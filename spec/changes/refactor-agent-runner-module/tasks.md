@@ -79,10 +79,10 @@
 
 ## 5. 阶段 4：runner 收尾、docstring 修复与契约核对
 
-- [ ] 5.1 修复 `_run_claude` 的 docstring 位置（把函数体内 `from core.config import ConfigLoader` 移至首段逻辑之后），确认 `ast.get_docstring()` 返回非 None
-- [ ] 5.2 清理残余空壳与不再需要的 import；确认 `runner.py` 行数 ≤ 3800
-- [ ] 5.3 运行 `tests/test_agent_runner_modules_contract.py`：验证 D6 全部名字可从 `runner` 访问、结果类 re-export 同一对象、`_run_claude` 补丁缝隙可用、8 组 setter/deleter 已删、行数上限；并补三条断言——(a) `runner._check_agent_result_artifact = MagicMock()` 实例打桩后 `_execute_agent_inner` 路径实际使用该替身（委托未被绕过）；(b) `DEFAULT_GATEWAY_MODEL` / `admin_disposition_path` / `_PLANREADY_STATUSES` / `_ARTIFACT_FRESHNESS_GRACE_SECONDS` 经 `runner` 可访问且与其新模块来源同一对象；(c) 单独 `import core.agent_runner.result_gate` / `maintenance_runs` / `latency` 不触发循环 import，且 `latency._default_ts_parser` 与 `runner.AgentRunner._parse_event_timestamp` 对同一样本返回一致
-- [ ] 5.4 全量 pytest 全绿（相对基线无新失败），独立 commit
+- [x] 5.1 修复 `_run_claude` 的 docstring 位置（把函数体内 `from core.config import ConfigLoader` 移至首段逻辑之后），确认 `ast.get_docstring()` 返回非 None
+- [x] 5.2 清理残余空壳与不再需要的 import；确认 `runner.py` 行数 ≤ 3800
+- [x] 5.3 运行 `tests/test_agent_runner_modules_contract.py`：验证 D6 全部名字可从 `runner` 访问、结果类 re-export 同一对象、`_run_claude` 补丁缝隙可用、8 组 setter/deleter 已删、行数上限；并补三条断言——(a) `runner._check_agent_result_artifact = MagicMock()` 实例打桩后 `_execute_agent_inner` 路径实际使用该替身（委托未被绕过）；(b) `DEFAULT_GATEWAY_MODEL` / `admin_disposition_path` / `_PLANREADY_STATUSES` / `_ARTIFACT_FRESHNESS_GRACE_SECONDS` 经 `runner` 可访问且与其新模块来源同一对象；(c) 单独 `import core.agent_runner.result_gate` / `maintenance_runs` / `latency` 不触发循环 import，且 `latency._default_ts_parser` 与 `runner.AgentRunner._parse_event_timestamp` 对同一样本返回一致
+- [x] 5.4 全量 pytest 全绿（相对基线无新失败），独立 commit
 
 ## 6. 阶段 5：收尾验证
 

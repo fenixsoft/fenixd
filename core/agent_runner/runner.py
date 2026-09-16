@@ -13,15 +13,12 @@ import subprocess
 import sys
 import threading
 import time
-import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Dict, Any
 
 from core.agent_runner.prompt_builder import (
     PromptBuilder,
-    planner_result_path,
-    planner_result_status_whitelist,
     spec_review_result_path,
     spec_review_result_status_whitelist,
 )
@@ -65,23 +62,16 @@ from core.agent_runner.latency import (  # noqa: F401
 from core.agent_runner.liveness import (
     AGENT_TERMINATE_GRACE_SECONDS,
     LIVE_ATTEMPT_STREAM_WINDOW_SECONDS,
-    SUPERVISION_DEFAULTS,
-    JUDGE_TIMEOUT_SECONDS,
-    LIVENESS_SNIPPET_CHARS,
     LivenessSupervisor,
 )
-from core.agent_runner.liveness import LivenessSupervisor
 from core.agent_runner.session import SessionTracker
 from core.agent_runner.provider_circuit import (
     PROVIDER_CIRCUIT_4XX,
     PROVIDER_CIRCUIT_COOLDOWN_SECONDS,
-    PROVIDER_CIRCUIT_PROBE_SUCCESS_CODE,
     PROVIDER_CIRCUIT_THRESHOLD,
     PROVIDER_CIRCUIT_WINDOW_SECONDS,
     PROVIDER_DAILY_ATTEMPTS_WARN,
     PROVIDER_SWITCH_COOLDOWN_SECONDS,
-    SWITCH_ERROR_CONN_PATTERNS,
-    SWITCH_ERROR_TEXT_PATTERNS,
     ProviderCircuit,
 )
 from core.agent_runner.run_files import (
@@ -92,18 +82,6 @@ from core.agent_runner.run_files import (
 )
 from core.agent_runner.token_budget import TokenAccountant
 from core.agent_runner.v2_server import V2ServerManager
-from core.run_task_track import (
-    find_impl_run_file,
-    parse_run_task_done,
-    parse_tasks_md,
-)
-from core.v2_dev_server import (
-    V2DevServerError,
-    start as v2_start_dev_server,
-    stop as v2_stop_dev_server,
-    base_url as v2_base_url,
-    cleanup_orphans as v2_cleanup_orphans,
-)
 from core.wip_checkpoint import (
     ANCHOR_EXTENSION_TAIL,
     ANCHOR_TRANSIENT_BACKOFF,
@@ -112,14 +90,8 @@ from core.wip_checkpoint import (
 )
 
 
-# 无 provider 分配的 agent（含 Administrator）走默认网关（cc-switch）时 --model 用的
-# 官方模型名。provider 已分配的 agent，其 --model 直接取该 agent 分配的网关模型名
-# （model 字段，如 deepseek-v4-flash）——见 fenixd-sdk-model-routing：--model 即实际
-# 发给网关的模型名，ANTHROPIC_MODEL 被 --model 覆盖不生效。本常量只作 fallback。
-# 常量定义随消费者（_get_admin_model）迁 core/agent_runner/maintenance_runs.py
-# （D3 / D2b 规则 3），此处 import 保持 runner 内部使用点与既有导入路径可用。
-# 维护型 run（Administrator/自省/自进化）实现在 maintenance_runs.py（D3），
-# AgentRunner 保留同名方法一行委托（保持测试调用路径与签名）。
+# DEFAULT_GATEWAY_MODEL 随 _get_admin_model 迁 maintenance_runs.py（D2b 规则 3），
+# re-export 保持内部使用点与既有导入路径；维护型 run 实现同迁，此处一行委托。
 from core.agent_runner.maintenance_runs import (
     ADMIN_DISPOSITION_GLOB,
     ADMIN_DISPOSITION_PREFIX,
@@ -336,16 +308,8 @@ TURN_EXTENSION_WINDOW_SECONDS = 60.0
 # TURN_EXTENSION_WINDOW_SECONDS 先例——框架生命周期内部治理参数）。
 EXTENSION_TAIL_WINDOW_SECONDS = 1800.0
 
-
 def _default_ts_parser(entry: dict):
-    """默认 timestamp 解析器：委托 core.agent_runner.latency 实现（D4）。
-
-    latency.py 自带等价实现（数值 timestamp 直通；ISO 字符串按
-    ``datetime.fromisoformat(str(raw).replace("Z", "+00:00")).timestamp()``
-    解析；缺失/异常返回 None——与 AgentRunner._parse_event_timestamp 行为逐字段
-    一致，由契约测试锁定）。runner.py 保留同名模块级函数并一行委托，维持
-    既有模块属性补丁路径。
-    """
+    """默认 timestamp 解析器：委托 core.agent_runner.latency 实现（D4）。"""
     return _latency_default_ts_parser(entry)
 
 
@@ -554,12 +518,7 @@ class AgentRunner:
     # ── V2 per-run 隔离测试服务（add-worktree-test-server）─────────────────────
 
 
-
-
-
-
     # ── provider 熔断（fix-stashpop-deadlock：provider-fault-fuse） ──────────────
-
 
 
     def _now(self) -> float:
@@ -588,14 +547,7 @@ class AgentRunner:
         self.__dict__.pop("_instant_fail_state", None)
 
 
-
     # ── provider 切换冷却（add-provider-failover：failover-dispatch） ──────────
-
-
-
-
-
-
 
 
     def run_implementer(self, spec_name: str,
@@ -1002,63 +954,45 @@ class AgentRunner:
         )
 
     def run_administrator(self, signal: dict) -> AdminDisposition:
-        """唤起 Administrator Agent 处置困境信号（maintenance_runs 委托）。"""
         return run_administrator(self, signal)
 
     def _clear_admin_disposition(self, disp_path: Path):
-        """清空本次 run 的处置状态文件（maintenance_runs 委托）。"""
         _clear_admin_disposition(disp_path)
 
     def _delete_admin_disposition(self, disp_path: Path):
-        """run 结束后删除自己的处置状态实例文件（maintenance_runs 委托）。"""
         _delete_admin_disposition(disp_path)
 
     def _read_admin_disposition(self, disp_path: Path) -> dict:
-        """读取管理员按 prompt 写入的处置记录（maintenance_runs 委托）。"""
         return _read_admin_disposition(disp_path)
-
-    # ── 每日自省 run（add-daily-self-review spec，design D2） ──────────
 
     def run_self_review(self, date_str: str, daily_summary: str,
                         todo_md: str | None = None,
                         todo_entries: str | None = None) -> SelfReviewResult:
-        """唤起每日自省 run（Administrator 通道，maintenance_runs 委托）。"""
         return run_self_review(self, date_str, daily_summary, todo_md, todo_entries)
 
     def _clear_self_review_out(self, out_path: Path):
-        """清空本次自省 run 的输出文件（maintenance_runs 委托）。"""
         _clear_self_review_out(out_path)
 
     def _delete_self_review_out(self, out_path: Path):
-        """run 结束后删除自己的 self_review 输出实例文件（maintenance_runs 委托）。"""
         _delete_self_review_out(out_path)
 
     def _read_self_review_out(self, out_path: Path) -> dict:
-        """读取自省 run 的回顾 JSON（maintenance_runs 委托）。"""
         return _read_self_review_out(out_path)
 
     def _accumulate_self_review_tokens(self, date_str: str, usage_info: dict) -> None:
-        """自省 token 归账到 cost-observability 独立类目（maintenance_runs 委托）。"""
         _accumulate_self_review_tokens(self, date_str, usage_info)
-
-    # ── 框架自进化 run（add-framework-self-evolution spec，design D2） ──
 
     def run_evolution(self, ready_projects: list,
                       pending_entries: list | None = None) -> EvolutionResult:
-        """唤起框架自进化分析 run（Administrator 通道，maintenance_runs 委托）。"""
         return run_evolution(self, ready_projects, pending_entries)
 
     def _delete_evolution_out(self, out_path: Path):
-        """run 结束后删除自己的 evolution 输出实例文件（maintenance_runs 委托）。"""
         _delete_evolution_out(out_path)
 
     def _accumulate_evolution_tokens(self, run_id: str, usage_info: dict) -> None:
-        """自进化 token 归账（maintenance_runs 委托）。"""
         _accumulate_evolution_tokens(self, run_id, usage_info)
 
     def _get_admin_model(self) -> str:
-        """Administrator 模型名：admin.agent_model > 默认网关 fallback
-        （maintenance_runs 委托）。"""
         return _get_admin_model(self)
 
     def _build_isolated_settings(self) -> dict:
@@ -2597,17 +2531,6 @@ class AgentRunner:
                 )
 
 
-
-
-
-
-
-
-
-
-
-
-
     def _run_claude(self, prompt: str, cwd: Path, run_id: str,
                     model_override: str | None = None,
                     env_overrides: Dict[str, str] | None = None,
@@ -2615,7 +2538,6 @@ class AgentRunner:
                     max_turns: int | None = None,
                     spec_name: str | None = None,
                     agent_type: str | None = None) -> tuple:
-        from core.config import ConfigLoader
         """
         Execute claude CLI with the given prompt, streaming events to disk.
 
@@ -2655,6 +2577,7 @@ class AgentRunner:
         # per-agent-timeout-override 3.2：run 生效超时按 agent_type 覆盖值查询
         #（override → 全局 run_timeout_seconds → 3600 回退）。
         timeout = self._effective_run_timeout(agent_type)
+        from core.config import ConfigLoader
         # fix-stuck-threshold-unify D5：supervision 激活路径读取 absolute_max 兜底值，
         # 不直接读原始配置（防止与 run 超时脱钩）。返回 None 表示未启用 supervision。
         sup_abs_max = ConfigLoader.effective_supervision_absolute_max_seconds(self.config)
@@ -3121,15 +3044,10 @@ class AgentRunner:
         return result if result else DEFAULT_SCHEDULE
 
 
-
-
     # ── attempt 存活探测（improve-run-lifecycle-governance D4）────────────────
 
 
-
-
     # ── 超时续期基准（improve-run-lifecycle-governance 3.2 / D3）──────────────
-
 
 
     # ── 超时活性监督（improve-run-lifecycle-governance 4.1–4.3 / D1–D3）────────
@@ -3156,13 +3074,6 @@ class AgentRunner:
         采样 / _turn_traffic_active）统一经此判定，不得各自硬编码事件类型。
         """
         return _entry_is_tool_result(entry)
-
-
-
-
-
-
-
 
 
     def _check_daily_limit(self):
@@ -3503,73 +3414,54 @@ class AgentRunner:
         return self._prompt_builder._build_prompt(
             spec_name, agent_type, detail, wt_path=wt_path)
 
-    # ── planner 产物硬门（add-judge-artifact-gate D1）────────────────────
-
     def _check_artifact_json_file(self, path: Path, agent_type: str,
                                   run_started_at: float | None) -> tuple:
-        """单产物文件基础校验（实现见 result_gate，D2b 规则 1/2 一行委托）。"""
         return _check_artifact_json_file(path, agent_type, run_started_at)
 
     def _check_agent_result_artifact(self, spec_name: str,
                                      agent_type: str,
                                      run_started_at: float | None = None,
                                      wt_path: Path | None = None) -> str | None:
-        """planner/implementer 产物存在性硬门（fail-closed，result_gate 委托）。"""
-        return _check_agent_result_artifact(
-            self, spec_name, agent_type, run_started_at, wt_path)
+        return _check_agent_result_artifact(self, spec_name, agent_type, run_started_at, wt_path)
 
-    # 结果文件顶层 status 白名单（P0 / spec「结果产物硬门」）。success = 全部任务
-    # 完成；partial = 诚实申报未完成；error = 失败（不施加完成度判据）。白名单外
-    # 取值（如 planner 词汇 verified/plan-ready）一律判失败——语义错位 status 被
-    # 读侧放行即历史 fail-open 事故形态（add-verify-contract-autodraft）。
-    # 判据实现在 result_gate.py（D2b 规则 1：经 runner 参数注入本类属性）。
+    # 结果文件顶层 status 白名单（P0 / spec「结果产物硬门」）：success=全部任务完成；
+    # partial=诚实申报未完成；error=失败不施加完成度判据。白名单外取值判失败（防
+    # fail-open 事故形态）；判据实现在 result_gate.py（D2b 规则 1 经 runner 注入）。
     _IMPL_RESULT_STATUSES = ("success", "error", "partial")
 
     def _check_impl_result_artifact(self, spec_name: str,
                                     run_started_at: float | None,
                                     wt_path: Path | None) -> str | None:
-        """implementer/fast-track 结果产物硬门（result_gate 委托）。"""
         return _check_impl_result_artifact(self, spec_name, run_started_at, wt_path)
 
     @staticmethod
     def _format_gap_list(gap: list, limit: int = 20) -> str:
-        """缺口任务 id 清单格式化（result_gate 委托）。"""
         return _format_gap_list(gap, limit)
 
     @staticmethod
     def _invalid_completed_ids(items) -> list:
-        """completed_tasks / unfinished 非法任务 id（result_gate 委托）。"""
         return _invalid_completed_ids(items)
 
     def _check_success_completion(self, spec_name: str, result_path: Path,
                                   data: dict, all_ids: list,
                                   checked_ids: set) -> str | None:
-        """status == "success" 的任务书完成度判据（result_gate 委托）。"""
-        return _check_success_completion(
-            self, spec_name, result_path, data, all_ids, checked_ids)
+        return _check_success_completion(self, spec_name, result_path, data, all_ids, checked_ids)
 
     def _check_partial_consistency(self, spec_name: str, result_path: Path,
                                    data: dict, all_ids: list,
                                    checked_ids: set) -> str | None:
-        """status == "partial" 的申报一致性判据（result_gate 委托）。"""
-        return _check_partial_consistency(
-            self, spec_name, result_path, data, all_ids, checked_ids)
+        return _check_partial_consistency(self, spec_name, result_path, data, all_ids, checked_ids)
 
     def _check_taskupdate_crosscheck(self, spec_name: str,
                                      checked_ids: set) -> str | None:
-        """能力探测：init.tools 含 TaskCreate 才强制 TaskUpdate 交叉核对
-        （result_gate 委托）。"""
         return _check_taskupdate_crosscheck(self, spec_name, checked_ids)
 
     @staticmethod
     def _read_init_tools(run_file) -> list | None:
-        """读 run 产物 init 事件的 tools 数组（result_gate 委托）。"""
         return _read_init_tools(run_file)
 
     def _append_crosscheck_skipped(self, spec_name: str, run_file,
                                    reason: str) -> None:
-        """向 run 产物追加 impl-task-crosscheck-skipped 审计事件
-        （result_gate 委托）。"""
         _append_crosscheck_skipped(self, spec_name, run_file, reason)
 
     def _build_legacy_section(self, spec_name: str) -> str:
