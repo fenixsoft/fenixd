@@ -460,14 +460,14 @@ def set_spec_budget(project_root, spec: str, budget) -> dict:
 
     budget 取值：
     - None：清除覆盖（属性置 null，恢复跟随全局 agents.impl_run_budget）；
-    - 1-10 整数：写入 per-spec 覆盖值（API 层已校验 isinstance(int) and not isinstance(bool)）；
+    - 1 至 agents.impl_run_budget_max（缺省 100）的整数：写入 per-spec 覆盖值；
     - 其余：{invalid: True}（拒绝写入，STATE.md 不变）。
 
     校验：
     - spec 不在 STATE.md → {found: False}
     - 终态（done/pushed）→ {terminal: True}（终态修改预算无意义）
     - 非法值 → {invalid: True}
-    - 成功 → {ok: True, budget: <1-10 整数或 None>}
+    - 成功 → {ok: True, budget: <整数或 None>}
     写入经 StateMachine.update_spec（flock + 原子 rename，与 daemon 并发写安全）。
 
     边界（add-spec-status-modal-budget D3）：本函数只写覆盖属性
@@ -489,13 +489,22 @@ def set_spec_budget(project_root, spec: str, budget) -> dict:
         sm = StateMachine(proot / ".fenix" / "STATE.md", None)
         sm.update_spec(spec, {"impl_run_budget_override": None})
         return {"ok": True, "found": True, "budget": None}
-    # 非法值校验（int，非 bool，1-10）
+    # 非法值校验（int，非 bool，[1, 有效上限]）
+    # open-impl-budget-ceiling：上限 = agents.impl_run_budget_max（缺省 100），
+    # 与闸门/Dashboard 摘要同源解析，保证「界面可设范围」与「闸门夹紧范围」一致。
+    from core.pm_engine.budget import (
+        resolve_impl_run_budget_max, IMPL_RUN_BUDGET_MAX_KEY, IMPL_RUN_BUDGET_MAX_DEFAULT,
+    )
+    from core.config import ConfigLoader
+    budget_max = resolve_impl_run_budget_max(
+        ConfigLoader.get(ConfigLoader.resolve_config(proot),
+                         IMPL_RUN_BUDGET_MAX_KEY, IMPL_RUN_BUDGET_MAX_DEFAULT))
     if isinstance(budget, bool) or not isinstance(budget, int):
         return {"ok": False, "found": True, "budget": None, "invalid": True,
-                "error": "budget must be an integer between 1 and 10 (or null to clear)"}
-    if budget < 1 or budget > 10:
+                "error": f"budget must be an integer between 1 and {budget_max} (or null to clear)"}
+    if budget < 1 or budget > budget_max:
         return {"ok": False, "found": True, "budget": None, "invalid": True,
-                "error": "budget must be an integer between 1 and 10 (or null to clear)"}
+                "error": f"budget must be an integer between 1 and {budget_max} (or null to clear)"}
     from core.state_machine import StateMachine
     sm = StateMachine(proot / ".fenix" / "STATE.md", None)
     sm.update_spec(spec, {"impl_run_budget_override": budget})

@@ -21,7 +21,7 @@ import yaml
 # Dashboard 管理的配置键子集：写回时只更新这些键，其它键原样保留
 _MANAGED_KEYS = ["llm", "agents", "gates", "runs", "verify", "hooks"]
 # 在 agents 下管理的子键白名单
-_AGENTS_MANAGED_SUBKEYS = ["models", "max_concurrent", "run_timeout_seconds", "max_turns", "daily_run_limit", "token_budget_millions", "impl_run_budget", "verify_redo_budget"]
+_AGENTS_MANAGED_SUBKEYS = ["models", "max_concurrent", "run_timeout_seconds", "max_turns", "daily_run_limit", "token_budget_millions", "impl_run_budget", "impl_run_budget_max", "verify_redo_budget"]
 
 # 用户级配置文件路径（与项目级同名 `.fenix/config.yaml`，作用域由所在目录决定）
 
@@ -992,9 +992,24 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
                 )
         if "impl_run_budget" in agents:
             irb = agents["impl_run_budget"]
-            if not isinstance(irb, int) or irb < 1 or irb > 10:
+            # open-impl-budget-ceiling：上限由 agents.impl_run_budget_max 决定
+            #（缺省 100，硬天花板 1000），不再硬编码 10。
+            from core.pm_engine.budget import resolve_impl_run_budget_max
+            budget_max = resolve_impl_run_budget_max(agents.get("impl_run_budget_max"))
+            if not isinstance(irb, int) or irb < 1 or irb > budget_max:
                 raise ValueError(
-                    f"agents.impl_run_budget must be an integer in [1, 10]: {irb}"
+                    f"agents.impl_run_budget must be an integer in [1, {budget_max}]: {irb}"
+                )
+        if "impl_run_budget_max" in agents:
+            ibm = agents["impl_run_budget_max"]
+            from core.pm_engine.budget import (
+                resolve_impl_run_budget_max, IMPL_RUN_BUDGET_MAX_CEILING,
+            )
+            if (not isinstance(ibm, int) or isinstance(ibm, bool)
+                    or ibm < 1 or ibm > IMPL_RUN_BUDGET_MAX_CEILING):
+                raise ValueError(
+                    f"agents.impl_run_budget_max must be an integer in "
+                    f"[1, {IMPL_RUN_BUDGET_MAX_CEILING}]: {ibm}"
                 )
         if "verify_redo_budget" in agents:
             vrb = agents["verify_redo_budget"]

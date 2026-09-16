@@ -162,9 +162,13 @@ def _resolve_global_impl_run_budget(project_root) -> int:
     """读取全局 agents.impl_run_budget 有效值，fallback DEFAULT_IMPL_RUN_BUDGET。
 
     结果按项目级 config.yaml 签名键缓存（config 变化自动失效），与闸门口径一致：
-    ConfigLoader.get 读合并配置 → clamp_impl_run_budget 夹紧 → fallback DEFAULT。
+    ConfigLoader.get 读合并配置 → 按有效上限夹紧 → fallback DEFAULT。
     """
-    from core.pm_engine.budget import clamp_impl_run_budget, DEFAULT_IMPL_RUN_BUDGET
+    from core.pm_engine.budget import (
+        clamp_impl_run_budget, DEFAULT_IMPL_RUN_BUDGET,
+        resolve_impl_run_budget_max, IMPL_RUN_BUDGET_MAX_KEY,
+        IMPL_RUN_BUDGET_MAX_DEFAULT,
+    )
     from core.config import ConfigLoader
     import core.dashboard.data as _facade
     proot = Path(project_root)
@@ -175,12 +179,29 @@ def _resolve_global_impl_run_budget(project_root) -> int:
     if cached is not None:
         return cached
     cfg = ConfigLoader.resolve_config(proot)
+    max_value = resolve_impl_run_budget_max(
+        ConfigLoader.get(cfg, IMPL_RUN_BUDGET_MAX_KEY, IMPL_RUN_BUDGET_MAX_DEFAULT))
     raw = ConfigLoader.get(cfg, "agents.impl_run_budget")
-    budget = clamp_impl_run_budget(raw) or DEFAULT_IMPL_RUN_BUDGET
+    budget = clamp_impl_run_budget(raw, max_value) or DEFAULT_IMPL_RUN_BUDGET
     if len(_GLOBAL_BUDGET_CACHE) > _GLOBAL_BUDGET_CACHE_MAX:
         _GLOBAL_BUDGET_CACHE.clear()
     _GLOBAL_BUDGET_CACHE[cache_key] = budget
     return budget
+
+
+def _impl_budget_max(project_root) -> int:
+    """读取有效预算上限 ``agents.impl_run_budget_max``（缺省 100）。
+
+    供 spec_summary 夹紧 override 与 API 校验共用（与闸门 ImplBudget._impl_budget_max
+    同源：同一 resolve_impl_run_budget_max 纯函数 + 同一配置键）。
+    """
+    from core.pm_engine.budget import (
+        resolve_impl_run_budget_max, IMPL_RUN_BUDGET_MAX_KEY, IMPL_RUN_BUDGET_MAX_DEFAULT,
+    )
+    from core.config import ConfigLoader
+    cfg = ConfigLoader.resolve_config(Path(project_root))
+    raw = ConfigLoader.get(cfg, IMPL_RUN_BUDGET_MAX_KEY, IMPL_RUN_BUDGET_MAX_DEFAULT)
+    return resolve_impl_run_budget_max(raw)
 
 
 def spec_summary(project_root, spec_name: str, entry: dict) -> dict:
@@ -196,9 +217,13 @@ def spec_summary(project_root, spec_name: str, entry: dict) -> dict:
     mode = read_spec_mode(project_root, spec_name)
     # add-spec-status-modal-budget D3：per-spec 预算字段
     # 三字段读取与预算闸门同源（clamp_impl_run_budget 单点），前端不重复实现解析。
-    from core.pm_engine.budget import clamp_impl_run_budget, IMPL_RUN_BUDGET_OVERRIDE_FIELD, DEFAULT_IMPL_RUN_BUDGET
+    # open-impl-budget-ceiling：夹紧上限改由可配置键解析，前端界面范围与此同源。
+    from core.pm_engine.budget import (
+        clamp_impl_run_budget, IMPL_RUN_BUDGET_OVERRIDE_FIELD, DEFAULT_IMPL_RUN_BUDGET,
+    )
+    budget_max = _impl_budget_max(project_root)
     budget_override_raw = entry.get(IMPL_RUN_BUDGET_OVERRIDE_FIELD) if entry else None
-    budget_override = clamp_impl_run_budget(budget_override_raw)
+    budget_override = clamp_impl_run_budget(budget_override_raw, budget_max)
     try:
         budget_used = int(entry.get("_impl_run_budget_used", 0) or 0) if entry else 0
     except (TypeError, ValueError):
@@ -256,6 +281,8 @@ def spec_summary(project_root, spec_name: str, entry: dict) -> dict:
         "budget_used": budget_used,
         "budget_override": budget_override,
         "budget_effective": budget_effective,
+        # open-impl-budget-ceiling：有效上限（前端覆盖输入框 max 与此同源）
+        "budget_max": budget_max,
         # evo-infra-failure-budget-exempt R3：infra 与 product 失败构成分离——
         # _verify_infra_rounds 为本轮验证周期 infra 轮次（纯观测，不参与
         # MAX_VERIFY_FAIL_ROUNDS 冻结；验证 PASS 归零）；_infra_failure_count

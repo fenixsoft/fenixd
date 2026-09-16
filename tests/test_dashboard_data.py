@@ -2162,7 +2162,8 @@ class TestSpecBudgetData(unittest.TestCase):
 
     def test_invalid_values_rejected(self):
         from core.dashboard.data import set_spec_budget, parse_state
-        for bad in (0, 11, "5", 3.5, True, -1):
+        # open-impl-budget-ceiling：上限缺省 100，101 越界；11 现合法。
+        for bad in (0, 101, "5", 3.5, True, -1):
             result = set_spec_budget(self.project_root, "demo-spec", bad)
             self.assertTrue(result["invalid"], f"budget={bad!r} 应拒绝")
         entry = parse_state(self.project_root)["demo-spec"]
@@ -2241,11 +2242,12 @@ class TestSpecSummaryBudgetFields(unittest.TestCase):
         self.assertEqual(s["budget_effective"], DEFAULT_IMPL_RUN_BUDGET)
 
     def test_override_clamped_like_gate(self):
-        """覆盖越界与闸门同口径夹紧（0→1，11→10）。"""
-        self.sm.update_spec("demo-spec", {"impl_run_budget_override": 11})
+        """覆盖越界与闸门同口径夹紧（0→1；超缺省上限 100 → 100）。"""
+        self.sm.update_spec("demo-spec", {"impl_run_budget_override": 101})
         s = self._summary()
-        self.assertEqual(s["budget_override"], 10)
-        self.assertEqual(s["budget_effective"], 10)
+        self.assertEqual(s["budget_override"], 100)
+        self.assertEqual(s["budget_effective"], 100)
+        self.assertEqual(s["budget_max"], 100)
 
     def test_used_tolerant_on_bad_value(self):
         self.sm.update_spec("demo-spec", {"_impl_run_budget_used": "oops"})

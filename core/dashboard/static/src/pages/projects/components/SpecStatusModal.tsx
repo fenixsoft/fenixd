@@ -536,11 +536,11 @@ export default function SpecStatusModal({
             <Space direction="vertical" style={{ width: '100%' }} size={8}>
               <div>
                 <Typography.Text type="secondary" style={{ display: 'block', marginBottom: 4, fontSize: 12 }}>
-                  覆盖值（1-10，null=跟随全局当前 {summary.budget_effective ?? 6}）
+                  覆盖值（1-{summary.budget_max ?? 100}，null=跟随全局当前 {summary.budget_effective ?? 6}）
                 </Typography.Text>
                 <InputNumber
                   min={1}
-                  max={10}
+                  max={summary.budget_max ?? 100}
                   step={1}
                   style={{ width: 120 }}
                   value={budgetOverride}

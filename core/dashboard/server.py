@@ -24,7 +24,7 @@ server.py — Fenix Web Dashboard 服务器（dashboard-server）。
     POST /api/spec-admin-invoke?project=<name>&spec=<name>  → 手动唤起 Admin（写 .fenix/admin_invoke_request.json，进行中返回 409）
     POST /api/spec-start-after?project=<name>&spec=<name> → 设置/清除定时拾取 start_after（body: {"value": iso|null}，非法 400 / 终态 403）
     POST /api/spec-freeze-config?project=<name>&spec=<name> → 冻结管理（body: {"mode": permanent|scheduled|unfreeze, "until"?: iso}，非法 400 / 非冻结 409）
-    POST /api/spec-budget?project=<name>&spec=<name> → 设置/清除 per-spec 实现尝试预算覆盖（body: {"budget": 1-10 整数|null}，缺键/非法 400 / 终态 403）
+    POST /api/spec-budget?project=<name>&spec=<name> → 设置/清除 per-spec 实现尝试预算覆盖（body: {"budget": 1..budget_max 整数|null}，缺键/非法 400 / 终态 403）
     POST /api/spec-approve-push?project=<name>&spec=<name> → 审批推送 done SPEC（写 .fenix/approve_push_request.json 信号，daemon 未运行/已有信号 409，非 done 403）
     GET /api/config?project=<name> → 读取受管配置（llm / agents.models / gates.approve_mode）
     POST /api/config?project=<name> → 写回受管配置（原子写、校验失败返回 400）
@@ -799,15 +799,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def _api_spec_budget(self, query) -> dict:
         """POST /api/spec-budget?project=<name>&spec=<name>
-        body: {"budget": <1-10 整数|null>}
+        body: {"budget": <1..budget_max 整数|null>}
 
         设置/清除 SPEC 的实现尝试预算覆盖（impl_run_budget_override）。
         - project 不存在 → 404；spec 不在项目 STATE.md → 404
         - body 缺 budget 键 / 非整数（bool/浮点/字符串数字）→ 400
-        - 越界（0、11）→ 400
+        - 越界（0、超过 agents.impl_run_budget_max）→ 400
         - 终态（done/pushed）→ 403「终态不可设置预算覆盖」
         - 成功 → 200 + {ok: true, budget: <值|null>}（null 清除覆盖，恢复跟随全局）
         修改只写覆盖属性，不触碰 _impl_run_budget_used（对账组件管辖）。
+
+        open-impl-budget-ceiling：上限改由 agents.impl_run_budget_max 决定
+        （缺省 100），不再硬编码 10；set_spec_budget 内部做同源权威校验。
         """
         spec = query.get("spec", [None])[0]
         project = self._project_from_query(query)
@@ -824,19 +827,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if body is None:
             return
         if "budget" not in body:
-            self._error(400, "budget required in request body (1-10 int or null)")
+            self._error(400, "budget required in request body (int or null)")
             return
         budget = body["budget"]
+        proot = Path(project["path"])
         # 非整数（含 bool、浮点、字符串数字）拒绝——null 合法（清除覆盖）
         if budget is not None and (
             isinstance(budget, bool) or not isinstance(budget, int)
         ):
-            self._error(400, "budget must be an integer between 1 and 10 (or null to clear)")
+            self._error(400, "budget must be an integer >= 1 (or null to clear)")
             return
-        if budget is not None and (budget < 1 or budget > 10):
-            self._error(400, "budget must be an integer between 1 and 10 (or null to clear)")
-            return
-        proot = Path(project["path"])
         try:
             result = dashboard_data.set_spec_budget(proot, spec, budget)
         except Exception as e:  # noqa: BLE001 兜底：写回异常不崩溃进程
@@ -849,7 +849,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._error(403, result.get("error") or "终态不可设置预算覆盖")
             return
         if result.get("invalid"):
-            self._error(400, result.get("error") or "budget must be an integer between 1 and 10 (or null to clear)")
+            self._error(400, result.get("error") or "budget out of range")
             return
         self._json({"ok": True, "project": project["name"], "spec": spec,
                     "budget": result.get("budget")})

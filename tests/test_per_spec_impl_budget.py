@@ -22,7 +22,10 @@ from core.admin_store import AdminStore, ESCALATION
 from core.pm_engine.budget import (
     DEFAULT_IMPL_RUN_BUDGET,
     clamp_impl_run_budget,
+    resolve_impl_run_budget_max,
     IMPL_RUN_BUDGET_OVERRIDE_FIELD,
+    IMPL_RUN_BUDGET_MAX_DEFAULT,
+    IMPL_RUN_BUDGET_MAX_CEILING,
 )
 from core.state_machine import StateMachine
 
@@ -44,10 +47,29 @@ class TestClampImplRunBudget(unittest.TestCase):
         self.assertEqual(clamp_impl_run_budget(10), 10)
 
     def test_out_of_range_clamped(self):
+        # open-impl-budget-ceiling：上限缺省为可配置的 IMPL_RUN_BUDGET_MAX_DEFAULT(100)
         self.assertEqual(clamp_impl_run_budget(0), 1)
-        self.assertEqual(clamp_impl_run_budget(11), 10)
-        self.assertEqual(clamp_impl_run_budget(100), 10)
+        self.assertEqual(clamp_impl_run_budget(99), 99)
+        self.assertEqual(clamp_impl_run_budget(100), 100)
+        self.assertEqual(clamp_impl_run_budget(101), IMPL_RUN_BUDGET_MAX_DEFAULT)
+        self.assertEqual(clamp_impl_run_budget(100000), IMPL_RUN_BUDGET_MAX_DEFAULT)
         self.assertEqual(clamp_impl_run_budget(-5), 1)
+
+    def test_explicit_max_clamps(self):
+        """显式传入 max_value 时按该上限夹紧（闸门/Dashboard 传有效上限）。"""
+        self.assertEqual(clamp_impl_run_budget(10, 10), 10)
+        self.assertEqual(clamp_impl_run_budget(11, 10), 10)
+        self.assertEqual(clamp_impl_run_budget(50, 20), 20)
+        self.assertEqual(clamp_impl_run_budget(5, 20), 5)
+
+    def test_resolve_impl_run_budget_max(self):
+        """上限键归一化：非正整数回退缺省；超硬天花板夹紧。"""
+        self.assertEqual(resolve_impl_run_budget_max(50), 50)
+        self.assertEqual(resolve_impl_run_budget_max(None), IMPL_RUN_BUDGET_MAX_DEFAULT)
+        self.assertEqual(resolve_impl_run_budget_max(0), IMPL_RUN_BUDGET_MAX_DEFAULT)
+        self.assertEqual(resolve_impl_run_budget_max(True), IMPL_RUN_BUDGET_MAX_DEFAULT)
+        self.assertEqual(resolve_impl_run_budget_max(5.5), IMPL_RUN_BUDGET_MAX_DEFAULT)
+        self.assertEqual(resolve_impl_run_budget_max(99999), IMPL_RUN_BUDGET_MAX_CEILING)
 
     def test_string_int_is_non_integer(self):
         """字符串数字属于非整数类型 → None（回退下一优先级），与 API 400 口径一致。"""
@@ -136,11 +158,16 @@ class TestOverridePriority(_Base):
         self.sm.update_spec("spec-a", {IMPL_RUN_BUDGET_OVERRIDE_FIELD: 0})
         self.assertEqual(self.engine._budget._impl_run_budget("spec-a"), 1)
 
-    def test_override_11_clamped_to_10(self):
-        """override=11 → 夹紧为 10。"""
+    def test_override_above_default_max_clamped(self):
+        """override 超缺省上限(100) → 夹紧为 IMPL_RUN_BUDGET_MAX_DEFAULT。
+
+        open-impl-budget-ceiling：上限缺省 100（可经 agents.impl_run_budget_max
+        调整）。override=101 超上限 → 夹到 100。
+        """
         self._make_spec("spec-a")
-        self.sm.update_spec("spec-a", {IMPL_RUN_BUDGET_OVERRIDE_FIELD: 11})
-        self.assertEqual(self.engine._budget._impl_run_budget("spec-a"), 10)
+        self.sm.update_spec("spec-a", {IMPL_RUN_BUDGET_OVERRIDE_FIELD: 101})
+        self.assertEqual(self.engine._budget._impl_run_budget("spec-a"),
+                         IMPL_RUN_BUDGET_MAX_DEFAULT)
 
     def test_spec_name_none_uses_global(self):
         """spec_name=None → 直接用全局 config（无 override 查询）。"""

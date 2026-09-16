@@ -154,8 +154,9 @@ IMPL_RUN_BUDGET_USED_FIELD = "_impl_run_budget_used"
 BUDGET_EXEMPT_RUNS_FIELD = "_budget_exempt_runs"
 BUDGET_EXEMPT_ALERTED_FIELD = "_exempt_alerted"
 # ── per-spec 预算覆盖属性（add-spec-status-modal-budget D3）────────────
-# 人工管理属性：null/缺失 = 跟随全局 agents.impl_run_budget；1-10 整数 = per-spec
-# 有效预算。与 priority/start_after 同类，须随条目序列化（serialize 显式键表）。
+# 人工管理属性：null/缺失 = 跟随全局 agents.impl_run_budget；正整数 = per-spec
+# 有效预算（上限由 agents.impl_run_budget_max 决定，open-impl-budget-ceiling）。
+# 与 priority/start_after 同类，须随条目序列化（serialize 显式键表）。
 IMPL_RUN_BUDGET_OVERRIDE_FIELD = "impl_run_budget_override"
 
 # ── 重启重验预算计数（fix-daemon-lifecycle-races D3）──────────────────
