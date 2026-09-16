@@ -3,7 +3,7 @@
 ## Deliverables
 
 ```yaml
-- path: core/dashboard/data.py
+- path: core/dashboard/data/summary.py
   kind: modify
 - path: fenixd.py
   kind: modify
