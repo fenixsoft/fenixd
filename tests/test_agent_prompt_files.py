@@ -254,11 +254,14 @@ class TestProjectExtraPrompt:
         runner = make_runner(proot)
         prompt = runner._prompt_builder._build_prompt("demo", "verifier")
         assert "项目附加提示词" not in prompt
+        # fix-agent-noninteractive-contract 2.5：非交互契约段在统一收尾处
+        # 注入（动态段之后、项目附加段之前），逐字节 baseline 同步纳入。
         baseline = runner._prompt_builder._fill_placeholders(
             (AGENT_PROMPT_DIR / AGENT_PROMPT_FILES["verifier"]).read_text(
                 encoding="utf-8"),
             "verifier", "demo", None,
-        ) + runner._prompt_builder._verifier_breakpoint_section("demo")
+        ) + runner._prompt_builder._verifier_breakpoint_section("demo") \
+            + runner._prompt_builder._noninteractive_contract_section()
         assert prompt == baseline
 
     def test_empty_extra_file_zero_injection(self, tmp_path):
