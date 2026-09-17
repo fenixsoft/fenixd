@@ -367,3 +367,39 @@ class TestMergebackWipOverlapAlert(unittest.TestCase):
         self.assertEqual(SIGNAL_SEVERITY.get("mergeback_wip_overlap"), "major")
         self.assertTrue(SIGNAL_RECOMMENDATION.get("mergeback_wip_overlap"),
                         "应有核对指引")
+
+    def test_remerge_block_skips_breaker_and_alerts(self):
+        """repair 后 re-merge 被闸门阻塞 → 旁路熔断、不 blocked、告警直发。
+
+        第三处 merge 结果处理站点（repair_lane._handle_remerge_failure）：
+        阻塞是前置拦截，repair 期间主树出现新 WIP 与分支重叠时同样 MUST NOT
+        计入 _merge_fp/_merge_streak 熔断记账。
+        """
+        self._mk("repair-spec")
+        from core.worktree_manager.types import MergeConflictInfo
+        remerge_info = MergeConflictInfo(
+            False,
+            "Merge-back blocked by WIP overlap gate (policy=block): 1 main-tree "
+            "tracked file(s) with uncommitted changes overlap branch changes: "
+            "['core/a.py']",
+            wip_overlap=["core/a.py"],
+            wip_gate_blocked=True,
+        )
+        self.engine._handle_remerge_failure(
+            "repair-spec", remerge_info, "fenix/repair-spec-1")
+
+        entry = self.sm.read_one("repair-spec") or {}
+        self.assertEqual(entry.get("status"), "implementing",
+                         f"repair 阻塞同样不翻转状态机: {entry}")
+        self.assertNotIn("_merge_fp", entry, "repair 阻塞不应写入指纹")
+        self.assertEqual(int(entry.get("_merge_streak", 0) or 0), 0,
+                         "repair 阻塞不应累计熔断连击")
+        # 告警直发（admin_alerts 出现 handled=false 的 mergeback_wip_overlap）
+        import json
+        records = json.loads(self._alerts_path().read_text(encoding="utf-8"))
+        hits = [r for r in records if r.get("signal_type") == "mergeback_wip_overlap"]
+        self.assertEqual(len(hits), 1, f"应恰好一条告警: {records}")
+        rec = hits[0]
+        self.assertFalse(rec.get("handled"))
+        self.assertEqual(rec.get("spec"), "repair-spec")
+        self.assertIn("core/a.py", rec.get("description", ""))
