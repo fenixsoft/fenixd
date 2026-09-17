@@ -210,8 +210,12 @@ def _scan_run_signals(path: Path) -> Optional[str]:
     """全文件扫描 run 产物找结构性失败信号（预算耗尽/spec 缺失类）。
 
     只做逐行子串匹配（不完整 JSON 解析），命中首个信号词即返回凭据摘要；
-    未命中返回 None。供 result 终态未命中标记时兜底——信号事件可能落在
-    文件中部（agent 输出/告警内容），尾部行不足以覆盖。
+    未命中返回 None。仅用于失败样本的归因补充（collect_failed_run_samples）：
+    _classify_run 已给 detail 时以其为准，detail 为空（如 error 终态缺省
+    error 文本）时拼出 signal=<词>；MUST NOT 据此改写 _classify_run 给出的
+    category——成功终态（result 未命中 marker/终态邻近 3 行无信号）由终态
+    判定直接计为 succeeded，不再做全文件主题词扫描降级（主题词与 repair/
+    planner/evo 轮正文高度重合，扫描必然误报）。
     """
     try:
         with path.open("r", encoding="utf-8", errors="replace") as f:
@@ -305,12 +309,14 @@ def collect_runs_stats(project_root, window_start: datetime) -> Dict[str, int]:
         if not _in_window(datetime.fromtimestamp(ts), window_start, window_end):
             continue
         category, _detail = _classify_run(run_id, _read_run_tail(p, 3))
-        # 业务失败语义兜底（2.2）：result 终态但无标记/信号时补充全文件
-        # 信号扫描——信号事件可能在文件中部，尾部行不覆盖。
-        if category == "succeeded":
-            sig = _scan_run_signals(p)
-            if sig:
-                category = "failed"
+        # 判定口径（result-based classification）：succeeded 以 _classify_run 的
+        # result 分支判定结果为准——result 文本未命中 _business_fail_marker 且终态
+        # 邻近 3 行未命中 _signal_evidence 即计为 succeeded，不引入成功语义文本
+        # 白名单（朴素文本如「已退出」同样计为 succeeded）。接受项边界：信号词
+        # 位于终态邻近 3 行之外时不再翻转分类（原先由全文件扫描捕获）；实证上
+        # 盲派空 spec run 的失败凭据是 result 文本命中 marker（marker 路径保留），
+        # 不依赖全文件扫描。本函数无 detail 输出通道，MUST NOT 追加 _scan_run_signals
+        # 改写 category——running/dropped/timeout/instant_hang 桶位保持不变。
         counts["total"] += 1
         counts[category] += 1
     return counts
@@ -347,11 +353,18 @@ def collect_failed_run_samples(
         if not _in_window(datetime.fromtimestamp(ts), window_start, window_end):
             continue
         category, detail = _classify_run(run_id, _read_run_tail(p, 3))
-        # 业务失败语义兜底：result 终态且无标记时全文件信号扫描。
-        if category == "succeeded":
+        # 判定口径（result-based classification）：succeeded 以 _classify_run 的
+        # result 分支判定结果为准（不引入成功语义文本白名单），成功终态不入选
+        # 失败样本；接受项边界：终态邻近 3 行之外的主题词不再翻转分类。
+        # 信号扫描兜底仅保留给 failed 样本的归因补充：_classify_run 已给 detail
+        # 时以其为准，detail 为空（如 error 终态缺省 error 文本）时用全文件扫描
+        # 拼出 signal=<词> 摘要；MUST NOT 改写 _classify_run 给出的 category
+        # （running/dropped/timeout/instant_hang 桶位不变，在飞 run 转录正文
+        # 必含被修改源码字面量，改写会制造与本次修复同源的新误报）。
+        if category == "failed" and not detail:
             sig = _scan_run_signals(p)
             if sig:
-                category, detail = "failed", sig
+                detail = sig
         if category == "failed" and detail:
             samples.append({"run_id": run_id, "detail": detail})
     # 按时间排序（最新 run 排前）；limit 截断
