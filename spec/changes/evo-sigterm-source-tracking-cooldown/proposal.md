@@ -8,8 +8,8 @@ agent_runner 对 CLI 子进程 SIGTERM 死法（Exit 143）与 SIGKILL 死法（
 
 - 记录 SIGTERM/SIGKILL 来源（daemon drain / 外部 kill / 资源回收 / 未知），143/-9 不再是无根因标签，run 错误信息与告警 evidence 透出来源。
 - 143/-9 类失败连续出现触发熔断冷却（或 attempt 级硬失败），而非无限瞬态重试（复用/扩展 infra 熔断计数）。
-- daemon drain/重启对 in-flight run 的 shutdown 标记覆盖全场景（含非优雅关停），避免误归 provider-transient。
-- 与产物硬门格式拒绝共享同一改法：非内容/非网关质量失败不走瞬态通道。
+- daemon 存活期内的框架主动终止（drain 关停 / cancel / supervision 超时强杀）全部留痕可判定归属，避免误归 provider-transient（daemon 已死的硬杀场景 runner 代码不执行、无归类动作，由读侧清扫补写终态，不在本方案范围）。
+- 与产物硬门失败共享同一改法：非内容/非网关质量失败不记全局瞬断指纹通道（任务完成度类另去 [provider-transient] 标签；结构类保留既有原地退避恢复路径但停止指纹记账）。
 
 ## 非目标
 
