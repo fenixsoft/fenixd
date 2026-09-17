@@ -25,12 +25,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from core.fast_track_result import (
-    HIGHER_THRESHOLD,
-    NORMAL_THRESHOLD,
-    SOURCE_FILE_WEIGHT,
+    DEFAULT_FULL_THRESHOLD,
+    DEFAULT_HIGHER_THRESHOLD,
+    FILE_WEIGHT,
     TASK_WEIGHT,
     budget_tier_for_scale,
     estimate_spec_scale,
+    get_scale_precheck_config,
 )
 from core.wip_checkpoint import ANCHOR_EXTENSION_TAIL, WIP_COMMIT_PREFIX
 from tests.helpers import FakeLogger, make_runner
@@ -82,135 +83,196 @@ def ahead_count(root: Path, branch: str) -> int:
 
 
 class TestEstimateSpecScale:
-    """estimate_spec_scale 边界单测：任务条数 + 源码文件数加权、输入缺失保守低档。"""
+    """estimate_spec_scale 边界单测：任务数 ×1 + 声明段交付物数 ×2、输入缺失保守低档。"""
+
+    def _write_tasks(self, spec_dir: Path, n_tasks: int, deliverables: list | None = None):
+        """写 tasks.md：n_tasks 个未勾选任务 +（可选）声明段交付物。"""
+        spec_dir.mkdir(parents=True, exist_ok=True)
+        lines = ["## 1. x"]
+        for i in range(1, n_tasks + 1):
+            lines.append(f"- [ ] {i}.x do {i}")
+        if deliverables:
+            lines.append("")
+            lines.append("## Deliverables")
+            lines.append("")
+            lines.append("```yaml")
+            for path, kind in deliverables:
+                lines.append(f"- path: {path}")
+                lines.append(f"  kind: {kind}")
+            lines.append("```")
+        (spec_dir / "tasks.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     def test_small_spec_low_scale(self, tmp_path):
-        """小样：1 未勾任务 + 少源码 → scale 低 → tier=normal。"""
+        """小样：1 未勾任务 + 0 交付物 → scale=1 → tier=normal。"""
         spec_dir = tmp_path / "small"
-        spec_dir.mkdir()
-        tasks = spec_dir / "tasks.md"
-        tasks.write_text("## 1. x\n- [ ] 1.1 do it\n", encoding="utf-8")
-        # 无源码文件
+        self._write_tasks(spec_dir, 1)
         scale = estimate_spec_scale(spec_dir)
-        tier = budget_tier_for_scale(scale)
-        assert scale == 1 * TASK_WEIGHT + 0 * SOURCE_FILE_WEIGHT
-        assert tier == "normal"
+        assert scale == 1 * TASK_WEIGHT
+        assert budget_tier_for_scale(scale) == "normal"
 
     def test_large_spec_high_scale(self, tmp_path):
-        """大样：8 未勾任务 + 5 个源码文件 → scale 高 → tier=full。"""
+        """大样：40 未勾任务 + 8 交付物 → scale=56 → tier=full。"""
         spec_dir = tmp_path / "large"
-        spec_dir.mkdir()
-        tasks = spec_dir / "tasks.md"
-        lines = ["## 1. x"]
-        for i in range(1, 9):
-            lines.append(f"- [ ] {i}.x do {i}")
-        tasks.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        # 5 个源码文件
-        for i in range(5):
-            (spec_dir / f"code{i}.py").write_text(f"# file {i}\n", encoding="utf-8")
+        self._write_tasks(
+            spec_dir, 40, [(f"core/f{i}.py", "modify") for i in range(8)]
+        )
         scale = estimate_spec_scale(spec_dir)
-        tier = budget_tier_for_scale(scale)
-        expected_scale = 8 * TASK_WEIGHT + 5 * SOURCE_FILE_WEIGHT
-        assert scale == expected_scale
-        assert tier == "full"
+        assert scale == 40 * TASK_WEIGHT + 8 * FILE_WEIGHT
+        assert budget_tier_for_scale(scale) == "full"
 
     def test_medium_spec_higher_tier(self, tmp_path):
-        """中等：4 未勾任务 → scale=40 → tier=higher。"""
+        """中等：22 未勾任务 + 8 交付物 → scale=38 → tier=higher。"""
         spec_dir = tmp_path / "medium"
-        spec_dir.mkdir()
-        tasks = spec_dir / "tasks.md"
-        lines = ["## 1. x"]
-        for i in range(1, 5):
-            lines.append(f"- [ ] {i}.x do {i}")
-        tasks.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        self._write_tasks(
+            spec_dir, 22, [(f"core/f{i}.py", "modify") for i in range(8)]
+        )
         scale = estimate_spec_scale(spec_dir)
-        tier = budget_tier_for_scale(scale)
-        assert scale == 4 * TASK_WEIGHT
-        assert tier == "higher"
+        assert scale == 22 * TASK_WEIGHT + 8 * FILE_WEIGHT
+        assert budget_tier_for_scale(scale) == "higher"
+
+    def test_declared_deliverables_counted_all_kinds(self, tmp_path):
+        """声明段交付物：modify/new/delete 均计 2 分，reference 不计。"""
+        spec_dir = tmp_path / "kinds"
+        self._write_tasks(
+            spec_dir,
+            0,
+            [
+                ("core/a.py", "modify"),
+                ("core/b.py", "new"),
+                ("core/c.py", "delete"),
+                (".fenix/config.yaml", "reference"),  # 语境引用，不计
+            ],
+        )
+        scale = estimate_spec_scale(spec_dir)
+        assert scale == 3 * FILE_WEIGHT, "只有 modify/new/delete 计入分值"
+
+    def test_no_deliverables_block_tasks_only(self, tmp_path):
+        """无声明段且文档正文无路径 → 交付物计 0，分值为任务数。"""
+        spec_dir = tmp_path / "no-decl"
+        self._write_tasks(spec_dir, 7)
+        scale = estimate_spec_scale(spec_dir)
+        assert scale == 7 * TASK_WEIGHT
 
     def test_tasks_md_missing_safe_low(self, tmp_path):
-        """tasks.md 缺失 → WARNING + 低档（不抛异常），返回源码文件数。"""
+        """tasks.md 缺失 → WARNING + 低档（不抛异常），交付物计 0。"""
         spec_dir = tmp_path / "no-tasks"
         spec_dir.mkdir()
-        (spec_dir / "a.py").write_text("# a\n", encoding="utf-8")
         scale = estimate_spec_scale(spec_dir)
-        tier = budget_tier_for_scale(scale)
-        # tasks.md 缺失 → unchecked_count=0 → scale=1
-        assert scale == 1 * SOURCE_FILE_WEIGHT
-        assert tier == "normal"
+        assert scale == 0
+        assert budget_tier_for_scale(scale) == "normal"
 
     def test_tasks_md_read_failure_safe_low(self, tmp_path):
         """tasks.md 读取失败（二进制内容）→ WARNING + 低档。"""
         spec_dir = tmp_path / "bad-tasks"
         spec_dir.mkdir()
-        tasks = spec_dir / "tasks.md"
-        tasks.write_bytes(b"\x00\x01\x02binary content")
+        (spec_dir / "tasks.md").write_bytes(b"\x00\x01\x02binary content")
         scale = estimate_spec_scale(spec_dir)
-        tier = budget_tier_for_scale(scale)
-        assert scale == 0 * TASK_WEIGHT
-        assert tier == "normal"
+        assert scale == 0
+        assert budget_tier_for_scale(scale) == "normal"
 
     def test_spec_dir_not_exist_returns_zero(self, tmp_path):
         """spec 目录不存在 → 返回 0。"""
         scale = estimate_spec_scale(tmp_path / "nonexistent")
-        tier = budget_tier_for_scale(scale)
         assert scale == 0
-        assert tier == "normal"
+        assert budget_tier_for_scale(scale) == "normal"
 
     def test_all_checked_tasks_count_zero(self, tmp_path):
-        """所有任务已勾选 → unchecked_count=0 → scale 低。"""
+        """所有任务已勾选（交付物已全部交付）→ 分值回落，不再判大。"""
         spec_dir = tmp_path / "all-done"
         spec_dir.mkdir()
-        tasks = spec_dir / "tasks.md"
-        tasks.write_text(
+        (spec_dir / "tasks.md").write_text(
             "## 1. x\n- [x] 1.1 done\n- [x] 1.2 done\n",
             encoding="utf-8")
         scale = estimate_spec_scale(spec_dir)
-        tier = budget_tier_for_scale(scale)
-        assert scale == 0 * TASK_WEIGHT
-        assert tier == "normal"
+        assert scale == 0
+        assert budget_tier_for_scale(scale) == "normal"
 
 
 class TestBudgetTierForScale:
-    """budget_tier_for_scale 阈值边界。"""
+    """budget_tier_for_scale 阈值边界（**严格大于**：阈值本身落较低档）。"""
 
-    def test_normal_boundary(self):
-        """scale=29 < 30 → normal。"""
-        assert budget_tier_for_scale(29) == "normal"
+    def test_threshold_itself_lower_tier(self):
+        """等于 higher 阈值 → 仍 normal；等于 full 阈值 → 仍 higher。"""
+        assert budget_tier_for_scale(DEFAULT_HIGHER_THRESHOLD) == "normal"
+        assert budget_tier_for_scale(DEFAULT_FULL_THRESHOLD) == "higher"
 
-    def test_higher_boundary(self):
-        """scale=30 == NORMAL_THRESHOLD*10 → higher。"""
-        assert budget_tier_for_scale(NORMAL_THRESHOLD * TASK_WEIGHT) == "higher"
-
-    def test_higher_upper(self):
-        """scale=59 < 60 → higher。"""
-        assert budget_tier_for_scale(HIGHER_THRESHOLD * TASK_WEIGHT - 1) == "higher"
-
-    def test_full_boundary(self):
-        """scale=60 == HIGHER_THRESHOLD*10 → full。"""
-        assert budget_tier_for_scale(HIGHER_THRESHOLD * TASK_WEIGHT) == "full"
-
-    def test_large_scale_still_full(self):
-        """scale=200 → full。"""
-        assert budget_tier_for_scale(200) == "full"
+    def test_just_above_thresholds(self):
+        """刚超过阈值即升档。"""
+        assert budget_tier_for_scale(DEFAULT_HIGHER_THRESHOLD + 1) == "higher"
+        assert budget_tier_for_scale(DEFAULT_FULL_THRESHOLD + 1) == "full"
 
     def test_zero_scale_normal(self):
         assert budget_tier_for_scale(0) == "normal"
+
+    def test_large_scale_still_full(self):
+        assert budget_tier_for_scale(200) == "full"
+
+    def test_custom_thresholds(self):
+        """阈值可覆盖（来自 agents.scale_precheck）：边界随自定义值移动。"""
+        kw = {"higher_threshold": 10, "full_threshold": 20}
+        assert budget_tier_for_scale(10, **kw) == "normal"
+        assert budget_tier_for_scale(11, **kw) == "higher"
+        assert budget_tier_for_scale(20, **kw) == "higher"
+        assert budget_tier_for_scale(21, **kw) == "full"
+
+
+class TestGetScalePrecheckConfig:
+    """get_scale_precheck_config：缺省填充 + 非法值回退 + 阈值倒挂整段回退。"""
+
+    def test_defaults_when_absent(self):
+        cfg = get_scale_precheck_config({})
+        assert cfg == {
+            "enabled": True,
+            "higher_threshold": DEFAULT_HIGHER_THRESHOLD,
+            "full_threshold": DEFAULT_FULL_THRESHOLD,
+        }
+
+    def test_explicit_values_respected(self):
+        cfg = get_scale_precheck_config(
+            {"agents": {"scale_precheck": {
+                "enabled": False, "higher_threshold": 10, "full_threshold": 20}}}
+        )
+        assert cfg == {"enabled": False, "higher_threshold": 10, "full_threshold": 20}
+
+    def test_illegal_values_fall_back(self):
+        """非布尔开关 / 非整数阈值 / 越界阈值 → 逐项回退缺省。"""
+        cfg = get_scale_precheck_config(
+            {"agents": {"scale_precheck": {
+                "enabled": 1, "higher_threshold": "x", "full_threshold": 0}}}
+        )
+        assert cfg == {
+            "enabled": True,
+            "higher_threshold": DEFAULT_HIGHER_THRESHOLD,
+            "full_threshold": DEFAULT_FULL_THRESHOLD,
+        }
+
+    def test_inverted_thresholds_fall_back_whole_section(self):
+        """阈值倒挂/相等 → 两阈值整段回退缺省；enabled 独立于阈值，仍按所填生效。"""
+        for higher, full in ((45, 30), (30, 30)):
+            cfg = get_scale_precheck_config(
+                {"agents": {"scale_precheck": {
+                    "enabled": False,
+                    "higher_threshold": higher,
+                    "full_threshold": full}}}
+            )
+            assert cfg["higher_threshold"] == DEFAULT_HIGHER_THRESHOLD
+            assert cfg["full_threshold"] == DEFAULT_FULL_THRESHOLD
+            assert cfg["enabled"] is False, "阈值非法不应把用户的关闭开关也重置"
 
 
 # ── dispatch 层 _fast_track_scale_precheck / _downgrade_fast_track_scale ────────
 
 
 class TestFastTrackScalePrecheck:
-    """dispatch 层预检 + 降级逻辑。"""
+    """dispatch 层预检 + 降级逻辑（含总开关与自定义阈值）。"""
 
-    def _make_dispatcher(self, tmp_path, specs=None):
+    def _make_dispatcher(self, tmp_path, specs=None, config=None, n_tasks=1):
         from core.pm_engine import PMEngine
         from core.state_machine import StateMachine
 
         logger = FakeLogger()
         sm = StateMachine(tmp_path / ".fenix" / "STATE.md", logger)
-        engine = PMEngine(sm, MagicMock(), {}, tmp_path, logger)
+        engine = PMEngine(sm, MagicMock(), config or {}, tmp_path, logger)
         engine.handle_event = MagicMock()
         engine._on_spec_verified = MagicMock()
         engine._enqueue = MagicMock()
@@ -244,37 +306,47 @@ class TestFastTrackScalePrecheck:
                 encoding="utf-8",
             )
             tasks = spec_dir / "tasks.md"
-            tasks.write_text("## 1. x\n- [ ] 1.1 do it\n", encoding="utf-8")
+            lines = ["## 1. x"]
+            for i in range(1, n_tasks + 1):
+                lines.append(f"- [ ] {i}.x do it")
+            tasks.write_text("\n".join(lines) + "\n", encoding="utf-8")
             sm.add_spec(name, {"priority": 5})
             sm.transition(name, "ready")
 
         return engine
 
+    def _write_tasks(self, tmp_path, spec, n_tasks, deliverables=0):
+        """重写 spec 的 tasks.md：n_tasks 未勾任务 + deliverables 个 modify 交付物。"""
+        spec_dir = tmp_path / "spec" / "changes" / spec
+        lines = ["## 1. x"]
+        for i in range(1, n_tasks + 1):
+            lines.append(f"- [ ] {i}.x do it")
+        if deliverables:
+            lines += ["", "## Deliverables", "", "```yaml"]
+            for i in range(deliverables):
+                lines += [f"- path: core/f{i}.py", "  kind: modify"]
+            lines.append("```")
+        (spec_dir / "tasks.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
     def test_normal_tier_passes_through(self, tmp_path):
         """normal 档：scale 小 → 不降级、不写标记、调用 _run_fast_track_worker。"""
         engine = self._make_dispatcher(tmp_path)
-        # 小任务（1 任务）
-        tasks = tmp_path / "spec" / "changes" / "demo" / "tasks.md"
-        tasks.write_text("## 1. x\n- [ ] 1.1 do it\n", encoding="utf-8")
+        self._write_tasks(tmp_path, "demo", n_tasks=5)
         engine._run_agent_worker("demo", "fast-track", 5)
         # 检查 spec 状态：不降级（status 保持 ready，因为 worker 不负责 transition）
         entry = engine.state_machine.read_one("demo")
         assert entry["status"] == "ready"
-        assert "_fast_track_scale_tier" not in entry
+        assert entry.get("_fast_track_scale_tier") != "higher"
         # dispatcher._run_fast_track_worker 被正常调用
         dispatcher = engine.__dict__["_dispatcher_instance"]
         dispatcher._run_fast_track_worker.assert_called_once_with("demo")
         dispatcher._downgrade_fast_track_scale.assert_not_called()
 
     def test_full_tier_downgrades_to_full_mode(self, tmp_path):
-        """full 档：tasks 多 → 降级 full 模式、reset ready + enqueue implementer。"""
+        """full 档：分值超 full 阈值 → 降级 full 模式、reset ready + enqueue implementer。"""
         engine = self._make_dispatcher(tmp_path, ["big-spec"])
-        # 写入 8 个任务
-        tasks = tmp_path / "spec" / "changes" / "big-spec" / "tasks.md"
-        lines = ["## 1. x"]
-        for i in range(1, 9):
-            lines.append(f"- [ ] {i}.x do {i}")
-        tasks.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        # 30 任务 + 8 交付物 = 30 + 16 = 46 > 45 → full
+        self._write_tasks(tmp_path, "big-spec", n_tasks=30, deliverables=8)
         engine._run_agent_worker("big-spec", "fast-track", 5)
         dispatcher = engine.__dict__["_dispatcher_instance"]
         # 不调用 _run_fast_track_worker
@@ -292,19 +364,72 @@ class TestFastTrackScalePrecheck:
         assert read_spec_mode(tmp_path, "big-spec") == "full"
 
     def test_higher_tier_writes_marker(self, tmp_path):
-        """higher 档：写 _fast_track_scale_tier=higher 标记，继续调用 _run_fast_track_worker。"""
+        """higher 档：分值在 (higher, full] 区间 → 写标记 + 继续 fast-track。"""
         engine = self._make_dispatcher(tmp_path, ["med-spec"])
-        # 写入 4 个任务（scale=40 → higher）
-        tasks = tmp_path / "spec" / "changes" / "med-spec" / "tasks.md"
-        lines = ["## 1. x"]
-        for i in range(1, 5):
-            lines.append(f"- [ ] {i}.x do {i}")
-        tasks.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        # 22 任务 + 8 交付物 = 22 + 16 = 38（> 30 且 ≤ 45）→ higher
+        self._write_tasks(tmp_path, "med-spec", n_tasks=22, deliverables=8)
         engine._run_agent_worker("med-spec", "fast-track", 5)
         dispatcher = engine.__dict__["_dispatcher_instance"]
         dispatcher._run_fast_track_worker.assert_called_once_with("med-spec")
         dispatcher._downgrade_fast_track_scale.assert_not_called()
         entry = engine.state_machine.read_one("med-spec")
+        assert entry.get("_fast_track_scale_tier") == "higher"
+
+    def test_threshold_itself_stays_lower_tier(self, tmp_path):
+        """严格大于：分值恰等于 full 阈值（45）→ 仍 higher，不降级。"""
+        engine = self._make_dispatcher(tmp_path, ["edge-spec"])
+        # 29 任务 + 8 交付物 = 29 + 16 = 45 == full 阈值 → higher
+        self._write_tasks(tmp_path, "edge-spec", n_tasks=29, deliverables=8)
+        engine._run_agent_worker("edge-spec", "fast-track", 5)
+        dispatcher = engine.__dict__["_dispatcher_instance"]
+        dispatcher._downgrade_fast_track_scale.assert_not_called()
+        entry = engine.state_machine.read_one("edge-spec")
+        assert entry.get("_fast_track_scale_tier") == "higher"
+
+    def test_disabled_switch_skips_precheck_entirely(self, tmp_path):
+        """总开关关闭 → 预检完全不执行：不降级、不写档位标记、照常派发。"""
+        engine = self._make_dispatcher(
+            tmp_path,
+            ["off-spec"],
+            config={"agents": {"scale_precheck": {"enabled": False}}},
+        )
+        # 分值 46（本会判 full）——开关关闭后不得降级
+        self._write_tasks(tmp_path, "off-spec", n_tasks=30, deliverables=8)
+        engine._run_agent_worker("off-spec", "fast-track", 5)
+        dispatcher = engine.__dict__["_dispatcher_instance"]
+        dispatcher._downgrade_fast_track_scale.assert_not_called()
+        dispatcher._run_fast_track_worker.assert_called_once_with("off-spec")
+        entry = engine.state_machine.read_one("off-spec")
+        assert entry["status"] == "ready"
+        assert entry.get("_fast_track_scale_tier") != "higher", "关闭时不得写档位标记"
+        from core.spec_mode import read_spec_mode
+        assert read_spec_mode(tmp_path, "off-spec") == "fast-track", "mode 不得被改写"
+
+    def test_disabled_switch_clears_stale_marker(self, tmp_path):
+        """关闭开关 + 存量 higher 标记 → 派发时清除标记（不再抬高 extension）。"""
+        engine = self._make_dispatcher(
+            tmp_path,
+            ["stale-spec"],
+            config={"agents": {"scale_precheck": {"enabled": False}}},
+        )
+        engine.state_machine.update_spec("stale-spec", {"_fast_track_scale_tier": "higher"})
+        self._write_tasks(tmp_path, "stale-spec", n_tasks=5)
+        engine._run_agent_worker("stale-spec", "fast-track", 5)
+        entry = engine.state_machine.read_one("stale-spec")
+        assert entry.get("_fast_track_scale_tier") != "higher", "陈旧 higher 标记应被清除"
+
+    def test_custom_thresholds_respected(self, tmp_path):
+        """自定义阈值：同一分值在缺省下 normal、在收紧阈值下 full。"""
+        engine = self._make_dispatcher(
+            tmp_path,
+            ["tuned-spec"],
+            config={"agents": {"scale_precheck": {
+                "higher_threshold": 5, "full_threshold": 8}}},
+        )
+        # 6 任务 = 6 分：> 5 且 ≤ 8 → higher（缺省阈值下是 normal）
+        self._write_tasks(tmp_path, "tuned-spec", n_tasks=6)
+        engine._run_agent_worker("tuned-spec", "fast-track", 5)
+        entry = engine.state_machine.read_one("tuned-spec")
         assert entry.get("_fast_track_scale_tier") == "higher"
 
 

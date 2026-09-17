@@ -835,6 +835,18 @@ export interface AgentsConfig {
   transient_break_window_seconds?: number;
   /** 熔断冷却秒（缺省 600） */
   transient_break_cooldown_seconds?: number;
+  /** fast-track 派发前规模预检（agents.scale_precheck）：总开关 + 两阈值 */
+  scale_precheck?: ScalePrecheckConfig;
+}
+
+/** 规模预检配置（agents.scale_precheck）：fast-track 派发前按规模分档 */
+export interface ScalePrecheckConfig {
+  /** 总开关：关闭后预检完全不执行（既不提高 extension 预算也不降级完整模式） */
+  enabled?: boolean;
+  /** higher 档阈值（严格大于才升档，缺省 30）：超过则提高 extension 上限，仍走 fast-track */
+  higher_threshold?: number;
+  /** full 档阈值（严格大于才降级，缺省 45）：超过则 mode 改写为 full，改走完整模式 */
+  full_threshold?: number;
 }
 
 export interface GatesConfig {

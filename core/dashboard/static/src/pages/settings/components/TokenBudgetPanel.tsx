@@ -1,4 +1,4 @@
-import { Button, Card, Form, InputNumber, Typography } from 'antd';
+import { Button, Card, Form, InputNumber, Switch, Typography } from 'antd';
 import { useEffect } from 'react';
 import type { ConfigData } from '@/services/dashboard';
 import SyncFromUserButton, { SETTINGS_ACTIONS_ROW_STYLE } from './SyncFromUserButton';
@@ -16,6 +16,10 @@ interface TokenBudgetPanelProps {
 
 export default function TokenBudgetPanel({ config, onSave, project, onConfigSynced }: TokenBudgetPanelProps) {
   const [form] = Form.useForm();
+  // 规模预检开关（agents.scale_precheck.enabled）：关闭时隐藏两阈值输入
+  const scalePrecheckOn = Form.useWatch('scale_precheck_enabled', form);
+
+  const sp = config.agents.scale_precheck ?? {};
 
   const initialValues = {
     token_budget_millions: config.agents.token_budget_millions ?? 50,
@@ -23,6 +27,9 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
     impl_run_budget: config.agents.impl_run_budget ?? 6,
     impl_run_budget_max: config.agents.impl_run_budget_max ?? 100,
     verify_redo_budget: config.agents.verify_redo_budget ?? 3,
+    scale_precheck_enabled: sp.enabled ?? true,
+    scale_precheck_higher: sp.higher_threshold ?? 30,
+    scale_precheck_full: sp.full_threshold ?? 45,
   };
 
   useEffect(() => {
@@ -32,6 +39,9 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
       impl_run_budget: config.agents.impl_run_budget ?? 6,
       impl_run_budget_max: config.agents.impl_run_budget_max ?? 100,
       verify_redo_budget: config.agents.verify_redo_budget ?? 3,
+      scale_precheck_enabled: config.agents.scale_precheck?.enabled ?? true,
+      scale_precheck_higher: config.agents.scale_precheck?.higher_threshold ?? 30,
+      scale_precheck_full: config.agents.scale_precheck?.full_threshold ?? 45,
     });
   }, [config.agents, form]);
 
@@ -45,6 +55,11 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
           impl_run_budget: values.impl_run_budget,
           impl_run_budget_max: values.impl_run_budget_max,
           verify_redo_budget: values.verify_redo_budget,
+          scale_precheck: {
+            enabled: values.scale_precheck_enabled,
+            higher_threshold: values.scale_precheck_higher,
+            full_threshold: values.scale_precheck_full,
+          },
         },
       });
     } catch (error) {
@@ -56,8 +71,9 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
     <div>
       <h3>预算</h3>
       <Text type="secondary">Token 预算、每日 Agent 运行限额与实现尝试预算等成本控制项。</Text>
+      {/* 单一 Form 承载两张卡片：同一保存按钮提交两节配置 */}
+      <Form form={form} initialValues={initialValues} layout="vertical">
       <Card style={{ marginTop: 12 }}>
-        <Form form={form} initialValues={initialValues} layout="vertical">
           <Form.Item
             name="token_budget_millions"
             label={
@@ -136,8 +152,83 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
           <Text type="secondary">
             默认 3。daemon 重启恢复路径（testing → implemented 重派 verify）的累计重验次数上限。达上限即冻结该 SPEC 并交人工裁决（人工解冻后计数清零），防止「毒 SPEC 借反复重启无限重验」烧 token。合法范围 1-10。
           </Text>
-        </Form>
       </Card>
+
+      {/* 规模预检：标题与注释置于卡片外，与上方「预算」节同构 */}
+      <h3 style={{ marginTop: 32 }}>规模预检</h3>
+      <Text type="secondary">
+        默认开启。fast-track SPEC 派发前先按下方口径估算规模分，据分值决定是否提高超时续期预算或改走完整模式。
+        关闭后本预检完全不执行：既不提高 extension 预算，也不把 fast-track 自动降级为完整模式。
+      </Text>
+      <Card style={{ marginTop: 12 }}>
+          <div className="switch-inline-row">
+            <Form.Item name="scale_precheck_enabled" valuePropName="checked" noStyle>
+              <Switch data-testid="scale-precheck-switch" />
+            </Form.Item>
+            <span className="switch-inline-label">
+              启用规模预检<span className="label-note">（agents.scale_precheck.enabled）</span>
+            </span>
+          </div>
+
+          <Text type="secondary" style={{ display: 'block', marginTop: 16 }}>
+            规模分算法：<b>未勾选任务数 × 1 + 交付物文件数 × 2</b>。任务数取自 SPEC 的 tasks.md 中未勾选（
+            <code>- [ ]</code>）的条目；交付物文件数取自 tasks.md「## Deliverables」声明段中 kind 为
+            modify / new / delete 的条目（kind 为 reference 的引用项不计）。派发时点任务尚未开工，故此时未勾选数等于任务总数。
+          </Text>
+
+          {scalePrecheckOn ? (
+            <>
+              <Form.Item
+                name="scale_precheck_higher"
+                label={
+                  <>
+                    higher 档阈值<span className="label-note">（agents.scale_precheck.higher_threshold）</span>
+                  </>
+                }
+                rules={[{ required: true, message: '请输入 higher 档阈值' }]}
+                style={{ marginTop: 24 }}
+              >
+                <InputNumber min={1} max={10000} step={1} style={{ width: '100%' }} />
+              </Form.Item>
+              <Text type="secondary">
+                默认 30。分值<b>大于</b>此值（严格大于，等于不升档）时进入 higher 档：SPEC 仍走 fast-track 单 run，
+                但超时监督的单 run 续期次数上限增加 2 次（缺省 2 → 4），使大任务面 SPEC 获得更充足的超时预算。
+                例如默认值下 30 分仍属 normal 档，31 分才进入 higher 档。
+              </Text>
+
+              <Form.Item
+                name="scale_precheck_full"
+                label={
+                  <>
+                    full 档阈值<span className="label-note">（agents.scale_precheck.full_threshold）</span>
+                  </>
+                }
+                rules={[
+                  { required: true, message: '请输入 full 档阈值' },
+                  ({ getFieldValue }) => ({
+                    validator(_, value) {
+                      const higher = getFieldValue('scale_precheck_higher');
+                      if (value == null || higher == null || value > higher) {
+                        return Promise.resolve();
+                      }
+                      return Promise.reject(new Error('full 档阈值须大于 higher 档阈值'));
+                    },
+                  }),
+                ]}
+                style={{ marginTop: 24 }}
+              >
+                <InputNumber min={1} max={10000} step={1} style={{ width: '100%' }} />
+              </Form.Item>
+              <Text type="secondary">
+                默认 45。分值<b>大于</b>此值（严格大于）时判定为 full 档：该 SPEC 的 .spec.yaml 中 mode 会被自动改写为
+                full 并改走完整模式（implementer + 独立验证全链），不再按 fast-track 单 run 派发。此改写是持久的，
+                后续派发均按完整模式进行。必须大于 higher 档阈值。
+              </Text>
+            </>
+          ) : null}
+      </Card>
+      </Form>
+
       <div style={project ? SETTINGS_ACTIONS_ROW_STYLE : { textAlign: 'right', marginTop: 24 }}>
         {project && onConfigSynced && (
           <SyncFromUserButton project={project} page="token" onSynced={onConfigSynced} />

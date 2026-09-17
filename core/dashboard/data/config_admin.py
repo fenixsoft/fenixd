@@ -31,6 +31,8 @@ _AGENTS_MANAGED_SUBKEYS = [
     "impl_run_budget",
     "impl_run_budget_max",
     "verify_redo_budget",
+    # 规模预检（agents.scale_precheck 三键：总开关 + 两阈值）
+    "scale_precheck",
 ]
 
 # 用户级配置文件路径（与项目级同名 `.fenix/config.yaml`，作用域由所在目录决定）
@@ -46,6 +48,8 @@ _SOURCE_KEYS = [
     "agents.token_budget_millions",
     "agents.impl_run_budget",
     "agents.verify_redo_budget",
+    # 规模预检三键（agents.scale_precheck.*）
+    "agents.scale_precheck",
     "gates.approve_mode",
     # add-draft-promotion-gate：草稿晋升模式
     "gates.promote_mode",
@@ -349,6 +353,12 @@ def read_config(scope_root, scope: str = "project") -> dict:
             "transient_break_cooldown_seconds",
         ):
             agents_result[_tk] = _transient[_tk]
+        # 规模预检三键回显（agents.scale_precheck：总开关 + 两阈值）——
+        # 缺省填充 + 非法值回退走与读侧同一个归一化函数，保证展示值与
+        # 生效值不脱节（与上方瞬断五键同模式）。
+        from core.fast_track_result import get_scale_precheck_config as _get_sp
+
+        agents_result["scale_precheck"] = _get_sp(raw)
         if agents_result:
             # 只在结果中有受管键时覆盖默认，避免清空默认值
             for k, v in agents_result.items():
@@ -551,6 +561,10 @@ def read_effective_config(project_root) -> dict:
             "transient_break_cooldown_seconds",
         ):
             result["agents"][_tk] = _transient[_tk]
+        # 规模预检三键回显（缺省填充 + 非法值回退，与读侧同源归一化）
+        from core.fast_track_result import get_scale_precheck_config as _get_sp_eff
+
+        result["agents"]["scale_precheck"] = _get_sp_eff(effective)
     gates_eff = effective.get("gates")
     if isinstance(gates_eff, dict) and "approve_mode" in gates_eff:
         result["gates"] = {"approve_mode": gates_eff["approve_mode"]}
@@ -656,6 +670,11 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
         if "verify_redo_budget" in patch["agents"]:
             # fix-daemon-lifecycle-races 验证发现：缺合并分支导致保存被静默丢弃
             merged["agents"]["verify_redo_budget"] = patch["agents"]["verify_redo_budget"]
+        if "scale_precheck" in patch["agents"]:
+            # 规模预检三键（agents.scale_precheck）：整体替换该嵌套段。
+            # 缺此分支则设置界面「预算」页签的规模预检卡片保存被静默丢弃
+            # （本文件历史上 token_budget_millions / verify_redo_budget 均踩过同坑）。
+            merged["agents"]["scale_precheck"] = copy.deepcopy(patch["agents"]["scale_precheck"])
         # fix-provider-transient-backoff（D6）：瞬断治理五键合并分支（前置校验
         # 已拒绝非法值，此处只应用合法值；缺省透传由 get_transient_config 兜底）。
         for _tk in (
@@ -1112,6 +1131,51 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
             vrb = agents["verify_redo_budget"]
             if not isinstance(vrb, int) or vrb < 1 or vrb > 10:
                 raise ValueError(f"agents.verify_redo_budget must be an integer in [1, 10]: {vrb}")
+        if "scale_precheck" in agents and agents["scale_precheck"] is not None:
+            # 规模预检（agents.scale_precheck）：enabled 必须布尔；两阈值正整数
+            # 且 higher < full（倒挂或相等即拒绝——否则档位语义不自洽）。
+            from core.fast_track_result import (
+                SCALE_PRECHECK_ENABLED_KEY,
+                SCALE_PRECHECK_FULL_KEY,
+                SCALE_PRECHECK_HIGHER_KEY,
+                SCALE_PRECHECK_THRESHOLD_MAX,
+                SCALE_PRECHECK_THRESHOLD_MIN,
+            )
+
+            _sp = agents["scale_precheck"]
+            if not isinstance(_sp, dict):
+                raise ValueError(f"agents.scale_precheck must be a mapping: {_sp!r}")
+            if SCALE_PRECHECK_ENABLED_KEY in _sp and not isinstance(
+                _sp[SCALE_PRECHECK_ENABLED_KEY], bool
+            ):
+                raise ValueError(
+                    "agents.scale_precheck.enabled must be a boolean: "
+                    f"{_sp[SCALE_PRECHECK_ENABLED_KEY]!r}"
+                )
+
+            def _sp_threshold(key: str):
+                if key not in _sp or _sp[key] is None:
+                    return None
+                _v = _sp[key]
+                if (
+                    isinstance(_v, bool)
+                    or not isinstance(_v, int)
+                    or _v < SCALE_PRECHECK_THRESHOLD_MIN
+                    or _v > SCALE_PRECHECK_THRESHOLD_MAX
+                ):
+                    raise ValueError(
+                        f"agents.scale_precheck.{key} must be an integer in "
+                        f"[{SCALE_PRECHECK_THRESHOLD_MIN}, {SCALE_PRECHECK_THRESHOLD_MAX}]: {_v!r}"
+                    )
+                return _v
+
+            _sp_higher = _sp_threshold(SCALE_PRECHECK_HIGHER_KEY)
+            _sp_full = _sp_threshold(SCALE_PRECHECK_FULL_KEY)
+            if _sp_higher is not None and _sp_full is not None and _sp_higher >= _sp_full:
+                raise ValueError(
+                    "agents.scale_precheck requires higher_threshold < full_threshold: "
+                    f"{_sp_higher} >= {_sp_full}"
+                )
         # fix-provider-transient-backoff（D6）：瞬断治理四数值键——非负整数校验
         # （非法值直接拒绝 400，与 verify/self_review/admin 同模式，前端类型错误
         # 由后端权威兜底；缺省回显与回退仍走 get_transient_config）。

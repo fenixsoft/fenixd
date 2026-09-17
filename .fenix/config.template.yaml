@@ -52,6 +52,19 @@ agents:
   # agents.impl_run_budget 均按此上限夹紧。旧实现硬编码 1-10，对长链条 spec 过紧
   #（机制摩擦吃满预算后真修复轮次归零）。缺省 100；硬天花板 1000。
   impl_run_budget_max: 100
+  # fast-track 派发前规模预检（add-fast-track-scale-precheck；2026-09-17 改版）。
+  # 算分：未勾选任务数 ×1 + tasks.md 声明段交付物数 ×2（交付物 = kind ∈
+  # modify/new/delete 的条目；reference 不计）。分值分档（严格大于）：
+  #   分值 ≤ higher_threshold            → normal（按原 fast-track 档派发）
+  #   higher_threshold < 分值 ≤ full_threshold → higher（提高 extension 上限，仍走 fast-track）
+  #   分值 > full_threshold              → full（.spec.yaml mode 改写为 full，改走完整模式）
+  # enabled 为总开关：关闭后预检完全不执行（既不提高 extension 预算也不降级）。
+  # 两阈值须为正整数且 higher_threshold < full_threshold，否则整段回退缺省。
+  # 修改后约 30s 配置热更新生效。设置界面在「预算」页签。
+  scale_precheck:
+    enabled: true
+    higher_threshold: 30
+    full_threshold: 45
   # 单 spec 累计 input token 预算（add-cost-observability D5，单位：百万）。
   # 收工累计达到 80% 发提醒级告警、100% 发升级级告警（不自动冻结，由人工决定处置）。
   # 合法范围 0-1000；设为 0 表示关闭预算检查。留空即采用缺省值 50。
