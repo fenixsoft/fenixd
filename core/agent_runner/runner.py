@@ -1618,6 +1618,13 @@ class AgentRunner:
         kept_wt_path = None  # worktree-reuse：fast-track 终态失败保留的复用遗产路径
         provider_name = None  # 本轮候选 provider（链选择前为 None，供 frozen 提前返回使用）
         model = None
+        # fix-observability-gaps：run 终态指标落盘需 usage_info——早夭分支
+        # （frozen/取消旗标/circuit 等未跑 _run_claude 的路径）引用前初始化，
+        # 避免 NameError（unobserved 语义：全 0 + unobserved 标记）。
+        usage_info = self._extract_usage_info(None)
+        # 同上：预检早夭分支（frozen/circuit/worktree 失败）无 turns 值，
+        # 统一顶部初始化，供终态指标落盘引用。
+        turns = 0
         self._last_model_used = None  # 用于 model_changed 日志留痕（design D3）
         # add-run-cancel D3/D5：本轮 run 是否被人工取消（RunCancelledError 捕获
         # 或 attempt 顶部旗标命中）。cancelled_flag 为 True 时不再进入下一 attempt。
@@ -1638,6 +1645,13 @@ class AgentRunner:
                     "agent_runner",
                     f"spec '{spec_name}' frozen — 终止 {agent_type} 自动重试链"
                     f"（attempt {attempt}/{max_retries}），不派发 attempt",
+                )
+                # fix-observability-gaps 1.1：frozen 早夭也是终态，写指标（unobserved）
+                self._log_run_metrics(
+                    run_id=run_id, spec_name=spec_name, agent_type=agent_type,
+                    duration_seconds=time.time() - start_time, turns=turns,
+                    usage_info=usage_info, terminal="frozen",
+                    provider=provider_name, model=model,
                 )
                 return AgentRunResult(
                     run_id, spec_name, agent_type,
@@ -1672,6 +1686,13 @@ class AgentRunner:
                     else:
                         self.worktree_manager.cleanup(wt_path, success=False)
                 self._cancel_clear(run_id)
+                # fix-observability-gaps 1.1：attempt 顶部取消也是终态，写指标
+                self._log_run_metrics(
+                    run_id=run_id, spec_name=spec_name, agent_type=agent_type,
+                    duration_seconds=time.time() - start_time, turns=turns,
+                    usage_info=usage_info, terminal="cancelled",
+                    provider=provider_name, model=model,
+                )
                 return AgentRunResult(
                     run_id, spec_name, agent_type,
                     success=False, duration_seconds=time.time() - start_time,
@@ -1724,6 +1745,12 @@ class AgentRunner:
                             "agent_runner",
                             f"Suppressed {agent_type} dispatch for '{spec_name}': {circuit_err}",
                         )
+                        self._log_run_metrics(
+                            run_id=run_id, spec_name=spec_name, agent_type=agent_type,
+                            duration_seconds=time.time() - start_time, turns=turns,
+                            usage_info=usage_info, terminal="circuit",
+                            provider=first_4xx_open, model=model,
+                        )
                         return AgentRunResult(
                             attempt_run_id, spec_name, agent_type,
                             success=False, duration_seconds=time.time() - start_time,
@@ -1734,6 +1761,12 @@ class AgentRunner:
                         f"all {len(chain)} candidates in switch/4xx cooldown"
                     )
                     self.logger.error("agent_runner", exhausted_err)
+                    self._log_run_metrics(
+                        run_id=run_id, spec_name=spec_name, agent_type=agent_type,
+                        duration_seconds=time.time() - start_time, turns=turns,
+                        usage_info=usage_info, terminal="chain_exhausted",
+                        provider=None, model=model,
+                    )
                     return AgentRunResult(
                         attempt_run_id, spec_name, agent_type,
                         success=False, duration_seconds=time.time() - start_time,
@@ -1753,6 +1786,13 @@ class AgentRunner:
                         f"Suppressed {agent_type} dispatch for '{spec_name}': {circuit_err}",
                     )
                     # 不创建 worktree、不进入重试计数。直接以熔断错误返回。
+                    # fix-observability-gaps 1.1：circuit 拦截终态写指标
+                    self._log_run_metrics(
+                        run_id=run_id, spec_name=spec_name, agent_type=agent_type,
+                        duration_seconds=time.time() - start_time, turns=turns,
+                        usage_info=usage_info, terminal="circuit",
+                        provider=provider_name, model=model,
+                    )
                     return AgentRunResult(
                         attempt_run_id, spec_name, agent_type,
                         success=False, duration_seconds=time.time() - start_time,
@@ -1780,6 +1820,12 @@ class AgentRunner:
                     error_msg = (f"repair worktree {wt_path} lost between attempts "
                                  f"— need fresh carrier resolution")
                     self.logger.error("agent_runner", error_msg)
+                    self._log_run_metrics(
+                        run_id=run_id, spec_name=spec_name, agent_type=agent_type,
+                        duration_seconds=time.time() - start_time, turns=turns,
+                        usage_info=usage_info, terminal="failure",
+                        provider=provider_name, model=model,
+                    )
                     return AgentRunResult(
                         attempt_run_id, spec_name, agent_type,
                         success=False, duration_seconds=time.time() - start_time,
@@ -1825,6 +1871,14 @@ class AgentRunner:
                         #（另一 run 在跑）或人工冻结时放弃，不再换名再造并行 run
                         if self._should_give_up_before_retry(
                                         spec_name, agent_type):
+                            self._log_run_metrics(
+                                run_id=run_id, spec_name=spec_name,
+                                agent_type=agent_type,
+                                duration_seconds=time.time() - start_time,
+                                turns=turns, usage_info=usage_info,
+                                terminal="failure", provider=provider_name,
+                                model=model,
+                            )
                             return AgentRunResult(
                                 attempt_run_id, spec_name, agent_type,
                                 success=False,
@@ -1833,6 +1887,12 @@ class AgentRunner:
                                 provider_used=provider_name, model_used=model,
                             )
                         continue
+                    self._log_run_metrics(
+                        run_id=run_id, spec_name=spec_name, agent_type=agent_type,
+                        duration_seconds=time.time() - start_time, turns=turns,
+                        usage_info=usage_info, terminal="failure",
+                        provider=provider_name, model=model,
+                    )
                     return AgentRunResult(
                         attempt_run_id, spec_name, agent_type,
                         success=False, duration_seconds=time.time() - start_time,
@@ -2097,6 +2157,14 @@ class AgentRunner:
                                 f"({agent_type}) yields: spec 已被接管，"
                                 f"放弃重派（fix-verdict-dedup-resynthesis D4）",
                             )
+                            self._log_run_metrics(
+                                run_id=run_id, spec_name=spec_name,
+                                agent_type=agent_type,
+                                duration_seconds=time.time() - start_time,
+                                turns=turns, usage_info=usage_info,
+                                terminal="failure", provider=provider_name,
+                                model=model,
+                            )
                             return AgentRunResult(
                                 attempt_run_id, spec_name, agent_type,
                                 success=False,
@@ -2265,6 +2333,14 @@ class AgentRunner:
                                         f"({agent_type}) yields: spec 已被接管，"
                                         f"放弃重派（fix-verdict-dedup-resynthesis D4）",
                                     )
+                                    self._log_run_metrics(
+                                        run_id=run_id, spec_name=spec_name,
+                                        agent_type=agent_type,
+                                        duration_seconds=time.time() - start_time,
+                                        turns=turns, usage_info=usage_info,
+                                        terminal="failure", provider=provider_name,
+                                        model=model,
+                                    )
                                     return AgentRunResult(
                                         attempt_run_id, spec_name, agent_type,
                                         success=False,
@@ -2384,6 +2460,14 @@ class AgentRunner:
                 self._accumulate_token_usage(spec_name, usage_info)
                 # 验证链侧车：planner/judge run 的 usage 逐轮追加（D3）
                 self._record_verify_progress_tokens(spec_name, agent_type, usage_info)
+                # fix-observability-gaps 1.1：成功收尾写结构化指标（duration/usage/cost）。
+                # run_id 记基础 run_id（run 级指标，含全部 attempt 的整条 run 耗时；
+                # 读侧按剥 attempt 后缀后的 base 匹配 run 文件）。
+                self._log_run_metrics(
+                    run_id=run_id, spec_name=spec_name, agent_type=agent_type,
+                    duration_seconds=duration, turns=turns, usage_info=usage_info,
+                    terminal="success", provider=provider_name, model=model,
+                )
                 # run 收尾清理取消旗标（add-run-cancel D5：正常完成也清，防泄漏）
                 self._cancel_clear(run_id)
                 return AgentRunResult(
@@ -2464,6 +2548,13 @@ class AgentRunner:
         # 返回 cancelled=True 结果；否则走既有终态失败返回。
         self._cancel_clear(run_id)
         if cancelled_flag:
+            # fix-observability-gaps 1.1：取消收尾写结构化指标
+            # （run_id 记基础 run_id，读侧按 base 匹配）
+            self._log_run_metrics(
+                run_id=run_id, spec_name=spec_name, agent_type=agent_type,
+                duration_seconds=duration, turns=turns, usage_info=usage_info,
+                terminal="cancelled", provider=provider_name, model=model,
+            )
             return AgentRunResult(
                 run_id, spec_name, agent_type,
                 success=False, duration_seconds=duration,
@@ -2476,6 +2567,12 @@ class AgentRunner:
         if shutdown_interrupted:
             # shutdown-interrupted 终态：error 已带 [shutdown-interrupted] 前缀；
             # usage 按 0（异常早夭同源）且不入账（对齐取消路径，避免濒死写 STATE）。
+            # fix-observability-gaps 1.1：中断收尾写结构化指标（含真实 duration）
+            self._log_run_metrics(
+                run_id=run_id, spec_name=spec_name, agent_type=agent_type,
+                duration_seconds=duration, turns=turns, usage_info=usage_info,
+                terminal="shutdown", provider=provider_name, model=model,
+            )
             return AgentRunResult(
                 run_id, spec_name, agent_type,
                 success=False, duration_seconds=duration,
@@ -2489,6 +2586,12 @@ class AgentRunner:
         self._accumulate_token_usage(spec_name, usage_info)
         # 验证链侧车（D3）：终态失败的 planner run 同样逐轮追加
         self._record_verify_progress_tokens(spec_name, agent_type, usage_info)
+        # fix-observability-gaps 1.1：全失败终态写结构化指标
+        self._log_run_metrics(
+            run_id=run_id, spec_name=spec_name, agent_type=agent_type,
+            duration_seconds=duration, turns=turns, usage_info=usage_info,
+            terminal="failure", provider=provider_name, model=model,
+        )
         return AgentRunResult(
             run_id, spec_name, agent_type,
             success=False, duration_seconds=duration,
@@ -3796,6 +3899,62 @@ class AgentRunner:
     @staticmethod
     def _extract_usage_info(result_event: dict | None) -> dict:
         return SessionTracker._extract_usage_info(result_event)
+
+    # ── run 终止指标落盘（fix-observability-gaps 1.x） ─────────────────────────
+    # 每次 run 进入终态时写一条结构化指标（复用既有日志设施，不新建 metrics
+    # 目录/消费者；design D1）。字段与 spec「run 终止指标结构化落盘」对齐：
+    # run_id / spec / agent_type / duration_seconds / turns / usage 四分项 /
+    # cost_usd / terminal / provider。usage/cost 直接取自 _extract_usage_info
+    # 的既有产出（add-cost-observability D1），不重复计算（任务 1.2）；
+    # cost_usd 只做事件留痕，页面成本口径维持 dashboard 既有计价表
+    # （任务 1.6，不叠加、不双源）。
+
+    def _log_run_metrics(
+        self,
+        *,
+        run_id: str,
+        spec_name: str,
+        agent_type: str,
+        duration_seconds: float,
+        turns: int,
+        usage_info: dict,
+        terminal: str,
+        provider: str | None = None,
+        model: str | None = None,
+    ) -> None:
+        """写一条 run 收尾结构化指标（成功/失败/取消/中断等终态各一条）。
+
+        复用 ``self.logger.info(component, message, context)`` 落盘（JSON 行，
+        context 为结构化字段）；落盘失败仅记 warning，绝不阻断 run 收尾。
+        """
+        usage = usage_info or {}
+        try:
+            self.logger.info(
+                "agent_runner",
+                f"run metrics: {agent_type} {terminal} '{spec_name}'",
+                {
+                    "metric_type": "run_metrics",
+                    "run_id": run_id,
+                    "spec": spec_name,
+                    "agent_type": agent_type,
+                    "duration_seconds": round(float(duration_seconds or 0), 3),
+                    "turns": int(turns or 0),
+                    "input_tokens": int(usage.get("input_tokens") or 0),
+                    "output_tokens": int(usage.get("output_tokens") or 0),
+                    "cache_creation_input_tokens": int(
+                        usage.get("cache_creation_input_tokens") or 0),
+                    "cache_read_input_tokens": int(
+                        usage.get("cache_read_input_tokens") or 0),
+                    "cost_usd": usage.get("cost_usd"),
+                    "terminal": terminal,
+                    "provider": provider,
+                },
+            )
+        except Exception as e:  # 指标落盘失败不得阻断 run 收尾
+            self.logger.warning(
+                "agent_runner",
+                f"run metrics 落盘失败 '{spec_name}' ({run_id}): {e}",
+            )
 
     @property
     def _extension_baselines(self):
