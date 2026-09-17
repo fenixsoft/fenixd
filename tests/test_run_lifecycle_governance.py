@@ -721,6 +721,42 @@ class TestReadyStallPatrol(RecoveryWatchFixture):
         self.assertEqual(
             len([b for b in result["blockers"] if b["spec"] == "s1"]), 1)
 
+    def test_queued_ready_not_reported(self):
+        """已入队等待派发的 ready spec 不算假就绪滞留（派发已成立，仅未起 run）。
+
+        回归：2026-09-17 18:25 一批 start_after 到点的 P5 spec 被误报——
+        `_spec_has_recent_run_activity` 以 run 流文件 mtime 为「派发活动」代理，
+        看不见「已入队、正等并发槽/优先级窗口」的等待：老化开窗最坏
+        initial+floor×step = 10+4×10 = 50 分钟（本项目配置），远长于 20 分钟
+        巡检阈值。实证：8 条 P5 spec 18:00:33 入队、18:50:59 才获派发（实耗
+        50.4 分钟），18:25 巡检即判滞留并呼唤 Administrator；其中两条随后正常
+        起 run，证明派发链路健康。
+        """
+        self.make_ready_spec("s1")
+        self._stale(hours=1)
+        self.runner.worktree_manager.has_active_worktree.return_value = False
+        entry = (5, "s1", "implementer", time.time() - 60)
+        with self.engine._queue_lock:
+            self.engine._run_queue.append(entry)
+        result = self.engine.check_blockers()
+        self.assertEqual([b for b in result["blockers"] if b["spec"] == "s1"], [])
+        recs = AdminStore(self.project_root, self.logger).read_all()
+        self.assertEqual(
+            [r for r in recs if r.get("signal_type") == "dispatch_stalled"], [])
+
+    def test_dequeued_still_reported(self):
+        """队列里没有该 spec 的条目 → 不豁免，照常上报（豁免只覆盖在队条目）。"""
+        self.make_ready_spec("s1")
+        self._stale(hours=1)
+        self.runner.worktree_manager.has_active_worktree.return_value = False
+        # 队列里有别人（或空）——s1 不在其中
+        with self.engine._queue_lock:
+            self.engine._run_queue.append((5, "other", "implementer", time.time()))
+        result = self.engine.check_blockers()
+        stalled = [b for b in result["blockers"] if b["spec"] == "s1"]
+        self.assertEqual(len(stalled), 1)
+        self.assertIn("假就绪滞留", stalled[0]["reason"])
+
     def test_recent_run_activity_not_reported(self):
         self.make_ready_spec("s1")
         self._stale(hours=1)

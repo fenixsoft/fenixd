@@ -1993,6 +1993,34 @@ class PMEngine:
             return False
         return result is True
 
+    def _queued_for_dispatch(self, spec_name: str) -> bool:
+        """spec 是否已有待派发条目（假就绪巡检豁免用）。
+
+        「派发活动」的第二个真相源：``_spec_has_recent_run_activity`` 以 run 流
+        文件 mtime 为代理，无法看见「已入队、正在等并发槽/优先级窗口」的等待
+        ——该窗口由队列老化开窗时序与 ``agents.max_concurrent`` 共同决定，实测
+        可达 50 分钟（远长于 20 分钟的巡检阈值），期间该 spec **确实已派发成立**，
+        仅尚未起 run。
+
+        与 ``family._sibling_repair_active`` 读队列同范式（同一 ``_queue_lock``
+        保护、同一 ``_run_queue`` 元组布局）；异常一律 fail-open 返回 False
+        （保持既有上报行为，不因本豁免故障而掩掉真阳性）。
+
+        注意豁免边界：本门只覆盖「排队中」，队列被永久饿死（如高优家族长时间
+        占满并行度）仍由既有的「Waiting in ready queue … possible queue
+        starvation」警告（阈值 2× stuck）可见——本条豁免不得泛化为「有活跃
+        run 就不报」。
+        """
+        try:
+            with self._queue_lock:
+                return any(e[1] == spec_name for e in self._run_queue)
+        except Exception as e:
+            self.logger.warning(
+                "pm_engine",
+                f"Queue probe failed for '{spec_name}' (treating as not queued): {e}",
+            )
+            return False
+
     def _ready_stall_threshold_minutes(self) -> float:
         """假就绪巡检阈值：pm.recovery.ready_stall_threshold_minutes（默认 20）。"""
         try:
@@ -2299,6 +2327,18 @@ class PMEngine:
                         # 不豁免会把「活 run 被重建锁保护、恢复检查正确 skip」的 spec
                         # 误报为 dispatch_stalled 循环呼叫 Administrator（2026-09-06
                         # add-verify-multi-kind-runner 事故）。
+                        # 已在派发队列中等待的 spec 同理（dispatch-queue-aging 时序）：
+                        # 入队已成立（_on_spec_ready 返回 True），只是受并发槽与优先级
+                        # 窗口约束尚未起 run；老化开窗最坏要 initial+floor×step 分钟
+                        # （本项目配置 10+4×10 = 50 分钟），远长于 20 分钟阈值，期间
+                        # 流文件判据恒为假 → 每轮巡检必报。2026-09-17 实证：8 条
+                        # start_after 18:00 到点的 P5 spec 入队后 50.4 分钟才获派发，
+                        # 18:25 巡检即把这批**已入队**的 spec 判为假就绪滞留并唤起
+                        # Administrator；其中两条（evo-sigterm-source-tracking-cooldown
+                        # / evo-supervision-timeout-config-consistency）在 18:50:59
+                        # 派发成立，证明派发链路健康，告警纯属观测盲区。
+                        # 队列被真正饿死（无并发窗口）仍由既有「Waiting in ready queue」
+                        # 警告（阈值 2×stuck）可见，本豁免不掩盖饿死形态。
                         stall_threshold = self._ready_stall_threshold_minutes()
                         if (
                             elapsed > stall_threshold
@@ -2307,6 +2347,7 @@ class PMEngine:
                             and not self._dependencies_pending(name)
                             and not self._spec_has_recent_run_activity(name, stall_threshold)
                             and not self._attempt_still_alive(name)
+                            and not self._queued_for_dispatch(name)
                         ):
                             blockers.append(
                                 {
