@@ -189,6 +189,7 @@ class AdminDisposition:
         error: str = "",
         output: str = "",
         family_waiver: bool = False,
+        failure_evidence: dict | None = None,
     ):
         self.run_id = run_id
         self.spec = spec
@@ -204,6 +205,11 @@ class AdminDisposition:
         # family_explosion 处置：Administrator 对该父 SPEC「放行一次」。
         # 由 admin_monitor 落成 _family_waiver=true（单次豁免，用后复位）。
         self.family_waiver = family_waiver
+        # orphaned-state-probe-calibration 1.5：非零退出的可定位失败证据
+        # （原始 stderr 摘录 / 退出码 / provider·model / 带时间戳事件时间线）。
+        # 独立字段，不参与 error 归因文本（error-attribution-denoise D5 语义
+        # 不变）；成功或无证据时为空 dict。
+        self.failure_evidence = failure_evidence or {}
 
     def to_dict(self) -> dict:
         return {
