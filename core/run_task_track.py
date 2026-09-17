@@ -57,8 +57,22 @@ def parse_unattainable(data: dict) -> "tuple[set, list]":
     实现者用它申报「已完成全部可做工作、但某任务客观上无法由 agent 完成」
     （如 7.3 人工运维门控：需用户亲手 touch 重启文件，agent 执行会自杀式
     SIGTERM 杀本 run）。语义与 ``findings`` 不同——``findings`` 是「待裁决
-    争议」，本字段是**机械可读的豁免清单**，供产物硬门与 verified→done 门禁
-    从「未完成」缺口里扣除。
+    争议」，本字段是**机械可读的豁免清单**，供三处消费（同一口径，禁止第二套
+    判定）：
+
+    1. 产物硬门（``result_gate._check_impl_result_artifact``）：从「未勾硬
+       缺口」与 TaskUpdate 覆盖义务里扣除；partial 申报一致性判据里计入
+       「已申报集合」（否则申报了 unattainable 的任务会被算成未申报缺口）；
+    2. **收敛路径**（``dispatch._honest_exit_gap`` / ``engine._partial_attribution``
+       / ``engine._task_completion_blocker``，共用 ``gap_from_result``）：partial
+       收工且缺口全部 ⊆ 申报 → 不判失败重派，按成功收口（人工无法代做的任务重派
+       N 轮只会重复同一终局，2026-09-16 fix-dashboard-read-path-performance
+       实测烧穿预算）。缺口口径 MUST 取结果文件（``unfinished`` 或
+       ``completed_tasks`` 反推），MUST NOT 读主树 tasks.md 勾选——主树 ``[x]``
+       只在成功/merge-back 路径回写，partial 收敛走不到该路径，读它会把已完成
+       任务也算成缺口形成读侧自锁（fix-robustness-edge-cases 事故 2026-09-17）；
+    3. verified→done 门禁（``engine._task_completion_blocker``）：缺口全部已
+       申报 → 放行到 done 并写人工待办告警。
 
     每项形如 ``{"task": "7.3", "reason": "<为何无法完成>", "evidence": "<依据>"}``。
 
@@ -120,6 +134,41 @@ def parse_tasks_md(project_root, spec_name) -> "tuple[list, set]":
     except (OSError, UnicodeDecodeError):
         return [], set()
     return all_ids, checked_ids
+
+
+def gap_from_result(data, project_root, spec_name) -> "list[str]":
+    """partial 收工的**真实缺口 id 清单**（诚实退出三处消费的统一口径）。
+
+    fix-robustness-edge-cases 事故（2026-09-17）：诚实退出的三处消费
+    （``dispatch._honest_exit_gap`` / ``engine._partial_attribution`` /
+    ``engine._task_completion_blocker``）在缺少 ``unfinished`` 时一律回退
+    **主树** ``tasks.md`` 的勾选状态。但主树的 ``[x]`` 由
+    ``_sync_task_progress`` 在成功 / merge-back 路径回写，而 partial 收敛恰
+    恰走不到那条路径——于是「未收敛 → 主树全未勾 → 缺口含全部已完成任务 →
+    永远收敛不了」构成读侧自锁，同一轮如实申报的 unattainable 缺口被算成
+    「已完成 14 项也未完成」，spec 每轮重派烧 ~$18 且第一轮成果整支丢弃。
+
+    优先级（与产物硬门口径同源，禁止再读主树勾选）：
+    1. ``unfinished`` 非空列表 → 直接采信（实现者显式申报的未完成）；
+    2. 否则以 ``completed_tasks`` 反推：``全部数字任务 id − completed_tasks``
+       ——``completed_tasks`` 由产物硬门 ``_check_partial_consistency`` 强制与
+       **worktree** ``tasks.md`` 勾选逐条一致，故与结果门同源、不受主树回写
+       状态影响；
+    3. 两者皆缺（非 partial / 畸形结果）→ 空列表（调用方按既有 fail-closed
+       语义处置，不在此处臆造缺口）。
+
+    Returns:
+        缺口 id 清单（文档顺序）；无缺口或无法判定 → 空列表。
+    """
+    unfinished = (data or {}).get("unfinished")
+    if isinstance(unfinished, list) and unfinished:
+        return [str(t) for t in unfinished]
+    completed = (data or {}).get("completed_tasks")
+    if isinstance(completed, list):
+        all_ids, _checked = parse_tasks_md(project_root, spec_name)
+        done = {str(t) for t in completed}
+        return [t for t in all_ids if t not in done]
+    return []
 
 
 def find_impl_run_file(project_root, spec_name, files=None) -> Path | None:

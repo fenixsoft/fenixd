@@ -828,10 +828,12 @@ class PMEngine:
         """partial 结果的失败归因构造（fix-impl-tasks-completion-gate D6）。
 
         partial 是「诚实申报未完成」的合法终态，其失败归因 MUST 非空且由
-        ``unfinished`` 清单与 tasks.md 缺口 id 构成——MUST NOT 沿用为 None 的
-        ``result.error``（成功进程的 error 为 None，沿用会产出「失败但无归因」
-        的空壳处置，违背 admin 处置非空壳约定）。归因同时是重派 prompt 的
-        缺口注入来源。
+        ``unfinished`` 清单与 ``completed_tasks`` 反推的缺口 id 构成——MUST NOT
+        沿用为 None 的 ``result.error``（成功进程的 error 为 None，沿用会产出
+        「失败但无归因」的空壳处置，违背 admin 处置非空壳约定）。归因同时是
+        重派 prompt 的缺口注入来源。缺口口径统一走
+        ``core.run_task_track.gap_from_result``（与产物硬门同源），MUST NOT
+        读主树 tasks.md 勾选。
 
         Args:
             spec_name: spec 名（tasks.md 缺口兜底用）。
@@ -845,13 +847,15 @@ class PMEngine:
         if isinstance(unfinished, list) and unfinished:
             gap = [str(t) for t in unfinished]
         else:
-            # 防御：unfinished 缺失/非数组时回退 tasks.md 未勾 id（硬门已校验
-            # 申报一致性，正常到不了这里；兜底不产出空壳归因）。
+            # 防御：unfinished 缺失/非数组时由结果文件 completed_tasks 反推缺口
+            # （core.run_task_track.gap_from_result，与产物硬门同源）。MUST NOT
+            # 回退主树 tasks.md 勾选——主树 [x] 只在成功/merge-back 路径回写，
+            # partial 收敛走不到，读它会产出「已完成任务也算未完成」的假归因
+            # （fix-robustness-edge-cases 事故 2026-09-17）。
             try:
-                from core.run_task_track import parse_tasks_md
+                from core.run_task_track import gap_from_result
 
-                all_ids, checked_ids = parse_tasks_md(self.project_root, spec_name)
-                gap = [t for t in all_ids if t not in checked_ids]
+                gap = gap_from_result(impl_result, self.project_root, spec_name)
             except Exception:
                 gap = []
         if gap:
@@ -1170,18 +1174,18 @@ class PMEngine:
             # done——partial 自带 unfinished 缺口证据（快照/共享文件残留 partial
             # 时把带未完成任务的 spec 静默推进 done 正是本 SPEC 消除的事故形态）。
             # fail-closed：归因带 TASK_GAP_ERROR_PREFIX，与人工回炉入口
-            # （task-reflow）同语义可处置。unfinished 缺失时回退任务书未勾 id。
+            # （task-reflow）同语义可处置。缺口口径走统一实现点
+            # ``core.run_task_track.gap_from_result``（与产物硬门同源），
+            # MUST NOT 回退主树 tasks.md 勾选。
             #
             # ── 诚实退出豁免（2026-09-16 改进②）──
             # 若缺口全部 ⊆ 结果文件的 ``unattainable`` 申报（实现者机械声明
             # 「确实无法由 agent 完成」，如人工运维门控任务），不再拦截：放行到
             # done，并把申报内容落一条可见的人工待办告警。部分未申报的仍按
             # fail-closed 拦截。
-            unfinished = result.get("unfinished")
-            gap = [str(t) for t in unfinished] if isinstance(unfinished, list) else []
-            if not gap:
-                _all_ids, checked_ids = parse_tasks_md(self.project_root, spec_name)
-                gap = [t for t in _all_ids if t not in checked_ids]
+            from core.run_task_track import gap_from_result as _gap_from_result
+
+            gap = _gap_from_result(result, self.project_root, spec_name)
             unattainable_ids, _invalid = _parse_unattainable(result)
             unclaimed = [t for t in gap if t not in unattainable_ids]
             if gap and not unclaimed:

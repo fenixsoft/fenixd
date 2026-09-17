@@ -795,6 +795,39 @@ class Dispatcher:
                     elif impl_status != "success":
                         impl_error = result.error
                 is_success = result.success and (impl_status is None or impl_status == "success")
+                # ── 诚实退出收敛（unattainable，2026-09-16 改进② 补齐收敛路径）──
+                # 实现者以 partial 收工且**缺口全部 ⊆ unattainable 申报**时，不该
+                # 判失败重派：剩余任务客观上不可由 agent 完成（人工运维门控——需
+                # 用户亲手重启 daemon / 审批 / 外部资源），重派 N 轮只会重复同一
+                # 终局。修正前该豁免只接在 verified→done 门（engine._task_completion_
+                # blocker），partial 在收敛路径一律 is_success=False → 无限重派烧预算
+                # （2026-09-16 fix-dashboard-read-path-performance 实测：3 轮原地重试 +
+                # 多次全新重派，$4.4，spec 在 implementing 悬置 43 分钟直至 admin 唤起）。
+                # 部分未申报的缺口仍按失败处置（防 partial 洗白），走既有重试通道。
+                honest_exit_gap: list = []
+                if impl_status == "partial":
+                    honest_exit_gap = self._honest_exit_gap(self._pm, spec_name, impl_result)
+                if result.success and impl_status == "partial" and honest_exit_gap:
+                    # 诚实退出收敛：不按失败重派，转正常成功收口（后续通用
+                    # is_success 路径会写 impl-result 快照、过交付物/relint 门、
+                    # merge-back 并 enqueue verifier）。人工待办告警与
+                    # engine._task_completion_blocker 的诚实退出分支同文案，
+                    # 使 /fenix-approve 环节可见「哪些任务交给了人工」。
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"诚实退出收敛 '{spec_name}'：partial 缺口全部 ⊆ unattainable "
+                        f"申报 {honest_exit_gap} —— 不重派，按成功收口转验证",
+                    )
+                    impl_error = None
+                    is_success = True
+                    try:
+                        self._pm._note_unattainable_todos(
+                            spec_name, impl_result, honest_exit_gap)
+                    except Exception as e:  # noqa: BLE001 — 非阻塞
+                        self._pm.logger.debug(
+                            "pm_engine",
+                            f"unattainable 待办告警写入失败（不阻断收敛）: {e}",
+                        )
                 final_error = impl_error or result.error
 
                 # ── 结构化诊断写入（fix-run-hang-amplification 2.3）──
@@ -1334,6 +1367,46 @@ class Dispatcher:
                 else:
                     self._active_priority_counts[priority] = cnt
             self._pm._process_queue()
+
+    @staticmethod
+    def _honest_exit_gap(pm, spec_name: str, impl_result) -> list:
+        """partial 收工的「缺口全部 ⊆ unattainable 申报」判定（诚实退出收敛）。
+
+        返回非空列表 = 缺口确实存在且**每一项**都由结果文件顶层 ``unattainable``
+        申报覆盖（如「需用户确认时机后重启 daemon」这类人工运维门控）；空列表 =
+        无缺口、或存在未申报缺口（防 partial 洗白，仍按失败处置）。
+
+        缺口口径见 ``core.run_task_track.gap_from_result``（与产物硬门同源：
+        ``unfinished`` 优先，否则 ``全部任务 − completed_tasks``）；MUST NOT
+        回退主树 tasks.md 勾选（partial 收敛走不到 ``_sync_task_progress`` 回写
+        路径，读主树会把已完成任务也算成缺口形成读侧自锁，2026-09-17 事故）。
+
+        与 ``engine._task_completion_blocker`` 的诚实退出分支同判据（同一解析
+        实现点 core.run_task_track）。判定异常一律返回空（fail-closed 按失败处置）。
+        """
+        try:
+            from core.run_task_track import gap_from_result as _gap_from_result
+            from core.run_task_track import parse_unattainable as _pu
+
+            unattainable_ids, _invalid = _pu(impl_result or {})
+            if not unattainable_ids:
+                return []
+            # 缺口口径与产物硬门同源（core.run_task_track.gap_from_result）：
+            # MUST NOT 回退主树 tasks.md 勾选——主树 [x] 由成功/merge-back 路径
+            # 回写，partial 收敛走不到那条路径，读它会把**已完成任务**也算成缺口
+            # → 永收敛不了（fix-robustness-edge-cases 读侧自锁事故 2026-09-17）。
+            gap = _gap_from_result(impl_result or {}, pm.project_root, spec_name)
+            if gap and not [t for t in gap if t not in unattainable_ids]:
+                return list(gap)
+        except Exception as e:  # noqa: BLE001 — 判定异常按失败处置（不阻断收敛主流程）
+            try:
+                pm.logger.debug(
+                    "pm_engine",
+                    f"unattainable 收敛判定异常 '{spec_name}'（按失败处置）: {e}",
+                )
+            except Exception:
+                pass
+        return []
 
     @staticmethod
     def _dispatch_backoffed(spec: dict) -> bool:
@@ -2483,7 +2556,16 @@ class Dispatcher:
                 "本轮实现中断：fast-track 结果文件未产出（run 异常结束），将自动重试",
             )
             return
-        if not result.success or ft_result.get("status") != "success":
+        # ── 诚实退出收敛（fast-track 车道，2026-09-16 改进② 补齐收敛路径）──
+        # partial 收工且**缺口全部 ⊆ unattainable 申报**时视同成功收口，继续走
+        # 零变更哨 / 交付物守卫 / relint / merge / verified 推进；未申报缺口或
+        # 非 partial 的失败形态仍走既有重派通道（防 partial 洗白）。
+        honest_exit_gap: list = []
+        if result.success and ft_result.get("status") == "partial":
+            honest_exit_gap = self._honest_exit_gap(self._pm, spec_name, ft_result)
+        if not result.success or (
+            ft_result.get("status") != "success" and not honest_exit_gap
+        ):
             self._keep_fast_track_worktree(spec_name, result)
             if result.success:
                 status_val = ft_result.get("status")
@@ -2509,6 +2591,22 @@ class Dispatcher:
                 final_error = ft_result.get("error") or result.error or "fast-track run failed"
             self._handle_fast_track_failure(spec_name, result, final_error)
             return
+
+        if honest_exit_gap:
+            # 人工退出放行留痕（与 full 车道同语义）：/fenix-approve 环节可见
+            # 「哪些任务交给了人工」。告警写失败仅 debug，不阻断收敛。
+            self._pm.logger.warning(
+                "pm_engine",
+                f"诚实退出收敛（fast-track）'{spec_name}'：partial 缺口全部 ⊆ "
+                f"unattainable 申报 {honest_exit_gap} —— 不重派，按成功收口",
+            )
+            try:
+                self._pm._note_unattainable_todos(spec_name, ft_result, honest_exit_gap)
+            except Exception as e:  # noqa: BLE001 — 非阻塞
+                self._pm.logger.debug(
+                    "pm_engine",
+                    f"unattainable 待办告警写入失败（不阻断收敛）: {e}",
+                )
 
         # ── 零变更成功哨 ──
         if self._pm._implementer_zero_change(spec_name, result):
