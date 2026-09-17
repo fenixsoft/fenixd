@@ -316,11 +316,11 @@ class TestRehearsedDispatch(unittest.TestCase):
         不降级 ready、spec 保持 implementing。"""
         branch = self._make_semantic_conflict_branch()
         self._mock_implementer_success(branch)
-        self.engine._dispatch_repair_lane = MagicMock()
+        self.engine._dispatcher._dispatch_repair_lane = MagicMock()
         self.sm.transition(self.spec, "implementing")
         self.engine._run_agent_worker(self.spec, "implementer", 5)
         # 直通 repair，而非普通重试
-        self.engine._dispatch_repair_lane.assert_called_once()
+        self.engine._dispatcher._dispatch_repair_lane.assert_called_once()
         # spec 保持 in-flight（不降级 ready）
         entry = self.sm.read_one(self.spec)
         self.assertEqual(entry["status"], "implementing")
@@ -332,7 +332,7 @@ class TestRehearsedDispatch(unittest.TestCase):
         """直通 repair 不把预演冲突错误写进 spec.error（与 abort 后路径可区分）。"""
         branch = self._make_semantic_conflict_branch()
         self._mock_implementer_success(branch)
-        self.engine._dispatch_repair_lane = MagicMock()
+        self.engine._dispatcher._dispatch_repair_lane = MagicMock()
         self.sm.transition(self.spec, "implementing")
         self.engine._run_agent_worker(self.spec, "implementer", 5)
         entry = self.sm.read_one(self.spec)
@@ -345,16 +345,16 @@ class TestRehearsedDispatch(unittest.TestCase):
         """fast-track 预演语义冲突 → 直通 repair，不经 fp 记账、spec 保持 in-flight。"""
         branch = self._make_semantic_conflict_branch()
         self.sm.transition(self.spec, "implementing")
-        self.engine._dispatch_repair_lane = MagicMock()
+        self.engine._dispatcher._dispatch_repair_lane = MagicMock()
         merged = self.engine._dispatcher._reconcile_and_merge(
             self.spec, self._make_ft_result(branch))
         self.assertFalse(merged)
-        self.engine._dispatch_repair_lane.assert_called_once()
+        self.engine._dispatcher._dispatch_repair_lane.assert_called_once()
         entry = self.sm.read_one(self.spec)
         self.assertEqual(entry["status"], "implementing")
         self.assertIsNone(entry.get("_merge_fp"))
         # repair 调用携带实现分支（repair agent 在分支上 merge main 原地修复）
-        call_args = self.engine._dispatch_repair_lane.call_args
+        call_args = self.engine._dispatcher._dispatch_repair_lane.call_args
         self.assertEqual(call_args.args[2], branch)
 
     # ── Scenario: repair 轮次上限仍兜底 ────────────────────────────────────
@@ -368,22 +368,22 @@ class TestRehearsedDispatch(unittest.TestCase):
             "status": "implementing",
             "_repair_round": MAX_REPAIR_ROUNDS_PER_FAILURE,
         })
-        self.engine._dispatch_repair_lane = MagicMock()
-        self.engine._fallback_after_repair = MagicMock()
+        self.engine._dispatcher._dispatch_repair_lane = MagicMock()
+        self.engine._dispatcher._fallback_after_repair = MagicMock()
         self.engine._run_agent_worker(self.spec, "implementer", 5)
         # 轮次超限：不派 repair，回退 fallback 重派
-        self.engine._dispatch_repair_lane.assert_not_called()
-        self.engine._fallback_after_repair.assert_called_once()
+        self.engine._dispatcher._dispatch_repair_lane.assert_not_called()
+        self.engine._dispatcher._fallback_after_repair.assert_called_once()
 
     def test_rehearsed_blocked_spec_falls_back(self):
         """blocked spec 的预演语义冲突不派 repair（_should_enter_repair 拦截）。"""
         branch = self._make_semantic_conflict_branch()
         self._mock_implementer_success(branch)
         self.sm.update_spec(self.spec, {"status": "blocked"})
-        self.engine._dispatch_repair_lane = MagicMock()
-        self.engine._fallback_after_repair = MagicMock()
+        self.engine._dispatcher._dispatch_repair_lane = MagicMock()
+        self.engine._dispatcher._fallback_after_repair = MagicMock()
         self.engine._run_agent_worker(self.spec, "implementer", 5)
-        self.engine._dispatch_repair_lane.assert_not_called()
+        self.engine._dispatcher._dispatch_repair_lane.assert_not_called()
 
     # ── Scenario: repair 后 re-merge 失败链保持现行 fp 熔断 ────────────────
 

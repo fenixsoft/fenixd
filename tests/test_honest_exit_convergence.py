@@ -135,7 +135,9 @@ class TestHonestExitConvergence(unittest.TestCase):
         self.spec_dir.mkdir(parents=True, exist_ok=True)
         (self.spec_dir / "tasks.md").write_text(HUMAN_GATE_TASKS, encoding="utf-8")
         self.engine._enqueue = MagicMock()
-        self.engine._enqueue_front = MagicMock()
+        # 观察点：dispatcher 直接 self._enqueue_front（refactor-giant-classes 3.8
+        # 消解回引后不再经 engine 门面委托转发）
+        self.engine._dispatcher._enqueue_front = MagicMock()
         self.engine._process_queue = MagicMock()
         self.engine._reconcile_impl_budget = MagicMock()
         self.sm.add_spec(self.spec, {"priority": 5})
@@ -174,7 +176,7 @@ class TestHonestExitConvergence(unittest.TestCase):
         )
         assert entry["status"] == "implemented", entry
         assert int(entry.get("_retry_count", 0) or 0) == 0
-        assert self.engine._enqueue_front.call_args[0][1] == "verifier"
+        assert self.engine._dispatcher._enqueue_front.call_args[0][1] == "verifier"
 
     def test_undeclared_gap_still_retries(self):
         """partial 但存在未申报缺口 → 仍按失败重派（不洗白）。"""

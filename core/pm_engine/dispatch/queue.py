@@ -1,0 +1,1222 @@
+"""queue.py — Q 队列核心/worker（refactor-giant-classes D1/D3/D5）。
+
+原为 Dispatcher 的 8 个方法（含 `__init__` 与 742 行 `_run_agent_worker`
+枢纽，`core/pm_engine/dispatch/_legacy.py`），原样搬移为 mixin。
+宿主实例化时按 MRO 命中本 mixin 的 `__init__`，实例属性初始化语义不变。
+
+`_run_agent_worker` 扇出到 B/F/P/V 各组的协作全部经宿主实例
+`self.<method>`（搬移后仍是同一类的方法，只是文件不同）。
+
+D3 patch 缝隙：本组使用 `time` 模块（入队时刻/老化计时），经模块顶部
+导入即可——测试 ``patch.object(_dispatch_mod.time, "time", _tick)``
+修改的是 time 模块对象（即 `core.pm_engine.dispatch.time`）的 `time`
+属性，全进程共享，patch 依旧生效。
+"""
+
+from __future__ import annotations
+
+import threading
+import time
+
+from core.state_machine import TASK_GATE_REJECTIONS_FIELD, start_after_pending
+
+
+class QQQueueMixin:
+    """Q 队列核心/worker（design D1 表 B Q 组）。"""
+
+    def __init__(self, pm):
+        self._pm = pm  # 门面回引（design D3 规则 3：组件 → 门面 单向）
+
+        # 队列与并发状态（design D3 规则 1：_queue_lock 与被保护的
+        # _run_queue/_active_runs/_active_priorities 整体同迁，单锁语义不变）。
+        self._queue_lock = threading.Lock()
+        self._active_runs = 0
+        # Pending (priority, spec_name, agent_type, enqueued_at) tuples。
+        # enqueued_at 为入队时刻 time.time()，仅供内存态老化计时（design D3）：
+        # 不持久化，daemon 重启重建队列即视为等待清零。
+        self._run_queue = []
+        self._active_priorities = set()  # 当前活动 priority 集合（宽松优先级下可含多个档）
+        self._active_priority_counts: Dict[int, int] = {}  # priority → 活动 run 数
+        # 派发锁冲突退避定时器（_schedule_backoff_retry 维护，死定时器惰性清理）。
+        self._backoff_timers: list = []
+        # 秒挂冷却恢复定时器（cli-retry-backoff 2.2）：{spec_name}，幂等排程防重复。
+        # 冷却到期由定时器重入 _on_spec_ready，不依赖 30 分钟全量扫描兜底。
+        self._instant_fail_timers: set = set()
+        # fix-provider-transient-backoff（D4）：transient 恢复排程定时器：{spec_name}。
+        # 瞬断终态触发后按 `transient_redispatch_delay_seconds`（缺省 600s）延迟重入
+        # _on_spec_ready，同 instant_fail_timers 同款幂等去重。
+        self._transient_timers: set = set()
+
+    def _get_spec_priority(self, spec_name: str) -> int:
+        """读取 SPEC 的 priority，缺省为 5。"""
+        spec = self._pm.state_machine.read_one(spec_name)
+        if spec and isinstance(spec.get("priority"), int):
+            return spec["priority"]
+        return 5
+
+    def _enqueue(self, spec_name: str, agent_type: str):
+        """Add a run request to the queue (thread-safe).
+
+        条目结构：(priority, spec_name, agent_type, enqueued_at)。
+        priority 从 STATE.md 读取（缺省 5）；enqueued_at = time.time() 供
+        派发队列老化计时（design D3，内存态、不持久化）。
+        """
+        priority = self._pm._get_spec_priority(spec_name)
+        entry = (priority, spec_name, agent_type, time.time())
+        with self._queue_lock:
+            # 去重：忽略 priority 差异，只看 (spec, agent)
+            if not any(e[1] == spec_name and e[2] == agent_type for e in self._run_queue):
+                self._run_queue.append(entry)
+                self._pm.logger.debug(
+                    "pm_engine", f"Queued: {spec_name} ({agent_type}, P{priority})"
+                )
+
+    def _enqueue_front(self, spec_name: str, agent_type: str):
+        """Insert a run request at the front of its priority bucket (thread-safe).
+
+        在优先级调度下，「队首」语义改为同档优先：verifier 与 implementer
+        属于同一 SPEC、同一 priority，插入后落回同一档且保持档内 FCFS。
+        """
+        priority = self._pm._get_spec_priority(spec_name)
+        entry = (priority, spec_name, agent_type, time.time())
+        with self._queue_lock:
+            # Remove existing duplicate (ignoring priority)
+            self._run_queue = [
+                e for e in self._run_queue if not (e[1] == spec_name and e[2] == agent_type)
+            ]
+            # 插入到同优先级档的最前面（保持同一档内的顺序）
+            insert_idx = 0
+            for i, e in enumerate(self._run_queue):
+                if e[0] == priority:
+                    insert_idx = i
+                    break
+                if e[0] > priority:
+                    insert_idx = i
+                    break
+                insert_idx = i + 1
+            self._run_queue.insert(insert_idx, entry)
+            self._pm.logger.debug(
+                "pm_engine", f"Queued at front of P{priority}: {spec_name} ({agent_type})"
+            )
+
+    def _aging_bonus(self, enqueued_at: float, now: float) -> int:
+        """队列等待老化收益：条目等待越久，参与比较的优先级档越高。
+
+        方向说明：本项目 priority 数值越小代表越重要、越早派发。放宽规则为
+        「任务 X 可派发当且仅当 min(active_priorities) >= X」——因此等待条目的
+        *比较档位* 必须随等待降低（effective = base - bonus）才能在 P4/P5 家族
+        持续占用下给 P6 打开派发窗口（spec Scenario: P6 条目获得窗口）。设计
+        文档中的字面 `base + …` 公式与自身 Scenario 相悖（只会让 P6 更晚派发），
+        本实现以行为需求为准：effective = max(0, base - bonus)。
+
+        config: pm.dispatch.aging.
+            enabled (默认 false) —— 关闭时恒返回 0，行为与现状完全一致；
+            initial_wait_minutes (默认 30) —— 等待不足此值不老化的零窗口；
+            step_down_minutes (默认 15) —— 每满一档老化时间降一级比较；
+            floor_levels (默认 4) —— 单条目等效降级总量上限（P6 最低可比至 P2，
+              仍天然低于新到的 P1，高优家族先占）。
+        """
+        from core.config import ConfigLoader
+
+        cfg = self._pm.config or {}
+        a = dict(ConfigLoader.get(cfg, "pm.dispatch.aging", {}) or {})
+        enabled = a.get("enabled", False)
+        if not enabled:
+            return 0
+        # 注意：不能用 `or 默认值` 取参 —— 配置 0（initial_wait/step_down）合法且常见，
+        # 0 为假值会被误替换为默认值。
+        iw = a.get("initial_wait_minutes")
+        sw = a.get("step_down_minutes")
+        fl = a.get("floor_levels")
+        initial_wait = max(0.0, float(iw if iw is not None else 30)) * 60.0
+        step_down = max(0.0, float(sw if sw is not None else 15)) * 60.0
+        floor_levels = max(0, int(fl if fl is not None else 4))
+        elapsed = max(0.0, now - (enqueued_at or now))
+        if step_down <= 0 or elapsed < initial_wait:
+            return 0
+        steps = int((elapsed - initial_wait) // step_down)
+        return min(floor_levels, max(0, steps))
+
+    def _effective_priority(self, base: int, enqueued_at: float, now: float) -> int:
+        """条目参与优先级判定时的有效档位（activity 追踪仍用 base，活动任务不老化）。"""
+        return max(0, base - self._pm._aging_bonus(enqueued_at, now))
+
+    def _process_queue(self):
+        """Process the run queue — relaxed-priority parallel scheduling.
+
+        调度规则（宽松优先级并行，fix-fenix-token-waste 后按用户要求调整）：
+        - 任务 X 可派发当且仅当没有比 X 更重要的活动任务
+          （即 min(active_priorities) >= X）：有 P6 在跑时 P5 可并发、P7 不行。
+        - 同一档内多个任务可并行至 max_concurrent；不同档可并发（只要满足上述规则）。
+        - 不抢占：已在运行的任务不会被新到的高优先级中断。
+        - 每轮派发队列中最高优先级的合法就绪条目。
+
+        队列老化（dispatch-queue-aging / design D3）：比较用 effective 档位
+        （base - 等待老化收益）；派发后活动集合 _active_priorities 记 base 原值
+        —— 活动任务不参与老化降级（spec Scenario: 持久运行的 P4 不会被降级）；
+        同级（effective 相等）条目保持「先入队先派发」的队首顺序（先入队者
+        老化收益 ≥ 后入队者，队首扫描天然保持同级 FCFS，spec Scenario: 同级
+        顺序稳定）。老化仅内存态 —— enqueued_at 随进程存活，daemon 重启重建
+        队列即从零计时。
+        """
+        # 优雅关闭期间不再派发（fix-admin-self-heal）
+        if self._pm.shutting_down:
+            self._pm.logger.debug("pm_engine", "Shutting down — dispatch paused")
+            return
+        # fix-provider-transient-backoff D4：全局瞬断熔断冻结期间暂停一切新派发。
+        # 与 instant_fail_cooled 同构：冷却到期自动恢复；在飞 run 不受影响。
+        if self._pm._global_transient_break_active():
+            self._pm.logger.debug(
+                "pm_engine",
+                "Global transient break active — dispatch paused "
+                "(fix-provider-transient-backoff D4)",
+            )
+            return
+        max_concurrent = self._pm._get_config("agents.max_concurrent", 2)
+
+        # 本轮调用内已被守卫三抑制的条目（spec, agent_type）。
+        # 被抑制条目保持 queued（后到抑制），但绝不能阻塞其后的条目派发
+        # —— 否则队首一个被抑制条目就会让整条队列停摆（2026-08-28 实证：
+        # 双 ready 同根兄弟互相判对方 actionable，P6/P7 全线无法派发）。
+        suppressed = set()
+
+        while True:
+            entry_to_dispatch = None
+
+            with self._queue_lock:
+                if self._active_runs >= max_concurrent:
+                    return
+                if not self._run_queue:
+                    return
+                now = time.time()
+
+                # 找队列中所有状态合法条目的最高 effective 档位
+                # （先不 pop，只扫描以确定 queued_best）
+                best_valid_prio = None
+                for entry in self._run_queue:
+                    prio, sname, atype, enqueued_at = entry
+                    if (sname, atype) in suppressed:
+                        continue
+                    eff = self._pm._effective_priority(prio, enqueued_at, now)
+                    spec = self._pm.state_machine.read_one(sname)
+                    if not spec:
+                        continue
+                    status = spec.get("status")
+                    if atype == "implementer" and status not in ("ready", "implementing"):
+                        # implementing 允许派发 = 原地打回的修复重派（热修 2026-08-29）：
+                        # 打回处置 _enqueue 时状态为 implementing，旧条件 status != "ready"
+                        # 导致修复条目被永久静默跳过、链路停摆。入队点均在 run 终止后
+                        # （打回处理器/零变更重试）且 _enqueue 按 (spec,type) 去重，无双派。
+                        continue
+                    if atype == "fast-track" and status not in ("ready", "implementing"):
+                        # fast-track：ready 正常派发；implementing 允许 = 失败打回后的修复重派
+                        # （入队点均在 run 终止后，与 implementer 同语义，无双派）。
+                        continue
+                    if atype == "verifier" and status not in ("implemented", "testing"):
+                        # testing 允许派发 = 重验车道出口（fix-robustness-edge-cases
+                        # 孤儿信号根因）：无驱动 testing 的三条恢复车道
+                        # （event_bus._recover_testing / admin_monitor 孤儿复位 /
+                        # env 阻塞复位直通道）都按重验语义入队 verifier，而 spec
+                        # 已在 testing——旧守卫 status != "implemented" 让条目永久
+                        # 滞留队列（无日志、无派发），testing 只能等 stuck 阈值兜底。
+                        # 派发处 transition(testing) 为幂等自迁移，语义不变。
+                        continue
+                    if self._pm._dispatch_backoffed(spec):
+                        continue
+                    # add-spec-scheduling-controls D2：start_after 未到期静默跳过
+                    # （不写 error 不翻状态，对齐退避门控的防自触发设计）；到期后由
+                    # 60s 定时唤起 / full_scan 兜底恢复调度。
+                    if start_after_pending(spec):
+                        self._pm.logger.debug(
+                            "pm_engine",
+                            f"start_after 未到期，跳过 {atype} 派发 '{sname}'（定时拾取）",
+                        )
+                        continue
+                    # cli-retry-backoff 2.2：秒挂冷却期内跳过 implementer/fast-track/
+                    # repair 派发（不耗预算、不起进程），并排程到期自动恢复。
+                    if atype in (
+                        "implementer",
+                        "fast-track",
+                        "repair",
+                    ) and self._pm._instant_fail_cooled(sname):
+                        self._pm.logger.debug(
+                            "pm_engine",
+                            f"秒挂冷却中，跳过 {atype} 派发 '{sname}'",
+                        )
+                        self._schedule_instant_fail_recovery(sname, lock_held=True)
+                        continue
+                    if best_valid_prio is None or eff < best_valid_prio:
+                        best_valid_prio = eff
+                if best_valid_prio is None:
+                    return  # 无就绪条目
+
+                # 确定当前应派发的目标档位（宽松优先级）：
+                # 任务 X 可派发当且仅当没有比 X 更重要的活动任务
+                # （即 min(active) >= X；有 P6 在跑时 P5 可并发、P7 不行）。
+                # 无活动任务时派发就绪条目中最高优先级档。
+                if self._active_priorities:
+                    min_active = min(self._active_priorities)
+                    if best_valid_prio > min_active:
+                        # 队列中最优就绪任务比活动任务更低优先（数值更大）：
+                        # 被更高优先的活动任务挡住，本轮不派发
+                        return
+                target_prio = best_valid_prio
+
+                # 从队列头部开始找第一个 effective == target 且状态合法的条目。
+                # 队首即同档最老条目（enqueued_at 单调不减）：同级 FCFS 不被老化扰动。
+                dispatch_idx = None
+                for i, entry in enumerate(self._run_queue):
+                    prio, sname, atype, enqueued_at = entry
+                    if (sname, atype) in suppressed:
+                        continue
+                    if self._pm._effective_priority(prio, enqueued_at, now) != target_prio:
+                        continue
+                    spec = self._pm.state_machine.read_one(sname)
+                    if not spec:
+                        continue
+                    status = spec.get("status")
+                    if atype == "implementer" and status not in ("ready", "implementing"):
+                        # implementing 允许派发 = 原地打回的修复重派（热修 2026-08-29）：
+                        # 打回处置 _enqueue 时状态为 implementing，旧条件 status != "ready"
+                        # 导致修复条目被永久静默跳过、链路停摆。入队点均在 run 终止后
+                        # （打回处理器/零变更重试）且 _enqueue 按 (spec,type) 去重，无双派。
+                        continue
+                    if atype == "fast-track" and status not in ("ready", "implementing"):
+                        # fast-track：ready 正常派发；implementing 允许 = 失败打回后的修复重派
+                        # （入队点均在 run 终止后，与 implementer 同语义，无双派）。
+                        continue
+                    if atype == "verifier" and status not in ("implemented", "testing"):
+                        # testing 允许派发 = 重验车道出口（fix-robustness-edge-cases
+                        # 孤儿信号根因）：无驱动 testing 的三条恢复车道
+                        # （event_bus._recover_testing / admin_monitor 孤儿复位 /
+                        # env 阻塞复位直通道）都按重验语义入队 verifier，而 spec
+                        # 已在 testing——旧守卫 status != "implemented" 让条目永久
+                        # 滞留队列（无日志、无派发），testing 只能等 stuck 阈值兜底。
+                        # 派发处 transition(testing) 为幂等自迁移，语义不变。
+                        continue
+                    if self._pm._dispatch_backoffed(spec):
+                        continue
+                    # add-spec-scheduling-controls D2：start_after 未到期静默跳过
+                    # （不写 error 不翻状态，对齐退避门控的防自触发设计）；到期后由
+                    # 60s 定时唤起 / full_scan 兜底恢复调度。
+                    if start_after_pending(spec):
+                        self._pm.logger.debug(
+                            "pm_engine",
+                            f"start_after 未到期，跳过 {atype} 派发 '{sname}'（定时拾取）",
+                        )
+                        continue
+                    # cli-retry-backoff 2.2：秒挂冷却期内跳过派发（与 best_valid_prio
+                    # 扫描同判定，保证队列继续扫描后续条目不被冷却 spec 阻塞）。
+                    if atype in (
+                        "implementer",
+                        "fast-track",
+                        "repair",
+                    ) and self._pm._instant_fail_cooled(sname):
+                        self._schedule_instant_fail_recovery(sname, lock_held=True)
+                        continue
+                    dispatch_idx = i
+                    break
+
+                if dispatch_idx is None:
+                    # 目标档位无就绪条目（可能有但状态不合法），本轮不派发
+                    return
+
+                entry_to_dispatch = self._run_queue.pop(dispatch_idx)
+                self._active_runs += 1
+                # 活动追踪记 base 原值：活动任务不老化
+                # （spec Scenario: 持久运行的 P4 不会被降级，min_active 语义不变）。
+                base_prio = entry_to_dispatch[0]
+                self._active_priority_counts[base_prio] = (
+                    self._active_priority_counts.get(base_prio, 0) + 1
+                )
+                self._active_priorities.add(base_prio)
+                active_count = self._active_runs
+
+            priority, spec_name, agent_type, my_enqueued_at = entry_to_dispatch
+
+            # ── 守卫三：派发互斥（fix-repair-lane-dedup / design 守卫三，legacy）──
+            # 仅存量 fix-* SPEC 可达（非 fix 父 SPEC 现已走原地打回，不进入此分支）。
+            # fix spec 实现器派发前检查同根兄弟是否存在活跃修复活动；
+            # 存在则回滚 entry 到队列、跳过本轮派发（先到先得，后到抑制）。
+            # 被抑制条目记入 suppressed 后继续扫描后队：抑制自己 ≠ 阻塞他人。
+            if agent_type == "implementer" and self._pm._is_fix_spec(spec_name):
+                carrier = self._pm._sibling_repair_active(spec_name, my_enqueued_at=my_enqueued_at)
+                if carrier:
+                    # 回滚：把已 pop 的 entry 放回队列
+                    with self._queue_lock:
+                        self._run_queue.insert(0, entry_to_dispatch)
+                        self._active_runs -= 1
+                        cnt = self._active_priority_counts.get(base_prio, 0) - 1
+                        if cnt <= 0:
+                            self._active_priority_counts.pop(base_prio, None)
+                            self._active_priorities.discard(base_prio)
+                        else:
+                            self._active_priority_counts[base_prio] = cnt
+                    self._pm.logger.info(
+                        "pm_engine",
+                        f"守卫三：'{spec_name}' 同根兄弟 '{carrier}' 存在活跃修复"
+                        f"——跳过本轮派发，保持 ready",
+                    )
+                    suppressed.add((spec_name, agent_type))
+                    continue
+
+            # Update state to in-progress
+            if agent_type == "implementer":
+                # add-fail-counter-budget D2：派发前预算闸门。
+                # 已启动（_run_agent_worker 内已自增计数）的 run 不受此处影响，
+                # 仍会跑完 merge；本闸门只在「即将开启新一轮」时校验，避免无限重派。
+                # 闸门触发 → 不派发、状态置 blocked + 人工裁决告警，并回滚队列占用。
+                if self._pm._check_impl_budget_exhausted(spec_name):
+                    with self._queue_lock:
+                        self._run_queue.insert(0, entry_to_dispatch)
+                        self._active_runs -= 1
+                        cnt = self._active_priority_counts.get(base_prio, 0) - 1
+                        if cnt <= 0:
+                            self._active_priority_counts.pop(base_prio, None)
+                        else:
+                            self._active_priority_counts[base_prio] = cnt
+                        self._active_priorities.discard(base_prio)
+                    continue
+                # add-spec-content-integrity-gate：派发前内容完整性闸门。
+                # 空 spec 目录（无 proposal/design/tasks/specs）冻结派发，
+                # 不烧预算；与预算闸门同层并列，复用回滚范式。
+                if self._pm._check_spec_content_missing(spec_name):
+                    with self._queue_lock:
+                        self._run_queue.insert(0, entry_to_dispatch)
+                        self._active_runs -= 1
+                        cnt = self._active_priority_counts.get(base_prio, 0) - 1
+                        if cnt <= 0:
+                            self._active_priority_counts.pop(base_prio, None)
+                        else:
+                            self._active_priority_counts[base_prio] = cnt
+                        self._active_priorities.discard(base_prio)
+                    continue
+                # 修复重派时状态已是 implementing（同态转换非法），跳过 transition
+                cur_status = (self._pm.state_machine.read_one(spec_name) or {}).get("status")
+                if cur_status != "implementing":
+                    # fix-observability-gaps 2.2：自动派发来源（run 尚未派发，
+                    # trigger_run_id 暂无，派发完成后由收口路径写 run context）
+                    self._pm.state_machine.transition(
+                        spec_name, "implementing",
+                        trigger_run_id=None, agent_type="implementer", channel="auto",
+                    )
+            elif agent_type == "fast-track":
+                # fast-track：与 implementer 同语义，派发即进入 implementing；
+                # 失败打回重派时状态已是 implementing，跳过同态转换。
+                if self._pm._check_impl_budget_exhausted(spec_name):
+                    with self._queue_lock:
+                        self._run_queue.insert(0, entry_to_dispatch)
+                        self._active_runs -= 1
+                        cnt = self._active_priority_counts.get(base_prio, 0) - 1
+                        if cnt <= 0:
+                            self._active_priority_counts.pop(base_prio, None)
+                        else:
+                            self._active_priority_counts[base_prio] = cnt
+                        self._active_priorities.discard(base_prio)
+                    continue
+                # add-spec-content-integrity-gate：内容完整性闸门（fast-track 分支，
+                # 与 implementer 同层并列；空 spec 冻结派发，不烧预算）。
+                if self._pm._check_spec_content_missing(spec_name):
+                    with self._queue_lock:
+                        self._run_queue.insert(0, entry_to_dispatch)
+                        self._active_runs -= 1
+                        cnt = self._active_priority_counts.get(base_prio, 0) - 1
+                        if cnt <= 0:
+                            self._active_priority_counts.pop(base_prio, None)
+                        else:
+                            self._active_priority_counts[base_prio] = cnt
+                        self._active_priorities.discard(base_prio)
+                    continue
+                cur_status = (self._pm.state_machine.read_one(spec_name) or {}).get("status")
+                if cur_status != "implementing":
+                    # fix-observability-gaps 2.2：fast-track 自动派发来源
+                    self._pm.state_machine.transition(
+                        spec_name, "implementing",
+                        trigger_run_id=None, agent_type="fast-track", channel="auto",
+                    )
+            elif agent_type == "verifier":
+                # fix-observability-gaps 2.2：verifier 自动派发来源
+                self._pm.state_machine.transition(
+                    spec_name, "testing",
+                    trigger_run_id=None, agent_type="verifier", channel="auto",
+                )
+
+            self._pm.logger.info(
+                "pm_engine",
+                f"Dispatching {agent_type} for '{spec_name}' (P{priority})",
+                {"active_runs": active_count},
+            )
+
+            t = threading.Thread(
+                target=self._pm._run_agent_worker,
+                args=(spec_name, agent_type, priority),
+                daemon=True,
+                name=f"fenix-{agent_type}-{spec_name}",
+            )
+            t.start()
+
+    def _run_agent_worker(self, spec_name: str, agent_type: str, priority: int):
+        """Worker thread body: run the agent and handle result.
+
+        Always decrements _active_runs and re-triggers queue processing
+        in finally, so slots are released even on exceptions.
+        priority 参数用于 finally 中从 _active_priorities 移除对应档位。
+        """
+        try:
+            if agent_type == "fast-track":
+                # ── fast-track 单 run 全包：实现 → 场景设计 → 验证 → 判定 ──
+                # 预算与 worktree 语义与 implementer 一致（impl- run_id/分支前缀），
+                # 结果处理走 _run_fast_track_worker（守卫 + 硬校验 + 状态推进）。
+                # ── 派发前规模预检（add-fast-track-scale-precheck）──────────
+                # 大任务面 spec（tasks.md 任务条数/交付物面超阈）不再按统一档
+                # 派发：full 档降级完整模式（implementer 车道），higher 档写入
+                # 规模档位标记供 runner 超时监督提高 extension 上限。预检失败
+                # 保守低档放行（design D2，不阻断派发）。总开关
+                # agents.scale_precheck.enabled 关闭时预检返回 "disabled"，
+                # 两档动作均不执行（回到预检上线前行为）。
+                scale, tier = self._fast_track_scale_precheck(spec_name)
+                if tier == "full":
+                    # 降级完整模式：改写 .spec.yaml mode → full + 状态回滚 ready
+                    # + 重新入队 implementer；本次不启动 fast-track run、不递增预算。
+                    self._downgrade_fast_track_scale(spec_name, scale)
+                    return
+                # higher 档写标记；其余档位仅在**存量标记存在**时清除——否则
+                # 「改版后重算降档」或「开关关闭」时旧 higher 标记会继续抬高
+                # extension 上限（liveness 只按标记值判定，不重算规模）。无标记
+                # 的常态路径不写键，避免 STATE.md 堆积无意义的 null 行。
+                try:
+                    _prev_tier = (
+                        self._pm.state_machine.read_one(spec_name) or {}
+                    ).get("_fast_track_scale_tier")
+                    if tier == "higher":
+                        self._pm.state_machine.update_spec(
+                            spec_name, {"_fast_track_scale_tier": "higher"}
+                        )
+                    elif _prev_tier:
+                        self._pm.state_machine.update_spec(
+                            spec_name, {"_fast_track_scale_tier": None}
+                        )
+                except Exception as e:
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"fast-track 规模档位标记写入失败 '{spec_name}'（非阻塞）: {e}",
+                    )
+                self._pm._increment_impl_run_budget_used(spec_name)
+                # ── 新轮次派发前清除旧锚点（fix-recovery-branch-anchor D1）──
+                # fast-track 车道同 implementer 语义：spec 可能经 repair lane
+                # （_run_repair_worker 为 fast-track spec 同样写 branch/标记）
+                # 或 fallback 留下陈旧 branch/implementer_run，新一轮在飞期间
+                # 不得被恢复链当作可保留锚点。
+                try:
+                    _ft_entry = self._pm.state_machine.read_one(spec_name) or {}
+                    if (
+                        _ft_entry.get("branch")
+                        or _ft_entry.get("implementer_run")
+                        or _ft_entry.get("_repair_awaiting_remerge")
+                    ):
+                        self._pm.state_machine.update_spec(
+                            spec_name,
+                            {
+                                "branch": None,
+                                "implementer_run": None,
+                                "_repair_awaiting_remerge": False,
+                            },
+                        )
+                except Exception as e:
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"fast-track 新轮次清除旧锚点失败 '{spec_name}'" f"（非阻塞）: {e}",
+                    )
+                self._run_fast_track_worker(spec_name)
+
+            elif agent_type == "implementer":
+                # add-fail-counter-budget D2：实现 run 启动即递增预算计数并持久化
+                # （跨重启有效）。已启动的 run 即使随后触发预算闸门也会照常跑完 merge
+                # （沉没成本不浪费），闸门只阻止「新一轮」自动重派。
+                self._pm._increment_impl_run_budget_used(spec_name)
+                wm = self._pm.agent_runner.worktree_manager
+                # 派发前把 spec 目录提交进主树（fix-merge-back-deadlock 根因修复）：
+                # 消除「spec 在主树 untracked + 分支 commit 同名路径」导致的 merge-back 冲突。
+                wm.ensure_spec_committed(spec_name)
+                # ── 中断恢复保留续做（interrupt-recovery-preserve D4/D5）──
+                # recovery 保留的 spec（_recovery_resume 标记 + 保留分支）：在既有
+                # 分支的 worktree 内 resume 续做（claude --resume 断点续跑），
+                # 而非从零新建分支。载体三态经 wm.resolve_resume_site
+                # （is_available 单源）解析：在场原地 / 缺失重建 / 不可用降级
+                # 为普通全新派发。标记一次性消费：派发后清空，防后续 full_scan
+                # 反复尝试续做。
+                resume_wt = None
+                dispatch_entry = self._pm.state_machine.read_one(spec_name) or {}
+                resume_branch = (
+                    dispatch_entry.get("branch") if dispatch_entry.get("_recovery_resume") else None
+                )
+                if resume_branch:
+                    site = wm.resolve_resume_site(spec_name, resume_branch)
+                    if site[0] is not None:
+                        resume_wt = site[0]
+                    else:
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"Resume site unavailable for '{spec_name}' "
+                            f"(branch '{resume_branch}') — degrade to fresh dispatch",
+                        )
+                if dispatch_entry.get("_recovery_resume"):
+                    self._pm.state_machine.update_spec(spec_name, {"_recovery_resume": None})
+                if resume_wt is not None:
+                    self._pm.logger.info(
+                        "pm_engine",
+                        f"Resume dispatch for '{spec_name}' on preserved branch "
+                        f"'{resume_branch}' (worktree {resume_wt})",
+                    )
+                    # 继承痕迹登记（prompt 注入恢复续做说明，interrupt-recovery-preserve 2.3）
+                    try:
+                        wm.mark_reused(spec_name, resume_wt, resume_branch or "")
+                    except Exception as e:
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"mark_reused for resume '{spec_name}' failed（非阻塞）: {e}",
+                        )
+                # ── 新轮次派发前清除上一轮锚点（fix-recovery-branch-anchor D1）──
+                # 非 _recovery_resume 续做的全新派发：旧的 branch/implementer_run
+                # 锚点来自上一轮已放弃的 run，若不清除，_recovery_preserve_spec
+                # 第一层（STATE.branch）会在下一轮在飞期间压过本轮载体，导致
+                # daemon 重启时保留并续做陈旧分支、整轮丢弃当前在飞成果。
+                if resume_wt is None:
+                    old_branch = dispatch_entry.get("branch")
+                    old_impl_run = dispatch_entry.get("implementer_run")
+                    if old_branch or old_impl_run:
+                        self._pm.state_machine.update_spec(
+                            spec_name, {"branch": None, "implementer_run": None}
+                        )
+                        self._pm.logger.info(
+                            "pm_engine",
+                            f"新轮次派发清除旧锚点 '{spec_name}': "
+                            f"branch={old_branch}, "
+                            f"implementer_run={old_impl_run}",
+                        )
+                    # 陈旧「待 re-merge」标记同步失效（fix-recovery-branch-anchor
+                    # D3）：上一轮失败链若曾写 _repair_awaiting_remerge，新一轮
+                    # 在飞期间重启不得对尚未完工的新分支执行 re-merge。
+                    if dispatch_entry.get("_repair_awaiting_remerge"):
+                        self._pm.state_machine.update_spec(
+                            spec_name, {"_repair_awaiting_remerge": False}
+                        )
+                    # 全新派发清零 task-gate 拒绝计数（改进①）：只卡第一次的计数
+                    # 只应反映「同一轮被连续拒回」；全新 implementing 轮次（含
+                    # 上轮已降级放行后的再派发）从零开始，避免陈旧计数误降级。
+                    from core.state_machine import TASK_GATE_REJECTIONS_FIELD
+                    if int(dispatch_entry.get(TASK_GATE_REJECTIONS_FIELD, 0) or 0) > 0:
+                        self._pm.state_machine.update_spec(
+                            spec_name, {TASK_GATE_REJECTIONS_FIELD: 0}
+                        )
+                # 主树 stash 已收拢进 merge_back_from_branch 的 guard 原子段
+                # （fix-autostash-orphans）：锁内 stash→merge→pop，不再依赖
+                # 派发前 stash + 成功路径 pop 的长窗口配对（曾致 7 次改动滞留 stash）。
+                result = self._pm.agent_runner.run_implementer(spec_name, pre_wt_path=resume_wt)
+                # Read .fenix-run-result.json (worktree first, project root fallback)
+                # to determine true status — file is more authoritative than
+                # process exit code for semantic success/error.
+                impl_result = self._pm._read_implementer_result(spec_name)
+                impl_status = None
+                impl_error = None
+                if impl_result:
+                    impl_status = impl_result.get("status")
+                    if impl_status == "error":
+                        impl_error = impl_result.get("error") or result.error
+                    elif impl_status == "partial":
+                        # fix-impl-tasks-completion-gate D6：partial 是「诚实申报未完成」
+                        # 的合法终态——is_success 为假、MUST NOT 进入 implemented。
+                        # 失败归因 MUST 非空且由 unfinished 清单与缺口 id 构成，MUST NOT
+                        # 沿用为 None 的 result.error（成功进程 error=None，沿用会产出
+                        # 「失败但无归因」的空壳处置，违背 admin 处置非空壳约定）。
+                        # 归因文案同时是重派 prompt 的缺口注入来源。
+                        impl_error = self._pm._partial_attribution(spec_name, impl_result, result)
+                    elif impl_status != "success":
+                        impl_error = result.error
+                is_success = result.success and (impl_status is None or impl_status == "success")
+                # ── 诚实退出收敛（unattainable，2026-09-16 改进② 补齐收敛路径）──
+                # 实现者以 partial 收工且**缺口全部 ⊆ unattainable 申报**时，不该
+                # 判失败重派：剩余任务客观上不可由 agent 完成（人工运维门控——需
+                # 用户亲手重启 daemon / 审批 / 外部资源），重派 N 轮只会重复同一
+                # 终局。修正前该豁免只接在 verified→done 门（engine._task_completion_
+                # blocker），partial 在收敛路径一律 is_success=False → 无限重派烧预算
+                # （2026-09-16 fix-dashboard-read-path-performance 实测：3 轮原地重试 +
+                # 多次全新重派，$4.4，spec 在 implementing 悬置 43 分钟直至 admin 唤起）。
+                # 部分未申报的缺口仍按失败处置（防 partial 洗白），走既有重试通道。
+                honest_exit_gap: list = []
+                if impl_status == "partial":
+                    honest_exit_gap = self._honest_exit_gap(self._pm, spec_name, impl_result)
+                if result.success and impl_status == "partial" and honest_exit_gap:
+                    # 诚实退出收敛：不按失败重派，转正常成功收口（后续通用
+                    # is_success 路径会写 impl-result 快照、过交付物/relint 门、
+                    # merge-back 并 enqueue verifier）。人工待办告警与
+                    # engine._task_completion_blocker 的诚实退出分支同文案，
+                    # 使 /fenix-approve 环节可见「哪些任务交给了人工」。
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"诚实退出收敛 '{spec_name}'：partial 缺口全部 ⊆ unattainable "
+                        f"申报 {honest_exit_gap} —— 不重派，按成功收口转验证",
+                    )
+                    impl_error = None
+                    is_success = True
+                    try:
+                        self._pm._note_unattainable_todos(
+                            spec_name, impl_result, honest_exit_gap)
+                    except Exception as e:  # noqa: BLE001 — 非阻塞
+                        self._pm.logger.debug(
+                            "pm_engine",
+                            f"unattainable 待办告警写入失败（不阻断收敛）: {e}",
+                        )
+                final_error = impl_error or result.error
+
+                # ── 结构化诊断写入（fix-run-hang-amplification 2.3）──
+                # run 终结时把终态类型 + 归因 + 已定性结论 + 已提交进度写入
+                # spec 级 _impl_diagnosis 字段，供重派 attempt 继承（不再从零
+                # 重复探测同一阻塞）。任何异常不阻塞主流程（诊断是附加物）。
+                try:
+                    self._record_impl_diagnosis(spec_name, result, impl_result, final_error)
+                except Exception as e:
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"记录实现诊断失败 '{spec_name}'（非阻塞）: {e}",
+                    )
+
+                # ── 零变更成功哨（2026-08-28）─────────────────────────
+                # 实现器宣称成功但分支零新提交且全程零 Edit/Write 工具调用
+                # ＝ 疑似输出截断/空转（CLI 把截断包装成 result/success + exit 0，
+                # is_error 三闸失明）。不合并、不推进状态，按失败重派；
+                # 连续 3 次零变更 → blocked 交人工。
+                if is_success and self._pm._implementer_zero_change(spec_name, result):
+                    # ── 验证确认型 no-op 放行（2026-09-11 add-web-ui 事故原地修）──
+                    # admin 把 env-blocked spec 复位 ready 而实现分支已 merge 进
+                    # main 时，agent 验证确认「全部绿、无需改动」报成功是唯一正确
+                    # 行为，被本哨误判空转 → 重派第二轮重蹈覆辙（$1.42 + 重建
+                    # $1.30）。哨兵触发后先跑交付物守卫：交付物齐备 = 合法确认
+                    # 完成，走正常成功收口（implemented → verifier）；
+                    # 缺件仍按空转重派。守卫方法内自带无声明 spec 跳过。
+                    # （分支零提交时 rev-list main..branch == 0 ⟺ 分支已并入 main，
+                    # 无需另查 merge-base。）
+                    if not self._pm._deliverable_gate_missing(spec_name, result):
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"零变更哨·确认型 no-op '{spec_name}' — 交付物齐备且分支"
+                            f"零提交（已并入 main），走成功收口（不重派）"
+                            f"run={result.run_id}",
+                        )
+                        # fix-observability-gaps 2.2：零变更哨成功收口，run context 可标注
+                        self._pm.state_machine.transition(
+                            spec_name, "implemented",
+                            trigger_run_id=result.run_id,
+                            agent_type="implementer", channel="auto",
+                        )
+                        self._pm.state_machine.update_spec(
+                            spec_name,
+                            {
+                                "implementer_run": result.run_id,
+                                "error": None,
+                                "_zero_change_attempts": 0,
+                            },
+                        )
+                        self._enqueue_front(spec_name, "verifier")
+                        return
+                    attempts = 0
+                    spec_entry = self._pm.state_machine.read_one(spec_name) or {}
+                    try:
+                        attempts = int(spec_entry.get("_zero_change_attempts", 0) or 0) + 1
+                    except (TypeError, ValueError):
+                        attempts = 1
+                    # fix-zero-change-blindspot：区分「真空转」与「有工作未提交」。
+                    # cleanup 前取证的 worktree_dirty 非空 = agent 确实动过文件
+                    # （如用 Bash 写文件而非 Edit/Write），只是没 commit——不是空转，
+                    # 重派文案须指导 commit，避免把真实工作当空转误报。
+                    dirty = list(getattr(result, "worktree_dirty", None) or [])
+                    if dirty:
+                        err_note = (
+                            f"实现器报成功但分支零提交，worktree 有 "
+                            f"{len(dirty)} 个未提交修改（清单见日志）——不是空转；"
+                            f"重派时务必用 git commit 提交改动后再报完成"
+                        )
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"零变更哨·未提交工作 '{spec_name}': {dirty[:10]}",
+                        )
+                    else:
+                        err_note = (
+                            "实现器零变更报成功（疑似输出截断/空转）— " "不合并不推进，重派实现"
+                        )
+                    updates: dict = {
+                        "status": "ready",
+                        "error": err_note + f"（第 {attempts} 次）",
+                        "_zero_change_attempts": attempts,
+                    }
+                    if attempts >= 3:
+                        updates["status"] = "blocked"
+                        updates["tester_run"] = None
+                        updates["error"] = (
+                            "实现器连续 3 次零变更报成功 — 已 blocked，"
+                            "需人工检查任务书/上下文/网关稳定性"
+                        )
+                    self._pm.state_machine.update_spec(spec_name, updates)
+                    self._pm.logger.error(
+                        "pm_engine",
+                        f"零变更成功哨触发 '{spec_name}'（第 {attempts} 次）— "
+                        f"run={result.run_id}",
+                    )
+                    if attempts < 3:
+                        self._enqueue_front(spec_name, "implementer")
+                    return
+
+                # ── 交付物存在性守卫（add-implementer-deliverable-gate，D1/D3）──
+                # 实现器宣称成功，但 SPEC 声明的核心交付物可能未真正落地
+                # （v2-config-page 事故：agent 报成功但 config.json 未创建，0/11 验证全败）。
+                # 在 merge 之前做纯文件系统存在性校验（校验基准为实现分支提交，
+                # worktree 已在 run_implementer 内清理，仅分支留存），缺件则不合并、
+                # 不推进状态，按失败重派并带精准缺件清单；连续 3 次封顶 → blocked 升级告警。
+                if is_success:
+                    missing = self._pm._deliverable_gate_missing(spec_name, result)
+                    if missing:
+                        # ── dispute 裁决通道（add-project-description 事故治理）──
+                        # 实现 run 对缺件提出 deliverable-dispute 异议时不自动重派
+                        # （误判场景重派必然同因失败，纯烧钱），blocked 交人工裁决。
+                        # 质疑不得自动放行（防 agent 绕守卫），必须第三方裁决。
+                        disputed = self._pm._disputed_deliverables(impl_result, missing)
+                        if disputed:
+                            disp_q = "、".join(disputed)
+                            updates: dict = {
+                                "status": "blocked",
+                                "tester_run": None,
+                                "error": (
+                                    f"交付物守卫缺件 [{disp_q}]，但实现 run 对其提出 "
+                                    f"deliverable-dispute 异议（依据见该 run 的 "
+                                    f".fenix-run-result.json findings 与旧分支成果）"
+                                    f"— 已 blocked 待人工裁决，不自动重派"
+                                ),
+                            }
+                            self._pm.state_machine.update_spec(spec_name, updates)
+                            self._pm.logger.error(
+                                "pm_engine",
+                                f"交付物守卫缺件异议 '{spec_name}'（{disp_q}）— "
+                                f"blocked 待裁决，不重派 run={result.run_id}",
+                            )
+                            return
+                        # ── 缺件 LLM 终审与裁决机械执行（add-deliverable-declaration-triage）──
+                        # 判缺件后不再直接打回/重派：先派 dispute-judge- run 语义终审
+                        # （机械规则拦不住的声明 vs 现实矛盾由 LLM 裁决）。终审期间
+                        # spec 置 blocked（error 含 run id 与「LLM 终审进行中」）阻断
+                        # 轮询重派竞态（D5）。裁决机械执行（D4）：
+                        #   typo → tasks.md 声明 path 修正 → 重跑守卫对账（4.4 防洗白）
+                        #            → 通过则放行 merge；
+                        #   reference → 声明软化（转软校验）；
+                        #   missing → 既有打回/重派路径（带精准缺件清单）；
+                        #   unclear → 既有 deliverable-dispute blocked 人工裁决话术。
+                        adjudication = self._pm._adjudicate_deliverable_missing(
+                            spec_name, result, impl_result, missing
+                        )
+                        if adjudication.get("action") != "proceed":
+                            return
+
+                # ── tasks.md 收口复检门禁（add-tasksmd-relint-gate）──────────────
+                # 2026-09-11 add-impl-terminal-nocommit-gate 事故：implementer 用 sed
+                # 勾选 tasks.md 把任务行写成 `^- [x] 1.1 …`，分组完好任务行全灭，晋升
+                # lint（立项期跑一次）穿透、收口期零校验 → dashboard 任务清单空白。
+                # 此处为 merge 前事后复检：以实现分支 HEAD 的 tasks.md 为基准（merge 前
+                # 主树版本 = 立项旧版本，读分支才反映中途编辑），违规 → 不合并不推进，
+                # 走失败重派 + error 写违规明细与修正处方。读取失败/异常 → fail-open。
+                if is_success:
+                    try:
+                        relint = self._pm._tasks_md_relint_from_branch(
+                            spec_name, getattr(result, "branch", None)
+                        )
+                    except Exception as e:
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"tasks.md relint 执行异常（fail-open）'{spec_name}': {e}",
+                        )
+                        relint = []
+                    if relint:
+                        self._redispatch_tasks_relint(
+                            spec_name, relint, run_id=getattr(result, "run_id", "") or ""
+                        )
+                        return
+
+                if is_success:
+                    # ── impl-result per-spec 快照（fix-verified-gate-evidence-race D1）──
+                    # implementer 成功即把已解析的结果 dict 原样原子快照到
+                    # .fenix/verify-progress/<spec>/impl-result.json，供 verified→done
+                    # 门禁 _task_completion_blocker 读取——门禁证据不再依赖跨 spec
+                    # 共享文件 .fenix/.fenix-run-result.json（2026-09-07 事故：共享文件
+                    # 被其它 spec 成功覆盖 → 门禁「无法证伪即放行」静默放行带未勾任务的
+                    # spec）。快照写失败仅 WARNING 不阻塞（fail-open，门禁 fail-closed
+                    # 兜底）；重派后新成功原子覆盖旧快照（幂等）。
+                    # fast-track 车道同语义，写点在 _run_fast_track_flow 的 merge
+                    # 成功收口处（2026-09-10 add-planready-artifact-gate 实证 fast-track
+                    # 滞留 verified 同样存在跨 spec 覆盖窗口）。
+                    if impl_result is not None:
+                        try:
+                            self._pm._write_impl_result_snapshot(spec_name, impl_result)
+                        except Exception as e:
+                            self._pm.logger.warning(
+                                "pm_engine",
+                                f"impl-result 快照写入失败 '{spec_name}'（非阻塞）: {e}",
+                            )
+                        # 消费后清理共享结果文件（D4，fast-track 车道同语义写点在
+                        # _run_fast_track_flow）：本次采信消费 + 快照落盘之后删除
+                        # 主树共享文件，仅当 stamp 严格匹配本 spec 时删除。删除失败
+                        # 仅 WARNING 不阻塞（fail-open，残留由 stamp 严格校验兜底）。
+                        self._pm._cleanup_shared_result_file(spec_name)
+                    # 计数对账（fix-budget-counting-semantics D3）：守卫放行/merge
+                    # 收工后回读 used 与正常收工 run 数比对，偏差记 WARNING。
+                    self._pm._reconcile_impl_budget(spec_name)
+                    # ── 锚点提前落盘（fix-recovery-branch-anchor D1）─────────
+                    # implementer run 终态成功后、merge 预演与 merge-back 之前，
+                    # 把 branch/implementer_run 写入 STATE——使恢复链在「已实现未合并」
+                    # 窗口内可命中本轮分支，避免 daemon 重启后清空重写。
+                    # 写入点定序在全部 merge 前置闸门之后（零变更哨/交付物守卫/
+                    # tasks.md 收口复检），确保只有真正通过所有闸门的成功 run 才
+                    # 留下锚点；早退路径（status: ready/blocked）进入下一轮全新
+                    # 派发，不残留本轮锚点。
+                    # ── 锚点清除见 _run_agent_worker 入口（tasks 1.5）──────
+                    if result.branch:
+                        try:
+                            self._pm.state_machine.update_spec(
+                                spec_name,
+                                {
+                                    "branch": result.branch,
+                                    "implementer_run": result.run_id,
+                                },
+                            )
+                            self._pm.logger.info(
+                                "pm_engine",
+                                f"锚点已提前落盘 '{spec_name}': "
+                                f"branch={result.branch}, "
+                                f"implementer_run={result.run_id}",
+                            )
+                        except Exception as e:
+                            self._pm.logger.warning(
+                                "pm_engine",
+                                f"锚点写入失败 '{spec_name}'（非阻塞）: {e}",
+                            )
+                    # Merge worktree branch back into main tree before advancing state.
+                    # worktree 已被 agent_runner 清理，但分支仍保留（success 路径不删分支），
+                    # 所以用分支名直接 merge。
+                    merge_ok = True
+                    merge_error = ""
+                    merge_info = None
+                    conflict_files = []
+                    if result.branch:
+                        merge_info = wm.merge_back_from_branch(result.branch)
+                        merge_ok, merge_error = merge_info  # 兼容 (bool, str) 解包
+                        # guard 段内 pop 冲突自愈丢弃的用户改动清单（admin 告警用）
+                        conflict_files = list(wm.last_stash_pop_conflicts)
+
+                    if not merge_ok:
+                        # ── 预演语义冲突直通 repair（add-merge-tree-rehearsal D2）──
+                        # merge-tree 预演在主树零污染点检出语义冲突（rehearsed=True）：
+                        # 未发生真合并，熔断语义上「merge 失败」并不成立——不经
+                        # _merge_fp/_merge_streak 记账、不做 ready 降级，spec 保持
+                        # in-flight 直接派 repair agent 在实现分支内把 main 合入解决。
+                        # 轮次上限（_repair_round）超限时回退现行 fallback 重派兜底。
+                        if getattr(merge_info, "rehearsed", False):
+                            self._direct_rehearsed_to_repair(
+                                spec_name, merge_info, result.branch, merge_error
+                            )
+                            return
+                        # merge 失败：指纹熔断（fix-fenix-token-waste）。
+                        # 同一错误指纹连续失败 ≥ 阈值 → spec 进入 blocked 停止自动重试，
+                        # 避免「根因不消除 → 全量重跑 → 再败」的无限烧钱循环。
+                        spec_entry = self._pm.state_machine.read_one(spec_name)
+                        max_r = self._pm._get_config("agents.max_retries", 3)
+                        fp = self._pm._merge_fingerprint(merge_error)
+                        prev_fp = spec_entry.get("_merge_fp")
+                        try:
+                            prev_streak = int(spec_entry.get("_merge_streak", 0) or 0)
+                        except (TypeError, ValueError):
+                            prev_streak = 0
+                        streak = prev_streak + 1 if prev_fp == fp else 1
+                        final_error = f"Merge-back failed (fp={fp}): {merge_error}"
+
+                        # 状态回写保护（fix-startup-double-dispatch）：
+                        # merge-back 失败回写 ready 前，检查 spec 当前状态——若已在
+                        # testing/implemented 且存在活跃 tester run，不降级 ready，
+                        # 只记录冲突并待验证结束后统一处置（避免覆写在飞验证态）。
+                        current_status = (spec_entry or {}).get("status", "")
+                        active_tester = (spec_entry or {}).get("tester_run")
+                        if current_status in ("testing", "implemented") and active_tester:
+                            self._pm.logger.warning(
+                                "pm_engine",
+                                f"Merge-back failed for '{spec_name}' but spec is in "
+                                f"'{current_status}' with active tester run {active_tester} "
+                                f"— not downgrading to ready, conflict logged",
+                            )
+                            # 记录冲突但不降级状态，保持 testing/implemented
+                            self._pm.state_machine.update_spec(
+                                spec_name,
+                                {
+                                    "error": final_error,
+                                    "_merge_fp": fp,
+                                    "_merge_streak": streak,
+                                },
+                            )
+                            return
+
+                        breaker_threshold = self._pm._get_config(
+                            "agents.merge_breaker_threshold", 2
+                        )
+                        if streak >= breaker_threshold:
+                            # 熔断触发：blocked 后 repair 通道一并停止
+                            # （spec-merge-circuit-breaker：repair 不绕过熔断）。
+                            # fix-observability-gaps 2.2：merge 熔断 blocked（自动降级路径）
+                            self._pm.state_machine.transition(
+                                spec_name, "blocked",
+                                trigger_run_id=None, agent_type="implementer", channel="auto",
+                            )
+                            self._pm.state_machine.update_spec(
+                                spec_name,
+                                {
+                                    "error": final_error,
+                                    "_merge_fp": fp,
+                                    "_merge_streak": streak,
+                                    "_retry_count": 0,
+                                },
+                            )
+                            self._pm.logger.error(
+                                "pm_engine",
+                                f"Circuit breaker tripped for '{spec_name}' (fp={fp}) — spec blocked",
+                            )
+                        elif self._pm._should_enter_repair(
+                            spec_name, merge_info, streak, breaker_threshold
+                        ):
+                            # ── repair 通道（add-merge-back-repair-lane）──
+                            # 语义冲突失败且熔断未触发：派 repair agent 原地修复
+                            # （把 main 合入分支解决冲突），而非 abort 后全新重派。
+                            self._pm._dispatch_repair_lane(
+                                spec_name,
+                                merge_info,
+                                result.branch,
+                                fp=fp,
+                                streak=streak,
+                            )
+                        else:
+                            try:
+                                prev_retries = int(spec_entry.get("_retry_count", 0) or 0)
+                            except (TypeError, ValueError):
+                                prev_retries = 0
+                            retries = prev_retries + 1
+                            self._pm.state_machine.update_spec(
+                                spec_name,
+                                {
+                                    "status": "ready",
+                                    "error": final_error,
+                                    "_merge_fp": fp,
+                                    "_merge_streak": streak,
+                                    "_retry_count": retries,
+                                },
+                            )
+                            self._pm.logger.warning(
+                                "pm_engine",
+                                f"Retry {retries}/{max_r} for '{spec_name}' (merge-back failed)",
+                            )
+                    else:
+                        # stash 恢复已在 merge_back_from_branch 的 guard 段内完成
+                        # （fix-autostash-orphans），此处只推进状态。
+                        # fix-observability-gaps 2.2：implementer merge 成功收口
+                        self._pm.state_machine.transition(
+                            spec_name, "implemented",
+                            trigger_run_id=result.run_id,
+                            agent_type="implementer", channel="auto",
+                        )
+                        self._pm.state_machine.update_spec(
+                            spec_name,
+                            {
+                                "implementer_run": result.run_id,
+                                # 记录真实实现分支（带时间戳后缀）：push 时按此分支推送，
+                                # 否则回退 fenix/<spec> 不存在导致 auto-push 全部失败。
+                                "branch": getattr(result, "branch", None) or None,
+                                "error": None,
+                                "_retry_count": 0,
+                                "_merge_fp": None,
+                                "_merge_streak": 0,
+                                # 派发成功即清零锁冲突计数（improve-run-lifecycle-governance D5）
+                                **self._pm._clear_dispatch_conflict(spec_name),
+                            },
+                        )
+                        # pop 冲突自愈后：被丢弃的 stash 改动文件清单写入 error 字段，
+                        # 触发 admin 告警（stash 条目保留、可 git stash show 找回，
+                        # 不阻塞 merge-back 与状态推进）。须放在上面 update_spec(error=None)
+                        # 之后，避免被清空。见 fix-stashpop-deadlock。
+                        if conflict_files:
+                            self._pm._report_stash_pop_conflict(
+                                spec_name, conflict_files, merge_info=merge_info
+                            )
+                        # 写侧确定性回写：把已完成的任务勾选同步进主树 tasks.md
+                        # （add-task-progress-sync）。任何异常都不阻塞 run 终态主流程。
+                        try:
+                            self._pm._sync_task_progress(spec_name)
+                        except Exception as e:
+                            self._pm.logger.warning(
+                                "pm_engine",
+                                f"任务进度回写未成功 '{spec_name}'（非阻塞）: {e}",
+                            )
+                        # 恢复重派遗产回收（add-recovery-legacy-check 1.3）：后继 run 成功
+                        # merge 后，该 spec 的遗产已被收编/不再需要，consume_legacy 触发回收。
+                        # worktree 物理回收在 run_implementer 的 cleanup（成功路径保留分支、
+                        # 由 merge 前已清理）完成后由既有路径处理；此处仅清内存态遗产登记，
+                        # 使清扫器不再对其豁免。
+                        try:
+                            wm.consume_legacy(spec_name)
+                        except Exception as e:
+                            self._pm.logger.warning(
+                                "pm_engine",
+                                f"consume_legacy 失败 '{spec_name}'（非阻塞）: {e}",
+                            )
+                        # Immediately queue verifier at FRONT so it runs next
+                        self._enqueue_front(spec_name, "verifier")
+                        self._pm.logger.info(
+                            "pm_engine", f"Implement done, verifier queued for '{spec_name}'"
+                        )
+                else:
+                    # ── 人工取消 hold-state（add-run-cancel D4）──────
+                    # 被取消的 run（cancelled=True）：只更新 error 字段（含
+                    # 「run 被人工取消」与 reason），不翻转 status、不动
+                    # _retry_count/_merge_fp/_merge_streak、不入队重派。
+                    # 后续重排完全交给既有机制（stuck 检测/恢复扫描）或
+                    # 管理员人工操作（freeze 等）。
+                    if getattr(result, "cancelled", False):
+                        cancelled_err = (
+                            f"run 被人工取消：{final_error}" if final_error else "run 被人工取消"
+                        )
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"run 被人工取消 '{spec_name}' — hold-state，"
+                            f"不重试/不重派: {cancelled_err}",
+                        )
+                        self._pm.state_machine.update_spec(
+                            spec_name,
+                            {
+                                "error": cancelled_err,
+                                # 取消保持持久标记（fix-cancel-holdstate-recovery D1）：
+                                # 随 STATE.md 存活，重启恢复/监测链路据此跳过该 spec。
+                                "_cancelled_hold": True,
+                            },
+                        )
+                        return
+                    # ── 死亡 run 豁免（fix-budget-counting-semantics D1）──────
+                    # 无收工结果产出（.fenix-run-result.json 缺失）＝ run 异常
+                    # 死亡（进程消失/零输出/网关链路耗尽）：回退本次启动的计数。
+                    # 有收工结果的正常失败（impl_status=error）不豁免——既有
+                    # 「正常失败仍计数」语义不变。
+                    # fix-run-hang-amplification D2：run_reason 传入豁免判据，
+                    # 监督超时/被判停滞而杀（extension budget exhausted / stagnant）
+                    # 不豁免——确实消耗了整份预算。
+                    if impl_status is None:
+                        self._pm._exempt_dead_run_budget(
+                            spec_name,
+                            f"no run-result file (error={str(final_error)[:80]})",
+                            run_reason=str(final_error) if final_error else None,
+                        )
+                        # 审计日志：可审计豁免判定（spec、终态、原因、是否豁免）
+                        self._pm.logger.info(
+                            "pm_engine",
+                            f"budget_exempt_audit: spec={spec_name}, "
+                            f"impl_status=None, final_error={str(final_error)[:120]}, "
+                            f"run_reason={str(final_error)[:80] if final_error else ''}",
+                        )
+                    # ── provider 熔断拦截（fix-stashpop-deadlock：provider-fault-fuse） ──
+                    # 熔断期派发失败（error 含 "provider circuit open"）属「provider 故障」，
+                    # 不是 spec 自身问题：不计入 _retry_count / _merge_streak、不翻转状态机、
+                    # 不创建新 worktree/autostash（design D5）。spec 保持 implementing 原状，
+                    # 由冷却结束后的既有轮询/事件机制自然重排；持续过久由 admin_monitor
+                    # 按 stuck 规则唤起人工（充值/换模型）。
+                    if final_error and "provider circuit open" in final_error:
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"Provider circuit open for '{spec_name}' — holding state, "
+                            f"no retry/state flip: {final_error}",
+                        )
+                        # 写入 error 供 dashboard/admin 可见，但不翻转状态、不增 retry
+                        self._pm.state_machine.update_spec(
+                            spec_name,
+                            {
+                                "error": final_error,
+                            },
+                        )
+                    elif final_error and "[provider-transient]" in final_error:
+                        # fix-provider-transient-backoff（D4）：transient 终态——不走
+                        # _retry_count 递增/清零路径，改排程等待后重派（复用
+                        # instant_fail_recovery 定时器模式，`transient_redispatch_delay_seconds`
+                        # 缺省 600s）。死亡 run 预算豁免行为保持不变。
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"Provider transient for '{spec_name}' — scheduling "
+                            f"delayed redispatch, no retry/state flip: {final_error}",
+                        )
+                        # 写入 error 供 dashboard 可见，但不翻转状态
+                        self._pm.state_machine.update_spec(
+                            spec_name,
+                            {
+                                "error": final_error,
+                            },
+                        )
+                        self._schedule_transient_recovery(spec_name)
+                    else:
+                        # Retry or mark error
+                        spec_entry = self._pm.state_machine.read_one(spec_name)
+                        try:
+                            prev_retries = int(spec_entry.get("_retry_count", 0) or 0)
+                        except (TypeError, ValueError):
+                            prev_retries = 0
+                        retries = prev_retries + 1
+                        max_r = self._pm._get_config("agents.max_retries", 3)
+                        if retries >= max_r:
+                            self._pm.state_machine.update_spec(
+                                spec_name,
+                                {
+                                    "status": "ready",
+                                    "error": final_error,
+                                    "_retry_count": 0,
+                                },
+                            )
+                            self._pm.logger.error(
+                                "pm_engine",
+                                f"All retries exhausted for '{spec_name}'",
+                            )
+                            # 3.2 行动性同状态更新补发（fix-dispatch-orphan D1）：
+                            # 失败落回 ready 后可能无后续事件触达（daemon 重启间隙 /
+                            # 轮询节流），立即重新排队实现器，避免滞留为孤儿。
+                            self._enqueue(spec_name, "implementer")
+                        else:
+                            self._pm.state_machine.update_spec(
+                                spec_name,
+                                {
+                                    "status": "ready",
+                                    "error": final_error,
+                                    "_retry_count": retries,
+                                },
+                            )
+                            self._pm.logger.warning(
+                                "pm_engine",
+                                f"Retry {retries}/{max_r} for '{spec_name}'",
+                            )
+
+            elif agent_type == "verifier":
+                self._pm._run_verification_pipeline(spec_name)
+
+        except Exception as e:
+            self._pm.logger.error("pm_engine", f"Agent run exception: {e}")
+            # 派发/执行异常必须回滚滞留中间态的 spec（fix: 伪 bug 卡死根因）。
+            # 此前只记日志：日限额耗尽等异常使 run 从未启动，spec 却已滞留在
+            # implementing/testing，无 run 痕迹、永久卡死。
+            self._pm._rollback_failed_dispatch(spec_name, agent_type, e)
+        finally:
+            # Release the concurrency slot and try to dispatch more work
+            with self._queue_lock:
+                self._active_runs -= 1
+                # 宽松优先级：按优先级计数释放，仅当该档最后一个 run 结束才移除该档，
+                # 避免多档并发时把仍活动的档位误移除（fix：多档并发）
+                cnt = self._active_priority_counts.get(priority, 0) - 1
+                if cnt <= 0:
+                    self._active_priority_counts.pop(priority, None)
+                    self._active_priorities.discard(priority)
+                else:
+                    self._active_priority_counts[priority] = cnt
+            self._pm._process_queue()

@@ -264,9 +264,11 @@ class TestFullLaneRelintRedispatchCounting(unittest.TestCase):
         from core.pm_engine import PMEngine
         self.sm = StateMachine(self.pr / ".fenix" / "STATE.md", self.logger)
         self.engine = PMEngine(self.sm, MagicMock(), {}, self.pr, self.logger)
-        self.engine._enqueue_front = MagicMock()
         # _redispatch_tasks_relint is on Dispatcher; access via _dispatcher property
         self.dispatcher = self.engine._dispatcher
+        # 观察点：dispatcher 直接 self._enqueue_front（refactor-giant-classes 3.8
+        # 消解回引后不再经 engine 门面委托转发）
+        self.dispatcher._enqueue_front = MagicMock()
         self.sm.add_spec("demo", {"priority": 5})
         self.sm.transition("demo", "implementing")
 
@@ -279,7 +281,7 @@ class TestFullLaneRelintRedispatchCounting(unittest.TestCase):
         entry = self.sm.read_one("demo")
         self.assertEqual(int(entry["_retry_count"]), 1)
         self.assertEqual(entry["status"], "ready")
-        self.engine._enqueue_front.assert_called_once_with("demo", "implementer")
+        self.dispatcher._enqueue_front.assert_called_once_with("demo", "implementer")
 
     def test_third_relint_blocks(self):
         """连续 3 次 relint → blocked。"""

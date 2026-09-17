@@ -36,36 +36,99 @@ def _rel_line(path: Path, root: Path, lineno: int) -> str:
 
 
 def scan_server_routes(root: Path) -> list:
-    """扫描 server.py 的 API 路由分支，产出 (route, source, method) 条目。
+    """扫描 API 路由，产出 (route, source, method) 条目。
 
-    匹配 `_handle_api` / `_handle_api_post` 方法体内对 path 的比较分支：
-      - `if path == "/api/..."` → 精确路由
-      - `elif path.startswith("/api/...")` / `endswith` → 前缀/后缀路由
-      静态资源分支（`/`、`/index.html`、`/screenshots/`）一并收录（页面入口）。
+    路由已迁入 `core/dashboard/routes/` 子包（refactor-giant-classes D4），
+    分两级扫描（design D4 三条 MUST ① 同文件集合）：
+
+    1. **表驱动路由表**（主源）：`routes/base.py` 的 `_API_GET_ROUTES` /
+       `_API_POST_ROUTES` / `_API_DELETE_ROUTES` 三张表驱动路由表——条目
+       显式声明 (kind, pattern, handler)。按表归属方法（MUST ②：不再依赖
+       回看 60 行的 `_handle_api_post`/`_handle_api_delete` 启发式，方法
+       归属由表名显式决定）；pattern 为精确串/regex 原样收录（regex 条目
+       以 `^...$` 形态收 '^/api/xxx' 前缀，供 planner 参考）。
+    2. **文本扫描**（兼容 fallback）：对 `routes/*.py` 全文件集合与
+       `server.py` 扫描 `path == "/api/..."` 字面量（旧生成器伪造测试
+       消费 server.py 文本）。此级不再做方法归属启发式——旧测试仅断言
+       条目存在性与出处 `文件:行号`，不依赖 POST/DELETE 判定。
+
+    新生成的 map 条目数 ≥ 收敛前 → 本仓覆盖回归断言（task 4.6）校验
+    条目数不减少。
     """
-    server = root / "core" / "dashboard" / "server.py"
     entries: list = []
-    if not server.is_file():
-        return entries
-    lines = server.read_text(encoding="utf-8").splitlines()
-    # 匹配 `path == "..."` / `path.startswith("...")` / `path.endswith("...")`
-    api_pat = re.compile(r'path\s*(?:==|startswith|endswith)\s*\(?\s*"([^"]+)"\s*\)?')
-    for i, line in enumerate(lines, start=1):
-        stripped = line.strip()
-        m = api_pat.search(stripped)
-        if not m:
-            continue
-        route = m.group(1)
-        method = "GET"
-        # 粗略归属：_handle_api_post 段内 → POST；DELETE 段 → DELETE
-        if (
-            "_handle_api_post" in lines[max(0, i - 60) : i]
-            and "_handle_api_delete" not in lines[max(0, i - 60) : i]
+    # ── 1) 表驱动路由表（主源，方法显式归属） ────────────────────────────
+    routes_base = root / "core" / "dashboard" / "routes" / "base.py"
+    if routes_base.is_file():
+        text = routes_base.read_text(encoding="utf-8")
+        table_entries = []
+        for table_name, method in (
+            ("_API_GET_ROUTES", "GET"),
+            ("_API_POST_ROUTES", "POST"),
+            ("_API_DELETE_ROUTES", "DELETE"),
         ):
-            method = "POST"
-        elif "_handle_api_delete" in lines[max(0, i - 60) : i]:
-            method = "DELETE"
-        entries.append((route, _rel_line(server, root, i), method))
+            for line_idx, line in enumerate(
+                routes_base.read_text(encoding="utf-8").splitlines(), start=1
+            ):
+                m = re.search(
+                    r'\(\s*"(exact|regex|suffix)",\s*"([^"]+)"', line
+                )
+                if not m:
+                    continue
+                # 需要确定该行属于哪张表（以 "_API_GET_ROUTES = [" 等为界）
+                pass
+        # 简化：按表边界切分文本后逐表匹配
+        marker = re.compile(r"_API_(GET|POST|DELETE)_ROUTES = \[")
+        current_table = None
+        table_start_line = 0
+        for line_idx, line in enumerate(
+            routes_base.read_text(encoding="utf-8").splitlines(), start=1
+        ):
+            m = marker.search(line)
+            if m:
+                current_table = m.group(1)
+                table_start_line = line_idx
+                continue
+            if current_table is None:
+                continue
+            # 表结束：遇到下一个表或非缩进条目
+            if line.startswith("]") and current_table:
+                current_table = None
+                continue
+            if not line.strip().startswith("("):
+                continue
+            rm = re.search(r'\(\s*"(exact|regex|suffix)",\s*"([^"]+)"', line)
+            if not rm:
+                continue
+            pattern = rm.group(2)
+            if pattern.startswith("^/"):
+                # regex 条目：展示 pattern 的 /api/... 前缀
+                display = pattern[: pattern.find("$")] if "$" in pattern else pattern
+                display = display.lstrip("^")
+            else:
+                display = pattern
+            entries.append(
+                (display, _rel_line(routes_base, root, line_idx), current_table)
+            )
+    # ── 2) 文本扫描 fallback（routes/ 子包全文件 + server.py） ──────────
+    api_pat = re.compile(r'path\s*(?:==|startswith|endswith)\s*\(?\s*"([^"]+)"\s*\)?')
+    scan_files = []
+    routes_dir = root / "core" / "dashboard" / "routes"
+    if routes_dir.is_dir():
+        scan_files.extend(sorted(routes_dir.glob("*.py")))
+    server = root / "core" / "dashboard" / "server.py"
+    if server.is_file():
+        scan_files.append(server)
+    for f in scan_files:
+        lines = f.read_text(encoding="utf-8").splitlines()
+        for i, line in enumerate(lines, start=1):
+            stripped = line.strip()
+            m = api_pat.search(stripped)
+            if not m:
+                continue
+            route = m.group(1)
+            if not route.startswith("/"):
+                continue
+            entries.append((route, _rel_line(f, root, i), "GET"))
     return entries
 
 
@@ -131,9 +194,14 @@ def self_check(root: Path, parsed_count: int, warning_buf: list) -> None:
     """
     heuristic = 0
     subprocess_mod = __import__("subprocess")
+    # MUST ③：自检 grep 源与扫描源同文件集合（routes/ 子包 + server.py）。
+    grep_targets = [str(root / "core" / "dashboard" / "routes")]
+    server_py = root / "core" / "dashboard" / "server.py"
+    if server_py.is_file():
+        grep_targets.append(str(server_py))
     try:
         res = subprocess_mod.run(
-            ["grep", "-oEh", r'"/api/[^"]+"', str(root / "core" / "dashboard" / "server.py")],
+            ["grep", "-oEh", r'"/api/[^"]+"'] + grep_targets,
             capture_output=True,
             text=True,
             timeout=30,

@@ -300,13 +300,13 @@ class TestRepairDispatch(unittest.TestCase):
             success=True, duration_seconds=1.0, branch=branch,
         )
         self.engine.agent_runner.run_implementer = MagicMock(return_value=result)
-        self.engine._dispatch_repair_lane = MagicMock()
+        self.engine._dispatcher._dispatch_repair_lane = MagicMock()
         (self.root / ".fenix" / ".fenix-run-result.json").write_text(
             json.dumps({"status": "success", "spec": self.spec}), encoding="utf-8")
         self.sm.transition(self.spec, "implementing")
         self.engine._run_agent_worker(self.spec, "implementer", 5)
         # 自愈完成 → 不派发 repair
-        self.engine._dispatch_repair_lane.assert_not_called()
+        self.engine._dispatcher._dispatch_repair_lane.assert_not_called()
         entry = self.sm.read_one(self.spec)
         self.assertEqual(entry["status"], "implemented")
 
@@ -386,9 +386,9 @@ class TestRepairDispatch(unittest.TestCase):
             False, "Different conflict text", conflict_paths=["a.py"],
             has_semantic_conflict=True)
         # 拦截 dispatch，验证轮次决策
-        self.engine._dispatch_repair_lane = MagicMock()
+        self.engine._dispatcher._dispatch_repair_lane = MagicMock()
         self.engine._handle_remerge_failure(self.spec, remerge_info, "fenix/demo-123")
-        self.engine._dispatch_repair_lane.assert_called_once()
+        self.engine._dispatcher._dispatch_repair_lane.assert_called_once()
         self.assertEqual(self.sm.read_one(self.spec)["status"], "implementing")
 
     # ── Scenario: 分支消亡回退重派 ────────────────────────────
@@ -398,9 +398,9 @@ class TestRepairDispatch(unittest.TestCase):
         self.sm.transition(self.spec, "implementing")
         info = MergeConflictInfo(False, "x", conflict_paths=["shared.py"],
                                  has_semantic_conflict=True)
-        self.engine._fallback_after_repair = MagicMock()
+        self.engine._dispatcher._fallback_after_repair = MagicMock()
         self.engine._dispatch_repair_lane(self.spec, info, "fenix/gone-999")
-        self.engine._fallback_after_repair.assert_called_once()
+        self.engine._dispatcher._fallback_after_repair.assert_called_once()
 
 
 class TestRepairWorker(unittest.TestCase):
@@ -633,26 +633,26 @@ class TestFastTrackRepairLane(unittest.TestCase):
         """fast-track spec 的 repair fallback → 回 fast-track 通道（非 implementer）。"""
         (self.spec_dir / ".spec.yaml").write_text(
             "mode: fast-track\n", encoding="utf-8")
-        self.engine._enqueue_front = MagicMock()
+        self.engine._dispatcher._enqueue_front = MagicMock()
         self.engine._fallback_after_repair(self.spec, None, "repair agent failed")
-        self.engine._enqueue_front.assert_called_once_with(self.spec, "fast-track")
+        self.engine._dispatcher._enqueue_front.assert_called_once_with(self.spec, "fast-track")
 
     def test_full_spec_fallback_enqueues_implementer(self):
         """回归保护：full 模式 spec 的 fallback 仍回 implementer 通道。"""
-        self.engine._enqueue_front = MagicMock()
+        self.engine._dispatcher._enqueue_front = MagicMock()
         self.engine._fallback_after_repair(self.spec, None, "repair agent failed")
-        self.engine._enqueue_front.assert_called_once_with(self.spec, "implementer")
+        self.engine._dispatcher._enqueue_front.assert_called_once_with(self.spec, "implementer")
 
     def test_fast_track_fallback_retries_exhausted_blocks(self):
         """fallback 重试耗尽 → blocked（与 implementer 路径同语义）。"""
         (self.spec_dir / ".spec.yaml").write_text(
             "mode: fast-track\n", encoding="utf-8")
-        self.engine._enqueue_front = MagicMock()
+        self.engine._dispatcher._enqueue_front = MagicMock()
         self.sm.update_spec(self.spec, {"_retry_count": 2})  # max_retries 缺省 3
         self.engine._fallback_after_repair(self.spec, None, "repair agent failed")
         entry = self.sm.read_one(self.spec)
         self.assertEqual(entry["status"], "blocked")
-        self.engine._enqueue_front.assert_not_called()
+        self.engine._dispatcher._enqueue_front.assert_not_called()
 
 
 if __name__ == "__main__":

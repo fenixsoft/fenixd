@@ -1,0 +1,318 @@
+"""legacy_registry.py — G2 遗产/复用注册表（refactor-giant-classes D1/D5）。
+
+原为 WorktreeManager 的 11 个方法，原样搬移为 mixin（方法体零改动）。
+宿主实例 `self._legacy` 字典为遗产存储载体，`self._reused_worktrees` 为复用记录。
+"""
+
+from __future__ import annotations
+
+import shutil
+import subprocess
+import time
+
+from pathlib import Path
+from typing import Optional
+
+from core.worktree_manager import (  # noqa: E402
+    LEGACY_GRACE_SECONDS,
+    WT_AVAILABLE,
+)
+
+class G2LegacyRegistryMixin:
+    def register_legacy(self, spec_name: str, worktree_path, branch: str) -> None:
+        """登记某 spec 的死亡 run 遗产（worktree 路径 + 分支）。
+
+        覆盖式更新（D5）：同一 spec 再次死亡时仅保留最新一份，旧遗产直接回收
+        （避免遗产链膨胀）。daemon 重启后内存态丢失，遗产按孤儿清扫兜底回收。
+
+        支持两种模式（守卫拒绝重派接入，add-project-description 事故治理）：
+        - worktree 模式：worktree_path 非空 —— 死亡 run 的未提交半成品目录保留；
+        - 仅分支模式：worktree_path 为 None/空 —— 守卫拒绝发生在成功收工清理之后，
+          worktree 已物理删除，仅分支留存（完整已提交成果），path 记空串。
+
+        Args:
+            spec_name: 死亡 run 所属 SPEC。
+            worktree_path: 死亡 run 的 worktree 绝对路径（Path 或 str）；
+                仅分支模式传 None。
+            branch: 死亡 run 的分支名（仅分支模式下为收编唯一线索，必填）。
+        """
+        if not spec_name or not branch:
+            return
+        wt_str = str(worktree_path) if worktree_path else ""
+        # 覆盖式更新前先把旧遗产回收（D5：仅留最新一份）
+        if spec_name in self._legacy:
+            old = self._legacy[spec_name]
+            self.logger.info(
+                "worktree_manager",
+                f"Replacing prior legacy for '{spec_name}' ({old.get('path')}) "
+                f"— superseded by newer death",
+            )
+        self._legacy[spec_name] = {
+            "path": wt_str,
+            "branch": branch or "",
+            "worktree_name": (
+                wt_str.rstrip("/").split("/")[-1] if wt_str else f"branch-only:{branch}"
+            ),
+            "registered_at": time.time(),
+            "dirty": bool(wt_str),  # worktree 模式待刷新脏快照；仅分支模式无脏文件
+        }
+        self.logger.warning(
+            "worktree_manager",
+            f"Registered legacy for '{spec_name}': "
+            f"{'worktree=' + wt_str if wt_str else 'branch-only'} branch={branch}",
+        )
+
+    def get_legacy(self, spec_name: str) -> Optional[dict]:
+        """返回某 spec 的遗产记录（copy），无则 None。
+
+        调用方（agent_runner 的 prompt 构建）据此注入遗产上下文；返回副本避免
+        外部直接改内部态。结构见 register_legacy。
+        """
+        rec = self._legacy.get(spec_name)
+        if rec is None:
+            return None
+        return dict(rec)
+
+    def consume_legacy(self, spec_name: str) -> Optional[dict]:
+        """回收某 spec 的遗产（后继 run 成功 merge 时调用），返回被回收的记录。
+
+        返回 None 表示该 spec 无在册遗产（幂等：重复调用安全）。回收时同步物理删除
+        遗产 worktree 与分支（失败后保留的半成品不再需要），使清扫器不再对其豁免。
+        物理删除失败仅记 WARNING，内存态遗产仍清除以放行后续逻辑。
+        """
+        rec = self._legacy.pop(spec_name, None)
+        if rec is None:
+            return None
+        self._active_reuse.pop(spec_name, None)
+        self.logger.info(
+            "worktree_manager",
+            f"Consumed legacy for '{spec_name}' (successor merged): {rec.get('path')}",
+        )
+        try:
+            from pathlib import Path as _Path
+
+            path = rec.get("path", "")
+            branch = rec.get("branch", "")
+            if path:
+                wt = _Path(path)
+                res = subprocess.run(
+                    ["git", "-C", str(self.project_root), "worktree", "remove", str(wt), "--force"],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                if res.returncode != 0 and wt.exists():
+                    shutil.rmtree(str(wt), ignore_errors=True)
+            if branch and branch != "HEAD":
+                subprocess.run(
+                    ["git", "-C", str(self.project_root), "branch", "-D", branch],
+                    capture_output=True,
+                    timeout=10,
+                )
+            subprocess.run(
+                ["git", "-C", str(self.project_root), "worktree", "prune"],
+                capture_output=True,
+                timeout=10,
+            )
+        except Exception as e:
+            self.logger.warning(
+                "worktree_manager",
+                f"Legacy consume physical reclaim failed for '{spec_name}': {e}",
+            )
+        return rec
+
+    def has_legacy(self, spec_name: str) -> bool:
+        """某 spec 是否有在册遗产（只读查询，prompt 注入 `无遗产不注入` 判定用）。"""
+        return spec_name in self._legacy
+
+    def keep_for_reuse(self, spec_name: str, wt_path: Path, agent_type: str = "") -> None:
+        """保留 worktree 目录与分支，登记供下轮重派继承。
+
+        底层复用 register_legacy（同一登记表：宽限期回收、清扫器豁免全继承），
+        仅追加 ``reuse`` 标记供 create() 认领。与 cleanup(success=False) 的差异：
+        不删除目录与分支、仅释放锁与活动集；dev-server 由调用方先行回收。
+
+        fix-provider-transient-backoff（D3）：transient 终态失败同样走此路径
+        （替代 cleanup(success=False)），agent_type 参数供日志区分来源
+        （fast-track / implementer / transient 其他 agent_type）。
+        """
+        wt_str = str(wt_path)
+        branch = self._wt_branches.get(wt_str) or self._guess_branch_from_worktree(wt_path)
+        # 收工清扫：agent 已退出，杀掉残留测试子进程（目录保留，进程不留）
+        self._kill_worktree_strays(wt_path.name)
+        self.register_legacy(spec_name, wt_path, branch)
+        rec = self._legacy.get(spec_name)
+        if rec is not None:
+            rec["reuse"] = True
+        self._active_worktrees.discard(wt_str)
+        self._wt_branches.pop(wt_str, None)
+        self._active_reuse.pop(spec_name, None)
+        # 释放 spec 锁（与 cleanup 的 finally 段同语义，按 spec 精确匹配）
+        for k in [k for k in self._spec_locks if k.split(":")[0] == spec_name]:
+            self._spec_locks.discard(k)
+            self._lock_since.pop(k, None)
+        self._proc_scan_cache.pop(spec_name, None)
+        self.logger.info(
+            "worktree_manager",
+            f"Kept worktree for reuse: {wt_path} (branch {branch}, "
+            f"spec '{spec_name}'" + (f", agent_type '{agent_type}'" if agent_type else "") + ")",
+        )
+
+    def get_reuse_record(self, spec_name: str) -> Optional[dict]:
+        """返回本轮 run 已认领的复用 worktree 记录（prompt 注入用），无则 None。"""
+        rec = self._active_reuse.get(spec_name)
+        if rec:
+            return dict(rec)
+        rec = self._legacy.get(spec_name)
+        if rec and rec.get("reuse"):
+            return dict(rec)
+        return None
+
+    def mark_reused(self, spec_name: str, wt_path: Path, branch: str) -> None:
+        """标记跨 attempt 复用的 worktree（未走 create 认领路径时补记，幂等）。"""
+        self._active_reuse[spec_name] = {
+            "path": str(wt_path),
+            "branch": branch or "",
+        }
+
+    def _take_reusable_worktree(self, spec_name: str) -> Optional[tuple]:
+        """认领该 spec 的复用遗产；有效返回 (wt_path, branch)，无效清理后返回 None。
+
+        有效性：目录存在、仍是注册的 git worktree、分支仍可解析。认领即从
+        _legacy 摘出（在用目录不再是「遗产」，防 sweeper 宽限期回收正在工作的
+        worktree），转入 _active_reuse 供 prompt 注入与收尾清理。
+        """
+        rec = self._legacy.get(spec_name)
+        if not rec or not rec.get("reuse"):
+            return None
+        path = rec.get("path") or ""
+        branch = rec.get("branch") or ""
+        wt = Path(path) if path else None
+        # 有效性判定收敛到 is_available 单源（interrupt-recovery-preserve D5）：
+        # 目录存在 + git worktree 注册有效 + 分支可解析。判定口径与 repair
+        # 换壳（resolve_repair_site）、recovery 保留一致，任何链路不自行拼装。
+        valid = False
+        if wt is not None:
+            try:
+                valid = self.is_available(wt, branch) == WT_AVAILABLE
+            except Exception:
+                valid = False
+        if not valid:
+            self._legacy.pop(spec_name, None)
+            self.logger.info(
+                "worktree_manager",
+                f"Reusable legacy for '{spec_name}' no longer valid "
+                f"(path={path or 'none'}, branch={branch or 'none'}) — fresh create",
+            )
+            return None
+        self._legacy.pop(spec_name, None)
+        self._active_reuse[spec_name] = {"path": str(wt), "branch": branch}
+        return wt, branch
+
+    def _maybe_register_legacy_for_stale_lock(self, spec_name: str) -> None:
+        """refresh_locks 释放陈锁时的遗产兜底注册（add-recovery-legacy-check D2）。
+
+        若该 spec 已无在册锁、但有物理残留的 implementer worktree（孤儿目录），且
+        该 worktree 当前未被活动集占用，则注册为遗产，避免被 cleanup_stale_worktrees
+        直接回收（design D2「单点改动、无新增扫描」：复用 refresh_locks 的扫锁时机）。
+
+        幂等：register_legacy 为覆盖式更新，已注册遗产不重复写。若该 spec 已在册
+        遗产则跳过（不覆盖已有更早注册的遗产——更早注册的宽限期更短，应由其决定）。
+        """
+        if self.has_legacy(spec_name):
+            return
+        wt = self.find_implementer_worktree(spec_name)
+        if wt is None:
+            return
+        if str(wt) in self._active_worktrees:
+            return  # 仍在活动集：未被清理，非孤儿，正常派发中
+        branch = self.get_branch_name(wt) or self._wt_branches.get(str(wt))
+        if not branch:
+            branch = self._guess_branch_from_worktree(wt)
+        self.register_legacy(spec_name, wt, branch or "")
+
+    def _guess_branch_from_worktree(self, wt_path) -> str:
+        """从 worktree 目录 HEAD 取分支名（register_legacy 兜底用）。"""
+        try:
+            br = subprocess.run(
+                ["git", "-C", str(wt_path), "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if br.returncode == 0:
+                return br.stdout.strip()
+        except Exception:
+            pass
+        return ""
+
+    def _reclaim_expired_legacy(self, now: float | None = None) -> list:
+        """宽限期兜底回收（add-recovery-legacy-check D2）：清扫器在扫孤儿前调用。
+
+        对每条在册遗产，若注册时刻距今超过 LEGACY_GRACE_SECONDS（跟随孤儿清扫周期），
+        视为无人收编而兜底回收：删除 worktree 目录 + 分支、记审计。返回被回收的
+        spec 名列表（审计/测试用）。
+
+        宽限期内（后继 run 尚在派发中）的遗产不动，交 merge 成功 / 重派逻辑处理。
+        """
+        if not self._legacy:
+            return []
+        now = time.time() if now is None else now
+        expired = [
+            spec
+            for spec, rec in self._legacy.items()
+            if now - rec.get("registered_at", 0) > LEGACY_GRACE_SECONDS
+        ]
+        reclaimed: list = []
+        for spec in expired:
+            rec = self._legacy.pop(spec, None)
+            if rec is None:
+                continue
+            path = rec.get("path", "")
+            branch = rec.get("branch", "")
+            self.logger.warning(
+                "worktree_manager",
+                f"Legacy grace period expired for '{spec}' — sweeper reclaiming "
+                f"worktree={path} branch={branch}",
+            )
+            try:
+                from pathlib import Path as _Path
+
+                wt = _Path(path)
+                if path:
+                    res = subprocess.run(
+                        [
+                            "git",
+                            "-C",
+                            str(self.project_root),
+                            "worktree",
+                            "remove",
+                            str(wt),
+                            "--force",
+                        ],
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                    )
+                    if res.returncode != 0:
+                        shutil.rmtree(str(wt), ignore_errors=True)
+                if branch and branch != "HEAD":
+                    subprocess.run(
+                        ["git", "-C", str(self.project_root), "branch", "-D", branch],
+                        capture_output=True,
+                        timeout=10,
+                    )
+            except Exception as e:
+                self.logger.warning(
+                    "worktree_manager",
+                    f"Legacy sweeper reclaim failed for '{spec}': {e}",
+                )
+            reclaimed.append(spec)
+        if reclaimed:
+            subprocess.run(
+                ["git", "-C", str(self.project_root), "worktree", "prune"],
+                capture_output=True,
+                timeout=10,
+            )
+        return reclaimed
+

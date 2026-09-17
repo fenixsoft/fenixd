@@ -77,13 +77,13 @@ class CancelFinalizeMarkerContract(unittest.TestCase):
     # legacy-verifier +10（verification/_legacy.py），全部落在
     # [anchor_line, anchor_line+25) 窗口内（最大偏移 +20，留 5 行余量）。
     WRITE_POINTS = [
-        ("core/pm_engine/dispatch.py",
+        ("core/pm_engine/dispatch/queue.py",
          "人工取消 hold-state（add-run-cancel D4）",
          "implementer"),
-        ("core/pm_engine/dispatch.py",
+        ("core/pm_engine/dispatch/fast_track.py",
          "人工取消 hold-state（add-run-cancel D4，fast-track 同语义）",
          "fast-track"),
-        ("core/pm_engine/dispatch.py",
+        ("core/pm_engine/dispatch/repair_lane.py",
          "人工取消 hold-state（add-run-cancel D4，repair worker）",
          "repair"),
         ("core/pm_engine/verification/pipeline.py",
