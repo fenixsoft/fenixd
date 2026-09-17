@@ -1668,7 +1668,11 @@ class VerificationPipeline:
             # 历史 verified 防降级）。
             if self._verified_gate_refuses(spec_name, "bug-found"):
                 return
-            self._context.state_machine.transition(spec_name, "bug-found")
+            # fix-observability-gaps 2.2：planner-judge 判定 bug-found（自动来源）
+            self._context.state_machine.transition(
+                spec_name, "bug-found",
+                trigger_run_id=judge_result.run_id, agent_type="planner-judge", channel="auto",
+            )
             self._context.state_machine.update_spec(
                 spec_name,
                 {
@@ -1774,7 +1778,11 @@ class VerificationPipeline:
             # 0 通过或 env 失败不得放行，升级 admin 处置
             if not self._env_whitewash_gate(spec_name):
                 return
-            self._context.state_machine.transition(spec_name, "verified")
+            # fix-observability-gaps 2.2：planner-judge 判定 verified（自动来源）
+            self._context.state_machine.transition(
+                spec_name, "verified",
+                trigger_run_id=judge_result.run_id, agent_type="planner-judge", channel="auto",
+            )
             self._context.state_machine.update_spec(
                 spec_name,
                 {

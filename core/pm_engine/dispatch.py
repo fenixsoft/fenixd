@@ -597,7 +597,12 @@ class Dispatcher:
                 # 修复重派时状态已是 implementing（同态转换非法），跳过 transition
                 cur_status = (self._pm.state_machine.read_one(spec_name) or {}).get("status")
                 if cur_status != "implementing":
-                    self._pm.state_machine.transition(spec_name, "implementing")
+                    # fix-observability-gaps 2.2：自动派发来源（run 尚未派发，
+                    # trigger_run_id 暂无，派发完成后由收口路径写 run context）
+                    self._pm.state_machine.transition(
+                        spec_name, "implementing",
+                        trigger_run_id=None, agent_type="implementer", channel="auto",
+                    )
             elif agent_type == "fast-track":
                 # fast-track：与 implementer 同语义，派发即进入 implementing；
                 # 失败打回重派时状态已是 implementing，跳过同态转换。
@@ -627,9 +632,17 @@ class Dispatcher:
                     continue
                 cur_status = (self._pm.state_machine.read_one(spec_name) or {}).get("status")
                 if cur_status != "implementing":
-                    self._pm.state_machine.transition(spec_name, "implementing")
+                    # fix-observability-gaps 2.2：fast-track 自动派发来源
+                    self._pm.state_machine.transition(
+                        spec_name, "implementing",
+                        trigger_run_id=None, agent_type="fast-track", channel="auto",
+                    )
             elif agent_type == "verifier":
-                self._pm.state_machine.transition(spec_name, "testing")
+                # fix-observability-gaps 2.2：verifier 自动派发来源
+                self._pm.state_machine.transition(
+                    spec_name, "testing",
+                    trigger_run_id=None, agent_type="verifier", channel="auto",
+                )
 
             self._pm.logger.info(
                 "pm_engine",
@@ -893,7 +906,12 @@ class Dispatcher:
                             f"零提交（已并入 main），走成功收口（不重派）"
                             f"run={result.run_id}",
                         )
-                        self._pm.state_machine.transition(spec_name, "implemented")
+                        # fix-observability-gaps 2.2：零变更哨成功收口，run context 可标注
+                        self._pm.state_machine.transition(
+                            spec_name, "implemented",
+                            trigger_run_id=result.run_id,
+                            agent_type="implementer", channel="auto",
+                        )
                         self._pm.state_machine.update_spec(
                             spec_name,
                             {
@@ -1150,7 +1168,11 @@ class Dispatcher:
                         if streak >= breaker_threshold:
                             # 熔断触发：blocked 后 repair 通道一并停止
                             # （spec-merge-circuit-breaker：repair 不绕过熔断）。
-                            self._pm.state_machine.transition(spec_name, "blocked")
+                            # fix-observability-gaps 2.2：merge 熔断 blocked（自动降级路径）
+                            self._pm.state_machine.transition(
+                                spec_name, "blocked",
+                                trigger_run_id=None, agent_type="implementer", channel="auto",
+                            )
                             self._pm.state_machine.update_spec(
                                 spec_name,
                                 {
@@ -1200,7 +1222,12 @@ class Dispatcher:
                     else:
                         # stash 恢复已在 merge_back_from_branch 的 guard 段内完成
                         # （fix-autostash-orphans），此处只推进状态。
-                        self._pm.state_machine.transition(spec_name, "implemented")
+                        # fix-observability-gaps 2.2：implementer merge 成功收口
+                        self._pm.state_machine.transition(
+                            spec_name, "implemented",
+                            trigger_run_id=result.run_id,
+                            agent_type="implementer", channel="auto",
+                        )
                         self._pm.state_machine.update_spec(
                             spec_name,
                             {
@@ -2829,7 +2856,11 @@ class Dispatcher:
                 breaker_threshold = self._pm._get_config("agents.merge_breaker_threshold", 2)
                 final_error = f"Merge-back failed (fp={fp}): {merge_error}"
                 if streak >= breaker_threshold:
-                    self._pm.state_machine.transition(spec_name, "blocked")
+                    # fix-observability-gaps 2.2：repair/fast-track merge 熔断 blocked
+                    self._pm.state_machine.transition(
+                        spec_name, "blocked",
+                        trigger_run_id=None, agent_type="implementer", channel="auto",
+                    )
                     self._pm.state_machine.update_spec(
                         spec_name,
                         {
@@ -2877,7 +2908,11 @@ class Dispatcher:
                 return False
         # merge 成功：回收 runner 延迟保留的 fast-track worktree（worktree-reuse）
         self._release_fast_track_worktree(spec_name, result)
-        self._pm.state_machine.transition(spec_name, "implemented")
+        # fix-observability-gaps 2.2：fast-track merge 成功 → implemented
+        self._pm.state_machine.transition(
+            spec_name, "implemented",
+            trigger_run_id=result.run_id, agent_type="fast-track", channel="auto",
+        )
         self._pm.state_machine.update_spec(
             spec_name,
             {
@@ -3210,7 +3245,12 @@ class Dispatcher:
                 # ── 顺序修复（fix-recovery-branch-anchor D1 1.4）───────
                 # update_spec(branch=...) MUST 先于 wm.cleanup 执行
                 # （先写锚点载体、后删 worktree，happy path 上不留窗口）。
-                self._pm.state_machine.transition(spec_name, "implemented")
+                # fix-observability-gaps 2.2：repair re-merge 成功 → implemented
+                self._pm.state_machine.transition(
+                    spec_name, "implemented",
+                    trigger_run_id=getattr(r, "run_id", None) or None,
+                    agent_type="repair", channel="auto",
+                )
                 self._pm.state_machine.update_spec(
                     spec_name,
                     {
@@ -3380,7 +3420,11 @@ class Dispatcher:
         final_error = f"Merge-back failed (fp={fp}): {merge_error}"
         breaker_threshold = self._pm._get_config("agents.merge_breaker_threshold", 2)
         if streak >= breaker_threshold:
-            self._pm.state_machine.transition(spec_name, "blocked")
+            # fix-observability-gaps 2.2：repair re-merge 熔断 blocked（自动降级路径）
+            self._pm.state_machine.transition(
+                spec_name, "blocked",
+                trigger_run_id=None, agent_type="repair", channel="auto",
+            )
             self._pm.state_machine.update_spec(
                 spec_name,
                 {
@@ -3620,8 +3664,17 @@ class Dispatcher:
         # 结果文件 0 通过或 env 失败不得放行，升级 admin 处置
         if not self._pm._env_whitewash_gate(spec_name):
             return
-        self._pm.state_machine.transition(spec_name, "testing")
-        self._pm.state_machine.transition(spec_name, "verified")
+        # fix-observability-gaps 2.2：fast-track 自动连跳（同一 run 触发两次转换）
+        self._pm.state_machine.transition(
+            spec_name, "testing",
+            trigger_run_id=getattr(result, "run_id", None) or None,
+            agent_type="fast-track", channel="auto",
+        )
+        self._pm.state_machine.transition(
+            spec_name, "verified",
+            trigger_run_id=getattr(result, "run_id", None) or None,
+            agent_type="fast-track", channel="auto",
+        )
         self._pm.state_machine.update_spec(
             spec_name,
             {

@@ -842,8 +842,20 @@ class StateMachine:
 
     # ── State Transitions ──────────────────────────────────────────
 
-    def transition(self, spec_name: str, new_status: str) -> bool:
-        """Transition a SPEC to a new status. Validates the transition is legal."""
+    def transition(self, spec_name: str, new_status: str,
+                   *, trigger_run_id: str | None = None,
+                   agent_type: str | None = None,
+                   channel: str = "auto") -> bool:
+        """Transition a SPEC to a new status. Validates the transition is legal.
+
+        fix-observability-gaps 2.1：结构化 context 以**可选关键字参数**扩展
+        （既有调用点零改动）：trigger_run_id（触发转换的 run）、agent_type
+        （触发方 agent 类型）、channel（来源：auto=自动调度 /
+        manual=人工操作 / recovery=恢复/解冻）。仅真实状态变化的转换（非
+        幂等短路、非非法拒绝）携带 context；幂等短路（old==new）不改变状态，
+        按 spec「每次状态转换 MUST 携带结构化 context」口径不视为状态转换，
+        不补 context（2.1a 显式排除，见日志行）。
+        """
         spec = self.read_one(spec_name)
         if not spec:
             self.logger.warning("state_machine", f"Cannot transition nonexistent SPEC: {spec_name}")
@@ -878,6 +890,14 @@ class StateMachine:
         self.logger.info(
             "state_machine",
             f"Transition: {spec_name} {old_status} → {new_status}",
+            # fix-observability-gaps 2.1：结构化 context（trigger_run_id /
+            # agent_type / channel），供 dashboard 时间轴读侧优先消费；
+            # 断路器在 update_spec 成功后返回 True，日志先行
+            {
+                "trigger_run_id": trigger_run_id,
+                "agent_type": agent_type,
+                "channel": channel,
+            },
         )
         return self.update_spec(spec_name, {"status": new_status})
 
@@ -885,13 +905,21 @@ class StateMachine:
         """Check if a transition is legal."""
         return to_status in VALID_TRANSITIONS.get(from_status, [])
 
-    def transition_gate(self, spec_name: str, new_status: str) -> bool:
+    def transition_gate(self, spec_name: str, new_status: str,
+                        *, trigger_run_id: str | None = None,
+                        agent_type: str | None = None,
+                        channel: str = "auto") -> bool:
         """门禁自动路径专用转换（verifier-judgment-integrity D7 逃生门）。
 
         仅允许 GATE_TRANSITIONS 中声明的转换（当前：VERIFIED→TESTING），
         用于 _on_spec_verified 门禁拦截后的自动回退。人工路径（直接调
         transition）受 VALID_TRANSITIONS 约束，VERIFIED→TESTING 仍被拒，
         不得绕过。返回 False 表示非门禁允许的转换或 spec 不存在。
+
+        fix-observability-gaps 2.1：与 transition() 相同——可选关键字参数
+        trigger_run_id / agent_type / channel，日志前缀 `Gate transition: `
+        同样携带结构化 context（该前缀不被时间轴正则命中，context 是
+        时间轴重建该路径的唯一通道，必须带）。
         """
         spec = self.read_one(spec_name)
         if not spec:
@@ -922,6 +950,11 @@ class StateMachine:
         self.logger.info(
             "state_machine",
             f"Gate transition: {spec_name} {old_status} → {new_status}",
+            {
+                "trigger_run_id": trigger_run_id,
+                "agent_type": agent_type,
+                "channel": channel,
+            },
         )
         return self.update_spec(spec_name, {"status": new_status})
 

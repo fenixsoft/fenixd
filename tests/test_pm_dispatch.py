@@ -325,7 +325,10 @@ class TestPushRefHygiene(unittest.TestCase):
         engine = self._make_engine({})
         result = engine.approve_push("test-spec")
         self.assertTrue(result)
-        self.sm.transition.assert_called_once_with("test-spec", "pushed")
+        self.sm.transition.assert_called_once_with(
+            "test-spec", "pushed",
+            trigger_run_id=None, agent_type=None, channel="auto",
+        )
         self.assertIsNone(self.sm.update_spec.call_args[0][1]["error"])
 
     def test_main_diverged_failure(self):
@@ -382,7 +385,10 @@ class TestPushRefHygiene(unittest.TestCase):
         # approve_push 应成功（main 推送成功），且不会因 gone-branch 报错
         result = engine.approve_push("test-spec")
         self.assertTrue(result)
-        self.sm.transition.assert_called_once_with("test-spec", "pushed")
+        self.sm.transition.assert_called_once_with(
+            "test-spec", "pushed",
+            trigger_run_id=None, agent_type=None, channel="auto",
+        )
 
     def test_remote_branch_diff_sha_warns_and_skips(self):
         """远端分支 SHA 不同 → 跳过分支推送并 WARN，main 成功仍推进。"""
@@ -803,7 +809,10 @@ class TestTaskCompletionGate(unittest.TestCase):
         engine = self._make_engine()
         self.assertIsNone(engine._task_completion_blocker("demo"))
         engine._on_spec_verified("demo")
-        self.sm.transition.assert_called_once_with("demo", "done")
+        self.sm.transition.assert_called_once_with(
+            "demo", "done",
+            trigger_run_id=None, agent_type=None, channel="auto",
+        )
 
     def test_gate_passes_without_run_record(self):
         """无 run 记录可查（.fenix-run-result.json 缺失）→ 放行（无法证伪）。"""

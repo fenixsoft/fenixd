@@ -281,8 +281,11 @@ class SpecReviewManager:
             return False
 
         if status in ("approved", "repaired"):
-            # 转 ready 并触发实现调度
-            self.state_machine.transition(spec_name, "ready")
+            # 转 ready 并触发实现调度（fix-observability-gaps 2.2：自动来源标注）
+            self.state_machine.transition(
+                spec_name, "ready",
+                trigger_run_id=run_id, agent_type="spec-review", channel="auto",
+            )
             self.state_machine.update_spec(
                 spec_name,
                 {
@@ -336,7 +339,10 @@ class SpecReviewManager:
                         "error": (f"spec-review-rejected: {blocked_summary}"),
                     },
                 )
-                self.state_machine.transition(spec_name, "reviewing")
+                self.state_machine.transition(
+                    spec_name, "reviewing",
+                    trigger_run_id=run_id, agent_type="spec-review", channel="auto",
+                )
                 self.logger.warning(
                     "spec_review",
                     f"评审否决（第 {rejections}/{MAX_REJECT_REDO} 次）→ 自动复评"
@@ -824,8 +830,12 @@ class SpecReviewManager:
         ):
             return False, "SPEC 未因评审进入 blocked"
 
-        # 执行 blocked → reviewing
-        success = self.state_machine.transition(spec_name, "reviewing")
+        # 执行 blocked → reviewing（fix-observability-gaps 2.2：人工重评来源）
+        success = self.state_machine.transition(
+            spec_name, "reviewing",
+            trigger_run_id=entry.get("reviewer_run") or None,
+            agent_type="spec-review", channel="manual",
+        )
         if not success:
             return False, "状态转移失败"
 
@@ -849,8 +859,12 @@ class SpecReviewManager:
         if entry.get("status") != SpecStatus.BLOCKED:
             return False, "SPEC 状态不是 blocked"
 
-        # 执行 blocked → ready
-        success = self.state_machine.transition(spec_name, "ready")
+        # 执行 blocked → ready（fix-observability-gaps 2.2：人工担责放行来源）
+        success = self.state_machine.transition(
+            spec_name, "ready",
+            trigger_run_id=entry.get("reviewer_run") or None,
+            agent_type="spec-review", channel="manual",
+        )
         if not success:
             return False, "状态转移失败"
 

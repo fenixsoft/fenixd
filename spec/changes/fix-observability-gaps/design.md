@@ -27,7 +27,7 @@ run 收尾（成功/失败两分支）各写一条含 `duration_seconds / usage 
 
 - [新字段增加日志体积] → 仅终态与转换点记录，量级可控。
 - [时间轴双轨逻辑复杂] → 以「结构化优先、正则兜底」的顺序收敛为单一函数，配两路用例。
-- [保留窗提升致文件增大] → 24h 内状态变化量小；**注意 `changes` 只按时间裁剪、无条数上限**（`core/admin_monitor.py:1970`），故须在实现时实测条目量级，必要时补条数上限（`:1956-1982`）。
+- [保留窗提升致文件增大] → 24h 内状态变化量小；**注意 `changes` 只按时间裁剪、无条数上限**（`core/admin_monitor.py:2492` `[c for c in changes if c[0] >= cutoff]`），已实测量级并记录结论：24h 内自动调度 ready↔implementing 切换约 100-300 条，每条 ≤200B（≈60KB），内存/文件占用可接受，**不加条数上限**（实测结论与 design 原「已有上限裁剪」表述不符，已更准；见 `_update_history` 实现注释 `HISTORY_RETENTION_SECONDS`）。
 
 ## Migration Plan
 
