@@ -13,7 +13,11 @@ import time
 from pathlib import Path
 
 from core.state_machine import ENV_BLOCK_ROUNDS_FIELD, start_after_pending
-from core.fast_track_result import estimate_spec_scale, budget_tier_for_scale
+from core.fast_track_result import (
+    budget_tier_for_scale,
+    estimate_spec_scale,
+    get_scale_precheck_config,
+)
 
 # ── 派发锁冲突退避（improve-run-lifecycle-governance D5）────────────────────
 # 派发 implementer 遇「worktree already active」时不再硬试三连发：按此序列指数
@@ -640,28 +644,39 @@ class Dispatcher:
                 # 预算与 worktree 语义与 implementer 一致（impl- run_id/分支前缀），
                 # 结果处理走 _run_fast_track_worker（守卫 + 硬校验 + 状态推进）。
                 # ── 派发前规模预检（add-fast-track-scale-precheck）──────────
-                # 大任务面 spec（tasks.md 任务条数/文件面超阈）不再按统一 3.5h
-                # 档派发：full 档降级完整模式（implementer 车道），higher 档
-                # 写入规模档位标记供 runner 超时监督提高 extension 上限。预检
-                # 失败保守低档放行（design D2，不阻断派发）。
+                # 大任务面 spec（tasks.md 任务条数/交付物面超阈）不再按统一档
+                # 派发：full 档降级完整模式（implementer 车道），higher 档写入
+                # 规模档位标记供 runner 超时监督提高 extension 上限。预检失败
+                # 保守低档放行（design D2，不阻断派发）。总开关
+                # agents.scale_precheck.enabled 关闭时预检返回 "disabled"，
+                # 两档动作均不执行（回到预检上线前行为）。
                 scale, tier = self._fast_track_scale_precheck(spec_name)
                 if tier == "full":
                     # 降级完整模式：改写 .spec.yaml mode → full + 状态回滚 ready
                     # + 重新入队 implementer；本次不启动 fast-track run、不递增预算。
                     self._downgrade_fast_track_scale(spec_name, scale)
                     return
-                if tier == "higher":
-                    # higher 档：写 spec 标记，runner 超时监督据此提高 extension
-                    # 上限（liveness._supervision_deadline_action 读取）。
-                    try:
+                # higher 档写标记；其余档位仅在**存量标记存在**时清除——否则
+                # 「改版后重算降档」或「开关关闭」时旧 higher 标记会继续抬高
+                # extension 上限（liveness 只按标记值判定，不重算规模）。无标记
+                # 的常态路径不写键，避免 STATE.md 堆积无意义的 null 行。
+                try:
+                    _prev_tier = (
+                        self._pm.state_machine.read_one(spec_name) or {}
+                    ).get("_fast_track_scale_tier")
+                    if tier == "higher":
                         self._pm.state_machine.update_spec(
-                            spec_name, {"_fast_track_scale_tier": tier}
+                            spec_name, {"_fast_track_scale_tier": "higher"}
                         )
-                    except Exception as e:
-                        self._pm.logger.warning(
-                            "pm_engine",
-                            f"fast-track 规模档位标记写入失败 '{spec_name}'（非阻塞）: {e}",
+                    elif _prev_tier:
+                        self._pm.state_machine.update_spec(
+                            spec_name, {"_fast_track_scale_tier": None}
                         )
+                except Exception as e:
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"fast-track 规模档位标记写入失败 '{spec_name}'（非阻塞）: {e}",
+                    )
                 self._pm._increment_impl_run_budget_used(spec_name)
                 # ── 新轮次派发前清除旧锚点（fix-recovery-branch-anchor D1）──
                 # fast-track 车道同 implementer 语义：spec 可能经 repair lane
@@ -1428,19 +1443,33 @@ class Dispatcher:
     def _fast_track_scale_precheck(self, spec_name: str) -> tuple:
         """fast-track 派发前规模预估：返回 (scale, tier)，含预留日志。
 
-        - scale = estimate_spec_scale(spec_dir)：tasks.md 未勾选任务条数加权
-          + spec 目录源码文件数；
-        - tier = budget_tier_for_scale(scale)：normal / higher / full；
+        - 配置 ``agents.scale_precheck``（设置界面「预算」页签）总开关关闭时
+          **整个跳过预检**，返回 ``(0, "disabled")``——调用方据此既不写
+          higher 档位标记也不触发 full 降级（回到预检上线前行为）；
+        - scale = estimate_spec_scale(spec_dir)：tasks.md 未勾选任务条数 ×1
+          + 声明段交付物数 ×2；
+        - tier = budget_tier_for_scale(scale, higher/full 阈值取自配置)；
         - 预检异常（tasks.md 缺失/IO 失败/路径非法）保守低档放行（design D2，
           不阻断派发），WARNING 留痕；异常不扩散（不抛）。
         - 日志含 spec、规模分、档位（任务 2.1「预留日志」）。
         """
+        if not self._scale_precheck_config()["enabled"]:
+            self._pm.logger.debug(
+                "pm_engine",
+                f"fast-track 规模预检已关闭，跳过 '{spec_name}'",
+            )
+            return 0, "disabled"
         spec_dir = self._pm.project_root / "spec" / "changes" / spec_name
         scale = 0
         tier = "normal"
         try:
             scale = int(estimate_spec_scale(spec_dir))
-            tier = budget_tier_for_scale(scale)
+            cfg = self._scale_precheck_config()
+            tier = budget_tier_for_scale(
+                scale,
+                higher_threshold=cfg["higher_threshold"],
+                full_threshold=cfg["full_threshold"],
+            )
         except Exception as e:
             self._pm.logger.warning(
                 "pm_engine",
@@ -1451,6 +1480,15 @@ class Dispatcher:
             f"fast-track 规模预检 '{spec_name}': scale={scale} tier={tier}",
         )
         return scale, tier
+
+    def _scale_precheck_config(self) -> dict:
+        """读取并归一化 ``agents.scale_precheck``（缺省 enabled=True / 30 / 45）。
+
+        归一化（非法值回退缺省、阈值倒挂整段回退）单点在
+        ``core.fast_track_result.get_scale_precheck_config``，与设置界面读侧
+        同源，避免展示值与生效值脱节。
+        """
+        return get_scale_precheck_config(self._pm.config or {})
 
     def _downgrade_fast_track_scale(self, spec_name: str, scale: int) -> None:
         """full 档规模降级：fast-track 大任务面改走完整模式（design D1）。
