@@ -83,7 +83,7 @@ Fenix daemon 里「一个 SPEC 该不该被派发实现」由两条独立链路�
 - **语义错**：出现终态后 run 仍可能继续（`interrupted` 之后 `error` 追加、`transient_retry` 之后新 sub_run_id 继续写别的文件不涉及本文件，但同文件内的 `result` → `superseded` 序列真实存在）。存活判据要的是「**末行**是否为终态」，即 `dashboard/data/runs.py:classify_run` 已确立的「终态后置不变量 ⇒ 只看末行」口径。
 - **成本错**：`_stream_recent` 在派发热路径上被反复调用，而 9.9 MB 的 run 流（本次事故文件确实是这个量级）全量逐行扫描不可接受。
 
-故新增 `liveness._file_tail_is_terminal(run_file)`：**从文件尾部按字节窗口 seek 读取**，解析末条非空行，判定其 `type` 是否属于 `RUN_TERMINAL_EVENT_TYPES`。窗口读取 MUST 复用 `core/dashboard/data/runs.py:295` 既有的「按字节窗口 seek + 首行残段丢弃 + 不足则回退全量」范式（该函数把「窗口首行是上一行残段必须丢弃」的坑写在注释里，直接照抄可避免重蹈 `overview 活跃 Agent 数虚高` 事故）。窗口/回退常量与解析容错（损坏行 → 视为非终态，fail-open 保持既有行为）在实现处固化。
+故新增 `liveness._file_tail_is_terminal(run_file)`：**从文件尾部按字节窗口 seek 读取**，解析末条非空行，判定其 `type` 是否属于 `RUN_TERMINAL_EVENT_TYPES`。窗口读取 MUST 复用 `core/dashboard/data/runs.py:293` `_read_run_lines` / `_READ_RUN_TAIL_WINDOW`（`:258`）既有的「按字节窗口 seek + 首行残段丢弃 + 不足则回退全量」范式（该函数把「窗口首行是上一行残段必须丢弃」的坑写在注释里，直接照抄可避免重蹈 `overview 活跃 Agent 数虚高` 事故）。**复用形式为「照范式自实现」，不是 import**：`core/agent_runner/` 包内现无 `core.dashboard.*` 反引先例（`core/event_bus.py:370`、`core/pm_engine/engine.py:21` 有先例但不在本包），liveness 又在派发热路径上，新增跨层 import 不值得。窗口/回退常量与解析容错（损坏行 → 视为非终态，fail-open 保持既有行为）在实现处固化。
 
 **注意方向**：解析失败 MUST fail-open 到「非终态」= 仍视为存活。判据的保守侧是**不误杀在跑的 run**——把活 run 判死会导致双派发（烧钱且可能污染分支），把死 run 判活只损失一个恢复周期（本就有的兜底，且被 D3 缩短）。这与 `worktree_manager.STALE_LOCK_IDLE_SECONDS` 分支「进程扫描未命中但流仍在增长：保守视为持锁」是同一条保守原则。
 
@@ -95,8 +95,18 @@ Fenix daemon 里「一个 SPEC 该不该被派发实现」由两条独立链路�
 recover_orphan_ready():
     for name, entry in state_machine.read_all().items():
         if entry.get("status") != "ready": continue
+        if entry.get("_cancelled_hold"): continue                # 有意等待：人工取消保持
+        if self.pm_engine._dispatch_backoffed(entry): continue    # 有意等待：派发退避期
         self._recover_ready(name, entry)      # ← 既有方法，判据一字不改
 ```
+
+**两道有意等待早退的落点与依据（核对结论，2026-09-17）**：
+
+- `_recover_ready()` 现有闸门只有两道：`start_after_pending`（`event_bus.py:268-277`）与 `_ready_has_live_child`（`event_bus.py:282`）。它**没有** `_dispatch_backoffed` 判定，`_on_spec_ready()`（`core/pm_engine/engine.py:316-425`）内也**没有** `_cancelled_hold` 读取点——恢复链路对这两种「有意等待」不设防。
+- 缺这两道闸门的后果（60 秒粒度才暴露）：`_handle_dispatch_lock_conflict` 会把 `error` 写成「worktree already active (lock conflict); backoff until <ISO>」并落 `_dispatch_backoff_until`（`dispatch.py:108-116`）；退避期内精触发仍会走完 `_recover_ready` 的「清 error → 重触发」，于是每个 60 秒 tick 产生一次 STATE.md 全量重写 + 一条误导性 INFO「Recovery: re-triggering implement for orphan ready …」，同时抹掉 Dashboard 应按既有能力读到的退避原因。
+- 早退复用既有判据而非新判据：`_dispatch_backoffed` 读 `_dispatch_backoff_until`（`dispatch.py:1427-1439`），`_cancelled_hold` 是框架既有的取消保持标记（`core/state_machine.py:305/659/1023-1032`、`core/agent_runner/runner.py:3168`）。故 D3「不另立判据」的约束未被违反。
+- 落点选在**精触发入口**而非 `_recover_ready` 内部：`full_scan` 兜底路径的既有行为不因此改变（本次不扩大改动面），而恢复主体仍是同一个 `_recover_ready`，两条路径的恢复语义依旧同源。
+- `_cancelled_hold` 现状由 `state_machine.recover_interrupted`（重启恢复）与 runner 复查消费；**所有写入点都保持 implementing/testing 原状**（`dispatch.py:1241-1262`、`2551-2567`、`3132-3142`，`pm_engine/verification/pipeline.py:740-753`、`1237-1244`），故 `ready + _cancelled_hold` 当前不可达——本闸门属**防御性收紧**，防止未来出现「保持态 + ready」写入点后精触发把人工取消的 SPEC 重新派发。
 
 选择「复用整个 `_recover_ready`」而非「另写一份轻量探测」的理由：恢复语义（`start_after_pending` 未到期 / 存活子进程 / 清 error 后重触发）只能有一个实现点。若精触发另写一份，两条路径必然在某次修改后分叉，出现「30 分钟扫描说该派、60 秒精触发说不该派」的双口径——这正是 `fix-dispatch-wakeup-gap` D2/D3 已经踩过并立规反对的模式。
 
@@ -113,8 +123,9 @@ recover_orphan_ready():
 有界性论证（无需额外节流阀）：
 
 - 稳态（error 为空、无存活子进程）→ **零 STATE 写入**；
-- 重复触发被既有闸门吸收：`_pending_dispatches` 单飞、`_last_dispatch_at` 10 秒冷却（`DISPATCH_COOLDOWN_SECONDS`）、`_dispatch_backoffed` 退避门、`_instant_fail_cooled` 秒挂冷却——精触发**不绕过**其中任何一个，因为它们都在 `_on_spec_ready()` 内；
-- 唯一的自激路径是「清 error → STATE 变 → watcher 事件」。`_dispatch_changes()` 只为 **status 变化** 产出事件，孤儿 ready 的 status 不变，故**不产生任何事件**，无自激。
+- 重复触发被既有闸门吸收，**吸收点是队列去重而非冷却窗口**（代码核对结论）：`_enqueue` 按 `(spec_name, agent_type)` 去重（`core/pm_engine/dispatch.py:269-275`），已入队等待并发槽的 SPEC 不会被 60 秒重试重复入队。注意 `_pending_dispatches` 单飞与 `_last_dispatch_at` 10 秒冷却（`DISPATCH_COOLDOWN_SECONDS = 10`，`core/pm_engine/engine.py:81/327-333`）只吸收**秒级**重复触发，**不足以**吸收 60 秒间隔的重试——有界性依赖队列去重与 D3 的两道有意等待早退闸门，不得依赖冷却窗口；
+- `_on_spec_ready()` 内既有闸门（冷却/单飞/`has_active_worktree`/`_dispatch_backoffed`/`start_after`/依赖）精触发不绕过。**方位校正**：`_instant_fail_cooled`（秒挂冷却）与并发闸 `max_concurrent` 在 `_process_queue` 的候选筛选与调度处（`dispatch.py:437`、`503`、`378-393`），**不在** `_on_spec_ready()` 内——它们经 `_on_spec_ready → _enqueue → _process_queue` 链路同样生效，不会被精触发绕过；
+- 唯一的自激路径是「清 error → STATE 变 → watcher 事件」。`_dispatch_changes()` 只为 **status 变化**（及新 SPEC 首次出现）产出事件，孤儿 ready 的 status 不变，故**不产生任何事件**，无自激。
 
 ### D5：存活探针三处同型点——本 SPEC 只修 1 处，另 2 处书面 defer
 
@@ -149,7 +160,8 @@ defer MUST 以**注释 + `findings`/tasks 登记**双落地（对齐 `fix-robust
 | **60 秒精触发放大 recove ry 副作用半径**（`event_bus.py:266` 注释记载的历史顾虑：`add-spec-status-modal-budget` 曾每小时重验 9 轮） | 精触发**不新增判据**、不绕过任何闸门；稳态零 STATE 写入（D4）；有界性论证见 D4；`full_scan` 仍为兜底、间隔不变 |
 | **精触发与 `full_scan` 恢复行为分叉** | 精触发直接调用同一个 `_recover_ready()`，无第二实现点（D3） |
 | **两处同型点未修留下同类事故** | D5 的书面 defer + 承接方登记 + 注释交叉引用；第 3 处已有在飞 SPEC 承接 |
-| 等待 `start_after` / `_cancelled_hold` 的有意等待被精触发误派 | 二者均为 `_recover_ready` **既有**门（`start_after_pending` 显式判定；`_cancelled_hold` 由 `_on_spec_ready` 链路上的既有守卫覆盖），精触发不新增或删除任何一道 |
+| 等待 `start_after` / 派发退避 / `_cancelled_hold` 的有意等待被精触发误派或误写 | `start_after` 为 `_recover_ready` **既有**门（`event_bus.py:268-277`）；`_dispatch_backoffed`（`_dispatch_backoff_until` 未到期）与 `_cancelled_hold` **在恢复链路上并无既有守卫**（`_recover_ready` 与 `_on_spec_ready` 均不读 `_cancelled_hold`，`_recover_ready` 不读 `_dispatch_backoff_until`），故按 D3 在精触发入口显式早退——复用既有判据，不新增判据，且 `full_scan` 路径语义不变 |
+| `_cancelled_hold` 与 `ready` 组合当前不可达（所有写入点保持 implementing/testing 原状），早退闸门暂无实际拦截对象 | 仍按 D3 落地为防御性收紧并补用例（3.10），避免未来新增写入点后精触发把人工取消的 SPEC 重新派发 |
 
 ## Migration
 

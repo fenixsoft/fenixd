@@ -27,6 +27,7 @@ full_scan recovery 对 ready SPEC 的跳过条件 SHALL 由黑名单（有 error
 - 精触发 MUST NOT 缩短或改变 `schedule.poll_interval_minutes` 的周期扫描语义（周期扫描仍为兜底）；
 - 精触发 MUST NOT 放宽任何派发闸门（依赖 / 预算 / 内容完整性 / 冻结 / `start_after` / 退避 / 秒挂冷却 / 冷却去重全部照常生效）；
 - 对**无需恢复**的 ready SPEC（error 字段已为空且被判存活或有意等待），精触发 MUST 零 STATE.md 写入——不得因周期变密而产生稳态写放大；
+- 「**有意等待**」MUST 显式包含**派发退避期**（`_dispatch_backoff_until` 未到期）与**人工取消保持**（`_cancelled_hold`）：精触发对二者 MUST 在入口早退，MUST NOT 清空 `error`（`error` 承载退避原因，需保持可观测）、MUST NOT 触发重派发日志。该早退 MUST 复用既有判定（`Dispatcher._dispatch_backoffed` 与既有 `_cancelled_hold` 标记），MUST NOT 另立判据；判定异常时 MUST fail-open（不早退），保底恢复不被新闸门吞掉；
 - 同一轮精触发的逐条处理 MUST 保持单条异常隔离（首条 Requirement 口径）。
 
 #### Scenario: 带 error 的孤儿 ready 获得重新派发
@@ -53,6 +54,16 @@ full_scan recovery 对 ready SPEC 的跳过条件 SHALL 由黑名单（有 error
 
 - **WHEN** 某 ready SPEC 处于 `start_after` 未到期、人工取消保持（`_cancelled_hold`）或派发退避期内
 - **THEN** 精触发 MUST 按既有闸门跳过，MUST NOT 重新派发该 SPEC
+
+#### Scenario: 退避窗口内不抹掉退避原因
+
+- **WHEN** 某 ready SPEC 因 worktree 锁冲突进入派发退避期（`error` 记载「backoff until …」、`_dispatch_backoff_until` 未到期），精触发周期到达
+- **THEN** MUST NOT 清空该 `error`、MUST NOT 产生 STATE.md 写入、MUST NOT 打印「orphan ready 已重触发」类日志；退避到期后 MUST 恢复既有重试/恢复路径
+
+#### Scenario: 退避到期后早退闸门不吞掉恢复
+
+- **WHEN** 某 ready SPEC 的 `_dispatch_backoff_until` 已成为过去时刻
+- **THEN** 精触发 MUST 按常规恢复路径处理该 SPEC（早退闸门 MUST NOT 使其永久失去恢复机会）
 
 #### Scenario: 精触发单条异常隔离
 

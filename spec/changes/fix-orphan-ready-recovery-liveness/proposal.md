@@ -34,7 +34,9 @@
 - **孤儿 ready 恢复改由短周期精触发（修改既有能力 `full-scan-resilience`）**：在 daemon 主循环既有的 60 秒计时段中，新增一次「孤儿 ready 恢复」精触发——逐条扫描 `ready` 态 SPEC，对确无驱动的条目走**与既有 full_scan 恢复完全同源**的处理路径（含 `start_after` 未到期 / `_cancelled_hold` / 存活子进程三道门 + `_on_spec_ready` 的全部派发闸门），使恢复延迟从「最坏一个扫描周期（30 分钟）」降到「最坏一个精触发周期（60 秒）」。
   - MUST NOT 缩短 `schedule.poll_interval_minutes`（30 分钟周期扫描仍为兜底，语义不变）；
   - MUST NOT 放宽任何派发闸门——精触发只是把既有判据跑得更勤，不是新判据；
-  - MUST 有界：同一 SPEC 的重复恢复尝试按最小间隔节流，避免「被闸门拦下 → 回 ready → 60 秒后又试」的空转环（`add-spec-status-modal-budget` 每小时重验 9 轮同型事故）；稳态（error 已为空且无存活子进程）MUST 零 STATE 写入，避免「写 error → 触发 spec_ready 事件」的自激。
+  - MUST 有界，且**不新增节流阀**：重复恢复尝试由既有机制吸收——`_enqueue` 按 `(spec, agent_type)` 去重（`core/pm_engine/dispatch.py:269-275`），同一 SPEC 不会因 60 秒重试重复入队；`_on_spec_ready` 内的冷却/单飞/退避/依赖闸门照常生效。
+  - MUST 对**有意等待**的两种形态在精触发入口显式早退且零写入：派发退避期（`_dispatch_backoff_until` 未到期）与人工取消保持（`_cancelled_hold=True`）。二者若被精触发每 60 秒处理一次，会反复清掉 `_handle_dispatch_lock_conflict` 写入的 `error`（该字段按既有能力约定需供 Dashboard 读到「backoff until」，`core/pm_engine/dispatch.py:86`）并打印误导性的「orphan ready 已重触发」日志（`add-spec-status-modal-budget` 每小时重验 9 轮同型事故）。
+  - 稳态（error 已为空且无存活子进程）MUST 零 STATE 写入，避免「写 error → 触发 spec_ready 事件」的自激。
 
 ## Capabilities
 
