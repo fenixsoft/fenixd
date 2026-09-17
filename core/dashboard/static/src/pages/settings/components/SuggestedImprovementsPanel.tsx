@@ -387,18 +387,22 @@ const SuggestedImprovementsPanel = forwardRef<
   const [error, setError] = useState<string | null>(null);
   const mountedRef = useRef(true);
 
-  const loadItems = useCallback(async () => {
+  // 返回本次加载到的条目数组：动作成功后的「转到下一条」要在刷新后的数据里按
+  // id 找回目标——旧 items 里目标仍带着动作前的状态，直接复用会渲染出陈旧禁用态。
+  const loadItems = useCallback(async (): Promise<EvolutionItem[]> => {
     setLoading(true);
     setError(null);
     try {
-      const data = await getEvolutionItems(project);
-      if (mountedRef.current) setItems(data.items || []);
+      const next = (await getEvolutionItems(project)).items || [];
+      if (mountedRef.current) setItems(next);
+      return next;
     } catch (e: any) {
       if (mountedRef.current) {
         const msg = e?.message || '加载失败';
         setError(msg);
         setItems([]);
       }
+      return [];
     } finally {
       if (mountedRef.current) setLoading(false);
     }
@@ -559,9 +563,8 @@ const SuggestedImprovementsPanel = forwardRef<
 
   // ── 接受 / 拒绝（7.5 二次确认）──────────────────────────────────
   //
-  // onDone 只在动作真正执行后触发（确认被取消不触发）：操作列菜单不传，
-  // 「查看」弹窗底部操作区传「关闭弹窗」——条目状态已被动作改变，弹窗里
-  // 的按钮禁用态与草稿页签随即失效。
+  // 成功回调走 nextAfterAction（有下一条则转过去、否则关窗），失败时不调，
+  // 弹窗原样留着——用户看清错误文案再决定重试还是翻页。操作列菜单不传回调。
 
   const handleAccept = (item: EvolutionItem, onDone?: () => void) => {
     // 本次执行时刻按配置预填（spec_run_at 为空 = 立即），弹窗里可临时改
@@ -590,8 +593,8 @@ const SuggestedImprovementsPanel = forwardRef<
         } else {
           message.error(result.error || '接受失败');
         }
-        await loadItems();
-        onDone?.();
+        const next = await loadItems();
+        if (result.ok) nextAfterAction(next, item, onDone);
       },
     });
   };
@@ -610,8 +613,8 @@ const SuggestedImprovementsPanel = forwardRef<
         } else {
           message.error(result.error || '拒绝失败');
         }
-        await loadItems();
-        onDone?.();
+        const next = await loadItems();
+        if (result.ok) nextAfterAction(next, item, onDone);
       },
     });
   };
@@ -642,8 +645,8 @@ const SuggestedImprovementsPanel = forwardRef<
         } else {
           message.error(result.error || '删除失败');
         }
-        await loadItems();
-        onDone?.();
+        const next = await loadItems();
+        if (result.ok) nextAfterAction(next, item, onDone);
       },
     });
   };
@@ -809,6 +812,45 @@ const SuggestedImprovementsPanel = forwardRef<
     if (viewIndex < 0) return;
     const target = filteredItems[viewIndex + delta];
     if (target) openView(target); // 与首次打开同构：页签回到分析结论
+  };
+
+  /** 弹窗内一次决策成功后的去向：列表还有下一条就留在弹窗里转过去，否则关窗。
+
+   * ``items`` 是动作后刚刷新的数据——按 id 找回目标条目（而非复用旧对象），
+   * 让弹窗里的按钮禁用态与草稿页签反映刷新后的真实状态。查看弹窗是受控的，
+   * 换 ``viewItem`` 即可在同一扇窗里翻页，无需「先关再开」（那样会与 antd
+   * 确认弹窗的关闭时机抢同一帧）。同一次动作会改掉当前条目状态，若它仍留在
+   * 过滤结果里，目标仍排在自己之后：先按 id 定位当前条目、再取其后一条；
+   * 当前条目已不在（状态改变被过滤掉，如「待决策」筛选下同意后的条目）时按下标
+   * 兜底——下一行恰好顶到原位置上。``onDone`` 保留给动作列菜单等调用方自定义
+   * 收尾（不传则关窗）。 */
+  const nextAfterAction = (
+    items: EvolutionItem[],
+    current: EvolutionItem,
+    onDone?: () => void,
+  ) => {
+    const start = filterDateRange?.[0]?.format('YYYY-MM-DD');
+    const end = filterDateRange?.[1]?.format('YYYY-MM-DD');
+    const seq = items.filter((item) => {
+      if (filterStatus && item.status !== filterStatus) return false;
+      if (filterProject && item.project !== filterProject) return false;
+      if (start && item.date_section && item.date_section < start) return false;
+      if (end && item.date_section && item.date_section > end) return false;
+      return true;
+    });
+    const idx = seq.findIndex((i) => i.id === current.id);
+    // 当前条目仍在过滤结果里 → 取其后的那一条；已被过滤掉（状态变了，例如
+    // 「待决策」筛选下同意后的条目）→ 后续条目整体前移一格，原下标处就是它的
+    // 后继（也是用户眼里原来位于下方的那一行）。
+    const target = idx >= 0 ? seq[idx + 1] : seq[viewIndex];
+    // 只有「查看」弹窗开着时才在窗内翻页——操作列菜单发起的同名动作没有
+    // 弹窗可翻，保持原行为（仅刷新表格）。
+    if (target && viewVisible) {
+      setViewItem(target);
+      setViewTab('analysis'); // 与首次打开同构：页签回到分析结论
+      return;
+    }
+    (onDone ?? closeView)();
   };
 
   // 掩码是半透明黑，按钮取同色系半透明黑底 + 白图标（antd Image 预览同款观感）
