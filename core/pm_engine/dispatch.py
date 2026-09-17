@@ -415,7 +415,14 @@ class Dispatcher:
                         # fast-track：ready 正常派发；implementing 允许 = 失败打回后的修复重派
                         # （入队点均在 run 终止后，与 implementer 同语义，无双派）。
                         continue
-                    if atype == "verifier" and status != "implemented":
+                    if atype == "verifier" and status not in ("implemented", "testing"):
+                        # testing 允许派发 = 重验车道出口（fix-robustness-edge-cases
+                        # 孤儿信号根因）：无驱动 testing 的三条恢复车道
+                        # （event_bus._recover_testing / admin_monitor 孤儿复位 /
+                        # env 阻塞复位直通道）都按重验语义入队 verifier，而 spec
+                        # 已在 testing——旧守卫 status != "implemented" 让条目永久
+                        # 滞留队列（无日志、无派发），testing 只能等 stuck 阈值兜底。
+                        # 派发处 transition(testing) 为幂等自迁移，语义不变。
                         continue
                     if self._pm._dispatch_backoffed(spec):
                         continue
@@ -481,7 +488,14 @@ class Dispatcher:
                         # fast-track：ready 正常派发；implementing 允许 = 失败打回后的修复重派
                         # （入队点均在 run 终止后，与 implementer 同语义，无双派）。
                         continue
-                    if atype == "verifier" and status != "implemented":
+                    if atype == "verifier" and status not in ("implemented", "testing"):
+                        # testing 允许派发 = 重验车道出口（fix-robustness-edge-cases
+                        # 孤儿信号根因）：无驱动 testing 的三条恢复车道
+                        # （event_bus._recover_testing / admin_monitor 孤儿复位 /
+                        # env 阻塞复位直通道）都按重验语义入队 verifier，而 spec
+                        # 已在 testing——旧守卫 status != "implemented" 让条目永久
+                        # 滞留队列（无日志、无派发），testing 只能等 stuck 阈值兜底。
+                        # 派发处 transition(testing) 为幂等自迁移，语义不变。
                         continue
                     if self._pm._dispatch_backoffed(spec):
                         continue
