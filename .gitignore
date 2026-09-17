@@ -54,3 +54,4 @@ fenixd.log
 
 # gh CLI 本机设备标识等本地运行时状态
 .local/
+todo.txt
