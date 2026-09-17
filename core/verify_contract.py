@@ -972,24 +972,101 @@ def probe_ready(base_url: str, ready: ReadyProbe) -> tuple:
 
 _URL_ORIGIN_RE = re.compile(r"https?://[A-Za-z0-9.\-_]+(?::\d+)?")
 
+# ── 改写作用域（admin 修 2026-09-17：属性选择器毒化事故）──────────────
+# 事故：quick-links-standalone-sync 连续 6 轮 judge 收敛到同一失败集，根因是
+# 旧实现对 **test_scenarios.json 全文** 跑 origin 正则——正则落进 CSS 属性
+# 选择器内部时，把「选择器字面量」当「导航目标」改写：
+#     input[placeholder='https://example.com']  →  input[placeholder='http://127.0.0.1:55187']
+# 该选择器从此永不匹配 DOM，6 个场景在第 5 步 type 集体超时；判官每轮正确
+# 归类 test-defect 并原地修复，修复又被下一轮全文改写再次毒化 → 死循环至
+# judge 重跑硬上限（6/5 轮）冻结 blocked。
+#
+# 改写的本来语义是 BASE_URL 铁律：`navigate`（web）与 `http_request`/
+# `sse_connect`（api）的**目标地址**打新鲜实例。二者已各自有运行时通道
+# （WebRunner.navigate 对扩展工程以 `self._base_url` 为准；ApiRunner 对
+# step.url 走 rewrite_origin），故文件级改写只需覆盖这两类步骤的目标字段。
+_ORIGIN_REWRITE_STEP_ACTIONS = {"navigate", "http_request", "sse_connect"}
+_ORIGIN_TARGET_FIELDS = {
+    # navigate：web 词表用 value，api 词表用 url（二者不共存，按存在者取）
+    "navigate": ("value", "url"),
+    "http_request": ("url",),
+    "sse_connect": ("url",),
+}
+
+
+def _rewrite_origin_in_scenarios(raw, base_url: str) -> tuple[list, int]:
+    """在场景 dict 列表上就地改写目标地址 origin，返回 (新列表, 改写处数)。
+
+    只动作于 ``navigate`` / ``http_request`` / ``sse_connect`` 步骤的目标字段
+    （见上方作用域说明）；其余字段——CSS 属性选择器（``target``）、注入
+    localStorage 的测试数据（``seed.value``）、mock 的 URL 模式
+    （``mock_api.target``）、断言 ``expected``——一律原样保留。
+
+    字段值不是字符串或以非 http(s) 开头（如 ``example.com`` 裸域名、
+    ``not a url`` 非法输入）时跳过：此类值是**产品行为要处理的输入**，
+    不是导航目标。返回改写处数。
+    """
+    if not isinstance(raw, list):
+        return raw, 0
+    prefix = base_url.rstrip("/")
+    out: list = []
+    n = 0
+    for item in raw:
+        if not isinstance(item, dict):
+            out.append(item)
+            continue
+        steps = item.get("steps")
+        if not isinstance(steps, list):
+            out.append(item)
+            continue
+        new_steps: list = []
+        for step in steps:
+            if not isinstance(step, dict) or step.get("action") not in _ORIGIN_REWRITE_STEP_ACTIONS:
+                new_steps.append(step)
+                continue
+            new_step = dict(step)
+            for field in _ORIGIN_TARGET_FIELDS.get(step.get("action"), ()):
+                if field not in new_step:
+                    continue
+                value = new_step[field]
+                if not isinstance(value, str) or not value.startswith(("http://", "https://")):
+                    continue
+                new_value, k = _URL_ORIGIN_RE.subn(prefix, value)
+                if k and new_value != value:
+                    new_step[field] = new_value
+                    n += k
+            new_steps.append(new_step)
+        out.append({**item, "steps": new_steps})
+    return out, n
+
 
 def rewrite_scenarios_origin(scenarios_path: Path, base_url: str) -> int:
-    """把场景文件中所有 http(s) URL 的 origin 改写为本次被测实例（BASE_URL 注入）。
+    """把场景**目标地址**的 origin 改写为本次被测实例（BASE_URL 注入）。
 
-    BASE_URL 铁律的执行点：无论 planner 生成什么地址，场景一律打新鲜实例。
-    只替换 scheme 锚定的 origin（host[:port]），路径与 query 原样保留。
-    返回改写处数（0 = 文件缺失或无 URL）。
+    BASE_URL 铁律的执行点：无论 planner 生成什么地址，`navigate` /
+    `http_request` / `sse_connect` 步骤一律打新鲜实例。只替换 scheme 锚定的
+    origin（host[:port]），路径与 query 原样保留；其余字段（选择器、注入数据、
+    mock 模式、断言期望）MUST NOT 触碰——详见 ``_rewrite_origin_in_scenarios``
+    上方的作用域说明（2026-09-17 属性选择器毒化事故）。
+
+    返回改写处数（0 = 文件缺失/非场景数组/无候选目标）。
     """
     try:
-        content = scenarios_path.read_text(encoding="utf-8")
+        raw = json.loads(scenarios_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return 0
+    if not isinstance(raw, list) or not base_url:
+        return 0
+
+    rewritten, n = _rewrite_origin_in_scenarios(raw, base_url)
+    if not n:
+        return 0
+    try:
+        scenarios_path.write_text(
+            json.dumps(rewritten, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
     except OSError:
         return 0
-    new_content, n = _URL_ORIGIN_RE.subn(base_url.rstrip("/"), content)
-    if n and new_content != content:
-        try:
-            scenarios_path.write_text(new_content, encoding="utf-8")
-        except OSError:
-            return 0
     return n
 
 

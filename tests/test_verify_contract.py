@@ -155,6 +155,70 @@ class TestRewriteOrigin(unittest.TestCase):
     def test_missing_file_zero(self):
         self.assertEqual(rewrite_scenarios_origin(Path("/nonexistent.json"), "x"), 0)
 
+    def _rewrite(self, scenarios):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        p = tmp / "test_scenarios.json"
+        p.write_text(json.dumps(scenarios, ensure_ascii=False), encoding="utf-8")
+        n = rewrite_scenarios_origin(p, "http://127.0.0.1:19099")
+        return n, json.loads(p.read_text(encoding="utf-8"))
+
+    def test_attribute_selector_url_preserved(self):
+        """CSS 属性选择器内的 URL MUST NOT 被改写（2026-09-17 毒化事故回归）。
+
+        quick-links-standalone-sync 连续 6 轮同因失败的根因：全文正则把
+        ``input[placeholder='https://example.com']`` 改写成实例地址，选择器
+        永不匹配 DOM。
+        """
+        n, data = self._rewrite([
+            {"steps": [
+                {"action": "navigate", "value": "http://127.0.0.1:55187/"},
+                {"action": "type",
+                 "target": "input[placeholder='https://example.com']",
+                 "value": "http://127.0.0.1:55187"},
+                {"action": "mock_api", "target": "**/*.myqcloud.com/**", "value": "{}"},
+                {"action": "seed", "target": "k",
+                 "value": '[{"url": "https://www.smzdm.com/p/1/"}]'},
+            ]},
+        ])
+        self.assertEqual(n, 1, "只有 navigate 目标地址应被改写")
+        steps = data[0]["steps"]
+        self.assertEqual(steps[0]["value"], "http://127.0.0.1:19099/")
+        self.assertEqual(steps[1]["target"], "input[placeholder='https://example.com']")
+        self.assertEqual(steps[2]["target"], "**/*.myqcloud.com/**")
+        self.assertIn("smzdm.com", steps[3]["value"])
+
+    def test_assertion_expected_preserved(self):
+        """断言期望值（如默认时间服务器地址）MUST NOT 被改写。"""
+        n, data = self._rewrite([
+            {"assertions": [
+                {"type": "text_match",
+                 "selector": "input[placeholder='https://api.example.com/v1']",
+                 "expected": "https://api.openai.com/v1"},
+            ]},
+        ])
+        self.assertEqual(n, 0)
+        self.assertEqual(data[0]["assertions"][0]["expected"], "https://api.openai.com/v1")
+
+    def test_api_step_url_rewritten(self):
+        """api 步骤 url（http_request/sse_connect）按 BASE_URL 铁律改写。"""
+        n, data = self._rewrite([
+            {"steps": [{"action": "http_request", "method": "GET",
+                        "url": "https://api.example.com/x?q=1"}]},
+        ])
+        self.assertEqual(n, 1)
+        self.assertEqual(data[0]["steps"][0]["url"], "http://127.0.0.1:19099/x?q=1")
+
+    def test_non_absolute_value_skipped(self):
+        """裸域名/非法输入是产品行为要处理的输入，不属导航目标，跳过改写。"""
+        n, data = self._rewrite([
+            {"steps": [{"action": "type",
+                        "target": "input[placeholder='自动获取或手动输入']",
+                        "value": "example.com"}]},
+        ])
+        self.assertEqual(n, 0)
+        self.assertEqual(data[0]["steps"][0]["value"], "example.com")
+
 
 class TestProvisionNodeModules(unittest.TestCase):
     def setUp(self):
