@@ -342,7 +342,13 @@ class EventBus:
 
     @staticmethod
     def _pgrep_live_worktree(spec_name: str) -> bool:
-        """pgrep 匹配 ``.claude/worktrees/{impl,verify}-<spec>-*`` 的 claude 进程。"""
+        """pgrep 匹配 ``.claude/worktrees/{impl,verify}-<spec>-*`` 的 claude 进程。
+
+        与 admin_monitor._pgrep_live_worktree 同语义。处置记录（书面 defer，
+        fix-robustness-edge-cases 1.1）：cmdline 子串匹配在 spec 名互为前缀时
+        误判活性，判定对象是 worktree 目录名而非 run 流文件，不在本 SPEC
+        字面范围；误判方向 fail-open 不误杀。承接方：待 worktree 活性 SPEC。
+        """
         try:
             for prefix in ("impl", "verify"):
                 pattern = f"{prefix}-{spec_name}-"

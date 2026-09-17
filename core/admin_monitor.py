@@ -337,6 +337,14 @@ def _pgrep_live_worktree(spec_name: str) -> bool:
 
     与 event_bus.EventBus._pgrep_live_worktree 同语义（fix-dispatch-orphan
     D4 存活探测）；抽为模块级供 admin 检测与 event_bus 恢复共用同一口径。
+
+    处置记录（fix-robustness-edge-cases 1.1，书面 defer）：``pgrep -f
+    "{prefix}-{spec}-"`` 是 cmdline 子串匹配，spec 名互为前缀（fix-x vs
+    fix-x-y）时 fix-x-y 的活跃进程会误证 fix-x 存活。判定对象是 worktree
+    目录名而非 run 流文件，不在本 SPEC「run 流文件」字面范围内；误判方向
+    为 fail-open（多做「存活」判定，不会误报 stuck/误杀），修复需先枚举
+    worktree 目录再精确匹配，机制不同。承接方：待后续 worktree 活性相关
+    SPEC 处理，本 SPEC 不引入。
     """
     try:
         for prefix in ("impl", "verify"):

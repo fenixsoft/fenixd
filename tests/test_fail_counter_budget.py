@@ -394,11 +394,14 @@ class TestBudgetReconciliation(_Base):
     def test_count_normal_completed_impl_runs(self):
         """死亡 run（error 终态）不计入正常收工数；多 attempt 归并为一 run。"""
         self._make_buggy_spec("demo-spec")
-        self._write_run_file("impl-demo-spec-1000-a1", "error")   # 死亡
-        self._write_run_file("impl-demo-spec-2000-a1", "result")  # 正常
-        self._write_run_file("impl-demo-spec-2000-a2", "result")  # 同 run 的 attempt
-        self._write_run_file("impl-demo-spec-3000-a1", "result")  # 正常
-        self._write_run_file("impl-otherspec-4000-a1", "result")  # 其它 spec
+        # 时间戳段使用真实 10 位 unix 秒（fix-robustness-edge-cases 1.1：
+        # 归属全等守卫经 run_spec_part 解析，只识别 9-10 位时间戳——4 位
+        # 伪时间戳文件解析不出 spec 名会被守卫排除，夹具必须用真实形态）
+        self._write_run_file("impl-demo-spec-1789000000-a1", "error")   # 死亡
+        self._write_run_file("impl-demo-spec-1789000001-a1", "result")  # 正常
+        self._write_run_file("impl-demo-spec-1789000001-a2", "result")  # 同 run 的 attempt
+        self._write_run_file("impl-demo-spec-1789000002-a1", "result")  # 正常
+        self._write_run_file("impl-otherspec-1789000003-a1", "result")  # 其它 spec
 
         self.assertEqual(self.engine._budget._count_normal_completed_impl_runs("demo-spec"), 2)
 
@@ -410,7 +413,7 @@ class TestBudgetReconciliation(_Base):
         INFO 校正日志；有豁免因素才沿用既有 WARN 不改数。
         """
         self._make_buggy_spec("demo-spec")
-        self._write_run_file("impl-demo-spec-1000-a1", "result")
+        self._write_run_file("impl-demo-spec-1789000000-a1", "result")
         self.engine._budget._increment_impl_run_budget_used("demo-spec")  # used=1 = 收工数
         self.engine._budget._reconcile_impl_budget("demo-spec")
         drift = [c for c in self.logger.warning.call_args_list

@@ -16,6 +16,7 @@ from typing import Optional, Set, Dict
 
 from core.proc_utils import is_claude_process
 from core.wip_checkpoint import collapse_wip_commits
+from core.agent_runner.run_files import run_spec_part
 
 # 历史导入路径兼容（verify-process-lifecycle D4：判定上移至 core.proc_utils，
 # 避免 v2_dev_server 等模块 import 本模块造成循环依赖）。
@@ -1346,6 +1347,10 @@ class WorktreeManager:
         try:
             for prefix in ("impl", "verify"):
                 for p in runs_dir.glob(f"{prefix}-{spec_name}-*.jsonl"):
+                    # 精确归属守卫（范式见 recovery.py）：spec 名互为前缀时
+                    # glob 命中不得直接认定——fix-x 不得被 fix-x-y 的流判为残留
+                    if run_spec_part(p.stem) != spec_name:
+                        continue
                     try:
                         m = p.stat().st_mtime
                     except OSError:

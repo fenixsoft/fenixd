@@ -14,6 +14,7 @@ from core.archive_commit import commit_archive_move
 
 # state 组（叶子组已搬移，直接导入无环）
 from .state import parse_state
+from core.agent_runner.run_files import run_spec_part
 
 
 def soft_delete_spec(project_root, spec: str) -> dict:
@@ -37,12 +38,18 @@ def soft_delete_spec(project_root, spec: str) -> dict:
         return {"found": False}
 
     # 运行中保护：runs 目录该 spec 的任意 run 文件 mtime < 120s → 拒绝
+    # 归属全等匹配（fix-robustness-edge-cases 1.1 纳入）：本点原为子串 glob
+    # ``glob(f"*{spec}*.jsonl")``（比前缀 glob 更易误命中，spec a-b 命中
+    # impl-a-b-c-<ts>.jsonl → 误拦 soft-delete）；承接方 refactor-dashboard-
+    # data-module / fix-dashboard-read-path-performance 均已合入，随本 SPEC 修正。
     runs_dir = proot / ".fenix" / "runs"
     protect_window = 120
     now = time.time()
     if runs_dir.is_dir():
         try:
-            for p in runs_dir.glob(f"*{spec}*.jsonl"):
+            for p in runs_dir.glob("*.jsonl"):
+                if run_spec_part(p.stem) != spec:
+                    continue
                 try:
                     if now - p.stat().st_mtime < protect_window:
                         return {"found": True, "running": True, "error": "spec 有进行中的运行"}

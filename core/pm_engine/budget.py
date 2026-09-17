@@ -12,6 +12,7 @@ from core.state_machine import (
     INFRA_REFUNDED_RUN_IDS_FIELD,
     VERIFY_INFRA_ROUNDS_FIELD,
 )
+from core.agent_runner.run_files import run_spec_part, strip_run_id_suffixes
 from pathlib import Path
 import json
 import re
@@ -371,8 +372,13 @@ class ImplBudget:
         if runs_dir.is_dir():
             archive_dir = runs_dir / "archive"
             try:
-                if archive_dir.is_dir() and list(archive_dir.glob(f"impl-{spec_name}-*.jsonl")):
-                    return True
+                if archive_dir.is_dir():
+                    for p in archive_dir.glob(f"impl-{spec_name}-*.jsonl"):
+                        # 精确归属守卫（run 流归属全等匹配，范式见 recovery.py）：
+                        # spec 名互为前缀（fix-x vs fix-x-y）时 glob 命中不得直接认定
+                        if run_spec_part(p.stem) != spec_name:
+                            continue
+                        return True
             except OSError:
                 pass
         return False
@@ -380,8 +386,8 @@ class ImplBudget:
     def _count_normal_completed_impl_runs(self, spec_name: str) -> int:
         """从 .fenix/runs/ 侧车统计本 spec 正常收工的实现 run 数。
 
-        run_id 规则 ``impl-<spec>-<ts>[-a<n>]``（每 attempt 一个产物文件，
-        同一 run 的多 attempt 视为一个 run，取最新 attempt 产物）。
+        run_id 规则 ``impl-<spec>-<ts>[-a<n>][-r<m>]``（每 attempt/瞬态重试一个
+        产物文件，同一 run 的多 attempt/重试视为一个 run，取最新产物）。
         判据：产物末行（终态行）为 error ＝ 死亡 run，不计；
         result 终态 ＝ 正常收工（成功或带收工结果的失败均计入）。
         """
@@ -390,7 +396,10 @@ class ImplBudget:
             return 0
         newest_attempt: dict = {}
         for p in runs_dir.glob(f"impl-{spec_name}-*.jsonl"):
-            base = re.sub(r"-a\d+$", "", p.stem)
+            if run_spec_part(p.stem) != spec_name:
+                continue  # 精确归属守卫（fix-x vs fix-x-y 前缀误命中全部排除）
+            # 归并键剥除 attempt/瞬态重试后缀：-a1 与 -a1-r2 同属一个 run
+            base = strip_run_id_suffixes(p.stem)
             try:
                 mtime = p.stat().st_mtime
             except OSError:

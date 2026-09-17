@@ -24,6 +24,7 @@ from core.dashboard.data import (
     parse_run_task_done,
     record_project_event,
 )
+from core.agent_runner.run_files import run_spec_part
 from core.run_task_track import parse_tasks_md, parse_unattainable as _parse_unattainable
 from core.pm_engine.family import FamilyGovernor
 from core.pm_engine.budget import ImplBudget
@@ -1994,6 +1995,10 @@ class PMEngine:
         try:
             for prefix in ("impl", "verify", "planner-plan", "planner-judge", "admin"):
                 for p in runs_dir.glob(f"{prefix}-{spec_name}-*.jsonl"):
+                    # 精确归属守卫（范式见 recovery.py）：spec 名互为前缀时
+                    # glob 命中不得直接认定——fix-x 不得被 fix-x-y 的活动豁免
+                    if run_spec_part(p.stem) != spec_name:
+                        continue
                     try:
                         if p.stat().st_mtime >= cutoff:
                             return True

@@ -5,7 +5,7 @@
 """
 
 from pathlib import Path
-from core.agent_runner.run_files import append_run_error, append_run_line
+from core.agent_runner.run_files import append_run_error, append_run_line, run_spec_part
 from datetime import datetime, timezone
 import json
 import subprocess
@@ -293,6 +293,10 @@ class LivenessSupervisor:
             except OSError:
                 return False
             for p in paths:
+                # 精确归属守卫（范式见 recovery.py）：spec 名互为前缀时
+                # glob 命中不得直接认定——fix-x 不得被 fix-x-y 的活跃流延期
+                if run_spec_part(p.stem) != spec_name:
+                    continue
                 try:
                     if p.stat().st_mtime >= cutoff:
                         return True

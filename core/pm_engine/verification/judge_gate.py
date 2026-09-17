@@ -16,6 +16,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from core.agent_runner.run_files import run_spec_part
+
 # judge-rerun-stability R1：单 spec judge 重跑硬上限（judge run 总数）。
 _MAX_JUDGE_RERUNS = 5
 
@@ -250,7 +252,12 @@ def _last_planner_run_cost(pipeline, spec_name: str) -> str:
     try:
         runs_dir = pipeline._context.project_root / ".fenix" / "runs"
         if runs_dir.is_dir():
-            candidates = sorted(runs_dir.glob(f"planner-plan-{spec_name}-*.jsonl"))
+            candidates = sorted(
+                p for p in runs_dir.glob(f"planner-plan-{spec_name}-*.jsonl")
+                # 精确归属守卫（范式见 recovery.py）：spec 名互为前缀时
+                # glob 命中不得直接认定——planner-plan-fix-x 不得取 fix-x-y 的耗时
+                if run_spec_part(p.stem) == spec_name
+            )
             if candidates:
                 last = candidates[-1]
                 duration_s = None

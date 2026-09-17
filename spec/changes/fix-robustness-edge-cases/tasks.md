@@ -33,6 +33,10 @@
   kind: modify
 - path: core/dashboard/registry.py
   kind: modify
+- path: core/pm_engine/verification/judge_gate.py
+  kind: modify
+- path: core/dashboard/data/spec_archive.py
+  kind: modify
 - path: tests/test_run_spec_prefixed_attribution.py
   kind: new
 - path: tests/test_admin_store_corruption.py
@@ -41,15 +45,15 @@
   kind: new
 ```
 
-> 路径说明（planner 耗时点，条件式）：`core/pm_engine/verification.py` 已列入 Deliverables。若实现时前序 `refactor-verification-module` **尚未落地**（现状：该文件仍为 6304 行单文件、`core/pm_engine/verification/` 包不存在），则直接改 `core/pm_engine/verification.py`；若**已落地**，则改其派生模块并把该派生模块路径补入 Deliverables。不得在未列入 Deliverables 的文件上实现本 SPEC 的改动。
+> 路径说明（planner 耗时点，条件式）：`core/pm_engine/verification.py` 已列入 Deliverables。若实现时前序 `refactor-verification-module` **尚未落地**（现状：该文件仍为 6304 行单文件、`core/pm_engine/verification/` 包不存在），则直接改 `core/pm_engine/verification.py`；若**已落地**，则改其派生模块并把该派生模块路径补入 Deliverables。不得在未列入 Deliverables 的文件上实现本 SPEC 的改动。**实现时状态**：refactor-verification-module 已落地（`core/pm_engine/verification/` 包存在），planner 耗时点落在派生模块 `core/pm_engine/verification/judge_gate.py`（`_last_planner_run_cost`），已补入 Deliverables。另：`core/dashboard/data/spec_archive.py`（原子串 glob 点，承接方 refactor-dashboard-data-module / fix-dashboard-read-path-performance 均已合入）随本 SPEC 纳入修正，已补入 Deliverables。
 
 ## 1. spec 归属全等匹配
 
-- [ ] 1.0 **（前置，必须先做）补齐 `run_spec_part` 后缀解析**：`core/agent_runner/run_files.py:66` 现仅剥 `-a<n>` 与时间戳、不识别 `-r<n>`；实测 `.fenix/runs/` 有 **40 个** `<prefix>-<spec>-<ts>-a<n>-r<m>.jsonl` 文件（如 `impl-add-control-plane-silent-failure-guards-1789419431-a1-r1.jsonl`）会被解析成整段而非 spec 名。改为同时剥离 `-a<n>` 与 `-r<n>`（参考 `core/admin_monitor.py:1856 _spec_from_run_id` 的 `^(.*)-\d{9,10}(-(?:a|r)\d+)*$`，但前缀表仍以 `RUN_ID_AGENT_PREFIXES` 为唯一真源）。**本步未完成前不得进入 1.1**——直接上全等守卫会把在跑的 run 判为「非本 spec」，活性/活动判定取假、预算豁免失效、`find_impl_run_file` 取到旧产物，即误报 stuck；该错误模式有前次事故记录（见 `_spec_from_run_id` docstring 引用的 evo-verifier-result-single-source）。
-- [ ] 1.1 枚举全部「按 spec 名查 run 流」判定点并逐一改为「glob 后经 `run_spec_part` 解析全等比较」。**完整清单（实测 file:line）**：`core/pm_engine/budget.py:336`（archive 目录）、`core/pm_engine/budget.py:355`、`core/pm_engine/engine.py:1986`、`core/pm_engine/verification.py:4174`（planner-plan）、`core/agent_runner/liveness.py:284`、`core/worktree_manager.py:1265`、`core/run_task_track.py:74`。**另有两处同型但形态更宽，必须给出显式处置（纳入本 SPEC 或书面 defer 并注明承接方）**：① `core/dashboard/data.py:1038` 用 `glob(f"*{spec}*.jsonl")` **子串**匹配 run 文件，比前缀 glob 更易误命中，已构成 spec.md「所有按 spec 名查找 run 流文件的判定点 MUST 全等」的违约，但该文件归属 `refactor-dashboard-data-module` / `fix-dashboard-read-path-performance`，须写明由谁承接；② `core/admin_monitor.py:280-295` 与 `core/event_bus.py:339-350` 的 `_pgrep_live_worktree` 以 `pgrep -f "impl-<spec>-"` 子串匹配 worktree 目录名，spec 名互为前缀时误判活性——不在本 requirement 的「run 流文件」字面范围内，处置须写明。
-- [ ] 1.2 确认 `run_spec_part` 为唯一解析来源，无新增重复实现；同时记录与 `admin_monitor._spec_from_run_id`（`core/admin_monitor.py:1856`）的关系——1.0 完成后二者对 `-r<n>` 口径应一致，须在注释或提交信息中说明，避免再次漂移
-- [ ] 1.3 新增 `tests/test_run_spec_prefixed_attribution.py`：构造 `impl-fix-x-*` 与 `impl-fix-x-y-*` 断言各判定点不误归属；**并覆盖后缀形态** `impl-fix-x-<ts>-a1.jsonl` 与 `impl-fix-x-<ts>-a1-r2.jsonl`（断言仍归属 `fix-x`，即「加守卫不漏命中」）
-- [ ] 1.4 全量 pytest（重点 `test_pm_recovery`、`test_dispatch_aging`、`test_worktree_stray_and_identical`、`test_dashboard_*`），独立 commit
+- [x] 1.0 **（前置，必须先做）补齐 `run_spec_part` 后缀解析**：`core/agent_runner/run_files.py:66` 现仅剥 `-a<n>` 与时间戳、不识别 `-r<n>`；实测 `.fenix/runs/` 有 **40 个** `<prefix>-<spec>-<ts>-a<n>-r<m>.jsonl` 文件（如 `impl-add-control-plane-silent-failure-guards-1789419431-a1-r1.jsonl`）会被解析成整段而非 spec 名。改为同时剥离 `-a<n>` 与 `-r<n>`（参考 `core/admin_monitor.py:1856 _spec_from_run_id` 的 `^(.*)-\d{9,10}(-(?:a|r)\d+)*$`，但前缀表仍以 `RUN_ID_AGENT_PREFIXES` 为唯一真源）。**本步未完成前不得进入 1.1**——直接上全等守卫会把在跑的 run 判为「非本 spec」，活性/活动判定取假、预算豁免失效、`find_impl_run_file` 取到旧产物，即误报 stuck；该错误模式有前次事故记录（见 `_spec_from_run_id` docstring 引用的 evo-verifier-result-single-source）。
+- [x] 1.1 枚举全部「按 spec 名查 run 流」判定点并逐一改为「glob 后经 `run_spec_part` 解析全等比较」。**完整清单（实测 file:line）**：`core/pm_engine/budget.py:336`（archive 目录）、`core/pm_engine/budget.py:355`、`core/pm_engine/engine.py:1986`、`core/pm_engine/verification.py:4174`（planner-plan）、`core/agent_runner/liveness.py:284`、`core/worktree_manager.py:1265`、`core/run_task_track.py:74`。**另有两处同型但形态更宽，必须给出显式处置（纳入本 SPEC 或书面 defer 并注明承接方）**：① `core/dashboard/data.py:1038` 用 `glob(f"*{spec}*.jsonl")` **子串**匹配 run 文件，比前缀 glob 更易误命中，已构成 spec.md「所有按 spec 名查找 run 流文件的判定点 MUST 全等」的违约，但该文件归属 `refactor-dashboard-data-module` / `fix-dashboard-read-path-performance`，须写明由谁承接；② `core/admin_monitor.py:280-295` 与 `core/event_bus.py:339-350` 的 `_pgrep_live_worktree` 以 `pgrep -f "impl-<spec>-"` 子串匹配 worktree 目录名，spec 名互为前缀时误判活性——不在本 requirement 的「run 流文件」字面范围内，处置须写明。
+- [x] 1.2 确认 `run_spec_part` 为唯一解析来源，无新增重复实现；同时记录与 `admin_monitor._spec_from_run_id`（`core/admin_monitor.py:1856`）的关系——1.0 完成后二者对 `-r<n>` 口径应一致，须在注释或提交信息中说明，避免再次漂移
+- [x] 1.3 新增 `tests/test_run_spec_prefixed_attribution.py`：构造 `impl-fix-x-*` 与 `impl-fix-x-y-*` 断言各判定点不误归属；**并覆盖后缀形态** `impl-fix-x-<ts>-a1.jsonl` 与 `impl-fix-x-<ts>-a1-r2.jsonl`（断言仍归属 `fix-x`，即「加守卫不漏命中」）
+- [x] 1.4 全量 pytest（重点 `test_pm_recovery`、`test_dispatch_aging`、`test_worktree_stray_and_identical`、`test_dashboard_*`），独立 commit
 
 ## 2. admin_store 抗损坏
 
