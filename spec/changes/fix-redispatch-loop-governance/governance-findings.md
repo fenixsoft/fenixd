@@ -62,4 +62,44 @@ design Open Questions「归因指纹的归一化规则具体到什么粒度（�
 worktree 路径）。**风险**：归一化过度会把不同原因判为同因 → 以「不同因不误熔断」
 回归用例锁定边界。
 
-## 2. 实现过程追加（占位，收尾时填最终态）
+## 2. 实现过程追加（收尾时填最终态）
+
+### F-8：`retries >= max_r` 原「行动性同状态更新补发」不再适用
+
+原 queue.py 的 `retries >= max_r` 分支在「清零 + 重派」之后有一行注释
+「3.2 行动性同状态更新补发（fix-dispatch-orphan D1）：失败落回 ready 后可能无后续
+事件触达…立即重新排队实现器，避免滞留为孤儿」。本 SPEC 3.4 把该分支改为冻结转人工
+（blocked + frozen）——孤儿担忧的基础消失（冻结态是终态，等待人工解冻而非轮询重派），
+故该补发随空转一并移除，不构成行为回退。非冻结重试路径（retries < max_r）本身
+从未 enqueue（重派经队列重处理 + full_scan recovery 兜底），语义不变。
+
+### F-9：收敛判据的「partial 前置」由调用方保证
+
+`honest_exit_convergence_gap` 只做「缺口 ⊆ unattainable × 无非法申报」判定，
+`status == "partial"` 前置由两处调用点各自保证（`_run_agent_worker` 与
+`_run_fast_track_flow` 均在 `impl_status/ft_result.status == "partial"` 时才调用
+`_honest_exit_gap`）。success/error 形态下一律返回 []，不存在「非 partial 误收敛」。
+
+### F-10：fast-track 车道不参与同因 streak 记账（design 作用域边界）
+
+`_handle_fast_track_failure` 的 max_r 封顶改为冻结转人工，但**不**增减
+`_redispatch_same_cause_streak`——design D3 明确「新 streak 只在 dispatch 的
+通用失败重派分支（`else: # Retry or mark error`）记账」，fast-track 失败处理器
+不属于该分支（其归因文案形态与 full 车道不同，单列熔断维度会造成双口径漂移）。
+
+## 3. 疑点清单最终态（tasks 5.3）
+
+| 疑点 | 标题 | 最终态 |
+|---|---|---|
+| F-1 | dispatch.py 声明路径系包 | ✅ 已解决：按 `core/pm_engine/dispatch/` 包内文件实现；结果文件 findings 登记 `deliverable-dispute` |
+| F-2 | retries >= max_r 空转 | ✅ 已解决：3.3/3.4 冻结转人工（full + fast-track 两车道） |
+| F-3 | fast-track 收敛死路 | ✅ 已解决：2.4 D2a 方案 (a) 降级完整模式；裁决理由记入 design |
+| F-4 | 收敛点丢弃非法 unattainable | ✅ 已解决：2.5 fail-closed（单点 `honest_exit_convergence_gap`） |
+| F-5 | result_gate 未导入 gap_from_result | ✅ 已解决：runner 侧按需导入（同模块，非新增依赖）；design 描述与代码差异已澄清 |
+| F-6 | serialize 键表表述 | ✅ 已解决：`_` 前缀全量透传已覆盖，无需改键表；重启保持性测试已补 |
+| F-7 | 指纹归一化粒度 | ✅ 已解决：剔除 run_id/时间戳/worktree 路径三段；「同缺口跨轮稳定」与「不同因不误熔断」双向回归用例锁定 |
+| F-8 | 冻结取代行动性补发 | ✅ 已解决：冻结态终态语义下补发不再必要；见 §2 |
+| F-9 | partial 前置由调用方保证 | ✅ 已解决：契约测试覆盖 partial/非 partial 域 |
+| F-10 | fast-track 不记账 streak | ✅ 已解决：作用域边界测试（3.3b）锁定四条通道不增减 streak |
+
+**遗留**：无。全部疑点已解决或转入契约测试锁定。

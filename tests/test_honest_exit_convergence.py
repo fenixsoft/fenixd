@@ -300,3 +300,60 @@ class TestHonestExitGapReadSource(unittest.TestCase):
              "unattainable": UNATTAINABLE_73},
         )
         assert gap == [], gap
+
+
+class TestHonestExitConvergencePoint(unittest.TestCase):
+    """fix-redispatch-loop-governance 扩充：收敛判据单点（D1/D2b/D4）回归。
+
+    - 单点函数 honest_exit_convergence_gap 与 Dispatcher._honest_exit_gap 同结论；
+    - 非法 unattainable 项 fail-closed（不收敛，防「只卡第一次」降级放行洗白窗口）；
+    - 缺口为空（partial 不自洽）MUST NOT 当收敛放过。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.root = Path(self.tmpdir)
+        self.spec = "demo"
+        d = self.root / "spec" / "changes" / self.spec
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "tasks.md").write_text(HUMAN_GATE_TASKS, encoding="utf-8")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _gap(self, payload):
+        from core.run_task_track import honest_exit_convergence_gap
+        return honest_exit_convergence_gap(payload, self.root, self.spec)
+
+    def test_invalid_unattainable_fail_closed(self):
+        """含非法条目（task 非合法 id）→ 不收敛（D2b）。"""
+        gap = self._gap(
+            {"status": "partial", "completed_tasks": ["1.1", "1.2"],
+             "unattainable": [{"task": "7.3", "reason": "门控"},
+                              {"task": "NOT-A-TASK", "reason": "非法"}]}
+        )
+        assert gap == [], gap
+
+    def test_empty_gap_not_converged(self):
+        """缺口为空（partial 不自洽）→ 不收敛（MUST NOT 把无缺口当收敛放过）。"""
+        gap = self._gap(
+            {"status": "partial", "completed_tasks": ["1.1", "1.2", "7.3"],
+             "unattainable": []}
+        )
+        assert gap == [], gap
+
+    def test_single_point_same_conclusion_as_dispatcher(self):
+        """单点函数与 Dispatcher._honest_exit_gap 对同一结果同结论。"""
+        from core.pm_engine.dispatch import Dispatcher
+
+        pm = MagicMock()
+        pm.project_root = self.root
+        for payload in (
+            {"status": "partial", "completed_tasks": ["1.1", "1.2"],
+             "unattainable": UNATTAINABLE_73},
+            {"status": "partial", "completed_tasks": ["1.1"], "unfinished": []},
+            {"status": "partial", "completed_tasks": ["1.1", "1.2"],
+             "unattainable": [{"task": "9.9", "reason": "越界申报"}]},
+        ):
+            assert self._gap(payload) == Dispatcher._honest_exit_gap(
+                pm, self.spec, payload), payload
