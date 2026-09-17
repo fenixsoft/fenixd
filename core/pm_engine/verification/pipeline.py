@@ -560,12 +560,13 @@ class VerificationPipeline:
     def _clear_degrade_context(self, spec_name: str) -> None:
         return _clear_degrade_context(self, spec_name)
 
-    def _run_three_stage_verification(self, spec_name: str, _repair_depth: int = 0):
-        """三步验证流水线主逻辑。"""
-        # ── 在飞 verify 结果状态判据（fix-daemon-lifecycle-races D6）：入口状态
-        # 非 testing → DEBUG 丢弃本流水线结果（注明当前状态），不执行任何迁移/
-        # 回退/派发。覆盖 stale-result 防护拨回 implemented、并发双路径中先到者
-        # 已推进、以及一切状态漂移变体。正常路径（dispatch 刚置 testing）不受影响。
+    def _check_entry_status(self, spec_name: str) -> bool:
+        """入口状态判据（fix-daemon-lifecycle-races D6）：非 testing 返回 False。
+
+        返回 True 表示 spec 处于 testing，可继续本流水线；False 表示结果应丢弃
+        （DEBUG 注明当前状态，不执行任何迁移/回退/派发）。覆盖 stale-result 防护
+        拨回 implemented、并发双路径中先到者已推进、以及一切状态漂移变体。
+        """
         _entry_status = (self._context.state_machine.read_one(spec_name) or {}).get("status", "")
         if _entry_status != "testing":
             self._context.logger.debug(
@@ -573,20 +574,24 @@ class VerificationPipeline:
                 f"Verify result discarded for '{spec_name}': spec is "
                 f"'{_entry_status}', not testing at pipeline entry — dropped",
             )
-            return
+            return False
+        return True
 
-        import asyncio
+    def _reload_verify_engine_modules(self) -> None:
+        """重新加载验证引擎模块，确保使用最新代码（D4：局部 import 留在函数体内）。
+
+        fenixd 作为常驻进程运行，Python 会缓存已导入的模块，实现者更新代码后
+        缓存不会自动失效，必须显式重新加载。注意：子模块必须先于父包重新加载
+        （依赖顺序）。
+
+        额外保障机制（fix-fix-fix-fix）：importlib.reload 不会更新其他模块中
+        已导入的名称引用，因此在 reload 之后显式重新导入核心类，确保使用最新
+        版本。测试靠 patch("core.verify_engine.VerifyEngine") 生效正因 import
+        在函数体内于调用时执行——提取时 MUST 保留 import 于本方法体内（D4）。
+        """
         import importlib
         import sys
 
-        # 重新加载验证引擎模块，确保使用最新代码
-        # fenixd 作为常驻进程运行，Python 会缓存已导入的模块，
-        # 实现者更新代码后缓存不会自动失效，必须显式重新加载
-        # 注意：子模块必须先于父包重新加载（依赖顺序）
-        #
-        # 额外保障机制（fix-fix-fix-fix）：
-        # importlib.reload 不会更新其他模块中已导入的名称引用，
-        # 因此在 reload 之后显式重新导入核心类，确保使用最新版本。
         _verify_modules = [
             "core.verify_engine.visual_diff",
             "core.verify_engine.browser",
@@ -632,22 +637,498 @@ class VerificationPipeline:
             except Exception:
                 pass
 
-        from core.verify_engine import VerifyEngine
-        from core.verify_engine.scenarios import load_scenarios
+    def _handle_verdict_evidence_rejection(self, spec_name: str, verdict_ret: dict) -> None:
+        """裁决证据分类校验失败处置（add-verdict-evidence-taxonomy D1-D5）。
 
-        # ── 阶段1+2: Planner↔场景验收闭环（2026-08-28）──
-        # 场景验收（绝对 navigate URL/完整性）失败 → 写 REPLAN_FEEDBACK.md 退回
-        # plan 阶段重新生成，上限 2 次重排；连续失败保持 implemented + error
-        # 可见（验收失败属环境/任务书问题，绝非产品缺陷，绝不流转 bug-found）。
-        verify_dir = self._context.project_root / ".fenix" / "verify-progress" / spec_name
-        replan_left = 2
-        replan_feedback = None
-        # fix-replan-feedback-injection：上一轮验收错误原文——连续两轮一字不差说明
-        # planner 未消费反馈（重跑即纯烧钱），升级为 ERROR 提示人工关注。
-        prev_replan_error = None
-        report = None
-        app_reachable = True
-        reach_note = ""
+        judge 已在 report.json 增强每个非 PASS 场景的 classification/evidence。
+        此处确定性校验：不合规 → 走既有 judge 重试一次（同 run_planner 调用）；
+        二次仍不合规 → cause=violations，blocked-env + 告警（与 verify-report-gate
+        阻断语义一致，宁可不推进也不带病采纳）。重试派发被 frozen/取消拦截 =
+        人工已接管 → 静默让位（零写入零告警）；派发失败/异常/产物丢失 → 温和
+        处置不发 verdict_evidence_invalid。合规后按分类-状态映射强制重写 status（D3）。
+        """
+        cause = verdict_ret.get("cause", "violations")
+        violations = verdict_ret.get("violations") or []
+        dispatch_error = verdict_ret.get("dispatch_error") or ""
+        if cause == "batch_attribution_dedup":
+            # ── 批量归因查重拒绝采纳（fix-verdict-dedup-resynthesis D1/D2）──
+            # 查重拒绝已由 _verify_verdict_evidence 内部完成「落盘违规 →
+            # 派发重合成 judge → 回灌校验」闭环；本分支仅剩的语义是「重合成
+            # 预算耗尽已升级 blocked」——_handle_attr_dedup_rejection 已置
+            # blocked + admin 告警，此处仅 WARNING 对账，不重复写 error。
+            # report.json 实际已在盘上（judge 自己写的），拒绝的是状态机
+            # 采纳而非落盘——不再「保持 testing 静默等待」（170 分钟自锁
+            # 与全量重跑罚金的根因已消除）。
+            detail = violations[0].get("reason") if violations else ""
+            self._context.logger.warning(
+                "pm_engine",
+                f"批量归因查重拒绝采纳 '{spec_name}'（重合成预算耗尽）— "
+                f"已 blocked 等待人工裁决: {detail}",
+            )
+            return
+        if cause in ("dispatch_frozen", "dispatch_cancelled"):
+            # ── 让位语义（design D2 / fix-verdict-retry-misattribution）──
+            # frozen 门/取消旗标 = 人工已接管：零写入（不 update_spec——不写
+            # status/error、不触 _cancelled_hold）、不发任何人工升级告警；
+            # 留痕已在上游方法内以 INFO 完成，此处补充采纳侧结论供日志对账。
+            self._context.logger.info(
+                "pm_engine",
+                f"裁决证据校验重试派发被"
+                f"{'取消旗标' if cause == 'dispatch_cancelled' else 'frozen 门'}"
+                f"拦截 '{spec_name}' — 让位：spec 保持 testing 原状，"
+                f"不写 blocked、不发告警（cause={cause}）",
+            )
+            return
+        if cause == "dispatch_failed":
+            # ── 派发故障温和处置（design D1）──
+            # 网关拒绝/预算闸门等：写 error 留痕但不动 status、不写 blocked、
+            # 不发 verdict_evidence_invalid（「二次违反证据契约」语义不得被
+            # 派发故障冒用）；spec 保持 testing 等待下轮重验。
+            self._context.logger.warning(
+                "pm_engine",
+                f"裁决重试 judge 派发失败 '{spec_name}' — 保持 testing，"
+                f"留 error 待下轮重验: {dispatch_error}",
+            )
+            self._context.state_machine.update_spec(
+                spec_name,
+                {
+                    "error": f"裁决重试 judge 派发失败（非证据不合规）：{dispatch_error}",
+                },
+            )
+            return
+        if cause == "dispatch_exception":
+            # ── 异常早退（design D1 / D7）──
+            # 上游已确保不复读旧 report.json、不打「重试后仍不合规」；此处
+            # 同样不按违规处置——留 error 保持 testing，异常多属瞬态。
+            self._context.logger.error(
+                "pm_engine",
+                f"裁决证据校验重试异常早退 '{spec_name}' — 保持 testing，"
+                f"留 error 待下轮重验: {dispatch_error}",
+            )
+            self._context.state_machine.update_spec(
+                spec_name,
+                {
+                    "error": (
+                        f"裁决重试 judge 异常（非证据不合规，未复检旧产物）："
+                        f"{dispatch_error}"
+                    ),
+                },
+            )
+            return
+        if cause == "report_missing":
+            # ── 重试成功但产物不可读（design D1）──
+            # fail-closed：无法确定性校验合规即不推进，阻断交人工；信号沿用
+            # 裁决结果不可读通道，不发 verdict_evidence_invalid（非违规判定）。
+            self._context.logger.error(
+                "pm_engine",
+                f"裁决重试 judge 成功但 report.json 不可读 '{spec_name}' — "
+                f"阻断为 blocked（fail-closed，不按违规处置）",
+            )
+            self._context.state_machine.update_spec(
+                spec_name,
+                {
+                    "status": "blocked",
+                    "error": (
+                        f"验证裁决重试后 report.json 不可读（产物缺失，非证据不合规），"
+                        f"已 blocked 等待人工裁决"
+                    ),
+                },
+            )
+            self._context.escalation_notifier(
+                spec_name=spec_name,
+                signal_type="verdict_result_unreadable",
+                severity="critical",
+                description=(
+                    f"'{spec_name}' 裁决重试后 report.json 不可读，已 blocked "
+                    f"等待人工裁决（非证据不合规）"
+                ),
+                evidence=(
+                    f"spec={spec_name}; cause=report_missing; report="
+                    f".fenix/verify-progress/{spec_name}/report.json"
+                ),
+                recommended_action=(
+                    "检查 judge 重试轮是否覆写/破坏了 report.json（产物门禁外的"
+                    "缺失路径）；修复产物后重置验证或重跑"
+                ),
+            )
+            return
+        if cause != "violations":
+            # ── 未知 cause 保守处置（design risk：fail-closed）──
+            # 前向兼容防护：枚举之外的 cause 值按 violations 同等保守处置
+            # （blocked + 告警），并 ERROR 留痕——不静默放行。
+            self._context.logger.error(
+                "pm_engine",
+                f"裁决证据校验未知 cause '{cause}' '{spec_name}' — 按 violations "
+                f"保守处置（fail-closed）: {verdict_ret}",
+            )
+        # ── cause=violations（真·二次违规）：保留既有语义 blocked + 告警 ──
+        # 本轮回合计入失败历史侧车（cause_type=evidence-invalid），供升级闸门
+        # 分型与轮间 diff（fix-verdict-retry-misattribution D6）。
+        self._append_fail_history(
+            spec_name,
+            "evidence-invalid",
+            [
+                v.get("scenario_id") or v.get("id") or "?"
+                for v in violations
+                if isinstance(v, dict)
+            ],
+        )
+        self._context.logger.error(
+            "pm_engine",
+            f"裁决证据分类二次校验仍失败 '{spec_name}' — 阻断推进为 blocked-env"
+            f"（{len(violations)} 项违规）",
+        )
+        self._context.state_machine.update_spec(
+            spec_name,
+            {
+                "status": "blocked",
+                "error": (
+                    f"验证裁决证据分类校验连续失败：report.json 非 PASS 场景缺 "
+                    f"classification/evidence，重试一次仍不合规（{len(violations)} 项"
+                    f"违规），已 blocked 等待人工裁决"
+                ),
+            },
+        )
+        self._context.escalation_notifier(
+            spec_name=spec_name,
+            signal_type="verdict_evidence_invalid",
+            severity="critical",
+            description=(
+                f"'{spec_name}' 验证裁决证据分类校验连续失败（{len(violations)} 项"
+                f"违规），已 blocked 等待人工裁决"
+            ),
+            evidence=self._verdict_violations_evidence(spec_name, violations),
+            recommended_action=(
+                "检查 planner-judge 是否遵守 prompt 第4步（对全部非 PASS 场景补 "
+                "classification/evidence）；人工重置后重跑验证"
+            ),
+        )
+        return
+
+    def _read_verdict_failclosed(self, spec_name: str):
+        """裁决读取与 fail-closed 防护（fix-verdict-read-failclosed D4）。
+
+        本段承载：warning streak 升级、_read_verdict 结构化三态读取、结果应用处
+        最终状态核对（D6）、裁决不可读重派一次→二次仍不可读 blocked + critical
+        告警。任一失败路径返回 None（丢弃）；成功返回 (verifier_result, verifier_status)。
+        """
+        # ── 阶段3+ warning 连续悬置追踪与升级（design D4 / D5）──
+        # 裁决采纳处更新连续计数侧车；达 2 轮的 warning 场景发 triage 升级告警，
+        # 并写入下一轮 planner prompt 的优先复核清单（triage_recheck.json）。
+        try:
+            triage_hits = self._update_warning_streaks(spec_name)
+            if triage_hits:
+                self._warning_stale_triage_alert(spec_name, triage_hits)
+        except Exception as e:
+            self._context.logger.warning(
+                "pm_engine",
+                f"warning_streaks 更新跳过（异常不阻断采纳）'{spec_name}': {e}",
+            )
+
+        # 读取判定结果（fix-verdict-read-failclosed：结构化三态；
+        # evo-verifier-result-single-source R1：统一走 _read_verdict 入口，
+        # 主树共享回退须过 role/spec 戳校验——implementer 残留不采信）
+        verifier_result = self._read_verdict(spec_name)
+        verifier_status = verifier_result.status if verifier_result.ok else None
+        # ── 结果状态判据（fix-daemon-lifecycle-races D6，结果应用处最终核对）──
+        # 前道守卫之后的取证校验/重试窗口内 spec 亦可能漂移，此处兜底：非 testing
+        # → DEBUG 丢弃，不迁移/不派生/不重派。
+        _apply_status = (self._context.state_machine.read_one(spec_name) or {}).get("status", "")
+        if _apply_status != "testing":
+            self._context.logger.debug(
+                "pm_engine",
+                f"Stale/foreign verify result discarded for '{spec_name}' "
+                f"(current state '{_apply_status}', result {verifier_status}) — "
+                f"spec no longer in testing, result dropped",
+            )
+            return None
+        # ── 裁决不可读 → fail-closed（fix-verdict-read-failclosed D4）──
+        # 结果文件缺失/非法 JSON/status 白名单外一律不得晋级 verified（历史事故：
+        # add-verify-contract-autodraft 裸换行非法 JSON → None → else 分支 →
+        # verified → done → auto-push）。处置：重派 judge 一次 → 复读；二次仍不可读
+        # → blocked + critical 告警（含解析错误原文与结果文件完整路径），不推进
+        # bug-found、不派生 fix。重试前复用入口状态判据（非 testing 丢弃，与
+        # stale-result 防护同构，不新增竞态面）。
+        if not verifier_result.ok:
+            verdict_result_path = (
+                self._context.project_root
+                / ".fenix"
+                / "verify-progress"
+                / spec_name
+                / ".fenix-run-result.json"
+            )
+            retry_status = (self._context.state_machine.read_one(spec_name) or {}).get("status", "")
+            if retry_status == "testing":
+                self._context.logger.warning(
+                    "pm_engine",
+                    f"裁决结果不可读 '{spec_name}'（reason={verifier_result.reason}）"
+                    f"— 重派 judge 一次后复读: {verifier_result.detail}",
+                )
+                retry_judge = self._pm.agent_runner.run_planner(spec_name, "judge")
+                if retry_judge.success:
+                    verifier_result = self._read_verdict(spec_name)
+                    verifier_status = verifier_result.status if verifier_result.ok else None
+            if not verifier_result.ok:
+                self._context.logger.error(
+                    "pm_engine",
+                    f"裁决结果二次仍不可读 '{spec_name}' — 阻断为 blocked"
+                    f"（reason={verifier_result.reason}）: {verifier_result.detail}",
+                )
+                self._context.state_machine.update_spec(
+                    spec_name,
+                    {
+                        "status": "blocked",
+                        "error": (
+                            f"验证裁决结果文件不可读（重派 judge 一次后仍不可读，"
+                            f"reason={verifier_result.reason}）：{verifier_result.detail}"
+                        ),
+                    },
+                )
+                self._context.escalation_notifier(
+                    spec_name=spec_name,
+                    signal_type="verdict_result_unreadable",
+                    severity="critical",
+                    description=(
+                        f"'{spec_name}' 验证裁决结果文件不可读，已 blocked 等待人工裁决"
+                        f"（reason={verifier_result.reason}）"
+                    ),
+                    evidence=(
+                        f"spec={spec_name}; result_file={verdict_result_path}; "
+                        f"parse_error={verifier_result.detail}"
+                    ),
+                    recommended_action=(
+                        "检查 planner-judge 是否以合法 JSON 写入结果文件（字符串内换行/"
+                        "引号/控制字符须转义，建议以代码 json.dump 生成而非手工拼接）；"
+                        "修复文件后重置验证或重跑"
+                    ),
+                )
+                return None
+        return verifier_result, verifier_status
+
+    # ── B9: bug-found 应用（编排骨架，等价搬移）────────────────────────
+    # D1 B9 段落：5 道守卫 → transition → spawn 抑制守卫 → infra 归因。
+    # 旧锚点 verifier_status=='bug-found' 分支体，此处提取为独立方法（D4）。
+    def _apply_bug_found(self, spec_name: str, judge_result, report,
+                         _repair_depth: int) -> None:
+        """处理 verifier_status=='bug-found' 分支：归因门禁 → transition → spawn 抑制 → infra 归因。
+
+        等价搬移自 _run_three_stage_verification 的 bug-found 分支体，保持控制流逐条等价。
+        内部多个 return 为提前退出主函数语义；调用者 MUST 在 return 之后显式 return。
+        """
+        # ── 归因分级门禁（add-verdict-credibility-gate / design D2 / Task 2.2）──
+        # 打回依据全部为 speculative（推测级）时抑制 bug-found 打回：
+        # 转重验一次或写 error「归因证据不足待人工复核」，不得带推测
+        # 信号打回 implementer（B2/B7：宁可多一次重验也不可带假信号打回，
+        # 本次事故直接教训）。
+        if self._speculative_bug_found_gate(spec_name):
+            return
+        # judge 自述环境问题守卫：judge 自己把根因描述为环境/基础设施问题时，
+        # 属「验证没能发生」而非「验证发现了缺陷」，不得流转 bug-found
+        # 派生伪 fix 级联（admin 处置 2026-08-28 failover 相对 URL 伪失败实证）。
+        if self._judge_bugs_declare_env(spec_name) and self._handle_judge_env_declared(
+            spec_name
+        ):
+            return
+        # ── 场景缺陷改道门（add-scenario-defect-triage-gate D1/D2/D3）──
+        # judge 申报 bug-found 后、打回 implementer 前，读 report.json 场景
+        # classification 分布：非 PASS 场景全部显式 test-defect/flaky 且
+        # product-bug=0 → 纯场景缺陷清单，拒绝打回 implementer（不再烧实现轮
+        # 修场景文件——add-spec-status-modal-budget 事故的直接教训），定向重派
+        # judge 一次走 scenario-repaired 原地修复通道。None/未知值/含任一
+        # product-bug 一律不走改道（保守，D1）。重派计入 _SCENARIO_REPAIR_
+        # MAX_ROUNDS 预算（与 scenario-repaired 重入共用 _repair_depth）。
+        if self._scenario_defect_reroute_gate(spec_name, _repair_depth, judge_result):
+            return
+        # 验证报告产物闸门（add-verify-report-gate）：裁决 Agent 漏写报告时
+        # 由框架合成兜底，合成失败则阻断推进（下游修复引用的路径必然可读）
+        report_blocker = self._ensure_verification_report(spec_name)
+        if report_blocker:
+            self._context.state_machine.update_spec(
+                spec_name,
+                {
+                    "error": report_blocker,
+                },
+            )
+            self._context.logger.error(
+                "pm_engine",
+                f"验证报告闸门: '{spec_name}' 阻止推进 bug-found — {report_blocker}",
+            )
+            return
+        # ── verified 一次性放行门（judge-rerun-stability R2）──
+        # 已 verified 且场景集未变 → 拒绝降级为 bug-found（人工 reset
+        # 回 testing 后 legacy/planner 误判防护；与 D6 stale-result 防护
+        # 正交共存——D6 处理非 testing 的 stale 丢弃，R2 处理 testing 内的
+        # 历史 verified 防降级）。
+        if self._verified_gate_refuses(spec_name, "bug-found"):
+            return
+        # fix-observability-gaps 2.2：planner-judge 判定 bug-found（自动来源）
+        self._context.state_machine.transition(
+            spec_name, "bug-found",
+            trigger_run_id=judge_result.run_id, agent_type="planner-judge", channel="auto",
+        )
+        self._context.state_machine.update_spec(
+            spec_name,
+            {
+                "tester_run": judge_result.run_id,
+                "error": "Verification found bugs — see verification report",
+                # 明确非环境性失联：复位 inconclusive 计数（环境恢复后从零重算）
+                "_inconclusive_attempts": 0,
+                # add-verify-parallel-backoff / design D2：bug-found 属健康轮
+                # 判定（非 inconclusive），降档并行度同轮复位。
+                "_verify_parallel_override": None,
+            },
+        )
+        # 裁决采纳后落盘 verdict 稳定性轮次（judge-rerun-stability R1）
+        self._record_verdict_adoption(spec_name, "bug-found", report)
+        # 本轮场景集变更小节追加到验证报告（spec 需求 2.3）
+        self._render_scenario_change_section_to_report(spec_name)
+        self._context.logger.warning(
+            "pm_engine",
+            f"Verifier found bugs in '{spec_name}', transitioning to bug-found",
+        )
+        # ── 守卫二：spawn 抑制（fix-repair-lane-dedup / design 守卫二）──
+        # 被验对象为 fix spec 且自身 ready/implementing（重实现已在飞）时，
+        # 跳过派生子 fix——由在飞重实现承载修复。
+        if self._context.is_fix_spec(spec_name):
+            cur = (self._context.state_machine.read_one(spec_name) or {}).get("status", "")
+            if cur in ("ready", "implementing"):
+                self._context.logger.info(
+                    "pm_engine",
+                    f"守卫二：'{spec_name}' 为 fix spec 且自身 {cur}"
+                    f"（重实现在飞）——跳过派生子 fix",
+                )
+                self._context.state_machine.update_spec(
+                    spec_name,
+                    {
+                        "error": "修复由在飞重实现承载，跳过派生子 fix",
+                    },
+                )
+                return
+        # ── 统一失败归因入口（evo-infra-failure-budget-exempt R1/R3）──
+        # 归因入口处调用 enrich_failure_class：三态分类后，product/unknown
+        # 照常流转 bug-found（unknown 按 product 保守处置，照常累计
+        # _verify_fail_rounds）；infra 兜底拦截（既有 infra 判定点已早退，
+        # 此处为防御性兜底——如误入则按 infra 记账、不派生 fix）。
+        failure_class = self.enrich_failure_class(
+            spec_name,
+            error_text=getattr(judge_result, "error", "") or "",
+        )
+        if failure_class == "infra":
+            # 防御性兜底：归因入口误判 infra（不应发生，既有 infra 判定点
+            # 已早退）——按 infra 记账（预算退款 + _verify_infra_rounds +
+            # _infra_failure_count + 台账），不流转 bug-found、不派生 fix。
+            self._context.logger.warning(
+                "pm_engine",
+                f"归因入口兜底：'{spec_name}' 判定 infra（误入 bug-found "
+                f"分支），按 infra 记账处理不派生 fix",
+            )
+            self._record_infra_failure(
+                spec_name,
+                "infra at attribution entry (fallback)",
+                run_id=getattr(judge_result, "run_id", "") or "",
+            )
+            return
+        # 到达 bug-found 归因（全部门禁已过、非 infra）＝ product 类——
+        # unknown 按 product 保守处置，台账 failure_class 记 product。
+        self._context.on_spec_bug_found(
+            spec_name,
+            failure_class="product",
+            run_id=getattr(judge_result, "run_id", "") or "",
+        )
+
+    # ── B10: verified 应用（编排骨架，等价搬移）────────────────────────
+    # D1 B10 段落：进度核对 / 报告闸 / 洗白门 → transition（7 计数器归零）→ 采纳落盘。
+    def _apply_verified(self, spec_name: str, judge_result, report) -> None:
+        """处理 verifier_status!='bug-found'（verified）分支：进度核对 → transition → 7 计数器归零。
+
+        等价搬移自 _run_three_stage_verification 的 verified 分支体。
+        内部 return 为提前退出主函数语义；调用者 MUST 在 return 之后显式 return。
+        """
+        # D6: testing→verified 前置进度核对：done>=total 才晋级
+        vblocker = self._check_verification_gate(spec_name)
+        if vblocker:
+            # 不完整：按 verifier 失败处理，写 error 摘要，不晋级 verified
+            self._context.state_machine.update_spec(
+                spec_name,
+                {
+                    "tester_run": judge_result.run_id,
+                    "error": vblocker,
+                },
+            )
+            self._context.logger.warning(
+                "pm_engine",
+                f"验证未完成 '{spec_name}'，阻止晋级 verified: {vblocker}",
+            )
+            return
+        # 验证报告产物闸门（add-verify-report-gate）
+        report_blocker = self._ensure_verification_report(spec_name)
+        if report_blocker:
+            self._context.state_machine.update_spec(
+                spec_name,
+                {
+                    "tester_run": judge_result.run_id,
+                    "error": report_blocker,
+                },
+            )
+            self._context.logger.error(
+                "pm_engine",
+                f"验证报告闸门: '{spec_name}' 阻止晋级 verified — {report_blocker}",
+            )
+            return
+        # verified 洗白门禁（help-center 0/15 verified 事故防线）：
+        # 0 通过或 env 失败不得放行，升级 admin 处置
+        if not self._env_whitewash_gate(spec_name):
+            return
+        # fix-observability-gaps 2.2：planner-judge 判定 verified（自动来源）
+        self._context.state_machine.transition(
+            spec_name, "verified",
+            trigger_run_id=judge_result.run_id, agent_type="planner-judge", channel="auto",
+        )
+        self._context.state_machine.update_spec(
+            spec_name,
+            {
+                "tester_run": judge_result.run_id,
+                "error": None,
+                "_inconclusive_attempts": 0,
+                # add-verify-parallel-backoff / design D2：verified 属健康轮，
+                # 降档并行度同轮复位（与 _inconclusive_attempts 同生命周期）。
+                "_verify_parallel_override": None,
+                # add-fail-counter-budget D1：验证 PASS 是 _verify_fail_rounds
+                # 的唯一归零点——跨修复周期累计的失败计数在此清零并持久化，
+                # 打回重派/修复收工等中间转换不再归零（见 _do_spec_bug_found）。
+                "_verify_fail_rounds": 0,
+                # evo-infra-failure-budget-exempt R3：_verify_infra_rounds 与
+                # _verify_fail_rounds 同生命周期——验证 PASS 唯一归零点两处同写，
+                # 避免跨周期累计导致 dashboard 展示失真。
+                VERIFY_INFRA_ROUNDS_FIELD: 0,
+                # fix-daemon-lifecycle-races D3：验证自然通过（verified 落定）是
+                # _verify_redo_count（重启恢复重验计数）的清零点，与
+                # _verify_fail_rounds 清零点对齐；人工 unfreeze_spec 亦清零。
+                "_verify_redo_count": 0,
+                # add-blocked-reverify-lane D3：env 阻塞轮次唯一自动清零点=验证
+                # 通过（与 _verify_fail_rounds PASS 唯一归零点同语义）；处置复位/
+                # 恢复/fix 链等中间转换不清零。
+                ENV_BLOCK_ROUNDS_FIELD: 0,
+            },
+        )
+        # 裁决采纳后落盘 verdict 稳定性轮次（judge-rerun-stability R1）
+        self._record_verdict_adoption(spec_name, "verified", report)
+        # 失败历史侧车随 verified 终态清空（fix-verdict-retry-misattribution D6）
+        self._clear_fail_history(spec_name)
+        # 本轮场景集变更小节追加到验证报告（spec 需求 2.3）
+        self._render_scenario_change_section_to_report(spec_name)
+        self._context.on_spec_verified(spec_name)
+
+    # ── B1: 冻结加载 + 损坏升级（等价搬移）─────────────────────────────
+    # D1 B1 段落：加载冻结场景集；若损坏则 escalate env_blocked 并返回 aborted 标记，
+    # 调用者 MUST return 终止本流水线。
+    def _load_frozen_or_escalate(self, spec_name: str, verify_dir) -> tuple:
+        """加载冻结场景文件，损坏时升级 env_blocked 并返回 (None, True)；正常返回 (frozen, False)。
+
+        等价搬移自 _run_three_stage_verification 的冻结加载 + 腐化升级段落。
+        frozen 为列表（冻结场景集）或 None（无冻结、走出题）；aborted=True
+        表示损坏已升级，调用者 MUST return 终止流水线。
+        """
         # ── 场景冻结复用（scenario-reuse-on-reenter，2026-09-04）──
         # 冻结集一经生成即跨轮一致的量尺：重入验证（打回/修复轮/重试）直接
         # 复用，绝不重新出题——planner 单轮 2h/30M token 级成本只支付一次。
@@ -674,6 +1155,414 @@ class VerificationPipeline:
                 ],
                 title="场景计划争议",
             )
+            return None, True
+        return frozen, False
+
+    # ── B8: scenario-repaired 重入（等价搬移）─────────────────────────
+    # D1 B8 段落：修复预算 / 冻结记账 / 空集拒绝 / 递归调用。
+    # 返回 True 表示已处理（调用者 MUST return）；返回 False 表示非
+    # scenario-repaired 状态，调用者继续后续分支。
+    def _handle_scenario_repaired(self, spec_name: str, verifier_status: str,
+                                  _repair_depth: int) -> bool:
+        """处理 scenario-repaired 通道：预算检查 → 冻结记账 → 空集拒绝 → 尾递归重入。
+
+        等价搬移自 _run_three_stage_verification B8 段落，保持尾递归调用原样。
+        返回 True 表示调用者 MUST return（已重入或预算耗尽/空集拒绝提前退出）；
+        返回 False 表示非 scenario-repaired，调用者继续后续分支。
+        """
+        if verifier_status != "scenario-repaired":
+            return False
+        if _repair_depth >= _SCENARIO_REPAIR_MAX_ROUNDS:
+            self._context.state_machine.update_spec(
+                spec_name,
+                {
+                    "error": (
+                        f"judge 场景原地修复预算耗尽（{_SCENARIO_REPAIR_MAX_ROUNDS} 轮）"
+                        f"— 保持 testing 等待下一轮重验，若仍场景缺陷将按既有升级路径处置"
+                    ),
+                },
+            )
+            self._context.logger.warning(
+                "pm_engine",
+                f"'{spec_name}' judge 场景修复预算耗尽 "
+                f"（{_SCENARIO_REPAIR_MAX_ROUNDS} 轮）— 不再重入",
+            )
+            return True
+        try:
+            freeze_result = self._apply_scenario_freeze(spec_name)
+        except Exception as e:
+            # 冻结记账属辅助治理，异常不阻断修复重入
+            self._context.logger.warning(
+                "pm_engine",
+                f"修复轮场景冻结记账跳过 '{spec_name}'（异常不阻断）: {e}",
+            )
+            freeze_result = None
+        if isinstance(freeze_result, dict) and freeze_result.get("aborted"):
+            # ── 空集显式兜底（evo-planner-scenario-schema-alignment 3.7）──
+            # judge 原地修复后场景集为空（写前预校验整批拒绝）：MUST 拒绝
+            # 本次重入、保持原状并留痕，MUST NOT 以空集或未过滤文件继续
+            # 进入阶段2（0 场景报告会被洗白门 fail-open 放行判 verified）。
+            reject_detail = "、".join(freeze_result.get("rejected") or [])[:400]
+            self._context.state_machine.update_spec(
+                spec_name,
+                {
+                    "error": (
+                        f"judge 原地修复后场景集为空（写前预校验整批拒绝，共 "
+                        f"{freeze_result.get('total', 0)} 条）— 拒绝本次重入，"
+                        f"保持 testing 待人工/下轮处置: {reject_detail}"
+                    ),
+                },
+            )
+            self._context.logger.error(
+                "pm_engine",
+                f"judge 场景修复后无合法场景 '{spec_name}' — 拒绝重入，"
+                f"0 场景不进入阶段2: {reject_detail}",
+            )
+            return True
+        self._context.logger.info(
+            "pm_engine",
+            f"[阶段3+] judge 场景原地修复采纳 '{spec_name}' — 重入执行"
+            f"（第 {_repair_depth + 1}/{_SCENARIO_REPAIR_MAX_ROUNDS} 次修复）",
+        )
+        # 尾递归调用保持原样——调用者 MUST return 以终止当前调用
+        self._run_three_stage_verification(spec_name, _repair_depth=_repair_depth + 1)
+        return True
+
+    # ── B3: 阶段2 引擎执行段（等价搬移，不含 env_error 回写段）──────
+    # D1 B3 段落（D2：引擎执行段可提，env_error 回写段含 continue/break 留循环体）。
+    # 加载场景 → 应用可达性自愈 → 静态缺陷扫描 → VerifyEngine 创建/运行。
+    # D4：VerifyEngine / load_scenarios 的 import 保留在本方法体内（运行时函数体内），
+    # 测试靠 patch("core.verify_engine.VerifyEngine") 在本方法执行时生效。
+    def _execute_stage2(self, spec_name: str, verify_dir, scenarios_path):
+        """阶段2 引擎执行段（等价搬移自循环体内 B3）。
+
+        返回五元组 (env_error, report, app_reachable, reach_note, aborted)：
+        - aborted=True：应用不可达 fail-fast，调用者 MUST return 终止流水线
+        - env_error 非 None：环境错误，调用者走 replan 回写段
+        - env_error=None, report 非 None：引擎执行完成，调用者继续 B4 门禁
+        """
+        import asyncio
+        from core.verify_engine import VerifyEngine
+        from core.verify_engine.scenarios import load_scenarios
+
+        env_error = None
+        report = None
+        app_reachable = True
+        reach_note = ""
+        user_blocked = False
+
+        # ── 阶段2: 验证引擎执行 ──
+        self._context.logger.info("pm_engine", f"[阶段2] 验证引擎执行: {spec_name}")
+
+        # 场景文件验收失败（相对 URL/结构非法）＝ 明确的环境错误：
+        # 退回 plan 阶段重新生成，不走 raise 穿透、更不判 bug-found。
+        try:
+            scenarios = load_scenarios(scenarios_path)
+        except ValueError as e:
+            env_error = f"场景文件验收失败: {e}"
+
+        if env_error is None:
+            # ── 阶段2.5: 应用可达性自愈（最终用户验证必选）──
+            # 场景执行前确保应用可被浏览器访问；不可达时自动启动 commands.start、
+            # 端口冲突换端口重试。自愈失败由下方验证门禁兜底，不静默判定通过。
+            app_reachable, user_blocked, reach_note = self._ensure_app_reachable(spec_name)
+            self._context.logger.info(
+                "pm_engine",
+                f"[阶段2] 应用可达性: {'OK' if app_reachable else '不可达'} — {reach_note or '无 navigate 依赖'}",
+            )
+
+            # ── 可达性自愈失败即本轮 fail-fast（add-verify-unreachable-failfast D1）──
+            # 自愈失败（就绪探针超时 / prepare 失败 / 契约缺失）属确定性环境错误，
+            # 继续跑整轮场景只会空转烧钱、由判定链末段兜底还易误拒。此处直接短路：
+            # 场景执行数=0、不重读场景、不创建/运行 VerifyEngine、不退回 plan 重排，
+            # 复用既有 _escalate_env_blocked 升级通道（落 blocked → 自动呼叫
+            # Administrator → 连续 2 轮冻结转人工）。evidence 用 reach_note（已由
+            # add-verify-preflight-gate D3 内嵌 boot.log 尾部）。user_blocked 守卫：
+            # 「需用户参与（收验证码/登录）」预留判定位恒 False，将来实现后不得被
+            # 短路自动判 blocked，故显式含 not user_blocked。
+            if not app_reachable and not user_blocked:
+                self._context.logger.error(
+                    "pm_engine",
+                    f"[阶段2] 应用不可达，本轮 fail-fast（场景执行数=0）'{spec_name}': "
+                    f"{reach_note}",
+                )
+                self._escalate_env_blocked(
+                    spec_name,
+                    [reach_note],
+                    title="验证环境阻塞（应用不可达）",
+                )
+                return None, None, False, "", True
+
+            # 自愈可能改写场景文件端口（场景声明端口 → 框架分配端口）：
+            # 上方 load 先于自愈，内存场景仍持声明端口，改写只落文件、对本次
+            # 执行无效 → 全场景对失联端口 navigate 整轮伪失败
+            # （add-v3-spec-detail-page：24 场景导航 localhost:8000 全灭）。
+            # 故自愈后必须重读场景文件再执行。
+            try:
+                scenarios = load_scenarios(scenarios_path)
+            except ValueError as e:
+                env_error = f"自愈改写后场景文件验收失败: {e}"
+
+        if env_error is None:
+            # ── 场景静态缺陷扫描（add-scenario-defect-triage-gate D3）──
+            # 在场景集冻结完成后、执行前调用：findings 只作情报落盘
+            # （scenario_static_findings.json）+ judge prompt 定向注入，
+            # fail-open——任何异常记 WARNING，不阻断验证执行。
+            self._run_scenario_static_check(spec_name)
+
+            # 场景执行根：worktree 轮传入 serving worktree 根（CLI 步骤
+            # 缺省 cwd 以此为准，seed 写入落验证树而非主树）；
+            # 无 worktree 轮不传（回退主树 project_root，行为不变）。
+            scenario_root = None
+            _sv_cache = self.__dict__.get("_contract_static_servers", {})
+            _sv_entry = _sv_cache.get(spec_name)
+            if isinstance(_sv_entry, dict):
+                _wt_path = _sv_entry.get("wt_path")
+                if _wt_path:
+                    scenario_root = Path(_wt_path)
+            engine = VerifyEngine(
+                spec_name,
+                self._context.project_root,
+                self._context.logger,
+                self._pm.config,
+                scenario_root=scenario_root,
+            )
+            # add-verify-parallel-backoff / design D1（读端）：spec attrs 的
+            # `_verify_parallel_override` 非空时覆盖 max_parallel 配置值——
+            # 该字段仅由 inconclusive 重验链路（连续 blocked-env 降档）写入、
+            # 健康轮自动复位，构造签名不变，既有测试兼容。降档来源标记随
+            # 引擎启动日志与 report 顶层 effective_parallel 透出（D3）。
+            _parallel_override = (self._context.state_machine.read_one(spec_name) or {}).get(
+                "_verify_parallel_override"
+            )
+            if _parallel_override is not None:
+                try:
+                    engine.max_parallel = int(_parallel_override)
+                    engine._parallel_override_active = True
+                except (TypeError, ValueError):
+                    self._context.logger.warning(
+                        "pm_engine",
+                        f"降档并行度解析失败 '{spec_name}' "
+                        f"(_verify_parallel_override={_parallel_override!r})，"
+                        f"沿用配置并行度",
+                    )
+            # 契约统一供给 base_url（design verify-runner-engine base_url 统一供给）：
+            # 取代「从候选场景 navigate 步骤文本正则考古」——serve 流程已知
+            # 实例地址，直接分发各 Runner（web/api URL origin 改写依据、
+            # 环境门探针定位依据）。无实例形态（纯 cli）为空串无害空操作。
+            engine.base_url = self._current_instance_base_url(spec_name)
+            report = asyncio.run(engine.run(scenarios))
+            env_error = report.get("env_error")
+
+        return env_error, report, app_reachable, reach_note, False
+
+    # ── B4: 阶段2 门禁 + 全绿快道（等价搬移）──────────────────────────
+    # D1 B4 段落：汇总日志 / 不可达门禁 / 失联门禁 / 同因哨 / 全绿快道。
+    # 返回 (fail_count, judge_result, aborted)：aborted=True 表示门禁触发，
+    # 调用者 MUST return 终止流水线；judge_result 非 None 为快道合成结果，
+    # None 表示未命中快道、需真实派发 judge。
+    def _run_stage2_gates(self, spec_name: str, report, app_reachable: bool,
+                          reach_note: str) -> tuple:
+        """阶段2 门禁链 + 全绿快道（等价搬移自 _run_three_stage_verification B4）。
+
+        汇总日志 → 不可达门禁 → 环境性失联门禁 → 全场景同因哨 → 全绿快道。
+        任一门禁触发即 (_, None, True) 返回，调用者 MUST return。
+        """
+        fail_count = report["summary"]["failed"] + report["summary"]["errors"]
+        self._context.logger.info(
+            "pm_engine",
+            f"[阶段2] 完成: {report['summary']['total']}场景, "
+            f"{report['summary']['passed']}通过, "
+            f"{report['summary']['warnings']}警告, "
+            f"{fail_count}失败",
+        )
+
+        # ── 阶段2 验证门禁：应用不可达且场景全失败时不判定 verified ──
+        # 最终用户验证为必选项：若自愈后应用仍不可达、0 场景通过，则本次验证
+        # 并未真正触达最终用户可见功能，不得静默判定 verified/done；将问题与
+        # 已尝试的解决方案写入 error 暴露（而非 "0通过/31失败" 却标完成）。
+        if (
+            not app_reachable
+            and report["summary"]["passed"] == 0
+            and fail_count == report["summary"]["total"]
+        ):
+            self._context.state_machine.update_spec(
+                spec_name,
+                {
+                    "tester_run": "blocked:app-unreachable",
+                    "error": f"验证无法执行（最终用户验证未完成）: {reach_note or '应用不可达'}",
+                },
+            )
+            self._context.logger.error(
+                "pm_engine",
+                f"验证门禁: '{spec_name}' 应用不可达，未判定 verified — {reach_note}",
+            )
+            # 死端修复（admin 2026-09-07，notes-standalone-sync 卡 testing 事故）：
+            # 此前的裸 return 使 spec 永久滞留 testing——blocked:app-unreachable
+            # 标记全库无消费者，且冻结场景集路径（scenario-reuse-on-reenter）
+            # 不会重新出题，BLOCKER CHECK 的 auto-recovery 只会原样重验并再次
+            # 撞门禁，形成每 stuck_threshold 一次的无效静默重试循环。按冻结
+            # 复用路径同款语义升级：blocked + 自动呼叫 Administrator 处置验证
+            # 基建（场景 URL/serve 配置属 admin 职权，planner 无法自愈）。
+            self._escalate_env_blocked(
+                spec_name,
+                [
+                    f"应用不可达，验证无法执行（冻结场景集下自动重验无效，需 admin "
+                    f"修正场景 URL/serve 配置）: {(reach_note or '应用不可达')[:200]}"
+                ],
+                title="验证环境阻塞",
+            )
+            return fail_count, None, True
+
+        # ── 阶段2.6 环境性失联门禁（verify-environment-sanity-gate / design D2）──
+        # 全批 blocked-env → inconclusive：回 testing 重派新 attempt，不判 bug-found、
+        # 不产生 repeated_failures 信号。阻断后直接 return（跳过 judge / 终态判定）。
+        if self._handle_env_blocked_inconclusive(spec_name, report):
+            return fail_count, None, True
+
+        # ── 阶段2.7 全场景同因失败哨（2026-08-28）──
+        # pass=0 且全部失败场景错误签名一致 → 疑环境/场景问题，呼叫 admin 介入
+        # 判断；不判 bug-found、不派生 fix；连续 3 轮同因自动 blocked。
+        if self._detect_uniform_verify_failure(spec_name, report):
+            return fail_count, None, True
+
+        # ── 阶段3 快道：全绿机械 verified（judge 效率治理 2026-09-06）──
+        # 0 失败且 0 警告时 judge 无信息增量（无分类对象；洗白门禁仅在
+        # 「0 通过或 env 失败」可触发，全绿恒无违规）——跳过 LLM 裁决
+        # （常态 15-50 分钟），合成结果文件后走与 judge 完全同源的采纳
+        # 尾段（进度核对/报告闸门/洗白门禁/transition）。tester_run 记
+        # mechanical-all-green 留痕。
+        judge_result = self._all_green_fast_path(spec_name, report, fail_count)
+        return fail_count, judge_result, False
+
+    # ── B5: judge 派发与失败三让位 + D6 二次状态核对（等价搬移）──────
+    # D1 B5 段落：_judge_dispatch_gate / judge 失败三让位分支 / D6 二次状态核对。
+    # 返回 judge_result（成功）或 None（让位/核对不过，调用者 MUST return）。
+    def _dispatch_judge_or_reuse(self, spec_name: str, report, fail_count: int,
+                                 judge_result) -> object:
+        """judge 派发与失败三让位 + D6 二次状态核对（等价搬移自 B5）。
+
+        快道未命中（judge_result None）→ 真实派发 judge（含稳定性复用门）；
+        失败三让位（取消 hold-state / circuit 熔断 / 冻结让位）静默退出；
+        无让位则 raise RuntimeError（触发外层 legacy 降级，与既有一致）。
+        D6：judge run 完成时刻再核 spec 状态，非 testing 静默丢弃。
+        """
+        if judge_result is None:
+            # ── 阶段3: Planner 判定结果 ──
+            self._context.logger.info("pm_engine", f"[阶段3] Planner 判定: {spec_name}")
+            # ── judge-rerun-stability R1：稳定性复用 + 重跑上限前置守卫 ──
+            # 连续两轮 verdict 一致且 spec 戳/report.json 未变 → 复用上次结果
+            # 不新起 judge run（叫停 add-web-ui 类 11 次空转重派）；judge run
+            # 总数超上限（_MAX_JUDGE_RERUNS=5）→ blocked 转人工裁决。
+            gate = self._judge_dispatch_gate(spec_name)
+            if gate is False:
+                return None  # 硬上限：已 blocked 等待人工裁决
+            if gate is None:
+                judge_result = self._pm.agent_runner.run_planner(spec_name, "judge")
+            else:
+                judge_result = gate  # 稳定性复用合成结果
+
+        if not judge_result.success:
+            # ── 人工取消 hold-state（add-run-cancel D4，judge 同语义）──
+            # judge run 被取消：spec 保持 testing 原状，只写 error。
+            if getattr(judge_result, "cancelled", False):
+                j_err = judge_result.error or ""
+                cancelled_err = f"run 被人工取消：{j_err}" if j_err else "run 被人工取消"
+                self._context.state_machine.update_spec(
+                    spec_name,
+                    {
+                        "error": cancelled_err,
+                        # 取消保持持久标记（fix-cancel-holdstate-recovery D1）。
+                        "_cancelled_hold": True,
+                    },
+                )
+                self._context.logger.warning(
+                    "pm_engine",
+                    f"Planner judge run 被人工取消 — hold-state '{spec_name}' "
+                    f"(保持 testing): {cancelled_err}",
+                )
+                return None
+            # ── provider 熔断拦截（fix-fix-stashpop-deadlock：provider-fault-fuse） ──
+            # 同阶段1：熔断期 planner judge 失败属「provider 故障」，
+            # 不得 raise → legacy 降级 → bug-found → 伪 fix 级联。
+            if judge_result.error and "provider circuit open" in judge_result.error:
+                self._context.state_machine.update_spec(
+                    spec_name,
+                    {
+                        "error": judge_result.error,
+                    },
+                )
+                # evo-infra-failure-budget-exempt R2：judge 熔断同属 infra，
+                # 归因入口前早退点挂预算退款与记账（与阶段1 circuit-open 同款）。
+                self._record_infra_failure(
+                    spec_name,
+                    judge_result.error,
+                    run_id=getattr(judge_result, "run_id", "") or "",
+                )
+                self._context.logger.warning(
+                    "pm_engine",
+                    f"Provider circuit open — planner judge suppressed for "
+                    f"'{spec_name}', holding implemented: {judge_result.error}",
+                )
+                return None
+            # ── 首轮 frozen 让位分支（fix-verdict-retry-misattribution D4）──
+            # judge 首次派发于冻结前、run 在飞期间 spec 被人工冻结、run 完成返回
+            # frozen 失败：与 cancelled「保持 testing 只写 error」及 circuit-open
+            # 「抑制」同型——INFO 留痕后静默退出，不 raise、不重派、不改状态。
+            # 判据与 runner.py 派发门共用导出常量（design D3 文案同源）。
+            if (judge_result.error or "").startswith(FROZEN_TERMINATED_ERROR_PREFIX):
+                self._context.logger.info(
+                    "pm_engine",
+                    f"Planner judge run 完成时 spec 已冻结 — 让位退出 '{spec_name}'"
+                    f"（在飞 run 结果按 frozen 处置，不重派不改状态）: "
+                    f"{judge_result.error}",
+                )
+                return None
+            raise RuntimeError(f"Planner judge 失败: {judge_result.error}")
+
+        # ── 在飞 verify 结果状态判据（fix-daemon-lifecycle-races D6）──
+        # judge run 完成时刻再次核对 spec 状态：在飞旧 verify run 完成时若 spec
+        # 已被重置（stale-result 防护拨回 implemented / 并发新 attempt 已接管），
+        # 结果按 DEBUG 静默丢弃——不走失败迁移、不触发 fallback 重派整轮 verifier
+        # （02:13 事故：implemented→verified 被拒后回退转 testing 重派）。
+        _apply_status = (self._context.state_machine.read_one(spec_name) or {}).get("status", "")
+        if _apply_status != "testing":
+            self._context.logger.debug(
+                "pm_engine",
+                f"Stale/foreign verify result discarded for '{spec_name}' "
+                f"(run {judge_result.run_id}, current state '{_apply_status}', "
+                f"result verified) — spec no longer in testing, result dropped",
+            )
+            return None
+        return judge_result
+
+    def _run_three_stage_verification(self, spec_name: str, _repair_depth: int = 0):
+        """三步验证流水线主逻辑。"""
+        # 入口状态判据：非 testing → 丢弃本流水线结果（D6，见 _check_entry_status）
+        if not self._check_entry_status(spec_name):
+            return
+
+        # 重新加载验证引擎模块（D4：VerifyEngine/load_scenarios 的 import 保持
+        # 在运行时函数体内——_execute_stage2 方法体内执行，测试靠
+        # patch("core.verify_engine.VerifyEngine") 生效）。
+        self._reload_verify_engine_modules()
+
+        # ── 阶段1+2: Planner↔场景验收闭环（2026-08-28）──
+        # 场景验收（绝对 navigate URL/完整性）失败 → 写 REPLAN_FEEDBACK.md 退回
+        # plan 阶段重新生成，上限 2 次重排；连续失败保持 implemented + error
+        # 可见（验收失败属环境/任务书问题，绝非产品缺陷，绝不流转 bug-found）。
+        verify_dir = self._context.project_root / ".fenix" / "verify-progress" / spec_name
+        replan_left = 2
+        replan_feedback = None
+        # fix-replan-feedback-injection：上一轮验收错误原文——连续两轮一字不差说明
+        # planner 未消费反馈（重跑即纯烧钱），升级为 ERROR 提示人工关注。
+        prev_replan_error = None
+        report = None
+        app_reachable = True
+        reach_note = ""
+        # ── 场景冻结加载 + 损坏升级（见 _load_frozen_or_escalate）──
+        frozen, _frozen_aborted = self._load_frozen_or_escalate(spec_name, verify_dir)
+        if _frozen_aborted:
             return
         while True:
             if frozen is not None:
@@ -957,8 +1846,7 @@ class VerificationPipeline:
                 )
                 return
 
-            # ── 阶段2: 验证引擎执行 ──
-            self._context.logger.info("pm_engine", f"[阶段2] 验证引擎执行: {spec_name}")
+            # ── 阶段2: 验证引擎执行（见 _execute_stage2，D2：env_error 回写段留循环体）──
             scenarios_path = (
                 self._context.project_root
                 / ".fenix"
@@ -966,107 +1854,11 @@ class VerificationPipeline:
                 / spec_name
                 / "test_scenarios.json"
             )
-            # 场景文件验收失败（相对 URL/结构非法）＝ 明确的环境错误：
-            # 退回 plan 阶段重新生成，不走 raise 穿透、更不判 bug-found。
-            env_error = None
-            report = None
-            try:
-                scenarios = load_scenarios(scenarios_path)
-            except ValueError as e:
-                env_error = f"场景文件验收失败: {e}"
-
-            if env_error is None:
-                # ── 阶段2.5: 应用可达性自愈（最终用户验证必选）──
-                # 场景执行前确保应用可被浏览器访问；不可达时自动启动 commands.start、
-                # 端口冲突换端口重试。自愈失败由下方验证门禁兜底，不静默判定通过。
-                app_reachable, user_blocked, reach_note = self._ensure_app_reachable(spec_name)
-                self._context.logger.info(
-                    "pm_engine",
-                    f"[阶段2] 应用可达性: {'OK' if app_reachable else '不可达'} — {reach_note or '无 navigate 依赖'}",
-                )
-
-                # ── 可达性自愈失败即本轮 fail-fast（add-verify-unreachable-failfast D1）──
-                # 自愈失败（就绪探针超时 / prepare 失败 / 契约缺失）属确定性环境错误，
-                # 继续跑整轮场景只会空转烧钱、由判定链末段兜底还易误拒。此处直接短路：
-                # 场景执行数=0、不重读场景、不创建/运行 VerifyEngine、不退回 plan 重排，
-                # 复用既有 _escalate_env_blocked 升级通道（落 blocked → 自动呼叫
-                # Administrator → 连续 2 轮冻结转人工）。evidence 用 reach_note（已由
-                # add-verify-preflight-gate D3 内嵌 boot.log 尾部）。user_blocked 守卫：
-                # 「需用户参与（收验证码/登录）」预留判定位恒 False，将来实现后不得被
-                # 短路自动判 blocked，故显式含 not user_blocked。
-                if not app_reachable and not user_blocked:
-                    self._context.logger.error(
-                        "pm_engine",
-                        f"[阶段2] 应用不可达，本轮 fail-fast（场景执行数=0）'{spec_name}': "
-                        f"{reach_note}",
-                    )
-                    self._escalate_env_blocked(
-                        spec_name,
-                        [reach_note],
-                        title="验证环境阻塞（应用不可达）",
-                    )
-                    return
-
-                # 自愈可能改写场景文件端口（场景声明端口 → 框架分配端口）：
-                # 上方 load 先于自愈，内存场景仍持声明端口，改写只落文件、对本次
-                # 执行无效 → 全场景对失联端口 navigate 整轮伪失败
-                # （add-v3-spec-detail-page：24 场景导航 localhost:8000 全灭）。
-                # 故自愈后必须重读场景文件再执行。
-                try:
-                    scenarios = load_scenarios(scenarios_path)
-                except ValueError as e:
-                    env_error = f"自愈改写后场景文件验收失败: {e}"
-
-            if env_error is None:
-                # ── 场景静态缺陷扫描（add-scenario-defect-triage-gate D3）──
-                # 在场景集冻结完成后、执行前调用：findings 只作情报落盘
-                # （scenario_static_findings.json）+ judge prompt 定向注入，
-                # fail-open——任何异常记 WARNING，不阻断验证执行。
-                self._run_scenario_static_check(spec_name)
-
-                # 场景执行根：worktree 轮传入 serving worktree 根（CLI 步骤
-                # 缺省 cwd 以此为准，seed 写入落验证树而非主树）；
-                # 无 worktree 轮不传（回退主树 project_root，行为不变）。
-                scenario_root = None
-                _sv_cache = self.__dict__.get("_contract_static_servers", {})
-                _sv_entry = _sv_cache.get(spec_name)
-                if isinstance(_sv_entry, dict):
-                    _wt_path = _sv_entry.get("wt_path")
-                    if _wt_path:
-                        scenario_root = Path(_wt_path)
-                engine = VerifyEngine(
-                    spec_name,
-                    self._context.project_root,
-                    self._context.logger,
-                    self._pm.config,
-                    scenario_root=scenario_root,
-                )
-                # add-verify-parallel-backoff / design D1（读端）：spec attrs 的
-                # `_verify_parallel_override` 非空时覆盖 max_parallel 配置值——
-                # 该字段仅由 inconclusive 重验链路（连续 blocked-env 降档）写入、
-                # 健康轮自动复位，构造签名不变，既有测试兼容。降档来源标记随
-                # 引擎启动日志与 report 顶层 effective_parallel 透出（D3）。
-                _parallel_override = (self._context.state_machine.read_one(spec_name) or {}).get(
-                    "_verify_parallel_override"
-                )
-                if _parallel_override is not None:
-                    try:
-                        engine.max_parallel = int(_parallel_override)
-                        engine._parallel_override_active = True
-                    except (TypeError, ValueError):
-                        self._context.logger.warning(
-                            "pm_engine",
-                            f"降档并行度解析失败 '{spec_name}' "
-                            f"(_verify_parallel_override={_parallel_override!r})，"
-                            f"沿用配置并行度",
-                        )
-                # 契约统一供给 base_url（design verify-runner-engine base_url 统一供给）：
-                # 取代「从候选场景 navigate 步骤文本正则考古」——serve 流程已知
-                # 实例地址，直接分发各 Runner（web/api URL origin 改写依据、
-                # 环境门探针定位依据）。无实例形态（纯 cli）为空串无害空操作。
-                engine.base_url = self._current_instance_base_url(spec_name)
-                report = asyncio.run(engine.run(scenarios))
-                env_error = report.get("env_error")
+            env_error, report, app_reachable, reach_note, _stage2_aborted = self._execute_stage2(
+                spec_name, verify_dir, scenarios_path
+            )
+            if _stage2_aborted:
+                return
 
             if env_error:
                 # ── 重跑消费硬门（fix-frozen-scenario-orphan-reservoir D5）──
@@ -1148,675 +1940,37 @@ class VerificationPipeline:
                 pass
             break
 
-        fail_count = report["summary"]["failed"] + report["summary"]["errors"]
-        self._context.logger.info(
-            "pm_engine",
-            f"[阶段2] 完成: {report['summary']['total']}场景, "
-            f"{report['summary']['passed']}通过, "
-            f"{report['summary']['warnings']}警告, "
-            f"{fail_count}失败",
+        # ── B4: 阶段2 门禁 + 全绿快道（见 _run_stage2_gates）──
+        fail_count, judge_result, _gates_aborted = self._run_stage2_gates(
+            spec_name, report, app_reachable, reach_note
         )
-
-        # ── 阶段2 验证门禁：应用不可达且场景全失败时不判定 verified ──
-        # 最终用户验证为必选项：若自愈后应用仍不可达、0 场景通过，则本次验证
-        # 并未真正触达最终用户可见功能，不得静默判定 verified/done；将问题与
-        # 已尝试的解决方案写入 error 暴露（而非 "0通过/31失败" 却标完成）。
-        if (
-            not app_reachable
-            and report["summary"]["passed"] == 0
-            and fail_count == report["summary"]["total"]
-        ):
-            self._context.state_machine.update_spec(
-                spec_name,
-                {
-                    "tester_run": "blocked:app-unreachable",
-                    "error": f"验证无法执行（最终用户验证未完成）: {reach_note or '应用不可达'}",
-                },
-            )
-            self._context.logger.error(
-                "pm_engine",
-                f"验证门禁: '{spec_name}' 应用不可达，未判定 verified — {reach_note}",
-            )
-            # 死端修复（admin 2026-09-07，notes-standalone-sync 卡 testing 事故）：
-            # 此前的裸 return 使 spec 永久滞留 testing——blocked:app-unreachable
-            # 标记全库无消费者，且冻结场景集路径（scenario-reuse-on-reenter）
-            # 不会重新出题，BLOCKER CHECK 的 auto-recovery 只会原样重验并再次
-            # 撞门禁，形成每 stuck_threshold 一次的无效静默重试循环。按冻结
-            # 复用路径同款语义升级：blocked + 自动呼叫 Administrator 处置验证
-            # 基建（场景 URL/serve 配置属 admin 职权，planner 无法自愈）。
-            self._escalate_env_blocked(
-                spec_name,
-                [
-                    f"应用不可达，验证无法执行（冻结场景集下自动重验无效，需 admin "
-                    f"修正场景 URL/serve 配置）: {(reach_note or '应用不可达')[:200]}"
-                ],
-                title="验证环境阻塞",
-            )
+        if _gates_aborted:
             return
-
-        # ── 阶段2.6 环境性失联门禁（verify-environment-sanity-gate / design D2）──
-        # 全批 blocked-env → inconclusive：回 testing 重派新 attempt，不判 bug-found、
-        # 不产生 repeated_failures 信号。阻断后直接 return（跳过 judge / 终态判定）。
-        if self._handle_env_blocked_inconclusive(spec_name, report):
-            return
-
-        # ── 阶段2.7 全场景同因失败哨（2026-08-28）──
-        # pass=0 且全部失败场景错误签名一致 → 疑环境/场景问题，呼叫 admin 介入
-        # 判断；不判 bug-found、不派生 fix；连续 3 轮同因自动 blocked。
-        if self._detect_uniform_verify_failure(spec_name, report):
-            return
-
-        # ── 阶段3 快道：全绿机械 verified（judge 效率治理 2026-09-06）──
-        # 0 失败且 0 警告时 judge 无信息增量（无分类对象；洗白门禁仅在
-        # 「0 通过或 env 失败」可触发，全绿恒无违规）——跳过 LLM 裁决
-        # （常态 15-50 分钟），合成结果文件后走与 judge 完全同源的采纳
-        # 尾段（进度核对/报告闸门/洗白门禁/transition）。tester_run 记
-        # mechanical-all-green 留痕。
-        judge_result = self._all_green_fast_path(spec_name, report, fail_count)
+        # ── B5: judge 派发与失败三让位 + D6 二次状态核对（见 _dispatch_judge_or_reuse）──
+        judge_result = self._dispatch_judge_or_reuse(spec_name, report, fail_count, judge_result)
         if judge_result is None:
-            # ── 阶段3: Planner 判定结果 ──
-            self._context.logger.info("pm_engine", f"[阶段3] Planner 判定: {spec_name}")
-            # ── judge-rerun-stability R1：稳定性复用 + 重跑上限前置守卫 ──
-            # 连续两轮 verdict 一致且 spec 戳/report.json 未变 → 复用上次结果
-            # 不新起 judge run（叫停 add-web-ui 类 11 次空转重派）；judge run
-            # 总数超上限（_MAX_JUDGE_RERUNS=5）→ blocked 转人工裁决。
-            gate = self._judge_dispatch_gate(spec_name)
-            if gate is False:
-                return  # 硬上限：已 blocked 等待人工裁决
-            if gate is None:
-                judge_result = self._pm.agent_runner.run_planner(spec_name, "judge")
-            else:
-                judge_result = gate  # 稳定性复用合成结果
-
-        if not judge_result.success:
-            # ── 人工取消 hold-state（add-run-cancel D4，judge 同语义）──
-            # judge run 被取消：spec 保持 testing 原状，只写 error。
-            if getattr(judge_result, "cancelled", False):
-                j_err = judge_result.error or ""
-                cancelled_err = f"run 被人工取消：{j_err}" if j_err else "run 被人工取消"
-                self._context.state_machine.update_spec(
-                    spec_name,
-                    {
-                        "error": cancelled_err,
-                        # 取消保持持久标记（fix-cancel-holdstate-recovery D1）。
-                        "_cancelled_hold": True,
-                    },
-                )
-                self._context.logger.warning(
-                    "pm_engine",
-                    f"Planner judge run 被人工取消 — hold-state '{spec_name}' "
-                    f"(保持 testing): {cancelled_err}",
-                )
-                return
-            # ── provider 熔断拦截（fix-fix-stashpop-deadlock：provider-fault-fuse） ──
-            # 同阶段1：熔断期 planner judge 失败属「provider 故障」，
-            # 不得 raise → legacy 降级 → bug-found → 伪 fix 级联。
-            if judge_result.error and "provider circuit open" in judge_result.error:
-                self._context.state_machine.update_spec(
-                    spec_name,
-                    {
-                        "error": judge_result.error,
-                    },
-                )
-                # evo-infra-failure-budget-exempt R2：judge 熔断同属 infra，
-                # 归因入口前早退点挂预算退款与记账（与阶段1 circuit-open 同款）。
-                self._record_infra_failure(
-                    spec_name,
-                    judge_result.error,
-                    run_id=getattr(judge_result, "run_id", "") or "",
-                )
-                self._context.logger.warning(
-                    "pm_engine",
-                    f"Provider circuit open — planner judge suppressed for "
-                    f"'{spec_name}', holding implemented: {judge_result.error}",
-                )
-                return
-            # ── 首轮 frozen 让位分支（fix-verdict-retry-misattribution D4）──
-            # judge 首次派发于冻结前、run 在飞期间 spec 被人工冻结、run 完成返回
-            # frozen 失败：与 cancelled「保持 testing 只写 error」及 circuit-open
-            # 「抑制」同型——INFO 留痕后静默退出，不 raise、不重派、不改状态。
-            # 判据与 runner.py 派发门共用导出常量（design D3 文案同源）。
-            if (judge_result.error or "").startswith(FROZEN_TERMINATED_ERROR_PREFIX):
-                self._context.logger.info(
-                    "pm_engine",
-                    f"Planner judge run 完成时 spec 已冻结 — 让位退出 '{spec_name}'"
-                    f"（在飞 run 结果按 frozen 处置，不重派不改状态）: "
-                    f"{judge_result.error}",
-                )
-                return
-            raise RuntimeError(f"Planner judge 失败: {judge_result.error}")
-
-        # ── 在飞 verify 结果状态判据（fix-daemon-lifecycle-races D6）──
-        # judge run 完成时刻再次核对 spec 状态：在飞旧 verify run 完成时若 spec
-        # 已被重置（stale-result 防护拨回 implemented / 并发新 attempt 已接管），
-        # 结果按 DEBUG 静默丢弃——不走失败迁移、不触发 fallback 重派整轮 verifier
-        # （02:13 事故：implemented→verified 被拒后回退转 testing 重派）。
-        _apply_status = (self._context.state_machine.read_one(spec_name) or {}).get("status", "")
-        if _apply_status != "testing":
-            self._context.logger.debug(
-                "pm_engine",
-                f"Stale/foreign verify result discarded for '{spec_name}' "
-                f"(run {judge_result.run_id}, current state '{_apply_status}', "
-                f"result verified) — spec no longer in testing, result dropped",
-            )
             return
 
         # ── 阶段3+ 裁决证据分类校验与重试（add-verdict-evidence-taxonomy D1-D5；
         #    fix-verdict-retry-misattribution D1/D2/D5/D7）──
-        # judge 已在 report.json 增强每个非 PASS 场景的 classification/evidence。
-        # 此处确定性校验：不合规 → 走既有 judge 重试一次（同 run_planner 调用）；
-        # 二次仍不合规 → cause=violations，blocked-env + 告警（与 verify-report-gate
-        # 阻断语义一致，宁可不推进也不带病采纳）。重试派发被 frozen/取消拦截 =
-        # 人工已接管 → 静默让位（零写入零告警）；派发失败/异常/产物丢失 → 温和
-        # 处置不发 verdict_evidence_invalid。合规后按分类-状态映射强制重写 status（D3）。
         verdict_ret = self._verify_verdict_evidence(spec_name, retry_judge=True)
         if not verdict_ret["ok"]:
-            cause = verdict_ret.get("cause", "violations")
-            violations = verdict_ret.get("violations") or []
-            dispatch_error = verdict_ret.get("dispatch_error") or ""
-            if cause == "batch_attribution_dedup":
-                # ── 批量归因查重拒绝采纳（fix-verdict-dedup-resynthesis D1/D2）──
-                # 查重拒绝已由 _verify_verdict_evidence 内部完成「落盘违规 →
-                # 派发重合成 judge → 回灌校验」闭环；本分支仅剩的语义是「重合成
-                # 预算耗尽已升级 blocked」——_handle_attr_dedup_rejection 已置
-                # blocked + admin 告警，此处仅 WARNING 对账，不重复写 error。
-                # report.json 实际已在盘上（judge 自己写的），拒绝的是状态机
-                # 采纳而非落盘——不再「保持 testing 静默等待」（170 分钟自锁
-                # 与全量重跑罚金的根因已消除）。
-                detail = violations[0].get("reason") if violations else ""
-                self._context.logger.warning(
-                    "pm_engine",
-                    f"批量归因查重拒绝采纳 '{spec_name}'（重合成预算耗尽）— "
-                    f"已 blocked 等待人工裁决: {detail}",
-                )
-                return
-            if cause in ("dispatch_frozen", "dispatch_cancelled"):
-                # ── 让位语义（design D2 / fix-verdict-retry-misattribution）──
-                # frozen 门/取消旗标 = 人工已接管：零写入（不 update_spec——不写
-                # status/error、不触 _cancelled_hold）、不发任何人工升级告警；
-                # 留痕已在上游方法内以 INFO 完成，此处补充采纳侧结论供日志对账。
-                self._context.logger.info(
-                    "pm_engine",
-                    f"裁决证据校验重试派发被"
-                    f"{'取消旗标' if cause == 'dispatch_cancelled' else 'frozen 门'}"
-                    f"拦截 '{spec_name}' — 让位：spec 保持 testing 原状，"
-                    f"不写 blocked、不发告警（cause={cause}）",
-                )
-                return
-            if cause == "dispatch_failed":
-                # ── 派发故障温和处置（design D1）──
-                # 网关拒绝/预算闸门等：写 error 留痕但不动 status、不写 blocked、
-                # 不发 verdict_evidence_invalid（「二次违反证据契约」语义不得被
-                # 派发故障冒用）；spec 保持 testing 等待下轮重验。
-                self._context.logger.warning(
-                    "pm_engine",
-                    f"裁决重试 judge 派发失败 '{spec_name}' — 保持 testing，"
-                    f"留 error 待下轮重验: {dispatch_error}",
-                )
-                self._context.state_machine.update_spec(
-                    spec_name,
-                    {
-                        "error": f"裁决重试 judge 派发失败（非证据不合规）：{dispatch_error}",
-                    },
-                )
-                return
-            if cause == "dispatch_exception":
-                # ── 异常早退（design D1 / D7）──
-                # 上游已确保不复读旧 report.json、不打「重试后仍不合规」；此处
-                # 同样不按违规处置——留 error 保持 testing，异常多属瞬态。
-                self._context.logger.error(
-                    "pm_engine",
-                    f"裁决证据校验重试异常早退 '{spec_name}' — 保持 testing，"
-                    f"留 error 待下轮重验: {dispatch_error}",
-                )
-                self._context.state_machine.update_spec(
-                    spec_name,
-                    {
-                        "error": (
-                            f"裁决重试 judge 异常（非证据不合规，未复检旧产物）："
-                            f"{dispatch_error}"
-                        ),
-                    },
-                )
-                return
-            if cause == "report_missing":
-                # ── 重试成功但产物不可读（design D1）──
-                # fail-closed：无法确定性校验合规即不推进，阻断交人工；信号沿用
-                # 裁决结果不可读通道，不发 verdict_evidence_invalid（非违规判定）。
-                self._context.logger.error(
-                    "pm_engine",
-                    f"裁决重试 judge 成功但 report.json 不可读 '{spec_name}' — "
-                    f"阻断为 blocked（fail-closed，不按违规处置）",
-                )
-                self._context.state_machine.update_spec(
-                    spec_name,
-                    {
-                        "status": "blocked",
-                        "error": (
-                            f"验证裁决重试后 report.json 不可读（产物缺失，非证据不合规），"
-                            f"已 blocked 等待人工裁决"
-                        ),
-                    },
-                )
-                self._context.escalation_notifier(
-                    spec_name=spec_name,
-                    signal_type="verdict_result_unreadable",
-                    severity="critical",
-                    description=(
-                        f"'{spec_name}' 裁决重试后 report.json 不可读，已 blocked "
-                        f"等待人工裁决（非证据不合规）"
-                    ),
-                    evidence=(
-                        f"spec={spec_name}; cause=report_missing; report="
-                        f".fenix/verify-progress/{spec_name}/report.json"
-                    ),
-                    recommended_action=(
-                        "检查 judge 重试轮是否覆写/破坏了 report.json（产物门禁外的"
-                        "缺失路径）；修复产物后重置验证或重跑"
-                    ),
-                )
-                return
-            if cause != "violations":
-                # ── 未知 cause 保守处置（design risk：fail-closed）──
-                # 前向兼容防护：枚举之外的 cause 值按 violations 同等保守处置
-                # （blocked + 告警），并 ERROR 留痕——不静默放行。
-                self._context.logger.error(
-                    "pm_engine",
-                    f"裁决证据校验未知 cause '{cause}' '{spec_name}' — 按 violations "
-                    f"保守处置（fail-closed）: {verdict_ret}",
-                )
-            # ── cause=violations（真·二次违规）：保留既有语义 blocked + 告警 ──
-            # 本轮回合计入失败历史侧车（cause_type=evidence-invalid），供升级闸门
-            # 分型与轮间 diff（fix-verdict-retry-misattribution D6）。
-            self._append_fail_history(
-                spec_name,
-                "evidence-invalid",
-                [
-                    v.get("scenario_id") or v.get("id") or "?"
-                    for v in violations
-                    if isinstance(v, dict)
-                ],
-            )
-            self._context.logger.error(
-                "pm_engine",
-                f"裁决证据分类二次校验仍失败 '{spec_name}' — 阻断推进为 blocked-env"
-                f"（{len(violations)} 项违规）",
-            )
-            self._context.state_machine.update_spec(
-                spec_name,
-                {
-                    "status": "blocked",
-                    "error": (
-                        f"验证裁决证据分类校验连续失败：report.json 非 PASS 场景缺 "
-                        f"classification/evidence，重试一次仍不合规（{len(violations)} 项"
-                        f"违规），已 blocked 等待人工裁决"
-                    ),
-                },
-            )
-            self._context.escalation_notifier(
-                spec_name=spec_name,
-                signal_type="verdict_evidence_invalid",
-                severity="critical",
-                description=(
-                    f"'{spec_name}' 验证裁决证据分类校验连续失败（{len(violations)} 项"
-                    f"违规），已 blocked 等待人工裁决"
-                ),
-                evidence=self._verdict_violations_evidence(spec_name, violations),
-                recommended_action=(
-                    "检查 planner-judge 是否遵守 prompt 第4步（对全部非 PASS 场景补 "
-                    "classification/evidence）；人工重置后重跑验证"
-                ),
-            )
+            self._handle_verdict_evidence_rejection(spec_name, verdict_ret)
             return
-
-        # ── 阶段3+ warning 连续悬置追踪与升级（design D4 / D5）──
-        # 裁决采纳处更新连续计数侧车；达 2 轮的 warning 场景发 triage 升级告警，
-        # 并写入下一轮 planner prompt 的优先复核清单（triage_recheck.json）。
-        try:
-            triage_hits = self._update_warning_streaks(spec_name)
-            if triage_hits:
-                self._warning_stale_triage_alert(spec_name, triage_hits)
-        except Exception as e:
-            self._context.logger.warning(
-                "pm_engine",
-                f"warning_streaks 更新跳过（异常不阻断采纳）'{spec_name}': {e}",
-            )
-
-        # 读取判定结果（fix-verdict-read-failclosed：结构化三态；
-        # evo-verifier-result-single-source R1：统一走 _read_verdict 入口，
-        # 主树共享回退须过 role/spec 戳校验——implementer 残留不采信）
-        verifier_result = self._read_verdict(spec_name)
-        verifier_status = verifier_result.status if verifier_result.ok else None
-        # ── 结果状态判据（fix-daemon-lifecycle-races D6，结果应用处最终核对）──
-        # 前道守卫之后的取证校验/重试窗口内 spec 亦可能漂移，此处兜底：非 testing
-        # → DEBUG 丢弃，不迁移/不派生/不重派。
-        _apply_status = (self._context.state_machine.read_one(spec_name) or {}).get("status", "")
-        if _apply_status != "testing":
-            self._context.logger.debug(
-                "pm_engine",
-                f"Stale/foreign verify result discarded for '{spec_name}' "
-                f"(current state '{_apply_status}', result {verifier_status}) — "
-                f"spec no longer in testing, result dropped",
-            )
+        # ── 阶段3+ 裁决采纳（judge 通道）──
+        verdict_read = self._read_verdict_failclosed(spec_name)
+        if verdict_read is None:
             return
-        # ── 裁决不可读 → fail-closed（fix-verdict-read-failclosed D4）──
-        # 结果文件缺失/非法 JSON/status 白名单外一律不得晋级 verified（历史事故：
-        # add-verify-contract-autodraft 裸换行非法 JSON → None → else 分支 →
-        # verified → done → auto-push）。处置：重派 judge 一次 → 复读；二次仍不可读
-        # → blocked + critical 告警（含解析错误原文与结果文件完整路径），不推进
-        # bug-found、不派生 fix。重试前复用入口状态判据（非 testing 丢弃，与
-        # stale-result 防护同构，不新增竞态面）。
-        if not verifier_result.ok:
-            verdict_result_path = (
-                self._context.project_root
-                / ".fenix"
-                / "verify-progress"
-                / spec_name
-                / ".fenix-run-result.json"
-            )
-            retry_status = (self._context.state_machine.read_one(spec_name) or {}).get("status", "")
-            if retry_status == "testing":
-                self._context.logger.warning(
-                    "pm_engine",
-                    f"裁决结果不可读 '{spec_name}'（reason={verifier_result.reason}）"
-                    f"— 重派 judge 一次后复读: {verifier_result.detail}",
-                )
-                retry_judge = self._pm.agent_runner.run_planner(spec_name, "judge")
-                if retry_judge.success:
-                    verifier_result = self._read_verdict(spec_name)
-                    verifier_status = verifier_result.status if verifier_result.ok else None
-            if not verifier_result.ok:
-                self._context.logger.error(
-                    "pm_engine",
-                    f"裁决结果二次仍不可读 '{spec_name}' — 阻断为 blocked"
-                    f"（reason={verifier_result.reason}）: {verifier_result.detail}",
-                )
-                self._context.state_machine.update_spec(
-                    spec_name,
-                    {
-                        "status": "blocked",
-                        "error": (
-                            f"验证裁决结果文件不可读（重派 judge 一次后仍不可读，"
-                            f"reason={verifier_result.reason}）：{verifier_result.detail}"
-                        ),
-                    },
-                )
-                self._context.escalation_notifier(
-                    spec_name=spec_name,
-                    signal_type="verdict_result_unreadable",
-                    severity="critical",
-                    description=(
-                        f"'{spec_name}' 验证裁决结果文件不可读，已 blocked 等待人工裁决"
-                        f"（reason={verifier_result.reason}）"
-                    ),
-                    evidence=(
-                        f"spec={spec_name}; result_file={verdict_result_path}; "
-                        f"parse_error={verifier_result.detail}"
-                    ),
-                    recommended_action=(
-                        "检查 planner-judge 是否以合法 JSON 写入结果文件（字符串内换行/"
-                        "引号/控制字符须转义，建议以代码 json.dump 生成而非手工拼接）；"
-                        "修复文件后重置验证或重跑"
-                    ),
-                )
-                return
-        # ── 阶段3+ 场景原地修复通道（judge-scenario-repair）──
-        # 测试场景文件自身也可能有缺陷（夹具未自建/步骤客观错误/依赖序缺失）。
-        # judge 原地修复场景文件并申报 scenario-repaired：框架经冻结 diff 记账
-        # （无理由移除会被确定性补齐——judge 无法靠删场景凑通过）后有界重入
-        # 阶段2/3——serving 实例在同函数缓存中存续，重执行秒级。与既有通道
-        # 分工：机械缺陷原地修（省一次完整出题）；覆盖级缺陷走交互契约退回
-        # plan；测试 harness 代码缺陷走 bug-found fix 链。
-        if verifier_status == "scenario-repaired":
-            if _repair_depth >= _SCENARIO_REPAIR_MAX_ROUNDS:
-                self._context.state_machine.update_spec(
-                    spec_name,
-                    {
-                        "error": (
-                            f"judge 场景原地修复预算耗尽（{_SCENARIO_REPAIR_MAX_ROUNDS} 轮）"
-                            f"— 保持 testing 等待下一轮重验，若仍场景缺陷将按既有升级路径处置"
-                        ),
-                    },
-                )
-                self._context.logger.warning(
-                    "pm_engine",
-                    f"'{spec_name}' judge 场景修复预算耗尽 "
-                    f"（{_SCENARIO_REPAIR_MAX_ROUNDS} 轮）— 不再重入",
-                )
-                return
-            try:
-                freeze_result = self._apply_scenario_freeze(spec_name)
-            except Exception as e:
-                # 冻结记账属辅助治理，异常不阻断修复重入
-                self._context.logger.warning(
-                    "pm_engine",
-                    f"修复轮场景冻结记账跳过 '{spec_name}'（异常不阻断）: {e}",
-                )
-                freeze_result = None
-            if isinstance(freeze_result, dict) and freeze_result.get("aborted"):
-                # ── 空集显式兜底（evo-planner-scenario-schema-alignment 3.7）──
-                # judge 原地修复后场景集为空（写前预校验整批拒绝）：MUST 拒绝
-                # 本次重入、保持原状并留痕，MUST NOT 以空集或未过滤文件继续
-                # 进入阶段2（0 场景报告会被洗白门 fail-open 放行判 verified）。
-                reject_detail = "、".join(freeze_result.get("rejected") or [])[:400]
-                self._context.state_machine.update_spec(
-                    spec_name,
-                    {
-                        "error": (
-                            f"judge 原地修复后场景集为空（写前预校验整批拒绝，共 "
-                            f"{freeze_result.get('total', 0)} 条）— 拒绝本次重入，"
-                            f"保持 testing 待人工/下轮处置: {reject_detail}"
-                        ),
-                    },
-                )
-                self._context.logger.error(
-                    "pm_engine",
-                    f"judge 场景修复后无合法场景 '{spec_name}' — 拒绝重入，"
-                    f"0 场景不进入阶段2: {reject_detail}",
-                )
-                return
-            self._context.logger.info(
-                "pm_engine",
-                f"[阶段3+] judge 场景原地修复采纳 '{spec_name}' — 重入执行"
-                f"（第 {_repair_depth + 1}/{_SCENARIO_REPAIR_MAX_ROUNDS} 次修复）",
-            )
-            return self._run_three_stage_verification(spec_name, _repair_depth=_repair_depth + 1)
+        verifier_result, verifier_status = verdict_read
+        # ── 阶段3+ 场景原地修复通道（judge-scenario-repair，见 _handle_scenario_repaired）──
+        if self._handle_scenario_repaired(spec_name, verifier_status, _repair_depth):
+            return
         if verifier_status == "bug-found":
-            # ── 归因分级门禁（add-verdict-credibility-gate / design D2 / Task 2.2）──
-            # 打回依据全部为 speculative（推测级）时抑制 bug-found 打回：
-            # 转重验一次或写 error「归因证据不足待人工复核」，不得带推测
-            # 信号打回 implementer（B2/B7：宁可多一次重验也不可带假信号打回，
-            # 本次事故直接教训）。
-            if self._speculative_bug_found_gate(spec_name):
-                return
-            # judge 自述环境问题守卫：judge 自己把根因描述为环境/基础设施问题时，
-            # 属「验证没能发生」而非「验证发现了缺陷」，不得流转 bug-found
-            # 派生伪 fix 级联（admin 处置 2026-08-28 failover 相对 URL 伪失败实证）。
-            if self._judge_bugs_declare_env(spec_name) and self._handle_judge_env_declared(
-                spec_name
-            ):
-                return
-            # ── 场景缺陷改道门（add-scenario-defect-triage-gate D1/D2/D3）──
-            # judge 申报 bug-found 后、打回 implementer 前，读 report.json 场景
-            # classification 分布：非 PASS 场景全部显式 test-defect/flaky 且
-            # product-bug=0 → 纯场景缺陷清单，拒绝打回 implementer（不再烧实现轮
-            # 修场景文件——add-spec-status-modal-budget 事故的直接教训），定向重派
-            # judge 一次走 scenario-repaired 原地修复通道。None/未知值/含任一
-            # product-bug 一律不走改道（保守，D1）。重派计入 _SCENARIO_REPAIR_
-            # MAX_ROUNDS 预算（与 scenario-repaired 重入共用 _repair_depth）。
-            if self._scenario_defect_reroute_gate(spec_name, _repair_depth, judge_result):
-                return
-            # 验证报告产物闸门（add-verify-report-gate）：裁决 Agent 漏写报告时
-            # 由框架合成兜底，合成失败则阻断推进（下游修复引用的路径必然可读）
-            report_blocker = self._ensure_verification_report(spec_name)
-            if report_blocker:
-                self._context.state_machine.update_spec(
-                    spec_name,
-                    {
-                        "error": report_blocker,
-                    },
-                )
-                self._context.logger.error(
-                    "pm_engine",
-                    f"验证报告闸门: '{spec_name}' 阻止推进 bug-found — {report_blocker}",
-                )
-                return
-            # ── verified 一次性放行门（judge-rerun-stability R2）──
-            # 已 verified 且场景集未变 → 拒绝降级为 bug-found（人工 reset
-            # 回 testing 后 legacy/planner 误判防护；与 D6 stale-result 防护
-            # 正交共存——D6 处理非 testing 的 stale 丢弃，R2 处理 testing 内的
-            # 历史 verified 防降级）。
-            if self._verified_gate_refuses(spec_name, "bug-found"):
-                return
-            # fix-observability-gaps 2.2：planner-judge 判定 bug-found（自动来源）
-            self._context.state_machine.transition(
-                spec_name, "bug-found",
-                trigger_run_id=judge_result.run_id, agent_type="planner-judge", channel="auto",
-            )
-            self._context.state_machine.update_spec(
-                spec_name,
-                {
-                    "tester_run": judge_result.run_id,
-                    "error": "Verification found bugs — see verification report",
-                    # 明确非环境性失联：复位 inconclusive 计数（环境恢复后从零重算）
-                    "_inconclusive_attempts": 0,
-                    # add-verify-parallel-backoff / design D2：bug-found 属健康轮
-                    # 判定（非 inconclusive），降档并行度同轮复位。
-                    "_verify_parallel_override": None,
-                },
-            )
-            # 裁决采纳后落盘 verdict 稳定性轮次（judge-rerun-stability R1）
-            self._record_verdict_adoption(spec_name, "bug-found", report)
-            # 本轮场景集变更小节追加到验证报告（spec 需求 2.3）
-            self._render_scenario_change_section_to_report(spec_name)
-            self._context.logger.warning(
-                "pm_engine",
-                f"Verifier found bugs in '{spec_name}', transitioning to bug-found",
-            )
-            # ── 守卫二：spawn 抑制（fix-repair-lane-dedup / design 守卫二）──
-            # 被验对象为 fix spec 且自身 ready/implementing（重实现已在飞）时，
-            # 跳过派生子 fix——由在飞重实现承载修复。
-            if self._context.is_fix_spec(spec_name):
-                cur = (self._context.state_machine.read_one(spec_name) or {}).get("status", "")
-                if cur in ("ready", "implementing"):
-                    self._context.logger.info(
-                        "pm_engine",
-                        f"守卫二：'{spec_name}' 为 fix spec 且自身 {cur}"
-                        f"（重实现在飞）——跳过派生子 fix",
-                    )
-                    self._context.state_machine.update_spec(
-                        spec_name,
-                        {
-                            "error": "修复由在飞重实现承载，跳过派生子 fix",
-                        },
-                    )
-                    return
-            # ── 统一失败归因入口（evo-infra-failure-budget-exempt R1/R3）──
-            # 归因入口处调用 enrich_failure_class：三态分类后，product/unknown
-            # 照常流转 bug-found（unknown 按 product 保守处置，照常累计
-            # _verify_fail_rounds）；infra 兜底拦截（既有 infra 判定点已早退，
-            # 此处为防御性兜底——如误入则按 infra 记账、不派生 fix）。
-            failure_class = self.enrich_failure_class(
-                spec_name,
-                error_text=getattr(judge_result, "error", "") or "",
-            )
-            if failure_class == "infra":
-                # 防御性兜底：归因入口误判 infra（不应发生，既有 infra 判定点
-                # 已早退）——按 infra 记账（预算退款 + _verify_infra_rounds +
-                # _infra_failure_count + 台账），不流转 bug-found、不派生 fix。
-                self._context.logger.warning(
-                    "pm_engine",
-                    f"归因入口兜底：'{spec_name}' 判定 infra（误入 bug-found "
-                    f"分支），按 infra 记账处理不派生 fix",
-                )
-                self._record_infra_failure(
-                    spec_name,
-                    "infra at attribution entry (fallback)",
-                    run_id=getattr(judge_result, "run_id", "") or "",
-                )
-                return
-            # 到达 bug-found 归因（全部门禁已过、非 infra）＝ product 类——
-            # unknown 按 product 保守处置，台账 failure_class 记 product。
-            self._context.on_spec_bug_found(
-                spec_name,
-                failure_class="product",
-                run_id=getattr(judge_result, "run_id", "") or "",
-            )
+            self._apply_bug_found(spec_name, judge_result, report, _repair_depth)
+            return
         else:
-            # D6: testing→verified 前置进度核对：done>=total 才晋级
-            vblocker = self._check_verification_gate(spec_name)
-            if vblocker:
-                # 不完整：按 verifier 失败处理，写 error 摘要，不晋级 verified
-                self._context.state_machine.update_spec(
-                    spec_name,
-                    {
-                        "tester_run": judge_result.run_id,
-                        "error": vblocker,
-                    },
-                )
-                self._context.logger.warning(
-                    "pm_engine",
-                    f"验证未完成 '{spec_name}'，阻止晋级 verified: {vblocker}",
-                )
-                return
-            # 验证报告产物闸门（add-verify-report-gate）
-            report_blocker = self._ensure_verification_report(spec_name)
-            if report_blocker:
-                self._context.state_machine.update_spec(
-                    spec_name,
-                    {
-                        "tester_run": judge_result.run_id,
-                        "error": report_blocker,
-                    },
-                )
-                self._context.logger.error(
-                    "pm_engine",
-                    f"验证报告闸门: '{spec_name}' 阻止晋级 verified — {report_blocker}",
-                )
-                return
-            # verified 洗白门禁（help-center 0/15 verified 事故防线）：
-            # 0 通过或 env 失败不得放行，升级 admin 处置
-            if not self._env_whitewash_gate(spec_name):
-                return
-            # fix-observability-gaps 2.2：planner-judge 判定 verified（自动来源）
-            self._context.state_machine.transition(
-                spec_name, "verified",
-                trigger_run_id=judge_result.run_id, agent_type="planner-judge", channel="auto",
-            )
-            self._context.state_machine.update_spec(
-                spec_name,
-                {
-                    "tester_run": judge_result.run_id,
-                    "error": None,
-                    "_inconclusive_attempts": 0,
-                    # add-verify-parallel-backoff / design D2：verified 属健康轮，
-                    # 降档并行度同轮复位（与 _inconclusive_attempts 同生命周期）。
-                    "_verify_parallel_override": None,
-                    # add-fail-counter-budget D1：验证 PASS 是 _verify_fail_rounds
-                    # 的唯一归零点——跨修复周期累计的失败计数在此清零并持久化，
-                    # 打回重派/修复收工等中间转换不再归零（见 _do_spec_bug_found）。
-                    "_verify_fail_rounds": 0,
-                    # evo-infra-failure-budget-exempt R3：_verify_infra_rounds 与
-                    # _verify_fail_rounds 同生命周期——验证 PASS 唯一归零点两处同写，
-                    # 避免跨周期累计导致 dashboard 展示失真。
-                    VERIFY_INFRA_ROUNDS_FIELD: 0,
-                    # fix-daemon-lifecycle-races D3：验证自然通过（verified 落定）是
-                    # _verify_redo_count（重启恢复重验计数）的清零点，与
-                    # _verify_fail_rounds 清零点对齐；人工 unfreeze_spec 亦清零。
-                    "_verify_redo_count": 0,
-                    # add-blocked-reverify-lane D3：env 阻塞轮次唯一自动清零点=验证
-                    # 通过（与 _verify_fail_rounds PASS 唯一归零点同语义）；处置复位/
-                    # 恢复/fix 链等中间转换不清零。
-                    ENV_BLOCK_ROUNDS_FIELD: 0,
-                },
-            )
-            # 裁决采纳后落盘 verdict 稳定性轮次（judge-rerun-stability R1）
-            self._record_verdict_adoption(spec_name, "verified", report)
-            # 失败历史侧车随 verified 终态清空（fix-verdict-retry-misattribution D6）
-            self._clear_fail_history(spec_name)
-            # 本轮场景集变更小节追加到验证报告（spec 需求 2.3）
-            self._render_scenario_change_section_to_report(spec_name)
-            self._context.on_spec_verified(spec_name)
+            self._apply_verified(spec_name, judge_result, report)
+            return
 
 
 # ── env 阻塞复位判定（add-blocked-reverify-lane D2）────────────────

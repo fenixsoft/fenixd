@@ -13,6 +13,7 @@ import subprocess
 import sys
 import threading
 import time
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Dict, Any
@@ -313,6 +314,46 @@ EXTENSION_TAIL_WINDOW_SECONDS = 1800.0
 def _default_ts_parser(entry: dict):
     """默认 timestamp 解析器：委托 core.agent_runner.latency 实现（D4）。"""
     return _latency_default_ts_parser(entry)
+
+
+@dataclass
+class _AttemptState:
+    """attempt 周期共享状态对象（design D3）。
+
+    承载 `_execute_agent_inner` 内跨块共享的局部标量，替代「十几个标量的
+    隐式元组」直接传参。逐字段映射原局部变量读写点，MUST NOT 改变读写
+    顺序或作用域（等价搬移）；状态对象生命周期限于本函数（attempt 循环
+    期间），MUST NOT 提升为实例属性（避免跨 run 泄漏）。
+    """
+
+    # 当前 attempt 使用的 worktree 路径（读 53 次，最高频共享标量）
+    wt_path: Optional[Path] = None
+    # 本轮候选 provider 名（链选择前 None，供 frozen 提前返回使用）
+    provider_name: Optional[str] = None
+    # 当前模型名
+    model: Optional[str] = None
+    # 实例级链指针（design D1：cursor 按 agent_type 记忆）。-1 表示尚未选定
+    chain_cursor: int = -1
+    # session_id 所属 provider（None=默认网关）
+    session_id: Optional[str] = None
+    session_provider: Optional[str] = None
+    # 本 attempt 已原地重试次数（预算 = 退避序列长度）
+    transient_retries: int = 0
+    # 连续 resume 失败次数（≥2 后本次 attempt 改全新会话）
+    resume_failures: int = 0
+    # worktree-reuse：fast-track 终态失败保留的复用遗产路径
+    kept_wt_path: Optional[Path] = None
+    # add-run-cancel D3/D5：本轮 run 是否被人工取消
+    cancelled_flag: bool = False
+    cancel_reason: str = ""
+    # shutdown-interrupted 守卫（2026-09-09 事故）
+    shutdown_interrupted: bool = False
+    # run 终态指标落盘需 usage_info（早夭分支引用前初始化，unobserved 语义）
+    usage_info: dict = field(default_factory=dict)
+    # 同上：预检早夭分支无 turns 值，统一顶部初始化
+    turns: int = 0
+    # 用于 "provider switched" 跨 attempt 打点
+    last_provider_used: Optional[str] = None
 
 
 class AgentRunner:
@@ -1575,102 +1616,59 @@ class AgentRunner:
             handed_off = set()
         max_retries = self._get_config("agents.max_retries", 3)
         start_time = time.time()
-        wt_path = pre_wt_path
-        session_id = None
-        # session_id 所属 provider（None=默认网关）：session 存在于其创建时的
-        # CLAUDE_CONFIG_DIR，跨 provider 续跑必然 'No conversation found'（fix）。
-        session_provider = None
-        # 实例级链指针（design D1：cursor 按 agent_type 记忆）。-1 表示尚未选定。
-        chain_cursor = -1
-        last_provider_used = None  # 用于 "provider switched" 跨 attempt 打点
-        kept_wt_path = None  # worktree-reuse：fast-track 终态失败保留的复用遗产路径
-        provider_name = None  # 本轮候选 provider（链选择前为 None，供 frozen 提前返回使用）
-        model = None
-        # fix-observability-gaps：run 终态指标落盘需 usage_info——早夭分支
-        # （frozen/取消旗标/circuit 等未跑 _run_claude 的路径）引用前初始化，
-        # 避免 NameError（unobserved 语义：全 0 + unobserved 标记）。
-        usage_info = self._extract_usage_info(None)
-        # 同上：预检早夭分支（frozen/circuit/worktree 失败）无 turns 值，
-        # 统一顶部初始化，供终态指标落盘引用。
-        turns = 0
+
+        # ── R0: 跨 attempt 共享状态对象（design D3 _AttemptState）─────────
+        # 逐字段映射原 14 个局部标量，为后续方法提取提供显式传参载体。
+        # 当前阶段（Task 4.1）：创建实例并映射初始值，保留原同名局部变量
+        # 作为 st 字段的别名——函数体读写点暂不改为 st.xxx（等价搬移），
+        # 后续提取方法时（4.2-4.6）逐块替换读写点为 st.xxx。
+        st = _AttemptState(
+            wt_path=pre_wt_path,
+            provider_name=None,
+            model=None,
+            chain_cursor=-1,
+            last_provider_used=None,
+            kept_wt_path=None,
+            usage_info=self._extract_usage_info(None),
+            turns=0,
+            cancelled_flag=False,
+            cancel_reason="",
+            shutdown_interrupted=False,
+        )
+        # 别名：原变量名 → st 字段（保留，函数体暂不改为 st.xxx）
+        wt_path = st.wt_path
+        session_id = st.session_id
+        session_provider = st.session_provider
+        chain_cursor = st.chain_cursor
+        last_provider_used = st.last_provider_used
+        kept_wt_path = st.kept_wt_path
+        provider_name = st.provider_name
+        model = st.model
+        usage_info = st.usage_info
+        turns = st.turns
         self._last_model_used = None  # 用于 model_changed 日志留痕（design D3）
-        # add-run-cancel D3/D5：本轮 run 是否被人工取消（RunCancelledError 捕获
-        # 或 attempt 顶部旗标命中）。cancelled_flag 为 True 时不再进入下一 attempt。
-        cancelled_flag = False
-        cancel_reason = ""
-        # shutdown-interrupted 守卫（2026-09-09 事故）：本 run 被框架主动终止。
-        # True 时不再进入下一 attempt、终态保留现场交 recovery/保全处置。
-        shutdown_interrupted = False
+        cancelled_flag = st.cancelled_flag
+        cancel_reason = st.cancel_reason
+        shutdown_interrupted = st.shutdown_interrupted
 
         for attempt in range(1, max_retries + 1):
             attempt_run_id = f"{run_id}-a{attempt}"
-            # lifecycle-hygiene 4.1：每轮 attempt 启动前统一检查 spec 结构化 frozen
-            # 字段——frozen 为真立即终止重试链（不派发 attempt、不创建 worktree），
-            # run 以失败收场保留错误记录。覆盖 judge failover 换网关重试等全部重试
-            # 路径，不止 worktree 失败路径；未冻结行为零变化。
-            if self._spec_is_frozen(spec_name):
-                self.logger.warning(
-                    "agent_runner",
-                    f"spec '{spec_name}' frozen — 终止 {agent_type} 自动重试链"
-                    f"（attempt {attempt}/{max_retries}），不派发 attempt",
-                )
-                # fix-observability-gaps 1.1：frozen 早夭也是终态，写指标（unobserved）
-                self._log_run_metrics(
-                    run_id=run_id, spec_name=spec_name, agent_type=agent_type,
-                    duration_seconds=time.time() - start_time, turns=turns,
-                    usage_info=usage_info, terminal="frozen",
-                    provider=provider_name, model=model,
-                )
-                return AgentRunResult(
-                    run_id, spec_name, agent_type,
-                    success=False, duration_seconds=time.time() - start_time,
-                    error=(f"{FROZEN_TERMINATED_ERROR_PREFIX} — auto-retry terminated "
-                           f"(attempt {attempt}/{max_retries})"),
-                    provider_used=provider_name, model_used=model,
-                )
-            # add-run-cancel D3：attempt 循环顶部检查取消旗标（与 frozen 检查同
-            # 位置，覆盖 attempt 间隙/准备阶段）——命中立即返回，不派发后续
-            # attempt、不创建本 attempt 的 worktree；残留 worktree 按终态失败
-            # 同语义清理。
-            if self._cancel_is_requested(run_id):
-                meta = self._cancel_meta.get(run_id, {})
-                cancel_reason = meta.get("reason", "")
-                self.logger.warning(
-                    "agent_runner",
-                    f"run '{run_id}' 取消旗标命中，终止 {agent_type} 重试链"
-                    f"（attempt {attempt}/{max_retries}），不派发 attempt",
-                )
-                if wt_path is not None:
-                    self._v2_stop_for_worktree(wt_path)
-                    if agent_type == "fast-track":
-                        self.worktree_manager.keep_for_reuse(spec_name, wt_path)
-                        kept_wt_path = wt_path
-                        # 取消 keep：目录+分支有意保留供下轮复用，不参与终态收割
-                        handed_off.add(wt_path)
-                    elif agent_type == "repair":
-                        # 终态失败保留现场：dispatch 层负责回收（fallback 清理）
-                        kept_wt_path = wt_path
-                        handed_off.add(wt_path)
-                    else:
-                        self.worktree_manager.cleanup(wt_path, success=False)
-                self._cancel_clear(run_id)
-                # fix-observability-gaps 1.1：attempt 顶部取消也是终态，写指标
-                self._log_run_metrics(
-                    run_id=run_id, spec_name=spec_name, agent_type=agent_type,
-                    duration_seconds=time.time() - start_time, turns=turns,
-                    usage_info=usage_info, terminal="cancelled",
-                    provider=provider_name, model=model,
-                )
-                return AgentRunResult(
-                    run_id, spec_name, agent_type,
-                    success=False, duration_seconds=time.time() - start_time,
-                    error=(CANCELLED_BY_ADMIN_ERROR_PREFIX
-                           + (f": {cancel_reason}" if cancel_reason else "")),
-                    cancelled=True,
-                    provider_used=provider_name, model_used=model,
-                    worktree_path=kept_wt_path,
-                    worktree_kept=kept_wt_path is not None,
-                )
+            # ── attempt 顶守卫（frozen / 取消旗标，见 _attempt_top_guards）──
+            _early = self._attempt_top_guards(
+                spec_name=spec_name, agent_type=agent_type,
+                run_id=run_id, attempt=attempt, max_retries=max_retries,
+                start_time=start_time, turns=turns, usage_info=usage_info,
+                st=st, handed_off=handed_off,
+            )
+            if _early is not None:
+                return _early
+            cancel_reason = st.cancel_reason
+            kept_wt_path = st.kept_wt_path
+            wt_path = st.wt_path
+            provider_name = st.provider_name
+            model = st.model
+            usage_info = st.usage_info
+            turns = st.turns
             # cli-retry-backoff：秒挂按 attempt 实际存活时长判定（进程时长近似，
             # 包含 worktree 创建到失败，60s 级判定不敏感于准备开销）。
             attempt_started_at = time.time()
@@ -1683,214 +1681,40 @@ class AgentRunner:
             # Check daily run limit
             self._check_daily_limit()
 
-            # ── 候选链解析与选择（add-provider-failover） ──
-            chain = self._get_agent_model_assignment(agent_type) or []
-            if not chain:
-                # 无 provider 分配：走默认网关（cc-switch），无链可选。provider_name=None。
-                provider_name = None
-                provider = None
-                model = None
-            else:
-                # 链指针推进：上次因切换类失败已前移的，保持前移（design D1/D3）；
-                # 否则从头选首个未冷却候选。4xx 熔断拦截态也算"不可用"跳过。
-                if chain_cursor < 0:
-                    chain_cursor = self._select_chain_candidate(chain, spec_name, agent_type)
-                if chain_cursor < 0:
-                    # 无可用候选。区分两类根因（design D3 / spec failover-dispatch）：
-                    # - 全部候选仅因 4xx 熔断（is_circuit_open）被跳过 → 维持既有
-                    #   "provider circuit open" 错误语义（不污染 error 文本、便于 admin/dashboard
-                    #   区分 provider 故障），报告首个 4xx 熔断候选。
-                    # - 否则（含 switch 冷却 / 全链冷却）→ chain_exhausted 失败语义，
-                    #   不启动进程、不计入 spec 重试消耗。
-                    first_4xx_open = None
-                    for (provider, _m) in chain:
-                        if self.is_circuit_open(provider["name"]):
-                            first_4xx_open = provider["name"]
-                            break
-                    if first_4xx_open is not None:
-                        circuit_err = self._circuit_open_error(first_4xx_open)
-                        self.logger.warning(
-                            "agent_runner",
-                            f"Suppressed {agent_type} dispatch for '{spec_name}': {circuit_err}",
-                        )
-                        self._log_run_metrics(
-                            run_id=run_id, spec_name=spec_name, agent_type=agent_type,
-                            duration_seconds=time.time() - start_time, turns=turns,
-                            usage_info=usage_info, terminal="circuit",
-                            provider=first_4xx_open, model=model,
-                        )
-                        return AgentRunResult(
-                            attempt_run_id, spec_name, agent_type,
-                            success=False, duration_seconds=time.time() - start_time,
-                            error=circuit_err, provider_used=first_4xx_open,
-                        )
-                    exhausted_err = (
-                        f"provider chain exhausted for {agent_type} '{spec_name}': "
-                        f"all {len(chain)} candidates in switch/4xx cooldown"
-                    )
-                    self.logger.error("agent_runner", exhausted_err)
-                    self._log_run_metrics(
-                        run_id=run_id, spec_name=spec_name, agent_type=agent_type,
-                        duration_seconds=time.time() - start_time, turns=turns,
-                        usage_info=usage_info, terminal="chain_exhausted",
-                        provider=None, model=model,
-                    )
-                    return AgentRunResult(
-                        attempt_run_id, spec_name, agent_type,
-                        success=False, duration_seconds=time.time() - start_time,
-                        error=exhausted_err, chain_exhausted=True,
-                    )
-                provider, model = chain[chain_cursor]
-                provider_name = provider["name"]
+            # ── 候选链解析与选择（add-provider-failover，见 _resolve_provider_candidate）──
+            provider, model, chain, _early = self._resolve_provider_candidate(
+                spec_name, agent_type, run_id, attempt_run_id, start_time,
+                turns, usage_info, st,
+            )
+            if _early is not None:
+                return _early
+            provider_name = st.provider_name
 
-                # ── 4xx 熔断拦截（fix-stashpop-deadlock：provider-fault-fuse） ──
-                # 仅对当前选中候选生效；若已熔断（冷却未到期），直接失败返回、不启动 claude、
-                # 不创建 worktree/autostash、不计入 spec 连续失败重试（design D5）。冷却到期后
-                # 首个真实派发作为半开探针（design D4）。
-                if self.is_circuit_open(provider_name):
-                    circuit_err = self._circuit_open_error(provider_name)
-                    self.logger.warning(
-                        "agent_runner",
-                        f"Suppressed {agent_type} dispatch for '{spec_name}': {circuit_err}",
-                    )
-                    # 不创建 worktree、不进入重试计数。直接以熔断错误返回。
-                    # fix-observability-gaps 1.1：circuit 拦截终态写指标
-                    self._log_run_metrics(
-                        run_id=run_id, spec_name=spec_name, agent_type=agent_type,
-                        duration_seconds=time.time() - start_time, turns=turns,
-                        usage_info=usage_info, terminal="circuit",
-                        provider=provider_name, model=model,
-                    )
-                    return AgentRunResult(
-                        attempt_run_id, spec_name, agent_type,
-                        success=False, duration_seconds=time.time() - start_time,
-                        error=circuit_err, provider_used=provider_name, model_used=model,
-                    )
-
-                # 选中且未熔断 → 计一次当日 attempt（design D5 / spec 4.2），后续跨 attempt
-                # 切换打点依赖 last_provider_used。
-                self._record_daily_provider_attempt(provider_name)
-
-            # fast-track 与 implementer 同语义：跨 attempt 复用同一 worktree（失败续跑）。
-            # repair 沿用同一语义：repair run 的 attempt 复用同一个 repair worktree
-            #（add-merge-back-repair-lane——worktree 由调度层解析，内部 attempt 不重造）。
-            # fix-resume-stale-worktree（todo 09-04 失误#3 处方 3a）：复用前校验路径
-            # 真实存在——恢复清理/孤儿回收可能在 attempt 间隙删除目录，盲复用以
-            # [Errno 2] 秒挂白烧一次重试额度。失效处置：implementer/fast-track 丢弃
-            # 引用改走新建分支路径；repair 载体失效显式失败交还调度层重新解析
-            # （repair 语义要求在实现分支内修复，换新分支即失去载体意义）。
-            reuse_worktree = False
-            if (agent_type in ("implementer", "fast-track", "repair")
-                    and wt_path is not None):
-                if self._worktree_path_valid(wt_path):
-                    reuse_worktree = True
-                elif agent_type == "repair":
-                    error_msg = (f"repair worktree {wt_path} lost between attempts "
-                                 f"— need fresh carrier resolution")
-                    self.logger.error("agent_runner", error_msg)
-                    self._log_run_metrics(
-                        run_id=run_id, spec_name=spec_name, agent_type=agent_type,
-                        duration_seconds=time.time() - start_time, turns=turns,
-                        usage_info=usage_info, terminal="failure",
-                        provider=provider_name, model=model,
-                    )
-                    return AgentRunResult(
-                        attempt_run_id, spec_name, agent_type,
-                        success=False, duration_seconds=time.time() - start_time,
-                        error=error_msg, provider_used=provider_name, model_used=model,
-                    )
-                else:
-                    self.logger.warning(
-                        "agent_runner",
-                        f"Worktree {wt_path} for '{spec_name}' no longer exists "
-                        f"(deleted between attempts) — fresh create instead of resume",
-                    )
-                    wt_path = None
-
-            # 跨 attempt 切换打点（design D5 / spec failover-dispatch「切换留痕」）：
-            # 本次实际使用的 provider 与上一次不同 → 输出 "provider switched" 日志；
-            # 当 model 也发生变更时附带 `model_changed: <old>→<new>`（design D3）。
-            # 放在 reuse_worktree 判断之后、运行之前，确保本次 dispatch 的 provider 已确定。
-            if last_provider_used is not None and provider_name is not None \
-                    and provider_name != last_provider_used:
-                switch_msg = (
-                    f"provider switched {last_provider_used} → {provider_name} "
-                    f"for '{spec_name}'"
-                )
-                last_model = getattr(self, "_last_model_used", None)
-                if model and last_model and model != last_model:
-                    switch_msg += f" — model_changed: {last_model}→{model}"
-                self.logger.info("agent_runner", switch_msg)
-            # 记忆本次使用的模型名（供下次 attempt 切换时判定 model_changed，design D3）
-            if model:
-                self._last_model_used = model
-            # 更新记忆：下次 attempt 据以判断切换并打点（design D5）。
-            last_provider_used = provider_name
-
-            # Create or reuse worktree
-            if wt_path is None:
-                wt_path = self.worktree_manager.create(spec_name, agent_type)
-                if wt_path is None:
-                    error_msg = "Failed to create worktree"
-                    self.logger.error("agent_runner", error_msg)
-                    if attempt < max_retries:
-                        time.sleep(5)
-                        # fix-restart-dual-dispatch S3/S4：重试前判定——锁活跃
-                        #（另一 run 在跑）或人工冻结时放弃，不再换名再造并行 run
-                        if self._should_give_up_before_retry(
-                                        spec_name, agent_type):
-                            self._log_run_metrics(
-                                run_id=run_id, spec_name=spec_name,
-                                agent_type=agent_type,
-                                duration_seconds=time.time() - start_time,
-                                turns=turns, usage_info=usage_info,
-                                terminal="failure", provider=provider_name,
-                                model=model,
-                            )
-                            return AgentRunResult(
-                                attempt_run_id, spec_name, agent_type,
-                                success=False,
-                                duration_seconds=time.time() - start_time,
-                                error=f"{error_msg} (gave up: parallel run or manual freeze)",
-                                provider_used=provider_name, model_used=model,
-                            )
-                        continue
-                    self._log_run_metrics(
-                        run_id=run_id, spec_name=spec_name, agent_type=agent_type,
-                        duration_seconds=time.time() - start_time, turns=turns,
-                        usage_info=usage_info, terminal="failure",
-                        provider=provider_name, model=model,
-                    )
-                    return AgentRunResult(
-                        attempt_run_id, spec_name, agent_type,
-                        success=False, duration_seconds=time.time() - start_time,
-                        error=error_msg, provider_used=provider_name, model_used=model,
-                    )
-                # verify-process-lifecycle（D1）：登记本 run 使用的 worktree，
-                # 供外层 finally 对未交接集合执行终态收割。
-                used_wts.add(wt_path)
-                # add-worktree-test-server（D2 派发前启动）：worktree 创建成功后立即
-                # 为其启动专属 dev-server，供本次 attempt 的测试请求命中 worktree 副本。
-                self._v2_launch_for_worktree(wt_path)
-            else:
-                self.logger.info(
-                    "agent_runner",
-                    f"Reusing worktree {wt_path} for '{spec_name}' (attempt {attempt}, resume)",
-                )
-                used_wts.add(wt_path)
-                if agent_type == "fast-track":
-                    # 跨 attempt 复用同一 worktree：补记继承痕迹（prompt 注入用）
-                    self.worktree_manager.mark_reused(
-                        spec_name, wt_path,
-                        self.worktree_manager.get_branch_name(wt_path) or "",
-                    )
+            # ── R3: worktree 复用/新建（等价搬移，D1 R3 表，部分可提取）────────
+            # 路径校验 / create 失败重试让位 / used_wts 登记 / dev-server /
+            # provider_marker / 路由地图。跨边界 continue（create 失败重试）
+            # 与 return（让位/失败）经返回值回传，调用者据以决策。
+            wt_path, reuse_worktree, _early, _do_continue = self._prepare_worktree(
+                spec_name=spec_name, agent_type=agent_type,
+                attempt=attempt, attempt_run_id=attempt_run_id,
+                max_retries=max_retries, start_time=start_time,
+                turns=turns, usage_info=usage_info,
+                provider_name=provider_name, model=model,
+                wt_path=wt_path, run_id=run_id,
+                st=st, used_wts=used_wts,
+            )
+            if _do_continue:
+                continue
+            if _early is not None:
+                return _early
+            last_provider_used = st.last_provider_used
 
             # ── 观测：run jsonl 写 provider_marker（design D5 / spec failover-dispatch） ──
             # attempt 启动时写入，指明所用 provider/model 与链内下标，事后可追溯实际网关。
             if provider_name is not None:
                 self._write_provider_marker(
                     attempt_run_id, spec_name, agent_type,
-                    provider_name, model, chain_cursor, len(chain),
+                    provider_name, model, st.chain_cursor, len(chain),
                 )
 
             # ── 路由地图生成（add-planner-efficiency：planner-route-map 1.1） ──
@@ -1997,30 +1821,7 @@ class AgentRunner:
                     # repair 的残留（含旧格式无 role）一律不采信为验证裁决。JSON 无法
                     # 解析时维持原始字节拷回（不注入，避免破坏字节；下游产物硬门会
                     # 拦截非法 JSON，读侧按 parse 归因）。
-                    wt_result = wt_path / ".fenix-run-result.json"
-                    root_result = self.project_root / ".fenix" / ".fenix-run-result.json"
-                    if wt_result.exists():
-                        try:
-                            raw = wt_result.read_text(encoding="utf-8")
-                            role = AGENT_TYPE_TO_ROLE.get(agent_type)
-                            if role is not None:
-                                try:
-                                    payload = json.loads(raw)
-                                    if isinstance(payload, dict):
-                                        payload["role"] = role
-                                        payload["spec"] = spec_name
-                                        root_result.write_text(
-                                            json.dumps(
-                                                payload, ensure_ascii=False, indent=2),
-                                            encoding="utf-8",
-                                        )
-                                        raw = None  # 已注入写盘，跳过原始拷回
-                                except (json.JSONDecodeError, ValueError):
-                                    pass  # 非法 JSON：fall through 原始字节拷回
-                            if raw is not None:
-                                root_result.write_text(raw, encoding="utf-8")
-                        except OSError:
-                            pass
+                    self._copyback_run_result(spec_name, agent_type, wt_path)
                     self._copyback_verify_progress(wt_path, spec_name)
                     # add-judge-artifact-gate D1：planner 产物存在性硬门——成功判定
                     # 从「进程 exit 0」升级为「exit 0 且结果文件落盘且可解析」；
@@ -2055,112 +1856,29 @@ class AgentRunner:
                     break  # 原地重试子循环：取消退出 while
                 except AgentArtifactGateError as e:
                     # add-judge-artifact-gate D1：exit 0 但产物缺失/为空/非法 JSON
-                    # → 按瞬态失败走既有原地退避重试（fix-provider-transient-backoff
-                    # 通道原样复用，不新增重试机制；不消耗 validate_report 的「裁决
-                    # 重试一次」预算）。run 已完整执行（exit 0），不计数秒挂；usage
-                    # 保留 _run_claude 实测值（区别于早期抛错按 0 计）。
+                    # → 按瞬态失败走既有原地退避重试（见 _handle_artifact_gate_retry）。
+                    # 跨边界 return（让位）/ continue（原地重试）/ break（预算耗尽）
+                    # 经返回值驱动，调用者据此决策（D2）。
                     output = ""
                     turns = 0
                     success = False
-                    error = str(e)
-                    self.logger.warning(
-                        "agent_runner",
-                        f"Artifact gate failed for '{spec_name}' ({agent_type}): {error}",
+                    (error, transient_retries, _gate_yielded,
+                     _gate_retry, _gate_break) = self._handle_artifact_gate_retry(
+                        e, spec_name=spec_name, agent_type=agent_type,
+                        run_id=run_id, attempt=attempt,
+                        attempt_run_id=attempt_run_id, sub_run_id=sub_run_id,
+                        provider_name=provider_name, model=model, wt_path=wt_path,
+                        transient_retries=transient_retries,
+                        transient_budget=transient_budget,
+                        start_time=start_time, turns=turns,
+                        usage_info=usage_info,
                     )
-                    if "[provider-transient]" not in error:
-                        error = f"[provider-transient] {error}"
-                    # fix-impl-resultfile-contract-gap 4.2：结果文件缺失归因——
-                    # 复用终态机械特征区分「格式回退截断」/「未收工即停」（只改
-                    # 局部变量 error，MUST NOT 改动传入 record_transient_break
-                    # 的 str(e)——全局瞬断指纹记账读 str(e)，归因文案不可污染）。
-                    if agent_type in ("implementer", "fast-track"):
-                        error = classify_and_enrich_artifact_error(
-                            self, error, agent_type, sub_run_id)
-                    # 全局瞬断指纹计数（transient-dispatch-gating D4 同语义）：
-                    # 产物硬门失败同样记账，保留 dispatch 闸门对瞬断风暴的可见性。
-                    # add-impl-terminal-nocommit-gate（D1 处置）：终态零提交门
-                    # 触发的错误（文本以 [terminal-no-commit] 开头）是「格式回退/
-                    # 忘提交」而非网关瞬断——跳过全局瞬断指纹记账，避免污染 dispatch
-                    # 闸门对瞬断风暴的可见性（多计保守、少计危险；此处精确跳过）。
-                    if not str(e).startswith("[terminal-no-commit]"):
-                        try:
-                            self.record_transient_break(str(e))
-                        except Exception as _break_err:
-                            self.logger.debug(
-                                "agent_runner",
-                                f"global transient break 记账失败（不阻断）: {_break_err}",
-                            )
-                    if transient_retries < len(transient_budget):
-                        backoff = transient_budget[transient_retries]
-                        transient_retries += 1
-                        append_run_line(
-                            self.project_root / ".fenix" / "runs"
-                            / f"{sub_run_id}.jsonl", {
-                                "type": "transient_retry",
-                                "spec": spec_name,
-                                "provider": provider_name,
-                                "backoff_seconds": backoff,
-                                "retry_number": transient_retries,
-                                "reason": "artifact_gate",
-                                "timestamp": datetime.now(timezone.utc).isoformat(),
-                            })
-                        # fix-retry-orphan-active-runs D1：superseded 终态补写
-                        # ——与 provider 瞬断通道同语义：superseded 紧跟
-                        # transient_retry = 本文件终态，重试在新 sub_run_id 文件
-                        # 继续（runner.py:1922 换新注释处交叉引用）。
-                        append_run_line(
-                            self.project_root / ".fenix" / "runs"
-                            / f"{sub_run_id}.jsonl", {
-                                "type": "superseded",
-                                "spec": spec_name,
-                                "provider": provider_name,
-                                "timestamp": datetime.now(timezone.utc).isoformat(),
-                            })
-                        self.logger.warning(
-                            "agent_runner",
-                            f"Artifact gate for '{spec_name}' (attempt {attempt}, "
-                            f"{agent_type}) — in-place retry "
-                            f"{transient_retries}/{len(transient_budget)} "
-                            f"after {backoff}s backoff (add-judge-artifact-gate)",
-                        )
-                        # 锚点 B（add-impl-wip-checkpoint D3）：transient_retry
-                        # 记录写后、sleep 前的静默窗口 WIP 提交——即便 daemon 在
-                        # 退避窗口内死亡，分支上已有可恢复提交（无载体则跳过）。
-                        self._wip_checkpoint_before_backoff(spec_name, wt_path)
-                        time.sleep(backoff)
-                        # fix-verdict-dedup-resynthesis D4：退避期间 spec 可能被
-                        # 人工/其它链路接管（status 迁出预期态/frozen/hold）——
-                        # 重派前复查，命中即让位（返回语义化失败，不再产生新的
-                        # transient_retry 重派，19:48 事故 $4.77 白烧根因）。
-                        if self._should_give_up_before_retry(
-                                        spec_name, agent_type,
-                                        check_lock=False):
-                            self.logger.warning(
-                                "agent_runner",
-                                f"Artifact-gate retry for '{spec_name}' "
-                                f"({agent_type}) yields: spec 已被接管，"
-                                f"放弃重派（fix-verdict-dedup-resynthesis D4）",
-                            )
-                            self._log_run_metrics(
-                                run_id=run_id, spec_name=spec_name,
-                                agent_type=agent_type,
-                                duration_seconds=time.time() - start_time,
-                                turns=turns, usage_info=usage_info,
-                                terminal="failure", provider=provider_name,
-                                model=model,
-                            )
-                            return AgentRunResult(
-                                attempt_run_id, spec_name, agent_type,
-                                success=False,
-                                duration_seconds=time.time() - start_time,
-                                error=(
-                                    f"{RETRY_YIELDED_ERROR_PREFIX} spec 已被接管"
-                                    f"（status 迁出预期态或 frozen/hold），"
-                                    f"重试让位（fix-verdict-dedup-resynthesis D4）"),
-                                provider_used=provider_name, model_used=model,
-                            )
+                    if _gate_yielded is not None:
+                        return _gate_yielded
+                    if _gate_retry:
                         continue
-                    break  # 原地预算耗尽 → 退出 while，attempt 层继续重试
+                    if _gate_break:
+                        break  # 原地预算耗尽 → 退出 while，attempt 层继续重试
                 except Exception as e:
                     output = ""
                     turns = 0
@@ -2209,144 +1927,41 @@ class AgentRunner:
                         f"unobserved (no result terminal event; real consumption "
                         f"likely non-zero, add-cost-observability): {error}",
                     )
-                    # 4xx 熔断计数（fix-stashpop-deadlock：provider-fault-fuse）。
-                    # 仅对「已分配 provider」且错误文本能解析出 HTTP 4xx 的情况计数（design D4）；
-                    # 5xx/网络错误不计数（瞬态，走既有 retry）。解析不到 code 视为失败、不计数。
-                    if provider_name:
-                        code = self.parse_api_error_status(error)
-                        if code is not None and code in PROVIDER_CIRCUIT_4XX:
-                            was_half_open = False
-                            st = self.provider_circuits.get(provider_name)
-                            if st and st.get("count", 0) >= PROVIDER_CIRCUIT_THRESHOLD \
-                                    and st.get("cooldown_until", 0) > 0 \
-                                    and st["cooldown_until"] <= self._now():
-                                # 半开探针仍 4xx → 重新冷却（design D4），不重复计数。
-                                was_half_open = True
-                            self._record_provider_4xx(provider_name, code)
-                            if was_half_open:
-                                self._record_provider_probe(provider_name, success=False)
-                        else:
-                            # fix-provider-transient-backoff（D1）：瞬断判定独立于
-                            # classify_switch_error——降噪后 error 文本可能不含
-                            # unrecognized_model 字样（D5 已过滤），判定必须依赖原始
-                            # stderr 信号（异常携带的 stderr_lines / has_result）。
-                            # resume 死 session（No conversation found）不属网关瞬断，
-                            # 排除在瞬断判定之外（其处置走下方 session 清理兜底）。
-                            exc_stderr = getattr(e, "stderr_lines", None) or []
-                            exc_exit = getattr(e, "exit_code", None)
-                            exc_has_result = getattr(e, "has_result", None)
-                            resume_dead = (
-                                error and "No conversation found with session ID" in error)
-                            is_transient = (
-                                not resume_dead and self.classify_transient_error(
-                                    exc_stderr,
-                                    exc_exit if exc_exit is not None else 1,
-                                    bool(exc_has_result)))
-                            if is_transient:
-                                # 瞬断终态/重试共用标记（transient-dispatch-gating D4）：写侧统一
-                                # 在 error 头部注入 `[provider-transient]`，供 dispatch 读侧识别
-                                # 与终态 keep_for_reuse 判定（task 3.2 / 4.1）。
-                                if "[provider-transient]" not in error:
-                                    error = f"[provider-transient] {error}"
-                                # 全局瞬断错误指纹计数（fix-provider-transient-backoff D4）：
-                                # 每次瞬断失败记账到全局熔断；达阈值触发全局派发冻结。
-                                # 指纹源用原始 stderr（降噪后 error 可能丢 unrecognized_model
-                                # 字样），与 D2 判定同源。
-                                try:
-                                    self.record_transient_break(
-                                        "\n".join(str(l) for l in exc_stderr) or error)
-                                except Exception as _break_err:
-                                    self.logger.debug(
-                                        "agent_runner",
-                                        f"global transient break 记账失败（不阻断）: {_break_err}",
-                                    )
-                            if (is_transient
-                                    and transient_retries < len(transient_budget)):
-                                # 原地退避重试：写 transient_retry 事件留痕，按退避序列
-                                # 下一档 sleep，然后 while 循环顶部以同 provider 重跑该
-                                # attempt（不递增 attempt、不触发 switch 冷却、不改 chain_cursor）。
-                                backoff = transient_budget[transient_retries]
-                                transient_retries += 1
-                                append_run_line(
-                                    self.project_root / ".fenix" / "runs"
-                                    / f"{sub_run_id}.jsonl", {
-                                        "type": "transient_retry",
-                                        "spec": spec_name,
-                                        "provider": provider_name,
-                                        "backoff_seconds": backoff,
-                                        "retry_number": transient_retries,
-                                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                                    })
-                                # fix-retry-orphan-active-runs D1：superseded
-                                # 终态补写——本文件末行恒为终态，恢复「终态后置」
-                                # 不变量。写侧紧跟 transient_retry = 本文件终态，
-                                # 重试在新 sub_run_id 文件继续（runner.py:1922
-                                # 换新注释处交叉引用）；daemon 退避窗口内死亡
-                                # 由 interrupted 补写接续（末行仍终态）。
-                                append_run_line(
-                                    self.project_root / ".fenix" / "runs"
-                                    / f"{sub_run_id}.jsonl", {
-                                        "type": "superseded",
-                                        "spec": spec_name,
-                                        "provider": provider_name,
-                                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                                    })
-                                self.logger.warning(
-                                    "agent_runner",
-                                    f"Transient error for '{spec_name}' (attempt {attempt}, "
-                                    f"provider {provider_name}) — in-place retry "
-                                    f"{transient_retries}/{len(transient_budget)} "
-                                    f"after {backoff}s backoff (fix-provider-transient-backoff)",
-                                )
-                                # 锚点 B（add-impl-wip-checkpoint D3）：transient_retry
-                                # 记录写后、sleep 前的静默窗口 WIP 提交——即便 daemon 在
-                                # 退避窗口内死亡，分支上已有可恢复提交（无载体则跳过）。
-                                self._wip_checkpoint_before_backoff(spec_name, wt_path)
-                                time.sleep(backoff)
-                                # fix-verdict-dedup-resynthesis D4：退避期间 spec
-                                # 可能被人工/其它链路接管（admin SIGKILL 后 30s 内
-                                # 置 blocked 即 19:48 事故形态）——重派前复查，
-                                # 命中即让位（返回语义化失败，不再产生新的
-                                # transient_retry 重派，token 消耗不再发生）。
-                                if self._should_give_up_before_retry(
-                                        spec_name, agent_type,
-                                        check_lock=False):
-                                    self.logger.warning(
-                                        "agent_runner",
-                                        f"Provider-transient retry for '{spec_name}' "
-                                        f"({agent_type}) yields: spec 已被接管，"
-                                        f"放弃重派（fix-verdict-dedup-resynthesis D4）",
-                                    )
-                                    self._log_run_metrics(
-                                        run_id=run_id, spec_name=spec_name,
-                                        agent_type=agent_type,
-                                        duration_seconds=time.time() - start_time,
-                                        turns=turns, usage_info=usage_info,
-                                        terminal="failure", provider=provider_name,
-                                        model=model,
-                                    )
-                                    return AgentRunResult(
-                                        attempt_run_id, spec_name, agent_type,
-                                        success=False,
-                                        duration_seconds=time.time() - start_time,
-                                        error=(
-                                            f"{RETRY_YIELDED_ERROR_PREFIX} spec 已被接管"
-                                            f"（status 迁出预期态或 frozen/hold），"
-                                            f"重试让位（fix-verdict-dedup-resynthesis D4）"),
-                                        provider_used=provider_name, model_used=model,
-                                    )
-                                continue  # 回到 while 顶部重跑同一 attempt（新 sub_run_id）
-                            # 非瞬断或原地预算耗尽 → 现行切换逻辑
-                            # add-provider-failover（design D2/D3）：切换类错误 → 该 provider
-                            # 进入 switch 短冷却，同 run 后续 attempt 前进到下一候选（跨
-                            # provider 不 resume，见 _resumable_session_id）。
-                            # 4xx 配额/鉴权类不触发（维持既有熔断语义、链指针不动）。
-                            if self.classify_switch_error(error):
-                                self._record_switch_cooldown(provider_name)
-                                # 仅当链上还有后续候选才前进指针；否则保持当前（全链耗尽将
-                                # 在下一 attempt 的 _select_chain_candidate 中判定为 chain_exhausted）。
-                                if chain_cursor + 1 < len(chain):
-                                    chain_cursor += 1
+                    # 4xx 熔断计数 + 瞬断判定（见 _record_4xx_or_transient）
+                    error, is_transient, _may_switch = self._record_4xx_or_transient(
+                        error, provider_name, agent_type,
+                        getattr(e, "stderr_lines", None),
+                        getattr(e, "exit_code", None),
+                        getattr(e, "has_result", None),
+                    )
+                    # 瞬断原地退避重试（见 _maybe_in_place_retry；跨边界
+                    # continue 回到 while 顶部 / return 让位经返回值驱动，D2）。
+                    transient_retries, _yielded, _do_retry = self._maybe_in_place_retry(
+                        spec_name=spec_name, agent_type=agent_type,
+                        run_id=run_id, attempt=attempt,
+                        attempt_run_id=attempt_run_id, sub_run_id=sub_run_id,
+                        provider_name=provider_name, model=model, wt_path=wt_path,
+                        is_transient=is_transient,
+                        transient_retries=transient_retries,
+                        transient_budget=transient_budget,
+                        start_time=start_time, turns=turns,
+                        usage_info=usage_info,
+                    )
+                    if _yielded is not None:
+                        return _yielded
+                    if _do_retry:
+                        continue  # 回到 while 顶部重跑同一 attempt（新 sub_run_id）
+                    # 非瞬断或原地预算耗尽 → 现行切换逻辑
+                    # add-provider-failover（design D2/D3）：切换类错误 → 该 provider
+                    # 进入 switch 短冷却，同 run 后续 attempt 前进到下一候选（跨
+                    # provider 不 resume，见 _resumable_session_id）。
+                    # 4xx 配额/鉴权类不触发（维持既有熔断语义、链指针不动）。
+                    if _may_switch and self.classify_switch_error(error):
+                        self._record_switch_cooldown(provider_name)
+                        # 仅当链上还有后续候选才前进指针；否则保持当前（全链耗尽将
+                        # 在下一 attempt 的 _select_chain_candidate 中判定为 chain_exhausted）。
+                        if st.chain_cursor + 1 < len(chain):
+                            st.chain_cursor += 1
                     # fix-provider-transient-backoff（D2）：implementer 失败后从产物尾部
                     # 提取 session_id 供续跑——全 agent_type 均提取（attempt 间 worktree
                     # 保留扩展到全部 agent_type，session 随同现场保留）。
@@ -2376,155 +1991,848 @@ class AgentRunner:
             branch = self.worktree_manager.get_branch_name(wt_path) if success else None
 
             if success:
-                # 半开探针闭合（fix-stashpop-deadlock）：若该 provider 此前已进入熔断但
-                # 冷却已到期（半开），此派发成功即视为网关恢复，闭合熔断（design D4）。
-                if provider_name:
-                    st = self.provider_circuits.get(provider_name)
-                    if st and st.get("cooldown_until", 0) > 0 and st["cooldown_until"] <= self._now():
-                        self._record_provider_probe(provider_name, success=True)
-                # add-worktree-test-server（D2 终态回收）：worktree 清理前先回收其 dev-server。
-                # fast-track 例外：成功不清理——硬校验/守卫在 dispatch 层判定，失败时
-                # 保留 worktree 供重派继承（worktree-reuse）；通过则由 dispatch 在
-                # merge 后统一清理。dev-server 随 dispatch 层处置一并回收。
-                wt_dirty: list = []
-                if agent_type in ("implementer", "fast-track"):
-                    # fix-zero-change-blindspot：cleanup 前取证 worktree dirty 状态
-                    #（仅 implementer / fast-track——零变更哨对两者都生效）。
-                    st = subprocess.run(
-                        ["git", "-C", str(wt_path), "status", "--porcelain"],
-                        capture_output=True, text=True, timeout=30,
-                    )
-                    if st.returncode == 0:
-                        wt_dirty = [l for l in st.stdout.splitlines() if l.strip()]
-                elif agent_type == "repair":
-                    # repair 现场取证：冲突解决是否已 commit（dispatch 层据此
-                    # 判断 re-merge-back 前的现场状态，add-merge-back-repair-lane）。
-                    st = subprocess.run(
-                        ["git", "-C", str(wt_path), "status", "--porcelain"],
-                        capture_output=True, text=True, timeout=30,
-                    )
-                    if st.returncode == 0:
-                        wt_dirty = [l for l in st.stdout.splitlines() if l.strip()]
-                # add-impl-terminal-nocommit-gate（D2）：终态零提交门——wt_dirty
-                # 取证之后、fast-track/repair 分流之前判定。implementer 正常终态
-                # （exit 0 + 合法结果文件）但分支相对 main 零新提交且 worktree 有
-                # 未提交产物时，拦截为可恢复错误（复用 AgentArtifactGateError 既有
-                # 通道：锚点 B WIP 提交 + 原地退避 + 同 worktree --resume 续做），
-                # 替代「成功判定 → cleanup 硬删 → 交付物守卫打回整轮重做」的零提交
-                # 死法（2026-09-10 双 SPEC 首轮全丢事故根因补位）。rev-list 失败
-                # fail-open 不拦——门自身故障绝不打断正常收口。
-                if agent_type == "implementer":
-                    self._check_terminal_no_commit_gate(
-                        spec_name=spec_name, agent_type=agent_type,
-                        wt_path=wt_path,
-                        branch=self.worktree_manager.get_branch_name(wt_path),
-                        wt_dirty=wt_dirty, sub_run_id=sub_run_id)
-                # add-merge-back-repair-lane：repair 与 fast-track 同语义，
-                # 成功不清理 worktree——冲突解决成果仍在分支上，交给 dispatch
-                # 层的 re-merge-back 决定终态；多轮 repair 需原地复用现场。
-                if agent_type in ("fast-track", "repair"):
-                    # 延迟清理：worktree 与 dev-server 均由 dispatch 层处置；
-                    # 有意交接 → 不参与本 run 终态收割
-                    handed_off.add(wt_path)
-                else:
-                    self._v2_stop_for_worktree(wt_path)
-                    # 成功：清理 worktree（保留分支供 merge-back），返回结果
-                    self.worktree_manager.cleanup(wt_path, success=True)
-                duration = time.time() - start_time
-                self._daily_run_count += 1
-                # cli-retry-backoff（2.1/2.2）：成功收工重置秒挂连续计数（非连续不累积）
-                self._reset_instant_fail(spec_name)
-                self.logger.info(
-                    "agent_runner",
-                    f"{agent_type} succeeded for '{spec_name}'",
-                    {"run_id": attempt_run_id, "attempt": attempt, "turns": turns,
-                     "provider": provider_name, "model": model},
+                return self._finalize_success(
+                    spec_name=spec_name, agent_type=agent_type,
+                    run_id=run_id, attempt_run_id=attempt_run_id,
+                    attempt=attempt, start_time=start_time,
+                    turns=turns, usage_info=usage_info,
+                    provider_name=provider_name, model=model,
+                    wt_path=wt_path, output=output,
+                    sub_run_id=sub_run_id, branch=branch,
+                    handed_off=handed_off,
                 )
-                # add-cost-observability（D1）：收工成功 → 累加 usage 到 STATE 内部字段
-                self._accumulate_token_usage(spec_name, usage_info)
-                # 验证链侧车：planner/judge run 的 usage 逐轮追加（D3）
-                self._record_verify_progress_tokens(spec_name, agent_type, usage_info)
-                # fix-observability-gaps 1.1：成功收尾写结构化指标（duration/usage/cost）。
-                # run_id 记基础 run_id（run 级指标，含全部 attempt 的整条 run 耗时；
-                # 读侧按剥 attempt 后缀后的 base 匹配 run 文件）。
+            else:
+                # ── 失败终态分型（见 _finalize_failure_keep，D1 R8）──
+                # 重试等待（attempt 内剩余预算）vs 终态 keep 分型。跨边界
+                # break 决策经返回值回传；kept_wt_path / wt_path 经状态对象回写。
+                st.wt_path = wt_path
+                st.kept_wt_path = kept_wt_path
+                should_break = self._finalize_failure_keep(
+                    spec_name=spec_name, agent_type=agent_type,
+                    attempt=attempt, attempt_run_id=attempt_run_id,
+                    max_retries=max_retries, start_time=start_time,
+                    turns=turns, usage_info=usage_info,
+                    provider_name=provider_name, model=model,
+                    error=error, cancelled_flag=cancelled_flag,
+                    shutdown_interrupted=shutdown_interrupted,
+                    st=st, handed_off=handed_off,
+                )
+                wt_path = st.wt_path
+                kept_wt_path = st.kept_wt_path
+                if should_break:
+                    break
+
+        return self._exhausted_result(
+            spec_name, agent_type, run_id, max_retries, start_time,
+            error=error, turns=turns, usage_info=usage_info,
+            provider_name=provider_name, model=model,
+            cancelled_flag=cancelled_flag, shutdown_interrupted=shutdown_interrupted,
+            kept_wt_path=kept_wt_path,
+        )
+
+    # ── R3: worktree 复用/新建（等价搬移，D1 R3 表，部分可提取）──────
+    # 路径校验 / create 失败重试让位 / used_wts 登记 / dev-server / provider_marker
+    # / 路由地图。跨边界 continue（create 失败重试）与 return（让位/失败）
+    # 经返回值 (do_continue, early_result) 回传，调用者据以决策。
+    def _prepare_worktree(self, spec_name: str, agent_type: str, attempt: int,
+                          attempt_run_id: str, max_retries: int, start_time: float,
+                          turns: int, usage_info: dict, provider_name, model,
+                          wt_path, run_id: str,
+                          st: _AttemptState, used_wts: set) -> tuple:
+        """worktree 复用/新建准备（等价搬移自 R3）。
+
+        返回四元组 (wt_path, reuse_worktree, early_result, do_continue)：
+        - do_continue=True → 调用者 MUST continue（create 失败重试等待后回到 attempt
+          循环顶部，跳过本次剩余 attempt 内步骤）
+        - early_result 非 None → 调用者 MUST return early_result
+        - 否则 wt_path 已就绪，reuse_worktree 指示是否复用模式，调用者继续执行
+        """
+        # fast-track 与 implementer 同语义：跨 attempt 复用同一 worktree（失败续跑）。
+        # repair 沿用同一语义：repair run 的 attempt 复用同一个 repair worktree
+        #（add-merge-back-repair-lane——worktree 由调度层解析，内部 attempt 不重造）。
+        # fix-resume-stale-worktree（todo 09-04 失误#3 处方 3a）：复用前校验路径
+        # 真实存在——恢复清理/孤儿回收可能在 attempt 间隙删除目录，盲复用以
+        # [Errno 2] 秒挂白烧一次重试额度。失效处置：implementer/fast-track 丢弃
+        # 引用改走新建分支路径；repair 载体失效显式失败交还调度层重新解析
+        # （repair 语义要求在实现分支内修复，换新分支即失去载体意义）。
+        reuse_worktree = False
+        if (agent_type in ("implementer", "fast-track", "repair")
+                and wt_path is not None):
+            if self._worktree_path_valid(wt_path):
+                reuse_worktree = True
+            elif agent_type == "repair":
+                error_msg = (f"repair worktree {wt_path} lost between attempts "
+                             f"— need fresh carrier resolution")
+                self.logger.error("agent_runner", error_msg)
                 self._log_run_metrics(
                     run_id=run_id, spec_name=spec_name, agent_type=agent_type,
-                    duration_seconds=duration, turns=turns, usage_info=usage_info,
-                    terminal="success", provider=provider_name, model=model,
+                    duration_seconds=time.time() - start_time, turns=turns,
+                    usage_info=usage_info, terminal="failure",
+                    provider=provider_name, model=model,
                 )
-                # run 收尾清理取消旗标（add-run-cancel D5：正常完成也清，防泄漏）
-                self._cancel_clear(run_id)
-                return AgentRunResult(
+                return wt_path, reuse_worktree, AgentRunResult(
                     attempt_run_id, spec_name, agent_type,
-                    success=True, duration_seconds=duration,
-                    turns_used=turns, output=output,
-                    branch=branch, provider_used=provider_name, model_used=model,
-                    worktree_dirty=wt_dirty,
-                    worktree_path=(wt_path if agent_type in ("fast-track", "repair") else None),
-                )
+                    success=False, duration_seconds=time.time() - start_time,
+                    error=error_msg, provider_used=provider_name, model_used=model,
+                ), False
             else:
                 self.logger.warning(
                     "agent_runner",
-                    f"{agent_type} failed for '{spec_name}' (attempt {attempt})",
-                    {"run_id": attempt_run_id, "error": error, "provider": provider_name},
+                    f"Worktree {wt_path} for '{spec_name}' no longer exists "
+                    f"(deleted between attempts) — fresh create instead of resume",
                 )
-                # 失败后的 worktree 处理（worktree-reuse：fast-track 与 implementer
-                # 同语义，跨 attempt 复用同一 worktree 续跑）：
-                # - implementer / fast-track / repair 且还有重试：保留 worktree（连同其
-                #   dev-server），下次 attempt 续跑；dev-server 随之复用，不重复启停。
-                # - fast-track 终态失败：保留目录与分支登记为复用遗产，下轮重派在同一
-                #   worktree 继承上一轮成果（不再从零重做）。
-                # - repair 终态失败：保留 worktree（add-merge-back-repair-lane：
-                #   worktree 生命周期交由 dispatch 层——fallback 或下一轮复用）。
-                # - 其他 / 终态失败：清理 worktree 并回收其 dev-server，下次 attempt 全新创建。
-                # add-run-cancel D5：取消（cancelled_flag）时不再进入下一 attempt——
-                # 走终态清理路径后 break，由循环后的 cancelled 收口返回 cancelled=True。
-                if attempt < max_retries and not cancelled_flag \
-                        and not shutdown_interrupted:
-                    time.sleep(10)  # Wait before retry
-                    # fix-provider-transient-backoff（D3）：attempt 间 worktree
-                    # 保留扩展到全部 agent_type——非 implementer 族复用前仍过
-                    # frozen/取消检查（见上方 reuse_worktree 判定），不再清工作树。
-                    # dev-server 随之复用，不重复启停。
-                else:
-                    self._v2_stop_for_worktree(wt_path)
-                    if shutdown_interrupted:
-                        # daemon 濒死：保留现场交 recovery/排水保全处置——
-                        # cleanup 会销毁待保全的未提交工作（checkpoint 锚点 A
-                        # 的保护对象）；keep_for_reuse 的复用认领语义也不适用
-                        # （续做与否由下一 daemon recovery 单源决定）。
-                        kept_wt_path = wt_path
-                        handed_off.add(wt_path)
-                    elif agent_type == "fast-track":
-                        self.worktree_manager.keep_for_reuse(spec_name, wt_path)
-                        kept_wt_path = wt_path
-                        # 终态失败保留复用遗产：下轮在同一 worktree 继承成果，
-                        # 目录+分支有意保留 → 不参与终态收割（dev-server 已停）
-                        handed_off.add(wt_path)
-                    elif agent_type == "repair":
-                        # 终态失败保留现场：dispatch 层负责回收（fallback 清理）
-                        kept_wt_path = wt_path
-                        handed_off.add(wt_path)
-                    elif error and "[provider-transient]" in error:
-                        # fix-provider-transient-backoff（D3）：transient 终态失败保留现场
-                        # 供下轮认领（替代 cleanup(success=False)）——复用遗产机制，
-                        # 下轮经 _take_reusable_worktree 认领同一目录与分支继承现场。
-                        # 非 transient 终态失败维持现行清理，避免真实缺陷现场被误续用。
-                        self.worktree_manager.keep_for_reuse(
-                            spec_name, wt_path, agent_type=agent_type)
-                        kept_wt_path = wt_path
-                        handed_off.add(wt_path)
-                        self.logger.warning(
-                            "agent_runner",
-                            f"Transient terminal failure for '{spec_name}' — worktree "
-                            f"{wt_path} kept for reuse (fix-provider-transient-backoff)",
-                        )
-                    else:
-                        self.worktree_manager.cleanup(wt_path, success=False)
-                    wt_path = None
-                    if cancelled_flag or shutdown_interrupted:
-                        break
+                wt_path = None
 
+        # 跨 attempt 切换打点（design D5 / spec failover-dispatch「切换留痕」）：
+        # 本次实际使用的 provider 与上一次不同 → 输出 "provider switched" 日志；
+        # 当 model 也发生变更时附带 `model_changed: <old>→<new>`（design D3）。
+        # 放在 reuse_worktree 判断之后、运行之前，确保本次 dispatch 的 provider 已确定。
+        if st.last_provider_used is not None and provider_name is not None \
+                and provider_name != st.last_provider_used:
+            switch_msg = (
+                f"provider switched {st.last_provider_used} → {provider_name} "
+                f"for '{spec_name}'"
+            )
+            last_model = getattr(self, "_last_model_used", None)
+            if model and last_model and model != last_model:
+                switch_msg += f" — model_changed: {last_model}→{model}"
+            self.logger.info("agent_runner", switch_msg)
+        # 记忆本次使用的模型名（供下次 attempt 切换时判定 model_changed，design D3）
+        if model:
+            self._last_model_used = model
+        # 更新记忆：下次 attempt 据以判断切换并打点（design D5）。
+        st.last_provider_used = provider_name
+
+        # Create or reuse worktree
+        if wt_path is None:
+            wt_path = self.worktree_manager.create(spec_name, agent_type)
+            if wt_path is None:
+                error_msg = "Failed to create worktree"
+                self.logger.error("agent_runner", error_msg)
+                if attempt < max_retries:
+                    time.sleep(5)
+                    # fix-restart-dual-dispatch S3/S4：重试前判定——锁活跃
+                    #（另一 run 在跑）或人工冻结时放弃，不再换名再造并行 run
+                    if self._should_give_up_before_retry(
+                                    spec_name, agent_type):
+                        self._log_run_metrics(
+                            run_id=run_id, spec_name=spec_name,
+                            agent_type=agent_type,
+                            duration_seconds=time.time() - start_time,
+                            turns=turns, usage_info=usage_info,
+                            terminal="failure", provider=provider_name,
+                            model=model,
+                        )
+                        return wt_path, False, AgentRunResult(
+                            attempt_run_id, spec_name, agent_type,
+                            success=False,
+                            duration_seconds=time.time() - start_time,
+                            error=f"{error_msg} (gave up: parallel run or manual freeze)",
+                            provider_used=provider_name, model_used=model,
+                        ), False
+                    return wt_path, False, None, True  # do_continue
+                self._log_run_metrics(
+                    run_id=run_id, spec_name=spec_name, agent_type=agent_type,
+                    duration_seconds=time.time() - start_time, turns=turns,
+                    usage_info=usage_info, terminal="failure",
+                    provider=provider_name, model=model,
+                )
+                return wt_path, False, AgentRunResult(
+                    attempt_run_id, spec_name, agent_type,
+                    success=False, duration_seconds=time.time() - start_time,
+                    error=error_msg, provider_used=provider_name, model_used=model,
+                ), False
+            # verify-process-lifecycle（D1）：登记本 run 使用的 worktree，
+            # 供外层 finally 对未交接集合执行终态收割。
+            used_wts.add(wt_path)
+            # add-worktree-test-server（D2 派发前启动）：worktree 创建成功后立即
+            # 为其启动专属 dev-server，供本次 attempt 的测试请求命中 worktree 副本。
+            self._v2_launch_for_worktree(wt_path)
+        else:
+            self.logger.info(
+                "agent_runner",
+                f"Reusing worktree {wt_path} for '{spec_name}' (attempt {attempt}, resume)",
+            )
+            used_wts.add(wt_path)
+            if agent_type == "fast-track":
+                # 跨 attempt 复用同一 worktree：补记继承痕迹（prompt 注入用）
+                self.worktree_manager.mark_reused(
+                    spec_name, wt_path,
+                    self.worktree_manager.get_branch_name(wt_path) or "",
+                )
+        return wt_path, reuse_worktree, None, False
+
+    # ── R6 子步 1: 4xx 熔断计数 + 瞬断判定（等价搬移，D1 R6 表）──────
+    # 纯副作用：4xx 计数 / 半开探针闭合失败记账 / 瞬断判定 / 全局瞬断指纹记账。
+    # 无跨边界 continue/break/return（D2 边界），可安全提取。
+    # 模块级名 PROVIDER_CIRCUIT_4XX / PROVIDER_CIRCUIT_THRESHOLD / 实例方法
+    # 均保持从 runner.py 模块全局访问（D7 patch 缝隙）。
+    def _record_4xx_or_transient(self, error, provider_name, agent_type,
+                                 exc_stderr, exc_exit, exc_has_result) -> tuple:
+        """4xx 熔断计数 + 瞬断判定（等价搬移自 R6 的 `if provider_name:` 段）。
+
+        返回 (error, is_transient, may_switch)：error 可能被注入
+        `[provider-transient]` 前缀（瞬断终态/重试共用标记，
+        transient-dispatch-gating D4）；is_transient 供调用者决定是否走原地
+        退避重试；may_switch 指示调用者是否可尝试 switch 冷却——原 `else:`
+        分支（provider 在位且 code 非 4xx）语义，4xx/无 provider 均不得触发
+        switch（维持既有熔断语义、链指针不动）。无跨边界控制流。
+        """
+        if not provider_name:
+            return error, False, False
+        code = self.parse_api_error_status(error)
+        if code is not None and code in PROVIDER_CIRCUIT_4XX:
+            # 4xx 熔断计数（fix-stashpop-deadlock：provider-fault-fuse）。
+            # 仅对「已分配 provider」且错误文本能解析出 HTTP 4xx 的情况计数（design D4）；
+            # 5xx/网络错误不计数（瞬态，走既有 retry）。解析不到 code 视为失败、不计数。
+            was_half_open = False
+            _circ_st = self.provider_circuits.get(provider_name)
+            if _circ_st and _circ_st.get("count", 0) >= PROVIDER_CIRCUIT_THRESHOLD \
+                    and _circ_st.get("cooldown_until", 0) > 0 \
+                    and _circ_st["cooldown_until"] <= self._now():
+                # 半开探针仍 4xx → 重新冷却（design D4），不重复计数。
+                was_half_open = True
+            self._record_provider_4xx(provider_name, code)
+            if was_half_open:
+                self._record_provider_probe(provider_name, success=False)
+            return error, False, False
+        # fix-provider-transient-backoff（D1）：瞬断判定独立于
+        # classify_switch_error——降噪后 error 文本可能不含
+        # unrecognized_model 字样（D5 已过滤），判定必须依赖原始
+        # stderr 信号（异常携带的 stderr_lines / has_result）。
+        # resume 死 session（No conversation found）不属网关瞬断，
+        # 排除在瞬断判定之外（其处置走下方 session 清理兜底）。
+        exc_stderr = exc_stderr or []
+        resume_dead = (
+            error and "No conversation found with session ID" in error)
+        is_transient = (
+            not resume_dead and self.classify_transient_error(
+                exc_stderr,
+                exc_exit if exc_exit is not None else 1,
+                bool(exc_has_result)))
+        if is_transient:
+            # 瞬断终态/重试共用标记（transient-dispatch-gating D4）：写侧统一
+            # 在 error 头部注入 `[provider-transient]`，供 dispatch 读侧识别
+            # 与终态 keep_for_reuse 判定（task 3.2 / 4.1）。
+            if "[provider-transient]" not in error:
+                error = f"[provider-transient] {error}"
+            # 全局瞬断错误指纹计数（fix-provider-transient-backoff D4）：
+            # 每次瞬断失败记账到全局熔断；达阈值触发全局派发冻结。
+            # 指纹源用原始 stderr（降噪后 error 可能丢 unrecognized_model
+            # 字样），与 D2 判定同源。
+            try:
+                self.record_transient_break(
+                    "\n".join(str(l) for l in exc_stderr) or error)
+            except Exception as _break_err:
+                self.logger.debug(
+                    "agent_runner",
+                    f"global transient break 记账失败（不阻断）: {_break_err}",
+                )
+        return error, is_transient, True  # may_switch：else 分支（provider 在位且 code 非 4xx）
+
+    # ── R6 子步 2: 瞬断原地退避重试（等价搬移，D1 R6 表，Task 5.1）──────
+    # 仅处理「is_transient 且原地预算未耗尽」时的瞬断重试段：写 transient_retry
+    # / superseded 事件留痕、锚点 B WIP 提交、按退避序列 sleep、退避后让位复查。
+    # 跨边界控制流（continue 回 while 顶部 / return 让位）经返回值驱动，调用者
+    # MUST 据此决策（D2）：
+    #   - yielded 非 None → 调用者 MUST return yielded（让位语义化失败）
+    #   - do_retry=True   → 调用者 MUST continue（回到 while 顶部重跑同一 attempt）
+    #   - 否则（非瞬断或预算耗尽）→ 调用者继续走现行 switch 冷却逻辑
+    # 模块级名（append_run_line / datetime / timezone / time / RETRY_YIELDED_...
+    # AgentRunResult）均保持从 runner.py 模块全局访问（D7 patch 缝隙）。
+    def _maybe_in_place_retry(self, spec_name: str, agent_type: str, run_id: str,
+                              attempt: int, attempt_run_id: str, sub_run_id: str,
+                              provider_name, model, wt_path, is_transient: bool,
+                              transient_retries: int, transient_budget: list,
+                              start_time: float, turns: int, usage_info: dict) -> tuple:
+        """瞬断原地退避重试决策（等价搬移自 R6 的 `if (is_transient ...)` 段）。
+
+        返回三元组 (transient_retries, yielded, do_retry)：
+        - yielded 非 None → 调用者 MUST return yielded（重派前复查命中让位）
+        - do_retry=True → 调用者 MUST continue（原地重试，新 sub_run_id）
+        - 否则 → 非瞬断或预算耗尽，调用者走现行 switch 冷却逻辑。
+        """
+        if not (is_transient and transient_retries < len(transient_budget)):
+            return transient_retries, None, False
+        # 原地退避重试：写 transient_retry 事件留痕，按退避序列
+        # 下一档 sleep，然后 while 循环顶部以同 provider 重跑该
+        # attempt（不递增 attempt、不触发 switch 冷却、不改 chain_cursor）。
+        backoff = transient_budget[transient_retries]
+        transient_retries += 1
+        append_run_line(
+            self.project_root / ".fenix" / "runs"
+            / f"{sub_run_id}.jsonl", {
+                "type": "transient_retry",
+                "spec": spec_name,
+                "provider": provider_name,
+                "backoff_seconds": backoff,
+                "retry_number": transient_retries,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
+        # fix-retry-orphan-active-runs D1：superseded
+        # 终态补写——本文件末行恒为终态，恢复「终态后置」
+        # 不变量。写侧紧跟 transient_retry = 本文件终态，
+        # 重试在新 sub_run_id 文件继续（runner.py:1922
+        # 换新注释处交叉引用）；daemon 退避窗口内死亡
+        # 由 interrupted 补写接续（末行仍终态）。
+        append_run_line(
+            self.project_root / ".fenix" / "runs"
+            / f"{sub_run_id}.jsonl", {
+                "type": "superseded",
+                "spec": spec_name,
+                "provider": provider_name,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
+        self.logger.warning(
+            "agent_runner",
+            f"Transient error for '{spec_name}' (attempt {attempt}, "
+            f"provider {provider_name}) — in-place retry "
+            f"{transient_retries}/{len(transient_budget)} "
+            f"after {backoff}s backoff (fix-provider-transient-backoff)",
+        )
+        # 锚点 B（add-impl-wip-checkpoint D3）：transient_retry
+        # 记录写后、sleep 前的静默窗口 WIP 提交——即便 daemon 在
+        # 退避窗口内死亡，分支上已有可恢复提交（无载体则跳过）。
+        self._wip_checkpoint_before_backoff(spec_name, wt_path)
+        time.sleep(backoff)
+        # fix-verdict-dedup-resynthesis D4：退避期间 spec
+        # 可能被人工/其它链路接管（admin SIGKILL 后 30s 内
+        # 置 blocked 即 19:48 事故形态）——重派前复查，
+        # 命中即让位（返回语义化失败，不再产生新的
+        # transient_retry 重派，token 消耗不再发生）。
+        if self._should_give_up_before_retry(
+                spec_name, agent_type, check_lock=False):
+            self.logger.warning(
+                "agent_runner",
+                f"Provider-transient retry for '{spec_name}' "
+                f"({agent_type}) yields: spec 已被接管，"
+                f"放弃重派（fix-verdict-dedup-resynthesis D4）",
+            )
+            self._log_run_metrics(
+                run_id=run_id, spec_name=spec_name,
+                agent_type=agent_type,
+                duration_seconds=time.time() - start_time,
+                turns=turns, usage_info=usage_info,
+                terminal="failure", provider=provider_name,
+                model=model,
+            )
+            return transient_retries, AgentRunResult(
+                attempt_run_id, spec_name, agent_type,
+                success=False,
+                duration_seconds=time.time() - start_time,
+                error=(
+                    f"{RETRY_YIELDED_ERROR_PREFIX} spec 已被接管"
+                    f"（status 迁出预期态或 frozen/hold），"
+                    f"重试让位（fix-verdict-dedup-resynthesis D4）"),
+                provider_used=provider_name, model_used=model,
+            ), False
+        return transient_retries, None, True
+
+    # ── R5: except 产物门（等价搬移，D1 R5 表，Task 5.3）────────────
+    # add-judge-artifact-gate D1：exit 0 但产物缺失/为空/非法 JSON → 按瞬态
+    # 失败走既有原地退避重试（fix-provider-transient-backoff 通道原样复用，
+    # 不新增重试机制；不消耗 validate_report 的「裁决重试一次」预算）。
+    # run 已完整执行（exit 0），不计数秒挂；usage 保留 _run_claude 实测值
+    # （区别于早期抛错按 0 计）。跨边界控制流（return 让位 / continue 重试 /
+    # break 预算耗尽）经返回值驱动，调用者 MUST 据此决策（D2）。
+    # 模块级名（classify_and_enrich_artifact_error / append_run_line /
+    # datetime / timezone / time / RETRY_YIELDED_ERROR_PREFIX /
+    # AgentRunResult）均保持从 runner.py 模块全局访问（D7 patch 缝隙）。
+    def _handle_artifact_gate_retry(self, e, spec_name: str, agent_type: str,
+                                    run_id: str, attempt: int,
+                                    attempt_run_id: str, sub_run_id: str,
+                                    provider_name, model, wt_path,
+                                    transient_retries: int,
+                                    transient_budget: list,
+                                    start_time: float, turns: int,
+                                    usage_info: dict) -> tuple:
+        """except AgentArtifactGateError 处置（等价搬移自 R5 段）。
+
+        返回五元组 (error, transient_retries, yielded_result, do_continue,
+        do_break)：
+        - yielded_result 非 None → 调用者 MUST return yielded_result（让位）
+        - do_continue=True → 调用者 MUST continue（原地重试）
+        - do_break=True → 调用者 MUST break（原地预算耗尽，attempt 层继续重试）
+        """
+        error = str(e)
+        self.logger.warning(
+            "agent_runner",
+            f"Artifact gate failed for '{spec_name}' ({agent_type}): {error}",
+        )
+        if "[provider-transient]" not in error:
+            error = f"[provider-transient] {error}"
+        # fix-impl-resultfile-contract-gap 4.2：结果文件缺失归因——
+        # 复用终态机械特征区分「格式回退截断」/「未收工即停」（只改
+        # 局部变量 error，MUST NOT 改动传入 record_transient_break
+        # 的 str(e)——全局瞬断指纹记账读 str(e)，归因文案不可污染）。
+        if agent_type in ("implementer", "fast-track"):
+            error = classify_and_enrich_artifact_error(
+                self, error, agent_type, sub_run_id)
+        # 全局瞬断指纹计数（transient-dispatch-gating D4 同语义）：
+        # 产物硬门失败同样记账，保留 dispatch 闸门对瞬断风暴的可见性。
+        # add-impl-terminal-nocommit-gate（D1 处置）：终态零提交门
+        # 触发的错误（文本以 [terminal-no-commit] 开头）是「格式回退/
+        # 忘提交」而非网关瞬断——跳过全局瞬断指纹记账，避免污染 dispatch
+        # 闸门对瞬断风暴的可见性（多计保守、少计危险；此处精确跳过）。
+        if not str(e).startswith("[terminal-no-commit]"):
+            try:
+                self.record_transient_break(str(e))
+            except Exception as _break_err:
+                self.logger.debug(
+                    "agent_runner",
+                    f"global transient break 记账失败（不阻断）: {_break_err}",
+                )
+        if transient_retries >= len(transient_budget):
+            # 原地预算耗尽 → 退出 while，attempt 层继续重试
+            return error, transient_retries, None, False, True
+        backoff = transient_budget[transient_retries]
+        transient_retries += 1
+        append_run_line(
+            self.project_root / ".fenix" / "runs"
+            / f"{sub_run_id}.jsonl", {
+                "type": "transient_retry",
+                "spec": spec_name,
+                "provider": provider_name,
+                "backoff_seconds": backoff,
+                "retry_number": transient_retries,
+                "reason": "artifact_gate",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
+        # fix-retry-orphan-active-runs D1：superseded 终态补写
+        # ——与 provider 瞬断通道同语义：superseded 紧跟
+        # transient_retry = 本文件终态，重试在新 sub_run_id 文件
+        # 继续（runner.py:1922 换新注释处交叉引用）。
+        append_run_line(
+            self.project_root / ".fenix" / "runs"
+            / f"{sub_run_id}.jsonl", {
+                "type": "superseded",
+                "spec": spec_name,
+                "provider": provider_name,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
+        self.logger.warning(
+            "agent_runner",
+            f"Artifact gate for '{spec_name}' (attempt {attempt}, "
+            f"{agent_type}) — in-place retry "
+            f"{transient_retries}/{len(transient_budget)} "
+            f"after {backoff}s backoff (add-judge-artifact-gate)",
+        )
+        # 锚点 B（add-impl-wip-checkpoint D3）：transient_retry
+        # 记录写后、sleep 前的静默窗口 WIP 提交——即便 daemon 在
+        # 退避窗口内死亡，分支上已有可恢复提交（无载体则跳过）。
+        self._wip_checkpoint_before_backoff(spec_name, wt_path)
+        time.sleep(backoff)
+        # fix-verdict-dedup-resynthesis D4：退避期间 spec 可能被
+        # 人工/其它链路接管（status 迁出预期态/frozen/hold）——
+        # 重派前复查，命中即让位（返回语义化失败，不再产生新的
+        # transient_retry 重派，19:48 事故 $4.77 白烧根因）。
+        if self._should_give_up_before_retry(
+                spec_name, agent_type, check_lock=False):
+            self.logger.warning(
+                "agent_runner",
+                f"Artifact-gate retry for '{spec_name}' "
+                f"({agent_type}) yields: spec 已被接管，"
+                f"放弃重派（fix-verdict-dedup-resynthesis D4）",
+            )
+            self._log_run_metrics(
+                run_id=run_id, spec_name=spec_name,
+                agent_type=agent_type,
+                duration_seconds=time.time() - start_time,
+                turns=turns, usage_info=usage_info,
+                terminal="failure", provider=provider_name,
+                model=model,
+            )
+            return error, transient_retries, AgentRunResult(
+                attempt_run_id, spec_name, agent_type,
+                success=False,
+                duration_seconds=time.time() - start_time,
+                error=(
+                    f"{RETRY_YIELDED_ERROR_PREFIX} spec 已被接管"
+                    f"（status 迁出预期态或 frozen/hold），"
+                    f"重试让位（fix-verdict-dedup-resynthesis D4）"),
+                provider_used=provider_name, model_used=model,
+            ), False, False
+        return error, transient_retries, None, True, False
+
+    # ── R1: attempt 顶守卫（等价搬移，D1 R1 表，部分可提取）──────────
+    # frozen 终止 / 取消旗标（worktree 三型处置）。写回变量（cancel_reason /
+    # kept_wt_path / wt_path）经 _AttemptState 回写，调用者 MUST 在返回后
+    # 同步局部变量。返回 AgentRunResult（早退终态）或 None（继续执行）。
+    def _attempt_top_guards(self, spec_name: str, agent_type: str, run_id: str,
+                            attempt: int, max_retries: int, start_time: float,
+                            turns: int, usage_info: dict,
+                            st: _AttemptState, handed_off: set):
+        """attempt 顶部守卫（等价搬移自 _execute_agent_inner R1）。
+
+        frozen 命中 → 终止重试链返回 frozen 失败结果；取消旗标命中 → worktree
+        三型处置（fast-track keep / repair keep / 其余 cleanup）后返回 cancelled
+        失败结果。均不进入下一 attempt。写回变量经 st：调用者 MUST 在返回后
+        同步局部变量 cancel_reason / kept_wt_path / wt_path。
+        """
+        # lifecycle-hygiene 4.1：每轮 attempt 启动前统一检查 spec 结构化 frozen
+        # 字段——frozen 为真立即终止重试链（不派发 attempt、不创建 worktree），
+        # run 以失败收场保留错误记录。覆盖 judge failover 换网关重试等全部重试
+        # 路径，不止 worktree 失败路径；未冻结行为零变化。
+        if self._spec_is_frozen(spec_name):
+            self.logger.warning(
+                "agent_runner",
+                f"spec '{spec_name}' frozen — 终止 {agent_type} 自动重试链"
+                f"（attempt {attempt}/{max_retries}），不派发 attempt",
+            )
+            # fix-observability-gaps 1.1：frozen 早夭也是终态，写指标（unobserved）
+            self._log_run_metrics(
+                run_id=run_id, spec_name=spec_name, agent_type=agent_type,
+                duration_seconds=time.time() - start_time, turns=turns,
+                usage_info=usage_info, terminal="frozen",
+                provider=st.provider_name, model=st.model,
+            )
+            return AgentRunResult(
+                run_id, spec_name, agent_type,
+                success=False, duration_seconds=time.time() - start_time,
+                error=(f"{FROZEN_TERMINATED_ERROR_PREFIX} — auto-retry terminated "
+                       f"(attempt {attempt}/{max_retries})"),
+                provider_used=st.provider_name, model_used=st.model,
+            )
+        # add-run-cancel D3：attempt 循环顶部检查取消旗标（与 frozen 检查同
+        # 位置，覆盖 attempt 间隙/准备阶段）——命中立即返回，不派发后续
+        # attempt、不创建本 attempt 的 worktree；残留 worktree 按终态失败
+        # 同语义清理。
+        if self._cancel_is_requested(run_id):
+            meta = self._cancel_meta.get(run_id, {})
+            st.cancel_reason = meta.get("reason", "")
+            self.logger.warning(
+                "agent_runner",
+                f"run '{run_id}' 取消旗标命中，终止 {agent_type} 重试链"
+                f"（attempt {attempt}/{max_retries}），不派发 attempt",
+            )
+            if st.wt_path is not None:
+                self._v2_stop_for_worktree(st.wt_path)
+                if agent_type == "fast-track":
+                    self.worktree_manager.keep_for_reuse(spec_name, st.wt_path)
+                    st.kept_wt_path = st.wt_path
+                    # 取消 keep：目录+分支有意保留供下轮复用，不参与终态收割
+                    handed_off.add(st.wt_path)
+                elif agent_type == "repair":
+                    # 终态失败保留现场：dispatch 层负责回收（fallback 清理）
+                    st.kept_wt_path = st.wt_path
+                    handed_off.add(st.wt_path)
+                else:
+                    self.worktree_manager.cleanup(st.wt_path, success=False)
+            self._cancel_clear(run_id)
+            # fix-observability-gaps 1.1：attempt 顶部取消也是终态，写指标
+            self._log_run_metrics(
+                run_id=run_id, spec_name=spec_name, agent_type=agent_type,
+                duration_seconds=time.time() - start_time, turns=turns,
+                usage_info=usage_info, terminal="cancelled",
+                provider=st.provider_name, model=st.model,
+            )
+            return AgentRunResult(
+                run_id, spec_name, agent_type,
+                success=False, duration_seconds=time.time() - start_time,
+                error=(CANCELLED_BY_ADMIN_ERROR_PREFIX
+                       + (f": {st.cancel_reason}" if st.cancel_reason else "")),
+                cancelled=True,
+                provider_used=st.provider_name, model_used=st.model,
+                worktree_path=st.kept_wt_path,
+                worktree_kept=st.kept_wt_path is not None,
+            )
+        return None
+
+    # ── R7: 成功终态（等价搬移，D1 R7 表）─────────────────────────────
+    # 半开探针闭合 / wt_dirty 取证 / 终态零提交门 / worktree 分型 / token 入账。
+    # 纯终态收割：无跨边界 continue/break（attempt 循环直接 return），可提取。
+    def _finalize_success(self, spec_name: str, agent_type: str, run_id: str,
+                          attempt_run_id: str, attempt: int, start_time: float,
+                          turns: int, usage_info: dict, provider_name, model,
+                          wt_path: Path, output: str, sub_run_id: str,
+                          branch, handed_off: set) -> AgentRunResult:
+        """成功终态收割（等价搬移，D1 R7）。
+
+        半开探针闭合 → wt_dirty 取证 → 终态零提交门 → worktree 分型清理 →
+        token 入账 → 结构化指标 → 返回 success 结果。
+        """
+        # 半开探针闭合（fix-stashpop-deadlock）：若该 provider 此前已进入熔断但
+        # 冷却已到期（半开），此派发成功即视为网关恢复，闭合熔断（design D4）。
+        if provider_name:
+            _circ = self.provider_circuits.get(provider_name)
+            if _circ and _circ.get("cooldown_until", 0) > 0 and _circ["cooldown_until"] <= self._now():
+                self._record_provider_probe(provider_name, success=True)
+        # add-worktree-test-server（D2 终态回收）：worktree 清理前先回收其 dev-server。
+        # fast-track 例外：成功不清理——硬校验/守卫在 dispatch 层判定，失败时
+        # 保留 worktree 供重派继承（worktree-reuse）；通过则由 dispatch 在
+        # merge 后统一清理。dev-server 随 dispatch 层处置一并回收。
+        wt_dirty: list = []
+        if agent_type in ("implementer", "fast-track"):
+            # fix-zero-change-blindspot：cleanup 前取证 worktree dirty 状态
+            #（仅 implementer / fast-track——零变更哨对两者都生效）。
+            _st = subprocess.run(
+                ["git", "-C", str(wt_path), "status", "--porcelain"],
+                capture_output=True, text=True, timeout=30,
+            )
+            if _st.returncode == 0:
+                wt_dirty = [l for l in _st.stdout.splitlines() if l.strip()]
+        elif agent_type == "repair":
+            # repair 现场取证：冲突解决是否已 commit（dispatch 层据此
+            # 判断 re-merge-back 前的现场状态，add-merge-back-repair-lane）。
+            _st = subprocess.run(
+                ["git", "-C", str(wt_path), "status", "--porcelain"],
+                capture_output=True, text=True, timeout=30,
+            )
+            if _st.returncode == 0:
+                wt_dirty = [l for l in _st.stdout.splitlines() if l.strip()]
+        # add-impl-terminal-nocommit-gate（D2）：终态零提交门——wt_dirty
+        # 取证之后、fast-track/repair 分流之前判定。implementer 正常终态
+        # （exit 0 + 合法结果文件）但分支相对 main 零新提交且 worktree 有
+        # 未提交产物时，拦截为可恢复错误（复用 AgentArtifactGateError 既有
+        # 通道：锚点 B WIP 提交 + 原地退避 + 同 worktree --resume 续做），
+        # 替代「成功判定 → cleanup 硬删 → 交付物守卫打回整轮重做」的零提交
+        # 死法（2026-09-10 双 SPEC 首轮全丢事故根因补位）。rev-list 失败
+        # fail-open 不拦——门自身故障绝不打断正常收口。
+        if agent_type == "implementer":
+            self._check_terminal_no_commit_gate(
+                spec_name=spec_name, agent_type=agent_type,
+                wt_path=wt_path,
+                branch=self.worktree_manager.get_branch_name(wt_path),
+                wt_dirty=wt_dirty, sub_run_id=sub_run_id)
+        # add-merge-back-repair-lane：repair 与 fast-track 同语义，
+        # 成功不清理 worktree——冲突解决成果仍在分支上，交给 dispatch
+        # 层的 re-merge-back 决定终态；多轮 repair 需原地复用现场。
+        if agent_type in ("fast-track", "repair"):
+            # 延迟清理：worktree 与 dev-server 均由 dispatch 层处置；
+            # 有意交接 → 不参与本 run 终态收割
+            handed_off.add(wt_path)
+        else:
+            self._v2_stop_for_worktree(wt_path)
+            # 成功：清理 worktree（保留分支供 merge-back），返回结果
+            self.worktree_manager.cleanup(wt_path, success=True)
+        duration = time.time() - start_time
+        self._daily_run_count += 1
+        # cli-retry-backoff（2.1/2.2）：成功收工重置秒挂连续计数（非连续不累积）
+        self._reset_instant_fail(spec_name)
+        self.logger.info(
+            "agent_runner",
+            f"{agent_type} succeeded for '{spec_name}'",
+            {"run_id": attempt_run_id, "attempt": attempt, "turns": turns,
+             "provider": provider_name, "model": model},
+        )
+        # add-cost-observability（D1）：收工成功 → 累加 usage 到 STATE 内部字段
+        self._accumulate_token_usage(spec_name, usage_info)
+        # 验证链侧车：planner/judge run 的 usage 逐轮追加（D3）
+        self._record_verify_progress_tokens(spec_name, agent_type, usage_info)
+        # fix-observability-gaps 1.1：成功收尾写结构化指标（duration/usage/cost）。
+        # run_id 记基础 run_id（run 级指标，含全部 attempt 的整条 run 耗时；
+        # 读侧按剥 attempt 后缀后的 base 匹配 run 文件）。
+        self._log_run_metrics(
+            run_id=run_id, spec_name=spec_name, agent_type=agent_type,
+            duration_seconds=duration, turns=turns, usage_info=usage_info,
+            terminal="success", provider=provider_name, model=model,
+        )
+        # run 收尾清理取消旗标（add-run-cancel D5：正常完成也清，防泄漏）
+        self._cancel_clear(run_id)
+        return AgentRunResult(
+            attempt_run_id, spec_name, agent_type,
+            success=True, duration_seconds=duration,
+            turns_used=turns, output=output,
+            branch=branch, provider_used=provider_name, model_used=model,
+            worktree_dirty=wt_dirty,
+            worktree_path=(wt_path if agent_type in ("fast-track", "repair") else None),
+        )
+
+    # ── R8: 失败终态分型（等价搬移，D1 R8 表）────────────────────────
+    # 重试等待 vs 终态 keep 分型。跨边界 break 决策经返回值回传；
+    # kept_wt_path / wt_path 经 _AttemptState 回写（调用者 MUST 同步局部变量）。
+    def _finalize_failure_keep(self, spec_name: str, agent_type: str,
+                               attempt: int, attempt_run_id: str,
+                               max_retries: int, start_time: float,
+                               turns: int, usage_info: dict,
+                               provider_name, model,
+                               error, cancelled_flag: bool,
+                               shutdown_interrupted: bool,
+                               st: _AttemptState, handed_off: set) -> bool:
+        """失败终态分型（等价搬移，D1 R8）：重试等待 or 终态 keep。
+
+        返回 True 表示 should_break（cancelled_flag or shutdown_interrupted 触发的
+        终态——attempt 循环 MUST break）；返回 False 表示已 sleep(10) 等待重试，
+        调用者继续下一轮 attempt。
+        方法内通过 st 回写 st.kept_wt_path / st.wt_path，调用者 MUST 同步
+        局部变量 kept_wt_path / wt_path。
+        """
+        self.logger.warning(
+            "agent_runner",
+            f"{agent_type} failed for '{spec_name}' (attempt {attempt})",
+            {"run_id": attempt_run_id, "error": error, "provider": provider_name},
+        )
+        # 失败后的 worktree 处理（worktree-reuse：fast-track 与 implementer
+        # 同语义，跨 attempt 复用同一 worktree 续跑）：
+        # - implementer / fast-track / repair 且还有重试：保留 worktree（连同其
+        #   dev-server），下次 attempt 续跑；dev-server 随之复用，不重复启停。
+        # - fast-track 终态失败：保留目录与分支登记为复用遗产，下轮重派在同一
+        #   worktree 继承上一轮成果（不再从零重做）。
+        # - repair 终态失败：保留 worktree（add-merge-back-repair-lane：
+        #   worktree 生命周期交由 dispatch 层——fallback 或下一轮复用）。
+        # - 其他 / 终态失败：清理 worktree 并回收其 dev-server，下次 attempt 全新创建。
+        # add-run-cancel D5：取消（cancelled_flag）时不再进入下一 attempt——
+        # 走终态清理路径后 break，由循环后的 cancelled 收口返回 cancelled=True。
+        if attempt < max_retries and not cancelled_flag \
+                and not shutdown_interrupted:
+            time.sleep(10)  # Wait before retry
+            # fix-provider-transient-backoff（D3）：attempt 间 worktree
+            # 保留扩展到全部 agent_type——非 implementer 族复用前仍过
+            # frozen/取消检查（见上方 reuse_worktree 判定），不再清工作树。
+            # dev-server 随之复用，不重复启停。
+            return False
+        self._v2_stop_for_worktree(st.wt_path)
+        if shutdown_interrupted:
+            # daemon 濒死：保留现场交 recovery/排水保全处置——
+            # cleanup 会销毁待保全的未提交工作（checkpoint 锚点 A
+            # 的保护对象）；keep_for_reuse 的复用认领语义也不适用
+            # （续做与否由下一 daemon recovery 单源决定）。
+            st.kept_wt_path = st.wt_path
+            handed_off.add(st.wt_path)
+        elif agent_type == "fast-track":
+            self.worktree_manager.keep_for_reuse(spec_name, st.wt_path)
+            st.kept_wt_path = st.wt_path
+            # 终态失败保留复用遗产：下轮在同一 worktree 继承成果，
+            # 目录+分支有意保留 → 不参与终态收割（dev-server 已停）
+            handed_off.add(st.wt_path)
+        elif agent_type == "repair":
+            # 终态失败保留现场：dispatch 层负责回收（fallback 清理）
+            st.kept_wt_path = st.wt_path
+            handed_off.add(st.wt_path)
+        elif error and "[provider-transient]" in error:
+            # fix-provider-transient-backoff（D3）：transient 终态失败保留现场
+            # 供下轮认领（替代 cleanup(success=False)）——复用遗产机制，
+            # 下轮经 _take_reusable_worktree 认领同一目录与分支继承现场。
+            # 非 transient 终态失败维持现行清理，避免真实缺陷现场被误续用。
+            self.worktree_manager.keep_for_reuse(
+                spec_name, st.wt_path, agent_type=agent_type)
+            st.kept_wt_path = st.wt_path
+            handed_off.add(st.wt_path)
+            self.logger.warning(
+                "agent_runner",
+                f"Transient terminal failure for '{spec_name}' — worktree "
+                f"{st.wt_path} kept for reuse (fix-provider-transient-backoff)",
+            )
+        else:
+            self.worktree_manager.cleanup(st.wt_path, success=False)
+        st.wt_path = None
+        return cancelled_flag or shutdown_interrupted
+
+    # ── R2: 候选链解析与选择（等价搬移，D1 R2 表）─────────────────────
+    # 模型分配 → 指针推进 → 全链耗尽/4xx 熔断拦截 → 记当日 attempt。
+    # chain_cursor 经状态对象（_AttemptState.chain_cursor）读写（D1 粘合表：
+    # R2 写 R2/R4/R7 读）；早退分支（circuit/chain_exhausted）返回 early_result，
+    # 调用者 MUST return。返回 (provider, model, chain, early_result)。
+    def _resolve_provider_candidate(self, spec_name: str, agent_type: str,
+                                    run_id: str, attempt_run_id: str,
+                                    start_time: float, turns: int,
+                                    usage_info: dict, st: _AttemptState) -> tuple:
+        """候选链解析与选择（等价搬移，D1 R2）。
+
+        无 provider 分配（chain 空）→ (None, None, [], None)（默认网关路径）；
+        选中未熔断 → (provider, model, chain, None) 并回写 st.provider_name /
+        st.model / st.chain_cursor；早退（circuit / chain_exhausted）→
+        (None, None, chain, AgentRunResult)，调用者 MUST return early_result。
+        """
+        chain = self._get_agent_model_assignment(agent_type) or []
+        if not chain:
+            # 无 provider 分配：走默认网关（cc-switch），无链可选。provider_name=None。
+            st.provider_name = None
+            st.model = None
+            return None, None, chain, None
+        # 链指针推进：上次因切换类失败已前移的，保持前移（design D1/D3）；
+        # 否则从头选首个未冷却候选。4xx 熔断拦截态也算"不可用"跳过。
+        if st.chain_cursor < 0:
+            st.chain_cursor = self._select_chain_candidate(chain, spec_name, agent_type)
+        if st.chain_cursor < 0:
+            # 无可用候选。区分两类根因（design D3 / spec failover-dispatch）：
+            # - 全部候选仅因 4xx 熔断（is_circuit_open）被跳过 → 维持既有
+            #   "provider circuit open" 错误语义（不污染 error 文本、便于 admin/dashboard
+            #   区分 provider 故障），报告首个 4xx 熔断候选。
+            # - 否则（含 switch 冷却 / 全链冷却）→ chain_exhausted 失败语义，
+            #   不启动进程、不计入 spec 重试消耗。
+            first_4xx_open = None
+            for (provider, _m) in chain:
+                if self.is_circuit_open(provider["name"]):
+                    first_4xx_open = provider["name"]
+                    break
+            if first_4xx_open is not None:
+                circuit_err = self._circuit_open_error(first_4xx_open)
+                self.logger.warning(
+                    "agent_runner",
+                    f"Suppressed {agent_type} dispatch for '{spec_name}': {circuit_err}",
+                )
+                self._log_run_metrics(
+                    run_id=run_id, spec_name=spec_name, agent_type=agent_type,
+                    duration_seconds=time.time() - start_time, turns=turns,
+                    usage_info=usage_info, terminal="circuit",
+                    provider=first_4xx_open, model=None,
+                )
+                return None, None, chain, AgentRunResult(
+                    attempt_run_id, spec_name, agent_type,
+                    success=False, duration_seconds=time.time() - start_time,
+                    error=circuit_err, provider_used=first_4xx_open,
+                )
+            exhausted_err = (
+                f"provider chain exhausted for {agent_type} '{spec_name}': "
+                f"all {len(chain)} candidates in switch/4xx cooldown"
+            )
+            self.logger.error("agent_runner", exhausted_err)
+            self._log_run_metrics(
+                run_id=run_id, spec_name=spec_name, agent_type=agent_type,
+                duration_seconds=time.time() - start_time, turns=turns,
+                usage_info=usage_info, terminal="chain_exhausted",
+                provider=None, model=None,
+            )
+            return None, None, chain, AgentRunResult(
+                attempt_run_id, spec_name, agent_type,
+                success=False, duration_seconds=time.time() - start_time,
+                error=exhausted_err, chain_exhausted=True,
+            )
+        provider, model = chain[st.chain_cursor]
+        st.provider_name = provider["name"]
+        st.model = model
+
+        # ── 4xx 熔断拦截（fix-stashpop-deadlock：provider-fault-fuse） ──
+        # 仅对当前选中候选生效；若已熔断（冷却未到期），直接失败返回、不启动 claude、
+        # 不创建 worktree/autostash、不计入 spec 连续失败重试（design D5）。冷却到期后
+        # 首个真实派发作为半开探针（design D4）。
+        if self.is_circuit_open(st.provider_name):
+            circuit_err = self._circuit_open_error(st.provider_name)
+            self.logger.warning(
+                "agent_runner",
+                f"Suppressed {agent_type} dispatch for '{spec_name}': {circuit_err}",
+            )
+            # 不创建 worktree、不进入重试计数。直接以熔断错误返回。
+            # fix-observability-gaps 1.1：circuit 拦截终态写指标
+            self._log_run_metrics(
+                run_id=run_id, spec_name=spec_name, agent_type=agent_type,
+                duration_seconds=time.time() - start_time, turns=turns,
+                usage_info=usage_info, terminal="circuit",
+                provider=st.provider_name, model=st.model,
+            )
+            return None, None, chain, AgentRunResult(
+                attempt_run_id, spec_name, agent_type,
+                success=False, duration_seconds=time.time() - start_time,
+                error=circuit_err, provider_used=st.provider_name, model_used=st.model,
+            )
+
+        # 选中且未熔断 → 计一次当日 attempt（design D5 / spec 4.2），后续跨 attempt
+        # 切换打点依赖 last_provider_used。
+        self._record_daily_provider_attempt(st.provider_name)
+        return provider, model, chain, None
+
+    # ── R9: 循环后收口（D1 R9 表，可无副作用提取）────────────────────
+    # 全重试耗尽三型返回 + token 入账。等价搬移自 _execute_agent_inner
+    # 的 for 循环后段；参数显式传递 attempt 循环后的最终局部变量值。
+    def _exhausted_result(self, spec_name: str, agent_type: str, run_id: str,
+                          max_retries: int, start_time: float,
+                          error=None, turns: int = 0, usage_info=None,
+                          provider_name=None, model=None,
+                          cancelled_flag: bool = False,
+                          shutdown_interrupted: bool = False,
+                          kept_wt_path=None) -> AgentRunResult:
+        """全重试耗尽三型返回（等价搬移，D1 R9）：cancelled / shutdown / 全失败。"""
         # All retries exhausted
         duration = time.time() - start_time
         # run 收尾（add-run-cancel D5）：清理取消旗标，防泄漏。
@@ -2617,6 +2925,45 @@ class AgentRunner:
                     f"{src} -> {dst}",
                 )
 
+    # ── R4 子段: 结果文件 role/spec 戳拷回（D1 R4 表，零粘合可提取）──────
+    # 仅覆盖「worktree .fenix-run-result.json → 主树共享文件」的戳注入 + 拷回
+    # 子段（design D2：无写点、无跨边界控制流、无 return——可无副作用提取）。
+    # try 体其余部分与末句 break 留循环体内（D2）。模块级名 json / 常量
+    # AGENT_TYPE_TO_ROLE 保持从 runner.py 模块全局访问（D7 patch 缝隙）。
+    def _copyback_run_result(self, spec_name: str, agent_type: str, wt_path: Path) -> None:
+        """把 worktree 的结果文件按 agent_type 注入 role/spec 戳后拷回主树共享文件。
+
+        等价搬移自 _execute_agent_inner 内层 try 体的戳拷回子段（D1 R4）：
+        - 主树共享文件是跨 agent 共享单例，拷回时按 agent_type 注入 role 与
+          spec 戳（evo-verifier-result-single-source R2 写入隔离）——裁决读侧
+          只认 role=verifier 的共享文件。
+        - JSON 无法解析时维持原始字节拷回（不注入，避免破坏字节）。
+        - OSError 静默（与既有行为一致）；目录不存在零动作。
+        """
+        wt_result = wt_path / ".fenix-run-result.json"
+        root_result = self.project_root / ".fenix" / ".fenix-run-result.json"
+        if wt_result.exists():
+            try:
+                raw = wt_result.read_text(encoding="utf-8")
+                role = AGENT_TYPE_TO_ROLE.get(agent_type)
+                if role is not None:
+                    try:
+                        payload = json.loads(raw)
+                        if isinstance(payload, dict):
+                            payload["role"] = role
+                            payload["spec"] = spec_name
+                            root_result.write_text(
+                                json.dumps(
+                                    payload, ensure_ascii=False, indent=2),
+                                encoding="utf-8",
+                            )
+                            raw = None  # 已注入写盘，跳过原始拷回
+                    except (json.JSONDecodeError, ValueError):
+                        pass  # 非法 JSON：fall through 原始字节拷回
+                if raw is not None:
+                    root_result.write_text(raw, encoding="utf-8")
+            except OSError:
+                pass
 
     def _run_claude(self, prompt: str, cwd: Path, run_id: str,
                     model_override: str | None = None,

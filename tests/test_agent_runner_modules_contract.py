@@ -167,10 +167,16 @@ class TestForwardingSettlersRemoved:
 # ── 4. 行数上限 ─────────────────────────────────────────────────
 
 class TestLineCount:
-    def test_runner_below_4000(self):
+    def test_runner_below_4500(self):
+        """runner.py 行数上限（refactor-long-functions D6 修订）。
+
+        重构前上限 4000（3946 行）；本变更在 runner.py 内新增提取私有方法
+        （_maybe_in_place_retry / _handle_artifact_gate_retry 等，共 +347 行），
+        已破 4000 上限，按 D6 裁决 (a) 显式修订为 4500（实测 4293，余量 207）。
+        """
         from pathlib import Path as P
         n = len(P("core/agent_runner/runner.py").read_text(encoding="utf-8").splitlines())
-        assert n < 4000, f"runner.py={n} 行 >= 4000"
+        assert n < 4500, f"runner.py={n} 行 >= 4500"
 
 
 # ── 5. 实例属性打桩不被绕过（D2b 规则 2） ────────────────────────
