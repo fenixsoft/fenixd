@@ -2066,6 +2066,33 @@ class PMEngine:
 
         return True
 
+    def _dependencies_pending(self, spec_name: str) -> bool:
+        """依赖未满足的静默判定（假就绪巡检豁免用，与 ``_dependencies_satisfied`` 同口径）。
+
+        与 ``_dependencies_satisfied`` 共用同一 ``DEPENDENCY_ACCEPTED_STATUSES``、
+        同一 STATE 读取与同一逗号分隔解析；差别只有两点：不打印
+        「blocked: dependency ...」日志（巡检每周期调用，重复 INFO 会形成刷屏），
+        以及把「依赖缺失」与「依赖未到接受态」统一折叠为 True。
+
+        语义：spec 配置了依赖且至少一个依赖当前不在接受态 → True；依赖条目缺失
+        （读不到）同样按未满足处理（与 ``_dependencies_satisfied`` 的 fail-closed
+        一致）。无依赖 / ``null`` / 名列表为空 → False（无需等待）。
+        """
+        spec = self.state_machine.read_one(spec_name) or {}
+        deps = spec.get("depends_on")
+        if not deps or deps == "null":
+            return False
+        dep_names = [d.strip() for d in str(deps).split(",") if d.strip()]
+        if not dep_names:
+            return False
+        for dep_name in dep_names:
+            dep_spec = self.state_machine.read_one(dep_name)
+            if not dep_spec:
+                return True
+            if dep_spec.get("status", "") not in DEPENDENCY_ACCEPTED_STATUSES:
+                return True
+        return False
+
     def _wakeup_dependents(self, dep_name: str, dependents: list) -> None:
         """依赖满足定向唤醒（dispatch-dependency-wakeup D1-D3）。
 
@@ -2258,6 +2285,14 @@ class PMEngine:
                         # （scheduled-spec-pickup）：daemon 每轮正确 skip 派发
                         # （start_after pending），巡检不得把它误报为假就绪滞留
                         # （2026-09-11 add-main-tree-deps-provision 实证）。
+                        # 依赖未满足的 spec 同理（dispatch-dependency-wakeup）：daemon
+                        # 每轮 dispatch 已按 _dependencies_satisfied 正确 skip，等待
+                        # 依赖转入接受态由事件定向唤醒（_wakeup_dependents），不依赖
+                        # 巡检告警——等待中的依赖既不会因告警提前满足，也不会因告警被
+                        # 重新派发，误报只会唤起无效 Administrator run。
+                        # （2026-09-17 refactor-facade-delegation 实证：依赖两条 refactor
+                        # 活 run 在跑、spec 从未获得过 worktree 锁，却被固定文案信号误述
+                        # 为「worktree 锁冲突 / 退避计划耗尽」。）
                         # 存活 attempt 亦不算（与 D4 auto-recovery 的 live-child 豁免同语义）：
                         # daemon 重启后 recovery 把 implementing 恢复为 ready，而旧 run 的
                         # 流写侧已随旧进程死亡——「流 mtime = 派发活动」代理判据失真，
@@ -2269,6 +2304,7 @@ class PMEngine:
                             elapsed > stall_threshold
                             and not self._dispatch_backoffed(entry)
                             and not start_after_pending(entry)
+                            and not self._dependencies_pending(name)
                             and not self._spec_has_recent_run_activity(name, stall_threshold)
                             and not self._attempt_still_alive(name)
                         ):

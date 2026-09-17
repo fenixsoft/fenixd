@@ -213,7 +213,11 @@ SIGNAL_RECOMMENDATION = {
     "blocked_stuck": "检查 blocked 是否误置（误判派生的假 spec）或确需人工决策；清理假 spec 或重置后重新调度，必要时升级",
     "daemon_errors": "检查 fenixd 重复 ERROR 的根因（同错误 10 分钟窗口内复现 ≥2 次），必要时重启 daemon",
     "family_explosion": "检修根因环境（如验证报告互相咬合导致 fix 递归）；确认放行一次则对父 SPEC 设置 _family_waiver=true",
-    "dispatch_stalled": "检查持锁进程是否为孤儿（ps/pgrep 确认后 kill），清理残留 worktree 锁后让 spec 重新派发",
+    # 处置建议三源同表（锁冲突退避耗尽 / 恢复闭环复查未通过 / 假就绪滞留）：
+    # 首句为锁冲突路径（历史主因），后两句覆盖「锁冲突前提为假」的形态
+    # ——2026-09-17 refactor-facade-delegation 事故里 spec 从未获得过 worktree
+    # 锁（依赖未满足），旧文案把处置引向「清理残留锁」这一无关方向。
+    "dispatch_stalled": "先按 evidence 判来源：① 确为锁冲突（evidence 含 backoff schedule/锁冲突计数）→ 检查持锁进程是否为孤儿（ps/pgrep 确认后 kill），清理残留 worktree 锁后让 spec 重新派发；② 依赖未满足（evidence 含 dependencies not satisfied 或原因含依赖）→ 无需处置，等待依赖转入接受态后事件定向唤醒自动派发；③ 恢复闭环复查未通过 → 核查该 spec 卡死根因（run/进程/闸门）",
     # add-verdict-credibility-gate / design D6：处置建议指向环境核查 + 恢复路径
     "inconclusive_loop": "验证环境核查清单：① 被测实例是否就绪（serve/start 命令与端口）；② 资源与并行度（max_parallel 是否挤爆实例）；③ mock+SSE 链路（mock_api 是否误拦推流、SSE 是否断流）；④ 探针摘要（见 evidence 末轮 blocked_env 数）。恢复路径：人工处置后解冻 spec（unfreeze）并清 `_inconclusive_attempts`，后续 blocked-env 轮次从 1 重新计数",
     "verify_contract_missing": "Administrator 起草 .fenix/verify.yaml 验证契约：检查项目构建命令、静态目录、服务启动方式；草稿写临时路径 → bin/fenix_verify_contract.py 自证 → 全通才落位 → git 提交 → spec 复位 ready 触发重验证",
@@ -740,7 +744,7 @@ class AdminMonitor:
                     "fix 族谱越界派生被拦截"
                     if stype == "family_explosion"
                     else (
-                        "派发长期被 worktree 锁冲突滞留"
+                        "spec 长期滞留 ready 且派发未成立（处置方向见 evidence）"
                         if stype == "dispatch_stalled"
                         else (
                             "连续多轮验证全部为环境性失联（blocked-env）"

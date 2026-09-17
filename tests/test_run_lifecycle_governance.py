@@ -681,6 +681,46 @@ class TestReadyStallPatrol(RecoveryWatchFixture):
         self.assertEqual(len(stalled), 1)
         self.assertIn("假就绪滞留", stalled[0]["reason"])
 
+    def test_dependency_pending_ready_not_reported(self):
+        """依赖未满足的 ready spec 是有意等待，不算假就绪滞留。
+
+        回归：2026-09-17 refactor-facade-delegation 被误报 dispatch_stalled——
+        depends_on 的两条依赖（refactor-giant-classes / refactor-long-functions）
+        仍在 implementing 且活 run 在跑，daemon 每轮 dispatch 已按
+        _dependencies_satisfied 正确 skip、等待事件定向唤醒；但假就绪巡检未豁免
+        依赖未满足的 spec，21 分钟即被判滞留，信号文案还固定述为「worktree 锁
+        冲突 / 退避计划耗尽」（该 spec 从未获得过 worktree 锁，属误述）。
+        """
+        self.make_ready_spec("s1")
+        self.sm.add_spec("dep-x", {"status": "implementing", "priority": 5})
+        self.sm.update_spec("s1", {"depends_on": "dep-x"})
+        self._stale(hours=1)
+        self.runner.worktree_manager.has_active_worktree.return_value = False
+        result = self.engine.check_blockers()
+        self.assertEqual([b for b in result["blockers"] if b["spec"] == "s1"], [])
+        recs = AdminStore(self.project_root, self.logger).read_all()
+        self.assertEqual(
+            [r for r in recs if r.get("signal_type") == "dispatch_stalled"], [])
+
+    def test_satisfied_dependency_still_reported(self):
+        """依赖已到接受态 → 不豁免，照常巡检（豁免只覆盖真正在等待的 spec）。"""
+        self.make_ready_spec("s1")
+        self.sm.add_spec("dep-x", {"status": "pushed", "priority": 5})
+        self.sm.update_spec("s1", {"depends_on": "dep-x"})
+        self._stale(hours=1)
+        result = self.engine.check_blockers()
+        stalled = [b for b in result["blockers"] if b["spec"] == "s1"]
+        self.assertEqual(len(stalled), 1)
+        self.assertIn("假就绪滞留", stalled[0]["reason"])
+
+    def test_no_dependency_ready_still_reported(self):
+        """无依赖的 ready 滞留照常上报（豁免不得泛化为「所有 ready 都不报」）。"""
+        self.make_ready_spec("s1")
+        self._stale(hours=1)
+        result = self.engine.check_blockers()
+        self.assertEqual(
+            len([b for b in result["blockers"] if b["spec"] == "s1"]), 1)
+
     def test_recent_run_activity_not_reported(self):
         self.make_ready_spec("s1")
         self._stale(hours=1)

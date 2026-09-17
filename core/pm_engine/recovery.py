@@ -11,10 +11,17 @@ import hashlib
 import json
 import time
 
-# dispatch_stalled 信号的建议处置（与 admin_monitor.SIGNAL_RECOMMENDATION 同义；
-# pm_engine 不反向依赖 admin_monitor，这里单独常量避免循环导入）
+# dispatch_stalled 信号的建议处置（与 admin_monitor.SIGNAL_RECOMMENDATION 同源；
+# pm_engine 不反向依赖 admin_monitor，这里单独常量避免循环导入）。三源同表：
+# 锁冲突退避耗尽 / 恢复闭环复查未通过 / 假就绪滞留——首句为锁冲突路径（历史主因），
+# 后两句覆盖「锁冲突前提为假」的形态（2026-09-17 refactor-facade-delegation 事故：
+# 该 spec 从未获得过 worktree 锁，依赖未满足等待定向唤醒）。
 SIGNAL_RECOMMENDATION_DISPATCH_STALLED = (
-    "检查持锁进程是否为孤儿（ps/pgrep 确认后 kill），清理残留 worktree 锁后让 spec 重新派发"
+    "先按 evidence 判来源：① 确为锁冲突（evidence 含 backoff schedule/锁冲突计数）→ "
+    "检查持锁进程是否为孤儿（ps/pgrep 确认后 kill），清理残留 worktree 锁后让 spec "
+    "重新派发；② 依赖未满足（evidence 含 dependencies not satisfied 或原因含依赖）→ "
+    "无需处置，等待依赖转入接受态后事件定向唤醒自动派发；③ 恢复闭环复查未通过 → "
+    "核查该 spec 卡死根因（run/进程/闸门）"
 )
 
 # ── 恢复闭环复查 / 假就绪巡检（improve-run-lifecycle-governance D6）──────────
@@ -521,9 +528,14 @@ class RecoveryWatch:
                     "signal_type": "dispatch_stalled",
                     "spec": spec_name,
                     "severity": "major",
-                    "description": (
-                        f"'{spec_name}' 派发长期被 worktree 锁冲突滞留，" f"退避计划耗尽仍未获得锁"
-                    ),
+                    # 文案中性化（2026-09-17）：本信号有三条来源（派发锁冲突退避
+                    # 耗尽 / 恢复闭环复查未通过 / 假就绪滞留），固定述为「锁冲突 +
+                    # 退避耗尽」只对第一条成立——2026-09-17 refactor-facade-delegation
+                    # 事故里该 spec 从未获得过 worktree 锁（依赖未满足，等待定向唤醒），
+                    # 信号文案却把 Administrator 引向「清理残留 worktree 锁」这一无关
+                    # 方向。处置方向由 evidence 给出（各调用点自带现场），描述只陈述
+                    # 共性事实，不再断言单一根因。
+                    "description": (f"'{spec_name}' 长期滞留 ready 且派发未成立（处置方向见 evidence）"),
                     "evidence": evidence,
                     "recommended_action": SIGNAL_RECOMMENDATION_DISPATCH_STALLED,
                 }
