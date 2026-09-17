@@ -15,6 +15,7 @@ _last_scenario_diff / _last_interaction_contract 随组件同迁（design D3 规
 from pathlib import Path
 from typing import Optional
 from datetime import datetime, timezone
+import functools
 import json
 import os
 import re
@@ -220,345 +221,154 @@ class VerificationPipeline:
         # MUST NOT 再直接回引 self._pm.<private>。
         self._context = context if context is not None else PipelineContext.from_pm(pm)
 
+    # ── 门面转发注册表（refactor-facade-delegation D2 / facade-inventory.md）──
+    # 实例式转发（85 个）：{门面方法名: 模块级函数}，函数以 pipe（self）为首参。
+    # 注册表以源码内联 dict 声明（静态可读），`__getattr__` 命中时返回
+    # functools.partial(func, self)（不注入多余 self）。
+    _FORWARDER_REGISTRY: dict[str, object] = {
+        "_read_verify_report": _read_verify_report,
+        "_ensure_verification_report": _ensure_verification_report,
+        "_check_verification_gate": _check_verification_gate,
+        "_verifier_result_is_stale": _verifier_result_is_stale,
+        "_read_verifier_result": _read_verifier_result,
+        "_read_planner_result": _read_planner_result,
+        "_read_verdict": _read_verdict,
+        "_branch_commit_count": _branch_commit_count,
+        "_implementation_branch_has_commits": _implementation_branch_has_commits,
+        "_implementer_zero_change": _implementer_zero_change,
+        "_deliverable_gate_missing": _deliverable_gate_missing,
+        "_tasks_md_relint_from_branch": _tasks_md_relint_from_branch,
+        "_tasks_md_relint_from_worktree": _tasks_md_relint_from_worktree,
+        "_disputed_deliverables": _disputed_deliverables,
+        "_verifier_error_is_infra": _verifier_error_is_infra,
+        "enrich_failure_class": enrich_failure_class,
+        "_record_infra_failure": _record_infra_failure,
+        "_detect_uniform_verify_failure": _detect_uniform_verify_failure.__func__,
+        "_fail_history_path": _fail_history_path,
+        "_read_fail_history": _read_fail_history,
+        "_append_fail_history": _append_fail_history,
+        "_clear_fail_history": _clear_fail_history,
+        "_scenario_classification_distribution": _scenario_classification_distribution,
+        "_failed_scenario_ids": _failed_scenario_ids,
+        "_apply_scenario_freeze": _apply_scenario_freeze,
+        "_apply_interaction_contract": _apply_interaction_contract,
+        "_render_scenario_change_section_to_report": _render_scenario_change_section_to_report,
+        "_write_verify_contract_missing": _write_verify_contract_missing,
+        "_run_scenario_static_check": _run_scenario_static_check,
+        "_run_contract_static_check": _run_contract_static_check,
+        "_ensure_serving_worktree": _ensure_serving_worktree,
+        "_serve_static_in_main": _serve_static_in_main,
+        "_serve_static_in_worktree": _serve_static_in_worktree,
+        "_serve_command_in_worktree": _serve_command_in_worktree.__func__,
+        "_serve_command_in_main": _serve_command_in_main,
+        "_finalize_static": _finalize_static,
+        "_remove_serving_worktree": _remove_serving_worktree,
+        "_register_serving_instance": _register_serving_instance,
+        "_unregister_serving_instance": _unregister_serving_instance,
+        "_evict_spec_serving": _evict_spec_serving,
+        "_current_instance_base_url": _current_instance_base_url,
+        "_ensure_app_reachable": _ensure_app_reachable,
+        "_open_boot_log": _open_boot_log,
+        "_read_boot_log_tail": _read_boot_log_tail,
+        "_rewrite_scenario_port": _rewrite_scenario_port,
+        "_serving_port_for_spec": _serving_port_for_spec,
+        "_current_verify_round": _current_verify_round,
+        "_handle_env_blocked_inconclusive": _handle_env_blocked_inconclusive,
+        "_write_inconclusive_loop_signal": _write_inconclusive_loop_signal,
+        "_env_whitewash_gate": _env_whitewash_gate,
+        "_escalate_env_blocked": _escalate_env_blocked,
+        "_update_warning_streaks": _update_warning_streaks,
+        "_warning_stale_triage_alert": _warning_stale_triage_alert,
+        "_scenario_defect_reroute_gate": _scenario_defect_reroute_gate,
+        "_escalate_scenario_defect_reroute": _escalate_scenario_defect_reroute,
+        "_handle_judge_env_declared": _handle_judge_env_declared,
+        "_judge_bugs_declare_env": _judge_bugs_declare_env,
+        "_speculative_bug_found_gate": _speculative_bug_found_gate,
+        "_run_legacy_verification": _run_legacy_verification,
+        "_verify_verdict_evidence": _verify_verdict_evidence,
+        "_verdict_violations_evidence": _verdict_violations_evidence,
+        "_write_verdict_violations": _write_verdict_violations,
+        "_clear_verdict_violations": _clear_verdict_violations,
+        "_verdict_violations_path": _verdict_violations_path,
+        "_resynthesis_directive_path": _resynthesis_directive_path,
+        "_read_resynthesis_directive": _read_resynthesis_directive,
+        "_clear_resynthesis_directive": _clear_resynthesis_directive,
+        "_resynthesis_directive_scenarios": _resynthesis_directive_scenarios,
+        "_write_resynthesis_directive": _write_resynthesis_directive,
+        "_escalate_dedup_resynthesis": _escalate_dedup_resynthesis,
+        "_handle_attr_dedup_rejection": _handle_attr_dedup_rejection,
+        "_handle_scenario_requeue": _handle_scenario_requeue,
+        "_clear_requeue_manifest": _clear_requeue_manifest,
+        "_record_verdict_adoption": _record_verdict_adoption,
+        "_persist_verdict_cache": _persist_verdict_cache,
+        "_verified_verdict_persisted": _verified_verdict_persisted,
+        "_verified_gate_refuses": _verified_gate_refuses,
+        "_judge_dispatch_gate": _judge_dispatch_gate,
+        "_judge_hard_cap_freeze": _judge_hard_cap_freeze,
+        "_judge_rerun_count": _judge_rerun_count,
+        "_all_green_fast_path": _all_green_fast_path,
+        "_last_planner_cost_usd": _last_planner_cost_usd,
+        "_last_planner_run_cost": _last_planner_run_cost,
+        "_write_degrade_context": _write_degrade_context,
+        "_clear_degrade_context": _clear_degrade_context,
+    }
+
+    # 静态式转发（5 个，首参非 pipe）：MUST NOT 进入 _FORWARDER_REGISTRY——
+    # partial(func, self) 对无 self 首参函数会多注一个 self 直接 TypeError；
+    # 以类级别名（staticmethod 别名）保留 `Cls.<名>` 与 `self.<名>` 两条解析路径
+    # （design D7）。
+
     def __getattr__(self, name: str):
         """懒惰兜底：既有测试以 `VerificationPipeline.__new__` 部分构造（只设
         `_pm`，绕过 `__init__`），首次访问 `_context` 时由 `_pm` 推导并缓存，
-        保持「测试零修改」约束（design D10：context 由 pm 内部推导亦成立）。"""
+        保持「测试零修改」约束（design D10：context 由 pm 内部推导亦成立）。
+
+        增量扩展（refactor-facade-delegation D2）：`_context` 分支优先；
+        未命中时查询门面转发注册表，返回 partial(func, self)；未知名
+        MUST `raise AttributeError`（hasattr/getattr(..., default) 语义正确）。"""
         if name == "_context":
             ctx = PipelineContext.from_pm(self._pm)
             self._context = ctx
             return ctx
+        func = type(self)._FORWARDER_REGISTRY.get(name)
+        if func is not None:
+            return functools.partial(func, self)
         raise AttributeError(f"{type(self).__name__!r} object has no attribute {name!r}")
+
+    def __dir__(self):
+        """IDE 补全增强（refactor-facade-delegation Open Question / tasks 5.1）：
+        返回既有属性 + 注册表键，缓解 `__getattr__` 委托下 dir() 不显示转发名。"""
+        return sorted(set(super().__dir__()) | set(type(self)._FORWARDER_REGISTRY))
 
     # ── report_gate 薄委托（refactor-verification-module D2b 规则 2：runner.py
     # 内部调用点 MUST 保持 self.<方法名> 形式，实现委托至模块级函数）──
 
-    def _read_verify_report(self, spec_name: str) -> dict:
-        return _read_verify_report(self, spec_name)
-
-    def _ensure_verification_report(self, spec_name: str) -> str | None:
-        return _ensure_verification_report(self, spec_name)
-
-    def _check_verification_gate(self, spec_name: str) -> str | None:
-        return _check_verification_gate(self, spec_name)
-
-    def _verifier_result_is_stale(self, result, result_path, spec_name: str) -> bool:
-        return _verifier_result_is_stale(self, result, result_path, spec_name)
-
-    def _read_verifier_result(self, result_path):
-        return _read_verifier_result(self, result_path)
-
-    def _read_planner_result(self, spec_name: str):
-        return _read_planner_result(self, spec_name)
-
-    def _read_verdict(self, spec_name: str):
-        return _read_verdict(self, spec_name)
-
     # ── branch_guard 薄委托（见 report_gate 注释 D2b 规则 2）──
 
-    def _branch_commit_count(self, result) -> Optional[int]:
-        return _branch_commit_count(self, result)
+    # D7 类级别名：取代 @staticmethod def 转发壳（无签名无 docstring，双份签名消除）
+    _extract_replan_error_items = staticmethod(_bg_extract_replan_error_items.__func__)
 
-    def _implementation_branch_has_commits(self, result) -> bool:
-        return _implementation_branch_has_commits(self, result)
-
-    def _implementer_zero_change(self, spec_name: str, result) -> bool:
-        return _implementer_zero_change(self, spec_name, result)
-
-    def _deliverable_gate_missing(self, spec_name: str, result) -> list:
-        return _deliverable_gate_missing(self, spec_name, result)
-
-    def _tasks_md_relint_from_branch(self, spec_name: str, branch) -> list:
-        return _tasks_md_relint_from_branch(self, spec_name, branch)
-
-    def _tasks_md_relint_from_worktree(self, spec_name: str, worktree_path) -> list:
-        return _tasks_md_relint_from_worktree(self, spec_name, worktree_path)
-
-    def _disputed_deliverables(self, impl_result, missing) -> list:
-        return _disputed_deliverables(self, impl_result, missing)
-
-    @staticmethod
-    def _extract_replan_error_items(env_error: str) -> list[str]:
-        # 模块级函数与静态方法同名：经模块别名解析（branch_guard 已导入同名函数）
-        return _bg_extract_replan_error_items(env_error)
-
-    @staticmethod
-    def _replan_errors_unconsumed(prev_items: list, cur_items: list) -> bool:
-        return _bg_replan_errors_unconsumed(prev_items, cur_items)
+    _replan_errors_unconsumed = staticmethod(_bg_replan_errors_unconsumed.__func__)
 
     # ── infra_classify 薄委托（见 report_gate 注释 D2b 规则 2）──
 
-    def _verifier_error_is_infra(self, error_text: str) -> bool:
-        return _verifier_error_is_infra(self, error_text)
-
-    def enrich_failure_class(
-        self, spec_name: str, error_text: str = "", result=None, result_path=None
-    ) -> str:
-        return enrich_failure_class(self, spec_name, error_text, result, result_path)
-
-    def _record_infra_failure(self, spec_name: str, reason: str, run_id: str = "") -> None:
-        return _record_infra_failure(self, spec_name, reason, run_id)
-
-    def _detect_uniform_verify_failure(self, spec_name: str, report: dict) -> bool:
-        return _detect_uniform_verify_failure(self, spec_name, report)
-
-    def _fail_history_path(self, spec_name: str) -> Path:
-        return _fail_history_path(self, spec_name)
-
-    def _read_fail_history(self, spec_name: str) -> list:
-        return _read_fail_history(self, spec_name)
-
-    def _append_fail_history(
-        self,
-        spec_name: str,
-        cause_type: str,
-        failed_scenarios: list,
-        failure_class: str = "",
-        run_id: str = "",
-    ) -> None:
-        return _append_fail_history(
-            self, spec_name, cause_type, failed_scenarios, failure_class, run_id
-        )
-
-    def _clear_fail_history(self, spec_name: str) -> None:
-        return _clear_fail_history(self, spec_name)
-
-    def _scenario_classification_distribution(self, spec_name: str) -> dict:
-        return _scenario_classification_distribution(self, spec_name)
-
-    def _failed_scenario_ids(self, spec_name: str) -> list:
-        return _failed_scenario_ids(self, spec_name)
-
-    @staticmethod
-    def _normalize_fail_signature(text: str) -> str:
-        return _normalize_fail_signature(text)
+    _normalize_fail_signature = staticmethod(_normalize_fail_signature)
 
     # ── scenario_gate 薄委托（见 report_gate 注释 D2b 规则 2）──
 
-    def _apply_scenario_freeze(self, spec_name: str) -> dict:
-        return _apply_scenario_freeze(self, spec_name)
-
-    def _apply_interaction_contract(self, spec_name: str) -> dict:
-        return _apply_interaction_contract(self, spec_name)
-
-    @staticmethod
-    def _load_frozen_scenarios(verify_dir):
-        return _load_frozen_scenarios(verify_dir)
-
-    def _render_scenario_change_section_to_report(self, spec_name: str) -> None:
-        return _render_scenario_change_section_to_report(self, spec_name)
-
-    def _write_verify_contract_missing(
-        self, spec_name: str, note: str, evidence=None, recommended_action=None
-    ) -> None:
-        return _write_verify_contract_missing(self, spec_name, note, evidence, recommended_action)
-
-    def _run_scenario_static_check(self, spec_name: str) -> None:
-        return _run_scenario_static_check(self, spec_name)
-
-    def _run_contract_static_check(self, spec_name: str) -> None:
-        return _run_contract_static_check(self, spec_name)
+    _load_frozen_scenarios = staticmethod(_load_frozen_scenarios)
 
     # ── serving 薄委托（见 report_gate 注释 D2b 规则 2）──
 
-    def _ensure_serving_worktree(self, spec_name: str, contract, mode: str):
-        return _ensure_serving_worktree(self, spec_name, contract, mode)
-
-    def _serve_static_in_main(self, contract, scenarios_path) -> tuple:
-        return _serve_static_in_main(self, contract, scenarios_path)
-
-    def _serve_static_in_worktree(self, spec_name, contract, scenarios_path) -> tuple:
-        return _serve_static_in_worktree(self, spec_name, contract, scenarios_path)
-
-    def _serve_command_in_worktree(self, spec_name, contract, scenarios_path) -> tuple:
-        return _serve_command_in_worktree(self, spec_name, contract, scenarios_path)
-
-    def _serve_command_in_main(self, spec_name, contract, scenarios_path) -> tuple:
-        return _serve_command_in_main(self, spec_name, contract, scenarios_path)
-
-    def _finalize_static(self, srv, contract, scenarios_path, scope_label) -> tuple:
-        return _finalize_static(self, srv, contract, scenarios_path, scope_label)
-
-    def _remove_serving_worktree(self, wt_path) -> None:
-        return _remove_serving_worktree(self, wt_path)
-
-    def _register_serving_instance(
-        self, spec_name: str, server, wt_path=None, hint_port=None
-    ) -> None:
-        return _register_serving_instance(self, spec_name, server, wt_path, hint_port)
-
-    def _unregister_serving_instance(self, spec_name: str, server) -> None:
-        return _unregister_serving_instance(self, spec_name, server)
-
-    def _evict_spec_serving(self, spec_name: str) -> None:
-        return _evict_spec_serving(self, spec_name)
-
-    def _current_instance_base_url(self, spec_name: str) -> str:
-        return _current_instance_base_url(self, spec_name)
-
-    def _ensure_app_reachable(self, spec_name: str) -> tuple:
-        return _ensure_app_reachable(self, spec_name)
-
-    @staticmethod
-    def _port_responds(port: int) -> bool:
-        return _port_responds(port)
-
-    def _open_boot_log(self, spec_name: str):
-        return _open_boot_log(self, spec_name)
-
-    def _read_boot_log_tail(self, spec_name: str, handle) -> str:
-        return _read_boot_log_tail(self, spec_name, handle)
-
-    def _rewrite_scenario_port(self, scenarios_path, old_port: int, new_port: int):
-        return _rewrite_scenario_port(self, scenarios_path, old_port, new_port)
-
-    def _serving_port_for_spec(self, spec_name: str):
-        return _serving_port_for_spec(self, spec_name)
-
-    def _current_verify_round(self, spec_name: str) -> int:
-        return _current_verify_round(self, spec_name)
+    _port_responds = staticmethod(_port_responds)
 
     # ── escalation 薄委托 ──
-    def _handle_env_blocked_inconclusive(self, spec_name: str, report: dict) -> bool:
-        return _handle_env_blocked_inconclusive(self, spec_name, report)
-
-    def _write_inconclusive_loop_signal(
-        self, spec_name: str, attempts: int, blocked_env: int, report: dict
-    ) -> bool:
-        return _write_inconclusive_loop_signal(self, spec_name, attempts, blocked_env, report)
-
-    def _env_whitewash_gate(self, spec_name: str) -> bool:
-        return _env_whitewash_gate(self, spec_name)
-
-    def _escalate_env_blocked(
-        self, spec_name: str, violations: list, title: str = "验证环境阻塞"
-    ) -> None:
-        return _escalate_env_blocked(self, spec_name, violations, title)
-
-    def _update_warning_streaks(self, spec_name: str) -> list:
-        return _update_warning_streaks(self, spec_name)
-
-    def _warning_stale_triage_alert(self, spec_name: str, scenario_ids: list) -> None:
-        return _warning_stale_triage_alert(self, spec_name, scenario_ids)
-
-    def _scenario_defect_reroute_gate(
-        self, spec_name: str, _repair_depth: int = 0, judge_result=None
-    ) -> bool:
-        return _scenario_defect_reroute_gate(self, spec_name, _repair_depth, judge_result)
-
-    def _escalate_scenario_defect_reroute(
-        self, spec_name: str, dist: dict, _repair_depth: int = 0
-    ) -> None:
-        return _escalate_scenario_defect_reroute(self, spec_name, dist, _repair_depth)
-
-    def _handle_judge_env_declared(self, spec_name: str) -> None:
-        return _handle_judge_env_declared(self, spec_name)
-
-    def _judge_bugs_declare_env(self, spec_name: str) -> bool:
-        return _judge_bugs_declare_env(self, spec_name)
-
-    def _speculative_bug_found_gate(self, spec_name: str) -> bool:
-        return _speculative_bug_found_gate(self, spec_name)
 
     # ── legacy 薄委托 ──
-    def _run_legacy_verification(self, spec_name: str) -> None:
-        return _run_legacy_verification(self, spec_name)
 
     # ── verdict_evidence 薄委托 ──
-    def _verify_verdict_evidence(self, spec_name: str, retry_judge=False):
-        return _verify_verdict_evidence(self, spec_name, retry_judge)
-
-    def _verdict_violations_evidence(self, spec_name: str, violations: list) -> list:
-        return _verdict_violations_evidence(self, spec_name, violations)
-
-    def _write_verdict_violations(self, spec_name: str, violations: list) -> None:
-        return _write_verdict_violations(self, spec_name, violations)
-
-    def _clear_verdict_violations(self, spec_name: str) -> None:
-        return _clear_verdict_violations(self, spec_name)
-
-    def _verdict_violations_path(self, spec_name: str) -> Path:
-        return _verdict_violations_path(self, spec_name)
-
-    def _resynthesis_directive_path(self, spec_name: str) -> Path:
-        return _resynthesis_directive_path(self, spec_name)
-
-    def _read_resynthesis_directive(self, spec_name: str) -> dict | None:
-        return _read_resynthesis_directive(self, spec_name)
-
-    def _clear_resynthesis_directive(self, spec_name: str) -> None:
-        return _clear_resynthesis_directive(self, spec_name)
-
-    def _resynthesis_directive_scenarios(self, report: dict, violations: list) -> list:
-        return _resynthesis_directive_scenarios(self, report, violations)
-
-    def _write_resynthesis_directive(
-        self,
-        spec_name: str,
-        report: dict,
-        violations: list,
-        rejection_round: int,
-        resynthesis_attempts: int,
-    ) -> None:
-        return _write_resynthesis_directive(
-            self, spec_name, report, violations, rejection_round, resynthesis_attempts
-        )
-
-    def _escalate_dedup_resynthesis(
-        self, spec_name: str, rejection_round: int, violations: list
-    ) -> None:
-        return _escalate_dedup_resynthesis(self, spec_name, rejection_round, violations)
-
-    def _handle_attr_dedup_rejection(
-        self, spec_name: str, report: dict, dedup_violations: list
-    ) -> dict:
-        return _handle_attr_dedup_rejection(self, spec_name, report, dedup_violations)
-
-    def _handle_scenario_requeue(self, spec_name: str, report: dict, dedup: dict) -> dict:
-        return _handle_scenario_requeue(self, spec_name, report, dedup)
-
-    def _clear_requeue_manifest(self, spec_name: str) -> None:
-        return _clear_requeue_manifest(self, spec_name)
-
-    def _record_verdict_adoption(self, spec_name: str, status: str, report: dict) -> None:
-        return _record_verdict_adoption(self, spec_name, status, report)
-
-    def _persist_verdict_cache(self, spec_name: str, report: dict) -> None:
-        return _persist_verdict_cache(self, spec_name, report)
-
-    def _verified_verdict_persisted(self, spec_name: str) -> bool:
-        return _verified_verdict_persisted(self, spec_name)
-
-    def _verified_gate_refuses(self, spec_name: str, target: str) -> bool:
-        return _verified_gate_refuses(self, spec_name, target)
 
     # ── judge_gate 薄委托（见 report_gate 注释 D2b 规则 2）──
-
-    def _judge_dispatch_gate(self, spec_name: str) -> str | None:
-        return _judge_dispatch_gate(self, spec_name)
-
-    def _judge_hard_cap_freeze(self, spec_name: str, count: int) -> None:
-        return _judge_hard_cap_freeze(self, spec_name, count)
-
-    def _judge_rerun_count(self, spec_name: str, delta: int = 0) -> int:
-        return _judge_rerun_count(self, spec_name, delta)
-
-    def _all_green_fast_path(self, spec_name: str, report: dict, fail_count: int):
-        return _all_green_fast_path(self, spec_name, report, fail_count)
-
-    def _last_planner_cost_usd(self, spec_name: str) -> float | None:
-        return _last_planner_cost_usd(self, spec_name)
-
-    def _last_planner_run_cost(self, spec_name: str) -> str:
-        return _last_planner_run_cost(self, spec_name)
-
-    def _write_degrade_context(
-        self, spec_name: str, reason: str, run_id: str, duration_seconds: float
-    ) -> None:
-        return _write_degrade_context(self, spec_name, reason, run_id, duration_seconds)
-
-    def _clear_degrade_context(self, spec_name: str) -> None:
-        return _clear_degrade_context(self, spec_name)
 
     def _check_entry_status(self, spec_name: str) -> bool:
         """入口状态判据（fix-daemon-lifecycle-races D6）：非 testing 返回 False。
