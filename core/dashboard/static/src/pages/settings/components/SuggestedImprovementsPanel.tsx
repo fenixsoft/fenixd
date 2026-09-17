@@ -7,18 +7,19 @@
  * 7.2: 顶部配置（用户级可写 / 项目级只读 + 全局键提示）
  * 7.3: 表格（列序：项目 / 日期 / 类别 / 问题 / 评估结论 / 状态 / 操作）
  * 7.4: 操作列「更多」下拉（复用 projects/list.tsx 形态）+ 二次确认弹窗
- * 7.5: 查看分析结论（弹窗）/ 查看草稿（弹窗 + 四文档页签）+ 接受拒绝反馈
+ * 7.5: 查看（单弹窗：分析结论 + 草稿文档页签）+ 接受拒绝反馈
  * 7.6: 表头排序 + 状态（默认待决策）/项目/日期过滤条 + 多选与批量同意/拒绝
  * 7.7: 操作列「删除」（硬删条目）+ 批量删除；类别列 Tag 渲染
  */
-import { Alert, Button, Card, DatePicker, Dropdown, Empty, Form, InputNumber, message, Modal, Select, Space, Spin, Switch, Table, Tabs, Tag, Tooltip, Typography } from 'antd';
-import { MoreOutlined } from '@ant-design/icons';
+import { Alert, Button, Card, DatePicker, Dropdown, Empty, Form, InputNumber, message, Modal, Radio, Select, Space, Spin, Switch, Table, Tabs, Tag, TimePicker, Tooltip, Typography } from 'antd';
+import { LeftOutlined, MoreOutlined, RightOutlined } from '@ant-design/icons';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import dayjs from 'dayjs';
 import type { Dayjs } from 'dayjs';
 import type { MenuProps } from 'antd';
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
-import type { Key } from 'react';
+import type { CSSProperties, Key } from 'react';
 import type { ConfigData, EvolutionItem, EvolutionDoc } from '@/services/dashboard';
 import type { SelfEvolutionSectionHandle } from './selfEvolutionSection';
 import { MaximizeTitle, useMaximizeModal } from '@/components/useMaximizeModal';
@@ -32,6 +33,7 @@ import {
   acceptEvolutionItem,
   rejectEvolutionItem,
   deleteEvolutionItem,
+  clearAllEvolutionTodo,
 } from '@/services/dashboard';
 
 const { Text } = Typography;
@@ -59,9 +61,7 @@ type BatchAction = 'accept' | 'reject' | 'delete';
 /** 条目在当前状态下被禁用的原因（无禁用返回 null），供批量跳过汇报使用。 */
 function actionDisabledReason(status: string, action: BatchAction): string | null {
   if (action === 'delete') return null; // 删除不设状态门：任意状态可删
-  // 构造最小 Pick 供 getActionDisabled（draft 动作在 BatchAction 里不会出现，
-  // has_draft / doc_source 不影响 accept/reject 判定）
-  const dis = getActionDisabled({ status, has_draft: false, doc_source: null });
+  const dis = getActionDisabled(status);
   if (!dis[action]) return null;
   if (status === 'analyzed') return '不需要立项（无草稿）';
   if (status === 'draft_failed') return '草稿生成失败';
@@ -87,24 +87,45 @@ function distinctOptions(
 
 // ── 弹窗形态（对齐 SPEC 列表页「文档」按钮）──────────────────────────
 //
-// 「查看分析结论」「查看 SPEC 草稿」原为 Drawer，形态与 projects 列表页的
-// 「文档」弹窗不一致（且用裸 Markdown，正文表格无边框）。此处统一改为中心
-// 弹窗：复用 SpecDocModal 导出的 markdownComponents 与 useMaximizeModal，
-// 加载中 / 失败可重试 / 空 / 正文四态同构。
+// 「查看分析结论」「查看 SPEC 草稿」合并为单一「查看」入口：条目无草稿时只
+// 展示分析结论（不渲染页签），有草稿时分析结论作第一个页签、其后接草稿文档。
+// 形态与 projects 列表页的「文档」弹窗一致：复用 SpecDocModal 导出的
+// markdownComponents 与 useMaximizeModal，加载中 / 失败可重试 / 空 / 正文
+// 四态同构。底部另有「同意 / 拒绝 / 删除」操作区，可直接在弹窗内决策。
+
+// 整窗几何：标题栏 + 底部操作区 + 弹窗容器内边距三项合计（antd v6 实测，
+// 720px 视口下 116px）不参与正文高度。还原态正文 = 整窗 85vh − 116px；
+// 最大化态由共享 hook 按 calc(100vh − 80px − footerHeight) 算，故 footerHeight
+// 取 116 − 80 = 36，让两态扣掉的是同一份非正文高度。
+const MODAL_CHROME_HEIGHT = 116;
+const MODAL_FOOTER_HEIGHT = MODAL_CHROME_HEIGHT - 80;
+
 const DOC_MODAL_OPTIONS = {
   defaultWidth: '80%',
-  defaultBodyHeight: 'calc(80vh - 80px)',
+  defaultBodyHeight: `calc(85vh - ${MODAL_CHROME_HEIGHT}px)`,
   extraBodyStyle: { display: 'flex', flexDirection: 'column', overflow: 'hidden' },
   centered: true,
+  footerHeight: MODAL_FOOTER_HEIGHT,
 } as const;
 
-// 草稿四文档页签文案（沿用原按钮文案，不改）
+/** 「查看」弹窗的页签键：analysis = 分析结论，其余为草稿文档。 */
+type ViewTab = 'analysis' | EvolutionDoc;
+
+/**
+ * 草稿文档页签文案——按文件与 SPEC 详情页「文档」弹窗（SpecDocModal）逐一对齐，
+ * 保证同一份文档在两处叫同一个名字：
+ * proposal.md → 需求背景 / design.md → 详细设计 / tasks.md → 任务清单 /
+ * specs/<capability>/spec.md → 测试场景清单（草稿无验证报告，故无该页签）。
+ */
 const EVOLUTION_DOC_LABELS: Record<EvolutionDoc, string> = {
-  proposal: 'Proposal',
-  design: 'Design',
-  tasks: 'Tasks',
-  spec: 'Spec',
+  proposal: '需求背景',
+  design: '详细设计',
+  tasks: '任务清单',
+  spec: '测试场景清单',
 };
+
+/** 有草稿时「查看」弹窗的第一个页签文案。 */
+const ANALYSIS_TAB_LABEL = '分析结论';
 
 /** Markdown 四态正文：加载中 / 失败可重试 / 空 / 正文（两处弹窗共用）。 */
 function MarkdownBody({
@@ -159,6 +180,74 @@ function MarkdownBody({
 
 // ── 配置（7.2）──────────────────────────────────────────────────────
 
+/** 「同意立项」弹窗里回传本次执行时刻的可变载体。 */
+interface AcceptSchedule {
+  startAfter: string | null;
+}
+
+/**
+ * 「同意立项」确认弹窗里的执行时刻选择（self_evolution.spec_run_at 的本次落地）。
+ *
+ * Modal.confirm 的内容渲染在独立 React root 里，父组件 state 变化不会重渲它，
+ * 因此选择结果经 ``holder`` 可变对象回传——弹窗内每次改动即写入，onOk 读到的
+ * 必然是最后一次选择（本组件自身用 useState 保证 UI 跟着变）。
+ */
+function AcceptScheduleFields({
+  holder,
+  initial,
+}: {
+  holder: AcceptSchedule;
+  initial: string | null;
+}) {
+  const [mode, setMode] = useState<'immediate' | 'scheduled'>(
+    initial ? 'scheduled' : 'immediate');
+  // 配置为「立即」时改选「指定时间」的预填值：1 小时后（用户自己改）
+  const [when, setWhen] = useState<Dayjs>(
+    initial ? dayjs(initial) : dayjs().add(1, 'hour').startOf('minute'));
+
+  const commit = (nextMode: 'immediate' | 'scheduled', nextWhen: Dayjs) => {
+    holder.startAfter = nextMode === 'scheduled'
+      ? nextWhen.second(0).millisecond(0).toISOString()
+      : null;
+  };
+
+  return (
+    <>
+      <div style={{ marginBottom: 8 }}>
+        将为该条目创建 SPEC 并进入流水线。执行时间：
+      </div>
+      <Radio.Group
+        value={mode}
+        onChange={(e) => {
+          const next = e.target.value as 'immediate' | 'scheduled';
+          setMode(next);
+          commit(next, when);
+        }}
+        data-testid="evolution-accept-schedule-mode"
+      >
+        <Radio value="immediate">创建后立即执行</Radio>
+        <Radio value="scheduled">在指定时间执行</Radio>
+      </Radio.Group>
+      {mode === 'scheduled' && (
+        <div style={{ marginTop: 12 }}>
+          <DatePicker
+            showTime={{ format: 'HH:mm' }}
+            format="YYYY-MM-DD HH:mm"
+            value={when}
+            disabledDate={(d) => d && d < dayjs().startOf('day')}
+            onChange={(v) => {
+              const next = v || when;
+              setWhen(next);
+              commit('scheduled', next);
+            }}
+            data-testid="evolution-accept-schedule-at"
+          />
+        </div>
+      )}
+    </>
+  );
+}
+
 interface SuggestedImprovementsPanelProps {
   config: ConfigData;
   scope: 'user' | 'project';
@@ -168,6 +257,30 @@ interface SuggestedImprovementsPanelProps {
 const DEFAULT_AUTO_ACCEPT = false;
 const DEFAULT_MAX_ITEMS = 20;
 const MAX_ITEMS_UPPER = 200;
+/** 「在指定时间执行」刚被选中、还没挑时刻时的预填值（用户可改）。 */
+const DEFAULT_SPEC_RUN_AT = '02:00';
+
+// ── SPEC 执行时刻（self_evolution.spec_run_at）────────────────────────
+//
+// 配置值是「每日 HH:mm」（本地时区），立项时要换成具体的一次性时刻写进
+// STATE.start_after。换算规则与后端 core/evolution.py: next_spec_run_at
+// 同一句话：取当日该时刻，已过（或正好等于现在）则取次日。
+// 后端只在自动接受路径自算；人工同意走本函数算好的确切值提交，故两边不会
+// 对同一次立项各算一遍。
+
+/** 把 "HH:mm" 换算成下一次到期的 UTC ISO；空/非法返回 null（= 立即执行）。 */
+function nextRunAtISO(runAt?: string | null): string | null {
+  if (!runAt) return null;
+  const [h, m] = runAt.split(':').map(Number);
+  if (!Number.isInteger(h) || !Number.isInteger(m)
+      || h < 0 || h > 23 || m < 0 || m > 59) {
+    return null;
+  }
+  const now = dayjs();
+  let target = now.hour(h).minute(m).second(0).millisecond(0);
+  if (!target.isAfter(now)) target = target.add(1, 'day');
+  return target.toISOString(); // dayjs 的 toISOString 输出 UTC（带 Z）
+}
 
 // ── 评估结论摘要（7.3）──────────────────────────────────────────────
 
@@ -184,33 +297,25 @@ function verdictSummary(item: EvolutionItem): string {
 // ── 禁用规则（7.4）────────────────────────────────────────────────
 
 const ACTIONS = [
-  { key: 'analysis', label: '查看分析结论' },
-  { key: 'draft', label: '查看 SPEC 草稿' },
+  { key: 'view', label: '查看' },
   { key: 'accept', label: '同意' },
   { key: 'reject', label: '拒绝', danger: true },
   { key: 'delete', label: '删除', danger: true },
 ] as const;
 
-function getActionDisabled(item: Pick<EvolutionItem, 'status' | 'has_draft' | 'doc_source'>): Record<string, boolean> {
-  const status = item.status;
-  // analyzed / draft_failed：禁用「查看 SPEC 草稿」与「同意」；
-  // analyzed 另禁用「拒绝」（仅可查看结论）；
+function getActionDisabled(status: string): Record<string, boolean> {
+  // 「查看」不设状态门：分析结论恒可查看，有无草稿由弹窗自行分支（原「查看
+  // SPEC 草稿」在 analyzed / draft_failed 下禁用，合并后该门随之取消）；
+  // analyzed（不需要立项）：仅可查看，禁用「同意」「拒绝」；
+  // draft_failed：无草稿可立项，禁用「同意」，仍可拒绝；
   // accepted / auto_accepted / rejected：禁用「同意」与「拒绝」；
   // pending / accept_failed：全部可用（accept_failed 可重试同意、可拒绝）。
   // delete 不设状态门（任意状态可删），恒可用。
-  //
-  // 文档页签渲染条件（evo-item-retention-doc-tracking 3.3）：由 status 判定
-  // 改为数据驱动——has_draft 为真（草稿目录在）或 doc_source 非 null/undefined
-  // （doc_source === 'spec'：草稿已删但可从 SPEC 位置读回）时同样渲染文档页签；
-  // 两者皆无（analyzed / 无 spec_name 的已拒绝等）→ 禁用。
-  const hasDoc = item.has_draft
-    || (item.doc_source !== null && item.doc_source !== undefined);
   const analyzed = status === 'analyzed';
   const draftFailed = status === 'draft_failed';
   const decided = status === 'accepted' || status === 'auto_accepted' || status === 'rejected';
   return {
-    analysis: false,
-    draft: !hasDoc,
+    view: false,
     accept: analyzed || draftFailed || decided,
     reject: analyzed || decided,
     delete: false,
@@ -230,20 +335,28 @@ const SuggestedImprovementsPanel = forwardRef<
   const isUserScope = scope === 'user';
 
   // 配置初始值（7.2：读值取 self_evolution；保存 MUST NOT 带 project 参数）
+  //
+  // spec_run_at 在配置里是「null 或 HH:mm」单键，UI 上是「模式 Radio + 时刻」
+  // 两个表单字段：spec_run_mode 只活在表单里，提交时折叠回单键（见 collect）。
   const initialValues = useMemo(() => ({
     auto_accept: se?.auto_accept ?? DEFAULT_AUTO_ACCEPT,
     max_items_per_run: se?.max_items_per_run ?? DEFAULT_MAX_ITEMS,
-  }), [se?.auto_accept, se?.max_items_per_run]);
+    spec_run_mode: se?.spec_run_at ? 'scheduled' : 'immediate',
+    spec_run_at: se?.spec_run_at ?? DEFAULT_SPEC_RUN_AT,
+  }), [se?.auto_accept, se?.max_items_per_run, se?.spec_run_at]);
 
   useEffect(() => {
     form.setFieldsValue(initialValues);
   }, [initialValues, form]);
 
+  // 表单内选的执行模式：决定 TimePicker 是否显示
+  const specRunMode = Form.useWatch('spec_run_mode', form);
+
   useImperativeHandle(
     ref,
     () => ({
       collect: async () => {
-        // 项目级作用域下两键为只读全局键：不收集（父页签仅提交陈旧自愈节）
+        // 项目级作用域下三键为只读全局键：不收集（父页签仅提交陈旧自愈节）
         if (!isUserScope) return {};
         try {
           const values = await form.validateFields();
@@ -251,6 +364,11 @@ const SuggestedImprovementsPanel = forwardRef<
             self_evolution: {
               auto_accept: values.auto_accept,
               max_items_per_run: values.max_items_per_run,
+              // 模式折叠回单键：选「立即」写 null（显式关掉定时，不能省略键，
+              // 否则合并白名单会保留旧时刻）
+              spec_run_at: values.spec_run_mode === 'scheduled'
+                ? (values.spec_run_at || DEFAULT_SPEC_RUN_AT)
+                : null,
             },
           };
         } catch {
@@ -296,12 +414,19 @@ const SuggestedImprovementsPanel = forwardRef<
   //
   // 两个下拉的选项从当前数据现算 distinct 值，避免出现「选了必然 0 条」的死选项；
   // 日期按 date_section（todo.md 小节日期，ISO 串，字典序即时间序）做闭区间。
-  // 三个条件缺省全空 = 不做任何过滤，表格展示全部条目。
+  // 缺省视图见下方导数规则：存在待决策条目则聚焦待决策，否则不做任何过滤。
 
-  // 缺省不做任何过滤：打开页签先看到全部条目（含已决策/不需要立项的）
   const [filterStatus, setFilterStatus] = useState<string | undefined>();
   const [filterProject, setFilterProject] = useState<string | undefined>();
   const [filterDateRange, setFilterDateRange] = useState<[Dayjs, Dayjs] | null>(null);
+
+  // 缺省状态下拉随数据重算（无粘性）：只要存在「待决策」（pending）条目就把状态
+  // 缺省筛成 pending，把待用户决策的条目顶到眼前；一条都没有则不加任何过滤，原样
+  // 展示全部。items 仅在 loadItems() 成功后换引用，故「重算」落在每次数据重载上
+  // ——用户手动改动筛选后保留到下一次重载为止，不会被无谓重置。
+  useEffect(() => {
+    setFilterStatus(items.some((i) => i.status === 'pending') ? 'pending' : undefined);
+  }, [items]);
 
   const projectOptions = useMemo(() => distinctOptions(items, (i) => i.project), [items]);
   const statusOptions = useMemo(() => {
@@ -342,19 +467,25 @@ const SuggestedImprovementsPanel = forwardRef<
 
   const [selectedRowKeys, setSelectedRowKeys] = useState<Key[]>([]);
   const [batchRunning, setBatchRunning] = useState(false);
+  // 「清理所有项目自省内容」：全局动作，与条目多选/批量无关，单独一个在飞标志
+  const [clearingTodo, setClearingTodo] = useState(false);
 
   // 过滤条件变化即清空选中：否则「先全选、再改过滤」会让批量作用到看不见的行上
   useEffect(() => {
     setSelectedRowKeys([]);
   }, [filterStatus, filterProject, filterDateRange]);
 
-  /** 执行一条 accept/reject/delete，异常收敛为失败结果（单条菜单与批量共用）。 */
+  /** 执行一条 accept/reject/delete，异常收敛为失败结果（单条菜单与批量共用）。
+
+   * ``startAfter`` 仅在 action='accept' 时有意义：新 SPEC 的定时拾取时刻
+   * （UTC ISO），null = 立即执行。 */
   const execOne = async (
     item: EvolutionItem,
     action: BatchAction,
+    startAfter?: string | null,
   ): Promise<{ ok: boolean; status?: string; spec_name?: string; error?: string }> => {
     try {
-      if (action === 'accept') return await acceptEvolutionItem(item.id);
+      if (action === 'accept') return await acceptEvolutionItem(item.id, startAfter ?? null);
       if (action === 'reject') return await rejectEvolutionItem(item.id);
       return await deleteEvolutionItem(item.id);
     } catch (e: any) {
@@ -362,106 +493,110 @@ const SuggestedImprovementsPanel = forwardRef<
     }
   };
 
-  // ── 查看分析结论（7.5，弹窗）────────────────────────────────────
+  /** 本作用域配置下的默认执行时刻（UTC ISO；null = 立即执行）。 */
+  const configStartAfter = () => nextRunAtISO(se?.spec_run_at);
 
-  const [analysisVisible, setAnalysisVisible] = useState(false);
-  const [analysisContent, setAnalysisContent] = useState('');
-  const [analysisLoading, setAnalysisLoading] = useState(false);
-  const [analysisError, setAnalysisError] = useState<string | null>(null);
-  // 记住来源条目：弹窗标题与「点击重试」都依赖它（原实现只存标题串）
-  const [analysisItem, setAnalysisItem] = useState<EvolutionItem | null>(null);
+  // ── 查看（7.5，单弹窗：分析结论 + 草稿文档页签）──────────────────
+  //
+  // 页面加载时带下来的 item.has_draft（后端按草稿目录是否存在现算）决定形态：
+  // 无草稿（不需要立项 / 草稿生成失败 / 已决策且草稿已清）→ 不渲染页签，只展示
+  // 分析结论；有草稿 → 分析结论作首个页签，其后接草稿四文档。
+  // 分析结论与草稿共用一份加载态：任一时刻只有一个页签可见，切换页签即重载。
 
-  const openAnalysis = async (item: EvolutionItem) => {
-    setAnalysisVisible(true);
-    setAnalysisItem(item);
-    setAnalysisContent('');
-    setAnalysisError(null);
-    setAnalysisLoading(true);
+  const [viewVisible, setViewVisible] = useState(false);
+  const [viewItem, setViewItem] = useState<EvolutionItem | null>(null);
+  const [viewTab, setViewTab] = useState<ViewTab>('analysis');
+  const [viewContent, setViewContent] = useState('');
+  const [viewLoading, setViewLoading] = useState(false);
+  const [viewError, setViewError] = useState<string | null>(null);
+  const [viewFound, setViewFound] = useState(true);
+
+  // 页签渲染条件（合并 evo-item-retention-doc-tracking 3.3 的数据驱动语义）：
+  // 草稿目录在（has_draft）或草稿已删但可从 SPEC 位置读回（doc_source 非 null）时，
+  // 均渲染草稿文档页签；两者皆无（analyzed / 无 spec_name 的已拒绝等）只留分析结论。
+  const hasDoc = Boolean(viewItem?.has_draft)
+    || (viewItem?.doc_source !== null && viewItem?.doc_source !== undefined);
+
+  const loadView = useCallback(async (item: EvolutionItem, tab: ViewTab) => {
+    setViewLoading(true);
+    setViewError(null);
+    setViewFound(true);
     try {
-      const data = await getEvolutionAnalysis(item.id);
+      const data = tab === 'analysis'
+        ? await getEvolutionAnalysis(item.id)
+        : await getEvolutionDraft(item.id, tab);
       if (!mountedRef.current) return;
       if (!data.found) {
-        setAnalysisError('分析结论不存在');
+        setViewFound(false);
+        setViewContent('');
       } else {
-        setAnalysisContent(data.content || '（空）');
+        setViewFound(true);
+        setViewContent(data.content || '（空）');
       }
     } catch (e: any) {
-      if (mountedRef.current) setAnalysisError(e?.message || '加载失败');
+      if (mountedRef.current) setViewError(e?.message || '加载失败');
     } finally {
-      if (mountedRef.current) setAnalysisLoading(false);
-    }
-  };
-
-  // ── 查看 SPEC 草稿（7.5）────────────────────────────────────────
-
-  const [draftVisible, setDraftVisible] = useState(false);
-  const [draftItem, setDraftItem] = useState<EvolutionItem | null>(null);
-  const [draftDoc, setDraftDoc] = useState<EvolutionDoc>('proposal');
-  const [draftContent, setDraftContent] = useState('');
-  const [draftLoading, setDraftLoading] = useState(false);
-  const [draftError, setDraftError] = useState<string | null>(null);
-  const [draftFound, setDraftFound] = useState(true);
-
-  const loadDraft = useCallback(async (item: EvolutionItem, doc: EvolutionDoc) => {
-    setDraftLoading(true);
-    setDraftError(null);
-    setDraftFound(true);
-    try {
-      const data = await getEvolutionDraft(item.id, doc);
-      if (!mountedRef.current) return;
-      if (!data.found) {
-        setDraftFound(false);
-        setDraftContent('');
-      } else {
-        setDraftFound(true);
-        setDraftContent(data.content || '（空）');
-      }
-    } catch (e: any) {
-      if (mountedRef.current) {
-        const msg = e?.message || '加载失败';
-        if (msg.includes('400') || msg.includes('非法')) {
-          setDraftError(msg);
-        } else {
-          setDraftError(msg);
-        }
-      }
-    } finally {
-      if (mountedRef.current) setDraftLoading(false);
+      if (mountedRef.current) setViewLoading(false);
     }
   }, []);
 
-  const openDraft = async (item: EvolutionItem) => {
-    setDraftVisible(true);
-    setDraftItem(item);
-    setDraftDoc('proposal');
-    loadDraft(item, 'proposal');
+  const openView = (item: EvolutionItem) => {
+    setViewVisible(true);
+    setViewItem(item);
+    setViewTab('analysis'); // 恒定落在分析结论页
   };
 
   useEffect(() => {
-    if (draftVisible && draftItem) loadDraft(draftItem, draftDoc);
-  }, [draftVisible, draftItem, draftDoc, loadDraft]);
+    if (viewVisible && viewItem) loadView(viewItem, viewTab);
+  }, [viewVisible, viewItem, viewTab, loadView]);
+
+  // 空态文案随页签而变：分析结论缺失与草稿缺失是两回事
+  const viewEmptyText = viewTab === 'analysis'
+    ? '分析结论不存在'
+    : viewItem?.doc_source === 'spec'
+      ? '文档读自 SPEC 位置，对应文档不存在。'
+      : '草稿文档不存在或已被接受删除。';
 
   // ── 接受 / 拒绝（7.5 二次确认）──────────────────────────────────
+  //
+  // onDone 只在动作真正执行后触发（确认被取消不触发）：操作列菜单不传，
+  // 「查看」弹窗底部操作区传「关闭弹窗」——条目状态已被动作改变，弹窗里
+  // 的按钮禁用态与草稿页签随即失效。
 
-  const handleAccept = (item: EvolutionItem) => {
+  const handleAccept = (item: EvolutionItem, onDone?: () => void) => {
+    // 本次执行时刻按配置预填（spec_run_at 为空 = 立即），弹窗里可临时改
+    const holder: AcceptSchedule = { startAfter: configStartAfter() };
     Modal.confirm({
       title: '同意立项',
-      content: `确定对「${item.title}」点击同意？将为该条目创建 SPEC 并进入流水线。`,
+      content: (
+        <>
+          <div style={{ marginBottom: 12 }}>确定对「{item.title}」点击同意？</div>
+          <AcceptScheduleFields holder={holder} initial={holder.startAfter} />
+        </>
+      ),
       okText: '同意',
       cancelText: '取消',
       onOk: async () => {
-        const result = await execOne(item, 'accept');
+        if (holder.startAfter && !dayjs(holder.startAfter).isAfter(dayjs())) {
+          message.error('执行时间必须晚于当前时间');
+          return Promise.reject(new Error('invalid start time'));
+        }
+        const result = await execOne(item, 'accept', holder.startAfter);
         if (result.ok) {
-          message.success(`已立项：${result.spec_name || item.title}`);
+          const when = holder.startAfter
+            ? `，将于 ${dayjs(holder.startAfter).format('YYYY-MM-DD HH:mm')} 执行`
+            : '';
+          message.success(`已立项：${result.spec_name || item.title}${when}`);
         } else {
           message.error(result.error || '接受失败');
         }
-        loadItems();
+        await loadItems();
+        onDone?.();
       },
     });
   };
 
-  const handleReject = (item: EvolutionItem) => {
+  const handleReject = (item: EvolutionItem, onDone?: () => void) => {
     Modal.confirm({
       title: '拒绝',
       content: `确定拒绝「${item.title}」？草稿将被删除且不可恢复。`,
@@ -475,7 +610,8 @@ const SuggestedImprovementsPanel = forwardRef<
         } else {
           message.error(result.error || '拒绝失败');
         }
-        loadItems();
+        await loadItems();
+        onDone?.();
       },
     });
   };
@@ -485,7 +621,7 @@ const SuggestedImprovementsPanel = forwardRef<
   // 硬删：记录移出 items.jsonl、草稿目录一并清理，不写墓碑。todo.md 里该条记录
   // 仍在，下一轮分析 run 可能把它重新入库——确认弹窗须向用户明示。
 
-  const handleDelete = (item: EvolutionItem) => {
+  const handleDelete = (item: EvolutionItem, onDone?: () => void) => {
     Modal.confirm({
       title: '删除条目',
       content: (
@@ -506,7 +642,8 @@ const SuggestedImprovementsPanel = forwardRef<
         } else {
           message.error(result.error || '删除失败');
         }
-        loadItems();
+        await loadItems();
+        onDone?.();
       },
     });
   };
@@ -542,6 +679,9 @@ const SuggestedImprovementsPanel = forwardRef<
 
     const verb = action === 'accept' ? '同意' : action === 'reject' ? '拒绝' : '删除';
     const isDestructive = action !== 'accept';
+    // 批量同意无逐条弹窗，执行时刻直接取配置（spec_run_at），并在确认弹窗里
+    // 明示——否则「配了定时却被批量绕开」会让人以为设置没生效
+    const batchStartAfter = action === 'accept' ? configStartAfter() : null;
     Modal.confirm({
       title: `批量${verb}`,
       content: (
@@ -555,6 +695,16 @@ const SuggestedImprovementsPanel = forwardRef<
               跳过原因：
               {[...skipReasons.entries()].map(([r, n]) => `${r} ${n} 条`).join('、')}
             </Text>
+          )}
+          {action === 'accept' && (
+            <div style={{ marginTop: 8 }}>
+              <Text type="secondary">
+                执行时间：
+                {batchStartAfter
+                  ? `${dayjs(batchStartAfter).format('YYYY-MM-DD HH:mm')}（按设置页 SPEC 执行时间）`
+                  : '创建后立即执行'}
+              </Text>
+            </div>
           )}
           {action === 'delete' && (
             <div style={{ marginTop: 8 }}>
@@ -575,7 +725,7 @@ const SuggestedImprovementsPanel = forwardRef<
         try {
           // 串行：后端写 items.jsonl 用文件锁、接受路径还逐条 git commit
           for (const item of runnable) {
-            const result = await execOne(item, action);
+            const result = await execOne(item, action, batchStartAfter);
             if (result.ok) {
               succeeded += 1;
             } else {
@@ -618,15 +768,14 @@ const SuggestedImprovementsPanel = forwardRef<
   // ── 操作菜单（7.4：Dropdown + MoreOutlined + Button type="link"）────────
 
   const menuItems = (item: EvolutionItem): MenuProps['items'] => {
-    const dis = getActionDisabled(item);
+    const dis = getActionDisabled(item.status);
     return ACTIONS.map((a) => ({
       key: a.key,
       label: a.label,
       disabled: dis[a.key],
       danger: 'danger' in a ? a.danger : undefined,
       onClick: () => {
-        if (a.key === 'analysis') openAnalysis(item);
-        else if (a.key === 'draft') openDraft(item);
+        if (a.key === 'view') openView(item);
         else if (a.key === 'accept') handleAccept(item);
         else if (a.key === 'reject') handleReject(item);
         else if (a.key === 'delete') handleDelete(item);
@@ -634,12 +783,50 @@ const SuggestedImprovementsPanel = forwardRef<
     }));
   };
 
-  // ── 弹窗最大化（7.5：两个弹窗各自独立的最大化状态）──────────────
+  // ── 弹窗最大化（7.5）────────────────────────────────────────────
 
-  const { modalProps: analysisModalProps, maximizeButton: analysisMaximizeButton } =
+  const { modalProps: viewModalProps, maximizeButton: viewMaximizeButton } =
     useMaximizeModal(DOC_MODAL_OPTIONS);
-  const { modalProps: draftModalProps, maximizeButton: draftMaximizeButton } =
-    useMaximizeModal(DOC_MODAL_OPTIONS);
+
+  // 弹窗底部操作区：与操作列菜单同源判禁用（同一条目状态），动作完成后关闭
+  // 弹窗——条目已改状态，留在弹窗里看的是上一状态的禁用态与草稿页签
+  const closeView = () => setViewVisible(false);
+  const viewActionDisabled = getActionDisabled(viewItem?.status || '');
+
+  // ── 弹窗内上一条 / 下一条（屏幕左右两侧，形如看图控件的翻页）──────────
+  //
+  // 跳转范围 = 当前表格的过滤结果 filteredItems（与表格所见同一序列），
+  // 这样「筛出待决策条目 → 逐条查看决策」是一条连续动线。当前条目不在
+  // 过滤结果里（理论上不会，查看入口就在表格行上）时两侧均禁用。
+
+  const viewIndex = viewItem
+    ? filteredItems.findIndex((i) => i.id === viewItem.id)
+    : -1;
+  const canPrev = viewIndex > 0;
+  const canNext = viewIndex >= 0 && viewIndex < filteredItems.length - 1;
+
+  const goRelative = (delta: -1 | 1) => {
+    if (viewIndex < 0) return;
+    const target = filteredItems[viewIndex + delta];
+    if (target) openView(target); // 与首次打开同构：页签回到分析结论
+  };
+
+  // 掩码是半透明黑，按钮取同色系半透明黑底 + 白图标（antd Image 预览同款观感）
+  const navButtonStyle: CSSProperties = {
+    position: 'fixed',
+    top: '50%',
+    transform: 'translateY(-50%)',
+    zIndex: 1100,
+    width: 44,
+    height: 44,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    background: 'rgba(0, 0, 0, 0.45)',
+    border: 'none',
+    color: '#fff',
+    fontSize: 18,
+  };
 
   // ── 表格列（7.3）──────────────────────────────────────────────────
 
@@ -665,7 +852,17 @@ const SuggestedImprovementsPanel = forwardRef<
       title: '问题', dataIndex: 'title', key: 'title', ellipsis: true,
       // 问题列不设 width：它吃掉剩余宽度，设了 sorter 后表头才有空间放排序箭头
       sorter: (a: EvolutionItem, b: EvolutionItem) => a.title.localeCompare(b.title),
-      render: (t: string) => <Text style={{ whiteSpace: 'nowrap' }}>{t}</Text>,
+      // 问题标题即「查看」入口（等价操作列的 更多 → 查看）：读条目的第一动作就是
+      // 点标题，不必先展开下拉。可点击样式沿用 SPEC 列表页名称列（蓝字 + pointer）
+      render: (t: string, r: EvolutionItem) => (
+        <span
+          onClick={() => openView(r)}
+          style={{ whiteSpace: 'nowrap', cursor: 'pointer', color: '#1677ff' }}
+          data-testid={`evolution-item-title-${r.id}`}
+        >
+          {t}
+        </span>
+      ),
     },
     {
       title: '评估结论', key: 'verdict', width: 180,
@@ -709,6 +906,52 @@ const SuggestedImprovementsPanel = forwardRef<
     },
   ];
 
+  /** 清空所有项目的 .fenix/todo.md（全局动作，项目级作用域不可用）。 */
+  const handleClearAllTodo = () => {
+    Modal.confirm({
+      title: '清理所有项目自省内容',
+      width: 520,
+      content: (
+        <>
+          <p style={{ marginTop: 0 }}>
+            将把<strong>所有项目</strong>的 <code>.fenix/todo.md</code> 清空为
+            空文件。该文件是各项目每日自省的产物，清空后不可从界面恢复
+            （已提交部分可从各项目 git 历史找回，未提交的改动会丢失）。
+          </p>
+          <p style={{ marginBottom: 0 }}>
+            下方<strong>条目列表不受影响</strong>：它读的是
+            <code> .fenix/evolution/items.jsonl</code>，与 todo.md 是两条独立
+            数据。本操作也不会代为提交 git。
+          </p>
+        </>
+      ),
+      okText: '清空',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: async () => {
+        setClearingTodo(true);
+        try {
+          const result = await clearAllEvolutionTodo();
+          const parts = [`已清空 ${result.cleared.length} 个项目`];
+          if (result.skipped.length > 0) parts.push(`跳过 ${result.skipped.length} 个`);
+          if (result.failed.length > 0) parts.push(`失败 ${result.failed.length} 个`);
+          const text = parts.join('，');
+          if (result.failed.length > 0) {
+            message.error(
+              `${text}：${result.failed.map((f) => `${f.project}(${f.error})`).join('；')}`,
+            );
+          } else {
+            message.success(text);
+          }
+        } catch (e: any) {
+          message.error(e?.message || '清理失败');
+        } finally {
+          setClearingTodo(false);
+        }
+      },
+    });
+  };
+
   return (
     <div data-testid="suggested-improvements-panel">
       {/* 标题与功能注解提到卡片外（与上方「代码陈旧自愈」卡片同构） */}
@@ -724,7 +967,7 @@ const SuggestedImprovementsPanel = forwardRef<
         <Form form={form} initialValues={initialValues} layout="vertical" disabled={!isUserScope}>
           {!isUserScope && (
             <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
-              全局键（auto_accept / max_items_per_run），请在用户级作用域修改。
+              全局键（auto_accept / max_items_per_run / spec_run_at），请在用户级作用域修改。
             </Text>
           )}
           <div className="switch-inline-row">
@@ -739,6 +982,64 @@ const SuggestedImprovementsPanel = forwardRef<
             缺省关闭。开启后分析 run 落地即对全部待决策且值得立项的条目自动走接受路径
             （记为自动接受），框架自行立项并进入开发；关闭时草稿停留在下表等待人工
             「同意」。项目级作用域下本项只读。
+          </Text>
+
+          {/* SPEC 执行时间：立项后何时开始跑。UI 上是「模式 + 时刻」两字段，
+              配置里折叠成单键 spec_run_at（null / "HH:mm"）。
+              外层 Form.Item 只提供 label 与行距（无 name），两个真字段以 noStyle
+              并排——时刻控件必须紧跟选项同行，换行会让「这段文字属于哪个选项」
+              变得含糊 */}
+          <Form.Item
+            label={
+              <>
+                SPEC 执行时间<span className="label-note">（self_evolution.spec_run_at）</span>
+              </>
+            }
+            style={{ marginTop: 24 }}
+          >
+            <Space size={16}>
+              <Form.Item name="spec_run_mode" noStyle>
+                <Radio.Group
+                  data-testid="self-evolution-control-spec-run-mode"
+                  onChange={(e) => {
+                    // 切到「指定时间」而时刻还空着时预填缺省，避免出现空控件
+                    if (e.target.value === 'scheduled'
+                        && !form.getFieldValue('spec_run_at')) {
+                      form.setFieldValue('spec_run_at', DEFAULT_SPEC_RUN_AT);
+                    }
+                  }}
+                >
+                  <Radio value="immediate">创建后立即执行</Radio>
+                  <Radio value="scheduled">在指定时间执行</Radio>
+                </Radio.Group>
+              </Form.Item>
+              {specRunMode === 'scheduled' && (
+                <Form.Item
+                  name="spec_run_at"
+                  noStyle
+                  // 表单内以 "HH:mm" 字符串存取（配置同形态），控件收发 dayjs
+                  normalize={(v: Dayjs | null) => (v ? v.format('HH:mm') : null)}
+                  getValueProps={(v: string | null) => ({ value: v ? dayjs(v, 'HH:mm') : null })}
+                >
+                  {/* allowClear=false：noStyle 字段不渲染校验文案，若允许清空会
+                      变成静默回退缺省时刻，不如不给清空入口 */}
+                  <TimePicker
+                    format="HH:mm"
+                    minuteStep={5}
+                    needConfirm={false}
+                    allowClear={false}
+                    style={{ width: 120 }}
+                    data-testid="self-evolution-control-spec-run-at"
+                  />
+                </Form.Item>
+              )}
+            </Space>
+          </Form.Item>
+          <Text type="secondary">
+            缺省「创建后立即执行」（存量配置无此键即为此档）。选「在指定时间执行」后，
+            每日该时刻生效：立项产生的 SPEC 记下 STATE 的 start_after（下一个该时刻），
+            到点前一律不派发给 implementer / verifier，到点由调度自动拾取。时刻按本机
+            时区解释；「同意立项」弹窗里可对本次临时改。项目级作用域下本项只读。
           </Text>
 
           <Form.Item
@@ -761,6 +1062,29 @@ const SuggestedImprovementsPanel = forwardRef<
             由下一轮的增量水位继续处理，用来给每轮的 LLM 成本封顶。
           </Text>
         </Form>
+
+        {/* 全局动作：清空所有项目的 todo.md。
+            置于 Form 之外——antd 的 Form disabled 只作用于表单控件，普通 Button
+            放进去不会随项目级作用域禁用；这里显式用 isUserScope 控制（「所有项目」
+            本就是全局范围，与卡片其余配置项的项目级只读语义一致）。 */}
+        <div style={{ marginTop: 24, borderTop: '1px solid #f0f0f0', paddingTop: 16 }}>
+          <Button
+            type="primary"
+            danger
+            disabled={!isUserScope || clearingTodo}
+            loading={clearingTodo}
+            onClick={handleClearAllTodo}
+            data-testid="self-evolution-clear-todo"
+          >
+            清理所有项目自省内容
+          </Button>
+          <Text type="secondary" style={{ display: 'block', marginTop: 8 }}>
+            把所有项目的 <code>.fenix/todo.md</code> 清空为空文件。仅清理这一份自省
+            文本——下方条目列表（读 <code>items.jsonl</code>）不受影响，也不代为提交
+            git。清空后这些仓库会处于未提交状态，由下一次每日自省一并提交。
+            项目级作用域下不可用。
+          </Text>
+        </div>
       </Card>
 
       {/* 7.3: 表格（移出卡片：小节标题与表格直接置于页签流内，与上方「建议改进项」
@@ -831,7 +1155,9 @@ const SuggestedImprovementsPanel = forwardRef<
         >
           批量拒绝
         </Button>
+        {/* 删除 = 实心红底白字，与「查看」弹窗底部的删除按钮同款（拒绝保持描边红字） */}
         <Button
+          type="primary"
           danger
           disabled={selectedRowKeys.length === 0 || batchRunning}
           onClick={() => runBatch('delete')}
@@ -859,62 +1185,99 @@ const SuggestedImprovementsPanel = forwardRef<
         locale={{ emptyText: items.length > 0 ? '没有符合过滤条件的条目' : '暂无建议改进项' }}
       />
 
-      {/* 7.5: 查看分析结论弹窗（形态对齐 SPEC 列表页「文档」弹窗） */}
+      {/* 7.5: 查看弹窗（无草稿=仅分析结论；有草稿=分析结论 + 草稿文档页签，
+          形态对齐 SPEC 列表页「文档」弹窗） */}
       <Modal
         title={
           <MaximizeTitle
-            text={analysisItem ? `分析结论 — ${analysisItem.title}` : '分析结论'}
-            button={analysisMaximizeButton}
+            text={viewItem ? viewItem.title : '查看'}
+            button={viewMaximizeButton}
           />
         }
-        open={analysisVisible}
-        onCancel={() => setAnalysisVisible(false)}
-        footer={null}
-        {...analysisModalProps}
-      >
-        <MarkdownBody
-          loading={analysisLoading}
-          error={analysisError}
-          emptyText="（空）"
-          content={analysisContent}
-          onRetry={() => analysisItem && openAnalysis(analysisItem)}
-        />
-      </Modal>
-
-      {/* 7.5: 查看 SPEC 草稿弹窗（四文档页签，形态对齐「文档」弹窗） */}
-      <Modal
-        title={
-          <MaximizeTitle
-            text={draftItem ? `SPEC 草稿 — ${draftItem.title}` : 'SPEC 草稿'}
-            button={draftMaximizeButton}
-          />
+        open={viewVisible}
+        onCancel={closeView}
+        footer={
+          /* antd footer 缺省右对齐：操作区落在弹窗右下角。
+             拒绝 = 描边红字（danger），删除 = 实心红底白字（danger + primary），
+             两者破坏性层级不同，须一眼可分 */
+          <Space>
+            <Button
+              disabled={viewActionDisabled.accept}
+              onClick={() => viewItem && handleAccept(viewItem, closeView)}
+            >
+              同意
+            </Button>
+            <Button
+              danger
+              disabled={viewActionDisabled.reject}
+              onClick={() => viewItem && handleReject(viewItem, closeView)}
+            >
+              拒绝
+            </Button>
+            <Button
+              type="primary"
+              danger
+              disabled={viewActionDisabled.delete}
+              onClick={() => viewItem && handleDelete(viewItem, closeView)}
+            >
+              删除
+            </Button>
+          </Space>
         }
-        open={draftVisible}
-        onCancel={() => setDraftVisible(false)}
-        footer={null}
-        {...draftModalProps}
+        {...viewModalProps}
       >
-        <Tabs
-          activeKey={draftDoc}
-          onChange={(key) => setDraftDoc(key as EvolutionDoc)}
-          items={EVOLUTION_DOCS.map((doc) => ({
-            key: doc,
-            label: EVOLUTION_DOC_LABELS[doc],
-          }))}
-        />
-        <div style={{ flex: 1, minHeight: 0 }}>
+        {/* 上一条 / 下一条：屏幕左右两侧浮层（看图控件形态），跳转范围为当前
+            表格过滤结果；关闭弹窗时随 wrap 的 display:none 一并隐藏。
+            禁用态靠外层 opacity 表达——内联 color 会压掉 antd 的禁用色 */}
+        <div style={{ ...navButtonStyle, left: 16, opacity: canPrev ? 1 : 0.3 }}>
+          <Button
+            type="text"
+            shape="circle"
+            size="large"
+            icon={<LeftOutlined />}
+            disabled={!canPrev}
+            onClick={() => goRelative(-1)}
+            title={canPrev ? '上一条' : '已是第一条'}
+            aria-label="上一条"
+            style={{ color: 'inherit', width: '100%', height: '100%' }}
+            data-testid="evolution-view-prev"
+          />
+        </div>
+        <div style={{ ...navButtonStyle, right: 16, opacity: canNext ? 1 : 0.3 }}>
+          <Button
+            type="text"
+            shape="circle"
+            size="large"
+            icon={<RightOutlined />}
+            disabled={!canNext}
+            onClick={() => goRelative(1)}
+            title={canNext ? '下一条' : '已是最后一条'}
+            aria-label="下一条"
+            style={{ color: 'inherit', width: '100%', height: '100%' }}
+            data-testid="evolution-view-next"
+          />
+        </div>
+        {/* 无草稿时不渲染页签：只剩分析结论一项，页签是多余的 */}
+        {hasDoc && (
+          <Tabs
+            activeKey={viewTab}
+            onChange={(key) => setViewTab(key as ViewTab)}
+            items={[
+              { key: 'analysis', label: ANALYSIS_TAB_LABEL },
+              ...EVOLUTION_DOCS.map((doc) => ({
+                key: doc,
+                label: EVOLUTION_DOC_LABELS[doc],
+              })),
+            ]}
+          />
+        )}
+        <div style={{ flex: 1, minHeight: 0 }} data-testid="evolution-view-body">
           <MarkdownBody
-            loading={draftLoading}
-            error={draftError}
-            emptyText={
-              draftFound
-                ? '（空）'
-                : draftItem?.doc_source === 'spec'
-                  ? '文档读自 SPEC 位置，对应文档不存在。'
-                  : '草稿文档不存在或已被接受删除。'
-            }
-            content={draftContent}
-            onRetry={() => draftItem && loadDraft(draftItem, draftDoc)}
+            loading={viewLoading}
+            error={viewError}
+            emptyText={viewEmptyText}
+            content={viewContent}
+            onRetry={() => viewItem && loadView(viewItem, viewTab)}
           />
         </div>
       </Modal>
