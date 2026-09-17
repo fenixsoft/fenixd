@@ -57,10 +57,10 @@
 
 ## 2. admin_store 抗损坏
 
-- [ ] 2.1 `_read_unlocked`：解析失败时先把文件改名 `.corrupt-<ts>` 留底，再返回 `[]`，并产生一条可观测记录
-- [ ] 2.2 `_mutate` 写回前加下限保护：旧记录整体丢失时拒绝写回并告警
-- [ ] 2.3 新增 `tests/test_admin_store_corruption.py`：损坏留底、拒绝清库写回、**损坏后恢复写入（留底后新告警仍能写入，不被下限保护误拦）**、正常追加、合法空文件不被误拦 五场景
-- [ ] 2.4 全量 pytest（重点 `test_alert_lifecycle`、`test_admin`），独立 commit
+- [x] 2.1 `_read_unlocked`：解析失败时先把文件改名 `.corrupt-<ts>` 留底，再返回 `[]`，并产生一条可观测记录
+- [x] 2.2 `_mutate` 写回前加下限保护：旧记录整体丢失时拒绝写回并告警
+- [x] 2.3 新增 `tests/test_admin_store_corruption.py`：损坏留底、拒绝清库写回、**损坏后恢复写入（留底后新告警仍能写入，不被下限保护误拦）**、正常追加、合法空文件不被误拦 五场景
+- [x] 2.4 全量 pytest（重点 `test_alert_lifecycle`、`test_admin`），独立 commit
 
 ## 3. logger 门面统一
 
