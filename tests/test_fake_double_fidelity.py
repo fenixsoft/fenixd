@@ -19,6 +19,7 @@ staticmethod 首参不剥离。vendored 代码（node_modules）不参与。
 """
 
 import ast
+import inspect
 import tempfile
 import unittest
 from pathlib import Path
@@ -274,12 +275,22 @@ class TestFakeDoubleFidelityOnRepo(unittest.TestCase):
         """钉住 5 处（本 SPEC 收紧的）替身与生产签名一致——防后续被改回
         **kwargs 后仅靠守卫有牙测试兜底（spec R3 场景「收紧后守卫零违规」）。"""
         seams = core_seams()
-        # 这 5 个方法名必须仍在候选 seam 中（否则收紧失去可比对基准）
+        # 这些方法名必须仍在候选 seam 中（否则收紧失去可比对基准）。
+        # 注：`_check_agent_result_artifact` 原为 AgentRunner 类方法（转发壳），
+        # refactor-facade-delegation 收敛后真身为 result_gate 模块函数（以 runner
+        # 为首参的 self 首参模块函数），不再从「类方法唯一签名」检出；其替身保真
+        # 由 tests/test_facade_delegation_contract.py 断言经门面实例路径解析到同一
+        # 模块函数（守护集合变化而非产品行为变化，design 5.4 已预警）。
         for name in ("_send_human_escalation_alert",
-                     "_check_agent_result_artifact",
                      "_run_claude",
                      "handle_event"):
             self.assertIn(name, seams, f"seam {name} 应从 core/ 唯一签名中检出")
+        # 模块函数 seam：`_check_agent_result_artifact` 收敛后为 result_gate 模块函数
+        import core.agent_runner.result_gate as result_gate
+        fn = getattr(result_gate, "_check_agent_result_artifact")
+        self.assertTrue(callable(fn))
+        self.assertIn("def _check_agent_result_artifact",
+                      inspect.getsource(fn))
 
 
 if __name__ == "__main__":
