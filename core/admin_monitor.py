@@ -1088,6 +1088,33 @@ class AdminMonitor:
             # 人工冻结豁免：冻结即「等待人工」的显式表达（与 blocked_stuck 同款）
             if entry.get("frozen"):
                 continue
+            # 待 re-merge 载体的豁免（2026-09-17 事故，铁律 4 同款「误判以 ctx 声明
+            # 为准」）：``_repair_awaiting_remerge=True`` 的 implementing spec 是
+            # **有意等待态**——分支已完整交付、仅剩合并，其唯一消费者是 daemon
+            # 重启时的 boot recovery（``recover_interrupted`` 的
+            # ``_recovery_remerge_pending``，core/state_machine.py:1143-1151），
+            # 该通路是**时间点事件**而非「有待派发」：在 daemon 不重启的正常稳态
+            # 下，该 spec 必然满足「无活动 run 文件 + 无存活子进程 + 无待派发」
+            # 三条件（本就按此设计），与真正的「无驱动」（控制平面某条路径把 spec
+            # 留在运行态却没人驱动）语义相反。若不豁免，每次状态写入后
+            # orphaned_state_threshold_minutes（缺省 8 分钟）即复发一次告警，且
+            # 处置侧对该载体无正确出口（复位 ready 会清空待合并标记、白废已完成的
+            # 实现；复位 testing 会把未合并分支的 committed 态当合并态直通验证）、
+            # 自动复位 resolve_env_blocked_reset_path 亦因其非 blocked 而不触发，
+            # 只能反复空转升级人工。
+            # 实证：'evo-merge-back-wip-overlap-gate-575976'（前任 admin 于
+            # 2026-09-17T22:59:31Z 置入该载体）在 8 分钟后的 23:07:30Z 即被本巡检
+            # 判为「无驱动」唤起 Administrator 空转。
+            # 载体自身「不重启即不被消费」的收敛通道（stale_code_selfheal 仅对
+            # 陈旧代码触发，已非普适出口）有待后续 SPEC 补，本处只消除误报。
+            if entry.get("_repair_awaiting_remerge"):
+                self.logger.debug(
+                    "admin_monitor",
+                    f"跳过 orphaned_state 探测：'{name}' 为待 re-merge 载体"
+                    f"（_repair_awaiting_remerge=True，仅剩合并的有意等待态，"
+                    f"由 daemon 重启恢复消费）",
+                )
+                continue
             updated_str = entry.get("updated") or entry.get("created") or ""
             try:
                 updated = datetime.fromisoformat(updated_str.replace("Z", "+00:00"))

@@ -15,6 +15,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -195,13 +196,22 @@ from core.admin_monitor import AdminMonitor, STORED_SIGNAL_TYPES
 
 
 class _MonitorSM:
-    """AdminMonitor 测试用最小 StateMachine 替身。"""
+    """AdminMonitor 测试用最小 StateMachine 替身。
 
-    def __init__(self, statuses: dict):
+    额外字段（entries 形参）：read_one 除 status 外可携带任意条目字段——供
+    孤儿巡检等按 STATE 条目字段分支的守卫用例注入（如 _repair_awaiting_remerge）。
+    """
+
+    def __init__(self, statuses: dict, entries: dict | None = None):
         self.statuses = statuses
+        self.entries = entries or {}
 
     def read_one(self, spec):
-        return {"status": self.statuses.get(spec, "")}
+        entry = {"status": self.statuses.get(spec, "")}
+        extra = self.entries.get(spec)
+        if isinstance(extra, dict):
+            entry.update(extra)
+        return entry
 
 
 class _MinimalStore:
@@ -436,3 +446,80 @@ class TestDispatchStalledStaleSnapshotGuard(unittest.TestCase):
             raw = self.mon._detect_family_explosion()
             self.assertEqual(len(raw), 1, "status 缺失时不得误判前提被推翻")
             self.assertEqual(mock_invoke.call_count, 1)
+
+
+class TestOrphanedStateRepairAwaitingRemergeExempt(unittest.TestCase):
+    """Scenario: 待 re-merge 载体（_repair_awaiting_remerge）不得被判「无驱动」。
+
+    2026-09-17 事故：'evo-merge-back-wip-overlap-gate-575976' 经 admin 裁决置为
+    「分支已完整交付、仅剩合并」的既有恢复载体（status=implementing +
+    _repair_awaiting_remerge=True，保留 branch/implementer_run）。该载体的唯一
+    消费者是 daemon 重启时的 boot recovery（_recovery_remerge_pending），其语义
+    本就是「无活动 run / 无存活子进程 / 无待派发」的有意等待——在 daemon 不重启
+    的稳态下必然满足 orphaned_state 的三条件，于是状态写入 8 分钟（阈值）后即被
+    判「无驱动」唤起 Administrator：处置侧无正确出口（复位 ready 清空待合并标记、
+    白废已完成实现；复位 testing 把未合并分支的 committed 态当合并态直通验证），
+    只能反复空转升级人工。守卫口径：该字段为真 → 跳过 orphaned_state 探测。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(self.tmpdir, ignore_errors=True))
+        self.proot = Path(self.tmpdir) / "proj"
+        (self.proot / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.logger = _FakeLogger()
+
+    def _entry(self, status="implementing", **extra):
+        """构造一条「停留时长已超阈值」的 STATE 条目。"""
+        old = datetime.now(timezone.utc).timestamp() - 3600
+        entry = {
+            "status": status,
+            "updated": datetime.fromtimestamp(old, timezone.utc).isoformat(),
+        }
+        entry.update(extra)
+        return entry
+
+    def _monitor(self, entry):
+        mon = AdminMonitor(
+            {}, _MonitorSM({}), self.proot, self.logger,
+            store=_MinimalStore(),
+            agent_runner=mock.MagicMock(),
+        )
+        # 三条件默认全部成立（无活动 run / 无存活子进程 / 无待派发）——判定
+        # 待 re-merge 载体的豁免必须在此前提下生效，故直接钉死判据而非造环境。
+        return mon
+
+    def test_repair_awaiting_remerge_is_exempt(self):
+        """_repair_awaiting_remerge=True → 跳过，不产生 orphaned_state 信号。"""
+        entry = self._entry(_repair_awaiting_remerge=True)
+        mon = self._monitor(entry)
+        with mock.patch("core.admin_monitor.spec_is_undriven", return_value=True) as probe:
+            signals = mon._detect_orphaned_state({"s1": entry}, time.time())
+        self.assertEqual(signals, [], "待 re-merge 载体是有意等待态，不得报无驱动")
+        self.assertEqual(probe.call_count, 0, "豁免应在无驱动判定之前短路")
+
+    def test_same_entry_without_flag_still_reported(self):
+        """同一悬置条目去掉该标记 → 照常上报（守卫非恒真，不掩真阳性）。"""
+        entry = self._entry()
+        mon = self._monitor(entry)
+        with mock.patch("core.admin_monitor.spec_is_undriven", return_value=True):
+            signals = mon._detect_orphaned_state({"s1": entry}, time.time())
+        self.assertEqual(len(signals), 1, "真正的无驱动悬置必须照常上报")
+        self.assertEqual(signals[0]["signal_type"], "orphaned_state")
+        self.assertEqual(signals[0]["spec"], "s1")
+
+    def test_flag_false_is_not_exempt(self):
+        """显式 False（STATE 往返后的常态值）不触发豁免。"""
+        entry = self._entry(_repair_awaiting_remerge=False)
+        mon = self._monitor(entry)
+        with mock.patch("core.admin_monitor.spec_is_undriven", return_value=True):
+            signals = mon._detect_orphaned_state({"s1": entry}, time.time())
+        self.assertEqual(len(signals), 1, "False 不得被当作 truthy 豁免")
+
+    def test_testing_status_with_flag_is_exempt(self):
+        """testing 态同样豁免（载体语义与状态无关，只看标记）。"""
+        entry = self._entry(status="testing", _repair_awaiting_remerge=True)
+        mon = self._monitor(entry)
+        with mock.patch("core.admin_monitor.spec_is_undriven", return_value=True):
+            signals = mon._detect_orphaned_state({"s1": entry}, time.time())
+        self.assertEqual(signals, [])
