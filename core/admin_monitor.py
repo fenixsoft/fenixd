@@ -2049,7 +2049,11 @@ class AdminMonitor:
         try:
             if reset_path == "testing":
                 # 直通道：gate transition 不走 VALID_TRANSITIONS，仅门禁白名单放行
-                sm.transition_gate(spec, "testing")
+                # fix-observability-gaps 2.1：transition_gate 带 context（恢复来源）
+                sm.transition_gate(
+                    spec, "testing",
+                    trigger_run_id=None, agent_type=None, channel="recovery",
+                )
                 sm.update_spec(spec, {"error": None})
                 # verifier 入队：pm_engine 存在时最小侵入调用 handle_event；
                 # pm_engine 缺失时仅靠 daemon recovery 的 implemented 分支兜底
@@ -2068,7 +2072,11 @@ class AdminMonitor:
                 )
             else:
                 # 既有路径：VALID_TRANSITIONS 允许 BLOCKED→READY
-                sm.transition(spec, "ready")
+                # fix-observability-gaps 2.2：恢复复位来源（ready 重实现）
+                sm.transition(
+                    spec, "ready",
+                    trigger_run_id=None, agent_type=None, channel="recovery",
+                )
                 sm.update_spec(spec, {"error": None})
                 self.logger.info(
                     "admin_monitor",
@@ -2186,7 +2194,13 @@ class AdminMonitor:
         status = spec_entry.get("status")
         if status == "testing":
             try:
-                sm.transition_gate(spec, "testing")  # 幂等（already testing）
+                # fix-observability-gaps 2.1：transition_gate 带 context（恢复来源；
+                # 正常路径为幂等 old==new，state_machine 幂等分支不产生日志；
+                # 兜底真实转换时也带上恢复来源）
+                sm.transition_gate(
+                    spec, "testing",
+                    trigger_run_id=None, agent_type=None, channel="recovery",
+                )  # 幂等（already testing）
                 sm.update_spec(spec, {"error": None})
                 if self.pm_engine is not None:
                     self.pm_engine.handle_event("spec_implemented", spec, spec_entry)
@@ -2202,7 +2216,11 @@ class AdminMonitor:
                 )
         elif status == "implementing":
             try:
-                sm.transition(spec, "ready")
+                # fix-observability-gaps 2.2：孤儿 implementing 复位（恢复来源）
+                sm.transition(
+                    spec, "ready",
+                    trigger_run_id=None, agent_type=None, channel="recovery",
+                )
                 sm.update_spec(spec, {"error": None})
                 self.logger.info(
                     "admin_monitor",
@@ -2460,7 +2478,17 @@ class AdminMonitor:
     def _update_history(self, specs: dict, now: float):
         """把当前快照与上次记录对比，状态变化则追加变更事件；裁剪过期条目。"""
         history = self._load_history()
-        cutoff = now - 60 * 60  # 只保留最近 1 小时
+        # fix-observability-gaps 4.1：保留窗由 1 小时提升至 24 小时
+        # （跨日状态反复不可复盘事故根因）。
+        # 口径说明：仅针对 ready↔implementing 的状态切换——非这两个状态的
+        # spec 记录不进入 changes（见下方 if status not in ("ready", "implementing")）。
+        # flapping 检测（_detect_flapping, FLAPPING_WINDOW_MINUTES=10）按
+        # 自身 10 分钟窗过滤，不受保留窗提升影响。
+        # 量级评估（2026-09-17 实测）：24h 内自动调度 ready↔implementing
+        # 切换约 100-300 条（日均 10-20 spec，每 spec 每日 2-5 次自动转换），
+        # 内存占用可接受（每条 ≤200B → 300 条 ≈60KB）；不加条数上限。
+        HISTORY_RETENTION_SECONDS = 24 * 60 * 60  # 24 小时
+        cutoff = now - HISTORY_RETENTION_SECONDS
         changed = False
         for name, entry in specs.items():
             status = entry.get("status")

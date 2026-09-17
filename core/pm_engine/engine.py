@@ -226,12 +226,20 @@ class PMEngine:
         next_status = result.get("next_status", "ready")
         if next_status == "ready":
             self.logger.info("pm_engine", f"Auto-promoting '{spec_name}': drafted → ready")
-            self.state_machine.transition(spec_name, "ready")
+            # fix-observability-gaps 2.2：自动晋升来源（无 run，channel=auto）
+            self.state_machine.transition(
+                spec_name, "ready",
+                trigger_run_id=None, agent_type="pm-engine", channel="auto",
+            )
             # 直接调用 _on_spec_ready 排队实现，不依赖事件循环
             self._on_spec_ready(spec_name)
         elif next_status == "reviewing":
             self.logger.info("pm_engine", f"Auto-promoting '{spec_name}': drafted → reviewing")
-            self.state_machine.transition(spec_name, "reviewing")
+            # fix-observability-gaps 2.2：自动晋升来源
+            self.state_machine.transition(
+                spec_name, "reviewing",
+                trigger_run_id=None, agent_type="pm-engine", channel="auto",
+            )
             # 派发评审 run
             self._on_spec_reviewing(spec_name)
         else:
@@ -595,7 +603,11 @@ class PMEngine:
                             "error": f"验证进度不完整，回退重新验证: {vblocker}",
                         },
                     )
-                    self.state_machine.transition_gate(spec_name, "testing")
+                    # fix-observability-gaps 2.1：门禁逃生门 transition_gate 也必须带 context
+                    self.state_machine.transition_gate(
+                        spec_name, "testing",
+                        trigger_run_id=None, agent_type=None, channel="auto",
+                    )
                     return
                 self.logger.warning(
                     "pm_engine",
@@ -614,7 +626,10 @@ class PMEngine:
             # 事件回放（done→done）时此处仍会进入——total_duration 重算为同值覆盖无害，
             # _evict_spec_serving 幂等，project log 由 _on_spec_done 防重入（_guard:done）
             # 去重。无需额外前置判断。
-            if self.state_machine.transition(spec_name, "done"):
+            # fix-observability-gaps 2.2：验证通过→done，自动来源（验证引擎非 agent run）
+            if self.state_machine.transition(
+                    spec_name, "done",
+                    trigger_run_id=None, agent_type=None, channel="auto"):
                 # verify-process-lifecycle D6（spec 终局驱逐）：done 落定后同步
                 # 回收该 spec 的被测实例——stop 登记服务 + 驱逐缓存 + 移除 serving
                 # worktree（幂等；主树 static 共享实例保留）。
@@ -750,7 +765,10 @@ class PMEngine:
                         f"to implemented, skipping",
                     )
                     return
-                self.state_machine.transition(original, "implemented")
+                self.state_machine.transition(
+                    original, "implemented",
+                    trigger_run_id=None, agent_type=None, channel="auto",
+                )
                 self.state_machine.update_spec(
                     original,
                     {
@@ -1533,7 +1551,11 @@ class PMEngine:
                 )
 
             # ── 推送成功 → 推进 pushed，清 error + 退避标记 ──
-            self.state_machine.transition(spec_name, "pushed")
+            # fix-observability-gaps 2.2：推送收口自动来源
+            self.state_machine.transition(
+                spec_name, "pushed",
+                trigger_run_id=None, agent_type=None, channel="auto",
+            )
             self.state_machine.update_spec(spec_name, {"error": None})
             self._append_project_log(
                 f"🚀 SPEC pushed: **{spec_name}** (main pushed, branch: {branch})"

@@ -220,9 +220,38 @@ def _sigkill_wait_seconds() -> int:
     return drain + DRAIN_MARGIN_SECONDS
 
 
+def _stdout_points_to_log_file() -> bool:
+    """stdout 是否已被重定向到 LOG_FILE（同一文件）。
+
+    实际启动命令把 stdout 与 stderr 都重定向到同一文件
+    （`python3 .fenix/bin/fenixd_supervisor.py ... >> .fenix/logs/supervisor.log
+    2>&1`），此时若 log() 仍 print 会与文件写形成每行双写。用
+    (st_dev, st_ino) 比较 stdout 与 LOG_FILE 是否同一文件；LOG_FILE 尚不存在
+    （首次启动尚未 mkdir）时按 inode 无法比较，回退 /proc/self/fd/1 路径解析。
+    """
+    try:
+        out_stat = os.fstat(sys.stdout.fileno())
+        try:
+            log_stat = LOG_FILE.stat()
+        except OSError:
+            # LOG_FILE 尚不存在：/proc 路径解析兜底（realpath 规范化比较）
+            try:
+                fd_link = os.readlink("/proc/self/fd/1")
+            except OSError:
+                return False
+            return os.path.realpath(fd_link) == str(LOG_FILE)
+        return (out_stat.st_dev, out_stat.st_ino) == (log_stat.st_dev, log_stat.st_ino)
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
 def log(msg: str):
     line = f"{_now_iso()} supervisor: {msg}"
-    print(line, flush=True)
+    # fix-observability-gaps 4.2：文件写为唯一 sink（stdout 已被重定向到同一
+    # LOG_FILE 时不再 print——否则每行双写）。控制台可见性仅当 stdout 未被
+    # 重定向到 LOG_FILE 时保留（直接终端运行仍可看到实时日志）。
+    if not _stdout_points_to_log_file():
+        print(line, flush=True)
     try:
         LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
         with LOG_FILE.open("a", encoding="utf-8") as f:

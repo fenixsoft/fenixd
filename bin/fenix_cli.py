@@ -53,7 +53,11 @@ def cmd_promote(args):
         # 命中跳过白名单 → ready；否则 → reviewing 待方案评审。与 _on_spec_drafted
         # 收尾语义一致，MUST NOT 硬编码 ready（否则 CLI 通道绕过评审门禁）。
         next_status = result.get("next_status", "ready")
-        sm.transition(args.spec, next_status)
+        # fix-observability-gaps 2.2：CLI 人工晋升来源（channel=manual）
+        sm.transition(
+            args.spec, next_status,
+            trigger_run_id=None, agent_type=None, channel="manual",
+        )
         if next_status == "reviewing":
             print(f"✓ SPEC「{args.spec}」已晋升 reviewing（待方案评审），等待评审 run")
         else:

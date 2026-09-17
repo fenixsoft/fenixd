@@ -14,6 +14,106 @@ from pathlib import Path
 # run 产物 agent 类型推断（原 data.py 顶层导入，随 runs 组迁移）
 from core.agent_runner.run_files import infer_run_agent_type
 
+# ── 结构化 run 指标日志索引（fix-observability-gaps 1.5 消费点）────────────
+# run 收尾在 fenixd.log 写一条 metric_type=run_metrics 的结构化指标（runner.py
+# _log_run_metrics），含 duration_seconds / cost_usd / terminal / provider。
+# 读侧 duration 推算优先消费该指标（替代「由 run 文件 mtime 推算耗时」，
+# spec「MUST NOT 仅依赖 mtime」）；无指标（旧日志/未触发）才回退 mtime。
+# 索引按 (log_path, size) 键增量维护：日志 append-only，size 增长只补扫新增块；
+# size 缩小（轮转）整体重建。进程内缓存，读侧高频重复调用零重扫。
+_RUN_METRIC_INDEX: dict = {}
+_RUN_METRIC_INDEX_KEY: tuple = None  # (str(log_path), size)
+
+
+def _strip_run_attempt_suffix(run_id: str) -> str:
+    """run 产物 stem → 基础 run_id（剥 -a<n>/ -r<n> attempt/瞬断重试后缀）。
+
+    指标日志的 run_id 记基础 run_id（一次 run = 逻辑整体，含多 attempt），
+    产物文件按 attempt 分文件（-a<n>）且瞬断原地重试有 -r<n> 子文件——
+    消费侧把产物 stem 归一到基础 id 才能在指标索引中命中。
+    """
+    if not run_id:
+        return run_id
+    # 优先剥 -a<n>（attempt 后缀），再剥 -r<n>（原地重试子产物后缀）
+    stripped = re.sub(r"-r\d+$", "", run_id)
+    stripped = re.sub(r"-a\d+$", "", stripped)
+    if stripped != run_id:
+        # -r<n> 可能出现在 -a<n> 之后（-a1-r1）：剥完再剥一次 -r
+        stripped = re.sub(r"-r\d+$", "", stripped)
+    return stripped or run_id
+
+
+def _load_run_metric_index(project_root: Path) -> dict:
+    """增量维护 run 指标索引 {base_run_id: metric_dict}（进程内缓存）。
+
+    metric_dict 取日志行的 context（含 duration_seconds/cost_usd/terminal/
+    provider 等），run_id 为 context.run_id（基础 run id）。日志轮转
+    （size 缩小）时整体重建，追加（size 增长）只补扫新增部分。
+    """
+    global _RUN_METRIC_INDEX, _RUN_METRIC_INDEX_KEY
+    logs_dir = Path(project_root) / ".fenix" / "logs"
+    log_path = logs_dir / "fenixd.log"
+    try:
+        size = log_path.stat().st_size
+    except OSError:
+        return {}
+    key = (str(log_path), size)
+    if key == _RUN_METRIC_INDEX_KEY:
+        return _RUN_METRIC_INDEX
+    # size 缩小（轮转）或首扫 → 清空重建
+    if _RUN_METRIC_INDEX_KEY is None or _RUN_METRIC_INDEX_KEY[0] != str(log_path) \
+            or size < _RUN_METRIC_INDEX_KEY[1]:
+        _RUN_METRIC_INDEX = {}
+        start = 0
+    else:
+        start = _RUN_METRIC_INDEX_KEY[1]
+    try:
+        with log_path.open("r", encoding="utf-8", errors="replace") as f:
+            if start:
+                f.seek(start)
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                ctx = entry.get("context") or {}
+                if not isinstance(ctx, dict) or ctx.get("metric_type") != "run_metrics":
+                    continue
+                rid = ctx.get("run_id")
+                if rid:
+                    _RUN_METRIC_INDEX[rid] = ctx
+    except OSError:
+        pass
+    _RUN_METRIC_INDEX_KEY = key
+    return _RUN_METRIC_INDEX
+
+
+def _logged_run_duration(project_root: Path, run_file_stem: str,
+                         engine: str = "") -> float | None:
+    """从结构化指标读 run 耗时（替代 mtime 推算）。
+
+    run_file_stem 为产物文件名（含 -a<n>/ -r<n>），归一化为基础 run_id 后
+    在指标索引中查找；命中返回 duration_seconds（float），未命中 None。
+    engine 预留字段：后续如需区分「哪个消费点」可传值；当前恒空。
+    """
+    if not project_root or not run_file_stem:
+        return None
+    base = _strip_run_attempt_suffix(run_file_stem)
+    index = _load_run_metric_index(project_root)
+    metric = index.get(base)
+    if not metric:
+        return None
+    d = metric.get("duration_seconds")
+    if d is None:
+        return None
+    try:
+        return float(d)
+    except (TypeError, ValueError):
+        return None
+
 # ── 运行记录（.fenix/runs/） ─────────────────────────────────────
 
 # run 终态事件类型 → classify_run 状态映射。写侧唯一权威是
@@ -110,12 +210,20 @@ _RUN_META_CACHE: dict = {}
 _RUN_META_CACHE_MAX = 16384
 
 
-def _run_meta_cached(p: Path, stat, now: float) -> dict:
+def _run_meta_cached(p: Path, stat, now: float,
+                     project_root: Path | None = None) -> dict:
     """计算/复用单条 run 元数据（status/started/duration_seconds/file_size）。
 
     命中（path, mtime_ns, size 全同）即返回缓存；未命中完整计算并写入缓存。
     耗时/开始时刻/状态推导逻辑与既有 get_runs 逐字等价（见各步注释），
     仅挪入本函数以便整体 memo。
+
+    fix-observability-gaps 1.5（消费点）：project_root 非空时 duration_seconds
+    **优先读结构化 run 指标**（runner 收尾写进 fenixd.log 的
+    metric_type=run_metrics 行，含真实 duration_seconds），替代「由 run 文件
+    mtime 推算耗时」（spec「MUST NOT 仅依赖 mtime」）；指标缺失（旧日志/
+    未触发）回退 mtime 推算。project_root 省略（仅取 status 的调用方如
+    _is_run_archivable）跳过指标查找，行为与现状一致。
     """
     key = (str(p), stat.st_mtime_ns, stat.st_size)
     cached = _RUN_META_CACHE.get(key)
@@ -158,6 +266,13 @@ def _run_meta_cached(p: Path, stat, now: float) -> dict:
         # 与真实耗时自相矛盾（耗时列为真实秒数而开始时间却是结束时刻）。
         started = datetime.fromtimestamp(start_ts, tz=timezone.utc).isoformat()
         duration_seconds = max(0, int(stat.st_mtime - start_ts))
+    # fix-observability-gaps 1.5（消费点）：结构化指标优先——run 收尾落盘的
+    # duration_seconds 为真实耗时（time.time()-start_time），替代 mtime 推算；
+    # 命中即用、未命中维持 mtime 兜底（旧日志不丢）。
+    if project_root is not None:
+        logged = _logged_run_duration(Path(project_root), run_id)
+        if logged is not None:
+            duration_seconds = int(round(logged))
     status_raw = classify_run(_read_run_lines(p, max_lines=3))
     status = status_raw
     # fix-retry-orphan-active-runs D3：末行非终态且文件 mtime 停更超过
@@ -237,7 +352,8 @@ def get_runs(project_root, spec_name: str | None = None, include_archive: bool =
         if m:
             spec_part = m.group(1)
         # 元数据（status/started/duration/file_size）按 (path, mtime_ns, size) memo
-        meta = _run_meta_cached(p, stat, now)
+        # （fix-observability-gaps 1.5：project_root 传入使 duration 优先读结构化指标）
+        meta = _run_meta_cached(p, stat, now, project_root=Path(project_root))
         out.append(
             {
                 "run_id": run_id,

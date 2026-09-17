@@ -37,11 +37,13 @@ def _sm(specs: dict):
                 self._specs[name].update(updates)
             return True
 
-        def transition_gate(self, name, new_status):
+        def transition_gate(self, name, new_status,
+                            *, trigger_run_id=None, agent_type=None, channel="auto"):
             self.update_spec(name, {"status": new_status})
             return True
 
-        def transition(self, name, new_status):
+        def transition(self, name, new_status,
+                       *, trigger_run_id=None, agent_type=None, channel="auto"):
             if (self._specs.get(name) or {}).get("status") in (
                     "implementing",
             ) and new_status == "ready":

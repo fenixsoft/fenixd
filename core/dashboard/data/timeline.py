@@ -194,6 +194,11 @@ def get_spec_timeline(project_root, spec_name: str, created: str = "") -> list:
             except OSError:
                 continue
             pat = re.compile(r"Transition: " + re.escape(spec_name) + r"\s+([\w-]+)\s*→\s*([\w-]+)")
+            # fix-observability-gaps 3.1：Gate transition（小写 t，state_machine
+            # transition_gate 前缀）旧正则 `Transition: ` 不命中（`pat.search
+            # ('Gate transition: fix-foo verified → testing')` → False）；结构化
+            # 写侧两条前缀同判，正则兜底只覆盖 `Transition: `（旧格式无 Gate 行）。
+            gate_pat = re.compile(r"Gate transition: " + re.escape(spec_name) + r"\s+([\w-]+)\s*→\s*([\w-]+)")
             for line in content.split("\n"):
                 if spec_name not in line:
                     continue
@@ -203,23 +208,37 @@ def get_spec_timeline(project_root, spec_name: str, created: str = "") -> list:
                     continue
                 msg = entry.get("message", "")
                 ts = entry.get("timestamp", "")
-                m = pat.search(msg)
+                ctx = entry.get("context") or {}
+                if not isinstance(ctx, dict):
+                    ctx = {}
+                # ── 结构化优先（fix-observability-gaps 3.1）──
+                # 写侧（state_machine.transition / transition_gate）已带
+                # 结构化 context（channel 键 = 写侧升级标记）。同一条日志行
+                # 有 context 走结构化解（含 Gate transition 前缀）、无 context
+                # 走正则兜底（历史日志），逐行互斥——同一行不产出两个状态节点。
+                m = pat.search(msg) or gate_pat.search(msg)
                 if m:
                     frm, to = m.group(1), m.group(2)
                     # 方向单源：backward 按生命周期序判定（与打回重建路径
                     # 同式），Transition 回退判定复用为该字段来源
                     backward = _LIFECYCLE_ORDER.get(to, 9) < _LIFECYCLE_ORDER.get(frm, 9)
                     reason = _backtrack_reason(frm, to) if backward else ""
-                    events.append(
-                        {
-                            "time": ts,
-                            "kind": "state",
-                            "from": frm,
-                            "to": to,
-                            "reason": reason,
-                            "backward": backward,
-                        }
-                    )
+                    node = {
+                        "time": ts,
+                        "kind": "state",
+                        "from": frm,
+                        "to": to,
+                        "reason": reason,
+                        "backward": backward,
+                    }
+                    if ctx.get("channel") is not None:
+                        # 结构化 context 落入节点（channel/trigger_run_id/
+                        # agent_type），供前端展示转换来源
+                        node["channel"] = ctx.get("channel")
+                        node["trigger_run_id"] = ctx.get("trigger_run_id")
+                        node["agent_type"] = ctx.get("agent_type")
+                    events.append(node)
+                    continue  # 本行已消费为状态节点，不再进入 Updated SPEC 分支
                 # 带引号全匹配（写点唯一于 state_machine.update_spec 的
                 # f"Updated SPEC '{spec_name}'"）：子串匹配会让前缀名 spec
                 # （如 add-foo）吸收姊妹 spec（add-foo-ui）的状态更新
@@ -399,6 +418,14 @@ def _collapse_timeline(events: list) -> list:
         }
         if len(buf) > 1:
             node["chain"] = [buf[0]["from"]] + [b["to"] for b in buf]
+        # fix-observability-gaps 3.1：结构化 context（channel/trigger_run_id/
+        # agent_type）随折叠链保留——取链上第一个非 None 的组成节点值
+        # （混合窗口下链首可能是旧格式无 context 行，溯源到新格式行即保留）。
+        for _ctx_key in ("channel", "trigger_run_id", "agent_type"):
+            for _b in buf:
+                if _b.get(_ctx_key) is not None:
+                    node[_ctx_key] = _b[_ctx_key]
+                    break
         return node
 
     for e in events:

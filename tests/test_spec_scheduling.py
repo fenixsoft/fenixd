@@ -220,7 +220,8 @@ def make_min_dispatcher(pm, run_queue, entry_reader):
     class _SM:
         def read_one(self, name):
             return entry_reader(name) or {}
-        def transition(self, name, status):
+        def transition(self, name, status,
+                       *, trigger_run_id=None, agent_type=None, channel="auto"):
             return True
     pm.state_machine = _SM()
     return d
