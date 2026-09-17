@@ -1,0 +1,138 @@
+# Tasks: refactor-giant-classes
+
+## Deliverables
+
+```yaml
+- path: core/worktree_manager/__init__.py
+  kind: new
+- path: core/worktree_manager/lifecycle.py
+  kind: new
+- path: core/worktree_manager/legacy_registry.py
+  kind: new
+- path: core/worktree_manager/locks.py
+  kind: new
+- path: core/worktree_manager/mergeback.py
+  kind: new
+- path: core/worktree_manager/dist_conflicts.py
+  kind: new
+- path: core/worktree_manager/stash_guard.py
+  kind: new
+- path: core/worktree_manager/stale_sweep.py
+  kind: new
+- path: core/worktree_manager/queries.py
+  kind: new
+- path: core/worktree_manager/repair_site.py
+  kind: new
+- path: core/worktree_manager/types.py
+  kind: new
+- path: core/worktree_manager.py
+  kind: delete
+- path: core/pm_engine/dispatch/__init__.py
+  kind: new
+- path: core/pm_engine/dispatch/queue.py
+  kind: new
+- path: core/pm_engine/dispatch/backoff.py
+  kind: new
+- path: core/pm_engine/dispatch/adjudication.py
+  kind: new
+- path: core/pm_engine/dispatch/rollback.py
+  kind: new
+- path: core/pm_engine/dispatch/fast_track.py
+  kind: new
+- path: core/pm_engine/dispatch/repair_lane.py
+  kind: new
+- path: core/pm_engine/dispatch.py
+  kind: delete
+- path: core/dashboard/routes/__init__.py
+  kind: new
+- path: core/dashboard/routes/base.py
+  kind: new
+- path: core/dashboard/routes/project_routes.py
+  kind: new
+- path: core/dashboard/routes/spec_routes.py
+  kind: new
+- path: core/dashboard/routes/run_routes.py
+  kind: new
+- path: core/dashboard/routes/settings_routes.py
+  kind: new
+- path: core/dashboard/routes/alert_routes.py
+  kind: new
+- path: core/dashboard/routes/evolution_routes.py
+  kind: new
+- path: core/dashboard/routes/help_routes.py
+  kind: new
+- path: core/dashboard/routes/sse_routes.py
+  kind: new
+- path: core/dashboard/routes/static_routes.py
+  kind: new
+- path: core/dashboard/sse.py
+  kind: new
+- path: core/dashboard/http_server.py
+  kind: new
+- path: core/dashboard/server.py
+  kind: modify
+- path: bin/gen-route-map.py
+  kind: modify
+- path: tests/test_characterization_giant_classes.py
+  kind: new
+- path: tests/test_giant_classes_contract.py
+  kind: new
+- path: spec/changes/refactor-giant-classes/contract-inventory.md
+  kind: new
+- path: spec/changes/refactor-giant-classes/giant-classes-findings.md
+  kind: new
+```
+
+> `core/dashboard/server.py` 的 `kind: modify` 保留进程/生命周期模块函数（`serve` 等）与门面组装；`bin/gen-route-map.py` 的 `kind: modify` 仅限 design D4 的路由扫描源同步。
+
+## 1. 阶段 0：测试基线加固
+
+- [ ] 1.1 静态清点：把 `WorktreeManager`（82 方法）/ `Dispatcher`（56）/ `DashboardHandler`（66 + 伴生类/模块函数）全部方法逐名落位到 design D1 三张分组表，落盘 `contract-inventory.md`，**不留未归属项**
+- [ ] 1.2 补 characterization tests（`tests/test_characterization_giant_classes.py`）：重点覆盖盲区——worktree G5（`_run_dist_build`/`_rebuild_dist_after_merge`）/G6（`_purge_ignored_brought_in`/`_resolve_ignored_modify_delete_conflicts`）/G4（`_detect_wip_overlap`）；dispatch B 组（`_on_instant_fail_recovery`/`_on_transient_recovery`）、adjudication 组
+- [ ] 1.3 建立疑点清单（`giant-classes-findings.md`），只记录不修
+- [ ] 1.4 运行 `bin/run_full_suite.py` 记录基线失败集合
+- [ ] 1.5 **patch 缝隙清点**（design D3）：逐项固定 worktree（2 处模块级 patch、类属性 `_rehearsal_*`、`_impl_branch_owned_by_spec`、8 常量、`MergeConflictInfo`）、dispatch（`time` 重绑、`_dispatch_backoffed`、2 常量）、server（4 类 monkeypatch、9 处 `start_daemon`/`stop_daemon` 字符串 patch、10 个被 import 名）的当前语义基线
+- [ ] 1.6 **隐性消费方清点**（design D4）：记录 `bin/gen-route-map.py::scan_server_routes` 的扫描源与 `tests/test_planner_route_map.py` 的消费口径
+- [ ] 1.7 **私有回引清点**（design D5）：落盘 `Dispatcher` 的 52 个 `self._pm._X` 目标（130 处）清单，标注高频 5 个
+
+## 2. 阶段 1：worktree_manager → 子包
+
+- [ ] 2.1 按 design D2 把 `core/worktree_manager.py` 改名为 `core/worktree_manager/_legacy.py` 并建包，门面 re-export 全部公开名（8 常量、`MergeContract`/`MergeConflictInfo`、`_is_claude_process`、`_is_build_artifact_path`），本 commit 上既有 import 全可用
+- [ ] 2.2 摘出 G3（`locks.py`）与 G8（`queries.py`）——纯工具/只读层，低耦合
+- [ ] 2.3 摘出 G2（`legacy_registry.py`）与 G9（`repair_site.py`）
+- [ ] 2.4 摘出 G1（`lifecycle.py`）
+- [ ] 2.5 摘出 G5（`dist_conflicts.py`）与 G6（`stash_guard.py`）
+- [ ] 2.6 摘出 G4（`mergeback.py`）——含 208 行 `_merge_back_from_branch_locked` 原样搬移（方法体不改）
+- [ ] 2.7 摘出 G7（`stale_sweep.py`）与 `types.py`；删除 `_legacy.py`
+- [ ] 2.8 类级状态核对：`_rehearsal_probe_done`/`_rehearsal_supported` 仍挂 `WorktreeManager` 类命名空间；`_impl_branch_owned_by_spec` staticmethod 类直调可用
+- [ ] 2.9 运行 characterization tests 与全量回归，比对基线
+
+## 3. 阶段 2：dispatch → 子包
+
+- [ ] 3.1 按 design D2 改名为 `core/pm_engine/dispatch/_legacy.py` 建包，门面 re-export `Dispatcher`/`DEFAULT_DISPATCH_BACKOFF_SCHEDULE`/`MAX_REPAIR_ROUNDS_PER_FAILURE`
+- [ ] 3.2 摘出 R（`rollback.py`，含 staticmethod `_honest_exit_gap`/`_dispatch_backoffed`）与 B（`backoff.py`）
+- [ ] 3.3 摘出 V（`adjudication.py`）——组内自洽度最高
+- [ ] 3.4 摘出 F（`fast_track.py`）
+- [ ] 3.5 摘出 P（`repair_lane.py`）
+- [ ] 3.6 摘出 Q（`queue.py`，含 742 行 `_run_agent_worker` 原样搬移）；`time` 引用经 `core.pm_engine.dispatch` 命名空间；`_dispatch_backoffed` 留类命名空间
+- [ ] 3.7 删除 `_legacy.py`；核对 engine.py 的 10 个队列状态 property 委托链不变
+- [ ] 3.8 按 design D5 消解 `_pm._X` 高频 5 个回引（其余保留清单待后续 spec）；运行回归比对基线
+
+## 4. 阶段 3：dashboard server → routes/ 子包
+
+- [ ] 4.1 摘出伴生类：`core/dashboard/sse.py`（`SSEConnection`/`SSEHub`）、`core/dashboard/http_server.py`（`DashboardHTTPServer`）
+- [ ] 4.2 摘出 `routes/base.py`（H0 HTTP 底座，含 `_json`/`_error`/`_read_json_body` 共享方法）
+- [ ] 4.3 摘出资源子路由：`spec_routes.py`/`project_routes.py`/`settings_routes.py`/`alert_routes.py`/`run_routes.py`/`evolution_routes.py`/`help_routes.py`
+- [ ] 4.4 摘出 `sse_routes.py`（H9）与 `static_routes.py`（H10）
+- [ ] 4.5 把 `_handle_api`/`_handle_api_post`/`_handle_api_delete` 的 55 分支改造为**表驱动 + 按资源委派**（design D1）；参数化路径用 regex matcher；**保留 `endswith` 顺序陷阱**（project lifecycle 排在 describe 之后、`/api/projects/<name>` DELETE 之前）
+- [ ] 4.6 同步 `bin/gen-route-map.py::scan_server_routes` 的扫描源（design D4），确认 `tests/test_planner_route_map.py` 通过
+- [ ] 4.7 门面 re-export 校验：`serve`/`STATIC_DIR`/`DashboardHTTPServer`/`find_free_port`/`SSEHub`/`HELP_DOC_NAME_RE`/`_bind_parent_lifecycle`/`_claude_watchdog_loop`/`_proc_starttime`/`_start_claude_watchdog` 全部可用；`start_daemon`/`stop_daemon` 字符串 patch 语义保持
+- [ ] 4.8 端点集合核对：枚举重构前后 (path, method) 集合，确认完全相等；运行回归比对基线
+
+## 5. 阶段 4：全量回归与收尾
+
+- [ ] 5.1 运行 `bin/run_full_suite.py` 与基线比对，确认不新增失败
+- [ ] 5.2 逐项运行 design D3 清单对应的 patch 缝隙测试文件，确认语义保持
+- [ ] 5.3 循环依赖检查：确认未引入新静态依赖环（design D6）
+- [ ] 5.4 汇报疑点清单最终态（`giant-classes-findings.md`）
+- [ ] 5.5 逐项勾选本 tasks.md 全部已完成任务
