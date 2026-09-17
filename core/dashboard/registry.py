@@ -26,9 +26,9 @@ import os
 import yaml
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
-
-logger = logging.getLogger(__name__)
+# 可传播到 fenixd 已挂载 handler 的结构化日志器（fix-robustness-edge-cases 3.1：
+# 收敛旁路裸 getLogger(__name__)=core.dashboard.registry，保证 WARNING 落盘）
+logger = logging.getLogger("fenixd.dashboard.registry")
 
 DEFAULT_PORT = 8787
 DEFAULT_CONFIG = Path.home() / ".config" / "fenixd" / "dashboard.yaml"

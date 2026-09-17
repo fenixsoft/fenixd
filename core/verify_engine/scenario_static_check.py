@@ -26,7 +26,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
-logger = logging.getLogger("verify_engine.scenario_static_check")
+logger = logging.getLogger("fenixd.verify_engine.scenario_static_check")
 
 # ── 端口相关确定性模式（D4：纯正则）─────────────────────────────
 # URL 形 ``http://127.0.0.1:57905/...`` 与裸 host:port 形（seed stdin 代码

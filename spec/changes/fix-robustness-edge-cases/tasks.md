@@ -64,10 +64,10 @@
 
 ## 3. logger 门面统一
 
-- [ ] 3.1 收敛旁路 logger（实测清单，file:line）：`core/verify_scenarios.py:183,263`（`getLogger("pm_engine")`）、`core/pm_engine/spec_integrity.py:61`（同）、`core/dashboard/server.py:77`、`core/dashboard/registry.py:29,31`、`core/verify_engine/scenario_static_check.py:29`、**`core/verify_engine/screenshot_lab.py:31`**、**`core/fast_track_result.py:141`**（后两者原不在清单与 Deliverables 内，但 3.2 的静态检查会检出——已补入）改为 `fenixd.` 可传播层级或注入 Logger；改动 `logging.getLogger("pm_engine")` 名称时须确认无按名捕获的消费方/测试
-- [ ] 3.2 新增 `tests/test_logger_no_bypass.py`：静态扫描 core，断言无裸 `logging.getLogger(...)`（`fenixd` 层级除外）
-- [ ] 3.3 修复 `core/logger.py` 中绕过级别判定的记录路径（`Logger._log` 直接调 `self._python_logger.handle(record)`，绕开 `isEnabledFor`，使 `logging.level` 失效、DEBUG 恒落盘）；修复后既有 `debug(...)` 调用（`core/event_bus.py` 6 处、`core/evolution.py` 7 处、`core/admin_monitor.py` 4 处等，且多处以 `Logger(proot)` 默认 INFO 实例化，如 `core/dashboard/data.py:422,466,495`）将不再落盘——MUST 先确认无消费方/测试依赖 DEBUG 行，再改
-- [ ] 3.4 实证：「持久化集加载净化剔除」类告警出现在 `fenixd.log`；全量 pytest，独立 commit
+- [x] 3.1 收敛旁路 logger（实测清单，file:line）：`core/verify_scenarios.py:183,263`（`getLogger("pm_engine")`）、`core/pm_engine/spec_integrity.py:61`（同）、`core/dashboard/server.py:77`、`core/dashboard/registry.py:29,31`、`core/verify_engine/scenario_static_check.py:29`、**`core/verify_engine/screenshot_lab.py:31`**、**`core/fast_track_result.py:141`**（后两者原不在清单与 Deliverables 内，但 3.2 的静态检查会检出——已补入）改为 `fenixd.` 可传播层级或注入 Logger；改动 `logging.getLogger("pm_engine")` 名称时须确认无按名捕获的消费方/测试
+- [x] 3.2 新增 `tests/test_logger_no_bypass.py`：静态扫描 core，断言无裸 `logging.getLogger(...)`（`fenixd` 层级除外）
+- [x] 3.3 修复 `core/logger.py` 中绕过级别判定的记录路径（`Logger._log` 直接调 `self._python_logger.handle(record)`，绕开 `isEnabledFor`，使 `logging.level` 失效、DEBUG 恒落盘）；修复后既有 `debug(...)` 调用（`core/event_bus.py` 6 处、`core/evolution.py` 7 处、`core/admin_monitor.py` 4 处等，且多处以 `Logger(proot)` 默认 INFO 实例化，如 `core/dashboard/data.py:422,466,495`）将不再落盘——MUST 先确认无消费方/测试依赖 DEBUG 行，再改
+- [x] 3.4 实证：「持久化集加载净化剔除」类告警出现在 `fenixd.log`；全量 pytest，独立 commit
 
 ## 4. 收尾
 

@@ -32,11 +32,16 @@ scenarios.json 结构（含来源轮次，便于增量审计）::
 """
 
 import json
+import logging
 import os
 import re
 import tempfile
 from pathlib import Path
 from typing import Optional
+
+# 可传播到 fenixd 已挂载 handler 的结构化日志器（fix-robustness-edge-cases 3.1：
+# 收敛旁路裸 getLogger("pm_engine")，保证 WARNING 落入 fenixd.log）
+_logger = logging.getLogger("fenixd.verify_scenarios")
 
 # tasks.md 修复段标题正则（与 pm_engine._VERIFY_FIX_SECTION_RE 同源）
 _VERIFY_FIX_SECTION_RE = re.compile(r"^## 验证修复\b.*$", re.MULTILINE)
@@ -188,9 +193,7 @@ def load_scenario_set(project_root, spec_name: str) -> Optional[ScenarioSet]:
                 continue
             kept.append(item)
         if rejected:
-            import logging
-
-            logging.getLogger("pm_engine").warning(
+            _logger.warning(
                 "持久化集加载净化剔除 %d 条缺 kind 孤儿条目"
                 "（scenarios.json 文件不改写，仅内存集合净化）: %s",
                 len(rejected),
@@ -275,7 +278,7 @@ def save_scenario_set(project_root, scenario_set: ScenarioSet) -> Path:
         clean_entries.append(e)
 
     if rejected:
-        logging.getLogger("pm_engine").warning(
+        _logger.warning(
             "场景集写端校验剔除 %d 个非法条目（scenarios.json 不落盘）: %s",
             len(rejected),
             "、".join(rejected),

@@ -138,7 +138,7 @@ def estimate_spec_scale(spec_dir: Path) -> int:
     if not spec_path.is_dir():
         return 0
 
-    logger = _log.getLogger("fast_track_scale")
+    logger = _log.getLogger("fenixd.fast_track_scale")
 
     # 1. 统计 tasks.md 未勾选任务条数
     tasks_path = spec_path / "tasks.md"

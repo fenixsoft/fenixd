@@ -74,7 +74,7 @@ from core.agent_runner.prompt_builder import (
 from core.fenix_session import start_daemon, stop_daemon
 from core.admin_store import AdminStore, SIGNAL
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("fenixd.dashboard.server")
 
 STATIC_DIR = Path(__file__).parent / "static"
 ALLOWED_IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif"}

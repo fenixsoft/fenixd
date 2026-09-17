@@ -67,6 +67,12 @@ class Logger:
 
     def _log(self, level: int, component: str, message: str, context: dict = None):
         """Thread-safe log entry."""
+        # 级别判定（fix-robustness-edge-cases 3.3）：此前直接
+        # ``self._python_logger.handle(record)`` 绕开 ``isEnabledFor``，使
+        # ``logging.level``（缺省 INFO）失效、DEBUG 恒落盘；先判级再构造
+        # record——level=DEBUG 且日志器级别高于 DEBUG 时直接跳过。
+        if not self._python_logger.isEnabledFor(level):
+            return
         with self._lock:
             record = logging.LogRecord(
                 name="fenixd",
