@@ -65,6 +65,17 @@ class _Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
+        if self.path.startswith("/api/large"):
+            # >64KB 合法 JSON：尾部的 deep.mark 只在完整响应体里可达——
+            # 若先截断再解析则 json_path 无法命中（回归 fence）。
+            blob = "x" * (128 * 1024)
+            body = json.dumps({"pad": blob, "deep": {"mark": "tail-value"}}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         self.send_response(404)
         self.send_header("Content-Length", "0")
         self.end_headers()
@@ -248,6 +259,50 @@ class TestApiRunner(unittest.TestCase):
         })
         result = asyncio.run(r.execute(sc))
         self.assertEqual(result["status"], "fail")
+
+    def test_large_json_response_parsed_before_evidence_truncation(self):
+        """>64KB 响应的 JSON 断言用完整响应体解析（先解析后截断）。
+
+        回归：曾先 `_truncate` 再 `json.loads`，截断体非法 JSON →
+        resp_json=None → json_schema/json_path 必然假失败（harness 缺陷）。
+        """
+        r = self._runner()
+        sc = Scenario.from_dict({
+            "id": "large", "kind": "api",
+            "steps": [
+                {"action": "http_request", "method": "GET",
+                 "url": f"{self.srv.base_url}/api/large", "as": "big"},
+            ],
+            "assertions": [
+                {"type": "status_code", "expected": 200},
+                # 尾部字段（超出 64KB 窗口）——只有完整解析才命中
+                {"type": "json_path", "path": "deep.mark", "expected": "tail-value"},
+                {"type": "json_schema",
+                 "schema": {"type": "object", "required": ["pad", "deep"]}},
+            ],
+        })
+        result = asyncio.run(r.execute(sc))
+        self.assertEqual(result["status"], "pass", result)
+        for a in result["assertion_results"]:
+            self.assertTrue(a["pass"], a)
+
+    def test_large_json_evidence_body_still_truncated(self):
+        """证据字段纪律不变：>64KB 响应仍截断到 64KB 并带截断标记。"""
+        from core.verify_engine.api_runner import _EVIDENCE_LIMIT
+
+        self.assertEqual(_EVIDENCE_LIMIT, 64 * 1024)
+        r = self._runner()
+        sc = Scenario.from_dict({
+            "id": "large-evidence", "kind": "api",
+            "steps": [
+                {"action": "http_request", "method": "GET",
+                 "url": f"{self.srv.base_url}/api/large", "as": "big"},
+            ],
+            "assertions": [{"type": "status_code", "expected": 200}],
+        })
+        result = asyncio.run(r.execute(sc))
+        self.assertEqual(result["status"], "pass", result)
+        self.assertIn("截断 64KB", result["step_results"][0]["detail"])
 
     def test_connection_failure_is_env_candidate(self):
         """连接失败类=环境候选：不判产品缺陷，探针失联 → blocked-env。"""

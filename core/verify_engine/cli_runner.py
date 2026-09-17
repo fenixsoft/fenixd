@@ -19,6 +19,7 @@ CLI 特异执行语义（与 web「失败即中断」唯一的分歧点，design
 """
 
 import asyncio
+import json
 import os
 import re
 import signal
@@ -215,12 +216,32 @@ class CliRunner(VerifyRunner):
                 "error": f"命令被信号 {sig} 终止（段错误等），判 error 不进 product-bug 管道",
             }
 
-        stdout = stdout_b.decode(errors="replace") if stdout_b else ""
-        stderr = stderr_b.decode(errors="replace") if stderr_b else ""
-        stdout, stdout_truncated = _truncate(stdout)
-        stderr, stderr_truncated = _truncate(stderr)
+        stdout_full = stdout_b.decode(errors="replace") if stdout_b else ""
+        stderr_full = stderr_b.decode(errors="replace") if stderr_b else ""
+        # JSON 解析必须用完整 stdout，早于证据截断（与 api_runner 同规）：
+        # 若先 _truncate 再 json.loads，>64KB 的合法 JSON 会被截成非法文本 →
+        # json_output 断言必然假失败（harness 缺陷，非产品缺陷、非场景缺陷）。
+        # json_parsed 与 json 分开存：区分「非法 JSON」与合法的字面量 null。
+        if stdout_full.strip():
+            try:
+                stdout_json = json.loads(stdout_full)
+                stdout_json_parsed = True
+            except json.JSONDecodeError:
+                stdout_json = None
+                stdout_json_parsed = False
+        else:
+            stdout_json = None
+            stdout_json_parsed = False
+        stdout, stdout_truncated = _truncate(stdout_full)
+        stderr, stderr_truncated = _truncate(stderr_full)
 
-        result = {"exit_code": exit_code, "stdout": stdout, "stderr": stderr}
+        result = {
+            "exit_code": exit_code,
+            "stdout": stdout,
+            "stderr": stderr,
+            "json": stdout_json,
+            "json_parsed": stdout_json_parsed,
+        }
         if name:
             named_results[name] = result
         named_results["_latest"] = result

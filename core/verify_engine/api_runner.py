@@ -236,11 +236,16 @@ class ApiRunner(VerifyRunner):
                 "error": f"请求异常: {type(e).__name__}: {e}",
             }
 
-        resp_body, truncated = _truncate(resp.text or "")
+        # 证据截断只作用于证据字段（body/truncated）：JSON 解析必须用完整
+        # 响应体，先解析后截断。若先截断再 json.loads，>64KB 的合法 JSON 会
+        # 被截成非法文本 → resp_json=None → json_schema/json_path 断言必然
+        # 假失败（harness 缺陷，非产品缺陷、非场景缺陷）。
+        resp_text = resp.text or ""
         try:
-            resp_json = json.loads(resp_body) if resp_body.strip() else None
+            resp_json = json.loads(resp_text) if resp_text.strip() else None
         except json.JSONDecodeError:
             resp_json = None
+        resp_body, truncated = _truncate(resp_text)
 
         capture = {
             "status": resp.status_code,

@@ -189,6 +189,42 @@ class TestCliRunnerSemantics(unittest.TestCase):
         })
         self.assertEqual(r["status"], "pass", r["assertion_results"])
 
+    def test_large_json_stdout_parsed_before_evidence_truncation(self):
+        """>64KB stdout 的 json_output 断言用完整输出解析（先解析后截断）。
+
+        回归：曾先 `_truncate` 再 `json.loads`，截断体非法 JSON →
+        json_output 必然假失败（harness 缺陷）。尾部字段证明完整解析。
+        """
+        r = self._exec({
+            "id": "bigjson", "kind": "cli",
+            "steps": [
+                {"action": "run", "command": [
+                    "python3", "-c",
+                    "import json; print(json.dumps({'pad': 'x' * 131072,"
+                    " 'deep': {'mark': 'tail-value'}}))"],
+                 "as": "gen"},
+            ],
+            "assertions": [
+                # 尾部字段（超出 64KB 窗口）——只有完整解析才命中
+                {"type": "json_output", "step": "gen", "path": "deep.mark",
+                 "expected": "tail-value"},
+            ],
+        })
+        self.assertEqual(r["status"], "pass", r["assertion_results"])
+
+    def test_large_stdout_evidence_still_truncated(self):
+        """证据纪律不变：>64KB stdout 仍截断到 64KB 并带截断标记。"""
+        r = self._exec({
+            "id": "bigev", "kind": "cli",
+            "steps": [
+                {"action": "run", "command": [
+                    "python3", "-c", "print('x' * 131072)"], "as": "big"},
+            ],
+            "assertions": [{"type": "exit_code", "expected": 0}],
+        })
+        self.assertEqual(r["status"], "pass", r["assertion_results"])
+        self.assertIn("截断 64KB", r["step_results"][0]["detail"])
+
 
 # ── 引擎级：混合场景集跨 kind depends_on ──────────────────────────
 

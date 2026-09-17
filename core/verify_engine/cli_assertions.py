@@ -247,19 +247,36 @@ class CliAssertionRunner:
         }
 
     async def _assert_json_output(self, step, a: dict) -> dict:
-        """断言命名结果 stdout 的 JSON 子树（step 指定解析哪个命名结果）。"""
+        """断言命名结果 stdout 的 JSON 子树（step 指定解析哪个命名结果）。
+
+        优先取 runner 预解析的 ``json`` 字段——它在证据截断**之前**由完整
+        stdout 解析（>64KB 输出不因截断而解析失败）；无该字段时回退为解析
+        ``stdout``（兼容直接构造 step 的调用方）。
+        """
         stdout = str(step.get("stdout") or "")
-        try:
-            data = json.loads(stdout)
-        except json.JSONDecodeError:
-            return {
-                "type": "json_output",
-                "layer": 3,
-                "step": a.get("step"),
-                "path": a.get("path"),
-                "pass": False,
-                "error": f"stdout 非合法 JSON: {stdout[:120]}",
-            }
+        if "json_parsed" in step:
+            if not step.get("json_parsed"):
+                return {
+                    "type": "json_output",
+                    "layer": 3,
+                    "step": a.get("step"),
+                    "path": a.get("path"),
+                    "pass": False,
+                    "error": f"stdout 非合法 JSON: {stdout[:120]}",
+                }
+            data = step.get("json")
+        else:
+            try:
+                data = json.loads(stdout)
+            except json.JSONDecodeError:
+                return {
+                    "type": "json_output",
+                    "layer": 3,
+                    "step": a.get("step"),
+                    "path": a.get("path"),
+                    "pass": False,
+                    "error": f"stdout 非合法 JSON: {stdout[:120]}",
+                }
         path = a.get("path") or ""
         expected = a.get("expected")
         actual = evaluate_json_path(data, path) if path else data
