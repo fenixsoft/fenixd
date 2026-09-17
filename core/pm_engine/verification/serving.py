@@ -877,11 +877,40 @@ def _read_boot_log_tail(pipeline, spec_name: str, handle) -> str:
 
 
 def _rewrite_scenario_port(pipeline, scenarios_path: Path, old_port: int, new_port: int):
-    """端口冲突换端口后，重写 test_scenarios.json 中的 URL 端口。"""
+    """端口冲突换端口后，重写 test_scenarios.json 中**导航目标**的 URL 端口。
+
+    2026-09-17 同类缺口修复（承 92228d33 的 origin 毒化事故）：旧实现与
+    ``rewrite_scenarios_origin`` 同型——对 test_scenarios.json **整份文本**跑
+    端口正则，会落进 CSS 属性选择器（``input[placeholder='http://127.0.0.1:55187']``）、
+    注入数据（``seed.value``）、断言 ``expected`` 等字段，把「选择器字面量／
+    测试数据」当「导航目标」改写。与 origin 路径共用
+    ``_rewrite_scenario_target_values`` 骨架，只动作于 ``navigate`` /
+    ``http_request`` / ``sse_connect`` 步骤的目标字段（见 verify_contract 的
+    ``_ORIGIN_TARGET_FIELDS``）。
+
+    与 origin 改写不同，端口替换 MUST NOT 要求 ``http(s)://`` 前缀：项目可能
+    显式声明 ``http://localhost:3000`` 等地址，端口形态才是本函数的判定依据；
+    正则自身以 ``:port`` + 边界锚定，裸域名与非 URL 文本不会被误改。
+    """
+    from core.verify_contract import _rewrite_scenario_target_values
+
+    port_re = re.compile(r":%d(?=[/\?\"']|$)" % old_port)
+
+    def _rewrite_value(value: str) -> tuple[str, int]:
+        return port_re.subn(f":{new_port}", value)
+
     try:
-        content = scenarios_path.read_text(encoding="utf-8")
-        content = re.sub(r":%d(?=[/\?\"']|$)" % old_port, f":{new_port}", content)
-        scenarios_path.write_text(content, encoding="utf-8")
+        raw = json.loads(scenarios_path.read_text(encoding="utf-8"))
+        if not isinstance(raw, list):
+            return
+        rewritten, n = _rewrite_scenario_target_values(
+            raw, requires_http_scheme=False, rewrite_value=_rewrite_value
+        )
+        if not n:
+            return
+        scenarios_path.write_text(
+            json.dumps(rewritten, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
         pipeline._context.logger.info("pm_engine", f"已重写验证场景端口 {old_port} → {new_port}")
     except Exception as e:
         pipeline._context.logger.warning("pm_engine", f"重写验证场景端口失败: {e}")

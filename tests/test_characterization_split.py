@@ -13,6 +13,7 @@ spec/changes/refactor-core-packages/findings.md）。本文件只新增，
 不修改任何现有测试文件。
 """
 
+import json
 import shutil
 import sys
 import tempfile
@@ -110,18 +111,58 @@ class TestRewriteScenarioPortCharacterization(unittest.TestCase):
     def test_rewrites_url_port_only(self):
         p = self.tmpdir / "test_scenarios.json"
         p.write_text(
-            'steps: navigate http://127.0.0.1:8765/ ; ports 87650 18765 stay;'
-            ' trailing colon port 8765 end',
+            json.dumps([
+                {"steps": [
+                    {"action": "navigate", "value": "http://127.0.0.1:8765/"},
+                ]},
+            ]),
             encoding="utf-8",
         )
         self.engine._verification._rewrite_scenario_port(p, 8765, 9999)
-        content = p.read_text(encoding="utf-8")
-        self.assertIn("http://127.0.0.1:9999/", content)
-        self.assertIn("port 8765 end", content)   # 行尾前缀 :8765 亦被改写（lookahead $）
-        self.assertNotIn(":8765", content)        # 无前缀粘连的旧端口全部消失
-        self.assertIn("87650", content)           # 前缀数字不被误改
-        self.assertIn("18765", content)
+        data = json.loads(p.read_text(encoding="utf-8"))
+        self.assertEqual(data[0]["steps"][0]["value"], "http://127.0.0.1:9999/")
         self.logger.info.assert_called_once()
+
+    def test_non_target_fields_preserved(self):
+        """2026-09-17 同类缺口回归：选择器/注入数据/断言内的端口 MUST NOT 被改写。
+
+        旧实现与 rewrite_scenarios_origin 同型——对 test_scenarios.json 整份
+        文本跑端口正则，落进 ``input[placeholder='http://127.0.0.1:8765']``、
+        ``seed.value``、断言 ``expected`` 等字段即把「选择器字面量/测试数据」
+        当「导航目标」改写（快速链接事故的同型通道）。
+        """
+        p = self.tmpdir / "test_scenarios.json"
+        p.write_text(
+            json.dumps([
+                {
+                    "steps": [
+                        {"action": "navigate", "value": "http://127.0.0.1:8765/"},
+                        {"action": "type",
+                         "target": "input[placeholder='http://127.0.0.1:8765']",
+                         "value": "http://127.0.0.1:8765"},
+                        {"action": "seed", "target": "k",
+                         "value": '[{"url": "http://127.0.0.1:8765/x"}]'},
+                        {"action": "mock_api", "target": "**/127.0.0.1:8765/**",
+                         "value": "{}"},
+                    ],
+                    "assertions": [
+                        {"type": "attribute_match", "selector": "a",
+                         "expected": "http://127.0.0.1:8765/"},
+                    ],
+                },
+            ]),
+            encoding="utf-8",
+        )
+        self.engine._verification._rewrite_scenario_port(p, 8765, 9999)
+        data = json.loads(p.read_text(encoding="utf-8"))
+        steps = data[0]["steps"]
+        self.assertEqual(steps[0]["value"], "http://127.0.0.1:9999/")
+        self.assertEqual(steps[1]["target"],
+                         "input[placeholder='http://127.0.0.1:8765']")
+        self.assertEqual(steps[2]["value"], '[{"url": "http://127.0.0.1:8765/x"}]')
+        self.assertEqual(steps[3]["target"], "**/127.0.0.1:8765/**")
+        self.assertEqual(data[0]["assertions"][0]["expected"],
+                         "http://127.0.0.1:8765/")
 
     def test_missing_file_is_swallowed_with_warning(self):
         p = self.tmpdir / "missing.json"

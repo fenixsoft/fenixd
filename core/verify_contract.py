@@ -1009,6 +1009,33 @@ def _rewrite_origin_in_scenarios(raw, base_url: str) -> tuple[list, int]:
     if not isinstance(raw, list):
         return raw, 0
     prefix = base_url.rstrip("/")
+
+    def _rewrite_value(value: str) -> tuple[str, int]:
+        return _URL_ORIGIN_RE.subn(prefix, value)
+
+    return _rewrite_scenario_target_values(raw, requires_http_scheme=True,
+                                           rewrite_value=_rewrite_value)
+
+
+def _rewrite_scenario_target_values(raw, *, requires_http_scheme: bool,
+                                    rewrite_value) -> tuple[list, int]:
+    """改写 ``navigate`` / ``http_request`` / ``sse_connect`` 步骤目标字段的通用骨架。
+
+    两个文件级改写点（BASE_URL 铁律的 ``rewrite_scenarios_origin`` 与端口换
+    端口后的 ``_rewrite_scenario_port``）共用本骨架：只遍历导航类步骤的目标
+    字段（见 ``_ORIGIN_TARGET_FIELDS``），其余字段——CSS 属性选择器
+    （``target``）、注入数据（``seed.value``）、mock 模式（``mock_api.target``）、
+    断言（``assertions``）——一律不触碰；非 dict/无 steps/畸形条目原样透传。
+
+    ``rewrite_value(value) -> (new_value, n)`` 由调用方注入（origin 替换 vs
+    端口替换）。``requires_http_scheme=True`` 时只处理以 http(s) 开头的值
+    （裸域名、非法输入是产品行为要处理的输入，不是导航目标），
+    ``False`` 时对任意字符串值调用 ``rewrite_value`` 由其自行判定。
+
+    返回 (新列表, 改写处数合计)。
+    """
+    if not isinstance(raw, list):
+        return raw, 0
     out: list = []
     n = 0
     for item in raw:
@@ -1029,9 +1056,11 @@ def _rewrite_origin_in_scenarios(raw, base_url: str) -> tuple[list, int]:
                 if field not in new_step:
                     continue
                 value = new_step[field]
-                if not isinstance(value, str) or not value.startswith(("http://", "https://")):
+                if not isinstance(value, str):
                     continue
-                new_value, k = _URL_ORIGIN_RE.subn(prefix, value)
+                if requires_http_scheme and not value.startswith(("http://", "https://")):
+                    continue
+                new_value, k = rewrite_value(value)
                 if k and new_value != value:
                     new_step[field] = new_value
                     n += k
