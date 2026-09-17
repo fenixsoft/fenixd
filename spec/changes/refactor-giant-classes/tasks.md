@@ -75,8 +75,6 @@
   kind: modify
 - path: tests/test_characterization_giant_classes.py
   kind: new
-- path: tests/test_giant_classes_contract.py
-  kind: new
 - path: spec/changes/refactor-giant-classes/contract-inventory.md
   kind: new
 - path: spec/changes/refactor-giant-classes/giant-classes-findings.md
