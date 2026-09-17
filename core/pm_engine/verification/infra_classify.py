@@ -437,11 +437,9 @@ def _failed_scenario_ids(pipeline, spec_name: str) -> list:
 
 def _normalize_fail_signature(text: str) -> str:
     """归一化失败签名：数字→N、去引号、折叠空白，便于同因比较。"""
-    import re as _re
-
-    t = _re.sub(r"\d+", "N", text or "")
-    t = _re.sub(r"['\"`]", "", t)
-    return _re.sub(r"\s+", " ", t).strip()
+    t = re.sub(r"\d+", "N", text or "")
+    t = re.sub(r"['\"`]", "", t)
+    return re.sub(r"\s+", " ", t).strip()
 
 
 def reclassify_infra_rounds(

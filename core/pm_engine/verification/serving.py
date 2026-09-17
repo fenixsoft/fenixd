@@ -68,8 +68,13 @@ def _ensure_serving_worktree(pipeline, spec_name: str, contract, mode: str):
             pipeline._unregister_serving_instance(spec_name, old_server)
         try:
             old_server.stop()
-        except Exception:
-            pass
+        except Exception as e:
+            # fix-deferred-findings 健壮性：stop() 失败不再静默吞掉，补日志
+            # （对齐 _evict_spec_serving 样板；不调换 unregister 顺序）
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"停止旧 serving 实例 '{spec_name}' 失败（不影响重建）: {e}",
+            )
         pipeline._remove_serving_worktree(old["wt_path"])
     wt = serve_root / f"{spec_name}-{int(time.time())}"
     r = subprocess.run(
@@ -185,12 +190,10 @@ def _serve_command_in_worktree(pipeline, spec_name, contract, scenarios_path) ->
     port = find_free_port()
     # legacy 兜底参数：邻近扫描基准（serve.port 或 cmd 内端口数字）与
     # 启动前监听快照（跳过既有实例端口）；cmd 引用 {port} 后两者皆不需要
-    import re as _re
-
-    m = _re.search(r"(?:--port|-p)\s+(\d+)", contract.serve.cmd or "")
+    m = re.search(r"(?:--port|-p)\s+(\d+)", contract.serve.cmd or "")
     legacy_hint = contract.serve.port or (int(m.group(1)) if m else None)
     pre = (
-        {p for p in range(legacy_hint, legacy_hint + 51) if _port_responds(p)}
+        _probe_ports_responding(range(legacy_hint, legacy_hint + 51))
         if legacy_hint
         else set()
     )
@@ -277,12 +280,10 @@ def _serve_command_in_main(pipeline, spec_name, contract, scenarios_path) -> tup
     port = find_free_port()
     # legacy 兜底参数：邻近扫描基准（serve.port 或 cmd 内端口数字）与
     # 启动前监听快照（跳过既有实例端口）；cmd 引用 {port} 后两者皆不需要
-    import re as _re
-
-    m = _re.search(r"(?:--port|-p)\s+(\d+)", contract.serve.cmd or "")
+    m = re.search(r"(?:--port|-p)\s+(\d+)", contract.serve.cmd or "")
     legacy_hint = contract.serve.port or (int(m.group(1)) if m else None)
     pre = (
-        {p for p in range(legacy_hint, legacy_hint + 51) if _port_responds(p)}
+        _probe_ports_responding(range(legacy_hint, legacy_hint + 51))
         if legacy_hint
         else set()
     )
@@ -922,3 +923,17 @@ def _port_responds(port: int) -> bool:
             return True
     except Exception:
         return False
+
+
+def _probe_ports_responding(ports) -> set:
+    """并发探测一组端口，返回响应端口集合（fix-deferred-findings 性能修复）。
+
+    legacy 邻近扫描（range(legacy_hint, legacy_hint+51)）原为串行 urlopen
+    探测（每端口 timeout=1.0，最坏 2×51s 量级），改造为 ThreadPoolExecutor
+    并发后总耗时收敛到单端口探测上限。每个端口探测结果独立（_port_responds
+    无共享状态），并发仅缩短墙钟时间，返回集合与原串行探测逐元素一致。
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        return {p for p, ok in zip(ports, pool.map(_port_responds, ports)) if ok}

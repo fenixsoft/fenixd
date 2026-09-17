@@ -443,11 +443,19 @@ def _collapse_timeline(events: list) -> list:
 
 
 def _parse_iso_ts(ts: str):
-    """解析 ISO 时间戳（兼容 Z 后缀与 +00:00），失败返回 None。"""
-    try:
-        from datetime import datetime as _dt
+    """解析 ISO 时间戳（兼容 Z 后缀与 +00:00），失败返回 None。
 
-        return _dt.fromisoformat(str(ts).replace("Z", "+00:00"))
+    fix-deferred-findings D2：无时区后缀（naive）结果补 `tzinfo=utc`——与项目
+    「全链时间戳 UTC」约定一致（有意行为变化：下游 astimezone()/timestamp()
+    不再按本地时区解释）。
+    """
+    try:
+        from datetime import datetime as _dt, timezone as _utz
+
+        dt = _dt.fromisoformat(str(ts).replace("Z", "+00:00"))
+        if dt is not None and dt.tzinfo is None:
+            dt = dt.replace(tzinfo=_utz.utc)
+        return dt
     except Exception:
         return None
 
@@ -467,13 +475,14 @@ def _timeline_sort_key(e: dict):
     节点取报告完成时刻、与 verified 转换同秒且真实次序在前（报告先落盘），
     须靠第三键精确时间排在 verified 之前；正常场景（引擎开始时刻）独占一秒，
     rank 不参与。
-    解析失败的事件按原字符串排在末尾，保持稳定。
+    解析失败的事件按原字符串排在末尾，保持稳定（fix-deferred-findings P0：
+    `datetime.max` 的 tzinfo 参数必须是实例，无效时间戳事件不再抛 TypeError）。
     """
     dt = _parse_iso_ts(e.get("time", ""))
     if dt is None:
         from datetime import datetime as _dt, timezone as _tz
 
-        return (_dt.max.replace(tzinfo=_tz), 2, str(e.get("time", "")))
+        return (_dt.max.replace(tzinfo=_tz.utc), 2, str(e.get("time", "")))
     kind_rank = {"state": 0, "verify": 0, "admin": 1, "run": 2}.get(e.get("kind"), 2)
     return (dt.replace(microsecond=0), kind_rank, dt)
 

@@ -105,7 +105,9 @@ def _check_verification_gate(pipeline, spec_name: str) -> str | None:
       返回「验证未完成：done/total（+最近 current）」。
     - done == total → 放行。
     """
-    from core.dashboard.data import parse_verify_progress
+    # fix-deferred-findings CYC-1：parse_verify_progress 已迁中性模块
+    # core.signals（pm_engine 侧不再反向 import dashboard.data）
+    from core.signals import parse_verify_progress
 
     vp = parse_verify_progress(pipeline._context.project_root, spec_name)
     if not vp.get("exists"):
@@ -232,6 +234,25 @@ def _read_verifier_result(pipeline, result_path: Path) -> VerdictReadResult:
     return VerdictReadResult.success(status)
 
 
+def _verify_progress_result_paths(pipeline, spec_name: str) -> tuple:
+    """verifier 结果文件路径解析：per-spec primary 优先 + 主树共享 fallback。
+
+    fix-deferred-findings 整洁类（零行为变化）：_read_planner_result /
+    _read_verdict / legacy._run_legacy_verification 三处重复的
+    「verify-progress/<spec>/.fenix-run-result.json → 共享文件」解析
+    收敛到本助手。
+    """
+    primary = (
+        pipeline._context.project_root
+        / ".fenix"
+        / "verify-progress"
+        / spec_name
+        / ".fenix-run-result.json"
+    )
+    fallback = pipeline._context.project_root / ".fenix" / ".fenix-run-result.json"
+    return primary, fallback
+
+
 def _read_planner_result(pipeline, spec_name: str) -> VerdictReadResult:
     """读取 Planner 写入的结果文件，返回结构化三态结果（fail-closed）。
 
@@ -248,16 +269,9 @@ def _read_planner_result(pipeline, spec_name: str) -> VerdictReadResult:
     fix-verdict-read-failclosed：不可读（含 fallback spec-stamp 拦截的
     foreign 残留）一律返回 ok=False，绝不以 None 等价 verified。
     """
-    primary = (
-        pipeline._context.project_root
-        / ".fenix"
-        / "verify-progress"
-        / spec_name
-        / ".fenix-run-result.json"
-    )
+    primary, fallback = _verify_progress_result_paths(pipeline, spec_name)
     if primary.exists():
         return _read_verifier_result(pipeline, primary)
-    fallback = pipeline._context.project_root / ".fenix" / ".fenix-run-result.json"
     # 共享结果文件护栏：主树共享文件携带的 spec 与当前 spec 不符时视为残留忽略
     # （与 _read_implementer_result 相同语义），避免误读其它 spec 的
     # implementer 残留状态。
@@ -298,17 +312,10 @@ def _read_verdict(pipeline, spec_name: str) -> VerdictReadResult:
     不可读（missing/parse/unknown-status/foreign-role/foreign-stamp）一律
     返回 ok=False 的 VerdictReadResult，**绝不**以 None 等价放行（fail-closed）。
     """
-    primary = (
-        pipeline._context.project_root
-        / ".fenix"
-        / "verify-progress"
-        / spec_name
-        / ".fenix-run-result.json"
-    )
+    primary, shared = _verify_progress_result_paths(pipeline, spec_name)
     if primary.exists():
         return _read_verifier_result(pipeline, primary)
 
-    shared = pipeline._context.project_root / ".fenix" / ".fenix-run-result.json"
     if not shared.exists():
         return VerdictReadResult.failure("missing", f"{shared}")
     try:
