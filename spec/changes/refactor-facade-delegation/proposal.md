@@ -10,7 +10,10 @@
 |---|---|---|
 | `PMEngine`（`core/pm_engine/engine.py`） | **110 / 206** | `self._verification.*` 43、`self._dispatcher.*` 21、`self._family.*` 15、`self._budget.*` 10、`self._recovery.*` 7、`self._reporting.*` 3、`self._spec_integrity.*` 1、**类级静态转发到兄弟类** 10 |
 | `VerificationPipeline`（`core/pm_engine/verification/pipeline.py`） | **90 / 93** | 连续整块转发到本包 9 个子模块的模块级函数（首参 `pipe` 注入） |
-| `AgentRunner`（`core/agent_runner/runner.py`） | **71 / 148** | `maintenance_runs` 13、`_liveness` 12、`_provider_circuit` 11、`result_gate` 10、`_prompt_builder` 7、`_v2_server` 5、`_token_accountant` 4、其它 9 |
+| `AgentRunner`（`core/agent_runner/runner.py`） | **65 / 148** | `_liveness` 12、`_provider_circuit` 11、`_prompt_builder` 7、`_v2_server` 5、`_token_accountant` 4、`self` 首参模块函数 13、**`@staticmethod` 式（首参非 `self`）13** |
+
+> 判据=函数体为单条 `return`（允许前置 docstring）的「调用形态」：三个门面合计 **265** 个（110 + 90 + 65）。其中 2 个是**向 stdlib 的调用**（`AgentRunner._now` → `time.monotonic`、`_normalize_run_id` → `re.sub`）——不是任何子模块实现的转发，不构成双份签名，MUST 保留为显式方法；故**收敛对象 263 个**：实例式 236（`PMEngine` 100 / `VerificationPipeline` 85 / `AgentRunner` 51）+ **`@staticmethod` 式 27**（`PMEngine` 10 / `AgentRunner` 12 / `VerificationPipeline` 5）。
+> 静态式 27 个不适用实例 `__getattr__`（类直调不经 `__getattr__`，且 `partial(func, self)` 对无 `self` 首参目标会多注一个 `self`），须按 design D7 以类级别名收敛（实测类直调点清单见 design D1 约束 4）。
 
 双份维护已实证：门面与实现签名逐参数完全一致（如 `PMEngine._enqueue` 与 `Dispatcher._enqueue` 同为 `(self, spec_name, agent_type)`）；返回注解双份（engine 92/110、pipeline 80/90、runner 66/73）。
 

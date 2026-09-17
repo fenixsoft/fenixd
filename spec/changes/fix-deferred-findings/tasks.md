@@ -21,12 +21,31 @@
   kind: modify
 - path: tests/test_deferred_findings_fixes.py
   kind: new
+- path: core/dashboard/data/__init__.py
+  kind: modify
+- path: core/dashboard/data/runs.py
+  kind: modify
+- path: core/dashboard/data/log_index.py
+  kind: modify
+- path: core/dashboard/data/admin_actions.py
+  kind: modify
+- path: core/dashboard/data/artifacts.py
+  kind: modify
+- path: core/event_bus.py
+  kind: modify
+- path: core/signals.py
+  kind: new
 - path: spec/changes/fix-deferred-findings/findings-ledger.md
   kind: new
 ```
 
+> **交付集补齐依据（评审补，2026-09-17）**：阶段 4（CYC-1）落地文件原不在 Deliverables 内，会构成「交付集缺项」（同批 `fix-observability-gaps/tasks.md:24` / `fix-dashboard-read-path-performance/tasks.md` 已就同类问题给出结论）。上表据 design D3 逐符号登记：
+> `get_runs`→`dashboard/data/runs.py:181`、`record_project_event`→`log_index.py:267`、`request_admin_invoke`→`admin_actions.py:32`、`parse_verify_progress`→`artifacts.py:16`，门面 re-export→`dashboard/data/__init__.py`（`:86/:103/:123/:180-183/:207`），`find_impl_run_file` 消费点→`core/event_bus.py:364`，新中性模块默认 `core/signals.py`。
+> **中性模块路径**：默认 `core/signals.py`（design Open Questions 候选）；若实现阶段改并入既有中性模块，MUST 在其 `.fenix-run-result.json` findings 登记实际落点路径，**MUST NOT** 落在 `core/run_task_track.py`（在飞 `fix-robustness-edge-cases` 的登记交付物）。
+
 > 本 spec **MUST NOT** 修改在飞重构 spec 作业面文件（`core/worktree_manager.py`、`core/pm_engine/dispatch.py`、`core/dashboard/server.py`、`core/pm_engine/engine.py`、`core/pm_engine/verification/pipeline.py`、`core/agent_runner/runner.py`）。
 > CYC-1 的 `engine.py` 子项、B4（`_last_freeze_rejected*` 声明）、B6（陈旧 docstring）已登记为**转移清单**（design D3），不在本变更交付集内。
+> **跨 spec 共享文件（评审补，2026-09-17）**：`core/dashboard/data/timeline.py` 与在飞 `fix-observability-gaps`（`.fenix/STATE.md`：`status: implementing`；其 tasks.md:26/49 指明落到该文件的 `get_spec_timeline`）重叠。实现前 MUST 按 design D3「在飞重叠登记」处置：已在飞落盘 → 基于最新内容开工；并行在飞 → MUST 串行，不得与其实施窗口重叠提交同一文件。
 > CYC-1 的非重叠子项若需新建中性模块，实现时在其 `.fenix-run-result.json` findings 登记实际落点路径。
 
 ## 1. 阶段 1：P0 真 bug 修复（timeline 排序键）
@@ -34,7 +53,7 @@
 - [ ] 1.1 复现 `_timeline_sort_key` 无效时间戳分支的 `TypeError`（`_tz` 为 `timezone` 类非实例），记录当前 characterization 测试 `test_timeline_sort_key_invalid_time_sorts_later` 的「锁死抛错」断言
 - [ ] 1.2 修复：`_tz` → `timezone.utc`；并按 design D2 在 `_parse_iso_ts` 内给 naive 结果补 `tzinfo=utc`
 - [ ] 1.3 改写 `tests/test_characterization_dashboard_data.py::test_timeline_sort_key_invalid_time_sorts_later`：由「断言抛 TypeError」改为「断言排序结果」（无效事件排在合法事件之后）
-- [ ] 1.4 补 naive 输入（无时区后缀）的解释测试（按 UTC）
+- [ ] 1.4 补 naive 输入（无时区后缀）的解释测试（按 UTC）；并按 design D2「下游消费点登记」补一条 `_run_meta_cached` 断言：naive 首事件戳经 `_parse_iso_ts` 后 `started` 按 UTC 解释、`duration_seconds` 与 `mtime - started` 自洽（该路径由 `core/dashboard/data/runs.py:150` 消费，属本次有意行为变化）
 
 ## 2. 阶段 2：P1 性能修复（端口探测）
 
@@ -53,10 +72,10 @@
 
 ## 4. 阶段 4：CYC-1 非重叠子项（分层倒置）
 
-- [ ] 4.1 `find_impl_run_file` / `parse_run_task_done` 的消费点改从真源 `core/run_task_track` 导入（非 engine.py 侧，零搬移）
-- [ ] 4.2 把 `get_runs` / `record_project_event` / `request_admin_invoke` / `parse_verify_progress` 搬入中性模块，`core/dashboard/data` 门面 re-export 保住既有导入路径
-- [ ] 4.3 更新 `verification/escalation.py`、`verification/report_gate.py` 的 late import 指向中性模块
-- [ ] 4.4 补「pm_engine 侧不 import `core.dashboard.data`」守卫断言（纳入现有 contract 测试或新测试）
+- [ ] 4.1 `find_impl_run_file` / `parse_run_task_done` 的消费点改从真源 `core/run_task_track` 导入（非 engine.py 侧，零搬移）；非 engine.py 侧唯一消费点为 `core/event_bus.py:364`，engine.py:21 那一行按 design D3 **转移**、本任务 MUST NOT 触碰
+- [ ] 4.2 把 `get_runs` / `record_project_event` / `request_admin_invoke` / `parse_verify_progress` 搬入中性模块（默认 `core/signals.py`；MUST NOT 落 `core/run_task_track.py`），`core/dashboard/data` 门面 re-export 保住既有导入路径；MUST 保持 `runs.py:408` 真源内部调用点与 `_RUN_META_CACHE`/`_run_meta_cached` memo 语义不变（design D3 约定 2）
+- [ ] 4.3 更新 `verification/escalation.py`（`request_admin_invoke`，`:258`）、`verification/report_gate.py`（`parse_verify_progress`，`:108`）的 late import 指向中性模块
+- [ ] 4.4 补「pm_engine 侧不 import `core.dashboard.data`」守卫断言——**落 `tests/test_deferred_findings_fixes.py`（本变更已登记的 new 交付物）**；MUST NOT 改 `tests/test_verification_modules_contract.py`（在飞 `refactor-long-functions` 的登记交付物，与本变更并行）
 
 ## 5. 阶段 5：回归与收尾
 

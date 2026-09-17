@@ -53,10 +53,24 @@
 
 **替代方案（已否决）**：只改 `_tz`。否决理由：docstring 声称「解析失败的事件按原字符串排在末尾」，而 naive-vs-aware 比较仍会抛错，修复不完整。
 
+**下游消费点登记（评审补，2026-09-17）**：`_parse_iso_ts` 非 timeline 私有——它还经门面被 `core/dashboard/data/runs.py::_run_meta_cached` 消费：
+
+- `runs.py:150` `real_dt = _facade._parse_iso_ts(real_start)`；随后 `real_dt.astimezone(timezone.utc).isoformat()`（`started`）与 `real_dt.timestamp()`（`duration_seconds`）。
+  naive 输入下 `astimezone()/timestamp()` 按**本地时区**解释（本机 CST=UTC+8），补 `tzinfo=utc` 后按 UTC 解释 → 对**无时区后缀**的 run 首事件戳，`started` 与 `duration_seconds` 会变化（偏差恰为本地时区偏移）。
+- 方向正确（与「全链时间戳 UTC」一致），但属**可观测行为变化**，故 MUST 与本条同批次显式标注，并在 tasks 1.4 的测试里对该路径补一条断言（naive 输入 → `started` 为 UTC 解释结果）。
+- `runs.py:96` 仅做 `is not None` 判空，不受影响。
+
 ### D3：在飞文件隔离与转移清单
 
 本变更 MUST NOT 修改以下在飞重构 spec 作业面文件：
 `core/worktree_manager.py`、`core/pm_engine/dispatch.py`、`core/dashboard/server.py`、`core/pm_engine/engine.py`、`core/pm_engine/verification/pipeline.py`、`core/agent_runner/runner.py`。
+
+**在飞重叠登记（评审补，2026-09-17）**：上表隔离清单只覆盖三条重构 spec，**不足以支撑 proposal「可与前两者并行」的并行性结论**——`core/dashboard/data/timeline.py`（本变更 P0 落点）与在飞 `fix-observability-gaps` 重叠：
+
+- `.fenix/STATE.md`：`fix-observability-gaps: status: implementing`（updated 2026-09-17T01:04）。
+- `spec/changes/fix-observability-gaps/tasks.md:26`：明示「已落地（`data.py` 已拆为 `data/` 包）则按符号名在 `core/dashboard/data/timeline.py` 内修改」；`tasks.md:49`（3.1a）目标为 `get_spec_timeline` 的 Transition 去重逻辑，而 `get_spec_timeline` 与 P0 目标 `_parse_iso_ts` / `_timeline_sort_key` 同处 `core/dashboard/data/timeline.py`（`timeline.py:353` 调用 `_timeline_sort_key`，`:418` 定义 `_parse_iso_ts`）。
+
+**处置（MUST）**：本变更 MUST 把 `core/dashboard/data/timeline.py` 登记为**跨 spec 共享文件**，实现前确认 `fix-observability-gaps` 是否已在该文件落盘：已落盘 → 基于其最新内容按符号名开工；未落盘/并行在飞 → 两者 MUST 串行（先落者 push 后，后落者 rebase 再改），MUST NOT 与其实施窗口重叠提交同一文件。P0 与 `get_spec_timeline` 去重段是不同符号，符号级无交集，冲突仅限文件级合并。
 
 **转移清单**（落在上述文件、本变更不处理）：
 
@@ -67,6 +81,11 @@
 | 陈旧 docstring D3 引用（B6） | `verification/pipeline.py` | 同上 |
 
 **CYC-1 的非重叠子项**（`verification/escalation.py`、`verification/report_gate.py`、`dashboard/data/{runs,log_index,admin_actions,artifacts,__init__}.py`）可本变更处理：把 `get_runs` / `record_project_event` / `request_admin_invoke` / `parse_verify_progress` 搬入中性模块并由 `dashboard.data` 门面 re-export；`find_impl_run_file` / `parse_run_task_done` 直接改从 `core.run_task_track` 导入（零搬移）。**仅 engine.py 的那一行 import 转移。**
+
+**搬迁集的两条约定（评审补，2026-09-17）**：
+
+1. **交付面**：本搬迁落地文件为 `core/dashboard/data/{__init__,runs,log_index,admin_actions,artifacts}.py` + 新中性模块（默认 `core/signals.py`，见 Open Questions）+ 消费点 `core/event_bus.py`（`:364` `from core.dashboard.data import find_impl_run_file` 是 `find_impl_run_file` **唯一非 engine.py 侧消费点**，已登记进 tasks Deliverables）。中性模块路径 **MUST NOT** 取 `core/run_task_track.py`——该文件是在飞 `fix-robustness-edge-cases`（`status: implementing`）的登记交付物。
+2. **真源内部调用点**：`get_runs` 在 `runs.py:408` 被同模块裸调用（`sum(1 for r in get_runs(project_root) ...)`），`timeline.py:247` / `summary.py:{109,266,616}` 经门面 `_facade.get_runs` 调用。搬迁 MUST 保持这些调用点可用（门面 re-export + runs.py 内改为从新模块导入），且 MUST 保持 `_RUN_META_CACHE` / `_run_meta_cached` 的 (path, mtime_ns, size) memo 语义不变——该读路径性能由已 push 的 `fix-dashboard-read-path-performance` 刚完成优化，本搬迁为纯搬移，MUST NOT 触碰其缓存判据。**登记说明**：`get_runs` / `record_project_event` 在 `core/pm_engine/` 内的唯一进口就是 engine.py:21 那一行（已转移），故这两项搬迁本身**不减少任何非 engine.py 反向 import**，属为 engine.py 子项预置中性落点；若实现阶段认为收益不足，可将其登记为「不搬」并在 findings-ledger 写明依据，MUST NOT 为达成此项而改动缓存/读路径逻辑。
 
 ### D4：不改补丁语义
 
@@ -95,4 +114,4 @@
 
 ## Open Questions
 
-- CYC-1 的中性模块落点（新建 `core/signals.py` vs 并入既有模块）——实现阶段按依赖方向决定。
+- CYC-1 的中性模块落点（新建 `core/signals.py` vs 并入既有模块）——默认按 **新建 `core/signals.py`** 执行（tasks Deliverables 已按此登记）；实现阶段若改并入既有中性模块，MUST 在其 `.fenix-run-result.json` findings 登记实际落点路径，且 MUST NOT 落在 `core/run_task_track.py`（在飞 `fix-robustness-edge-cases` 的登记交付物）。

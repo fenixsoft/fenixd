@@ -87,7 +87,7 @@
 
 ## 1. 阶段 0：测试基线加固
 
-- [ ] 1.1 静态清点：把 `WorktreeManager`（82 方法）/ `Dispatcher`（56）/ `DashboardHandler`（66 + 伴生类/模块函数）全部方法逐名落位到 design D1 三张分组表，落盘 `contract-inventory.md`，**不留未归属项**
+- [ ] 1.1 静态清点：把 `WorktreeManager`（**83** 方法）/ `Dispatcher`（**56**）/ `DashboardHandler`（**80** + 伴生类 `SSEConnection`/`SSEHub`/`DashboardHTTPServer` + 10 模块函数）全部方法逐名落位到 design D1 三张分组表，落盘 `contract-inventory.md`，**不留未归属项**。清点须以 AST/静态解析结果计数并与三张表的条目数逐类比对（83 / 56 / 80），数量不等即视为未归属项存在，MUST 先补齐 design 分组表再进阶段 1
 - [ ] 1.2 补 characterization tests（`tests/test_characterization_giant_classes.py`）：重点覆盖盲区——worktree G5（`_run_dist_build`/`_rebuild_dist_after_merge`）/G6（`_purge_ignored_brought_in`/`_resolve_ignored_modify_delete_conflicts`）/G4（`_detect_wip_overlap`）；dispatch B 组（`_on_instant_fail_recovery`/`_on_transient_recovery`）、adjudication 组
 - [ ] 1.3 建立疑点清单（`giant-classes-findings.md`），只记录不修
 - [ ] 1.4 运行 `bin/run_full_suite.py` 记录基线失败集合
@@ -97,7 +97,7 @@
 
 ## 2. 阶段 1：worktree_manager → 子包
 
-- [ ] 2.1 按 design D2 把 `core/worktree_manager.py` 改名为 `core/worktree_manager/_legacy.py` 并建包，门面 re-export 全部公开名（8 常量、`MergeContract`/`MergeConflictInfo`、`_is_claude_process`、`_is_build_artifact_path`），本 commit 上既有 import 全可用
+- [ ] 2.1 按 design D2 把 `core/worktree_manager.py` 改名为 `core/worktree_manager/_legacy.py` 并建包，门面 re-export 全部公开名（8 常量、`MergeConflictInfo`、`_is_claude_process`、`_is_build_artifact_path`），本 commit 上既有 import 全可用
 - [ ] 2.2 摘出 G3（`locks.py`）与 G8（`queries.py`）——纯工具/只读层，低耦合
 - [ ] 2.3 摘出 G2（`legacy_registry.py`）与 G9（`repair_site.py`）
 - [ ] 2.4 摘出 G1（`lifecycle.py`）
@@ -125,7 +125,7 @@
 - [ ] 4.3 摘出资源子路由：`spec_routes.py`/`project_routes.py`/`settings_routes.py`/`alert_routes.py`/`run_routes.py`/`evolution_routes.py`/`help_routes.py`
 - [ ] 4.4 摘出 `sse_routes.py`（H9）与 `static_routes.py`（H10）
 - [ ] 4.5 把 `_handle_api`/`_handle_api_post`/`_handle_api_delete` 的 55 分支改造为**表驱动 + 按资源委派**（design D1）；参数化路径用 regex matcher；**保留 `endswith` 顺序陷阱**（project lifecycle 排在 describe 之后、`/api/projects/<name>` DELETE 之前）
-- [ ] 4.6 同步 `bin/gen-route-map.py::scan_server_routes` 的扫描源（design D4），确认 `tests/test_planner_route_map.py` 通过
+- [ ] 4.6 按 design D4 三条 MUST 同步 `bin/gen-route-map.py`：①`scan_server_routes` 扫描源（改为 `routes/` 子包或表驱动路由表）；②方法归属启发式（MUST NOT 再依赖回看 60 行判 POST/DELETE）；③自检 grep 源与 ① 同文件集合。确认 `tests/test_planner_route_map.py` 通过，并补一条**本仓覆盖回归断言**：对本仓重构前后各生成一次地图，条目数不得减少
 - [ ] 4.7 门面 re-export 校验：`serve`/`STATIC_DIR`/`DashboardHTTPServer`/`find_free_port`/`SSEHub`/`HELP_DOC_NAME_RE`/`_bind_parent_lifecycle`/`_claude_watchdog_loop`/`_proc_starttime`/`_start_claude_watchdog` 全部可用；`start_daemon`/`stop_daemon` 字符串 patch 语义保持
 - [ ] 4.8 端点集合核对：枚举重构前后 (path, method) 集合，确认完全相等；运行回归比对基线
 

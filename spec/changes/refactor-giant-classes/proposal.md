@@ -5,8 +5,8 @@
 前三条重构（`refactor-agent-runner-module` / `refactor-dashboard-data-module` / `refactor-verification-module`）解决了三个最扎眼的巨型**文件**，但全仓仍有三个超过 2000 行的巨型**类**从未被任何重构覆盖：
 
 - `core/worktree_manager.py` 的 `WorktreeManager` —— **4052 行 / 83 个方法**
-- `core/pm_engine/dispatch.py` 的 `Dispatcher` —— **3789 行 / 55 个方法**
-- `core/dashboard/server.py` 的 `DashboardHandler` —— **2300 行 / 80 个方法**（其中 `_handle_api_post` 是 **33 个 `elif` 分支**的路由链、`_handle_api` 22 个分支）
+- `core/pm_engine/dispatch.py` 的 `Dispatcher` —— **3856 行 / 56 个方法**
+- `core/dashboard/server.py` 的 `DashboardHandler` —— **2300 行 / 80 个方法**（其中 `_handle_api_post` 是 **33 个 `elif` 分支**的路由链、`_handle_api` 20 个分支）
 
 它们各自混合多个互不相关的职责（worktree 生命周期 / merge-back / autostash / 冲突消解；队列 / worker / 车道 / 交付物裁定；HTTP 路由 / 各资源 API / 静态服务），且是全仓改动最频繁的文件之一（近 300 提交内 `worktree_manager.py` 49 次、`dispatch.py` 55 次、`server.py` 65 次）——巨型单类导致新人无法整类理解、改动牵一发动全身、多 Agent 并发开发时冲突集中于此。
 
@@ -33,7 +33,7 @@
 
 ## Impact
 
-- **代码**：`core/worktree_manager.py`（4180 行文件）→ `core/worktree_manager/` 子包；`core/pm_engine/dispatch.py`（3818 行文件）→ `core/pm_engine/dispatch/` 子包；`core/dashboard/server.py` 的 `DashboardHandler`（2300 行类）→ 按资源拆分的子路由模块 + 薄分派。
+- **代码**：`core/worktree_manager.py`（4180 行文件）→ `core/worktree_manager/` 子包；`core/pm_engine/dispatch.py`（3856 行文件）→ `core/pm_engine/dispatch/` 子包；`core/dashboard/server.py` 的 `DashboardHandler`（2300 行类）→ 按资源拆分的子路由模块 + 薄分派。
 - **API**：零变化。`WorktreeManager` / `Dispatcher` / `DashboardHandler` 的导入路径与调用路径保持可用（新模块符号经宿主 re-export）。
 - **测试**：全量 `bin/run_full_suite.py` 不引入新失败（须与阶段 0 基线比对）；以字符串路径 patch 的模块级名字须专项验证 patch 语义保持。
 - **并发**：三条前置重构（`runner.py` / `pipeline.py` / `engine.py`）与本变更**源文件不相交**，可与 `refactor-long-functions` 并行；本变更自身覆盖三个互不 import 的文件，内部可按文件顺序推进。

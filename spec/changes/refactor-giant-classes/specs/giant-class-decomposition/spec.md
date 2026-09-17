@@ -4,7 +4,7 @@
 
 ### Requirement: 三个巨型类按职责分模块
 
-`core/worktree_manager.py` 的 `WorktreeManager`（约 4052 行 / 83 方法）、`core/pm_engine/dispatch.py` 的 `Dispatcher`（约 3789 行 / 55 方法）、`core/dashboard/server.py` 的 `DashboardHandler`（约 2300 行 / 80 方法）MUST 各自按内聚职责拆分：
+`core/worktree_manager.py` 的 `WorktreeManager`（约 4052 行 / 83 方法）、`core/pm_engine/dispatch.py` 的 `Dispatcher`（约 3856 行 / 56 方法）、`core/dashboard/server.py` 的 `DashboardHandler`（约 2300 行 / 80 方法）MUST 各自按内聚职责拆分：
 
 - `core/worktree_manager.py` MUST 拆为 `core/worktree_manager/` 子包，按职责域（worktree 生命周期、merge-back、autostash/stash 回收、冲突消解、构建产物重建等）分子模块。
 - `core/pm_engine/dispatch.py` MUST 拆为 `core/pm_engine/dispatch/` 子包，按职责域（队列与优先级、worker 执行、车道流转、交付物裁定、退避与重试等）分子模块。
