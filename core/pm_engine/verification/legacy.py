@@ -332,7 +332,10 @@ def _run_legacy_verification(pipeline, spec_name: str):
             # 读它会错误判为「非 verified」而漏拦）。
             if pipeline._verified_gate_refuses(spec_name, "bug-found"):
                 return
-            pipeline._context.state_machine.transition(spec_name, "bug-found")
+            pipeline._context.state_machine.transition(
+                spec_name, "bug-found",
+                trigger_run_id=result.run_id, agent_type="tester", channel="auto",
+            )
             pipeline._context.state_machine.update_spec(
                 spec_name,
                 {
@@ -443,7 +446,10 @@ def _run_legacy_verification(pipeline, spec_name: str):
                 )
                 return
 
-            pipeline._context.state_machine.transition(spec_name, "verified")
+            pipeline._context.state_machine.transition(
+                spec_name, "verified",
+                trigger_run_id=result.run_id, agent_type="tester", channel="auto",
+            )
             pipeline._context.state_machine.update_spec(
                 spec_name,
                 {
@@ -475,7 +481,10 @@ def _run_legacy_verification(pipeline, spec_name: str):
         # verifier agent 进程失败的降级同样不得覆盖已 verified 结论。
         if pipeline._verified_gate_refuses(spec_name, "bug-found"):
             return
-        pipeline._context.state_machine.transition(spec_name, "bug-found")
+        pipeline._context.state_machine.transition(
+            spec_name, "bug-found",
+            trigger_run_id=result.run_id, agent_type="tester", channel="auto",
+        )
         pipeline._context.state_machine.update_spec(
             spec_name,
             {

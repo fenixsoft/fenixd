@@ -335,7 +335,11 @@ def promote_spec(project_root, spec_name: str) -> dict:
         # 依分流结论转移：命中跳过白名单 → ready；否则 → reviewing 待方案评审。
         # 与 _on_spec_drafted 收尾语义一致，MUST NOT 硬编码 ready（全通道覆盖）。
         next_status = result.get("next_status", "ready")
-        sm.transition(spec_name, next_status)
+        # fix-observability-gaps 2.2：dashboard 人工晋升来源（channel=manual）
+        sm.transition(
+            spec_name, next_status,
+            trigger_run_id=None, agent_type=None, channel="manual",
+        )
         return {"ok": True, "found": True, "violations": [], "next_status": next_status}
     # 失败
     if "reason" in result:
