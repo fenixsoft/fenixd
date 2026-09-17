@@ -66,15 +66,40 @@ def append_run_error(run_file: Path, error: str, exit_code: int) -> None:
     append_run_line(run_file, {"type": "error", "error": error, "exit_code": exit_code})
 
 
+# 后缀剥离正则：attempt（-a<n>）与瞬态重试（-r<n>）段，任意顺序、可重复出现。
+# 与 core/agent_runner/runner.py AgentRunner._normalize_run_id（(?:-a\d+|-r\d+)+$）
+# 及 core/admin_monitor.py _spec_from_run_id（重复组 -(?:a|r)\d+）同口径
+# （fix-robustness-edge-cases 1.0/1.2：三者对 -r<n> 的剥除语义 MUST 一致，
+# 否则 run 归属解析互相漂移——-r<n> 漏剥会把在跑 run 判成「非本 spec」）。
+RUN_ID_SUFFIX_RE = re.compile(r"(-(?:a|r)\d+)+$")
+
+
+def strip_run_id_suffixes(run_id: str) -> str:
+    """剥除 run_id 尾部 attempt/瞬态重试后缀（``-a<n>`` / ``-r<n>``），返回基础 run_id。
+
+    与 ``AgentRunner._normalize_run_id``（add-run-cancel 归一化助手）同口径；
+    本处为模块级纯函数，供 ``run_spec_part`` 与按 run 分组（预算 attempt 归并，
+    core/pm_engine/budget.py _count_normal_completed_impl_runs）共用，避免后缀
+    剥离逻辑在判定点重复实现（1.2 唯一解析来源约束）。
+    """
+    return RUN_ID_SUFFIX_RE.sub("", run_id)
+
+
 def run_spec_part(run_id: str) -> str:
     """从 run_id 推断 spec 名（与 get_runs 的推断逻辑对齐，供索引分组使用）。
 
-    依次剥离 agent 类型前缀、attempt 段（-a<n>）与时间戳段（-<unix秒>）。
+    依次剥离 agent 类型前缀、attempt/瞬态重试段（-a<n> / -r<n>，见
+    ``strip_run_id_suffixes``）与时间戳段（-<unix秒>）。
+
+    -r<n> 由 runner.py 瞬态重试子循环生成（形如 ``<base>-a1-r1``），漏剥会把
+    在跑的 run 解析成整段非 spec 名，全等归属守卫将其判为「非本 spec」→ 活性/
+    近期活动判定取假、误报 stuck（与 admin_monitor._spec_from_run_id 事故口径
+    一致，evo-verifier-result-single-source）。
 
     前缀表 = 本模块 ``RUN_ID_AGENT_PREFIXES``（唯一真源，见其定义处注释）。
     """
     _agent_type, spec_part = infer_run_agent_type(run_id)
-    spec_part = re.sub(r"-a\d+$", "", spec_part)
+    spec_part = strip_run_id_suffixes(spec_part)
     m = re.match(r"^(.*)-\d{9,10}$", spec_part)
     if m:
         spec_part = m.group(1)

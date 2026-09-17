@@ -57,7 +57,7 @@ class TestDiscoverFaultIsolation:
             "scan_dirs": [str(scan)],
         })
 
-        with caplog.at_level(logging.WARNING, logger="core.dashboard.registry"):
+        with caplog.at_level(logging.WARNING, logger="fenixd.dashboard.registry"):
             result = reg.discover()
 
         assert isinstance(result, list)
@@ -91,7 +91,7 @@ class TestDiscoverFaultIsolation:
         reg = Registry(config_path=cfg)
         reg.save({"port": 8787, "projects": [], "scan_dirs": [str(scan)]})
 
-        with caplog.at_level(logging.WARNING, logger="core.dashboard.registry"):
+        with caplog.at_level(logging.WARNING, logger="fenixd.dashboard.registry"):
             result = reg.discover()
 
         names = {p["name"] for p in result}

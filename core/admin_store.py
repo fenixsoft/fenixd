@@ -66,16 +66,27 @@ class AdminStore:
         self._lockfile.parent.mkdir(parents=True, exist_ok=True)
         return open(self._lockfile, "w")
 
-    @staticmethod
-    def _read_unlocked(path: Path) -> list:
+    def _read_unlocked(self, path: Path) -> "tuple[list, bool]":
+        """读取告警记录；返回 ``(records, corrupt)``。
+
+        ``corrupt=True`` 表示「本次读取因解析失败走了损坏处理路径」——损坏
+        文件已改名 ``.corrupt-<ts>`` 留底取证、返回空集合（fix-robustness-edge-
+        cases 2.1）。留底改名后的 ``[]`` 与「文件本不存在 / 合法空数组」在
+        返回值上不可区分，故下限保护（``_mutate``）必须凭本信号的显式语义
+        判定，不得按实现默认推断（design D2：否则二选一皆错——恒不触发则
+        静默清库仍在，恒触发则拦掉损坏后的合法恢复写入）。正常空文件/合法
+        空数组路径恒 ``corrupt=False``，不得被下限保护误拦。
+        """
         if not path.exists():
-            return []
+            return [], False
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            return []
+            return [], self._quarantine_corrupt(path)
         if not isinstance(data, list):
-            return []
+            # 非数组内容同样无法解读（读-改-写会以空为底抹掉全部历史）——
+            # 与非法 JSON 同视为损坏，一并留底
+            return [], self._quarantine_corrupt(path)
         recs = [e for e in data if isinstance(e, dict)]
         # 存量（修复前落盘）dict/list evidence 读侧归一为字符串，一次读即自愈
         # （回归 fix-alert-evidence-render-crash）：写入口修复只能挡住新写入，
@@ -85,13 +96,40 @@ class AdminStore:
             ev = e.get("evidence")
             if ev is not None and not isinstance(ev, str):
                 e["evidence"] = json.dumps(ev, ensure_ascii=False)
-        return recs
+        return recs, False
+
+    def _quarantine_corrupt(self, path: Path) -> bool:
+        """把损坏的告警文件改名 ``<name>.corrupt-<ts>`` 留底，返回是否成功。
+
+        读损坏的取证保留：改名后返回空集合，且不覆盖损坏证据（后续写回受
+        ``_mutate`` 下限保护拒绝）。改名失败（OSError，权限/硬件异常）仍返回
+        True——损坏语义不变，写回同样被拒（fail-closed：宁可告警暂时写不进，
+        不可静默清掉全部历史），需人工介入修复。
+        """
+        dest = path.with_name(f"{path.name}.corrupt-{int(time.time())}")
+        try:
+            if path.exists():
+                path.rename(dest)
+            if self._logger is not None:
+                self._logger.warning(
+                    "admin_store",
+                    f"告警文件读取失败，已留底改名 {dest}（本次返回空集合；"
+                    "写回受下限保护，不覆盖损坏证据）",
+                )
+        except OSError:
+            if self._logger is not None:
+                self._logger.warning(
+                    "admin_store",
+                    f"告警文件损坏留底改名失败 {path}（写回仍将被拒，需人工介入）",
+                )
+        return True
 
     def _read_locked(self) -> list:
         with self._lock() as lf:
             fcntl.flock(lf, fcntl.LOCK_EX)
             try:
-                return self._read_unlocked(self.alerts_path)
+                records, _corrupt = self._read_unlocked(self.alerts_path)
+                return records
             finally:
                 fcntl.flock(lf, fcntl.LOCK_UN)
 
@@ -127,14 +165,30 @@ class AdminStore:
         （无任何变更）则跳过写回，文件 mtime 保持不变。
 
         写回前自动裁剪到最近 MAX_RECORDS 条（新记录在数组末尾，删头部最旧的）。
+
+        写回下限保护（fix-robustness-edge-cases 2.2）：当本次读取因损坏走了
+        留底路径（``_read_unlocked`` 的 corrupt 信号为真）时拒绝写回——否则
+        读-改-写会以空数组为底，把损坏文件里的全部既有历史静默抹掉。该保护
+        仅凭 corrupt 信号触发：文件不存在/合法空数组路径恒放行，留底改名后
+        的下一次 mutate 读到的是缺失文件（干净空集合、corrupt=False），
+        恢复写入不被拦（scenario「损坏后恢复写入」）。
         """
         with self._thread_lock:
             with self._lock() as lf:
                 fcntl.flock(lf, fcntl.LOCK_EX)
                 try:
-                    records = self._read_unlocked(self.alerts_path)
+                    records, corrupt = self._read_unlocked(self.alerts_path)
                     result = fn(records)
                     if skip_unchanged and not result:
+                        return result
+                    if corrupt:
+                        # 旧记录整体不可读（已留底取证）：拒绝本次写回
+                        if self._logger is not None:
+                            self._logger.error(
+                                "admin_store",
+                                "告警文件损坏留底后拒绝写回（历史不覆盖，"
+                                "待人工介入；留底后新告警恢复写入不被拦）",
+                            )
                         return result
                     if len(records) > MAX_RECORDS:
                         del records[:-MAX_RECORDS]

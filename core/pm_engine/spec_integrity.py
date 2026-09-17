@@ -30,6 +30,10 @@ c-sched-clear 两条空占位 spec 各盲跑 6 个 run。本模块在派发前�
 import logging
 from pathlib import Path
 
+# 可传播到 fenixd 已挂载 handler 的结构化日志器（fix-robustness-edge-cases 3.1：
+# 收敛旁路裸 getLogger("pm_engine")，保证 WARNING 落入 fenixd.log）
+_logger = logging.getLogger("fenixd.pm_engine.spec_integrity")
+
 
 def spec_has_content(project_root, spec_name: str) -> bool:
     """判定 spec 目录是否含实质内容（纯函数，design D2）。
@@ -58,7 +62,7 @@ def spec_has_content(project_root, spec_name: str) -> bool:
         return False
     except OSError:
         # 读目录异常保守放行：权限/临时不可达下宁可放行让预算闸门兜底
-        logging.getLogger("pm_engine").warning(
+        _logger.warning(
             "读取 spec 目录失败（保守放行）: %s",
             spec_dir,
         )

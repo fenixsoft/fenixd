@@ -56,7 +56,7 @@ class TestRefreshLocks:
         wm = make_wm(tmp_path, alive=False)
         wm._spec_locks.add("s1:implementer")
         # 流文件早已停止增长（超过判定窗口）
-        touch_run_stream(tmp_path, "s1", "impl-s1-100", age=STALE_LOCK_IDLE_SECONDS + 60)
+        touch_run_stream(tmp_path, "s1", "impl-s1-1789000100", age=STALE_LOCK_IDLE_SECONDS + 60)
         assert wm.has_active_worktree("s1") is False
         assert "s1:implementer" not in wm._spec_locks  # 陈锁已回收
 
@@ -64,7 +64,7 @@ class TestRefreshLocks:
         """进程扫描未命中但流仍在增长：保守视为持锁，不回收。"""
         wm = make_wm(tmp_path, alive=False)
         wm._spec_locks.add("s1:implementer")
-        touch_run_stream(tmp_path, "s1", "impl-s1-100", age=5)
+        touch_run_stream(tmp_path, "s1", "impl-s1-1789000100", age=5)
         assert wm.has_active_worktree("s1") is True
         assert "s1:implementer" in wm._spec_locks
 
@@ -85,8 +85,8 @@ class TestRefreshLocks:
     def test_refresh_locks_releases_only_stale(self, tmp_path):
         wm = make_wm(tmp_path, alive=False)
         wm._spec_locks.update({"stale:implementer", "live:implementer"})
-        touch_run_stream(tmp_path, "stale", "impl-stale-1", age=STALE_LOCK_IDLE_SECONDS + 1)
-        touch_run_stream(tmp_path, "live", "impl-live-1", age=1)
+        touch_run_stream(tmp_path, "stale", "impl-stale-1789000001", age=STALE_LOCK_IDLE_SECONDS + 1)
+        touch_run_stream(tmp_path, "live", "impl-live-1789000002", age=1)
         # live spec 的进程扫描命中：换一个按 spec 名区分的替身
         wm._process_scanner = lambda spec: spec == "live"
         released = wm.refresh_locks()
@@ -109,7 +109,7 @@ class TestRefreshLocks:
         wm = make_wm(tmp_path, alive=False)
         wm._process_scanner = scanner
         wm._spec_locks.add("s1:implementer")
-        touch_run_stream(tmp_path, "s1", "impl-s1-1", age=STALE_LOCK_IDLE_SECONDS + 1)
+        touch_run_stream(tmp_path, "s1", "impl-s1-1789000001", age=STALE_LOCK_IDLE_SECONDS + 1)
         wm.has_active_worktree("s1")
         wm.has_active_worktree("s1")
         assert len(calls) == 1
@@ -159,7 +159,7 @@ class TestHasLiveAttempt:
             runner._pgrep_live_attempt = _boom
         else:
             runner._pgrep_live_attempt = lambda spec: False
-        touch_run_stream(tmp_path, "s1", "impl-s1-7", age=stream_age)
+        touch_run_stream(tmp_path, "s1", "impl-s1-1789000007", age=stream_age)
         assert runner.has_live_attempt("s1") is expected
 
     def test_pgrep_matches_worktree_literal(self, tmp_path):
@@ -589,7 +589,7 @@ class TestReadyStallPatrol(RecoveryWatchFixture):
     def test_recent_run_activity_not_reported(self):
         self.make_ready_spec("s1")
         self._stale(hours=1)
-        touch_run_stream(self.project_root, "s1", "impl-s1-1", age=60)
+        touch_run_stream(self.project_root, "s1", "impl-s1-1789000001", age=60)
         result = self.engine.check_blockers()
         self.assertEqual([b for b in result["blockers"] if b["spec"] == "s1"], [])
 

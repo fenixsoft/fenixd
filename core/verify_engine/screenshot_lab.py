@@ -28,7 +28,7 @@ BLANK_DOMINANT_COLOR_PCT = 0.99
 # 此处用像素值范围 / std 近似：std 在 BLANK_STD_THRESHOLD 之上但 < 0.08 视为低对比度
 LOW_CONTRAST_STD_UPPER = 0.08
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("fenixd.verify_engine.screenshot_lab")
 
 
 def classify_screenshot(
