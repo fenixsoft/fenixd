@@ -321,7 +321,8 @@ def spec_summary(project_root, spec_name: str, entry: dict, runs_files: list | N
         # （subject 无编号 / agent 不勾 tasks.md）时仍能看到 run 推进。
         "run_progress": _facade.run_task_progress(project_root, spec_name, files=runs_files),
         # 存活心跳（2026-09-15 原地补充）：run_progress 依赖 TaskCreate/TaskUpdate，
-        # 而派发路由实测不含该工具族 → 实现期间恒 0/N。run_activity 以「产物是否
+        # 该工具族虽经 CLAUDE_CODE_ENABLE_TODO_TOOLS=1 恢复，实现期间 agent 未必
+        # 立刻建 Task、历史 run 也可能无事件。run_activity 以「产物是否
         # 仍在写」提供不依赖任务工具的存活线索，前端据此在进度单元显示「进行中」。
         "run_activity": _facade.run_activity(project_root, spec_name, files=runs_files),
         "verify_done": vp.get("done", 0),

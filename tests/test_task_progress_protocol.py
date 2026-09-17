@@ -48,9 +48,10 @@ class TestTaskProgressContractPrompt(unittest.TestCase):
         """双分支 prompt 均含任务编号契约段（契约段文本两分支共用，见
         test_contract_text_shared_between_branches 的逐字节一致锁定）。
 
-        fix-impl-tasks-completion-gate D5/6.3：契约条件生成——本测试环境无 impl
-        run 产物（init.tools 不可得）→ 路由判定为「工具不可用」，prompt 以
-        completed_tasks 为进度载体、MUST NOT 要求 TaskCreate。
+        2026-09-17（方案 1）：工具可用性恒为可用——不再按历史 run 的
+        init.tools 探测（旧探测对无历史 run 的新 spec / 修复轮必然误判「工具
+        不可用」，注入禁止段致 agent 不用工具，自我延续）。契约段无条件注入
+        任务粒度映射。
         """
         for agent_type in ("implementer", "fast-track"):
             with self.subTest(agent_type=agent_type):
@@ -66,9 +67,11 @@ class TestTaskProgressContractPrompt(unittest.TestCase):
                 assert "先勾后做" in prompt
                 # 收尾逐项勾选与 completed_tasks 清单一一对应
                 assert "一一对应，不留半勾" in prompt
-                # 工具不可用分支 MUST NOT 要求 TaskCreate（9.6 断言）
-                assert "MUST NOT 尝试创建任务" in prompt
-                assert "TaskUpdate status=completed" not in prompt
+                # 工具粒度映射无条件注入（方案 1）
+                assert "只能由一个 TaskCreate 对应" in prompt
+                assert "TaskUpdate status=completed" in prompt
+                # 不再存在「工具不可用」禁止段
+                assert "MUST NOT 尝试创建任务" not in prompt
 
     def test_contract_text_shared_between_branches(self):
         """文本复用：两分支注入的契约段逐字节一致（独立构建路径各自注入）。"""
@@ -94,14 +97,15 @@ class TestTaskProgressContractPrompt(unittest.TestCase):
         prompt = self._prompt("fast-track")
         assert "completed_tasks" in prompt
 
-    def test_task_tools_unavailable_no_taskcreate_force(self):
-        """9.6：工具不可用分支（无 run 产物）prompt 不含 TaskCreate 强制语句。"""
+    def test_task_tools_unconditionally_available(self):
+        """方案 1：工具可用性恒为可用——无 run 产物（无历史 run）时契约段
+        仍注入任务粒度映射，不再走「工具不可用」分支。"""
         for agent_type in ("implementer", "fast-track"):
             with self.subTest(agent_type=agent_type):
                 prompt = self._prompt(agent_type)
-                # 契约段不得要求创建 TaskCreate / 不得出现一任务一 TaskCreate 指令
-                assert "只能由一个 TaskCreate 对应" not in prompt
-                assert "TaskUpdate status=completed" not in prompt
+                assert "只能由一个 TaskCreate 对应" in prompt
+                assert "TaskUpdate status=completed" in prompt
+                assert "MUST NOT 尝试创建任务" not in prompt
 
     def test_task_tools_available_injects_taskcreate_contract(self):
         """6.3：init.tools 含 TaskCreate 时契约段附加任务粒度映射（条件生效）。"""

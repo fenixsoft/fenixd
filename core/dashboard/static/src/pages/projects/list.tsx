@@ -844,8 +844,9 @@ export default function SpecListPage() {
         const runAhead = !!rp && rp.done > record.task_done;
         // run-progress-current：done=0 阶段也有进行中任务的观感
         const runCurrent = rp?.current && rp.current.length > 0 ? rp.current : null;
-        // 存活心跳（2026-09-15 原地补充）：run_progress 依赖 TaskCreate/TaskUpdate，
-        // 派发路由实测不含该工具族 → 恒 0/N 静止。run_activity 用「产物是否仍在写」
+        // 存活心跳（2026-09-15 原地补充）：run_progress 依赖 TaskCreate/TaskUpdate；
+        // 该工具族虽经 CLAUDE_CODE_ENABLE_TODO_TOOLS=1 恢复，实现期间 agent 未必
+        // 立刻建 Task、历史 run 也可能无事件。run_activity 用「产物是否仍在写」
         // 提供不依赖任务工具的存活线索，仅在无更细粒度线索（current）时兜底显示。
         const runActive = !isVerify && !runCurrent && !!record.run_activity?.active;
         // 对齐 v1：条下方两侧分别显示 done/total 与 百分比

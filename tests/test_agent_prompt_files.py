@@ -627,16 +627,18 @@ class TestTaskProgressContractDualBranch:
             assert "unfinished" in prompt
             assert "一一对应" in prompt
 
-    def test_tools_unavailable_no_taskcreate_force(self, tmp_path):
-        """工具不可用分支：prompt 不含 TaskCreate/TaskUpdate 强制要求。"""
+    def test_tools_unconditionally_available(self, tmp_path):
+        """方案 1（2026-09-17）：工具可用性恒为可用——即使无 run 产物（无历史
+        run 可探测），契约段仍注入任务粒度映射，不再注入「工具不可用」禁止段。"""
         for agent_type in ("implementer", "fast-track"):
             prompt = self._prompt(tmp_path, agent_type)
-            assert "MUST NOT 尝试创建任务" in prompt
-            assert "只能由一个 TaskCreate 对应" not in prompt
-            assert "TaskUpdate status=completed" not in prompt
+            assert "只能由一个 TaskCreate 对应" in prompt
+            assert "TaskUpdate status=completed" in prompt
+            assert "MUST NOT 尝试创建任务" not in prompt
 
     def test_tools_available_injects_taskcreate_mapping(self, tmp_path):
-        """工具可用分支：init.tools 暴露 TaskCreate 时注入任务粒度映射契约。"""
+        """init.tools 暴露 TaskCreate 时同样注入任务粒度映射契约（与无条件
+        注入路径文本一致）。"""
         tools = ["Task", "TaskCreate", "TaskUpdate", "Bash", "Read", "Write"]
         for agent_type in ("implementer", "fast-track"):
             prompt = self._prompt(tmp_path, agent_type, run_tools=tools)

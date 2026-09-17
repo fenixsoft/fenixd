@@ -210,7 +210,8 @@ export interface SpecSummary {
   run_progress?: { done: number; total: number; current?: string[] } | null;
   /**
    * 存活心跳（2026-09-15 原地补充）：run_progress 依赖 TaskCreate/TaskUpdate，
-   * 而派发路由实测不含该工具族 → 实现期间恒 0/N。本字段以「产物是否仍在写」
+   * 该工具族虽经 CLAUDE_CODE_ENABLE_TODO_TOOLS=1 恢复，但实现期间 agent 未必
+   * 立刻建 Task、历史 run 也可能无事件。本字段以「产物是否仍在写」
    * 提供不依赖任务工具的存活线索，前端据此在进度单元显示「进行中」。
    */
   run_activity?: { active: boolean; last_event_seconds_ago: number | null } | null;

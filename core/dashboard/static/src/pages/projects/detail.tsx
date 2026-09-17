@@ -1639,7 +1639,8 @@ export default function SpecDetailPage() {
               </Typography.Text>
             ) : null}
             {/* 存活心跳（2026-09-15 原地补充）：run_progress 依赖 TaskCreate/
-                TaskUpdate，派发路由实测不含该工具族 → 实现期间恒 0/N。run_activity
+                TaskUpdate；该工具族虽经 CLAUDE_CODE_ENABLE_TODO_TOOLS=1 恢复，
+                但实现期间 agent 未必立刻建 Task、历史 run 也可能无事件。run_activity
                 用「产物是否仍在写」提供不依赖任务工具的存活线索，仅在无更细粒度
                 线索（current）时兜底显示，避免误读成「卡死」。 */}
             {!detail?.run_progress?.current?.length && detail?.run_activity?.active ? (

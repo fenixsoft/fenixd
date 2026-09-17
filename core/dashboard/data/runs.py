@@ -564,11 +564,11 @@ def run_activity(project_root, spec_name, *, now: float | None = None, files=Non
     """最新 impl run 的存活心跳（不依赖 TaskCreate/TaskUpdate 的实时兜底）。
 
     run_task_progress（fix-implementer-task-progress D3）依赖 run 产物中的
-    TaskCreate/TaskUpdate 事件（parse_run_task_done）。但派发路由实际不暴露
-    任务清单工具（2026-09-15 实测 308/308 impl+run 的 ``init.tools`` 不含
-    TaskCreate），该信号在实现期间恒为 0/0/[]——任务进度列静止在 0/N，用户
-    无法分辨「卡死」与「正在实现但细粒度进度不可用」。本函数改用与任务工具
-    无关的线索：**产物文件是否仍在写**。
+    TaskCreate/TaskUpdate 事件（parse_run_task_done）。该信号虽在 2026-09-15
+    经 ``CLAUDE_CODE_ENABLE_TODO_TOOLS=1`` 显式启用后恢复，但实现期间 agent
+    未必立刻建 Task、且历史 run 仍可能无事件，信号可能滞后或缺失——任务进度
+    列静止在 0/N 时用户无法分辨「卡死」与「正在实现但细粒度进度不可用」。
+    本函数改用与任务工具无关的线索：**产物文件是否仍在写**。
 
     - ``active``：最新 impl run 末行非终态（running/empty）且产物 mtime 未超
       ``_RUN_STALE_SECONDS``（复用 get_runs 的停更判据，两处同一阈值——已死

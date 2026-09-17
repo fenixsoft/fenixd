@@ -739,7 +739,7 @@ class PromptBuilder:
         return "\n".join(lines)
 
     def _task_progress_contract_section(self, spec_name: str) -> str:
-        """任务进度契约段（fix-impl-tasks-completion-gate D5/6.3，条件生成）。
+        """任务进度契约段（fix-impl-tasks-completion-gate D5/6.3）。
 
         full 与 fast-track 两个 implementer 分支共用同一文本（同源生成，内容
         逐字一致）。契约载体：
@@ -750,43 +750,35 @@ class PromptBuilder:
           数字任务在 completed_tasks 恰出现一次，每个 ``- [ ]`` 数字任务在
           partial 收工时于 unfinished 恰出现一次）。禁止把多条任务归并、禁止把
           分组标题当任务登记。
-        - **工具可用时的附加契约（条件生效）**：当且仅当派发路由的 ``init.tools``
-          暴露 ``TaskCreate`` 时，附加任务粒度映射——每条任务一个 TaskCreate、
-          subject 以 ``Task <tasks.md id>: <标题>`` 开头、完成瞬间对同一 taskId
-          发 ``TaskUpdate status=completed`` 不得攒批。
-        - **工具不可用**（``init.tools`` 不含 TaskCreate / init 事件不可得 / 无
-          历史 run）：MUST NOT 要求 TaskCreate/TaskUpdate，显式说明进度以
-          ``completed_tasks`` 清单为准——禁止强制要求本路由不提供的工具
-          （141/141 runner 派发 run 实测无 TaskCreate，强制即不可执行契约）。
-        """
-        from core.run_task_track import find_impl_run_file, read_init_tools
+        - **任务粒度映射（无条件生效）**：每条任务一个 TaskCreate、subject 以
+          ``Task <tasks.md id>: <标题>`` 开头、完成瞬间对同一 taskId 发
+          ``TaskUpdate status=completed`` 不得攒批。
 
-        tools_available = False
-        try:
-            run_file = find_impl_run_file(self._pm.project_root, spec_name)
-            tools = read_init_tools(run_file)
-            tools_available = bool(tools) and "TaskCreate" in tools
-        except Exception:
-            tools_available = False
-        if tools_available:
-            task_lines = (
-                f'- 每一条 tasks.md 任务（如 "1.3 配置解析签名缓存"）只能由一个 '
-                f'TaskCreate 对应，TaskCreate 的 subject MUST 以 "Task <id>: '
-                f'<标题>" 开头，id **逐字照抄 tasks.md 的"分组号.任务号"**（含'
-                f'小写字母后缀，如 "Task 1.2b: ..."、"Task 4.6b: ..."；后缀'
-                f"不是笔误），禁止把多条任务归并为一条 TaskCreate，也禁止把分组"
-                f"（## 标题）当任务创建。\n"
-                f"- 开始实现某任务时创建其 TaskCreate；该任务完成的瞬间立刻对同一"
-                f"taskId 发 TaskUpdate status=completed，不得攒批到收尾。TaskUpdate "
-                f"的 taskId 取 TaskCreate 结果返回的任务编号（1 基创建序，形如 "
-                f'"Task #1 created"）。\n'
-            )
-        else:
-            task_lines = (
-                f"- 本派发路由不暴露 TaskCreate/TaskUpdate 工具（init.tools 不含 "
-                f"TaskCreate）——MUST NOT 尝试创建任务，任务粒度实时汇报不可用；"
-                f"进度以 .fenix-run-result.json 的 completed_tasks 清单为准。\n"
-            )
+        工具可用性**恒为可用**——不再按历史 run 的 ``init.tools`` 探测。
+        根因（2026-09-17 定案）：``_run_claude`` 已无条件注入
+        ``CLAUDE_CODE_ENABLE_TODO_TOOLS=1``（见 runner.py，工具族恒可用），
+        而旧探测读的是**派发前最新一个历史 run**——新 run 的 ``init`` 事件要等
+        run 启动后才产生，故新 spec（无历史 run）/ 修复轮（历史 run 是修复前跑的）
+        必然误判「工具不可用」→ 注入禁止段 → agent 不用工具 → 下一轮更读不到
+        工具，自我延续（fix-impl-resultfile-contract-gap 事故实证：init.tools
+        26 个含 TaskCreate，转录里 TaskCreate 调用 0 次）。工具可用性是派发路由
+        的**静态属性**，与 runner 的单点注入对齐，不再靠历史 run 猜。
+
+        ``spec_name`` 保留在签名中（两处调用点仍按位置传参）——契约段内容
+        已与 spec 无关，留着以备将来需要按 spec 差异化时不再改调用点。
+        """
+        task_lines = (
+            f'- 每一条 tasks.md 任务（如 "1.3 配置解析签名缓存"）只能由一个 '
+            f'TaskCreate 对应，TaskCreate 的 subject MUST 以 "Task <id>: '
+            f'<标题>" 开头，id **逐字照抄 tasks.md 的"分组号.任务号"**（含'
+            f'小写字母后缀，如 "Task 1.2b: ..."、"Task 4.6b: ..."；后缀'
+            f"不是笔误），禁止把多条任务归并为一条 TaskCreate，也禁止把分组"
+            f"（## 标题）当任务创建。\n"
+            f"- 开始实现某任务时创建其 TaskCreate；该任务完成的瞬间立刻对同一"
+            f"taskId 发 TaskUpdate status=completed，不得攒批到收尾。TaskUpdate "
+            f"的 taskId 取 TaskCreate 结果返回的任务编号（1 基创建序，形如 "
+            f'"Task #1 created"）。\n'
+        )
         return (
             f"\n## 任务进度契约（task-progress-contract，强制，fix-impl-tasks-completion-gate）\n"
             f'- 每条 tasks.md 任务（如 "1.3 配置解析签名缓存"）完成时逐项把 '
