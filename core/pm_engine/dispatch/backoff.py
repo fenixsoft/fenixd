@@ -163,6 +163,59 @@ class BBackoffMixin:
         finally:
             self._pm._process_queue()
 
+    # ── evo-sigterm-source-tracking-cooldown：信号死法冷却恢复排程 ─────────
+    # 仿秒挂冷却（instant_fail_recovery）定时器模式：信号死法冷却到期后重入
+    # `_on_spec_ready` + `_process_queue`。与 _instant_fail_timers 独立——两条
+    # 冷却通道各自排程恢复，互不覆盖冷却截止（取更晚者生效）。
+
+    def _schedule_signal_kill_recovery(self, spec_name: str,
+                                       lock_held: bool = False) -> None:
+        """信号死法冷却到期后重入 ``_on_spec_ready``。
+
+        幂等：已为该 spec 排程恢复定时器则不再重复（``_signal_kill_timers``
+        集合判重）。cooldown_until 以 ``time.monotonic`` 记（runner._now），
+        差值为剩余秒；到期回调重新触发派发并顺带 process_queue。
+
+        ``lock_held``：调用方已持 ``_queue_lock`` 时为 True（_process_queue 场景），
+        跳过内部再取锁——threading.Lock 非重入，双重获取会死锁。
+        """
+        if lock_held:
+            self._schedule_signal_kill_recovery_locked(spec_name)
+            return
+        with self._queue_lock:
+            self._schedule_signal_kill_recovery_locked(spec_name)
+
+    def _schedule_signal_kill_recovery_locked(self, spec_name: str) -> None:
+        """锁内实现（调用方已持 _queue_lock）排程信号冷却恢复定时器。"""
+        if spec_name in self._signal_kill_timers:
+            return
+        until = self._pm._signal_kill_cooldown_until(spec_name)
+        if until <= 0:
+            return
+        delay = max(0.5, float(until) - time.monotonic())
+        timer = threading.Timer(
+            delay,
+            self._on_signal_kill_recovery,
+            args=(spec_name,),
+        )
+        timer.daemon = True
+        self._signal_kill_timers.add(spec_name)
+        timer.start()
+
+    def _on_signal_kill_recovery(self, spec_name: str) -> None:
+        """信号死法冷却到期回调：重新唤起派发（幂等，多定时器并发安全）。"""
+        with self._queue_lock:
+            self._signal_kill_timers.discard(spec_name)
+        self._pm.logger.info(
+            "pm_engine",
+            f"信号死法冷却到期，恢复调度 '{spec_name}'"
+            f"（evo-sigterm-source-tracking-cooldown 自动恢复）",
+        )
+        try:
+            self._pm._on_spec_ready(spec_name)
+        finally:
+            self._pm._process_queue()
+
     # ── fix-provider-transient-backoff（D4）：transient 恢复排程 ──────────
     # 仿秒挂冷却（instant_fail_recovery）定时器模式：瞬断终态后按
     # `agents.transient_redispatch_delay_seconds`（缺省 600s）延迟重入

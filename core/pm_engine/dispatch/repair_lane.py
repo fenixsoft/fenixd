@@ -117,6 +117,16 @@ class PRepairLaneMixin:
             )
             self._schedule_instant_fail_recovery(spec_name)
             return
+        # evo-sigterm-source-tracking-cooldown：信号死法冷却期内不派发 repair。
+        # 与秒挂冷却并存：两条通道各自排程恢复，取更晚的冷却截止生效。
+        if self._pm._signal_kill_cooled(spec_name):
+            self._pm.logger.debug(
+                "pm_engine",
+                f"信号死法冷却中，跳过 repair 派发 '{spec_name}'"
+                f"（冷却期后恢复调度）",
+            )
+            self._schedule_signal_kill_recovery(spec_name)
+            return
         try:
             repair_round = int(
                 (self._pm.state_machine.read_one(spec_name) or {}).get("_repair_round", 0) or 0

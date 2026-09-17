@@ -3080,6 +3080,36 @@ class PMEngine:
         except Exception:
             return False
 
+    def _signal_kill_cooled(self, spec_name: str) -> bool:
+        """信号死法冷却判定（evo-sigterm-source-tracking-cooldown）：冷却期内跳过该 spec 重派。
+
+        与 _instant_fail_cooled 同构（fail-open）；覆盖 admin/impl 处置 run 路由
+        ——冷却只作用于该 spec 的重派，MUST NOT 触发全局瞬断熔断。
+        """
+        runner = getattr(self, "agent_runner", None)
+        checker = getattr(runner, "is_signal_kill_cooldown", None)
+        if not callable(checker):
+            return False
+        try:
+            return checker(spec_name) is True
+        except Exception:
+            return False
+
+    def _signal_kill_cooldown_until(self, spec_name: str) -> float:
+        """返回 spec 的信号死法冷却到期单调秒（未冷却/无条目返回 0）。
+
+        委托到 agent_runner.signal_kill_cooldown_until；runner 不可用或判定
+        异常时 fail-open（返回 0，不排程恢复定时器）。
+        """
+        runner = getattr(self, "agent_runner", None)
+        m = getattr(runner, "signal_kill_cooldown_until", None)
+        if not callable(m):
+            return 0.0
+        try:
+            return float(m(spec_name))
+        except (TypeError, ValueError):
+            return 0.0
+
     def _global_transient_break_active(self) -> bool:
         """全局瞬断熔断判定（fix-provider-transient-backoff D4）：熔断期冻结全部新派发。
 

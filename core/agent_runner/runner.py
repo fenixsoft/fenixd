@@ -1906,6 +1906,15 @@ class AgentRunner:
                             f"classify/retry (shutdown-interrupted guard)",
                         )
                         break  # 原地重试子循环：退出 while，attempt 层收口
+                    # evo-sigterm-source-tracking-cooldown：信号死法来源判定
+                    #（闭集）。已在 shutdown 守卫之后——shutting_down/产物
+                    # interrupted 先行短路；框架自身终止（supervision 超时/
+                    # 轮次上限强杀）与 cancel 路径各自排除；其余 143/负信号 →
+                    # 注入 [signal-kill: …] 标签并计入该 spec 信号冷却计数。
+                    # 先于 _record_instant_fail：信号死法若同时是秒挂，两条
+                    # 通道对同一事件各自计数（双记仅累加，冷却截止互不覆盖）。
+                    error = self._record_signal_kill_or_label(
+                        spec_name, error, getattr(e, "exit_code", None))
                     # cli-retry-backoff（2.1）：attempt 失败按存活时长判定秒挂并累计。
                     # 仅「进程确实启动过」的失败才判定（worktree 创建失败等进程未起的
                     # 分支走上方 return/continue，不进入本法）；框架主动 SIGTERM 由
@@ -2180,6 +2189,12 @@ class AgentRunner:
         """
         if not provider_name:
             return error, False, False
+        # evo-sigterm-source-tracking-cooldown：信号死法（[signal-kill: …] 前缀）
+        # 不入瞬断通道——不归 [provider-transient]、不排原地重试、不记全局瞬断
+        # 指纹（信号死法的重试与冷却由信号冷却通道（spec 维度）管辖，反复撞
+        # 运气至预算耗尽的形态即由该通道熔断）。
+        if error and error.startswith("[signal-kill:"):
+            return error, False, False
         code = self.parse_api_error_status(error)
         if code is not None and code in PROVIDER_CIRCUIT_4XX:
             # 4xx 熔断计数（fix-stashpop-deadlock：provider-fault-fuse）。
@@ -2359,8 +2374,25 @@ class AgentRunner:
             "agent_runner",
             f"Artifact gate failed for '{spec_name}' ({agent_type}): {error}",
         )
-        if "[provider-transient]" not in error:
-            error = f"[provider-transient] {error}"
+        # evo-sigterm-source-tracking-cooldown：产物硬门失败停止全局瞬断**指纹**
+        # 记账（对齐 runner.py [terminal-no-commit] carve-out 先例——产物硬门失败
+        # 是「格式回退/忘提交/未收工」类而非网关瞬断，不入瞬断指纹通道）。两类
+        # 按各自既有契约隔离，MUST NOT 混为一谈：
+        # - 任务完成度类（[task-gate] 前缀，result_gate.py:559-716）：MUST NOT
+        #   注入 [provider-transient] 标签、MUST NOT 记全局瞬断指纹、MUST NOT
+        #   消耗原地瞬态退避预算——重试由既有 gate 降级语义
+        #   （TASK_GATE_DEGRADE_THRESHOLD=2）与 attempt 层重试承担；
+        # - 结构类（文件缺失/为空/非法 JSON/顶层非对象/status 白名单外，无前缀）：
+        #   保留既有原地退避重试与 [provider-transient] 标签（test_agent_runner_
+        #   gate.py 契约），仅新增结构类机械归因标签 + 停止全局瞬断指纹记账。
+        is_task_gate = error.startswith("[task-gate]")
+        is_terminal_nocommit = error.startswith("[terminal-no-commit]")
+        if not is_task_gate:
+            if "[provider-transient]" not in error:
+                error = f"[provider-transient] {error}"
+        if not is_task_gate and not is_terminal_nocommit:
+            # 结构类机械归因标签（供读侧与任务完成度类区分）
+            error = f"[artifact-structural] {error}"
         # fix-impl-resultfile-contract-gap 4.2：结果文件缺失归因——
         # 复用终态机械特征区分「格式回退截断」/「未收工即停」（只改
         # 局部变量 error，MUST NOT 改动传入 record_transient_break
@@ -2368,20 +2400,10 @@ class AgentRunner:
         if agent_type in ("implementer", "fast-track"):
             error = classify_and_enrich_artifact_error(
                 self, error, agent_type, sub_run_id)
-        # 全局瞬断指纹计数（transient-dispatch-gating D4 同语义）：
-        # 产物硬门失败同样记账，保留 dispatch 闸门对瞬断风暴的可见性。
-        # add-impl-terminal-nocommit-gate（D1 处置）：终态零提交门
-        # 触发的错误（文本以 [terminal-no-commit] 开头）是「格式回退/
-        # 忘提交」而非网关瞬断——跳过全局瞬断指纹记账，避免污染 dispatch
-        # 闸门对瞬断风暴的可见性（多计保守、少计危险；此处精确跳过）。
-        if not str(e).startswith("[terminal-no-commit]"):
-            try:
-                self.record_transient_break(str(e))
-            except Exception as _break_err:
-                self.logger.debug(
-                    "agent_runner",
-                    f"global transient break 记账失败（不阻断）: {_break_err}",
-                )
+        # 任务完成度类：不进原地瞬态退避预算 → 退出 while，attempt 层继续重试
+        #（不消耗 transient_budget；重试由 gate 降级与 attempt 层承担）。
+        if is_task_gate:
+            return error, transient_retries, None, False, True
         if transient_retries >= len(transient_budget):
             # 原地预算耗尽 → 退出 while，attempt 层继续重试
             return error, transient_retries, None, False, True
@@ -2609,6 +2631,10 @@ class AgentRunner:
         self._daily_run_count += 1
         # cli-retry-backoff（2.1/2.2）：成功收工重置秒挂连续计数（非连续不累积）
         self._reset_instant_fail(spec_name)
+        # evo-sigterm-source-tracking-cooldown：成功收工重置信号死法连续计数
+        #（连续信号死法链被打断；若该 spec 曾因信号死法进入冷却，冷却到期由
+        # dispatch 闸门侧自动恢复，此处只清计数状态）。
+        self._reset_signal_kill(spec_name)
         self.logger.info(
             "agent_runner",
             f"{agent_type} succeeded for '{spec_name}'",
@@ -3677,6 +3703,80 @@ class AgentRunner:
             return False
         return False
 
+    # ── 信号死法来源判定（evo-sigterm-source-tracking-cooldown）──────────
+    # 闭集按序短路（先排除框架自身终止，否则框架自己强杀的 run 会被误标外部
+    # 信号）：cancel 旗标（RunCancelledError 独立异常通道）→ supervision 超时/
+    # 轮次上限强杀（returncode=-9 且错误文本 Timeout after/Max turns）→ daemon
+    # 关停（shutting_down/产物 interrupted，既有 [shutdown-interrupted] 守卫先行
+    # 短路）→ 其余 143/负信号 → [signal-kill: …] 标签 + 信号冷却计数。
+    # 来源归属 MUST 只由可实测的三源闭集推导；无判别力时标 unknown 并如实带
+    # returncode，MUST NOT 以猜测声称 external-kill。
+
+    @staticmethod
+    def _signal_kill_label(exit_code) -> Optional[str]:
+        """returncode → 信号死法标签；非信号死法返回 None。
+
+        143 = 128 + SIGTERM（CLI 自身把 SIGTERM 转写为退出码 143，见既有
+        Exit 143 秒挂实测注释）；负信号为 -<信号号>（-9=SIGKILL / -15=SIGTERM）。
+        无法映射的信号号标 unknown 并如实带 returncode（不得猜测信号发出者）。
+        """
+        if exit_code == 143:
+            return "[signal-kill: SIGTERM/143]"
+        if exit_code == 130:
+            return "[signal-kill: SIGINT/130]"
+        if isinstance(exit_code, int) and exit_code < 0:
+            name = {1: "SIGHUP", 2: "SIGINT", 9: "SIGKILL",
+                    15: "SIGTERM"}.get(-exit_code)
+            if name:
+                return f"[signal-kill: {name}/{exit_code}]"
+            return f"[signal-kill: unknown/{exit_code}]"
+        return None
+
+    def _record_signal_kill_or_label(self, spec_name: str, error: str,
+                                     exit_code) -> str:
+        """信号死法来源判定（闭集）+ spec 维度信号冷却计数。
+
+        调用点 MUST 在 shutdown-interrupted 守卫之后（shutting_down/产物
+        interrupted 已先行短路为 [shutdown-interrupted]）；cancel 旗标走
+        RunCancelledError 独立异常通道，不达本方法。框架自身终止（supervision
+        超时/轮次上限强杀：错误文本 Timeout after/Max turns）MUST NOT 打信号
+        标签、MUST NOT 计信号计数——框架自己强杀不得冷却链路。
+
+        Returns: 可能被注入 ``[signal-kill: …]`` 前缀的 error。
+        """
+        if not spec_name or not error:
+            return error
+        # 框架自身终止排除（supervision 超时/轮次上限强杀，错误文本为
+        # `Timeout after …` / `Max turns …`，runner.py:2833/2874 收口）。
+        # 真实超时/强杀路径异常不带 exit_code（timeout/turn_limit raise 无属性），
+        # 错误文本排除对有无 exit_code 一视同仁——统一先行短路。
+        if "Timeout after" in error or "Max turns" in error:
+            return error
+        if exit_code is None:
+            # 无 exit_code 且非框架自身终止文本 → 判别力不足，不归类不计数。
+            return error
+        label = self._signal_kill_label(exit_code)
+        if label is None:
+            # 非信号死法（普通非零退出）：连续信号死法链被打断，重置计数。
+            self._provider_circuit.reset_signal_kill(spec_name)
+            return error
+        if "[signal-kill:" not in error:
+            error = f"{label} {error}"
+        # 计入信号冷却通道（spec 维度；与秒挂冷却并存，同事件双记仅累加）。
+        try:
+            self._provider_circuit.record_signal_kill(spec_name)
+        except Exception as _sig_err:
+            self.logger.debug(
+                "agent_runner",
+                f"signal-kill 计数记账失败（不阻断）: {_sig_err}",
+            )
+        self.logger.warning(
+            "agent_runner",
+            f"'{spec_name}' 子进程信号死法 exit_code={exit_code} — {label} "
+            f"（source=unknown：非框架终止/非 daemon 关停，信号发出者不可考）",
+        )
+        return error
+
     def _record_instant_fail(self, spec_name: str, duration_seconds: float,
                              run_file=None) -> None:
         """attempt 失败时按进程存活时长判定秒挂并累计 spec 维度连续计数。
@@ -4016,6 +4116,33 @@ class AgentRunner:
     def is_global_transient_break_active(self, now: float | None = None) -> bool:
         """全局瞬断熔断是否生效（dispatch 闸门查询）。"""
         return self._provider_circuit.is_global_transient_break(now=now)
+
+    # ── 信号死法冷却转导（evo-sigterm-source-tracking-cooldown）────────────
+
+    def is_signal_kill_cooldown(self, spec_name: str,
+                                now: float | None = None) -> bool:
+        """该 spec 是否处于信号死法冷却期（dispatch 派发前闸门调用）。
+
+        冷却只作用于该 spec 的重派（含 admin/impl 处置 run 路由），MUST NOT
+        触发全局瞬断熔断；冷却到期自动恢复并清零计数。
+        """
+        return self._provider_circuit.is_signal_kill_cooldown(spec_name, now=now)
+
+    def signal_kill_cooldown_until(self, spec_name: str) -> float:
+        """该 spec 信号死法冷却到期单调秒（派发恢复排程用；未冷却返回 0）。"""
+        return self._provider_circuit.signal_kill_cooldown_until(spec_name)
+
+    def _signal_kill_counts(self, spec_name: str) -> int:
+        """当前连续信号死法次数（测试/观测辅助）。"""
+        return self._provider_circuit.signal_kill_counts(spec_name)
+
+    def _record_signal_kill(self, spec_name: str, now: float | None = None) -> bool:
+        """记录一次信号死法到 spec 维度信号冷却通道（返回 True = 已触发冷却）。"""
+        return self._provider_circuit.record_signal_kill(spec_name, now=now)
+
+    def _reset_signal_kill(self, spec_name: str) -> None:
+        """成功：清除该 spec 的信号死法连续计数与冷却态（连续链被打断）。"""
+        self._provider_circuit.reset_signal_kill(spec_name)
 
     def _accumulate_token_usage(self, spec_name: str, usage_info: dict) -> None:
         return self._token_accountant._accumulate_token_usage(spec_name, usage_info)
