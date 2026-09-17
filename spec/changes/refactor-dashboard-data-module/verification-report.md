@@ -1,35 +1,22 @@
 # 验证报告：refactor-dashboard-data-module
 
-> ⚠️ 本报告由框架于 2026-09-15T20:34:59Z 自动合成（裁决 Agent 未写报告，已由框架合成），内容为结构化验证产物（report.json / .fenix-run-result.json）的忠实渲染。
-> 报告时效标记（判定本报告是否属上一轮）：合成源轮次指纹：report.json@2026-09-15T20:31:15.644785+00:00
+> ⚠️ 本报告由框架于 2026-09-15T22:51:57Z 自动合成（裁决 Agent 未写报告，已由框架合成），内容为结构化验证产物（report.json / .fenix-run-result.json）的忠实渲染。
+> 报告时效标记（判定本报告是否属上一轮）：合成源轮次指纹：report.json@2026-09-15T22:51:57.155422+00:00
 
-## 结论：❌ 未通过（Bug Found）
+## 结论：✅ 通过（verified）
 
-**状态：bug-found — 24/25 场景通过，1 失败，0 错误（1 个真实产品 Bug）**
+**状态：verified — 25/25 场景通过，0 失败，0 错误（全部场景通过）**
 
-25 场景 24 过 1 fail。唯一失败 cli-tasks-no-line-anchors（跨轮已裁决 product-bug）：tasks.md:54 绝对行号锚点违反 spec R7，需实现方修订 tasks.md 锚点为符号名后重验。其余 23 场景全过；web-settings-load 经静态情报检出及源码核实（settings/index.tsx:29 label '并行'）+ 执行证据（click 成功、断言全过、无 autoInsertSpace 配置命中）判定为误报，无需修复。
+全绿快道: 25/25 场景通过、0 失败 0 警告——无分类对象，跳过 judge 机械 verified
 
 | 指标 | 数量 |
 | --- | --- |
-| 通过 | 24 |
-| 失败 | 1 |
+| 通过 | 25 |
+| 失败 | 0 |
 | 错误 | 0 |
-| 产品 Bug | 1 |
+| 产品 Bug | 0 |
 | 本链增量 Token（输入） | 19.15M |
 | 本链增量 Token（输出） | 0.15M |
-
-
-## 真实产品 Bug
-
-### BUG-01（severity=major）· cli 锚点探测（exit_code + output_match）
-
-- 关联场景：cli-tasks-no-line-anchors
-- 描述：spec/changes/refactor-dashboard-data-module/tasks.md:54 含绝对行号锚点（tests/test_config.py:397-432、test_dashboard_data.py:721），违反 spec R7「任务锚点为符号名，MUST NOT 使用绝对行号」（specs/dashboard-data-modules/spec.md:113-120）；grep 锚点探测 exit_code=1 且 && 短路未输出 NO-LINE-ANCHOR-OK
-- 根因：实现阶段编写 tasks.md 时对任务/交付物使用了将被后续改动失效的绝对行号锚点（design D6 关切），违反 spec R7 约束
-- 证据（场景 cli-tasks-no-line-anchors 结构化证据，引用）：
-  - failed_assertions: [{"type": "exit_code", "selector": "grep 锚点探测", "expected": 0, "actual": 1}, {"type": "output_match", "selector": "anchors", "expected": "NO-LINE-ANCHOR-OK", "actual": "grep 命中 tasks.md:54 后 && 短路未输出；命中行含 test_dashboard_data.py:721 行号锚点"}]
-  - screenshots: []
-  - first_failed_step: 步骤1: ! grep -nE 'data\.py:[0-9]+|第[0-9一二三四五六七八九十百千]+行' spec/changes/refactor-dashboard-data-module/tasks.md && echo NO-LINE-ANCHOR-OK ——grep 命中 tasks.md:54（tests/test_config.py:397-432、test_dashboard_data.py:721 绝对行号锚点）
 
 
 ## 场景结果
@@ -48,7 +35,7 @@
 | cli-key-consumer-tests-pass | 关键消费点测试全过（spec R2「消费点零修改」核心面）：data 模块最大测试面 tests/test_dashboard_data.py（27 个 name 访问）、test_config.py（8 处 patch core.dashboard.data._is_running）、test_spec_archive.py、test_dashboard_freeze.py、test_spec_scheduling.py、test_daily_self_review.py（patch USER_CONFIG_PATH）。6 文件均不在基线失败集合（baseline-failures.md 仅 test_index_served）。出处：contract-inventory.md §2.1 消费文件表；baseline-failures.md。 | pass | 0/2 | - |
 | cli-full-suite-bounded-no-hang | 有界全量回归（spec R5「全量测试不引入新失败」）：bin/run_full_suite.py 有界运行必须完整结束不挂起（timed_out=false、hanging_test=null）——挂起/超时即判回归（fix-run-hang-amplification 关切）。失败集合相对基线由实现方已证（impl-result.json：当前 6 ⊆ 基线 7），本场景验证回归不挂起、有界收口；pytest 退出码因存量基线失败（test_index_served）非 0 属正常预期，不作断言。--json stdout 含 [run_full_suite] 日志行与多行 JSON 文档（锁日志/elapsed 日志 print 到 stdout，run_full_suite.py:247/164），步骤经 python 取 '{' 起 JSON 解析并归一键名（hang_test→hanging_test），退出码掩码语义不变。出处：spec.md R5 第一个 Scenario；bin/run_full_suite.py（有界/faulthandler/超时 124 约定）；baseline-failures.md。 | pass | 0/3 | - |
 | cli-findings-list-only-records | 拆分中发现的问题只记录不修（spec R5「发现的问题只记录」Scenario）：疑点清单 findings.md 存在且含 BUG-1（_timeline_sort_key 无效时间戳 TypeError）、DEAD-1（_should_overlay 语义疑点）、CYC-1（pm_engine 反向 import）、OBS-1（read_config 缓存键）四类条目，代码行为未被顺手修改。出处：spec/changes/refactor-dashboard-data-module/findings.md；tasks.md 1.3；spec.md R5。 | pass | 0/4 | - |
-| cli-tasks-no-line-anchors | 任务描述不使用绝对行号锚点（spec R7「任务锚点为符号名」Scenario）：tasks.md 不出现「data.py:NNNN」或「第 N 行」式锚点——任务与交付物以函数名/模块名/import 路径锚定（design D6 的关切即 data.py 行号会被后续 spec 改动失效）。出处：spec.md R7；design D6；tasks.md（全部任务以函数名/路径描述）。 | failed | 2/2 | product-bug |
+| cli-tasks-no-line-anchors | 任务描述不使用绝对行号锚点（spec R7「任务锚点为符号名」Scenario）：tasks.md 不出现「data.py:NNNN」或「第 N 行」式锚点——任务与交付物以函数名/模块名/import 路径锚定（design D6 的关切即 data.py 行号会被后续 spec 改动失效）。出处：spec.md R7；design D6；tasks.md（全部任务以函数名/路径描述）。 | pass | 0/2 | - |
 | cli-staged-commits-history | 搬移按依赖分层分阶段独立 commit（spec R6「每阶段可独立回滚」Scenario）：git 历史含 refactor-dashboard-data-module 的分阶段提交——阶段 0（e8f3c536 characterization+契约清单）、6.2 收尾（99c7d9a0）、实现分支 merge（aa30a492），任一阶段失败可回退该 commit 而前序成果保留。出处：git log --all；spec.md R6；tasks.md 阶段 1-5 独立 commit 要求。 | pass | 0/3 | - |
 | api-overview-endpoint | GET /api/overview 端到端冒烟：dashboard 数据层重构后跨项目统计仍正常下发（projects 含 fenixd 与 scheduling-showcase、totals.spec_count 可解析），HTTP 200 + Content-Type application/json。出处：路由 core/dashboard/server.py:374；实现 core/dashboard/data/summary.py:661（overview）。origin 由框架改写到本轮实例（rewrite_scenarios_origin，verification.py:703）。 | pass | 0/4 | - |
 | api-specs-list-showcase | GET /api/specs?project=scheduling-showcase 端到端：夹具项目 SPEC 摘要列表正常下发（project 名精确、specs 数组含 c-sched-set 等夹具 spec）。夹具由 verify.yaml prepare 每轮复位（fixture_scheduling_showcase.py --reset），状态稳定。出处：路由 core/dashboard/server.py:376；实现 core/dashboard/data/summary.py:186（spec_summary）；夹具 bin/fixture_scheduling_showcase.py（BASELINE_STATE 含 c-sched-set/c-sched-done）。 | pass | 0/4 | - |
@@ -61,13 +48,6 @@
 | web-project-spec-list | 重构后项目 SPEC 列表页回归：navigate #/projects/scheduling-showcase 后桌面 Table（.ant-table）渲染夹具 SPEC 行（含 c-sched-* 名称），任务进度格 data-testid=task-progress-cell 可见——spec 列表经 /api/specs → core.dashboard.data.summary.spec_summary。navigate 出处：config/routes.ts:27-29（/projects/:name → ./projects/list）；渲染 core/dashboard/static/src/pages/projects/list.tsx:865（data-testid=task-progress-cell）、antd Table 桌面分支；夹具 spec 名见 bin/fixture_scheduling_showcase.py BASELINE_STATE（c-sched-set/c-sched-clear/c-sched-done）。 | pass | 0/5 | - |
 | web-spec-detail-page | 重构后 SPEC 详情页回归：navigate #/projects/scheduling-showcase/c-sched-done 后页头（.ant-page-header-heading-title）渲染 SPEC 名 c-sched-done、标签页（.ant-tabs）渲染——详情经 /api/specs/<spec> → core.dashboard.data.spec_detail（artifacts/runs/timeline/tasks 跨组聚合）。navigate 出处：config/routes.ts:23-25（/projects/:name/:spec → ./projects/detail）；渲染 core/dashboard/static/src/pages/projects/detail.tsx:733-735（headerCfg title 含 <span>{spec}</span>）、765/775（PageContainer）。 | pass | 0/5 | - |
 | web-settings-load | 重构后设置页加载回归：navigate #/settings 后设置面板渲染（planner 节切换 data-testid=planner-throttle-switch 可见、保存按钮 data-testid=settings-save 可用、作用域选择区 .settings-page 含「作用域：」文本）——配置读侧经 /api/config → core.dashboard.data.config_admin.read_effective_config。navigate 出处：config/routes.ts:30-35（/settings → ./settings）；渲染 core/dashboard/static/src/pages/settings/index.tsx:155（Text 作用域：）/161（.settings-page）/152（title 设置）、components/ParallelSettingsPanel.tsx:121/151（planner-throttle-switch/settings-save）。 | pass | 0/5 | - |
-
-
-## 断言级豁免清单
-
-以下失败断言被归类为非产品缺陷（不记产品 Bug），逐条列出供人工复核豁免是否掩盖真实缺陷（场景级一句话归因不足以复核）。
-
-无非 product-bug 的被豁免失败断言。
 
 ## 本轮场景集变更
 
