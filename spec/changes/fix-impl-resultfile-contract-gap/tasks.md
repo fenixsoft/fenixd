@@ -17,14 +17,12 @@
   kind: new
 ```
 
-> 注 1（2026-09-17 评审更正，行数契约口径）：`core/agent_runner/runner.py` 当前 **3803 行**。实测契约：
-> `tests/test_agent_runner_modules_contract.py:170-173`（`test_runner_below_4000`）断言的是
-> `runner.py < 4000`——3803 行**通过（当前为绿）**，且本 SPEC **不修改**该测试（它不在 `## Deliverables`
-> 内）；「≤3800」是另一在飞 SPEC 的收敛阈值（`spec/changes/refactor-agent-runner-module/specs/
-> agent-runner-modules/spec.md:33`），处置归属 `refactor-long-functions`，**不是**本测试的断言，
-> 也**不**构成本 SPEC 的红线（本 SPEC 无「存量红」可登记）。实现者 **MUST NOT** 为腾行数做无关重构；
-> 本 SPEC 增量 MUST 尽量小（硬约束是 `< 4000`，余量约 197 行，MUST NOT 使其逼近上限）。优先把捞回泛化
-> 与归因包装落在 `result_gate.py`，把 runner.py 增量压到最小。
+> 注 1（行数契约口径，2026-09-17 已核对）：`core/agent_runner/runner.py` 当前 **3803 行**，实测
+> `tests/test_agent_runner_modules_contract.py:170-173` 断言 `runner.py < 4000`——当前为绿。本 SPEC 的
+> 硬约束即此 `< 4000`（余量约 197 行，增量 MUST NOT 使其逼近上限）；实现者 **MUST NOT** 为腾行数做
+> 无关重构。优先把捞回泛化与归因包装落在 `result_gate.py`，把 runner.py 增量压到最小。
+> （另注：`≤3800` 是另一在飞 SPEC 的收敛阈值，见 `spec/changes/refactor-agent-runner-module/specs/
+> agent-runner-modules/spec.md`，处置归属 `refactor-long-functions`，不是本测试的断言。）
 >
 > 注 2：`_salvage_spec_review_result` 的既有签名与语义是 `core/pm_engine/spec_review.py:191/220`
 > 反射调用点与 `tests/test_review_circuit_breaker.py` 打桩对象的契约，**MUST 保留可用**。
