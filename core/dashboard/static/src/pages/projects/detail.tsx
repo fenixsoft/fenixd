@@ -1649,7 +1649,7 @@ export default function SpecDetailPage() {
                 data-testid="run-activity-active"
                 style={{ display: 'block', marginTop: 6, fontSize: 12 }}
               >
-                run 进行中（实现进行中，任务级进度不可用）
+                run 进行中
               </Typography.Text>
             ) : null}
             {proposalWhy ? (
