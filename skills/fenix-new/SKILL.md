@@ -183,8 +183,55 @@ python3 .fenix/bin/fenix_spec.py status --change <name>
      而非 `core/dashboard/static/dist`；`<...>` 模板占位符同样禁止（守卫会静默跳过，
      声明形同虚设）。目录/占位符声明曾致收工守卫确定性缺件 → 打回循环烧预算至
      blocked（remove-auto-run-cleanup 事故 2026-09-03）。
+
+     **任务必须是实现 Agent 可独立完成的**（强制，见 §3.2.1）。
+
 2. 每完成一个 artifact 后重跑 `status`，继续处理下一个 `ready` artifact。
 3. 重复直到所有 artifact 为 `done`（`isComplete` 为 true，`applyRequires` 的 `tasks` 就绪）。
+
+### 3.2.1 任务粒度：禁止把「Agent 做不到的事」写成任务（强制）
+
+实现 Agent 在 worktree 内以 `bypassPermissions` 跑 `claude -p`，**没有任何人工介入能力**。
+任务门禁按「tasks.md 每条 `- [ ]` 是否勾选」机械对账：写成 Agent 做不到的任务 → 该条永远无法勾选
+→ 门禁判缺口 → 打回重派 → 烧预算（实证：`fix-robustness-edge-cases` 任务 4.2
+「经用户确认时机后重启 daemon 并冒烟验证」即因此被打回）。
+
+**四类 Agent 做不到的事，MUST NOT 作为独立任务出现：**
+
+| 类型 | 典型写法（禁止） | Agent 做不到的原因 |
+|------|------------------|--------------------|
+| 需人工运维门控 | 「经用户确认时机后重启 daemon」「请用户批准后推送」 | 需用户亲手操作 / 授权，Agent 无法代做 |
+| 需外部资源 | 「配置生产环境凭据」「在第三方控制台开启 X」 | worktree 内无凭据、无网络可达性 |
+| 需人工裁决 | 「与用户确认方案取舍后再实现」「等待用户回复」 | Agent 单次 run 内无法与人往返 |
+| 主树专属写操作 | 「在主树执行 git 操作 / 删除 `.fenix/` 运行时文件」 | worktree 隔离 + 主树只读（hook 拦截） |
+
+**正确做法：把「Agent 能做的部分」与「人工部分」拆开，只把前者写成任务。**
+
+- **信号式人工动作 → 转成交付物落位 + 预演**（本仓既有范式，参照
+  `fix-dashboard-read-path-performance` 任务 6.2、`refactor-dashboard-data-module` 先例 `99c7d9a0`）：
+
+  ```
+  ## 禁止写法
+  - [ ] 4.2 经用户确认时机后重启 daemon 并冒烟验证
+
+  ## 正确写法（Agent 可完成、可勾选）
+  - [ ] 4.2 落位 restart_request 交付物（根路径，JSON：reason/origin/date）并冒烟预演
+        （全新进程 + 消费方 import + 核心 API），实际重启由 supervisor 消费该信号完成
+  ```
+
+  即：Agent 负责**把重启信号落盘 + 预演验证**，`supervisor` 负责**实际重启**——
+  这条任务 Agent 能做完并勾选，人工动作被下沉到框架机制里。
+
+- **确需人工执行的动作** → 写入对应文档（如 `docs/help/*.md`）的「人工步骤」小节，
+  **不写成 tasks.md 任务**；需要跨 run 保留的，用 `.fenix/todo.md` 登记（那是给人看的队列，
+  不进任务门禁对账）。
+
+- **实现期才发现某任务不可达** → Agent MUST 在 `.fenix-run-result.json` 顶层 `unattainable`
+  数组申报（附 `reason` / `evidence`）并以 `status: "partial"` 收工；门禁会从缺口扣除已申报项并放行。
+  **申报 unattainable 是补救，不是立项时的借口**——立项时就应识别并改写（上表四类）。
+
+**自检**：写完 tasks.md 后逐条自问「这条任务，一个在隔离 worktree 内、无人可问、无外部凭据的
+Agent，能不能独立做完并勾选 `[x]`？」答案是否 → 按上表改写，MUST NOT 保留原样。
 
 ### 3.3 晋升 lint 预检（提案即校验，daemon 同源规则）
 
@@ -249,6 +296,7 @@ git commit -m "[fenix] spec: <spec-name>"
 - 先澄清再生成，不猜测用户需求
 - SPEC 要足够精确，让实现Agent 无需再提问
 - 每个 Requirement 至少有一个可测试的 Scenario
+- **任务粒度（强制，见 §3.2.1）**：每条 tasks.md 任务 MUST 是实现 Agent 在隔离 worktree 内可独立完成并勾选 `[x]` 的；MUST NOT 把需人工运维门控 / 外部资源 / 人工裁决 / 主树专属写操作写成任务。信号式人工动作改写成「交付物落位 + 预演」，人工步骤写入文档或 `.fenix/todo.md`。
 - **执行模式（add-fast-track-mode）**：
   - 用户未指定模式时 MUST 给出明确建议（fast-track / full，附理由），禁止默认任一路径
   - 用户显式指定（`--fast-track` / `--full`）时 MUST 尊重用户指定，不得以评估结果覆盖

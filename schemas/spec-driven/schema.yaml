@@ -148,6 +148,21 @@ artifacts:
       Reference specs for what needs to be built, design for how to build it.
       Each task should be verifiable - you know when it's done.
 
+      **任务必须是实现 Agent 可独立完成的（强制）**：
+      实现 Agent 在隔离 worktree 内跑 `claude -p`，**无人工介入能力**；任务门禁按
+      每条 `- [ ]` 是否勾选机械对账，写成 Agent 做不到的任务 → 永远勾不上 → 判缺口
+      → 打回重派 → 烧预算（实证：任务「经用户确认时机后重启 daemon 并冒烟验证」被打回）。
+      以下四类 **MUST NOT** 作为独立任务出现：① 需人工运维门控（重启 daemon、人工审批）；
+      ② 需外部资源（生产凭据、第三方控制台）；③ 需人工裁决（等待用户回复/方案取舍）；
+      ④ 主树专属写操作（主树 git 操作、删 `.fenix/` 运行时文件——worktree 隔离 + 主树只读）。
+      改写范式：**信号式人工动作 → 交付物落位 + 预演**。例：把
+      「经用户确认时机后重启 daemon 并冒烟验证」改写成
+      「落位 restart_request 交付物（根路径，JSON：reason/origin/date）并冒烟预演
+      （全新进程 + 消费方 import + 核心 API），实际重启由 supervisor 消费该信号完成」——
+      Agent 负责落盘信号 + 预演，框架机制负责实际重启。确需人工执行的动作写入文档
+      （如 `docs/help/*.md`）或 `.fenix/todo.md`，**不写成任务**。
+      自检：每条任务自问「隔离 worktree 内、无人可问、无外部凭据的 Agent 能否独立做完并勾选」。
+
       **不可交付路径模式（declaration-premechanize，daemon 会机械校验并软化）：**
 
       以下四类路径在 tasks.md `## Deliverables` 声明段中有特殊约束。
