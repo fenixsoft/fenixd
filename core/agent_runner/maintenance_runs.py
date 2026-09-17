@@ -148,6 +148,19 @@ def run_administrator(runner, signal: dict) -> AdminDisposition:
         output = ""
         success = False
         error = str(e)
+        # evo-sigterm-source-tracking-cooldown：admin 处置 run 同走信号死法来源
+        # 判定（闭集）——与 _execute_agent_inner 同款：daemon 关停（shutting_down
+        # / 产物 interrupted）→ [shutdown-interrupted]；框架自身终止（supervision
+        # 超时/轮次上限强杀）由 _record_signal_kill_or_label 内部排除；其余
+        # 143/负信号 → [signal-kill: …] 标签 + spec 维度信号冷却计数（admin 处置
+        # run 路由覆盖，不再无限瞬态重试）。
+        run_file = runner.project_root / ".fenix" / "runs" / f"{run_id}.jsonl"
+        if getattr(runner, "shutting_down", False) or runner._run_was_interrupted(
+                run_file):
+            error = f"[shutdown-interrupted] {error}"
+        else:
+            error = runner._record_signal_kill_or_label(
+                spec, error, getattr(e, "exit_code", None))
         # fix-admin-disposition-empty-shell：失败不再静默——WARNING 携带 run_id
         # 与异常文本，保证 `grep "Administrator run"` 可一次检索全部失败。
         runner.logger.warning(

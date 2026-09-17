@@ -42,6 +42,10 @@ class QQQueueMixin:
         # 秒挂冷却恢复定时器（cli-retry-backoff 2.2）：{spec_name}，幂等排程防重复。
         # 冷却到期由定时器重入 _on_spec_ready，不依赖 30 分钟全量扫描兜底。
         self._instant_fail_timers: set = set()
+        # 信号死法冷却恢复定时器（evo-sigterm-source-tracking-cooldown）：
+        # {spec_name}，幂等排程防重复。与 _instant_fail_timers 独立——两条冷却
+        # 通道各自排程恢复，互不覆盖冷却截止（取更晚者生效）。
+        self._signal_kill_timers: set = set()
         # fix-provider-transient-backoff（D4）：transient 恢复排程定时器：{spec_name}。
         # 瞬断终态触发后按 `transient_redispatch_delay_seconds`（缺省 600s）延迟重入
         # _on_spec_ready，同 instant_fail_timers 同款幂等去重。
@@ -245,6 +249,17 @@ class QQQueueMixin:
                         )
                         self._schedule_instant_fail_recovery(sname, lock_held=True)
                         continue
+                    # evo-sigterm-source-tracking-cooldown：信号死法冷却期内跳过
+                    # 该 spec 的**全部** agent 类型重派（含 admin/impl 处置 run
+                    # 路由；不耗预算、不起进程），并排程到期自动恢复。与秒挂冷却
+                    # 并存：两条通道各自独立，取更晚的冷却截止生效。
+                    if self._pm._signal_kill_cooled(sname):
+                        self._pm.logger.debug(
+                            "pm_engine",
+                            f"信号死法冷却中，跳过 {atype} 派发 '{sname}'",
+                        )
+                        self._schedule_signal_kill_recovery(sname, lock_held=True)
+                        continue
                     if best_valid_prio is None or eff < best_valid_prio:
                         best_valid_prio = eff
                 if best_valid_prio is None:
@@ -313,6 +328,11 @@ class QQQueueMixin:
                         "repair",
                     ) and self._pm._instant_fail_cooled(sname):
                         self._schedule_instant_fail_recovery(sname, lock_held=True)
+                        continue
+                    # evo-sigterm-source-tracking-cooldown：信号死法冷却期内跳过
+                    # 该 spec 的全部 agent 类型重派（与 best_valid_prio 扫描同判定）。
+                    if self._pm._signal_kill_cooled(sname):
+                        self._schedule_signal_kill_recovery(sname, lock_held=True)
                         continue
                     dispatch_idx = i
                     break

@@ -1674,6 +1674,26 @@ class AdminMonitor:
             )
             return
 
+        # evo-sigterm-source-tracking-cooldown：信号死法冷却期内跳过 admin 处置
+        # 唤起（该 spec 连续信号死法已达阈值——反复唤起只会再次撞运气烧预算）。
+        # spec 保持原状，冷却到期由恢复定时器 / 检测循环自然恢复。
+        try:
+            _sig_spec = signal.get("spec")
+            _sig_cooled = (
+                bool(_sig_spec)
+                and callable(getattr(self.agent_runner, "is_signal_kill_cooldown", None))
+                and self.agent_runner.is_signal_kill_cooldown(_sig_spec) is True
+            )
+        except Exception:
+            _sig_cooled = False
+        if _sig_cooled:
+            self.logger.debug(
+                "admin_monitor",
+                f"信号死法冷却中，跳过 Administrator 唤起 '{_sig_spec}'"
+                f"（evo-sigterm-source-tracking-cooldown）",
+            )
+            return
+
         try:
             disp = self.agent_runner.run_administrator(signal)
         except Exception as e:

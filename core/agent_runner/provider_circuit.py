@@ -61,6 +61,19 @@ TRANSIENT_BREAK_THRESHOLD = 3  # 窗口内同指纹次数达此次数 → 触发
 TRANSIENT_BREAK_COOLDOWN_SECONDS = 600  # 触发后全局冻结时长（秒）
 TRANSIENT_BREAK_ALERT_THROTTLE_MINUTES = 15  # major 告警节流（分钟）
 
+# ── 信号死法冷却（evo-sigterm-source-tracking-cooldown）────────────────
+# CLI 子进程以信号死法结束（Exit 143 / 负信号 -9/-15 等）且非 daemon 关停、
+# 非框架自身终止（cancel/supervision 超时/轮次上限强杀）时的 spec 维度冷却：
+# 同 spec 连续信号死法达阈值 → 该 spec 冷却，期间其重派被跳过（不耗预算、
+# 不起进程），冷却到期自动恢复。计数键 = spec 维度（爆炸半径限于该 spec，
+# MUST NOT 写 record_transient_error / _transient_break_until 全局瞬断熔断）。
+# 与既有秒挂冷却（runner._record_instant_fail）并存：同一事件双记仅允许累加，
+# 冷却截止各自独立（dispatch 侧 OR 判定天然取更晚者生效），互不覆盖。
+# 阈值/冷却量级沿用瞬断通道同量级常量；可配键沿用 agents.* 命名。
+SIGNAL_KILL_COOLDOWN_AFTER = 3  # 同 spec 信号死法连续达此数 → 冷却
+SIGNAL_KILL_COOLDOWN_SECONDS = 600  # 冷却时长（秒，与瞬断冷却同量级）
+SIGNAL_KILL_ALERT_THROTTLE_MINUTES = 15  # major 告警节流（分钟）
+
 
 class ProviderCircuit:
     """provider 熔断与切换冷却组件（门面 AgentRunner 的组合组件）。"""
@@ -94,6 +107,14 @@ class ProviderCircuit:
         #   _transient_break_until: 全局冻结到期单调秒（0 = 未冻结）
         self._transient_break_events: Dict[str, list] = {}
         self._transient_break_until: float = 0.0
+
+        # evo-sigterm-source-tracking-cooldown：信号死法（143/-9）冷却态（spec 维度）。
+        # 进程内存、不落盘（daemon 重启清零，重启即视为恢复）：
+        #   {spec_name: {"count": int, "cooldown_until": float}}
+        # count = 连续信号死法次数，cooldown_until = 冷却到期单调秒。
+        # 冷却只作用于该 spec 的重派（跳过派发、不耗预算、不起进程），MUST NOT
+        # 写 record_transient_error / _transient_break_until 全局瞬断熔断。
+        self._signal_kill: Dict[str, dict] = {}
 
     @staticmethod
     def parse_api_error_status(error_text: str) -> Optional[int]:
@@ -493,6 +514,197 @@ class ProviderCircuit:
             self._pm.logger.error(
                 "agent_runner",
                 f"transient_break_storm 告警写入失败: {e}",
+            )
+
+    # ── 信号死法冷却（evo-sigterm-source-tracking-cooldown）────────────────
+    # spec 维度的信号死法（143/-9）连续计数 → 达阈值触发该 spec 冷却。与秒挂
+    # 冷却（runner._record_instant_fail）并存：同一事件双记仅累加（信号死法若
+    # 同时是秒挂，两条通道各自计数），冷却截止各自独立——dispatch 侧 OR 判定
+    # 使两条通道对同一事件互不覆盖冷却截止（取更晚者生效）。
+
+    def record_signal_kill(self, spec_name: str, now: float | None = None) -> bool:
+        """记录一次信号死法（143/-9），同 spec 连续计数 → 达阈值触发该 spec 冷却。
+
+        只作用于该 spec 的重派（dispatch 跳过派发、不耗预算、不起进程），
+        MUST NOT 写 record_transient_error / _transient_break_until 全局瞬断
+        熔断（不得冻结全项目新派发）。触发时写 major 告警（15 分钟节流）。
+
+        Returns:
+            True 表示本次记录后该 spec 处于冷却期（本次触发或已在冷却）；
+            False 表示未触发（未达阈值）。
+        """
+        if not spec_name:
+            return False
+        now = self._pm._now() if now is None else now
+        st = self._signal_kill.setdefault(
+            spec_name, {"count": 0, "cooldown_until": 0.0})
+        st["count"] = int(st.get("count", 0)) + 1
+        if st.get("cooldown_until", 0.0) > now:
+            # 已在冷却期内：仅累加计数，不重复触发/告警（冷却到期由查询侧恢复）。
+            return True
+        after = self._signal_kill_cooldown_after()
+        if st["count"] < after:
+            self._pm.logger.warning(
+                "agent_runner",
+                f"'{spec_name}' 信号死法 {st['count']}/{after} "
+                f"（evo-sigterm-source-tracking-cooldown 计数）",
+            )
+            return False
+        # 达阈值：进入该 spec 冷却
+        cooldown_seconds = self._signal_kill_cooldown_seconds()
+        st["cooldown_until"] = now + cooldown_seconds
+        self._pm.logger.error(
+            "agent_runner",
+            f"'{spec_name}' 连续 {st['count']} 次信号死法（阈值 {after}）— "
+            f"进入 {cooldown_seconds}s 冷却，期间该 spec 重派被跳过；"
+            f"冷却到期自动恢复（evo-sigterm-source-tracking-cooldown）",
+        )
+        self._alert_signal_kill_storm(spec_name, st["count"], cooldown_seconds)
+        return True
+
+    def is_signal_kill_cooldown(self, spec_name: str,
+                                now: float | None = None) -> bool:
+        """该 spec 是否处于信号死法冷却期（dispatch 派发前闸门调用）。
+
+        冷却到期自动恢复并清零计数（与 is_instant_fail_cooldown 同构）；恢复时
+        写一条 major 告警（15 分钟节流，signal_type=signal_kill_recovered）。
+        无条目 / 未进入冷却返回 False。
+        """
+        if not spec_name:
+            return False
+        st = self._signal_kill.get(spec_name)
+        if not st:
+            return False
+        until = st.get("cooldown_until") or 0.0
+        if until <= 0:
+            return False
+        now = self._pm._now() if now is None else now
+        if now >= until:
+            # 冷却到期自动恢复：清零计数，写恢复告警（节流抑制重复）。
+            self._pm.logger.warning(
+                "agent_runner",
+                f"'{spec_name}' 信号死法冷却到期 — 自动恢复派发，计数清零"
+                f"（evo-sigterm-source-tracking-cooldown）",
+            )
+            self._alert_signal_kill_recovered(spec_name)
+            self._signal_kill.pop(spec_name, None)
+            return False
+        return True
+
+    def signal_kill_cooldown_until(self, spec_name: str) -> float:
+        """该 spec 信号死法冷却到期单调秒（未冷却/无条目返回 0；派发恢复排程用）。"""
+        st = self._signal_kill.get(spec_name)
+        if not st:
+            return 0.0
+        try:
+            return float(st.get("cooldown_until") or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def signal_kill_counts(self, spec_name: str) -> int:
+        """当前连续信号死法次数（测试/观测辅助）。"""
+        st = self._signal_kill.get(spec_name)
+        return int(st.get("count", 0)) if st else 0
+
+    def reset_signal_kill(self, spec_name: str) -> None:
+        """成功 / 冷却到期：清除该 spec 的信号死法连续计数与冷却态。"""
+        self._signal_kill.pop(spec_name, None)
+
+    def _signal_kill_cooldown_after(self) -> int:
+        """信号冷却阈值（agents.signal_kill_cooldown_after，缺省 3）。"""
+        try:
+            v = int(self._pm._get_config(
+                "agents.signal_kill_cooldown_after",
+                SIGNAL_KILL_COOLDOWN_AFTER) or SIGNAL_KILL_COOLDOWN_AFTER)
+        except (TypeError, ValueError):
+            v = SIGNAL_KILL_COOLDOWN_AFTER
+        return max(1, v)
+
+    def _signal_kill_cooldown_seconds(self) -> int:
+        """信号冷却时长（agents.signal_kill_cooldown_seconds，缺省 600）。"""
+        try:
+            v = int(self._pm._get_config(
+                "agents.signal_kill_cooldown_seconds",
+                SIGNAL_KILL_COOLDOWN_SECONDS) or SIGNAL_KILL_COOLDOWN_SECONDS)
+        except (TypeError, ValueError):
+            v = SIGNAL_KILL_COOLDOWN_SECONDS
+        return max(1, v)
+
+    def _alert_signal_kill_storm(self, spec_name: str, count: int,
+                                 cooldown_seconds: int) -> None:
+        """信号死法冷却触发时发 major 告警（signal_type=signal_kill_storm）。
+
+        重复冷却由既有 15 分钟 throttle 抑制：AdminStore.latest_signal 按
+        (spec, signal_type) 在窗口内查重，窗口内已有同信号则不发第二条。
+        """
+        try:
+            from core.admin_store import AdminStore, ESCALATION
+            store = AdminStore(self._pm.project_root, self._pm.logger)
+            if store.latest_signal(spec_name, "signal_kill_storm",
+                                   SIGNAL_KILL_ALERT_THROTTLE_MINUTES) is not None:
+                self._pm.logger.debug(
+                    "agent_runner",
+                    f"signal_kill_storm 告警已 throttle（15 分钟内已有）: '{spec_name}'",
+                )
+                return
+            store.append({
+                "kind": ESCALATION,
+                "signal_type": "signal_kill_storm",
+                "spec": spec_name,
+                "severity": "major",
+                "description": (
+                    f"spec '{spec_name}' 连续 {count} 次信号死法（Exit 143/-9，"
+                    f"来源待考）— 已进入 {cooldown_seconds}s 冷却，期间该 spec "
+                    f"重派被跳过；冷却到期自动恢复"
+                ),
+                "evidence": (
+                    f"spec={spec_name}; signal_kill_count={count}; "
+                    f"cooldown_seconds={cooldown_seconds}"
+                ),
+                "recommended_action": (
+                    "检查子进程被信号杀死的外部原因（资源回收/外部 kill/CLI 自身）；"
+                    "冷却自动到期后恢复，无需人工干预；若反复触发请核对 daemon 关停"
+                    "时序与 supervision 强杀路径是否被误归为外部信号"
+                ),
+            })
+        except Exception as e:
+            self._pm.logger.error(
+                "agent_runner",
+                f"signal_kill_storm 告警写入失败 '{spec_name}': {e}",
+            )
+
+    def _alert_signal_kill_recovered(self, spec_name: str) -> None:
+        """信号死法冷却到期恢复时发 major 告警（signal_type=signal_kill_recovered）。
+
+        与 _alert_signal_kill_storm 同构：15 分钟节流去重。
+        """
+        try:
+            from core.admin_store import AdminStore, ESCALATION
+            store = AdminStore(self._pm.project_root, self._pm.logger)
+            if store.latest_signal(spec_name, "signal_kill_recovered",
+                                   SIGNAL_KILL_ALERT_THROTTLE_MINUTES) is not None:
+                self._pm.logger.debug(
+                    "agent_runner",
+                    f"signal_kill_recovered 告警已 throttle（15 分钟内已有）: '{spec_name}'",
+                )
+                return
+            store.append({
+                "kind": ESCALATION,
+                "signal_type": "signal_kill_recovered",
+                "spec": spec_name,
+                "severity": "major",
+                "description": (
+                    f"spec '{spec_name}' 信号死法冷却到期，重派已恢复"
+                ),
+                "evidence": f"spec={spec_name}",
+                "recommended_action": (
+                    "无需人工干预；若信号死法再次连发将重新冷却"
+                ),
+            })
+        except Exception as e:
+            self._pm.logger.error(
+                "agent_runner",
+                f"signal_kill_recovered 告警写入失败 '{spec_name}': {e}",
             )
 
     def _circuit_open_error(self, provider_name: str, now: float | None = None) -> str:
