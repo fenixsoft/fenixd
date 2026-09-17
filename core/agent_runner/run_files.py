@@ -33,6 +33,7 @@ RUN_ID_AGENT_PREFIXES: tuple[tuple[str, str], ...] = (
     ("planner-plan-", "planner-plan"),
     ("planner-", "planner"),
     ("impl-", "implementer"),
+    ("repair-", "repair"),
     ("verify-", "verifier"),
     ("test-", "tester"),
 )

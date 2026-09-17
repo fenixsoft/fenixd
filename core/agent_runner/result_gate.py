@@ -483,7 +483,8 @@ def _check_impl_result_artifact(
         )
     else:
         gate_err = runner._check_partial_consistency(
-            spec_name, result_path, data, all_ids, checked_ids
+            spec_name, result_path, data, all_ids, checked_ids,
+            unattainable_ids=unattainable_ids,
         )
     if gate_err is None:
         # ── 能力探测（D4）：TaskCreate 可用才强制交叉核对，否则 fail-open + 审计。
@@ -596,17 +597,34 @@ def _check_success_completion(
 
 
 def _check_partial_consistency(
-    runner, spec_name: str, result_path: Path, data: dict, all_ids: list, checked_ids: set
+    runner, spec_name: str, result_path: Path, data: dict, all_ids: list, checked_ids: set,
+    unattainable_ids: set | None = None,
 ) -> str | None:
     """status == "partial" 的申报一致性判据（spec「partial 的申报一致性判据」）。
 
-    completed_tasks 集合 == 已勾选集合；unfinished 集合 == 未勾选集合；两集合
-    互斥且并集 == 全部数字任务 id。任一不满足返回失败归因（防 partial 成为
-    绕过 success 判据的缺口）。
+    completed_tasks 集合 == 已勾选集合；unfinished 集合 ⊆ 未勾选集合；且
+    「未勾选 − unfinished − unattainable」为空（每个未勾任务都必须被申报为
+    unfinished 或 unattainable）；三集合互斥且并集 == 全部数字任务 id。
+    任一不满足返回失败归因（防 partial 成为绕过 success 判据的缺口）。
+
+    诚实退出衔接（2026-09-16 改进② 补齐 partial 路径）：``unattainable`` 申报
+    的任务**不要求**出现在 unfinished 里——它客观上不可由 agent 完成（如
+    「经用户确认时机后重启 daemon」这类人工运维门控），既不能勾选（先勾后做）
+    也不该被当作 agent 的未完成缺口。修正前判据把「并集 == 全部数字任务 id」
+    无条件成立（completed ∪ unfinished ⊊ all），申报 unattainable 的 partial
+    必然被拒（2026-09-16 fix-dashboard-read-path-performance 实测：实现者三个
+    原地重试轮如实申报 unattainable=[6.2] 均被同一门拒回，spec 在 implementing
+    悬置 43 分钟直至 orphaned_state 唤起 admin）。
     """
     agent_type = "implementer"
+    unattainable_ids = set(unattainable_ids or ())
     raw_ct = data.get("completed_tasks")
     raw_un = data.get("unfinished")
+    # unattainable 申报在场时 unfinished 可省略（缺口全由 unattainable 承载的
+    # 收工形态：申报了「做不了」的任务即无需再列「没做完」）；无申报时维持
+    # 原样硬拦（缺数组 = 申报不完整）。
+    if raw_un is None and unattainable_ids:
+        raw_un = []
     if not isinstance(raw_ct, list) or not isinstance(raw_un, list):
         return (
             f"exit 0 但结果文件 partial 缺 completed_tasks/unfinished 数组"
@@ -620,24 +638,34 @@ def _check_partial_consistency(
         )
     ct_set, un_set = set(raw_ct), set(raw_un)
     expected_un = set(all_ids) - checked_ids
+    # 未勾任务中既未申报 unfinished、又未申报 unattainable 的部分（真缺口）。
+    undeclared = expected_un - un_set - unattainable_ids
     missing_ct = sorted(checked_ids - ct_set)
     extra_ct = sorted(ct_set - checked_ids)
-    missing_un = sorted(expected_un - un_set)
     extra_un = sorted(un_set - expected_un)
     overlap = sorted(ct_set & un_set)
     parts = []
     if missing_ct or extra_ct:
         parts.append("completed_tasks 与勾选集合不一致")
-    if missing_un or extra_un:
-        parts.append("unfinished 与未勾选集合不一致")
+    if extra_un:
+        parts.append("unfinished 含非未勾任务")
+    if undeclared:
+        parts.append(
+            "未申报缺口（既不在 unfinished 也未在 unattainable）: "
+            + runner._format_gap_list(sorted(undeclared))
+        )
     if overlap:
         parts.append(f"completed_tasks/unfinished 交集非空: {runner._format_gap_list(overlap)}")
-    if (ct_set | un_set) != set(all_ids):
+    if (ct_set | un_set | unattainable_ids) != set(all_ids):
         parts.append("并集不等于全部数字任务 id")
     if parts:
         return (
             f"{TASK_GATE_ERROR_PREFIX} exit 0 但结果文件 partial 申报一致性判据未通过"
-            f"（{agent_type} 产物硬门）: {result_path} {'；'.join(parts)}"
+            f"（{agent_type} 产物硬门）: {result_path} {'；'.join(parts)}。"
+            f"提示：客观上无法由 agent 完成的未完成任务（人工运维门控——需用户亲手"
+            f'重启 daemon、需人工审批、需外部资源）MUST 用顶层 `unattainable` 数组'
+            f'申报诚实退出：`"unattainable": [{{"task": "7.3", "reason": "<为何 '
+            f'agent 无法完成>", "evidence": "<依据>"}}]`，MUST NOT 勾选或谎报 success'
         )
     return None
 

@@ -3448,8 +3448,12 @@ class AgentRunner:
 
     def _check_partial_consistency(self, spec_name: str, result_path: Path,
                                    data: dict, all_ids: list,
-                                   checked_ids: set) -> str | None:
-        return _check_partial_consistency(self, spec_name, result_path, data, all_ids, checked_ids)
+                                   checked_ids: set,
+                                   unattainable_ids: set | None = None) -> str | None:
+        return _check_partial_consistency(
+            self, spec_name, result_path, data, all_ids, checked_ids,
+            unattainable_ids=unattainable_ids,
+        )
 
     def _check_taskupdate_crosscheck(self, spec_name: str,
                                      checked_ids: set) -> str | None:
