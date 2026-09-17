@@ -19,7 +19,7 @@ from typing import Optional
 
 from core.wip_checkpoint import collapse_wip_commits  # noqa: E402
 from core.worktree_manager.types import MergeConflictInfo
-from core.worktree_manager import _is_build_artifact_path  # noqa: E402
+from core.worktree_manager import _is_build_artifact_path, WIP_GATE_STASH_PREFIX  # noqa: E402
 
 
 class G4MergebackMixin:
@@ -80,13 +80,26 @@ class G4MergebackMixin:
 
             self.last_stash_pop_conflicts = []
             self.last_stash_entry_fate = {"kept": True, "sha": ""}
-            # WIP 重叠预检（fix-mergeback-stashpop-silent-loss D3）：预演闸放行后、
-            # stash 之前，检测「分支改动文件 ∩ 主树脏 tracked 文件」。只读、不阻断
-            # ——重叠仅是预警（不同 hunk 可自动合并），清单挂到返回的
-            # MergeConflictInfo.wip_overlap 供 dispatch 并入告警文本。
-            wip_overlap = self._detect_wip_overlap(branch)
+            # WIP 重叠闸门（evo-merge-back-wip-overlap-gate D1/D2）：预演闸放行后、
+            # stash 之前，把「主树脏 tracked ∩ 分支改动」（已排除 spec/changes，见
+            # _detect_wip_overlap）从「只预警」升级为执行级前置处置：
+            #   * 无重叠 / 检测命令失败 → 放行现行 autostash→merge→pop 路径
+            #     （逐字节不变；闸门自身异常 MUST 退化为不阻塞、不新增 stash）；
+            #   * 有重叠 + 默认自动收纳策略 → 放行：重叠改动随 ensure_clean_tree
+            #     的 stash 卷走（闸门专用前缀 WIP_GATE_STASH_PREFIX，与
+            #     AUTOSTASH_MSG_PREFIX 隔离），merge 成功后恢复；pop 冲突时保留
+            #     条目 + 记录去向（last_stash_entry_fate）+ 逐文件找回命令；
+            #   * 有重叠 + 显式配置阻塞策略（worktree.mergeback_wip_overlap_policy
+            #     =block）→ 中止返回携带 wip_gate_blocked=True 的可区分失败
+            #     （不 stash、不 merge、不 pop，主树零污染），dispatch 层据此
+            #     旁路熔断记账、只发告警等待人工处置。
+            gate_blocked, wip_overlap = self._wip_overlap_gate(branch)
+            if gate_blocked is not None:
+                return gate_blocked
 
-            stashed = self.ensure_clean_tree()
+            stashed = self.ensure_clean_tree(
+                prefix=WIP_GATE_STASH_PREFIX if wip_overlap else None
+            )
             try:
                 info = self._merge_back_from_branch_locked(branch)
                 info.wip_overlap = wip_overlap
@@ -97,12 +110,79 @@ class G4MergebackMixin:
                     if conflict_files:
                         self.last_stash_pop_conflicts = list(conflict_files)
 
+    def _wip_gate_policy(self) -> str:
+        """merge-back 前 WIP 重叠闸门策略（evo-merge-back-wip-overlap-gate D1）。
+
+        默认自动收纳（auto）；仅显式配置 ``worktree.mergeback_wip_overlap_policy=
+        block``（或等价布尔开关）时阻塞（design：重叠 ≠ 冲突——不同 hunk 可自动
+        合并，以阻塞为默认把可自动完成的 merge-back 转成失败，属净回归）。
+
+        配置经构造参数注入（缺省 None → auto）；读取/解析异常一律回退 auto——
+        闸门自身故障 MUST NOT 把默认收纳语义改成阻塞。
+        """
+        policy = getattr(self, "_mergeback_wip_overlap_policy", None) or "auto"
+        if isinstance(policy, bool):
+            return "block" if policy else "auto"
+        return (
+            "block"
+            if str(policy).strip().lower() in ("block", "1", "true", "yes", "on")
+            else "auto"
+        )
+
+    def _wip_overlap_gate(self, branch: str) -> tuple:
+        """merge-back 前 WIP 重叠闸门（evo-merge-back-wip-overlap-gate D1/D2）。
+
+        在 ``_main_tree_lock`` 内、``ensure_clean_tree`` 之前调用。返回
+        ``(blocked, overlap)``：
+
+        - ``blocked``：非 None 时即调用方需直接返回的 ``MergeConflictInfo``
+          （``wip_gate_blocked=True``，主树未被 stash/merge/pop 触碰）；
+          None = 放行（无重叠 / 收纳策略 / 检测命令失败）。
+        - ``overlap``：检测到的重叠文件清单（已排除 ``spec/changes/**``），供
+          调用方决定收纳 stash 前缀与挂到成功/失败返回值（``info.wip_overlap``）。
+        """
+        overlap = self._detect_wip_overlap(branch)
+        if not overlap:
+            return None, []
+        if self._wip_gate_policy() == "block":
+            error = (
+                f"Merge-back blocked by WIP overlap gate (policy=block): "
+                f"{len(overlap)} main-tree tracked file(s) with uncommitted changes "
+                f"overlap branch '{branch}' changes: {overlap}. "
+                f"处置：提交（git add/commit）或 stash（git stash push）主树这些"
+                f"改动后重新放行该 spec——git stash list 查条目去向、"
+                f"git show <sha>:<file> 按文件找回"
+            )
+            self.logger.error("worktree_manager", error)
+            return (
+                MergeConflictInfo(False, error, wip_overlap=overlap, wip_gate_blocked=True),
+                overlap,
+            )
+        # 默认自动收纳：重叠改动随 ensure_clean_tree 的 stash 卷走（闸门专用前缀，
+        # 与 reclaim_stale_autostash 只认的 AUTOSTASH_MSG_PREFIX 隔离），merge
+        # 成功后恢复；pop 冲突保留条目 + 去向可见。
+        self.logger.warning(
+            "worktree_manager",
+            f"WIP overlap gate (policy=auto, default): {len(overlap)} main-tree "
+            f"tracked file(s) overlapped with branch '{branch}' changes — will be "
+            f"stashed with gate prefix and restored after merge: {overlap}",
+        )
+        return None, overlap
+
     def _detect_wip_overlap(self, branch: str) -> list:
         """merge-back 前 WIP 重叠预检（fix-mergeback-stashpop-silent-loss D3）。
 
         计算主树脏 tracked 文件与 ``merge-base..branch`` 分支改动文件的交集。
         非空 → 记 WARNING（含重叠清单），返回清单供挂到 MergeConflictInfo；
         空/命令失败 → 返回空列表、零行为变化。只读不阻断：不 stash、不改状态。
+
+        **闸门作用域（evo-merge-back-wip-overlap-gate D2）**：重叠集合排除
+        ``spec/changes/**``——该前缀被 ``ensure_clean_tree`` 的 autostash 显式
+        ``:(exclude)spec/changes`` 排除（收纳对它无效：stash 卷不走、merge 仍可
+        能被拒绝），却可在主树长期脏（纳入闸门会让几乎每次 merge-back 被阻塞）；
+        其「主树脏 + 分支同改」由既有提交通道 ``ensure_spec_committed`` /
+        ``_commit_softened_declaration`` 收口，MUST NOT 为它引入新的 stash/阻塞
+        语义。
 
         Returns: 排序后的重叠文件路径列表（无重叠为空列表）。
         """
@@ -136,6 +216,14 @@ class G4MergebackMixin:
                 return []
             branch_files = {ln.strip() for ln in diff.stdout.splitlines() if ln.strip()}
             overlap = sorted(set(dirty) & branch_files)
+            # 闸门作用域（evo-merge-back-wip-overlap-gate D2）：排除 spec/changes/**
+            # ——见上方 docstring，纳入闸门会分别导致「收纳无效」与「几乎每次
+            # merge-back 阻塞」。该前缀的「主树脏 + 分支同改」走既有提交通道。
+            overlap = [
+                p
+                for p in overlap
+                if not (p == "spec/changes" or p.startswith("spec/changes/"))
+            ]
             if overlap:
                 self.logger.warning(
                     "worktree_manager",

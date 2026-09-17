@@ -410,6 +410,14 @@ class FFastTrackMixin:
                 if getattr(merge_info, "rehearsed", False):
                     self._direct_rehearsed_to_repair(spec_name, merge_info, branch, merge_error)
                     return False
+                # ── WIP 重叠闸门阻塞旁路（evo-merge-back-wip-overlap-gate D3）──
+                # 与 implementer 路径同语义：阻塞是前置拦截而非 merge 失败，主树
+                # 未被 stash/merge/pop 触碰——不经 _merge_fp/_merge_streak 记账、
+                # 不做 ready 降级、不进 repair 通道，spec 保持 in-flight，仅直发
+                # 告警等待人工处置主树 WIP（提交或 stash 重叠改动后重新放行）。
+                if getattr(merge_info, "wip_gate_blocked", False):
+                    self._report_mergeback_wip_overlap(spec_name, merge_info, branch, merge_error)
+                    return False
                 spec_entry = self._pm.state_machine.read_one(spec_name) or {}
                 max_r = self._pm._get_config("agents.max_retries", 3)
                 fp = self._pm._merge_fingerprint(merge_error)

@@ -62,6 +62,7 @@ const SIGNAL_LABEL: Record<string, string> = {
   family_explosion: 'SPEC 族爆炸',
   daemon_errors: '守护进程异常',
   stash_pop_conflict: '合并冲突改动滞留',
+  mergeback_wip_overlap: '合并被主树改动阻塞',
   verify_uniform_failure: '全场景同因失败',
 };
 

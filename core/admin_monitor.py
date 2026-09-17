@@ -180,6 +180,10 @@ SIGNAL_SEVERITY = {
     # fix-mergeback-stashpop-silent-loss D1：pop 冲突自愈丢弃的用户改动，
     # 内容找回需人工核对（stash 栈 + 逐文件 git show），major 级。
     "stash_pop_conflict": "major",
+    # evo-merge-back-wip-overlap-gate D1：merge-back 前主树 WIP 与分支改动重叠，
+    # 按显式配置的阻塞策略中止合并（主树零污染）——需人工处置重叠改动后放行，
+    # major 级（阻塞是前置拦截、非 merge 失败，低于 critical）。
+    "mergeback_wip_overlap": "major",
     # fix-verify-uniform-failure-consumer：全场景同因失败（pass=0 且失败签名
     # 一致）——既可能是验证环境/夹具问题，也可能是场景本身缺陷；admin 需判类
     # 后走对应处置路径，不直接判 bug-found（同因哨有意不派生 fix）。
@@ -228,6 +232,9 @@ SIGNAL_RECOMMENDATION = {
     # fix-mergeback-stashpop-silent-loss D1：核对指引——查 stash 栈确认条目去向，
     # 按 sha / 逐文件 git show 找回被自愈丢弃的改动，确认无独有内容后可清理条目。
     "stash_pop_conflict": "merge-back stash pop 冲突已自愈，主树已恢复可写但部分未提交改动被丢弃：git stash list 查条目去向（保留/drop + sha）；按告警中逐文件 git show <sha>:<file> 命令核对内容，仍需要的改动手动落回工作区；确认零独有内容后 git stash drop 清理",
+    # evo-merge-back-wip-overlap-gate D1：阻塞策略下主树 WIP 与分支改动重叠导致
+    # merge-back 中止的核对指引——重叠 ≠ 冲突，主树零污染，处置后重新放行即可。
+    "mergeback_wip_overlap": "merge-back 被 WIP 重叠闸门阻塞（策略=block，主树零污染，未 stash/merge/pop）：提交（git add/commit）或 stash（git stash push）主树与分支重叠的未提交改动后，重新放行该 spec（ready 重派）继续 merge-back；改动找回用 git stash list 与逐文件 git show <sha>:<file>",
     # add-blocked-reverify-lane D2：env 阻塞处置建议同步复位收敛措辞——
     # 处置范围限于环境修复，result 写入后框架自动判定复位路径（实现分支已合并→
     # 直通道 testing 重验，否则→ready），无需手动 reset spec 状态。
@@ -263,6 +270,11 @@ STORED_SIGNAL_TYPES = (
     "dispatch_stalled",
     "verify_contract_missing",
     "stash_pop_conflict",
+    # evo-merge-back-wip-overlap-gate D8：merge-back 前 WIP 重叠闸门阻塞
+    # （mergeback_wip_overlap）由 pm_engine 在 merge 结果处理失败分支直发、
+    # 本监视器摄取唤起——未收录则摄取循环 :691 continue 跳过、记录落 store
+    # 后无人摄取、Administrator 不唤起（即「显式告警」目标落空）。
+    "mergeback_wip_overlap",
     "verify_contract_redraft",
     # add-verdict-credibility-gate / design D6：连续 blocked-env 达阈值时
     # pm_engine 写入、本监视器摄取唤起（写入即待唤起型，recovery 尊重暂停

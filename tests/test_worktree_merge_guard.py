@@ -59,10 +59,10 @@ def init_repo(root: Path) -> str:
     return git(root, "rev-parse", "HEAD").stdout.strip()
 
 
-def make_wm(root: Path) -> WorktreeManager:
+def make_wm(root: Path, **kwargs) -> WorktreeManager:
     base = root / ".claude" / "worktrees"
     base.mkdir(parents=True, exist_ok=True)
-    return WorktreeManager(base, root, CapturingLogger())
+    return WorktreeManager(base, root, CapturingLogger(), **kwargs)
 
 
 def make_branch(root: Path, branch: str, added_path: str, added_content: str,
@@ -720,9 +720,11 @@ class TestSupersededStashDrop:
         info = wm.merge_back_from_branch("fenix/impl")
         success, err = info
         assert success, f"merge 应成功，实际失败: {err}"
-        # WIP 与分支版不同 → 有独立差异 → 条目保留
+        # WIP 与分支版不同 → 有独立差异 → 条目保留（闸门收纳路径用独立前缀
+        # WIP_GATE_STASH_PREFIX，与 AUTOSTASH_MSG_PREFIX 隔离——reclaim_stale_
+        # autostash 按子串匹配只回收后者，故意保留待找回的条目不会被 60s 巡检抢走）
         lst = git(root, "stash", "list")
-        assert "fenix: pre-dispatch autostash" in lst.stdout
+        assert "fenix: wip-overlap gate stash" in lst.stdout
         assert (root / "extra.py").read_text(encoding="utf-8") == "BASE-EXTRA\n"
 
     def test_stash_with_unique_diff_is_preserved(self, tmp_path):
@@ -902,3 +904,209 @@ class TestWipOverlapPrecheck:
         assert wm._detect_wip_overlap("fenix/impl") == []
         overlap_warns = [w for w in wm.logger.warnings if "WIP overlap" in w]
         assert not overlap_warns
+
+
+class TestWipOverlapGate:
+    """evo-merge-back-wip-overlap-gate：merge-back 前 WIP 重叠闸门。
+
+    tasks 2.1-2.4 四个 spec scenario：
+      1. 重叠 + 阻塞策略 → merge-back 中止且 wip_gate_blocked=True、主树可写、
+         无文件被丢弃、无 stash 被创建
+      2. 默认（收纳）策略 → 重叠改动被收纳、merge 成功、WIP 在 stash 中找到
+         （pop 冲突保留条目）且 merge 后主树 WIP 恢复（不同 hunk 干净恢复）
+      3. 仅 spec/changes/** 重叠 → 闸门不阻塞、不收纳，沿用现行行为
+      4. 无重叠 / 主树干净 → 行为与既有用例逐字节一致（含显式配置阻塞策略时）
+    """
+
+    def _branch_edits_core_a(self, root: Path, content: str) -> str:
+        """分支 fenix/impl 修改 core/a.py 为 content，checkout 回 BASE。返回 BASE sha。"""
+        base_sha = git(root, "rev-parse", "HEAD").stdout.strip()
+        git(root, "checkout", "-q", "-b", "fenix/impl")
+        (root / "core" / "a.py").write_text(content, encoding="utf-8")
+        git(root, "add", "-A")
+        git(root, "commit", "-q", "-m", "[fenix] branch edits core/a.py")
+        git(root, "checkout", "-q", base_sha)
+        return base_sha
+
+    def _seed_core_a(self, root: Path, content: str = "BASE-A\n"):
+        (root / "core").mkdir()
+        (root / "core" / "a.py").write_text(content, encoding="utf-8")
+        git(root, "add", "-A")
+        git(root, "commit", "-q", "-m", "[fenix] add core/a.py")
+
+    # ───────────────────────── tasks 2.1: 阻塞策略 ─────────────────────────
+
+    def test_block_policy_aborts_merge_with_zero_pollution(self, tmp_path):
+        """重叠 + 阻塞策略 → 中止、wip_gate_blocked=True、主树零污染。"""
+        root = tmp_path / "repo"
+        init_repo(root)
+        self._seed_core_a(root)
+        base_sha = self._branch_edits_core_a(root, "BRANCH-A\n")
+        # 主树 WIP 与分支重叠（同路径）
+        (root / "core" / "a.py").write_text("WIP-A\n", encoding="utf-8")
+
+        wm = make_wm(root, mergeback_wip_overlap_policy="block")
+        info = wm.merge_back_from_branch("fenix/impl")
+        success, err = info
+        assert not success, f"阻塞策略下 merge-back 应中止: {err}"
+        assert info.wip_gate_blocked is True, "应返回可区分的 wip_gate_blocked=True"
+        assert info.wip_overlap == ["core/a.py"], f"重叠清单应含 core/a.py: {info.wip_overlap}"
+
+        # 主树零污染：不 stash、不 merge、不 pop
+        st = git(root, "stash", "list")
+        assert not st.stdout.strip(), f"阻塞不应创建任何 stash: {st.stdout!r}"
+        assert git(root, "rev-parse", "HEAD").stdout.strip() == base_sha, \
+            "阻塞不应推进 HEAD（不 merge）"
+        # 无文件被丢弃：WIP 仍在工作区
+        assert (root / "core" / "a.py").read_text(encoding="utf-8") == "WIP-A\n"
+        # 主树保持可写（后续 git 写操作可用，无 index 半合并）
+        (root / "core" / "write.txt").write_text("ok\n", encoding="utf-8")
+        git(root, "add", "core/write.txt")
+        git(root, "commit", "-q", "-m", "[fenix] main tree still writable")
+        # WIP 原样保留在工作区（唯一脏项 core/a.py 未被触碰、未被丢弃）
+        assert git(root, "status", "--porcelain").stdout.strip() == "M core/a.py"
+
+    # ───────────────────────── tasks 2.2: 默认收纳策略 ─────────────────────────
+
+    def test_default_auto_policy_preserves_wip_on_pop_conflict(self, tmp_path):
+        """收纳策略 + pop 冲突：merge 成功、条目保留在 stash（可 git show 找回）。"""
+        root = tmp_path / "repo"
+        init_repo(root)
+        self._seed_core_a(root)
+        self._branch_edits_core_a(root, "BRANCH-A\n")
+        # 主树 WIP 与分支同路径（内容不同 → pop 必冲突）
+        (root / "core" / "a.py").write_text("WIP-A\n", encoding="utf-8")
+
+        wm = make_wm(root)  # 默认 auto
+        info = wm.merge_back_from_branch("fenix/impl")
+        success, err = info
+        assert success, f"收纳策略下 merge 应成功: {err}"
+        assert info.wip_gate_blocked is False
+
+        # merge 结果落主树；主树干净可写（无 UU 残留）
+        assert (root / "core" / "a.py").read_text(encoding="utf-8") == "BRANCH-A\n"
+        st = git(root, "status", "--porcelain")
+        assert not st.stdout.strip(), f"主树应干净可写: {st.stdout!r}"
+        # 未提交内容可在 stash 中找到（闸门专用前缀，独立于 autostash）
+        lst = git(root, "stash", "list")
+        assert "fenix: wip-overlap gate stash" in lst.stdout, \
+            f"闸门收纳条目应保留在栈中: {lst.stdout!r}"
+        show = git(root, "show", "stash@{0}:core/a.py")
+        assert show.stdout == "WIP-A\n", f"stash 应保有 WIP 内容: {show.stdout!r}"
+
+    def test_default_auto_policy_recovers_wip_after_merge(self, tmp_path):
+        """收纳策略：重叠改动被收纳（stash 可找回）+ merge 成功 + 非重叠 WIP 恢复。
+
+        主树 WIP 同时含：core/a.py（与分支重叠，pop 冲突 → 条目保留在 stash 可
+        找回）与 notes/scratch.txt（不重叠，pop 干净 → merge 后已恢复）。同一次
+        merge-back 同时验证「未提交内容可在 stash 中找到」与「主树 WIP 已恢复」。
+        """
+        root = tmp_path / "repo"
+        init_repo(root)
+        (root / "core").mkdir()
+        (root / "core" / "a.py").write_text("L1-BASE\nL2-BASE\n", encoding="utf-8")
+        (root / "notes").mkdir()
+        (root / "notes" / "scratch.txt").write_text("SCRATCH-BASE\n", encoding="utf-8")
+        git(root, "add", "-A")
+        git(root, "commit", "-q", "-m", "[fenix] add core/a.py + notes/scratch.txt")
+        base_sha = git(root, "rev-parse", "HEAD").stdout.strip()
+        git(root, "checkout", "-q", "-b", "fenix/impl")
+        (root / "core" / "a.py").write_text("BRANCH-A\nL2-BASE\n", encoding="utf-8")
+        git(root, "add", "-A")
+        git(root, "commit", "-q", "-m", "[fenix] branch edits core/a.py")
+        git(root, "checkout", "-q", base_sha)
+        # 主树 WIP：core/a.py（与分支重叠）+ notes/scratch.txt（不重叠）
+        (root / "core" / "a.py").write_text("L1-BASE\nL2-WIP-A\n", encoding="utf-8")
+        (root / "notes" / "scratch.txt").write_text("SCRATCH-WIP\n", encoding="utf-8")
+
+        wm = make_wm(root)  # 默认 auto
+        info = wm.merge_back_from_branch("fenix/impl")
+        success, err = info
+        assert success, f"收纳策略下 merge 应成功: {err}"
+        # 重叠文件：分支改动合入；pop 冲突 → 条目保留（未提交内容可在 stash 找回）
+        assert (root / "core" / "a.py").read_text(encoding="utf-8") == \
+            "BRANCH-A\nL2-BASE\n", "重叠文件以合并结果为准"
+        lst = git(root, "stash", "list")
+        assert "fenix: wip-overlap gate stash" in lst.stdout, \
+            f"闸门收纳条目应保留在栈中: {lst.stdout!r}"
+        show = git(root, "show", "stash@{0}:core/a.py")
+        assert show.stdout == "L1-BASE\nL2-WIP-A\n", \
+            f"stash 应保有重叠文件的 WIP 内容: {show.stdout!r}"
+        # 非重叠 WIP：merge 后已恢复（pop 干净恢复，保持未提交——这是用户改动的本义）
+        assert (root / "notes" / "scratch.txt").read_text(encoding="utf-8") == \
+            "SCRATCH-WIP\n", "非重叠 WIP 应在 merge 后恢复"
+        # 无 UU 半合并残留（core/a.py 冲突已自愈、可写）；恢复的 WIP 以未提交修改呈现
+        st = git(root, "status", "--porcelain")
+        lines = st.stdout.splitlines()
+        assert not any(
+            l.startswith("U") or l.startswith("AA") or l.startswith("DD") for l in lines
+        ), f"不应有 UU 残留: {st.stdout!r}"
+        assert any(l.lstrip().startswith("M notes/scratch.txt") for l in lines), \
+            f"notes WIP 应恢复为未提交修改: {st.stdout!r}"
+
+    # ───────────────────────── tasks 2.3: 闸门作用域排除 spec/changes ─────────────────────────
+
+    def test_spec_changes_overlap_not_gated(self, tmp_path):
+        """仅 spec/changes/** 重叠 → 闸门不阻塞、不收纳（沿用现行行为）。"""
+        root = tmp_path / "repo"
+        init_repo(root)
+        spec_task = "spec/changes/demo/tasks.md"
+        (root / "spec" / "changes" / "demo").mkdir(parents=True)
+        (root / spec_task).write_text("- [ ] 1.1 base\n", encoding="utf-8")
+        git(root, "add", "-A")
+        git(root, "commit", "-q", "-m", "[fenix] add spec tasks")
+        base_sha = git(root, "rev-parse", "HEAD").stdout.strip()
+        git(root, "checkout", "-q", "-b", "fenix/impl")
+        (root / spec_task).write_text("- [x] 1.1 done\n", encoding="utf-8")
+        git(root, "add", "-A")
+        git(root, "commit", "-q", "-m", "[fenix] branch edits spec tasks")
+        git(root, "checkout", "-q", base_sha)
+        # 主树 WIP：改同一 tasks.md（叠加重叠，但应被闸门判定排除）
+        (root / spec_task).write_text("- [x] 1.1 dirty-wip\n", encoding="utf-8")
+
+        # 即使显式配置阻塞策略，spec/changes 重叠也不触发闸门
+        wm = make_wm(root, mergeback_wip_overlap_policy="block")
+        assert wm._detect_wip_overlap("fenix/impl") == [], \
+            "闸门作用域应排除 spec/changes/**"
+        info = wm.merge_back_from_branch("fenix/impl")
+        assert info.wip_gate_blocked is False, \
+            "spec/changes 重叠 MUST NOT 触发闸门阻塞"
+        # 沿用现行行为：该前缀被 stash 排除（收纳对它无效），merge 走既有失败路径
+        # （git 保护拒绝 "local changes would be overwritten"），不新增 stash/阻塞语义
+        st = git(root, "stash", "list")
+        assert not st.stdout.strip(), f"不应新增任何 stash: {st.stdout!r}"
+
+    # ───────────────────────── tasks 2.4: 无重叠 / 主树干净回归 ─────────────────────────
+
+    def test_no_overlap_ignores_block_policy(self, tmp_path):
+        """无重叠（主树干净 tracked 态）→ 即使配置 block 策略也逐字节现行行为。"""
+        root = tmp_path / "repo"
+        init_repo(root)
+        self._seed_core_a(root)
+        self._branch_edits_core_a(root, "BRANCH-A\n")
+
+        wm = make_wm(root, mergeback_wip_overlap_policy="block")
+        info = wm.merge_back_from_branch("fenix/impl")
+        success, err = info
+        assert success, f"无重叠时 merge 应正常完成: {err}"
+        assert info.wip_gate_blocked is False
+        assert info.wip_overlap == []
+        # 结果与既有用例逐字节一致：分支改动合入、主树干净
+        assert (root / "core" / "a.py").read_text(encoding="utf-8") == "BRANCH-A\n"
+        assert git(root, "status", "--porcelain").stdout.strip() == ""
+        # 无 stash 产生（主树 tracked 干净 → 无 autostash）
+        assert not git(root, "stash", "list").stdout.strip()
+
+    def test_clean_tree_no_gate_no_warning(self, tmp_path):
+        """主树干净 → 闸门零介入、零 WARNING（与既有 precheck 语义一致）。"""
+        root = tmp_path / "repo"
+        init_repo(root)
+        self._seed_core_a(root)
+        self._branch_edits_core_a(root, "BRANCH-A\n")
+
+        wm = make_wm(root)
+        gate_blocked, overlap = wm._wip_overlap_gate("fenix/impl")
+        assert gate_blocked is None
+        assert overlap == []
+        gate_warns = [w for w in wm.logger.warnings if "WIP overlap gate" in w]
+        assert not gate_warns, f"主树干净不应有闸门 WARNING: {wm.logger.warnings}"
