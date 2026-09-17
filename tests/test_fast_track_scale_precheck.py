@@ -275,7 +275,10 @@ class TestFastTrackScalePrecheck:
         engine = PMEngine(sm, MagicMock(), config or {}, tmp_path, logger)
         engine.handle_event = MagicMock()
         engine._on_spec_verified = MagicMock()
-        engine._enqueue = MagicMock()
+        # 观察点：dispatcher 直接 self._enqueue（refactor-giant-classes 3.8
+        # 消解回引后不再经 engine 门面委托转发）
+        # 注意：dispatcher 将在下面创建，此处暂留空，稍后赋 mock。
+        engine._enqueue = MagicMock()  # 保留以防其他 engine 路径用到
         engine._enqueue_front = MagicMock()
         # mock worktree manager
         wm = MagicMock()
@@ -296,6 +299,10 @@ class TestFastTrackScalePrecheck:
         )
         # 将 dispatcher 实例注入到 engine 的缓存中
         engine.__dict__["_dispatcher_instance"] = dispatcher
+        # 观察点下移：dispatcher 直接 self._enqueue（refactor-giant-classes 3.8
+        # 消解回引后不再经 engine 门面委托转发）
+        dispatcher._enqueue = MagicMock()
+        dispatcher._enqueue_front = MagicMock()
 
         # 写入 spec 目录（tasks.md）
         for name in (specs or ["demo"]):
@@ -356,7 +363,8 @@ class TestFastTrackScalePrecheck:
         assert entry["status"] == "ready"
         assert "降级完整模式" in (entry.get("error") or "")
         # implementer 被 enqueue
-        engine._enqueue.assert_called_with("big-spec", "implementer")
+        dispatcher = engine.__dict__["_dispatcher_instance"]
+        dispatcher._enqueue.assert_called_with("big-spec", "implementer")
         # 预算未递增
         engine._increment_impl_run_budget_used.assert_not_called()
         # mode 改写为 full

@@ -310,3 +310,48 @@ class TestGeneratorSelfCheck:
         out = self._run_generator(root)
         assert "覆盖自检" in out
         assert "≥30%" in out
+
+class TestRepoCoverageRegression:
+    """本仓覆盖回归（refactor-giant-classes D4 task 4.6）。
+
+    路由迁入 `routes/` 子包 + 表驱动后，gen-route-map 扫描源同步为
+    routes/ 子包全文件 + server.py——对本仓生成地图条目数不得少于
+    迁移前（迁移前 server.py 的 _handle_api 系列分支约 20+ API 路由）。
+
+    断言：本仓生成的地图含 ≥15 条 API 路由（重构前 server.py 的
+    `path == "/api/..."` 分支数），且 routes/base.py 表驱动条目被收录。
+    条目数减少 = 扫描源同步失败（静默退化）。
+    """
+
+    REPO_ROOT = Path(__file__).resolve().parent.parent
+
+    def _run(self) -> str:
+        gen = self.REPO_ROOT / "bin" / "gen-route-map.py"
+        res = subprocess.run(
+            [sys.executable, str(gen), str(self.REPO_ROOT)],
+            capture_output=True, text=True, timeout=60,
+        )
+        assert res.returncode == 0, res.stderr
+        return res.stdout
+
+    def test_repo_api_entries_not_reduced(self):
+        """本仓地图 API 条目数 ≥ 迁移前基线（15 条），表驱动条目被收录。"""
+        out = self._run()
+        api_lines = [
+            l for l in out.splitlines()
+            if l.startswith("- `") and ("[GET]" in l or "[POST]" in l or "[DELETE]" in l)
+        ]
+        # 迁移前 server.py _handle_api/_handle_api_post/_handle_api_delete
+        # 的 `path == "/api/..."` 分支：GET 18 + POST 27 + DELETE 2 = 47。
+        # 表驱动路由表收录后应保持 ≥15（宽松下限，防扫描源同步退化）。
+        assert len(api_lines) >= 15, (
+            f"本仓 API 路由条目仅 {len(api_lines)}（<15）："
+            "gen-route-map 扫描源未同步 routes/ 子包表驱动路由表？"
+        )
+        # 表驱动路由表的精确条目被收录（routes/base.py 主源）
+        assert any('`/api/projects`' in l for l in api_lines), (
+            "表驱动路由 /api/projects 未收录——scan_server_routes 未读 routes/base.py？"
+        )
+        assert any('`/api/spec-freeze`' in l for l in api_lines), (
+            "表驱动路由 /api/spec-freeze 未收录——POST 表扫描失败？"
+        )

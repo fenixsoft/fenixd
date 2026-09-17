@@ -1771,8 +1771,10 @@ class TestZeroChangeConfirmationPath(unittest.TestCase):
         file_on_branch 模拟 file_exists_on_branch 的返回（交付物守卫校验基准
         为实现分支 HEAD）；真实存在性由真实 git 仓库覆盖（merge-base 判据）。
         """
-        self.engine._enqueue = MagicMock()
-        self.engine._enqueue_front = MagicMock()
+        # 观察点下移到 dispatcher 级（refactor-giant-classes 3.8 消解回引后
+        # dispatcher 直接 self._enqueue/_enqueue_front，不再经 engine 门面）
+        self.engine._dispatcher._enqueue = MagicMock()
+        self.engine._dispatcher._enqueue_front = MagicMock()
         self.engine._write_impl_result_snapshot = MagicMock()
         self.engine._reconcile_impl_budget = MagicMock()
         self.engine._sync_task_progress = MagicMock()
@@ -1796,9 +1798,9 @@ class TestZeroChangeConfirmationPath(unittest.TestCase):
         entry = self.sm.read_one("demo")
         self.assertEqual(entry["status"], "implemented")
         # 正常成功收口语义：verifier 排队（队列头）、run 字段落定、error 清、计数清零
-        self.engine._enqueue_front.assert_called_once_with("demo", "verifier")
+        self.engine._dispatcher._enqueue_front.assert_called_once_with("demo", "verifier")
         impl_calls = [
-            c for c in self.engine._enqueue_front.call_args_list
+            c for c in self.engine._dispatcher._enqueue_front.call_args_list
             if c.args[1] == "implementer"
         ]
         self.assertEqual(impl_calls, [])
@@ -1814,7 +1816,7 @@ class TestZeroChangeConfirmationPath(unittest.TestCase):
         self.assertEqual(entry["status"], "ready")
         self.assertIn("零变更", entry["error"])
         self.assertEqual(int(entry["_zero_change_attempts"]), 2)
-        self.engine._enqueue_front.assert_called_once_with("demo", "implementer")
+        self.engine._dispatcher._enqueue_front.assert_called_once_with("demo", "implementer")
 
     def test_branch_gone_fails_open_to_redispatch(self):
         """分支不存在（rev-list 失败）→ 哨兵判定 fail-open 返回 False，

@@ -85,9 +85,9 @@ class _Base(unittest.TestCase):
 class TestModeAwareDispatch(_Base):
     def test_fast_track_mode_enqueues_fast_track(self):
         self._mk()
-        self.engine._enqueue = MagicMock()
+        self.engine._dispatcher._enqueue = MagicMock()
         self.engine._on_spec_ready("demo")
-        calls = [c[0] for c in self.engine._enqueue.call_args_list]
+        calls = [c[0] for c in self.engine._dispatcher._enqueue.call_args_list]
         self.assertIn(("demo", "fast-track"), calls)
 
 
@@ -173,7 +173,7 @@ class TestFastTrackBugFoundEscalates(_Base):
         self.engine._verification._deliverable_gate_missing = MagicMock(return_value=[])
         self.engine._reconcile_impl_budget = MagicMock()
         self.engine._clear_dispatch_conflict = MagicMock(return_value={})
-        self.engine._enqueue = MagicMock()
+        self.engine._dispatcher._enqueue = MagicMock()
         self.sm.transition("demo", "implementing")
 
         self.engine._run_fast_track_worker("demo")
@@ -183,7 +183,7 @@ class TestFastTrackBugFoundEscalates(_Base):
         # mode should be full
         self.assertEqual(read_spec_mode(self.pr, "demo"), "full")
         # verifier should be enqueued
-        self.engine._enqueue.assert_called_with("demo", "verifier")
+        self.engine._dispatcher._enqueue.assert_called_with("demo", "verifier")
 
 
 class TestFastTrackWorktreeReuse(_Base):
@@ -354,7 +354,7 @@ class TestFastTrackMissingResultMerge(_Base):
         self.engine._reconcile_impl_budget = MagicMock()
         self.engine._clear_dispatch_conflict = MagicMock(return_value={})
         self.engine._sync_task_progress = MagicMock()
-        self.engine._enqueue = MagicMock()
+        self.engine._dispatcher._enqueue = MagicMock()
 
         self.engine._run_fast_track_worker("demo")
 
@@ -367,7 +367,7 @@ class TestFastTrackMissingResultMerge(_Base):
         # mode 改写为 full
         self.assertEqual(read_spec_mode(self.pr, "demo"), "full")
         # verifier 被 enqueue（补验证）
-        self.engine._enqueue.assert_called_once_with("demo", "verifier")
+        self.engine._dispatcher._enqueue.assert_called_once_with("demo", "verifier")
         # error 记原因
         self.assertIn("结果文件缺失", entry.get("error", ""))
         self.assertIn("分支已提交", entry.get("error", ""))
@@ -390,7 +390,7 @@ class TestFastTrackMissingResultMerge(_Base):
         self.engine._exempt_dead_run_budget = MagicMock()
         self.engine._reconcile_impl_budget = MagicMock()
         self.engine._clear_dispatch_conflict = MagicMock(return_value={})
-        self.engine._enqueue = MagicMock()
+        self.engine._dispatcher._enqueue = MagicMock()
 
         self.engine._run_fast_track_worker("demo")
 
@@ -400,7 +400,7 @@ class TestFastTrackMissingResultMerge(_Base):
         self.engine._exempt_dead_run_budget.assert_called_once()
         self.assertIn("fast-track no run-result", self.engine._exempt_dead_run_budget.call_args[0][1])
         # retry 1 < max(3)：不直接 enqueue，spec 回 ready 由 ready 派发器重派
-        self.engine._enqueue.assert_not_called()
+        self.engine._dispatcher._enqueue.assert_not_called()
 
     def test_missing_result_merge_failure_preserves_worktree(self):
         """merge 失败 → _reconcile_and_merge 内部处置（保留 worktree + 重派），
@@ -415,7 +415,7 @@ class TestFastTrackMissingResultMerge(_Base):
         self.engine._verification._implementation_branch_has_commits = MagicMock(return_value=True)
         self.engine._reconcile_impl_budget = MagicMock()
         self.engine._clear_dispatch_conflict = MagicMock(return_value={})
-        self.engine._enqueue = MagicMock()
+        self.engine._dispatcher._enqueue = MagicMock()
         wm = self.engine.agent_runner.worktree_manager
         wm.merge_back_from_branch.return_value = (False, "conflict")
         wm.last_stash_pop_conflicts = []
@@ -427,7 +427,7 @@ class TestFastTrackMissingResultMerge(_Base):
         self.assertIn("Merge-back failed", entry["error"])
         # 不走升级（mode 仍为 fast-track）
         self.assertEqual(read_spec_mode(self.pr, "demo"), "fast-track")
-        self.engine._enqueue.assert_not_called()
+        self.engine._dispatcher._enqueue.assert_not_called()
 
 
 class TestAccidentSignatureReplay(_Base):
@@ -490,7 +490,7 @@ class TestAccidentSignatureReplay(_Base):
         self.engine._reconcile_impl_budget = MagicMock()
         self.engine._clear_dispatch_conflict = MagicMock(return_value={})
         self.engine._sync_task_progress = MagicMock()
-        self.engine._enqueue = MagicMock()
+        self.engine._dispatcher._enqueue = MagicMock()
         self.engine._exempt_dead_run_budget = MagicMock()
 
         self.engine._run_fast_track_worker("demo")
@@ -504,7 +504,7 @@ class TestAccidentSignatureReplay(_Base):
             .assert_called_once_with("fenix/demo")
         # 升级补验证：mode→full + verifier enqueue
         self.assertEqual(read_spec_mode(self.pr, "demo"), "full")
-        self.engine._enqueue.assert_called_once_with("demo", "verifier")
+        self.engine._dispatcher._enqueue.assert_called_once_with("demo", "verifier")
         self.assertIn("结果文件缺失", entry.get("error", ""))
 
 
