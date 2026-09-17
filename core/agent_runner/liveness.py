@@ -20,16 +20,10 @@ AGENT_TERMINATE_GRACE_SECONDS = 10
 # ── attempt 存活探测 / 超时活性监督（improve-run-lifecycle-governance）──────
 # 进程扫描不可用时，run 流文件 mtime 在该窗口内视为 attempt 仍在活动（D4 回退判据）。
 LIVE_ATTEMPT_STREAM_WINDOW_SECONDS = 120
-# 超时监督默认值（D3）。单次续期 extension_seconds、次数上限 max_extensions、
-# 总墙钟上限 absolute_max_seconds（命中即无条件终止，封闭续期的成本风险）、
-# 活性判定窗口 judge_window（秒）。
-SUPERVISION_DEFAULTS = {
-    "enabled": True,
-    "extension_seconds": 1800,
-    "max_extensions": 2,
-    "absolute_max_seconds": 7200,
-    "judge_window": 600,
-}
+# 超时监督默认值（D3）：单源定义于 core.config（supervision-timeout-config-consistency，
+# 与 supervision_floor 派生共用，禁止两处各自手写常数）；本模块 import 后 re-export，
+# 保持 ``from core.agent_runner.liveness import SUPERVISION_DEFAULTS`` 路径可用。
+from core.config import SUPERVISION_DEFAULTS  # noqa: E402
 # 活性判定 LLM 单轮调用的超时秒数（D2）：judge 卡死不能拖住监督循环
 JUDGE_TIMEOUT_SECONDS = 120
 # 活性快照 last_output 片段截断字符数（D1）
@@ -907,9 +901,29 @@ class LivenessSupervisor:
             except Exception:
                 pass
         extension_seconds = max(1.0, float(sup["extension_seconds"]))
-        # absolute_max 是总墙钟上限；配置偏小时抬到 run_timeout + 续期总额，
-        # 否则续期预算会被总上限截断（语义矛盾）。
-        floor_absolute_max = run_timeout + max_extensions * extension_seconds
+        # absolute_max 是总墙钟上限；配置偏小时抬到派生下限，否则续期预算会被总上限
+        # 截断（语义矛盾）。下限由单一派生函数给出（supervision-timeout-config-consistency）：
+        # floor = 生效超时 + 续期预算 × extension_seconds，与 config 校验层共用同一
+        # 实现，禁止此处手写常数。传入该 agent 的实际预算（含 fast-track higher 档
+        # 加成），运行时数值与改造前逐位一致（基础档 18600s / higher 档 22200s）。
+        from core.config import ConfigLoader
+
+        cfg = getattr(self._pm, "config", None)
+        if not isinstance(cfg, dict):
+            # 测试/最小门面未暴露 config：以已解析的生效超时与监督设置回构最小配置，
+            # 保证 supervision_floor 派生结果与门面 _effective_run_timeout 一致
+            # （缺省语义下 floor = run_timeout + max_extensions × extension_seconds）。
+            cfg = {"agents": {"run_timeout_seconds": run_timeout, "timeout_supervision": dict(sup)}}
+        floor_absolute_max = ConfigLoader.supervision_floor(
+            cfg,
+            agent_type=agent_type,
+            extension_budget=max_extensions,
+        )
+        if floor_absolute_max is None:
+            # 防御：supervision 显式关闭时本函数在首个短路（sup["enabled"]）已返回，
+            # 两处读同一配置段，正常不会到达；此处兜底按零续期预算派生，保证不早于
+            # run_timeout 截断（不得在此重新手写续期公式）。
+            floor_absolute_max = run_timeout
         configured_abs_max = float(sup["absolute_max_seconds"])
         absolute_max = max(configured_abs_max, floor_absolute_max)
         if configured_abs_max < floor_absolute_max:
