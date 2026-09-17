@@ -1,9 +1,9 @@
 ## Deliverables
 
 ```yaml
-- path: core/worktree_manager.py
+- path: core/worktree_manager/mergeback.py
   kind: modify
-- path: core/pm_engine/dispatch.py
+- path: core/pm_engine/dispatch/queue.py
   kind: modify
 - path: core/admin_monitor.py
   kind: modify
