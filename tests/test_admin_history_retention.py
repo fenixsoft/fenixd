@@ -37,10 +37,10 @@ class _FakeLogger:
 
 
 class _FakeStore:
-    def append(self, *a, **k):
-        pass
+    def append(self, entry: dict) -> dict:
+        return entry
 
-    def latest_signal(self, *a, **k):
+    def latest_signal(self, spec, signal_type, within_minutes):
         return None
 
 

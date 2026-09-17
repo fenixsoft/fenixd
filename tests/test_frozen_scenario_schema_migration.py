@@ -269,14 +269,16 @@ class _FakeSmWithTransitionGate:
     def read_all(self):
         return dict(self._specs)
 
-    def transition_gate(self, spec_name, new_status):
+    def transition_gate(self, spec_name, new_status,
+                        *, trigger_run_id=None, agent_type=None, channel="auto"):
         self.transition_gate_calls.append((spec_name, new_status))
         entry = self._specs.get(spec_name)
         if entry:
             entry["status"] = new_status
         return True
 
-    def transition(self, spec_name, new_status):
+    def transition(self, spec_name, new_status,
+                   *, trigger_run_id=None, agent_type=None, channel="auto"):
         self.transition_calls.append((spec_name, new_status))
         entry = self._specs.get(spec_name)
         if entry:
