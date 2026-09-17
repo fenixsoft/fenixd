@@ -415,3 +415,138 @@ class TestEventBusSpecReviewGate(unittest.TestCase):
         self.assertTrue(ok)
         self.pm.handle_event.assert_called_once_with(
             "spec_drafted", "spec-d", {"status": "drafted"})
+
+
+# ── fix-orphan-ready-recovery-liveness 2.1/2.2/3.4/3.5/3.6/3.10 ──
+# 孤儿 ready 短周期精触发（recover_orphan_ready）测试。
+# 真实 StateMachine + 真实 PMEngine（mock runner），确保 _dispatch_backoffed /
+# _on_spec_ready / _enqueue 全链路行为可断言。
+
+
+class TestRecoverOrphanReady(unittest.TestCase):
+    """fix-orphan-ready-recovery-liveness 2.1/2.2：孤儿 ready 短周期精触发。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.project_root = Path(self.tmpdir)
+        (self.project_root / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.state_path = self.project_root / ".fenix" / "STATE.md"
+        self.logger = MagicMock()
+        self.sm = StateMachine(self.state_path, self.logger)
+        self.runner = MagicMock()
+        self.runner.worktree_manager = MagicMock()
+        self.runner.worktree_manager.has_active_worktree.return_value = False
+        self.runner.has_live_attempt.return_value = False
+        from core.pm_engine import PMEngine
+        from core.event_bus import EventBus
+        self.engine = PMEngine(self.sm, self.runner, {}, self.project_root, self.logger)
+        self.engine._process_queue = MagicMock()  # 防止 worker 线程异步副作用
+        self.bus = EventBus(self.state_path, self.sm, self.engine, {}, self.logger)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _orphan_ready(self, name="spec-orphan", **extra):
+        """向 STATE.md 写入一个 ready 态孤儿 SPEC（error 非空、无 start_after、无 _cancelled_hold）。"""
+        entry = {"status": "ready", "error": "dispatch stalled"}
+        entry.update(extra)
+        self.sm.add_spec(name, entry)
+
+    # ── 3.4：孤儿 ready 经精触发重派 ────────────────────────────────
+
+    def test_orphan_ready_redispatched(self):
+        """error 非空 + 无存活子进程 + 无 start_after → handle_event('spec_ready') 被调用，
+        state_machine.update_spec 收到 {'error': None}。"""
+        self._orphan_ready()
+        with patch.object(self.engine, "handle_event") as mock_handle:
+            self.bus.recover_orphan_ready()
+        mock_handle.assert_called_once()
+        args = mock_handle.call_args[0]
+        self.assertEqual(args[0], "spec_ready")
+        self.assertEqual(args[1], "spec-orphan")
+        # update_spec 被调用（error 从非空清为 None）
+        specs = self.sm.read_all()
+        self.assertIsNone(specs["spec-orphan"].get("error"))
+
+    def test_start_after_not_due_skips(self):
+        """start_after 未到期 → 不触发重派。"""
+        import datetime as _dt
+        future = (_dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(hours=1)).isoformat()
+        self._orphan_ready(start_after=future)
+        with patch.object(self.engine, "handle_event") as mock_handle:
+            self.bus.recover_orphan_ready()
+        mock_handle.assert_not_called()
+
+    def test_cancelled_hold_skips(self):
+        """_cancelled_hold=True → 不触发重派。"""
+        self._orphan_ready(_cancelled_hold=True)
+        with patch.object(self.engine, "handle_event") as mock_handle:
+            self.bus.recover_orphan_ready()
+        mock_handle.assert_not_called()
+
+    # ── 3.5：稳态零 STATE 写入 ─────────────────────────────────────
+
+    def test_steady_state_zero_write(self):
+        """error 已为空的健康 ready SPEC → update_spec / write_all 零调用。"""
+        self._orphan_ready(error=None)
+        with patch.object(self.sm, "update_spec") as mock_update, \
+             patch.object(self.sm, "write_all") as mock_write:
+            self.bus.recover_orphan_ready()
+        mock_update.assert_not_called()
+        mock_write.assert_not_called()
+
+    # ── 3.6：单条异常隔离 ─────────────────────────────────────────
+
+    def test_single_spec_exception_isolated(self):
+        """某条 ready SPEC 恢复抛异常 → 其余照常完成，异常记 error 日志、不向上抛。"""
+        self._orphan_ready(name="spec-good")
+        self._orphan_ready(name="spec-bad")
+        real_recover = self.bus._recover_ready
+
+        def flaky(name, entry):
+            if name == "spec-bad":
+                raise RuntimeError("boom")
+            return real_recover(name, entry)
+
+        self.bus._recover_ready = flaky
+        # recover_orphan_ready 不抛
+        self.bus.recover_orphan_ready()
+        # error 日志包含异常信息
+        error_calls = [c for c in self.logger.error.call_args_list
+                       if "spec-bad" in str(c)]
+        self.assertTrue(len(error_calls) > 0)
+
+    # ── 3.10：有意等待早退 ────────────────────────────────────────
+
+    def test_backoff_early_exit_no_write(self):
+        """ready + _dispatch_backoff_until 未到期 → 零写入、零重派、error 不被清空。"""
+        import time as _time
+        self._orphan_ready(_dispatch_backoff_until=int(_time.time() + 3600))
+        with patch.object(self.sm, "update_spec") as mock_update, \
+             patch.object(self.sm, "write_all") as mock_write, \
+             patch.object(self.engine, "handle_event") as mock_handle:
+            self.bus.recover_orphan_ready()
+        mock_update.assert_not_called()
+        mock_write.assert_not_called()
+        mock_handle.assert_not_called()
+
+    def test_cancelled_hold_early_exit_no_write(self):
+        """ready + _cancelled_hold=True → 零写入、零重派。"""
+        self._orphan_ready(_cancelled_hold=True)
+        with patch.object(self.sm, "update_spec") as mock_update, \
+             patch.object(self.sm, "write_all") as mock_write, \
+             patch.object(self.engine, "handle_event") as mock_handle:
+            self.bus.recover_orphan_ready()
+        mock_update.assert_not_called()
+        mock_write.assert_not_called()
+        mock_handle.assert_not_called()
+
+    def test_backoff_expired_resumes_recovery(self):
+        """_dispatch_backoff_until 已过期 → 正常恢复路径。"""
+        import time as _time
+        self._orphan_ready(_dispatch_backoff_until=int(_time.time() - 60))
+        with patch.object(self.engine, "handle_event") as mock_handle:
+            self.bus.recover_orphan_ready()
+        mock_handle.assert_called_once()
+        self.assertEqual(mock_handle.call_args[0][0], "spec_ready")

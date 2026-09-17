@@ -49,6 +49,31 @@ HANG_ZERO_GROWTH_WINDOW_SECONDS = 300
 # 事故窗口内工具完成数低，但心跳大量涌入。取 3 作为最小有效产出阈值。
 HANG_MIN_TOOL_COMPLETIONS = 3
 
+# ── mtime 新鲜度判定的三处同型点处置（fix-orphan-ready-recovery-liveness D5）──
+# 「mtime 新鲜 ⇒ 进程仍活着」这一谬误在框架里有三处实现。本次只修第 1 处，
+# 另两处按证据与归属分别处置，MUST NOT 静默忽略：
+#
+# ① 本处（_stream_recent → has_live_attempt）：判定对象 = 孤儿 ready 恢复前
+#    的存活探针回退判据；已修——末行终态即判非存活。
+#
+# ② worktree_manager._latest_stream_mtime（→ has_active_worktree / refresh_locks
+#    的「无进程但流新鲜 → 保守持锁」分支）：判定对象 = worktree 锁活性判定；
+#    本次未命中（daemon 重启后内存锁表为空，has_active_worktree 走进程表分支
+#    并正确返回 False）；且该分支的保守语义防的是「误释放锁 → 双派发」，收紧
+#    影响面远超本次事故证据支持的范围，书面 defer。
+#    ▸ 两处判定的交互（勿误以为彼此独立）：本处修好后，_on_spec_ready（engine.py:359-
+#    372）对「在册陈旧锁 + 终态末行 + 挂锁流新鲜」的 SPEC 会由「静默跳过 live
+#    attempt」变为「锁冲突 → 进退避 → 退避耗尽可能 dispatch_stalled 升级」；
+#    因②的 STALE_LOCK_IDLE_SECONDS（1800s）远长于本处 120s 判活窗口，该升级
+#    路径在修复前同样存在（仅延后 120 秒），本 SPEC 不因此扩面，但②的承接方需
+#    知悉该形态会显性化为告警。
+#
+# ③ admin_monitor._has_recent_spec_run（→ spec_is_undriven → orphaned_state）：
+#    判定对象 = 5 分钟监视周期的 undriven 信号；本次未命中（覆盖 implementing/
+#    testing，与本次 ready 形态互补且已足够快）；判定口径已被在飞的
+#    evo-orphaned-state-probe-calibration 占用，同批修改会造成两个 SPEC 撞同一
+#    函数，书面 defer 给该 SPEC 承接。
+
 # ── 启动终态补写扫描（fix-daemon-lifecycle-races D1）──────────────────────
 # run jsonl 的终态事件类型（对齐 runner.py _run_was_interrupted 与
 # admin_monitor.py _run_has_interrupted_marker 的判定口径）：
@@ -97,6 +122,87 @@ def _file_has_terminal_event(run_file: Path) -> bool:
     except OSError:
         return False
     return False
+
+
+# 尾读字节窗口（fix-orphan-ready-recovery-liveness D2）：按字节窗口 seek 读末行，
+# 窗口首行是上一行的残段必须丢弃；窗口内无完整行时回退全量逐行读。64KB 与
+# dashboard _READ_RUN_TAIL_WINDOW 同量级，覆盖常规产物尾部（result 终态行 4KB+）。
+_TAIL_READ_WINDOW = 64 * 1024
+
+
+def _line_is_terminal(line: str) -> bool:
+    """判单行文本是否为终态事件（解析失败 → False，fail-open 到「非终态」）。
+
+    ``line`` 已 strip 非空；JSON 损坏 / 解析结果非 dict / type 不在终态集合 →
+    False。保守侧是**不误杀在跑的 run**——把活 run 判死会导致双派发。
+    """
+    try:
+        entry = json.loads(line)
+    except json.JSONDecodeError:
+        return False
+    return isinstance(entry, dict) and entry.get("type") in RUN_TERMINAL_EVENT_TYPES
+
+
+def _last_line_is_terminal_full(run_file: Path) -> bool:
+    """全量逐行读，判**末条非空行**是否为终态（尾读窗口回退分支）。
+
+    空文件 / 文件不可读（OSError）→ False（fail-open）。
+    """
+    last = ""
+    try:
+        with run_file.open("r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    last = line
+    except OSError:
+        return False
+    if not last:
+        return False
+    return _line_is_terminal(last)
+
+
+def _file_tail_is_terminal(run_file: Path) -> bool:
+    """判 run jsonl 文件**末条非空行**是否已是终态事件（fix-orphan-ready-recovery-liveness 1.1）。
+
+    本助手判**末行**、``_file_has_terminal_event`` 判**全文件是否出现过**终态事件，
+    语义不同、不可互相替换：出现终态后 run 仍可能继续（interrupted 之后 error
+    追加、result 之后 superseded 序列真实存在），存活判据要的是「末行终态即 run
+    已明确终结」的后置不变量口径（对齐 dashboard classify_run 只看末行）。
+
+    终态口径 = ``RUN_TERMINAL_EVENT_TYPES``（result/interrupted/error/cancelled），
+    复用框架单一真源，不另立集合。**superseded 不在终态集合内**——它是原地重试
+    弃置旧产物文件的标记，run 在新 sub_run_id 文件继续，把其视为终结会造成原地
+    重试退避窗口内的双派发。
+
+    失败方向固定为 fail-open（= 仍视为存活）：文件不可读 / 空文件 / 末行损坏
+    不可解析 / 末条事件非 dict → 一律返回 False。
+
+    读取范式照 ``core/dashboard/data/runs.py`` ``_read_run_lines`` 自实现（本包
+    不反向 import core.dashboard.*，design D2）：先按字节窗口 seek 尾部读，窗口
+    首行是上一行残段必须丢弃；窗口内无完整行（末行超窗）时回退全量逐行读。
+    """
+    try:
+        size = run_file.stat().st_size
+    except OSError:
+        return False
+    if size <= 0:
+        return False
+    if size <= _TAIL_READ_WINDOW:
+        return _last_line_is_terminal_full(run_file)
+    try:
+        with run_file.open("rb") as f:
+            f.seek(-_TAIL_READ_WINDOW, 2)
+            raw = f.read()
+    except OSError:
+        return False
+    text = raw.decode("utf-8", errors="replace")
+    # 窗口首行是从字节窗口切入的上一行残段，必须丢弃（见 _read_run_lines 注释）
+    lines = [ln for ln in text.split("\n")[1:] if ln.strip()]
+    if not lines:
+        # 窗口内无完整行（末行超窗）→ 回退全量逐行读
+        return _last_line_is_terminal_full(run_file)
+    return _line_is_terminal(lines[-1])
 
 
 def sweep_runs_without_terminal_state(runs_dir: Path) -> list:
@@ -282,7 +388,20 @@ class LivenessSupervisor:
         return False
 
     def _stream_recent(self, spec_name: str, seconds: int) -> bool:
-        """该 spec 最新 run 流文件的 mtime 是否在 seconds 内（不可用 → False）。"""
+        """该 spec 最新 run 流文件的 mtime 是否在 seconds 内且**末行非终态**。
+
+        mtime 新鲜只证明「文件近期被写过」（有写活动），末行终态证明「run 已
+        明确终结」（没有生命）——两条件取 AND 才是「有生命」的辅助判据。判据
+        分层：resume 孤儿进程通常持续写流，故 mtime 新鲜 ≈ 进程还在；但框架
+        主动 SIGTERM 杀掉的 run 也会留下新鲜的流（runner 收口补写 error 终态行），
+        若不排除末行终态的文件，刚死的 run 会在 120s 窗口内把恢复挡在门外
+        （fix-orphan-ready-recovery-liveness 事故：daemon 停机杀的 run 在重启后
+        首轮恢复被误判 live child present，SPEC 空等一个扫描周期）。
+
+        不可用（无 runs 目录 / 无匹配文件）→ False。文件不可读 / 末行解析失败
+        经 ``_file_tail_is_terminal`` fail-open 到「非终态」→ 仍计为存活（保守
+        侧不误杀在跑 run）。
+        """
         runs_dir = self._pm.project_root / ".fenix" / "runs"
         if not runs_dir.is_dir():
             return False
@@ -298,7 +417,7 @@ class LivenessSupervisor:
                 if run_spec_part(p.stem) != spec_name:
                     continue
                 try:
-                    if p.stat().st_mtime >= cutoff:
+                    if p.stat().st_mtime >= cutoff and not _file_tail_is_terminal(p):
                         return True
                 except OSError:
                     continue

@@ -291,22 +291,119 @@ class EventBus:
         # 该孤儿每 30 分钟被重复重置派发（事故家族「孤儿滞留」的直接成因，
         # 与白名单反转想消除的盲区同源）。dispatch 只消费内存副本 updated，
         # 不会回写，因此此处显式持久化 error=None（补 D4 遗漏点）。
+        # 该写回仅在 error **非空**时执行（fix-orphan-ready-recovery-liveness D4）：
+        # 对已为 None 的字段写 None 本即空操作，但按 60 秒精触发粒度重复执行
+        # 会让每个健康 ready SPEC 每 60 秒产生一次 STATE.md 全量重写 + 一条
+        # Updated SPEC 日志——「error 清空必须写回」的论证只对 error 非空成立，
+        # 稳态（error 已空）应零写入。
         updated = {k: v for k, v in entry.items() if k != "error"}
         updated["error"] = None
-        try:
-            self.state_machine.update_spec(name, {"error": None})
-        except Exception as e:
-            # 写回失败不阻断派发：本就靠后续扫描兜底，仅记日志
-            self.logger.error(
-                "event_bus",
-                f"Recovery: failed to persist error-clear for orphan '{name}': {e}",
-            )
+        if entry.get("error") is not None:
+            try:
+                self.state_machine.update_spec(name, {"error": None})
+            except Exception as e:
+                # 写回失败不阻断派发：本就靠后续扫描兜底，仅记日志
+                self.logger.error(
+                    "event_bus",
+                    f"Recovery: failed to persist error-clear for orphan '{name}': {e}",
+                )
         self.logger.info(
             "event_bus",
             f"Recovery: re-triggering implement for orphan ready '{name}' "
             f"(error cleared, implementer_run preserved)",
         )
         self.pm_engine.handle_event("spec_ready", name, updated)
+
+    def recover_orphan_ready(self):
+        """孤儿 ready 短周期精触发（fix-orphan-ready-recovery-liveness D3/D4）。
+
+        逐条扫描 ``ready`` 态 SPEC，对确无驱动的条目走与既有 full_scan 恢复
+        **完全同源**的 ``_recover_ready`` 处理路径——不复制判据、不新增第二
+        实现点，恢复延迟从「最坏一个扫描周期（30 分钟）」降到「最坏一个精触发
+        周期（60 秒）」。full_scan 仍为兜底，``schedule.poll_interval_minutes``
+        语义不变。
+
+        入口先过两道「有意等待」早退（design D3），二者 MUST 零 STATE 写入、
+        MUST NOT 打印「re-triggering implement for orphan ready」日志：
+
+        - ``_cancelled_hold`` 为真（人工取消保持）→ 跳过；
+        - ``self.pm_engine._dispatch_backoffed(entry)`` 为真（``_dispatch_backoff_until``
+          未到期）→ 跳过——``error`` 承载退避原因（``_handle_dispatch_lock_conflict``
+          写入的「backoff until」），精触发不得抹掉它。
+
+        任一闸门判定异常 MUST 按「不早退」fail-open（保底恢复不被新闸门吞掉），
+        记日志后继续走既有恢复路径。
+
+        **核对结论（2026-09-17，以代码为准）——精触发未绕过任何闸门**：
+        恢复侧既有门 = ``start_after_pending``（本文件 ``_recover_ready`` 内）与
+        存活子进程（``_ready_has_live_child``）；派发侧既有门（``_on_spec_ready``，
+        ``core/pm_engine/engine.py:316-425``）= 关闭中 / 10 秒冷却 / 单飞 /
+        ``has_active_worktree`` / ``_dispatch_backoffed`` / ``start_after`` / 依赖，
+        精触发经 ``_on_spec_ready → _enqueue → _process_queue`` 全链路生效。
+        方位校正：``_instant_fail_cooled`` 与并发闸 ``max_concurrent`` 不在
+        ``_on_spec_ready`` 内、而在 ``_process_queue`` 的候选筛选与调度处
+        （``core/pm_engine/dispatch.py:437``、``503``、``378-393``），经上述链路
+        同样生效，判定为「未被绕过」。另须纠正的原表述：``_recover_ready`` 与
+        ``_on_spec_ready`` 均**不读** ``_cancelled_hold``，故该守卫即本入口的
+        早退闸门（复用既有标记，非新判据）。
+
+        **有界性核对（design D4，真实吸收点是队列去重而非冷却窗口）**：重复
+        恢复尝试由 ``_enqueue`` 按 ``(spec_name, agent_type)`` 去重吸收
+        （``core/pm_engine/dispatch.py:269-275``）——已入队等待并发槽的 SPEC
+        不会被 60 秒重试重复入队。``_pending_dispatches`` 单飞与 ``_last_dispatch_at``
+        10 秒冷却（``DISPATCH_COOLDOWN_SECONDS = 10``，``core/pm_engine/engine.py:81``）
+        只吸收**秒级**重复触发，**不足以**吸收 60 秒间隔的重试——故有界性依赖
+        队列去重与本入口的两道有意等待早退闸门，MUST NOT 依赖冷却窗口（后续
+        删去重或误以为冷却兜住都会破坏有界性）。
+
+        稳态（error 为空、无存活子进程）经 ``_recover_ready`` 零 STATE 写入
+        （D4），不会产生「写 error → 触发 spec_ready 事件」的自激。
+        """
+        try:
+            current_specs = self.state_machine.read_all()
+        except Exception as e:
+            self.logger.error(
+                "event_bus",
+                f"Orphan ready recovery read failed: {e}",
+            )
+            return
+        handled = 0
+        failed = 0
+        for name, entry in current_specs.items():
+            if not isinstance(entry, dict):
+                failed += 1
+                continue
+            if entry.get("status") != "ready":
+                continue
+            try:
+                # 有意等待早退 ①：人工取消保持（_cancelled_hold）
+                if entry.get("_cancelled_hold"):
+                    continue
+                # 有意等待早退 ②：派发退避期（_dispatch_backoff_until 未到期）。
+                # 读既有判据 _dispatch_backoffed，异常 fail-open 到「不早退」。
+                if self.pm_engine._dispatch_backoffed(entry):
+                    continue
+            except Exception as e:
+                self.logger.error(
+                    "event_bus",
+                    f"Orphan ready early-exit gate failed for '{name}' "
+                    f"(fail-open, proceeding with recovery): {e}",
+                )
+            try:
+                self._recover_ready(name, entry)
+                handled += 1
+            except Exception as e:
+                self.logger.error(
+                    "event_bus",
+                    f"Orphan ready recovery failed for '{name}': {e}",
+                )
+                failed += 1
+        if handled or failed:
+            self.logger.info(
+                "event_bus",
+                f"Orphan ready recovery complete: handled={handled}, "
+                f"failed={failed}, total={len(current_specs)}",
+            )
 
     def _ready_has_live_child(self, spec_name: str) -> bool:
         """判定 SPEC 是否仍有存活的 agent 子进程（D4 白名单存活依据）。
