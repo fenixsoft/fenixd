@@ -26,30 +26,24 @@ class RRollbackMixin:
 
         返回非空列表 = 缺口确实存在且**每一项**都由结果文件顶层 ``unattainable``
         申报覆盖（如「需用户确认时机后重启 daemon」这类人工运维门控）；空列表 =
-        无缺口、或存在未申报缺口（防 partial 洗白，仍按失败处置）。
+        无缺口、或存在未申报缺口、或申报含非法项（防 partial 洗白 / 防非法申报
+        部分采信，仍按失败处置）。
 
-        缺口口径见 ``core.run_task_track.gap_from_result``（与产物硬门同源：
-        ``unfinished`` 优先，否则 ``全部任务 − completed_tasks``）；MUST NOT
-        回退主树 tasks.md 勾选（partial 收敛走不到 ``_sync_task_progress`` 回写
-        路径，读主树会把已完成任务也算成缺口形成读侧自锁，2026-09-17 事故）。
+        判据单点（fix-redispatch-loop-governance D1/D2b/D4）：收敛判定本体在
+        ``core.run_task_track.honest_exit_convergence_gap``（内部即
+        ``gap_from_result`` + ``parse_unattainable``），本方法为经 Dispatcher
+        命名空间暴露的薄封装（既有调用点与测试经 ``Dispatcher._honest_exit_gap``
+        类直调）。缺口口径 MUST 取结果文件，MUST NOT 回退主树 tasks.md 勾选
+        （partial 收敛走不到 ``_sync_task_progress`` 回写路径，读主树会把已完成
+        任务也算成缺口形成读侧自锁，2026-09-17 事故）。
 
-        与 ``engine._task_completion_blocker`` 的诚实退出分支同判据（同一解析
-        实现点 core.run_task_track）。判定异常一律返回空（fail-closed 按失败处置）。
+        与 ``engine._task_completion_blocker`` 的诚实退出分支同判据（同一实现点）。
+        判定异常一律返回空（fail-closed 按失败处置）。
         """
         try:
-            from core.run_task_track import gap_from_result as _gap_from_result
-            from core.run_task_track import parse_unattainable as _pu
+            from core.run_task_track import honest_exit_convergence_gap as _h
 
-            unattainable_ids, _invalid = _pu(impl_result or {})
-            if not unattainable_ids:
-                return []
-            # 缺口口径与产物硬门同源（core.run_task_track.gap_from_result）：
-            # MUST NOT 回退主树 tasks.md 勾选——主树 [x] 由成功/merge-back 路径
-            # 回写，partial 收敛走不到那条路径，读它会把**已完成任务**也算成缺口
-            # → 永收敛不了（fix-robustness-edge-cases 读侧自锁事故 2026-09-17）。
-            gap = _gap_from_result(impl_result or {}, pm.project_root, spec_name)
-            if gap and not [t for t in gap if t not in unattainable_ids]:
-                return list(gap)
+            return _h(impl_result or {}, pm.project_root, spec_name)
         except Exception as e:  # noqa: BLE001 — 判定异常按失败处置（不阻断收敛主流程）
             try:
                 pm.logger.debug(

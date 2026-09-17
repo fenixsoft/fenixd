@@ -90,6 +90,19 @@ verified 推进」与实际不符。
 本就该走完整模式的三阶段独立验证（而非 fast-track 的单 run 自证）。裁决理由 MUST 记入
 design 并在契约测试中锁定。
 
+**D2a 裁决（2026-09-18 实现阶段，已定案为 (a)）**：收敛形态识别点落在
+`_run_fast_track_flow` 的 relint 门之后、`_hard_check_fast_track` 之前——
+`honest_exit_gap` 非空即跳过硬校验的 verification 段要求，改走
+`_reconcile_and_merge`（merge + `transition(implemented)`）→ `_rewrite_fast_track_to_full`
+（.spec.yaml mode→full）→ 写 error 留痕 → 入队完整模式 verifier，
+语义复用既有 `_handle_fast_track_missing_result_merge`（结果文件缺失、分支已提交
+升级补验证的同一模式）。理由：(i) 诚实退出收敛的 run 已过零变更哨 / 交付物守卫 /
+relint 三道门，其实现成果可信；(ii) 缺口涉及的任务客观上不可由 agent 完成，
+fast-track 单 run 自证路径（`_fast_track_advance_to_verified`）对这类 spec 的
+验证强度不足，三阶段独立验证是正确收口；(iii) 与 full 车道的收敛去向
+（`implemented` → verifier）语义对齐，避免「一条车道收敛、另一条不收敛」。
+契约锁定见 `tests/test_redispatch_loop_governance.py::TestFastTrackConvergence`。
+
 #### D2b：收敛点 MUST 对非法 `unattainable` 项 fail-closed
 
 `_honest_exit_gap` 与 `_task_completion_blocker` 当前**丢弃** `parse_unattainable` 返回的

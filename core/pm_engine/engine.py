@@ -1202,20 +1202,36 @@ class PMEngine:
             # 「确实无法由 agent 完成」，如人工运维门控任务），不再拦截：放行到
             # done，并把申报内容落一条可见的人工待办告警。部分未申报的仍按
             # fail-closed 拦截。
-            from core.run_task_track import gap_from_result as _gap_from_result
+            #
+            # fix-redispatch-loop-governance D2b：收敛判据单点在
+            # ``core.run_task_track.honest_exit_convergence_gap``（内部即
+            # gap_from_result + parse_unattainable）——含非法申报项（非 dict /
+            # task 非合法 id / 缺 reason）时判不收敛（fail-closed），MUST NOT
+            # 「合法项生效、非法项静默忽略」（产物硬门正常时非法申报已被拦，
+            # 但「只卡第一次」降级放行后非法条目可抵达本收敛点，部分采信等于
+            # 开了洗白窗口）。
+            from core.run_task_track import (
+                gap_from_result as _gap_from_result,
+            )
+            from core.run_task_track import (
+                honest_exit_convergence_gap as _honest_convergence_gap,
+            )
 
-            gap = _gap_from_result(result, self.project_root, spec_name)
-            unattainable_ids, _invalid = _parse_unattainable(result)
-            unclaimed = [t for t in gap if t not in unattainable_ids]
-            if gap and not unclaimed:
-                self._note_unattainable_todos(spec_name, result, gap)
+            converged_gap = _honest_convergence_gap(result, self.project_root, spec_name)
+            if converged_gap:
+                self._note_unattainable_todos(spec_name, result, converged_gap)
                 self._clear_task_gap_error(spec_name)
                 return None  # 缺口全部已诚实申报 → 放行
+            gap = _gap_from_result(result, self.project_root, spec_name)
+            # D2b 审计：非法申报项在归因文案中显式标注（不静默）。
+            _unat_ids, _inv = _parse_unattainable(result)
+            _inv_note = f"（且含 {len(_inv)} 个非法 unattainable 申报项）" if _inv else ""
             return (
                 TASK_GAP_ERROR_PREFIX
                 + "实现者申报未完成（partial）："
                 + "、".join(gap[:20])
                 + (f" 等共 {len(gap)} 项" if len(gap) > 20 else "")
+                + _inv_note
             )
         if impl_status != "success":
             return None  # 非 success（error/其它）→ 放行（现状不变）

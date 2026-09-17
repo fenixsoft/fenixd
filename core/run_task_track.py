@@ -171,6 +171,44 @@ def gap_from_result(data, project_root, spec_name) -> "list[str]":
     return []
 
 
+def honest_exit_convergence_gap(data, project_root, spec_name) -> "list[str]":
+    """诚实退出收敛判定**单点实现**（fix-redispatch-loop-governance D1/D2b/D4）。
+
+    收敛成立 ⟺ ``impl_status == "partial"``（调用方判定）且
+    ``缺口 := gap_from_result(...)`` 非空 且 缺口每一项都 ∈ ``unattainable`` 申报
+    且 ``parse_unattainable`` 无非法项（D2b fail-closed——非法申报不得部分采信，
+    否则「只卡第一次」降级放行后存在洗白窗口）。
+
+    Returns:
+        收敛成立 → 缺口 id 清单（供日志/留痕/人工待办告警）；不收敛 → 空列表。
+        调用方 MUST 以「返回非空」为收敛成立判据，与结果文件是否声明 partial
+        正交（partial 状态由调用方在调用本函数前判定）。
+
+    fix-robustness-edge-cases 事故（2026-09-17）：缺口口径 MUST 取结果文件
+    （``gap_from_result``：``unfinished`` 优先，否则 ``全部任务 − completed_tasks``），
+    MUST NOT 回退主树 tasks.md 勾选——主树 ``[x]`` 只在成功/merge-back 路径回写，
+    partial 收敛走不到该路径，读它会把已完成任务也算成缺口形成读侧自锁。
+
+    消费点（同一判据，禁止第二套推导）：
+    - ``dispatch.rollback._honest_exit_gap``（full/fast-track 两车道共用）；
+    - ``engine._task_completion_blocker``（verified→done 门禁诚实退出分支）；
+    - ``agent_runner`` 成果继承 keep 判定（partial 且**不**收敛 → 保留 worktree）。
+    """
+    unattainable_ids, invalid = parse_unattainable(data or {})
+    if invalid:
+        return []  # D2b：非法申报 fail-closed，不收敛
+    if not unattainable_ids:
+        return []  # 无申报 → 不收敛（缺口中每一项都须有申报覆盖）
+    gap = gap_from_result(data or {}, project_root, spec_name)
+    if not gap:
+        # 缺口为空而 status=partial 属申报不自洽（产物硬门 _check_partial_consistency
+        # 会拦）；此处不重复判定，但 MUST NOT 把「无缺口」当收敛放过。
+        return []
+    if all(t in unattainable_ids for t in gap):
+        return list(gap)
+    return []
+
+
 def find_impl_run_file(project_root, spec_name, files=None) -> Path | None:
     """最新一次 impl-<spec>-*.jsonl 运行产物，或 None。
 
