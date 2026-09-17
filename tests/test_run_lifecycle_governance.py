@@ -42,6 +42,21 @@ def touch_run_stream(tmp_path: Path, spec: str, run_id: str, age: float) -> Path
     return p
 
 
+def touch_run_stream_tail(tmp_path: Path, spec: str, run_id: str, age: float, lines: list) -> Path:
+    """写入一个 run 流文件（自定义行序列）并把时间戳拨到 age 秒前。
+
+    供 fix-orphan-ready-recovery-liveness 末行终态判据用例使用：
+    ``lines`` 为 JSON 对象列表，逐行写入（末行即判据对象）。
+    """
+    runs = tmp_path / ".fenix" / "runs"
+    runs.mkdir(parents=True, exist_ok=True)
+    p = runs / f"{run_id}.jsonl"
+    p.write_text("".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8")
+    ts = time.time() - age
+    os.utime(p, (ts, ts))
+    return p
+
+
 class TestRefreshLocks:
     """1.1 refresh_locks：进程表重建 + 陈锁回收。"""
 
@@ -185,6 +200,86 @@ class TestHasLiveAttempt:
         finally:
             ar.subprocess.run = original
         assert seen == ["worktrees/impl-s1-", "worktrees/verify-s1-"]
+
+    # ── fix-orphan-ready-recovery-liveness 3.1/3.2/3.3 ──────────────
+
+    @pytest.mark.parametrize(
+        "tail_line",
+        [
+            {"type": "result"},
+            {"type": "error"},
+            {"type": "interrupted"},
+            {"type": "cancelled"},
+            # 本次事故形态：daemon SIGTERM 后 runner 收口补写的 error 终态行
+            {"type": "error", "error": "Exit code: 143", "exit_code": 143},
+        ],
+        ids=["result", "error", "interrupted", "cancelled", "accident-exit-143"],
+    )
+    def test_terminal_tail_not_alive(self, tmp_path, tail_line):
+        """3.1 末行终态 ⇒ 不存活：mtime 在 120s 窗口内 + 末行终态 + pgrep 判否。
+
+        复现 fix-orphan-ready-recovery-liveness 事故：daemon 主动 SIGTERM 杀掉在飞
+        run，runner 补写 error 终态行，重启后首轮恢复不得再把它误判为 live child。
+        """
+        runner = self.make_runner(tmp_path)
+        runner._pgrep_live_attempt = lambda spec: False
+        touch_run_stream_tail(
+            tmp_path, "s1", "impl-s1-1789000008", age=10,
+            lines=[
+                {"type": "init"},
+                {"type": "assistant", "message": {"content": []}},
+                tail_line,
+            ],
+        )
+        assert runner.has_live_attempt("s1") is False
+
+    def test_non_terminal_tail_fresh_still_alive(self, tmp_path):
+        """3.2 fail-open 方向①：末行为非终态事件（system）且 mtime 新鲜 → 仍存活。"""
+        runner = self.make_runner(tmp_path)
+        runner._pgrep_live_attempt = lambda spec: False
+        touch_run_stream_tail(
+            tmp_path, "s1", "impl-s1-1789000009", age=10,
+            lines=[{"type": "system"}, {"type": "system"}],
+        )
+        assert runner.has_live_attempt("s1") is True
+
+    def test_corrupt_json_tail_still_alive(self, tmp_path):
+        """3.2 fail-open 方向②：末行损坏 JSON → 仍存活（活 run 不被误杀）。"""
+        runner = self.make_runner(tmp_path)
+        runner._pgrep_live_attempt = lambda spec: False
+        runs = tmp_path / ".fenix" / "runs"
+        runs.mkdir(parents=True, exist_ok=True)
+        p = runs / "impl-s1-1789000010.jsonl"
+        p.write_text('{"type":"init"}\n{{,,broken json\n', encoding="utf-8")
+        ts = time.time() - 10
+        os.utime(p, (ts, ts))
+        assert runner.has_live_attempt("s1") is True
+
+    def test_empty_stream_still_alive(self, tmp_path):
+        """3.2 fail-open 方向③：空文件 → 仍存活（活 run 不被误杀）。"""
+        runner = self.make_runner(tmp_path)
+        runner._pgrep_live_attempt = lambda spec: False
+        runs = tmp_path / ".fenix" / "runs"
+        runs.mkdir(parents=True, exist_ok=True)
+        p = runs / "impl-s1-1789000011.jsonl"
+        p.write_text("", encoding="utf-8")
+        ts = time.time() - 10
+        os.utime(p, (ts, ts))
+        assert runner.has_live_attempt("s1") is True
+
+    def test_superseded_tail_still_alive(self, tmp_path):
+        """3.3 superseded 末行 ⇒ 仍存活（design D1：属弃置标记非终结，防双派发）。"""
+        runner = self.make_runner(tmp_path)
+        runner._pgrep_live_attempt = lambda spec: False
+        touch_run_stream_tail(
+            tmp_path, "s1", "impl-s1-1789000012", age=10,
+            lines=[
+                {"type": "init"},
+                {"type": "superseded", "reason": "artifact-gate in-place retry"},
+            ],
+        )
+        assert runner.has_live_attempt("s1") is True, \
+            "superseded 属弃置标记非终结：原地重试弃置旧产物文件，run 在新 sub_run_id 文件继续，判死会致退避窗口内双派发"
 
 
 # ── 2.1/2.2 派发锁冲突退避 + dispatch_stalled 信号 ────────────────────────────
@@ -997,5 +1092,58 @@ class TestSupervisionDeadlineAction(unittest.TestCase):
     def test_legacy_top_level_key_fallback(self):
         self.runner.config = {"timeout_supervision": {"enabled": False}}
         self.assertFalse(self.runner._supervision_settings()["enabled"])
+
+
+# ── fix-orphan-ready-recovery-liveness 3.11 去重有界性 ────────────────────
+
+
+class TestRecoverOrphanReadyDedupBoundedness(unittest.TestCase):
+    """3.11：recover_orphan_ready 重复触发不导致 _run_queue 膨胀。
+
+    锁定 design D4 的真实吸收点：_enqueue 按 (spec, agent_type) 去重，
+    已入队等待并发槽的 SPEC 不会被 60 秒重试重复入队。防后续有人删掉
+    _enqueue 去重后误以为冷却已兜住。
+    """
+
+    def setUp(self):
+        self.tmpdir = Path(__import__("tempfile").mkdtemp())
+        self.project_root = self.tmpdir
+        (self.project_root / ".fenix").mkdir(exist_ok=True)
+        self.logger = MagicMock()
+        self.sm = StateMachine(self.project_root / ".fenix" / "STATE.md", self.logger)
+        self.runner = MagicMock()
+        self.runner.worktree_manager = MagicMock()
+        self.runner.has_live_attempt.return_value = False
+        self.config = {}
+        self.engine = PMEngine(self.sm, self.runner, self.config,
+                               self.project_root, self.logger)
+        self.engine._process_queue = MagicMock()
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_dedup_absorbs_repeated_triggers(self):
+        """ready SPEC 已在 _run_queue 中 → 重复 recover_orphan_ready →
+        _run_queue 中 (spec, "implementer") 条目数恒为 1。"""
+        from core.event_bus import EventBus
+
+        # 写入 STATE.md 一个 ready 态孤儿 SPEC
+        self.sm.add_spec("s1", {"status": "ready", "error": "dispatch stalled"})
+        # 手动预入队（模拟已在等待并发槽）
+        self.engine._run_queue.append((5, "s1", "implementer", time.time()))
+        bus = EventBus(self.sm.state_path, self.sm, self.engine, {}, self.logger)
+
+        for _ in range(3):
+            # 每轮清除冷却，确保 _on_spec_ready 能到达 _enqueue（不被 cooldown 吞掉）
+            self.engine._last_dispatch_at.pop("s1", None)
+            bus.recover_orphan_ready()
+
+        entries = [(e[1], e[2]) for e in self.engine._run_queue]
+        self.assertEqual(
+            entries.count(("s1", "implementer")),
+            1,
+            "60秒间隔重复触发的入队请求应被 _enqueue 的 (spec, agent_type) 去重吸收",
+        )
 
 

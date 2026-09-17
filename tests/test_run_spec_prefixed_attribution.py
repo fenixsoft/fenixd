@@ -40,8 +40,12 @@ def _mk_project(tmp_path) -> Path:
     return proot
 
 
-def _write_run(runs_dir: Path, name: str, tail: str = "result") -> Path:
-    """在 runs 根目录写一个 run 产物文件：首行 init 事件 + 终态行（默认 result 正常收工）。"""
+def _write_run(runs_dir: Path, name: str, tail: str = "system") -> Path:
+    """在 runs 根目录写一个 run 产物文件：首行 init 事件 + 末行事件（缺省 system
+    非终态事件——fix-orphan-ready-recovery-liveness 3.9：liveness._stream_recent
+    的流新鲜度回退已排除末行终态的文件，夹具若默认写 result 终态会让
+    ``_stream_recent(...) is True`` 的断言必红；system 口径与
+    tests/test_run_lifecycle_governance.py::touch_run_stream 一致）。"""
     p = runs_dir / f"{name}.jsonl"
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(

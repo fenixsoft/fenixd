@@ -465,6 +465,11 @@ class FenixDaemon:
         # add-spec-scheduling-controls D3：定时调度到期检测独立计时（60s，
         # 对齐恢复复查/recovery watch 模式：try/except 记日志不中断主循环）。
         scheduling_check_ts = time.time()
+        # fix-orphan-ready-recovery-liveness D3：孤儿 ready 短周期精触发独立计时
+        # （60s，对齐 recovery_watch_ts / scheduling_check_ts 挂载方式——同步调用、
+        # 不新建线程/Timer）。恢复延迟从「最坏一个扫描周期（30 分钟）」降到
+        # 「最坏一个精触发周期（60 秒）」；full_scan 周期扫描仍为兜底。
+        orphan_ready_check_ts = time.time()
         # add-framework-self-evolution 5.1：自进化检查点独立计时（节拍复用
         # admin.interval_minutes，缺省 5 分钟）。
         evolution_check_ts = time.time()
@@ -563,6 +568,18 @@ class FenixDaemon:
                         self.pm_engine.check_scheduling_deadlines()
                     except Exception as e:
                         self.logger.error("fenixd", f"Scheduling deadlines check failed: {e}")
+                # 孤儿 ready 短周期精触发（fix-orphan-ready-recovery-liveness D3）：
+                # 每 60s 对 ready 态孤儿 SPEC 走与 full_scan 恢复同源的
+                # event_bus.recover_orphan_ready()，恢复延迟从「最坏一个扫描周期
+                # （30 分钟）」降到「最坏一个精触发周期（60 秒）」；不新建线程，
+                # 同步调用 + 异常捕获记日志不中断主循环；不缩短 poll_interval_
+                # minutes、不改 full_scan 触发源（周期扫描仍为兜底）。
+                if time.time() - orphan_ready_check_ts >= 60:
+                    orphan_ready_check_ts = time.time()
+                    try:
+                        self.event_bus.recover_orphan_ready()
+                    except Exception as e:
+                        self.logger.error("fenixd", f"Orphan ready recovery check failed: {e}")
                 # verify-process-lifecycle（D4 周期清扫）：孤儿泄漏可见窗口
                 # ≤ 一个周期（600s）。覆盖 dev-server 与 servers.json 登记实例；
                 # 首轮启动清扫已处理存量，此后周期性兜底。

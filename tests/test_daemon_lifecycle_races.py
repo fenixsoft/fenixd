@@ -266,6 +266,32 @@ class TestTerminalStateSweep(unittest.TestCase):
         p2 = self._write("t-none", [{"type": "assistant"}])
         self.assertFalse(_file_has_terminal_event(p2))
 
+    def test_file_tail_is_terminal_drift_guard(self):
+        """fix-orphan-ready-recovery-liveness 3.7 终态口径单源防漂移：
+        _file_tail_is_terminal 对 RUN_TERMINAL_EVENT_TYPES 全集判定为 True，
+        对 superseded 判定为 False——防后续有人「顺手」把 superseded 并入终态集合。"""
+        from core.agent_runner.liveness import _file_tail_is_terminal
+        # 终态全集 → True
+        for etype in ("result", "interrupted", "error", "cancelled"):
+            p = self._write(f"tail-{etype}", [
+                {"type": "assistant", "message": {"content": []}},
+                {"type": etype, "timestamp": "2026-09-17T00:00:00Z"},
+            ])
+            self.assertTrue(
+                _file_tail_is_terminal(p),
+                f"末行 {etype} 应判终态（属 RUN_TERMINAL_EVENT_TYPES）",
+            )
+        # superseded → False（属弃置标记非终结）
+        p_sup = self._write("tail-superseded", [
+            {"type": "assistant", "message": {"content": []}},
+            {"type": "superseded", "reason": "artifact-gate in-place retry"},
+        ])
+        self.assertFalse(
+            _file_tail_is_terminal(p_sup),
+            "superseded 属弃置标记非终结，不得纳入终态集合"
+            "（纳入会在 artifact-gate 原地重试退避窗口内造成双派发）",
+        )
+
 
 # ── (3b) 运行期悬空 run 清扫（add-runtime-run-sweeper）───────────────
 class TestRuntimeDanglingRunSweep(unittest.TestCase):
