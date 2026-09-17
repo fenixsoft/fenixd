@@ -7,6 +7,7 @@ Handles result parsing, retry logic, and token/turn budget control.
 
 import json
 import os
+import functools
 import re
 import shutil
 import subprocess
@@ -368,6 +369,114 @@ class AgentRunner:
     # 据此把「框架主动终止」与「网关瞬断」区分开。类属性缺省 False：绕过
     # __init__ 的测试构造（__new__）无需逐处补默认。
     shutting_down = False
+
+    # ── 门面转发注册表（refactor-facade-delegation D2 / facade-inventory.md）──
+    # 实例式转发（52 个）：{门面方法名: (子对象属性名, 目标方法名)} 或
+    # {门面方法名: self 首参模块函数}。子对象属性为惰性 property（`_liveness`
+    # 等，正常查找命中不触发 `__getattr__`），经 `getattr(self, 子对象属性名)`
+    # 触发惰性构造；`__getattr__` 返回 `getattr(子对象, 目标方法名)`/partial。
+    # 注册表以源码内联 dict 声明（静态可读）；未知名 MUST `raise AttributeError`
+    # （hasattr/getattr(..., default) 语义正确）；dunder 名 MUST NOT 转发。
+    _FORWARDER_REGISTRY: dict[str, object] = {
+        "_build_prompt": ("_prompt_builder", "_build_prompt"),
+        "_build_legacy_section": ("_prompt_builder", "_build_legacy_section"),
+        "_legacy_dirty_snapshot": ("_prompt_builder", "_legacy_dirty_snapshot"),
+        "_scenario_freeze_section": ("_prompt_builder", "_scenario_freeze_section"),
+        "_interaction_contract_section": ("_prompt_builder", "_interaction_contract_section"),
+        "_triage_recheck_section": ("_prompt_builder", "_triage_recheck_section"),
+        "_verdict_rejection_section": ("_prompt_builder", "_verdict_rejection_section"),
+        "_circuit_state": ("_provider_circuit", "_circuit_state"),
+        "is_circuit_open": ("_provider_circuit", "is_circuit_open"),
+        "is_switch_cooldown": ("_provider_circuit", "is_switch_cooldown"),
+        "_record_switch_cooldown": ("_provider_circuit", "_record_switch_cooldown"),
+        "_write_provider_marker": ("_provider_circuit", "_write_provider_marker"),
+        "_record_daily_provider_attempt": ("_provider_circuit", "_record_daily_provider_attempt"),
+        "_circuit_open_error": ("_provider_circuit", "_circuit_open_error"),
+        "_record_provider_4xx": ("_provider_circuit", "_record_provider_4xx"),
+        "_record_provider_probe": ("_provider_circuit", "_record_provider_probe"),
+        "record_transient_break": ("_provider_circuit", "record_transient_error"),
+        "is_global_transient_break_active": ("_provider_circuit", "is_global_transient_break"),
+        "is_signal_kill_cooldown": ("_provider_circuit", "is_signal_kill_cooldown"),
+        "signal_kill_cooldown_until": ("_provider_circuit", "signal_kill_cooldown_until"),
+        "_signal_kill_counts": ("_provider_circuit", "signal_kill_counts"),
+        "_record_signal_kill": ("_provider_circuit", "record_signal_kill"),
+        "_accumulate_token_usage": ("_token_accountant", "_accumulate_token_usage"),
+        "_check_token_budget": ("_token_accountant", "_check_token_budget"),
+        "_send_token_alert": ("_token_accountant", "_send_token_alert"),
+        "_record_verify_progress_tokens": ("_token_accountant", "_record_verify_progress_tokens"),
+        "_v2_ensure_state": ("_v2_server", "_v2_ensure_state"),
+        "_v2_launch_for_worktree": ("_v2_server", "_v2_launch_for_worktree"),
+        "_v2_inject_env": ("_v2_server", "_v2_inject_env"),
+        "_v2_stop_for_worktree": ("_v2_server", "_v2_stop_for_worktree"),
+        "_v2_stop_all": ("_v2_server", "_v2_stop_all"),
+        "has_live_attempt": ("_liveness", "has_live_attempt"),
+        "sweep_dangling_runs": ("_liveness", "sweep_dangling_runs"),
+        "_pgrep_live_attempt": ("_liveness", "_pgrep_live_attempt"),
+        "_stream_recent": ("_liveness", "_stream_recent"),
+        "note_run_extension": ("_liveness", "note_run_extension"),
+        "get_extension_baseline": ("_liveness", "get_extension_baseline"),
+        "_liveness_snapshot": ("_liveness", "_liveness_snapshot"),
+        "_judge_liveness": ("_liveness", "_judge_liveness"),
+        "_supervision_settings": ("_liveness", "_supervision_settings"),
+        "_supervision_judge_timeout": ("_liveness", "_supervision_judge_timeout"),
+        "_supervision_deadline_action": ("_liveness", "_supervision_deadline_action"),
+        "wait_for_running_agents": ("_liveness", "wait_for_running_agents"),
+        "run_administrator": run_administrator,
+        "run_self_review": run_self_review,
+        "run_evolution": run_evolution,
+        "_get_admin_model": _get_admin_model,
+        "_check_agent_result_artifact": _check_agent_result_artifact,
+        "_check_impl_result_artifact": _check_impl_result_artifact,
+        "_check_success_completion": _check_success_completion,
+        "_check_partial_consistency": _check_partial_consistency,
+        "_check_taskupdate_crosscheck": _check_taskupdate_crosscheck,    }
+
+    def __getattr__(self, name: str):
+        """门面转发统一委托（refactor-facade-delegation D1/D2）。
+
+        注册表内实例式转发经此解析；未知名 / dunder 名 `raise AttributeError`。
+        惰性 property（`_liveness` 等）是类属性，正常查找命中，不会走到这里。"""
+        if name.startswith("__") and name.endswith("__"):
+            raise AttributeError(
+                f"{type(self).__name__!r} object has no attribute {name!r}")
+        target = type(self)._FORWARDER_REGISTRY.get(name)
+        if target is None:
+            raise AttributeError(
+                f"{type(self).__name__!r} object has no attribute {name!r}")
+        if isinstance(target, tuple):
+            sub_attr, meth = target
+            return getattr(getattr(self, sub_attr), meth)
+        return functools.partial(target, self)
+
+    def __dir__(self):
+        """IDE 补全增强（refactor-facade-delegation Open Question / tasks 5.1）：
+        返回既有属性 + 注册表键，缓解 `__getattr__` 委托下 dir() 不显示转发名。"""
+        return sorted(set(super().__dir__()) | set(type(self)._FORWARDER_REGISTRY))
+
+
+    # ── 静态式转发类级别名（refactor-facade-delegation D7 / tasks 3.3）──
+    # 首参非 self 的 @staticmethod 式转发（12 个）与目标不以 self 为首参的
+    # 模块函数转发（3 个：_read_admin_disposition / _read_self_review_out /
+    # _check_artifact_json_file）MUST NOT 走实例 __getattr__ 的 partial 路径
+    # （partial 会多注一个 self → TypeError）；以类级别名保留 `Cls.<名>` 与
+    # `self.<名>` 两条解析路径（staticmethod 描述符经类/实例访问返回原函数，
+    # 不重复签名、无 docstring，spec「双份签名不再存在」）。
+    _entry_is_tool_result = staticmethod(_entry_is_tool_result)
+    _format_gap_list = staticmethod(_format_gap_list)
+    _invalid_completed_ids = staticmethod(_invalid_completed_ids)
+    _read_init_tools = staticmethod(_read_init_tools)
+    parse_api_error_status = staticmethod(ProviderCircuit.parse_api_error_status)
+    classify_switch_error = staticmethod(ProviderCircuit.classify_switch_error)
+    classify_transient_error = staticmethod(ProviderCircuit.classify_transient_error)
+    _summarize_snapshot = staticmethod(LivenessSupervisor._summarize_snapshot)
+    _parse_verdict_json = staticmethod(LivenessSupervisor._parse_verdict_json)
+    _resumable_session_id = staticmethod(SessionTracker._resumable_session_id)
+    _extract_session_id = staticmethod(SessionTracker._extract_session_id)
+    _extract_usage_info = staticmethod(SessionTracker._extract_usage_info)
+    # 目标不以 self 为首参（模块函数转发，非注入）
+    _read_admin_disposition = staticmethod(_read_admin_disposition)
+    _read_self_review_out = staticmethod(_read_self_review_out)
+    _check_artifact_json_file = staticmethod(_check_artifact_json_file)
 
     def __init__(self, config: dict, worktree_manager, state_machine,
                  project_root: Path, logger):
@@ -996,22 +1105,11 @@ class AgentRunner:
             conflict_summary=conflict_summary or {},
         )
 
-    def run_administrator(self, signal: dict) -> AdminDisposition:
-        return run_administrator(self, signal)
-
     def _clear_admin_disposition(self, disp_path: Path):
         _clear_admin_disposition(disp_path)
 
     def _delete_admin_disposition(self, disp_path: Path):
         _delete_admin_disposition(disp_path)
-
-    def _read_admin_disposition(self, disp_path: Path) -> dict:
-        return _read_admin_disposition(disp_path)
-
-    def run_self_review(self, date_str: str, daily_summary: str,
-                        todo_md: str | None = None,
-                        todo_entries: str | None = None) -> SelfReviewResult:
-        return run_self_review(self, date_str, daily_summary, todo_md, todo_entries)
 
     def _clear_self_review_out(self, out_path: Path):
         _clear_self_review_out(out_path)
@@ -1019,24 +1117,14 @@ class AgentRunner:
     def _delete_self_review_out(self, out_path: Path):
         _delete_self_review_out(out_path)
 
-    def _read_self_review_out(self, out_path: Path) -> dict:
-        return _read_self_review_out(out_path)
-
     def _accumulate_self_review_tokens(self, date_str: str, usage_info: dict) -> None:
         _accumulate_self_review_tokens(self, date_str, usage_info)
-
-    def run_evolution(self, ready_projects: list,
-                      pending_entries: list | None = None) -> EvolutionResult:
-        return run_evolution(self, ready_projects, pending_entries)
 
     def _delete_evolution_out(self, out_path: Path):
         _delete_evolution_out(out_path)
 
     def _accumulate_evolution_tokens(self, run_id: str, usage_info: dict) -> None:
         _accumulate_evolution_tokens(self, run_id, usage_info)
-
-    def _get_admin_model(self) -> str:
-        return _get_admin_model(self)
 
     def _build_isolated_settings(self) -> dict:
         """构造隔离 settings.json：enabledPlugins / hooks（spec D2/D3）。
@@ -3526,15 +3614,6 @@ class AgentRunner:
         except (ValueError, TypeError):
             return None
 
-    @staticmethod
-    def _entry_is_tool_result(entry: dict) -> bool:
-        """类静态入口：委托模块级统一识别（沿用 _parse_event_timestamp 先例）。
-
-        tool-result-stream-detection 单一真源——类内消费点（_run_claude 内联
-        采样 / _turn_traffic_active）统一经此判定，不得各自硬编码事件类型。
-        """
-        return _entry_is_tool_result(entry)
-
 
     def _check_daily_limit(self):
         """Check and reset daily run counter."""
@@ -3943,81 +4022,14 @@ class AgentRunner:
     # ── 组合组件委托（refactor-core-packages 阶段 1：PromptBuilder）──────
     # 测试引用方法（runner._build_prompt 等）保持调用路径可用（design D3 规则 4）。
 
-    def _build_prompt(self, spec_name: str, agent_type: str, detail: dict | None = None,
-                      wt_path: Path | None = None) -> str:
-        return self._prompt_builder._build_prompt(
-            spec_name, agent_type, detail, wt_path=wt_path)
-
-    def _check_artifact_json_file(self, path: Path, agent_type: str,
-                                  run_started_at: float | None, is_resumed_worktree: bool = False) -> tuple:
-        return _check_artifact_json_file(path, agent_type, run_started_at, is_resumed_worktree)
-
-    def _check_agent_result_artifact(self, spec_name: str, agent_type: str,
-                                     run_started_at: float | None = None,
-                                     wt_path: Path | None = None,
-                                     is_resumed_worktree: bool = False) -> str | None:
-        return _check_agent_result_artifact(self, spec_name, agent_type, run_started_at, wt_path, is_resumed_worktree)
-
     # 结果文件顶层 status 白名单（P0 / spec「结果产物硬门」）：success=全部任务完成；
     # partial=诚实申报未完成；error=失败不施加完成度判据。白名单外取值判失败（防
     # fail-open 事故形态）；判据实现在 result_gate.py（D2b 规则 1 经 runner 注入）。
     _IMPL_RESULT_STATUSES = ("success", "error", "partial")
 
-    def _check_impl_result_artifact(self, spec_name: str, run_started_at: float | None, wt_path: Path | None,
-                                    is_resumed_worktree: bool = False) -> str | None:
-        return _check_impl_result_artifact(self, spec_name, run_started_at, wt_path, is_resumed_worktree)
-
-    @staticmethod
-    def _format_gap_list(gap: list, limit: int = 20) -> str:
-        return _format_gap_list(gap, limit)
-
-    @staticmethod
-    def _invalid_completed_ids(items) -> list:
-        return _invalid_completed_ids(items)
-
-    def _check_success_completion(self, spec_name: str, result_path: Path,
-                                  data: dict, all_ids: list,
-                                  checked_ids: set) -> str | None:
-        return _check_success_completion(self, spec_name, result_path, data, all_ids, checked_ids)
-
-    def _check_partial_consistency(self, spec_name: str, result_path: Path,
-                                   data: dict, all_ids: list,
-                                   checked_ids: set,
-                                   unattainable_ids: set | None = None) -> str | None:
-        return _check_partial_consistency(
-            self, spec_name, result_path, data, all_ids, checked_ids,
-            unattainable_ids=unattainable_ids,
-        )
-
-    def _check_taskupdate_crosscheck(self, spec_name: str,
-                                     checked_ids: set) -> str | None:
-        return _check_taskupdate_crosscheck(self, spec_name, checked_ids)
-
-    @staticmethod
-    def _read_init_tools(run_file) -> list | None:
-        return _read_init_tools(run_file)
-
     def _append_crosscheck_skipped(self, spec_name: str, run_file,
                                    reason: str) -> None:
         _append_crosscheck_skipped(self, spec_name, run_file, reason)
-
-    def _build_legacy_section(self, spec_name: str) -> str:
-        return self._prompt_builder._build_legacy_section(spec_name)
-
-    def _legacy_dirty_snapshot(self, wt_path: str) -> str:
-        return self._prompt_builder._legacy_dirty_snapshot(wt_path)
-
-    def _scenario_freeze_section(self, spec_name: str) -> str:
-        return self._prompt_builder._scenario_freeze_section(spec_name)
-
-    def _interaction_contract_section(self, spec_name: str) -> str:
-        return self._prompt_builder._interaction_contract_section(spec_name)
-
-    def _triage_recheck_section(self, spec_name: str) -> str:
-        return self._prompt_builder._triage_recheck_section(spec_name)
-
-    def _verdict_rejection_section(self, spec_name: str) -> str:
-        return self._prompt_builder._verdict_rejection_section(spec_name)
 
     # ── 组合组件（refactor-core-packages 阶段 2）────────────────────────
 
@@ -4060,115 +4072,13 @@ class AgentRunner:
 
     # ── 组合组件委托（阶段 2：状态/方法已迁组件，门面保持调用路径）──────
 
-    @staticmethod
-    def parse_api_error_status(error_text: str) -> Optional[int]:
-        return ProviderCircuit.parse_api_error_status(error_text)
-
-    @staticmethod
-    def classify_switch_error(error_text: str) -> bool:
-        return ProviderCircuit.classify_switch_error(error_text)
-
-    @staticmethod
-    def classify_transient_error(stderr_lines: list, exit_code: int,
-                                 has_result: bool) -> bool:
-        """瞬断判定转导（fix-provider-transient-backoff D2）——见
-        ProviderCircuit.classify_transient_error（全量 stderr 信号，与降噪解耦）。"""
-        return ProviderCircuit.classify_transient_error(stderr_lines, exit_code,
-                                                        has_result)
-
-    def _circuit_state(self, provider_name: str) -> dict:
-        return self._provider_circuit._circuit_state(provider_name)
-
-    def is_circuit_open(self, provider_name: str, now: float | None = None) -> bool:
-        return self._provider_circuit.is_circuit_open(provider_name, now)
-
-    def is_switch_cooldown(self, provider_name: str, now: float | None = None) -> bool:
-        return self._provider_circuit.is_switch_cooldown(provider_name, now)
-
-    def _record_switch_cooldown(self, provider_name: str, now: float | None = None) -> None:
-        return self._provider_circuit._record_switch_cooldown(provider_name, now)
-
-    def _write_provider_marker(self, run_id: str, spec_name: str, agent_type: str,
-                               provider_name: str, model: str, chain_index: int,
-                               chain_len: int) -> None:
-        return self._provider_circuit._write_provider_marker(run_id, spec_name, agent_type, provider_name, model, chain_index, chain_len)
-
-    def _record_daily_provider_attempt(self, provider_name: str) -> None:
-        return self._provider_circuit._record_daily_provider_attempt(provider_name)
-
-    def _circuit_open_error(self, provider_name: str, now: float | None = None) -> str:
-        return self._provider_circuit._circuit_open_error(provider_name, now)
-
-    def _record_provider_4xx(self, provider_name: str, code: int,
-                             now: float | None = None) -> None:
-        return self._provider_circuit._record_provider_4xx(provider_name, code, now)
-
-    def _record_provider_probe(self, provider_name: str, success: bool,
-                               now: float | None = None) -> None:
-        return self._provider_circuit._record_provider_probe(provider_name, success, now)
-
     # ── 全局瞬断熔断转导（fix-provider-transient-backoff D4）──────────────────
 
-    def record_transient_break(self, error_text: str) -> bool:
-        """记录一次瞬断失败到全局指纹计数（D4）。返回 True = 首次触发熔断。"""
-        return self._provider_circuit.record_transient_error(error_text)
-
-    def is_global_transient_break_active(self, now: float | None = None) -> bool:
-        """全局瞬断熔断是否生效（dispatch 闸门查询）。"""
-        return self._provider_circuit.is_global_transient_break(now=now)
-
     # ── 信号死法冷却转导（evo-sigterm-source-tracking-cooldown）────────────
-
-    def is_signal_kill_cooldown(self, spec_name: str,
-                                now: float | None = None) -> bool:
-        """该 spec 是否处于信号死法冷却期（dispatch 派发前闸门调用）。
-
-        冷却只作用于该 spec 的重派（含 admin/impl 处置 run 路由），MUST NOT
-        触发全局瞬断熔断；冷却到期自动恢复并清零计数。
-        """
-        return self._provider_circuit.is_signal_kill_cooldown(spec_name, now=now)
-
-    def signal_kill_cooldown_until(self, spec_name: str) -> float:
-        """该 spec 信号死法冷却到期单调秒（派发恢复排程用；未冷却返回 0）。"""
-        return self._provider_circuit.signal_kill_cooldown_until(spec_name)
-
-    def _signal_kill_counts(self, spec_name: str) -> int:
-        """当前连续信号死法次数（测试/观测辅助）。"""
-        return self._provider_circuit.signal_kill_counts(spec_name)
-
-    def _record_signal_kill(self, spec_name: str, now: float | None = None) -> bool:
-        """记录一次信号死法到 spec 维度信号冷却通道（返回 True = 已触发冷却）。"""
-        return self._provider_circuit.record_signal_kill(spec_name, now=now)
 
     def _reset_signal_kill(self, spec_name: str) -> None:
         """成功：清除该 spec 的信号死法连续计数与冷却态（连续链被打断）。"""
         self._provider_circuit.reset_signal_kill(spec_name)
-
-    def _accumulate_token_usage(self, spec_name: str, usage_info: dict) -> None:
-        return self._token_accountant._accumulate_token_usage(spec_name, usage_info)
-
-    def _check_token_budget(self, spec_name: str, tokens_in: int) -> None:
-        return self._token_accountant._check_token_budget(spec_name, tokens_in)
-
-    def _send_token_alert(self, spec_name: str, tokens_in: int, budget: float,
-                          severity: str, title: str) -> None:
-        return self._token_accountant._send_token_alert(spec_name, tokens_in, budget, severity, title)
-
-    def _record_verify_progress_tokens(self, spec_name: str, agent_type: str,
-                                         usage_info: dict) -> None:
-        return self._token_accountant._record_verify_progress_tokens(spec_name, agent_type, usage_info)
-
-    def _v2_ensure_state(self) -> None:
-        return self._v2_server._v2_ensure_state()
-
-    def _v2_launch_for_worktree(self, wt_path: Path) -> None:
-        return self._v2_server._v2_launch_for_worktree(wt_path)
-
-    def _v2_inject_env(self, wt_path: Path) -> Dict[str, str]:
-        return self._v2_server._v2_inject_env(wt_path)
-
-    def _v2_stop_for_worktree(self, wt_path: Path) -> None:
-        return self._v2_server._v2_stop_for_worktree(wt_path)
 
     def _v2_harvest_used_worktrees(self, used_wts: set, handed_off: set) -> None:
         """终态收割（verify-process-lifecycle D1/D2）：对未交接 worktree 回收。
@@ -4193,9 +4103,6 @@ class AgentRunner:
             except Exception as e:
                 self.logger.warning(
                     "agent_runner", f"终态收割 strays 清扫失败 {wt}: {e}")
-
-    def _v2_stop_all(self) -> None:
-        return self._v2_server._v2_stop_all()
 
     @property
     def provider_circuits(self):
@@ -4254,57 +4161,6 @@ class AgentRunner:
 
     # ── 组合组件委托（阶段 3：存活/监督/session 已迁组件）────────────────
 
-    def has_live_attempt(self, spec_name: str) -> bool:
-        return self._liveness.has_live_attempt(spec_name)
-
-    def sweep_dangling_runs(self) -> list:
-        return self._liveness.sweep_dangling_runs()
-
-    def _pgrep_live_attempt(self, spec_name: str) -> bool:
-        return self._liveness._pgrep_live_attempt(spec_name)
-
-    def _stream_recent(self, spec_name: str, seconds: int) -> bool:
-        return self._liveness._stream_recent(spec_name, seconds)
-
-    def note_run_extension(self, spec_name: str, run_id: str,
-                           extension_index: int, new_deadline: float) -> None:
-        return self._liveness.note_run_extension(spec_name, run_id, extension_index, new_deadline)
-
-    def get_extension_baseline(self, spec_name: str) -> float | None:
-        return self._liveness.get_extension_baseline(spec_name)
-
-    def _liveness_snapshot(self, run_file: Path, window_seconds: float,
-                           now: float | None = None) -> dict:
-        return self._liveness._liveness_snapshot(run_file, window_seconds, now)
-
-    @staticmethod
-    def _summarize_snapshot(snapshot: dict) -> str:
-        return LivenessSupervisor._summarize_snapshot(snapshot)
-
-    def _judge_liveness(self, snapshot: dict, spec_name: str | None,
-                        run_id: str) -> dict:
-        return self._liveness._judge_liveness(snapshot, spec_name, run_id)
-
-    @staticmethod
-    def _parse_verdict_json(text: str) -> dict | None:
-        return LivenessSupervisor._parse_verdict_json(text)
-
-    def _supervision_settings(self) -> dict:
-        return self._liveness._supervision_settings()
-
-    def _supervision_judge_timeout(self) -> float:
-        return self._liveness._supervision_judge_timeout()
-
-    def _supervision_deadline_action(self, run_file: Path, spec_name: str | None,
-                                     run_id: str, started_at: float,
-                                     extensions_used: int,
-                                     judge=None, agent_type: str | None = None) -> dict:
-        return self._liveness._supervision_deadline_action(
-            run_file, spec_name, run_id, started_at, extensions_used, judge, agent_type)
-
-    def wait_for_running_agents(self, timeout: int = AGENT_TERMINATE_GRACE_SECONDS):
-        return self._liveness.wait_for_running_agents(timeout)
-
     def running_run_ids(self) -> list:
         """当前在册在跑 run 的 run_id 列表（存活判定：进程仍在或快照内未收割）。
 
@@ -4340,23 +4196,6 @@ class AgentRunner:
                 return []
             time.sleep(0.5)
         return self.running_run_ids()
-
-    @staticmethod
-    def _resumable_session_id(
-        session_id: str | None,
-        session_provider: str | None,
-        current_provider: str | None,
-        reuse_worktree: bool,
-    ) -> str | None:
-        return SessionTracker._resumable_session_id(session_id, session_provider, current_provider, reuse_worktree)
-
-    @staticmethod
-    def _extract_session_id(run_file: Path) -> str | None:
-        return SessionTracker._extract_session_id(run_file)
-
-    @staticmethod
-    def _extract_usage_info(result_event: dict | None) -> dict:
-        return SessionTracker._extract_usage_info(result_event)
 
     # ── run 终止指标落盘（fix-observability-gaps 1.x） ─────────────────────────
     # 每次 run 进入终态时写一条结构化指标（复用既有日志设施，不新建 metrics
