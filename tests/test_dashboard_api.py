@@ -1371,3 +1371,96 @@ class TestSpecApprovePushAPI:
             assert body2["error"]
         finally:
             srv.stop()
+
+
+# ── keep-alive 错误路径连接卫生（BUG-01 回归锁，refactor-giant-classes 修复轮） ──
+class TestKeepAliveErrorPathHygiene:
+    """keep-alive 连接复用下错误路径响应写序/请求体排空（BUG-01 回归锁）。
+
+    验证场景 api-post-chain-spec-evolution / api-spec-detail-doc-error-paths
+    在 httpx/http.client 连接复用（keep-alive）下暴露的两个缺陷：
+    - POST handler 错误路径（project/spec 校验失败）未消费请求体 → 残留字节
+      被同连接下一请求当请求行读取，解析为 ``{...}POST ...`` 非法命令 → 501；
+    - ``_get_spec_doc`` 适配器对已自写 ``_error`` 的 handler 再包 ``_json(None)``
+      → 双重响应残留 200+null 污染同连接下一请求。
+    修复后同连接连续请求均返回正确状态且连接不脱同步（will_close=False）。
+    """
+
+    def test_post_error_paths_keep_alive_connection_clean(self, server_fx):
+        """三个错误路径 POST 走同一 keep-alive 连接，均返回正确状态且不脱同步。"""
+        _, srv = server_fx
+        import http.client
+        conn = http.client.HTTPConnection("127.0.0.1", srv.port, timeout=10)
+        try:
+            steps = [
+                ("/api/spec-error-clear", 404),
+                ("/api/spec-error-clear?project=no-such-project-xyz&spec=x", 404),
+                ("/api/evolution/reject", 400),
+            ]
+            for i, (path, expect) in enumerate(steps):
+                body = b"{}"
+                conn.request(
+                    "POST", path, body=body,
+                    headers={"Content-Type": "application/json",
+                             "Content-Length": str(len(body))},
+                )
+                resp = conn.getresponse()
+                data = resp.read()
+                assert resp.status == expect, (
+                    f"step{i+1} {path}: 期望{expect} 实际{resp.status} {data[:80]!r}"
+                )
+                assert resp.will_close is False, (
+                    f"step{i+1} {path}: 连接被关闭/脱同步（残留 body 污染）"
+                )
+        finally:
+            conn.close()
+
+    def test_spec_doc_error_paths_keep_alive_no_double_write(self, server_fx):
+        """GET spec-doc 错误路径单响应；同连接下一请求不被残留 200+null 污染。"""
+        _, srv = server_fx
+        import http.client
+        conn = http.client.HTTPConnection("127.0.0.1", srv.port, timeout=10)
+        try:
+            conn.request("GET", "/api/spec-doc")
+            resp = conn.getresponse()
+            data = resp.read()
+            assert resp.status == 400
+            assert b"unknown project" in data
+
+            # 同连接第二请求：不得读到上一请求的双重写残留（200+null）
+            conn.request("GET", "/api/spec-doc?project=no-such-project-xyz&spec=x&doc=proposal")
+            resp = conn.getresponse()
+            data = resp.read()
+            assert resp.status == 400
+            assert b"unknown project" in data
+
+            # 连接仍健康：正常端点可用
+            conn.request("GET", "/api/events?project=proj-a")
+            resp = conn.getresponse()
+            data = resp.read()
+            assert resp.status == 200
+        finally:
+            conn.close()
+
+    def test_spec_doc_success_path_keep_alive(self, server_fx):
+        """成功路径 spec-doc 与错误路径交替走同连接，互不污染。"""
+        proot, srv = server_fx
+        (proot / "spec" / "changes" / "myspec" / "proposal.md").write_text(
+            "# 背景\n\n- 列表项\n", encoding="utf-8"
+        )
+        import http.client
+        conn = http.client.HTTPConnection("127.0.0.1", srv.port, timeout=10)
+        try:
+            # 错误路径（未注册项目 → 400）
+            conn.request("GET", "/api/spec-doc?project=no-such-project-xyz&spec=x&doc=proposal")
+            resp = conn.getresponse()
+            assert resp.status == 400
+            resp.read()
+            # 成功路径（同连接）
+            conn.request("GET", "/api/spec-doc?project=proj-a&spec=myspec&doc=proposal")
+            resp = conn.getresponse()
+            data = resp.read()
+            assert resp.status == 200
+            assert "背景".encode("utf-8") in data
+        finally:
+            conn.close()

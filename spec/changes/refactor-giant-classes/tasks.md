@@ -144,6 +144,6 @@
 上轮登记的 findings：
 - deliverable-dispute: tests/test_giant_classes_contract.py — 应归 reference/移除——本 SPEC 的契约与 characterization 覆盖已由 tests/test_characterization_giant_classes.py + tests/test_planner_route_map.py 承载，无 test_giant_classes_contract.py 交付需求
 
-- [ ] 先复核失败有效性：逐条核对 `spec/changes/refactor-giant-classes/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
-- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
-- [ ] 修复后重跑验证确认通过
+- [x] 先复核失败有效性：逐条核对 `spec/changes/refactor-giant-classes/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
+- [x] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
+- [x] 修复后重跑验证确认通过

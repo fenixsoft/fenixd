@@ -96,7 +96,10 @@ def _get_verify_yaml_template(s, p, q, m):
     s._api_verify_yaml_template()
 
 def _get_spec_doc(s, p, q, m):
-    s._json(s._api_spec_doc(q))
+    # _api_spec_doc 是自含响应 handler：成功写 _json、错误分支自写 _error——
+    # 不得再包 _json 双重写响应（keep-alive 下残留第二响应 200+null 污染
+    # 下一请求，BUG-01 修复合入）
+    s._api_spec_doc(q)
 
 def _get_help_docs(s, p, q, m):
     s._json(s._api_help_docs())
@@ -372,6 +375,8 @@ class H0BaseMixin:
             self.server._release_request_slot()
 
     def _handle_inner(self, method: str = "GET"):
+        # 每请求复位 body 消费计数（BUG-01 排空判定基准；keep-alive 下同连接多请求）
+        self._request_body_consumed = 0
         try:
             parsed = urllib.parse.urlparse(self.path)
             path = parsed.path
@@ -385,9 +390,17 @@ class H0BaseMixin:
                     self._error(405, "Method Not Allowed")
                     return
                 if method == "POST":
-                    self._handle_api_post(path, query)
+                    try:
+                        self._handle_api_post(path, query)
+                    finally:
+                        # handler 错误路径提前返回未消费 body 时排空残留字节，
+                        # 防 keep-alive 复用下残留体被下一请求当请求行（BUG-01）
+                        self._drain_remaining_request_body()
                 elif method == "DELETE":
-                    self._handle_api_delete(path, query)
+                    try:
+                        self._handle_api_delete(path, query)
+                    finally:
+                        self._drain_remaining_request_body()
                 else:
                     self._handle_api(path, query)
                 return
@@ -427,6 +440,9 @@ class H0BaseMixin:
             return None
         try:
             raw = self.rfile.read(content_length)
+            # BUG-01：标记本请求已消费的 body 字节（POST/DELETE 派发后
+            # _drain_remaining_request_body 据此计算残留）
+            self._request_body_consumed = content_length
             body = json.loads(raw.decode("utf-8"))
             if not isinstance(body, dict):
                 self._error(400, "Request body must be a JSON object")
@@ -435,6 +451,25 @@ class H0BaseMixin:
         except (json.JSONDecodeError, UnicodeDecodeError):
             self._error(400, "Invalid JSON body")
             return None
+
+    def _drain_remaining_request_body(self):
+        """POST/DELETE 处理后排空未消费的请求体字节（BUG-01 keep-alive 排空）。
+
+        handler 在错误路径（如 project/spec 校验失败）提前返回而未读 body 时，
+        残留字节会在 keep-alive 连接复用下被当作下一请求的请求行读取，解析为
+        ``{...}POST /api/...`` 之类的非法命令 → 501 Unsupported method。
+        排空后连接回到干净状态；已消费（_read_json_body 读满）时为 no-op。
+        """
+        try:
+            content_length = int(self.headers.get("Content-Length", "0") or "0")
+        except ValueError:
+            content_length = 0
+        remaining = content_length - getattr(self, "_request_body_consumed", 0)
+        if remaining > 0:
+            try:
+                self.rfile.read(remaining)
+            except Exception:  # noqa: BLE001 连接已断/异常则放弃排空，不影响主响应
+                pass
 
     def _wants_gzip(self) -> bool:
         return "gzip" in self.headers.get("Accept-Encoding", "").lower()
