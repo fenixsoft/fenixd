@@ -103,11 +103,21 @@ agents:
     extension_seconds: 1800
     # 续期次数上限（0 = 到点即按活性判定终止，不续期）
     max_extensions: 2
-    # 总墙钟上限（秒）；默认 16200 = 9000 运行 + 2×1800 续期，向上对齐护栏下限
-    # （run_timeout + 续期上限 7200，见 core/config.py SUPERVISION_EXTENSION_SECONDS）
+    # 总墙钟上限（秒）。下限约束（supervision-timeout-config-consistency）：
+    #   absolute_max_seconds MUST ≥ max(全局 run_timeout_seconds, agents.timeout_overrides 全部值)
+    #     + (max_extensions + 2) × extension_seconds
+    # （+2 覆盖 fast-track higher 档续期预算加成；配置校验层按「全部署最大可达
+    # 下限」取保守值，派生实现见 core/config.py supervision_config_floor）。
+    # 低于下限时：默认自动对齐抬升并持久化（auto_align 显式关闭则启动/热更新
+    # fail-fast）。示例 16200 = 9000 运行 + 4×1800 续期（= 现有取值，向下兼容）。
+    # 提示：仅按 2×1800 基础预算（如 12600）会让 fast-track higher 档运行时再次
+    # 命中同文案 ERROR，「消除 ERROR 复发」目标落空，MUST NOT 下调保守性。
     absolute_max_seconds: 16200
     # 活性判定窗口（秒）：窗口内零事件直接判停滞；judge 的快照也取此窗口
     judge_window: 600
+    # 一致性校验处置（可选）：absolute_max_seconds < 配置校验层下限时，
+    # true（缺省）= 自动抬升至下限并持久化；false = 启动/热更新 fail-fast。
+    # auto_align: true
   # 使用三步验证流水线（Planner → VerifyEngine → Judge），比旧版 verifier 快 5-10x
   use_new_verifier: true
 
@@ -248,12 +258,16 @@ admin:
 
 # ---- Agent Run 超时护栏（可选）----
 # timeout_supervision 监控单次 Agent 运行的墙钟上限，防止超时参数再次与 run 超时脱钩。
-# 护栏联动（design D5）：absolute_max_seconds MUST ≥ agents.run_timeout_seconds +
-# 续期上限(7200s)，否则启动/热更新打 ERROR 并按 run_timeout_seconds + 7200 兜底生效。
+# 护栏联动（supervision-timeout-config-consistency）：absolute_max_seconds MUST ≥
+# max(生效超时) + (max_extensions + 2) × extension_seconds（配置校验层全部署最大
+# 可达下限，见 core/config.py supervision_config_floor；+2 覆盖 fast-track higher
+# 档续期预算加成）。低于下限时默认自动对齐抬升并持久化，auto_align 显式关闭时
+# 启动/热更新 fail-fast（不再仅告警后按兜底值继续）。
 timeout_supervision:
   # 是否启用 supervision（false 时整段不参与校验，也不对运行施加额外墙钟上限）
   enabled: false
-  # 单次运行墙钟硬上限（秒）。默认值 16200 = run_timeout(9000) + 续期上限(7200) 对齐，
+  # 单次运行墙钟硬上限（秒）。默认值 16200 = run_timeout(9000) + 4×1800 对齐
+  #（最大可达续期预算口径，与 core/config.py SUPERVISION_DEFAULTS 7200 同源派生），
   # 与超时参数单源联动，杜绝「absolute_max 远小于跑满的运行」类脱钩事故。
   absolute_max_seconds: 16200
 

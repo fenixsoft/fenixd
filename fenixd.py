@@ -217,6 +217,11 @@ class FenixDaemon:
         log_level = self.config.get("logging.level", "INFO")
         self.logger = Logger(log_dir, log_level)
         self.logger.info("fenixd", "Initializing Fenix Loop Engineering Framework...")
+        # supervision-timeout-config-consistency：启动配置校验（resolve_config 内
+        # _validate）完成后，把默认自动对齐抬升的 absolute_max 值经既有写路径
+        # 持久化（不一致且 auto_align 显式关闭时 resolve_config 已 fail-fast，
+        # 不会走到此处）。
+        self._maybe_persist_supervision_alignment()
 
         # 3. Initialize StateMachine（状态文件在 .fenix/ 下，.STATE.md.lock 随同目录）
         state_path = PROJECT_ROOT / ".fenix" / "STATE.md"
@@ -678,6 +683,50 @@ class FenixDaemon:
         self.logger.info(
             "fenixd",
             "Configuration hot-reloaded (user/project config.yaml changed)",
+        )
+        # supervision-timeout-config-consistency：热更新完成校验后持久化自动对齐值
+        #（校验层已把低于配置层下限的 absolute_max 抬升至下限，内存生效）。
+        self._maybe_persist_supervision_alignment()
+
+    def _maybe_persist_supervision_alignment(self) -> None:
+        """supervision 自动对齐持久化（supervision-timeout-config-consistency 1.3/1.4）。
+
+        配置校验层（ConfigLoader._check_supervision_consistency，经 resolve_config /
+        resolve_config_into 于启动与热更新共入）在发现 absolute_max_seconds 低于配置
+        校验层下限时，默认自动对齐：把内存值抬升至下限并记录（take_supervision_alignment）。
+        本方法消费该记录，把对齐值经既有受管键写路径 core.dashboard.data.write_config
+        落盘（受管键白名单 + 原子写 + 配置头注释保留）。core/config.py MUST NOT 直接
+        写配置文件（避免与 launcher/dashboard 写路径竞争、避免 safe_dump 丢注释）。
+
+        幂等：未发生对齐时消费返回 None，直接返回；对齐已由人工手工调平时，记录
+        为空同样无操作。持久化失败仅 ERROR 留痕（对齐值已在内存生效，不阻断运行）。
+        """
+        from core.config import ConfigLoader
+        from core.dashboard.data import write_config
+
+        try:
+            aligned = ConfigLoader.take_supervision_alignment()
+        except Exception as e:
+            self.logger.error("fenixd", f"supervision 对齐记录读取失败: {e}")
+            return
+        if aligned is None:
+            return
+        aligned_value = int(aligned) if float(aligned).is_integer() else float(aligned)
+        res = write_config(
+            PROJECT_ROOT,
+            {"agents": {"timeout_supervision": {"absolute_max_seconds": aligned_value}}},
+        )
+        if not res.get("ok"):
+            self.logger.error(
+                "fenixd",
+                f"supervision 自动对齐持久化失败: {res.get('error')} "
+                f"（对齐值 {aligned_value}s 已在内存生效，配置文件未更新）",
+            )
+            return
+        self.logger.info(
+            "fenixd",
+            f"supervision absolute_max_seconds 自动对齐已持久化至 {res.get('path')} "
+            f"（={aligned_value}s）",
         )
 
     def _update_stale_code_state(self):

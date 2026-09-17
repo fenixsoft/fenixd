@@ -33,6 +33,9 @@ _AGENTS_MANAGED_SUBKEYS = [
     "verify_redo_budget",
     # 规模预检（agents.scale_precheck 三键：总开关 + 两阈值）
     "scale_precheck",
+    # 超时活性监督（agents.timeout_supervision 段，supervision-timeout-config-consistency）：
+    # 自动对齐持久化与设置页直连写回共用此受管子键
+    "timeout_supervision",
 ]
 
 # 用户级配置文件路径（与项目级同名 `.fenix/config.yaml`，作用域由所在目录决定）
@@ -675,6 +678,13 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
             # 缺此分支则设置界面「预算」页签的规模预检卡片保存被静默丢弃
             # （本文件历史上 token_budget_millions / verify_redo_budget 均踩过同坑）。
             merged["agents"]["scale_precheck"] = copy.deepcopy(patch["agents"]["scale_precheck"])
+        if "timeout_supervision" in patch["agents"]:
+            # 超时活性监督段（agents.timeout_supervision，supervision-timeout-config-
+            # consistency）：整体替换该嵌套段。自动对齐持久化经本写路径落盘；缺此
+            # 分支则对齐值保存被静默丢弃（同 scale_precheck 的历史坑）。
+            merged["agents"]["timeout_supervision"] = copy.deepcopy(
+                patch["agents"]["timeout_supervision"]
+            )
         # fix-provider-transient-backoff（D6）：瞬断治理五键合并分支（前置校验
         # 已拒绝非法值，此处只应用合法值；缺省透传由 get_transient_config 兜底）。
         for _tk in (
@@ -1215,6 +1225,32 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
                         raise ValueError(
                             f"agents.transient_backoff_schedule 元素非正整数: {_part!r}"
                         )
+        # supervision-timeout-config-consistency：agents.timeout_supervision 段校验
+        # （自动对齐持久化 + 设置页直连写回共用；非法值直接拒绝 400，不静默忽略）。
+        # 数值键须为非负数字（排除 bool），enabled 须布尔——与 liveness 消费端
+        # SUPERVISION_DEFAULTS 的类型契约一致。
+        if "timeout_supervision" in agents and agents["timeout_supervision"] is not None:
+            _ts_sup = agents["timeout_supervision"]
+            if not isinstance(_ts_sup, dict):
+                raise ValueError(f"agents.timeout_supervision must be a mapping: {_ts_sup!r}")
+            for _tsk in ("extension_seconds", "max_extensions", "absolute_max_seconds", "judge_window"):
+                _tsv = _ts_sup.get(_tsk)
+                if _tsv is not None and (
+                    isinstance(_tsv, bool) or not isinstance(_tsv, (int, float)) or _tsv < 0
+                ):
+                    raise ValueError(
+                        f"agents.timeout_supervision.{_tsk} must be a non-negative "
+                        f"number: {_tsv!r}"
+                    )
+            if (
+                "enabled" in _ts_sup
+                and _ts_sup["enabled"] is not None
+                and not isinstance(_ts_sup["enabled"], bool)
+            ):
+                raise ValueError(
+                    f"agents.timeout_supervision.enabled must be a boolean: "
+                    f"{_ts_sup['enabled']!r}"
+                )
         gates = merged.get("gates") or {}
         if "approve_mode" in gates and gates["approve_mode"] is not None:
             mode = gates["approve_mode"]

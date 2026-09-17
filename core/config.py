@@ -24,9 +24,24 @@ STUCK_GRACE_SECONDS = 600
 # D4：run_timeout_seconds 缺失或 ≤0 时的派生回退基准（9000+600=9600）。
 RUN_TIMEOUT_FALLBACK_SECONDS = 9000
 STUCK_FALLBACK_SECONDS = RUN_TIMEOUT_FALLBACK_SECONDS + STUCK_GRACE_SECONDS
-# D5：absolute_max 联动兜底续期上限（秒）。absolute_max 低于
-# run_timeout_seconds + 该值时按 run_timeout_seconds + 该值兜底生效。
-SUPERVISION_EXTENSION_SECONDS = 7200
+# D5：supervision 超时监督默认值（单源派生，supervision-timeout-config-consistency）。
+# 单次续期 extension_seconds、次数上限 max_extensions、总墙钟上限 absolute_max_seconds
+# （命中即无条件终止，封闭续期的成本风险）、活性判定窗口 judge_window（秒）。
+# 本表由 liveness 运行时（_supervision_settings）与 supervision 下限派生共用，
+# 禁止两处各自手写常数（消除 22200/18600 双份表述）。
+SUPERVISION_DEFAULTS = {
+    "enabled": True,
+    "extension_seconds": 1800,
+    "max_extensions": 2,
+    "absolute_max_seconds": 7200,
+    "judge_window": 600,
+}
+# fast-track higher 档（_fast_track_scale_tier == "higher"）的续期预算加成：
+# 默认 max_extensions 2 → 4，使大任务面 spec 获得更充足超时预算。配置校验层
+# 下限按「最大可达续期预算」取 max_extensions + 该加成（保守口径，与 liveness
+# 运行时 fast-track 加成语义一致；仅在基础预算 2×1800 时，higher 档运行时仍
+# 命中同文案 ERROR，「消除 ERROR 复发」目标落空——实测依据见 proposal）。
+SUPERVISION_FAST_TRACK_EXTRA_EXTENSIONS = 2
 
 # ── add-bug-repair-mode-config：admin.bug_repair_mode 取值枚举 ────────
 # bug-found 处置的修复方式：inplace（原地打回，缺省）/ derive（派生 fix-* 子
@@ -56,6 +71,11 @@ SELF_EVOLUTION_SPEC_RUN_AT_DEFAULT = None
 # 避免 30 分钟扫描热更新时反复刷屏。
 _DEPRECATED_STUCK_WARNED = False
 _SUPERVISION_BOUNDS_WARNED = False
+# supervision-timeout-config-consistency：最近一次「自动对齐」抬升到的配置层
+# 下限（进程级记录，供 daemon 在 resolve_config 后经既有写路径持久化）。
+# _validate 对齐时写入、daemon 消费即复位（take_supervision_alignment）；
+# 未消费的残留记录会被下一次 _validate 覆盖，恒反映最新校验的配置。
+_SUPERVISION_LAST_ALIGNED = None
 
 # ── improve-hot-reload-robustness D3：未知 agent 类型键降级告警去重 ──
 # 同一未知键每进程生命周期只报一次（30s 热重载重试风暴下，不去重则告警与
@@ -391,9 +411,11 @@ class ConfigLoader:
                     f"gates.spec_review_mode must be one of {cls.VALID_SPEC_REVIEW_MODES}: {mode}"
                 )
 
-        # D5：timeout_supervision.absolute_max_seconds 联动护栏，启动/热更新时校验；
-        # enabled=true 且配置值低于 run_timeout + 续期上限时打 ERROR 并按兜底值生效。
-        cls.effective_supervision_absolute_max_seconds(config)
+        # D5：timeout_supervision.absolute_max_seconds 一致性校验，启动/热更新时
+        # 执行：默认自动对齐（内存抬升 + daemon 持久化），显式关闭 auto_align 时
+        # fail-fast（启动/加载失败；热更新拒绝新配置保留旧值）。口径取全部署最大
+        # 可达下限（supervision_config_floor），详见 _check_supervision_consistency。
+        cls._check_supervision_consistency(config)
 
         # Validate admin.* (optional — 缺省使用默认值，见 get_admin_config)
         admin = config.get("admin") or {}
@@ -1238,42 +1260,220 @@ class ConfigLoader:
             _DEPRECATED_STUCK_WARNED = True
 
     @classmethod
+    def _supervision_segment(cls, config: Dict[str, Any]) -> Optional[dict]:
+        """解析 ``timeout_supervision`` 配置段（supervision-timeout-config-consistency）。
+
+        canonical 位置 ``agents.timeout_supervision``；缺省回退旧版顶层
+        ``timeout_supervision``（fix-stuck-threshold-unify 遗留，enabled=false 作
+        回退开关，与 liveness ``_supervision_settings`` 读取顺序一致）；两处均非
+        dict → 返回 None（supervision 未配置）。
+
+        返回的 dict 是 config 内对象：自动对齐分支靠原地改写 absolute_max_seconds
+        使内存生效（持久化由 daemon 经既有写路径完成，本模块不直写配置文件）。
+        """
+        if not isinstance(config, dict):
+            return None
+        agents = config.get("agents")
+        if isinstance(agents, dict):
+            sup = agents.get("timeout_supervision")
+            if isinstance(sup, dict):
+                return sup
+        sup = config.get("timeout_supervision")
+        if isinstance(sup, dict):
+            return sup
+        return None
+
+    @classmethod
+    def _supervision_settings(cls, config: Dict[str, Any]) -> dict:
+        """规范化后的 supervision 段（缺省填充 ``SUPERVISION_DEFAULTS``）。
+
+        段缺失时按缺省（enabled=true + 默认参数）返回——liveness 运行时缺段时
+        仍按缺省激活监督（既有语义）。调用方读 ``enabled`` 判定是否启用。
+        """
+        cfg = dict(SUPERVISION_DEFAULTS)
+        sup = cls._supervision_segment(config)
+        if sup is not None:
+            for key in ("enabled", "extension_seconds", "max_extensions"):
+                if key in sup and sup[key] is not None:
+                    cfg[key] = sup[key]
+        return cfg
+
+    @classmethod
+    def supervision_floor(
+        cls,
+        config: Dict[str, Any],
+        agent_type: str | None = None,
+        extension_budget: int | None = None,
+    ) -> Optional[float]:
+        """supervision absolute_max 下限的单一派生来源（design supervision-timeout-config-consistency）。
+
+        下限 = 生效 run_timeout_seconds（含 per-agent 覆盖）+ 续期预算 × extension_seconds。
+        - 生效超时：``effective_run_timeout_seconds``（``agents.timeout_overrides.<agent_type>``
+          覆盖，缺省回退全局 / RUN_TIMEOUT_FALLBACK_SECONDS 兜底）；
+        - 续期预算：显式传入的 ``extension_budget``，缺省 ``max(0, max_extensions)``；
+          fast-track higher 档由调用方传 ``max_extensions + SUPERVISION_FAST_TRACK_EXTRA_EXTENSIONS``
+          （liveness 运行时按 spec 档位加成，保持既有加成语义）；
+        - extension_seconds / max_extensions / enabled 取 ``agents.timeout_supervision``
+          （缺省回退旧顶层 ``timeout_supervision``，再回退 SUPERVISION_DEFAULTS）。
+
+        Returns: 下限秒数（float）；supervision 显式 disabled（enabled=false）时
+                 返回 None。段缺失按缺省语义派生（liveness 运行时缺段仍按缺省
+                 激活监督）；配置校验层在「缺段 / 未配置 absolute_max_seconds」时
+                 由调用方跳过校验。
+        """
+        settings = cls._supervision_settings(config)
+        if not settings["enabled"]:
+            return None
+        if extension_budget is None:
+            extension_budget = max(0, int(settings["max_extensions"]))
+        extension_seconds = max(1.0, float(settings["extension_seconds"]))
+        effective_rt = cls.effective_run_timeout_seconds(config, agent_type)
+        return float(effective_rt) + float(extension_budget) * extension_seconds
+
+    @classmethod
+    def supervision_config_floor(cls, config: Dict[str, Any]) -> Optional[float]:
+        """配置校验层全部署最大可达下限（supervision-timeout-config-consistency）。
+
+        下限 = max(全局 run_timeout_seconds, agents.timeout_overrides 全部值)
+              + (max_extensions + SUPERVISION_FAST_TRACK_EXTRA_EXTENSIONS) × extension_seconds
+        - ``+2`` 覆盖 fast-track higher 档运行时加成：仅按基础预算（如 18600s）
+          时，该档运行时仍需 22200s（liveness 按档位加 2 次续期），会再次命中
+          同文案 ERROR，「消除 ERROR 复发」目标落空（实测依据见 proposal）；
+        - 与既有保守口径同源：SUPERVISION_DEFAULTS 7200（= 4×1800）与模板 16200
+          （= 9000 + 4×1800）均按「最大可达续期预算」取值，本函数把手写常数改
+          为派生，MUST NOT 下调保守性；
+        - ``supervision-judge`` 覆盖不参与（内部轻量判定子进程，非长 run，不参与
+          absolute_max 派生，见 TIMEOUT_OVERRIDE_KEYS 注释）。
+
+        Returns: 下限秒数；supervision 未启用（enabled=false）或缺段时返回 None（不校验）。
+        """
+        sup = cls._supervision_segment(config)
+        if sup is None or not sup.get("enabled", True):
+            return None
+        settings = cls._supervision_settings(config)
+        budget = max(0, int(settings["max_extensions"])) + SUPERVISION_FAST_TRACK_EXTRA_EXTENSIONS
+        max_effective = cls.effective_run_timeout_seconds(config, None)
+        max_agent = None
+        for at in cls.normalize_timeout_overrides(config):
+            if at == "supervision-judge":
+                continue
+            rt = cls.effective_run_timeout_seconds(config, at)
+            if rt > max_effective:
+                max_effective, max_agent = rt, at
+        return cls.supervision_floor(config, agent_type=max_agent, extension_budget=budget)
+
+    @classmethod
     def effective_supervision_absolute_max_seconds(cls, config: Dict[str, Any]) -> Optional[float]:
         """timeout_supervision.absolute_max_seconds 的生效值（含联动兜底，design D5）。
 
-        enabled=true 时：配置值 MUST ≥ run_timeout_seconds + SUPERVISION_EXTENSION_SECONDS，
-        否则打 ERROR 并按 run_timeout_seconds + 该续期上限兜底返回。
-        enabled=false 或段缺失：返回 None（不启用 supervision，不校验）。
-        absolute_max 未配置：返回 None（由消费方按各自默认处理，本护栏只约束显式值）。
+        enabled=true 时：配置值 MUST ≥ 配置校验层下限（supervision_config_floor），
+        否则打 ERROR 并按该下限兜底返回。enabled=false 或段缺失：返回 None（不启用
+        supervision，不校验）。absolute_max 未配置：返回 None（由消费方按各自默认
+        处理，本护栏只约束显式值）。
 
         agent_runner 的 supervision 激活路径 MUST 调本助手读取兜底值，而非直读原始配置。
+        一致性校验（自动对齐 / fail-fast）见 ``_check_supervision_consistency``，本助手
+        只读不写，供运行期（runner.py）查询生效值。
         """
-        sup = config.get("timeout_supervision") or {}
-        if not sup.get("enabled", False):
+        floor = cls.supervision_config_floor(config)
+        if floor is None:
             return None
+        sup = cls._supervision_segment(config) or {}
         configured = sup.get("absolute_max_seconds")
         if not isinstance(configured, (int, float)):
             return None
-        agents = config.get("agents") or {}
-        rt = agents.get("run_timeout_seconds")
-        if not isinstance(rt, (int, float)) or rt <= 0:
-            rt = RUN_TIMEOUT_FALLBACK_SECONDS
-        required = float(rt) + SUPERVISION_EXTENSION_SECONDS
-        if float(configured) < required:
+        if float(configured) < float(floor):
             global _SUPERVISION_BOUNDS_WARNED
+            floor_int = int(floor) if float(floor).is_integer() else float(floor)
             if not _SUPERVISION_BOUNDS_WARNED:
                 _logger.error(
-                    "timeout_supervision.absolute_max_seconds=%s 低于 run_timeout_seconds(%s)"
-                    "+ 续期上限(%s)=%s，按 %s 兜底生效（supervision 不会先于墙钟终止运行）",
+                    "timeout_supervision.absolute_max_seconds=%s 低于配置校验层下限 %s"
+                    "（max(生效超时) + (max_extensions + %s)×extension_seconds），按 %s 兜底"
+                    "生效（supervision 不会先于墙钟终止运行）",
                     configured,
-                    rt,
-                    SUPERVISION_EXTENSION_SECONDS,
-                    required,
-                    required,
+                    floor_int,
+                    SUPERVISION_FAST_TRACK_EXTRA_EXTENSIONS,
+                    floor_int,
                 )
                 _SUPERVISION_BOUNDS_WARNED = True
-            return required
+            return float(floor)
         return float(configured)
+
+    @classmethod
+    def _check_supervision_consistency(cls, config: Dict[str, Any]) -> None:
+        """supervision absolute_max 与配置校验层下限的一致性校验（design D5 升级）。
+
+        absolute_max_seconds < 配置校验层下限（supervision_config_floor）时：
+        - 默认（``agents.timeout_supervision.auto_align`` 缺省 true）：ERROR 留痕
+          （含两侧值、配置层下限、两条修正建议）→ 把 absolute_max 抬升至下限
+          （内存生效，供 daemon 经写路径持久化）；MUST NOT 抛异常，保证启动与
+          热更新均可继续；
+        - auto_align 显式关闭：fail-fast 抛 ValueError——启动/加载失败；热更新沿
+          既有 try/except + resolve_config_into「失败不触碰旧 dict」语义拒绝新
+          配置、保留旧值，daemon 不退出。
+
+        顺序约定：自动对齐分支先执行，仅当其被显式关闭时才进入阻断分支——两者
+        不同时生效。持久化 MUST 复用 core.dashboard.data.write_config（受管键
+        白名单 + 原子写 + 配置头注释），由 daemon（fenxid.py）在 resolve_config
+        后调用；本模块 MUST NOT 直接写配置文件。
+        """
+        floor = cls.supervision_config_floor(config)
+        if floor is None:
+            return  # supervision 未启用（enabled=false / 段缺失）：不校验
+        sup = cls._supervision_segment(config)
+        if sup is None:
+            return
+        configured = sup.get("absolute_max_seconds")
+        if not isinstance(configured, (int, float)):
+            return  # 未配置显式 absolute_max：由消费方按各自默认处理，不校验
+        if float(configured) >= float(floor):
+            return  # 一致（含自动对齐后再次校验）
+        if not sup.get("auto_align", True):
+            raise ValueError(
+                "timeout_supervision.absolute_max_seconds=%s 低于配置校验层下限 %s"
+                "（= max(生效超时) + (max_extensions + %s)×extension_seconds），且 auto_align "
+                "已显式关闭：拒绝加载。修正建议：① 抬升 absolute_max_seconds 至 %s 以上；"
+                "或 ② 下调 agents.run_timeout_seconds / agents.timeout_overrides 以保住显式硬上限"
+                % (
+                    configured,
+                    floor,
+                    SUPERVISION_FAST_TRACK_EXTRA_EXTENSIONS,
+                    floor,
+                )
+            )
+        # 默认自动对齐：ERROR 留痕 + 内存抬升（持久化由 daemon 经写路径完成）
+        global _SUPERVISION_BOUNDS_WARNED, _SUPERVISION_LAST_ALIGNED
+        aligned_value = int(floor) if float(floor).is_integer() else float(floor)
+        if not _SUPERVISION_BOUNDS_WARNED:
+            _logger.error(
+                "timeout_supervision.absolute_max_seconds=%s 低于配置校验层下限 %ss"
+                "（= max(生效超时) + (max_extensions + %s)×extension_seconds）：默认自动对齐，"
+                "absolute_max 抬升至 %ss 并持久化。修正建议：① 抬升 absolute_max_seconds（保"
+                "显式硬上限）；或 ② 下调 agents.run_timeout_seconds / agents.timeout_overrides"
+                "（保住 %ss 级硬上限）",
+                configured,
+                aligned_value,
+                SUPERVISION_FAST_TRACK_EXTRA_EXTENSIONS,
+                aligned_value,
+                configured,
+            )
+            _SUPERVISION_BOUNDS_WARNED = True
+        sup["absolute_max_seconds"] = aligned_value  # 内存生效
+        _SUPERVISION_LAST_ALIGNED = float(floor)
+
+    @classmethod
+    def take_supervision_alignment(cls) -> Optional[float]:
+        """读取并复位最近一次「自动对齐」抬升到的下限（消费即复位，供 daemon 持久化）。
+
+        校验层自动对齐时写入、daemon 在 resolve_config / resolve_config_into 后
+        消费：返回该下限则调用方应经既有写路径把 absolute_max 落盘；返回 None
+        表示本次加载未发生对齐（无持久化必要）。进程级记录，恒反映最新校验的
+        配置；未消费的残留会被下一次 _validate 对齐覆盖。
+        """
+        global _SUPERVISION_LAST_ALIGNED
+        value = _SUPERVISION_LAST_ALIGNED
+        _SUPERVISION_LAST_ALIGNED = None
+        return value
 
     @classmethod
     def normalize_timeout_overrides(cls, config: Dict[str, Any]) -> Dict[str, int]:
@@ -1370,9 +1570,10 @@ class ConfigLoader:
 
         正常 daemon 生命周期内只打一次；单测需多次验证「首次告警 / 二次静默」时显式重置。
         """
-        global _DEPRECATED_STUCK_WARNED, _SUPERVISION_BOUNDS_WARNED
+        global _DEPRECATED_STUCK_WARNED, _SUPERVISION_BOUNDS_WARNED, _SUPERVISION_LAST_ALIGNED
         _DEPRECATED_STUCK_WARNED = False
         _SUPERVISION_BOUNDS_WARNED = False
+        _SUPERVISION_LAST_ALIGNED = None
         _UNKNOWN_AGENT_MODEL_KEYS_WARNED.clear()
 
     @classmethod
