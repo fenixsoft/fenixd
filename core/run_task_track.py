@@ -24,8 +24,6 @@ import json
 import re
 from pathlib import Path
 
-from core.agent_runner.run_files import run_spec_part
-
 # tasks.md 数字任务勾选行的单一正则（D2）。engine._task_completion_blocker
 # 既内联逻辑与本模块共用此映射，禁止两套实现。
 # 字母后缀（[a-z]?）为任务 id 合法形态，见模块 docstring。
@@ -159,7 +157,10 @@ def find_impl_run_file(project_root, spec_name, files=None) -> Path | None:
     except OSError:
         return None
     # 精确归属守卫（范式见 recovery.py）：spec 名互为前缀（fix-x vs fix-x-y）
-    # 时 fnmatch/glob 命中不得直接认定——fix-x 不得取到 fix-x-y 的最新产物
+    # 时 fnmatch/glob 命中不得直接认定——fix-x 不得取到 fix-x-y 的最新产物。
+    # 函数内 import（与 recovery.py 同款）：run_task_track 被 agent_runner
+    # 初始化路径（result_gate）反向引用，模块级 import 会造成循环导入。
+    from core.agent_runner.run_files import run_spec_part
     candidates = [(m, p) for m, p in candidates if run_spec_part(p.stem) == spec_name]
     if not candidates:
         return None
@@ -413,6 +414,10 @@ def parse_run_task_done_cumulative(project_root, spec_name) -> dict:
         return empty
     files: list = []
     try:
+        # 函数内 import run_spec_part：模块级 import 会与 agent_runner 初始化
+        # 路径（result_gate 反向引用本模块）构成循环导入（见 find_impl_run_file）
+        from core.agent_runner.run_files import run_spec_part
+
         for p in runs_dir.glob(f"impl-{spec_name}-*.jsonl"):
             if run_spec_part(p.stem) != spec_name:
                 continue  # 精确归属守卫（fix-x vs fix-x-y 前缀误命中全部排除）
