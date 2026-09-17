@@ -98,6 +98,17 @@ def spec_review_result_path(project_root, spec_name: str) -> Path:
     return Path(project_root) / ".fenix" / "spec-review" / spec_name / ".fenix-run-result.json"
 
 
+def impl_result_path(wt_path) -> Path:
+    """实现者车道（implementer / fast-track）结果文件路径（fix-impl-resultfile-contract-gap D1）。
+
+    返回 ``<worktree>/.fenix-run-result.json``；产物硬门（result_gate）与契约段
+    （_result_gate_section）共用——注入/校验同源，与 planner_result_path /
+    spec_review_result_path 同款约定。依赖方向 result_gate → prompt_builder 不可反
+    （反向必成循环 import，使 test_agent_runner_modules_contract:71 红）。
+    """
+    return Path(wt_path) / ".fenix-run-result.json"
+
+
 def project_agents_dir(proot) -> Path | None:
     """项目级 agents 目录 <项目根>/.fenix/agents；解析为通用层时返回 None。
 
@@ -269,6 +280,12 @@ class PromptBuilder:
             # 两个 implementer 分支共用同一文本，保证 harness TaskCreate/TaskUpdate
             # 行为与 tasks.md 编号对齐（进度可见性断链的根治点）。
             prompt += self._task_progress_contract_section(spec_name)
+            # 结果文件硬门契约段（fix-impl-resultfile-contract-gap D1/D2）：
+            # 告知实现者「不写结果文件 = run 失败 + 原地重派」，闭合「硬门在拦、
+            # 提示词不说」的反馈断链。注入点与 fast-track 共用同一函数（路径按
+            # agent_type 分派），置于任务进度契约段之后、声明现实处方之前。
+            prompt += self._result_gate_section(
+                spec_name, "implementer", wt_path=wt_path)
             # 派发前声明现实处方（add-deliverable-declaration-triage D2）：有声明段
             # SPEC 把「声明清单 × 仓库现实」快照注入，实现者开工前即知候选矛盾。
             prompt += self._declared_reality_section(spec_name)
@@ -320,6 +337,11 @@ class PromptBuilder:
             # 任务进度契约段（fix-implementer-task-progress D1，与 full 分支共用
             # 同一文本；fast-track 的 PHASE 1 主体已迁移 agents/fast-track.md）。
             prompt += self._task_progress_contract_section(spec_name)
+            # 结果文件硬门契约段（fix-impl-resultfile-contract-gap D1/D2）：
+            # 与 implementer 共用同一函数，路径按 agent_type 分派（fast-track 在
+            # worktree 根写 .fenix-run-result.json，含 verification 段）。
+            prompt += self._result_gate_section(
+                spec_name, "fast-track", wt_path=wt_path)
             # 之前只有 implementer 分支注入 prev_error，fast-track 打回后新 run
             # 完全不知道上次为何失败（fix-implementer-task-progress 三连打回）。
             prompt += self._scenario_freeze_section(spec_name)
@@ -578,6 +600,12 @@ class PromptBuilder:
         （终态类型 + 归因 + 已定性结论 + 已提交进度），新 run 据此直接调整策略而非
         从零重复探测同一阻塞（run-budget-continuity 要求）。无诊断时返回空串
         （prompt 与现状逐字节一致）。
+
+        fix-impl-resultfile-contract-gap 2.2：诊断以 JSON 字符串存储，解析失败
+        （非法 JSON）降级为原文截断呈现而非抛错；attribution / conclusion 渲染
+        各自截断（500 / 800 字）避免重试轮提示词膨胀。`error` 原文内含 attribution
+        子串系两字段同源（均取自 final_error，dispatch.py:1319-1333/1538-1603），
+        不计为重复渲染（字段级判据，D3）。
         """
         import json as _json
 
@@ -592,17 +620,26 @@ class PromptBuilder:
         try:
             diag = _json.loads(diag_raw)
         except (ValueError, TypeError):
-            return ""
+            # 解析失败：降级为原文截断呈现（2.2），MUST NOT 抛错——重派轮仍
+            # 携带上轮死因文本（哪怕结构损坏），不静默丢弃。
+            return (
+                f"\n\n## Previous run diagnosis (raw, inherited by this attempt)\n"
+                f"Use this raw diagnosis text to adjust your strategy — do NOT "
+                f"repeat the same detection:\n\n{diag_raw.strip()[:500]}\n"
+            )
         if not isinstance(diag, dict) or not diag.get("terminal"):
             return ""
         branch = diag.get("progress", {}).get("branch") or "unknown"
         tasks = diag.get("progress", {}).get("tasks_checked")
+        # 截断守卫（2.2）：attribution / conclusion 各自截断防提示词膨胀。
+        attr = str(diag.get("attribution") or "")[:500]
+        conc = str(diag.get("conclusion") or "")[:800]
         return (
             f"\n\n## Previous run diagnosis (structured, inherited by this attempt)\n"
             f"Use this diagnosis to adjust your strategy — do NOT repeat the same detection:\n\n"
             f"- terminal: {diag.get('terminal')}\n"
-            f"- attribution: {diag.get('attribution') or ''}\n"
-            f"- conclusion: {diag.get('conclusion') or ''}\n"
+            f"- attribution: {attr}\n"
+            f"- conclusion: {conc}\n"
             f"- progress: branch={branch}, tasks_checked={tasks}\n"
         )
 
@@ -1545,7 +1582,8 @@ class PromptBuilder:
             "局部数据（步骤序号/断言 label/完整 error），MUST NOT 套用共享模板串。\n"
         )
 
-    def _result_gate_section(self, spec_name: str, agent_type: str = "planner-judge") -> str:
+    def _result_gate_section(self, spec_name: str, agent_type: str = "planner-judge",
+                             wt_path: Path | None = None) -> str:
         """产物硬门契约注入段（add-judge-artifact-gate D2）。
 
         告知 planner-judge/planner-plan：run 成功判定 = 进程正常退出 **且** 结果
@@ -1557,6 +1595,14 @@ class PromptBuilder:
         JSON 当正文 fenced 代码块吐出、end_turn 自然收工，结果文件从未落盘。
         评审段额外强调「正文里的 JSON 不算交付，框架只读文件」并把路径经
         spec_review_result_path 同源计算。
+
+        implementer / fast-track（fix-impl-resultfile-contract-gap D1/D2）：实现者
+        车道此前也没有本段——plan/评审补充后仍漏实现者两分支，2026-09-16 起
+        implementer 收工硬门（_check_impl_result_artifact，fail-closed）一直拦截，
+        但提示词从未告知「不写=判失败」，模型把结果文件当最后一件家务、优先跑
+        全量套件/核实交付物，验证中自然 end_turn → 文件从未落盘 → 整轮白烧重派
+        （7 次实证，合计 $97.86）。本段按 agent_type 分派路径并补齐实现者特有
+        要素：先落盘再深入（绑定到全量套件**之前**）、无后台节拍声明。
         """
         if agent_type == "spec-review":
             result_path = spec_review_result_path(self._pm.project_root, spec_name)
@@ -1573,6 +1619,30 @@ class PromptBuilder:
                 "- 结果文件 MUST 为合法 JSON——字符串内换行/引号/控制字符必须转义。\n"
                 "- **先落盘再深入**：先完成最小必要结果落盘，再做深入调查/复现——"
                 "深入调查不会为产物缺失兜底。\n"
+            )
+        if agent_type in ("implementer", "fast-track"):
+            if wt_path is not None:
+                result_path = str(impl_result_path(wt_path))
+            else:
+                # wt_path 不可得（测试/异常场景）→ 降级相对路径表述（D1），不崩溃。
+                result_path = ".fenix-run-result.json（worktree 根目录）"
+            return (
+                "\n\n## 结果文件硬门（实现者收工契约，强制）\n"
+                "- 框架对本次 run 的成功判定 = 进程正常退出 **且** 结果文件已落盘"
+                "且为可解析的非空 JSON。\n"
+                f"  - 结果文件（**唯一交付落点**）：{result_path}\n"
+                "- **收工前未写 / 文件为空 / 非法 JSON → 本次 run 判失败并原地"
+                "退避重试（整轮 token 重烧）**。\n"
+                "- **正文里的 JSON 不算交付**：框架不解析正文，只读文件——正文里的"
+                "JSON 会被当作「结果文件缺失」→ 本次 run 判**失败**。\n"
+                "- **先落盘再深入**：先写一份最小可判的结果文件，再做全量套件回归"
+                " / 交付物核实等收尾工作——深入调查/验证不会为产物缺失兜底。\n"
+                "- 结果文件 MUST 为合法 JSON——字符串内换行/引号/控制字符必须转义"
+                "（建议以 `json.dump` 生成而非手工拼接文本）。\n"
+                "- 本车道**无后台节拍**：`ScheduleWakeup` 在非交互派发下不产生唤醒"
+                "；长任务 MUST 使用**前台有界入口** `python3 bin/run_full_suite.py "
+                "--timeout 3600`（自身在超时内返回），MUST NOT 采用「后台运行 + "
+                "轮询等待」的收尾编排。\n"
             )
         result_path = planner_result_path(self._pm.project_root, spec_name, "planner-judge")
         scenarios_path = planner_result_path(self._pm.project_root, spec_name, "planner-plan")

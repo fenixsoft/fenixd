@@ -45,6 +45,8 @@ from core.agent_runner.result_gate import (  # noqa: F401
     _format_gap_list,
     _invalid_completed_ids,
     _read_init_tools,
+    classify_and_enrich_artifact_error,
+    salvage_result_from_transcript,
 )
 # run 级 API 延迟统计纯函数与常量迁 core/agent_runner/latency.py（D4），
 # re-export 维持 bin/analyze_run_latency.py / tests/test_run_latency_stats.py 的
@@ -1203,73 +1205,39 @@ class AgentRunner:
     # 从转录末轮 assistant text 抽最后一个 fenced JSON，status 在白名单内即落盘
     # ——把「整轮白烧重试」降为「零成本回收」。抽不出/status 非法/文件已存在
     # 一律不动，交由硬门与读侧按既有语义处理。
-
-    _FENCED_JSON_RE = re.compile(r"```(?:json)?\s*\n(.*?)\n```", re.DOTALL)
+    #
+    # fix-impl-resultfile-contract-gap D4：实现泛化为车道无关
+    # （salvage_result_from_transcript，落 result_gate.py），本方法保留为薄
+    # 包装——spec-review 路径与白名单行为逐字不变（core/pm_engine/spec_review.py
+    # :191/220 反射调用点与 tests/test_review_circuit_breaker.py 打桩对象继续
+    # 可用）。成功日志由泛化实现内部写出（含 spec/run_id/status，不静默）。
 
     def _salvage_spec_review_result(self, spec_name: str,
                                     run_id: str | None) -> bool:
-        """尝试从评审 run 转录捞回结果并落盘。
+        """尝试从评审 run 转录捞回结果并落盘（薄包装，委派泛化实现）。
 
         Returns: True 表示已代写落盘；False 表示无可用 JSON / status 非法 /
             文件已存在（不覆盖既有产物）。
         """
-        path = spec_review_result_path(self.project_root, spec_name)
-        if path.exists():
+        return salvage_result_from_transcript(
+            self.project_root, spec_name, run_id, "spec-review",
+            statuses=spec_review_result_status_whitelist)
+
+    def _salvage_impl_result(self, spec_name: str, run_id: str | None,
+                             wt_path: Path | None, agent_type: str) -> bool:
+        """实现者车道（implementer / fast-track）结果文件捞回薄包装。
+
+        fix-impl-resultfile-contract-gap 3.4：run 自然收工但从未写结果文件时，
+        从转录末轮 fenced JSON 代写落盘到 ``<wt_path>/.fenix-run-result.json``
+        （`_IMPL_RESULT_STATUSES` 是类属性，白名单经 ``statuses`` 参数传入，
+        不得导出为模块常量）。``wt_path`` 为 None（测试/异常场景）MUST no-op
+        返回 False，MUST NOT 抛错。
+        """
+        if wt_path is None:
             return False
-        if not run_id:
-            return False
-        run_file = self.project_root / ".fenix" / "runs" / f"{run_id}.jsonl"
-        last_text = ""
-        try:
-            with run_file.open(encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        d = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if d.get("type") != "assistant":
-                        continue
-                    for c in (d.get("message") or {}).get("content") or []:
-                        if isinstance(c, dict) and c.get("type") == "text":
-                            last_text = c.get("text") or ""
-        except OSError:
-            return False
-        if not last_text:
-            return False
-        matches = self._FENCED_JSON_RE.findall(last_text)
-        if not matches:
-            return False
-        payload = None
-        for block in reversed(matches):
-            try:
-                candidate = json.loads(block)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(candidate, dict) and candidate.get(
-                    "status") in spec_review_result_status_whitelist:
-                payload = candidate
-                break
-        if payload is None:
-            return False
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(
-                json.dumps(payload, ensure_ascii=False, indent=2),
-                encoding="utf-8")
-        except OSError as e:
-            self.logger.warning(
-                "agent_runner",
-                f"spec-review 结果捞回写盘失败 '{spec_name}': {e}")
-            return False
-        self.logger.warning(
-            "agent_runner",
-            f"spec-review 结果捞回：run 未写结果文件，已从转录末轮 fenced JSON "
-            f"代写落盘 '{spec_name}' run_id={run_id} "
-            f"status={payload.get('status')}")
-        return True
+        return salvage_result_from_transcript(
+            self.project_root, spec_name, run_id, agent_type,
+            wt_path=wt_path, statuses=self._IMPL_RESULT_STATUSES)
 
     def _wip_checkpoint_before_backoff(self, spec_name: str, wt_path) -> None:
         """锚点 B（add-impl-wip-checkpoint D3）：transient 原地退避前的 WIP 提交。
@@ -1946,6 +1914,15 @@ class AgentRunner:
                     if run_session_id:
                         session_id = run_session_id
                         session_provider = provider_name
+                    # fix-impl-resultfile-contract-gap D4：实现者车道 fenced-JSON
+                    # 结果捞回——run 自然收工（_run_claude 正常返回）但结果文件
+                    # 未落盘时，从转录末轮 fenced JSON 代写落盘。插入点 MUST 在
+                    # 拷回块之前：既有拷回块按 agent_type 注入 role/spec 戳并写
+                    # 主树副本，捞回若在其后执行，代写文件将不带 role 且主树无
+                    # 副本（与「落盘视图同构」要求相悖）。wt_path 不可得时 no-op。
+                    if agent_type in ("implementer", "fast-track") and wt_path is not None:
+                        self._salvage_impl_result(
+                            spec_name, sub_run_id, wt_path, agent_type)
                     # fix-verdict-read-failclosed D1（拷回前置）：_run_claude 返回后、
                     # 产物硬门**之前**立即拷回 worktree 验证产物——门检对象必须是本轮
                     # run 真实写出的结果文件。历史事故（add-verify-contract-autodraft）：
@@ -2032,6 +2009,13 @@ class AgentRunner:
                     )
                     if "[provider-transient]" not in error:
                         error = f"[provider-transient] {error}"
+                    # fix-impl-resultfile-contract-gap 4.2：结果文件缺失归因——
+                    # 复用终态机械特征区分「格式回退截断」/「未收工即停」（只改
+                    # 局部变量 error，MUST NOT 改动传入 record_transient_break
+                    # 的 str(e)——全局瞬断指纹记账读 str(e)，归因文案不可污染）。
+                    if agent_type in ("implementer", "fast-track"):
+                        error = classify_and_enrich_artifact_error(
+                            self, error, agent_type, sub_run_id)
                     # 全局瞬断指纹计数（transient-dispatch-gating D4 同语义）：
                     # 产物硬门失败同样记账，保留 dispatch 闸门对瞬断风暴的可见性。
                     # add-impl-terminal-nocommit-gate（D1 处置）：终态零提交门

@@ -13,6 +13,10 @@
 5. 提交改动，提交信息格式：[fenix] {spec_name}: <任务描述>
 6. 在 tasks.md 中把该任务勾选为完成（- [x]）；收尾时逐项勾选所有已完成任务。
 7. 全部任务完成后，写文件 .fenix-run-result.json：
+   **结果文件落盘是刚性门控（不写=判失败）**——若 run 自然收工时该文件未落盘
+   （或为空/非法 JSON），框架判本次 run **失败**并原地重派（整轮 token 重烧）。
+   **先落盘再深入**：全量套件回归 / 交付物核实之前，先写最小可判的结果文件；
+   框架不解析回复正文，正文里的 JSON 不算交付。
    {"status": "success", "spec": "{spec_name}", "summary": "<简要总结>",
     "completed_tasks": ["1.1", "2.3", "..."]}
    `completed_tasks` 数组 MUST 与 tasks.md 勾选一一对应：每个 `- [x]` 数字任务

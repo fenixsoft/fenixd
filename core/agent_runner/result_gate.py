@@ -16,10 +16,13 @@ result_gate.py — 结果数据结构与产物门（refactor-agent-runner-module
 """
 
 import json
+import logging
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
 from core.agent_runner.prompt_builder import (
+    impl_result_path,
     planner_result_path,
     planner_result_status_whitelist,
     spec_review_result_path,
@@ -434,7 +437,7 @@ def _check_impl_result_artifact(
             f"exit 0 但 worktree 路径不可得（{agent_type} 产物硬门），"
             f"无法定位结果文件: {spec_name}"
         )
-    result_path = wt_path / ".fenix-run-result.json"
+    result_path = impl_result_path(wt_path)
     err, data = runner._check_artifact_json_file(
         result_path, agent_type, run_started_at, is_resumed_worktree=is_resumed_worktree
     )
@@ -510,6 +513,165 @@ def _check_impl_result_artifact(
         # 门禁干净通过 → 清零任务完成度类拒绝计数（防陈旧计数日久误降级）。
         _clear_task_gate_rejections(runner, spec_name)
     return gate_err
+
+
+# ── 转录末轮 fenced JSON 捞回（fix-impl-resultfile-contract-gap D4）────────────
+# 与 runner.py 既有 spec-review 捞回同族：从 .fenix/runs/<run_id>.jsonl 末轮
+# assistant text 抽最后一个 fenced JSON，status 在白名单内即代写落盘——把
+# 「整轮白烧重试」降为「零成本回收」。泛化为车道无关：路径与白名单按
+# agent_type 分派；调用点（runner.py）MUST 在拷回块之前执行。
+_FENCED_JSON_RE = re.compile(r"```(?:json)?\s*\n(.*?)\n```", re.DOTALL)
+
+_salvage_logger = logging.getLogger("fenixd.agent_runner.result_gate")
+
+
+def salvage_result_from_transcript(
+    project_root,
+    spec_name: str,
+    run_id: str | None,
+    agent_type: str,
+    wt_path: Path | None = None,
+    statuses: tuple | None = None,
+) -> bool:
+    """车道无关的结果文件捞回（fix-impl-resultfile-contract-gap D4）。
+
+    从 run 转录末轮 assistant text 抽最后一个 fenced JSON；``status`` 在
+    ``statuses`` 白名单内即代写落盘到按 ``agent_type`` 分派的目标路径。
+    守卫（与 spec-review 既有语义逐字一致）：
+
+    - 目标文件已存在 → 不覆盖，直接返回 False；
+    - 抽不出合法 JSON / status 不在白名单 → 不落盘返回 False；
+    - 转录缺失/不可读 → 不落盘不抛异常返回 False；
+    - 成功落盘 → 写一条含 spec/run_id/status 的 WARNING 日志（不静默）。
+
+    目标路径分派：spec-review → ``.fenix/spec-review/<spec>/.fenix-run-result.json``
+    （spec_review_result_path）；implementer / fast-track → ``impl_result_path(wt_path)``
+    （wt_path 为 None 时返回 False——测试/异常场景无 worktree 载体）。
+
+    白名单分派：spec-review 用 ``spec_review_result_status_whitelist``
+    （本模块已导入，默认值）；implementer/fast-track 的 ``_IMPL_RESULT_STATUSES``
+    是 ``AgentRunner`` 类属性，不得导出为模块常量（1.1），MUST 经 ``statuses``
+    参数由调用点传入。``statuses is None`` 时降级为该车道白名单或空（fail-closed）。
+    """
+    if agent_type == "spec-review":
+        target = spec_review_result_path(project_root, spec_name)
+        whitelist = statuses if statuses is not None else spec_review_result_status_whitelist
+    elif agent_type in ("implementer", "fast-track"):
+        if wt_path is None:
+            return False
+        target = impl_result_path(wt_path)
+        whitelist = statuses
+    else:
+        return False
+    if whitelist is None:
+        whitelist = ()
+    if target.exists():
+        return False
+    if not run_id:
+        return False
+    run_file = Path(project_root) / ".fenix" / "runs" / f"{run_id}.jsonl"
+    last_text = ""
+    try:
+        with run_file.open(encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    d = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if d.get("type") != "assistant":
+                    continue
+                for c in (d.get("message") or {}).get("content") or []:
+                    if isinstance(c, dict) and c.get("type") == "text":
+                        last_text = c.get("text") or ""
+    except OSError:
+        return False
+    if not last_text:
+        return False
+    matches = _FENCED_JSON_RE.findall(last_text)
+    if not matches:
+        return False
+    payload = None
+    for block in reversed(matches):
+        try:
+            candidate = json.loads(block)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(candidate, dict) and candidate.get("status") in whitelist:
+            payload = candidate
+            break
+    if payload is None:
+        return False
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except OSError as e:
+        _salvage_logger.warning(
+            "结果捞回写盘失败 '%s' (%s): %s", spec_name, agent_type, e)
+        return False
+    _salvage_logger.warning(
+        "%s 结果捞回：run 未写结果文件，已从转录末轮 fenced JSON "
+        "代写落盘 '%s' run_id=%s status=%s",
+        agent_type, spec_name, run_id, payload.get("status"))
+    return True
+
+
+# ── 结果文件缺失归因（fix-impl-resultfile-contract-gap D5）────────────────────
+# 复用既有 _classify_terminal_no_commit 的终态机械特征（<function_calls> /
+# markdown fenced Edit|Write|Bash|NotebookEdit / fenced <invoke，正则常量
+# _TERMINAL_NO_COMMIT_TOOL_PATTERN），新增一层文案映射：「未提交即收工」→
+# 「未收工即停」（MUST NOT 改既有返回值——tests/test_terminal_nocommit_gate.py
+# :196/203 断言「未提交即收工」）。落位遵守 D2b 模块契约：门族函数首参为
+# runner 实例，MUST NOT import runner。
+
+
+def classify_terminal_stall(runner, sub_run_id: str) -> str:
+    """实现者车道结果文件缺失归因文案（4.1）。
+
+    薄包装：委托既有 ``AgentRunner._classify_terminal_no_commit``（唯一实现，
+    旧名保留，MUST NOT 改名破坏既有测试），把其返回文案映射为实现者车道
+    语义——「格式回退截断」保持不变；「未提交即收工」映射为「未收工即停」
+    （文案 MUST 由映射层产出，MUST NOT 改既有方法返回值）。
+
+    转录缺失/损坏时既有方法降级「未提交即收工」→ 映射后即「未收工即停」。
+    归因仅用于日志/告警语义区分，MUST NOT 改变处置路径（重试次数/退避/resume
+    不变）。
+    """
+    raw = runner._classify_terminal_no_commit(sub_run_id)
+    if raw == "格式回退截断":
+        return "格式回退截断"
+    return "未收工即停"
+
+
+def classify_and_enrich_artifact_error(
+    runner, error_text: str, agent_type: str, sub_run_id: str | None,
+) -> str:
+    """结果文件缺失归因拼接（4.2）。
+
+    当 ``agent_type ∈ {implementer, fast-track}`` 且 ``error`` 文本含
+    「结果文件缺失」时，把 ``classify_terminal_stall`` 的归因文案拼进 error
+    局部变量（形如「结果文件缺失（未收工即停）」），供日志/告警语义区分。
+    MUST NOT 改变处置路径——重试次数、退避序列、resume 决策完全一致。
+
+    **归因文本 MUST 只拼进局部变量 ``error_text``**，MUST NOT 改动传给
+    ``record_transient_break`` 的 ``str(e)``——全局瞬断指纹记账读的是
+    ``str(e)``（runner.py:2040-2051），把归因文案带进 ``str(e)`` 会污染
+    dispatch 闸门对瞬断风暴的可见性。
+
+    ``sub_run_id`` 缺失（测试/异常场景）时不归因，原样返回。
+    """
+    if agent_type not in ("implementer", "fast-track"):
+        return error_text
+    if not sub_run_id or "结果文件缺失" not in error_text:
+        return error_text
+    stall_reason = classify_terminal_stall(runner, sub_run_id)
+    return error_text.replace(
+        "结果文件缺失", f"结果文件缺失（{stall_reason}）", 1)
 
 
 def _format_gap_list(gap: list, limit: int = 20) -> str:
