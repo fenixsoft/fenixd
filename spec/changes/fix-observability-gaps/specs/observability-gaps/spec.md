@@ -25,6 +25,12 @@
 
 `state_machine` 的每次状态转换 MUST 在日志中携带结构化 context，至少含：触发该转换的 `trigger_run_id`（可得时）、`agent_type`（可得时）、`channel`（区分自动调度/人工操作/恢复等来源）。
 
+> **排除项（fix-observability-gaps 2.1a / 2.2a 评审澄清）：**
+>
+> 1. **幂等短路**（`transition` / `transition_gate` 中 `old_status == new_status`）不视为"状态转换"——状态未发生改变，不产生 `Transition:` 日志行，MUST NOT 被视为本要求的覆盖范围。调用方可传 context 参数（无害），但 state_machine 内部幂等分支不落盘。
+>
+> 2. **`update_spec` 直写 `status` 字段**（打回路径、admin 直接置状态等）该路径不经过 `transition()` / `transition_gate()`，因此不产生 `Transition:` 日志行。时间轴读侧通过 `Updated SPEC` 日志行重建此类事件（见 `core/dashboard/data/timeline.py` 的 `status_updates` 逻辑）。本 requirement 只约束经 `transition()` / `transition_gate()` 的显式转换路径，update_spec 直写路径的上下文由 `Updated SPEC` 日志行的 `context.updates` 承载，不适用本条 requirement。
+
 #### Scenario: 自动转换携带来源
 
 - **WHEN** PM Engine 因收工触发 `implementing → implemented`
