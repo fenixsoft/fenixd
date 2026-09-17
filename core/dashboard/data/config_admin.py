@@ -31,6 +31,8 @@ _AGENTS_MANAGED_SUBKEYS = [
     "impl_run_budget",
     "impl_run_budget_max",
     "verify_redo_budget",
+    # 同因重派熔断阈值（agents.max_same_cause_redispatches，缺省 3，1-100）
+    "max_same_cause_redispatches",
     # 规模预检（agents.scale_precheck 三键：总开关 + 两阈值）
     "scale_precheck",
     # 超时活性监督（agents.timeout_supervision 段，supervision-timeout-config-consistency）：
@@ -51,6 +53,8 @@ _SOURCE_KEYS = [
     "agents.token_budget_millions",
     "agents.impl_run_budget",
     "agents.verify_redo_budget",
+    # 同因重派熔断阈值（agents.max_same_cause_redispatches）
+    "agents.max_same_cause_redispatches",
     # 规模预检三键（agents.scale_precheck.*）
     "agents.scale_precheck",
     "gates.approve_mode",
@@ -130,6 +134,8 @@ def _managed_key_sources(raw: dict) -> dict:
             sources["agents.impl_run_budget"] = "project"
         if "verify_redo_budget" in agents_raw:
             sources["agents.verify_redo_budget"] = "project"
+        if "max_same_cause_redispatches" in agents_raw:
+            sources["agents.max_same_cause_redispatches"] = "project"
         # fix-provider-transient-backoff（D6）：瞬断治理五键显式定义 → project
         for _tk in (
             "transient_backoff_schedule",
@@ -272,6 +278,7 @@ def read_config(scope_root, scope: str = "project") -> dict:
             "token_budget_millions": 50,
             "impl_run_budget": 4,
             "verify_redo_budget": 3,
+            "max_same_cause_redispatches": 3,
         },
         "gates": {"approve_mode": "manual", "promote_mode": "auto"},
         "runs": {"keep": 50},
@@ -343,6 +350,14 @@ def read_config(scope_root, scope: str = "project") -> dict:
             agents_result["impl_run_budget"] = agents_raw["impl_run_budget"]
         if isinstance(agents_raw.get("verify_redo_budget"), int):
             agents_result["verify_redo_budget"] = agents_raw["verify_redo_budget"]
+        # 同因重派熔断阈值回显（agents.max_same_cause_redispatches）——经
+        # ConfigLoader 单点归一化（正整数 1–100，非法回退缺省 3），展示值与
+        # dispatch 熔断消费的生效值不脱节。
+        from core.config import ConfigLoader as _CLMSC
+
+        agents_result["max_same_cause_redispatches"] = (
+            _CLMSC.get_max_same_cause_redispatches(raw)
+        )
         # fix-provider-transient-backoff（D6）：瞬断治理五键回显到 agents 段
         # （缺省填充，语义与 read_effective_config 的 get_transient_config 一致）
         from core.config import ConfigLoader as _CLT
@@ -480,6 +495,7 @@ def read_effective_config(project_root) -> dict:
             "token_budget_millions": 50,
             "impl_run_budget": 4,
             "verify_redo_budget": 3,
+            "max_same_cause_redispatches": 3,
         },
         "gates": {"approve_mode": "manual", "promote_mode": "auto"},
         "runs": {"keep": 50},
@@ -553,6 +569,10 @@ def read_effective_config(project_root) -> dict:
             result["agents"]["impl_run_budget"] = agents_eff["impl_run_budget"]
         if isinstance(agents_eff.get("verify_redo_budget"), int):
             result["agents"]["verify_redo_budget"] = agents_eff["verify_redo_budget"]
+        # 同因重派熔断阈值有效值回显（经 ConfigLoader 单点归一化，非法回退缺省 3）
+        result["agents"]["max_same_cause_redispatches"] = (
+            ConfigLoader.get_max_same_cause_redispatches(effective)
+        )
         # fix-provider-transient-backoff（D6）：瞬断治理五键回显到 agents 段
         # （缺省填充，语义与 ConfigLoader.get_transient_config 一致——非法值回退缺省）。
         _transient = ConfigLoader.get_transient_config(effective)
@@ -673,6 +693,14 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
         if "verify_redo_budget" in patch["agents"]:
             # fix-daemon-lifecycle-races 验证发现：缺合并分支导致保存被静默丢弃
             merged["agents"]["verify_redo_budget"] = patch["agents"]["verify_redo_budget"]
+        if "max_same_cause_redispatches" in patch["agents"]:
+            # 同因重派熔断阈值（agents.max_same_cause_redispatches）：合并分支。
+            # 缺此分支则设置界面「预算」页签的输入保存被静默丢弃（本文件历史上
+            # token_budget_millions / verify_redo_budget 均踩过同坑）；合法值已由
+            # write_config 前置校验把关。
+            merged["agents"]["max_same_cause_redispatches"] = (
+                patch["agents"]["max_same_cause_redispatches"]
+            )
         if "scale_precheck" in patch["agents"]:
             # 规模预检三键（agents.scale_precheck）：整体替换该嵌套段。
             # 缺此分支则设置界面「预算」页签的规模预检卡片保存被静默丢弃
@@ -866,6 +894,18 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
         config_patch["agents"]["models"] = ConfigLoader.serialize_models_patch(
             config_patch["agents"]["models"]
         )
+
+    # fix-redispatch-loop-governance D5：agents.max_same_cause_redispatches 前置
+    # 校验（正整数 1–100；非法直接拒绝 400，不静默忽略——与 verify/admin 同模式，
+    # 前端类型错误在后端权威兜底）。
+    if isinstance(config_patch.get("agents"), dict):
+        _msc = config_patch["agents"].get("max_same_cause_redispatches")
+        if _msc is not None:
+            if isinstance(_msc, bool) or not isinstance(_msc, int) or _msc < 1 or _msc > 100:
+                return fail(
+                    f"agents.max_same_cause_redispatches must be a positive integer "
+                    f"in [1, 100]: {_msc!r}"
+                )
 
     # add-daily-self-review：前端提交的 self_review patch 后端校验（非法直接拒绝，
     # 不静默忽略——spec「非法输入（如 25:00）被前端与后端双重校验拒绝」）。

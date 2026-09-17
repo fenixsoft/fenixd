@@ -52,6 +52,15 @@ agents:
   # agents.impl_run_budget 均按此上限夹紧。旧实现硬编码 1-10，对长链条 spec 过紧
   #（机制摩擦吃满预算后真修复轮次归零）。缺省 100；硬天花板 1000。
   impl_run_budget_max: 100
+  # 同因重派熔断阈值（fix-redispatch-loop-governance D3/D5）：同一 spec 连续以
+  # 同一归因（归一化指纹：剔除 run_id/时间戳/worktree 路径后的失败文案）判失败
+  # 重派达该阈值 → 冻结转人工（status=blocked + frozen + redispatch_loop_detected
+  # 人工升级告警），不再自动重派——替代「清零重试计数后照样重派」的空转
+  #（2026-09-17 fix-robustness-edge-cases 事故：同 spec 同终局热派 3 轮、
+  # 每轮 ~$18、首轮整支丢弃）。每轮原因都在变化时不累积，不会误熔断真实需要
+  # 多轮修复的 spec。合法范围 1-100；留空/注释即采用缺省值 3。
+  # 修改后约 30s 配置热更新生效。设置界面在「预算」页签。
+  max_same_cause_redispatches: 3
   # fast-track 派发前规模预检（add-fast-track-scale-precheck；2026-09-17 改版）。
   # 算分：未勾选任务数 ×1 + tasks.md 声明段交付物数 ×2（交付物 = kind ∈
   # modify/new/delete 的条目；reference 不计）。分值分档（严格大于）：

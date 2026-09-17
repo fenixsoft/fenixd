@@ -27,6 +27,7 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
     impl_run_budget: config.agents.impl_run_budget ?? 6,
     impl_run_budget_max: config.agents.impl_run_budget_max ?? 100,
     verify_redo_budget: config.agents.verify_redo_budget ?? 3,
+    max_same_cause_redispatches: config.agents.max_same_cause_redispatches ?? 3,
     scale_precheck_enabled: sp.enabled ?? true,
     scale_precheck_higher: sp.higher_threshold ?? 30,
     scale_precheck_full: sp.full_threshold ?? 45,
@@ -39,6 +40,7 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
       impl_run_budget: config.agents.impl_run_budget ?? 6,
       impl_run_budget_max: config.agents.impl_run_budget_max ?? 100,
       verify_redo_budget: config.agents.verify_redo_budget ?? 3,
+      max_same_cause_redispatches: config.agents.max_same_cause_redispatches ?? 3,
       scale_precheck_enabled: config.agents.scale_precheck?.enabled ?? true,
       scale_precheck_higher: config.agents.scale_precheck?.higher_threshold ?? 30,
       scale_precheck_full: config.agents.scale_precheck?.full_threshold ?? 45,
@@ -55,6 +57,7 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
           impl_run_budget: values.impl_run_budget,
           impl_run_budget_max: values.impl_run_budget_max,
           verify_redo_budget: values.verify_redo_budget,
+          max_same_cause_redispatches: values.max_same_cause_redispatches,
           scale_precheck: {
             enabled: values.scale_precheck_enabled,
             higher_threshold: values.scale_precheck_higher,
@@ -151,6 +154,22 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
           </Form.Item>
           <Text type="secondary">
             默认 3。daemon 重启恢复路径（testing → implemented 重派 verify）的累计重验次数上限。达上限即冻结该 SPEC 并交人工裁决（人工解冻后计数清零），防止「毒 SPEC 借反复重启无限重验」烧 token。合法范围 1-10。
+          </Text>
+
+          <Form.Item
+            name="max_same_cause_redispatches"
+            label={
+              <>
+                同因重派熔断阈值<span className="label-note">（agents.max_same_cause_redispatches，1-100）</span>
+              </>
+            }
+            rules={[{ required: true, message: '请输入同因重派熔断阈值' }]}
+            style={{ marginTop: 24 }}
+          >
+            <InputNumber min={1} max={100} step={1} style={{ width: '100%' }} />
+          </Form.Item>
+          <Text type="secondary">
+            默认 3。同一 SPEC 连续以<b>同一归因</b>（归一化指纹：剔除 run_id / 时间戳 / worktree 路径后的失败文案）判失败重派达该阈值 → 冻结转人工处置并发人工升级告警，不再自动重派（替代「清零重试计数后照样重派」的空转）。每轮原因都在变化时计数不累积，不会误熔断真实需要多轮修复的 SPEC。
           </Text>
       </Card>
 

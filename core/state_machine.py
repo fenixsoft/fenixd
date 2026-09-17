@@ -328,6 +328,10 @@ class StateParser:
                     "reviewer_run",
                     "_repair_base_tip",
                     "_repair_merge_error",
+                    # 同因重派熔断（fix-redispatch-loop-governance D3.2）：归因指纹
+                    # 可空字段——None 经 serialize 写 null、解析回退 None（否则
+                    # 「null」字符串会被 prev_fp == fp 比较吞掉，跨重启熔断失效）。
+                    "_redispatch_cause_fp",
                 ):
                     if value.lower() in ("null", "none", ""):
                         value = None
@@ -793,6 +797,11 @@ class StateMachine:
         # 人工解冻清零同款，同一原子写）。其余中间转换（admin 处置复位、daemon
         # 恢复、fix 链）一律不清零，保证「第 2 次阻塞即冻结转人工」可达。
         updates[ENV_BLOCK_ROUNDS_FIELD] = 0
+        # fix-redispatch-loop-governance D3.5：同因重派熔断计数随人工解冻清零——
+        # 人工处置后同因重试从零起算（与 VERIFY_REDO_COUNT_FIELD /
+        # _inconclusive_attempts / ENV_BLOCK_ROUNDS_FIELD 同款「同一原子写清零」）。
+        updates["_redispatch_same_cause_streak"] = 0
+        updates["_redispatch_cause_fp"] = None
         updates["error"] = None
         updates[FROZEN_UNTIL_FIELD] = None
         return self.update_spec(spec_name, updates)
@@ -1120,6 +1129,8 @@ class StateMachine:
                             "_retry_count": 0,
                             "_merge_fp": None,
                             "_merge_streak": 0,
+                            "_redispatch_same_cause_streak": 0,
+                            "_redispatch_cause_fp": None,
                         },
                     )
                     recovered.append(name)
@@ -1189,6 +1200,8 @@ class StateMachine:
                         "_retry_count": 0,
                         "_merge_fp": None,
                         "_merge_streak": 0,
+                        "_redispatch_same_cause_streak": 0,
+                        "_redispatch_cause_fp": None,
                     },
                 )
                 recovered.append(name)
@@ -1266,6 +1279,8 @@ class StateMachine:
                 "_retry_count": 0,
                 "_merge_fp": None,
                 "_merge_streak": 0,
+                "_redispatch_same_cause_streak": 0,
+                "_redispatch_cause_fp": None,
                 "_repair_round": 0,
                 "_repair_merge_error": None,
                 "_repair_awaiting_remerge": False,
@@ -1406,6 +1421,8 @@ class StateMachine:
                 "_retry_count": 0,
                 "_merge_fp": None,
                 "_merge_streak": 0,
+                "_redispatch_same_cause_streak": 0,
+                "_redispatch_cause_fp": None,
             },
         )
         return True

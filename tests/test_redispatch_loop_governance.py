@@ -462,5 +462,205 @@ class TestTraceSymmetry(unittest.TestCase):
         assert "7.3" in ft_logs
 
 
+class TestRedispatchStatePersistence(unittest.TestCase):
+    """tasks 3.2/3.5：STATE 字段持久化（_ 前缀全量透传）与解冻清零。"""
+
+    def setUp(self):
+        from core.state_machine import StateMachine
+
+        self.tmpdir = tempfile.mkdtemp()
+        self.root = Path(self.tmpdir)
+        (self.root / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.sm = StateMachine(self.root / ".fenix" / "STATE.md", MagicMock())
+        self.sm.add_spec("demo", {"priority": 5})
+        self.sm.transition("demo", "ready")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_breaker_fields_survive_serialize_roundtrip(self):
+        """序列化→反序列化后两字段不丢（daemon 重启保持性）。"""
+        from core.state_machine import StateMachine
+
+        self.sm.update_spec(
+            "demo",
+            {"_redispatch_same_cause_streak": 3, "_redispatch_cause_fp": "abc123def456"},
+        )
+        sm2 = StateMachine(self.root / ".fenix" / "STATE.md", MagicMock())
+        entry = sm2.read_one("demo")
+        assert int(entry.get("_redispatch_same_cause_streak", 0) or 0) == 3
+        assert entry.get("_redispatch_cause_fp") == "abc123def456"
+
+    def test_unfreeze_clears_breaker_fields(self):
+        """解冻清零：人工处置后同因计数从零起算（同一原子写）。"""
+        from core.state_machine import FROZEN_FIELD
+
+        self.sm.update_spec(
+            "demo",
+            {"status": "blocked", FROZEN_FIELD: True,
+             "_redispatch_same_cause_streak": 4, "_redispatch_cause_fp": "fp-xyz",
+             "error": "原状态 implementing · 同因重派循环（fp=fp-xyz，连续同因 4 轮）"},
+        )
+        assert bool(self.sm.read_one("demo").get(FROZEN_FIELD))
+        self.sm.unfreeze_spec("demo")
+        entry = self.sm.read_one("demo")
+        assert int(entry.get("_redispatch_same_cause_streak", -1) or 0) == 0
+        assert entry.get("_redispatch_cause_fp") is None
+        assert not entry.get(FROZEN_FIELD)
+
+
+class TestSameCauseCircuitBreaker(_RunAgentBase):
+    """tasks 3.8/3.3b/3.5：同因重派熔断 + 作用域边界 + 解冻后不立即熔断。"""
+
+    # 同缺口的 partial 归因文案稳定（指纹同源）；跨轮 epoch 变化的 run 引用
+    # 不应改变指纹 → 连续 3 轮同因 → 冻结。
+    ROUND_ERROR = (
+        "实现者申报未完成（status=partial）：7.3 "
+        "run=impl-demo-{epoch}-a1"
+    )
+    ROUND_PARTIAL = {
+        "status": "partial", "spec": "demo",
+        "completed_tasks": ["1.1", "1.2"], "unfinished": [],
+    }
+
+    def _run_failure_round(self, error_text=None, payload=None, epoch=1,
+                           merge_ok=True, merge_error="", success=True):
+        """跑一轮失败重派（结果文件驱动），返回 spec entry。"""
+        self.sm.transition(self.spec, "implementing")
+        if payload is None:
+            payload = dict(self.ROUND_PARTIAL)
+            payload["unfinished"] = [str(i) for i in payload.get("unfinished", [])]
+        _mk_result_file(self.root, self.spec, payload)
+
+        def _fake_impl(spec_name, pre_wt_path=None):
+            return SimpleNamespace(
+                success=success, error=None,
+                run_id=f"impl-{self.spec}-{epoch}-a1",
+                branch="fenix/demo-2", duration_seconds=1.0,
+                worktree_dirty=[],
+            )
+
+        self.engine.agent_runner.run_implementer = MagicMock(side_effect=_fake_impl)
+        self.engine.agent_runner.worktree_manager.find_implementer_worktree = (
+            MagicMock(return_value=None)
+        )
+        self.engine.agent_runner.worktree_manager.merge_back_from_branch = (
+            MagicMock(return_value=(merge_ok, merge_error))
+        )
+        self.engine._run_agent_worker(self.spec, "implementer", 5)
+        return self.sm.read_one(self.spec)
+
+    def test_same_cause_reaches_threshold_freezes(self):
+        """同因连续达阈值（缺省 3）→ 冻结 + 告警信号 + 不再派发。"""
+        from core.state_machine import FROZEN_FIELD
+        from core.admin_store import AdminStore
+
+        entry = None
+        for r in (1, 2, 3):
+            entry = self._run_failure_round(epoch=r)
+        assert entry["status"] == "blocked", entry
+        assert bool(entry.get(FROZEN_FIELD)), entry
+        assert int(entry.get("_redispatch_same_cause_streak", 0) or 0) == 3
+        # error 内嵌「原状态 X」+ 指纹 + 轮数
+        assert "原状态 implementing" in entry.get("error", ""), entry
+        assert "同因重派循环" in entry.get("error", ""), entry
+        assert "指纹" in entry.get("error", ""), entry
+        # 冻结后 MUST NOT 再 _enqueue（第 3 轮冻结分支不派发）
+        assert self.engine._dispatcher._enqueue.call_count == 0
+        # 人工升级告警信号
+        alerts = [
+            a for a in AdminStore(self.root, self.logger).read_all()
+            if a.get("signal_type") == "redispatch_loop_detected"
+        ]
+        assert alerts, "熔断未写 redispatch_loop_detected 告警"
+
+    def test_streak_resets_on_fingerprint_change(self):
+        """不同因不误熔断：指纹变化即重置 streak，连续多轮不冻结。"""
+        # 抬升 max_retries：本测试验证的是同因 streak 维度（每轮原因不同 → 不
+        # 熔断），须避免 3.4 的 max_r 封顶冻结（retries>=3）遮蔽观察点。
+        self.engine.config.setdefault("agents", {})["max_retries"] = 20
+
+        entry = None
+        for r in (1, 2, 3, 4):
+            # 每轮失败归因不同（缺口集合不同 → 归因文案不同 → 指纹不同）
+            gap_task = f"1.{r}"
+            payload = {
+                "status": "partial", "spec": self.spec,
+                "completed_tasks": ["1.1", "1.2"], "unfinished": [gap_task],
+            }
+            entry = self._run_failure_round(epoch=r, payload=payload)
+        assert entry["status"] == "ready", entry
+        assert "blocked" != entry["status"]
+        assert int(entry.get("_redispatch_same_cause_streak", 0) or 0) == 1, entry
+        assert int(entry.get("_retry_count", 0) or 0) == 4, entry
+
+    def test_freeze_error_parseable_for_unfreeze_channel(self):
+        """冻结 error 经 parse_orig_status → unfreeze_spec(status=orig) 可还原。"""
+        from core.state_machine import FROZEN_FIELD, parse_orig_status
+
+        for r in (1, 2, 3):
+            entry = self._run_failure_round(epoch=r)
+        assert entry["status"] == "blocked"
+        orig = parse_orig_status(entry.get("error"))
+        assert orig == "implementing", (orig, entry.get("error"))
+        # 官方解冻通道：unfreeze_spec(status=orig) 还原为可调度状态
+        self.sm.unfreeze_spec(self.spec, status=orig)
+        revived = self.sm.read_one(self.spec)
+        assert not revived.get(FROZEN_FIELD)
+        assert revived["status"] == "implementing"
+        # 解冻后计数清零 → 重新派发不立即熔断
+        assert int(revived.get("_redispatch_same_cause_streak", 0) or 0) == 0
+
+    def test_merge_breaker_channel_does_not_feed_streak(self):
+        """3.3b：merge 指纹熔断通道 MUST NOT 增减 _redispatch_same_cause_streak。"""
+        # 预置 streak=2（来自另一渠道），驱动 merge 失败整轮
+        self.sm.update_spec(self.spec, {"_redispatch_same_cause_streak": 2,
+                                        "_redispatch_cause_fp": "fp-old"})
+        # 成功实现 + merge 失败（同一错误指纹连续 < 熔断阈值 → 普通重试分支）
+        entry = self._run_failure_round(
+            payload={"status": "success", "spec": self.spec,
+                     "completed_tasks": ["1.1", "1.2"]},
+            merge_ok=False, merge_error="Merge-back failed: conflict in foo",
+            success=True,
+        )
+        # merge 通道只写 _merge_fp/_merge_streak/_retry_count，不碰同因 streak
+        assert int(entry.get("_merge_streak", 0) or 0) == 1
+        assert int(entry.get("_redispatch_same_cause_streak", 0) or 0) == 2
+
+    def test_provider_transient_channel_does_not_feed_streak(self):
+        """3.3b：provider transient 排程 MUST NOT 增减 _redispatch_same_cause_streak。"""
+        self.sm.update_spec(self.spec, {"_redispatch_same_cause_streak": 2})
+        entry = self._run_failure_round(
+            payload={"status": "error", "spec": self.spec,
+                     "error": "[provider-transient] gateway timeout"},
+            epoch=7, success=False,
+        )
+        assert int(entry.get("_redispatch_same_cause_streak", 0) or 0) == 2
+        assert int(entry.get("_retry_count", 0) or 0) == 0  # transient 不递增 retry
+
+    def test_deliverable_gate_channel_does_not_feed_streak(self):
+        """3.3b：交付物守卫 _retry_count 封顶通道 MUST NOT 增减 streak。"""
+        self.sm.update_spec(self.spec, {"_redispatch_same_cause_streak": 2})
+        self.engine._deliverable_gate_missing = MagicMock(
+            return_value=[{"path": "core/foo.py", "violation": "missing"}]
+        )
+        entry = self._run_failure_round(
+            payload={"status": "success", "spec": self.spec,
+                     "completed_tasks": ["1.1", "1.2"]},
+        )
+        # 守卫缺件处置（_retry_count 封顶路径），不碰同因 streak
+        assert int(entry.get("_redispatch_same_cause_streak", 0) or 0) == 2
+
+    def test_lock_conflict_backoff_does_not_feed_streak(self):
+        """3.3b：锁冲突退避（_dispatch_backoff_until）MUST NOT 增减 streak。"""
+        self.sm.update_spec(self.spec, {"_redispatch_same_cause_streak": 2})
+        # 退避定时器桩掉（避免真实定时器在测试后触发 _on_spec_ready 再派发）
+        self.engine._dispatcher._schedule_backoff_retry = MagicMock()
+        self.engine._dispatcher._handle_dispatch_lock_conflict(self.spec)
+        entry = self.sm.read_one(self.spec)
+        assert int(entry.get("_dispatch_backoff_until") or 0) > 0
+        assert int(entry.get("_redispatch_same_cause_streak", 0) or 0) == 2
+
+
 if __name__ == "__main__":
     unittest.main()

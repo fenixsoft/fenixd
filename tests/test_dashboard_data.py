@@ -95,6 +95,39 @@ class TestDashboardConfigIO(unittest.TestCase):
         echoed = read_config(self.tmpdir)
         self.assertEqual(echoed["verify"]["planner_max_concurrent"], 0)
 
+    def test_max_same_cause_redispatches_roundtrip_and_validation(self):
+        """agents.max_same_cause_redispatches：缺省回显 + 写读回环 + 非法拒绝
+        （fix-redispatch-loop-governance D5：新配置键 MUST 带 Dashboard 界面）。"""
+        from core.dashboard.data import read_config, write_config
+
+        # 缺省回显（缺省 3，经 ConfigLoader 单点归一化）
+        echoed = read_config(self.tmpdir)
+        self.assertEqual(echoed["agents"]["max_same_cause_redispatches"], 3)
+
+        # 写 5 → 读回 5（sources 标注 project）
+        result = write_config(self.tmpdir, {"agents": {"max_same_cause_redispatches": 5}})
+        self.assertTrue(result["ok"], result.get("error"))
+        echoed = read_config(self.tmpdir)
+        self.assertEqual(echoed["agents"]["max_same_cause_redispatches"], 5)
+        self.assertEqual(echoed["sources"]["agents.max_same_cause_redispatches"], "project")
+
+        # 非法值拒绝（越界 0 / 101 / 非整数 → 400 不落盘，保留旧值）
+        for bad in (0, 101, "3", True):
+            bad_res = write_config(self.tmpdir, {"agents": {"max_same_cause_redispatches": bad}})
+            self.assertFalse(bad_res["ok"], f"{bad!r} 应被拒绝")
+            self.assertIn("max_same_cause_redispatches", bad_res["error"])
+        echoed = read_config(self.tmpdir)
+        self.assertEqual(echoed["agents"]["max_same_cause_redispatches"], 5)
+
+    def test_max_same_cause_redispatches_effective_echo(self):
+        """read_effective_config 有效值回显（与生效值一致，非法回退缺省 3）。"""
+        from core.dashboard.data import read_effective_config, write_config
+
+        result = write_config(self.tmpdir, {"agents": {"max_same_cause_redispatches": 7}})
+        self.assertTrue(result["ok"], result.get("error"))
+        eff = read_effective_config(self.tmpdir)
+        self.assertEqual(eff["agents"]["max_same_cause_redispatches"], 7)
+
 
 class TestSpecTimelineOrdering(unittest.TestCase):
     """SPEC 时间轴排序：同秒内状态转移必须先于运行节点。

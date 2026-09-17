@@ -817,20 +817,41 @@ class FFastTrackMixin:
             prev_retries = 0
         retries = prev_retries + 1
         max_r = self._pm._get_config("agents.max_retries", 3)
+        # fix-redispatch-loop-governance 3.4（fast-track 车道对等）：retries 达
+        # max_r 时真正终止自动重试——冻结转人工（freeze_for_human，error 内嵌
+        # 「原状态 X」供 parse_orig_status 解冻还原）。原实现「清零 _retry_count
+        # 后照样 _enqueue」是空转（与 full 车道同款事故形态）。同因 streak 记账
+        # 只在 full 车道通用失败重派分支（design D3 作用域边界），此处只做封顶冻结。
         if retries >= max_r:
-            self._pm.state_machine.update_spec(
+            fp = self._pm._redispatch_cause_fingerprint(final_error)
+            orig_status = (spec_entry or {}).get("status") or "implementing"
+            self._pm.state_machine.freeze_for_human(
                 spec_name,
-                {
-                    "status": "ready",
-                    "error": f"{final_error}｜重试 {max_r}/{max_r} 已耗尽，重新排队",
-                    "_retry_count": 0,
-                },
+                error=(
+                    f"原状态 {orig_status} · fast-track 重试耗尽"
+                    f"（{max_r}/{max_r} 轮，指纹 {fp}）：{final_error}"
+                ),
+                signal_type="redispatch_loop_detected",
+                severity="major",
+                description=(
+                    f"'{spec_name}' fast-track 连续失败重试 {max_r} 轮已达上限"
+                    f"（max_retries），自动重试终止——已冻结转人工处置"
+                ),
+                evidence=(
+                    f"spec={spec_name}; retries={retries}; max_retries={max_r}; "
+                    f"fp={fp}; final_error={final_error}"
+                ),
+                recommended_action=(
+                    "检查失败根因；处置后解冻（unfreeze_spec 自动清零计数）可重新"
+                    "获得自动修复机会"
+                ),
+                alert_callback=self._pm._send_human_escalation_alert,
             )
             self._pm.logger.error(
                 "pm_engine",
-                f"fast-track all retries exhausted '{spec_name}'",
+                f"fast-track all retries exhausted '{spec_name}' — 冻结转人工，"
+                f"不再重派（{retries}/{max_r}，fp={fp}）",
             )
-            self._enqueue(spec_name, "fast-track")
         else:
             self._pm.state_machine.update_spec(
                 spec_name,

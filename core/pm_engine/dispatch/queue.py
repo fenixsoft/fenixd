@@ -1187,23 +1187,108 @@ class QQQueueMixin:
                             prev_retries = 0
                         retries = prev_retries + 1
                         max_r = self._pm._get_config("agents.max_retries", 3)
-                        if retries >= max_r:
-                            self._pm.state_machine.update_spec(
+                        # ── 同因重派熔断（fix-redispatch-loop-governance D3/3.3/3.4）──
+                        # 现状（事故实证）：retries >= max_r 时清零 _retry_count 后
+                        # 照样 _enqueue——「All retries exhausted」只是日志，无限热派。
+                        # 本变更让该分支真正终止自动重试：
+                        #   1. 同因熔断：对失败归因做归一化指纹（剔除 run_id/时间戳/
+                        #      worktree 路径等易变段），连续同指纹达
+                        #      agents.max_same_cause_redispatches（缺省 3）阈值 →
+                        #      冻结转人工（freeze_for_human），MUST NOT 再 _enqueue；
+                        #      指纹变化即重置 streak 为 1。
+                        #   2. 重试耗尽：retries 达 max_r → 同样冻结终止（协同 3.3，
+                        #      「达上限即冻结」），不再清零重派。
+                        # 作用域边界（3.3b）：本 streak 只在**本通用失败重派分支**
+                        # 记账——merge 指纹熔断（_merge_fp/_merge_streak）、provider
+                        # transient 排程、锁冲突退避、交付物守卫/relint 的
+                        # _retry_count 封顶四条通道的失败 MUST NOT 增减它。
+                        fp = self._pm._redispatch_cause_fingerprint(final_error)
+                        prev_fp = spec_entry.get("_redispatch_cause_fp")
+                        try:
+                            prev_streak = int(
+                                spec_entry.get("_redispatch_same_cause_streak", 0) or 0
+                            )
+                        except (TypeError, ValueError):
+                            prev_streak = 0
+                        streak = prev_streak + 1 if prev_fp == fp else 1
+                        from core.config import ConfigLoader as _CL_breaker
+
+                        breaker_threshold = _CL_breaker.get_max_same_cause_redispatches(
+                            self._pm.config
+                        )
+                        orig_status = (spec_entry or {}).get("status") or "implementing"
+                        if streak >= breaker_threshold:
+                            # 同因熔断：冻结转人工（error 内嵌「原状态 X」供
+                            # parse_orig_status 解冻还原 + 含指纹/轮数供人工审计）
+                            self._pm.state_machine.freeze_for_human(
                                 spec_name,
-                                {
-                                    "status": "ready",
-                                    "error": final_error,
-                                    "_retry_count": 0,
+                                error=(
+                                    f"原状态 {orig_status} · 同因重派循环（指纹 "
+                                    f"{fp}，连续同因 {streak} 轮，累计重派 {retries} "
+                                    f"轮，阈值 {breaker_threshold}）：{final_error}"
+                                ),
+                                signal_type="redispatch_loop_detected",
+                                severity="major",
+                                description=(
+                                    f"'{spec_name}' 连续 {streak} 轮以同一归因"
+                                    f"（指纹 {fp}）判失败重派，达熔断阈值——已冻结"
+                                    f"转人工处置，不再自动重派"
+                                ),
+                                evidence=(
+                                    f"spec={spec_name}; fp={fp}; streak={streak}; "
+                                    f"retries={retries}; max_retries={max_r}; "
+                                    f"final_error={final_error}"
+                                ),
+                                recommended_action=(
+                                    "检查失败根因（缺口/环境/网关）；处置后解冻"
+                                    "（unfreeze_spec 自动清零同因计数）可重新获得"
+                                    "自动修复机会"
+                                ),
+                                alert_callback=self._pm._send_human_escalation_alert,
+                                # 冻结瞬间持久化最终同因计数（供冻结态审计 /
+                                # 解冻前可读；解冻时统一清零）
+                                extra_updates={
+                                    "_redispatch_cause_fp": fp,
+                                    "_redispatch_same_cause_streak": streak,
                                 },
                             )
                             self._pm.logger.error(
                                 "pm_engine",
-                                f"All retries exhausted for '{spec_name}'",
+                                f"同因重派熔断 '{spec_name}'（fp={fp}，streak="
+                                f"{streak}，retries={retries}/{max_r}）— "
+                                f"冻结转人工，不再重派",
                             )
-                            # 3.2 行动性同状态更新补发（fix-dispatch-orphan D1）：
-                            # 失败落回 ready 后可能无后续事件触达（daemon 重启间隙 /
-                            # 轮询节流），立即重新排队实现器，避免滞留为孤儿。
-                            self._enqueue(spec_name, "implementer")
+                        elif retries >= max_r:
+                            # 重试耗尽（3.4）：真正终止自动重试（原清零+重派空转）。
+                            self._pm.state_machine.freeze_for_human(
+                                spec_name,
+                                error=(
+                                    f"原状态 {orig_status} · 重试耗尽"
+                                    f"（{max_r}/{max_r} 轮，指纹 {fp}）：{final_error}"
+                                ),
+                                signal_type="redispatch_loop_detected",
+                                severity="major",
+                                description=(
+                                    f"'{spec_name}' 连续失败重试 {max_r} 轮已达上限"
+                                    f"（max_retries），自动重试终止——已冻结转人工"
+                                    f"处置"
+                                ),
+                                evidence=(
+                                    f"spec={spec_name}; retries={retries}; "
+                                    f"max_retries={max_r}; fp={fp}; "
+                                    f"final_error={final_error}"
+                                ),
+                                recommended_action=(
+                                    "检查失败根因；处置后解冻（unfreeze_spec 自动"
+                                    f"清零计数）可重新获得自动修复机会"
+                                ),
+                                alert_callback=self._pm._send_human_escalation_alert,
+                            )
+                            self._pm.logger.error(
+                                "pm_engine",
+                                f"All retries exhausted for '{spec_name}' — "
+                                f"冻结转人工，不再重派（{retries}/{max_r}，fp={fp}）",
+                            )
                         else:
                             self._pm.state_machine.update_spec(
                                 spec_name,
@@ -1211,11 +1296,14 @@ class QQQueueMixin:
                                     "status": "ready",
                                     "error": final_error,
                                     "_retry_count": retries,
+                                    "_redispatch_cause_fp": fp,
+                                    "_redispatch_same_cause_streak": streak,
                                 },
                             )
                             self._pm.logger.warning(
                                 "pm_engine",
-                                f"Retry {retries}/{max_r} for '{spec_name}'",
+                                f"Retry {retries}/{max_r} for '{spec_name}'"
+                                f"（同因 streak {streak}）",
                             )
 
             elif agent_type == "verifier":
