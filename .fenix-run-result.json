@@ -1,0 +1,13 @@
+{
+  "status": "partial",
+  "spec": "fix-robustness-edge-cases",
+  "summary": "三项缺陷修复全部实现并验证（承接上轮已验证实现的移植与收口）：① spec 归属全等匹配——run_spec_part 补齐 -r<n> 瞬态重试后缀解析（新增 RUN_ID_SUFFIX_RE/strip_run_id_suffixes 共享助手，与 admin_monitor._spec_from_run_id、AgentRunner._normalize_run_id 口径一致，1.2 关系已在注释登记，防再次漂移）；七处判定点（budget archive 豁免 + 收工计数、engine._spec_has_recent_run_activity、judge_gate._last_planner_run_cost、liveness._stream_recent、worktree_manager._latest_stream_mtime、run_task_track.find_impl_run_file + parse_run_task_done_cumulative）全部改为 glob 后经 run_spec_part 全等比较（范式 recovery.py）；dashboard soft_delete_spec 原子串 glob 随本 SPEC 纳入修正（承接方 refactor-dashboard-data-module / fix-dashboard-read-path-performance 均已合入）；_pgrep_live_worktree pgrep 子串两处书面 defer（判定对象为 worktree 目录名非 run 流文件、误判方向 fail-open 不误杀，注释已登记，承接方待 worktree 活性 SPEC）。② admin_store 读损坏抗清库——_read_unlocked 返回 (records, corrupt) 显式信号：解析失败（JSONDecodeError/OSError/非数组）先改名 .corrupt-<ts> 留底取证再返回空集合并产生可观测日志；_mutate 写回下限保护仅凭 corrupt 信号触发（design D2 关键：留底后的 [] 与文件不存在/合法空数组返回值不可区分，必须以显式信号触发），损坏后恢复写入不被误拦，正常空文件/合法清空恒放行。③ logger 门面统一 + 级别判定修复——7 处旁路 logger（verify_scenarios×2、spec_integrity、dashboard/server、dashboard/registry、scenario_static_check、screenshot_lab、fast_track_result）全部收敛到 fenixd. 可传播层级；Logger._log 补 isEnabledFor 先判级（修复 handle() 绕过级别判定、DEBUG 恒落盘问题）；新增 test_logger_no_bypass 静态扫描（tokenize 精确识别）防旁路回潮 + 「持久化集加载净化剔除」WARNING 落盘实证。验证：三项缺陷复现用例（test_run_spec_prefixed_attribution 18 / test_admin_store_corruption 10 / test_logger_no_bypass 4，共 32 例）全绿；定向回归（test_pm_recovery/test_dispatch_aging/test_worktree_stray_and_identical/test_alert_lifecycle/test_admin/test_fail_counter_budget/test_run_lifecycle_governance/test_dashboard_fault_isolation 283 例 + test_dashboard_* 466 例）全绿；全量 bin/run_full_suite.py --timeout 3600 --baseline 2e3c0243：当前失败 6 例全部归类存量（dashboard static/dist 未构建×2、test_task_track 子进程 temp 目录 import core 失败×4，基线同失败），本次引入回归 0。tasks.md 1.0-4.1 已逐项勾选。4.2（重启 daemon 冒烟验证）为人工运维门控，按 task-progress-contract unattainable 申报，不勾选。",
+  "completed_tasks": ["1.0", "1.1", "1.2", "1.3", "1.4", "2.1", "2.2", "2.3", "2.4", "3.1", "3.2", "3.3", "3.4", "4.1"],
+  "unattainable": [
+    {
+      "task": "4.2",
+      "reason": "需用户确认时机后重启 daemon 并冒烟验证——人工运维门控，实现者无权重启生产 daemon，须由用户亲手执行",
+      "evidence": "tasks.md 4.2 原文『经用户确认时机后重启 daemon 并冒烟验证』；task-progress-contract 明确『需用户亲手重启 daemon』属 unattainable 申报范畴"
+    }
+  ]
+}
