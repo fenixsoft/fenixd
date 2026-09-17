@@ -96,6 +96,136 @@ class PMEngine:
       - Periodic blocker detection and health reporting
     """
 
+    # ── 门面转发注册表（refactor-facade-delegation D2 / facade-inventory.md）──
+    # 实例式转发（100 个）：{门面方法名: (子对象属性名, 目标方法名)}。子对象
+    # 属性为惰性 property（`_verification`/`_dispatcher`/`_family`/`_budget`/
+    # `_recovery`/`_reporting`/`_spec_integrity`，正常查找命中不触发
+    # `__getattr__`），`__getattr__` 经 `getattr(self, 子对象属性名)` 触发惰性
+    # 构造后返回 `getattr(子对象, 目标方法名)`。注册表以源码内联 dict 声明
+    # （静态可读）；未知名 / dunder 名 MUST `raise AttributeError`。
+    _FORWARDER_REGISTRY: dict[str, object] = {
+        "_resolve_fix_spec_name": ("_family", "_resolve_fix_spec_name"),
+        "_ensure_fix_spec_files": ("_family", "_ensure_fix_spec_files"),
+        "_family_width": ("_family", "_family_width"),
+        "_family_waiver_set": ("_family", "_family_waiver_set"),
+        "_consume_family_waiver": ("_family", "_consume_family_waiver"),
+        "_family_gate_blocked": ("_family", "_family_gate_blocked"),
+        "_same_root_siblings": ("_family", "_same_root_siblings"),
+        "_sibling_repair_active": ("_family", "_sibling_repair_active"),
+        "_sibling_has_live_agent": ("_family", "_sibling_has_live_agent"),
+        "_has_non_terminal_child_fix": ("_family", "_has_non_terminal_child_fix"),
+        "_signal_family_explosion": ("_family", "_signal_family_explosion"),
+        "_do_spec_bug_found": ("_family", "_do_spec_bug_found"),
+        "_do_legacy_fix_spec_bug_found": ("_family", "_do_legacy_fix_spec_bug_found"),
+        "_inject_verify_fix_task": ("_family", "_inject_verify_fix_task"),
+        "_send_human_escalation_alert": ("_family", "_send_human_escalation_alert"),
+        "_impl_run_budget": ("_budget", "_impl_run_budget"),
+        "_increment_impl_run_budget_used": ("_budget", "_increment_impl_run_budget_used"),
+        "_budget_exempt_alert_threshold": ("_budget", "_budget_exempt_alert_threshold"),
+        "_exempt_dead_run_budget": ("_budget", "_exempt_dead_run_budget"),
+        "_exempt_infra_run_budget": ("_budget", "_exempt_infra_run_budget"),
+        "_alert_budget_exempt_loop": ("_budget", "_alert_budget_exempt_loop"),
+        "_reconcile_impl_budget": ("_budget", "_reconcile_impl_budget"),
+        "_count_normal_completed_impl_runs": ("_budget", "_count_normal_completed_impl_runs"),
+        "_impl_run_budget_used": ("_budget", "_impl_run_budget_used"),
+        "_check_impl_budget_exhausted": ("_budget", "_check_impl_budget_exhausted"),
+        "_check_spec_content_missing": ("_spec_integrity", "check_spec_content_missing"),
+        "_read_verify_report": ("_verification", "_read_verify_report"),
+        "_handle_env_blocked_inconclusive": ("_verification", "_handle_env_blocked_inconclusive"),
+        "_ensure_app_reachable": ("_verification", "_ensure_app_reachable"),
+        "_rewrite_scenario_port": ("_verification", "_rewrite_scenario_port"),
+        "_current_verify_round": ("_verification", "_current_verify_round"),
+        "_apply_scenario_freeze": ("_verification", "_apply_scenario_freeze"),
+        "_run_scenario_static_check": ("_verification", "_run_scenario_static_check"),
+        "_scenario_defect_reroute_gate": ("_verification", "_scenario_defect_reroute_gate"),
+        "_apply_interaction_contract": ("_verification", "_apply_interaction_contract"),
+        "_render_scenario_change_section_to_report": ("_verification", "_render_scenario_change_section_to_report"),
+        "_run_three_stage_verification": ("_verification", "_run_three_stage_verification"),
+        "_verifier_error_is_infra": ("_verification", "_verifier_error_is_infra"),
+        "enrich_failure_class": ("_verification", "enrich_failure_class"),
+        "_verifier_result_is_stale": ("_verification", "_verifier_result_is_stale"),
+        "_implementer_zero_change": ("_verification", "_implementer_zero_change"),
+        "_implementation_branch_has_commits": ("_verification", "_implementation_branch_has_commits"),
+        "_deliverable_gate_missing": ("_verification", "_deliverable_gate_missing"),
+        "_tasks_md_relint_from_branch": ("_verification", "_tasks_md_relint_from_branch"),
+        "_tasks_md_relint_from_worktree": ("_verification", "_tasks_md_relint_from_worktree"),
+        "_disputed_deliverables": ("_verification", "_disputed_deliverables"),
+        "_adjudicate_deliverable_missing": ("_dispatcher", "_adjudicate_deliverable_missing"),
+        "_detect_uniform_verify_failure": ("_verification", "_detect_uniform_verify_failure"),
+        "_run_legacy_verification": ("_verification", "_run_legacy_verification"),
+        "_verify_verdict_evidence": ("_verification", "_verify_verdict_evidence"),
+        "_speculative_bug_found_gate": ("_verification", "_speculative_bug_found_gate"),
+        "_env_whitewash_gate": ("_verification", "_env_whitewash_gate"),
+        "_escalate_env_blocked": ("_verification", "_escalate_env_blocked"),
+        "_record_infra_failure": ("_verification", "_record_infra_failure"),
+        "_update_warning_streaks": ("_verification", "_update_warning_streaks"),
+        "_warning_stale_triage_alert": ("_verification", "_warning_stale_triage_alert"),
+        "_ensure_verification_report": ("_verification", "_ensure_verification_report"),
+        "_check_verification_gate": ("_verification", "_check_verification_gate"),
+        "_read_verifier_result": ("_verification", "_read_verifier_result"),
+        "_read_planner_result": ("_verification", "_read_planner_result"),
+        "_read_verdict": ("_verification", "_read_verdict"),
+        "_judge_bugs_declare_env": ("_verification", "_judge_bugs_declare_env"),
+        "_handle_judge_env_declared": ("_verification", "_handle_judge_env_declared"),
+        "_verdict_violations_path": ("_verification", "_verdict_violations_path"),
+        "_write_verdict_violations": ("_verification", "_write_verdict_violations"),
+        "_clear_verdict_violations": ("_verification", "_clear_verdict_violations"),
+        "_read_fail_history": ("_verification", "_read_fail_history"),
+        "_append_fail_history": ("_verification", "_append_fail_history"),
+        "_clear_fail_history": ("_verification", "_clear_fail_history"),
+        "_failed_scenario_ids": ("_verification", "_failed_scenario_ids"),
+        "_dispatch_backoff_schedule": ("_dispatcher", "_dispatch_backoff_schedule"),
+        "_handle_dispatch_lock_conflict": ("_dispatcher", "_handle_dispatch_lock_conflict"),
+        "_schedule_backoff_retry": ("_dispatcher", "_schedule_backoff_retry"),
+        "_get_spec_priority": ("_dispatcher", "_get_spec_priority"),
+        "_enqueue": ("_dispatcher", "_enqueue"),
+        "_enqueue_front": ("_dispatcher", "_enqueue_front"),
+        "_aging_bonus": ("_dispatcher", "_aging_bonus"),
+        "_effective_priority": ("_dispatcher", "_effective_priority"),
+        "_process_queue": ("_dispatcher", "_process_queue"),
+        "_run_agent_worker": ("_dispatcher", "_run_agent_worker"),
+        "_rollback_failed_dispatch": ("_dispatcher", "_rollback_failed_dispatch"),
+        "_report_stash_pop_conflict": ("_dispatcher", "_report_stash_pop_conflict"),
+        "_run_fast_track_worker": ("_dispatcher", "_run_fast_track_worker"),
+        "_should_enter_repair": ("_dispatcher", "_should_enter_repair"),
+        "_dispatch_repair_lane": ("_dispatcher", "_dispatch_repair_lane"),
+        "_claim_repair_site": ("_dispatcher", "_claim_repair_site"),
+        "_run_repair_worker": ("_dispatcher", "_run_repair_worker"),
+        "_check_repair_commit_facts": ("_dispatcher", "_check_repair_commit_facts"),
+        "_handle_remerge_failure": ("_dispatcher", "_handle_remerge_failure"),
+        "_fallback_after_repair": ("_dispatcher", "_fallback_after_repair"),
+        "_recovery_watch_path": ("_recovery", "_recovery_watch_path"),
+        "_load_recovery_watch": ("_recovery", "_load_recovery_watch"),
+        "_save_recovery_watch": ("_recovery", "_save_recovery_watch"),
+        "register_recovery_watch": ("_recovery", "register_recovery_watch"),
+        "check_recovery_watch": ("_recovery", "check_recovery_watch"),
+        "_signal_dispatch_stalled": ("_recovery", "_signal_dispatch_stalled"),
+        "_clear_dispatch_conflict": ("_recovery", "_clear_dispatch_conflict"),
+        "generate_report": ("_reporting", "generate_report"),
+        "generate_daily_report": ("_reporting", "generate_daily_report"),
+        "get_pushable_specs": ("_reporting", "get_pushable_specs"),    }
+
+    def __getattr__(self, name: str):
+        """门面转发统一委托（refactor-facade-delegation D1/D2）。
+
+        注册表内实例式转发经此解析；未知名 / dunder 名 `raise AttributeError`
+        （hasattr/getattr(..., default) 语义正确）。惰性 property 是类属性，
+        正常查找命中，不会走到这里。"""
+        if name.startswith("__") and name.endswith("__"):
+            raise AttributeError(
+                f"{type(self).__name__!r} object has no attribute {name!r}")
+        target = type(self)._FORWARDER_REGISTRY.get(name)
+        if target is None:
+            raise AttributeError(
+                f"{type(self).__name__!r} object has no attribute {name!r}")
+        sub_attr, meth = target
+        return getattr(getattr(self, sub_attr), meth)
+
+    def __dir__(self):
+        """IDE 补全增强（refactor-facade-delegation Open Question / tasks 5.1）：
+        返回既有属性 + 注册表键，缓解 `__getattr__` 委托下 dir() 不显示转发名。"""
+        return sorted(set(super().__dir__()) | set(type(self)._FORWARDER_REGISTRY))
+
     def __init__(self, state_machine, agent_runner, config: dict, project_root: Path, logger):
         self.state_machine = state_machine
         self.agent_runner = agent_runner
@@ -2600,79 +2730,13 @@ class PMEngine:
 
     # ── 组合组件委托（阶段 4：family/budget 已迁组件，门面保持调用路径）──
 
-    def _resolve_fix_spec_name(self, spec_name: str):
-        return self._family._resolve_fix_spec_name(spec_name)
+    _fix_prefix_depth = staticmethod(FamilyGovernor._fix_prefix_depth)
 
-    def _ensure_fix_spec_files(self, fix_spec_name: str, parent_spec_name: str):
-        return self._family._ensure_fix_spec_files(fix_spec_name, parent_spec_name)
+    _fix_strip_all = staticmethod(FamilyGovernor._fix_strip_all)
 
-    @staticmethod
-    def _fix_prefix_depth(name: str) -> int:
-        return FamilyGovernor._fix_prefix_depth(name)
+    _is_fix_spec = staticmethod(FamilyGovernor._is_fix_spec)
 
-    @staticmethod
-    def _fix_strip_all(name: str) -> str:
-        return FamilyGovernor._fix_strip_all(name)
-
-    def _family_width(self, child_name: str) -> int:
-        return self._family._family_width(child_name)
-
-    def _family_waiver_set(self, spec_name: str) -> bool:
-        return self._family._family_waiver_set(spec_name)
-
-    def _consume_family_waiver(self, spec_name: str) -> bool:
-        return self._family._consume_family_waiver(spec_name)
-
-    def _family_gate_blocked(self, parent_name: str, child_name: str) -> bool:
-        return self._family._family_gate_blocked(parent_name, child_name)
-
-    @staticmethod
-    def _is_fix_spec(name: str) -> bool:
-        return FamilyGovernor._is_fix_spec(name)
-
-    @staticmethod
-    def _same_root(name_a: str, name_b: str) -> bool:
-        return FamilyGovernor._same_root(name_a, name_b)
-
-    def _same_root_siblings(self, spec_name: str) -> list:
-        return self._family._same_root_siblings(spec_name)
-
-    def _sibling_repair_active(self, spec_name: str, my_enqueued_at: float = None) -> str:
-        return self._family._sibling_repair_active(spec_name, my_enqueued_at)
-
-    def _sibling_has_live_agent(self, spec_name: str) -> bool:
-        return self._family._sibling_has_live_agent(spec_name)
-
-    def _has_non_terminal_child_fix(self, spec_name: str) -> str:
-        return self._family._has_non_terminal_child_fix(spec_name)
-
-    def _signal_family_explosion(self, parent_name: str, child_name: str, detail: str):
-        return self._family._signal_family_explosion(parent_name, child_name, detail)
-
-    def _do_spec_bug_found(self, spec_name: str, failure_class: str = "product", run_id: str = ""):
-        return self._family._do_spec_bug_found(
-            spec_name, failure_class=failure_class, run_id=run_id
-        )
-
-    def _do_legacy_fix_spec_bug_found(self, spec_name: str):
-        return self._family._do_legacy_fix_spec_bug_found(spec_name)
-
-    def _inject_verify_fix_task(self, spec_name: str, fail_rounds: int):
-        return self._family._inject_verify_fix_task(spec_name, fail_rounds)
-
-    def _send_human_escalation_alert(
-        self,
-        spec_name: str,
-        signal_type: str,
-        severity: str,
-        description: str,
-        evidence: str,
-        recommended_action: str,
-        trigger: Optional[dict] = None,
-    ):
-        return self._family._send_human_escalation_alert(
-            spec_name, signal_type, severity, description, evidence, recommended_action, trigger
-        )
+    _same_root = staticmethod(FamilyGovernor._same_root)
 
     # ── infra 熔断告警（evo-run-failure-classification-circuitbreaker D3）──────────
     def _emit_infra_breaker_event(
@@ -2751,29 +2815,6 @@ class PMEngine:
             )
 
     # ── 实现尝试总预算（add-fail-counter-budget D2/D4 / add-spec-status-modal-budget D3）──────────────
-    def _impl_run_budget(self, spec_name: str | None = None) -> int:
-        return self._budget._impl_run_budget(spec_name)
-
-    def _increment_impl_run_budget_used(self, spec_name: str) -> int:
-        return self._budget._increment_impl_run_budget_used(spec_name)
-
-    def _budget_exempt_alert_threshold(self) -> int:
-        return self._budget._budget_exempt_alert_threshold()
-
-    def _exempt_dead_run_budget(
-        self, spec_name: str, reason: str, run_reason: str | None = None
-    ) -> None:
-        return self._budget._exempt_dead_run_budget(spec_name, reason, run_reason)
-
-    def _exempt_infra_run_budget(self, spec_name: str, reason: str, refund_key: str = "") -> bool:
-        """infra 失败预算事后补偿（evo-infra-failure-budget-exempt R2）。
-
-        与 _exempt_dead_run_budget 同范式：回退本次实现 run 增量（下限 0）+
-        独立写 _infra_failure_count（生命周期累计，不归零）。幂等（按
-        refund_key 去重，同一实现 run 只退款一次）。预算退款纳入
-        _budget_reconcile_has_exemption，防 reconcile 回写冲掉退款。
-        """
-        return self._budget._exempt_infra_run_budget(spec_name, reason, refund_key=refund_key)
 
     def reclassify_infra_rounds(
         self, spec_name: str, n: int, audit_reason: str, actor: str = "admin"
@@ -2796,27 +2837,7 @@ class PMEngine:
             actor=actor,
         )
 
-    def _alert_budget_exempt_loop(self, spec_name: str, exempt: int) -> None:
-        return self._budget._alert_budget_exempt_loop(spec_name, exempt)
-
-    def _reconcile_impl_budget(self, spec_name: str) -> None:
-        return self._budget._reconcile_impl_budget(spec_name)
-
-    def _count_normal_completed_impl_runs(self, spec_name: str) -> int:
-        return self._budget._count_normal_completed_impl_runs(spec_name)
-
-    @staticmethod
-    def _run_file_died(path: Path) -> bool:
-        return ImplBudget._run_file_died(path)
-
-    def _impl_run_budget_used(self, spec_name: str) -> int:
-        return self._budget._impl_run_budget_used(spec_name)
-
-    def _check_impl_budget_exhausted(self, spec_name: str) -> bool:
-        return self._budget._check_impl_budget_exhausted(spec_name)
-
-    def _check_spec_content_missing(self, spec_name: str) -> bool:
-        return self._spec_integrity.check_spec_content_missing(spec_name)
+    _run_file_died = staticmethod(ImplBudget._run_file_died)
 
     # ── 组合组件（refactor-core-packages 阶段 5）────────────────────────
 
@@ -2834,179 +2855,11 @@ class PMEngine:
 
     # ── 组合组件委托（阶段 5：验证域已迁组件，门面保持调用路径）──────────
 
-    def _read_verify_report(self, spec_name: str) -> dict:
-        return self._verification._read_verify_report(spec_name)
-
-    def _handle_env_blocked_inconclusive(self, spec_name: str, report: dict) -> bool:
-        return self._verification._handle_env_blocked_inconclusive(spec_name, report)
-
-    def _ensure_app_reachable(self, spec_name: str) -> tuple:
-        return self._verification._ensure_app_reachable(spec_name)
-
-    def _rewrite_scenario_port(self, scenarios_path: Path, old_port: int, new_port: int):
-        return self._verification._rewrite_scenario_port(scenarios_path, old_port, new_port)
-
-    def _current_verify_round(self, spec_name: str) -> int:
-        return self._verification._current_verify_round(spec_name)
-
-    def _apply_scenario_freeze(self, spec_name: str) -> dict:
-        return self._verification._apply_scenario_freeze(spec_name)
-
-    def _run_scenario_static_check(self, spec_name: str) -> None:
-        return self._verification._run_scenario_static_check(spec_name)
-
-    def _scenario_defect_reroute_gate(
-        self, spec_name: str, _repair_depth: int, judge_result
-    ) -> bool:
-        return self._verification._scenario_defect_reroute_gate(
-            spec_name, _repair_depth, judge_result
-        )
-
-    def _apply_interaction_contract(self, spec_name: str) -> dict:
-        return self._verification._apply_interaction_contract(spec_name)
-
-    def _render_scenario_change_section_to_report(self, spec_name: str) -> None:
-        return self._verification._render_scenario_change_section_to_report(spec_name)
-
-    def _run_three_stage_verification(self, spec_name: str):
-        return self._verification._run_three_stage_verification(spec_name)
-
-    def _verifier_error_is_infra(self, error_text: str) -> bool:
-        return self._verification._verifier_error_is_infra(error_text)
-
-    def enrich_failure_class(
-        self, spec_name: str, error_text: str = "", result=None, result_path: Path | None = None
-    ) -> str:
-        """统一失败归因接口（evo-infra-failure-budget-exempt R1）。
-
-        返回 infra | product | unknown；保持 ``_verifier_error_is_infra``
-        bool 签名不变（三态另立本新函数）。
-        """
-        return self._verification.enrich_failure_class(
-            spec_name, error_text, result=result, result_path=result_path
-        )
-
-    def _verifier_result_is_stale(self, result, result_path: Path, spec_name: str) -> bool:
-        return self._verification._verifier_result_is_stale(result, result_path, spec_name)
-
-    def _implementer_zero_change(self, spec_name: str, result) -> bool:
-        return self._verification._implementer_zero_change(spec_name, result)
-
-    def _implementation_branch_has_commits(self, result) -> bool:
-        return self._verification._implementation_branch_has_commits(result)
-
-    def _deliverable_gate_missing(self, spec_name: str, result) -> list:
-        return self._verification._deliverable_gate_missing(spec_name, result)
-
-    def _tasks_md_relint_from_branch(self, spec_name: str, branch) -> list:
-        return self._verification._tasks_md_relint_from_branch(spec_name, branch)
-
-    def _tasks_md_relint_from_worktree(self, spec_name: str, worktree_path) -> list:
-        return self._verification._tasks_md_relint_from_worktree(spec_name, worktree_path)
-
-    def _disputed_deliverables(self, impl_result, missing) -> list:
-        return self._verification._disputed_deliverables(impl_result, missing)
-
-    def _adjudicate_deliverable_missing(
-        self, spec_name: str, result, impl_result, missing: list
-    ) -> dict:
-        """缺件 LLM 终审 + 裁决机械执行（add-deliverable-declaration-triage D3/D4）。"""
-        return self._dispatcher._adjudicate_deliverable_missing(
-            spec_name, result, impl_result, missing
-        )
-
-    @staticmethod
-    def _normalize_fail_signature(text: str) -> str:
-        return VerificationPipeline._normalize_fail_signature(text)
-
-    def _detect_uniform_verify_failure(self, spec_name: str, report: dict) -> bool:
-        return self._verification._detect_uniform_verify_failure(spec_name, report)
-
-    def _run_legacy_verification(self, spec_name: str):
-        return self._verification._run_legacy_verification(spec_name)
-
-    def _verify_verdict_evidence(self, spec_name: str, retry_judge: bool = False) -> dict:
-        return self._verification._verify_verdict_evidence(spec_name, retry_judge)
-
-    def _speculative_bug_found_gate(self, spec_name: str) -> bool:
-        """归因分级门禁（add-verdict-credibility-gate / D2 / Task 2.2）。"""
-        return self._verification._speculative_bug_found_gate(spec_name)
-
-    def _env_whitewash_gate(self, spec_name: str) -> bool:
-        return self._verification._env_whitewash_gate(spec_name)
-
-    def _escalate_env_blocked(
-        self, spec_name: str, violations: list, title: str = "验证环境阻塞"
-    ) -> None:
-        return self._verification._escalate_env_blocked(spec_name, violations, title=title)
-
-    def _record_infra_failure(self, spec_name: str, reason: str, run_id: str = "") -> None:
-        """infra 失败统一记账（evo-infra-failure-budget-exempt R2/R3）。"""
-        return self._verification._record_infra_failure(spec_name, reason, run_id=run_id)
-
-    def _update_warning_streaks(self, spec_name: str) -> list:
-        return self._verification._update_warning_streaks(spec_name)
-
-    def _warning_stale_triage_alert(self, spec_name: str, scenario_ids: list) -> None:
-        return self._verification._warning_stale_triage_alert(spec_name, scenario_ids)
-
-    def _ensure_verification_report(self, spec_name: str) -> str | None:
-        return self._verification._ensure_verification_report(spec_name)
-
-    def _check_verification_gate(self, spec_name: str) -> str | None:
-        return self._verification._check_verification_gate(spec_name)
-
-    def _read_verifier_result(self, result_path: Path) -> "VerdictReadResult":
-        return self._verification._read_verifier_result(result_path)
-
-    def _read_planner_result(self, spec_name: str) -> "VerdictReadResult":
-        return self._verification._read_planner_result(spec_name)
-
-    def _read_verdict(self, spec_name: str) -> "VerdictReadResult":
-        """统一裁决读取入口（evo-verifier-result-single-source R1）。
-
-        legacy 与 planner 裁决应用处统一走此入口读取验证裁决；主树共享文件
-        回退须过 role/spec 戳校验（role≠verifier/缺 role 一律不采信），
-        不依赖 run_id 可解析（修复 _verifier_result_is_stale fail-open）。
-        """
-        return self._verification._read_verdict(spec_name)
-
-    def _judge_bugs_declare_env(self, spec_name: str) -> bool:
-        return self._verification._judge_bugs_declare_env(spec_name)
-
-    def _handle_judge_env_declared(self, spec_name: str) -> bool:
-        return self._verification._handle_judge_env_declared(spec_name)
-
-    def _verdict_violations_path(self, spec_name: str) -> Path:
-        return self._verification._verdict_violations_path(spec_name)
-
-    def _write_verdict_violations(self, spec_name: str, violations: list) -> None:
-        return self._verification._write_verdict_violations(spec_name, violations)
-
-    def _clear_verdict_violations(self, spec_name: str) -> None:
-        return self._verification._clear_verdict_violations(spec_name)
+    # 链式别名（design D7 链式依赖）：目标为 VerificationPipeline 同名的类级别名，
+    # MUST 显式写全限定，指向收敛后仍存在的 pipeline 类属性（非被删转发）。
+    _normalize_fail_signature = staticmethod(VerificationPipeline._normalize_fail_signature)
 
     # ── 失败历史侧车门面（fix-verdict-retry-misattribution D6 + R3）──
-    def _read_fail_history(self, spec_name: str) -> list:
-        return self._verification._read_fail_history(spec_name)
-
-    def _append_fail_history(
-        self,
-        spec_name: str,
-        cause_type: str,
-        failed_scenarios: list,
-        failure_class: str = "",
-        run_id: str = "",
-    ) -> None:
-        return self._verification._append_fail_history(
-            spec_name, cause_type, failed_scenarios, failure_class=failure_class, run_id=run_id
-        )
-
-    def _clear_fail_history(self, spec_name: str) -> None:
-        return self._verification._clear_fail_history(spec_name)
-
-    def _failed_scenario_ids(self, spec_name: str) -> list:
-        return self._verification._failed_scenario_ids(spec_name)
 
     @property
     def _last_scenario_diff(self):
@@ -3072,39 +2925,7 @@ class PMEngine:
 
     # ── 组合组件委托（阶段 6：dispatch/recovery/reporting 已迁组件）──────
 
-    def _dispatch_backoff_schedule(self) -> list:
-        return self._dispatcher._dispatch_backoff_schedule()
-
-    def _handle_dispatch_lock_conflict(self, spec_name: str) -> None:
-        return self._dispatcher._handle_dispatch_lock_conflict(spec_name)
-
-    def _schedule_backoff_retry(self, spec_name: str, delay: float) -> None:
-        return self._dispatcher._schedule_backoff_retry(spec_name, delay)
-
-    def _get_spec_priority(self, spec_name: str) -> int:
-        return self._dispatcher._get_spec_priority(spec_name)
-
-    def _enqueue(self, spec_name: str, agent_type: str):
-        return self._dispatcher._enqueue(spec_name, agent_type)
-
-    def _enqueue_front(self, spec_name: str, agent_type: str):
-        return self._dispatcher._enqueue_front(spec_name, agent_type)
-
-    def _aging_bonus(self, enqueued_at: float, now: float) -> int:
-        return self._dispatcher._aging_bonus(enqueued_at, now)
-
-    def _effective_priority(self, base: int, enqueued_at: float, now: float) -> int:
-        return self._dispatcher._effective_priority(base, enqueued_at, now)
-
-    def _process_queue(self):
-        return self._dispatcher._process_queue()
-
-    def _run_agent_worker(self, spec_name: str, agent_type: str, priority: int):
-        return self._dispatcher._run_agent_worker(spec_name, agent_type, priority)
-
-    @staticmethod
-    def _dispatch_backoffed(spec: dict) -> bool:
-        return Dispatcher._dispatch_backoffed(spec)
+    _dispatch_backoffed = staticmethod(Dispatcher._dispatch_backoffed)
 
     def _instant_fail_cooled(self, spec_name: str) -> bool:
         """秒挂冷却判定（cli-retry-backoff 2.2）：冷却期内跳过派发。
@@ -3195,79 +3016,6 @@ class PMEngine:
         except (TypeError, ValueError):
             return 0.0
 
-    def _rollback_failed_dispatch(self, spec_name: str, agent_type: str, exc: Exception):
-        return self._dispatcher._rollback_failed_dispatch(spec_name, agent_type, exc)
-
-    def _report_stash_pop_conflict(
-        self, spec_name: str, conflict_files: list, merge_info=None
-    ) -> None:
-        return self._dispatcher._report_stash_pop_conflict(
-            spec_name, conflict_files, merge_info=merge_info
-        )
-
-    def _run_fast_track_worker(self, spec_name: str) -> None:
-        """fast-track 单 run 全包 worker（add-fast-track-mode D1/D4/D5/D6）。"""
-        return self._dispatcher._run_fast_track_worker(spec_name)
-
-    def _should_enter_repair(
-        self, spec_name: str, merge_info, streak: int, breaker_threshold: int
-    ) -> bool:
-        """merge-back 语义冲突失败是否进入 repair 通道（add-merge-back-repair-lane）。"""
-        return self._dispatcher._should_enter_repair(
-            spec_name, merge_info, streak, breaker_threshold
-        )
-
-    def _dispatch_repair_lane(
-        self, spec_name: str, merge_info, branch: str, fp: str | None = None, streak: int = 0
-    ) -> None:
-        """进入 repair 通道（载体三态解析 + 认领现场 + 派发 repair worker）。"""
-        return self._dispatcher._dispatch_repair_lane(
-            spec_name, merge_info, branch, fp=fp, streak=streak
-        )
-
-    def _claim_repair_site(self, spec_name: str, wt_path, branch: str) -> None:
-        """认领 repair 现场（_legacy take 摘出 + _spec_locks 注册）。"""
-        return self._dispatcher._claim_repair_site(spec_name, wt_path, branch)
-
-    def _run_repair_worker(self, spec_name: str, wt_path, branch: str, merge_info) -> None:
-        """repair worker：派发 repair agent → re-merge-back → 状态推进。"""
-        return self._dispatcher._run_repair_worker(spec_name, wt_path, branch, merge_info)
-
-    def _check_repair_commit_facts(self, spec_name: str, wt_path, branch: str):
-        """repair git 事实复核（fix-repair-commit-enforcement D1/D2/D5）。
-
-        以分支 git 事实（tip 前进 / 无未解决冲突 / 无未完成 merge）独立验证
-        repair agent 的 success 声明；失败返回携带具体事实的 (False, error)。
-        """
-        return self._dispatcher._check_repair_commit_facts(spec_name, wt_path, branch)
-
-    def _handle_remerge_failure(self, spec_name: str, remerge_info, branch: str) -> None:
-        """repair 后 re-merge-back 失败处理（熔断连续累计 + 下一轮 repair/fallback）。"""
-        return self._dispatcher._handle_remerge_failure(spec_name, remerge_info, branch)
-
-    def _fallback_after_repair(
-        self, spec_name: str, branch: str | None, repair_error: str, merge_error: str = ""
-    ) -> None:
-        """repair 链失败回退：全新重派 implementer（prompt 注入 merge 失败上下文）。"""
-        return self._dispatcher._fallback_after_repair(
-            spec_name, branch, repair_error, merge_error=merge_error
-        )
-
-    def _recovery_watch_path(self) -> Path:
-        return self._recovery._recovery_watch_path()
-
-    def _load_recovery_watch(self) -> None:
-        return self._recovery._load_recovery_watch()
-
-    def _save_recovery_watch(self) -> None:
-        return self._recovery._save_recovery_watch()
-
-    def register_recovery_watch(self, spec_name: str, reason: str) -> None:
-        return self._recovery.register_recovery_watch(spec_name, reason)
-
-    def check_recovery_watch(self) -> list:
-        return self._recovery.check_recovery_watch()
-
     def reclaim_stale_autostash_if_idle(self) -> bool:
         """滞留 autostash 兜底回收（fix-autostash-orphans）。
 
@@ -3278,34 +3026,11 @@ class PMEngine:
             return False
         return self.agent_runner.worktree_manager.reclaim_stale_autostash()
 
-    @staticmethod
-    def _spec_fingerprint(entry: dict) -> str:
-        return RecoveryWatch._spec_fingerprint(entry)
+    _spec_fingerprint = staticmethod(RecoveryWatch._spec_fingerprint)
 
-    def _signal_dispatch_stalled(
-        self, spec_name: str, evidence: str, fingerprint: str | None = None
-    ) -> None:
-        return self._recovery._signal_dispatch_stalled(spec_name, evidence, fingerprint)
+    _is_push_backoffed = staticmethod(ReportBuilder._is_push_backoffed)
 
-    def _clear_dispatch_conflict(self, spec_name: str) -> dict:
-        return self._recovery._clear_dispatch_conflict(spec_name)
-
-    def generate_report(self) -> str:
-        return self._reporting.generate_report()
-
-    def generate_daily_report(self):
-        return self._reporting.generate_daily_report()
-
-    def get_pushable_specs(self):
-        return self._reporting.get_pushable_specs()
-
-    @staticmethod
-    def _is_push_backoffed(spec: dict) -> bool:
-        return ReportBuilder._is_push_backoffed(spec)
-
-    @staticmethod
-    def _get_push_retry_count(spec: dict) -> int:
-        return ReportBuilder._get_push_retry_count(spec)
+    _get_push_retry_count = staticmethod(ReportBuilder._get_push_retry_count)
 
     @property
     def _queue_lock(self):
