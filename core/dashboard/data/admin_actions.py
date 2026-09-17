@@ -26,78 +26,10 @@ from core.state_machine import (
 # 跨组引用（D4：叶子→中枢，直接导入无环）
 from .state import parse_state
 
-ADMIN_INVOKE_REQUEST = ".fenix/admin_invoke_request.json"
-
-
-def request_admin_invoke(project_root, spec: str, prompt: str | None = None) -> dict:
-    """写入手动唤起 Administrator 的文件信号（.fenix/admin_invoke_request.json）。
-
-    校验 spec 须存在于项目 STATE.md，且当前不存在未消费的请求文件，否则返回
-    对应拒绝状态（spec 不存在 → {found: False}；已有进行中 → {conflict: True}）。
-    通过校验后原子写入 {spec, source: "manual", created: <ISO>} 返回 {ok: True}。
-
-    prompt：用户在 Dashboard 处置弹窗输入的提示词，非空时写入请求文件，
-    daemon 拾取后作为本次处置的任务描述（替代默认文案）传给 Administrator。
-
-    文件信号模式与 restart_request 同构：server 进程不直接起 agent（绕过
-    state_machine 与 token 预算），由 daemon 主循环下一轮扫描拾取并唤起。
-
-    Returns:
-        {"ok": bool, "found": bool, "conflict": bool,
-         "file": str|null, "created": str|null, "error": str|null}
-    """
-    proot = Path(project_root)
-    specs = parse_state(proot)
-    if spec not in specs:
-        return {
-            "ok": False,
-            "found": False,
-            "conflict": False,
-            "file": None,
-            "created": None,
-            "error": f"spec not found: {spec}",
-        }
-
-    req_path = proot / ADMIN_INVOKE_REQUEST
-    if req_path.exists():
-        return {
-            "ok": False,
-            "found": True,
-            "conflict": True,
-            "file": str(req_path),
-            "created": None,
-            "error": "已有进行中的 Admin 处置",
-        }
-
-    created = datetime.now(timezone.utc).isoformat()
-    payload = {"spec": spec, "source": "manual", "created": created}
-    if prompt and prompt.strip():
-        payload["prompt"] = prompt.strip()
-    req_path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(
-        dir=str(req_path.parent), prefix=".admin_invoke_request.", suffix=".tmp"
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_path, req_path)
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
-    return {
-        "ok": True,
-        "found": True,
-        "conflict": False,
-        "file": str(req_path),
-        "created": created,
-        "error": None,
-    }
-
+# fix-deferred-findings CYC-1：request_admin_invoke 与 ADMIN_INVOKE_REQUEST
+# 已迁入中性模块 core.signals（pm_engine 侧消费点不再反向 import
+# dashboard.data），此处 re-export 保住既有门面导入路径。
+from core.signals import ADMIN_INVOKE_REQUEST, request_admin_invoke  # noqa: F401
 
 CANCEL_RUN_REQUEST = ".fenix/cancel_run_request.json"
 

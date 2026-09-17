@@ -103,16 +103,12 @@ def _run_legacy_verification(pipeline, spec_name: str):
         verifier_status = verifier_result.status if verifier_result.ok else None
         # 陈旧/归属护栏所需路径（与 _read_verdict 同源解析：primary
         # 优先，缺失回退共享文件——_verifier_result_is_stale 据此检测
-        # mtime 陈旧/spec 戳不符）。
-        run_result_path = (
-            pipeline._context.project_root
-            / ".fenix"
-            / "verify-progress"
-            / spec_name
-            / ".fenix-run-result.json"
-        )
-        if not run_result_path.exists():
-            run_result_path = pipeline._context.project_root / ".fenix" / ".fenix-run-result.json"
+        # mtime 陈旧/spec 戳不符）。fix-deferred-findings 整洁类：路径解析
+        # 经 _verify_progress_result_paths 收敛（与 report_gate 同源）。
+        from core.pm_engine.verification.report_gate import _verify_progress_result_paths
+
+        primary, fallback = _verify_progress_result_paths(pipeline, spec_name)
+        run_result_path = primary if primary.exists() else fallback
         # fix-verdict-read-failclosed D5（legacy 同门）：旧版 verifier 结果不可读
         # （缺失/非法 JSON/白名单外）→ blocked + critical 告警，绝不晋级
         # verified。legacy 是降级通道（三阶段两连败才进），结果不可读说明结构性

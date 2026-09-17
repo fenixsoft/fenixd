@@ -253,15 +253,17 @@ def _escalate_env_blocked(
                 f"'{spec_name}' {title}第 {rounds} 轮，自动呼叫 Administrator 处置",
             )
         # 自动呼叫 Administrator：与 Dashboard 手动 invoke 同一信号通道
-        # （.fenix/admin_invoke_request.json，daemon 主循环拾取派发）
+        # （.fenix/admin_invoke_request.json，daemon 主循环拾取派发）。
+        # fix-deferred-findings CYC-1：中性模块（不再反向 import dashboard.data）
         try:
-            from core.dashboard.data import request_admin_invoke
+            from core.signals import request_admin_invoke
 
             inv = request_admin_invoke(
                 pipeline._context.project_root,
                 spec_name,
                 (
-                    f"{title}自动升级（verified 洗白门禁/场景冻结复用）：{error_msg[:300]}。"
+                    f"{title}自动升级（verified 洗白门禁/场景冻结复用）："
+                    f"{error_msg[:300]}{'...' if len(error_msg) > 300 else ''}。"
                     "请诊断并处置——处置范围仅限环境修复（依赖安装、被测服务"
                     "/dashboard 重启、端口占用清理、验证产物重建、裁决场景集"
                     "变更）。环境问题不是产品缺陷：不要打回实现分支、不要修改"
@@ -284,7 +286,7 @@ def _escalate_env_blocked(
                 spec_name=spec_name,
                 signal_type="verify_env_blocked",
                 severity="critical" if frozen else "warning",
-                description=error_msg[:300],
+                description=error_msg[:300] + ("..." if len(error_msg) > 300 else ""),
                 evidence=(
                     f"spec={spec_name}; " f"report=spec/changes/{spec_name}/verification-report.md"
                 ),

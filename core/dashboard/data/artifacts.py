@@ -13,56 +13,10 @@ from pathlib import Path
 # ── 验证产物（容错解析） ──────────────────────────────────────────
 
 
-def parse_verify_progress(project_root, spec_name) -> dict:
-    """解析 .fenix/verify-progress/<spec>.json；损坏/非对象以 error 字段标记。
-
-    进度文件缺失时回退 fast-track 裁决结果文件（fix-verify-progress-fasttrack）：
-    调 parse_run_result_scenarios 取 verification.scenarios 合成进度——total=场景数、
-    done=含 status 条目数、current=终态文案「验证完成: N通过, M失败, K错误」
-    （对齐 verify_engine 终态格式），并标记 source: "run-result" 区分来源
-    （进度文件路径返回 source: "file"）。两者皆缺维持 exists: False 空态语义。
-    """
-    pf = Path(project_root) / ".fenix" / "verify-progress" / f"{spec_name}.json"
-    if pf.exists():
-        try:
-            data = json.loads(pf.read_text(encoding="utf-8"))
-            if not isinstance(data, dict):
-                return {"exists": True, "error": "corrupt", "total": 0, "done": 0, "current": ""}
-            return {
-                "exists": True,
-                "total": int(data.get("total", 0) or 0),
-                "done": int(data.get("done", 0) or 0),
-                "current": data.get("current", "") or "",
-                "step": data.get("step"),
-                "error": data.get("error"),
-                "source": "file",
-            }
-        except (json.JSONDecodeError, OSError, TypeError, ValueError):
-            return {"exists": True, "error": "corrupt", "total": 0, "done": 0, "current": ""}
-    # 进度文件缺失：fast-track 回退合成（场景为空维持空态，不抛异常）
-    scenarios = parse_run_result_scenarios(project_root, spec_name)
-    if not scenarios:
-        return {"exists": False, "total": 0, "done": 0, "current": ""}
-    passed = failed = errors = done = 0
-    for sc in scenarios:
-        status = sc.get("status")
-        if not status:
-            continue
-        done += 1
-        if status == "pass":
-            passed += 1
-        elif status in ("fail", "failed"):
-            failed += 1
-        elif status == "error":
-            errors += 1
-        # warning/exempt 豁免类不入三桶（与裁决链豁免语义一致）
-    return {
-        "exists": True,
-        "total": len(scenarios),
-        "done": done,
-        "current": f"验证完成: {passed}通过, {failed}失败, {errors}错误",
-        "source": "run-result",
-    }
+# fix-deferred-findings CYC-1：parse_verify_progress 已迁入中性模块
+# core.signals（pm_engine 侧消费点不再反向 import dashboard.data），
+# 此处 re-export 保住既有门面导入路径。
+from core.signals import parse_verify_progress  # noqa: E402,F401
 
 
 def parse_report(project_root, spec_name) -> dict:

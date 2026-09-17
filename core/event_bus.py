@@ -474,7 +474,7 @@ class EventBus:
     def _latest_impl_run_file(self, spec_name: str) -> Optional[Path]:
         """STATE.md implementer_run 指向的最新 run 文件（复用 dashboard 解析）。"""
         try:
-            from core.dashboard.data import find_impl_run_file
+            from core.run_task_track import find_impl_run_file
 
             project_root = getattr(self.pm_engine, "project_root", None)
             if project_root is None:

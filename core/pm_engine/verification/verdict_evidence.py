@@ -932,6 +932,13 @@ def _record_verdict_adoption(pipeline, spec_name: str, status: str, report=None)
     try:
         prev = json.loads(prev_raw) if prev_raw else None
     except (TypeError, ValueError):
+        # fix-deferred-findings 健壮性：坏 baseline 不再静默 fallback——
+        # 保留 fallback 行为（prev=None，差量按当前累计全额记账），补告警。
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"'{spec_name}' _judge_token_baseline 非合法 JSON（{prev_raw!r}），"
+            "回退按当前累计全额记账",
+        )
         prev = None
     cur = _sum_verify_chain_tokens(pipeline._context.project_root, spec_name)
     if cur:

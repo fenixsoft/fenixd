@@ -164,6 +164,53 @@ class TestPureFunctions(unittest.TestCase):
         self.assertIsNone(_parse_iso_ts(None))
         self.assertIsNone(_parse_iso_ts(12345))
 
+    def test_parse_iso_ts_naive_interpreted_as_utc(self):
+        """fix-deferred-findings D2：无时区后缀（naive）结果补 tzinfo=utc。
+
+        与项目「全链时间戳 UTC」约定一致（有意行为变化）：naive 输入不再
+        返回 naive datetime（否则与 aware 的 datetime.max 比较会抛 TypeError）。
+        """
+        from core.dashboard.data import _parse_iso_ts
+        dt = _parse_iso_ts("2026-09-15T12:00:00")
+        self.assertIsInstance(dt, datetime)
+        self.assertEqual(dt.tzinfo, timezone.utc)
+        self.assertEqual(dt.hour, 12)
+        # 补 tzinfo 后可与 aware 时间戳直接比较（不再抛 TypeError）
+        aware = _parse_iso_ts("2026-09-15T12:00:01Z")
+        self.assertLess(dt, aware)
+
+    def test_run_meta_cached_naive_start_interpreted_as_utc(self):
+        """fix-deferred-findings D2 下游消费点：runs.py::_run_meta_cached 对
+        无时区后缀的 run 首事件戳按 UTC 解释。
+
+        naive 输入经 _parse_iso_ts 补 tzinfo=utc 后：`started` 为 UTC 解释结果，
+        `duration_seconds` 与 mtime - started 自洽（若按本地时区 CST=UTC+8 解释，
+        duration 会凭空多出本地偏移）。
+        """
+        from core.dashboard.data.runs import _run_meta_cached
+
+        tmpdir = tempfile.mkdtemp()
+        try:
+            runs_dir = Path(tmpdir) / ".fenix" / "runs"
+            runs_dir.mkdir(parents=True)
+            run_file = runs_dir / "impl-spec-x-1750000000-a1.jsonl"
+            # 首事件戳无时区后缀（naive）
+            run_file.write_text(
+                json.dumps({"type": "started", "timestamp": "2026-09-15T12:00:00"}) + "\n",
+                encoding="utf-8",
+            )
+            # mtime = 2026-09-15T12:00:30Z（started 后 30 秒）
+            mtime = datetime(2026, 9, 15, 12, 0, 30, tzinfo=timezone.utc).timestamp()
+            os.utime(run_file, (mtime, mtime))
+            stat = run_file.stat()
+            meta = _run_meta_cached(run_file, stat, time.time(), project_root=Path(tmpdir))
+            # started 按 UTC 解释（本地时区解释会得到 04:00:00+00:00）
+            self.assertEqual(meta["started"], "2026-09-15T12:00:00+00:00")
+            # duration = mtime - started = 30s（自洽）
+            self.assertEqual(meta["duration_seconds"], 30)
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
     # ── _ts_delta ──
 
     def test_ts_delta_normal(self):
@@ -197,14 +244,17 @@ class TestPureFunctions(unittest.TestCase):
         self.assertLess(_timeline_sort_key(admin_event), _timeline_sort_key(run_event))
 
     def test_timeline_sort_key_invalid_time_sorts_later(self):
-        """无效时间戳分支（findings.md BUG-1）：当前 TypeError，重构后需验证行为一致。"""
+        """无效时间戳分支（findings.md BUG-1 / fix-deferred-findings P0）：修复后
+        无效事件返回 (datetime.max, 2, 原字符串) 排在末尾，不再抛 TypeError。"""
         from core.dashboard.data import _timeline_sort_key
         bad_event = {"time": "invalid", "kind": "state"}
         good_event = {"time": "2026-09-15T12:00:00Z", "kind": "run"}
-        # 当前行为：datetime.max.replace(tzinfo=timezone) 抛 TypeError
-        # 搬移后需保持一致（既不 crash，也不静默忽略）
-        with self.assertRaises(TypeError):
-            _timeline_sort_key(bad_event)
+        bad_key = _timeline_sort_key(bad_event)
+        good_key = _timeline_sort_key(good_event)
+        # 无效事件排在合法事件之后
+        self.assertGreater(bad_key, good_key)
+        # kind rank=2（run 类兜底值）确保末位
+        self.assertEqual(bad_key[1], 2)
 
     # ── _parse_run_lines ──
 
