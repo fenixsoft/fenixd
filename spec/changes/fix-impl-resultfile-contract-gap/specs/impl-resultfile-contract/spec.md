@@ -46,13 +46,21 @@
 实现者车道（`implementer` / `fast-track`）被重派时，提示词的「上轮失败上下文」MUST 携带上一轮
 **可归因的真实死因文本**，覆盖两类来源：
 
-- 状态机记录的 `error` 字段（既有来源）；
+- 状态机记录的 `error` 字段（既有来源，经 `_prev_error_section` 注入）；
 - 上一轮执行器的结构化诊断 `_impl_diagnosis`（含 `terminal` / `attribution` / `conclusion` /
-  `progress`）。
+  `progress`，经 `_impl_diagnosis_section` 注入）。
 
-两类来源 MUST **合并注入**（而非二选一）：当 `error` 为空但诊断存在时，MUST 仍把诊断中的
-`attribution` 与 `conclusion` 注入，使 agent 知道上轮为何终止。判定「结果文件缺失」而重派的轮次，
-契约段 MUST 使 agent 明确得知「上轮因未落盘结果文件被判失败」，而非仅知「任务未完成」。
+两类来源 MUST 均可达（当 `error` 为空但诊断存在时，诊断中的 `attribution` / `conclusion` MUST 仍
+注入，使 agent 知道上轮为何终止）；**同一诊断字段在单次 prompt 中 MUST 只渲染一次**——不得因两段
+并存而重复渲染 `attribution` / `conclusion` / `progress`。该去重是**字段级**判据：同一诊断字段
+MUST NOT 被两段各自作为独立条目渲染（`_prev_error_section` 只渲染 `error` 原文、不追加诊断字段）；
+因 `attribution` 的定义即 `final_error[:500]`（`dispatch.py:1538-1603`）而 `STATE.error` 同源写入的
+也是 `final_error`（`dispatch.py:1319-1333`），`error` 原文**包含** `attribution` 子串属预期，
+MUST NOT 计为重复渲染，MUST NOT 为满足去重而裁剪 / 丢弃 `error` 原文。判定「结果文件缺失」而重派的
+轮次，契约段 MUST 使 agent 明确得知「上轮因未落盘结果文件被判失败」，而非仅知「任务未完成」。
+
+（备注：2026-09-17 复核实测两段均已在实现者双车道注入——`prompt_builder.py:574/609` 与注入点
+`:260`/`:263`/`:334`/`:336`；本要求因此以「可达性核实 + 单次渲染去重」为验收口径。）
 
 #### Scenario: 结果文件缺失重派轮携带真实死因
 
@@ -63,6 +71,13 @@
 
 - **WHEN** 状态机 `error` 为空、但上一轮已写入 `_impl_diagnosis`（含非空 `attribution`）
 - **THEN** 提示词仍注入该诊断的 `attribution` / `conclusion`，不出现「无上轮上下文」的静默空段
+
+#### Scenario: 诊断字段在单次提示词中不重复渲染
+
+- **WHEN** `error` 与 `_impl_diagnosis` 同时非空，构建 implementer 重试轮提示词
+- **THEN** 字段级去重成立：`_prev_error_section` 的输出除 `error` 原文外不含任何诊断字段条目，
+  `_impl_diagnosis_section` 是唯一把 `attribution` / `conclusion` / `progress` 作为独立条目渲染的段
+  （`error` 原文内含 `attribution` 子串系两字段同源，不计为重复渲染）
 
 #### Scenario: 无上轮上下文时零注入
 
@@ -81,6 +96,8 @@
 - 抽不出合法 JSON / `status` 不在白名单 → MUST NOT 落盘，交由硬门按既有语义判失败重试；
 - 转录缺失或不可读 → MUST NOT 落盘、MUST NOT 抛异常；
 - 落盘视图 MUST 与 agent 自写产物同构（顶层含 `spec` 戳），使后续读侧与硬门无需区分来源；
+- 捞回时点 MUST 早于框架的 worktree→主树产物拷回（`runner.py:1963` 的拷回块），使既有拷回逻辑的
+  `role` / `spec` 戳注入与主树副本写入对代写产物同样生效；
 - 捞回动作 MUST 产生可观测日志（含 spec / run_id / `status`），MUST NOT 静默。
 
 spec-review 车道既有捞回语义（路径、白名单）MUST 保持不变。

@@ -32,7 +32,7 @@
 
 1. 实现者双车道（implementer / fast-track）的提示词携带结果文件硬门契约，闭合「门在拦、提示词不说」
    的反馈断链（根因）。
-2. 重试轮携带上一轮真实死因，消除「盲重派」。
+2. 重试轮携带上一轮真实死因（两来源可达、单次渲染不重复），消除「盲重派」。
 3. 实现者车道具备 fenced-JSON 结果捞回，把「整轮白烧」降为「零成本回收」。
 4. 结果文件缺失归因区分「格式回退截断」与「未收工即停」，提升事故可读性。
 
@@ -59,8 +59,12 @@
   （`result_path = wt_path / ".fenix-run-result.json"`，`result_gate.py:437`）。为避免双实现漂移，
   在 `prompt_builder` 侧引入模块级 helper `impl_result_path(wt_path)` 并让契约段与硬门两侧共用，
   与既有 `planner_result_path` / `spec_review_result_path` 的「注入侧与校验侧同源」约定一致。
-  但硬门侧在 `result_gate.py`、注入侧在 `prompt_builder.py`，两者都在 `agent_runner` 包内，
-  提取到公共位置（如 `result_gate.py` 导出、`prompt_builder` 导入）即可，不新建模块。
+- **helper 落位方向（实测，不可反）**：既有依赖方向是 `result_gate` → `prompt_builder`——
+  `result_gate.py:23-28` 从 `prompt_builder` 导入 `planner_result_path` /
+  `spec_review_result_path` / 两个白名单；`prompt_builder` 不导入 `result_gate`。故
+  `impl_result_path` MUST 与既有路径函数同处 `prompt_builder.py`，由 `result_gate` 导入使用。
+  反向（helper 落 `result_gate.py`、`prompt_builder` 导入）会形成循环导入，并使
+  `tests/test_agent_runner_modules_contract.py:71`「单独 import 三模块不触发循环 import」契约红。
 - **`wt_path` 不总是可得**：`prompt_builder._build_prompt` 已接收 `wt_path`（`add-planner-efficiency`
   引入），runner 调用点（`runner.py:1906/1911`）已透传。契约段在 `wt_path is None` 时 MUST 降级为
   「相对路径 `.fenix-run-result.json`（worktree 根）」表述而非崩溃——降级路径仅供测试/异常场景，
@@ -85,23 +89,42 @@
 替代方案（否决）：只在 `agents/implementer.md` 步骤 7 后补一句「不写=判失败」。否决理由：静态
 文件无法携带路径、无法按车道分派，且与既有动态契约段（任务进度）的分工范式不一致。
 
-### D3: 死因透传走 `_prev_error_section` 扩展，不新增段
+### D3: 死因透传——先核实既有两段覆盖，再最小补齐（MUST NOT 重复渲染）
 
-`_prev_error_section` 现读 `state_machine.read_one(spec_name)["error"]`，为空即零注入。扩展为
-「`error` ∪ 上轮 `_impl_diagnosis`」合并渲染：
+**实测现状复核（2026-09-17，与本 SPEC 初判不同，以此为准）**：实现者双车道的重派提示词**已由两段**
+携带上轮死因——
 
-- 两者都有 → 两段分别呈现（error 在前，诊断摘要在后）；
-- 仅诊断有 → 渲染诊断段（`attribution` / `conclusion` / `progress`）；
-- 都没有 → 零注入（保持「首次派发提示词逐字不变」）。
+- `_prev_error_section`（`prompt_builder.py:609`）读 `STATE.error`，注入点 `:260`（implementer）/
+  `:334`（fast-track）；产物硬门失败文本经 `[provider-transient]` 前缀（`runner.py:2033-2034`）
+  后由 `dispatch.py:1319-1333` 写入 `STATE.error`；
+- `_impl_diagnosis_section`（`prompt_builder.py:574`）读 STATE `_impl_diagnosis`，注入点 `:263` /
+  `:336`；该字段由 `dispatch.py:867` 在每次 run 终结时写入，其 `attribution` 即
+  `final_error[:500]`（`dispatch.py:1538-1603`）。
 
-**为什么合并不替换**：`error` 是执行器终态文本（含 `[provider-transient] 结果文件缺失...` 这类
-可操作归因），`_impl_diagnosis` 是结构化摘要（含 `terminal` / `progress.branch` / `tasks_checked`）。
-实测两者常**只有其一非空**（`fix-robustness-edge-cases` 有诊断无 error；
-`fix-observability-gaps` 有 error 而诊断 `conclusion` 为空），合并是唯一能保证「重试轮总能拿到
-死因」的形态。
+即「`STATE.error` 与 `_impl_diagnosis` 两处口径不通」**不成立**，两条来源在重派轮通常都可见。
+因此 D3 **不再新增任何与 `_impl_diagnosis_section` 重复的诊断渲染**，只保留两件确有价值的事：
 
-风险：诊断是 JSON 字符串（`_impl_diagnosis` 以 JSON 文本存 STATE），渲染前 MUST 容错解析，
-解析失败 MUST 降级为原文截断呈现而非抛错。
+1. **写点核实（原 task 2.3）**：确认「结果文件缺失」文本确经上两条来源到达重派轮；若某路径上
+   `STATE.error` 被其它写点覆盖（`dispatch.py` 存在多处 `{"error": ...}` 写点），定位写点并保证
+   死因不丢（实现记录写明实际取值来源）。
+2. **零重复约束（字段级，2026-09-17 评审明确口径）**：若为覆盖「仅 `error` 非空、诊断为空」的边角
+   仍要扩展 `_prev_error_section`，同一诊断字段（`attribution` / `conclusion` / `progress`）MUST NOT
+   被两段**各自作为独立条目**渲染——`_impl_diagnosis_section` 已渲染诊断时，`_prev_error_section`
+   MUST 只渲染 `error` 原文、MUST NOT 追加任何诊断字段条目。否则两段叠加会让重试轮提示词出现两份
+   诊断，与本设计「避免提示词膨胀」的风险项自相矛盾。
+   **判据是字段级、不是子串级（MUST 遵守）**：`attribution` 的定义即 `final_error[:500]`
+   （`dispatch.py:1538-1603`），而同一路径上写入 `STATE.error` 的也是 `final_error`
+   （`dispatch.py:1319-1333`）——故 `error` 原文**天然包含** `attribution` 子串。这是两字段同源所致，
+   MUST NOT 计作「重复渲染」，MUST NOT 为凑「内容只出现一次」而裁剪 / 丢弃 `error` 原文
+   （那会违反本 SPEC「上轮死因 MUST 可达」的硬要求，并连带击穿 task 2.3 的透传验收）。
+
+替代方案（否决）：把 `_impl_diagnosis_section` 的渲染职责并入 `_prev_error_section` 并删除前者
+——`tests/test_run_budget_continuity.py:110-144` 对该段有独立断言，删除会破既有护栏。
+
+**仍然存在但本 SPEC 不主张修复的真缺口**：同一 dispatch 内的**原地退避重试 attempt**
+（`runner.py:1884` 子循环）会重建 prompt，而 `STATE.error` / `_impl_diagnosis` 只在 dispatch 终结时
+写入（`dispatch.py:867`）——故 attempt 2+ 看不到 attempt 1 的失败原因。修复它需在 runner 内把上次
+attempt 的 error 传进 `_build_prompt`（控制流改动）；本 SPEC 只在 task 2.3 登记该事实与取值来源。
 
 ### D4: 捞回泛化为按车道取目标路径，白名单按车道分派
 
@@ -130,6 +153,18 @@ implementer/fast-track → `wt_path / ".fenix-run-result.json"` + `_IMPL_RESULT_
 `tests/` 引用，实现时以 `grep` 确认后决定；保守做法是新增 `_classify_terminal_stall(sub_run_id)`
 薄包装委派，避免破既有测试）。
 
+两条硬约束（实现时 MUST 遵守，否则与既有模块契约/测试冲突）：
+
+- **落位与签名**：`result_gate.py` 的模块契约（文件头注释 + D2b）明确「本模块 MUST NOT
+  `import runner`；门族函数首参为 `runner` 实例」。故若把可复用入口落在 `result_gate.py`，签名
+  MUST 为 `classify_terminal_stall(runner, sub_run_id)`（经实例访问 `runner._TERMINAL_NO_COMMIT_TOOL_PATTERN`），
+  MUST NOT 写成 `classify_terminal_stall(run_file)` 后去 `import runner`；最保守形态是保留
+  `AgentRunner._classify_terminal_no_commit` 为唯一实现，仅新增一层文案映射/别名。
+- **文案是新增映射，不是既有返回值**：既有方法无假工具调用特征时返回「未提交即收工」
+  （`runner.py:1193/1198`），本 SPEC 的实现者车道归因要求「未收工即停」。两者 MUST 通过显式映射
+  共存——MUST NOT 直接改既有方法返回值（`tests/test_terminal_nocommit_gate.py:196/203` 断言
+  「未提交即收工」，改则破既有护栏）。
+
 **只改归因文案，不改控制流**：归因字符串拼进 error 前缀（形如
 `[provider-transient] 结果文件缺失（未收工即停）...`），供日志/告警区分。MUST NOT 因归因类别不同
 而改变重试次数、退避序列或 resume 决策。
@@ -147,9 +182,15 @@ implementer/fast-track → `wt_path / ".fenix-run-result.json"` + `_IMPL_RESULT_
 - [`_prev_error_section` 扩展使提示词长度增长] → 诊断摘要 MUST 截断（建议 attribution ≤ 500 字、
   conclusion ≤ 800 字），避免重试轮提示词膨胀。
 - [归因改名破坏既有测试] → 保守方案（新增薄包装）已写入 D5；若选择改名，必须全量 `grep` 并同步测试。
-- [D1 路径 helper 提取位置不当引入循环导入] → `prompt_builder` 已 `from ...` 依赖 `result_gate`
-  （同包），实现时确认导入方向；若成环则把 helper 放在 `prompt_builder` 并由 `result_gate` 导入
-  （现状 `result_gate` 不导入 `prompt_builder`，此方向更安全）。
+- [D1 路径 helper 提取位置不当引入循环导入] → 实测依赖方向为 `result_gate` → `prompt_builder`
+  （`result_gate.py:23-28` 导入 `planner_result_path` / `spec_review_result_path` / 两个白名单），
+  故 helper MUST 落 `prompt_builder.py` 并由 `result_gate` 导入；反向必成环（见 D1 落位方向条）。
+- [D3 与既有 `_impl_diagnosis_section` 重复渲染] → 已写入 D3 的「零重复约束」与 task 2.1；
+  实现时若发现**同一诊断字段被两段各自作为独立条目渲染**，即为本约束被违反；判据是字段级——
+  `error` 原文内含 `attribution` 子串系两字段同源（均取自 `final_error`），不计为重复（见 D3 字段级判据）。
+- [归因文案与既有 `_classify_terminal_no_commit` 文案冲突] → 既有方法无特征时返回「未提交即收工」
+  （`runner.py:1193/1198`，`tests/test_terminal_nocommit_gate.py:196/203` 断言），本 SPEC 要求
+  「未收工即停」。实现 MUST 以新增映射层产出新文案，MUST NOT 改既有方法返回值（见 task 4.1）。
 
 ## Migration Plan
 
