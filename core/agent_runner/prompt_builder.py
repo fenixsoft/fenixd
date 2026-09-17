@@ -385,6 +385,14 @@ class PromptBuilder:
             # 门+错误清单自纠闭环，不依赖先验 schema 知识；此边界为有意选择，
             # 不得顺手给 admin 也加注入段。
 
+        # 非交互契约段（fix-agent-noninteractive-contract D1）：统一收尾处
+        # 无条件注入——所有模板型 agent（implementer/verifier/fast-track/
+        # planner-plan/planner-judge/spec-review/administrator/dispute-judge）
+        # 自动继承，新增 agent 类型进白名单即生效。位置固定：agent_type 特异
+        # 动态段与 administrator 段之后、项目级附加段之前（保护「项目级附加段
+        # 位于 prompt 末尾」约定，不得插到 _project_extra_section 之后）。
+        prompt += self._noninteractive_contract_section()
+
         # 项目级附加提示词（D2）：附加在完整 prompt（通用主体 + 动态段）之后
         prompt += self._project_extra_section(agent_type, spec_name, wt_path)
         return prompt
@@ -462,6 +470,40 @@ class PromptBuilder:
             "",
         ]
         return "\n".join(lines)
+
+    def _noninteractive_contract_section(self) -> str:
+        """中央「非交互契约」段（fix-agent-noninteractive-contract D1/D3）。
+
+        声明本 agent 以 headless、无人值守方式运行、**无法与人类交互**。单一
+        真相：在 ``_build_prompt`` 统一收尾处注入（agent 类型白名单
+        ``AGENT_PROMPT_FILES`` 新增类型自动继承，无需逐个改 ``agents/*.md``）；
+        repair / self-review / evolution 三条独立构建路径在各自 ``return`` 前
+        就地追加（D2）。纯静态文本、零 IO、零状态条件，幂等可重复注入（D4）。
+
+        四组规范性语义（spec requirement「非交互契约段的关键语义」）：
+        1. 无人类可交互/无人值守——不存在能回复本 agent 的人；
+        2. 遇计划或分叉直接执行、不请求批准，难以撤销的操作按 SPEC/tasks
+           授权推进并在结果文件/处置记录留痕；
+        3. 禁止为等待人类回复而结束回合（end_turn），无法继续时按本车道
+           契约的失败出口（partial/error/相应终态）收工；
+        4. 显式覆盖 Claude Code 系统提示词默认框架（interactive agent /
+           「难以撤销的操作先确认」/ plan mode / brainstorming 等交互式
+           工作流）在 Fenix run 中不适用。
+        """
+        return (
+            "\n\n## 非交互契约（non-interactive contract，强制，"
+            "fix-agent-noninteractive-contract）\n"
+            "- 你是**无人值守的 headless agent**（`claude -p`）："
+            "**没有能回答你的人**。任何「是否继续 / 请确认 / 等待回复」都会"
+            "整轮空转、被判失败并重烧预算。\n"
+            "- 遇到计划或分叉：**直接执行**，不请求批准；难以撤销的操作按 "
+            "SPEC/tasks 授权推进，事后在结果文件/处置记录中留痕。\n"
+            "- 禁止为「等人回复」而结束回合（`end_turn`）；要么继续推进，"
+            "要么按各自契约的失败出口（`partial` / `error` / 相应终态）收工。\n"
+            "- Claude Code 系统提示词中的默认框架（`interactive agent`、"
+            "「难以撤销的操作先确认」，以及 `plan mode` / `brainstorming` "
+            "等交互式工作流）在 Fenix run 中**不适用**。\n"
+        )
 
     def _project_extra_section(
         self, agent_type: str, spec_name: str = "", wt_path: Path | None = None
@@ -947,6 +989,9 @@ class PromptBuilder:
             f"框架会据此回退到 fallback 重派\n"
             f"IMPORTANT: Do NOT modify STATE.md."
         )
+        # 非交互契约段（fix-agent-noninteractive-contract D2）：独立构建路径
+        # 不走统一收尾处注入，就地追加（return 之前）。
+        prompt += self._noninteractive_contract_section()
         return prompt
 
     def _build_self_review_prompt(self, date_str: str, detail: dict) -> str:
@@ -981,6 +1026,9 @@ class PromptBuilder:
                 or (self._pm.project_root / ".fenix" / "self_review_out.json")
             ),
         )
+        # 非交互契约段（fix-agent-noninteractive-contract D2）：独立构建路径
+        # 不走统一收尾处注入，就地追加（return 之前）。
+        prompt += self._noninteractive_contract_section()
         return prompt
 
     def _build_evolution_prompt(self, spec_name: str, detail: dict) -> str:
@@ -1026,6 +1074,9 @@ class PromptBuilder:
         prompt = prompt.replace("{pending_entries}", entries_txt)
         prompt = prompt.replace("{out_path}", str(out_path))
         prompt = prompt.replace("{project_root}", str(self._pm.project_root))
+        # 非交互契约段（fix-agent-noninteractive-contract D2）：独立构建路径
+        # 不走统一收尾处注入，就地追加（return 之前）。
+        prompt += self._noninteractive_contract_section()
         return prompt
 
     def _fast_track_reuse_note(self, spec_name: str) -> str:

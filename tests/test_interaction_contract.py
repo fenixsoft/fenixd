@@ -598,7 +598,10 @@ class TestPromptClauses(_AgentRunnerBase):
     def test_planner_plan_prompt_unchanged_without_candidates(self):
         _write_spec_doc(self.proot, "demo", "proposal.md", "纯算法模块，无 UI。\n")
         prompt = self.runner._prompt_builder._build_prompt("demo", "planner-plan")
-        self.assertNotIn("交互契约", prompt)
+        # fix-agent-noninteractive-contract 2.x：中央「非交互契约」段标题含子串
+        # 「交互契约」，通用子串否定断言已失效——改指交互契约段的独有标记
+        # （interaction-contract / add-interaction-contract-and-per-assert-triage）。
+        self.assertNotIn("interaction-contract", prompt)
 
     def test_planner_judge_requires_assertion_triage(self):
         prompt = self.runner._prompt_builder._build_prompt("demo", "planner-judge")
