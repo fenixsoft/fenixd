@@ -248,3 +248,89 @@ class RRollbackMixin:
                 "pm_engine",
                 f"stash_pop_conflict 告警写入失败 '{spec_name}'（非阻塞）: {e}",
             )
+
+    def _report_mergeback_wip_overlap(
+        self, spec_name: str, merge_info, branch: str, merge_error: str
+    ) -> None:
+        """WIP 重叠闸门阻塞告警直发（evo-merge-back-wip-overlap-gate D1/D3）。
+
+        在 merge 结果处理的**失败/阻塞分支**、``wip_gate_blocked=True`` 时调用
+        （主通道与 fast-track 通道两处站点均覆盖）：merge-back 未发生（不 stash、
+        不 merge、不 pop，主树零污染），spec 保持 in-flight。告警含 spec 名、
+        重叠文件清单、策略（阻塞）、找回命令与处置指引——signal_type=
+        ``mergeback_wip_overlap``，经 admin_monitor 白名单摄取唤起 Administrator。
+
+        **序列化加固（D6）**：evidence 一律先经 ``_str_field``（实现在
+        core/agent_runner/prompt_builder.py）序列化为 str 再入 record——dict
+        穿透 ``str.replace`` 会致 Administrator 唤起失败（fix-alert-evidence-
+        render-crash 先例）。
+
+        任何异常都不阻塞 merge 结果处理主流程。
+        """
+        overlap = list(getattr(merge_info, "wip_overlap", []) or [])
+        recover_cmds = (
+            "git stash list 查条目去向；逐文件 git show <sha>:<file> 核对"
+            "（如 git show stash@{0}:<file>）"
+        )
+        description = (
+            f"SPEC '{spec_name}' merge-back 被 WIP 重叠闸门阻塞（策略=block）："
+            f"主树 {len(overlap)} 个已跟踪文件存在未提交改动，与分支 "
+            f"'{branch}' 的改动路径重叠（{overlap}）——为避免 pop 冲突静默丢弃，"
+            f"已中止合并（主树零污染，未 stash/未 merge/未 pop）。"
+            f"找回/核对：{recover_cmds}。"
+            f"处置指引：提交（git add/commit）或 stash（git stash push）主树这些"
+            f"重叠改动后，重新放行该 spec（ready 重派）即可继续 merge-back。"
+        )
+        try:
+            self._pm.state_machine.update_spec(
+                spec_name,
+                {"error": f"mergeback wip overlap blocked (policy=block): files={overlap}"},
+            )
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"mergeback wip overlap 状态上报失败 '{spec_name}'（非阻塞）: {e}",
+            )
+        self._pm.logger.error(
+            "pm_engine",
+            f"'{spec_name}' mergeback wip overlap blocked —— 主树零污染，"
+            f"等待人工提交/stash 重叠改动后重新放行",
+        )
+        try:
+            from core.agent_runner.prompt_builder import _str_field
+            from core.admin_store import AdminStore, SIGNAL
+
+            evidence = _str_field(
+                {
+                    "overlap_files": overlap,
+                    "policy": "block",
+                    "branch": branch,
+                    "merge_error": str(merge_error),
+                }
+            )
+            store = AdminStore(self._pm.project_root, self._pm.logger)
+            store.append(
+                {
+                    "kind": SIGNAL,
+                    "signal_type": "mergeback_wip_overlap",
+                    "spec": spec_name,
+                    "severity": "major",
+                    "description": description,
+                    "evidence": evidence,
+                    "recommended_action": (
+                        "提交或 stash 主树与分支重叠的未提交改动"
+                        "（git add/commit 或 git stash push）后重新放行该 spec"
+                        "（ready 重派）继续 merge-back；被收纳/保留的改动可用 "
+                        "git stash list 与逐文件 git show <sha>:<file> 找回核对"
+                    ),
+                }
+            )
+            self._pm.logger.info(
+                "pm_engine",
+                f"mergeback_wip_overlap 告警已写入 admin store: '{spec_name}'",
+            )
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"mergeback_wip_overlap 告警写入失败 '{spec_name}'（非阻塞）: {e}",
+            )

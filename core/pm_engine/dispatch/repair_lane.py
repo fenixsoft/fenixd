@@ -504,6 +504,14 @@ class PRepairLaneMixin:
         repair 链内 spec 保持 implementing，无在飞 tester。
         """
         merge_error = getattr(remerge_info, "error", "") or str(remerge_info)
+        # ── WIP 重叠闸门阻塞旁路（evo-merge-back-wip-overlap-gate D3）──
+        # repair 后 re-merge-back 同样可能被主树 WIP 重叠闸门阻塞（repair 期间
+        # 主树出现新 WIP 与分支改动重叠）：阻塞是前置拦截而非 merge 失败，主树
+        # 未被 stash/merge/pop 触碰——不经 _merge_fp/_merge_streak 记账、不
+        # blocked、不进 repair 轮，spec 保持 in-flight，仅直发告警等待人工处置。
+        if getattr(remerge_info, "wip_gate_blocked", False):
+            self._report_mergeback_wip_overlap(spec_name, remerge_info, branch, merge_error)
+            return
         spec_entry = self._pm.state_machine.read_one(spec_name) or {}
         fp = self._pm._merge_fingerprint(merge_error)
         prev_fp = spec_entry.get("_merge_fp")

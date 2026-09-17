@@ -34,6 +34,7 @@ class G1LifecycleMixin:
         process_scanner=None,
         implement_branch_prefix: str = None,
         state_reader=None,
+        mergeback_wip_overlap_policy=None,
     ):
         self.base_dir = Path(base_dir)
         self.project_root = Path(project_root)
@@ -88,6 +89,12 @@ class G1LifecycleMixin:
         # D1/D2）：{"kept": bool, "sha": str}——kept=False 表示已被自动 drop（sha
         # 可 gc 前找回），kept=True 表示条目保留。dispatch 层读走并入告警文本。
         self.last_stash_entry_fate: dict = {"kept": True, "sha": ""}
+        # merge-back 前 WIP 重叠闸门策略（evo-merge-back-wip-overlap-gate D1）：
+        # "auto"（默认）= 自动收纳重叠改动（stash→merge→恢复，pop 冲突保留条目）；
+        # "block" = 显式配置时阻塞（不 stash/不 merge/不 pop，主树零污染）等待人工
+        # 处置。缺省 None → auto；fenixd 从 worktree.mergeback_wip_overlap_policy
+        # 解析注入。读取/解析异常一律回退 auto（闸门故障决不把默认语义改成阻塞）。
+        self._mergeback_wip_overlap_policy = mergeback_wip_overlap_policy
 
     def create(self, spec_name: str, agent_type: str = "implementer") -> Optional[Path]:
         """

@@ -50,6 +50,11 @@ PROCESS_SCAN_CACHE_SECONDS = 5.0
 # pre-dispatch autostash 条目的消息前缀（fix-autostash-orphans）：周期巡检按此
 # 识别「框架自己 stash 的条目」——人工手工 stash 的条目不带此前缀，永不自动回收。
 AUTOSTASH_MSG_PREFIX = "fenix: pre-dispatch autostash"
+# merge-back 前 WIP 重叠闸门收纳条目的消息前缀（evo-merge-back-wip-overlap-gate
+# D1）：MUST NOT 包含 AUTOSTASH_MSG_PREFIX 子串——reclaim_stale_autostash 以
+# 子串匹配栈顶并 pop（stash_guard.py），复用同前缀会让「故意保留待人工找回」的
+# 闸门条目被 60s 巡检抢走并沿用丢弃策略，去向记录随即失真。
+WIP_GATE_STASH_PREFIX = "fenix: wip-overlap gate stash"
 
 # dashboard 静态根（相对项目根）：构建产物目录（dist/、v3/dist/ 等层级变体）
 # 都在其下。产物冲突判定按目录层次容错——写死单一路径前缀会在主树重命名产物

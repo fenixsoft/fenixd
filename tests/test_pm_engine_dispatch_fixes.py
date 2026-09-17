@@ -15,6 +15,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -224,3 +225,181 @@ class TestStashPopConflictAlert(unittest.TestCase):
         from core.admin_monitor import SIGNAL_SEVERITY, STORED_SIGNAL_TYPES
         self.assertIn("stash_pop_conflict", STORED_SIGNAL_TYPES)
         self.assertEqual(SIGNAL_SEVERITY.get("stash_pop_conflict"), "major")
+
+
+class TestMergebackWipOverlapAlert(unittest.TestCase):
+    """evo-merge-back-wip-overlap-gate D3：阻塞路径旁路熔断 + 告警直发。
+
+    三个 spec scenario：
+      1. wip_gate_blocked=True → admin_alerts 出现 handled=false 的
+         mergeback_wip_overlap 记录（description 含重叠清单与找回命令），
+         且 _merge_streak 未累计、spec 未被 transition("blocked")
+      2. 连续两次阻塞亦然（第二次同样不记账、不冻结）
+      3. signal_type 被 admin_monitor 白名单收录 + severity major
+    """
+
+    def setUp(self):
+        from core.pm_engine import PMEngine
+        self.tmpdir = tempfile.mkdtemp()
+        self.repo = Path(self.tmpdir)
+        self.logger = MagicMock()
+        (self.repo / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.state_path = self.repo / ".fenix" / "STATE.md"
+        self.sm = StateMachine(self.state_path, self.logger)
+        config = {}
+        self.engine = PMEngine(self.sm, MagicMock(), config, self.repo, self.logger)
+        # mock worktree manager：merge_back_from_branch 返回 WIP 重叠闸门阻塞
+        wm = MagicMock()
+        wm.ensure_spec_committed.return_value = True
+        wm.last_stash_pop_conflicts = []
+        wm.has_active_worktree.return_value = False
+        wm.find_implementer_worktree.return_value = None
+        wm.consume_legacy = MagicMock()
+        self.engine.agent_runner.worktree_manager = wm
+        # mock worker 依赖
+        self.engine._verification._implementer_zero_change = MagicMock(return_value=False)
+        self.engine._verification._deliverable_gate_missing = MagicMock(return_value=[])
+        self.engine._tasks_md_relint_from_branch = MagicMock(return_value=[])
+        self.engine._reconcile_impl_budget = MagicMock()
+        self.engine._write_impl_result_snapshot = MagicMock()
+        self.engine._cleanup_shared_result_file = MagicMock()
+        self.engine._clear_dispatch_conflict = MagicMock(return_value={})
+        self.engine._sync_task_progress = MagicMock()
+        self.engine._record_impl_diagnosis = MagicMock()
+        self.engine._note_unattainable_todos = MagicMock()
+        self.engine._process_queue = MagicMock()
+        self.engine.handle_event = MagicMock()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _alerts_path(self):
+        from core.admin_store import AdminStore
+        return AdminStore(self.repo, self.logger).alerts_path
+
+    def _mk(self, name="blocked-spec"):
+        self.sm.add_spec(name, {"priority": 5})
+        self.sm.transition(name, "ready")
+        self.sm.transition(name, "implementing")
+
+    def _stub_blocked_merge(self, overlap=("core/a.py",)):
+        from core.worktree_manager.types import MergeConflictInfo
+        wm = self.engine.agent_runner.worktree_manager
+        wm.merge_back_from_branch.return_value = MergeConflictInfo(
+            False,
+            "Merge-back blocked by WIP overlap gate (policy=block): 1 main-tree "
+            "tracked file(s) with uncommitted changes overlap branch changes: "
+            "['core/a.py']",
+            wip_overlap=list(overlap),
+            wip_gate_blocked=True,
+        )
+
+    def _run_implementer_merge_attempt(self, spec_name="blocked-spec",
+                                       branch="fenix/blocked-spec-1"):
+        """模拟一次 implementer run 走到 merge-back（被闸门阻塞）。"""
+        result = SimpleNamespace(
+            success=True, error=None, run_id="impl-blocked-1", branch=branch,
+            worktree_dirty=[], cancelled=False, worktree_path=None,
+        )
+        self.engine.agent_runner.run_implementer = MagicMock(return_value=result)
+        self.engine._read_implementer_result = MagicMock(return_value={
+            "status": "success", "spec": spec_name,
+        })
+        self.engine._run_agent_worker(spec_name, "implementer", 5)
+
+    def test_blocked_merge_writes_unhandled_alert_and_skips_breaker(self):
+        """scenario 1: 阻塞 → handled=false 告警 + _merge_streak 未累计 + 不 blocked。"""
+        self._mk()
+        self._stub_blocked_merge()
+
+        self._run_implementer_merge_attempt()
+
+        # admin_alerts 出现 handled=false 的 mergeback_wip_overlap 记录
+        import json
+        records = json.loads(self._alerts_path().read_text(encoding="utf-8"))
+        hits = [r for r in records if r.get("signal_type") == "mergeback_wip_overlap"]
+        self.assertEqual(len(hits), 1, f"应恰好一条告警: {records}")
+        rec = hits[0]
+        self.assertFalse(rec.get("handled"), "告警应未处理（handled=false）")
+        self.assertEqual(rec.get("spec"), "blocked-spec")
+        self.assertEqual(rec.get("severity"), "major")
+        desc = rec.get("description", "")
+        for fragment in ("blocked-spec", "core/a.py", "git show", "git stash list",
+                         "提交（git add/commit）或 stash"):
+            self.assertIn(fragment, desc, f"description 应含 {fragment!r}: {desc}")
+        # evidence 已序列化为 str（dict 穿透 str.replace 会致 Administrator 唤起失败）
+        ev = rec.get("evidence")
+        self.assertIsInstance(ev, str, f"evidence 应为 str: {ev!r}")
+        self.assertIn("core/a.py", ev)
+
+        # spec 保持 in-flight：未被 transition("blocked")、未降级 ready
+        entry = self.sm.read_one("blocked-spec") or {}
+        self.assertEqual(entry.get("status"), "implementing",
+                         f"阻塞不应翻转状态机: {entry}")
+        # _merge_fp/_merge_streak 未累计（旁路熔断记账：键不存在或为 None/0）
+        self.assertNotIn("_merge_fp", entry, "旁路不应写入指纹")
+        self.assertEqual(int(entry.get("_merge_streak", 0) or 0), 0,
+                         "不应累计熔断连击")
+
+    def test_repeated_block_never_counts_or_blocks(self):
+        """scenario 2: 连续两次阻塞 → _merge_streak 恒 0、spec 保持 in-flight。"""
+        self._mk()
+        self._stub_blocked_merge()
+
+        self._run_implementer_merge_attempt()
+        # 模拟人工处置后重新放行（ready → implementing 重派）
+        self.sm.transition("blocked-spec", "ready")
+        self.sm.transition("blocked-spec", "implementing")
+        self._run_implementer_merge_attempt()
+
+        entry = self.sm.read_one("blocked-spec") or {}
+        self.assertEqual(entry.get("status"), "implementing",
+                         f"连续阻塞后 spec 仍应 in-flight: {entry}")
+        self.assertEqual(int(entry.get("_merge_streak", 0) or 0), 0,
+                         "连续阻塞 MUST NOT 累计 _merge_streak（不入熔断）")
+        self.assertIsNone(entry.get("_merge_fp"))
+
+    def test_signal_type_whitelisted(self):
+        """scenario 3: signal_type 被 admin_monitor 白名单收录 + severity major。"""
+        from core.admin_monitor import SIGNAL_RECOMMENDATION, SIGNAL_SEVERITY, STORED_SIGNAL_TYPES
+        self.assertIn("mergeback_wip_overlap", STORED_SIGNAL_TYPES,
+                      "未收录则摄取循环跳过、记录石沉大海")
+        self.assertEqual(SIGNAL_SEVERITY.get("mergeback_wip_overlap"), "major")
+        self.assertTrue(SIGNAL_RECOMMENDATION.get("mergeback_wip_overlap"),
+                        "应有核对指引")
+
+    def test_remerge_block_skips_breaker_and_alerts(self):
+        """repair 后 re-merge 被闸门阻塞 → 旁路熔断、不 blocked、告警直发。
+
+        第三处 merge 结果处理站点（repair_lane._handle_remerge_failure）：
+        阻塞是前置拦截，repair 期间主树出现新 WIP 与分支重叠时同样 MUST NOT
+        计入 _merge_fp/_merge_streak 熔断记账。
+        """
+        self._mk("repair-spec")
+        from core.worktree_manager.types import MergeConflictInfo
+        remerge_info = MergeConflictInfo(
+            False,
+            "Merge-back blocked by WIP overlap gate (policy=block): 1 main-tree "
+            "tracked file(s) with uncommitted changes overlap branch changes: "
+            "['core/a.py']",
+            wip_overlap=["core/a.py"],
+            wip_gate_blocked=True,
+        )
+        self.engine._handle_remerge_failure(
+            "repair-spec", remerge_info, "fenix/repair-spec-1")
+
+        entry = self.sm.read_one("repair-spec") or {}
+        self.assertEqual(entry.get("status"), "implementing",
+                         f"repair 阻塞同样不翻转状态机: {entry}")
+        self.assertNotIn("_merge_fp", entry, "repair 阻塞不应写入指纹")
+        self.assertEqual(int(entry.get("_merge_streak", 0) or 0), 0,
+                         "repair 阻塞不应累计熔断连击")
+        # 告警直发（admin_alerts 出现 handled=false 的 mergeback_wip_overlap）
+        import json
+        records = json.loads(self._alerts_path().read_text(encoding="utf-8"))
+        hits = [r for r in records if r.get("signal_type") == "mergeback_wip_overlap"]
+        self.assertEqual(len(hits), 1, f"应恰好一条告警: {records}")
+        rec = hits[0]
+        self.assertFalse(rec.get("handled"))
+        self.assertEqual(rec.get("spec"), "repair-spec")
+        self.assertIn("core/a.py", rec.get("description", ""))

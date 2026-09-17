@@ -53,12 +53,18 @@ class G6StashGuardMixin:
                 files.append(path)
         return sorted(p for p in files if p)
 
-    def ensure_clean_tree(self) -> bool:
+    def ensure_clean_tree(self, prefix: str = None) -> bool:
         """merge guard 段内确保主树 tracked 状态干净，保证 merge-back 可成功。
 
         仅 stash **tracked 修改**（`git stash push` 不带 -u）。返回 True 表示
         执行过 stash（guard 的 finally 会 restore_after_merge 恢复）；False
         表示主树 tracked 状态本来就干净。
+
+        ``prefix``：stash 条目前缀。缺省 None = ``AUTOSTASH_MSG_PREFIX``（既有
+        语义）；merge-back 前 WIP 重叠闸门收纳路径传入 ``WIP_GATE_STASH_PREFIX``
+        （evo-merge-back-wip-overlap-gate D1 前缀隔离：reclaim_stale_autostash 只
+        按 AUTOSTASH_MSG_PREFIX 子串回收栈顶条目，复用同前缀会让故意保留待人工
+        找回的闸门条目被 60s 巡检抢走并沿用丢弃策略，去向记录随即失真）。
 
         **不卷 untracked 文件**（fix-autostash-orphans）：untracked 与分支新增
         同路径的冲突由 merge 内部 `_backup_untracked_spec_files` 处理——不一致
@@ -84,7 +90,7 @@ class G6StashGuardMixin:
                 "stash",
                 "push",
                 "-m",
-                AUTOSTASH_MSG_PREFIX,
+                prefix or AUTOSTASH_MSG_PREFIX,
                 "--",
                 ".",
                 ":(exclude)spec/changes",
@@ -189,6 +195,10 @@ class G6StashGuardMixin:
                     if pinned_sha
                     else "git stash show"
                 )
+                # 条目保留 + 去向记录（evo-merge-back-wip-overlap-gate D3）：
+                # kept=True 且钉住真实 sha——dispatch 层告警据此生成逐文件找回
+                # 命令；杜绝「条目保留但去向/内容未知」的静默丢弃形态。
+                self.last_stash_entry_fate = {"kept": True, "sha": pinned_sha}
                 self.logger.warning(
                     "worktree_manager",
                     f"Stash pop conflict self-healed; discarded stash changes on "

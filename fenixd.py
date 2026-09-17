@@ -234,6 +234,10 @@ class FenixDaemon:
         # 并集；配置值仅作推送侧前缀，非创建端事实源（非 fenix 配置下创建端
         # 仍产出 fenix/<spec>-<ts>，须并集枚举才不扫空命名空间）。
         _impl_prefix = self.config.get("worktree.implement_branch_prefix", "fenix")
+        # merge-back 前 WIP 重叠闸门策略（evo-merge-back-wip-overlap-gate D1）：
+        # 默认 auto（自动收纳重叠改动）；显式 worktree.mergeback_wip_overlap_policy
+        # =block 时阻塞等待人工处置（不 stash/不 merge/不 pop，主树零污染）。
+        _wip_policy = self.config.get("worktree.mergeback_wip_overlap_policy", "auto")
         self.worktree_manager = WorktreeManager(
             wt_base,
             PROJECT_ROOT,
@@ -242,6 +246,7 @@ class FenixDaemon:
             # 分支在飞引用保护（D6）：注入 STATE 读取器——stale 清扫删分支前
             # 检查在飞/待收口 spec 的分支引用（宁可多留分支不可误删成果）。
             state_reader=self.state_machine.read_all,
+            mergeback_wip_overlap_policy=str(_wip_policy) if _wip_policy else "auto",
         )
         self.logger.info("fenixd", "WorktreeManager initialized")
 

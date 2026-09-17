@@ -27,6 +27,7 @@ class MergeConflictInfo:
         "has_semantic_conflict",
         "rehearsed",
         "wip_overlap",
+        "wip_gate_blocked",
     )
 
     def __init__(
@@ -39,6 +40,7 @@ class MergeConflictInfo:
         has_semantic_conflict: bool = False,
         rehearsed: bool = False,
         wip_overlap: list | None = None,
+        wip_gate_blocked: bool = False,
     ):
         self.success = bool(success)
         self.error = error
@@ -48,8 +50,13 @@ class MergeConflictInfo:
         self.has_semantic_conflict = has_semantic_conflict
         self.rehearsed = bool(rehearsed)
         # WIP 重叠预检（fix-mergeback-stashpop-silent-loss D3）：主树脏 tracked
-        # 文件与分支改动文件的交集，空列表 = 无重叠。只预警不阻断。
+        # 文件与分支改动文件的交集，空列表 = 无重叠。
         self.wip_overlap = list(wip_overlap or [])
+        # WIP 重叠闸门阻塞（evo-merge-back-wip-overlap-gate D1）：True = merge-back
+        # 被前置闸门按阻塞策略中止（不 stash、不 merge、不 pop，主树零污染）。
+        # dispatch 层据此旁路 _merge_fp/_merge_streak 熔断记账与 ready 降级，
+        # spec 保持 in-flight 只发告警等待人工处置（对照 rehearsed 同类豁免）。
+        self.wip_gate_blocked = bool(wip_gate_blocked)
 
     def __iter__(self):
         """兼容 (bool, str) 解包：既有调用方 ``success, err = ...`` 照常工作。"""
@@ -65,5 +72,6 @@ class MergeConflictInfo:
             f"conflict_paths={self.conflict_paths}, "
             f"self_heal={self.self_heal_applicable}/{self.self_heal_succeeded}, "
             f"semantic={self.has_semantic_conflict}, rehearsed={self.rehearsed}, "
-            f"wip_overlap={self.wip_overlap})"
+            f"wip_overlap={self.wip_overlap}, "
+            f"wip_gate_blocked={self.wip_gate_blocked})"
         )

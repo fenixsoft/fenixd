@@ -941,6 +941,20 @@ class QQQueueMixin:
                                 spec_name, merge_info, result.branch, merge_error
                             )
                             return
+                        # ── WIP 重叠闸门阻塞旁路（evo-merge-back-wip-overlap-gate D3）──
+                        # 阻塞是「前置拦截」而非「merge 失败」：主树未被
+                        # stash/merge/pop 触碰（worktree_manager 在闸门命中且策略为
+                        # block 时直接返回 wip_gate_blocked=True，主树零污染），
+                        # 原样走熔断记账会把同一指纹连续累计到阈值冻结 spec
+                        # （比现状更差）。对照 rehearsed=True 同类豁免：不经
+                        # _merge_fp/_merge_streak 记账、不做 ready 降级、不进
+                        # repair 通道，spec 保持 in-flight，仅直发告警等待人工
+                        # 处置主树 WIP（提交或 stash 重叠改动后重新放行）。
+                        if getattr(merge_info, "wip_gate_blocked", False):
+                            self._report_mergeback_wip_overlap(
+                                spec_name, merge_info, result.branch, merge_error
+                            )
+                            return
                         # merge 失败：指纹熔断（fix-fenix-token-waste）。
                         # 同一错误指纹连续失败 ≥ 阈值 → spec 进入 blocked 停止自动重试，
                         # 避免「根因不消除 → 全量重跑 → 再败」的无限烧钱循环。
