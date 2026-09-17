@@ -109,12 +109,4 @@
 - 移动端/响应式行为场景在场景 JSON 顶层声明 `"viewport": {"width": 390, "height": 844}`（引擎按声明视口渲染，`useIsMobile` 等 matchMedia 门控的移动端条件渲染可被真实驱动）；桌面行为场景不声明该字段（缺省 1280×800）。断言的选择器/文案必须与目标视口下实际渲染的结构一致（桌面表格与移动卡片列表结构不同）。
 - **铁律：禁止 mock 本 SPEC 交付物包含的 API 端点。** mock_api 仅允许用于与交付物无关的辅助/壳层接口（如页面骨架依赖的 /api/overview）。本 SPEC 实现/修改的端点必须打真实实例——mock 掉被测对象等于只测了前端对夹具数据的渲染，后端契约零覆盖（假阴性放大器：场景"通过"而功能未验证，help-center 事故实证）。若被测实例形态无法支撑真实端点，在场景中如实失败，由框架按环境问题升级处置，不得以 mock 掩盖。
 
-## cli 场景：pytest 断言的 output_match 硬约束
-
-`output_match` 是**子串包含**（`mode: contains`，见 `core/verify_engine/cli_assertions.py`），不是正则、不做大小写归一。由它派生的两条约束必须先核对再落盘：
-
-- **禁止在 run 命令中并列 `-v` 与 `-q`（或 `--verbose` 与 `--quiet`）。** pytest 9 中 `-q` 覆盖 `-v`，测试虽全过（`exit_code=0`）但输出退化为 `..... [100%]`，**不打印 `PASSED`**——于是「`<test_name> PASSED`」类 output_match 断言 100% 失败，且全场景同因失败（签名一致）触发 `verify_uniform_failure` 假信号，白烧一轮 admin/验证预算。**要 `PASSED` 就只写 `-v`（可加 `--tb=short`），要安静就只写 `-q` 并改用「`N passed`」类断言——二者不可并存，且断言必须与命令实际输出形态一致。**
-- **断言文案必须来自被测产物的真实输出，不得臆测。** 典型陷阱：前端状态标签多由 `STATUS_META`（`core/dashboard/static/src/services/dashboard.ts`）渲染为**中文**（`implementing`→`实现中`、`implemented`→`已实现`、`testing`→`验证中`），若被断言的 DOM 走该表，`text_contains: "implementing"` 必失败——web 场景断言状态文案前先查该表或真实渲染结构。cli 同理：断言具体用例名/输出行前，用源码（测试文件里的 `def test_*` 名）核对，不得凭场景描述臆造。
-- 通用原则：**凡「输出匹配」类断言，落盘前先自问「被测命令/页面在通过时究竟会打印/渲染什么」**；无法从源码确定时，改用确定性更强的断言（cli 优先 `exit_code` + `file_exists`/`json_output`；web 优先 `element_visible` + `text_match` 选择器细化），而非赌一个想当然的字符串。
-
 IMPORTANT: 不要修改 .fenix/STATE.md。
