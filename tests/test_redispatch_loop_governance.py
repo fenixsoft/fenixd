@@ -662,5 +662,127 @@ class TestSameCauseCircuitBreaker(_RunAgentBase):
         assert int(entry.get("_redispatch_same_cause_streak", 0) or 0) == 2
 
 
+class TestWorktreeInheritance(unittest.TestCase):
+    """tasks 4.2/4.4：成果继承判据 + 预算/豁免正交。"""
+
+    def setUp(self):
+        from test_agent_runner import make_runner
+
+        self.tmpdir = tempfile.mkdtemp()
+        self.root = Path(self.tmpdir)
+        self.spec = "demo"
+        _write_main_tasks(self.root, self.spec, HUMAN_GATE_TASKS)
+        self.runner = make_runner(self.root)
+        self.wt = self.root / ".claude" / "worktrees" / f"impl-{self.spec}-1"
+        self.wt.mkdir(parents=True, exist_ok=True)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _write_wt_result(self, payload):
+        (self.wt / ".fenix-run-result.json").write_text(
+            json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    def test_keep_for_partial_non_convergent(self):
+        """partial 且存在未申报缺口 → keep（供下轮继承）。"""
+        self._write_wt_result(
+            {"status": "partial", "spec": self.spec,
+             "completed_tasks": ["1.1", "1.2"], "unfinished": []}
+        )
+        assert self.runner._should_keep_worktree_for_partial(self.spec, self.wt) is True
+
+    def test_no_keep_for_partial_convergent(self):
+        """partial 且缺口全申报（收敛）→ 不 keep（正常成功路径 cleanup 不变）。"""
+        self._write_wt_result(
+            {"status": "partial", "spec": self.spec,
+             "completed_tasks": ["1.1", "1.2"],
+             "unattainable": UNATTAINABLE_73}
+        )
+        assert self.runner._should_keep_worktree_for_partial(self.spec, self.wt) is False
+
+    def test_no_keep_for_success_or_error(self):
+        """success / error 形态 → 不 keep（既有 cleanup 语义不变）。"""
+        self._write_wt_result({"status": "success", "spec": self.spec,
+                               "completed_tasks": ["1.1", "1.2"]})
+        assert self.runner._should_keep_worktree_for_partial(self.spec, self.wt) is False
+        self._write_wt_result({"status": "error", "spec": self.spec, "error": "x"})
+        assert self.runner._should_keep_worktree_for_partial(self.spec, self.wt) is False
+
+    def test_keep_fail_open_on_exception(self):
+        """判定/读取异常 → fail-open 返回 False（走既有 cleanup，不阻断收工）。"""
+        (self.wt / ".fenix-run-result.json").write_text("{not-json", encoding="utf-8")
+        assert self.runner._should_keep_worktree_for_partial(self.spec, self.wt) is False
+        (self.wt / ".fenix-run-result.json").unlink()
+        assert self.runner._should_keep_worktree_for_partial(self.spec, self.wt) is False
+
+    def test_cross_assert_runner_judgement_matches_dispatch(self):
+        """runner 侧 keep 判据与 dispatch._honest_exit_gap 对同一结果文件同结论。"""
+        from core.pm_engine.dispatch import Dispatcher
+
+        cases = [
+            # (payload, 期望 keep, 期望收敛)
+            ({"status": "partial", "spec": self.spec,
+              "completed_tasks": ["1.1", "1.2"], "unfinished": []}, True, False),
+            ({"status": "partial", "spec": self.spec,
+              "completed_tasks": ["1.1", "1.2"],
+              "unattainable": UNATTAINABLE_73}, False, True),
+            ({"status": "success", "spec": self.spec,
+              "completed_tasks": ["1.1", "1.2"]}, False, False),
+        ]
+        pm = MagicMock()
+        pm.project_root = self.root
+        for payload, expect_keep, expect_converged in cases:
+            self._write_wt_result(payload)
+            keep = self.runner._should_keep_worktree_for_partial(self.spec, self.wt)
+            converged = bool(Dispatcher._honest_exit_gap(pm, self.spec, payload))
+            assert keep == expect_keep, (payload, keep)
+            assert converged == expect_converged, (payload, converged)
+            # 逐字等价：runner keep ⟺ (partial ∧ ¬收敛)；_honest_exit_gap 只在
+            # partial 域返回非空（= 收敛成立），success/error 域返回 [] 与收敛
+            # 无关——等价域以 partial 形态界定。
+            is_partial = payload.get("status") == "partial"
+            assert keep == (is_partial and not converged), (
+                "runner keep 判据 MUST 与 dispatch._honest_exit_gap 逐字等价",
+                payload)
+
+    def test_breaker_freeze_keeps_budget_and_skips_death_exempt(self):
+        """4.4：熔断时 _impl_run_budget_used 保持真实值、MUST NOT 走死亡 run 豁免。"""
+        sm, engine, logger = _make_engine(self.root)
+        engine.config.setdefault("agents", {})["max_same_cause_redispatches"] = 2
+        sm.add_spec(self.spec, {"priority": 5})
+        sm.transition(self.spec, "ready")
+        engine._exempt_dead_run_budget = MagicMock()
+        engine._increment_impl_run_budget_used = MagicMock(
+            wraps=lambda s: sm.update_spec(
+                s, {"_impl_run_budget_used": int(
+                    (sm.read_one(s) or {}).get("_impl_run_budget_used", 0) or 0) + 1}
+            ) or 0
+        )
+
+        def _fake_impl(spec_name, pre_wt_path=None):
+            return SimpleNamespace(
+                success=True, error=None,
+                run_id=f"impl-{self.spec}-1-a1", branch=None,
+                duration_seconds=1.0, worktree_dirty=[],
+            )
+
+        engine.agent_runner.run_implementer = MagicMock(side_effect=_fake_impl)
+        engine.agent_runner.worktree_manager.find_implementer_worktree = (
+            MagicMock(return_value=None)
+        )
+        for r in (1, 2):
+            sm.transition(self.spec, "implementing")
+            _mk_result_file(self.root, self.spec,
+                            {"status": "partial", "spec": self.spec,
+                             "completed_tasks": ["1.1", "1.2"], "unfinished": []})
+            engine._run_agent_worker(self.spec, "implementer", 5)
+        entry = sm.read_one(self.spec)
+        assert entry["status"] == "blocked"
+        # 预算计数保持真实值（每轮启动递增一次），MUST NOT 被熔断重置
+        assert int(entry.get("_impl_run_budget_used", 0) or 0) == 2, entry
+        # 死亡 run 豁免（无收工结果形态）MUST NOT 被触发
+        engine._exempt_dead_run_budget.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

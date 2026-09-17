@@ -2625,8 +2625,35 @@ class AgentRunner:
             handed_off.add(wt_path)
         else:
             self._v2_stop_for_worktree(wt_path)
-            # 成功：清理 worktree（保留分支供 merge-back），返回结果
-            self.worktree_manager.cleanup(wt_path, success=True)
+            # 成果继承（fix-redispatch-loop-governance D4）：implementer 成功
+            # 路径先 cleanup 再返回（dispatch 层拿到结果时现场已被删除），故 keep
+            # 判定必须落在此处、cleanup(success=True) 之前。partial 且诚实退出
+            # 收敛**不成立**的 run（确有未申报缺口）将被 spec 层判失败重派——
+            # 保留 worktree 现场与分支成果供下轮经 _take_reusable_worktree 认领
+            #（同一目录同一分支，不再从零重建）。判据单点复用
+            # core.run_task_track.honest_exit_convergence_gap（与 dispatch.
+            # _honest_exit_gap 同一实现点，MUST NOT 重写第二套收敛推导）；判定/
+            # 保留抛异常 fail-open 走既有 cleanup（保留失败绝不阻断 run 收工）。
+            # MUST NOT 影响正常成功推进路径的 cleanup(success=True) 语义。
+            if self._should_keep_worktree_for_partial(spec_name, wt_path):
+                try:
+                    self.worktree_manager.keep_for_reuse(spec_name, wt_path)
+                    handed_off.add(wt_path)
+                    self.logger.info(
+                        "agent_runner",
+                        f"partial 非收敛 '{spec_name}'：保留 worktree 供下轮"
+                        f"重派继承 {wt_path}",
+                    )
+                except Exception as e:  # noqa: BLE001 — 保留失败 fail-open
+                    self.logger.warning(
+                        "agent_runner",
+                        f"partial keep 保留失败 '{spec_name}'（fail-open 走既有"
+                        f"cleanup）: {e}",
+                    )
+                    self.worktree_manager.cleanup(wt_path, success=True)
+            else:
+                # 成功：清理 worktree（保留分支供 merge-back），返回结果
+                self.worktree_manager.cleanup(wt_path, success=True)
         duration = time.time() - start_time
         self._daily_run_count += 1
         # cli-retry-backoff（2.1/2.2）：成功收工重置秒挂连续计数（非连续不累积）
@@ -2663,6 +2690,48 @@ class AgentRunner:
             worktree_dirty=wt_dirty,
             worktree_path=(wt_path if agent_type in ("fast-track", "repair") else None),
         )
+
+    def _should_keep_worktree_for_partial(self, spec_name: str, wt_path) -> bool:
+        """「partial 且诚实退出收敛不成立」→ 保留 worktree 供下轮重派继承（D4 判据单点）。
+
+        读 worktree 内结果文件（缺失 → 主树共享文件回退，与 engine._read_implementer_result
+        同语义）；``status == "partial"`` 且 ``honest_exit_convergence_gap`` 判
+        **不**收敛（缺口有未申报项 / 申报含非法项 / 无申报）→ True。
+
+        判据 MUST 复用 ``core.run_task_track.honest_exit_convergence_gap``（与
+        dispatch._honest_exit_gap 同一个实现点），MUST NOT 重写第二套收敛推导
+        （否则违反 honest-exit-convergence 的「缺口口径单点」要求，并把读源回退的
+        洞重新开在 runner 侧）。任何异常 fail-open 返回 False（走既有 cleanup），
+        保留失败不阻断 run 收工（liveness 兜底）。
+        """
+        try:
+            result_path = wt_path / ".fenix-run-result.json"
+            if not result_path.exists():
+                result_path = self.project_root / ".fenix" / ".fenix-run-result.json"
+                if not result_path.exists():
+                    return False
+            data = json.loads(result_path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                return False
+            # stamp 严格校验（fail-closed，与 engine._read_implementer_result 同口径）：
+            # 共享 .fenix/.fenix-run-result.json 是跨 spec 单例，无 stamp 残留
+            # 不得被误采信为当前 spec 的结果（worktree 文件同规则收紧）。
+            if data.get("spec") != spec_name:
+                return False
+            if data.get("status") != "partial":
+                # 仅 partial 形态纳入 keep；success/error 走既有 cleanup 语义
+                #（正常成功推进路径 cleanup(success=True) 不变）。
+                return False
+            from core.run_task_track import honest_exit_convergence_gap
+
+            converged = bool(honest_exit_convergence_gap(data, self.project_root, spec_name))
+            return not converged
+        except Exception as e:  # noqa: BLE001 — 判定异常 fail-open
+            self.logger.debug(
+                "agent_runner",
+                f"partial keep 判定异常（fail-open 走既有 cleanup）'{spec_name}': {e}",
+            )
+            return False
 
     # ── R8: 失败终态分型（等价搬移，D1 R8 表）────────────────────────
     # 重试等待 vs 终态 keep 分型。跨边界 break 决策经返回值回传；

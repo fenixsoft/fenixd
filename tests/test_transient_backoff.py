@@ -988,6 +988,14 @@ class TestDispatchWorkerTransientBranch:
             def _enqueue(self, spec_name, agent_type):
                 self.enqueued.append((spec_name, agent_type))
 
+            # fix-redispatch-loop-governance 3.3：同因重派熔断经 _pm 调用归因指纹
+            #（与真实 PMEngine._redispatch_cause_fingerprint 同语义——归一化哈希）
+            @staticmethod
+            def _redispatch_cause_fingerprint(error):
+                import hashlib
+                norm = "".join((error or "").split())
+                return hashlib.sha1(norm.encode("utf-8", "replace")).hexdigest()[:12]
+
             def _enqueue_front(self, spec_name, agent_type):
                 self.enqueued.append((spec_name, agent_type))
 

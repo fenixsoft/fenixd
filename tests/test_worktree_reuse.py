@@ -261,3 +261,81 @@ class TestStaleWorktreeValidation:
         assert result.success is True
         runner.worktree_manager.create.assert_not_called()
         assert runner._run_claude.call_args.args[1] == real
+
+
+
+def _write_spec_tasks(root, text):
+    """写主树 spec tasks.md（gap_from_result 需要任务 id 清单）。"""
+    d = root / "spec" / "changes" / "demo"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "tasks.md").write_text(text, encoding="utf-8")
+
+
+HUMAN_GATE_TASKS = (
+    "# Tasks\n\n## 1. 实现\n\n- [x] 1.1 任务一\n- [x] 1.2 任务二\n"
+    "## 7. 收尾\n\n- [ ] 7.3 门控\n"
+)
+
+class TestPartialNonConvergentInheritance:
+    """fix-redispatch-loop-governance 4.3：partial 非收敛形态的成果继承链。
+
+    runner 成功路径对 partial 且收敛不成立的 run 保留 worktree（_finalize_success
+    内 cleanup 之前判定）；下一轮 implementer create 经 _take_reusable_worktree
+    认领同一目录同一分支（继承已提交成果与未提交现场），MUST NOT 新建 worktree。
+    """
+
+    def test_partial_non_convergent_keep_then_implementer_reuses(self, tmp_path):
+        root = tmp_path / "repo"
+        init_repo(root)
+        wm = make_wm(root)
+
+        _write_spec_tasks(root, HUMAN_GATE_TASKS)
+        wt1 = wm.create("demo", "implementer")
+        branch1 = wm.get_branch_name(wt1)
+        # 成果（提交 + 未提交现场）
+        (wt1 / "core" / "feat.py").parent.mkdir(parents=True, exist_ok=True)
+        (wt1 / "core" / "feat.py").write_text("IMPL\n", encoding="utf-8")
+        git(wt1, "add", "-A")
+        git(wt1, "commit", "-q", "-m", "[fenix] demo: impl")
+        (wt1 / "core" / "wip.py").write_text("WIP\n", encoding="utf-8")
+
+        from test_agent_runner import make_runner
+        runner = make_runner(root)
+
+        # partial 非收敛结果文件 → keep 判据成立
+        (wt1 / ".fenix-run-result.json").write_text(
+            '{"status": "partial", "spec": "demo",'
+            ' "completed_tasks": ["1.1", "1.2"], "unfinished": []}',
+            encoding="utf-8",
+        )
+        assert runner._should_keep_worktree_for_partial("demo", wt1) is True
+        wm.keep_for_reuse("demo", wt1)
+        assert wt1.exists(), "partial 非收敛保留后目录必须存在"
+
+        # 下一轮 implementer 认领同一目录同一分支
+        wt2 = wm.create("demo", "implementer")
+        assert wt2 is not None and Path(wt2) == Path(wt1)
+        assert wm.get_branch_name(wt2) == branch1
+        assert (wt2 / "core" / "feat.py").read_text(encoding="utf-8") == "IMPL\n"
+        assert (wt2 / "core" / "wip.py").exists()
+
+    def test_partial_convergent_cleanup_semantics_unchanged(self, tmp_path):
+        """收敛形态不保留：正常成功路径 cleanup(success=True) 语义不变。"""
+        root = tmp_path / "repo"
+        init_repo(root)
+        wm = make_wm(root)
+        _write_spec_tasks(root, HUMAN_GATE_TASKS)
+        wt1 = wm.create("demo", "implementer")
+        (wt1 / ".fenix-run-result.json").write_text(
+            '{"status": "partial", "spec": "demo",'
+            ' "completed_tasks": ["1.1", "1.2"],'
+            ' "unattainable": [{"task": "7.3", "reason": "门控"}]}',
+            encoding="utf-8",
+        )
+        from test_agent_runner import make_runner
+        runner = make_runner(root)
+        branch1 = wm.get_branch_name(wt1)
+        assert runner._should_keep_worktree_for_partial("demo", wt1) is False
+        wm.cleanup(wt1, success=True)
+        assert not wt1.exists(), "收敛形态走既有 cleanup（目录清理、分支保留）"
+        assert git(root, "rev-parse", "--verify", branch1).returncode == 0
