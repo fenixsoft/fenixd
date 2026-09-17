@@ -134,3 +134,16 @@
 - [x] 5.3 循环依赖检查：确认未引入新静态依赖环（design D6）
 - [x] 5.4 汇报疑点清单最终态（`giant-classes-findings.md`）
 - [x] 5.5 逐项勾选本 tasks.md 全部已完成任务
+
+## 验证修复（原地打回第 1 轮）
+
+### 上轮实现结论（自动携带，来自上一轮 implementer 收工结论）
+
+三个巨型类（WorktreeManager 83 方法 / Dispatcher 56 / DashboardHandler 80+伴生类）全部按 design D1 分组表拆为子包/mixin：worktree_manager 9 组、dispatch 6 组、dashboard routes 10 组+伴生类独立；4.5 表驱动路由分派（GET 20/POST 33/DELETE 2，55 分支零变化）；4.6 gen-route-map 三条 MUST 同步+本仓覆盖回归断言；阶段4收尾——4.8 端点集合核对完全相等、5.1 有界全量回归 classification=存量（6 项失败⊆基线，无引入）、5.2 patch 缝隙专项全绿、5.3 无新静态依赖环、5.4 疑点清单最终态落盘。期间修复 routes 子模块遗漏 import（yaml/AGENT_PROMPT_FILES/project_agents_dir）与 verify_yaml_template __file__ 路径漂移。
+
+上轮登记的 findings：
+- deliverable-dispute: tests/test_giant_classes_contract.py — 应归 reference/移除——本 SPEC 的契约与 characterization 覆盖已由 tests/test_characterization_giant_classes.py + tests/test_planner_route_map.py 承载，无 test_giant_classes_contract.py 交付需求
+
+- [ ] 先复核失败有效性：逐条核对 `spec/changes/refactor-giant-classes/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
+- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
+- [ ] 修复后重跑验证确认通过
