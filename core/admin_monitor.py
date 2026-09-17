@@ -163,6 +163,31 @@ _RECLASSIFY_NEGATION_PHRASES = (
 # （done/pushed 之后族谱不可能再派生，困境实质已消失）。
 _TERMINAL_SPEC_STATUSES = ("done", "pushed")
 
+# ── dispatch_stalled 前提复核（陈旧快照守卫，2026-09-17 事故）────────────
+# dispatch_stalled 是**快照式**信号：pm_engine 在巡检瞬间把「ready 滞留」这一
+# 事实写进 store，AdminMonitor 在后续巡检里逐条摄取兑现。二者之间存在最长一个
+# 巡检周期（admin.interval_minutes）的滞后，且一旦 store 内积压多条，滞后期还会
+# 被串行摄取的阻塞时长叠加。若该 spec 在窗口内已被正常派发／推进，积压记录携带
+# 的「ready 滞留」前提就已被事实推翻——照旧唤起只会得到一个「已恢复、无需处置」
+# 的空转 admin run（每次数美元 + 占据 admin worker 槽）。
+#
+# 实证（2026-09-17）：'evo-orphaned-state-probe-calibration' 的 dispatch_stalled
+# 记录写于 18:25:31Z（队列老化窗口内的假就绪滞留误报），spec 已于 19:52:22Z 被
+# 正常派发、20:16:20Z 该积压记录才被兑现唤起（此时 implementer run 正在产流），
+# 20:26:00Z run 成功收工——唤起时刻前提已被推翻 24 分钟，处置结论只能是空转。
+#
+# 守卫口径：仅在「该信号的困境前提 = spec 处于 ready」时复核——spec 当前状态
+# 已非 ready（implementing/testing/implemented/blocked/…）即视为前提被覆盖，
+# 标记 escalated 跳过（与终态守卫同款「核销而非丢弃」，记录保留可审计）。
+# ready 当且仅当 status 字段字面等于 "ready"：未知/缺失一律按前提未被推翻处理
+# （fail-open，宁多唤起一次也不掩真阳性）。
+_STALL_PREMISE_READY = "ready"
+# 前提复核适用的信号类型：仅 dispatch_stalled。其余「写入即待唤起」类信号
+# （family_explosion / verify_contract_* / inconclusive_loop / stash_pop_conflict /
+# verify_uniform_failure）的困境前提与 ready 状态无关，各有自身的守卫逻辑，
+# 一律不参与本复核。
+_STALL_PREMISE_SIGNAL_TYPES = ("dispatch_stalled",)
+
 # 信号 → 严重度/建议处置
 SIGNAL_SEVERITY = {
     "repeated_failures": "major",
@@ -750,6 +775,32 @@ class AdminMonitor:
                     f"{stype}: spec '{spec}' 已终态"
                     f"（status={spec_entry.get('status')}），跳过唤起"
                     f"（mark_escalated={'ok' if marked else '未命中'}）",
+                )
+                continue
+            # 前提复核守卫（陈旧快照，2026-09-17 事故；常量注释见文件头
+            # _STALL_PREMISE_SIGNAL_TYPES）：dispatch_stalled 的困境前提是
+            # 「spec 处于 ready 且派发未成立」。记录从写入到被本方法摄取之间
+            # 存在一个巡检周期以上的滞后，期间 spec 可能已被正常派发／推进——
+            # 此时记录里的「ready 滞留」已被事实推翻，唤起只会得到空转 admin
+            # run。spec 当前状态「存在且已非 ready」→ 标记 escalated 核销跳过
+            # （记录保留可审计，下一 tick 不再重捞；与上方终态守卫同范式）。
+            #
+            # 只读得到 status 为前提复核的适用条件：status 缺失（spec 条目不存在
+            # 或未写 status 字段）时前提不可推翻，fail-open 照常摄取——宁多唤起
+            # 一次也不掩真阳性。
+            _stall_status = spec_entry.get("status")
+            if (
+                stype in _STALL_PREMISE_SIGNAL_TYPES
+                and _stall_status
+                and _stall_status != _STALL_PREMISE_READY
+            ):
+                marked = self.store.mark_escalated(rec.get("id"))
+                self.logger.info(
+                    "admin_monitor",
+                    f"{stype}: spec '{spec}' 已非 ready"
+                    f"（status={_stall_status}）——记录快照的"
+                    f"「ready 滞留」前提已被事实推翻，跳过唤起",
+                    {"mark_escalated": bool(marked), "record_id": rec.get("id")},
                 )
                 continue
             signal = self._make_signal(

@@ -281,9 +281,6 @@ class TestAdminMonitorIngestion(unittest.TestCase):
                       SIGNAL_RECOMMENDATION.get("inconclusive_loop", ""))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 class TestVerifyUniformFailureIngestion(unittest.TestCase):
     """Scenario: admin_monitor 摄取 verify_uniform_failure SIGNAL 后唤起 Administrator。
 
@@ -346,3 +343,96 @@ class TestVerifyUniformFailureIngestion(unittest.TestCase):
             raw = self.mon._detect_family_explosion()
             self.assertEqual(raw, [])
             self.assertEqual(mock_invoke.call_count, 0)
+
+
+class TestDispatchStalledStaleSnapshotGuard(unittest.TestCase):
+    """Scenario: dispatch_stalled 记录被摄取前复核「ready 滞留」前提是否仍成立。
+
+    2026-09-17 事故：'evo-orphaned-state-probe-calibration' 的 dispatch_stalled
+    记录写于 18:25:31Z（队列老化窗口内的假就绪滞留误报），spec 已于 19:52:22Z
+    被正常派发，20:16:20Z 该积压记录才被摄取兑现（此时 implementer run 正在
+    产流），20:26:00Z run 成功收工——唤起时刻前提已被事实推翻 24 分钟。
+
+    守卫口径：dispatch_stalled 的困境前提 = spec 处于 ready。摄取时 spec 当前
+    状态已非 ready → 标记 escalated 核销跳过，不唤起 Administrator。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(self.tmpdir, ignore_errors=True))
+        self.proot = Path(self.tmpdir) / "proj"
+        self.proot.mkdir(parents=True, exist_ok=True)
+        (self.proot / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.store = _MinimalStore()
+        self.sm = _MonitorSM({"s1": "ready"})
+        self.logger = _FakeLogger()
+        self.store.append({
+            "kind": SIGNAL, "signal_type": "dispatch_stalled", "spec": "s1",
+            "severity": "major",
+            "description": "'s1' 长期滞留 ready 且派发未成立（处置方向见 evidence）",
+            "evidence": "ready stall 916m without dispatch activity; error=No error recorded",
+            "recommended_action": "先按 evidence 判来源",
+        })
+        self.mon = AdminMonitor(
+            {}, self.sm, self.proot, self.logger,
+            store=self.store,
+            agent_runner=mock.MagicMock(),
+        )
+
+    def test_stale_record_after_dispatch_is_not_ingested(self):
+        """前提被推翻（spec 已非 ready）→ 不唤起，记录被核销。"""
+        self.sm.statuses["s1"] = "implementing"  # 已被正常派发
+        with mock.patch.object(self.mon, "_invoke_administrator",
+                               return_value=None) as mock_invoke:
+            raw = self.mon._detect_family_explosion()
+            self.assertEqual(raw, [], "陈旧快照不应转化为信号")
+            self.assertEqual(mock_invoke.call_count, 0, "不应唤起 Administrator")
+        # 记录被标记 escalated 核销（保留可审计，下一 tick 不再重捞）
+        self.assertEqual(self.store.escalated, ["rec-0"])
+        again = self.mon._detect_family_explosion()
+        self.assertEqual(len(again), 0)
+
+    def test_genuine_ready_stall_still_ingested(self):
+        """前提仍成立（spec 仍 ready）→ 照常唤起（不掩真阳性）。"""
+        with mock.patch.object(self.mon, "_invoke_administrator",
+                               return_value=None) as mock_invoke:
+            raw = self.mon._detect_family_explosion()
+            self.assertEqual(len(raw), 1, "真实 ready 滞留应照常上报")
+            self.assertEqual(raw[0]["spec"], "s1")
+            self.assertEqual(mock_invoke.call_count, 1)
+
+    def test_terminal_status_still_covered_by_terminal_guard(self):
+        """终态 spec 走既有终态守卫（两条守卫互不冲突）。"""
+        self.sm.statuses["s1"] = "pushed"
+        with mock.patch.object(self.mon, "_invoke_administrator",
+                               return_value=None) as mock_invoke:
+            raw = self.mon._detect_family_explosion()
+            self.assertEqual(raw, [])
+            self.assertEqual(mock_invoke.call_count, 0)
+
+    def test_other_signal_types_are_not_premise_filtered(self):
+        """守卫只作用于 dispatch_stalled：其余信号的困境前提与 ready 无关。"""
+        from core.admin_monitor import _STALL_PREMISE_SIGNAL_TYPES
+        self.assertEqual(_STALL_PREMISE_SIGNAL_TYPES, ("dispatch_stalled",))
+        # testing 态的 inconclusive_loop 在其自身场景下（TestAdminMonitorIngestion
+        # 的 s1=implemented）照常摄取——此处同表锁死豁免范围
+        self.store.append({
+            "kind": SIGNAL, "signal_type": "inconclusive_loop", "spec": "s1",
+            "severity": "major", "description": "连续 4 轮 blocked-env",
+            "evidence": "spec=s1; 连续轮数=4", "recommended_action": "环境核查",
+        })
+        self.sm.statuses["s1"] = "testing"
+        with mock.patch.object(self.mon, "_invoke_administrator",
+                               return_value=None) as mock_invoke:
+            raw = self.mon._detect_family_explosion()
+            self.assertEqual([s["signal_type"] for s in raw], ["inconclusive_loop"])
+            self.assertEqual(mock_invoke.call_count, 1)
+
+    def test_missing_status_fails_open(self):
+        """status 缺失（前提不可推翻）→ fail-open 照常摄取，不掩真阳性。"""
+        self.sm.statuses.pop("s1", None)
+        with mock.patch.object(self.mon, "_invoke_administrator",
+                               return_value=None) as mock_invoke:
+            raw = self.mon._detect_family_explosion()
+            self.assertEqual(len(raw), 1, "status 缺失时不得误判前提被推翻")
+            self.assertEqual(mock_invoke.call_count, 1)
