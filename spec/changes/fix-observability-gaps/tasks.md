@@ -7,7 +7,7 @@
   kind: modify
 - path: core/state_machine.py
   kind: modify
-- path: core/dashboard/data.py
+- path: core/dashboard/data/timeline.py
   kind: modify
 - path: core/admin_monitor.py
   kind: modify
@@ -22,6 +22,8 @@
 ```
 
 > 路径说明（2026-09-15 评审更正）：原注释称时间轴消费点「`core/dashboard/data.py` 或其派生包（前序 SPEC 创建，本注册时尚不存在，故不列入 Deliverables）」——**与实测不符**。实测：`core/dashboard/data.py` 已存在（单文件 5333 行，时间轴函数 `get_spec_timeline` 在 `:3373`，Transition 正则在 `:3411`），`core/dashboard/data/` 包尚不存在（前序 `refactor-dashboard-data-module` 仅为 `ready`，未实现）。同批 `fix-dashboard-read-path-performance/tasks.md` 已就同一处陈旧注释做更正，并给出结论：「不登记权威修改路径会导致交付集缺项」。据此本 SPEC 显式登记两处权威修改路径：run 收尾日志点 `core/agent_runner/runner.py`（实测存在；收尾日志点在 `:3183-3201` 成功分支、`:3271-3304` 失败分支，另有 `:930/:983/:995/:1083` 等早夭分支）、时间轴消费点 `core/dashboard/data.py`。
+>
+> **路径再更正（2026-09-17，解 deliverable-dispute blocked）**：上段「实测 data.py 已存在、data/ 包尚不存在」的记载**已过期**——前序 `refactor-dashboard-data-module` 于本 SPEC 实现期间落地，`core/dashboard/data.py` 已拆为 `core/dashboard/data/` 包（main 与本 SPEC worktree 均无该单文件）。时间轴消费点（`get_spec_timeline`，原 `:3373`；Transition 正则，原 `:3411`）实际落在 `core/dashboard/data/timeline.py`，Deliverables 声明已同步更新为该路径。实现者据此提出 `deliverable-dispute` 异议（见 run `impl-fix-observability-gaps-1789617176-a1-r2` 结果文件 findings），经人工确认异议成立并改登记路径，故不再构成缺件。下文注释中残留的旧 `core/dashboard/data.py:行号` 引用一律按符号名理解，实际文件以 `core/dashboard/data/timeline.py` 为准。
 >
 > **实现前置确认（必做）**：动手前确认 `refactor-dashboard-data-module` 是否已落地——未落地则直接改 `core/dashboard/data.py`；已落地（`data.py` 已拆为 `data/` 包）则按符号名在 `core/dashboard/data/timeline.py` 内修改，并在实现记录中注明实际文件路径。`core/agent_runner/runner.py` 同理：若前序 `refactor-agent-runner-module` 已落地，按符号名落到对应子模块。
 
