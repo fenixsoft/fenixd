@@ -27,6 +27,7 @@
 
 - **WHEN** 人工处置后解冻
 - **THEN** 同因计数清零，重试从零起算（对齐既有 `unfreeze_spec` 的计数清零语义）
+- **AND** 冻结 error 文案内嵌「原状态 <冻结前状态>」子串，使官方解冻通道（`parse_orig_status` → `unfreeze_spec(status=orig)`）把 spec 还原为可调度状态并重新派发
 
 ### Requirement: 重派时成果继承
 

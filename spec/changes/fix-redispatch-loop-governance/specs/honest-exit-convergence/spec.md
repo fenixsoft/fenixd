@@ -68,7 +68,28 @@ full 车道（`dispatch._run_agent_worker`）与 fast-track 车道（`dispatch._
 #### Scenario: fast-track 车道同样收敛
 
 - **WHEN** fast-track run 以 `partial` 收工且缺口全部 ⊆ `unattainable`
-- **THEN** 该车道同样收敛（不重派），走其既有成功收口
+- **THEN** 该车道同样收敛（不重派），且 MUST 到达验证入口——`partial` 结果文件必然不含合法 `verification` 段，故 MUST NOT 被 fast-track 硬校验（要求 scenarios 非空 + verdict ∈ {verified, bug-found}）判失败打回；收敛后按 design D2a 降级完整模式补独立验证
+
+#### Scenario: fast-track 车道可用的验证入口
+
+- **WHEN** fast-track 车道的诚实退出收敛成立
+- **THEN** spec 进入可被三阶段独立验证的状态（mode 改写为 `full` + `implemented` + 入队 verifier），MUST NOT 停在 fast-track 单 run 自证路径上等待
+
+### Requirement: 收敛点对非法申报 fail-closed
+
+收敛判据 MUST NOT 部分采信 `unattainable` 申报：存在**非法条目**（非映射 / task 非合法 id / 缺 reason）时 MUST 判不收敛并走失败通道，MUST NOT「合法项生效、非法项静默忽略」。
+
+（动机：产物硬门正常时非法申报已被拦，但「只卡第一次」降级放行后非法条目可抵达收敛点；部分采信等于开了洗白窗口。）
+
+#### Scenario: 含非法条目则不收敛
+
+- **WHEN** 结果文件 `unattainable` 数组中含一项非法条目（如 `task` 非合法 id），且其余条目恰好覆盖全部缺口
+- **THEN** 收敛 MUST NOT 成立，按失败通道处置
+
+#### Scenario: 条目全合法才收敛
+
+- **WHEN** `unattainable` 全部条目合法（合法 task id + 非空 reason）且覆盖全部缺口
+- **THEN** 收敛成立
 
 #### Scenario: 留痕对称
 
