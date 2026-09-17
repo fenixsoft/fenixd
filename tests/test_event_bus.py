@@ -550,3 +550,57 @@ class TestRecoverOrphanReady(unittest.TestCase):
             self.bus.recover_orphan_ready()
         mock_handle.assert_called_once()
         self.assertEqual(mock_handle.call_args[0][0], "spec_ready")
+
+    # ── 4.3 实测发现的恢复链路存活兜底缺陷（_ready_has_live_child ③）──────
+    # daemon 真实环境观察（2026-09-17）发现：孤儿 ready 恢复走 _recover_ready →
+    # _ready_has_live_child 时，agent_runner.has_live_attempt 已正确返回 False
+    # （修正生效），但该方法的**自有兜底 ③**（_run_file_recent 只看 mtime）把
+    # daemon 主动 SIGTERM 补写的终态 run（mtime 新鲜 + 末行 error）误判为存活，
+    # 恢复被静默跳过——与 has_live_attempt 修正同口径后，兜底 ③ MUST 排除末行
+    # 终态文件。
+
+    def _ready_spec_with_run_file(self, runs_tail: str, *, mtime_age: float = 10):
+        """写 ready SPEC + implementer_run 指向的 run 文件（可指定末行与 mtime 年龄）。"""
+        import os as _os
+        import time as _time
+        runs_dir = self.project_root / ".fenix" / "runs"
+        runs_dir.mkdir(parents=True, exist_ok=True)
+        run_id = f"impl-spec-run-{int(_time.time())}"
+        run_file = runs_dir / f"{run_id}.jsonl"
+        lines = [
+            {"type": "init"},
+            {"type": "result", "result": "ok"} if runs_tail == "result" else
+            {"type": "error", "error": "Exit code: 143", "exit_code": 143} if runs_tail == "error" else
+            {"type": "system"},
+        ]
+        run_file.write_text(
+            "".join(json.dumps(l) + "\n" for l in lines), encoding="utf-8"
+        )
+        ts = _time.time() - mtime_age
+        _os.utime(run_file, (ts, ts))
+        self.sm.add_spec("spec-run", {
+            "status": "ready", "error": "dispatch stalled",
+            "implementer_run": run_id,
+        })
+        return run_file
+
+    def test_ready_has_live_child_runs_tail_terminal_not_alive(self):
+        """兜底 ③：run 文件 mtime 新鲜但末行终态（error/result）→ 不判存活。"""
+        from core.agent_runner.liveness import LIVE_ATTEMPT_STREAM_WINDOW_SECONDS
+        for tail in ("error", "result"):
+            self._ready_spec_with_run_file(tail)
+            self.assertFalse(
+                self.bus._ready_has_live_child("spec-run"),
+                f"末行 {tail} 终态 + mtime 新鲜不得判为存活（恢复不能被刚死的 run 挡住）",
+            )
+            # 清掉再构造下一组
+            (self.project_root / ".fenix" / "STATE.md").unlink(missing_ok=True)
+        self.assertTrue(LIVE_ATTEMPT_STREAM_WINDOW_SECONDS > 0)
+
+    def test_ready_has_live_child_runs_tail_non_terminal_alive(self):
+        """兜底 ③ fail-open：run 文件 mtime 新鲜且末行为非终态（system）→ 仍判存活。"""
+        self._ready_spec_with_run_file("system")
+        self.assertTrue(
+            self.bus._ready_has_live_child("spec-run"),
+            "末行非终态且 mtime 新鲜应视为存活（活 run 不被误杀）",
+        )

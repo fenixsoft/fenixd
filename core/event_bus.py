@@ -409,12 +409,16 @@ class EventBus:
         """判定 SPEC 是否仍有存活的 agent 子进程（D4 白名单存活依据）。
 
         接口选型（fix-dispatch-orphan 5.1）：优先复用姊妹变更
-        improve-run-lifecycle-governance 落地的 ``agent_runner.has_live_attempt(spec)``；
-        该接口当前尚未合入（core/agent_runner.py 中不存在），按 design D4 兜底实现：
-        pgrep 匹配 ``.claude/worktrees/{impl,verify}-<spec>-*`` 的 claude 进程 +
-        STATE.md 中 implementer_run 指向的最新 run 文件 mtime < 120s。
+        improve-run-lifecycle-governance 落地的 ``agent_runner.has_live_attempt(spec)``。
 
-        不重复造锁机制（锁归姊妹变更）；此处仅做「进程表 + run 文件 mtime」的
+        兜底实现（fix-orphan-ready-recovery-liveness 补丁）：曾以纯 mtime 回退
+        （run 文件 mtime < 120s → 视为活跃）；该兜底不检查末行终态，导致 daemon
+        主动 SIGTERM 杀掉的 run（流文件新鲜但末行已是 error 终态）被误判为存活，
+        阻塞恢复（2026-09-17 事故）。现兜底 ③ 已加入 ``_file_tail_is_terminal``
+        判定——末行已为终态的文件不得作为存活依据（与 ``has_live_attempt``
+        的 ``_stream_recent`` 修正同口径，共用 ``RUN_TERMINAL_EVENT_TYPES`` 单源）。
+
+        不重复造锁机制（锁归姊妹变更）；此处仅做「进程表 + run 文件存活判定」的
         轻量存活探测，与姊妹变更语义一致即满足白名单需求。
         """
         # 1) 优先：若姊妹变更已落地 has_live_attempt，直接复用
@@ -430,10 +434,16 @@ class EventBus:
         if self._pgrep_live_worktree(spec_name):
             return True
 
-        # 3) 兜底：implementer_run 指向的最新 run 文件 mtime < 120s（视为活跃）
+        # 3) 兜底：implementer_run 指向的最新 run 文件 mtime < 120s 且末行非终态
+        #    （fix-orphan-ready-recovery-liveness：曾仅判 mtime，导致 daemon 主动
+        #    SIGTERM 补写的终态 run 在 120s 窗口内被误判为存活；现已加入
+        #    ``_file_tail_is_terminal`` 判定，与 ``has_live_attempt`` 的
+        #    ``_stream_recent`` 修正同口径）
         run_file = self._latest_impl_run_file(spec_name)
         if run_file is not None and self._run_file_recent(run_file, 120):
-            return True
+            from core.agent_runner.liveness import _file_tail_is_terminal
+            if not _file_tail_is_terminal(run_file):
+                return True
 
         return False
 
