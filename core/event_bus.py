@@ -6,7 +6,6 @@ internal events to the PM Engine. Includes periodic full-scan fallback.
 """
 
 import hashlib
-import subprocess
 import threading
 import time
 from pathlib import Path
@@ -449,27 +448,22 @@ class EventBus:
 
     @staticmethod
     def _pgrep_live_worktree(spec_name: str) -> bool:
-        """pgrep 匹配 ``.claude/worktrees/{impl,verify}-<spec>-*`` 的 claude 进程。
+        """pgrep 匹配 ``.claude/worktrees/{impl,verify,repair}-<spec>-*`` 的 claude 进程。
 
-        与 admin_monitor._pgrep_live_worktree 同语义。处置记录（书面 defer，
-        fix-robustness-edge-cases 1.1）：cmdline 子串匹配在 spec 名互为前缀时
-        误判活性，判定对象是 worktree 目录名而非 run 流文件，不在本 SPEC
-        字面范围；误判方向 fail-open 不误杀。承接方：待 worktree 活性 SPEC。
+        orphaned-state-probe-calibration 1.4：从「同语义孪生」改为直接复用
+        admin_monitor._pgrep_live_worktree——修复 repair- 前缀失明时只改一处，
+        避免孪生漂移（实测：admin_monitor 曾于 :335 补 repair 而本处遗漏会
+        造成恢复链与检测链口径不一致）。行为与 admin_monitor 完全一致：
+        pgrep -f "{impl,verify,repair}-<spec>-" 任一命中即判存活。
+
+        处置记录（书面 defer，fix-robustness-edge-cases 1.1）：cmdline 子串
+        匹配在 spec 名互为前缀时误判活性，判定对象是 worktree 目录名而非 run
+        流文件，不在本 SPEC 字面范围；误判方向 fail-open 不误杀。承接方：待
+        worktree 活性 SPEC。
         """
-        try:
-            for prefix in ("impl", "verify"):
-                pattern = f"{prefix}-{spec_name}-"
-                res = subprocess.run(
-                    ["pgrep", "-f", pattern],
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                )
-                if res.returncode == 0 and res.stdout.strip():
-                    return True
-        except (subprocess.SubprocessError, OSError):
-            return False
-        return False
+        from core.admin_monitor import _pgrep_live_worktree as _impl
+
+        return _impl(spec_name)
 
     def _latest_impl_run_file(self, spec_name: str) -> Optional[Path]:
         """STATE.md implementer_run 指向的最新 run 文件（复用 dashboard 解析）。"""

@@ -12,11 +12,12 @@ import shutil
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
 from core.admin_store import AdminStore, SIGNAL, ESCALATION, DISPOSITION
-from core.admin_monitor import AdminMonitor
+from core.admin_monitor import AdminMonitor, _RUN_PREFIXES, _pgrep_live_worktree, spec_is_undriven
 from core.agent_runner import AdminDisposition, AgentRunner
 from core.agent_runner.runner import admin_disposition_path
 from core.dashboard.registry import Registry
@@ -793,6 +794,169 @@ class TestAdminMonitorDetection:
         }, config={"admin": {"enabled": False}})
         assert mon.enabled is False
         assert mon.run_once() == []
+
+
+# ── orphaned-state-probe-calibration：repair 通道探测校准 ───────
+
+class TestOrphanedRepairProbe:
+    """repair- 前缀 run 参与「无驱动」判定（orphaned-state-probe-calibration 1.3）。
+
+    2026-09-15 误报回归：活跃 repair run 文件在 _has_recent_spec_run（经
+    _spec_from_run_id 归一）中不可见，spec_is_undriven 条件 ① 恒假 → 误判
+    「无活动 run / 无存活子进程 / 无待派发」。
+    """
+
+    def test_active_repair_run_suppresses_undriven(self, tmp_path):
+        """repair-<spec>-<ts> run 文件 mtime 在宽限窗（120s）内 → 非孤儿。"""
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "implementing", "updated": utcnow_iso()},
+        })
+        make_runs(proot, [("repair-spec-a-1780000001", "running")])  # 刚写入，mtime 新鲜
+        entry = {"status": "implementing", "updated": utcnow_iso()}
+        with mock.patch("core.admin_monitor._pgrep_live_worktree", return_value=False):
+            assert spec_is_undriven(proot, "spec-a", entry) is False
+
+    def test_inactive_repair_run_still_undriven(self, tmp_path):
+        """repair- run 文件 mtime 超宽限窗 + 无存活进程 + 无待派发 → 仍判孤儿。"""
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "implementing", "updated": utcnow_iso()},
+        })
+        runs_dir = proot / ".fenix" / "runs"
+        runs_dir.mkdir(parents=True, exist_ok=True)
+        stale = runs_dir / "repair-spec-a-1780000001.jsonl"
+        stale.write_text(json.dumps({"type": "error", "message": "boom"}) + "\n",
+                         encoding="utf-8")
+        old = time.time() - 3600
+        os.utime(stale, (old, old))
+        entry = {"status": "implementing", "updated": utcnow_iso()}
+        with mock.patch("core.admin_monitor._pgrep_live_worktree", return_value=False):
+            assert spec_is_undriven(proot, "spec-a", entry) is True
+
+    def test_orphaned_detection_skips_active_repair(self, tmp_path):
+        """端到端：存活 repair run 活跃期 _detect_orphaned_state 不产生信号。"""
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "implementing", "updated": iso_ago(20)},
+        }, config={"admin": {"escalation_cooldown_minutes": 15}})
+        make_runs(proot, [("repair-spec-a-1780000001", "running")])
+        with mock.patch("core.admin_monitor._pgrep_live_worktree", return_value=False):
+            signals = mon._detect_orphaned_state(
+                {"spec-a": {"status": "implementing", "updated": iso_ago(20)}},
+                time.time(),
+            )
+        assert all(s["signal_type"] != "orphaned_state" for s in signals)
+
+
+class TestSpecFromRunIdAllPrefixes:
+    """_spec_from_run_id 全前缀覆盖（orphaned-state-probe-calibration 1.1）。
+
+    归一改用真源全量前缀 RUN_ID_AGENT_PREFIXES 后，所有 run 前缀（含 repair-）
+    都能还原 spec 名；attempt/瞬态重试后缀（-a<n> / -r<n>）不影响还原。
+    """
+
+    def test_all_agent_prefixes_resolve(self):
+        ts = 1789408572
+        cases = {
+            f"repair-evo-x-{ts}": "evo-x",
+            f"repair-evo-x-{ts}-a1": "evo-x",
+            f"repair-evo-x-{ts}-a1-r2": "evo-x",
+            f"repair-evo-x-{ts}-r1": "evo-x",
+            f"impl-evo-x-{ts}": "evo-x",
+            f"impl-evo-x-{ts}-a3": "evo-x",
+            f"verify-evo-x-{ts}": "evo-x",
+            f"verify-evo-x-{ts}-r2-a1": "evo-x",
+            f"planner-plan-evo-x-{ts}": "evo-x",
+            f"planner-judge-evo-x-{ts}": "evo-x",
+            f"spec-review-evo-x-{ts}": "evo-x",
+            f"admin-evo-x-{ts}": "evo-x",
+            f"dispute-judge-evo-x-{ts}": "evo-x",
+            f"dispute-judge-evo-x-{ts}-a2": "evo-x",
+        }
+        for run_id, expect in cases.items():
+            assert AdminMonitor._spec_from_run_id(run_id) == expect, \
+                f"run_id {run_id} 还原失败"
+
+    def test_full_truth_table_includes_bare_planner_and_test(self):
+        """全量前缀表含裸 planner- 与 test-（活跃度归属角度应能还原）。"""
+        ts = 1789408572
+        assert AdminMonitor._spec_from_run_id(f"planner-evo-x-{ts}") == "evo-x"
+        assert AdminMonitor._spec_from_run_id(f"test-evo-x-{ts}") == "evo-x"
+
+
+class TestPgrepRepairProbe:
+    """进程存活探测覆盖 repair worktree（orphaned-state-probe-calibration 1.4）。"""
+
+    def test_pattern_set_includes_repair(self):
+        """模式集包含 impl-/verify-/repair- 三态，repair-<spec>- 被实际发起 pgrep。"""
+        with mock.patch("core.admin_monitor.subprocess.run") as m_run:
+            m_run.return_value = mock.Mock(returncode=1, stdout="")
+            assert _pgrep_live_worktree("evo-x") is False
+            patterns = [c.args[0][2] for c in m_run.call_args_list]
+            assert "impl-evo-x-" in patterns
+            assert "verify-evo-x-" in patterns
+            assert "repair-evo-x-" in patterns
+
+    def test_repair_process_judged_live(self):
+        """repair-<spec>-<ts> worktree 下存在 claude 进程 → 判定为存活。"""
+        def side_effect(cmd, **kw):
+            if cmd[2] == "repair-evo-x-":
+                return mock.Mock(returncode=0, stdout="4242\n")
+            return mock.Mock(returncode=1, stdout="")
+        with mock.patch("core.admin_monitor.subprocess.run",
+                        side_effect=side_effect) as m_run:
+            assert _pgrep_live_worktree("evo-x") is True
+
+
+class TestFailurePrefixSubset:
+    """前缀语义拆分锁定（orphaned-state-probe-calibration 1.2 / design 1）。
+
+    失败计数子集 _RUN_PREFIXES 含 repair-、不含 planner-/test-；归一改用全量
+    前缀后 repeated_failures 不得随之纳入 planner-/test- 失败 run。
+    """
+
+    def test_subset_boundary(self):
+        assert "repair-" in _RUN_PREFIXES
+        assert "planner-" not in _RUN_PREFIXES   # 裸 planner- 不计
+        assert "test-" not in _RUN_PREFIXES       # tester 通道不计
+        assert "planner-plan-" in _RUN_PREFIXES   # 既有 planner 细前缀仍计
+        assert "planner-judge-" in _RUN_PREFIXES
+        assert "impl-" in _RUN_PREFIXES
+        assert "verify-" in _RUN_PREFIXES
+
+    def test_repeated_failures_excludes_bare_planner_and_test(self, tmp_path):
+        """裸 planner- / test- 失败 run 不得触发 repeated_failures。
+
+        锁定 design 1 拆分：若归一误用全量前缀整表替换，这两类（真源中
+        ("planner-", "planner") / ("test-", "tester")）会被纳入 3 次/30 分钟
+        计数、产生新告警类别；失败子集只显式补入 repair-。
+        """
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "implementing", "updated": utcnow_iso()},
+        }, config={"admin": {"escalation_cooldown_minutes": 15}})
+        make_runs(proot, [
+            ("planner-spec-a-1780000001", "error"),
+            ("planner-spec-a-1780000002", "error"),
+            ("planner-spec-a-1780000003", "error"),
+            ("test-spec-a-1780000001", "error"),
+            ("test-spec-a-1780000002", "error"),
+            ("test-spec-a-1780000003", "error"),
+        ])
+        signals = mon.run_once()
+        assert all(s["signal_type"] != "repeated_failures" for s in signals)
+
+    def test_repeated_failures_counts_repair(self, tmp_path):
+        """repair- 补入失败计数子集：窗口内 3 条 repair 失败 run → repeated_failures。"""
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "implementing", "updated": utcnow_iso()},
+        }, config={"admin": {"escalation_cooldown_minutes": 15}})
+        make_runs(proot, [
+            ("repair-spec-a-1780000001", "error"),
+            ("repair-spec-a-1780000002", "error"),
+            ("repair-spec-a-1780000003", "error"),
+        ])
+        signals = mon.run_once()
+        sig = next((s for s in signals if s["signal_type"] == "repeated_failures"), None)
+        assert sig is not None
+        assert sig["spec"] == "spec-a"
 
 
 # ── 4.1 节流 / 冷却 ─────────────────────────────────────

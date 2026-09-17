@@ -19,6 +19,7 @@ from core.agent_runner import (
     AgentRunner,
     append_run_line,
 )
+from core.agent_runner.runner import admin_disposition_path
 from tests.helpers import FakeLogger
 
 
@@ -382,3 +383,115 @@ class TestManualInterventionPrompt:
         signal = {"signal_type": "manual-intervention", "description": "人工呼叫"}
         prompt = runner._prompt_builder._build_prompt("fallback-spec", "administrator", detail=signal)
         assert "- spec: fallback-spec" in prompt
+
+
+# ── orphaned-state-probe-calibration：admin 处置失败证据 ──────
+
+
+def _make_admin_runner_stub(proot: Path, fake_run_claude=None) -> AgentRunner:
+    """run_administrator 测试共用的最小 AgentRunner 替身（绕过真实 __init__）。
+
+    与 tests/test_admin.py 的 make_admin_runner_stub 同构：project_root/logger/
+    _get_config/_get_admin_model/_get_agent_model_assignment/_prompt_builder.
+    _build_prompt 链齐备；额外提供 _provider_circuit（MagicMock）——失败路径
+    的 _record_signal_kill_or_label 对非信号死法调用 reset_signal_kill。
+    """
+    runner = AgentRunner.__new__(AgentRunner)
+    runner.project_root = proot
+    runner.logger = FakeLogger()
+    runner._get_config = lambda key, default=None: default
+    runner._get_admin_model = lambda: "claude-sonnet-5"
+    runner._get_agent_model_assignment = lambda agent_type: None
+    runner._prompt_builder._build_prompt = lambda *a, **k: "prompt"
+    # _provider_circuit 是惰性属性（缓存 _provider_circuit_instance）；失败路径
+    # 的 _record_signal_kill_or_label 对非信号死法调用 reset_signal_kill，
+    # 直接注入缓存实例避免构造真实 ProviderCircuit。
+    runner._provider_circuit_instance = MagicMock()
+    if fake_run_claude is not None:
+        runner._run_claude = fake_run_claude
+    return runner
+
+
+class TestRunAdministratorFailureEvidence:
+    """run_administrator 非零退出的失败证据（orphaned-state-probe-calibration 1.5/2.5）。
+
+    四项证据（原始 stderr 摘录 / 退出码 / provider·model / 带时间戳事件时间线）
+    进 AdminDisposition.failure_evidence 独立字段；error 归因文本仍为降噪后形态
+    （原始 stderr 不回填，error-attribution-denoise D5 语义不变）。
+    """
+
+    def test_failure_evidence_assembled_error_denoised(self, tmp_path):
+        proot = tmp_path / "proj"
+        proot.mkdir(parents=True, exist_ok=True)
+        (proot / ".fenix" / "runs").mkdir(parents=True, exist_ok=True)
+
+        def failing_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+                               max_turns, spec_name=None, agent_type=None):
+            # 模拟真实失败 run 的产物：provider_marker 先行落盘、转录事件
+            # 带时间戳、stderr 原始行、终态 error 行（均无 timestamp）。
+            run_file = proot / ".fenix" / "runs" / f"{run_id}.jsonl"
+            lines = [
+                {"type": "provider_marker", "spec": "spec-a",
+                 "agent_type": "administrator", "provider": "volc",
+                 "model": "deepseek-v4-flash", "chain_index": 0, "chain_len": 1},
+                {"type": "system", "subtype": "init",
+                 "timestamp": "2026-09-15T09:30:12+00:00"},
+                {"type": "assistant",
+                 "timestamp": "2026-09-15T09:30:20+00:00", "message": {}},
+                {"type": "user",
+                 "timestamp": "2026-09-15T09:30:25+00:00", "message": {}},
+                {"type": "stderr",
+                 "line": "[claude-code:unrecognized_model] {\"model\":\"deepseek-v4.1-flash\"}"},
+                {"type": "error", "error": "Exit code: 1", "exit_code": 1},
+            ]
+            run_file.write_text(
+                "".join(json.dumps(l, ensure_ascii=False) + "\n" for l in lines),
+                encoding="utf-8")
+            exc = RuntimeError("claude CLI failed: Exit code: 1")
+            # _run_claude 失败路径携带原始信号（runner.py:2983-2985）
+            exc.stderr_lines = [
+                "[claude-code:unrecognized_model] {\"model\":\"deepseek-v4.1-flash\"}",
+                "unrelated raw stderr line",
+            ]
+            exc.exit_code = 1
+            raise exc
+
+        runner = _make_admin_runner_stub(proot, fake_run_claude=failing_run_claude)
+        disp = runner.run_administrator(
+            {"spec": "spec-a", "signal_type": "stuck", "description": "卡死"})
+
+        assert disp.success is False
+        # error 归因文本仍为降噪后形态：原始 stderr 不回填
+        assert "unrecognized_model" not in disp.error
+        assert "Exit code: 1" in disp.error
+        # 退出码
+        assert disp.failure_evidence["exit_code"] == 1
+        # 原始 stderr 摘录（独立证据字段，含被降噪丢弃的 [claude-code: 行）
+        assert "unrecognized_model" in disp.failure_evidence["stderr_tail"]
+        assert "unrelated raw stderr line" in disp.failure_evidence["stderr_tail"]
+        # provider/model（run 产物 provider_marker 事件）
+        assert disp.failure_evidence["provider_model"]["provider"] == "volc"
+        assert disp.failure_evidence["provider_model"]["model"] == "deepseek-v4-flash"
+        # 带时间戳事件时间线：末 3 条、全部跳过无 timestamp 事件
+        ts = disp.failure_evidence["recent_event_timestamps"]
+        assert len(ts) == 3
+        assert ts[-1] == "2026-09-15T09:30:25+00:00"
+        assert all("2026-09-15T09:30" in t for t in ts)
+
+    def test_failure_evidence_absent_on_success(self, tmp_path):
+        """成功路径 failure_evidence 为空 dict（不携带失败证据）。"""
+        proot = tmp_path / "proj"
+        proot.mkdir(parents=True, exist_ok=True)
+        (proot / ".fenix").mkdir(parents=True, exist_ok=True)
+
+        def ok_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+                          max_turns, spec_name=None, agent_type=None):
+            admin_disposition_path(cwd, run_id).write_text(
+                json.dumps({"result": "resolved"}), encoding="utf-8")
+            return "output", 5, "sess", {"input_tokens": 0, "output_tokens": 0,
+                                         "cost_usd": 0.0}
+
+        runner = _make_admin_runner_stub(proot, fake_run_claude=ok_run_claude)
+        disp = runner.run_administrator({"spec": "spec-a", "signal_type": "stuck"})
+        assert disp.success is True
+        assert disp.failure_evidence == {}

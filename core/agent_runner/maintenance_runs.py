@@ -43,6 +43,73 @@ DEFAULT_GATEWAY_MODEL = "claude-sonnet-5"
 ADMIN_DISPOSITION_PREFIX = "admin_disposition-"
 ADMIN_DISPOSITION_GLOB = "admin_disposition-*.json"
 
+# ── 失败取证参数（orphaned-state-probe-calibration 1.5） ─────────────
+# run_administrator 非零退出失败证据的取值上限：原始 stderr 取末 N 行、
+# 整体截断 4KB；run 产物取末 3 条带 timestamp 事件。
+_ADMIN_FAILURE_STDERR_TAIL_LINES = 10
+_ADMIN_FAILURE_STDERR_MAX_CHARS = 4 * 1024
+_ADMIN_FAILURE_TS_EVENTS = 3
+
+
+def _admin_failure_evidence(runner, run_id: str, exc: Exception) -> dict:
+    """Administrator 处置 run 非零退出的可定位失败证据（orphaned-state-probe-calibration 1.5）。
+
+    四项，全部来自异常本身（`_run_claude` 抛出的 RuntimeError 携带原始信号，
+    runner.py:2983-2985）与 run 产物：
+    - ``stderr_tail``：``getattr(exc, "stderr_lines", [])`` 末 N 行原始 stderr，
+      拼接后截断 4KB（不止 error-attribution-denoise 过滤后的 5 行——原始
+      现场逐条保留，unrecognized_model 类死因在此可定位）；
+    - ``exit_code``：``getattr(exc, "exit_code", None)``；
+    - ``provider_model``：run 产物内 ``provider_marker`` 事件的
+      provider/model（Administrator 实际驱动的模型@网关，定位「模型不被网关
+      接受」类失败的关键证据）；
+    - ``recent_event_timestamps``：run 产物末 3 条**带 timestamp** 事件的
+      时间戳——MUST 跳过无 timestamp 的 error/stderr/result/provider_marker/
+      system 事件（这些终态/旁路事件不落时间戳，否则恒为空）。
+
+    原始 stderr 只进独立证据字段（返回 dict），**不得**回填 ``error`` 归因
+    文本——error-attribution-denoise D5 的全局降噪语义保持不变。任何读取
+    异常降级为空 dict（只影响可定位性，不阻断处置主流程）。
+    """
+    evidence: dict = {
+        "exit_code": getattr(exc, "exit_code", None),
+        "stderr_tail": "",
+        "provider_model": None,
+        "recent_event_timestamps": [],
+    }
+    stderr_lines = getattr(exc, "stderr_lines", None)
+    if isinstance(stderr_lines, list) and stderr_lines:
+        tail = "\n".join(str(l) for l in stderr_lines[-_ADMIN_FAILURE_STDERR_TAIL_LINES:])
+        evidence["stderr_tail"] = tail[:_ADMIN_FAILURE_STDERR_MAX_CHARS]
+    run_file = runner.project_root / ".fenix" / "runs" / f"{run_id}.jsonl"
+    if run_file.is_file():
+        try:
+            rows = run_file.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            rows = []
+        provider_marker = None
+        timestamped: list = []
+        for line in rows:
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("type") == "provider_marker":
+                provider_marker = entry
+            ts = entry.get("timestamp")
+            if isinstance(ts, str) and ts:
+                timestamped.append(ts)
+        if provider_marker is not None:
+            evidence["provider_model"] = {
+                "provider": provider_marker.get("provider"),
+                "model": provider_marker.get("model"),
+                "agent_type": provider_marker.get("agent_type"),
+            }
+        evidence["recent_event_timestamps"] = timestamped[-_ADMIN_FAILURE_TS_EVENTS:]
+    return evidence
+
 
 def admin_disposition_path(project_root: Path, run_id: str) -> Path:
     """某次 admin run 的处置状态实例文件路径。"""
@@ -128,6 +195,7 @@ def run_administrator(runner, signal: dict) -> AdminDisposition:
         pass
 
     runner._clear_admin_disposition(disp_path)
+    failure_evidence: dict = {}
     try:
         # _run_claude 返回 4 元组（add-cost-observability D1 加 usage_info）；
         # admin 不消费 usage，此调用点曾漏改按 3 元组解包——admin run 一启动
@@ -161,12 +229,17 @@ def run_administrator(runner, signal: dict) -> AdminDisposition:
         else:
             error = runner._record_signal_kill_or_label(
                 spec, error, getattr(e, "exit_code", None))
+        # orphaned-state-probe-calibration 1.5：失败证据四件套（原始 stderr
+        # 摘录 / 退出码 / provider·model / 带时间戳事件时间线）——只进独立
+        # 证据字段（AdminDisposition.failure_evidence 与 logger context），
+        # 不回填 error 归因文本（error-attribution-denoise D5 语义不变）。
+        failure_evidence = _admin_failure_evidence(runner, run_id, e)
         # fix-admin-disposition-empty-shell：失败不再静默——WARNING 携带 run_id
         # 与异常文本，保证 `grep "Administrator run"` 可一次检索全部失败。
         runner.logger.warning(
             "agent_runner",
             f"Administrator run {run_id} failed: {error}",
-            {"run_id": run_id, "error": error},
+            {"run_id": run_id, "error": error, "failure_evidence": failure_evidence},
         )
 
     disp = runner._read_admin_disposition(disp_path)
@@ -186,6 +259,7 @@ def run_administrator(runner, signal: dict) -> AdminDisposition:
         error=error,
         output=output,
         family_waiver=bool(disp.get("family_waiver", False)),
+        failure_evidence=failure_evidence,
     )
 
 

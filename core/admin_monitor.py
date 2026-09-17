@@ -13,7 +13,10 @@ daemon 内独立线程周期性读取本地数据（STATE.md、.fenix/runs/ 转�
   - daemon_errors    10 分钟窗口内同指纹 ERROR 复现 ≥2 次且最近两次间隔 ≤5 分钟
   - orphaned_state    implementing/testing 无活动 run + 无存活子进程 + 无待派发
                        超 orphaned_state_threshold_minutes（缺省 15 分钟，远短于
-                       stuck 的 ~160 分钟）；与 stuck 在 stuck 阈值处交接（hand-off）
+                       stuck 的 ~160 分钟）；与 stuck 在 stuck 阈值处交接（hand-off）。
+                       description 描述的是 signal 阶段；disposition pending/
+                       failed/escalated 阶段由处置/升级记录承载（orphaned-state-
+                       probe-calibration 1.6 阶段语义，见 _detect_orphaned_state）
 
 节流（D2）：同 spec 同类信号在 admin.escalation_cooldown_minutes 内只唤起一次，
 依据 .fenix/admin_alerts.json 中的 signal 记录与未处理升级告警。
@@ -242,7 +245,7 @@ SIGNAL_RECOMMENDATION = {
     # Administrator 通道唤起；处置完成（resolved）后框架自动走复位直通道
     # （testing→verifier 重验入队 / implementing→ready 重实现），无需手动
     # reset spec 状态。
-    "orphaned_state": "状态无驱动（implementing/testing 无活动 run/无存活子进程/无待派发）：Administrator 核查驱动链路（派发/recovery 是否空转）并确认是否人工干预；处置完成写 result 后框架自动走复位直通道（testing→verifier 重验入队；implementing→ready 重实现），无需手动 reset spec 状态",
+    "orphaned_state": "状态无驱动（implementing/testing 无活动 run/无存活子进程/无待派发，signal 阶段）：Administrator 核查驱动链路（派发/recovery 是否空转）并确认是否人工干预；处置完成写 result 后框架自动走复位直通道（testing→verifier 重验入队；implementing→ready 重实现），无需手动 reset spec 状态。pending/failed/escalated 后续阶段由处置记录 status/result 与升级告警承载；冷却过期后同信号可再次成条（_throttled 既有节流语义）",
     # evo-run-failure-classification-circuitbreaker D3：评审链路 infra 熔断处置指引。
     # 熔断是链路级自动保护（停止派发 + 冷却 + 冷却后自动恢复），Administrator 对
     # provider 配额/余额无操作杠杆，不唤起（design D3）；本表仅登记严重度/建议供
@@ -278,12 +281,17 @@ STORED_SIGNAL_TYPES = (
     "verify_uniform_failure",
 )
 
-# run_id 前缀 → 计入"失败 run"的 agent 类型
+# run_id 前缀 → 计入"失败 run"的 agent 类型（失败计数专用子集）
 # ⚠️ 真源 = core/agent_runner/run_files.py:RUN_ID_AGENT_PREFIXES（新增 run 前缀
 # 只改那里）；本表是它的**子集**——只列计入失败统计的前缀（planner-/test- 不计）。
+# orphaned-state-probe-calibration：前缀归一（_spec_from_run_id）已改用真源全量
+# 前缀表，本表**只**服务失败计数（_detect_repeated_failures 显式传入），不再服务
+# 活跃度/归属判定。`repair-` 属实现通道（失败即实现失败）已补入；`planner-`/
+# `test-` 仍不计入（不得随归一扩大计数口径——design 1 拆分约束）。
 _RUN_PREFIXES = (
     "impl-",
     "verify-",
+    "repair-",
     "planner-plan-",
     "planner-judge-",
     "dispute-judge-",
@@ -337,10 +345,15 @@ _TAIL_ERROR_READ_BYTES = 256 * 1024
 
 
 def _pgrep_live_worktree(spec_name: str) -> bool:
-    """pgrep 匹配 ``.claude/worktrees/{impl,verify}-<spec>-*`` 的 claude 进程。
+    """pgrep 匹配 ``.claude/worktrees/{impl,verify,repair}-<spec>-*`` 的 claude 进程。
 
     与 event_bus.EventBus._pgrep_live_worktree 同语义（fix-dispatch-orphan
     D4 存活探测）；抽为模块级供 admin 检测与 event_bus 恢复共用同一口径。
+
+    orphaned-state-probe-calibration 1.4：匹配集补入 ``repair``（worktree 目录
+    名 ``repair-<spec>-<ts>``，core/worktree_manager.py:3479）——修复 repair 通道
+    进程存活失明（2026-09-15 误报根因②）；事件间隙大于 ORPHANED_RUN_GRACE_SECONDS
+    =120s 的残留窗口由本判据兜住。
 
     处置记录（fix-robustness-edge-cases 1.1，书面 defer）：``pgrep -f
     "{prefix}-{spec}-"`` 是 cmdline 子串匹配，spec 名互为前缀（fix-x vs
@@ -351,7 +364,7 @@ def _pgrep_live_worktree(spec_name: str) -> bool:
     SPEC 处理，本 SPEC 不引入。
     """
     try:
-        for prefix in ("impl", "verify"):
+        for prefix in ("impl", "verify", "repair"):
             pattern = f"{prefix}-{spec_name}-"
             res = subprocess.run(
                 ["pgrep", "-f", pattern],
@@ -369,9 +382,10 @@ def _pgrep_live_worktree(spec_name: str) -> bool:
 def _has_recent_spec_run(project_root, spec: str, now: float, window: float) -> bool:
     """该 spec 是否存在窗口内有写活动的 run 文件（有进度）——任意 run 前缀。
 
-    与 AdminMonitor._has_recent_progress 同语义（impl/verify/planner 等全部
-    前缀经 _spec_from_run_id 归一），模块级供 _detect_orphaned_state 与
-    event_bus 恢复共用。
+    与 AdminMonitor._has_recent_progress 同语义（impl/verify/planner/repair 等
+    全部前缀经 _spec_from_run_id 归一——orphaned-state-probe-calibration 后
+    repair- 亦覆盖：mtime 在宽限窗内即非孤儿，杜绝「活跃 repair run 被判无
+    驱动」类误报），模块级供 _detect_orphaned_state 与 event_bus 恢复共用。
     """
     if project_root is None:
         return False
@@ -403,8 +417,10 @@ def spec_is_undriven(
     """「无驱动」判定（orphaned-state-signal R1 三条件，同一判定口径）。
 
     返回 True 当且仅当三者同时成立：
-      ① 无活动 run 文件：该 spec 的 run 文件 mtime 均超出 run_grace_seconds；
-      ② 无存活 agent 子进程：不存在 impl-<spec>- / verify-<spec>- 模式进程；
+      ① 无活动 run 文件：该 spec 的 run 文件 mtime 均超出 run_grace_seconds
+         （任意 run 前缀，含 repair-，orphaned-state-probe-calibration 1.3）；
+      ② 无存活 agent 子进程：不存在 impl-<spec>- / verify-<spec>- /
+         repair-<spec>- 模式进程（orphaned-state-probe-calibration 1.4）；
       ③ 无待派发：无 _cancelled_hold / start_after 未到 / 派发退避
          （_dispatch_backoff_until）未到期。
     任一不成立（长 run 仍在跑 / 进程仍存活 / 有意等待中）→ False——避免把
@@ -809,7 +825,11 @@ class AdminMonitor:
             mtime = p.stat().st_mtime
             if mtime < cutoff:
                 continue
-            spec = self._spec_from_run_id(p.stem)
+            # orphaned-state-probe-calibration：失败计数 MUST 用失败前缀子集
+            # （_RUN_PREFIXES），不能随归一默认改用全量前缀——否则 planner-/
+            # test- 失败 run 会被纳入 3 次/30 分钟计数、产生新告警类别
+            # （design 1 拆分：计数口径除 repair- 的显式补入外不得变化）。
+            spec = self._spec_from_run_id(p.stem, _RUN_PREFIXES)
             if not spec:
                 continue
             if self._run_terminal_status(p) != "error":
@@ -992,6 +1012,17 @@ class AdminMonitor:
         短阈值才判无驱动，避免把刚 reset 的 spec 误报。
 
         人工冻结（frozen）是有意等待态，与 blocked_stuck 同豁免。
+
+        生命周期阶段（orphaned-state-probe-calibration 1.6 语义澄清）：
+          - signal：本方法生成信号即 signal 阶段——description 描述的是检测
+            时刻三条件成立 + 状态超短阈值这一**信号阶段**事实；
+          - disposition pending / disposition failed / escalated：后续阶段由
+            AdminStore 处置记录（kind=disposition 的 status/result 字段）与
+            升级告警（kind=escalation）承载，不回写本信号 description——
+            阶段差异看记录状态，**不得**声称「同一信号仅一条记录」：冷却
+            （_throttled，AdminStore.latest_signal）过期后同信号可再次成条，
+            属既有节流语义而非重复告警缺陷（实证 .fenix/logs/fenixd.log:17224
+            Signal throttled: orphaned_state … (cooldown 15m)）。
         """
         signals = []
         threshold_minutes = float(
@@ -1030,7 +1061,8 @@ class AdminMonitor:
                     "orphaned_state",
                     name,
                     f"'{name}' 处于 {status} 超过 {int(elapsed_minutes)} 分钟无驱动"
-                    "（无活动 run / 无存活子进程 / 无待派发）",
+                    "（signal 阶段：无活动 run / 无存活子进程 / 无待派发，待"
+                    "Administrator 处置；pending/failed/escalated 阶段看处置记录）",
                     f"updated={updated_str}，阈值 {int(threshold_minutes)} 分钟"
                     f"（stuck 阈值 {int(self.admin_cfg.get('stuck_threshold_minutes', 0))}"
                     " 分钟远高于此，本信号先于 stuck 捕获）",
@@ -1734,6 +1766,16 @@ class AdminMonitor:
                     "admin_run_id": disp.run_id,
                     "escalate": bool(disp.escalate),
                     "error": disp.error or "",
+                    # orphaned-state-probe-calibration 1.5：非零退出的可定位
+                    # 失败证据（原始 stderr 摘录/退出码/provider·model/带时间戳
+                    # 事件时间线），独立字段随处置记录留痕；无证据时省略
+                    # （类型守卫防 MagicMock 替身注入非 dict 值）。
+                    "failure_evidence": (
+                        disp.failure_evidence
+                        if isinstance(getattr(disp, "failure_evidence", None), dict)
+                        and disp.failure_evidence
+                        else None
+                    ),
                 }
             )
         except Exception as e:
@@ -2399,18 +2441,31 @@ class AdminMonitor:
             )
 
     @staticmethod
-    def _spec_from_run_id(run_id: str):
+    def _spec_from_run_id(run_id: str, prefixes=None):
         """从 run_id 还原 spec 名：匹配 <prefix><spec>-<ts> 结构。
 
         如 impl-myspec-1735... → myspec；planner-plan-myspec-1735... → myspec。
         无法识别返回 None。
+
+        orphaned-state-probe-calibration：归一前缀改用真源**全量**前缀
+        ``core/agent_runner/run_files.py:RUN_ID_AGENT_PREFIXES``（顺序与真源
+        一致、长前缀在前，含 repair- 等全部 run 前缀）——活跃/归属判定对
+        repair 通道不再失明（2026-09-15 活跃 repair run 被判「无驱动」误报
+        根因①）。失败计数语义拆分到 ``_RUN_PREFIXES``：需要按失败子集还原时
+        显式传入（_detect_repeated_failures），MUST NOT 随本函数默认全量前缀
+        扩大计数口径（planner-/test- 失败 run 不得纳入，design 1 拆分约束）。
 
         后缀兼容 attempt（-a<n>）与瞬态重试（-r<n>，fix-provider-transient-backoff
         引入的 in-place retry run_id，形如 <base>-a1-r1）：两者都不影响 spec 名
         还原，若漏剥 -r<n> 将解析失败返回 None，导致 _has_recent_progress 匹配
         不到活跃 run 而误报 stuck（evo-verifier-result-single-source 事故实证）。
         """
-        for prefix in _RUN_PREFIXES:
+        from core.agent_runner.run_files import RUN_ID_AGENT_PREFIXES
+
+        if prefixes is None:
+            prefixes = RUN_ID_AGENT_PREFIXES
+        for p in prefixes:
+            prefix = p[0] if isinstance(p, tuple) else p
             if not run_id.startswith(prefix):
                 continue
             rest = run_id[len(prefix) :]
