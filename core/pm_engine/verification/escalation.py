@@ -19,7 +19,8 @@ from pathlib import Path
 from core.state_machine import ENV_BLOCK_ROUNDS_FIELD, FREEZE_ERROR_PREFIX
 
 # judge-scenario-repair：judge 原地场景修复预算（上限重入轮数）
-_SCENARIO_REPAIR_MAX_ROUNDS = 2
+# 2026-09-18：2 → 3（与 pipeline.py 同步；实证第 3 轮才出正确修复）
+_SCENARIO_REPAIR_MAX_ROUNDS = 3
 
 
 def _handle_env_blocked_inconclusive(pipeline, spec_name: str, report: dict) -> bool:

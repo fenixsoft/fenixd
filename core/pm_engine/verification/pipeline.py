@@ -30,7 +30,9 @@ from core.proc_utils import find_free_port
 # judge-scenario-repair：judge 原地场景修复预算（上限重入轮数）。
 # 场景文件自身缺陷（夹具未自建/步骤客观错误/依赖序缺失）由 judge 原地修复
 # 后重执行，不再「env 伪失败→原样重验」空转；上限与阶段1 replan_left 对齐。
-_SCENARIO_REPAIR_MAX_ROUNDS = 2
+# 2026-09-18：2 → 3（实证 add-spec-manual-activation：夹具场景第 3 轮才修出
+# 正确修复却因预算耗尽无法重入，修复落盘却永不执行）。
+_SCENARIO_REPAIR_MAX_ROUNDS = 3
 
 from core.pm_engine.verification.judge_gate import _MAX_JUDGE_RERUNS
 
