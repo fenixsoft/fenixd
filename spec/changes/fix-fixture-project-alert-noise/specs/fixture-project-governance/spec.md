@@ -8,6 +8,7 @@
 
 - `Registry.discover()` 返回的每个项目 dict MUST 含 `fixture` 布尔键：显式配置 `fixture: true` 的项目为真；未配置该键的项目、以及 `scan_dirs` 自动扫描发现的项目 MUST 缺省为假。
 - `Registry.add_project(path, name=None, fixture=False)` MUST 支持把 `fixture` 标记写入配置条目；对已存在的同路径条目，再次注册 MUST 跳过（不重复添加、不静默改标记）。
+- `Registry.mark_fixture(path, fixture=True)` MUST 按规范化路径定位配置条目并写入/更新 `fixture` 键后写回，作为**显式更新既有条目标记**的唯一途径；目标路径不在配置中时 MUST 返回未变更提示且不抛异常。`add_project` 对已存在同路径条目的「跳过」语义与之不冲突——跳过指不重复添加，改标记须经 `mark_fixture` 显式发起（供给脚本对存量夹具条目补标记即走此路径）。
 - `fixture` 只标记来源，MUST NOT 改变项目的发现、监控、daemon 生命周期或可见性语义（夹具项目仍出现在项目列表与 overview 卡片中）。
 
 #### Scenario: 显式标记夹具项目
@@ -18,6 +19,11 @@
 #### Scenario: 未标记与自动扫描项目缺省非夹具
 - **WHEN** 配置中某项目条目不含 `fixture` 键，且另有仅由 `scan_dirs` 扫描发现的项目
 - **THEN** 两者在 `discover()` 结果中的 `fixture` 取值均为假
+
+#### Scenario: 存量条目补写夹具标记
+- **WHEN** 配置中 `scheduling-showcase` 条目已存在但不含 `fixture` 键，调用 `Registry.mark_fixture('/root/scheduling-showcase')`
+- **THEN** 该条目被写入 `fixture: true`，且 `Registry.discover()` 返回的该项目 dict 含 `fixture: true`
+- **AND** 对不在配置中的路径调用 `mark_fixture` 返回未变更提示且不抛异常
 
 #### Scenario: 夹具标记不影响项目可见性
 - **WHEN** 某夹具项目（`fixture: true`）被 `discover()`
