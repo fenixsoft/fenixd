@@ -116,6 +116,6 @@
 
 ## 7. 收口
 
-- [ ] 7.1 运行有界全量回归 `python3 bin/run_full_suite.py --timeout 3600 --baseline HEAD`（fix-run-hang-amplification 3.3：MUST NOT 裸调 `pytest tests/ -q`），按输出归类存量/引入失败并记录结论。
+- [x] 7.1 运行有界全量回归 `python3 bin/run_full_suite.py --timeout 3600 --baseline HEAD`（fix-run-hang-amplification 3.3：MUST NOT 裸调 `pytest tests/ -q`），按输出归类存量/引入失败并记录结论。
 
-- [ ] 7.2 在 `tasks.md` 勾选全部已完成任务，并写 `.fenix-run-result.json`（`status: success`，附改动摘要与回归结论）。
+- [x] 7.2 在 `tasks.md` 勾选全部已完成任务，并写 `.fenix-run-result.json`（`status: success`，附改动摘要与回归结论）。
