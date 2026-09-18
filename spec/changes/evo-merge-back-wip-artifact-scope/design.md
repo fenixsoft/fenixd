@@ -25,10 +25,16 @@ def _is_build_artifact_path(path: str) -> bool:
 | `mergeback.py:546/548` | merge 冲突后分类：`self_heal_applicable` / `has_semantic_conflict` | 产物自愈不适用 → abort + 分类为语义 |
 | `dist_conflicts.py:71` | `_resolve_build_artifact_conflicts`：产物冲突无条件对齐 HEAD | 不进入自愈分支，返回 False |
 | `dist_conflicts.py:123` | 清账：分支侧干净 add 的 stray 产物移除 | 旧产物残留累积 |
+| `dist_conflicts.py:277` | `_rebuild_dist_after_merge`：`src_touched` 判定（static 根下**非**产物路径） | 判定与实例口径脱钩（首子句仍以 `DASHBOARD_STATIC_ROOT` 限定作用域，见 Non-Goals） |
 | `dist_conflicts.py:374` | `_artifact_paths(ref)`：列出某 ref 下的产物路径集 | 集合为空，对齐/移除全失效 |
 
-`mergeback.py:176` `_detect_wip_overlap()` 用「主树脏 tracked ∩
+`mergeback.py:172` `_detect_wip_overlap()` 用「主树脏 tracked ∩
 `merge-base..branch` 改动」求交，只排除 `spec/changes/**`，**不含产物排除**。
+
+`mergeback.py:96-102` merge-back guard 段：闸门 `_wip_overlap_gate()` 之后
+**无条件**调用 `ensure_clean_tree()`——「主树改动是否被卷进 stash」由
+`ensure_clean_tree` 决定（路径集 `.` + `:(exclude)spec/changes`，
+`stash_guard.py:85-97`），闸门只决定 stash 条目前缀与 `wip_overlap` 上报内容。
 
 ### 本项目形态（fenix-desktop）
 
@@ -43,7 +49,9 @@ def _is_build_artifact_path(path: str) -> bool:
 
 - 产物判定作用域可配置：项目可声明自己的产物根（前缀）与产物文件（后缀通配）。
 - 默认行为与现行逐字节兼容（未配置的项目零行为变化）。
-- 消除「产物 → WIP 重叠 → 闸门收纳 → pop 冲突 → 误报 major 告警」链路。
+- 消除**纯产物**形态的「产物重叠 → guard 段 stash → pop 冲突 → 误报 major
+  告警」链路（含 D3b 的「stash 前置丢弃重叠产物」）。语义文件重叠仍按既有语义
+  告警（不是本 SPEC 的目标，见 D3b 实证）。
 - 判定器故障（配置非法/解析异常）一律**回退默认**，绝不放宽判定。
 
 **Non-Goals**
@@ -53,6 +61,12 @@ def _is_build_artifact_path(path: str) -> bool:
   真实源码文件）。
 - 不自动清理历史 `stash_pop_conflict` 告警与主树存量产物脏改动。
 - 不改 `mergeback_wip_overlap_policy`（auto/block）语义与其默认值。
+- **不改产物的「重建触发作用域」**：`_rebuild_dist_after_merge` 的 `src_touched`
+  与 `_run_dist_build` 仍以 `DASHBOARD_STATIC_ROOT`（`core/dashboard/static`）
+  限定（`dist_conflicts.py:230/277`）。故「产物在仓库根」的项目（如 fenix-desktop）
+  merge 后**不会**被框架自动重建产物，须由项目自身构建 hook（如
+  `scripts/upload_release_to_cos.py` 的 done/pushed 重打包）刷新——本 SPEC 不为其
+  新增重建通道。
 
 ## Decisions
 
@@ -68,7 +82,7 @@ def normalize_artifact_patterns(raw) -> list: ...
 
 class ArtifactPathMatcher:
     """产物路径判定器（每实例一份，线程内只读）。"""
-    def __init__(self, patterns=None, defaults=DEFAULT_ARTIFACT_PREFIXES): ...
+    def __init__(self, patterns=None, defaults=None): ...  # defaults=None → DEFAULT_ARTIFACT_PREFIXES
     def is_artifact(self, path: str) -> bool: ...
     def paths_in(self, paths) -> list: ...        # 过滤出产物
     def non_artifacts_in(self, paths) -> list: ... # 过滤出语义路径
@@ -115,15 +129,55 @@ worktree:
 | `mergeback._rehearse_merge_from_branch` | `non_artifact` 改 `self._artifacts.non_artifacts_in(conflict_paths)` |
 | `mergeback` 冲突分类（2 处） | 同上，改 `self._artifacts.is_artifact(p)` / `all(...)` / `any(...)` |
 | `dist_conflicts` 三处 | `_artifact_paths()` 改 `self._artifacts.paths_in(...)`；stray 判定改实例方法 |
-| `mergeback._detect_wip_overlap` | 重叠集合**额外**排除产物：`overlap = [p for p in overlap if not self._artifacts.is_artifact(p)]` |
+| `mergeback._detect_wip_overlap` | `_detect_wip_overlap` 保持只读、语义不变；由 `_wip_overlap_gate` 在返回前切分产物/语义子集（见 D3b） |
 
 **为什么 WIP 重叠闸门也要排除产物（本 SPEC 的核心动机）**：闸门的作用是「主树未
 提交改动与分支改动重叠时先收纳再合并」。产物的未提交改动**不需要保护**——产物是
 `src` 的投影，会被重新构建覆盖；把它纳入重叠集合只会制造必然的 pop 冲突与误报告警。
-排除后本仓库的两次实际事故（4 文件版 / 2 文件版）都不会再触发闸门。
+排除后本仓库的实际事故不会再触发**闸门**（不再有 `WIP_GATE_STASH_PREFIX` 条目、
+不再按 `policy=block` 阻塞纯产物重叠）；但**仅此一步不足以切断告警链路**，见 D3b。
 
 **`_detect_wip_overlap` 仍保留 `spec/changes/**` 排除**（语义不同，勿合并）：
 `spec/changes/**` 是「框架运行必需、有独立提交通道」，产物是「可再生的投影」。
+
+### D3b：产物重叠子集在 stash 之前对齐 HEAD（切断误报链路的关键一步）
+
+**为什么必须有这一步（实证）**：真正把主树改动卷进 stash 的是
+`ensure_clean_tree()`（`mergeback.py:100`，闸门放行后**无条件**执行；路径集 `.` +
+`:(exclude)spec/changes`，见 `stash_guard.py:85-97`），**不是闸门**——闸门只决定
+stash 条目前缀（`WIP_GATE_STASH_PREFIX` vs `AUTOSTASH_MSG_PREFIX`）与
+`wip_overlap` 的上报内容。因此 D3 把产物移出重叠集合后：产物**依旧脏、依旧被
+stash**，pop 时依旧与分支侧新产物冲突，`last_stash_pop_conflicts` 依旧被填
+（`mergeback.py:107-111`）→ `queue.py:930` 依旧直发 `severity=major` 告警
+（`rollback.py:142-159`）。
+
+实证：fenix-desktop `.fenix/admin_alerts.json` 的 `stock-standalone-sync` 记录，
+`conflict_files=["dist/index.html","fenix-newtab-v1.0.0.zip"]`、`wip_overlap` 四路径
+**全为产物** —— 即「排除后 overlap=[]」也拦不住这两文件被 autostash 卷走。
+对照既有先例：闸门对 `spec/changes/**` 的排除之所以成立，是因为该前缀**同时**被
+autostash 的 `:(exclude)spec/changes` 排除（`mergeback.py:180-186` docstring 已写明
+「收纳对它无效」）——产物没有这层对偶，MUST 另行处理。
+
+**做法**（在 `_wip_overlap_gate()` 内、`ensure_clean_tree` 之前；该调用点
+`mergeback.py:96` 位于 `_main_tree_lock` 内，无需新增锁）：
+
+1. `overlap = self._detect_wip_overlap(branch)`——**该方法保持只读、语义不变**；
+2. 按实例判定器切分：`artifact_overlap = [p for p in overlap if
+   self._artifacts.is_artifact(p)]`，其余为 `semantic_overlap`；
+3. `artifact_overlap` 非空 → 逐路径 `git checkout HEAD -- <p>`（与
+   `_resolve_build_artifact_conflicts` 的「产物无条件对齐 HEAD」同语义：产物是
+   `src` 的投影，merge 后由构建重建），并记 INFO 日志（含路径清单，可审计）；
+4. 对齐失败（返回码非 0 / 超时 / `OSError`）的路径**逐路径**回落：并入
+   `semantic_overlap`——即退回现行行为（照旧 stash、照旧可能 pop 冲突与告警）。
+   **fail-safe 方向 = 与现行行为一致**：MUST NOT 因对齐失败而阻塞 merge-back、
+   MUST NOT 跳过 stash、MUST NOT 改宽判定；
+5. 返回（与上报、与 `policy=block` 判定）的 `wip_overlap` = 对齐后的语义集合
+   ——纯产物重叠不再阻塞 merge-back。
+
+**作用域约束（防数据丢失，MUST）**：对齐只作用于**重叠子集**（既是主树脏
+tracked、又是 `merge-base..branch` 改动的那部分）。主树独有、分支未触碰的产物脏
+改动 **MUST NOT** 被对齐——它们由既有 stash/pop 往返返回主树，本无冲突风险；若
+一并丢弃，等于把「用户本地刚构建、分支根本没碰」的产物静默抹掉，属净回归。
 
 ### D4：构造注入与故障回退
 
@@ -156,13 +210,19 @@ _artifact_paths = self.config.get("worktree.build_artifact_paths", None)
    配置 `*.zip` 后真；非法项（无 `/` 结尾、含 `..`、非字符串）被丢弃且不影响
    其余项；空前缀列表 → 等价默认。
 2. **WIP 重叠闸门**：主树脏 `dist/index.html` + 分支同改，配置产物后
-   `_detect_wip_overlap` 返回**不含**该路径（改造前含）。
+   `_detect_wip_overlap` 仍返回该路径（只读口径不变），但 `_wip_overlap_gate`
+   的返回/上报集合**不含**该路径，且该路径被对齐 HEAD（`git checkout HEAD --`
+   调用以桩断言）、`last_stash_pop_conflicts` 为空。
 3. **预演闸分类**：冲突全为配置产物时 `rehearsed` 为 None（放行真合并）；
    含语义路径时返回 `MergeConflictInfo(rehearsed=True)`。
 4. **故障回退**：`build_artifact_paths="not a list"` / `[123, None]` →
    构造不抛异常、行为等价默认。
 5. **兼容性**：不传 `build_artifact_paths` 时 `_is_build_artifact_path` 的行为与
    现行逐字节一致（既有 `test_worktree_stray_and_identical` 断言不回退）。
+6. **链路切断（D3b 核心验收）**：纯产物重叠 → 对齐命令以产物路径为参数被调用、
+   `wip_overlap` 与 `last_stash_pop_conflicts` 均为空；主树独有产物 → 对齐未被
+   调用、仍走 stash/pop 往返；对齐失败 → 路径并入 `wip_overlap` 且不阻塞；
+   语义重叠 → 对齐不接收该路径、闸门按 policy 照常处置。
 
 ### D6：前端与配置面的最小落点
 
@@ -185,4 +245,11 @@ _artifact_paths = self.config.get("worktree.build_artifact_paths", None)
   「产物自愈处理语义文件」——仅当人工把语义路径写进配置才可能发生，属显式误配。
 - **`dist/` 前缀宽度**：本仓库 `dist/` 内全是构建输出（无手写源码），前缀安全；
   校验要求前缀以 `/` 结尾，避免 `dist` 前缀意外匹配 `dists/`、`distfoo/`。
-- **并发**：判定器构造后只读，无锁需求；`WorktreeManager` 单实例注入。
+- **对齐丢弃（D3b）**：前置对齐会丢弃主树**重叠子集**的产物改动——该改动本身
+  可再生（产物 = `src` 投影），且作用域被「重叠子集」与「配置显式声明」双重
+  收窄、有 INFO 日志可审计、失败方向是回退现行行为。主树独有产物改动不受影响。
+- **重建作用域（Non-Goals）**：产物在仓库根的项目 merge 后不会被框架自动重建
+  （`src_touched` 仍限 `core/dashboard/static`），须由项目自身构建 hook 刷新；
+  本 SPEC 不新增重建通道，判定器改造不改变 `_rebuild_dist_after_merge` 的触发面。
+- **并发**：判定器构造后只读，无锁需求；`WorktreeManager` 单实例注入。D3b 的
+  对齐在 `_main_tree_lock` 内执行（`_wip_overlap_gate` 的唯一调用点所在）。
