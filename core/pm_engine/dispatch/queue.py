@@ -819,24 +819,77 @@ class QQQueueMixin:
                         # 质疑不得自动放行（防 agent 绕守卫），必须第三方裁决。
                         disputed = self._pm._disputed_deliverables(impl_result, missing)
                         if disputed:
-                            disp_q = "、".join(disputed)
-                            updates: dict = {
-                                "status": "blocked",
-                                "tester_run": None,
-                                "error": (
-                                    f"交付物守卫缺件 [{disp_q}]，但实现 run 对其提出 "
-                                    f"deliverable-dispute 异议（依据见该 run 的 "
-                                    f".fenix-run-result.json findings 与旧分支成果）"
-                                    f"— 已 blocked 待人工裁决，不自动重派"
-                                ),
-                            }
-                            self._pm.state_machine.update_spec(spec_name, updates)
-                            self._pm.logger.error(
-                                "pm_engine",
-                                f"交付物守卫缺件异议 '{spec_name}'（{disp_q}）— "
-                                f"blocked 待裁决，不重派 run={result.run_id}",
+                            # ── 孤儿声明机械预分类（deliverable-dispute-orphan-preclassify）──
+                            # 异议命中处先跑按 kind 分化的孤儿判定（design「机械预分类
+                            # 在裁决链中的位置」）：判为孤儿（声明残留：任务清单零出现 +
+                            # 源码面 git grep 零引用）→ 机械删除声明 + 审计 + 重跑守卫
+                            # 对账，spec 不 blocked；非孤儿（存在任一引用）→ 维持 blocked
+                            # 待人工（宁可多走人工，不误删真实交付物）。kind: delete 不
+                            # 参与预分类（add-deliverable-delete-kind D4 防洗白）。判定/
+                            # 删除/提交/重跑任一环节异常 → 全量回退既有 blocked 待人工
+                            # （fail-open，不因预分类故障改变处置）。
+                            orphan_result = self._pm._preclassify_orphan(
+                                spec_name, result, impl_result, disputed, missing
                             )
-                            return
+                            if orphan_result.get("action") == "proceed":
+                                # 孤儿声明删除后守卫重跑全清 → 放行 merge（不 blocked）
+                                self._pm.logger.warning(
+                                    "pm_engine",
+                                    f"交付物守卫缺件争议孤儿预分类全清 '{spec_name}' — "
+                                    f"声明残留已删除，放行 merge run={result.run_id}",
+                                )
+                            elif orphan_result.get("action") == "continue":
+                                # 仍有缺件 → 以重跑后的 remaining 续走既有后续（design
+                                # 续走契约第 4 点）：剩余项仍带 dispute 异议 → blocked 待
+                                # 人工；无异议项 → 交下方既有 _adjudicate_deliverable_missing
+                                # LLM 终审，不得因「已判过一批孤儿」就整段跳过。
+                                still_disputed = orphan_result.get(
+                                    "remaining_disputed", []
+                                )
+                                if still_disputed:
+                                    disp_q = "、".join(still_disputed)
+                                    updates: dict = {
+                                        "status": "blocked",
+                                        "tester_run": None,
+                                        "error": (
+                                            f"交付物守卫缺件 [{disp_q}]，但实现 run 对其"
+                                            f"提出 deliverable-dispute 异议（依据见该 run"
+                                            f"的 .fenix-run-result.json findings 与旧分支"
+                                            f"成果）— 已 blocked 待人工裁决，不自动重派"
+                                        ),
+                                    }
+                                    self._pm.state_machine.update_spec(spec_name, updates)
+                                    self._pm.logger.error(
+                                        "pm_engine",
+                                        f"交付物守卫缺件异议 '{spec_name}'（{disp_q}）— "
+                                        f"blocked 待裁决，不重派 run={result.run_id}",
+                                    )
+                                    return
+                                # 剩余缺件均无异议 → 落入下方既有 LLM 终审通道
+                                missing = orphan_result.get(
+                                    "remaining_missing", missing
+                                )
+                            else:
+                                # fallback（无孤儿可删 / 判定/删除/提交/重跑异常）→
+                                # 全量回退既有 blocked 待人工路径（fail-open）
+                                disp_q = "、".join(disputed)
+                                updates: dict = {
+                                    "status": "blocked",
+                                    "tester_run": None,
+                                    "error": (
+                                        f"交付物守卫缺件 [{disp_q}]，但实现 run 对其提出 "
+                                        f"deliverable-dispute 异议（依据见该 run 的 "
+                                        f".fenix-run-result.json findings 与旧分支成果）"
+                                        f"— 已 blocked 待人工裁决，不自动重派"
+                                    ),
+                                }
+                                self._pm.state_machine.update_spec(spec_name, updates)
+                                self._pm.logger.error(
+                                    "pm_engine",
+                                    f"交付物守卫缺件异议 '{spec_name}'（{disp_q}）— "
+                                    f"blocked 待裁决，不重派 run={result.run_id}",
+                                )
+                                return
                         # ── 缺件 LLM 终审与裁决机械执行（add-deliverable-declaration-triage）──
                         # 判缺件后不再直接打回/重派：先派 dispute-judge- run 语义终审
                         # （机械规则拦不住的声明 vs 现实矛盾由 LLM 裁决）。终审期间

@@ -481,6 +481,234 @@ class VAdjudicationMixin:
         # 仍有剩余 → remaining 带入 judge
         return {"action": "continue", "remaining": remaining}
 
+    # ── 孤儿声明机械预分类（deliverable-dispute-orphan-preclassify）────────
+
+    def _preclassify_orphan(
+        self, spec_name: str, result, impl_result, disputed: list, missing: list
+    ) -> dict:
+        """缺件异议分支内的孤儿声明机械预分类（design「机械预分类在裁决链
+        中的位置」）。
+
+        实现 run 对缺件提出 deliverable-dispute 异议（blocked 待人工）之前，
+        先跑按 kind 分化的孤儿判定（``is_orphan_declaration``，规则 1 源码面
+        git grep 零引用 / 规则 2 历史仅 modify / 规则 3 任务清单零出现）：
+        判为孤儿（声明残留）→ 机械删除声明 + 审计 + 重跑守卫对账，不 blocked；
+        非孤儿 → 维持 blocked 待人工（宁可多走人工，不误删真实交付物）。
+        kind: delete 不参与预分类（防洗白，一律进人工裁决）。
+
+        删除后的续走契约 MUST 与 ``_preclassify_missing``（本模块 295 行）的
+        proceed 分支逐条对齐（design「删除后的续走契约」节）：
+
+        1. 删声明：改写 tasks.md 声明段（只删该条的 path+kind 两行），留
+           .history 备份（对齐 admin 处置 .history 备份惯例）；
+        2. **立即提交**改写的 tasks.md（同 ``_commit_softened_declaration``，
+           fix-merge-back-deadlock 教训：主树 spec 文件被 merge-back 的
+           autostash 显式排除，残留 dirty 会让「主树改了 tasks.md + 实现分支
+           也改了 tasks.md」的 merge 被 git 拒绝 → spec 被 merge 指纹熔断冻结
+           blocked）。提交失败仅 WARNING（派发前 ensure_spec_committed 兜底）；
+        3. 重跑守卫对账：删除后以重跑 ``_deliverable_gate_missing(spec_name,
+           result)`` 的结果替换 ``missing``；全清 → ``status=implementing`` +
+           ``error=None`` + ``{"action": "proceed"}``（对齐 ``_preclassify_missing``
+           全清分支），放行 merge；
+        4. 仍有缺件：把重跑后的 remaining 作为新的 ``missing`` 续走既有后续
+           代码（剩余项仍带 dispute 异议 → 调用方 blocked 待人工；无异议项 →
+           既有 ``_adjudicate_deliverable_missing`` LLM 终审），不得因「已判过
+           一批孤儿」就整段跳过；
+        5. 任一环节异常 → 全量回退既有 blocked 待人工路径（fail-open，不因
+           预分类故障改变处置）。
+
+        Returns:
+            {"action": "proceed"} → 全部孤儿声明已删除，守卫重跑通过（调用方
+            继续 merge 推进）；
+            {"action": "continue", "remaining_missing": [...], "remaining_disputed": [...]}
+            → 仍有缺件：remaining_missing 为守卫重跑后的缺件清单（调用方续走
+            既有后续，remaining_disputed 为其中仍带异议的项，非空则 blocked
+            待人工）；
+            {"action": "fallback"} → 判定/改写/提交任一环节异常，全量回退既有
+            blocked 待人工路径（missing 不变，disputed 全量仍待人工）。
+        """
+        from core.deliverables import is_orphan_declaration, remove_declared_entry
+
+        # 声明段条目经统一解析入口取（add-declaration-relocation-protocol D1：
+        # worktree/分支版本优先、主树回退）——MUST NOT 自行拼接主树 spec 目录
+        # 直读（读分支、写主树的错层正是 refactor-giant-classes 事故根因）。
+        resolved = self._effective_declaration(spec_name, result)
+        entries = resolved.get("entries") or []
+        spec_dir = resolved.get("spec_dir")
+        if not entries:
+            # 声明段无条目 → 无声明可删，回退 blocked 待人工
+            return {"action": "fallback"}
+        if not spec_dir:
+            spec_dir = self._pm.project_root / "spec" / "changes" / spec_name
+
+        # 缺件入参兼容 list[dict]（path/kind/violation）与 list[str]
+        missing_paths = [m["path"] if isinstance(m, dict) else str(m) for m in missing]
+        entry_by_path: dict = {}
+        for e in entries:
+            if isinstance(e, dict) and e.get("path"):
+                entry_by_path[e["path"]] = e
+
+        # 逐条孤儿判定（单条判定异常 → 保留 disputed 走人工，不整段跳过）
+        orphans: list = []
+        non_orphans: list = []
+        for d in disputed:
+            entry = entry_by_path.get(d)
+            if entry is None:
+                # 声明段无该条目（缺件来自正则回退/基线）→ 无从删除，保留人工
+                non_orphans.append(d)
+                continue
+            try:
+                oc = is_orphan_declaration(
+                    self._pm.project_root, spec_name, entry, spec_dir
+                )
+            except Exception as exc:
+                # 判定异常 → fail-open：该条维持 blocked 待人工
+                non_orphans.append(d)
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"孤儿判定异常 '{spec_name}'（{d} 保留人工）: {exc}",
+                )
+                continue
+            if oc.get("orphan"):
+                orphans.append(d)
+            else:
+                non_orphans.append(d)
+
+        if not orphans:
+            # 无孤儿可删 → 全量维持 blocked 待人工（非孤儿/判定异常）
+            return {"action": "fallback"}
+
+        # 快照删除前 tasks.md 声明段（供审计 diff.before）
+        before_text = ""
+        tasks_path = Path(spec_dir) / "tasks.md"
+        if tasks_path.exists():
+            try:
+                before_text = tasks_path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                before_text = ""
+
+        # 1. 逐条删声明 + 留 .history 备份 + 立即提交
+        diff_by_element: dict = {}
+        deleted: list = []
+        for m in orphans[:]:  # copy 以便异常时移除
+            try:
+                # .history 备份（对齐 admin 处置备份惯例）：备份文件不可写/
+                # 目录异常不阻塞删除本身（备份是附加留痕，fail-open）。
+                self._backup_to_history(spec_name, m, before_text)
+                diff = remove_declared_entry(spec_dir, m)
+                diff_by_element[m] = diff
+                self._commit_softened_declaration(spec_name, m)
+                deleted.append(m)
+            except Exception as exc:
+                # 单条删除异常：保留 disputed 走人工（异常不阻塞其余，也不整段
+                # 跳过后续——本 spec 语境下最接近 fail-open 的处置）
+                non_orphans.append(m)
+                orphans.remove(m)
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"孤儿声明删除异常 '{spec_name}'（{m} 保留人工）: {exc}",
+                )
+
+        if not deleted:
+            # 全部删除异常 → 全量回退 blocked 待人工
+            return {"action": "fallback"}
+
+        # 2/3. 审计留痕（reasoning 前缀 orphan-preclassify，judge_run_id 空串）
+        try:
+            from core.admin_store import DisputeAuditStore
+
+            after_text = ""
+            if tasks_path.exists():
+                after_text = tasks_path.read_text(encoding="utf-8")
+            DisputeAuditStore(self._pm.project_root, self._pm.logger).append(
+                {
+                    "spec": spec_name,
+                    "trigger_run_id": "",
+                    "judge_run_id": "",
+                    "verdicts": [
+                        {
+                            "element": m,
+                            "verdict": "orphan-preclassify",
+                            "reasoning": (
+                                "orphan-preclassify: 源码面 git grep 零引用 "
+                                "+ 任务清单（全路径与 basename 皆）零出现，"
+                                "声明残留，机械删除声明条目"
+                            ),
+                        }
+                        for m in deleted
+                    ],
+                    "diff": {
+                        "before": before_text,
+                        "after": after_text,
+                    },
+                }
+            )
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"孤儿预分类审计写盘失败 '{spec_name}'（非阻塞）: {e}",
+            )
+
+        # 4. 重跑守卫对账：以重跑结果替换 missing
+        try:
+            gate_result = self._pm._deliverable_gate_missing(spec_name, result)
+        except Exception as e:
+            self._pm.logger.error(
+                "pm_engine",
+                f"孤儿删除后守卫重跑异常 '{spec_name}'（回退 blocked）: {e}",
+            )
+            # 异常回退：声明已删除无法回滚，但处置维持 blocked 待人工
+            # （fail-open 不改既有处置：剩余缺件全部按未预分类处理）
+            return {"action": "fallback"}
+
+        if not gate_result:
+            # 全清 → 走「裁决执行后守卫重跑通过」放行分支（对齐 _preclassify_missing）
+            self._pm.logger.warning(
+                "pm_engine",
+                f"孤儿声明删除全清 '{spec_name}' — 守卫重跑通过，放行 merge",
+            )
+            self._pm.state_machine.update_spec(
+                spec_name,
+                {
+                    "status": "implementing",
+                    "error": None,
+                },
+            )
+            return {"action": "proceed"}
+
+        # 仍有缺件 → 以重跑后的 remaining 续走既有后续（remaining_disputed 供
+        # 调用方判断 blocked vs LLM 终审；非孤儿 disputed 项同样计入）
+        remaining_paths = [g["path"] if isinstance(g, dict) else str(g) for g in gate_result]
+        remaining_disputed = [r for r in remaining_paths if r in (disputed + non_orphans)]
+        return {
+            "action": "continue",
+            "remaining_missing": gate_result,
+            "remaining_disputed": remaining_disputed,
+        }
+
+    def _backup_to_history(self, spec_name: str, element: str, content: str) -> None:
+        """删除前 .history 备份留痕（对齐 admin 处置 .history 备份惯例）。
+
+        备份目标：``<project_root>/.history/<spec_name>/<元素 basename>.<时间戳>
+        .orphan-preclassify.bak``（.history 已在 .gitignore 排除，不提交）。
+        备份内容为删除前的 tasks.md 全文快照（diff.before 同源）。备份失败仅
+        WARNING，不阻塞删除本身（备份是附加留痕，fail-open）。
+        """
+        try:
+            backup_dir = self._pm.project_root / ".history" / spec_name
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            ts = time.strftime("%Y%m%d%H%M%S")
+            backup_path = (
+                backup_dir
+                / f"{Path(element).name}.{ts}.orphan-preclassify.bak"
+            )
+            backup_path.write_text(content, encoding="utf-8")
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"孤儿删除 .history 备份失败 '{spec_name}'（{element}，非阻塞）: {e}",
+            )
+
     # ── 陈日声明前置分类与重定位（add-declaration-relocation-protocol D4）──────
 
     def _preclassify_stale(self, spec_name: str, result, missing: list) -> dict:
