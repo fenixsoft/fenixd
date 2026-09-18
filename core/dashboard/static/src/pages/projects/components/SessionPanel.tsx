@@ -1,16 +1,18 @@
-// SessionModal.tsx — 项目级自由会话全屏 Modal（dashboard-live-session D6）
+// SessionPanel.tsx — 项目级自由会话内联分面面板（add-project-detail-tabs D2）
 //
+// 由项目级会话全屏 Modal 迁移（Modal 外壳 → 「会话」分面内联容器），会话行为契约零变更：
 // 打开流程：GET 拉全量缓冲 → EventSource('/api/stream') → hello 分支用服务端
 // cid 注册 watch → 再 GET 重拉一次（兜住注册前窗口），与 ClaudeOutputPane 同构。
-// 会话不存在（首次打开）→ 显示「开始会话」空态，点击后显式 POST /api/session/start。
-// 关闭/卸载：unregister watch + eventSource.close()。
+// 会话不存在（首次进入）→ 显示「开始会话」空态，点击后显式 POST /api/session/start。
+// 分面无会话项目不注册 watch（注册必然 404 → console.error，污染 no_console_error
+// 断言；验证 BUG-01 实证，迁移源为合入 main 的 5f5d5846 修复形态）。
+// 切离分面（active=false）：unregister watch + eventSource.close() + 清空本地状态，
+// 切回分面时重新执行 loadAll() 接回；MUST NOT 终止会话进程本身。
 import { useEffect, useRef, useState } from 'react';
 import {
   App,
   Button,
   Input,
-  Modal,
-  Space,
   Spin,
   Typography,
 } from 'antd';
@@ -31,13 +33,13 @@ import type { SessionEvent } from '@/services/dashboard';
 import { runEventsToChatMessages } from '@/components/claude-msg/runEvents';
 import ClaudeMessageList from '@/components/claude-msg/ClaudeMessageList';
 
-interface SessionModalProps {
+interface SessionPanelProps {
   project: string;
-  open: boolean;
-  onClose: () => void;
+  /** 「会话」分面是否被选中：激活时拉取会话状态并订阅事件流，切离即释放订阅 */
+  active: boolean;
 }
 
-export default function SessionModal({ project, open, onClose }: SessionModalProps) {
+export default function SessionPanel({ project, active }: SessionPanelProps) {
   const { message } = App.useApp();
   const [events, setEvents] = useState<SessionEvent[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -53,12 +55,17 @@ export default function SessionModal({ project, open, onClose }: SessionModalPro
   const seenUuidsRef = useRef<Set<string>>(new Set());
   const eventSourceRef = useRef<EventSource | null>(null);
   // cid 由服务端在 SSE hello 中分配（design D3：自造 cid 会静默失效）。初值必须为
-  // null——挂载时 Modal 未打开，此时无任何订阅可注销；若预置自造 cid，下方 [open]
-  // 清理 effect 会在挂载当帧发出 DELETE /api/session/watch（服务端查不到该 cid 对应
+  // null——分面未激活时无任何订阅可注销；若预置自造 cid，下方 [active] 清理
+  // effect 会在挂载当帧发出 DELETE /api/session/watch（服务端查不到该 cid 对应
   // 会话）→ 404 → 控制台错误，污染所有访问项目列表页的 no_console_error 断言
   // （2026-09-18 admin 处置 add-spec-manual-activation 时实证）。
   const cidRef = useRef<string | null>(null);
   const sessionIdRef = useRef<string | null>(null);
+  // watch 是否实际注册过：无会话项目（空态）跳过注册但 hello 仍分配 cid，
+  // 若照 cid 无条件注销会对「从未注册的 cid」发 DELETE /api/session/watch →
+  // 服务端无会话返回 404 → console.error，污染所有访问项目页的
+  // no_console_error 断言（本项目验证实测）。仅注册过才注销。
+  const watchRegisteredRef = useRef(false);
 
   const syncEvents = (next: SessionEvent[]) => {
     // 全量重拉：清空重建去重集合（design D6——重拉是唯一可能重复的路径）
@@ -83,9 +90,9 @@ export default function SessionModal({ project, open, onClose }: SessionModalPro
     }
   };
 
-  // 拉全量 + 建立 SSE（打开时执行；重开 Modal 时重新接回）
+  // 拉全量 + 建立 SSE（分面激活时执行；切离后重新接回）
   useEffect(() => {
-    if (!open || !project) return;
+    if (!active || !project) return;
     let disposed = false;
 
     const loadAll = async (): Promise<string | null> => {
@@ -135,6 +142,7 @@ export default function SessionModal({ project, open, onClose }: SessionModalPro
           // 会话存在：用服务端 hello 分配的 cid 注册 watch
           try {
             await registerSessionWatch(project, cid);
+            watchRegisteredRef.current = true;
           } catch (e) {
             console.error('Failed to register session watch:', e);
           }
@@ -182,6 +190,10 @@ export default function SessionModal({ project, open, onClose }: SessionModalPro
         for (const e of msg.events) {
           if (e.type === 'session_ended') {
             setEnded(true);
+            // 会话已终止（用户停止 / 空闲超时回收 / 进程退出）：服务端会话
+            // 已移除，此后注销 watch 必 404（服务端无会话判定）→ 标记未注册，
+            // 切离分面不再发 DELETE，避免污染 no_console_error 断言
+            watchRegisteredRef.current = false;
           }
         }
         appendEvents(msg.events);
@@ -196,19 +208,22 @@ export default function SessionModal({ project, open, onClose }: SessionModalPro
       es.close();
       eventSourceRef.current = null;
     };
-  }, [open, project]);
+  }, [active, project]);
 
-  // 关闭 / 卸载：注销 watch（需服务端 cid）
+  // 切离分面：注销 watch（需服务端 cid）+ 清空本地状态，切回重新接回；
+  // 仅释放订阅，MUST NOT 终止会话进程本身
   useEffect(() => {
-    if (!open) {
+    if (!active) {
       const cid = cidRef.current;
-      // 异步注销，不阻塞关闭
-      if (cid && project) {
+      // 异步注销，不阻塞切面；仅对实际注册过的 watch 注销——
+      // 无会话项目从未注册，注销未注册 cid 会 404（服务端无会话判定）
+      if (watchRegisteredRef.current && cid && project) {
         void unregisterSessionWatch(project, cid).catch(() => {});
-        // 注销后清空：卸载时本 effect 会再跑一次，cid 不清会被重复 DELETE（404）
-        cidRef.current = null;
+        watchRegisteredRef.current = false;
       }
-      // 关闭时清空本地状态，重开重新接回
+      // 注销后清空：卸载时本 effect 会再跑一次，cid 不清会被重复 DELETE（404）
+      cidRef.current = null;
+      // 切离时清空本地状态，切回重新接回（events/started 由 loadAll 重置）
       sessionIdRef.current = null;
       setSessionId(null);
       setEnded(false);
@@ -216,7 +231,7 @@ export default function SessionModal({ project, open, onClose }: SessionModalPro
       setText('');
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+  }, [active]);
 
   // 开始会话：显式创建（唯一允许启动进程的端点），成功后拉全量
   const handleStart = async () => {
@@ -227,6 +242,19 @@ export default function SessionModal({ project, open, onClose }: SessionModalPro
       setSessionId(res.session.id);
       setStarted(true);
       setEnded(false);
+      // 会话由无变有：此前空态 when hello 到达时 afterHello 跳过了 watch 注册
+      // （无会话注册必然 404），若此刻不补注册，SSE 将永不推送本会话事件——
+      // 发送消息后用户消息不回显、消息流无反馈（本项目验证实测）。用当前
+      // hello 分配的连接 cid 补注册；EventSource 自动重连后 afterHello 也会
+      // 以新 cid 兜底注册（会话已存在分支），二者不冲突。
+      if (!watchRegisteredRef.current && cidRef.current && sessionIdRef.current) {
+        try {
+          await registerSessionWatch(project, cidRef.current);
+          watchRegisteredRef.current = true;
+        } catch (e) {
+          console.error('Failed to register session watch:', e);
+        }
+      }
       const data = await getSession(project);
       if (data.session) {
         syncEvents(data.events || []);
@@ -262,29 +290,16 @@ export default function SessionModal({ project, open, onClose }: SessionModalPro
     try {
       await stopSession(project);
       setEnded(true);
+      // 会话已终止：服务端会话已移除，后续注销 watch 必 404——
+      // 标记未注册，切离分面不再发 DELETE（避免污染 no_console_error 断言）
+      watchRegisteredRef.current = false;
     } catch (e) {
       message.error(`停止失败：${e instanceof Error ? e.message : String(e)}`);
     }
   };
 
   return (
-    <Modal
-      open={open}
-      onCancel={onClose}
-      footer={null}
-      width="96vw"
-      styles={{ body: { height: '82vh', display: 'flex', flexDirection: 'column', padding: '16px 24px' } }}
-      title={
-        <Space>
-          <MessageOutlined />
-          <span>接入会话</span>
-          <Typography.Text type="secondary" style={{ fontWeight: 400, fontSize: 13 }}>
-            {project} · 与 Claude 自由对话（不绑定 SPEC）
-          </Typography.Text>
-        </Space>
-      }
-      destroyOnClose={false}
-    >
+    <div style={{ display: 'flex', flexDirection: 'column', minHeight: 480, maxHeight: 'calc(100vh - 320px)' }}>
       {loading ? (
         <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <Spin size="small" />
@@ -351,11 +366,11 @@ export default function SessionModal({ project, open, onClose }: SessionModalPro
           </div>
           {ended ? (
             <Typography.Text type="secondary" style={{ display: 'block', marginTop: 8, fontSize: 12 }}>
-              会话已结束，如需新会话请关闭后重新打开。
+              会话已结束。切离本分面再切回可开始新会话。
             </Typography.Text>
           ) : null}
         </>
       )}
-    </Modal>
+    </div>
   );
 }
