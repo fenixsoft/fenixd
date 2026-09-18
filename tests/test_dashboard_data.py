@@ -97,6 +97,54 @@ class TestDashboardConfigIO(unittest.TestCase):
         echoed = read_config(self.tmpdir)
         self.assertEqual(echoed["verify"]["planner_max_concurrent"], 0)
 
+    def test_impl_code_review_roundtrip_and_validation(self):
+        """verify.impl_code_review：写读回环 + 非法值拒绝（add-impl-code-review-gate）。"""
+        from core.dashboard.data import read_config, write_config
+
+        # 缺省：verify 回显默认值，无 impl_code_review 键（不破坏既有严格相等断言）
+        echoed = read_config(self.tmpdir)
+        self.assertNotIn("impl_code_review", echoed.get("verify", {}))
+        # _SOURCE_KEYS 登记后 sources 键存在，缺省为 user（继承用户级）
+        self.assertEqual(echoed["sources"]["verify.impl_code_review"], "user")
+
+        # 写 True → 读回 True（sources 标注 project）
+        result = write_config(self.tmpdir, {"verify": {"impl_code_review": True}})
+        self.assertTrue(result["ok"], result.get("error"))
+        echoed = read_config(self.tmpdir)
+        self.assertTrue(echoed["verify"]["impl_code_review"])
+        self.assertEqual(echoed["sources"]["verify.impl_code_review"], "project")
+
+        # 写 False → 读回 False（配置写入 false 而非删键）
+        result = write_config(self.tmpdir, {"verify": {"impl_code_review": False}})
+        self.assertTrue(result["ok"], result.get("error"))
+        echoed = read_config(self.tmpdir)
+        self.assertIs(echoed["verify"]["impl_code_review"], False)
+        self.assertEqual(echoed["sources"]["verify.impl_code_review"], "project")
+
+        # 非法值拒绝（非 bool → 不落盘，保留旧值，与 deps_mode 非法值同款）
+        for bad in ("yes", 1, 0, "on", "true"):
+            bad_res = write_config(self.tmpdir, {"verify": {"impl_code_review": bad}})
+            self.assertFalse(bad_res["ok"], f"{bad!r} 应被拒绝")
+            self.assertIn("impl_code_review", bad_res["error"])
+        echoed = read_config(self.tmpdir)
+        self.assertIs(echoed["verify"]["impl_code_review"], False)
+
+    def test_impl_code_review_effective_echo(self):
+        """read_effective_config 有效值回显 verify.impl_code_review。"""
+        from core.dashboard.data import read_effective_config, write_config
+
+        result = write_config(self.tmpdir, {"verify": {"impl_code_review": True}})
+        self.assertTrue(result["ok"], result.get("error"))
+        eff = read_effective_config(self.tmpdir)
+        self.assertTrue(eff["verify"]["impl_code_review"])
+
+    def test_impl_code_review_sync_from_user(self):
+        """「同步用户级设置」按钮按页白名单取键——verify 页键组含 impl_code_review
+        （add-impl-code-review-gate 任务 2.4）。"""
+        from core.dashboard.data import _SYNC_PAGE_KEYS
+
+        self.assertIn("impl_code_review", _SYNC_PAGE_KEYS["verify"]["verify"])
+
     def test_max_same_cause_redispatches_roundtrip_and_validation(self):
         """agents.max_same_cause_redispatches：缺省回显 + 写读回环 + 非法拒绝
         （fix-redispatch-loop-governance D5：新配置键 MUST 带 Dashboard 界面）。"""

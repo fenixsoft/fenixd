@@ -890,6 +890,10 @@ export interface VerifyConfig {
   /** serving 目录自动回收（fix-verify-serving-disk-reclaim）：enabled=false 时禁用
    *  .fenix/verify-serving/ 目录与 boot.log 的生命周期清扫（缺省 true） */
   serving_reclaim?: { enabled?: boolean };
+  /** 实现阶段末尾代码质量审查开关（impl-code-review-gate）：开启后实现者会在
+   *  收尾阶段调用 bin/ocr_review.py（ocr）审查本次改动并自行修正真实问题；
+   *  缺省 false，需环境已安装 ocr，未安装时自动跳过 */
+  impl_code_review?: boolean;
 }
 
 export interface SelfReviewConfig {

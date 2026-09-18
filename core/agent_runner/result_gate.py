@@ -420,6 +420,102 @@ def _check_agent_result_artifact(
     return None
 
 
+def _check_impl_code_review_artifact(
+    runner, spec_name: str, wt_path: Path | None, data: dict
+) -> str | None:
+    """收尾代码质量审查产物硬门（add-impl-code-review-gate，任务 6.1）。
+
+    开关关闭时返回 None（零校验）。开启时校验 code-review.json 存在且结构合法、
+    status 在允许枚举内、findings 与逐条处置条数匹配、rejected/deferred 须附
+    非空 reason。status == "unavailable" 时 MUST 放行（设计 D7，环境缺失降级）。
+    所有失败原因 MUST 含报告路径与具体缺口，格式与既有硬门文案风格一致。
+    """
+    try:
+        from core.config import ConfigLoader
+
+        enabled = ConfigLoader.get_impl_code_review_enabled(runner.config)
+    except Exception:
+        return None
+    if not enabled:
+        return None
+    if wt_path is None:
+        return None  # worktree 不可得时不校验（与 _check_impl_result_artifact 入口同语义）
+    report_path = wt_path / ".fenix" / "verify-progress" / spec_name / "code-review.json"
+    report_rel = f".fenix/verify-progress/{spec_name}/code-review.json"
+    if not report_path.is_file():
+        return (
+            f"exit 0 但收尾审查报告缺失（impl-code-review-gate）: {report_rel}"
+        )
+    try:
+        raw = report_path.read_text(encoding="utf-8")
+        cr_data = json.loads(raw)
+    except (OSError, json.JSONDecodeError) as e:
+        return (
+            f"exit 0 但收尾审查报告无法解析（impl-code-review-gate）: "
+            f"{report_rel} ({e})"
+        )
+    if not isinstance(cr_data, dict):
+        return (
+            f"exit 0 但收尾审查报告顶层非对象（impl-code-review-gate）: {report_rel}"
+        )
+    cr_status = cr_data.get("status", "")
+    if cr_status not in ("completed", "unavailable"):
+        return (
+            f"exit 0 但收尾审查报告 status='{cr_status}' 不在白名单"
+            f"（impl-code-review-gate，合法值为 completed/unavailable）: {report_rel}"
+        )
+    if cr_status == "unavailable":
+        reason = cr_data.get("reason", "")
+        if not isinstance(reason, str) or not reason.strip():
+            return (
+                f"exit 0 但收尾审查报告 status=unavailable 缺非空 reason"
+                f"（impl-code-review-gate，unavailable MUST 附非空原因）: {report_rel}"
+            )
+        # unavailable + 非空 reason → 放行（环境缺失降级）
+        return None
+    # status == "completed" → 校验 findings 与逐条处置
+    findings = cr_data.get("findings")
+    if not isinstance(findings, list):
+        return (
+            f"exit 0 但收尾审查报告 findings 非列表（impl-code-review-gate）: {report_rel}"
+        )
+    code_review = data.get("code_review")
+    if not isinstance(code_review, dict):
+        return (
+            f"exit 0 但结果文件缺少 code_review 段（impl-code-review-gate）: "
+            f"请在 .fenix-run-result.json 顶层增加 code_review 段（含 report_path 与"
+            f"逐条处置摘要）"
+        )
+    cr_dispositions = code_review.get("dispositions") or []
+    if not isinstance(cr_dispositions, list) or len(cr_dispositions) != len(findings):
+        return (
+            f"exit 0 但收尾审查 findings 条数({len(findings)})与结果文件"
+            f" code_review.dispositions 条数({len(cr_dispositions)})不匹配"
+            f"（impl-code-review-gate）: {report_rel}"
+        )
+    for idx, disp in enumerate(cr_dispositions):
+        if not isinstance(disp, dict):
+            return (
+                f"exit 0 但 code_review.dispositions[{idx}] 非对象"
+                f"（impl-code-review-gate）: {report_rel}"
+            )
+        d = disp.get("disposition", "")
+        if d not in ("fixed", "rejected", "deferred"):
+            return (
+                f"exit 0 但 code_review.dispositions[{idx}].disposition='{d}' 不在"
+                f"白名单（合法值为 fixed/rejected/deferred）（impl-code-review-gate）: "
+                f"{report_rel}"
+            )
+        if d in ("rejected", "deferred"):
+            r = disp.get("reason", "")
+            if not isinstance(r, str) or not r.strip():
+                return (
+                    f"exit 0 但 code_review.dispositions[{idx}] disposition={d} "
+                    f"缺非空 reason（impl-code-review-gate）: {report_rel}"
+                )
+    return None
+
+
 def _check_impl_result_artifact(
     runner,
     spec_name: str,
@@ -482,6 +578,18 @@ def _check_impl_result_artifact(
             f"（只能申报确实无法完成的未勾任务，{agent_type} 产物硬门）: "
             f"{result_path} {runner._format_gap_list(bogus)}"
         )
+
+    # add-impl-code-review-gate（任务 6.2）：接入收尾审查产物硬门——仅对
+    # 「实现者自报本轮成功」的收口调用（status == "success"，或 partial 且
+    # unattainable 已覆盖全部未勾任务，等价于本轮全部任务实际做完、只是申报
+    # 形态差异）；partial 且仍存在未勾任务时 MUST NOT 调用（末轮诚实申报不因
+    # 缺审查报告被拦）。返回非 None 即作为本函数的失败原因。
+    if status == "success" or not (unchecked_ids - unattainable_ids):
+        code_review_err = runner._check_impl_code_review_artifact(
+            spec_name, wt_path, data
+        )
+        if code_review_err is not None:
+            return code_review_err
 
     if status == "success":
         # 诚实退出（改进②）：无法完成的已申报任务从「全部任务」基准里扣除，

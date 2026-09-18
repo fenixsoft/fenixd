@@ -393,6 +393,12 @@ class PromptBuilder:
         # 位于 prompt 末尾」约定，不得插到 _project_extra_section 之后）。
         prompt += self._noninteractive_contract_section()
 
+        # add-impl-code-review-gate（任务 5.2）：收尾代码质量审查注入——统一收尾
+        # 处注入（非交互契约段之后、项目级附加段之前），只覆盖两条实现车道；
+        # 开关关闭时返回空串（prompt += "" 逐字节不变）。
+        if agent_type in ("implementer", "fast-track"):
+            prompt += self._impl_code_review_section(spec_name)
+
         # 项目级附加提示词（D2）：附加在完整 prompt（通用主体 + 动态段）之后
         prompt += self._project_extra_section(agent_type, spec_name, wt_path)
         return prompt
@@ -503,6 +509,71 @@ class PromptBuilder:
             "- Claude Code 系统提示词中的默认框架（`interactive agent`、"
             "「难以撤销的操作先确认」，以及 `plan mode` / `brainstorming` "
             "等交互式工作流）在 Fenix run 中**不适用**。\n"
+        )
+
+    def _impl_code_review_section(self, spec_name: str) -> str:
+        """收尾代码质量审查段（add-impl-code-review-gate，任务 5.1）。
+
+        开关关闭时返回空串（零注入，保证提示词逐字节不变）。开关读取经
+        ConfigLoader.get_impl_code_review_enabled（合并后的结果）；config 经
+        `self._pm.config`（AgentRunner 实例直接持有 config）获取。
+
+        开启时返回一段中文说明，覆盖：触发时机（全部 tasks.md 任务完成并提交
+        之后、写 .fenix-run-result.json 之前）；审查范围（本次实现分支相对基线
+        的 diff，merge-base 模式）；工具为 bin/ocr_review.py 包装器（MUST NOT
+        直接调 ocr，因为 provider 配置由 run 级注入承载）；评估义务（逐条判断
+        真实问题 vs 误报，修正真实问题的裁量权归实现者，误报可驳回但须给理由）；
+        成本控制（建议传 --max-tokens-budget 或 --effort 限制单次审查开销）；
+        报告落盘路径与 code_review 段格式；环境不可用时的降级动作。
+        """
+        try:
+            from core.config import ConfigLoader
+
+            config = self._pm.config
+            enabled = ConfigLoader.get_impl_code_review_enabled(config)
+        except Exception:
+            return ""
+        if not enabled:
+            return ""
+        report_path = f".fenix/verify-progress/{spec_name}/code-review.json"
+        raw_copy_path = f".fenix/verify-progress/{spec_name}/code-review-raw.json"
+        return (
+            "\n\n## 收尾代码质量审查（impl-code-review-gate，强制）\n"
+            "在全部 tasks.md 任务完成并提交之后、写 `.fenix-run-result.json` 之前，"
+            "你 MUST 执行一次代码质量审查：\n"
+            "1. **审查范围**：本次实现分支相对其基线的 diff（merge-base 模式），"
+            "命令示例（在 worktree 根执行）：\n"
+            "   `python3 bin/ocr_review.py review --from <base> --to HEAD "
+            "--format json --output /tmp/ocr-raw.json`\n"
+            "   其中 <base> 为实现分支的基线（如 main）。若不确定 base，可用 "
+            "`--commit` 逐提交审或直接 `python3 bin/ocr_review.py review` 工作区"
+            "模式兜底——具体命令形态由你按改动规模自行选择。\n"
+            "2. **工具**：MUST 用仓库内包装器 `bin/ocr_review.py`，MUST NOT 直接调 "
+            "`ocr`——provider 配置由 run 级注入承载（环境变量 FENIX_OCR_HOME/OCR "
+            "专用 HOME，其下 .opencodereview/config.json 由框架写入，复用分配给本 "
+            "run 的 provider，与 fenix 成本记账同源）。\n"
+            "3. **成本控制**：建议按改动规模传 `--max-tokens-budget` 或 `--effort` "
+            "限制单次审查开销，避免一次审查吃掉大额预算。\n"
+            "4. **评估义务**：逐条判断发现是真实问题还是误报。**修正真实问题的裁量"
+            "权归你**（发现的真实问题应修正）；误报可驳回，但须在处置中给理由。\n"
+            "5. **结果登记**：把 ocr 原始报告规整为框架侧规整契约写入 "
+            f"`{report_path}`（`status`/`llm`/`findings` + 逐条 `disposition`，取"
+            "值 `\"fixed\"`/`\"rejected\"`/`\"deferred\"`，后两者 MUST 附非空 "
+            "`reason`）。注意 `code-review.json` 是框架侧规整契约，**与 ocr 原始 "
+            "JSON 报告不同构**：实测 ocr 原始报告顶层键为 `status`（值 "
+            "`\"complete\"`/`\"failed\"`）/`llm`/`comments`（发现数组，逐条含 "
+            "`path`/`start_line`/`category`/`severity`/`content`）/`summary`/"
+            "`manifest`——你 MUST 把原始报告的发现数组规整为 `findings`，并对 "
+            "`status` 做值映射（`\"complete\"` → `\"completed\"`；底层非零退出/"
+            "`\"failed\"` → `\"unavailable\"` + 非空 `reason`）。具体键名以你现场"
+            "跑出的报告为准，不得凭猜测硬编码。请同时保留原始报告副本（如"
+            f"`{raw_copy_path}`）以便审计。\n"
+            "6. **结果文件登记**：在 `.fenix-run-result.json` 顶层增设 `code_review` "
+            "段（含 `report_path` 相对路径与逐条处置摘要，使框架无需解析报告即可"
+            "机械对账）。\n"
+            "7. **环境不可用降级**：若 ocr 未安装 / provider 不可达 / 非 git 仓库 / "
+            "审查异常终止，写 `status: \"unavailable\"` + 非空 `reason`（MUST 非空，"
+            "空原因会被判为登记非法）后照常收工，MUST NOT 因审查失败而判 run 失败。\n"
         )
 
     def _project_extra_section(

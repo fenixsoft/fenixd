@@ -306,5 +306,108 @@ class TestBugRepairModeConfig(unittest.TestCase):
         self.assertEqual(echoed["admin"]["enabled"], True)
 
 
+class TestImplCodeReviewConfig(unittest.TestCase):
+    """add-impl-code-review-gate 任务 7.6：verify.impl_code_review 读写契约。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.config_dir = Path(self.tmpdir) / ".fenix"
+        self.config_dir.mkdir(parents=True, exist_ok=True)
+        self.config_path = self.config_dir / "config.yaml"
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _write_raw(self, raw: dict):
+        with self.config_path.open("w", encoding="utf-8") as f:
+            yaml.safe_dump(raw, f, allow_unicode=True, sort_keys=False)
+
+    def test_write_then_read_back_true(self):
+        """写入 true → 落盘、读回为 True、来源标注 project。"""
+        from core.dashboard.data import read_config, write_config
+
+        result = write_config(
+            self.tmpdir, {"verify": {"impl_code_review": True}})
+        self.assertTrue(result["ok"], result.get("error"))
+        with self.config_path.open("r", encoding="utf-8") as f:
+            raw = yaml.safe_load(f)
+        self.assertTrue(raw["verify"]["impl_code_review"])
+
+        echoed = read_config(self.tmpdir)
+        self.assertTrue(echoed["verify"]["impl_code_review"])
+        self.assertEqual(echoed["sources"]["verify.impl_code_review"], "project")
+
+    def test_write_false_persists_false(self):
+        """写入 false → 落盘为 false（而非删键），读回为 False。"""
+        from core.dashboard.data import read_config, write_config
+
+        write_config(self.tmpdir, {"verify": {"impl_code_review": True}})
+        result = write_config(self.tmpdir, {"verify": {"impl_code_review": False}})
+        self.assertTrue(result["ok"], result.get("error"))
+        with self.config_path.open("r", encoding="utf-8") as f:
+            raw = yaml.safe_load(f)
+        self.assertIs(raw["verify"]["impl_code_review"], False)
+        echoed = read_config(self.tmpdir)
+        self.assertIs(echoed["verify"]["impl_code_review"], False)
+        self.assertEqual(echoed["sources"]["verify.impl_code_review"], "project")
+
+    def test_illegal_value_rejected_and_not_persisted(self):
+        """非 bool 值（如 "yes" / 1 / 空串）拒绝保存，配置文件不变。"""
+        from core.dashboard.data import read_config, write_config
+
+        for bad in ("yes", 1, 0, "", None if False else "x"):
+            before = read_config(self.tmpdir)
+            result = write_config(self.tmpdir, {"verify": {"impl_code_review": bad}})
+            self.assertFalse(result["ok"], f"应当拒绝: {bad!r}")
+            self.assertIn("impl_code_review", result["error"])
+            after = read_config(self.tmpdir)
+            self.assertEqual(after["verify"], before["verify"])
+
+    def test_default_not_echoed_and_no_source(self):
+        """缺省（未配置）时读回 MUST NOT 含 impl_code_review 键（防破坏既有
+        严格相等断言 tests/test_system_settings_config.py:229）；来源标注
+        随 _SOURCE_KEYS 登记存在，缺省为继承自用户级（user）。"""
+        from core.dashboard.data import read_config
+
+        echoed = read_config(self.tmpdir)
+        self.assertNotIn("impl_code_review", echoed["verify"])
+        # _SOURCE_KEYS 登记后 sources 键存在，缺省为 user（继承用户级）
+        self.assertEqual(echoed["sources"]["verify.impl_code_review"], "user")
+
+    def test_strict_bool_readback(self):
+        """读侧严格 bool：配置文件中该键为 1 / "yes" 等非 bool 时不回显。"""
+        from core.dashboard.data import read_config
+
+        self._write_raw({"verify": {"impl_code_review": 1,
+                                    "static_scope": "main",
+                                    "deps_mode": "hardlink"}})
+        echoed = read_config(self.tmpdir)
+        self.assertNotIn("impl_code_review", echoed["verify"])
+
+    def test_config_loader_reader_reads_merged(self):
+        """ConfigLoader.get_impl_code_review_enabled 读取合并后的 verify 节。"""
+        from core.config import ConfigLoader
+
+        self.assertTrue(
+            ConfigLoader.get_impl_code_review_enabled(
+                {"verify": {"impl_code_review": True}}))
+        self.assertFalse(
+            ConfigLoader.get_impl_code_review_enabled(
+                {"verify": {"impl_code_review": False}}))
+        self.assertFalse(ConfigLoader.get_impl_code_review_enabled({}))
+        self.assertFalse(ConfigLoader.get_impl_code_review_enabled(
+            {"verify": {"static_scope": "main"}}))
+        self.assertFalse(ConfigLoader.get_impl_code_review_enabled(
+            {"verify": {"impl_code_review": 1}}))
+
+    def test_effective_config_echoes(self):
+        """read_effective_config 在项目级显式配置时同样回显该键。"""
+        from core.dashboard.data import read_effective_config, write_config
+
+        write_config(self.tmpdir, {"verify": {"impl_code_review": True}})
+        eff = read_effective_config(self.tmpdir)
+        self.assertTrue(eff["verify"]["impl_code_review"])
+
+
 if __name__ == "__main__":
     unittest.main()
