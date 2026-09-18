@@ -16,9 +16,19 @@
 
 ### Scenario: 过期自动核销
 
-- **GIVEN** transient_break_storm 告警已产生、全局熔断于 13:32:32Z 自然过期
-- **WHEN** 熔断过期处理流程执行
-- **THEN** 对应告警被自动标记 handled + 核销原因「熔断自然过期」落审计，不再留未处理升级记录
+- **GIVEN** transient_break_storm 告警已产生、全局熔断自然过期（实证：13:32:32Z
+  「Global transient break expired — dispatch resumed」，即派发闸门查询
+  `is_global_transient_break` 首次观察到 `now >= _transient_break_until` 的时点）
+- **WHEN** 熔断过期处理流程执行（过期分支内联核销）
+- **THEN** 对应告警被自动标记 handled=True + handled_by="auto-resolve" + 核销原因
+  「熔断自然过期」落审计（经既有 AdminStore.auto_resolve 通道），不再留未处理升级记录
+
+### Scenario: 无对应告警时不误伤
+
+- **GIVEN** 全局熔断过期，但窗口内无 corresponding transient_break_storm 告警
+  （如告警被 15 分钟节流未产生、或告警已由人工/Dashboard 标记 handled）
+- **WHEN** 过期流程执行
+- **THEN** 零操作、零写回：MUST NOT 创建新记录、MUST NOT 改写已 handled 条目
 
 ## Requirement 3: 不生成新告警类型
 
