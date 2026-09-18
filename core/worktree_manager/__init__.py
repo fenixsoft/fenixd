@@ -72,17 +72,6 @@ WT_REBUILDABLE = "rebuildable"  # 分支可解析但目录缺失/未注册 → �
 WT_UNAVAILABLE = "unavailable"  # 分支不可解析（已并入/已清扫/typo）→ 不可用，调用方降级
 
 
-def _is_build_artifact_path(path: str) -> bool:
-    """构建产物路径判定：static 根下任一层级 dist 目录内的文件。
-
-    「默认判定」别名（evo-merge-back-wip-artifact-scope D1）：判定语义从全局
-    常量改为实例状态（``ArtifactPathMatcher``，见 `core/worktree_manager/
-    artifact_paths.py`），本函数委托默认实例的判定，签名与返回值语义逐字节
-    不变——既有引用（`tests/test_characterization_giant_classes.py` 等）零改动。
-    """
-    return ArtifactPathMatcher().is_artifact(path)
-
-
 # ── 数据类（design D1：types.py 原样保留，此处 re-export） ──────────────────
 
 from core.worktree_manager.types import MergeConflictInfo  # noqa: E402

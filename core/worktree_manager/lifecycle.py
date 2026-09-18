@@ -40,6 +40,7 @@ class G1LifecycleMixin:
         state_reader=None,
         mergeback_wip_overlap_policy=None,
         build_artifact_paths=None,
+        has_build_artifacts=None,
     ):
         self.base_dir = Path(base_dir)
         self.project_root = Path(project_root)
@@ -101,13 +102,16 @@ class G1LifecycleMixin:
         # 解析注入。读取/解析异常一律回退 auto（闸门故障决不把默认语义改成阻塞）。
         self._mergeback_wip_overlap_policy = mergeback_wip_overlap_policy
 
-        # 构建产物路径判定器（evo-merge-back-wip-artifact-scope D4）：产物判定
-        # 从全局常量改为实例状态。配置值经 normalize_artifact_patterns 规范化
-        # （非法项丢弃并 WARNING）；缺省 None / 全非法 → 空列表构造，等价
-        # ArtifactPathMatcher()（仅默认集合，行为与现行逐字节一致）。判定器是
-        # 构造期必需属性——MUST NOT 用 getattr 兜底，缺失应暴露而非静默降级。
+        # 构建产物路径判定器（evo-merge-back-wip-artifact-scope D4 /
+        # fix-artifact-paths-hardcoded-default D1）：产物判定从全局常量改为实例
+        # 状态。配置值经 normalize_artifact_patterns 规范化（非法项丢弃并 WARNING）；
+        # 缺省 None / 全非法 → 空列表构造，判定恒假（未裁决的保守侧，**无任何内置
+        # 默认路径**）。has_build_artifacts 三态注入（None=未裁决 / False=已声明无
+        # 产物 / True=按路径判定），False 时判定器短路恒假。判定器是构造期必需
+        # 属性——MUST NOT 用 getattr 兜底，缺失应暴露而非静默降级。
         self._artifacts = ArtifactPathMatcher(
-            normalize_artifact_patterns(build_artifact_paths)
+            normalize_artifact_patterns(build_artifact_paths),
+            has_build_artifacts=has_build_artifacts,
         )
 
     def create(self, spec_name: str, agent_type: str = "implementer") -> Optional[Path]:

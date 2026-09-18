@@ -88,10 +88,10 @@ def make_conflict_branch(root: Path, branch: str,
     return git(root, "rev-parse", "HEAD").stdout.strip()
 
 
-def make_wm(root: Path) -> WorktreeManager:
+def make_wm(root: Path, **kwargs) -> WorktreeManager:
     base = root / ".claude" / "worktrees"
     base.mkdir(parents=True, exist_ok=True)
-    return WorktreeManager(base, root, CapturingLogger())
+    return WorktreeManager(base, root, CapturingLogger(), **kwargs)
 
 
 def _reset_rehearsal_probe():
@@ -108,7 +108,14 @@ class TestRehearsalGate(unittest.TestCase):
         self.tmpdir = tempfile.mkdtemp()
         self.root = Path(self.tmpdir) / "repo"
         init_repo(self.root)
-        self.wm = make_wm(self.root)
+        # 产物自愈用例（_branch_with_artifact_conflict / test_artifact_conflict_*）依赖
+        # 「core/dashboard/static/dist 判真」，语义反转后须显式声明产物配置（未声明
+        # 判定恒假=未裁决，产物冲突会退化为语义冲突）。
+        self.wm = make_wm(
+            self.root,
+            build_artifact_paths=["core/dashboard/static/dist/"],
+            has_build_artifacts=True,
+        )
 
     def tearDown(self):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
