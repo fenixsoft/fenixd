@@ -11,7 +11,13 @@
 `--start-after`）走同一条 `_dispatch_changes` 扫描 → `spec_drafted` → 晋升链，同样会偷跑。
 
 同型缺口还波及 `start_after: manual`（待激活哨兵）：待激活 SPEC 注册为 `drafted` 后会被
-晋升出草稿态（虽在派发口被拦、功能上侥幸不误跑，但语义错位——它应停在 `drafted` 等激活）。
+晋升出草稿态。该形态**并非仅语义错位**：若分流判定命中评审（`promote_drafted` 返回
+`next_status="reviewing"`），`_on_spec_drafted` 会同步直调 `_on_spec_reviewing` 派发
+**真实评审 run**——评审派发经 `SpecReviewManager.dispatch_review`，不经派发队列的
+`start_after_pending` 谓词（`core/pm_engine/dispatch/queue.py:233/317`），故派发口的既有
+门拦不住它。实证：`add-project-detail-tabs`（未到期）15:18:01 晋升 reviewing 后
+15:18:03 即起评审 run（`.fenix/logs/fenixd.log:41314-41320`），`manual` 哨兵 SPEC 走
+同一条链。
 
 ## What Changes
 
@@ -41,8 +47,14 @@
 
 - **代码**：`core/pm_engine/engine.py`（`_on_spec_drafted` / `_on_spec_reviewing`）、
   `core/event_bus.py`（`_recover_one` 的 `drafted` / `reviewing` 分支）。
-- **测试**：`tests/test_spec_scheduling.py`、`tests/test_event_bus.py` 补回归用例。
+- **测试**：新增 `tests/test_start_after_gate.py`（覆盖四条自动通道与三条放行路径，见
+  tasks.md）；既有 `tests/test_spec_scheduling.py` / `tests/test_event_bus.py` /
+  `tests/test_pm_promotion_gate.py` 作为回归基线一并跑通（无 `start_after` 的条目
+  行为完全不变，既有用例无需改动）。
 - **行为变更**：`drafted`/`reviewing` 态且 `start_after` 未到期的 SPEC 不再被自动晋升；
-  `manual` 哨兵 SPEC 停在 `drafted`（此前会被晋升到 `ready`/`reviewing` 后由派发口拦下）。
+  `manual` 哨兵 SPEC 停在 `drafted`（此前会被晋升到 `ready`/`reviewing`，并可能直接派发
+  评审 run）。`manual` SPEC 的人工激活语义不变：`activate_spec` 置 null + kick 信号后，
+  daemon 消费信号时 `start_after` 已为 null → 守卫放行 → 正常晋升与派发
+  （`core/dashboard/data/admin_actions.py:423-427` → `.fenix/fenixd.py:1157`）。
 - **无破坏性**：既有无 `start_after`（null）的 SPEC 行为完全不变；`start_after` 已到期的
   SPEC 行为完全不变。
