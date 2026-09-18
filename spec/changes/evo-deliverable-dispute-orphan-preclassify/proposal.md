@@ -8,8 +8,8 @@
 
 ## What Changes
 
-- **dispute 裁决通道补孤儿声明机械预分类**：缺件路径经按 kind 分化的孤儿判定——kind: new 看「源码面 `git grep` 零引用 + tasks.md 任务文本零出现」，kind: modify 另加「路径限定历史（`git log --all -- <path>`）零命中」——判定为孤儿声明（声明残留）时，直接机械删除声明并留审计（DisputeAuditStore 追加 verdict=orphan-preclassify），spec 不进 blocked、直接走既有恢复路径；人工裁决只留给真正需要语义判断的争议（basename 多命中、语境等价、运行时产物、kind: modify 的路径漂移）。
-- **晋升期 lint_declared 孤儿检查**：kind: new 声明在任务清单文本零出现且源码面（`git grep`）零引用时，晋升（drafted → ready）期即报错拦截，让孤儿声明在立项当下暴露，不再等到收工守卫才发现。
+- **dispute 裁决通道补孤儿声明机械预分类**：缺件路径经按 kind 分化的孤儿判定——kind: new 看「源码面 `git grep` 零引用 + tasks.md 任务文本零出现（全路径与 basename 皆零）」，kind: modify 另加「路径限定历史（`git log --all -- <path>`）零命中」——判定为孤儿声明（声明残留）时，直接机械删除声明并留审计（DisputeAuditStore 追加 verdict=orphan-preclassify），提交改写的 tasks.md 后重跑守卫对账、全清即放行 merge（spec 不进 blocked）；人工裁决只留给真正需要语义判断的争议（basename 多命中、语境等价、运行时产物、kind: modify 的路径漂移）。
+- **晋升期 lint_declared 孤儿检查**：kind: new 声明在任务清单文本（全路径与 basename 皆）零出现且源码面（`git grep`）零引用时，晋升（drafted → ready）期即报错拦截，让孤儿声明在立项当下暴露，不再等到收工守卫才发现。
 
 ## Capabilities
 
