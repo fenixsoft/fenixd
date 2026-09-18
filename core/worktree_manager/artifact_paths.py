@@ -44,7 +44,7 @@ DEFAULT_ARTIFACT_PREFIXES: Tuple[str, ...] = ("core/dashboard/static",)
 # 前缀同形但非 static 根的路径不被误判）。
 _DEFAULT_STATIC_ROOT = "core/dashboard/static/"
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("fenixd.worktree_manager.artifact_paths")
 
 
 # ── 默认判定（既有语义的逐字节搬运） ─────────────────────────────────────
