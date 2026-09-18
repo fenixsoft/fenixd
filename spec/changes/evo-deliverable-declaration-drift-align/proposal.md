@@ -13,10 +13,12 @@
 
 ## 设计思路
 
-1. **漂移笔误机械对齐**（孤儿预分类旁扩一类）：交付物守卫缺件异议时，若声明路径在主树与实现分支 HEAD 均缺、且 git 历史命中（曾作为文件存在，即拆包/改名漂移），则在全仓（core/ 下递归）扫描候选新落点：
-   - 候选唯一 → 机械改写声明（tasks.md Deliverables 段 path 更新）留审计（verdict=drift-aligned + actual_path + 证据链接），解除 blocked 自动重入实现
-   - 候选零/多（无法唯一定位）→ fail-open 维持现状走人工通道
-2. **派发前同源草案收敛检查**：_on_spec_ready 派发 implementer 前，检查 spec/changes/ 下是否存在同源草案（本 spec 目录被其它 spec 的 SUPERSEDED.md 声明已取代，或本 spec 自身是 SUPERSEDED 页目标之外的同名草案）→ 命中则本 spec 置 blocked（error=同源草案收敛义务未满足，指向 SUPERSEDED.md 路径），禁止双 run 派发。
+1. **漂移笔误机械对齐**（孤儿预分类旁扩一类，仅异议分支可达）：交付物守卫缺件异议时，若声明路径在主树与实现分支 HEAD 均缺、且 git 历史命中（曾作为文件存在，即拆包/改名漂移），则定位候选新落点——旧路径 basename 对应包目录内、且落在本次实现分支改动集合（`git diff --name-only <merge-base>..<branch>`）里的 `.py` 文件（复用 `add-declaration-relocation-protocol` 已落地的陈日信号/生效声明解析/改写/凭据原语）：
+   - 候选唯一且在分支 HEAD 真实存在 → 机械改写**生效声明所在位置**（非主树直写）并立即提交，留审计（verdict=drift-aligned + type=relocation + actual_path），解除 blocked 自动重入实现
+   - 候选零/多、生效声明无落盘位置（分支来源）、或候选不在分支 HEAD → fail-open 维持现状走人工通道
+2. **派发前同源草案收敛检查**：`_on_spec_ready`（并以同口径覆盖队列候选筛选入口）派发 implementer/fast-track 前，检查本 spec 目录自身是否含 SUPERSEDED.md（已被取代标记）→ 命中则置 blocked（error=同源草案收敛义务未满足，指向 SUPERSEDED.md 路径），禁止双 run 派发；被该页点名的生效落点一侧 MUST NOT 被拦截。
+
+> 本 SPEC 与 `add-declaration-relocation-protocol`（2026-09-18 已 push 入库）的分工：后者覆盖实现 run **未提异议**时 `_adjudicate_deliverable_missing` 链上的陈日重定位（`_preclassify_stale`）；本 SPEC 覆盖实现 run **已提 deliverable-dispute 异议**时 `queue.py` 争议分支内的同族机械对齐——该分支不进入 `_adjudicate_deliverable_missing`，故 `_preclassify_stale` 不可达，本轮三次 blocked 事故正落在这一段。
 
 ## 范围
 
