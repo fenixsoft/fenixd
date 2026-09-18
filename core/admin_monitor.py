@@ -67,6 +67,12 @@ _PROGRAMMING_ERROR_TYPES = (TypeError, AttributeError, NameError, ValueError)
 # 上限后 _retry_due_dispatch_failures 不再选中，不无限重试。
 DISPATCH_RETRY_MAX = 1
 
+# admin-disposition-reschedule：中断-重派累计上限（模块常量，config
+# `admin.reschedule_max` 可覆盖，非法值回落 2）。同 (spec, signal_type)
+# 信号族的累计重派次数（reschedule_count，落库在 DISPOSITION 记录）超限后
+# 不再自动重派、转人工升级——防止停机循环无限重派烧钱。
+MAX_RESCHEDULE = 2
+
 # admin-signal-consolidation D2：悬置强制升级的信号族（blocked_stuck + ENV 阻塞族）。
 # 悬置类信号 = spec 保持 blocked 状态过久、自动处置通道已被冷却压制——此时
 # 强制升级真人（突破 latest_signal 冷却）。其他信号类型（stuck/flapping/
@@ -584,6 +590,16 @@ class AdminMonitor:
     @property
     def cooldown_minutes(self) -> float:
         return float(self.admin_cfg["escalation_cooldown_minutes"])
+
+    @property
+    def reschedule_max(self) -> int:
+        """中断-重派累计上限，config admin.reschedule_max 可覆盖，非法值回落 2。"""
+        raw = self._get_config("admin.reschedule_max", MAX_RESCHEDULE)
+        try:
+            val = int(raw)
+            return val if val >= 0 else MAX_RESCHEDULE
+        except (TypeError, ValueError):
+            return MAX_RESCHEDULE
 
     def _get_config(self, key: str, default=None):
         from .config import ConfigLoader
@@ -1604,6 +1620,63 @@ class AdminMonitor:
             retried += 1
         return retried
 
+    # ── 孤儿处置重派（admin-disposition-reschedule） ─────────────
+
+    def _has_active_admin_run_for(self, spec, signal_type: str, exclude_run_id: Optional[str] = None) -> bool:
+        """同 (spec, signal_type) 是否已有在飞/待派发的 admin run。
+
+        判据刻意对齐 _recover_orphaned_dispositions 自身的 by_run 归并口径
+        （同款 `status == "pending"`）：一个 run 只有在「存在 pending 记录
+        且无任何非 pending 兄弟记录」时才视为在飞——已终结 run（含被
+        superseded/interrupted/escalated 终结的原 pending 记录仍滞留 store
+        的形态）不算在飞。据此为「已有在飞 run 的信号」去重，避免双重派发。
+
+        exclude_run_id：重派判定时排除「正被孤儿处理的中断 run」自身——其
+        pending 记录是本判定的考察对象，不得把自己误判为「已有在飞 run」。
+        """
+        by_run: dict = {}
+        for rec in self.store.read_all():
+            if rec.get("kind") != DISPOSITION:
+                continue
+            if rec.get("signal_type") != signal_type:
+                continue
+            if rec.get("spec") != spec:
+                continue
+            rid = rec.get("admin_run_id")
+            if not rid:
+                continue
+            if exclude_run_id is not None and rid == exclude_run_id:
+                continue
+            status = rec.get("status") or rec.get("result")
+            info = by_run.setdefault(rid, {"final": False, "has_pending": False})
+            if status == "pending":
+                info["has_pending"] = True
+            else:
+                info["final"] = True
+        return any(info["has_pending"] and not info["final"] for info in by_run.values())
+
+    def _reschedule_count_for(self, spec, signal_type: str) -> int:
+        """读同 (spec, signal_type) 的 DISPOSITION 记录 reschedule_count 最大值（缺省 0）。
+
+        计数按信号族聚合（跨独立信号事件可能多计；多计方向为更早升级，
+        安全侧）。字段缺失/非法值按 0 计。
+        """
+        best = 0
+        for rec in self.store.read_all():
+            if rec.get("kind") != DISPOSITION:
+                continue
+            if rec.get("signal_type") != signal_type:
+                continue
+            if rec.get("spec") != spec:
+                continue
+            try:
+                val = int(rec.get("reschedule_count") or 0)
+            except (TypeError, ValueError):
+                val = 0
+            if val > best:
+                best = val
+        return best
+
     # ── 兜底升级（fix-admin-self-heal） ──────────────────────────
 
     def _recover_orphaned_dispositions(self):
@@ -1678,7 +1751,111 @@ class AdminMonitor:
             # 优雅退出所致已知中断）。含标记 → 判定已知中断：终结 pending disposition 且
             # 不产生人工升级告警；无标记/文件缺失 → 维持现有"疑似 daemon 崩溃"升级兜底
             # （保守方向：宁可多告警不漏告警，files 被 prune 删除也按无标记处理）。
+            #
+            # admin-disposition-reschedule：已知中断分支前置回溯底层未处理信号——
+            # 命中（kind=signal ∧ escalated ∧ 非 handled ∧ (spec, signal_type) 严格相等）
+            # 且重派未超限时，重新入队 admin run 而非静默终结；超限则升级人工。
+            # 信号未找到 / 信号重建失败 / 已有在飞 run → 回落原「终结 interrupted」逻辑。
             if self._run_has_interrupted_marker(rid):
+                sig_rec = self.store.unhandled_signal_for(spec, sig_type)
+                if sig_rec is not None:
+                    next_count = self._reschedule_count_for(spec, sig_type) + 1
+                    if next_count > self.reschedule_max:
+                        # 重派超限（design：第 1、2 次中断各重派一次，第 3 次即升级）：
+                        # 不再自动重派，升级人工（kind=escalation, severity=critical，
+                        # description 注明中断/重派次数），并为该 run 追加非 pending
+                        # 终结记录，防同一孤儿每轮巡检重复升级。
+                        self.store.append(
+                            attach_trigger(
+                                {
+                                    "kind": ESCALATION,
+                                    "signal_type": sig_type,
+                                    "spec": spec,
+                                    "severity": "critical",
+                                    "description": (
+                                        f"Administrator 处置反复中断（run {rid}）：底层信号 "
+                                        f"{sig_type} 已累计重派 {next_count - 1} 次仍未处理完成，"
+                                        f"达到上限 {self.reschedule_max}，停止自动重派，需人工介入"
+                                    ),
+                                    "evidence": (
+                                        f"run {rid} 转录含 interrupted 标记；"
+                                        f"reschedule_count={next_count - 1} ≥ {self.reschedule_max}"
+                                    ),
+                                    "action_taken": "AdminMonitor 孤儿检测：中断-重派超限转人工升级",
+                                    "admin_run_id": rid,
+                                    "recommended_action": (
+                                        "人工检查底层信号未处理原因：处置连续中断说明 daemon "
+                                        "停机循环或信号处置本身存在阻塞，需人工介入处置"
+                                    ),
+                                }
+                            )
+                        )
+                        self.store.append(
+                            {
+                                "kind": DISPOSITION,
+                                "status": "escalated",
+                                "signal_type": sig_type,
+                                "spec": spec,
+                                "admin_run_id": rid,
+                                "result": "escalated",
+                                "actions_taken": (
+                                    "AdminMonitor 孤儿检测：中断-重派超限升级人工并终结该 run"
+                                ),
+                                "description": (
+                                    f"Administrator 处置反复中断已升级人工（run {rid}），pending 终结"
+                                ),
+                            }
+                        )
+                        self.logger.warning(
+                            "admin_monitor",
+                            f"Orphaned admin disposition escalated to human after "
+                            f"reschedule limit: {rid} (reschedule_count={next_count - 1})",
+                        )
+                        continue
+                    # 未超限：回溯底层信号并重派（不经 _handle_signal——否则
+                    # _throttled 冷却会把重派吞掉，同 _retry_due_dispatch_failures
+                    # 既有先例）。signal 重建失败 / 已有在飞 run → 回落原终结逻辑。
+                    signal = self._rebuild_dispatch_signal(sig_rec)
+                    if signal is not None and not self._has_active_admin_run_for(
+                        spec, sig_type, exclude_run_id=rid
+                    ):
+                        # 审计留痕：原 pending disposition 追加 status=superseded 记录
+                        # （同 admin_run_id），携带 reschedule_count 新值；非 pending
+                        # 记录即令该 run 被判 final，孤儿循环终止。MUST NOT 额外写
+                        # status=dispatched 的新 disposition——新 run 的 pending 记录
+                        # 由 run_administrator 自身落盘（core/agent_runner/
+                        # maintenance_runs.py:182），额外写同 admin_run_id 的非 pending
+                        # 记录会让 by_run 归并把新 run 判为已终结，后续中断永不检测。
+                        self.store.append(
+                            {
+                                "kind": DISPOSITION,
+                                "status": "superseded",
+                                "signal_type": sig_type,
+                                "spec": spec,
+                                "admin_run_id": rid,
+                                "result": "superseded",
+                                "reschedule_count": next_count,
+                                "actions_taken": (
+                                    "superseded by rescheduled disposition "
+                                    f"(signal {sig_rec.get('id')} still unhandled)"
+                                ),
+                                "description": (
+                                    f"Administrator 处置因 daemon 关闭被中断（run {rid}），"
+                                    f"底层信号 {sig_type} 仍未处理，自动重新入队 admin run"
+                                    f"（第 {next_count} 次重派）"
+                                ),
+                            }
+                        )
+                        self.logger.warning(
+                            "admin_monitor",
+                            f"Rescheduling orphaned admin disposition for signal {sig_type} "
+                            f"on '{spec or 'daemon'}' (superseded run {rid}, "
+                            f"reschedule_count={next_count})",
+                        )
+                        self._invoke_administrator(signal, sig_rec)
+                        continue
+                # 未找到信号记录 / 信号重建失败 / 已有在飞 run：维持现「终结 interrupted」
+                # 行为（回归兼容，task 2.6）
                 self.store.append(
                     {
                         "kind": DISPOSITION,
