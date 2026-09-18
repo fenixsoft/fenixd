@@ -855,7 +855,13 @@ class QQQueueMixin:
                         relint = []
                     if relint:
                         self._redispatch_tasks_relint(
-                            spec_name, relint, run_id=getattr(result, "run_id", "") or ""
+                            spec_name,
+                            relint,
+                            run_id=getattr(result, "run_id", "") or "",
+                            # fix-relint-redispatch-legacy 1.3：full 车道此处持有
+                            # result（用于上方 _tasks_md_relint_from_branch），把分支
+                            # 线索传入处置函数以登记仅分支遗产（branch 为空则跳过）。
+                            branch=getattr(result, "branch", None),
                         )
                         return
 

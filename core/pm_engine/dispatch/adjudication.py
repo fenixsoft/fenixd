@@ -740,6 +740,11 @@ class VAdjudicationMixin:
         _branch = getattr(result, "branch", None)
         if _branch and hasattr(_wm, "register_legacy"):
             _wm.register_legacy(spec_name, None, _branch)
+            # fixed-relint-redispatch-legacy 一致性：打 reuse 标记使仅分支遗产可被
+            # 下轮 create 经 _take_reusable_worktree 认领同一分支（与 relint 打回
+            # 路径同语义；register_legacy 自身不置 reuse，keep_for_reuse 同源标记）。
+            if hasattr(_wm, "mark_legacy_reusable"):
+                _wm.mark_legacy_reusable(spec_name)
         spec_entry = self._pm.state_machine.read_one(spec_name) or {}
         try:
             prev_retries = int(spec_entry.get("_retry_count", 0) or 0)
@@ -786,15 +791,57 @@ class VAdjudicationMixin:
     # design D3 规则 3）；本处仅处置违规（重派/计数），不重复实现判定。
 
     def _redispatch_tasks_relint(
-        self, spec_name: str, relint: list, *, agent_type: str = "implementer", run_id: str = ""
+        self,
+        spec_name: str,
+        relint: list,
+        *,
+        agent_type: str = "implementer",
+        run_id: str = "",
+        branch: str | None = None,
     ) -> None:
         """tasks.md 收口复检违规处置：不合并、不推进，按失败重派。
 
         error 写违规明细（逐条）与修正处方；连续计数沿用既有重派语义
         （``_retry_count`` 递增，``agents.max_retries`` 封顶 blocked），
         与交付物守卫缺件处置同构。
+
+        重派前登记分支遗产（fix-relint-redispatch-legacy D1/D2）：relint 违规的
+        典型成因是 sed 转义把 ``- [x]`` 写成 ``^- [x]``——首轮实现工作完全有效，
+        只是 tasks.md 格式有误。本函数在状态写回与重派**之前**把该 run 的分支
+        登记为仅分支遗产（与交付物守卫 ``_redispatch_for_missing`` 同款），
+        使下一轮 ``worktree_manager.create`` 经 ``_take_reusable_worktree`` 认领
+        同一分支、继承首轮已提交成果，而非从 main 新建 worktree 整支搁浅。
+        登记后以 ``mark_legacy_reusable`` 打 reuse 标记（同 ``keep_for_reuse``
+        语义），使仅分支遗产可被下轮认领重建载体；branch 为空时跳过登记
+        （fail-open），登记异常捕获降级 WARNING 不阻断处置。
+
+        D3 顺序语义（fix-redispatch-loop-governance 正交）：登记走**仅分支模式**
+        （``worktree_path=None``——full 车道成功收工后 worktree 已被
+        ``cleanup(success=True)`` 物理清理，只剩分支留存完整已提交成果）。
+        fast-track 车道不传 branch（保持 None）——该车道 relint 处置此前已由
+        ``_keep_fast_track_worktree`` 登记**含路径的 worktree 模式遗产**（现场
+        保留，reuse=True），若此处再以仅分支登记覆盖会丢失未提交现场。而
+        ``register_legacy`` 为覆盖式更新（同一 spec 只留最新一份），两条机制若
+        同轮命中以后登记者为准——含路径的 worktree 模式更保守，故 fast-track
+        调用点 MUST NOT 传 branch，以免覆盖现场。
         """
         spec_entry = self._pm.state_machine.read_one(spec_name) or {}
+        # ── 重派前登记分支遗产（fix-relint-redispatch-legacy D1/D2）───────────
+        # 在状态写回（update_spec）与 _enqueue_front **之前**注册（与交付物守卫
+        # _redispatch_for_missing 同序），使 _legacy 在下一轮 create 时已在册。
+        # 条件与守卫同型（fail-open）：branch 为空静默跳过；登记自身异常捕获
+        # 降级 WARNING（处置链路不得因登记失败中断）。
+        _wm = self._pm.agent_runner.worktree_manager
+        if branch and hasattr(_wm, "register_legacy"):
+            try:
+                _wm.register_legacy(spec_name, None, branch)
+                if hasattr(_wm, "mark_legacy_reusable"):
+                    _wm.mark_legacy_reusable(spec_name)
+            except Exception as e:
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"relint 遗产登记失败（非阻塞）'{spec_name}': {e}",
+                )
         try:
             prev_retries = int(spec_entry.get("_retry_count", 0) or 0)
         except (TypeError, ValueError):

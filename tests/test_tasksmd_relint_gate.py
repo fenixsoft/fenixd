@@ -303,6 +303,102 @@ class TestFullLaneRelintRedispatchCounting(unittest.TestCase):
         self.assertIn("^-", entry["error"])
 
 
+class TestFullLaneRelintLegacyRegistration(unittest.TestCase):
+    """Task 2.1/2.2：relint 违规重派的分支遗产登记（fix-relint-redispatch-legacy）。
+
+    以真实 WorktreeManager 为观察点：relint 处置传入 branch 时仅分支遗产在册
+    （path 空、branch 正确、reuse 为真）；branch=None 时安全跳过登记、重派照常。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.pr = Path(self.tmpdir)
+        (self.pr / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.logger = MagicMock()
+        from core.pm_engine import PMEngine
+        from core.worktree_manager import WorktreeManager
+        self.sm = StateMachine(self.pr / ".fenix" / "STATE.md", self.logger)
+        self.engine = PMEngine(self.sm, MagicMock(), {}, self.pr, self.logger)
+        self.wm = WorktreeManager(self.pr / ".claude" / "worktrees", self.pr, self.logger)
+        self.engine.agent_runner.worktree_manager = self.wm
+        self.dispatcher = self.engine._dispatcher
+        self.dispatcher._enqueue_front = MagicMock()
+        self.sm.add_spec("demo", {"priority": 5})
+        self.sm.transition("demo", "implementing")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_relint_with_branch_registers_claimable_legacy(self):
+        """传入 branch → 仅分支遗产在册（path 空、branch 正确、reuse 为真）。"""
+        self.dispatcher._redispatch_tasks_relint(
+            "demo", ["violation-1"], run_id="run-1", branch="fenix/demo-1")
+        rec = self.wm.get_legacy("demo")
+        self.assertIsNotNone(rec, "relint 打回应登记分支遗产")
+        self.assertEqual(rec["path"], "", "full 车道成功收工后为仅分支模式")
+        self.assertEqual(rec["branch"], "fenix/demo-1")
+        self.assertTrue(self.wm._legacy["demo"]["reuse"],
+                        "仅分支遗产须置 reuse 才可被下轮 _take_reusable_worktree 认领")
+        entry = self.sm.read_one("demo")
+        self.assertEqual(entry["status"], "ready")
+
+    def test_branch_none_skips_registration_and_redispatches(self):
+        """branch=None → 跳过登记、重派照常（status=ready + 计数递增 + 已入队）。"""
+        self.dispatcher._redispatch_tasks_relint("demo", ["violation-1"],
+                                                 run_id="run-1")
+        self.assertIsNone(self.wm.get_legacy("demo"),
+                          "branch 为空时不得登记遗产（fail-open）")
+        entry = self.sm.read_one("demo")
+        self.assertEqual(entry["status"], "ready")
+        self.assertEqual(int(entry["_retry_count"]), 1)
+        self.dispatcher._enqueue_front.assert_called_once_with("demo", "implementer")
+
+    def test_registration_exception_fail_open(self):
+        """登记自身异常 → 捕获降级 WARNING，不阻断重派。"""
+
+        class _BoomWM:
+            def register_legacy(self, spec_name, worktree_path, branch):
+                raise RuntimeError("disk gone")
+
+        self.engine.agent_runner.worktree_manager = _BoomWM()
+        self.dispatcher._redispatch_tasks_relint(
+            "demo", ["violation-1"], run_id="run-1", branch="fenix/demo-1")
+        entry = self.sm.read_one("demo")
+        self.assertEqual(entry["status"], "ready")
+        self.assertEqual(int(entry["_retry_count"]), 1)
+        self.dispatcher._enqueue_front.assert_called_once_with("demo", "implementer")
+        self.assertTrue(self.logger.warning.called)
+
+    def test_full_lane_wiring_passes_branch(self):
+        """full 车道调用点 wiring：result.branch 传入处置函数并登记遗产。"""
+        _mk_spec_dir(self.pr, "demo", mode="full")
+        self.sm.transition("demo", "ready")
+        self.sm.transition("demo", "implementing")
+        from core.agent_runner import AgentRunResult
+        result = AgentRunResult("impl-demo-1", "demo", "implementer", True, 5.0,
+                                branch="fenix/demo-1")
+        self.engine.agent_runner.run_implementer = MagicMock(return_value=result)
+        self.engine._read_implementer_result = MagicMock(
+            return_value={"status": "success", "spec": "demo"})
+        self.engine._verification._implementer_zero_change = MagicMock(return_value=False)
+        self.engine._verification._deliverable_gate_missing = MagicMock(return_value=[])
+        self.engine._verification._tasks_md_relint_from_branch = MagicMock(return_value=[
+            "tasks.md 存在任务分组（2 个），但未解析出任何任务行",
+        ])
+        self.engine._reconcile_impl_budget = MagicMock()
+        self.engine._write_impl_result_snapshot = MagicMock()
+        self.engine._clear_dispatch_conflict = MagicMock(return_value={})
+        self.engine._sync_task_progress = MagicMock()
+        self.engine._on_spec_verified = MagicMock()
+        self.engine.handle_event = MagicMock()
+        self.engine._process_queue = MagicMock()
+        self.engine._run_agent_worker("demo", "implementer", 5)
+        rec = self.wm.get_legacy("demo")
+        self.assertIsNotNone(rec, "full 车道 relint 违规后遗产应在册")
+        self.assertEqual(rec["branch"], "fenix/demo-1")
+        self.assertTrue(self.wm._legacy["demo"]["reuse"])
+
+
 class _Base(unittest.TestCase):
     """fast-track 车道共用夹具（与 test_fast_track_dispatch.py 同构）。"""
 
@@ -406,6 +502,30 @@ class TestFastTrackLaneRelintGate(_Base):
         wm.keep_for_reuse.assert_not_called()
         entry = self.sm.read_one("demo")
         self.assertEqual(entry["status"], "verified")
+
+    def test_relint_keeps_worktree_legacy_not_overwritten(self):
+        """Task 2.5：fast-track relint 处置仍走 keep_for_reuse（worktree 现场保留），
+        不因本变更额外登记仅分支遗产覆盖现场（register_legacy 不被调用）。"""
+        wt = self.pr / "wt-demo"
+        wt.mkdir(parents=True, exist_ok=True)
+        self._prepare(worktree_path=wt)
+        self._write_designed(["s1"])
+        self.engine._read_implementer_result = MagicMock(
+            return_value=_fast_result("verified"))
+        self.engine._verification._tasks_md_relint_from_worktree = MagicMock(return_value=[
+            "tasks.md 存在任务分组（2 个），但未解析出任何任务行",
+        ])
+
+        self.engine._run_fast_track_worker("demo")
+
+        wm = self.engine.agent_runner.worktree_manager
+        # 现场保留机制照旧（worktree 模式遗产 + reuse，经 keep_for_reuse）
+        wm.keep_for_reuse.assert_called_once_with("demo", wt)
+        # fast-track 调用点不传 branch → 处置函数跳过仅分支登记（不覆盖现场）
+        wm.register_legacy.assert_not_called()
+        entry = self.sm.read_one("demo")
+        self.assertEqual(entry["status"], "ready")
+        self.assertIn("tasks.md 收口复检违规", entry["error"])
 
     def test_missing_tasks_md_fail_open(self):
         """worktree 内无 tasks.md → fail-open 放行、继续硬校验。"""
