@@ -883,10 +883,13 @@ export interface GatesConfig {
 export interface VerifyConfig {
   /** static 验证契约的服务范围：main=主树（方案 1，默认）| worktree=验证 worktree（方案 2） */
   static_scope?: 'main' | 'worktree';
-  /** worktree node_modules 供给模式：prefer-offline=npm 缓存安装（默认）| hardlink=主树硬链接副本 */
+  /** worktree node_modules 供给模式：hardlink=主树硬链接副本（默认，共享 inode）| prefer-offline=npm 缓存安装 */
   deps_mode?: 'prefer-offline' | 'hardlink';
   /** planner 生成节流：全框架同时在出题的 planner 数上限（0/缺省=不节流） */
   planner_max_concurrent?: number;
+  /** serving 目录自动回收（fix-verify-serving-disk-reclaim）：enabled=false 时禁用
+   *  .fenix/verify-serving/ 目录与 boot.log 的生命周期清扫（缺省 true） */
+  serving_reclaim?: { enabled?: boolean };
 }
 
 export interface SelfReviewConfig {

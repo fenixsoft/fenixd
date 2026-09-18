@@ -1,4 +1,4 @@
-import { Alert, Button, Card, Form, Radio, Typography } from 'antd';
+import { Alert, Button, Card, Form, Radio, Switch, Typography } from 'antd';
 import { useEffect } from 'react';
 import type { ConfigData } from '@/services/dashboard';
 import SyncFromUserButton, { SETTINGS_ACTIONS_ROW_STYLE } from './SyncFromUserButton';
@@ -20,7 +20,8 @@ export default function VerifyPanel({ config, onSave, project, onConfigSynced }:
   useEffect(() => {
     form.setFieldsValue({
       static_scope: config.verify?.static_scope || 'main',
-      deps_mode: config.verify?.deps_mode || 'prefer-offline',
+      deps_mode: config.verify?.deps_mode || 'hardlink',
+      serving_reclaim_enabled: config.verify?.serving_reclaim?.enabled ?? true,
     });
   }, [config.verify, form]);
 
@@ -31,6 +32,7 @@ export default function VerifyPanel({ config, onSave, project, onConfigSynced }:
         verify: {
           static_scope: values.static_scope,
           deps_mode: values.deps_mode,
+          serving_reclaim: { enabled: values.serving_reclaim_enabled },
         },
       });
     } catch (error) {
@@ -95,7 +97,7 @@ export default function VerifyPanel({ config, onSave, project, onConfigSynced }:
             <Radio.Group>
               <div style={{ display: 'block', marginBottom: 16 }}>
                 <Radio value="prefer-offline">
-                  <strong>prefer-offline</strong> — npm 缓存安装（默认）
+                  <strong>prefer-offline</strong> — npm 缓存安装
                   <div>
                     <Text type="secondary">
                       在 worktree 内 npm ci --prefer-offline（锁文件严格安装、
@@ -107,7 +109,7 @@ export default function VerifyPanel({ config, onSave, project, onConfigSynced }:
               </div>
               <div style={{ display: 'block' }}>
                 <Radio value="hardlink">
-                  <strong>hardlink</strong> — 主树硬链接副本
+                  <strong>hardlink</strong> — 主树硬链接副本（默认）
                   <div>
                     <Text type="secondary">
                       秒级完成、共享 inode 不占双倍空间。npm 更新包 = 重新解包
@@ -118,6 +120,18 @@ export default function VerifyPanel({ config, onSave, project, onConfigSynced }:
                 </Radio>
               </div>
             </Radio.Group>
+          </Form.Item>
+          <Form.Item
+            name="serving_reclaim_enabled"
+            label={
+              <>
+                serving 目录自动回收<span className="label-note">（verify.serving_reclaim.enabled）</span>
+              </>
+            }
+            valuePropName="checked"
+            extra="daemon 启动时与周期清扫对 .fenix/verify-serving/ 下无主 worktree（spec 不在 changes/archive、未登记、无活进程、超宽限期）执行 git worktree remove --force + prune，并按同判据回收 <spec>-boot.log。关闭后不再自动回收（存量目录需人工清理）。"
+          >
+            <Switch checkedChildren="开" unCheckedChildren="关" />
           </Form.Item>
         </Form>
       </Card>

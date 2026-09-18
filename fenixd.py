@@ -444,6 +444,11 @@ class FenixDaemon:
         # 视为非在飞——servers.json 中进程仍存活的登记实例按 /proc liveness 收割。
         self._sweep_verify_serving_registry(use_in_flight=False)
 
+        # fix-verify-serving-disk-reclaim（D4 启动 reconcile）：登记收割之后再
+        # 按「无主」判据回收 verify-serving 目录与 boot.log（启动 use_in_flight=
+        # False：前一轮 daemon 已死，无在飞保留；覆盖 daemon 死机期间累积孤儿）。
+        self._reclaim_verify_serving_tree(use_in_flight=False)
+
         # Start event bus monitoring——必须先于 initial full_scan：
         # start() 会建立 STATE 基线快照（_update_known_state），若首扫先行，
         # _known_specs 为空，全部存量 SPEC 被判为「新出现」，pushed 等 hook
@@ -610,6 +615,13 @@ class FenixDaemon:
                         self._sweep_verify_serving_registry()
                     except Exception as e:
                         self.logger.error("fenixd", f"Periodic serving registry sweep failed: {e}")
+                    # fix-verify-serving-disk-reclaim（D4 周期清扫）：登记收割之后
+                    # 再按无主判据回收目录与 boot.log（use_in_flight=True 保留 testing
+                    # 中的 spec），覆盖长期运行中的增量孤儿。
+                    try:
+                        self._reclaim_verify_serving_tree()
+                    except Exception as e:
+                        self.logger.error("fenixd", f"Periodic serving tree reclaim failed: {e}")
                 # add-framework-self-evolution 5.1：自进化检查点（节拍复用
                 # admin.interval_minutes，缺省 5 分钟；异常记 ERROR 不中断主循环，
                 # 就绪即入队、无在途立即启动分析 run）。
@@ -651,6 +663,38 @@ class FenixDaemon:
 
         kw = {"is_spec_in_flight": self._is_spec_in_flight} if use_in_flight else {}
         serving_sweep(PROJECT_ROOT, self.logger, **kw)
+
+    def _reclaim_verify_serving_tree(self, use_in_flight: bool = True) -> None:
+        """verify-serving 目录与 boot.log 生命周期回收（fix-verify-serving-disk-reclaim）。
+
+        与登记制收割叠加的目录维度清扫：对 `.fenix/verify-serving/` 下无主
+        worktree（spec 不在 changes/archive、未登记、无活进程、超宽限期）执行
+        `git worktree remove --force` + `prune`，并按同判据回收 `<spec>-boot.log`。
+
+        启动清扫（use_in_flight=False：前一轮 daemon 已死，全部视为非在飞）与
+        周期清扫（use_in_flight=True：testing 中的 spec 视为在飞保留）共用。
+        开关 `verify.serving_reclaim.enabled` 为 false 时早退（不调 git、不删文件）。
+        """
+        enabled = bool(ConfigLoader.get(self.config, "verify.serving_reclaim.enabled", True))
+        if not enabled:
+            self.logger.info(
+                "fenixd", "verify.serving_reclaim.enabled=false，跳过 serving 目录回收"
+            )
+            return
+        from core.pm_engine.verification.serving_reclaim import reclaim_verify_serving
+
+        kw = {"is_spec_in_flight": self._is_spec_in_flight} if use_in_flight else {}
+        try:
+            result = reclaim_verify_serving(PROJECT_ROOT, self.logger, **kw)
+            if self.logger:
+                self.logger.info(
+                    "fenixd",
+                    f"verify-serving 回收完成：reclaimed={len(result['reclaimed'])}，"
+                    f"kept={len(result['kept'])}，"
+                    f"boot_logs_reclaimed={len(result['boot_logs_reclaimed'])}",
+                )
+        except Exception as e:
+            self.logger.error("fenixd", f"Serving tree reclaim failed: {e}")
 
     def _config_mtimes(self):
         """两个配置文件的当前 mtime（不存在计为 None）。"""
