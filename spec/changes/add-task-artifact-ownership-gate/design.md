@@ -30,16 +30,23 @@
 
 ## Decisions
 
-**D1：判据用「双条件合取」，而非单一路径匹配。**
+**D1：判据 =「已登记验证产物的产出动词式引用」×「未指向任何代码文件」×「执行车道 ∉ 归属车道」三重合取。**
 
-单条件（任务行提到 `verify-progress` 即拦）实测误拦率 100%：全库 15 条命中**全是**「写代码让框架产出该文件」的合法任务（如「新增 `_write_impl_result_snapshot` 落盘快照」）。故判据 MUST 为：
+单条件（任务行提到 `verify-progress` 即拦）必然误拦：全库 36 条提及 `verify-progress` 的任务行里绝大多数是「写代码让框架产出该文件」的合法任务（如「新增 `_write_impl_result_snapshot` 落盘快照」）与「读取已产侧车」的合法任务。故判据 MUST 为：
 
-1. 命中验证产物路径标识，**且**
-2. 任务行**未指向任何代码文件**（无代码扩展名 / 已知代码路径特征）。
+1. 任务行命中**已登记的验证链产物路径引用**——引用 MUST 路径限定（`.fenix/verify-progress/…`，见步骤 2 的例外）**且**为归属表登记的四类核心产物之一（`test_scenarios.json` / `scenarios.json` / `report.json` / `<vp_dir>/.fenix-run-result.json`），**或**为 `.fenix/verify-progress/<spec>/` 目录本身的持久化引用；
+2. 该引用处**未指向任何代码文件**——把命中的产物字面量遮蔽（mask）后，行内不出现代码扩展名（`.py`/`.ts`/`.tsx`/`.js`/`.jsx`/`.sh`/`.yaml`/`.yml`）与代码路径特征（`core/`、`agents/`、`tests/`、`bin/`、`skills/`、`docs/`）；
+3. 引用前出现产出动词（写 / 落盘 / 持久化 / 保存 / 落位 / 序列化 / 追加），且**执行车道不在该产物的归属车道集合内**（D3）。
 
-加此条件后全库（184 份 tasks.md，含 archive）候选违规 **0 条**，本次事故的 6.2 是唯一真阳性。合计正是「一个无代码可写的任务，却要产出验证产物」——这就是必不可能完成的确切形态。
+*实现期实测（本判据在存量 260 份 tasks.md / 3424 条任务行上的表现）*：违规 **1** 条 = `fix-verify-serving-disk-reclaim` 的 6.2，即本次事故真阳性；其余候选 0 条。
 
-*备选（已否）*：改用「产物路径前是否有写动词」的 NLP 式匹配——实测仍有 15 条误报（「把…原子写入 `.fenix/verify-progress/`」是写代码的描述），且脆弱。
+**步骤 2 的必要性（MUST NOT 退化为字面量匹配）**：`test_scenarios.json`/`scenarios.json`/`report.json` 三个字面量在合法任务里高频出现且**通常不带 `verify-progress/` 前缀**——例如 `evo-judge-rerun-stability` 1.2「`specs/scenarios.json` 内容 sha256」指的是 spec 目录下的场景定义件（与 `verify-progress/<spec>/scenarios.json` 是不同文件），`2026-09-06-add-verdict-evidence-taxonomy` 4.1「旧格式 report.json 兼容解析」指的是**读**旧产物。故：
+
+- 裸 `report.json`/`scenarios.json` 字面量 MUST NOT 单独触发违规（否则上两条合法任务被误拦）；
+- 裸 `.fenix-run-result.json` MUST NOT 单独触发违规——它是**实现者/fast-track 自己的收工票据**（归属表的合法交付项，`agents/implementer.md` 第 7 步明确 MUST 写），全库 9 处命中全是收工/清理任务；
+- 未登记到归属表的侧车（`tokens.json`/`fail_history.json`/`warning_streaks.json`/`baseline_streaks.json` 等「写代码让框架产出」形态）MUST NOT 触发违规。
+
+**备选（已否）**：改用「产物路径前是否有写动词」的 NLP 式匹配——脆弱且不能消除步骤 2 的裸字面量误拦。
 
 **D2：归属表落成独立模块常量，而非散落正则。**
 
@@ -59,7 +66,7 @@
 
 ## Risks / Trade-offs
 
-- **[误拦合法 spec]** → 全库 184 份 tasks.md 零误拦回归作为硬验收；判据双条件合取；实现期若发现某合法形态被拦，优先放宽判据而非加白名单。
+- **[误拦合法 spec]** → 全库 260 份 tasks.md（spec/changes 61 + spec/archive 199，3424 条任务行）零误拦回归作为硬验收；判据含「已登记产物引用」与「产出动词」两重收窄（D1）；实现期若发现某合法形态被拦，优先放宽判据而非加白名单。
 - **[判据是文本启发式，可能漏拦]** → 明确 fail-open 取向：宁可漏拦怪题，绝不误拦合法 spec。漏拦由 §3.2.1 指引与 `unattainable` 申报兜底（非本次消除目标）。
 - **[归属表与真实写侧漂移]** → 归属表由测试锚定（对核心产物路径做断言），未来新增验证产物需同步；漂移风险低（验证产物集合稳定）。
 - **[晋升门是全库公共链路]** → 违规只影响含该类任务行的 spec；不影响既有 spec（零误拦回归保证）。
@@ -71,4 +78,4 @@
 ## Open Questions
 
 - 归属表的载体：独立模块 `core/artifact_ownership.py` vs `core/deliverables.py` 常量块——由实现者按「`skills/fenix-new` 自检脚本 import 便利性」在实现期定，二者均接受。
-- fast-track 车道是否需要额外放行 `.fenix/verify-progress/<spec>/<spec>.json`（fast-track 的 progress 文件，见 `prompt_builder` fast-track 分支）——实现期核对归属表是否需要补该条。
+- ~~fast-track 车道是否需要额外放行 `.fenix/verify-progress/<spec>/<spec>.json`（fast-track 的 progress 文件）~~ **已裁定（评审轮）：不登记、不触发。** 该文件不在归属表登记的四类核心产物内（属进度侧车），且按 D1 步骤 2 未登记侧车 MUST NOT 触发违规，故无需放行条目；归属表中的 `.fenix/verify-progress/<spec>/` 目录条目仍含 `fast-track`（`agents/fast-track.md` 第 61 行「把 {scenarios_path} 与 {result_path} 写入 verify-progress 目录」为合法车道行为，不得误拦）。

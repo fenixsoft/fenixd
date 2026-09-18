@@ -7,10 +7,10 @@ SPEC 立项时，任务书可能被写成「要求实现者产出**只有验证�
 ## What Changes
 
 - **新增产物归属表（单一真相源）**：声明式定义每个验证链产物由哪个车道产出（`test_scenarios.json` → planner-plan；`scenarios.json` → pm_engine；`report.json` → verify_engine；`planner-judge` 结果文件 → planner-judge；worktree 根 `.fenix-run-result.json` → implementer/fast-track）。
-- **新增晋升 lint 规则**：`lint_tasks_text` 扫描 tasks.md 任务行，命中「任务要求产出验证链产物」且**未指向任何代码文件** → 判违规拒绝晋升；违规文案给出纠正处方。执行车道由 `.spec.yaml` 的 `mode` 决定，与归属表比对：**执行车道 ∉ 归属车道 → 拒绝**。
+- **新增晋升 lint 规则**：`lint_tasks_text` 扫描 tasks.md 任务行，命中「任务行**要求产出**（产出动词 + 路径限定到 `.fenix/verify-progress/` 的**已登记核心产物**引用，或该目录自身的持久化引用）」且**未指向任何代码文件** → 判违规拒绝晋升；违规文案给出纠正处方。执行车道由 `.spec.yaml` 的 `mode` 决定，与归属表比对：**执行车道 ∉ 归属车道 → 拒绝**。
 - **三个强制点自动生效**（`lint_tasks_text` 单实现）：晋升门 `drafted→ready`、full 车道收口 relint、fast-track 车道收口 relint。
 - **起草指引同步**：`skills/fenix-new/SKILL.md` §3.2.1 的四类表格补第 5 类「需产出他车道产物」；`agents/evolution.md` 自进化起草 prompt 同步（两条起草入口都不漏）。
-- 判据为文本层启发式、fail-open 取向：宁可漏拦怪题，绝不误拦合法 spec（全库 184 份 tasks.md 实测候选违规 0、真阳性 1）。
+- 判据为文本层启发式、fail-open 取向：宁可漏拦怪题，绝不误拦合法 spec（全库 260 份 tasks.md / 3424 条任务行实测候选违规 1 条，即本事故真阳性）。
 
 ## Capabilities
 
@@ -28,4 +28,4 @@ SPEC 立项时，任务书可能被写成「要求实现者产出**只有验证�
 - **代码**：`core/deliverables.py`（`lint_tasks_text` 新增规则 + 产物归属表常量）、可能新增 `core/artifact_ownership.py`（单一真相源，供 lint 与起草自检共用）。
 - **提示词/文档**：`skills/fenix-new/SKILL.md`（§3.2.1 第 5 类）、`agents/evolution.md`（自进化起草格式契约）。
 - **测试**：`tests/test_deliverables.py`（或新建 `tests/test_task_artifact_ownership.py`）——判据矩阵、车道比对、零误拦回归。
-- **风险**：晋升门是全库 spec 的公共链路，误拦会阻断正常立项。缓解：规则要求「命中产物路径」**且**「未指向代码文件」双条件，且对 `.spec.yaml` mode 缺失保守按 full；必须用存量 184 份 tasks.md 做零误拦回归。
+- **风险**：晋升门是全库 spec 的公共链路，误拦会阻断正常立项。缓解：规则要求「路径限定的已登记产物引用」**且**「产出动词」**且**「未指向代码文件」三重条件，且对 `.spec.yaml` mode 缺失保守按 full；必须用存量 260 份 tasks.md（spec/changes 61 + spec/archive 199）做零误拦回归。
