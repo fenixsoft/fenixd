@@ -1,0 +1,282 @@
+"""验证链产物归属表（add-task-artifact-ownership-gate，D2）。
+
+声明式定义：每个验证链产物由哪个车道产出，作为单一真相源供 lint 与
+起草自检共用。
+
+判据规则（design D1，三重合取才判违规，零误拦取向）：
+1. 任务行命中已登记的验证链产物引用——路径限定到 ``.fenix/verify-progress/``
+   且为核心产物之一（``test_scenarios.json``/``scenarios.json``/
+   ``report.json``/``<vp_dir>/.fenix-run-result.json``），**或**为
+   ``.fenix/verify-progress/<spec>/`` 目录本身的持久化引用；
+2. 该引用处未指向任何代码文件——遮蔽命中产物后，行内无代码扩展名
+   （``.py``/``.ts``/``.tsx``/``.js``/``.jsx``/``.sh``/``.yaml``/``.yml``）
+   或代码路径特征（``core/``/``agents/``/``tests/``/``bin/``/``skills/``/``docs/``）；
+3. 引用前出现产出动词（写/落盘/持久化/保存/落位/序列化/追加），且
+   执行车道 ∉ 该产物归属车道集合。
+
+放行形态（MUST NOT 判违规）：
+- 裸 ``test_scenarios.json``/``scenarios.json``/``report.json`` 字面量
+  （未路径限定到 ``.fenix/verify-progress/``）——``specs/scenarios.json``
+  指 spec 目录下的场景定义件；「旧格式 report.json 兼容解析」为读取语义；
+- 裸 ``.fenix-run-result.json``——实现者/fast-track 自己的收工票据；
+- 未登记到归属表的侧车产物（``tokens.json``/``fail_history.json``/
+  ``warning_streaks.json``/``scenario_reroute_stoploss.json`` 等）；
+- 「写代码让框架产出该文件」的任务（含代码文件特征）。
+
+构成本模块为纯函数、零 IO：判定函数不含文件读写，车道由调用侧传入
+（缺失按 ``full``），异常不外抛（fail-open）。
+"""
+
+from __future__ import annotations
+
+import re
+import warnings
+from typing import List, Mapping, Set
+
+# ============================================================================
+# 归属表常量（声明式单一真相源）
+# ============================================================================
+
+# 验证链核心产物 → 归属车道集合
+# 注意：验证链产物归属集合 MUST NOT 含 implementer（实现者车道）
+VERIFICATION_ARTIFACT_OWNERS: Mapping[str, Set[str]] = {
+    # planner-plan 产出的测试场景文件（fast-track 亦为合法产出车道）
+    "test_scenarios.json": {"planner-plan", "fast-track"},
+    # pm_engine 持久化写侧产出的场景文件（fast-track 亦为合法产出车道）
+    "scenarios.json": {"pm_engine", "fast-track"},
+    # verify_engine 产出的验证报告
+    "report.json": {"verify_engine"},
+    # planner-judge 结果文件（位于 .fenix/verify-progress/<spec>/ 下）
+    ".fenix-run-result.json": {"planner-judge"},
+}
+
+# ``.fenix/verify-progress/<spec>/`` 目录级持久化引用的归属车道
+# （该目录由多个车道写入，任何要求把产物写入该目录的实现者任务都判违规）
+VERIFY_PROGRESS_DIR_OWNERS: Set[str] = {
+    "planner-plan",
+    "pm_engine",
+    "verify_engine",
+    "planner-judge",
+    "fast-track",
+}
+
+# worktree 根 ``.fenix-run-result.json`` 的归属车道
+# （实现者/fast-track 自己的收工票据，合法交付，不触发违规）
+IMPL_RESULT_FILE_OWNERS: Set[str] = {"implementer", "fast-track"}
+
+# ============================================================================
+# 匹配常量
+# ============================================================================
+
+# 代码文件扩展名（步骤 2 遮蔽后检查）
+_CODE_EXTENSIONS: tuple = (
+    ".py",
+    ".ts",
+    ".tsx",
+    ".js",
+    ".jsx",
+    ".sh",
+    ".yaml",
+    ".yml",
+)
+
+# 代码路径特征前缀（步骤 2 遮蔽后检查）
+_CODE_PATH_PREFIXES: tuple = (
+    "core/",
+    "agents/",
+    "tests/",
+    "bin/",
+    "skills/",
+    "docs/",
+)
+
+# 产出动词（步骤 3 判定）
+_PRODUCTION_VERBS: tuple = (
+    "写",
+    "落盘",
+    "持久化",
+    "保存",
+    "落位",
+    "序列化",
+    "追加",
+)
+
+# ============================================================================
+# 正则
+# ============================================================================
+
+# 任务行匹配（复用 core/deliverables.py 的 _TASKS_ITEM_RE 形态）
+_TASKS_ITEM_RE = re.compile(r"^-\s\[[ x]\]\s+([^\s]+)")
+
+# 已登记核心产物的路径引用：.fenix/verify-progress/<spec>/<核心产物>
+_VP_ARTIFACT_RE = re.compile(
+    r"\.fenix/verify-progress/[^/\s]+/(?:"
+    + "|".join(re.escape(k) for k in VERIFICATION_ARTIFACT_OWNERS)
+    + r")"
+)
+
+# ``.fenix/verify-progress/<spec>/`` 目录级引用：
+# 目录后必须紧跟空白 / 中文标点 / 行尾 / 反引号（Markdown 代码标记闭合——
+# 任务的路径引用常被反引号包裹，如 ``到 `.fenix/verify-progress/<spec>/` ``）。
+# 否则是文件级引用——已登记产物走 _VP_ARTIFACT_RE，未登记侧车文件放行，
+# 均非目录级。
+_VP_DIR_REF_RE = re.compile(
+    r"\.fenix/verify-progress/[^/\s]+/(?=[\s，,。、；;）)）】`]|$)"
+)
+
+# 代码扩展名出现（遮蔽后扫描）
+_CODE_EXT_RE = re.compile(
+    r"\.(?:py|ts|tsx|js|jsx|sh|yaml|yml)\b"
+)
+
+
+# ============================================================================
+# 内部判定
+# ============================================================================
+
+
+def _line_points_to_code(line: str, mask_literal: str = "") -> bool:
+    """判定任务行是否指向任何代码文件（步骤 2：无代码文件引用才判违规）。
+
+    把命中的产物字面量遮蔽（mask）后，扫描行内是否出现代码扩展名
+    （``.py``/``.ts``/``.tsx``/``.js``/``.jsx``/``.sh``/``.yaml``/``.yml``）
+    或代码路径特征（``core/``/``agents/``/``tests/``/``bin/``/``skills/``/
+    ``docs/``）。
+
+    Args:
+        line: 任务行原文。
+        mask_literal: 需遮蔽的产物字面量（如 ``test_scenarios.json``）。
+
+    Returns:
+        True 表示行内含代码文件特征（需放行）。
+    """
+    masked = line.replace(mask_literal, "") if mask_literal else line
+
+    # 代码扩展名（排除 incident 路径里的 .json 等非代码扩展名——特判）
+    if _CODE_EXT_RE.search(masked):
+        return True
+
+    # 代码路径特征
+    for prefix in _CODE_PATH_PREFIXES:
+        if prefix in masked:
+            return True
+
+    return False
+
+
+def _line_has_production_verb(line: str, ref_end: int) -> bool:
+    """判定产物引用之前是否出现产出动词（步骤 3）。
+
+    Args:
+        line: 任务行原文。
+        ref_end: 产物引用匹配的结束位置（字符索引）。
+
+    Returns:
+        True 表示在引用之前出现产出动词。
+    """
+    prefix = line[:ref_end]
+    return any(verb in prefix for verb in _PRODUCTION_VERBS)
+
+
+# ============================================================================
+# 判定入口（单一真相入口，供 lint 与起草自检复用）
+# ============================================================================
+
+
+def ownership_violations_for_task_line(line: str, lane: str) -> List[str]:
+    """判定单条任务行是否存在产物归属违规（design D1 三重合取）。
+
+    Args:
+        line: tasks.md 任务行原文（如 ``- [ ] 6.2 写 .fenix-run-result.json …``）。
+        lane: 执行车道——``"fast-track"`` 或 ``"full"``（full 车道执行者为
+            implementer）。缺失/未知值调用侧应先按 ``full`` 归一。
+
+    Returns:
+        违规描述清单；空列表 = 无违规。
+
+    Raises:
+        不会抛出：自身故障一律 fail-open（返回空清单）。
+    """
+    violations: List[str] = []
+    try:
+        task_id = ""
+        m = _TASKS_ITEM_RE.match(line)
+        if m:
+            task_id = m.group(1)
+
+        # ---- 步骤 1a：已登记核心产物的路径限定引用 ----
+        vp_artifacts = list(_VP_ARTIFACT_RE.finditer(line))
+        core_hits: List[str] = []
+        for match in vp_artifacts:
+            literal = match.group(0)
+            artifact_key = _match_artifact_key(literal)
+            if artifact_key is None:
+                continue  # 防御：未登记文件（理论不可达）
+            owners = VERIFICATION_ARTIFACT_OWNERS[artifact_key]
+            core_hits.append(literal)
+            if _line_points_to_code(line, artifact_key):
+                continue  # 步骤 2：含代码文件 → 写代码让框架产出 → 放行
+            if _line_has_production_verb(line, match.end()) and lane not in owners:
+                violations.append(
+                    _violet_message(task_id, literal, owners)
+                )
+        if core_hits:
+            # 已命中核心产物路径引用，不再重复判目录级（同路径只报一次）
+            return violations
+
+        # ---- 步骤 1b：``.fenix/verify-progress/<spec>/`` 目录级引用 ----
+        vp_dir = _VP_DIR_REF_RE.search(line)
+        if vp_dir:
+            literal = vp_dir.group(0)
+            if not _line_points_to_code(line, literal):
+                if (
+                    _line_has_production_verb(line, vp_dir.end())
+                    and lane not in VERIFY_PROGRESS_DIR_OWNERS
+                ):
+                    violations.append(
+                        _violet_message(
+                            task_id,
+                            literal,
+                            VERIFY_PROGRESS_DIR_OWNERS,
+                            is_dir=True,
+                        )
+                    )
+
+    except Exception as exc:  # pragma: no cover - 防御分支
+        try:
+            warnings.warn(
+                f"ownership_violations_for_task_line 自身故障（fail-open）: {exc}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+        except Exception:
+            pass
+        return []
+
+    return violations
+
+
+def _match_artifact_key(literal: str):
+    """从路径字面量中识别命中的归属表 key（含 ``.fenix-run-result.json``）。"""
+    for key in VERIFICATION_ARTIFACT_OWNERS:
+        if key in literal:
+            return key
+    return None
+
+
+def _violet_message(task_id: str, literal: str, owners: Set[str], is_dir: bool = False) -> str:
+    """构造违规消息：点名任务行 id + 命中产物路径 + 纠正处方。
+
+    处方措辞与 ``skills/fenix-new`` §3.2.1 第 5 类一致：改写为
+    「实现 X 让框架产出该文件」或移出任务书。
+    """
+    if is_dir:
+        head = f"任务 {task_id}：要求把产物持久化到 verify-progress 目录 {literal!r}"
+    else:
+        head = f"任务 {task_id}：要求实现者产出验证链产物 {literal!r}"
+    return (
+        f"{head}——该文件/目录由验证链车道"
+        f"{'、'.join(sorted(owners))} 产出，实现者交付时尚不存在、无法满足；"
+        f"请改写为「实现 X 让框架产出该文件」（写出产出该文件所需的代码），"
+        f"或将其移出任务书（reference / `.fenix/todo.md` 人工步骤）"
+    )

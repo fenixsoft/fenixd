@@ -334,8 +334,12 @@ def _tasks_md_relint_from_branch(pipeline, spec_name: str, branch) -> list:
         # 路径不存在 → fail-open（fast-track 前置 spec 允许后补）
         return []
     from core.deliverables import lint_tasks_text
+    from core.spec_mode import read_spec_mode
 
-    return lint_tasks_text(proc.stdout)
+    # 执行车道按 .spec.yaml mode 判定（full/fast-track；缺失保守按 full），
+    # 与晋升 lint 同源同口径（add-task-artifact-ownership-gate D3）
+    lane = read_spec_mode(pipeline._context.project_root, spec_name)
+    return lint_tasks_text(proc.stdout, lane)
 
 
 def _tasks_md_relint_from_worktree(pipeline, spec_name: str, worktree_path) -> list:
@@ -358,8 +362,11 @@ def _tasks_md_relint_from_worktree(pipeline, spec_name: str, worktree_path) -> l
         )
         return []
     from core.deliverables import lint_tasks_text
+    from core.spec_mode import read_spec_mode
 
-    return lint_tasks_text(text)
+    # fast-track 车道收口复检同样按 .spec.yaml mode 判定执行车道
+    lane = read_spec_mode(pipeline._context.project_root, spec_name)
+    return lint_tasks_text(text, lane)
 
 
 def _disputed_deliverables(pipeline, impl_result, missing) -> list:

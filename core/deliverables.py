@@ -1966,8 +1966,8 @@ def _tasks_parse_counts(text: str) -> tuple:
     return group_count, item_count
 
 
-def lint_tasks_text(text: str) -> List[str]:
-    """tasks.md 文本可解析性判定（task-track R2 同源规则，收口复检共用）。
+def lint_tasks_text(text: str, lane: str = "full") -> List[str]:
+    """tasks.md 文本可解析性判定 + 产物归属校验（task-track R2 + add-task-artifact-ownership-gate）。
 
     ``lint_tasks_parseable`` 与 dispatch 收口复检挂点（full/fast-track 车道）
     共用同一判定逻辑，避免两套解析口径漂移。文本形态直接判定：
@@ -1979,9 +1979,22 @@ def lint_tasks_text(text: str) -> List[str]:
       → 违规，文案点名损伤特征并给出修正处方；
     - 分组与任务行均正常 → 放行。
 
+    可解析性判定通过后（未提前返回），逐条扫描任务行执行「产物归属」校验
+    （add-task-artifact-ownership-gate，design D1 三重合取）：命中已登记验证
+    链产物的产出式引用 + 行内无代码文件 + 产出动词 + 执行车道 ∉ 归属车道 →
+    判违规。lane 参数由调用侧传入（缺失时由 ``lint_tasks_parseable`` 按
+    ``.spec.yaml`` mode 解析，缺省按 ``full`` 保守处理）。
+
+    Args:
+        text: tasks.md 文件原文。
+        lane: 执行车道——``"fast-track"`` 或 ``"full"``（full 车道执行者为
+            implementer）。默认 ``"full"`` 保持向后兼容。
+
     Returns:
         违规描述清单；空列表 = 通过。
     """
+    from core.artifact_ownership import ownership_violations_for_task_line
+
     group_count, item_count = _tasks_parse_counts(text)
 
     if group_count == 0:
@@ -1999,7 +2012,27 @@ def lint_tasks_text(text: str) -> List[str]:
             "（如 `^- [x] 1.1 …`）即 sed 转义损伤特征，请改用编辑器直接勾选："
             "把 `^- [` 改回 `- [ ` 并恢复 `[x]`/`[ ]`，否则下游无法跟踪任务"
         ]
-    return []
+
+    # ── 可解析性判定通过 → 追加产物归属校验（add-task-artifact-ownership-gate）──
+    # 逐条扫描任务行，调用 ownership_violations_for_task_line 进行
+    # design D1 三重合取判定；fail-open（单行异常不中断全局扫描）
+    ownership_violations: List[str] = []
+    for line in text.splitlines():
+        if _TASKS_ITEM_RE.match(line):
+            try:
+                ownership_violations.extend(
+                    ownership_violations_for_task_line(line, lane)
+                )
+            except Exception as exc:  # pragma: no cover - 防御分支
+                try:
+                    _resolution_logger.warning(
+                        "deliverables",
+                        "产物归属校验单行异常（fail-open，放行该行）: %s",
+                        exc,
+                    )
+                except Exception:
+                    pass
+    return ownership_violations
 
 
 def lint_tasks_parseable(spec_dir, project_root) -> List[str]:
@@ -2019,4 +2052,32 @@ def lint_tasks_parseable(spec_dir, project_root) -> List[str]:
     if not tasks.exists():
         return []
     text = tasks.read_text(encoding="utf-8")
-    return lint_tasks_text(text)
+    lane = _resolve_lane_for_spec_dir(spec_dir)
+    return lint_tasks_text(text, lane)
+
+
+def _resolve_lane_for_spec_dir(spec_dir) -> str:
+    """执行车道判定（add-task-artifact-ownership-gate D3）。
+
+    复用既有 ``core.spec_mode.read_spec_mode``（MUST NOT 自实现第二套
+    ``.spec.yaml``/YAML 解析）：``fast-track`` → ``"fast-track"``；
+    其余（`mode` 缺失 / 值非法 / 文件不存在 / 解析异常）保守按 ``full``。
+    ``read_spec_mode(project_root, spec_name)`` 内部已做读侧容错（缺省 full、
+    不抛异常），故本函数仅需归一化调用签名（spec_dir → spec_name + project_root）。
+
+    Args:
+        spec_dir: spec 目录（``<project_root>/spec/changes/<spec>/``）。
+
+    Returns:
+        ``"fast-track"`` 或 ``"full"``。
+    """
+    from core.spec_mode import read_spec_mode
+
+    spec_dir = Path(spec_dir)
+    try:
+        spec_name = spec_dir.name
+        project_root = spec_dir.parent.parent.parent
+        return read_spec_mode(project_root, spec_name)
+    except Exception:
+        # 异常保守按 full（与 read_spec_mode 读侧容错语义一致）
+        return "full"
