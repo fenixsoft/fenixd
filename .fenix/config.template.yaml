@@ -215,6 +215,20 @@ verify:
   #     运行实例（每次 HEAD 变化自动重建 worktree 与产物，node_modules 自动
   #     从主树链入；详见 core/verify_contract.py 模块文档）
   static_scope: "main"
+  # verify worktree node_modules 供给模式（verify.yaml deps_mode > 本配置 > 代码默认）：
+  #   hardlink（默认，推荐）— 主树 node_modules 以 os.link 硬链接副本共享 inode，
+  #     秒级供给、不占双倍磁盘（每 serving worktree 仅 ~24M）。约束：避免主树与
+  #     worktree 并发构建（in-place 写入会穿透共享 inode）。
+  #   prefer-offline — worktree 内 npm ci --prefer-offline 实装一份独立
+  #     node_modules（~1.6G/份，真拷贝），失败回退 npm install --prefer-offline。
+  #   主树无 node_modules 时 hardlink 自动降级 prefer-offline（MUST NOT 失败）。
+  deps_mode: "hardlink"
+  # verify-serving 目录生命周期回收（fix-verify-serving-disk-reclaim）：
+  # daemon 启动 reconcile + 600s 周期清扫，对无主 worktree（spec 不在
+  # changes/archive、未登记、无活进程、超宽限期）执行 git worktree remove --force
+  # + prune，并按同判据回收 <spec>-boot.log。
+  serving_reclaim:
+    enabled: true
 
 # ---- Push Ref Hygiene (fix-push-ref-lifecycle) ----
 # done→pushed 的推送生命周期治理：

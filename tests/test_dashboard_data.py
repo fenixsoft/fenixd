@@ -57,7 +57,8 @@ class TestDashboardConfigIO(unittest.TestCase):
         # 缺省回显（此前 verify 段根本不在 read_config 里，前端恒显示默认值）
         echoed = read_config(self.tmpdir)
         self.assertEqual(echoed["verify"],
-                         {"static_scope": "main", "deps_mode": "prefer-offline"})
+                         {"static_scope": "main", "deps_mode": "hardlink",
+                          "serving_reclaim": {"enabled": True}})
 
         result = write_config(self.tmpdir, {
             "verify": {"static_scope": "worktree", "deps_mode": "hardlink"},
@@ -65,7 +66,8 @@ class TestDashboardConfigIO(unittest.TestCase):
         self.assertTrue(result["ok"], result.get("error"))
         echoed = read_config(self.tmpdir)
         self.assertEqual(echoed["verify"],
-                         {"static_scope": "worktree", "deps_mode": "hardlink"})
+                         {"static_scope": "worktree", "deps_mode": "hardlink",
+                          "serving_reclaim": {"enabled": True}})
         self.assertEqual(echoed["sources"]["verify.deps_mode"], "project")
 
         # 非法值拒绝（不落盘）

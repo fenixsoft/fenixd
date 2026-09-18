@@ -51,10 +51,10 @@ class TestEnsureMainTreeDeps(unittest.TestCase):
         self.assertEqual(done, ["pkg"])
         self.assertEqual(calls[0][:2], ["npm", "ci"])
         self.assertIn("--prefer-offline", calls[0])
-        # 成功应记录 INFO
+        # 成功应记录 INFO（mode 缺省＝DEFAULT_DEPS_MODE＝hardlink；主树自装仍是 npm ci）
         self.logger.info.assert_any_call(
             "verify_contract",
-            "主树依赖预装完成（pkg，deps_mode=prefer-offline）: "
+            "主树依赖预装完成（pkg，deps_mode=hardlink）: "
             "npm ci --prefer-offline",
         )
 

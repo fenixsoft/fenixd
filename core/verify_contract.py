@@ -131,8 +131,9 @@ PREPARE_STEP_TIMEOUT = 600  # 单条构建步骤上限（秒）：构建慢是�
 DEFAULT_READY_TIMEOUT = 60
 
 # worktree node_modules 供给模式（verify.yaml deps_mode > config verify.deps_mode > 默认）
+# 默认 hardlink：主树 node_modules 以 os.link 硬链接副本共享 inode，秒级且不占双倍空间。
 DEPS_MODES = ("prefer-offline", "hardlink")
-DEFAULT_DEPS_MODE = "prefer-offline"
+DEFAULT_DEPS_MODE = "hardlink"
 
 
 @dataclass

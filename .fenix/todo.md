@@ -44,3 +44,8 @@
   - 证据：09-17T16:33:58Z「Recovery watch failed for 'refactor-giant-classes' — not recovered, escalating dispatch_stalled」；admin_disposition-admin-refactor-giant-classes-1789664978.json 记录第 4 点定性「16:33 那条 dispatch_stalled 是 recovery watch 复查机制在 blocked 写入前 4 秒的竞态产物，已被 blocked 事实覆盖」；同类误报修复先例 3fad3350（09-17 18:07，core/admin_monitor.py「修复依赖未满足的 ready spec 被假就绪巡检误报 dispatch_stalled」）。
   - 调查评估：已核实：admin 处置记录明确把 16:33 的 dispatch_stalled 定性为竞态产物并被随后写入的 blocked 事实覆盖，处置只处理 blocked_stuck（blocked 滞留告警）本体；已 pushed 的 evo-recovery-watch-transition-guard（恢复观察过渡守卫，09-14 立项）覆盖的是「成功收工与复查竞态」窗口，本次属「blocked 写入竞态」——触发源与 guard 不同。根因：recovery watch 的 stale 判定未与状态写入（blocked）串行化，复查瞬间与写入交错产生误报。与存量关系：无 spec 覆盖此变体。结论：低严重度改进，频度低（窗口内 1 次）但每次升级都留未处理记录、需人工核销。
   - 建议：在 recovery watch stale 升级前增加「复查当前 status 是否已偏离（如已 blocked/implementing/testing）」的前置检查（对齐 evo-recovery-watch-transition-guard 的 transition_defer 顺延范式），消除与状态写入的竞态误报。
+
+- **verify-serving 存量目录人工清理（fix-verify-serving-disk-reclaim 登记）**
+  - 背景：`.fenix/verify-serving/` 存量 19 个 serving worktree 合计约 30G，其中 18 个的 spec 仍存活于 `spec/changes/` 或 `spec/archive/`（按 D1 判据 1「归档等同存活」不会被自动回收），仅 1 个（`verify-draft-fixture-1788860224`）无主已被自动清扫。
+  - 清理范围 MUST NOT 只限「spec 在 changes/archive 双双消失」的目录（现测仅 1 个，清理后 30G 基本不动）——**存量主体为 18 个 spec 仍在册目录内各 1.6G `node_modules`**，需按 D1 判据人工逐条核对。
+  - 清理方式：**逐条核对后删除，勿用通配批量删**（按 fix-verify-cli-cwd-isolation 教训）：对每个 `<spec>-<ts>` 目录，先确认其 `servers.json` 无登记、`/proc` 无活进程指向、无在飞验证 run，再 `git worktree remove --force` + `git worktree prune`。清理前确认 `.fenix/config.yaml` 的 `verify.deps_mode` 已改为 `hardlink`（本次 SPEC 已改默认值，新建 worktree 单份仅 ~24M），防止存量模式下新建 worktree 再次膨胀。

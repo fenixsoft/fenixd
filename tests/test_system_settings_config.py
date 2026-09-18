@@ -227,7 +227,8 @@ class TestSystemAdminExistingSectionsNoRegression(unittest.TestCase):
         self.assertEqual(echoed["gates"],
                          {"approve_mode": "manual", "promote_mode": "auto"})
         self.assertEqual(echoed["verify"],
-                         {"static_scope": "main", "deps_mode": "prefer-offline"})
+                         {"static_scope": "main", "deps_mode": "hardlink",
+                          "serving_reclaim": {"enabled": True}})
 
     def test_roundtrip_verify_and_self_review_after_admin_write(self):
         """写入 admin 段后，verify/self_review 写读仍正常（互不干扰）。"""
@@ -239,7 +240,8 @@ class TestSystemAdminExistingSectionsNoRegression(unittest.TestCase):
         write_config(self.tmpdir, {"self_review": {"enabled": True}})
         echoed = read_config(self.tmpdir)
         self.assertEqual(echoed["verify"],
-                         {"static_scope": "worktree", "deps_mode": "hardlink"})
+                         {"static_scope": "worktree", "deps_mode": "hardlink",
+                          "serving_reclaim": {"enabled": True}})
         self.assertEqual(echoed["self_review"]["enabled"], True)
         self.assertEqual(echoed["admin"]["shutdown_drain_seconds"], 300)
 

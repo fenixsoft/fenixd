@@ -74,9 +74,9 @@ _SOURCE_KEYS = [
     "admin.bug_repair_mode",
     # stuck-signal-hygiene D4：stuck 处置后静默期（分钟）
     "admin.stuck_silence_minutes",
-    # 验证契约键（verify.*：静态服务范围 / worktree 依赖供给模式）
     "verify.static_scope",
     "verify.deps_mode",
+    "verify.serving_reclaim.enabled",
     # add-planner-efficiency：planner 生成节流上限
     "verify.planner_max_concurrent",
     # add-spec-hooks：两级 hook 订阅配置（global + specs）
@@ -112,7 +112,6 @@ _AGENTS_SOURCE_KEYS = (
 # 合并写回键（数值标量透传；与来源键同集合）
 _AGENTS_MERGE_KEYS = _AGENTS_SOURCE_KEYS
 
-
 def _echo_agents_int_keys(agents_src) -> dict:
     """回显 agents 数值标量键（仅 int 值回显，缺省/非法由缺省 dict 兜底）。"""
     out = {}
@@ -121,7 +120,6 @@ def _echo_agents_int_keys(agents_src) -> dict:
             if isinstance(agents_src.get(k), int):
                 out[k] = agents_src[k]
     return out
-
 
 # 受管键的默认回显值（add-daily-self-review；与 ConfigLoader.get_self_review_config
 # 保持一致：enabled/read_todo 缺省 false，run_at 缺省 02:00）
@@ -133,7 +131,6 @@ _CONFIG_HEADER_COMMENT = (
     "# 敏感字段（如 apikey）请妥善保管，.fenix/ 目录已 gitignore。\n"
     "\n"
 )
-
 
 def _managed_key_sources(raw: dict) -> dict:
     """计算每个受管键的来源层级：在该文件中显式定义 → "project"，否则 "user"。
@@ -177,6 +174,9 @@ def _managed_key_sources(raw: dict) -> dict:
             sources["verify.deps_mode"] = "project"
         if "planner_max_concurrent" in verify_src:
             sources["verify.planner_max_concurrent"] = "project"
+        sr_raw = verify_src.get("serving_reclaim")
+        if isinstance(sr_raw, dict) and "enabled" in sr_raw:
+            sources["verify.serving_reclaim.enabled"] = "project"
     # add-daily-self-review：admin.self_review 段显式定义 → project
     admin_raw = raw.get("admin")
     if isinstance(admin_raw, dict) and isinstance(admin_raw.get("self_review"), dict):
@@ -216,9 +216,8 @@ def _managed_key_sources(raw: dict) -> dict:
             sources["self_evolution.spec_run_at"] = "project"
     return sources
 
-
-# add-settings-system-tab：受管 admin.* 键缺省（与 ConfigLoader.get_admin_config
-# 缺省一致：enabled=True / interval_minutes=5 / escalation_cooldown_minutes=60 /
+# add-settings-system-tab：受管 admin.* 键缺省（与 ConfigLoader.get_admin_config 一致：
+# enabled=True / interval_minutes=5 / escalation_cooldown_minutes=60 /
 # merge_breaker_threshold 复用 agents.merge_breaker_threshold（缺省 2）/
 # shutdown_drain_seconds=1800 / bug_repair_mode=inplace）
 _ADMIN_DEFAULTS = {
@@ -231,7 +230,6 @@ _ADMIN_DEFAULTS = {
     # 与 ConfigLoader.get_admin_config 缺省一致）
     "stuck_silence_minutes": 120,
 }
-
 
 def _managed_admin_keys(config: dict) -> dict:
     """受管 admin.* 键提取：6 键 + 缺省填充，不透传未知 admin 键/self_review 子段。
@@ -264,7 +262,6 @@ def _managed_admin_keys(config: dict) -> dict:
             out[key] = val
     return out
 
-
 def read_config(scope_root, scope: str = "project") -> dict:
     """读取指定作用域文件的受管配置段。
 
@@ -296,8 +293,7 @@ def read_config(scope_root, scope: str = "project") -> dict:
         },
         "gates": {"approve_mode": "manual", "promote_mode": "auto"},
         "runs": {"keep": 50},
-        # 验证契约键（static_scope 服务范围 / deps_mode worktree 依赖供给模式）
-        "verify": {"static_scope": "main", "deps_mode": "prefer-offline"},
+        "verify": {"static_scope": "main", "deps_mode": "hardlink", "serving_reclaim": {"enabled": True}},
         # add-spec-archive D5：自动归档阈值（0 = 禁用，默认 50）
         "archive": {"auto_threshold": 50},
         # add-daily-self-review：admin.self_review 三键（缺省 false/false/02:00）
@@ -402,6 +398,9 @@ def read_config(scope_root, scope: str = "project") -> dict:
         pmc = verify_raw.get("planner_max_concurrent")
         if isinstance(pmc, int) and not isinstance(pmc, bool) and pmc >= 0:
             result["verify"]["planner_max_concurrent"] = pmc
+        sr_raw = verify_raw.get("serving_reclaim")
+        if isinstance(sr_raw, dict) and isinstance(sr_raw.get("enabled"), bool):
+            result["verify"]["serving_reclaim"]["enabled"] = sr_raw["enabled"]
     runs_raw = raw.get("runs")
     if (
         isinstance(runs_raw, dict)
@@ -438,7 +437,6 @@ def read_config(scope_root, scope: str = "project") -> dict:
     result["self_evolution"] = _CLSE.get_self_evolution_config(raw)
     return result
 
-
 # 配置解析签名缓存（dashboard-spec-summary-index D4）：
 # read_effective_config 按 (用户级 config.yaml 签名, 项目级 config.yaml 签名) 缓存，
 # mtime/size 未变不重读文件与 YAML 解析；写路径不维护显式失效（写后 mtime 已变，
@@ -448,7 +446,6 @@ def read_config(scope_root, scope: str = "project") -> dict:
 _EFFECTIVE_CONFIG_CACHE: dict = {}
 _EFFECTIVE_CONFIG_CACHE_MAX = 512
 
-
 def _config_file_sig(path: Path):
     """配置文件签名 (mtime_ns, size)；缺失返回 None。"""
     try:
@@ -456,7 +453,6 @@ def _config_file_sig(path: Path):
     except OSError:
         return None
     return (st.st_mtime_ns, st.st_size)
-
 
 def read_effective_config(project_root) -> dict:
     """项目模式有效配置视图：受管键取 resolve_config 有效合并值 + sources 标注。
@@ -496,8 +492,7 @@ def read_effective_config(project_root) -> dict:
         },
         "gates": {"approve_mode": "manual", "promote_mode": "auto"},
         "runs": {"keep": 50},
-        # 验证契约键（static_scope 服务范围 / deps_mode worktree 依赖供给模式）
-        "verify": {"static_scope": "main", "deps_mode": "prefer-offline"},
+        "verify": {"static_scope": "main", "deps_mode": "hardlink", "serving_reclaim": {"enabled": True}},
         # add-spec-archive D5：自动归档阈值（0 = 禁用，默认 50）
         "archive": {"auto_threshold": 50},
         # add-daily-self-review：admin.self_review 三键（缺省 false/false/02:00）
@@ -601,6 +596,9 @@ def read_effective_config(project_root) -> dict:
         pmc = verify_eff.get("planner_max_concurrent")
         if isinstance(pmc, int) and not isinstance(pmc, bool) and pmc >= 0:
             result["verify"]["planner_max_concurrent"] = pmc
+        sr_eff = verify_eff.get("serving_reclaim")
+        if isinstance(sr_eff, dict) and isinstance(sr_eff.get("enabled"), bool):
+            result["verify"]["serving_reclaim"]["enabled"] = sr_eff["enabled"]
     runs_eff = effective.get("runs")
     if (
         isinstance(runs_eff, dict)
@@ -636,7 +634,6 @@ def read_effective_config(project_root) -> dict:
         _EFFECTIVE_CONFIG_CACHE.clear()
     _EFFECTIVE_CONFIG_CACHE[cache_key] = copy.deepcopy(result)
     return result
-
 
 def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
     """把 patch 中的受管键合并到 raw_config，返回新 dict（不修改原对象）。
@@ -729,6 +726,9 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
                 else patch["verify"].get(vk) in ("prefer-offline", "hardlink")
             ):
                 merged["verify"][vk] = patch["verify"][vk]
+        sr_patch = patch["verify"].get("serving_reclaim")
+        if isinstance(sr_patch, dict) and isinstance(sr_patch.get("enabled"), bool):
+            merged.setdefault("verify", {}).setdefault("serving_reclaim", {})["enabled"] = sr_patch["enabled"]
         # add-planner-efficiency（planner-generation-throttle 2.3）：
         # planner 生成节流上限——非负整数（0=不节流），非法值静默忽略。
         pmc = patch["verify"].get("planner_max_concurrent")
@@ -811,7 +811,6 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
             merged["self_evolution"]["spec_run_at"] = se_p["spec_run_at"]
 
     return merged
-
 
 def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict:
     """把受管配置段写回作用域文件（原子写、保留非受管键）。
@@ -918,6 +917,9 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
                     f"verify.planner_max_concurrent must be a non-negative integer "
                     f"(0=不节流): {pmc!r}"
                 )
+        sr_patch = v_patch.get("serving_reclaim")
+        if isinstance(sr_patch, dict) and sr_patch.get("enabled") is not None and not isinstance(sr_patch["enabled"], bool):
+            return fail(f"verify.serving_reclaim.enabled must be a boolean: {sr_patch['enabled']!r}")
 
     # add-settings-system-tab：admin.* 五键前置校验（非法值直接拒绝，不静默忽略——
     # 与 verify/self_review 同模式，前端输入类型错误在后端权威兜底）。
@@ -1390,7 +1392,6 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
 
     return {"ok": True, "error": None, "scope": scope, "path": str(config_path)}
 
-
 # ── 同步用户级设置到项目级（设置页项目级作用域「同步用户级设置」按钮） ──
 
 # 页面标识 → 用户级 config.yaml 中被同步的受管键白名单。
@@ -1414,7 +1415,7 @@ _SYNC_PAGE_KEYS = {
             "verify_redo_budget",
         ],
     },
-    "verify": {"verify": ["static_scope", "deps_mode"]},
+    "verify": {"verify": ["static_scope", "deps_mode", "serving_reclaim"]},
     "approval": {"gates": ["promote_mode", "approve_mode"]},
     "misc": {"archive": ["auto_threshold"]},
     "system": {
@@ -1436,7 +1437,6 @@ _SYNC_PAGE_KEYS = {
         ],
     },
 }
-
 
 def sync_config_from_user(project_root, page: str) -> dict:
     """把用户级 config.yaml 中 page 页签对应的受管键覆盖写入项目级配置。
