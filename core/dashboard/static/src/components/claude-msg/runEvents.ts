@@ -49,6 +49,26 @@ function toolResultFromUserMessage(ev: RunEvent): Array<{ toolUseId: string; res
   return out;
 }
 
+/**
+ * 取 user 事件的文本：优先顶层 content 字符串；否则从 message.content 块数组
+ * 提取 text 块拼接（--replay-user-messages 的 isReplay 回显事件是块数组形态，
+ * 顶层无 content，若不提取会渲染成空气泡——design D1「对应前端义务」）。
+ * 均无 → 空串（tool_result 消息不含文本，交由调用方跳过）。
+ */
+function userMessageText(ev: RunEvent): string {
+  if (typeof ev.content === 'string') return ev.content;
+  const message = (ev as Record<string, unknown>).message as
+    | { content?: Array<Record<string, unknown>> }
+    | undefined;
+  const blocks = message?.content;
+  if (!Array.isArray(blocks)) return '';
+  return blocks
+    .filter((b) => b && typeof b === 'object' && b.type === 'text')
+    .map((b) => String(b.text || ''))
+    .join('')
+    .trim();
+}
+
 export function runEventsToChatMessages(events: RunEvent[]): ChatMessage[] {
   const out: ChatMessage[] = [];
   let currentThinking: ChatMessage | null = null;
@@ -93,13 +113,18 @@ export function runEventsToChatMessages(events: RunEvent[]): ChatMessage[] {
           }
         }
         // tool_result 消息不再渲染文本行（除非另有文本内容）
-        const text = typeof ev.content === 'string' ? ev.content.trim() : '';
+        const text = userMessageText(ev);
         if (text && text !== '[Request interrupted by user]') {
-          out.push({ type: 'user', content: ev.content, timestamp });
+          out.push({ type: 'user', content: text, timestamp });
         }
         continue;
       }
-      out.push({ type: 'user', content: ev.content || '', timestamp });
+      // 普通用户消息：优先字符串 content，回显事件（isReplay，块数组无顶层
+      // content）经 userMessageText 提取 text 块
+      const text = userMessageText(ev);
+      if (text) {
+        out.push({ type: 'user', content: text, timestamp });
+      }
       continue;
     }
 
@@ -148,6 +173,32 @@ export function runEventsToChatMessages(events: RunEvent[]): ChatMessage[] {
       } else {
         out.push({ type: 'system', content: `[${ev.type}]`, timestamp });
       }
+      continue;
+    }
+
+    // session 终态事件（dashboard-live-session 4.4）：
+    // reason 映射为中文系统行，MUST NOT 落 fallback 的 [session_ended]。
+    if (ev.type === 'session_ended') {
+      flushThinking();
+      const reason = (ev.reason as string) || '';
+      let label: string;
+      switch (reason) {
+        case 'idle':
+          label = '会话因空闲已自动终止';
+          break;
+        case 'process_exit':
+          label = '会话进程已退出';
+          break;
+        case 'user':
+          label = '会话已停止';
+          break;
+        case 'shutdown':
+          label = 'Dashboard 正在关闭，会话已终止';
+          break;
+        default:
+          label = reason ? `会话已终止（${reason}）` : '会话已终止';
+      }
+      out.push({ type: 'system', content: label, timestamp });
       continue;
     }
 

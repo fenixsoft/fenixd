@@ -7,7 +7,8 @@
     "dev": "max dev",
     "build": "max build",
     "preview": "max preview",
-    "prebuild": "tailwindcss -i ./tailwind.css -o ./src/components/claude-msg/tailwind.gen.css --minify"
+    "prebuild": "tailwindcss -i ./tailwind.css -o ./src/components/claude-msg/tailwind.gen.css --minify",
+    "test": "node --test tests/*.test.mjs"
   },
   "browserslist": [
     "> 1%",
