@@ -67,6 +67,23 @@ from core.state_machine import (
 # 假就绪巡检：ready 滞留超过该阈值且期间无派发活动 → 阻塞项（design D6）
 DEFAULT_READY_STALL_THRESHOLD_MINUTES = 20
 
+# ── 同因重派熔断易变段剔除正则（fix-redispatch-loop-governance D3/D3.1）──
+# 归因文案指纹计算前的易变段剔除（见 PMEngine._redispatch_cause_fingerprint）：
+# 1. run_id 形态 impl-<spec>-<epoch>[-aN][-rN]（spec 名可含连字符，贪婪消费到
+#    尾部至少一个「-数字」段即 epoch，再可选 -aN/-rN 后缀）；
+# 2. 9 位以上数字（时间戳 / epoch / pid）；
+# 3. worktree 路径（…/.claude/worktrees/impl-… 形态）。
+# 1. run_id 形态（可选带 run=/run_id= 标签）impl-<spec>-<epoch>[-aN][-rN]
+#   （spec 名可含连字符，贪婪消费到尾部至少一个「-数字」段即 epoch，再可选
+#   -aN/-rN 后缀）；标签仅在接受显式分隔符（=_:\s 或空白）后消费，避免把
+#   「running」这类普通词吞掉（防归一化过度 → 不同因误判同因）。
+_REDISPATCH_RUN_ID_RE = re.compile(
+    r"(?:(?:run|run_id)\s*[=_:\s-]+\s*)?impl-[A-Za-z0-9._-]+(?:-[0-9]+){1,}"
+    r"(?:-[a-z][0-9]+)?(?:-r[0-9]+)?"
+)
+_REDISPATCH_TIMESTAMP_RE = re.compile(r"\b\d{9,}\b")
+_REDISPATCH_WT_PATH_RE = re.compile(r"(?:/[\w.-]*)*/\.claude(?:/[\w.-]+)*")
+
 # 依赖闸门接受态（fix-dispatch-wakeup-gap D2 单点口径）：依赖 SPEC 转入这些
 # 状态之一时，等待中的 dependents 视为「依赖满足」——EventBus 据此定向唤醒
 # dependents 重评（dispatch-dependency-wakeup 1.1），_dependencies_satisfied
@@ -1332,20 +1349,36 @@ class PMEngine:
             # 「确实无法由 agent 完成」，如人工运维门控任务），不再拦截：放行到
             # done，并把申报内容落一条可见的人工待办告警。部分未申报的仍按
             # fail-closed 拦截。
-            from core.run_task_track import gap_from_result as _gap_from_result
+            #
+            # fix-redispatch-loop-governance D2b：收敛判据单点在
+            # ``core.run_task_track.honest_exit_convergence_gap``（内部即
+            # gap_from_result + parse_unattainable）——含非法申报项（非 dict /
+            # task 非合法 id / 缺 reason）时判不收敛（fail-closed），MUST NOT
+            # 「合法项生效、非法项静默忽略」（产物硬门正常时非法申报已被拦，
+            # 但「只卡第一次」降级放行后非法条目可抵达本收敛点，部分采信等于
+            # 开了洗白窗口）。
+            from core.run_task_track import (
+                gap_from_result as _gap_from_result,
+            )
+            from core.run_task_track import (
+                honest_exit_convergence_gap as _honest_convergence_gap,
+            )
 
-            gap = _gap_from_result(result, self.project_root, spec_name)
-            unattainable_ids, _invalid = _parse_unattainable(result)
-            unclaimed = [t for t in gap if t not in unattainable_ids]
-            if gap and not unclaimed:
-                self._note_unattainable_todos(spec_name, result, gap)
+            converged_gap = _honest_convergence_gap(result, self.project_root, spec_name)
+            if converged_gap:
+                self._note_unattainable_todos(spec_name, result, converged_gap)
                 self._clear_task_gap_error(spec_name)
                 return None  # 缺口全部已诚实申报 → 放行
+            gap = _gap_from_result(result, self.project_root, spec_name)
+            # D2b 审计：非法申报项在归因文案中显式标注（不静默）。
+            _unat_ids, _inv = _parse_unattainable(result)
+            _inv_note = f"（且含 {len(_inv)} 个非法 unattainable 申报项）" if _inv else ""
             return (
                 TASK_GAP_ERROR_PREFIX
                 + "实现者申报未完成（partial）："
                 + "、".join(gap[:20])
                 + (f" 等共 {len(gap)} 项" if len(gap) > 20 else "")
+                + _inv_note
             )
         if impl_status != "success":
             return None  # 非 success（error/其它）→ 放行（现状不变）
@@ -1460,6 +1493,31 @@ class PMEngine:
         因此可用字符串归一化哈希；不同根因会得到不同指纹。
         """
         norm = "".join((error or "").split())
+        return hashlib.sha1(norm.encode("utf-8", "replace")).hexdigest()[:12]
+
+    @staticmethod
+    def _redispatch_cause_fingerprint(error: str) -> str:
+        """对失败归因文案计算稳定指纹（同因重派熔断，fix-redispatch-loop-governance D3/D3.1）。
+
+        与 ``_merge_fingerprint`` 同族手法 + 显式剔除**易变段**：
+
+        - run_id（``impl-<spec>-<epoch>[-aN][-rN]`` 形态）——每轮必然变化；
+        - 9 位以上数字（时间戳 / epoch / pid）——每轮必然变化；
+        - worktree 路径（``…/.claude/worktrees/impl-…`` 形态）——轮次不同路径不同。
+
+        剔除后整体去空白取 sha1 前 12 位。保留原因主干：**同缺口的连续 partial**
+        （归因文案「实现者申报未完成（status=partial）：X」，缺口相同则逐字节一致）
+        得到同一指纹；不同根因（缺口不同 / 归因不同）得到不同指纹——「每轮都在变
+        的原因不该熔断，每轮不变的原因才该」（design D3）。归一化过度会把不同原因
+        判为同因 →「不同因不误熔断」回归用例锁定边界（TestSameCauseCircuitBreaker）。
+        """
+        text = (error or "")
+        # 先剔 worktree 路径（最大易变块，内部含 run_id/时间戳——先整体移除避免
+        # 残留碎片如 `//spec` 污染指纹），再剔独立 run_id 与 9 位以上数字时间戳。
+        text = _REDISPATCH_WT_PATH_RE.sub("", text)
+        text = _REDISPATCH_RUN_ID_RE.sub("", text)
+        text = _REDISPATCH_TIMESTAMP_RE.sub("", text)
+        norm = "".join(text.split())
         return hashlib.sha1(norm.encode("utf-8", "replace")).hexdigest()[:12]
 
     # ── Verification Pipeline ─────────────────────────────────────

@@ -152,6 +152,32 @@ class ConfigLoader:
     TRANSIENT_BREAK_WINDOW_DEFAULT = 600  # 熔断窗口秒
     TRANSIENT_BREAK_COOLDOWN_DEFAULT = 600  # 熔断冷却秒
 
+    # ── 同因重派熔断（fix-redispatch-loop-governance D3/D5）──
+    # agents.max_same_cause_redispatches：同一 spec 连续同因重派计数阈值，
+    # 达阈值冻结转人工（替代既有「清零 _retry_count 后照样重派」的空转）。
+    # 正整数，合法范围 1–100；非法/缺失回退缺省 3。
+    MAX_SAME_CAUSE_REDISPATCHES_DEFAULT = 3
+    MAX_SAME_CAUSE_REDISPATCHES_MIN = 1
+    MAX_SAME_CAUSE_REDISPATCHES_MAX = 100
+
+    @classmethod
+    def get_max_same_cause_redispatches(cls, config: Dict[str, Any]) -> int:
+        """读取并规范化 ``agents.max_same_cause_redispatches``（正整数 1–100）。
+
+        非法（缺失 / 非整数 / 布尔 / 越界 1–100）回退缺省 3——单点归一化，
+        设置界面回显与 dispatch 熔断消费同一函数，展示与生效值不脱节
+        （与 get_transient_config 同模式）。
+        """
+        try:
+            val = cls.get(config, "agents.max_same_cause_redispatches", None)
+        except Exception:
+            return cls.MAX_SAME_CAUSE_REDISPATCHES_DEFAULT
+        if val is None or isinstance(val, bool) or not isinstance(val, int):
+            return cls.MAX_SAME_CAUSE_REDISPATCHES_DEFAULT
+        if val < cls.MAX_SAME_CAUSE_REDISPATCHES_MIN or val > cls.MAX_SAME_CAUSE_REDISPATCHES_MAX:
+            return cls.MAX_SAME_CAUSE_REDISPATCHES_DEFAULT
+        return val
+
     @classmethod
     def normalize_transient_backoff_schedule(cls, raw) -> str:
         """规范 `agents.transient_backoff_schedule` 为合法逗号秒序列字符串。

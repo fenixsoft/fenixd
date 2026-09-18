@@ -291,6 +291,45 @@ class FFastTrackMixin:
             )
             return
 
+        # ── 诚实退出收敛：跳过 fast-track 硬校验，降级完整模式补独立验证（D2a）──
+        # partial + 缺口全申报的结果文件**必然不含合法 verification 段**
+        # （agent 明确申报「做不完」，不可能同时产出完整验证裁决）→ 下方
+        # _hard_check_fast_track 的 parse_fast_track_verification fail-closed
+        # 会把收敛打回重派，fast-track 车道诚实退出收敛实质是死路（2026-09-17
+        # 调研实证，design D2a）。诚实退出意味着「实现做完了、部分任务没做」，
+        # 其验证本就该走完整模式的三阶段独立验证（而非 fast-track 单 run 自证）。
+        # 复用既有 _handle_fast_track_missing_result_merge 的「merge + mode 改写
+        # + enqueue verifier」语义（design D2a 方案 (a)；裁决理由见 design.md）。
+        if honest_exit_gap:
+            merged = self._reconcile_and_merge(spec_name, result)
+            if not merged:
+                return  # merge 失败内部已处置（保留 worktree + 重派/熔断）
+            self._rewrite_fast_track_to_full(spec_name)
+            self._pm.state_machine.update_spec(
+                spec_name,
+                {
+                    "error": "诚实退出收敛（fast-track）：缺口全部 ⊆ unattainable，"
+                    "降级完整模式补独立验证",
+                },
+            )
+            # impl-result per-spec 快照 + 共享结果文件清理（与其余成功收口同语义）
+            try:
+                self._pm._write_impl_result_snapshot(spec_name, ft_result)
+            except Exception as e:
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"fast-track 诚实退出收敛 impl-result 快照写入失败 "
+                    f"'{spec_name}'（非阻塞）: {e}",
+                )
+            self._pm._cleanup_shared_result_file(spec_name)
+            self._enqueue(spec_name, "verifier")
+            self._pm.logger.warning(
+                "pm_engine",
+                f"诚实退出收敛（fast-track）'{spec_name}'：缺口全部 ⊆ unattainable "
+                f"申报 {honest_exit_gap} —— 降级完整模式，入队 verifier 补独立验证",
+            )
+            return
+
         # ── 硬校验（merge 前执行，失败则不合并、按失败重派） ──
         verification = self._hard_check_fast_track(spec_name, ft_result)
         if verification is None:
@@ -786,20 +825,41 @@ class FFastTrackMixin:
             prev_retries = 0
         retries = prev_retries + 1
         max_r = self._pm._get_config("agents.max_retries", 3)
+        # fix-redispatch-loop-governance 3.4（fast-track 车道对等）：retries 达
+        # max_r 时真正终止自动重试——冻结转人工（freeze_for_human，error 内嵌
+        # 「原状态 X」供 parse_orig_status 解冻还原）。原实现「清零 _retry_count
+        # 后照样 _enqueue」是空转（与 full 车道同款事故形态）。同因 streak 记账
+        # 只在 full 车道通用失败重派分支（design D3 作用域边界），此处只做封顶冻结。
         if retries >= max_r:
-            self._pm.state_machine.update_spec(
+            fp = self._pm._redispatch_cause_fingerprint(final_error)
+            orig_status = (spec_entry or {}).get("status") or "implementing"
+            self._pm.state_machine.freeze_for_human(
                 spec_name,
-                {
-                    "status": "ready",
-                    "error": f"{final_error}｜重试 {max_r}/{max_r} 已耗尽，重新排队",
-                    "_retry_count": 0,
-                },
+                error=(
+                    f"原状态 {orig_status} · fast-track 重试耗尽"
+                    f"（{max_r}/{max_r} 轮，指纹 {fp}）：{final_error}"
+                ),
+                signal_type="redispatch_loop_detected",
+                severity="major",
+                description=(
+                    f"'{spec_name}' fast-track 连续失败重试 {max_r} 轮已达上限"
+                    f"（max_retries），自动重试终止——已冻结转人工处置"
+                ),
+                evidence=(
+                    f"spec={spec_name}; retries={retries}; max_retries={max_r}; "
+                    f"fp={fp}; final_error={final_error}"
+                ),
+                recommended_action=(
+                    "检查失败根因；处置后解冻（unfreeze_spec 自动清零计数）可重新"
+                    "获得自动修复机会"
+                ),
+                alert_callback=self._pm._send_human_escalation_alert,
             )
             self._pm.logger.error(
                 "pm_engine",
-                f"fast-track all retries exhausted '{spec_name}'",
+                f"fast-track all retries exhausted '{spec_name}' — 冻结转人工，"
+                f"不再重派（{retries}/{max_r}，fp={fp}）",
             )
-            self._enqueue(spec_name, "fast-track")
         else:
             self._pm.state_machine.update_spec(
                 spec_name,

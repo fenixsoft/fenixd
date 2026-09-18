@@ -826,6 +826,9 @@ export interface AgentsConfig {
   impl_run_budget_max?: number;
   /** 重启重验预算（agents.verify_redo_budget，缺省 3）：daemon 重启恢复路径累计重验次数上限 */
   verify_redo_budget?: number;
+  /** 同因重派熔断阈值（agents.max_same_cause_redispatches，缺省 3，范围 1-100）：
+   * 同一 spec 连续以同一归因（归一化指纹）判失败重派达该阈值 → 冻结转人工，不再自动重派 */
+  max_same_cause_redispatches?: number;
   /** 瞬断治理（fix-provider-transient-backoff D6）：原地退避秒序列（逗号分隔，缺省 30,60,120） */
   transient_backoff_schedule?: string;
   /** 瞬断终态 dispatch 排程等待秒（缺省 600） */

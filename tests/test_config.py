@@ -149,6 +149,30 @@ class TestConfigLoader(unittest.TestCase):
             ConfigLoader.get_admin_config({})["escalation_cooldown_minutes"], 60
         )
 
+    def test_max_same_cause_redispatches_default_and_normalize(self):
+        """agents.max_same_cause_redispatches：缺省 3，非法/越界回退缺省
+        （fix-redispatch-loop-governance D5：单点归一化，消费与回显同源）。"""
+        from core.config import ConfigLoader as CL
+
+        self.assertEqual(CL.get_max_same_cause_redispatches({}), 3)
+        self.assertEqual(
+            CL.get_max_same_cause_redispatches({"agents": {"max_same_cause_redispatches": 5}}), 5
+        )
+        # 边界：1 与 100 合法
+        self.assertEqual(
+            CL.get_max_same_cause_redispatches({"agents": {"max_same_cause_redispatches": 1}}), 1
+        )
+        self.assertEqual(
+            CL.get_max_same_cause_redispatches({"agents": {"max_same_cause_redispatches": 100}}), 100
+        )
+        # 越界 / 非整数 / 布尔 / 字符串 → 回退缺省 3
+        for bad in (0, -1, 101, 3.5, "3", True, None):
+            self.assertEqual(
+                CL.get_max_same_cause_redispatches({"agents": {"max_same_cause_redispatches": bad}}),
+                3,
+                f"{bad!r} 应回退缺省",
+            )
+
     def test_bug_repair_mode_validate_rejects_and_unchanged(self):
         """宽松路径（resolve_config）同拒非法值；合法值经 get_admin_config 取回。"""
         ConfigLoader.reset_stuck_threshold_state()
