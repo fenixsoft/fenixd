@@ -9,7 +9,10 @@
 接入同源实现，MUST NOT 各自维护分叉的缺件处置逻辑。
 
 流水线 MUST 以统一的输入契约（spec 名、实现结果、缺件清单、声明上下文）与统一的
-输出契约（`action: proceed | handled` 及处置明细）供两车道调用。
+输出契约（`action: proceed | handled` 及处置明细）供两车道调用。**输入契约的
+「缺件清单」MUST 为守卫的结构化返回全量**（`violation ∈ {missing, undeleted,
+removed}`，见 `implementer-deliverable-gate`）——收缩违规（`removed`）与缺件同源
+入流水线，MUST NOT 被排除在车道无关处置之外。
 
 #### Scenario: full 与 fast-track 共用同源流水线
 
@@ -101,17 +104,23 @@ MUST 派轻量单轮 judge run（复用既有 planner-judge 范式，run 前缀 
 
 daemon 消费合法裁决 JSON 后 SHALL 机械执行（不经 agent 手改文档）：
 `typo` → 将**生效声明**对应条目的 `path` 确定性替换为 `actual_path`（若同名
-条目已存在 actual_path 则去重；命中陈日信号时须满足重定位凭据三要素）→ 重跑守卫
-对账 → 通过则正常合并推进；`reference` → 将该条目 `kind` 改为 `reference`（移入
+条目已存在 actual_path 则去重；命中陈日信号时须满足重定位凭据三要素；若生效声明
+已无该条目——实现方先行对齐——则按 `declaration-relocation-protocol` 的**凭据
+登记**落册，MUST NOT 因条目缺失卡死）→ 重跑守卫对账 → 通过则正常合并推进；`reference` → 将该条目 `kind` 改为 `reference`（移入
 references 软校验）→ 继续推进；`missing` → 走既有打回/重派路径（带精准缺件清单）；
 `unclear` → 既有 dispute blocked 转人工通道。每条裁决的执行 SHALL 落 dispute
 审计流（裁决 JSON 全文、修正前后 diff、run 关联 id、时间戳），人工可复核；人工
 回滚 = 恢复声明段原文 + 触发重派。无对应人工裁决记录时，任何缺件 MUST NOT 被
 静默放行。
 
-**执行目标**：声明改写 SHALL 作用于**生效声明**（经统一解析入口决定：分支/worktree
-版本优先），改写分支版本后 MUST 同步回写主树或经裁决通道持久化，保证 merge-back
-后主树声明一致（消除「分支已改、主树仍旧」的错层复发）。
+**执行目标**：声明改写 SHALL 作用于**生效声明所在位置**（经统一解析入口决定：
+worktree 内文件 → 分支 → 主树回退）。改写 MUST 在**实现分支上提交**（worktree 存在
+时以 `git -C <worktree> commit` 固化；worktree 已清理时经 `worktree_manager` 重新
+挂载该分支的 worktree、提交后移除），MUST NOT 仅写文件不提交，也 MUST NOT 用
+`git -C <project_root> commit` 直提（该命令提交到主树当前分支，非实现分支）。主树
+对齐由 merge-back 携带分支提交自然完成（`git merge <branch>` 只搬运分支提交，未提交
+的 worktree 改动不会被带入主树），故 MUST NOT 另行单独写主树声明——消除「分支已改、
+主树仍旧」的错层复发。
 
 #### Scenario: typo 裁决自动修正声明并放行
 

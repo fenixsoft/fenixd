@@ -5,13 +5,19 @@
 ### Requirement: 声明收缩防护
 
 收工守卫 MUST 以派发时落盘的**可信基线快照**（见 `deliverable-declaration-resolution`）
-为参照做收缩判定：基线中的路径若在生效声明中被**无声剔除**（生效声明不再含该路径，
-且该路径在实现分支 HEAD 也不满足其原有 kind 要求），MUST 判为收缩违规（`removed`）。
-收缩违规 MUST NOT 因「声明不再声明它」而放行——它等价于把交付物从声明里删掉绕门。
+为参照做收缩判定：基线中的路径若在生效声明中被**无声剔除**（生效声明对该路径**不再
+以原有 kind 做硬校验**——含条目被删除、也含其 kind 被改写为 `reference` 而移入软校验组
+或改写为其他不满足原有语义的 kind，且该路径在实现分支 HEAD 也不满足其原有 kind 要求），
+MUST 判为收缩违规（`removed`）。收缩违规 MUST NOT 因「声明不再硬校验它」而放行——
+删条目与改 kind 等价于把交付物从声明里摘出去绕门。
+
+收缩违规条目 MUST 进入与 `missing` 同源的裁决流水线（陈日前置分类 → 重定位凭据
+登记/终审 → 机械执行 → 复检，见 `deliverable-declaration-triage`），MUST NOT 静默
+放行，亦 MUST NOT 不设终审地按缺件无界重派；经凭据登记或合法软化后复检通过方放行。
 
 合法豁免（不判收缩违规）仅限两类：（1）该路径有**重定位凭据**在册（旧路径 → 替代
-路径已机械改写并审计，见 `declaration-relocation-protocol`）；（2）生效声明对该路径
-的 kind 被合法裁决软化（`reference`，且审计留痕）。
+路径的机械改写或凭据登记已审计，见 `declaration-relocation-protocol`）；（2）生效声明
+对该路径的 kind 被合法裁决软化（`reference`，且审计留痕）。
 
 基线快照不可用（未落盘 / 读取失败）时，收缩防护 MUST 降级为保守策略——不因缺基线
 而误伤正常轮次，但 MUST 审计留痕说明本轮未做收缩判定。
@@ -30,6 +36,22 @@
   审计留痕）
 - **WHEN** 收工守卫对账
 - **THEN** MUST NOT 对 `core/old.py` 判收缩违规（重定位豁免）
+
+#### Scenario: 改 kind 软化绕门被拦
+
+- **GIVEN** 基线快照含 `core/x.py`（kind: modify），实现分支 HEAD 上该路径不存在，
+  生效声明把该条目 kind 改写为 `reference`（无裁决软化审计、无重定位凭据）
+- **WHEN** 收工守卫对账
+- **THEN** 该条判违规 `{"path": "core/x.py", "kind": "modify", "violation": "removed"}`
+- **AND** MUST NOT 因「路径仍在声明段内（references 组）」而放行
+
+#### Scenario: 收缩违规经凭据登记后放行
+
+- **GIVEN** 收缩违规 `core/pm_engine/dispatch.py`（kind: modify），裁决流水线经陈日
+  前置分类 + 终审 `actual_path` 落册重定位凭据（旧路径 → 实现分支 HEAD 存在的替代路径）
+- **WHEN** 守卫以生效声明复检
+- **THEN** 该条视为合法豁免，不再计入违规清单
+- **AND** 全部条目达成时正常合并推进，不重派、不 blocked
 
 #### Scenario: 无基线时保守降级
 

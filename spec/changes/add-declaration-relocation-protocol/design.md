@@ -64,12 +64,18 @@ Agent 只能改 **worktree/分支** 内的那份。所有消费方（收工守�
 
 **决策**：裁决（typo 修正 / reference 软化 / 重定位）改写的目标 = **生效声明所在位置**，
 与 D1 的读基准同位。full 车道在守卫/裁决窗口保留 worktree（复用
-`fix-redispatch-loop-governance` 落地的 legacy 保留机制），改写直接写 worktree 内
-`tasks.md` 并由 merge 带入分支；worktree 已清理的兜底路径以
-`git -C <root> commit` 原子落到分支。
+`fix-redispatch-loop-governance` 落地的 legacy 保留机制），改写写 worktree 内
+`tasks.md` 后 MUST 在 worktree 内**提交到实现分支**（`git -C <worktree> commit`，
+与既有 `_commit_softened_declaration` 的「写盘即固化」同事务语义）；worktree 已清理
+的兜底路径经 `worktree_manager` 重新挂载该分支的 worktree、提交后移除，MUST NOT 用
+`git -C <project_root> commit`（该命令只提交主树当前分支 main，不会落到实现分支；
+仓库内亦无 commit-tree/update-ref 型无 worktree 写分支助手）。
 
-**主树对齐由 merge-back 完成**：分支的 tasks.md 会随 merge 带入主树，故**不再**单独
-写主树声明——彻底消除「分支已改、主树仍旧」的错层复发面。
+**主树对齐由 merge-back 完成**：`git merge --no-ff <branch>` 把分支**提交**带入主树
+（含 tasks.md），故**不再**单独写主树声明——彻底消除「分支已改、主树仍旧」的错层
+复发面。注意 merge 只搬运提交：未提交的 worktree 改写不会被带入主树，且主树
+`spec/changes/**` 被 autostash 显式排除（`_commit_softened_declaration` 记录的
+2026-09-15 merge-back 死锁事故），故「写盘即提交」是必需而非可选。
 
 **理由**：读写同位是本次修复的核心；若读分支、写主树，judge 的修正对守卫不可见，
 等价于把现有死循环换个触发条件（这正是 `adjudication.py` 当前写
@@ -95,14 +101,18 @@ Agent 只能改 **worktree/分支** 内的那份。所有消费方（收工守�
 
 ### D4：陈日声明 = 确定性信号 + 三要素凭据的重定位
 
-**决策**：陈日信号 = 生效声明中 `new`/`modify` 条目在**基线树（主树 HEAD）不存在**。
-命中即走重定位：凭据三要素齐备（旧路径基线不存在 + 替代路径在实现分支 HEAD 存在 +
-来源标注）方机械改写，`kind` 保持；任一缺失或 basename 多命中/零命中 → 不自动重定位，
-转 LLM 终审或人工。
+**决策**：陈日信号 = 生效声明中 **`modify` 条目**在**基线树（主树 HEAD）不存在**。
+`new` MUST NOT 参与（其基线期望本就是「不存在」，无信号量）。命中即走重定位：
+凭据三要素齐备（旧路径基线不存在 + 替代路径在实现分支 HEAD 存在 + 来源标注）方
+机械改写（`kind` 保持）或凭据登记（生效声明已被实现方先行对齐、无条目可替换时，
+见 `declaration-relocation-protocol`）；任一缺失或 basename 多命中/零命中 → 不自动
+重定位，转 LLM 终审或人工。
 
-**理由**：这是本次事故的直接病灶——上游删了 `dispatch.py`，声明指向不存在路径，
-不判「本轮实现缺失」而应判「声明陈旧需重定位」。零语义推断（只认存在性）避免
-把「该新建的 new 文件尚未建」误判为陈日。
+**理由**：这是本次事故的直接病灶——上游删了 `dispatch.py`（`modify`），声明指向
+不存在路径，不判「本轮实现缺失」而应判「声明陈旧需重定位」。零语义推断（只认
+存在性）避免把「该新建的 new 文件尚未建」误判为陈日——故 `new` 必须整体排除：
+若把 `new` 纳入，任何未落地的 `new` 缺件都会命中「基线树不存在」，被强制转入
+重定位通道而偏离既有缺件处置。
 
 **备选**：让 LLM 直接给替代路径并改写——已有 `typo` 裁决归途可复用（`actual_path`），
 故重定位复用该归途而非新造一条；机械 basename 唯一命中作为无 LLM 时的确定性快路。
@@ -124,6 +134,11 @@ Agent 只能改 **worktree/分支** 内的那份。所有消费方（收工守�
 
 - **[读分支声明引入自证风险]** → D3 可信基线快照 + 收缩防护闭合；无基线时降级为
   保守（不做收缩判定）并审计留痕，避免误伤正常轮次。
+- **[收缩防护反向卡住本次事故场景]** → 事故现场「主树声明陈旧 + 分支声明已被实现方
+  对齐」在新设计下由收缩防护产出 `removed`（而非 `missing`），若无处置通路会以另一
+  形态复现阻塞。故 `removed` MUST 与缺件同源入裁决流水线，并由 D4 的**凭据登记**
+  （生效声明已无该条目时不经文本替换落册凭据）给出确定性出口；收缩违规条目
+  MUST NOT 静默放行，MUST NOT 无界重派。
 - **[full 车道保留 worktree 至裁决终态，占用磁盘/与清扫器竞态]** → 复用
   `fix-redispatch-loop-governance` 的 legacy 保留与清扫器豁免（宽限期回收已在册）；
   裁决终态后释放。
