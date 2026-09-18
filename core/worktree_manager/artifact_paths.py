@@ -212,6 +212,7 @@ class ArtifactPathMatcher:
                 非布尔值按 None（缺省）处理（MUST NOT 让判定变宽）。
         """
         self._has_build_artifacts = has_build_artifacts
+        self._patterns: List[Tuple[str, str]] = list(patterns or [])
         self._prefixes: List[str] = []
         self._globs: List[str] = []
 
@@ -220,6 +221,16 @@ class ArtifactPathMatcher:
                 self._prefixes.append(pattern)
             elif kind == "glob":
                 self._globs.append(pattern)
+
+    # ── 未裁决查询 ─────────────────────────────────────────────────────────
+
+    def is_config_unresolved(self) -> bool:
+        """本项目（实例所归属的 WorktreeManager）产物配置是否「未裁决」。
+
+        委托模块级 `is_artifact_config_unresolved`（三态表唯一权威）——patterns
+        取构造时注入的规范化列表（None/空列表与空判定集合等价）。
+        """
+        return is_artifact_config_unresolved(self._has_build_artifacts, self._patterns)
 
     # ── 公开方法 ──────────────────────────────────────────────────────────
 

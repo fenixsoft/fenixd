@@ -151,6 +151,11 @@ class G4MergebackMixin:
         把重叠集合中判定为产物的子集对齐 HEAD（使其变干净、不进 stash、pop 无
         产物冲突）——从源头消除「产物 → stash → pop 冲突 → 误报 major 告警」链路。
         """
+        # 产物配置未裁决兜底信号（fix-artifact-paths-hardcoded-default D3）：
+        # MUST 置于「无重叠早退」之前——主树干净是常态，若在早退之后判定，最
+        # 常见形态永不触发起草，配置缺口被静默掩盖（本 SPEC 要消灭的「默认值
+        # 掩盖配置缺口」问题的复刻）。信号不改闸门判定，只呼叫 Administrator 起草。
+        self._maybe_signal_build_artifact_paths_missing(branch)
         overlap = self._detect_wip_overlap(branch)
         if not overlap:
             return None, []
@@ -230,6 +235,82 @@ class G4MergebackMixin:
             f"stashed with gate prefix and restored after merge: {overlap}",
         )
         return None, overlap
+
+    def _maybe_signal_build_artifact_paths_missing(self, branch: str) -> None:
+        """产物配置未裁决时的起草兜底信号（fix-artifact-paths-hardcoded-default D3）。
+
+        仅在「需要区分产物与语义内容」的 merge-back WIP 重叠闸门咽喉触发，投喂
+        Administrator 起草产物配置（`worktree.has_build_artifacts` +
+        `build_artifact_paths`）。触发条件 = 判定「未裁决」（has 缺省，或 true 配
+        空路径）；已裁决（false / 路径非空）不写。信号不改闸门判定，只呼叫起草。
+
+        全链路复用 `verify_contract_missing` 模式：`AdminStore.append` 写
+        kind=SIGNAL（severity=major），`admin_monitor` 摄取唤起 Administrator；
+        信号带 `spec` 字段（`_spec_from_branch` 推导，merge-back 链路既有 helper），
+        evidence 另附「项目名=<name>」作冗余证据（摄取侧对无 spec 形态仍支持从
+        evidence 解析项目名）。在途去重（D3）：同项目同 signal_type 的未消费信号
+        已存在时跳过重复写入。写入异常记 warning 不抛穿（信号通道故障不影响
+        merge-back 判定）。
+        """
+        try:
+            if not self._artifacts.is_config_unresolved():
+                return
+            from core.admin_store import AdminStore, SIGNAL
+
+            project_name = self.project_root.name
+            spec = self._spec_from_branch(branch)
+            evidence = f"项目名={project_name}"
+            if branch:
+                evidence += f"; branch={branch}"
+            store = AdminStore(self.project_root, self.logger)
+            # 在途去重（照搬 settings_routes._api_verify_yaml_autodraft_post 的
+            # inflight 判定范式：kind==SIGNAL 且未 handled 且 evidence 含项目名）
+            inflight = [
+                r
+                for r in store.read_all()
+                if r.get("kind") == SIGNAL
+                and r.get("signal_type") == "build_artifact_paths_missing"
+                and not r.get("handled")
+                and f"项目名={project_name}" in (r.get("evidence") or "")
+            ]
+            if inflight:
+                return
+            store.append(
+                {
+                    "kind": SIGNAL,
+                    "signal_type": "build_artifact_paths_missing",
+                    "spec": spec or "",
+                    "severity": "major",
+                    "description": (
+                        f"项目 {project_name} 未声明构建产物配置"
+                        f"（worktree.has_build_artifacts / build_artifact_paths "
+                        f"未裁决）——merge-back WIP 重叠闸门无法区分产物与语义内容，"
+                        f"产物会被当语义内容处理。请探测并填写产物路径；确无产物时"
+                        f"写 has_build_artifacts=false 结案。"
+                    ),
+                    "evidence": evidence,
+                    "recommended_action": (
+                        "Administrator 起草 .fenix/config.yaml 的产物路径配置："
+                        "bin/fenix_detect_artifacts.py 探测候选路径（输入源："
+                        "package.json scripts / pyproject.toml / 目录结构 / "
+                        "project.type）；路径合法性经 validate_build_artifact_paths "
+                        "同口径校验；确无产物写 has_build_artifacts=false 结案，"
+                        "不得用「路径留空」冒充已裁决"
+                    ),
+                }
+            )
+            self.logger.warning(
+                "worktree_manager",
+                f"build_artifact_paths_missing 信号已写入 "
+                f"(spec={spec or '?'}, project={project_name}) — "
+                f"呼叫 Administrator 起草产物路径配置",
+            )
+        except Exception as e:
+            self.logger.warning(
+                "worktree_manager",
+                f"build_artifact_paths_missing 信号写入失败"
+                f"（不影响 merge-back 判定）: {e}",
+            )
 
     def _detect_wip_overlap(self, branch: str) -> list:
         """merge-back 前 WIP 重叠预检（fix-mergeback-stashpop-silent-loss D3）。

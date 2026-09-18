@@ -67,6 +67,9 @@ def init_repo(root: Path):
     git(root, "config", "user.email", "test@fenix.local")
     git(root, "config", "user.name", "Fenix Test")
     git(root, "config", "commit.gpgsign", "false")
+    # 镜像真实仓库：.fenix/ 运行时目录不入库（产物配置未裁决信号等运行时写入
+    # 均落 .fenix/，测试断言「主树干净」必须不受其干扰）。
+    (root / ".gitignore").write_text(".fenix/\n", encoding="utf-8")
     (root / "shared.py").write_text("BASE\n", encoding="utf-8")
     git(root, "add", "-A")
     git(root, "commit", "-q", "-m", "[fenix] base")
