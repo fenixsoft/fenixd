@@ -1394,6 +1394,258 @@ def soften_unsatisfiable_declarations(spec_dir, project_root) -> list:
     return softened
 
 
+# ── 孤儿声明判定（deliverable-dispute-orphan-preclassify）─────────────────
+# 声明残留判定：spec 立项时声明了一条从未被任何任务要求、源码面零引用的
+# 交付物（refactor-giant-classes 事故：`tests/test_giant_classes_contract.py`
+# 孤儿声明触发守卫缺件 → dispute → blocked 待人工空转 76 分钟）。
+# 判定按 kind 分化（design「孤儿判定」节）：引用面 = tracked 文件中除框架
+# 记账面（.fenix/**）、声明自身所在 spec 面（spec/changes/<本 spec>/**）、
+# 产物面（.history/**、dist/**）以外的部分。负向 pathspec 必须写 `:!` magic
+# （`-- 'x/**'` 是**包含**语义，照字面写只在被排除面上搜索、恒零命中 = 一切
+# 缺件被误判孤儿，实测防「恒零命中」回归）。
+
+
+def _git_grep_zero_refs(project_root, path: str, spec_name: str):
+    """规则 1：源码面 ``git grep`` 引用扫描（负向 pathspec 排除观测面）。
+
+    ``git grep -n -F <path> -- ':!.fenix/**' ':!spec/changes/<本 spec>/**'
+    ':!.history/**' ':!dist/**'``——只扫 tracked 文件（天然排除未跟踪运行时
+    产物，如 .fenix/verify-serving 30G），``-F`` 关闭正则避免路径元字符被
+    解释。返回值：``{"hit": False, "matches": []}`` = 零命中（规则 1 通过）；
+    ``{"hit": True, "matches": [...]}`` = 有引用（非孤儿）；git 不可用/异常
+    → ``{"hit": True, "matches": [], "error": ...}`` fail-open（引用面未知，
+    不判孤儿——lint 自身故障仍放行，不阻塞流水线）。
+
+    注意 ``git grep`` 退出码：0 = 有匹配、1 = 无匹配、128+ = git 错误
+    （非仓库/坏 pathspec）。排除 pathspec 命中不存在路径不报错（实测）。
+    """
+    spec_pathspec = f"spec/changes/{spec_name}/**"
+    try:
+        proc = subprocess.run(
+            [
+                "git", "-C", str(project_root),
+                "grep", "-n", "-F", path, "--",
+                ":!.fenix/**",
+                f":!{spec_pathspec}",
+                ":!.history/**",
+                ":!dist/**",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=_GIT_READ_TIMEOUT_SECONDS,
+        )
+    except (subprocess.TimeoutExpired, OSError) as e:
+        return {"hit": True, "matches": [], "error": str(e)}
+    if proc.returncode == 1:
+        # 无匹配 → 零引用（确定性）
+        return {"hit": False, "matches": []}
+    if proc.returncode != 0:
+        # git 错误（非仓库/坏 pathspec）→ fail-open：引用面未知，不判孤儿
+        return {
+            "hit": True,
+            "matches": [],
+            "error": proc.stderr.strip() or f"git grep exit={proc.returncode}",
+        }
+    lines = [ln for ln in proc.stdout.splitlines() if ln.strip()]
+    return {"hit": True, "matches": lines}
+
+
+def _git_log_path_history(project_root, path: str):
+    """规则 2：路径限定历史（仅 kind: modify）——``git log --all --oneline
+    -- <path>``（路径限定 tree diff，非 pickaxe ``-S``——pickaxe 匹配文本
+    内容会把记账面「提到」误判为引用，令判定结果随记录行为翻转）。
+
+    命中非空 = 该路径**曾作为文件存在过**（缺失更可能是拆包/改名漂移 →
+    走人工，不判孤儿）；零命中 = 从未作为文件存在过 → 进入孤儿判定。
+    ``git log -- <path>`` 对从未存在的路径返回空输出 + exit 0（实测），故
+    以 stdout 非空为命中判据；git 不可用/异常 → fail-open（不判孤儿）。
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(project_root), "log", "--all", "--oneline", "--", path],
+            capture_output=True,
+            text=True,
+            timeout=_GIT_READ_TIMEOUT_SECONDS,
+        )
+    except (subprocess.TimeoutExpired, OSError) as e:
+        return {"hit": True, "commits": [], "error": str(e)}
+    if proc.returncode != 0:
+        # git 错误（非仓库等）→ fail-open：历史未知，不判孤儿
+        return {
+            "hit": True,
+            "commits": [],
+            "error": proc.stderr.strip() or f"git log exit={proc.returncode}",
+        }
+    commits = [ln for ln in proc.stdout.splitlines() if ln.strip()]
+    return {"hit": bool(commits), "commits": commits}
+
+
+def _task_lines_mention(tasks_md_text: str, path: str) -> list:
+    """规则 3：任务清单零出现——tasks.md 全部任务行（``- [ ]``/``- [x]``
+    开头）文本不含该路径**及其 basename**（末段文件名）。
+
+    任务行是交付需求的第一语义位，判别力最强（正常 spec 首组任务行均逐字
+    点名声明路径）。basename 计入的理由（design 实测）：add-architect-agent
+    的 ``ArchitectPanel.tsx`` 任务行只写 basename，全路径零命中——只认全路径
+    会把非孤儿声明误拦；basename 命中只让判定更保守（回退人工，不误删）。
+    事故案的 basename 在其 spec 任务行命中 0 次，放宽后检出能力不减。
+
+    Returns:
+        命中的任务行列表（含 basename 命中的行）；零命中返回 []。
+    """
+    basename = Path(path).name
+    hits: list = []
+    for line in tasks_md_text.splitlines():
+        if not _TASKS_ITEM_RE.match(line):
+            continue
+        if path in line or (basename and basename in line):
+            hits.append(line)
+    return hits
+
+
+def is_orphan_declaration(project_root, spec_name: str, entry: dict, spec_dir=None) -> dict:
+    """孤儿声明判定（deliverable-dispute-orphan-preclassify 规则 1/2/3 合成）。
+
+    按声明 kind 分化（判定查询工具与覆盖范围各异，design「孤儿判定」节）：
+    - ``kind: new``：规则 1（源码面 git grep 零引用）AND 规则 3（任务清单
+      零出现）→ 孤儿。不查历史（新建文件的本义即「主树不存在且历史未出现
+      过」，全历史查询对 new 零信息量）；
+    - ``kind: modify``：规则 1 AND 规则 2（``git log --all -- <path>`` 路径
+      限定历史零命中）AND 规则 3 → 孤儿。历史命中 = 路径曾作为文件存在过，
+      缺失更可能是拆包/改名漂移 → 非孤儿（走人工）；
+    - ``kind: delete``：**不参与孤儿预分类**（add-deliverable-delete-kind D4
+      防洗白：delete 声明一律进人工裁决）→ 恒非孤儿。
+
+    任一规则命中（有引用/历史/任务提及）→ 非孤儿（宁可多走人工，不误删
+    真实交付物）。git 不可用/读取异常 → fail-open 非孤儿（lint 自身故障仍
+    放行，不阻塞晋升）。
+
+    Args:
+        project_root: 项目根（git 命令 cwd 基准，主树）。
+        spec_name: spec 名（负向 pathspec 排除面 ``spec/changes/<本 spec>/**``
+            的构造基准）。
+        entry: 声明条目 dict（含 ``path`` / ``kind``）。
+        spec_dir: spec 目录（规则 3 读 tasks.md 用）；缺省回退
+            ``<project_root>/spec/changes/<spec_name>``。
+
+    Returns:
+        ``{"orphan": bool, "evidence": {...}}``。evidence 携带各规则判定摘要
+        （供违规文案/审计 reasoning 引用）：``{"git_grep": ...,
+        "git_log": ..., "task_lines": [...]}``。
+    """
+    path = str((entry or {}).get("path") or "").strip()
+    kind = str((entry or {}).get("kind") or "").strip().lower()
+    evidence: dict = {"path": path, "kind": kind}
+    if not path or kind == "delete":
+        # delete 不参与预分类；缺 path 无判定对象 → 非孤儿
+        return {"orphan": False, "evidence": evidence}
+
+    # gitignored / 仓库外路径不参与孤儿判定（design「边界」节：运行时产物路径
+    # 仍需语义判断，走人工，不预分类）——规则 1 的引用面被负向 pathspec 排除
+    # （.fenix/** 等）或路径本身不可能在仓内（仓库外），git grep 恒零命中对
+    # 孤儿判定零信息量；且该形态已有 lint 规则 5/6 专属拒绝，孤儿检查不得在
+    # 其上报双层违规。
+    candidates = [path]
+    normalized = normalize_check_path(path)
+    if normalized != path:
+        candidates.append(normalized)
+    if _path_is_gitignored(project_root, candidates) or _path_is_outside_root(
+        project_root, candidates
+    ):
+        evidence["skipped"] = "gitignored-or-outside-root"
+        return {"orphan": False, "evidence": evidence}
+
+    # 规则 1：源码面零引用
+    grep = _git_grep_zero_refs(project_root, path, spec_name)
+    evidence["git_grep"] = grep
+    if grep.get("hit") and grep.get("matches"):
+        return {"orphan": False, "evidence": evidence}
+    if grep.get("error"):
+        # git 不可用 → fail-open（引用面未知，不判孤儿）
+        return {"orphan": False, "evidence": evidence}
+
+    # 规则 2：历史判据（仅 kind: modify）
+    if kind == "modify":
+        history = _git_log_path_history(project_root, path)
+        evidence["git_log"] = history
+        if history.get("hit") or history.get("error"):
+            # 历史命中（疑似漂移）或历史不可查（fail-open）→ 非孤儿
+            return {"orphan": False, "evidence": evidence}
+
+    # 规则 3：任务清单零出现（全路径与 basename 皆零）
+    task_hits: list = []
+    tasks_path = Path(spec_dir) if spec_dir is not None else None
+    if tasks_path is None:
+        tasks_path = Path(project_root) / "spec" / "changes" / spec_name
+    tasks_file = tasks_path / "tasks.md"
+    try:
+        if tasks_file.exists():
+            task_hits = _task_lines_mention(tasks_file.read_text(encoding="utf-8"), path)
+    except (OSError, UnicodeDecodeError):
+        task_hits = []  # tasks.md 不可读 → 任务面未知，视同零出现（保守）
+    evidence["task_lines"] = task_hits
+    if task_hits:
+        return {"orphan": False, "evidence": evidence}
+
+    # 全部规则通过 → 孤儿
+    evidence["summary"] = (
+        f"orphan-preclassify: kind={kind} 路径在主树不存在，源码面 git grep "
+        f"零引用（排除 .fenix/spec 自身/.history/dist 观测面），tasks.md 任务行"
+        f"对全路径与 basename 均零出现"
+    )
+    return {"orphan": True, "evidence": evidence}
+
+
+def remove_declared_entry(spec_dir, element: str) -> dict:
+    """机械删除 tasks.md 声明段条目的 path+kind 两行（孤儿声明删除）。
+
+    逐行精确文本操作（不经 yaml 反序列化再序列化——保留注释/顺序，diff
+    最小）：在 ``## Deliverables`` 段内找到 ``path == element`` 的条目，
+    删除 path 行 + 紧随的 kind 行（两行，其余内容不动）。删除前重读文件、
+    按条目精确删除，任何失败上抛（调用方等价 fallback 回退既有路径）。
+
+    Returns:
+        {"element", "before": <声明段原文>, "after": <声明段新文>}，
+        供审计流落 diff（design「审计」节：diff 记删除声明前后文本）。
+    """
+    tasks = Path(spec_dir) / "tasks.md"
+    text = tasks.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    start = None
+    for i, line in enumerate(lines):
+        if _DECLARED_HEADING_RE.match(line):
+            start = i + 1
+            break
+    if start is None:
+        raise ValueError(f"tasks.md 无 Deliverables 声明段（无法删除 {element}）")
+    end = len(lines)
+    for i in range(start, len(lines)):
+        if _H2_RE.match(lines[i]):
+            end = i
+            break
+
+    def _path_line_re(p: str):
+        return re.compile(rf"^(\s*-\s*path\s*:\s*){re.escape(p)}(\s*(#.*)?)$")
+
+    elem_idx = None
+    for i in range(start, end):
+        if _path_line_re(element).match(lines[i]):
+            elem_idx = i
+            break
+    if elem_idx is None:
+        raise ValueError(f"声明段无条目匹配 {element}（无法删除）")
+
+    before = "\n".join(lines[start:end])
+    remove_end = elem_idx + 1
+    if remove_end < len(lines) and re.match(r"^\s+kind\s*:", lines[remove_end]):
+        remove_end += 1
+    del lines[elem_idx:remove_end]
+    after = "\n".join(lines[start:end])
+
+    tasks.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return {"element": element, "before": before, "after": after}
+
+
 def lint_declared(spec_dir, project_root) -> List[str]:
     """晋升 lint（drafted → ready）：Deliverables 声明形态机械校验。
 
@@ -1654,6 +1906,30 @@ def lint_declared(spec_dir, project_root) -> List[str]:
                     f"[{path}] 在主树不存在，疑似笔误——仓库内唯一 basename "
                     f"命中 [{hits[0]}]，请修正声明路径或改 kind"
                 )
+            elif not hits:
+                # 规则 11（deliverable-dispute-orphan-preclassify）：孤儿声明
+                # 检查——覆盖规则 4 原本放行的「basename 零命中」形态：主树
+                # 不存在 + basename 零命中 + 任务清单（全路径与 basename 皆）
+                # 零出现 + 源码面 git grep 零引用 → 拦（声明残留，拒绝晋升，
+                # 让孤儿声明在立项当下暴露）。basename 多命中沿用规则 4 的
+                # fail-open（语义矛盾需 LLM 裁决，lint 只拦确定性形态）。
+                # kind: new 不查历史（规则 2 分化结论：全历史查询对其零信息量）。
+                oc = is_orphan_declaration(
+                    project_root,
+                    Path(spec_dir).name,
+                    {"path": path, "kind": "new"},
+                    spec_dir,
+                )
+                if oc.get("orphan"):
+                    evidence = oc.get("evidence") or {}
+                    violations.append(
+                        f"[{path}] 是孤儿声明——kind: new 路径在主树不存在，"
+                        f"任务清单（tasks.md 全部任务行）对该路径及其 basename "
+                        f"均零出现（规则 3 全路径/basename 皆零命中），源码面 "
+                        f"git grep 零引用（规则 1，排除 .fenix/spec 自身/"
+                        f".history/dist 观测面；判定证据 {evidence}）"
+                        f"— 声明残留，请从 Deliverables 段移除或补齐对应任务"
+                    )
     return violations
 
 

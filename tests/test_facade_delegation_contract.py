@@ -307,6 +307,7 @@ ENGINE_INST_TARGETS = {
         "_tasks_md_relint_from_worktree": "_verification._tasks_md_relint_from_worktree",
         "_disputed_deliverables": "_verification._disputed_deliverables",
         "_adjudicate_deliverable_missing": "_dispatcher._adjudicate_deliverable_missing",
+        "_preclassify_orphan": "_dispatcher._preclassify_orphan",
         "_detect_uniform_verify_failure": "_verification._detect_uniform_verify_failure",
         "_run_legacy_verification": "_verification._run_legacy_verification",
         "_verify_verdict_evidence": "_verification._verify_verdict_evidence",
@@ -689,14 +690,15 @@ class TestCoverageHardGate(unittest.TestCase):
                 self.assertTrue(callable(getattr(e, name)))
                 total += 1
         # 收敛对象 267 = 237 实例式 + 30 静态式；+2 stdlib 保留 + 1 薄包装真方法 = 270
-        self.assertEqual(total, 270, f"全集枚举数量错误: {total}")
+        # （deliverable-dispute-orphan-preclassify：+1 实例式 _preclassify_orphan → 271）
+        self.assertEqual(total, 271, f"全集枚举数量错误: {total}")
 
     def test_counts_match_inventory(self):
         self.assertEqual(len(PIPELINE_INST_TARGETS), 85)
         self.assertEqual(len(PIPELINE_STATIC_TARGETS), 5)
         self.assertEqual(len(RUNNER_INST_TARGETS), 52)
         self.assertEqual(len(RUNNER_STATIC_TARGETS), 15)
-        self.assertEqual(len(ENGINE_INST_TARGETS), 100)
+        self.assertEqual(len(ENGINE_INST_TARGETS), 101)
         self.assertEqual(len(ENGINE_STATIC_TARGETS), 10)
 
     def test_hasattr_semantics(self):
