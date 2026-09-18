@@ -76,8 +76,11 @@ export default function VerifyPanel({ config, onSave, project, onConfigSynced }:
         静态验证契约（.fenix/verify.yaml）的被测实例服务范围。两种范围都会在
         每轮验证前执行契约的 prepare 构建步骤，并把验证场景 URL 全量改写到本次启动的实例。
       </Text>
-      <Card style={{ marginTop: 12 }}>
-        <Form form={form} layout="vertical">
+      {/* 单一 Form 承载两张卡片：产物路径卡片的 Form.List 必须处于 Form 上下文内，
+          否则 add/remove 会落到 rc-field-form 的默认空上下文（warning 桩），
+          点击「添加产物路径」静默无反应。 */}
+      <Form form={form} layout="vertical">
+        <Card style={{ marginTop: 12 }}>
           <Form.Item
             name="static_scope"
             label={
@@ -150,88 +153,108 @@ export default function VerifyPanel({ config, onSave, project, onConfigSynced }:
               </div>
             </Radio.Group>
           </Form.Item>
-          <Form.Item
-            name="serving_reclaim_enabled"
-            label={
-              <>
-                serving 目录自动回收<span className="label-note">（verify.serving_reclaim.enabled）</span>
-              </>
-            }
-            valuePropName="checked"
-            extra="daemon 启动时与周期清扫对 .fenix/verify-serving/ 下无主 worktree（spec 不在 changes/archive、未登记、无活进程、超宽限期）执行 git worktree remove --force + prune，并按同判据回收 <spec>-boot.log。关闭后不再自动回收（存量目录需人工清理）。"
-          >
-            <Switch checkedChildren="开" unCheckedChildren="关" />
-          </Form.Item>
-          <Form.Item
-            name="impl_code_review"
-            label={
-              <>
-                收尾代码质量审查<span className="label-note">（verify.impl_code_review）</span>
-              </>
-            }
-            valuePropName="checked"
-            extra="开启后实现者会在全部 tasks.md 任务完成、提交之后、写结果文件之前调用 ocr（bin/ocr_review.py）审查本次改动，逐条评估发现并自行修正真实问题（误报可驳回）。需要环境已安装 ocr（npm install -g @alibaba-group/open-code-review），未安装时自动按 unavailable 降级跳过。"
-          >
-            <Switch checkedChildren="开" unCheckedChildren="关" />
-          </Form.Item>
-        </Form>
-      </Card>
-      <Card title="构建产物路径" style={{ marginTop: 12 }} data-testid="artifact-paths-card">
-        <Typography.Paragraph type="secondary">
-          worktree.build_artifact_paths —— 声明项目的构建产物路径，供 merge-back
-          WIP 重叠检查把产物与语义内容区分处理（产物对齐 HEAD、不进入 stash，
-          避免 pop 冲突与误报告警）。支持目录前缀（如 dist/，须以 / 结尾）与
-          文件通配（如 release-*.zip，含 *）；留空时回退框架默认仅在
-          core/dashboard/static 内判定。
-          {artifactEditable
-            ? '（项目级键：此处可在项目作用域下编辑保存）'
-            : '（项目级键：用户级作用域下只读，请切换到对应项目编辑）'}
-        </Typography.Paragraph>
-        {artifactEditable ? (
-          <Form.List name="build_artifact_paths">
-            {(fields, { add, remove }) => (
-              <>
-                {fields.map((field) => (
-                  <Space key={field.key} align="baseline" style={{ display: 'flex', marginBottom: 8 }}>
-                    <Form.Item
-                      name={[field.name, 'path']}
-                      rules={[{ validator: artifactPathRule }]}
-                      style={{ marginBottom: 0, minWidth: 280 }}
-                    >
-                      <Input placeholder="例如 dist/ 或 release-*.zip" data-testid="artifact-path-input" />
-                    </Form.Item>
-                    <Button
-                      type="text"
-                      danger
-                      icon={<MinusCircleOutlined />}
-                      aria-label="删除此行"
-                      onClick={() => remove(field.name)}
-                    />
-                  </Space>
-                ))}
-                <Button
-                  type="dashed"
-                  icon={<PlusOutlined />}
-                  onClick={() => add({ path: '' })}
-                  data-testid="artifact-path-add"
-                >
-                  添加产物路径
-                </Button>
-              </>
-            )}
-          </Form.List>
-        ) : config.worktree?.build_artifact_paths?.length ? (
-          <ul style={{ margin: 0, paddingLeft: 20 }}>
-            {config.worktree.build_artifact_paths.map((p, i) => (
-              <li key={i}>
-                <code>{p}</code>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <Text type="secondary">未配置（使用框架默认判定集合）</Text>
-        )}
-      </Card>
+          {/* 开关行与其它设置页一致：开关在前、名称紧随同行（.switch-inline-row），
+              开关控件不带「开/关」文字（与其余开关统一） */}
+          <div className="switch-inline-row">
+            <Form.Item name="serving_reclaim_enabled" valuePropName="checked" noStyle>
+              <Switch data-testid="serving-reclaim-switch" />
+            </Form.Item>
+            <span className="switch-inline-label">
+              serving 目录自动回收
+              <span className="label-note">（verify.serving_reclaim.enabled）</span>
+            </span>
+          </div>
+          <Text type="secondary">
+            daemon 启动时与周期清扫对 .fenix/verify-serving/ 下无主 worktree（spec 不在
+            changes/archive、未登记、无活进程、超宽限期）执行 git worktree remove --force +
+            prune，并按同判据回收 &lt;spec&gt;-boot.log。关闭后不再自动回收（存量目录需人工清理）。
+          </Text>
+          {/* 收尾代码质量审查：沿用同款开关行（add-impl-code-review-gate 3.2 的
+              impl_code_review 键在主树已入库，重构时保留，仅改呈现形态） */}
+          <div className="switch-inline-row" style={{ marginTop: 24 }}>
+            <Form.Item name="impl_code_review" valuePropName="checked" noStyle>
+              <Switch data-testid="impl-code-review-switch" />
+            </Form.Item>
+            <span className="switch-inline-label">
+              收尾代码质量审查
+              <span className="label-note">（verify.impl_code_review）</span>
+            </span>
+          </div>
+          <Text type="secondary">
+            开启后实现者会在全部 tasks.md 任务完成、提交之后、写结果文件之前调用
+            ocr（bin/ocr_review.py）审查本次改动，逐条评估发现并自行修正真实问题
+            （误报可驳回）。需要环境已安装 ocr（npm install -g
+            @alibaba-group/open-code-review），未安装时自动按 unavailable 降级跳过。
+          </Text>
+        </Card>
+
+        {/* 构建产物路径：标题与说明置于卡片外，与上方「验证契约」节同构 */}
+        <h3 style={{ marginTop: 32 }}>构建产物路径</h3>
+        <Text type="secondary">
+          worktree.build_artifact_paths —— 声明项目的构建产物路径，供 merge-back WIP
+          重叠检查把产物与语义内容区分处理（产物对齐 HEAD、不进入 stash，避免 pop
+          冲突与误报告警）。支持目录前缀（如 dist/，须以 / 结尾）与文件通配（如
+          release-*.zip，含 *）；留空时回退框架默认仅在 core/dashboard/static 内判定。
+        </Text>
+        <Card style={{ marginTop: 12 }} data-testid="artifact-paths-card">
+          {artifactEditable ? (
+            <Form.List name="build_artifact_paths">
+              {(fields, { add, remove }) => (
+                <>
+                  {fields.map((field) => (
+                    <Space key={field.key} align="baseline" style={{ display: 'flex', marginBottom: 8 }}>
+                      <Form.Item
+                        name={[field.name, 'path']}
+                        rules={[{ validator: artifactPathRule }]}
+                        style={{ marginBottom: 0, minWidth: 280 }}
+                      >
+                        <Input placeholder="例如 dist/ 或 release-*.zip" data-testid="artifact-path-input" />
+                      </Form.Item>
+                      <Button
+                        type="text"
+                        danger
+                        icon={<MinusCircleOutlined />}
+                        aria-label="删除此行"
+                        onClick={() => remove(field.name)}
+                      />
+                    </Space>
+                  ))}
+                  <Button
+                    type="dashed"
+                    icon={<PlusOutlined />}
+                    onClick={() => add({ path: '' })}
+                    data-testid="artifact-path-add"
+                  >
+                    添加产物路径
+                  </Button>
+                </>
+              )}
+            </Form.List>
+          ) : (
+            <>
+              <Alert
+                type="info"
+                showIcon
+                message="构建产物路径为项目级设置，用户级作用域下不可编辑。请在页面右上角把「作用域」切换到对应项目后添加或修改。"
+                data-testid="artifact-paths-scope-hint"
+              />
+              {config.worktree?.build_artifact_paths?.length ? (
+                <ul style={{ margin: '12px 0 0', paddingLeft: 20 }}>
+                  {config.worktree.build_artifact_paths.map((p, i) => (
+                    <li key={i}>
+                      <code>{p}</code>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <Text type="secondary" style={{ display: 'block', marginTop: 12 }}>
+                  未配置（使用框架默认判定集合）
+                </Text>
+              )}
+            </>
+          )}
+        </Card>
+      </Form>
       <div style={project ? SETTINGS_ACTIONS_ROW_STYLE : { textAlign: 'right', marginTop: 24 }}>
         {project && onConfigSynced && (
           <SyncFromUserButton project={project} page="verify" onSynced={onConfigSynced} />
