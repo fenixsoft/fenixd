@@ -266,6 +266,23 @@ class TestTestingRecovery:
             bus._recover_testing("demo", entry)
         assert recorded == []
 
+    def test_queued_testing_not_retriggered(self, tmp_path):
+        """verifier 条目已在派发队列（等并发槽）→ 不重触发（2026-09-18 修复）。
+
+        实证：本 SPEC 'fix-verify-serving-disk-reclaim' 07:55 入队后，08:07 与
+        08:30 两轮本出口各重触发一次 spec_implemented，而条目一直在队列——重派
+        被 `_enqueue` 去重吸收，只是刷日志。条件 ④ 后不再重触发。
+        """
+        proot = tmp_path / "proj"
+        proot.mkdir(parents=True, exist_ok=True)
+        entry = {"status": "testing", "updated": iso_ago(20)}
+        bus, recorded = self._bus(proot, entry)
+        bus.pm_engine._queued_for_dispatch = lambda name: name == "demo"
+        with mock.patch("core.admin_monitor._pgrep_live_worktree",
+                        return_value=False):
+            bus._recover_testing("demo", entry)
+        assert recorded == []
+
 
 class TestOrphanedResetAfterDisposition:
     """R3 复位直通道：Administrator 处置成功（resolved）后框架自动复位。"""

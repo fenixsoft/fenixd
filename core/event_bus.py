@@ -220,7 +220,8 @@ class EventBus:
           分支原样查 tester_run 硬挡：env 阻塞会写入 tester_run="blocked:app-
           unreachable" 标记，硬挡会让事故形态（复位后 testing 无驱动）永不恢复。
         - 无驱动判定与 admin_monitor._detect_orphaned_state 共用
-          `spec_is_undriven` 同一口径（R1 三条件），防止双路径重复触发。
+          `spec_is_undriven` 同一口径（R1 三条件 + 2026-09-18 补的条件 ④
+          「无排队中的派发条目」），防止双路径重复触发；pm_engine 注入见调用点。
         """
         try:
             attempts = int(entry.get("_inconclusive_attempts", 0) or 0)
@@ -242,7 +243,12 @@ class EventBus:
             return
         from core.admin_monitor import spec_is_undriven
 
-        if not spec_is_undriven(project_root, name, entry):
+        # 注入 pm_engine（2026-09-18）：条件 ④「无排队中的派发条目」——本恢复
+        # 出口同样受「已入队待槽」盲区影响（该出口的 `spec_implemented` 重派会被
+        # `_enqueue` 去重吸收、队列非空时 `_process_queue` 直接返回，于是同一 spec
+        # 每 12 分钟被重复 re-trigger 一次刷日志）。判定口径与 admin_monitor
+        # 孤儿探测共用同一函数，勿在此另写一份。
+        if not spec_is_undriven(project_root, name, entry, pm_engine=self.pm_engine):
             self.logger.debug(
                 "event_bus",
                 f"Skipping recovery for '{name}': testing 有驱动/有意等待中",

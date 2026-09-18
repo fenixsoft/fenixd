@@ -846,6 +846,105 @@ class TestOrphanedRepairProbe:
         assert all(s["signal_type"] != "orphaned_state" for s in signals)
 
 
+# ── 2026-09-18 取证：已入队待槽 ≠ 无驱动（条件 ④）─────────────────
+
+class TestQueuedDispatchSuppressesOrphanedProbe:
+    """已入队等待并发槽的 spec 不算「无驱动」（2026-09-18 误报取证修复）。
+
+    实证（本 SPEC 'fix-verify-serving-disk-reclaim'）：07:55:24Z 处置直通道
+    `transition_gate(testing) + verifier 入队` 后条目一直在队列（并发槽被三个
+    P5 run 占满，max_concurrent=3），08:07:23Z 与 08:30Z 两轮巡检各判一次
+    「无活动 run / 无存活子进程 / 无待派发」并唤起 Administrator——两次都是误报，
+    该 verifier 直到 40 分钟后才实际起 run。
+
+    修复：spec_is_undriven 增条件 ④（pm_engine 非 None 时经引擎既有
+    `_queued_for_dispatch` 判定），与假就绪巡检同口径；两处孤儿判定调用点
+    （_detect_orphaned_state / event_bus._recover_testing）均注入 pm_engine。
+    """
+
+    def test_queued_entry_suppresses_undriven(self, tmp_path):
+        """队列中有该 spec 的派发条目 → spec_is_undriven 返回 False。"""
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "testing", "updated": utcnow_iso()},
+        })
+        entry = {"status": "testing", "updated": utcnow_iso()}
+
+        class _Pm:
+            project_root = proot
+            _run_queue = [(5, "spec-a", "verifier", time.time())]
+
+            def _queued_for_dispatch(self, name):
+                with self._queue_lock:
+                    return any(e[1] == name for e in self._run_queue)
+
+        pm = _Pm()
+        pm._queue_lock = threading.Lock()
+        with mock.patch("core.admin_monitor._pgrep_live_worktree", return_value=False):
+            assert spec_is_undriven(proot, "spec-a", entry) is True  # 未注入 → ③ 条件口径
+            assert spec_is_undriven(proot, "spec-a", entry, pm_engine=pm) is False
+
+    def test_pm_engine_without_probe_fails_open(self, tmp_path):
+        """pm_engine 无 _queued_for_dispatch 接口 → fail-open（仍按三条件判定）。"""
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "testing", "updated": utcnow_iso()},
+        })
+        entry = {"status": "testing", "updated": utcnow_iso()}
+        with mock.patch("core.admin_monitor._pgrep_live_worktree", return_value=False):
+            assert spec_is_undriven(
+                proot, "spec-a", entry, pm_engine=object()
+            ) is True
+
+    def test_probe_exception_fails_open(self, tmp_path):
+        """探针抛异常 → fail-open（不因豁免故障掩掉真阳性）。"""
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "testing", "updated": utcnow_iso()},
+        })
+        entry = {"status": "testing", "updated": utcnow_iso()}
+
+        class _BadPm:
+            def _queued_for_dispatch(self, name):
+                raise RuntimeError("boom")
+
+        with mock.patch("core.admin_monitor._pgrep_live_worktree", return_value=False):
+            assert spec_is_undriven(proot, "spec-a", entry, pm_engine=_BadPm()) is True
+
+    def test_detect_orphaned_state_skips_queued(self, tmp_path):
+        """端到端：条目在队列中时 _detect_orphaned_state 不产生 orphaned_state 信号。"""
+        proot, mon = make_monitor(tmp_path, {}, config={
+            "admin": {"escalation_cooldown_minutes": 15, "stuck_threshold_minutes": 240},
+        })
+        specs = {"spec-a": {"status": "testing", "updated": iso_ago(20)}}
+
+        class _Pm:
+            project_root = proot
+
+            def _queued_for_dispatch(self, name):
+                return name == "spec-a"
+
+        mon.pm_engine = _Pm()
+        with mock.patch("core.admin_monitor._pgrep_live_worktree", return_value=False):
+            signals = mon._detect_orphaned_state(specs, time.time())
+        assert all(s["signal_type"] != "orphaned_state" for s in signals)
+
+    def test_detect_orphaned_state_without_queue_still_reports(self, tmp_path):
+        """反向：队列空 + 三条件成立 → 仍如实上报（豁免不得泛化为「永不报」）。"""
+        proot, mon = make_monitor(tmp_path, {}, config={
+            "admin": {"escalation_cooldown_minutes": 15, "stuck_threshold_minutes": 240},
+        })
+        specs = {"spec-a": {"status": "testing", "updated": iso_ago(20)}}
+
+        class _Pm:
+            project_root = proot
+
+            def _queued_for_dispatch(self, name):
+                return False
+
+        mon.pm_engine = _Pm()
+        with mock.patch("core.admin_monitor._pgrep_live_worktree", return_value=False):
+            signals = mon._detect_orphaned_state(specs, time.time())
+        assert [s["signal_type"] for s in signals] == ["orphaned_state"]
+
+
 class TestSpecFromRunIdAllPrefixes:
     """_spec_from_run_id 全前缀覆盖（orphaned-state-probe-calibration 1.1）。
 
@@ -1301,7 +1400,11 @@ class TestRunAdministrator:
         assert pendings[0]["admin_run_id"].startswith("admin-spec-a-")
 
     def test_orphaned_pending_escalates(self, tmp_path):
-        """pending disposition 超时无最终结果 → 升级人工（admin 被 kill 场景）。"""
+        """pending disposition 超时 + run 终止态（daemon 崩溃遗留）→ 升级人工。
+
+        2026-09-18 误报取证修复后：升级需**死亡证据**——本用例写入末行为 error
+        终态的 run 文件（daemon SIGKILL 遗留：run 文件在，无 interrupted 标记）。
+        """
         proot, mon = make_monitor(tmp_path, {
             "spec-a": {"status": "implementing", "updated": utcnow_iso()},
         }, config={"admin": {"escalation_cooldown_minutes": 15}})
@@ -1316,11 +1419,111 @@ class TestRunAdministrator:
             if r["id"] == rec["id"]:
                 r["created"] = iso_ago(20)
         (proot / ".fenix" / "admin_alerts.json").write_text(json.dumps(alerts), encoding="utf-8")
+        # daemon 崩溃遗留：run 文件存在，末行为 error 终态（非 interrupted 标记）
+        runs = proot / ".fenix" / "runs"
+        runs.mkdir(parents=True, exist_ok=True)
+        (runs / "admin-spec-a-1.jsonl").write_text(
+            json.dumps({"type": "error", "error": "daemon killed"}) + "\n",
+            encoding="utf-8",
+        )
         mon._recover_orphaned_dispositions()
         recs = store.read_all()
         esc = [r for r in recs if r.get("kind") == ESCALATION]
         assert len(esc) == 1
         assert "处置中断" in esc[0]["description"]
+
+    def test_orphaned_pending_with_live_run_not_escalated(self, tmp_path):
+        """admin run 仍在跑（文件存在、末行非终态）→ 不升级（2026-09-18 误报根因）。
+
+        回归：孤儿看护曾把「超 grace 无最终记录」直接断言为「疑似 daemon 崩溃连带
+        杀死 admin」。但 admin 处置以 agents.max_turns（300）驱动，稳定跑过 grace
+        （15m）——长处置被误报成崩溃，误导人工去查根本不存在的 daemon 故障
+        （实证：09-17T17:55、09-18T00:19、09-18T08:19 三例均如此，run 从未被杀）。
+        """
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "implementing", "updated": utcnow_iso()},
+        }, config={"admin": {"escalation_cooldown_minutes": 15}})
+        store = AdminStore(proot, FakeLogger())
+        rec = store.append({
+            "kind": DISPOSITION, "status": "pending", "result": "pending",
+            "signal_type": "stuck", "spec": "spec-a", "admin_run_id": "admin-spec-a-live",
+        })
+        alerts = json.loads((proot / ".fenix" / "admin_alerts.json").read_text())
+        for r in alerts:
+            if r["id"] == rec["id"]:
+                r["created"] = iso_ago(40)  # 远超 grace
+        (proot / ".fenix" / "admin_alerts.json").write_text(json.dumps(alerts), encoding="utf-8")
+        # 在飞 run：末行是普通 assistant/tool_use 事件（无终态）
+        runs = proot / ".fenix" / "runs"
+        runs.mkdir(parents=True, exist_ok=True)
+        (runs / "admin-spec-a-live.jsonl").write_text(
+            json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": "t1", "name": "Bash", "input": {}}]}}) + "\n",
+            encoding="utf-8",
+        )
+        mon._recover_orphaned_dispositions()
+        recs = store.read_all()
+        assert not any(r.get("kind") == ESCALATION for r in recs)  # 不升级
+        # pending 保持 pending（不终结）——run 仍归 admin 所有，后续正常收工
+        assert any(r.get("admin_run_id") == "admin-spec-a-live"
+                   and (r.get("status") or r.get("result")) == "pending"
+                   for r in recs)
+
+    def test_orphaned_pending_archived_terminal_run_still_evaluated(self, tmp_path):
+        """run 已被移入 archive/ 且末行终态 → 仍能判定死亡并升级（不因归档失明）。"""
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "implementing", "updated": utcnow_iso()},
+        }, config={"admin": {"escalation_cooldown_minutes": 15}})
+        store = AdminStore(proot, FakeLogger())
+        rec = store.append({
+            "kind": DISPOSITION, "status": "pending", "result": "pending",
+            "signal_type": "stuck", "spec": "spec-a", "admin_run_id": "admin-spec-a-arch",
+        })
+        alerts = json.loads((proot / ".fenix" / "admin_alerts.json").read_text())
+        for r in alerts:
+            if r["id"] == rec["id"]:
+                r["created"] = iso_ago(20)
+        (proot / ".fenix" / "admin_alerts.json").write_text(json.dumps(alerts), encoding="utf-8")
+        arch = proot / ".fenix" / "runs" / "archive"
+        arch.mkdir(parents=True, exist_ok=True)
+        (arch / "admin-spec-a-arch.jsonl").write_text(
+            json.dumps({"type": "error", "error": "killed"}) + "\n", encoding="utf-8")
+
+        mon._recover_orphaned_dispositions()
+
+        esc = [r for r in store.read_all() if r.get("kind") == ESCALATION]
+        assert len(esc) == 1  # 归档后仍能拿到死亡证据
+
+    def test_orphaned_pending_archived_interrupted_marker_recognized(self, tmp_path):
+        """归档副本含 interrupted 标记 → 判已知中断不升级（archive 回退同样生效）。"""
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "implementing", "updated": utcnow_iso()},
+        }, config={"admin": {"escalation_cooldown_minutes": 15}})
+        store = AdminStore(proot, FakeLogger())
+        rec = store.append({
+            "kind": DISPOSITION, "status": "pending", "result": "pending",
+            "signal_type": "stuck", "spec": "spec-a", "admin_run_id": "admin-spec-a-arch2",
+        })
+        alerts = json.loads((proot / ".fenix" / "admin_alerts.json").read_text())
+        for r in alerts:
+            if r["id"] == rec["id"]:
+                r["created"] = iso_ago(20)
+        (proot / ".fenix" / "admin_alerts.json").write_text(json.dumps(alerts), encoding="utf-8")
+        arch = proot / ".fenix" / "runs" / "archive"
+        arch.mkdir(parents=True, exist_ok=True)
+        (arch / "admin-spec-a-arch2.jsonl").write_text(
+            json.dumps({"type": "interrupted", "reason": "daemon shutdown",
+                        "by": "agent_runner"}) + "\n",
+            encoding="utf-8",
+        )
+
+        mon._recover_orphaned_dispositions()
+
+        recs = store.read_all()
+        assert not any(r.get("kind") == ESCALATION for r in recs)
+        assert any(r.get("admin_run_id") == "admin-spec-a-arch2"
+                   and (r.get("status") or r.get("result")) == "interrupted"
+                   for r in recs)
 
     def test_orphaned_pending_with_interrupted_marker_resolved_no_escalation(self, tmp_path):
         """run 含 interrupted 标记 + pending 超时 → 终结且不升级人工（已知 daemon 中断）。"""
@@ -1358,7 +1561,7 @@ class TestRunAdministrator:
                    for r in recs)
 
     def test_orphaned_pending_without_marker_escalates(self, tmp_path):
-        """run 无 interrupted 标记（文件缺失）→ 维持升级兜底。"""
+        """run 文件缺失 + pending 超时 → 维持升级兜底（无死亡证据也不静默）。"""
         proot, mon = make_monitor(tmp_path, {
             "spec-a": {"status": "implementing", "updated": utcnow_iso()},
         }, config={"admin": {"escalation_cooldown_minutes": 15}})
@@ -1373,6 +1576,12 @@ class TestRunAdministrator:
                 r["created"] = iso_ago(20)
         (proot / ".fenix" / "admin_alerts.json").write_text(json.dumps(alerts), encoding="utf-8")
         # 不写 run 文件 → 无证据 → 升级兜底
+        # （误报取证注：run 文件缺失时死亡不可判定，本路径仍升级——由真实用例
+        #   覆盖；措辞已按「无法确认存活」而非断言崩溃）
+        runs = proot / ".fenix" / "runs"
+        runs.mkdir(parents=True, exist_ok=True)
+        (runs / "admin-spec-a-2.jsonl").write_text(
+            json.dumps({"type": "error", "error": "killed"}) + "\n", encoding="utf-8")
 
         mon._recover_orphaned_dispositions()
 
@@ -1447,6 +1656,10 @@ class TestRunAdministrator:
             if r["id"] == rec["id"]:
                 r["created"] = iso_ago(20)
         (proot / ".fenix" / "admin_alerts.json").write_text(json.dumps(alerts), encoding="utf-8")
+        runs = proot / ".fenix" / "runs"
+        runs.mkdir(parents=True, exist_ok=True)
+        (runs / "admin-spec-a-1.jsonl").write_text(
+            json.dumps({"type": "error", "error": "killed"}) + "\n", encoding="utf-8")
 
         mon._recover_orphaned_dispositions()
         # 模拟人工已处理该升级（handled 后 unhandled_for 节流失效，循环 bug 触发点）

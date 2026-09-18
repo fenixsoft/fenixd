@@ -450,18 +450,40 @@ def spec_is_undriven(
     entry: dict,
     *,
     run_grace_seconds: float = ORPHANED_RUN_GRACE_SECONDS,
+    pm_engine=None,
 ) -> bool:
     """「无驱动」判定（orphaned-state-signal R1 三条件，同一判定口径）。
 
-    返回 True 当且仅当三者同时成立：
+    返回 True 当且仅当四者同时成立：
       ① 无活动 run 文件：该 spec 的 run 文件 mtime 均超出 run_grace_seconds
          （任意 run 前缀，含 repair-，orphaned-state-probe-calibration 1.3）；
       ② 无存活 agent 子进程：不存在 impl-<spec>- / verify-<spec>- /
          repair-<spec>- 模式进程（orphaned-state-probe-calibration 1.4）；
       ③ 无待派发：无 _cancelled_hold / start_after 未到 / 派发退避
-         （_dispatch_backoff_until）未到期。
-    任一不成立（长 run 仍在跑 / 进程仍存活 / 有意等待中）→ False——避免把
-    正常长 run 或有意等待误判为孤儿（proposal.md 风险与回退）。
+         （_dispatch_backoff_until）未到期；
+      ④ 无排队中的派发条目：pm_engine 给出时，该 spec 无待派发队列条目
+         （见下）。
+    任一不成立（长 run 仍在跑 / 进程仍存活 / 有意等待中 / 已入队等待槽位）
+    → False——避免把正常长 run 或有意等待误判为孤儿。
+
+    ④ 的由来（2026-09-18 取证，实证误报）：条件 ③ 只覆盖「结构化的有意等待」
+    （start_after / 退避 / 取消保持），**不覆盖「已入队、正在等并发槽」**。
+    派发成立的判据是 `_enqueue` 成功（引擎对「已入队」与「未派发」两种状态
+    不做结构化区分），条目可在队列中等待数十分钟——排队等待时长由
+    `agents.max_concurrent` 与优先级窗口共同决定，最坏 = 队列老化开窗
+    （initial_wait + floor_levels × step_down，本项目 10+4×10 = 50 分钟）加上
+    当前在飞 run 的剩余时长，而这些 run 的吞吐实测为小时级（`run_timeout_seconds`
+    缺省 15000s，长 run 常以万秒计）。同一盲区已在假就绪巡检处以
+    `PMEngine._queued_for_dispatch`（core/pm_engine/engine.py）豁免，
+    本次把它按依赖倒置（注入 pm_engine，不在本模块读引擎状态）补到孤儿探测。
+
+    实证（本 SPEC 'fix-verify-serving-disk-reclaim'）：07:55:24Z 处置直通道
+    `transition_gate(testing) + verifier 入队`，条目此后一直在队列（并发槽被
+    三个 P5 run 占满），08:07:23Z 与 23 分钟后 08:30Z 两轮巡检均判「无驱动」并
+    各唤起一次 Administrator——两次都为误报，40 分钟后该 verifier 才实际起 run。
+
+    保留 `pm_engine=None`（不判定 ④）：本函数是模块级工具，既有单元测试与
+    外部调用只传三参；缺省行为与引入 ④ 之前逐位一致，调用点按需注入。
 
     admin_monitor 检测在此之上叠加「状态停留超短阈值」；event_bus 恢复在此
     之上叠加 _inconclusive_attempts 暂停守卫。二者共用本函数 → 同一判定口径。
@@ -491,7 +513,31 @@ def spec_is_undriven(
     # ① 无活动 run 文件
     if _has_recent_spec_run(project_root, spec_name, time.time(), run_grace_seconds):
         return False
+    # ④ 无排队中的派发条目（调用方注入 pm_engine 时判定；见 docstring）
+    if pm_engine is not None and _queued_for_dispatch(pm_engine, spec_name):
+        return False
     return True
+
+
+def _queued_for_dispatch(pm_engine, spec_name: str) -> bool:
+    """spec 是否有待派发条目（孤儿探测豁免用）。
+
+    复用引擎既有的 `_queued_for_dispatch` 豁免实现（core/pm_engine/engine.py，
+    假就绪巡检专用），使「已入队等待并发槽」在孤儿探测侧得到同一结论；接口
+    不可用 / 判定异常一律 fail-open 返回 False（保持既有上报行为，不因本豁免
+    故障掩掉真阳性）。
+
+    行为核对（本 SPEC 实施时以代码为准）：引擎侧读取自己的 `_run_queue`，
+    **不触发 `_process_queue`**（无副作用、不改队列、不派发），与 `_enqueue`
+    的非阻塞语义一致——故本判定可在任意线程安全调用。
+    """
+    probe = getattr(pm_engine, "_queued_for_dispatch", None)
+    if not callable(probe):
+        return False
+    try:
+        return probe(spec_name) is True
+    except Exception:
+        return False
 
 
 class AdminMonitor:
@@ -1144,14 +1190,20 @@ class AdminMonitor:
             stuck_threshold = float(self.admin_cfg.get("stuck_threshold_minutes", 0) or 0)
             if stuck_threshold > 0 and elapsed_minutes > stuck_threshold:
                 continue
-            if not spec_is_undriven(self.project_root, name, entry):
+            # 注入 pm_engine（2026-09-18 修复）：条件 ④「无排队中的派发条目」——
+            # 处置直通道 `transition_gate(testing) + verifier 入队` 后条目可在队列
+            # 里等并发槽数十分钟，缺此判定则每轮巡检必判「无驱动」并唤起
+            # Administrator（本 SPEC 07:55/08:07/08:30 三连误报实证）。pm_engine
+            # 为 None（测试替身/独立组件）时不判 ④，行为与修复前一致。
+            if not spec_is_undriven(self.project_root, name, entry, pm_engine=self.pm_engine):
                 continue
             signals.append(
                 self._make_signal(
                     "orphaned_state",
                     name,
                     f"'{name}' 处于 {status} 超过 {int(elapsed_minutes)} 分钟无驱动"
-                    "（signal 阶段：无活动 run / 无存活子进程 / 无待派发，待"
+                    "（signal 阶段：无活动 run / 无存活子进程 / 无排队中派发条目 / "
+                    "无待派发，待"
                     "Administrator 处置；pending/failed/escalated 阶段看处置记录）",
                     f"updated={updated_str}，阈值 {int(threshold_minutes)} 分钟"
                     f"（stuck 阈值 {int(self.admin_cfg.get('stuck_threshold_minutes', 0))}"
@@ -1560,6 +1612,25 @@ class AdminMonitor:
         admin 是 daemon 子进程，若其在处置中被 kill（daemon 重启/崩溃），不会留下
         最终 disposition、也不会走升级分支。此方法每次巡检兜底：pending 记录超时
         无最终结果 → 转为人工升级告警，保证「admin 死了也有告警」。
+
+        ★ 误报边界（2026-09-18 取证）：本判据「created 超过 grace 且无最终记录」
+        推定 run 已死，但 admin 处置本身的耗时不受任何时限约束——`run_administrator`
+        以 `agents.max_turns`（缺省 300，实测可跑 152 轮 / 63 分钟）驱动，稳定超过
+        grace（`admin.escalation_cooldown_minutes`，缺省 15 分钟）。于是**任何**跑满
+        15 分钟的 admin 处置，无论存活与否都会在此被升级，措辞却断言「疑似 daemon
+        重启/崩溃连带杀死 admin」——与本轮三次误报（09-17T17:55、09-18T00:19 两例
+        + 09-18T08:19 一例）的实况（亚秒级认知负荷，从未真被杀）完全相反。
+        真正的判死证据是可用而未用的：daemon 在被动关闭时**同步**向 `.fenix/runs/
+        <rid>.jsonl` 追加 `{"type":"interrupted"}`（见 `_run_has_interrupted_marker`），
+        run 正常收工时流文件末行必为终态事件（`core/agent_runner/run_files.py`
+        `_file_has_terminal_event` 同口径）。故本方法必须先查 run 文件（daemon
+        侧转写，不依赖 admin 子进程存活）——只要 daemon 还活着，被唤醒的 admin
+        就仍在 daemon 进程表里受自己 300 轮上限约束，run 文件不会撒谎。
+        调用 `has_live_attempt`（其 pgrep 只认 `worktrees/{impl,verify}-` 前缀）
+        在此处**无效**：admin run 无 worktree，恒返回 False。
+
+        本次仅加「死亡证据门」收紧误报路径，不改写/撤回任何已落记录——判定态
+        不可逆，撤回属于另一条决策（存量记录需人工或后续 SPEC 处置）。
         """
         records = self.store.read_all()
         grace = max(self.cooldown_minutes, 1) * 60
@@ -1591,6 +1662,16 @@ class AdminMonitor:
             spec = pending.get("spec")
             sig_type = pending.get("signal_type")
             if self.store.unhandled_for(spec, sig_type) is not None:
+                continue
+
+            # 死亡证据门（2026-09-18 误报取证修复，与 fix-graceful-shutdown-agents
+            # 的 interrupted 判定同源扩展）：admin 处置耗时不受 grace 约束，故
+            # 「超 grace 无最终记录」**不足以**推断 run 已死。仅当 run 文件同时
+            # 满足 ① 存在 且 ② 末行是终态事件 时才确认死亡；文件缺失/无终态
+            # （仍在跑）/读失败 → 本方法不是死亡判定器，跳过，不落告警。
+            # 保守方向：宁可漏报（用户可见 admin run 仍在写流），不可拿「超时」
+            # 冒充「被杀」——误报的措辞会误导人工去查根本不存在的 daemon 崩溃。
+            if not self._run_file_has_terminal_state(rid):
                 continue
 
             # fix-graceful-shutdown-agents：先验 run 文件是否含 interrupted 标记（daemon
@@ -1668,11 +1749,14 @@ class AdminMonitor:
         检测据此区分"已知中断"（与 run 共存）与"疑似崩溃"（run 无标记）。run 文件被 prune
         删除或读不到标记，一律按 False（无证据 → 升级兜底，保守方向）。
 
+        路径解析复用 `_admin_run_file`（含 archive 回退）——run 被「runs 保留」规则
+        移入 `archive/` 后，只看顶层会漏掉标记，使已知中断被误判为疑似崩溃。
+
         Args:
             admin_run_id: admin disposition 的 admin_run_id（形如 admin-<spec>-<ts>）。
         """
-        run_file = self.project_root / ".fenix" / "runs" / f"{admin_run_id}.jsonl"
-        if not run_file.is_file():
+        run_file = self._admin_run_file(admin_run_id)
+        if run_file is None:
             return False
         try:
             with run_file.open("r", encoding="utf-8") as f:
@@ -1689,6 +1773,53 @@ class AdminMonitor:
         except OSError:
             return False
         return False
+
+    def _admin_run_file(self, admin_run_id: str):
+        """定位 admin run 产物文件：先顶层 `.fenix/runs/`，再 `archive/`。
+
+        run 收工后被「runs 保留」清理移入 `archive/`（见 fenixd 主循环
+        runs_retention_check），届时顶层已不存在——只 glob 顶层会让所有依赖
+        run 文件的死亡判定突然失明（文件缺失）。两处均无 → None。
+
+        Args:
+            admin_run_id: admin disposition 的 admin_run_id。
+
+        Returns:
+            Path（存在）或 None。
+        """
+        runs_dir = self.project_root / ".fenix" / "runs"
+        for candidate in (runs_dir / f"{admin_run_id}.jsonl",
+                          runs_dir / "archive" / f"{admin_run_id}.jsonl"):
+            try:
+                if candidate.is_file():
+                    return candidate
+            except OSError:
+                continue
+        return None
+
+    def _run_file_has_terminal_state(self, admin_run_id: str) -> bool:
+        """run 产物文件存在且末行为终态事件 → 确认该 admin run 已死。
+
+        终态事件类型取自 `core/agent_runner/run_files.py:RUN_TERMINAL_EVENT_TYPES`
+        真源（result/interrupted/error/cancelled 等）。判定用**末行**而非全文：
+        文件一旦含终态即已终结，但只看末行同时排除「早先轮次写过终态又被后续
+        事件续写」的不可能形态（终态行是收口时追加的最后一行）；读失败/无末行
+        → False（非死亡证据，保守不升级）。
+
+        Args:
+            admin_run_id: admin disposition 的 admin_run_id。
+        """
+        run_file = self._admin_run_file(admin_run_id)
+        if run_file is None:
+            return False
+        try:
+            from core.agent_runner.liveness import _file_has_terminal_event
+        except Exception:
+            return False
+        try:
+            return bool(_file_has_terminal_event(run_file))
+        except OSError:
+            return False
 
     def _detect_restart_failure(self, now: float):
         """restart_request 存在且过期 → 重启未完成 → 升级人工。
