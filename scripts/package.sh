@@ -41,7 +41,6 @@ mkdir -p "${PKG_DIR}/bin"
 cp "${ROOT_DIR}/bin/fenix_dashboard.py" "${PKG_DIR}/bin/"
 cp "${ROOT_DIR}/bin/fenix_process.py" "${PKG_DIR}/bin/"
 cp "${ROOT_DIR}/bin/fenix_session.py" "${PKG_DIR}/bin/"
-cp "${ROOT_DIR}/bin/statusline.py" "${PKG_DIR}/bin/"
 
 # Skills
 mkdir -p "${PKG_DIR}/skills"
