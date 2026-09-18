@@ -46,8 +46,11 @@ serving worktree 存放根（`core/pm_engine/verification/serving.py`
    `spec/changes/<spec>` 或 `spec/archive/*-<spec>` 存在。
 2. **登记在册**：目录绝对路径 ∈ `servers.json` 任一条目 `worktree` 字段。
 3. **活进程**：`/proc` 扫描有进程 argv 或 cwd 指向该目录。
-4. **宽限期**：目录 mtime 在宽限期内（默认复用 `escalation_cooldown` 同量级，
-   防与并发 `_ensure_serving_worktree` 创建竞态）。
+4. **宽限期**：目录 mtime 在宽限期内（模块常量 `RECLAIM_GRACE_SECONDS = 600`，
+   与 600s 清扫节拍同量级、不小于单次 worktree 创建 + 依赖供给时长；**不新增
+   配置键**——`admin.escalation_cooldown_minutes` 语义为管理员升级静默期
+   （`core/config.py`，测试 `tests/test_config.py:145` 断言缺省 60 分钟），与目录
+   宽限无关，不复用）。
 
 四个 helper 均须**只读**且**异常时返回「保留」**（保守侧）：
 
@@ -57,6 +60,18 @@ serving worktree 存放根（`core/pm_engine/verification/serving.py`
   末段=`1789694112`（正确）没问题，但 `add-foo-123`（非时间戳）会被误解析。
   10 位数字是既有时戳约定，显式校验。
 - archive 匹配需按 `*-<spec>` 后缀匹配（archive 目录名带日期前缀）。
+- 判据 2 的路径比较 MUST 先 `Path.resolve()` 再**全等**匹配，且 `worktree` 为
+  空串的登记项 MUST NOT 参与匹配（`serving_registry.register` 在未传 `wt_path`
+  时写 `""`，见 `core/serving_registry.py:118`；`serving.py:346` 与
+  `serving.py:771` 两处调用即不传）——否则「空串包含」或相对/绝对路径不一致会
+  把在飞实例误判为未登记。
+
+**实测校准（2026-09-18）**：当前 `.fenix/verify-serving/` 下 19 个目录中，18 个
+的 spec 仍可解析存活（15 个命中 `spec/archive/2026-09-*`、3 个在 `spec/changes/`），
+仅 `verify-draft-fixture-1788860224` 无主。故判据 1 的「归档等同存活」意味着启动
+reconcile 对**存量**只回收约 1 个目录，存量 30G 主体（18 × 1.6G）由人工清理承担
+（Non-Goals）；本 SPEC 的自动机制主要治理**增量**泄漏，减小增量占用靠 D6 的
+hardlink 默认（1.6G → ~24M）。
 
 **Alternatives considered**：
 - 「按 mtime 陈旧度删」——被否：在飞验证可能长时间无文件变动，mtime 不可靠
@@ -123,8 +138,9 @@ changes/archive 且无在飞 run → 删。`contract_selfcheck.json`、顶层状
   hardlink 本就是为省空间设计，风险与收益有明确取舍（用户已决策）。
 - **[启动 reconcile 拖慢 daemon 启动]** → 清扫为纯文件系统枚举 + 少量 git
   调用，19 条目量级毫秒~秒级，可忽略。
-- **[存量 30G 不在本 SPEC 交付内]** → 人工清理由 todo.md 承载，本 SPEC 只保证
-  新机制生效后不再累积。
+- **[存量 30G 不在本 SPEC 自动回收内]** → 判据 1「归档等同存活」使存量中 18 个
+  目录被保留（实测仅 1 个无主可自动回收）；存量清理由 todo.md 承载，本 SPEC 只
+  保证新机制生效后不再累积，并把单份增量占用从 1.6G 降到 ~24M（D6）。
 
 ## Migration Plan
 
@@ -134,10 +150,12 @@ changes/archive 且无在飞 run → 删。`contract_selfcheck.json`、顶层状
    config 开关（如 `verify.serving_reclaim.enabled: false`）禁用——若实现期
    决定加开关则同步界面。
 
-## Open Questions
+## Open Questions（均已决，实现按此执行）
 
-- 清扫是否需独立 config 开关（默认开）？倾向加 `verify.serving_reclaim.enabled`
-  （默认 true）+ Dashboard 界面，遵循「新增配置项必须带 Dashboard 界面」约定；
-  若判定不必新增键则不加。
-- 宽限期取值：复用 `escalation_cooldown`（60）还是独立键？倾向复用既有
-  `escalation_cooldown` 语义做宽限（不新增键）。
+- **清扫开关**：**加** `verify.serving_reclaim.enabled`（缺省 `true`），并在
+  `VerifyPanel` 提供 Switch —— 遵循项目约定「新增配置项必须带 Dashboard 界面」
+  （同约定见 `spec/archive/2026-09-15-add-impl-wip-checkpoint/proposal.md:13`）。
+  受管键落点见 tasks 4.2 列出的五处；漏掉 `_SYNC_PAGE_KEYS["verify"]`
+  （`config_admin.py:1417`）会让界面开关的写入被静默丢弃。
+- **宽限期取值**：**不新增键、不复用** `admin.escalation_cooldown_minutes`
+  （语义为管理员升级静默期），改用模块常量 `RECLAIM_GRACE_SECONDS = 600`。

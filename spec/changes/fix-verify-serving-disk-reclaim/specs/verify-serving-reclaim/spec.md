@@ -9,12 +9,19 @@
 
 1. **归属 spec 存活**：`<name>` 能按 `{spec}-{10 位 Unix 时间戳}` 约定解析出
    spec 名，且该 spec 目录存在于 `spec/changes/` 或 `spec/archive/` 之下。
-2. **登记在册**：`<name>` 的绝对路径出现在 `.fenix/verify-serving/servers.json`
-   任一条目的 `worktree` 字段中。
+2. **登记在册**：`<name>` 的绝对路径（经 `Path.resolve()`）与
+   `.fenix/verify-serving/servers.json` 任一条目的 `worktree` 字段（同样
+   `resolve()` 后）**全等**；`worktree` 为空串的登记项 MUST NOT 参与匹配
+   （未传 `wt_path` 的登记即写空串）。
 3. **活进程占用**：进程表存在 argv 或 cwd 指向 `<name>` 的存活进程。
-4. **近期新建宽限**：`<name>` 的创建/修改时间在宽限期内（防与并发创建竞态）。
+4. **近期新建宽限**：`<name>` 的创建/修改时间在模块常量
+   `RECLAIM_GRACE_SECONDS`（600s）之内（防与并发创建竞态）。
 
 四条皆不满足的目录条目 MUST 被回收。
+
+> 校准说明：「归档等同存活」使存量 19 个目录中的 18 个（15 个 spec 已归档、
+> 3 个在 `spec/changes`）不被自动回收——自动清扫对存量只回收真正无主的条目
+> （实测 1 个）；存量主体由人工清理承担（见 proposal「人工清理存量」）。
 
 #### Scenario: 归属 spec 仍在 changes 的目录保留
 
@@ -110,7 +117,9 @@ spec 的目录）。
 ### Requirement: boot.log 回收
 
 系统 SHALL 按与目录相同的「无主」判据回收 `.fenix/verify-serving/`
-下的 `<spec>-boot.log`：其 spec 名在 `spec/changes/` 与 `spec/archive/`
+下的 `<spec>-boot.log`：spec 名由文件名剥离 `-boot.log` 后缀得到（boot.log
+名**不含**时间戳，MUST NOT 复用目录名的 `{spec}-{10 位时间戳}` 解析规则），
+该 spec 名在 `spec/changes/` 与 `spec/archive/`（按 `*-<spec>` 后缀匹配）
 均不存在且无在飞 run 时回收；否则保留。
 
 #### Scenario: 无主 spec 的 boot.log 回收
@@ -130,6 +139,30 @@ spec 的目录）。
 - **WHEN** `.fenix/verify-serving/contract_selfcheck.json` 或名称不含可解析
   spec 名的文件
 - **THEN** 该文件 MUST 保留（fail-safe，MUST NOT 删除）
+
+### Requirement: 清扫开关
+
+系统 SHALL 支持通过 `verify.serving_reclaim.enabled` 开关（缺省 `true`）关闭
+目录与 boot.log 清扫；该键为 `false` 时清扫 MUST 早退（MUST NOT 调用 git、
+MUST NOT 删除任何条目）。按项目约定「新增配置项必须带 Dashboard 界面」，
+Dashboard 验证契约页 SHALL 提供该开关且缺省为开。
+
+#### Scenario: 开关缺省为开时执行清扫
+
+- **WHEN** config 未设 `verify.serving_reclaim.enabled`
+- **THEN** 系统 MUST 按缺省 `true` 执行清扫
+
+#### Scenario: 关闭时清扫早退
+
+- **WHEN** `verify.serving_reclaim.enabled` 为 `false`
+- **THEN** 系统 MUST NOT 调用 `git worktree remove`、MUST NOT 删除任何目录条目
+  或 boot.log
+
+#### Scenario: 开关经 Dashboard 持久化
+
+- **WHEN** 用户在验证契约页关闭该开关并保存
+- **THEN** 项目 config SHALL 出现 `verify.serving_reclaim.enabled: false`
+  （保存路径 MUST 把该键纳入验证页受管键集合，否则写入被静默丢弃）
 
 ### Requirement: 清扫可观测性
 

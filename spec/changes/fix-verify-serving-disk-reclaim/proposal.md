@@ -14,8 +14,14 @@
    `_evict_spec_serving`（`core/pm_engine/verification/serving.py`）只在
    **spec 转 done 事件**触发，且依赖**仅存内存**的 `_contract_static_servers`
    缓存取 `wt_path`。daemon 重启后缓存清空、或 spec 未经 done（archive/手动
-   清理/状态回退），`wt_path` 线索即丢失 —— 目录永久残留。实测 19 个中 15 个
-   对应 spec 已从 `spec/changes` 与 `spec/archive` **双双消失**，确定无主。
+   清理/状态回退），`wt_path` 线索即丢失 —— 目录永久残留。实测（2026-09-18）
+   19 个目录中，仅 1 个（`verify-draft-fixture-1788860224`）的 spec 名在
+   `spec/changes` 与 `spec/archive` 按 `*-<spec>` 后缀规则**均不存在**，确定无主；
+   其余 18 个的 spec 仍在册（15 个归档于 `spec/archive/2026-09-*`，如
+   `add-dashboard-help-center`、`add-planner-efficiency`、`fix-mobile-touch-disclosure`，
+   3 个在 `spec/changes/`）——按 D1 判据 1「归档等同存活」，这些目录会被保留，
+   故自动清扫对**存量**只能回收约 1 个，存量 30G 主体的回收仍须人工完成
+   （见 What Changes 末条）。
    `serving_registry.sweep` 只收割**进程与登记项**，不触碰目录本身。
 
 两条成因可独立治理：默认值改 `hardlink` 把单份占用从 1.6G 降到 ~24M，
@@ -38,8 +44,13 @@
   的孤儿）+ 复用既有 600s 周期 orphan 清扫节拍（覆盖长期运行中的孤儿）。
 - **boot.log 回收**：按与目录相同的「无主」判据回收到期 `<spec>-boot.log`
   （对应 spec 已不在 changes/archive 且无在飞 run）。
+- **清扫开关**：新增 `verify.serving_reclaim.enabled`（缺省 `true`），并在
+  Dashboard 验证契约页提供 Switch（遵循「新增配置项必须带 Dashboard 界面」约定）。
 - **人工清理存量**：当前 30G 存量不写成任务（工作树隔离、主树只读），
-  登记 `.fenix/todo.md` 由人工执行一次。
+  登记 `.fenix/todo.md` 由人工执行一次。**清理范围 MUST NOT 只限「spec 在
+  changes/archive 双双消失」的目录**——存量主体恰是 18 个「spec 仍在册」目录内
+  各一份 1.6G `node_modules`（按 D1 判据 1 不会被自动回收），只清理前者等于
+  30G 基本不动。
 
 ## Capabilities
 
@@ -47,7 +58,7 @@
 
 - `verify-serving-reclaim`: `.fenix/verify-serving/` 目录与 `<spec>-boot.log`
   的生命周期回收 —— 保留集判定（spec 存活 / servers.json 登记 / 活进程）、
-  清扫执行语义、触发点与幂等性。
+  清扫执行语义、触发点与幂等性、`verify.serving_reclaim.enabled` 开关语义。
 - `verify-deps-provision-default`: 验证 worktree 依赖供给的默认模式语义
   —— 代码默认 `hardlink`、降级行为、配置解析优先级与界面默认标注一致性。
 
