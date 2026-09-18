@@ -40,10 +40,13 @@
   （`project / project_path / proc / session_id / events / lock / last_activity /
   stderr_tail`）及 `SessionManager` 类骨架。
 - [ ] 1.2 实现 `SessionManager.start(project_name, project_path) -> Session`：
-  若既有会话存活则复用；否则以 D1 的命令行与 `cwd=project_path`、
+  若既有会话存活则复用；否则以 D1 的命令行（**含 `--replay-user-messages`**，
+  见 1.10）与 `cwd=project_path`、
   `env=os.environ.copy()` 启动 `subprocess.Popen(stdin=PIPE, stdout=PIPE,
   stderr=PIPE, text=True, bufsize=1)`，`session_id` 用 `uuid4().hex` 生成。
-  MUST NOT 从 `.fenix/config.yaml` 读 provider 配置。
+  MUST NOT 从 `.fenix/config.yaml` 读 provider 配置。MUST NOT 给会话进程注入
+  `--settings` / `--add-dir` / `FENIX_RUN_WORKTREE` 等 agent-run 专用参数
+  （见 1.11）。
 - [ ] 1.3 实现每会话的 **stdout 读线程**：逐行读取，`json.loads` 成功且**非
   hook 噪音**（见 1.9）的以 `{"type": …, **原始字段, "ts": time.time()}` 形态
   append 到 `events` 并
@@ -71,14 +74,35 @@
   `type == "system"` 且 `subtype` 以 `hook_` 开头的事件；其余事件（含
   `system/init`）一律保留。过滤 MUST 只作用于会话路径，MUST NOT 触及
   `agent_runner` 的落盘逻辑。
+- [ ] 1.10 **用户输入回显（本轮评审实测补入，属 D1 命令行契约）**：命令行 MUST
+  含 `--replay-user-messages`。无该标志时实测 CLI 不回显用户输入——事件流里没有
+  `user` 行，前端看不到用户发的话，且重开界面接回（D4）后用户轮次全部丢失
+  （只剩 assistant）。加该标志后每轮输入以
+  `{"type":"user","isReplay":true,"uuid":…,"message":{"content":[{type:"text"}]}}`
+  回显。测试须覆盖：连发两轮后缓冲中含两条 `isReplay` 的 `user` 事件
+  （并入 5.4 的真实进程集成测试断言）。
+- [ ] 1.11 **会话不得继承 agent-run 专用上下文（本轮评审补入，防回归）**：
+  `agent_runner/runner.py:3211` 起会给子进程注入 `FENIX_RUN_PROJECT_ROOT` /
+  `FENIX_RUN_WORKTREE` / `CLAUDE_CODE_ENABLE_TODO_TOOLS` / `--settings
+  .fenix/agent-settings.json` / `--add-dir <progress_dir>`。自由会话 MUST NOT
+  注入其中任何一项：`--settings` 里挂着 `block-main-tree-write.py` 等
+  PreToolUse 守卫（拦主树写入）与 `block-image-read.py`，会话进程一旦继承，
+  「自由」语义即被静默削弱（项目根恰在主树时会话连写文件都被拦）。
+  验收：`SessionManager` 的命令行与 env 中 MUST NOT 出现上述项；测试断言
+  `Popen` 收到的 `env` 不含 `FENIX_RUN_WORKTREE` / `FENIX_RUN_PROJECT_ROOT`，
+  且 `cmd` 不含 `--settings` / `--add-dir`。
 
 ## 2. REST 端点与路由登记（D3）
 
 - [ ] 2.1 新建 `core/dashboard/routes/session_routes.py`，实现
   `H_SessionRoutesMixin`：
+  - `_api_session_start(query)` → `POST /api/session/start?project=<name>`：
+    显式创建（或复用在存活会话）并返回 `{"session": {"id": sid, "started_at": …}}`；
+    项目不存在 / 路径不存在 → 4xx，且 MUST NOT 启动任何进程。这是**唯一**允许
+    启动会话进程的端点。
   - `_api_session_get(query)` → `GET /api/session?project=<name>`：校验项目存在
-    且路径存在（否则 4xx）；无会话时返回 `{"session": null, "events": []}`；
-    有会话时返回 `{"session": {"id": sid, "started_at": …},
+    且路径存在（否则 4xx）；**只读**——无会话时返回 `{"session": null, "events": []}`，
+    MUST NOT 触发创建；有会话时返回 `{"session": {"id": sid, "started_at": …},
     "events": [...], "truncated": <bool>}`。
   - `_api_session_send(query)` → `POST /api/session/send?project=<name>`：读 JSON
     body `{"text": "..."}`；空/空白 → 400；项目或会话缺失 → 404；成功 →
@@ -88,14 +112,19 @@
   - `_api_session_watch(run_id, query, watch)` → `POST`/`DELETE`
     `/api/session/watch?project=<name>&cid=<cid>`：`hub.watch/unwatch(cid, sid)`。
 - [ ] 2.2 在 `core/dashboard/routes/base.py` 的 `_API_GET_ROUTES`（1 条
-  `/api/session`）、`_API_POST_ROUTES`（3 条：`/api/session/send`、
-  `/api/session/stop`、`/api/session/watch`）、`_API_DELETE_ROUTES`（1 条
-  `/api/session/watch`）中按既有条目结构 `(kind, pattern, handler, json_flag)`
-  登记新路由。**顺序陷阱（强制）**：POST 链末有 4 个裸 `endswith`
-  （`/start` `/stop` `/restart` `/install-hosting`，`base.py:294-297`），其中
-  `/stop` **会误匹配 `/api/session/stop`** —— 故新路由 MUST 作为**精确条目**放在
-  裸 `endswith` 组**之前**（与 `/api/project/describe` 同处精确区），MUST NOT
-  落在后缀组之后。
+  `/api/session`）、`_API_POST_ROUTES`（4 条：`/api/session/start`、
+  `/api/session/send`、`/api/session/stop`、`/api/session/watch`）、
+  `_API_DELETE_ROUTES`（1 条 `/api/session/watch`）中按既有条目结构
+  `(kind, pattern, handler)` 登记新路由（**注意：`base.py:35` 的注释写作
+  `(kind, pattern, handler, json_flag)` 是陈旧注释，实际三张表均为 3 元组，
+  `_dispatch_table` 亦按 3 元组解包，照注释写 4 元组会 `ValueError`**）。
+  **顺序陷阱（强制）**：POST 链末
+  有 4 个裸 `endswith`（`/start` `/stop` `/restart` `/install-hosting`，
+  `base.py:294-297`），其中 `/start` 与 `/stop` **会误匹配** `/api/session/start`
+  与 `/api/session/stop` —— 故这些新路由 MUST 作为**精确条目**放在裸 `endswith`
+  组**之前**（与 `/api/project/describe` 同处精确区），MUST NOT 落在后缀组之后。
+  `/api/session/watch` 亦可登记为 `regex` 精确形态（`^/api/session/watch$`），
+  与既有 `^/api/runs/(.+)/watch$` 同层。
 - [ ] 2.3 在 `core/dashboard/routes/__init__.py` 门面 re-export 新 mixin，并在
   `core/dashboard/server.py` 的 `DashboardHandler` 继承列表中加入新 mixin
   （MRO 中须排在 `BaseHTTPRequestHandler` 之前）。

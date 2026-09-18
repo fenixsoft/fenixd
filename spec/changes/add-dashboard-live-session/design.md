@@ -61,6 +61,7 @@ claude -p
        --output-format stream-json
        --verbose
        --permission-mode bypassPermissions
+       --replay-user-messages
 ```
 
 - `-p` + `--input-format stream-json` 使进程从 stdin 读 JSON 行、每读一行触发
@@ -74,6 +75,15 @@ claude -p
   ```json
   {"type":"user","message":{"role":"user","content":[{"type":"text","text":"<用户输入>"}]}}
   ```
+- **用户输入的可见性（本轮评审实测补入）**：无 `--replay-user-messages` 时 CLI
+  **不回显**用户输入（实测：连发两轮，stdout 仅 `hook_*` / `init` / `assistant` /
+  `result`，无 `user` 行），前端会看不到自己发的话；且该轮输入不进服务端缓冲，
+  D4 的「重开接回」会丢掉全部用户轮次。故命令行 MUST 带
+  `--replay-user-messages`（实测回显 `{"type":"user","isReplay":true,"uuid":…,
+  "message":{"content":[{type:"text",…}]}}`，携 `uuid`，D6 去重照常成立）。
+  对应前端义务：`runEventsToChatMessages` 的 `user` 分支当前只读 `ev.content`
+  （字符串形态），回显事件走 `message.content` 块数组形态会被渲染成**空气泡**
+  （实测 `content: ""`）——4.4 一并补该分支。
 - stdout 由**每条会话一条守护线程**逐行 `json.loads`。非 JSON 行（CLI 的
   进度/告警文本）单独成 `{"type":"stderr","line":…}` 事件，保证前端永不因
   脏行中断解析（与 `runner.py` 同款兜底）。

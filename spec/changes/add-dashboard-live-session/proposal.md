@@ -59,7 +59,9 @@ claude -p --input-format stream-json --output-format stream-json --verbose \
   `claude` 子进程池（每项目至多一个会话）、stdin 写入管道、stdout 逐行解析线程、
   会话内事件缓冲、空闲回收。纯标准库，与 dashboard 进程同生命周期。
 - **新增会话 REST 端点**（沿用既有 mixin + 表驱动路由模式）：
-  - `GET  /api/session?project=<name>` → 会话状态 + 全量事件缓冲（重开 Modal 接回）
+  - `POST /api/session/start?project=<name>` → 显式创建（或复用）该项目的会话并返回句柄
+  - `GET  /api/session?project=<name>` → 会话状态 + 全量事件缓冲（**只读**：无会话时
+    返回 `session: null`，MUST NOT 借回读端点启动进程；重开 Modal 接回）
   - `POST /api/session/send?project=<name>` → body `{"text": "..."}` 送入一轮
   - `POST /api/session/stop?project=<name>` → 终止会话进程
   - `POST /api/session/watch?project=<name>&cid=<cid>` → 订阅该会话的 SSE 增量

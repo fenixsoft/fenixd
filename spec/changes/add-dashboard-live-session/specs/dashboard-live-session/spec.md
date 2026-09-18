@@ -10,12 +10,16 @@ MUST 是该项目的注册根路径（`registry` 中该项目的 `path`），MUS
 
 ```
 claude -p --input-format stream-json --output-format stream-json --verbose \
-       --permission-mode bypassPermissions
+       --permission-mode bypassPermissions --replay-user-messages
 ```
 
 - `-p` 与 `--input-format stream-json` 的组合 MUST 使进程在读入一行 stdin JSON
   后执行一轮但**不退出**，从而支持多轮对话。
 - `--verbose` MUST 存在（`--print` 与 `--output-format stream-json` 的硬性要求）。
+- `--replay-user-messages` MUST 存在：CLI 在无该标志时**不回显**用户输入，
+  服务端缓冲将丢失全部用户轮次（重开界面接回后只剩 assistant 侧）。携带该标志后
+  每轮输入 MUST 以 `{"type":"user","isReplay":true,…}` 事件出现在事件流中，
+  且 MUST 携带 `uuid`（前端去重依赖）。
 - 进程环境 MUST 由 dashboard 进程环境复制（`os.environ.copy()`）后覆盖，
   MUST NOT 从 `.fenix/config.yaml` 读取 provider 配置。
 
@@ -23,9 +27,20 @@ claude -p --input-format stream-json --output-format stream-json --verbose \
 
 #### Scenario: 首次为项目创建会话
 
-- **WHEN** 客户端请求项目 `A` 的会话且当前无 `A` 的会话
+- **WHEN** 客户端显式请求创建项目 `A` 的会话且当前无 `A` 的会话
 - **THEN** 系统 MUST 以 `A` 的注册根路径为 cwd 启动一个流式输入模式的 `claude` 进程，
   并返回该会话的句柄
+
+#### Scenario: 回读端点不隐式启动进程
+
+- **WHEN** 客户端对项目 `A` 回读会话状态，而当前无 `A` 的会话
+- **THEN** 系统 MUST 返回「无会话」响应，MUST NOT 借此启动任何会话进程
+
+#### Scenario: 用户输入在事件流中可见
+
+- **WHEN** 客户端向存活会话发送文本 `"列一下这个目录"` 并随后重新回读该会话缓冲
+- **THEN** 事件流中 MUST 含该轮输入对应的 `user` 事件（`isReplay: true`），
+  MUST NOT 只保留 assistant 侧输出
 
 #### Scenario: 重复请求复用同一会话
 
