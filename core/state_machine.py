@@ -241,6 +241,17 @@ TASK_GATE_REJECTIONS_FIELD = "_impl_gate_task_rejections"
 # 无需类型转换登记——此处定义常量作为单一事实源供写侧/注入侧共用。
 IMPL_DIAGNOSIS_FIELD = "_impl_diagnosis"
 
+# ── 场景原地修复预算耗尽轮次（fix-recovery-path-blockers D4）──────────
+# 字段名单点定义（pm_engine 与 state_machine 共用，避免两处漂移）：
+# _scenario_repair_exhausted_rounds：spec 生命周期内「场景原地修复预算耗尽」
+# 的跨轮持久计数（0=尚未给过重验日程；>=1=已给过一次重验仍不收敛）。与
+# _judge_rerun_count 同生命周期累计语义：**唯一**清零点 = 验证通过
+# （verified 落定，_record_verdict_adoption 内既有 verified 分支）与人工
+# unfreeze_spec（对齐 _env_block_rounds 既有语义——人工解冻是唯一人工裁决
+# 出口）。MUST NOT 在 admin 处置复位 / daemon 恢复 / 中间转换清零——否则
+# 「毒 spec 借每次 admin 复位重置计数 → 无限循环」敞口复开。
+SCENARIO_REPAIR_EXHAUSTED_FIELD = "_scenario_repair_exhausted_rounds"
+
 
 # ── STATE.md Parser ─────────────────────────────────────────────────
 
@@ -819,6 +830,11 @@ class StateMachine:
         # _inconclusive_attempts / ENV_BLOCK_ROUNDS_FIELD 同款「同一原子写清零」）。
         updates["_redispatch_same_cause_streak"] = 0
         updates["_redispatch_cause_fp"] = None
+        # fix-recovery-path-blockers D4：场景原地修复预算耗尽轮次随人工解冻
+        # 清零——人工解冻是唯一人工裁决出口（对齐 _env_block_rounds 既有语义），
+        # 解冻后重新获得「首次耗尽排程重验 → 再次耗尽升级」的完整体验；其余
+        # 中间转换（admin 处置复位 / daemon 恢复 / fix 链）一律不清零。
+        updates[SCENARIO_REPAIR_EXHAUSTED_FIELD] = 0
         updates["error"] = None
         updates[FROZEN_UNTIL_FIELD] = None
         return self.update_spec(spec_name, updates)
