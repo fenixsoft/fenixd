@@ -61,6 +61,11 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
   // （2026-09-18 admin 处置 add-spec-manual-activation 时实证）。
   const cidRef = useRef<string | null>(null);
   const sessionIdRef = useRef<string | null>(null);
+  // watch 是否实际注册过：无会话项目（空态）跳过注册但 hello 仍分配 cid，
+  // 若照 cid 无条件注销会对「从未注册的 cid」发 DELETE /api/session/watch →
+  // 服务端无会话返回 404 → console.error，污染所有访问项目页的
+  // no_console_error 断言（本项目验证实测）。仅注册过才注销。
+  const watchRegisteredRef = useRef(false);
 
   const syncEvents = (next: SessionEvent[]) => {
     // 全量重拉：清空重建去重集合（design D6——重拉是唯一可能重复的路径）
@@ -137,6 +142,7 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
           // 会话存在：用服务端 hello 分配的 cid 注册 watch
           try {
             await registerSessionWatch(project, cid);
+            watchRegisteredRef.current = true;
           } catch (e) {
             console.error('Failed to register session watch:', e);
           }
@@ -205,12 +211,14 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
   useEffect(() => {
     if (!active) {
       const cid = cidRef.current;
-      // 异步注销，不阻塞切面
-      if (cid && project) {
+      // 异步注销，不阻塞切面；仅对实际注册过的 watch 注销——
+      // 无会话项目从未注册，注销未注册 cid 会 404（服务端无会话判定）
+      if (watchRegisteredRef.current && cid && project) {
         void unregisterSessionWatch(project, cid).catch(() => {});
-        // 注销后清空：卸载时本 effect 会再跑一次，cid 不清会被重复 DELETE（404）
-        cidRef.current = null;
+        watchRegisteredRef.current = false;
       }
+      // 注销后清空：卸载时本 effect 会再跑一次，cid 不清会被重复 DELETE（404）
+      cidRef.current = null;
       // 切离时清空本地状态，切回重新接回（events/started 由 loadAll 重置）
       sessionIdRef.current = null;
       setSessionId(null);
