@@ -22,6 +22,10 @@
   - **明显失效可修正且处置留痕**：契约存在但明显失效（如 prepare 指向不存在的 script、serve.kind 非法、serve.root 不存在）时可修正，修正动作必须在处置记录 `actions_taken` 留痕（含 diff 摘要）
   - **有效契约一律不碰**：可解析且 serve 段合法的契约，即使命令触发起草任务，也以「契约有效、无需起草」结案——人类手写/手改始终权威
   - **起草流程**：草稿写临时路径 → `bin/fenix_verify_contract.py <项目根>` 自证（prepare/serve/ready 三段全通）→ 全通才落位 `.fenix/verify.yaml` → git 提交 → spec 复位 ready → 2 轮上限 → `escalate=true` 附草稿全文与逐段失败证据
+- **修正/生成 `.fenix/config.yaml` 的产物路径配置**：当收到 `build_artifact_paths_missing` 信号（merge-back WIP 重叠闸门检出产物配置未裁决）时起草 `worktree.has_build_artifacts` + `worktree.build_artifact_paths`；边界规则与 verify.yaml 起草同构：
+  - **缺失即起草**：两键未裁决（has 缺省，或 true 配空路径）时，按下方「构建产物路径起草手册」探测填写
+  - **有效配置一律不碰**：`has_build_artifacts` 已显式配置（false 或 true 配非空路径）时以「已裁决、无需起草」结案——人类手写/手改始终权威
+  - **确无产物写显式标志**：探测确认项目无构建产物时写 `has_build_artifacts=false` 结案，MUST NOT 用「路径留空」冒充已裁决（留空 = 未裁决，信号会复发）
 
 ## 验证契约起草手册
 
@@ -47,6 +51,31 @@
 - **可解析**：YAML 语法正确
 - **serve 段合法**：`serve.kind ∈ {static, command}` 且对应必填字段非空（`root` for static, `cmd` for command）
 - 满足以上两点 = 有效契约，一律不碰
+
+## 构建产物路径起草手册
+
+### 输入源（信息收集）
+收到 `build_artifact_paths_missing` 信号后，收集以下信息：
+1. **项目类型与描述**：读 `.fenix/config.yaml` 的 `project.type` 和 `description`
+2. **构建脚本**：读 `package.json` 的 `scripts`（特别是 `build`、`dist`、`release`），或 `pyproject.toml` 的 `[build-system]` / `[tool.poetry.scripts]`
+3. **目录结构探测**：检查 `dist/`、`build/`、`public/`、`static/`、`out/`、`target/` 等常见产物目录是否存在及其内容形态（是否存在 hash 文件名、`index.html` 等构建产物特征）
+4. **框架约定**：Fenix 框架自身项目（被管理的仓库）的常见产物位于 `core/dashboard/static/dist/`；通用项目通常有根级 `dist/` 或 `build/`
+5. **探测脚本（可选）**：`python3 bin/fenix_detect_artifacts.py <项目根>` 纯本地探测输出候选路径 JSON，供直接参考
+
+### 起草流程
+1. **探测**：根据输入源确定产物候选路径，目录前缀 MUST 以 `/` 结尾（如 `dist/`），通配 MUST 含 `*`（如 `release-*.zip`）；路径必须合法（不能绝对路径、不能含 `..`、不能以 `/` 结尾的前缀不含通配）
+2. **校验**：路径经 `validate_build_artifact_paths`（同口径）逐项校验，非法项 MUST 丢弃
+3. **写配置**：编辑 `.fenix/config.yaml`，在 `worktree:` 段写入：
+   - `has_build_artifacts: true`（确认有产物时）
+   - `build_artifact_paths: [<合法路径列表>]`
+4. **确无产物**：探测确认项目无构建产物时写：
+   - `has_build_artifacts: false`（显式无产物标志，MUST NOT 路径留空）
+5. **git 提交**：`git add .fenix/config.yaml && git commit -m "[fenix] admin: 起草构建产物路径配置 <spec>"`
+6. **留痕**：处置记录 `actions_taken` 必须包含探测来源摘要（读了哪些文件）与最终落位的路径列表
+
+### 有效配置判定（与 verify.yaml 起草同构）
+- `has_build_artifacts` 已显式配置（false 或 true）且 `build_artifact_paths` 非空（或 has=false 时路径任意） = 有效配置，一律不碰
+- has=true 但路径为空 = 未裁决，仍需起草
 
 ## Dashboard 服务运维手册
 - 脚本: python3 {dash_script}（bin/fenix_dashboard.py），默认端口 8787
