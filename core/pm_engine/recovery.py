@@ -10,6 +10,7 @@ from pathlib import Path
 import hashlib
 import json
 import time
+from datetime import datetime
 
 # dispatch_stalled 信号的建议处置（与 admin_monitor.SIGNAL_RECOMMENDATION 同源；
 # pm_engine 不反向依赖 admin_monitor，这里单独常量避免循环导入）。三源同表：
@@ -52,6 +53,25 @@ DEFAULT_TRANSITION_BUFFER_SECONDS = 60
 # 缺省 5 分钟，且 MUST < followup_check_minutes（缺省 15），使回落可在
 # 下一次复查即可观测（原「与缓冲同量级」在单位上自相矛盾，评审固化此值）。
 DEFAULT_TRANSITION_GRACE_MINUTES = 5
+
+# ── 升级前状态/运行痕迹复查（evo-recovery-watch-status-recheck）──────────
+# 2026-09-17 16:33:58Z refactor-giant-classes 误报（admin store 信号 id
+# `24ae002d605c`）：artifact-gate 不一致触发 runner 原地退避重试
+# （transient_retry + superseded 终态补写，core/agent_runner/runner.py:2368/2384），
+# 重试 run 开始输出（16:34:55Z，误报 56 秒后）前有约 4.3 分钟间隙；期间终态
+# 流又被保留清理归档（16:33:38Z → 16:33:58Z 误报）——spec 状态/锁/流 mtime
+# 与真卡死形态完全等价，故误升级。新增正向证据判据 + 有界顺延消除该形态：
+# - **框架内重试在途**：该 spec 最近一次归属其自身的 impl 流末事件 ∈
+#   {transient_retry, superseded} 且距该事件不超过 inflight_retry_minutes
+#   → 顺延本次判定（保留观察项、推进 due），不升级；
+# - **有界性**：自观察项首个 due 到期时刻（recheck_deadline）起累计顺延
+#   不得超过 defer_limit_minutes（缺省 30），超限回落既有 stale 判定并升级，
+#   MUST NOT 以「一直有重试痕迹」把真实卡死洗成健康。
+DEFAULT_INFLIGHT_RETRY_MINUTES = 5
+DEFAULT_DEFER_LIMIT_MINUTES = 30
+# runner 原地退避重试留痕的末事件类型（transient_retry 写后紧跟 superseded
+# 终态补写 = 本文件末行恒为终态，runner.py:1915/2472 恢复「终态后置」不变量）。
+INFLIGHT_RETRY_EVENT_TYPES = ("transient_retry", "superseded")
 
 
 class RecoveryWatch:
@@ -105,11 +125,17 @@ class RecoveryWatch:
             )
             or DEFAULT_FOLLOWUP_CHECK_MINUTES
         )
+        due = time.time() + max(0.5, minutes) * 60
         entry = self._pm.state_machine.read_one(spec_name) or {}
         self._recovery_watch[spec_name] = {
             "fingerprint": self._pm._spec_fingerprint(entry),
-            "due": time.time() + max(0.5, minutes) * 60,
+            "due": due,
             "registered_at": time.time(),
+            # 顺延有界性起算点（recovery-watch-status-recheck D4）= 首个 due
+            # 到期时刻。登记时固化（含 followup 钳制后实际 due），daemon 重启
+            # 后续算不随当前配置漂移；旧格式观察项（升级前登记）由
+            # _recheck_deadline 回退 registered_at + followup 计算。
+            "recheck_deadline": due,
             "reason": reason,
             # 登记时的状态：复查通过条件 = 已离开该状态或已有活跃派发
             # （auto-recovery 登记时是 ready/implemented；defer 登记时是
@@ -160,20 +186,48 @@ class RecoveryWatch:
             if now < float(item.get("due") or 0):
                 continue
 
-            # ── 过渡窗口豁免（D1/D2 顺延落点：pop 之前检查）──
-            # 该 spec 存在待合并分支（未并入 main 的提交）或 succeed 痕迹
-            # 在缓冲窗内 → 顺延本次判定（保留观察项、推进 due），
-            # MUST NOT 静默丢弃观察项或关闭它。
-            deferred_due = self._transition_defer_due(spec_name, now)
-            if deferred_due is not None:
-                item["due"] = deferred_due
-                self._pm._save_recovery_watch()
+            # ── 升级前复查第 1 层：pop 之前的顺延判据（D1/D2 + 重试在途）──
+            # 顺延（recovery-watch-status-recheck 1.6 落点：pop 之前检查，
+            # MUST NOT 以裸 continue 静默丢弃观察项）MUST 有界
+            # （defer_limit_minutes，1.7）：自首个 due 到期时刻起累计顺延
+            # 超限 → 回落既有 stale 判定并升级，不因「一直有重试痕迹」把
+            # 真实卡死洗成健康。有界性门施加于全部顺延分支之前。
+            if not self._defer_exhausted(item, now):
+                # 过渡窗口豁免（D1/D2 既有）：该 spec 存在待合并分支（未并入
+                # main 的提交）或 succeed 痕迹在缓冲窗内 → 顺延本次判定
+                # （保留观察项、推进 due），MUST NOT 静默丢弃观察项或关闭它。
+                deferred_due = self._transition_defer_due(spec_name, now)
+                if deferred_due is not None:
+                    item["due"] = deferred_due
+                    self._pm._save_recovery_watch()
+                    self._pm.logger.info(
+                        "pm_engine",
+                        f"Recovery watch deferred for '{spec_name}' "
+                        f"(transition window active, due={deferred_due:.0f})",
+                    )
+                    continue
+                # 框架内重试在途（recovery-watch-status-recheck）：最近一次
+                # 归属该 spec 的 impl 流末事件 ∈ {transient_retry, superseded}
+                # 且距 now ≤ inflight_retry_minutes → 顺延本次判定（重试间隙
+                # 形态：2026-09-17 16:33:58Z 误报，16:34:55Z 重试 run 开始
+                # 输出——顺延让框架内推进先行，避免唤起无效 admin run）。
+                retry_due = self._inflight_retry_defer_due(spec_name, now)
+                if retry_due is not None:
+                    item["due"] = retry_due
+                    self._pm._save_recovery_watch()
+                    self._pm.logger.info(
+                        "pm_engine",
+                        f"Recovery watch deferred for '{spec_name}' "
+                        f"(in-flight retry active, due={retry_due:.0f})",
+                    )
+                    continue
+            else:
                 self._pm.logger.info(
                     "pm_engine",
-                    f"Recovery watch deferred for '{spec_name}' "
-                    f"(transition window active, due={deferred_due:.0f})",
+                    f"Recovery watch defer limit reached for '{spec_name}' "
+                    f"(cumulative defer > defer_limit_minutes), falling back "
+                    f"to stale check",
                 )
-                continue
 
             self._recovery_watch.pop(spec_name, None)
             self._pm._save_recovery_watch()
@@ -181,6 +235,19 @@ class RecoveryWatch:
             if not entry:
                 continue  # spec 已消失（被人工清理）：观察项静默关闭（2.4 不变）
             status = entry.get("status")
+            # ── 升级前复查第 2 层：blocked（含 frozen）→ 关闭观察项、不升级 ──
+            # blocked 由 admin_monitor._detect_blocked_stuck 通道
+            # （core/admin_monitor.py:690）告警，recovery watch 重复升级属
+            # 重复告警（2026-09-17 事故 16:37Z 双通道并存同一 spec）。frozen
+            # blocked 的 status 仍为 blocked（frozen 标记在 error/FROZEN_FIELD），
+            # 同一分支覆盖。观察项此处已 pop，直接 continue 即关闭。
+            if status == "blocked":
+                self._pm.logger.info(
+                    "pm_engine",
+                    f"Recovery watch closed for '{spec_name}' "
+                    f"(status=blocked, delegated to blocked_stuck channel)",
+                )
+                continue
             active_dispatch = False
             try:
                 active_dispatch = bool(
@@ -208,12 +275,32 @@ class RecoveryWatch:
                     f"(in-place dispatch from ready, no alert)",
                 )
                 continue
+            # ── 升级前复查第 3 层：升级前重读状态（design 缺口 3）──
+            # 首次 read_one 的 status 一直用到升级；期间就地派发/闸门检查
+            # 可能变更状态——升级前重读命中「已恢复推进」（进入 ready 之后的
+            # 后续态或已有活跃派发）→ 不升级。blocked 豁免已由第 2 层按首次
+            # read_one 判定（就地重派被内容闸门冻结 blocked 属「ready 滞留
+            # 重派未成立」既有形态，仍升级——2.6/3fad3350 语义保持，见
+            # _redispatch_stalled_ready docstring）。重读失败/异常 → 保守升级
+            # （不因本机制漏报真滞留，不静默关闭）。
+            try:
+                fresh = self._pm.state_machine.read_one(spec_name) or {}
+            except Exception:
+                fresh = {}
+            if fresh.get("status") in RECOVERY_PROGRESS_STATUSES or active_dispatch:
+                self._pm.logger.info(
+                    "pm_engine",
+                    f"Recovery watch passed for '{spec_name}' (status now "
+                    f"{fresh.get('status')} before escalation, no alert)",
+                )
+                continue
             evidence = (
                 f"auto-recovery/defer at {item.get('registered_at')} "
-                f"({item.get('reason')}); spec still {status} with no active "
-                f"dispatch after followup window, in-place redispatch "
+                f"({item.get('reason')}); spec still {fresh.get('status')} "
+                f"with no active dispatch after followup window, in-place "
+                f"redispatch "
                 f"{'succeeded' if dispatched else 'not established'}, "
-                f"error={str(entry.get('error') or '')[:120]}"
+                f"error={str(fresh.get('error') or '')[:120]}"
             )
             self._pm.logger.error(
                 "pm_engine",
@@ -285,6 +372,172 @@ class RecoveryWatch:
             grace = max(0.0, followup - 1)
         return grace
 
+    def _followup_check_minutes(self) -> float:
+        """复查间隔（分钟）：pm.recovery.followup_check_minutes（缺省 15）。
+
+        供顺延有界性起算（_recheck_deadline 旧格式回退）等复用；与
+        register_recovery_watch / _transition_grace_minutes 同源读取。
+        """
+        try:
+            return max(
+                0.0,
+                float(
+                    self._pm._get_config(
+                        "pm.recovery.followup_check_minutes", DEFAULT_FOLLOWUP_CHECK_MINUTES
+                    )
+                ),
+            )
+        except (TypeError, ValueError):
+            return float(DEFAULT_FOLLOWUP_CHECK_MINUTES)
+
+    def _defer_limit_minutes(self) -> float:
+        """顺延累计上限（分钟）：pm.recovery.defer_limit_minutes（缺省 30）。
+
+        不变量（recovery-watch-status-recheck 1.7）：defer_limit MUST >
+        followup_check_minutes（缺省 15）——否则首个顺延窗口即可能越过上限。
+        配置违反不变量（<= followup）时按 ``_transition_grace_minutes`` 同一
+        钳制范式收敛（上浮到 followup + 1；上限只会更大不会失效，有界性
+        优先，绝不把真实卡死洗成健康）。
+        """
+        try:
+            defer = max(
+                0.0,
+                float(
+                    self._pm._get_config(
+                        "pm.recovery.defer_limit_minutes", DEFAULT_DEFER_LIMIT_MINUTES
+                    )
+                ),
+            )
+        except (TypeError, ValueError):
+            defer = float(DEFAULT_DEFER_LIMIT_MINUTES)
+        followup = self._followup_check_minutes()
+        if defer <= followup:
+            defer = followup + 1
+        return defer
+
+    def _inflight_retry_minutes(self) -> float:
+        """框架内重试在途豁免窗口（分钟）：pm.recovery.inflight_retry_minutes（缺省 5）。
+
+        不变量（recovery-watch-status-recheck 1.7）：inflight_retry MUST <
+        defer_limit_minutes（缺省 30）——否则重试痕迹窗口可长于顺延上限，
+        窗口内恒顺延把真实卡死洗成健康。配置违反不变量（>= defer_limit）时
+        按 ``_transition_grace_minutes`` 同一钳制范式收敛（下沉到
+        defer_limit - 1，下限 0——极端配置下直接不豁免，有界性优先）。
+        """
+        try:
+            retry = max(
+                0.0,
+                float(
+                    self._pm._get_config(
+                        "pm.recovery.inflight_retry_minutes", DEFAULT_INFLIGHT_RETRY_MINUTES
+                    )
+                ),
+            )
+        except (TypeError, ValueError):
+            retry = float(DEFAULT_INFLIGHT_RETRY_MINUTES)
+        defer = self._defer_limit_minutes()
+        if retry >= defer:
+            retry = max(0.0, defer - 1)
+        return retry
+
+    def _recheck_deadline(self, item: dict) -> float:
+        """观察项顺延累计起算点（绝对时间戳）。
+
+        起算点 = 观察项首个 due 到期时刻（``registered_at + followup_check_minutes``）。
+        登记时已固化 ``recheck_deadline`` 字段（含 followup 钳制后的实际 due），
+        daemon 重启后续算不随当前配置漂移；旧格式观察项（本机制上线前登记）
+        回退 ``registered_at + 当前 followup``，再回退 ``due``。
+        """
+        rd = item.get("recheck_deadline")
+        if isinstance(rd, (int, float)) and rd > 0:
+            return float(rd)
+        registered = item.get("registered_at")
+        if isinstance(registered, (int, float)) and registered > 0:
+            return float(registered) + self._followup_check_minutes() * 60
+        due = item.get("due")
+        if isinstance(due, (int, float)) and due > 0:
+            return float(due)
+        return 0.0
+
+    def _defer_exhausted(self, item: dict, now: float) -> bool:
+        """顺延累计是否已达上限（recovery-watch-status-recheck 1.7 有界性）。
+
+        自 ``_recheck_deadline``（首个 due 到期时刻）起累计顺延不得超过
+        ``defer_limit_minutes``（缺省 30）；now 已越过该截止 → 回落既有 stale
+        判定并升级——MUST NOT 以「一直有重试痕迹 / 长期活跃态」把真实卡死洗成
+        健康。调用点：``check_recovery_watch`` 第 1 层，施加于全部顺延分支之前。
+        """
+        return now >= self._recheck_deadline(item) + self._defer_limit_minutes() * 60
+
+    def _inflight_retry_defer_due(self, spec_name: str, now: float):
+        """框架内重试在途的顺延 due（绝对时间戳）；不在途返回 None。
+
+        2026-09-17 误报形态（proposal Why）：artifact-gate 不一致触发 runner
+        原地退避重试（``transient_retry`` + ``superseded`` 终态补写，
+        runner.py:2368/2384），重试 run 开始输出（16:34:55Z，误报 56 秒后）
+        前有分钟级间隙——期间 spec 状态/锁/流 mtime 与真卡死形态完全等价。
+        末事件 ∈ {``transient_retry``, ``superseded``} 且距 now 不超过
+        ``inflight_retry_minutes``（缺省 5）→ 判「框架内重试在途」顺延本次判定
+        （保留观察项、推进 due），不升级。
+
+        顺延推进量 = ``now + transition_buffer_seconds``（与过渡窗口顺延同一
+        推进量，daemon 每 60s 复查一次，下一次复查恰好落在窗口边界）。有界性
+        由调用方（check_recovery_watch 第 1 层）在顺延分支前统一施加
+        （``defer_limit_minutes``）。
+
+        返回 None 的保守方向：流不可读 / 末事件解析失败 / 末事件非重试标记 /
+        已超窗口 → 不豁免（设计「无正向证据 → 维持既有升级」，不把真实卡死
+        洗成健康）。
+
+        Returns: 顺延后的绝对 due（float）；不在途返回 None。
+        """
+        event = self._spec_recent_impl_stream_last_event(spec_name)
+        if event is None:
+            return None
+        etype, event_ts = event
+        if etype not in INFLIGHT_RETRY_EVENT_TYPES:
+            return None
+        retry_window = self._inflight_retry_minutes() * 60
+        if now - event_ts > retry_window:
+            return None
+        return now + self._transition_buffer_seconds()
+
+    def _latest_impl_stream(self, spec_name: str):
+        """该 spec 最近一次 impl 流文件（顶层 + archive/ 中 mtime 最新），或 None。
+
+        检索口径（recovery-watch-status-recheck 1.3）：`.fenix/runs` 顶层 +
+        `.fenix/runs/archive/`——终态 run 会在告警前被保留清理归档
+        （2026-09-17 16:33:38Z 归档、16:33:58Z 误报，只查顶层即漏判最后一条
+        活性痕迹；归档含检先例 engine.py:798 `get_runs(..., include_archive=True)`）。
+
+        归属精确（D2 判据 (a) 归属须精确）：MUST NOT 仅凭
+        ``f"impl-{spec_name}-*.jsonl"`` glob 命中即算活动——spec 名互为前缀会
+        误命中他 spec 的运行流（spec ``a-b`` 命中 ``impl-a-b-c-<ts>.jsonl``，
+        凭空制造「近期活动」→ 豁免真 stale）；须对 glob 命中的每个候选再用
+        ``run_spec_part``（core/agent_runner/run_files.py 既有单一来源解析器，
+        与 dashboard 读侧同口径，不另造）解析出完整 spec 名精确比较。
+        """
+        from core.agent_runner.run_files import run_spec_part
+
+        runs_dir = self._pm.project_root / ".fenix" / "runs"
+        latest = None  # (mtime, Path)
+        for base in (runs_dir, runs_dir / "archive"):
+            if not base.is_dir():
+                continue
+            try:
+                for p in base.glob(f"impl-{spec_name}-*.jsonl"):
+                    if run_spec_part(p.stem) != spec_name:
+                        continue  # 精确归属守卫：他 spec 的前缀命中全部排除
+                    try:
+                        mtime = p.stat().st_mtime
+                    except OSError:
+                        continue
+                    if latest is None or mtime > latest[0]:
+                        latest = (mtime, p)
+            except OSError:
+                continue
+        return latest[1] if latest else None
+
     def _spec_recent_impl_stream_mtime(self, spec_name: str):
         """该 spec 最近一次 impl run 流的 mtime（D2 判据 (a) 事实源），或 None。
 
@@ -294,34 +547,56 @@ class RecoveryWatch:
         生命周期内持续写入，其 mtime 是过渡窗口可复用的可观测源（与
         ``engine._spec_has_recent_run_activity`` 同源代理，engine.py:1956）。
 
-        归属精确（D2 判据 (a) 归属须精确）：MUST NOT 仅凭
-        ``f"impl-{spec_name}-*.jsonl"`` glob 命中即算活动——spec 名互为前缀会
-        误命中他 spec 的运行流（spec ``a-b`` 命中 ``impl-a-b-c-<ts>.jsonl``，
-        凭空制造「近期活动」→ 豁免真 stale）；须对 glob 命中的每个候选再用
-        ``run_spec_part``（core/agent_runner/run_files.py 既有单一来源解析器，
-        与 dashboard 读侧同口径，不另造）解析出完整 spec 名精确比较。
+        检索口径（recovery-watch-status-recheck 1.3）：顶层 + archive/
+        均由 ``_latest_impl_stream`` 覆盖；归属精确性（前缀歧义守卫）亦在其中
+        实施，见其 docstring。
 
         Returns: 最新 impl 流的 mtime（float）；无流/目录缺失/io 失败返回 None。
         """
-        from core.agent_runner.run_files import run_spec_part
-
-        runs_dir = self._pm.project_root / ".fenix" / "runs"
-        if not runs_dir.is_dir():
+        stream = self._latest_impl_stream(spec_name)
+        if stream is None:
             return None
-        latest = None
         try:
-            for p in runs_dir.glob(f"impl-{spec_name}-*.jsonl"):
-                if run_spec_part(p.stem) != spec_name:
-                    continue  # 精确归属守卫：他 spec 的前缀命中全部排除
-                try:
-                    mtime = p.stat().st_mtime
-                except OSError:
-                    continue
-                if latest is None or mtime > latest:
-                    latest = mtime
+            return stream.stat().st_mtime
         except OSError:
             return None
-        return latest
+
+    def _spec_recent_impl_stream_last_event(self, spec_name: str):
+        """该 spec 最近一次归属自身 impl 流的末事件，或 None。
+
+        末事件 = JSONL 最后一行 ``type`` 字段（runner.py 原地退避重试留痕：
+        ``transient_retry`` 写后紧跟 ``superseded`` 终态补写 = 本文件末行恒为
+        终态，runner.py:1915/2472「终态后置」不变量）；时间取事件
+        ``timestamp``（UTC ISO）解析为 epoch。最近 = ``_latest_impl_stream``
+        （mtime 最新，顶层 + archive/）。
+
+        异常/损坏/不可读/字段缺失一律返回 None——保守不豁免（宁可多报 stale，
+        不把真实卡死洗成健康；design「重读失败保守升级」）。
+
+        Returns: (type, timestamp_epoch) 元组；不可得返回 None。
+        """
+        stream = self._latest_impl_stream(spec_name)
+        if stream is None:
+            return None
+        try:
+            lines = stream.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return None
+        if not lines:
+            return None
+        try:
+            last = json.loads(lines[-1])
+        except (json.JSONDecodeError, IndexError):
+            return None
+        etype = last.get("type")
+        ts = last.get("timestamp")
+        if not etype or not ts:
+            return None
+        try:
+            event_ts = datetime.fromisoformat(ts).timestamp()
+        except (ValueError, TypeError):
+            return None
+        return (etype, float(event_ts))
 
     def _transition_defer_due(self, spec_name: str, now: float):
         """过渡窗口内的顺延 due（绝对时间戳）；不在过渡窗口返回 None。
