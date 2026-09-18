@@ -52,7 +52,12 @@ export default function SessionModal({ project, open, onClose }: SessionModalPro
   // 无 uuid 的事件（stderr / session_ended 本地合成）不进集合
   const seenUuidsRef = useRef<Set<string>>(new Set());
   const eventSourceRef = useRef<EventSource | null>(null);
-  const cidRef = useRef<string>(`session-modal-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`);
+  // cid 由服务端在 SSE hello 中分配（design D3：自造 cid 会静默失效）。初值必须为
+  // null——挂载时 Modal 未打开，此时无任何订阅可注销；若预置自造 cid，下方 [open]
+  // 清理 effect 会在挂载当帧发出 DELETE /api/session/watch（服务端查不到该 cid 对应
+  // 会话）→ 404 → 控制台错误，污染所有访问项目列表页的 no_console_error 断言
+  // （2026-09-18 admin 处置 add-spec-manual-activation 时实证）。
+  const cidRef = useRef<string | null>(null);
   const sessionIdRef = useRef<string | null>(null);
 
   const syncEvents = (next: SessionEvent[]) => {
@@ -189,6 +194,8 @@ export default function SessionModal({ project, open, onClose }: SessionModalPro
       // 异步注销，不阻塞关闭
       if (cid && project) {
         void unregisterSessionWatch(project, cid).catch(() => {});
+        // 注销后清空：卸载时本 effect 会再跑一次，cid 不清会被重复 DELETE（404）
+        cidRef.current = null;
       }
       // 关闭时清空本地状态，重开重新接回
       sessionIdRef.current = null;
