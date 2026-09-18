@@ -147,9 +147,51 @@ class EventBus:
         try:
             status = entry.get("status", "")
             if status == "drafted":
+                # fix-start-after-premature-pickup 2.1：start_after 定时拾取早退
+                # （与 _recover_ready 既有早退同源，本文件 :337-347）。未到期/哨兵的
+                # SPEC 不被恢复路径晋升——否则每轮扫描生产「re-triggering promote」
+                # 噪音事件并提前拾取（实证 add-project-detail-tabs 提前 42 分钟）。
+                # 级别偏离登记：_recover_ready 同类跳过现为 info（:341），本处取
+                # debug 是为避免每个定时 SPEC 每 60s 一条噪音；_recover_ready 保持
+                # 不动（Non-Goals，本 SPEC 不顺带改）。
+                try:
+                    from core.state_machine import start_after_pending
+
+                    if start_after_pending(entry):
+                        self.logger.debug(
+                            "event_bus",
+                            f"Recovery: skip '{name}' — start_after scheduled pickup "
+                            f"pending（drafted）",
+                        )
+                        return True
+                except Exception as e:
+                    # fail-open：无法判定时不阻塞既有恢复路径，记日志（2.3）
+                    self.logger.warning(
+                        "event_bus",
+                        f"start_after 判定异常 '{name}'（fail-open 放行）: {e}",
+                    )
                 self.logger.info("event_bus", f"Recovery: re-triggering promote for '{name}'")
                 self.pm_engine.handle_event("spec_drafted", name, entry)
             elif status == "reviewing":
+                # fix-start-after-premature-pickup 2.2：同源早退（reviewing 分支），
+                # 措辞复用 _recover_ready 既有串 + 分支后缀，debug 级，MUST NOT 打
+                # 「re-triggering spec_reviewing」日志、不写 STATE。
+                try:
+                    from core.state_machine import start_after_pending
+
+                    if start_after_pending(entry):
+                        self.logger.debug(
+                            "event_bus",
+                            f"Recovery: skip '{name}' — start_after scheduled pickup "
+                            f"pending（reviewing）",
+                        )
+                        return True
+                except Exception as e:
+                    # fail-open：无法判定时不阻塞既有恢复路径，记日志（2.3）
+                    self.logger.warning(
+                        "event_bus",
+                        f"start_after 判定异常 '{name}'（fail-open 放行）: {e}",
+                    )
                 self.logger.info(
                     "event_bus", f"Recovery: re-triggering spec_reviewing for '{name}'"
                 )

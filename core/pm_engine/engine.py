@@ -345,6 +345,36 @@ class PMEngine:
         Gates: if gates.promote_mode is 'manual', spec stays drafted
         (no promotion, no error, no dispatch) — awaiting manual promotion.
         """
+        # fix-start-after-premature-pickup D1：start_after 定时拾取门控（对齐
+        # _on_spec_ready 既有守卫，engine.py:552）。drafted + 未到期/哨兵的 SPEC
+        # 不得被任何自动通道晋升——扫描（_dispatch_changes）、恢复（_recover_one）、
+        # 以及本文件 :392 的 _on_spec_drafted → _on_spec_reviewing 同 handler 直调
+        # 均汇聚于此（覆盖面以 handler 入口为界）。守卫置于 promote_mode 闸口之外：
+        # manual 晋升模式与定时拾取门互不替代（1.5 人工放行豁免见 D1 末条——CLI
+        # promote / Dashboard 晋升按钮直调共享函数 promote_drafted，不经本方法）。
+        # 有意放行（D1 通道 ③④）：check_scheduling_deadlines（60s 到期唤起）与
+        # _check_scheduling_kick_requests（清空/激活 kick 信号）在调用本方法前已
+        # 确认到期/激活——到期后 start_after_pending 返回 False、清空/激活后字段
+        # 置 null 亦返回 False，故此处正常放行，无需特判。
+        try:
+            from core.state_machine import start_after_pending
+
+            entry = self.state_machine.read_one(spec_name)
+            # entry 为 None（SPEC 已删除/归档）时 MUST NOT 早退——promote_drafted
+            # 自带 not-found 拒绝与日志，是既有语义，守卫不得抢先吞掉（D2 落点约定）。
+            if entry is not None and start_after_pending(entry):
+                self.logger.debug(
+                    "pm_engine",
+                    f"Skipping '{spec_name}': start_after pending (scheduled pickup)",
+                )
+                return
+        except Exception as e:
+            # fail-open：判定异常不吞既有晋升能力（对齐 _recover_ready 既有守卫）
+            self.logger.warning(
+                "pm_engine",
+                f"start_after 门控判定异常 '{spec_name}'（fail-open 放行）: {e}",
+            )
+
         from core.config import ConfigLoader
         from core.pm_engine.promotion import promote_drafted
 
@@ -427,6 +457,33 @@ class PMEngine:
 
     def _on_spec_reviewing(self, spec_name: str):
         """处理 spec_reviewing 事件：派发评审 run（派发 → 阻塞等待 → 收口）。"""
+        # fix-start-after-premature-pickup D1：start_after 定时拾取门控（对齐
+        # _on_spec_ready 既有守卫，engine.py:552）。reviewing + 未到期/哨兵的
+        # SPEC 不得被派发评审 run。守卫插在方法体最前面（早于 _review_dispatches
+        # 单飞标记与熔断短路），并**自行** read_one——不复用下方 reader_run 检查处
+        # 那次读盘（它位于单飞守卫/熔断之后，位置不符；也不为省一次读盘挪动其顺序）。
+        # 有意放行（D1 通道 ③④）：到期 / 清空 / 激活后 start_after_pending 返回
+        # False 正常放行。人工重评（SpecReviewManager.re_review → dispatch_review）
+        # 与评审否决后自动复评（spec_review.py:358/:845）不经本方法，直调
+        # dispatch_review——不受本守卫约束（D1 已知取舍，边界见 5.2 登记）。
+        try:
+            from core.state_machine import start_after_pending
+
+            entry = self.state_machine.read_one(spec_name)
+            # entry 读不到（SPEC 已删除/归档）时跳过守卫判定（不早退），交由既有
+            # 链自然处理（D2 落点约定）。
+            if entry is not None and start_after_pending(entry):
+                self.logger.debug(
+                    "pm_engine",
+                    f"Skipping '{spec_name}': start_after pending (scheduled pickup)",
+                )
+                return
+        except Exception as e:
+            # fail-open：判定异常不吞既有评审派发能力（对齐 _recover_ready 既有守卫）
+            self.logger.warning(
+                "pm_engine",
+                f"start_after 门控判定异常 '{spec_name}'（fail-open 放行）: {e}",
+            )
         # 评审单飞守卫：同一 spec 的并发 spec_reviewing 只放行一个。dispatch_review
         # 同步阻塞（评审 run 分钟级），守卫须覆盖整个阻塞期——否则第二条触发通道
         # （event_bus 轮询与 _on_spec_drafted 直调）会重复派发同一 spec。
