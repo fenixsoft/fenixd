@@ -422,13 +422,86 @@ def _pgrep_live_worktree(spec_name: str) -> bool:
     return False
 
 
-def _has_recent_spec_run(project_root, spec: str, now: float, window: float) -> bool:
-    """该 spec 是否存在窗口内有写活动的 run 文件（有进度）——任意 run 前缀。
+def _is_admin_run_id(stem: str) -> bool:
+    """run 文件 stem 是否属于 Administrator 处置 run（admin- 前缀）。
 
-    与 AdminMonitor._has_recent_progress 同语义（impl/verify/planner/repair 等
-    全部前缀经 _spec_from_run_id 归一——orphaned-state-probe-calibration 后
-    repair- 亦覆盖：mtime 在宽限窗内即非孤儿，杜绝「活跃 repair run 被判无
-    驱动」类误报），模块级供 _detect_orphaned_state 与 event_bus 恢复共用。
+    单点定义，两处委托（模块级 ``_has_recent_spec_run`` 与
+    ``AdminMonitor._has_recent_progress``），勿二次漂移。admin run
+    是**处置者**的活动，不是被处置 SPEC 的验证/实现驱动证据
+    （fix-recovery-path-blockers D1）——驱动判定 MUST 排除它，否则
+    Administrator 处置全过程该 spec 永恒满足「有近期写活动」→恢复路径
+    永不推进（2026-09-18 add-spec-manual-activation 事故：预算耗尽停
+    testing 后 75 分钟无任何恢复动作）。前缀取用 ``RUN_ID_AGENT_PREFIXES``
+    真源（run_files.py，admin- 排首），禁硬编码散落。
+    """
+    from core.agent_runner.run_files import RUN_ID_AGENT_PREFIXES
+
+    for prefix, _agent_type in RUN_ID_AGENT_PREFIXES:
+        if stem.startswith(prefix):
+            return prefix == "admin-"
+    return False
+
+
+def _spec_has_active_admin_run(store, spec: str, logger=None) -> bool:
+    """该 spec 是否存在在飞/待派发的 Administrator run（任意 signal_type）。
+
+    fix-recovery-path-blockers D2：按 ``(spec)`` 单键聚合 store 中
+    ``kind == DISPOSITION`` 的记录，复用 ``_has_active_admin_run_for`` 的
+    by_run 归并口径（某 ``admin_run_id`` 组 ``has_pending`` 且无终结兄弟
+    记录才算在飞——已终结 run 含 superseded/interrupted/escalated 终结后
+    仍滞留 store 的 pending 记录均不算）——但**去掉 signal_type 过滤**：
+    admin 处置的 signal_type 可能是 ``verify_env_blocked`` /
+    ``manual-intervention`` / ``stuck``，不只有 ``orphaned_state``，
+    按 ``(spec, signal_type)`` 精确匹配会漏。
+
+    模块级单一实现：``AdminMonitor._has_active_admin_run_for_spec`` 与
+    ``event_bus`` 的两个守卫调用点都委托本函数（store 作为入参），勿复制
+    第二份归并实现。判定异常 fail-open 返回 False（守卫故障不阻断恢复路径），
+    异常记 WARNING（logger 可选注入）。
+    """
+    try:
+        records = store.read_all()
+    except Exception as e:
+        if logger is not None:
+            logger.warning(
+                "admin_monitor",
+                f"_spec_has_active_admin_run 判定异常 fail-open（{spec}）: "
+                f"{type(e).__name__}: {e}",
+            )
+        return False
+    by_run: dict = {}
+    for rec in records:
+        if rec.get("kind") != DISPOSITION:
+            continue
+        if rec.get("spec") != spec:
+            continue
+        rid = rec.get("admin_run_id")
+        if not rid:
+            continue
+        status = rec.get("status") or rec.get("result")
+        info = by_run.setdefault(rid, {"final": False, "has_pending": False})
+        if status == "pending":
+            info["has_pending"] = True
+        else:
+            info["final"] = True
+    return any(info["has_pending"] and not info["final"] for info in by_run.values())
+
+
+def _has_recent_spec_run(project_root, spec: str, now: float, window: float) -> bool:
+    """该 spec 是否存在窗口内有写活动的 run 文件（有进度）——非 admin 前缀。
+
+    与 ``AdminMonitor._has_recent_progress`` 同语义（impl/verify/planner/repair
+    等非 admin 前缀经 ``_spec_from_run_id`` 归一），模块级供
+    ``_detect_orphaned_state`` 与 ``event_bus`` 恢复共用。
+
+    fix-recovery-path-blockers D1：Administrator 的处置 run（admin- 前缀）
+    是处置者的活动，不是被处置 SPEC 的驱动证据——判定口径改为「是否存在
+    **非 admin 前缀**的、写活动在宽限窗内的 run 文件」。仅有 admin run 时
+    MUST 返回 False，使 spec_is_undriven 条件①成立、恢复路径可推进
+    （2026-09-18 事故根因：旧判定把处置者活动误判为被处置 SPEC 的驱动，
+    导致恢复判定全跳过）。
+
+    两处实现共用 ``_is_admin_run_id``（单点定义），禁二次漂移。
     """
     if project_root is None:
         return False
@@ -440,6 +513,10 @@ def _has_recent_spec_run(project_root, spec: str, now: float, window: float) -> 
     except OSError:
         return False
     for p in files:
+        # fix-recovery-path-blockers D1：admin run 是处置者活动，不是被处置
+        # SPEC 的驱动证据——排除 admin- 前缀（单点判定 _is_admin_run_id）。
+        if _is_admin_run_id(p.stem):
+            continue
         if AdminMonitor._spec_from_run_id(p.stem) != spec:
             continue
         try:
@@ -1434,6 +1511,20 @@ class AdminMonitor:
         signal_rec, _ = self.store.merge_signal(
             self._signal_record(signal, escalated=True), status_hash
         )
+        # fix-recovery-path-blockers D2b：唤起前与在飞 admin run 互斥——D1 生效后
+        # 处置中的 spec 会在冷却窗（缺省 60 分钟）过期后重新成条，无本守卫即产生
+        # 与在飞处置**并行**的第二个 Administrator run（写同一批 STATE/
+        # test_scenarios.json）。守卫按 spec 单键聚合、覆盖**任意** signal_type
+        # （admin 处置的 signal_type 不只有 orphaned_state）。为真 → 跳过
+        # 本次唤起（信号仍按既有沉淀/节流语义落 store，不丢痕）并记 WARNING。
+        if spec and self._has_active_admin_run_for_spec(spec):
+            self.logger.warning(
+                "admin_monitor",
+                f"已有在飞处置，跳过重复唤起 '{spec}'（signal {signal_type}）"
+                f"— fix-recovery-path-blockers D2b",
+                {"signal": signal},
+            )
+            return
         self.logger.warning(
             "admin_monitor",
             f"Distress detected, invoking Administrator: {signal_type} for '{spec or 'daemon'}'",
@@ -1654,6 +1745,17 @@ class AdminMonitor:
             else:
                 info["final"] = True
         return any(info["has_pending"] and not info["final"] for info in by_run.values())
+
+    def _has_active_admin_run_for_spec(self, spec) -> bool:
+        """该 spec 是否存在在飞/待派发的 Administrator run（任意 signal_type）。
+
+        fix-recovery-path-blockers D2：守卫口径按 spec 单键聚合、覆盖**任意**
+        signal_type（admin 处置的 signal_type 可能是 verify_env_blocked /
+        manual-intervention / stuck，不只有 orphaned_state）。委托模块级
+        ``_spec_has_active_admin_run``（单一归并实现，勿二次漂移）；判定异常
+        fail-open 返回 False 并记 WARNING（守卫故障不阻断恢复路径）。
+        """
+        return _spec_has_active_admin_run(self.store, spec, logger=self.logger)
 
     def _reschedule_count_for(self, spec, signal_type: str) -> int:
         """读同 (spec, signal_type) 的 DISPOSITION 记录 reschedule_count 最大值（缺省 0）。
@@ -2658,6 +2760,19 @@ class AdminMonitor:
         status = spec_entry.get("status")
         if status == "testing":
             try:
+                # fix-recovery-path-blockers D2：派发 verifier 前与在飞 admin run
+                # 互斥——admin 正在写 STATE/场景文件（test_scenarios.json）时复位
+                # 重验会读半成品产物。守卫按 spec 单键聚合、覆盖**任意**
+                # signal_type（admin 处置的 signal_type 不只有 orphaned_state）。
+                # 在飞判定为真 → 跳过本次复位（不写状态、不派发）并记 INFO，
+                # SPEC 保持原样（MUST NOT 因此写额外状态）。
+                if self._has_active_admin_run_for_spec(spec):
+                    self.logger.info(
+                        "admin_monitor",
+                        f"孤儿 testing 复位跳过 '{spec}': admin 处置在飞，"
+                        f"verifier 重验派发互斥（fix-recovery-path-blockers D2）",
+                    )
+                    return
                 # fix-observability-gaps 2.1：transition_gate 带 context（恢复来源；
                 # 正常路径为幂等 old==new，state_machine 幂等分支不产生日志；
                 # 兜底真实转换时也带上恢复来源）
@@ -2907,7 +3022,13 @@ class AdminMonitor:
         return "running"
 
     def _has_recent_progress(self, spec: str, runs_dir: Path, now: float, window: float) -> bool:
-        """该 spec 是否存在窗口内有写活动的 run 文件（有进度）。"""
+        """该 spec 是否存在窗口内有写活动的 run 文件（有进度）——非 admin 前缀。
+
+        fix-recovery-path-blockers D1：与模块级 `_has_recent_spec_run` 同源，
+        排除 `admin-` 前缀（`_is_admin_run_id` 单点判定）——Administrator 的
+        处置 run 是处置者的活动，不是被处置 SPEC 的驱动证据。两处实现共用
+        `_is_admin_run_id`，勿二次漂移。
+        """
         if not runs_dir.is_dir():
             return False
         try:
@@ -2915,6 +3036,8 @@ class AdminMonitor:
         except OSError:
             return False
         for p in files:
+            if _is_admin_run_id(p.stem):
+                continue
             if self._spec_from_run_id(p.stem) != spec:
                 continue
             try:

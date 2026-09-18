@@ -846,6 +846,210 @@ class TestOrphanedRepairProbe:
         assert all(s["signal_type"] != "orphaned_state" for s in signals)
 
 
+class TestAdminRunNotDriverEvidence:
+    """admin- 前缀 run 不再计入驱动证据（fix-recovery-path-blockers D1）。
+
+    2026-09-18 事故根因：Administrator 的处置 run（admin-<spec>-<ts>.jsonl）
+    被 _has_recent_spec_run 归为该 spec 的驱动证据 → spec_is_undriven 条件①
+    恒假 → 恢复路径永不推进 → 75 分钟人工等待。D1 修复后，admin run 排除
+    于驱动判定之外——仅有 admin run 时该 spec MUST 判为「无驱动」。
+    """
+
+    def test_only_admin_run_makes_spec_undriven(self, tmp_path):
+        """仅有 admin- run（mtime 新鲜）→ _has_recent_spec_run False，spec_is_undriven True。"""
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "testing", "updated": utcnow_iso()},
+        })
+        make_runs(proot, [("admin-spec-a-1780000001", "running")])  # 新鲜 mtime
+        entry = {"status": "testing", "updated": utcnow_iso()}
+        with mock.patch("core.admin_monitor._pgrep_live_worktree", return_value=False):
+            from core.admin_monitor import _has_recent_spec_run
+            assert _has_recent_spec_run(proot, "spec-a", time.time(), 120) is False
+            assert spec_is_undriven(proot, "spec-a", entry) is True
+
+    def test_admin_plus_impl_mixed_spec_has_driven(self, tmp_path):
+        """admin + impl 混合 run（均新鲜）→ _has_recent_spec_run True，spec_is_undriven False。"""
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "testing", "updated": utcnow_iso()},
+        })
+        make_runs(proot, [
+            ("admin-spec-a-1780000001", "running"),
+            ("impl-spec-a-1780000002", "running"),
+        ])
+        entry = {"status": "testing", "updated": utcnow_iso()}
+        with mock.patch("core.admin_monitor._pgrep_live_worktree", return_value=False):
+            from core.admin_monitor import _has_recent_spec_run
+            assert _has_recent_spec_run(proot, "spec-a", time.time(), 120) is True
+            assert spec_is_undriven(proot, "spec-a", entry) is False
+
+    def test_expired_admin_run_matches_no_run(self, tmp_path):
+        """admin- run 过期（mtime 超宽限窗）→ 与无 run 文件逐位一致。"""
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "testing", "updated": utcnow_iso()},
+        })
+        # 过期 admin run
+        runs_dir = proot / ".fenix" / "runs"
+        runs_dir.mkdir(parents=True, exist_ok=True)
+        stale_admin = runs_dir / "admin-spec-a-1780000001.jsonl"
+        stale_admin.write_text(json.dumps({"type": "running"}) + "\n", encoding="utf-8")
+        old = time.time() - 3600
+        os.utime(stale_admin, (old, old))
+        entry = {"status": "testing", "updated": utcnow_iso()}
+        with mock.patch("core.admin_monitor._pgrep_live_worktree", return_value=False):
+            from core.admin_monitor import _has_recent_spec_run
+            # 过期 admin run 排除后 → 无有效 run → False（与无文件一致）
+            assert _has_recent_spec_run(proot, "spec-a", time.time(), 120) is False
+            assert spec_is_undriven(proot, "spec-a", entry) is True
+
+
+class TestAdminDispatchMutualExclusion:
+    """verifier 重验派发与在飞 Administrator run 互斥（fix-recovery-path-blockers D2/D2b）。
+
+    守卫按 spec 单键聚合、覆盖任意 signal_type；判定异常 fail-open 放行；
+    唤起路径同步抑制重复 Administrator。依赖模块级 ``_spec_has_active_admin_run``
+    单一归并实现。
+    """
+
+    # ── 辅助：带 transition_gate/update_spec 的 state_machine 替身 ──
+
+    def _reset_sm(self, specs: dict):
+        class _SM:
+            def __init__(self, data):
+                self._specs = data
+
+            def read_one(self, name):
+                return self._specs.get(name)
+
+            def transition_gate(self, *a, **k):
+                pass
+
+            def update_spec(self, name, updates):
+                self._specs[name].update(updates)
+
+        return _SM(specs)
+
+    def test_inflight_admin_suppresses_verifier_dispatch(self, tmp_path):
+        """在飞 admin run（pending 且无终结兄弟）→ _reset_orphaned_after_disposition 不派发 verifier。"""
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "testing", "updated": utcnow_iso()},
+        })
+        mon.store.append({
+            "kind": DISPOSITION,
+            "signal_type": "orphaned_state",
+            "spec": "spec-a",
+            "admin_run_id": "admin-spec-a-1780000001",
+            "status": "pending",
+            "description": "处置中",
+        })
+        dispatched = []
+
+        class _Pm:
+            def handle_event(self, kind, name, entry):
+                dispatched.append((kind, name))
+
+        mon.state_machine = self._reset_sm({"spec-a": {"status": "testing"}})
+        mon.pm_engine = _Pm()
+        mon._reset_orphaned_after_disposition({
+            "spec": "spec-a", "signal_type": "orphaned_state",
+        })
+        assert dispatched == []  # 不派发 verifier（守卫命中）
+
+    def test_inflight_guard_exception_fails_open(self, tmp_path):
+        """guard 判定抛异常 → fail-open 仍派发（守卫故障不阻断恢复）。"""
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "testing", "updated": utcnow_iso()},
+        })
+        dispatched = []
+
+        class _Pm:
+            def handle_event(self, kind, name, entry):
+                dispatched.append((kind, name))
+
+        bad_store = mock.Mock()
+        bad_store.read_all.side_effect = RuntimeError("store unreadable")
+        mon.state_machine = self._reset_sm({"spec-a": {"status": "testing"}})
+        mon.store = bad_store
+        mon.pm_engine = _Pm()
+        mon._reset_orphaned_after_disposition({
+            "spec": "spec-a", "signal_type": "orphaned_state",
+        })
+        assert dispatched == [("spec_implemented", "spec-a")]  # fail-open 放行
+
+    def test_no_inflight_admin_dispatches_verifier(self, tmp_path):
+        """无在飞 admin（已终结记录）→ 正常派发 verifier。"""
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "testing", "updated": utcnow_iso()},
+        })
+        # 已终结的 disposition 记录不算在飞（by_run 归并：final 有记录即排除）
+        mon.store.append({
+            "kind": DISPOSITION,
+            "signal_type": "orphaned_state",
+            "spec": "spec-a",
+            "admin_run_id": "admin-spec-a-1780000001",
+            "status": "resolved",
+            "result": "resolved",
+        })
+        dispatched = []
+
+        class _Pm:
+            def handle_event(self, kind, name, entry):
+                dispatched.append((kind, name))
+
+        mon.state_machine = self._reset_sm({"spec-a": {"status": "testing"}})
+        mon.pm_engine = _Pm()
+        mon._reset_orphaned_after_disposition({
+            "spec": "spec-a", "signal_type": "orphaned_state",
+        })
+        assert dispatched == [("spec_implemented", "spec-a")]
+
+    def test_handle_signal_skips_invoke_when_inflight(self, tmp_path):
+        """_handle_signal 存在在飞 admin run 时 _invoke_administrator 不被调用，信号仍落 store。"""
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "testing", "updated": utcnow_iso()},
+        })
+        mon.store.append({
+            "kind": DISPOSITION,
+            "signal_type": "verify_env_blocked",  # 非 orphaned_state 的在飞处置
+            "spec": "spec-a",
+            "admin_run_id": "admin-spec-a-1780000002",
+            "status": "pending",
+            "description": "处置中",
+        })
+        signal = {
+            "spec": "spec-a", "signal_type": "orphaned_state",
+            "severity": "major", "description": "孤儿信号", "evidence": "e",
+        }
+        with mock.patch.object(mon, "_invoke_administrator") as inv:
+            mon._handle_signal(signal)
+        inv.assert_not_called()
+        # 信号仍按既有语义落 store（不丢痕）
+        stored = [r for r in mon.store.read_all() if r.get("kind") == SIGNAL]
+        assert any(r.get("spec") == "spec-a" and r.get("signal_type") == "orphaned_state"
+                   for r in stored)
+
+    def test_handle_signal_covers_any_signal_type(self, tmp_path):
+        """守卫覆盖非 orphaned_state 的 signal_type：在飞处置为 verify_env_blocked 时同样抑制唤起。"""
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "testing", "updated": utcnow_iso()},
+        })
+        mon.store.append({
+            "kind": DISPOSITION,
+            "signal_type": "verify_env_blocked",
+            "spec": "spec-a",
+            "admin_run_id": "admin-spec-a-1780000003",
+            "status": "pending",
+            "description": "环境阻塞处置中",
+        })
+        # 不同 signal_type 的新信号（如 stuck）也应被拦截——守卫按 spec 聚合
+        signal = {
+            "spec": "spec-a", "signal_type": "stuck",
+            "severity": "major", "description": "stuck 信号", "evidence": "e",
+        }
+        with mock.patch.object(mon, "_invoke_administrator") as inv:
+            mon._handle_signal(signal)
+        inv.assert_not_called()
+
+
 # ── 2026-09-18 取证：已入队待槽 ≠ 无驱动（条件 ④）─────────────────
 
 class TestQueuedDispatchSuppressesOrphanedProbe:

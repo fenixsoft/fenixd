@@ -102,6 +102,81 @@ class TestRecoverOneInconclusiveHold(unittest.TestCase):
         self.pm.handle_event.assert_not_called()
 
 
+class TestRecoverTestingAdminGuard(unittest.TestCase):
+    """_recover_testing 派发前 admin 并发守卫（fix-recovery-path-blockers D2/2.3）。
+
+    守卫经两条无需新注入的通路探测并联：(a) AdminStore + 模块级
+    ``_spec_has_active_admin_run``（与 AdminMonitor 同源归并）；(b)
+    ``agent_runner.running_run_ids()`` 中存在 ``admin-<spec>-`` 前缀 run。
+    任一成立 → 跳过 spec_implemented 重验派发；判定异常 fail-open 放行。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        (Path(self.tmpdir) / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.state_path = Path(self.tmpdir) / ".fenix" / "STATE.md"
+        self.logger = MagicMock()
+        self.sm = StateMachine(self.state_path, self.logger)
+        from core.event_bus import EventBus
+        self.pm = MagicMock()
+        self.pm.project_root = self.tmpdir
+        self.bus = EventBus(self.state_path, self.sm, self.pm, {}, self.logger)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_inflight_admin_skips_recovery_dispatch(self):
+        """在飞 admin run（守卫命中）→ handle_event 不被调用、日志含跳过说明。"""
+        entry = {"status": "testing", "updated": "2026-09-18T00:00:00+00:00"}
+        with patch("core.admin_monitor._pgrep_live_worktree", return_value=False):
+            with patch.object(self.bus, "_admin_inflight_guard", return_value=True) as guard:
+                self.bus._recover_testing("spec-a", entry)
+        guard.assert_called_once_with("spec-a")
+        self.pm.handle_event.assert_not_called()
+        info_calls = [str(c) for c in self.logger.info.call_args_list]
+        self.assertTrue(
+            any("admin 处置在飞" in c for c in info_calls),
+            f"日志应含跳过说明: {info_calls}",
+        )
+
+    def test_no_inflight_admin_dispatches_once(self):
+        """无在飞 admin → handle_event 被调用一次。"""
+        entry = {"status": "testing", "updated": "2026-09-18T00:00:00+00:00"}
+        with patch("core.admin_monitor._pgrep_live_worktree", return_value=False):
+            with patch.object(self.bus, "_admin_inflight_guard", return_value=False):
+                self.bus._recover_testing("spec-b", entry)
+        self.pm.handle_event.assert_called_once_with(
+            "spec_implemented", "spec-b", entry
+        )
+
+    def test_inflight_guard_via_adminstore_pathway(self):
+        """经 AdminStore 通路（非 pm_engine.admin_monitor 引用）判定在飞。"""
+        from core.admin_store import AdminStore, DISPOSITION
+        store = AdminStore(self.tmpdir, self.logger)
+        store.append({
+            "kind": DISPOSITION,
+            "signal_type": "verify_env_blocked",  # 非 orphaned_state 的在飞处置
+            "spec": "spec-c",
+            "admin_run_id": "admin-spec-c-1780000001",
+            "status": "pending",
+            "description": "在飞处置",
+        })
+        self.pm.agent_runner = None  # 切断通路(b)，验证通路(a)独立判定
+        entry = {"status": "testing", "updated": "2026-09-18T00:00:00+00:00"}
+        with patch("core.admin_monitor._pgrep_live_worktree", return_value=False):
+            self.bus._recover_testing("spec-c", entry)
+        self.pm.handle_event.assert_not_called()
+
+    def test_inflight_guard_via_running_run_ids_pathway(self):
+        """经 agent_runner 进程表通路判定在飞（admin-<spec>- 前缀 run 存活）。"""
+        self.pm.agent_runner = MagicMock()
+        self.pm.agent_runner.running_run_ids.return_value = ["admin-spec-d-1780000002"]
+        entry = {"status": "testing", "updated": "2026-09-18T00:00:00+00:00"}
+        with patch("core.admin_monitor._pgrep_live_worktree", return_value=False):
+            self.bus._recover_testing("spec-d", entry)
+        self.pm.handle_event.assert_not_called()
+
+
 class TestEventBusHookDispatch(unittest.TestCase):
     """add-spec-hooks 3.1/6.3：EventBus 状态 diff 触发 hook 分发。
 

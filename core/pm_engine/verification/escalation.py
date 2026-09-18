@@ -11,6 +11,7 @@ import json
 import os
 import re
 import tempfile
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,6 +22,15 @@ from core.state_machine import ENV_BLOCK_ROUNDS_FIELD, FREEZE_ERROR_PREFIX
 # judge-scenario-repair：judge 原地场景修复预算（上限重入轮数）
 # 2026-09-18：2 → 3（与 pipeline.py 同步；实证第 3 轮才出正确修复）
 _SCENARIO_REPAIR_MAX_ROUNDS = 3
+
+# fix-recovery-path-blockers D3：预算耗尽重验延时常量（30 分钟，
+# 与 schedule.poll_interval_minutes 缺省对齐）。定时器管准点、周期扫描管兜底
+# ——daemon 重启后定时器丢失，靠 `_dispatch_backoff_until` 兜底
+# （spec_is_undriven 条件③ 在退避窗内为真、探测器静默；到期后
+# event_bus._recover_testing 周期扫描拾取，最坏延迟 = 一个 poll_interval）。
+# MUST NOT 误引 `check_scheduling_deadlines`——它只覆盖 drafted/ready 拾取，
+# testing 态不在其覆盖范围。
+_SCENARIO_REPAIR_REVERIFY_DELAY_SECONDS = 1800
 
 
 def _handle_env_blocked_inconclusive(pipeline, spec_name: str, report: dict) -> bool:
@@ -1174,3 +1184,147 @@ def _write_inconclusive_loop_signal(
             f"inconclusive_loop 信号写入失败 '{spec_name}': {e}",
         )
         return False
+
+
+def _schedule_scenario_repair_reverify(pipeline, spec_name: str) -> None:
+    """首次预算耗尽后排程一次确定性重验（fix-recovery-path-blockers D3）。
+
+    首次耗尽不再只写 error 干等——落一个显式、可观测的重验日程：
+      1. 写 ``_dispatch_backoff_until``（deadline = now + 重验延时常量）：
+         `spec_is_undriven` 条件 ③ 在退避窗内为真 → 15 分钟 orphaned_state
+         阈值先到期也不会成条（把「有意等待」结构化表达给探测器）；
+      2. 排程 ``threading.Timer``（daemon 线程）：到期回调入队 verifier +
+         `_process_queue` 触发派发（等价 ``_recover_testing`` 的
+         ``spec_implemented`` 语义——testing 态由 verifier 派发驱动）。
+
+    幂等：同 spec 已排程则不再重复（``_reverify_timers`` per-spec 判重集合，
+    仿 ``_schedule_instant_fail_recovery`` 的 ``_instant_fail_timers`` 模式）。
+    重验计时器在 daemon 重启后丢失（进程内对象）——属于预期，兜底由
+    ``_dispatch_backoff_until`` + ``event_bus._recover_testing`` 周期扫描承担；
+    MUST NOT 依赖「定时器与周期扫描只触发其一」——两者可能同时到期，幂等由
+    `_enqueue` 按 (spec, agent_type) 去重与 `_process_queue` 的
+    `_dispatch_backoffed` 门（queue.py:228/312）保证只起一次 verifier run。
+
+    Args:
+        pipeline: VerificationPipeline 实例（经 `_context` 触达 state_machine/
+                  enqueue/logger/pm_engine）。
+        spec_name: 预算耗尽的 spec 名。
+    """
+    # 幂等判重：同 spec 已排程重验定时器则直接返回（不排第二个）
+    timers = getattr(pipeline, "_reverify_timers", None)
+    if timers is None:
+        timers = set()
+        pipeline._reverify_timers = timers
+    if spec_name in timers:
+        pipeline._context.logger.debug(
+            "pm_engine",
+            f"重验日程已存在，幂等跳过 '{spec_name}'（fix-recovery-path-blockers D3）",
+        )
+        return
+    # 写 _dispatch_backoff_until：退避窗内 spec_is_undriven 条件③ 为真，
+    # 探测器静默；到期后由定时器（主）+ 周期扫描（兜底）触发重验。
+    deadline_epoch = int(time.time()) + _SCENARIO_REPAIR_REVERIFY_DELAY_SECONDS
+    try:
+        pipeline._context.state_machine.update_spec(
+            spec_name,
+            {
+                "_dispatch_backoff_until": deadline_epoch,
+            },
+        )
+    except Exception as e:
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"重验日程写 _dispatch_backoff_until 失败 '{spec_name}'"
+            f"（不阻断排程）: {type(e).__name__}: {e}",
+        )
+
+    def _on_reverify_due(name: str = spec_name) -> None:
+        """定时器到期回调：入队 verifier + 触发派发（幂等，多定时器并发安全）。"""
+        # 清掉判重标记：允许未来再次进入排程路径（若再次耗尽走升级通道）
+        timers.discard(name)
+        pipeline._context.logger.info(
+            "pm_engine",
+            f"重验日程到期，入队 verifier '{name}'（fix-recovery-path-blockers D3）",
+        )
+        try:
+            pipeline._context.enqueue(name, "verifier")
+        except Exception as e:
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"重验日程到期入队异常 '{name}': {type(e).__name__}: {e}",
+            )
+            return
+        # 触发派发：经 pipeline._pm 门面回引（design D3 规则 3）——_context
+        # 无 pm_engine 成员，MUST NOT 从 _context 取。
+        pm_engine = getattr(pipeline, "_pm", None)
+        if pm_engine is not None:
+            try:
+                pm_engine._process_queue()
+            except Exception as e:
+                pipeline._context.logger.warning(
+                    "pm_engine",
+                    f"重验日程到期 _process_queue 异常 '{name}': "
+                    f"{type(e).__name__}: {e}",
+                )
+
+    timer = threading.Timer(_SCENARIO_REPAIR_REVERIFY_DELAY_SECONDS, _on_reverify_due)
+    timer.daemon = True
+    timers.add(spec_name)
+    timer.start()
+    pipeline._context.logger.info(
+        "pm_engine",
+        f"'{spec_name}' 场景原地修复预算耗尽，已排程重验"
+        f"（{_SCENARIO_REPAIR_REVERIFY_DELAY_SECONDS}s 后重验）— "
+        f"fix-recovery-path-blockers D3",
+    )
+
+
+def _escalate_scenario_repair_exhausted(pipeline, spec_name: str) -> None:
+    """场景原地修复预算再次耗尽 → 升级人工裁决（fix-recovery-path-blockers D3）。
+
+    首次耗尽已排程重验仍不收敛（``_scenario_repair_exhausted_rounds >= 1``）
+    → 走既有升级通道呼叫人工：spec 保持 testing、不排程。signal_type 复用
+    既有场景缺陷族 ``scenario_defect_reroute_exhausted``（语义同族：场景缺陷
+    修复预算耗尽升级人工）。escalation 记录按 (spec, signal_type) 由
+    ``unhandled_for`` 节流——同 spec 已存在未处理的同族升级则不重复告警。
+
+    Args:
+        pipeline: VerificationPipeline 实例（经 `_context.escalation_notifier`
+                  升级人工）。
+        spec_name: 再次耗尽的 spec 名。
+    """
+    pipeline._context.logger.error(
+        "pm_engine",
+        f"场景原地修复预算再次耗尽 '{spec_name}' — 升级人工，"
+        f"不再排程重验（fix-recovery-path-blockers D3）",
+    )
+    try:
+        pipeline._context.escalation_notifier(
+            spec_name=spec_name,
+            signal_type="scenario_defect_reroute_exhausted",
+            severity="major",
+            description=(
+                f"'{spec_name}' 场景原地修复预算耗尽且重验后仍不收敛"
+                f"（{_SCENARIO_REPAIR_MAX_ROUNDS} 轮原地修复 + 1 次重验日程）"
+                f"— 已停止重验，升级人工裁决，spec 保持 testing"
+            ),
+            evidence=(
+                f"spec={spec_name}; scenario_repair_max_rounds="
+                f"{_SCENARIO_REPAIR_MAX_ROUNDS}; "
+                f"reverify_delay_seconds={_SCENARIO_REPAIR_REVERIFY_DELAY_SECONDS}"
+            ),
+            recommended_action=(
+                "检查失败场景文件（.fenix/verify-progress/"
+                f"{spec_name}/test_scenarios.json）与验证报告，人工裁决："
+                "① admin 场景修复通道修场景（schema 门内）；② 确认为真产品缺陷"
+                "则重置分类/直接打回 implementer；③ 场景集已过时则删除冻结集"
+                "批准重新出题；④ 处置完成后若需重新自动重验可 unfreeze_spec"
+                "（清零耗尽计数，重新获得首次排程重验体验）。"
+            ),
+        )
+    except Exception as e:
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"场景修复预算耗尽升级告警失败 '{spec_name}'（非阻塞）: "
+            f"{type(e).__name__}: {e}",
+        )

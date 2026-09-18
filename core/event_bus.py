@@ -254,11 +254,74 @@ class EventBus:
                 f"Skipping recovery for '{name}': testing 有驱动/有意等待中",
             )
             return
+        # fix-recovery-path-blockers D2：verifier 重验派发与在飞 admin run 互斥。
+        # admin 正在写 STATE/场景文件（test_scenarios.json）时重验会读半成品产物；
+        # 守卫覆盖该 spec 的**任意** signal_type 处置。在飞判定为真 → 跳过本次
+        # 重验派发（spec 保持 testing 原样）并记 INFO。
+        if self._admin_inflight_guard(name):
+            self.logger.info(
+                "event_bus",
+                f"Skipping recovery for '{name}': admin 处置在飞，"
+                f"verifier 重验派发互斥（fix-recovery-path-blockers D2）",
+            )
+            return
         self.logger.info(
             "event_bus",
             f"Recovery: re-triggering verify for undriven testing '{name}'",
         )
         self.pm_engine.handle_event("spec_implemented", name, entry)
+
+    def _admin_inflight_guard(self, spec: str) -> bool:
+        """verifier 派发前置守卫：该 spec 是否有在飞/待派发的 Administrator run。
+
+        fix-recovery-path-blockers D2：派发互斥守卫，取用面按 design D2——
+        PMEngine/PipelineContext 均**不持有** admin_monitor 引用，守卫经两条
+        **无需新注入**的通路探测并联：
+
+          (a) ``AdminStore(project_root, logger)`` 纯路径构造（admin_store.py），
+              读 ``read_all()`` 后套模块级 ``_spec_has_active_admin_run`` 归并
+              判定（与 AdminMonitor._has_active_admin_run_for_spec 同源，勿二次
+              漂移）——覆盖「pending 但进程已死」的残骸形态；
+          (b) ``agent_runner.running_run_ids()``（runner.py:4320）中存在
+              ``admin-<spec>-`` 前缀 run——admin run 经 ``_run_claude`` 注册进
+              ``_running_agents``（runner.py:3372），本通路只覆盖**进程存活**
+              的 admin run。
+
+        任一成立 → 返回 True（调用方跳过本次重验派发）；两路皆异常 → fail-open
+        返回 False 放行并记 WARNING（守卫故障不阻断恢复路径）。
+        """
+        project_root = getattr(self.pm_engine, "project_root", None)
+        admin_found = False
+        # 通路 (a)：AdminStore 纯路径构造 + 同源归并判定
+        if project_root is not None:
+            try:
+                from core.admin_store import AdminStore
+                from core.admin_monitor import _spec_has_active_admin_run
+
+                store = AdminStore(project_root, self.logger)
+                admin_found = _spec_has_active_admin_run(store, spec, logger=self.logger)
+            except Exception as e:
+                self.logger.warning(
+                    "event_bus",
+                    f"admin 在飞判定通路(a)异常 fail-open '{spec}': "
+                    f"{type(e).__name__}: {e}",
+                )
+        # 通路 (b)：进程表侧口径（互补：只含进程存活的 admin run）
+        if not admin_found:
+            agent_runner = getattr(self.pm_engine, "agent_runner", None)
+            if agent_runner is not None:
+                try:
+                    running = agent_runner.running_run_ids()
+                    admin_found = any(
+                        str(rid).startswith(f"admin-{spec}-") for rid in running
+                    )
+                except Exception as e:
+                    self.logger.warning(
+                        "event_bus",
+                        f"admin 在飞判定通路(b)异常 fail-open '{spec}': "
+                        f"{type(e).__name__}: {e}",
+                    )
+        return admin_found
 
     def _recover_ready(self, name: str, entry: dict):
         """recovery 的 ready 分支（fix-dispatch-orphan D4 白名单）。

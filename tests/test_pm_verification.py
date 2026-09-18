@@ -615,6 +615,136 @@ class TestJudgeScenarioRepair(unittest.TestCase):
         self.assertEqual(self.sm.read_one("demo-spec")["status"], "verified")
 
 
+class TestScenarioRepairReverifySchedule(unittest.TestCase):
+    """预算耗尽重验日程（fix-recovery-path-blockers D3/D4/D5）。
+
+    首次耗尽 → 计数 1 + 排程重验（_dispatch_backoff_until 已写）+ 不升级人工；
+    再次耗尽 → 升级人工不排程；排程幂等；重验轮重新获得完整修复预算；
+    计数随 verified 落定 / unfreeze_spec 清零、admin 处置复位（中间转换）不清零。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        (Path(self.tmpdir) / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.state_path = Path(self.tmpdir) / ".fenix" / "STATE.md"
+        self.logger = MagicMock()
+        self.sm = StateMachine(self.state_path, self.logger)
+        self.sm.add_spec("demo-spec", {"priority": 5})
+        self.sm.transition("demo-spec", "ready")
+        self.sm.transition("demo-spec", "implementing")
+        self.sm.transition("demo-spec", "implemented")
+        self.sm.transition("demo-spec", "testing")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _make_pipe(self):
+        """构造最小 VerificationPipeline 桩（类 test_scenario_reroute_gate._mk_pm）。"""
+        from types import SimpleNamespace
+        from core.pm_engine.verification import VerificationPipeline
+        pm = SimpleNamespace()
+        pm.project_root = Path(self.tmpdir)
+        pm.logger = MagicMock()
+        pm.state_machine = self.sm
+        pm.agent_runner = MagicMock()
+        pm._send_human_escalation_alert = MagicMock()
+        pm._enqueue = MagicMock()
+        pm._process_queue = MagicMock()
+        return VerificationPipeline(pm)
+
+    def test_first_exhaustion_schedules_reverify_and_counts(self):
+        """首次耗尽 → 计数递增 1、_dispatch_backoff_until 已写、error 含重验时刻、不升级人工。"""
+        from core.pm_engine.verification import _SCENARIO_REPAIR_MAX_ROUNDS
+        pipe = self._make_pipe()
+        self.assertTrue(pipe._handle_scenario_repaired(
+            "demo-spec", "scenario-repaired", _SCENARIO_REPAIR_MAX_ROUNDS))
+        entry = self.sm.read_one("demo-spec")
+        self.assertEqual(int(entry.get("_scenario_repair_exhausted_rounds")), 1)
+        # 排程生效：_dispatch_backoff_until 已写（退避窗内探测器静默）
+        self.assertGreater(int(entry.get("_dispatch_backoff_until") or 0), int(time.time()))
+        # error 含「已排程重验」+ 可读 ISO8601 重验时刻，且未被旧文案覆盖
+        err = str(entry.get("error") or "")
+        self.assertIn("已排程重验", err)
+        self.assertRegex(err, r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
+        self.assertNotIn("不再重入", err)
+        # 未升级人工
+        pipe._pm._send_human_escalation_alert.assert_not_called()
+        # 保持 testing（绝不误流转 verified/bug-found）
+        self.assertEqual(entry["status"], "testing")
+
+    def test_second_exhaustion_escalates_without_new_schedule(self):
+        """再次耗尽（计数 >= 1）→ 升级人工（既有场景缺陷族信号）、不新增排程。"""
+        from core.pm_engine.verification import _SCENARIO_REPAIR_MAX_ROUNDS
+        pipe = self._make_pipe()
+        self.sm.update_spec("demo-spec", {"_scenario_repair_exhausted_rounds": 1})
+        self.assertTrue(pipe._handle_scenario_repaired(
+            "demo-spec", "scenario-repaired", _SCENARIO_REPAIR_MAX_ROUNDS))
+        # 升级人工（signal_type 属既有场景缺陷族）
+        calls = pipe._pm._send_human_escalation_alert.call_args_list
+        self.assertTrue(calls)
+        self.assertEqual(calls[-1].kwargs.get("signal_type"), "scenario_defect_reroute_exhausted")
+        # 未新增排程：无 _reverify_timers 或其中不含该 spec
+        self.assertNotIn("demo-spec", getattr(pipe, "_reverify_timers", set()))
+        # error 不含「已排程重验」（再次态文案不同）
+        err = str((self.sm.read_one("demo-spec") or {}).get("error") or "")
+        self.assertNotIn("已排程重验", err)
+        self.assertEqual((self.sm.read_one("demo-spec") or {}).get("status"), "testing")
+
+    def test_schedule_idempotent_single_timer(self):
+        """排程幂等：重复进入排程路径不排第二个定时器。"""
+        from core.pm_engine.verification.escalation import _schedule_scenario_repair_reverify
+        pipe = self._make_pipe()
+        with patch("core.pm_engine.verification.escalation.threading.Timer") as timer_cls:
+            _schedule_scenario_repair_reverify(pipe, "demo-spec")
+            _schedule_scenario_repair_reverify(pipe, "demo-spec")
+        self.assertEqual(timer_cls.call_count, 1)
+        self.assertEqual(pipe._reverify_timers, {"demo-spec"})
+
+    def test_reverify_round_resets_repair_budget(self):
+        """排程触发的重验轮：入队 verifier（_repair_depth 从 0 起算）+ 触发派发。"""
+        from core.pm_engine.verification.escalation import _schedule_scenario_repair_reverify
+        pipe = self._make_pipe()
+        with patch("core.pm_engine.verification.escalation.threading.Timer") as timer_cls:
+            _schedule_scenario_repair_reverify(pipe, "demo-spec")
+            cb = timer_cls.call_args[0][1]  # 捕获到期回调并手动触发
+            cb()
+        # 回调：入队 verifier（新轮验证 _repair_depth=0 起算）→ _process_queue 派发
+        pipe._pm._enqueue.assert_called_once_with("demo-spec", "verifier")
+        pipe._pm._process_queue.assert_called_once()
+
+    def test_verified_clears_count(self):
+        """verified 落定清零耗尽计数（_record_verdict_adoption 内 verified 分支）。"""
+        from core.pm_engine.verification.verdict_evidence import _record_verdict_adoption
+        pipe = self._make_pipe()
+        self.sm.update_spec("demo-spec", {"_scenario_repair_exhausted_rounds": 1})
+        with patch("core.verify_report.record_verdict_round"), \
+                patch("core.verify_report.verdict_failed_ids", return_value=[]), \
+                patch("core.verify_report._sum_verify_chain_tokens", return_value=None):
+            _record_verdict_adoption(pipe, "demo-spec", "verified", report={})
+        self.assertEqual(
+            int((self.sm.read_one("demo-spec") or {}).get("_scenario_repair_exhausted_rounds") or 0), 0)
+
+    def test_unfreeze_clears_count(self):
+        """人工 unfreeze_spec 清零耗尽计数（对齐 _env_block_rounds 既有语义）。"""
+        pipe = self._make_pipe()
+        self.sm.update_spec("demo-spec", {"_scenario_repair_exhausted_rounds": 1})
+        self.sm.unfreeze_spec("demo-spec")
+        self.assertEqual(
+            int((self.sm.read_one("demo-spec") or {}).get("_scenario_repair_exhausted_rounds") or 0), 0)
+
+    def test_admin_reset_does_not_clear_count(self):
+        """admin 处置复位（transition_gate(testing) 直通道）不清零——生命周期累计语义。"""
+        pipe = self._make_pipe()
+        self.sm.update_spec("demo-spec", {"_scenario_repair_exhausted_rounds": 2})
+        # 复位直通道：transition_gate(testing) 幂等 + update error=None
+        self.sm.update_spec("demo-spec", {
+            "status": "testing", "error": None,
+            "_dispatch_backoff_until": 0,
+        })
+        self.assertEqual(
+            int((self.sm.read_one("demo-spec") or {}).get("_scenario_repair_exhausted_rounds") or 0), 2)
+
+
 class TestLocateAppBaseUrlFromError(unittest.TestCase):
     """环境门 _locate_app_base_url 须能从 navigate 失败的 error 文本提取 URL。
 

@@ -957,11 +957,17 @@ def _record_verdict_adoption(pipeline, spec_name: str, status: str, report=None)
     # hard cap 冻结标记（与 _verify_fail_rounds 的清零点对齐，D1 同语义）；
     # 打回轮（bug-found）不清零——失败链中计数跨轮累计直至上限。
     if status == "verified":
+        from core.state_machine import SCENARIO_REPAIR_EXHAUSTED_FIELD
+
         pipeline._context.state_machine.update_spec(
             spec_name,
             {
                 "_judge_rerun_count": 0,
                 "_judge_cap_frozen": False,
+                # fix-recovery-path-blockers D4：场景原地修复预算耗尽轮次与
+                # _judge_rerun_count 同生命周期——verified 落定清零，使成功
+                # 后的新一轮验证重新获得「首次耗尽排程重验」的完整体验。
+                SCENARIO_REPAIR_EXHAUSTED_FIELD: 0,
             },
         )
 

@@ -65,6 +65,7 @@ from core.state_machine import (
     INFRA_FAILURE_COUNT_FIELD,
     VERIFY_INFRA_ROUNDS_FIELD,
     INFRA_REFUNDED_RUN_IDS_FIELD,
+    SCENARIO_REPAIR_EXHAUSTED_FIELD,
 )
 
 # refactor-verification-module 阶段3.3：infra 失败归因/历史/回拨组已迁 infra_classify.py，
@@ -139,9 +140,12 @@ from core.pm_engine.verification.escalation import (
     _env_whitewash_gate,
     _escalate_env_blocked,
     _escalate_scenario_defect_reroute,
+    _escalate_scenario_repair_exhausted,
     _handle_env_blocked_inconclusive,
     _handle_judge_env_declared,
     _judge_bugs_declare_env,
+    _schedule_scenario_repair_reverify,
+    _SCENARIO_REPAIR_REVERIFY_DELAY_SECONDS,
     _scenario_defect_reroute_gate,
     _speculative_bug_found_gate,
     _update_warning_streaks,
@@ -985,20 +989,63 @@ class VerificationPipeline:
         if verifier_status != "scenario-repaired":
             return False
         if _repair_depth >= _SCENARIO_REPAIR_MAX_ROUNDS:
-            self._context.state_machine.update_spec(
-                spec_name,
-                {
-                    "error": (
-                        f"judge 场景原地修复预算耗尽（{_SCENARIO_REPAIR_MAX_ROUNDS} 轮）"
-                        f"— 保持 testing 等待下一轮重验，若仍场景缺陷将按既有升级路径处置"
-                    ),
-                },
-            )
-            self._context.logger.warning(
-                "pm_engine",
-                f"'{spec_name}' judge 场景修复预算耗尽 "
-                f"（{_SCENARIO_REPAIR_MAX_ROUNDS} 轮）— 不再重入",
-            )
+            # ── fix-recovery-path-blockers D3/D4/D5：预算耗尽两态处置 ──
+            # 先读跨轮持久计数、再分两条不同文案写（MUST NOT 先写旧文案再
+            # 补写新文案——后者会把首次排程的「下次重验时刻」立即覆盖掉，
+            # Dashboard/CLI 直读 error 字段，可观测目标即落空）。计数生命周期：
+            # verified 落定 + 人工 unfreeze_spec 两处清零；admin 处置复位 /
+            # 中间转换不清零（D4，防「毒 spec 借复位重置计数无限循环」）。
+            try:
+                exhausted_rounds = int(
+                    (self._context.state_machine.read_one(spec_name) or {}).get(
+                        SCENARIO_REPAIR_EXHAUSTED_FIELD, 0
+                    )
+                    or 0
+                )
+            except (TypeError, ValueError):
+                exhausted_rounds = 0
+            if exhausted_rounds == 0:
+                # 首次耗尽：落显式重验日程（排程定时器 + _dispatch_backoff_until
+                # 兜底）+ 计数递增为 1，保持 testing；MUST NOT 升级人工、
+                # MUST NOT 原地重入（设计 D3：立即原地重入会绕过
+                # _SCENARIO_REPAIR_MAX_ROUNDS 的防护语义）。
+                retry_at = int(time.time()) + _SCENARIO_REPAIR_REVERIFY_DELAY_SECONDS
+                retry_iso = datetime.fromtimestamp(retry_at, tz=timezone.utc).isoformat()
+                _schedule_scenario_repair_reverify(self, spec_name)
+                self._context.state_machine.update_spec(
+                    spec_name,
+                    {
+                        "error": (
+                            f"judge 场景原地修复预算耗尽（{_SCENARIO_REPAIR_MAX_ROUNDS} 轮）"
+                            f"— 已排程重验（{retry_iso}），不再消耗实现预算"
+                        ),
+                        SCENARIO_REPAIR_EXHAUSTED_FIELD: 1,
+                    },
+                )
+                self._context.logger.warning(
+                    "pm_engine",
+                    f"'{spec_name}' judge 场景修复预算耗尽 "
+                    f"（{_SCENARIO_REPAIR_MAX_ROUNDS} 轮）— 已排程重验"
+                    f"（{retry_iso}），不再重入",
+                )
+            else:
+                # 再次耗尽（已给过一次重验仍不收敛）：走既有升级通道呼叫人工，
+                # 保持 testing，不排程（升级通道见 _escalate_scenario_repair_exhausted）。
+                self._context.state_machine.update_spec(
+                    spec_name,
+                    {
+                        "error": (
+                            f"judge 场景原地修复预算耗尽（{_SCENARIO_REPAIR_MAX_ROUNDS} 轮）"
+                            f"且重验后仍不收敛 — 升级人工裁决，spec 保持 testing"
+                        ),
+                    },
+                )
+                self._context.logger.error(
+                    "pm_engine",
+                    f"'{spec_name}' judge 场景修复预算再次耗尽 "
+                    f"（{_SCENARIO_REPAIR_MAX_ROUNDS} 轮）— 升级人工，不再排程",
+                )
+                _escalate_scenario_repair_exhausted(self, spec_name)
             return True
         try:
             freeze_result = self._apply_scenario_freeze(spec_name)
