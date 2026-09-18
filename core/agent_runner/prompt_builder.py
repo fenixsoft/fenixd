@@ -709,9 +709,10 @@ class PromptBuilder:
     def _declared_reality_snapshot(self, spec_name: str) -> "dict | None":
         """「声明清单 × 仓库现实」快照（add-deliverable-declaration-triage PR2 2.1）。
 
-        仅对有 ``## Deliverables`` 声明段的 SPEC 干跑：以
-        ``extract_declared_entries`` 取原始条目（path+kind），对每个
-        new/modify/delete 路径做主树存在性检查与 basename 匹配，产出快照：
+        仅对有 ``## Deliverables`` 声明段的 SPEC 干跑：以统一解析入口
+        （add-declaration-relocation-protocol D1，分支/worktree 优先、主树回退，
+        与收工守卫同源）取原始条目（path+kind），对每个 new/modify/delete
+        路径做主树存在性检查与 basename 匹配，产出快照：
 
         ``{"entries": [{"path", "kind", "exists", "candidates"}]}``
 
@@ -726,13 +727,28 @@ class PromptBuilder:
         Returns:
             快照 dict 或 None。
         """
-        from core.deliverables import extract_declared_entries, match_basename_in_tree
+        from core.deliverables import match_basename_in_tree, resolve_effective_declaration
 
-        spec_dir = self._pm.project_root / "spec" / "changes" / spec_name
-        if not spec_dir.is_dir():
-            return None
+        # 分支/worktree 上下文：派发时从 spec 状态与 worktree_manager 解析
+        branch = None
+        worktree_path = None
         try:
-            entries = extract_declared_entries(spec_dir)
+            entry = self._pm.state_machine.read_one(spec_name) or {}
+            branch = entry.get("branch") or None
+            if branch:
+                worktree_path = self._pm.agent_runner.worktree_manager.find_worktree_path(
+                    branch
+                )
+        except Exception:
+            pass
+        try:
+            resolved = resolve_effective_declaration(
+                spec_name,
+                branch=branch,
+                worktree_path=worktree_path,
+                project_root=self._pm.project_root,
+            )
+            entries = resolved["entries"]
         except Exception:
             return None
         if not entries:

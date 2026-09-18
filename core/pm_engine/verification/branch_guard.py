@@ -153,53 +153,77 @@ def _implementer_zero_change(pipeline, spec_name: str, result) -> bool:
 def _deliverable_gate_missing(pipeline, spec_name: str, result) -> list:
     """交付物守卫：返回 SPEC 声明与实现分支现实的差异条目清单。
 
-    纯文件存在性检查（add-implementer-deliverable-gate D3）：从 SPEC 目录
-    提取声明路径，逐一在 ``result.branch`` 的 HEAD 提交中校验 blob 存在。
+    纯文件存在性检查（add-implementer-deliverable-gate D3）：从 SPEC
+    声明提取路径，逐一在 ``result.branch`` 的 HEAD 提交中校验 blob 存在。
     校验基准为实现分支（worktree 已清理，仅分支留存）。
 
-    提取器语义升级（add-deliverable-extractor-semantics）：仅
-    ``deliverables``（新建交付物）参与缺件判定；``references``（既有文件
-    引用）走软校验——缺失仅记审计日志（D4），不阻断、不重派、不改状态。
-    路径按字面校验（``normalize_check_path`` 已退役为恒等映射：
-    ``.fenix`` 自引用符号链接设计废弃后为实体目录，历史的前缀归一化
-    会在根路径同名文件存在时把 ``.fenix/x`` 缺件假放行）。
+    声明来源（add-declaration-relocation-protocol D1）：统一解析入口
+    ``resolve_effective_declaration`` 的分层结果（分支/worktree 版本优先、
+    主树回退）——MUST NOT 硬编码读主树 ``project_root/spec/changes/<spec>/
+    tasks.md``（后者是实现方与验收方错层的根因：上游重构致规划期声明路径
+    失效时，主树声明陈旧且永不满足，重派复用同分支原地打转）。
 
-    结构化返回（add-deliverable-delete-kind D3）：返回类型为
-    ``list[dict]``，每项 ``{"path": str, "kind": str,
-    "violation": "missing"|"undeleted"}``。``violation`` 语义由 ``kind``
-    决定——``new``/``modify``：分支 HEAD 无该 blob → ``missing``；
-    ``delete``：分支 HEAD 仍有该 blob → ``undeleted``（反判）。kind 来自
-    声明段 ``extract_declared_entries``；正则回退路径无 kind 概念，统一
-    按 non-delete 语义（缺失即 ``missing``）。
+    结构化返回（add-deliverable-delete-kind D3 + 收缩防护 D3 产出）：返回类型
+    为 ``list[dict]``，每项 ``{"path": str, "kind": str,
+    "violation": "missing"|"undeleted"|"removed"}``。``violation`` 语义由
+    ``kind`` 决定——``new``/``modify``：分支 HEAD 无该 blob → ``missing``；
+    ``delete``：分支 HEAD 仍有该 blob → ``undeleted``（反判）；``removed``
+    为收缩防护产出（基线路径在生效声明中被无声剔除，见
+    ``check_declaration_shrinkage``，与缺件同源入裁决流水线）。kind 来自
+    声明段条目；正则回退路径无 kind 概念，统一按 non-delete 语义（缺失即
+    ``missing``）。
 
     Returns:
         差异条目列表；空列表表示放行（含无路径 SPEC 跳过场景）。
     """
-    from core.deliverables import extract_declared, extract_declared_entries, extract_paths_typed
+    from core.deliverables import (
+        check_declaration_shrinkage,
+        extract_paths_typed,
+        load_declaration_baseline,
+        resolve_effective_declaration,
+    )
 
-    spec_dir = pipeline._context.project_root / "spec" / "changes" / spec_name
-    if not spec_dir.is_dir():
-        return []
-    # 声明优先（planner 交付契约）：tasks.md 有 `## Deliverables` 段时做机械
-    # 对账，不做正则语境猜测；无声明段回退 extract_paths_typed（向后兼容）。
-    typed = extract_declared(spec_dir)
-    decl_source = "declared"
-    if typed is None:
-        typed = extract_paths_typed(spec_dir)
+    project_root = pipeline._context.project_root
+    branch = getattr(result, "branch", None)
+    # 统一解析入口：worktree 内文件 > git show <branch> > 主树（D1）。
+    # worktree 路径：实现 run 收口时通常已清理，仅 fast-track 保留；有则传入
+    # （worktree 内是「在测的那份」的最高优先位）。worktree_manager 查询失败
+    # 静默跳过（fail-safe，回退分支/主树读取）。
+    worktree_path = None
+    if branch:
+        try:
+            worktree_path = pipeline._pm.agent_runner.worktree_manager.find_worktree_path(branch)
+        except Exception:
+            worktree_path = None
+    resolved = resolve_effective_declaration(
+        spec_name,
+        branch=branch,
+        worktree_path=worktree_path,
+        project_root=project_root,
+    )
+    typed = {"deliverables": resolved["deliverables"], "references": resolved["references"]}
+    decl_source = resolved["source"]
+    entries = resolved["entries"]
+    # 无声明段（含两处均不可用）：回退 extract_paths_typed（向后兼容存量 spec）。
+    # 回退读取目标 = 生效声明所在目录（worktree 内优先；分支版本无落盘位置时
+    # 回读主树目录，与解析回退语义一致）。
+    if not typed["deliverables"] and not typed["references"]:
+        fallback_dir = resolved.get("spec_dir") or (
+            project_root / "spec" / "changes" / spec_name
+        )
+        typed = extract_paths_typed(fallback_dir)
         decl_source = "extracted"
     declared = typed["deliverables"]
     references = typed["references"]
     if not declared and not references:
         # 无路径 SPEC：跳过守卫，行为退化到守卫上线前（向后兼容）
         return []
-    # kind 映射：声明段条目提供 path→kind（供反判 delete）；
+    # kind 映射：声明段条目提供 path→kind（供反判 delete / 收缩判定）；
     # 正则回退无 kind 概念，全部按 non-delete 语义（缺失即 missing）。
     kind_by_path: dict = {}
-    if decl_source == "declared":
-        for e in extract_declared_entries(spec_dir) or []:
+    if decl_source != "extracted":
+        for e in entries or []:
             kind_by_path[e["path"]] = e["kind"]
-    wm = pipeline._pm.agent_runner.worktree_manager
-    branch = getattr(result, "branch", None)
     if not branch:
         # 无分支无法校验存活交付物：保守放行（与既有零变更哨共用缺失判定），
         # 交由零变更哨/merge 流程兜底
@@ -207,7 +231,7 @@ def _deliverable_gate_missing(pipeline, spec_name: str, result) -> list:
 
     def _exists_on_branch(path: str) -> bool:
         # 字面路径校验（.fenix 前缀归一化已退役，见本方法 docstring）
-        return wm.file_exists_on_branch(branch, path)
+        return pipeline._pm.agent_runner.worktree_manager.file_exists_on_branch(branch, path)
 
     # 交付物（硬校验）：按 kind 区分违规类别——
     #   new/modify 缺失 → missing（既有一致行为）；
@@ -221,6 +245,44 @@ def _deliverable_gate_missing(pipeline, spec_name: str, result) -> list:
         else:
             if not _exists_on_branch(p):
                 violations.append({"path": p, "kind": kind, "violation": "missing"})
+
+    # 收缩防护（D3，add-declaration-relocation-protocol）：以派发时落盘的可信
+    # 基线快照为参照，基线路径在生效声明中被无声剔除（删条目/改 kind 绕门）→
+    # removed 违规，与缺件同源进入裁决流水线（2.6，MUST NOT 被排除/静默放行/
+    # 无界重派）。基线不可用（未落盘/读取失败）→ 保守降级不产出违规 + 审计留痕
+    # 「本轮未做收缩判定」（2.4）。
+    baseline = None
+    try:
+        baseline = load_declaration_baseline(spec_name, project_root)
+    except Exception as e:
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"基线快照读取异常 '{spec_name}'（收缩防护降级保守）: {e}",
+        )
+        baseline = None
+    if baseline is None:
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"本轮未做收缩判定 '{spec_name}'（基线快照缺失/不可用，"
+            f"保守不误伤正常轮次）",
+        )
+    else:
+        removed_items = check_declaration_shrinkage(
+            baseline,
+            typed,
+            entries or [],
+            branch,
+            project_root,
+        )
+        if removed_items:
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"收缩防护判定 '{spec_name}': {len(removed_items)} 条基线路径被"
+                f"无声剔除（removed）——走裁决流水线，不得静默放行",
+            )
+        # 合并入结构化返回（2.5）：removed 与 missing 同源供下游按 kind 分化
+        violations.extend(removed_items)
+
     violations.sort(key=lambda v: v["path"])
 
     # 引用（软校验，D4）：缺失仅审计留痕——引用错误不该阻断实现

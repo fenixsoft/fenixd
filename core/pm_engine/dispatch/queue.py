@@ -629,6 +629,24 @@ class QQQueueMixin:
                         self._pm.state_machine.update_spec(
                             spec_name, {TASK_GATE_REJECTIONS_FIELD: 0}
                         )
+                # ── 派发时落可信基线快照（add-declaration-relocation-protocol D3）──
+                # 把当前**主树**声明集合快照到 .fenix/verify-progress/<spec>/
+                # declaration-baseline.json（worktree 之外，实现 Agent 路径不写入），
+                # 作为收工守卫收缩防护（check_declaration_shrinkage）的独立参照系。
+                # 写入异常仅 WARNING 不阻塞派发（该轮收缩防护降级保守，见 2.4）。
+                try:
+                    from core.deliverables import snapshot_declaration_baseline
+
+                    snapshot_declaration_baseline(
+                        spec_name,
+                        f"dispatch-{int(time.time())}",
+                        self._pm.project_root,
+                    )
+                except Exception as e:
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"基线快照落盘失败 '{spec_name}'（仅 WARNING 不阻塞派发）: {e}",
+                    )
                 # 主树 stash 已收拢进 merge_back_from_branch 的 guard 原子段
                 # （fix-autostash-orphans）：锁内 stash→merge→pop，不再依赖
                 # 派发前 stash + 成功路径 pop 的长窗口配对（曾致 7 次改动滞留 stash）。

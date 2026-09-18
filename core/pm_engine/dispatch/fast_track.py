@@ -128,6 +128,24 @@ class FFastTrackMixin:
                 f"fast-track ensure_spec_committed 失败 '{spec_name}': {e}（非阻塞）",
             )
 
+        # ── 派发时落可信基线快照（add-declaration-relocation-protocol D3）──
+        # 把当前**主树**声明集合快照到 .fenix/verify-progress/<spec>/
+        # declaration-baseline.json（worktree 之外，实现 Agent 路径不写入），
+        # 作为收工守卫收缩防护的独立参照系。
+        # 写入异常仅 WARNING 不阻塞派发（收缩防护该轮降级保守）。
+        try:
+            from core.deliverables import snapshot_declaration_baseline
+
+            snapshot_declaration_baseline(
+                spec_name,
+                f"ft-dispatch-{int(time.time())}",
+                self._pm.project_root,
+            )
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"fast-track 基线快照落盘失败 '{spec_name}'（仅 WARNING 不阻塞）: {e}",
+            )
         try:
             result = self._pm.agent_runner.run_fast_track(spec_name)
         except Exception as e:
@@ -263,8 +281,15 @@ class FFastTrackMixin:
         missing = self._pm._deliverable_gate_missing(spec_name, result)
         if missing:
             self._keep_fast_track_worktree(spec_name, result)
-            self._handle_fast_track_deliverable_gate(spec_name, result, missing)
-            return
+            # 接入同源裁决流水线（4.4）：陈日重定位 / 预分类软化 / LLM 终审 /
+            # 防洗白复检与 full 车道一致，MUST NOT 直按缺件重派。裁决放行
+            # （action=proceed）→ 继续后续 merge 推进；handled（已终态处置：
+            # 重派/blocked）→ 直接 return。
+            adjudication = self._handle_fast_track_deliverable_gate(
+                spec_name, result, missing
+            )
+            if adjudication.get("action") != "proceed":
+                return
 
         # ── tasks.md 收口复检门禁（add-tasksmd-relint-gate）──────────────
         # 与 full 车道同语义的事后复检：fast-track 成功收口前以 worktree 内
@@ -907,32 +932,14 @@ class FFastTrackMixin:
         spec_name: str,
         result,
         missing: list,
-    ) -> None:
-        """fast-track 交付物守卫触发：缺件重派，3 次封顶。"""
-        spec_entry = self._pm.state_machine.read_one(spec_name) or {}
-        try:
-            retries = int(spec_entry.get("_retry_count", 0) or 0) + 1
-        except (TypeError, ValueError):
-            retries = 1
-        max_r = self._pm._get_config("agents.max_retries", 3)
-        # 按 kind 分化话术：undeleted 用「未删除」语义、missing 保持「缺件」语义
-        missing_q = "、".join(
-            (
-                f"{m.get('path', '?')}（{m.get('violation', 'missing')}）"
-                if isinstance(m, dict)
-                else str(m)
-            )
-            for m in missing
+    ) -> dict:
+        """fast-track 交付物守卫触发：接入同源裁决流水线（add-declaration-relocation-protocol 4.4）。
+
+        与 full 车道同源（``_adjudicate_deliverable_missing``），保持 LLM 终审 /
+        重定位 / 预分类软化 / 防洗白的统一行为与输出契约。重派时按 fast-track
+        车道入队（MUST NOT 直按缺件重派）。
+        """
+        adjudication = self._pm._adjudicate_deliverable_missing(
+            spec_name, result, None, missing, agent_type="fast-track"
         )
-        err_note = f"fast-track 交付物守卫：违规 [{missing_q}] — 重派补齐（第 {retries} 次）"
-        updates: dict = {
-            "status": "ready",
-            "error": err_note,
-            "_retry_count": retries,
-        }
-        if retries >= max_r:
-            updates["status"] = "blocked"
-            updates["error"] = f"fast-track 交付物守卫连续 {max_r} 次缺件 [{missing_q}] — blocked"
-        self._pm.state_machine.update_spec(spec_name, updates)
-        if updates["status"] != "blocked":
-            self._enqueue_front(spec_name, "fast-track")
+        return adjudication

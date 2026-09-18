@@ -393,13 +393,31 @@ class TestDeliverableGate(_GateFixture):
         self.assertEqual(int(entry["_retry_count"]), max_r)
 
     def test_missing_is_zero_cost(self):
-        """守卫零成本断言：仅调用 file_exists_on_branch（文件 stat），无 LLM/测试/网络。"""
+        """守卫零成本断言：仅做纯读（git show/cat-file 对象库读 + 文件 stat），
+        无 LLM/测试/网络。
+
+        add-declaration-relocation-protocol D1 后守卫声明来源走统一解析入口
+        （分支版本 git show 为纯对象库只读，允许；含主树回退文件读）；命题
+        「零成本」= 不触发 LLM/测试/网络，而不是禁止一切 subprocess。
+        """
         self.make_ready_spec("s1")
         self.write_spec_dir("s1", "- [ ] 1.1 写 `core/foo.py` 和 `tests/t.py`\n")
-        # 仅允许 worktree_manager.file_exists_on_branch 被调用；任何其它 subprocess/网络/LLM 调用即失败
+        # 仅允许 worktree_manager.file_exists_on_branch 与纯读 git（show/cat-file）；
+        # 任何 LLM/测试/网络/写操作 subprocess 调用即失败
         self.wm.file_exists_on_branch.return_value = False
+
+        def _allow_pure_read(cmd, *args, **kwargs):
+            if (
+                isinstance(cmd, list)
+                and len(cmd) >= 4
+                and cmd[0] == "git"
+                and cmd[3] in ("show", "cat-file")
+            ):
+                return mock.MagicMock(returncode=1, stdout="", stderr="")
+            raise AssertionError(f"unexpected subprocess: {cmd}")
+
         with mock.patch.object(self.engine, "_read_implementer_result", return_value=None), \
-             mock.patch("core.pm_engine.subprocess.run", side_effect=AssertionError("unexpected subprocess")):
+             mock.patch("core.pm_engine.subprocess.run", side_effect=_allow_pure_read):
             missing = self.engine._deliverable_gate_missing("s1", self.make_result())
         self.assertEqual(sorted(_paths_of(missing)),
                          sorted(["core/foo.py", "tests/t.py"]))
@@ -437,7 +455,11 @@ class TestDeliverableGateTyped(_GateFixture):
         self.assertEqual(self.run_gate(), [])
 
     def test_reference_missing_audits_only(self):
-        """引用缺失仅记审计日志（含 spec 与路径清单），不产生缺件/重派/状态变更。"""
+        """引用缺失仅记审计日志（含 spec 与路径清单），不产生缺件/重派/状态变更。
+
+        add-declaration-relocation-protocol D3 后守卫在引用缺失审计之外会产出
+        「基线快照缺失→本轮未做收缩判定」审计留痕（保守不误伤正常轮次）。
+        """
         self.make_ready_spec("s1")
         self.write_spec_dir("s1", _REFERENCE_ONLY_TASKS)
         self.wm.file_exists_on_branch.return_value = False
@@ -447,10 +469,15 @@ class TestDeliverableGateTyped(_GateFixture):
         result = self.engine._deliverable_gate_missing("s1", self.make_result())
 
         self.assertEqual(result, [])
-        self.assertEqual(len(capturing.warnings), 1)
-        args, kwargs = capturing.warnings[0]
-        self.assertEqual(args[0], "deliverable-reference-missing")
-        ctx = kwargs.get("context") or {}
+        # 至少有引用缺失审计 + 收缩防护基线缺失审计两条 warning
+        self.assertGreaterEqual(len(capturing.warnings), 1)
+        # 引用缺失 warning 存在且内容正确
+        ref_warnings = [
+            w for w in capturing.warnings
+            if w[0][0] == "deliverable-reference-missing"
+        ]
+        self.assertEqual(len(ref_warnings), 1)
+        ctx = ref_warnings[0][1].get("context") or {}
         self.assertEqual(ctx.get("spec"), "s1")
         self.assertEqual(sorted(ctx.get("missing_references") or []),
                          [".fenix/core/agent_runner.py",

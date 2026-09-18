@@ -606,14 +606,28 @@ class TestGuardPreclassify(_GuardPreclassifyFixture):
         self.assertEqual(outcome["remaining"], ["core/real.py"])
 
     def test_preclassify_exception_falls_back_to_judge(self):
-        """预分类异常 → 全量回退既有 judge 流程。"""
+        """预分类异常 → 全量回退既有 judge 流程。
+
+        add-declaration-relocation-protocol D1：预分类声明读取改经统一解析入口
+        （``resolve_effective_declaration``，worktree/分支优先、主树回退——测试
+        tmpdir 无 git 仓库，回退主树 spec 目录）。声明段无条目（两处均不可用 /
+        无 ``## Deliverables`` 段）→ fallback 回退既有 judge 流程。
+        """
         self.write_spec_dir(
             "- path: core/dashboard/static/dist/index.html\n  kind: modify\n")
         missing = ["core/dashboard/static/dist/index.html"]
         result = self.make_result()
-        # extract_declared_entries 返回 None（无声明段）→ fallback
-        with mock.patch("core.deliverables.extract_declared_entries",
-                        return_value=None):
+        # 无声明段（统一入口返回空条目）→ fallback
+        with mock.patch(
+            "core.deliverables.resolve_effective_declaration",
+            return_value={
+                "deliverables": [],
+                "references": [],
+                "entries": [],
+                "source": None,
+                "spec_dir": None,
+            },
+        ):
             outcome = self.dispatcher._preclassify_missing("s1", result, missing)
         self.assertEqual(outcome["action"], "fallback")
 
