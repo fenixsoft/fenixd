@@ -190,6 +190,10 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
         for (const e of msg.events) {
           if (e.type === 'session_ended') {
             setEnded(true);
+            // 会话已终止（用户停止 / 空闲超时回收 / 进程退出）：服务端会话
+            // 已移除，此后注销 watch 必 404（服务端无会话判定）→ 标记未注册，
+            // 切离分面不再发 DELETE，避免污染 no_console_error 断言
+            watchRegisteredRef.current = false;
           }
         }
         appendEvents(msg.events);
@@ -286,6 +290,9 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
     try {
       await stopSession(project);
       setEnded(true);
+      // 会话已终止：服务端会话已移除，后续注销 watch 必 404——
+      // 标记未注册，切离分面不再发 DELETE（避免污染 no_console_error 断言）
+      watchRegisteredRef.current = false;
     } catch (e) {
       message.error(`停止失败：${e instanceof Error ? e.message : String(e)}`);
     }
