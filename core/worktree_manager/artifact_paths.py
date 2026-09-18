@@ -7,8 +7,8 @@ artifact_paths — 构建产物路径判定器。
 可配置前缀 + 一组包级默认前缀」的判定器。原 `_is_build_artifact_path()` 是包级
 自由函数（`core/worktree_manager/__init__.py:74`），只有一条硬编码规则：路径以
 `core/dashboard/static/` 开头、且其下任一层级含 `dist` 目录。该判定被复用在多条
-语义不同的调用路径上，对「构建产物在仓库根」的项目形态（如 fenix-desktop 的
-根级 `dist/`、`fenix-newtab-v1.0.0.zip`）完全失效，故迁移为实例状态 + 可配置
+语义不同的调用路径上，对「构建产物在仓库根」的项目形态（如根级 `dist/`、
+`release-*.zip` 等发布产物）完全失效，故迁移为实例状态 + 可配置
 前缀/后缀通配。
 
 **调用点清单**（语义不同的调用路径）：
@@ -148,8 +148,8 @@ def validate_build_artifact_paths(value: Any) -> Optional[str]:
     if discarded:
         return (
             f"worktree.build_artifact_paths 含非法项（将被静默丢弃）：{discarded!r}。"
-            f"合法形态示例：目录前缀以 '/' 结尾（如 'dist/'），通配含 '*'"
-            f"（如 'fenix-newtab-*.zip'）；非字符串/绝对路径/含 '..' 段/未以 '/' "
+            f"合法形态示例：目录前缀以 '/' 结尾（如 'dist/'、'build/'），通配含 '*'"
+            f"（如 'release-*.zip'）；非字符串/绝对路径/含 '..' 段/未以 '/' "
             f"结尾的前缀均非法。保留项：{kept!r}"
         )
     return None

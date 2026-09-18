@@ -127,7 +127,7 @@ export default function VerifyPanel({ config, onSave, project, onConfigSynced }:
           由 .fenix/config.yaml 手工编写），供 merge-back WIP 重叠检查把产物与
           语义内容区分处理（产物对齐 HEAD、不进入 stash，避免 pop 冲突与误报
           告警）。支持目录前缀（如 dist/，须以 / 结尾）与文件通配（如
-          fenix-newtab-*.zip，含 *）；未配置（空）时回退框架默认仅在
+          release-*.zip，含 *）；未配置（空）时回退框架默认仅在
           core/dashboard/static 内判定。
         </Typography.Paragraph>
         {config.worktree?.build_artifact_paths?.length ? (
