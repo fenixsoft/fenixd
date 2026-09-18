@@ -76,6 +76,8 @@ _SOURCE_KEYS = [
     "admin.stuck_silence_minutes",
     "verify.static_scope",
     "verify.deps_mode",
+    # add-impl-code-review-gate：实现阶段末尾代码质量审查开关
+    "verify.impl_code_review",
     "verify.serving_reclaim.enabled",
     # add-planner-efficiency：planner 生成节流上限
     "verify.planner_max_concurrent",
@@ -177,6 +179,9 @@ def _managed_key_sources(raw: dict) -> dict:
             sources["verify.deps_mode"] = "project"
         if "planner_max_concurrent" in verify_src:
             sources["verify.planner_max_concurrent"] = "project"
+        # add-impl-code-review-gate：严格 bool 才标注 project（缺省/非法不标）
+        if isinstance(verify_src.get("impl_code_review"), bool):
+            sources["verify.impl_code_review"] = "project"
         sr_raw = verify_src.get("serving_reclaim")
         if isinstance(sr_raw, dict) and "enabled" in sr_raw:
             sources["verify.serving_reclaim.enabled"] = "project"
@@ -404,6 +409,10 @@ def read_config(scope_root, scope: str = "project") -> dict:
         pmc = verify_raw.get("planner_max_concurrent")
         if isinstance(pmc, int) and not isinstance(pmc, bool) and pmc >= 0:
             result["verify"]["planner_max_concurrent"] = pmc
+        # add-impl-code-review-gate：严格 bool 才回显，缺省不填充（与
+        # planner_max_concurrent「缺省不回显」同款，不破坏既有严格相等断言）
+        if isinstance(verify_raw.get("impl_code_review"), bool):
+            result["verify"]["impl_code_review"] = verify_raw["impl_code_review"]
         sr_raw = verify_raw.get("serving_reclaim")
         if isinstance(sr_raw, dict) and isinstance(sr_raw.get("enabled"), bool):
             result["verify"]["serving_reclaim"]["enabled"] = sr_raw["enabled"]
@@ -606,6 +615,9 @@ def read_effective_config(project_root) -> dict:
         pmc = verify_eff.get("planner_max_concurrent")
         if isinstance(pmc, int) and not isinstance(pmc, bool) and pmc >= 0:
             result["verify"]["planner_max_concurrent"] = pmc
+        # add-impl-code-review-gate：严格 bool 才回显，缺省不填充
+        if isinstance(verify_eff.get("impl_code_review"), bool):
+            result["verify"]["impl_code_review"] = verify_eff["impl_code_review"]
         sr_eff = verify_eff.get("serving_reclaim")
         if isinstance(sr_eff, dict) and isinstance(sr_eff.get("enabled"), bool):
             result["verify"]["serving_reclaim"]["enabled"] = sr_eff["enabled"]
@@ -739,6 +751,10 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
         pmc = patch["verify"].get("planner_max_concurrent")
         if isinstance(pmc, int) and not isinstance(pmc, bool) and pmc >= 0:
             merged["verify"]["planner_max_concurrent"] = pmc
+        # add-impl-code-review-gate：严格 bool 才合并（前置校验已拒绝非法值，
+        # 此处只应用合法值；缺省不写入——与 planner_max_concurrent 同款）
+        if isinstance(patch["verify"].get("impl_code_review"), bool):
+            merged["verify"]["impl_code_review"] = patch["verify"]["impl_code_review"]
     # add-spec-archive D5：archive.auto_threshold（非负整数，0=禁用，非法值静默忽略）
     if "archive" in patch and isinstance(patch["archive"], dict):
         at = patch["archive"].get("auto_threshold")
@@ -921,6 +937,14 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
                 return fail(
                     f"verify.planner_max_concurrent must be a non-negative integer "
                     f"(0=不节流): {pmc!r}"
+                )
+        # add-impl-code-review-gate：严格 bool 前置校验（非 bool 直接拒绝，
+        # 与同段 deps_mode 枚举校验的「非法值直接拒绝」语义一致，不落盘）
+        if "impl_code_review" in v_patch and v_patch["impl_code_review"] is not None:
+            if not isinstance(v_patch["impl_code_review"], bool):
+                return fail(
+                    f"verify.impl_code_review must be a boolean: "
+                    f"{v_patch['impl_code_review']!r}"
                 )
         sr_patch = v_patch.get("serving_reclaim")
         if isinstance(sr_patch, dict) and sr_patch.get("enabled") is not None and not isinstance(sr_patch["enabled"], bool):
@@ -1417,7 +1441,7 @@ _SYNC_PAGE_KEYS = {
             "verify_redo_budget",
         ],
     },
-    "verify": {"verify": ["static_scope", "deps_mode", "serving_reclaim"]},
+    "verify": {"verify": ["static_scope", "deps_mode", "impl_code_review", "serving_reclaim"]},
     "approval": {"gates": ["promote_mode", "approve_mode"]},
     "misc": {"archive": ["auto_threshold"]},
     "system": {

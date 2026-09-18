@@ -236,6 +236,10 @@ verify:
   #     node_modules（~1.6G/份，真拷贝），失败回退 npm install --prefer-offline。
   #   主树无 node_modules 时 hardlink 自动降级 prefer-offline（MUST NOT 失败）。
   deps_mode: "hardlink"
+  # 实现阶段末尾的代码质量审查开关（调用 ocr，alibaba open-code-review）：
+  # 开启后实现者会在收尾阶段调用 bin/ocr_review.py 审查本次改动并自行修正
+  # 真实问题；需要环境已安装 ocr，未安装时自动按 unavailable 降级跳过。
+  impl_code_review: false
   # verify-serving 目录生命周期回收（fix-verify-serving-disk-reclaim）：
   # daemon 启动 reconcile + 600s 周期清扫，对无主 worktree（spec 不在
   # changes/archive、未登记、无活进程、超宽限期）执行 git worktree remove --force

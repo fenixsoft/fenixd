@@ -1624,6 +1624,23 @@ class ConfigLoader:
         return at
 
     @classmethod
+    def get_impl_code_review_enabled(cls, config: Dict[str, Any]) -> bool:
+        """读取 ``verify.impl_code_review`` 开关（impl-code-review-gate）。
+
+        严格 bool 语义：仅当值为 Python ``True`` 时返回 True；值为 ``False``、
+        缺失、类型非法（int/str/None 等）、或 ``verify`` 节缺失/非 dict 时一律
+        返回 False（fail-open，脏值不中断派发）。
+
+        该键支持用户级默认 + 项目级覆盖（合并由既有 ``resolve_config`` 深合并
+        完成），本读取器只看合并后的结果。
+        """
+        verify = config.get("verify")
+        if not isinstance(verify, dict):
+            return False
+        val = verify.get("impl_code_review")
+        return val is True  # 严格 bool：1/"yes" 等非 bool 一律不算
+
+    @classmethod
     def get(cls, config: Dict[str, Any], dotted_key: str, default=None):
         """
         Get a nested config value by dotted key.

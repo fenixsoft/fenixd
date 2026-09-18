@@ -721,3 +721,84 @@ class TestSpecReviewPromptRegistration:
             f"AGENT_ROLES 与 KNOWN_AGENT_TYPES 不一致: "
             f"{keys ^ set(ConfigLoader.KNOWN_AGENT_TYPES)}"
         )
+
+
+# ── add-impl-code-review-gate 任务 7.5：收尾审查段注入断言 ────────────
+
+
+class TestImplCodeReviewSectionInjection:
+    """Scenario: 开关关闭时零注入 / 开关开启时两条实现车道均注入审查段。"""
+
+    # 关闭时（缺省）implementer 与 fast-track prompt 均不含审查相关内容
+    @pytest.mark.parametrize("agent_type", ["implementer", "fast-track"])
+    def test_disabled_no_review_section(self, tmp_path, agent_type):
+        proot = tmp_path / "proj"
+        _mk_spec_dir(proot, "demo")
+        runner = make_runner(proot)
+        runner.config = {"verify": {"impl_code_review": False}}
+        prompt = runner._prompt_builder._build_prompt("demo", agent_type)
+        assert "bin/ocr_review.py" not in prompt
+        assert "收尾代码质量审查" not in prompt
+        assert "code-review.json" not in prompt
+
+    # 缺省配置（无 verify 节）同样零注入
+    @pytest.mark.parametrize("agent_type", ["implementer", "fast-track"])
+    def test_no_verify_key_no_review_section(self, tmp_path, agent_type):
+        proot = tmp_path / "proj"
+        _mk_spec_dir(proot, "demo")
+        runner = make_runner(proot)
+        runner.config = {}
+        prompt = runner._prompt_builder._build_prompt("demo", agent_type)
+        assert "bin/ocr_review.py" not in prompt
+        assert "收尾代码质量审查" not in prompt
+
+    # 开启时 implementer 与 fast-track prompt 均含审查段
+    @pytest.mark.parametrize("agent_type", ["implementer", "fast-track"])
+    def test_enabled_injects_review_section(self, tmp_path, agent_type):
+        proot = tmp_path / "proj"
+        _mk_spec_dir(proot, "demo")
+        runner = make_runner(proot)
+        runner.config = {"verify": {"impl_code_review": True}}
+        prompt = runner._prompt_builder._build_prompt("demo", agent_type)
+        assert "bin/ocr_review.py" in prompt
+        assert "code-review.json" in prompt
+        assert ".fenix/verify-progress/demo/code-review.json" in prompt
+        assert "收尾代码质量审查" in prompt
+
+    # 审查段内声明裁量权归实现者
+    @pytest.mark.parametrize("agent_type", ["implementer", "fast-track"])
+    def test_review_section_declares_discretion(self, tmp_path, agent_type):
+        proot = tmp_path / "proj"
+        _mk_spec_dir(proot, "demo")
+        runner = make_runner(proot)
+        runner.config = {"verify": {"impl_code_review": True}}
+        prompt = runner._prompt_builder._build_prompt("demo", agent_type)
+        assert "裁量权归你" in prompt or "裁量权归实现者" in prompt
+        # 不得要求机械修正全部发现
+        assert "误报" in prompt
+
+    # 非实现车道（verifier）即使开关开启也零注入
+    def test_non_impl_agent_not_injected(self, tmp_path):
+        proot = tmp_path / "proj"
+        _mk_spec_dir(proot, "demo")
+        runner = make_runner(proot)
+        runner.config = {"verify": {"impl_code_review": True}}
+        for agent_type in ("verifier", "planner-plan", "planner-judge", "spec-review"):
+            prompt = runner._prompt_builder._build_prompt("demo", agent_type)
+            assert "bin/ocr_review.py" not in prompt, (
+                f"{agent_type} 不应含审查段"
+            )
+
+    # 段序：审查段位于非交互契约段之后
+    @pytest.mark.parametrize("agent_type", ["implementer", "fast-track"])
+    def test_review_section_after_noninteractive_contract(self, tmp_path, agent_type):
+        proot = tmp_path / "proj"
+        _mk_spec_dir(proot, "demo")
+        runner = make_runner(proot)
+        runner.config = {"verify": {"impl_code_review": True}}
+        prompt = runner._prompt_builder._build_prompt("demo", agent_type)
+        nc_pos = prompt.find("非交互契约")
+        cr_pos = prompt.find("收尾代码质量审查")
+        assert nc_pos >= 0, "缺少非交互契约段"
+        assert cr_pos >= 0, "缺少收尾审查段"
+        assert cr_pos > nc_pos, "审查段应在非交互契约段之后"

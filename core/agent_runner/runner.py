@@ -40,6 +40,7 @@ from core.agent_runner.result_gate import (  # noqa: F401
     _append_crosscheck_skipped,
     _check_agent_result_artifact,
     _check_artifact_json_file,
+    _check_impl_code_review_artifact,
     _check_impl_result_artifact,
     _check_partial_consistency,
     _check_success_completion,
@@ -142,6 +143,11 @@ CANCELLED_BY_ADMIN_ERROR_PREFIX = "cancelled by admin"
 # 语义化失败 error 以此标记开头，消费侧（verification.py 重试派发三分支外的
 # 其它失败分支）按温和处置识别为「人工接管让位」而非网关故障。
 RETRY_YIELDED_ERROR_PREFIX = "[retry-yielded]"
+
+# ── add-impl-code-review-gate：ocr 包装器默认可执行名 ──────────────────
+# ocr 可执行文件的默认裸名（包装器 bin/ocr_review.py 以 os.execvp 解析 PATH，
+# 裸名可用；模块级常量由 env 注入处引用，不在 agents 配置新增键）。
+DEFAULT_OCR_BIN = "ocr"
 
 # agent_type → spec 预期态（fix-verdict-dedup-resynthesis D4）：该 agent 正在
 # 跑时 spec 应处于此态；被人工接管（status 迁移/blocked/frozen 等）后，退避
@@ -426,6 +432,7 @@ class AgentRunner:
         "run_evolution": run_evolution,
         "_get_admin_model": _get_admin_model,
         "_check_agent_result_artifact": _check_agent_result_artifact,
+        "_check_impl_code_review_artifact": _check_impl_code_review_artifact,
         "_check_impl_result_artifact": _check_impl_result_artifact,
         "_check_success_completion": _check_success_completion,
         "_check_partial_consistency": _check_partial_consistency,
@@ -1202,6 +1209,67 @@ class AgentRunner:
                 pass
         return cfg_dir
 
+    # ── add-impl-code-review-gate：run 级 ocr 配置写入 ─────────────────────
+    # 写一份 run 级 .opencodereview/config.json 到 provider 隔离目录的
+    # ocrcfg/ 子目录，使 ocr 复用分配给本次 implementer run 的那个 provider
+    #（baseurl/apikey/model 与 fenix 记账同源）。包装器 bin/ocr_review.py 把
+    # HOME 指向该子目录后 exec ocr，ocr 读 $HOME/.opencodereview/config.json。
+
+    def _ocr_home_for_provider(self, provider_name: str) -> Path:
+        """返回包含 .opencodereview/config.json 的 HOME 目录（即 ocrcfg/ 本身）。
+
+        不变量：返回值 P 满足 (P / ".opencodereview" / "config.json").is_file()
+        当写入成功；ocr 只认 $HOME/.opencodereview/config.json，HOME 指到父
+        目录则配置文件永远读不到（design D2）。
+        """
+        return self.project_root / ".fenix" / "agent-config" / provider_name / "ocrcfg"
+
+    def _write_run_ocr_config(self, provider: dict, model: str) -> Optional[Path]:
+        """写 run 级 ocr 配置，返回 HOME 目录路径（失败返回 None）。
+
+        在 _ensure_agent_config_dir 建立的 provider 隔离目录下建 ocrcfg/
+        子目录，写 .opencodereview/config.json（原子替换，同款 _ensure_agent_config_dir
+        手法）。provider 名固定为 "fenix-impl"（避免与 ocr 内置预设名撞名）；
+        url 原样透传 provider["baseurl"]（不追加版本后缀，实测 ocr 自行拼
+        /v1/messages）。
+
+        Args:
+            provider: 已选定的 provider dict（含 name/baseurl/apikey）
+            model: 本轮实际生效的模型名（与 fenix 记账同源）
+        Returns:
+            HOME 目录路径（ocrcfg/ 本身），或写入失败时 None
+        """
+        try:
+            provider_name = provider.get("name", "unknown")
+            home_dir = self._ocr_home_for_provider(provider_name)
+            ocr_cfg_dir = home_dir / ".opencodereview"
+            ocr_cfg_dir.mkdir(parents=True, exist_ok=True)
+            config_path = ocr_cfg_dir / "config.json"
+            config_data = {
+                "provider": "fenix-impl",
+                "custom_providers": {
+                    "fenix-impl": {
+                        "api_key": provider.get("apikey", ""),
+                        "url": provider.get("baseurl", ""),
+                        "protocol": "anthropic",
+                        "model": model,
+                    }
+                },
+            }
+            # 原子替换（并发 run 写同一路径时安全）
+            tmp = ocr_cfg_dir / ".config.json.tmp"
+            tmp.write_text(
+                json.dumps(config_data, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            os.replace(tmp, config_path)
+            return home_dir
+        except (OSError, json.JSONDecodeError) as e:
+            logging.warning(
+                "[impl-code-review-gate] _write_run_ocr_config 失败，跳过 ocr 注入: %s", e
+            )
+            return None
+
     def _select_chain_candidate(self, chain, spec_name: str, agent_type: str,
                                  now: float | None = None) -> int:
         """在候选链上选择首个「未熔断且未处于 switch 冷却」的候选下标（add-provider-failover）。
@@ -1870,6 +1938,25 @@ class AgentRunner:
                         for k, v in (provider.get("env") or {}).items():
                             env_overrides[k] = v
                         model_override = model
+                        # add-impl-code-review-gate：run 级 ocr provider 注入——
+                        # 复用分配给本 run 的 provider（baseurl/apikey/model 与
+                        # fenix 记账同源，model 取 model_override 即本分支生效值）；
+                        # 开关关闭 / 写入失败时跳过（审查环境缺失不影响实现 run 主体）。
+                        from core.config import ConfigLoader as _CLOCR
+
+                        try:
+                            if _CLOCR.get_impl_code_review_enabled(self.config):
+                                ocr_home = self._write_run_ocr_config(provider, model_override)
+                                if ocr_home is not None:
+                                    env_overrides["FENIX_OCR_HOME"] = str(ocr_home)
+                                env_overrides["FENIX_OCR_BIN"] = DEFAULT_OCR_BIN
+                                # ocr node 启动器的版本检查开关——HOME 重定向到 run 级
+                                # 目录后避免 detached 拉起联网 update.js 的游离请求
+                                env_overrides["OCR_NO_UPDATE"] = "1"
+                        except Exception as e:
+                            logging.warning(
+                                "[impl-code-review-gate] ocr 配置注入异常，跳过: %s", e
+                            )
                     else:
                         # 未分配 agent（含 Administrator）走默认网关（cc-switch），--model 用
                         # 官方模型名常量，由 cc-switch 网关自行映射到可用模型。
