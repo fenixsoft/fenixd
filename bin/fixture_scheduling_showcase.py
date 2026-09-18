@@ -30,9 +30,12 @@
 """
 
 import argparse
+import json
+import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path("/root/scheduling-showcase")
@@ -61,13 +64,26 @@ def _git(*args):
 
 
 def _ensure_registered() -> None:
-    """登记到全局注册表；失败仅告警（~ auto-scan 仍可发现该项目）。"""
+    """登记到全局注册表（带夹具标记）；失败仅告警（~ auto-scan 仍可发现该项目）。
+
+    夹具项目须以 `fixture: true` 登记（fixture-project-governance）——读侧
+    跨项目聚合据此跳过夹具告警噪音。流程：
+      1. 先 `add_project(ROOT, fixture=True)`：新条目直接带标记写入；
+      2. 若因条目已存在而跳过（存量条目无标记），改走 `mark_fixture` 补写标记；
+      3. 任一步失败仅 WARN 不阻断（auto-scan 兜底可见性，标记缺失仅影响
+         告警聚合过滤，由 spec 场景复位契约后续覆盖）。
+    """
     try:
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
         from core.dashboard.registry import Registry
 
-        added, msg = Registry().add_project(ROOT)
-        print(f"registry: {'added' if added else 'present'} ({msg})")
+        added, msg = Registry().add_project(ROOT, fixture=True)
+        if added:
+            print(f"registry: added as fixture ({msg})")
+            return
+        # 条目已存在：显式补写夹具标记（存量条目无 fixture 键的场景）
+        updated, upd_msg = Registry().mark_fixture(ROOT, fixture=True)
+        print(f"registry: {'marked' if updated else 'present'} ({upd_msg})")
     except Exception as e:  # noqa: BLE001 注册失败不阻断 prepare
         print(f"WARN: registry 登记失败（依赖 auto-scan 兜底）: {e}", file=sys.stderr)
 
@@ -109,6 +125,54 @@ def _provision_from_template() -> None:
         shutil.copy2(src, dst)
 
 
+def _reset_alerts_baseline() -> None:
+    """把夹具 .fenix/admin_alerts.json 复位到空基线 `[]`（原子写）。
+
+    fixture-project-governance：seed 场景经 AdminStore.append 往夹具写入的
+    升级告警/处置记录是验证数据，若不清空会跨验证轮次永久累积（读侧跨项目
+    聚合已跳过夹具，但显式查询与 `--status` 仍可见，复位保持基线一致）。
+
+    写入 MUST 为原子写（同目录 tempfile.mkstemp + os.replace，与
+    AdminStore._write_unlocked 同形态）——夹具 .fenix/ 内有常驻 daemon 与
+    seed 场景的并发读-改-写，半写文件会被 AdminStore._read_unlocked 判为损坏
+    并隔离改名，使后续 api 场景读到空集。MUST NOT 触碰 admin_alerts.json.lock
+    （锁文件不属数据基线）。
+    """
+    alerts_path = ROOT / ".fenix" / "admin_alerts.json"
+    alerts_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path_str = tempfile.mkstemp(
+        prefix=".admin_alerts.",
+        suffix=".tmp",
+        dir=str(alerts_path.parent),
+    )
+    tmp_path = Path(tmp_path_str)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump([], f, ensure_ascii=False)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(str(tmp_path), str(alerts_path))
+    finally:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+
+
+def _alerts_count() -> int:
+    """读取夹具 admin_alerts.json 记录数；缺文件/损坏按 0（供 --status 只读核对）。"""
+    alerts_path = ROOT / ".fenix" / "admin_alerts.json"
+    try:
+        data = json.loads(alerts_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return 0
+    if not isinstance(data, list):
+        return 0
+    return sum(1 for e in data if isinstance(e, dict))
+
+
 def reset_fixture() -> int:
     try:
         (ROOT / ".fenix").mkdir(parents=True, exist_ok=True)
@@ -126,6 +190,10 @@ def reset_fixture() -> int:
     # 而 BASELINE_STATE 常量本就是权威基线）。
     (ROOT / ".fenix" / "STATE.md").write_text(BASELINE_STATE, encoding="utf-8")
     (ROOT / ".fenix" / "config.yaml").write_text(BASELINE_CONFIG, encoding="utf-8")
+
+    # 告警基线：复位 admin_alerts.json 为空数组（fixture-project-governance 4.1）——
+    # seed 写入的告警/处置记录是验证数据，不随 --reset 复位会跨验证轮次累积。
+    _reset_alerts_baseline()
 
     # 夹具 daemon 的 worktree 管理需要 git；丢历史后此处首次 init（含基线提交，
     # 给 worktree add 一个 HEAD 可依）。已存在则不动历史，避免每轮 reset 产生
@@ -157,6 +225,8 @@ def show_status() -> int:
         print(f"registered: {'scheduling-showcase' in names}")
     except Exception as e:  # noqa: BLE001
         print(f"registered: unknown ({e})")
+    # 告警基线只读核对（fixture-project-governance 4.2）：复位后应为 0
+    print(f"alerts:    {_alerts_count()} records（--reset 后应为 0）")
     return 0
 
 

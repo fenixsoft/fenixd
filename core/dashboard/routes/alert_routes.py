@@ -43,6 +43,8 @@ class H6AlertRoutesMixin:
         all_resolved = []
         total = 0
         for p in self.server.projects():
+            if p.get("fixture"):
+                continue  # fixture-project-governance：夹具项目告警为验证噪音，不进人工聚合
             if not p.get("exists"):
                 continue
             proot = Path(p["path"])
@@ -91,6 +93,8 @@ class H6AlertRoutesMixin:
 
         projects_out = []
         for p in self.server.projects():
+            if p.get("fixture"):
+                continue  # fixture-project-governance：夹具项目处置记录不进人工聚合视图
             if not p.get("exists"):
                 continue
             acts = dashboard_data.get_admin_activities(Path(p["path"]), spec=spec_name)
