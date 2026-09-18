@@ -18,6 +18,16 @@ function artifactPathRule(rules: unknown, value: unknown): Promise<void> {
   return Promise.resolve();
 }
 
+/** has_build_artifacts 三态表单值：'unset'（未裁决）/ 'true'（有产物）/ 'false'（无产物）。
+    antd Switch 无 indeterminate 语义，故用 Radio.Group 三选一承载（spec 6.3 约定）。 */
+export type HasBuildArtifactsState = 'unset' | 'true' | 'false';
+
+function toFormState(v: boolean | undefined): HasBuildArtifactsState {
+  if (v === true) return 'true';
+  if (v === false) return 'false';
+  return 'unset';
+}
+
 interface VerifyPanelProps {
   config: ConfigData;
   onSave: (values: Partial<ConfigData>) => Promise<void>;
@@ -31,6 +41,10 @@ export default function VerifyPanel({ config, onSave, project, onConfigSynced }:
   const [form] = Form.useForm();
   // 产物路径为项目级键：用户级作用域下只读展示（无 project 即用户级）
   const artifactEditable = Boolean(project);
+  // 三态联动：无产物（false）时路径列表隐藏并显示结案提示
+  const hasBuildArtifacts = Form.useWatch('has_build_artifacts', form) as
+    | HasBuildArtifactsState
+    | undefined;
 
   useEffect(() => {
     form.setFieldsValue({
@@ -41,6 +55,7 @@ export default function VerifyPanel({ config, onSave, project, onConfigSynced }:
       build_artifact_paths: (config.worktree?.build_artifact_paths || []).map(
         (p) => ({ path: p }),
       ),
+      has_build_artifacts: toFormState(config.worktree?.has_build_artifacts),
     });
   }, [config.verify, config.worktree, form]);
 
@@ -62,12 +77,22 @@ export default function VerifyPanel({ config, onSave, project, onConfigSynced }:
             .map((row: { path?: string }) => (row?.path || '').trim())
             .filter((p: string) => p.length > 0),
         };
+        // 三态 → 配置值：true/false 显式写回；'unset'（未配置）不携带该键
+        // （保持未裁决，由运行期信号兜底起草）
+        if (values.has_build_artifacts === 'true') {
+          payload.worktree.has_build_artifacts = true;
+        } else if (values.has_build_artifacts === 'false') {
+          payload.worktree.has_build_artifacts = false;
+        }
       }
       await onSave(payload);
     } catch (error) {
       console.error('Validation failed:', error);
     }
   };
+
+  const artifactsState = hasBuildArtifacts ?? toFormState(config.worktree?.has_build_artifacts);
+  const declaredNoArtifacts = artifactsState === 'false';
 
   return (
     <div>
@@ -191,45 +216,75 @@ export default function VerifyPanel({ config, onSave, project, onConfigSynced }:
         {/* 构建产物路径：标题与说明置于卡片外，与上方「验证契约」节同构 */}
         <h3 style={{ marginTop: 32 }}>构建产物路径</h3>
         <Text type="secondary">
-          worktree.build_artifact_paths —— 声明项目的构建产物路径，供 merge-back WIP
-          重叠检查把产物与语义内容区分处理（产物对齐 HEAD、不进入 stash，避免 pop
-          冲突与误报告警）。支持目录前缀（如 dist/，须以 / 结尾）与文件通配（如
-          release-*.zip，含 *）；留空时回退框架默认仅在 core/dashboard/static 内判定。
+          worktree.has_build_artifacts × worktree.build_artifact_paths —— 声明项目的
+          构建产物路径，供 merge-back WIP 重叠检查把产物与语义内容区分处理（产物对齐
+          HEAD、不进入 stash，避免 pop 冲突与误报告警）。支持目录前缀（如 dist/，须以
+          / 结尾）与文件通配（如 release-*.zip，含 *）。判定完全由配置驱动，无内置
+          默认路径：未配置（未裁决）时判定恒假，merge-back 会写信号呼叫系统自动起草；
+          已声明无产物时显式写 has_build_artifacts: false 结案（不得留空冒充）。
         </Text>
         <Card style={{ marginTop: 12 }} data-testid="artifact-paths-card">
           {artifactEditable ? (
-            <Form.List name="build_artifact_paths">
-              {(fields, { add, remove }) => (
-                <>
-                  {fields.map((field) => (
-                    <Space key={field.key} align="baseline" style={{ display: 'flex', marginBottom: 8 }}>
-                      <Form.Item
-                        name={[field.name, 'path']}
-                        rules={[{ validator: artifactPathRule }]}
-                        style={{ marginBottom: 0, minWidth: 280 }}
-                      >
-                        <Input placeholder="例如 dist/ 或 release-*.zip" data-testid="artifact-path-input" />
-                      </Form.Item>
+            <>
+              <Form.Item
+                name="has_build_artifacts"
+                label="项目存在构建产物（worktree.has_build_artifacts）"
+                extra={
+                  hasBuildArtifacts === 'unset' || hasBuildArtifacts === undefined
+                    ? '尚未配置，请手动填写或等待系统自动起草（运行期信号 + Administrator 兜底）'
+                    : undefined
+                }
+                data-testid="has-build-artifacts-form-item"
+              >
+                <Radio.Group data-testid="has-build-artifacts-radio">
+                  <Radio value="unset">未配置</Radio>
+                  <Radio value="true">有产物</Radio>
+                  <Radio value="false">无产物</Radio>
+                </Radio.Group>
+              </Form.Item>
+              {declaredNoArtifacts ? (
+                <Alert
+                  type="success"
+                  showIcon
+                  message="已声明本项目无构建产物"
+                  description="项目确定无构建产物；merge-back 将不再需要区分产物与语义内容。"
+                  data-testid="artifact-paths-no-artifacts-alert"
+                />
+              ) : (
+                <Form.List name="build_artifact_paths">
+                  {(fields, { add, remove }) => (
+                    <>
+                      {fields.map((field) => (
+                        <Space key={field.key} align="baseline" style={{ display: 'flex', marginBottom: 8 }}>
+                          <Form.Item
+                            name={[field.name, 'path']}
+                            rules={[{ validator: artifactPathRule }]}
+                            style={{ marginBottom: 0, minWidth: 280 }}
+                          >
+                            <Input placeholder="例如 dist/ 或 release-*.zip" data-testid="artifact-path-input" />
+                          </Form.Item>
+                          <Button
+                            type="text"
+                            danger
+                            icon={<MinusCircleOutlined />}
+                            aria-label="删除此行"
+                            onClick={() => remove(field.name)}
+                          />
+                        </Space>
+                      ))}
                       <Button
-                        type="text"
-                        danger
-                        icon={<MinusCircleOutlined />}
-                        aria-label="删除此行"
-                        onClick={() => remove(field.name)}
-                      />
-                    </Space>
-                  ))}
-                  <Button
-                    type="dashed"
-                    icon={<PlusOutlined />}
-                    onClick={() => add({ path: '' })}
-                    data-testid="artifact-path-add"
-                  >
-                    添加产物路径
-                  </Button>
-                </>
+                        type="dashed"
+                        icon={<PlusOutlined />}
+                        onClick={() => add({ path: '' })}
+                        data-testid="artifact-path-add"
+                      >
+                        添加产物路径
+                      </Button>
+                    </>
+                  )}
+                </Form.List>
               )}
-            </Form.List>
+            </>
           ) : (
             <>
               <Alert
@@ -238,6 +293,18 @@ export default function VerifyPanel({ config, onSave, project, onConfigSynced }:
                 message="构建产物路径为项目级设置，用户级作用域下不可编辑。请在页面右上角把「作用域」切换到对应项目后添加或修改。"
                 data-testid="artifact-paths-scope-hint"
               />
+              <div style={{ marginTop: 12 }}>
+                <Text>
+                  项目存在构建产物：{' '}
+                  {config.worktree?.has_build_artifacts === undefined && (
+                    <Text type="warning">未配置（未裁决，等待自动起草）</Text>
+                  )}
+                  {config.worktree?.has_build_artifacts === true && <Text>有产物</Text>}
+                  {config.worktree?.has_build_artifacts === false && (
+                    <Text>无产物（已声明）</Text>
+                  )}
+                </Text>
+              </div>
               {config.worktree?.build_artifact_paths?.length ? (
                 <ul style={{ margin: '12px 0 0', paddingLeft: 20 }}>
                   {config.worktree.build_artifact_paths.map((p, i) => (
@@ -247,9 +314,11 @@ export default function VerifyPanel({ config, onSave, project, onConfigSynced }:
                   ))}
                 </ul>
               ) : (
-                <Text type="secondary" style={{ display: 'block', marginTop: 12 }}>
-                  未配置（使用框架默认判定集合）
-                </Text>
+                config.worktree?.has_build_artifacts !== false && (
+                  <Text type="secondary" style={{ display: 'block', marginTop: 12 }}>
+                    未配置路径（未裁决，等待系统自动起草）
+                  </Text>
+                )
               )}
             </>
           )}

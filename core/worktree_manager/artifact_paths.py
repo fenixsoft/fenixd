@@ -128,19 +128,29 @@ def validate_build_artifact_paths(value: Any) -> Optional[str]:
 
 
 def worktree_config_view(raw: Any) -> dict:
-    """Dashboard 只读回显视图：worktree.build_artifact_paths（字符串列表）或空。
+    """Dashboard 只读回显视图：worktree.build_artifact_paths + has_build_artifacts。
 
-    read_config / read_effective_config 共用（evo-merge-back-wip-artifact-scope D6）：
-    从原始 dict（read_config 的 raw 或 effective）提取 worktree.build_artifact_paths。
-    非法形态（非列表/含非字符串项）回显空列表——与判定器 normalize_artifact_patterns
-    的 fail-safe 语义一致：非法即回退空集合，展示为「未配置」。
+    read_config / read_effective_config 共用（evo-merge-back-wip-artifact-scope D6 /
+    fix-artifact-paths-hardcoded-default D5）：从原始 dict（read_config 的 raw 或
+    effective）提取两键。build_artifact_paths 非法形态回显空列表；has_build_artifacts
+    缺省/非法值回显 None（三态语义——Must 回显 None 区分「未裁决」与「已声明无产物」，
+    MUST NOT 缺省填充 false，否则前端开关无法区分两态）。
     """
     wm = raw.get("worktree") if isinstance(raw, dict) else None
+    result: dict = {"build_artifact_paths": []}
     if isinstance(wm, dict):
         bap = wm.get("build_artifact_paths")
         if isinstance(bap, list) and all(isinstance(i, str) for i in bap):
-            return {"build_artifact_paths": list(bap)}
-    return {"build_artifact_paths": []}
+            result["build_artifact_paths"] = list(bap)
+        # has_build_artifacts：仅显式布尔值透传（回显 true/false），其余一律 None
+        hba = wm.get("has_build_artifacts")
+        if isinstance(hba, bool):
+            result["has_build_artifacts"] = hba
+        else:
+            result["has_build_artifacts"] = None
+    else:
+        result["has_build_artifacts"] = None
+    return result
 
 
 # ── 未裁决判定（三态表，fix-artifact-paths-hardcoded-default D2） ─────────
