@@ -72,7 +72,7 @@ fast-track 走独立分支（`queue.py:505-550`），该分支对 `_recovery_res
 
 **选择**：清锚点（`{"branch": None, "implementer_run": None, "_repair_awaiting_remerge": False}`）MUST 位于续做判定**之后**，且以 `resume_wt is None` 为前置条件；同时 `_fast_track_scale_tier` 写入保持原位（它不属于「本轮锚点」，清不清与续做无关）。
 
-**关键定序问题**：fast-track 分支当前把「规模预检结果写入」与「清锚点」放在一起。规模预检若判 `full` 会**提前 return**（降级重派 implementer）。此时若已清锚点，降级后的 implementer 派发将看不到 `_recovery_resume`——故清锚点 MUST 排在规模预检 return 之前不可行。
+**关键定序问题**：fast-track 分支当前把「规模预检结果写入」与「清锚点」放在一起。规模预检若判 `full` 会**提前 return**（降级重派 implementer）。若清锚点排在规模预检 return **之前**，降级后的 implementer 派发将看不到 `_recovery_resume`——故「先清锚点再降级」不可行，续做判定与清锚点 MUST 均落在 `tier == "full"` 早退路径**之后**。
 
 **落点**（精确到该分支内的顺序）：
 
@@ -108,11 +108,21 @@ fast-track 走独立分支（`queue.py:505-550`），该分支对 `_recovery_res
 
 **理由**：本变更的判据是「清锚点前 MUST 先消费 `_recovery_resume`」，若不固定这两处的语义，后续审查容易把它们误判为同类缺口并「修复」，反而破坏既有正确行为。
 
-### D6｜prompt 段落去重
+### D6｜prompt 段落去重与「恢复来源」判据
 
-**选择**：fast-track prompt 注入恢复续做注记时，与既有 `_fast_track_reuse_note` **互斥**——二者语义重叠（均为「延续已有成果」），同一次构建 MUST NOT 同时注入两条。
+**选择**：fast-track prompt 注入恢复续做注记时，与既有 `_fast_track_reuse_note` **择一**——二者语义重叠（均为「延续已有成果」），同一次构建 MUST NOT 同时注入两条。
 
-**实现口径**：`_recovery_resume_note` 与 `_fast_track_reuse_note` 都基于 `wm.get_reuse_record(spec_name)`，而续做路径的 `mark_reused` 与复用路径的 `_take_reusable_worktree` 写的是**同一张 `_active_reuse` 表**——故二者要么都命中要么都不命中，天然互斥。实现上让恢复续做注记**优先**（它是更精确的说明：指明了中断原因），命中时以它替代 reuse 注记。
+**来源问题的实证**：续做路径的 `mark_reused` 与复用路径的 `_take_reusable_worktree` 写的是**同一张 `_active_reuse` 表**（`legacy_registry.py:189-194` vs `:229/:249`），而写入该表的路径**并不只恢复续做**：
+
+- `keep_for_reuse` → `_take_reusable_worktree`（fast-track 打回重派，`worktree_manager.create` 于 `lifecycle.py:139-152` 认领）；
+- runner 跨 attempt 复用同一 worktree（`runner.py:2344-2350` 对 fast-track 补记 `mark_reused`）；
+- transient 终态失败保留现场（`runner.py:2963` 区域 `keep_for_reuse`）。
+
+因此「`get_reuse_record` 非空」**不能**推出「本轮是 daemon 重启后的恢复续做」。若按该判据在 fast-track 分支注入恢复注记，则**全部**普通打回重派/瞬断重试轮都会被注入「本 spec 的实现 run 曾因 daemon 重启/停机被中断」——归因错误，会误导 Agent 误判本轮性质。
+
+**结论（已写入 spec）**：恢复续做命中时 `mark_reused` MUST 携带恢复来源标记（`recovery=True`），`_recovery_resume_note` MUST 支持「要求恢复来源」的可选判据（缺省关闭 → implementer 分支既有调用逐字节不变）；fast-track 分支以该判据择一注入，未命中恢复来源时**退回** `_fast_track_reuse_note`（MUST NOT 让普通重派轮丢失既有继承注记）。
+
+**备选**：让 `_recovery_resume_note` 自带跨进程判据（如读 `.fenix/interrupted_runs.json` sidecar 判断本 spec 是否在册）。**理由（否决）**：sidecar 在成功恢复后即被消费/重写，判据不稳定且引入与干扰恢复链的耦合；来源标记随同一次 `mark_reused` 写入是零额外状态的确定做法。
 
 **备选**：两条都注入，靠文案自证不重复。**理由（否决）**：两段都在说「不要重做」，冗余注入浪费 token 且稀释注意力。
 

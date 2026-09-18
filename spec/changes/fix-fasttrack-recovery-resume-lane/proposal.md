@@ -21,7 +21,7 @@ Recovering interrupted SPEC '...' with preserved branch '...' (ahead of main)
 
 - **A｜fast-track 派发入口镜像续做消费（治本）**：`core/pm_engine/dispatch/queue.py` 的 `_run_agent_worker` fast-track 分支对齐 implementer 分支——读 `_recovery_resume` 标记与 `branch`，经 `wm.resolve_resume_site` 三态解析载体；**仅在 `resume_wt is None`（未命中续做）时才执行「清除旧锚点」**；命中时 `mark_reused` 登记继承痕迹并打 `Resume dispatch ...` 日志。
 - **B｜runner 载体透传贯通**：`AgentRunner.run_fast_track` 接受并透传 `pre_wt_path`（现状仅 `run_implementer`/`run_repair` 支持），使 dispatch 层解析出的恢复载体进入 `_execute_agent` 的 `st.wt_path`，**不新建 worktree**、走既有 `claude --resume` 断点续跑。
-- **C｜prompt 继承注记补 fast-track 分支**：`prompt_builder` 的 fast-track 分支注入 `_recovery_resume_note`（现状仅 implementer 分支注入 `prompt_builder.py:278`），向 Agent 说明「本 spec 的实现 run 曾因重启被中断、框架保留了你在分支上的已提交成果、从 tasks.md 第一个未勾选项继续、不重做不回滚」。
+- **C｜prompt 继承注记补 fast-track 分支**：`prompt_builder` 的 fast-track 分支注入 `_recovery_resume_note`（现状仅 implementer 分支注入 `prompt_builder.py:278`），向 Agent 说明「本 spec 的实现 run 曾因重启被中断、框架保留了你在分支上的已提交成果、从 tasks.md 第一个未勾选项继续、不重做不回滚」。注入 MUST 带**恢复来源判据**（`mark_reused(..., recovery=True)` + `_recovery_resume_note(..., require_recovery=True)`）：`get_reuse_record` 所读的 `_active_reuse` 同时被普通打回重派（`_take_reusable_worktree`）、跨 attempt 复用（`runner.py:2344-2350`）写入，无来源判据会把「曾因 daemon 重启被中断」的**错误归因**注入到每次普通重派轮；未命中恢复来源时 MUST 退回既有 `_fast_track_reuse_note`。（implementer 分支既有调用不传该判据，行为与文案逐字节不变。）
 - **D｜锚点失效条件收窄**：「锚点随实现轮次失效」在 fast-track 车道的落点补例外——失效判定 MUST 先消费 `_recovery_resume`，**续做载体命中时 MUST NOT 清空本轮锚点**；只有「未命中续做」（无标记 / 解析降级 / 零提交）才失效。（注：`recovery-branch-anchor` 能力由尚未归档的 `fix-recovery-branch-anchor-without-worktree` 引入，不在 `spec/specs/` 中，故本变更**不**对其发 MODIFIED，改由新能力 `fasttrack-recovery-resume` 覆盖 fast-track 车道上的这一约束。）
 - **E｜全部 fast-track 派发出口普查**：除首轮派发外，fast-track 的其余派发出口（规模预检降级 `full`、结果文件缺失/硬校验失败/零变更哨重派、transient 终态保留、repair lane fallback）MUST 逐一书面明确「是否消费恢复标记 / 是否清锚点 / 是否保留现场」，MUST NOT 存在无条件抹除可续做锚点的出口。`engine.py` 的 auto-recovery（stuck implementing）与 `rollback.py` 的派发异常回滚两处清锚点出口 MUST 一并纳入判据说明（前者是有意的「确认无存活子进程」重置，后者是「run 从未启动」回滚，二者与 `_recovery_resume` 的区分 MUST 在代码注释中固定）。
 - **F｜可观测性**：续做命中、载体解析降级、出口清锚点三类事件 MUST 各有日志（对齐 implementer 分支的 `Resume dispatch` / `Resume site unavailable`），使「本轮是续做还是从零」在日志中可直接判读。
@@ -46,7 +46,8 @@ Recovering interrupted SPEC '...' with preserved branch '...' (ahead of main)
 |---|---|
 | `core/pm_engine/dispatch/queue.py` | fast-track 分支镜像 implementer 的 `_recovery_resume` 消费（读标记 → `resolve_resume_site` → `pre_wt_path` → 仅未命中才清锚点 → `mark_reused` + 日志） |
 | `core/agent_runner/runner.py` | `run_fast_track` 增加 `pre_wt_path` 形参并透传 `_execute_agent` |
-| `core/agent_runner/prompt_builder.py` | fast-track 分支注入 `_recovery_resume_note`（与 `_fast_track_reuse_note` 并列，去重不重复注入同一语义段） |
+| `core/agent_runner/prompt_builder.py` | fast-track 分支按「恢复来源」判据择一注入恢复续做注记 / `_fast_track_reuse_note`；`_recovery_resume_note` 增加可选 `require_recovery` 形参（缺省不变） |
+| `core/worktree_manager/legacy_registry.py` | `mark_reused` 增加可选 `recovery` 形参（记录恢复来源，供 prompt 判据；缺省不写键） |
 | `core/pm_engine/dispatch/fast_track.py` | 全部重派出口的「消费/清锚点/保留现场」判据书面固定（含 `_downgrade_fast_track_scale` 降级 full 时的续做衔接） |
 | `docs/help/03-lifecycle.md` | 补 fast-track 车道的恢复续做语义说明 |
 
