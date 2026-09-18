@@ -162,6 +162,8 @@ SPEC 处于 `implementing`/`testing` 这类中断状态时，daemon 重启会自
 
 **保留续做 vs 清空重建**：`implementing` 中断时，若发现可保留的分支（相对 main 有未合并提交，经上述三层锚点回落链解析），则保留 `branch`/`implementer_run` 并打 `_recovery_resume` 标记，由 dispatch 层在保留分支的 worktree 内 `claude --resume` 续做而非从零重派；仅零提交/分支缺失/载体不可用才走清空重建（零留痕的静默早退是本框架治理重点，锚点缺失一律打 WARNING 附候选清单）。
 
+**fast-track 车道的恢复续做**：`mode: fast-track` 的 spec 经 daemon 重启恢复时与 implementer 车道**同源消费** `_recovery_resume`——派发入口读标记与保留分支、经 `resolve_resume_site` 三态解析载体，在保留分支的 worktree 内续做（`pre_wt_path` 贯通 runner，不新建分支、不重做既有成果；日志打 `Resume dispatch ... on preserved branch ...`）；载体不可用时降级为普通全新派发并打 WARNING（`Resume site unavailable ...`）留痕。标记为一次性消费：派发后即清空，防后续扫描反复尝试续做；未命中续做时入口才清除旧锚点（日志 `新轮次派发清除旧锚点`），使「本轮是续做还是从零」在日志中可直接判读。恢复续做的 fast-track prompt 注入继承注记（「框架保留了你在分支上的已提交成果、从 tasks.md 第一个未勾选项继续、不重做不回滚」）——该注记仅对**恢复续做来源**（`mark_reused` 带 `recovery=True`）注入，普通打回重派/失败重派轮仍走既有「Worktree 继承（worktree-reuse）」注记，不误注「曾因 daemon 重启被中断」的归因。
+
 **repair 待 re-merge-back 标记**：repair 通道运行期 `status` 保持 `implementing`，修复成功后会在 `merge_back_from_branch` 之前写入 `_repair_awaiting_remerge: true` 标记并落盘 `branch`——该标记使「repair 成功、仅剩重新合并进主树」成为 STATE 可观察的事实。daemon 重启恢复见到 `implementing + 该标记` 时，直接调用 `merge_back_from_branch` 完成合并并推进 `implemented`（不派发 implementer、不经过 `ready` 窗口）；re-merge 失败则清除标记后回落保留续做路径（`_recovery_resume`），由下一轮 run 的正常 merge-back 进入 repair/熔断通道。re-merge 成功后标记即清除，`implemented` 及之后状态上该标记恒为假。
 
 ## 门禁系统：两步判定

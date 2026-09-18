@@ -1041,3 +1041,110 @@ class TestFirstRoundEndToEnd:
         entry = sm.read_one("demo")
         assert entry["branch"] is None, "零提交分支仍走现行清空"
         assert entry.get("_recovery_resume") is None
+
+
+# ── 11. fast-track 车道端到端续做（fix-fasttrack-recovery-resume） ─────────────
+
+
+class TestFastTrackEndToEndResume:
+    """fast-track 恢复续做端到端：recovery 保全 → 续做派发不新建 → prompt 注记。
+
+    对应 capability `fasttrack-recovery-resume` 的端到端场景：interrupted
+    implementing + 分支 ahead of main → recover 保留续做标记 → fast-track 派发
+    消费标记、经 resolve_resume_site 命中既有 worktree（不新建）、prompt 注入
+    恢复续做注记（且不重复注入 Worktree 继承段）。
+    """
+
+    def _setup_preserved(self, tmp_path):
+        """构造「interrupted implementing + 分支 ahead of main」并走 recovery 保全。
+
+        Returns: (root, wm, wt, branch, sm)
+        """
+        root = tmp_path / "proj"
+        init_repo(root)
+        wm = make_wm(root)  # 真实 WorktreeManager + 真实 git
+        wt = wm.create("demo", "implementer")
+        branch = wm.get_branch_name(wt)
+        # 分支相对 main 有提交（有成果可续做）
+        (wt / "impl.py").write_text("CODE\n", encoding="utf-8")
+        git(wt, "add", "-A")
+        git(wt, "commit", "-q", "-m", "[fenix] demo: impl")
+        sm = make_state_machine(root, {
+            "demo": {"status": "implementing", "implementer_run": "impl-demo-1750000000"},
+        })
+        recovered = sm.recover_interrupted(project_root=root, worktree_manager=wm)
+        assert "demo" in recovered
+        entry = sm.read_one("demo")
+        assert entry["branch"] == branch, "保留原分支"
+        assert entry.get("_recovery_resume") is True, "标记恢复续做"
+        return root, wm, wt, branch, sm
+
+    def test_e2e_fast_track_resume_no_new_worktree(self, tmp_path):
+        """① 保全 + ② fast-track 派发：不新建 worktree，run_fast_track 收到载体。"""
+        from unittest.mock import MagicMock
+
+        from core.pm_engine import PMEngine
+
+        root, wm, wt, branch, sm = self._setup_preserved(tmp_path)
+
+        # ── 模拟 fast-track 派发（真实 dispatch 分支 + 真实 wm + 真实 SM） ──
+        logger = FakeLogger()
+        engine = PMEngine(sm, MagicMock(), {}, root, logger)
+        engine.handle_event = MagicMock()
+        engine._on_spec_verified = MagicMock()
+        engine._increment_impl_run_budget_used = MagicMock()
+        engine.agent_runner.worktree_manager = wm
+        # spec 目录（tasks.md 1 条 → normal 档，不降级）
+        spec_dir = root / "spec" / "changes" / "demo"
+        spec_dir.mkdir(parents=True, exist_ok=True)
+        (spec_dir / ".spec.yaml").write_text(
+            "schema: spec-driven\ncreated: 2026-09-18\nmode: fast-track\n",
+            encoding="utf-8",
+        )
+        (spec_dir / "tasks.md").write_text("# Tasks\n\n- [ ] 1.1 do it\n", encoding="utf-8")
+        from core.pm_engine.dispatch import Dispatcher
+
+        dispatcher = Dispatcher(engine)
+        dispatcher._enqueue = MagicMock()
+        dispatcher._enqueue_front = MagicMock()
+        engine.__dict__["_dispatcher_instance"] = dispatcher
+        dispatcher._run_fast_track_worker = MagicMock()
+
+        # 观测 worktree_manager.create：续做派发 MUST NOT 新建 worktree
+        create_calls = {"count": 0}
+        original_create = wm.create
+
+        def _spy_create(*a, **k):
+            create_calls["count"] += 1
+            return original_create(*a, **k)
+
+        wm.create = _spy_create
+
+        engine._run_agent_worker("demo", "fast-track", 5)
+
+        assert create_calls["count"] == 0, "续做派发 MUST NOT 新建 worktree"
+        dispatcher._run_fast_track_worker.assert_called_once_with(
+            "demo", pre_wt_path=wt
+        )
+        # 标记已消费、锚点保留
+        entry = sm.read_one("demo")
+        assert not entry.get("_recovery_resume"), "标记一次性消费（不再为真）"
+        assert entry.get("branch") == branch, "续做命中不清锚点"
+
+    def test_e2e_fast_track_resume_prompt_note(self, tmp_path):
+        """③ fast-track 续做 prompt 含恢复续做注记，且不含 Worktree 继承重复段。"""
+        from test_agent_runner import make_runner
+
+        root, wm, wt, branch, _sm = self._setup_preserved(tmp_path)
+        # 续做命中已经 mark_reused（recovery=True）登记——直接构造同源痕迹：
+        # 真实 wm 上登记恢复来源复用记录，构建 fast-track prompt
+        wm.mark_reused("demo", wt, branch, recovery=True)
+        runner = make_runner(root)
+        runner.worktree_manager = wm
+        prompt = runner._prompt_builder._build_prompt("demo", "fast-track")
+        assert "中断恢复续做" in prompt, "续做轮 prompt 必须含恢复续做注记"
+        assert "不要重做已完成的工作" in prompt
+        assert branch in prompt, "注记必须含当前分支名"
+        # 不重复注入 _fast_track_reuse_note 的语义重叠段落
+        assert "Worktree 继承（worktree-reuse）" not in prompt, \
+            "恢复续做注记优先，MUST NOT 同时注入 Worktree 继承重复段"

@@ -101,3 +101,38 @@ class TestFastTrackPromptReuseNote:
         runner = make_runner(proot)
         prompt = runner._prompt_builder._build_prompt("demo", "fast-track")
         assert "Worktree 继承" not in prompt
+
+    def test_reuse_note_without_recovery_marker(self, tmp_path):
+        """复用痕迹存在但**无恢复来源标记**（普通打回重派/瞬断重试轮）：
+        fast-track prompt 仍含「Worktree 继承」段、MUST NOT 含「中断恢复续做」
+        ——不以来源判据区分时该用例会假绿（design D6），此处为回归用例。"""
+        proot = tmp_path / "proj"
+        _mk_spec_dir(proot, "demo")
+        runner = make_runner(proot)
+        wm = MagicMock()
+        wm.get_reuse_record.return_value = {
+            "path": "/tmp/wt-demo", "branch": "fenix/demo-1",
+        }
+        runner.worktree_manager = wm
+        prompt = runner._prompt_builder._build_prompt("demo", "fast-track")
+        assert "Worktree 继承" in prompt, "普通复用轮必须保留既有继承注记"
+        assert "中断恢复续做" not in prompt, \
+            "无恢复来源标记时不得注入「曾因 daemon 重启被中断」的错误归因"
+
+    def test_recovery_note_when_recovery_marker(self, tmp_path):
+        """记录带恢复来源标记：fast-track prompt 注入「中断恢复续做」，
+        「Worktree 继承」段不出现（语义重叠，择一注入）。"""
+        proot = tmp_path / "proj"
+        _mk_spec_dir(proot, "demo")
+        runner = make_runner(proot)
+        wm = MagicMock()
+        wm.get_reuse_record.return_value = {
+            "path": "/tmp/wt-demo",
+            "branch": "fenix/demo-1",
+            "recovery": True,
+        }
+        runner.worktree_manager = wm
+        prompt = runner._prompt_builder._build_prompt("demo", "fast-track")
+        assert "中断恢复续做" in prompt
+        assert "不要重做已完成的工作" in prompt
+        assert "Worktree 继承" not in prompt, "恢复续做注记优先，不得重复注入"

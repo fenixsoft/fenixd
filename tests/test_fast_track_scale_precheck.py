@@ -344,9 +344,10 @@ class TestFastTrackScalePrecheck:
         entry = engine.state_machine.read_one("demo")
         assert entry["status"] == "ready"
         assert entry.get("_fast_track_scale_tier") != "higher"
-        # dispatcher._run_fast_track_worker 被正常调用
+        # dispatcher._run_fast_track_worker 被正常调用（fix-fasttrack-recovery-resume
+        # 1.5：无恢复标记路径传入 pre_wt_path=None 而非缺省）
         dispatcher = engine.__dict__["_dispatcher_instance"]
-        dispatcher._run_fast_track_worker.assert_called_once_with("demo")
+        dispatcher._run_fast_track_worker.assert_called_once_with("demo", pre_wt_path=None)
         dispatcher._downgrade_fast_track_scale.assert_not_called()
 
     def test_full_tier_downgrades_to_full_mode(self, tmp_path):
@@ -371,6 +372,38 @@ class TestFastTrackScalePrecheck:
         from core.spec_mode import read_spec_mode
         assert read_spec_mode(tmp_path, "big-spec") == "full"
 
+    def test_full_tier_downgrade_with_resume_marker_keeps_anchor(self, tmp_path):
+        """带 _recovery_resume 标记的 spec 降级 full：不清锚点、不消费标记。
+
+        fix-fasttrack-recovery-resume D4 / 6.2：降级后走 implementer 车道，
+        由后者按其分支消费续做标记——branch/implementer_run/_recovery_resume
+        必须原样保留给随后的 implementer 派发。
+        """
+        engine = self._make_dispatcher(tmp_path, ["big-resume-spec"])
+        branch = "fenix/big-resume-spec-1789750999"
+        engine.state_machine.update_spec(
+            "big-resume-spec",
+            {
+                "branch": branch,
+                "implementer_run": "impl-big-resume-1",
+                "_recovery_resume": True,
+            },
+        )
+        # 30 任务 + 8 交付物 = 46 > 45 → full
+        self._write_tasks(tmp_path, "big-resume-spec", n_tasks=30, deliverables=8)
+        engine._run_agent_worker("big-resume-spec", "fast-track", 5)
+        dispatcher = engine.__dict__["_dispatcher_instance"]
+        dispatcher._downgrade_fast_track_scale.assert_called_once()
+        dispatcher._run_fast_track_worker.assert_not_called()
+        # 锚点与标记原样保留（降级出口 MUST NOT 清空/消费）
+        entry = engine.state_machine.read_one("big-resume-spec")
+        assert entry.get("branch") == branch, "降级出口 MUST NOT 清空 branch"
+        assert entry.get("implementer_run") == "impl-big-resume-1", \
+            "降级出口 MUST NOT 清空 implementer_run"
+        assert entry.get("_recovery_resume") is True, "降级出口 MUST NOT 消费标记"
+        # implementer 被 enqueue 一次
+        dispatcher._enqueue.assert_called_with("big-resume-spec", "implementer")
+
     def test_higher_tier_writes_marker(self, tmp_path):
         """higher 档：分值在 (higher, full] 区间 → 写标记 + 继续 fast-track。"""
         engine = self._make_dispatcher(tmp_path, ["med-spec"])
@@ -378,7 +411,7 @@ class TestFastTrackScalePrecheck:
         self._write_tasks(tmp_path, "med-spec", n_tasks=22, deliverables=8)
         engine._run_agent_worker("med-spec", "fast-track", 5)
         dispatcher = engine.__dict__["_dispatcher_instance"]
-        dispatcher._run_fast_track_worker.assert_called_once_with("med-spec")
+        dispatcher._run_fast_track_worker.assert_called_once_with("med-spec", pre_wt_path=None)
         dispatcher._downgrade_fast_track_scale.assert_not_called()
         entry = engine.state_machine.read_one("med-spec")
         assert entry.get("_fast_track_scale_tier") == "higher"
@@ -406,7 +439,7 @@ class TestFastTrackScalePrecheck:
         engine._run_agent_worker("off-spec", "fast-track", 5)
         dispatcher = engine.__dict__["_dispatcher_instance"]
         dispatcher._downgrade_fast_track_scale.assert_not_called()
-        dispatcher._run_fast_track_worker.assert_called_once_with("off-spec")
+        dispatcher._run_fast_track_worker.assert_called_once_with("off-spec", pre_wt_path=None)
         entry = engine.state_machine.read_one("off-spec")
         assert entry["status"] == "ready"
         assert entry.get("_fast_track_scale_tier") != "higher", "关闭时不得写档位标记"

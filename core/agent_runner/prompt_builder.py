@@ -356,7 +356,17 @@ class PromptBuilder:
             prompt += self._prev_error_section(spec_name)
             # 上轮结构化诊断注入（fix-run-hang-amplification 2.4，与 implementer 分支共用）。
             prompt += self._impl_diagnosis_section(spec_name)
-            prompt += self._fast_track_reuse_note(spec_name)
+            # 恢复来源择一注入（fix-fasttrack-recovery-resume D6）：恢复续做命中
+            # （mark_reused 带 recovery=True，经 require_recovery=True 判据命中）时
+            # 注入「中断恢复续做」注记；普通打回重派/瞬断重试轮（复用痕迹存在但
+            # 无恢复来源标记）MUST 退回既有 Worktree 继承注记——不得让普通重派轮
+            # 丢失继承说明，也不得向普通重派轮注入「曾因 daemon 重启被中断」的
+            # 错误归因文案（design D6）。两条语义重叠，MUST NOT 同时注入。
+            note = (
+                self._recovery_resume_note(spec_name, require_recovery=True)
+                or self._fast_track_reuse_note(spec_name)
+            )
+            prompt += note
             # evo-planner-scenario-schema-alignment 2.1/2.3：fast-track 的 PHASE 2
             # 自行生成并写入 test_scenarios.json（第二条写入车道），注入同一 schema
             # 单源段；agents/fast-track.md 内联的第二份枚举已收敛到本段。
@@ -1181,19 +1191,36 @@ class PromptBuilder:
             f"项继续，不要重做已完成的工作，不要重置或回滚已有改动。\n"
         )
 
-    def _recovery_resume_note(self, spec_name: str) -> str:
+    def _recovery_resume_note(self, spec_name: str, require_recovery: bool = False) -> str:
         """恢复续做说明：中断恢复保留分支的 resume 派发时注入（interrupt-recovery-preserve）。
 
         dispatch 层在保留分支的 worktree 内续做（``mark_reused`` 登记继承痕迹，
         prompt 构建据此注入）。语义与 worktree-reuse 继承一致：延续已有成果、
         从 tasks.md 第一个未勾选项继续，不重做、不回滚。未登记复用痕迹时返回空串
         （prompt 与现状逐字节一致）。
+
+        Args:
+            require_recovery: 为真时，除 ``get_reuse_record`` 非空外还 MUST 要求
+                该记录携带恢复来源标记（``rec.get("recovery")``），否则返回空串。
+                缺省 False 时行为与文案逐字节不变——implementer 分支既有调用
+                （不传该形参）与 fast-track 分支（``require_recovery=True`` 择一
+                注入，见 3.1）共用同一函数。
+
+        判定源说明（fix-fasttrack-recovery-resume 3.4）：
+        ① 本函数与 ``_fast_track_reuse_note`` 共享同一 ``_active_reuse`` 判定源
+        （``wm.get_reuse_record``），fast-track 分支以 ``require_recovery=True``
+        择一注入（恢复续做注记优先，未命中退回 Worktree 继承注记）；
+        ② ``_active_reuse`` 亦由 ``_take_reusable_worktree`` / 跨 attempt 复用
+        （``runner.py`` 补记）写入，故 ``require_recovery`` 判据不可省略——否则
+        普通打回重派轮会被注入「曾因 daemon 重启被中断」的错误归因文案。
         """
         wm = getattr(self._pm, "worktree_manager", None)
         if wm is None or not hasattr(wm, "get_reuse_record"):
             return ""
         rec = wm.get_reuse_record(spec_name)
         if not rec:
+            return ""
+        if require_recovery and not rec.get("recovery"):
             return ""
         branch = rec.get("branch") or ""
         return (

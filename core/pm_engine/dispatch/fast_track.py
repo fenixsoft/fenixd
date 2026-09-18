@@ -90,6 +90,12 @@ class FFastTrackMixin:
         - 本次不启动 fast-track run、不递增实现预算（_run_agent_worker 调用
           点先于 _increment_impl_run_budget_used）；
         - 改写失败仅 WARNING（非阻塞，下轮派发仍按 fast-track 原档重试）。
+
+        （fix-fasttrack-recovery-resume D4 锚点要求）本路径 MUST NOT 清空
+        ``branch``/``implementer_run``，MUST NOT 消费 ``_recovery_resume``——
+        降级后走 implementer 车道，由后者按其分支消费续做标记（design D4）：
+        降级路径在 dispatch 入口的续做判定**之前** return，若此处清锚点/消费
+        标记，随后的 implementer 派发将丢失可续做的保留分支。
         """
         try:
             self._rewrite_fast_track_to_full(spec_name)
@@ -98,6 +104,9 @@ class FFastTrackMixin:
                 "pm_engine",
                 f"fast-track 规模降级 .spec.yaml 改写失败 '{spec_name}'（非阻塞）: {e}",
             )
+        # （fix-fasttrack-recovery-resume D4）本 update_spec 只写 status/error——
+        # **不得**在此清空 branch/implementer_run，也**不得**消费 _recovery_resume：
+        # 降级后走 implementer 车道，保留的锚点与标记须原样交给其派发入口消费。
         self._pm.state_machine.update_spec(
             spec_name,
             {
@@ -112,12 +121,23 @@ class FFastTrackMixin:
             f"改走完整模式 implementer 车道（不再按 3.5h 统一档）",
         )
 
-    def _run_fast_track_worker(self, spec_name: str) -> None:
+    def _run_fast_track_worker(
+        self, spec_name: str, pre_wt_path: Path | None = None
+    ) -> None:
         """处理 fast-track 单 run 结果：守卫 → 硬校验 → 状态推进。
 
         在 _run_agent_worker 的 fast-track 分支被同步调用（同线程，预算已递增）。
         完整路径：ensure_spec_committed → run_fast_track → guards → merge →
         hard-check → state advance；任一步骤失败按失败重派（与 implementer 同语义）。
+
+        Args:
+            spec_name: SPEC 名称。
+            pre_wt_path: 可选。非 None 时经 ``agent_runner.run_fast_track``
+                透传到 ``_execute_agent``——在既有 worktree 内续做
+                （interrupt-recovery-preserve 恢复续做），不创建新 worktree；
+                语义与 implementer 车道的 ``run_implementer(pre_wt_path=...)``
+                相同。本方法是 ``run_fast_track`` 的**唯一**调用点（queue.py
+                fast-track 分支），无其它调用点需同步。
         """
         wm = self._pm.agent_runner.worktree_manager
         try:
@@ -147,7 +167,9 @@ class FFastTrackMixin:
                 f"fast-track 基线快照落盘失败 '{spec_name}'（仅 WARNING 不阻塞）: {e}",
             )
         try:
-            result = self._pm.agent_runner.run_fast_track(spec_name)
+            result = self._pm.agent_runner.run_fast_track(
+                spec_name, pre_wt_path=pre_wt_path
+            )
         except Exception as e:
             self._pm._rollback_failed_dispatch(spec_name, "fast-track", e)
             return
@@ -204,6 +226,11 @@ class FFastTrackMixin:
             # result.success 门：runner 仅在 success 时填 branch（runner.py:2644），
             # 失败/中断 run 的 branch 为空——显式保留该前置，对齐 spec WHEN 子句
             # 「正常收工（exit 0，result.success 为真、result.branch 非空）」。
+            # （fix-fasttrack-recovery-resume 4.1 出口矩阵：结果文件缺失分流）
+            # 本出口对 branch/implementer_run/_recovery_resume 均**不触碰**——
+            # merge 路径（_handle_fast_track_missing_result_merge）复用成功语义，
+            # 失败路径（_handle_fast_track_failure）仅退预算/重试，均不新增清锚点
+            # 也不消费恢复标记（标记属 dispatch 入口一次性消费，见 queue.py）。
             if getattr(result, "success", False) and self._pm._implementation_branch_has_commits(
                 result
             ):
@@ -465,6 +492,13 @@ class FFastTrackMixin:
             merge_info = wm.merge_back_from_branch(branch)
             merge_ok, merge_error = merge_info
             if not merge_ok:
+                # （fix-fasttrack-recovery-resume 4.1 出口矩阵：merge-back 失败
+                # 分支出口——blocked 熔断 / repair 通道 / ready+重派三岔，见下）
+                # 三岔对 branch/implementer_run/_recovery_resume 均**不触碰**：
+                # - blocked/repair/retry 保留 spec in-flight 或在 ready 降级时经
+                #   dispatch 入口重新消费标记与锚点（若有）；
+                # - MUST NOT 在此新增清锚点（merge 失败不代表 stale 锚点）、
+                #   也 MUST NOT 消费 _recovery_resume（标记在入口一次性消费）。
                 # worktree-reuse：merge 失败同样保留 worktree，重派继承后重试 merge
                 self._keep_fast_track_worktree(spec_name, result)
                 # ── 预演语义冲突直通 repair（add-merge-tree-rehearsal D2）──
@@ -605,6 +639,10 @@ class FFastTrackMixin:
         from core.verdict_check import validate_fast_track_result
 
         # ── 完成度叠加判据（fix-impl-tasks-completion-gate 5.1）──
+        # （fix-fasttrack-recovery-resume 4.1 出口矩阵：完成度判据拦截分支）
+        # 本出口仅写 error + _enqueue_front 重派，对 branch/implementer_run/
+        # _recovery_resume 均**不触碰**——重派走 dispatch 入口，由其按续做
+        # 标记决定是否清锚点；不新增清锚点、不消费恢复标记。
         try:
             wt_path = self._pm._find_implementer_worktree(spec_name)
             if wt_path is not None and (wt_path / ".fenix-run-result.json").exists():
@@ -635,6 +673,10 @@ class FFastTrackMixin:
             )
 
         verification = parse_fast_track_verification(ft_result or {})
+        # （fix-fasttrack-recovery-resume 4.1 出口矩阵：verification 解析失败
+        # 拦截分支）本出口与下方校验失败分支同——仅写 error + _enqueue_front
+        # 重派，对 branch/implementer_run/_recovery_resume 均**不触碰**，不新增
+        # 清锚点、不消费恢复标记。
         if verification is None:
             err = "fast-track 结果文件非法（verification 段缺失或结构不完整）"
             self._pm.state_machine.update_spec(spec_name, {"error": err})
@@ -661,6 +703,11 @@ class FFastTrackMixin:
                 pass
 
         check = validate_fast_track_result(ft_result, designed_ids or None)
+        # （fix-fasttrack-recovery-resume 4.1 出口矩阵：硬校验失败重派分支）
+        # 本出口仅写 error + _enqueue_front 重派（validate 不通过 / bug-found
+        # 升级完整模式由更下的 _escalate_to_full_mode 处理），对
+        # branch/implementer_run/_recovery_resume 均**不触碰**，不新增清锚点、
+        # 不消费恢复标记。
         if not check["ok"]:
             violations_str = "；".join(check["violations"])
             err = f"fast-track 硬校验失败（fail-closed）：{violations_str}"
@@ -757,6 +804,11 @@ class FFastTrackMixin:
         - spec 保持 implemented，派发完整模式 verifier 流水线
         - 升级原因写入 spec entry error 字段
         - 保留已有实现成果，不丢回 ready 重跑 implementer
+
+        （fix-fasttrack-recovery-resume 4.1 出口矩阵：bug-found 升级完整模式
+        分支）本出口仅改写 mode + enqueue verifier，对 branch/implementer_run/
+        _recovery_resume 均**不触碰**——实现成果保留、不新增清锚点、不消费
+        恢复标记（spec 已 implemented，恢复链不再针对本分支续做）。
         """
         # 1. .spec.yaml 写 mode: full
         self._rewrite_fast_track_to_full(spec_name)
@@ -900,7 +952,13 @@ class FFastTrackMixin:
             )
 
     def _handle_fast_track_zero_change(self, spec_name: str, result) -> None:
-        """fast-track 零变更哨处理：与 implementer 同逻辑。"""
+        """fast-track 零变更哨处理：与 implementer 同逻辑。
+
+        （fix-fasttrack-recovery-resume 4.1 出口矩阵：零变更哨重派分支）
+        本出口仅写 status/error/_zero_change_attempts + _enqueue_front 重派，
+        对 branch/implementer_run/_recovery_resume 均**不触碰**——不新增清锚点、
+        不消费恢复标记（重派经 dispatch 入口按续做标记处置）。
+        """
         spec_entry = self._pm.state_machine.read_one(spec_name) or {}
         attempts = 0
         try:
