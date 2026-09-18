@@ -141,10 +141,15 @@ class Registry:
     # ── 发现 ─────────────────────────────────────────────────
 
     def discover(self) -> list:
-        """合并显式配置与目录扫描，返回 [{name, path, discovered, exists}]。
+        """合并显式配置与目录扫描，返回 [{name, path, discovered, exists, fixture}]。
 
         合并后按 `ignored` 列表过滤规范化路径——被忽略项目（无论显式注册
         还是自动发现）一律不再出现在监控列表，实现软删除语义。
+
+        `fixture` 为「该项目是验证夹具、其数据为验证噪音」的权威标记：
+        显式条目仅当配置键为布尔真（``fixture: true``）时为真——缺省、假值
+        与非布尔值（如字符串 "yes"）一律按假处理；扫描发现的项目恒为假
+        （扫描无法判定夹具属性，缺省保守=非夹具，宁多展示不静默隐藏）。
         """
         data = self.load()
         ignored = {self._norm(x) for x in data.get("ignored", []) if x}
@@ -172,6 +177,7 @@ class Registry:
                     "path": key,
                     "discovered": False,
                     "exists": rp.is_dir(),
+                    "fixture": p.get("fixture") is True,
                 }
             )
 
@@ -211,6 +217,7 @@ class Registry:
                         "path": key,
                         "discovered": True,
                         "exists": True,
+                        "fixture": False,
                     }
                 )
 
@@ -218,8 +225,12 @@ class Registry:
 
     # ── 注册 ─────────────────────────────────────────────────
 
-    def add_project(self, path, name=None) -> tuple:
+    def add_project(self, path, name=None, fixture=False) -> tuple:
         """注册项目到配置（按路径去重）。
+
+        fixture=True 时在配置条目写入 `fixture` 标记（夹具项目权威标识）；
+        对已存在同路径条目保持「跳过」语义——不重复添加、不静默改标记
+        （存量条目标记的更新须经 mark_fixture 显式发起）。
 
         Returns: (added: bool, message: str)
         """
@@ -247,10 +258,40 @@ class Registry:
             {
                 "name": name or (rp.name or key),
                 "path": key,
+                "fixture": fixture,
             }
         )
         self.save(data)
         return True, f"已注册项目: {key}"
+
+    def mark_fixture(self, path, fixture=True) -> tuple:
+        """按规范化路径定位配置条目并写入/更新 `fixture` 键后写回。
+
+        add_project 对已存在同路径条目「跳过」（不重复添加、不静默改标记）；
+        存量条目标记的显式更新（如夹具供给脚本对已登记夹具补 `fixture: true`）
+        必须经本方法发起。目标路径不在配置中时返回未变更提示且不抛异常。
+
+        Returns: (updated: bool, message: str)
+        """
+        try:
+            rp = Path(path).expanduser().resolve()
+        except (OSError, RuntimeError):
+            return False, f"无效路径: {path}"
+        key = str(rp)
+
+        data = self.load()
+        for p in data.get("projects", []):
+            if not isinstance(p, dict):
+                continue
+            try:
+                existing = str(Path(p.get("path", "")).expanduser().resolve())
+            except (OSError, RuntimeError):
+                continue
+            if existing == key:
+                p["fixture"] = bool(fixture)
+                self.save(data)
+                return True, f"已更新夹具标记: {key}"
+        return False, f"项目未在监控列表（无需变更）: {key}"
 
     def remove_project(self, path) -> tuple:
         """从配置 `projects` 移除显式注册的项目（按规范化路径匹配）并写回。
