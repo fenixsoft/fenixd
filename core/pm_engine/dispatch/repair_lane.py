@@ -622,6 +622,9 @@ class PRepairLaneMixin:
             "_repair_base_tip": None,
             # 清除待 re-merge 标记（fix-recovery-branch-anchor D3）：fallback
             # 重派后由新 implementer 正常收口，不得再被恢复链当「待 re-merge」处理。
+            # （fix-fasttrack-recovery-resume 4.1 出口矩阵·例外）此清除**不涉及**
+            # branch/implementer_run（二者保持原值，不新增清锚点），也**不消费**
+            # _recovery_resume（恢复标记在 dispatch 入口一次性消费，此处不触碰）。
             "_repair_awaiting_remerge": False,
             "_retry_count": retries,
         }

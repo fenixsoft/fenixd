@@ -118,6 +118,11 @@ class RRollbackMixin:
                 # fix-run-hang-amplification 2.5：update_spec 增量更新——此处只清
                 # error 与 run 字段，_impl_diagnosis 结构化诊断 MUST NOT 被清除
                 # （重派 attempt 需继承上轮诊断）。
+                # （fix-fasttrack-recovery-resume D5 区分注释）本处清锚点属**有意回滚**
+                # ——run **从未启动**（dispatch 异常），`_recovery_resume` 尚未被消费、
+                # 锚点亦非本轮产出。MUST NOT 消费该标记（保持原值），使其在原样重派
+                # 时仍可被 dispatch 入口消费；清 branch/implementer_run 只是剥除
+                # 从未启动的 run 留下的空壳字段，恢复续做锚点不在其列。
                 self._pm.state_machine.update_spec(
                     spec_name,
                     {

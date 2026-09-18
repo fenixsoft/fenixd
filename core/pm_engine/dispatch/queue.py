@@ -498,6 +498,10 @@ class QQQueueMixin:
                 if tier == "full":
                     # 降级完整模式：改写 .spec.yaml mode → full + 状态回滚 ready
                     # + 重新入队 implementer；本次不启动 fast-track run、不递增预算。
+                    # （fix-fasttrack-recovery-resume D4）此处早退于续做判定**之前**，
+                    # MUST NOT 新增任何锚点写入/清除动作——branch/implementer_run 与
+                    # _recovery_resume 标记原样留给随后的 implementer 派发消费（其
+                    # 分支本就会正确消费续做标记）。
                     self._downgrade_fast_track_scale(spec_name, scale)
                     return
                 # higher 档写标记；其余档位仅在**存量标记存在**时清除——否则
@@ -522,32 +526,91 @@ class QQQueueMixin:
                         f"fast-track 规模档位标记写入失败 '{spec_name}'（非阻塞）: {e}",
                     )
                 self._pm._increment_impl_run_budget_used(spec_name)
-                # ── 新轮次派发前清除旧锚点（fix-recovery-branch-anchor D1）──
-                # fast-track 车道同 implementer 语义：spec 可能经 repair lane
-                # （_run_repair_worker 为 fast-track spec 同样写 branch/标记）
-                # 或 fallback 留下陈旧 branch/implementer_run，新一轮在飞期间
-                # 不得被恢复链当作可保留锚点。
-                try:
-                    _ft_entry = self._pm.state_machine.read_one(spec_name) or {}
-                    if (
-                        _ft_entry.get("branch")
-                        or _ft_entry.get("implementer_run")
-                        or _ft_entry.get("_repair_awaiting_remerge")
-                    ):
-                        self._pm.state_machine.update_spec(
-                            spec_name,
-                            {
-                                "branch": None,
-                                "implementer_run": None,
-                                "_repair_awaiting_remerge": False,
-                            },
+                # ── 中断恢复保留续做（interrupt-recovery-preserve D4/D5）──
+                # 本段与下方 implementer 分支的 _recovery_resume 消费序列**同源**
+                # （interrupt-recovery-preserve D4/D5 / fix-recovery-branch-anchor D1）；
+                # 两处结构改动 MUST 同步（见 implementer 分支的反向引用注释）。
+                # recovery 保留的 spec（_recovery_resume 标记 + 保留分支）：在既有
+                # 分支的 worktree 内 resume 续做（claude --resume 断点续跑），
+                # 而非从零新建分支。载体三态经 wm.resolve_resume_site
+                # （is_available 单源）解析：在场原地 / 缺失重建 / 不可用降级
+                # 为普通全新派发。标记一次性消费：派发后清空，防后续 full_scan
+                # 反复尝试续做。清锚点 MUST 在续做判定**之后**、仅 resume_wt
+                # is None 时执行（续做命中时旧锚点正是本轮要使用的保留分支）。
+                wm = self._pm.agent_runner.worktree_manager
+                resume_wt = None
+                dispatch_entry = self._pm.state_machine.read_one(spec_name) or {}
+                resume_branch = (
+                    dispatch_entry.get("branch") if dispatch_entry.get("_recovery_resume") else None
+                )
+                if resume_branch:
+                    site = wm.resolve_resume_site(spec_name, resume_branch)
+                    if site[0] is not None:
+                        resume_wt = site[0]
+                    else:
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"Resume site unavailable for '{spec_name}' "
+                            f"(branch '{resume_branch}') — degrade to fresh dispatch",
                         )
-                except Exception as e:
-                    self._pm.logger.warning(
+                if dispatch_entry.get("_recovery_resume"):
+                    self._pm.state_machine.update_spec(spec_name, {"_recovery_resume": None})
+                if resume_wt is not None:
+                    self._pm.logger.info(
                         "pm_engine",
-                        f"fast-track 新轮次清除旧锚点失败 '{spec_name}'" f"（非阻塞）: {e}",
+                        f"Resume dispatch for '{spec_name}' on preserved branch "
+                        f"'{resume_branch}' (worktree {resume_wt})",
                     )
-                self._run_fast_track_worker(spec_name)
+                    # 继承痕迹登记（prompt 注入恢复续做说明，interrupt-recovery-preserve
+                    # 2.3 / fix-fasttrack-recovery-resume 3.2c）。recovery=True 携带
+                    # 恢复来源标记——_active_reuse 同时被 _take_reusable_worktree /
+                    # 跨 attempt 复用写入，无来源判据会把「曾因 daemon 重启被中断」
+                    # 的错误归因注入每次普通重派轮（design D6）。
+                    try:
+                        wm.mark_reused(spec_name, resume_wt, resume_branch or "", recovery=True)
+                    except Exception as e:
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"mark_reused for resume '{spec_name}' failed（非阻塞）: {e}",
+                        )
+                # ── 新轮次派发前清除旧锚点（fix-recovery-branch-anchor D1）──
+                # 仅**未命中续做**（resume_wt is None：无标记 / 载体解析降级 /
+                # 零提交）的全新派发才清除。fast-track 车道同 implementer 语义：
+                # spec 可能经 repair lane（_run_repair_worker 为 fast-track spec
+                # 同样写 branch/标记）或 fallback 留下陈旧 branch/implementer_run，
+                # 新一轮在飞期间不得被恢复链当作可保留锚点。注意：续做命中时
+                # MUST NOT 执行本段——不清除正是 state_machine 保全的可续做锚点
+                # 能存活到派发当刻的前提（fix-fasttrack-recovery-resume 事故实证，
+                # 2026-09-18：无条件清除使恢复保全的分支被就地抹除）。陈旧
+                # _repair_awaiting_remerge 续做命中时保持原值交由后续流程处置。
+                # _fast_track_scale_tier 不属「本轮锚点」，写入保持原位不动。
+                if resume_wt is None:
+                    try:
+                        if (
+                            dispatch_entry.get("branch")
+                            or dispatch_entry.get("implementer_run")
+                            or dispatch_entry.get("_repair_awaiting_remerge")
+                        ):
+                            self._pm.state_machine.update_spec(
+                                spec_name,
+                                {
+                                    "branch": None,
+                                    "implementer_run": None,
+                                    "_repair_awaiting_remerge": False,
+                                },
+                            )
+                            self._pm.logger.info(
+                                "pm_engine",
+                                f"新轮次派发清除旧锚点 '{spec_name}': "
+                                f"branch={dispatch_entry.get('branch')}, "
+                                f"implementer_run={dispatch_entry.get('implementer_run')}",
+                            )
+                    except Exception as e:
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"fast-track 新轮次清除旧锚点失败 '{spec_name}'" f"（非阻塞）: {e}",
+                        )
+                self._run_fast_track_worker(spec_name, pre_wt_path=resume_wt)
 
             elif agent_type == "implementer":
                 # add-fail-counter-budget D2：实现 run 启动即递增预算计数并持久化
@@ -565,6 +628,9 @@ class QQQueueMixin:
                 # （is_available 单源）解析：在场原地 / 缺失重建 / 不可用降级
                 # 为普通全新派发。标记一次性消费：派发后清空，防后续 full_scan
                 # 反复尝试续做。
+                # （fix-fasttrack-recovery-resume 1.4 反向引用）本段消费序列与
+                # 上方 fast-track 分支的续做判定段同源——两处结构改动 MUST 同步，
+                # 见 fast-track 分支的对照注释。
                 resume_wt = None
                 dispatch_entry = self._pm.state_machine.read_one(spec_name) or {}
                 resume_branch = (

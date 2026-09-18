@@ -2691,6 +2691,11 @@ class PMEngine:
                         f"auto-recovery stuck implementing, "
                         f"elapsed_minutes={b['elapsed_minutes']}",
                     )
+                    # （fix-fasttrack-recovery-resume D5 区分注释）本处清锚点属**有意
+                    # 重置**——判据已确认「滞留 implementing 超阈值且无存活子进程」
+                    # （上方 _attempt_still_alive 已核验）即 run 已死，拉回 ready 全新
+                    # 派发。MUST NOT 消费 `_recovery_resume`：它不由本路径产出，且此时
+                    # 不存在可续做的在飞 run——消费会使随后的正常派发失去续做判定资格。
                     self.state_machine.update_spec(
                         spec_name,
                         {

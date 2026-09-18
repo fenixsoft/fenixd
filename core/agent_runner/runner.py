@@ -1074,15 +1074,23 @@ class AgentRunner:
             )
             return None
 
-    def run_fast_track(self, spec_name: str) -> AgentRunResult:
+    def run_fast_track(self, spec_name: str, pre_wt_path: Path | None = None) -> AgentRunResult:
         """Run the Fast-Track Agent for a SPEC (single run: implement + verify).
 
         Fast-track run 同时完成实现与验证（实现+场景设计+验证+判定）。
         生成的分支与成功路径 merge 语义与 implementer 一致；budget 沿用
         impl_run_budget（走 impl- 前缀 run_id，复用既有计数/对账路径）。
+
+        Args:
+            spec_name: SPEC 名称。
+            pre_wt_path: 可选。非 None 时在既有 worktree 内续做
+                （interrupt-recovery-preserve 恢复续做），不创建新 worktree；
+                语义与 ``run_implementer`` 的 pre_wt_path 相同。
         """
         run_id = f"impl-{spec_name}-{int(time.time())}"
-        return self._execute_agent(spec_name, "fast-track", run_id)
+        return self._execute_agent(
+            spec_name, "fast-track", run_id, pre_wt_path=pre_wt_path
+        )
 
     def run_repair(self, spec_name: str, wt_path: Path,
                    conflict_summary: dict | None = None) -> AgentRunResult:

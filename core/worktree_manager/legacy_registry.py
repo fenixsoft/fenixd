@@ -186,12 +186,27 @@ class G2LegacyRegistryMixin:
             return dict(rec)
         return None
 
-    def mark_reused(self, spec_name: str, wt_path: Path, branch: str) -> None:
-        """标记跨 attempt 复用的 worktree（未走 create 认领路径时补记，幂等）。"""
-        self._active_reuse[spec_name] = {
+    def mark_reused(
+        self, spec_name: str, wt_path: Path, branch: str,
+        recovery: bool = False,
+    ) -> None:
+        """标记跨 attempt 复用的 worktree（未走 create 认领路径时补记，幂等）。
+
+        Args:
+            recovery: 为真时把恢复来源标记写入记录（``{"path": …,
+                "branch": …, "recovery": True}``），供 prompt 恢复续做判据
+                （fix-fasttrack-recovery-resume 3.2b）区分「恢复续做」与
+                「普通打回重派/跨 attempt 复用」——后者同样写入 _active_reuse，
+                无来源判据会把「曾因 daemon 重启被中断」的错误归因注入普通
+                重派轮（design D6）。缺省不写键，既有调用行为不变。
+        """
+        rec = {
             "path": str(wt_path),
             "branch": branch or "",
         }
+        if recovery:
+            rec["recovery"] = True
+        self._active_reuse[spec_name] = rec
 
     def _take_reusable_worktree(self, spec_name: str) -> Optional[tuple]:
         """认领该 spec 的复用遗产；有效返回 (wt_path, branch)，无效清理后返回 None。
