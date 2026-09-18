@@ -205,6 +205,16 @@ def write_config_if_unresolved(project_root: Path, detection: dict) -> dict:
             return {"wrote": False, "reason": "has_build_artifacts 已显式配置，跳过"}
 
     cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    # 写入前经 validate_build_artifact_paths 同口径校验（task 7.1：与 Dashboard
+    # write_config 同一判定权威——非法项拒绝而非静默丢弃，防探测误判误写）
+    try:
+        from core.worktree_manager.artifact_paths import validate_build_artifact_paths
+
+        err = validate_build_artifact_paths(list(detection["build_artifact_paths"]))
+        if err:
+            return {"wrote": False, "reason": f"候选路径校验未通过: {err}"}
+    except ImportError:
+        pass  # 独立脚本环境（无 core 包）时跳过校验，仅作参考
     try:
         import yaml  # PyYAML（fenix-setup 步骤 1 已确保安装）
 
