@@ -1165,8 +1165,8 @@ export default function SpecListPage() {
           {
             key: 'session',
             label: '会话',
-            // add-project-detail-tabs D2/D3：会话界面内联承载（由 SessionModal 迁移）。
-            // active 门控：仅在选中本分面时拉取会话状态与订阅事件流，未选中零请求
+            // add-project-detail-tabs D2/D3：会话界面内联承载（由项目级会话全屏 Modal
+            // 迁移而来）。active 门控：仅在选中本分面时拉取会话状态与订阅事件流，未选中零请求
             children: <SessionPanel project={name} active={activeTab === 'session'} />,
           },
         ]}
