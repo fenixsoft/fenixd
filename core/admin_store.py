@@ -503,9 +503,47 @@ class AdminStore:
         """返回（spec, signal_type）对应的未处理升级告警（若有）。
 
         Administrator 无法处置升级为人类告警后，同信号不再重复唤起。
+
+        仅匹配 kind=ESCALATION——不匹配 kind=signal（kind=signal 记录的
+        未处理判定见 unhandled_signal_for）。
         """
         for rec in self.read_all():
             if rec.get("kind") != ESCALATION or rec.get("handled"):
+                continue
+            if rec.get("signal_type") != signal_type:
+                continue
+            rec_spec = rec.get("spec")
+            if spec is None and rec_spec is not None:
+                continue
+            if spec is not None and rec_spec != spec:
+                continue
+            return rec
+        return None
+
+    def unhandled_signal_for(self, spec: Optional[str], signal_type: str) -> Optional[dict]:
+        """返回（spec, signal_type）对应的未处理信号记录（若有），供孤儿处置重派判定。
+
+        admin-disposition-reschedule：匹配 kind=SIGNAL ∧ 非 handled ∧
+        signal_type 相等 ∧ spec 严格相等 ∧ escalated 为真——返回最新一条
+        命中（read_all 已按 created 倒序）。未找到返回 None。
+
+        与 unhandled_for 同结构，但作用于 kind=signal 记录：
+        - unhandled_for 匹配 kind=ESCALATION（人工告警去重）
+        - unhandled_signal_for 匹配 kind=SIGNAL ∧ escalated=true（底层信号回溯）
+
+        escalated=true 口径：仅在实际唤起 Administrator 时（节流通过）才以
+        escalated=true 落信号记录，节流分支落 escalated=False。以 escalated=true
+        匹配可避免为「从未唤起过的节流沉淀记录」发起重派。
+
+        spec 严格相等：实测现有信号记录 spec 全部非 None（spec=None 只出现在
+        kind=escalation），不做宽松匹配。
+        """
+        for rec in self.read_all():
+            if rec.get("kind") != SIGNAL:
+                continue
+            if rec.get("handled"):
+                continue
+            if not rec.get("escalated"):
                 continue
             if rec.get("signal_type") != signal_type:
                 continue
