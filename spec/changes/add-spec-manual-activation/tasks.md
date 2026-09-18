@@ -23,6 +23,10 @@
   kind: modify
 - path: bin/fenix_cli.py
   kind: modify
+- path: bin/fenix_status.py
+  kind: modify
+- path: bin/fenix_process.py
+  kind: modify
 - path: skills/fenix-new/SKILL.md
   kind: modify
 - path: core/dashboard/static/src/services/dashboard.ts
@@ -62,7 +66,7 @@
 
 ## 3. 列表摘要暴露 depends_on
 
-- [ ] 3.1 core/dashboard/data/summary.py：`spec_summary` 返回值增 `"depends_on": entry.get("depends_on")`（附注释：列表页「前置依赖」标记数据源）；`_ENTRY_SIG_KEYS` 元组增 `"depends_on"`（否则依赖变化不使索引失效，tag 滞后）；两处顺序无关，保证与 spec_summary 实读字段一一对应
+- [ ] 3.1 core/dashboard/data/summary.py：新增模块级 `_normalize_depends_on(raw)`（缺失/`None`/空串/**字面量字符串 `"null"`** → `None`，其余 `str(raw).strip()` 原样返回；与调度器 `_dependencies_satisfied` 的 `deps == "null"` 守卫同口径）；`spec_summary` 返回值增 `"depends_on": _normalize_depends_on(entry.get("depends_on"))`（附注释：列表页「前置依赖」标记数据源，**MUST NOT 直接透传** `entry.get("depends_on")`——该字段未登记在 `StateParser._parse_content` 的 null→None 归一化键表，serialize 对空值恒写 `depends_on: null`，透传会让 227/244 条无依赖 SPEC 拿到字面量 `"null"` 而被误标）；`_ENTRY_SIG_KEYS` 元组增 `"depends_on"`（否则依赖变化不使索引失效，tag 滞后）；两处顺序无关，保证与 spec_summary 实读字段一一对应
 
 ## 4. Dashboard API 与路由
 
@@ -75,6 +79,8 @@
 
 - [ ] 5.1 core/evolution.py：`accept_item` 的 start_after 处理确认/补注释——哨兵字符串 `"manual"` 原样落入 entry（`if start_after: entry["start_after"] = start_after` 现有逻辑已满足，若需显式化则补一行注释说明哨兵不经时间换算）；MUST NOT 引入 `parse_utc` 于该写侧（哨兵不是时间）
 - [ ] 5.2 bin/fenix_cli.py：新增 `cmd_activate(args)` 与 `activate` 子命令（argparse：`spec` 位置参数 + `--project`），调 `core.dashboard.data.admin_actions.activate_spec`；成功打印「SPEC '<name>' 已激活，立即进入调度」exit 0；非待激活/未找到/终态打印拒绝原因 exit 1；同步更新模块 docstring 顶部「用法」清单与 `subparsers` 注册
+- [ ] 5.3 bin/fenix_status.py：`_collect_signals`（`fenix_status.py:168-170`）与状态行渲染（`fenix_status.py:276-277`）对哨兵值分别处理——`get_spec_start_after(entry) == "manual"` 时「已知等待」文案 SHALL 为 `{name}（待激活，需人工激活）` 而**不是** `start_after { _local_ts("manual") }`（`_local_ts` 对非 ISO 走 except 回退 `str(raw)[:19]`，会输出 `start_after manual` 的伪时间戳）；状态行备注 SHALL 输出「⏸ 待激活」而**不是**「⏰ 定时」（哨兵无目标时间，「定时」为事实错误）。MUST NOT 改动 `get_spec_start_after` 本身的返回值语义（`specs/scheduled-spec-pickup/spec.md`「哨兵原样返回」是 MUST）
+- [ ] 5.4 bin/fenix_process.py：同上（`fenix_process.py:277-279` `⏰ start_after: {_local_ts(start_after, '%m-%d %H:%M')}`）——哨兵值改印「待激活（start_after: manual）」，不走 `_local_ts` 时间换算
 
 ## 6. fenix-new skill 执行时机三档化
 
@@ -85,7 +91,8 @@
 
 - [ ] 7.1 core/dashboard/static/src/services/dashboard.ts：`SpecSummary` 接口增 `depends_on?: string | null`（对齐详情类型）；新增 `activateSpec(project, spec)` service（POST /api/spec-activate）；`setSpecStartAfter` 类型签名确认接受 `'manual'` 字符串；补 `ActivateResult` 返回类型
 - [ ] 7.2 core/dashboard/static/src/pages/projects/list.tsx：新增 `ManualActivationTag` 组件（`record.start_after === 'manual'` 时渲染橙色「待激活」Tag + Tooltip「已设为手工激活，需人工激活后才会被拾取」，否则返回 null）；`ScheduledPickupTag` 保持不动（`dayjs('manual')` 非法已自然返回 null，不误渲染倒计时）
-- [ ] 7.3 core/dashboard/static/src/pages/projects/list.tsx：新增 `DependencyTag` 组件（`record.status === 'ready'` 且 `record.depends_on` 非空时渲染「前置依赖」Tag + Tooltip 展示依赖名列表，逗号分隔原样）；在桌面状态列 render（与 `ScheduledPickupTag` 并列）与移动端卡片状态区（`SpecCardList` 同位置）各挂 `ManualActivationTag` 与 `DependencyTag`
+- [ ] 7.3 core/dashboard/static/src/pages/projects/list.tsx：新增 `DependencyTag` 组件（`record.status === 'ready'` 且 `record.depends_on` **规范化后**非空时渲染「前置依赖」Tag + Tooltip 展示依赖名列表，逗号分隔原样；判据 MUST 与 D12 的后端规范化对齐——`record.depends_on` 正常化后无依赖为 `null`，MUST NOT 依赖裸真值判定）；在桌面状态列 render（与 `ScheduledPickupTag` 并列）与移动端卡片状态区（`SpecCardList` 同位置）各挂 `ManualActivationTag` 与 `DependencyTag`
+- [ ] 7.6 core/dashboard/static/src/pages/projects/list.tsx：`openStartAfterModal`（`list.tsx:673` `setSaDate(record.start_after ? dayjs(record.start_after) : null)`）与 `handleStartAfterOk`（`saDate.toISOString()`）对哨兵值安全降级——`record.start_after === 'manual'` 时预填 MUST NOT 走 `dayjs()`（`dayjs('manual')` 为 Invalid Date，DatePicker 显示异常，且 `saDate.toISOString()` 可能抛 `RangeError: Invalid time value`），SHALL 降级为「预填 null + 提示当前为待激活态，请用『修改状态』弹窗的『激活』按钮或重新选择时间」；`handleStartAfterOk` 提交前 MUST 校验 `saDate?.isValid()`，非法则拒绝提交并提示（不得静默把哨兵清成 null，也不得报错崩弹窗）——对齐 `specs/scheduled-spec-pickup/spec.md` 中「预填 MUST 安全降级（不得因解析失败而报错或误清空）」的 MUST
 - [ ] 7.4 core/dashboard/static/src/pages/projects/components/SpecStatusModal.tsx：非终态区块增「调度」小节——`status === 'ready'` 且 `start_after === 'manual'` → 显示「激活（立即调度）」按钮（调 `activateSpec`，确认文案说明将立即派发）；`status === 'ready'` 且非同 manual → 显示「设为待激活」按钮（调 `setSpecStartAfter(..., 'manual')`，确认文案说明将暂停调度待人工激活）；成功后 `onDone()` 刷新
 - [ ] 7.5 core/dashboard/static/src/pages/settings/components/SuggestedImprovementsPanel.tsx：`AcceptScheduleFields` 的 Radio.Group 由两档（immediate/scheduled）扩为三档，新增 `value="manual"`「手工激活」选项；`commit` 逻辑——`manual` 时 `holder.startAfter = 'manual'`；`mode` state 类型扩为 `'immediate' | 'scheduled' | 'manual'`；批量接受路径（默认 from config）不受影响
 
@@ -101,6 +108,8 @@
 
 - [ ] 10.1 tests/test_spec_scheduling.py：新增 `TestManualActivation` 测试类——覆盖 1.3 的谓词用例；增 `set_spec_start_after(..., 'manual')` 写入经 STATE.md 往返后 `get_spec_start_after` 返回 `"manual"`（哨兵持久化不折叠）；`check_scheduling_deadlines` 对 manual SPEC 多轮调用不唤起（不误判到期，对齐 D3）
 - [ ] 10.2 tests/test_dashboard_api.py：新增 `/api/spec-activate` 端点测试——待激活 SPEC 激活成功（`start_after` 变 null + 写入 `scheduling_kick_request.json`）；非待激活（定时/null）返回 `{ok: false}` 且 STATE 不变；不存在 SPEC → 404；终态 → 403；并验证 `/api/spec-start-after` body `value: "manual"` 成功写入哨兵
-- [ ] 10.3 tests/test_dashboard_api.py：列表摘要测试确认 `/api/specs` 每项含 `depends_on` 字段（值取自 STATE.md），且 `_ENTRY_SIG_KEYS` 含 `depends_on`（依赖变化触发索引失效）
+- [ ] 10.3 tests/test_dashboard_api.py：列表摘要测试确认 `/api/specs` 每项含 `depends_on` 字段（有依赖者 = STATE.md 声明的名称串），且 `_ENTRY_SIG_KEYS` 含 `depends_on`（依赖变化触发索引失效）；**必测反例**——STATE.md 条目为 `- depends_on: null`（解析回字面量 `"null"`，本仓库现状 227/244 条为此形态）时摘要值 MUST 为 `null` 而非 `"null"`，否则「前置依赖」tag 全线误标
+- [ ] 10.6 tests/test_cli_time_display.py：新增哨兵展示用例（该文件已用 `_load_module` 载入 `bin/*.py`，`_local_ts` 的非 ISO 回退已有 `test_unparseable_falls_back_to_slice` 先例）——`get_spec_start_after({"start_after": "manual"}) == "manual"`；`fenix_status` 的「已知等待」与状态行备注、`fenix_process` 的详情行对 `manual` 输出「待激活」语义而非「⏰ 定时」/伪时间戳（5.3/5.4）
+- [ ] 10.7 tests/test_dashboard_data.py（或 test_spec_scheduling.py）：`_normalize_depends_on` 单元用例——`None` / `""` / `"  "` / `"null"` / `"NULL"` → `None`；`"spec-a"` / `"spec-a, spec-b"` → 原样（去首尾空白）
 - [ ] 10.4 tests/test_dashboard_evolution_api.py：`/api/evolution/accept` body `start_after: "manual"` 用例——接受成功，新建 SPEC 的 STATE entry `start_after` 为 `"manual"`（未被 parse_utc 拒绝）
 - [ ] 10.5 运行 `python3 -m pytest tests/test_spec_scheduling.py tests/test_dashboard_api.py tests/test_dashboard_evolution_api.py -q` 全绿；如涉及 `tests/test_dashboard_data.py` / `tests/test_self_evolution.py` 的既有断言（如 spec_summary 字段集合、accept_item 参数），同步修正并跑通
