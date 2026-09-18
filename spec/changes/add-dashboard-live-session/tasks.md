@@ -190,3 +190,9 @@
   中文系统行（**非** fallback 的 `[session_ended]`），且既有 run 事件分支
   不回归。该测试文件须加入 `core/dashboard/static/package.json` 的测试脚本
   或 CI 入口（与 `tokens.test.mjs` 同处）。
+
+## 验证修复（原地打回第 1 轮）
+
+- [ ] 先复核失败有效性：逐条核对 `spec/changes/add-dashboard-live-session/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
+- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
+- [ ] 修复后重跑验证确认通过
