@@ -32,7 +32,7 @@ Fenix 是通用开发框架，但构建产物路径的判定默认值被写死�
   的 WIP 重叠闸门（`_wip_overlap_gate`）——只在"真正需要区分产物与语义内容"的咽喉处
   触发，不在 daemon 每次启动空转。落地链路复用既有 `verify_contract_missing` 模式：
   `STORED_SIGNAL_TYPES` 登记 → `admin_monitor` 摄取唤起 Administrator →
-  `_SIGNAL_RECOMMENDATIONS` 处置指引 → `agents/administrator.md` 新增起草手册。
+  `_SIGNAL_RECOMMENDATION` 处置指引 → `agents/administrator.md` 新增起草手册。
   已裁决（`false` 或路径非空）时不写信号。
 - **Dashboard 界面**：`核心设置`「验证」页签的「构建产物路径」卡片新增
   `has_build_artifacts` 开关（"项目存在构建产物"）；关闭时路径列表置灰/隐藏并显示
@@ -81,4 +81,18 @@ Fenix 是通用开发框架，但构建产物路径的判定默认值被写死�
 - **信号系统**：`core/pm_engine/verification/*` 或 merge-back 侧的生产点、
   `core/admin_store.py`（若需新 signal_type 枚举）。
 - **测试**：`tests/test_worktree_wip_artifact_scope.py` 多处断言依赖默认语义
-  （如 `:133-135`、`:340`、`:519`）需改写，新增三态判定与信号链路用例。
+  （如 `:133-135`、`:340`、`:519`，另有判定矩阵内四处无参 `ArtifactPathMatcher()`
+  构造 `:51`/`:57`/`:63`/`:91`）需改写（含其 `:26`/`:30` 对被删符号的 import、
+  `:487-505` 的「非法配置回退默认」断言）；另有多处**未在本行列出**的测试夹具依赖
+  「未配置时 `core/dashboard/static/dist` 判真」——`tests/test_merge_tree_rehearsal.py:91`
+  与 `tests/test_mergeback_repair_lane.py:92` 的 `make_wm()` 均未传
+  `build_artifact_paths`，其产物自愈用例会在语义反转后失败，须显式声明产物配置；
+  **最大一处遗漏是 `tests/test_worktree_merge_guard.py`**：`:62` 的 `make_wm(root, **kwargs)`
+  已支持关键字透传，但 `:252 TestBuildArtifactConflictSelfHeal` 与
+  `:399 TestDistConflictRootCure` 两族（共 9 处 `make_wm(root)`）同样依赖默认判定，
+  须显式声明（逐条盘点见 tasks 2.5）。
+  **反向修正**：`tests/test_facade_delegation_contract.py` 实测**不含任何
+  worktree/artifact 条目**（其 `:71` 是 `_write_verify_contract_missing`，属
+  VerificationPipeline 组），原「需删 `_is_build_artifact_path` 条目」的说法不成立。
+  取消派发前须按 tasks 2.5 逐条盘点。新增 `tests/test_artifact_paths_declaration.py`
+  （三态判定表）与 `tests/test_artifact_paths_signal.py`（信号链路）

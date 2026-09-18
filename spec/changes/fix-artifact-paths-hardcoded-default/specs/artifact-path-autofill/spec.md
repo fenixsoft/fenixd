@@ -42,14 +42,21 @@
 - 触发条件 MUST 为：判定「未裁决」（`has_build_artifacts` 缺省，或 `true` 但路径为空）；
 - 触发点 MUST 为 `_wip_overlap_gate`（merge-back 中真正需要区分产物与语义内容的
   咽喉），MUST NOT 在 daemon 启动等无需分类的时机空转触发；
+- 触发 MUST NOT 受「本次 merge-back 无 WIP 重叠」影响：判定 MUST 落在该方法的
+  「无重叠即早退」分支**之前**（`mergeback.py:155-157`）——主树干净是常态，若早退
+  在判定之前，则最常见的形态永不触发起草，缺口重新被静默掩盖；
+- 信号 MUST 带 `spec` 字段（本次 merge-back 的 spec 名），evidence 中另附
+  「项目名=<name>」作冗余证据；摄取侧对无 spec 的形态仍 MUST 支持从 evidence 解析；
 - 已裁决（`has_build_artifacts=false` 或路径非空）时 MUST NOT 写信号；
 - 在途去重 MUST 生效：同项目同 signal_type 的未消费信号已存在时 MUST NOT 重复写。
 
 #### Scenario: 未裁决时闸门产生信号
 
 - **WHEN** merge-back 进入 WIP 重叠闸门，且该 spec 所属项目产物配置未裁决
-- **THEN** 系统 MUST 写一条 `build_artifact_paths_missing` 信号，evidence 含项目名
+- **THEN** 系统 MUST 写一条 `build_artifact_paths_missing` 信号，携带 `spec`
+  字段并在 evidence 中附项目名
 - **AND** 闸门 MUST 按既有策略继续（本信号不改变闸门判定，只呼叫起草）
+- **AND** 该触发 MUST 同样成立于「主树干净、无 WIP 重叠」的形态（判定不在早退之后）
 
 #### Scenario: 已声明无产物时不产生信号
 

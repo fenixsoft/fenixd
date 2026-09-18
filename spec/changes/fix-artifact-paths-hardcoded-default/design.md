@@ -54,7 +54,9 @@
 ### D2：三态判定表以「未裁决」为一等状态
 
 判定器暴露 `is_artifact(path)`，另提供模块级函数
-`is_artifact_config_unresolved(has, paths) -> bool` 判定是否未裁决：
+`is_artifact_config_unresolved(has_build_artifacts, patterns) -> bool` 判定是否
+未裁决（`patterns` 为 `normalize_artifact_patterns` 的产物——非法项已被丢弃，
+故「非法/全非法」与「未配置」在未裁决判定上同归保守侧）：
 
 | `has` | `paths` | 判定 | 未裁决 |
 |-------|---------|------|--------|
@@ -98,6 +100,38 @@ setup 走"尽力填写"，失败/信息不足不阻塞（留待运行期兜底�
 的角色（`artifact_paths.py` 里的 `_DEFAULT_STATIC_ROOT`）。`__init__.py` 的
 `DASHBOARD_STATIC_ROOT` 保留导出，包级 `_is_build_artifact_path` 删除（唯一调用
 方是测试，见下）。
+
+**补充约定（评审就地修补，实现期必须遵循）：**
+
+- **fail-safe 方向**：判定器构造/配置解析的任何异常、非法项、非法布尔值，
+  一律落到**未裁决**——判定恒假（保守，不让判定变宽），且照常触发起草信号
+  （用户可见、可被修正）。MUST NOT 出现「因配置形态非法而静默既不判真也不告警」
+  的中间态。
+- **`DASHBOARD_STATIC_ROOT` 的残留用途**（收窄后的边界）：删除产物判定默认值后，
+  该常量在 `dist_conflicts.py` 中仍有三处「框架自身 dashboard 重建作用域」用途——
+  `_run_dist_build` / `_rebuild_dist_after_merge`（`dist_conflicts.py:231/281/295/308/338`）
+  与 `_artifact_paths(rev)` 的 `git ls-tree` 查询范围（`:370`）。三者都是「限定查询/重建
+  范围」，不是「判真」；而其中的**判定**（`is_artifact` / `strays` 过滤，
+  `:124`、`:281`、`:383`）随本 SPEC 变为配置驱动：某项目若不声明
+  `build_artifact_paths`，其 `core/dashboard/static/**` 不再被判为产物，
+  `_rebuild_dist_after_merge` 的 `src_touched` 会对自己重建出的产物判真——
+  这属已接受的方向性回归（产物判定必须由配置声明），fenixd 自身由 D5/7.3 回填消解。
+  **本机自举影响面（MUST 知悉）**：本仓库 `/root/fenixd` 的 `.fenix/config.yaml`
+  目前**没有 `worktree` 段**（`worktree:` 只在 `.fenix/config.template.yaml`），
+  即回填（7.3）执行前本机 daemon 自身即处于「未裁决」。既然「未裁决」的定义是
+  判定恒假，则本仓库的 `dist_conflicts` 自愈链（`:72-124` 产物冲突对齐、
+  `:281 src_touched`、`:383 stray 过滤）会整体失效，直到 7.3 落盘为止——
+  故 **7.3 是本 SPEC 合并前 MUST 完成的本机前置条件，不是可选的收尾步骤**。
+- **本仓库未跟踪产物的既有事实**：`.gitignore:30` 的 `dist/` 与 `:22-24` 的
+  `core/dashboard/static/dist` 说明帧已使 `core/dashboard/static/dist/**` 不入库，
+  `git ls-tree` 本就枚举不到——即「回填里的 `build_artifact_paths=["core/dashboard/static/"]`
+  会把 src 一并判为产物」这一副作用，在 dist 不入库的前提下只影响**尚未提交的
+  工作区 src 改动**（产物重叠对齐 HEAD 会丢弃它们）。该风险由 D5 回填 + 7.3
+  手工确认消解，但实施 7.3 时 MUST 先确认主树无未提交的 `core/dashboard/static/src/**`。
+- **D5 回填的生效范围**：`.fenix/config.yaml` 被 `.gitignore:26` 整体排除，
+  回填结果只作用于**本机**该项目的 daemon；跨机器/新克隆的项目 MUST 走
+  setup 探测（D4）或运行期信号兜底，不得假设仓库携带该配置。因此**部署顺序**
+  必须由 tasks 7.5 约束：先回填本机全部已注册项目，再升级 daemon 语义。
 
 ## Risks / Trade-offs
 
