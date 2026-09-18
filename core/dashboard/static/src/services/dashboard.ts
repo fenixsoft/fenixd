@@ -234,6 +234,8 @@ export interface SpecSummary {
   budget_effective?: number;
   /** open-impl-budget-ceiling：有效上限（agents.impl_run_budget_max，前端输入框 max 与此同源） */
   budget_max?: number;
+  /** add-spec-manual-activation D12：前置依赖（规范化后，null=无依赖，否则逗号分隔依赖名串） */
+  depends_on?: string | null;
 }
 
 export async function getSpecs(project: string): Promise<{ project: string; specs: SpecSummary[] }> {
@@ -370,7 +372,7 @@ export interface StartAfterResult {
   error?: string;
 }
 
-/** 设置/清除 SPEC 定时拾取时间（value=ISO8601 UTC 或 null 清除） */
+/** 设置/清除 SPEC 定时拾取时间（value=ISO8601 UTC / null 清除 / "manual" 设为待激活） */
 export function setSpecStartAfter(project: string, spec: string, value: string | null) {
   return request<StartAfterResult>(
     `/api/spec-start-after?project=${encodeURIComponent(project)}&spec=${encodeURIComponent(spec)}`,
@@ -379,6 +381,25 @@ export function setSpecStartAfter(project: string, spec: string, value: string |
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ value }),
     },
+  );
+}
+
+// ── SPEC 手工激活（add-spec-manual-activation D10/D12-D11） ──
+
+export interface ActivateResult {
+  ok: boolean;
+  project: string;
+  spec: string;
+  start_after: string | null;
+  reason?: string;
+  error?: string;
+}
+
+/** 激活待激活 SPEC（start_after manual → null 并即时唤醒派发；非待激活返回 {ok:false, reason}） */
+export function activateSpec(project: string, spec: string) {
+  return request<ActivateResult>(
+    `/api/spec-activate?project=${encodeURIComponent(project)}&spec=${encodeURIComponent(spec)}`,
+    { method: 'POST' },
   );
 }
 

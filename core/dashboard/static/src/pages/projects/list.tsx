@@ -249,6 +249,51 @@ function ScheduledPickupTag({ record }: { record: SpecSummary }) {
   );
 }
 
+// add-spec-manual-activation D9：start_after == 'manual'（手工激活哨兵）的 spec
+// 渲染橙色「待激活」Tag——永不到期、待人工激活。不加状态门槛（渲染只看字段，
+// 避免 drafted 态漏标；若后续语义变化不误伤）。ScheduledPickupTag 对 'manual'
+// 由 dayjs('manual') Invalid Date 自然返回 null，二者不冲突。
+function ManualActivationTag({ record }: { record: SpecSummary }) {
+  if (record.start_after !== 'manual') return null;
+  return (
+    <Tooltip title="已设为手工激活，需人工激活后才会被拾取">
+      <Tag color="orange" style={{ marginInlineEnd: 0 }}>
+        待激活
+      </Tag>
+    </Tooltip>
+  );
+}
+
+// add-spec-manual-activation D9：ready 且有前置依赖的 spec 渲染「前置依赖」Tag
+// （hover 展示依赖名列表）。判据依赖后端规范化：record.depends_on 经
+// _normalize_depends_on 归一，无依赖为 null/undefined——MUST NOT 用裸真值判定
+// （STATE.md 里 `depends_on: null` 解析回字面量字符串 "null"，227/244 条存量
+// entry 为此形态，裸真值会全线误标）。仅 ready 展示（用户明确要求：ready 时才
+// 提示「为什么就绪却不派发」）；其它状态的依赖信息属详情页职责。
+function DependencyTag({ record }: { record: SpecSummary }) {
+  if (record.status !== 'ready') return null;
+  const deps = record.depends_on;
+  if (!deps) return null;
+  return (
+    <Tooltip title={`前置依赖：${deps}`}>
+      <Tag color="geekblue" style={{ marginInlineEnd: 0 }}>
+        前置依赖
+      </Tag>
+    </Tooltip>
+  );
+}
+
+// 状态列等待标记集：定时拾取 + 待激活 + 前置依赖（桌面与移动端共用）
+function StatusWaitGroup({ record }: { record: SpecSummary }) {
+  return (
+    <>
+      <ScheduledPickupTag record={record} />
+      <ManualActivationTag record={record} />
+      <DependencyTag record={record} />
+    </>
+  );
+}
+
 function PriorityCell({
   record,
   onEdit,
@@ -356,7 +401,7 @@ function SpecCardList({ data, project, loading, onDocView, onMenu, menuItems, on
             <div style={{ width: '100%', minWidth: 0 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                 <Badge color={TONE_DOT[m.tone]} text={m.label} />
-                <ScheduledPickupTag record={record} />
+                <StatusWaitGroup record={record} />
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <SpecNameCell project={project} record={record} />
                 </div>
@@ -667,8 +712,17 @@ export default function SpecListPage() {
     setAdminInvoke({ spec: record.name });
   };
 
-  // ── 设置拾取时间（add-spec-scheduling-controls D6）──────────────────
+  // ── 设置拾取时间（add-spec-scheduling-controls D6 / add-spec-manual-activation 7.6）──
   const openStartAfterModal = (record: SpecSummary) => {
+    // 哨兵 manual 时 MUST NOT 走 dayjs()——dayjs('manual') 为 Invalid Date，
+    // DatePicker 显示异常，且 toISOString() 会抛 RangeError。降级为「预填 null +
+    // 提示当前为待激活态，请用『修改状态』弹窗的『激活』按钮或重新选择时间」。
+    if (record.start_after === 'manual') {
+      setSaDate(null);
+      message.info('该 SPEC 当前为待激活态（start_after: manual）——请用「修改状态」弹窗的「激活」按钮，或在此重新选择时间');
+      setStartAfterEdit({ spec: record.name });
+      return;
+    }
     // 预填既有定时（ISO → 本地时区展示）；无定时则为 null（清除路径）
     setSaDate(record.start_after ? dayjs(record.start_after) : null);
     setStartAfterEdit({ spec: record.name });
@@ -678,6 +732,11 @@ export default function SpecListPage() {
     if (!startAfterEdit) return;
     try {
       // DatePicker 输入为本地时区；dayjs.toISOString() 输出 UTC ISO8601（Z 后缀）
+      // 哨兵安全降级：非法/不存在日期 MUST NOT 静默把哨兵清成 null，拒绝提交并提示
+      if (saDate && !saDate.isValid()) {
+        message.error('所选时间无效，请重新选择');
+        return;
+      }
       const value = saDate ? saDate.toISOString() : null;
       await setSpecStartAfter(name, startAfterEdit.spec, value);
       message.success(saDate ? '已设置定时拾取时间' : '已清除定时，立即恢复调度');
@@ -752,7 +811,7 @@ export default function SpecListPage() {
         return (
           <Space size={4} wrap>
             <Badge color={TONE_DOT[m.tone]} text={m.label} />
-            <ScheduledPickupTag record={record} />
+            <StatusWaitGroup record={record} />
           </Space>
         );
       },

@@ -660,8 +660,11 @@ class PMEngine:
                     )
             # ── 2) start_after 到期唤起派发（仅登记过定时字段的 spec）──
             sa = entry.get(START_AFTER_FIELD)
+            # 哨兵 `manual` 经 parse_utc 判 None 天然跳过到期检测，MUST NOT 改为
+            # `sa != None` 之类判据——否则哨兵被判到期误唤起（D3 要求保留该行为，
+            # 勿改此分支）。见 core/state_machine.py START_AFTER_MANUAL 常量注释。
             if sa is None or parse_utc(sa) is None:
-                continue  # 无定时字段（或非法）→ 无到期检测需求
+                continue  # 无定时字段（或非法/哨兵）→ 无到期检测需求
             if start_after_pending(entry, now):
                 continue  # 尚未到期
             status = entry.get("status")

@@ -167,7 +167,13 @@ def _collect_signals(proot, entries, active, daemon, approve_mode, promote_mode)
             waits.append(f"{name}（冻结{tail}）")
         start_after = data.get_spec_start_after(entry)
         if start_after:
-            waits.append(f"{name}（start_after { _local_ts(start_after) }）")
+            # add-spec-manual-activation D8/5.3：哨兵 manual 是「永不到期、待人工
+            # 激活」——MUST NOT 走 _local_ts（非 ISO 走 except 回退 str[:19]，
+            # 会输出 `start_after manual` 的伪时间戳）。
+            if start_after == "manual":
+                waits.append(f"{name}（待激活，需人工激活）")
+            else:
+                waits.append(f"{name}（start_after { _local_ts(start_after) }）")
 
     # 待推送 / 待晋升
     done_pending = sum(1 for e in entries.values() if e.get("status") == "done")
@@ -273,8 +279,14 @@ def render_report(project_root) -> str:
         notes = []
         if data.is_spec_frozen(entry):
             notes.append("🧊 冻结")
-        if data.get_spec_start_after(entry):
-            notes.append("⏰ 定时")
+        sa = data.get_spec_start_after(entry)
+        if sa:
+            # add-spec-manual-activation 5.3：哨兵 manual 无目标时间，
+            # 「⏰ 定时」为事实错误，改印「⏸ 待激活」
+            if sa == "manual":
+                notes.append("⏸ 待激活")
+            else:
+                notes.append("⏰ 定时")
         err = entry.get("error")
         if err and not data.is_spec_frozen(entry):
             notes.append(f"⚠️ {str(err)[:80]}")

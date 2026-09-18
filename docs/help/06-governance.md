@@ -33,7 +33,7 @@ Fenix daemon 自动调度 SPEC 时受一组预算、重试与熔断规则约束�
 | 唤醒源 | 间隔 / 时机 | 做什么 |
 |--------|------------|--------|
 | **文件监听器** | 2 秒（比对 STATE.md 校验和） | 状态一变即为该 SPEC 产出事件并派发——**正常路径** |
-| **定时拾取** | 60 秒 | 检查 `start_after` 已到期的 SPEC 并派发 |
+| **定时拾取** | 60 秒 | 检查 `start_after` 已到期的 SPEC 并派发（哨兵 `manual` 的 SPEC 永不参与到期检测） |
 | **恢复闭环复查** | 60 秒 | 复查到期的恢复观察项（见下方盲区） |
 | **配置热更新** | 30 秒 | 配置文件 mtime 变更即原地重载 |
 | **自动归档检查** | 300 秒 | 终态 SPEC 超阈值则归档 |
@@ -124,6 +124,28 @@ daemon 重启时，处于 `implementing`/`testing` 中断状态的 SPEC 自动�
 **Lint 拦截**：晋升时仍执行完整 lint（声明形态+tasks 可解析性），违规时 SPEC 停留 drafted 并在 STATE 写入错误明细，可在 Dashboard 或 CLI 反馈中查看。修正后重新晋升。
 
 **闸口切回后的存量处理**：把 `promote_mode` 从 `manual` 改回 `auto` 后，下一次 full_scan recovery 会自动晋升停留 drafted 的存量 SPEC，无需逐个手动操作。
+
+## SPEC 手工激活（待激活）
+
+定时拾取（`start_after` ISO8601）能表达「某个绝对时间点之后拾取」，但缺少「永不到期、等人发话才拾取」这一档。`start_after` 取值域扩展出第三个哨兵值 `manual`（add-spec-manual-activation）：
+
+- **语义**：`start_after: manual` 的 SPEC **永不到期**，不会被调度器拾取，须人工激活后方可进入调度。它与定时拾取、冻结同属「有意等待」语义——不写 error、不翻状态、不触发告警巡检。
+- **只拦派发、不拦晋升**：手工激活只拦「ready → 派发」；「drafted → ready」的晋升（含 `promote_mode` 语义）不受影响。
+- **与非目标区分**：`depends_on` 的调度语义不变（仅列表展示依赖标记）。
+
+**激活入口清单**：
+
+| 入口 | 操作 |
+|------|------|
+| Dashboard「修改状态」弹窗 | 调度小节「激活（立即调度）」按钮（双向：亦可「设为待激活」） |
+| CLI | `python3 bin/fenix_cli.py activate <spec> [--project <path>]` |
+| `/fenix-new` | §1.6 执行时机第三档「手工激活」（注册时写 `start_after: "manual"`） |
+| evo 同意立项 | 「同意立项」弹窗执行时刻三档中的「手工激活」 |
+| `/fenix-ready` | 放行时可选手工激活（仓库外 `~/.claude/skills/fenix-ready`，人工同步，见下） |
+
+**人工步骤（仓库外，非本仓库交付物）**：`/fenix-ready` skill 位于 `~/.claude/skills/fenix-ready/`（仓库外独立目录），其「放行后立即调度 / 设为待激活」选项须由人工在主树手工补做（改动要点：放行确认处增一问「放行后立即调度，还是设为待激活？」；选待激活时把 SPEC 的 `start_after` 写为 `manual`）。
+
+激活动作 = 把 `start_after` 由 `manual` 置为 `null` 并即时唤醒派发（复用 `scheduling_kick_request.json` 文件信号），daemon 主循环 1s 粒度拾取即派发。
 
 ## SPEC 方案评审门禁
 

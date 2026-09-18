@@ -93,8 +93,11 @@ class H7EvolutionRoutesMixin:
         人工「同意」= accept_item(decided_by="manual")（自动接受是 daemon
         检查点经 3.7 的另一条路径，二者共用同一实现，design D6）。
 
-        ``start_after``（可选，UTC ISO8601）：非空则新 SPEC 排到该时刻由调度
-        定时拾取，到点前 dispatch 静默跳过；null/缺失 = 立项后立即执行（原行为）。
+        ``start_after``（可选）取值三态：
+        - null/缺失 → 立项后立即执行（原行为）
+        - UTC ISO8601 字符串 → 定时拾取（原语义）
+        - ``"manual"``（add-spec-manual-activation D5）→ 立项即为待激活
+          （永不到期，须人工激活后方可被调度器拾取）
         本次执行时刻由调用方（设置页弹窗，按 ``self_evolution.spec_run_at`` 配置
         预填并可临时改）决定，端点不做配置解释；格式非法 400。
         """
@@ -109,12 +112,17 @@ class H7EvolutionRoutesMixin:
         raw_start_after = body.get("start_after")
         start_after = None
         if raw_start_after not in (None, ""):
-            from core.state_machine import parse_utc  # 时间解析单点（design D6）
+            if isinstance(raw_start_after, str) and raw_start_after.strip().lower() == "manual":
+                # D5 哨兵分支：立项即为待激活（经 accept_item 原样落入 entry，
+                # parse_utc 不参与——哨兵不是时间）
+                start_after = "manual"
+            else:
+                from core.state_machine import parse_utc  # 时间解析单点（design D6）
 
-            if not isinstance(raw_start_after, str) or parse_utc(raw_start_after) is None:
-                self._error(400, f"start_after 非法（应为 UTC ISO8601）: {raw_start_after!r}")
-                return
-            start_after = raw_start_after
+                if not isinstance(raw_start_after, str) or parse_utc(raw_start_after) is None:
+                    self._error(400, f"start_after 非法（应为 UTC ISO8601 / manual）: {raw_start_after!r}")
+                    return
+                start_after = raw_start_after
         from core.evolution import accept_item
 
         try:

@@ -9,6 +9,7 @@ fenix_cli.py — Fenix CLI 工具集（add-draft-promotion-gate D6）。
     python3 bin/fenix_cli.py promote <spec> [--project <path>]
     python3 bin/fenix_cli.py review <spec> [--project <path>]
     python3 bin/fenix_cli.py reflow <spec> [--project <path>]
+    python3 bin/fenix_cli.py activate <spec> [--project <path>]
 """
 
 import argparse
@@ -102,6 +103,31 @@ def cmd_review(args):
         sys.exit(1)
 
 
+def cmd_activate(args):
+    """激活待激活 SPEC（start_after manual → null，立即进入调度）。
+
+    判定与执行收敛到 core/dashboard/data/admin_actions.activate_spec 单一
+    实现点（add-spec-manual-activation D6）——CLI 与 Dashboard API 共用同一
+    幂等语义（非待激活拒绝、终态拒绝、found 404），MUST NOT 在 CLI 侧复写。
+    """
+    from core.dashboard.data.admin_actions import activate_spec
+
+    proot = _resolve_project_root(args.project)
+    result = activate_spec(proot, args.spec)
+    if result.get("ok"):
+        print(f"✓ SPEC「{args.spec}」已激活，立即进入调度（start_after manual → null）")
+        sys.exit(0)
+    else:
+        if not result.get("found"):
+            reason = f"SPEC「{args.spec}」不存在于 STATE.md"
+        elif result.get("terminal"):
+            reason = f"终态 SPEC「{args.spec}」不可激活"
+        else:
+            reason = result.get("reason") or "未知原因"
+        print(f"✗ 激活被拒绝：{reason}", file=sys.stderr)
+        sys.exit(1)
+
+
 def cmd_reflow(args):
     """task-gap 滞留 verified SPEC 的人工回炉（verified → ready）。
 
@@ -174,6 +200,18 @@ def main():
         help="项目根目录（默认当前目录）",
     )
 
+    p_activate = subparsers.add_parser(
+        "activate",
+        help="激活待激活 SPEC（start_after manual → null，立即进入调度）",
+    )
+    p_activate.add_argument("spec", help="要激活的 SPEC 名称")
+    p_activate.add_argument(
+        "--project",
+        "-p",
+        default=None,
+        help="项目根目录（默认当前目录）",
+    )
+
     args = parser.parse_args()
 
     if args.command == "promote":
@@ -182,6 +220,8 @@ def main():
         cmd_review(args)
     elif args.command == "reflow":
         cmd_reflow(args)
+    elif args.command == "activate":
+        cmd_activate(args)
     else:
         print(f"未知命令：{args.command}", file=sys.stderr)
         sys.exit(1)

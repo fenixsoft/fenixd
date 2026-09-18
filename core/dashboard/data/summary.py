@@ -248,6 +248,26 @@ def _impl_budget_max(project_root) -> int:
     return budget
 
 
+def _normalize_depends_on(raw) -> str | None:
+    """规范化 depends_on 取值（add-spec-manual-activation D12）。
+
+    depends_on **未**登记在 `StateParser._parse_content` 的 null→None 归一化
+    键表里，而 serialize 对空值恒写 ``- depends_on: null``——STATE.md 里
+    无依赖 SPEC 的该字段解析回来后是**字面量字符串 "null"**（本仓库实测
+    227/244 条）而非 None。若原样透出，前端裸真值判定会让所有无依赖 SPEC
+    被误标「前置依赖」。取值口径与调度器 `_dependencies_satisfied` 的
+    ``deps == "null"`` 守卫对齐：
+    - 缺失 / None / 空串 / 全空白 / 字面量 "null"（大小写不敏感）→ None
+    - 其余 → ``str(raw).strip()`` 原样返回（逗号分隔直接透传）
+    """
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text or text.lower() == "null":
+        return None
+    return text
+
+
 def spec_summary(project_root, spec_name: str, entry: dict, runs_files: list | None = None) -> dict:
     """单个 SPEC 的摘要（/api/specs 列表项）。
 
@@ -306,6 +326,12 @@ def spec_summary(project_root, spec_name: str, entry: dict, runs_files: list | N
         # 定时 Tag/倒计时与冻结模式。
         "start_after": _facade.get_spec_start_after(entry),
         "frozen_until": _facade.get_frozen_until(entry),
+        # add-spec-manual-activation D12：depends_on 规范化值（列表页「前置依赖」
+        # tag 的数据源）。MUST NOT 直接透传 entry.get("depends_on")——该字段未
+        # 登记在 StateParser._parse_content 的 null→None 归一化键表，serialize 对
+        # 空值恒写 `depends_on: null`，透传会让 227/244 条无依赖 SPEC 拿到字面量
+        # "null" 而被误标（见 _normalize_depends_on docstring）。
+        "depends_on": _normalize_depends_on(entry.get("depends_on") if entry else None),
         # 冻结态（结构化字段优先，回退文本前缀）：前端据此渲染解冻入口。
         # 自动冻结（内容完整性闸门 / 预算闸门 / env 阻塞）只认文本会漏判。
         "frozen": _facade.is_spec_frozen(entry),
@@ -410,6 +436,7 @@ _ENTRY_SIG_KEYS = (
     "start_after",
     "frozen_until",
     "frozen",
+    "depends_on",
     IMPL_RUN_BUDGET_OVERRIDE_FIELD,
     "_impl_run_budget_used",
     "_verify_infra_rounds",
