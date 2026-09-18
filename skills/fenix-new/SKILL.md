@@ -205,7 +205,7 @@ python3 .fenix/bin/fenix_spec.py status --change <name>
 → 门禁判缺口 → 打回重派 → 烧预算（实证：`fix-robustness-edge-cases` 任务 4.2
 「经用户确认时机后重启 daemon 并冒烟验证」即因此被打回）。
 
-**四类 Agent 做不到的事，MUST NOT 作为独立任务出现：**
+**五类 Agent 做不到的事，MUST NOT 作为独立任务出现：**
 
 | 类型 | 典型写法（禁止） | Agent 做不到的原因 |
 |------|------------------|--------------------|
@@ -213,6 +213,7 @@ python3 .fenix/bin/fenix_spec.py status --change <name>
 | 需外部资源 | 「配置生产环境凭据」「在第三方控制台开启 X」 | worktree 内无凭据、无网络可达性 |
 | 需人工裁决 | 「与用户确认方案取舍后再实现」「等待用户回复」 | Agent 单次 run 内无法与人往返 |
 | 主树专属写操作 | 「在主树执行 git 操作 / 删除 `.fenix/` 运行时文件」 | worktree 隔离 + 主树只读（hook 拦截） |
+| 需产出他车道产物 | 「把 `test_scenarios.json`/`scenarios.json`/`report.json` 持久化到 `.fenix/verify-progress/<spec>/`」 | 该文件由验证链车道产出（planner-plan/pm_engine/verify_engine），实现者交付时尚不存在 |
 
 **正确做法：把「Agent 能做的部分」与「人工部分」拆开，只把前者写成任务。**
 
@@ -231,13 +232,27 @@ python3 .fenix/bin/fenix_spec.py status --change <name>
   即：Agent 负责**把重启信号落盘 + 预演验证**，`supervisor` 负责**实际重启**——
   这条任务 Agent 能做完并勾选，人工动作被下沉到框架机制里。
 
+- **需产出他车道产物 → 改写为「实现 X 让框架产出该文件」**：
+
+  ```
+  ## 禁止写法（验证链产物，实现者交付时不存在）
+  - [ ] 6.2 写 .fenix-run-result.json，并持久化场景集与结果到 .fenix/verify-progress/<spec>/
+
+  ## 正确写法（Agent 可完成、可勾选）
+  - [ ] 6.2 新增 planner_plan 生成逻辑，在核心路由中调用 _write_test_scenarios 落盘场景集
+        （场景文件由框架验证链自动产出，实现者负责编写触发该产出的代码）
+  ```
+
+  即：Agent 负责**编写产生该文件的代码**，文件本身由对应车道的框架机制产出——
+  这条任务 Agent 能做完并勾选，产物归属不冲突。
+
 - **确需人工执行的动作** → 写入对应文档（如 `docs/help/*.md`）的「人工步骤」小节，
   **不写成 tasks.md 任务**；需要跨 run 保留的，用 `.fenix/todo.md` 登记（那是给人看的队列，
   不进任务门禁对账）。
 
 - **实现期才发现某任务不可达** → Agent MUST 在 `.fenix-run-result.json` 顶层 `unattainable`
   数组申报（附 `reason` / `evidence`）并以 `status: "partial"` 收工；门禁会从缺口扣除已申报项并放行。
-  **申报 unattainable 是补救，不是立项时的借口**——立项时就应识别并改写（上表四类）。
+  **申报 unattainable 是补救，不是立项时的借口**——立项时就应识别并改写（上表五类）。
 
 **自检**：写完 tasks.md 后逐条自问「这条任务，一个在隔离 worktree 内、无人可问、无外部凭据的
 Agent，能不能独立做完并勾选 `[x]`？」答案是否 → 按上表改写，MUST NOT 保留原样。
@@ -311,7 +326,7 @@ git commit -m "[fenix] spec: <spec-name>"
 - 先澄清再生成，不猜测用户需求
 - SPEC 要足够精确，让实现Agent 无需再提问
 - 每个 Requirement 至少有一个可测试的 Scenario
-- **任务粒度（强制，见 §3.2.1）**：每条 tasks.md 任务 MUST 是实现 Agent 在隔离 worktree 内可独立完成并勾选 `[x]` 的；MUST NOT 把需人工运维门控 / 外部资源 / 人工裁决 / 主树专属写操作写成任务。信号式人工动作改写成「交付物落位 + 预演」，人工步骤写入文档或 `.fenix/todo.md`。
+- **任务粒度（强制，见 §3.2.1）**：每条 tasks.md 任务 MUST 是实现 Agent 在隔离 worktree 内可独立完成并勾选 `[x]` 的；MUST NOT 把需人工运维门控 / 外部资源 / 人工裁决 / 主树专属写操作 / 需产出他车道产物写成任务。信号式人工动作改写成「交付物落位 + 预演」，人工步骤写入文档或 `.fenix/todo.md`。
 - **执行模式（add-fast-track-mode）**：
   - 用户未指定模式时 MUST 给出明确建议（fast-track / full，附理由），禁止默认任一路径
   - 用户显式指定（`--fast-track` / `--full`）时 MUST 尊重用户指定，不得以评估结果覆盖

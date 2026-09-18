@@ -130,6 +130,12 @@ spec 内容必须符合 fenix-new 流程的文档格式：
    组内任务行 `- [ ] <组号>.<序号> <任务>`（如 `- [ ] 1.1 ...`）。
    **只有 Deliverables 段、没有编号分组 = 下游解析不出任务，草稿整条作废**。
 
+**任务行 MUST NOT 要求实现者产出他车道验证产物**（与 `skills/fenix-new` §3.2.1 第 5 类同语义，
+晋升 lint 会机械拦截）：验证链产物（`test_scenarios.json` / `scenarios.json` / `report.json` /
+`.fenix/verify-progress/<spec>/` 目录及 `planner-judge` 结果文件）由验证链车道产出，实现者
+交付时根本不存在——要求写出来的任务永远无法勾选。正确写法是「实现 X 让框架产出该文件」
+（写出触发该产出的代码），或移出任务书（reference / `.fenix/todo.md` 人工步骤）。
+
 tasks_md 骨架（照此形状改写内容，两个 `## ` 段都要有）：
 
 ````markdown

@@ -317,7 +317,17 @@ class TestPromotionLintTasks(unittest.TestCase):
 
 
 class TestExistingSpecsZeroMisfire(unittest.TestCase):
-    """存量 spec tasks.md 全量回归：lint 零误拦（task-track 2.4）。"""
+    """存量 spec tasks.md 全量回归：lint 零误拦（task-track 2.4）。
+
+    唯一预期违规为 ``fix-verify-serving-disk-reclaim`` 任务 6.2（事故真阳性，
+    add-task-artifact-ownership-gate 判据命中历史事故形态，属「该拦」而非
+    「误拦」；实现期 MUST NOT 改写该事故 SPEC 文件，design「唯一预期违规」）。
+    其余任何文件出现违规即判误拦失败。
+    """
+
+    _ACCIDENT_RELPATH = (
+        "spec/changes/fix-verify-serving-disk-reclaim/tasks.md"
+    )
 
     def test_all_existing_tasks_md_pass_lint(self):
         changes_dir = PROJECT_ROOT / "spec" / "changes"
@@ -327,7 +337,11 @@ class TestExistingSpecsZeroMisfire(unittest.TestCase):
         for tf in tasks_files:
             violations = lint_tasks_parseable(tf.parent, PROJECT_ROOT)
             if violations:
-                misfired.append((str(tf.relative_to(PROJECT_ROOT)), violations))
+                rel = str(tf.relative_to(PROJECT_ROOT))
+                if rel == self._ACCIDENT_RELPATH:
+                    # 事故真阳性：新判据命中历史事故任务行，非误拦
+                    continue
+                misfired.append((rel, violations))
         self.assertEqual(
             misfired, [],
             f"存量 spec 存在 lint 误拦: {misfired}",
