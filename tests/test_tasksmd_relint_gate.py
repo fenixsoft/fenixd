@@ -357,7 +357,7 @@ class TestFullLaneRelintLegacyRegistration(unittest.TestCase):
         """登记自身异常 → 捕获降级 WARNING，不阻断重派。"""
 
         class _BoomWM:
-            def register_legacy(self, *args, **kwargs):
+            def register_legacy(self, spec_name, worktree_path, branch):
                 raise RuntimeError("disk gone")
 
         self.engine.agent_runner.worktree_manager = _BoomWM()
