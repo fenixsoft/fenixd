@@ -199,16 +199,21 @@ function AcceptScheduleFields({
   holder: AcceptSchedule;
   initial: string | null;
 }) {
-  const [mode, setMode] = useState<'immediate' | 'scheduled'>(
-    initial ? 'scheduled' : 'immediate');
+  const [mode, setMode] = useState<'immediate' | 'scheduled' | 'manual'>(
+    initial === 'manual' ? 'manual' : initial ? 'scheduled' : 'immediate');
   // 配置为「立即」时改选「指定时间」的预填值：1 小时后（用户自己改）
   const [when, setWhen] = useState<Dayjs>(
-    initial ? dayjs(initial) : dayjs().add(1, 'hour').startOf('minute'));
+    initial && initial !== 'manual' ? dayjs(initial) : dayjs().add(1, 'hour').startOf('minute'));
 
-  const commit = (nextMode: 'immediate' | 'scheduled', nextWhen: Dayjs) => {
-    holder.startAfter = nextMode === 'scheduled'
-      ? nextWhen.second(0).millisecond(0).toISOString()
-      : null;
+  const commit = (nextMode: 'immediate' | 'scheduled' | 'manual', nextWhen: Dayjs) => {
+    if (nextMode === 'manual') {
+      // add-spec-manual-activation D11：手工激活档直接写哨兵字符串，无时区换算
+      holder.startAfter = 'manual';
+    } else {
+      holder.startAfter = nextMode === 'scheduled'
+        ? nextWhen.second(0).millisecond(0).toISOString()
+        : null;
+    }
   };
 
   return (
@@ -219,7 +224,7 @@ function AcceptScheduleFields({
       <Radio.Group
         value={mode}
         onChange={(e) => {
-          const next = e.target.value as 'immediate' | 'scheduled';
+          const next = e.target.value as 'immediate' | 'scheduled' | 'manual';
           setMode(next);
           commit(next, when);
         }}
@@ -227,6 +232,7 @@ function AcceptScheduleFields({
       >
         <Radio value="immediate">创建后立即执行</Radio>
         <Radio value="scheduled">在指定时间执行</Radio>
+        <Radio value="manual">手工激活</Radio>
       </Radio.Group>
       {mode === 'scheduled' && (
         <div style={{ marginTop: 12 }}>
@@ -580,15 +586,20 @@ const SuggestedImprovementsPanel = forwardRef<
       okText: '同意',
       cancelText: '取消',
       onOk: async () => {
-        if (holder.startAfter && !dayjs(holder.startAfter).isAfter(dayjs())) {
+        // 哨兵 manual 不参与时刻校验（见 D11）；仅 ISO 定时需晚于当前时刻
+        if (holder.startAfter
+            && holder.startAfter !== 'manual'
+            && !dayjs(holder.startAfter).isAfter(dayjs())) {
           message.error('执行时间必须晚于当前时间');
           return Promise.reject(new Error('invalid start time'));
         }
         const result = await execOne(item, 'accept', holder.startAfter);
         if (result.ok) {
-          const when = holder.startAfter
-            ? `，将于 ${dayjs(holder.startAfter).format('YYYY-MM-DD HH:mm')} 执行`
-            : '';
+          const when = holder.startAfter === 'manual'
+            ? '，已设为待激活（手工激活后进入调度）'
+            : holder.startAfter
+              ? `，将于 ${dayjs(holder.startAfter).format('YYYY-MM-DD HH:mm')} 执行`
+              : '';
           message.success(`已立项：${result.spec_name || item.title}${when}`);
         } else {
           message.error(result.error || '接受失败');

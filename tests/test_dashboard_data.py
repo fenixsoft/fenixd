@@ -2288,5 +2288,44 @@ class TestSpecSummaryBudgetFields(unittest.TestCase):
         self.assertEqual(s["budget_used"], 0)
 
 
+class TestNormalizeDependsOn(unittest.TestCase):
+    """add-spec-manual-activation 10.7：_normalize_depends_on 单元用例。
+
+    关键反例：STATE.md 的 `depends_on: null` 解析回字面量字符串 "null"
+    （该字段未登记在解析器 null→None 归一化键表），必须归一化为 None——
+    否则前端「前置依赖」标记对无依赖 SPEC 全线误标。
+    """
+
+    def setUp(self):
+        from core.dashboard.data.summary import _normalize_depends_on
+        self.fn = _normalize_depends_on
+
+    def test_none_and_empty_to_none(self):
+        self.assertIsNone(self.fn(None))
+        self.assertIsNone(self.fn(""))
+        self.assertIsNone(self.fn("   "))
+        self.assertIsNone(self.fn("  \t\n "))
+
+    def test_literal_null_string_to_none(self):
+        # 字面量字符串 "null"（serialize 对空值恒写 `- depends_on: null`，
+        # 解析回字符串 "null" 而非 None）——大小写不敏感
+        self.assertIsNone(self.fn("null"))
+        self.assertIsNone(self.fn("NULL"))
+        self.assertIsNone(self.fn("  null  "))
+
+    def test_real_deps_kept_stripped(self):
+        self.assertEqual(self.fn("spec-a"), "spec-a")
+        self.assertEqual(self.fn(" spec-a "), "spec-a")
+        self.assertEqual(self.fn("spec-a, spec-b"), "spec-a, spec-b")
+        self.assertEqual(self.fn("fix-a,b"), "fix-a,b")
+
+    def test_non_string_scalar_coerced(self):
+        # 防御性：非字符串值 str() 后走同一口径——"0" 不是 null，保留
+        self.assertEqual(self.fn(0), "0")
+        self.assertEqual(self.fn(123), "123")
+        # 但 None 本身走前置分支直接返回 None（不经过 str()）
+        self.assertIsNone(self.fn(None))
+
+
 if __name__ == "__main__":
     unittest.main()

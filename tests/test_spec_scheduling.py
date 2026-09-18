@@ -118,6 +118,27 @@ class TestSharedTimeTools(unittest.TestCase):
         # 解析失败视为不阻塞（fail-open，脏值不卡死调度）
         self.assertFalse(self.start_after_pending({"start_after": "明天早上"}, now))
 
+    def test_start_after_manual_sentinel_always_pending(self):
+        # add-spec-manual-activation D1：哨兵 manual = 永不到期（等价「永远 pending」）。
+        # 远期 now 亦真，验证不依赖时间。
+        entry = {"start_after": "manual"}
+        self.assertTrue(self.start_after_pending(entry, datetime(2026, 9, 6, 10, 0, tzinfo=timezone.utc)))
+        self.assertTrue(self.start_after_pending(entry, datetime(2036, 1, 1, 0, 0, tzinfo=timezone.utc)))
+
+    def test_start_after_manual_case_variants(self):
+        # 大小写不敏感 + strip 容错人工手改 STATE.md
+        for variant in ("Manual", "MANUAL", " manual "):
+            self.assertTrue(
+                self.start_after_pending({"start_after": variant}, None),
+                f"variant {variant!r} should be pending",
+            )
+
+    def test_start_after_manual_prefix_like_not_misjudged(self):
+        # 前缀相似但非哨兵 → 回退 parse_utc fail-open → False（非法值不阻塞）
+        now = datetime(2026, 9, 6, 10, 0, tzinfo=timezone.utc)
+        self.assertFalse(self.start_after_pending({"start_after": "manual-x"}, now))
+        self.assertFalse(self.start_after_pending({"start_after": "manuel"}, now))
+
     def test_parse_orig_status_ok(self):
         self.assertEqual(
             self.parse_orig_status("用户指令冻结：原状态 testing · 人工确认"),
@@ -640,6 +661,170 @@ class TestSchedulingKickSignal(unittest.TestCase):
         with mock.patch.object(self._fenixd_mod, "PROJECT_ROOT", self.proot):
             daemon._check_scheduling_kick_requests()
         self.assertEqual(calls, ["myspec"], "drafted spec 拾取走晋升链")
+
+
+class TestManualActivation(unittest.TestCase):
+    """add-spec-manual-activation 10.1：哨兵 manual 全链行为。
+
+    覆盖：
+    - 谓词：manual 恒 pending（不依赖时间）、大小写/空白变体、前缀相似不误判；
+    - 持久化：set_spec_start_after('manual') 经 STATE.md 往返后
+      get_spec_start_after 返回 "manual"（哨兵不被折叠为 None）；
+    - 激活动作：activate_spec 置 null + 写 scheduling_kick 信号；
+    - 调度门控：manual 的 spec 经 queue/_on_spec_ready 均不被拾取；
+    - check_scheduling_deadlines 多轮调用不唤起（D3，不误判到期）。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.proot = make_spec_scheduling_project(Path(self.tmpdir))
+        self.sm = make_state_machine(self.proot)
+        (self.proot / ".fenix" / "logs").mkdir(parents=True, exist_ok=True)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    # ── 谓词层（对齐 1.3 用例） ──
+
+    def test_sentinel_always_pending(self):
+        from core.state_machine import start_after_pending
+        entry = {"start_after": "manual"}
+        self.assertTrue(start_after_pending(entry, datetime(2026, 9, 6, 10, 0, tzinfo=timezone.utc)))
+        # 远期 now 亦真：验证不依赖时间
+        self.assertTrue(start_after_pending(entry, datetime(2036, 1, 1, 0, 0, tzinfo=timezone.utc)))
+
+    def test_sentinel_case_and_whitespace_variants(self):
+        from core.state_machine import start_after_pending
+        for variant in ("Manual", "MANUAL", " manual ", "  Manual  "):
+            self.assertTrue(
+                start_after_pending({"start_after": variant}, None),
+                f"variant {variant!r} should be pending",
+            )
+
+    def test_prefix_like_not_misjudged(self):
+        from core.state_machine import start_after_pending
+        now = datetime(2026, 9, 6, 10, 0, tzinfo=timezone.utc)
+        # 前缀相似但非哨兵 → 回退 parse_utc fail-open → False（非法值不阻塞）
+        self.assertFalse(start_after_pending({"start_after": "manual-x"}, now))
+        self.assertFalse(start_after_pending({"start_after": "manuel"}, now))
+
+    # ── 持久化与读侧 ──
+
+    def test_set_manual_roundtrip_not_collapsed(self):
+        from core.dashboard.data import get_spec_start_after, set_spec_start_after
+        result = set_spec_start_after(self.proot, "myspec", "manual")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["start_after"], "manual")
+        # 经 STATE.md 往返后 get_spec_start_after 返回 "manual"（不被折叠为 None）
+        entry = self.sm.read_one("myspec")
+        self.assertEqual(entry.get("start_after"), "manual")
+        self.assertEqual(get_spec_start_after(entry), "manual")
+        # 设为待激活不写 kick 信号（这是暂停调度，不是恢复调度）
+        self.assertFalse(
+            (self.proot / ".fenix" / "scheduling_kick_request.json").exists(),
+            "设为待激活不写 kick 信号",
+        )
+
+    def test_set_manual_case_insensitive(self):
+        from core.dashboard.data import get_spec_start_after, set_spec_start_after
+        result = set_spec_start_after(self.proot, "myspec", "MANUAL")
+        self.assertTrue(result["ok"])
+        self.assertEqual(get_spec_start_after(self.sm.read_one("myspec")), "manual")
+
+    # ── 激活动作 ──
+
+    def test_activate_spec_clears_and_wakes(self):
+        from core.dashboard.data import activate_spec, get_spec_start_after
+        self.sm.update_spec("myspec", {"start_after": "manual"})
+        result = activate_spec(self.proot, "myspec")
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["found"])
+        self.assertEqual(result["start_after"], None)
+        entry = self.sm.read_one("myspec")
+        self.assertIsNone(entry.get("start_after"))
+        self.assertIsNone(get_spec_start_after(entry))
+        req = self.proot / ".fenix" / "scheduling_kick_request.json"
+        self.assertTrue(req.exists(), "激活动作必须写唤醒信号")
+        payload = json.loads(req.read_text(encoding="utf-8"))
+        self.assertEqual(payload["spec"], "myspec")
+
+    def test_activate_spec_not_manual_rejected(self):
+        from core.dashboard.data import activate_spec
+        self.sm.update_spec("myspec", {"start_after": None})
+        result = activate_spec(self.proot, "myspec")
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["found"])
+        self.assertIn("并非待激活态", result.get("reason", ""))
+        # STATE 零变更
+        self.assertIsNone(self.sm.read_one("myspec").get("start_after"))
+
+    def test_activate_spec_unknown_spec(self):
+        from core.dashboard.data import activate_spec
+        result = activate_spec(self.proot, "nosuch")
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["found"])
+
+    # ── 调度门控（D2：全派发入口经 start_after_pending 单点覆盖） ──
+
+    def test_manual_not_dispatched_by_queue(self):
+        from core.pm_engine import PMEngine
+        self.sm.update_spec("myspec", {"start_after": "manual"})
+        queue = [(5, "myspec", "implementer", 0.0)]
+        called = []
+        pm = PMEngine.__new__(PMEngine)
+        pm._run_agent_worker = lambda *a, **k: called.append(a)
+        d = make_min_dispatcher(pm, queue, lambda n: self.sm.read_all().get(n))
+        d._process_queue()
+        self.assertFalse(called, "哨兵 manual 的 spec 不得派发（静默跳过）")
+        self.assertEqual(len(d._run_queue), 1, "条目保持排队，不丢失")
+
+    def test_manual_not_dispatched_by_on_spec_ready(self):
+        from core.pm_engine import PMEngine
+        self.sm.update_spec("myspec", {"start_after": "manual", "status": "ready"})
+        called = []
+
+        class _FakeAgentRunner:
+            class _WM:
+                def has_active_worktree(self, n): return False
+            worktree_manager = _WM()
+            def has_live_attempt(self, n): return False
+
+        pm = PMEngine.__new__(PMEngine)
+        pm.state_machine = self.sm
+        pm.agent_runner = _FakeAgentRunner()
+        pm.logger = _SilentLogger()
+        pm.shutting_down = False
+        pm._pending_dispatches = set()
+        pm._last_dispatch_at = {}
+        pm._dispatch_backoffed = lambda spec: False
+        pm._dependencies_satisfied = lambda n: True
+        pm.project_root = self.proot
+        pm._enqueue = lambda n, at: called.append((n, at))
+        pm._on_spec_ready("myspec")
+        self.assertEqual(called, [], "manual 未激活时 _on_spec_ready 不得入队")
+        # 激活（清哨兵）后立即入队
+        self.sm.update_spec("myspec", {"start_after": None})
+        pm._on_spec_ready("myspec")
+        self.assertEqual(called, [("myspec", "implementer")], "激活后立即恢复调度")
+
+    # ── check_scheduling_deadlines 不误判哨兵到期（D3） ──
+
+    def test_deadlines_never_wake_manual(self):
+        from core.pm_engine import PMEngine
+        self.sm.update_spec("myspec", {"start_after": "manual"})
+        pm = PMEngine.__new__(PMEngine)
+        pm.state_machine = self.sm
+        pm.project_root = self.proot
+        pm.logger = _SilentLogger()
+        pm._on_spec_ready = mock.Mock()
+        pm._on_spec_drafted = mock.Mock()
+        pm._pending_dispatches = set()
+        for _ in range(3):
+            result = pm.check_scheduling_deadlines()
+            self.assertEqual(result["signaled"], [], "manual 不得被到期检测唤起")
+        pm._on_spec_ready.assert_not_called()
+        pm._on_spec_drafted.assert_not_called()
+        self.assertEqual(self.sm.read_one("myspec").get("start_after"), "manual")
 
 
 if __name__ == "__main__":

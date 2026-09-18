@@ -276,7 +276,12 @@ def render_report(project_root, spec_name: str) -> str:
         lines.append(f"  🧊 冻结{tail}")
     start_after = data.get_spec_start_after(entry)
     if start_after:
-        lines.append(f"  ⏰ start_after: {_local_ts(start_after, '%m-%d %H:%M')}")
+        # add-spec-manual-activation 5.4：哨兵 Manual 无目标时间，MUST NOT
+        # 走 _local_ts（非 ISO 走 except 回退 str[:19]，输出伪时间戳）
+        if start_after == "manual":
+            lines.append("  ⏸ 待激活（start_after: manual）")
+        else:
+            lines.append(f"  ⏰ start_after: {_local_ts(start_after, '%m-%d %H:%M')}")
 
     # ── 进度 ──
     lines.append("")
