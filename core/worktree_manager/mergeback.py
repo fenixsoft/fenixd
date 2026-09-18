@@ -19,7 +19,7 @@ from typing import Optional
 
 from core.wip_checkpoint import collapse_wip_commits  # noqa: E402
 from core.worktree_manager.types import MergeConflictInfo
-from core.worktree_manager import _is_build_artifact_path, WIP_GATE_STASH_PREFIX  # noqa: E402
+from core.worktree_manager import WIP_GATE_STASH_PREFIX  # noqa: E402
 
 
 class G4MergebackMixin:
@@ -130,7 +130,8 @@ class G4MergebackMixin:
         )
 
     def _wip_overlap_gate(self, branch: str) -> tuple:
-        """merge-back 前 WIP 重叠闸门（evo-merge-back-wip-overlap-gate D1/D2）。
+        """merge-back 前 WIP 重叠闸门（evo-merge-back-wip-overlap-gate D1/D2，
+        evo-merge-back-wip-artifact-scope D3b）。
 
         在 ``_main_tree_lock`` 内、``ensure_clean_tree`` 之前调用。返回
         ``(blocked, overlap)``：
@@ -138,12 +139,73 @@ class G4MergebackMixin:
         - ``blocked``：非 None 时即调用方需直接返回的 ``MergeConflictInfo``
           （``wip_gate_blocked=True``，主树未被 stash/merge/pop 触碰）；
           None = 放行（无重叠 / 收纳策略 / 检测命令失败）。
-        - ``overlap``：检测到的重叠文件清单（已排除 ``spec/changes/**``），供
-          调用方决定收纳 stash 前缀与挂到成功/失败返回值（``info.wip_overlap``）。
+        - ``overlap``：**语义**重叠文件清单（已排除 ``spec/changes/**`` 和配置
+          产物），供调用方决定收纳 stash 前缀与挂到成功/失败返回值
+          （``info.wip_overlap``）。产物重叠在此方法内已按 D3b 对齐 HEAD（
+          ``git checkout HEAD -- <p>``），不再进入重叠集合。
+
+        **D3b 核心动机**：`ensure_clean_tree()`（`mergeback.py:100`）在闸门放行后
+        **无条件**对全树 tracked 脏改动执行 stash；产物的未提交改动**不需要
+        保护**（产物是 src 的投影，merge 后由构建重建），把它纳入重叠集合只会
+        制造必然的 pop 冲突与误报 major 告警。因此在 `ensure_clean_tree` 之前，
+        把重叠集合中判定为产物的子集对齐 HEAD（使其变干净、不进 stash、pop 无
+        产物冲突）——从源头消除「产物 → stash → pop 冲突 → 误报 major 告警」链路。
         """
         overlap = self._detect_wip_overlap(branch)
         if not overlap:
             return None, []
+
+        # ── D3b：按实例判定器切分产物 / 语义重叠 ──────────────────────────
+        artifact_overlap = self._artifacts.paths_in(overlap)
+        semantic_overlap = self._artifacts.non_artifacts_in(overlap)
+
+        # 产物重叠逐路径对齐 HEAD（与 _resolve_build_artifact_conflicts 的
+        # 「产物无条件对齐 HEAD」同语义：产物是 src 投影，merge 后由构建重建）。
+        # 只作用于重叠子集——主树独有、分支未触碰的产物改动 MUST NOT 被对齐
+        # （仍走既有 stash/pop 往返），若一并丢弃等于把「用户本地刚构建、分支
+        # 根本没碰」的产物静默抹掉，属净回归。
+        if artifact_overlap:
+            aligned_ok, aligned_fail = [], []
+            for p in artifact_overlap:
+                try:
+                    result = subprocess.run(
+                        [
+                            "git", "-C", str(self.project_root),
+                            "checkout", "HEAD", "--", p,
+                        ],
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                    )
+                    if result.returncode == 0:
+                        aligned_ok.append(p)
+                    else:
+                        aligned_fail.append(p)
+                except (subprocess.TimeoutExpired, OSError):
+                    aligned_fail.append(p)
+
+            if aligned_ok:
+                self.logger.info(
+                    "worktree_manager",
+                    f"WIP overlap D3b: aligned {len(aligned_ok)} artifact(s) to "
+                    f"HEAD before stash — {aligned_ok}",
+                )
+            # 对齐失败的路径**逐路径**回落：并入 semantic_overlap——即退回
+            # 现行行为（照旧 stash、照旧可能 pop 冲突与告警）。
+            # **fail-safe 方向 = 与现行行为一致**：MUST NOT 因对齐失败而阻塞
+            # merge-back、MUST NOT 跳过 stash、MUST NOT 改宽判定。
+            if aligned_fail:
+                self.logger.warning(
+                    "worktree_manager",
+                    f"WIP overlap D3b: {len(aligned_fail)} artifact(s) failed to "
+                    f"align to HEAD — falling back to semantic overlap: {aligned_fail}",
+                )
+                semantic_overlap = sorted(semantic_overlap + aligned_fail)
+
+        # 对齐后返回语义集合（纯产物重叠不再阻塞 merge-back）
+        if not semantic_overlap:
+            return None, []
+        overlap = semantic_overlap  # 语义重叠（产物已干净或回落为语义）
         if self._wip_gate_policy() == "block":
             error = (
                 f"Merge-back blocked by WIP overlap gate (policy=block): "
@@ -183,6 +245,15 @@ class G4MergebackMixin:
         其「主树脏 + 分支同改」由既有提交通道 ``ensure_spec_committed`` /
         ``_commit_softened_declaration`` 收口，MUST NOT 为它引入新的 stash/阻塞
         语义。
+
+        **产物排除（evo-merge-back-wip-artifact-scope D3b）**：本方法**保持只读、
+        语义不变**——产物路径（配置声明的产物前缀/通配）仍在返回的重叠集合中
+        交付，由调用方 ``_wip_overlap_gate`` 另行切分处置。产物的排除与
+        ``spec/changes/**`` 排除**语义不同、MUST NOT 合并**：前者是「可再生的
+        投影」（merge 后由构建重建），后者是「框架运行必需、有独立提交通道」。
+        且产物侧无 autostash 对偶排除（``:(exclude)`` 不覆盖产物），产物仍会被
+        autostash 卷走，故产物必须在 stash **之前**对齐 HEAD（见 ``_wip_overlap_gate``
+        的 D3b 段）。
 
         Returns: 排序后的重叠文件路径列表（无重叠为空列表）。
         """
@@ -305,9 +376,10 @@ class G4MergebackMixin:
         conflict_paths = self._parse_merge_tree_conflict_paths(res.stdout)
         if not conflict_paths:
             return None
-        # 分类复用既有产物前缀判定（与 abort 后分类口径一致）：非产物路径
-        # 全部为被忽略的 DU 运行时草稿时才放行，其余视为语义冲突直通 repair。
-        non_artifact = [p for p in conflict_paths if not _is_build_artifact_path(p)]
+        # 分类复用产物路径判定器实例（evo-merge-back-wip-artifact-scope D3）：
+        # 非产物路径全部为被忽略的 DU 运行时草稿时才放行，其余视为语义冲突
+        # 直通 repair。
+        non_artifact = self._artifacts.non_artifacts_in(conflict_paths)
         if not non_artifact:
             return None
         if all(self._rehearsed_path_is_ignored_du(p) for p in non_artifact):
@@ -543,9 +615,11 @@ class G4MergebackMixin:
             # 主树 abort 后保持干净（merge --abort 本身幂等，重复 abort 无害）。
             conflict_paths = self._collect_conflict_paths()
             self_heal_applicable = bool(conflict_paths) and all(
-                _is_build_artifact_path(p) for p in conflict_paths
+                self._artifacts.is_artifact(p) for p in conflict_paths
             )
-            has_semantic_conflict = any(not _is_build_artifact_path(p) for p in conflict_paths)
+            has_semantic_conflict = any(
+                not self._artifacts.is_artifact(p) for p in conflict_paths
+            )
             if conflict_paths:
                 self.logger.warning(
                     "worktree_manager",

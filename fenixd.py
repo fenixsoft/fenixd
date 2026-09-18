@@ -238,6 +238,12 @@ class FenixDaemon:
         # 默认 auto（自动收纳重叠改动）；显式 worktree.mergeback_wip_overlap_policy
         # =block 时阻塞等待人工处置（不 stash/不 merge/不 pop，主树零污染）。
         _wip_policy = self.config.get("worktree.mergeback_wip_overlap_policy", "auto")
+        # 构建产物路径判定配置（evo-merge-back-wip-artifact-scope D2/D4）：项目可
+        # 声明自己的产物根（前缀，以 / 结尾）与产物文件（后缀通配，含 *），供
+        # 产物判定器实例化。MUST 谨慎——判定变宽会把语义改动误判为产物并被静默
+        # 丢弃（fix-mergeback-stashpop-silent-loss 事故家族），故默认只含框架现行
+        # 有效路径（core/dashboard/static），产品项目须显式声明后才变宽。
+        _artifact_paths = self.config.get("worktree.build_artifact_paths", None)
         self.worktree_manager = WorktreeManager(
             wt_base,
             PROJECT_ROOT,
@@ -247,6 +253,7 @@ class FenixDaemon:
             # 检查在飞/待收口 spec 的分支引用（宁可多留分支不可误删成果）。
             state_reader=self.state_machine.read_all,
             mergeback_wip_overlap_policy=str(_wip_policy) if _wip_policy else "auto",
+            build_artifact_paths=_artifact_paths,
         )
         self.logger.info("fenixd", "WorktreeManager initialized")
 

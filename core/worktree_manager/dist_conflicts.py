@@ -12,7 +12,6 @@ from pathlib import Path
 
 from core.worktree_manager import (  # noqa: E402
     DASHBOARD_STATIC_ROOT,
-    _is_build_artifact_path,
 )
 
 
@@ -68,7 +67,9 @@ class G5DistConflictsMixin:
             conflict_paths = _collect_unmerged(res.stdout)
             if not conflict_paths:
                 return False
-            artifact_paths = [p for p in conflict_paths if _is_build_artifact_path(p)]
+            # 产物判定走实例判定器（evo-merge-back-wip-artifact-scope D3）：
+            # 项目配置的产物路径（如根级 dist/）也参与自愈判定。
+            artifact_paths = self._artifacts.paths_in(conflict_paths)
             if not artifact_paths:
                 return False
 
@@ -120,7 +121,7 @@ class G5DistConflictsMixin:
                 strays = [
                     line
                     for line in staged.stdout.splitlines()
-                    if _is_build_artifact_path(line) and line not in head_artifacts
+                    if self._artifacts.is_artifact(line) and line not in head_artifacts
                 ]
                 for p in strays:
                     subprocess.run(
@@ -273,8 +274,11 @@ class G5DistConflictsMixin:
             if diff.returncode != 0:
                 return
             changed = [l.strip() for l in diff.stdout.splitlines() if l.strip()]
+            # 首个子句以 DASHBOARD_STATIC_ROOT 限定重建作用域（Non-Goals：不改
+            # 重建触发面）；产物判定走实例判定器（evo-merge-back-wip-artifact-scope
+            # D3，与预演闸/自愈同一口径）。
             src_touched = any(
-                p.startswith(DASHBOARD_STATIC_ROOT) and not _is_build_artifact_path(p)
+                p.startswith(DASHBOARD_STATIC_ROOT) and not self._artifacts.is_artifact(p)
                 for p in changed
             )
             if not src_touched:
@@ -371,7 +375,13 @@ class G5DistConflictsMixin:
         )
         if ls.returncode != 0:
             return set()
-        return {line for line in ls.stdout.splitlines() if _is_build_artifact_path(line)}
+        # 产物判定走实例判定器（evo-merge-back-wip-artifact-scope D3），与其余
+        # 调用点同一口径。查询范围仍限 DASHBOARD_STATIC_ROOT（既有语义）。
+        return {
+            line
+            for line in ls.stdout.splitlines()
+            if self._artifacts.is_artifact(line)
+        }
 
     def _parse_merge_blockers(self, error: str) -> list:
         """从 git 的 'local changes would be overwritten by merge' 错误中解析路径。

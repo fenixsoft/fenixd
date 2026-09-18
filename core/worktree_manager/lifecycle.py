@@ -22,6 +22,10 @@ from typing import Dict, Optional, Set
 from core.worktree_manager import (  # noqa: E402
     STALE_LOCK_IDLE_SECONDS,
 )
+from core.worktree_manager.artifact_paths import (
+    ArtifactPathMatcher,
+    normalize_artifact_patterns,
+)
 
 
 class G1LifecycleMixin:
@@ -35,6 +39,7 @@ class G1LifecycleMixin:
         implement_branch_prefix: str = None,
         state_reader=None,
         mergeback_wip_overlap_policy=None,
+        build_artifact_paths=None,
     ):
         self.base_dir = Path(base_dir)
         self.project_root = Path(project_root)
@@ -95,6 +100,15 @@ class G1LifecycleMixin:
         # 处置。缺省 None → auto；fenixd 从 worktree.mergeback_wip_overlap_policy
         # 解析注入。读取/解析异常一律回退 auto（闸门故障决不把默认语义改成阻塞）。
         self._mergeback_wip_overlap_policy = mergeback_wip_overlap_policy
+
+        # 构建产物路径判定器（evo-merge-back-wip-artifact-scope D4）：产物判定
+        # 从全局常量改为实例状态。配置值经 normalize_artifact_patterns 规范化
+        # （非法项丢弃并 WARNING）；缺省 None / 全非法 → 空列表构造，等价
+        # ArtifactPathMatcher()（仅默认集合，行为与现行逐字节一致）。判定器是
+        # 构造期必需属性——MUST NOT 用 getattr 兜底，缺失应暴露而非静默降级。
+        self._artifacts = ArtifactPathMatcher(
+            normalize_artifact_patterns(build_artifact_paths)
+        )
 
     def create(self, spec_name: str, agent_type: str = "implementer") -> Optional[Path]:
         """
