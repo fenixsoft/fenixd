@@ -11,7 +11,8 @@
 ## What Changes
 
 - **缺口 A — admin run 不再计入驱动证据**：`_has_recent_spec_run`（及其 `AdminMonitor._has_recent_progress` 同源实现）跳过 `admin-` 前缀的 run 文件——Administrator 的处置活动**不是**被处置 spec 的验证驱动证据。判定口径改为「该 spec 是否存在非 admin 前缀的近期 run 文件」。
-- **缺口 A — 补并发守卫**：`event_bus._recover_testing` 与 `admin_monitor` 孤儿复位派 verifier 前，检查该 spec 是否存在**在飞或待派发的 Administrator run**（复用 `AdminMonitor._has_active_admin_run_for`）；有则跳过本次重验派发——避免「admin 正在写 STATE/修场景文件」与「verifier 同时读同一批产物」的竞态（admin 处置常写 `test_scenarios.json` 与 spec 状态）。
+- **缺口 A — 补并发守卫**：`event_bus._recover_testing` 与 `admin_monitor` 孤儿复位派 verifier 前，检查该 spec 是否存在**在飞或待派发的 Administrator run**；有则跳过本次重验派发——避免「admin 正在写 STATE/修场景文件」与「verifier 同时读同一批产物」的竞态（admin 处置常写 `test_scenarios.json` 与 spec 状态）。守卫口径按 spec 聚合、覆盖**任意** signal_type（admin 处置的 signal_type 可能是 `verify_env_blocked` / `manual-intervention` / `stuck`，不是只有 `orphaned_state`）；取用面不依赖 `pm_engine.admin_monitor` 引用（该引用在生产装配中**不存在**），改用 `AdminStore` 路径构造 + `agent_runner.running_run_ids()` 双通路并联（见 design D2）。
+- **缺口 A — 同时抑制重复唤起 Administrator（D1 的必要配套）**：`AdminMonitor._handle_signal` 唤起前用同一在飞判定去重。缺此则 D1 修复后，处置中的 spec 会在 escalation 冷却窗（缺省 60 分钟）过期后重新成条，产生与在飞处置**并行**的第二个 admin run——即本 SPEC 要防的竞态被搬到 admin 侧。既有 `_has_active_admin_run_for` 只服务于孤儿重派判重（`core/admin_monitor.py:1819`），唤起路径无任何在飞去重（见 design D2b）。
 - **缺口 B — 预算耗尽给出显式重验日程**：`_handle_scenario_repaired` 预算耗尽时不再只写 error 干等：
   - **首次耗尽**（新增跨轮持久计数 `_scenario_repair_exhausted_rounds == 0`）→ 写显式重验日程（排程定时器 + `_dispatch_backoff_until` 兜底，见 design D3），保持 testing 并留痕；**不升级人工**。
   - **再次耗尽**（计数 `>= 1`，即已给过一次重验仍不收敛）→ 走既有升级通道（`escalation_notifier`，signal_type 复用既有场景缺陷族），保持 testing，等待人工裁决。
@@ -22,7 +23,7 @@
 
 ### New Capabilities
 
-- `recovery-path-liveness`: 恢复路径的活性判定与推进日程——（a）Administrator 处置活动不得被误判为被处置 spec 的驱动证据，且派发 verifier 前必须与该 spec 的在飞 admin run 互斥；（b）场景原地修复预算耗尽必须落一个显式、可观测的重验日程，连续耗尽才升级人工。
+- `recovery-path-liveness`: 恢复路径的活性判定与推进日程——（a）Administrator 处置活动不得被误判为被处置 spec 的驱动证据，派发 verifier 前必须与该 spec 的在飞 admin run 互斥，且同一在飞判定须同时抑制对该 spec 的重复唤起；（b）场景原地修复预算耗尽必须落一个显式、可观测的重验日程，连续耗尽才升级人工。
 
 ### Modified Capabilities
 
@@ -31,12 +32,12 @@
 ## Impact
 
 - **改动点**：
-  - `core/admin_monitor.py` — `_has_recent_spec_run`（模块级）与 `AdminMonitor._has_recent_progress`（两处同源实现）加 `admin-` 前缀排除；孤儿复位路径复用 `_has_active_admin_run_for` 作并发守卫。
+  - `core/admin_monitor.py` — `_has_recent_spec_run`（模块级）与 `AdminMonitor._has_recent_progress`（两处同源实现）加 `admin-` 前缀排除；新增 `_has_active_admin_run_for_spec`（按 spec 聚合、跨 signal_type）；孤儿复位路径与 `_handle_signal` 唤起路径接入守卫。
   - `core/event_bus.py` — `_recover_testing` 补 admin 并发守卫（派发前查在飞 admin run）。
   - `core/pm_engine/verification/pipeline.py` — `_handle_scenario_repaired` 预算耗尽分支改为「首次排程 / 再次升级」两态；新增计数读写。
   - `core/pm_engine/verification/escalation.py` — 若重验日程排程器落在此处（design 定），同步常量与调用。
   - `core/state_machine.py` — 新增 `_scenario_repair_exhausted_rounds` 字段名常量（与既有 `_judge_rerun_count` 同族）与 `verified` / `unfreeze_spec` 清零点。
-- **行为影响**：预算耗尽的 spec 首次进入显式重验日程（更快、可观测）；admin 处置期间的 spec 恢复判定回归「真无驱动」语义；不改变非 admin 处置路径与正常验证链任何样例。
+- **行为影响**：预算耗尽的 spec 首次进入显式重验日程（更快、可观测）；admin 处置期间的 spec 恢复判定回归「真无驱动」语义；admin 处置期间不再产生重复的 verifier 派发与重复的 admin 唤起；不改变非 admin 处置路径与正常验证链任何样例。
 - **不涉及**：不改变 `_SCENARIO_REPAIR_MAX_ROUNDS` 的数值语义（本轮该值已由既有提交改为 3，属独立变更）；不修改前端；不引入新配置键（日程时长若需可配置，走既有 `agents.*` 命名，见 design）。
 
 ## Non-Goals
