@@ -442,6 +442,51 @@ def _is_admin_run_id(stem: str) -> bool:
     return False
 
 
+def _spec_has_active_admin_run(store, spec: str, logger=None) -> bool:
+    """该 spec 是否存在在飞/待派发的 Administrator run（任意 signal_type）。
+
+    fix-recovery-path-blockers D2：按 ``(spec)`` 单键聚合 store 中
+    ``kind == DISPOSITION`` 的记录，复用 ``_has_active_admin_run_for`` 的
+    by_run 归并口径（某 ``admin_run_id`` 组 ``has_pending`` 且无终结兄弟
+    记录才算在飞——已终结 run 含 superseded/interrupted/escalated 终结后
+    仍滞留 store 的 pending 记录均不算）——但**去掉 signal_type 过滤**：
+    admin 处置的 signal_type 可能是 ``verify_env_blocked`` /
+    ``manual-intervention`` / ``stuck``，不只有 ``orphaned_state``，
+    按 ``(spec, signal_type)`` 精确匹配会漏。
+
+    模块级单一实现：``AdminMonitor._has_active_admin_run_for_spec`` 与
+    ``event_bus`` 的两个守卫调用点都委托本函数（store 作为入参），勿复制
+    第二份归并实现。判定异常 fail-open 返回 False（守卫故障不阻断恢复路径），
+    异常记 WARNING（logger 可选注入）。
+    """
+    try:
+        records = store.read_all()
+    except Exception as e:
+        if logger is not None:
+            logger.warning(
+                "admin_monitor",
+                f"_spec_has_active_admin_run 判定异常 fail-open（{spec}）: "
+                f"{type(e).__name__}: {e}",
+            )
+        return False
+    by_run: dict = {}
+    for rec in records:
+        if rec.get("kind") != DISPOSITION:
+            continue
+        if rec.get("spec") != spec:
+            continue
+        rid = rec.get("admin_run_id")
+        if not rid:
+            continue
+        status = rec.get("status") or rec.get("result")
+        info = by_run.setdefault(rid, {"final": False, "has_pending": False})
+        if status == "pending":
+            info["has_pending"] = True
+        else:
+            info["final"] = True
+    return any(info["has_pending"] and not info["final"] for info in by_run.values())
+
+
 def _has_recent_spec_run(project_root, spec: str, now: float, window: float) -> bool:
     """该 spec 是否存在窗口内有写活动的 run 文件（有进度）——非 admin 前缀。
 
@@ -1466,6 +1511,20 @@ class AdminMonitor:
         signal_rec, _ = self.store.merge_signal(
             self._signal_record(signal, escalated=True), status_hash
         )
+        # fix-recovery-path-blockers D2b：唤起前与在飞 admin run 互斥——D1 生效后
+        # 处置中的 spec 会在冷却窗（缺省 60 分钟）过期后重新成条，无本守卫即产生
+        # 与在飞处置**并行**的第二个 Administrator run（写同一批 STATE/
+        # test_scenarios.json）。守卫按 spec 单键聚合、覆盖**任意** signal_type
+        # （admin 处置的 signal_type 不只有 orphaned_state）。为真 → 跳过
+        # 本次唤起（信号仍按既有沉淀/节流语义落 store，不丢痕）并记 WARNING。
+        if spec and self._has_active_admin_run_for_spec(spec):
+            self.logger.warning(
+                "admin_monitor",
+                f"已有在飞处置，跳过重复唤起 '{spec}'（signal {signal_type}）"
+                f"— fix-recovery-path-blockers D2b",
+                {"signal": signal},
+            )
+            return
         self.logger.warning(
             "admin_monitor",
             f"Distress detected, invoking Administrator: {signal_type} for '{spec or 'daemon'}'",
@@ -1686,6 +1745,17 @@ class AdminMonitor:
             else:
                 info["final"] = True
         return any(info["has_pending"] and not info["final"] for info in by_run.values())
+
+    def _has_active_admin_run_for_spec(self, spec) -> bool:
+        """该 spec 是否存在在飞/待派发的 Administrator run（任意 signal_type）。
+
+        fix-recovery-path-blockers D2：守卫口径按 spec 单键聚合、覆盖**任意**
+        signal_type（admin 处置的 signal_type 可能是 verify_env_blocked /
+        manual-intervention / stuck，不只有 orphaned_state）。委托模块级
+        ``_spec_has_active_admin_run``（单一归并实现，勿二次漂移）；判定异常
+        fail-open 返回 False 并记 WARNING（守卫故障不阻断恢复路径）。
+        """
+        return _spec_has_active_admin_run(self.store, spec, logger=self.logger)
 
     def _reschedule_count_for(self, spec, signal_type: str) -> int:
         """读同 (spec, signal_type) 的 DISPOSITION 记录 reschedule_count 最大值（缺省 0）。
@@ -2690,6 +2760,19 @@ class AdminMonitor:
         status = spec_entry.get("status")
         if status == "testing":
             try:
+                # fix-recovery-path-blockers D2：派发 verifier 前与在飞 admin run
+                # 互斥——admin 正在写 STATE/场景文件（test_scenarios.json）时复位
+                # 重验会读半成品产物。守卫按 spec 单键聚合、覆盖**任意**
+                # signal_type（admin 处置的 signal_type 不只有 orphaned_state）。
+                # 在飞判定为真 → 跳过本次复位（不写状态、不派发）并记 INFO，
+                # SPEC 保持原样（MUST NOT 因此写额外状态）。
+                if self._has_active_admin_run_for_spec(spec):
+                    self.logger.info(
+                        "admin_monitor",
+                        f"孤儿 testing 复位跳过 '{spec}': admin 处置在飞，"
+                        f"verifier 重验派发互斥（fix-recovery-path-blockers D2）",
+                    )
+                    return
                 # fix-observability-gaps 2.1：transition_gate 带 context（恢复来源；
                 # 正常路径为幂等 old==new，state_machine 幂等分支不产生日志；
                 # 兜底真实转换时也带上恢复来源）
