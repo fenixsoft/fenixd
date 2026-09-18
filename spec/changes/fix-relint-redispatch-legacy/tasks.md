@@ -3,13 +3,26 @@
 ## Deliverables
 
 ```yaml
-- path: core/pm_engine/dispatch.py
+- path: core/pm_engine/dispatch/adjudication.py
+  kind: modify
+- path: core/pm_engine/dispatch/queue.py
+  kind: modify
+- path: core/worktree_manager/legacy_registry.py
+  kind: modify
+- path: core/worktree_manager/queries.py
   kind: modify
 - path: tests/test_tasksmd_relint_gate.py
   kind: modify
 - path: tests/test_redispatch_artifact_succession.py
   kind: new
 ```
+
+> 注：本 spec 规划期声明路径为 `core/pm_engine/dispatch.py`（kind: modify），
+> 但该单文件已被 refactor-giant-classes 重构拆分为 `core/pm_engine/dispatch/`
+> 目录——实际改动落在 `adjudication.py`（`_redispatch_tasks_relint` 处置）与
+> `queue.py`（full 车道调用点传 branch）；`worktree_manager` 两文件承载仅分支
+> 遗产认领能力（`mark_legacy_reusable` / `create_worktree_on_branch` prefix）。
+> 声明段已对齐实际交付物路径，交付物守卫按此对账。
 
 ## 1. 阶段 1：登记分支遗产
 
