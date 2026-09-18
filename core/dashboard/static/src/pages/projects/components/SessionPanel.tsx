@@ -238,6 +238,19 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
       setSessionId(res.session.id);
       setStarted(true);
       setEnded(false);
+      // 会话由无变有：此前空态 when hello 到达时 afterHello 跳过了 watch 注册
+      // （无会话注册必然 404），若此刻不补注册，SSE 将永不推送本会话事件——
+      // 发送消息后用户消息不回显、消息流无反馈（本项目验证实测）。用当前
+      // hello 分配的连接 cid 补注册；EventSource 自动重连后 afterHello 也会
+      // 以新 cid 兜底注册（会话已存在分支），二者不冲突。
+      if (!watchRegisteredRef.current && cidRef.current && sessionIdRef.current) {
+        try {
+          await registerSessionWatch(project, cidRef.current);
+          watchRegisteredRef.current = true;
+        } catch (e) {
+          console.error('Failed to register session watch:', e);
+        }
+      }
       const data = await getSession(project);
       if (data.session) {
         syncEvents(data.events || []);
