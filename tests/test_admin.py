@@ -846,6 +846,62 @@ class TestOrphanedRepairProbe:
         assert all(s["signal_type"] != "orphaned_state" for s in signals)
 
 
+class TestAdminRunNotDriverEvidence:
+    """admin- 前缀 run 不再计入驱动证据（fix-recovery-path-blockers D1）。
+
+    2026-09-18 事故根因：Administrator 的处置 run（admin-<spec>-<ts>.jsonl）
+    被 _has_recent_spec_run 归为该 spec 的驱动证据 → spec_is_undriven 条件①
+    恒假 → 恢复路径永不推进 → 75 分钟人工等待。D1 修复后，admin run 排除
+    于驱动判定之外——仅有 admin run 时该 spec MUST 判为「无驱动」。
+    """
+
+    def test_only_admin_run_makes_spec_undriven(self, tmp_path):
+        """仅有 admin- run（mtime 新鲜）→ _has_recent_spec_run False，spec_is_undriven True。"""
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "testing", "updated": utcnow_iso()},
+        })
+        make_runs(proot, [("admin-spec-a-1780000001", "running")])  # 新鲜 mtime
+        entry = {"status": "testing", "updated": utcnow_iso()}
+        with mock.patch("core.admin_monitor._pgrep_live_worktree", return_value=False):
+            from core.admin_monitor import _has_recent_spec_run
+            assert _has_recent_spec_run(proot, "spec-a", time.time(), 120) is False
+            assert spec_is_undriven(proot, "spec-a", entry) is True
+
+    def test_admin_plus_impl_mixed_spec_has_driven(self, tmp_path):
+        """admin + impl 混合 run（均新鲜）→ _has_recent_spec_run True，spec_is_undriven False。"""
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "testing", "updated": utcnow_iso()},
+        })
+        make_runs(proot, [
+            ("admin-spec-a-1780000001", "running"),
+            ("impl-spec-a-1780000002", "running"),
+        ])
+        entry = {"status": "testing", "updated": utcnow_iso()}
+        with mock.patch("core.admin_monitor._pgrep_live_worktree", return_value=False):
+            from core.admin_monitor import _has_recent_spec_run
+            assert _has_recent_spec_run(proot, "spec-a", time.time(), 120) is True
+            assert spec_is_undriven(proot, "spec-a", entry) is False
+
+    def test_expired_admin_run_matches_no_run(self, tmp_path):
+        """admin- run 过期（mtime 超宽限窗）→ 与无 run 文件逐位一致。"""
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "testing", "updated": utcnow_iso()},
+        })
+        # 过期 admin run
+        runs_dir = proot / ".fenix" / "runs"
+        runs_dir.mkdir(parents=True, exist_ok=True)
+        stale_admin = runs_dir / "admin-spec-a-1780000001.jsonl"
+        stale_admin.write_text(json.dumps({"type": "running"}) + "\n", encoding="utf-8")
+        old = time.time() - 3600
+        os.utime(stale_admin, (old, old))
+        entry = {"status": "testing", "updated": utcnow_iso()}
+        with mock.patch("core.admin_monitor._pgrep_live_worktree", return_value=False):
+            from core.admin_monitor import _has_recent_spec_run
+            # 过期 admin run 排除后 → 无有效 run → False（与无文件一致）
+            assert _has_recent_spec_run(proot, "spec-a", time.time(), 120) is False
+            assert spec_is_undriven(proot, "spec-a", entry) is True
+
+
 # ── 2026-09-18 取证：已入队待槽 ≠ 无驱动（条件 ④）─────────────────
 
 class TestQueuedDispatchSuppressesOrphanedProbe:

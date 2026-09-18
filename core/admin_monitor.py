@@ -422,13 +422,41 @@ def _pgrep_live_worktree(spec_name: str) -> bool:
     return False
 
 
-def _has_recent_spec_run(project_root, spec: str, now: float, window: float) -> bool:
-    """该 spec 是否存在窗口内有写活动的 run 文件（有进度）——任意 run 前缀。
+def _is_admin_run_id(stem: str) -> bool:
+    """run 文件 stem 是否属于 Administrator 处置 run（admin- 前缀）。
 
-    与 AdminMonitor._has_recent_progress 同语义（impl/verify/planner/repair 等
-    全部前缀经 _spec_from_run_id 归一——orphaned-state-probe-calibration 后
-    repair- 亦覆盖：mtime 在宽限窗内即非孤儿，杜绝「活跃 repair run 被判无
-    驱动」类误报），模块级供 _detect_orphaned_state 与 event_bus 恢复共用。
+    单点定义，两处委托（模块级 ``_has_recent_spec_run`` 与
+    ``AdminMonitor._has_recent_progress``），勿二次漂移。admin run
+    是**处置者**的活动，不是被处置 SPEC 的验证/实现驱动证据
+    （fix-recovery-path-blockers D1）——驱动判定 MUST 排除它，否则
+    Administrator 处置全过程该 spec 永恒满足「有近期写活动」→恢复路径
+    永不推进（2026-09-18 add-spec-manual-activation 事故：预算耗尽停
+    testing 后 75 分钟无任何恢复动作）。前缀取用 ``RUN_ID_AGENT_PREFIXES``
+    真源（run_files.py，admin- 排首），禁硬编码散落。
+    """
+    from core.agent_runner.run_files import RUN_ID_AGENT_PREFIXES
+
+    for prefix, _agent_type in RUN_ID_AGENT_PREFIXES:
+        if stem.startswith(prefix):
+            return prefix == "admin-"
+    return False
+
+
+def _has_recent_spec_run(project_root, spec: str, now: float, window: float) -> bool:
+    """该 spec 是否存在窗口内有写活动的 run 文件（有进度）——非 admin 前缀。
+
+    与 ``AdminMonitor._has_recent_progress`` 同语义（impl/verify/planner/repair
+    等非 admin 前缀经 ``_spec_from_run_id`` 归一），模块级供
+    ``_detect_orphaned_state`` 与 ``event_bus`` 恢复共用。
+
+    fix-recovery-path-blockers D1：Administrator 的处置 run（admin- 前缀）
+    是处置者的活动，不是被处置 SPEC 的驱动证据——判定口径改为「是否存在
+    **非 admin 前缀**的、写活动在宽限窗内的 run 文件」。仅有 admin run 时
+    MUST 返回 False，使 spec_is_undriven 条件①成立、恢复路径可推进
+    （2026-09-18 事故根因：旧判定把处置者活动误判为被处置 SPEC 的驱动，
+    导致恢复判定全跳过）。
+
+    两处实现共用 ``_is_admin_run_id``（单点定义），禁二次漂移。
     """
     if project_root is None:
         return False
@@ -440,6 +468,10 @@ def _has_recent_spec_run(project_root, spec: str, now: float, window: float) -> 
     except OSError:
         return False
     for p in files:
+        # fix-recovery-path-blockers D1：admin run 是处置者活动，不是被处置
+        # SPEC 的驱动证据——排除 admin- 前缀（单点判定 _is_admin_run_id）。
+        if _is_admin_run_id(p.stem):
+            continue
         if AdminMonitor._spec_from_run_id(p.stem) != spec:
             continue
         try:
@@ -2907,7 +2939,13 @@ class AdminMonitor:
         return "running"
 
     def _has_recent_progress(self, spec: str, runs_dir: Path, now: float, window: float) -> bool:
-        """该 spec 是否存在窗口内有写活动的 run 文件（有进度）。"""
+        """该 spec 是否存在窗口内有写活动的 run 文件（有进度）——非 admin 前缀。
+
+        fix-recovery-path-blockers D1：与模块级 `_has_recent_spec_run` 同源，
+        排除 `admin-` 前缀（`_is_admin_run_id` 单点判定）——Administrator 的
+        处置 run 是处置者的活动，不是被处置 SPEC 的驱动证据。两处实现共用
+        `_is_admin_run_id`，勿二次漂移。
+        """
         if not runs_dir.is_dir():
             return False
         try:
@@ -2915,6 +2953,8 @@ class AdminMonitor:
         except OSError:
             return False
         for p in files:
+            if _is_admin_run_id(p.stem):
+                continue
             if self._spec_from_run_id(p.stem) != spec:
                 continue
             try:
