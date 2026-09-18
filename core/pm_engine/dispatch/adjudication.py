@@ -14,10 +14,41 @@ from __future__ import annotations
 
 import json
 import time
+from pathlib import Path
 
 
 class VAdjudicationMixin:
     """V 交付物裁定/dispute（design D1 表 B V 组）。"""
+
+    def _effective_declaration(self, spec_name: str, result=None) -> dict:
+        """经统一解析入口取「生效声明」（add-declaration-relocation-protocol D1）。
+
+        与收工守卫同源（worktree 内文件 > ``git show <branch>`` > 主树回退），
+        供预分类/裁决/语境摘录共用——MUST NOT 自行拼接主树 spec 目录直读
+        （读分支、写主树的错层正是本次事故根因）。``result`` 提供分支/worktree
+        上下文（可选；缺失时按主树回退语义解析）。
+
+        Returns:
+            ``resolve_effective_declaration`` 同构 dict（含 deliverables/
+            references/entries/source/spec_dir）。
+        """
+        from core.deliverables import resolve_effective_declaration
+
+        branch = getattr(result, "branch", None) if result is not None else None
+        worktree_path = None
+        if branch:
+            try:
+                worktree_path = self._pm.agent_runner.worktree_manager.find_worktree_path(
+                    branch
+                )
+            except Exception:
+                worktree_path = None
+        return resolve_effective_declaration(
+            spec_name,
+            branch=branch,
+            worktree_path=worktree_path,
+            project_root=self._pm.project_root,
+        )
 
     def _record_impl_diagnosis(
         self, spec_name: str, result, impl_result, final_error: str | None
@@ -196,11 +227,12 @@ class VAdjudicationMixin:
 
         context: dict = {"excerpts": excerpts}
         try:
-            from core.deliverables import extract_declared_entries
-
-            entries = extract_declared_entries(spec_dir)
-            if entries:
-                context["declared_entries"] = entries
+            # 声明段条目经统一解析入口取（add-declaration-relocation-protocol
+            # D1：worktree/分支版本优先、主树回退），与收工守卫同源——MUST NOT
+            # 自行拼接主树 spec 目录直读（读分支、写主树的错层正是本次事故根因）。
+            resolved = self._effective_declaration(spec_name)
+            if resolved.get("entries"):
+                context["declared_entries"] = resolved["entries"]
         except Exception:
             pass
         return context
@@ -308,17 +340,25 @@ class VAdjudicationMixin:
             {"action": "fallback"} → 预分类不可用，回退既有 judge 流程
             （missing 不变）。
         """
-        from core.deliverables import classify_unsatisfiable, extract_declared_entries
+        from core.deliverables import classify_unsatisfiable
 
-        # 声明段无条目（存量 spec 正则提取）→ 不预分类，回退 judge
-        spec_dir = self._pm.project_root / "spec" / "changes" / spec_name
-        entries = extract_declared_entries(spec_dir)
+        # 声明段条目经统一解析入口取（add-declaration-relocation-protocol D1：
+        # worktree/分支版本优先、主树回退，与收工守卫同源）——MUST NOT 自行拼接
+        # 主树 spec 目录直读（读分支、写主树的错层正是本次事故根因）。
+        resolved = self._effective_declaration(spec_name, result)
+        entries = resolved.get("entries") or []
+        # 声明段无条目（存量 spec 正则提取 / 两处均不可用）→ 不预分类，回退 judge
         if not entries:
             return {"action": "fallback"}
 
+        # 软化执行目标 = 生效声明所在位置（worktree 内 → 分支 → 主树回退）
+        spec_dir = resolved.get("spec_dir")
+        if not spec_dir:
+            spec_dir = self._pm.project_root / "spec" / "changes" / spec_name
+
         # 快照软化前 tasks.md 声明段（供审计 diff.before）
         before_text = ""
-        tasks_path = spec_dir / "tasks.md"
+        tasks_path = Path(spec_dir) / "tasks.md"
         if tasks_path.exists():
             try:
                 before_text = tasks_path.read_text(encoding="utf-8")
@@ -441,8 +481,300 @@ class VAdjudicationMixin:
         # 仍有剩余 → remaining 带入 judge
         return {"action": "continue", "remaining": remaining}
 
+    # ── 陈日声明前置分类与重定位（add-declaration-relocation-protocol D4）──────
+
+    def _preclassify_stale(self, spec_name: str, result, missing: list) -> dict:
+        """陈日声明前置分类（3.5/4.1）：命中陈日信号的缺件走重定位通道。
+
+        在预分类软化 / LLM 终审**之前**对缺件清单逐条做陈日信号判定
+        （``is_stale_declaration``：kind == modify 且基线主树 HEAD 无该路径）。
+        命中陈日信号的条目 MUST NOT 直接落入「缺件 → 打回重派」：
+
+        - 机械 basename 唯一命中（3.4，``match_basename_in_tree`` 仅唯一命中）
+          且凭据三要素齐备（3.3：旧路径基线不存在 ✓ 陈日信号 + 替代路径在实现
+          分支 HEAD 存在 + 来源标注 ``mechanical-basename``）→ 直接重定位：
+            生效声明仍含该条目 → ``relocate_declared_path`` 文本改写（kind 保持）
+            已无该条目（实现方先行对齐）→ ``register_relocation_credential``
+            凭据登记（3.6，不经文本替换）
+          两者均落 dispute 审计流 + 分支提交固化（4.2），成本不消耗重派预算；
+        - 无唯一命中 / 替代路径分支 HEAD 不存在 / 判定异常 → 保留在 remaining
+          交 LLM 终审（typo 裁决的 actual_path 归途复用，4.3）。
+
+        纯机械判定（基线存在性 + basename 匹配），MUST NOT 触发 LLM；单条异常
+        fail-safe 回退（保留在 remaining 走既有流程，不阻塞整条收工链）。
+
+        Args:
+            spec_name: spec 名。
+            result: 实现 run 结果（含 branch，供分支 HEAD 存在性判定）。
+            missing: 守卫结构化返回的全量条目（list[dict] 或 list[str]）。
+
+        Returns:
+            {"action": "proceed"} → 重定位后守卫复检全清（放行分支，不派 judge）；
+            {"action": "continue", "remaining": [...]} → 仍有缺件待后继流程
+            （remaining 为守卫复检后的结构化条目或原缺件）。
+        """
+        from core.deliverables import (
+            is_stale_declaration,
+            match_basename_in_tree,
+            register_relocation_credential,
+            relocate_declared_path,
+        )
+
+        branch = getattr(result, "branch", None)
+        missing_paths = [
+            m["path"] if isinstance(m, dict) else str(m) for m in missing
+        ]
+        if not missing_paths:
+            return {"action": "continue", "remaining": missing}
+
+        # 生效声明（与守卫同源：worktree > 分支 > 主树回退）——重定位改写的
+        # 执行目标与条目级 kind 判定基准（D1/D2：读写同位）
+        resolved = self._effective_declaration(spec_name, result)
+        entries = resolved.get("entries") or []
+        by_path = {e["path"]: e for e in entries}
+
+        relocated_any = False
+        relocated_old: list = []  # 已走重定位的旧路径（复检时不再计入缺件）
+        remaining: list = []
+        for p in missing_paths:
+            entry = by_path.get(p)
+            # 仅声明段条目可判陈日；正则回退路径（无 kind 概念）不命中
+            if not entry or not is_stale_declaration(entry, self._pm.project_root):
+                remaining.append(p if not isinstance(p, dict) else p)
+                continue
+            # 陈日信号命中：机械 basename 唯一命中 → 候选替代路径（3.4）
+            try:
+                hits = match_basename_in_tree(self._pm.project_root, p)
+            except Exception:
+                hits = []
+            if len(hits) != 1:
+                # 多命中 / 零命中：不自动重定位（D4 多命中/零命中转终审或人工）
+                remaining.append(p)
+                continue
+            new_path = hits[0]
+            # 凭据三要素之 2：替代路径在实现分支 HEAD 真实存在
+            if not branch:
+                remaining.append(p)
+                continue
+            try:
+                exists = self._pm.agent_runner.worktree_manager.file_exists_on_branch(
+                    branch, new_path
+                )
+            except Exception:
+                exists = False
+            if not exists:
+                # 替代路径不在分支 → MUST NOT 改写（防「改声明 ≠ 交付物落地」）
+                remaining.append(p)
+                continue
+            # 三要素齐备 → 重定位执行
+            ok = self._relocate_or_register(
+                spec_name, result, resolved, p, new_path, "mechanical-basename"
+            )
+            if ok:
+                relocated_any = True
+                relocated_old.append(p)
+            else:
+                remaining.append(p)
+
+        if not relocated_any:
+            return {"action": "continue", "remaining": remaining}
+
+        # 重定位后守卫复检：替代路径真实存在方通过（防洗白，3.7/4.4）
+        try:
+            gate = self._pm._deliverable_gate_missing(spec_name, result)
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"陈日重定位后守卫复检异常 '{spec_name}'（回退缺件处置）: {e}",
+            )
+            return {"action": "continue", "remaining": missing}
+        if not gate:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"陈日声明重定位全清 '{spec_name}'（{relocated_old}）— "
+                f"守卫复检通过，放行 merge",
+            )
+            self._pm.state_machine.update_spec(
+                spec_name,
+                {"status": "implementing", "error": None},
+            )
+            return {"action": "proceed"}
+        return {"action": "continue", "remaining": gate}
+
+    def _relocate_or_register(
+        self,
+        spec_name: str,
+        result,
+        resolved: dict,
+        old_path: str,
+        new_path: str,
+        source: str,
+    ) -> bool:
+        """重定位执行（3.2/3.3 文本改写 或 3.6 凭据登记），落审计 + 分支提交。
+
+        生效声明（``resolved``）仍含该条目 → ``relocate_declared_path`` 文本改写
+        （kind 保持、同名去重，改写目标 = 生效声明所在位置 spec_dir）；已无该条目
+        （实现方先行对齐）→ ``register_relocation_credential`` 凭据登记（不经文本
+        替换）。二者均落 dispute 审计流（含 before/after diff 或凭据摘要）+ 分支
+        提交固化（4.2）。改写/登记失败 → False（调用方保留在 remaining）。
+
+        Returns:
+            重定位成功（改写或登记 + 审计 + 提交完成）返回 True；异常/失败 False。
+        """
+        from core.deliverables import (
+            register_relocation_credential,
+            relocate_declared_path,
+        )
+
+        spec_dir = resolved.get("spec_dir")
+        entries = resolved.get("entries") or []
+        entry_still_present = any(
+            isinstance(e, dict) and e.get("path") == old_path for e in entries
+        )
+        try:
+            if entry_still_present:
+                # 3.2/3.3：文本改写（生效声明所在位置）——kind 保持、同名去重
+                if not spec_dir:
+                    raise ValueError(
+                        f"生效声明无落盘位置（source={resolved.get('source')}）"
+                        f"无法改写 {old_path}"
+                    )
+                diff = relocate_declared_path(spec_dir, old_path, new_path)
+                from core.admin_store import DisputeAuditStore
+
+                DisputeAuditStore(self._pm.project_root, self._pm.logger).append(
+                    {
+                        "spec": spec_name,
+                        "trigger_run_id": getattr(result, "run_id", "") or "",
+                        "type": "relocation",
+                        "old_path": old_path,
+                        "new_path": new_path,
+                        "source": source,
+                        "verdicts": [
+                            {
+                                "element": old_path,
+                                "verdict": "typo",
+                                "actual_path": new_path,
+                                "reasoning": f"relocate: {source}",
+                            }
+                        ],
+                        "diff": {
+                            old_path: {
+                                "before": (diff or {}).get("before"),
+                                "after": (diff or {}).get("after"),
+                            }
+                        },
+                    }
+                )
+            else:
+                # 3.6：凭据登记（不经文本替换）——凭据三要素在调用方已校验
+                register_relocation_credential(
+                    spec_name,
+                    old_path,
+                    new_path,
+                    source,
+                    getattr(result, "run_id", "") or "",
+                    self._pm.project_root,
+                    branch=getattr(result, "branch", None),
+                )
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"陈日重定位执行失败 '{spec_name}'（{old_path} → {new_path}，"
+                f"回退缺件处置）: {e}",
+            )
+            return False
+        # 分支提交固化（4.2）：改写/登记落盘后立即提交到实现分支（写盘即固化）
+        self._commit_declaration_rewrite(spec_name, old_path, new_path, result)
+        return True
+
+    def _commit_declaration_rewrite(
+        self, spec_name: str, element: str, new_path: str, result
+    ) -> None:
+        """声明改写/登记后提交固化到实现分支（add-declaration-relocation-protocol D2）。
+
+        改写目标 = 生效声明所在位置（worktree 内文件 → 分支 → 主树回退，见
+        ``resolve_effective_declaration``）。改写后 MUST 在实现分支上提交：
+
+        - worktree 存在（full 车道守卫/裁决窗口保留 / fast-track 现场保留）：
+          ``git -C <worktree> add + commit``（提交落实现分支 HEAD）；
+        - worktree 已清理、仅分支留存：经 ``worktree_manager`` 重挂该分支
+          worktree、提交后移除（MUST NOT ``git -C <project_root> commit``——
+          只作用于主树当前分支，不会落到实现分支；仓库内亦无 commit-tree 型
+          无 worktree 写分支助手）。
+        - 提交失败仅 WARNING：内容仍在工作区，派发前 ``ensure_spec_committed``
+          兜底（与既有 ``_commit_softened_declaration`` 非阻塞语义一致）。
+        """
+        branch = getattr(result, "branch", None)
+        if not branch:
+            return
+        rel = f"spec/changes/{spec_name}/tasks.md"
+        try:
+            worktree_path = (
+                self._pm.agent_runner.worktree_manager.find_worktree_path(branch)
+            )
+        except Exception:
+            worktree_path = None
+        tmp_wt = None
+        if worktree_path is None:
+            try:
+                tmp_wt = self._pm.agent_runner.worktree_manager.create_worktree_on_branch(
+                    spec_name, branch, prefix="judge"
+                )
+            except Exception:
+                tmp_wt = None
+            worktree_path = tmp_wt
+        if worktree_path is None:
+            # 重挂失败：退回既有主树提交路径（非阻塞，派发前兜底）
+            self._commit_softened_declaration(spec_name, element)
+            return
+        import subprocess as _sp
+
+        try:
+            add = _sp.run(
+                ["git", "-C", str(worktree_path), "add", "--", rel],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            if add.returncode == 0:
+                _sp.run(
+                    [
+                        "git",
+                        "-C",
+                        str(worktree_path),
+                        "commit",
+                        "-m",
+                        f"[fenix] {spec_name}: 声明段重定位（{element} → {new_path}）",
+                        "--",
+                        rel,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                )
+            self._pm.logger.info(
+                "pm_engine",
+                f"声明段重定位已在实现分支提交 '{spec_name}'（{element} → "
+                f"{new_path}，worktree {worktree_path}）",
+            )
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"声明段重定位分支提交失败 '{spec_name}'（{element}，非阻塞）: {e}",
+            )
+        if tmp_wt is not None:
+            try:
+                self._pm.agent_runner.worktree_manager.cleanup(tmp_wt, success=True)
+            except Exception as e:
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"judge 重挂 worktree 清理失败 '{spec_name}'（非阻塞）: {e}",
+                )
+
     def _adjudicate_deliverable_missing(
-        self, spec_name: str, result, impl_result, missing: list
+        self, spec_name: str, result, impl_result, missing: list,
+        *, agent_type: str = "implementer",
     ) -> dict:
         """缺件 LLM 终审 + 裁决机械执行（D3/D4，Tasks 4.1-4.4）。
 
@@ -476,6 +808,16 @@ class VAdjudicationMixin:
             merge 推进；{"action": "handled"} → 已终态处置（打回重派 / blocked
             人工 / 防洗白打回），调用方直接 return。
         """
+        # ── 陈日声明前置分类（add-declaration-relocation-protocol 3.5/4.1）──
+        # 在预分类**之前**：命中陈日信号（kind == modify 且基线主树 HEAD 无该
+        # 路径）的缺件走重定位通道（机械 basename 唯一命中 → 改写/凭据登记 +
+        # 分支提交 + 复检；无唯一命中 → 保留交终审 actual_path 归途），MUST NOT
+        # 直接落入「缺件 → 打回重派」。纯机械判定不触发 LLM。重定位全清 →
+        # proceed（放行分支且不派 judge run）。
+        stale_result = self._preclassify_stale(spec_name, result, missing)
+        if stale_result.get("action") == "proceed":
+            return stale_result
+        missing = stale_result.get("remaining", missing)
         # ── 预分类（add-declaration-premechanize D4）：确定性缺件先行软化 ──
         # 在组装 judge 输入之前，先对缺件清单做确定性分类：命中不可交付模式
         # 的条目直接机械软化 + 审计 + 重跑守卫；全清走放行分支且不派 judge run；
@@ -489,13 +831,12 @@ class VAdjudicationMixin:
         # 将 remaining 规范化为路径列表（兼容 list[str] 与 list[dict]）
         remaining_paths = [r["path"] if isinstance(r, dict) else str(r) for r in remaining]
         # kind 映射：供 judge 输入携带 kind（4.5）及 delete 防洗白（4.3）。
-        # 从声明段条目提取，缺省 "new"（正则回退路径无 kind 概念）。
+        # 经统一解析入口取生效声明条目（add-declaration-relocation-protocol
+        # D1，与守卫同源），缺省 "new"（正则回退路径无 kind 概念）。
         kind_by_path: dict = {}
         try:
-            from core.deliverables import extract_declared_entries as _ede
-
-            _spec_dir = self._pm.project_root / "spec" / "changes" / spec_name
-            for e in _ede(_spec_dir) or []:
+            _resolved = self._effective_declaration(spec_name, result)
+            for e in _resolved.get("entries") or []:
                 if isinstance(e, dict) and e.get("path") and e.get("kind"):
                     kind_by_path[e["path"]] = e["kind"]
         except Exception:
@@ -557,33 +898,78 @@ class VAdjudicationMixin:
             return {"verdict": "unclear"}
 
         # 4. 裁决机械执行：typo 修正 / reference 软化（逐条，失败等价 unclear）
+        #    改写目标 = 生效声明所在位置（worktree → 分支 → 主树回退，D2 读写同位；
+        #    与守卫读侧同源——MUST NOT 硬编码主树 spec 目录直读）。typo 命中陈日
+        #    信号时按重定位协议执行（3.2/3.3 改写或 3.6 凭据登记，4.3）。
         executed_verdicts: list = []
         diff_by_element: dict = {}
+        # 生效声明上下文（改写目标 spec_dir + 条目级 kind/陈日判定基准）
+        effective_resolved = self._effective_declaration(spec_name, result)
+        eff_spec_dir = effective_resolved.get("spec_dir") or str(
+            self._pm.project_root / "spec" / "changes" / spec_name
+        )
+        eff_entries = effective_resolved.get("entries") or []
+        eff_by_path = {e["path"]: e for e in eff_entries}
         for m in remaining_paths:
             v = _verdict_of(m)
             verdict = v.get("verdict")
             kind_m = kind_by_path.get(m, "new")
+            entry = eff_by_path.get(m) or {"path": m, "kind": kind_m}
             try:
                 if verdict == "typo":
                     actual_path = str(v.get("actual_path") or "").strip()
                     if not actual_path:
                         verdict_by_element[m] = {"verdict": "unclear"}
                         continue
-                    from core.deliverables import replace_declared_path
+                    from core.deliverables import is_stale_declaration
 
-                    diff = replace_declared_path(
-                        self._pm.project_root / "spec" / "changes" / spec_name, m, actual_path
-                    )
-                    diff_by_element[m] = diff
-                    executed_verdicts.append({"element": m, **v})
-                    self._pm.logger.warning(
-                        "pm_engine",
-                        f"dispute judge 裁决 typo '{spec_name}': "
-                        f"{m} → {actual_path}（声明段已修正）",
-                    )
-                    self._commit_softened_declaration(
-                        spec_name, f"{m} → {actual_path}（typo 修正）"
-                    )
+                    # 4.3 重定位接入裁决：typo 裁决命中陈日信号（modify + 基线
+                    # 不存在）→ 按重定位凭据三要素执行——生效声明仍含该条目走
+                    # 3.2/3.3 文本改写（relocate_declared_path）；已无该条目
+                    # （实现方先行对齐）走 3.6 凭据登记。非陈日走既有 typo 修正。
+                    if is_stale_declaration(entry, self._pm.project_root):
+                        ok = self._relocate_or_register(
+                            spec_name,
+                            result,
+                            effective_resolved,
+                            m,
+                            actual_path,
+                            "judge-actual-path",
+                        )
+                        if not ok:
+                            verdict_by_element[m] = {"verdict": "unclear"}
+                            continue
+                        # 改写 diff 留痕（改写后重读声明段全文）
+                        try:
+                            before_text = Path(eff_spec_dir, "tasks.md").read_text(
+                                encoding="utf-8"
+                            )
+                        except (OSError, UnicodeDecodeError):
+                            before_text = ""
+                        diff_by_element[m] = {
+                            "before": before_text,
+                            "after": before_text,
+                        }
+                        executed_verdicts.append({"element": m, **v})
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"dispute judge 裁决 typo（陈日重定位）'{spec_name}': "
+                            f"{m} → {actual_path}（凭据三要素齐备，重定位执行）",
+                        )
+                    else:
+                        from core.deliverables import replace_declared_path
+
+                        diff = replace_declared_path(eff_spec_dir, m, actual_path)
+                        diff_by_element[m] = diff
+                        executed_verdicts.append({"element": m, **v})
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"dispute judge 裁决 typo '{spec_name}': "
+                            f"{m} → {actual_path}（声明段已修正）",
+                        )
+                        self._commit_softened_declaration(
+                            spec_name, f"{m} → {actual_path}（typo 修正）"
+                        )
                 elif verdict == "reference" and kind_m == "delete":
                     # 4.3 防洗白：delete 条目的 reference 归宿被机械拒绝——
                     # 改写为 unclear（转人工），不软化声明段（软化 = 删除要求
@@ -610,9 +996,7 @@ class VAdjudicationMixin:
                 elif verdict == "reference":
                     from core.deliverables import soften_declared_kind
 
-                    diff = soften_declared_kind(
-                        self._pm.project_root / "spec" / "changes" / spec_name, m
-                    )
+                    diff = soften_declared_kind(eff_spec_dir, m)
                     diff_by_element[m] = diff
                     executed_verdicts.append({"element": m, **v})
                     self._pm.logger.warning(
@@ -722,19 +1106,29 @@ class VAdjudicationMixin:
             return {"action": "handled"}
 
         # 真缺件 / typo 防洗白落空：既有打回/重派路径（带精准缺件清单）
-        self._redispatch_for_missing(spec_name, result, remaining)
+        self._redispatch_for_missing(spec_name, result, remaining, agent_type=agent_type)
         return {"action": "handled"}
 
-    def _redispatch_for_missing(self, spec_name: str, result, missing_list: list) -> None:
+    def _redispatch_for_missing(
+        self,
+        spec_name: str,
+        result,
+        missing_list: list,
+        *,
+        agent_type: str = "implementer",
+    ) -> None:
         """缺件打回/重派（add-implementer-deliverable-gate 既有路径，4.3 missing）。
 
-        注册分支遗产（供后继 run 收编）→ 重试计数 → 重派 implementer；
-        连续 ``agents.max_retries`` 次封顶 blocked。自 judge 终审进入的调用
-        同样走此路径——judge 不放行不存在的文件（防洗白，D4）。
+        注册分支遗产（供后继 run 收编）→ 重试计数 → 重派（车道无关：full 重派
+        implementer，fast-track 重派 fast-track——add-declaration-relocation-protocol
+        4.4 双车道同源流水线的重派归宿）；连续 ``agents.max_retries`` 次封顶
+        blocked。自 judge 终审进入的调用同样走此路径——judge 不放行不存在的文件
+        （防洗白，D4）。重定位与软化（非重派归宿）不消耗本计数（4.3 预算对齐）。
 
         Args:
             missing_list: 守卫返回的差异条目列表（``list[dict]``，每项含
                 ``path``/``kind``/``violation``）。
+            agent_type: 重派车道（"implementer" 或 "fast-track"）。
         """
         _wm = self._pm.agent_runner.worktree_manager
         _branch = getattr(result, "branch", None)

@@ -46,11 +46,61 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 import re
 import subprocess
+import time
 from pathlib import Path
 from typing import Iterable, List
+
+# 模块级 logger（add-declaration-relocation-protocol D1，统一审计留痕入口）
+_resolution_logger = logging.getLogger("fenixd.deliverables")
+
+
+class _LenientLogAdapter:
+    """轻量 logger 适配层：与 PMEngine.logger 接口一致（tag, msg 两参），
+    内部把 tag 拼到消息前缀，传给 stdlib Logger 的单 arg 接口，避免
+    stdlib 日志把 tag 当 format string 导致 TypeError。
+
+    测试环境不启动 daemon 时 stdlib Logger 的 `warning(tag, msg)` 会触发
+    ``"tag" % (msg,)`` → TypeError；生产环境 handler 未连接时不报错。
+    """
+    def __init__(self, delegate):
+        self._delegate = delegate
+
+    def _fmt(self, args):
+        if len(args) == 0:
+            return "", []
+        if len(args) == 1:
+            return str(args[0]), []
+        return f"{args[0]}: {args[1]}", list(args[2:])
+
+    def info(self, *a, **k):
+        msg, args = self._fmt(a)
+        self._delegate.info(msg, *args, **k) if args else self._delegate.info(msg)
+
+    def warning(self, *a, **k):
+        msg, args = self._fmt(a)
+        self._delegate.warning(msg, *args, **k) if args else self._delegate.warning(msg)
+
+    def error(self, *a, **k):
+        msg, args = self._fmt(a)
+        self._delegate.error(msg, *args, **k) if args else self._delegate.error(msg)
+
+    def debug(self, *a, **k):
+        msg, args = self._fmt(a)
+        self._delegate.debug(msg, *args, **k) if args else self._delegate.debug(msg)
+
+
+_resolution_logger = _LenientLogAdapter(logging.getLogger("fenixd.deliverables"))
+
+# git show / cat-file 超时（秒）
+_GIT_READ_TIMEOUT_SECONDS = 15
+
+# 重定位审计记录类型标识（3.6 凭据登记）
+_RELOCATION_AUDIT_TYPE = "relocation"
 
 # 核心交付路径前缀（相对项目根）：实现产物的稳定落点。
 _DELIVERABLE_PREFIXES = ("core/", "tests/", ".fenix/", "scripts/")
@@ -375,16 +425,589 @@ def extract_declared(spec_dir) -> "dict | None":
     entries = extract_declared_entries(spec_dir)
     if not entries:
         return None
+    return _typed_from_entries(entries)
+
+
+# ── 统一声明解析契约（add-declaration-relocation-protocol D1/D3/D4）──────────
+
+
+def _utcnow_iso() -> str:
+    """UTC 时间戳（快照时刻 / 凭据登记 created）。"""
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _declared_entries_from_text(text: str) -> "list | None":
+    """从 tasks.md 文本解析声明段条目（path + kind，保序去重）。
+
+    与 ``extract_declared_entries`` 同构的解析逻辑，但直接吃文本而非文件——
+    供统一声明解析入口（``resolve_effective_declaration``）从分支/worktree/主树
+    三种来源解析共用。无声明段、无有效围栏块、yaml 解析失败或全部条目非法
+    → ``None``（与 ``extract_declared_entries`` 返回语义一致）。
+    """
+    import yaml as _yaml
+
+    lines = (text or "").splitlines()
+    start = None
+    for i, line in enumerate(lines):
+        if _DECLARED_HEADING_RE.match(line):
+            start = i + 1
+            break
+    if start is None:
+        return None
+
+    block: List[str] = []
+    in_fence = False
+    for line in lines[start:]:
+        if _H2_RE.match(line):
+            break
+        if _FENCE_RE.match(line):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            block.append(line)
+    if not block:
+        return None
+    try:
+        entries_obj = _yaml.safe_load("\n".join(block))
+    except Exception:
+        return None
+    if not isinstance(entries_obj, list):
+        return None
+
+    out: List[dict] = []
+    for e in entries_obj:
+        if not isinstance(e, dict):
+            continue
+        path = str(e.get("path") or "").strip()
+        kind = str(e.get("kind") or "").strip().lower()
+        if not path or kind not in _DECLARED_KINDS:
+            continue
+        if _ABSOLUTE_RE.match(path) or _WILDCARD_RE.search(path) or _DIRECTORY_RE.search(path):
+            continue
+        if any(o["path"] == path for o in out):
+            continue
+        out.append({"path": path, "kind": kind})
+    return out if out else None
+
+
+def _typed_from_entries(entries) -> dict:
+    """按 kind 归类条目为 deliverables/references 两桶（保序去重）。
+
+    与 ``extract_declared`` 的归类逻辑同源：new/modify/delete → deliverables
+    （硬校验，delete 为反判）；reference → references（软校验）。
+    """
     typed: dict = {"deliverables": [], "references": []}
-    for e in entries:
+    for e in entries or []:
         path, kind = e["path"], e["kind"]
         if path in typed["deliverables"] or path in typed["references"]:
             continue
         key = "deliverables" if kind in ("new", "modify", "delete") else "references"
         typed[key].append(path)
-    if not typed["deliverables"] and not typed["references"]:
-        return None
     return typed
+
+
+def _git_show_tasks_text(branch: str, spec_name: str, project_root) -> "str | None":
+    """只读 ``git show <branch>:spec/changes/<spec>/tasks.md``（D1 分支来源）。
+
+    fail-safe：非零退出（路径不存在）/超时/异常 → None（分支版本不可用，
+    调用方回退下一来源）。纯对象库读取，不触发 LLM / 测试 / 网络。
+    """
+    try:
+        proc = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(project_root),
+                "show",
+                f"{branch}:spec/changes/{spec_name}/tasks.md",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=_GIT_READ_TIMEOUT_SECONDS,
+        )
+    except (subprocess.TimeoutExpired, OSError) as e:
+        _resolution_logger.warning(
+            "deliverables",
+            f"resolve_effective_declaration git show 失败（回退下一来源）"
+            f"'{spec_name}'@{branch}: {e}",
+        )
+        return None
+    if proc.returncode != 0:
+        return None
+    return proc.stdout
+
+
+def _read_file_text(path) -> "str | None":
+    """文件读取（worktree/主树来源），失败返回 None 并留痕。"""
+    try:
+        return Path(path).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        _resolution_logger.warning(
+            "deliverables",
+            f"resolve_effective_declaration 文件读取失败（回退下一来源）{path}: {e}",
+        )
+        return None
+
+
+def resolve_effective_declaration(
+    spec_name, *, branch=None, worktree_path=None, project_root=None
+) -> dict:
+    """统一声明解析入口（add-declaration-relocation-protocol D1）。
+
+    所有消费方（收工守卫、裁决流水线、晋升 lint、提示词组装、fast-track 快照、
+    重定位）MUST 经本入口取「某 spec 在当下适用的交付物声明集合」——杜绝各消费点
+    各自拼接 ``project_root/spec/changes/<spec>/`` 直读主树的错层（事故实证：
+    fix-relint-redispatch-legacy 主树声明陈旧致守卫两轮空转）。
+
+    解析优先序（D1）：**worktree 内 tasks.md > ``git show <branch>:...tasks.md``
+    > 主树 tasks.md**。分层回退 fail-safe：worktree 文件不存在/读取失败/解析异常
+    （无声明段）→ 回退分支版本；分支 git show 非零退出/超时/路径不存在 → 回退主树；
+    两处均不可用 → 返回空结果（等价「无声明段」，守卫跳过）。回退去向与原因经
+    logger 审计留痕。纯文件/对象库读取，MUST NOT 触发 LLM / 测试 / 网络（成本契约，
+    见 ``_git_show_tasks_text`` / ``_read_file_text``）。
+
+    Args:
+        spec_name: spec 名（spec/changes/<spec>/）。
+        branch: 实现分支名（可选；git show 基线）。
+        worktree_path: worktree 根路径（可选；worktree 内文件优先）。
+        project_root: 项目根（主树；可选，缺失时主树回退不可用）。
+
+    Returns:
+        与 ``extract_declared`` 同构的结果（保序去重），另附来源与条目级信息::
+
+            {
+              "deliverables": [...],   # kind ∈ new/modify/delete（硬校验）
+              "references": [...],     # kind == reference（软校验）
+              "entries": [...],        # 条目级 [{"path", "kind"}]（去重保序）
+              "source": "worktree"|"branch"|"main"|None,  # 生效来源（None=均不可用）
+              "spec_dir": str|None,    # 生效声明所在目录（改写目标；worktree 优先，
+                                       # 分支版本无落盘位置时为 None——改写走
+                                       # worktree 挂载提交路径，见 D2）
+            }
+    """
+    # 1) worktree 内文件
+    if worktree_path:
+        try:
+            wt_tasks = Path(worktree_path) / "spec" / "changes" / spec_name / "tasks.md"
+        except (OSError, TypeError, ValueError):
+            # worktree_path 不可用（非路径形态/非法对象）→ 回退下一来源
+            wt_tasks = None
+        if wt_tasks is not None and wt_tasks.is_file():
+            text = _read_file_text(wt_tasks)
+            if text is not None:
+                entries = _declared_entries_from_text(text)
+                if entries is not None:
+                    return {
+                        **_typed_from_entries(entries),
+                        "entries": entries,
+                        "source": "worktree",
+                        "spec_dir": str(wt_tasks.parent),
+                    }
+    # 2) 分支版本（git show，只读对象库）
+    if branch and project_root:
+        text = _git_show_tasks_text(branch, spec_name, project_root)
+        if text is not None:
+            entries = _declared_entries_from_text(text)
+            if entries is not None:
+                return {
+                    **_typed_from_entries(entries),
+                    "entries": entries,
+                    "source": "branch",
+                    "spec_dir": None,
+                }
+    # 3) 主树文件
+    if project_root:
+        main_spec_dir = Path(project_root) / "spec" / "changes" / spec_name
+        main_tasks = main_spec_dir / "tasks.md"
+        if main_tasks.is_file():
+            text = _read_file_text(main_tasks)
+            if text is not None:
+                entries = _declared_entries_from_text(text)
+                if entries is not None:
+                    return {
+                        **_typed_from_entries(entries),
+                        "entries": entries,
+                        "source": "main",
+                        "spec_dir": str(main_spec_dir),
+                    }
+                # 主树文件存在但无声明段：返回空结果 + source 标记（消费方按
+                # 「无声明段」语义处理——守卫回退 extract_paths_typed，spec_dir
+                # 供回退读取目标定位）。
+                return {
+                    "deliverables": [],
+                    "references": [],
+                    "entries": [],
+                    "source": "main",
+                    "spec_dir": str(main_spec_dir),
+                }
+    # 4) 两处均不可用 / 均无声明段 → 空结果（消费方按「无声明段」语义处理）
+    return {
+        "deliverables": [],
+        "references": [],
+        "entries": [],
+        "source": None,
+        "spec_dir": None,
+    }
+
+
+def snapshot_declaration_baseline(spec_name, run_id, project_root) -> "dict | None":
+    """派发时快照主树声明条目到实现 Agent 不可触及的位置（D3）。
+
+    写入 ``.fenix/verify-progress/<spec>/declaration-baseline.json``（原子：
+    写临时文件 + ``os.replace``）。快照内容：当前**主树** tasks.md 声明条目
+    （path + kind）、快照时刻、触发 run id。该位置在 worktree 之外——实现 Agent
+    路径不写入，是收缩防护（D3）的独立参照系。
+
+    写入异常（磁盘/权限）仅 WARNING 不阻塞派发（收缩防护该轮降级保守，见
+    ``check_declaration_shrinkage`` 与守卫的降级语义）。
+
+    Args:
+        spec_name: spec 名。
+        run_id: 触发 run id。
+        project_root: 项目根（定位主树 spec 目录与 .fenix/verify-progress）。
+
+    Returns:
+        快照 dict（含 entries）；写入失败返回 None。
+    """
+    root = Path(project_root)
+    spec_dir = root / "spec" / "changes" / spec_name
+    try:
+        entries = extract_declared_entries(spec_dir) or []
+    except Exception as e:
+        _resolution_logger.warning(
+            "deliverables",
+            f"基线快照声明解析失败 '{spec_name}'（不落快照，收缩防护该轮降级）: {e}",
+        )
+        return None
+    snap = {
+        "spec": spec_name,
+        "snapshot_at": _utcnow_iso(),
+        "run_id": run_id or "",
+        "entries": entries,
+    }
+    target = root / ".fenix" / "verify-progress" / spec_name / "declaration-baseline.json"
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_name(target.name + ".tmp")
+        tmp.write_text(json.dumps(snap, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, target)
+    except OSError as e:
+        _resolution_logger.warning(
+            "deliverables",
+            f"基线快照写入失败 '{spec_name}'（仅 WARNING 不阻塞派发）: {e}",
+        )
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
+        return None
+    return snap
+
+
+def load_declaration_baseline(spec_name, project_root) -> "dict | None":
+    """读取基线快照（D3 读取侧）；缺失/损坏/读取失败 → None（守卫降级保守）。"""
+    target = (
+        Path(project_root) / ".fenix" / "verify-progress" / spec_name / "declaration-baseline.json"
+    )
+    if not target.is_file():
+        return None
+    try:
+        with target.open(encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        _resolution_logger.warning(
+            "deliverables",
+            f"基线快照读取失败 '{spec_name}'（收缩防护降级保守）: {e}",
+        )
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _git_object_exists_on_branch(branch, path, project_root) -> bool:
+    """``git cat-file -e <branch>:<path>`` O(1) 探测（纯对象库，零成本）。"""
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(project_root), "cat-file", "-e", f"{branch}:{path}"],
+            capture_output=True,
+            text=True,
+            timeout=_GIT_READ_TIMEOUT_SECONDS,
+        )
+        return r.returncode == 0
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+
+
+def _declared_satisfied_on_branch(path, kind, branch, project_root) -> bool:
+    """分支 HEAD 是否已满足声明条目的原 kind 达成要求（D3 收缩判定步骤 2）。
+
+    new/modify → blob/tree 存在；delete → blob/tree 不存在（反判）。
+    branch 缺失/git 异常 → False（fail-safe 判未满足 → 可能判 removed；
+    保守取向——缺件处置有终审/人工兜底，不静默放行）。
+    """
+    if not branch or not path:
+        return False
+    exists = _git_object_exists_on_branch(branch, path, project_root)
+    if kind == "delete":
+        return not exists
+    return exists
+
+
+def _has_relocation_credential(project_root, path) -> bool:
+    """旧路径在 dispute 审计流是否已有重定位凭据（D3 豁免条款 1）。
+
+    凭据形态（两种，均落在跨 run 持久审计流）：
+    1. ``type == "relocation"`` 且 ``old_path`` 等于该路径（3.6 凭据登记 /
+       3.2-3.4 机械重定位改写随审计流落册）；
+    2. judge ``typo`` 裁决在册（``verdicts`` 数组中 ``element == path`` 且
+       ``verdict == "typo"`` 且带 ``actual_path``）——typo 改写即声明路径
+       修正（旧路径 → actual_path），视同重定位凭据（4.3 重定位接入裁决）。
+    两种形态任一命中即豁免。审计流跨 run 持久——上一轮重定位后本轮未
+    merge-back，豁免判定仍可命中。读取失败/缺失 → False（fail-safe，不误豁免）。
+    """
+    try:
+        from core.admin_store import DisputeAuditStore
+
+        for rec in DisputeAuditStore(project_root).read_all():
+            if rec.get("type") == _RELOCATION_AUDIT_TYPE and rec.get("old_path") == path:
+                return True
+            # typo 裁决改写在册：judge 给出 actual_path 的修正即「旧路径 → 替代
+            # 路径」的有据改写（审计流已落 diff），收缩防护视同重定位凭据
+            for v in rec.get("verdicts") or []:
+                if (
+                    isinstance(v, dict)
+                    and v.get("element") == path
+                    and v.get("verdict") == "typo"
+                    and v.get("actual_path")
+                ):
+                    return True
+    except Exception:
+        return False
+    return False
+
+
+def _has_soften_audit(project_root, path) -> bool:
+    """该路径在审计流是否有合法软化（kind → reference）记录（D3 豁免条款 2）。
+
+    软化形态：DisputeAuditStore 记录的 verdicts 数组中含 element == path 且
+    verdict == "reference" 的裁决（法官 reference 软化 / guard-preclassify
+    机械软化均落此形态）。读取失败/缺失 → False。
+    """
+    try:
+        from core.admin_store import DisputeAuditStore
+
+        for rec in DisputeAuditStore(project_root).read_all():
+            for v in rec.get("verdicts") or []:
+                if (
+                    isinstance(v, dict)
+                    and v.get("element") == path
+                    and v.get("verdict") == "reference"
+                ):
+                    return True
+    except Exception:
+        return False
+    return False
+
+
+def check_declaration_shrinkage(
+    baseline, effective, effective_entries, branch, project_root
+) -> list:
+    """收缩防护判定（D3）：基线路径在生效声明中被「无声剔除」→ removed 违规。
+
+    对基线每条（path, kind）判定：
+      - 生效声明对基线路径**不再以原有 kind 硬校验**——条目被删除（不在
+        effective_entries 中）、或 kind 被改写为 ``reference``（移入软校验组）、
+        或改写为其他不满足原有语义的 kind（如 modify → delete / new）；
+      - 且该路径在实现分支 HEAD **不满足原有 kind 要求**（modify/new 缺失、
+        delete 仍存在）——若分支上已满足原 kind（交付物已落地），剔除的是过时
+        声明而非绕门，不判违规；
+      - 且无合法豁免：该路径有**重定位凭据**在册（DisputeAuditStore 中
+        ``type == "relocation"`` 且 old_path 匹配）或**软化审计**在册（裁决
+        reference）→ 不计入违规。
+    三者同时成立 → 返回 ``{"path", "kind", "violation": "removed"}``。
+
+    基线不可用（None/缺 entries）→ 返回 []（守卫该轮降级保守，不因缺基线
+    误伤正常轮次——审计留痕由守卫负责）。
+
+    Args:
+        baseline: ``load_declaration_baseline`` 返回的快照 dict（或 None）。
+        effective: 生效声明 typed dict（{"deliverables": [...], "references": [...]}）。
+        effective_entries: 生效声明条目级 [{"path", "kind"}]。
+        branch: 实现分支名（分支 HEAD 满足性判定基准）。
+        project_root: 项目根（凭据/软化审计读取基准）。
+
+    Returns:
+        removed 违规条目列表（保序）；无违规返回 []。
+    """
+    if not isinstance(baseline, dict):
+        return []
+    base_entries = baseline.get("entries")
+    if not isinstance(base_entries, list) or not base_entries:
+        return []
+    eff_by_path = {
+        e["path"]: e["kind"]
+        for e in (effective_entries or [])
+        if isinstance(e, dict) and e.get("path")
+    }
+    violations: list = []
+    for be in base_entries:
+        if not isinstance(be, dict):
+            continue
+        path = str(be.get("path") or "").strip()
+        kind = str(be.get("kind") or "").strip().lower()
+        if not path or kind not in _DECLARED_KINDS:
+            continue
+        # 1) 生效声明仍以原 kind 硬校验该路径 → 未剔除
+        if eff_by_path.get(path) == kind:
+            continue
+        # 2) 分支 HEAD 已满足原 kind 要求 → 剔除的是过时声明（交付物已落地）
+        if _declared_satisfied_on_branch(path, kind, branch, project_root):
+            continue
+        # 3) 合法豁免：重定位凭据 / 软化审计在册 → 不计入
+        if _has_relocation_credential(project_root, path) or _has_soften_audit(
+            project_root, path
+        ):
+            continue
+        violations.append({"path": path, "kind": kind, "violation": "removed"})
+    return violations
+
+
+def is_stale_declaration(entry, project_root) -> bool:
+    """陈日声明确定性信号（D4）：仅 ``kind == "modify"`` 且路径在主树 HEAD 不存在。
+
+    ``new`` 恒 False（基线期望本就是不存在，未落地 new 缺件走既有缺件处置与
+    收缩防护，MUST NOT 被强制转入重定位通道）；``delete``/``reference`` 恒 False
+    （反判存在性 / 软校验不参与陈日判定）。零语义推断——只认「主树 HEAD 无该路径」
+    这一确定性事实（参考 ``classify_unsatisfiable`` 的排除形态处理）。
+
+    Args:
+        entry: 声明条目 dict（含 path/kind）。
+        project_root: 项目根（主树基准）。
+
+    Returns:
+        命中陈日信号返回 True；其余（new/delete/reference/缺字段/判定不可用）
+        返回 False。
+    """
+    if not isinstance(entry, dict):
+        return False
+    path = str(entry.get("path") or "").strip()
+    kind = str(entry.get("kind") or "").strip().lower()
+    if kind != "modify" or not path:
+        return False
+    # 主树 HEAD 存在性：git cat-file -e HEAD:<path>；非仓库/异常回退文件系统存在
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(project_root), "cat-file", "-e", f"HEAD:{path}"],
+            capture_output=True,
+            text=True,
+            timeout=_GIT_READ_TIMEOUT_SECONDS,
+        )
+        if r.returncode == 0:
+            return False  # 主树 HEAD 存在 → 非陈日
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+    # git 判定不可用：回退文件系统存在性（fail-safe）
+    try:
+        return not (Path(project_root) / path).exists()
+    except OSError:
+        # 判定不可用且无法证明缺失 → 视为存在（不误判陈日）
+        return False
+
+
+def relocate_declared_path(effective_spec_dir, old_path, new_path) -> dict:
+    """重定位改写（3.2）：生效声明中旧路径确定性替换为替代路径（kind 保持）。
+
+    复用 ``replace_declared_path`` 的文本改写语义（逐行精确替换、同名去重、
+    保留注释/顺序、diff 最小）。``effective_spec_dir`` MUST 为**生效声明所在位置**
+    （worktree 内 spec 目录优先；其次分支版本落盘位置），MUST NOT 传主树 spec
+    目录——改写写生效声明，由 merge-back 携带分支提交对齐主树（D2）。
+
+    改写失败（无声明段 / 无条目匹配 / 并发漂移）上抛，由调用方 fail-safe 处置
+    （等价转既有缺件处置，见 3.5）。
+
+    Returns:
+        ``replace_declared_path`` 同构：{"element", "actual_path", "before", "after"}。
+    """
+    return replace_declared_path(effective_spec_dir, old_path, new_path)
+
+
+def register_relocation_credential(
+    spec_name,
+    old_path,
+    new_path,
+    source,
+    run_id,
+    project_root,
+    *,
+    branch=None,
+) -> "dict | None":
+    """凭据登记（3.6）：生效声明已无该条目时，**不经文本替换**落册重定位凭据。
+
+    当实现方已先行对齐生效声明（旧路径条目已不在声明段，机械文本替换无从执行），
+    且凭据三要素齐备（旧路径基线不存在 + 替代路径在实现分支 HEAD 存在 + 来源标注）
+    时，以本函数把重定位记录写入 dispute 审计流（``.fenix/dispute_audits.jsonl``，
+    经 DisputeAuditStore 跨 run 持久）——供收缩防护豁免匹配
+    （``_has_relocation_credential``）。
+
+    替代路径在实现分支 HEAD 不存在（branch 提供时以 git cat-file 判定；branch
+    缺失时保守拒绝——无第三方证明替代路径已落地，防「改声明≠交付物」）或来源标注
+    缺失 → MUST NOT 登记，返回 None（调用方转既有缺件处置）。MUST NOT 因「声明段
+    无该条目」上抛卡死（本函数不触碰声明段，无该语义的异常面）。写盘失败仅
+    WARNING 不抛。
+
+    Args:
+        spec_name: spec 名。
+        old_path: 陈日旧路径（基线登记路径）。
+        new_path: 替代路径（实现分支 HEAD 真实存在）。
+        source: 来源标注（如 "relocated" / "judge-actual-path" / "mechanical-basename"）。
+        run_id: 触发 run id。
+        project_root: 项目根（审计流读写基准）。
+        branch: 实现分支名（可选；提供时校验 new_path 在分支 HEAD 存在）。
+
+    Returns:
+        落册的审计记录 dict；未登记（来源缺失/替代路径校验失败/写盘失败）返回 None。
+    """
+    if not old_path or not new_path or not source:
+        return None
+    if branch is not None:
+        if not _git_object_exists_on_branch(branch, new_path, project_root):
+            _resolution_logger.warning(
+                "deliverables",
+                f"重定位凭据登记拒绝 '{spec_name}': 替代路径 {new_path} "
+                f"在分支 {branch} HEAD 不存在（转既有缺件处置）",
+            )
+            return None
+    else:
+        # 无分支上下文：保守拒绝（无法证明替代路径已落地）
+        _resolution_logger.warning(
+            "deliverables",
+            f"重定位凭据登记拒绝 '{spec_name}': 无分支上下文无法校验替代路径 "
+            f"{new_path}（转既有缺件处置）",
+        )
+        return None
+    rec = {
+        "spec": spec_name,
+        "trigger_run_id": run_id or "",
+        "type": _RELOCATION_AUDIT_TYPE,
+        "old_path": old_path,
+        "new_path": new_path,
+        "source": source,
+        "run_id": run_id or "",
+        "created": _utcnow_iso(),
+    }
+    try:
+        from core.admin_store import DisputeAuditStore
+
+        DisputeAuditStore(project_root, _resolution_logger).append(rec)
+        return rec
+    except Exception as e:
+        _resolution_logger.warning(
+            "deliverables",
+            f"重定位凭据登记写盘失败 '{spec_name}'（非阻塞）: {e}",
+        )
+        return None
 
 
 def replace_declared_path(spec_dir, element: str, actual_path: str) -> dict:

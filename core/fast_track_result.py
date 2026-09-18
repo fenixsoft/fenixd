@@ -185,14 +185,41 @@ def estimate_spec_scale(spec_dir: Path) -> int:
         logger.warning(f"fast-track 规模预估 tasks.md 缺失（低档放行）: {tasks_path}")
 
     # 2. 统计声明段交付物数（modify/new/delete；reference 不计）
+    #    add-declaration-relocation-protocol D1：声明读取经统一解析入口
+    #    （分支/worktree 版本优先、主树回退），与收工守卫同源；无声明段时
+    #    回退语境推断的 deliverables 口径。project_root 由 spec_path 向上
+    #    推导（spec_dir = project_root/spec/changes/<spec>）；推导出的
+    #    project_root 下不存在标准 spec 布局（测试/独立目录夹具）时回退
+    #    直接解析 spec_path（extract_declared 保有 kind 语义，reference 不计）。
     file_count = 0
     try:
-        from core.deliverables import extract_declared, extract_paths_typed
+        from core.deliverables import (
+            extract_declared,
+            extract_paths_typed,
+            resolve_effective_declaration,
+        )
 
-        declared = extract_declared(spec_path)
-        if declared is None:
-            # 无声明段（存量 spec）：回退语境推断的 deliverables 口径
-            declared = extract_paths_typed(spec_path)
+        # 从 spec_dir 反推 project_root（spec_dir = project_root/spec/changes/<name>）
+        spec_name = spec_path.name
+        proj_root = spec_path.parent.parent.parent  # project_root/spec/changes -> project_root
+        declared = None
+        if proj_root.is_dir() and (
+            proj_root / "spec" / "changes" / spec_name / "tasks.md"
+        ).is_file():
+            # 标准布局才走统一入口（分支/worktree 版本优先、主树回退）；
+            # 非标准布局（如单测直接给 spec 目录）走下方直解析回退。
+            declared = resolve_effective_declaration(
+                spec_name,
+                project_root=str(proj_root),
+            )
+        if declared is None or (
+            not declared["deliverables"] and not declared["references"]
+        ):
+            # 无标准布局 / 无声明段：先 extract_declared（保有 kind 语义——
+            # reference 不计分），再无声明段回退语境推断的 deliverables 口径
+            declared = extract_declared(spec_path)
+            if declared is None:
+                declared = extract_paths_typed(spec_path)
         file_count = len((declared or {}).get("deliverables") or [])
     except Exception as e:
         # 解析失败保守低档放行（与 tasks.md 缺失同语义，不阻断派发）
