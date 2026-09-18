@@ -125,6 +125,24 @@ class G2LegacyRegistryMixin:
         """某 spec 是否有在册遗产（只读查询，prompt 注入 `无遗产不注入` 判定用）。"""
         return spec_name in self._legacy
 
+    def mark_legacy_reusable(self, spec_name: str) -> bool:
+        """把在册遗产标记为可被下轮 create 认领（reuse=True，与 keep_for_reuse 同源标记）。
+
+        fix-relint-redispatch-legacy：守卫/relint 打回路径在 ``register_legacy``
+        （仅分支模式，worktree_path=None）登记后调用——register_legacy 自身不置
+        reuse，而 ``_take_reusable_worktree`` 认领条件要求 reuse 为真；仅分支遗产
+        打上该标记后，下轮 create 才能在既有分支上重建载体认领同一分支，继承首轮
+        已提交成果（而非仅靠 prompt 注入提示收编）。
+
+        无在册遗产时安全返回 False（幂等，不抛异常）；fast-track 车道不走本方法
+        （其现场保留经 ``keep_for_reuse`` 已置 reuse，若此处再置不改变语义）。
+        """
+        rec = self._legacy.get(spec_name)
+        if rec is None:
+            return False
+        rec["reuse"] = True
+        return True
+
     def keep_for_reuse(self, spec_name: str, wt_path: Path, agent_type: str = "") -> None:
         """保留 worktree 目录与分支，登记供下轮重派继承。
 
@@ -188,6 +206,28 @@ class G2LegacyRegistryMixin:
         path = rec.get("path") or ""
         branch = rec.get("branch") or ""
         wt = Path(path) if path else None
+        if wt is None:
+            # 仅分支模式（fix-relint-redispatch-legacy，守卫/relint 打回）：成功收工
+            # 后 worktree 已被 cleanup(success=True) 物理清理、仅分支留存完整已提交
+            # 成果——在既有分支上重建载体（checkout，impl- 前缀保持 implementer 通道
+            # 语义）认领同一分支，MUST NOT 从 main HEAD 起新分支（继承首轮已提交
+            # 工作）。仅在 path 为空时启用，worktree 模式语义不变；分支不可解析或
+            # 换壳失败 → fail-open 回退全新 create（遗产清除，防 sweeper 误豁免）。
+            if not branch:
+                self._legacy.pop(spec_name, None)
+                return None
+            wt_path = self.create_worktree_on_branch(spec_name, branch, prefix="impl")
+            if wt_path is None:
+                self._legacy.pop(spec_name, None)
+                self.logger.info(
+                    "worktree_manager",
+                    f"Branch-only legacy for '{spec_name}' cannot be re-checked out "
+                    f"(branch={branch or 'none'}) — fresh create",
+                )
+                return None
+            self._legacy.pop(spec_name, None)
+            self._active_reuse[spec_name] = {"path": str(wt_path), "branch": branch}
+            return wt_path, branch
         # 有效性判定收敛到 is_available 单源（interrupt-recovery-preserve D5）：
         # 目录存在 + git worktree 注册有效 + 分支可解析。判定口径与 repair
         # 换壳（resolve_repair_site）、recovery 保留一致，任何链路不自行拼装。

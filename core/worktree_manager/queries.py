@@ -149,12 +149,16 @@ class G8QueryMixin:
                 return WT_REBUILDABLE
             return WT_AVAILABLE
 
-    def create_worktree_on_branch(self, spec_name: str, branch: str) -> Optional[Path]:
-            """在既有分支上创建 worktree（checkout 而非 ``-b`` 新建），供 repair 换壳。
+    def create_worktree_on_branch(
+        self, spec_name: str, branch: str, prefix: str = "repair"
+    ) -> Optional[Path]:
+            """在既有分支上创建 worktree（checkout 而非 ``-b`` 新建），供 repair 换壳 /
+            fix-relint-redispatch-legacy 仅分支遗产认领。
 
-            worktree 目录名 ``repair-<spec>-<ts>``（区别于 impl-/verify- 前缀，
-            Dashboard/runs 检索据此辨识）。仅登记活动集与分支映射，不 seed spec
-            文件（分支已含实现历史，spec 文档已在其中）。
+            worktree 目录名 ``{prefix}-<spec>-<ts>``（默认 ``repair-``，区别于
+            impl-/verify- 前缀，Dashboard/runs 检索据此辨识；仅分支遗产认领传
+            ``impl`` 保持 implementer 通道语义）。仅登记活动集与分支映射，不 seed
+            spec 文件（分支已含实现历史，spec 文档已在其中）。
 
             Returns: worktree 路径，失败（分支不存在/该分支已有 worktree/git
             错误/异常）返回 None。
@@ -162,7 +166,7 @@ class G8QueryMixin:
             if not branch:
                 return None
             timestamp = int(time.time())
-            wt_name = f"repair-{spec_name}-{timestamp}"
+            wt_name = f"{prefix}-{spec_name}-{timestamp}"
             wt_path = self.base_dir / wt_name
             try:
                 # 分支必须存在（rev-parse --verify 精确校验，防 typo 分支名）
