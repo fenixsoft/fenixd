@@ -81,13 +81,24 @@ provider 配置驱动，1m46s / 92 万 token 命中 11 条发现（2 high / 3 me
 1. 在 run 专属目录（沿用既有 `_ensure_agent_config_dir(provider_name)` 已建立的
    per-provider 隔离目录，其下属一个 `ocrcfg/` 子目录）写
    `.opencodereview/config.json`，内容为该 provider 的
-   `url`（baseurl + `/v1`）/ `api_key` / `model`，`protocol` 取 `anthropic`
-   ——实测该网关的 `/v1/messages` 同时接受 `x-api-key` 与
-   `authorization: Bearer`，anthropic 协议可通。
-2. 向 agent 环境注入 `FENIX_OCR_HOME`（run 级 HOME）与 `FENIX_OCR_BIN`（`ocr`
-   可执行文件路径，缺省 `ocr`）。
+   `url`（**原样取 `baseurl`，不追加/改写版本后缀**——实测 `ocr` 自行在 URL 后
+   拼 `/v1/messages`：配 `https://host` → `https://host/v1/messages`，配
+   `https://host/v1` → `https://host/v1/messages`，配 `https://host/anthropic`
+   → `https://host/anthropic/v1/messages`；本项目 `aliyun` / `bigmodel.cn` /
+   `deepseek` 三个真实 baseurl 本就不以 `/v1` 结尾，自行「归一化」会拼出
+   `.../anthropic/v1/v1/messages` 这类坏 URL）/ `api_key` / `model`（取本轮
+   实际生效的模型名，与 fenix 记账同源），`provider` 与 `custom_providers` 的
+   键固定为 `fenix-impl`（避开 ocr 内置预设名，`ocr llm providers` 可列全部
+   预设），`protocol` 取 `anthropic`——实测该网关的 `/v1/messages` 同时接受
+   `x-api-key` 与 `authorization: Bearer`，anthropic 协议可通。
+2. 向 agent 环境注入 `FENIX_OCR_HOME`（run 级 HOME）、`FENIX_OCR_BIN`（`ocr`
+   可执行文件路径，缺省 `ocr`）与 `OCR_NO_UPDATE=1`（关掉 `ocr` node 启动器
+   在每个 run 级 HOME 下 `detached` 拉起的新版本检查）。
 3. 仓库内新增 `bin/ocr_review.py` 包装器：读 `FENIX_OCR_HOME`，设
-   `HOME=<该目录>` 后 `os.execv` 底层 `ocr`，透传全部 argv 与退出码。
+   `HOME=<该目录>` 后以 **`os.execvp`**（带 PATH 搜索）替换为底层 `ocr`，
+   透传全部 argv 与退出码——MUST NOT 用 `os.execv`：它不搜索 PATH，`FENIX_OCR_BIN`
+   取缺省裸名 `"ocr"` 时必然 `FileNotFoundError`（本机实测），会把「ocr 已装」
+   误判成环境不可用而静默降级放行。
 4. 提示词要求实现者调 `bin/ocr_review.py`，而非直接调 `ocr`。
 
 **理由**：由「关键外部约束」实测 2 得——只要 `$HOME/.opencodereview/config.json`
@@ -95,6 +106,15 @@ provider 配置驱动，1m46s / 92 万 token 命中 11 条发现（2 high / 3 me
 故纯环境变量方案**在正确性上有洞**且洞是静默的（审查会成功返回，但用的是错的
 provider，成本记到别处）。run 级 HOME 是唯一能确定性覆盖配置文件的手段，且天然
 满足并发隔离（每 run 一个目录）与「不触碰用户全局配置」。
+
+**注入的 HOME 是哪个目录（不变量）**：`FENIX_OCR_HOME` MUST 指向**直接包含
+`.opencodereview/` 的那个目录**，即 `ocrcfg/` 本身，而非其父目录
+`.fenix/agent-config/<provider>/`。理由与上面同源：ocr 只读
+`$HOME/.opencodereview/config.json` 一个硬编码路径，HOME 指到父目录则该文件
+永远读不到——审查会退化为按 `ANTHROPIC_*` 环境变量选端点，落在设计期望之外的
+不确定性上（pass-through 行为实测可用，但不再是 run 级确定性注入）。
+`_write_run_ocr_config` 的返回值与 `FENIX_OCR_HOME` 的取值 MUST 同一，且
+`(FENIX_OCR_HOME / ".opencodereview" / "config.json")` MUST 存在（测试钉住）。
 
 **备选**：
 - 纯 `OCR_LLM_*` 环境变量 —— 被否（实测被配置文件压制）。
@@ -107,14 +127,21 @@ provider，成本记到别处）。run 级 HOME 是唯一能确定性覆盖配�
 ### D3：注入点为 prompt_builder 新增段，两条实现车道共用
 
 **决策**：`core/agent_runner/prompt_builder.py` 新增
-`_impl_code_review_section(spec_name)`，在 `implementer` 分支与 `fast-track`
-分支**均**追加，位置置于 `_noninteractive_contract_section()` 之后、
-`_project_extra_section()` 之前。
+`_impl_code_review_section(spec_name)`，在 `_build_prompt` 的**统一收尾处**
+（`_noninteractive_contract_section()` 与 `_project_extra_section()` 两行之间）
+按 `agent_type in ("implementer", "fast-track")` 条件追加一次。
 
-**理由**：既有实现车道动态段的注入模式完全一致（`_prev_error_section`、
+**理由**：既有实现车道动态段的注入模式一致（`_prev_error_section`、
 `_result_gate_section` 等均在两分支各调一次同一函数）。fast-track 是「实现+
 验证同一 run 内完成」，其「写代码之后、验证之前」的时点与 implementer 的
 「写完所有任务之后」语义对齐，故一并覆盖。
+
+**注入点为何在统一收尾处而非两个分支内**：`_noninteractive_contract_section()`
+是在两分支的 `elif` 链**之外**无条件调用一次的（`prompt_builder.py:394`），
+分支内追加的段必然排在它**之前**，与 spec「收尾审查段 MUST 位于非交互契约段
+之后」的段序要求冲突。统一收尾处注入是该文件既有约定（非交互契约段与新 agent
+类型白名单同在此处），天然满足「非交互契约段之后、项目级附加段之前」，且两条
+车道由同一 agent_type 白名单覆盖，不必维护两份调用。
 
 **位置约束**：`_noninteractive_contract_section()` 之后可保证实现者先看到
 非交互契约；`_project_extra_section()` 之前可保护既有「项目级附加段位于
@@ -130,10 +157,25 @@ prompt 末尾」的约定（该约定在 prompt_builder 内已有显式注释）
 结果文件硬门通道——该文件本就承载 `status` / `completed_tasks` / `unattainable`
 等机械对账字段。
 
+**已知边界（可接受）**：`_copyback_verify_progress` 的 mtime 守卫按**文件**比较
+（worktree 版本 mtime 较新才拷回），同一 spec 的后续实现 run 若因环境不可用只写
+`status: "unavailable"`，其报告 mtime 更新、会覆盖主树上前一轮较完整的审查报告。
+本能力定位是「给实现者一个自查机会 + 留下可审计痕迹」，非合规证据链，且覆盖
+不涉及代码合并（`verify-progress/` 在仓库外、不参与 merge-back），影响可审计性
+而非正确性；不为此增加「保留历史报告」的额外机制。
+
 ### D5：硬门复用 `_check_impl_result_artifact` 单一实现点
 
 **决策**：在该函数 `status` 判定之后、任务完成度判据之前（或之后，见任务书）
 插一段 code-review 校验；开关关闭时早退，零校验。
+
+**末轮语义边界（降级放行按设计，非漏洞）**：审查段要求「全部任务完成并提交**之后**、
+写结果文件**之前**」执行审查，故此硬门只在实现者**自报成功**的那一轮生效。
+最后一轮仍失败（`status: "partial"` / `"error"` 收口）时，**未附审查报告不属于
+违规**——这类轮次按既有任务完成度判据处置，框架 MUST NOT 要求其补审查产物。
+硬门实现时必须在任务完成度判据**之前**早退于「本轮最终未成功」的形态，避免把
+「诚实申报 partial 的轮次」误判为交付物缺口重派（与 7.3 的「关闭时零校验」同等
+重要的零误拦边界）。
 
 **理由**：该函数已被 implementer 与 fast-track 两车道共用（fast_track.py:586
 直接调），在此加分支即两条车道同时生效，无需在两处维护同款逻辑——历史多次

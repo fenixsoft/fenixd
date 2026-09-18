@@ -24,8 +24,9 @@ medium —— 其中「降级路径非事务性导致 totals 重复记账」是�
 - **前端「验证」页签增开关**：`VerifyPanel.tsx` 增一个 Switch，保存时随既有
   `verify` patch 一并提交；`services/dashboard.ts` 的 `VerifyConfig` 接口增字段。
 - **新增收尾审查任务注入**：开关打开时，向 implementer 与 fast-track 两条实现
-  车道的 prompt 末尾注入「收尾代码质量审查」段，要求实现者在全部 tasks.md 任务
-  完成、提交之后、写结果文件之前，调用 `ocr` 审查本次改动。
+  车道的 prompt 末尾注入「收尾代码质量审查」段（单一注入点在 prompt_builder
+  的统一收尾处，位于非交互契约段之后、项目级附加段之前），要求实现者在全部
+  tasks.md 任务完成、提交之后、写结果文件之前，调用 `ocr` 审查本次改动。
 - **新增 run 级 ocr provider 注入**：runner 在选定本轮 provider 后，写一份
   run 专属 HOME 目录的 `.opencodereview/config.json`（含该 provider 的
   baseurl / apikey / model），并把仓库内新增的 `bin/ocr_review.py` 包装器路径

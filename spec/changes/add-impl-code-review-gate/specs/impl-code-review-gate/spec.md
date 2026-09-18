@@ -39,7 +39,10 @@ fast-track 两条车道）的派发提示词注入「收尾代码质量审查」
 
 - **WHEN** 检查提示词段序
 - **THEN** 收尾审查段 MUST 位于非交互契约段之后、项目级附加提示词段之前，
-  MUST NOT 破坏既有「项目级附加段位于 prompt 末尾」的约定
+  MUST NOT 破坏既有「项目级附加段位于 prompt 末尾」的约定。段序须由
+  `_build_prompt` 的**单一收尾注入点**保证（非交互契约段与项目级附加段之间），
+  MUST NOT 在 implementer / fast-track 分支内各自追加（分支内追加必然排到
+  非交互契约段之前）
 
 ### Requirement: run 级 ocr provider 注入
 
@@ -92,6 +95,15 @@ fenix 的 provider 记账同源。
   `"fixed"` / `"rejected"` / `"deferred"`，`rejected` 与 `deferred` MUST 附
   `reason`。
 
+`code-review.json` 是本框架的规整契约，MUST NOT 假定审查工具的原生报告同构：
+实测 `ocr review --format json` 的顶层键为 `status`（`"complete"` / `"failed"`）/
+`llm` / `comments`（发现数组，逐条含 `path` / `start_line` / `category` /
+`severity` / `content`）/ `summary` / `manifest`。实现者 MUST 把原生报告的发现
+数组规整进 `findings`、把原生 `status` 映射为规整枚举
+（`"complete"` → `"completed"`；底层非零退出或 `"failed"` → `"unavailable"` +
+非空 `reason`），并 SHOULD 保留原生报告副本（如报告同目录下的
+`code-review-raw.json`）以供审计。
+
 `.fenix-run-result.json` 的 `code_review` 段 MUST 含 `report_path`（相对路径）
 与逐条处置摘要，使框架无需解析 `code-review.json` 即可机械对账。
 
@@ -129,6 +141,13 @@ fenix 的 provider 记账同源。
 - `status` 为 `"unavailable"` 时 MUST 放行（见下条降级 Requirement），MUST NOT
   要求 `findings` 与处置对账。
 - 开关为 `false` 时该硬门 MUST 零校验（与未引入本功能时行为一致）。
+- **末轮零误拦边界**：审查任务只在「全部任务完成并提交之后、写结果文件之前」
+  执行，故硬门 MUST 只对**实现者自报本轮成功**的收口生效——即结果文件顶层
+  `status == "success"` 与 fast-track 的 `verification.verdict == "verified"`
+  两种形态。实现者诚实申报未完成（`status` 为 `"error"` / `"partial"`，或
+  fast-track `verdict` 非 `"verified"`）时，未附审查报告 MUST NOT 被判为交付物
+  缺口，MUST NOT 因此重派（覆盖审查属「实现流程已跑完」的收尾义务，不是对
+  「本轮没做完」的额外惩罚）。
 
 #### Scenario: 报告缺失判失败
 
@@ -149,6 +168,13 @@ fenix 的 provider 记账同源。
 
 - **WHEN** 开关为 `false`，run 未写任何审查报告
 - **THEN** 硬门 MUST 不因审查产物缺失而失败
+
+#### Scenario: 末轮诚实申报不因缺审查报告被拦
+
+- **WHEN** 开关为 `true`，实现者自报未完成（`status: "partial"` 或 `"error"`，
+  或 fast-track `verdict` 非 `"verified"`）且未写审查报告
+- **THEN** 硬门 MUST NOT 以「审查报告缺失」为由判失败，MUST 按既有任务完成度
+  判据（或 error 早退）处置
 
 #### Scenario: 硬门失败走既有重派通道
 
