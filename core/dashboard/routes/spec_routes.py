@@ -212,13 +212,17 @@ class H3SpecRoutesMixin:
 
     def _api_spec_start_after(self, query) -> dict:
         """POST /api/spec-start-after?project=<name>&spec=<name>
-        body: {"value": "<iso-utc>"|null}
+        body: {"value": "<iso-utc>"|null|"manual"}
 
-        设置/清除 SPEC 定时拾取时间（start_after，ISO8601 UTC；null 即清除）。
+        设置/清除 SPEC 定时拾取时间（start_after，ISO8601 UTC 三态：
+        - "manual"（哨兵，add-spec-manual-activation D5）→ 设为待激活
+          （永不到期，须人工激活后方可被调度器拾取）
+        - null → 清除定时（立即恢复调度）
+        - ISO8601 → 定时（原语义）
         - project 不存在 → 404；spec 不在项目 STATE.md → 404
         - 终态（done/pushed）→ 403「终态不可设置定时拾取」
         - value 非法 ISO8601 → 400（STATE.md 不变）
-        - 成功 → 200 + {ok: true, start_after: <iso|null>}
+        - 成功 → 200 + {ok: true, start_after: <iso|null|"manual">}
         """
         spec = query.get("spec", [None])[0]
         project = self._project_from_query(query)
@@ -235,7 +239,7 @@ class H3SpecRoutesMixin:
         if body is None:
             return
         if "value" not in body:
-            self._error(400, "value required in request body (ISO8601 UTC or null)")
+            self._error(400, "value required in request body (ISO8601 UTC / null / manual)")
             return
         proot = Path(project["path"])
         try:
@@ -251,6 +255,63 @@ class H3SpecRoutesMixin:
             return
         if result.get("invalid"):
             self._error(400, result.get("error") or "start_after 非法 ISO8601")
+            return
+        self._json(
+            {
+                "ok": True,
+                "project": project["name"],
+                "spec": spec,
+                "start_after": result.get("start_after"),
+            }
+        )
+
+
+    def _api_spec_activate(self, query) -> dict:
+        """POST /api/spec-activate?project=<name>&spec=<name>
+        body: 无参
+
+        激活待激活 SPEC（add-spec-manual-activation D4）：把 start_after 由
+        哨兵 manual 置为 null 并即时唤醒派发（复用 scheduling_kick 信号）。
+        错误语义对齐 freeze-config 家族：
+        - project 缺失/不存在 → 404；spec 不在项目 STATE.md → 404
+        - 终态（done/pushed）→ 403「终态不可激活」
+        - 非待激活（start_after 非 manual）→ 200 + {ok: false, reason}
+          （STATE 零变更，幂等拒绝）
+        - 成功 → 200 + {ok: true, spec, start_after: null}
+        """
+        spec = query.get("spec", [None])[0]
+        project = self._project_from_query(query)
+        if project is None:
+            self._error(404, "unknown project")
+            return
+        if not project.get("exists"):
+            self._error(404, "project not found")
+            return
+        if not spec:
+            self._error(404, "spec required")
+            return
+        proot = Path(project["path"])
+        try:
+            result = dashboard_data.activate_spec(proot, spec)
+        except Exception as e:  # noqa: BLE001 兜底：写回异常不崩溃进程
+            self._error(500, f"activate spec failed: {e}")
+            return
+        if not result.get("found"):
+            self._error(404, result.get("error") or "spec not found")
+            return
+        if result.get("terminal"):
+            self._error(403, result.get("error") or "终态不可激活")
+            return
+        if not result.get("ok"):
+            # 非待激活：200 + reason（幂等拒绝，非请求错误）
+            self._json(
+                {
+                    "ok": False,
+                    "project": project["name"],
+                    "spec": spec,
+                    "reason": result.get("reason") or "该 SPEC 并非待激活态",
+                }
+            )
             return
         self._json(
             {

@@ -133,6 +133,7 @@ from .admin_actions import (
     get_spec_start_after,
     get_frozen_until,
     set_spec_start_after,
+    activate_spec,
     set_spec_budget,
     configure_spec_freeze,
     request_spec_approve_push,

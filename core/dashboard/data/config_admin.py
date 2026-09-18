@@ -94,6 +94,8 @@ _SOURCE_KEYS = [
     "self_evolution.auto_accept",
     "self_evolution.max_items_per_run",
     "self_evolution.spec_run_at",
+    # evo-merge-back-wip-artifact-scope：构建产物路径键（只读；不含 _SYNC_PAGE_KEYS）
+    "worktree.build_artifact_paths",
 ]
 
 # 受管 agents 标量键（来源标注 + 回显共用；配置键新条目在此登记一次即可
@@ -214,12 +216,15 @@ def _managed_key_sources(raw: dict) -> dict:
             sources["self_evolution.max_items_per_run"] = "project"
         if "spec_run_at" in se_raw:
             sources["self_evolution.spec_run_at"] = "project"
+    # evo-merge-back-wip-artifact-scope：worktree 段显式定义 → project
+    wm_raw = raw.get("worktree")
+    if isinstance(wm_raw, dict) and "build_artifact_paths" in wm_raw:
+        sources["worktree.build_artifact_paths"] = "project"
     return sources
 
-# add-settings-system-tab：受管 admin.* 键缺省（与 ConfigLoader.get_admin_config 一致：
-# enabled=True / interval_minutes=5 / escalation_cooldown_minutes=60 /
-# merge_breaker_threshold 复用 agents.merge_breaker_threshold（缺省 2）/
-# shutdown_drain_seconds=1800 / bug_repair_mode=inplace）
+
+# add-settings-system-tab：受管 admin.* 键缺省（与 ConfigLoader.get_admin_config
+# 一致：enabled/interval/escalation/merge_breaker/shutdown/bug_repair_mode）
 _ADMIN_DEFAULTS = {
     "enabled": True,
     "interval_minutes": 5,
@@ -307,6 +312,8 @@ def read_config(scope_root, scope: str = "project") -> dict:
         # add-framework-self-evolution：self_evolution 三键（缺省 auto_accept=false /
         # max_items_per_run=20 / spec_run_at=null 立即执行）
         "self_evolution": {"auto_accept": False, "max_items_per_run": 20, "spec_run_at": None},
+        # evo-merge-back-wip-artifact-scope：worktree 只读展示键（缺省空列表 = 未配置）
+        "worktree": {"build_artifact_paths": []},
         "scope": scope,
         "raw_exists": False,
         "sources": _managed_key_sources({}),
@@ -364,9 +371,7 @@ def read_config(scope_root, scope: str = "project") -> dict:
             "transient_break_cooldown_seconds",
         ):
             agents_result[_tk] = _transient[_tk]
-        # 规模预检三键回显（agents.scale_precheck：总开关 + 两阈值）——
-        # 缺省填充 + 非法值回退走与读侧同一个归一化函数，保证展示值与
-        # 生效值不脱节（与上方瞬断五键同模式）。
+        # 规模预检三键回显（agents.scale_precheck，缺省填充 + 非法值回退同读侧归一化）
         from core.fast_track_result import get_scale_precheck_config as _get_sp
 
         agents_result["scale_precheck"] = _get_sp(raw)
@@ -435,14 +440,16 @@ def read_config(scope_root, scope: str = "project") -> dict:
     from core.config import ConfigLoader as _CLSE
 
     result["self_evolution"] = _CLSE.get_self_evolution_config(raw)
+    # evo-merge-back-wip-artifact-scope：产物路径只读回显（worktree_config_view，
+    # 非法形态回显空列表 = 未配置，与解析侧 fail-safe 一致）
+    from core.worktree_manager.artifact_paths import worktree_config_view as _wtcv
+
+    result["worktree"] = _wtcv(raw)
     return result
 
-# 配置解析签名缓存（dashboard-spec-summary-index D4）：
-# read_effective_config 按 (用户级 config.yaml 签名, 项目级 config.yaml 签名) 缓存，
-# mtime/size 未变不重读文件与 YAML 解析；写路径不维护显式失效（写后 mtime 已变，
-# 签名键自然失效，与 _RUN_TASK_CACHE 同模式）。
-# 缓存有界：键 ∈ {用户级 config.yaml，项目 config.yaml} × mtime 版本，超出整体清空
-# （防配置频繁写入时旧键残留无界增长）。
+
+# 配置解析签名缓存（dashboard-spec-summary-index D4）：read_effective_config
+# 按 (用户级, 项目级) config.yaml 签名 (mtime_ns, size) 缓存；写后自然失效。
 _EFFECTIVE_CONFIG_CACHE: dict = {}
 _EFFECTIVE_CONFIG_CACHE_MAX = 512
 
@@ -505,6 +512,8 @@ def read_effective_config(project_root) -> dict:
         "stale_code_selfheal": {"enabled": True, "idle_confirm_seconds": 120},
         # add-framework-self-evolution：self_evolution 用户级生效值（项目级只读透出）
         "self_evolution": {"auto_accept": False, "max_items_per_run": 20},
+        # evo-merge-back-wip-artifact-scope：worktree 只读展示键（缺省空列表 = 未配置）
+        "worktree": {"build_artifact_paths": []},
         "scope": "project",
         "raw_exists": proj_path.exists(),
         "sources": _managed_key_sources({}),
@@ -622,6 +631,10 @@ def read_effective_config(project_root) -> dict:
     # add-framework-self-evolution：self_evolution 用户级生效值透出（项目级视图
     # 只读展示全局键，面板在项目级作用域下据此置只读）
     result["self_evolution"] = ConfigLoader.get_self_evolution_config(effective)
+    # evo-merge-back-wip-artifact-scope：产物路径只读回显（有效合并视图，非法形态回显空列表）
+    from core.worktree_manager.artifact_paths import worktree_config_view as _wtcv
+
+    result["worktree"] = _wtcv(effective)
 
     # 提取 project.description → 顶层 description（非 str 或缺失 → ""）
     project_eff = effective.get("project")
@@ -657,21 +670,14 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
             merged["agents"] = {}
         if "models" in patch["agents"]:
             merged["agents"]["models"] = copy.deepcopy(patch["agents"]["models"])
-        # 数值标量键统一合并分支（含同因重派熔断阈值——历史上 token_budget_millions /
-        # verify_redo_budget / scale_precheck 均因缺分支被保存静默丢弃；合法值已由
-        # write_config 前置校验把关，此处只应用合法值）。
+        # 数值标量键统一合并分支（历史 token_budget/verify_redo/scale_precheck 缺分支被静默丢弃）
         for _mk in _AGENTS_MERGE_KEYS:
             if _mk in patch["agents"]:
                 merged["agents"][_mk] = patch["agents"][_mk]
         if "scale_precheck" in patch["agents"]:
-            # 规模预检三键（agents.scale_precheck）：整体替换该嵌套段。
-            # 缺此分支则设置界面「预算」页签的规模预检卡片保存被静默丢弃
-            # （本文件历史上 token_budget_millions / verify_redo_budget 均踩过同坑）。
+            # 规模预检/超时监督段整体替换（缺分支会静默丢弃保存，历史同坑）
             merged["agents"]["scale_precheck"] = copy.deepcopy(patch["agents"]["scale_precheck"])
         if "timeout_supervision" in patch["agents"]:
-            # 超时活性监督段（agents.timeout_supervision，supervision-timeout-config-
-            # consistency）：整体替换该嵌套段。自动对齐持久化经本写路径落盘；缺此
-            # 分支则对齐值保存被静默丢弃（同 scale_precheck 的历史坑）。
             merged["agents"]["timeout_supervision"] = copy.deepcopy(
                 patch["agents"]["timeout_supervision"]
             )
@@ -701,9 +707,7 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
         # promote_mode 在 merge 阶段被静默丢弃（枚举合法性已由 write_config 前置校验把关）
         if "promote_mode" in patch["gates"]:
             merged["gates"]["promote_mode"] = patch["gates"]["promote_mode"]
-        # add-spec-review-gate：spec_review_mode 合并分支（缺合并分支会导致设置页
-        # 保存的 spec_review_mode 在 merge 阶段被静默丢弃；枚举合法性已由
-        # write_config 前置校验把关）
+        # add-spec-review-gate：spec_review_mode 缺合并分支会被静默丢弃（同 promote_mode）
         if "spec_review_mode" in patch["gates"]:
             merged["gates"]["spec_review_mode"] = patch["gates"]["spec_review_mode"]
 
@@ -759,9 +763,7 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
         if _CL.is_valid_hhmm(run_at):
             sr["run_at"] = run_at
         merged["admin"]["self_review"] = sr
-    # add-settings-system-tab：admin.* 六键合并。只动 6 个受管键——保留 admin 段内
-    # 的 self_review / agent_model / workers 等未知或非受管键（写路径校验保证
-    # 进入此处的值合法，self_review 由顶层 patch 分支单独合并）。
+    # add-settings-system-tab：admin.* 六键合并（只动受管键，保留未知键）
     if "admin" in patch and isinstance(patch["admin"], dict):
         if not isinstance(merged.get("admin"), dict):
             merged["admin"] = {}
@@ -794,9 +796,7 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
             merged["stale_code_selfheal"]["enabled"] = scs["enabled"]
         if "idle_confirm_seconds" in scs:
             merged["stale_code_selfheal"]["idle_confirm_seconds"] = scs["idle_confirm_seconds"]
-    # add-framework-self-evolution：self_evolution 三键合并（项目级作用域写入已
-    # 被 write_config 前置校验拒绝，此处仅处理用户级合法值；缺省透传由
-    # get_self_evolution_config 兜底）
+    # add-framework-self-evolution：self_evolution 三键合并（项目级被拒，此处仅用户级）
     if "self_evolution" in patch and isinstance(patch["self_evolution"], dict):
         if not isinstance(merged.get("self_evolution"), dict):
             merged["self_evolution"] = {}
@@ -809,7 +809,13 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
             # null 显式写回 null（= 取消定时，回到立即执行）：不能因「假值不可写」
             # 而保留旧时刻，否则 UI 上关不掉定时
             merged["self_evolution"]["spec_run_at"] = se_p["spec_run_at"]
-
+    # evo-merge-back-wip-artifact-scope：worktree 段列表形态原样透传（非法值 write_config 拒绝）
+    if "worktree" in patch and isinstance(patch["worktree"], dict):
+        if not isinstance(merged.get("worktree"), dict):
+            merged["worktree"] = {}
+        _bap = patch["worktree"].get("build_artifact_paths")
+        if isinstance(_bap, list):
+            merged["worktree"]["build_artifact_paths"] = list(_bap)
     return merged
 
 def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict:
@@ -846,10 +852,8 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
         except (yaml.YAMLError, OSError) as e:
             return fail(f"读取现有配置失败: {e}")
 
-    # improve-failover-model-mapping-ui（D4/D5）：前端编辑器状态（规范化的行列表）
-    # 序列化为 _validate_agent_models 能消费的 canonical 形态（str / list[str|对象]）。
-    # 在合并前序列化，保证校验与写入都使用 canonical 形态；role-level model 空值
-    # 不写入，避免空串覆盖配置文件中已有的模型缺省。
+    # improve-failover-model-mapping-ui D4/D5：编辑器行列表序列化为 canonical 形态
+    # （str/list|对象）供校验；role-level model 空值不写入（避免空串覆盖已有缺省）
     if isinstance(config_patch.get("agents"), dict) and isinstance(
         config_patch["agents"].get("models"), dict
     ):
@@ -989,9 +993,20 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
         if hooks_err:
             return fail(f"hooks 配置非法：{hooks_err}")
 
-    # add-stale-code-selfheal：stale_code_selfheal 两键前置校验（非法值直接拒绝
-    # 400，不静默忽略——与 verify/self_review/admin 同模式，前端类型错误在后端
-    # 权威兜底）。
+    # evo-merge-back-wip-artifact-scope：build_artifact_paths 前置校验（误配会静默
+    # 丢弃语义改动，故拒绝而非静默忽略；判定权威 = validate_build_artifact_paths）
+    if isinstance(config_patch.get("worktree"), dict):
+        bap_patch = config_patch["worktree"].get("build_artifact_paths")
+        if bap_patch is not None:
+            from core.worktree_manager.artifact_paths import (
+                validate_build_artifact_paths,
+            )
+
+            bap_err = validate_build_artifact_paths(bap_patch)
+            if bap_err:
+                return fail(bap_err)
+
+    # add-stale-code-selfheal：两键前置校验（非法值直接拒绝 400，同 verify/self_review 模式）
     if isinstance(config_patch.get("stale_code_selfheal"), dict):
         scs = config_patch["stale_code_selfheal"]
         if "enabled" in scs and scs["enabled"] is not None and not isinstance(scs["enabled"], bool):
@@ -1004,9 +1019,8 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
                     f"integer: {_scs_v!r}"
                 )
 
-    # add-framework-self-evolution：self_evolution 三键前置校验 + 项目级作用域拒绝。
-    # 三键为全局（用户级）键：项目级作用域提交含 self_evolution → 400 且不写盘
-    # （spec「项目级写入被拒」）；用户级提交的非法值直接拒绝 400，不静默忽略。
+    # add-framework-self-evolution：self_evolution 三键校验 + 项目级作用域拒绝
+    # （全局用户级键，项目级提交 400 不写盘，用户级非法值直接拒绝 400）
     if "self_evolution" in config_patch:
         if scope != "user":
             return fail(
@@ -1042,9 +1056,7 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
     # 2. 合并受管键
     merged = _deep_merge_managed(raw, config_patch)
 
-    # improve-provider-billing-config（D1）：顶层 llm.billing 段移除——即使旧客户端
-    # 仍提交旧形态也剥离，保证落盘文件永不含顶层 llm.billing（下次保存自然清除
-    # 手工残留的旧键）。
+    # improve-provider-billing-config D1：顶层 llm.billing 段移除（旧客户端残留清零）
     if isinstance(merged.get("llm"), dict) and "billing" in merged["llm"]:
         merged["llm"].pop("billing", None)
 
@@ -1054,10 +1066,8 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
         llm = merged.get("llm") or {}
         if llm:
             ConfigLoader._validate_llm(llm)
-        # improve-provider-billing-config（task 2.1）：per-provider billing 校验——
-        # 遍历 llm.providers[i].billing（enabled 布尔、prices 行 model 非空、4 项
-        # 单价非负数值排除 bool、同一卡片内行 model 不重复）；任一非法拒绝写入并
-        # 列出违规项。与 _validate_llm 内 load-time 校验共用 _validate_provider_billing。
+        # improve-provider-billing-config task 2.1：per-provider billing 校验
+        # （enabled 布尔、prices model 非空、单价非负、行 model 不重复，非法拒绝并列出）
         if isinstance(llm, dict):
             _providers = llm.get("providers")
             if _providers is not None:
@@ -1067,9 +1077,7 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
         agents = merged.get("agents") or {}
         if "models" in agents and agents["models"]:
             ConfigLoader._validate_agent_models(agents["models"], llm)
-            # improve-failover-model-mapping-ui D5：Dashboard 保存时额外要求每行引用的
-            # provider 名必须存在于 llm.providers（load-time 校验只打 ERROR 不阻塞，但
-            # UI 保存不允许"脏配置"落盘）。
+            # improve-failover-model-mapping-ui D5：UI 保存要求 provider 名存在于 llm.providers
             model_patch = (
                 config_patch.get("agents", {}).get("models", {})
                 if config_patch.get("agents")
@@ -1192,9 +1200,7 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
                     "agents.scale_precheck requires higher_threshold < full_threshold: "
                     f"{_sp_higher} >= {_sp_full}"
                 )
-        # fix-provider-transient-backoff（D6）：瞬断治理四数值键——非负整数校验
-        # （非法值直接拒绝 400，与 verify/self_review/admin 同模式，前端类型错误
-        # 由后端权威兜底；缺省回显与回退仍走 get_transient_config）。
+        # fix-provider-transient-backoff D6：瞬断治理四数值键非负整数校验（非法拒绝 400）
         for _tk in (
             "transient_redispatch_delay_seconds",
             "transient_break_threshold",
@@ -1231,10 +1237,8 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
                         raise ValueError(
                             f"agents.transient_backoff_schedule 元素非正整数: {_part!r}"
                         )
-        # supervision-timeout-config-consistency：agents.timeout_supervision 段校验
-        # （自动对齐持久化 + 设置页直连写回共用；非法值直接拒绝 400，不静默忽略）。
-        # 数值键须为非负数字（排除 bool），enabled 须布尔——与 liveness 消费端
-        # SUPERVISION_DEFAULTS 的类型契约一致。
+        # supervision-timeout-config-consistency：timeout_supervision 段校验
+        # （自动对齐 + 直连写回共用；数值键非负，enabled 布尔，非法拒绝 400）
         if "timeout_supervision" in agents and agents["timeout_supervision"] is not None:
             _ts_sup = agents["timeout_supervision"]
             if not isinstance(_ts_sup, dict):
@@ -1394,12 +1398,9 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
 
 # ── 同步用户级设置到项目级（设置页项目级作用域「同步用户级设置」按钮） ──
 
-# 页面标识 → 用户级 config.yaml 中被同步的受管键白名单。
-# 键集与各设置页签 onSave 提交的 patch 键一一对应（「只覆盖当前页面的设置值」）：
-# llm 页取 providers 整段；agents 页只取 models；parallel 页取并发三键 +
-# verify.planner_max_concurrent；token 页取预算四键；verify 页取 static_scope/
-# deps_mode；approval 页取 gates 两键；misc 页取 archive.auto_threshold；
-# system 页取 admin.* 六键 + agents.transient_* 五键。
+# 页面标识 → 用户级 config.yaml 中被同步的受管键白名单（键集与各页签 onSave
+# patch 一一对应）。worktree.build_artifact_paths 不含——只读键 + 误配会静默丢弃
+# 语义改动，「同步用户级设置」不得覆盖进项目级（须手工显式声明）。
 _SYNC_PAGE_KEYS = {
     "llm": {"llm": ["providers"]},
     "agents": {"agents": ["models"]},

@@ -466,6 +466,28 @@ class TestEvolutionAcceptRejectAPI:
         sm = StateMachine(ev["fw"] / ".fenix" / "STATE.md", None)
         assert sm.read_one("evo-add-evo-a").get("start_after") is None
 
+    @pytest.mark.parametrize("raw", ["manual", "MANUAL", " Manual "])
+    def test_accept_manual_sentinel_creates_pending_spec(self, server_fx_with_fw, raw):
+        """add-spec-manual-activation 10.4：start_after="manual" 接受成功，
+        新建 SPEC 的 STATE entry start_after 为 "manual"（未被 parse_utc 拒绝）。
+
+        大小写容错：端点判等 strip().lower() == "manual"（parametrize 三变体）。
+        """
+        from core.state_machine import StateMachine
+        from core.dashboard.data import get_spec_start_after
+        proot, srv, ev = server_fx_with_fw
+        status, data = srv.post_json(
+            "/api/evolution/accept", {"item_id": "item-a", "start_after": raw})
+        assert status == 200, f"应接受哨兵变体: {raw!r}"
+        assert data["ok"] is True
+        sm = StateMachine(ev["fw"] / ".fenix" / "STATE.md", None)
+        entry = sm.read_one("evo-add-evo-a")
+        assert entry is not None
+        assert entry.get("start_after") == "manual", (
+            f"哨兵 {raw!r} 应规范化落入 STATE，实际 {entry.get('start_after')!r}")
+        assert get_spec_start_after(entry) == "manual", (
+            "读侧必须原样返回哨兵（前端待激活 tag 依赖）")
+
     def test_accept_invalid_start_after_400(self, server_fx_with_fw):
         """非法 start_after（非 ISO 字符串 / 非字符串）→ 400 且不立项。"""
         proot, srv, ev = server_fx_with_fw

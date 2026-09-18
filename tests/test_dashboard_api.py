@@ -324,6 +324,160 @@ class TestSpecSchedulingAPI:
         assert status == 409
 
 
+class TestSpecManualActivationAPI:
+    """手工激活（add-spec-manual-activation D4/D5）：/api/spec-activate +
+    /api/spec-start-after 的哨兵 manual 写侧。
+
+    夹具 make_project：myspec=testing（非终态）、otherspec=done（终态）。
+    """
+
+    def _set_manual(self, srv, spec="myspec"):
+        status, body = srv.post_json(
+            f"/api/spec-start-after?project=proj-a&spec={spec}",
+            {"value": "manual"},
+        )
+        assert status == 200
+        assert body["start_after"] == "manual"
+
+    def test_start_after_manual_writes_sentinel(self, server_fx):
+        proot, srv = server_fx
+        status, body = srv.post_json(
+            "/api/spec-start-after?project=proj-a&spec=myspec",
+            {"value": "manual"},
+        )
+        assert status == 200
+        assert body["ok"] is True
+        assert body["start_after"] == "manual"
+        entry = dash_data.parse_state(proot)["myspec"]
+        assert entry.get("start_after") == "manual", (
+            "哨兵 manual 经 STATE.md 持久化（未折叠/未拒绝）")
+        # 设为待激活不写唤醒信号（暂停调度，不是恢复调度）
+        assert not (proot / ".fenix" / "scheduling_kick_request.json").exists()
+
+    def test_start_after_manual_case_insensitive(self, server_fx):
+        proot, srv = server_fx
+        status, body = srv.post_json(
+            "/api/spec-start-after?project=proj-a&spec=myspec",
+            {"value": "MANUAL"},
+        )
+        assert status == 200
+        assert body["start_after"] == "manual"
+        assert dash_data.parse_state(proot)["myspec"].get("start_after") == "manual"
+
+    def test_activate_success(self, server_fx):
+        proot, srv = server_fx
+        self._set_manual(srv, "myspec")
+        status, body = srv.post("/api/spec-activate?project=proj-a&spec=myspec")
+        assert status == 200
+        assert body["ok"] is True
+        assert body["spec"] == "myspec"
+        assert body["start_after"] is None
+        entry = dash_data.parse_state(proot)["myspec"]
+        assert entry.get("start_after") is None
+        req = proot / ".fenix" / "scheduling_kick_request.json"
+        assert req.exists(), "激活动作必须写唤醒信号"
+        import json as _json
+        payload = _json.loads(req.read_text(encoding="utf-8"))
+        assert payload["spec"] == "myspec"
+
+    def test_activate_not_pending_rejected(self, server_fx):
+        proot, srv = server_fx
+        # myspec 无 start_after（非 manual）→ 非待激活
+        status, body = srv.post("/api/spec-activate?project=proj-a&spec=myspec")
+        assert status == 200
+        assert body["ok"] is False
+        assert "并非待激活态" in (body.get("reason") or "")
+        entry = dash_data.parse_state(proot)["myspec"]
+        assert entry.get("start_after") is None, "STATE 零变更"
+        assert not (proot / ".fenix" / "scheduling_kick_request.json").exists()
+
+    def test_activate_unknown_spec_404(self, server_fx):
+        _, srv = server_fx
+        status, _ = srv.post("/api/spec-activate?project=proj-a&spec=ghost")
+        assert status == 404
+
+    def test_activate_unknown_project_404(self, server_fx):
+        _, srv = server_fx
+        status, _ = srv.post("/api/spec-activate?project=ghost&spec=myspec")
+        assert status == 404
+
+    def test_activate_terminal_403(self, server_fx):
+        proot, srv = server_fx
+        # 终态 otherspec 即使被置 manual（绕过写侧终态拒绝）也不可激活
+        self.sm_update = None  # 直接经 data 层写（服务端只读校验）
+        from core.dashboard.data import set_spec_start_after as sset
+        r = sset(proot, "otherspec", "manual")
+        assert r.get("terminal") is True, "终态写侧本就拒绝 manual"
+        status, body = srv.post("/api/spec-activate?project=proj-a&spec=otherspec")
+        assert status == 403
+        entry = dash_data.parse_state(proot)["otherspec"]
+        assert entry.get("start_after") is None
+
+
+class TestSpecDependsOnSummary:
+    """列表摘要 depends_on 字段（add-spec-manual-activation D12）。
+
+    反例必测：STATE.md 的 `- depends_on: null` 解析回字面量字符串 "null"
+    （该字段未登记在解析器 null→None 归一化键表），摘要 MUST 归一化为 null，
+    否则前端「前置依赖」tag 全线误标。
+    """
+
+    def test_specs_summary_includes_depends_on(self, server_fx):
+        _, srv = server_fx
+        status, data = srv.get("/api/specs?project=proj-a")
+        assert status == 200
+        for s in data["specs"]:
+            assert "depends_on" in s, "列表摘要 MUST 暴露 depends_on"
+            # 夹具 STATE.md 均为 `depends_on: null` → 摘要须为 None 而非 "null"
+            assert s["depends_on"] is None, (
+                f"{s['name']} 的 depends_on 应为 None（字面量 'null' 必须归一化），"
+                f"实际 {s['depends_on']!r}")
+
+    def test_depends_on_with_value_exposes_normalized_text(self, server_fx):
+        proot, srv = server_fx
+        # 直接改 STATE.md：my spec 声明依赖 otherspec
+        state = (proot / ".fenix" / "STATE.md")
+        (proot / ".fenix" / ".STATE.md.bak").write_bytes(state.read_bytes())
+        new_state = state.read_text(encoding="utf-8").replace(
+            "### myspec\n- status: testing",
+            "### myspec\n- status: ready",
+        ).replace(
+            "- depends_on: null\n",
+            "- depends_on: otherspec\n",
+            1,
+        )
+        state.write_text(new_state, encoding="utf-8")
+        # 索引被 STATE 变化自然失效（state_changed → idx={} 重建），无需重启服务
+        status, data = srv.get("/api/specs?project=proj-a")
+        assert status == 200
+        by_name = {s["name"]: s for s in data["specs"]}
+        assert by_name["myspec"]["depends_on"] == "otherspec", (
+            "有依赖的 spec 摘要透出规范化后的名称串")
+
+    def test_entry_sig_keys_contains_depends_on(self):
+        from core.dashboard.data.summary import _ENTRY_SIG_KEYS
+        assert "depends_on" in _ENTRY_SIG_KEYS, (
+            "depends_on 必须纳入摘要索引指纹，否则依赖变化不使索引失效")
+
+    def test_summary_index_invalidated_on_depends_change(self, server_fx):
+        """依赖变化必须使摘要索引失效（_ENTRY_SIG_KEYS 含 depends_on 的端到端验证）。"""
+        from core.dashboard.data.summary import SummaryIndex
+        proot, _ = server_fx
+        idx = SummaryIndex()
+        first = {s["name"]: s for s in idx.get(proot)}
+        state = (proot / ".fenix" / "STATE.md")
+        new_state = state.read_text(encoding="utf-8").replace(
+            "- depends_on: null\n",
+            "- depends_on: otherspec\n",
+            1,
+        )
+        state.write_text(new_state, encoding="utf-8")
+        second = {s["name"]: s for s in idx.get(proot)}
+        assert first["myspec"].get("depends_on") is None
+        assert second["myspec"].get("depends_on") == "otherspec", (
+            "depends_on 变化未使索引失效（tag 滞后）")
+
+
 class TestProjectLifecycleAPI:
     """管理端点：start/stop/delete（mock tmux，验证返回、错误路径、SSE 广播）。"""
 

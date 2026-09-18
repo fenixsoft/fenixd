@@ -21,6 +21,7 @@ from core.state_machine import (
     parse_orig_status,
     INFRA_FAILURE_COUNT_FIELD,
     VERIFY_INFRA_ROUNDS_FIELD,
+    START_AFTER_MANUAL,
 )
 
 # 跨组引用（D4：叶子→中枢，直接导入无环）
@@ -381,17 +382,69 @@ def _write_scheduling_kick_signal(project_root, spec: str) -> dict:
     return {"ok": True, "conflict": False, "file": str(req_path)}
 
 
+def activate_spec(project_root, spec: str) -> dict:
+    """激活待激活 SPEC：把 start_after 从 manual 置为 null 并即时唤醒派发。
+
+    复用既有 ``_write_scheduling_kick_signal``（action='clear-start-after'），
+    daemon 主循环 1s 粒度消费信号并唤起 ``_on_spec_ready``——激活动作与定时清空
+    共享同一条唤醒通路（add-spec-manual-activation D4）。
+
+    幂等语义：
+    - spec 不在 STATE.md → ``{ok: False, found: False, error: ...}``
+    - 终态（done/pushed）→ ``{ok: False, found: True, terminal: True, error: ...}``
+    - 当前 start_after 非 manual → ``{ok: False, found: True,
+      reason: "该 SPEC 并非待激活态（start_after 非 manual）"}``
+      （STATE 零变更——幂等拒绝，不误清定时值）
+    - 命中 → update_spec 清 start_after + 写 kick 信号
+      → ``{ok: True, found: True, spec, start_after: None}``
+    """
+    from core.state_machine import StateMachine
+
+    proot = Path(project_root)
+    specs = parse_state(proot)
+    if spec not in specs:
+        return {"ok": False, "found": False, "error": f"spec not found: {spec}"}
+    entry = specs[spec]
+    status = entry.get("status")
+    if status in ("done", "pushed"):
+        return {
+            "ok": False,
+            "found": True,
+            "terminal": True,
+            "error": f"终态 spec（{status}）不可激活",
+        }
+    # 校验当前 start_after 是否为哨兵 manual（大小写不敏感 + strip 容错）
+    raw_sa = entry.get("start_after") if isinstance(entry, dict) else None
+    if not (isinstance(raw_sa, str) and raw_sa.strip().lower() == START_AFTER_MANUAL):
+        return {
+            "ok": False,
+            "found": True,
+            "reason": f"该 SPEC 并非待激活态（start_after 非 manual）",
+        }
+    # 命中 → 清 start_after + 唤醒信号
+    sm = StateMachine(proot / ".fenix" / "STATE.md", None)
+    sm.update_spec(spec, {"start_after": None})
+    _write_scheduling_kick_signal(proot, spec)
+    return {"ok": True, "found": True, "spec": spec, "start_after": None}
+
+
 def get_spec_start_after(entry: dict) -> str | None:
-    """读取 entry 的 start_after 规范值（ISO8601 UTC 字符串或 None）。
+    """读取 entry 的 start_after 规范值（ISO8601 UTC 字符串 / 哨兵 "manual" / None）。
 
     纯读函数：非法格式/缺失按「无限制」处理（返回 None），供列表倒计时
     展示与前端状态推导用。时间换算/校验单点在后端（design D6）。
+    - 哨兵 ``"manual"``（手工激活，add-spec-manual-activation D1）原样返回
+      （在 parse_utc 之前判定——哨兵不是时间，parse_utc 会返回 None 被折叠）；
+      大小写不敏感 + strip 容错人工手改 STATE.md。
     """
     from core.state_machine import parse_utc
 
     raw = entry.get("start_after") if isinstance(entry, dict) else None
     if raw is None:
         return None
+    # 哨兵优先判定：合法值且语义特殊（手工激活），MUST NOT 折叠回 None
+    if isinstance(raw, str) and raw.strip().lower() == START_AFTER_MANUAL:
+        return START_AFTER_MANUAL
     dt = parse_utc(raw)
     return dt.isoformat() if dt is not None else None
 
@@ -411,13 +464,17 @@ def get_frozen_until(entry: dict) -> str | None:
 
 
 def set_spec_start_after(project_root, spec: str, value) -> dict:
-    """设置/清除 SPEC 的 start_after（定时拾取时间，ISO8601 UTC 或 null）。
+    """设置/清除 SPEC 的 start_after（定时拾取时间 / 手工激活哨兵）。
 
-    - spec 不在 STATE.md → {found: False}
+    取值三态（add-spec-manual-activation D4/D5）：
     - value 为 None/空串 → 清除定时（start_after 置 null，立即恢复调度）
-    - value 非法 ISO8601 → {invalid: True}（拒绝写入，STATE.md 不变）
+    - value（字符串）``strip().lower() == "manual"`` → 设为待激活
+      （写哨兵字符串，跳过 parse_utc 校验；**不**写 kick 信号——这是「设为
+      等待」而非「恢复调度」，激活动作见 ``activate_spec``）
+    - value 为合法 ISO8601 → 定时（原语义）
+    - value 非法 → {invalid: True}（拒绝写入，STATE.md 不变）
     - 终态（done/pushed）→ {terminal: True}（拒绝，定时不影响终态语义）
-    - 成功 → {ok: True, start_after: <ISO8601 UTC 或 None>}
+    - 成功 → {ok: True, start_after: <ISO8601 UTC 或 None 或 "manual">}
     写入经 StateMachine.update_spec（flock + 原子 rename，与 daemon 并发写安全）。
     """
     from core.state_machine import StateMachine, parse_utc
@@ -436,6 +493,10 @@ def set_spec_start_after(project_root, spec: str, value) -> dict:
         }
     if value is None or (isinstance(value, str) and not value.strip()):
         normalized = None
+    elif isinstance(value, str) and value.strip().lower() == START_AFTER_MANUAL:
+        # 哨兵分支：大小写不敏感 + strip 容错；跳过 parse_utc（哨兵不是时间）。
+        # 不写 kick 信号——设为待激活是「暂停调度」，不是「恢复调度」。
+        normalized = START_AFTER_MANUAL
     else:
         dt = parse_utc(value)
         if dt is None:

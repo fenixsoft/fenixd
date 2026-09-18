@@ -67,6 +67,13 @@ FREEZE_ERROR_PREFIX = "用户指令冻结："
 START_AFTER_FIELD = "start_after"
 FROZEN_UNTIL_FIELD = "frozen_until"
 
+# 手工激活哨兵（add-spec-manual-activation D1）：start_after 取值域的第三态。
+# 值为 "manual" 时表示「永不到期，须人工激活后方可被调度器拾取」——与定时值
+# （ISO8601 UTC）互斥，与 null（无限制）语义相反。哨兵是合法值而非脏值，
+# 必须由 start_after_pending 显式分派（见该函数注释），勿下沉到 parse_utc
+# （parse_utc 只认时间戳，哨兵不是时间）。
+START_AFTER_MANUAL = "manual"
+
 
 def parse_utc(value) -> Optional[datetime]:
     """ISO8601 UTC 解析（容错）。非法/空/None 返回 None，绝不抛异常。
@@ -97,13 +104,23 @@ def parse_utc(value) -> Optional[datetime]:
 def start_after_pending(entry: dict, now: Optional[datetime] = None) -> bool:
     """start_after 定时拾取门控：晚于当前时刻返回 True（未到期，应跳过派发）。
 
-    语义（spec scheduled-spec-pickup）：字段缺失/null/非法格式一律视为不阻塞
-    （解析失败 fail-open，脏值不卡死调度——与 ``_dispatch_backoffed`` 容错同型）；
-    早于/等于 now 的值等价 null（不阻塞拾取）。
+    语义（spec scheduled-spec-pickup）：
+    - 字段缺失/null/非法格式一律视为不阻塞（解析失败 fail-open，脏值不卡死
+      调度——与 ``_dispatch_backoffed`` 容错同型）。
+    - 哨兵值 ``"manual"``（手工激活）显式判定为永远阻塞（语义与 fail-open 相反），
+      必须在 parse_utc 之前分派——哨兵是合法值而非脏值，若下沉到 parse_utc 则
+      被 fail-open 吞掉导致未激活 SPEC 被误派发（本次最核心的风险点）。
+    - 早于/等于 now 的值等价 null（不阻塞拾取）。
     """
     value = (entry or {}).get(START_AFTER_FIELD)
     if value is None:
         return False
+
+    # D1 哨兵判定：合法值且语义与 fail-open 相反（永远 pending），必须在此分派。
+    # 大小写不敏感 + strip 容错人工手改 STATE.md。
+    if isinstance(value, str) and value.strip().lower() == START_AFTER_MANUAL:
+        return True  # 永不到期，等价「永远 pending」
+
     when = parse_utc(value)
     if when is None:
         return False

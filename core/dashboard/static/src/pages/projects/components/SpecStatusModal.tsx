@@ -39,6 +39,8 @@ import {
   reflowSpec,
   setSpecBudget,
   setSpecFreezeConfig,
+  activateSpec,
+  setSpecStartAfter,
 } from '@/services/dashboard';
 import type { SpecSummary } from '@/services/dashboard';
 
@@ -365,6 +367,68 @@ export default function SpecStatusModal({
     }
   }, [project, spec, onDone, message]);
 
+  // ── 调度区：手工激活 / 激活（add-spec-manual-activation D10） ──────────
+  const isManualPending = summary?.start_after === 'manual';
+  const isReady = summary?.status === 'ready';
+
+  const handleActivate = useCallback(() => {
+    appModal.confirm({
+      title: '激活 SPEC',
+      content: (
+        <div style={{ whiteSpace: 'pre-wrap' }}>
+          {`确认激活 SPEC「${spec}」？\n\n`}
+          激活后 start_after 由 manual 置为 null，daemon 将立即拾取并进入调度。
+        </div>
+      ),
+      okText: '激活',
+      okButtonProps: { type: 'primary' },
+      cancelText: '取消',
+      onOk: async () => {
+        setLoading(true);
+        try {
+          const result = await activateSpec(project, spec);
+          if (result.ok) {
+            message.success(`SPEC「${spec}」已激活，daemon 将立即拾取`);
+            onDone();
+          } else {
+            message.error(`激活被拒绝：${result.reason || '该 SPEC 并非待激活态'}`);
+          }
+        } catch (err) {
+          message.error(`激活失败：${err instanceof Error ? err.message : String(err)}`);
+        } finally {
+          setLoading(false);
+        }
+      },
+    });
+  }, [project, spec, onDone, message, appModal]);
+
+  const handleSetManual = useCallback(() => {
+    appModal.confirm({
+      title: '设为待激活',
+      content: (
+        <div style={{ whiteSpace: 'pre-wrap' }}>
+          {`确认将 SPEC「${spec}」设为待激活？\n\n`}
+          设为待激活后 start_after 为 manual，daemon 停止自动调度该 SPEC，
+          直到在 Dashboard「修改状态」弹窗或 CLI 手动激活。
+        </div>
+      ),
+      okText: '设为待激活',
+      cancelText: '取消',
+      onOk: async () => {
+        setLoading(true);
+        try {
+          await setSpecStartAfter(project, spec, 'manual');
+          message.success(`SPEC「${spec}」已设为待激活，daemon 停止自动调度`);
+          onDone();
+        } catch (err) {
+          message.error(`操作失败：${err instanceof Error ? err.message : String(err)}`);
+        } finally {
+          setLoading(false);
+        }
+      },
+    });
+  }, [project, spec, onDone, message, appModal]);
+
   // 按状态无可用区块时直接返回 null（不应出现，菜单入口按状态屏蔽）
   if (!summary || open === false) return null;
 
@@ -502,6 +566,33 @@ export default function SpecStatusModal({
                     </Button>
                   )}
                 </Space>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* ── 调度区块（非终态，add-spec-manual-activation D10）── */}
+        {nonTerminal && isReady && (
+          <div style={{ marginBottom: 16 }}>
+            <Divider style={{ margin: '4px 0 12px' }} />
+            <Typography.Text strong style={{ fontSize: 14 }}>调度</Typography.Text>
+            {isManualPending ? (
+              <>
+                <Typography.Paragraph type="secondary" style={{ margin: '4px 0 8px' }}>
+                  该 SPEC 当前为待激活态（start_after: manual），daemon 不会自动调度。
+                </Typography.Paragraph>
+                <Button type="primary" onClick={handleActivate} loading={loading}>
+                  激活（立即调度）
+                </Button>
+              </>
+            ) : (
+              <>
+                <Typography.Paragraph type="secondary" style={{ margin: '4px 0 8px' }}>
+                  将 start_after 设为 manual，daemon 停止自动调度，直到手动激活。
+                </Typography.Paragraph>
+                <Button onClick={handleSetManual} loading={loading}>
+                  设为待激活
+                </Button>
               </>
             )}
           </div>

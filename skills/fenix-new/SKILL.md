@@ -38,16 +38,22 @@ description: Use when the user wants to create a new development requirement, as
 
 用户确认后，把最终模式记入待创建 SPEC 的 `.spec.yaml`（见 3.1）；用户显式指定（`--fast-track` / `--full`）时 **MUST 尊重用户指定**，不得以评估结果覆盖或追问。
 
-### 1.6 确认执行时机（add-spec-scheduling-controls）
+### 1.6 确认执行时机（add-spec-scheduling-controls / add-spec-manual-activation）
 
-澄清需求与执行模式后，MUST 向用户确认执行时机（可与 1.5 的模式确认合并为一次问询），二选一：
+澄清需求与执行模式后，MUST 向用户确认执行时机（可与 1.5 的模式确认合并为一次问询），三选一：
 
 - **立即执行**：注册后 daemon 立即拾取（不写 `start_after`）。
 - **定时调度**：询问具体开始时间（绝对时间如「今晚 23:00」「明晚 02:00」按本地时区 UTC+8 解释；相对时长如 `+2h` / `+30m` 按注册时刻解释），按 §3.1.2 换算写入 `start_after`。
+- **手工激活**（add-spec-manual-activation）：注册后**永不到期、不自动拾取**，须用户日后在 Dashboard「修改状态」/ CLI `fenix_cli.py activate` 等处手动激活后才进入调度——注册时写哨兵 `start_after: "manual"`（见 §3.1.2 / §4）。
 
-建议话术：「SPEC 立项后是立即开始调度实现，还是定时到某个时间点再开始（如今晚 23:00、明晚凌晨 02:00、+2h）？」
+建议话术：「SPEC 立项后是立即开始调度实现、定时到某个时间点再开始（如今晚 23:00、明晚凌晨 02:00、+2h），还是先设为『待激活』（不自动调度，等你在 Dashboard/CLI 手动激活）？」
 
-用户已显式指定开始时间（如传入 `--start-after ...` 或对话中明说了时间点）或已明确表示立即执行时，视为已确认，MUST NOT 重复追问。确认结果按 §3.1.2 / §4 写入；两者都未表达时默认立即执行（不写 `start_after` 字段）。
+用户已显式指定开始时间（如传入 `--start-after ...` 或对话中明说了时间点）、已明确表示立即执行、或已明确要求「待激活/不自动调度」时，视为已确认，MUST NOT 重复追问。确认结果按 §3.1.2 / §4 写入；三者都未表达时默认立即执行（不写 `start_after` 字段）。
+
+三档各自写入的 STATE 字段值：
+- 立即执行 → 不写 `start_after`（缺省 null）
+- 定时调度 → `start_after: "<ISO8601-UTC>"`（§3.1.2 换算）
+- 手工激活 → `start_after: "manual"`（哨兵，原样写入，无时区换算）
 
 ### 2. 生成 kebab-case 名称
 
@@ -109,6 +115,9 @@ if 'mode:' not in text:
   ```
 - **相对时长**（如 `--start-after +2h` / `--start-after +30m`）：按提交（注册）
   时刻解释为未来时间点——`+2h` = 当前 UTC 时间 + 2 小时，`+30m` = + 30 分钟。
+- **手工激活**（add-spec-manual-activation，§1.6 第三档）：**无需任何时区/相对时长
+  换算**——直接写哨兵字符串 `manual`（`start_after: "manual"`），语义为「永不到期、
+  待人工激活」；MUST NOT 用未来时间模拟（那会到期后自动拾取，破坏「等人发话」语义）。
 - **未指定**：不写 `start_after` 字段（缺省 null，daemon 立即按既有逻辑拾取）。
 
 换算结果在 §4 注册时写入（见下）；`--modify <name>` 更新时若用户调整定时，
@@ -268,7 +277,13 @@ print(f'SPEC <spec-name> registered')
 
 用户指定了 `--start-after` 时，把换算好的 ISO8601 UTC 时间戳（见 §3.1.2）作为
 attrs 一并写入：`sm.add_spec('<spec-name>', {'status': 'drafted', 'priority': 5,
-'start_after': '<ISO8601-UTC>'})`。未指定时不写该键（缺省 null，立即进入调度）。
+'start_after': '<ISO8601-UTC>'})`。
+
+用户选择手工激活档（§1.6 第三档）时，直接写哨兵值（无需时区换算）：
+`sm.add_spec('<spec-name>', {'status': 'drafted', 'priority': 5,
+'start_after': 'manual'})`。
+
+未指定时不写该键（缺省 null，立即进入调度）。
 
 告知用户：**「SPEC `<name>` 已创建并注册。fenixd 会自动拾取并开始实现。」**
 
@@ -303,9 +318,10 @@ git commit -m "[fenix] spec: <spec-name>"
   - 确认后 MUST 把 mode 写入 `.spec.yaml`（见 3.1.1）；存量 spec 缺省 full
   - `--modify <name>` 更新 spec 时，如需变更执行模式，同样同步更新 `.spec.yaml` 的 mode 行
 - **定时拾取（add-spec-scheduling-controls）**：
-  - 每次立项 MUST 按 1.6 向用户确认执行时机（立即执行 / 定时调度）；用户已显式给出时间或明确说立即执行时不得重复追问
+  - 每次立项 MUST 按 1.6 向用户确认执行时机（立即执行 / 定时调度 / 手工激活）；用户已显式给出时间或明确说立即执行时不得重复追问
   - 用户传入 `--start-after` 时 MUST 换算为 ISO8601 UTC 时间戳，注册时经 `add_spec` attrs 写入 STATE.md entry 的 `start_after` 字段（见 3.1.2 / §4）
   - 绝对时间按本地时区 UTC+8 解释；`+Nh`/`+Nm` 相对时长按提交（注册）时刻解释
+  - **手工激活档（add-spec-manual-activation）**：MUST 写哨兵值 `manual`，MUST NOT 用未来时间模拟（那会到期后自动拾取，破坏「等人发话」语义）
   - 未指定时 MUST NOT 写 `start_after` 字段（缺省 null，daemon 立即按既有逻辑拾取）
   - `--modify <name>` 更新时若用户调整定时，同步更新 STATE.md 的 `start_after` 字段
 - **确定能力全集时必须搜索归档目录**：`spec/specs/` 仅存放当前活跃的 specs，历史的 specs 已归档到 `spec/archive/` 中。判断某个能力是新增还是修改时，必须同时搜索 `spec/archive/` 下的所有 `specs/` 子目录，确保不会将已存在的归档能力误判为新能力。

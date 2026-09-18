@@ -35,7 +35,7 @@
 #### Scenario: 激活待激活 SPEC
 
 - **WHEN** 某 ready SPEC 的 `start_after` 为 `manual`，用户执行激活
-- **THEN** 该 SPEC 的 `start_after` 变为 null，且写入唤醒信号；daemon 在秒级内掷取并派发
+- **THEN** 该 SPEC 的 `start_after` 变为 null，且写入唤醒信号；daemon 在秒级内拾取并派发
 
 #### Scenario: 对非待激活 SPEC 激活被拒
 
@@ -60,7 +60,8 @@
 - **自进化「同意立项」**：Dashboard 弹窗执行时刻 SHALL 由二选一（立即 / 指定时间）扩为三选一，新增「手工激活」；后端 `POST /api/evolution/accept` SHALL 接受哨兵值（body 的 `start_after` 取 `"manual"`）并透传 `accept_item`
 - **Dashboard「修改状态」**：对 ready 态 SPEC SHALL 提供双向操作——当前待激活时显示「激活（立即调度）」；当前非待激活时显示「设为待激活」
 - **CLI**：`bin/fenix_cli.py` SHALL 提供 `activate <spec>` 子命令执行激活动作
-- **`/fenix-ready` 放行**：人工放行草稿时 SHALL 可一并选择设为待激活
+
+**不在本仓库门禁范围内（人工步骤）**：`/fenix-ready` 放行时可一并选择「设为待激活」——该 skill 位于仓库外（`~/.claude/skills/fenix-ready/`，实测为**真实目录**而非指向本仓库 `skills/` 的软链；本仓库 `skills/` 下无 `fenix-ready`），**不可作为本仓库交付物**，故本条**不**是可由本仓库 gate 核对的 SHALL。其改动要点（放行确认步骤增一问「放行后立即调度 / 设为待激活」）由 `docs/help/06-governance.md` 记录，由人工在主树同步（见 tasks.md §9「人工步骤」）。本能力的其余四个入口均为仓库内交付物，SHALL 照常受门禁核对。
 
 #### Scenario: fenix-new 手工激活档
 

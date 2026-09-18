@@ -196,6 +196,19 @@ worktree:
   implement_branch_prefix: "fenix"
   # Branch prefix for verifier worktrees
   verify_branch_prefix: "fenix/verify"
+  # 构建产物路径（evo-merge-back-wip-artifact-scope D2）：声明项目的构建产物
+  # 路径，供产物判定器识别并从 merge-back 的 WIP 重叠集合中排除（对齐 HEAD）。
+  # 未配置时等价只含 ["core/dashboard/static"]（框架默认，逐字节向后兼容）。
+  # 支持两类形态（字符串列表）：
+  #   - 目录前缀：不含 *、必须以 / 结尾（如 "dist/"、"build/"）——路径以该串
+  #     开头即判定为产物；前缀未以 / 结尾会被静默丢弃（防 dist 误匹配 dists/）
+  #   - 文件通配：含 *（如 "release-*.zip"）——按 fnmatch.fnmatchcase 匹配
+  #     完整相对路径（不含 / 的模式只匹配仓库根级文件，不会跨目录命中子目录同名文件）
+  # 非法项（非字符串、绝对路径、含 .. 段）被丢弃并记 WARNING；全部非法/为空列表
+  # → 回退默认集合。
+  # 示例（产物在仓库根的项目，如 vite + zip 发布包）：
+  #   build_artifact_paths: ["dist/", "build/", "release-*.zip"]
+  # build_artifact_paths: ["dist/", "build/", "release-*.zip"]
 
 # ---- Gate Configuration ----
 gates:

@@ -1232,7 +1232,10 @@ def accept_item(
         return {"ok": False, "status": "accept_failed", "spec_name": name, "error": err}
 
     # 提交成功 → 注册；start_after 非空 = 定时拾取（到点前 dispatch 门控跳过），
-    # 为空则 drafted 立即进入调度（原行为）
+    # 为空则 drafted 立即进入调度（原行为）。
+    # 哨兵字符串 "manual"（add-spec-manual-activation D5，evo 同意立项的「手工
+    # 激活」档）原样落入 entry：MUST NOT 在此引入 parse_utc 时间换算——哨兵
+    # 不是时间，经 start_after_pending 显式判等后即「永不到期、待人工激活」。
     registered = False
     entry = {"status": "drafted", "priority": 5}
     if start_after:

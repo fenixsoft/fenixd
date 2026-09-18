@@ -75,7 +75,7 @@ when = parse_utc(value)
 ### D9: 前端列表两个 tag（`static/src/pages/projects/list.tsx`）
 新增两个纯展示组件，挂在状态列 `Space`（与 `ScheduledPickupTag` 并列）：
 - `ManualActivationTag`：`record.start_after === 'manual'` 时渲染橙色「待激活」tag + Tooltip（「已设为手工激活，需人工激活后才会被拾取」）。**不加状态门槛**（manual 与 ready 绑定，但渲染只看字段，避免 drafted 态漏标；若后续语义变化不误伤）
-- `DependencyTag`：`record.status === 'ready'` 且 `record.depends_on` 有值时渲染「前置依赖」tag + Tooltip（依赖名列表，逗号分隔原样展示，与 `_dependencies_satisfied` 的解析口径一致）
+- `DependencyTag`：`record.status === 'ready'` 且 `record.depends_on` 规范化后非空时渲染「前置依赖」tag + Tooltip（依赖名列表，逗号分隔原样展示，与 `_dependencies_satisfied` 的解析口径一致）。判据依赖 D12 的后端规范化——前端**不得**只做 `!!record.depends_on` 真值判定（字面量 `"null"` 为真值，会全线误标）
 
 **为何依赖 tag 仅 ready**：按用户明确要求（`ready` 时才提示「为什么就绪却不派发」）；其它状态的依赖信息属详情页职责。
 
@@ -91,12 +91,29 @@ when = parse_utc(value)
 `AcceptScheduleFields` 的 Radio.Group 由两档（立即/指定时间）扩为三档，新增 `value="manual"`「手工激活」。`commit` 逻辑：`manual` → `holder.startAfter = 'manual'`。后端 `/api/evolution/accept` 已有 `start_after` 透传（D5 仅放大校验以接受哨兵）。
 
 ### D12: 后端摘要新增 `depends_on`（`core/dashboard/data/summary.py`）
-`spec_summary` 返回值增 `"depends_on": entry.get("depends_on")`；`_ENTRY_SIG_KEYS` 增 `"depends_on"`（否则依赖变化不使索引失效，列表 tag 滞后）。纯读、无副作用。
+`spec_summary` 返回值增 `"depends_on"`，取值**必须经规范化**（不能直接 `entry.get("depends_on")`）：
+
+```python
+def _normalize_depends_on(raw):
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text or text == "null":   # 与调度器 _dependencies_satisfied 的 deps == "null" 同口径
+        return None
+    return text
+```
+
+**为何必须规范化（实测证伪点）**：`depends_on` **未**登记在 `StateParser._parse_content` 的 null→None 归一化键表里（`core/state_machine.py:313-337` 仅含 FROZEN_FIELD / START_AFTER_FIELD / FROZEN_UNTIL_FIELD / 若干 run 与 _ 前缀字段），而 `serialize` 对空值恒写 `- depends_on: null`（`core/state_machine.py:389-391`）。本仓库 `.fenix/STATE.md` 实测：244 条 entry 中 **227 条** 的 `depends_on` 解析回**字面量字符串 `"null"`**（`read_all()` 实测分布 `{"'null'": 227, ...}`）。若摘要原样透出，前端 `非空` 判据对 `"null"` 恒为真 → **所有无依赖的 ready SPEC 都会被渲染「前置依赖」tag（tooltip 显示 `null`）**，恰好摧毁本 tag 的存在意义（区分「卡在依赖」与「真卡住」）。这也是既有详情页 `detail.tsx:1505` `{detail?.depends_on || '无依赖'}` 显示成 `null` 的同源坑。
+
+`_ENTRY_SIG_KEYS` 增 `"depends_on"`（否则依赖变化不使索引失效，列表 tag 滞后）。纯读、无副作用。
 
 ## Risks / Trade-offs
 
 - **[哨兵被 fail-open 误放行（最核心风险）]** → D1 谓词内显式优先判等 + 专测「manual 的 spec 在各派发入口均不被拾取」；「静默放行未激活 SPEC」是本次最高危失败形态，任务清单单列覆盖全部入口
 - **[`get_spec_start_after` 把 manual 折叠成 None 致前端丢标记]** → D12/读侧单独识别哨兵原样返回；前端 tag 与「设置拾取时间」弹窗预填均按 `'manual'` 分支处理
+- **[`get_spec_start_after` 改为原样返回哨兵后的读侧扩散]** → 该函数是**共享读函数**，除摘要外还有 `bin/fenix_status.py:168/276`、`bin/fenix_process.py:277` 两处 CLI 消费点，它们把返回值一律经 `_local_ts` 当时间渲染（`_local_ts` 对非 ISO 走 except 回退 `str(raw)[:19]`）。不改则待激活 SPEC 在 `fenix-status` 会显示「⏰ 定时」备注与 `start_after manual` 伪时间戳——事实错误。任务 5.3/5.4 逐点覆盖；MUST NOT 靠「折叠回 None」绕过（那会违反 `scheduled-spec-pickup` 的「哨兵原样返回」MUST）
+- **[`depends_on` 字面量 `"null"` 污染列表 tag]** → 见 D12：该字段未被解析器 null 归一化，227/244 条存量 entry 解析回字符串 `"null"`（实测），前端裸真值判定会全线误标「前置依赖」。摘要侧必须规范化
+- **[「设置拾取时间」弹窗预填哨兵]** → `list.tsx:673` `dayjs('manual')` 为 Invalid Date，`scheduled-spec-pickup` 已 MUST 要求安全降级，任务 7.6 承接
 - **[误改 `check_scheduling_deadlines` 致哨兵被判到期]** → D3 保留 `parse_utc is None → continue` 并加注释 + 回归测试
 - **[`fenix-ready` 不可交付]** → D8 明确写入「人工步骤」文档，不写进 tasks.md 任务（避免门禁缺口烧预算）
 - **[依赖 tag 与索引失效]** → D12 `_ENTRY_SIG_KEYS` 同步加字段；`_ENTRY_SIG_KEYS` 缺项会导致列表依赖 tag 长期陈旧
