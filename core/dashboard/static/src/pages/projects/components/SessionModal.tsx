@@ -118,13 +118,10 @@ export default function SessionModal({ project, open, onClose }: SessionModalPro
       }
     };
 
-    // 注册 watch 后重拉一次（兜住注册前的窗口）
+    // 注册 watch 后重拉一次（兜住注册前的窗口）。
+    // 无会话项目（空态）不注册 watch：注册必然 404 → console.error，
+    // 污染 web 场景 no_console_error 断言（验证 BUG-01 实证）。
     const afterHello = async (cid: string) => {
-      try {
-        await registerSessionWatch(project, cid);
-      } catch (e) {
-        console.error('Failed to register session watch:', e);
-      }
       try {
         const data = await getSession(project);
         if (disposed) return;
@@ -135,7 +132,21 @@ export default function SessionModal({ project, open, onClose }: SessionModalPro
           setEnded(false);
           syncEvents(data.events || []);
           setTruncated(Boolean(data.truncated));
+          // 会话存在：用服务端 hello 分配的 cid 注册 watch
+          try {
+            await registerSessionWatch(project, cid);
+          } catch (e) {
+            console.error('Failed to register session watch:', e);
+          }
+          // 注册后重拉一次（兜住注册前的窗口，design D6）
+          const again = await getSession(project);
+          if (disposed) return;
+          if (again.session) {
+            syncEvents(again.events || []);
+            setTruncated(Boolean(again.truncated));
+          }
         } else {
+          // 无会话（空态）：跳过注册，仅设空态（避免 404 + console.error）
           sessionIdRef.current = null;
           setSessionId(null);
           setStarted(false);
