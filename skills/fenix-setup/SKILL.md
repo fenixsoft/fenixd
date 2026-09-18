@@ -125,6 +125,29 @@ fi
 echo "项目简介已生成"
 ```
 
+### 5b. 探测并填写构建产物路径
+
+调用 `bin/fenix_detect_artifacts.py --write`（纯本地探测：`package.json` scripts、
+`pyproject.toml`、目录结构、Fenix 框架约定）写入 `.fenix/config.yaml` 的
+`worktree.has_build_artifacts` 与 `worktree.build_artifact_paths`。
+
+> **幂等规则**：`worktree.has_build_artifacts` 已显式存在（人工或前次 setup 写入）
+> 时 MUST 跳过，MUST NOT 覆盖人工设置。
+> **兜底规则**：探测失败 / 信息不足（如纯文档仓库）时两键留空（未裁决），交由
+> 运行期 `build_artifact_paths_missing` 信号兜底起草——本步骤任何失败 MUST NOT
+> 阻塞后续步骤。
+
+```bash
+# .fenix/bin 为框架 bin 的软链（fenix-init 步骤 2 已建立）
+if [ -x ".fenix/bin/fenix_detect_artifacts.py" ] || [ -f ".fenix/bin/fenix_detect_artifacts.py" ]; then
+    python3 .fenix/bin/fenix_detect_artifacts.py --write "$(pwd)" 2>/dev/null \
+        | python3 -c "import sys,json; d=json.load(sys.stdin); w=d.get('write',{}); print(('已填写产物配置' if w.get('wrote') else '跳过：'+w.get('reason','探测失败')) + ('（'+str(len(d.get('build_artifact_paths',[])))+' 条候选路径）' if d.get('has_build_artifacts') else '（未探测到产物）'))" \
+        || echo "产物路径探测跳过（失败不阻塞）"
+else
+    echo "跳过：找不到探测脚本 .fenix/bin/fenix_detect_artifacts.py（不阻塞后续步骤）"
+fi
+```
+
 ### 6. 兜底：确保验证契约模板
 
 `.fenix/STATE.md`、`.fenix/PROJECT_LOG.md`、`.fenix/verify.yaml` 均由步骤 2 的

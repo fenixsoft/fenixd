@@ -192,26 +192,51 @@ def _read_existing_config(project_root: Path) -> dict | None:
 def write_config_if_unresolved(project_root: Path, detection: dict) -> dict:
     """将探测结果写入 .fenix/config.yaml（幂等，不覆盖已显式配置的项目）。
 
+    仅 when worktree.has_build_artifacts 未显式存在（未裁决）才写入；已裁决项目
+    跳过（MUST NOT 覆盖人工设置）。YAML 缺失时退化到最小文本追加（保留其余行），
+    不抛异常——写入失败返回 {"wrote": False, "reason": <原因>}。
+
     Returns: {"wrote": bool, "reason": str}
     """
-    existing = _read_existing_config(project_root)
-    # 已裁决（has 已显式存在）→ 跳过，不覆盖人工设置
-    if existing and "has_build_artifacts" in existing:
-        return {"wrote": False, "reason": "has_build_artifacts 已显式配置，跳过"}
-
     cfg_path = project_root / ".fenix" / "config.yaml"
-    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    if cfg_path.is_file():
+        existing = _read_existing_config(project_root)
+        if existing and "has_build_artifacts" in existing:
+            return {"wrote": False, "reason": "has_build_artifacts 已显式配置，跳过"}
 
-    # 读取现有内容（可能有其它键）
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        import yaml  # PyYAML（fenix-setup 步骤 1 已确保安装）
+
+        try:
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                config = yaml.safe_load(f) or {}
+        except (OSError, yaml.YAMLError, FileNotFoundError):
+            config = {}
+        if not isinstance(config, dict):
+            config = {}
+        worktree = config.setdefault("worktree", {})
+        if not isinstance(worktree, dict):
+            worktree = {}
+        if "has_build_artifacts" in worktree:
+            return {"wrote": False, "reason": "has_build_artifacts 已显式配置，跳过"}
+        worktree["has_build_artifacts"] = bool(detection["has_build_artifacts"])
+        worktree["build_artifact_paths"] = list(detection["build_artifact_paths"])
+        config["worktree"] = worktree
+        with open(cfg_path, "w", encoding="utf-8") as f:
+            yaml.dump(config, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+        return {"wrote": True, "reason": "探测结果已写入（YAML 合并）"}
+    except ImportError:
+        pass  # 无 yaml → 退化最小文本追加
+
+    # ── 退化路径：无 PyYAML → 最小文本追加（保留原行）──────────────────────
     old_lines = []
     if cfg_path.is_file():
         try:
             old_lines = cfg_path.read_text(encoding="utf-8").splitlines()
         except OSError:
             pass
-
-    # 读取现有 worktree 段（简单替换/追加）
-    # 简单策略：删旧 worktree 段，追加新段
+    # 剔除旧 worktree 段（避免重复键）
     new_lines = []
     in_worktree = False
     for line in old_lines:
@@ -225,21 +250,17 @@ def write_config_if_unresolved(project_root: Path, detection: dict) -> dict:
             else:
                 continue
         new_lines.append(line)
-
-    # 追加 worktree 段
     new_lines.append("")
     new_lines.append("worktree:")
-    new_lines.append(f"  has_build_artifacts: {detection['has_build_artifacts']}")
+    new_lines.append(f"  has_build_artifacts: {str(detection['has_build_artifacts']).lower()}")
     paths = detection["build_artifact_paths"]
-    if paths:
-        paths_repr = json.dumps(paths, ensure_ascii=False)
-        new_lines.append(f"  build_artifact_paths: {paths_repr}")
-    else:
-        new_lines.append("  build_artifact_paths: []")
+    new_lines.append(f"  build_artifact_paths: {json.dumps(paths, ensure_ascii=False)}")
     new_lines.append("")
-
-    cfg_path.write_text("\n".join(new_lines), encoding="utf-8")
-    return {"wrote": True, "reason": "探测结果已写入"}
+    try:
+        cfg_path.write_text("\n".join(new_lines), encoding="utf-8")
+        return {"wrote": True, "reason": "探测结果已写入（文本追加退化路径）"}
+    except OSError as e:
+        return {"wrote": False, "reason": f"写入失败: {e}"}
 
 
 def main():
