@@ -108,9 +108,11 @@
       `_SYNC_PAGE_KEYS` **不含**该键（只读键，不参与「同步用户级设置」写入），
       并在注释写明该决定
 - [x] 3.3 `core/dashboard/static/src/pages/settings/components/VerifyPanel.tsx`：
-      验证契约页增加「构建产物路径」只读展示（当前生效值 + 语义说明 + 推荐形态）；
+      验证契约页增加「构建产物路径」可编辑列表（项目作用域：`Form.List` 增删 +
+      逐项校验；用户级作用域：只读展示）+ 语义说明；
       `core/dashboard/static/src/services/dashboard.ts` 的 `ConfigData` 类型补
-      `worktree.build_artifact_paths?: string[]`
+      `worktree.build_artifact_paths?: string[]`（2026-09-18 由只读展示改为可编辑，
+      见 design D6 修订）
 - [x] 3.4 前端构建：`npm run build`（`core/dashboard/static`），确认产物刷新
 
 ## 4. 测试（D5）

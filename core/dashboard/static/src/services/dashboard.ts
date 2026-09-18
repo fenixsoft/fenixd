@@ -1130,7 +1130,7 @@ export interface ConfigData {
   hooks?: HooksConfig;
   /** add-stale-code-selfheal：代码陈旧自愈（enabled / idle_confirm_seconds） */
   stale_code_selfheal?: StaleCodeSelfhealConfig;
-  /** evo-merge-back-wip-artifact-scope：构建产物路径（只读展示，误配会静默丢弃语义改动） */
+  /** evo-merge-back-wip-artifact-scope：构建产物路径（项目级可编辑，误配会静默丢弃语义改动） */
   worktree?: { build_artifact_paths?: string[] };
   /** add-framework-self-evolution：自进化配置（auto_accept / max_items_per_run） */
   self_evolution?: SelfEvolutionConfig;

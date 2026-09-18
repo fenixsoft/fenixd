@@ -94,7 +94,8 @@ _SOURCE_KEYS = [
     "self_evolution.auto_accept",
     "self_evolution.max_items_per_run",
     "self_evolution.spec_run_at",
-    # evo-merge-back-wip-artifact-scope：构建产物路径键（只读；不含 _SYNC_PAGE_KEYS）
+    # evo-merge-back-wip-artifact-scope：构建产物路径键（项目级可编辑；
+    # 不含 _SYNC_PAGE_KEYS——不参与用户级同步写入）
     "worktree.build_artifact_paths",
 ]
 
@@ -312,7 +313,7 @@ def read_config(scope_root, scope: str = "project") -> dict:
         # add-framework-self-evolution：self_evolution 三键（缺省 auto_accept=false /
         # max_items_per_run=20 / spec_run_at=null 立即执行）
         "self_evolution": {"auto_accept": False, "max_items_per_run": 20, "spec_run_at": None},
-        # evo-merge-back-wip-artifact-scope：worktree 只读展示键（缺省空列表 = 未配置）
+        # evo-merge-back-wip-artifact-scope：worktree 产物路径键缺省（空列表 = 未配置）
         "worktree": {"build_artifact_paths": []},
         "scope": scope,
         "raw_exists": False,
@@ -440,7 +441,7 @@ def read_config(scope_root, scope: str = "project") -> dict:
     from core.config import ConfigLoader as _CLSE
 
     result["self_evolution"] = _CLSE.get_self_evolution_config(raw)
-    # evo-merge-back-wip-artifact-scope：产物路径只读回显（worktree_config_view，
+    # evo-merge-back-wip-artifact-scope：产物路径回显（worktree_config_view，
     # 非法形态回显空列表 = 未配置，与解析侧 fail-safe 一致）
     from core.worktree_manager.artifact_paths import worktree_config_view as _wtcv
 
@@ -512,7 +513,7 @@ def read_effective_config(project_root) -> dict:
         "stale_code_selfheal": {"enabled": True, "idle_confirm_seconds": 120},
         # add-framework-self-evolution：self_evolution 用户级生效值（项目级只读透出）
         "self_evolution": {"auto_accept": False, "max_items_per_run": 20},
-        # evo-merge-back-wip-artifact-scope：worktree 只读展示键（缺省空列表 = 未配置）
+        # evo-merge-back-wip-artifact-scope：worktree 产物路径键缺省（空列表 = 未配置）
         "worktree": {"build_artifact_paths": []},
         "scope": "project",
         "raw_exists": proj_path.exists(),
@@ -631,7 +632,7 @@ def read_effective_config(project_root) -> dict:
     # add-framework-self-evolution：self_evolution 用户级生效值透出（项目级视图
     # 只读展示全局键，面板在项目级作用域下据此置只读）
     result["self_evolution"] = ConfigLoader.get_self_evolution_config(effective)
-    # evo-merge-back-wip-artifact-scope：产物路径只读回显（有效合并视图，非法形态回显空列表）
+    # evo-merge-back-wip-artifact-scope：产物路径回显（有效合并视图，非法形态回显空列表）
     from core.worktree_manager.artifact_paths import worktree_config_view as _wtcv
 
     result["worktree"] = _wtcv(effective)
@@ -1399,8 +1400,8 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
 # ── 同步用户级设置到项目级（设置页项目级作用域「同步用户级设置」按钮） ──
 
 # 页面标识 → 用户级 config.yaml 中被同步的受管键白名单（键集与各页签 onSave
-# patch 一一对应）。worktree.build_artifact_paths 不含——只读键 + 误配会静默丢弃
-# 语义改动，「同步用户级设置」不得覆盖进项目级（须手工显式声明）。
+# patch 一一对应）。worktree.build_artifact_paths 不含——项目级键 + 误配会静默
+# 丢弃语义改动，「同步用户级设置」不得覆盖进项目级（须在验证页项目作用域显式编辑）。
 _SYNC_PAGE_KEYS = {
     "llm": {"llm": ["providers"]},
     "agents": {"agents": ["models"]},
