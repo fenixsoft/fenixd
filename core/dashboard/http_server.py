@@ -44,6 +44,7 @@ class DashboardHTTPServer(ThreadingHTTPServer):
         self.sse_hub = SSEHub()
         self.summary_index = dashboard_data.SummaryIndex()  # 摘要索引（thread-safe）
         self.watcher = None  # serve() 中创建并启动
+        self.session_manager = None  # serve() 中创建并启动（dashboard-live-session 3.1）
         self._projects_cache = []
         self._cache_ts = 0.0
         self._cache_ttl = 10.0

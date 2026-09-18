@@ -116,6 +116,9 @@ def _get_evolution_analysis(s, p, q, m):
 def _get_evolution_draft(s, p, q, m):
     s._api_evolution_draft(q)
 
+def _get_session(s, p, q, m):
+    s._api_session_get(q)
+
 
 # ── POST 路由适配函数 ─────────────────────────────────────────────────
 
@@ -211,6 +214,18 @@ def _post_run_watch(s, p, q, m):
 def _post_project_describe(s, p, q, m):
     s._api_project_describe(q)
 
+def _post_session_start(s, p, q, m):
+    s._api_session_start(q)
+
+def _post_session_send(s, p, q, m):
+    s._api_session_send(q)
+
+def _post_session_stop(s, p, q, m):
+    s._api_session_stop(q)
+
+def _post_session_watch(s, p, q, m):
+    s._api_session_watch(q, watch=True)
+
 # 4 个裸 endswith —— 排在 /api/project/describe 之后（保留顺序陷阱）
 
 def _post_start(s, p, q, m):
@@ -231,6 +246,9 @@ def _post_install_hosting(s, p, q, m):
 def _del_run_watch(s, p, q, m):
     rest = urllib.parse.unquote(m.group(1))[: -len("/watch")]
     s._json(s._api_run_watch(rest, q, watch=False))
+
+def _del_session_watch(s, p, q, m):
+    s._api_session_watch(q, watch=False)
 
 def _del_project(s, p, q, m):
     s._api_project_delete(p, q)
@@ -261,6 +279,7 @@ _API_GET_ROUTES = [
     ("exact", "/api/evolution/items",  _get_evolution_items),
     ("exact", "/api/evolution/analysis", _get_evolution_analysis),
     ("exact", "/api/evolution/draft",  _get_evolution_draft),
+    ("exact", "/api/session",         _get_session),
 ]
 
 _API_POST_ROUTES = [
@@ -297,6 +316,11 @@ _API_POST_ROUTES = [
     ("regex", r"^/api/runs/(.+)/watch$",        _post_run_watch),
     # /api/project/describe（精确，排在 endswith 之前）
     ("exact", "/api/project/describe",   _post_project_describe),
+    # session 路由（精确，排在裸 endswith 之前，防 /start /stop 误匹配）
+    ("exact", "/api/session/start",      _post_session_start),
+    ("exact", "/api/session/send",       _post_session_send),
+    ("exact", "/api/session/stop",       _post_session_stop),
+    ("regex", "^/api/session/watch$",   _post_session_watch),
     # 裸 endswith（4 个，MUST 排最后——保留顺序陷阱）
     ("suffix", "/start",        _post_start),
     ("suffix", "/stop",         _post_stop),
@@ -306,6 +330,7 @@ _API_POST_ROUTES = [
 
 _API_DELETE_ROUTES = [
     ("regex",  r"^/api/runs/(.+)/watch$", _del_run_watch),
+    ("regex",  "^/api/session/watch$",   _del_session_watch),
     ("regex",  r"^/api/projects/([^/]+)$", _del_project),
 ]
 

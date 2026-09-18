@@ -1324,3 +1324,63 @@ export async function getHelpDoc(name: string): Promise<HelpDocItem> {
   const q = `?name=${encodeURIComponent(name)}`;
   return request<HelpDocItem>(`/api/help/doc${q}`);
 }
+
+// ── 项目级自由会话（dashboard-live-session） ───────────────────────────────
+
+// 会话事件是 claude CLI stream-json 原始事件（与 RunEvent 同构），扩展
+// 会话侧字段（uuid 去重键 / session_id 归属 / subtype 过滤 / line 兜底行）。
+// 继承 RunEvent 使 runEventsToChatMessages(events) 可直接接收 SessionEvent[]。
+export interface SessionEvent extends RunEvent {
+  uuid?: string;
+  session_id?: string;
+  subtype?: string;
+  line?: string;
+  isReplay?: boolean;
+  message?: unknown;
+}
+
+export interface SessionInfo {
+  id: string;
+  started_at: number;
+}
+
+export interface SessionState {
+  session: SessionInfo | null;
+  events: SessionEvent[];
+  truncated?: boolean;
+  error?: string;
+}
+
+export async function startSession(project: string): Promise<{ session: SessionInfo }> {
+  const q = `?project=${encodeURIComponent(project)}`;
+  return request<{ session: SessionInfo }>(`/api/session/start${q}`, { method: 'POST' });
+}
+
+export async function getSession(project: string): Promise<SessionState> {
+  const q = `?project=${encodeURIComponent(project)}`;
+  return request<SessionState>(`/api/session${q}`);
+}
+
+export async function sendSessionMessage(project: string, text: string): Promise<{ ok: boolean }> {
+  const q = `?project=${encodeURIComponent(project)}`;
+  return request<{ ok: boolean }>(`/api/session/send${q}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text }),
+  });
+}
+
+export async function stopSession(project: string): Promise<{ ok: boolean }> {
+  const q = `?project=${encodeURIComponent(project)}`;
+  return request<{ ok: boolean }>(`/api/session/stop${q}`, { method: 'POST' });
+}
+
+export async function registerSessionWatch(project: string, cid: string): Promise<void> {
+  const q = `?project=${encodeURIComponent(project)}&cid=${encodeURIComponent(cid)}`;
+  await request(`/api/session/watch${q}`, { method: 'POST' });
+}
+
+export async function unregisterSessionWatch(project: string, cid: string): Promise<void> {
+  const q = `?project=${encodeURIComponent(project)}&cid=${encodeURIComponent(cid)}`;
+  await request(`/api/session/watch${q}`, { method: 'DELETE' });
+}

@@ -1,4 +1,4 @@
-import { ClockCircleOutlined, MoreOutlined } from '@ant-design/icons';
+import { ClockCircleOutlined, MessageOutlined, MoreOutlined } from '@ant-design/icons';
 import { PageContainer } from '@ant-design/pro-components';
 import {
   Alert,
@@ -48,6 +48,7 @@ import { fetchProposalWhy } from '@/utils/proposalWhy';
 import SpecDocModal from './components/SpecDocModal';
 import AdminInvokeModal from './components/AdminInvokeModal';
 import SpecStatusModal from './components/SpecStatusModal';
+import SessionModal from './components/SessionModal';
 
 const REFRESH_THROTTLE_MS = 500;
 // dashboard-sse-refresh：增量 patch 去重窗口（同 spec 1s 内多事件只应用最新）
@@ -497,6 +498,9 @@ export default function SpecListPage() {
   const [saDate, setSaDate] = useState<dayjs.Dayjs | null>(null);
   // add-spec-status-modal-budget：修改状态弹窗（归档/冻结/晋升/预算 四区块收敛入口）
   const [statusModal, setStatusModal] = useState<{ spec: string } | null>(null);
+
+  // dashboard-live-session D7：项目级自由会话入口（按钮在标题栏右端，项目级语义）
+  const [sessionOpen, setSessionOpen] = useState(false);
 
   const load = useCallback(async () => {
     if (!name) return;
@@ -1013,12 +1017,26 @@ export default function SpecListPage() {
       breadcrumbRender={false}
       header={{
         title: (
-          <Space size={8} align="baseline">
-            <span>{name}</span>
-            <Typography.Text type="secondary" style={{ fontSize: 14, fontWeight: 400 }}>
-              共 {Object.keys(specMap).length} 个 SPEC
-            </Typography.Text>
-          </Space>
+          <div style={{ display: 'flex', alignItems: 'center', width: '100%', minWidth: 0 }}>
+            <Space size={8} align="baseline" style={{ minWidth: 0, flex: '0 1 auto' }}>
+              <span>{name}</span>
+              <Typography.Text type="secondary" style={{ fontSize: 14, fontWeight: 400 }}>
+                共 {Object.keys(specMap).length} 个 SPEC
+              </Typography.Text>
+            </Space>
+            {/* dashboard-live-session D7：项目级「接入会话」按钮，靠右对齐，
+                与具体 SPEC 无关（不进每行操作菜单） */}
+            <div style={{ marginLeft: 'auto', flexShrink: 0 }}>
+              <Button
+                type="primary"
+                ghost
+                icon={<MessageOutlined />}
+                onClick={() => setSessionOpen(true)}
+              >
+                接入会话
+              </Button>
+            </div>
+          </div>
         ),
         onBack: () => history.push('/overview'),
       }}
@@ -1207,6 +1225,13 @@ export default function SpecListPage() {
         summary={statusModal ? (specMap[statusModal.spec] ?? null) : null}
         onClose={() => setStatusModal(null)}
         onDone={() => void load()}
+      />
+
+      {/* dashboard-live-session D6/D7：项目级自由会话 Modal */}
+      <SessionModal
+        project={name}
+        open={sessionOpen}
+        onClose={() => setSessionOpen(false)}
       />
     </PageContainer>
   );

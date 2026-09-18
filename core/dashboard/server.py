@@ -169,7 +169,8 @@ from .routes.evolution_routes import H7EvolutionRoutesMixin  # noqa: E402
 from .routes.help_routes import H8HelpRoutesMixin  # noqa: E402
 from .routes.sse_routes import H9SseRoutesMixin  # noqa: E402
 from .routes.static_routes import H10StaticRoutesMixin  # noqa: E402
-class DashboardHandler(H0BaseMixin, H2ProjectRoutesMixin, H3SpecRoutesMixin, H4RunRoutesMixin, H5SettingsRoutesMixin, H6AlertRoutesMixin, H7EvolutionRoutesMixin, H8HelpRoutesMixin, H9SseRoutesMixin, H10StaticRoutesMixin, BaseHTTPRequestHandler):
+from .routes.session_routes import H_SessionRoutesMixin  # noqa: E402
+class DashboardHandler(H0BaseMixin, H2ProjectRoutesMixin, H3SpecRoutesMixin, H4RunRoutesMixin, H5SettingsRoutesMixin, H6AlertRoutesMixin, H7EvolutionRoutesMixin, H8HelpRoutesMixin, H9SseRoutesMixin, H10StaticRoutesMixin, H_SessionRoutesMixin, BaseHTTPRequestHandler):
     """处理 GET/HEAD/POST/DELETE 请求，输出 JSON 或静态资源。
 
     protocol_version=HTTP/1.1：SSE 需要 keep-alive 长连接 + chunked 传输
@@ -411,6 +412,9 @@ def serve(registry: Registry, port: int = 8787, static_dir=None):
     )
     httpd.watcher = watcher
     watcher.start()
+    # dashboard-live-session 3.2：会话管理器随 dashboard 生命周期（watcher 之后创建）
+    from .session_manager import SessionManager
+    httpd.session_manager = SessionManager(httpd.sse_hub)
     url = f"http://localhost:{actual}"
     # flush=True：被 Ctrl+C / timeout 杀进程时 URL 必须已输出（供 skill 解析）
     print("=" * 60, flush=True)
@@ -424,6 +428,10 @@ def serve(registry: Registry, port: int = 8787, static_dir=None):
     except KeyboardInterrupt:
         print("\nDashboard 已退出")
     finally:
+        # dashboard-live-session 3.3：先终止会话子进程，再停 watcher
+        if httpd.session_manager is not None:
+            httpd.session_manager.shutdown()
+            httpd.session_manager = None
         watcher.stop()
         httpd.server_close()
 
