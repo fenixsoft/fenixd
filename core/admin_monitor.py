@@ -211,6 +211,11 @@ SIGNAL_SEVERITY = {
     "inconclusive_loop": "major",
     # fix-verify-contract-signal-semantics B：契约有效 + 用户显式覆盖确认的重起草信号
     "verify_contract_redraft": "major",
+    # fix-artifact-paths-hardcoded-default D3：merge-back WIP 重叠闸门检出产物
+    # 配置未裁决（has_build_artifacts 缺省或 true 配空路径），呼叫 Administrator
+    # 起草产物路径配置——与 verify_contract_missing 同级（配置缺口，需人工/起草
+    # 落地，未裁决时产物会被当语义内容处理）。
+    "build_artifact_paths_missing": "major",
     # fix-mergeback-stashpop-silent-loss D1：pop 冲突自愈丢弃的用户改动，
     # 内容找回需人工核对（stash 栈 + 逐文件 git show），major 级。
     "stash_pop_conflict": "major",
@@ -263,6 +268,10 @@ SIGNAL_RECOMMENDATION = {
     # 有效契约按 D4 权限边界默认不碰，用户已显式授权覆盖（evidence 含「覆盖确认=是」）
     # 时方可重起草；重起草草稿同样须经 bin/fenix_verify_contract.py 三段自证全通才落位。
     "verify_contract_redraft": "复核现有契约有效性：若契约仍有效，Administrator 按权限边界默认不碰，仅当用户已显式授权覆盖（evidence 含「覆盖确认=是」）时方可重起草；重起草草稿写临时路径 → bin/fenix_verify_contract.py 自证 → 全通才落位 → git 提交 → spec 复位 ready 触发重验证",
+    # fix-artifact-paths-hardcoded-default D3：产物路径起草手册指引——探测输入源、
+    # 校验口径、确无产物的结案方式均见 agents/administrator.md「构建产物路径起草
+    # 手册」小节；探测脚本 bin/fenix_detect_artifacts.py 输出候选路径（纯本地）。
+    "build_artifact_paths_missing": "Administrator 起草 .fenix/config.yaml 的产物路径配置：bin/fenix_detect_artifacts.py 探测候选路径（输入源：package.json scripts / pyproject.toml / 目录结构 / project.type）→ 路径经 validate_build_artifact_paths 同口径校验 → 写 worktree.has_build_artifacts + build_artifact_paths → git 提交 → 处置记录留痕；确无产物写 has_build_artifacts=false 结案（不得用路径留空冒充已裁决）",
     # fix-mergeback-stashpop-silent-loss D1：核对指引——查 stash 栈确认条目去向，
     # 按 sha / 逐文件 git show 找回被自愈丢弃的改动，确认无独有内容后可清理条目。
     "stash_pop_conflict": "merge-back stash pop 冲突已自愈，主树已恢复可写但部分未提交改动被丢弃：git stash list 查条目去向（保留/drop + sha）；按告警中逐文件 git show <sha>:<file> 命令核对内容，仍需要的改动手动落回工作区；确认零独有内容后 git stash drop 清理",
@@ -314,6 +323,10 @@ STORED_SIGNAL_TYPES = (
     # pm_engine 写入、本监视器摄取唤起（写入即待唤起型，recovery 尊重暂停
     # 标记，人工处置是唯一出路）。
     "inconclusive_loop",
+    # fix-artifact-paths-hardcoded-default D3：merge-back WIP 重叠闸门写入的
+    # 产物配置未裁决起草信号——未收录则记录落 store 后无人摄取，Administrator
+    # 不唤起（「立即呼叫起草」目标落空）。证据含「项目名=」供无 spec 形态解析。
+    "build_artifact_paths_missing",
     # 2026-09-14 原地修复（未走 SPEC）：全场景同因失败哨
     # （verification.py `_detect_uniform_verify_failure`）在 pass=0 且失败签名
     # 一致时写入本信号，文案自称「已呼叫 admin 介入判断」——但此前本表不含该
@@ -899,7 +912,13 @@ class AdminMonitor:
             stype = rec.get("signal_type")
             # 手动触发信号（source=ui-manual）无关联 spec，项目名从 evidence 携带
             spec = rec.get("spec")
-            if not spec and stype in ("verify_contract_missing", "verify_contract_redraft"):
+            if not spec and stype in (
+                "verify_contract_missing",
+                "verify_contract_redraft",
+                # fix-artifact-paths-hardcoded-default D3：WIP 闸门信号无 spec
+                # （非常规分支名退化为仅靠 evidence）时同样从「项目名=」解析。
+                "build_artifact_paths_missing",
+            ):
                 # 从 evidence 提取项目名（格式: "项目名=<name>; ..."）
                 evidence = rec.get("evidence") or ""
                 for part in evidence.split(";"):

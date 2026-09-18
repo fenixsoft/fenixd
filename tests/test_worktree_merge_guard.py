@@ -53,6 +53,10 @@ def init_repo(root: Path) -> str:
     git(root, "config", "user.email", "test@fenix.local")
     git(root, "config", "user.name", "Fenix Test")
     git(root, "config", "commit.gpgsign", "false")
+    # 镜像真实仓库：.fenix/ 运行时目录不入库（产物配置未裁决信号等运行时写入
+    # 均落 .fenix/，测试断言「主树干净」必须不受其干扰——真实仓库 .gitignore
+    # 以 .fenix/* 整体排除）。
+    (root / ".gitignore").write_text(".fenix/\n", encoding="utf-8")
     (root / "shared.py").write_text("BASE\n", encoding="utf-8")
     git(root, "add", "-A")
     git(root, "commit", "-q", "-m", "[fenix] base")
@@ -284,7 +288,7 @@ class TestBuildArtifactConflictSelfHeal:
         git(root, "mv", f"{self.DIST}/umi.aaa.js", f"{self.DIST}/umi.ccc.js")
         git(root, "commit", "-q", "-m", "[fenix] main dist rebuild")
 
-        wm = make_wm(root)
+        wm = make_wm(root, build_artifact_paths=["core/dashboard/static/dist/", "core/dashboard/static/v3/dist/"], has_build_artifacts=True)
         info = wm.merge_back_from_branch("fenix/impl")
         success, err = info
         assert success, f"dist 冲突应自愈，实际失败: {err}"
@@ -318,7 +322,7 @@ class TestBuildArtifactConflictSelfHeal:
         git(root, "add", "-A")
         git(root, "commit", "-q", "-m", "[fenix] main work")
 
-        wm = make_wm(root)
+        wm = make_wm(root, build_artifact_paths=["core/dashboard/static/dist/", "core/dashboard/static/v3/dist/"], has_build_artifacts=True)
         info = wm.merge_back_from_branch("fenix/impl")
         success, err = info
         assert not success, "混入语义冲突时不应自愈"
@@ -382,7 +386,7 @@ class TestBuildArtifactConflictSelfHeal:
         git(root, "add", "-A")
         git(root, "commit", "-q", "-m", "[fenix] main: flatten v3 dist layout")
 
-        wm = make_wm(root)
+        wm = make_wm(root, build_artifact_paths=["core/dashboard/static/dist/", "core/dashboard/static/v3/dist/"], has_build_artifacts=True)
         success, err = wm.merge_back_from_branch("fenix/impl")
         assert success, f"产物冲突应自愈，实际失败: {err}"
 
@@ -452,7 +456,7 @@ class TestDistConflictRootCure:
         git(root, "mv", f"{self.DIST}/umi.aaa.js", f"{self.DIST}/umi.ccc.js")
         git(root, "commit", "-q", "-m", "[fenix] main rebuild")
 
-        wm = make_wm(root)
+        wm = make_wm(root, build_artifact_paths=["core/dashboard/static/dist/"], has_build_artifacts=True)
         info = wm.merge_back_from_branch("fenix/impl")
         success, _ = info
         assert success, "纯产物冲突应自愈"
@@ -492,7 +496,7 @@ class TestDistConflictRootCure:
         self._branch_rebuild(root, base, with_src=True)
         # 主树不动 dist（分支 src/dist 无冲突，纯干净 merge 但触碰 src）
 
-        wm = make_wm(root)
+        wm = make_wm(root, build_artifact_paths=["core/dashboard/static/dist/"], has_build_artifacts=True)
         calls = self._fake_build(
             monkeypatch, wm,
             write_dist={f"{self.DIST}/index.html": "INDEX-REBUILT\n",
@@ -523,7 +527,7 @@ class TestDistConflictRootCure:
         git(root, "commit", "-q", "-m", "[fenix] backend only")
         git(root, "checkout", "-q", base)
 
-        wm = make_wm(root)
+        wm = make_wm(root, build_artifact_paths=["core/dashboard/static/dist/"], has_build_artifacts=True)
         calls = self._fake_build(monkeypatch, wm)
         success, err = wm.merge_back_from_branch("fenix/impl")
         assert success, err
@@ -537,7 +541,7 @@ class TestDistConflictRootCure:
         base = git(root, "rev-parse", "HEAD").stdout.strip()
         self._branch_rebuild(root, base, with_src=True)
 
-        wm = make_wm(root)
+        wm = make_wm(root, build_artifact_paths=["core/dashboard/static/dist/"], has_build_artifacts=True)
         calls = self._fake_build(monkeypatch, wm, fail=True)
         info = wm.merge_back_from_branch("fenix/impl")
         success, _ = info
@@ -557,7 +561,7 @@ class TestDistConflictRootCure:
         git(root, "mv", f"{self.DIST}/umi.aaa.js", f"{self.DIST}/umi.ccc.js")
         git(root, "commit", "-q", "-m", "[fenix] main rebuild")
 
-        wm = make_wm(root)
+        wm = make_wm(root, build_artifact_paths=["core/dashboard/static/dist/"], has_build_artifacts=True)
         calls = self._fake_build(
             monkeypatch, wm,
             write_dist={f"{self.DIST}/index.html": "INDEX-REBUILT\n"},
@@ -580,7 +584,7 @@ class TestDistConflictRootCure:
         git(root, "merge", "-q", "--no-ff", "fenix/impl",
             "-m", "[fenix] merge implementer branch fenix/impl")
 
-        wm = make_wm(root)
+        wm = make_wm(root, build_artifact_paths=["core/dashboard/static/dist/"], has_build_artifacts=True)
         calls = self._fake_build(monkeypatch, wm)
         info = wm.merge_back_from_branch("fenix/impl")
         success, _ = info

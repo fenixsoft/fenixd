@@ -99,6 +99,9 @@ _SOURCE_KEYS = [
     # evo-merge-back-wip-artifact-scope：构建产物路径键（项目级可编辑；
     # 不含 _SYNC_PAGE_KEYS——不参与用户级同步写入）
     "worktree.build_artifact_paths",
+    # fix-artifact-paths-hardcoded-default D4：项目是否存在构建产物（三态，
+    # 缺省 None=未裁决 / false=已声明无产物 / true=按路径判定）
+    "worktree.has_build_artifacts",
 ]
 
 # 受管 agents 标量键（来源标注 + 回显共用；配置键新条目在此登记一次即可
@@ -222,10 +225,13 @@ def _managed_key_sources(raw: dict) -> dict:
             sources["self_evolution.max_items_per_run"] = "project"
         if "spec_run_at" in se_raw:
             sources["self_evolution.spec_run_at"] = "project"
-    # evo-merge-back-wip-artifact-scope：worktree 段显式定义 → project
+    # evo-merge-back-wip-artifact-scope / fix-artifact-paths-hardcoded-default：
+    # worktree 段显式定义 → project（两键各判一次，存在性判定不可用 or/in 合并）
     wm_raw = raw.get("worktree")
     if isinstance(wm_raw, dict) and "build_artifact_paths" in wm_raw:
         sources["worktree.build_artifact_paths"] = "project"
+    if isinstance(wm_raw, dict) and "has_build_artifacts" in wm_raw:
+        sources["worktree.has_build_artifacts"] = "project"
     return sources
 
 
@@ -318,8 +324,9 @@ def read_config(scope_root, scope: str = "project") -> dict:
         # add-framework-self-evolution：self_evolution 三键（缺省 auto_accept=false /
         # max_items_per_run=20 / spec_run_at=null 立即执行）
         "self_evolution": {"auto_accept": False, "max_items_per_run": 20, "spec_run_at": None},
-        # evo-merge-back-wip-artifact-scope：worktree 产物路径键缺省（空列表 = 未配置）
-        "worktree": {"build_artifact_paths": []},
+        # evo-merge-back-wip-artifact-scope / fix-artifact-paths-hardcoded-default：
+        # worktree 产物键缺省（空列表=未配置；has_build_artifacts 缺省 None=未裁决）
+        "worktree": {"build_artifact_paths": [], "has_build_artifacts": None},
         "scope": scope,
         "raw_exists": False,
         "sources": _managed_key_sources({}),
@@ -522,8 +529,9 @@ def read_effective_config(project_root) -> dict:
         "stale_code_selfheal": {"enabled": True, "idle_confirm_seconds": 120},
         # add-framework-self-evolution：self_evolution 用户级生效值（项目级只读透出）
         "self_evolution": {"auto_accept": False, "max_items_per_run": 20},
-        # evo-merge-back-wip-artifact-scope：worktree 产物路径键缺省（空列表 = 未配置）
-        "worktree": {"build_artifact_paths": []},
+        # evo-merge-back-wip-artifact-scope / fix-artifact-paths-hardcoded-default：
+        # worktree 产物键缺省（空列表=未配置；has_build_artifacts 缺省 None=未裁决）
+        "worktree": {"build_artifact_paths": [], "has_build_artifacts": None},
         "scope": "project",
         "raw_exists": proj_path.exists(),
         "sources": _managed_key_sources({}),
@@ -826,13 +834,18 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
             # null 显式写回 null（= 取消定时，回到立即执行）：不能因「假值不可写」
             # 而保留旧时刻，否则 UI 上关不掉定时
             merged["self_evolution"]["spec_run_at"] = se_p["spec_run_at"]
-    # evo-merge-back-wip-artifact-scope：worktree 段列表形态原样透传（非法值 write_config 拒绝）
+    # evo-merge-back-wip-artifact-scope / fix-artifact-paths-hardcoded-default：
+    # worktree 段列表形态原样透传（非法值 write_config 拒绝）；has_build_artifacts
+    # 布尔形态合并（False/True 显式写回，缺省 None 不覆盖旧值）。
     if "worktree" in patch and isinstance(patch["worktree"], dict):
         if not isinstance(merged.get("worktree"), dict):
             merged["worktree"] = {}
         _bap = patch["worktree"].get("build_artifact_paths")
         if isinstance(_bap, list):
             merged["worktree"]["build_artifact_paths"] = list(_bap)
+        _hba = patch["worktree"].get("has_build_artifacts")
+        if isinstance(_hba, bool):
+            merged["worktree"]["has_build_artifacts"] = _hba
     return merged
 
 def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict:
@@ -1030,6 +1043,14 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
             bap_err = validate_build_artifact_paths(bap_patch)
             if bap_err:
                 return fail(bap_err)
+        # fix-artifact-paths-hardcoded-default D4：has_build_artifacts 必须为布尔
+        # （三态语义依赖「缺省=None / false / true」可区分，非法值 400 拒绝）
+        hba_patch = config_patch["worktree"].get("has_build_artifacts")
+        if hba_patch is not None and not isinstance(hba_patch, bool):
+            return fail(
+                f"worktree.has_build_artifacts must be a boolean (true/false): "
+                f"{hba_patch!r}"
+            )
 
     # add-stale-code-selfheal：两键前置校验（非法值直接拒绝 400，同 verify/self_review 模式）
     if isinstance(config_patch.get("stale_code_selfheal"), dict):
@@ -1424,8 +1445,9 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
 # ── 同步用户级设置到项目级（设置页项目级作用域「同步用户级设置」按钮） ──
 
 # 页面标识 → 用户级 config.yaml 中被同步的受管键白名单（键集与各页签 onSave
-# patch 一一对应）。worktree.build_artifact_paths 不含——项目级键 + 误配会静默
-# 丢弃语义改动，「同步用户级设置」不得覆盖进项目级（须在验证页项目作用域显式编辑）。
+# patch 一一对应）。worktree.build_artifact_paths / worktree.has_build_artifacts
+# 不含——项目级键 + 误配会静默丢弃语义改动（产物判定必须由项目声明），
+# 「同步用户级设置」不得覆盖进项目级（须在验证页项目作用域显式编辑）。
 _SYNC_PAGE_KEYS = {
     "llm": {"llm": ["providers"]},
     "agents": {"agents": ["models"]},

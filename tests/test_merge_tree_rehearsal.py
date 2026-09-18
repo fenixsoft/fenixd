@@ -67,6 +67,9 @@ def init_repo(root: Path):
     git(root, "config", "user.email", "test@fenix.local")
     git(root, "config", "user.name", "Fenix Test")
     git(root, "config", "commit.gpgsign", "false")
+    # 镜像真实仓库：.fenix/ 运行时目录不入库（产物配置未裁决信号等运行时写入
+    # 均落 .fenix/，测试断言「主树干净」必须不受其干扰）。
+    (root / ".gitignore").write_text(".fenix/\n", encoding="utf-8")
     (root / "shared.py").write_text("BASE\n", encoding="utf-8")
     git(root, "add", "-A")
     git(root, "commit", "-q", "-m", "[fenix] base")
@@ -88,10 +91,10 @@ def make_conflict_branch(root: Path, branch: str,
     return git(root, "rev-parse", "HEAD").stdout.strip()
 
 
-def make_wm(root: Path) -> WorktreeManager:
+def make_wm(root: Path, **kwargs) -> WorktreeManager:
     base = root / ".claude" / "worktrees"
     base.mkdir(parents=True, exist_ok=True)
-    return WorktreeManager(base, root, CapturingLogger())
+    return WorktreeManager(base, root, CapturingLogger(), **kwargs)
 
 
 def _reset_rehearsal_probe():
@@ -108,7 +111,14 @@ class TestRehearsalGate(unittest.TestCase):
         self.tmpdir = tempfile.mkdtemp()
         self.root = Path(self.tmpdir) / "repo"
         init_repo(self.root)
-        self.wm = make_wm(self.root)
+        # 产物自愈用例（_branch_with_artifact_conflict / test_artifact_conflict_*）依赖
+        # 「core/dashboard/static/dist 判真」，语义反转后须显式声明产物配置（未声明
+        # 判定恒假=未裁决，产物冲突会退化为语义冲突）。
+        self.wm = make_wm(
+            self.root,
+            build_artifact_paths=["core/dashboard/static/dist/"],
+            has_build_artifacts=True,
+        )
 
     def tearDown(self):
         shutil.rmtree(self.tmpdir, ignore_errors=True)

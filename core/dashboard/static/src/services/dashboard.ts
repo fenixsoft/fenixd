@@ -1134,8 +1134,10 @@ export interface ConfigData {
   hooks?: HooksConfig;
   /** add-stale-code-selfheal：代码陈旧自愈（enabled / idle_confirm_seconds） */
   stale_code_selfheal?: StaleCodeSelfhealConfig;
-  /** evo-merge-back-wip-artifact-scope：构建产物路径（项目级可编辑，误配会静默丢弃语义改动） */
-  worktree?: { build_artifact_paths?: string[] };
+  /** evo-merge-back-wip-artifact-scope / fix-artifact-paths-hardcoded-default：
+   构建产物路径（项目级可编辑）+ 三态标志（has_build_artifacts：undefined=未裁决 /
+   true=有产物按路径判定 / false=已声明无产物） */
+  worktree?: { build_artifact_paths?: string[]; has_build_artifacts?: boolean };
   /** add-framework-self-evolution：自进化配置（auto_accept / max_items_per_run） */
   self_evolution?: SelfEvolutionConfig;
   scope: 'user' | 'project';

@@ -49,3 +49,15 @@
   - 背景：`.fenix/verify-serving/` 存量 19 个 serving worktree 合计约 30G，其中 18 个的 spec 仍存活于 `spec/changes/` 或 `spec/archive/`（按 D1 判据 1「归档等同存活」不会被自动回收），仅 1 个（`verify-draft-fixture-1788860224`）无主已被自动清扫。
   - 清理范围 MUST NOT 只限「spec 在 changes/archive 双双消失」的目录（现测仅 1 个，清理后 30G 基本不动）——**存量主体为 18 个 spec 仍在册目录内各 1.6G `node_modules`**，需按 D1 判据人工逐条核对。
   - 清理方式：**逐条核对后删除，勿用通配批量删**（按 fix-verify-cli-cwd-isolation 教训）：对每个 `<spec>-<ts>` 目录，先确认其 `servers.json` 无登记、`/proc` 无活进程指向、无在飞验证 run，再 `git worktree remove --force` + `git worktree prune`。清理前确认 `.fenix/config.yaml` 的 `verify.deps_mode` 已改为 `hardlink`（本次 SPEC 已改默认值，新建 worktree 单份仅 ~24M），防止存量模式下新建 worktree 再次膨胀。
+
+## 2026-09-19
+
+### 人工运维（fix-artifact-paths-hardcoded-default 登记）
+
+- **对其它已注册项目执行产物配置回填（D5 存量回填，task 7.4）**
+  - 背景：产物判定语义已反转（无内置默认集合，未配置=未裁决=判定恒假）。当前机器上除 fenixd 自身（已在本 SPEC 7.3 回填：worktree.has_build_artifacts=true + build_artifact_paths=["core/dashboard/static/"]，落盘 `/root/fenixd/.fenix/config.yaml`，仅本机生效、未入库）外的**所有已注册项目**（其它 daemon 项目主树）尚未回填。
+  - 操作：对每个已注册项目主树执行
+    `python3 <fenixd 仓库>/bin/fenix_detect_artifacts.py --write <项目根>`；
+    脚本幂等、不覆盖已显式配置的项目；探测无产物时写 has_build_artifacts=false；
+    执行前确认该项目主树无未提交的产物/源码改动（前缀会把 src 一并判为产物）。
+  - **发布顺序约束（task 7.5，MUST）**：把本语义反转版本部署到某台机器前，该机上**所有**已注册项目 MUST 先完成上述回填——否则 daemon 一启动，未回填项目即落入「未裁决」窗口，其产物被判为语义内容、`core/dashboard/static` 类路径失去豁免。顺序：本仓库（7.3 已完成）→ 同机其它已注册项目（本条目）。

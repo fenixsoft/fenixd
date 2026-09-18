@@ -1,14 +1,15 @@
 """tests/test_worktree_wip_artifact_scope.py — 产物路径判定器与 WIP 重叠闸门测试。
 
-evo-merge-back-wip-artifact-scope D5 测试策略：
-  1. 判定矩阵：默认前缀命中 / 根级 dist 默认为假 / 配置 dist/ 后为真 /
+fix-artifact-paths-hardcoded-default D1/D2 测试策略：
+  1. 判定矩阵：无配置时判定恒假（未裁决）/ 配置 dist/ 后为真 /
      fenix-newtab-*.zip 命中发布包 / *.zip MUST NOT 命中 src/vendor/pkg.zip /
-     未以 / 结尾项被丢弃 / 绝对路径与 .. 项被丢弃 / 配置形态非法回退默认 /
-     空列表等价默认
+     未以 / 结尾项被丢弃 / 绝对路径与 .. 项被丢弃 / 配置形态非法回退空集合 /
+     空列表回退空集合 / has_build_artifacts=False 短路恒假 /
+     is_artifact_config_unresolved 三态表
   2. WIP 重叠闸门：产物脏改动不计入重叠集合（只读口径不变），语义重叠仍计入，
      spec/changes/** 排除不受产物配置影响
   3. 预演闸分类：冲突全为配置产物放行，含语义路径返回 rehearsed=True 且
-     conflict_paths 不含产物路径；包级 _is_build_artifact_path 保持默认语义
+     conflict_paths 不含产物路径
   4. 链路切断（D3b 核心验收）：纯产物重叠 → checkout HEAD 对齐被调用、
      wip_overlap 为空、last_stash_pop_conflicts 为空；主树独有产物 → 对齐未
      被调用、仍走 stash/pop 往返；对齐失败 → 路径并入 wip_overlap 且不阻塞；
@@ -21,13 +22,10 @@ from unittest.mock import patch
 
 import pytest
 
-from core.worktree_manager import (
-    WorktreeManager,
-    _is_build_artifact_path,
-)
+from core.worktree_manager import WorktreeManager
 from core.worktree_manager.artifact_paths import (
     ArtifactPathMatcher,
-    DEFAULT_ARTIFACT_PREFIXES,
+    is_artifact_config_unresolved,
     normalize_artifact_patterns,
 )
 
@@ -44,27 +42,29 @@ def make_wm(root: Path, **kwargs) -> WorktreeManager:
 # ── 1. 判定矩阵 ─────────────────────────────────────────────────────────────
 
 class TestArtifactPathMatcherMatrix:
-    """判定矩阵：默认前缀 / 配置前缀 / 通配 / 非法项丢弃。"""
+    """判定矩阵：无配置默认恒假 / 配置前缀 / 通配 / 非法项丢弃 / 三态短路。"""
 
-    def test_default_prefix_hits_dashboard_artifact(self):
-        """默认前缀下 core/dashboard/static/**/dist/x.js 为真。"""
+    def test_unconfigured_matcher_judges_all_false(self):
+        """无配置（未裁决）时判定恒假——无任何内置默认路径。"""
         m = ArtifactPathMatcher()
-        assert m.is_artifact("core/dashboard/static/v3/dist/assets/a.js")
-        assert m.is_artifact("core/dashboard/static/dist/assets/a.js")
+        assert not m.is_artifact("core/dashboard/static/v3/dist/assets/a.js")
+        assert not m.is_artifact("core/dashboard/static/dist/assets/a.js")
+        assert not m.is_artifact("dist/index.html")
+        assert not m.is_artifact("src/main.py")
 
     def test_root_dist_false_by_default(self):
-        """根级 dist/x.js 默认判定为假。"""
+        """无配置时根级 dist/x.js 判定为假。"""
         m = ArtifactPathMatcher()
         assert not m.is_artifact("dist/index.html")
         assert not m.is_artifact("dist/assets/a.js")
 
     def test_dist_as_last_segment_false(self):
-        """dist 为末段（非目录层级）默认判定为假。"""
+        """无配置时 dist 为末段（非目录层级）判定为假。"""
         m = ArtifactPathMatcher()
         assert not m.is_artifact("core/dashboard/static/dist")
 
     def test_configured_prefix_hits_root_dist(self):
-        """配置 'dist/' 后根级 dist/ 判定为真。"""
+        """配置 'dist/' 后根级 dist/ 判定为真（has_build_artifacts=None + 非空路径 → 按配置）。"""
         m = ArtifactPathMatcher(normalize_artifact_patterns(["dist/"]))
         assert m.is_artifact("dist/index.html")
         assert m.is_artifact("dist/assets/a.js")
@@ -86,13 +86,14 @@ class TestArtifactPathMatcherMatrix:
         assert m.is_artifact("dist/release.zip")
         assert not m.is_artifact("deep/nested/dist/release.zip")
 
-    def test_configured_prefix_keeps_default_set(self):
-        """配置前缀不丢失默认集合（实例前缀 + 默认前缀并存）。"""
+    def test_configured_prefix_does_not_introduce_default_set(self):
+        """配置前缀不引入默认集合：core/dashboard/static 不再默认判真。"""
         m = ArtifactPathMatcher(normalize_artifact_patterns(["dist/"]))
-        assert m.is_artifact("core/dashboard/static/v3/dist/assets/a.js")
+        assert not m.is_artifact("core/dashboard/static/v3/dist/assets/a.js"), \
+            "仅配置 dist/ 不应引入旧默认集合"
 
     def test_normalize_drops_non_trailing_slash_prefix(self):
-        """不含 * 且未以 / 结尾的项被丢弃并回退默认。"""
+        """不含 * 且未以 / 结尾的项被丢弃并回退空集合（判定恒假）。"""
         m = ArtifactPathMatcher(normalize_artifact_patterns(["dist"]))
         assert not m.is_artifact("dists/a.js")
         assert not m.is_artifact("dist/a.js")
@@ -108,18 +109,29 @@ class TestArtifactPathMatcherMatrix:
         result = normalize_artifact_patterns([123, None, ["dist/"]])
         assert result == []
 
-    def test_invalid_shape_falls_back_to_default(self):
-        """配置形态非法（字符串 / [123, None]）不抛异常且回退默认。"""
+    def test_invalid_shape_falls_back_to_empty(self):
+        """配置形态非法（字符串 / [123, None]）不抛异常且回退空集合（判定恒假）。"""
         m1 = ArtifactPathMatcher(normalize_artifact_patterns("dist/"))
-        assert not m1.is_artifact("dist/index.html")  # 字符串 → 回退默认
+        assert not m1.is_artifact("dist/index.html")
         m2 = ArtifactPathMatcher(normalize_artifact_patterns([123, None]))
         assert not m2.is_artifact("dist/index.html")
 
-    def test_empty_list_equals_default(self):
-        """空列表等价默认集合。"""
+    def test_empty_list_judges_all_false(self):
+        """空列表回退空集合（判定恒假）。"""
         m = ArtifactPathMatcher(normalize_artifact_patterns([]))
-        assert m.is_artifact("core/dashboard/static/dist/x.js")
+        assert not m.is_artifact("core/dashboard/static/dist/x.js")
         assert not m.is_artifact("dist/index.html")
+
+    def test_has_build_artifacts_false_short_circuits(self):
+        """has_build_artifacts=False 时判定短路恒假（忽略 patterns）。"""
+        m = ArtifactPathMatcher(
+            normalize_artifact_patterns(["dist/", "*.zip"]),
+            has_build_artifacts=False,
+        )
+        assert not m.is_artifact("dist/index.html")
+        assert not m.is_artifact("release.zip")
+        assert m.paths_in(["dist/index.html", "release.zip", "src/main.py"]) == []
+        assert m.non_artifacts_in(["dist/index.html", "src/main.py"]) == ["dist/index.html", "src/main.py"]
 
     def test_paths_in_and_non_artifacts_in(self):
         """paths_in / non_artifacts_in 过滤。"""
@@ -128,11 +140,37 @@ class TestArtifactPathMatcherMatrix:
         assert m.paths_in(paths) == ["dist/index.html", "fenix-newtab-v1.0.0.zip"]
         assert m.non_artifacts_in(paths) == ["src/main.py"]
 
-    def test_package_level_alias_default_semantics(self):
-        """包级 _is_build_artifact_path 保持默认语义（与配置无关）。"""
-        assert _is_build_artifact_path("core/dashboard/static/dist/x.js")
-        assert not _is_build_artifact_path("dist/index.html")
-        assert not _is_build_artifact_path("src/main.py")
+
+# ── 1b. is_artifact_config_unresolved 三态表 ─────────────────────────────────
+
+class TestIsArtifactConfigUnresolved:
+    """is_artifact_config_unresolved 三态判定表（fix-artifact-paths-hardcoded-default D2）。"""
+
+    def test_defaults_none_with_empty_patterns(self):
+        """缺省 + 空路径 → 未裁决。"""
+        assert is_artifact_config_unresolved(None, []) is True
+
+    def test_defaults_none_with_nonempty_patterns(self):
+        """缺省 + 非空路径 → 已裁决（按配置）。"""
+        assert is_artifact_config_unresolved(None, [("prefix", "dist/")]) is False
+
+    def test_false_with_any_patterns(self):
+        """has=False → 已裁决（无产物，无论路径）。"""
+        assert is_artifact_config_unresolved(False, []) is False
+        assert is_artifact_config_unresolved(False, [("prefix", "dist/")]) is False
+
+    def test_true_with_nonempty_patterns(self):
+        """has=True + 非空路径 → 已裁决。"""
+        assert is_artifact_config_unresolved(True, [("prefix", "dist/")]) is False
+
+    def test_true_with_empty_patterns(self):
+        """has=True + 空路径 → 未裁决（标志与路径不一致）。"""
+        assert is_artifact_config_unresolved(True, []) is True
+
+    def test_non_boolean_fallback_to_missing(self):
+        """非法布尔值（字符串、数字）→ 按缺省处理。"""
+        assert is_artifact_config_unresolved("yes", []) is True
+        assert is_artifact_config_unresolved(1, [("prefix", "dist/")]) is False
 
 
 # ── 2. WIP 重叠闸门（D3b） ──────────────────────────────────────────────────
@@ -168,7 +206,7 @@ class TestWipOverlapGateArtifactScope:
         self._branch_edits_paths(root, "fenix/impl", {"dist/index.html": "DIST-BRANCH\n"}, base_sha)
         (root / "dist" / "index.html").write_text("DIST-WIP\n", encoding="utf-8")
 
-        wm = make_wm(root, build_artifact_paths=["dist/"])
+        wm = make_wm(root, build_artifact_paths=["dist/"], has_build_artifacts=True)
         assert wm._detect_wip_overlap("fenix/impl") == ["dist/index.html"], \
             "只读口径不变：产物路径仍在 _detect_wip_overlap 返回集中"
 
@@ -193,6 +231,7 @@ class TestWipOverlapGateArtifactScope:
             wm = make_wm(
                 root,
                 build_artifact_paths=["dist/", "fenix-newtab-*.zip"],
+                has_build_artifacts=True,
             )
             blocked, overlap = wm._wip_overlap_gate("fenix/impl")
             assert blocked is None
@@ -221,7 +260,7 @@ class TestWipOverlapGateArtifactScope:
         (root / "src" / "main.py").write_text("SRC-WIP\n", encoding="utf-8")
         (root / "dist" / "index.html").write_text("DIST-WIP\n", encoding="utf-8")
 
-        wm = make_wm(root, build_artifact_paths=["dist/"])
+        wm = make_wm(root, build_artifact_paths=["dist/"], has_build_artifacts=True)
         blocked, overlap = wm._wip_overlap_gate("fenix/impl")
         assert blocked is None  # 默认 auto 策略
         assert overlap == ["src/main.py"], f"语义重叠仍计入: {overlap}"
@@ -243,7 +282,7 @@ class TestWipOverlapGateArtifactScope:
         git(root, "checkout", "-q", base_sha)
         (root / spec_task).write_text("- [x] 1.1 dirty-wip\n", encoding="utf-8")
 
-        wm = make_wm(root, build_artifact_paths=["dist/"])
+        wm = make_wm(root, build_artifact_paths=["dist/"], has_build_artifacts=True)
         assert wm._detect_wip_overlap("fenix/impl") == [], \
             "spec/changes/** 排除不受产物配置影响"
 
@@ -303,7 +342,8 @@ class TestRehearsalArtifactClassification:
                           "fenix-newtab-v1.0.0.zip": "zip-branch\n"},
         )
 
-        wm = make_wm(root, build_artifact_paths=["dist/", "fenix-newtab-*.zip"])
+        wm = make_wm(root, build_artifact_paths=["dist/", "fenix-newtab-*.zip"],
+                      has_build_artifacts=True)
         with patch(
             "core.worktree_manager.mergeback.G4MergebackMixin._merge_tree_supported",
             return_value=True,
@@ -322,7 +362,7 @@ class TestRehearsalArtifactClassification:
             branch_edits={"src/main.py": "SRC-BRANCH\n", "dist/index.html": "DIST-BRANCH\n"},
         )
 
-        wm = make_wm(root, build_artifact_paths=["dist/"])
+        wm = make_wm(root, build_artifact_paths=["dist/"], has_build_artifacts=True)
         with patch(
             "core.worktree_manager.mergeback.G4MergebackMixin._merge_tree_supported",
             return_value=True,
@@ -334,10 +374,6 @@ class TestRehearsalArtifactClassification:
             assert "dist/index.html" not in result.conflict_paths, \
                 f"conflict_paths 不应含产物路径: {result.conflict_paths}"
             assert "src/main.py" in result.conflict_paths
-
-    def test_package_alias_default_semantics(self):
-        """包级 _is_build_artifact_path('dist/index.html') 仍为 False（默认语义与配置无关）。"""
-        assert not _is_build_artifact_path("dist/index.html")
 
 
 # ── 4. 链路切断（D3b 核心验收） ──────────────────────────────────────────────
@@ -380,6 +416,7 @@ class TestD3bChainBreak:
         wm = make_wm(
             root,
             build_artifact_paths=["dist/", "fenix-newtab-*.zip"],
+            has_build_artifacts=True,
         )
         info = wm.merge_back_from_branch("fenix/impl")
         success, err = info
@@ -403,7 +440,7 @@ class TestD3bChainBreak:
             "core.worktree_manager.mergeback.subprocess.run",
             wraps=subprocess.run,
         ) as mock_run:
-            wm = make_wm(root, build_artifact_paths=["dist/"])
+            wm = make_wm(root, build_artifact_paths=["dist/"], has_build_artifacts=True)
             info = wm.merge_back_from_branch("fenix/impl")
             success, err = info
             assert success, f"merge 应成功: {err}"
@@ -449,7 +486,7 @@ class TestD3bChainBreak:
                 len(a) >= 1 and isinstance(a[0], list) and a[0][:5] == ["git", "-C", str(root), "checkout", "HEAD"]
             ) else real_run(*a, **k),
         ):
-            wm = make_wm(root, build_artifact_paths=["dist/"])
+            wm = make_wm(root, build_artifact_paths=["dist/"], has_build_artifacts=True)
             blocked, overlap = wm._wip_overlap_gate("fenix/impl")
             assert blocked is None, "对齐失败 MUST NOT 阻塞 merge-back"
             assert "dist/index.html" in overlap, \
@@ -467,7 +504,8 @@ class TestD3bChainBreak:
             "core.worktree_manager.mergeback.subprocess.run",
             wraps=subprocess.run,
         ) as mock_run:
-            wm = make_wm(root, build_artifact_paths=["dist/"], mergeback_wip_overlap_policy="block")
+            wm = make_wm(root, build_artifact_paths=["dist/"],
+                          has_build_artifacts=True, mergeback_wip_overlap_policy="block")
             blocked, overlap = wm._wip_overlap_gate("fenix/impl")
             assert blocked is not None and blocked.wip_gate_blocked is True, \
                 f"block 策略下语义重叠应阻塞: {blocked}"
@@ -484,10 +522,10 @@ class TestD3bChainBreak:
 # ── 5. 故障回退与兼容性 ──────────────────────────────────────────────────────
 
 class TestFailSafeAndCompatibility:
-    """判定器故障回退 + 与既有行为逐字节兼容。"""
+    """判定器故障回退 + 配置驱动语义兼容。"""
 
     def test_invalid_build_artifact_paths_construct_without_error(self, tmp_path):
-        """build_artifact_paths 非法形态构造不抛异常、行为等价默认。"""
+        """build_artifact_paths 非法形态构造不抛异常、判定恒假（回退空集合）。"""
         root = tmp_path / "repo"
         init_repo(root)
         (root / "core" / "dashboard" / "static" / "dist").mkdir(parents=True)
@@ -496,16 +534,16 @@ class TestFailSafeAndCompatibility:
         git(root, "commit", "-q", "-m", "[fenix] add dist artifact")
 
         wm_bad = make_wm(root, build_artifact_paths="not a list")
-        assert wm_bad._artifacts.is_artifact("core/dashboard/static/dist/x.js"), \
-            "非法配置应回退默认集合（dashboard 产物仍命中）"
+        assert not wm_bad._artifacts.is_artifact("core/dashboard/static/dist/x.js"), \
+            "非法配置回退空集合（不再命中默认集合）"
         assert not wm_bad._artifacts.is_artifact("dist/x.js"), \
-            "非法配置回退默认（根级 dist 不命中）"
+            "非法配置回退空集合（根级 dist 不命中）"
 
         wm_mixed = make_wm(root, build_artifact_paths=[123, None])
-        assert wm_mixed._artifacts.is_artifact("core/dashboard/static/dist/x.js")
+        assert not wm_mixed._artifacts.is_artifact("core/dashboard/static/dist/x.js")
 
-    def test_no_build_artifact_paths_byte_compatible(self, tmp_path):
-        """不传 build_artifact_paths 时行为与现行逐字节一致。"""
+    def test_no_build_artifact_paths_judges_all_false(self, tmp_path):
+        """不传 build_artifact_paths 时判定恒假（未裁决，无任何内置默认路径）。"""
         root = tmp_path / "repo"
         init_repo(root)
         wm = make_wm(root)
@@ -516,5 +554,18 @@ class TestFailSafeAndCompatibility:
             "src/main.py",
         ]
         for p in paths:
-            assert wm._artifacts.is_artifact(p) == _is_build_artifact_path(p), \
-                f"实例判定器与包级默认语义不一致: {p}"
+            assert not wm._artifacts.is_artifact(p), \
+                f"未配置时判定恒假: {p}"
+        assert is_artifact_config_unresolved(
+            None, normalize_artifact_patterns(None)
+        ), "未配置时 is_artifact_config_unresolved 应返回 True"
+
+    def test_has_false_skips_path_matching(self, tmp_path):
+        """has_build_artifacts=False 时判定短路恒假（忽略 patterns）。"""
+        wm = make_wm(
+            tmp_path,
+            build_artifact_paths=["dist/"],
+            has_build_artifacts=False,
+        )
+        assert not wm._artifacts.is_artifact("dist/index.html")
+        assert is_artifact_config_unresolved(False, normalize_artifact_patterns(["dist/"])) is False
