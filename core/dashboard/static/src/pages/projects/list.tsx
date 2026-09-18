@@ -1,4 +1,4 @@
-import { ClockCircleOutlined, MessageOutlined, MoreOutlined } from '@ant-design/icons';
+import { ClockCircleOutlined, MoreOutlined } from '@ant-design/icons';
 import { PageContainer } from '@ant-design/pro-components';
 import {
   Alert,
@@ -8,6 +8,7 @@ import {
   Card,
   DatePicker,
   Dropdown,
+  Empty,
   Input,
   List,
   Modal,
@@ -48,7 +49,7 @@ import { fetchProposalWhy } from '@/utils/proposalWhy';
 import SpecDocModal from './components/SpecDocModal';
 import AdminInvokeModal from './components/AdminInvokeModal';
 import SpecStatusModal from './components/SpecStatusModal';
-import SessionModal from './components/SessionModal';
+import SessionPanel from './components/SessionPanel';
 
 const REFRESH_THROTTLE_MS = 500;
 // dashboard-sse-refresh：增量 patch 去重窗口（同 spec 1s 内多事件只应用最新）
@@ -499,8 +500,9 @@ export default function SpecListPage() {
   // add-spec-status-modal-budget：修改状态弹窗（归档/冻结/晋升/预算 四区块收敛入口）
   const [statusModal, setStatusModal] = useState<{ spec: string } | null>(null);
 
-  // dashboard-live-session D7：项目级自由会话入口（按钮在标题栏右端，项目级语义）
-  const [sessionOpen, setSessionOpen] = useState(false);
+  // add-project-detail-tabs D1：项目页分面选中态（开发/质量/会话），
+  // 仅存组件内存、不持久化到 URL——刷新回默认「开发」
+  const [activeTab, setActiveTab] = useState<'dev' | 'quality' | 'session'>('dev');
 
   const load = useCallback(async () => {
     if (!name) return;
@@ -1016,35 +1018,34 @@ export default function SpecListPage() {
     <PageContainer
       breadcrumbRender={false}
       header={{
+        // add-project-detail-tabs D4：移除标题栏右端会话按钮（会话入口由「会话」
+        // 分面承载）；header 恢复为项目名 + SPEC 计数
         title: (
-          <div style={{ display: 'flex', alignItems: 'center', width: '100%', minWidth: 0 }}>
-            <Space size={8} align="baseline" style={{ minWidth: 0, flex: '0 1 auto' }}>
-              <span>{name}</span>
-              <Typography.Text type="secondary" style={{ fontSize: 14, fontWeight: 400 }}>
-                共 {Object.keys(specMap).length} 个 SPEC
-              </Typography.Text>
-            </Space>
-            {/* dashboard-live-session D7：项目级「接入会话」按钮，靠右对齐，
-                与具体 SPEC 无关（不进每行操作菜单） */}
-            <div style={{ marginLeft: 'auto', flexShrink: 0 }}>
-              <Button
-                type="primary"
-                ghost
-                icon={<MessageOutlined />}
-                onClick={() => setSessionOpen(true)}
-              >
-                接入会话
-              </Button>
-            </div>
-          </div>
+          <Space size={8} align="baseline" style={{ minWidth: 0 }}>
+            <span>{name}</span>
+            <Typography.Text type="secondary" style={{ fontSize: 14, fontWeight: 400 }}>
+              共 {Object.keys(specMap).length} 个 SPEC
+            </Typography.Text>
+          </Space>
         ),
         onBack: () => history.push('/overview'),
       }}
     >
-      {error ? (
-        <Alert type="error" showIcon style={{ marginBottom: 16 }} message="SPEC 列表加载失败" description={error} />
-      ) : null}
-      <Card variant="borderless">
+      {/* add-project-detail-tabs D1：项目页三分面 Tabs——开发（默认）/质量/会话；
+          选中态不持久化到 URL；会话 Panel 的 active 门控见「会话」分面 children */}
+      <Tabs
+        activeKey={activeTab}
+        onChange={setActiveTab}
+        items={[
+          {
+            key: 'dev',
+            label: '开发',
+            children: (
+              <>
+                {error ? (
+                  <Alert type="error" showIcon style={{ marginBottom: 16 }} message="SPEC 列表加载失败" description={error} />
+                ) : null}
+                <Card variant="borderless">
         <div
           style={{
             marginBottom: 16,
@@ -1147,7 +1148,29 @@ export default function SpecListPage() {
           }}
         />
         )}
-      </Card>
+              </Card>
+              </>
+            ),
+          },
+          {
+            key: 'quality',
+            label: '质量',
+            // add-project-detail-tabs：质量视图建设中——纯空态占位，不发起任何数据请求
+            children: (
+              <Card variant="borderless">
+                <Empty description="质量视图建设中" style={{ padding: '64px 0' }} />
+              </Card>
+            ),
+          },
+          {
+            key: 'session',
+            label: '会话',
+            // add-project-detail-tabs D2/D3：会话界面内联承载（由 SessionModal 迁移）。
+            // active 门控：仅在选中本分面时拉取会话状态与订阅事件流，未选中零请求
+            children: <SessionPanel project={name} active={activeTab === 'session'} />,
+          },
+        ]}
+      />
 
       <SpecDocModal
         project={name}
@@ -1227,12 +1250,6 @@ export default function SpecListPage() {
         onDone={() => void load()}
       />
 
-      {/* dashboard-live-session D6/D7：项目级自由会话 Modal */}
-      <SessionModal
-        project={name}
-        open={sessionOpen}
-        onClose={() => setSessionOpen(false)}
-      />
     </PageContainer>
   );
 }
