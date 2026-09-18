@@ -483,6 +483,67 @@ def _warning_stale_triage_alert(pipeline, spec_name: str, scenario_ids: list) ->
         )
 
 
+def _scenario_reroute_stoploss_path(pipeline, spec_name: str) -> Path:
+    """跨轮失败集留存路径（与 scenario_reroute_directive / triage_recheck 同级）。"""
+    return (
+        pipeline._context.project_root
+        / ".fenix"
+        / "verify-progress"
+        / spec_name
+        / "scenario_reroute_stoploss.json"
+    )
+
+
+def _read_scenario_reroute_stoploss(pipeline, spec_name: str) -> dict | None:
+    """读改道前失败集留存（scenario-defect-reroute-stoploss 2.2）。
+
+    缺失/损坏/结构不符 → None（视为无留存，保守放行不误停）。结构校验：
+    顶层 dict、round 可转 int、failed_ids 为非空 list——任一项不满足即按
+    「无留存」处理，MUST NOT 因本机制制造新的停止点。
+    """
+    path = _scenario_reroute_stoploss_path(pipeline, spec_name)
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return None
+        round_ = int(data.get("round"))
+        failed_ids = data.get("failed_ids")
+        if not isinstance(failed_ids, list) or not failed_ids:
+            return None
+        failed_ids = [str(s) for s in failed_ids]
+    except (json.JSONDecodeError, OSError, TypeError, ValueError):
+        return None
+    return {"round": round_, "failed_ids": failed_ids}
+
+
+def _write_scenario_reroute_stoploss(
+    pipeline, spec_name: str, round_: int, failed_ids: list
+) -> None:
+    """写当前失败集留存（覆盖；含写入轮次）；写失败仅告警，不阻断改道。"""
+    path = _scenario_reroute_stoploss_path(pipeline, spec_name)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "round": round_,
+                    "failed_ids": [str(s) for s in failed_ids],
+                    "written_at": datetime.now(timezone.utc).isoformat(),
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    except OSError as e:
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"scenario_reroute_stoploss 写盘失败 '{spec_name}'（不阻断改道）: {e}",
+        )
+
+
 def _scenario_defect_reroute_gate(
     pipeline, spec_name: str, _repair_depth: int, judge_result
 ) -> bool:
@@ -524,6 +585,41 @@ def _scenario_defect_reroute_gate(
 
     if _repair_depth >= _SCENARIO_REPAIR_MAX_ROUNDS:
         return pipeline._escalate_scenario_defect_reroute(spec_name, dist, _repair_depth)
+
+    # ── 改道止损（scenario-defect-reroute-stoploss）──
+    # 改道重入轮（_repair_depth >= 1 且留存轮次与 _repair_depth - 1 匹配）的门
+    # 触发入口，对比重跑失败场景集与改道前失败集：改道前失败集 ⊆ 重跑失败集
+    # （含相等，无任一场景被修复）→ 判「改道无效」，立即 _escalate_scenario_
+    # defect_reroute 提前止损升级人工（信号 scenario_defect_reroute_stoploss），
+    # 不再重派 judge、不消耗剩余改道预算；有场景被修复 → 覆盖留存后继续既有
+    # 预算通道。链首触发（_repair_depth == 0）只写留存不判定（防上一链条陈旧
+    # 留存误停）。读取点 MUST 是改道重入轮的门触发入口——重入重跑已产新
+    # report.json；MUST NOT 在同一次门调用内「重派 judge 前读」，那时 report.json
+    # 仍是改道前的旧产物，读到的必然是同批（假止损）。
+    prev_record = _read_scenario_reroute_stoploss(pipeline, spec_name)
+    if (
+        _repair_depth >= 1
+        and prev_record is not None
+        and prev_record["round"] == _repair_depth - 1
+        and prev_record["failed_ids"]
+        and set(prev_record["failed_ids"]) <= set(dist["failed_ids"])
+    ):
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"场景缺陷改道重入轮 '{spec_name}'（深度 {_repair_depth}）重跑失败集"
+            f"与改道前同批（{len(prev_record['failed_ids'])} 个失败场景无一被"
+            f"修复）— 判改道无效，提前止损升级人工，不再消耗剩余改道预算",
+        )
+        return pipeline._escalate_scenario_defect_reroute(
+            spec_name,
+            dist,
+            _repair_depth,
+            stoploss=True,
+            prev_failed_ids=prev_record["failed_ids"],
+        )
+
+    # 写当前失败集留存（覆盖改道前，含写入轮次；写失败仅告警，不阻断改道）
+    _write_scenario_reroute_stoploss(pipeline, spec_name, _repair_depth, dist["failed_ids"])
 
     # 写改道指令文件（prompt_builder _scenario_reroute_directive_section 读取）
     directive_path = (
@@ -660,9 +756,68 @@ def _scenario_defect_reroute_gate(
 
 
 def _escalate_scenario_defect_reroute(
-    pipeline, spec_name: str, dist: dict, _repair_depth: int
+    pipeline,
+    spec_name: str,
+    dist: dict,
+    _repair_depth: int,
+    stoploss: bool = False,
+    prev_failed_ids: list | None = None,
 ) -> bool:
-    """改道预算耗尽升级人工：附失败清单/classification 分布/申报记录。"""
+    """改道收口升级人工：附失败清单/classification 分布/申报记录。
+
+    stoploss=True（scenario-defect-reroute-stoploss 止损路径）：改道重入轮
+    重跑失败集与改道前同批（改道前失败集 ⊆ 重跑失败集，无任一场景被修复）
+    → 判改道无效，提前升级人工，不再消耗剩余改道预算；human-escalation-alert
+    信号 scenario_defect_reroute_stoploss（severity major），附同批失败证据
+    （failed_ids / 轮次 / classification 分布）。stoploss=False：既有预算耗尽
+    路径（信号 scenario_defect_reroute_exhausted），行为不变。
+    """
+    if stoploss:
+        prev_failed = [str(s) for s in (prev_failed_ids or [])]
+        pipeline._context.state_machine.update_spec(
+            spec_name,
+            {
+                "error": (
+                    f"场景缺陷改道重入轮重跑失败集与改道前同批（改道前 "
+                    f"{len(prev_failed)} 个失败场景无一被修复）— 判改道无效，"
+                    f"提前止损升级人工裁决，spec 保持 testing，不再消耗剩余"
+                    f"改道预算"
+                ),
+            },
+        )
+        pipeline._context.logger.error(
+            "pm_engine",
+            f"场景缺陷改道同批失败止损 '{spec_name}'（深度 {_repair_depth}）— "
+            f"改道前失败集 ⊆ 重跑失败集（无任一场景被修复），提前升级人工，"
+            f"不再重派 judge",
+        )
+        pipeline._context.escalation_notifier(
+            spec_name=spec_name,
+            signal_type="scenario_defect_reroute_stoploss",
+            severity="major",
+            description=(
+                f"'{spec_name}' 场景缺陷改道重入轮（深度 {_repair_depth}）重跑"
+                f"失败集与改道前同批：改道前 {len(prev_failed)} 个失败场景"
+                f"无一被修复（全部 test-defect/flaky、product-bug=0）— 判改道"
+                f"无效，提前止损升级人工裁决，不再消耗剩余改道预算。"
+            ),
+            evidence=(
+                f"spec={spec_name}; 留存轮次={_repair_depth - 1}; "
+                f"改道前 failed_ids={','.join(prev_failed)[:500]}; "
+                f"重跑 failed_ids={','.join(dist.get('failed_ids') or [])[:500]}; "
+                f"classification_distribution="
+                f"{json.dumps(dist.get('counts'), ensure_ascii=False)}"
+            ),
+            recommended_action=(
+                "检查失败场景文件（.fenix/verify-progress/"
+                f"{spec_name}/test_scenarios.json）与验证报告，人工裁决："
+                "① admin 场景修复通道修场景（schema 门内）；② 确认为真产品缺陷"
+                "则重置分类/直接打回 implementer；③ 场景集已过时则删除冻结集"
+                "批准重新出题。"
+            ),
+        )
+        return True
+
     pipeline._context.state_machine.update_spec(
         spec_name,
         {
