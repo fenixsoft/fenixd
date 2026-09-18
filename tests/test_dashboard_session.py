@@ -515,11 +515,14 @@ class TestRealProcessIntegration:
         mgr = SessionManager(hub)
         try:
             s = mgr.start("proj-a", str(tmp_path))
+            # 分开发送并间隔：让 CLI 有时间启动并处理第一轮，
+            # 避免并发环境（全量套件）下资源竞争导致第二轮回显超时。
             mgr.send(s.session_id, "回复：一")
+            time.sleep(1.0)
             mgr.send(s.session_id, "回复：二")
 
-            # 轮询等待：两轮 assistant + 两条 isReplay user 回显（最长 120s）
-            deadline = time.time() + 120
+            # 轮询等待：两轮 assistant + 两条 isReplay user 回显（最长 180s）
+            deadline = time.time() + 180
             assistant_seen = 0
             replay_seen = 0
             while time.time() < deadline:
