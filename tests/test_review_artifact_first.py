@@ -82,6 +82,21 @@ class _FailingRunner:
         return MagicMock(success=False, run_id=run_id, error=self.error)
 
 
+def _mk_pm_engine(**overrides):
+    """评审同步驱动用的 pm_engine 替身（fix-spec-review-blocking-dispatch 5.10 b 族）。
+
+    dispatch_review 入口新增在飞守卫（2.4）：``pm_engine.is_review_in_flight``
+    命中即拒派。本文件用例直接同步驱动 dispatch_review 走四步链，替身须
+    显式返回 False（无在飞评审、守卫放行），否则 MagicMock 默认 truthy
+    会让全部用例永远拒派。
+    """
+    pm = MagicMock()
+    pm.is_review_in_flight.return_value = False
+    for k, v in overrides.items():
+        setattr(pm, k, v)
+    return pm
+
+
 class TestArtifactFirstConsumption(unittest.TestCase):
     """2.1/2.3：exit code 1 + 产物已落盘 → 消费产物、attempt 不递增。"""
 
@@ -99,7 +114,7 @@ class TestArtifactFirstConsumption(unittest.TestCase):
     def _manager(self, sm=None, runner=None):
         sm = sm or self._fresh()
         runner = runner or _FailingRunner(self.tmpdir)
-        engine = MagicMock()
+        engine = _mk_pm_engine()
         return SpecReviewManager(self.tmpdir, sm, runner, engine, {}, MagicMock()), sm, engine
 
     def test_exit1_with_approved_artifact_consumes(self):
@@ -167,7 +182,7 @@ class TestArtifactFirstRetryFallback(unittest.TestCase):
         """2.2：产物缺失 → 既有重试（attempt 递增、保持 reviewing）。"""
         sm = self._fresh()
         runner = _FailingRunner(self.tmpdir, error="boom")
-        mgr = SpecReviewManager(self.tmpdir, sm, runner, MagicMock(), {}, MagicMock())
+        mgr = SpecReviewManager(self.tmpdir, sm, runner, _mk_pm_engine(), {}, MagicMock())
         self.assertFalse(mgr.dispatch_review("spec"))
         entry = sm.read_one("spec")
         self.assertEqual(entry["status"], "reviewing")
@@ -179,7 +194,7 @@ class TestArtifactFirstRetryFallback(unittest.TestCase):
         runner = _FailingRunner(
             self.tmpdir, error="boom",
             result={"status": "failed", "findings": []})
-        mgr = SpecReviewManager(self.tmpdir, sm, runner, MagicMock(), {}, MagicMock())
+        mgr = SpecReviewManager(self.tmpdir, sm, runner, _mk_pm_engine(), {}, MagicMock())
         self.assertFalse(mgr.dispatch_review("spec"))
         entry = sm.read_one("spec")
         self.assertEqual(entry["status"], "reviewing")
@@ -196,7 +211,7 @@ class TestArtifactFirstRetryFallback(unittest.TestCase):
         runner = _FailingRunner(
             self.tmpdir, error="boom",
             result={"status": "approved", "repairs": []}, on_run=during)
-        mgr = SpecReviewManager(self.tmpdir, sm, runner, MagicMock(), {}, MagicMock())
+        mgr = SpecReviewManager(self.tmpdir, sm, runner, _mk_pm_engine(), {}, MagicMock())
         self.assertFalse(mgr.dispatch_review("spec"))
         entry = sm.read_one("spec")
         self.assertEqual(entry["status"], "reviewing")
@@ -215,7 +230,7 @@ class TestClassifyRunFailure(unittest.TestCase):
     def _manager(self):
         sm = _mk_project(self.tmpdir)
         runner = _FailingRunner(self.tmpdir)
-        return SpecReviewManager(self.tmpdir, sm, runner, MagicMock(), {}, MagicMock())
+        return SpecReviewManager(self.tmpdir, sm, runner, _mk_pm_engine(), {}, MagicMock())
 
     def test_infra_fingerprints(self):
         """infra 指纹：402/403/429/quota/budget/余额/rate limit（大小写不敏感）。"""
@@ -250,7 +265,7 @@ class TestClassifyRunFailure(unittest.TestCase):
         sm = _mk_project(self.tmpdir)
         sm.update_spec("spec", {"reviewer_run": None})
         runner = _FailingRunner(self.tmpdir, error="API Error: 402 余额不足")
-        pm = MagicMock()
+        pm = _mk_pm_engine()
         from core.pm_engine.infra_breaker import InfraCircuitBreaker
         pm.infra_breaker = InfraCircuitBreaker(
             self.tmpdir,
@@ -270,7 +285,7 @@ class TestClassifyRunFailure(unittest.TestCase):
         sm = _mk_project(self.tmpdir)
         sm.update_spec("spec", {"reviewer_run": None})
         runner = _FailingRunner(self.tmpdir, error="结果文件缺失")
-        mgr = SpecReviewManager(self.tmpdir, sm, runner, MagicMock(), {}, MagicMock())
+        mgr = SpecReviewManager(self.tmpdir, sm, runner, _mk_pm_engine(), {}, MagicMock())
         self.assertFalse(mgr.dispatch_review("spec"))
         entry = sm.read_one("spec")
         err = str(entry.get("error", ""))
@@ -284,7 +299,7 @@ class TestClassifyRunFailure(unittest.TestCase):
         sm = _mk_project(self.tmpdir)
         sm.update_spec("spec", {"reviewer_run": None, "_review_attempts": MAX_REVIEW_ATTEMPTS})
         runner = _FailingRunner(self.tmpdir, error="API Error: 402 余额不足")
-        pm = MagicMock()
+        pm = _mk_pm_engine()
         from core.pm_engine.infra_breaker import InfraCircuitBreaker
         pm.infra_breaker = InfraCircuitBreaker(self.tmpdir, {"admin": {}})
         mgr = SpecReviewManager(self.tmpdir, sm, runner, pm, {}, MagicMock())

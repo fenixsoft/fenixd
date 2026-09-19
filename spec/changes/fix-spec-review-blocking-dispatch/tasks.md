@@ -86,6 +86,6 @@
 
 ## 验证修复（原地打回第 1 轮）
 
-- [ ] 先复核失败有效性：逐条核对 `spec/changes/fix-spec-review-blocking-dispatch/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
-- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
-- [ ] 修复后重跑验证确认通过
+- [x] 先复核失败有效性：逐条核对 `spec/changes/fix-spec-review-blocking-dispatch/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
+- [x] 按复核结论修复：复核结论——8 个失败场景（rr15/16/17、cg02/03、dws02/03/04）全部由同一真实产品 Bug 导致（BUG-01：`is_review_in_flight` 内部 `with self._queue_lock:` 与 `_process_queue` 外层锁同线程嵌套，`threading.Lock` 非可重入 → 死锁；验证报告 faulthandler 栈证实）。修复：`_queue_lock` 改 `RLock`（生产一行）+ 测试夹具同步（`make_min_dispatcher`/`test_admin` 手动 `threading.Lock()` 覆盖生产 RLock → 同改 RLock 并补 `_active_reviews`；`test_review_artifact_first` 同步驱动 `dispatch_review` 的 pm_engine 替身补 `is_review_in_flight → False`——MagicMock 默认 truthy 令入口守卫永远拒派）
+- [x] 修复后重跑验证确认通过：分片式全量回归（225 测试文件 5 片，有界入口每片 timeout 1500）——9 个失败全部 ⊆ premerge 存量失败集合（dashboard API/数据模块契约/fake_double_fidelity/repair_redispatch SUBFAILED/task_track TestCliWarning，均为环境性存量失败），**无本次引入回归**；核心相关 454 个测试（评审异步派发/启动扫描/评审门族/调度/管理/瞬时退避）全绿
