@@ -263,6 +263,7 @@ class TestHandleReviewFailure:
             "reviewer_run": None,
         })
         pm = MagicMock()
+        pm.is_review_in_flight = MagicMock(return_value=False)
         pm.infra_breaker = InfraCircuitBreaker(
             tmp_project,
             {"admin": {"run_infra_breaker": {"threshold": 3, "cooldown_minutes": 30}}})
@@ -323,6 +324,7 @@ class TestDispatchReviewShortCircuit:
         sm = FakeStateMachine()
         sm.update_spec("test-spec", {"reviewer_run": None})
         pm = MagicMock()
+        pm.is_review_in_flight = MagicMock(return_value=False)
         breaker = InfraCircuitBreaker(
             tmp_project,
             {"admin": {"run_infra_breaker": {"threshold": 3, "cooldown_minutes": 30}}})
@@ -344,6 +346,7 @@ class TestDispatchReviewShortCircuit:
         sm = FakeStateMachine()
         sm.update_spec("test-spec", {"reviewer_run": None, "_review_attempts": 0})
         pm = MagicMock()
+        pm.is_review_in_flight = MagicMock(return_value=False)
         pm._emit_infra_breaker_event = MagicMock()
         breaker = InfraCircuitBreaker(
             tmp_project,

@@ -31,6 +31,13 @@ class QQQueueMixin:
         # _run_queue/_active_runs/_active_priorities 整体同迁，单锁语义不变）。
         self._queue_lock = threading.Lock()
         self._active_runs = 0
+        # 评审在飞集合（fix-spec-review-blocking-dispatch D3）：spec 名集合，
+        # 评审条目独立登记、不占 _active_runs/_active_priorities（评审是晋升
+        # 前置门，占实现槽位会把「先审后跑」退化为「审等实现跑完」）。生命周期
+        # 与设计 D4 重入安全性对齐：出队时置位、worker 调 dispatch_review 前
+        # 释放（MUST NOT 晚于锚点 reviewer_run 落盘），锚点落盘后由 reviewer_run
+        # 判据接力；finally 幂等兜底释放（异常路径也释放）。
+        self._active_reviews: set = set()
         # Pending (priority, spec_name, agent_type, enqueued_at) tuples。
         # enqueued_at 为入队时刻 time.time()，仅供内存态老化计时（design D3）：
         # 不持久化，daemon 重启重建队列即视为等待清零。
@@ -154,14 +161,19 @@ class QQQueueMixin:
         两处 26 行重复守卫漂移：日志文案 / fail-open 策略 / stale 处理只在此改一处。
 
         - ``spec``：``state_machine.read_one(sname)`` 结果；``reviewer_run`` 为空
-          → 无在飞评审（放行）。
-        - ``reviewer_in_flight`` 分层判定：进程表 → 流文件 → 陈旧锚点 fail-open。
+          **且**该 spec 不在 ``_active_reviews`` 中 → 无在飞评审（放行）。
+          （fix-spec-review-blocking-dispatch 3.4：前置条件由「reviewer_run 非空」
+          放宽为「reviewer_run 非空 或 _active_reviews 命中」——「锚点尚未落盘、
+          但评审条目已在 _active_reviews」的窗口必须进入在飞判定，正是
+          reviewer_in_flight 新增 ``"queued"`` 前置判据要覆盖的窗口。）
+        - ``reviewer_in_flight`` 分层判定：进程表 → 流文件 → ``_active_reviews``
+          前置判据（"queued"）→ 陈旧锚点 fail-open。
         - 判定异常 fail-open（D0 第 5 条，对齐 engine 落点容错）。
         - 返回 True = 应顺延（调用方 MUST ``continue``：条目保留队列、不 pop、
           不消耗 attempt，待 review 收尾后由既有重触发通道重判）。
         """
         reviewer_run = spec.get("reviewer_run")
-        if reviewer_run:
+        if reviewer_run or self._pm.is_review_in_flight(sname):
             try:
                 in_flight, reason = self._pm.agent_runner.reviewer_in_flight(
                     sname, reviewer_run
@@ -186,6 +198,36 @@ class QQQueueMixin:
                     f"待既有恢复路径清理: {sname} run={reviewer_run}",
                 )
         return False
+
+    def _review_entry_ready(self, spec: dict, sname: str) -> bool:
+        """评审条目候选可派发判定（fix-spec-review-blocking-dispatch 1.2）。
+
+        供 ``_process_queue`` 的 best_valid_prio 扫描与 dispatch_idx 扫描两处
+        共用（对齐 ``_should_defer_for_reviewer`` 的单一落点范式，避免守卫
+        漂移）：
+
+        - 状态 MUST 为 ``reviewing``（晋升链已置位，派发处不再 transition）；
+        - 无在飞评审才可派发：经 ``reviewer_in_flight`` 取**在飞结论**
+          （``in_flight`` 为 False 才放行）。判据 MUST NOT 按「锚点非空即拒」
+          ——本 SPEC 新增的「锚点写入在 dispatch_review 内、异常后不再清除」
+          路径会让锚点残留的条目被永久静默跳过（design D4 重入安全性）。
+          ``_active_reviews`` 前置判据（``"queued"``）同样经 reviewer_in_flight
+          命中：空锚点 + 已出队未收口 → 判在飞 → 本条目不派发。
+        - 判定异常 fail-open 放行（保守不阻塞候选扫描，与其它候选闸门一致）。
+        """
+        if spec.get("status") != "reviewing":
+            return False
+        try:
+            in_flight, _reason = self._pm.agent_runner.reviewer_in_flight(
+                sname, spec.get("reviewer_run")
+            )
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"评审条目在飞判定异常 '{sname}'（fail-open 放行）: {e}",
+            )
+            return True
+        return not in_flight
 
     def _process_queue(self):
         """Process the run queue — relaxed-priority parallel scheduling.
@@ -230,11 +272,29 @@ class QQQueueMixin:
             entry_to_dispatch = None
 
             with self._queue_lock:
-                if self._active_runs >= max_concurrent:
-                    return
+                now = time.time()
+                # 槽位闸门（fix-spec-review-blocking-dispatch 1.5b / design D2
+                # 第二处）：实现车道槽位占满时不得无条件提前返回——队列中可能
+                # 存在评审条目，评审是晋升前置门、不占实现槽位（评审并发无上限），
+                # 必须照常被扫描并派发。放行只针对评审条目本身：下方两条扫描
+                # 循环在 slots_full 时对非评审条目 continue，故实现条目不因该
+                # 放行而被派发（``max_concurrent`` 对实现车道仍生效）。无合法
+                # 评审条目时 best_valid_prio 扫描自然产出 None 并 return（等价
+                # 于旧早退，不做独立预扫描防双倍读盘）。
+                slots_full = self._active_runs >= max_concurrent
+                if slots_full:
+                    has_review = any(
+                        e[2] == "spec-review"
+                        and (e[1], e[2]) not in suppressed
+                        and self._review_entry_ready(
+                            self._pm.state_machine.read_one(e[1]) or {}, e[1]
+                        )
+                        for e in self._run_queue
+                    )
+                    if not has_review:
+                        return
                 if not self._run_queue:
                     return
-                now = time.time()
 
                 # 找队列中所有状态合法条目的最高 effective 档位
                 # （先不 pop，只扫描以确定 queued_best）
@@ -243,12 +303,20 @@ class QQQueueMixin:
                     prio, sname, atype, enqueued_at = entry
                     if (sname, atype) in suppressed:
                         continue
+                    # 槽位占满时实现车道条目不参与候选（评审条目放行，1.5b）
+                    if slots_full and atype != "spec-review":
+                        continue
                     eff = self._pm._effective_priority(prio, enqueued_at, now)
                     spec = self._pm.state_machine.read_one(sname)
                     if not spec:
                         continue
                     status = spec.get("status")
-                    if atype == "implementer" and status not in ("ready", "implementing"):
+                    if atype == "spec-review":
+                        # 评审条目候选判定（1.2/1.3）：状态必须 reviewing 且无
+                        # 在飞评审；命中则跳过（条目保留队列待重判）。
+                        if not self._review_entry_ready(spec, sname):
+                            continue
+                    elif atype == "implementer" and status not in ("ready", "implementing"):
                         # implementing 允许派发 = 原地打回的修复重派（热修 2026-08-29）：
                         # 打回处置 _enqueue 时状态为 implementing，旧条件 status != "ready"
                         # 导致修复条目被永久静默跳过、链路停摆。入队点均在 run 终止后
@@ -338,13 +406,20 @@ class QQQueueMixin:
                     prio, sname, atype, enqueued_at = entry
                     if (sname, atype) in suppressed:
                         continue
+                    # 槽位占满时实现车道条目不可派发（评审条目放行，1.5b）
+                    if slots_full and atype != "spec-review":
+                        continue
                     if self._pm._effective_priority(prio, enqueued_at, now) != target_prio:
                         continue
                     spec = self._pm.state_machine.read_one(sname)
                     if not spec:
                         continue
                     status = spec.get("status")
-                    if atype == "implementer" and status not in ("ready", "implementing"):
+                    if atype == "spec-review":
+                        # 评审条目候选判定（1.4）：与 best_valid_prio 扫描同口径
+                        if not self._review_entry_ready(spec, sname):
+                            continue
+                    elif atype == "implementer" and status not in ("ready", "implementing"):
                         # implementing 允许派发 = 原地打回的修复重派（热修 2026-08-29）：
                         # 打回处置 _enqueue 时状态为 implementing，旧条件 status != "ready"
                         # 导致修复条目被永久静默跳过、链路停摆。入队点均在 run 终止后
@@ -404,17 +479,29 @@ class QQQueueMixin:
                     return
 
                 entry_to_dispatch = self._run_queue.pop(dispatch_idx)
-                self._active_runs += 1
-                # 活动追踪记 base 原值：活动任务不老化
-                # （spec Scenario: 持久运行的 P4 不会被降级，min_active 语义不变）。
-                base_prio = entry_to_dispatch[0]
-                self._active_priority_counts[base_prio] = (
-                    self._active_priority_counts.get(base_prio, 0) + 1
-                )
-                self._active_priorities.add(base_prio)
-                active_count = self._active_runs
-
-            priority, spec_name, agent_type, my_enqueued_at = entry_to_dispatch
+                # 先解包条目（agent_type 供下游分流，priority 供 finally 释放）。
+                # 必须在锁内完成——解锁后 _run_queue 可被其他线程修改，
+                # 但 entry_to_dispatch 已 pop，变量局部安全。
+                priority, spec_name, agent_type, my_enqueued_at = entry_to_dispatch
+                if agent_type == "spec-review":
+                    # 评审条目不占实现车道槽位（design D2）：MUST NOT 增减
+                    # _active_runs、MUST NOT 写 _active_priority_counts /
+                    # _active_priorities（否则以「更重要的活动任务」身份挤压
+                    # 实现派发）；独立登记 _active_reviews 供同 spec 防重派与
+                    # 可观测。释放时点见 _run_spec_review_worker（MUST NOT 晚于
+                    # 四步链锚点 reviewer_run 落盘，design D4 重入安全性）。
+                    self._active_reviews.add(spec_name)
+                    active_count = self._active_runs
+                else:
+                    self._active_runs += 1
+                    # 活动追踪记 base 原值：活动任务不老化
+                    # （spec Scenario: 持久运行的 P4 不会被降级，min_active 语义不变）。
+                    base_prio = entry_to_dispatch[0]
+                    self._active_priority_counts[base_prio] = (
+                        self._active_priority_counts.get(base_prio, 0) + 1
+                    )
+                    self._active_priorities.add(base_prio)
+                    active_count = self._active_runs
 
             # ── 派发前同源草案收敛检查（evo-deliverable-declaration-drift-align
             # D3，同口径兜底）──
@@ -425,6 +512,8 @@ class QQQueueMixin:
             # 继续扫描后队（拦截自己 ≠ 阻塞他人）。被 SUPERSEDED.md 显式点名为
             # 生效落点的一侧（自身无 SUPERSEDED.md）MUST NOT 被拦截。检查异常
             # fail-open：不因检查故障阻塞派发（与其它派发前闸门 fail-open 一致）。
+            # 1.7/1.10：本闸门以 agent_type ∈ (implementer, fast-track) 为入口
+            # ，spec-review 天然不进入，无需额外排除。
             if agent_type in ("implementer", "fast-track"):
                 try:
                     convergence = self._pm._check_superseded_convergence(spec_name)
@@ -491,6 +580,8 @@ class QQQueueMixin:
                 # 已启动（_run_agent_worker 内已自增计数）的 run 不受此处影响，
                 # 仍会跑完 merge；本闸门只在「即将开启新一轮」时校验，避免无限重派。
                 # 闸门触发 → 不派发、状态置 blocked + 人工裁决告警，并回滚队列占用。
+                # 1.7：spec-review 不经本闸门（评审不消耗实现预算）；1.10：回滚
+                # 点只对 implementer 可达，不会误减评审的 _active_reviews。
                 if self._pm._check_impl_budget_exhausted(spec_name):
                     with self._queue_lock:
                         self._run_queue.insert(0, entry_to_dispatch)
@@ -565,6 +656,16 @@ class QQQueueMixin:
                     spec_name, "testing",
                     trigger_run_id=None, agent_type="verifier", channel="auto",
                 )
+            elif agent_type == "spec-review":
+                # 评审条目状态推进（fix-spec-review-blocking-dispatch 1.6）：
+                # 不调用 transition——状态已由晋升链（promote_drafted 的
+                # reviewing 分支 / rejected 复评 / re_review）置为 reviewing，
+                # 派发处只登记在飞集合（上面出队分流已 add）并记录派发日志
+                # （下方统一日志）。预算闸门/内容完整性闸门/同源草案收敛/
+                # 守卫三均以 agent_type ∈ (implementer, fast-track) 为入口，
+                # 评审条目不进入这些同步闸门及其回滚点（1.7/1.10：评审不消耗
+                # 实现预算，无实现内容可校验），也就不会误减 _active_runs。
+                pass
 
             self._pm.logger.info(
                 "pm_engine",
@@ -588,7 +689,22 @@ class QQQueueMixin:
         priority 参数用于 finally 中从 _active_priorities 移除对应档位。
         """
         try:
-            if agent_type == "fast-track":
+            if agent_type == "spec-review":
+                # ── spec-review 分支（fix-spec-review-blocking-dispatch 1.8）──
+                # 评审 run 与 implementer 同构：在独立 worker 线程执行，调用方
+                # （_on_spec_reviewing）入队后立即返回。四步链（锚点落盘 → 快照
+                # → 执行 → 机械收口）保留在 dispatch_review 内，与本线程同一调用
+                # 栈闭合（收口依赖本轮 attempt 的 run_started_at 做结果新鲜度
+                # 校验，design D7）。异常收口分两层（design 风险段）：
+                #   ① 四步链内部异常已由 dispatch_review 内 except 自吞并走
+                #      _handle_review_failure（重试/冻结），行为与改造前逐字一致；
+                #   ② 四步链之外异常（构造失败/快照路径异常）落本分支 except：
+                #      清 reviewer_run、保持 reviewing、重新入队（spec-review-
+                #      recovery spec Scenario「worker 内异常走统一回滚」），
+                #      MUST NOT 只记日志了事。
+                self._run_spec_review_worker(spec_name, priority)
+
+            elif agent_type == "fast-track":
                 # ── fast-track 单 run 全包：实现 → 场景设计 → 验证 → 判定 ──
                 # 预算与 worktree 语义与 implementer 一致（impl- run_id/分支前缀），
                 # 结果处理走 _run_fast_track_worker（守卫 + 硬校验 + 状态推进）。
@@ -1605,13 +1721,83 @@ class QQQueueMixin:
         finally:
             # Release the concurrency slot and try to dispatch more work
             with self._queue_lock:
-                self._active_runs -= 1
-                # 宽松优先级：按优先级计数释放，仅当该档最后一个 run 结束才移除该档，
-                # 避免多档并发时把仍活动的档位误移除（fix：多档并发）
-                cnt = self._active_priority_counts.get(priority, 0) - 1
-                if cnt <= 0:
-                    self._active_priority_counts.pop(priority, None)
-                    self._active_priorities.discard(priority)
+                if agent_type == "spec-review":
+                    # 评审条目释放（fix-spec-review-blocking-dispatch 1.9）：
+                    # 释放 _active_reviews，不触碰 _active_runs/_active_priorities
+                    # （评审条目从未递增它们）。幂等 discard：worker 的
+                    # _run_spec_review_worker 已在调用 dispatch_review 前释放
+                    # （释放时点 ≤ 锚点落盘，design D4 重入安全性），finally
+                    # 再执行一次兜底（覆盖异常路径）。异常路径不触发重排队列
+                    # ——_rollback_failed_dispatch 不含 spec-review 分支时
+                    # 由 recovery 的 reviewing 分支兜底拾取（spec-review-recovery
+                    # spec Scenario「未完成状态可被恢复通道重新拾取」）。
+                    self._active_reviews.discard(spec_name)
                 else:
-                    self._active_priority_counts[priority] = cnt
+                    self._active_runs -= 1
+                    # 宽松优先级：按优先级计数释放，仅当该档最后一个 run 结束才移除该档，
+                    # 避免多档并发时把仍活动的档位误移除（fix：多档并发）
+                    cnt = self._active_priority_counts.get(priority, 0) - 1
+                    if cnt <= 0:
+                        self._active_priority_counts.pop(priority, None)
+                        self._active_priorities.discard(priority)
+                    else:
+                        self._active_priority_counts[priority] = cnt
             self._pm._process_queue()
+
+    def _run_spec_review_worker(self, spec_name: str, priority: int):
+        """评审 run worker 线程体（fix-spec-review-blocking-dispatch 1.8）。
+
+        - 四步链（锚点落盘 → 快照 → 执行 → 机械收口）保留在
+          ``SpecReviewManager.dispatch_review`` 内、在本线程调用栈闭合；
+        - 在飞登记释放时点 MUST NOT 晚于锚点落盘（design D4 重入安全性）：
+          构造完成后、调用 ``dispatch_review`` 之前先释放 ``_active_reviews``
+          的本次登记（幂等 discard），锚点落盘后由 ``reviewer_run`` 判据接力
+          ——否则同一 worker 线程内的续 attempt 重入 ``dispatch_review`` 入口
+          见自己仍在集合中而被拒，评审收口被自己挡住；
+        - 四步链**内部**异常已由 ``dispatch_review`` 自吞并走
+          ``_handle_review_failure``（重试/冻结），不会传播到这里；
+        - 四步链**之外**异常（构造 SpecReviewManager 失败、快照/日志路径异常
+          等）：此时 spec 可能停在 reviewing 且 reviewer_run 未被推进，MUST
+          显式收口——清 ``reviewer_run``、保持 ``reviewing``、重新入队
+          （spec-review-recovery spec Scenario「worker 内异常走统一回滚」），
+          MUST NOT 只记日志了事（``_rollback_failed_dispatch`` 不含
+          spec-review 分支，直接复用等同于只记日志）。
+        """
+        # 构造在释放前：构造失败时登记仍保留，由上层 finally 兜底释放。
+        from core.pm_engine.spec_review import SpecReviewManager
+
+        review_manager = SpecReviewManager(
+            self._pm.project_root,
+            self._pm.state_machine,
+            self._pm.agent_runner,
+            self._pm,
+            self._pm.config,
+            self._pm.logger,
+        )
+        # 释放时点：不晚于四步链锚点 reviewer_run 落盘
+        with self._queue_lock:
+            self._active_reviews.discard(spec_name)
+        try:
+            review_manager.dispatch_review(spec_name)
+        except Exception as e:
+            self._pm.logger.error(
+                "pm_engine", f"评审 worker 异常（四步链外）: {spec_name}: {e}"
+            )
+            try:
+                # 显式收口：清锚点、保持 reviewing、重新入队由队列接力
+                # （recovery 的 reviewing 分支作为最终兜底拾取）。
+                self._pm.state_machine.update_spec(
+                    spec_name,
+                    {
+                        "reviewer_run": None,
+                        "error": f"spec-review-incomplete: worker 异常: {e}",
+                    },
+                )
+                entry = self._pm.state_machine.read_one(spec_name) or {}
+                if entry.get("status") == "reviewing":
+                    self._pm._enqueue(spec_name, "spec-review")
+            except Exception as e2:
+                self._pm.logger.error(
+                    "pm_engine",
+                    f"评审 worker 异常收口失败（交 recovery 兜底）: {spec_name}: {e2}",
+                )
