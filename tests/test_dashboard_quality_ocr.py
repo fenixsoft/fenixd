@@ -229,3 +229,160 @@ class TestQualityOcrAPI:
             assert "EACCES" in body["error"]
         finally:
             srv.stop()
+
+
+# ── add-impl-code-review-tuning：config_admin 三键登记 / sources / 回显 / 写读 ──
+
+
+class TestImplCodeReviewTuningConfigAdmin:
+    """verify.impl_code_review_* 三键在 config_admin 的登记 / sources / 回显 /
+    写读回环 / 非法值拒绝 / 同步白名单（tasks 7.4）。"""
+
+    def _write(self, root: Path, patch: dict) -> dict:
+        from core.dashboard.data import write_config
+        return write_config(root, patch)
+
+    def test_source_keys_registered(self):
+        """三键登记进 _SOURCE_KEYS（缺省 sources == "user"）。"""
+        from core.dashboard.data import _SOURCE_KEYS
+
+        assert "verify.impl_code_review_timeout_sec" in _SOURCE_KEYS
+        assert "verify.impl_code_review_concurrency" in _SOURCE_KEYS
+        assert "verify.impl_code_review_effort" in _SOURCE_KEYS
+        # 未登记子键进 _MANAGED_KEYS（节级仅 "verify"）
+        from core.dashboard.data import _MANAGED_KEYS
+
+        assert "verify" in _MANAGED_KEYS
+        assert "verify.impl_code_review_timeout_sec" not in _MANAGED_KEYS
+
+    def test_sync_page_keys_include_three(self):
+        """_SYNC_PAGE_KEYS["quality"]["verify"] 含三新键与既有开关键。"""
+        from core.dashboard.data import _SYNC_PAGE_KEYS
+
+        qv = _SYNC_PAGE_KEYS["quality"]["verify"]
+        assert "impl_code_review" in qv
+        assert "impl_code_review_timeout_sec" in qv
+        assert "impl_code_review_concurrency" in qv
+        assert "impl_code_review_effort" in qv
+
+    def test_default_echo_both_sides(self, tmp_path):
+        """缺省恒回显：read_config 与 read_effective_config 两侧均含 600/2/low。
+        项目级 read_config 侧既有 impl_code_review 开关仍缺席（5.4「缺省不回显」
+        约定不变）；read_effective_config 侧含开关与否取决于用户级配置（合并
+        用户级后的有效值，本环境用户级显式配置了 impl_code_review）——只断言
+        三新键缺省恒出。"""
+        from core.dashboard.data import read_config, read_effective_config
+
+        rc = read_config(tmp_path)
+        assert rc["verify"]["impl_code_review_timeout_sec"] == 600
+        assert rc["verify"]["impl_code_review_concurrency"] == 2
+        assert rc["verify"]["impl_code_review_effort"] == "low"
+        assert "impl_code_review" not in rc["verify"]
+
+        eff = read_effective_config(tmp_path)
+        assert eff["verify"]["impl_code_review_timeout_sec"] == 600
+        assert eff["verify"]["impl_code_review_concurrency"] == 2
+        assert eff["verify"]["impl_code_review_effort"] == "low"
+        # 缺省 sources == "user"
+        assert rc["sources"]["verify.impl_code_review_timeout_sec"] == "user"
+        assert rc["sources"]["verify.impl_code_review_concurrency"] == "user"
+        assert rc["sources"]["verify.impl_code_review_effort"] == "user"
+
+    def test_write_read_roundtrip(self, tmp_path):
+        """写 900/4/high → 读回同值（sources 标注 project）。"""
+        from core.dashboard.data import read_config, read_effective_config
+
+        res = self._write(
+            tmp_path,
+            {
+                "verify": {
+                    "impl_code_review_timeout_sec": 900,
+                    "impl_code_review_concurrency": 4,
+                    "impl_code_review_effort": "high",
+                }
+            },
+        )
+        assert res["ok"], res.get("error")
+
+        rc = read_config(tmp_path)
+        assert rc["verify"]["impl_code_review_timeout_sec"] == 900
+        assert rc["verify"]["impl_code_review_concurrency"] == 4
+        assert rc["verify"]["impl_code_review_effort"] == "high"
+        assert rc["sources"]["verify.impl_code_review_timeout_sec"] == "project"
+        assert rc["sources"]["verify.impl_code_review_concurrency"] == "project"
+        assert rc["sources"]["verify.impl_code_review_effort"] == "project"
+
+        eff = read_effective_config(tmp_path)
+        assert eff["verify"]["impl_code_review_timeout_sec"] == 900
+        assert eff["verify"]["impl_code_review_concurrency"] == 4
+        assert eff["verify"]["impl_code_review_effort"] == "high"
+
+    def test_does_not_overwrite_other_keys(self, tmp_path):
+        """只改力度保存 → verify.deps_mode 值不变（spec「不覆写其它键」Scenario）。"""
+        from core.dashboard.data import read_config
+
+        res = self._write(
+            tmp_path,
+            {"verify": {"deps_mode": "hardlink", "impl_code_review_effort": "medium"}},
+        )
+        assert res["ok"], res.get("error")
+
+        res = self._write(tmp_path, {"verify": {"impl_code_review_effort": "low"}})
+        assert res["ok"], res.get("error")
+
+        rc = read_config(tmp_path)
+        assert rc["verify"]["deps_mode"] == "hardlink"  # 未被覆写
+        assert rc["verify"]["impl_code_review_effort"] == "low"
+
+    def test_invalid_values_rejected(self, tmp_path):
+        """非法值拒绝（正整数与枚举）：不落盘、保留旧值。"""
+        from core.dashboard.data import read_config
+
+        # 预写合法值
+        res = self._write(
+            tmp_path,
+            {
+                "verify": {
+                    "impl_code_review_timeout_sec": 900,
+                    "impl_code_review_concurrency": 4,
+                    "impl_code_review_effort": "high",
+                }
+            },
+        )
+        assert res["ok"], res.get("error")
+
+        # 超时：bool / 0 / 负 / 字符串 / float → 拒绝
+        for bad in (True, 0, -5, "abc", 60.5):
+            bad_res = self._write(
+                tmp_path, {"verify": {"impl_code_review_timeout_sec": bad}}
+            )
+            assert not bad_res["ok"], f"{bad!r} 应被拒绝"
+            assert "impl_code_review_timeout_sec" in bad_res["error"]
+
+        # 并发：bool / 0 / 负 / 字符串 → 拒绝
+        for bad in (True, 0, -1, "2"):
+            bad_res = self._write(
+                tmp_path, {"verify": {"impl_code_review_concurrency": bad}}
+            )
+            assert not bad_res["ok"], f"{bad!r} 应被拒绝"
+            assert "impl_code_review_concurrency" in bad_res["error"]
+
+        # 力度：非法枚举 / 大小写不匹配 → 拒绝
+        for bad in ("extreme", "LOW", "Medium", 1):
+            bad_res = self._write(tmp_path, {"verify": {"impl_code_review_effort": bad}})
+            assert not bad_res["ok"], f"{bad!r} 应被拒绝"
+            assert "impl_code_review_effort" in bad_res["error"]
+
+        # 拒绝后旧值保留（读回归显式值）
+        rc = read_config(tmp_path)
+        assert rc["verify"]["impl_code_review_timeout_sec"] == 900
+        assert rc["verify"]["impl_code_review_concurrency"] == 4
+        assert rc["verify"]["impl_code_review_effort"] == "high"
+
+    def test_switch_absent_when_not_configured(self, tmp_path):
+        """三键缺省回显不应把 impl_code_review 开关带出（5.4 约定）。"""
+        from core.dashboard.data import read_config
+
+        rc = read_config(tmp_path)
+        assert "impl_code_review" not in rc["verify"]
+        assert rc["sources"]["verify.impl_code_review"] == "user"

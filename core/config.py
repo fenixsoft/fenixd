@@ -1672,6 +1672,72 @@ class ConfigLoader:
         return val is True  # 严格 bool：1/"yes" 等非 bool 一律不算
 
     @classmethod
+    def get_impl_code_review_timeout_sec(cls, config: Dict[str, Any]) -> int:
+        """读取 ``verify.impl_code_review_timeout_sec``（add-impl-code-review-tuning）。
+
+        ocr LLM 单请求超时（秒），写入 run 级 ocr provider 配置（custom_providers
+        .fenix-impl.timeout_sec）。缺省 600；仅接受**正整数 int**（``bool`` 不算
+        int），其余（缺失 / verify 节缺失或非 dict / str / float / ≤0）一律回退
+        缺省（fail-open，脏值不中断派发）。不设上界——超大值由 ocr 侧报
+        ``timeout_sec ... overflows time.Duration`` 兜底，框架侧只保证正整数。
+
+        注意：该键 MUST NOT 进入 ``resolve_config`` 的缺省填充列表——缺省只由本
+        读取器单点提供（与 ``get_impl_code_review_enabled`` 同款，避免 defaults 与
+        读取器缺省双源漂移）。
+        """
+        verify = config.get("verify")
+        if not isinstance(verify, dict):
+            return 600
+        val = verify.get("impl_code_review_timeout_sec")
+        if isinstance(val, bool):
+            return 600
+        if isinstance(val, int) and val > 0:
+            return val
+        return 600
+
+    @classmethod
+    def get_impl_code_review_concurrency(cls, config: Dict[str, Any]) -> int:
+        """读取 ``verify.impl_code_review_concurrency``（add-impl-code-review-tuning）。
+
+        ocr 并发子任务上限，经提示词命令示例 ``--concurrency <n>`` 承载。缺省 2；
+        语义与 ``get_impl_code_review_timeout_sec`` 同——仅接受**正整数 int**
+        （``bool`` 不算 int），其余（缺失 / verify 节缺失或非 dict / str / float /
+        ≤0）一律回退缺省（fail-open，脏值不中断派发）。
+
+        注意：该键 MUST NOT 进入 ``resolve_config`` 的缺省填充列表——缺省只由本
+        读取器单点提供（与 ``get_impl_code_review_enabled`` 同款）。
+        """
+        verify = config.get("verify")
+        if not isinstance(verify, dict):
+            return 2
+        val = verify.get("impl_code_review_concurrency")
+        if isinstance(val, bool):
+            return 2
+        if isinstance(val, int) and val > 0:
+            return val
+        return 2
+
+    @classmethod
+    def get_impl_code_review_effort(cls, config: Dict[str, Any]) -> str:
+        """读取 ``verify.impl_code_review_effort``（add-impl-code-review-tuning）。
+
+        ocr 审查力度预设（``low`` / ``medium`` / ``high``），经提示词命令示例
+        ``--effort <v>`` 承载。缺省 ``"low"``；合法值恰为 ``"low"`` / ``"medium"`` /
+        ``"high"`` 三者之一，其余取值（含缺失 / verify 节缺失或非 dict / 大小写
+        不匹配 / 非 str）一律回退缺省（fail-open，脏值不中断派发）。
+
+        注意：该键 MUST NOT 进入 ``resolve_config`` 的缺省填充列表——缺省只由本
+        读取器单点提供（与 ``get_impl_code_review_enabled`` 同款）。
+        """
+        verify = config.get("verify")
+        if not isinstance(verify, dict):
+            return "low"
+        val = verify.get("impl_code_review_effort")
+        if val in ("low", "medium", "high"):
+            return val
+        return "low"
+
+    @classmethod
     def get(cls, config: Dict[str, Any], dotted_key: str, default=None):
         """
         Get a nested config value by dotted key.

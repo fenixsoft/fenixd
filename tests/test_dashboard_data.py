@@ -54,11 +54,15 @@ class TestDashboardConfigIO(unittest.TestCase):
         config_path = Path(self.tmpdir) / ".fenix" / "config.yaml"
         config_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # 缺省回显（此前 verify 段根本不在 read_config 里，前端恒显示默认值）
+        # 缺省回显（此前 verify 段根本不在 read_config 里，前端恒显示默认值；
+        # add-impl-code-review-tuning：三运行参数恒回显缺省 600/2/low）
         echoed = read_config(self.tmpdir)
         self.assertEqual(echoed["verify"],
                          {"static_scope": "main", "deps_mode": "hardlink",
-                          "serving_reclaim": {"enabled": True}})
+                          "serving_reclaim": {"enabled": True},
+                          "impl_code_review_timeout_sec": 600,
+                          "impl_code_review_concurrency": 2,
+                          "impl_code_review_effort": "low"})
 
         result = write_config(self.tmpdir, {
             "verify": {"static_scope": "worktree", "deps_mode": "hardlink"},
@@ -67,7 +71,10 @@ class TestDashboardConfigIO(unittest.TestCase):
         echoed = read_config(self.tmpdir)
         self.assertEqual(echoed["verify"],
                          {"static_scope": "worktree", "deps_mode": "hardlink",
-                          "serving_reclaim": {"enabled": True}})
+                          "serving_reclaim": {"enabled": True},
+                          "impl_code_review_timeout_sec": 600,
+                          "impl_code_review_concurrency": 2,
+                          "impl_code_review_effort": "low"})
         self.assertEqual(echoed["sources"]["verify.deps_mode"], "project")
 
         # 非法值拒绝（不落盘）

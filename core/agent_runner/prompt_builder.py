@@ -542,8 +542,19 @@ class PromptBuilder:
         直接调 ocr，因为 provider 配置由 run 级注入承载）；评估义务（逐条判断
         真实问题 vs 误报，修正真实问题的裁量权归实现者，误报可驳回但须给理由）；
         成本控制（MUST NOT 传 --max-tokens-budget——按 token 预算中止会令多数
-        文件判 failed 只产出部分 findings，审查覆盖残缺；改用 --effort 控深度）；
+        文件判 failed 只产出部分 findings，审查覆盖残缺；并发与力度由框架注入，
+        取值来自配置，实现者 MUST NOT 自行改写）；
         报告落盘路径与 code_review 段格式；环境不可用时的降级动作。
+
+        add-impl-code-review-tuning（任务 3.1/3.2/3.2b/3.3）：并发（--concurrency）
+        与力度（--effort）经命令示例注入，取值来自
+        ConfigLoader.get_impl_code_review_concurrency / get_impl_code_review_effort
+        （用户可配置 verify.impl_code_review_concurrency / _effort，缺省 2 / "low"）。
+        二者与 timeout_sec 的注入通道不同：timeout_sec 经 run 级 ocr 配置确定性
+        注入（runner._write_run_ocr_config），而 --concurrency 无持久化配置键、
+        --effort 与并发同走单一提示词通道（design D2/D6）——对实现者仍是软约束，
+        命令示例给出完整串；若实现者不照抄即失效，单测断言命令串压低该风险。
+        两读取器调用 MUST 位于开关关闭提前返回之后（开关关闭零注入：不调用）。
         """
         try:
             from core.config import ConfigLoader
@@ -554,6 +565,8 @@ class PromptBuilder:
             return ""
         if not enabled:
             return ""
+        concurrency = ConfigLoader.get_impl_code_review_concurrency(config)
+        effort = ConfigLoader.get_impl_code_review_effort(config)
         report_path = f".fenix/verify-progress/{spec_name}/code-review.json"
         raw_copy_path = f".fenix/verify-progress/{spec_name}/code-review-raw.json"
         return (
@@ -563,10 +576,12 @@ class PromptBuilder:
             "1. **审查范围**：本次实现分支相对其基线的 diff（merge-base 模式），"
             "命令示例（在 worktree 根执行）：\n"
             "   `python3 bin/ocr_review.py review --from <base> --to HEAD "
+            f"--concurrency {concurrency} --effort {effort} "
             "--format json --output /tmp/ocr-raw.json`\n"
             "   其中 <base> 为实现分支的基线（如 main）。若不确定 base，可用 "
             "`--commit` 逐提交审或直接 `python3 bin/ocr_review.py review` 工作区"
-            "模式兜底——具体命令形态由你按改动规模自行选择。\n"
+            "模式兜底——具体命令形态由你按改动规模自行选择（`--concurrency` / "
+            "`--effort` 除外，其取值已由框架注入，不得改写）。\n"
             "2. **工具**：MUST 用仓库内包装器 `bin/ocr_review.py`，MUST NOT 直接调 "
             "`ocr`——provider 配置由 run 级注入承载（环境变量 FENIX_OCR_HOME/OCR "
             "专用 HOME，其下 .opencodereview/config.json 由框架写入，复用分配给本 "
@@ -574,8 +589,12 @@ class PromptBuilder:
             "3. **成本控制**：MUST NOT 传 `--max-tokens-budget`（或 `--max-tokens`）"
             "——它按累计 token 预算硬中止审查，超预算的文件直接判 failed，实测导致 "
             "「8 个待审文件 7 个 failed、仅产出 3 条残缺 findings」，审查覆盖形同虚设。"
-            "改用 `--effort low|medium|high` 控制审查深度；若确需限制规模，用 "
-            "`--exclude` 排除生成物/夹具等非本次改动文件，而非砍预算。\n"
+            "审查力度已由框架经 `--effort <值>` 注入（用户可配置 "
+            "`verify.impl_code_review_effort`），并发上限亦已由框架经 "
+            "`--concurrency <值>` 注入（用户可配置 "
+            "`verify.impl_code_review_concurrency`）——MUST NOT 自行改写这两个取值"
+            "；若确需限制规模，用 `--exclude` 排除生成物/夹具等非本次改动文件，"
+            "而非砍预算。\n"
             "4. **评估义务**：逐条判断发现是真实问题还是误报。**修正真实问题的裁量"
             "权归你**（发现的真实问题应修正）；误报可驳回，但须在处置中给理由。\n"
             "5. **结果登记**：把 ocr 原始报告规整为框架侧规整契约写入 "

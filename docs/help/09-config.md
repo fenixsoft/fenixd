@@ -152,8 +152,19 @@ agents:
 |----|--------|------|---------|
 | static_scope | `main` | main/worktree | 热更新（下一轮验证生效） |
 | deps_mode | `prefer-offline` | prefer-offline/hardlink | 热更新（下一个 worktree 创建生效） |
+| impl_code_review | `false` | bool | 热更新（下一轮实现收尾阶段生效） |
+| impl_code_review_timeout_sec | `600` | 正整数 | 热更新（写入 run 级 ocr 配置，确定性生效） |
+| impl_code_review_concurrency | `2` | 正整数 | 热更新（经提示词命令示例承载） |
+| impl_code_review_effort | `low` | low/medium/high | 热更新（经提示词命令示例承载） |
 
 `verify.*` 与 `.fenix/verify.yaml` 的分工需要特别说明。`verify.*` 是 config.yaml 的命名空间，存放机器本地的运行时开关，不入库，随 config.yaml 热更新；而 `.fenix/verify.yaml` 是项目验证契约（prepare/serve/ready），随仓库提交、手工编辑，Dashboard 不会改写这个文件。deps_mode 也可以在 verify.yaml 顶层按项目声明 `deps_mode:`，优先于 config。
+
+`impl_code_review_timeout_sec` / `_concurrency` / `_effort`（add-impl-code-review-tuning）：
+- **`impl_code_review_timeout_sec`**：ocr LLM 单请求超时（秒，含等待响应头），写入 run 级 `ocrcfg/.opencodereview/config.json` 的 `custom_providers.fenix-impl.timeout_sec`，**确定性生效**。不配置时 ocr 走其内置 300s 默认——实测 8 路并发 + 300s 单请求超时会撞穿首字节等待导致大面积文件级 timeout（`duration_to_headers_ms` 恰 300000）。缺省 600 秒。
+- **`impl_code_review_concurrency`**：ocr 并发子任务上限（`--concurrency`），经提示词命令示例承载。实测 8 路并发同时打同一 provider 网关会把首字节延迟放大到撞穿超时线；降到 2 以吞吐换稳定。缺省 2。该参数无持久化配置键，实现者须照抄提示词中的命令串才生效（软约束）。
+- **`impl_code_review_effort`**：ocr 审查力度预设（`--effort`），经提示词命令示例承载。`low` 更快更省但 recall 偏低（ocr precision 优先的刻意取舍）；`medium` 为 ocr 官方默认；`high` 深度审查。缺省 `low`，与 ocr 内置 `medium` 不同。实现者须照抄命令串才生效（软约束）。
+
+三键的缺省取值（600/2/low）均比 ocr 官方默认值（300s/8/medium）更保守——宁慢勿废：超时更长避免大面积 timeout；并发更低避免网关排队；力度更轻以速度换覆盖，用户可随时上调。
 
 ### verify_engine（视觉校验）
 
@@ -391,7 +402,7 @@ hook 分发与动作执行在 daemon 后台线程进行，不阻塞状态机写�
 | 配置管理 | llm.providers / agents.models / gates.approve_mode / gates.promote_mode / gates.spec_review_mode |
 | Token 预算面板 | agents.token_budget_millions |
 | 验证 | verify.static_scope / verify.deps_mode（存于 config.yaml；`.fenix/verify.yaml` 契约手工编辑，不经设置页改写） |
-| 质量 | verify.impl_code_review（实现阶段收尾代码质量审查开关，自「验证」页迁出；页签顶部的 ocr 环境探测/一键安装不写配置键） |
+| 质量 | verify.impl_code_review（实现阶段收尾代码质量审查开关，自「验证」页迁出；页签顶部的 ocr 环境探测/一键安装不写配置键）；verify.impl_code_review_timeout_sec / verify.impl_code_review_concurrency / verify.impl_code_review_effort（收尾审查三运行参数：超时秒/并发/力度，缺省 600/2/low） |
 | 提示词管理 | agents/ 通用层 + .fenix/agents/ 项目级 |
 | 系统 | admin.enabled / admin.interval_minutes / admin.escalation_cooldown_minutes / admin.merge_breaker_threshold / admin.shutdown_drain_seconds |
 | 系统·瞬断治理 | agents.transient_backoff_schedule / agents.transient_redispatch_delay_seconds / agents.transient_break_threshold / agents.transient_break_window_seconds / agents.transient_break_cooldown_seconds |

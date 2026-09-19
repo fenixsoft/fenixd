@@ -894,6 +894,16 @@ export interface VerifyConfig {
    *  收尾阶段调用 bin/ocr_review.py（ocr）审查本次改动并自行修正真实问题；
    *  缺省 false，需环境已安装 ocr，未安装时自动跳过 */
   impl_code_review?: boolean;
+  /** 收尾审查 ocr LLM 单请求超时秒（add-impl-code-review-tuning，缺省 600，
+   *  正整数；写入 run 级 ocr provider 配置 custom_providers.fenix-impl.timeout_sec，
+   *  确定性生效） */
+  impl_code_review_timeout_sec?: number;
+  /** 收尾审查 ocr 并发子任务上限（add-impl-code-review-tuning，缺省 2，正整数；
+   *  经提示词命令示例 --concurrency <n> 承载，实现者须照抄命令示例） */
+  impl_code_review_concurrency?: number;
+  /** 收尾审查 ocr 力度预设（add-impl-code-review-tuning，缺省 'low'；经提示词
+   *  命令示例 --effort <v> 承载，实现者须照抄命令示例） */
+  impl_code_review_effort?: 'low' | 'medium' | 'high';
 }
 
 export interface SelfReviewConfig {

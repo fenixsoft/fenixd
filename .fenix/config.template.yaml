@@ -251,6 +251,21 @@ verify:
   # 开启后实现者会在收尾阶段调用 bin/ocr_review.py 审查本次改动并自行修正
   # 真实问题；需要环境已安装 ocr，未安装时自动按 unavailable 降级跳过。
   impl_code_review: false
+  # 收尾审查 ocr LLM 单请求超时（秒，add-impl-code-review-tuning）：
+  # 正整数，缺省 600。不配置时 ocr 走其内置 300s 默认——实测 8 路并发 +
+  # 300s 单请求超时会撞穿首字节等待导致大面积文件级 timeout。写入 run 级
+  # ocr 配置 custom_providers.fenix-impl.timeout_sec，确定性生效。
+  impl_code_review_timeout_sec: 600
+  # 收尾审查 ocr 并发子任务上限（--concurrency，add-impl-code-review-tuning）：
+  # 正整数，缺省 2（ocr 内置缺省 8）。实测 8 路并发同时打同一 provider 网关会
+  # 放大首字节延迟；降到 2 以吞吐换稳定。该参数无持久化配置键，经提示词命令
+  # 示例承载——实现者须照抄命令串才生效（软约束）。
+  impl_code_review_concurrency: 2
+  # 收尾审查 ocr 审查力度（--effort，add-impl-code-review-tuning）：
+  # 合法值 low | medium | high，缺省 low（ocr 内置缺省 medium）。low 更快更省
+  # 但 recall 偏低（ocr precision 优先的刻意取舍），可随时上调。经提示词命令
+  # 示例承载——实现者须照抄命令串才生效（软约束）。
+  impl_code_review_effort: low
   # verify-serving 目录生命周期回收（fix-verify-serving-disk-reclaim）：
   # daemon 启动 reconcile + 600s 周期清扫，对无主 worktree（spec 不在
   # changes/archive、未登记、无活进程、超宽限期）执行 git worktree remove --force

@@ -56,6 +56,13 @@ Fenix Web Dashboard（`http://localhost:8787`）是跨项目的可视化监控�
 
 「质量」页签（内部 key `quality`，位于「验证」之后）承载实现阶段的代码质量门设置：单个开关「收尾代码质量审查」（`verify.impl_code_review`，键路径不变）。开启后实现者在全部 tasks.md 任务完成、提交之后、写结果文件之前调用 ocr（`bin/ocr_review.py`）审查本次改动；环境未安装 ocr 时自动按 unavailable 降级跳过。该开关原置于「验证」页签，独立成页后验证页不再承载它（避免双入口）。
 
+开关下方另有三项运行参数设置（add-impl-code-review-tuning，键 `verify.impl_code_review_timeout_sec` / `verify.impl_code_review_concurrency` / `verify.impl_code_review_effort`，缺省 600 / 2 / `low`）：
+- **审查超时（秒）**：ocr LLM 单请求超时，写入 run 级 ocr provider 配置（`custom_providers.fenix-impl.timeout_sec`），**确定性生效**——不配置时 ocr 走其内置 300s 默认，实测 8 路并发 + 300s 会撞穿首字节等待导致大面积文件级 timeout。数字输入，须正整数，单位「秒」。
+- **审查并发**：ocr 并发子任务上限（`--concurrency`）。实测 8 路并发同时打同一 provider 网关会把首字节延迟放大到撞穿超时线，降到 2 以吞吐换稳定。数字输入，须正整数。
+- **审查力度**：ocr 审查力度预设（`--effort`），下拉 `low` / `medium` / `high`。`low` 更快更省但 recall 偏低（ocr precision 优先的刻意取舍），`medium` 为 ocr 官方默认，`high` 深度审查。
+
+**注意软约束**：`--concurrency` 与 `--effort` 经**提示词命令示例承载**（无持久化配置键 / 与并发同走单一通道），实现者须照抄提示词中的命令串才生效——这两项不像超时那样是硬性生效开关，若实现者改写命令形态即可能不生效；配置值只是框架注入的「建议值」。超时则写入 run 级配置、确定性生效。三项缺省值均比 ocr 官方默认（300s / 8 / `medium`）更保守：宁慢勿废，用户可随时上调。
+
 页签顶部有一行 open-code-review 环境状态（`GET /api/quality/ocr-status`，按 `shutil.which("ocr")` 探测，与 `bin/ocr_review.py` 的 PATH 解析同源）：已安装时显示版本号并放行开关；未安装时显示橙色提示 + 「一键安装」按钮，**开关置灰不可用**（避免开启一个运行期必然降级跳过的开关）。点「一键安装」调用 `POST /api/quality/ocr-install`，后端执行 `npm install -g @alibaba-group/open-code-review`（固定字面量，无用户输入拼接，不做提权）——成功后重新探测并解锁开关，失败（如权限不足 EACCES）返回 400 并把 npm 报错末尾透出，用户可自行 `sudo npm install -g @alibaba-group/open-code-review` 安装后刷新页面。**后端不拦「未安装时保存 `impl_code_review: true`」**：存量已勾选的配置不应因环境探测而保存失败，运行期降级语义保持不变。
 
 「自进化」页签（原「自愈」改名，内部 key `self-evolution`）下自上而下两张卡片，页签内容最下方为**唯一**的右对齐「保存」按钮——点击后一次提交同时写回两节配置（`stale_code_selfheal` + 用户级作用域下的 `self_evolution`）；两张卡片内均不自带保存按钮：

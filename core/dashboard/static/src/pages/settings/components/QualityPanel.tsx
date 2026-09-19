@@ -1,4 +1,4 @@
-import { Alert, Button, Card, Form, Switch, Typography, message } from 'antd';
+import { Alert, Button, Card, Form, InputNumber, Select, Switch, Typography, message } from 'antd';
 import { useEffect, useState } from 'react';
 import type { ConfigData } from '@/services/dashboard';
 import { getOcrStatus, installOcr } from '@/services/dashboard';
@@ -25,6 +25,12 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
   useEffect(() => {
     form.setFieldsValue({
       impl_code_review: config.verify?.impl_code_review === true,
+      // add-impl-code-review-tuning：三运行参数回填缺省（600/2/low——后端
+      // read_config / read_effective_config 恒回显缺省，前端回填与之一致；
+      // 既有开关「缺省不回显」约定不变：impl_code_review 缺席仍为关）
+      impl_code_review_timeout_sec: config.verify?.impl_code_review_timeout_sec ?? 600,
+      impl_code_review_concurrency: config.verify?.impl_code_review_concurrency ?? 2,
+      impl_code_review_effort: config.verify?.impl_code_review_effort ?? 'low',
     });
   }, [config.verify, form]);
 
@@ -67,6 +73,11 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
         // add-impl-code-review-gate：收尾代码质量审查开关（键路径不变，仅移至质量页签）
         verify: {
           impl_code_review: values.impl_code_review === true,
+          // add-impl-code-review-tuning：三运行参数序列化（表单回填后恒有值；
+          // 正整数/枚举由表单校验先行把关，后端 write_config 再权威兜底）
+          impl_code_review_timeout_sec: values.impl_code_review_timeout_sec,
+          impl_code_review_concurrency: values.impl_code_review_concurrency,
+          impl_code_review_effort: values.impl_code_review_effort,
         },
       });
     } catch {
@@ -135,6 +146,99 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
             开启后实现者会在全部 tasks.md 任务完成、提交之后、写结果文件之前调用
             ocr（bin/ocr_review.py）审查本次改动，逐条评估发现并自行修正真实问题
             （误报可驳回）。需要环境已安装 ocr，未安装时自动按 unavailable 降级跳过。
+          </Text>
+
+          {/* add-impl-code-review-tuning：三运行参数编辑控件（超时秒 / 并发 / 力度）。
+              与 ocr 参数对应：timeout_sec 写入 run 级 ocr provider 配置（确定性生效）；
+              --concurrency / --effort 经提示词命令示例承载（软约束，实现者须照抄命令串）。
+              缺省回填 600 / 2 / low（后端 read_config / read_effective_config 恒回显缺省）。 */}
+          <Form.Item
+            name="impl_code_review_timeout_sec"
+            label={
+              <>
+                审查超时<span className="label-note">（verify.impl_code_review_timeout_sec）</span>
+              </>
+            }
+            rules={[
+              {
+                validator: (_: unknown, v: number | undefined | null) =>
+                  v != null && Number.isInteger(v) && v > 0
+                    ? Promise.resolve()
+                    : Promise.reject(new Error('须为正整数')),
+              },
+            ]}
+            style={{ marginTop: 24 }}
+          >
+            <InputNumber
+              min={1}
+              style={{ width: '100%' }}
+              addonAfter="秒"
+              data-testid="impl-code-review-timeout"
+            />
+          </Form.Item>
+          <Text type="secondary">
+            默认 600。ocr LLM 单请求超时（秒，含等待响应头）：不配置时 ocr 走其内置
+            300s 默认，实测 8 路并发 + 300s 单请求超时会撞穿首字节等待导致大面积
+            文件级 timeout。写入 run 级 ocr 配置（custom_providers.fenix-impl.timeout_sec），
+            确定性生效。
+          </Text>
+
+          <Form.Item
+            name="impl_code_review_concurrency"
+            label={
+              <>
+                审查并发<span className="label-note">（verify.impl_code_review_concurrency）</span>
+              </>
+            }
+            rules={[
+              {
+                validator: (_: unknown, v: number | undefined | null) =>
+                  v != null && Number.isInteger(v) && v > 0
+                    ? Promise.resolve()
+                    : Promise.reject(new Error('须为正整数')),
+              },
+            ]}
+            style={{ marginTop: 24 }}
+          >
+            <InputNumber
+              min={1}
+              style={{ width: '100%' }}
+              data-testid="impl-code-review-concurrency"
+            />
+          </Form.Item>
+          <Text type="secondary">
+            默认 2。ocr 并发子任务上限（--concurrency）：实测 8 路并发同时打同一
+            provider 网关会把首字节延迟放大到撞穿超时线；降到 2 以吞吐换稳定。
+            经提示词命令示例承载，实现者须照抄命令串才生效。
+          </Text>
+
+          <Form.Item
+            name="impl_code_review_effort"
+            label={
+              <>
+                审查力度<span className="label-note">（verify.impl_code_review_effort）</span>
+              </>
+            }
+            rules={[
+              {
+                validator: (_: unknown, v: string | undefined | null) =>
+                  v && ['low', 'medium', 'high'].includes(v)
+                    ? Promise.resolve()
+                    : Promise.reject(new Error('须为 low/medium/high')),
+              },
+            ]}
+            style={{ marginTop: 24 }}
+          >
+            <Select data-testid="impl-code-review-effort">
+              <Select.Option value="low">low</Select.Option>
+              <Select.Option value="medium">medium</Select.Option>
+              <Select.Option value="high">high</Select.Option>
+            </Select>
+          </Form.Item>
+          <Text type="secondary">
+            默认 low。ocr 审查力度预设（--effort）：low 更快更省但 recall 偏低
+            （precision 优先的刻意取舍），medium 为 ocr 官方默认，high 深度审查。
+            经提示词命令示例承载，实现者须照抄命令串才生效。
           </Text>
         </Form>
       </Card>

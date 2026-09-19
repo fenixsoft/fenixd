@@ -80,6 +80,11 @@ _SOURCE_KEYS = [
     "verify.deps_mode",
     # add-impl-code-review-gate：实现阶段末尾代码质量审查开关
     "verify.impl_code_review",
+    # add-impl-code-review-tuning：收尾审查三运行参数（超时秒/并发/力度，
+    # 缺省 600/2/low，与 ConfigLoader 三读取器缺省同源）
+    "verify.impl_code_review_timeout_sec",
+    "verify.impl_code_review_concurrency",
+    "verify.impl_code_review_effort",
     "verify.serving_reclaim.enabled",
     # add-planner-efficiency：planner 生成节流上限
     "verify.planner_max_concurrent",
@@ -190,6 +195,18 @@ def _managed_key_sources(raw: dict) -> dict:
         # add-impl-code-review-gate：严格 bool 才标注 project（缺省/非法不标）
         if isinstance(verify_src.get("impl_code_review"), bool):
             sources["verify.impl_code_review"] = "project"
+        # add-impl-code-review-tuning：三运行参数严格类型判定才标注 project
+        # （正整数/枚举，缺省/非法不标——与 impl_code_review bool 同款）
+        if isinstance(verify_src.get("impl_code_review_timeout_sec"), int) and \
+                not isinstance(verify_src.get("impl_code_review_timeout_sec"), bool):
+            if verify_src["impl_code_review_timeout_sec"] > 0:
+                sources["verify.impl_code_review_timeout_sec"] = "project"
+        if isinstance(verify_src.get("impl_code_review_concurrency"), int) and \
+                not isinstance(verify_src.get("impl_code_review_concurrency"), bool):
+            if verify_src["impl_code_review_concurrency"] > 0:
+                sources["verify.impl_code_review_concurrency"] = "project"
+        if verify_src.get("impl_code_review_effort") in ("low", "medium", "high"):
+            sources["verify.impl_code_review_effort"] = "project"
         sr_raw = verify_src.get("serving_reclaim")
         if isinstance(sr_raw, dict) and "enabled" in sr_raw:
             sources["verify.serving_reclaim.enabled"] = "project"
@@ -318,7 +335,12 @@ def read_config(scope_root, scope: str = "project") -> dict:
         },
         "gates": {"approve_mode": "manual", "promote_mode": "auto"},
         "runs": {"keep": 50},
-        "verify": {"static_scope": "main", "deps_mode": "hardlink", "serving_reclaim": {"enabled": True}},
+        "verify": {"static_scope": "main", "deps_mode": "hardlink", "serving_reclaim": {"enabled": True},
+                   # add-impl-code-review-tuning：三运行参数恒回显缺省（600/2/low——
+                   # 与 impl_code_review「缺省不回显」语义相反，spec「缺省回显」Scenario）
+                   "impl_code_review_timeout_sec": 600,
+                   "impl_code_review_concurrency": 2,
+                   "impl_code_review_effort": "low"},
         # add-spec-archive D5：自动归档阈值（0 = 禁用，默认 50）
         "archive": {"auto_threshold": 50},
         # add-daily-self-review：admin.self_review 三键（缺省 false/false/02:00）
@@ -430,6 +452,20 @@ def read_config(scope_root, scope: str = "project") -> dict:
         # planner_max_concurrent「缺省不回显」同款，不破坏既有严格相等断言）
         if isinstance(verify_raw.get("impl_code_review"), bool):
             result["verify"]["impl_code_review"] = verify_raw["impl_code_review"]
+        # add-impl-code-review-tuning：三运行参数恒回显——缺省段已含 600/2/low，
+        # 此处读回显式定义值覆盖（读取器对非法值回退缺省，回显与生效值一致；
+        # 与 impl_code_review「缺省不回显」语义相反，spec「缺省回显」Scenario）
+        from core.config import ConfigLoader as _CLICRT
+
+        result["verify"]["impl_code_review_timeout_sec"] = (
+            _CLICRT.get_impl_code_review_timeout_sec(raw)
+        )
+        result["verify"]["impl_code_review_concurrency"] = (
+            _CLICRT.get_impl_code_review_concurrency(raw)
+        )
+        result["verify"]["impl_code_review_effort"] = (
+            _CLICRT.get_impl_code_review_effort(raw)
+        )
         sr_raw = verify_raw.get("serving_reclaim")
         if isinstance(sr_raw, dict) and isinstance(sr_raw.get("enabled"), bool):
             result["verify"]["serving_reclaim"]["enabled"] = sr_raw["enabled"]
@@ -530,7 +566,12 @@ def read_effective_config(project_root) -> dict:
         },
         "gates": {"approve_mode": "manual", "promote_mode": "auto"},
         "runs": {"keep": 50},
-        "verify": {"static_scope": "main", "deps_mode": "hardlink", "serving_reclaim": {"enabled": True}},
+        "verify": {"static_scope": "main", "deps_mode": "hardlink", "serving_reclaim": {"enabled": True},
+                   # add-impl-code-review-tuning：三运行参数恒回显缺省（600/2/low——
+                   # 与 impl_code_review「缺省不回显」语义相反，spec「缺省回显」Scenario）
+                   "impl_code_review_timeout_sec": 600,
+                   "impl_code_review_concurrency": 2,
+                   "impl_code_review_effort": "low"},
         # add-spec-archive D5：自动归档阈值（0 = 禁用，默认 50）
         "archive": {"auto_threshold": 50},
         # add-daily-self-review：admin.self_review 三键（缺省 false/false/02:00）
@@ -642,6 +683,17 @@ def read_effective_config(project_root) -> dict:
         # add-impl-code-review-gate：严格 bool 才回显，缺省不填充
         if isinstance(verify_eff.get("impl_code_review"), bool):
             result["verify"]["impl_code_review"] = verify_eff["impl_code_review"]
+        # add-impl-code-review-tuning：三运行参数恒回显——缺省段已含 600/2/low，
+        # 此处读有效合并值覆盖（读取器对非法值回退缺省，回显与生效值一致）
+        result["verify"]["impl_code_review_timeout_sec"] = (
+            ConfigLoader.get_impl_code_review_timeout_sec(effective)
+        )
+        result["verify"]["impl_code_review_concurrency"] = (
+            ConfigLoader.get_impl_code_review_concurrency(effective)
+        )
+        result["verify"]["impl_code_review_effort"] = (
+            ConfigLoader.get_impl_code_review_effort(effective)
+        )
         sr_eff = verify_eff.get("serving_reclaim")
         if isinstance(sr_eff, dict) and isinstance(sr_eff.get("enabled"), bool):
             result["verify"]["serving_reclaim"]["enabled"] = sr_eff["enabled"]
@@ -782,6 +834,18 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
         # 此处只应用合法值；缺省不写入——与 planner_max_concurrent 同款）
         if isinstance(patch["verify"].get("impl_code_review"), bool):
             merged["verify"]["impl_code_review"] = patch["verify"]["impl_code_review"]
+        # add-impl-code-review-tuning：三运行参数合并（正整数/枚举才合并，
+        # 缺失不填充、非法值由前置校验拒绝；与 impl_code_review 同款
+        # 「界面可填、保存不静默丢弃」对称——漏 merge 分支即保存被吞）
+        _ict = patch["verify"].get("impl_code_review_timeout_sec")
+        if isinstance(_ict, int) and not isinstance(_ict, bool) and _ict > 0:
+            merged["verify"]["impl_code_review_timeout_sec"] = _ict
+        _icc = patch["verify"].get("impl_code_review_concurrency")
+        if isinstance(_icc, int) and not isinstance(_icc, bool) and _icc > 0:
+            merged["verify"]["impl_code_review_concurrency"] = _icc
+        _ice = patch["verify"].get("impl_code_review_effort")
+        if _ice in ("low", "medium", "high"):
+            merged["verify"]["impl_code_review_effort"] = _ice
     # add-spec-archive D5：archive.auto_threshold（非负整数，0=禁用，非法值静默忽略）
     if "archive" in patch and isinstance(patch["archive"], dict):
         at = patch["archive"].get("auto_threshold")
@@ -1015,6 +1079,36 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
                     f"verify.impl_code_review must be a boolean: "
                     f"{v_patch['impl_code_review']!r}"
                 )
+        # add-impl-code-review-tuning：三运行参数前置校验（正整数 / 枚举拒绝，
+        # 非法值直接 fail 不落盘，与 impl_code_review bool 同款「非 None 且非法 → fail」；
+        # None 视为「未提交」，不校验）
+        if (
+            "impl_code_review_timeout_sec" in v_patch
+            and v_patch["impl_code_review_timeout_sec"] is not None
+        ):
+            _ict = v_patch["impl_code_review_timeout_sec"]
+            if isinstance(_ict, bool) or not isinstance(_ict, int) or _ict <= 0:
+                return fail(
+                    f"verify.impl_code_review_timeout_sec must be a positive integer: {_ict!r}"
+                )
+        if (
+            "impl_code_review_concurrency" in v_patch
+            and v_patch["impl_code_review_concurrency"] is not None
+        ):
+            _icc = v_patch["impl_code_review_concurrency"]
+            if isinstance(_icc, bool) or not isinstance(_icc, int) or _icc <= 0:
+                return fail(
+                    f"verify.impl_code_review_concurrency must be a positive integer: {_icc!r}"
+                )
+        if (
+            "impl_code_review_effort" in v_patch
+            and v_patch["impl_code_review_effort"] is not None
+            and v_patch["impl_code_review_effort"] not in ("low", "medium", "high")
+        ):
+            return fail(
+                f"verify.impl_code_review_effort must be one of ['low', 'medium', 'high']: "
+                f"{v_patch['impl_code_review_effort']!r}"
+            )
         sr_patch = v_patch.get("serving_reclaim")
         if isinstance(sr_patch, dict) and sr_patch.get("enabled") is not None and not isinstance(sr_patch["enabled"], bool):
             return fail(f"verify.serving_reclaim.enabled must be a boolean: {sr_patch['enabled']!r}")
@@ -1521,8 +1615,17 @@ _SYNC_PAGE_KEYS = {
     },
     "verify": {"verify": ["static_scope", "deps_mode", "serving_reclaim"]},
     # 收尾代码质量审查自「验证」页迁出至独立「质量」页签（键路径 verify.impl_code_review
-    # 保持不变，仅换呈现位置；见 settings 页 quality 页签）
-    "quality": {"verify": ["impl_code_review"]},
+    # 保持不变，仅换呈现位置；见 settings 页 quality 页签）。
+    # add-impl-code-review-tuning：同步白名单同步扩三运行参数键（缺此步时「同步
+    # 用户级设置」按钮会静默漏同步三键——功能对用户不可见）。
+    "quality": {
+        "verify": [
+            "impl_code_review",
+            "impl_code_review_timeout_sec",
+            "impl_code_review_concurrency",
+            "impl_code_review_effort",
+        ]
+    },
     "approval": {"gates": ["promote_mode", "approve_mode"]},
     "misc": {"archive": ["auto_threshold"]},
     "system": {
