@@ -486,7 +486,22 @@ def _check_impl_code_review_artifact(
             f"请在 .fenix-run-result.json 顶层增加 code_review 段（含 report_path 与"
             f"逐条处置摘要）"
         )
-    cr_dispositions = code_review.get("dispositions") or []
+    # evo-spec-concurrency-flight-guard 解卡：键名别名容错。
+    # 规范键为 `dispositions`，但提示词/spec 只描述为「逐条处置摘要」而从未
+    # 固化键名（spec.md 正文、design.md、prompt 段均未出现该字面量），实现者
+    # 据语义自选键名（实测 add-impl-code-review-gate 首跑写的是
+    # `findings_summary`，dispositions 缺席）→ 硬门数 0 条而 findings N 条，
+    # 判「条数不匹配」→ 原地重试无限循环（键名契约缺口，非 agent 违规）。
+    # 读侧 fail-open 接受同义键名，与「软契约不应承担机械对账」的既有取向一致；
+    # 对账语义不变（仍是逐条计数 + reason 强校验）。
+    cr_dispositions = None
+    for _alias in ("dispositions", "findings_summary"):
+        _val = code_review.get(_alias)
+        if _val is not None:
+            cr_dispositions = _val
+            break
+    if cr_dispositions is None:
+        cr_dispositions = []
     if not isinstance(cr_dispositions, list) or len(cr_dispositions) != len(findings):
         return (
             f"exit 0 但收尾审查 findings 条数({len(findings)})与结果文件"

@@ -413,6 +413,63 @@ class TestCodeReviewArtifactGate:
         }
         assert self._gate(config, tmp_path, data) is None
 
+    def test_enabled_findings_summary_alias_passes(self, tmp_path):
+        """键名别名：code_review 用同义键 `findings_summary` 登记逐条处置 → 放行。
+
+        契约缺口回归（evo-spec-concurrency-flight-guard 解卡）：提示词/spec 只
+        描述为「逐条处置摘要」，未固化键名，实现者自选 `findings_summary` →
+        硬门读 `dispositions` 得 0 条 → 误判「条数不匹配」死循环。读侧接受别名。
+        """
+        config = {"verify": {"impl_code_review": True}}
+        rpt_dir = tmp_path / ".fenix" / "verify-progress" / "demo-spec"
+        rpt_dir.mkdir(parents=True)
+        findings = [{"path": "a.py"}, {"path": "b.py"}]
+        (rpt_dir / "code-review.json").write_text(
+            json.dumps({"status": "completed", "findings": findings}), encoding="utf-8"
+        )
+        data = {
+            "status": "success",
+            "code_review": {
+                "findings_summary": [
+                    {"disposition": "fixed"},
+                    {"disposition": "rejected", "reason": "false positive"},
+                ]
+            },
+        }
+        assert self._gate(config, tmp_path, data) is None
+
+    def test_enabled_findings_summary_alias_still_counts(self, tmp_path):
+        """别名键仍受条数对账约束：findings_summary 2 条 vs findings 1 条 → 判失败。"""
+        config = {"verify": {"impl_code_review": True}}
+        rpt_dir = tmp_path / ".fenix" / "verify-progress" / "demo-spec"
+        rpt_dir.mkdir(parents=True)
+        (rpt_dir / "code-review.json").write_text(
+            json.dumps({"status": "completed", "findings": [{"path": "a.py"}]}),
+            encoding="utf-8",
+        )
+        data = {
+            "status": "success",
+            "code_review": {"findings_summary": [{"disposition": "fixed"}] * 2},
+        }
+        err = self._gate(config, tmp_path, data)
+        assert err is not None
+        assert "不匹配" in err
+
+    def test_enabled_neither_key_mismatch(self, tmp_path):
+        """两个键名都缺席 → 仍按 0 条对账判失败（不因别名容错而放行缺登记）。"""
+        config = {"verify": {"impl_code_review": True}}
+        rpt_dir = tmp_path / ".fenix" / "verify-progress" / "demo-spec"
+        rpt_dir.mkdir(parents=True)
+        (rpt_dir / "code-review.json").write_text(
+            json.dumps({"status": "completed", "findings": [{"path": "a.py"}]}),
+            encoding="utf-8",
+        )
+        err = self._gate(
+            config, tmp_path, {"status": "success", "code_review": {"report_path": "x"}}
+        )
+        assert err is not None
+        assert "不匹配" in err
+
     def test_partial_still_has_unchecked_no_gate(self, tmp_path):
         """末轮零误拦：_check_impl_result_artifact 对 status=partial 且仍有未勾任务
         （未覆盖 unattainable）的收口 MUST NOT 调审查硬门——缺失报告不放行不成问题。
