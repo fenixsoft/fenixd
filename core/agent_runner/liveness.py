@@ -445,7 +445,9 @@ class LivenessSupervisor:
             return False
         return False
 
-    def reviewer_in_flight(self, spec_name: str, reviewer_run: str | None) -> tuple:
+    def reviewer_in_flight(
+        self, spec_name: str, reviewer_run: str | None
+    ) -> tuple[bool, str | None]:
         """D0 判定总则：「在飞评审 run」= ``reviewer_run`` 非空 且 该 run 尚在飞。
 
         分层判据（进程表为真相，流文件兜底，陈旧锚点 fail-open，对齐
@@ -490,6 +492,11 @@ class LivenessSupervisor:
                 f"reviewer_in_flight 流判据异常 '{spec_name}' "
                 f"run={reviewer_run}（fail-open 放行）: {e}",
             )
+            # fail-open：流判据异常 ≠ 明确的「流不存活」，回到判据 5 的中性
+            # 无在飞结论（不落入下方判据 4 的 stale 终局判定——stale 语义是
+            # 「run 已终态」，与判据异常的事实不符，误标会诱导调用方清理锚点，
+            # 反而放行真正的在飞评审并发派发，击穿本守卫）。
+            return False, None
         # 判据 4：陈旧锚点（无存活进程、无新鲜非终态流）——放行由调用方执行
         return False, "stale"
 

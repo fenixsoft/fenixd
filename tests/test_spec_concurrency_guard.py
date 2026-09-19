@@ -23,7 +23,7 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -169,6 +169,22 @@ class TestReviewerInFlightJudgement(unittest.TestCase):
         # 该终态文件不应命中（其 mtime 新鲜但末行终态）
         sup2 = LivenessSupervisor(_FakeRunnerForLiveness(self.tmpdir))
         self.assertFalse(sup2._stream_recent("demo-x", 600))
+
+    def test_stream_check_exception_fail_open(self):
+        """判据 3 流判据异常 → (False, None) fail-open（D0 判据 5）。
+
+        修复回归（ocr review Finding 1）：流判据异常 ≠ 明确的「流不存活」，
+        不得落入判据 4 的 stale 终局判定——stale 语义是「run 已终态」，
+        误标会诱导调用方清理锚点、放行真正的在飞评审并发派发。
+        """
+        run_id = f"spec-review-demo-{TS}"
+        sup = self._sup()  # 进程表无该 run → 走流判据
+        with patch.object(
+            sup, "_run_stream_alive", side_effect=OSError("stream read failed")
+        ):
+            in_flight, reason = sup.reviewer_in_flight("demo", run_id)
+        self.assertFalse(in_flight)
+        self.assertIsNone(reason)  # 中性无在飞，而非 stale
 
 
 # ── D1 审核收尾回退守卫（spec_review.py）─────────────────────────────────────
