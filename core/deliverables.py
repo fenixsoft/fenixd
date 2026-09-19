@@ -942,6 +942,8 @@ def register_relocation_credential(
     project_root,
     *,
     branch=None,
+    verdict=None,
+    evidence=None,
 ) -> "dict | None":
     """凭据登记（3.6）：生效声明已无该条目时，**不经文本替换**落册重定位凭据。
 
@@ -957,6 +959,11 @@ def register_relocation_credential(
     无该条目」上抛卡死（本函数不触碰声明段，无该语义的异常面）。写盘失败仅
     WARNING 不抛。
 
+    ``verdict``/``evidence``（可选，evo-deliverable-declaration-drift-align
+    1.4）：在册时把裁决/依据一并写入落册记录（``verdicts`` 数组 + ``evidence``
+    字段），供裁决溯源（如 verdict=drift-aligned 的机械对齐留痕）；缺省不附加，
+    既有调用形态零变化。
+
     Args:
         spec_name: spec 名。
         old_path: 陈日旧路径（基线登记路径）。
@@ -965,6 +972,8 @@ def register_relocation_credential(
         run_id: 触发 run id。
         project_root: 项目根（审计流读写基准）。
         branch: 实现分支名（可选；提供时校验 new_path 在分支 HEAD 存在）。
+        verdict: 可选裁决（如 "drift-aligned"）；提供时随记录落 verdicts。
+        evidence: 可选判定依据（dict/str）；随记录落册。
 
     Returns:
         落册的审计记录 dict；未登记（来源缺失/替代路径校验失败/写盘失败）返回 None。
@@ -997,6 +1006,17 @@ def register_relocation_credential(
         "run_id": run_id or "",
         "created": _utcnow_iso(),
     }
+    if verdict:
+        rec["verdicts"] = [
+            {
+                "element": old_path,
+                "verdict": verdict,
+                "actual_path": new_path,
+                "reasoning": f"relocate: {source}"
+                + (f"; {evidence}" if evidence else ""),
+            }
+        ]
+        rec["evidence"] = evidence
     try:
         from core.admin_store import DisputeAuditStore
 
@@ -1594,6 +1614,169 @@ def is_orphan_declaration(project_root, spec_name: str, entry: dict, spec_dir=No
         f"对全路径与 basename 均零出现"
     )
     return {"orphan": True, "evidence": evidence}
+
+
+# ── 漂移笔误机械对齐判定（evo-deliverable-declaration-drift-align D1）─────────
+# 与孤儿预分类并列、互斥（孤儿=零历史命中；漂移=历史命中+目标候选存在）：
+# 声明路径在主树与实现分支 HEAD 均缺、且 git 历史对该路径有命中（曾作为文件
+# 存在过，即拆包/改名漂移特征）→ 进入 _locate_drift_target 候选定位。唯一候选
+# 且分支 HEAD 真实存在方机械对齐；零/多候选 fail-open 回人工。纯函数判定层，
+# 改写/审计/提交由 adjudication 编排（_preclassify_drift，复用既有原语）。
+
+
+def _git_branch_merge_base(project_root, branch) -> "str | None":
+    """``git merge-base HEAD <branch>`` 计算分支改动集合的 diff 基准。
+
+    拆包/改名漂移的候选定位以「本 spec 的改动落在哪个模块」为判据，只能由
+    分支改动集合（merge-base..branch）判定。merge-base 计算失败/异常 → None
+    （调用方 fail-open 回人工，不机械改写）。
+    """
+    if not branch:
+        return None
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(project_root), "merge-base", "HEAD", branch],
+            capture_output=True,
+            text=True,
+            timeout=_GIT_READ_TIMEOUT_SECONDS,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.strip() or None
+
+
+def _git_branch_changed_files(project_root, branch, merge_base) -> list:
+    """``git diff --name-only --diff-filter=AM <merge-base>..<branch>`` 分支改动
+    集合（新增/修改文件，design D1 规则 2；既有用法见 mergeback.py:757）。
+
+    拆包/改名漂移场景下分支改动集合内的 .py 文件是「本次实现改动落点」的
+    唯一证据——包内文件按名字无法分辨（core/pm_engine/dispatch/ 实测 7 个
+    模块），MUST NOT 用全仓 rglob 同名文件兜底。git 异常 → 空列表（调用方
+    fail-open 回人工）。
+    """
+    if not branch or not merge_base:
+        return []
+    try:
+        proc = subprocess.run(
+            [
+                "git", "-C", str(project_root),
+                "diff", "--name-only", "--diff-filter=AM",
+                f"{merge_base}..{branch}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=_GIT_READ_TIMEOUT_SECONDS,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return []
+    if proc.returncode != 0:
+        return []
+    files = [ln.strip() for ln in proc.stdout.splitlines() if ln.strip()]
+    files.sort()
+    return files
+
+
+def _locate_drift_target(project_root, declared_path, branch, merge_base) -> list:
+    """全仓定位拆包后候选落点（evo-deliverable-declaration-drift-align D1）。
+
+    规则（确定性，无「同名字符串」之外的语义推断）：
+    1. 取旧文件 basename 去 ``.py`` 作为**包目录名**（``worktree_manager.py`` →
+       ``worktree_manager/``、``pm_engine/dispatch.py`` → ``pm_engine/dispatch/``）；
+    2. 候选 = 该包目录内、且落在本次实现分支改动集合
+       （``git diff --name-only --diff-filter=AM <merge-base>..<branch>``）内的
+       .py 文件——「本 SPEC 的改动落在哪个模块」只能由分支改动集合判定；
+    3. MUST NOT 用 rglob 全仓同名文件兜底（同名冲突会伪造唯一性）。
+
+    Args:
+        project_root: 项目根（git 命令 cwd 基准）。
+        declared_path: 声明路径（拆包前的旧单文件路径）。
+        branch: 实现分支名。
+        merge_base: merge-base 提交（``_git_branch_merge_base`` 计算）。
+
+    Returns:
+        候选相对路径列表（排序）；零候选 = 无可对齐（fail-open 回人工）。
+    """
+    name = Path(declared_path or "").name
+    if not name.endswith(".py"):
+        return []  # 非 .py 无「拆包为目录」的形态（规则 1 前提）
+    pkg_dir = name[:-3]  # 去 .py 得包目录名
+    parent = str(Path(declared_path).parent)
+    if parent in ("", "."):
+        pkg_prefix = f"{pkg_dir}/"
+    else:
+        pkg_prefix = f"{parent}/{pkg_dir}/"
+    changed = _git_branch_changed_files(project_root, branch, merge_base)
+    candidates = [
+        p
+        for p in changed
+        if p.startswith(pkg_prefix) and p.endswith(".py") and p != declared_path
+    ]
+    candidates.sort()
+    return candidates
+
+
+def is_drift_candidate(entry, project_root, branch, merge_base=None) -> dict:
+    """漂移特征判定（evo-deliverable-declaration-drift-align 1.1）。
+
+    与孤儿预分类并列且互斥（孤儿=零历史命中；漂移=历史命中+目标候选存在）。
+    命中漂移特征须同时满足（任一不成立 → 非漂移，fail-open 回既有通道）：
+    1. ``kind == modify`` 且主树 HEAD 无该路径（复用 ``is_stale_declaration``
+       陈日信号——new/delete/reference 形态无「曾作为文件存在过」的漂移语义）；
+    2. 实现分支 HEAD 也无该路径（分支已落地 → 无缺件，无对齐必要）；
+    3. git 历史对该路径有命中（``git log --all -- <path>`` 非空——曾作为文件
+       存在过，缺失更可能是拆包/改名漂移，区别于零引用孤儿）。
+
+    条件 3 命中后随 evidence 附候选定位线索（``_locate_drift_target`` 候选
+    清单与 merge_base），供调用方直接判唯一性、供审计 reasoning 引用。
+
+    Args:
+        entry: 声明条目 dict（含 path/kind）。
+        project_root: 项目根（git 命令 cwd 基准，主树）。
+        branch: 实现分支名（分支 HEAD 存在性判定基准；缺失时 fail-open 非漂移）。
+        merge_base: merge-base 提交（可选；缺省时按需计算一次供候选定位）。
+
+    Returns:
+        ``{"drift": bool, "evidence": {...}}``。evidence 含陈日信号、分支 HEAD
+        存在性、git 历史命中摘要、候选定位线索（``candidates``/``merge_base``）。
+    """
+    path = str((entry or {}).get("path") or "").strip()
+    kind = str((entry or {}).get("kind") or "").strip().lower()
+    evidence: dict = {"path": path, "kind": kind}
+    if not path or kind != "modify":
+        return {"drift": False, "evidence": evidence}
+    # 条件 1：陈日信号（modify 且主树 HEAD 无该路径）
+    if not is_stale_declaration(entry, project_root):
+        return {"drift": False, "evidence": evidence}
+    evidence["stale"] = True
+    # 条件 2：实现分支 HEAD 无该路径（git cat-file -e）；分支缺失无法判定
+    # 分支 HEAD 缺失 → fail-open 非漂移（不机械改写）
+    if not branch:
+        return {"drift": False, "evidence": evidence}
+    if _git_object_exists_on_branch(branch, path, project_root):
+        return {"drift": False, "evidence": evidence}
+    evidence["branch_missing"] = True
+    # 条件 3：git 历史命中（曾作为文件存在过）
+    history = _git_log_path_history(project_root, path)
+    evidence["git_log"] = history
+    if history.get("error"):
+        # 历史不可查 → fail-open 非漂移（不机械改写）
+        return {"drift": False, "evidence": evidence}
+    if not history.get("hit"):
+        return {"drift": False, "evidence": evidence}
+    evidence["history_hit"] = len(history.get("commits") or [])
+    # 候选定位线索（供调用方唯一性判定与审计 reasoning 引用）
+    try:
+        if merge_base is None:
+            merge_base = _git_branch_merge_base(project_root, branch)
+        candidates = _locate_drift_target(project_root, path, branch, merge_base)
+    except Exception:
+        candidates = []
+        merge_base = None
+    evidence["candidates"] = candidates
+    evidence["merge_base"] = merge_base
+    return {"drift": True, "evidence": evidence}
 
 
 def remove_declared_entry(spec_dir, element: str) -> dict:

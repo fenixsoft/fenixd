@@ -944,30 +944,220 @@ class VerificationPipeline:
         等价搬移自 _run_three_stage_verification 的冻结加载 + 腐化升级段落。
         frozen 为列表（冻结场景集）或 None（无冻结、走出题）；aborted=True
         表示损坏已升级，调用者 MUST return 终止流水线。
+
+        evo-frozen-scenario-contract-versioning（本 SPEC）：冻结集按条目级
+        contract_version 路由契约迁移——读原始 JSON → 版本路由 → 迁移 →
+        写回 → 最后才 load_scenarios 验收（**迁移 MUST 先于验收执行**，否则
+        旧集先被判 corrupt 直接升级人工）。全场景过时（aborted=
+        'all_scenarios_stale'）自动删除冻结文件并回落出题通道；未登记迁移段
+        （aborted='no_migration_path'）与其余损坏维持既有 corrupt →
+        env_blocked 人工通道（fail-closed）。
         """
+        # D4：import 留在函数体内（core.verify_engine.scenarios 在
+        # _reload_verify_engine_modules 的 reload 清单内，函数体内调用时解析
+        # 才能拿到最新模块）
+        from core.verify_engine.scenarios import (
+            CONTRACT_VERSION_FIELD,
+            CURRENT_CONTRACT_VERSION,
+            frozen_contract_version,
+            load_scenarios,
+            migrate_frozen_contract,
+            prepare_scenarios_for_write,
+        )
+
         # ── 场景冻结复用（scenario-reuse-on-reenter，2026-09-04）──
         # 冻结集一经生成即跨轮一致的量尺：重入验证（打回/修复轮/重试）直接
         # 复用，绝不重新出题——planner 单轮 2h/30M token 级成本只支付一次。
         # 冻集变更的唯一通道：admin 裁决（扩展/豁免）或人工删除冻结文件批准
-        # 重新出题。首次进入（无冻结文件）走下方 planner 设计闭环。
-        frozen = self._load_frozen_scenarios(verify_dir)
-        if isinstance(frozen, tuple) and frozen[0] == "corrupt":
+        # 重新出题，以及本 SPEC 的契约自动迁移（机械补齐，无人工介入）。
+        path = verify_dir / "test_scenarios.json"
+        if not path.is_file():
+            return None, False
+        # ── 步骤 1：读冻结文件原始 JSON 数组（未过 load_scenarios 验收）──
+        # 文件不可解析（JSON 语法错）不属契约漂移 → 沿用既有 corrupt →
+        # env_blocked（维持人工，D2.3）。
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError) as e:
             self._context.logger.error(
                 "pm_engine",
-                f"冻结场景文件验收失败 '{spec_name}' — 场景一经冻结跨轮一致，"
-                f"变更须 admin 裁决，不自动重新出题",
+                f"冻结场景文件解析失败 '{spec_name}'（不属契约漂移，维持人工）: "
+                f"{type(e).__name__}: {e}",
             )
-            # frozen-scenario-schema-migration 1.2：升级告警附字段级差异清单
-            # （场景 id/下标/缺失字段），admin 可凭差异精准修复冻结文件，
-            # 不再给笼统 corrupt 盲修。
-            detail = frozen[1] if len(frozen) > 1 else ""
             self._escalate_env_blocked(
                 spec_name,
                 [
                     "冻结场景文件损坏或验收失败。处置选项：① 确认场景集已过时 → "
                     f"删除 .fenix/verify-progress/{spec_name}/test_scenarios.json "
                     "批准重新出题；② 文件可修复 → 修复后保持冻结。",
+                    f"解析异常：{type(e).__name__}: {str(e)[:300]}",
+                ],
+                title="场景计划争议",
+            )
+            return None, True
+        if not isinstance(raw, list):
+            # 根节点非数组不属契约漂移 → 维持既有 corrupt → env_blocked
+            self._escalate_env_blocked(
+                spec_name,
+                [
+                    "冻结场景文件损坏或验收失败。处置选项：① 确认场景集已过时 → "
+                    f"删除 .fenix/verify-progress/{spec_name}/test_scenarios.json "
+                    "批准重新出题；② 文件可修复 → 修复后保持冻结。",
+                    f"场景文件格式错误: 期望 JSON 数组，实际为 {type(raw).__name__}",
+                ],
+                title="场景计划争议",
+            )
+            return None, True
+
+        # ── 步骤 2：集内 contract_version 最小值路由（缺失/非整型=1）──
+        # 取 min 保守迁移（任一旧条目都走迁移）；>= 当前版本 → 幂等零操作
+        # （不迁移、不写回、不备份，D4）。
+        set_version = frozen_contract_version(raw)
+        migrated = False
+        if set_version < CURRENT_CONTRACT_VERSION:
+            migrated = True
+            # 步骤 3：迁移前备份原文件（回退口 D4 配套；随下次成功迁移覆盖）
+            try:
+                (verify_dir / "test_scenarios.json.contract-v1.bak").write_text(
+                    path.read_text(encoding="utf-8"), encoding="utf-8"
+                )
+            except OSError as e:
+                self._context.logger.warning(
+                    "pm_engine",
+                    f"冻结契约迁移备份失败 '{spec_name}'（不阻断迁移）: {e}",
+                )
+            base_url = self._current_instance_base_url(spec_name)
+            result = migrate_frozen_contract(raw, base_url=base_url)
+            # D4 风险 4：迁移结果回注实例属性，供阶段1 复用分支 diff 基线
+            # 使用（避免把「迁移」误记为「planner 本轮凭空增改场景」）。
+            self._frozen_migrated = list(result["migrated"])
+            if result["aborted"] == "all_scenarios_stale":
+                # D3：全场景过时（含空集）→ 删除冻结文件、本轮回落到既有
+                # 出题分支——不置 blocked/env_blocked、不递归调用
+                # _run_three_stage_verification（返回 (None, False) 由主循环
+                # 以 frozen=None 走 planner 出题通道）。
+                try:
+                    path.unlink()
+                except OSError as e:
+                    self._context.logger.error(
+                        "pm_engine",
+                        f"契约升级全场景过时 '{spec_name}' 旧冻结文件删除失败"
+                        f"（下轮重试删除）: {e}",
+                    )
+                self._context.logger.info(
+                    "pm_engine",
+                    f"契约升级全场景过时、已自动重新出题 '{spec_name}'，"
+                    f"旧场景数={len(raw)}，旧 contract_version={set_version}",
+                )
+                return None, False
+            if result["aborted"] == "no_migration_path":
+                # D5 fail-closed：未登记版本段不猜不跳过 → 维持既有
+                # corrupt → env_blocked 人工通道
+                self._context.logger.error(
+                    "pm_engine",
+                    f"冻结契约迁移无路径 '{spec_name}'（contract_version="
+                    f"{set_version} → {CURRENT_CONTRACT_VERSION} 未登记迁移段）"
+                    "— 维持人工通道",
+                )
+                self._escalate_env_blocked(
+                    spec_name,
+                    [
+                        "冻结场景文件损坏或验收失败。处置选项：① 确认场景集已过时 → "
+                        f"删除 .fenix/verify-progress/{spec_name}/test_scenarios.json "
+                        "批准重新出题；② 文件可修复 → 修复后保持冻结。",
+                        f"契约迁移无可用路径（contract_version={set_version} → "
+                        f"{CURRENT_CONTRACT_VERSION} 未登记迁移段，fail-closed）",
+                    ],
+                    title="场景计划争议",
+                )
+                return None, True
+            if result["pending_replan"]:
+                # 部分迁移：被剔除场景不参与本轮，剩余场景继续（D2.3）
+                self._context.logger.warning(
+                    "pm_engine",
+                    f"冻结契约迁移部分成功 '{spec_name}'："
+                    f"{len(result['pending_replan'])} 个场景无法定位 URL，"
+                    f"待重排（本轮剔除）: {result['pending_replan']}",
+                )
+            # 写回冻结文件（数组形态 + 条目盖 schema_version/contract_version
+            # 戳）；写回失败 ERROR 留痕并照常以内存迁移结果继续（不退回
+            # corrupt，下次加载再迁一次即幂等，D4 写回原子性）。
+            try:
+                write_back = prepare_scenarios_for_write(result["migrated"])
+                path.write_text(
+                    json.dumps(write_back, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+            except Exception as e:  # noqa: BLE001 — D4：写回失败不改变本轮内存结果
+                self._context.logger.error(
+                    "pm_engine",
+                    f"冻结契约迁移写回失败 '{spec_name}'（以内存迁移结果继续，"
+                    f"下次加载再迁）: {type(e).__name__}: {e}",
+                )
+            # 迁移日志与审计（spec R3）：场景总数/成功迁移数/移除过时数/
+            # contract_version 变更
+            self._context.logger.info(
+                "pm_engine",
+                f"冻结契约迁移完成 '{spec_name}': 场景总数={len(raw)}，"
+                f"成功迁移数={len(result['migrated'])}，移除过时数="
+                f"{len(result['pending_replan'])}，contract_version "
+                f"{set_version}→{CURRENT_CONTRACT_VERSION}",
+            )
+
+        # ── 步骤 4：以最终场景集走既有验收（读盘 = 写回后的文件）──
+        try:
+            frozen = load_scenarios(path)
+        except ValueError as e:
+            # 迁移后仍失败（合成 navigate 可能仍不满足其他规则）→ 既有
+            # corrupt → env_blocked；迁移过的集附第③条回退指引（D4 风险：
+            # MUST NOT 静默吞掉或再自动重出题，可能掩盖真实场景缺陷）。
+            detail = str(e)
+            base_opts = (
+                "冻结场景文件损坏或验收失败。处置选项：① 确认场景集已过时 → "
+                f"删除 .fenix/verify-progress/{spec_name}/test_scenarios.json "
+                "批准重新出题；② 文件可修复 → 修复后保持冻结。"
+            )
+            if migrated:
+                base_opts += (
+                    "③ 如需恢复迁移前集合：删除 "
+                    f".fenix/verify-progress/{spec_name}/test_scenarios.json 与 "
+                    "test_scenarios.json.contract-v1.bak 的对应项后由 planner "
+                    "重出题 / 或把 .bak 恢复为原文件。"
+                )
+            self._escalate_env_blocked(
+                spec_name,
+                [
+                    base_opts,
                     f"验收差异清单：{detail[:600]}" if detail else "验收差异清单：无",
+                ],
+                title="场景计划争议",
+            )
+            return None, True
+        except Exception as e:
+            self._context.logger.error(
+                "pm_engine",
+                f"冻结场景文件加载异常 '{spec_name}': {type(e).__name__}: {e}",
+            )
+            self._escalate_env_blocked(
+                spec_name,
+                [
+                    "冻结场景文件损坏或验收失败。处置选项：① 确认场景集已过时 → "
+                    f"删除 .fenix/verify-progress/{spec_name}/test_scenarios.json "
+                    "批准重新出题；② 文件可修复 → 修复后保持冻结。",
+                    f"load_scenarios 非验收路径异常: {type(e).__name__}: {e}",
+                ],
+                title="场景计划争议",
+            )
+            return None, True
+        if not frozen:
+            # 空集不出现在迁移后（空文件/全过时已被 all_scenarios_stale
+            # 分支删除回落到出题），防御性维持既有 corrupt 语义
+            self._escalate_env_blocked(
+                spec_name,
+                [
+                    "冻结场景文件为空（无任何场景）。处置选项：① 确认场景集已过时 → "
+                    f"删除 .fenix/verify-progress/{spec_name}/test_scenarios.json "
+                    "批准重新出题；② 文件可修复 → 修复后保持冻结。",
                 ],
                 title="场景计划争议",
             )

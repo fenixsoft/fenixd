@@ -2122,12 +2122,16 @@ class AgentRunner:
                         f"unobserved (no result terminal event; real consumption "
                         f"likely non-zero, add-cost-observability): {error}",
                     )
-                    # 4xx 熔断计数 + 瞬断判定（见 _record_4xx_or_transient）
+                    # 4xx 熔断计数 + 瞬断判定（见 _record_4xx_or_transient）；
+                    # 透传 attempt 元信息（spec_name / attempt_run_id，均在该
+                    # 作用域内）供瞬断记账聚合注入（evo-transient-storm-alert-context D1）
                     error, is_transient, _may_switch = self._record_4xx_or_transient(
                         error, provider_name, agent_type,
                         getattr(e, "stderr_lines", None),
                         getattr(e, "exit_code", None),
                         getattr(e, "has_result", None),
+                        spec_name=spec_name,
+                        run_id=attempt_run_id,
                     )
                     # 瞬断原地退避重试（见 _maybe_in_place_retry；跨边界
                     # continue 回到 while 顶部 / return 让位经返回值驱动，D2）。
@@ -2363,7 +2367,8 @@ class AgentRunner:
     # 模块级名 PROVIDER_CIRCUIT_4XX / PROVIDER_CIRCUIT_THRESHOLD / 实例方法
     # 均保持从 runner.py 模块全局访问（D7 patch 缝隙）。
     def _record_4xx_or_transient(self, error, provider_name, agent_type,
-                                 exc_stderr, exc_exit, exc_has_result) -> tuple:
+                                 exc_stderr, exc_exit, exc_has_result,
+                                 spec_name=None, run_id=None) -> tuple:
         """4xx 熔断计数 + 瞬断判定（等价搬移自 R6 的 `if provider_name:` 段）。
 
         返回 (error, is_transient, may_switch)：error 可能被注入
@@ -2372,6 +2377,9 @@ class AgentRunner:
         退避重试；may_switch 指示调用者是否可尝试 switch 冷却——原 `else:`
         分支（provider 在位且 code 非 4xx）语义，4xx/无 provider 均不得触发
         switch（维持既有熔断语义、链指针不动）。无跨边界控制流。
+
+        spec_name/run_id 为瞬断记账的 attempt 元信息（evo-transient-storm-alert-
+        context D1）：缺省 None → 空串占位正常记账，既有调用零改动。
         """
         if not provider_name:
             return error, False, False
@@ -2420,10 +2428,16 @@ class AgentRunner:
             # 全局瞬断错误指纹计数（fix-provider-transient-backoff D4）：
             # 每次瞬断失败记账到全局熔断；达阈值触发全局派发冻结。
             # 指纹源用原始 stderr（降噪后 error 可能丢 unrecognized_model
-            # 字样），与 D2 判定同源。
+            # 字样），与 D2 判定同源。attempt 元信息（spec/run_id/provider）
+            # 透传记账（evo-transient-storm-alert-context D1，供触发时聚合
+            # 注入告警上下文——对指纹归一化免疫）。
             try:
                 self.record_transient_break(
-                    "\n".join(str(l) for l in exc_stderr) or error)
+                    "\n".join(str(l) for l in exc_stderr) or error,
+                    spec=spec_name,
+                    run_id=run_id,
+                    provider=provider_name,
+                )
             except Exception as _break_err:
                 self.logger.debug(
                     "agent_runner",

@@ -686,6 +686,186 @@ class VAdjudicationMixin:
             "remaining_disputed": remaining_disputed,
         }
 
+    # ── 漂移笔误机械对齐（evo-deliverable-declaration-drift-align D1/D2）────────
+
+    def _preclassify_drift(
+        self, spec_name: str, result, impl_result, disputed: list, missing: list
+    ) -> dict:
+        """缺件异议分支内的漂移笔误机械对齐（design D1/D2）。
+
+        实现 run 对缺件提出 deliverable-dispute 异议（blocked 待人工）之前，对
+        disputed 条目先跑漂移特征判定（``is_drift_candidate``：kind == modify +
+        主树 HEAD 缺失 + 分支 HEAD 缺失 + git 历史命中——拆包/改名漂移特征，
+        区别于零引用孤儿）：命中 → ``_locate_drift_target`` 候选定位，唯一候选
+        且分支 HEAD 真实存在 → 机械改写生效声明（复用 ``_relocate_or_register``：
+        文本改写或凭据登记 + 审计 + 分支提交），不 blocked；零/多候选或特征不
+        命中 → fail-open 维持 blocked 待人工（不机械改写）。
+
+        与 ``_preclassify_stale`` 互斥（design D1「单轮单通道」）：``_preclassify
+        _stale`` 只挂在 ``_adjudicate_deliverable_missing`` 链上（缺件无异议），
+        本通道只挂在 queue.py 争议分支（缺件异议）——异议形态下 stale 通道不可达，
+        两类条目也按「历史命中与否」天然分流，同一轮同一 spec MUST NOT 双通道各
+        改写一次声明。本通道失败（零/多候选、改写异常）即回退既有 blocked 待
+        人工通道，MUST NOT 再触发重定位改写。
+
+        Returns:
+            {"action": "proceed"} → 全部漂移条目已对齐，守卫重跑通过（调用方
+            continue merge 推进，spec 置 implementing）；
+            {"action": "continue", "remaining_missing": [...], "remaining_disputed": [...]}
+            → 仍有缺件：remaining_missing 为守卫重跑后的缺件清单，remaining_disputed
+            为其中仍带异议的项（非空 → 调用方 blocked 待人工，空 → 交既有 LLM 终审）；
+            {"action": "fallback"} → 无可对齐条目 / 判定·改写·提交·守卫重跑任一
+            环节异常，全量回退既有 blocked 待人工路径（missing 不变）。
+        """
+        from core.deliverables import (
+            _git_branch_merge_base,
+            is_drift_candidate,
+        )
+
+        branch = getattr(result, "branch", None)
+        if not branch:
+            return {"action": "fallback"}
+
+        # 生效声明（与守卫同源：worktree > 分支 > 主树回退）——重定位改写的
+        # 执行目标与条目级 kind 判定基准（D2：读写同位，MUST NOT 直写主树）
+        resolved = self._effective_declaration(spec_name, result)
+        entries = resolved.get("entries") or []
+        by_path = {e["path"]: e for e in entries}
+        if not entries:
+            return {"action": "fallback"}
+
+        try:
+            merge_base = _git_branch_merge_base(self._pm.project_root, branch)
+        except Exception:
+            merge_base = None
+        if not merge_base:
+            # 分支改动集合基准不可用 → 无法判定「改动落在哪个模块」，
+            # fail-open 回人工（不机械改写）
+            return {"action": "fallback"}
+
+        # 缺件入参兼容 list[dict]（path/kind/violation）与 list[str]
+        missing_paths = [m["path"] if isinstance(m, dict) else str(m) for m in missing]
+
+        # 逐条漂移判定 → 唯一候选 → 机械对齐（单条异常 → 保留 disputed 走人工）
+        aligned_old: list = []
+        remaining: list = []
+        for d in disputed:
+            p = str(d)
+            entry = by_path.get(p)
+            if entry is None:
+                # 声明段无该条目（缺件来自正则回退/基线）→ 无从改写，保留人工
+                remaining.append(p)
+                continue
+            try:
+                dc = is_drift_candidate(
+                    entry, self._pm.project_root, branch, merge_base
+                )
+            except Exception as exc:
+                remaining.append(p)
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"漂移特征判定异常 '{spec_name}'（{p} 保留人工）: {exc}",
+                )
+                continue
+            if not dc.get("drift"):
+                remaining.append(p)
+                continue
+            evidence = dc.get("evidence") or {}
+            cands = evidence.get("candidates") or []
+            if len(cands) != 1:
+                # 候选零个或多个 → fail-open 回人工（不机械改写）
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"漂移候选 {len(cands)} 个（{p}）'{spec_name}' — 不唯一，"
+                    f"保留人工（候选 {cands}）",
+                )
+                remaining.append(p)
+                continue
+            new_path = cands[0]
+            # 防「改声明 ≠ 交付物落地」：候选在实现分支 HEAD 真实存在
+            try:
+                exists = (
+                    self._pm.agent_runner.worktree_manager.file_exists_on_branch(
+                        branch, new_path
+                    )
+                )
+            except Exception:
+                exists = False
+            if not exists:
+                remaining.append(p)
+                continue
+            history_hits = evidence.get("history_hit") or len(
+                (evidence.get("git_log") or {}).get("commits") or []
+            )
+            reason = (
+                f"drift-aligned: 历史命中 {history_hits} 条，拆包/改名漂移特征"
+                f"（主树与分支 HEAD 均缺该旧单文件路径），分支改动集合"
+                f"(merge-base {merge_base}..{branch}) 包内唯一候选 {new_path}"
+            )
+            ok = self._relocate_or_register(
+                spec_name,
+                result,
+                resolved,
+                p,
+                new_path,
+                "mechanical-branch-diff",
+                verdict="drift-aligned",
+                evidence=reason,
+                extra_audit={
+                    "candidates": cands,
+                    "merge_base": merge_base,
+                    "history_hits": history_hits,
+                },
+            )
+            if ok:
+                aligned_old.append(p)
+            else:
+                remaining.append(p)
+
+        if not aligned_old:
+            # 无可对齐条目 → 全量回退既有 blocked 待人工路径
+            return {"action": "fallback"}
+
+        # 对齐后守卫复检：替代路径真实存在方通过（防洗白，与 stale 通道同源）
+        try:
+            gate_result = self._pm._deliverable_gate_missing(spec_name, result)
+        except Exception as e:
+            self._pm.logger.error(
+                "pm_engine",
+                f"漂移对齐后守卫重跑异常 '{spec_name}'（回退 blocked）: {e}",
+            )
+            # 异常回退：声明已改写无法回滚，但处置维持 blocked 待人工
+            # （fail-open 不改既有处置：剩余缺件全部按未预分类处理）
+            return {"action": "fallback"}
+
+        if not gate_result:
+            # 全清 → 走「裁决执行后守卫重跑通过」放行分支（对齐 _preclassify_orphan）
+            self._pm.logger.warning(
+                "pm_engine",
+                f"漂移声明对齐全清 '{spec_name}'（{aligned_old}）— 守卫重跑通过，"
+                f"放行 merge",
+            )
+            self._pm.state_machine.update_spec(
+                spec_name,
+                {
+                    "status": "implementing",
+                    "error": None,
+                },
+            )
+            return {"action": "proceed"}
+
+        # 仍有缺件 → 以重跑后的 remaining 续走既有后续（remaining_disputed 供
+        # 调用方判断 blocked vs LLM 终审）
+        remaining_paths = [
+            g["path"] if isinstance(g, dict) else str(g) for g in gate_result
+        ]
+        remaining_disputed = [r for r in remaining_paths if r in (disputed + remaining)]
+        return {
+            "action": "continue",
+            "remaining_missing": gate_result,
+            "remaining_disputed": remaining_disputed,
+        }
+
     def _backup_to_history(self, spec_name: str, element: str, content: str) -> None:
         """删除前 .history 备份留痕（对齐 admin 处置 .history 备份惯例）。
 
@@ -837,6 +1017,10 @@ class VAdjudicationMixin:
         old_path: str,
         new_path: str,
         source: str,
+        *,
+        verdict: str = "typo",
+        evidence=None,
+        extra_audit: "dict | None" = None,
     ) -> bool:
         """重定位执行（3.2/3.3 文本改写 或 3.6 凭据登记），落审计 + 分支提交。
 
@@ -845,6 +1029,12 @@ class VAdjudicationMixin:
         （实现方先行对齐）→ ``register_relocation_credential`` 凭据登记（不经文本
         替换）。二者均落 dispute 审计流（含 before/after diff 或凭据摘要）+ 分支
         提交固化（4.2）。改写/登记失败 → False（调用方保留在 remaining）。
+
+        ``verdict``/``evidence``/``extra_audit``（可选，evo-deliverable-declaration-
+        drift-align 1.4）：缺省 ``verdict="typo"`` 保持既有调用形态；漂移机械对齐
+        通道传 ``verdict="drift-aligned"`` + 候选唯一性证据（evidence）与对齐细节
+        （extra_audit 合并进落册记录，如候选清单/历史命中数/merge_base），供审计
+        溯源。``extra_audit`` 非 dict 时忽略。
 
         Returns:
             重定位成功（改写或登记 + 审计 + 提交完成）返回 True；异常/失败 False。
@@ -860,42 +1050,45 @@ class VAdjudicationMixin:
             isinstance(e, dict) and e.get("path") == old_path for e in entries
         )
         try:
-            if entry_still_present:
+            if entry_still_present and spec_dir:
                 # 3.2/3.3：文本改写（生效声明所在位置）——kind 保持、同名去重
-                if not spec_dir:
-                    raise ValueError(
-                        f"生效声明无落盘位置（source={resolved.get('source')}）"
-                        f"无法改写 {old_path}"
-                    )
                 diff = relocate_declared_path(spec_dir, old_path, new_path)
                 from core.admin_store import DisputeAuditStore
 
+                audit_rec = {
+                    "spec": spec_name,
+                    "trigger_run_id": getattr(result, "run_id", "") or "",
+                    "type": "relocation",
+                    "old_path": old_path,
+                    "new_path": new_path,
+                    "source": source,
+                    "verdicts": [
+                        {
+                            "element": old_path,
+                            "verdict": verdict,
+                            "actual_path": new_path,
+                            "reasoning": f"relocate: {source}"
+                            + (f"; {evidence}" if evidence else ""),
+                        }
+                    ],
+                    "diff": {
+                        old_path: {
+                            "before": (diff or {}).get("before"),
+                            "after": (diff or {}).get("after"),
+                        }
+                    },
+                }
+                if isinstance(extra_audit, dict):
+                    audit_rec.update(extra_audit)
                 DisputeAuditStore(self._pm.project_root, self._pm.logger).append(
-                    {
-                        "spec": spec_name,
-                        "trigger_run_id": getattr(result, "run_id", "") or "",
-                        "type": "relocation",
-                        "old_path": old_path,
-                        "new_path": new_path,
-                        "source": source,
-                        "verdicts": [
-                            {
-                                "element": old_path,
-                                "verdict": "typo",
-                                "actual_path": new_path,
-                                "reasoning": f"relocate: {source}",
-                            }
-                        ],
-                        "diff": {
-                            old_path: {
-                                "before": (diff or {}).get("before"),
-                                "after": (diff or {}).get("after"),
-                            }
-                        },
-                    }
+                    audit_rec
                 )
             else:
-                # 3.6：凭据登记（不经文本替换）——凭据三要素在调用方已校验
+                # 3.6：凭据登记（不经文本替换）——生效声明已无该条目、或声明
+                # 来源为分支版本无落盘位置（spec_dir=None，evo-deliverable-
+                # declaration-drift-align D2：MUST NOT 直写主树声明——改写与
+                # 守卫读取错位即 add-declaration-relocation-protocol 立 SPEC
+                # 的根因）。凭据三要素在调用方已校验。
                 register_relocation_credential(
                     spec_name,
                     old_path,
@@ -904,6 +1097,8 @@ class VAdjudicationMixin:
                     getattr(result, "run_id", "") or "",
                     self._pm.project_root,
                     branch=getattr(result, "branch", None),
+                    verdict=verdict,
+                    evidence=evidence,
                 )
         except Exception as e:
             self._pm.logger.warning(

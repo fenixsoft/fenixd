@@ -33,3 +33,18 @@
 ## Requirement 3: 不生成新告警类型
 
 自动核销复用既有告警生命周期通道（alert admin store），MUST NOT 引入新的告警 kind；核销动作为审计记录而非关闭信号。
+
+## Requirement 4: 过期核销的候选选择
+
+过期核销 MUST 选中「窗口内最新的**未处理** transient_break_storm 告警」：候选获取通道
+（`AdminStore.latest_signal`）不做 handled 过滤，窗口内更新的已处理条目会抢先命中，而写回
+通道（`AdminStore.auto_resolve`）对已处理条目恒跳过；故实现 MUST 在候选上显式判定
+`handled is not True`，否则核销静默失效。
+
+### Scenario: 最新同类告警已处理时核销仍生效
+
+- **GIVEN** 窗口内存在一条较新的已处理 transient_break_storm 告警（人工/Dashboard 或
+  上一轮熔断自动核销产生），同时存在一条较早的未处理同类告警
+- **WHEN** 熔断过期流程执行
+- **THEN** 系统 MUST 选中并核销那条未处理告警（handled=True + handled_by="auto-resolve"），
+  MUST NOT 因候选被已处理条目抢占而零写回、MUST NOT 改写已处理条目的任何字段

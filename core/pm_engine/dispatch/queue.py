@@ -418,6 +418,49 @@ class QQQueueMixin:
 
             priority, spec_name, agent_type, my_enqueued_at = entry_to_dispatch
 
+            # ── 派发前同源草案收敛检查（evo-deliverable-declaration-drift-align
+            # D3，同口径兜底）──
+            # _on_spec_ready 只覆盖 4 条主入口；定时重派与恢复车道直入队列的条目
+            # （该文件 :604 注释点名的旁路）不经它，故在此候选筛选处以同口径等价
+            # 过谓词：本 spec 目录自身含 SUPERSEDED.md（已被取代）→ 移除队列条目、
+            # 置 blocked（error=同源草案收敛义务未满足，附 SUPERSEDED.md 路径），
+            # 继续扫描后队（拦截自己 ≠ 阻塞他人）。被 SUPERSEDED.md 显式点名为
+            # 生效落点的一侧（自身无 SUPERSEDED.md）MUST NOT 被拦截。检查异常
+            # fail-open：不因检查故障阻塞派发（与其它派发前闸门 fail-open 一致）。
+            if agent_type in ("implementer", "fast-track"):
+                try:
+                    convergence = self._pm._check_superseded_convergence(spec_name)
+                except Exception as e:
+                    convergence = {"blocked": False, "error": None}
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"同源草案收敛检查异常 '{spec_name}'（fail-open 放行）: {e}",
+                    )
+                if convergence.get("blocked"):
+                    self._pm.state_machine.update_spec(
+                        spec_name,
+                        {
+                            "status": "blocked",
+                            "tester_run": None,
+                            "error": convergence.get("error") or "同源草案收敛义务未满足",
+                        },
+                    )
+                    self._pm.logger.error(
+                        "pm_engine",
+                        f"同源草案收敛义务拦截派发 '{spec_name}'（含 SUPERSEDED.md，"
+                        f"{convergence.get('superseded_path')}）— 已 blocked，"
+                        f"收敛后恢复；移除队列条目继续扫描",
+                    )
+                    with self._queue_lock:
+                        self._active_runs -= 1
+                        cnt = self._active_priority_counts.get(base_prio, 0) - 1
+                        if cnt <= 0:
+                            self._active_priority_counts.pop(base_prio, None)
+                            self._active_priorities.discard(base_prio)
+                        else:
+                            self._active_priority_counts[base_prio] = cnt
+                    continue
+
             # ── 守卫三：派发互斥（fix-repair-lane-dedup / design 守卫三，legacy）──
             # 仅存量 fix-* SPEC 可达（非 fix 父 SPEC 现已走原地打回，不进入此分支）。
             # fix spec 实现器派发前检查同根兄弟是否存在活跃修复活动；
@@ -949,30 +992,45 @@ class QQQueueMixin:
                         # 质疑不得自动放行（防 agent 绕守卫），必须第三方裁决。
                         disputed = self._pm._disputed_deliverables(impl_result, missing)
                         if disputed:
-                            # ── 孤儿声明机械预分类（deliverable-dispute-orphan-preclassify）──
-                            # 异议命中处先跑按 kind 分化的孤儿判定（design「机械预分类
-                            # 在裁决链中的位置」）：判为孤儿（声明残留：任务清单零出现 +
-                            # 源码面 git grep 零引用）→ 机械删除声明 + 审计 + 重跑守卫
-                            # 对账，spec 不 blocked；非孤儿（存在任一引用）→ 维持 blocked
-                            # 待人工（宁可多走人工，不误删真实交付物）。kind: delete 不
-                            # 参与预分类（add-deliverable-delete-kind D4 防洗白）。判定/
-                            # 删除/提交/重跑任一环节异常 → 全量回退既有 blocked 待人工
-                            # （fail-open，不因预分类故障改变处置）。
-                            orphan_result = self._pm._preclassify_orphan(
+                            # ── 争议分支漂移笔误机械对齐（evo-deliverable-declaration-drift-align）──
+                            # 实现 run 已对缺件提出 deliverable-dispute 异议时，先试
+                            # 漂移机械对齐（design D1/D2）：声明路径在主树与分支 HEAD
+                            # 均缺 + git 历史命中（拆包/改名漂移特征）→ _locate_drift_target
+                            # 候选定位，分支改动集合内包目录唯一候选且分支 HEAD 真实
+                            # 存在 → 机械改写生效声明 + 审计 + 提交 + 守卫重跑全清 →
+                            # 放行 merge（不 blocked）；零/多候选或任一环节异常 → fail-open
+                            # 回退既有 blocked 待人工通道（与 _preclassify_stale 互斥：
+                            # 异议形态不进入 _adjudicate_deliverable_missing，stale 通道
+                            # 不可达——本轮三次 blocked 事故正落在这一段）。
+                            drift_result = self._pm._preclassify_drift(
                                 spec_name, result, impl_result, disputed, missing
                             )
+                            if drift_result.get("action") == "fallback":
+                                # 漂移通道 fail-open → 走既有孤儿预分类（deliverable-
+                                # dispute-orphan-preclassify）：按 kind 分化的孤儿判定
+                                # （声明残留：任务清单零出现 + 源码面 git grep 零引用）
+                                # → 机械删除声明 + 审计 + 重跑守卫对账，spec 不 blocked；
+                                # 非孤儿 → 维持 blocked 待人工。两类预分类按「历史命中
+                                # 与否」天然分流（孤儿=零历史命中，漂移=历史命中），
+                                # 同一轮同一 spec 只会被一条通道改写声明。
+                                orphan_result = self._pm._preclassify_orphan(
+                                    spec_name, result, impl_result, disputed, missing
+                                )
+                            else:
+                                # proceed / continue → 复用孤儿通道同构的后续处理
+                                orphan_result = drift_result
                             if orphan_result.get("action") == "proceed":
-                                # 孤儿声明删除后守卫重跑全清 → 放行 merge（不 blocked）
+                                # 机械对齐/删除后守卫重跑全清 → 放行 merge（不 blocked）
                                 self._pm.logger.warning(
                                     "pm_engine",
-                                    f"交付物守卫缺件争议孤儿预分类全清 '{spec_name}' — "
-                                    f"声明残留已删除，放行 merge run={result.run_id}",
+                                    f"交付物守卫缺件争议机械预分类全清 '{spec_name}' — "
+                                    f"声明已机械处置，放行 merge run={result.run_id}",
                                 )
                             elif orphan_result.get("action") == "continue":
                                 # 仍有缺件 → 以重跑后的 remaining 续走既有后续（design
                                 # 续走契约第 4 点）：剩余项仍带 dispute 异议 → blocked 待
                                 # 人工；无异议项 → 交下方既有 _adjudicate_deliverable_missing
-                                # LLM 终审，不得因「已判过一批孤儿」就整段跳过。
+                                # LLM 终审，不得因「已判过一批」就整段跳过。
                                 still_disputed = orphan_result.get(
                                     "remaining_disputed", []
                                 )
