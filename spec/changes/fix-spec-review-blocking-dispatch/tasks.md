@@ -83,3 +83,9 @@
 - [x] 6.1 全量跑 `tests/` 确认无回归
 - [x] 6.2 在 `core/pm_engine/dispatch/queue.py` 与 `core/pm_engine/engine.py` 的改动处补齐注释，说明「评审不占实现槽位」「双判据单飞」的设计理由（对齐仓内既有的长注释风格）
 - [x] 6.3 更新 `core/agent_runner/liveness.py` 模块文档中 `reviewer_in_flight` 的分层判据说明，纳入 `_active_reviews` 前置判据
+
+## 验证修复（原地打回第 1 轮）
+
+- [ ] 先复核失败有效性：逐条核对 `spec/changes/fix-spec-review-blocking-dispatch/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
+- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
+- [ ] 修复后重跑验证确认通过
