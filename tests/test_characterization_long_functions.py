@@ -127,8 +127,10 @@ class TestThreeStageVerificationChar:
         try:
             pipe = VerificationPipeline(pm)
             pipe._escalate_env_blocked = MagicMock()
-            pipe._load_frozen_scenarios = MagicMock(
-                return_value=("corrupt", "field missing: x"))
+            # 写不可解析的冻结文件（JSON 语法错 → corrupt → env_blocked；
+            # 自 evo-frozen-scenario-contract-versioning 起 _load_frozen_or_escalate
+            # 直接读原始 JSON 路由契约迁移，不再经 _load_frozen_scenarios 验收）
+            (vp / "test_scenarios.json").write_text("{not-json", encoding="utf-8")
             with patch("importlib.reload", lambda m: m):
                 result = pipe._run_three_stage_verification("char-spec")
             assert result is None
@@ -146,8 +148,7 @@ class TestThreeStageVerificationChar:
         try:
             pipe = VerificationPipeline(pm)
             pipe._escalate_env_blocked = MagicMock()
-            pipe._load_frozen_scenarios = MagicMock(
-                return_value=("corrupt", "field missing: x"))
+            (vp / "test_scenarios.json").write_text("{not-json", encoding="utf-8")
             with patch("importlib.reload", lambda m: m):
                 pipe._run_three_stage_verification("char-spec")
             assert vp.exists()
@@ -180,8 +181,7 @@ class TestThreeStageVerificationChar:
         try:
             pipe = VerificationPipeline(pm)
             pipe._escalate_env_blocked = MagicMock()
-            pipe._load_frozen_scenarios = MagicMock(
-                return_value=("corrupt", "bad schema"))
+            (vp / "test_scenarios.json").write_text("{not-json", encoding="utf-8")
             def _explode(m):
                 raise RuntimeError("reload failed")
             with patch("importlib.reload", _explode), \

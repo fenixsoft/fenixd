@@ -14,6 +14,16 @@ import re
 # 无版本=旧 schema 走迁移，当前版本直通，未知版本走迁移尝试+字段差异报错。
 SCHEMA_VERSION = 1
 
+# ── 契约版本标记（evo-frozen-scenario-contract-versioning D1）──────
+# 场景验收契约规则版本（条目级字段，语义：「本冻结集符合哪个版本的场景
+# 验收契约规则」）。v2 = 「web 场景 MUST 含 navigate 步骤（绝对 URL）」。
+# 字段缺失或非整型 → 视为 1（存量兼容，与 _schema_version_notes /
+# migrate_scenario_schema 的条目级字段口径一致）；< CURRENT_CONTRACT_VERSION
+# 的冻结集在加载时经 migrate_frozen_contract 机械迁移（见下方迁移函数）。
+CURRENT_CONTRACT_VERSION = 2
+
+CONTRACT_VERSION_FIELD = "contract_version"
+
 
 # ── 旧 schema 字段迁移（frozen-scenario-schema-migration D1/D2）────
 # 冻结文件（frozen test_scenarios.json）可能以旧字段形态生成：
@@ -99,11 +109,184 @@ def prepare_scenarios_for_write(raw: list) -> list:
     旧 schema 字段先迁移（与读侧同源，``migrate_scenario_schema``），
     再恒定写入 ``schema_version`` 标记——写盘文件始终为当前 schema
     形态，读侧版本路由直通，不残留「旧字段 + 新版本号」的不一致组合。
+
+    evo-frozen-scenario-contract-versioning D1：额外恒定盖
+    ``contract_version = CURRENT_CONTRACT_VERSION`` 戳（与 schema_version
+    盖戳同处）——新建/冻结写回的文件天然是当前契约版本，下轮加载零迁移、
+    不产生「新产场景被判旧契约」副作用。
     """
     return [
-        {**d, "schema_version": SCHEMA_VERSION} if isinstance(d, dict) else d
+        {
+            **d,
+            "schema_version": SCHEMA_VERSION,
+            CONTRACT_VERSION_FIELD: CURRENT_CONTRACT_VERSION,
+        }
+        if isinstance(d, dict)
+        else d
         for d in migrate_scenario_schema(raw)
     ]
+
+
+# ── 契约版本迁移（evo-frozen-scenario-contract-versioning D2）──────
+# 冻结集按条目级 contract_version 路由到对应版本迁移函数；迁移是纯函数
+# （不读写盘），base_url 由调用方（pipeline）注入——本文件属引擎层，
+# MUST NOT import pm_engine。
+
+
+def frozen_contract_version(scenarios: list) -> int:
+    """冻结集条目级 ``contract_version`` 的最小值（缺失/非整型视为 1）。
+
+    冻结集按统一生成批次落盘，条目版本不一致本身即异常——取 **min** 保守
+    迁移（任一旧条目都走迁移，D1 口径）。空集返回 1（同缺失语义），由
+    migrate_frozen_contract 以 ``all_scenarios_stale`` 处置。
+
+    Args:
+        scenarios: 场景 dict 列表（根节点 JSON 数组的原始条目）。
+
+    Returns:
+        整型版本号（>= 1）。
+    """
+    versions = []
+    for item in scenarios:
+        if not isinstance(item, dict):
+            versions.append(1)
+            continue
+        v = item.get(CONTRACT_VERSION_FIELD)
+        versions.append(v if isinstance(v, int) else 1)
+    return min(versions) if versions else 1
+
+
+def migrate_frozen_contract(
+    scenarios: list,
+    current_version: int = CURRENT_CONTRACT_VERSION,
+    base_url: str = "",
+) -> dict:
+    """迁移冻结场景集到当前契约版本（纯函数，不读写盘）。
+
+    以集内 ``contract_version`` 最小值（缺失/非整型=1，见
+    ``frozen_contract_version``）为起点，经 ``_CONTRACT_MIGRATIONS``
+    登记表逐段推进（支持跳版本：v1 直迁当前版 = 依次执行各段逻辑，
+    前段产物直接喂后段）。未登记版本段 fail-closed——MUST NOT 猜测或
+    跳过版本，返回 ``aborted='no_migration_path'`` 交回既有 corrupt →
+    env_blocked 人工通道。
+
+    Args:
+        scenarios: 冻结场景 dict 列表（原始 JSON 数组，未过 load_scenarios）。
+        current_version: 迁移目标版本（默认当前契约版本常量）。
+        base_url: 引擎契约供给的被测实例 base_url（web 场景缺 navigate
+            时合成 navigate 步骤的候选 URL；空串 = 无可用基址）。
+
+    Returns:
+        dict（D2.1）：
+          - migrated: 已迁移（含版本戳）的场景 dict 列表（已剔除无法迁移项）
+          - pending_replan: 无法机械迁移的场景 id 列表
+          - aborted: 'all_scenarios_stale'（迁移后无任何合法场景 / 空集）
+            | 'no_migration_path'（未登记版本段） | ''（正常）
+    """
+    if not scenarios:
+        return {"migrated": [], "pending_replan": [], "aborted": "all_scenarios_stale"}
+    current = frozen_contract_version(scenarios)
+    migrated = scenarios
+    pending_replan: list = []
+    while current < current_version:
+        step = current + 1
+        fn = _CONTRACT_MIGRATIONS.get(step)
+        if fn is None:
+            # fail-closed：未登记的版本段不猜不跳过，退回既有人工通道
+            return {
+                "migrated": [],
+                "pending_replan": pending_replan,
+                "aborted": "no_migration_path",
+            }
+        migrated, pending = fn(migrated, base_url=base_url)
+        pending_replan.extend(pending)
+        current = step
+    if not migrated:
+        return {
+            "migrated": [],
+            "pending_replan": pending_replan,
+            "aborted": "all_scenarios_stale",
+        }
+    return {"migrated": migrated, "pending_replan": pending_replan, "aborted": ""}
+
+
+def _find_step_url_candidate(steps) -> str:
+    """场景内步骤的 ``url`` 字段候选（web 场景 api 形态残留/手写场景）。
+
+    只取步骤顶层 ``url`` 字段、且匹配 ``^https?://\\S+$`` 的首个值——
+    MUST NOT 从 steps 文本正则挖 URL：web 场景不含 ``run`` 步骤
+    （``CLI_ACTIONS = {"run"}``，web 场景带 run 本身即校验错误），
+    navigate 目标 URL 的权威载体是步骤 ``value`` 字段（serving.py:578-579）；
+    ``click/type`` 的 ``target``/``value`` 是选择器与输入值，正则命中即为误取。
+    """
+    if not isinstance(steps, list):
+        return ""
+    for s in steps:
+        if isinstance(s, dict):
+            url = s.get("url")
+            if isinstance(url, str) and re.match(r"^https?://\S+$", url.strip()):
+                return url
+    return ""
+
+
+def _migrate_contract_to_v2(scenarios: list, base_url: str = ""):
+    """契约 1 → 2 迁移段：v2 = 「web 场景 MUST 含 navigate 步骤（绝对 URL）」。
+
+    逐场景处理（migrate_frozen_contract D2.2）：
+      1. 非 web 场景（kind ∈ {cli, api}）：无需 navigate 规则 → 原样保留，
+         仅盖 contract_version = 2；
+      2. web 场景且已有 navigate 步骤：仅盖戳（不重复插入、不改 navigate
+         既有字段）；
+      3. web 场景缺 navigate：候选 URL 取值顺序——场景内 step 的 ``url``
+         字段（``^https?://\\S+$``）> 入参 ``base_url``；命中则合成
+         ``{"action": "navigate", "value": <url>, "description": ...}`` 插入
+         steps 首位（与「web 场景先打开页面再交互」语义一致）并盖戳；
+         两者皆无 → 该场景移入 pending_replan、从迁移结果剔除。
+
+    Returns:
+        (migrated, pending)：同一版本段的无副作用迁移结果。
+    """
+    migrated: list = []
+    pending: list = []
+    for i, item in enumerate(scenarios):
+        if not isinstance(item, dict):
+            # 非 dict 条目无字段可操作：原样保留（过不了验收是它自身的
+            # 问题，由读端校验在迁移后统一报 corrupt）
+            migrated.append(item)
+            continue
+        sid = item.get("id") or f"[{i}]"
+        kind = item.get("kind", "web")
+        if kind != "web":
+            migrated.append({**item, CONTRACT_VERSION_FIELD: 2})
+            continue
+        steps = item.get("steps")
+        has_navigate = isinstance(steps, list) and any(
+            isinstance(s, dict) and s.get("action") == "navigate" for s in steps
+        )
+        if has_navigate:
+            migrated.append({**item, CONTRACT_VERSION_FIELD: 2})
+            continue
+        url = _find_step_url_candidate(steps)
+        if not url:
+            url = base_url
+        if not url:
+            pending.append(sid)
+            continue
+        nav_step = {
+            "action": "navigate",
+            "value": url,
+            "description": "契约 v2 自动补齐（navigate 绝对 URL）",
+        }
+        new_steps = [nav_step] + (steps if isinstance(steps, list) else [])
+        migrated.append({**item, "steps": new_steps, CONTRACT_VERSION_FIELD: 2})
+    return migrated, pending
+
+
+# 版本登记表：{目标版本: 迁移函数}。迁移函数签名
+# ``fn(scenarios: list, base_url: str) -> (migrated: list, pending: list)``，
+# 只负责「N-1 → N」这一步，版本戳由该段自盖。未来新增 v3 只需追加一个
+# 函数 + 一个登记项，并递增 CURRENT_CONTRACT_VERSION。
+_CONTRACT_MIGRATIONS = {2: _migrate_contract_to_v2}
 
 
 # ── 常量 ──────────────────────────────────────────────────────────
