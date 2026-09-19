@@ -31,8 +31,11 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
       impl_code_review_timeout_sec: config.verify?.impl_code_review_timeout_sec ?? 600,
       impl_code_review_concurrency: config.verify?.impl_code_review_concurrency ?? 2,
       impl_code_review_effort: config.verify?.impl_code_review_effort ?? 'low',
+      // 周期性代码审查（2026-09-19 从项目页「质量」分面迁来）：
+      // 开关是项目级配置（admin.code_review.enabled），归设置页而非项目页
+      code_review_enabled: config.code_review?.enabled === true,
     });
-  }, [config.verify, form]);
+  }, [config.verify, config.code_review, form]);
 
   useEffect(() => {
     let alive = true;
@@ -78,6 +81,11 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
           impl_code_review_timeout_sec: values.impl_code_review_timeout_sec,
           impl_code_review_concurrency: values.impl_code_review_concurrency,
           impl_code_review_effort: values.impl_code_review_effort,
+        },
+        // add-code-review-agent-and-quality-tab：周期性代码审查开关
+        // （2026-09-19 从项目页「质量」分面迁到设置页「质量」页签）
+        code_review: {
+          enabled: values.code_review_enabled === true,
         },
       });
     } catch {
@@ -144,8 +152,9 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
           )}
           <Text type="secondary">
             开启后实现者会在全部 tasks.md 任务完成、提交之后、写结果文件之前调用
-            ocr（bin/ocr_review.py）审查本次改动，逐条评估发现并自行修正真实问题
-            （误报可驳回）。需要环境已安装 ocr，未安装时自动按 unavailable 降级跳过。
+            ocr（bin/ocr_review.py）scan 全文件扫描本次改动，逐条评估发现并自行修正
+            真实问题（误报可驳回）。需要环境已安装 ocr，未安装时自动按 unavailable
+            降级跳过。
           </Text>
 
           {/* add-impl-code-review-tuning：三运行参数编辑控件（超时秒 / 并发 / 力度）。
@@ -239,6 +248,31 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
             默认 low。ocr 审查力度预设（--effort）：low 更快更省但 recall 偏低
             （precision 优先的刻意取舍），medium 为 ocr 官方默认，high 深度审查。
             经提示词命令示例承载，实现者须照抄命令串才生效。
+          </Text>
+        </Form>
+      </Card>
+      <Card style={{ marginTop: 12 }}>
+        <Form form={form} layout="vertical">
+          {/* 周期性代码审查开关（2026-09-19 从项目页「质量」分面迁到本页签）：
+              它是项目级配置（admin.code_review.enabled），与手动触发按钮的性质不同
+              ——分面负责「看结果 + 手动触发」，配置归设置页统一管理。
+              注：本条改动在 merge-back 中两次因「先 stash 后 merge」被丢弃，本卡片
+              由 admin 处置（stash_pop_conflict）从 stash 找回，见 admin_disposition。 */}
+          <div className="switch-inline-row">
+            <Form.Item name="code_review_enabled" valuePropName="checked" noStyle>
+              <Switch data-testid="code-review-enabled-switch" />
+            </Form.Item>
+            <span className="switch-inline-label">
+              周期性代码审查
+              <span className="label-note">（admin.code_review.enabled）</span>
+            </span>
+          </div>
+          <Text type="secondary" style={{ display: 'block', marginTop: 8 }}>
+            开启后与每日自省同周期（admin.self_review.run_at 时点）自动派发
+            code-review agent，审查窗口内开发 SPEC 的产品代码质量，问题沉淀到
+            .fenix/code-review/items.jsonl 台账，供项目页「质量」分面展示与消费。
+            需要环境已安装 ocr（未安装时审查仍以 LLM 逐文件执行，仅少了扫描加速）。
+            手动触发（全仓库审查 / 立即审查本周期）不受本开关约束。
           </Text>
         </Form>
       </Card>
