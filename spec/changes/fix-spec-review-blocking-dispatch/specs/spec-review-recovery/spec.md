@@ -12,6 +12,8 @@
 
 **执行模型**：评审 run SHALL 经**派发队列**在独立 worker 线程中异步执行，与 implementer 同构。`dispatch_review` 的「锚点先落盘 → 快照 → 执行 → 机械收口」四步链 SHALL 保持完整——四步 MUST 在同一调用栈内闭合（收口依赖本轮 attempt 的 `run_started_at` 做结果新鲜度校验），但该调用栈 MUST NOT 是调用方线程：派发入口 MUST 在入队后立即返回。
 
+在飞登记（`_active_reviews`）与锚点（`reviewer_run`）的生命周期 MUST 互补且不重叠到互相否决：登记 MUST 覆盖「条目出队 → 锚点落盘」，锚点落盘后由 `reviewer_run` 接力；两者在收口路径清除。MUST NOT 让登记覆盖整个 worker 生命周期——同一 worker 线程内的续 attempt 会经 `dispatch_review` 入口重判在飞，登记未释放将导致评审自我否决（`_run_claude` 的尝试环在同线程内可直接续跑下一 attempt）。
+
 四步链内的执行异常 MUST 走与其它 agent 类型相同的失败回滚路径（`_rollback_failed_dispatch`），MUST NOT 静默吞掉。
 
 #### Scenario: approved 收口到 ready
@@ -47,7 +49,17 @@
 #### Scenario: worker 内异常走统一回滚
 
 - **WHEN** 评审 run 在 worker 线程中抛出未捕获异常
-- **THEN** 系统 MUST 调用 `_rollback_failed_dispatch` 收口滞留状态，MUST NOT 让 spec 停留在 `reviewing` 且无锚点、无 error
+- **THEN** 系统 MUST 收口滞留状态（清 `reviewer_run`、保持 `reviewing` 并重新入队，或经 `_rollback_failed_dispatch` 的 `spec-review` 分支达成同等效果），MUST NOT 让 spec 停留在 `reviewing` 且无锚点、无 error、无恢复路径——注意 `_rollback_failed_dispatch`（`core/pm_engine/dispatch/rollback.py:72`）当前只覆盖 verifier/implementer/fast-track，直接复用而不补分支等同于「只记日志」
+
+#### Scenario: 续 attempt 不被自身在飞登记否决
+
+- **WHEN** 同一 worker 线程内的评审 run 续跑下一 attempt 并重新进入 `dispatch_review` 入口
+- **THEN** 在飞守卫 SHALL 放行（锚点已由本线程落盘、在飞登记已释放），MUST NOT 出现「评审被自己挡在门外」的停滞
+
+#### Scenario: 未完成状态可被恢复通道重新拾取
+
+- **WHEN** 四步链之外的异常使 SPEC 停留在 `reviewing` 且 `reviewer_run` 为空
+- **THEN** 既有 recovery 的 `reviewing` 分支（全量扫描 / watcher）SHALL 能重新触发该 SPEC 的评审派发，MUST NOT 依赖人工干预
 
 ### Requirement: 评审故障的重试与标记
 
@@ -99,6 +111,12 @@
 - **GIVEN** `agents.max_concurrent` 为 3 且已有 3 个实现 run 在跑
 - **WHEN** 一个新 SPEC 完成晋升并需要评审
 - **THEN** 评审 run SHALL 正常开始执行，MUST NOT 因实现槽位占满而排队等待
+
+#### Scenario: 槽位占满时评审条目仍被扫描
+
+- **GIVEN** `_active_runs >= agents.max_concurrent`，且队列中同时存在评审条目与实现条目
+- **WHEN** 队列处理被触发
+- **THEN** 队列扫描 MUST NOT 被槽位闸门提前返回（评审条目 SHALL 可被派发）；同轮的实现条目 MUST NOT 因该放行而被派发
 
 #### Scenario: 评审不被实现挤占
 

@@ -65,6 +65,11 @@ spec-review 是 daemon 中唯一仍在调用栈上同步执行的 agent run。�
 
 **边界**：优先级档比较对评审条目**仍按 `_effective_priority` 计算并参与 target 选择**（即评审也会按优先级排队），只是它不进入活动集合去影响别人。这样评审之间仍有顺序，但不挤压实现。
 
+**槽位闸门的第二处（实证补记，MUST 处理）**：仅「不计入 `_active_runs`」不足以让评审「不因实现槽位占满而等待」——`_process_queue` 在**扫描队列之前**还有一道 `if self._active_runs >= max_concurrent: return`（`core/pm_engine/dispatch/queue.py:233`）。实现车道跑满时该早退使队列里的评审条目**根本不被扫描**，`spec-concurrency-governance` 的 Scenario「评审不挤压实现派发」不可达。故：
+
+- 当队列中存在状态合法的评审条目时，`_process_queue` MUST NOT 因 `_active_runs >= max_concurrent` 提前返回；实现/verifier 条目仍受该闸门约束。
+- 该闸门的绕过 MUST 只放行**评审条目本身**，MUST NOT 顺带放行同轮的实现条目（否则 `max_concurrent` 对实现车道失效）。
+
 ### D3：新增 `_active_reviews` 集合，作为评审在飞的独立登记
 
 **选择**：`DispatchQueue` 新增 `_active_reviews: set[str]`（spec 名集合），在评审条目出队时 add、在 worker `finally` 释放。
@@ -86,6 +91,12 @@ spec-review 是 daemon 中唯一仍在调用栈上同步执行的 agent run。�
 
 **替代方案**：把 `_review_dispatches` 的 discard 从 `finally` 挪到收口处。否决——它存在 `engine` 实例上，与队列在 `DispatchQueue` 上的职责边界不清；`_active_reviews` 放在队列侧与 `_active_runs` 并列，语义更内聚。
 
+**重入安全性（MUST，实测约束）**：`_run_claude` 的尝试环在同线程内可直接续跑下一 attempt（`core/agent_runner/runner.py:3265`），且评审 run 时长可达分钟级。若 `_active_reviews` 在**整个 worker 生命周期**内保持置位，则同一线程内的续 attempt 在 `dispatch_review` 入口看到自己仍在集合中而被拒——评审收口被自己挡住（本 SPEC 引入的新死锁）。故 MUST 满足：
+
+- 在飞登记 MUST 覆盖窗口 = 「条目出队 → 四步链的锚点（`reviewer_run`）落盘」，即集合的释放时点 MUST NOT 晚于锚点落盘；锚点落盘后由判据 2（`reviewer_run` 非空）接力。
+- 单飞判据的生命周期口径 MUST 统一为 `consume_review_result`/`_handle_review_failure` 清锚点 + worker 释放 `_active_reviews`，`tasks.md` 中「出队时置位、收尾时释放」的表述 MUST 与该窗口一致。
+- `dispatch_review` 入口的在飞判据 MUST 取 `reviewer_in_flight` 的**在飞结论**（`in_flight == True`），仅当结论为「陈旧锚点」（`reason == "stale"`）时才允许清理锚点后继续派发；MUST NOT 按「锚点是否非空」直接自清——否则与 `_should_defer_for_reviewer` 的 fail-open（判定异常 → `(False, None)`）叠加后可在评审仍在跑时清锚点并放行并发派发。
+
 ### D5：`full_scan` 从启动主路径移到后台线程，但基线快照仍在 watcher 之前
 
 **选择**：`fenixd.py:start()` 中：
@@ -98,6 +109,12 @@ self.event_bus.full_scan()    # 改为：后台线程执行，不阻塞主循环
 具体做法：`full_scan` 拆成两段——`_snapshot_baseline()`（同步，毫秒级，只做 `_update_known_state`）与 `_run_full_scan_body()`（异步）。`start()` 先同步调前者，再提交后者到后台线程，随后立即进入主循环。
 
 **理由**：`start()` 里的注释（`fenixd.py:480`）记录得很清楚——「start() 会建立 STATE 基线快照（_update_known_state），若首扫先行，_known_specs 为空，全部存量 SPEC 被判为『新出现』，pushed 等 hook 事件被全量重放」。直接把 `full_scan` 丢进后台线程会把这个顺序依赖打乱：watcher 先跑一轮 `_dispatch_changes` 时基线还是空的。
+
+**实现口径（MUST，防模块 API 自吞）**：
+
+- `full_scan()` MUST 保留为同步入口（`_snapshot_baseline()` + 扫描主体顺序执行的两段组合），其既有调用方语义逐字不变——`fenixd.py:491` 改为分别调用两段，`event_bus._periodic_scan_loop`（`core/event_bus.py:645`）继续整调用同步版，`start()` **MUST NOT** 调用异步版（否则后台扫描线程永被同步等待吞掉，本次修复静默失效）。
+- 异步扫描线程 MUST 携带 `daemon=True` 标记；`EventBus` 需要新增此线程的持有字段并以**同一命名风格**（`fenixd-*` 同族）标记，`stop()` 的收口语义（`self._running = False` + 短 join）SHALL 覆盖它。
+- 基线不变量由 `event_bus.start()` 本身保证（`core/event_bus.py:51` 已同步调用 `_update_known_state()`，早于 watcher 线程启动）；`_snapshot_baseline()` 属**显式化该不变量**的冗余加固，任务 4.1/4.2 仍 SHOULD 按计划实施（把隐式依赖变为显式契约），但不得以此为理由改动 `start()` 的同步/异步划分。
 
 **替代方案**：
 
@@ -123,7 +140,9 @@ self.event_bus.full_scan()    # 改为：后台线程执行，不阻塞主循环
 
 ## Risks / Trade-offs
 
-- **[评审 run 崩溃后锚点残留]** → `_handle_review_failure` 与 recovery 的 stale 分支已有清理路径；`_active_reviews` 在 `finally` 释放。新增：worker 异常走 `_rollback_failed_dispatch`（与其它 agent_type 同路径）。
+- **[评审 run 崩溃后锚点残留]** → `_handle_review_failure` 与 recovery 的 stale 分支已有清理路径；`_active_reviews` 在 `finally` 释放。**精度约束（实证）**：`_rollback_failed_dispatch`（`core/pm_engine/dispatch/rollback.py:72`）当前只有 `verifier`/`implementer`/`fast-track` 三个分支，`agent_type == "spec-review"` 落入其 `if/elif` 之外，**只记一条 error 日志、不改状态也不重入队**。故 worker 内异常时的收口 MUST 显式区分两层，MUST NOT 把「异常被捕获」当作「状态已收口」：
+  - 四步链**内部**异常（`run_spec_review` 抛错等）已在 `dispatch_review` 内由既有 `except` 捕获并走 `_handle_review_failure`（重试/冻结），属正常收口路径，行为与改造前逐字一致；
+  - 四步链**之外**的异常（构造 `SpecReviewManager` 失败、快照/日志路径异常等）落到 worker 的 `except`：此时锚点与状态可能均为「未推进」，spec 停在 `reviewing`，MUST 由 `_active_reviews` 释放（`finally`）+ 既有 recovery 的 `reviewing` 分支（`core/event_bus.py:175-198`）重新拾取，恢复延迟上界为 watcher/periodic 扫描周期而非「无界」。任务 1.8 若仍按「复用 `_rollback_failed_dispatch`」实现，MUST 同时为 `spec-review` 补一条分支（清 `reviewer_run` + 保持 `reviewing` + 重新入队），并在任务备注中说明取舍。
 - **[异步化后 `_active_reviews` 与实际在飞不一致]**（如 worker 线程被 daemon 排水 SIGTERM 终止）→ `finally` 对 SIGTERM 后正常退出有效；进程被 SIGKILL 时 `_active_reviews` 随内存消失，daemon 重启后由 recovery 的 `reviewing` 分支重新拾取。与 `_active_runs` 的既有容错同构。
 - **[`full_scan` 异步后启动窗口内 recovery 未完成，新的 STATE 变更先被 watcher 处理]** → 这是可接受的：recovery 处理的是「上次异常退出遗留的中间态」，watcher 处理的是「新变化」，两者通过 `_known_specs` 基线隔离。首扫期间 watcher 已在跑，但基线的快照已提前建立（D5）。
 - **[评审不占槽位后，短时间大量 spec 同时晋升会并发起多个分钟级评审]** → 用户明确接受（「不设上限」）。可观测性由 `_active_reviews` 提供，必要时后续可加配置。
