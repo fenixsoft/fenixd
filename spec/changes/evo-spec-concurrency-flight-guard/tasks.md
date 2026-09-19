@@ -69,6 +69,6 @@
       审计侧车、不调 `_on_spec_ready`）；派发顺延（engine + queue 两落点各一用例）；
       ready 兜底（三落点各一用例、无 Invalid transition ERROR、有 WARNING 留痕）
 - [x] 4.2 防死锁回归：陈旧锚点（run 已终态）MUST 放行不误拦；非 `fenix/` 分支不触发兜底
-- [ ] 4.3 回归：`test_spec_review_agent.py` / `test_spec_review_gate.py` /
+- [x] 4.3 回归：`test_spec_review_agent.py` / `test_spec_review_gate.py` /
       `test_review_circuit_breaker.py` / `test_state_machine.py` / `test_agent_runner*.py` /
       dispatch 相关套件全绿；`liveness.py` 改动后孤儿恢复用例（event_bus）全绿
