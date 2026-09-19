@@ -5,10 +5,11 @@
 系统 SHALL 新增三个 `ConfigLoader` 读取器，读取合并后配置（用户级默认 + 项目级覆盖由既有 `resolve_config` 深合并完成）中的 `verify.impl_code_review_timeout_sec` / `verify.impl_code_review_concurrency` / `verify.impl_code_review_effort`。
 
 - 三者 MUST 遵循同型回退语义：键缺失、`verify` 节缺失或非 dict、类型非法、超出合法区间时，一律返回缺省值（fail-open，脏值不中断派发）。
-- `timeout_sec`：缺省 `600`；合法区间为**正整数**，非 int / bool 混入 / ≤0 / 非数字字符串一律回退缺省。
+- `timeout_sec`：缺省 `600`；合法区间为**正整数**（不设上界——超大值由 ocr 侧报 `timeout_sec ... overflows time.Duration` 兜底，框架侧只保证正整数），非 int / bool 混入 / ≤0 / 非数字字符串一律回退缺省。
 - `concurrency`：缺省 `2`；合法区间为**正整数**，非 int / ≤0 一律回退缺省。
 - `effort`：缺省 `"low"`；合法值为 `"low"` / `"medium"` / `"high"` 三者之一，其余取值一律回退缺省。
 - 三个读取器 MUST 各自独立，互不影响（例：`effort` 非法不应连带使 `timeout_sec` 回退）。
+- 三键 MUST NOT 进入 `resolve_config` 的缺省填充列表：缺省只由读取器单点提供（与 `get_impl_code_review_enabled` 同款，避免 defaults 与读取器双源漂移）。
 
 #### Scenario: 键缺失时取缺省
 - **WHEN** 合并配置中 `verify` 节存在但不含三个新键
@@ -53,6 +54,7 @@
 - 命令示例 MUST 含 `--concurrency <concurrency>` 与 `--effort <effort>`，取值来自对应读取器。
 - 提示词 MUST NOT 含 `--max-tokens-budget`（按 token 硬中止会令多数文件判 failed，致审查覆盖残缺）。
 - 开关关闭时该段零注入（返回空串），不变。
+- 该段 MUST 保持单段注入（`--effort` 虽有同名持久化 ocr 配置键，本变更 MUST NOT 额外经 run 级配置注入它——双通道会产生遮蔽歧义，见 design D6）。
 
 #### Scenario: 注入命令参数
 - **WHEN** 开关为 true、`concurrency = 3`、`effort = "medium"`
@@ -75,10 +77,11 @@ Dashboard 设置页「质量」页签 SHALL 提供三个新参数的读取回显
 - `impl_code_review_effort` MUST 为下拉选择（`low` / `medium` / `high`），回显缺省 `low`。
 - 保存 MUST 序列化三个键写入项目级/用户级配置，遵循既有作用域与保存链路，MUST NOT 覆写未在表单中出现的其它配置键。
 - 三键 MUST 登记进设置页受管键清单（受 sources 标注与合并回显管辖），与既有 `verify.impl_code_review` 同卡呈现。
+- 三键 MUST 同时登记进「同步用户级设置」按页白名单（`_SYNC_PAGE_KEYS["quality"]["verify"]`）与读/写两侧镜像（`read_config` 项目级段与缺省段、`read_effective_config` 缺省段与生效段、`write_config` 前置校验段与 merge 段）；既有 `verify.impl_code_review` 的「缺省不回显 + sources 恒在（缺省 `"user"`）」现状 MUST 不变。
 
 #### Scenario: 缺省回显
 - **WHEN** 配置中不含三个新键，用户打开质量页签
-- **THEN** 超时显示 `600`、并发显示 `2`、力度显示 `low`
+- **THEN** 超时显示 `600`、并发显示 `2`、力度显示 `low`（`read_config` 与 `read_effective_config` 两侧均恒回显缺省），且 `impl_code_review` 开关仍按既有约定回显为关（键缺席、sources 为 `"user"`）
 
 #### Scenario: 保存后回读
 - **WHEN** 用户把超时改为 `900`、并发改为 `4`、力度改为 `high` 并保存

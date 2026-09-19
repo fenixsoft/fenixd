@@ -20,11 +20,15 @@
 
 - **`ConfigLoader` 新增三个读取器**，与既有 `get_impl_code_review_enabled` 同型（缺省回退、非法值回退、脏值不中断派发）。
 - **`runner._write_run_ocr_config` 注入 `timeout_sec`**，写入 run 级 ocr provider 配置。
-- **`prompt_builder._impl_code_review_section` 命令示例注入 `--concurrency` / `--effort`**（并发与 effort 是 CLI flag，非持久化配置键，只能经提示词承载）。
+- **`prompt_builder._impl_code_review_section` 命令示例注入 `--concurrency` / `--effort`**（`--concurrency` 无持久化配置键——实测 `ocr config set concurrency 2` 报 `unknown config key`，只能经提示词承载；`--effort` 虽有同名持久化键，仍与并发同走 CLI flag，避免两条注入通道漂移——见 design D2/D6）。
 - **Dashboard「质量」页签新增三个编辑项**（复用 `QualityPanel.tsx`，与既有 `impl_code_review` 开关同卡）。
 - **`config.template.yaml` / 设置页受管键清单 / 文档同步**（新增配置项必须同时具备界面能力——见下方 Impact 的规范约束）。
 
 **非目标**：不改变审查范围（ocr `review` 本就是 diff-based，只审本次改动）；不替换 `verify.impl_code_review` 的硬门与降级语义；不引入 ocr 之外的审查引擎。
+
+另两条**明确排除**（防止实现期顺手扩面）：
+- **周期代码审查车道（`admin.code_review`）不在本变更范围内**：该车道的 agent（`agents/code-review.md`）明确「MAY 调用 `ocr` 作为辅助手段，非必需」，framework 侧为它注入 provider 配置会与其可选语义冲突。故本 SPEC MUST NOT 把 run 级 ocr 配置注入扩展到该路径。
+- **放宽任何超时阈值不在本变更范围内**：并发降到 2 会拉长同一 run 内的静默窗口（`agents.timeout_supervision` 的「judge_window 内零事件 → 判停滞终止」不看产出），本变更 MUST NOT 顺手调整 `agents.run_timeout_seconds` / `timeout_supervision.*`；若实测出现停滞误判，属独立治理项（见 design D4 补充）。
 
 ## Capabilities
 
@@ -57,6 +61,6 @@
 **外部依赖**：无新增；仍依赖环境已安装 `ocr`（缺失时按既有 `unavailable` 降级）。
 
 **风险与取舍**：
-- `--concurrency` / `--effort` 是 CLI flag 而非持久化配置键（ocr `config` 不认这两个键），故只能经提示词承载——**参数对实现者仍是"建议"而非强制**。若实现者不照抄命令示例即失效；本 SPEC 以提示词固化 + 单测断言命令串来压低该风险。
+- `--concurrency` 是**纯 CLI flag**：实测 `ocr config set concurrency 2` → `unknown config key: concurrency`（`ocr review --help` 亦无对应配置键说明），无 env/配置通道，只能经提示词承载。`--effort` **兼具 CLI flag 与同名持久化键**（实测 `ocr config set effort low` 生效并写入配置顶层 `{"effort": "low"}`；`ocr review --help` 自陈 `--effort ... ("" = configured or default medium)`），本 SPEC 仍令其与 `--concurrency` 同走命令示例以保持单一注入通道。故这两项对实现者仍是"建议"而非强制：若实现者不照抄命令示例即失效；本 SPEC 以提示词固化 + 单测断言命令串来压低该风险（design D6 记录了改走确定性注入的升级路径）。
 - `timeout_sec` 是 provider 级真实配置键（实测 `ocr config set custom_providers.<name>.timeout_sec` 生效），注入后**确定性生效**。
 - 缺省 effort 从 ocr 官方的 `medium` 下调为 `low`：更快更省，但按 ocr README 的取舍（precision 优先、recall 偏低）可能漏掉部分问题。用户可随时上调。
