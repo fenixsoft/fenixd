@@ -618,6 +618,37 @@ class PMEngine:
                     f"Skipping '{spec_name}': dependencies not satisfied",
                 )
                 return
+            # ── 派发前在飞评审校验（evo-spec-concurrency-flight-guard D2）──
+            # 同 spec 存在在飞 spec-review run 时顺延本次派发：不创建实现 run、
+            # 不写 STATE/error、不更新 _last_dispatch_at（顺延不计冷却起点），
+            # 待评审收尾经既有 _on_spec_ready 重触发通道（spec_review.py 收口
+            # 调用）重判。陈旧锚点（run 已终态但结果未消费/历史残留）判为
+            # 「无在飞评审」放行并记 WARNING（D0 第 4 条，fail-open 防自造死锁）。
+            reviewer_run = spec.get("reviewer_run")
+            if reviewer_run:
+                try:
+                    in_flight, reason = self.agent_runner.reviewer_in_flight(
+                        spec_name, reviewer_run
+                    )
+                except Exception as e:
+                    # 判定异常 fail-open（D0 第 5 条，对齐既有门控容错）
+                    self.logger.warning(
+                        "pm_engine",
+                        f"在飞评审判定异常 '{spec_name}'（fail-open 放行）: {e}",
+                    )
+                    in_flight, reason = False, None
+                if in_flight:
+                    self.logger.info(
+                        "pm_engine",
+                        f"在飞评审 run，派发顺延: {spec_name} run={reviewer_run}",
+                    )
+                    return
+                if reason == "stale":
+                    self.logger.warning(
+                        "pm_engine",
+                        f"陈旧评审锚点（run 已终态）按无在飞评审放行; "
+                        f"待既有恢复路径清理: {spec_name} run={reviewer_run}",
+                    )
             # add-fast-track-mode（task 3.1）：按 .spec.yaml mode 选择派发类型。
             # fast-track spec 派发 fast-track agent（单 run 全包），其余派 implementer。
             from core.spec_mode import read_spec_mode
@@ -636,6 +667,58 @@ class PMEngine:
         finally:
             # 派发完成（成功或失败），从 pending 中移除，允许未来派发
             self._pending_dispatches.discard(spec_name)
+
+    def _merge_ready_fallback(
+        self, spec_name: str, run_id: str | None, agent_type: str, branch: str | None
+    ) -> bool:
+        """合并收尾 ready 态兜底（evo-spec-concurrency-flight-guard D3）。
+
+        实现 run 合并完成后推进 ``implemented`` 前调用：若 spec 当前 status=ready
+        （评审收尾竞态把已接管的 spec 回退过），先补记合法转移 ``ready→implementing``
+        ，再由调用方推进 ``implementing→implemented``——消除 ``ready→implemented``
+        非法转移 ERROR（16:29:24Z 事故实证，83 分钟状态矛盾）。
+
+        判据以**调用点即证据**（本方法仅由三条实现合并收尾路径调用：queue.py
+        implementer 主路径 / repair_lane.py re-merge / fast_track.py 单 run），
+        MUST NOT 以分支名字面匹配单独充当判据——分支仅作防御性次级校验。
+
+        Returns: True 表示已补记 implementing（status 曾是 ready 且次级校验通过）；
+        False 表示未触发（status 非 ready，或 branch 不满足 fenix/ 次级校验——此时
+        ready→implemented 依然被拒 = 真实异常暴露，不静默放行）。
+        """
+        spec = self.state_machine.read_one(spec_name)
+        if not spec or spec.get("status") != "ready":
+            return False
+        # 次级校验（防御性，不是唯一判据）：实现分支属本 spec 的 `fenix/` 前缀
+        # 且非 `fenix/verify-`（worktree_manager/lifecycle.py:396-399 同款判定）。
+        # 不满足 → 不兜底，维持既有转移（ready→implemented 仍被拒 = 暴露真实异常）。
+        if not branch or not branch.startswith("fenix/") or branch.startswith("fenix/verify-"):
+            self.logger.warning(
+                "pm_engine",
+                f"ready 态合并兜底次级校验未通过，不补记 implementing"
+                f"（status=ready 但 branch={branch} 非实现分支）: {spec_name} run={run_id}",
+            )
+            return False
+        self.state_machine.transition(
+            spec_name, "implementing",
+            trigger_run_id=run_id, agent_type=agent_type, channel="auto",
+        )
+        self.logger.warning(
+            "pm_engine",
+            f"ready 态合并兜底：补记 implementing（评审收尾竞态回退残留）"
+            f"'{spec_name}' run={run_id} branch={branch}",
+        )
+        try:
+            self._append_project_log(
+                f"⚠️ ready 态合并兜底：'{spec_name}' 补记 implementing"
+                f"（run={run_id}，评审收尾竞态回退残留）"
+            )
+        except Exception as e:
+            self.logger.warning(
+                "pm_engine",
+                f"合并兜底项目日志失败 '{spec_name}'（非阻断，兜底本身已生效）: {e}",
+            )
+        return True
 
     # ── 定时调度到期检测（add-spec-scheduling-controls D3）────────────────────
 

@@ -419,6 +419,9 @@ class AgentRunner:
         "sweep_dangling_runs": ("_liveness", "sweep_dangling_runs"),
         "_pgrep_live_attempt": ("_liveness", "_pgrep_live_attempt"),
         "_stream_recent": ("_liveness", "_stream_recent"),
+        # evo-spec-concurrency-flight-guard D0：共享「在飞评审 run」判定
+        # （引擎/队列两处派发落点经门面访问，避免第二套漂移实现）
+        "reviewer_in_flight": ("_liveness", "reviewer_in_flight"),
         "note_run_extension": ("_liveness", "note_run_extension"),
         "get_extension_baseline": ("_liveness", "get_extension_baseline"),
         "_liveness_snapshot": ("_liveness", "_liveness_snapshot"),
