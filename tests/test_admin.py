@@ -1082,7 +1082,9 @@ class TestQueuedDispatchSuppressesOrphanedProbe:
                     return any(e[1] == name for e in self._run_queue)
 
         pm = _Pm()
-        pm._queue_lock = threading.Lock()
+        # fix-spec-review-blocking-dispatch：与生产同用可重入锁（生产 _queue_lock
+        # 已改 RLock，测试替身须同语义，否则 _queued_for_dispatch 嵌套 acquire 死锁）。
+        pm._queue_lock = threading.RLock()
         with mock.patch("core.admin_monitor._pgrep_live_worktree", return_value=False):
             assert spec_is_undriven(proot, "spec-a", entry) is True  # 未注入 → ③ 条件口径
             assert spec_is_undriven(proot, "spec-a", entry, pm_engine=pm) is False

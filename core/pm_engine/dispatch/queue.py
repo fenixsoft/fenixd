@@ -29,7 +29,11 @@ class QQQueueMixin:
 
         # 队列与并发状态（design D3 规则 1：_queue_lock 与被保护的
         # _run_queue/_active_runs/_active_priorities 整体同迁，单锁语义不变）。
-        self._queue_lock = threading.Lock()
+        # fix-spec-review-blocking-dispatch BUG-01：is_review_in_flight 内部
+        # with self._queue_lock:（engine.py:3516）与 _process_queue 的外层
+        # with self._queue_lock:（queue.py:274）同线程嵌套，threading.Lock
+        # 非可重入 → 永久阻塞。改为 RLock 使同线程可重入，不影响既有语义。
+        self._queue_lock = threading.RLock()
         self._active_runs = 0
         # 评审在飞集合（fix-spec-review-blocking-dispatch D3）：spec 名集合，
         # 评审条目独立登记、不占 _active_runs/_active_priorities（评审是晋升

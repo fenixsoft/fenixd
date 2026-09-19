@@ -232,11 +232,17 @@ def make_min_dispatcher(pm, run_queue, entry_reader):
     d = Dispatcher.__new__(Dispatcher)
     d._pm = pm
     pm._dispatcher_instance = d
-    d._queue_lock = threading.Lock()
+    # fix-spec-review-blocking-dispatch：与生产同用可重入锁——_process_queue
+    # 持锁期间 _should_defer_for_reviewer → is_review_in_flight 会再取同一把
+    # 锁（engine.py:3516），非可重入 Lock 同线程二次 acquire 死锁。
+    d._queue_lock = threading.RLock()
     d._run_queue = run_queue
     d._active_runs = 0
     d._active_priorities = set()
     d._active_priority_counts = {}
+    # fix-spec-review-blocking-dispatch 1.1：评审在飞集合（__new__ 绕过 __init__，
+    # 须手动补生产 __init__ 里初始化的字段，否则 is_review_in_flight 读不到）。
+    d._active_reviews = set()
     # read_one 由调用方注入（entry_reader: spec_name -> entry dict）
     class _SM:
         def read_one(self, name):
