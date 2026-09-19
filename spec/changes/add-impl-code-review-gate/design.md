@@ -194,8 +194,12 @@ prompt 末尾」的约定（该约定在 prompt_builder 内已有显式注释）
 实现者若不确定 base，可用 `--commit` 逐提交审或 `ocr review` 工作区模式兜底
 ——具体命令形态由实现者在注入段指导下自行选择，框架不硬编码。
 
-**成本控制**：注入段 MUST 提示实现者传 `--max-tokens-budget` 或 `--effort`，
-避免一次审查吃掉大额预算。默认值由实现者按改动规模选择（裁量权语义）。
+**成本控制**（09-19 修订）：注入段 MUST NOT 建议传 `--max-tokens-budget`——
+实测该参数按累计 token 预算硬中止审查（超预算的文件直接判 `failed`，审查
+`status: partial`），在 `evo-spec-concurrency-flight-guard` 上导致「8 个待审
+文件 7 个 failed、仅产出 3 条残缺 findings」，覆盖形同虚设。改为 MUST 提示
+实现者用 `--effort low|medium|high` 控制审查深度；确需限制规模时用 `--exclude`
+排除生成物/夹具等非本次改动文件。原「默认值由实现者裁量」保留。
 
 ### D7：环境缺失降级为 fail-open 放行
 

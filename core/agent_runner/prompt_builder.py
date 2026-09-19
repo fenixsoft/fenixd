@@ -533,7 +533,8 @@ class PromptBuilder:
         的 diff，merge-base 模式）；工具为 bin/ocr_review.py 包装器（MUST NOT
         直接调 ocr，因为 provider 配置由 run 级注入承载）；评估义务（逐条判断
         真实问题 vs 误报，修正真实问题的裁量权归实现者，误报可驳回但须给理由）；
-        成本控制（建议传 --max-tokens-budget 或 --effort 限制单次审查开销）；
+        成本控制（MUST NOT 传 --max-tokens-budget——按 token 预算中止会令多数
+        文件判 failed 只产出部分 findings，审查覆盖残缺；改用 --effort 控深度）；
         报告落盘路径与 code_review 段格式；环境不可用时的降级动作。
         """
         try:
@@ -562,8 +563,11 @@ class PromptBuilder:
             "`ocr`——provider 配置由 run 级注入承载（环境变量 FENIX_OCR_HOME/OCR "
             "专用 HOME，其下 .opencodereview/config.json 由框架写入，复用分配给本 "
             "run 的 provider，与 fenix 成本记账同源）。\n"
-            "3. **成本控制**：建议按改动规模传 `--max-tokens-budget` 或 `--effort` "
-            "限制单次审查开销，避免一次审查吃掉大额预算。\n"
+            "3. **成本控制**：MUST NOT 传 `--max-tokens-budget`（或 `--max-tokens`）"
+            "——它按累计 token 预算硬中止审查，超预算的文件直接判 failed，实测导致 "
+            "「8 个待审文件 7 个 failed、仅产出 3 条残缺 findings」，审查覆盖形同虚设。"
+            "改用 `--effort low|medium|high` 控制审查深度；若确需限制规模，用 "
+            "`--exclude` 排除生成物/夹具等非本次改动文件，而非砍预算。\n"
             "4. **评估义务**：逐条判断发现是真实问题还是误报。**修正真实问题的裁量"
             "权归你**（发现的真实问题应修正）；误报可驳回，但须在处置中给理由。\n"
             "5. **结果登记**：把 ocr 原始报告规整为框架侧规整契约写入 "
