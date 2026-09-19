@@ -648,6 +648,7 @@ class AdminMonitor:
         store=None,
         agent_runner=None,
         pm_engine=None,
+        code_review_executor=None,
     ):
         from .config import ConfigLoader
 
@@ -666,6 +667,12 @@ class AdminMonitor:
         self._history_path = self.project_root / ".fenix" / "admin_state_history.json"
         # add-alert-auto-resolve D4：启动首轮扫描执行存量回填（仅一次）
         self._lifecycle_backfilled = False
+        # add-code-review-agent-and-quality-tab：code-review 后台派发 executor
+        # （对齐 fenixd._admin_executor 形态）——None 时回退同步执行（测试/禁用态）。
+        self._code_review_executor = code_review_executor
+        # code-review 在途标记（对齐 _evolution_in_flight 形态）：投递即置位、
+        # worker 收尾复位。有在途 run 则本轮跳过（D3「单飞」）。
+        self._code_review_in_flight = False
 
     # ── 配置读取 ────────────────────────────────────────────────
 
@@ -762,6 +769,15 @@ class AdminMonitor:
         # add-daily-self-review：每日自省调度检查点（design D1，挂在既有巡检
         # 循环，不新增线程/定时器）。enabled && 本地时间 ≥ run_at && 今日未执行
         # → 触发；enabled=false 全链路零动作。任何异常只记日志不阻断巡检。
+        # add-code-review-agent-and-quality-tab：code-review 检查点 MUST 排在
+        # self_review 之前——后者 _save_state 会在收尾把 self_review_state.json 的
+        # last_run_at 覆写为「此刻」，而 window_start 正读该字段。若先跑自省再跑
+        # 本检查点，窗口退化为 [now, now] → manifest 恒空 → 周期审查每天以
+        # no_files 空转（design D3 时序）。
+        try:
+            self._run_code_review_checkpoint()
+        except Exception as e:
+            self.logger.error("admin_monitor", f"Code-review checkpoint failed: {e}")
         try:
             self._run_self_review_checkpoint()
         except Exception as e:
@@ -786,6 +802,117 @@ class AdminMonitor:
             store=self.store,
         )
         return scheduler.check_and_run()
+
+    def _run_code_review_checkpoint(self) -> dict:
+        """周期性代码审查调度检查点（add-code-review-agent-and-quality-tab）。
+
+        守卫与自省同源：``admin.code_review.enabled``、同自然日防重、
+        ``run_at`` 未到不跑；manifest 为空则跳过（不派发空 run）；已有
+        code-review run 在跑则跳过（单飞）。
+
+        派发经 ``_code_review_executor`` 投递后台 worker 执行完整 run（对齐
+        fenixd._evolution_worker 形态），MUST NOT 在巡检线程内同步跑完整
+        审查——整轮审查（数十文件 LLM 调用）若照搬会让 admin 巡检停摆整个
+        审查时长。单飞标记在投递即置位、worker 收尾复位（对齐
+        ``_evolution_in_flight``）。``admin.code_review.enabled`` 为 false
+        时全链路零动作（不派发、不写产物）。
+
+        返回调度结果 dict（供测试断言；巡检本身不消费返回值）。
+        """
+        from .config import ConfigLoader
+        from .self_review import _parse_run_at, local_today_str
+
+        from core.code_review import (
+            compute_window,
+            collect_manifest,
+            save_code_review_state,
+            read_code_review_state,
+        )
+
+        cr_cfg = ConfigLoader.get_code_review_config(self.config)
+        if not cr_cfg.get("enabled"):
+            return {"triggered": False, "reason": "disabled"}
+
+        sr_cfg = ConfigLoader.get_self_review_config(self.config)
+        now = datetime.now()
+
+        # run_at 未到不触发（与自省同口径）
+        if now < _parse_run_at(sr_cfg["run_at"], now.date()):
+            return {"triggered": False, "reason": "before_run_at"}
+
+        # 同自然日防重（独立状态文件，MUST NOT 复用 self_review_state.json 的
+        # last_run_date——后者会被同轮自省写为今天导致本车道永不派发）
+        state = read_code_review_state(self.project_root)
+        if state.get("last_run_date") == local_today_str():
+            return {"triggered": False, "reason": "already_ran_today"}
+
+        # 单飞：已有 code-review run 在跑 → 跳过
+        if self._code_review_in_flight:
+            return {"triggered": False, "reason": "already_running"}
+        if self.agent_runner is not None:
+            running = getattr(self.agent_runner, "_running_agents", None) or {}
+            if any(str(rid).startswith("code-review-") for rid in running):
+                self._code_review_in_flight = True
+                return {"triggered": False, "reason": "already_running_agent"}
+
+        # 窗口 + manifest（与自省同源窗口口径，task 3.3 MUST 在 self_review 之前
+        # 调用，保证 window_start 读到上一次自省时刻而非本轮自省刚写入的 now）
+        window_start, window_kind = compute_window(self.project_root)
+        manifest = collect_manifest(self.project_root, scope="window", window_start=window_start)
+        if not manifest:
+            # manifest 为空：记录并跳过（不派发空 run——design Risk「空场景
+            # 白洗」），同日防重仍然写入（当日不重试，与自省零活动跳过同口径）
+            save_code_review_state(self.project_root, local_today_str())
+            self.logger.info(
+                "admin_monitor",
+                "code-review: 窗口内无文件变更，跳过本次周期审查"
+                f"（window_start={window_start.isoformat()}, kind={window_kind}）",
+            )
+            return {"triggered": True, "ok": True, "reason": "no_files", "date": local_today_str()}
+
+        # 上限截断
+        max_files = cr_cfg.get("max_files", 500)
+        if max_files > 0 and len(manifest) > max_files:
+            manifest = manifest[:max_files]
+
+        # 防重状态写入（投递前即写——投递成功/失败均不重试，与自省同口径）
+        save_code_review_state(self.project_root, local_today_str())
+
+        # 投递后台 worker（对齐 _evolution_worker 形态）
+        self._code_review_in_flight = True
+        review_kind = "scheduled"
+
+        def _worker():
+            try:
+                result = self.agent_runner.run_code_review(
+                    manifest,
+                    review_kind=review_kind,
+                    window_start=window_start,
+                    scope="window",
+                )
+                self.logger.info(
+                    "admin_monitor",
+                    f"code-review 周期审查完成：run_id={result.run_id}, "
+                    f"inserted={result.inserted}, updated={result.updated}, "
+                    f"resolved={result.resolved}"
+                    + (f", error={result.error}" if result.error else ""),
+                )
+            except Exception as e:
+                self.logger.error("admin_monitor", f"code-review 周期审查异常: {e}")
+            finally:
+                self._code_review_in_flight = False
+
+        try:
+            if self._code_review_executor is not None:
+                self._code_review_executor.submit(_worker)
+            else:
+                # executor 不可用（测试/禁用态）：同步执行（行为不变，保逃生门）
+                _worker()
+            return {"triggered": True, "ok": True, "reason": "scheduled", "date": local_today_str()}
+        except Exception as e:
+            self._code_review_in_flight = False
+            self.logger.error("admin_monitor", f"code-review 周期审查派发失败: {e}")
+            return {"triggered": True, "ok": False, "reason": f"exception: {e}", "date": local_today_str()}
 
     def _run_alert_lifecycle(self, specs: dict) -> int:
         """告警自动闭环扫描（add-alert-auto-resolve design D1/D3/D4）。

@@ -344,6 +344,10 @@ class FenixDaemon:
                 "fenixd",
                 "Admin run worker pool disabled (admin.workers: 0) — synchronous fallback",
             )
+        # add-code-review-agent-and-quality-tab：注入 code-review executor
+        # 到 AdminMonitor（对齐 _evolution_worker 形态，投递后台 worker）
+        if self.admin_monitor is not None:
+            self.admin_monitor._code_review_executor = self._admin_executor
 
         # 6.5 Initialize HookEngine（add-spec-hooks：SPEC 状态事件 hook 引擎）。
         # 配置从共享 config 对象实时读取（30s 热更新自动生效）；失败告警复用
@@ -558,6 +562,14 @@ class FenixDaemon:
                     self._check_approve_push_requests()
                 except Exception as e:
                     self.logger.error("fenixd", f"approve_push pickup failed: {e}")
+                # add-code-review-agent-and-quality-tab：code-review 手动触发
+                # 文件信号拾取（dashboard 写入 .fenix/code_review_request.json），
+                # 主循环下一轮消费（scope→review_kind 映射 + manifest 收集 +
+                # 后台投递 run_code_review），与 _check_cancel_requests 同构。
+                try:
+                    self._check_code_review_requests()
+                except Exception as e:
+                    self.logger.error("fenixd", f"code_review pickup failed: {e}")
                 # 配置热更新：每 30s 检查配置文件 mtime，变更则原地重载
                 if time.time() - config_check_ts >= 30:
                     config_check_ts = time.time()
@@ -1256,6 +1268,132 @@ class FenixDaemon:
                 f"审批推送未成功 spec='{spec}'（非 done/退避期内/推送失败），"
                 "不重试，退避与 recovery 兜底覆盖",
             )
+
+    # ── 手动触发 code-review 文件信号消费（add-code-review-agent-and-quality-tab D1）──
+
+    def _check_code_review_requests(self):
+        """主循环每轮扫描 code-review 手动触发文件信号并投递后台执行。
+
+        dashboard 的 POST /api/code-review/run 会原子写入
+        .fenix/code_review_request.json（含 scope: "full"|"window"、
+        requested_at）；本方法在主循环（1s 粒度）中检测其存在：读取→删除→
+        校验 hosting_state → 构造 run 参数 → 投递后台 worker 池。
+
+        消费方守卫（task 4.4/设计 D1）：daemon 未运行或 hosting_state ==
+        unmanaged 时信号无人消费，会永久滞留并在 daemon 下次启动时被消费成
+        一次用户并未请求的审查——POST 端点已前置拦截（400/409），此处
+        二次校验防御性兜底（如信号文件被绕过写入）。
+
+        单飞：已有 code-review run 在跑 → 忽略请求并记录。
+        """
+        from core.fenix_session import hosting_state
+
+        req_path = PROJECT_ROOT / ".fenix" / "code_review_request.json"
+        if not req_path.exists():
+            return
+        try:
+            with req_path.open("r", encoding="utf-8") as f:
+                payload = json.load(f)
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+            try:
+                req_path.unlink()
+            except OSError:
+                pass
+            return
+        # 先读后删：删除失败（被并发消费）则本次跳过，下一轮再试
+        try:
+            req_path.unlink()
+        except OSError:
+            return
+
+        scope = str(payload.get("scope") or "window")
+        if scope not in ("full", "window"):
+            scope = "window"
+
+        # 守卫：daemon 未运行或 unmanaged 时信号无人消费
+        hs = "stopped"
+        try:
+            hs = hosting_state(PROJECT_ROOT)
+        except Exception:
+            pass
+        if hs in ("stopped", "unmanaged"):
+            self.logger.warning(
+                "fenixd",
+                f"code_review 信号被丢弃：daemon 状态为 {hs}（信号无人消费，"
+                "与 approve_push 同判据），用户可能看到端点已返回拒绝但信号仍被"
+                "写入的窗口态",
+            )
+            return
+
+        # 单飞：已有 code-review run 在跑
+        if self.admin_monitor is not None and self.admin_monitor._code_review_in_flight:
+            self.logger.info("fenixd", "code_review 手动触发被忽略：已有审查在跑")
+            return
+        running = getattr(self.agent_runner, "_running_agents", None) or {}
+        if any(str(rid).startswith("code-review-") for rid in running):
+            self.logger.info("fenixd", "code_review 手动触发被忽略：agent 层检测到在途 run")
+            return
+
+        requested_at = payload.get("requested_at", "")
+        self.logger.info(
+            "fenixd",
+            f"消费 code-review 手动触发信号：scope={scope}, requested_at={requested_at}",
+        )
+
+        def _worker():
+            from core.code_review import compute_window, collect_manifest
+            from core.config import ConfigLoader
+
+            try:
+                if scope == "full":
+                    manifest = collect_manifest(PROJECT_ROOT, "full", None)
+                    review_kind = "manual_full"
+                    window_start = None
+                else:
+                    window_start, _ = compute_window(PROJECT_ROOT)
+                    manifest = collect_manifest(PROJECT_ROOT, "window", window_start)
+                    review_kind = "manual_window"
+                # 上限截断
+                cr_cfg = ConfigLoader.get_code_review_config(self.config)
+                max_files = cr_cfg.get("max_files", 500)
+                if max_files > 0 and len(manifest) > max_files:
+                    manifest = manifest[:max_files]
+                if not manifest:
+                    self.logger.info("fenixd", f"code_review 手动触发：manifest 为空（scope={scope}），跳过")
+                    return
+                result = self.agent_runner.run_code_review(
+                    manifest, review_kind=review_kind,
+                    window_start=window_start, scope=scope,
+                )
+                self.logger.info(
+                    "fenixd",
+                    f"code-review 手动审查完成：run_id={result.run_id}, "
+                    f"inserted={result.inserted}, updated={result.updated}, "
+                    f"resolved={result.resolved}"
+                    + (f", error={result.error}" if result.error else ""),
+                )
+            except Exception as e:
+                self.logger.error("fenixd", f"code_review 手动审查异常: {e}")
+
+        if self.admin_monitor is not None:
+            self.admin_monitor._code_review_in_flight = True
+
+        def _worker_with_flag():
+            try:
+                _worker()
+            finally:
+                if self.admin_monitor is not None:
+                    self.admin_monitor._code_review_in_flight = False
+
+        try:
+            if self._admin_executor is not None:
+                self._admin_executor.submit(_worker_with_flag)
+            else:
+                _worker_with_flag()
+        except Exception as e:
+            if self.admin_monitor is not None:
+                self.admin_monitor._code_review_in_flight = False
+            self.logger.error("fenixd", f"code_review 手动审查投递失败: {e}")
 
     # ── 框架自进化检查点（add-framework-self-evolution 5.x） ────────
 

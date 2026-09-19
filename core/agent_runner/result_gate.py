@@ -292,6 +292,34 @@ class EvolutionResult:
         self.output = output
 
 
+class CodeReviewResult:
+    """周期性代码审查 run 的结果（run_code_review 返回，add-code-review-agent-and-quality-tab）。
+
+    - inserted/updated: 落账到 items.jsonl 的条目数（inserted=新插入，
+      updated=重复观测刷新）
+    - resolved: 全仓快照核销的条目数（仅 manual_full 收尾核销非 0）
+    - error: success=False 时的失败原因
+    """
+
+    def __init__(
+        self,
+        run_id: str = "",
+        success: bool = True,
+        inserted: int = 0,
+        updated: int = 0,
+        resolved: int = 0,
+        error: str = "",
+        output: str = "",
+    ):
+        self.run_id = run_id
+        self.success = success
+        self.inserted = inserted
+        self.updated = updated
+        self.resolved = resolved
+        self.error = error
+        self.output = output
+
+
 # ── 产物门族（add-judge-artifact-gate / add-planready-artifact-gate /
 #     fix-verdict-read-failclosed / fix-impl-tasks-completion-gate）──
 #

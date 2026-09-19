@@ -216,6 +216,12 @@ from .evolution_items import (
     read_evolution_draft,
 )
 
+# ── code_review 组（add-code-review-agent-and-quality-tab）──
+from .code_review import (
+    read_code_review_items,
+    read_code_review_progress,
+)
+
 # ── state 组 ──
 from .state import parse_state
 

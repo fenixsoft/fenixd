@@ -121,6 +121,10 @@ class ConfigLoader:
         "self-review",
         "spec-review",
         "dispute-judge",
+        # add-code-review-agent-and-quality-tab: code-review（周期性仓库级
+        # 代码审查）。不登记会被 _hash_gate 静默跳过 agents.models.code-review
+        # 并回退默认网关（dispute-judge 前科）。
+        "code-review",
     ]
 
     # ── run_timeout 按 agent_type 覆盖（per-agent-timeout-override）──────
@@ -1180,6 +1184,33 @@ class ConfigLoader:
             "enabled": bool(sr.get("enabled", False)),
             "run_at": cls._validated_run_at(sr.get("run_at")),
             "read_todo": bool(sr.get("read_todo", False)),
+        }
+
+    @classmethod
+    def get_code_review_config(cls, config: Dict[str, Any]) -> Dict[str, Any]:
+        """Return the ``admin.code_review.*`` 段，缺失项填默认值。
+
+        默认值（add-code-review-agent-and-quality-tab D7）：
+        - enabled: False（纯增量，用户显式开启后才进入周期调度；手动触发
+          不受该开关约束——用户显式点击即执行，与 admin.self_review 的
+          「开关只管周期调度」语义一致）
+        - max_files: 500（全仓审查 manifest 上限；窗口审查按窗口收集。
+          非法值（非正整数/类型错误）回退缺省）
+        """
+        admin = config.get("admin") if isinstance(config, dict) else None
+        cr = admin.get("code_review") if isinstance(admin, dict) else None
+        if not isinstance(cr, dict):
+            cr = {}
+        max_files = cr.get("max_files", 500)
+        if (
+            not isinstance(max_files, int)
+            or isinstance(max_files, bool)
+            or max_files <= 0
+        ):
+            max_files = 500
+        return {
+            "enabled": bool(cr.get("enabled", False)),
+            "max_files": int(max_files),
         }
 
     @classmethod

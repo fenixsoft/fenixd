@@ -8,7 +8,6 @@ import {
   Card,
   DatePicker,
   Dropdown,
-  Empty,
   Input,
   List,
   Modal,
@@ -50,6 +49,7 @@ import SpecDocModal from './components/SpecDocModal';
 import AdminInvokeModal from './components/AdminInvokeModal';
 import SpecStatusModal from './components/SpecStatusModal';
 import SessionPanel from './components/SessionPanel';
+import QualityTab from './components/QualityTab';
 
 const REFRESH_THROTTLE_MS = 500;
 // dashboard-sse-refresh：增量 patch 去重窗口（同 spec 1s 内多事件只应用最新）
@@ -1155,10 +1155,11 @@ export default function SpecListPage() {
           {
             key: 'quality',
             label: '质量',
-            // add-project-detail-tabs：质量视图建设中——纯空态占位，不发起任何数据请求
+            // add-code-review-agent-and-quality-tab：承载代码审查质量视图——
+            // QualityTab active 门控：仅在选中本分面时拉取数据与订阅事件流
             children: (
               <Card variant="borderless">
-                <Empty description="质量视图建设中" style={{ padding: '64px 0' }} />
+                <QualityTab project={name} active={activeTab === 'quality'} />
               </Card>
             ),
           },
