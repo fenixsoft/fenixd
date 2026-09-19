@@ -1463,7 +1463,10 @@ _SYNC_PAGE_KEYS = {
             "verify_redo_budget",
         ],
     },
-    "verify": {"verify": ["static_scope", "deps_mode", "impl_code_review", "serving_reclaim"]},
+    "verify": {"verify": ["static_scope", "deps_mode", "serving_reclaim"]},
+    # 收尾代码质量审查自「验证」页迁出至独立「质量」页签（键路径 verify.impl_code_review
+    # 保持不变，仅换呈现位置；见 settings 页 quality 页签）
+    "quality": {"verify": ["impl_code_review"]},
     "approval": {"gates": ["promote_mode", "approve_mode"]},
     "misc": {"archive": ["auto_threshold"]},
     "system": {

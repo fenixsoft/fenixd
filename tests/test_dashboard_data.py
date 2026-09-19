@@ -139,11 +139,14 @@ class TestDashboardConfigIO(unittest.TestCase):
         self.assertTrue(eff["verify"]["impl_code_review"])
 
     def test_impl_code_review_sync_from_user(self):
-        """「同步用户级设置」按钮按页白名单取键——verify 页键组含 impl_code_review
-        （add-impl-code-review-gate 任务 2.4）。"""
+        """「同步用户级设置」按钮按页白名单取键——impl_code_review 迁至 quality 页
+        （原 add-impl-code-review-gate 任务 2.4 的 verify 页键组，随「质量」页签独立
+        而移动；键路径 verify.impl_code_review 不变）。"""
         from core.dashboard.data import _SYNC_PAGE_KEYS
 
-        self.assertIn("impl_code_review", _SYNC_PAGE_KEYS["verify"]["verify"])
+        self.assertIn("impl_code_review", _SYNC_PAGE_KEYS["quality"]["verify"])
+        # verify 页不再承载该键（迁出后避免双入口）
+        self.assertNotIn("impl_code_review", _SYNC_PAGE_KEYS["verify"]["verify"])
 
     def test_max_same_cause_redispatches_roundtrip_and_validation(self):
         """agents.max_same_cause_redispatches：缺省回显 + 写读回环 + 非法拒绝

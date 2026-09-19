@@ -11,6 +11,7 @@ import ApprovalModePanel from './components/ApprovalModePanel';
 import TokenBudgetPanel from './components/TokenBudgetPanel';
 import MiscSettingsPanel from './components/MiscSettingsPanel';
 import VerifyPanel from './components/VerifyPanel';
+import QualityPanel from './components/QualityPanel';
 import ProjectProfilePanel from './components/ProjectProfilePanel';
 import PromptsPanel from './components/PromptsPanel';
 import SystemPanel from './components/SystemPanel';
@@ -29,6 +30,8 @@ const BASE_MENU_ITEMS = [
   { key: 'parallel', label: '并行' },
   { key: 'token', label: '预算' },
   { key: 'verify', label: '验证' },
+  // add-quality-tab：收尾代码质量审查自「验证」页迁出为独立页签（键路径不变）
+  { key: 'quality', label: '质量' },
   { key: 'approval', label: '审批' },
   { key: 'misc', label: '归档' },
   { key: 'system', label: '系统' },
@@ -275,6 +278,14 @@ export default function SettingsPage() {
                 )}
                 {activeKey === 'verify' && (
                   <VerifyPanel
+                    config={config}
+                    onSave={handleSave}
+                    project={scope === 'project' ? project : undefined}
+                    onConfigSynced={scope === 'project' ? setConfig : undefined}
+                  />
+                )}
+                {activeKey === 'quality' && (
+                  <QualityPanel
                     config={config}
                     onSave={handleSave}
                     project={scope === 'project' ? project : undefined}

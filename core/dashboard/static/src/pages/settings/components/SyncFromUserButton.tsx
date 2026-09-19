@@ -9,6 +9,7 @@ const PAGE_LABELS: Record<string, string> = {
   parallel: '并行',
   token: '预算',
   verify: '验证',
+  quality: '质量',
   approval: '审批',
   misc: '归档',
   system: '系统',

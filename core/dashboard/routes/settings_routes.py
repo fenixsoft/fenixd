@@ -14,6 +14,7 @@ from pathlib import Path
 import yaml
 
 from core.dashboard import data as dashboard_data
+from core.dashboard.ocr_status import check_ocr_installed, install_ocr
 from core.admin_store import AdminStore, SIGNAL  # noqa: E402
 from core.dashboard.registry import Registry
 from core.agent_runner.prompt_builder import (
@@ -405,3 +406,35 @@ class H5SettingsRoutesMixin:
             }
         )
 
+
+    # ── 质量页签：open-code-review 安装探测与一键安装 ──────────────────
+
+    def _api_quality_ocr_status_get(self, query) -> dict:
+        """GET /api/quality/ocr-status — ocr 安装状态（质量页签门控）。
+
+        返回 {"installed", "bin", "version"}；探测口径见 core.dashboard.ocr_status
+        （shutil.which("ocr")，与 bin/ocr_review.py 包装器的 PATH 解析同源）。
+        无项目参数依赖——ocr 是机器级环境，与作用域/项目无关。
+        """
+        return check_ocr_installed()
+
+    def _api_quality_ocr_install_post(self, query) -> None:
+        """POST /api/quality/ocr-install — 一键安装 open-code-review。
+
+        执行 `npm install -g @alibaba-group/open-code-review`（固定字面量，
+        无用户输入拼接）。失败（含权限不足）返回 400 + 可读错误与 npm 输出尾部，
+        由用户自行 sudo 安装（不做提权）。成功返回最新版本串供 UI 立即刷新。
+        """
+        result = install_ocr()
+        if not result["ok"]:
+            # npm 原始报错（如 EACCES 权限不足）尾部并入错误文案透出，
+            # 便于用户自行 sudo 安装；错误体仍是单行可读字符串。
+            msg = result["error"] or "安装失败"
+            tail = (result.get("output") or "").strip()
+            if tail:
+                last_line = tail.splitlines()[-1].strip()
+                if last_line and last_line not in msg:
+                    msg = f"{msg}：{last_line}"
+            self._error(400, msg)
+            return
+        self._json({"ok": True, "version": result["version"], "output": result["output"]})

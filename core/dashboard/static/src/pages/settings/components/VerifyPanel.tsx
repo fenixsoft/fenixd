@@ -51,7 +51,6 @@ export default function VerifyPanel({ config, onSave, project, onConfigSynced }:
       static_scope: config.verify?.static_scope || 'main',
       deps_mode: config.verify?.deps_mode || 'hardlink',
       serving_reclaim_enabled: config.verify?.serving_reclaim?.enabled ?? true,
-      impl_code_review: config.verify?.impl_code_review === true,
       build_artifact_paths: (config.worktree?.build_artifact_paths || []).map(
         (p) => ({ path: p }),
       ),
@@ -67,7 +66,6 @@ export default function VerifyPanel({ config, onSave, project, onConfigSynced }:
           static_scope: values.static_scope,
           deps_mode: values.deps_mode,
           serving_reclaim: { enabled: values.serving_reclaim_enabled },
-          impl_code_review: values.impl_code_review === true,
         },
       };
       // 产物路径仅项目级可写（用户级作用域下该卡片只读，不提交该键）
@@ -194,23 +192,8 @@ export default function VerifyPanel({ config, onSave, project, onConfigSynced }:
             changes/archive、未登记、无活进程、超宽限期）执行 git worktree remove --force +
             prune，并按同判据回收 &lt;spec&gt;-boot.log。关闭后不再自动回收（存量目录需人工清理）。
           </Text>
-          {/* 收尾代码质量审查：沿用同款开关行（add-impl-code-review-gate 3.2 的
-              impl_code_review 键在主树已入库，重构时保留，仅改呈现形态） */}
-          <div className="switch-inline-row" style={{ marginTop: 24 }}>
-            <Form.Item name="impl_code_review" valuePropName="checked" noStyle>
-              <Switch data-testid="impl-code-review-switch" />
-            </Form.Item>
-            <span className="switch-inline-label">
-              收尾代码质量审查
-              <span className="label-note">（verify.impl_code_review）</span>
-            </span>
-          </div>
-          <Text type="secondary">
-            开启后实现者会在全部 tasks.md 任务完成、提交之后、写结果文件之前调用
-            ocr（bin/ocr_review.py）审查本次改动，逐条评估发现并自行修正真实问题
-            （误报可驳回）。需要环境已安装 ocr（npm install -g
-            @alibaba-group/open-code-review），未安装时自动按 unavailable 降级跳过。
-          </Text>
+          {/* 收尾代码质量审查已迁至独立「质量」页签（add-quality-tab）：
+              键路径 verify.impl_code_review 不变，仅换呈现位置 */}
         </Card>
 
         {/* 构建产物路径：标题与说明置于卡片外，与上方「验证契约」节同构 */}

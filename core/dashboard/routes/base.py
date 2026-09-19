@@ -119,6 +119,9 @@ def _get_evolution_draft(s, p, q, m):
 def _get_session(s, p, q, m):
     s._api_session_get(q)
 
+def _get_quality_ocr_status(s, p, q, m):
+    s._json(s._api_quality_ocr_status_get(q))
+
 
 # ── POST 路由适配函数 ─────────────────────────────────────────────────
 
@@ -127,6 +130,9 @@ def _post_config(s, p, q, m):
 
 def _post_config_sync(s, p, q, m):
     s._api_config_sync_from_user(q)
+
+def _post_quality_ocr_install(s, p, q, m):
+    s._api_quality_ocr_install_post(q)
 
 def _post_prompts(s, p, q, m):
     s._api_prompts_post(q)
@@ -280,12 +286,16 @@ _API_GET_ROUTES = [
     ("exact", "/api/evolution/analysis", _get_evolution_analysis),
     ("exact", "/api/evolution/draft",  _get_evolution_draft),
     ("exact", "/api/session",         _get_session),
+    # 质量页签：open-code-review 安装状态（GET，无副作用）
+    ("exact", "/api/quality/ocr-status", _get_quality_ocr_status),
 ]
 
 _API_POST_ROUTES = [
     # 精确路由（原顺序保持）
     ("exact", "/api/config",              _post_config),
     ("exact", "/api/config/sync-from-user", _post_config_sync),
+    # 质量页签：一键安装 open-code-review（POST，同步执行 npm install -g）
+    ("exact", "/api/quality/ocr-install", _post_quality_ocr_install),
     ("exact", "/api/prompts",             _post_prompts),
     ("exact", "/api/todo",                _post_todo),
     ("exact", "/api/verify-yaml",         _post_verify_yaml),

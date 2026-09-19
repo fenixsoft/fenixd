@@ -368,6 +368,7 @@ hook 分发与动作执行在 daemon 后台线程进行，不阻塞状态机写�
 | 配置管理 | llm.providers / agents.models / gates.approve_mode / gates.promote_mode / gates.spec_review_mode |
 | Token 预算面板 | agents.token_budget_millions |
 | 验证 | verify.static_scope / verify.deps_mode（存于 config.yaml；`.fenix/verify.yaml` 契约手工编辑，不经设置页改写） |
+| 质量 | verify.impl_code_review（实现阶段收尾代码质量审查开关，自「验证」页迁出；页签顶部的 ocr 环境探测/一键安装不写配置键） |
 | 提示词管理 | agents/ 通用层 + .fenix/agents/ 项目级 |
 | 系统 | admin.enabled / admin.interval_minutes / admin.escalation_cooldown_minutes / admin.merge_breaker_threshold / admin.shutdown_drain_seconds |
 | 系统·瞬断治理 | agents.transient_backoff_schedule / agents.transient_redispatch_delay_seconds / agents.transient_break_threshold / agents.transient_break_window_seconds / agents.transient_break_cooldown_seconds |

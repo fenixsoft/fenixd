@@ -1269,6 +1269,24 @@ export async function getVerifyYamlTemplate(): Promise<{ path: string; template:
   return request(`/api/verify-yaml-template`);
 }
 
+// ── 质量页签：open-code-review 安装探测与一键安装 ──────────────────────
+
+export interface OcrStatus {
+  installed: boolean;
+  bin: string | null;
+  version: string | null;
+}
+
+export async function getOcrStatus(): Promise<OcrStatus> {
+  return request<OcrStatus>(`/api/quality/ocr-status`);
+}
+
+export async function installOcr(): Promise<{ ok: boolean; version: string | null }> {
+  return request<{ ok: boolean; version: string | null }>(`/api/quality/ocr-install`, {
+    method: 'POST',
+  });
+}
+
 export async function autodraftVerifyYaml(
   project: string,
   overwrite: boolean,
