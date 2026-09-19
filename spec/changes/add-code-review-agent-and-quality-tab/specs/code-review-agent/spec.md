@@ -7,7 +7,7 @@
 - `core/agent_runner/prompt_builder.py` 的 `AGENT_PROMPT_FILES` MUST 含 `"code-review": "code-review.md"`。
 - `core/agent_runner/run_files.py` 的 `RUN_ID_AGENT_PREFIXES` MUST 含 `("code-review-", "code-review")`。
 - `core/config.py` 的 `KNOWN_AGENT_TYPES` MUST 含 `"code-review"`。
-- `.fenix/config.yaml` 与 `.fenix/config.template.yaml` 的 `agents.models` MUST 含 `code-review` 模型分配。
+- `.fenix/config.template.yaml` 的 `agents.models` MUST 含 `code-review` 模型分配示例（用户级/项目级 `.fenix/config.yaml` 为 gitignored 运行时文件，由用户按模板自行配置，不进交付声明）。
 - 框架根 `agents/code-review.md` 提示词文件 MUST 存在。
 - 未登记 `agents.models.code-review` 时，模型链 MUST 依次回退 `self-review` → `administrator` → 默认网关，MUST NOT 静默走默认网关而无回退。
 
@@ -75,6 +75,7 @@ code-review 的审查周期 SHALL 与每日自省（`admin.self_review`）完全
 系统 SHALL 对外暴露 code-review 的运行状态与真实进度，并支持取消在跑的审查 run。
 
 - 进度结构 MUST 含 `{running, review_id, review_kind, total, done, current}`。
+- `running` 判定 MUST 基于该 run 产物 `.fenix/runs/<review_id>.jsonl` 的末行终态：终态集合 MUST 取既有运行终态全量四类（`result` / `error` / `interrupted` / `cancelled`），并叠加既有 stale 阈值兜底；MUST NOT 以「产物/manifest 文件是否存在」近似判定（否则已取消或已停机的 run 会永远显示为运行中，进度条与取消按钮永不收起，且手动触发的 409 守卫恒真、后续触发全部被拒）。
 - 取消 MUST 复用既有 run 取消机制：写 `.fenix/cancel_run_request.json` 旗标后由 daemon 消费，MUST NOT 另立取消通道。
 - 取消后该 run MUST 终止，已落盘的部分结果 MUST 保留（不丢已完成的审查条目）。
 

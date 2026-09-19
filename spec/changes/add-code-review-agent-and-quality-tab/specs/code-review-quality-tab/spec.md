@@ -6,6 +6,8 @@
 
 - 表格 MUST 含列：严重度、文件:行、问题标题、所属 SPEC、状态；MUST 支持按严重度 / 状态过滤与排序。
 - 表格 MUST 支持行复选（`rowSelection`），并显示已选条数。
+- 表格 MUST 提供逐条「忽略」操作（行操作或操作列）：触发后调 `POST /api/code-review/items/status` 将条目置 `ignored`，成功后该条目 MUST 从默认列表移除——`ignored` 是「用户显式标记」而非「系统自动置入」的状态，其唯一入口就在本分面，缺此入口则 `code-review-items` 的状态机中 `ignored` 无法被触发。
+- 表格 MUST 提供逐条「清除归属」操作（仅对 `in_spec` 条目）：把条目重置回 `open` 并清空 `spec_name`——否则条目一旦生成修复 SPEC 即被 `in_spec` 永久占用（`resolved` 仅由全仓核销置入、`ignored` 只是用户忽略），用户无法撤回误选。
 - 默认列表 MUST 仅含 `open` 状态条目（`resolved` / `ignored` 默认隐藏，可经状态过滤查看）。
 - 数据 MUST 经 `GET /api/code-review/items` 拉取，并随 SSE（`/api/stream`）与心跳兜底刷新，MUST NOT 仅在页面首次加载时拉取一次。
 - 仅当「质量」分面被选中时才拉取数据与订阅；未选中时 MUST NOT 发起质量数据请求（保持 `project-page-tabs` 的按需加载语义）。
@@ -32,6 +34,7 @@
 - 「全仓库审查」MUST 以 `scope=full` 调 `POST /api/code-review/run`。
 - 「立即审查本周期」MUST 以 `scope=window` 调 `POST /api/code-review/run`。
 - 已有审查运行中时，再次点击 MUST 被拒绝（后端返回 409），前端 MUST 给出明确提示而非静默失败。
+- 手动触发 MUST 走「写文件信号 → daemon 消费」链路；若该项目的文件信号无消费方（daemon 未运行或未受 supervisor 托管，`hosting_state == "unmanaged"`），后端 MUST 拒绝写信号并返回明确错误（先例 `request_spec_approve_push`：无人消费的信号会永久滞留，并可能在 daemon 下次启动时被消费成一次用户并未请求的审查），前端 MUST 原样提示该拒绝。
 - 触发成功后 MUST 进入运行中态，展示进度条与取消按钮。
 
 #### Scenario: 触发全仓审查

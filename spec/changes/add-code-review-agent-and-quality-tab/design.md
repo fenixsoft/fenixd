@@ -33,9 +33,11 @@
 - `core/agent_runner/prompt_builder.py:26` `AGENT_PROMPT_FILES` + 框架根 `agents/code-review.md`
 - `core/agent_runner/run_files.py:28` `RUN_ID_AGENT_PREFIXES`（否则时间线退化为泛型 `agent`）
 - `core/config.py:114` `KNOWN_AGENT_TYPES`（否则 `agents.models.code-review` 被静默跳过、回退默认网关）
-- `.fenix/config.yaml` + `.fenix/config.template.yaml` 的 `agents.models.code-review`
+- `.fenix/config.template.yaml` 的 `agents.models.code-review`（模板为入库交付物；`.fenix/config.yaml` 是 gitignored 运行时文件，由用户按模板自行补齐，不作为交付声明）
 
 **模型链回退**：`code-review` → `self-review` → `administrator` → 默认网关（与 `evolution` 同型，`maintenance_runs.py:373`）。
+
+**手动信号与消费方守卫**：两个触发按钮经 `POST /api/code-review/run` 写 `.fenix/code_review_request.json`，由 daemon 主循环扫描消费（同 `admin_invoke_request` / `cancel_run_request` / `approve_push_request` 形态）。`code_review_request.json` 是本车道新增的**第五个文件信号**——除 `fenixd.py` 的 1s 扫描点外，MUST 同时登记：(a) daemon 启动/停机的清扫路径（对齐既有信号「损坏 JSON 删除防卡死」与停机残留处理）；(b) 托管守卫——daemon 未运行或 `hosting_state == "unmanaged"` 时拒绝写入（先例 `request_spec_approve_push`，`core/dashboard/data/admin_actions.py:736-751`：信号无人消费会永久滞留，daemon 下次启动会把它消费成一次用户并未请求的审查）。`.fenix/` 整体 gitignored（`.gitignore` 的 `.fenix/*`），该信号文件不构成交付物。
 
 **理由**：LLM agent 能给出语义级、可读的修复建议（生成修复 SPEC 需要），`ocr` 静态规则单独用覆盖面与可解释性不足；二者结合而非二选一。
 
@@ -50,6 +52,8 @@
 `window_start` 直接读 `.fenix/self_review_state.json` 的 `last_run_at`（与 `core/self_review.py:507` 同一口径），首跑回退 `now - 24h`。触发点绑定在 admin 巡检判定到达自省时点之后（同一 `run_at`），复用同一自然日防重与开关守卫形态。
 
 **派发位置**：daemon/admin_monitor 层（`fenixd.py` / `core/admin_monitor.py`），**不在 `core/self_review.py` 内**——该模块硬约束 MUST NOT 派发 agent。在 admin 侧新增一个 `_check_code_review_checkpoint`，与 self_review checkpoint 并列。
+
+**时点次序（重要，修正「之后」的直觉）**：`_check_code_review_checkpoint` MUST 排在 `_run_self_review_checkpoint()` **之前**。`window_start` 读 `.fenix/self_review_state.json` 的 `last_run_at`，而自省检查点会在收尾把该字段覆写为「此刻」（`core/self_review.py:1121-1133`，含成功/失败/零活动跳过三条路径）。若在本检查点之前跑自省，窗口退化为 `[now, now]` → manifest 恒空 → 周期审查每天以 `no_files` 空转。防重状态另立（如 `.fenix/code_review_state.json` 的 `last_run_date`），MUST NOT 复用 `self_review_state.json` 的 `last_run_date`（同轮已被自省写为今天 → 本车道永不派发）。
 
 **理由**：用户明确"周期计算逻辑与自省一致"；复用同一状态源保证两者永远同窗口，不引入漂移。
 
