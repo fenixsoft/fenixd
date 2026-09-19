@@ -98,6 +98,100 @@ DEPENDENCY_ACCEPTED_STATUSES = ("done", "pushed", "implemented", "verified")
 DISPATCH_COOLDOWN_SECONDS = 10
 
 
+# ── 派发前同源草案收敛检查（evo-deliverable-declaration-drift-align D3）──────
+# SUPERSEDED.md 显式点名解析（「以显式点名为唯一判据」）：被取代目录名以 inline
+# code（反引号）或路径形态出现在该页正文中（现行实例「**生效实现落点**：
+# ``spec/changes/evo-merge-back-wip-overlap-gate-575976/``」即此形态）。MUST NOT
+# 依赖 ``.spec.yaml`` 的 capability 字段——实测全仓 ``.spec.yaml`` 无 capability
+# 键，文档自述的「capability + name 归一」不可实现。
+_SUPERSEDED_INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
+
+
+def _parse_superseded_named_targets(text: str) -> list:
+    """从 SUPERSEDED.md 正文解析显式点名的目录名（inline code / 路径形态）。
+
+    ``spec/changes/<name>/`` 路径形态与裸 ``<name>`` inline code 归一为目录名；
+    排除 ``spec/changes/`` 前缀之外的无斜杠 token（非 spec 目录点名）、空 token
+    与不含目录名字符集（字母数字/连字符/点）的 token（如中文叙述夹带的反引号
+    片段）。
+
+    Returns:
+        点名目录名列表（去重、保序）；无点名/解析异常返回 []。
+    """
+    names: list = []
+    if not text:
+        return names
+    for tok in _SUPERSEDED_INLINE_CODE_RE.findall(text):
+        tok = tok.strip().strip("/")
+        if tok.startswith("spec/changes/"):
+            rest = tok[len("spec/changes/"):]
+            if not rest:
+                continue
+            name = rest.split("/", 1)[0]
+        elif "/" not in tok and tok and tok != "SUPERSEDED.md":
+            name = tok
+        else:
+            continue
+        # 目录名字符集校验（spec 目录名形态：字母数字开头，仅字母数字/连字符/点）
+        if not re.fullmatch(r"[A-Za-z0-9][\w.-]*", name or ""):
+            continue
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def _scan_superseded_docs(project_root) -> dict:
+    """扫描 spec/changes/ 下所有 SUPERSEDED.md 并解析显式点名（D3 第 1/2 条）。
+
+    Returns:
+        {目录名: {"superseded": bool, "named_targets": [目录名, ...]}}（保序）；
+        spec/changes/ 不存在/不可读 → {}。
+    """
+    changes_dir = Path(project_root) / "spec" / "changes"
+    out: dict = {}
+    if not changes_dir.is_dir():
+        return out
+    for d in sorted(changes_dir.iterdir()):
+        if not d.is_dir():
+            continue
+        sup = d / "SUPERSEDED.md"
+        info: dict = {"superseded": False, "named_targets": []}
+        if sup.is_file():
+            try:
+                text = sup.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                text = ""
+            info["superseded"] = True
+            info["named_targets"] = _parse_superseded_named_targets(text)
+        out[d.name] = info
+    return out
+
+
+def _superseded_name_peers(spec_name: str, scan: dict) -> list:
+    """名字归一识别平级同名草案（D3 第 3 条：仅识别，不拦截）。
+
+    本 spec 目录名去掉数字后缀（``_NUM_SUFFIX_RE``，同源 core/evolution.py:1498；
+    ``-<6位 id>`` / ``-_575976`` 均由此产生，见 evolution.py:1040-1042）后与其
+    它目录名相等的 → 平级同名草案清单。两侧含义不同（对方含 SUPERSEDED.md=生效
+    落点不拦本方；本方含 SUPERSEDED.md=拦截本方）统一由调用方以「本方是否含
+    SUPERSEDED.md」裁定，MUST NOT 单凭归一命中拦截生效落点（被点名的生效落点
+    与收敛源按名字归一会互为命中，误拦会把生效草案永久冻住）。
+
+    Returns:
+        平级同名草案目录名列表（保序）。
+    """
+    from core.evolution import _NUM_SUFFIX_RE
+
+    base = _NUM_SUFFIX_RE.sub("", spec_name, count=1)
+    peers: list = []
+    for name in scan:
+        if name == spec_name:
+            continue
+        if _NUM_SUFFIX_RE.sub("", name, count=1) == base:
+            peers.append(name)
+    return peers
+
+
 class PMEngine:
     """
     Project Management Engine — the brain of fenixd.
@@ -618,6 +712,38 @@ class PMEngine:
                     f"Skipping '{spec_name}': dependencies not satisfied",
                 )
                 return
+            # 派发前同源草案收敛检查（evo-deliverable-declaration-drift-align
+            # D3）：本 spec 目录自身含 SUPERSEDED.md（已被取代，不再作为独立
+            # 实现入口）→ 禁止派发、置 blocked（error=同源草案收敛义务未满足，
+            # 附 SUPERSEDED.md 路径），待收敛（该 SUPERSEDED.md 移除或目录删除）
+            # 后由后续周期重评恢复。被 SUPERSEDED.md 显式点名为生效落点的一侧
+            # （自身无 SUPERSEDED.md）MUST NOT 被拦截。旁路直入队列的条目
+            # （定时重派/恢复车道）由 _process_queue 候选筛选处以同口径兜底。
+            try:
+                convergence = self._check_superseded_convergence(spec_name)
+            except Exception as e:
+                # 检查异常 fail-open：不因检查故障阻塞派发（保守放行，
+                # 与其它派发前闸门的 fail-open 取向一致）
+                convergence = {"blocked": False, "error": None}
+                self.logger.warning(
+                    "pm_engine",
+                    f"同源草案收敛检查异常 '{spec_name}'（fail-open 放行）: {e}",
+                )
+            if convergence.get("blocked"):
+                self.state_machine.update_spec(
+                    spec_name,
+                    {
+                        "status": "blocked",
+                        "tester_run": None,
+                        "error": convergence.get("error") or "同源草案收敛义务未满足",
+                    },
+                )
+                self.logger.error(
+                    "pm_engine",
+                    f"同源草案收敛义务拦截派发 '{spec_name}'（含 SUPERSEDED.md）— "
+                    f"已 blocked，收敛后恢复（{convergence.get('superseded_path')}）",
+                )
+                return
             # add-fast-track-mode（task 3.1）：按 .spec.yaml mode 选择派发类型。
             # fast-track spec 派发 fast-track agent（单 run 全包），其余派 implementer。
             from core.spec_mode import read_spec_mode
@@ -636,6 +762,60 @@ class PMEngine:
         finally:
             # 派发完成（成功或失败），从 pending 中移除，允许未来派发
             self._pending_dispatches.discard(spec_name)
+
+    def _check_superseded_convergence(self, spec_name: str) -> dict:
+        """派发前同源草案收敛检查（evo-deliverable-declaration-drift-align D3）。
+
+        implementer/fast-track 派发前 MUST 检查本 spec 目录自身是否含
+        SUPERSEDED.md（已被取代，不再作为独立实现入口）：命中 → 禁止派发、
+        spec 置 blocked（error=同源草案收敛义务未满足，附 SUPERSEDED.md 路径），
+        待收敛（该 SUPERSEDED.md 移除或目录删除）后恢复派发（D3 第 5 条）。
+
+        拦截面只限「本 spec 目录自身含 SUPERSEDED.md」——该标记由收敛动作主动
+        写入（先例：commit 023346ff / 42af955e），语义明确「本目录不再作为独立
+        实现入口」。名字归一（去 ``-\d+$`` 后缀，同源 ``_NUM_SUFFIX_RE``，
+        core/evolution.py:1498）仅用于识别平级同名草案；MUST NOT 单凭归一命中
+        拦截生效落点（被 SUPERSEDED.md 显式点名为生效落点的一侧自始不受拦截——
+        被点名的生效落点与收敛源按名字归一会互为命中，误拦会把生效草案永久
+        冻住）。
+
+        Args:
+            spec_name: spec 目录名（spec/changes/<spec_name>/）。
+
+        Returns:
+            {"blocked": bool, "error": str|None, "superseded_path": str|None,
+             "peers": [平级同名草案目录名], "named_by": [点名本 spec 的收敛源]}。
+            blocked=True 时调用方 MUST 置 blocked 并跳过派发。
+        """
+        project_root = self.project_root
+        spec_dir = Path(project_root) / "spec" / "changes" / spec_name
+        sup_path = spec_dir / "SUPERSEDED.md"
+        scan = _scan_superseded_docs(project_root)
+        peers = _superseded_name_peers(spec_name, scan)
+        named_by = [
+            name
+            for name, info in scan.items()
+            if spec_name in (info.get("named_targets") or [])
+        ]
+        if sup_path.is_file():
+            try:
+                rel = sup_path.relative_to(project_root).as_posix()
+            except ValueError:
+                rel = str(sup_path)
+            return {
+                "blocked": True,
+                "error": f"同源草案收敛义务未满足: {rel}",
+                "superseded_path": rel,
+                "peers": peers,
+                "named_by": named_by,
+            }
+        return {
+            "blocked": False,
+            "error": None,
+            "superseded_path": None,
+            "peers": peers,
+            "named_by": named_by,
+        }
 
     # ── 定时调度到期检测（add-spec-scheduling-controls D3）────────────────────
 
