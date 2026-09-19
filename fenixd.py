@@ -213,8 +213,15 @@ class FenixDaemon:
         self.config = ConfigLoader.resolve_config(PROJECT_ROOT)
 
         # 2. Initialize logger
-        log_dir = PROJECT_ROOT / self.config.get("logging.dir", ".fenix/logs")
-        log_level = self.config.get("logging.level", "INFO")
+        # 配置读取一律走 ConfigLoader.get 的点号路径解析：self.config 是
+        # resolve_config 深合并后的**嵌套 dict**（如 {"worktree": {...}}），
+        # 而 dict.get("worktree.base_dir") 是按**扁平字面键**查找——恒返回缺省
+        # 兜底值，显式配置静默失效（2026-09-19 事故：worktree.has_build_artifacts
+        # / build_artifact_paths / mergeback_wip_overlap_policy 三键读成缺省，
+        # 已裁决的 has_build_artifacts=false 读不到 → 产物判定永久「未裁决」→
+        # merge-back WIP 重叠闸门误发 build_artifact_paths_missing 信号）。
+        log_dir = PROJECT_ROOT / ConfigLoader.get(self.config, "logging.dir", ".fenix/logs")
+        log_level = ConfigLoader.get(self.config, "logging.level", "INFO")
         self.logger = Logger(log_dir, log_level)
         self.logger.info("fenixd", "Initializing Fenix Loop Engineering Framework...")
         # supervision-timeout-config-consistency：启动配置校验（resolve_config 内
@@ -229,15 +236,23 @@ class FenixDaemon:
         self.logger.info("fenixd", "StateMachine initialized")
 
         # 4. Initialize WorktreeManager
-        wt_base = PROJECT_ROOT / self.config.get("worktree.base_dir", ".claude/worktrees")
+        # 本段四键均为点号路径读取（见上方「2. Initialize logger」注释）：
+        # 写成 self.config.get("worktree.x") 会静默取缺省值。
+        wt_base = PROJECT_ROOT / ConfigLoader.get(
+            self.config, "worktree.base_dir", ".claude/worktrees"
+        )
         # 分支枚举前缀（fix-recovery-branch-anchor D2）：与分支创建端同源取
         # 并集；配置值仅作推送侧前缀，非创建端事实源（非 fenix 配置下创建端
         # 仍产出 fenix/<spec>-<ts>，须并集枚举才不扫空命名空间）。
-        _impl_prefix = self.config.get("worktree.implement_branch_prefix", "fenix")
+        _impl_prefix = ConfigLoader.get(
+            self.config, "worktree.implement_branch_prefix", "fenix"
+        )
         # merge-back 前 WIP 重叠闸门策略（evo-merge-back-wip-overlap-gate D1）：
         # 默认 auto（自动收纳重叠改动）；显式 worktree.mergeback_wip_overlap_policy
         # =block 时阻塞等待人工处置（不 stash/不 merge/不 pop，主树零污染）。
-        _wip_policy = self.config.get("worktree.mergeback_wip_overlap_policy", "auto")
+        _wip_policy = ConfigLoader.get(
+            self.config, "worktree.mergeback_wip_overlap_policy", "auto"
+        )
         # 构建产物路径判定配置（evo-merge-back-wip-artifact-scope D2/D4 /
         # fix-artifact-paths-hardcoded-default D1/D4）：项目可声明自己的产物根
         # （前缀，以 / 结尾）与产物文件（后缀通配，含 *），供产物判定器实例化。
@@ -246,8 +261,12 @@ class FenixDaemon:
         # 恒假，产品项目须显式声明后才判真。has_build_artifacts 三态：
         # 缺省 None=未裁决（判定恒假 + 运行期触发起草信号）、false=已声明无产物、
         # true=按 build_artifact_paths 判定。
-        _artifact_paths = self.config.get("worktree.build_artifact_paths", None)
-        _has_build_artifacts = self.config.get("worktree.has_build_artifacts", None)
+        _artifact_paths = ConfigLoader.get(
+            self.config, "worktree.build_artifact_paths", None
+        )
+        _has_build_artifacts = ConfigLoader.get(
+            self.config, "worktree.has_build_artifacts", None
+        )
         self.worktree_manager = WorktreeManager(
             wt_base,
             PROJECT_ROOT,
