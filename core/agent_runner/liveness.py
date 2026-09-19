@@ -448,11 +448,19 @@ class LivenessSupervisor:
     def reviewer_in_flight(
         self, spec_name: str, reviewer_run: str | None
     ) -> tuple[bool, str | None]:
-        """D0 判定总则：「在飞评审 run」= ``reviewer_run`` 非空 且 该 run 尚在飞。
+        """D0 判定总则：「在飞评审 run」= ``_active_reviews`` 命中 或 reviewer_run 非空且该 run 尚在飞。
 
-        分层判据（进程表为真相，流文件兜底，陈旧锚点 fail-open，对齐
-        spec/changes/evo-spec-concurrency-flight-guard/design.md D0）：
+        分层判据（fix-spec-review-blocking-dispatch 3.1/3.2/3.6 扩展既有
+        evo-spec-concurrency-flight-guard D0 分层；进程表为真相，流文件兜底，
+        陈旧锚点 fail-open，对齐 spec/changes/evo-spec-concurrency-flight-guard/
+        design.md D0）：
 
+          0. ``_active_reviews`` 命中（经 pm_engine 门面 ``is_review_in_flight``
+             查询，PMEngine __init__ 注入 ``_pm_engine_ref`` 回引——agent_runner
+             不持 pm_engine，tasks 3.7 显式约定查询通路）→ ``(True, "queued")``。
+             覆盖「评审条目已出队、四步链锚点尚未落盘」的窗口——期间进程表与
+             流文件均判否，若落到陈旧锚点分支会诱导调用方清理锚点、放行并发派发。
+             本前置判据 MUST 优先于判据 1 的空锚点短路（tasks 3.6）。
           1. ``reviewer_run`` 为空 → ``(False, None)``（无在飞评审）。
           2. ``running_run_ids()``（进程表为真相，评审 run 经 ``_run_claude``
              注册进 ``_running_agents``）含 ``reviewer_run`` → ``(True, "process")``。
@@ -461,13 +469,33 @@ class LivenessSupervisor:
              → ``(True, "stream")``。
           4. 2、3 皆否 → **陈旧锚点**（run 已终态但结果未消费/历史残留）：
              ``(False, "stale")``——调用方 MUST 按「无在飞评审」放行并记 WARNING，
-             交由既有恢复路径清理锚点（防自造死锁）。
+             交由既有恢复路径清理锚点（防自造死锁）。stale 语义收窄为「确无
+             在飞评审」：``"queued"`` 判据已覆盖入队/出队窗口，不会把在飞
+             误标为 stale（spec-concurrency-governance Scenario「陈旧锚点语义
+             收窄」）。
           5. 判定过程异常 → fail-open ``(False, None)``（不新增死锁面，对齐
              engine.py:470-478 既有门控容错），异常详情记 WARNING 日志。
 
         Returns: ``(in_flight: bool, reason: str | None)``。reason 取值
-        ``"process"`` / ``"stream"``（在飞）、``"stale"``（陈旧锚点）、None（无）。
+        ``"queued"`` / ``"process"`` / ``"stream"``（在飞）、``"stale"``
+        （陈旧锚点）、None（无）。
         """
+        # 前置判据 0（fix-spec-review-blocking-dispatch 3.1/3.6）：`_active_reviews`
+        # 命中即判在飞。查询经 PMEngine 门面 `is_review_in_flight`（回引 `_pm_engine_ref`
+        # 在 PMEngine.__init__ 注入）；无回引（测试的瘦门面/CLI 构造）时跳过本判据，
+        # 回到既有分层。判定异常 fail-open：发不起查询不等于「无在飞」，保守放行
+        # 到既有分层继续（不落入 stale 终局）。
+        pm_engine_ref = getattr(self._pm, "_pm_engine_ref", None)
+        if pm_engine_ref is not None:
+            try:
+                if pm_engine_ref.is_review_in_flight(spec_name):
+                    return True, "queued"
+            except Exception as e:
+                self._pm.logger.warning(
+                    "agent_runner",
+                    f"reviewer_in_flight 队列前置判据异常 '{spec_name}'"
+                    f"（fail-open 继续既有分层）: {e}",
+                )
         if not reviewer_run:
             return False, None
         # 判据 2：进程表（in-process 注册表；判据异常不回退到流判据的判定不成立，

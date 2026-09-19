@@ -99,8 +99,28 @@ class RRollbackMixin:
                     f"Rolled back '{spec_name}' testing → implemented (verifier never started): {exc}",
                 )
                 self._enqueue(spec_name, "verifier")
-            elif agent_type in ("implementer", "fast-track") and status == "implementing":
-                # 死亡 run 豁免（fix-budget-counting-semantics D1）：异常路径＝
+            elif agent_type == "spec-review" and status == "reviewing":
+                # 评审 worker 异常回滚（fix-spec-review-blocking-dispatch 1.8
+                # 双保险）：四步链之外异常（构造失败/快照路径异常）时 spec 可能
+                # 停在 reviewing 且 reviewer_run 未被推进——清锚点、保持
+                # reviewing。MUST NOT 在此处重新入队：_run_spec_review_worker
+                # 已在四步链外异常路径显式入队（tasks 1.8），此处作为
+                # defense-in-depth 兜底仅清理状态，避免双入队导致无限重派
+                # （worker 异常 → 入队 → 再 worker 异常 → 再入队…）。
+                # 未入队的残余场景由 recovery 的 reviewing 分支兜底拾取。
+                self._pm.state_machine.update_spec(
+                    spec_name,
+                    {
+                        "reviewer_run": None,
+                        "error": f"spec-review-incomplete: dispatch exception: {exc}",
+                    },
+                )
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"Rolled back '{spec_name}' reviewing（评审 worker 异常，"
+                    f"清理锚点待恢复拾取）: {exc}",
+                )
+            elif agent_type in ("implementer", "fast-track") and status == "implementing":                # 死亡 run 豁免（fix-budget-counting-semantics D1）：异常路径＝
                 # run 无收工结果产出（进程消失/零输出/网关链路耗尽），回退本次
                 # 启动的预算计数。计数在 worker 启动处先行递增，此处补偿回退。
                 # run_reason 传入 exc 信息（派发异常不属监督超时/停滞，应豁免）。

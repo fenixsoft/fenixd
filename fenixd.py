@@ -488,7 +488,15 @@ class FenixDaemon:
         # recover_interrupted 此前定义了但从未被调用，导致 daemon 重启后卡死的
         # spec 永远不被重新调度（fix-fenix-token-waste）；保留判定已在上面与
         # 孤儿清理协同完成。
-        self.event_bus.full_scan()
+        # ── 初扫异步化（fix-spec-review-blocking-dispatch 4.2/4.3/4.4）──
+        # 评审派发入队化后，首扫的 recovery 分支（reviewing → spec-review 入队）
+        # 不再阻塞调用线程，但首扫本身在历史上有 1802s 长尾记录（design D5）。
+        # 基线快照（_snapshot_baseline）由 event_bus.start() 内的
+        # _update_known_state 同步完成（2026-09-07 事故的防线，D5 不变量保持），
+        # 扫描主体提交到后台 daemon 线程（命名对齐 fenixd-* 同族，句柄由
+        # EventBus 持有、stop() 收口覆盖）——主循环不再等首扫完成，恢复
+        # 「进入主循环 ≤ 数秒」的用户可见指标。MUST NOT 在此等待扫描主体。
+        self.event_bus.start_initial_scan()
 
         # 启动 Administrator 监视线程（admin.enabled 时；间隔见 admin.interval_minutes）
         if self.admin_monitor and self.admin_monitor.enabled:

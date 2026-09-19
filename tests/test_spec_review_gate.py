@@ -278,13 +278,20 @@ class TestReviewFreezeClassification(unittest.TestCase):
                       "告警 evidence 必须含本轮评审 run id")
 
     def test_first_rejection_redoes_not_freeze(self):
-        """首次否决 → 不冻结不告警，回 reviewing 记计数（自动复评）。"""
-        mgr, sm, _ = self._manager()
-        mgr.dispatch_review = MagicMock(return_value=True)
-        self._write_result("spec", {"status": "rejected",
-                                    "findings": [{"severity": "blocking",
-                                                  "detail": "阈值不可达"}]})
-        self.assertTrue(mgr.consume_review_result("spec"))
+        """首次否决 → 不冻结不告警，回 reviewing 入队复评（不冻结合复评直调）。
+
+        fix-spec-review-blocking-dispatch 改造：rejected 未达上限时不再递归
+        直调 dispatch_review（同步阻塞），改为 pm_engine._enqueue 入队
+        spec-review 由队列在 worker 线程异步派发。断言同步调整：检查入队记录
+        而非 dispatch_review 被调用。
+        """
+        from unittest.mock import patch
+        mgr, sm, engine = self._manager()
+        with patch.object(engine, "_enqueue") as m_enqueue:
+            self._write_result("spec", {"status": "rejected",
+                                        "findings": [{"severity": "blocking",
+                                                      "detail": "阈值不可达"}]})
+            self.assertTrue(mgr.consume_review_result("spec"))
         entry = sm.read_one("spec")
         self.assertEqual(entry["status"], "reviewing",
                          "首次否决不得冻结，须回 reviewing 复评")
@@ -292,7 +299,7 @@ class TestReviewFreezeClassification(unittest.TestCase):
         self.assertEqual(int(entry.get("_review_rejections", 0)), 1)
         self.assertEqual(self._alerts("spec-review-rejected", "spec"), [],
                          "自动复评阶段不得发人工升级告警")
-        mgr.dispatch_review.assert_called_once_with("spec")
+        m_enqueue.assert_called_once_with("spec", "spec-review")
 
     def test_rejected_blocked_stuck_exempt(self):
         """冻结豁免：达上限冻结的评审否决 spec 不再触发 admin_monitor 的 blocked_stuck。"""
@@ -397,10 +404,20 @@ class TestReviewFreezeClassification(unittest.TestCase):
 
     def test_re_review_still_rejected_when_frozen(self):
         """re_review（重新评审入口）对冻结 spec 保持拒绝——评审类冻结的恢复
-        走解冻而非 re_review（既有冻结保护契约，test_dashboard_api 同型）。"""
-        self._write_result("spec", {"status": "rejected", "findings": []})
+        走解冻而非 re_review（既有冻结保护契约，test_dashboard_api 同型）。
+
+        fix-spec-review-blocking-dispatch 改造：rejected 未达上限不再递归
+        dispatch_review 同步触发冻结（改为入队异步派发），故需预置冻结
+        让测试语义不变——先让 spec 达冻结终态再验证 re_review 拒绝。
+        """
         mgr, sm, _ = self._manager()
+        # 预置冻结：rejections 已达上限-1，本次 rejected 消费达上限触发冻结
+        sm.update_spec("spec", {"_review_rejections": MAX_REJECT_REDO - 1})
+        self._write_result("spec", {"status": "rejected", "findings": []})
         mgr.consume_review_result("spec")
+        entry = sm.read_one("spec")
+        # 确认冻结已触发（消费达上限 → freeze_for_human）
+        self.assertTrue(entry.get(FROZEN_FIELD), "预置冻结应触发 frozen=True")
         ok, msg = mgr.re_review("spec")
         self.assertFalse(ok)
         self.assertIn("冻结", msg)

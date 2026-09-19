@@ -345,6 +345,16 @@ class PMEngine:
         self.project_root = project_root
         self.logger = logger
 
+        # 评审在飞查询回路注入（fix-spec-review-blocking-dispatch 3.7）：_
+        # active_reviews 由 DispatchQueue 持有，reviewer_in_flight（agent_runner
+        # 侧组件）需经 pm_engine 门面查询（agent_runner 不持 pm_engine）。
+        # 显式约定回引字段（_pm_engine_ref），与 worktree_manager 的
+        # state_reader 注入同族；测试以 MagicMock 替代 agent_runner 时赋值无害。
+        try:
+            agent_runner._pm_engine_ref = self
+        except Exception:
+            pass
+
         self._handling_events = set()  # 防重入：正在处理的 (event_kind, spec_name)
         # 队列/并发状态与锁随 Dispatcher 组件同迁（design D3 规则 1，单锁语义不变）
 
@@ -359,11 +369,6 @@ class PMEngine:
         # 派发单飞守卫（fix-startup-double-dispatch）：跟踪正在派发中的 spec，
         # 防止启动扫描与事件回放对同一 spec 的重复派发
         self._pending_dispatches: set = set()
-        # 评审单飞守卫（评审门禁接线修复）：spec-review 的派发是**同步阻塞**
-        # （评审 run 分钟级），两条触发通道（event_bus 轮询 + _on_spec_drafted
-        # 直调）会在守卫释放前各自进入。STATE 侧锚点虽已在 run 启动前落盘，仍留
-        # 毫秒级「读-占位」窗口；本集合覆盖整个阻塞期，封死残余并发派发。
-        self._review_dispatches: set = set()
         # 派发冷却登记（双派发穿透原地修 2026-09-06）：spec -> 上次成功派发时刻。
         # 单飞键只覆盖「同时在飞」——dispatch 流程 <50ms 返回后标记即释放，而锁要等
         # run 线程执行 create() 才可见：full_scan 与 STATE 监听/spec_ready 双通道在
@@ -550,16 +555,23 @@ class PMEngine:
             return []
 
     def _on_spec_reviewing(self, spec_name: str):
-        """处理 spec_reviewing 事件：派发评审 run（派发 → 阻塞等待 → 收口）。"""
+        """处理 spec_reviewing 事件：评审条目入队（异步、不阻塞调用方线程）。
+
+        改造（fix-spec-review-blocking-dispatch 2.1/2.2）：评审派发不再在调用方
+        线程同步阻塞执行——``_enqueue(spec_name, "spec-review")`` 只写队列即返回，
+        真正的 run 由 ``_process_queue`` → ``_run_agent_worker`` 的 spec-review
+        分支在独立 worker 线程执行（与 implementer 完全同构，design D1）。调用方
+        线程（MainThread / fenixd-watcher / fenixd-scanner / 定时拾取）立即恢复，
+        主循环不再被分钟级评审 run 钉死（2026-09-19 事故：daemon 27 分钟不进
+        主循环、五个文件信号消费者全部停摆）。
+        """
         # fix-start-after-premature-pickup D1：start_after 定时拾取门控（对齐
-        # _on_spec_ready 既有守卫，engine.py:552）。reviewing + 未到期/哨兵的
-        # SPEC 不得被派发评审 run。守卫插在方法体最前面（早于 _review_dispatches
-        # 单飞标记与熔断短路），并**自行** read_one——不复用下方 reader_run 检查处
-        # 那次读盘（它位于单飞守卫/熔断之后，位置不符；也不为省一次读盘挪动其顺序）。
-        # 有意放行（D1 通道 ③④）：到期 / 清空 / 激活后 start_after_pending 返回
-        # False 正常放行。人工重评（SpecReviewManager.re_review → dispatch_review）
-        # 与评审否决后自动复评（spec_review.py:358/:845）不经本方法，直调
-        # dispatch_review——不受本守卫约束（D1 已知取舍，边界见 5.2 登记）。
+        # _on_spec_ready 既有守卫）。reviewing + 未到期/哨兵的 SPEC 不得被派发
+        # 评审 run。守卫插在方法体最前面（早于双判据单飞与熔断短路）。有意放行
+        # （D1 通道 ③④）：到期 / 清空 / 激活后 start_after_pending 返回 False
+        # 正常放行。人工重评（SpecReviewManager.re_review）与评审否决后自动复评
+        # 改造后均改为入队（spec_review.py:393/:880，tasks 2.6/2.7），与本入口
+        # 同走 `_enqueue`——队列去重吸收重复触发，不再有「绕过守卫」的通道。
         try:
             from core.state_machine import start_after_pending
 
@@ -578,12 +590,45 @@ class PMEngine:
                 "pm_engine",
                 f"start_after 门控判定异常 '{spec_name}'（fail-open 放行）: {e}",
             )
-        # 评审单飞守卫：同一 spec 的并发 spec_reviewing 只放行一个。dispatch_review
-        # 同步阻塞（评审 run 分钟级），守卫须覆盖整个阻塞期——否则第二条触发通道
-        # （event_bus 轮询与 _on_spec_drafted 直调）会重复派发同一 spec。
-        if spec_name in self._review_dispatches:
-            self.logger.debug("pm_engine", f"Skipping duplicate review dispatch: '{spec_name}'")
+        # ── 双判据单飞守卫（fix-spec-review-blocking-dispatch 2.2 / design D4）──
+        # 异步化后调用方立即返回，旧守卫 `_review_dispatches`（靠「同步阻塞整个
+        # 评审期」成立）已移除——它派发即释放，窗口敞开。两组互补判据任一命中即
+        # 拒绝本次派发，贯穿评审 run 从入队到收口的全生命周期：
+        #   ① `_active_reviews` 命中（条目已入队 / 已出队未收口）——经
+        #      DispatchQueue 暴露的只读查询 `is_review_in_flight`；
+        #   ② STATE 的 `reviewer_run` 非空且 run 确在飞（`reviewer_in_flight`
+        #      在飞结论 in_flight==True）——覆盖「锚点已落盘但 run 尚未注册进
+        #      进程表」的窗口。陈旧锚点（stale）判为无在飞评审放行入队，由
+        #      dispatch_review 入口清理后继续派发（防 stale 卡死 reviewing）。
+        if self.is_review_in_flight(spec_name):
+            self.logger.debug(
+                "pm_engine", f"Skipping duplicate review dispatch: '{spec_name}'"
+            )
             return
+        entry = self.state_machine.read_one(spec_name) or {}
+        reviewer_run = entry.get("reviewer_run")
+        if reviewer_run:
+            try:
+                in_flight, reason = self.agent_runner.reviewer_in_flight(
+                    spec_name, reviewer_run
+                )
+            except Exception as e:
+                # 判定异常 fail-open 放行（对齐既有门控容错；异常是否构成在飞由
+                # dispatch_review 入口重判兜底）
+                self.logger.warning(
+                    "pm_engine",
+                    f"在飞评审判定异常 '{spec_name}'（fail-open 放行）: {e}",
+                )
+                in_flight, reason = False, None
+            if in_flight:
+                self.logger.info("pm_engine", f"已有在飞评审 run: {spec_name}")
+                return
+            if reason == "stale":
+                self.logger.warning(
+                    "pm_engine",
+                    f"陈旧评审锚点（run 已终态）按无在飞评审放行; "
+                    f"待派发清理: {spec_name} run={reviewer_run}",
+                )
         # 链路级熔断短路（evo-run-failure-classification-circuitbreaker D2）：
         # spec-review 链路熔断窗口内直接返回不派发；冷却到期自动恢复重试。
         cond = self.infra_breaker.condition("spec-review")
@@ -596,29 +641,11 @@ class PMEngine:
             self._emit_infra_breaker_event(
                 "recovered", spec_name, "", self.infra_breaker.get_state("spec-review")
             )
-        self._review_dispatches.add(spec_name)
-        try:
-            from core.pm_engine.spec_review import SpecReviewManager
-
-            review_manager = SpecReviewManager(
-                self.project_root,
-                self.state_machine,
-                self.agent_runner,
-                self,
-                self.config,
-                self.logger,
-            )
-            # 检查是否已有在飞评审 run（防重派，与 dispatch_review 内部检查同源）
-            entry = self.state_machine.read_one(spec_name)
-            if entry and entry.get("reviewer_run"):
-                self.logger.info("pm_engine", f"已有在飞评审 run: {spec_name}")
-                return
-            # 派发评审（内部含「锚点先落盘 → 阻塞执行 → 机械收口」全链）
-            success = review_manager.dispatch_review(spec_name)
-            if not success:
-                self.logger.error("pm_engine", f"评审派发失败: {spec_name}")
-        finally:
-            self._review_dispatches.discard(spec_name)
+        # 入队评审（只写队列即返回）+ 立即触发队列处理（tasks 1.11：「晋升即
+        # 评审」不依赖 30 分钟周期扫描兜底；handle_event 尾部已有一次
+        # _process_queue，此处补一次覆盖 re_review / 复评等直入队入口）。
+        self._enqueue(spec_name, "spec-review")
+        self._process_queue()
 
     def _on_spec_ready(self, spec_name: str):
         """Schedule implementer for ready SPEC (if dependencies are satisfied)."""
@@ -712,14 +739,20 @@ class PMEngine:
                     f"Skipping '{spec_name}': dependencies not satisfied",
                 )
                 return
-            # ── 派发前在飞评审校验（evo-spec-concurrency-flight-guard D2）──
+            # ── 派发前在飞评审校验（evo-spec-concurrency-flight-guard D2 +
+            # fix-spec-review-blocking-dispatch 3.5 放宽）──
             # 同 spec 存在在飞 spec-review run 时顺延本次派发：不创建实现 run、
             # 不写 STATE/error、不更新 _last_dispatch_at（顺延不计冷却起点），
             # 待评审收尾经既有 _on_spec_ready 重触发通道（spec_review.py 收口
             # 调用）重判。陈旧锚点（run 已终态但结果未消费/历史残留）判为
             # 「无在飞评审」放行并记 WARNING（D0 第 4 条，fail-open 防自造死锁）。
+            # 3.5：前置条件由「reviewer_run 非空」放宽为「reviewer_run 非空 或
+            # _active_reviews 命中」——评审条目已入队、锚点尚未落盘的窗口内，
+            # 实现派发 MUST NOT 因锚点为空而穿透（spec-concurrency-governance
+            # Requirement 2 的「顺延」语义；缺口由 reviewer_in_flight 的
+            # "queued" 前置判据闭合：空锚点 + 在飞登记 → in_flight=True）。
             reviewer_run = spec.get("reviewer_run")
-            if reviewer_run:
+            if reviewer_run or self.is_review_in_flight(spec_name):
                 try:
                     in_flight, reason = self.agent_runner.reviewer_in_flight(
                         spec_name, reviewer_run
@@ -3454,6 +3487,34 @@ class PMEngine:
     @_active_runs.deleter
     def _active_runs(self):
         del self._dispatcher._active_runs
+
+    @property
+    def _active_reviews(self):
+        # 评审在飞集合透传（fix-spec-review-blocking-dispatch 1.1）：与
+        # _active_runs/_active_priorities 同族——测试与调用方多以属性路径
+        # 访问队列态，缺该透传即 AttributeError。
+        return self._dispatcher._active_reviews
+
+    @_active_reviews.setter
+    def _active_reviews(self, value):
+        self._dispatcher._active_reviews = value
+
+    @_active_reviews.deleter
+    def _active_reviews(self):
+        del self._dispatcher._active_reviews
+
+    def is_review_in_flight(self, spec_name: str) -> bool:
+        """评审在飞只读查询（fix-spec-review-blocking-dispatch 3.7）。
+
+        DispatchQueue 持有 `_active_reviews`（评审条目已入队/已出队未收口的
+        在飞登记），`reviewer_in_flight`（LivenessSupervisor 侧）与
+        `_on_spec_reviewing` 均经此门面通路查询——agent_runner 不持 pm_engine，
+        PMEngine __init__ 显式注入 `_pm_engine_ref` 回引（与 worktree_manager
+        的 state_reader 注入同族，非即兴跨层引用）。锁读保持与 _active_runs
+        同锁语义。
+        """
+        with self._queue_lock:
+            return spec_name in self._active_reviews
 
     @property
     def _active_priorities(self):

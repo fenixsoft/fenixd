@@ -40,6 +40,7 @@ class EventBus:
         self._running = False
         self._watch_thread = None
         self._scan_thread = None
+        self._initial_scan_thread = None
         self._last_checksum = None
         self._known_specs: Dict[str, str] = {}  # spec_name → status (last known)
 
@@ -84,14 +85,68 @@ class EventBus:
             self._watch_thread.join(timeout=2)
         if self._scan_thread:
             self._scan_thread.join(timeout=0.5)
+        # 启动期初扫线程（fix-spec-review-blocking-dispatch 4.3）：daemon=True，
+        # 收口语义快速 join 放过当前轮（不阻塞 shutdown；进程退出由 OS 兜底）。
+        if self._initial_scan_thread and self._initial_scan_thread.is_alive():
+            self._initial_scan_thread.join(timeout=1)
         self.logger.info("event_bus", "Stopped")
+
+    def _snapshot_baseline(self):
+        """基线快照：仅 ``_update_known_state``（同步、毫秒级）。
+
+        fix-spec-review-blocking-dispatch 4.1：``full_scan`` 拆分为「基线快照」
+        与「扫描主体」两段。基线快照 MUST 在 ``event_bus.start()`` 之后、任何
+        后台扫描之前**同步**完成——``_update_known_state`` 建立 ``_known_specs``
+        基线，否则后台首扫 / watcher 的 ``_dispatch_changes`` 会把全部存量 SPEC
+        判为「新出现」并重放 hook 事件（2026-09-07 事故：15+ pushed spec 的
+        commit-push hook 连环触发）。``event_bus.start()`` 本身已同步调用
+        ``_update_known_state()``（本文件 :51），本方法属**显式化该不变量**的
+        冗余加固（design D5），不是唯一保障。
+        """
+        self._update_known_state()
+
+    def start_initial_scan(self):
+        """把初扫主体提交到后台线程（fix-spec-review-blocking-dispatch 4.2/4.3）。
+
+        fenixd.start() 在 ``event_bus.start()``（基线快照 + watcher/scanner 启动）
+        之后调用：扫描主体在独立 daemon 线程执行（命名对齐 ``fenixd-*`` 同族），
+        立即返回，MUST NOT 阻塞调用方进入主循环。扫描异常由 ``_run_full_scan_body``
+        内部逐段捕获（单条 SPEC 失败只跳过该条），线程级异常不向上冒泡。
+        线程句柄由 EventBus 持有（``_initial_scan_thread``），``stop()`` 收口语义
+        覆盖它。
+        """
+        self._initial_scan_thread = threading.Thread(
+            target=self._run_full_scan_body,
+            name="fenixd-initial-scan",
+            daemon=True,
+        )
+        self._initial_scan_thread.start()
+        self.logger.info("event_bus", "Initial async scan started")
 
     def full_scan(self):
         """Perform a complete scan of STATE.md, dispatch events, and run blocker check.
-        Also recovers actionable states that may have been missed on daemon restart.
+
+        同步入口（fix-spec-review-blocking-dispatch 4.1 兼容契约）：「基线快照 +
+        扫描主体」两段顺序执行。既有调用方语义逐字不变——``_periodic_scan_loop``
+        （本文件 :645）继续整调用同步版；``fenixd.start()`` MUST NOT 调用异步版
+        （否则后台扫描线程永被同步等待吞掉）；启动初扫请用 ``start_initial_scan``。
 
         韧性（fix-dispatch-orphan D3/D4）：单条 SPEC 的处理异常只跳过该条并记日志，
         不中止整轮扫描；扫描末尾输出 handled/failed 统计。
+        """
+        self._snapshot_baseline()
+        self._run_full_scan_body()
+
+    def _run_full_scan_body(self):
+        """full_scan 扫描主体（fix-spec-review-blocking-dispatch 4.1/4.2）。
+
+        从 ``full_scan``（同步入口）中抽取为独立方法，由 ``start_initial_scan``
+        提交到后台 daemon 线程异步执行（不阻塞 fenixd.start() 进入主循环）。
+        ``_periodic_scan_loop`` 继续整调用同步版 ``full_scan``（= 基线快照 +
+        扫描主体），无二次异步（4.5）。
+
+        韧性（fix-dispatch-orphan D3/D4）：单条 SPEC 的处理异常只跳过该条并记
+        日志，不中止整轮扫描；扫描末尾输出 handled/failed 统计。
         """
         self.logger.debug("event_bus", "Performing full scan...")
         try:

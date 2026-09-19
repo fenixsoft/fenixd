@@ -119,14 +119,54 @@ class SpecReviewManager:
                 self.pm_engine._emit_infra_breaker_event(
                     "recovered", spec_name, "", breaker.get_state("spec-review")
                 )
-        # 防重派：锚点在 run 启动前写入，故「在飞」与「已落锚点待消费」都表现为非空。
+        # 防重派（fix-spec-review-blocking-dispatch 2.4 改口径）：
+        # ① ``_active_reviews`` 命中 → 拒绝：覆盖「条目已出队、锚点尚未落盘」
+        #    的窗口。异步化后本入口只由 worker（``_run_spec_review_worker``）
+        #    调用——worker 在调用前已释放本次登记（释放时点 ≤ 锚点落盘，
+        #    design D4 重入安全性），故本判据主要防御其它并发直调通道。
+        # ② 锚点非空 → MUST 经 ``reviewer_in_flight`` 取**在飞结论**：
+        #    ``in_flight == True`` 拒派；仅 ``reason == "stale"``（陈旧锚点，
+        #    run 已终态）才清锚点后继续。MUST NOT 按「锚点非空」直接自清——
+        #    ``_should_defer_for_reviewer`` 的判定异常分支为 fail-open
+        #    ``(False, None)``，直接自清会在评审仍在跑时放行并发派发。
+        #    判定异常 fail-closed 拒派（记 WARNING，recovery 兜底）——评审
+        #    自身派发宁可不发，与实现派发侧的 fail-open 取相反保守方向。
+        # 重入保护：content 失败重试入队（``_handle_review_failure`` 清锚点后
+        # 重新入队 → 新 worker）进入本入口时 ``_active_reviews`` 已被
+        # ``_run_spec_review_worker`` 释放、锚点已被收口路径清除——两者皆空
+        # 放行，评审不被自己挡住（spec-review-recovery spec Scenario「续
+        # attempt 不被自身在飞登记否决」）。
+        pm_engine = self.pm_engine
+        if pm_engine is not None and pm_engine.is_review_in_flight(spec_name):
+            self.logger.info("spec_review", f"评审条目已在飞（队列/未收口）: {spec_name}")
+            return False
         entry = self.state_machine.read_one(spec_name)
         if not entry:
             self.logger.warning("spec_review", f"SPEC 不存在: {spec_name}")
             return False
-        if entry.get("reviewer_run"):
-            self.logger.info("spec_review", f"已有在飞评审 run: {spec_name}")
-            return False
+        reviewer_run = entry.get("reviewer_run")
+        if reviewer_run:
+            try:
+                in_flight, reason = self.agent_runner.reviewer_in_flight(
+                    spec_name, reviewer_run
+                )
+            except Exception as e:
+                # 判定异常 fail-closed 拒派（不自行清锚点）
+                self.logger.warning(
+                    "spec_review",
+                    f"在飞评审判定异常 '{spec_name}'（fail-closed 拒派）: {e}",
+                )
+                return False
+            if in_flight:
+                self.logger.info("spec_review", f"已有在飞评审 run: {spec_name}")
+                return False
+            if reason == "stale":
+                self.logger.warning(
+                    "spec_review",
+                    f"陈旧评审锚点（run 已终态）清理后继续派发: "
+                    f"{spec_name} run={reviewer_run}",
+                )
+                self.state_machine.update_spec(spec_name, {"reviewer_run": None})
         # 检查评审尝试次数
         try:
             attempts = int(entry.get("_review_attempts", 0) or 0)
@@ -384,13 +424,15 @@ class SpecReviewManager:
                     f"（未冻结，避免误判转人工）: {spec_name}；"
                     f"blocking: {blocked_summary[:200]}",
                 )
-                # 复评派发：复用本类唯一派发收口点（与 re_review 同款）；
+                # 复评派发（fix-spec-review-blocking-dispatch 2.6）：rejected 后
+                # 自动复评改为入队 spec-review 由队列接力（不再递归直调
+                # dispatch_review——收口线程内递归调用会与在飞判据互相否决）。
                 # agent_runner 为 None 的 CLI 场景跳过，由 daemon recovery 的
                 # reviewing 分支拾取。上轮 blocking 摘要已写入 error，经
                 # _prev_error_section 注入复评 prompt（复评者据此区分
                 # 「前提证伪」与「文档不一致」）。
-                if self.agent_runner is not None:
-                    self.dispatch_review(spec_name)
+                if self.agent_runner is not None and self.pm_engine is not None:
+                    self.pm_engine._enqueue(spec_name, "spec-review")
                 return True
 
             # 达上限：方向确不成立，冻结转人工（原语义）
@@ -797,7 +839,14 @@ class SpecReviewManager:
             )
             return
 
-        # ── content 分支：既有重试语义 ──
+        # ── content 分支：重试改为入队（fix-spec-review-blocking-dispatch 2.5）──
+        # 原：保持 reviewing + 清 reviewer_run → 由 `dispatch_review` 返回后
+        # 调用方重试。改造后：清 reviewer_run → 入队 spec-review → 由队列接力
+        # 在独立 worker 线程重试。重试入队前 MUST 已清除 reviewer_run（否则队列
+        # 候选筛选判「reviewer_run 非空 + in_flight=True」→ 拒派；任务 2.5 约束）。
+        # 本方法在 dispatch_review 栈内执行，worker 的 finally 会兜底调
+        # `_process_queue`，所以不需要额外触发。CLI 场景 pm_engine=None 保持原语义
+        # （记日志，由 daemon recovery 拾取）。
         entry = self.state_machine.read_one(spec_name)
         if not entry:
             return
@@ -806,7 +855,7 @@ class SpecReviewManager:
         except (TypeError, ValueError):
             attempts = 0
         if attempts < MAX_REVIEW_ATTEMPTS:
-            # 重试：保持 reviewing 状态，清除 reviewer_run
+            # 重试：保持 reviewing 状态，清除 reviewer_run + 入队
             self.state_machine.update_spec(
                 spec_name,
                 {
@@ -816,6 +865,8 @@ class SpecReviewManager:
                 },
             )
             self.logger.info("spec_review", f"评审失败重试: {spec_name} attempt={attempts+1}")
+            if self.pm_engine is not None:
+                self.pm_engine._enqueue(spec_name, "spec-review")
         else:
             # 达上限转冻结转人工（fix-blocked-freeze-classification 2.2）：
             # admin 对「评审器连续失败」无操作杠杆（模型链/配置问题），
@@ -874,12 +925,12 @@ class SpecReviewManager:
         if not success:
             return False, "状态转移失败"
 
-        # 派发新评审（agent_runner 为 None 的 CLI 场景跳过派发，
-        # 由 daemon full_scan recovery 的 reviewing 分支拾取）
-        if self.agent_runner is not None:
-            dispatch_ok = self.dispatch_review(spec_name)
-            if not dispatch_ok:
-                return False, "评审派发失败"
+        # 派发新评审（fix-spec-review-blocking-dispatch 2.7：改投队列）——
+        # agent_runner 为 None 的 CLI 场景跳过派发，由 daemon full_scan
+        # recovery 的 reviewing 分支拾取。in-process（daemon 侧）场景：
+        # 入队 spec-review 由队列接力在 worker 线程派发，re_review 立即返回。
+        if self.agent_runner is not None and self.pm_engine is not None:
+            self.pm_engine._enqueue(spec_name, "spec-review")
 
         return True, "重新评审已触发"
 

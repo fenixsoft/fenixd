@@ -23,6 +23,18 @@ from core.state_machine import StateMachine
 from core.pm_engine.spec_review import SpecReviewManager, MAX_REVIEW_ATTEMPTS, MAX_REJECT_REDO
 
 
+def _stub_pm():
+    """MagicMock pm_engine + is_review_in_flight stub（fix-spec-review-blocking-dispatch）。
+
+    dispatch_review 入口新增 `pm_engine.is_review_in_flight` 在飞判据；裸 MagicMock
+    对其调用返回 MagicMock（真值）会把 dispatch_review 拒派。此处 stub 为 False
+    （无在飞评审），使测试聚焦于既有评审语义。
+    """
+    m = MagicMock()
+    m.is_review_in_flight = MagicMock(return_value=False)
+    return m
+
+
 def _mk_project(tmpdir: Path, spec_name="spec"):
     """Create a minimal project with a drafted spec and spec dir."""
     (tmpdir / ".fenix").mkdir(parents=True, exist_ok=True)
@@ -68,6 +80,7 @@ class TestConsumeReviewResult(unittest.TestCase):
         sm = sm or _mk_project(self.tmpdir)
         runner = runner or _FakeRunner()
         engine = MagicMock()
+        engine.is_review_in_flight = MagicMock(return_value=False)
         engine._on_spec_ready = MagicMock()
         return SpecReviewManager(self.tmpdir, sm, runner, engine, {}, MagicMock()), sm, engine
 
@@ -113,14 +126,14 @@ class TestConsumeReviewResult(unittest.TestCase):
         self.assertIn("原状态 reviewing", err)
 
     def test_first_rejection_triggers_redo_not_freeze(self):
-        """首次 rejected → 不冻结，回 reviewing 自动复评（防误判转人工）。
+        """首次 rejected → 不冻结，回 reviewing 入队复评（防误判转人工）。
 
-        2026-09-15 评审误判事故：`blocking` 由 LLM 自分类，存在把「文档内部
-        矛盾/遗漏」误判为「方向不成立」的残差。首次否决 MUST NOT 冻结，而应
-        回 reviewing 并记 `_review_rejections=1`，由复评纠正误判。
+        fix-spec-review-blocking-dispatch 改造：rejected 未达上限时不再递归
+        dispatch_review（同步阻塞），改为 pm_engine._enqueue 入队
+        spec-review 由队列在 worker 线程异步派发。断言同步调整：检查入队记录
+        而非 dispatch_review 被调用。
         """
         mgr, sm, engine = self._manager()
-        mgr.dispatch_review = MagicMock(return_value=True)  # 隔离派发副作用
         _write_result(self.tmpdir, "spec", {"status": "rejected",
                                             "findings": [{"severity": "blocking",
                                                           "aspect": "hole",
@@ -137,7 +150,7 @@ class TestConsumeReviewResult(unittest.TestCase):
         err = str(entry.get("error") or "")
         self.assertIn("spec-review-rejected: 阈值不可达", err,
                       "否决摘要须留在 error 供复评注入")
-        mgr.dispatch_review.assert_called_once_with("spec")
+        engine._enqueue.assert_called_once_with("spec", "spec-review")
 
     def test_rejection_counter_cleared_on_pass(self):
         """通过（approved/repaired）即清零否决计数，下次评审从零起算。"""
@@ -202,6 +215,7 @@ class TestReReviewConditions(unittest.TestCase):
         sm = sm or _mk_project(self.tmpdir)
         runner = _FakeRunner()
         engine = MagicMock()
+        engine.is_review_in_flight = MagicMock(return_value=False)
         return SpecReviewManager(self.tmpdir, sm, runner, engine, {}, MagicMock()), sm, engine
 
     def test_non_review_blocked_rejected(self):
@@ -251,6 +265,7 @@ class TestWriteBoundary(unittest.TestCase):
         sm = _mk_project(self.tmpdir)
         runner = _FakeRunner()
         engine = MagicMock()
+        engine.is_review_in_flight = MagicMock(return_value=False)
         return SpecReviewManager(self.tmpdir, sm, runner, engine, {}, MagicMock()), sm
 
     def test_repairs_path_outside_rejected(self):
@@ -367,7 +382,7 @@ class TestDispatchAnchorAndConsume(unittest.TestCase):
         """回归（双派发）：run 启动那一刻 reviewer_run 必须已非空且等于本 run。"""
         sm = self._fresh()
         runner = _RecordingRunner(sm, self.tmpdir, result={"status": "approved", "repairs": []})
-        mgr = SpecReviewManager(self.tmpdir, sm, runner, MagicMock(), {}, MagicMock())
+        mgr = SpecReviewManager(self.tmpdir, sm, runner, _stub_pm(), {}, MagicMock())
         self.assertTrue(mgr.dispatch_review("spec"))
         self.assertIsNotNone(runner.reviewer_run_at_start)
         self.assertEqual(runner.reviewer_run_at_start, runner.run_id_seen)
@@ -383,7 +398,7 @@ class TestDispatchAnchorAndConsume(unittest.TestCase):
 
         runner = _RecordingRunner(sm, self.tmpdir,
                                   result={"status": "approved", "repairs": []}, on_run=during)
-        mgr = SpecReviewManager(self.tmpdir, sm, runner, MagicMock(), {}, MagicMock())
+        mgr = SpecReviewManager(self.tmpdir, sm, runner, _stub_pm(), {}, MagicMock())
         holder["mgr"] = mgr
         self.assertTrue(mgr.dispatch_review("spec"))
         self.assertFalse(seen["second"])
@@ -392,6 +407,7 @@ class TestDispatchAnchorAndConsume(unittest.TestCase):
         """根因回归：run 收工后结果必须被消费（repaired → ready + 派发实现）。"""
         sm = self._fresh()
         engine = MagicMock()
+        engine.is_review_in_flight = MagicMock(return_value=False)
         runner = _RecordingRunner(sm, self.tmpdir, result={
             "status": "repaired",
             "repairs": [{"path": "spec/changes/spec/tasks.md", "summary": "x"}]})
@@ -403,9 +419,16 @@ class TestDispatchAnchorAndConsume(unittest.TestCase):
         engine._on_spec_ready.assert_called_once_with("spec")
 
     def test_rejected_result_consumed_to_blocked(self):
-        """根因回归：rejected 结果必须被消费（→ blocked + 规范前缀）。"""
+        """根因回归：rejected 结果必须被消费（→ blocked + 规范前缀）。
+
+        fix-spec-review-blocking-dispatch 改造：rejected 未达上限不再递归
+        dispatch_review（同步触发二次否决达上限），故需预置 `_review_rejections`
+        到上限前一步，使本次消费即达上限触发冻结（原递归路径的等价状态）。
+        """
         sm = self._fresh()
+        sm.update_spec("spec", {"_review_rejections": MAX_REJECT_REDO - 1})
         engine = MagicMock()
+        engine.is_review_in_flight = MagicMock(return_value=False)
         runner = _RecordingRunner(sm, self.tmpdir, result={
             "status": "rejected",
             "findings": [{"severity": "blocking", "aspect": "hole", "detail": "x"}]})
@@ -423,7 +446,7 @@ class TestDispatchAnchorAndConsume(unittest.TestCase):
         """run 执行失败：锚点清空、保持 reviewing、尝试计数递增（可重试）。"""
         sm = self._fresh()
         runner = _RecordingRunner(sm, self.tmpdir, success=False)
-        mgr = SpecReviewManager(self.tmpdir, sm, runner, MagicMock(), {}, MagicMock())
+        mgr = SpecReviewManager(self.tmpdir, sm, runner, _stub_pm(), {}, MagicMock())
         self.assertFalse(mgr.dispatch_review("spec"))
         entry = sm.read_one("spec")
         self.assertIsNone(entry.get("reviewer_run"))
@@ -435,7 +458,7 @@ class TestDispatchAnchorAndConsume(unittest.TestCase):
         sm = self._fresh()
         sm.update_spec("spec", {"_review_attempts": MAX_REVIEW_ATTEMPTS})
         runner = _RecordingRunner(sm, self.tmpdir, result={"status": "approved", "repairs": []})
-        mgr = SpecReviewManager(self.tmpdir, sm, runner, MagicMock(), {}, MagicMock())
+        mgr = SpecReviewManager(self.tmpdir, sm, runner, _stub_pm(), {}, MagicMock())
         self.assertFalse(mgr.dispatch_review("spec"))
         entry = sm.read_one("spec")
         self.assertEqual(entry["status"], "blocked")
@@ -474,6 +497,7 @@ class TestArtifactFirstNoReentry(unittest.TestCase):
             result={"status": "approved", "repairs": [], "findings": []},
             success=False, on_run=during)
         engine = MagicMock()
+        engine.is_review_in_flight = MagicMock(return_value=False)
         mgr = SpecReviewManager(self.tmpdir, sm, runner, engine, {}, MagicMock())
         self.assertTrue(mgr.dispatch_review("spec"))
         # run 只执行一次：消费后不得再次派发
@@ -491,6 +515,7 @@ class TestArtifactFirstNoReentry(unittest.TestCase):
             result={"status": "approved", "repairs": [], "findings": []},
             success=False)
         engine = MagicMock()
+        engine.is_review_in_flight = MagicMock(return_value=False)
         mgr = SpecReviewManager(self.tmpdir, sm, runner, engine, {}, MagicMock())
         self.assertTrue(mgr.dispatch_review("spec"))
         self.assertEqual(sm.read_one("spec")["status"], "ready")

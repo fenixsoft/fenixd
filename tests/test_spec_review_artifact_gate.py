@@ -26,6 +26,20 @@ from unittest.mock import MagicMock
 import pytest
 
 from core.agent_runner import AgentRunner
+
+
+def _stub_pm():
+    """MagicMock pm_engine + is_review_in_flight stub（fix-spec-review-blocking-dispatch）。
+
+    dispatch_review 入口新增 `pm_engine.is_review_in_flight` 在飞判据；裸 MagicMock
+    对其调用返回 MagicMock（真值）会把 dispatch_review 拒派。此处 stub 为 False
+    （无在飞评审），使测试聚焦于既有评审语义。
+    """
+    m = MagicMock()
+    m.is_review_in_flight = MagicMock(return_value=False)
+    return m
+
+
 from core.agent_runner.prompt_builder import (
     AGENT_PROMPT_DIR,
     spec_review_result_path,
@@ -263,7 +277,13 @@ class TestDispatchSalvageWiring:
             def run_spec_review(self, spec_name, run_id=None):
                 return MagicMock(success=True, run_id=run_id)
 
+            # fix-spec-review-blocking-dispatch：dispatch_review 入口在飞守卫
+            # 会在 reviewer_run 非空时调 agent_runner.reviewer_in_flight。
+            def reviewer_in_flight(self, spec_name, reviewer_run):
+                return (False, None)
+
         engine = MagicMock()
+        engine.is_review_in_flight = MagicMock(return_value=False)
         mgr = SpecReviewManager(tmp_path, sm, _R(), engine, {}, MagicMock())
         assert mgr.dispatch_review("demo") is True
         assert calls and calls[0][0] == "salvage"
@@ -285,7 +305,12 @@ class TestDispatchSalvageWiring:
             def run_spec_review(self, spec_name, run_id=None):
                 return MagicMock(success=True, run_id=run_id)
 
-        mgr = SpecReviewManager(tmp_path, sm, _R(), MagicMock(), {}, MagicMock())
+            # fix-spec-review-blocking-dispatch：dispatch_review 入口在飞守卫
+            # 会在 reviewer_run 非空时调 agent_runner.reviewer_in_flight。
+            def reviewer_in_flight(self, spec_name, reviewer_run):
+                return (False, None)
+
+        mgr = SpecReviewManager(tmp_path, sm, _R(), _stub_pm(), {}, MagicMock())
         mgr.dispatch_review("demo")
         assert seen.get("run_started_at") is not None
 

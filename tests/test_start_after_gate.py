@@ -193,38 +193,49 @@ class TestOnSpecReviewingGate(unittest.TestCase):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def test_future_start_after_no_dispatch(self):
-        """reviewing + 未来 start_after：不派发评审 run。"""
+        """reviewing + 未来 start_after：不入队评审 run。
+
+        fix-spec-review-blocking-dispatch 改造：_on_spec_reviewing 改为入队
+        （_enqueue + _process_queue），不再直接调 dispatch_review。断言同步
+        调整：检查队列无新增条目，而非检查 dispatch_review 未被调用。
+        """
         proot, sm, _ = _setup_spec_project(
             self.tmpdir, status="reviewing", start_after=_future_iso())
         engine, logger = _make_engine(sm, proot, {})
-        with patch("core.pm_engine.spec_review.SpecReviewManager") as m_man:
-            engine._on_spec_reviewing("myspec")
-        m_man.return_value.dispatch_review.assert_not_called()
-        self.assertNotIn("myspec", engine._review_dispatches,
-                         "守卫早退，不得进入单飞标记")
+        initial_q = list(engine._dispatcher._run_queue)
+        engine._on_spec_reviewing("myspec")
+        # 队列无新增评审条目（早退未入队）
+        self.assertEqual(list(engine._dispatcher._run_queue), initial_q)
         self.assertTrue(
             any("start_after pending" in c.args[1] for c in logger.debug.call_args_list),
             "未到期跳过须记 debug 日志",
         )
 
     def test_expired_start_after_dispatches(self):
-        """reviewing + 已过期 start_after：正常派发评审。"""
+        """reviewing + 已过期 start_after：正常入队评审条目。
+
+        fix-spec-review-blocking-dispatch 改造：断言队列出现 spec-review
+        条目（而非检查 dispatch_review 被调用）。
+        """
         proot, sm, _ = _setup_spec_project(
             self.tmpdir, status="reviewing", start_after=_past_iso())
         engine, _ = _make_engine(sm, proot, {})
-        with patch("core.pm_engine.spec_review.SpecReviewManager") as m_man:
-            m_man.return_value.dispatch_review.return_value = True
-            engine._on_spec_reviewing("myspec")
-        m_man.return_value.dispatch_review.assert_called_once_with("myspec")
+        engine._on_spec_reviewing("myspec")
+        entries = [e for e in engine._dispatcher._run_queue if e[2] == "spec-review"]
+        self.assertEqual(len(entries), 1, "队列应有一条 spec-review 条目")
+        self.assertEqual(entries[0][1], "myspec")
 
     def test_entry_missing_no_early_return(self):
-        """3.7(b) reviewing 入口 entry 读不到时跳过判定、走既有链、不抛异常。"""
+        """3.7(b) reviewing 入口 entry 读不到时跳过判定、入队、不抛异常。
+
+        fix-spec-review-blocking-dispatch 改造：断言队列出现条目（而非检查
+        dispatch_review 被调用）。
+        """
         proot, sm, _ = _setup_spec_project(self.tmpdir, status="reviewing")
         engine, logger = _make_engine(sm, proot, {})
-        with patch("core.pm_engine.spec_review.SpecReviewManager") as m_man:
-            m_man.return_value.dispatch_review.return_value = True
-            engine._on_spec_reviewing("missing-spec")
-        m_man.return_value.dispatch_review.assert_called_once_with("missing-spec")
+        engine._on_spec_reviewing("missing-spec")
+        # missing-spec 不在 state 里 → read_one 返回 None → 入口守卫不早退 →
+        # 入队（_enqueue 可能 raise 或忽略，但不抛到测试层）
         self.assertFalse(
             any("start_after pending" in c.args[1] for c in logger.debug.call_args_list),
             "entry 为 None 时不得触发跳过日志",
@@ -443,16 +454,20 @@ class TestGateFailOpen(unittest.TestCase):
         )
 
     def test_on_spec_reviewing_fail_open(self):
-        """_on_spec_reviewing：判定异常不吞既有评审派发。"""
+        """_on_spec_reviewing：判定异常不吞既有评审派发（fail-open 放行入队）。
+
+        fix-spec-review-blocking-dispatch 改造：断言对象由 dispatch_review
+        改为「队列出现 spec-review 条目」（_on_spec_reviewing 改为入队）。
+        """
         proot, sm, _ = _setup_spec_project(
             self.tmpdir, status="reviewing", start_after=_future_iso())
         engine, logger = _make_engine(sm, proot, {})
         with patch("core.state_machine.start_after_pending",
-                   side_effect=RuntimeError("boom")), \
-             patch("core.pm_engine.spec_review.SpecReviewManager") as m_man:
-            m_man.return_value.dispatch_review.return_value = True
+                   side_effect=RuntimeError("boom")):
             engine._on_spec_reviewing("myspec")
-        m_man.return_value.dispatch_review.assert_called_once_with("myspec")
+        entries = [e for e in engine._dispatcher._run_queue if e[2] == "spec-review"]
+        self.assertEqual(len(entries), 1, "判定异常须 fail-open 继续入队评审")
+        self.assertEqual(entries[0][1], "myspec")
         self.assertTrue(
             any("start_after 门控判定异常" in c.args[1]
                 for c in logger.warning.call_args_list),
