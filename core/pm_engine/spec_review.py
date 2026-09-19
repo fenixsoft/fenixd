@@ -35,6 +35,12 @@ MAX_REVIEW_ATTEMPTS = 3
 # 确不成立、冻结转人工。取 2 = 「初次否决 + 1 次复评确认」。
 MAX_REJECT_REDO = 2
 
+# 审核收尾回退守卫（evo-spec-concurrency-flight-guard D1）：评审收口
+# （approved/repaired → 回退 ready）前重读 spec 当前 status，属这三类说明存在
+# 在飞实现 run 或在实现后段（implementer 已派发/合并已推进）——跳过回退，
+# 仅清 reviewer_run 锚点 + 落 `_review_skipped_result` 审计侧车。
+IN_FLIGHT_IMPL_STATES = ("implementing", "implemented", "testing")
+
 # 写入边界校验：SPEC 目录相对路径前缀
 SPEC_CHANGES_PREFIX = "spec/changes/"
 
@@ -281,6 +287,35 @@ class SpecReviewManager:
             return False
 
         if status in ("approved", "repaired"):
+            # ── 审核收尾回退守卫（evo-spec-concurrency-flight-guard D1）──
+            # 评审 run 收尾时，实现 run 可能已在飞（implementer 已派发 →
+            # implementing；或已合并 → implemented/testing）。此刻把状态回退到
+            # ready 会：① 产生「ready 态残留」→ 后续 merge 收尾 ready→implemented
+            # 非法转移 ERROR（16:29:24Z 事故实证）；② ready 残留把同一 spec 拉进
+            # 重复派发面。故本分支最前重读 spec 当前 status——属在飞实现状态则
+            # 跳过回退，仅清 reviewer_run 锚点 + 落审计侧车。
+            current = self.state_machine.read_one(spec_name) or {}
+            cur = current.get("status")
+            if cur in IN_FLIGHT_IMPL_STATES:
+                self.logger.info(
+                    "spec_review",
+                    f"评审收尾遇在飞实现 run（status={cur}），跳过回退: {spec_name}",
+                )
+                # 清锚点（否则 reviewer_run 永久残留，与 D2 派发前校验合流后
+                # 阻塞后续派发——本 SPEC 自造死锁）；审计侧车留痕本轮评审结论
+                # 未被状态机消费（不写 error 字段，防事件总线自触发反馈环，D0）。
+                self.state_machine.update_spec(
+                    spec_name,
+                    {
+                        "reviewer_run": None,
+                        "_review_attempts": 0,
+                        "_review_skipped_result": f"{status}@result-path={result_path}",
+                    },
+                )
+                # 早于下方 :300 的 _on_spec_ready 调用返回（MUST NOT 调用它：
+                # 此刻无待派发实现 run，且若调用会被 D2 判定为在飞评审而顺延，
+                # 语义重复）。
+                return True
             # 转 ready 并触发实现调度（fix-observability-gaps 2.2：自动来源标注）
             self.state_machine.transition(
                 spec_name, "ready",

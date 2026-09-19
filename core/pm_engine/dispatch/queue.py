@@ -145,6 +145,48 @@ class QQQueueMixin:
         """条目参与优先级判定时的有效档位（activity 追踪仍用 base，活动任务不老化）。"""
         return max(0, base - self._pm._aging_bonus(enqueued_at, now))
 
+    def _should_defer_for_reviewer(self, spec: dict, sname: str) -> bool:
+        """派发前在飞评审校验（evo-spec-concurrency-flight-guard D2）**单一落点**。
+
+        `_process_queue` 的候选筛选（best_valid_prio 扫描）与档位对齐（dispatch_idx
+        扫描）两处需同口径顺延（覆盖 family.py:585 / adjudication.py:1408 /
+        queue.py:870 等绕过 `_on_spec_ready` 的直入队列路径）。提取为本方法避免
+        两处 26 行重复守卫漂移：日志文案 / fail-open 策略 / stale 处理只在此改一处。
+
+        - ``spec``：``state_machine.read_one(sname)`` 结果；``reviewer_run`` 为空
+          → 无在飞评审（放行）。
+        - ``reviewer_in_flight`` 分层判定：进程表 → 流文件 → 陈旧锚点 fail-open。
+        - 判定异常 fail-open（D0 第 5 条，对齐 engine 落点容错）。
+        - 返回 True = 应顺延（调用方 MUST ``continue``：条目保留队列、不 pop、
+          不消耗 attempt，待 review 收尾后由既有重触发通道重判）。
+        """
+        reviewer_run = spec.get("reviewer_run")
+        if reviewer_run:
+            try:
+                in_flight, reason = self._pm.agent_runner.reviewer_in_flight(
+                    sname, reviewer_run
+                )
+            except Exception as e:
+                # 判定异常 fail-open（D0 第 5 条）
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"在飞评审判定异常 '{sname}'（fail-open 放行）: {e}",
+                )
+                in_flight, reason = False, None
+            if in_flight:
+                self._pm.logger.info(
+                    "pm_engine",
+                    f"在飞评审 run，派发顺延: {sname} run={reviewer_run}",
+                )
+                return True
+            if reason == "stale":
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"陈旧评审锚点（run 已终态）按无在飞评审放行; "
+                    f"待既有恢复路径清理: {sname} run={reviewer_run}",
+                )
+        return False
+
     def _process_queue(self):
         """Process the run queue — relaxed-priority parallel scheduling.
 
@@ -260,6 +302,18 @@ class QQQueueMixin:
                         )
                         self._schedule_signal_kill_recovery(sname, lock_held=True)
                         continue
+                    # 派发前在飞评审校验（evo-spec-concurrency-flight-guard D2）：
+                    # 存在在飞 spec-review run 时跳过**候选筛选**（条目保留队列、
+                    # 不 pop、不消耗 attempt），待 review 收尾重判。本落点覆盖
+                    # family.py:585 / adjudication.py:1408 / queue.py:870 等绕过
+                    # `_on_spec_ready` 的直入队列路径（与 engine 落点同口径）。
+                    # 陈旧锚点（run 已终态）判为无在飞评审放行并记 WARNING（D0）。
+                    # 位置：置于退避/start_after/冷却闸门之后、派发判定之前
+                    # （D2 任务 2.4：避免在无谓路径上做进程表判定）。
+                    if atype in ("implementer", "fast-track") and (
+                        self._should_defer_for_reviewer(spec, sname)
+                    ):
+                        continue
                     if best_valid_prio is None or eff < best_valid_prio:
                         best_valid_prio = eff
                 if best_valid_prio is None:
@@ -333,6 +387,14 @@ class QQQueueMixin:
                     # 该 spec 的全部 agent 类型重派（与 best_valid_prio 扫描同判定）。
                     if self._pm._signal_kill_cooled(sname):
                         self._schedule_signal_kill_recovery(sname, lock_held=True)
+                        continue
+                    # 派发前在飞评审校验（evo-spec-concurrency-flight-guard D2）：
+                    # 与 best_valid_prio 扫描同判定（同口径、同位置语义），命中
+                    # 则 continue——条目保留队列、不 pop、不消耗 attempt。陈旧
+                    # 锚点（run 已终态）判为无在飞评审放行并记 WARNING（D0）。
+                    if atype in ("implementer", "fast-track") and (
+                        self._should_defer_for_reviewer(spec, sname)
+                    ):
                         continue
                     dispatch_idx = i
                     break
@@ -1255,6 +1317,16 @@ class QQQueueMixin:
                         # stash 恢复已在 merge_back_from_branch 的 guard 段内完成
                         # （fix-autostash-orphans），此处只推进状态。
                         # fix-observability-gaps 2.2：implementer merge 成功收口
+                        # 合并收尾 ready 态兜底（evo-spec-concurrency-flight-guard
+                        # D3）：status=ready（评审收尾竞态回退残留）时先补记合法转移
+                        # ready→implementing，再推进 implemented——消除 ready→
+                        # implemented 非法转移 ERROR 与 83 分钟状态矛盾。
+                        self._pm._merge_ready_fallback(
+                            spec_name,
+                            result.run_id,
+                            "implementer",
+                            getattr(result, "branch", None) or None,
+                        )
                         self._pm.state_machine.transition(
                             spec_name, "implemented",
                             trigger_run_id=result.run_id,

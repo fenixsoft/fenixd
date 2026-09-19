@@ -581,6 +581,12 @@ class FFastTrackMixin:
         # merge 成功：回收 runner 延迟保留的 fast-track worktree（worktree-reuse）
         self._release_fast_track_worktree(spec_name, result)
         # fix-observability-gaps 2.2：fast-track merge 成功 → implemented
+        # 合并收尾 ready 态兜底（evo-spec-concurrency-flight-guard D3）：
+        # status=ready（评审收尾竞态回退残留）时先补记 ready→implementing，
+        # 再推进 implemented（消除 ready→implemented 非法转移 ERROR）。
+        self._pm._merge_ready_fallback(
+            spec_name, result.run_id, "fast-track", result.branch
+        )
         self._pm.state_machine.transition(
             spec_name, "implemented",
             trigger_run_id=result.run_id, agent_type="fast-track", channel="auto",

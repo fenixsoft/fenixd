@@ -400,7 +400,11 @@ class LivenessSupervisor:
         if not runs_dir.is_dir():
             return False
         cutoff = time.time() - seconds
-        for prefix in ("impl", "verify"):
+        # evo-spec-concurrency-flight-guard 0.1：在飞判定前缀覆盖 spec-review-/
+        # repair-（评审/修复 run 同样「新鲜 + 末行非终态」判在飞）。扩展后
+        # has_live_attempt / 孤儿 ready 恢复对「评审/修复 run 在飞」的 spec 一
+        # 并视为有生命（不重置状态、不重复派发），与 D0 判定同口径。
+        for prefix in ("impl", "verify", "spec-review", "repair"):
             try:
                 paths = list(runs_dir.glob(f"{prefix}-{spec_name}-*.jsonl"))
             except OSError:
@@ -416,6 +420,85 @@ class LivenessSupervisor:
                 except OSError:
                     continue
         return False
+
+    def _run_stream_alive(self, run_id: str, seconds: int) -> bool:
+        """该 run_id 的流文件是否「新鲜且末行非终态」（_stream_recent 同口径，per-run）。
+
+        evo-spec-concurrency-flight-guard D0 第 3 条：与 ``_stream_recent`` 的
+        「mtime 新鲜 AND 末行非终态」判定逐条同构，差异仅为判定对象是**单个
+        run_id 的流文件**（``runs/<run_id>.jsonl``）而非按 spec 前缀扫描——
+        D0 的 `reviewer_run` 是完整 run_id（``spec-review-<spec>-<ts>`` /
+        ``repair-<spec>-<ts>``），天然覆盖这两类前缀，不另起前缀表。
+        文件不存在/不可读经 ``_file_tail_is_terminal`` fail-open 到「非终态」时
+        仍要求 mtime 新鲜才判存活（保守侧不误杀在跑 run，与 _stream_recent 一致）。
+        """
+        runs_dir = self._pm.project_root / ".fenix" / "runs"
+        if not runs_dir.is_dir():
+            return False
+        run_file = runs_dir / f"{run_id}.jsonl"
+        try:
+            if run_file.stat().st_mtime >= time.time() - seconds and not _file_tail_is_terminal(
+                run_file
+            ):
+                return True
+        except OSError:
+            return False
+        return False
+
+    def reviewer_in_flight(
+        self, spec_name: str, reviewer_run: str | None
+    ) -> tuple[bool, str | None]:
+        """D0 判定总则：「在飞评审 run」= ``reviewer_run`` 非空 且 该 run 尚在飞。
+
+        分层判据（进程表为真相，流文件兜底，陈旧锚点 fail-open，对齐
+        spec/changes/evo-spec-concurrency-flight-guard/design.md D0）：
+
+          1. ``reviewer_run`` 为空 → ``(False, None)``（无在飞评审）。
+          2. ``running_run_ids()``（进程表为真相，评审 run 经 ``_run_claude``
+             注册进 ``_running_agents``）含 ``reviewer_run`` → ``(True, "process")``。
+          3. 该 run 流文件「新鲜且末行非终态」（``_run_stream_alive``，与
+             ``_stream_recent`` 同口径，覆盖 spec-review-/repair- 前缀）
+             → ``(True, "stream")``。
+          4. 2、3 皆否 → **陈旧锚点**（run 已终态但结果未消费/历史残留）：
+             ``(False, "stale")``——调用方 MUST 按「无在飞评审」放行并记 WARNING，
+             交由既有恢复路径清理锚点（防自造死锁）。
+          5. 判定过程异常 → fail-open ``(False, None)``（不新增死锁面，对齐
+             engine.py:470-478 既有门控容错），异常详情记 WARNING 日志。
+
+        Returns: ``(in_flight: bool, reason: str | None)``。reason 取值
+        ``"process"`` / ``"stream"``（在飞）、``"stale"``（陈旧锚点）、None（无）。
+        """
+        if not reviewer_run:
+            return False, None
+        # 判据 2：进程表（in-process 注册表；判据异常不回退到流判据的判定不成立，
+        # 而是 fail-open 放行——进程表读不出不等于评审在飞）
+        try:
+            running = self._pm.running_run_ids() or []
+            if reviewer_run in running:
+                return True, "process"
+        except Exception as e:
+            self._pm.logger.warning(
+                "agent_runner",
+                f"reviewer_in_flight 进程表判定异常 '{spec_name}' "
+                f"run={reviewer_run}（fail-open 继续流判据）: {e}",
+            )
+        # 判据 3：流文件新鲜 + 末行非终态（spec-review-/repair- 前缀天然覆盖）
+        try:
+            if self._run_stream_alive(reviewer_run, LIVE_ATTEMPT_STREAM_WINDOW_SECONDS):
+                return True, "stream"
+        except Exception as e:
+            self._pm.logger.warning(
+                "agent_runner",
+                f"reviewer_in_flight 流判据异常 '{spec_name}' "
+                f"run={reviewer_run}（fail-open 放行）: {e}",
+            )
+            # fail-open：流判据异常 ≠ 明确的「流不存活」，回到判据 5 的中性
+            # 无在飞结论（不落入下方判据 4 的 stale 终局判定——stale 语义是
+            # 「run 已终态」，与判据异常的事实不符，误标会诱导调用方清理锚点，
+            # 反而放行真正的在飞评审并发派发，击穿本守卫）。
+            return False, None
+        # 判据 4：陈旧锚点（无存活进程、无新鲜非终态流）——放行由调用方执行
+        return False, "stale"
 
     def note_run_extension(
         self, spec_name: str, run_id: str, extension_index: int, new_deadline: float

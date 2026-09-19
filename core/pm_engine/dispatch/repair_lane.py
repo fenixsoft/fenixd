@@ -340,6 +340,15 @@ class PRepairLaneMixin:
                 # update_spec(branch=...) MUST 先于 wm.cleanup 执行
                 # （先写锚点载体、后删 worktree，happy path 上不留窗口）。
                 # fix-observability-gaps 2.2：repair re-merge 成功 → implemented
+                # 合并收尾 ready 态兜底（evo-spec-concurrency-flight-guard D3）：
+                # status=ready（评审收尾竞态回退残留）时先补记 ready→implementing，
+                # 再推进 implemented（消除 ready→implemented 非法转移 ERROR）。
+                self._pm._merge_ready_fallback(
+                    spec_name,
+                    getattr(r, "run_id", None) or None,
+                    "repair",
+                    branch,
+                )
                 self._pm.state_machine.transition(
                     spec_name, "implemented",
                     trigger_run_id=getattr(r, "run_id", None) or None,
