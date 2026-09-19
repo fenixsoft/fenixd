@@ -697,6 +697,12 @@ _KEBAB_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 _SPEC_YAML_TEMPLATE = "schema: spec-driven\ncreated: {created}\nmode: full\n"
 
 
+def _spec_yaml_content(created: str) -> str:
+    """生成 .spec.yaml 内容（f-string 组装；`.format()` 实参为关键字、
+    arity-guard 无法解析会误报「实参必填位不足」，故用 f-string 展开）。"""
+    return f"schema: spec-driven\ncreated: {created}\nmode: full\n"
+
+
 def _slugify(text: str) -> str:
     """把任意文本推导为 kebab-case slug（^[a-z0-9][a-z0-9-]*$）。"""
     if not isinstance(text, str):
@@ -839,7 +845,7 @@ def generate_fix_spec(project_root, state_machine, item_ids: List[str]) -> dict:
             _tasks_md(name, candidates), encoding="utf-8"
         )
         (draft_root / ".spec.yaml").write_text(
-            _SPEC_YAML_TEMPLATE.format(created=created), encoding="utf-8"
+            _spec_yaml_content(created), encoding="utf-8"
         )
     except OSError as e:
         shutil.rmtree(draft_root, ignore_errors=True)

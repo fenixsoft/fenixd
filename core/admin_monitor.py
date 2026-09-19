@@ -29,6 +29,7 @@ import json
 import re
 import subprocess
 import tempfile
+import threading
 import time
 import traceback
 from datetime import datetime, timezone
@@ -672,7 +673,12 @@ class AdminMonitor:
         self._code_review_executor = code_review_executor
         # code-review 在途标记（对齐 _evolution_in_flight 形态）：投递即置位、
         # worker 收尾复位。有在途 run 则本轮跳过（D3「单飞」）。
+        # 锁定：检查点（admin 巡检线程）与手动信号消费（fenixd 主循环线程）
+        # 双线程读-改-写，GIL 不保证「读 False→写 True」原子（check-then-set
+        # 竞态：两线程同时通过单飞判定、各自派发同一 run_id 覆盖产物文件），
+        # 用锁把判定+置位压成临界区（fix-ocr finding low）。
         self._code_review_in_flight = False
+        self._code_review_lock = threading.Lock()
 
     # ── 配置读取 ────────────────────────────────────────────────
 
@@ -847,13 +853,16 @@ class AdminMonitor:
             return {"triggered": False, "reason": "already_ran_today"}
 
         # 单飞：已有 code-review run 在跑 → 跳过
-        if self._code_review_in_flight:
-            return {"triggered": False, "reason": "already_running"}
-        if self.agent_runner is not None:
-            running = getattr(self.agent_runner, "_running_agents", None) or {}
-            if any(str(rid).startswith("code-review-") for rid in running):
-                self._code_review_in_flight = True
-                return {"triggered": False, "reason": "already_running_agent"}
+        # （判定+置位在锁内原子完成，防双线程同时通过单飞判定派发同一 run_id）
+        with self._code_review_lock:
+            if self._code_review_in_flight:
+                return {"triggered": False, "reason": "already_running"}
+            if self.agent_runner is not None:
+                running = getattr(self.agent_runner, "_running_agents", None) or {}
+                if any(str(rid).startswith("code-review-") for rid in running):
+                    self._code_review_in_flight = True
+                    return {"triggered": False, "reason": "already_running_agent"}
+            self._code_review_in_flight = True
 
         # 窗口 + manifest（与自省同源窗口口径，task 3.3 MUST 在 self_review 之前
         # 调用，保证 window_start 读到上一次自省时刻而非本轮自省刚写入的 now）
@@ -861,7 +870,10 @@ class AdminMonitor:
         manifest = collect_manifest(self.project_root, scope="window", window_start=window_start)
         if not manifest:
             # manifest 为空：记录并跳过（不派发空 run——design Risk「空场景
-            # 白洗」），同日防重仍然写入（当日不重试，与自省零活动跳过同口径）
+            # 白洗」），同日防重仍然写入（当日不重试，与自省零活动跳过同口径）。
+            # 复位单飞标志（上方锁内已置位）——否则本车道永久被「已运行」挡住。
+            with self._code_review_lock:
+                self._code_review_in_flight = False
             save_code_review_state(self.project_root, local_today_str())
             self.logger.info(
                 "admin_monitor",
@@ -879,7 +891,6 @@ class AdminMonitor:
         save_code_review_state(self.project_root, local_today_str())
 
         # 投递后台 worker（对齐 _evolution_worker 形态）
-        self._code_review_in_flight = True
         review_kind = "scheduled"
 
         def _worker():
@@ -900,7 +911,8 @@ class AdminMonitor:
             except Exception as e:
                 self.logger.error("admin_monitor", f"code-review 周期审查异常: {e}")
             finally:
-                self._code_review_in_flight = False
+                with self._code_review_lock:
+                    self._code_review_in_flight = False
 
         try:
             if self._code_review_executor is not None:
@@ -910,7 +922,8 @@ class AdminMonitor:
                 _worker()
             return {"triggered": True, "ok": True, "reason": "scheduled", "date": local_today_str()}
         except Exception as e:
-            self._code_review_in_flight = False
+            with self._code_review_lock:
+                self._code_review_in_flight = False
             self.logger.error("admin_monitor", f"code-review 周期审查派发失败: {e}")
             return {"triggered": True, "ok": False, "reason": f"exception: {e}", "date": local_today_str()}
 

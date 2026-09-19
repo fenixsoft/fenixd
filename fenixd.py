@@ -1326,12 +1326,31 @@ class FenixDaemon:
             return
 
         # 单飞：已有 code-review run 在跑
-        if self.admin_monitor is not None and self.admin_monitor._code_review_in_flight:
+        # （判定+置位在锁内原子完成，防 admin 巡检线程与主循环线程双线程
+        # 同时通过单飞判定导致同一 run_id 被覆盖）
+        lock = getattr(self.admin_monitor, "_code_review_lock", None)
+
+        def _in_flight_check_and_set() -> bool:
+            """原子检查并置位单飞标志；返回 True 表示「已有在途」应跳过。"""
+            if lock is not None:
+                with lock:
+                    return _check_set_locked()
+            return _check_set_locked()
+
+        def _check_set_locked() -> bool:
+            if self.admin_monitor is not None and self.admin_monitor._code_review_in_flight:
+                return True
+            running = getattr(self.agent_runner, "_running_agents", None) or {}
+            if any(str(rid).startswith("code-review-") for rid in running):
+                if self.admin_monitor is not None:
+                    self.admin_monitor._code_review_in_flight = True
+                return True
+            if self.admin_monitor is not None:
+                self.admin_monitor._code_review_in_flight = True
+            return False
+
+        if _in_flight_check_and_set():
             self.logger.info("fenixd", "code_review 手动触发被忽略：已有审查在跑")
-            return
-        running = getattr(self.agent_runner, "_running_agents", None) or {}
-        if any(str(rid).startswith("code-review-") for rid in running):
-            self.logger.info("fenixd", "code_review 手动触发被忽略：agent 层检测到在途 run")
             return
 
         requested_at = payload.get("requested_at", "")
@@ -1375,15 +1394,13 @@ class FenixDaemon:
             except Exception as e:
                 self.logger.error("fenixd", f"code_review 手动审查异常: {e}")
 
-        if self.admin_monitor is not None:
-            self.admin_monitor._code_review_in_flight = True
-
         def _worker_with_flag():
             try:
                 _worker()
             finally:
                 if self.admin_monitor is not None:
-                    self.admin_monitor._code_review_in_flight = False
+                    with self.admin_monitor._code_review_lock:
+                        self.admin_monitor._code_review_in_flight = False
 
         try:
             if self._admin_executor is not None:
@@ -1392,7 +1409,8 @@ class FenixDaemon:
                 _worker_with_flag()
         except Exception as e:
             if self.admin_monitor is not None:
-                self.admin_monitor._code_review_in_flight = False
+                with self.admin_monitor._code_review_lock:
+                    self.admin_monitor._code_review_in_flight = False
             self.logger.error("fenixd", f"code_review 手动审查投递失败: {e}")
 
     # ── 框架自进化检查点（add-framework-self-evolution 5.x） ────────

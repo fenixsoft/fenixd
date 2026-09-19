@@ -852,14 +852,18 @@ def run_code_review(
                 run_ok = False
                 error = f"审查落账异常: {e}"
             if run_ok and review_kind == "manual_full":
-                # 全仓快照核销：本轮未再观测到的 open 项置 resolved（D5）
-                try:
-                    observed = {f["fingerprint"] for f in findings if isinstance(f, dict) and f.get("fingerprint")}
-                    resolved = resolve_snapshot(runner.project_root, observed)
-                except Exception:  # noqa: BLE001 — 核销失败记 WARNING 不使整轮失败
-                    _log = getattr(runner, "logger", None)
-                    if _log is not None:
-                        _log.warning("code-review", f"全仓快照核销失败（run {run_id}）")
+                # 全仓快照核销：本轮未再观测到的 open 项置 resolved（D5）。
+                # findings 为空（agent 未产出审查结果）时 MUST NOT 执行核销——
+                # 空集核销会把全部 open 项置 resolved = 误核销白洗，违反设计
+                # 「空场景/空 manifest 白洗」risk 缓解。
+                if findings:
+                    try:
+                        observed = {f["fingerprint"] for f in findings if isinstance(f, dict) and f.get("fingerprint")}
+                        resolved = resolve_snapshot(runner.project_root, observed)
+                    except Exception:  # noqa: BLE001 — 核销失败记 WARNING 不使整轮失败
+                        _log = getattr(runner, "logger", None)
+                        if _log is not None:
+                            _log.warning("code-review", f"全仓快照核销失败（run {run_id}）")
 
     return CodeReviewResult(
         run_id=run_id,
