@@ -99,7 +99,9 @@ Agent 可用的模型通道（Provider）注册表。未配置 = 空注册表，
 
 ### agents.models
 
-按 Agent 角色声明模型通道，键取九角色：`implementer` / `fast-track` / `planner-plan` / `planner-judge` / `verifier` / `administrator` / `self-review` / `spec-review` / `dispute-judge`。未知角色键降级跳过并 ERROR 告警（新角色键需重启 daemon 使白名单生效）；未分配的角色走默认网关。
+按 Agent 角色声明模型通道，键取十个角色：`implementer` / `fast-track` / `planner-plan` / `planner-judge` / `verifier` / `administrator` / `self-review` / `spec-review` / `dispute-judge` / `code-review`。未知角色键降级跳过并 ERROR 告警（新角色键需重启 daemon 使白名单生效）；未分配的角色走默认网关。
+
+> **code-review（周期性代码审查，add-code-review-agent-and-quality-tab）**：`agents.models.code-review` 可为其独立分配模型；未配置时模型链依次回退 `agents.models.self-review` → `agents.models.administrator` → `admin.agent_model` → 默认网关（与 evolution 同型链）。
 
 ```yaml
 agents:
@@ -242,6 +244,27 @@ self_evolution:
 两键均为**全局（用户级）键**：Dashboard 配置写入 API 对项目级作用域提交 `self_evolution` 返回 400（引导到用户级作用域修改），项目级配置文件不会被写入该键；读取侧的有效值取用户级 + 项目级合并后配置。节、键缺失或值非法（`auto_accept` 非布尔、`max_items_per_run` 非 1..200 整数/布尔混入）时回退缺省值，不使 daemon 启动失败，30s 热更新路径不受该节中断。
 
 语义：仅当 daemon 为自托管（`PROJECT_ROOT == FRAMEWORK_ROOT`）时启用自进化检查点（节拍复用 `admin.interval_minutes`，缺省 5 分钟）。检查点按 Dashboard registry 逐项目判定就绪（`.fenix/self_review_state.json` 的 `last_run_at` 晚于 `.fenix/evolution/state.json` 水位，且 `.fenix/todo.md` 非空），就绪即入队；无 `evo-` 分析 run 在途时立刻以队列中全部就绪项目启动一次分析 run。分析结论与草稿落在 gitignored 的 `.fenix/evolution/`（见[文件与数据地图](10-artifacts.md)）；接受后 SPEC 名统一使用 `evo-` 前缀并进入既有流水线（见[生命周期](03-lifecycle.md)）。`auto_accept` 为真时，分析落地完成后对本轮全部 `pending` 条目自动走接受路径（单条失败不影响其余），无需人工点击。
+
+### admin.code_review（周期性代码审查）
+
+项目级「质量」分面（`add-code-review-agent-and-quality-tab`）：开启后与每日自省**同周期**触发 `code-review` agent，审查窗口内开发 SPEC 的代码质量，问题沉淀到独立台账 `.fenix/code-review/items.jsonl`，并在项目页「质量」分面以可复选表格呈现（支持一键生成修复 SPEC `fix-cr-<slug>`）。审查窗口与自省**同源**：`window_start` 取 `.fenix/self_review_state.json` 的 `last_run_at`（首跑/旧格式回退 `now - 24h`），即周期口径 = `admin.self_review.run_at` 时点，二者永远同窗口、不引入漂移。
+
+| 键 | 默认值 | 范围 | 生效方式 |
+|----|--------|------|---------|
+| enabled | `false` | bool | 热更新（下一检查点生效） |
+| max_files | `500` | 正整数 | 热更新（下一检查点生效） |
+
+```yaml
+admin:
+  code_review:
+    enabled: false      # 是否启用周期性代码审查（缺省 false）
+    max_files: 500      # 审查 manifest 上限（正整数）：大仓全量审查超限截断，避免耗时过长/烧钱
+```
+
+- `enabled` 只管**周期调度**（与 `admin.self_review.enabled` 同语义）：关闭时到达自省时点不派发 code-review run、不写任何产物；「质量」分面的**手动触发**按钮（全仓库审查 / 立即审查本周期）**不受此开关约束**——用户显式点击即执行（写 `.fenix/code_review_request.json` 文件信号，daemon 未受 supervisor 托管时拒绝并以明确文案返回）。
+- 手动触发无运行中审查时返回受理；已有审查在跑时返回 409「已有审查在进行中」。
+- 模型链：`agents.models.code-review` → `agents.models.self-review` → `agents.models.administrator` → `admin.agent_model` → 默认网关。
+- token 归账到 `.fenix/cost/code_review_tokens.json`（与每日自省同结构，不写 STATE）。
 
 ### pm.dispatch.aging / pm.family
 

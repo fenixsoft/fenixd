@@ -149,8 +149,10 @@ agents:
   transient_break_cooldown_seconds: 600
 
   # 按 Agent 角色分配模型（可选）。未列出的角色使用默认模型。
-  # 角色可选: implementer | planner-plan | planner-judge | verifier | administrator | self-review | fast-track
+  # 角色可选: implementer | planner-plan | planner-judge | verifier | administrator | self-review | fast-track | code-review
   # self-review 为每日自省与框架自进化（evolution）共用的分配。
+  # code-review 为周期性仓库级代码审查（add-code-review-agent-and-quality-tab）：
+  #   模型链回退 code-review → self-review → administrator → 默认网关。
   #
   # provider 支持三种形态（逐字节向后兼容）：
   #   形态 1（字符串）：单值链，角色级 model 或 provider 条目 model 作为缺省。
@@ -304,6 +306,18 @@ admin:
   # supervisor 的 SIGKILL 等待 = 本值 + 120s 余量。新项目缺省 0：避免 1-2 小时级
   # implementer/planner 在飞场景每次重启必等满排水窗口；有特殊需求可手改大值。
   shutdown_drain_seconds: 0
+
+  # ---- 周期性代码审查（add-code-review-agent-and-quality-tab，可选）----
+  # 项目页「质量」分面提供同款开关（读/写 GET/POST /api/config 的
+  # admin.code_review.enabled）。开启后与每日自省同周期（admin.self_review.run_at
+  # 时点）派发 code-review agent，审查窗口内开发 SPEC 的代码质量，问题沉淀到
+  # .fenix/code-review/items.jsonl 台账供「质量」分面展示与消费。
+  # code_review:
+  #   # 是否启用周期性代码审查（缺省 false；手动触发不受此开关约束）
+  #   enabled: false
+  #   # 全仓审查 manifest 上限（正整数，缺省 500）：超过上限截断，避免大仓
+  #   # 全量审查耗时过长/烧钱。窗口审查按窗口收集，也受此上限约束。
+  #   max_files: 500
 
 # ---- Agent Run 超时护栏（可选）----
 # timeout_supervision 监控单次 Agent 运行的墙钟上限，防止超时参数再次与 run 超时脱钩。

@@ -170,7 +170,8 @@ from .routes.help_routes import H8HelpRoutesMixin  # noqa: E402
 from .routes.sse_routes import H9SseRoutesMixin  # noqa: E402
 from .routes.static_routes import H10StaticRoutesMixin  # noqa: E402
 from .routes.session_routes import H_SessionRoutesMixin  # noqa: E402
-class DashboardHandler(H0BaseMixin, H2ProjectRoutesMixin, H3SpecRoutesMixin, H4RunRoutesMixin, H5SettingsRoutesMixin, H6AlertRoutesMixin, H7EvolutionRoutesMixin, H8HelpRoutesMixin, H9SseRoutesMixin, H10StaticRoutesMixin, H_SessionRoutesMixin, BaseHTTPRequestHandler):
+from .routes.code_review_routes import H11CodeReviewRoutesMixin  # noqa: E402
+class DashboardHandler(H0BaseMixin, H2ProjectRoutesMixin, H3SpecRoutesMixin, H4RunRoutesMixin, H5SettingsRoutesMixin, H6AlertRoutesMixin, H7EvolutionRoutesMixin, H8HelpRoutesMixin, H9SseRoutesMixin, H10StaticRoutesMixin, H_SessionRoutesMixin, H11CodeReviewRoutesMixin, BaseHTTPRequestHandler):
     """处理 GET/HEAD/POST/DELETE 请求，输出 JSON 或静态资源。
 
     protocol_version=HTTP/1.1：SSE 需要 keep-alive 长连接 + chunked 传输

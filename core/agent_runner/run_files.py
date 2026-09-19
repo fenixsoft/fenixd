@@ -29,6 +29,9 @@ RUN_ID_AGENT_PREFIXES: tuple[tuple[str, str], ...] = (
     ("admin-", "administrator"),
     ("dispute-judge-", "dispute-judge"),
     ("spec-review-", "spec-review"),
+    # add-code-review-agent-and-quality-tab：code-review- 独立前缀，与既有
+    # 前缀无子串冲突（顺序无关，放此处便于横向检索）
+    ("code-review-", "code-review"),
     ("planner-judge-", "planner-judge"),
     ("planner-plan-", "planner-plan"),
     ("planner-", "planner"),

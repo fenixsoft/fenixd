@@ -18,11 +18,12 @@ from pathlib import Path
 FRAMEWORK_ROOT = Path(__file__).resolve().parents[2]
 AGENT_PROMPT_DIR = FRAMEWORK_ROOT / "agents"
 
-# 九类 agent → 提示词文件名（agent-type 白名单的单一来源，Dashboard 端点复用）
+# 十类 agent → 提示词文件名（agent-type 白名单的单一来源，Dashboard 端点复用）
 # add-daily-self-review：新增 self-review（每日自省）类型。
 # add-deliverable-declaration-triage：新增 dispute-judge（交付物缺件 LLM 终审）类型。
 # add-framework-self-evolution：新增 evolution（框架自进化复核）类型。
 # add-spec-review-gate：新增 spec-review（SPEC 方案评审）类型。
+# add-code-review-agent-and-quality-tab：新增 code-review（周期性仓库级代码审查）类型。
 AGENT_PROMPT_FILES = {
     "implementer": "implementer.md",
     "verifier": "verifier.md",
@@ -34,6 +35,7 @@ AGENT_PROMPT_FILES = {
     "dispute-judge": "dispute-judge.md",
     "evolution": "evolution.md",
     "spec-review": "spec-review.md",
+    "code-review": "code-review.md",
 }
 
 
@@ -261,6 +263,12 @@ class PromptBuilder:
         # 维度占位符，注入就绪项目 todo.md 全文与待分析条目清单）。
         if agent_type == "evolution":
             return self._build_evolution_prompt(spec_name, detail or {})
+
+        # add-code-review-agent-and-quality-tab：周期/手动代码审查 run prompt
+        # 独立构建（无 spec 维度占位符，注入 manifest 文件清单、审查窗口与
+        # 增量落盘路径）。
+        if agent_type == "code-review":
+            return self._build_code_review_prompt(spec_name, detail or {})
 
         template = self._load_agent_template(agent_type)
         prompt = self._fill_placeholders(template, agent_type, spec_name, detail)
@@ -1179,6 +1187,35 @@ class PromptBuilder:
         prompt = prompt.replace("{pending_entries}", entries_txt)
         prompt = prompt.replace("{out_path}", str(out_path))
         prompt = prompt.replace("{project_root}", str(self._pm.project_root))
+        # 非交互契约段（fix-agent-noninteractive-contract D2）：独立构建路径
+        # 不走统一收尾处注入，就地追加（return 之前）。
+        prompt += self._noninteractive_contract_section()
+        return prompt
+
+    def _build_code_review_prompt(self, run_id: str, detail: dict) -> str:
+        """构建 code-review（周期/手动代码审查）run 的 prompt。
+
+        加载 agents/code-review.md（文件化体系，缺失 fail-fast），以 str.replace
+        填充占位符（不用 str.format——正文含大量 {} JSON 示例）：
+        - {manifest}: 待审文件清单（框架侧先行算出，进度 total 权威来源）
+        - {total_files}: manifest 长度（agent 据此核对是否覆盖完全）
+        - {review_window}: 审查窗口描述（scheduled/manual_window 为
+          [window_start, now]，manual_full 为全仓）
+        - {out_path}: 逐文件增量落盘路径（.fenix/code-review/out-<run_id>.jsonl）
+        """
+        template = self._load_agent_template("code-review")
+        prompt = template
+        files: list = detail.get("manifest") or []
+        total = len(files)
+        manifest_txt = "\n".join(f"- {f}" for f in files) or "（manifest 为空——本 run 不应派发，见调用方）"
+        window = detail.get("review_window") or "（全仓）"
+        prompt = prompt.replace("{manifest}", manifest_txt)
+        prompt = prompt.replace("{total_files}", str(total))
+        prompt = prompt.replace("{review_window}", str(window))
+        out_path = detail.get("out_path")
+        if not out_path:
+            out_path = self._pm.project_root / ".fenix" / "code-review" / f"out-{run_id}.jsonl"
+        prompt = prompt.replace("{out_path}", str(out_path))
         # 非交互契约段（fix-agent-noninteractive-contract D2）：独立构建路径
         # 不走统一收尾处注入，就地追加（return 之前）。
         prompt += self._noninteractive_contract_section()

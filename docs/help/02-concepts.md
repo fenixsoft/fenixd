@@ -26,7 +26,7 @@ graph TB
         PM --> SM
     end
 
-    subgraph POOL ["Agent Pool（十类 Agent）"]
+    subgraph POOL ["Agent Pool（十一类 Agent）"]
         IMP["Implementer\n（实现者）"]
         VER["Verifier\n（验证者）"]
         PP["Planner-Plan\n（规划器）"]
@@ -37,6 +37,7 @@ graph TB
         DJ["Dispute-Judge\n（争议法官）"]
         EV["Evolution\n（自进化）"]
         REV["Spec-Review\n（方案评审）"]
+        CR["Code-Review\n（代码审查）"]
         IMP ~~~ PP
         PP ~~~ FT
         VER ~~~ PJ
@@ -44,6 +45,7 @@ graph TB
         ADM ~~~ SR
         SR ~~~ EV
         DJ ~~~ REV
+        REV ~~~ CR
     end
 
     subgraph DASH ["Dashboard"]
@@ -65,7 +67,7 @@ graph TB
 
 两条入边的分工是理解调度的关键：**正常唤醒靠文件监听（2 秒级），兜底扫描只是安全网**。各唤醒源的间隔、成本实测与已知盲区见[调度与治理规则](06-governance.md#调度节拍spec-何时被唤醒)。
 
-## 十类 Agent 角色
+## 十一类 Agent 角色
 
 | Agent 类型 | 职责 | 触发时机 |
 |-----------|------|---------|
@@ -79,6 +81,7 @@ graph TB
 | **dispute-judge**（争议法官） | 对实现者/验证者的声明争议做只读裁决 | 争议仲裁触发 |
 | **evolution**（自进化） | 从自省报告提炼需求、批量产出 evo-* SPEC | 定时触发 |
 | **spec-review**（方案评审） | 阅读 SPEC 三文档做方案级评审（goal-fit/hole/regression），结论 approved/repaired/rejected | `drafted → reviewing` 晋升门禁 |
+| **code-review**（代码审查） | 周期性仓库级代码审查，问题沉淀为可追踪台账（`.fenix/code-review/items.jsonl`），供「质量」分面消费并生成 fix-cr-* 修复 SPEC | 每日自省时点同步触发 / 「质量」分面手动触发 |
 
 ## full 模式 vs fast-track 模式
 

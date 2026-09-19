@@ -25,8 +25,13 @@ from typing import Dict
 
 from core.agent_runner.result_gate import (
     AdminDisposition,
+    CodeReviewResult,
     EvolutionResult,
     SelfReviewResult,
+)
+from core.code_review import (
+    resolve_snapshot,
+    upsert_findings,
 )
 
 # 无 provider 分配的 agent（含 Administrator）走默认网关（cc-switch）时 --model 用的
@@ -707,3 +712,263 @@ def _get_admin_model(runner) -> str:
     if admin_model:
         return admin_model
     return DEFAULT_GATEWAY_MODEL
+
+
+# ── 周期性代码审查 run（add-code-review-agent-and-quality-tab）──────
+
+
+def run_code_review(
+    runner,
+    manifest: list,
+    review_kind: str,
+    window_start: datetime | None = None,
+    scope: str = "window",
+) -> CodeReviewResult:
+    """唤起代码审查 run（code-review agent，design D1/D4）。
+
+    与 self_review/evolution 同形态：运维角色，直接在 main 树（project_root）
+    操作，**不创建 worktree**。特性：
+    - run_id 前缀 ``code-review-<epoch>``：独立前缀，不占 spec 维度预算、
+      不计入每日 agent run 计数（不走 _execute_agent）；
+    - 派发前框架侧把 manifest（待审文件清单，进度 total 权威来源）落盘为
+      ``.fenix/code-review/manifest-<run_id>.json``，并注入 prompt；
+    - agent 逐文件审查、每审完一个文件向 ``.fenix/code-review/out-<run_id>
+      .jsonl`` 追加一行（增量落盘，进度 done 来源）；
+    - run 结束读增量产物并 ``upsert_findings`` 入台账；``manual_full``
+      收尾再 ``resolve_snapshot`` 全仓核销（D5 只增不核销的例外）；
+    - token 归账到独立类目 ``.fenix/cost/code_review_tokens.json``
+      （MUST NOT 走 _accumulate_token_usage——审查 run 无 spec 维度）；
+    - 模型解析链：agents.models.code-review 分配优先 → 回退
+      agents.models.self-review → 回退 agents.models.administrator →
+      再回退 _get_admin_model → 默认网关。
+    - 超时走 agents.run_timeout_seconds 全局默认（_run_claude 内生效）。
+
+    Args:
+        runner: AgentRunner 实例（门面依赖注入，D2b 规则 1）。
+        manifest: 待审文件清单（相对路径列表，框架侧先行算出）。
+        review_kind: scheduled / manual_full / manual_window。
+        window_start: 审查窗口起点（scheduled/manual_window 注入；
+            manual_full 为 None=全仓）。
+        scope: full / window（写进 manifest 供审计）。
+    """
+    run_id = _unique_code_review_run_id(runner)
+    mpath = runner.project_root / ".fenix" / "code-review" / f"manifest-{run_id}.json"
+    opath = runner.project_root / ".fenix" / "code-review" / f"out-{run_id}.jsonl"
+    try:
+        mpath.parent.mkdir(parents=True, exist_ok=True)
+        mpath.write_text(
+            json.dumps(
+                {
+                    "run_id": run_id,
+                    "scope": scope,
+                    "review_kind": review_kind,
+                    "window_start": window_start.isoformat() if window_start else None,
+                    "files": [str(f) for f in manifest],
+                    "requested_at": datetime.now(timezone.utc).isoformat(),
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    except OSError as e:
+        return CodeReviewResult(run_id=run_id, success=False, error=f"manifest 落盘失败: {e}")
+
+    review_window = (
+        f"[{window_start.isoformat()}, now]" if window_start else "（全仓，manual_full）"
+    )
+    prompt = runner._build_prompt(
+        run_id,
+        "code-review",
+        detail={
+            "manifest": [str(f) for f in manifest],
+            "review_window": review_window,
+            "out_path": str(opath),
+        },
+    )
+
+    # 模型解析链：agents.models.code-review > self-review > administrator >
+    # _get_admin_model → 默认网关（design D1 模型链回退）
+    env_overrides: Dict[str, str] = {}
+    assignment = (
+        runner._get_agent_model_assignment("code-review")
+        or runner._get_agent_model_assignment("self-review")
+        or runner._get_agent_model_assignment("administrator")
+    )
+    if assignment:
+        provider, model_override = assignment[0]
+        env_overrides["ANTHROPIC_BASE_URL"] = provider["baseurl"]
+        env_overrides["ANTHROPIC_API_KEY"] = provider["apikey"]
+        env_overrides["ANTHROPIC_MODEL"] = model_override
+        env_overrides["CLAUDE_CONFIG_DIR"] = str(runner._ensure_agent_config_dir(provider["name"]))
+        for k, v in (provider.get("env") or {}).items():
+            env_overrides[k] = v
+    else:
+        model_override = runner._get_admin_model()
+
+    try:
+        output, turns, _session_id, usage_info = runner._run_claude(
+            prompt,
+            runner.project_root,
+            run_id,
+            model_override,
+            env_overrides,
+            max_turns=runner._get_config("agents.max_turns", 300),
+            spec_name="code-review",
+            agent_type="code-review",
+        )
+        run_ok = True
+        error = ""
+    except Exception as e:
+        output = ""
+        run_ok = False
+        error = str(e)
+        usage_info = runner._extract_usage_info(None)
+
+    # token 归账到独立类目（不写 STATE，与自省同一约束）
+    _accumulate_code_review_tokens(runner, run_id, usage_info)
+
+    # 读取增量产物并落账（产物缺失/解析失败 → success=False 带原因）
+    inserted = updated = resolved = 0
+    if run_ok:
+        try:
+            findings = _read_code_review_out(opath)
+        except OSError as e:
+            run_ok = False
+            error = f"读取审查产物失败: {e}"
+            findings = []
+        if run_ok and findings is not None:
+            try:
+                stats = upsert_findings(
+                    runner.project_root,
+                    findings,
+                    review_id=run_id,
+                    review_kind=review_kind,
+                )
+                inserted = stats.get("inserted", 0)
+                updated = stats.get("updated", 0)
+            except Exception as e:
+                # 落账异常不应穿透；整轮视为失败带原因
+                run_ok = False
+                error = f"审查落账异常: {e}"
+            if run_ok and review_kind == "manual_full":
+                # 全仓快照核销：本轮未再观测到的 open 项置 resolved（D5）。
+                # findings 为空（agent 未产出审查结果）时 MUST NOT 执行核销——
+                # 空集核销会把全部 open 项置 resolved = 误核销白洗，违反设计
+                # 「空场景/空 manifest 白洗」risk 缓解。
+                if findings:
+                    try:
+                        observed = {f["fingerprint"] for f in findings if isinstance(f, dict) and f.get("fingerprint")}
+                        resolved = resolve_snapshot(runner.project_root, observed)
+                    except Exception:  # noqa: BLE001 — 核销失败记 WARNING 不使整轮失败
+                        _log = getattr(runner, "logger", None)
+                        if _log is not None:
+                            _log.warning("code-review", f"全仓快照核销失败（run {run_id}）")
+
+    return CodeReviewResult(
+        run_id=run_id,
+        success=run_ok,
+        inserted=inserted,
+        updated=updated,
+        resolved=resolved,
+        error=error,
+        output=output,
+    )
+
+
+def _unique_code_review_run_id(runner) -> str:
+    """生成不冲突的 ``code-review-<epoch>`` run_id（task 3.7）。
+
+    秒级时间戳在「手动触发 + 同秒周期触发」下可能撞名（manifest/out 文件
+    会被互相覆盖）。目标文件已存在时追加 ``-<n>`` 退避（n 从 1 起递增）。
+    """
+    base = f"code-review-{int(time.time())}"
+    candidate = base
+    n = 1
+    cr_dir = runner.project_root / ".fenix" / "code-review"
+    while True:
+        if not (cr_dir / f"manifest-{candidate}.json").exists() and not (
+            cr_dir / f"out-{candidate}.jsonl"
+        ).exists():
+            return candidate
+        n += 1
+        candidate = f"{base}-{n}"
+
+
+def _read_code_review_out(opath: Path) -> list:
+    """读取审查增量产物 ``out-<run_id>.jsonl``。
+
+    每行为一个文件的审查结果 JSON（file/findings[]）。非 dict 行忽略；
+    损坏行跳过；文件缺失返回空列表（run 失败路径已由 success=False 兜底）。
+    """
+    out: list = []
+    if not opath.is_file():
+        return out
+    for lineno, line in enumerate(opath.read_text(encoding="utf-8", errors="replace").splitlines(), start=1):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(rec, dict):
+            continue
+        file_ = str(rec.get("file") or "")
+        findings = rec.get("findings")
+        if not isinstance(findings, list):
+            # 单文件无结果行：跳过（不计入台账，也不报错）
+            continue
+        for finding in findings:
+            if not isinstance(finding, dict):
+                continue
+            # 审查契约字段归一（file 取文件行 + finding 层可覆盖）
+            base = dict(finding)
+            base.setdefault("file", file_)
+            base.setdefault("spec", "")
+            base.setdefault("line", 1)
+            if base.get("file"):
+                out.append(base)
+    return out
+
+
+def _accumulate_code_review_tokens(runner, run_id: str, usage_info: dict) -> None:
+    """code-review token 归账到 cost-observability 独立类目（task 3.6）。
+
+    追加到 ``.fenix/cost/code_review_tokens.json`` 的 runs 数组（与
+    self_review_tokens.json 同结构），供成本对账口径一致；不写 STATE
+    （审查 run 无 spec 维度）。写失败静默降级（观测增强，不阻断）。
+    """
+    if not isinstance(usage_info, dict):
+        usage_info = {}
+    cost_dir = runner.project_root / ".fenix" / "cost"
+    tokens_json = cost_dir / "code_review_tokens.json"
+    try:
+        tokens_json.parent.mkdir(parents=True, exist_ok=True)
+        data = {}
+        if tokens_json.is_file():
+            try:
+                loaded = json.loads(tokens_json.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                loaded = {}
+            if isinstance(loaded, dict):
+                data = loaded
+        runs = data.get("runs")
+        if not isinstance(runs, list):
+            runs = []
+        runs.append(
+            {
+                "agent_type": "code-review",
+                "date": run_id,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "input_tokens": int(usage_info.get("input_tokens", 0) or 0)
+                + int(usage_info.get("cache_creation_input_tokens", 0) or 0)
+                + int(usage_info.get("cache_read_input_tokens", 0) or 0),
+                "output_tokens": int(usage_info.get("output_tokens", 0) or 0),
+                "cost_usd": usage_info.get("cost_usd"),
+            }
+        )
+        data["runs"] = runs
+        tokens_json.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    except (OSError, json.JSONDecodeError):
+        pass

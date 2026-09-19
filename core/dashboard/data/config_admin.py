@@ -64,6 +64,8 @@ _SOURCE_KEYS = [
     "gates.spec_review_mode",
     # add-daily-self-review：admin.self_review 三键
     "admin.self_review",
+    # add-code-review-agent-and-quality-tab：admin.code_review 两键（周期代码审查）
+    "admin.code_review",
     # add-settings-system-tab：admin.* 受管键（5 键）
     "admin.enabled",
     "admin.interval_minutes",
@@ -132,6 +134,9 @@ def _echo_agents_int_keys(agents_src) -> dict:
 # 受管键的默认回显值（add-daily-self-review；与 ConfigLoader.get_self_review_config
 # 保持一致：enabled/read_todo 缺省 false，run_at 缺省 02:00）
 _DEFAULT_SELF_REVIEW = {"enabled": False, "run_at": "02:00", "read_todo": False}
+# add-code-review-agent-and-quality-tab：admin.code_review 缺省（与
+# ConfigLoader.get_code_review_config 一致：enabled 缺省 false，max_files 缺省 500）
+_DEFAULT_CODE_REVIEW = {"enabled": False, "max_files": 500}
 
 _CONFIG_HEADER_COMMENT = (
     "# Fenix 配置文件\n"
@@ -192,6 +197,9 @@ def _managed_key_sources(raw: dict) -> dict:
     admin_raw = raw.get("admin")
     if isinstance(admin_raw, dict) and isinstance(admin_raw.get("self_review"), dict):
         sources["admin.self_review"] = "project"
+    # add-code-review-agent-and-quality-tab：admin.code_review 段显式定义 → project
+    if isinstance(admin_raw, dict) and isinstance(admin_raw.get("code_review"), dict):
+        sources["admin.code_review"] = "project"
     # add-settings-system-tab：admin.* 受管键（5 键）显式定义 → project
     if isinstance(admin_raw, dict):
         for _k in (
@@ -315,6 +323,8 @@ def read_config(scope_root, scope: str = "project") -> dict:
         "archive": {"auto_threshold": 50},
         # add-daily-self-review：admin.self_review 三键（缺省 false/false/02:00）
         "self_review": dict(_DEFAULT_SELF_REVIEW),
+        # add-code-review-agent-and-quality-tab：admin.code_review 两键（缺省 false/500）
+        "code_review": dict(_DEFAULT_CODE_REVIEW),
         # add-settings-system-tab：admin.* 受管键（5 键 + 缺省填充）
         "admin": dict(_ADMIN_DEFAULTS, merge_breaker_threshold=2),
         # add-spec-hooks：两级 hook 订阅配置（缺省空订阅，零行为）
@@ -441,6 +451,10 @@ def read_config(scope_root, scope: str = "project") -> dict:
         from core.config import ConfigLoader as _CL
 
         result["self_review"] = _CL.get_self_review_config(raw)
+        # add-code-review-agent-and-quality-tab：admin.code_review 两键
+        # （经 ConfigLoader 生效值回显，与 self_review 同形态：顶层独立子键、
+        # 不进 _managed_admin_keys 键集）
+        result["code_review"] = _CL.get_code_review_config(raw)
         # add-settings-system-tab：受管 admin 键提取（5 键 + 缺省填充，不透传未知键）
         result["admin"] = _managed_admin_keys(raw)
     # add-spec-hooks：hooks 段原样透传（读回 UI 编辑视图）
@@ -521,6 +535,8 @@ def read_effective_config(project_root) -> dict:
         "archive": {"auto_threshold": 50},
         # add-daily-self-review：admin.self_review 三键（缺省 false/false/02:00）
         "self_review": dict(_DEFAULT_SELF_REVIEW),
+        # add-code-review-agent-and-quality-tab：admin.code_review 两键（缺省 false/500）
+        "code_review": dict(_DEFAULT_CODE_REVIEW),
         # add-settings-system-tab：admin.* 受管键（5 键 + 缺省填充）
         "admin": dict(_ADMIN_DEFAULTS, merge_breaker_threshold=2),
         # add-spec-hooks：两级 hook 订阅配置（缺省空订阅，零行为）
@@ -640,6 +656,9 @@ def read_effective_config(project_root) -> dict:
     result["archive"] = {"auto_threshold": ConfigLoader.effective_auto_archive_threshold(effective)}
     # add-daily-self-review：经生效助手取值（run_at 非法值回退 02:00，回显一致）
     result["self_review"] = ConfigLoader.get_self_review_config(effective)
+    # add-code-review-agent-and-quality-tab：code_review 生效值回显（与
+    # self_review 同形态：顶层独立子键、经 get_code_review_config 归一化缺省）
+    result["code_review"] = ConfigLoader.get_code_review_config(effective)
     # add-settings-system-tab：受管 admin 键提取（5 键 + 缺省填充，不透传未知键）
     result["admin"] = _managed_admin_keys(effective)
     # add-spec-hooks：hooks 段有效值透传（读回 UI 编辑视图）
@@ -788,6 +807,26 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
         if _CL.is_valid_hhmm(run_at):
             sr["run_at"] = run_at
         merged["admin"]["self_review"] = sr
+    # add-code-review-agent-and-quality-tab：admin.code_review 两键（enabled
+    # 严格 bool、max_files 正整数；非法值由 write_config 前置校验拒绝，此处只
+    # 应用合法值——对齐 self_review 合并语义）
+    if "code_review" in patch and isinstance(patch["code_review"], dict):
+        if not isinstance(merged.get("admin"), dict):
+            merged["admin"] = {}
+        existing_cr = merged["admin"].get("code_review")
+        if not isinstance(existing_cr, dict):
+            existing_cr = {}
+        cr = dict(existing_cr)
+        if isinstance(patch["code_review"].get("enabled"), bool):
+            cr["enabled"] = patch["code_review"]["enabled"]
+        max_files = patch["code_review"].get("max_files")
+        if (
+            isinstance(max_files, int)
+            and not isinstance(max_files, bool)
+            and max_files > 0
+        ):
+            cr["max_files"] = max_files
+        merged["admin"]["code_review"] = cr
     # add-settings-system-tab：admin.* 六键合并（只动受管键，保留未知键）
     if "admin" in patch and isinstance(patch["admin"], dict):
         if not isinstance(merged.get("admin"), dict):
@@ -919,6 +958,23 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
             if not ConfigLoader.is_valid_hhmm(sr_patch["run_at"]):
                 return fail(
                     f"admin.self_review.run_at must be HH:MM (00:00-23:59): {sr_patch['run_at']}"
+                )
+
+    # add-code-review-agent-and-quality-tab：前端提交的 code_review patch 后端
+    # 校验（非法直接拒绝，不静默忽略——同 self_review 模式）
+    if isinstance(config_patch.get("code_review"), dict):
+        cr_patch = config_patch["code_review"]
+        if (
+            "enabled" in cr_patch
+            and cr_patch["enabled"] is not None
+            and not isinstance(cr_patch["enabled"], bool)
+        ):
+            return fail(f"admin.code_review.enabled must be a boolean: {cr_patch['enabled']}")
+        if "max_files" in cr_patch and cr_patch["max_files"] is not None:
+            mf = cr_patch["max_files"]
+            if isinstance(mf, bool) or not isinstance(mf, int) or mf <= 0:
+                return fail(
+                    f"admin.code_review.max_files must be a positive integer: {mf!r}"
                 )
 
     # verify.* patch 前置校验：非法值直接拒绝，不静默忽略（同 self_review 模式；

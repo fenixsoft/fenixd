@@ -28,6 +28,9 @@ const AGENT_ROLES = [
   { key: 'fast-track', label: 'Fast-Track（快速通道）' },
   { key: 'spec-review', label: 'Spec Review（方案评审）' },
   { key: 'dispute-judge', label: 'Dispute Judge（交付物终审）' },
+  // add-code-review-agent-and-quality-tab：code-review（周期性仓库级代码审查），
+  // 独立模型链（agents.models.code-review → 回退 self-review → administrator）
+  { key: 'code-review', label: 'Code-Review（代码审查）' },
 ];
 
 // 后端 normalize_agent_models 输出 → 编辑器行（str / 对象 / 混合数组统一为 {provider, model}）

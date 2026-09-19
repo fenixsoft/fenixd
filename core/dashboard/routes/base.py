@@ -122,6 +122,12 @@ def _get_session(s, p, q, m):
 def _get_quality_ocr_status(s, p, q, m):
     s._json(s._api_quality_ocr_status_get(q))
 
+def _get_code_review_items(s, p, q, m):
+    s._api_code_review_items(q)
+
+def _get_code_review_progress(s, p, q, m):
+    s._api_code_review_progress(q)
+
 
 # ── POST 路由适配函数 ─────────────────────────────────────────────────
 
@@ -220,6 +226,15 @@ def _post_run_watch(s, p, q, m):
 def _post_project_describe(s, p, q, m):
     s._api_project_describe(q)
 
+def _post_code_review_run(s, p, q, m):
+    s._api_code_review_run(q)
+
+def _post_code_review_generate_spec(s, p, q, m):
+    s._api_code_review_generate_spec(q)
+
+def _post_code_review_items_status(s, p, q, m):
+    s._api_code_review_items_status(q)
+
 def _post_session_start(s, p, q, m):
     s._api_session_start(q)
 
@@ -288,6 +303,9 @@ _API_GET_ROUTES = [
     ("exact", "/api/session",         _get_session),
     # 质量页签：open-code-review 安装状态（GET，无副作用）
     ("exact", "/api/quality/ocr-status", _get_quality_ocr_status),
+    # code-review（add-code-review-agent-and-quality-tab）：台账与进度（GET，无副作用）
+    ("exact", "/api/code-review/items", _get_code_review_items),
+    ("exact", "/api/code-review/progress", _get_code_review_progress),
 ]
 
 _API_POST_ROUTES = [
@@ -326,6 +344,10 @@ _API_POST_ROUTES = [
     ("regex", r"^/api/runs/(.+)/watch$",        _post_run_watch),
     # /api/project/describe（精确，排在 endswith 之前）
     ("exact", "/api/project/describe",   _post_project_describe),
+    # code-review（add-code-review-agent-and-quality-tab）：手动触发 / generate-spec / 状态流转
+    ("exact", "/api/code-review/run", _post_code_review_run),
+    ("exact", "/api/code-review/generate-spec", _post_code_review_generate_spec),
+    ("exact", "/api/code-review/items/status", _post_code_review_items_status),
     # session 路由（精确，排在裸 endswith 之前，防 /start /stop 误匹配）
     ("exact", "/api/session/start",      _post_session_start),
     ("exact", "/api/session/send",       _post_session_send),

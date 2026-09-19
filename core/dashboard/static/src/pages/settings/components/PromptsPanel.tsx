@@ -22,6 +22,8 @@ const AGENT_LABELS: Record<string, string> = {
   'dispute-judge': 'Dispute Judge（交付物终审）',
   evolution: 'Evolution（自改进）',
   'spec-review': 'Spec Review（方案评审）',
+  // add-code-review-agent-and-quality-tab：新增 code-review（周期性仓库级代码审查）
+  'code-review': 'Code-Review（代码审查）',
 };
 
 interface PromptsPanelProps {

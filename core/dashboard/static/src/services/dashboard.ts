@@ -1174,6 +1174,94 @@ export async function regenerateProjectDescription(project: string): Promise<{ o
   );
 }
 
+// ── code-review（add-code-review-agent-and-quality-tab）──────────────
+
+export interface CodeReviewItem {
+  item_id: string;
+  project: string;
+  review_id: string;
+  review_kind: string;
+  reviewed_at: string;
+  spec: string;
+  file: string;
+  line: number;
+  severity: 'critical' | 'major' | 'minor' | 'info';
+  category: string;
+  title: string;
+  description: string;
+  suggestion: string;
+  evidence: string;
+  fingerprint: string;
+  status: 'open' | 'in_spec' | 'resolved' | 'ignored';
+  spec_name: string | null;
+  first_seen_at: string;
+  last_seen_at: string;
+  resolved_at?: string | null;
+}
+
+export interface CodeReviewProgress {
+  running: boolean;
+  review_id: string | null;
+  review_kind: string | null;
+  total: number;
+  done: number;
+  current: string | null;
+}
+
+/** add-code-review-agent-and-quality-tab：读取问题台账（默认仅 open，可逗号选状态） */
+export async function getCodeReviewItems(
+  project: string,
+  statuses?: string[],
+): Promise<{ items: CodeReviewItem[] }> {
+  const statusQ = statuses && statuses.length ? `&status=${encodeURIComponent(statuses.join(','))}` : '';
+  return request<{ items: CodeReviewItem[] }>(
+    `/api/code-review/items?project=${encodeURIComponent(project)}${statusQ}`,
+  );
+}
+
+/** add-code-review-agent-and-quality-tab：读取审查运行进度 */
+export async function getCodeReviewProgress(project: string): Promise<CodeReviewProgress> {
+  return request<CodeReviewProgress>(
+    `/api/code-review/progress?project=${encodeURIComponent(project)}`,
+  );
+}
+
+/** add-code-review-agent-and-quality-tab：手动触发审查（full=全仓库 / window=本周期）。409 时抛错带后端文案 */
+export function triggerCodeReview(project: string, scope: 'full' | 'window') {
+  return request<{ ok: boolean; scope: string; requested_at: string }>(
+    `/api/code-review/run?project=${encodeURIComponent(project)}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scope }),
+    },
+  );
+}
+
+/** add-code-review-agent-and-quality-tab：把选中条目批量生成修复 SPEC */
+export function generateFixSpec(project: string, itemIds: string[]) {
+  return request<{ ok: boolean; spec_name: string; skipped: Array<{ item_id: string; reason: string }>; error?: string }>(
+    `/api/code-review/generate-spec?project=${encodeURIComponent(project)}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ item_ids: itemIds }),
+    },
+  );
+}
+
+/** add-code-review-agent-and-quality-tab：逐条人工状态流转（ignored / open 清除归属） */
+export function setCodeReviewItemStatus(project: string, itemId: string, status: 'ignored' | 'open') {
+  return request<{ ok: boolean; item_id: string; status: string; error?: string }>(
+    `/api/code-review/items/status?project=${encodeURIComponent(project)}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ item_id: itemId, status }),
+    },
+  );
+}
+
 // ── agent 提示词（add-agent-prompt-files 任务 3.2）─────────────────────
 
 export interface AgentPrompt {
