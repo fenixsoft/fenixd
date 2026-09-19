@@ -6,10 +6,12 @@
 测试对 `runner._now` 的 monkeypatch 补丁缝保持有效。
 """
 
+import json
+import re
+import time
 from core.agent_runner.run_files import append_run_line
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any
-import re
 
 # ── provider 熔断（fix-stashpop-deadlock：provider-fault-fuse） ──────────────
 # 同一 provider 在滚动窗口内累计 HTTP 4xx（400/401/404）达阈值 → circuit_open，
@@ -60,6 +62,10 @@ TRANSIENT_BREAK_WINDOW_SECONDS = 600  # 窗口时长（秒）
 TRANSIENT_BREAK_THRESHOLD = 3  # 窗口内同指纹次数达此次数 → 触发熔断
 TRANSIENT_BREAK_COOLDOWN_SECONDS = 600  # 触发后全局冻结时长（秒）
 TRANSIENT_BREAK_ALERT_THROTTLE_MINUTES = 15  # major 告警节流（分钟）
+# evo-transient-storm-alert-context（design D2）：触发全局熔断时注入告警上下文
+# 的 attempt 聚合清单有界上限——冻结期内事件持续累积，清单 MUST 有界，避免
+# description/evidence 与 admin_alerts.json 无界增长；截断时追加 truncated=<被略去条数>。
+TRANSIENT_BREAK_ATTEMPT_LIST_LIMIT = 20
 
 # ── 信号死法冷却（evo-sigterm-source-tracking-cooldown）────────────────
 # CLI 子进程以信号死法结束（Exit 143 / 负信号 -9/-15 等）且非 daemon 关停、
@@ -73,6 +79,25 @@ TRANSIENT_BREAK_ALERT_THROTTLE_MINUTES = 15  # major 告警节流（分钟）
 SIGNAL_KILL_COOLDOWN_AFTER = 3  # 同 spec 信号死法连续达此数 → 冷却
 SIGNAL_KILL_COOLDOWN_SECONDS = 600  # 冷却时长（秒，与瞬断冷却同量级）
 SIGNAL_KILL_ALERT_THROTTLE_MINUTES = 15  # major 告警节流（分钟）
+
+
+class TransientAttempt:
+    """一次瞬断失败 attempt 的元信息记账（evo-transient-storm-alert-context D1）。
+
+    与既有时间戳列表同构：``at``（单调秒）用于滑窗剔除（行为不变）；spec/run_id/
+    provider 供触发全局熔断时聚合注入告警上下文——对 fingerprint 归一化免疫（即使
+    指纹只剩 ``<model>`` 占位，清单仍列出真实 provider/run_id）。元信息缺省为
+    空串占位并正常记账，MUST NOT 阻断熔断记账。
+    """
+
+    __slots__ = ("spec", "run_id", "provider", "at")
+
+    def __init__(self, spec: str = "", run_id: str = "", provider: str = "",
+                 at: float = 0.0):
+        self.spec = spec or ""
+        self.run_id = run_id or ""
+        self.provider = provider or ""
+        self.at = at
 
 
 class ProviderCircuit:
@@ -103,7 +128,9 @@ class ProviderCircuit:
         # fix-provider-transient-backoff（D4 / transient-dispatch-gating）：全局
         # 瞬断错误指纹熔断态。进程内存、不落盘（与 4xx 熔断/switch 冷却同构，
         # daemon 重启清零可接受）。
-        #   _transient_break_events: {指纹: [window 内失败时间戳, ...]}
+        #   _transient_break_events: {指纹: [window 内失败 TransientAttempt, ...]}
+        #     （at 单调秒供滑窗剔除；spec/run_id/provider 供触发时聚合注入
+        #     告警上下文，design D1——两处记账点 MUST 同构经统一助手写入）
         #   _transient_break_until: 全局冻结到期单调秒（0 = 未冻结）
         self._transient_break_events: Dict[str, list] = {}
         self._transient_break_until: float = 0.0
@@ -391,8 +418,24 @@ class ProviderCircuit:
         text = re.sub(r"[\s:/.,()\"'-]+", " ", text).strip()
         return text
 
-    def record_transient_error(self, error_text: str, now: float | None = None) -> bool:
+    def record_transient_error(
+        self,
+        error_text: str,
+        now: float | None = None,
+        *,
+        spec: str | None = None,
+        run_id: str | None = None,
+        provider: str | None = None,
+    ) -> bool:
         """记录一次瞬断错误，窗口内同指纹累计 → 达阈值触发全局熔断。
+
+        每次 attempt 除指纹时间戳外同时记账元信息（spec/run_id/provider/at，
+        design D1）——触发熔断时聚合注入告警上下文，对指纹归一化免疫。
+        spec/run_id/provider 为**可选关键字**参数（缺省 None → 空串占位并正常
+        记账，MUST NOT 阻断熔断记账）；``now`` 保持第二位置参数（既有调用点以
+        ``("…", now=…)`` 与 ``("x", 1)`` 两种形态调用，缺省 None → 既有调用点
+        与既有测试零改动）。两处记账点（正常路径 / 已冻结早退分支）MUST 经
+        同一内部助手 ``_append_transient_event`` 写入，保证元素结构一致。
 
         Returns:
             True 表示本次记录**触发了**全局熔断（首次达阈值）；False 表示未触发
@@ -403,8 +446,14 @@ class ProviderCircuit:
             return False
         if self.is_global_transient_break(now=now):
             # 已冻结中：只记账不重复触发/告警（冷却到期由查询侧清零重记）。
-            self._transient_break_events.setdefault(fingerprint, []).append(
-                now if now is not None else self._pm._now()
+            # 早退分支 MUST 与正常路径同构经同一助手写入 TransientAttempt
+            #（含同一份元信息），否则滑窗剔除对混合元素类型取值失败（design D1）。
+            self._append_transient_event(
+                fingerprint,
+                now if now is not None else self._pm._now(),
+                spec=spec,
+                run_id=run_id,
+                provider=provider,
             )
             return False
         now = self._pm._now() if now is None else now
@@ -416,11 +465,10 @@ class ProviderCircuit:
         )
         if window <= 0:
             return False
-        events = self._transient_break_events.setdefault(fingerprint, [])
-        # 滑出窗口外旧事件
-        events = [t for t in events if now - t <= window]
-        events.append(now)
-        self._transient_break_events[fingerprint] = events
+        self._append_transient_event(
+            fingerprint, now, spec=spec, run_id=run_id, provider=provider, window=window
+        )
+        events = self._transient_break_events[fingerprint]
         threshold = int(
             self._pm._get_config("agents.transient_break_threshold", TRANSIENT_BREAK_THRESHOLD) or 0
         )
@@ -434,42 +482,130 @@ class ProviderCircuit:
                 or 0
             )
             self._transient_break_until = now + (cooldown or TRANSIENT_BREAK_COOLDOWN_SECONDS)
-            self._alert_transient_break(fingerprint, len(events), window)
+            # 触发时构建窗口内 attempt 聚合清单（design D2，对指纹归一化免疫）：
+            # ERROR 日志与升级信号上下文并列注入，可定位风暴来源 provider/run。
+            attempt_summary, truncated = self._build_attempt_summary(events)
+            self._alert_transient_break(
+                fingerprint, len(events), window, attempt_summary, truncated
+            )
             self._pm.logger.error(
                 "agent_runner",
                 f"Global transient break TRIGGERED for fingerprint '{fingerprint}' "
                 f"({len(events)} failures within {int(window)}s window) — "
                 f"freezing all new run dispatch for "
                 f"{int(self._transient_break_until - now)}s "
-                f"(fix-provider-transient-backoff D4)",
+                f"(fix-provider-transient-backoff D4); failed attempts: "
+                f"{json.dumps(attempt_summary, ensure_ascii=False)}"
+                + (f"; truncated={truncated}" if truncated else ""),
             )
             return True
         return False
+
+    def _append_transient_event(
+        self,
+        fingerprint: str,
+        now: float,
+        spec: str | None = None,
+        run_id: str | None = None,
+        provider: str | None = None,
+        window: int | None = None,
+    ) -> None:
+        """统一经本助手写入一条瞬断事件（design D1：两处记账点 MUST 同构）。
+
+        正常记账路径与已冻结早退路径都经本助手写入 TransientAttempt——任一处
+        保留裸时间戳都会让滑窗剔除 ``now - t``（provider_circuit.py:420）与
+        D2 聚合对混合元素类型报错/取值失败。window 非 None 时先滑出窗口外旧
+        事件（按 ``at`` 时间戳剔除，行为不变；早退分支不剔除——与既有语义
+        一致）。元信息缺省 None → 空串占位并正常记账，MUST NOT 阻断熔断记账。
+        """
+        events = self._transient_break_events.setdefault(fingerprint, [])
+        if window is not None and window > 0:
+            events = [t for t in events if now - t.at <= window]
+        events.append(
+            TransientAttempt(
+                spec=spec or "",
+                run_id=run_id or "",
+                provider=provider or "",
+                at=now,
+            )
+        )
+        self._transient_break_events[fingerprint] = events
+
+    @staticmethod
+    def _build_attempt_summary(events: list, limit: int = TRANSIENT_BREAK_ATTEMPT_LIST_LIMIT):
+        """把窗口内 TransientAttempt 列表聚合为有界清单（design D2，纯函数）。
+
+        返回 ``(summary, truncated)``：summary 为 ``[{"run_id", "spec",
+        "provider", "at": <ISO>}]``（事件按写入序、最新在后，取最近 limit 条）；
+        超出 limit 时 truncated = 被略去条数。聚合对指纹归一化免疫——即使指纹
+        只剩 ``<model>`` 占位，清单仍列出真实 provider/run_id。
+        """
+        out = []
+        truncated = 0
+        if events:
+            total = len(events)
+            if total > limit:
+                truncated = total - limit
+            for ev in events[-limit:]:
+                out.append(
+                    {
+                        "run_id": ev.run_id,
+                        "spec": ev.spec,
+                        "provider": ev.provider,
+                        "at": datetime.fromtimestamp(ev.at, timezone.utc).isoformat(),
+                    }
+                )
+        return out, truncated
 
     def is_global_transient_break(self, now: float | None = None) -> bool:
         """全局是否处于瞬断熔断冻结期（派发闸门查询）。
 
         冷却到期自动解除并清零窗口内指纹计数（重新起算，与 is_instant_fail_cooled
         到期恢复语义一致）；无冻结 / 已到期返回 False（恢复派发）。
+
+        到期分支内联自动核销对应 transient_break_storm 告警（design D3）——
+        本代码库无到期事件分发机制，核销 MUST 复用本过期分支（幂等、可测），
+        不做轮询/异步扫描。冻结到期后无人查询（如 dispatch 闸门的 shutting_down /
+        已抑制条目早退分支先返回、跳过本方法）的路径不产生核销动作，由
+        admin_alerts.json 的 MAX_RECORDS=150 环形裁剪（core/admin_store.py:34,
+        193-194）与人工/Dashboard 处置承接——本仓库不存在按时间的告警清理机制。
         """
         if self._transient_break_until <= 0:
             return False
         now = self._pm._now() if now is None else now
         if now >= self._transient_break_until:
+            # 核销摘要：清零前聚合窗口内全部 attempt（跨指纹扁平化，供
+            # resolve_note 的「聚合清单摘要」留审计——design D3 第 2 点）。
+            summary, truncated = self._build_attempt_summary(
+                [ev for evs in self._transient_break_events.values() for ev in evs]
+            )
             self._transient_break_until = 0.0
             self._transient_break_events.clear()
             self._pm.logger.warning(
                 "agent_runner",
-                "Global transient break expired — dispatch resumed, " "fingerprint window reset",
+                "Global transient break expired — dispatch resumed, "
+                "fingerprint window reset",
             )
+            # 熔断自然过期自动核销（紧邻 WARNING 之后；异常静默不阻断闸门语义）
+            self._auto_resolve_transient_storm(summary, truncated)
             return False
         return True
 
-    def _alert_transient_break(self, fingerprint: str, count: int, window: int) -> None:
+    def _alert_transient_break(
+        self,
+        fingerprint: str,
+        count: int,
+        window: int,
+        attempt_summary: list | None = None,
+        truncated: int = 0,
+    ) -> None:
         """触发全局瞬断熔断时发 major 告警（15 分钟节流去重）。
 
         与 _alert_instant_fail_storm 同构：AdminStore.latest_signal 按
         (spec, signal_type) 在窗口内查重，窗口内已有同信号则不发第二条。
+        attempt_summary（窗口内失败 attempt 聚合清单，design D2）注入
+        description 与 evidence——对指纹归一化免疫（指纹只剩 <model> 时清单
+        仍列出真实 provider/run_id）。清单有界（N=20，超出追加 truncated）。
         """
         try:
             from core.admin_store import AdminStore, ESCALATION
@@ -489,6 +625,8 @@ class ProviderCircuit:
                     f"({TRANSIENT_BREAK_ALERT_THROTTLE_MINUTES} 分钟内已有)",
                 )
                 return
+            summary_json = json.dumps(attempt_summary or [], ensure_ascii=False)
+            truncated_suffix = f"; truncated={truncated}" if truncated else ""
             store.append(
                 {
                     "kind": ESCALATION,
@@ -498,11 +636,14 @@ class ProviderCircuit:
                     "description": (
                         f"全局瞬断风暴：错误指纹 '{fingerprint}' 在 {int(window)}s 窗口内 "
                         f"出现 {count} 次 — 已冻结全部新 run 派发，冷却期内不再启动新 run"
+                        f"；窗口内失败 attempt：{summary_json}"
+                        + (f"（截断 {truncated} 条）" if truncated else "")
                     ),
                     "evidence": (
                         f"fingerprint={fingerprint}; count={count}; "
                         f"window_seconds={int(window)}; "
-                        f"cooldown_seconds={int(self._transient_break_until - self._pm._now())}"
+                        f"cooldown_seconds={int(self._transient_break_until - self._pm._now())}; "
+                        f"failed_attempts={summary_json}{truncated_suffix}"
                     ),
                     "recommended_action": (
                         "检查网关/默认 provider 瞬时故障（model 拒绝 / 5xx / 断连）；"
@@ -515,6 +656,119 @@ class ProviderCircuit:
                 "agent_runner",
                 f"transient_break_storm 告警写入失败: {e}",
             )
+
+    def _auto_resolve_transient_storm(
+        self, attempt_summary: list | None = None, truncated: int = 0
+    ) -> None:
+        """熔断自然过期 → 自动核销 transient_break_storm 告警（design D3）。
+
+        定位「窗口内最新**未处理**」告警（Requirement 4）：latest_signal 不做
+        handled 过滤（core/admin_store.py:432-436），窗口内更新的已处理条目
+        （人工/Dashboard 标记或上一轮熔断已自动核销）会抢先命中——候选已
+        handled 时向前继续找窗口内更早的未处理者（spec 场景「最新同类告警已
+        处理时核销仍生效」）；无未处理候选（含窗口内全部已处理）→ 零操作、
+        零写回。
+
+        核销经既有 AdminStore.auto_resolve 通道（core/admin_store.py:345-378）：
+        handled=True + handled_by="auto-resolve" + resolve_note（核销原因=熔断
+        自然过期 + 聚合清单摘要）留审计。不引入新告警 kind；MUST NOT 复用
+        alert_lifecycle.find_resolvable（其判定输入为 spec 状态表，
+        global-transient 不在 STATE.md 状态表中 → 该路径永不命中）。
+
+        锚点口径（design D3）：latest_signal 窗口锚点取 created（escalation
+        记录不带 last_seen，core/admin_store.py:443-455）；窗口下限 = 冻结时长
+        （agents.transient_break_cooldown_seconds，与 record_transient_error
+        记账处同一 ``_get_config`` 取用）换算分钟数 + 时钟域偏差裕量——冻结期
+        以 ``time.monotonic`` 计、告警 created 为墙钟 ISO（_utcnow_iso），二者
+        非同源，用严格等长窗口会因偏差漏配；MUST NOT 照抄既有 15 分钟节流
+        口径（该锚点仅用于「近 15 分钟内是否已发同类告警」的查重，语义不同）。
+        缺省不小于 60 分钟。
+
+        异常静默（try/except 沿用告警写入风格）：MUST NOT 阻断
+        is_global_transient_break 的闸门/fail-open 语义（该方法被 dispatch
+        闸门查询路径调用，core/pm_engine/dispatch/queue.py:172）。
+        """
+        try:
+            from core.admin_store import AdminStore
+
+            store = AdminStore(self._pm.project_root, self._pm.logger)
+            cooldown = int(
+                self._pm._get_config(
+                    "agents.transient_break_cooldown_seconds",
+                    TRANSIENT_BREAK_COOLDOWN_SECONDS,
+                )
+                or 0
+            )
+            # 冻结时长分钟数 + 偏差裕量（时钟域偏差，见 docstring）；缺省不小于 60 分钟
+            anchor_minutes = max(60, cooldown // 60 + 2)
+            candidate = store.latest_signal(
+                "global-transient", "transient_break_storm", anchor_minutes
+            )
+            if candidate is None:
+                return  # 窗口内无对应告警：零操作、零写回
+            if candidate.get("handled") is True:
+                # 最新候选已处理——向前找窗口内更早的未处理者（Requirement 4
+                # 场景）；找不到（含窗口内全部已处理）→ 零操作、零写回。
+                candidate = self._latest_unhandled_storm(store, anchor_minutes)
+                if candidate is None:
+                    return
+            note = (
+                "熔断自然过期自动核销（dispatch resumed）："
+                f"failed_attempts={json.dumps(attempt_summary or [], ensure_ascii=False)}"
+                + (f"; truncated={truncated}" if truncated else "")
+            )
+            store.auto_resolve(
+                [
+                    {
+                        "id": candidate.get("id"),
+                        "spec": "global-transient",
+                        "resolve_note": note,
+                    }
+                ]
+            )
+            self._pm.logger.info(
+                "agent_runner",
+                f"transient_break_storm 告警自动核销（熔断自然过期）: "
+                f"id={candidate.get('id')}",
+            )
+        except Exception as e:
+            self._pm.logger.error(
+                "agent_runner",
+                f"transient_break_storm 自动核销失败（不阻断过期解除）: {e}",
+            )
+
+    @staticmethod
+    def _latest_unhandled_storm(store, anchor_minutes: int) -> Optional[dict]:
+        """返回窗口内最新一条**未处理** transient_break_storm 告警（Requirement 4）。
+
+        latest_signal 不做 handled 过滤，窗口内更新的已处理条目会抢先命中；
+        本查询跳过已处理候选，直接选「窗口内最新未处理」者。read_all 按
+        created 倒序返回，首个命中即最新。窗口边界与 latest_signal 同口径
+        （created 锚点 + 分钟窗口）。无命中返回 None（零操作）。MUST NOT
+        改写已处理条目。
+        """
+        if not anchor_minutes or anchor_minutes <= 0:
+            return None
+        cutoff = time.time() - anchor_minutes * 60
+        for rec in store.read_all():
+            if rec.get("kind") != "escalation":
+                continue
+            if rec.get("signal_type") != "transient_break_storm":
+                continue
+            if rec.get("spec") != "global-transient":
+                continue
+            if rec.get("handled"):
+                continue
+            try:
+                created = datetime.fromisoformat(
+                    (rec.get("created") or "").replace("Z", "+00:00")
+                )
+            except (ValueError, TypeError):
+                continue
+            if created.timestamp() < cutoff:
+                continue
+            return rec
+        return None
 
     # ── 信号死法冷却（evo-sigterm-source-tracking-cooldown）────────────────
     # spec 维度的信号死法（143/-9）连续计数 → 达阈值触发该 spec 冷却。与秒挂
