@@ -1246,6 +1246,13 @@ class AgentRunner:
         url 原样透传 provider["baseurl"]（不追加版本后缀，实测 ocr 自行拼
         /v1/messages）。
 
+        ``timeout_sec`` 来源：``ConfigLoader.get_impl_code_review_timeout_sec``
+        解析 ``verify.impl_code_review_timeout_sec`` 的结果（缺省 600，秒）。
+        语义：ocr LLM 单请求超时（连响应头都算在内）——不配置时 ocr 走其内置
+        300s 默认，实测 8 路并发 + 300s 单请求超时会撞穿首字节等待导致大面积
+        文件级 timeout（duration_to_headers_ms 恰 300000）；注入后确定性生效
+        （探针实验：timeout_sec=20 时 duration_to_headers_ms≈20000）。
+
         Args:
             provider: 已选定的 provider dict（含 name/baseurl/apikey）
             model: 本轮实际生效的模型名（与 fenix 记账同源）
@@ -1253,6 +1260,8 @@ class AgentRunner:
             HOME 目录路径（ocrcfg/ 本身），或写入失败时 None
         """
         try:
+            from core.config import ConfigLoader as _CLOCR
+
             provider_name = provider.get("name", "unknown")
             home_dir = self._ocr_home_for_provider(provider_name)
             ocr_cfg_dir = home_dir / ".opencodereview"
@@ -1266,6 +1275,11 @@ class AgentRunner:
                         "url": provider.get("baseurl", ""),
                         "protocol": "anthropic",
                         "model": model,
+                        # add-impl-code-review-tuning：ocr LLM 单请求超时（秒），
+                        # 与 api_key/url/protocol/model 同批原子写入。
+                        "timeout_sec": _CLOCR.get_impl_code_review_timeout_sec(
+                            self.config
+                        ),
                     }
                 },
             }
