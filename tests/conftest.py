@@ -89,6 +89,41 @@ def _zero_post_ready_settle():
         _vmod.POST_READY_SETTLE_SECONDS = saved
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _isolated_basetemp_cleanup(request):
+    """会话级：把 tmp_path 根隔离到项目 .fenix/，并在会话结束自清（清理方案 A+B）。
+
+    背景：pytest 默认 basetemp 落 ``/tmp/pytest-of-<user>/``，多项目/多并发套件
+    共用同一基址；pytest 仅在会话结束清理自己那一层并保留 ~5 个历史目录，长期
+    累积到 GB 级（实测单机 1.4G / 33k 条目），且 tmp_path 的 ``make_numbered_dir``
+    每用例扫一次目录，随条目数线性变慢。
+
+    A：basetemp 改到 ``<project_root>/.fenix/pytest-basetemp``（gitignored，随
+    项目隔离，--basetemp 由 run_full_suite.py 注入；此处兜底直接跑 pytest 的场景）。
+    B：会话结束 ``shutil.rmtree`` 本次 basetemp，杜绝跨会话累积。
+
+    对**给定 basetemp**（--basetemp 传入）pytest 会先清空再建——故即使上一轮
+    进程被 SIGKILL 未走本清理，下一轮也从干净目录起跑，不会无限增长。
+    """
+    import shutil
+
+    factory = request.session.config._tmp_path_factory
+    # 若调用方未指定 basetemp，兜底指到项目内（与 run_full_suite.py 同落点）。
+    if factory._basetemp is None and factory._given_basetemp is None:
+        project_root = Path(__file__).resolve().parent.parent
+        base = project_root / ".fenix" / "pytest-basetemp"
+        base.parent.mkdir(parents=True, exist_ok=True)
+        factory._given_basetemp = base
+    yield
+    # 会话结束清理本次 basetemp（given 或自建），忽略失败（并发/权限）。
+    try:
+        base = factory._basetemp or factory._given_basetemp
+        if base is not None:
+            shutil.rmtree(base, ignore_errors=True)
+    except Exception:
+        pass
+
+
 def make_project(tmp_path: Path, name: str = "proj-a", otherspec: bool = True) -> Path:
     """构造一个可用的 Fenixd 项目目录。
 

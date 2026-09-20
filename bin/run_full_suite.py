@@ -46,6 +46,13 @@ DEFAULT_TIMEOUT_SECONDS = 3600
 FAULTHANDLER_TIMEOUT_SECONDS = 300
 # 主机级互斥锁文件（相对项目根，.fenix/ fcntl 锁范式）。
 LOCK_FILE_REL = ".fenix/full-suite.lock"
+# 全量套件 basetemp（临时目录根，相对项目根）。
+# 默认 pytest basetemp 落在系统 /tmp/pytest-of-<user>/——多项目/多并发套件共用
+# 同一基址，且 pytest 仅在会话结束清理自己那一层、留 ~5 个历史目录，长期累积
+# 到 GB 级并拖慢 tmp_path 的 make_numbered_dir（O(n) 扫目录）。
+# 改用项目内 .fenix/（gitignored）隔离：目录随项目、可随 .fenix 一并清理，
+# 不污染系统 /tmp。会话结束由 tests/conftest.py 的 autouse fixture 自清（B）。
+BASETEMP_REL = ".fenix/pytest-basetemp"
 # 锁等待超时（秒）：等不到锁也执行（保守不阻塞），但写日志留痕供复盘。
 LOCK_WAIT_TIMEOUT_SECONDS = 600
 # 基线 ref 上运行同一套件时使用较短的硬超时（基线只需复现失败集合，不必等满主套件）。
@@ -60,6 +67,21 @@ PYTEST_BASE_ARGS = [
     "-o",
     f"faulthandler_timeout={FAULTHANDLER_TIMEOUT_SECONDS}",
 ]
+
+
+def _with_basetemp(cmd: list, project_root) -> list:
+    """给 pytest 命令注入项目内 basetemp（隔离系统 /tmp，且可由 conftest 自清）。
+
+    ``--basetemp`` 指向 ``<project_root>/<BASETEMP_REL>``；pytest 会**先清空**该
+    目录再建（given basetemp 语义），故每轮套件从干净目录起跑，天然不累积。
+    """
+    if any(str(a).startswith("--basetemp") for a in cmd):
+        return cmd  # 调用方已显式指定，不覆盖
+    base = Path(project_root) / BASETEMP_REL
+    # pytest 以 ``mkdir(mode=0o700)``（非 parents=True）创建给定 basetemp，
+    # 故父目录须先存在（主树 .fenix 已在；基线临时 worktree 需兜底）。
+    base.parent.mkdir(parents=True, exist_ok=True)
+    return cmd + [f"--basetemp={base}"]
 
 
 # ── 端口段派生（concurrent-suite-isolation 4.2）──────────────────────────
@@ -159,7 +181,7 @@ def run_suite(
     if cmd_override is not None:
         cmd = list(cmd_override)
     else:
-        cmd = list(PYTEST_BASE_ARGS)
+        cmd = _with_basetemp(list(PYTEST_BASE_ARGS), project_root)
     rc, out, err, timed_out = run_command(cmd, timeout, cwd=project_root, env=env or _suite_env())
     elapsed = round(time.time() - started, 1)
     hanging = extract_hanging_test(err) if timed_out else None

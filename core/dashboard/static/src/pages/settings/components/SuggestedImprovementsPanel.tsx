@@ -180,82 +180,14 @@ function MarkdownBody({
 
 // ── 配置（7.2）──────────────────────────────────────────────────────
 
-/** 「同意立项」弹窗里回传本次执行时刻的可变载体。 */
-interface AcceptSchedule {
-  startAfter: string | null;
-}
-
-/**
- * 「同意立项」确认弹窗里的执行时刻选择（self_evolution.spec_run_at 的本次落地）。
- *
- * Modal.confirm 的内容渲染在独立 React root 里，父组件 state 变化不会重渲它，
- * 因此选择结果经 ``holder`` 可变对象回传——弹窗内每次改动即写入，onOk 读到的
- * 必然是最后一次选择（本组件自身用 useState 保证 UI 跟着变）。
- */
-function AcceptScheduleFields({
-  holder,
-  initial,
-}: {
-  holder: AcceptSchedule;
-  initial: string | null;
-}) {
-  const [mode, setMode] = useState<'immediate' | 'scheduled' | 'manual'>(
-    initial === 'manual' ? 'manual' : initial ? 'scheduled' : 'immediate');
-  // 配置为「立即」时改选「指定时间」的预填值：1 小时后（用户自己改）
-  const [when, setWhen] = useState<Dayjs>(
-    initial && initial !== 'manual' ? dayjs(initial) : dayjs().add(1, 'hour').startOf('minute'));
-
-  const commit = (nextMode: 'immediate' | 'scheduled' | 'manual', nextWhen: Dayjs) => {
-    if (nextMode === 'manual') {
-      // add-spec-manual-activation D11：手工激活档直接写哨兵字符串，无时区换算
-      holder.startAfter = 'manual';
-    } else {
-      holder.startAfter = nextMode === 'scheduled'
-        ? nextWhen.second(0).millisecond(0).toISOString()
-        : null;
-    }
-  };
-
-  return (
-    <>
-      <div style={{ marginBottom: 8 }}>
-        将为该条目创建 SPEC 并进入流水线。执行时间：
-      </div>
-      {/* 下拉与时间选择同行并排（弹窗已加宽），不换行 */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'nowrap' }}>
-        <Select
-          value={mode}
-          onChange={(next: 'immediate' | 'scheduled' | 'manual') => {
-            setMode(next);
-            commit(next, when);
-          }}
-          style={{ width: 200, flex: 'none' }}
-          data-testid="evolution-accept-schedule-mode"
-          options={[
-            { value: 'immediate', label: '创建后立即执行' },
-            { value: 'scheduled', label: '在指定时间执行' },
-            { value: 'manual', label: '手工激活' },
-          ]}
-        />
-        {mode === 'scheduled' && (
-          <DatePicker
-            showTime={{ format: 'HH:mm' }}
-            format="YYYY-MM-DD HH:mm"
-            value={when}
-            disabledDate={(d) => d && d < dayjs().startOf('day')}
-            onChange={(v) => {
-              const next = v || when;
-              setWhen(next);
-              commit('scheduled', next);
-            }}
-            style={{ flex: 'none' }}
-            data-testid="evolution-accept-schedule-at"
-          />
-        )}
-      </div>
-    </>
-  );
-}
+/** 「同意立项」弹窗里回传本次执行时刻的可变载体（共享组件 ScheduleFields 定义）。 */
+import ScheduleFields, {
+  START_AFTER_MANUAL,
+  describeStartAfter,
+  isStartAfterValid,
+  nextRunAtISO,
+} from '@/components/ScheduleFields';
+import type { AcceptSchedule } from '@/components/ScheduleFields';
 
 interface SuggestedImprovementsPanelProps {
   config: ConfigData;
