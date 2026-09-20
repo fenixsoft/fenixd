@@ -138,9 +138,15 @@ class H11CodeReviewRoutesMixin:
     def _api_code_review_generate_spec(self, query):
         """POST /api/code-review/generate-spec — body {project, item_ids: [...]}
 
+        body 可选 ``start_after``（三态，与 `set_spec_start_after` 同源口径）：
+        - 缺省 / null / 空串 → 立即执行
+        - ``"manual"`` → 待激活（哨兵，永不到期）
+        - ISO8601 → 定时拾取
+        非法值 400（不落盘、条目状态不变）。
+
         调 ``core.code_review.generate_fix_spec`` 把选中问题机械合成修复 SPEC。
 
-        返回 ``{ok, spec_name, skipped, error}``；成功把条目置 in_spec。
+        返回 ``{ok, spec_name, skipped, error, start_after}``；成功把条目置 in_spec。
         """
         from core.dashboard import server as _server_mod  # noqa: E402 — D3 缝隙
         project = self._project_from_query(query)
@@ -157,11 +163,19 @@ class H11CodeReviewRoutesMixin:
         if not item_ids:
             self._error(400, "item_ids 不能为空")
             return
-        from core.code_review import generate_fix_spec
+        from core.code_review import _normalize_start_after, generate_fix_spec
+
+        start_after = body.get("start_after")
+        ok_sa, normalized_sa, sa_err = _normalize_start_after(start_after)
+        if not ok_sa:
+            self._error(400, sa_err)
+            return
 
         proot = Path(project["path"])
         try:
-            result = generate_fix_spec(str(proot), self._code_review_state_machine(), item_ids)
+            result = generate_fix_spec(
+                str(proot), self._code_review_state_machine(), item_ids, normalized_sa
+            )
         except Exception as e:  # noqa: BLE001 —— 端点不因内部异常 500 崩溃
             self._error(500, f"生成修复 SPEC 失败: {e}")
             return

@@ -889,6 +889,7 @@ def generate_fix_spec(
             "spec_name": None,
             "skipped": skipped,
             "error": f"SPEC 名冲突无法消解（base fix-cr-{slug}）",
+            "start_after": normalized_sa,
         }
 
     capability = slug or "fix"
@@ -916,7 +917,13 @@ def generate_fix_spec(
         )
     except OSError as e:
         shutil.rmtree(draft_root, ignore_errors=True)
-        return {"ok": False, "spec_name": None, "skipped": skipped, "error": f"草稿落盘失败: {e}"}
+        return {
+            "ok": False,
+            "spec_name": None,
+            "skipped": skipped,
+            "error": f"草稿落盘失败: {e}",
+            "start_after": normalized_sa,
+        }
 
     # 同源 lint 预检（violation → 删除草稿、条目状态不变、返回错误）
     violations = _lint_draft(draft_root, project_root)
@@ -927,6 +934,7 @@ def generate_fix_spec(
             "spec_name": None,
             "skipped": skipped,
             "error": f"lint 未通过: {'；'.join(violations)}",
+            "start_after": normalized_sa,
         }
 
     # 落地：复制到 spec/changes → git add+commit → add_spec
@@ -937,18 +945,35 @@ def generate_fix_spec(
         shutil.copytree(draft_root, dest)
     except OSError as e:
         shutil.rmtree(draft_root, ignore_errors=True)
-        return {"ok": False, "spec_name": None, "skipped": skipped, "error": f"复制到 spec/changes 失败: {e}"}
+        return {
+            "ok": False,
+            "spec_name": None,
+            "skipped": skipped,
+            "error": f"复制到 spec/changes 失败: {e}",
+            "start_after": normalized_sa,
+        }
 
     ok, err = _git_commit(project_root, dest, name)
     if not ok:
         shutil.rmtree(dest, ignore_errors=True)
         shutil.rmtree(draft_root, ignore_errors=True)
-        return {"ok": False, "spec_name": None, "skipped": skipped, "error": f"git commit 失败: {err}"}
+        return {
+            "ok": False,
+            "spec_name": None,
+            "skipped": skipped,
+            "error": f"git commit 失败: {err}",
+            "start_after": normalized_sa,
+        }
 
     registered = False
     try:
         if state_machine is not None:
-            registered = state_machine.add_spec(name, {"status": "drafted", "priority": 5})
+            entry = {"status": "drafted", "priority": 5}
+            # start_after 非空 = 定时拾取 / 待激活（add_spec 透传任意键）。
+            # 与 evolution.accept 同形：哨兵 "manual" 原样落入，不做时间换算。
+            if normalized_sa:
+                entry["start_after"] = normalized_sa
+            registered = state_machine.add_spec(name, entry)
         else:
             registered = True
     except Exception as e:
@@ -963,6 +988,7 @@ def generate_fix_spec(
             "spec_name": name,
             "skipped": skipped,
             "error": f"STATE 注册失败（spec/changes/{name} 已提交，可人工处置）",
+            "start_after": normalized_sa,
         }
 
     shutil.rmtree(draft_root, ignore_errors=True)
@@ -970,7 +996,13 @@ def generate_fix_spec(
     # 成功后把参与条目置 in_spec 并写 spec_name（in_spec 由生成链路置入，
     # 不经 set_item_status——后者仅允许人工 open/ignored，design 1.5）
     _mark_in_spec(project_root, [rec["item_id"] for rec in candidates], name)
-    return {"ok": True, "spec_name": name, "skipped": skipped, "error": None}
+    return {
+        "ok": True,
+        "spec_name": name,
+        "skipped": skipped,
+        "error": None,
+        "start_after": normalized_sa,
+    }
 
 
 def _mark_in_spec(project_root, item_ids: List[str], spec_name: str) -> None:
