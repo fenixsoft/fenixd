@@ -320,24 +320,75 @@ export default function QualityTab({ project, active }: QualityTabProps) {
     }
   };
 
-  // ── 生成修复 SPEC（5.6） ────────────────────────────────────────
+  // ── 生成修复 SPEC（5.6；2026-09-20 用户要求加确认框 + 执行时间） ──────
+  //
+  // 二次确认弹窗（Modal.confirm）里带执行时间三档选择，复用设置页「同意立项」
+  // 的 ScheduleFields——两处的时刻语义（立即=null / 定时=UTC ISO / 手工激活
+  // = 哨兵）必须同源。预填值取 self_evolution.spec_run_at（与设置页同一配置
+  // 键），经 nextRunAtISO 换算成下一次到期时刻。
+  const configStartAfter = async (): Promise<string | null> => {
+    try {
+      const cfg = await getConfig(project);
+      return nextRunAtISO(cfg.self_evolution?.spec_run_at);
+    } catch {
+      // 配置读取失败不阻塞生成：按「立即执行」预填（用户仍可在弹窗里改）
+      return null;
+    }
+  };
+
+  // 打开弹窗前把配置里的默认执行时刻算好（异步；算完再弹，避免弹窗内
+  // 初始值闪一下从「立即」跳到「定时」）
   const handleGenerate = async () => {
     if (selectedKeys.length === 0 || generating) return;
-    setGenerating(true);
-    try {
-      const result = await generateFixSpec(project, selectedKeys.map(String));
-      if (result.ok) {
-        message.success(`已生成修复 SPEC：${result.spec_name}`);
-        setSelectedKeys([]);
-        void loadItems();
-      } else {
-        message.error(result.error || '生成失败');
-      }
-    } catch (e) {
-      message.error(`生成失败: ${e instanceof Error ? e.message : String(e)}`);
-    } finally {
-      setGenerating(false);
-    }
+    const initial = await configStartAfter();
+    const count = selectedKeys.length;
+    const holder: AcceptSchedule = { startAfter: initial };
+    modal.confirm({
+      title: '生成修复 SPEC',
+      width: 640,
+      content: (
+        <>
+          <div style={{ marginBottom: 12 }}>
+            将为选中的 {count} 条问题创建一个修复 SPEC 并进入流水线。
+          </div>
+          <ScheduleFields holder={holder} initial={initial} hint="该 SPEC 执行时间：" />
+        </>
+      ),
+      okText: '生成',
+      cancelText: '取消',
+      onOk: async () => {
+        // 哨兵 manual 不参与时刻校验（add-spec-manual-activation D11）；
+        // 仅 ISO 定时需晚于当前时刻（与设置页「同意立项」同一判据）
+        if (!isStartAfterValid(holder.startAfter)) {
+          message.error('执行时间必须晚于当前时间');
+          return Promise.reject(new Error('invalid start time'));
+        }
+        setGenerating(true);
+        try {
+          const result = await generateFixSpec(
+            project,
+            selectedKeys.map(String),
+            holder.startAfter,
+          );
+          if (result.ok) {
+            message.success(
+              `已生成修复 SPEC：${result.spec_name}${describeStartAfter(holder.startAfter)}`,
+            );
+            setSelectedKeys([]);
+            void loadItems();
+          } else {
+            message.error(result.error || '生成失败');
+            // 失败时保留弹窗（用户看清文案再决定重试/改时刻）
+            return Promise.reject(new Error(result.error || 'generate failed'));
+          }
+        } catch (e) {
+          message.error(`生成失败: ${e instanceof Error ? e.message : String(e)}`);
+          return Promise.reject(e instanceof Error ? e : new Error(String(e)));
+        } finally {
+          setGenerating(false);
+        }
+      },
+    });
   };
 
   // ── 行操作（5.10）：忽略 / 清除归属 ─────────────────────────────
