@@ -381,3 +381,93 @@ class RRollbackMixin:
                 "pm_engine",
                 f"mergeback_wip_overlap 告警写入失败 '{spec_name}'（非阻塞）: {e}",
             )
+
+    def _report_mergeback_spec_dir_inflight_stuck(
+        self, spec_name: str, merge_info, branch: str, merge_error: str,
+        retry_count: int, first_at: int,
+    ) -> None:
+        """spec 目录在飞编辑顺延超限回落告警（evo-merge-back-spec-dir-inflight-guard D1a/D2）。
+
+        顺延窗口（``mergeback.spec_dir_inflight_grace_minutes``，缺省 30 分钟）或
+        连续顺延轮数（``mergeback.spec_dir_inflight_max_rounds``，缺省 3）超限时
+        调用：MUST NOT 无限顺延（无上限顺延会把事故中的「整轮重派」换成「永不再
+        处理」，比事故更差）。走既有「发告警 + 等待人工处置」直通，对齐
+        ``_report_mergeback_wip_overlap`` 同型语义：
+
+        - spec 保持 in-flight（implementing），分支/锚点原样保留（MUST NOT 静默
+          丢弃分支）；
+        - 写 admin store 信号（signal_type=``mergeback_spec_dir_inflight_stuck``）——
+          该 spec 对本窗口的可见性由本告警 + 后续 orphaned_state 探测（implementing
+          无活动 run 超短阈值）共同兜底（周期巡检对 ready 态在飞等待不可见，
+          故不降级 ready）；
+        - 任何异常不阻塞调用方主流程。
+
+        告警描述含找回/处置指引（提交主树 spec 目录后，人工可 reset 复位实现状态
+        重新放行，或等待 daemon 恢复通道重试）。
+        """
+        description = (
+            f"SPEC '{spec_name}' merge-back 顺延超限（spec 目录在飞编辑）："
+            f"自首轮顺延（{first_at}）起已连续 {retry_count} 轮仍未解除"
+            f"（窗口/轮数上限已到），已停止自动重试等待人工处置。分支 "
+            f"'{branch}' 保留（已成功实现、仅剩合并）。处置指引：提交主树 "
+            f"spec/changes/{spec_name}/ 目录的未提交改动（git add/commit，"
+            f"含 spec 迭代修补），再把该 spec 复位 ready 重新放行 merge-back；"
+            f"或等待 daemon 恢复通道（recovery）下一轮再试。"
+        )
+        try:
+            self._pm.state_machine.update_spec(
+                spec_name,
+                {
+                    "error": (
+                        f"mergeback spec_dir_inflight stuck after {retry_count} "
+                        f"rounds since {first_at}: {str(merge_error)[:120]}"
+                    ),
+                },
+            )
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"mergeback spec_dir_inflight_stuck 状态上报失败 '{spec_name}'（非阻塞）: {e}",
+            )
+        self._pm.logger.error(
+            "pm_engine",
+            f"'{spec_name}' merge-back 顺延超限（spec 目录在飞编辑）—— 已停止自动"
+            f"重试，等待人工提交 spec 目录后重新放行（分支与产物保留）",
+        )
+        try:
+            from core.agent_runner.prompt_builder import _str_field
+            from core.admin_store import AdminStore, SIGNAL
+
+            evidence = _str_field(
+                {
+                    "retry_count": retry_count,
+                    "first_at": first_at,
+                    "branch": branch,
+                    "merge_error": str(merge_error),
+                }
+            )
+            store = AdminStore(self._pm.project_root, self._pm.logger)
+            store.append(
+                {
+                    "kind": SIGNAL,
+                    "signal_type": "mergeback_spec_dir_inflight_stuck",
+                    "spec": spec_name,
+                    "severity": "major",
+                    "description": description,
+                    "evidence": evidence,
+                    "recommended_action": (
+                        "提交主树 spec/changes/ 目录的未提交改动"
+                        "（git add/commit，含 spec 迭代修补）后重新放行该 spec"
+                        "（ready 重派）继续 merge-back；分支与已成功实现保留"
+                    ),
+                }
+            )
+            self._pm.logger.info(
+                "pm_engine",
+                f"mergeback_spec_dir_inflight_stuck 告警已写入 admin store: '{spec_name}'",
+            )
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"mergeback_spec_dir_inflight_stuck 告警写入失败 '{spec_name}'（非阻塞）: {e}",
+            )

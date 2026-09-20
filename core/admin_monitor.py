@@ -224,6 +224,12 @@ SIGNAL_SEVERITY = {
     # 按显式配置的阻塞策略中止合并（主树零污染）——需人工处置重叠改动后放行，
     # major 级（阻塞是前置拦截、非 merge 失败，低于 critical）。
     "mergeback_wip_overlap": "major",
+    # evo-merge-back-spec-dir-inflight-guard D1a/D2：spec 目录在飞编辑顺延超限——
+    # 停止自动重试（有界顺延耗尽），等待人工提交 spec 目录后复位放行。
+    # 等同 WIP 重叠阻塞（major）：非 critical（非全链路瘫痪）、非 minor（阻塞
+    # 单 spec merge-back）。由上述 STORED_SIGNAL_TYPES 收录，admin_monitor
+    # 摄取唤起 Administrator。
+    "mergeback_spec_dir_inflight_stuck": "major",
     # fix-verify-uniform-failure-consumer：全场景同因失败（pass=0 且失败签名
     # 一致）——既可能是验证环境/夹具问题，也可能是场景本身缺陷；admin 需判类
     # 后走对应处置路径，不直接判 bug-found（同因哨有意不派生 fix）。
@@ -319,6 +325,14 @@ STORED_SIGNAL_TYPES = (
     # 本监视器摄取唤起——未收录则摄取循环 :691 continue 跳过、记录落 store
     # 后无人摄取、Administrator 不唤起（即「显式告警」目标落空）。
     "mergeback_wip_overlap",
+    # evo-merge-back-spec-dir-inflight-guard D1a/D2：spec 目录在飞编辑顺延
+    # 超限（窗口/轮数上限）回落「告警 + 等待人工处置」通道时由 pm_engine
+    # 直发——未收录则记录落 store 后无人摄取、Administrator 不唤起，顺延
+    # 超限的 spec 会「永远不再被处理」（比事故更差）。注意该形态 spec 保持
+    # implementing（不降级 ready），周期巡检（admin_monitor orphaned_state
+    # 只扫 implementing/testing、event_bus recover_orphan_ready 只扫 ready）
+    # 无法单独兜底其可见性，本信号是本 SPEC 自有的告警出口（D1a 点名）。
+    "mergeback_spec_dir_inflight_stuck",
     "verify_contract_redraft",
     # add-verdict-credibility-gate / design D6：连续 blocked-env 达阈值时
     # pm_engine 写入、本监视器摄取唤起（写入即待唤起型，recovery 尊重暂停

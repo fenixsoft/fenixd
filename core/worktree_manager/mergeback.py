@@ -97,6 +97,17 @@ class G4MergebackMixin:
             if gate_blocked is not None:
                 return gate_blocked
 
+            # ── spec 目录在飞编辑卫检查（evo-merge-back-spec-dir-inflight-guard D1）──
+            # 闸门顺序（task 0.1 固化）：rehearsed（line 77）→ wip_overlap_gate
+            # （line 96）→ 本卫检查 → ensure_clean_tree（line 100）。三者均为主树
+            # 零污染早退，顺序不改变各自判定结果，但 MUST 固化以防把「需 repair 的
+            # 冲突」误报为「等待提交」。复用 _spec_from_branch（queries.py:43）从
+            # 分支名解析 spec；解析失败（非 fenix/<spec>-<ts> 形态）→ 返回 None
+            # 放行（fail-open，MUST NOT 退化为对 spec/changes/ 全目录检测）。
+            inflight_info = self._check_spec_dir_inflight(branch)
+            if inflight_info is not None:
+                return inflight_info
+
             stashed = self.ensure_clean_tree(
                 prefix=WIP_GATE_STASH_PREFIX if wip_overlap else None
             )
@@ -127,6 +138,65 @@ class G4MergebackMixin:
             "block"
             if str(policy).strip().lower() in ("block", "1", "true", "yes", "on")
             else "auto"
+        )
+
+    def _check_spec_dir_inflight(self, branch: str):
+        """spec/changes/<spec>/ 在飞未提交编辑检测（evo-merge-back-spec-dir-inflight-guard D1）。
+
+        在 ``_main_tree_lock`` 内、``_wip_overlap_gate`` 之后、
+        ``ensure_clean_tree`` 之前调用。对 ``spec/changes/<spec>/`` 整个目录
+        （含 ``specs/**``、proposal/design/tasks）执行 ``git status --porcelain
+        -- <rel>`` 检测未提交改动（含 untracked）。
+
+        Returns:
+            - ``MergeConflictInfo``（``spec_dir_inflight=True``，``success=False``）
+              命中时——调用方直接返回，不进入 merge、不 stash、不触碰主树；
+            - ``None``——spec 目录干净（放行），或解析失败（fail-open），或命令
+              失败/超时（保守放行）。
+
+        spec 名解析复用 ``_spec_from_branch``（queries.py:43）；解析失败
+        （返回 None/非 str）→ 返回 None（fail-open，MUST NOT 退化为对整个
+        ``spec/changes/`` 的检测，D1 精度要求）。
+        """
+        spec = self._spec_from_branch(branch)
+        if not spec or not isinstance(spec, str):
+            return None
+        rel = f"spec/changes/{spec}"
+        try:
+            res = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(self.project_root),
+                    "status",
+                    "--porcelain",
+                    "--",
+                    rel,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            return None
+        if res.returncode != 0:
+            return None
+        dirty = [ln.strip() for ln in res.stdout.splitlines() if ln.strip()]
+        if not dirty:
+            return None
+        self.logger.warning(
+            "worktree_manager",
+            f"spec 目录在飞编辑检测到 {rel}/ 存在 {len(dirty)} 个未提交改动文件"
+            f"（含 untracked）：{dirty[:5]}{'…' if len(dirty) > 5 else ''}"
+            f" — merge-back 顺延等待提交（spec_dir_inflight）",
+        )
+        return MergeConflictInfo(
+            False,
+            f"spec 目录在飞编辑：{rel}/ 有 {len(dirty)} 个未提交改动"
+            f"（{dirty[0]}{'…' if len(dirty) > 1 else ''}）"
+            f" — merge-back 顺延等待提交动作解除"
+            f"（提交或 git commit -a 'spec: {spec}' 后重试）",
+            spec_dir_inflight=True,
         )
 
     def _wip_overlap_gate(self, branch: str) -> tuple:
