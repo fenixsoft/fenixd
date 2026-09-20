@@ -96,7 +96,11 @@ class TestImplLaneGateContract:
         assert "先落盘再深入" in prompt
         assert "正文里的 JSON 不算交付" in prompt or "正文" in prompt
         assert "判失败" in prompt
-        assert "无后台节拍" in prompt
+        # fix-agent-lane-efficiency 5.4：「无后台节拍」措辞已修正——能力事实
+        #（ScheduleWakeup 不产生唤醒）保留，新增后台 Bash 完成通知可用 + 一次
+        #后台启动 + 禁止 sleep 自旋。旧锚点 assert "无后台节拍" in prompt 已废弃。
+        assert "ScheduleWakeup" in prompt
+        assert "完成通知" in prompt or "run_in_background" in prompt
         assert "run_full_suite" in prompt or "前台有界" in prompt
 
     @pytest.mark.parametrize("agent_type", ["implementer", "fast-track"])

@@ -1789,6 +1789,29 @@ class ConfigLoader:
         return "low"
 
     @classmethod
+    def get_subagent_model_override(cls, config: Dict[str, Any]) -> str:
+        """读取 ``agents.subagent_model_override``（fix-agent-lane-efficiency D1）。
+
+        子代理模型覆盖键：非空时，隔离 settings.json 的 env 子代理 tier 映射（
+        ``CLAUDE_CODE_SUBAGENT_MODEL`` / ``ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL``）
+        使用该值而非 provider 自身 model。空串（缺省）= 使用 provider model。
+
+        命名冲突处置记录（2026-09-20，tasks 1.6 决策登记）：``agents.subagent_model``
+        （2026-09-02-add-agent-llm-isolation 遗留）为无读点的死键——本实现选择
+        **保留新键 ``agents.subagent_model_override``** 为唯一活键；``agents.subagent_model``
+        保持死键（不读、不写），语义边界写入实现记录与 docs/help/09-config.md。
+        MUST NOT 从本读取器回退读取死键——否则两个键同时可被用户读作「子代理模型」
+        即违反 D1「不留下两个活配置键」约束。
+        """
+        agents = config.get("agents") or {}
+        if not isinstance(agents, dict):
+            return ""
+        val = agents.get("subagent_model_override")
+        if isinstance(val, str):
+            return val.strip()
+        return ""
+
+    @classmethod
     def get(cls, config: Dict[str, Any], dotted_key: str, default=None):
         """
         Get a nested config value by dotted key.

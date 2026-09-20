@@ -232,7 +232,9 @@ class TestSystemAdminExistingSectionsNoRegression(unittest.TestCase):
                           # add-impl-code-review-tuning：三运行参数恒回显缺省
                           "impl_code_review_timeout_sec": 600,
                           "impl_code_review_concurrency": 2,
-                          "impl_code_review_effort": "low"})
+                          "impl_code_review_effort": "low",
+                          # fix-agent-lane-efficiency D3：上下文经济性告警阈值
+                          "context_cost_per_turn_threshold": 200000})
 
     def test_roundtrip_verify_and_self_review_after_admin_write(self):
         """写入 admin 段后，verify/self_review 写读仍正常（互不干扰）。"""
@@ -249,7 +251,8 @@ class TestSystemAdminExistingSectionsNoRegression(unittest.TestCase):
                           # add-impl-code-review-tuning：三运行参数恒回显缺省
                           "impl_code_review_timeout_sec": 600,
                           "impl_code_review_concurrency": 2,
-                          "impl_code_review_effort": "low"})
+                          "impl_code_review_effort": "low",
+                          "context_cost_per_turn_threshold": 200000})
         self.assertEqual(echoed["self_review"]["enabled"], True)
         self.assertEqual(echoed["admin"]["shutdown_drain_seconds"], 300)
 

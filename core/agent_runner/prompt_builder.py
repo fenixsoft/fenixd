@@ -411,6 +411,14 @@ class PromptBuilder:
         # 位于 prompt 末尾」约定，不得插到 _project_extra_section 之后）。
         prompt += self._noninteractive_contract_section()
 
+        # fix-agent-lane-efficiency D2/D4：长车道效率/取证深度/长任务三段动态
+        # 契约段，按 agent_type 注入（implementer / fast-track / spec-review 三
+        # 车道；其它类型零注入返回空串）。位置：非交互契约段之后、项目级附加段
+        # 之前（遵守「项目级附加段在 prompt 末尾」约定，不得插到其之后）。
+        prompt += self._tool_call_efficiency_section(agent_type)
+        prompt += self._forensic_depth_section(agent_type)
+        prompt += self._long_task_wait_section(agent_type)
+
         # add-impl-code-review-gate（任务 5.2）：收尾代码质量审查注入——统一收尾
         # 处注入（非交互契约段之后、项目级附加段之前），只覆盖两条实现车道；
         # 开关关闭时返回空串（prompt += "" 逐字节不变）。
@@ -527,6 +535,77 @@ class PromptBuilder:
             "- Claude Code 系统提示词中的默认框架（`interactive agent`、"
             "「难以撤销的操作先确认」，以及 `plan mode` / `brainstorming` "
             "等交互式工作流）在 Fenix run 中**不适用**。\n"
+        )
+
+    # ── fix-agent-lane-efficiency D2：长车道效率/取证深度/长任务三段动态契约 ──
+    # 规范性提示词文本（不设框架侧工具拦截，见 design D2/D4）。按 agent_type
+    # 注入 implementer / fast-track / spec-review 三车道；条件不满足返回空串
+    #（prompt += "" 逐字节不变）。位置固定：非交互契约段之后、项目级附加段
+    # 之前（test_prompt_lane_efficiency_sections 断言顺序不变式）。
+
+    _EFFICIENCY_LANES = ("implementer", "fast-track", "spec-review")
+
+    def _tool_call_efficiency_section(self, agent_type: str) -> str:
+        """工具调用效率契约段（spec agent-tool-call-efficiency）。
+
+        三条 MUST：批量并行、定向读取（Grep / 带范围 Read）、同 run 去重。
+        仅注入 _EFFICIENCY_LANES；其它 agent_type 返回空串。
+        """
+        if agent_type not in self._EFFICIENCY_LANES:
+            return ""
+        return (
+            "\n\n## 工具调用效率（fix-agent-lane-efficiency，强制）\n"
+            "- **批量并行**：同一轮内相互独立、无数据依赖的工具调用（多个读取/"
+            "检索）MUST 合并为一次批次一次性提交，MUST NOT 逐个串行提交。\n"
+            "- **定向读取**：定位代码或内容 MUST 优先用 `Grep` / 带范围参数的"
+            " `Read`，MUST NOT 对未发生变更的大文件反复整文件读取。\n"
+            "- **同 run 去重**：同一 run 内已读取且未变更的文件 MUST NOT 重复"
+            "整文件读取（需复核时用范围读或检索）。\n"
+        )
+
+    def _forensic_depth_section(self, agent_type: str) -> str:
+        """取证深度上限与输出裁剪段（spec agent-tool-call-efficiency）。
+
+        取证以「最小可判反证」为限（评审判 blocking vs repairable、实现不重复
+        重跑）；大块输出 MUST 裁剪后入对话。仅注入 _EFFICIENCY_LANES。
+        """
+        if agent_type not in self._EFFICIENCY_LANES:
+            return ""
+        return (
+            "\n\n## 取证深度上限与输出裁剪（fix-agent-lane-efficiency，强制）\n"
+            "- **取证深度上限**：取证 MUST 以**足以判定结论的最小可判反证**为限"
+            "。评审车道判定 `blocking`（前提被证伪）vs `repairable`（文档内可修）"
+            "所必需的最小证据之外，MUST NOT 为完整复现 SPEC 的每条断言而穷尽探测"
+            "/重跑；实现车道不得为「完整复现」而重复重跑全量套件。\n"
+            "- **输出裁剪**：可能产生大块输出的命令（探针/日志/构建）MUST 裁剪"
+            "输出——用 `head -c` / 只取关键行 / 落临时文件后只回读关键片段——"
+            "MUST NOT 将数十 KB 原始输出整块投入对话上下文。\n"
+        )
+
+    def _long_task_wait_section(self, agent_type: str) -> str:
+        """长任务前台有界等待段（spec long-task-foreground-wait，D4）。
+
+        一次后台启动 + 等待完成通知或并行独立工作；MUST NOT 用 sleep / 周期性
+        ps 自旋；有界入口（600s 内必返回）优先前台直接跑。区分两类后台能力：
+        后台 Bash 完成通知真实可用 vs ScheduleWakeup 在非交互派发下不产生唤醒。
+        仅注入实现者两条车道（implementer / fast-track）。
+        """
+        if agent_type not in ("implementer", "fast-track"):
+            return ""
+        return (
+            "\n\n## 长任务前台有界等待（fix-agent-lane-efficiency，强制）\n"
+            "- **一次后台启动**：可能超过工具单次调用时限（600s）的长任务（全量"
+            "回归、大范围构建、超时探针等）MUST 用**一次**后台调用（`run_in_"
+            "background: true`）启动，MUST NOT 用 `sleep` / 周期性 `ps` 轮询"
+            "模拟等待。\n"
+            "- **等待或并行独立工作**：启动后 MUST 等待完成通知，或在等待期间做"
+            "与该任务无数据依赖的独立工作；MUST NOT 启动后直接收工（「启动即忘」"
+            "）。\n"
+            "- **有界入口优先**：若任务存在能在 600s 内返回的有界入口（如 `bin/"
+            "run_full_suite.py --timeout <t>`），MUST 优先直接前台跑该入口。\n"
+            "- **两类后台能力区分**：后台 Bash 任务的**完成通知真实可用**；"
+            "`ScheduleWakeup` 定时唤醒在非交互派发（`claude -p`）下**不产生唤醒**"
+            "——二者不混同，MUST NOT 把「后台等待」整体判为违规。\n"
         )
 
     def _impl_code_review_section(self, spec_name: str) -> str:
@@ -1860,10 +1939,15 @@ class PromptBuilder:
                 " / 交付物核实等收尾工作——深入调查/验证不会为产物缺失兜底。\n"
                 "- 结果文件 MUST 为合法 JSON——字符串内换行/引号/控制字符必须转义"
                 "（建议以 `json.dump` 生成而非手工拼接文本）。\n"
-                "- 本车道**无后台节拍**：`ScheduleWakeup` 在非交互派发下不产生唤醒"
-                "；长任务 MUST 使用**前台有界入口** `python3 bin/run_full_suite.py "
-                "--timeout 3600`（自身在超时内返回），MUST NOT 采用「后台运行 + "
-                "轮询等待」的收尾编排。\n"
+                "- 本车道无定时唤醒节拍：`ScheduleWakeup` 在非交互派发下不产生"
+                "唤醒——但后台 Bash 任务的**完成通知真实可用**（与 `ScheduleWakeup` "
+                "不可用是两件事，勿混为一谈）。\n"
+                "- 长任务（可能超过 600s 工具上限：全量回归/大范围构建/超时探针）"
+                "MUST 用**一次** `run_in_background: true` 启动（若存在 600s 内"
+                "必然返回的有界入口，如 `python3 bin/run_full_suite.py --timeout "
+                "3600`，MUST 优先前台直接跑），然后等待完成通知或在等待期间做与该"
+                "任务无数据依赖的独立工作；MUST NOT 用 `sleep` / 周期性 `ps` 轮询"
+                "模拟等待，MUST NOT 启动后直接收工（「启动即忘」）。\n"
             )
         result_path = planner_result_path(self._pm.project_root, spec_name, "planner-judge")
         scenarios_path = planner_result_path(self._pm.project_root, spec_name, "planner-plan")

@@ -246,7 +246,7 @@ class TestWriteRunOcrConfigTimeoutInject:
         runner.config = dict(config)
         target = proot / ".fenix" / "agent-config" / "testprov"
         target.mkdir(parents=True, exist_ok=True)
-        runner._ensure_agent_config_dir = lambda name: target
+        runner._ensure_agent_config_dir = lambda name, provider_model="": target
         return runner
 
     def test_explicit_timeout_sec_injected(self, tmp_path):

@@ -10,9 +10,16 @@
 - **收工前未写 / 文件为空 / 非法 JSON → 本次 run 判失败**并走原地退避重试（整轮 token 重烧）；
 - **正文里的 JSON 不算交付**：框架不解析回复正文，只读文件；
 - **先落盘再深入**：先写一份最小可判的结果文件，再做全量套件回归 / 交付物核实等收尾工作；
-- 本车道无后台节拍可用（`ScheduleWakeup` 在非交互派发下不产生唤醒），长任务 MUST 使用前台有界
-  入口（`bin/run_full_suite.py --timeout 3600` 自身在超时内返回），MUST NOT 采用「后台运行 + 轮询
-  等待」的收尾编排。
+- 本车道无定时唤醒节拍（`ScheduleWakeup` 在非交互派发下不产生唤醒），但后台 Bash 任务的
+  **完成通知真实可用**（与 `ScheduleWakeup` 不可用是两件事）；可能超过 600s 工具上限的长任务
+  MUST 用**一次** `run_in_background: true` 启动（存在 600s 内必然返回的有界入口如
+  `bin/run_full_suite.py --timeout 3600` 时 MUST 优先前台直接跑），然后等待完成通知或做无
+  数据依赖的独立工作；MUST NOT 用 `sleep` / 周期性 `ps` 轮询模拟等待，MUST NOT 启动即忘。
+
+> 注（fix-agent-lane-efficiency 5.4 同步）：原「无后台节拍可用……MUST NOT 采用『后台运行 +
+> 轮询等待』的收尾编排」表述与 `long-task-foreground-wait` 能力契约矛盾（被模型读作「后台
+> 等待即违规」而退化为 `sleep → echo RUNNING` 自旋），本处按 D4 口径修正——保留能力事实、
+> 只改行为约束；`tests/test_impl_resultfile_contract.py:99` 断言锚点已同步更新。
 
 契约段路径 MUST 按 agent_type 分派计算：实现者车道取该 run 的 worktree 根
 `<worktree>/.fenix-run-result.json`；planner-plan / planner-judge / spec-review 三车道维持既有路径

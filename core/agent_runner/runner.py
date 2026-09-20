@@ -847,7 +847,7 @@ class AgentRunner:
             env_overrides["ANTHROPIC_API_KEY"] = provider["apikey"]
             env_overrides["ANTHROPIC_MODEL"] = model_override
             env_overrides["CLAUDE_CONFIG_DIR"] = str(
-                self._ensure_agent_config_dir(provider["name"])
+                self._ensure_agent_config_dir(provider["name"], model_override)
             )
             for k, v in (provider.get("env") or {}).items():
                 env_overrides[k] = v
@@ -933,7 +933,7 @@ class AgentRunner:
             env_overrides["ANTHROPIC_API_KEY"] = provider["apikey"]
             env_overrides["ANTHROPIC_MODEL"] = model_override
             env_overrides["CLAUDE_CONFIG_DIR"] = str(
-                self._ensure_agent_config_dir(provider["name"])
+                self._ensure_agent_config_dir(provider["name"], model_override)
             )
             for k, v in (provider.get("env") or {}).items():
                 env_overrides[k] = v
@@ -1148,13 +1148,22 @@ class AgentRunner:
     def _accumulate_evolution_tokens(self, run_id: str, usage_info: dict) -> None:
         _accumulate_evolution_tokens(self, run_id, usage_info)
 
-    def _build_isolated_settings(self) -> dict:
-        """构造隔离 settings.json：enabledPlugins / hooks（spec D2/D3）。
+    def _build_isolated_settings(self, provider_model: str = "") -> dict:
+        """构造隔离 settings.json：enabledPlugins / hooks / env 子代理模型映射（spec D2/D3）。
 
         从 ~/.claude/settings.json 复制 enabledPlugins（缺省 superpowers）。hooks 从
-        .fenix/agent-settings.json 复制（PreToolUse block-image-read）。不复制任何 env
-        模型名映射——那属于 cc-switch 网关、对直连 Provider 无用且有毒化子代理解析的
-        风险（如陈旧 hy3）。Provider 的 ANTHROPIC_MODEL/BASE_URL/API_KEY 经进程 env 注入。
+        .fenix/agent-settings.json 复制（PreToolUse block-image-read）。不复制宿主
+        ~/.claude/settings.json 的 env 模型名映射——那属于 cc-switch 网关、对直连
+        Provider 无用且有毒化子代理解析的风险（如陈旧 hy3）。Provider 的
+        ANTHROPIC_MODEL/BASE_URL/API_KEY 经进程 env 注入。
+
+        fix-agent-lane-efficiency D1：当传入 provider_model（直连 Provider 车道）时，
+        额外注入一段**按该 provider 重算**的 env 模型映射——CLAUDE_CODE_SUBAGENT_MODEL
+        与 ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL 均映射到 provider 自身模型，
+        取值优先级为 agents.subagent_model_override（非空）→ provider_model。这使
+        子代理 tier 解析永不回落到宿主 cc-switch 的官方模型名（直连 Provider 无此
+        模型 → model_not_found 404）。provider_model 为空（未分配 provider，走默认
+        网关）时不写任何 env——该路径行为与变更前逐字节一致。
         """
         settings: Dict[str, Any] = {}
         source: Dict[str, Any] = {}
@@ -1182,35 +1191,76 @@ class AgentRunner:
             except (OSError, json.JSONDecodeError):
                 pass
 
-        # 不复制 ~/.claude/settings.json 的 env（ANTHROPIC_DEFAULT_* / CLAUDE_CODE_SUBAGENT_MODEL
-        # 等 cc-switch 网关映射）——直连 Provider 不需要，且会毒化子代理模型解析（陈旧 hy3）。
+        if provider_model:
+            # D1：provider 作用域内重建的子代理模型映射（非复制宿主 cc-switch 映射）。
+            # 取值优先级：agents.subagent_model_override（非空）→ provider 自身 model。
+            from core.config import ConfigLoader as _CLSubagentModel
+
+            config = getattr(self, "config", None) or {}
+            subagent_model = (
+                _CLSubagentModel.get_subagent_model_override(config)
+                or provider_model
+            )
+            settings["env"] = {
+                "CLAUDE_CODE_SUBAGENT_MODEL": subagent_model,
+                "ANTHROPIC_DEFAULT_OPUS_MODEL": subagent_model,
+                "ANTHROPIC_DEFAULT_SONNET_MODEL": subagent_model,
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL": subagent_model,
+            }
         return settings
 
-    def _ensure_agent_config_dir(self, provider_name: str) -> Path:
+    # fix-agent-lane-efficiency D1：隔离 settings.json 内容版本标记。旧版本（无 env
+    # 子代理模型映射）settings.json 在已部署机器上已存在（_ensure_agent_config_dir 现行
+    # 「marker 已存在即 return」会永不重建）——实现版本标记 + 内容不匹配时原子重写，
+    # 使新映射在存量隔离目录上也生效。
+    ISOLATED_SETTINGS_SCHEMA_VERSION = 2
+
+    def _ensure_agent_config_dir(self, provider_name: str, provider_model: str = "") -> Path:
         """按需生成并返回 Provider 的隔离配置目录（spec D1/D2/D5）。
 
         目录：.fenix/agent-config/<provider_name>/，含 settings.json 与指向
         ~/.claude 的 skills/plugins symlink（源目录不存在则跳过，优雅降级）。
-        幂等：settings.json 已存在则跳过重建；并发首次创建由原子 mkdir +
-        temp+rename 写文件兜底，内容确定无副作用。
+        幂等：settings.json 已存在且内容与将写入内容一致（含 schema 版本标记）则
+        跳过重建；存在旧版/内容不匹配时原子重写（tempfile + os.replace，保留既有
+        symlink）。并发首次创建由原子 mkdir + temp+rename 写文件兜底。
+
+        fix-agent-lane-efficiency D1：传入 provider_model（直连 Provider 车道）时
+        settings.json 含按 provider 重算的 env 子代理模型映射；存量旧 settings.json
+        （无 env 段）会被内容比对识别并原子重写为最新映射。
         """
         cfg_dir = self.project_root / ".fenix" / "agent-config" / provider_name
         marker = cfg_dir / "settings.json"
-        if marker.is_file():
-            return cfg_dir
+        settings = self._build_isolated_settings(provider_model)
+        settings["_schema_version"] = self.ISOLATED_SETTINGS_SCHEMA_VERSION
         try:
             cfg_dir.mkdir(parents=True, exist_ok=True)
         except OSError:
             return cfg_dir
 
-        settings = self._build_isolated_settings()
-        try:
+        def _write_atomic() -> None:
             tmp = cfg_dir / ".settings.tmp"
             tmp.write_text(
                 json.dumps(settings, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
             os.replace(tmp, marker)
+
+        if marker.is_file():
+            try:
+                existing = json.loads(marker.read_text(encoding="utf-8"))
+                if isinstance(existing, dict) and existing == settings:
+                    return cfg_dir
+            except (OSError, json.JSONDecodeError):
+                pass
+            # 内容不匹配（旧版无 env / 用户改过 / 损坏）→ 原子重写（幂等陷阱处置）
+            try:
+                _write_atomic()
+            except OSError:
+                pass
+            return cfg_dir
+
+        try:
+            _write_atomic()
         except OSError:
             pass
 
@@ -1961,7 +2011,7 @@ class AgentRunner:
                         # 使 Provider 的 baseurl/apikey/model 绝对生效（spec D1）。
                         # add-provider-failover：隔离目录随候选同步切换（design D4 / task 3.2）。
                         env_overrides["CLAUDE_CONFIG_DIR"] = str(
-                            self._ensure_agent_config_dir(provider["name"])
+                            self._ensure_agent_config_dir(provider["name"], model)
                         )
                         # 注入 provider 自定义环境变量（如 CLAUDE_CODE_MAX_CONTEXT_TOKENS）
                         for k, v in (provider.get("env") or {}).items():
@@ -3427,6 +3477,19 @@ class AgentRunner:
         # 同线程追加+join 后读取无竞态（类 turn_count 同模式）。
         latency_state: dict = {"last_tool_result_ts": None, "samples": []}
 
+        # ── fix-agent-lane-efficiency D3：run 级上下文经济性指标（纯读侧旁路）──
+        # 累计 input_tokens / cache_read_input_tokens / context_peak_estimate，
+        # run 终结时落盘到 transcript + 日志（_log_run_metrics），超阈值打 WARNING。
+        # 转录事件来源：assistant 事件的 message.usage；不用 CLI result.modelUsage（D3
+        # 记账段已证实 modelUsage 与 result.usage 矛盾）。指标来源以本 run 转录事件
+        # 为准，MUST NOT 取 CLI result.modelUsage。
+        context_metrics: dict = {
+            "total_input_tokens": 0,
+            "total_cache_read_tokens": 0,
+            "context_peak_tokens": 0,
+            "peak_input_so_far": 0,
+        }
+
         def _read_stream(stream, is_stderr: bool) -> None:
             try:
                 for line in iter(stream.readline, ""):
@@ -3450,6 +3513,23 @@ class AgentRunner:
                             continue
                         if entry.get("type") == "assistant":
                             turn_count[0] += 1
+                            # fix-agent-lane-efficiency D3：逐轮累计 usage
+                            # 指标（纯读侧旁路）。来源：assistant 事件的
+                            # message.usage（与转录同源），不用 CLI
+                            # result.modelUsage（D3 记账段证实矛盾）。
+                            _msg = entry.get("message") or {}
+                            _usage = _msg.get("usage") or {}
+                            _inp = int(_usage.get("input_tokens") or 0)
+                            _cr = int(
+                                _usage.get("cache_read_input_tokens") or 0
+                            )
+                            context_metrics["total_input_tokens"] += _inp
+                            context_metrics["total_cache_read_tokens"] += _cr
+                            if _inp > context_metrics["peak_input_so_far"]:
+                                context_metrics["peak_input_so_far"] = _inp
+                            context_metrics["context_peak_tokens"] = (
+                                context_metrics["peak_input_so_far"]
+                            )
                         if entry.get("type") == "result":
                             # 记录最后一个 result 事件（含 num_turns / result 文本 / session_id）；
                             # 落盘推迟到读线程 join 后，保证 result 终态是文件最后一行
@@ -3457,6 +3537,37 @@ class AgentRunner:
                             last_result.clear()
                             last_result.update(entry)
                             continue
+                        # fix-agent-lane-efficiency D1：子代理启动失败可见化。
+                        # 子代理（Explore/general-purpose/Plan）以 model_not_found /
+                        # 认证失败 / 启动期错误终止时，claude CLI 在流中落
+                        # task_notification 事件（summary 含子代理类型与错误类别）。
+                        # 纯读侧捕获：落显式 WARNING（含 run_id、子代理类型、错误
+                        # 原文摘要），MUST NOT 改变本 run 终态判定、MUST NOT 改变
+                        # 事件处理时序（与 D3 指标同模式——只读日志旁路）。
+                        if entry.get("type") == "task_notification":
+                            _tsum = str(entry.get("summary") or "")
+                            if _tsum and any(
+                                _sig in _tsum
+                                for _sig in (
+                                    "model_not_found",
+                                    "HTTP 404",
+                                    "authentication",
+                                    "auth_error",
+                                    "startup",
+                                    "启动",
+                                    "not exist",
+                                    "may not have access",
+                                )
+                            ):
+                                self.logger.warning(
+                                    "agent_runner",
+                                    f"subagent startup failure detected: {_tsum[:400]}",
+                                    {
+                                        "run_id": run_id,
+                                        "event": "subagent_startup_failure",
+                                        "summary": _tsum[:400],
+                                    },
+                                )
                         # 延迟样本采集：tool_result → assistant = 一次 API 往返
                         # （tool_result 按 _entry_is_tool_result 统一识别：真实
                         # stream-json 转录以 user 事件包裹 tool_result block
@@ -3667,6 +3778,68 @@ class AgentRunner:
                 self.logger.debug(
                     "agent_runner",
                     f"延迟摘要计算失败（不阻断 run 终态）: {e}",
+                )
+            # ── fix-agent-lane-efficiency D3：上下文经济性指标落盘 ──
+            # 纯读侧统计（assistant 事件的 message.usage 累计），写入 transcript
+            # 的 run_metrics 行（终态行之后追加，不改既有行顺序）+ 日志；超阈值
+            # 打 WARNING（不阻断 run、不触发独立人工告警）。最小样本门槛：turns
+            # < 5 或 usage 缺失/零轮空跑只落指标不打告警（零轮空跑噪声抑制）。
+            try:
+                _turns = turn_count[0]
+                _inp = context_metrics["total_input_tokens"]
+                _cr = context_metrics["total_cache_read_tokens"]
+                _peak = context_metrics["context_peak_tokens"]
+                _per_turn = (_inp // _turns) if _turns > 0 else 0
+                # 指标行落盘（终态行之后，type 为 run_metrics）
+                append_run_line(run_file, {
+                    "type": "run_metrics",
+                    "run_id": run_id,
+                    "turns": _turns,
+                    "input_tokens": _inp,
+                    "cache_read_input_tokens": _cr,
+                    "context_peak_tokens": _peak,
+                    "per_turn_input_tokens": _per_turn,
+                })
+                # 日志侧也落一份（与既有的 _log_run_metrics 同源，
+                # dashboard 读侧按 metric_type==run_metrics 增量索引）
+                self.logger.info(
+                    "agent_runner",
+                    f"context metrics: turns={_turns} inp={_inp} "
+                    f"peak={_peak} per_turn={_per_turn} cr={_cr}",
+                    {
+                        "metric_type": "run_metrics",
+                        "run_id": run_id,
+                        "turns": _turns,
+                        "input_tokens": _inp,
+                        "cache_read_input_tokens": _cr,
+                        "context_peak_tokens": _peak,
+                        "per_turn_input_tokens": _per_turn,
+                    },
+                )
+                # 超阈值诊断 WARNING（告警降噪：turns < 5 空跑跳过）
+                if _turns >= 5 and _per_turn > 0:
+                    from core.config import ConfigLoader as _CLT
+                    _threshold = _CLT.get(
+                        self.config, "verify.context_cost_per_turn_threshold",
+                        200000,
+                    )
+                    if isinstance(_threshold, (int, float)) and _per_turn > _threshold:
+                        self.logger.warning(
+                            "agent_runner",
+                            f"context cost per turn={_per_turn} exceeds "
+                            f"threshold={_threshold} for run '{run_id}' "
+                            f"—— O(N²) context structure detected",
+                            {
+                                "run_id": run_id,
+                                "per_turn_input_tokens": _per_turn,
+                                "threshold": _threshold,
+                                "turns": _turns,
+                            },
+                        )
+            except Exception as e:
+                self.logger.debug(
+                    "agent_runner",
+                    f"context metrics落盘失败（不阻断 run 终态）: {e}",
                 )
             # result 终态事件最后落盘（读线程里跳过内联写），保证是文件最后一行
             if last_result:

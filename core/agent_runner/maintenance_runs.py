@@ -161,7 +161,7 @@ def run_administrator(runner, signal: dict) -> AdminDisposition:
         env_overrides["ANTHROPIC_BASE_URL"] = provider["baseurl"]
         env_overrides["ANTHROPIC_API_KEY"] = provider["apikey"]
         env_overrides["ANTHROPIC_MODEL"] = model_override
-        env_overrides["CLAUDE_CONFIG_DIR"] = str(runner._ensure_agent_config_dir(provider["name"]))
+        env_overrides["CLAUDE_CONFIG_DIR"] = str(runner._ensure_agent_config_dir(provider["name"], model_override))
         for k, v in (provider.get("env") or {}).items():
             env_overrides[k] = v
         # 观测：run jsonl 写 provider_marker，与 dispatch attempt 路径同口径，
@@ -392,7 +392,7 @@ def run_self_review(
         env_overrides["ANTHROPIC_BASE_URL"] = provider["baseurl"]
         env_overrides["ANTHROPIC_API_KEY"] = provider["apikey"]
         env_overrides["ANTHROPIC_MODEL"] = model_override
-        env_overrides["CLAUDE_CONFIG_DIR"] = str(runner._ensure_agent_config_dir(provider["name"]))
+        env_overrides["CLAUDE_CONFIG_DIR"] = str(runner._ensure_agent_config_dir(provider["name"], model_override))
         for k, v in (provider.get("env") or {}).items():
             env_overrides[k] = v
     else:
@@ -633,7 +633,7 @@ def run_evolution(
         env_overrides["ANTHROPIC_BASE_URL"] = provider["baseurl"]
         env_overrides["ANTHROPIC_API_KEY"] = provider["apikey"]
         env_overrides["ANTHROPIC_MODEL"] = model_override
-        env_overrides["CLAUDE_CONFIG_DIR"] = str(runner._ensure_agent_config_dir(provider["name"]))
+        env_overrides["CLAUDE_CONFIG_DIR"] = str(runner._ensure_agent_config_dir(provider["name"], model_override))
         for k, v in (provider.get("env") or {}).items():
             env_overrides[k] = v
     else:
@@ -834,7 +834,7 @@ def run_code_review(
         env_overrides["ANTHROPIC_BASE_URL"] = provider["baseurl"]
         env_overrides["ANTHROPIC_API_KEY"] = provider["apikey"]
         env_overrides["ANTHROPIC_MODEL"] = model_override
-        env_overrides["CLAUDE_CONFIG_DIR"] = str(runner._ensure_agent_config_dir(provider["name"]))
+        env_overrides["CLAUDE_CONFIG_DIR"] = str(runner._ensure_agent_config_dir(provider["name"], model_override))
         for k, v in (provider.get("env") or {}).items():
             env_overrides[k] = v
     else:

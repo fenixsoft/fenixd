@@ -39,9 +39,12 @@ Fenix 配置分两级合并，大部分键支持 30 秒热更新，少数需重�
 | max_turns | 400 | ≥1 | 重启 |
 | daily_run_limit | **代码缺省 50**（模板 300） | ≥0（0=无限） | 热更新 |
 | run_timeout_seconds | 9000 | ≥1 | 热更新 |
+| subagent_model_override | "" (空串=使用 provider model) | 模型名字符串 | 重启 |
 | use_new_verifier | true | bool | 重启 |
 
 ### agents.（瞬断治理）：provider 网关瞬时故障的退避与熔断
+
+`agents.subagent_model_override`（fix-agent-lane-efficiency D1）：子代理（`Explore`/`general-purpose`/`Plan`）在直连 Provider 车道下的模型覆盖。非空时，隔离 `settings.json` 的 env 子代理 tier 映射（`CLAUDE_CODE_SUBAGENT_MODEL` / `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL`）使用该值而非 provider 自身 `model`。空串（缺省）= 使用 provider model。`agents.subagent_model`（2026-09-02 遗留）为无读点的死键，不生效，不建议配置。
 
 | 键 | 默认值 | 范围 | 生效方式 |
 |----|--------|------|---------|

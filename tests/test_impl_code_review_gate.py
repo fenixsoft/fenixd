@@ -210,7 +210,7 @@ class TestWriteRunOcrConfig:
         # 替换 _ensure_agent_config_dir 为幂等实现（直接返回目标目录）
         target = proot / ".fenix" / "agent-config" / "testprov"
         target.mkdir(parents=True, exist_ok=True)
-        runner._ensure_agent_config_dir = lambda name: target
+        runner._ensure_agent_config_dir = lambda name, provider_model="": target
         return runner
 
     def test_config_file_written_and_home_invariant(self, tmp_path):
