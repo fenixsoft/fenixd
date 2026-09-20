@@ -120,3 +120,9 @@
 - [x] 8.2 运行本次新增与受影响的测试文件（`tests/test_freeze_stop_inflight_agents.py`、`tests/test_delete_stop_inflight_agents.py`、`tests/test_run_cancel.py`、`tests/test_cancel_holdstate_recovery.py`、`tests/test_run_spec_prefixed_attribution.py`、`tests/test_interrupt_recovery_preserve.py`、`tests/test_dashboard_data_modules_contract.py`、`tests/test_agent_runner_modules_contract.py`、`tests/test_dashboard_data.py`、`tests/test_daemon_lifecycle_races.py`）并修复全部失败。**仓库无 `bin/run_full_suite.py`**，全量回归入口见 8.3。
 - [x] 8.3 全量回归（有界入口：`python3 -m pytest tests -x -q --timeout=3600`，与既有 `tests/` 布局一致；若确需分档则用 `pytest -k` 分批），修复本次引入的失败
 - [x] 8.4 更新 `docs/help/09-config.md` 或 `docs/help/02-concepts.md` 中关于冻结/删除语义的段落，说明「冻结即停在跑 agent、解冻自动续做」「删除先停后删」的新行为
+
+## 验证修复（原地打回第 1 轮）
+
+- [ ] 先复核失败有效性：逐条核对 `spec/changes/add-freeze-stop-inflight-agents/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
+- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
+- [ ] 修复后重跑验证确认通过
