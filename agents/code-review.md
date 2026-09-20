@@ -77,6 +77,11 @@ python3 bin/ocr_review.py scan --path "<manifest 逗号分隔清单>" \
   归一到本文档的维度/严重度定义）。
 - `title` / `suggestion` / `evidence` 由你依据 `content` 补全（ocr 不产出
   这三个字段）。
+- **`content` 语言随被审文件浮动，你 MUST 归一为中文**（见「语言契约」）：
+  ocr 对英文注释为主的文件（如 `core/**/*.py`）回英文、对中文注释密集的文件
+  （如 `core/dashboard/static/src/**/*.tsx`）回中文，同一轮台账会因此中英
+  混杂。透传 `content` → `description` 时 MUST 改写为中文，`title` /
+  `suggestion` MUST 用中文撰写；英文原文如需保留，只放在 `evidence`。
 - 一个文件可能在 `comments` 里有 0 条或多条——都 MUST 落一行（0 条时
   `findings: []`）。**MUST 按 manifest 逐文件落行**，不能只把 ocr 命中的
   文件落行（否则进度 done 永远小于 total，且硬门判为覆盖不全）。
@@ -116,9 +121,9 @@ MUST NOT 等到全部文件审完才一次性写出）。追加方式：以 appe
       "line": 行号（可定位时填写，否则省略或 1）,
       "severity": "critical | major | minor | info",
       "category": "correctness | robustness | security | maintainability | consistency",
-      "title": "问题标题（独立成句，见下方 title 契约）",
-      "description": "问题描述：为什么会出问题、影响什么",
-      "suggestion": "修复建议（具体、可执行）",
+      "title": "问题标题（中文，独立成句，见下方 title / 语言契约）",
+      "description": "问题描述（中文）：为什么会出问题、影响什么",
+      "suggestion": "修复建议（中文，具体、可执行）",
       "evidence": "证据：文件:行号、可疑代码片段或行为描述"
     }
   ],
@@ -142,6 +147,25 @@ MUST NOT 等到全部文件审完才一次性写出）。追加方式：以 appe
   细节交给 `description`，MUST NOT 用硬截断凑长度。
 - MUST 以句末标点或完整短语收尾，MUST NOT 以半个单词 / 半个引号 /
   半个括号结束。
+
+### 语言契约（违反 = 该条不可用）
+
+台账面向中文用户（dashboard「质量」分面直接渲染 `title` / `description`）。
+**`title` / `description` / `suggestion` 三个字段 MUST 用中文呈现**，不论
+其来源是 `ocr scan` 还是你亲自审查：
+
+- **ocr 结果映射**：`ocr scan` 的 `content` 语言跟随被审文件自身（英文注释
+  为主的文件回英文、中文注释密集的文件回中文），MUST NOT 原样透传英文
+  `content` 充当 `description`。你 MUST 在映射时改写为中文表述——代码标识
+  符、路径、API 名等专有名词保留英文原文，叙述部分用中文。
+- **英文原文的去处**：需要保留 ocr 英文原话作为凭证时，放 `evidence`
+  （evidence 允许中英并存），MUST NOT 因此让 `title` / `description` /
+  `suggestion` 回退成英文。
+- 历史事故：2026-09-19 全仓审查中，ocr 覆盖的 131 条发现全部以英文
+  `content` 透传，台账 225 条里 129 条纯英文，与 agent 亲自审查产出的
+  中文条目在同一页签并排显示，用户直接质疑「为什么有的中文有的英文」。
+- 语言问题独立于 `title` 契约：即使 `title` 写成了完整句，只要是英文
+  （如 `Dead imports: ...`）仍判该条不可用。
 
 数据落盘的完整流程：
 1. **逐文件审查**：先在本地完成**全部**文件的审查判断——绝不允许边审边写，
