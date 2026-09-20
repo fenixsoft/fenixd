@@ -492,27 +492,22 @@ const SuggestedImprovementsPanel = forwardRef<
       content: (
         <>
           <div style={{ marginBottom: 12 }}>确定对「{item.title}」点击同意？</div>
-          <AcceptScheduleFields holder={holder} initial={holder.startAfter} />
+          <ScheduleFields holder={holder} initial={holder.startAfter} />
         </>
       ),
       okText: '同意',
       cancelText: '取消',
       onOk: async () => {
         // 哨兵 manual 不参与时刻校验（见 D11）；仅 ISO 定时需晚于当前时刻
-        if (holder.startAfter
-            && holder.startAfter !== 'manual'
-            && !dayjs(holder.startAfter).isAfter(dayjs())) {
+        if (!isStartAfterValid(holder.startAfter)) {
           message.error('执行时间必须晚于当前时间');
           return Promise.reject(new Error('invalid start time'));
         }
         const result = await execOne(item, 'accept', holder.startAfter);
         if (result.ok) {
-          const when = holder.startAfter === 'manual'
-            ? '，已设为待激活（手工激活后进入调度）'
-            : holder.startAfter
-              ? `，将于 ${dayjs(holder.startAfter).format('YYYY-MM-DD HH:mm')} 执行`
-              : '';
-          message.success(`已立项：${result.spec_name || item.title}${when}`);
+          message.success(
+            `已立项：${result.spec_name || item.title}${describeStartAfter(holder.startAfter)}`,
+          );
         } else {
           message.error(result.error || '接受失败');
         }
