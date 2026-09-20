@@ -4,7 +4,7 @@
 - GET  /api/code-review/items      （query project、可选 status）→ 台账列表
 - GET  /api/code-review/progress   （query project）→ 运行进度
 - POST /api/code-review/run        （body {project, scope}）→ 写手动触发信号
-- POST /api/code-review/generate-spec（body {project, item_ids}）→ 生成修复 SPEC
+- POST /api/code-review/generate-spec（body {project, item_ids, start_after?}）→ 生成修复 SPEC
 - POST /api/code-review/items/status（body {project, item_id, status}）→ 人工状态流转
 
 端点 handler 走既有 mixin 形态（self._json / self._error / _read_json_body）。

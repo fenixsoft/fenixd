@@ -1259,14 +1259,29 @@ export function triggerCodeReview(project: string, scope: 'full' | 'window') {
   );
 }
 
-/** add-code-review-agent-and-quality-tab：把选中条目批量生成修复 SPEC */
-export function generateFixSpec(project: string, itemIds: string[]) {
-  return request<{ ok: boolean; spec_name: string; skipped: Array<{ item_id: string; reason: string }>; error?: string }>(
+/** add-code-review-agent-and-quality-tab：把选中条目批量生成修复 SPEC
+ *
+ * ``startAfter`` 三态（与设置页「同意立项」同一语义，见 ScheduleFields）：
+ * 缺省/undefined = 立即执行；``"manual"`` = 待激活；UTC ISO = 定时拾取。
+ * 显式传 null 亦为立即执行——后端按「缺省/null/空串 → 立即」归一。
+ */
+export function generateFixSpec(
+  project: string,
+  itemIds: string[],
+  startAfter?: string | null,
+) {
+  return request<{
+    ok: boolean;
+    spec_name: string;
+    skipped: Array<{ item_id: string; reason: string }>;
+    error?: string;
+    start_after?: string | null;
+  }>(
     `/api/code-review/generate-spec?project=${encodeURIComponent(project)}`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ item_ids: itemIds }),
+      body: JSON.stringify({ item_ids: itemIds, start_after: startAfter ?? null }),
     },
   );
 }
