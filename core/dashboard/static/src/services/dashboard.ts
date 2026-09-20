@@ -46,17 +46,67 @@ export interface OverviewData {
   token_usage: { recent: TokenUsageItem[] };
 }
 
+/** 请求超时（毫秒）。code-review item 9985f4b5f79a：旧实现 fetch 无 signal/
+    timeout，后端挂起（daemon 重启/supervisor 排水/网络黑洞）时 Promise 永不
+    settle，UI 转圈无出路。长耗时端点目前无，统一 30s。 */
+const REQUEST_TIMEOUT_MS = 30000;
+
+/** API 错误：携带 HTTP 状态码与错误类别（code-review item e49991904b1f：
+    旧实现把所有失败压成裸 Error，调用方无法区分网络/鉴权/业务/服务端）。 */
+export class ApiError extends Error {
+  status: number;
+  kind: 'network' | 'timeout' | 'auth' | 'client' | 'server' | 'unknown';
+  constructor(message: string, status: number, kind: ApiError['kind']) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.kind = kind;
+  }
+}
+
+/** 后端错误体形状（code-review item e49991904b1f：此前 await res.json() 得 any）。 */
+interface ApiErrorBody {
+  error?: string;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, init);
+  // AbortController 超时（code-review item 9985f4b5f79a）。调用方自带 signal 时
+  // 与之共存：任一 abort 均生效。
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  let res: Response;
+  try {
+    res = await fetch(path, { ...init, signal: init?.signal ?? controller.signal });
+  } catch (e) {
+    // 网络失败 / 超时区分（e49991904b1f）
+    if (e instanceof DOMException && e.name === 'AbortError') {
+      throw new ApiError(`请求超时（>${REQUEST_TIMEOUT_MS / 1000}s）`, 0, 'timeout');
+    }
+    throw new ApiError(
+      `网络请求失败：${e instanceof Error ? e.message : String(e)}`,
+      0,
+      'network',
+    );
+  } finally {
+    clearTimeout(timer);
+  }
   if (!res.ok) {
     let msg = `HTTP ${res.status}`;
     try {
-      const body = await res.json();
+      const body = (await res.json()) as ApiErrorBody;
       if (body?.error) msg = body.error;
     } catch {
       // 非 JSON 错误体，保留 HTTP 状态码信息
     }
-    throw new Error(msg);
+    const kind: ApiError['kind'] =
+      res.status === 401 || res.status === 403
+        ? 'auth'
+        : res.status >= 500
+          ? 'server'
+          : res.status >= 400
+            ? 'client'
+            : 'unknown';
+    throw new ApiError(msg, res.status, kind);
   }
   // 部分端点（DELETE / 裸 POST）合法返回 204 或空体，此时 res.json() 会抛
   // SyntaxError 把成功调用误报为失败。按状态码与原文长度短路，空体统一返回
@@ -1165,7 +1215,13 @@ export interface ConfigData {
   /** evo-merge-back-wip-artifact-scope / fix-artifact-paths-hardcoded-default：
    构建产物路径（项目级可编辑）+ 三态标志（has_build_artifacts：undefined=未裁决 /
    true=有产物按路径判定 / false=已声明无产物） */
-  worktree?: { build_artifact_paths?: string[]; has_build_artifacts?: boolean };
+  // has_build_artifacts 三态（code-review item deed1f27d507）：后端
+  // worktree_config_view 恒发该键，未裁决取 None → JSON null（非 undefined），
+  // 故类型含 null。
+  worktree?: {
+    build_artifact_paths?: string[];
+    has_build_artifacts?: boolean | null;
+  };
   /** add-framework-self-evolution：自进化配置（auto_accept / max_items_per_run） */
   self_evolution?: SelfEvolutionConfig;
   /** add-code-review-agent-and-quality-tab：周期性代码审查（admin.code_review 两键，
@@ -1415,10 +1471,17 @@ export async function getOcrStatus(): Promise<OcrStatus> {
   return request<OcrStatus>(`/api/quality/ocr-status`);
 }
 
-export async function installOcr(): Promise<{ ok: boolean; version: string | null }> {
-  return request<{ ok: boolean; version: string | null }>(`/api/quality/ocr-install`, {
-    method: 'POST',
-  });
+export async function installOcr(): Promise<{
+  ok: boolean;
+  version: string | null;
+  error?: string | null;
+}> {
+  // 补 error 字段（code-review item 52c15fcd9bc1）：后端失败路径返回
+  // {ok:false, error:"…", version:null}，前端旧类型缺 error 使调用方无法透出原因。
+  return request<{ ok: boolean; version: string | null; error?: string | null }>(
+    `/api/quality/ocr-install`,
+    { method: 'POST' },
+  );
 }
 
 export async function autodraftVerifyYaml(

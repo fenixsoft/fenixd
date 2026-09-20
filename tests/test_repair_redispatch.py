@@ -64,8 +64,16 @@ class _Base(unittest.TestCase):
                 self.assertEqual(engine._dispatcher._run_queue, [])
                 engine._run_agent_worker.assert_called_once()
                 if expect_transition_called:
+                    # 派发点以**关键字**传来源上下文（fix-observability-gaps 2.2：
+                    # trigger_run_id / agent_type / channel 是时间轴重建该路径的
+                    # 唯一通道）；断言 MUST 与之一致——旧写法只给两个位置参数，
+                    # 与实际调用形态不符而恒失败（存量缺陷）。
                     engine.state_machine.transition.assert_called_once_with(
-                        "spec-a", "implementing"
+                        "spec-a",
+                        "implementing",
+                        trigger_run_id=None,
+                        agent_type="implementer",
+                        channel="auto",
                     )
 
     def test_implementing_dispatch_skips_same_state_transition(self):

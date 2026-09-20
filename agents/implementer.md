@@ -4,15 +4,15 @@
 2. 读取 {spec_dir}/tasks.md，找到下一个未勾选的任务。
 3. 实现该任务。编写真实的生产代码，不得写桩（stub）。
 4. 实现后运行项目测试，修复所有失败。
-   **全量回归 MUST 走有界入口**（fix-run-hang-amplification 3.3）：全量回归（``pytest tests/ -q``）**必须**通过 ``bin/run_full_suite.py --timeout 3600`` 执行，MUST NOT 裸调 ``pytest tests/ -q`` 无限等待。
-   有界入口以硬超时运行套件并启用 faulthandler，挂起时中止并输出挂起测试标识；超时/挂起时的失败按 ``--baseline <ref>`` 归类存量/引入（见设计文档）。裸调 ``pytest`` 无限等待在存量挂起时可烧穿全部预算。
+   - **全量回归 MUST 走有界入口**（fix-run-hang-amplification 3.3）：全量回归（``pytest tests/ -q``）**必须**通过 ``bin/run_full_suite.py --timeout 3600`` 执行，MUST NOT 裸调 ``pytest tests/ -q`` 无限等待。
+   - 有界入口以硬超时运行套件并启用 faulthandler，挂起时中止并输出挂起测试标识；超时/挂起时的失败按 ``--baseline <ref>`` 归类存量/引入（见设计文档）。裸调 ``pytest` 无限等待在存量挂起时可烧穿全部预算。
 5. 提交改动，提交信息格式：[fenix] {spec_name}: <任务描述>
 6. 在 tasks.md 中把该任务勾选为完成（- [x]）；收尾时逐项勾选所有已完成任务。
 7. 全部任务完成后，写文件 .fenix-run-result.json：
-   **结果文件落盘是刚性门控（不写=判失败）**——若 run 自然收工时该文件未落盘（或为空/非法 JSON），框架判本次 run **失败**并原地重派（整轮 token 重烧）。
-   **先落盘再深入**：全量套件回归 / 交付物核实之前，先写最小可判的结果文件；框架不解析回复正文，正文里的 JSON 不算交付。
+   - **结果文件落盘是刚性门控（不写=判失败）**。若 run 自然收工时该文件未落盘（或为空/非法 JSON），框架判本次 run **失败**并原地重派（整轮 token 重烧）。
+   - **先落盘再深入**：全量套件回归 / 交付物核实之前，先写最小可判的结果文件；框架不解析回复正文，正文里的 JSON 不算交付。结果文件的格式为：
    `{"status": "success", "spec": "{spec_name}", "summary": "<简要总结>", "completed_tasks": ["1.1", "2.3", "..."]}`
-   `completed_tasks` 数组 MUST 与 tasks.md 勾选一一对应：每个 `- [x]` 数字任务恰出现一次，禁止把多条任务归并为一个条目，禁止把分组（## 标题）当任务登记，禁止「先勾后做」。
+   其中 `completed_tasks` 数组 MUST 与 tasks.md 勾选一一对应：每个 `- [x]` 数字任务恰出现一次。禁止把多条任务归并为一个条目，禁止把分组（## 标题）当任务登记，禁止「先勾后做」。
 8. 若做不完（预算/环境原因），MUST 以 `status: "partial"` 收工并如实登记 `unfinished` 数组（未完成任务 id，每个 `- [ ]` 数字任务恰出现一次）， MUST NOT 用 success 掩盖未完成项：
    `{"status": "partial", "spec": "{spec_name}", "summary": "<简要总结>","completed_tasks": ["1.1"], "unfinished": ["4.5", "5.1"]}`
    若某错误尝试 3 次仍无法修复，写文件 .fenix-run-result.json：`{"status": "error", "spec": "{spec_name}", "error": "<错误描述>"}`

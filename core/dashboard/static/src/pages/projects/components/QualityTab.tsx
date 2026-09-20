@@ -58,6 +58,21 @@ interface QualityTabProps {
   active: boolean;
 }
 
+// 严重度排序权重（code-review item 2cde5d51a359）：spec 要求表格 MUST 支持按
+// 严重度/状态过滤**与排序**，但严重度/状态列此前均无 sorter。
+const SEVERITY_ORDER: Record<string, number> = {
+  critical: 0,
+  major: 1,
+  minor: 2,
+  info: 3,
+};
+const STATUS_ORDER: Record<string, number> = {
+  open: 0,
+  in_spec: 1,
+  resolved: 2,
+  ignored: 3,
+};
+
 const SEVERITY_COLOR: Record<string, string> = {
   critical: 'red',
   major: 'orange',
@@ -181,23 +196,39 @@ export default function QualityTab({ project, active }: QualityTabProps) {
   const [severityFilter, setSeverityFilter] = useState<string | undefined>();
   const [statusFilter, setStatusFilter] = useState<string | undefined>('open');
   const [progress, setProgress] = useState<CodeReviewProgress | null>(null);
-  const [polling, setPolling] = useState(false);
   const [generating, setGenerating] = useState(false);
+  // 触发/取消请求进行中的 pending 门控（code-review item 133cba8a5748）：旧实现
+  // 仅依据 progress 快照 disable 按钮、且 handleTrigger 只乐观写 runningRef 不
+  // 置 progress，在「新一轮 run 已开始 / run 刚结束」窗口内可重复触发或取消到
+  // 错误 review_id。用独立的 pending 态在这两个动作进行期间禁用按钮。
+  const [actionPending, setActionPending] = useState(false);
   const pollTimerRef = useRef<number | null>(null);
   const runningRef = useRef<boolean>(false);
+  // 请求序号守卫（code-review item 103bd502bd1e）：loadItems 会被 SSE 回调、
+  // 30s 心跳、轮询结束兜底与 filter 变化并发触发，较慢的早期响应会覆盖较新数据。
+  const loadSeqRef = useRef(0);
+  // 「已有任何数据」标记：后台刷新不置 loading，避免表格反复闪烁。
+  const loadedOnceRef = useRef(false);
 
   // ── 数据拉取（active 门控：未选中零请求） ────────────────────────
   const loadItems = useCallback(async () => {
     if (!active || !project) return;
+    const seq = ++loadSeqRef.current;
+    const firstLoad = !loadedOnceRef.current;
     try {
-      setLoading(true);
-      const statuses = statusFilter && statusFilter !== 'all' ? [statusFilter] : undefined;
+      // 仅首屏置 loading（code-review item 103bd502bd1e）：后台刷新不置，避免
+      // 表格在 SSE/心跳驱动下反复闪烁。
+      if (firstLoad) setLoading(true);
+      const statuses = statusFilter ? [statusFilter] : undefined;
       const data = await getCodeReviewItems(project, statuses);
+      if (seq !== loadSeqRef.current) return; // 过期响应丢弃（陈旧覆盖防护）
       setItems(data.items || []);
+      loadedOnceRef.current = true;
     } catch (e) {
+      if (seq !== loadSeqRef.current) return;
       message.error(`加载失败: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
-      setLoading(false);
+      if (firstLoad && seq === loadSeqRef.current) setLoading(false);
     }
   }, [active, project, statusFilter, message]);
 
@@ -233,27 +264,52 @@ export default function QualityTab({ project, active }: QualityTabProps) {
     }
   }, [active, project, loadItems]);
 
-  // 首次加载 + SSE 增量刷新订阅（随 /api/stream + 心跳兜底）
+  // 数据加载 effect（仅依赖 active/project/过滤条件）——与 SSE 订阅分离
+  // （code-review item 797015d4ba47）：旧实现把 SSE/心跳与数据拉取放在同一
+  // effect 且依赖 loadItems/loadProgress（二者又依赖 statusFilter），切换状态
+  // 过滤时会重建 EventSource、重建心跳、清掉进度轮询，既造成连接抖动（/api/stream
+  // 有连接数上限）也可能重置轮询状态机。
+  useEffect(() => {
+    if (!active || !project) return;
+    void loadItems();
+    void loadProgress();
+  }, [active, project, loadItems, loadProgress]);
+
+  // SSE 增量刷新订阅 + 心跳兜底（仅依赖 active/project，转义为 ref 读取最新 loader）
+  const loadItemsRef = useRef(loadItems);
+  const loadProgressRef = useRef(loadProgress);
+  useEffect(() => {
+    loadItemsRef.current = loadItems;
+    loadProgressRef.current = loadProgress;
+  }, [loadItems, loadProgress]);
+
   useEffect(() => {
     if (!active || !project) return;
     let disposed = false;
-    void loadItems();
-    void loadProgress();
 
     const es = new EventSource('/api/stream');
     es.onmessage = (ev: MessageEvent) => {
       if (disposed) return;
-      let msg: { type?: string } = {};
+      let msg: { type?: string; project?: string } = {};
       try {
         msg = JSON.parse(ev.data);
       } catch {
         return;
       }
-      // code-review 相关事件（run 完成/状态流转）→ 刷新表格与进度；
-      // 无专用事件时由心跳/轮询兜底（loadProgress 内轮询 + 此处兜底刷新）
-      if (msg.type === 'code_review_updated' || msg.type === 'code_review_run_done') {
-        void loadItems();
-        void loadProgress();
+      // 订阅**后端真实存在**的事件（code-review item 1354814ba4bf）：旧实现监听
+      // `code_review_updated` / `code_review_run_done`，但 core/dashboard/watcher.py
+      // 只会广播 refresh / state / detail / run_events / run_meta / admin_activities
+      // ——这两个事件全仓不存在，该「随 SSE 增量刷新」链路实际永不触发，数据新鲜度
+      // 完全依赖 2s 轮询与 30s 心跳（心跳窗口内审查结果不刷新）。改为：
+      // - `state`（watcher 的状态增量）中匹配本 project 的帧 → 刷新；
+      // - `run_meta`（状态转换，低频）→ 刷新；
+      // - 全局 `refresh` 心跳不在此消费（由下方 30s 心跳兜底，避免每 2s 全量重拉）。
+      if (
+        (msg.type === 'state' || msg.type === 'run_meta') &&
+        (!msg.project || msg.project === project)
+      ) {
+        void loadItemsRef.current();
+        void loadProgressRef.current();
       }
     };
     es.onerror = () => {
@@ -264,8 +320,8 @@ export default function QualityTab({ project, active }: QualityTabProps) {
     // 表格刷新——事件流不可达时数据仍保持新鲜）
     const heartbeat = window.setInterval(() => {
       if (!disposed) {
-        void loadItems();
-        void loadProgress();
+        void loadItemsRef.current();
+        void loadProgressRef.current();
       }
     }, 30000);
 
@@ -278,7 +334,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
         pollTimerRef.current = null;
       }
     };
-  }, [active, project, loadItems, loadProgress]);
+  }, [active, project]);
 
   // 未激活时清理轮询
   useEffect(() => {
@@ -292,6 +348,8 @@ export default function QualityTab({ project, active }: QualityTabProps) {
   // ── 手动触发按钮（5.4） ────────────────────────────────────────
   const handleTrigger = async (scope: 'full' | 'window') => {
     const label = scope === 'full' ? '全仓库审查' : '当期提交审查';
+    if (actionPending) return; // pending 门控（code-review item 133cba8a5748）
+    setActionPending(true);
     try {
       await triggerCodeReview(project, scope);
       message.success(`${label} 已受理，daemon 将开始执行`);
@@ -306,17 +364,28 @@ export default function QualityTab({ project, active }: QualityTabProps) {
       } else {
         message.error(`${label}失败: ${errMsg}`);
       }
+    } finally {
+      setActionPending(false);
     }
   };
 
   // ── 取消（5.5） ───────────────────────────────────────────────
   const handleCancel = async () => {
-    if (!progress?.review_id) return;
+    // review_id 为空时给出可见反馈而非静默 return（code-review item 133cba8a5748：
+    // 旧实现在按钮已渲染（progress.running 为真）却 review_id 缺失时什么都不做）。
+    if (!progress?.review_id) {
+      message.warning('进度信息尚未就绪（缺 review_id），请稍后重试');
+      return;
+    }
+    if (actionPending) return;
+    setActionPending(true);
     try {
       await cancelRun(project, progress.review_id);
       message.success('已受理取消请求，审查将停止');
     } catch (e) {
       message.error(`取消失败: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setActionPending(false);
     }
   };
 
@@ -445,10 +514,40 @@ export default function QualityTab({ project, active }: QualityTabProps) {
     });
   };
 
+  // 选中项与可见行求交（code-review item 01f6207c6b11）：忽略/清除归属/后端流转
+  // 为 resolved/in_spec、或切换严重度/状态过滤后，旧选中 key 会残留为「幽灵
+  // 选中」，使「已选 N 条」计数错误、并把不可见/已失效 item_id 提交给后端。
+  useEffect(() => {
+    setSelectedKeys((prev) => {
+      const visible = new Set(items.map((it) => String(it.item_id)));
+      const next = prev.filter((k) => visible.has(String(k)));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [items]);
+
+  // 行操作渲染（code-review item ca92db5ea623 抽三元）：把原嵌套三元改为早返回。
+  const renderOps = (rec: CodeReviewItem) => {
+    if (rec.status === 'in_spec') {
+      return (
+        <Button size="small" type="link" onClick={() => void handleClearAttribution(rec)}>
+          清除归属
+        </Button>
+      );
+    }
+    if (rec.status === 'open') {
+      return (
+        <Button size="small" type="link" danger onClick={() => void handleIgnore(rec)}>
+          忽略
+        </Button>
+      );
+    }
+    return null;
+  };
+
   const filteredItems = items.filter(
     (it) =>
       (!severityFilter || it.severity === severityFilter) &&
-      (!statusFilter || statusFilter === 'all' || it.status === statusFilter),
+      (!statusFilter || it.status === statusFilter),
   );
 
   const columns: ColumnsType<CodeReviewItem> = [
@@ -457,6 +556,9 @@ export default function QualityTab({ project, active }: QualityTabProps) {
       dataIndex: 'severity',
       key: 'severity',
       width: 90,
+      // critical > major > minor > info（code-review item 2cde5d51a359）
+      sorter: (a: CodeReviewItem, b: CodeReviewItem) =>
+        (SEVERITY_ORDER[a.severity] ?? 9) - (SEVERITY_ORDER[b.severity] ?? 9),
       render: (sev: string) => <Tag color={SEVERITY_COLOR[sev] || 'default'}>{sev}</Tag>,
     },
     {
@@ -469,6 +571,8 @@ export default function QualityTab({ project, active }: QualityTabProps) {
       dataIndex: 'status',
       key: 'status',
       width: 100,
+      sorter: (a: CodeReviewItem, b: CodeReviewItem) =>
+        (STATUS_ORDER[a.status] ?? 9) - (STATUS_ORDER[b.status] ?? 9),
       render: (status: string) => (
         <Tag color={STATUS_COLOR[status] || 'default'}>{STATUS_TEXT[status] || status}</Tag>
       ),
@@ -477,16 +581,8 @@ export default function QualityTab({ project, active }: QualityTabProps) {
       title: '操作',
       key: 'ops',
       width: 130,
-      render: (_: unknown, rec: CodeReviewItem) =>
-        rec.status === 'in_spec' ? (
-          <Button size="small" type="link" onClick={() => void handleClearAttribution(rec)}>
-            清除归属
-          </Button>
-        ) : rec.status === 'open' ? (
-          <Button size="small" type="link" danger onClick={() => void handleIgnore(rec)}>
-            忽略
-          </Button>
-        ) : null,
+      // 嵌套三元抽出为具名函数（code-review item ca92db5ea623）
+      render: (_: unknown, rec: CodeReviewItem) => renderOps(rec),
     },
   ];
 
@@ -540,10 +636,18 @@ export default function QualityTab({ project, active }: QualityTabProps) {
           {/* 两个触发按钮同为默认样式（用户要求样式一致）；
               「生成修复 SPEC」保持 primary（主操作按钮）；
               「全部忽略」为 primary + danger（红底白字，用户 2026-09-20 要求） */}
-          <Button disabled={progress?.running} onClick={() => void handleTrigger('full')}>
+          <Button
+            disabled={progress?.running || actionPending}
+            loading={actionPending}
+            onClick={() => void handleTrigger('full')}
+          >
             全仓库审查
           </Button>
-          <Button disabled={progress?.running} onClick={() => void handleTrigger('window')}>
+          <Button
+            disabled={progress?.running || actionPending}
+            loading={actionPending}
+            onClick={() => void handleTrigger('window')}
+          >
             当期提交审查
           </Button>
           <Button
@@ -574,7 +678,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
               <Typography.Text strong>
                 审查进行中（{progress.review_kind || 'code-review'}）
               </Typography.Text>
-              <Button size="small" onClick={() => void handleCancel()}>
+              <Button size="small" loading={actionPending} onClick={() => void handleCancel()}>
                 取消
               </Button>
             </Space>

@@ -51,12 +51,13 @@ import logging
 import os
 import re
 import subprocess
-import time
 from pathlib import Path
 from typing import Iterable, List
 
-# 模块级 logger（add-declaration-relocation-protocol D1，统一审计留痕入口）
-_resolution_logger = logging.getLogger("fenixd.deliverables")
+# 模块级 logger（add-declaration-relocation-protocol D1，统一审计留痕入口）。
+# 实际绑定在 _LenientLogAdapter 类定义之后设置（见文件下方），此处的中间
+# binding 属死赋值（code-review item 98e2c3152572：定义后立即被覆写、中间
+# 从未被读），已删除以免同名两处定义造成误导。
 
 
 class _LenientLogAdapter:
@@ -283,7 +284,12 @@ def extract_paths_typed(spec_dir) -> dict:
     """
     root = Path(spec_dir)
     typed: dict = {"deliverables": [], "references": []}
-    seen: set[str] = set()
+    # 去重按 (ctx, path) 分别记账（code-review item f54b4ca2f11a）：旧实现用
+    # 单一全局 seen，先出现的语境「赢」并压制另一语境——tasks.md 中同路径的
+    # 「实现依据」引用行若先于勾选/新增行出现，该路径**永不进入 deliverables**，
+    # 把硬校验交付物静默降级为软审计（正是本模块要防的假成功）。docstring 早已
+    # 声明两类「各自去重」，此处对齐语义。
+    seen: dict[str, set] = {"deliverables": set(), "references": set()}
 
     for doc in _iter_spec_documents(root):
         rel = doc.relative_to(root).as_posix() if doc.is_relative_to(root) else doc.name
@@ -329,9 +335,9 @@ def extract_paths_typed(spec_dir) -> dict:
                 tokens = [_normalize_token(t) for t in _candidates_from_line(raw_line)]
 
             for cand in tokens:
-                if not _is_deliverable_path(cand) or cand in seen:
+                if not _is_deliverable_path(cand) or cand in seen[ctx]:
                     continue
-                seen.add(cand)
+                seen[ctx].add(cand)
                 typed[ctx].append(cand)
 
     return typed
@@ -837,6 +843,10 @@ def check_declaration_shrinkage(
     Args:
         baseline: ``load_declaration_baseline`` 返回的快照 dict（或 None）。
         effective: 生效声明 typed dict（{"deliverables": [...], "references": [...]}）。
+            注（code-review item 8684d6381442）：本函数当前只消费条目级的
+            ``effective_entries``（含 kind，可表达 bucket 降级），typed dict
+            保留在签名内仅为调用点稳定（branch_guard 已解析出该结构）；
+            判定不读它的两个 bucket。如需按 bucket 语义细分，可在此消费。
         effective_entries: 生效声明条目级 [{"path", "kind"}]。
         branch: 实现分支名（分支 HEAD 满足性判定基准）。
         project_root: 项目根（凭据/软化审计读取基准）。
@@ -1380,10 +1390,13 @@ def soften_unsatisfiable_declarations(spec_dir, project_root) -> list:
         if e.get("kind") == "delete":
             # 防洗白：delete 的软化在语义上就是错的（降级为仅审计 = 删除要求
             # 静默消失），lint 规则 7-10 已拒绝其不可交付形态；此处防御性跳过
-            # 并留痕，防止未来新增软化路径时无声破防。
-            print(
-                f"WARNING: 软化跳过 delete 声明 {path}（防洗白：delete 不参与"
-                f"软化，见 add-deliverable-delete-kind D4）"
+            # 并留痕，防止未来新增软化路径时无声破防。经 _resolution_logger
+            # 而非裸 print（code-review item cece1d891e31）：daemon 下 stdout
+            # 通常被重定向/不捕获，防洗白留痕在审计最需要处会丢失。
+            _resolution_logger.warning(
+                "deliverables",
+                f"软化跳过 delete 声明 {path}（防洗白：delete 不参与"
+                f"软化，见 add-deliverable-delete-kind D4）",
             )
             continue
         if not classify_unsatisfiable(e, project_root):
@@ -1404,7 +1417,11 @@ def soften_unsatisfiable_declarations(spec_dir, project_root) -> list:
             soften_declared_kind(spec_dir, path)
         except Exception as exc:
             # 单条改写失败：跳过该条记 warning，交由后续 lint 照常拒绝兜底
-            print(f"WARNING: 软化声明 {path} 失败（跳过，lint 兜底）: {exc}")
+            # （经 _resolution_logger，理由同上方 delete 跳过分支）。
+            _resolution_logger.warning(
+                "deliverables",
+                f"软化声明 {path} 失败（跳过，lint 兜底）: {exc}",
+            )
             continue
         softened.append(
             {

@@ -17,7 +17,10 @@ DEFAULT_GATEWAY_MODEL 随 `_get_admin_model` 同迁本模块（D2b 规则 3）�
 均由 runner.py re-export（D2b 规则 4）。
 """
 
+import fcntl
 import json
+import os
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -242,11 +245,16 @@ def run_administrator(runner, signal: dict) -> AdminDisposition:
         failure_evidence = _admin_failure_evidence(runner, run_id, e)
         # fix-admin-disposition-empty-shell：失败不再静默——WARNING 携带 run_id
         # 与异常文本，保证 `grep "Administrator run"` 可一次检索全部失败。
-        runner.logger.warning(
-            "agent_runner",
-            f"Administrator run {run_id} failed: {error}",
-            {"run_id": run_id, "error": error, "failure_evidence": failure_evidence},
-        )
+        # logger 判空（code-review item b1d40b9afa56）：本处位于 except 中，
+        # logger 缺失/为 None 会抛 AttributeError 把真正失败归因整体吞掉；
+        # 与本文件其它调用点（run_code_review/run_evolution）统一用 getattr 判空。
+        _log = getattr(runner, "logger", None)
+        if _log is not None:
+            _log.warning(
+                "agent_runner",
+                f"Administrator run {run_id} failed: {error}",
+                {"run_id": run_id, "error": error, "failure_evidence": failure_evidence},
+            )
 
     disp = runner._read_admin_disposition(disp_path)
     # 读取即清理自身实例文件：内容已捕获进 AdminDisposition 返回给调用方落
@@ -481,6 +489,74 @@ def _read_self_review_out(out_path: Path) -> dict:
     return data
 
 
+def _append_token_run(tokens_json: Path, entry: dict) -> None:
+    """向 token 归账文件的 ``runs`` 数组追加一条记录（flock + 原子替换）。
+
+    三个归账函数（self-review / evolution / code-review）共用同一段读-改-写
+    逻辑，且各自无锁重写——两个运维 run 并发收尾（daemon 检查点在 worker 线程
+    投递）时后写者会覆盖前者的 ``runs`` 追加，token 记录静默丢失
+    （code-review item d1836827425e）。此处提取为公共助手：以
+    ``.<name>.lock`` 做 fcntl.flock 互斥、以 tempfile + fsync + os.replace
+    原子落盘（同 core/code_review._with_lock/_atomic_write 手法），彻底消除
+    并发覆盖与半写。写失败静默降级（观测增强，不阻断主流程）。
+    """
+    try:
+        tokens_json.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = tokens_json.parent / f".{tokens_json.name}.lock"
+        with open(lock_path, "w") as lock_f:
+            fcntl.flock(lock_f, fcntl.LOCK_EX)
+            try:
+                data = {}
+                if tokens_json.is_file():
+                    try:
+                        loaded = json.loads(tokens_json.read_text(encoding="utf-8"))
+                    except (OSError, json.JSONDecodeError):
+                        loaded = {}
+                    if isinstance(loaded, dict):
+                        data = loaded
+                runs = data.get("runs")
+                if not isinstance(runs, list):
+                    runs = []
+                runs.append(entry)
+                data["runs"] = runs
+                content = json.dumps(data, ensure_ascii=False, indent=2)
+                # 原子替换：进程唯一临时名 + fsync + os.replace
+                fd, tmp_str = tempfile.mkstemp(
+                    prefix=f".{tokens_json.name}.", suffix=".tmp",
+                    dir=str(tokens_json.parent),
+                )
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as f:
+                        f.write(content)
+                        f.flush()
+                        os.fsync(f.fileno())
+                    os.replace(tmp_str, str(tokens_json))
+                finally:
+                    tmp_path = Path(tmp_str)
+                    if tmp_path.exists():
+                        try:
+                            tmp_path.unlink()
+                        except OSError:
+                            pass
+            finally:
+                fcntl.flock(lock_f, fcntl.LOCK_UN)
+    except (OSError, json.JSONDecodeError):
+        pass
+
+
+def _token_usage_fields(usage_info: dict) -> dict:
+    """把 usage_info 归整为归账记录的 token 字段（input 含三类 cache）。"""
+    if not isinstance(usage_info, dict):
+        usage_info = {}
+    return {
+        "input_tokens": int(usage_info.get("input_tokens", 0) or 0)
+        + int(usage_info.get("cache_creation_input_tokens", 0) or 0)
+        + int(usage_info.get("cache_read_input_tokens", 0) or 0),
+        "output_tokens": int(usage_info.get("output_tokens", 0) or 0),
+        "cost_usd": usage_info.get("cost_usd"),
+    }
+
+
 def _accumulate_self_review_tokens(runner, date_str: str, usage_info: dict) -> None:
     """add-daily-self-review：自省 token 归账到 cost-observability 独立类目。
 
@@ -488,41 +564,16 @@ def _accumulate_self_review_tokens(runner, date_str: str, usage_info: dict) -> N
     ``.fenix/cost/self_review_tokens.json`` 的 runs 数组（与
     verify-progress tokens.json 同结构），供成本对账口径一致；不写
     STATE（禁止注册 STATE 条目硬约束）。写失败静默降级（观测增强，
-    不阻断自省主流程）。
+    不阻断自省主流程）。写路径走 _append_token_run（flock + 原子替换）。
     """
-    if not isinstance(usage_info, dict):
-        usage_info = {}
-    cost_dir = runner.project_root / ".fenix" / "cost"
-    tokens_json = cost_dir / "self_review_tokens.json"
-    try:
-        tokens_json.parent.mkdir(parents=True, exist_ok=True)
-        data = {}
-        if tokens_json.is_file():
-            try:
-                loaded = json.loads(tokens_json.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                loaded = {}
-            if isinstance(loaded, dict):
-                data = loaded
-        runs = data.get("runs")
-        if not isinstance(runs, list):
-            runs = []
-        runs.append(
-            {
-                "agent_type": "self-review",
-                "date": date_str,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "input_tokens": int(usage_info.get("input_tokens", 0) or 0)
-                + int(usage_info.get("cache_creation_input_tokens", 0) or 0)
-                + int(usage_info.get("cache_read_input_tokens", 0) or 0),
-                "output_tokens": int(usage_info.get("output_tokens", 0) or 0),
-                "cost_usd": usage_info.get("cost_usd"),
-            }
-        )
-        data["runs"] = runs
-        tokens_json.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    except (OSError, json.JSONDecodeError):
-        pass
+    tokens_json = runner.project_root / ".fenix" / "cost" / "self_review_tokens.json"
+    entry = {
+        "agent_type": "self-review",
+        "date": date_str,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        **_token_usage_fields(usage_info),
+    }
+    _append_token_run(tokens_json, entry)
 
 
 # ── 框架自进化 run（add-framework-self-evolution spec，design D2） ──
@@ -619,11 +670,17 @@ def run_evolution(
 
             try:
                 contract = read_contract(out_path)
-                runner._delete_evolution_out(out_path)
             except ContractError as e:
                 run_ok = False
                 error = str(e)
                 contract = None
+            finally:
+                # 清理移入 finally（code-review item 2417c0bb0bf9）：read_contract
+                # 抛 ContractError 或落地 import 失败时旧实现不执行
+                # _delete_evolution_out，产物残留 .fenix/evolution/ 累积垃圾
+                # （与方法 docstring「run 结束读取并清理」不符）。finally 保证
+                # 无论读写成败都清理本 run 的产物文件。
+                runner._delete_evolution_out(out_path)
         except Exception as e:
             # 落地异常不应穿透（检查点统一捕获）；整轮视为失败带原因
             run_ok = False
@@ -670,41 +727,17 @@ def _accumulate_evolution_tokens(runner, run_id: str, usage_info: dict) -> None:
 
     design D2 二选一：追加到 ``.fenix/cost/self_review_tokens.json`` 的
     runs 数组（与 verify-progress tokens.json 同结构），agent_type 标注
-    ``evolution`` 以便成本对账区分。写失败静默降级（观测增强，不阻断）。
+    ``evolution`` 以便成本对账区分。写路径走 _append_token_run（flock +
+    原子替换），与 self-review/code-review 共用，消除并发覆盖。
     """
-    if not isinstance(usage_info, dict):
-        usage_info = {}
-    cost_dir = runner.project_root / ".fenix" / "cost"
-    tokens_json = cost_dir / "self_review_tokens.json"
-    try:
-        tokens_json.parent.mkdir(parents=True, exist_ok=True)
-        data = {}
-        if tokens_json.is_file():
-            try:
-                loaded = json.loads(tokens_json.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                loaded = {}
-            if isinstance(loaded, dict):
-                data = loaded
-        runs = data.get("runs")
-        if not isinstance(runs, list):
-            runs = []
-        runs.append(
-            {
-                "agent_type": "evolution",
-                "date": run_id,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "input_tokens": int(usage_info.get("input_tokens", 0) or 0)
-                + int(usage_info.get("cache_creation_input_tokens", 0) or 0)
-                + int(usage_info.get("cache_read_input_tokens", 0) or 0),
-                "output_tokens": int(usage_info.get("output_tokens", 0) or 0),
-                "cost_usd": usage_info.get("cost_usd"),
-            }
-        )
-        data["runs"] = runs
-        tokens_json.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    except (OSError, json.JSONDecodeError):
-        pass
+    tokens_json = runner.project_root / ".fenix" / "cost" / "self_review_tokens.json"
+    entry = {
+        "agent_type": "evolution",
+        "date": run_id,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        **_token_usage_fields(usage_info),
+    }
+    _append_token_run(tokens_json, entry)
 
 
 def _get_admin_model(runner) -> str:
@@ -857,7 +890,10 @@ def run_code_review(
             run_ok = False
             error = f"读取审查产物失败: {e}"
             findings = []
-        if run_ok and findings is not None:
+        # `_read_code_review_out` 所有返回路径都是 list（缺失文件返回 []），
+        # 旧写法 `findings is not None` 是恒真判断（code-review item d315670fb35f），
+        # 会误导读者以为存在 None 返回路径。直接判 run_ok。
+        if run_ok:
             try:
                 stats = upsert_findings(
                     runner.project_root,
@@ -873,13 +909,41 @@ def run_code_review(
                 error = f"审查落账异常: {e}"
             if run_ok and review_kind == "manual_full":
                 # 全仓快照核销：本轮未再观测到的 open 项置 resolved（D5）。
-                # findings 为空（agent 未产出审查结果）时 MUST NOT 执行核销——
-                # 空集核销会把全部 open 项置 resolved = 误核销白洗，违反设计
-                # 「空场景/空 manifest 白洗」risk 缓解。
+                # 空集保护（code-review item 69166b2235fd）：旧实现以 `if findings:`
+                # 为门，但 `observed` 取的 `fingerprint` 字段 agent 从不产出（指纹由
+                # upsert_findings 内部按 sha1(file|category|normalize_title) 现算），
+                # 故常态是 findings 非空而 observed 为空集 → resolve_snapshot(root, set())
+                # 会把台账**全部 open 置 resolved**（正是注释声明 MUST 避免的空集核销
+                # 白洗）。改为在框架侧按**同一指纹口径**补算 observed，并以「observed
+                # 非空」为最终门：既修复常态白洗，也保住「一条条目都没审出」时跳过核销。
                 if findings:
                     try:
-                        observed = {f["fingerprint"] for f in findings if isinstance(f, dict) and f.get("fingerprint")}
-                        resolved = resolve_snapshot(runner.project_root, observed)
+                        from core.code_review import fingerprint as _cr_fingerprint
+
+                        observed = set()
+                        for _f in findings:
+                            if not isinstance(_f, dict):
+                                continue
+                            _fp = _f.get("fingerprint")
+                            if not _fp:
+                                _file = str(_f.get("file") or "")
+                                _cat = str(_f.get("category") or "")
+                                _title = str(_f.get("title") or "")
+                                if _file and _title:
+                                    _fp = _cr_fingerprint(_file, _cat, _title)
+                            if _fp:
+                                observed.add(_fp)
+                        if observed:
+                            resolved = resolve_snapshot(runner.project_root, observed)
+                        else:
+                            _log = getattr(runner, "logger", None)
+                            if _log is not None:
+                                _log.warning(
+                                    "code-review",
+                                    f"全仓快照核销跳过（run {run_id}）：本轮无可归一的"
+                                    f"指纹（{len(findings)} 条 finding 缺 file/title），"
+                                    f"拒绝空集核销以免误置全部 open 为 resolved",
+                                )
                     except Exception:  # noqa: BLE001 — 核销失败记 WARNING 不使整轮失败
                         _log = getattr(runner, "logger", None)
                         if _log is not None:
@@ -957,38 +1021,13 @@ def _accumulate_code_review_tokens(runner, run_id: str, usage_info: dict) -> Non
 
     追加到 ``.fenix/cost/code_review_tokens.json`` 的 runs 数组（与
     self_review_tokens.json 同结构），供成本对账口径一致；不写 STATE
-    （审查 run 无 spec 维度）。写失败静默降级（观测增强，不阻断）。
+    （审查 run 无 spec 维度）。写路径走 _append_token_run（flock + 原子替换）。
     """
-    if not isinstance(usage_info, dict):
-        usage_info = {}
-    cost_dir = runner.project_root / ".fenix" / "cost"
-    tokens_json = cost_dir / "code_review_tokens.json"
-    try:
-        tokens_json.parent.mkdir(parents=True, exist_ok=True)
-        data = {}
-        if tokens_json.is_file():
-            try:
-                loaded = json.loads(tokens_json.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                loaded = {}
-            if isinstance(loaded, dict):
-                data = loaded
-        runs = data.get("runs")
-        if not isinstance(runs, list):
-            runs = []
-        runs.append(
-            {
-                "agent_type": "code-review",
-                "date": run_id,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "input_tokens": int(usage_info.get("input_tokens", 0) or 0)
-                + int(usage_info.get("cache_creation_input_tokens", 0) or 0)
-                + int(usage_info.get("cache_read_input_tokens", 0) or 0),
-                "output_tokens": int(usage_info.get("output_tokens", 0) or 0),
-                "cost_usd": usage_info.get("cost_usd"),
-            }
-        )
-        data["runs"] = runs
-        tokens_json.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    except (OSError, json.JSONDecodeError):
-        pass
+    tokens_json = runner.project_root / ".fenix" / "cost" / "code_review_tokens.json"
+    entry = {
+        "agent_type": "code-review",
+        "date": run_id,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        **_token_usage_fields(usage_info),
+    }
+    _append_token_run(tokens_json, entry)

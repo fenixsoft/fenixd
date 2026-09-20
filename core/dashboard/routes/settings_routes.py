@@ -8,7 +8,6 @@ D5 约定：各组方法采用 mixin 模式，DashboardHandler 继承各组 mixi
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import yaml
@@ -16,7 +15,6 @@ import yaml
 from core.dashboard import data as dashboard_data
 from core.dashboard.ocr_status import check_ocr_installed, install_ocr
 from core.admin_store import AdminStore, SIGNAL  # noqa: E402
-from core.dashboard.registry import Registry
 from core.agent_runner.prompt_builder import (
     AGENT_PROMPT_DIR,
     AGENT_PROMPT_FILES,
@@ -182,8 +180,16 @@ class H5SettingsRoutesMixin:
             self._error(400, "content 必须为字符串（自由 Markdown，不做 schema 校验）")
             return
         target = agents_dir / AGENT_PROMPT_FILES[agent_type]
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
+        # 写失败（只读 checkout/权限/磁盘满）转可读 500（code-review item
+        # 767838aa8f46）：旧实现让 mkdir/write_text 的 OSError 逃到通用分派
+        # handler，产出不透明的 "Internal Server Error: ..."，与同文件
+        # todo.md / verify.yaml 写者（均 try/except OSError → 可读 500）不一致。
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+        except OSError as e:
+            self._error(500, f"提示词写入失败: {e}")
+            return
         self._json({"ok": True, "agent_type": agent_type, "path": str(target)})
 
 
@@ -312,7 +318,14 @@ class H5SettingsRoutesMixin:
         模板单一来源 = core/verify_contract_template.yaml（fenix-init 生成、
         setup skill 复制均引用同一文件）；全部配置行注释 = 惰性 YAML。
         """
-        template = Path(__file__).resolve().parents[2] / "verify_contract_template.yaml"
+        # FRAMEWORK_ROOT 单一来源（code-review item 19f4609a3160）：旧实现经
+        # `Path(__file__).resolve().parents[2]` 从子模块反推仓库布局（routes →
+        # dashboard → core），与 server.FRAMEWORK_ROOT 重复且在模块搬迁时易漂移；
+        # 复用 server 暴露的常量（其它 route 模块亦如此惰性解析），并保持对
+        # monkeypatch FRAMEWORK_ROOT 的测试缝一致。
+        from core.dashboard import server as _server_mod
+
+        template = _server_mod.FRAMEWORK_ROOT / "core" / "verify_contract_template.yaml"
         try:
             content = template.read_text(encoding="utf-8")
         except OSError as e:
@@ -365,14 +378,33 @@ class H5SettingsRoutesMixin:
             evidence_detail += "; 覆盖确认=是"
         # 在途去重（D2）：同项目同 signal_type 未消费信号已存在 → 不重复写。
         # 异类型互不抑制（missing 在途不挡 redraft——契约被修正后确认覆盖是新意图）；
-        # 已 handled 的历史信号不抑制（用户可再次请求）。
+        # 已被巡检拾取（escalated）或已 handled 的历史信号不抑制（用户可再次请求）。
+        # code-review item ff064d68996f：`handled=True` 生产上只对 kind=ESCALATION
+        # 写入（AdminStore 各 mark_* 均先判 kind == ESCALATION），而 SIGNAL 记录
+        # 恒 handled=False——单凭 `not handled` 判「在途」会让「一旦写过一条该类型
+        # 信号就永久去重」：Administrator 早已起草完成后用户再点仍被拒。故在途
+        # 定义收紧为「未被巡检拾取（not escalated）且未 handled」，已被拾取的记录
+        # 不再抑制新的用户请求。
+        # 项目名匹配 MUST 用显式分隔而非裸子串（code-review item dd98b4dea114）：
+        # 旧实现 `f"项目名={name}" in evidence`，当项目名是另一个在途信号项目名的
+        # **前缀**时（`项目名=proj` 命中 `项目名=proj2; 覆盖确认=是`）会误判在途，
+        # 端点回 dispatched 却不写信号——用户等一个永不会来的草稿。改写为按字段
+        # 解析：取 `项目名=` 到下一个 `;` 之间的值做**全等**比较。
+        def _evidence_project(ev: str) -> str:
+            for seg in (ev or "").split(";"):
+                seg = seg.strip()
+                if seg.startswith("项目名="):
+                    return seg[len("项目名="):].strip()
+            return ""
+
         inflight = [
             r
             for r in store.read_all()
             if r.get("kind") == SIGNAL
             and r.get("signal_type") == signal_type
             and not r.get("handled")
-            and f"项目名={project['name']}" in (r.get("evidence") or "")
+            and not r.get("escalated")
+            and _evidence_project(r.get("evidence")) == project["name"]
         ]
         if inflight:
             self._json(

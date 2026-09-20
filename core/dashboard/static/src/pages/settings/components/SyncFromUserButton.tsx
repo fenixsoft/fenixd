@@ -1,19 +1,12 @@
-import { Button, Modal, message } from 'antd';
+import { App, Button } from 'antd';
 import { syncConfigFromUser } from '@/services/dashboard';
 import type { ConfigData } from '@/services/dashboard';
 
-// 页标识 → 页签名（确认弹窗文案用），与 settings/index.tsx 菜单 key 对齐
-const PAGE_LABELS: Record<string, string> = {
-  llm: '模型',
-  agents: '模型分配',
-  parallel: '并行',
-  token: '预算',
-  verify: '验证',
-  quality: '质量',
-  approval: '审批',
-  misc: '归档',
-  system: '系统',
-};
+// 页标识 → 页签名：单一来源取 settings/index.tsx 的 BASE_MENU_ITEMS
+// （code-review item e0b8f3aefec7：旧实现是手工副本，页签增删/改名会漂移；
+// 且 `?? page` 回退会把内部 key 暴露到用户可见弹窗）。此处集中导入并在回退
+// 分支给出可控提示而非裸 key。
+import { PAGE_LABELS } from '../index';
 
 interface SyncFromUserButtonProps {
   /** 当前项目名（项目级作用域才渲染本按钮） */
@@ -30,10 +23,15 @@ interface SyncFromUserButtonProps {
  * 的设置值（后端 _SYNC_PAGE_KEYS 白名单），其它页签与项目级特有键不受影响。
  */
 export default function SyncFromUserButton({ project, page, onSynced }: SyncFromUserButtonProps) {
-  const pageLabel = PAGE_LABELS[page] ?? page;
+  // 消费 App 上下文（code-review item 633923ee6b0b）：静态 Modal/message 无法
+  // 消费 <AntdApp> 上下文，会与 App.useApp() 页面产生主题/locale 不一致并在开发
+  // 环境触发 antd 静态方法告警。
+  const { message, modal } = App.useApp();
+  // 回退不再直接暴露内部 key（code-review item e0b8f3aefec7）
+  const pageLabel = PAGE_LABELS[page] ?? '当前页签';
 
   const handleClick = () => {
-    Modal.confirm({
+    modal.confirm({
       title: '同步用户级设置',
       content: (
         <div style={{ whiteSpace: 'pre-wrap' }}>
@@ -45,12 +43,22 @@ export default function SyncFromUserButton({ project, page, onSynced }: SyncFrom
       okButtonProps: { danger: true },
       cancelText: '取消',
       onOk: async () => {
+        let config: ConfigData;
         try {
-          const config = await syncConfigFromUser(project, page);
+          config = await syncConfigFromUser(project, page);
           message.success(`已同步用户级「${pageLabel}」设置到项目「${project}」`);
-          onSynced(config);
         } catch (err) {
           message.error(`同步失败：${err instanceof Error ? err.message : String(err)}`);
+          // 失败时 reject 让弹窗保持打开（用户可直接重试，无需重新打开）
+          // （code-review item 689fe8681e9a）
+          throw err;
+        }
+        // 后端已写盘成功，回填回调移出 try（code-review item 689fe8681e9a）：
+        // 旧实现把 onSynced 放在同一 try，回调抛错会被误报为「同步失败」。
+        try {
+          onSynced(config);
+        } catch (e) {
+          message.warning(`同步成功但刷新失败：${e instanceof Error ? e.message : String(e)}`);
         }
       },
     });

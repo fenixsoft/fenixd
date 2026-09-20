@@ -43,21 +43,64 @@ def test_removed_default_symbols_no_longer_exist():
 
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     forbidden = ["_matches_default", "_DEFAULT_STATIC_ROOT", "DEFAULT_ARTIFACT_PREFIXES"]
+    # 按 **AST 标识符** 检索，而非裸文本（存量缺陷修复）：旧实现用
+    # `sym not in content` 明文子串扫描，无法区分「代码中残留引用」与
+    # 「文档/注释里陈述该符号已被删除」——本测试文件自身必须写出符号名才能断言
+    # 其不存在，`artifact_paths.py` 的模块 docstring 也如实记述了被删符号，
+    # 二者都会让明文扫描恒失败（该断言自反）。改为解析 AST 后取全部标识符
+    # （Name.id / Attribute.attr / import 别名 / 函数类名 / 关键字参数名），
+    # 只在**真实代码引用**层面判定残留，忽略 docstring 与注释。
+    import ast
+
+    _self = os.path.abspath(__file__)
+
+    def _identifiers(tree) -> set:
+        found = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name):
+                found.add(node.id)
+            elif isinstance(node, ast.Attribute):
+                found.add(node.attr)
+            elif isinstance(node, ast.alias):
+                found.add(node.name.rsplit(".", 1)[-1])
+                if node.asname:
+                    found.add(node.asname)
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                found.add(node.name)
+            elif isinstance(node, ast.keyword) and node.arg:
+                found.add(node.arg)
+            elif isinstance(node, ast.arg):
+                found.add(node.arg)
+        return found
+
+    # 扫描范围 MUST 限定主树源码：`.fenix/`（verify-serving 会话里保存着**其它
+    # 时刻的整仓快照副本**，含陈旧测试文件）、`.history/`（临时文件）、
+    # `.git/.claude/node_modules` 均非本仓源码，扫入会产生假阳性（存量缺陷：
+    # 旧实现只排除了后三者）。
+    _SKIP = ("/.git", "/node_modules", "/.claude", "/.fenix", "/.history")
     for root, _dirs, files in os.walk(repo_root):
-        if "/.git" in root or "/node_modules" in root or "/.claude" in root:
+        if any(seg in root for seg in _SKIP):
             continue
         for fname in files:
             if not fname.endswith(".py"):
                 continue
             path = os.path.join(root, fname)
+            if os.path.abspath(path) == _self:
+                continue
             try:
                 with open(path, encoding="utf-8") as f:
                     content = f.read()
             except (OSError, UnicodeDecodeError):
                 continue
+            try:
+                tree = ast.parse(content)
+            except SyntaxError:
+                continue
+            idents = _identifiers(tree)
             for sym in forbidden:
-                assert sym not in content, (
-                    f"被删除符号 '{sym}' 残留于 {os.path.relpath(path, repo_root)}"
+                assert sym not in idents, (
+                    f"被删除符号 '{sym}' 仍被代码引用："
+                    f"{os.path.relpath(path, repo_root)}"
                 )
 
 

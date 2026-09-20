@@ -31,7 +31,6 @@ from core.agent_runner.prompt_builder import (
 from core.agent_runner.run_files import append_run_line
 from core.run_task_track import (
     find_impl_run_file,
-    parse_run_task_done,
     parse_tasks_md,
     parse_unattainable,
 )
@@ -462,7 +461,16 @@ def _check_impl_code_review_artifact(
         from core.config import ConfigLoader
 
         enabled = ConfigLoader.get_impl_code_review_enabled(runner.config)
-    except Exception:
+    except Exception as e:  # noqa: BLE001
+        # 静默吞异常会把整个硬门变成 no-op（code-review item 42781988b0a6）：
+        # 懒导入/配置查找里的意外错误（ImportError/AttributeError/配置形态异常）
+        # 会让门「消失」而非 fail-closed。此处记 WARNING 留痕（仍返回 None 以
+        # 保持与既有降级语义一致——门消失不足以拦下一轮，但至少可观测）。
+        runner.logger.warning(
+            "agent_runner",
+            f"impl-code-review 门开关读取失败（按未启用降级，留痕）: "
+            f"{type(e).__name__}: {e}",
+        )
         return None
     if not enabled:
         return None
@@ -1204,13 +1212,24 @@ def _register_task_gate_rejection(runner, spec_name: str, error: str) -> bool:
 
 
 def _clear_task_gate_rejections(runner, spec_name: str) -> None:
-    """门禁干净通过时清零 task-gate 拒绝计数（改进①，防陈旧计数误降级）。"""
+    """门禁干净通过时清零 task-gate 拒绝计数（改进①，防陈旧计数误降级）。
+
+    走 state_machine 的原子计数原语（与 _bump_task_gate_rejections 对称，
+    code-review item 7037da170e00）：旧实现是 ``read_one → update_spec(=0)``
+    非原子读改写，并发 bump 会丢失（或把新拒绝静默归零），使「只卡第一次」
+    阈值两向失真；且 ``except Exception: pass`` 无任何日志，持久失败无从排查。
+    现用 ``bump_task_gate_rejections(delta=-cur)`` 在文件锁内原子归零，失败
+    记 WARNING（非静默）。
+    """
     if runner.state_machine is None:
         return
     try:
         entry = runner.state_machine.read_one(spec_name) or {}
-        if int(entry.get(TASK_GATE_REJECTIONS_FIELD, 0) or 0) > 0:
-            runner.state_machine.update_spec(
-                spec_name, {TASK_GATE_REJECTIONS_FIELD: 0})
-    except Exception:
-        pass
+        cur = int(entry.get(TASK_GATE_REJECTIONS_FIELD, 0) or 0)
+        if cur > 0:
+            runner.state_machine.bump_task_gate_rejections(spec_name, -cur)
+    except Exception as e:
+        runner.logger.warning(
+            "agent_runner",
+            f"task-gate 拒绝计数清零失败 '{spec_name}'（不阻断）: {e}",
+        )

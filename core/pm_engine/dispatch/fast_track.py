@@ -15,9 +15,7 @@ patch time 模块对象属性全进程共享，重绑依旧生效。
 from __future__ import annotations
 
 import json
-import threading
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 
 from core.fast_track_result import (
@@ -517,7 +515,10 @@ class FFastTrackMixin:
                     self._report_mergeback_wip_overlap(spec_name, merge_info, branch, merge_error)
                     return False
                 spec_entry = self._pm.state_machine.read_one(spec_name) or {}
-                max_r = self._pm._get_config("agents.max_retries", 3)
+                # （code-review item 9f857a108821）此处旧有 `max_r = ...
+                # agents.max_retries` 赋值从未被本方法读取（下方 merge 失败分岔只用
+                # breaker_threshold；max_r 仅在 _handle_fast_track_failure 使用），
+                # 属死赋值，会误导读者以为 merge 重试受 max_retries 封顶，已删除。
                 fp = self._pm._merge_fingerprint(merge_error)
                 prev_fp = spec_entry.get("_merge_fp")
                 try:
@@ -613,8 +614,15 @@ class FFastTrackMixin:
             )
         try:
             wm.consume_legacy(spec_name)
-        except Exception:
-            pass
+        except Exception as e:
+            # 失败不再静默吞掉（code-review item 2aef9b8f5cd0）：与
+            # queue.py 的等价调用同款非阻塞 WARNING，使持续的 legacy 清理失败
+            # 在本车道可观测（fail-open 但可见）。
+            self._pm.logger.warning(
+                "pm_engine",
+                f"consume_legacy 清理失败 '{spec_name}'（非阻塞）: "
+                f"{type(e).__name__}: {e}",
+            )
         return True
 
     # ── repair 通道（add-merge-back-repair-lane D1/D2/D4/D5/D6）──────────────
@@ -899,6 +907,20 @@ class FFastTrackMixin:
         # provider 熔断拦截
         if final_error and "provider circuit open" in final_error:
             self._pm.state_machine.update_spec(spec_name, {"error": final_error})
+            return
+        # provider 瞬断终态延迟重派（code-review item 498a7c7432f1）：与 full 车道
+        # 的 [provider-transient] 分支同语义（queue.py:1554）——瞬断终态不走
+        # _retry_count 递增/清零路径，改按 transient_redispatch_delay_seconds
+        # 排程等待后重派，避免把网关瞬断计入重试并快速重派。缺此分支会使
+        # fast-track 车道与全车道语义不一致。
+        if final_error and "[provider-transient]" in final_error:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"fast-track provider transient '{spec_name}' — scheduling "
+                f"delayed redispatch, no retry/state flip: {final_error}",
+            )
+            self._pm.state_machine.update_spec(spec_name, {"error": final_error})
+            self._schedule_transient_recovery(spec_name)
             return
         # 重试
         spec_entry = self._pm.state_machine.read_one(spec_name) or {}

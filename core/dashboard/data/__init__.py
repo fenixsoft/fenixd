@@ -3,23 +3,40 @@
 按 design D1/D2/D7：data.py 拆分为 data/ 包，本模块作为薄门面逐条 re-export
 全部既有名字，保证既有调用路径零改动。
 
-_D8 约定_：`_is_running` 与 `USER_CONFIG_PATH` 两个可 patch 名保留在本门面
-绑定；被搬移函数内对它们的访问 MUST 经本门面延迟解析（见 D8）。
+_D8 约定_（可 patch 名契约，code-review item 895133450e96 修正：原文档只列了
+`_is_running` 与 `USER_CONFIG_PATH`，范围过窄，实际远不止这两个）：被搬移函数内
+通过**本门面**（`import core.dashboard.data as _facade` 后 `_facade.<name>`）
+延迟解析的全部名字都构成 patch 缝，测试以 `patch.object(core.dashboard.data,
+"<name>")` 打桩。当前已知清单（新增门面延迟引用时同步登记）：
+
+    _is_running, USER_CONFIG_PATH,
+    archive_spec_runs   (spec_archive.py:201，显式 D8 注释),
+    spec_summary        (summary.py:585),
+    parse_verify_progress (spec_docs.py:191),
+    classify_run        (tasks.py:206)
+
+MUST NOT 把这些 `_facade.X` 访问「整理」成直接 import——会静默破坏
+monkeypatch 语义（对应测试会以难定位的方式失败）。
 """
 
-import copy
-import json
-import os
-import re
-import shutil
-import tempfile
-import threading
-import time
-from collections import deque
-from datetime import datetime, timezone, timedelta
-from pathlib import Path
+# stdlib 绑定：纯兼容 re-export 面（code-review item a605cfddb10f）。仓内唯一被
+# 外部访问的是门面命名空间下的 ``yaml``（tests/test_dashboard_index.py）；
+# ``os``/``re``/``threading`` 等在本包内无引用点，保留仅为路径兼容。与同包
+# 兄弟模块（admin_actions.py:33 / artifacts.py:19 / tasks.py:47）同款加
+# ``# noqa: F401``，使「保留供兼容、非本处使用」的意图对 linter 可见。
+import copy  # noqa: F401
+import json  # noqa: F401
+import os  # noqa: F401
+import re  # noqa: F401
+import shutil  # noqa: F401
+import tempfile  # noqa: F401
+import threading  # noqa: F401
+import time  # noqa: F401
+from collections import deque  # noqa: F401
+from datetime import datetime, timezone, timedelta  # noqa: F401
+from pathlib import Path  # noqa: F401
 
-import yaml
+import yaml  # noqa: F401
 
 from core.agent_runner.run_files import archive_spec_runs, infer_run_agent_type, run_spec_part
 from core.archive_commit import commit_archive_move

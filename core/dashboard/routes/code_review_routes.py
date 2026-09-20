@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -34,7 +33,6 @@ class H11CodeReviewRoutesMixin:
 
         返回 ``{items: [...]}``（按 severity 排序，默认仅 open）。缺项目 → 404。
         """
-        from core.dashboard import server as _server_mod  # noqa: E402 — D3 缝隙
         project = self._project_from_query(query)
         if project is None or not project.get("exists"):
             self._error(404, "project not found")
@@ -109,26 +107,32 @@ class H11CodeReviewRoutesMixin:
             self._error(400, "daemon 未运行，请先启动 daemon")
             return
 
-        # 原子写信号文件（tmp+rename + fsync，与 request_admin_invoke 同构）
+        # 原子创建信号文件（O_CREAT|O_EXCL 独占创建，code-review item d3c1d2ef4a88）：
+        # ThreadingHTTPServer 最多 64 并发线程，旧实现的 `exists()` 检查与随后的
+        # `os.replace` 非原子——两个并发 POST 可同时通过检查，后者的 replace 会
+        # 静默覆盖前者的信号（或覆盖一条已存在未消费的请求），丢失一次用户触发。
+        # 独占创建成功即胜出；FileExistsError → 409（已有未消费请求）。
         created = datetime.now(timezone.utc).isoformat()
         payload = {"scope": scope, "source": "dashboard", "created": created}
         req_path = proot / CODE_REVIEW_REQUEST
-        if req_path.exists():
+        req_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            fd = os.open(str(req_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except FileExistsError:
             self._error(409, "已有未消费的审查触发请求（请稍后重试）")
             return
-        req_path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp_path = tempfile.mkstemp(
-            dir=str(req_path.parent), prefix=".code_review_request.", suffix=".tmp"
-        )
+        except OSError:
+            self._error(500, "审查触发信号写入失败")
+            return
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(payload, f, ensure_ascii=False, indent=2)
                 f.flush()
                 os.fsync(f.fileno())
-            os.replace(tmp_path, req_path)
         except Exception:
+            # 写中途失败：清掉半写文件，避免残留被 daemon 误消费
             try:
-                os.unlink(tmp_path)
+                os.unlink(str(req_path))
             except OSError:
                 pass
             self._error(500, "审查触发信号写入失败")
@@ -148,7 +152,6 @@ class H11CodeReviewRoutesMixin:
 
         返回 ``{ok, spec_name, skipped, error, start_after}``；成功把条目置 in_spec。
         """
-        from core.dashboard import server as _server_mod  # noqa: E402 — D3 缝隙
         project = self._project_from_query(query)
         if project is None or not project.get("exists"):
             self._error(404, "project not found")
@@ -174,10 +177,14 @@ class H11CodeReviewRoutesMixin:
         proot = Path(project["path"])
         try:
             result = generate_fix_spec(
-                str(proot), self._code_review_state_machine(), item_ids, normalized_sa
+                str(proot), self._code_review_state_machine(proot), item_ids, normalized_sa
             )
         except Exception as e:  # noqa: BLE001 —— 端点不因内部异常 500 崩溃
-            self._error(500, f"生成修复 SPEC 失败: {e}")
+            # 不外泄裸异常文本（code-review item 5268c8ebc625）：generate_fix_spec
+            # 会做文件写入/git commit/lint，失败属预期而非异常态；裸 `{e}` 会把内部
+            # 路径/栈信息透给 HTTP 客户端。与 _api_code_review_items_status 同款
+            # 泛化文案（详情经服务端日志留痕）。
+            self._error(500, "生成修复 SPEC 失败（详见服务端日志）")
             return
         if not result.get("ok"):
             self._error(400, result.get("error") or "生成修复 SPEC 失败")
@@ -223,9 +230,14 @@ class H11CodeReviewRoutesMixin:
     # ── 辅助 ──────────────────────────────────────────────
 
     @staticmethod
-    def _code_review_state_machine():
-        """框架根 StateMachine（generate_fix_spec 注册用；惰性构造，无缓存需求）。"""
-        from core.dashboard import server as _server_mod  # noqa: E402 — D3 缝隙
+    def _code_review_state_machine(project_path):
+        """目标**项目**的 StateMachine（generate_fix_spec 注册用；惰性构造）。
+
+        code-review item 62e84785cd28：旧实现固定返回 FRAMEWORK_ROOT 下
+        `.fenix/STATE.md` 的 StateMachine——多项目监控部署下会把生成的修复 SPEC
+        注册到**框架根** STATE，目标项目 daemon 读不到该 spec、永不晋升。改为指向
+        目标项目路径（单项目/框架自托管部署下二者一致，行为不变）。
+        """
         from core.state_machine import StateMachine
 
-        return StateMachine(_server_mod.FRAMEWORK_ROOT / ".fenix" / "STATE.md", None)
+        return StateMachine(Path(project_path) / ".fenix" / "STATE.md", None)

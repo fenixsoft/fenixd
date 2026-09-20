@@ -23,6 +23,25 @@ import type { SelfEvolutionSectionHandle } from './components/selfEvolutionSecti
 
 const { Text } = Typography;
 
+// 页签 key → 标签 单一来源（code-review item e0b8f3aefec7）：供
+// SyncFromUserButton 等子组件复用，避免手工副本漂移。BASE_MENU_ITEMS 由其派生。
+export const PAGE_LABELS: Record<string, string> = {
+  llm: '模型',
+  agents: '模型分配',
+  prompts: '提示词',
+  parallel: '并行',
+  token: '预算',
+  verify: '验证',
+  quality: '质量',
+  approval: '审批',
+  misc: '归档',
+  system: '系统',
+  'self-evolution': '自进化',
+  'self-review': '自省',
+  'project-profile': '项目',
+  hook: 'Hook',
+};
+
 const BASE_MENU_ITEMS = [
   { key: 'llm', label: '模型' },
   { key: 'agents', label: '模型分配' },
@@ -63,6 +82,9 @@ export default function SettingsPage() {
   const [config, setConfig] = useState<ConfigData | null>(null);
   const [projects, setProjects] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
+  // 加载失败显式态（code-review item eae893169197）：旧实现仅 console.error，
+  // config 停在 null，除 prompts 外的页签统统渲染空白面板，用户无从判断原因。
+  const [loadError, setLoadError] = useState<string | null>(null);
   // 自进化页签：两张配置卡片各自暴露的收集句柄，供页签底部唯一「保存」按钮触发
   const staleSelfhealRef = useRef<SelfEvolutionSectionHandle>(null);
   const suggestionsRef = useRef<SelfEvolutionSectionHandle>(null);
@@ -82,18 +104,30 @@ export default function SettingsPage() {
 
   // 加载配置
   useEffect(() => {
+    // 取消/忽略守卫（code-review item 56756944dd6e）：快速切换项目（或作用域）会
+    // 触发重叠请求，较慢的早期响应可能在较新响应之后 resolve，把 config 覆盖成
+    // 上一个项目的陈旧数据。用 cancelled 标志在 effect 被取代时丢弃结果。
+    let cancelled = false;
     const loadConfig = async () => {
       setLoading(true);
+      setLoadError(null);
       try {
         const configData = await getConfig(project);
+        if (cancelled) return;
         setConfig(configData);
       } catch (e) {
+        if (cancelled) return;
+        const msg = e instanceof Error ? e.message : String(e);
         console.error('Failed to load config:', e);
+        setLoadError(msg);
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     };
     loadConfig();
+    return () => {
+      cancelled = true;
+    };
   }, [project, scope]); // 添加 scope 依赖，确保作用域切换时重新加载配置
 
   // 处理作用域选择（'user' 或 'project:<name>'）
@@ -132,12 +166,20 @@ export default function SettingsPage() {
       staleSelfhealRef.current?.collect(),
       suggestionsRef.current?.collect(),
     ]);
-    if (parts.some((p) => p === null)) return;
+    // 校验失败/无变更不再静默返回（code-review item 57ca856f0531）：旧实现两处
+    // 裸 return 使用户以为已保存，实际什么都没发生。
+    if (parts.some((p) => p === null)) {
+      message.warning('请先修正表单校验错误');
+      return;
+    }
     const merged = parts.reduce<Partial<ConfigData>>(
       (acc, p) => ({ ...acc, ...(p ?? {}) }),
       {},
     );
-    if (Object.keys(merged).length === 0) return;
+    if (Object.keys(merged).length === 0) {
+      message.info('没有需要保存的变更');
+      return;
+    }
     await handleSave(merged);
   };
 
@@ -216,6 +258,13 @@ export default function SettingsPage() {
             }
           >
             {loading && <div>加载中...</div>}
+            {/* 加载失败回退 UI（code-review item eae893169197）：旧实现失败后
+                config 恒为 null，非 prompts 页签全部渲染空白面板而用户无从判断。 */}
+            {!loading && loadError && (
+              <div style={{ color: '#ff4d4f', padding: '12px 0' }}>
+                配置加载失败：{loadError}
+              </div>
+            )}
             {/* 提示词页签不依赖 config（读取 agents/*.md 与 .fenix/agents/），独立于配置守卫渲染 */}
             {!loading && activeKey === 'prompts' && (
               <PromptsPanel project={scope === 'project' ? project : undefined} />

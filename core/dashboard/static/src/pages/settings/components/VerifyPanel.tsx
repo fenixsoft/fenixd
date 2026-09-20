@@ -12,17 +12,32 @@ function artifactPathRule(rules: unknown, value: unknown): Promise<void> {
   const v = typeof value === 'string' ? value.trim() : '';
   if (!v) return Promise.reject(new Error('路径不能为空'));
   if (v.startsWith('/')) return Promise.reject(new Error('不能是绝对路径'));
-  if (v.split('/').includes('..')) return Promise.reject(new Error("不能含 '..' 路径段"));
+  // 与后端 normalize_artifact_patterns 同口径（code-review item c30b8b2c0662）：
+  // 后端是 `".." in item`（任意位置出现即拒），旧实现只判整段 '..'，使
+  // "dist..old/" 通过前端校验后被 POST /api/config 400 拒绝而用户看不到原因。
+  if (v.includes('..')) return Promise.reject(new Error("不能含 '..'"));
   if (!v.includes('*') && !v.endsWith('/'))
     return Promise.reject(new Error("目录前缀须以 '/' 结尾，或使用含 '*' 的通配"));
   return Promise.resolve();
+}
+
+/** 产物三态提示文案（code-review item ca92db5ea623：抽出嵌套三元为具名函数）。 */
+function buildArtifactsHint(state: HasBuildArtifactsState | undefined): string {
+  if (state === 'unset' || state === undefined) {
+    return '尚未配置：判定恒假（不豁免任何路径），merge-back 会写信号呼叫系统自动起草。';
+  }
+  if (state === 'true') {
+    return '有派生物：下方列出的路径会被 merge-back 当作可丢弃的生成物处理（对齐 HEAD、不进 stash）。注意：把源码目录（如 src/）也列进来会连带取消「源码变更后重建产物」的触发。';
+  }
+  return '无派生物：不豁免任何路径，所有 tracked 改动都按人手维护的源码处理——这对构建输出未入库的项目是正确取值。';
 }
 
 /** has_build_artifacts 三态表单值：'unset'（未裁决）/ 'true'（有产物）/ 'false'（无产物）。
     antd Switch 无 indeterminate 语义，故用 Radio.Group 三选一承载（spec 6.3 约定）。 */
 export type HasBuildArtifactsState = 'unset' | 'true' | 'false';
 
-function toFormState(v: boolean | undefined): HasBuildArtifactsState {
+function toFormState(v: boolean | null | undefined): HasBuildArtifactsState {
+  // 参数类型放宽含 null（code-review item deed1f27d507）：后端未裁决发 null。
   if (v === true) return 'true';
   if (v === false) return 'false';
   return 'unset';
@@ -70,17 +85,26 @@ export default function VerifyPanel({ config, onSave, project, onConfigSynced }:
       };
       // 产物路径仅项目级可写（用户级作用域下该卡片只读，不提交该键）
       if (artifactEditable) {
+        // 校验器已拒绝空路径（artifactPathRule 的「路径不能为空」），故此处
+        // 无需 filter 剔除空行——旧 filter 恒不生效（code-review item
+        // 721019da2aa9）。保留 trim 归一（前后空白不影响规则判定）。
         payload.worktree = {
-          build_artifact_paths: (values.build_artifact_paths || [])
-            .map((row: { path?: string }) => (row?.path || '').trim())
-            .filter((p: string) => p.length > 0),
+          build_artifact_paths: (values.build_artifact_paths || []).map(
+            (row: { path?: string }) => (row?.path || '').trim(),
+          ),
         };
-        // 三态 → 配置值：true/false 显式写回；'unset'（未配置）不携带该键
-        // （保持未裁决，由运行期信号兜底起草）
+        // 三态 → 配置值（code-review item 22ec00069cd7）：'unset' 表示撤销裁决，
+        // 若省略该键，后端 _merge_config 会保留旧布尔值，保存+刷新后单选框弹回
+        // 有/无产物、用户无法真正回到未配置态。null = 显式清除该键后由后端按未
+        // 裁决处理（未被配置时读取为 undefined）。
         if (values.has_build_artifacts === 'true') {
           payload.worktree.has_build_artifacts = true;
         } else if (values.has_build_artifacts === 'false') {
           payload.worktree.has_build_artifacts = false;
+        } else {
+          // unset：显式清除（null 语义由 write 路径处理为移除该键）
+          (payload.worktree as { has_build_artifacts?: boolean | null }).has_build_artifacts =
+            null;
         }
       }
       await onSave(payload);
@@ -216,13 +240,7 @@ export default function VerifyPanel({ config, onSave, project, onConfigSynced }:
                     <span className="label-note">（worktree.has_build_artifacts）</span>
                   </>
                 }
-                extra={
-                  hasBuildArtifacts === 'unset' || hasBuildArtifacts === undefined
-                    ? '尚未配置：判定恒假（不豁免任何路径），merge-back 会写信号呼叫系统自动起草。'
-                    : hasBuildArtifacts === 'true'
-                      ? '有派生物：下方列出的路径会被 merge-back 当作可丢弃的生成物处理（对齐 HEAD、不进 stash）。注意：把源码目录（如 src/）也列进来会连带取消「源码变更后重建产物」的触发。'
-                      : '无派生物：不豁免任何路径，所有 tracked 改动都按人手维护的源码处理——这对构建输出未入库的项目是正确取值。'
-                }
+                extra={buildArtifactsHint(hasBuildArtifacts)}
                 data-testid="has-build-artifacts-form-item"
               >
                 <Radio.Group data-testid="has-build-artifacts-radio">
@@ -285,7 +303,12 @@ export default function VerifyPanel({ config, onSave, project, onConfigSynced }:
               <div style={{ marginTop: 12 }}>
                 <Text>
                   需要豁免的派生产物：{' '}
-                  {config.worktree?.has_build_artifacts === undefined && (
+                  {/* 后端 worktree_config_view 恒发该键、未裁决时取 None → JSON
+                      `null`（**不是 undefined**）。旧实现只比 `=== undefined`，在
+                      user-scope 只读分支下三支全假，该行渲染成空标签
+                      （code-review item deed1f27d507）。以 null 为未裁决判据。 */}
+                  {(config.worktree?.has_build_artifacts === null ||
+                    config.worktree?.has_build_artifacts === undefined) && (
                     <Text type="warning">未配置（未裁决，判定恒假，等待自动起草）</Text>
                   )}
                   {config.worktree?.has_build_artifacts === true && <Text>有派生物</Text>}
@@ -303,7 +326,8 @@ export default function VerifyPanel({ config, onSave, project, onConfigSynced }:
                   ))}
                 </ul>
               ) : (
-                config.worktree?.has_build_artifacts !== false && (
+                config.worktree?.has_build_artifacts !== false &&
+                config.worktree?.has_build_artifacts !== true && (
                   <Text type="secondary" style={{ display: 'block', marginTop: 12 }}>
                     未配置豁免路径（未裁决，等待系统自动起草）
                   </Text>

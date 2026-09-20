@@ -9,7 +9,7 @@ import hashlib
 import threading
 import time
 from pathlib import Path
-from typing import Dict, Optional, Set
+from typing import Dict, Optional
 
 # 依赖闸门接受态（fix-dispatch-wakeup-gap D2 单点口径）：与
 # PMEngine._dependencies_satisfied 共用同一常量，杜绝「闸门说满足、唤醒说
@@ -601,8 +601,15 @@ class EventBus:
             try:
                 if agent_runner.has_live_attempt(spec_name):
                     return True
-            except Exception:
-                pass
+            except Exception as e:
+                # 探测异常不再静默（code-review item 586896a04cd5）：探测坏掉时
+                # 静默降级到更弱的兜底，可能把真有驱动的 ready/testing 误判为
+                # 无驱动（或反之），且无任何「为何卡在恢复路径」的痕迹。
+                self.logger.warning(
+                    "event_bus",
+                    f"has_live_attempt 探测异常 '{spec_name}'（降级兜底）: "
+                    f"{type(e).__name__}: {e}",
+                )
 
         # 2) 兜底：pgrep 匹配 worktree 下的 claude 进程
         if self._pgrep_live_worktree(spec_name):
@@ -641,7 +648,12 @@ class EventBus:
         return _impl(spec_name)
 
     def _latest_impl_run_file(self, spec_name: str) -> Optional[Path]:
-        """STATE.md implementer_run 指向的最新 run 文件（复用 dashboard 解析）。"""
+        """STATE.md implementer_run 指向的最新 run 文件（复用 dashboard 解析）。
+
+        解析失败记 WARNING 后返回 None（code-review item 586896a04cd5）：旧实现
+        静默吞异常，「探测坏掉」（API 改名/run 文件损坏/权限）与「确实无 run」
+        不可区分，使判定静默降级而无迹可查。
+        """
         try:
             from core.run_task_track import find_impl_run_file
 
@@ -649,7 +661,12 @@ class EventBus:
             if project_root is None:
                 return None
             return find_impl_run_file(Path(project_root), spec_name)
-        except Exception:
+        except Exception as e:
+            self.logger.warning(
+                "event_bus",
+                f"_latest_impl_run_file 解析异常 '{spec_name}'（按无 run 处理）: "
+                f"{type(e).__name__}: {e}",
+            )
             return None
 
     @staticmethod
@@ -673,10 +690,16 @@ class EventBus:
 
                 current_hash = self._file_checksum()
                 if current_hash != self._last_checksum:
-                    self._last_checksum = current_hash
                     self.logger.debug("event_bus", "STATE.md changed, dispatching...")
+                    # `_last_checksum` MUST 在 read_all/dispatch **成功之后**才提交
+                    # （code-review item d7151c041831 / 15f8ddcb4713）：旧实现先提交
+                    # checksum 再读盘/派发，若读盘抛异常（外层 except 只记日志），
+                    # 该次状态变化事件被静默丢弃、且下轮 checksum 已相同不再触发
+                    # ——一次变更永久丢失（仅 30 分钟全扫兜底）。改为成功后提交：
+                    # 失败时 checksum 保持旧值，下一 2s tick 自然重试。
                     current_specs = self.state_machine.read_all()
                     self._dispatch_changes(current_specs)
+                    self._last_checksum = current_hash
             except Exception as e:
                 self.logger.error("event_bus", f"Watch error: {e}")
 
@@ -709,13 +732,24 @@ class EventBus:
                 self.full_scan()
 
     def _file_checksum(self) -> str:
-        """Compute MD5 checksum of STATE.md."""
+        """Compute MD5 checksum of STATE.md.
+
+        读取失败记 WARNING 并返回 ``""``（code-review item 6070d3553ede）：旧实现
+        静默吞异常且与「文件缺失」共用 ``""`` 哨兵，使不可读/半写的 STATE.md 与
+        被删除无法区分、I/O 故障无任何诊断，且瞬态失败会造成 hash 抖动让 watcher
+        误判文件变更。此处留痕异常类型（哨兵语义保持不变——文件确实缺失时
+        调用方按空内容处理是正确的）。
+        """
         if not self.state_path.exists():
             return ""
         try:
             content = self.state_path.read_bytes()
             return hashlib.md5(content).hexdigest()
-        except Exception:
+        except Exception as e:
+            self.logger.warning(
+                "event_bus",
+                f"STATE.md 校验和读取失败（按空内容处理）: {type(e).__name__}: {e}",
+            )
             return ""
 
     def _update_known_state(self):

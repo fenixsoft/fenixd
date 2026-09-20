@@ -15,7 +15,8 @@ import SyncFromUserButton, { SETTINGS_ACTIONS_ROW_STYLE } from './SyncFromUserBu
 
 const { Text } = Typography;
 
-// 与后端 KNOWN_AGENT_TYPES 严格一致（9 个角色，勿增删）
+// 与后端 KNOWN_AGENT_TYPES 严格一致（含 code-review 共 10 个角色，勿增删；
+// code-review item f62e36d1531f：旧注释写 9 个，已漂移）
 const AGENT_ROLES = [
   { key: 'implementer', label: 'Implementer（执行）' },
   { key: 'planner-plan', label: 'Planner Plan（生成场景）' },
@@ -114,22 +115,31 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
     if (!row || (row.model || '').trim()) return;
     const def = (providers.find((p) => p.name === providerName) || {}).model;
     if (!def) return;
-    const next = rows.map((r, i) => (i === rowIndex ? { ...r, model: def } : r));
-    form.setFieldValue(['roleList', roleIndex, 'rows'], next);
+    // 只写目标字段路径（code-review item a65a4acb0953）：旧实现读整份 rows 后
+    // 全量写回（读-改-写），若期间用户在其它行输入/勾选 Provider（或其它自动
+    // 填充并发执行），会以快照覆盖这些更新。form.setFieldValue 支持嵌套路径
+    // 数组成员，直接定位该行 model 字段避免整数组替换。
+    form.setFieldValue(['roleList', roleIndex, 'rows', rowIndex, 'model'], def);
   };
 
   // 复制某角色的当前分配到剪贴板（深拷贝，之后编辑该卡片不影响副本）
   const handleCopy = (index: number) => {
     const cur = form.getFieldValue(['roleList', index]) as RoleValue | undefined;
-    setClipboard({ label: AGENT_ROLES[index].label, value: cloneRoleValue(cur) });
-    message.success(`已复制「${AGENT_ROLES[index].label}」的模型分配`);
+    // 下标空值防护（code-review item 2863ab0c2d54）：Form.List 项数可能多于
+    // AGENT_ROLES（角色表删减/外部 setFieldsValue 注入），裸下标解引用会抛
+    // TypeError 使整个设置页白屏。
+    const roleLabel = AGENT_ROLES[index]?.label ?? `角色 ${index + 1}`;
+    setClipboard({ label: roleLabel, value: cloneRoleValue(cur) });
+    message.success(`已复制「${roleLabel}」的模型分配`);
   };
 
   // 把剪贴板内容覆盖到某角色（角色级默认模型与全部 Provider 行一起替换）
   const handlePaste = (index: number) => {
     if (!clipboard) return;
     form.setFieldValue(['roleList', index], cloneRoleValue(clipboard.value));
-    message.success(`已粘贴「${clipboard.label}」的模型分配到「${AGENT_ROLES[index].label}」`);
+    message.success(
+      `已粘贴「${clipboard.label}」的模型分配到「${AGENT_ROLES[index]?.label ?? `角色 ${index + 1}`}」`,
+    );
   };
 
   const handleSave = async () => {
@@ -151,7 +161,7 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
           return !!((r?.model || '').trim() || roleDefault || providerDefaults[p]);
         });
         if (!roleDefault && !allRowsHaveModel) {
-          missing.push(AGENT_ROLES[index].label);
+          missing.push(AGENT_ROLES[index]?.label ?? `角色 ${index + 1}`);
         }
       });
       if (missing.length > 0) {
@@ -183,8 +193,8 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
           {(fields) => (
             <>
               {fields.map((field, index) => {
-                const role = AGENT_ROLES[index];
-                const rv = watchList[index];
+                const role = AGENT_ROLES[index] ?? { key: `role-${index}`, label: `角色 ${index + 1}` };
+                const rv = watchList[index] ?? {};
                 const roleModel = (rv?.roleModel || '').trim();
                 return (
                   <Card

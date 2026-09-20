@@ -56,8 +56,15 @@ def infer_run_agent_type(run_id: str) -> tuple[str, str]:
 def append_run_line(run_file: Path, entry: dict) -> None:
     """向运行产物文件追加一行 JSON 并立即 flush，保证运行期间 Dashboard 可读。
 
-    每行独立 open("a") + flush，两个读线程并发写入时依赖 O_APPEND 的原子性，
-    避免长行被交错切碎。
+    每行独立 open("a") + flush。写入端**多线程并发**（同一 run 的不同事件
+    由 daemon 主循环/worker/子进程收尾等多个写线程追加）时，短行依赖内核
+    O_APPEND 的原子性避免交错；但该保证有边界（code-review item 12723ef0e4df）：
+    Python 的 TextIOWrapper/BufferedWriter 只在单次行数据不超过内部缓冲
+    （默认约 8 KiB）时才走缓冲一次 write；**超缓冲的大行**（超长 error/result）
+    会绕过缓冲分发为多次 raw write，仍可能与并发 writer 交错产生半行 JSON。
+    调用方若需保证大行完整性，须在进程内自行串行化（本函数不持有跨调用锁，
+    以维持既有「每行独立 open」的零共享语义）。实测常见行（事件/终态）远小于
+    该阈值，故此处只显式记录该限制，不改变实现。
     """
     with run_file.open("a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
@@ -103,6 +110,10 @@ def run_spec_part(run_id: str) -> str:
     """
     _agent_type, spec_part = infer_run_agent_type(run_id)
     spec_part = strip_run_id_suffixes(spec_part)
+    # 时间戳剥离限定 9-10 位数字（code-review item 6c089e65a080）：spec 名以
+    # 9-10 位数字结尾时会被误剥（如 spec-123456789 → spec）。属极边界场景，
+    # 与 fenixd._spec_from_run_id 的解析互为补充；此处保持既有口径（与
+    # get_runs 的推断对齐），仅记录该已知限制，不扩大改动面。
     m = re.match(r"^(.*)-\d{9,10}$", spec_part)
     if m:
         spec_part = m.group(1)
@@ -126,7 +137,12 @@ def archive_spec_runs(runs_dir: Path, spec_name: str) -> int:
         return 0
     try:
         candidates = [p for p in runs_dir.glob("*.jsonl") if run_spec_part(p.stem) == spec_name]
-    except OSError:
+    except OSError as e:
+        # 扫描失败与「runs_dir 不存在」旧实现同返回 0 且无日志（code-review
+        # item 23e672c8f873）：上游 bin/fenix_archive.py / spec_archive.py 是
+        # fail-open 调用方，会把「扫描失败、零归档」当正常结果，导致已归档 SPEC
+        # 的产物残留无人察觉。记 WARNING 使该形态可观测。
+        _logger.warning("archive_spec_runs: 扫描 %s 失败（本 SPEC 零归档）: %s", runs_dir, e)
         return 0
     moved = 0
     archive_dir = runs_dir / "archive"
@@ -135,6 +151,18 @@ def archive_spec_runs(runs_dir: Path, spec_name: str) -> int:
             archive_dir.mkdir(parents=True, exist_ok=True)
             dest = archive_dir / victim.name
             if dest.exists():
+                # 去重删除前做轻量判等（code-review item ca47fc88588f）：旧实现
+                # 无条件 unlink 且不留日志，仅在「归档副本与顶层副本同源」假设下
+                # 安全。一旦顶层副本因 retention 移档后又按原路径追加终态行而与
+                # 归档副本分歧，较新的顶层产物会被静默销毁、排障无迹。分歧时记
+                # WARNING 再删（仍以归档为准，保持既有去重语义）。
+                if _files_differ(victim, dest):
+                    _logger.warning(
+                        "archive_spec_runs: 顶层副本与归档副本内容分歧，仍按归档为准删除顶层: %s",
+                        victim,
+                    )
+                else:
+                    _logger.debug("archive_spec_runs: 去重删除同源顶层副本 %s", victim)
                 victim.unlink()
             else:
                 victim.replace(dest)
@@ -143,3 +171,16 @@ def archive_spec_runs(runs_dir: Path, spec_name: str) -> int:
             _logger.warning("archive_spec_runs: 无法归档 %s: %s", victim, e)
             continue
     return moved
+
+
+def _files_differ(a: Path, b: Path) -> bool:
+    """轻量判等：size 或 mtime 不同即视为分歧；探测失败保守返回 True。
+
+    用于 archive_spec_runs 去重删除前的分歧检测（code-review item
+    ca47fc88588f），不做逐字节比对（产物可能较大，且此处只需发现明显分歧）。
+    """
+    try:
+        sa, sb = a.stat(), b.stat()
+    except OSError:
+        return True
+    return sa.st_size != sb.st_size or int(sa.st_mtime) != int(sb.st_mtime)

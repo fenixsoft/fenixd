@@ -7,19 +7,19 @@ _run_fast_track_flow 等 F 组）仍经宿主实例 `self.<method>` 协作。
 D6 无环约束：本组 MUST NOT 直接 import `core.worktree_manager`
 （现状经 `self._pm.agent_runner.<...>` 属性链间接访问，无边）。
 
-D3 patch 缝隙：本组使用 `time` 模块，经模块顶部导入——测试
-patch time 模块对象属性全进程共享，重绑依旧生效。
+D3 patch 缝隙更正（code-review item 01338d60b747）：测试注入确定性时钟走的是
+**包命名空间** ``core.pm_engine.dispatch.time``（由 tests/test_repair_lane_dedup.py
+patch.object 重绑），而非本模块的 ``repair_lane.time``——入队时刻的 ``time.time()``
+实际在 ``queue.py`` 求值。故本模块不 import ``time``；docstring 旧称「本组使用
+time 模块」与任何调用点都不符，已删除。同理本模块亦不参与 env-block/start-after
+gate（``ENV_BLOCK_ROUNDS_FIELD``/``start_after_pending`` 仅 queue/fast_track 消费）。
 """
 
 from __future__ import annotations
 
 import json
 import threading
-import time
-from datetime import datetime, timezone
 from pathlib import Path
-
-from core.state_machine import ENV_BLOCK_ROUNDS_FIELD, start_after_pending
 
 from core.pm_engine.dispatch import (  # noqa: E402
     MAX_REPAIR_ROUNDS_PER_FAILURE,
@@ -76,7 +76,11 @@ class PRepairLaneMixin:
         - 熔断未触发（streak < threshold）：blocked spec 不再派发 repair；
         - 同一失败链内 repair 未超轮次（_repair_round < MAX_REPAIR_ROUNDS_PER_FAILURE）。
         """
-        # 兼容 (bool, str) 元组调用（merge_info 可能非 MergeConflictInfo）
+        # 语义冲突判据（code-review item ea9b5b370bcf）：旧注释声称「兼容
+        # (bool, str) 元组调用」，但 getattr(tuple, "has_semantic_conflict", False)
+        # 恒为 False——元组入参会无条件禁用 repair（静默落 fallback），该兼容
+        # 声明从未成立、且会误导后续调用方。此处删除误导性声明，如实说明：仅
+        # 具 has_semantic_conflict 属性的 MergeConflictInfo 才进入 repair 通道。
         info_has_semantic = bool(getattr(merge_info, "has_semantic_conflict", False))
         if not info_has_semantic:
             return False
@@ -104,8 +108,11 @@ class PRepairLaneMixin:
         (b) worktree 已清但分支存在 → 换壳：在分支上新建 worktree；
         (c) 分支不存在 → 回退 fallback 全新重派（prompt 注入 merge 失败上下文）。
 
-        轮次控制（D5/D6）：``_repair_round`` 在派发前递增并持久化，
-        超限不派发（_should_enter_repair 已拦截，此处兜底回退）。
+        轮次控制（D5/D6）：``_repair_round`` 在派发前递增并持久化；本方法作为
+        兜底在此**再次**校验轮次上限（code-review item 2a26974066a9：docstring
+        旧称「超限不派发…此处兜底回退」，但旧实现无条件递增派发，任何绕过
+        ``_should_enter_repair`` 的直呼调用都可超预算）。超限 → 回退 fallback
+        全新重派，不再发起 repair 轮。
         """
         wm = self._pm.agent_runner.worktree_manager
         # cli-retry-backoff 2.2：秒挂冷却期内不派发 repair（repair agent 同样会秒挂）。
@@ -133,6 +140,20 @@ class PRepairLaneMixin:
             )
         except (TypeError, ValueError):
             repair_round = 0
+        # 兜底轮次上限（code-review item 2a26974066a9）：正常路径由
+        # _should_enter_repair 前置拦截；此处防御直呼/旁路调用不得超预算。
+        if repair_round >= MAX_REPAIR_ROUNDS_PER_FAILURE:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"repair 轮次已达上限（{repair_round}/{MAX_REPAIR_ROUNDS_PER_FAILURE}）"
+                f"'{spec_name}' — 兜底回退 fallback 全新重派",
+            )
+            self._fallback_after_repair(
+                spec_name,
+                branch,
+                getattr(merge_info, "error", "") or "",
+            )
+            return
         # 分支消亡 → fallback（三态 (c)）
         if not branch or not wm.branch_exists(branch):
             self._pm.logger.warning(
@@ -188,8 +209,8 @@ class PRepairLaneMixin:
             )
         self._pm.logger.warning(
             "pm_engine",
-            f"进入 repair 通道 '{spec_name}'（第 {round_no}/{MAX_REPAIR_ROUNDS_PER_FAILURE} 轮）"
-            f"worktree={wt_path} branch={resolved_branch}",
+            f"进入 repair 通道 '{spec_name}'（第 {round_no}/{MAX_REPAIR_ROUNDS_PER_FAILURE} 轮，"
+            f"merge 失败 streak={streak}） worktree={wt_path} branch={resolved_branch}",
         )
         t = threading.Thread(
             target=self._pm._run_repair_worker,
@@ -206,6 +227,12 @@ class PRepairLaneMixin:
         宽限期按孤儿回收正在使用的现场）；在 ``_spec_locks`` 注册 repair 锁
         （防 repair 进行中重复派发）。worktree 已在三态解析时登记进活动集
         （``_active_worktrees``/``_wt_branches``），sweeper 不再豁免该目录。
+
+        私有属性访问一致容错（code-review item bbb27ecdff1e / f916e16d044f）：
+        ``_legacy``/``_spec_locks``/``_wt_branches`` 均经 ``hasattr`` 守卫——
+        旧实现只守卫前两者，``_wt_branches`` 裸写；一旦 worktree_manager 实现
+        变更或测试替身缺该属性，会在 ``claim_legacy_for_repair`` 已改写
+        ``_legacy``（现场半认领）之后抛 AttributeError，留下不一致状态。
         """
         wm = self._pm.agent_runner.worktree_manager
         # 认领即摘出登记表（与 fast-track `_take_reusable_worktree` 同款 take）
@@ -215,7 +242,7 @@ class PRepairLaneMixin:
             wm._legacy.pop(spec_name, None)
         if hasattr(wm, "_spec_locks"):
             wm._spec_locks.add(f"{spec_name}:repair")
-        if branch:
+        if branch and hasattr(wm, "_wt_branches"):
             wm._wt_branches[str(wt_path)] = branch
 
     def _run_repair_worker(self, spec_name: str, wt_path, branch: str, merge_info) -> None:

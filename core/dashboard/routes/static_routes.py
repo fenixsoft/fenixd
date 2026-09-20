@@ -81,6 +81,7 @@ class H10StaticRoutesMixin:
         except OSError:
             self._error(404, "Not Found")
             return
+        self._mark_response_started()
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Cache-Control", cache)

@@ -315,7 +315,8 @@ class PMEngine:
         "_clear_dispatch_conflict": ("_recovery", "_clear_dispatch_conflict"),
         "generate_report": ("_reporting", "generate_report"),
         "generate_daily_report": ("_reporting", "generate_daily_report"),
-        "get_pushable_specs": ("_reporting", "get_pushable_specs"),    }
+        "get_pushable_specs": ("_reporting", "get_pushable_specs"),
+    }
 
     def __getattr__(self, name: str):
         """门面转发统一委托（refactor-facade-delegation D1/D2）。
@@ -2139,16 +2140,17 @@ class PMEngine:
                 "pm_engine",
                 f"归档残留检测失败（按无残留处理，不阻塞 push）: {e}",
             )
-            return False, []
+            return False, [], []
         if result.returncode != 0:
             self.logger.warning(
                 "pm_engine",
                 f"git status 失败，按无归档残留处理: "
                 f"{(result.stderr or result.stdout).strip()[:200]}",
             )
-            return False, []
+            return False, [], []
 
         names: list[str] = []
+        paths_out: list[str] = []
         found = False
         for line in result.stdout.splitlines():
             if len(line) < 4:
@@ -2171,7 +2173,10 @@ class PMEngine:
                 if deleted or (in_archive and added):
                     found = True
                     names.append(self._archive_residue_spec(path))
-        return found, list(dict.fromkeys(n for n in names if n))
+                    paths_out.append(path)
+        return found, list(dict.fromkeys(n for n in names if n)), list(
+            dict.fromkeys(paths_out)
+        )
 
     @staticmethod
     def _archive_residue_spec(rel_path: str) -> str:
@@ -2206,12 +2211,18 @@ class PMEngine:
         - commit/push 失败 → WARNING（含 stderr 摘要）并继续，spec 终态不受影响，
           残留留给下次 push 重试；提交内容不含 spec/ 之外的任何路径。
         """
-        has_residue, spec_names = self._archive_move_residue()
+        has_residue, spec_names, residue_paths = self._archive_move_residue()
         if not has_residue:
             return
         label = "、".join(spec_names) if spec_names else "spec"
         commit_msg = f"[fenix] archive: {label} 归档入库"
-        ok, err = self._git_commit(["spec"], commit_msg)
+        # 收窄 add 范围到**实际残留路径**（code-review item 88209fa06ce0）：旧实现
+        # `git add -- spec` 会把 spec/ 下所有未提交/未跟踪改动（其它 spec 的在途
+        # 草案等）卷进「[fenix] archive: …」提交，与提交语义不符。残留清单本身已
+        # 精确（只认 changes 删除侧与 archive 新增侧），据此逐路径提交。残留路径
+        # 为空（理论不可达，has_residue 为真必有路径）时回退 catalog 级 add 兜底。
+        _paths = residue_paths or ["spec"]
+        ok, err = self._git_commit(_paths, commit_msg)
         if not ok:
             self.logger.warning(
                 "pm_engine",
@@ -2760,7 +2771,7 @@ class PMEngine:
             if status in ("done", "pushed"):
                 continue
 
-                # Transient state — verified should auto-transition to done;
+            # Transient state — verified should auto-transition to done;
             # if stuck here, flag as blocker
             if status == "verified":
                 # 必须与其余 blocker 构造点同为 dict：此前 append 字符串导致

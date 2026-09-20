@@ -43,25 +43,18 @@ server.py — Fenix Web Dashboard 服务器（dashboard-server）。
     GET /screenshots/<project>/<spec>/<file> → 截图（防路径穿越，仅限注册项目）
 """
 
-import gzip
 import contextlib
 import fcntl
-import json
 import logging
-import mimetypes
 import os
-import queue
 import re
 import sys
 import signal
 import socket
 import threading
 import time
-import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-
-import yaml
 
 from . import data as dashboard_data
 from .registry import Registry
@@ -203,7 +196,12 @@ def _find_dashboard_occupant(port: int) -> dict | None:
             return None
         for line in net_tcp.read_text(encoding="utf-8", errors="replace").split("\n")[1:]:
             parts = line.split()
-            if len(parts) < 4:
+            # 字段数护栏按实际取用下标（inode 是第 10 列）判定（code-review item
+            # aaf3f304a0de）：旧实现只查 `len(parts) < 4`，而下方读 `parts[9]`——
+            # 4~9 个字段的截断/畸形行会抛 IndexError，被外层 `except Exception:
+            # return None` 吞掉，使「解析失败」与「无占用者」不可区分；调用方据此
+            # 打印误导性的「未知进程」并非 0 退出，而不是接管陈旧 dashboard 实例。
+            if len(parts) < 10:
                 continue
             local = parts[1]
             state = parts[3]
@@ -234,7 +232,11 @@ def _find_dashboard_occupant(port: int) -> dict | None:
                             cmdline = raw.replace(b"\x00", b" ").decode("utf-8", "replace").strip()
                         except OSError:
                             cmdline = ""
-                        return {"pid": int(pid_dir.name), "cmdline": cmdline}
+                        pid = int(pid_dir.name)
+                        # starttime 随 PID 一并返回（code-review item 5612e191a8f5）：
+                        # 接管方 kill 前可据此复核进程身份，防「查询后目标死亡、PID
+                        # 被复用」时误杀无关进程。
+                        return {"pid": pid, "cmdline": cmdline, "starttime": _proc_starttime(pid)}
             except OSError:
                 continue
     except Exception:
@@ -294,6 +296,10 @@ def _start_claude_watchdog(env=None) -> bool:
             "dashboard serve 检测到拉起它的 claude 进程已退出（CLAUDE_PID="
             f"{pid}）——agent run 已结束，本实例自杀以避免孤儿泄漏。\n"
         )
+        # SIGTERM 的处置已由 serve() 安装为「优雅停机」（转 httpd.shutdown()，
+        # code-review item a4e9b12a8b82），故此处 SIGTERM 会走完整清理链
+        # （session_manager.shutdown / watcher.stop / server_close），
+        # 不再依赖默认处置的「立即终止、不展开 Python 帧」。
         os.kill(os.getpid(), signal.SIGTERM)
 
     threading.Thread(
@@ -371,16 +377,36 @@ def serve(registry: Registry, port: int = 8787, static_dir=None):
             static_dir or STATIC_DIR,
         )
     except OSError as e:
-        if not isinstance(e, OSError) or e.errno not in (98, 48, 56):
-            # 非「地址已占用」错误（如权限）直接抛出
+        if e.errno not in (98, 48, 56):
+            # 非「地址已占用」错误（如权限）直接抛出。
+            # code-review item fde33bdc20b2：旧写法 `not isinstance(e, OSError) or ...`
+            # 的首操作数恒为 False（e 已由 except 绑定为 OSError），系死代码；
+            # 实际判据就是 errno，此处化简约。
             raise
         # EADDRINUSE：地址已被占用 → 端口接管逻辑
         occupant = _find_dashboard_occupant(actual)
         if occupant and _is_dashboard_serve_cmd(occupant["cmdline"]):
+            # 复核进程身份（code-review item 5612e191a8f5）：occupant 的 PID 来自
+            # 早先 /proc 扫描，若目标在查表与 kill 之间死亡、PID 被复用，直接
+            # SIGTERM 会误杀无关进程。用查表时记录的 starttime 比对（同
+            # _claude_watchdog_loop 的 PID 复用防护），不一致则视为目标已消失、
+            # 不再发信号（端口若仍被占，下方重绑会失败并明确报错）。
+            expected_start = occupant.get("starttime")
+            if expected_start is None or _proc_starttime(occupant["pid"]) != expected_start:
+                sys.stderr.write(
+                    f"端口 {actual} 占用者 PID {occupant['pid']} 身份已变化/已退出，"
+                    f"跳过接管信号（防 PID 复用误杀）。\n"
+                )
+                sys.exit(1)
             try:
                 os.kill(occupant["pid"], signal.SIGTERM)
-            except OSError:
-                pass
+            except OSError as e:
+                # 目标在查表后已退出属可预期竞态，记日志而非静默 pass
+                # （code-review item 5612e191a8f5）。
+                sys.stderr.write(
+                    f"端口 {actual} 接管：向 PID {occupant['pid']} 发 SIGTERM 失败"
+                    f"（目标可能已退出）: {e}\n"
+                )
             # 等待旧实例退出（≤3s）
             deadline = time.monotonic() + 3.0
             while time.monotonic() < deadline:
@@ -408,14 +434,37 @@ def serve(registry: Registry, port: int = 8787, static_dir=None):
             )
             sys.exit(1)
 
-    watcher = FileWatcher(
-        lambda: httpd.projects(), httpd.sse_hub, summary_index=httpd.summary_index
-    )
-    httpd.watcher = watcher
-    watcher.start()
-    # dashboard-live-session 3.2：会话管理器随 dashboard 生命周期（watcher 之后创建）
-    from .session_manager import SessionManager
-    httpd.session_manager = SessionManager(httpd.sse_hub)
+    watcher = None
+    try:
+        watcher = FileWatcher(
+            lambda: httpd.projects(), httpd.sse_hub, summary_index=httpd.summary_index
+        )
+        httpd.watcher = watcher
+        watcher.start()
+        # dashboard-live-session 3.2：会话管理器随 dashboard 生命周期（watcher 之后创建）
+        from .session_manager import SessionManager
+        httpd.session_manager = SessionManager(httpd.sse_hub)
+    except Exception:
+        # 绑定成功后的启动段抛异常时，旧实现会让异常逃出 serve() 而**不经过**
+        # 下方 finally 的 server_close()，泄漏已绑定的监听 socket（in-process
+        # 调用方——验证脚本/测试——常见）。此处显式清理后重抛
+        # （code-review item 1a0dcb04539b）。
+        try:
+            if httpd.session_manager is not None:
+                httpd.session_manager.shutdown()
+                httpd.session_manager = None
+        except Exception:
+            pass
+        try:
+            if watcher is not None:
+                watcher.stop()
+        except Exception:
+            pass
+        try:
+            httpd.server_close()
+        except Exception:
+            pass
+        raise
     url = f"http://localhost:{actual}"
     # flush=True：被 Ctrl+C / timeout 杀进程时 URL 必须已输出（供 skill 解析）
     print("=" * 60, flush=True)
@@ -424,6 +473,24 @@ def serve(registry: Registry, port: int = 8787, static_dir=None):
     print(f"  端口: {actual}", flush=True)
     print("  Ctrl+C 退出", flush=True)
     print("=" * 60, flush=True)
+    # 优雅停机信号处理（code-review item a4e9b12a8b82）：SIGTERM 若走默认处置会
+    # 立即终止进程、不展开 Python 帧——serve() 的 finally 清理链（session_manager
+    # .shutdown / watcher.stop / server_close）永不执行，live-session 子进程被
+    # 孤儿化（正是 self-watchdog 自杀 / 外部 stop 要防的形态）。安装 handler 把
+    # SIGTERM 转为 httpd.shutdown()（从 serve_forever 干净返回 → 走 finally）。
+    # 仅在主线程可安装（signal.signal 限制）；失败（非主线程调用 serve）降级为
+    # 既有默认处置。
+    try:
+        def _graceful_term(_signum, _frame):
+            # httpd.shutdown() MUST 从 serve_forever 所在线程**之外**调用（其内部
+            # 等 serve_forever 循环退出，同线程调用会死锁）。signal handler 在
+            # 主线程中断点执行、而主线程正阻塞在 serve_forever 内，故起一个极短命
+            # 线程调用 shutdown()，让 serve_forever 干净返回 → 走 finally 清理链。
+            threading.Thread(target=httpd.shutdown, daemon=True).start()
+
+        signal.signal(signal.SIGTERM, _graceful_term)
+    except (ValueError, OSError):
+        pass
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

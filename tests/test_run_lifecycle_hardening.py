@@ -115,7 +115,7 @@ class TestArchiveMoveResidue(unittest.TestCase):
         # 模拟归档移动：删除 spec-a 目录 + archive 新增
         arch = self.root / "spec" / "archive" / "spec-a-1788451452"
         shutil.move(self.root / "spec" / "changes" / "spec-a", arch)
-        has, names = self.engine._archive_move_residue()
+        has, names, _paths = self.engine._archive_move_residue()
         self.assertTrue(has)
         self.assertIn("spec-a", names)
 
@@ -124,19 +124,19 @@ class TestArchiveMoveResidue(unittest.TestCase):
         arch = self.root / "spec" / "archive" / "new-spec-1788451452"
         arch.mkdir(parents=True)
         (arch / "spec.md").write_text("# N", encoding="utf-8")
-        has, names = self.engine._archive_move_residue()
+        has, names, _paths = self.engine._archive_move_residue()
         self.assertTrue(has)
         self.assertIn("new-spec", names)
 
     def test_no_residue_clean_tree(self):
-        has, names = self.engine._archive_move_residue()
+        has, names, _paths = self.engine._archive_move_residue()
         self.assertFalse(has)
         self.assertEqual(names, [])
 
     def test_source_modification_not_residue(self):
         # 仅源码修改 → 非归档残留
         (self.root / "core" / "keep.py").write_text("KEEP = 2\n", encoding="utf-8")
-        has, names = self.engine._archive_move_residue()
+        has, names, _paths = self.engine._archive_move_residue()
         self.assertFalse(has)
         self.assertEqual(names, [])
 

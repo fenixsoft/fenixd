@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import threading
 
 # 安装命令的包名（固定字面量，不拼接任何用户输入）
 OCR_NPM_PACKAGE = "@alibaba-group/open-code-review"
@@ -28,6 +29,29 @@ OCR_NPM_PACKAGE = "@alibaba-group/open-code-review"
 _VERSION_TIMEOUT = 5
 # `npm install -g` 超时（秒）——全局安装含下载与解包，给足余量
 _INSTALL_TIMEOUT = 300
+# 全局安装互斥（code-review item ea103a53f670）：dashboard 跑在
+# ThreadingHTTPServer 上，双击/两个并发 POST /api/quality/ocr-install 会同时
+# 起两个 `npm install -g` 写同一全局前缀，可能损坏 node_modules 并产生难解的
+# EEXIST/EBUSY。非阻塞获取，已持锁则返回可读的「安装进行中」错误。
+_INSTALL_LOCK = threading.Lock()
+
+
+def _partial_output(exc) -> str:
+    """从 TimeoutExpired 取出子进程已产出的部分 stdout/stderr（尾部 4000 字符）。
+
+    `capture_output+text=True` 时 exc.stdout/stderr 为 str；若 bytes（未设 text）
+    则容错解码。任一为空按空串参与拼接。code-review item 95afe353e7d3。
+    """
+    def _as_text(v) -> str:
+        if v is None:
+            return ""
+        if isinstance(v, bytes):
+            return v.decode("utf-8", errors="replace")
+        return str(v)
+
+    combined = (_as_text(getattr(exc, "stdout", None)) + "\n"
+                + _as_text(getattr(exc, "stderr", None))).strip()
+    return combined[-4000:]
 
 
 def _ocr_version(ocr_bin: str) -> str | None:
@@ -73,7 +97,24 @@ def install_ocr(timeout: int = _INSTALL_TIMEOUT) -> dict:
         - ok=True 时附带安装后重新探测的 version（供 UI 立即刷新状态）
         - ok=False 时 error 为可读摘要，output 为 npm stdout/stderr 尾部
           （权限不足等原始报错透出给用户，便于自行 sudo 安装）
+        - 并发调用：非阻塞获取全局安装锁，已被占用时返回 error="安装进行中"
+          （code-review item ea103a53f670）
     """
+    if not _INSTALL_LOCK.acquire(blocking=False):
+        return {
+            "ok": False,
+            "error": "安装进行中（已有 npm install 正在执行），请稍候重试",
+            "output": "",
+            "version": None,
+        }
+    try:
+        return _install_ocr_locked(timeout)
+    finally:
+        _INSTALL_LOCK.release()
+
+
+def _install_ocr_locked(timeout: int) -> dict:
+    """`_INSTALL_LOCK` 保护下的实际安装流程（调用方持锁）。"""
     try:
         r = subprocess.run(
             ["npm", "install", "-g", OCR_NPM_PACKAGE],
@@ -81,11 +122,15 @@ def install_ocr(timeout: int = _INSTALL_TIMEOUT) -> dict:
             text=True,
             timeout=timeout,
         )
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as e:
+        # 超时分支保留子进程已写出的部分诊断（code-review item 95afe353e7d3）：
+        # 最慢的失败模式（300s 安装）此前只返回空 output，用户看不到任何细节，
+        # 而调用方明确依赖 output 透出 npm 报错尾部。TimeoutExpired 携带
+        # stdout/stderr 的部分内容，bytes/text 两态都容错解码。
         return {
             "ok": False,
             "error": f"安装超时（>{timeout}s）",
-            "output": "",
+            "output": _partial_output(e),
             "version": None,
         }
     except OSError as e:

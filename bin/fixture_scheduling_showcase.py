@@ -98,9 +98,19 @@ def _ensure_registered() -> None:
         print(f"WARN: registry 登记失败（依赖 auto-scan 兜底）: {e}", file=sys.stderr)
 
 
-def _commit_baseline() -> None:
-    _git("add", "-A")
-    _git(
+def _commit_baseline() -> bool:
+    """建立夹具初始基线提交；返回是否成功（code-review item 06bfc79c4b04）。
+
+    旧实现丢弃 `_git` 返回值，git 不可用/无可用身份/索引损坏时 `reset_fixture`
+    仍打印「fixture created (fresh baseline commit)」并返回 0——prepare 报成功而
+    夹具其实没有 HEAD，后续 daemon 的 `worktree add` 会在场景内失败，产生另一个
+    难以定位的环境失败。此处显式检查 add/commit 的 returncode。
+    """
+    add = _git("add", "-A")
+    if add.returncode != 0:
+        print(f"FAIL: fixture git add 失败: {(add.stderr or '').strip()[:200]}", file=sys.stderr)
+        return False
+    commit = _git(
         "-c",
         "user.name=fenix-fixture",
         "-c",
@@ -109,6 +119,14 @@ def _commit_baseline() -> None:
         "-qm",
         "fixture: scheduling-showcase 初始基线",
     )
+    if commit.returncode != 0:
+        print(
+            f"FAIL: fixture git commit 失败（夹具将无 HEAD）: "
+            f"{(commit.stderr or '').strip()[:200]}",
+            file=sys.stderr,
+        )
+        return False
+    return True
 
 
 def _provision_from_template() -> None:
@@ -186,6 +204,25 @@ def _reset_alerts_baseline() -> None:
                 pass
 
 
+def _atomic_write_text(path: Path, text: str) -> None:
+    """原子写文本（tempfile + fsync + os.replace，同 _reset_alerts_baseline 惯用法）。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_str = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    tmp_path = Path(tmp_str)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(str(tmp_path), str(path))
+    finally:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+
+
 def _alerts_count() -> int:
     """读取夹具 admin_alerts.json 记录数；缺文件/损坏按 0（供 --status 只读核对）。"""
     alerts_path = ROOT / ".fenix" / "admin_alerts.json"
@@ -229,8 +266,12 @@ def _reset_fixture_body() -> int:
     # 基线文件：无条件写回（场景每轮真实改写它们，且不再依赖夹具 git 历史——
     # 旧实现用 `git checkout HEAD -- STATE.md` 复位，丢历史后无 HEAD 可用，
     # 而 BASELINE_STATE 常量本就是权威基线）。
-    (ROOT / ".fenix" / "STATE.md").write_text(BASELINE_STATE, encoding="utf-8")
-    (ROOT / ".fenix" / "config.yaml").write_text(BASELINE_CONFIG, encoding="utf-8")
+    # 原子写基线文件（code-review item 9904b83fe05e）：`write_text` 先截断后写，
+    # 常驻的夹具 daemon（或并发的 seed/status 读取方）可能观测到零长度/半写的
+    # STATE.md/config.yaml 而使 spec 状态断言失败——正是下方 _reset_alerts_baseline
+    # 显式加固要防的形态。统一走同一原子写助手。
+    _atomic_write_text(ROOT / ".fenix" / "STATE.md", BASELINE_STATE)
+    _atomic_write_text(ROOT / ".fenix" / "config.yaml", BASELINE_CONFIG)
 
     # 告警基线：复位 admin_alerts.json 为空数组（fixture-project-governance 4.1）——
     # seed 写入的告警/处置记录是验证数据，不随 --reset 复位会跨验证轮次累积。
@@ -240,8 +281,15 @@ def _reset_fixture_body() -> int:
     # 给 worktree add 一个 HEAD 可依）。已存在则不动历史，避免每轮 reset 产生
     # 提交churn——STATE.md 的复位靠上面的无条件写回，不再依赖 git。
     if not (ROOT / ".git").exists():
-        _git("init", "-q")
-        _commit_baseline()
+        init = _git("init", "-q")
+        if init.returncode != 0:
+            print(
+                f"FAIL: fixture git init 失败: {(init.stderr or '').strip()[:200]}",
+                file=sys.stderr,
+            )
+            return 1
+        if not _commit_baseline():
+            return 1
         print("fixture created (fresh baseline commit)")
     else:
         print("fixture reset (baseline files rewritten)")

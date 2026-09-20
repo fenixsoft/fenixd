@@ -78,7 +78,10 @@ class VAdjudicationMixin:
                 terminal = "interrupted"
             else:
                 terminal = "error"
-        elif impl_status_success := bool(impl_result and impl_result.get("status") == "success"):
+        elif impl_result and impl_result.get("status") == "success":
+            # （code-review item 71664501d3f3）原为 `elif impl_status_success := ...`
+            # 海象赋值，该变量在方法内从未被读取（死状态且误导性地长寿）；改为
+            # 普通布尔条件，语义不变。
             terminal = "result"
         elif (impl_result or {}).get("status") == "partial":
             # fix-impl-tasks-completion-gate D6：partial 是诚实申报未完成的合法
@@ -233,8 +236,15 @@ class VAdjudicationMixin:
             resolved = self._effective_declaration(spec_name)
             if resolved.get("entries"):
                 context["declared_entries"] = resolved["entries"]
-        except Exception:
-            pass
+        except Exception as e:
+            # 声明解析失败不再静默吞（code-review item bb46425e6eae）：判定输入
+            # 缺失 declared_entries 会静默劣化 judge 口径；记 WARNING（与本文件
+            # 其它 fail-open 助手同款留痕），使劣化可诊断。
+            self._pm.logger.warning(
+                "pm_engine",
+                f"有效声明解析失败 '{spec_name}'（judge 输入缺 declared_entries）: "
+                f"{type(e).__name__}: {e}",
+            )
         return context
 
     def _read_dispute_verdicts(
@@ -396,6 +406,9 @@ class VAdjudicationMixin:
             return {"action": "fallback"}
 
         # 逐条软化（单条异常留在 remaining 并 warning）
+        # diff_by_element 收集各条改写 diff 并喂入下方审计留痕的 "diff"
+        # （code-review item 7d3b13d266dc：旧实现声明后从未被读，审计实际取自
+        # 文件级 before_text/after_text，此处补上逐条 diff，使留痕可溯源到条目）。
         diff_by_element: dict = {}
         for m in deterministic[:]:  # copy以便异常时移除
             entry = entry_by_path[m]
@@ -442,6 +455,11 @@ class VAdjudicationMixin:
                     "diff": {
                         "before": before_text,
                         "after": after_text,
+                        "by_element": {
+                            k: {"before": d.get("before"), "after": d.get("after")}
+                            for k, d in diff_by_element.items()
+                            if isinstance(d, dict)
+                        },
                     },
                 }
             )
@@ -730,7 +748,15 @@ class VAdjudicationMixin:
         # 执行目标与条目级 kind 判定基准（D2：读写同位，MUST NOT 直写主树）
         resolved = self._effective_declaration(spec_name, result)
         entries = resolved.get("entries") or []
-        by_path = {e["path"]: e for e in entries}
+        # 非 dict / 缺 path 的畸形条目过滤（code-review item f204e70e4aa8）：
+        # entries 来自 resolve_effective_declaration，本文件其它消费点均以
+        # isinstance(e, dict)/.get("path") 守卫；裸 e["path"] 遇畸形条目会抛
+        # KeyError 而非 fail-open。统一过滤。
+        by_path = {
+            e["path"]: e
+            for e in entries
+            if isinstance(e, dict) and e.get("path")
+        }
         if not entries:
             return {"action": "fallback"}
 
@@ -939,7 +965,15 @@ class VAdjudicationMixin:
         # 执行目标与条目级 kind 判定基准（D1/D2：读写同位）
         resolved = self._effective_declaration(spec_name, result)
         entries = resolved.get("entries") or []
-        by_path = {e["path"]: e for e in entries}
+        # 非 dict / 缺 path 的畸形条目过滤（code-review item f204e70e4aa8）：
+        # entries 来自 resolve_effective_declaration，本文件其它消费点均以
+        # isinstance(e, dict)/.get("path") 守卫；裸 e["path"] 遇畸形条目会抛
+        # KeyError 而非 fail-open。统一过滤。
+        by_path = {
+            e["path"]: e
+            for e in entries
+            if isinstance(e, dict) and e.get("path")
+        }
 
         relocated_any = False
         relocated_old: list = []  # 已走重定位的旧路径（复检时不再计入缺件）
@@ -948,7 +982,9 @@ class VAdjudicationMixin:
             entry = by_path.get(p)
             # 仅声明段条目可判陈日；正则回退路径（无 kind 概念）不命中
             if not entry or not is_stale_declaration(entry, self._pm.project_root):
-                remaining.append(p if not isinstance(p, dict) else p)
+                # missing_paths 已在上方归一为字符串，此处 `p if not isinstance(...)
+                # else p` 两分支恒等（code-review item 0a8b4d70dc57），简化为直接追加。
+                remaining.append(p)
                 continue
             # 陈日信号命中：机械 basename 唯一命中 → 候选替代路径（3.4）
             try:
@@ -1160,8 +1196,9 @@ class VAdjudicationMixin:
                 text=True,
                 timeout=60,
             )
+            commit = None
             if add.returncode == 0:
-                _sp.run(
+                commit = _sp.run(
                     [
                         "git",
                         "-C",
@@ -1176,11 +1213,26 @@ class VAdjudicationMixin:
                     text=True,
                     timeout=120,
                 )
-            self._pm.logger.info(
-                "pm_engine",
-                f"声明段重定位已在实现分支提交 '{spec_name}'（{element} → "
-                f"{new_path}，worktree {worktree_path}）",
-            )
+            # 提交结果须经校验（code-review item d75fc648a6bf）：旧实现只看
+            # add.returncode 就无条件打「已提交」INFO——git add 失败或 commit
+            # 失败时重定位实际未落分支，误导性日志掩盖了这一点。仅当
+            # add 与 commit 均 returncode==0 才记成功；否则 WARNING（非阻塞
+            # 回退经 ensure_spec_committed 仍适用）。
+            if add.returncode == 0 and commit is not None and commit.returncode == 0:
+                self._pm.logger.info(
+                    "pm_engine",
+                    f"声明段重定位已在实现分支提交 '{spec_name}'（{element} → "
+                    f"{new_path}，worktree {worktree_path}）",
+                )
+            else:
+                add_rc = add.returncode
+                commit_rc = commit.returncode if commit is not None else "n/a"
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"声明段重定位分支提交未成功 '{spec_name}'（{element} → "
+                    f"{new_path}，worktree {worktree_path}，add.rc={add_rc}, "
+                    f"commit.rc={commit_rc}）——重定位可能未落分支",
+                )
         except Exception as e:
             self._pm.logger.warning(
                 "pm_engine",
@@ -1332,7 +1384,11 @@ class VAdjudicationMixin:
             self._pm.project_root / "spec" / "changes" / spec_name
         )
         eff_entries = effective_resolved.get("entries") or []
-        eff_by_path = {e["path"]: e for e in eff_entries}
+        eff_by_path = {
+            e["path"]: e
+            for e in eff_entries
+            if isinstance(e, dict) and e.get("path")
+        }
         for m in remaining_paths:
             v = _verdict_of(m)
             verdict = v.get("verdict")
@@ -1351,6 +1407,16 @@ class VAdjudicationMixin:
                     # 3.2/3.3 文本改写（relocate_declared_path）；已无该条目
                     # （实现方先行对齐）走 3.6 凭据登记。非陈日走既有 typo 修正。
                     if is_stale_declaration(entry, self._pm.project_root):
+                        # 改写前快照 tasks.md 全文（code-review item 9aab1d5262d0）：
+                        # 旧实现在 _relocate_or_register **之后**读取并同时赋给
+                        # before/after，导致 before == after、改写前内容不可考。
+                        # 先拍 before，改写后再读 after，审计 diff 才有意义。
+                        try:
+                            audit_before = Path(eff_spec_dir, "tasks.md").read_text(
+                                encoding="utf-8"
+                            )
+                        except (OSError, UnicodeDecodeError):
+                            audit_before = ""
                         ok = self._relocate_or_register(
                             spec_name,
                             result,
@@ -1362,16 +1428,16 @@ class VAdjudicationMixin:
                         if not ok:
                             verdict_by_element[m] = {"verdict": "unclear"}
                             continue
-                        # 改写 diff 留痕（改写后重读声明段全文）
+                        # 改写后文本（失败回退空串，diff 仍可反映「改写前非空」）
                         try:
-                            before_text = Path(eff_spec_dir, "tasks.md").read_text(
+                            after_text = Path(eff_spec_dir, "tasks.md").read_text(
                                 encoding="utf-8"
                             )
                         except (OSError, UnicodeDecodeError):
-                            before_text = ""
+                            after_text = ""
                         diff_by_element[m] = {
-                            "before": before_text,
-                            "after": before_text,
+                            "before": audit_before,
+                            "after": after_text,
                         }
                         executed_verdicts.append({"element": m, **v})
                         self._pm.logger.warning(
@@ -1463,7 +1529,27 @@ class VAdjudicationMixin:
 
         # 6. 防洗白闸门（4.4）：修正后重跑守卫对账——actual_path 在实现分支
         # 真实存在才放行；仍缺失按缺件走既有打回路径（修正声明 ≠ 放行缺件）。
-        remaining = self._pm._deliverable_gate_missing(spec_name, result)
+        # 守卫重跑独立 try/except（code-review item 0133485d7dff）：本模块其它
+        # 重跑点（_preclassify_missing/_orphan/_drift/_stale）均包裹该守卫；若它
+        # 在此抛异常，旧实现会让异常在 spec 仍处临时 blocked 态时逃逸、中止裁决。
+        # 失败按「仍缺件」保守处置（fail-closed：不放行 merge），error 走既有
+        # blocked/人工裁决路径。
+        try:
+            remaining = self._pm._deliverable_gate_missing(spec_name, result)
+        except Exception as e:
+            self._pm.logger.error(
+                "pm_engine",
+                f"dispute judge 裁决后守卫重跑异常 '{spec_name}'（保守按仍缺件处置）: {e}",
+            )
+            self._pm.state_machine.update_spec(
+                spec_name,
+                {
+                    "status": "blocked",
+                    "tester_run": None,
+                    "error": f"dispute judge 裁决后守卫重跑异常（需人工复核）: {e}",
+                },
+            )
+            return {"action": "handled"}
         if not remaining:
             self._pm.logger.warning(
                 "pm_engine",

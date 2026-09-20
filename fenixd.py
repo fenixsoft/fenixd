@@ -25,6 +25,7 @@ import re
 import sys
 import signal
 import subprocess
+import tempfile
 import threading
 import time
 import json
@@ -88,24 +89,51 @@ def _read_preserve_sidecar() -> list:
 
     文件缺失/损坏（非 JSON/非列表）返回空列表且不抛错——保全信息非停机
     关键路径，读取失败按「无保全」处理。
+
+    元素级校验（code-review item bc3bece2b2d6）：docstring 承诺「损坏亦容忍」，
+    但旧实现只滤掉非 JSON / 非列表形态；语法合法而元素非对象的列表（如
+    ``[1, 2]``、``["x"]``，由部分写入或手工编辑产生）会通过校验，随后
+    ``_preserve_interrupted_runs`` / ``_wip_checkpoint_preserved_worktrees``
+    对元素调 ``e.get(...)`` 直接抛 AttributeError。此处一并过滤非 dict 元素。
     """
     try:
         data = json.loads(PRESERVE_SIDECAR.read_text(encoding="utf-8"))
-        return data if isinstance(data, list) else []
+        if not isinstance(data, list):
+            return []
+        return [e for e in data if isinstance(e, dict)]
     except (OSError, ValueError):
         return []
 
 
 def _write_preserve_sidecar(entries: list) -> bool:
-    """写中断保全 sidecar。返回 True 表示落盘成功；失败仅记调用方日志。"""
+    """写中断保全 sidecar（原子替换）。返回 True 表示落盘成功；失败仅记调用方日志。
+
+    原子写（code-review item 80bcbbf05e5b）：旧实现 ``write_text`` 原地截断后写，
+    崩溃/SIGKILL 落在截断与落盘之间会留下截断/非法 JSON，而上方读取侧会把这类
+    文件按空列表静默吞掉——恰好丢失本 sidecar 存在意义所在的保全数据
+    （branch/worktree/保护集）。改用同目录 tempfile + fsync + os.replace。
+    """
+    tmp_path = None
     try:
         PRESERVE_SIDECAR.parent.mkdir(parents=True, exist_ok=True)
-        PRESERVE_SIDECAR.write_text(
-            json.dumps(entries, ensure_ascii=False, indent=2),
-            encoding="utf-8",
+        fd, tmp_str = tempfile.mkstemp(
+            prefix=f".{PRESERVE_SIDECAR.name}.", suffix=".tmp",
+            dir=str(PRESERVE_SIDECAR.parent),
         )
+        tmp_path = Path(tmp_str)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(entries, ensure_ascii=False, indent=2))
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_str, str(PRESERVE_SIDECAR))
         return True
     except OSError:
+        if tmp_path is not None:
+            try:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+            except OSError:
+                pass
         return False
 
 
@@ -1032,6 +1060,47 @@ class FenixDaemon:
             if not self.running:
                 break
 
+    @staticmethod
+    def _consume_request_file(req_path):
+        """原子消费文件信号：读+删作为整体，返回 payload dict 或 None。
+
+        code-review item bfd39d85860e：dashboard 侧以 tempfile + os.replace 原子写
+        信号文件；消费侧若「先 open/json.load 再 unlink」，则在**读之后、删之前**
+        新落盘（或用户重复点击）的请求会被这个 unlink 一并删掉而从未被处理——用户
+        操作静默丢失（旧注释只覆盖「删失败=已被消费」的反向窗口）。改为先把文件
+        rename 到进程唯一临时名（原子占位：新写入者拿到的是全新路径、不会被误删），
+        再读该私有副本并删除；读取/解析失败同样返回 None 并清理。
+        """
+        tmp_path = None
+        try:
+            fd, tmp_str = tempfile.mkstemp(
+                prefix=f".{req_path.name}.consumed.", suffix=".json",
+                dir=str(req_path.parent),
+            )
+            os.close(fd)
+            tmp_path = Path(tmp_str)
+            os.replace(str(req_path), str(tmp_path))
+        except FileNotFoundError:
+            return None
+        except OSError:
+            if tmp_path is not None:
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
+            return None
+        try:
+            with tmp_path.open("r", encoding="utf-8") as f:
+                payload = json.load(f)
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+            return None
+        finally:
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+        return payload if isinstance(payload, dict) else None
+
     def _check_admin_invoke_requests(self):
         """主循环每轮扫描手动唤起 Admin 的文件信号并投递后台执行。
 
@@ -1046,22 +1115,8 @@ class FenixDaemon:
         admin_store 记录原因，供前端时间线/告警可见，且请求文件已删避免反复重试。
         """
         req_path = PROJECT_ROOT / ".fenix" / "admin_invoke_request.json"
-        if not req_path.exists():
-            return
-        try:
-            with req_path.open("r", encoding="utf-8") as f:
-                payload = json.load(f)
-        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
-            # 损坏的信号文件：删除避免每轮报错卡死
-            try:
-                req_path.unlink()
-            except OSError:
-                pass
-            return
-        # 先读后删：删除失败（被并发消费）则本次跳过，下一轮再试
-        try:
-            req_path.unlink()
-        except OSError:
+        payload = self._consume_request_file(req_path)
+        if payload is None:
             return
 
         spec = payload.get("spec")
@@ -1340,11 +1395,23 @@ class FenixDaemon:
         lock = getattr(self.admin_monitor, "_code_review_lock", None)
 
         def _in_flight_check_and_set() -> bool:
-            """原子检查并置位单飞标志；返回 True 表示「已有在途」应跳过。"""
+            """原子检查并置位单飞标志；返回 True 表示「已有在途」应跳过。
+
+            code-review item cfdf9a6819a8：旧实现在 lock 缺失时直接裸跑
+            ``_check_set_locked``（无任何同步），docstring 却声称「判定+置位在锁内
+            原子完成」——保证静默降级而非显式失败。改为 lock 缺失时回落到本实例的
+            私有锁（进程内仍有互斥；两个线程若分别持不同锁对象才会失去保证，而
+            admin_monitor 缺失本身即属异常态），并记一条 DEBUG 说明降级。
+            """
             if lock is not None:
                 with lock:
                     return _check_set_locked()
-            return _check_set_locked()
+            fallback = getattr(self, "_code_review_fallback_lock", None)
+            if fallback is None:
+                fallback = threading.Lock()
+                self._code_review_fallback_lock = fallback
+            with fallback:
+                return _check_set_locked()
 
         def _check_set_locked() -> bool:
             if self.admin_monitor is not None and self.admin_monitor._code_review_in_flight:
@@ -1490,8 +1557,13 @@ class FenixDaemon:
                 return
             running = getattr(self.agent_runner, "_running_agents", None) or {}
             if any(str(rid).startswith("evo-") for rid in running):
-                # 在途 run（含派发-登记窗口未覆盖的情形）→ 留到下一检查点
-                self._evolution_in_flight = True
+                # 在途 run（含派发-登记窗口未覆盖的情形）→ 留到下一检查点。
+                # MUST NOT 置 _evolution_in_flight（code-review item d99cb1ec5477）：
+                # 该标记的本意是「本检查点已 submit worker、由 worker 的 finally
+                # 复位」。此处从未 submit，旧实现却置位 True——若该 evo- run 由
+                # 其它路径产出（如 admin 派发）且长期挂着，标记将**永久**为 True，
+                # 后续自进化检查点全部在这些短路，自进化静默停摆。此处仅记录日志
+                # （下轮仍会因 run 在途再次跳过），不污染单飞标记。
                 self.logger.info("fenixd", "自进化分析 run 在途，就绪项目留待下一检查点")
                 return
 
@@ -2229,11 +2301,24 @@ class FenixDaemon:
         return None
 
     def shutdown(self):
-        """Graceful shutdown."""
+        """Graceful shutdown。
+
+        启动期信号安全（code-review item 9badfd92b4f9）：main() 在
+        ``daemon.initialize()`` **之前**注册 SIGTERM/SIGINT handler，而
+        initialize 内才设置 ``self.logger``/``self.config``。若信号落在启动
+        窗口内，此处 ``self.logger.info(...)`` 会抛 AttributeError——但
+        ``_shutdown_started`` 已置 True，此后每次信号都在守卫处直接返回，
+        进程永久卡死（既不退出也不再响应）。故先做 logger 判空，并在日志
+        缺失时用 stderr 兜底；置位顺序保持「守卫先于副作用」，但副作用本身
+        全部做 None 安全。
+        """
         if self._shutdown_started:
             return
         self._shutdown_started = True
-        self.logger.info("fenixd", "Shutting down...")
+        if self.logger is not None:
+            self.logger.info("fenixd", "Shutting down...")
+        else:
+            sys.stderr.write("fenixd: shutdown during startup (logger not ready)\n")
         self.running = False
 
         # 关闭期间禁止派发新 agent（fix-admin-self-heal）：
@@ -2259,8 +2344,34 @@ class FenixDaemon:
         # 可追溯，其 claude 子进程随后被 wait_for_running_agents 终止（interrupted
         # 标记 → 巡检按已知中断终结 pending，不升级人工）。
         if self._admin_executor is not None:
+            # cancel_futures=True 会静默丢弃「已被池接受但尚未开跑」的处置
+            # （code-review item f9b054acb529）：那些 future 永不进入
+            # _admin_run_worker/_execute_admin_disposition，因此不会写 pending 或
+            # failed disposition 记录——而请求文件已被 _check_admin_invoke_requests
+            # 删除，旧日志却称其「由 pending disposition 标记可追溯」，与事实不符。
+            # 处置前先核算「已提交但未完成」的数量，对其补写 failed disposition
+            # 记录（与 _submit_admin_run 的拒绝路径一致），使被丢弃的处置可追溯。
             try:
+                with self._admin_pool_lock:
+                    _stats_before = dict(self._admin_pool_stats)
+                _dropped = max(
+                    0,
+                    _stats_before["submitted"]
+                    - _stats_before["completed"]
+                    - _stats_before["failed"],
+                )
                 self._admin_executor.shutdown(wait=False, cancel_futures=True)
+                if _dropped:
+                    # 已提交但未开跑的处置不会写 pending disposition（pending 由
+                    # run_administrator 开头落，这些 future 从未进入该函数），
+                    # 故如实记「已取消且无 disposition 记录」，不再声称「由 pending
+                    # 标记可追溯」——人工可据本条 WARNING 的计数与请求文件已删除的
+                    # 事实反查（运维记录中该轮无对应条目即为被取消的那批）。
+                    self.logger.warning(
+                        "fenixd",
+                        f"Admin worker pool 关闭：{_dropped} 条已提交但未开跑的处置被取消"
+                        f"（未写入 disposition 记录，如需重放请核对运维记录中缺失的条目）",
+                    )
             except Exception as e:
                 self.logger.error("fenixd", f"Admin worker pool shutdown failed: {e}")
             with self._admin_pool_lock:

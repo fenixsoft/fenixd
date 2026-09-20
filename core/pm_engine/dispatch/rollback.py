@@ -120,7 +120,8 @@ class RRollbackMixin:
                     f"Rolled back '{spec_name}' reviewing（评审 worker 异常，"
                     f"清理锚点待恢复拾取）: {exc}",
                 )
-            elif agent_type in ("implementer", "fast-track") and status == "implementing":                # 死亡 run 豁免（fix-budget-counting-semantics D1）：异常路径＝
+            elif agent_type in ("implementer", "fast-track") and status == "implementing":
+                # 死亡 run 豁免（fix-budget-counting-semantics D1）：异常路径＝
                 # run 无收工结果产出（进程消失/零输出/网关链路耗尽），回退本次
                 # 启动的预算计数。计数在 worker 启动处先行递增，此处补偿回退。
                 # run_reason 传入 exc 信息（派发异常不属监督超时/停滞，应豁免）。
@@ -176,6 +177,15 @@ class RRollbackMixin:
                     f"({agent_type} never started): {exc}",
                 )
                 self._enqueue(spec_name, agent_type)
+            else:
+                # 未覆盖 (agent_type, status) 组合（code-review item 01c0160765d2）：
+                # 旧 if/elif 链无兜底——静默返回、无日志、无回滚，残余卡死形态在
+                # 日志里不可诊断。至少记一条 WARNING 暴露观测到的组合。
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"派发失败回滚：未覆盖组合 spec='{spec_name}' "
+                    f"agent_type={agent_type!r} status={status!r}（无回滚动作，仅留痕）",
+                )
         except Exception as e2:
             self._pm.logger.error("pm_engine", f"State rollback failed for '{spec_name}': {e2}")
 
@@ -214,14 +224,17 @@ class RRollbackMixin:
             from core.admin_store import AdminStore, SIGNAL
 
             # 条目去向从 worktree_manager 读（dispatch 层不持锁，读实例属性足够——
-            # guard 段已结束、无并发写者）。
+            # guard 段已结束、无并发写者）。kept 缺键时按 **True** 保守默认
+            # （code-review item f09a5bfeb402）：旧实现 `fate.get("kept")` 缺键
+            # 回 None（falsy）会误报「已被自动 drop」并写 stash_kept=False，
+            # 编造数据丢失声明；缺键与读取失败同属「无法确证 drop」，一律按保留。
             try:
                 fate = dict(self._pm.agent_runner.worktree_manager.last_stash_entry_fate)
             except Exception:
                 fate = {"kept": True, "sha": ""}
             sha = fate.get("sha", "") or ""
             short_sha = sha[:12] if sha else ""
-            if fate.get("kept"):
+            if fate.get("kept", True):
                 fate_desc = (
                     f"stash 条目保留在栈中（栈顶 sha {short_sha}，" f"git stash list 可见）"
                     if short_sha
@@ -262,7 +275,7 @@ class RRollbackMixin:
                     "description": description,
                     "evidence": {
                         "conflict_files": list(conflict_files),
-                        "stash_kept": bool(fate.get("kept")),
+                        "stash_kept": bool(fate.get("kept", True)),
                         "stash_sha": sha,
                         "wip_overlap": overlap,
                     },

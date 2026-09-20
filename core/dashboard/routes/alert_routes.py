@@ -8,12 +8,12 @@ D5 约定：各组方法采用 mixin 模式，DashboardHandler 继承各组 mixi
 
 from __future__ import annotations
 
-import json
+import logging
 from pathlib import Path
 
-from core.admin_store import AdminStore, SIGNAL
 from core.dashboard import data as dashboard_data
-from core.dashboard.registry import Registry
+
+logger = logging.getLogger("fenixd.dashboard.alert_routes")
 
 
 class H6AlertRoutesMixin:
@@ -127,15 +127,27 @@ class H6AlertRoutesMixin:
                     "summary": dashboard_data.alerts_summary(Path(project["path"])),
                 }
             )
-        except Exception:
-            pass
+        except Exception as e:
+            # 广播失败留痕（code-review item 95ab3853f55d）：旧 `except: pass`
+            # 把（含 payload 形态错误等编程错误的）一切失败静默吞掉，持续失败的
+            # 广播无迹可查。降级为 WARNING 不阻断已成功的处置动作。
+            logger.warning("SSE 广播失败（告警已处置，横幅可能滞后）: %s", e)
         self._json({"ok": True, "id": alert_id})
 
 
     def _api_alerts_clear(self):
-        """清理所有事件：把全部项目未处理升级告警标记为已处理；逐项目广播刷新横幅。"""
+        """清理所有事件：把全部项目未处理升级告警标记为已处理；逐项目广播刷新横幅。
+
+        与 `_api_alerts` / `_api_admin_activities` 一致地**跳过 fixture 项目**
+        （code-review item cb7a35748089）：夹具告警为验证噪音、本就不进人工聚合
+        视图，但旧实现仍对其 mark_all_alerts_handled 并广播其摘要——用户「清理
+        可见横幅」会静默改写隐藏的夹具状态，且破坏夹具 reset 契约（夹具告警
+        只应经 bin/fixture_scheduling_showcase.py --reset 复位）。
+        """
         cleared = 0
         for p in self.server.projects():
+            if p.get("fixture"):
+                continue  # fixture-project-governance：夹具告警只经 --reset 复位
             if not p.get("exists"):
                 continue
             proot = Path(p["path"])
@@ -148,8 +160,11 @@ class H6AlertRoutesMixin:
                         "summary": dashboard_data.alerts_summary(proot),
                     }
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                # 广播失败留痕（code-review item 95ab3853f55d），同 _api_alert_handled。
+                logger.warning(
+                    "SSE 广播失败（告警已清理，横幅可能滞后）: %s", e
+                )
         self._json({"ok": True, "cleared": cleared})
 
     # ── 项目管理端点（启停 daemon / 软删除） ──────────────

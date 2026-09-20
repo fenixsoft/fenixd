@@ -34,8 +34,6 @@ from core.proc_utils import find_free_port
 # 正确修复却因预算耗尽无法重入，修复落盘却永不执行）。
 _SCENARIO_REPAIR_MAX_ROUNDS = 3
 
-from core.pm_engine.verification.judge_gate import _MAX_JUDGE_RERUNS
-
 # D9：`ensure_main_tree_deps` / `run_prepare_steps` / `load_verify_contract` /
 # `rewrite_scenarios_origin` 不再在此模块顶层绑定——调用点经包命名空间
 # （`import core.pm_engine.verification as _facade`）延迟解析，使
@@ -448,10 +446,19 @@ class VerificationPipeline:
         # 下面的 import 会使用已更新的 sys.modules 条目
         for mod_name in _verify_modules:
             try:
-                if mod_name not in sys.modules:
-                    importlib.import_module(mod_name)
-            except Exception:
-                pass
+                # 条件放宽（code-review item eb64219d5fa8）：旧守卫 `not in sys.modules`
+                # 使本循环永远无法恢复「importlib.reload 失败」的模块（失败的 reload
+                # 会把旧条目留在 sys.modules 中），与方法 docstring 声称的「reload 后
+                # 重导入」矛盾。改为对**所有**目标模块尝试 import_module（已存在则
+                # 直接返回既有模块，幂等无副作用），并对失败记 WARNING 而非静默 pass
+                # （静默会让调用方继续跑陈旧/半加载的引擎代码——正是本方法要防的形态）。
+                importlib.import_module(mod_name)
+            except Exception as e:
+                self._context.logger.warning(
+                    "pm_engine",
+                    f"模块重导入失败 {mod_name}（继续，可能残留陈旧代码）: "
+                    f"{type(e).__name__}: {e}",
+                )
 
     def _handle_verdict_evidence_rejection(self, spec_name: str, verdict_ret: dict) -> None:
         """裁决证据分类校验失败处置（add-verdict-evidence-taxonomy D1-D5）。
@@ -684,6 +691,19 @@ class VerificationPipeline:
                 if retry_judge.success:
                     verifier_result = self._read_verdict(spec_name)
                     verifier_status = verifier_result.status if verifier_result.ok else None
+            elif retry_status != "testing":
+                # 非 testing 丢弃（code-review item 3219564e2f22）：本节 docstring
+                # 明言「重试前复用入口状态判据（非 testing 丢弃，与 stale-result
+                # 防护同构）」，但旧实现仅「非 testing 就不重派」，随后仍无条件走
+                # fail-closed blocked 写入——spec 已离开 testing（admin 复位为
+                # implemented / 解冻）时该 blocked 会覆盖更新的状态。与上方
+                # _apply_status 判据同口径：非 testing 直接丢弃本次结果、不写状态。
+                self._context.logger.debug(
+                    "pm_engine",
+                    f"裁决不可读但 spec 已非 testing（当前 '{retry_status}'）"
+                    f"'{spec_name}' — 丢弃本次结果，不阻断",
+                )
+                return None
             if not verifier_result.ok:
                 self._context.logger.error(
                     "pm_engine",
@@ -1018,7 +1038,7 @@ class VerificationPipeline:
             migrated = True
             # 步骤 3：迁移前备份原文件（回退口 D4 配套；随下次成功迁移覆盖）
             try:
-                (verify_dir / "test_scenarios.json.contract-v1.bak").write_text(
+                (verify_dir / f"test_scenarios.json.contract-v{set_version}.bak").write_text(
                     path.read_text(encoding="utf-8"), encoding="utf-8"
                 )
             except OSError as e:
@@ -1121,7 +1141,7 @@ class VerificationPipeline:
                 base_opts += (
                     "③ 如需恢复迁移前集合：删除 "
                     f".fenix/verify-progress/{spec_name}/test_scenarios.json 与 "
-                    "test_scenarios.json.contract-v1.bak 的对应项后由 planner "
+                    f"test_scenarios.json.contract-v{set_version}.bak 的对应项后由 planner "
                     "重出题 / 或把 .bak 恢复为原文件。"
                 )
             self._escalate_env_blocked(

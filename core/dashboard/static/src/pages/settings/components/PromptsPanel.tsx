@@ -10,7 +10,8 @@ import type { PromptsData } from '@/services/dashboard';
 const { Text, Title } = Typography;
 const { TextArea } = Input;
 
-// key 集合与后端 AGENT_PROMPT_FILES 严格一致（10 个 agent，勿增删）
+// key 集合与后端 AGENT_PROMPT_FILES 严格一致（含 code-review 共 11 个 agent，
+// 勿增删；code-review item f62e36d1531f：旧注释写 10 个，已漂移）
 const AGENT_LABELS: Record<string, string> = {
   implementer: 'Implementer（实现）',
   verifier: 'Verifier（验证）',
@@ -48,6 +49,12 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
         const d = await getPrompts(project);
         if (!cancelled) {
           setData(d);
+          // 切换项目时同步把 activeAgent 复位为 implementer（code-review item
+          // 67694883ca76）：旧实现只重置草稿（恒取 implementer 的 extra）而不重置
+          // 选择器，用户若先切到 verifier 再切项目，textarea 装的是 implementer
+          // 内容而选择器显示 verifier——点保存会把 implementer 内容写进
+          // .fenix/agents/verifier.md（静默错写文件）。复位后二者一致。
+          setActiveAgent('implementer');
           setExtraDraft(d.project ? d.project.extras['implementer'] ?? '' : '');
         }
       } catch (e) {
@@ -61,30 +68,56 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
     return () => { cancelled = true; };
   }, [project]);
 
-  // 切换 agent 时把项目附加草稿重置为服务端现值
+  // 切换 agent 时把项目附加草稿重置为服务端现值；若当前草稿有未保存改动，
+  // 先确认再丢弃（code-review item 60bca994744d：旧实现无条件覆盖，静默丢失
+  // 用户已输入未保存的内容）。
+  const serverDraftFor = (atype: string) =>
+    data?.project ? data.project.extras[atype] ?? '' : '';
+
   const handleAgentChange = (atype: string) => {
+    if (extraDraft !== serverDraftFor(activeAgent) && !window.confirm('当前 agent 的修改尚未保存，切换将丢弃，确定继续？')) {
+      return;
+    }
     setActiveAgent(atype);
-    setExtraDraft(data?.project ? data.project.extras[atype] ?? '' : '');
+    setExtraDraft(serverDraftFor(atype));
   };
 
   const activeContent = useMemo(
-    () => data?.agents.find((a) => a.type === activeAgent)?.content ?? '',
+    // agents 空值防护（code-review item c3407e11dad8）：_api_prompts_get 出错时
+    // 经 _json 返回 {error: "…"} 且 HTTP 200（request() 仅在 !res.ok 时抛），
+    // 此时 data 非空但 agents 为 undefined，旧实现 .find 抛 TypeError 使面板崩溃。
+    () => (data?.agents ?? []).find((a) => a.type === activeAgent)?.content ?? '',
     [data, activeAgent],
   );
 
   const handleSave = async () => {
     if (!project) return;
+    // 固化本次保存的目标 agent（code-review item 9bb2f4e7caaa）：旧实现
+    // 保存后 refetch 时仍读闭包里的 activeAgent，若请求在飞期间用户切换了
+    // agent，会把**旧 agent** 的值写回 extraDraft 而 UI 显示新 agent。
+    const targetAgent = activeAgent;
     setSaving(true);
     try {
-      await saveProjectPrompt(project, activeAgent, extraDraft);
+      await saveProjectPrompt(project, targetAgent, extraDraft);
       message.success('项目附加提示词已保存');
-      const d = await getPrompts(project);
-      setData(d);
-      setExtraDraft(d.project ? d.project.extras[activeAgent] ?? '' : '');
     } catch (e) {
       const errorMessage = e instanceof Error ? e.message : String(e);
       message.error(`保存失败：${errorMessage}`);
       console.error('Failed to save project prompt:', e);
+      setSaving(false);
+      return;
+    }
+    // 保存已成功，后续 refetch 失败不得报「保存失败」（code-review item
+    // 9bb2f4e7caaa 第 1 点）：独立 try/catch，仅提示刷新失败。
+    try {
+      const d = await getPrompts(project);
+      setData(d);
+      // 仅当用户仍停在同一 agent 时才回填草稿（避免覆盖刚切到的 agent）
+      if (targetAgent === activeAgent) {
+        setExtraDraft(d.project ? d.project.extras[targetAgent] ?? '' : '');
+      }
+    } catch (e) {
+      message.warning(`已保存，但刷新列表失败：${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setSaving(false);
     }
@@ -103,6 +136,9 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
         <Select
           value={activeAgent}
           onChange={handleAgentChange}
+          // 保存进行中禁止切换 agent（code-review item 9bb2f4e7caaa）：在飞请求
+          // 期间切换会让 refetch 把旧 agent 的值写回草稿而 UI 显示新 agent。
+          disabled={saving}
           style={{ width: 260 }}
           options={Object.keys(AGENT_LABELS).map((k) => ({ value: k, label: AGENT_LABELS[k] }))}
         />

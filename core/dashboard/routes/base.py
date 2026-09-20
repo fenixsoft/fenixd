@@ -13,8 +13,9 @@ D3 patch 缝隙：
 - `_GZIP_EXT`/`_GZIP_MIN` 类常量随本 mixin 迁移（无外部 patch 依赖）。
 
 H1 路由分派链（`_handle_api`/`_handle_api_post`/`_handle_api_delete`）
-随各资源子路由摘出后收敛为表驱动（design D1 表 C H1，task 4.5）；
-本模块仅承载 H0 HTTP 底座（不含分派链）。
+随各资源子路由摘出后收敛为表驱动（design D1 表 C H1，task 4.5）——
+本模块即承载 H0 HTTP 底座**与**该 H1 表驱动分派链（三张路由表 + 全部适配
+函数），二者同处本文件。
 """
 
 from __future__ import annotations
@@ -32,18 +33,15 @@ import urllib.parse
 # 是方法**最后 4 个分支**，须排在 /api/project/describe 之后（保留陷阱）。
 # DELETE 的 /api/projects/<name> 在独立方法中。
 #
-# 条目结构: (kind, pattern, handler, json_flag)
+# 条目结构: (kind, pattern, handler)  —— 3 元组（code-review item 46526caaf62f：
+# 旧注释写作 4 元组含 json_flag，但 _dispatch_table 实际按 3 值解包，照旧注释
+# 写 4 元组会在请求期 ValueError: too many values to unpack）
 #   kind   ∈ {"exact", "regex", "suffix"}
 #   pattern: 路由字面量（精确匹配串 / 正则 pattern / 后缀串）
-#   handler: handler 函数引用（self, path, query, m） → None
-#   json_flag: handler 返回 dict 时自动包 _json（True）或 handler 已写响应（False）
+#   handler: handler 函数引用（self, path, query, m） → None（handler 自写响应）
 #
 # 参数化路径用 regex capture group（/api/specs/<spec>、/api/runs/<id>、
 # /api/alerts/<id>/handled、/api/projects/<name>）。
-
-def _r_json(s, p, q, m, payload):
-    """json 包装适配器：handler 返回 payload 时包 _json。"""
-    s._json(payload)
 
 
 # ── GET 路由适配函数 ──────────────────────────────────────────────────
@@ -387,6 +385,16 @@ class H0BaseMixin:
     _GZIP_EXT = {".js", ".css", ".html", ".htm", ".svg", ".json", ".md", ".txt", ".map"}
     _GZIP_MIN = 860  # 小于阈值的响应不值得压缩
 
+    def _mark_response_started(self):
+        """标记本请求已开始写响应（供 _handle 的 500 兜底判断是否可再写）。
+
+        code-review item 9de3d3095e85：`_handle_inner` 的裸 `except Exception`
+        会对**响应已开始**的 socket 再写第二个响应（如 body 写中途 BrokenPipe/
+        OSError），在 keep-alive 连接上发出第二条状态行/体，污染下一次交换。
+        `_json`/`_error`/`_send_file` 响应前调用本方法登记。
+        """
+        self._response_started = True
+
     # ── H1 表驱动路由分派（design D1 表 C H1，task 4.5）────────────────
 
     def _dispatch_table(self, table, path, query):
@@ -428,6 +436,11 @@ class H0BaseMixin:
     def _handle(self, method: str = "GET"):
         # 线程上限（dashboard-connection-limit D6）
         if not self.server._try_acquire_request_slot():
+            # 快速拒绝前 MUST 排空请求体（code-review item 265e22d75797）：HTTP/1.1
+            # keep-alive 下未读的 body 字节会被当作下一请求的请求行解析——正是
+            # POST/DELETE 分支下方小心规避的 BUG-01 失步类。_request_body_consumed
+            # 在本处尚未复位（该复位在 _handle_inner 开头），故用 getattr 兜底为 0。
+            self._drain_remaining_request_body()
             self._error(503, "server busy")
             return
         try:
@@ -448,6 +461,8 @@ class H0BaseMixin:
                     if method == "GET":
                         self._handle_sse()
                         return
+                    # 排空 body 后再回 405（code-review item 265e22d75797）
+                    self._drain_remaining_request_body()
                     self._error(405, "Method Not Allowed")
                     return
                 if method == "POST":
@@ -467,6 +482,8 @@ class H0BaseMixin:
                 return
 
             if method != "GET" and method != "HEAD":
+                # 排空 body 后再回 405（code-review item 265e22d75797）
+                self._drain_remaining_request_body()
                 self._error(405, "Method Not Allowed")
                 return
 
@@ -479,10 +496,14 @@ class H0BaseMixin:
         except BrokenPipeError:
             pass
         except Exception as e:  # noqa: BLE001
-            try:
-                self._error(500, f"Internal Server Error: {e}")
-            except Exception:
-                pass
+            # 仅在响应尚未开始时才补写 500（code-review item 9de3d3095e85）：
+            # handler 已开始写响应（body 中途 BrokenPipe/OSError）时再写第二个
+            # 响应会在 keep-alive 连接上发出第二条状态行/体、污染下一次交换。
+            if not getattr(self, "_response_started", False):
+                try:
+                    self._error(500, f"Internal Server Error: {e}")
+                except Exception:
+                    pass
 
     def _read_json_body(self) -> dict:
         """读取并解析 JSON 请求体，做大小限制。"""
@@ -544,6 +565,7 @@ class H0BaseMixin:
 
     def _json(self, payload):
         body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        self._mark_response_started()
         self.send_response(200)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-cache")
@@ -555,6 +577,7 @@ class H0BaseMixin:
 
     def _error(self, code: int, msg: str):
         body = json.dumps({"error": msg}, ensure_ascii=False).encode("utf-8")
+        self._mark_response_started()
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))

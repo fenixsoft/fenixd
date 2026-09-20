@@ -920,7 +920,19 @@ class TestAdminDispatchMutualExclusion:
             def read_one(self, name):
                 return self._specs.get(name)
 
-            def transition_gate(self, *a, **k):
+            # 保真替身（test_fake_double_fidelity 守卫 R1/R2）：签名 MUST 与生产
+            # StateMachine.transition_gate(spec_name, new_status, *,
+            # trigger_run_id=None, agent_type=None, channel="auto") 一致——旧写法
+            # `(*a, **k)` 属宽容替身，会掩盖实参不匹配的真实缺陷，已被守卫拦截。
+            def transition_gate(
+                self,
+                spec_name,
+                new_status,
+                *,
+                trigger_run_id=None,
+                agent_type=None,
+                channel="auto",
+            ):
                 pass
 
             def update_spec(self, name, updates):

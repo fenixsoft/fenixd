@@ -993,7 +993,16 @@ class LivenessSupervisor:
         # per-agent-timeout-override 3.2：supervision 的 extension 总额与 absolute_max
         # 护栏按该 agent type 的生效超时派生（覆盖值参与），stuck 阈值派生保持全局默认
         # 值语义（见 effective_stuck_threshold_seconds，不随覆盖变化）。
-        run_timeout = float(self._pm._effective_run_timeout(agent_type))
+        # float(None) 容错（code-review item bd14491bfae6）：门面委托路径返回
+        # None（runner 不可用/异常被吞后 ConfigLoader 回退亦失败）时，裸 float()
+        # 抛 TypeError 会让本函数——监督循环主路径——整段崩溃并向上冒泡。回退
+        # run_timeout 默认值（与 config.RUN_TIMEOUT_FALLBACK_SECONDS 同源语义）。
+        try:
+            run_timeout = float(self._pm._effective_run_timeout(agent_type))
+        except (TypeError, ValueError):
+            from core.config import RUN_TIMEOUT_FALLBACK_SECONDS as _RT_FALLBACK
+
+            run_timeout = float(_RT_FALLBACK)
         max_extensions = max(0, int(sup["max_extensions"]))
         # ── 规模预检 higher 档 extension 上限调整（add-fast-track-scale-precheck）──
         # fast-track spec 标记 _fast_track_scale_tier == "higher" 时，extension

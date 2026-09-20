@@ -17,7 +17,6 @@ import {
   Select,
   Slider,
   Space,
-  Spin,
   Table,
   Tabs,
   Tag,
@@ -85,6 +84,22 @@ function phasePct(record: SpecSummary) {
     : pct(record.task_done, record.task_total);
 }
 
+// 进度文案（code-review item ca92db5ea623）：抽出内联三元，避免嵌套三元表达式。
+// 进度条配色（code-review item ca92db5ea623）：抽出嵌套三元为具名函数。
+function strokeColorFor(gen: boolean, isVerify: boolean) {
+  if (gen) return '#13c2c2';
+  return isVerify ? '#52c41a' : '#1677ff';
+}
+
+function trailColorFor(gen: boolean, isVerify: boolean) {
+  if (!isVerify) return TRACK_LIGHT;
+  return gen ? TRACK_LIGHT : TRACK_GREEN;
+}
+
+function progressText(progress: number) {
+  return progress >= 100 ? '已完成' : `${progress}%`;
+}
+
 function fmtDuration(sec?: number | null) {
   if (sec == null || Number.isNaN(sec)) return '';
   let s = Math.max(0, Math.round(sec));
@@ -131,6 +146,13 @@ function SpecNameCell({ project, record }: { project: string; record: SpecSummar
   const [open, setOpen] = useState(false);
   const [why, setWhy] = useState<string | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // 卸载清理（code-review item 2d5f6ca39f91）：悬停启动的 200ms 定时器若在
+  // 触发前组件被卸载（列表刷新/行删除/切 Tab），其回调仍会 setWhy/setOpen，
+  // 造成卸载后 setState。统一在卸载时清掉。
+  useEffect(() => () => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+  }, []);
 
   const onEnter = () => {
     timerRef.current = setTimeout(() => {
@@ -183,7 +205,13 @@ function fetchVerdict(project: string, spec: string): Promise<SpecDetail['verdic
   if (cached) return cached;
   const p = getSpecDetail(project, spec)
     .then((d) => d.verdict ?? null)
-    .catch(() => null);
+    .catch(() => {
+      // 失败结果不入缓存（code-review item a31792c774de）：旧实现把 .catch→null
+      // 的 Promise 一并缓存，一次网络抖动就让该 spec 之后永远拿不到 verdict。
+      // 失败时剔除缓存项，下次 hover 重试。
+      verdictCache.delete(key);
+      return null;
+    });
   verdictCache.set(key, p);
   return p;
 }
@@ -192,6 +220,11 @@ function VerifyCell({ project, record }: { project: string; record: SpecSummary 
   const [open, setOpen] = useState(false);
   const [verdict, setVerdict] = useState<SpecDetail['verdict'] | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // 卸载清理（code-review item 2d5f6ca39f91，与 SpecNameCell 同款）
+  useEffect(() => () => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+  }, []);
 
   // fix-verify-progress-fasttrack：无任何验证数据（verify_total 为 0）时渲染纯文本
   // 占位符 —，避免「尚无验证数据」被误读为 0/0 计数；无结论可读，不包 Popover。
@@ -434,6 +467,14 @@ function SpecCardList({ data, project, loading, onDocView, onMenu, menuItems, on
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <SpecNameCell project={project} record={record} />
                 </div>
+                <Button
+                  type="link"
+                  size="small"
+                  className="touch-expand"
+                  onClick={() => onDocView(record.name)}
+                >
+                  文档
+                </Button>
                 <Dropdown
                   menu={{ items: menuItems(record), onClick: ({ key }) => onMenu(record, key) }}
                   placement="bottomRight"
@@ -461,7 +502,7 @@ function SpecCardList({ data, project, loading, onDocView, onMenu, menuItems, on
                   <Typography.Text type="secondary">
                     {record.task_done}/{record.task_total}
                   </Typography.Text>
-                  <Typography.Text type="secondary">{progress >= 100 ? '已完成' : `${progress}%`}</Typography.Text>
+                  <Typography.Text type="secondary">{progressText(progress)}</Typography.Text>
                 </div>
               </div>
               <div style={{ marginTop: 8 }}>
@@ -510,7 +551,12 @@ export default function SpecListPage() {
   const pendingPatchesRef = useRef<Record<string, SpecSummary | null>>({});
   const patchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const specMapRef = useRef(specMap);
-  specMapRef.current = specMap;
+  // 渲染期副作用消除（code-review item b81c73214b46）：原在渲染体直接写
+  // specMapRef.current = specMap，属 render side effect（并发渲染/StrictMode
+  // 下可能 ref 与本次渲染不一致）；改在 effect 中同步。
+  useEffect(() => {
+    specMapRef.current = specMap;
+  }, [specMap]);
 
   // 文档弹窗（对齐 v1 docmodal：背景/设计/任务清单 三页签）
   const [docView, setDocView] = useState<string | null>(null);
@@ -602,7 +648,13 @@ export default function SpecListPage() {
         const items = msg.specs || [];
         for (const item of items) {
           if (item && typeof item.spec === 'string') {
-            enqueuePatch(item.spec, item.summary ?? null);
+            // 区分「summary 显式为 null（契约上的删除标记）」与「字段缺失」
+            // （code-review item 318a841d2c70）：旧写法 `item.summary ?? null`
+            // 把二者并入同一语义，后端某次事件因序列化/字段裁剪缺失 summary 时
+            // 会把该行误删（列表行流式消失）。缺字段 → 跳过该条，不动本地表。
+            if ('summary' in item) {
+              enqueuePatch(item.spec, item.summary ?? null);
+            }
           }
         }
         return;
@@ -619,7 +671,16 @@ export default function SpecListPage() {
     };
     return () => {
       es.close();
+      // 清理时 MUST 把 ref 置回 null 并清空待处理队列（code-review item
+      // cf865713d17b）：旧实现只 clearTimeout 不置 null，而 enqueuePatch 仅在
+      // `patchTimerRef.current == null` 时创建新定时器——该 effect 一旦因路由
+      // 切换（name 变化 → load 变化）重建，ref 便永久留着一个已清除的非 null id，
+      // 此后所有 SSE 增量 patch 都不再被调度刷新（pendingPatchesRef 无限累积、
+      // 界面停止增量更新）。同时陈旧队列若不清空，会在后续 flush 时被应用到
+      // 新项目的 specMap，造成跨项目行污染。
       if (patchTimerRef.current) clearTimeout(patchTimerRef.current);
+      patchTimerRef.current = null;
+      pendingPatchesRef.current = {};
     };
   }, [load, name, enqueuePatch]);
 
@@ -669,7 +730,15 @@ export default function SpecListPage() {
 
   // 受控展开：数据到达时默认全部展开（树形子级 + error 信息行可见），用户可手动收起
   const [expandedKeys, setExpandedKeys] = useState<readonly Key[]>([]);
+  // 仅在**首次**数据到达时初始化展开状态（code-review item b229013a3316）：`tree`
+  // 由 filtered→specMap 派生，任何 SSE 增量 patch / 30s 心跳重拉都会产生新引用，
+  // 旧实现 `[tree]` 依赖会在流式更新期间反复把用户手工收起的树弹开，且与受控
+  // 展开 onExpandedRowsChange 互相打架。用 ref 标记首次初始化。
+  const expandedInitRef = useRef(false);
   useEffect(() => {
+    if (expandedInitRef.current) return;
+    if (tree.length === 0) return;
+    expandedInitRef.current = true;
     setExpandedKeys(tree.map((r) => r.name));
   }, [tree]);
 
@@ -678,7 +747,9 @@ export default function SpecListPage() {
       await clearSpecError(name, record.name);
       void load();
     } catch (err) {
-      console.error(err);
+      // 面向用户的错误提示（code-review item 61a4afa41eab）：旧实现仅
+      // console.error，用户误以为操作已生效。
+      message.error(`清除错误失败：${err instanceof Error ? err.message : String(err)}`);
     }
   };
 
@@ -696,8 +767,14 @@ export default function SpecListPage() {
       okButtonProps: { danger: true },
       cancelText: '取消',
       onOk: async () => {
-        await deleteSpec(name, record.name);
-        void load();
+        // try/catch（code-review item 61a4afa41eab）：旧实现无捕获，deleteSpec
+        // 失败会产生未处理 Promise 拒绝且弹窗无提示。
+        try {
+          await deleteSpec(name, record.name);
+          void load();
+        } catch (err) {
+          message.error(`删除 SPEC 失败：${err instanceof Error ? err.message : String(err)}`);
+        }
       },
     });
   };
@@ -719,7 +796,7 @@ export default function SpecListPage() {
       cancelText: '取消',
       onOk: async () => {
         try {
-          const result = await reReviewSpec(name, record.name);
+          await reReviewSpec(name, record.name);
           message.success(`SPEC「${record.name}」已重新进入评审`);
           void load();
         } catch (err) {
@@ -737,7 +814,8 @@ export default function SpecListPage() {
       setPriorityEdit(null);
       void load();
     } catch (err) {
-      console.error(err);
+      // 面向用户的错误提示（code-review item 61a4afa41eab）
+      message.error(`调整优先级失败：${err instanceof Error ? err.message : String(err)}`);
     }
   };
 
@@ -956,8 +1034,8 @@ export default function SpecListPage() {
               percent={p}
               size="small"
               showInfo={false}
-              strokeColor={gen ? '#13c2c2' : isVerify ? '#52c41a' : '#1677ff'}
-              trailColor={isVerify ? (gen ? TRACK_LIGHT : TRACK_GREEN) : TRACK_LIGHT}
+              strokeColor={strokeColorFor(!!gen, isVerify)}
+              trailColor={trailColorFor(!!gen, isVerify)}
             />
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, lineHeight: '18px' }}>
               {isVerify ? (
@@ -1022,7 +1100,10 @@ export default function SpecListPage() {
       dataIndex: 'total_duration',
       key: 'duration',
       width: '8%',
-      sorter: (a: SpecSummary, b: SpecSummary) => a.total_duration - b.total_duration,
+      // 空值兜底（code-review item 826c6a25ac54）：total_duration 可选，
+      // 直接相减得 NaN 使排序不可预期；?? 0 归一。
+      sorter: (a: SpecSummary, b: SpecSummary) =>
+        (a.total_duration ?? 0) - (b.total_duration ?? 0),
       render: (v: number) => fmtDuration(v),
     },
     {

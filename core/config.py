@@ -322,8 +322,17 @@ class ConfigLoader:
         fresh = cls.resolve_config(project_root)
         # 注意：resolve_config 内部（config.py:123）已对 fresh 完成同一份 _validate，
         # 此处不重复校验（improve-hot-reload-robustness D9 死代码清理）。
-        config.clear()
+        #
+        # 原地更新顺序（code-review item 0c1e1d2b4341）：旧实现 `clear()` → `update()`
+        # 存在一个「dict 为空」的窗口，而后台读线程（admin worker / 自进化 worker /
+        # HookEngine / EventBus / code-review worker）正并发经 ConfigLoader.get
+        # 遍历同一 dict——落在窗口内的读取会观测到空树并静默回落到内建缺省。
+        # 改为「先 update 新值，再删除 fresh 中已不存在的键」：任一时刻 dict 都
+        # 非空，键集合为旧∪新（读到的是旧值/新值的混合，但不会出现「整树消失」）。
+        # 对象身份不变（组件持有的同一引用仍生效），语义等价。
         config.update(fresh)
+        for stale_key in [k for k in config if k not in fresh]:
+            config.pop(stale_key, None)
 
     @classmethod
     def _load_optional_yaml(cls, path: Path, label: str) -> Dict[str, Any]:
@@ -1085,8 +1094,18 @@ class ConfigLoader:
             "merge_breaker_threshold": int(breaker),
             # interrupt-recovery-preserve D1：规划性重启排水窗口（秒）；0 = 现行
             # 快速停机。缺省 1800（半小时量级，用户已确认方向）。
+            # 显式 is None 判缺省（code-review item 8d6d85bb339f）：旧实现用
+            # `or 1800` 真值回退，把**显式配置的 0** 当假值又还原成 1800——而
+            # `_validate` 明确允许 0（只拒负数）且 docstring 声明「0 = 快速停机」，
+            # 使这条快速停机路径经本门面永远请求不到（daemon/supervisor 的读取方
+            # 是尊重 0 的，口径不一致）。
             "shutdown_drain_seconds": max(
-                0, int(admin.get("shutdown_drain_seconds", 1800) or 1800)
+                0,
+                int(
+                    1800
+                    if admin.get("shutdown_drain_seconds") is None
+                    else admin["shutdown_drain_seconds"]
+                ),
             ),
             # add-bug-repair-mode-config：bug-found 修复方式（未配置缺省 inplace）
             "bug_repair_mode": brm,

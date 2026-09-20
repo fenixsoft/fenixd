@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import threading
 import time
+from typing import Dict
 
 from core.state_machine import TASK_GATE_REJECTIONS_FIELD, start_after_pending
 
@@ -68,6 +69,28 @@ class QQQueueMixin:
         if spec and isinstance(spec.get("priority"), int):
             return spec["priority"]
         return 5
+
+    def _rollback_dispatch_slot(self, base_prio, entry_to_dispatch=None):
+        """回滚一次已 pop 的派发占用（可选重新入队 + 释放槽位计数）。
+
+        调用方 MUST 持有 ``_queue_lock``。统一各闸门（预算耗尽 / 内容缺失 /
+        同源收敛 / 守卫三）触发的记账（code-review item 25e5ba1febfc：旧实现
+        六处复制同一段逻辑、微差易漂移），并统一「仅当该档计数归零才移出
+        ``_active_priorities``」的口径——修复 code-review item 5eab0a6c324d：
+        旧预算/内容闸门无条件 ``discard(base_prio)``，在同档仍有活动 run
+        （cnt > 0）时会移除一个仍活跃的档位，破坏
+        「priority ∈ _active_priorities ⟺ _active_priority_counts[priority] > 0」
+        不变量，使宽松优先级闸门 ``min(self._active_priorities)`` 取值错误。
+        """
+        if entry_to_dispatch is not None:
+            self._run_queue.insert(0, entry_to_dispatch)
+        self._active_runs -= 1
+        cnt = self._active_priority_counts.get(base_prio, 0) - 1
+        if cnt <= 0:
+            self._active_priority_counts.pop(base_prio, None)
+            self._active_priorities.discard(base_prio)
+        else:
+            self._active_priority_counts[base_prio] = cnt
 
     def _enqueue(self, spec_name: str, agent_type: str):
         """Add a run request to the queue (thread-safe).
@@ -543,13 +566,8 @@ class QQQueueMixin:
                         f"收敛后恢复；移除队列条目继续扫描",
                     )
                     with self._queue_lock:
-                        self._active_runs -= 1
-                        cnt = self._active_priority_counts.get(base_prio, 0) - 1
-                        if cnt <= 0:
-                            self._active_priority_counts.pop(base_prio, None)
-                            self._active_priorities.discard(base_prio)
-                        else:
-                            self._active_priority_counts[base_prio] = cnt
+                        # 收敛拦截：移除条目（不重新入队）、释放槽位
+                        self._rollback_dispatch_slot(base_prio)
                     continue
 
             # ── 守卫三：派发互斥（fix-repair-lane-dedup / design 守卫三，legacy）──
@@ -562,14 +580,7 @@ class QQQueueMixin:
                 if carrier:
                     # 回滚：把已 pop 的 entry 放回队列
                     with self._queue_lock:
-                        self._run_queue.insert(0, entry_to_dispatch)
-                        self._active_runs -= 1
-                        cnt = self._active_priority_counts.get(base_prio, 0) - 1
-                        if cnt <= 0:
-                            self._active_priority_counts.pop(base_prio, None)
-                            self._active_priorities.discard(base_prio)
-                        else:
-                            self._active_priority_counts[base_prio] = cnt
+                        self._rollback_dispatch_slot(base_prio, entry_to_dispatch)
                     self._pm.logger.info(
                         "pm_engine",
                         f"守卫三：'{spec_name}' 同根兄弟 '{carrier}' 存在活跃修复"
@@ -588,28 +599,14 @@ class QQQueueMixin:
                 # 点只对 implementer 可达，不会误减评审的 _active_reviews。
                 if self._pm._check_impl_budget_exhausted(spec_name):
                     with self._queue_lock:
-                        self._run_queue.insert(0, entry_to_dispatch)
-                        self._active_runs -= 1
-                        cnt = self._active_priority_counts.get(base_prio, 0) - 1
-                        if cnt <= 0:
-                            self._active_priority_counts.pop(base_prio, None)
-                        else:
-                            self._active_priority_counts[base_prio] = cnt
-                        self._active_priorities.discard(base_prio)
+                        self._rollback_dispatch_slot(base_prio, entry_to_dispatch)
                     continue
                 # add-spec-content-integrity-gate：派发前内容完整性闸门。
                 # 空 spec 目录（无 proposal/design/tasks/specs）冻结派发，
                 # 不烧预算；与预算闸门同层并列，复用回滚范式。
                 if self._pm._check_spec_content_missing(spec_name):
                     with self._queue_lock:
-                        self._run_queue.insert(0, entry_to_dispatch)
-                        self._active_runs -= 1
-                        cnt = self._active_priority_counts.get(base_prio, 0) - 1
-                        if cnt <= 0:
-                            self._active_priority_counts.pop(base_prio, None)
-                        else:
-                            self._active_priority_counts[base_prio] = cnt
-                        self._active_priorities.discard(base_prio)
+                        self._rollback_dispatch_slot(base_prio, entry_to_dispatch)
                     continue
                 # 修复重派时状态已是 implementing（同态转换非法），跳过 transition
                 cur_status = (self._pm.state_machine.read_one(spec_name) or {}).get("status")
@@ -625,27 +622,13 @@ class QQQueueMixin:
                 # 失败打回重派时状态已是 implementing，跳过同态转换。
                 if self._pm._check_impl_budget_exhausted(spec_name):
                     with self._queue_lock:
-                        self._run_queue.insert(0, entry_to_dispatch)
-                        self._active_runs -= 1
-                        cnt = self._active_priority_counts.get(base_prio, 0) - 1
-                        if cnt <= 0:
-                            self._active_priority_counts.pop(base_prio, None)
-                        else:
-                            self._active_priority_counts[base_prio] = cnt
-                        self._active_priorities.discard(base_prio)
+                        self._rollback_dispatch_slot(base_prio, entry_to_dispatch)
                     continue
                 # add-spec-content-integrity-gate：内容完整性闸门（fast-track 分支，
                 # 与 implementer 同层并列；空 spec 冻结派发，不烧预算）。
                 if self._pm._check_spec_content_missing(spec_name):
                     with self._queue_lock:
-                        self._run_queue.insert(0, entry_to_dispatch)
-                        self._active_runs -= 1
-                        cnt = self._active_priority_counts.get(base_prio, 0) - 1
-                        if cnt <= 0:
-                            self._active_priority_counts.pop(base_prio, None)
-                        else:
-                            self._active_priority_counts[base_prio] = cnt
-                        self._active_priorities.discard(base_prio)
+                        self._rollback_dispatch_slot(base_prio, entry_to_dispatch)
                     continue
                 cur_status = (self._pm.state_machine.read_one(spec_name) or {}).get("status")
                 if cur_status != "implementing":
@@ -915,7 +898,8 @@ class QQQueueMixin:
                     # 全新派发清零 task-gate 拒绝计数（改进①）：只卡第一次的计数
                     # 只应反映「同一轮被连续拒回」；全新 implementing 轮次（含
                     # 上轮已降级放行后的再派发）从零开始，避免陈旧计数误降级。
-                    from core.state_machine import TASK_GATE_REJECTIONS_FIELD
+                    # （TASK_GATE_REJECTIONS_FIELD 已模块顶部导入，删除此处的
+                    # 冗余函数内 import——code-review item 3218887178b8/35c865a3a00f）
                     if int(dispatch_entry.get(TASK_GATE_REJECTIONS_FIELD, 0) or 0) > 0:
                         self._pm.state_machine.update_spec(
                             spec_name, {TASK_GATE_REJECTIONS_FIELD: 0}

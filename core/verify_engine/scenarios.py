@@ -838,6 +838,10 @@ class Assertion:
         return ASSERTION_LAYERS.get(self.type, 0)
 
     def to_dict(self) -> dict:
+        # extra 不得覆盖规范键（code-review item 7743535e64de）：旧实现
+        # `d.update(self.extra)` 在写入 type/selector/expected 之后执行，extra 里
+        # 含同名键会覆盖基础字段；而 from_dict 侧以 known_keys 剔除同名键，往返
+        # 不对称。改为 extra 中与规范键冲突的条目一律忽略（规范字段优先）。
         d: dict = {"type": self.type}
         if self.selector:
             d["selector"] = self.selector
@@ -847,7 +851,10 @@ class Assertion:
             d["expected"] = self.expected
         if self.threshold != 0.2:
             d["threshold"] = self.threshold
-        d.update(self.extra)
+        _known = {"type", "selector", "label", "expected", "threshold"}
+        for k, v in (self.extra or {}).items():
+            if k not in _known:
+                d[k] = v
         return d
 
     @classmethod

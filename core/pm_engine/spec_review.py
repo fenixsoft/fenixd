@@ -6,7 +6,6 @@
 import hashlib
 import json
 import logging
-import os
 import re
 import subprocess
 import time
@@ -18,7 +17,7 @@ from core.state_machine import (
     FROZEN_FIELD,
     FREEZE_ERROR_PREFIX,
 )
-from core.agent_runner.runner import AgentRunner, AgentRunResult
+from core.agent_runner.runner import AgentRunner
 from core.agent_runner.prompt_builder import (
     spec_review_result_path,
     spec_review_result_status_whitelist,
@@ -312,11 +311,20 @@ class SpecReviewManager:
             self._handle_review_failure(spec_name, f"结果文件读取失败: {e}")
             return False
 
-        # 写入边界校验
+        # 写入边界校验。MUST NOT 再走 artifact 分类（code-review item 4b9f59b8717f）：
+        # 边界错误（approved 带 repairs / repaired 无 repairs / repairs 路径非法）
+        # 的产物在 `_artifact_landed_valid` 眼里是**合法**的（它只看文件可解析 +
+        # status 白名单 + mtime + 快照一致性，不看 repairs 与 status 的一致性），
+        # 故旧实现会判 artifact → 再次 consume_review_result → 再次命中同一（未被
+        # 修正的）边界错误 → 无限递归，最终 RecursionError 被 worker 捕获后重新入队
+        # 退化为活锁。显式 forbade_artifact + 透传 run_started_at（旧实现顺带跳过
+        # mtime 新鲜度校验）。
         boundary_err = self._check_write_boundary(spec_name, data)
         if boundary_err:
             self.logger.warning("spec_review", f"写入边界校验失败: {spec_name}: {boundary_err}")
-            self._handle_review_failure(spec_name, boundary_err)
+            self._handle_review_failure(
+                spec_name, boundary_err, allow_artifact=False, run_started_at=run_started_at
+            )
             return False
 
         # 按 status 机械收口
@@ -391,7 +399,17 @@ class SpecReviewManager:
             # 计数存 `_review_rejections`（`_` 前缀随 STATE 往返持久化）；任何一次
             # approved/repaired 收口即清零（见上一分支的 update_spec）。
             findings = data.get("findings") or []
-            blocking = [f for f in findings if f.get("severity") == "blocking"]
+            # findings 元素类型校验（code-review item 29ed238af688）：findings 由
+            # LLM 产出，元素非 dict 时旧实现 f.get(...) 抛 AttributeError 逃出
+            # consume_review_result，绕过失败分类/重试与冻结路径。非 dict 元素
+            # 直接忽略（不进 blocking 摘要）。
+            if not isinstance(findings, list):
+                findings = []
+            blocking = [
+                f
+                for f in findings
+                if isinstance(f, dict) and f.get("severity") == "blocking"
+            ]
             blocked_summary = (
                 "; ".join(f.get("detail", "") for f in blocking) if blocking else "无详情"
             )
@@ -637,7 +655,15 @@ class SpecReviewManager:
         spec_root = (self.project_root / "spec" / "changes").resolve()
         allowed_dir = (spec_root / spec_name).resolve()
         repairs = review_data.get("repairs") or []
+        # repairs 元素类型校验（code-review item 29ed238af688）：repairs 由 LLM
+        # 产出，可能非列表/元素非 dict；旧实现 repair.get(...) 会抛 AttributeError
+        # 逃出 consume_review_result，绕过本文件的失败分类/重试与冻结路径。
+        # 非法形态按「非法产物」直接判失败（fail-closed），不进 repairs 校验循环。
+        if not isinstance(repairs, list):
+            return f"repairs 非列表（非法产物）: {type(repairs).__name__}"
         for repair in repairs:
+            if not isinstance(repair, dict):
+                return f"repairs 元素非对象（非法产物）: {repair!r}"
             path = repair.get("path", "")
             if not isinstance(path, str) or not path:
                 return f"repairs 路径越界: {path!r}"
@@ -659,8 +685,19 @@ class SpecReviewManager:
                 snapshot_err = self._verify_snapshot(spec_name, snapshot)
                 if snapshot_err:
                     return snapshot_err
-            except (OSError, json.JSONDecodeError):
-                pass  # 快照读取失败，跳过比对（保守放行？）
+            except (OSError, json.JSONDecodeError, UnicodeDecodeError) as e:
+                # 读取失败不再静默放行（code-review item 5d38e8dd6478 / 6a3f77476d0f）：
+                # 快照是 SPEC 目录完整性硬门（删除检测）的唯一依据，缺失/损坏时
+                # 旧实现 pass 静默放行、且无日志——越界删除将无人发现。Non-UTF8
+                # 内容抛 UnicodeDecodeError（非 OSError 子类）此前还会直接逃出本方法。
+                # 记 WARNING 明确降级（保留既有放行语义，但使降级可观测）。
+                _logger.warning(
+                    "spec_review: 快照读取失败 '%s'（%s，跳过目录完整性比对，"
+                    "删除检测降级）: %s",
+                    spec_name,
+                    type(e).__name__,
+                    e,
+                )
 
         # 3. status 与改动一致性
         status = review_data.get("status")
@@ -753,8 +790,15 @@ class SpecReviewManager:
                     snapshot_err = self._verify_snapshot(spec_name, snapshot)
                     if snapshot_err:
                         return (False, None)
-                except (OSError, json.JSONDecodeError):
-                    pass  # 快照读取失败，跳过比对（保守放行）
+                except (OSError, json.JSONDecodeError, UnicodeDecodeError) as e:
+                    # 与 _check_write_boundary 同款：读取失败记 WARNING 而非静默
+                    # 放行（code-review item 5d38e8dd6478——本文件的同款快照加载
+                    # 代码需一并修正）。
+                    self.logger.warning(
+                        "spec_review",
+                        f"产物判定快照读取失败 '{spec_name}'（跳过一致性校验）: "
+                        f"{type(e).__name__}: {e}",
+                    )
 
             return (True, data)
 
@@ -807,8 +851,16 @@ class SpecReviewManager:
                 return "infra"
         return "content"
 
-    def _handle_review_failure(self, spec_name: str, reason: str):
+    def _handle_review_failure(
+        self, spec_name: str, reason: str, *, allow_artifact: bool = True,
+        run_started_at: float | None = None,
+    ):
         """处理评审失败：按失败分类落点（D1/D2）。
+
+        ``allow_artifact=False``（写入边界类失败调用）：禁止 artifact 分类回流
+        ——否则 consume → 边界错误 → _handle_review_failure → artifact →
+        consume 无限递归（code-review item 4b9f59b8717f）。``run_started_at``
+        透传给回流消费，保持 mtime 新鲜度校验。
 
         - artifact：产物已落盘合法 → 直接消费（不重试，run-failure-artifact-first
           承接；`_artifact_landed_valid` 缺失时回退 content）；
@@ -822,12 +874,20 @@ class SpecReviewManager:
         error 保留 ``spec-review-incomplete:`` 前缀不变（复用 re_review 的
         startswith 契约）。
         """
-        failure_type = self._classify_run_failure(reason, spec_name)
+        failure_type = self._classify_run_failure(
+            reason, spec_name if allow_artifact else None
+        )
 
         if failure_type == "artifact":
             # 判别失败：产物已落盘合法 → 直接消费收口，不重试。
             self.logger.info("spec_review", f"判别失败（产物已落盘）→ 直接消费: {spec_name}")
-            self.consume_review_result(spec_name)
+            # 仅在确有 run_started_at 时才透传该关键字——保持既有调用形态
+            # （run_started_at=None 与「不传」语义等价：均跳过 mtime 新鲜度校验），
+            # 避免为无意义的 None 改变调用签名（既有测试以位置参数断言）。
+            if run_started_at is not None:
+                self.consume_review_result(spec_name, run_started_at=run_started_at)
+            else:
+                self.consume_review_result(spec_name)
             return
 
         if failure_type == "infra":
@@ -976,6 +1036,14 @@ class SpecReviewManager:
                 "error": None,
             },
         )
-        # 触发实现调度
-        self.pm_engine._on_spec_ready(spec_name)
+        # 触发实现调度（pm_engine None 守卫，code-review item 5ee4abf84768）：
+        # CLI（bin/fenix_cli.py: cmd_review）与 Dashboard
+        # （core/dashboard/data/admin_actions.re_review_spec）均以
+        # SpecReviewManager(proot, sm, None, None, {}, logger) 构造——与 re_review
+        # 的 `if self.agent_runner is not None and self.pm_engine is not None` 同款
+        # 守卫缺失时，blocked→ready 已提交成功后会在本行抛 AttributeError，调用方
+        # 拿不到结果而状态已变更。此处按 None 跳过派发（状态已在 ready，由 daemon
+        # full_scan recovery 兜底拾取）。
+        if self.pm_engine is not None:
+            self.pm_engine._on_spec_ready(spec_name)
         return True, "担责放行已触发"

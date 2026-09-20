@@ -949,6 +949,11 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
         _hba = patch["worktree"].get("has_build_artifacts")
         if isinstance(_hba, bool):
             merged["worktree"]["has_build_artifacts"] = _hba
+        elif "has_build_artifacts" in patch["worktree"] and _hba is None:
+            # 显式 null = 撤销裁决（code-review item 22ec00069cd7）：写入 None 使
+            # 「未配置」态真正生效，而非保留旧布尔让单选框弹回。写路径的
+            # has_build_artifacts 缺省本就是 None（见 _defaults），语义自洽。
+            merged["worktree"]["has_build_artifacts"] = None
     return merged
 
 def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict:

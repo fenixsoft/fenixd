@@ -54,24 +54,46 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
   const handleInstall = async () => {
     setInstalling(true);
     try {
-      const res = await installOcr();
-      // 安装成功后重新探测，解锁开关
-      const fresh = await getOcrStatus();
-      setOcr(fresh);
+      // 1) 安装调用（code-review item 52c15fcd9bc1）：必须先检查 res.ok——
+      // 旧实现不看返回值，ok===false/version===null 时仍提示「安装成功」。
+      let res;
+      try {
+        res = await installOcr();
+      } catch (err) {
+        message.error(`安装失败：${err instanceof Error ? err.message : String(err)}`);
+        return;
+      }
+      if (!res.ok) {
+        message.error(`安装失败：${res.error || 'npm 安装未成功'}`);
+        return;
+      }
       message.success(
         res.version ? `open-code-review 安装成功：${res.version}` : 'open-code-review 安装成功',
       );
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      message.error(`安装失败：${msg}`);
+      // 2) 安装成功后重新探测（独立 try）：探测失败不应把已成功的安装误报为失败、
+      // 也不应让 ocr 停在 stale（否则开关永久置灰）。
+      try {
+        const fresh = await getOcrStatus();
+        setOcr(fresh);
+      } catch {
+        // 探测失败：乐观标记为已安装（版本未知），至少解锁开关
+        setOcr({ installed: true, bin: null, version: res.version ?? null });
+      }
     } finally {
       setInstalling(false);
     }
   };
 
   const handleSave = async () => {
+    let values;
     try {
-      const values = await form.validateFields();
+      values = await form.validateFields();
+    } catch {
+      // 校验失败：antd 已在表单内渲染提示，无需额外日志
+      // （避免触发验证的 no_console_error 断言）。
+      return;
+    }
+    try {
       await onSave({
         // add-impl-code-review-gate：收尾代码质量审查开关（键路径不变，仅移至质量页签）
         verify: {
@@ -88,9 +110,10 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
           enabled: values.code_review_enabled === true,
         },
       });
-    } catch {
-      // 校验失败：antd 已在表单内渲染提示，无需额外日志
-      // （避免触发验证的 no_console_error 断言）。
+    } catch (err) {
+      // 区分「校验失败」与「保存失败」（code-review item d91325bb73dd）：旧实现
+      // 单一裸 catch 把 onSave 的网络/500 失败一并静默吞掉，用户得不到任何提示。
+      message.error(`保存失败：${err instanceof Error ? err.message : String(err)}`);
     }
   };
 
@@ -252,7 +275,13 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
         </Form>
       </Card>
       <Card style={{ marginTop: 12 }}>
-        <Form form={form} layout="vertical">
+        {/* 与上方质量卡片共用同一 Form 实例（code-review item a7f58be138e4）：
+            旧实现在两个 <Form> 上绑同一 Form.useForm() 实例——rc-field-form 要求
+            一个实例对应一个 <form>，两个 <form> 注册进同一 store 会让
+            validateFields/setFieldsValue/错误渲染耦合到挂载顺序（「instance is not
+            connected to any Form element」的已知来源）。此处改用非 Form 容器承载
+            后续项，仍由同一 form 实例管理字段。 */}
+        <div>
           {/* 周期性代码审查开关（2026-09-19 从项目页「代码审查」分面迁到本页签）：
               它是项目级配置（admin.code_review.enabled），与手动触发按钮的性质不同
               ——分面负责「看结果 + 手动触发」，配置归设置页统一管理。
@@ -274,7 +303,7 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
             需要环境已安装 ocr（未安装时审查仍以 LLM 逐文件执行，仅少了扫描加速）。
             手动触发（全仓库审查 / 当期提交审查）不受本开关约束。
           </Text>
-        </Form>
+        </div>
       </Card>
       <div style={project ? SETTINGS_ACTIONS_ROW_STYLE : { textAlign: 'right', marginTop: 24 }}>
         {project && onConfigSynced && (

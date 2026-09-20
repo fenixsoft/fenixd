@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import tempfile
+import threading
 import time
 from datetime import datetime
 
@@ -76,6 +77,57 @@ DEFAULT_DEFER_LIMIT_MINUTES = 30
 INFLIGHT_RETRY_EVENT_TYPES = ("transient_retry", "superseded")
 
 
+def _read_last_nonempty_line(path, chunk_size: int = 65536) -> str:
+    """只读文件末尾、返回最后一个非空行（避免全量读大 JSONL）。
+
+    code-review item 40320e04d629 / 97a48d2814f1：run 流可达数 MB，仅需末行。
+    从尾部读一块（默认 64 KiB）取其中最后一个非空行；若这**整个块**只有一个
+    （可能是被截断的）行，则该行可能不完整——回退全量读以保证正确性（大流文件
+    的末行远小于 64 KiB，故正常路径不回退）。
+    """
+    size = path.stat().st_size
+    if size == 0:
+        return ""
+    with path.open("rb") as f:
+        start = max(0, size - chunk_size)
+        f.seek(start)
+        raw = f.read()
+    text = raw.decode("utf-8", errors="replace")
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return ""
+    # 尾部块正好从行首开始（start == 0）或块内含换行 → 末行为完整行
+    if start == 0 or "\n" in raw.decode("utf-8", errors="replace"):
+        return lines[-1]
+    # 整个块是被截断的单行 → 回退全量读
+    full = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    nonempty = [ln for ln in full if ln.strip()]
+    return nonempty[-1] if nonempty else ""
+
+
+def _parse_event_timestamp(ts):
+    """事件时间戳 → epoch 秒；与 runner._parse_event_timestamp 同口径。
+
+    code-review item fc528d7216ed：接受 epoch 数值与 ISO 字符串；ISO 的 ``Z``
+    后缀归一为 ``+00:00``；naive（无时区）时间戳按 UTC 解释（框架全链 UTC，
+    旧实现按**本地时区**解释会带来时区漂移）。不可解析返回 None。
+    """
+    if isinstance(ts, (int, float)) and not isinstance(ts, bool):
+        return float(ts)
+    s = str(ts).strip()
+    if not s:
+        return None
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        from datetime import timezone as _tz
+
+        dt = dt.replace(tzinfo=_tz.utc)
+    return dt.timestamp()
+
+
 class RecoveryWatch:
     """恢复闭环复查注册组件（门面 PMEngine 的组合组件）。"""
 
@@ -86,6 +138,12 @@ class RecoveryWatch:
         # {spec: {"fingerprint", "due", "registered_at", "reason"}}，镜像到
         # .fenix/recovery_watch.json，daemon 重启后续查。
         self._recovery_watch: dict = {}
+        # 观察项读写互斥（code-review item 1fa5c6b99aad）：check_recovery_watch
+        # 会被 daemon 主循环定时器（fenixd.py）与 PMEngine.check_blockers
+        # （EventBus 扫描 / 初扫线程）并发调用，registration 点也会插入 dict；
+        # 旧实现「pop + 整文件重写」非原子，两次交错的巡检会丢失或复活观察项。
+        # 用可重入锁保护 dict 读改写 + 落盘（_save 内部亦加锁，见其实现）。
+        self._watch_lock = threading.RLock()
         # 巡检信号指纹去重（D6）：{spec: (fingerprint, raised_at_monotonic)}
         self._signal_fingerprints: dict = {}
 
@@ -130,6 +188,12 @@ class RecoveryWatch:
         """
         path = self._pm._recovery_watch_path()
         tmp_path = None
+        with self._watch_lock:
+            self.__save_recovery_watch_locked(path)
+            return
+
+    def __save_recovery_watch_locked(self, path) -> None:
+        tmp_path = None
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             fd, tmp_str = tempfile.mkstemp(
@@ -159,13 +223,26 @@ class RecoveryWatch:
         auto-recovery 与 recovery deferred（存活子进程仍在）都会登记——后者防止
         「defer → 下轮仍卡死 → 再 defer」无限循环（tasks 3.1）。
         """
-        minutes = float(
-            self._pm._get_config(
-                "pm.recovery.followup_check_minutes", DEFAULT_FOLLOWUP_CHECK_MINUTES
+        # 数值容错（code-review item 10fded66b995）：与本文件其它配置助手
+        # （_followup_check_minutes 等）同款 try/except——畸形
+        # pm.recovery.followup_check_minutes（非数值字符串）此前会让 float()
+        # 抛 ValueError 逃出登记路径，中断 auto-recovery 收尾。
+        try:
+            minutes = float(
+                self._pm._get_config(
+                    "pm.recovery.followup_check_minutes", DEFAULT_FOLLOWUP_CHECK_MINUTES
+                )
+                or DEFAULT_FOLLOWUP_CHECK_MINUTES
             )
-            or DEFAULT_FOLLOWUP_CHECK_MINUTES
-        )
+        except (TypeError, ValueError):
+            minutes = float(DEFAULT_FOLLOWUP_CHECK_MINUTES)
         due = time.time() + max(0.5, minutes) * 60
+        entry = self._pm.state_machine.read_one(spec_name) or {}
+        with self._watch_lock:
+            self._register_watch_entry(spec_name, reason, minutes, due)
+        return
+
+    def _register_watch_entry(self, spec_name, reason, minutes, due) -> None:
         entry = self._pm.state_machine.read_one(spec_name) or {}
         self._recovery_watch[spec_name] = {
             "fingerprint": self._pm._spec_fingerprint(entry),
@@ -269,9 +346,25 @@ class RecoveryWatch:
                     f"to stale check",
                 )
 
-            self._recovery_watch.pop(spec_name, None)
-            self._pm._save_recovery_watch()
-            entry = self._pm.state_machine.read_one(spec_name)
+            # pop + 落盘作为一个整体持锁（code-review item 1fa5c6b99aad）：两次
+            # 交错巡检否则会把对方刚 pop 的项写回（复活）或丢失未落盘的变更。
+            with self._watch_lock:
+                self._recovery_watch.pop(spec_name, None)
+                self._pm._save_recovery_watch()
+            # read_one 异常隔离（code-review item 3c7ed59e424d）：本处此前无守卫，
+            # 而下方升级前重读刻意包裹（「重读失败保守升级」）。STATE.md 瞬态 I/O
+            # 异常会让异常逃出 check_recovery_watch、中止**其余全部**到期观察项的
+            # 本轮处置（daemon 只记一条 "Recovery watch check failed"）。单条失败
+            # 仅跳过该条并记 WARNING，保持其余继续。
+            try:
+                entry = self._pm.state_machine.read_one(spec_name)
+            except Exception as e:
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"Recovery watch 复查读取 STATE 失败 '{spec_name}'（跳过本条）: "
+                    f"{type(e).__name__}: {e}",
+                )
+                continue
             if not entry:
                 continue  # spec 已消失（被人工清理）：观察项静默关闭（2.4 不变）
             status = entry.get("status")
@@ -327,11 +420,25 @@ class RecoveryWatch:
                 fresh = self._pm.state_machine.read_one(spec_name) or {}
             except Exception:
                 fresh = {}
-            if fresh.get("status") in RECOVERY_PROGRESS_STATUSES or active_dispatch:
+            # 第 3 层「已有活跃派发」须**重新探测**（code-review item 838ada899c96）：
+            # 旧实现复用 `active_dispatch`——它在上方计算，且控制流能到达此处
+            # 意味着 2.1 已返回（`status ∈ RECOVERY_PROGRESS_STATUSES or
+            # active_dispatch` 为假），故此处 `active_dispatch` 可证为 False，
+            # `or active_dispatch` 恒假，docstring 声称的「升级前重读…已有活跃
+            # 派发 → 不升级」实际从未执行。就地重派窗口内 worktree 可能已变活跃，
+            # 故重读时一并重探，避免误升级。
+            try:
+                active_dispatch_now = bool(
+                    self._pm.agent_runner.worktree_manager.has_active_worktree(spec_name)
+                )
+            except Exception:
+                active_dispatch_now = False
+            if fresh.get("status") in RECOVERY_PROGRESS_STATUSES or active_dispatch_now:
                 self._pm.logger.info(
                     "pm_engine",
                     f"Recovery watch passed for '{spec_name}' (status now "
-                    f"{fresh.get('status')} before escalation, no alert)",
+                    f"{fresh.get('status')}, active_dispatch={active_dispatch_now} "
+                    f"before escalation, no alert)",
                 )
                 continue
             evidence = (
@@ -618,23 +725,33 @@ class RecoveryWatch:
         stream = self._latest_impl_stream(spec_name)
         if stream is None:
             return None
+        # 只读文件末尾一行（code-review item 40320e04d629 / 97a48d2814f1）：run 流
+        # 累积全部 stdout/stderr 行可达数 MB，而本方法每 60s tick 对每个到期观察项
+        # 调用一次，旧实现全量 read_text + splitlines 是 O(文件大小) 重复开销。
+        # 从尾部读一块（64 KiB）取最后一个非空行即可；不足则回退全量读。
         try:
-            lines = stream.read_text(encoding="utf-8").splitlines()
+            last_line = _read_last_nonempty_line(stream)
         except OSError:
             return None
-        if not lines:
+        if not last_line:
             return None
         try:
-            last = json.loads(lines[-1])
-        except (json.JSONDecodeError, IndexError):
+            last = json.loads(last_line)
+        except (json.JSONDecodeError, ValueError):
             return None
         etype = last.get("type")
         ts = last.get("timestamp")
         if not etype or not ts:
             return None
         try:
-            event_ts = datetime.fromisoformat(ts).timestamp()
+            # Z 后缀与 epoch 数值容错（code-review item fc528d7216ed）：与
+            # runner._parse_event_timestamp 同口径——旧实现 datetime.fromisoformat
+            # 遇 'Z' 后缀抛 ValueError → 返回 None → 在途重试顺延静默失效
+            # （正是本机制要防的误升级形态）。naive 时间戳按 UTC 解释（框架全链 UTC）。
+            event_ts = _parse_event_timestamp(ts)
         except (ValueError, TypeError):
+            return None
+        if event_ts is None:
             return None
         return (etype, float(event_ts))
 
@@ -816,12 +933,23 @@ class RecoveryWatch:
         self._signal_fingerprints[spec_name] = (fp, now)
 
         # 同源路径（family.py bug_repair_mode 先例）：get_admin_config 缺省填充，
-        # 旁路 _get_config + 硬编码 fallback 会与权威缺省漂移（缺省现为 60 分钟）
+        # 旁路 _get_config + 硬编码 fallback 会与权威缺省漂移（缺省现为 60 分钟）。
+        # 取值容错（code-review item b9df0f065a8d）：直接下标 + 裸 float 在缺键
+        # （自定义/部分配置）或非数值时抛 KeyError/ValueError，而本方法在
+        # check_recovery_watch 循环内被调用——异常会中止整轮复查、静默丢弃其余
+        # 到期条目的升级。改用 .get + try/except 回落权威缺省。
         from core.config import ConfigLoader
 
-        store_cooldown = float(
-            ConfigLoader.get_admin_config(self._pm.config)["escalation_cooldown_minutes"]
-        )
+        try:
+            store_cooldown = float(
+                ConfigLoader.get_admin_config(self._pm.config).get(
+                    "escalation_cooldown_minutes"
+                )
+            )
+        except (TypeError, ValueError):
+            store_cooldown = 60.0
+        if not store_cooldown or store_cooldown <= 0:
+            store_cooldown = 60.0
         store = AdminStore(self._pm.project_root, self._pm.logger)
         try:
             if store.latest_signal(spec_name, "dispatch_stalled", store_cooldown) is not None:
