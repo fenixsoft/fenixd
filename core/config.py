@@ -151,6 +151,12 @@ class ConfigLoader:
     # Valid spec review modes（add-spec-review-gate：auto=默认全量评审，never=完全关闭）
     VALID_SPEC_REVIEW_MODES = ["auto", "never"]
 
+    # Valid start_after scopes（add-start-after-scope-config：两档覆盖范围）
+    # dispatch（缺省）= start_after 只约束实现派发链（定时/待激活 SPEC 立即晋升并跑
+    # 方案评审，实现等到点）即 fix-start-after-premature-pickup 之前的旧行为；
+    # full = 同时约束晋升/评审入口（SPEC 停在 drafted，到期/激活才晋升并评审）。
+    VALID_START_AFTER_SCOPES = ["full", "dispatch"]
+
     # ── 瞬断治理配置（fix-provider-transient-backoff D6 / transient-controls-ui）──
     # 五键缺省值（design D6 表）。消费方（runner/provider_circuit/dispatch）经
     # _get_config 读取，非法值由本类防御式规范化回退缺省。
@@ -468,6 +474,14 @@ class ConfigLoader:
             if mode not in cls.VALID_SPEC_REVIEW_MODES:
                 raise ValueError(
                     f"gates.spec_review_mode must be one of {cls.VALID_SPEC_REVIEW_MODES}: {mode}"
+                )
+
+        # Validate gates.start_after_scope (optional — defaults to dispatch)
+        if "start_after_scope" in gates and gates["start_after_scope"] is not None:
+            scope = gates["start_after_scope"]
+            if scope not in cls.VALID_START_AFTER_SCOPES:
+                raise ValueError(
+                    f"gates.start_after_scope must be one of {cls.VALID_START_AFTER_SCOPES}: {scope}"
                 )
 
         # D5：timeout_supervision.absolute_max_seconds 一致性校验，启动/热更新时
@@ -1048,6 +1062,24 @@ class ConfigLoader:
         if mode not in cls.VALID_SPEC_REVIEW_MODES:
             return "auto"
         return mode
+
+    @classmethod
+    def get_start_after_scope(cls, config: Dict[str, Any]) -> str:
+        """Return the start_after scope, defaulting to 'dispatch'.
+
+        'dispatch' (default): start_after only gates the implementation dispatch chain
+        — scheduled/manual SPECs are immediately promoted and go through review; implementation
+        dispatch waits until due (behavior before fix-start-after-premature-pickup).
+
+        'full': start_after also gates the promotion and review entry points — SPECs stay
+        in drafted until due/activated before promotion and review (behavior after
+        fix-start-after-premature-pickup).
+        """
+        gates = config.get("gates") or {}
+        scope = gates.get("start_after_scope")
+        if scope not in cls.VALID_START_AFTER_SCOPES:
+            return "dispatch"
+        return scope
 
     @classmethod
     def get_admin_config(cls, config: Dict[str, Any]) -> Dict[str, Any]:
