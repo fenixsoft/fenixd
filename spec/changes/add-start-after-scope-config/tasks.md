@@ -35,17 +35,17 @@
 
 ## 1. 配置层：新增键与 getter（core/config.py）
 
-- [ ] 1.1 新增类常量 `VALID_START_AFTER_SCOPES = ["full", "dispatch"]`，紧邻既有
+- [x] 1.1 新增类常量 `VALID_START_AFTER_SCOPES = ["full", "dispatch"]`，紧邻既有
       `VALID_SPEC_REVIEW_MODES` 定义，附一行注释说明两档语义（`dispatch`=只约束实现派发
       链即旧行为；`full`=同时约束晋升/评审入口）。
-- [ ] 1.2 在 `_validate` 的 gates 校验段（`spec_review_mode` 校验之后）新增
+- [x] 1.2 在 `_validate` 的 gates 校验段（`spec_review_mode` 校验之后）新增
       `start_after_scope` 校验分支：键存在且非 None 时，值不在 `VALID_START_AFTER_SCOPES`
       则 `raise ValueError`，错误信息含合法取值（措辞对齐既有三条：
       `"gates.start_after_scope must be one of ['full', 'dispatch']: <value>"`）。
-- [ ] 1.3 新增类方法 `get_start_after_scope(cls, config) -> str`，紧邻
+- [x] 1.3 新增类方法 `get_start_after_scope(cls, config) -> str`，紧邻
       `get_spec_review_mode`；非法/缺失返回缺省 `"dispatch"`；docstring 说明缺省语义
       （回归 `fix-start-after-premature-pickup` 之前的旧行为）与两档差异。
-- [ ] 1.4 在 `tests/test_config.py` 中新增测试类（对齐 `spec_review_mode` 既有 4 例
+- [x] 1.4 在 `tests/test_config.py` 中新增测试类（对齐 `spec_review_mode` 既有 4 例
       形态，`tests/test_config.py:847` 同款 `_write_valid(gates__<key>=...)` helper）：
       (a) 非法值 `"sometimes"` 被拒且异常含键名；(b) `full` / `dispatch` 两值均接受并
       回读到 `config["gates"]["start_after_scope"]`；(c) 未配置时
@@ -60,7 +60,7 @@
 
 ## 2. 门控层：组合谓词与四处调用点
 
-- [ ] 2.1 在 `core/state_machine.py` 中新增模块级函数
+- [x] 2.1 在 `core/state_machine.py` 中新增模块级函数
       `start_after_blocks_promotion(entry, config=None) -> bool`（置于
       `start_after_pending` 之后）：实现为**纯组合表达式**
       `start_after_pending(entry) and ConfigLoader.get_start_after_scope(config) == "full"`。
@@ -70,18 +70,18 @@
       (i) 仅用于**晋升/评审**入口——实现派发口 MUST 继续直接调 `start_after_pending`；
       (ii) `config=None` 等价 `dispatch`（不阻塞）；(iii) 异常不在此处吞，由调用点 fail-open。
       **MUST NOT** 修改 `start_after_pending` 的签名或语义（6 处调用点依赖其无条件性）。
-- [ ] 2.2 `core/pm_engine/engine.py` 的 `_on_spec_drafted`：把守卫内的
+- [x] 2.2 `core/pm_engine/engine.py` 的 `_on_spec_drafted`：把守卫内的
       `start_after_pending(entry)` 改为 `start_after_blocks_promotion(entry, self.config)`，
       并更新该处注释（把「fix-start-after-premature-pickup D1 无条件门控」改写为
       「受 `gates.start_after_scope` 条件门控，`full` 时行为同 fix-start-after-premature-pickup，
       `dispatch` 时回到该 SPEC 之前的旧行为」）。保留既有 try/except + warning 日志。
-- [ ] 2.3 `core/pm_engine/engine.py` 的 `_on_spec_reviewing`：同 2.2 改为
+- [x] 2.3 `core/pm_engine/engine.py` 的 `_on_spec_reviewing`：同 2.2 改为
       `start_after_blocks_promotion(entry, self.config)`，注释同步更新。保留既有
       try/except fail-open 与 debug 日志措辞。
-- [ ] 2.4 `core/event_bus.py` 的 `_recover_one` **drafted 分支**：早退判定改为
+- [x] 2.4 `core/event_bus.py` 的 `_recover_one` **drafted 分支**：早退判定改为
       `start_after_blocks_promotion(entry, self.config)`；注释更新为受 scope 约束。
       保留「不产生 re-triggering promote 日志」的既有措辞与 debug 级别。
-- [ ] 2.5 `core/event_bus.py` 的 `_recover_one` **reviewing 分支**：同 2.4（reviewing 分支、
+- [x] 2.5 `core/event_bus.py` 的 `_recover_one` **reviewing 分支**：同 2.4（reviewing 分支、
       `re-triggering spec_reviewing` 日志）。
 - [ ] 2.6 逐点自查实现派发口**未被改**：`core/pm_engine/engine.py` 的 `_on_spec_ready`
       （`start_after_pending(spec)`）与假就绪巡检豁免、`core/event_bus.py` 的
