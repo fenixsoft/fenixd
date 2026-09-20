@@ -223,6 +223,8 @@ class H3SpecRoutesMixin:
         - 终态（done/pushed）→ 403「终态不可设置定时拾取」
         - value 非法 ISO8601 → 400（STATE.md 不变）
         - 成功 → 200 + {ok: true, start_after: <iso|null|"manual">}
+          清空时（start_after null）若即时唤醒信号写出失败，响应携带 warning
+          （ok 仍为 true——start_after 已成功置 null，附告警供前端分支文案）
         """
         spec = query.get("spec", [None])[0]
         project = self._project_from_query(query)
@@ -256,14 +258,21 @@ class H3SpecRoutesMixin:
         if result.get("invalid"):
             self._error(400, result.get("error") or "start_after 非法 ISO8601")
             return
-        self._json(
-            {
-                "ok": True,
-                "project": project["name"],
-                "spec": spec,
-                "start_after": result.get("start_after"),
-            }
-        )
+        resp = {
+            "ok": True,
+            "project": project["name"],
+            "spec": spec,
+            "start_after": result.get("start_after"),
+        }
+        kick = result.get("scheduling_kick")
+        if kick and not kick.get("ok"):
+            # 信号写出失败：如实告知（D3），不无条件宣称「立即恢复调度」；
+            # 周期数取 schedule.poll_interval_minutes 缺省 30（可配置键，措辞不硬编码承诺）
+            resp["warning"] = (
+                "已清除定时，但即时唤醒信号写入失败，将由下次扫描"
+                "（缺省 ≤30 分钟，即 schedule.poll_interval_minutes）派发"
+            )
+        self._json(resp)
 
 
     def _api_spec_activate(self, query) -> dict:
@@ -278,6 +287,8 @@ class H3SpecRoutesMixin:
         - 非待激活（start_after 非 manual）→ 200 + {ok: false, reason}
           （STATE 零变更，幂等拒绝）
         - 成功 → 200 + {ok: true, spec, start_after: null}
+          若即时唤醒信号写出失败，响应携带 warning（ok 仍为 true——start_after
+          已成功置 null，附告警供前端分支文案）
         """
         spec = query.get("spec", [None])[0]
         project = self._project_from_query(query)
@@ -313,14 +324,20 @@ class H3SpecRoutesMixin:
                 }
             )
             return
-        self._json(
-            {
-                "ok": True,
-                "project": project["name"],
-                "spec": spec,
-                "start_after": result.get("start_after"),
-            }
-        )
+        resp = {
+            "ok": True,
+            "project": project["name"],
+            "spec": spec,
+            "start_after": result.get("start_after"),
+        }
+        kick = result.get("scheduling_kick")
+        if kick and not kick.get("ok"):
+            # 信号写出失败：如实告知（D3），不无条件宣称「立即恢复调度」
+            resp["warning"] = (
+                "已激活，但即时唤醒信号写入失败，将由下次扫描"
+                "（缺省 ≤30 分钟，即 schedule.poll_interval_minutes）派发"
+            )
+        self._json(resp)
 
 
     def _api_spec_freeze_config(self, query) -> dict:

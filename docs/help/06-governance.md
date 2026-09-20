@@ -145,7 +145,13 @@ daemon 重启时，处于 `implementing`/`testing` 中断状态的 SPEC 自动�
 
 **人工步骤（仓库外，非本仓库交付物）**：`/fenix-ready` skill 位于 `~/.claude/skills/fenix-ready/`（仓库外独立目录），其「放行后立即调度 / 设为待激活」选项须由人工在主树手工补做（改动要点：放行确认处增一问「放行后立即调度，还是设为待激活？」；选待激活时把 SPEC 的 `start_after` 写为 `manual`）。
 
-激活动作 = 把 `start_after` 由 `manual` 置为 `null` 并即时唤醒派发（复用 `scheduling_kick_request.json` 文件信号），daemon 主循环 1s 粒度拾取即派发。
+激活动作 = 把 `start_after` 由 `manual` 置为 `null` 并即时唤醒派发（复用 scheduling kick 文件信号），daemon 主循环 1s 粒度拾取即派发。
+
+**信号载体（fix-scheduling-kick-single-slot）**：scheduling kick 信号载体为**每 SPEC 一文件**的目录形态 `.fenix/scheduling_kick/<spec>.json`（内容 `{"spec", "action": "clear-start-after", "created"}`）。同一 SPEC 重复清空幂等覆盖自身文件；**不同 SPEC 互不阻塞**——不再存在单槽位冲突导致第二个唤醒信号被静默丢弃。旧单文件路径 `.fenix/scheduling_kick_request.json` 由消费侧只读兼容（存量项目一次性迁移，消费后删除，新写入一律走目录）。
+
+**诚实回报语义**：清空定时 / 激活动作的成功响应（API 200 / CLI exit 0）只代表 `start_after` 已成功置 null；若即时唤醒信号写出失败，响应携带 `warning`（「已清除定时/已激活，但即时唤醒信号写入失败，将由下次扫描（缺省 ≤30 分钟，即 `schedule.poll_interval_minutes`）派发」），前端与 CLI 依此分支文案，MUST NOT 无条件宣称「立即恢复调度」。
+
+**陈旧信号回收（代码常量 1 小时，不可配置）**：daemon 启动清扫与周期计时段（600s 孤儿清扫节拍）对信号目录对账——`created` 在回收阈值内的条目先消费再删（唤醒幂等）；早于阈值 / `created` 缺失 / 损坏的条目仅删除不唤起（防 daemon 长期停机后残留信号在恢复时引发一轮病态集中派发）。旧单文件路径同受该阈值约束。该阈值与文件监听 2 秒、定时拾取 / 恢复复查 60 秒等均为代码常量，不可配置。
 
 ## SPEC 方案评审门禁
 

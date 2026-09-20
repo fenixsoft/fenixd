@@ -158,6 +158,15 @@ from .admin_actions import (
     set_spec_priority,
 )
 
+# fix-scheduling-kick-single-slot D2：SCHEDULING_KICK_DIR / write_scheduling_kick
+# 来自 core.signals（中性模块），daemon 与 dashboard 双端共用同一份定义。
+# validate_scheduling_kick_spec 直接从 core.signals 导入（非经 admin_actions 中转）。
+from core.signals import (  # noqa: F401
+    SCHEDULING_KICK_DIR,
+    write_scheduling_kick,
+    validate_scheduling_kick_spec,
+)
+
 # ── spec_archive 组 ──
 from .spec_archive import (
     soft_delete_spec,

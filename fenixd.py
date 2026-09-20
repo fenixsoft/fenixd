@@ -50,6 +50,16 @@ from core.worktree_manager import WorktreeManager
 from core.agent_runner import AgentRunner
 from core.agent_runner.runner import ADMIN_DISPOSITION_GLOB
 from core.v2_dev_server import cleanup_orphans as v2_cleanup_orphans
+# fix-scheduling-kick-single-slot D2：scheduling kick 信号载体（目录形态）定义在
+# 中性模块 core.signals——daemon 消费侧与 dashboard 写入侧共用同一份常量，
+# 不产生 dashboard → 根 daemon 的反向依赖。
+from core.signals import SCHEDULING_KICK_DIR
+
+# fix-scheduling-kick-single-slot D4：陈旧信号回收阈值（代码常量 1 小时，
+# 对齐信号时序族）。daemon 正常运行时消费延迟 ≤ 2s（1s 主循环），超过 1 小时
+# 未消费只可能是消费方缺席——此时「唤醒」已失去即时语义，退化为「下次扫描自然
+# 会处理」。MUST NOT 进配置（对齐 docs/help/06-governance.md 既有记载）。
+SCHEDULING_KICK_STALE_THRESHOLD_SECONDS = 3600
 from core.wip_checkpoint import (
     ANCHOR_DRAIN_PRESERVE,
     commit_wip_checkpoint,
@@ -513,6 +523,16 @@ class FenixDaemon:
         # hook 连环触发，因 index.lock 冲突失败才未酿成连环误提交）。
         self.event_bus.start()
 
+        # fix-scheduling-kick-single-slot D4：启动清扫调度 kick 信号对账。
+        # MUST 排在 event_bus.start()（同步建立 STATE 基线快照）之后、进入主
+        # 循环之前——阈值内的条目会被「先消费再删」唤起并写 STATE；早于基线
+        # 快照的写入会被随后的首扫 _dispatch_changes 当作新变化重放（本文件
+        # 2026-09-07 hook 全量重放事故的注释即为此防线）。
+        try:
+            self._reclaim_stale_scheduling_kicks()
+        except Exception as e:
+            self.logger.error("fenixd", f"Startup scheduling_kick reclaim failed: {e}")
+
         # 恢复上次异常退出遗留的中断状态（implementing/testing → ready）。
         # recover_interrupted 此前定义了但从未被调用，导致 daemon 重启后卡死的
         # spec 永远不被重新调度（fix-fenix-token-waste）；保留判定已在上面与
@@ -586,8 +606,8 @@ class FenixDaemon:
                     self.logger.error("fenixd", f"cancel_run pickup failed: {e}")
                 # 清空定时拾取即派发信号（2026-09-08 清空 start_after 后等 30min
                 # recovery 才派发事故的 API 侧修复）：dashboard 清空 start_after
-                # 时写入 .fenix/scheduling_kick_request.json，主循环下一轮（≤2s）
-                # 消费并唤起派发。
+                # 时写入 .fenix/scheduling_kick/<spec>.json（每 SPEC 一文件，多槽位），
+                # 主循环下一轮（≤2s）消费并唤起派发。
                 try:
                     self._check_scheduling_kick_requests()
                 except Exception as e:
@@ -695,6 +715,14 @@ class FenixDaemon:
                         self._reclaim_verify_serving_tree()
                     except Exception as e:
                         self.logger.error("fenixd", f"Periodic serving tree reclaim failed: {e}")
+                    # fix-scheduling-kick-single-slot D4：陈旧 scheduling kick 信号
+                    # 周期对账（复用 600s 孤儿清扫时点）。启动清扫已处理存量，
+                    # 此后周期性兜底：超阈值条目仅删不唤起、非 .json 残留按
+                    # mtime 同阈值清理、损坏条目删除防卡死。
+                    try:
+                        self._reclaim_stale_scheduling_kicks()
+                    except Exception as e:
+                        self.logger.error("fenixd", f"Periodic scheduling_kick reclaim failed: {e}")
                 # add-framework-self-evolution 5.1：自进化检查点（节拍复用
                 # admin.interval_minutes，缺省 5 分钟；异常记 ERROR 不中断主循环，
                 # 就绪即入队、无在途立即启动分析 run）。
@@ -1198,53 +1226,123 @@ class FenixDaemon:
             )
 
     def _check_scheduling_kick_requests(self):
-        """主循环每轮扫描「清空定时拾取即派发」的文件信号并消费。
+        """主循环每轮扫描「清空定时拾取即派发」的目录形态信号并消费。
 
-        dashboard 的 /api/spec-start-after 在清空 start_after（value=null）时
-        原子写入 .fenix/scheduling_kick_request.json（含 spec/action/created）；
-        本方法在主循环（1s 粒度）中检测其存在：读取→删除→按 spec 当前状态
-        唤起 _on_spec_ready / _on_spec_drafted（与 check_scheduling_deadlines
-        的到期拾取同语义）→立即 _process_queue。与 _check_cancel_requests
-        同构：损坏 JSON 删除防卡死；删除失败下轮再试。
+        fix-scheduling-kick-single-slot：载体由单文件单槽位演进为每 SPEC 一文件
+        （.fenix/scheduling_kick/<spec>.json）——不同 SPEC 写不同文件，无共享
+        槽位即无跨 SPEC 冲突。本方法在主循环（1s 粒度）中扫描目录 *.json 条目
+        逐条消费：「读取 → 按 spec 当前状态唤起（drafted 走 _on_spec_drafted，
+        否则 _on_spec_ready）→ 唤起成功后删除 → _process_queue」（先唤起后删：
+        唤起异常时信号保留留待下轮重试，删除失败亦留待下轮）。逐条消费相互
+        隔离：单条异常捕获记日志后继续下一条，MUST NOT 中断同轮其余信号。
 
-        spec 已不在 STATE.md（已归档/删除）时仍删信号防反复报错；spec 处于
-        终态或派发中时由 _on_spec_ready 内部谓词自然拦截（幂等，无需此处
-        重复校验——2026-09-08 清空 start_after 后等 30min recovery 才派发事故
-        的 API 侧修复）。
+        目录不存在视为空；非 *.json 条目一律忽略且 MUST NOT 删除（避免误删
+        并发写入中的临时文件——那些由 _reclaim_stale_scheduling_kicks 按 mtime
+        阈值清理）。损坏/非法 JSON/缺 spec 字段的信号文件删除防卡死。
+
+        旧单文件路径 .fenix/scheduling_kick_request.json 兼容消费（D5，只读
+        兼容——新写入一律走目录，存量旧文件在下次被消费后消失），与目录扫描
+        在同一轮内互不阻塞；旧文件同样适用 D4 回收阈值分档（created 早于阈值
+        的旧文件仅删除、MUST NOT 唤起——防 daemon 长期停机残留的旧信号在恢复时
+        引发一轮病态集中派发）。
         """
-        req_path = PROJECT_ROOT / ".fenix" / "scheduling_kick_request.json"
-        if not req_path.exists():
-            return
+        kick_dir = PROJECT_ROOT / SCHEDULING_KICK_DIR
+        if kick_dir.is_dir():
+            for path in sorted(kick_dir.glob("*.json")):
+                try:
+                    self._consume_scheduling_kick_file(path)
+                except Exception as e:  # noqa: BLE001 逐条隔离：继续下一条
+                    self.logger.error(
+                        "fenixd",
+                        f"scheduling_kick 条目消费异常（继续下一条）: {path.name}: {e}",
+                    )
+        # 旧单文件路径兼容消费（D5：与目录扫描同轮、互不阻塞）。
+        # 常量定义在 core/dashboard/data/admin_actions.SCHEDULING_KICK_REQUEST，
+        # 本文件按既有风格用字面路径（旧路径只读兼容、无共享常量义务）。
+        legacy = PROJECT_ROOT / ".fenix" / "scheduling_kick_request.json"
+        if legacy.exists():
+            try:
+                self._consume_scheduling_kick_file(legacy)
+            except Exception as e:  # noqa: BLE001
+                self.logger.error("fenixd", f"scheduling_kick 旧文件消费异常: {e}")
+
+    def _consume_scheduling_kick_file(self, path: Path) -> None:
+        """消费/清理单个 scheduling kick 信号文件（目录条目与旧单文件共用）。
+
+        分档语义（fix-scheduling-kick-single-slot D4/D5，唯一判据 = created
+        时间戳，消费方时钟）：
+        - 损坏 / 非法 JSON / 缺 spec 字段 → 删除防卡死（记日志）
+        - created 缺失 / 非法 / 早于回收阈值 → 陈旧信号：仅删除不唤起
+          （daemon 长期停机后的积压不应引发一轮集中派发）
+        - created 在阈值内 → 按 spec 当前状态唤起（drafted → _on_spec_drafted，
+          否则 _on_spec_ready）→ 唤起成功后删除 → _process_queue
+          （先唤起后删：唤起异常时信号保留留待下轮重试，删除失败亦留待下轮；
+          重复唤起由下游 handler 既有幂等谓词吸收）
+        - spec 已不在 STATE.md → 删除信号并记日志
+        """
         try:
-            with req_path.open("r", encoding="utf-8") as f:
+            with path.open("r", encoding="utf-8") as f:
                 payload = json.load(f)
         except (json.JSONDecodeError, OSError, UnicodeDecodeError):
             # 损坏的信号文件：删除避免每轮报错卡死
+            self.logger.warning("fenixd", f"scheduling_kick 信号损坏，删除: {path.name}")
             try:
-                req_path.unlink()
+                path.unlink()
             except OSError:
                 pass
             return
-        # 先读后删：删除失败（被并发消费）则本次跳过，下一轮再试
-        try:
-            req_path.unlink()
-        except OSError:
+        if not isinstance(payload, dict):
+            self.logger.warning("fenixd", f"scheduling_kick 信号非对象，删除: {path.name}")
+            try:
+                path.unlink()
+            except OSError:
+                pass
             return
-
         spec = payload.get("spec")
         if not spec:
-            self.logger.warning("fenixd", "scheduling_kick 请求缺少 spec，忽略")
+            self.logger.warning("fenixd", f"scheduling_kick 信号缺少 spec，删除: {path.name}")
+            try:
+                path.unlink()
+            except OSError:
+                pass
+            return
+        # 陈旧分档（D4/D5）：created 缺失/非法按陈旧处理（仅删）
+        stale = True
+        created = payload.get("created")
+        if isinstance(created, str) and created:
+            try:
+                dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                stale = (
+                    datetime.now(timezone.utc) - dt
+                ).total_seconds() > SCHEDULING_KICK_STALE_THRESHOLD_SECONDS
+            except ValueError:
+                stale = True  # created 非法 → 按陈旧处理
+        if stale:
+            self.logger.info(
+                "fenixd",
+                f"scheduling_kick 陈旧信号（created={created}），仅删除不唤起: {path.name}",
+            )
+            try:
+                path.unlink()
+            except OSError:
+                pass
             return
         if self.pm_engine is None:
-            self.logger.warning("fenixd", "pm_engine 未初始化，丢弃 scheduling_kick 请求")
+            self.logger.warning("fenixd", "pm_engine 未初始化，跳过 scheduling_kick 信号")
             return
 
         entry = self.pm_engine.state_machine.read_one(spec)
         if not entry:
             self.logger.info(
                 "fenixd",
-                f"消费 scheduling_kick 信号：spec '{spec}' 已不存在，丢弃",
+                f"消费 scheduling_kick 信号：spec '{spec}' 已不存在，删除信号",
             )
+            try:
+                path.unlink()
+            except OSError:
+                pass
             return
         status = entry.get("status")
         self.logger.info(
@@ -1260,10 +1358,63 @@ class FenixDaemon:
             # 唤起后立即处理派发队列，对齐 check_scheduling_deadlines 的到期拾取
             self.pm_engine._process_queue()
         except Exception as e:
+            # 唤起异常：信号保留留待下轮重试（对齐「异常者留待下轮重试」语义）
             self.logger.error(
                 "fenixd",
                 f"scheduling_kick 唤起 '{spec}' 失败（full_scan 兜底）: {e}",
             )
+            return
+        # 唤起成功后删除；删除失败亦留待下轮
+        try:
+            path.unlink()
+        except OSError:
+            self.logger.warning("fenixd", f"scheduling_kick 信号删除失败，留待下轮: {path.name}")
+
+    def _reclaim_stale_scheduling_kicks(self) -> None:
+        """陈旧 scheduling kick 信号回收（启动清扫 + 周期计时段，600s 对齐孤儿清扫）。
+
+        fix-scheduling-kick-single-slot D4：对信号目录对账，逐条按 created 分档：
+        - *.json 条目：created 在回收阈值（1 小时，代码常量）内 → 消费（唤起）
+          后删除（幂等，复用 _consume_scheduling_kick_file 的唤起路径）；created
+          早于阈值 / 缺失 / 非法 → 仅删除不唤起；损坏 JSON / 缺 spec → 删除防卡死。
+        - 非 *.json 残留（写入中断留下的临时文件）：按 mtime 同阈值清理
+          （MUST NOT 在 _check_scheduling_kick_requests 的消费扫描中被当作损坏
+          信号删除——那里只忽略不删，由本对账统一回收）。
+        - 旧单文件路径 .fenix/scheduling_kick_request.json：同判据分档（D5）。
+
+        异常捕获记日志不中断主循环。
+        """
+        kick_dir = PROJECT_ROOT / SCHEDULING_KICK_DIR
+        if kick_dir.is_dir():
+            for path in sorted(kick_dir.iterdir()):
+                try:
+                    if path.name.endswith(".json"):
+                        self._consume_scheduling_kick_file(path)
+                    else:
+                        self._reclaim_temp_scheduling_kick(path)
+                except Exception as e:  # noqa: BLE001 逐条隔离：继续下一条
+                    self.logger.error(
+                        "fenixd",
+                        f"scheduling_kick 对账异常（继续）: {path.name}: {e}",
+                    )
+        legacy = PROJECT_ROOT / ".fenix" / "scheduling_kick_request.json"
+        if legacy.exists():
+            try:
+                self._consume_scheduling_kick_file(legacy)
+            except Exception as e:  # noqa: BLE001
+                self.logger.error("fenixd", f"scheduling_kick 旧文件对账异常: {e}")
+
+    def _reclaim_temp_scheduling_kick(self, path: Path) -> None:
+        """非 .json 残留（写入中断留下的临时文件）按 mtime 同阈值清理。"""
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            return
+        if time.time() - mtime > SCHEDULING_KICK_STALE_THRESHOLD_SECONDS:
+            try:
+                path.unlink()
+            except OSError:
+                pass
 
     # ── SPEC 审批推送信号消费（add-spec-approve-push-modal） ───────
 

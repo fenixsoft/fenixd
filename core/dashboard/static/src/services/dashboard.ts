@@ -429,6 +429,8 @@ export interface StartAfterResult {
   project: string;
   spec: string;
   start_after: string | null;
+  /** 清空定时时即时唤醒信号写出失败（fix-scheduling-kick-single-slot D3）：非空时须提示「由下次扫描派发」 */
+  warning?: string;
   error?: string;
 }
 
@@ -451,6 +453,8 @@ export interface ActivateResult {
   project: string;
   spec: string;
   start_after: string | null;
+  /** 即时唤醒信号写出失败（fix-scheduling-kick-single-slot D3）：非空时须提示「由下次扫描派发」 */
+  warning?: string;
   reason?: string;
   error?: string;
 }

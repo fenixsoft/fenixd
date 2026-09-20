@@ -352,7 +352,7 @@ class TestSpecManualActivationAPI:
         assert entry.get("start_after") == "manual", (
             "哨兵 manual 经 STATE.md 持久化（未折叠/未拒绝）")
         # 设为待激活不写唤醒信号（暂停调度，不是恢复调度）
-        assert not (proot / ".fenix" / "scheduling_kick_request.json").exists()
+        assert not (proot / ".fenix" / "scheduling_kick" / "myspec.json").exists()
 
     def test_start_after_manual_case_insensitive(self, server_fx):
         proot, srv = server_fx
@@ -374,7 +374,7 @@ class TestSpecManualActivationAPI:
         assert body["start_after"] is None
         entry = dash_data.parse_state(proot)["myspec"]
         assert entry.get("start_after") is None
-        req = proot / ".fenix" / "scheduling_kick_request.json"
+        req = proot / ".fenix" / "scheduling_kick" / "myspec.json"
         assert req.exists(), "激活动作必须写唤醒信号"
         import json as _json
         payload = _json.loads(req.read_text(encoding="utf-8"))
@@ -389,7 +389,7 @@ class TestSpecManualActivationAPI:
         assert "并非待激活态" in (body.get("reason") or "")
         entry = dash_data.parse_state(proot)["myspec"]
         assert entry.get("start_after") is None, "STATE 零变更"
-        assert not (proot / ".fenix" / "scheduling_kick_request.json").exists()
+        assert not (proot / ".fenix" / "scheduling_kick" / "myspec.json").exists()
 
     def test_activate_unknown_spec_404(self, server_fx):
         _, srv = server_fx
@@ -412,6 +412,117 @@ class TestSpecManualActivationAPI:
         assert status == 403
         entry = dash_data.parse_state(proot)["otherspec"]
         assert entry.get("start_after") is None
+
+    # ── fix-scheduling-kick-single-slot 多槽位 / 诚实回报（task 6.2/6.3）──
+
+    @staticmethod
+    def _add_spec(proot, name, status="ready"):
+        """向项目 STATE.md 追加一个非终态 spec（make_project 夹具只有 testing/done 两个）。"""
+        from core.state_machine import StateMachine
+        sm = StateMachine(proot / ".fenix" / "STATE.md", None)
+        sm.add_spec(name, {"priority": 3, "status": status, "depends_on": None})
+
+    def test_clear_two_specs_both_signals_exist(self, server_fx):
+        """连续清空两个 SPEC 的 start_after：两次响应均 ok:true，两信号文件并存。
+
+        锁死本次事故形态（fix-scheduling-kick-single-slot）：单槽位下第二个清空的
+        唤醒信号被丢弃，本用例断言目录形态下两 SPEC 信号文件同时存在。
+        """
+        proot, srv = server_fx
+        self._add_spec(proot, "spec-b", status="ready")
+        import json as _json
+        from core.dashboard.data import set_spec_start_after
+        for sp in ("myspec", "spec-b"):
+            set_spec_start_after(proot, sp, "2026-09-30T00:00:00+00:00")
+        status1, body1 = srv.post_json(
+            "/api/spec-start-after?project=proj-a&spec=myspec", {"value": None})
+        status2, body2 = srv.post_json(
+            "/api/spec-start-after?project=proj-a&spec=spec-b", {"value": None})
+        assert status1 == 200 and status2 == 200
+        assert body1["ok"] is True and body2["ok"] is True
+        assert "warning" not in body1, "信号成功写出时无 warning"
+        kdir = proot / ".fenix" / "scheduling_kick"
+        assert kdir.is_dir(), "信号目录已创建"
+        files = sorted(p.name for p in kdir.glob("*.json"))
+        assert files == ["myspec.json", "spec-b.json"], (
+            f"两个 SPEC 的信号文件必须并存（原事故形态：第二个被丢弃），实际 {files}")
+
+    def test_clear_start_after_write_failure_warning(self, server_fx, monkeypatch):
+        """信号写入失败 → 响应带非空 warning 且 start_after 已为 null（task 6.2）。"""
+        proot, srv = server_fx
+        from core.dashboard.data import admin_actions
+        import json as _json
+        def _fail_write(project_root, spec):
+            return {"ok": False, "file": None, "error": "simulated disk full"}
+        monkeypatch.setattr(admin_actions, "write_scheduling_kick", _fail_write)
+        status, body = srv.post_json(
+            "/api/spec-start-after?project=proj-a&spec=myspec", {"value": None})
+        assert status == 200, "start_after 已成功置 null，请求本身成功"
+        assert body["ok"] is True
+        assert body["start_after"] is None
+        warning = body.get("warning")
+        assert warning, "信号写出失败时必须带非空 warning"
+        assert "即时唤醒信号写入失败" in warning
+        assert "下次扫描" in warning
+        assert "30" in warning, "文案含缺省周期数（schedule.poll_interval_minutes 缺省 30）"
+        # start_after 确实已置 null
+        entry = dash_data.parse_state(proot)["myspec"]
+        assert entry.get("start_after") is None
+
+    def test_activate_two_manual_specs_both_signals(self, server_fx):
+        """连续激活两个 manual SPEC：两信号文件并存，无 409/丢弃（task 6.3）。"""
+        proot, srv = server_fx
+        self._add_spec(proot, "spec-b", status="ready")
+        from core.dashboard.data import set_spec_start_after
+        for sp in ("myspec", "spec-b"):
+            r = set_spec_start_after(proot, sp, "manual")
+            assert r["ok"], f"{sp} 置 manual 失败"
+        status1, body1 = srv.post("/api/spec-activate?project=proj-a&spec=myspec")
+        status2, body2 = srv.post("/api/spec-activate?project=proj-a&spec=spec-b")
+        assert status1 == 200 and status2 == 200, "两次激活都成功（无 409）"
+        assert body1["ok"] is True and body2["ok"] is True
+        kdir = proot / ".fenix" / "scheduling_kick"
+        files = sorted(p.name for p in kdir.glob("*.json"))
+        assert files == ["myspec.json", "spec-b.json"], (
+            f"两次激活的信号文件并存（无丢弃），实际 {files}")
+
+    def test_activate_write_failure_warning(self, server_fx, monkeypatch):
+        """激活时信号写出失败 → 响应带非空 warning（task 3.2 同款透传）。"""
+        proot, srv = server_fx
+        self._set_manual(srv, "myspec")
+        from core.dashboard.data import admin_actions
+        def _fail_write(project_root, spec):
+            return {"ok": False, "file": None, "error": "simulated disk full"}
+        monkeypatch.setattr(admin_actions, "write_scheduling_kick", _fail_write)
+        status, body = srv.post("/api/spec-activate?project=proj-a&spec=myspec")
+        assert status == 200
+        assert body["ok"] is True
+        assert body["start_after"] is None
+        warning = body.get("warning")
+        assert warning, "激活信号写出失败时必须带非空 warning"
+        assert "即时唤醒信号写入失败" in warning
+
+    def test_activate_cli_honest_report_on_write_failure(self, server_fx, monkeypatch, capsys):
+        """信号写出失败时 cmd_activate 不输出「立即进入调度」且 exit 0（task 6.9）。"""
+        proot, _ = server_fx
+        from core.dashboard.data import set_spec_start_after
+        r = set_spec_start_after(proot, "myspec", "manual")
+        assert r["ok"]
+        import bin.fenix_cli as cli_mod
+        from core.dashboard.data import admin_actions
+        def _fail_write(project_root, spec):
+            return {"ok": False, "file": None, "error": "simulated disk full"}
+        monkeypatch.setattr(admin_actions, "write_scheduling_kick", _fail_write)
+        class Args:
+            spec = "myspec"
+            project = str(proot)
+        try:
+            cli_mod.cmd_activate(Args())
+        except SystemExit as exc:
+            assert exc.code == 0, "start_after 已成功置 null，退出码仍为 0"
+        out = capsys.readouterr().out
+        assert "立即进入调度" not in out, "信号失败时不得宣称「立即进入调度」"
+        assert "即时唤醒" in out or "下次扫描" in out
 
 
 class TestSpecDependsOnSummary:

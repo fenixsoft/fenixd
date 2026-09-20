@@ -410,9 +410,12 @@ class TestMetaPassThroughPaths(unittest.TestCase):
         self.assertEqual(sm.read_one("myspec")["status"], "drafted")
         # 手工激活 / 清空：start_after 置 null（activate_spec 语义，admin_actions.py:426）
         sm.update_spec("myspec", {"start_after": None})
-        req = proot / ".fenix" / "scheduling_kick_request.json"
+        req = proot / ".fenix" / "scheduling_kick" / "myspec.json"
+        kdir = proot / ".fenix" / "scheduling_kick"
+        kdir.mkdir(parents=True, exist_ok=True)
         req.write_text(
-            json.dumps({"spec": "myspec", "action": "clear-start-after"}),
+            json.dumps({"spec": "myspec", "action": "clear-start-after",
+                        "created": datetime.now(timezone.utc).isoformat()}),
             encoding="utf-8",
         )
         daemon = self._make_daemon(pm)
