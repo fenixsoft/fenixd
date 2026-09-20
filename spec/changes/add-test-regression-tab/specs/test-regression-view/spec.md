@@ -39,9 +39,9 @@
 设置页「质量」页签 MUST 新增周期性全量回归配置卡片（与既有「周期性代码审查」卡片同层），承载：
 
 - `admin.regression.enabled`（开关，缺省 false）：开启后与每日自省同周期自动执行全量回归；
-- 长耗时阈值（可配，写入 `verify.yaml` 的 `regression.long_test_threshold_seconds`，缺省 10）——若判定该阈值更适宜随执行声明而非项目配置，则 MUST 在卡片中提供入口或以只读方式说明其来源。
+- 长耗时阈值（`verify.yaml` 的 `regression.long_test_threshold_seconds`，缺省 10）：本卡片 MUST 以只读方式说明其来源并复用既有 `GET/POST /api/verify-yaml` 端点提供编辑入口；MUST NOT 为该阈值另开第二写入路径（阈值归执行声明，见 design D1/R4——双写会让来源分叉）。
 
-配置读写 MUST 经既有 `GET/POST /api/config` 通道（`admin.regression.enabled` 走 config；阈值走 verify.yaml 读写端点），保存后 MUST 与其它质量配置一致地持久化并回显。
+配置读写 MUST 经既有 `GET/POST /api/config` 通道（`admin.regression.enabled` 走 config）；保存后 MUST 与其它质量配置一致地持久化并回显。该键 MUST 在 `core/dashboard/data/config_admin.py` 的 `_SOURCE_KEYS` 登记并纳入写路径 patch 合并（对齐 `admin.code_review` 的四处同款改造），否则前端提交的键被静默丢弃、开关保存后不回显。
 
 #### Scenario: 开关回显与保存
 

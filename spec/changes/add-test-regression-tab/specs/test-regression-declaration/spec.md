@@ -40,7 +40,7 @@
 
 框架 MUST 在既有验证契约自动起草流程（add-verify-contract-autodraft 通道）中，一并处理 `regression` 段：当 `verify.yaml` 无 `regression` 段（或文件整体缺失）时，administrator agent 起草的契约 MUST 包含探测到的 `regression` 段——即识别项目测试体系（语言、测试框架、测试目录、测试运行命令），生成能产出 JUnit XML 的 `cmd` 与对应 `output`，并据实测设定合理的 `timeout_seconds`。
 
-起草产物 MUST 经 `bin/fenix_verify_contract.py <项目根>` 三段自证（prepare/serve/ready）后落位，全通才写盘。`regression` 段的探测失败（如项目无测试体系）MUST 以省略该段收尾（`regression` 段为可选），不得臆造无效命令。
+起草产物 MUST 经 `bin/fenix_verify_contract.py <项目根>` 三段自证（prepare/serve/ready）后落位，全通才写盘。`regression` 段的自证为**独立可选校验**：`regression` 段存在时按 `cmd` 跑一次确认 `output` 产出可解析 JUnit XML，其失败 MUST 以省略该段收尾且 MUST NOT 改变三段自证的退出码与判定语义（prepare/serve/ready 三段未过即不落位，与现状一致——回归可跑 1800s，不得把既有自证门拖成小时级）。`regression` 段的探测失败（如项目无测试体系、命令产不出 JUnit XML）MUST 以省略该段收尾（`regression` 段为可选），不得臆造无效命令。
 
 #### Scenario: 无 regression 段时起草补齐
 

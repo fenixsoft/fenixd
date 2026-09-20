@@ -86,6 +86,8 @@ Dashboard MUST 提供 `POST /api/regression/run`（body `{project}`），原子�
 
 调度检查点 MUST 挂在既有 admin 巡检循环（不新增线程/定时器），异常只记日志不阻断巡检。
 
+回归执行 MUST 与主机级全量套件互斥：起跑前抢占 `bin/run_full_suite.py` 的同一把主机级锁（`.fenix/full-suite.lock`，等待上限同其 600s）；拿不到即放弃本次执行并记日志（MUST NOT 与之并发跑第二套全量测试）。
+
 #### Scenario: 开启后每日触发一次
 
 - **WHEN** `admin.regression.enabled` 为 true，`run_at` 时点已到，且当日尚未执行
