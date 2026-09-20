@@ -123,6 +123,6 @@
 
 ## 验证修复（原地打回第 1 轮）
 
-- [ ] 先复核失败有效性：逐条核对 `spec/changes/add-freeze-stop-inflight-agents/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
-- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
-- [ ] 修复后重跑验证确认通过
+- [x] 先复核失败有效性：逐条核对 `spec/changes/add-freeze-stop-inflight-agents/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——复核结论：2 个失败场景（api-freeze-inflight-stopped-agents、web-freeze-inflight-stopped-hint）同根因 BUG-01（freeze_spec 后端未返回 stopped_agents），proposal Impact 明确声明「freeze_spec 返回值扩展（stopped_agents 计数）」，前端 SpecStatusModal.tsx:165 的 `result?.stopped_agents` 消费点与之一致，场景断言与产品实际行为相符 → 确为真实产品 Bug，非场景缺陷；另全量回归揭示 task 3.1-3.5 的 frozen_terminated 判定对 MagicMock 替身误判（11 个 spec_review 测试红灯）与 v2 dev-server worktree 归属解析在嵌套路径下取错段（test_orphan_detected_when_no_claude），均为真实产品 Bug
+- [x] 按复核结论修复：① BUG-01——`admin_actions.freeze_spec` 冻结 STATE 写入前经 `running_run_ids_for_spec` 统计在跑 agent 数，随成功响应返回 `stopped_agents`（0/缺失=无在跑，前端分支不变），`_api_spec_freeze` docstring 同步，新增 4 个单测（在跑 1→1、空闲 0、多 run 计数、终态不可冻结不计数）；② frozen_terminated 判定改 `getattr(..., False) is True` 严格等值（spec_review.py 补 `result = None` 初始化消除异常路径 UnboundLocalError；queue/fast_track/repair_lane/legacy/pipeline 五处同改），11 个 spec_review 测试恢复通过；③ `_dev_server_worktree_root` 改 `rsplit` 取末段修复嵌套 worktree 路径归属误判
+- [x] 修复后重跑验证确认通过：受影响测试 467 个全过；有界全量回归（`pytest tests/ -q --basetemp=项目内`，5255 passed / 5 failed / 18 skipped）——仅剩 5 个存量环境性失败（test_daily_self_review git 不可用降级、TestCliWarning×4 worktree 缺 .fenix/core 部署目录），均与本次改动无关且存在于基线两侧；frozen_terminated 替身误判 11 失败清零、v2 孤儿判定修复，无本次引入回归。中途一次 1400 失败系并发 pytest 共享 `.fenix/pytest-basetemp` 导致 conftest 会话清理删除了在跑套件 tmp_path fixture 的自证伪像，已隔离重跑复验全绿
