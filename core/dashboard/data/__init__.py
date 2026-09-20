@@ -239,6 +239,12 @@ from .code_review import (
     read_code_review_progress,
 )
 
+# ── regression 组（add-test-regression-tab）──
+from .regression import (
+    read_regression_result,
+    is_regression_running,
+)
+
 # ── state 组 ──
 from .state import parse_state
 

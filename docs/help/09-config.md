@@ -277,6 +277,41 @@ admin:
 - 模型链：`agents.models.code-review` → `agents.models.self-review` → `agents.models.administrator` → `admin.agent_model` → 默认网关。
 - token 归账到 `.fenix/cost/code_review_tokens.json`（与每日自省同结构，不写 STATE）。
 
+### admin.regression（周期性全量回归）
+
+设置页「质量」页签的开关（`add-test-regression-tab`）：开启后与每日自省**同周期**（`admin.self_review.run_at` 时点）自动执行一次全量回归，结果落到 `.fenix/regression/last-run.json`，供项目页「测试回归」分面展示。**前置条件**：项目 `.fenix/verify.yaml` 须有有效 `regression` 段（见下节）——无段时周期检查点跳过（reason: not_configured），不会派发空跑。同自然日防重（独立状态文件 `.fenix/regression/state.json` 的 `last_run_date`，不复用自省/code-review 的防重状态）；与 implementer 收尾的全量套件互斥（抢占 `bin/run_full_suite.py` 的同一把主机级锁 `.fenix/full-suite.lock`，等待上限 600s，拿不到即放弃本次并记日志——同一主机同一时刻只跑一套完整测试）。
+
+| 键 | 默认值 | 范围 | 生效方式 |
+|----|--------|------|---------|
+| enabled | `false` | bool | 热更新（下一检查点生效） |
+
+```yaml
+admin:
+  regression:
+    enabled: false      # 是否启用周期性全量回归（缺省 false；手动触发不受此开关约束）
+```
+
+- `enabled` 只管**周期调度**（与 `admin.code_review.enabled` 同语义）：关闭时到达自省时点不派发、不写任何产物；项目页「测试回归」分面的**手动触发**按钮（「立即执行全量回归」）**不受此开关约束**——用户显式点击即执行（写 `.fenix/regression_request.json` 文件信号，daemon 未受 supervisor 托管时拒绝；项目未配置 regression 段时返回 400「该项目未配置全量回归」）。
+- 周期性回归与每日自省同周期但**不依赖自省状态**：回归检查点独立判定 run_at 时点与独立防重，与自省/code-review 的先后顺序不敏感。
+- 回归命令在项目根执行（cwd=项目根），超时自动中止整个进程组（`start_new_session= True` 形态，仅杀直接子进程会让 shell 派生的测试森林存活）。
+
+### verify.yaml 的 regression 段（全量回归执行声明）
+
+`.fenix/verify.yaml` 顶层可选 `regression` 段声明项目全量回归如何执行与如何解析结果（框架为通用开发框架，命令形态与测试目录由项目声明，框架只认 JUnit XML——跨语言事实标准：pytest `--junit-xml`、jest-junit、go-junit-report、maven-surefire 均可产出）：
+
+```yaml
+regression:
+  cmd: python3 -m pytest tests/ -q --junit-xml=.fenix/regression/junit.xml  # 必填：执行命令（shell 字符串或 argv 列表），cwd=项目根，MUST 产出 JUnit XML
+  output: .fenix/regression/junit.xml   # 必填：命令产出的 JUnit XML 相对项目根路径
+  timeout_seconds: 1800                 # 可选：硬超时（秒），正整数，缺省 1800；超过则中止并归为 timeout
+  format: junit                         # 可选：结果格式，本次仅支持 junit 一值（缺省 junit）；其它值整段按无效处理
+  long_test_threshold_seconds: 10       # 可选：长耗时用例阈值（正数，缺省 10），单用例耗时超过即计入 long_tests
+```
+
+- 缺 `cmd`/`output`、`format` 非 `junit` 或非法数值（非正数）时，`regression` 段视为无效/回退缺省：无效段按「未配置回归」处理（记 WARNING，不阻断 daemon 启动），分面显示引导态、周期检查点跳过、触发端点 400。**MUST NOT** 把其它 format 按 junit 去解析（必然产出无解释的 parse_error）。
+- `regression` 段缺省不存在 = 「未配置全量回归」，存量项目零迁移。
+- 命令应幂等，产物落 `.fenix/regression/`（gitignored 运行时产物）。
+
 ### pm.dispatch.aging / pm.family
 
 | 键 | 默认值 | 生效方式 |

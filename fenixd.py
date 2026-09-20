@@ -607,6 +607,14 @@ class FenixDaemon:
                     self._check_code_review_requests()
                 except Exception as e:
                     self.logger.error("fenixd", f"code_review pickup failed: {e}")
+                # add-test-regression-tab：regression 手动触发文件信号拾取
+                # （dashboard 写入 .fenix/regression_request.json），主循环
+                # 下一轮消费（校验回归段 + 单飞 + 后台投递 run_regression），
+                # 与 _check_code_review_requests 同构。
+                try:
+                    self._check_regression_requests()
+                except Exception as e:
+                    self.logger.error("fenixd", f"regression pickup failed: {e}")
                 # 配置热更新：每 30s 检查配置文件 mtime，变更则原地重载
                 if time.time() - config_check_ts >= 30:
                     config_check_ts = time.time()
@@ -1488,6 +1496,137 @@ class FenixDaemon:
                 with self.admin_monitor._code_review_lock:
                     self.admin_monitor._code_review_in_flight = False
             self.logger.error("fenixd", f"code_review 手动审查投递失败: {e}")
+
+    def _check_regression_requests(self):
+        """主循环每轮扫描 regression 手动触发文件信号并投递后台执行。
+
+        dashboard 的 POST /api/regression/run 会原子写入
+        .fenix/regression_request.json（含 requested_at）；本方法在
+        主循环（1s 粒度）中检测其存在：读取→删除→校验 hosting_state →
+        校验 verify.yaml regression 段 → 单飞 → 投递后台 worker 池。
+
+        消费方守卫（对齐 _check_code_review_requests）：daemon 未运行或
+        hosting_state == unmanaged 时信号无人消费；已有回归在跑时单飞
+        忽略请求（不排队、不并发）。信号文件在框架根 PROJECT_ROOT
+        （单项目自托管形态，MUST NOT 按多项目 registry 逐项目扫描）。
+        """
+        from core.fenix_session import hosting_state
+
+        req_path = PROJECT_ROOT / ".fenix" / "regression_request.json"
+        if not req_path.exists():
+            return
+        try:
+            with req_path.open("r", encoding="utf-8") as f:
+                payload = json.load(f)
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+            try:
+                req_path.unlink()
+            except OSError:
+                pass
+            return
+        # 先读后删：删除失败（被并发消费）则本次跳过，下一轮再试
+        try:
+            req_path.unlink()
+        except OSError:
+            return
+
+        # 守卫：daemon 未运行或 unmanaged 时信号无人消费
+        hs = "stopped"
+        try:
+            hs = hosting_state(PROJECT_ROOT)
+        except Exception:
+            pass
+        if hs in ("stopped", "unmanaged"):
+            self.logger.warning(
+                "fenixd",
+                f"regression 信号被丢弃：daemon 状态为 {hs}（信号无人消费，"
+                "与 code_review 同判据），用户可能看到端点已返回拒绝但信号仍被"
+                "写入的窗口态",
+            )
+            return
+
+        # 校验项目 verify.yaml 的 regression 段存在且有效（无效/缺失 →
+        # 丢弃信号并记 WARNING，MUST NOT 派发空跑）
+        from core.verify_contract import load_verify_contract
+
+        contract = load_verify_contract(PROJECT_ROOT, logger=self.logger)
+        if contract is None or contract.regression is None:
+            self.logger.warning(
+                "fenixd",
+                "regression 信号被丢弃：项目未配置全量回归"
+                "（verify.yaml regression 段缺失或无效）",
+            )
+            return
+        spec = contract.regression
+
+        # 单飞：已有回归在跑 → 忽略请求（不排队、不并发）
+        lock = getattr(self.admin_monitor, "_regression_lock", None)
+
+        def _in_flight_check_and_set() -> bool:
+            """原子检查并置位回归单飞标志；返回 True 表示「已有在途」应跳过。"""
+            if lock is not None:
+                with lock:
+                    return _check_set_locked()
+            fallback = getattr(self, "_regression_fallback_lock", None)
+            if fallback is None:
+                fallback = threading.Lock()
+                self._regression_fallback_lock = fallback
+            with fallback:
+                return _check_set_locked()
+
+        def _check_set_locked() -> bool:
+            if self.admin_monitor is not None and self.admin_monitor._regression_in_flight:
+                return True
+            running = getattr(self.agent_runner, "_running_agents", None) or {}
+            if any(str(rid).startswith("regression-") for rid in running):
+                if self.admin_monitor is not None:
+                    self.admin_monitor._regression_in_flight = True
+                return True
+            if self.admin_monitor is not None:
+                self.admin_monitor._regression_in_flight = True
+            return False
+
+        if _in_flight_check_and_set():
+            self.logger.info("fenixd", "regression 手动触发被忽略：已有回归在跑")
+            return
+
+        requested_at = payload.get("requested_at", "")
+        self.logger.info(
+            "fenixd",
+            f"消费 regression 手动触发信号：requested_at={requested_at}",
+        )
+
+        def _worker():
+            try:
+                result = self.agent_runner.run_regression(
+                    spec, reason="manual"
+                )
+                self.logger.info(
+                    "fenixd",
+                    f"回归完成：run_id={result.run_id}, status={result.status}"
+                    + (f", error={result.error}" if result.error else ""),
+                )
+            except Exception as e:
+                self.logger.error("fenixd", f"回归手动执行异常: {e}")
+
+        def _worker_with_flag():
+            try:
+                _worker()
+            finally:
+                if self.admin_monitor is not None:
+                    with self.admin_monitor._regression_lock:
+                        self.admin_monitor._regression_in_flight = False
+
+        try:
+            if self._admin_executor is not None:
+                self._admin_executor.submit(_worker_with_flag)
+            else:
+                _worker_with_flag()
+        except Exception as e:
+            if self.admin_monitor is not None:
+                with self.admin_monitor._regression_lock:
+                    self.admin_monitor._regression_in_flight = False
+            self.logger.error("fenixd", f"回归手动执行投递失败: {e}")
 
     # ── 框架自进化检查点（add-framework-self-evolution 5.x） ────────
 

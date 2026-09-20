@@ -116,6 +116,7 @@ from core.agent_runner.maintenance_runs import (
     run_administrator,
     run_code_review,
     run_evolution,
+    run_regression,
     run_self_review,
 )
 
@@ -436,6 +437,7 @@ class AgentRunner:
         "run_self_review": run_self_review,
         "run_evolution": run_evolution,
         "run_code_review": run_code_review,
+        "run_regression": run_regression,
         "_get_admin_model": _get_admin_model,
         "_check_agent_result_artifact": _check_agent_result_artifact,
         "_check_impl_code_review_artifact": _check_impl_code_review_artifact,

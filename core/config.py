@@ -1253,6 +1253,23 @@ class ConfigLoader:
         }
 
     @classmethod
+    def get_regression_config(cls, config: Dict[str, Any]) -> Dict[str, Any]:
+        """Return the ``admin.regression.*`` 段，缺失项填默认值。
+
+        默认值（add-test-regression-tab）：
+        - enabled: False（周期全量回归开关，缺省关闭零动作；与
+          admin.code_review.enabled 同形制——开关只管周期调度，手动
+          触发不受约束）
+        """
+        admin = config.get("admin") if isinstance(config, dict) else None
+        reg = admin.get("regression") if isinstance(admin, dict) else None
+        if not isinstance(reg, dict):
+            reg = {}
+        return {
+            "enabled": bool(reg.get("enabled", False)),
+        }
+
+    @classmethod
     def get_run_infra_breaker_config(cls, admin: Dict[str, Any] | None = None) -> Dict[str, Any]:
         """Return the ``admin.run_infra_breaker.*`` 段，缺失项填默认值（D5）。
 

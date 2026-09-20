@@ -335,6 +335,19 @@ admin:
   #   # 全量审查耗时过长/烧钱。窗口审查按窗口收集，也受此上限约束。
   #   max_files: 500
 
+  # ---- 周期性全量回归（add-test-regression-tab，可选）----
+  # 设置页「质量」页签提供该开关（读/写 GET/POST /api/config 的
+  # admin.regression.enabled）。开启后与每日自省同周期（admin.self_review.run_at
+  # 时点）自动执行一次全量回归，结果落到 .fenix/regression/last-run.json 供项目页
+  # 「测试回归」分面展示。**前置条件**：项目 .fenix/verify.yaml 须有有效 regression
+  # 段（cmd/output/timeout/long_test_threshold_seconds 声明，见 verify 契约模板）——
+  # 无段时周期检查点跳过（reason: not_configured），不会派发空跑。与 implementer
+  # 收尾的全量套件互斥（主机级 .fenix/full-suite.lock，同一主机同一时刻只跑一套
+  # 完整测试）。手动触发（项目页「立即执行全量回归」）不受此开关约束。
+  # regression:
+  #   # 是否启用周期性全量回归（缺省 false；手动触发不受此开关约束）
+  #   enabled: false
+
 # ---- Agent Run 超时护栏（可选）----
 # timeout_supervision 监控单次 Agent 运行的墙钟上限，防止超时参数再次与 run 超时脱钩。
 # 护栏联动（supervision-timeout-config-consistency）：absolute_max_seconds MUST ≥

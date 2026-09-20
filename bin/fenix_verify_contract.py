@@ -5,7 +5,9 @@
     python bin/fenix_verify_contract.py [项目根目录]
 
     项目根目录缺省为当前目录。校验 .fenix/verify.yaml 三段契约（prepare/serve/ready），
-    输出逐段结果，全通退出码 0。
+    输出逐段结果，全通退出码 0。含 regression 段时额外做一次**可选**自证：按
+    regression.cmd 跑一次确认 output 产出可解析 JUnit XML，结果作为独立一行输出，
+    不计入退出码（三段判定语义不变——避免 1800s 级全量回归拖垮既有自证门）。
 
 退出码:
     0 — 三段全部通过（prepare/serve/ready）
@@ -38,7 +40,73 @@ _project_root = _script_dir.parent
 if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
-from core.verify_contract import validate_contract
+from core.verify_contract import load_verify_contract, validate_contract
+from core.regression import parse_junit_xml
+
+
+def selfcheck_regression(project_root: Path) -> tuple:
+    """可选 regression 段自证：按 cmd 跑一次确认 output 产出可解析 JUnit XML。
+
+    返回 (ok, note)：ok 为 True/False/None（None=无 regression 段，跳过）。
+    执行有硬超时（spec.timeout_seconds，对齐执行车道 D8 进程组中止），
+    但失败/超时不改变退出码——三段自证语义不变（design: 回归可跑 1800s，
+    不得把既有自证门拖成小时级）。
+    """
+    contract = load_verify_contract(project_root)
+    if contract is None or contract.regression is None:
+        return None, None
+    spec = contract.regression
+
+    import subprocess
+
+    cmd = spec.cmd
+    output_rel = str(spec.output)
+    output_abs = Path(project_root) / output_rel
+    # 清理旧产物，确保解析的是本次执行产出
+    if output_abs.is_file():
+        try:
+            output_abs.unlink()
+        except OSError:
+            pass
+    use_shell = isinstance(cmd, str)
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            shell=use_shell,
+            cwd=str(project_root),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+    except OSError as e:
+        return False, f"回归命令启动失败: {e}"
+    try:
+        proc.wait(timeout=spec.timeout_seconds)
+    except subprocess.TimeoutExpired:
+        # 对齐执行车道：中止整个进程组
+        import os
+        import signal
+
+        try:
+            pgid = os.getpgid(proc.pid)
+            os.killpg(pgid, signal.SIGTERM)
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                os.killpg(pgid, signal.SIGKILL)
+        except (OSError, ProcessLookupError):
+            pass
+        return False, f"回归命令超时（>{spec.timeout_seconds}s），未能确认产出 JUnit XML"
+    if not output_abs.is_file():
+        return False, f"回归命令退出码 {proc.returncode}，但 JUnit XML 产物不存在: {output_rel}"
+    try:
+        parsed = parse_junit_xml(output_abs)
+    except Exception as e:
+        return False, f"JUnit XML 不可解析: {e}"
+    return (
+        True,
+        f"回归自证通过（{parsed['total']} 用例，产出 {output_rel}）",
+    )
 
 
 def main():
@@ -97,6 +165,19 @@ def main():
     print()
     if result.ready_error:
         print(f"  错误: {result.ready_error}")
+
+    # 可选 regression 段自证（独立一行，不计入退出码）
+    reg_ok, reg_note = selfcheck_regression(project_root)
+    if reg_ok is not None:
+        print()
+        print(f"[regression] {'✓ 通过' if reg_ok else '✗ 自证失败'}")
+        if reg_note:
+            print(f"  {reg_note}")
+        if reg_ok is False:
+            print(
+                "  提示: regression 段可选——自证失败时 Administrator 应省略该段"
+                "（不得臆造无效命令，否则周期回归将每天以 parse_error 空转）"
+            )
 
     # 输出 valid 判定
     print()

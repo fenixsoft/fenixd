@@ -30,6 +30,7 @@ from core.agent_runner.result_gate import (
     AdminDisposition,
     CodeReviewResult,
     EvolutionResult,
+    RegressionResult,
     SelfReviewResult,
 )
 from core.code_review import (
@@ -1031,3 +1032,81 @@ def _accumulate_code_review_tokens(runner, run_id: str, usage_info: dict) -> Non
         **_token_usage_fields(usage_info),
     }
     _append_token_run(tokens_json, entry)
+
+
+# ── 全量回归执行（add-test-regression-tab，task 3.1）────────────────────
+
+
+def _unique_regression_run_id(runner) -> str:
+    """生成不冲突的 ``regression-<epoch>`` run_id（task 3.1）。
+
+    秒级时间戳在「手动触发 + 同秒周期触发」下可能撞名（对齐
+    _unique_code_review_run_id 的退避形态）。信号文件/日志按 run 实例留痕。
+    """
+    base = f"regression-{int(time.time())}"
+    candidate = base
+    n = 1
+    while True:
+        if not (runner.project_root / ".fenix" / "regression" / f"run-{candidate}.json").exists():
+            return candidate
+        n += 1
+        candidate = f"{base}-{n}"
+
+
+def run_regression(runner, spec, reason: str = "manual") -> RegressionResult:
+    """执行一次全量回归（task 3.1，对齐 run_code_review 形态）。
+
+    与 run_code_review 不同：**不经 LLM**——直接按 verify.yaml regression.cmd
+    在项目根执行、解析 JUnit XML 并写 `.fenix/regression/last-run.json` 快照
+    （core/regression.run_and_write_regression 封装）。本函数是 runner 门面
+    转发表中的执行函数：run_id 前缀 ``regression-<epoch>``、结果写完后返回
+    RegressionResult 信封。
+
+    参数:
+        runner: AgentRunner 实例（门面依赖注入，D2b 规则 1；仅用
+            project_root/logger）。
+        spec: 已解析的 RegressionSpec（verify.yaml regression 段）。
+        reason: manual / scheduled（写进结果快照供审计，缺省 manual）。
+
+    返回:
+        RegressionResult(status=快照状态, snapshot=完整快照)。
+    """
+    from core.regression import run_and_write_regression
+
+    run_id = _unique_regression_run_id(runner)
+    log = getattr(runner, "logger", None)
+
+    try:
+        snapshot = run_and_write_regression(
+            runner.project_root,
+            spec,
+            logger=log,
+        )
+    except Exception as e:  # noqa: BLE001 — 执行异常兜底为失败快照
+        snapshot = {
+            "status": "parse_error",
+            "cmd": str(getattr(spec, "cmd", "")),
+            "output": str(getattr(spec, "output", "")),
+            "reason": f"回归执行异常: {e}",
+        }
+        if log is not None:
+            log.error("regression", f"回归执行异常（run {run_id}）: {e}")
+
+    ok = snapshot.get("status") in ("passed", "failed", "timeout")
+    status = snapshot.get("status", "parse_error")
+    if status == "skipped":
+        # 主机级锁未获取等：非成功也非失败（本次未执行）
+        return RegressionResult(
+            run_id=run_id,
+            success=False,
+            status=status,
+            error=snapshot.get("reason", "skipped"),
+            snapshot=snapshot,
+        )
+    return RegressionResult(
+        run_id=run_id,
+        success=ok,
+        status=status,
+        error=snapshot.get("reason", "") if not ok else "",
+        snapshot=snapshot,
+    )

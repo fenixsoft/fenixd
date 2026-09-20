@@ -126,6 +126,11 @@ def _get_code_review_items(s, p, q, m):
 def _get_code_review_progress(s, p, q, m):
     s._api_code_review_progress(q)
 
+# ── regression（add-test-regression-tab）──────────────────────────
+
+def _get_regression_result(s, p, q, m):
+    s._api_regression_result(q)
+
 
 # ── POST 路由适配函数 ─────────────────────────────────────────────────
 
@@ -227,6 +232,9 @@ def _post_project_describe(s, p, q, m):
 def _post_code_review_run(s, p, q, m):
     s._api_code_review_run(q)
 
+def _post_regression_run(s, p, q, m):
+    s._api_regression_run(q)
+
 def _post_code_review_generate_spec(s, p, q, m):
     s._api_code_review_generate_spec(q)
 
@@ -304,6 +312,8 @@ _API_GET_ROUTES = [
     # code-review（add-code-review-agent-and-quality-tab）：台账与进度（GET，无副作用）
     ("exact", "/api/code-review/items", _get_code_review_items),
     ("exact", "/api/code-review/progress", _get_code_review_progress),
+    # regression（add-test-regression-tab）：最近一次回归快照（GET，无副作用）
+    ("exact", "/api/regression/result", _get_regression_result),
 ]
 
 _API_POST_ROUTES = [
@@ -346,6 +356,8 @@ _API_POST_ROUTES = [
     ("exact", "/api/code-review/run", _post_code_review_run),
     ("exact", "/api/code-review/generate-spec", _post_code_review_generate_spec),
     ("exact", "/api/code-review/items/status", _post_code_review_items_status),
+    # regression（add-test-regression-tab）：手动触发（写文件信号，daemon 消费）
+    ("exact", "/api/regression/run", _post_regression_run),
     # session 路由（精确，排在裸 endswith 之前，防 /start /stop 误匹配）
     ("exact", "/api/session/start",      _post_session_start),
     ("exact", "/api/session/send",       _post_session_send),

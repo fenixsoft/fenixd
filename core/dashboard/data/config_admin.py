@@ -66,6 +66,8 @@ _SOURCE_KEYS = [
     "admin.self_review",
     # add-code-review-agent-and-quality-tab：admin.code_review 两键（周期代码审查）
     "admin.code_review",
+    # add-test-regression-tab：admin.regression 键（周期全量回归开关）
+    "admin.regression",
     # add-settings-system-tab：admin.* 受管键（5 键）
     "admin.enabled",
     "admin.interval_minutes",
@@ -142,6 +144,9 @@ _DEFAULT_SELF_REVIEW = {"enabled": False, "run_at": "02:00", "read_todo": False}
 # add-code-review-agent-and-quality-tab：admin.code_review 缺省（与
 # ConfigLoader.get_code_review_config 一致：enabled 缺省 false，max_files 缺省 500）
 _DEFAULT_CODE_REVIEW = {"enabled": False, "max_files": 500}
+# add-test-regression-tab：admin.regression 缺省（与 ConfigLoader.get_regression_config
+# 一致：enabled 缺省 false——周期全量回归开关缺省关闭零动作）
+_DEFAULT_REGRESSION = {"enabled": False}
 
 _CONFIG_HEADER_COMMENT = (
     "# Fenix 配置文件\n"
@@ -217,6 +222,9 @@ def _managed_key_sources(raw: dict) -> dict:
     # add-code-review-agent-and-quality-tab：admin.code_review 段显式定义 → project
     if isinstance(admin_raw, dict) and isinstance(admin_raw.get("code_review"), dict):
         sources["admin.code_review"] = "project"
+    # add-test-regression-tab：admin.regression 段显式定义 → project
+    if isinstance(admin_raw, dict) and isinstance(admin_raw.get("regression"), dict):
+        sources["admin.regression"] = "project"
     # add-settings-system-tab：admin.* 受管键（5 键）显式定义 → project
     if isinstance(admin_raw, dict):
         for _k in (
@@ -347,6 +355,8 @@ def read_config(scope_root, scope: str = "project") -> dict:
         "self_review": dict(_DEFAULT_SELF_REVIEW),
         # add-code-review-agent-and-quality-tab：admin.code_review 两键（缺省 false/500）
         "code_review": dict(_DEFAULT_CODE_REVIEW),
+        # add-test-regression-tab：admin.regression 键（缺省 false，周期全量回归开关）
+        "regression": dict(_DEFAULT_REGRESSION),
         # add-settings-system-tab：admin.* 受管键（5 键 + 缺省填充）
         "admin": dict(_ADMIN_DEFAULTS, merge_breaker_threshold=2),
         # add-spec-hooks：两级 hook 订阅配置（缺省空订阅，零行为）
@@ -491,6 +501,10 @@ def read_config(scope_root, scope: str = "project") -> dict:
         # （经 ConfigLoader 生效值回显，与 self_review 同形态：顶层独立子键、
         # 不进 _managed_admin_keys 键集）
         result["code_review"] = _CL.get_code_review_config(raw)
+        # add-test-regression-tab：admin.regression 键（经 ConfigLoader 生效值
+        # 回显，与 code_review 同形态：顶层独立子键、不进 _managed_admin_keys
+        # 键集——未知 admin 键由白名单狭窄回显，读不懂写入值）
+        result["regression"] = _CL.get_regression_config(raw)
         # add-settings-system-tab：受管 admin 键提取（5 键 + 缺省填充，不透传未知键）
         result["admin"] = _managed_admin_keys(raw)
     # add-spec-hooks：hooks 段原样透传（读回 UI 编辑视图）
@@ -578,6 +592,8 @@ def read_effective_config(project_root) -> dict:
         "self_review": dict(_DEFAULT_SELF_REVIEW),
         # add-code-review-agent-and-quality-tab：admin.code_review 两键（缺省 false/500）
         "code_review": dict(_DEFAULT_CODE_REVIEW),
+        # add-test-regression-tab：admin.regression 键（缺省 false，周期全量回归开关）
+        "regression": dict(_DEFAULT_REGRESSION),
         # add-settings-system-tab：admin.* 受管键（5 键 + 缺省填充）
         "admin": dict(_ADMIN_DEFAULTS, merge_breaker_threshold=2),
         # add-spec-hooks：两级 hook 订阅配置（缺省空订阅，零行为）
@@ -711,6 +727,9 @@ def read_effective_config(project_root) -> dict:
     # add-code-review-agent-and-quality-tab：code_review 生效值回显（与
     # self_review 同形态：顶层独立子键、经 get_code_review_config 归一化缺省）
     result["code_review"] = ConfigLoader.get_code_review_config(effective)
+    # add-test-regression-tab：regression 生效值回显（与 code_review 同形态：
+    # 顶层独立子键、经 get_regression_config 归一化缺省）
+    result["regression"] = ConfigLoader.get_regression_config(effective)
     # add-settings-system-tab：受管 admin 键提取（5 键 + 缺省填充，不透传未知键）
     result["admin"] = _managed_admin_keys(effective)
     # add-spec-hooks：hooks 段有效值透传（读回 UI 编辑视图）
@@ -891,6 +910,20 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
         ):
             cr["max_files"] = max_files
         merged["admin"]["code_review"] = cr
+    # add-test-regression-tab：admin.regression 键（enabled 严格 bool；非法值
+    # 由 write_config 前置校验拒绝，此处只应用合法值——对齐 code_review 合并
+    # 语义；未知 admin 键由 _managed_admin_keys 白名单狭窄回显，读不懂写入值，
+    # 故本键 MUST 走本合并路径而非依赖 admin 段透传）
+    if "regression" in patch and isinstance(patch["regression"], dict):
+        if not isinstance(merged.get("admin"), dict):
+            merged["admin"] = {}
+        existing_reg = merged["admin"].get("regression")
+        if not isinstance(existing_reg, dict):
+            existing_reg = {}
+        reg = dict(existing_reg)
+        if isinstance(patch["regression"].get("enabled"), bool):
+            reg["enabled"] = patch["regression"]["enabled"]
+        merged["admin"]["regression"] = reg
     # add-settings-system-tab：admin.* 六键合并（只动受管键，保留未知键）
     if "admin" in patch and isinstance(patch["admin"], dict):
         if not isinstance(merged.get("admin"), dict):
@@ -1045,6 +1078,17 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
                 return fail(
                     f"admin.code_review.max_files must be a positive integer: {mf!r}"
                 )
+
+    # add-test-regression-tab：前端提交的 regression patch 后端校验（enabled
+    # 严格 bool，非法直接拒绝、不静默忽略——同 code_review 模式）
+    if isinstance(config_patch.get("regression"), dict):
+        reg_patch = config_patch["regression"]
+        if (
+            "enabled" in reg_patch
+            and reg_patch["enabled"] is not None
+            and not isinstance(reg_patch["enabled"], bool)
+        ):
+            return fail(f"admin.regression.enabled must be a boolean: {reg_patch['enabled']}")
 
     # verify.* patch 前置校验：非法值直接拒绝，不静默忽略（同 self_review 模式；
     # 只在 merge 层过滤会让 write "成功" 但用户输入被吞）

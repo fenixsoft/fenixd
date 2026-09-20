@@ -9,7 +9,34 @@
 # 改写到本次启动的实例——保证场景永远打新鲜实现，而不是场景声明的
 # 地址或上一次构建的陈旧产物。
 #
-# 【如何启用】
+# `prepare`、`serve`、`ready` 完成（【使用前必读】见下）后，可继续配置：
+#
+# regression  可选。项目全量回归如何执行与如何解析结果。缺省不配 = 未配置
+#             全量回归（分面显示引导态、不派发、零报错）。Fenix 是通用开发
+#             框架，回归命令不硬编码为 pytest——由项目声明；命令须产出
+#             JUnit XML 结果文件（pytest --junit-xml、jest-junit、
+#             go-junit-report、maven-surefire 等均可；`testcase@time` 承载
+#             单个用例耗时，正是「长耗时用例」视图所需）。
+#   cmd       必填。全量回归命令，cwd=项目根；字符串=经 shell 执行，
+#             YAML 列表=argv 直接执行。命令 MUST 产出 JUnit XML。
+#   output    必填。命令产出的 JUnit XML 文件路径（相对项目根）。
+#   timeout_seconds         可选，正整数，缺省 1800。硬超时；超过则中止
+#                           整个进程组并按超时归类（回归为整进程组执行，
+#                           只杀直接子进程会让 shell 派生的测试进程存活）。
+#   format                  可选，固定 junit，缺省 junit。结果格式；
+#                           本次仅支持 JUnit XML（声明其它值整段无效）。
+#   long_test_threshold_seconds  可选，正数，缺省 10。单用例耗时超过即
+#                           计入「长耗时用例」表（含通过的用例）。
+#
+# # ── 全量回归示例（pytest 形态；被测项目按自身框架改写）──
+# regression:
+#   cmd: python3 -m pytest tests/ -q --junit-xml=.fenix/regression/junit.xml
+#   output: .fenix/regression/junit.xml
+#   timeout_seconds: 1800
+#   format: junit
+#   long_test_threshold_seconds: 10
+#
+# 【使用前必读】
 # 下方所有配置行均以 # 注释：保持注释 = 无契约，框架回退旧行为（config 的
 # commands.start + 端口改写），对任何项目形态都安全。确认项目实际的构建与
 # 服务方式后，删除对应行首的 "# " 使其生效。可在 Dashboard 设置页

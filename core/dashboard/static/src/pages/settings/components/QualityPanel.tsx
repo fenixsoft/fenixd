@@ -34,8 +34,11 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
       // 周期性代码审查（2026-09-19 从项目页「代码审查」分面迁来）：
       // 开关是项目级配置（admin.code_review.enabled），归设置页而非项目页
       code_review_enabled: config.code_review?.enabled === true,
+      // add-test-regression-tab：周期性全量回归开关（admin.regression.enabled）
+      // 缺省 false；分面只读展示 + 手动触发，配置归设置页「质量」页签
+      regression_enabled: config.regression?.enabled === true,
     });
-  }, [config.verify, config.code_review, form]);
+  }, [config.verify, config.code_review, config.regression, form]);
 
   useEffect(() => {
     let alive = true;
@@ -108,6 +111,11 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
         // （2026-09-19 从项目页「代码审查」分面迁到设置页「质量」页签）
         code_review: {
           enabled: values.code_review_enabled === true,
+        },
+        // add-test-regression-tab：周期性全量回归开关（admin.regression.enabled，
+        // 缺省 false；与 code_review 同周期：admin.self_review.run_at 时点）
+        regression: {
+          enabled: values.regression_enabled === true,
         },
       });
     } catch (err) {
@@ -302,6 +310,38 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
             .fenix/code-review/items.jsonl 台账，供项目页「代码审查」分面展示与消费。
             需要环境已安装 ocr（未安装时审查仍以 LLM 逐文件执行，仅少了扫描加速）。
             手动触发（全仓库审查 / 当期提交审查）不受本开关约束。
+          </Text>
+        </div>
+      </Card>
+      {/* add-test-regression-tab：周期性全量回归开关（admin.regression.enabled）。
+          与 code_review 同层同形态：开关归设置页，项目页「测试回归」分面只读
+          展示 + 手动触发。开启前提 = 项目 .fenix/verify.yaml 有有效 regression 段
+          （无段时周期检查点跳过、不派发空跑）；长耗时阈值归 verify.yaml 声明
+          （regression.long_test_threshold_seconds 缺省 10），本卡片只读说明其来源，
+          MUST NOT 另开第二个阈值写入路径（双写会让阈值来源分叉，design R4）——
+          编辑入口复用既有 GET/POST /api/verify-yaml（项目设置「项目简介」面板）。 */}
+      <Card style={{ marginTop: 12 }}>
+        <div>
+          <div className="switch-inline-row">
+            <Form.Item name="regression_enabled" valuePropName="checked" noStyle>
+              <Switch data-testid="regression-enabled-switch" />
+            </Form.Item>
+            <span className="switch-inline-label">
+              周期性全量回归
+              <span className="label-note">（admin.regression.enabled）</span>
+            </span>
+          </div>
+          <Text type="secondary" style={{ display: 'block', marginTop: 8 }}>
+            开启后与每日自省同周期（admin.self_review.run_at 时点）自动执行一次
+            全量回归（需项目 .fenix/verify.yaml 配置 regression 段），结果落到
+            .fenix/regression/last-run.json，供项目页「测试回归」分面展示。
+            同一自然日防重；与 implementer 收尾的全量套件互斥（主机级锁）。
+            手动触发（项目页「立即执行全量回归」）不受本开关约束。
+          </Text>
+          <Text type="secondary" style={{ display: 'block', marginTop: 8 }}>
+            长耗时用例阈值来自 verify.yaml 的 regression.long_test_threshold_seconds
+            （缺省 10 秒），属项目测试体系声明——请在「项目简介」面板的
+            verify.yaml 编辑入口中调整，本卡片不提供第二个写入路径。
           </Text>
         </div>
       </Card>
