@@ -217,25 +217,26 @@ class TestDiscardIdenticalLocalChanges:
         assert wm.last_stash_pop_conflicts == [], "一致副本不应产生 pop 冲突"
 
     def test_divergent_copy_unblocks_via_stash_selfheal(self, repo):
-        """分歧本地修改 → autostash 生效后 merge 不再死锁：分支结果胜出，
-        pop 冲突自愈丢弃 stash 侧改动，stash 条目保留可找回。"""
+        """分歧本地修改 → autostash 生效后 merge 不再死锁：pop 冲突经态 2 恢复
+        commit 落盘 stash 版（不再「分支版胜出」丢弃本地改动），stash 条目保留。"""
         make_tracked_file_branch(repo, "fenix/impl-divergent", "skill.md",
                                  "OLD\n", "NEW\n")
         (repo / "skill.md").write_text("LOCAL\n", encoding="utf-8")
 
         wm = make_wm(repo)
         success, err = wm.merge_back_from_branch("fenix/impl-divergent")
-        assert success, f"merge 应在 autostash+pop 自愈下成功，实际失败: {err}"
-        assert (repo / "skill.md").read_text(encoding="utf-8") == "NEW\n"
+        assert success, f"merge 应在 autostash+pop 三态自愈下成功，实际失败: {err}"
+        # 态 2 恢复：stash 版 LOCAL\n 落工作区（两侧改动都保留），不再断言分支版胜出
+        assert (repo / "skill.md").read_text(encoding="utf-8") == "LOCAL\n"
         assert wm.last_stash_pop_conflicts == ["skill.md"]
         stash_list = git(repo, "stash", "list").stdout.strip()
-        assert stash_list, "被自愈丢弃的本地改动应保留在 stash 中可找回"
+        assert stash_list, "被自愈恢复的本地改动应保留在 stash 中可找回"
         stash_show = git(repo, "stash", "show", "-p", "stash@{0}").stdout
         assert "LOCAL\n" in stash_show, "stash 中应能找回分歧的本地内容"
 
-    def test_mixed_blockers_branch_wins_conflicted_file_recorded(self, repo):
-        """混合修改（一份与分支一致、一份分歧）→ merge 成功，分歧文件以分支
-        版本落地并记入 pop 冲突清单，一致文件干净合入。"""
+    def test_mixed_blockers_stash_side_preserved_conflicted_file_recorded(self, repo):
+        """混合修改（一份与分支一致、一份分歧）→ merge 成功，分歧文件以 stash
+        版落地（两侧改动都保留）并记入 pop 冲突清单，一致文件干净合入。"""
         git(repo, "checkout", "-q", "-b", "fenix/impl-mixed")
         (repo / "a.md").write_text("NEW\n", encoding="utf-8")
         (repo / "b.md").write_text("BRANCH\n", encoding="utf-8")
@@ -249,9 +250,10 @@ class TestDiscardIdenticalLocalChanges:
 
         wm = make_wm(repo)
         success, err = wm.merge_back_from_branch("fenix/impl-mixed")
-        assert success, f"merge 应在 autostash+pop 自愈下成功，实际失败: {err}"
+        assert success, f"merge 应在 autostash+pop 三态自愈下成功，实际失败: {err}"
         assert (repo / "a.md").read_text(encoding="utf-8") == "NEW\n"
-        assert (repo / "b.md").read_text(encoding="utf-8") == "BRANCH\n"
+        # 分歧文件 b.md 以 stash 版 LOCAL\n 落地（不再断言分支版 BRANCH\n 胜出）
+        assert (repo / "b.md").read_text(encoding="utf-8") == "LOCAL\n"
         assert wm.last_stash_pop_conflicts == ["b.md"]
 
     # ── 单元级直测：identical self-heal（纵深防御路径） ──────────────────────

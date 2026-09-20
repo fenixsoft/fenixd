@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import tempfile
 import time
+from pathlib import Path
 
 from core.worktree_manager import (  # noqa: E402
     AUTOSTASH_MSG_PREFIX,
@@ -117,25 +119,28 @@ class G6StashGuardMixin:
         返回 ``(ok, conflict_files)``：
 
         - ``(True, [])``：pop 成功 / 无 stash 可恢复（与旧版返回 True 兼容）。
-        - ``(True, [file, ...])``：pop 发生冲突但已完成自愈——主树回到干净可写状态，
-          ``conflict_files`` 为被丢弃 stash 改动的文件清单（stash 条目保留，可
-          ``git stash list`` / ``git stash show`` 找回）。
+        - ``(True, [file, ...])``：pop 发生冲突但已完成三态自愈——主树回到
+          可写状态，``conflict_files`` 为 UU 冲突文件清单（stash 条目保留，
+          stash 版内容已按态 1/2/3 落回工作区或恢复 commit，见
+          ``_triage_stash_pop_conflicts``）。
         - ``(False, [])``：pop 失败且非冲突类（如其它 git 错误），stash 保留；调用方按
           旧版 False 语义处理（主树可能仍半合并，需人工处置）。
 
-        **自愈（fix-stashpop-deadlock）**：当 pop 返回非 0 且输出含 ``CONFLICT`` 时，
-        主树会陷入 UU 半合并状态、index.lock 满，导致后续所有 git 写操作瘫痪。此时：
-          1. 用 ``git ls-files -u`` 枚举全部 UU 未合并文件；
-          2. 对每个 UU 文件 ``git checkout -f HEAD -- <file>``（``-f`` 因路径处于 unmerged
-             状态，普通 checkout 会报 "path is unmerged"）——丢弃 stash 版本、保留已
-             merge 进 HEAD 的实现（最不可丢失的产物）；
-          3. ``git reset`` 清空 index 残留的 staged 冲突条目，主树恢复干净可写。
-        stash 条目**不**自动 drop，被丢弃内容可由人工从 stash 中找回——除非
-        自愈后核对确认条目零独有内容（fix-mergeback-stashpop-silent-loss D2）：
-        对每个 UU 文件跑树级 ``git diff --quiet <sha> HEAD -- <file>``，全部一致
-        说明 stash 版已被合并结果完全取代，条目永远等不到清理，按
-        reclaim_stale_autostash（4f753ed）同款「sha 仍在栈顶才 drop」模式自动
-        drop 并记 sha 日志；任一文件有差异则保留条目并给出逐文件找回命令。
+        **三态自愈（evo-stash-pop-conflict-triage D1/D2）**：当 pop 返回非 0 且输出
+        含 ``CONFLICT`` 时，主树会陷入 UU 半合并状态、index.lock 满，导致后续所有
+        git 写操作瘫痪。此时对每个 UU 冲突文件按序尝试：
+          1. ``git ls-files -u`` 枚举全部 UU 未合并文件；
+          2. 三态重试（``_triage_stash_pop_conflicts``）——态 1 三方重试
+             （ours=``HEAD:<f>``、base=``stash@{0}^1:<f>``、theirs=``stash@{0}:<f>``，
+             ``git merge-file``）无冲突写回工作区（两侧改动都保留）；态 1 失败
+             MUST NOT 视为异常，直接进态 2；态 2 逐文件 ``git checkout --theirs``
+             取回 stash 版内容落工作区（MUST NOT 读工作区冲突标记——二进制/非
+             UTF-8 文件工作区为 merge 结果、无标记），``git add -- <paths>`` +
+             ``git commit --only`` 只把本次冲突路径入库留审计；态 2 任一步失败进
+             态 3 兜底——stash 版内容至少落工作区并显式登记 disposition；
+          3. **任何路径都不再 ``checkout -f HEAD`` 静默丢弃 stash 版**；stash 条目
+             一律保留（不因恢复 commit 触发「零独有内容」自动 drop，见 D3），
+             找回命令仍可 ``git show <sha>:<file>``。
         """
         # pop 前钉住栈顶 sha（fix-mergeback-stashpop-silent-loss D2）：guard 锁内
         # LIFO，此时栈顶即刚 push 的条目；drop 前以「sha 仍为栈顶」防并发插队。
@@ -175,36 +180,40 @@ class G6StashGuardMixin:
             )
             return False, []
 
-        # ── pop 冲突：进入自愈（fix-stashpop-deadlock） ──
+        # ── pop 冲突：进入三态重试（evo-stash-pop-conflict-triage D1/D2） ──
         conflict_files = self._list_unmerged_files()
         if conflict_files:
-            self._heal_unmerged_files(conflict_files)
-            # 被取代条目自动 drop 判定（fix-mergeback-stashpop-silent-loss D2）：
-            # 树级 diff 逐一核对 stash 版是否已被合并后 HEAD 完全取代。
-            if self._drop_superseded_stash_entry(pinned_sha, conflict_files):
-                self.last_stash_entry_fate = {"kept": False, "sha": pinned_sha}
-                self.logger.warning(
-                    "worktree_manager",
-                    f"Stash pop conflict self-healed; stash changes on "
-                    f"{len(conflict_files)} file(s): {conflict_files} were fully "
-                    f"subsumed by merge result — entry auto-dropped",
-                )
-            else:
-                recover_cmds = (
-                    " ".join(f"git show {pinned_sha}:{f}" for f in conflict_files)
-                    if pinned_sha
-                    else "git stash show"
-                )
-                # 条目保留 + 去向记录（evo-merge-back-wip-overlap-gate D3）：
-                # kept=True 且钉住真实 sha——dispatch 层告警据此生成逐文件找回
-                # 命令；杜绝「条目保留但去向/内容未知」的静默丢弃形态。
-                self.last_stash_entry_fate = {"kept": True, "sha": pinned_sha}
-                self.logger.warning(
-                    "worktree_manager",
-                    f"Stash pop conflict self-healed; discarded stash changes on "
-                    f"{len(conflict_files)} file(s): {conflict_files} "
-                    f"(stash preserved, recover via: {recover_cmds})",
-                )
+            # 三态重试：态 1 三方合并 → 态 2 恢复 commit → 态 3 兜底。
+            # 自愈口径由「checkout -f HEAD 覆盖丢弃 stash 版」改为下述三态，
+            # 任何路径都不得静默丢弃 stash 版内容。
+            mode, triage_note = self._triage_stash_pop_conflicts(
+                pinned_sha, conflict_files
+            )
+            # D4 可观测性：结构化日志（处置方式（态 1/2/3）/stash sha/文件清单），
+            # 供 stash_pop_conflict 信号 evidence 携带，dashboard 与自省可见。
+            self.logger.warning(
+                "worktree_manager",
+                f"Stash pop conflict triage: mode={mode} "
+                f"stash_sha={pinned_sha[:12] if pinned_sha else '-'} "
+                f"files={conflict_files} note={triage_note}",
+            )
+            # 条目保留记账（D3）：内容已按三态落回工作区/恢复 commit，条目一律
+            # 保留——不因恢复 commit 触发「零独有内容」自动 drop（恢复 commit
+            # 后 HEAD 已含 stash 版、树级 diff 恒为空，drop 判据会误命中；
+            # 且「被合并结果取代」与「被自愈恢复 commit 重新入库」是两回事，
+            # 后者保留条目作审计）。stash_pop_conflict 信号行为保持不变。
+            recover_cmds = (
+                " ".join(f"git show {pinned_sha}:{f}" for f in conflict_files)
+                if pinned_sha
+                else "git stash show"
+            )
+            self.last_stash_entry_fate = {"kept": True, "sha": pinned_sha}
+            self.logger.warning(
+                "worktree_manager",
+                f"Stash pop conflict triaged via mode {mode}; stash changes on "
+                f"{len(conflict_files)} file(s): {conflict_files} recovered "
+                f"(stash preserved, recover via: {recover_cmds})",
+            )
         else:
             # 输出含 CONFLICT 但已无 UU 条目（罕见：冲突已自行消解）——照常处理
             self.logger.warning(
@@ -213,6 +222,193 @@ class G6StashGuardMixin:
                 f"stash preserved: {output.strip()}",
             )
         return True, conflict_files
+
+    def _try_merge_file_threeway(self, f: str, pinned_sha: str) -> bytes | None:
+        """对单个 UU 冲突文件做三方重试（态 1），成功返回合并后字节内容。
+
+        ours = ``HEAD:<f>``（已合入 HEAD 版）、base = ``<pinned_sha>^1:<f>``
+        （stash 父提交版）、theirs = ``<pinned_sha>:<f>``（stash 版），经
+        ``git merge-file`` 合并。三者任一提不出来（add/add、delete/modify、
+        二进制不合并等）或合并仍冲突（rc!=0）返回 None —— 调用方进态 2，
+        **MUST NOT** 视为异常（pop 已做过同样的三方合并，纯文本同 hunk 冲突
+        时态 1 与现状结果相同；态 1 的收益在 pop 因索引/二进制/CRLF 等边缘
+        原因未自动合并的场景）。
+        """
+        if not pinned_sha:
+            # sha 未知：无法定位 stash 父/版 —— 态 1 不可行
+            return None
+        blobs = {}
+        for key, ref in (
+            ("ours", f"HEAD:{f}"),
+            ("base", f"{pinned_sha}^1:{f}"),
+            ("theirs", f"{pinned_sha}:{f}"),
+        ):
+            try:
+                cat = subprocess.run(
+                    ["git", "-C", str(self.project_root), "cat-file", "blob", ref],
+                    capture_output=True,
+                    timeout=30,
+                )
+            except (subprocess.TimeoutExpired, OSError):
+                return None
+            if cat.returncode != 0:
+                return None
+            blobs[key] = cat.stdout
+        # merge-file 需要文件路径输入，三方内容落临时文件
+        tmp_dir = Path(tempfile.mkdtemp(prefix="fenix-triage-"))
+        try:
+            tmp_paths = {}
+            for key, content in blobs.items():
+                p = tmp_dir / key
+                p.write_bytes(content)
+                tmp_paths[key] = p
+            mf = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(self.project_root),
+                    "merge-file",
+                    "-p",
+                    str(tmp_paths["ours"]),
+                    str(tmp_paths["base"]),
+                    str(tmp_paths["theirs"]),
+                ],
+                capture_output=True,
+                timeout=30,
+            )
+            # rc=0 干净合并；rc=1 冲突；rc=2 错误（二进制等）——均进态 2
+            if mf.returncode != 0:
+                return None
+            return mf.stdout
+        except (subprocess.TimeoutExpired, OSError):
+            return None
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    def _triage_stash_pop_conflicts(self, pinned_sha: str, conflict_files: list) -> tuple:
+        """pop 冲突 UU 文件三态重试（evo-stash-pop-conflict-triage D1/D2/D3）。
+
+        对 ``conflict_files``（UU 冲突文件清单，见 ``_list_unmerged_files``）
+        按序尝试，返回 ``(mode, note)``：
+
+        - 态 1（mode=1）：对每个 UU 文件三方重试（``_try_merge_file_threeway``），
+          无冲突则把合并结果（两侧改动都保留）写回工作区并 ``git add`` 消解
+          unmerged 状态。态 1 失败 **MUST NOT** 视为异常，直接进态 2。
+        - 态 2（mode=2）：逐文件 ``git checkout --theirs -- <f>`` 从 stash 条目
+          的 stage 3 取回 stash 版内容落工作区 —— **MUST NOT** 读工作区冲突标记
+          （二进制/非 UTF-8 文件 pop 后工作区被 merge 结果整体覆盖、无标记）；
+          再 ``git add -- <paths>`` + ``git commit --only`` **只把本次冲突路径**
+          入库留审计 —— 保留 index 中其余 staged 条目、不改动其它路径内容
+          （D2 路径作用域）。
+        - 态 3（mode=3）：态 2 落盘/入库任一步失败（写盘失败、commit 失败、
+          磁盘满等）时，stash 版内容至少已落工作区（``--theirs`` 落盘/冲突标记
+          保留两侧），显式登记 disposition 兜底 —— **绝不静默丢弃**，stash
+          条目保留、stash_pop_conflict 信号照发。
+
+        ``_drop_superseded_stash_entry``（``零独有内容才 drop`` 判据）保持不动：
+        恢复 commit 后 HEAD 已含 stash 版、树级 diff 恒为空，drop 判据会误命中
+        「被合并结果取代」——而这里内容是被自愈重新入库，条目保留作审计
+        （D3：入恢复 commit 与条目保留并存按保留记账）。
+        """
+        # ── 态 1：三方重试（ours=HEAD / base=stash 父 / theirs=stash） ──
+        remaining: list = []
+        for f in conflict_files:
+            merged = self._try_merge_file_threeway(f, pinned_sha)
+            if merged is None:
+                remaining.append(f)
+                continue
+            try:
+                (self.project_root / f).write_bytes(merged)
+            except OSError as e:
+                self.logger.warning(
+                    "worktree_manager",
+                    f"State-1 write-back failed for '{f}': {e} — falling to state 2",
+                )
+                remaining.append(f)
+                continue
+            st = subprocess.run(
+                ["git", "-C", str(self.project_root), "add", "--", f],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if st.returncode != 0:
+                self.logger.warning(
+                    "worktree_manager",
+                    f"State-1 git add failed for '{f}': {st.stderr.strip()} "
+                    f"— falling to state 2",
+                )
+                remaining.append(f)
+                continue
+            self.logger.info(
+                "worktree_manager",
+                f"State-1 three-way merge resolved '{f}' (both sides preserved)",
+            )
+        if not remaining:
+            # 全部 UU 文件被态 1 干净合并——双版本内容已落工作区并消解 unmerged
+            return 1, "state-1 three-way merge resolved all conflict files"
+
+        # ── 态 2：取回 stash 版 + 路径作用域恢复 commit ──
+        for f in remaining:
+            co = subprocess.run(
+                ["git", "-C", str(self.project_root), "checkout", "--theirs", "--", f],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if co.returncode != 0:
+                # --theirs 失败（罕见：路径仍 UU）：stash 版在 index stage 3 +
+                # 工作区冲突标记仍保留两侧，不丢数据；放弃本次 commit 走态 3
+                self.logger.warning(
+                    "worktree_manager",
+                    f"State-2 checkout --theirs failed for '{f}' "
+                    f"({co.stderr.strip()}) — stash content preserved in "
+                    f"worktree/index, falling to state-3 disposition",
+                )
+                return 3, f"state-2 checkout --theirs failed for '{f}'"
+        try:
+            add = subprocess.run(
+                ["git", "-C", str(self.project_root), "add", "--", *conflict_files],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if add.returncode != 0:
+                raise RuntimeError(f"git add failed: {add.stderr.strip()}")
+            # 只把本次冲突路径入库（--only 保留 index 中其余 staged 条目），
+            # 提交信息含 stash sha 供审计（设计模板「<spec 名> stash pop 恢复」，
+            # 此处 restore_after_merge 无 spec 上下文，用通用前缀 + sha）。
+            cmt = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(self.project_root),
+                    "commit",
+                    "--only",
+                    "-m",
+                    f"[fenix] stash pop 恢复（stash {pinned_sha or 'unknown'}）",
+                    "--",
+                    *conflict_files,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            if cmt.returncode != 0:
+                raise RuntimeError(
+                    f"git commit --only failed: "
+                    f"{(cmt.stderr or cmt.stdout).strip()}"
+                )
+            return 2, f"recovery commit: {cmt.stdout.splitlines()[0] if cmt.stdout else ''}"
+        except (subprocess.TimeoutExpired, RuntimeError) as exc:
+            # ── 态 3 兜底：stash 版内容已在工作区（--theirs 落盘），显式登记
+            # disposition，绝不静默丢弃（条目保留、信号照发）
+            self.logger.warning(
+                "worktree_manager",
+                f"State-2 recovery commit failed ({exc}); stash content "
+                f"preserved in worktree — state-3 disposition recorded",
+            )
+            return 3, f"state-2 recovery commit failed: {exc}"
 
     def _drop_superseded_stash_entry(self, pinned_sha: str, conflict_files: list) -> bool:
         """pop 冲突自愈后判定 stash 条目是否已被合并结果完全取代（D2）。

@@ -746,7 +746,9 @@ class TestSupersededStashDrop:
             f"有独立差异的条目应保留，实际栈: {lst.stdout!r}"
 
     def test_restore_conflict_preserves_entry_and_logs_recover_cmd(self, tmp_path):
-        """scenario 2 端到端：真实 pop 冲突自愈路径，条目保留且日志含找回命令。"""
+        """scenario 2 端到端：真实 pop 冲突走三态恢复 commit 路径，条目保留且
+        日志含找回命令（evo-stash-pop-conflict-triage R1：冲突文件以 stash 版
+        落地、恢复 commit 入库，主树 porcelain 允许非空）。"""
         root = tmp_path / "repo"
         init_repo(root)
         self._branch_modifies_shared(root, "MERGED\n")
@@ -756,11 +758,15 @@ class TestSupersededStashDrop:
         ok, conflict_files = wm.restore_after_merge()
         assert ok is True
         assert conflict_files == ["shared.py"], f"应检出 UU 冲突文件: {conflict_files}"
-        # 主树为合并结果、干净可写
-        assert (root / "shared.py").read_text(encoding="utf-8") == "MERGED\n"
+        # 态 2 恢复 commit 口径：冲突文件以 stash 版内容落地（不再「分支版
+        # MERGED 胜出」），恢复提交（HEAD）中同样可见 stash 版
+        assert (root / "shared.py").read_text(encoding="utf-8") == "WIP-UNIQUE\n"
+        assert git(root, "show", "HEAD:shared.py").stdout == "WIP-UNIQUE\n"
+        # 主树无 UU 残留；porcelain 允许非空（其它路径的预置 staged 条目不吞并）
+        assert not git(root, "ls-files", "-u").stdout.strip()
         st = git(root, "status", "--porcelain")
-        assert not st.stdout.strip(), f"主树应干净: {st.stdout!r}"
-        # 有独立差异 → 条目保留
+        assert "UU" not in st.stdout, f"不应有未合并残留: {st.stdout!r}"
+        # 有独立差异 → 条目保留（三态恢复不触发「零独有内容」自动 drop）
         lst = git(root, "stash", "list")
         assert "fenix: pre-dispatch autostash" in lst.stdout, \
             f"有差异条目应保留，实际栈: {lst.stdout!r}"
@@ -973,7 +979,8 @@ class TestWipOverlapGate:
     # ───────────────────────── tasks 2.2: 默认收纳策略 ─────────────────────────
 
     def test_default_auto_policy_preserves_wip_on_pop_conflict(self, tmp_path):
-        """收纳策略 + pop 冲突：merge 成功、条目保留在 stash（可 git show 找回）。"""
+        """收纳策略 + pop 冲突：merge 成功、冲突文件以 stash 版落地（态 2 恢复
+        commit，不再「分支版胜出」丢弃本地改动）、条目保留在 stash（可找回）。"""
         root = tmp_path / "repo"
         init_repo(root)
         self._seed_core_a(root)
@@ -987,8 +994,9 @@ class TestWipOverlapGate:
         assert success, f"收纳策略下 merge 应成功: {err}"
         assert info.wip_gate_blocked is False
 
-        # merge 结果落主树；主树干净可写（无 UU 残留）
-        assert (root / "core" / "a.py").read_text(encoding="utf-8") == "BRANCH-A\n"
+        # 冲突文件以 stash 版 WIP-A 落地（态 2 恢复 commit 入库）；主树干净可写
+        assert (root / "core" / "a.py").read_text(encoding="utf-8") == "WIP-A\n"
+        assert git(root, "show", "HEAD:core/a.py").stdout == "WIP-A\n"
         st = git(root, "status", "--porcelain")
         assert not st.stdout.strip(), f"主树应干净可写: {st.stdout!r}"
         # 未提交内容可在 stash 中找到（闸门专用前缀，独立于 autostash）
@@ -1001,9 +1009,10 @@ class TestWipOverlapGate:
     def test_default_auto_policy_recovers_wip_after_merge(self, tmp_path):
         """收纳策略：重叠改动被收纳（stash 可找回）+ merge 成功 + 非重叠 WIP 恢复。
 
-        主树 WIP 同时含：core/a.py（与分支重叠，pop 冲突 → 条目保留在 stash 可
-        找回）与 notes/scratch.txt（不重叠，pop 干净 → merge 后已恢复）。同一次
-        merge-back 同时验证「未提交内容可在 stash 中找到」与「主树 WIP 已恢复」。
+        主树 WIP 同时含：core/a.py（与分支重叠，pop 冲突 → 冲突文件以 stash 版
+        落地、条目保留在 stash 可找回）与 notes/scratch.txt（不重叠，pop 干净 →
+        merge 后已恢复）。同一次 merge-back 同时验证「未提交内容可在 stash 中
+        找到」与「主树 WIP 已恢复」。
         """
         root = tmp_path / "repo"
         init_repo(root)
@@ -1027,9 +1036,10 @@ class TestWipOverlapGate:
         info = wm.merge_back_from_branch("fenix/impl")
         success, err = info
         assert success, f"收纳策略下 merge 应成功: {err}"
-        # 重叠文件：分支改动合入；pop 冲突 → 条目保留（未提交内容可在 stash 找回）
+        # 重叠文件：pop 冲突 → 冲突文件以 stash 版落地（态 2 恢复 commit，不再
+        # 断言「分支改动合入/合并结果为准」），条目保留（未提交内容可在 stash 找回）
         assert (root / "core" / "a.py").read_text(encoding="utf-8") == \
-            "BRANCH-A\nL2-BASE\n", "重叠文件以合并结果为准"
+            "L1-BASE\nL2-WIP-A\n", "重叠文件以 stash 版落地（两侧改动都保留）"
         lst = git(root, "stash", "list")
         assert "fenix: wip-overlap gate stash" in lst.stdout, \
             f"闸门收纳条目应保留在栈中: {lst.stdout!r}"
@@ -1039,14 +1049,16 @@ class TestWipOverlapGate:
         # 非重叠 WIP：merge 后已恢复（pop 干净恢复，保持未提交——这是用户改动的本义）
         assert (root / "notes" / "scratch.txt").read_text(encoding="utf-8") == \
             "SCRATCH-WIP\n", "非重叠 WIP 应在 merge 后恢复"
-        # 无 UU 半合并残留（core/a.py 冲突已自愈、可写）；恢复的 WIP 以未提交修改呈现
+        # 无 UU 半合并残留（core/a.py 冲突已自愈、可写）；恢复的 WIP 以未提交修改
+        # 呈现（pop 对非冲突文件自动 staged，故 staged/unstaged 形态均接受）
         st = git(root, "status", "--porcelain")
         lines = st.stdout.splitlines()
         assert not any(
             l.startswith("U") or l.startswith("AA") or l.startswith("DD") for l in lines
         ), f"不应有 UU 残留: {st.stdout!r}"
-        assert any(l.lstrip().startswith("M notes/scratch.txt") for l in lines), \
-            f"notes WIP 应恢复为未提交修改: {st.stdout!r}"
+        assert any(
+            l.lstrip().startswith("M") and "notes/scratch.txt" in l for l in lines
+        ), f"notes WIP 应恢复为未提交修改: {st.stdout!r}"
 
     # ───────────────────────── tasks 2.3: 闸门作用域排除 spec/changes ─────────────────────────
 
