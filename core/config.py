@@ -1075,6 +1075,7 @@ class ConfigLoader:
         in drafted until due/activated before promotion and review (behavior after
         fix-start-after-premature-pickup).
         """
+        config = config or {}
         gates = config.get("gates") or {}
         scope = gates.get("start_after_scope")
         if scope not in cls.VALID_START_AFTER_SCOPES:
