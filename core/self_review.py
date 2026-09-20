@@ -268,6 +268,29 @@ def _classify_run(run_id: str, lines: list) -> tuple:
     return "failed", text[:140]
 
 
+def _collect_run_files(runs_dir: Path) -> list:
+    """并集：当前目录 + 归档目录 *.jsonl，同 run_id 当前目录优先去重。
+
+    归档目录不存在时退化为仅当前目录。返回按 run_id 去重后的 Path 列表
+    （run_id = p.stem）。只读遍历，不触发任何写操作。
+    """
+    files: list = []
+    try:
+        files = list(runs_dir.glob("*.jsonl"))
+    except OSError:
+        pass
+    arc = runs_dir / "archive"
+    if arc.is_dir():
+        try:
+            current_stems = {f.stem for f in files}
+            for p in arc.glob("*.jsonl"):
+                if p.stem not in current_stems:
+                    files.append(p)
+        except OSError:
+            pass
+    return files
+
+
 def collect_runs_stats(project_root, window_start: datetime) -> Dict[str, int]:
     """近 24 小时窗口 runs 统计（成功/失败/秒挂/超时/丢弃/在跑），排除
     self-review run 自身。
@@ -275,7 +298,8 @@ def collect_runs_stats(project_root, window_start: datetime) -> Dict[str, int]:
     窗口 = [window_start, window_end]，其中 window_end 为函数入口时冻结的
     datetime.now() 快照值，聚合执行期间不再调用实时时钟判定窗口归属。按 run_id
     内嵌开始时间戳判定归属（缺失回退文件 mtime），与 get_runs 的解析口径一致。
-    产物文件只读，不触发任何写操作。
+    统计源为当前目录 + 归档目录并集（archive 目录不存在时忽略），同 run_id
+    当前目录优先去重。产物文件只读，不触发任何写操作。
     """
     # 快照化：聚合启动时冻结窗口上界
     window_end = datetime.now()
@@ -292,10 +316,7 @@ def collect_runs_stats(project_root, window_start: datetime) -> Dict[str, int]:
     runs_dir = Path(project_root) / ".fenix" / "runs"
     if not runs_dir.is_dir():
         return counts
-    try:
-        files = list(runs_dir.glob("*.jsonl"))
-    except OSError:
-        return counts
+    files = _collect_run_files(runs_dir)
     for p in files:
         run_id = p.stem
         if run_id.startswith("review-"):
@@ -330,16 +351,15 @@ def collect_failed_run_samples(
     返回 ``[{run_id, detail}]``：detail 为命中的业务失败标记（marker=...）或
     结构性失败信号（signal=...）摘要；仅分类为 failed 的 run 入选。
     窗口快照化（同 collect_runs_stats），按 run_id 内嵌时间戳判定归属。
+    统计源与 collect_runs_stats 同一并集（当前目录 + 归档目录，同 run_id
+    当前目录优先去重），保证计数与样本口径一致。
     """
     window_end = datetime.now()
     samples: List[Dict[str, str]] = []
     runs_dir = Path(project_root) / ".fenix" / "runs"
     if not runs_dir.is_dir():
         return samples
-    try:
-        files = list(runs_dir.glob("*.jsonl"))
-    except OSError:
-        return samples
+    files = _collect_run_files(runs_dir)
     for p in files:
         run_id = p.stem
         if run_id.startswith("review-"):
