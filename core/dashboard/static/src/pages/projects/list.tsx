@@ -95,6 +95,33 @@ function fmtDuration(sec?: number | null) {
   return `${Math.floor(m / 60)}时${m % 60}分${s ? `${s}秒` : ''}`;
 }
 
+// ── 设置拾取时间：过去时刻一律置灰 ──────────────────────────────
+// 拾取时间语义为「到该时刻后 daemon 才拾取」，故只能是未来；过去时刻无意义。
+// disabledDate 置灰「今天之前」的日期（今天全天可选，当天已过时刻由 disabledTime
+// 精确置灰）。判定用 isSame/isBefore 而非 d < startOf('day')，避免毫秒边界误伤。
+function disablePastDate(d: dayjs.Dayjs | null) {
+  return !!d && d.isBefore(dayjs().startOf('day'));
+}
+
+// disabledTime 置灰当天已流逝的小时/分钟/秒；当选中日不是今天时返回空（不限制）。
+// 返回结构对齐 antd 6 的 getDisabledHours/getDisabledMinutes/getDisabledSeconds 约定。
+function disablePastTime(picked: dayjs.Dayjs | null) {
+  const now = dayjs();
+  if (!picked || !picked.isSame(now, 'day')) return {};
+  return {
+    disabledHours: () => rangeArray(0, now.hour()),
+    disabledMinutes: (hour: number) => (hour === now.hour() ? rangeArray(0, now.minute()) : []),
+    disabledSeconds: (hour: number, minute: number) =>
+      hour === now.hour() && minute === now.minute() ? rangeArray(0, now.second()) : [],
+  };
+}
+
+function rangeArray(start: number, endExclusive: number) {
+  const out: number[] = [];
+  for (let i = start; i < endExclusive; i += 1) out.push(i);
+  return out;
+}
+
 type TypeFilter = '' | 'active' | 'completed';
 
 // ── 名称列 Why 悬浮提示（对齐 v1 why-hint：悬停 200ms 拉取 proposal 的 ## Why 段） ──
@@ -500,9 +527,9 @@ export default function SpecListPage() {
   // add-spec-status-modal-budget：修改状态弹窗（归档/冻结/晋升/预算 四区块收敛入口）
   const [statusModal, setStatusModal] = useState<{ spec: string } | null>(null);
 
-  // add-project-detail-tabs D1：项目页分面选中态（开发/质量/会话），
-  // 仅存组件内存、不持久化到 URL——刷新回默认「开发」
-  const [activeTab, setActiveTab] = useState<'dev' | 'quality' | 'session'>('dev');
+  // add-project-detail-tabs D1：项目页分面选中态（SPEC 开发/代码审查/测试回归/Claude Code 会话），
+  // 仅存组件内存、不持久化到 URL——刷新回默认「SPEC 开发」
+  const [activeTab, setActiveTab] = useState<'dev' | 'quality' | 'regression' | 'session'>('dev');
 
   const load = useCallback(async () => {
     if (!name) return;
@@ -741,6 +768,12 @@ export default function SpecListPage() {
       // 哨兵安全降级：非法/不存在日期 MUST NOT 静默把哨兵清成 null，拒绝提交并提示
       if (saDate && !saDate.isValid()) {
         message.error('所选时间无效，请重新选择');
+        return;
+      }
+      // 兜底：拾取时间只能是未来（过去时刻不可拾取）。禁选已挡住日历入口，
+      // 但仍可经键盘输入或弹窗跨分钟滞留绕过，故提交侧再校验一次。
+      if (saDate && !saDate.isAfter(dayjs())) {
+        message.error('拾取时间必须晚于当前时间，请重新选择');
         return;
       }
       const value = saDate ? saDate.toISOString() : null;
@@ -1031,15 +1064,16 @@ export default function SpecListPage() {
         onBack: () => history.push('/overview'),
       }}
     >
-      {/* add-project-detail-tabs D1：项目页三分面 Tabs——开发（默认）/质量/会话；
-          选中态不持久化到 URL；会话 Panel 的 active 门控见「会话」分面 children */}
+      {/* add-project-detail-tabs D1：项目页分面 Tabs——「SPEC 开发」（默认）/「代码审查」/
+          「测试回归」/「Claude Code 会话」；选中态不持久化到 URL；
+          会话 Panel 的 active 门控见「Claude Code 会话」分面 children */}
       <Tabs
         activeKey={activeTab}
         onChange={setActiveTab}
         items={[
           {
             key: 'dev',
-            label: '开发',
+            label: 'SPEC 开发',
             children: (
               <>
                 {error ? (
@@ -1154,15 +1188,21 @@ export default function SpecListPage() {
           },
           {
             key: 'quality',
-            label: '质量',
+            label: '代码审查',
             // add-code-review-agent-and-quality-tab：承载代码审查质量视图——
             // QualityTab active 门控：仅在选中本分面时拉取数据与订阅事件流。
-            // 卡片由 QualityTab 自身渲染（与「开发」分面同层，避免嵌套 Card 双倍内边距）
+            // 卡片由 QualityTab 自身渲染（与「SPEC 开发」分面同层，避免嵌套 Card 双倍内边距）
             children: <QualityTab project={name} active={activeTab === 'quality'} />,
           },
           {
+            key: 'regression',
+            label: '测试回归',
+            // add-project-test-regression-tab：测试回归视图占位，内容待后续 SPEC 补充
+            children: null,
+          },
+          {
             key: 'session',
-            label: '会话',
+            label: 'Claude Code 会话',
             // add-project-detail-tabs D2/D3：会话界面内联承载（由项目级会话全屏 Modal
             // 迁移而来）。active 门控：仅在选中本分面时拉取会话状态与订阅事件流，未选中零请求
             children: <SessionPanel project={name} active={activeTab === 'session'} />,
@@ -1229,6 +1269,8 @@ export default function SpecListPage() {
             style={{ width: '100%' }}
             value={saDate}
             onChange={(d) => setSaDate(d)}
+            disabledDate={disablePastDate}
+            disabledTime={disablePastTime}
             placeholder="选择拾取时间"
           />
           <Button danger type="link" style={{ paddingInline: 0 }} disabled={!saDate} onClick={() => setSaDate(null)}>

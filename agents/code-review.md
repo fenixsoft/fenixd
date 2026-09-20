@@ -116,7 +116,7 @@ MUST NOT 等到全部文件审完才一次性写出）。追加方式：以 appe
       "line": 行号（可定位时填写，否则省略或 1）,
       "severity": "critical | major | minor | info",
       "category": "correctness | robustness | security | maintainability | consistency",
-      "title": "一句话问题标题（≤40 字，概括问题）",
+      "title": "问题标题（独立成句，见下方 title 契约）",
       "description": "问题描述：为什么会出问题、影响什么",
       "suggestion": "修复建议（具体、可执行）",
       "evidence": "证据：文件:行号、可疑代码片段或行为描述"
@@ -128,6 +128,20 @@ MUST NOT 等到全部文件审完才一次性写出）。追加方式：以 appe
 
 找不到问题（该文件干净）时：`{"file": "...", "findings": []}`——也 MUST
 追加一行（进度计数依赖逐文件落行），`ocr_used` 可省略。
+
+### `title` 契约（违反 = 该条不可用）
+
+`title` MUST 是**独立完整的一句话**，概括问题本身，读它即知问题是什么。
+
+- MUST NOT 截取 `description` 的前 N 个字符充当 title（历史事故：曾写
+  「≤40 字」被字面执行，180/181 条 title 恰为 `description[:40]`，全部
+  在词/短语中间断开——如 `"Self-deadlock on the non-reentrant \`_que"`、
+  `"The draft is always reset from \`extras['"`，用户看到的标题全是半句）。
+- 不以「字数上限」为目标：先写完整句，再自行压缩到 60 字以内；压不下就
+  保留最关键的「对象 + 故障」两要素（如「`_queue_lock` 非可重入导致自死锁」），
+  细节交给 `description`，MUST NOT 用硬截断凑长度。
+- MUST 以句末标点或完整短语收尾，MUST NOT 以半个单词 / 半个引号 /
+  半个括号结束。
 
 数据落盘的完整流程：
 1. **逐文件审查**：先在本地完成**全部**文件的审查判断——绝不允许边审边写，

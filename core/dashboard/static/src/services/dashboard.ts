@@ -1159,7 +1159,7 @@ export interface ConfigData {
   /** add-framework-self-evolution：自进化配置（auto_accept / max_items_per_run） */
   self_evolution?: SelfEvolutionConfig;
   /** add-code-review-agent-and-quality-tab：周期性代码审查（admin.code_review 两键，
-   *  设置页「质量」页签读写；项目页「质量」分面只读触发按钮与进度） */
+   *  设置页「质量」页签读写；项目页「代码审查」分面只读触发按钮与进度） */
   code_review?: CodeReviewConfig;
   scope: 'user' | 'project';
   raw_exists: boolean;

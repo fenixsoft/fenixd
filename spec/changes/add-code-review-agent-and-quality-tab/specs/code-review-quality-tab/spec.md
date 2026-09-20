@@ -4,7 +4,9 @@
 
 项目页「质量」分面 SHALL 展示当前代码仓的 code-review 问题台账，以可复选表格呈现。
 
-- 表格 MUST 含列：严重度、文件:行、问题标题、所属 SPEC、状态；MUST 支持按严重度 / 状态过滤与排序。
+- 表格 MUST 含列：严重度、问题、状态；MUST 支持按严重度 / 状态过滤与排序。
+- 「问题」列 MUST 三行堆叠展示：第一行问题标题、第二行 `文件:行`、第三行内容（`[category] description`）。
+- 内容行 MUST 最多显示两行（`ellipsis.rows=2`），超出部分 MUST 可通过悬浮浮层查看全文；浮层 MUST 形制对齐开发分面「名称」列（Popover + Markdown 渲染）。
 - 表格 MUST 支持行复选（`rowSelection`），并显示已选条数。
 - 表格 MUST 提供逐条「忽略」操作（行操作或操作列）：触发后调 `POST /api/code-review/items/status` 将条目置 `ignored`，成功后该条目 MUST 从默认列表移除——`ignored` 是「用户显式标记」而非「系统自动置入」的状态，其唯一入口就在本分面，缺此入口则 `code-review-items` 的状态机中 `ignored` 无法被触发。
 - 表格 MUST 提供逐条「清除归属」操作（仅对 `in_spec` 条目）：把条目重置回 `open` 并清空 `spec_name`——否则条目一旦生成修复 SPEC 即被 `in_spec` 永久占用（`resolved` 仅由全仓核销置入、`ignored` 只是用户忽略），用户无法撤回误选。
@@ -15,7 +17,7 @@
 #### Scenario: 展示问题表格
 
 - **WHEN** 用户切到项目 `A` 的「质量」分面且台账有 open 问题
-- **THEN** MUST 显示问题表格（含严重度、文件:行、标题、所属 SPEC、状态列）与行复选框
+- **THEN** MUST 显示问题表格（含严重度、问题、状态列）与行复选框；「问题」列每行含标题 / 文件:行 / 内容三行
 
 #### Scenario: 未选中分面不发请求
 
@@ -29,10 +31,11 @@
 
 ### Requirement: 手动触发审查按钮
 
-质量分面 SHALL 在问题表格右上角提供两个触发按钮：「全仓库审查」与「立即审查本周期」。
+质量分面 SHALL 在问题表格右上角提供两个触发按钮：「全仓库审查」与「当期提交审查」。
 
+- 两个触发按钮 MUST 使用同一视觉样式（同为默认 `outlined`，MUST NOT 一主一次）。
 - 「全仓库审查」MUST 以 `scope=full` 调 `POST /api/code-review/run`。
-- 「立即审查本周期」MUST 以 `scope=window` 调 `POST /api/code-review/run`。
+- 「当期提交审查」MUST 以 `scope=window` 调 `POST /api/code-review/run`。
 - 已有审查运行中时，再次点击 MUST 被拒绝（后端返回 409），前端 MUST 给出明确提示而非静默失败。
 - 手动触发 MUST 走「写文件信号 → daemon 消费」链路；若该项目的文件信号无消费方（daemon 未运行或未受 supervisor 托管，`hosting_state == "unmanaged"`），后端 MUST 拒绝写信号并返回明确错误（先例 `request_spec_approve_push`：无人消费的信号会永久滞留，并可能在 daemon 下次启动时被消费成一次用户并未请求的审查），前端 MUST 原样提示该拒绝。
 - 触发成功后 MUST 进入运行中态，展示进度条与取消按钮。
@@ -44,7 +47,7 @@
 
 #### Scenario: 触发本周期审查
 
-- **WHEN** 用户点击「立即审查本周期」
+- **WHEN** 用户点击「当期提交审查」
 - **THEN** 前端 MUST 调 `POST /api/code-review/run` 且 `scope=window`
 
 #### Scenario: 运行中重复触发被拒

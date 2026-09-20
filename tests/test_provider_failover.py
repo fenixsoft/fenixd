@@ -75,6 +75,13 @@ def make_runner(proot: Path, config: dict | None = None) -> AgentRunner:
     runner._provider_circuit._daily_provider_attempts = {}
     runner._provider_circuit._daily_provider_warned = {}
     runner._provider_circuit.provider_circuits = {}
+    # v2 dev-server stub：本文件各测试的 fake _run_claude 让 run_implementer 走
+    # 完整成功收口 → _finalize_success 会 _v2_launch_for_worktree / _v2_stop_for_worktree
+    # 真实 spawn/回收 node dev-server（每个测试一次），全量套件内累积到 250s+。
+    # 本文件测 provider 链切换，与 worktree 测试服务器生命周期正交，stub 掉即恢复
+    # 原始语义（与 test_agent_runner_gate / test_planready_artifact_gate 同处方）。
+    runner.__dict__["_v2_server_instance"] = MagicMock()
+    runner._v2_server._v2_inject_env.return_value = {}
     # 产物硬门 stub（test_provider_failover 关注 provider 切换，与 implementer
     # 产物完成度正交）：fix-impl-tasks-completion-gate（2026-09-14 df8dd94c）
     # 给 implementer/fast-track 加了「worktree 内 .fenix-run-result.json 存在 +

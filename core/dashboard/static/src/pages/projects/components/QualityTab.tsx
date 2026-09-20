@@ -1,11 +1,15 @@
-// QualityTab.tsx — 项目页「质量」分面（add-code-review-agent-and-quality-tab D7/5.2-5.10）
+// QualityTab.tsx — 项目页「代码审查」分面（add-code-review-agent-and-quality-tab D7/5.2-5.10）
 //
 // 承载当前代码仓的 code-review 问题台账：
-// - 可复选问题表格（严重度/文件:行/标题/所属 SPEC/状态列，严重度与状态过滤排序）
-// - 右上角两个手动触发按钮（全仓库审查 / 立即审查本周期）
+// - 可复选问题表格（严重度/问题/状态列，严重度与状态过滤排序）；
+//   「问题」列两行堆叠：第一行 标题 + 文件:行（同行不换行）/ 第二行 内容
+//   （内容最多两行，悬浮浮层显示全文）；
+//   浮层用 Popover + Markdown 渲染（与「SPEC 开发」分面「名称」列的 Why 浮层同形制，
+//   描述里的 `` `code` `` / 列表 / 表格按 Markdown 排版）
+// - 右上角四个动作按钮（全仓库审查 / 当期提交审查 / 生成修复 SPEC / 全部忽略）
 // - 运行中真实进度条（done/total 百分比）+ 当前文件 + 取消按钮
-// - 底部「生成修复 SPEC」按钮（选中 > 0 才可用）
-// - 行操作：逐条「忽略」（open → ignored）、「清除归属」（in_spec → open）
+// - 行操作：逐条「忽略」（open → ignored）、「清除归属」（in_spec → open）；
+//   批量「全部忽略」= 把表格勾选的条目复制行操作的忽略语义（2026-09-20 用户要求）
 //
 // 配置归属（2026-09-19 用户决策）：本分面**只读触发与展示**，不再承载
 // admin.code_review.enabled 开关——配置项归设置页「质量」页签统一管理
@@ -18,6 +22,7 @@ import {
   App,
   Button,
   Card,
+  Popover,
   Progress,
   Select,
   Space,
@@ -26,6 +31,9 @@ import {
   Typography,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
+import Markdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import { markdownComponents } from './SpecDocModal';
 import {
   cancelRun,
   generateFixSpec,
@@ -61,6 +69,100 @@ const STATUS_COLOR: Record<string, string> = {
   resolved: 'green',
   ignored: 'default',
 };
+
+// ── 「问题」列单元格：两行堆叠 + 内容行悬浮浮层 ──────────────────────
+// 行布局（2026-09-20 用户要求）：第一行 = 问题标题 + `文件:行`（同一行不换行，
+// `文件:行` 过长时单行省略 + 原生 tooltip）；第二行 = 内容。
+// 浮层形制对齐「SPEC 开发」分面「名称」列的 Why 浮层（Popover + Markdown 渲染）：
+// 描述里常见 `` `code` `` / 列表 / 表格，纯文本 Tooltip 会原样显示反引号，
+// 这里按 Markdown 排版。
+// 宽度（2026-09-20 用户要求）：浮层宽度 = 所在「问题」列宽度的 80%——列宽随
+// 视口自适应（无固定 width），故在悬浮时实测所在 td 宽度再换算，而非写死 px。
+// 延迟（2026-09-20 用户要求）：鼠标悬停满 1s 才弹出浮层，快速划过不触发
+// （避免浏览列表时浮层乱闪）；移出即时关闭并清除定时器。
+const POPOVER_DELAY_MS = 1000;
+
+function ProblemCell({ rec }: { rec: CodeReviewItem }) {
+  const [open, setOpen] = useState(false);
+  const [popoverWidth, setPopoverWidth] = useState<number>();
+  const cellRef = useRef<HTMLDivElement>(null);
+  const timerRef = useRef<number | null>(null);
+
+  // 定时器统一清理：卸载 / 移出 / 重复进入都不会留下悬挂 timer
+  const clearTimer = () => {
+    if (timerRef.current !== null) {
+      window.clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+  };
+
+  const handleEnter = () => {
+    clearTimer();
+    // 宽度在延迟结束、真正弹出前实测（列宽可能因视口/内容变化）
+    timerRef.current = window.setTimeout(() => {
+      timerRef.current = null;
+      const td = cellRef.current?.closest('td');
+      const colWidth = td?.getBoundingClientRect().width ?? 0;
+      if (colWidth > 0) setPopoverWidth(Math.round(colWidth * 0.8));
+      setOpen(true);
+    }, POPOVER_DELAY_MS);
+  };
+
+  const handleLeave = () => {
+    clearTimer();
+    setOpen(false);
+  };
+
+  useEffect(() => clearTimer, []);
+
+  return (
+    <div ref={cellRef}>
+      <Space direction="vertical" size={2} style={{ width: '100%' }}>
+        {/* 第一行：问题标题 + 文件:行（同一行，`文件:行` 过长时单行省略，
+            不换行——用户 2026-09-20 要求） */}
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, minWidth: 0 }}>
+          <span style={{ fontWeight: 500, minWidth: 0 }}>{rec.title}</span>
+          <Typography.Text
+            code
+            style={{ fontSize: 12, flex: '0 1 auto', minWidth: 0 }}
+            ellipsis={{ tooltip: true }}
+          >
+            {rec.file}:{rec.line}
+          </Typography.Text>
+        </div>
+        {/* 第二行：内容，最多两行，悬浮显示全文 */}
+        <Popover
+          open={open}
+          placement="topLeft"
+          content={
+            <div
+              style={{
+                width: popoverWidth ? `${popoverWidth}px` : undefined,
+                maxWidth: '80vw',
+                fontSize: 13,
+                lineHeight: 1.65,
+              }}
+            >
+              <Markdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                {`[${rec.category}] ${rec.description}`}
+              </Markdown>
+            </div>
+          }
+        >
+          <Typography.Paragraph
+            type="secondary"
+            style={{ fontSize: 12, marginBottom: 0 }}
+            ellipsis={{ rows: 2, tooltip: false }}
+            onMouseEnter={handleEnter}
+            onMouseLeave={handleLeave}
+          >
+            [{rec.category}] {rec.description}
+          </Typography.Paragraph>
+        </Popover>
+      </Space>
+    </div>
+  );
+}
 
 export default function QualityTab({ project, active }: QualityTabProps) {
   const { message, modal } = App.useApp();
@@ -180,7 +282,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
 
   // ── 手动触发按钮（5.4） ────────────────────────────────────────
   const handleTrigger = async (scope: 'full' | 'window') => {
-    const label = scope === 'full' ? '全仓库审查' : '立即审查本周期';
+    const label = scope === 'full' ? '全仓库审查' : '当期提交审查';
     try {
       await triggerCodeReview(project, scope);
       message.success(`${label} 已受理，daemon 将开始执行`);
@@ -240,6 +342,31 @@ export default function QualityTab({ project, active }: QualityTabProps) {
     }
   };
 
+  // ── 批量「全部忽略」（2026-09-20 用户要求）：把勾选条目全部置 ignored ──
+  // 选中可能混入非 open 条目（in_spec/resolved），逐条忽略会让后端的
+  // 「仅 open/ignored 可人工置入」约束报错；这里只对 open 条目发请求。
+  // 用 Promise.allSettled 并发跑完整批，不因单条失败中断其余；结束后统一
+  // 提示成功/失败计数并刷新列表（不做逐条 toast，避免刷屏）。
+  const handleIgnoreAll = async () => {
+    const targets = items.filter((it) => selectedKeys.includes(it.item_id) && it.status === 'open');
+    if (targets.length === 0) {
+      message.warning('选中条目中没有可忽略的 open 问题');
+      return;
+    }
+    const results = await Promise.allSettled(
+      targets.map((it) => setCodeReviewItemStatus(project, it.item_id, 'ignored')),
+    );
+    const failed = results.filter((r) => r.status === 'rejected').length;
+    const ok = targets.length - failed;
+    if (failed === 0) {
+      message.success(`已忽略 ${ok} 条问题`);
+    } else {
+      message.warning(`已忽略 ${ok} 条，${failed} 条失败`);
+    }
+    setSelectedKeys([]);
+    void loadItems();
+  };
+
   const handleClearAttribution = async (item: CodeReviewItem) => {
     modal.confirm({
       title: '清除归属',
@@ -273,36 +400,9 @@ export default function QualityTab({ project, active }: QualityTabProps) {
       render: (sev: string) => <Tag color={SEVERITY_COLOR[sev] || 'default'}>{sev}</Tag>,
     },
     {
-      title: '文件:行',
-      dataIndex: 'file',
-      key: 'file',
-      width: 260,
-      render: (file: string, rec: CodeReviewItem) => (
-        <Typography.Text code style={{ fontSize: 12 }}>
-          {file}:{rec.line}
-        </Typography.Text>
-      ),
-    },
-    {
-      title: '问题标题',
-      dataIndex: 'title',
-      key: 'title',
-      render: (title: string, rec: CodeReviewItem) => (
-        <Space direction="vertical" size={0}>
-          <span>{title}</span>
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            [{rec.category}] {rec.description}
-          </Typography.Text>
-        </Space>
-      ),
-    },
-    {
-      title: '所属 SPEC',
-      dataIndex: 'spec_name',
-      key: 'spec_name',
-      width: 160,
-      render: (specName: string | null) =>
-        specName ? <Tag color="purple">{specName}</Tag> : <span style={{ color: '#999' }}>—</span>,
+      title: '问题',
+      key: 'problem',
+      render: (_: unknown, rec: CodeReviewItem) => <ProblemCell rec={rec} />,
     },
     {
       title: '状态',
@@ -377,11 +477,14 @@ export default function QualityTab({ project, active }: QualityTabProps) {
           </Typography.Text>
         </Space>
         <Space wrap>
-          <Button type="primary" disabled={progress?.running} onClick={() => void handleTrigger('full')}>
+          {/* 两个触发按钮同为默认样式（用户要求样式一致）；
+              「生成修复 SPEC」保持 primary（主操作按钮）；
+              「全部忽略」为 primary + danger（红底白字，用户 2026-09-20 要求） */}
+          <Button disabled={progress?.running} onClick={() => void handleTrigger('full')}>
             全仓库审查
           </Button>
           <Button disabled={progress?.running} onClick={() => void handleTrigger('window')}>
-            立即审查本周期
+            当期提交审查
           </Button>
           <Button
             type="primary"
@@ -390,6 +493,16 @@ export default function QualityTab({ project, active }: QualityTabProps) {
             onClick={() => void handleGenerate()}
           >
             生成修复 SPEC{selectedKeys.length > 0 ? `（${selectedKeys.length}）` : ''}
+          </Button>
+          {/* 「全部忽略」：红底白字（type="primary" danger，用户 2026-09-20 要求），
+              未勾选任何条目时禁用（selectedKeys 为空即无目标） */}
+          <Button
+            type="primary"
+            danger
+            disabled={selectedKeys.length === 0}
+            onClick={() => void handleIgnoreAll()}
+          >
+            全部忽略{selectedKeys.length > 0 ? `（${selectedKeys.length}）` : ''}
           </Button>
         </Space>
       </div>

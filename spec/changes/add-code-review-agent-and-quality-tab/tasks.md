@@ -104,8 +104,8 @@
 
 - [x] 5.1 `core/dashboard/static/src/services/dashboard.ts`：新增 5 个服务函数（`getCodeReviewItems` / `getCodeReviewProgress` / `triggerCodeReview` / `generateFixSpec` / `setCodeReviewItemStatus`），对齐既有 `request<T>` 封装与端点
 - [x] 5.2 新建 `core/dashboard/static/src/pages/projects/components/QualityTab.tsx`：props `{ project: string; active: boolean }`；`active` 为真时才拉取与订阅（对齐 `SessionPanel` 的 active 门控，未选中零请求）
-- [x] 5.3 `QualityTab` 表格：`Table` + `rowSelection`（`selectedRowKeys` 状态），列含 严重度/文件:行/问题标题/所属 SPEC/状态，支持严重度与状态过滤排序；默认仅 `open`；随 `EventSource('/api/stream')` 增量刷新 + 心跳兜底
-- [x] 5.4 `QualityTab` 右上角两个按钮「全仓库审查」「立即审查本周期」——分别调 `triggerCodeReview(project, 'full'|'window')`；409 时提示「已有审查在进行中」；成功后进入运行中态
+- [x] 5.3 `QualityTab` 表格：`Table` + `rowSelection`（`selectedRowKeys` 状态），列含 严重度/问题/状态（「问题」列三行堆叠：标题 / 文件:行 / 内容，内容两行截断 + Markdown Popover 浮层），支持严重度与状态过滤排序；默认仅 `open`；随 `EventSource('/api/stream')` 增量刷新 + 心跳兜底
+- [x] 5.4 `QualityTab` 右上角两个按钮「全仓库审查」「当期提交审查」——分别调 `triggerCodeReview(project, 'full'|'window')`；409 时提示「已有审查在进行中」；成功后进入运行中态
 - [x] 5.5 `QualityTab` 运行中态：轮询 `GET /api/code-review/progress` 渲染真实百分比进度条（`done/total`）+ 当前文件文案 + 取消按钮；取消调既有 `cancelRun(project, runId)`（run_id 由 progress 的 `review_id` 提供）；无运行时不渲染进度区；运行结束收起并刷新表格
 - [x] 5.6 `QualityTab` 底部「生成修复 SPEC」按钮（选中 > 0 才可用）：调 `generateFixSpec(project, selectedRowKeys)`，成功提示 SPEC 名并从 open 列表移除已 `in_spec` 条目
 - [x] 5.7 `QualityTab` 开关区：`admin.code_review.enabled` 的开关（读 `GET /api/config`、写 `POST /api/config`），与两个触发按钮同区（design D7）

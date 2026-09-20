@@ -1,6 +1,6 @@
 // SessionPanel.tsx — 项目级自由会话内联分面面板（add-project-detail-tabs D2）
 //
-// 由项目级会话全屏 Modal 迁移（Modal 外壳 → 「会话」分面内联容器），会话行为契约零变更：
+// 由项目级会话全屏 Modal 迁移（Modal 外壳 → 「Claude Code 会话」分面内联容器），会话行为契约零变更：
 // 打开流程：GET 拉全量缓冲 → EventSource('/api/stream') → hello 分支用服务端
 // cid 注册 watch → 再 GET 重拉一次（兜住注册前窗口），与 ClaudeOutputPane 同构。
 // 会话不存在（首次进入）→ 显示「开始会话」空态，点击后显式 POST /api/session/start。
@@ -35,7 +35,7 @@ import ClaudeMessageList from '@/components/claude-msg/ClaudeMessageList';
 
 interface SessionPanelProps {
   project: string;
-  /** 「会话」分面是否被选中：激活时拉取会话状态并订阅事件流，切离即释放订阅 */
+  /** 「Claude Code 会话」分面是否被选中：激活时拉取会话状态并订阅事件流，切离即释放订阅 */
   active: boolean;
 }
 

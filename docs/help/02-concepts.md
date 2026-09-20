@@ -81,7 +81,7 @@ graph TB
 | **dispute-judge**（争议法官） | 对实现者/验证者的声明争议做只读裁决 | 争议仲裁触发 |
 | **evolution**（自进化） | 从自省报告提炼需求、批量产出 evo-* SPEC | 定时触发 |
 | **spec-review**（方案评审） | 阅读 SPEC 三文档做方案级评审（goal-fit/hole/regression），结论 approved/repaired/rejected | `drafted → reviewing` 晋升门禁 |
-| **code-review**（代码审查） | 周期性仓库级代码审查，问题沉淀为可追踪台账（`.fenix/code-review/items.jsonl`），供「质量」分面消费并生成 fix-cr-* 修复 SPEC | 每日自省时点同步触发 / 「质量」分面手动触发 |
+| **code-review**（代码审查） | 周期性仓库级代码审查，问题沉淀为可追踪台账（`.fenix/code-review/items.jsonl`），供项目页「代码审查」分面消费并生成 fix-cr-* 修复 SPEC | 每日自省时点同步触发 / 项目页「代码审查」分面手动触发 |
 
 ## full 模式 vs fast-track 模式
 

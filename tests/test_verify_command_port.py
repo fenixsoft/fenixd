@@ -370,7 +370,11 @@ class TestLegacyRewriteLogNeutral(unittest.TestCase):
         """
         from test_inplace_bug_repair import _mk_engine
         from core.state_machine import StateMachine
-        from core.pm_engine import verification as _vmod
+        # 探活循环实际读的是子模块 serving.py 的模块全局（serving.py:773
+        # for _ in range(LEGACY_START_PROBE_ATTEMPTS)），包 __init__ 只是
+        # re-export 同名对象——patch 包属性不影响子模块已绑定的全局，故必须
+        # patch serving 模块本身，否则仍白等 30×1s（实测 30.06s）。
+        import core.pm_engine.verification.serving as _vmod
         sm = StateMachine(self.tmp / ".fenix" / "STATE.md", self.logger)
         engine, _ = _mk_engine(self.tmp, self.logger, {
             "verify": {"static_scope": "main"},

@@ -2,7 +2,7 @@
 
 与每日自省同周期运行（design D3 同源口径），审查窗口内开发 SPEC 的代码
 质量，问题沉淀为独立台账 ``.fenix/code-review/items.jsonl``，供项目页
-「质量」分面展示与消费。
+「代码审查」分面展示与消费。
 
 本模块为纯逻辑层，被 daemon（派发/收尾 ingest/核销）与 dashboard
 （读取/状态流转/生成 SPEC）两侧复用；MUST NOT 派发 agent（派发职责在

@@ -258,7 +258,7 @@ self_evolution:
 
 ### admin.code_review（周期性代码审查）
 
-设置页「质量」页签的开关（`add-code-review-agent-and-quality-tab`；2026-09-19 从项目页「质量」分面迁来——分面只保留结果展示与手动触发）：开启后与每日自省**同周期**触发 `code-review` agent，审查窗口内开发 SPEC 的**产品代码**质量（框架侧 manifest 已排除测试/manifest 外文档/构建产物），问题沉淀到独立台账 `.fenix/code-review/items.jsonl`，并在项目页「质量」分面以可复选表格呈现（支持一键生成修复 SPEC `fix-cr-<slug>`）。审查窗口与自省**同源**：`window_start` 取 `.fenix/self_review_state.json` 的 `last_run_at`（首跑/旧格式回退 `now - 24h`），即周期口径 = `admin.self_review.run_at` 时点，二者永远同窗口、不引入漂移。审查路径为两步：先 `ocr scan`（**全文件扫描**，非 diff-based 的 `ocr review`）批量扫描，再由 agent 逐文件落 `out-<run_id>.jsonl`；产物缺失或零有效行时整轮判失败（`repo-code-review-gate`）。
+设置页「质量」页签的开关（`add-code-review-agent-and-quality-tab`；2026-09-19 从项目页「代码审查」分面迁来——分面只保留结果展示与手动触发）：开启后与每日自省**同周期**触发 `code-review` agent，审查窗口内开发 SPEC 的**产品代码**质量（框架侧 manifest 已排除测试/manifest 外文档/构建产物），问题沉淀到独立台账 `.fenix/code-review/items.jsonl`，并在项目页「代码审查」分面以可复选表格呈现（支持一键生成修复 SPEC `fix-cr-<slug>`）。审查窗口与自省**同源**：`window_start` 取 `.fenix/self_review_state.json` 的 `last_run_at`（首跑/旧格式回退 `now - 24h`），即周期口径 = `admin.self_review.run_at` 时点，二者永远同窗口、不引入漂移。审查路径为两步：先 `ocr scan`（**全文件扫描**，非 diff-based 的 `ocr review`）批量扫描，再由 agent 逐文件落 `out-<run_id>.jsonl`；产物缺失或零有效行时整轮判失败（`repo-code-review-gate`）。
 
 | 键 | 默认值 | 范围 | 生效方式 |
 |----|--------|------|---------|
@@ -272,7 +272,7 @@ admin:
     max_files: 500      # 审查 manifest 上限（正整数）：大仓全量审查超限截断，避免耗时过长/烧钱
 ```
 
-- `enabled` 只管**周期调度**（与 `admin.self_review.enabled` 同语义）：关闭时到达自省时点不派发 code-review run、不写任何产物；项目页「质量」分面的**手动触发**按钮（全仓库审查 / 立即审查本周期）**不受此开关约束**——用户显式点击即执行（写 `.fenix/code_review_request.json` 文件信号，daemon 未受 supervisor 托管时拒绝并以明确文案返回）。
+- `enabled` 只管**周期调度**（与 `admin.self_review.enabled` 同语义）：关闭时到达自省时点不派发 code-review run、不写任何产物；项目页「代码审查」分面的**手动触发**按钮（全仓库审查 / 当期提交审查）**不受此开关约束**——用户显式点击即执行（写 `.fenix/code_review_request.json` 文件信号，daemon 未受 supervisor 托管时拒绝并以明确文案返回）。
 - 手动触发无运行中审查时返回受理；已有审查在跑时返回 409「已有审查在进行中」。
 - 模型链：`agents.models.code-review` → `agents.models.self-review` → `agents.models.administrator` → `admin.agent_model` → 默认网关。
 - token 归账到 `.fenix/cost/code_review_tokens.json`（与每日自省同结构，不写 STATE）。
@@ -402,7 +402,7 @@ hook 分发与动作执行在 daemon 后台线程进行，不阻塞状态机写�
 | 配置管理 | llm.providers / agents.models / gates.approve_mode / gates.promote_mode / gates.spec_review_mode |
 | Token 预算面板 | agents.token_budget_millions |
 | 验证 | verify.static_scope / verify.deps_mode（存于 config.yaml；`.fenix/verify.yaml` 契约手工编辑，不经设置页改写） |
-| 质量 | verify.impl_code_review（实现阶段收尾代码质量审查开关，自「验证」页迁出；页签顶部的 ocr 环境探测/一键安装不写配置键）；verify.impl_code_review_timeout_sec / verify.impl_code_review_concurrency / verify.impl_code_review_effort（收尾审查三运行参数：超时秒/并发/力度，缺省 600/2/low）；admin.code_review.enabled（周期性代码审查开关，2026-09-19 自项目页「质量」分面迁来） |
+| 质量 | verify.impl_code_review（实现阶段收尾代码质量审查开关，自「验证」页迁出；页签顶部的 ocr 环境探测/一键安装不写配置键）；verify.impl_code_review_timeout_sec / verify.impl_code_review_concurrency / verify.impl_code_review_effort（收尾审查三运行参数：超时秒/并发/力度，缺省 600/2/low）；admin.code_review.enabled（周期性代码审查开关，2026-09-19 自项目页「代码审查」分面迁来） |
 | 提示词管理 | agents/ 通用层 + .fenix/agents/ 项目级 |
 | 系统 | admin.enabled / admin.interval_minutes / admin.escalation_cooldown_minutes / admin.merge_breaker_threshold / admin.shutdown_drain_seconds |
 | 系统·瞬断治理 | agents.transient_backoff_schedule / agents.transient_redispatch_delay_seconds / agents.transient_break_threshold / agents.transient_break_window_seconds / agents.transient_break_cooldown_seconds |

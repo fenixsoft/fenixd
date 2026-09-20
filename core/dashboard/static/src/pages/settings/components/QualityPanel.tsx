@@ -31,7 +31,7 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
       impl_code_review_timeout_sec: config.verify?.impl_code_review_timeout_sec ?? 600,
       impl_code_review_concurrency: config.verify?.impl_code_review_concurrency ?? 2,
       impl_code_review_effort: config.verify?.impl_code_review_effort ?? 'low',
-      // 周期性代码审查（2026-09-19 从项目页「质量」分面迁来）：
+      // 周期性代码审查（2026-09-19 从项目页「代码审查」分面迁来）：
       // 开关是项目级配置（admin.code_review.enabled），归设置页而非项目页
       code_review_enabled: config.code_review?.enabled === true,
     });
@@ -83,7 +83,7 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
           impl_code_review_effort: values.impl_code_review_effort,
         },
         // add-code-review-agent-and-quality-tab：周期性代码审查开关
-        // （2026-09-19 从项目页「质量」分面迁到设置页「质量」页签）
+        // （2026-09-19 从项目页「代码审查」分面迁到设置页「质量」页签）
         code_review: {
           enabled: values.code_review_enabled === true,
         },
@@ -253,7 +253,7 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
       </Card>
       <Card style={{ marginTop: 12 }}>
         <Form form={form} layout="vertical">
-          {/* 周期性代码审查开关（2026-09-19 从项目页「质量」分面迁到本页签）：
+          {/* 周期性代码审查开关（2026-09-19 从项目页「代码审查」分面迁到本页签）：
               它是项目级配置（admin.code_review.enabled），与手动触发按钮的性质不同
               ——分面负责「看结果 + 手动触发」，配置归设置页统一管理。
               注：本条改动在 merge-back 中两次因「先 stash 后 merge」被丢弃，本卡片
@@ -270,9 +270,9 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
           <Text type="secondary" style={{ display: 'block', marginTop: 8 }}>
             开启后与每日自省同周期（admin.self_review.run_at 时点）自动派发
             code-review agent，审查窗口内开发 SPEC 的产品代码质量，问题沉淀到
-            .fenix/code-review/items.jsonl 台账，供项目页「质量」分面展示与消费。
+            .fenix/code-review/items.jsonl 台账，供项目页「代码审查」分面展示与消费。
             需要环境已安装 ocr（未安装时审查仍以 LLM 逐文件执行，仅少了扫描加速）。
-            手动触发（全仓库审查 / 立即审查本周期）不受本开关约束。
+            手动触发（全仓库审查 / 当期提交审查）不受本开关约束。
           </Text>
         </Form>
       </Card>
