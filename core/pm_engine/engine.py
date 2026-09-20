@@ -445,11 +445,14 @@ class PMEngine:
         Gates: if gates.promote_mode is 'manual', spec stays drafted
         (no promotion, no error, no dispatch) — awaiting manual promotion.
         """
-        # fix-start-after-premature-pickup D1：start_after 定时拾取门控（对齐
-        # _on_spec_ready 既有守卫，engine.py:552）。drafted + 未到期/哨兵的 SPEC
-        # 不得被任何自动通道晋升——扫描（_dispatch_changes）、恢复（_recover_one）、
-        # 以及本文件 :392 的 _on_spec_drafted → _on_spec_reviewing 同 handler 直调
-        # 均汇聚于此（覆盖面以 handler 入口为界）。守卫置于 promote_mode 闸口之外：
+        # add-start-after-scope-config D1：start_after 定时拾取门控（对齐
+        # _on_spec_ready 既有守卫，engine.py:552）——本入口受
+        # gates.start_after_scope 条件门控：full 时行为同 fix-start-after-premature-pickup
+        # （drafted + 未到期/哨兵的 SPEC 不得被任何自动通道晋升——扫描
+        # （_dispatch_changes）、恢复（_recover_one）、以及本文件 :392 的
+        # _on_spec_drafted → _on_spec_reviewing 同 handler 直调均汇聚于此，覆盖面以
+        # handler 入口为界）；dispatch 时回到 fix-start-after-premature-pickup 之前的
+        # 旧行为（立即晋升，仅实现派发等到期）。守卫置于 promote_mode 闸口之外：
         # manual 晋升模式与定时拾取门互不替代（1.5 人工放行豁免见 D1 末条——CLI
         # promote / Dashboard 晋升按钮直调共享函数 promote_drafted，不经本方法）。
         # 有意放行（D1 通道 ③④）：check_scheduling_deadlines（60s 到期唤起）与
@@ -457,12 +460,12 @@ class PMEngine:
         # 确认到期/激活——到期后 start_after_pending 返回 False、清空/激活后字段
         # 置 null 亦返回 False，故此处正常放行，无需特判。
         try:
-            from core.state_machine import start_after_pending
+            from core.state_machine import start_after_blocks_promotion
 
             entry = self.state_machine.read_one(spec_name)
             # entry 为 None（SPEC 已删除/归档）时 MUST NOT 早退——promote_drafted
             # 自带 not-found 拒绝与日志，是既有语义，守卫不得抢先吞掉（D2 落点约定）。
-            if entry is not None and start_after_pending(entry):
+            if entry is not None and start_after_blocks_promotion(entry, self.config):
                 self.logger.debug(
                     "pm_engine",
                     f"Skipping '{spec_name}': start_after pending (scheduled pickup)",
@@ -566,20 +569,22 @@ class PMEngine:
         主循环不再被分钟级评审 run 钉死（2026-09-19 事故：daemon 27 分钟不进
         主循环、五个文件信号消费者全部停摆）。
         """
-        # fix-start-after-premature-pickup D1：start_after 定时拾取门控（对齐
-        # _on_spec_ready 既有守卫）。reviewing + 未到期/哨兵的 SPEC 不得被派发
-        # 评审 run。守卫插在方法体最前面（早于双判据单飞与熔断短路）。有意放行
+        # add-start-after-scope-config D1：start_after 定时拾取门控（对齐
+        # _on_spec_ready 既有守卫）——本入口受 gates.start_after_scope 条件门控：
+        # full 时 reviewing + 未到期/哨兵的 SPEC 不得被派发评审 run（同
+        # fix-start-after-premature-pickup 行为）；dispatch 时回到旧行为（立即派发）。
+        # 守卫插在方法体最前面（早于双判据单飞与熔断短路）。有意放行
         # （D1 通道 ③④）：到期 / 清空 / 激活后 start_after_pending 返回 False
         # 正常放行。人工重评（SpecReviewManager.re_review）与评审否决后自动复评
         # 改造后均改为入队（spec_review.py:393/:880，tasks 2.6/2.7），与本入口
         # 同走 `_enqueue`——队列去重吸收重复触发，不再有「绕过守卫」的通道。
         try:
-            from core.state_machine import start_after_pending
+            from core.state_machine import start_after_blocks_promotion
 
             entry = self.state_machine.read_one(spec_name)
             # entry 读不到（SPEC 已删除/归档）时跳过守卫判定（不早退），交由既有
             # 链自然处理（D2 落点约定）。
-            if entry is not None and start_after_pending(entry):
+            if entry is not None and start_after_blocks_promotion(entry, self.config):
                 self.logger.debug(
                     "pm_engine",
                     f"Skipping '{spec_name}': start_after pending (scheduled pickup)",
