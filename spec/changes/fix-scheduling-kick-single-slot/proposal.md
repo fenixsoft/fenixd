@@ -45,11 +45,13 @@ if req_path.exists():
 - **写侧如实回报**：`set_spec_start_after` / `activate_spec` 的返回值携带唤醒信号的
   写入结果（成功 / 失败原因）；写入异常不再被吞掉。API 响应透传该结果，前端据此
   选择诚实文案——信号写出失败时提示「已清除定时，但即时唤醒信号写入失败，将由
-  下次扫描（≤30 分钟）派发」，MUST NOT 再无条件宣称「立即恢复调度」。
+  下次扫描（缺省 ≤30 分钟，即 `schedule.poll_interval_minutes`）派发」，MUST NOT 再无条件
+  宣称「立即恢复调度」。
 - **陈旧信号自动回收**：daemon 启动时与周期清扫中对信号目录执行对账——残留条目
   一律消费（唤醒语义幂等，重复唤醒被既有 handler 吸收）后删除；损坏/非法 JSON
   删除防卡死；`created` 早于回收阈值的条目判为陈旧信号，仅清理不唤醒（防御
   daemon 长期停机后的病态积压）。回收阈值与既有时序常量同族（代码常量，不进配置）。
+  旧单文件路径的兼容消费同受该阈值约束，避免存量陈旧文件在项目恢复时触发过时派发。
 - **兼容旧信号路径**：消费侧仍识别并消费旧单槽位文件 `.fenix/scheduling_kick_request.json`
   （存量项目一次性迁移），消费后删除；新写入方一律走新目录。
 
@@ -86,6 +88,8 @@ if req_path.exists():
   + 旧路径兼容；新增陈旧回收逻辑挂在启动清扫与周期计时段）。
 - **API 层**：`core/dashboard/routes/spec_routes.py`（`_api_spec_start_after` /
   `_api_spec_activate` 透传信号写入结果，失败时带 `warning` 字段）。
+- **CLI 入口**：`bin/fenix_cli.py`（`cmd_activate` 按信号写入结果分支输出——与
+  Dashboard 并列的第二个「动作方」，不得再无条件宣称「立即进入调度」）。
 - **前端**：`core/dashboard/static/src/services/dashboard.ts`（结果类型新增字段）、
   `core/dashboard/static/src/pages/projects/list.tsx`（清空文案按写入结果分支）、
   `core/dashboard/static/src/pages/projects/components/SpecStatusModal.tsx`（激活动作
