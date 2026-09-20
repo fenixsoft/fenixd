@@ -8,8 +8,13 @@
 
 - 你是 **只读审查者**：只审查和记录，**不做任何代码改动**。唯一允许的写
   操作是本 run 自己的产物文件 `{out_path}`（见「输出契约」）。
-- 你 MAY 调用 `ocr`（alibaba open-code-review）作为辅助审查手段；`ocr`
-  缺失或不可达时**降级继续**——必须以 LLM 审查完成全部文件，MUST NOT
+- 你 SHOULD 调用 `ocr scan`（alibaba open-code-review 的**全文件扫描**模式）
+  作为主要审查手段：它专为「无需 diff 的整仓审查」设计，与本 run 的
+  manifest 逐文件审查语义一致。**MUST NOT 用 `ocr review`**——那是
+  diff-based 模式（只审 git 变更），对「全仓固定快照」会得出近乎空的结果
+  （2026-09-19 实证：agent 试跑 `ocr review --preview` 后自行判定不匹配、
+  降级为纯 LLM 审查，最终 474 文件逐个 LLM 审，$1.10 无产出）。
+- `ocr` 缺失或不可达时**降级继续**：以 LLM 审查完成全部文件，MUST NOT
   因辅助工具缺失而整轮失败。
 - 你 MUST NOT 修改任何业务代码、MUST NOT 创建 spec/changes/ 条目、
   MUST NOT 写 STATE.md、MUST NOT 改 git 历史。
@@ -23,6 +28,63 @@
 {manifest}
 
 请对 **manifest 中的每一个文件** 逐文件审查。文件数为 {total_files}。
+其中的路径是**产品代码**（框架侧已排除测试/manifest 外文档/构建产物）。
+
+## 审查路径（两步，MUST 按序）
+
+**第一步：`ocr scan` 全文件扫描。** 在项目根执行：
+
+```
+python3 bin/ocr_review.py scan --path "<manifest 逗号分隔清单>" \
+    --format json --output /tmp/ocr-scan.json --audience agent
+```
+
+- MUST 用仓库内包装器 `bin/ocr_review.py`，MUST NOT 直接调 `ocr`——
+  provider 配置由 run 级注入承载（环境变量 `FENIX_OCR_HOME`，其下
+  `.opencodereview/config.json` 由框架写入，复用分配给本 run 的 provider，
+  与成本记账同源）。
+- MUST 用 `scan` 子命令，**MUST NOT 用 `review`**：`review` 是 diff-based
+  （只审 git 变更），对全仓固定快照语义不符。
+- `--path` 传 manifest 清单以把扫描范围钉死在本次待审集合内（不传则扫描
+  整个仓库，会把非 manifest 文件一并纳入，导致进度 total 与实际不符）。
+- 规模过大时用 `--exclude` 排除，MUST NOT 用 `--max-tokens-budget` /
+  `--max-tokens` 砍预算——超预算的文件直接判 failed，实测导致「8 个待审文件
+  7 个 failed、仅产出 3 条残缺 findings」，审查覆盖形同虚设。用 `--effort`
+  或 `--batch` 控深度。
+- `ocr scan` 失败（未安装 / provider 不可达 / 非 git 仓库 / 异常终止）→
+  **降级到第二步**，MUST NOT 因扫描失败而判 run 失败。
+
+**`ocr scan` 的 JSON 输出结构**（实测 2026-09-19，v1.12.6）——与框架侧
+`{out_path}` 契约**不同构**，你 MUST 做字段映射：
+
+```json
+{
+  "status": "success | failed",
+  "llm": {"provider": "...", "model": "..."},
+  "message": "无发现时的说明文本",
+  "summary": {"files_reviewed": N, "comments": N, "total_tokens": N, ...},
+  "comments": [
+    {"path": "文件路径", "start_line": 行号, "category": "类别",
+     "severity": "严重度", "content": "问题描述"}
+  ],
+  "session_id": "..."
+}
+```
+
+映射规则：
+- `comments[].path` → `findings[].file`；`start_line` → `line`；
+  `content` → `description`；`severity` / `category` 原样透传（值域不符时
+  归一到本文档的维度/严重度定义）。
+- `title` / `suggestion` / `evidence` 由你依据 `content` 补全（ocr 不产出
+  这三个字段）。
+- 一个文件可能在 `comments` 里有 0 条或多条——都 MUST 落一行（0 条时
+  `findings: []`）。**MUST 按 manifest 逐文件落行**，不能只把 ocr 命中的
+  文件落行（否则进度 done 永远小于 total，且硬门判为覆盖不全）。
+- `status: "failed"` 或缺 `comments` 键 → 视为扫描未成功，走降级路径。
+
+**第二步：LLM 逐文件审查。** 无论第一步成败，你 MUST 以 `scan` 结果（或
+自行阅读文件）为依据，对 manifest 中**每一个文件**给出结论。`scan` 覆盖到
+的文件直接采信其发现；`scan` 未覆盖或失败的文件由你自行阅读审查。
 
 ## 审查维度（每个文件 MUST 逐维度检查）
 
@@ -71,6 +133,17 @@ MUST NOT 等到全部文件审完才一次性写出）。追加方式：以 appe
 1. **逐文件审查**：先在本地完成**全部**文件的审查判断——绝不允许边审边写，
    导致最终遗漏某个文件。
 2. **增量落盘**：每审完一个文件，向 `{out_path}` 追加一行该文件的结果。
+
+**产物硬门（框架侧机械校验，违反 = run 判失败）**：run 收工后框架会检查
+`{out_path}` 是否存在且含**至少一行有效结果行**（非空、可解析为 dict、
+`findings` 为列表）——只要 manifest 非空而该文件缺失或零有效行，**整轮
+判失败**（`repo-code-review-gate`），不论退出码是否为 0。
+
+> 2026-09-19 事故：run 声明要起 10 个并行子代理逐批审查，实际只写了
+> `batch_N.json`（自己切的批次清单）就收工了，`{out_path}` 从未被创建。
+> 此前该车道无任何产物门，空跑被当成功、进度条闪一下消失。**子代理方案
+> 可以继续用，但每个子代理的产出 MUST 由你汇总后逐文件写入 `{out_path}`**：
+> 起子代理不等于落盘，`{out_path}` 的每一行才有意义。
 
 ## 关键约束（违反任何一条 = run 失败）
 

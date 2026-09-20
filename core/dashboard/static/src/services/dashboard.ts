@@ -915,6 +915,14 @@ export interface SelfReviewConfig {
   read_todo?: boolean;
 }
 
+/** 周期性代码审查（admin.code_review；add-code-review-agent-and-quality-tab） */
+export interface CodeReviewConfig {
+  /** 是否启用周期性代码审查（缺省 false；手动触发不受此开关约束） */
+  enabled?: boolean;
+  /** 全仓审查 manifest 上限（正整数，缺省 500）：超过截断 */
+  max_files?: number;
+}
+
 // add-settings-system-tab：系统页签受管 admin.* 键（read_config 白名单 6 键）
 export interface AdminConfig {
   /** 自动自愈总开关（缺省 true） */
@@ -1150,6 +1158,9 @@ export interface ConfigData {
   worktree?: { build_artifact_paths?: string[]; has_build_artifacts?: boolean };
   /** add-framework-self-evolution：自进化配置（auto_accept / max_items_per_run） */
   self_evolution?: SelfEvolutionConfig;
+  /** add-code-review-agent-and-quality-tab：周期性代码审查（admin.code_review 两键，
+   *  设置页「质量」页签读写；项目页「质量」分面只读触发按钮与进度） */
+  code_review?: CodeReviewConfig;
   scope: 'user' | 'project';
   raw_exists: boolean;
   sources: Record<string, string>;

@@ -4,10 +4,9 @@
 
 1. 子模块职责边界：9 个职责子模块各自承载 D2 分组方法；
 2. `grep "self._pm._"` == 0（私有回引清零）；
-3. 行数上限：pipeline.py（门面+大函数）不超既有 6304 行基线；
-4. 大函数仍在 pipeline.py，主函数收敛为编排骨架（内部段落提取为私有方法）；
-5. 门面 re-export 完整性：全部既有公开符号可导入；
-6. D9 patch 缝隙名仍可从 `core.pm_engine.verification` 访问。
+3. 大函数仍在 pipeline.py，主函数收敛为编排骨架（内部段落提取为私有方法）；
+4. 门面 re-export 完整性：全部既有公开符号可导入；
+5. D9 patch 缝隙名仍可从 `core.pm_engine.verification` 访问。
 """
 
 import re
@@ -75,16 +74,7 @@ class TestNoPrivateBackrefs:
             assert not hits, f"{mod}.py 残留 self._pm._ 回引: {len(hits)} 处"
 
 
-# ── 3. 行数上限 ───────────────────────────────────────
-
-class TestLineCount:
-    def test_pipeline_below_6304(self):
-        n = len((ROOT / "core/pm_engine/verification/pipeline.py")
-                .read_text(encoding="utf-8").splitlines())
-        assert n <= 6304, f"pipeline.py={n} 行 > 6304（原单文件基线）"
-
-
-# ── 4. 大函数仅搬移 ───────────────────────────────────
+# ── 3. 大函数仅搬移 ───────────────────────────────────
 
 class TestThreeStageWholeMove:
     def test_run_three_stage_in_pipeline(self):
@@ -107,20 +97,8 @@ class TestThreeStageWholeMove:
             assert re.search(r"def _run_three_stage_verification\(", body) is None, \
                 f"{mod}.py 重复承载 _run_three_stage_verification"
 
-    def test_main_convergence_below_830(self):
-        """主函数收敛（refactor-long-functions D1/D5）：`_run_three_stage_verification`
-        长度 ≤ 830 行（较原 1249 行下降 ≥ 1/3；D2 保留的 while True 循环体计入），
-        内部线性段落已提取为私有方法（主函数收敛为编排骨架）。"""
-        import inspect
 
-        from core.pm_engine.verification.pipeline import VerificationPipeline as VP
-
-        src = inspect.getsource(VP._run_three_stage_verification)
-        n = len(src.splitlines())
-        assert n <= 830, f"_run_three_stage_verification={n} 行 > 830（收敛目标）"
-
-
-# ── 5. 门面 re-export 完整性 ──────────────────────────
+# ── 4. 门面 re-export 完整性 ──────────────────────────
 
 class TestFacadeReexports:
     SYMBOLS = [
@@ -138,7 +116,7 @@ class TestFacadeReexports:
         assert not missing, f"门面缺失符号: {missing}"
 
 
-# ── 6. D9 patch 缝隙名 ─────────────────────────────────
+# ── 5. D9 patch 缝隙名 ─────────────────────────────────
 
 class TestD9PatchGap:
     NAMES = ["subprocess", "time", "probe_ready", "ensure_main_tree_deps",

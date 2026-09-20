@@ -33,6 +33,7 @@ from core.code_review import (
     resolve_snapshot,
     upsert_findings,
 )
+from core.agent_runner.result_gate import _check_repo_code_review_artifact
 
 # 无 provider 分配的 agent（含 Administrator）走默认网关（cc-switch）时 --model 用的
 # 官方模型名。provider 已分配的 agent，其 --model 直接取该 agent 分配的网关模型名
@@ -827,6 +828,25 @@ def run_code_review(
 
     # token 归账到独立类目（不写 STATE，与自省同一约束）
     _accumulate_code_review_tokens(runner, run_id, usage_info)
+
+    # ── 产物硬门（2026-09-19 原地修复：此前该车道**全链无任何产物门**）────
+    # 事故取证：run exit 0（subtype=success）但 agent 从未写过 out-<run_id>.jsonl
+    # （只写了自己切批的 batch_N.json），_read_code_review_out 对缺失文件 return []，
+    # 落账走完 inserted=0/updated=0 后仍返回 success=True——空跑被当成功，
+    # 用户看到的进度条闪一下就消失。对照同族的 spec-review 车道：
+    # SpecReviewManager.dispatch_review 有 _check_agent_result_artifact 硬门。
+    # 判据与归因文案见 core/agent_runner/result_gate.py 的同名门函数。
+    if run_ok:
+        gate_err = _check_repo_code_review_artifact(manifest, opath)
+        if gate_err is not None:
+            run_ok = False
+            error = gate_err
+            _log = getattr(runner, "logger", None)
+            if _log is not None:
+                _log.error(
+                    "code-review",
+                    f"产物硬门拦截: run={run_id} manifest={len(manifest)} — {gate_err}",
+                )
 
     # 读取增量产物并落账（产物缺失/解析失败 → success=False 带原因）
     inserted = updated = resolved = 0

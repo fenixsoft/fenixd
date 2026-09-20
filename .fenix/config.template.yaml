@@ -323,9 +323,10 @@ admin:
   shutdown_drain_seconds: 0
 
   # ---- 周期性代码审查（add-code-review-agent-and-quality-tab，可选）----
-  # 项目页「质量」分面提供同款开关（读/写 GET/POST /api/config 的
-  # admin.code_review.enabled）。开启后与每日自省同周期（admin.self_review.run_at
-  # 时点）派发 code-review agent，审查窗口内开发 SPEC 的代码质量，问题沉淀到
+  # 设置页「质量」页签提供该开关（读/写 GET/POST /api/config 的
+  # admin.code_review.enabled；2026-09-19 从项目页「质量」分面迁来——分面只保留
+  # 结果展示与手动触发）。开启后与每日自省同周期（admin.self_review.run_at
+  # 时点）派发 code-review agent，审查窗口内开发 SPEC 的产品代码质量，问题沉淀到
   # .fenix/code-review/items.jsonl 台账供「质量」分面展示与消费。
   # code_review:
   #   # 是否启用周期性代码审查（缺省 false；手动触发不受此开关约束）

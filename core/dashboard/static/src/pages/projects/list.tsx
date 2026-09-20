@@ -1156,12 +1156,9 @@ export default function SpecListPage() {
             key: 'quality',
             label: '质量',
             // add-code-review-agent-and-quality-tab：承载代码审查质量视图——
-            // QualityTab active 门控：仅在选中本分面时拉取数据与订阅事件流
-            children: (
-              <Card variant="borderless">
-                <QualityTab project={name} active={activeTab === 'quality'} />
-              </Card>
-            ),
+            // QualityTab active 门控：仅在选中本分面时拉取数据与订阅事件流。
+            // 卡片由 QualityTab 自身渲染（与「开发」分面同层，避免嵌套 Card 双倍内边距）
+            children: <QualityTab project={name} active={activeTab === 'quality'} />,
           },
           {
             key: 'session',

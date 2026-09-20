@@ -42,6 +42,7 @@ from core.agent_runner.result_gate import (  # noqa: F401
     _check_artifact_json_file,
     _check_impl_code_review_artifact,
     _check_impl_result_artifact,
+    _check_repo_code_review_artifact,
     _check_partial_consistency,
     _check_success_completion,
     _check_taskupdate_crosscheck,
@@ -439,6 +440,7 @@ class AgentRunner:
         "_check_agent_result_artifact": _check_agent_result_artifact,
         "_check_impl_code_review_artifact": _check_impl_code_review_artifact,
         "_check_impl_result_artifact": _check_impl_result_artifact,
+        "_check_repo_code_review_artifact": _check_repo_code_review_artifact,
         "_check_success_completion": _check_success_completion,
         "_check_partial_consistency": _check_partial_consistency,
         "_check_taskupdate_crosscheck": _check_taskupdate_crosscheck,    }

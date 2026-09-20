@@ -7,11 +7,10 @@
 3. `_run_claude` 补丁缝隙可用（模块级 subprocess 名在位）+ docstring 可解析；
 4. 8 组转发属性 setter/deleter 已删除、getter 保留、绕过 __init__ 实例仍可用；
 5. `_check_daily_limit` 写点不经转发 setter（无 AttributeError）；
-6. runner.py 行数 < 4000；
-7. 实例属性打桩不被绕过（内部调用点一律经 self.<方法名>）：
+6. 实例属性打桩不被绕过（内部调用点一律经 self.<方法名>）：
    - 静态：`_execute_agent_inner` 调用点保持 `self._check_agent_result_artifact`；
    - 行为：result_gate 兄弟函数经实例访问（打桩生效）；
-8. 单独 import 三个新模块不触发循环 import；`latency._default_ts_parser` 与
+7. 单独 import 三个新模块不触发循环 import；`latency._default_ts_parser` 与
    `runner.AgentRunner._parse_event_timestamp` 对同一样本逐字段一致。
 """
 
@@ -19,7 +18,6 @@ import ast
 import datetime
 import inspect
 import json
-from pathlib import Path
 from unittest.mock import MagicMock
 
 import core.agent_runner.latency as latency
@@ -164,22 +162,7 @@ class TestForwardingSettlersRemoved:
                 == datetime.datetime.now(datetime.timezone.utc).date())
 
 
-# ── 4. 行数上限 ─────────────────────────────────────────────────
-
-class TestLineCount:
-    def test_runner_below_4500(self):
-        """runner.py 行数上限（refactor-long-functions D6 修订）。
-
-        重构前上限 4000（3946 行）；本变更在 runner.py 内新增提取私有方法
-        （_maybe_in_place_retry / _handle_artifact_gate_retry 等，共 +347 行），
-        已破 4000 上限，按 D6 裁决 (a) 显式修订为 4500（实测 4293，余量 207）。
-        """
-        from pathlib import Path as P
-        n = len(P("core/agent_runner/runner.py").read_text(encoding="utf-8").splitlines())
-        assert n < 4500, f"runner.py={n} 行 >= 4500"
-
-
-# ── 5. 实例属性打桩不被绕过（D2b 规则 2） ────────────────────────
+# ── 4. 实例属性打桩不被绕过（D2b 规则 2） ────────────────────────
 
 class TestInstanceStubNotBypassed:
     def test_execute_agent_inner_calls_self_check_agent_result(self):

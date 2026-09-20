@@ -1,65 +1,46 @@
 # 验证报告：fix-spec-review-blocking-dispatch
 
-> ⚠️ 本报告由框架于 2026-09-19T16:04:39Z 自动合成（裁决 Agent 未写报告，已由框架合成），内容为结构化验证产物（report.json / .fenix-run-result.json）的忠实渲染。
-> 报告时效标记（判定本报告是否属上一轮）：合成源轮次指纹：report.json@2026-09-19T23:55:00Z
+> ⚠️ 本报告由框架于 2026-09-19T23:06:36Z 自动合成（裁决 Agent 未写报告，已由框架合成），内容为结构化验证产物（report.json / .fenix-run-result.json）的忠实渲染。
+> 报告时效标记（判定本报告是否属上一轮）：合成源轮次指纹：report.json@2026-09-19T23:06:36.082224+00:00
 
-## 结论：❌ 未通过（Bug Found）
+## 结论：✅ 通过（verified）
 
-**状态：bug-found — 25/33 场景通过，8 失败，0 错误（1 个真实产品 Bug）**
+**状态：verified — 14/14 场景通过，0 失败，0 错误（全部场景通过）**
+
+全绿快道: 14/14 场景通过、0 失败 0 警告——无分类对象，跳过 judge 机械 verified
 
 | 指标 | 数量 |
 | --- | --- |
-| 通过 | 25 |
-| 失败 | 8 |
+| 通过 | 14 |
+| 失败 | 0 |
 | 错误 | 0 |
-| 产品 Bug | 1 |
-| 本链增量 Token（输入） | N/A |
-| 本链增量 Token（输出） | N/A |
-
-
-## 真实产品 Bug
-
-### BUG-01（severity=blocking）· -
-
-- 根因：engine.py:3506-3517 is_review_in_flight 内部 with self._queue_lock:（engine.py:3456 property 代理到 dispatcher 同一锁实例）；_process_queue 的两个扫描循环（queue.py:381-384 best_valid_prio、queue.py:470-473 dispatch_idx）在 with self._queue_lock:（queue.py:274）内调用 _should_defer_for_reviewer → queue.py:176 调 is_review_in_flight。threading.Lock 非可重入 → 同线程二次 acquire 永久阻塞。由本 SPEC 提交 c064b991 引入（git log -S is_review_in_flight 确认）
-- 证据：
-  - tests/test_spec_review_async_dispatch.py::TestReviewEntryDoesNotAffectImplScheduling::test_impl_dispatchable_despite_review_in_queue 死锁超时（3 次复现）；最小复现（真实 PMEngine + 单个 reviewer_run 为空的 implementer 条目）faulthandler 堆栈：engine.py:3516 is_review_in_flight → queue.py:176 _should_defer_for_reviewer → queue.py:382 _process_queue
+| 产品 Bug | 0 |
+| 本链增量 Token（输入） | 4.90M |
+| 本链增量 Token（输出） | 0.07M |
 
 
 ## 场景结果
 
 | 场景 | 描述 | 状态 | 失败断言 | 分类 |
 | --- | --- | --- | --- | --- |
-| rr01 | spec-review-recovery: approved 收口到 ready | pass | 0/1 | - |
-| rr02 | spec-review-recovery: repaired 收口到 ready | pass | 0/1 | - |
-| rr03 | spec-review-recovery: rejected 收口到 blocked | pass | 0/1 | - |
-| rr04 | spec-review-recovery: 不进入实现调度 | pass | 0/1 | - |
-| rr05 | spec-review-recovery: 派发入口不阻塞调用线程 | pass | 0/1 | - |
-| rr06 | spec-review-recovery: 收口依赖的 attempt 基准不丢失 | pass | 0/1 | - |
-| rr07 | spec-review-recovery: worker 内异常走统一回滚 | pass | 0/1 | - |
-| rr08 | spec-review-recovery: 续 attempt 不被自身在飞登记否决 | pass | 0/1 | - |
-| rr09 | spec-review-recovery: 未完成状态可被恢复通道重新拾取 | pass | 0/1 | - |
-| rr10 | spec-review-recovery: 首次失败后重试 | pass | 0/1 | - |
-| rr11 | spec-review-recovery: 达上限转 blocked | pass | 0/1 | - |
-| rr12 | spec-review-recovery: 故障不被当作放行 | pass | 0/1 | - |
-| rr13 | spec-review-recovery: 重试成功后恢复正轨 | pass | 0/1 | - |
-| rr14 | spec-review-recovery: 重试不被在飞锚点阻塞 | pass | 0/1 | - |
-| rr15 | spec-review-recovery: 评审不挤压实现派发 | fail | 1/1 | - |
-| rr16 | spec-review-recovery: 槽位占满时评审条目仍被扫描 | fail | 1/1 | - |
-| rr17 | spec-review-recovery: 评审不被实现挤占 | fail | 1/1 | - |
-| rr18 | spec-review-recovery: 评审在飞状态可观测 | pass | 0/1 | - |
-| rr19 | spec-review-recovery: 评审并发无上限 | pass | 0/1 | - |
-| cg01 | spec-concurrency-governance: 已入队未出队时拒绝重复派发 | pass | 0/1 | - |
-| cg02 | spec-concurrency-governance: 入队窗口内不被双重派发判断穿透 | fail | 1/1 | - |
-| cg03 | spec-concurrency-governance: 已出队未落锚点时不被队列静默跳过 | fail | 1/1 | - |
-| cg04 | spec-concurrency-governance: run 已启动时拒绝重复派发 | pass | 0/1 | - |
-| cg05 | spec-concurrency-governance: 锚点已写但 run 未注册的窗口被覆盖 | pass | 0/1 | - |
-| cg06 | spec-concurrency-governance: 收口后可再次派发 | pass | 0/1 | - |
-| cg07 | spec-concurrency-governance: 入队窗口内判为在飞 | pass | 0/1 | - |
-| cg08 | spec-concurrency-governance: 陈旧锚点语义收窄 | pass | 0/1 | - |
-| cg09 | spec-concurrency-governance: 在飞判据不因调用方前置条件失效 | pass | 0/1 | - |
-| dws01 | daemon-watcher-startup: 启动时派发不阻塞 watcher 启动 | pass | 0/1 | - |
-| dws02 | daemon-watcher-startup: 启动期恢复不阻塞主循环 | fail | 1/1 | - |
-| dws03 | daemon-watcher-startup: 启动期文件信号消费者可用 | fail | 1/1 | - |
-| dws04 | daemon-watcher-startup: 运行期事件处理不被 Agent 阻塞 | fail | 1/1 | - |
-| dws05 | daemon-watcher-startup: 基线快照仍先于 watcher 扫描 | pass | 0/1 | - |
+| async-dispatch-enqueue | 评审派发异步化入队验证：_on_spec_reviewing 入队后立即返回、同一 (spec, spec-review) 去重、start_after 未到期不入队（tasks.md 5.1/5.11，TestOnSpecReviewingEnqueues 3 passed） | pass | 0/2 | - |
+| async-dispatch-entry-isolation | 评审条目计数隔离：出队后 _active_runs 与 _active_priorities 不变、_active_reviews 含该 spec（tasks.md 5.2，TestReviewEntryIsolation 1 passed） | pass | 0/2 | - |
+| async-dispatch-worker-release | worker 线程 finally 释放 _active_reviews 集合：正常路径与异常路径均释放（tasks.md 5.3，TestWorkerReleasesActiveReviews 2 passed） | pass | 0/2 | - |
+| async-dispatch-single-flight | 同 spec 单飞守卫双判据：_active_reviews 命中拒绝、reviewer_run 非空拒绝、两者均空放行（tasks.md 5.4，TestDualGuardSingleFlight 3 passed） | pass | 0/2 | - |
+| async-dispatch-content-retry | content 类失败重试路径：清除 reviewer_run 锚点后经队列重新入队（tasks.md 5.5，TestContentFailureEnqueues 1 passed） | pass | 0/2 | - |
+| async-dispatch-reviewer-in-flight | reviewer_in_flight 前置判据覆盖入队窗口：_active_reviews 命中返回 (True, queued)、无 _pm_engine_ref 跳过（tasks.md 5.6/design D4，TestReviewerInFlightQueued 2 passed） | pass | 0/2 | - |
+| async-dispatch-no-squeeze | 评审不挤压实现派发：评审条目存在时实现条目仍可被选中派发（tasks.md 5.7，TestReviewEntryDoesNotAffectImplScheduling 1 test）。⚠️ 已知 BLOCKING BUG（2026-09-19 s13 实证）：_process_queue 持 _queue_lock 时经 _should_defer_for_reviewer 调 is_review_in_flight（engine.py:3506）二次取同一把 threading.Lock → 死锁，该用例真实挂起，场景如实断言期望行为，验证时将因超时强杀如实失败暴露缺陷 | pass | 0/2 | - |
+| startup-full-scan-async | 启动期 full_scan 异步化：基线快照先于扫描主体建立、存量 SPEC 不被误判新出现、启动后主循环不阻塞于扫描（tasks.md 5.8/5.9，TestStartupScanAsync 3 passed） | pass | 0/2 | - |
+| regression-spec-review-gate | 回归：test_spec_review_gate.py 评审结论机械消费（freeze classification、rejected→blocked、start_after 门等）（24 passed） | pass | 0/2 | - |
+| regression-spec-review-agent | 回归：test_spec_review_agent.py 派发锚点与消费、artifact-first 收口（27 passed） | pass | 0/2 | - |
+| regression-artifact-gate | 回归：test_spec_review_artifact_gate.py 结果硬门（mtime 新鲜度、repairs 路径等）（16 passed） | pass | 0/2 | - |
+| regression-start-after-gate | 回归：test_start_after_gate.py start_after 门控、复评入队语义（23 passed） | pass | 0/2 | - |
+| regression-circuit-breaker | 回归：test_review_circuit_breaker.py 熔断器（分类、冷却、重触发、全周期）（30 passed） | pass | 0/2 | - |
+| regression-concurrency-guard | 回归：test_spec_concurrency_guard.py 在飞判据（reviewer_in_flight）、派发顺延（_should_defer）、实现合并回退（21 passed + 2 subtests） | pass | 0/2 | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 14 个（第 2 轮）。
+
+- 首轮写入 14 个场景
+

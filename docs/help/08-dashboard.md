@@ -54,7 +54,7 @@ Fenix Web Dashboard（`http://localhost:8787`）是跨项目的可视化监控�
 
 设置页承担配置管理职责：分项目读写受管配置键（llm / agents.models / gates.approve_mode）；查看与编辑 verify.yaml 验证契约；查看/调整 token 预算与消耗；以及管理提示词：查看通用层 agents/ 提示词、编辑项目级附加提示词。「Hook」面板管理当前项目的全局 hooks（对所有 SPEC 生效），表单结构同 SPEC 详情页的 Hook 页签，并展示跨 SPEC 的最近执行记录。
 
-「质量」页签（内部 key `quality`，位于「验证」之后）承载实现阶段的代码质量门设置：单个开关「收尾代码质量审查」（`verify.impl_code_review`，键路径不变）。开启后实现者在全部 tasks.md 任务完成、提交之后、写结果文件之前调用 ocr（`bin/ocr_review.py`）审查本次改动；环境未安装 ocr 时自动按 unavailable 降级跳过。该开关原置于「验证」页签，独立成页后验证页不再承载它（避免双入口）。
+「质量」页签（内部 key `quality`，位于「验证」之后）承载代码质量门与周期性审查设置，两张卡片。第一张（既有）：单个开关「收尾代码质量审查」（`verify.impl_code_review`，键路径不变）。开启后实现者在全部 tasks.md 任务完成、提交之后、写结果文件之前调用 ocr（`bin/ocr_review.py`）审查本次改动；环境未安装 ocr 时自动按 unavailable 降级跳过。该开关原置于「验证」页签，独立成页后验证页不再承载它（避免双入口）。第二张（`admin.code_review.enabled`，2026-09-19 从项目页「质量」分面迁来）：开关「周期性代码审查」——配置项归设置页统一管理，项目页分面只保留结果展示与手动触发。开启后与每日自省同周期派发 code-review agent，审查产品代码质量，问题入台账供项目页「质量」分面消费。
 
 开关下方另有三项运行参数设置（add-impl-code-review-tuning，键 `verify.impl_code_review_timeout_sec` / `verify.impl_code_review_concurrency` / `verify.impl_code_review_effort`，缺省 600 / 2 / `low`）：
 - **审查超时（秒）**：ocr LLM 单请求超时，写入 run 级 ocr provider 配置（`custom_providers.fenix-impl.timeout_sec`），**确定性生效**——不配置时 ocr 走其内置 300s 默认，实测 8 路并发 + 300s 会撞穿首字节等待导致大面积文件级 timeout。数字输入，须正整数，单位「秒」。

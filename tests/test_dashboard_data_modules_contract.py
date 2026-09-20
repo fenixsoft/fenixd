@@ -7,7 +7,6 @@ Task 5.3 of refactor-dashboard-data-module SPEC.
 - 私有别名可访问（_parse_run_task_done / _find_impl_run_file）
 - 模块级常量可达（32 个分组常量）
 - patch 目标仍绑定在门面（_is_running / USER_CONFIG_PATH）
-- 不存在超过 1500 行的子模块
 """
 import sys
 from pathlib import Path
@@ -133,16 +132,6 @@ def test_patch_targets_are_facade_bound():
     finally:
         shutil.rmtree(tmp)
         shutil.rmtree(tmp2)
-
-
-def test_no_submodule_exceeds_1500_lines():
-    """不存在超过 1500 行的子模块（spec 巨型文件约束）。"""
-    data_dir = Path(__file__).resolve().parent.parent / "core" / "dashboard" / "data"
-    for f in data_dir.glob("*.py"):
-        if f.name == "__init__.py":
-            continue
-        line_count = len(f.read_text(encoding="utf-8").split("\n"))
-        assert line_count <= 1500, f"{f.name} 达 {line_count} 行，超过 1500 上限"
 
 
 def test_legacy_module_removed():

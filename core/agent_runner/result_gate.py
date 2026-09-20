@@ -559,6 +559,65 @@ def _check_impl_code_review_artifact(
     return None
 
 
+def _check_repo_code_review_artifact(manifest: list, out_path: Path) -> str | None:
+    """周期性代码审查 run 的产物硬门（2026-09-19 原地修复）。
+
+    事故取证（触发本次修复的实证）：`run_code_review` 此前**全链无任何产物门**
+    ——run 退出码 0（转录 `subtype: success`）但 agent 从未写过
+    ``out-<run_id>.jsonl``（只写了自己切批的 ``batch_N.json``，声明要起 10 个
+    并行子代理后末轮直接收工），``_read_code_review_out`` 对缺失文件返回空列表，
+    落账走完 ``inserted=0/updated=0`` 后仍返回 ``success=True``：空跑被当成功，
+    用户在 Dashboard 看到的进度条闪一下就消失，且全仓核销因 ``findings`` 为空而
+    被跳过（未误核销，属侥幸）。对照同族车道——spec-review 有
+    ``_check_agent_result_artifact``、implementer 有 ``_check_impl_result_artifact``
+    ——本车道是唯一完全无门的。
+
+    判据（fail-closed：无审查产物 ≠ 无问题）：
+    - ``manifest`` 为空 → 返回 None（调用方已前置跳过，此处不重复判定，
+      避免「空 manifest」被误伤）；
+    - ``out_path`` 不存在，或存在但**零有效行** → 返回失败原因。
+
+    「有效行」与 ``_read_code_review_out`` 同口径：非空、可解析为 dict、
+    且 ``findings`` 为列表——「该文件审完了」的登记形态。刻意不复用
+    ``read_progress`` 的 ``done``（按裸行数计，含畸形行，服务进度条实时性）：
+    进度展示与门禁判定目的不同，门禁必须防「写满垃圾行骗过门」。
+
+    注：``unavailable`` 降级语义（ocr 缺失/网关不可达）**不适用于本车道**——
+    本 run 的审查手段是 agent 自身的 LLM 阅读，ocr 只是可选加速器；agent 没写
+    逐文件结果就是没审，不存在「环境不可用所以免责」的口子。
+    """
+    if not manifest:
+        return None
+    rel = out_path.name
+    if not out_path.is_file():
+        return (
+            f"审查产物缺失（repo-code-review-gate）：manifest {len(manifest)} 个文件"
+            f"但 {rel} 不存在——run 退出码为 0 不等于审查完成，agent MUST 逐文件"
+            f"追加结果行"
+        )
+    valids = 0
+    try:
+        text = out_path.read_text(encoding="utf-8", errors="replace")
+    except OSError as e:
+        return f"审查产物无法读取（repo-code-review-gate）: {rel} ({e})"
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(rec, dict) and isinstance(rec.get("findings"), list):
+            valids += 1
+    if valids <= 0:
+        return (
+            f"审查产物为空（repo-code-review-gate）：manifest {len(manifest)} 个文件"
+            f"但 {rel} 无任何有效结果行——run 退出码为 0 不等于审查完成"
+        )
+    return None
+
+
 def _check_impl_result_artifact(
     runner,
     spec_name: str,

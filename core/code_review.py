@@ -460,6 +460,11 @@ _EXCLUDED_DIRS = {
     "venv",
     "archive",
     "static/dist",
+    # 测试代码不作为审查对象（2026-09-19 用户决策）：审查面对准产品代码。
+    # 全仓 474 文件里 tests/ 占 251，且过半是断言细节而非产品逻辑——
+    # 逐文件 LLM 审查既稀释了产品代码的注意力预算，也让 manifest 规模失去意义。
+    # 测试自身的质量由测试套件自身把关。
+    "tests",
 }
 _EXCLUDED_PREFIXES = (
     "spec/",
@@ -467,12 +472,22 @@ _EXCLUDED_PREFIXES = (
     "dist/",
     ".fenix/",
     ".git/",
+    "tests/",
     "core/dashboard/static/dist/",
 )
+# 生成物文件名判据（无法靠目录排除的）：``*.gen.css`` 等由构建命令产出
+# （如 tailwind.gen.css 由 package.json 的 prebuild 生成），审查它们是
+# 对压缩产物做 LLM 审查，无意义且极烧 token（单文件逾 1 万字符）。
+_GENERATED_NAME_MARKERS = (".gen.", ".min.")
+_GENERATED_SUFFIXES = (".d.ts",)
 
 
 def _is_source_file(path_str: str) -> bool:
-    """判定是否为受控源码文件（排除 spec/docs/dist/.fenix 等非代码路径）。"""
+    """判定是否为受控产品源码文件（排除测试/文档/生成物/运行时产物）。
+
+    排除维度：目录前缀（spec/docs/dist/.fenix/tests）、路径中出现的排除目录名、
+    扩展名白名单、以及生成物文件名判据（``.gen.`` / ``.min.`` / ``.d.ts``）。
+    """
     p = path_str.replace("\\", "/")
     for prefix in _EXCLUDED_PREFIXES:
         if p.startswith(prefix):
@@ -480,6 +495,13 @@ def _is_source_file(path_str: str) -> bool:
     parts = p.split("/")
     for part in parts:
         if part in _EXCLUDED_DIRS:
+            return False
+    name = parts[-1].lower() if parts else ""
+    for marker in _GENERATED_NAME_MARKERS:
+        if marker in name:
+            return False
+    for suffix in _GENERATED_SUFFIXES:
+        if name.endswith(suffix):
             return False
     ext = Path(p).suffix.lower()
     return ext in _SOURCE_EXTS

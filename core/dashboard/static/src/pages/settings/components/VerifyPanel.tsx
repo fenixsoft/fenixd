@@ -199,38 +199,44 @@ export default function VerifyPanel({ config, onSave, project, onConfigSynced }:
         {/* 构建产物路径：标题与说明置于卡片外，与上方「验证契约」节同构 */}
         <h3 style={{ marginTop: 32 }}>构建产物路径</h3>
         <Text type="secondary">
-          worktree.has_build_artifacts × worktree.build_artifact_paths —— 声明项目的
-          构建产物路径，供 merge-back WIP 重叠检查把产物与语义内容区分处理（产物对齐
-          HEAD、不进入 stash，避免 pop 冲突与误报告警）。支持目录前缀（如 dist/，须以
-          / 结尾）与文件通配（如 release-*.zip，含 *）。判定完全由配置驱动，无内置
-          默认路径：未配置（未裁决）时判定恒假，merge-back 会写信号呼叫系统自动起草；
-          已声明无产物时显式写 has_build_artifacts: false 结案（不得留空冒充）。
+          这是一份豁免清单，告诉 merge-back 哪些路径是「由源码生成的派生物」、
+          不必当作需要人工处理的改动。产物改动会被对齐 HEAD、不进入 WIP 重叠 stash，
+          避免 pop 冲突与误报告警。支持目录前缀（如 dist/，须以 / 结尾）与文件通配
+          （如 release-*.zip，含 *）。它不影响构建、也不影响验证，是否/何时构建由构建配置
+          不由本设置逻辑决定。
         </Text>
         <Card style={{ marginTop: 12 }} data-testid="artifact-paths-card">
           {artifactEditable ? (
             <>
               <Form.Item
                 name="has_build_artifacts"
-                label="项目存在构建产物（worktree.has_build_artifacts）"
+                label={
+                  <>
+                    需要豁免的派生产物
+                    <span className="label-note">（worktree.has_build_artifacts）</span>
+                  </>
+                }
                 extra={
                   hasBuildArtifacts === 'unset' || hasBuildArtifacts === undefined
-                    ? '尚未配置，请手动填写或等待系统自动起草（运行期信号 + Administrator 兜底）'
-                    : undefined
+                    ? '尚未配置：判定恒假（不豁免任何路径），merge-back 会写信号呼叫系统自动起草。'
+                    : hasBuildArtifacts === 'true'
+                      ? '有派生物：下方列出的路径会被 merge-back 当作可丢弃的生成物处理（对齐 HEAD、不进 stash）。注意：把源码目录（如 src/）也列进来会连带取消「源码变更后重建产物」的触发。'
+                      : '无派生物：不豁免任何路径，所有 tracked 改动都按人手维护的源码处理——这对构建输出未入库的项目是正确取值。'
                 }
                 data-testid="has-build-artifacts-form-item"
               >
                 <Radio.Group data-testid="has-build-artifacts-radio">
                   <Radio value="unset">未配置</Radio>
-                  <Radio value="true">有产物</Radio>
-                  <Radio value="false">无产物</Radio>
+                  <Radio value="true">有派生物</Radio>
+                  <Radio value="false">无派生物</Radio>
                 </Radio.Group>
               </Form.Item>
               {declaredNoArtifacts ? (
                 <Alert
                   type="success"
                   showIcon
-                  message="已声明本项目无构建产物"
-                  description="项目确定无构建产物；merge-back 将不再需要区分产物与语义内容。"
+                  message="已声明：本项目无需要豁免的派生产物"
+                  description="git 跟踪范围内全部是人手维护的内容（构建输出如 dist/ 未入库）。merge-back 无需区分产物与语义，所有改动都按源码处理。此声明不影响构建与验证。"
                   data-testid="artifact-paths-no-artifacts-alert"
                 />
               ) : (
@@ -278,13 +284,13 @@ export default function VerifyPanel({ config, onSave, project, onConfigSynced }:
               />
               <div style={{ marginTop: 12 }}>
                 <Text>
-                  项目存在构建产物：{' '}
+                  需要豁免的派生产物：{' '}
                   {config.worktree?.has_build_artifacts === undefined && (
-                    <Text type="warning">未配置（未裁决，等待自动起草）</Text>
+                    <Text type="warning">未配置（未裁决，判定恒假，等待自动起草）</Text>
                   )}
-                  {config.worktree?.has_build_artifacts === true && <Text>有产物</Text>}
+                  {config.worktree?.has_build_artifacts === true && <Text>有派生物</Text>}
                   {config.worktree?.has_build_artifacts === false && (
-                    <Text>无产物（已声明）</Text>
+                    <Text>无派生物（已声明，不影响构建与验证）</Text>
                   )}
                 </Text>
               </div>
@@ -299,7 +305,7 @@ export default function VerifyPanel({ config, onSave, project, onConfigSynced }:
               ) : (
                 config.worktree?.has_build_artifacts !== false && (
                   <Text type="secondary" style={{ display: 'block', marginTop: 12 }}>
-                    未配置路径（未裁决，等待系统自动起草）
+                    未配置豁免路径（未裁决，等待系统自动起草）
                   </Text>
                 )
               )}

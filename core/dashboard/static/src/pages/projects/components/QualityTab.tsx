@@ -5,8 +5,11 @@
 // - 右上角两个手动触发按钮（全仓库审查 / 立即审查本周期）
 // - 运行中真实进度条（done/total 百分比）+ 当前文件 + 取消按钮
 // - 底部「生成修复 SPEC」按钮（选中 > 0 才可用）
-// - admin.code_review.enabled 开关（读 GET /api/config、写 POST /api/config）
 // - 行操作：逐条「忽略」（open → ignored）、「清除归属」（in_spec → open）
+//
+// 配置归属（2026-09-19 用户决策）：本分面**只读触发与展示**，不再承载
+// admin.code_review.enabled 开关——配置项归设置页「质量」页签统一管理
+// （QualityPanel.tsx），分面承担的是「看结果 + 手动触发」。
 //
 // active 门控（对齐 SessionPanel）：仅在选中本分面时拉取数据与订阅 SSE，
 // 未选中零请求（project-page-tabs 按需加载语义）。
@@ -18,7 +21,6 @@ import {
   Progress,
   Select,
   Space,
-  Switch,
   Table,
   Tag,
   Typography,
@@ -29,8 +31,6 @@ import {
   generateFixSpec,
   getCodeReviewItems,
   getCodeReviewProgress,
-  getConfig,
-  saveConfig,
   setCodeReviewItemStatus,
   triggerCodeReview,
 } from '../../../services/dashboard';
@@ -71,8 +71,6 @@ export default function QualityTab({ project, active }: QualityTabProps) {
   const [statusFilter, setStatusFilter] = useState<string | undefined>('open');
   const [progress, setProgress] = useState<CodeReviewProgress | null>(null);
   const [polling, setPolling] = useState(false);
-  const [enabled, setEnabled] = useState<boolean | null>(null);
-  const [configLoading, setConfigLoading] = useState(false);
   const [generating, setGenerating] = useState(false);
   const pollTimerRef = useRef<number | null>(null);
   const runningRef = useRef<boolean>(false);
@@ -124,24 +122,12 @@ export default function QualityTab({ project, active }: QualityTabProps) {
     }
   }, [active, project, loadItems]);
 
-  const loadConfig = useCallback(async () => {
-    if (!active || !project) return;
-    try {
-      const cfg = await getConfig(project);
-      const cr = (cfg as { code_review?: { enabled?: boolean } }).code_review;
-      setEnabled(typeof cr?.enabled === 'boolean' ? cr.enabled : null);
-    } catch {
-      setEnabled(null);
-    }
-  }, [active, project]);
-
   // 首次加载 + SSE 增量刷新订阅（随 /api/stream + 心跳兜底）
   useEffect(() => {
     if (!active || !project) return;
     let disposed = false;
     void loadItems();
     void loadProgress();
-    void loadConfig();
 
     const es = new EventSource('/api/stream');
     es.onmessage = (ev: MessageEvent) => {
@@ -181,7 +167,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
         pollTimerRef.current = null;
       }
     };
-  }, [active, project, loadItems, loadProgress, loadConfig]);
+  }, [active, project, loadItems, loadProgress]);
 
   // 未激活时清理轮询
   useEffect(() => {
@@ -272,25 +258,6 @@ export default function QualityTab({ project, active }: QualityTabProps) {
     });
   };
 
-  // ── 配置开关（5.7） ─────────────────────────────────────────────
-  const handleToggleEnabled = async (checked: boolean) => {
-    setConfigLoading(true);
-    try {
-      await saveConfig(project, {
-        code_review: {
-          enabled: checked,
-        },
-      });
-      setEnabled(checked);
-      message.success(checked ? '已开启周期性代码审查' : '已关闭周期性代码审查');
-    } catch (e) {
-      message.error(`配置保存失败: ${e instanceof Error ? e.message : String(e)}`);
-      setEnabled(!checked);
-    } finally {
-      setConfigLoading(false);
-    }
-  };
-
   const filteredItems = items.filter(
     (it) =>
       (!severityFilter || it.severity === severityFilter) &&
@@ -368,52 +335,18 @@ export default function QualityTab({ project, active }: QualityTabProps) {
 
   return (
     <Card variant="borderless">
-      <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, marginBottom: 8 }}>
-        <Space>
-          <span style={{ fontWeight: 600 }}>周期性代码审查</span>
-          <Switch
-            checked={!!enabled}
-            checkedChildren="已开启"
-            unCheckedChildren="已关闭"
-            loading={configLoading || enabled === null}
-            onChange={(v) => void handleToggleEnabled(v)}
-          />
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            开启后与每日自省同周期自动审查
-          </Typography.Text>
-        </Space>
-        <Space>
-          <Button type="primary" disabled={progress?.running} onClick={() => void handleTrigger('full')}>
-            全仓库审查
-          </Button>
-          <Button disabled={progress?.running} onClick={() => void handleTrigger('window')}>
-            立即审查本周期
-          </Button>
-        </Space>
-      </div>
-
-      {progress?.running ? (
-        <Card size="small" style={{ marginBottom: 12, background: '#fafafa' }}>
-          <Space direction="vertical" style={{ width: '100%' }} size={4}>
-            <Space style={{ justifyContent: 'space-between', width: '100%' }}>
-              <Typography.Text strong>
-                审查进行中（{progress.review_kind || 'code-review'}）
-              </Typography.Text>
-              <Button size="small" onClick={() => void handleCancel()}>
-                取消
-              </Button>
-            </Space>
-            <Progress percent={progressPercent} status="active" />
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              {progress.done}/{progress.total} 文件
-              {progress.current ? ` · 当前：${progress.current}` : ''}
-            </Typography.Text>
-          </Space>
-        </Card>
-      ) : null}
-
-      <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, marginBottom: 8 }}>
-        <Space>
+      {/* 工具栏：左对齐（严重度/状态下拉框 + 已选计数），右对齐（三个动作按钮同排） */}
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          flexWrap: 'wrap',
+          gap: 8,
+          marginBottom: 8,
+        }}
+      >
+        <Space wrap>
           <Select
             placeholder="严重度"
             allowClear
@@ -439,11 +372,47 @@ export default function QualityTab({ project, active }: QualityTabProps) {
               { value: 'ignored', label: 'ignored' },
             ]}
           />
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            已选 {selectedKeys.length} 条
+          </Typography.Text>
         </Space>
-        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          已选 {selectedKeys.length} 条
-        </Typography.Text>
+        <Space wrap>
+          <Button type="primary" disabled={progress?.running} onClick={() => void handleTrigger('full')}>
+            全仓库审查
+          </Button>
+          <Button disabled={progress?.running} onClick={() => void handleTrigger('window')}>
+            立即审查本周期
+          </Button>
+          <Button
+            type="primary"
+            disabled={selectedKeys.length === 0}
+            loading={generating}
+            onClick={() => void handleGenerate()}
+          >
+            生成修复 SPEC{selectedKeys.length > 0 ? `（${selectedKeys.length}）` : ''}
+          </Button>
+        </Space>
       </div>
+
+      {progress?.running ? (
+        <Card size="small" style={{ marginBottom: 12, background: '#fafafa' }}>
+          <Space direction="vertical" style={{ width: '100%' }} size={4}>
+            <Space style={{ justifyContent: 'space-between', width: '100%' }}>
+              <Typography.Text strong>
+                审查进行中（{progress.review_kind || 'code-review'}）
+              </Typography.Text>
+              <Button size="small" onClick={() => void handleCancel()}>
+                取消
+              </Button>
+            </Space>
+            <Progress percent={progressPercent} status="active" />
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {progress.done}/{progress.total} 文件
+              {progress.current ? ` · 当前：${progress.current}` : ''}
+            </Typography.Text>
+          </Space>
+        </Card>
+      ) : null}
 
       <Table<CodeReviewItem>
         rowKey="item_id"
@@ -458,17 +427,6 @@ export default function QualityTab({ project, active }: QualityTabProps) {
         pagination={{ pageSize: 10, showSizeChanger: false, hideOnSinglePage: true }}
         locale={{ emptyText: '暂无未处理问题' }}
       />
-
-      <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 12 }}>
-        <Button
-          type="primary"
-          disabled={selectedKeys.length === 0}
-          loading={generating}
-          onClick={() => void handleGenerate()}
-        >
-          生成修复 SPEC{selectedKeys.length > 0 ? `（${selectedKeys.length}）` : ''}
-        </Button>
-      </div>
     </Card>
   );
 }

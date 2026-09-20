@@ -51,3 +51,10 @@ Non-Goal 原文为「手工激活只拦『ready→派发』，不拦『drafted�
   `_recover_one` + `_on_spec_drafted`，`drafted + 未来 start_after` 保持 drafted
   且无派发；`drafted + 已过期 start_after` 经 `check_scheduling_deadlines`（通道 ③）
   正常晋升到 ready。
+
+## 本轮场景集变更
+
+当前稳定场景集共 9 个（第 1 轮）。
+
+- 首轮写入 9 个场景
+

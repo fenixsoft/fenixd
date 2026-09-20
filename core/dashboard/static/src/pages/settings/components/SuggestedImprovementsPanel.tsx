@@ -221,21 +221,23 @@ function AcceptScheduleFields({
       <div style={{ marginBottom: 8 }}>
         将为该条目创建 SPEC 并进入流水线。执行时间：
       </div>
-      <Radio.Group
-        value={mode}
-        onChange={(e) => {
-          const next = e.target.value as 'immediate' | 'scheduled' | 'manual';
-          setMode(next);
-          commit(next, when);
-        }}
-        data-testid="evolution-accept-schedule-mode"
-      >
-        <Radio value="immediate">创建后立即执行</Radio>
-        <Radio value="scheduled">在指定时间执行</Radio>
-        <Radio value="manual">手工激活</Radio>
-      </Radio.Group>
-      {mode === 'scheduled' && (
-        <div style={{ marginTop: 12 }}>
+      {/* 下拉与时间选择同行并排（弹窗已加宽），不换行 */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'nowrap' }}>
+        <Select
+          value={mode}
+          onChange={(next: 'immediate' | 'scheduled' | 'manual') => {
+            setMode(next);
+            commit(next, when);
+          }}
+          style={{ width: 200, flex: 'none' }}
+          data-testid="evolution-accept-schedule-mode"
+          options={[
+            { value: 'immediate', label: '创建后立即执行' },
+            { value: 'scheduled', label: '在指定时间执行' },
+            { value: 'manual', label: '手工激活' },
+          ]}
+        />
+        {mode === 'scheduled' && (
           <DatePicker
             showTime={{ format: 'HH:mm' }}
             format="YYYY-MM-DD HH:mm"
@@ -246,10 +248,11 @@ function AcceptScheduleFields({
               setWhen(next);
               commit('scheduled', next);
             }}
+            style={{ flex: 'none' }}
             data-testid="evolution-accept-schedule-at"
           />
-        </div>
-      )}
+        )}
+      </div>
     </>
   );
 }
@@ -577,6 +580,7 @@ const SuggestedImprovementsPanel = forwardRef<
     const holder: AcceptSchedule = { startAfter: configStartAfter() };
     Modal.confirm({
       title: '同意立项',
+      width: 640,
       content: (
         <>
           <div style={{ marginBottom: 12 }}>确定对「{item.title}」点击同意？</div>

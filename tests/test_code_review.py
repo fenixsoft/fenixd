@@ -744,5 +744,117 @@ class TestSetItemStatus(unittest.TestCase):
         self.assertIn("不存在", r["error"])
 
 
+# ── 2026-09-19 原地修复：manifest 范围与产物硬门 ──────────────────
+
+
+class TestManifestScope(unittest.TestCase):
+    """全仓 manifest 只收产品代码（用户决策 2026-09-19）。
+
+    事故背景：全仓审查 manifest 收了 474 个文件，其中 tests/ 占 251（过半）
+    ——断言细节而非产品逻辑，稀释了产品代码的审查预算，与「审查工程代码质量」
+    的语义不符。修复后须排除 tests/ 与生成物文件。
+    """
+
+    def setUp(self):
+        self.repo = _make_repo()
+        # 追加各类非产品文件
+        (self.repo / "tests").mkdir(exist_ok=True)
+        (self.repo / "tests" / "test_x.py").write_text("def test(): pass\n")
+        (self.repo / "tests" / "fixtures" / "demo").mkdir(parents=True, exist_ok=True)
+        (self.repo / "tests" / "fixtures" / "demo" / "f.py").write_text("z=1\n")
+        gen = self.repo / "core" / "dashboard" / "static" / "src"
+        gen.mkdir(parents=True, exist_ok=True)
+        (gen / "tailwind.gen.css").write_text(".a{}\n")
+        (gen / "bundle.min.js").write_text("x\n")
+        (gen / "types.d.ts").write_text("export {};\n")
+        (self.repo / "core" / "ok.tsx").write_text("export default 1\n")
+        _git(self.repo, "add", "-A")
+        _git(self.repo, "commit", "-qm", "more")
+
+    def test_excludes_tests(self):
+        from core.code_review import collect_manifest
+
+        files = collect_manifest(self.repo, "full", None)
+        self.assertNotIn("tests/test_x.py", files)
+        self.assertNotIn("tests/fixtures/demo/f.py", files)
+        self.assertTrue(all(not f.startswith("tests/") for f in files))
+
+    def test_excludes_generated_artifacts(self):
+        from core.code_review import collect_manifest
+
+        files = collect_manifest(self.repo, "full", None)
+        self.assertNotIn("core/dashboard/static/src/tailwind.gen.css", files)
+        self.assertNotIn("core/dashboard/static/src/bundle.min.js", files)
+        self.assertNotIn("core/dashboard/static/src/types.d.ts", files)
+
+    def test_keeps_product_code(self):
+        from core.code_review import collect_manifest
+
+        files = collect_manifest(self.repo, "full", None)
+        self.assertIn("core/a.py", files)
+        self.assertIn("core/ok.tsx", files)
+
+
+class TestRepoCodeReviewArtifactGate(unittest.TestCase):
+    """code-review 产物硬门（2026-09-19 原地修复）。
+
+    事故背景：`run_code_review` 此前全链无任何产物门——run exit 0 但 agent
+    从未写 out-<run_id>.jsonl，`_read_code_review_out` 对缺失文件返回空列表，
+    落账 inserted=0 后仍 success=True：空跑被当成功。
+    """
+
+    def setUp(self):
+        self.dir = Path(_mkdtemp("cr-gate-"))
+        self.out = self.dir / "out-code-review-1.jsonl"
+
+    def _gate(self, manifest):
+        from core.agent_runner.result_gate import _check_repo_code_review_artifact
+
+        return _check_repo_code_review_artifact(manifest, self.out)
+
+    def test_empty_manifest_passes(self):
+        # 空 manifest 调用方已前置跳过，此处不重复判定（避免误伤）
+        self.assertIsNone(self._gate([]))
+
+    def test_missing_file_fails(self):
+        err = self._gate(["core/a.py"])
+        self.assertIsNotNone(err)
+        self.assertIn("产物缺失", err)
+
+    def test_empty_file_fails(self):
+        self.out.write_text("")
+        err = self._gate(["core/a.py"])
+        self.assertIsNotNone(err)
+        self.assertIn("产物为空", err)
+
+    def test_garbage_lines_fail(self):
+        # 防「写满垃圾行骗过门禁」：有效行判据不是裸行数
+        self.out.write_text("not json\n\n{}\n")
+        err = self._gate(["core/a.py"])
+        self.assertIsNotNone(err)
+        self.assertIn("产物为空", err)
+
+    def test_no_findings_list_fails(self):
+        # findings 非列表的行不算「该文件审完了」的登记形态
+        self.out.write_text(json.dumps({"file": "core/a.py"}) + "\n")
+        err = self._gate(["core/a.py"])
+        self.assertIsNotNone(err)
+
+    def test_valid_line_passes(self):
+        self.out.write_text(json.dumps({"file": "core/a.py", "findings": []}) + "\n")
+        self.assertIsNone(self._gate(["core/a.py"]))
+
+    def test_clean_file_review_passes(self):
+        # 空 findings 也是合法审查结论（文件干净），MUST NOT 判失败；
+        # 多文件全覆盖同样放行
+        self.out.write_text(
+            json.dumps({"file": "core/a.py", "findings": []})
+            + "\n"
+            + json.dumps({"file": "core/b.py", "findings": []})
+            + "\n"
+        )
+        self.assertIsNone(self._gate(["core/a.py", "core/b.py"]))
+
+
 if __name__ == "__main__":
     unittest.main()
