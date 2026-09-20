@@ -15,10 +15,12 @@ fixture 说明：最小可解析项目 = .fenix/STATE.md（调度相关测试只
 STATE 读写）；dispatch 门控测试用 PMEngine.__new__ 绕过 __init__。
 """
 import json
+import os
 import shutil
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -552,20 +554,31 @@ class TestSchedulingKickSignal(unittest.TestCase):
         })
         result = set_spec_start_after(self.proot, "myspec", None)
         self.assertTrue(result["ok"])
-        req = self.proot / ".fenix" / "scheduling_kick_request.json"
-        self.assertTrue(req.exists(), "清空 start_after 必须写唤醒信号")
+        req = self.proot / ".fenix" / "scheduling_kick" / "myspec.json"
+        self.assertTrue(req.exists(), "清空 start_after 必须写唤醒信号（新目录形态）")
         payload = json.loads(req.read_text(encoding="utf-8"))
         self.assertEqual(payload["spec"], "myspec")
         self.assertEqual(payload["action"], "clear-start-after")
+        # 返回值如实回报信号写入结果（D3）
+        self.assertEqual(result["scheduling_kick"], {"ok": True, "error": None})
 
-    def test_clear_start_after_conflict_keeps_existing_signal(self):
+    def test_clear_start_after_multi_spec_no_conflict(self):
+        """连续清空两个 SPEC：两个信号文件并存，无冲突丢弃（fix-scheduling-kick-single-slot）。"""
         from core.dashboard.data import set_spec_start_after
-        req = self.proot / ".fenix" / "scheduling_kick_request.json"
-        req.write_text(json.dumps({"spec": "other"}), encoding="utf-8")
-        result = set_spec_start_after(self.proot, "myspec", None)
-        self.assertTrue(result["ok"], "信号冲突不阻塞清空本身（STATE 已写）")
-        payload = json.loads(req.read_text(encoding="utf-8"))
-        self.assertEqual(payload["spec"], "other", "已有未消费信号不被覆盖")
+        # 添加一个额外的非终态 spec（donespec 是终态 done，set_spec_start_after 会拒绝）
+        self.sm.add_spec("extra", {"priority": 3, "status": "ready", "depends_on": None})
+        self.sm.update_spec("myspec", {"start_after": "2026-09-30T00:00:00+00:00"})
+        self.sm.update_spec("extra", {"start_after": "2026-09-30T00:00:00+00:00"})
+        r1 = set_spec_start_after(self.proot, "myspec", None)
+        r2 = set_spec_start_after(self.proot, "extra", None)
+        self.assertTrue(r1["ok"] and r2["ok"], "两个清空都必须成功（原事故形态：第二个被静默丢弃）")
+        kdir = self.proot / ".fenix" / "scheduling_kick"
+        files = sorted(p.name for p in kdir.glob("*.json"))
+        self.assertEqual(files, ["extra.json", "myspec.json"], "两 SPEC 信号文件并存")
+        # 同一 SPEC 重复清空幂等覆盖（不增文件数）
+        set_spec_start_after(self.proot, "myspec", None)
+        files = sorted(p.name for p in kdir.glob("*.json"))
+        self.assertEqual(files, ["extra.json", "myspec.json"])
 
     def test_set_start_after_no_kick_signal(self):
         from core.dashboard.data import set_spec_start_after
@@ -574,8 +587,9 @@ class TestSchedulingKickSignal(unittest.TestCase):
             (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat(),
         )
         self.assertTrue(result["ok"])
+        self.assertEqual(result["scheduling_kick"], None, "设置定时不写唤醒信号（字段为 null）")
         self.assertFalse(
-            (self.proot / ".fenix" / "scheduling_kick_request.json").exists(),
+            (self.proot / ".fenix" / "scheduling_kick" / "myspec.json").exists(),
             "设置定时不需要唤醒（到期唤起走 check_scheduling_deadlines）")
 
     # ── 拾取侧（daemon 主循环）──
@@ -622,35 +636,44 @@ class TestSchedulingKickSignal(unittest.TestCase):
         processed = []
         pm._process_queue = lambda: processed.append(True)
         daemon = self._fake_daemon(pm)
-        req = self.proot / ".fenix" / "scheduling_kick_request.json"
-        req.write_text(json.dumps({"spec": "myspec", "action": "clear-start-after"}),
-                       encoding="utf-8")
+        kdir = self.proot / ".fenix" / "scheduling_kick"
+        kdir.mkdir(parents=True, exist_ok=True)
+        (kdir / "myspec.json").write_text(
+            json.dumps({"spec": "myspec", "action": "clear-start-after",
+                        "created": datetime.now(timezone.utc).isoformat()}),
+            encoding="utf-8",
+        )
         with mock.patch.object(self._fenixd_mod, "PROJECT_ROOT", self.proot):
             daemon._check_scheduling_kick_requests()
         self.assertEqual(calls, ["myspec"], "拾取信号后必须唤起 _on_spec_ready")
         self.assertEqual(processed, [True], "唤起后必须立即 _process_queue")
-        self.assertFalse(req.exists(), "信号消费后删除")
+        self.assertFalse((kdir / "myspec.json").exists(), "信号消费后删除")
 
     def test_kick_request_unknown_spec_dropped(self):
         pm = self._make_pm()
         calls = []
         pm._on_spec_ready = lambda n: calls.append(n)
         daemon = self._fake_daemon(pm)
-        req = self.proot / ".fenix" / "scheduling_kick_request.json"
-        req.write_text(json.dumps({"spec": "ghost"}), encoding="utf-8")
+        kdir = self.proot / ".fenix" / "scheduling_kick"
+        kdir.mkdir(parents=True, exist_ok=True)
+        (kdir / "ghost.json").write_text(
+            json.dumps({"spec": "ghost", "created": datetime.now(timezone.utc).isoformat()}),
+            encoding="utf-8",
+        )
         with mock.patch.object(self._fenixd_mod, "PROJECT_ROOT", self.proot):
             daemon._check_scheduling_kick_requests()
         self.assertEqual(calls, [], "不存在的 spec 不派发")
-        self.assertFalse(req.exists(), "信号仍删除防反复报错")
+        self.assertFalse((kdir / "ghost.json").exists(), "信号仍删除防反复报错")
 
     def test_kick_request_corrupt_deleted_without_exception(self):
         pm = self._make_pm()
         daemon = self._fake_daemon(pm)
-        req = self.proot / ".fenix" / "scheduling_kick_request.json"
-        req.write_text("{ not valid json !!!", encoding="utf-8")
+        kdir = self.proot / ".fenix" / "scheduling_kick"
+        kdir.mkdir(parents=True, exist_ok=True)
+        (kdir / "corrupt.json").write_text("{ not valid json !!!", encoding="utf-8")
         with mock.patch.object(self._fenixd_mod, "PROJECT_ROOT", self.proot):
             daemon._check_scheduling_kick_requests()
-        self.assertFalse(req.exists())
+        self.assertFalse((kdir / "corrupt.json").exists())
         pm._on_spec_ready.assert_not_called() if hasattr(pm._on_spec_ready, "assert_not_called") else None
 
     def test_kick_request_drafts_spec_promotes(self):
@@ -662,11 +685,211 @@ class TestSchedulingKickSignal(unittest.TestCase):
         pm._on_spec_drafted = lambda n: calls.append(n)
         pm._process_queue = lambda: None
         daemon = self._fake_daemon(pm)
-        req = self.proot / ".fenix" / "scheduling_kick_request.json"
-        req.write_text(json.dumps({"spec": "myspec"}), encoding="utf-8")
+        kdir = self.proot / ".fenix" / "scheduling_kick"
+        kdir.mkdir(parents=True, exist_ok=True)
+        (kdir / "myspec.json").write_text(
+            json.dumps({"spec": "myspec", "created": datetime.now(timezone.utc).isoformat()}),
+            encoding="utf-8",
+        )
         with mock.patch.object(self._fenixd_mod, "PROJECT_ROOT", self.proot):
             daemon._check_scheduling_kick_requests()
         self.assertEqual(calls, ["myspec"], "drafted spec 拾取走晋升链")
+
+    def test_kick_request_multi_dir_entries_same_round(self):
+        """同轮多信号逐条消费、互不干扰（fix-scheduling-kick-single-slot 目录形态）。"""
+        from core.state_machine import SpecStatus
+        self.sm.update_spec("myspec", {"status": SpecStatus.READY})
+        self.sm.update_spec("donespec", {"status": SpecStatus.READY})
+        pm = self._make_pm()
+        calls = []
+        pm._on_spec_ready = lambda n: calls.append(n)
+        pm._process_queue = lambda: None
+        daemon = self._fake_daemon(pm)
+        kdir = self.proot / ".fenix" / "scheduling_kick"
+        kdir.mkdir(parents=True, exist_ok=True)
+        now = datetime.now(timezone.utc).isoformat()
+        for name in ("myspec", "donespec"):
+            (kdir / f"{name}.json").write_text(
+                json.dumps({"spec": name, "created": now}), encoding="utf-8")
+        with mock.patch.object(self._fenixd_mod, "PROJECT_ROOT", self.proot):
+            daemon._check_scheduling_kick_requests()
+        self.assertEqual(sorted(calls), ["donespec", "myspec"], "两信号同轮消费")
+        self.assertEqual(list(kdir.glob("*.json")), [], "全部消费后删除")
+
+    def test_kick_request_single_exception_not_blocking_others(self):
+        """单条信号唤起异常不中断同轮其余信号（task 4.2）。"""
+        from core.state_machine import SpecStatus
+        self.sm.update_spec("myspec", {"status": SpecStatus.READY})
+        self.sm.update_spec("donespec", {"status": SpecStatus.READY})
+        pm = self._make_pm()
+        calls = []
+        def boom(spec):
+            if spec == "donespec":
+                raise RuntimeError("boom")
+            calls.append(spec)
+        pm._on_spec_ready = boom
+        pm._process_queue = lambda: None
+        daemon = self._fake_daemon(pm)
+        kdir = self.proot / ".fenix" / "scheduling_kick"
+        kdir.mkdir(parents=True, exist_ok=True)
+        now = datetime.now(timezone.utc).isoformat()
+        for name in ("myspec", "donespec"):
+            (kdir / f"{name}.json").write_text(
+                json.dumps({"spec": name, "created": now}), encoding="utf-8")
+        with mock.patch.object(self._fenixd_mod, "PROJECT_ROOT", self.proot):
+            daemon._check_scheduling_kick_requests()
+        self.assertEqual(calls, ["myspec"], "异常 spec 不影响其它信号")
+        # 异常者信号保留留待下轮（先唤起后删）；myspec 已消费删除
+        self.assertTrue((kdir / "donespec.json").exists(), "唤起异常的信号保留留待下轮重试")
+        self.assertFalse((kdir / "myspec.json").exists())
+
+    def test_kick_request_legacy_single_file_consumed(self):
+        """旧单文件路径兼容消费（D5）：阈值内旧文件按既有语义消费并删除。"""
+        from core.state_machine import SpecStatus
+        self.sm.update_spec("myspec", {"status": SpecStatus.READY})
+        pm = self._make_pm()
+        calls = []
+        pm._on_spec_ready = lambda n: calls.append(n)
+        pm._process_queue = lambda: None
+        daemon = self._fake_daemon(pm)
+        legacy = self.proot / ".fenix" / "scheduling_kick_request.json"
+        legacy.write_text(json.dumps({
+            "spec": "myspec", "action": "clear-start-after",
+            "created": datetime.now(timezone.utc).isoformat(),
+        }), encoding="utf-8")
+        with mock.patch.object(self._fenixd_mod, "PROJECT_ROOT", self.proot):
+            daemon._check_scheduling_kick_requests()
+        self.assertEqual(calls, ["myspec"], "旧单文件信号仍被消费")
+        self.assertFalse(legacy.exists(), "旧文件消费后删除")
+
+    def test_kick_request_legacy_stale_only_removed(self):
+        """旧单文件超阈值（D4）：仅删除不唤起（防 daemon 长期停机后的病态派发）。"""
+        pm = self._make_pm()
+        calls = []
+        pm._on_spec_ready = lambda n: calls.append(n)
+        daemon = self._fake_daemon(pm)
+        legacy = self.proot / ".fenix" / "scheduling_kick_request.json"
+        stale = (datetime.now(timezone.utc) - timedelta(hours=5)).isoformat()
+        legacy.write_text(json.dumps({"spec": "myspec", "created": stale}), encoding="utf-8")
+        with mock.patch.object(self._fenixd_mod, "PROJECT_ROOT", self.proot):
+            daemon._check_scheduling_kick_requests()
+        self.assertEqual(calls, [], "陈旧旧文件 MUST NOT 唤起")
+        self.assertFalse(legacy.exists(), "陈旧旧文件仅删除")
+
+    def test_kick_request_non_json_residue_not_deleted(self):
+        """目录内非 .json 残留（写入中断临时文件）消费扫描不得删除（task 4.1/6.8）。"""
+        pm = self._make_pm()
+        daemon = self._fake_daemon(pm)
+        kdir = self.proot / ".fenix" / "scheduling_kick"
+        kdir.mkdir(parents=True, exist_ok=True)
+        residue = kdir / "myspec.json.tmp.12345"
+        residue.write_text("partial", encoding="utf-8")
+        with mock.patch.object(self._fenixd_mod, "PROJECT_ROOT", self.proot):
+            daemon._check_scheduling_kick_requests()
+        self.assertTrue(residue.exists(), "消费扫描不得删除非 .json 残留")
+        # 陈旧回收终将其清走（mtime 超阈值）
+        os.utime(residue, (time.time() - 7200, time.time() - 7200))
+        with mock.patch.object(self._fenixd_mod, "PROJECT_ROOT", self.proot):
+            daemon._reclaim_stale_scheduling_kicks()
+        self.assertFalse(residue.exists(), "陈旧回收清走非 .json 残留")
+
+    # ── 陈旧回收（task 6.5/6.7：_reclaim_stale_scheduling_kicks 分档）──
+
+    def _write_kick(self, name, created_ts, kdir=None):
+        kdir = kdir or self.proot / ".fenix" / "scheduling_kick"
+        kdir.mkdir(parents=True, exist_ok=True)
+        p = kdir / f"{name}.json"
+        p.write_text(json.dumps({"spec": name, "created": created_ts}), encoding="utf-8")
+        return p
+
+    def test_reclaim_stale_only_deletes(self):
+        """created 超阈值条目仅删不唤起（task 6.5）。"""
+        pm = self._make_pm()
+        calls = []
+        pm._on_spec_ready = lambda n: calls.append(n)
+        daemon = self._fake_daemon(pm)
+        stale = (datetime.now(timezone.utc) - timedelta(hours=5)).isoformat()
+        self._write_kick("myspec", stale)
+        with mock.patch.object(self._fenixd_mod, "PROJECT_ROOT", self.proot):
+            daemon._reclaim_stale_scheduling_kicks()
+        self.assertEqual(calls, [], "陈旧条目 MUST NOT 唤起")
+        self.assertFalse(
+            (self.proot / ".fenix" / "scheduling_kick" / "myspec.json").exists(),
+            "陈旧条目仅删除")
+
+    def test_reclaim_fresh_kick_then_delete(self):
+        """阈值内条目先消费（唤起）再删除（task 6.5）。"""
+        from core.state_machine import SpecStatus
+        self.sm.update_spec("myspec", {"status": SpecStatus.READY})
+        pm = self._make_pm()
+        calls = []
+        pm._on_spec_ready = lambda n: calls.append(n)
+        pm._process_queue = lambda: None
+        daemon = self._fake_daemon(pm)
+        self._write_kick("myspec", datetime.now(timezone.utc).isoformat())
+        with mock.patch.object(self._fenixd_mod, "PROJECT_ROOT", self.proot):
+            daemon._reclaim_stale_scheduling_kicks()
+        self.assertEqual(calls, ["myspec"], "阈值内条目被唤起（先消费）")
+        self.assertFalse(
+            (self.proot / ".fenix" / "scheduling_kick" / "myspec.json").exists(),
+            "消费后删除")
+
+    def test_reclaim_missing_created_only_deletes(self):
+        """created 缺失条目仅删（task 6.5）。"""
+        pm = self._make_pm()
+        calls = []
+        pm._on_spec_ready = lambda n: calls.append(n)
+        daemon = self._fake_daemon(pm)
+        kdir = self.proot / ".fenix" / "scheduling_kick"
+        kdir.mkdir(parents=True, exist_ok=True)
+        (kdir / "myspec.json").write_text(json.dumps({"spec": "myspec"}), encoding="utf-8")
+        with mock.patch.object(self._fenixd_mod, "PROJECT_ROOT", self.proot):
+            daemon._reclaim_stale_scheduling_kicks()
+        self.assertEqual(calls, [], "created 缺失按陈旧处理（仅删）")
+        self.assertFalse((kdir / "myspec.json").exists())
+
+    def test_reclaim_legacy_file_stale_only_deletes(self):
+        """陈旧回收对旧单文件路径同样生效（task 6.7）：超阈值 → 仅删不唤起。"""
+        pm = self._make_pm()
+        calls = []
+        pm._on_spec_ready = lambda n: calls.append(n)
+        daemon = self._fake_daemon(pm)
+        legacy = self.proot / ".fenix" / "scheduling_kick_request.json"
+        stale = (datetime.now(timezone.utc) - timedelta(hours=5)).isoformat()
+        legacy.write_text(json.dumps({"spec": "myspec", "created": stale}), encoding="utf-8")
+        with mock.patch.object(self._fenixd_mod, "PROJECT_ROOT", self.proot):
+            daemon._reclaim_stale_scheduling_kicks()
+        self.assertEqual(calls, [], "陈旧旧文件 MUST NOT 唤起")
+        self.assertFalse(legacy.exists(), "陈旧旧文件仅删除")
+
+    def test_reclaim_legacy_file_fresh_consumed(self):
+        """陈旧回收对旧单文件路径同样生效（task 6.7）：阈值内 → 先消费后删除。"""
+        from core.state_machine import SpecStatus
+        self.sm.update_spec("myspec", {"status": SpecStatus.READY})
+        pm = self._make_pm()
+        calls = []
+        pm._on_spec_ready = lambda n: calls.append(n)
+        pm._process_queue = lambda: None
+        daemon = self._fake_daemon(pm)
+        legacy = self.proot / ".fenix" / "scheduling_kick_request.json"
+        legacy.write_text(json.dumps({
+            "spec": "myspec", "created": datetime.now(timezone.utc).isoformat(),
+        }), encoding="utf-8")
+        with mock.patch.object(self._fenixd_mod, "PROJECT_ROOT", self.proot):
+            daemon._reclaim_stale_scheduling_kicks()
+        self.assertEqual(calls, ["myspec"], "阈值内旧文件被唤起")
+        self.assertFalse(legacy.exists(), "旧文件消费后删除")
+
+    def test_reclaim_corrupt_deleted(self):
+        """对账中损坏 JSON 删除防卡死（task 4.3 同判据）。"""
+        pm = self._make_pm()
+        daemon = self._fake_daemon(pm)
+        kdir = self.proot / ".fenix" / "scheduling_kick"
+        kdir.mkdir(parents=True, exist_ok=True)
+        (kdir / "corrupt.json").write_text("{ bad", encoding="utf-8")
+        with mock.patch.object(self._fenixd_mod, "PROJECT_ROOT", self.proot):
+            daemon._reclaim_stale_scheduling_kicks()
+        self.assertFalse((kdir / "corrupt.json").exists())
 
 
 class TestManualActivation(unittest.TestCase):
@@ -727,7 +950,7 @@ class TestManualActivation(unittest.TestCase):
         self.assertEqual(get_spec_start_after(entry), "manual")
         # 设为待激活不写 kick 信号（这是暂停调度，不是恢复调度）
         self.assertFalse(
-            (self.proot / ".fenix" / "scheduling_kick_request.json").exists(),
+            (self.proot / ".fenix" / "scheduling_kick" / "myspec.json").exists(),
             "设为待激活不写 kick 信号",
         )
 
@@ -746,11 +969,12 @@ class TestManualActivation(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertTrue(result["found"])
         self.assertEqual(result["start_after"], None)
+        self.assertEqual(result["scheduling_kick"], {"ok": True, "error": None})
         entry = self.sm.read_one("myspec")
         self.assertIsNone(entry.get("start_after"))
         self.assertIsNone(get_spec_start_after(entry))
-        req = self.proot / ".fenix" / "scheduling_kick_request.json"
-        self.assertTrue(req.exists(), "激活动作必须写唤醒信号")
+        req = self.proot / ".fenix" / "scheduling_kick" / "myspec.json"
+        self.assertTrue(req.exists(), "激活动作必须写唤醒信号（新目录形态）")
         payload = json.loads(req.read_text(encoding="utf-8"))
         self.assertEqual(payload["spec"], "myspec")
 

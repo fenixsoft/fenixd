@@ -856,8 +856,14 @@ export default function SpecListPage() {
         return;
       }
       const value = saDate ? saDate.toISOString() : null;
-      await setSpecStartAfter(name, startAfterEdit.spec, value);
-      message.success(saDate ? '已设置定时拾取时间' : '已清除定时，立即恢复调度');
+      const result = await setSpecStartAfter(name, startAfterEdit.spec, value);
+      // fix-scheduling-kick-single-slot D3：清空定时成功但即时唤醒信号写出失败时
+      // 如实告知（MUST NOT 无条件宣称「立即恢复调度」）
+      if (!saDate && result.warning) {
+        message.warning(result.warning);
+      } else {
+        message.success(saDate ? '已设置定时拾取时间' : '已清除定时，立即恢复调度');
+      }
       setStartAfterEdit(null);
       void load();
     } catch (err) {

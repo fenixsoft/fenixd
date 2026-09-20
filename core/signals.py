@@ -17,12 +17,26 @@ NOT 搬入（登记为「不搬」，见 findings-ledger.md）：
 
 import json
 import os
+import re
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 # ADMIN_INVOKE_REQUEST 常量（信号文件路径）
 ADMIN_INVOKE_REQUEST = ".fenix/admin_invoke_request.json"
+
+# SCHEDULING_KICK_DIR 常量（scheduling kick 信号目录）。
+# fix-scheduling-kick-single-slot：由单文件单槽位演进为「每 SPEC 一文件」目录形态
+# ——不同 SPEC 写不同文件，无共享槽位即无跨 SPEC 冲突；同一 SPEC 重复清空幂等覆盖。
+# 旧常量 SCHEDULING_KICK_REQUEST（.fenix/scheduling_kick_request.json）走向只读兼容：
+# 消费侧仍识别并消费存量旧文件（消费后删除），新写入一律走本目录。
+SCHEDULING_KICK_DIR = ".fenix/scheduling_kick"
+
+# SPEC 名合法性判据：复制自 core/spec_gen.py 的 kebab-case 权威正则
+# （^[a-z][a-z0-9]*(-[a-z0-9]+)*$）。core.signals 须为中性模块（不依赖
+# core.dashboard.data / core.spec_gen），故在此复制而非导入——两份正则
+# 保持字面一致，若 spec_gen 侧正则变更须同步更新此处。
+_KEBAB_RE = re.compile(r"^[a-z][a-z0-9]*(-[a-z0-9]+)*$")
 
 
 def request_admin_invoke(project_root, spec: str, prompt: str | None = None) -> dict:
@@ -98,6 +112,76 @@ def request_admin_invoke(project_root, spec: str, prompt: str | None = None) -> 
         "created": created,
         "error": None,
     }
+
+
+def validate_scheduling_kick_spec(spec: str) -> str | None:
+    """校验 SPEC 名可否作 scheduling kick 信号文件名。
+
+    判据复用 core/spec_gen.py 的 kebab-case 权威正则（^[a-z][a-z0-9]*(-[a-z0-9]+)*$）：
+    SPEC 名已被 fenix_spec.py new 约束为该形态，可安全作文件名。黑名单式拒绝
+    （仅查空串 / `/` / `\` / `..`）会放过 `.`、前导点、含 `:` 或非 ASCII 等
+    「能当文件名但不合规」的输入——正则白名单与之等价且无遗漏。
+
+    Returns:
+        合法返回 None；不合法返回非空错误描述。
+    """
+    if not isinstance(spec, str):
+        return f"spec 名必须为字符串（当前类型 {type(spec).__name__}）"
+    if not spec:
+        return "spec 名为空"
+    if not _KEBAB_RE.match(spec):
+        return (
+            f"spec 名不合法（须为 kebab-case，如 'fix-foo-bar'）：{spec!r}"
+        )
+    return None
+
+
+def write_scheduling_kick(project_root, spec: str) -> dict:
+    """写「清空 start_after 触发即时派发」的唤醒信号到每 SPEC 一文件的目录。
+
+    fix-scheduling-kick-single-slot：载体由单文件单槽位
+    （.fenix/scheduling_kick_request.json）演进为每 SPEC 一个文件
+    （.fenix/scheduling_kick/<spec>.json）。同一 SPEC 重复清空幂等覆盖自身文件；
+    不同 SPEC 互不阻塞——从根上消除跨 SPEC 的「槽位冲突导致静默丢弃」。
+
+    写入原子性：tempfile.mkstemp 在目标同目录建临时文件 → os.fsync → os.replace
+    覆盖目标。临时文件名不以 `.json` 结尾（<spec>.json.tmp.<rand>），避免被消费侧
+    「只扫 *.json」的谓词命中并发写入中的临时文件。
+
+    Returns:
+        {"ok": bool, "file": str|null, "error": str|null}
+        任何异常不外抛，一律转为 ok:false + 非空 error。
+    """
+    name_err = validate_scheduling_kick_spec(spec)
+    if name_err is not None:
+        return {"ok": False, "file": None, "error": name_err}
+
+    proot = Path(project_root)
+    req_dir = proot / SCHEDULING_KICK_DIR
+    req_path = req_dir / f"{spec}.json"
+    created = datetime.now(timezone.utc).isoformat()
+    payload = {"spec": spec, "action": "clear-start-after", "created": created}
+
+    try:
+        req_dir.mkdir(parents=True, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(req_dir), prefix=f".{spec}.json.tmp."
+        )
+    except OSError as exc:
+        return {"ok": False, "file": None, "error": f"无法创建信号目录/临时文件: {exc}"}
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, req_path)
+    except Exception as exc:  # 任何异常不外抛，转为 ok:false
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        return {"ok": False, "file": None, "error": f"写入 scheduling kick 信号失败: {exc}"}
+    return {"ok": True, "file": str(req_path), "error": None}
 
 
 def parse_verify_progress(project_root, spec_name) -> dict:

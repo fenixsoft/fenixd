@@ -30,7 +30,14 @@ from .state import parse_state
 # fix-deferred-findings CYC-1：request_admin_invoke 与 ADMIN_INVOKE_REQUEST
 # 已迁入中性模块 core.signals（pm_engine 侧消费点不再反向 import
 # dashboard.data），此处 re-export 保住既有门面导入路径。
-from core.signals import ADMIN_INVOKE_REQUEST, request_admin_invoke  # noqa: F401
+# fix-scheduling-kick-single-slot：write_scheduling_kick 亦在 core.signals，
+# admin_actions 委托它写目录形态的唤醒信号。
+from core.signals import (  # noqa: F401
+    ADMIN_INVOKE_REQUEST,
+    SCHEDULING_KICK_DIR,
+    request_admin_invoke,
+    write_scheduling_kick,
+)
 
 CANCEL_RUN_REQUEST = ".fenix/cancel_run_request.json"
 
@@ -349,37 +356,23 @@ SCHEDULING_KICK_REQUEST = ".fenix/scheduling_kick_request.json"
 
 
 def _write_scheduling_kick_signal(project_root, spec: str) -> dict:
-    """写入清空 start_after 后的即时派发唤醒信号（.fenix/scheduling_kick_request.json）。
+    """写入清空 start_after 后的即时派发唤醒信号（每 SPEC 一文件目录形态）。
 
-    原子写（tmp+rename），与 request_admin_invoke 同构；已存在未消费信号时
-    不覆盖（返回 conflict），避免把先到的请求顶掉——两个 spec 的唤醒互不冲突，
-    daemon 拾取侧按各自 spec 独立派发即可。
+    fix-scheduling-kick-single-slot：委托 core.signals.write_scheduling_kick，
+    载体由单文件单槽位演进为每 SPEC 一个文件
+    （.fenix/scheduling_kick/<spec>.json）。多槽位下不存在跨 SPEC 冲突，
+    conflict 恒为 False；写入失败如实上报。
+
+    保留与旧调用方兼容的 {"ok", "conflict", "file", "error"} 返回形状
+    （error 字段供 D3 诚实回报链路透传写入失败原因）。
     """
-    req_path = Path(project_root) / SCHEDULING_KICK_REQUEST
-    if req_path.exists():
-        return {"ok": False, "conflict": True, "file": str(req_path)}
-    payload = {
-        "spec": spec,
-        "action": "clear-start-after",
-        "created": datetime.now(timezone.utc).isoformat(),
+    kick_result = write_scheduling_kick(project_root, spec)
+    return {
+        "ok": kick_result["ok"],
+        "conflict": False,  # 多槽位下不再存在跨 SPEC 冲突
+        "file": kick_result["file"],
+        "error": kick_result.get("error"),
     }
-    req_path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(
-        dir=str(req_path.parent), prefix=".scheduling_kick_request.", suffix=".tmp"
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_path, req_path)
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
-    return {"ok": True, "conflict": False, "file": str(req_path)}
 
 
 def activate_spec(project_root, spec: str) -> dict:
@@ -421,11 +414,18 @@ def activate_spec(project_root, spec: str) -> dict:
             "found": True,
             "reason": f"该 SPEC 并非待激活态（start_after 非 manual）",
         }
-    # 命中 → 清 start_after + 唤醒信号
+    # 命中 → 清 start_after + 唤醒信号；写入结果如实回报（D3），
+    # CLI 与 Dashboard 依 ok 分支文案，不再无条件宣称「立即恢复调度」
     sm = StateMachine(proot / ".fenix" / "STATE.md", None)
     sm.update_spec(spec, {"start_after": None})
-    _write_scheduling_kick_signal(proot, spec)
-    return {"ok": True, "found": True, "spec": spec, "start_after": None}
+    kick_result = _write_scheduling_kick_signal(proot, spec)
+    return {
+        "ok": True,
+        "found": True,
+        "spec": spec,
+        "start_after": None,
+        "scheduling_kick": {"ok": kick_result["ok"], "error": kick_result.get("error")},
+    }
 
 
 def get_spec_start_after(entry: dict) -> str | None:
@@ -512,11 +512,14 @@ def set_spec_start_after(project_root, spec: str, value) -> dict:
     # 清空即唤醒（2026-09-08 fix-run-cancel-retry-flag-miss 事故路径）：status 恒为
     # ready，event_bus watcher 只盯 status 不发事件、check_scheduling_deadlines 只管
     # 「时间流逝到期」，此前清空后要等 30min 一轮 recovery full_scan 才被捞起。
-    # 写文件信号（与 cancel_run_request 同构），daemon 主循环 1s 粒度拾取即派发；
-    # 信号冲突（上一信号未消费）不阻塞清空本身，daemon 拾取时对新 spec 一并生效。
+    # 写文件信号（与 cancel_run_request 同构），daemon 主循环 1s 粒度拾取即派发。
+    # 信号写入结果如实回报（fix-scheduling-kick-single-slot D3）：成功时前端宣称
+    # 「立即恢复调度」，失败时告知将由下次扫描派发。
+    scheduling_kick = None
     if normalized is None:
-        _write_scheduling_kick_signal(proot, spec)
-    return {"ok": True, "found": True, "start_after": normalized}
+        kick_result = _write_scheduling_kick_signal(proot, spec)
+        scheduling_kick = {"ok": kick_result["ok"], "error": kick_result.get("error")}
+    return {"ok": True, "found": True, "start_after": normalized, "scheduling_kick": scheduling_kick}
 
 
 def set_spec_budget(project_root, spec: str, budget) -> dict:

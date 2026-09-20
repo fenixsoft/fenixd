@@ -109,13 +109,24 @@ def cmd_activate(args):
     判定与执行收敛到 core/dashboard/data/admin_actions.activate_spec 单一
     实现点（add-spec-manual-activation D6）——CLI 与 Dashboard API 共用同一
     幂等语义（非待激活拒绝、终态拒绝、found 404），MUST NOT 在 CLI 侧复写。
+
+    信号写入结果如实回报（fix-scheduling-kick-single-slot D3/2.5）：start_after
+    已成功置 null（exit 0），但即时唤醒信号写出失败时不宣称「立即进入调度」，
+    改为提示将由下次扫描派发——CLI 是与 Dashboard 并列的第二个「动作方」。
     """
     from core.dashboard.data.admin_actions import activate_spec
 
     proot = _resolve_project_root(args.project)
     result = activate_spec(proot, args.spec)
     if result.get("ok"):
-        print(f"✓ SPEC「{args.spec}」已激活，立即进入调度（start_after manual → null）")
+        kick = result.get("scheduling_kick")
+        if kick and not kick.get("ok"):
+            print(
+                f"✓ SPEC「{args.spec}」已激活（start_after manual → null），"
+                f"但即时唤醒信号写入失败，将由下次扫描（缺省 ≤30 分钟）派发"
+            )
+        else:
+            print(f"✓ SPEC「{args.spec}」已激活，立即进入调度（start_after manual → null）")
         sys.exit(0)
     else:
         if not result.get("found"):

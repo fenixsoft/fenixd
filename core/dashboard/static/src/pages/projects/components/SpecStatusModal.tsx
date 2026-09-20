@@ -388,7 +388,13 @@ export default function SpecStatusModal({
         try {
           const result = await activateSpec(project, spec);
           if (result.ok) {
-            message.success(`SPEC「${spec}」已激活，daemon 将立即拾取`);
+            // fix-scheduling-kick-single-slot D3：激活成功但即时唤醒信号写出失败时
+            // 如实告知（MUST NOT 无条件宣称「daemon 将立即拾取」）
+            if (result.warning) {
+              message.warning(result.warning);
+            } else {
+              message.success(`SPEC「${spec}」已激活，daemon 将立即拾取`);
+            }
             onDone();
           } else {
             message.error(`激活被拒绝：${result.reason || '该 SPEC 并非待激活态'}`);
