@@ -85,6 +85,25 @@ class RunCancelledError(Exception):
         super().__init__(msg)
 
 
+class FrozenTerminatedError(Exception):
+    """run 因其所属 SPEC 被冻结而终止时抛出。
+
+    与 RunCancelledError 并列（add-freeze-stop-inflight-agents D2）：取消是
+    run 级人工动作（写 _cancelled_hold），冻结终止是 spec 级停止（写
+    _frozen_hold）——两者语义不同、互不读写，MUST NOT 复用取消通道。
+    不走通用 Exception 处理路径——不重试、不计秒挂、不触发 provider 切换。
+    携带 reason（冻结来源）与 by（冻结操作方）。
+    """
+
+    def __init__(self, reason: str = "", by: str = "admin"):
+        self.reason = reason
+        self.by = by
+        msg = f"run frozen-terminated by {by}"
+        if reason:
+            msg += f": {reason}"
+        super().__init__(msg)
+
+
 class AgentArtifactGateError(Exception):
     """planner 产物硬门失败（add-judge-artifact-gate D1。
 
@@ -123,6 +142,7 @@ class AgentRunResult:
         worktree_path=None,
         worktree_kept: bool = False,
         cancelled: bool = False,
+        frozen_terminated: bool = False,
     ):
         self.run_id = run_id
         self.spec_name = spec_name
@@ -152,6 +172,10 @@ class AgentRunResult:
         self.worktree_kept = worktree_kept
         # run 是否被人工取消（cancel_run 旗标命中导致 RunCancelledError）。
         self.cancelled = cancelled
+        # add-freeze-stop-inflight-agents D1：run 是否因 spec 冻结被终止
+        # （FrozenTerminatedError → 独立 frozen-terminated 终态；与 cancelled
+        # 并列、互不读写——dispatch 侧据此写 _frozen_hold 而非 _cancelled_hold）。
+        self.frozen_terminated = frozen_terminated
 
     def to_dict(self) -> dict:
         return {
@@ -167,6 +191,7 @@ class AgentRunResult:
             "model_used": self.model_used,
             "chain_exhausted": self.chain_exhausted,
             "cancelled": self.cancelled,
+            "frozen_terminated": self.frozen_terminated,
             "output_summary": self.output[-500:] if self.output else "",
         }
 

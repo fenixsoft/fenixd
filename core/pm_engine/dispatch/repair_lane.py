@@ -291,6 +291,25 @@ class PRepairLaneMixin:
                     f"repair agent 派发异常 '{spec_name}': {e}",
                 )
 
+            # ── 冻结终止 hold-state（add-freeze-stop-inflight-agents 3.3）──
+            # repair run 被冻结终止：spec 保持原状（blocked），只写
+            # _frozen_hold 标记 + error，不动 _retry_count/_merge_fp/
+            # _merge_streak、不入队重派。
+            if getattr(r, "frozen_terminated", False):
+                ft_err = getattr(r, "error", None) or repair_error or ""
+                frozen_err = (
+                    f"repair run 因 spec 冻结被终止（进度已保全，解冻后续做）"
+                    f"{': ' + ft_err if ft_err else ''}"
+                )
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"repair run 因 spec 冻结被终止 — hold-state '{spec_name}'"
+                    f"（保持原状）: {frozen_err}",
+                )
+                self._pm.state_machine.mark_frozen_hold(
+                    spec_name, frozen_err)
+                return
+
             # ── 人工取消 hold-state（add-run-cancel D4，repair worker）──
             # repair run 被取消：spec 保持原状（implementing），只写 error，
             # 不动 _retry_count/_merge_fp/_merge_streak、不入队重派。

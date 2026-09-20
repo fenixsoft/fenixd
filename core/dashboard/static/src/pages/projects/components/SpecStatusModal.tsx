@@ -158,8 +158,17 @@ export default function SpecStatusModal({
       onOk: async () => {
         setLoading(true);
         try {
-          await freezeSpec(project, spec);
-          message.success(`SPEC「${spec}」已冻结，daemon 停止调度`);
+          // add-freeze-stop-inflight-agents 6.3：冻结成功后若返回
+          // stopped_agents > 0 提示已停止的在跑 agent 计数与续做语义；
+          // 为 0 或缺省时不提示（无在跑 agent，交互与现状一致）。
+          const result = await freezeSpec(project, spec);
+          if (result?.stopped_agents) {
+            message.success(
+              `SPEC「${spec}」已冻结：已停止 ${result.stopped_agents} 个在跑 agent，进度已留存，解冻后可续做`,
+            );
+          } else {
+            message.success(`SPEC「${spec}」已冻结，daemon 停止调度`);
+          }
           onDone();
         } catch (err) {
           message.error(`冻结失败：${err instanceof Error ? err.message : String(err)}`);

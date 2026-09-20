@@ -762,6 +762,8 @@ export default function SpecListPage() {
           {`确认删除 SPEC「${record.name}」？\n\n`}
           软删除：STATE.md 移除该条目，spec/changes/{record.name}/ 目录移入 archive 归档。
           {'\n'}归档路径：spec/archive/{record.name}-&lt;时间戳&gt;/
+          {/* add-freeze-stop-inflight-agents 6.4：说明先停后删语义（纯文案） */}
+          {'\n'}若有在跑的 agent 会先停止并留存进度。
         </div>
       ),
       okText: '删除',
@@ -771,7 +773,18 @@ export default function SpecListPage() {
         // try/catch（code-review item 61a4afa41eab）：旧实现无捕获，deleteSpec
         // 失败会产生未处理 Promise 拒绝且弹窗无提示。
         try {
-          await deleteSpec(name, record.name);
+          // add-freeze-stop-inflight-agents 6.2：受理结果处理——该 spec 有在跑
+          // agent 时后端异步受理（202 + accepted=true + stopping=N），前端提示
+          // 「已受理，正在停止 N 个进行中的 agent」并保持 load() 轮询（spec 行
+          // 在停止+删除完成后自然消失）；无在跑 agent 时走既有同步删除路径。
+          const result = await deleteSpec(name, record.name);
+          if (result?.accepted && result.stopping) {
+            message.info(
+              `已受理，正在停止 ${result.stopping} 个进行中的 agent`,
+            );
+          } else {
+            // 同步删除成功（无在跑 agent）——既有成功提示
+          }
           void load();
         } catch (err) {
           message.error(`删除 SPEC 失败：${err instanceof Error ? err.message : String(err)}`);

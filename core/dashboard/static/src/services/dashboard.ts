@@ -312,7 +312,10 @@ export function setSpecPriority(project: string, spec: string, priority: number)
 }
 
 export function deleteSpec(project: string, spec: string) {
-  return request(
+  // add-freeze-stop-inflight-agents 6.1：返回类型扩展——该 spec 有在跑 agent
+  // 时后端异步受理返回 {accepted: true, stopping: N}（202）；无在跑 agent 时
+  // 为既有同步删除结果。
+  return request<{ ok: boolean; accepted?: boolean; stopping?: number; archived?: boolean; archive_path?: string | null }>(
     `/api/spec-delete?project=${encodeURIComponent(project)}&spec=${encodeURIComponent(spec)}`,
     { method: 'POST' },
   );
@@ -337,7 +340,9 @@ export function invokeSpecAdmin(project: string, spec: string, prompt?: string) 
 }
 
 export function freezeSpec(project: string, spec: string) {
-  return request(
+  // add-freeze-stop-inflight-agents 6.1：返回类型扩展——冻结操作后端返回
+  // 已停止的在跑 agent 计数（stopped_agents，0/缺省 = 无在跑 agent）。
+  return request<{ ok: boolean; frozen?: boolean; stopped_agents?: number; error?: string | null }>(
     `/api/spec-freeze?project=${encodeURIComponent(project)}&spec=${encodeURIComponent(spec)}`,
     { method: 'POST' },
   );

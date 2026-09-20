@@ -22,6 +22,12 @@ SPEC 进入 `drafted` 状态后、被晋升为 `ready` 之前，框架执行一�
 
 SPEC 的十状态生命周期（`drafted` → `ready` → `implementing` → `implemented` → `testing` → `verified`/`bug-found` → `done` → `pushed`，以及 `blocked`）由 `core/state_machine.py` 中的 `SpecStatus` 枚举和 `transition()` 方法管理。每一次状态转换都是一个门禁点：非法转移（比如从 `done` 直接跳回 `ready`）会被状态机拒绝，STATE.md 不会写入不一致的状态。人工冻结是状态机的另一道门：当管理员在 Dashboard 或 CLI 中冻结一个 SPEC 时，`FROZEN_FIELD` 被写入 STATE.md 的 entry 中，此后所有自动链路对 status 的改写在 `update_spec()` 内被统一拦截（82 个调用点一次性收口），冻结期间 SPEC 稳定在 `blocked` 状态，不参与调度，不被自动恢复。冻结还支持定时解冻（`frozen_until` 字段），超时后自动解除。
 
+**冻结即停在跑 agent（add-freeze-stop-inflight-agents）**：冻结不仅挡住派发边界，还终止该 SPEC 名下**已经在跑**的 agent（评审 reviewer、实现 implementer、验证 verifier、修复 repair、fast-track 等全部经 dispatch 收口的角色）。runner 轮询环（1 秒粒度）在人工取消旗标检查旁直接读 STATE 的 `frozen` 字段，命中即：先对当前 worktree 做一次 WIP checkpoint（锚点 `freeze-hold`）保全未提交现场 → `terminate()` → 最长 10 秒宽限 → 存活则 `kill()` → 向 run 产物追加 `frozen-terminated` 终态行 → 走独立 `FrozenTerminatedError` 通道（与人工取消 `RunCancelledError` 并列、互不干扰）。被冻结终止的 run 不重试、不重派、不翻转 status；STATE 写入 `_frozen_hold` 标记（与 `_cancelled_hold` 并列、互不读写），保留 `branch` / `implementer_run` 锚点。
+
+**解冻自动续做**：解冻（`unfreeze_spec`）时若检测到 `_frozen_hold` 且保留分支相对 main 有未合并提交，走与 daemon 重启恢复（`interrupt-recovery-preserve`）**同源**的保留判定——保留 `branch` / `implementer_run`、置 `_recovery_resume: True`，dispatch 拾取后在保留分支的 worktree 上 resume 续做（而非从零新建分支）。无分支/零提交/载体不可用时清 `_frozen_hold` 走普通重派（从零），并 WARNING 留痕。
+
+**删除先停后删**：删除（软删除）一个 SPEC 前，框架先请求终止其名下全部在跑 run，并有界等待终态（每 run 宽限 10 秒 + 总上限），终态齐备后才移动目录/剔除 STATE 条目；等待超时仍返回失败且**不产生半删状态**。API 侧为异步受理：有在跑 agent 时写 `.fenix/spec_delete_request.json` 信号返回受理结果（`stopping: N`），由 daemon 主循环消费完成停止+删除；无在跑 agent 时保持同步软删除。daemon 未受 supervisor 托管时拒绝受理（信号无人消费）。
+
 ### 产物硬门
 
 验证引擎完成场景执行后，planner-judge 对报告做增强（为每个非 PASS 场景补 classification 与 evidence），然后 `core/verdict_check.py` 的 `validate_report()` 对增强后的报告做硬校验：每个非 PASS 场景必须有合法的四分类（`product-bug`/`test-defect`/`flaky`/`env`）、至少一个证据维度（失败断言列表 / 截图路径 / 首个失败步骤），以及完整的 `assertion_triage` 数组：每条失败断言必须被单独归类并附非空证据。`assertion_triage` 是逐断言归因的核心数据结构：一个场景有 3 条失败断言，就必须有 3 条归因条目，缺一不可。这是为了防止「一条产品缺陷被淹没在整体豁免里」的假阴性事故。

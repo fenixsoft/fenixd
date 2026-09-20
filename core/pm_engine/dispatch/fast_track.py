@@ -188,6 +188,26 @@ class FFastTrackMixin:
         与 _run_fast_track_worker 分离，使 worker 可对其包 try/except 兜底收割
         （verify-process-lifecycle D3）。任一步骤失败按失败重派同语义返回。
         """
+        # ── 冻结终止 hold-state（add-freeze-stop-inflight-agents 3.2）──
+        # 被冻结终止的 fast-track run：独立保持分支，在 cancelled 分支之前
+        #（spec 级 > run 级）。只写 _frozen_hold 标记 + error、不翻转 status、
+        # 不动 _retry_count/_merge_fp/_merge_streak、不入队重派、不豁免预算；
+        # worktree 保留语义不变（runner 保留现场供解冻后续做）。
+        if getattr(result, "frozen_terminated", False):
+            ft_err = getattr(result, "error", None) or ""
+            frozen_err = (
+                f"run 因 spec 冻结被终止（进度已保全，解冻后续做）"
+                f"{': ' + ft_err if ft_err else ''}"
+            )
+            self._pm.logger.warning(
+                "pm_engine",
+                f"fast-track run 因 spec 冻结被终止 '{spec_name}' — "
+                f"_frozen_hold，不重试/不重派: {frozen_err}",
+            )
+            self._pm.state_machine.mark_frozen_hold(
+                spec_name, frozen_err)
+            return
+
         # ── 人工取消 hold-state（add-run-cancel D4，fast-track 同语义）──
         # 被取消的 fast-track run 结果 cancelled=True：只写 error、不翻 status、
         # 不动 _retry_count/_merge_fp/_merge_streak、不入队重派；worktree

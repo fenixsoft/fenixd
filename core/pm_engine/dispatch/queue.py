@@ -1353,6 +1353,27 @@ class QQQueueMixin:
                             conflict_files,
                         )
                 else:
+                    # ── 冻结终止 hold-state（add-freeze-stop-inflight-agents 3.1）──
+                    # 被冻结终止的 run（frozen_terminated=True）：独立保持分支，
+                    # 在 cancelled 分支之前判定（spec 级高于 run 级）。只写
+                    # _frozen_hold 标记 + error、不翻转 status（保持 blocked）、
+                    # 不动 _retry_count/_merge_fp/_merge_streak、不入队重派、
+                    # 不豁免预算（区别于死亡 run 豁免）。解冻后经 _frozen_hold
+                    # + 保留分支续做。
+                    if getattr(result, "frozen_terminated", False):
+                        ft_err = getattr(result, "error", None) or final_error or ""
+                        frozen_err = (
+                            f"run 因 spec 冻结被终止（进度已保全，解冻后续做）"
+                            f"{': ' + ft_err if ft_err else ''}"
+                        )
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"run 因 spec 冻结被终止 '{spec_name}' — "
+                            f"_frozen_hold，不重试/不重派: {frozen_err}",
+                        )
+                        self._pm.state_machine.mark_frozen_hold(
+                            spec_name, frozen_err)
+                        return
                     # ── 人工取消 hold-state（add-run-cancel D4）──────
                     # 被取消的 run（cancelled=True）：只更新 error 字段（含
                     # 「run 被人工取消」与 reason），不翻转 status、不动

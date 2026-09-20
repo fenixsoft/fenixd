@@ -216,6 +216,16 @@ VERIFY_REDO_COUNT_FIELD = "_verify_redo_count"
 # 重启重验预算缺省阈值（agents.verify_redo_budget 未配置时沿用本值）
 DEFAULT_VERIFY_REDO_BUDGET = 3
 
+# ── 冻结终止保持标记（add-freeze-stop-inflight-agents D3）──────────────
+# _frozen_hold：spec 被冻结终止（run 因 frozen 被强杀、现场已 WIP 保全）后
+# 的独立保持标记，与 _cancelled_hold 并列且互不读写：
+# - _cancelled_hold：人工取消 run → 有意等待态，唯一出路是显式复位；恢复链路跳过。
+# - _frozen_hold：冻结终止 → 现场已保全，出路是 unfreeze（清 frozen + 清
+#   _frozen_hold + 置 _recovery_resume 续做）；恢复链路不因它跳过（冻结期间
+#   由 frozen 字段挡住一切派发，_frozen_hold 只是续做依据）。
+# 冻结终止路径 MUST 先清 _cancelled_hold（避免解冻后恢复链路按取消保持跳过）。
+FROZEN_HOLD_FIELD = "_frozen_hold"
+
 # ── env 阻塞轮次生命周期计数（add-blocked-reverify-lane D3）──────────
 # 字段名单点定义（pm_engine 与 state_machine 共用，避免两处漂移）：
 # _env_block_rounds：spec 生命周期内累计的 env 阻塞轮数（跨 admin 处置复位/
@@ -346,6 +356,7 @@ class StateParser:
                     FROZEN_FIELD,
                     "_recovery_resume",
                     "_cancelled_hold",
+                    FROZEN_HOLD_FIELD,  # add-freeze-stop-inflight-agents D3
                     "_repair_awaiting_remerge",
                     "_judge_cap_frozen",
                     # evo-merge-back-spec-dir-inflight-guard D2：merge-only 重试
@@ -358,6 +369,9 @@ class StateParser:
                     # _recovery_resume（interrupt-recovery-preserve）同型处理。
                     # _cancelled_hold（fix-cancel-holdstate-recovery D1）：取消保持
                     # 标记随 STATE.md 往返，False 不转会被误判为保持态。
+                    # _frozen_hold（add-freeze-stop-inflight-agents D3）：冻结终止
+                    # 保持标记与 _cancelled_hold 并列，False 不转会把解冻后无冻结终止
+                    # 的 spec 永久误判为冻结保持态（解冻后续做判定失效）。
                     # _repair_awaiting_remerge（fix-recovery-branch-anchor D3）：
                     # 「待 re-merge-back」标记，False 不转会被误判为恒待合并。
                     # _judge_cap_frozen（judge-rerun-stability R1）：judge 重跑
@@ -728,16 +742,28 @@ class StateMachine:
         写入 blocked + 结构化 frozen 标记 + 规范前缀 error。error 保留「用户指令」
         子串，与既有文本契约豁免（admin_monitor）双保险兼容。冻结期间自动链路
         （重派/恢复/Retry/admin 唤起）全部失效，唯一出路是 unfreeze_spec。
+
+        add-freeze-stop-inflight-agents 2.2（保真锚点）：冻结时若该 spec 当前
+        status 在 INTERRUPTED_STATES（implementing/testing/reviewing），把
+        branch / implementer_run / reviewer_run 现值一并写入同一次 update_spec
+        ——MUST NOT 因冻结清空这些锚点，否则在飞 attempt 被冻结终止后（轮询环
+        冻结检查）解冻续做判定（_frozen_hold + 保留分支）因锚点已失只能降级为
+        从零重派。当前 freeze_spec 只写 {status, frozen, error}、本身不清锚点，
+        但必须显式带值透传：一旦将来有清理路径把 branch 置空，mark_frozen_hold
+        （MUST NOT 清锚点）也会拿着空锚点、续做判定必然降级。
         """
         error = f"{FREEZE_ERROR_PREFIX}{reason}" if reason else FREEZE_ERROR_PREFIX.rstrip("：:")
-        return self.update_spec(
-            spec_name,
-            {
-                "status": SpecStatus.BLOCKED,
-                FROZEN_FIELD: True,
-                "error": error,
-            },
-        )
+        updates: dict = {
+            "status": SpecStatus.BLOCKED,
+            FROZEN_FIELD: True,
+            "error": error,
+        }
+        entry = self.read_one(spec_name) or {}
+        if entry.get("status") in INTERRUPTED_STATES:
+            for _anchor in ("branch", "implementer_run", "reviewer_run"):
+                if entry.get(_anchor) is not None:
+                    updates[_anchor] = entry.get(_anchor)
+        return self.update_spec(spec_name, updates)
 
     def freeze_for_human(
         self,
@@ -822,17 +848,93 @@ class StateMachine:
             )
         return ok
 
-    def unfreeze_spec(self, spec_name: str, status: str = None) -> bool:
+    def mark_frozen_hold(self, spec_name: str, error: str = "") -> bool:
+        """冻结终止的独立保持标记写入（add-freeze-stop-inflight-agents D3）。
+
+        调用方：dispatch 侧的 frozen_terminated=True 结果收口（queue /
+        fast_track / repair_lane / verification，与既有 cancelled 分支并列）。
+
+        单次原子写 ``{_frozen_hold: True, _cancelled_hold: False, error}``：
+        - MUST NOT 改 status（保持 blocked——冻结期间由 frozen 字段挡住一切派发）；
+        - MUST NOT 清 branch / implementer_run（解冻续做判定依据）；
+        - MUST 清 _cancelled_hold（与取消保持**互不读写**：冻结终止路径先清
+          后者，避免解冻后恢复链路按取消保持跳过）。
+        形态约束（tests/test_cancel_holdstate_recovery.py 静态守卫）：MUST 写
+        ``_frozen_hold: True`` 并**清** ``_cancelled_hold`` 为 False，而非两字段
+        同写 True——全库取消保持写点字面命中恰为 6 处（守卫要求），
+        新增该字面即红灯。
+        """
+        return self.update_spec(
+            spec_name,
+            {
+                FROZEN_HOLD_FIELD: True,
+                "_cancelled_hold": False,
+                "error": error or (FROZEN_HOLD_FIELD + " flagged"),
+            },
+        )
+
+    def unfreeze_spec(self, spec_name: str, status: str = None,
+                      project_root=None, worktree_manager=None) -> bool:
         """解除人工冻结。status 给定时同时恢复到该状态（绕过冻结保护）。
 
         解冻即人工裁决完成——重启重验计数一并清零（fix-daemon-lifecycle-races
         D3），使人工放行后的重验预算重新从零起算。error 与 frozen_until
         （定时解冻目标，add-spec-scheduling-controls D3）随解冻一并清除，
         保证恢复后 spec 回到「无 error、无冻结残留」的干净可调度态。
+
+        add-freeze-stop-inflight-agents D4/2.5（续做接线）：若该 spec 带
+        ``_frozen_hold: True``（曾被冻结终止、现场已保全）且 project_root /
+        worktree_manager 均传入，走 ``_resolve_preserved_branch`` 共享判定
+        （与 _recovery_preserve_spec 同源、零漂移）：
+        - 判定通过（分支在册 + 相对 main 有未合并提交 + 载体可用）→ 同一
+          原子写保留 branch/implementer_run、置 ``_recovery_resume: True``、
+          清 ``_frozen_hold``，status 用解析出的原状态——dispatch 拾取后在
+          保留分支上 resume 续做，而非从零新建分支。
+        - 判定不通过（无 branch / 零提交 / 载体不可用）→ 清 ``_frozen_hold``、
+          不置 ``_recovery_resume``、走普通重派，并 WARNING 留痕降级原因。
+        ``_frozen_hold`` 缺失（从未被冻结终止）时行为与改动前逐位一致。
         """
+        entry = self.read_one(spec_name) or {}
+        frozen_hold = bool(entry.get(FROZEN_HOLD_FIELD))
+        # 续做解析先行：判定通过时覆盖 status/branch/implementer_run 的
+        # 解冻目标（同一原子写），未命中时保持普通解冻清理集。
+        resume_status = None  # 仅续做判定通过时设为解析出的目标状态
+        resume_branch = None
+        resume_impl_run = None
+        if frozen_hold and project_root is not None and worktree_manager is not None:
+            _resolved_branch, _wt = self._resolve_preserved_branch(
+                spec_name, entry, project_root, worktree_manager,
+                context="Unfreeze resume",
+            )
+            if _wt is not None:
+                resume_status = _resolved_branch and (
+                    status or SpecStatus.READY)
+                resume_branch = _resolved_branch
+                resume_impl_run = entry.get("implementer_run")
+                self.logger.warning(
+                    "state_machine",
+                    f"Unfreeze resume: spec '{spec_name}' 冻结终止现场已保全，"
+                    f"在保留分支 '{resume_branch}' 上续做（_recovery_resume），"
+                    f"worktree={_wt}",
+                )
+            else:
+                self.logger.warning(
+                    "state_machine",
+                    f"Unfreeze resume degrade: spec '{spec_name}' 带 _frozen_hold "
+                    f"但保留判定未通过（分支缺失/零提交/载体不可用）——清标记走 "
+                    f"普通重派（从零）",
+                )
         updates: dict = {FROZEN_FIELD: False}
-        if status is not None:
+        if status is not None and resume_status is None and not (frozen_hold and resume_branch):
             updates["status"] = status
+        if resume_branch is not None:
+            updates["status"] = resume_status
+            updates["branch"] = resume_branch
+            updates["implementer_run"] = resume_impl_run
+            # dispatch 层据此识别「解冻续做」路径：在保留分支的 worktree 内
+            # resume，而非从零新建分支（与 _recovery_preserve_spec 同源输出）。
+            updates["_recovery_resume"] = True
+        updates[FROZEN_HOLD_FIELD] = False
         # 计数清零并入同一原子写，避免解冻后残留计数立即再次触发冻结
         updates[VERIFY_REDO_COUNT_FIELD] = 0
         # add-verdict-credibility-gate / design D6：inconclusive 循环计数同样
@@ -1381,30 +1483,29 @@ class StateMachine:
         )
         return True
 
-    def _recovery_preserve_spec(
-        self, name: str, entry: dict, project_root=None, worktree_manager=None
-    ) -> bool:
-        """实现中断的恢复保留判定与三态载体处置（interrupt-recovery-preserve D4/D5）。
+    def _resolve_preserved_branch(
+        self, name: str, entry: dict, project_root=None, worktree_manager=None,
+        *, context: str = "Recovery preserve",
+    ) -> tuple:
+        """共享保留判定主体（add-freeze-stop-inflight-agents 2.4）。
 
-        判定：branch 在册、分支可解析、且 ``git rev-parse main..branch`` 非空
-        （相对 main 有未合并提交）→ 保留。载体处置经 worktree_manager 三态
-        单源查询（is_available）：在场原地登记（受清理豁免）；缺失在既有分支
-        上重建 worktree；不可用降级清空重建并 WARNING。
+        从 _recovery_preserve_spec 提取、供其与 unfreeze_spec 续做接线共用——
+        MUST NOT 保留第二份平行副本（前缀表/解析口径漂移已有事故先例：
+        评审前缀表漂移、-r<n> 剥除口径漂移）。三层分支解析（fix-recovery-
+        branch-anchor D2）+ rev-list 非空闸门 + resolve_resume_site 载体三态：
 
-        branch 解析链三层（fix-recovery-branch-anchor D2，tasks 2.4）：
         1. STATE.branch；
         2. ``find_worktree_by_spec``（在册 worktree 事实查询）；
         3. ``find_branches_by_spec``（git 分支命名空间枚举，worktree 已清
            只剩分支时命中；候选经「已含 main」优先排序，零提交候选已剔除）。
         第三层命中时走既有 rev-list 非空闸门与 resolve_resume_site 载体处置。
 
-        留痕（E，tasks 7.1-7.4）：锚点缺失早退、第三层命中、载体不可用降级
-        均打 WARNING 附候选/原因。
-
-        Returns: True 表示已保留并写入恢复续做标记（调用方计入 recovered）。
+        Returns: ``(resolved_branch, wt)`` 判定通过（分支可解析、相对 main
+        有未合并提交、载体可用）；``(None, None)`` 判定不通过。wt 为
+        resolve_resume_site 三态后的可用载体。
         """
         if project_root is None or worktree_manager is None:
-            return False
+            return None, None
         branch = entry.get("branch")
         ns_candidates: list = []
         if not branch and worktree_manager is not None:
@@ -1416,7 +1517,7 @@ class StateMachine:
                 branch = resolved[1]
                 self.logger.warning(
                     "state_machine",
-                    f"Recovery preserve: STATE branch 缺失，经 git 事实查询回落 "
+                    f"{context}: STATE branch 缺失，经 git 事实查询回落 "
                     f"spec '{name}' 在册 worktree → branch '{branch}'",
                 )
         if not branch and worktree_manager is not None:
@@ -1429,7 +1530,7 @@ class StateMachine:
                 cand_names = [c["branch"] for c in ns_candidates]
                 self.logger.warning(
                     "state_machine",
-                    f"Recovery preserve: STATE 与在册 worktree 双缺失，"
+                    f"{context}: STATE 与在册 worktree 双缺失，"
                     f"经分支命名空间枚举回落 spec '{name}' → 选中 "
                     f"branch '{branch}'（候选: {cand_names}）",
                 )
@@ -1437,12 +1538,12 @@ class StateMachine:
             # 锚点不可得早退：强制留痕（tasks 7.1）
             self.logger.warning(
                 "state_machine",
-                f"Recovery preserve: spec '{name}' 三处锚点均不可得——"
+                f"{context}: spec '{name}' 三处锚点均不可得——"
                 f"STATE.branch 缺失、在册 worktree 无命中、"
                 f"分支命名空间枚举："
                 f"{'无候选' if not ns_candidates else [c['branch'] for c in ns_candidates]}",
             )
-            return False
+            return None, None
         try:
             # 分支可解析 + 相对 main 有未合并提交（rev-list --count > 0）。
             # 分支不存在时 rev-list 非零退出 → 走现行清空路径。
@@ -1453,23 +1554,47 @@ class StateMachine:
                 timeout=15,
             )
             if ahead.returncode != 0:
-                return False
+                return None, None
             try:
                 ahead_commits = int(ahead.stdout.strip() or "0")
             except ValueError:
-                return False
+                return None, None
             if ahead_commits <= 0:
-                return False
+                return None, None
         except (subprocess.TimeoutExpired, OSError):
-            return False
+            return None, None
         # 三态载体处置：在场原地 / 缺失重建 / 不可用降级
         wt, resolved_branch = worktree_manager.resolve_resume_site(name, branch)
         if wt is None:
             self.logger.warning(
                 "state_machine",
-                f"Recovery preserve unavailable for '{name}': branch '{branch}' "
+                f"{context} unavailable for '{name}': branch '{branch}' "
                 f"无可用载体（三态判定失败）——降级清空重建",
             )
+            return None, None
+        return resolved_branch, wt
+
+    def _recovery_preserve_spec(
+        self, name: str, entry: dict, project_root=None, worktree_manager=None
+    ) -> bool:
+        """实现中断的恢复保留判定与三态载体处置（interrupt-recovery-preserve D4/D5）。
+
+        判定主体已提取为 ``_resolve_preserved_branch``（add-freeze-stop-
+        inflight-agents 2.4 共享单点，本方法与其零漂移），此处仅负责判定通过
+        后的更新集写入。
+
+        判定：branch 在册、分支可解析、且 ``git rev-parse main..branch`` 非空
+        （相对 main 有未合并提交）→ 保留。载体处置经 worktree_manager 三态
+        单源查询（is_available）：在场原地登记（受清理豁免）；缺失在既有分支
+        上重建 worktree；不可用降级清空重建并 WARNING。
+
+        Returns: True 表示已保留并写入恢复续做标记（调用方计入 recovered）。
+        """
+        if project_root is None or worktree_manager is None:
+            return False
+        resolved_branch, wt = self._resolve_preserved_branch(
+            name, entry, project_root, worktree_manager)
+        if wt is None:
             return False
         self.logger.warning(
             "state_machine",

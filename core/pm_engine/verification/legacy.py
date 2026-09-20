@@ -37,6 +37,24 @@ def _run_legacy_verification(pipeline, spec_name: str):
     # 不得 transition bug-found / 调用 _on_spec_bug_found（否则会派生伪 fix
     # 级联，与 implementer 路径的 fix-fix-stashpop-deadlock 同理）。保持 spec
     # 在 implemented（由 full_scan recovery 兜底重排），写入 error 供 dashboard 可见。
+    if getattr(result, "frozen_terminated", False):
+        # ── 冻结终止 hold-state（add-freeze-stop-inflight-agents 3.4）──
+        # verifier run 因 spec 冻结被终止：独立保持分支，在 cancelled 分支
+        # 之前（spec 级 > run 级）。写 _frozen_hold 标记 + error、保持原
+        # status（testing/blocked），不复用取消的 _cancelled_hold 路径。
+        v_err = result.error or ""
+        frozen_err = (
+            f"verifier run 因 spec 冻结被终止（进度已保全，解冻后续做）"
+            f"{': ' + v_err if v_err else ''}"
+        )
+        pipeline._context.state_machine.mark_frozen_hold(
+            spec_name, frozen_err)
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"Verifier run 因 spec 冻结被终止 — hold-state '{spec_name}' "
+            f"(保持原状): {frozen_err}",
+        )
+        return
     if getattr(result, "cancelled", False):
         # ── 人工取消 hold-state（add-run-cancel D4，legacy verifier）──
         # verifier run 被取消：spec 保持 testing 原状，只写 error，

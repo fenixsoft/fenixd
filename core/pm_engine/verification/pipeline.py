@@ -1532,6 +1532,24 @@ class VerificationPipeline:
                 judge_result = gate  # 稳定性复用合成结果
 
         if not judge_result.success:
+            # ── 冻结终止 hold-state（add-freeze-stop-inflight-agents 3.4）──
+            # judge run 因 spec 冻结被终止：独立保持分支，在 cancelled 分支之前
+            #（spec 级 > run 级）。写 _frozen_hold 标记 + error、保持原 status
+            #（testing/blocked），不复用取消的 _cancelled_hold 代码路径。
+            if getattr(judge_result, "frozen_terminated", False):
+                j_err = judge_result.error or ""
+                frozen_err = (
+                    f"judge run 因 spec 冻结被终止（进度已保全，解冻后续做）"
+                    f"{': ' + j_err if j_err else ''}"
+                )
+                self._context.state_machine.mark_frozen_hold(
+                    spec_name, frozen_err)
+                self._context.logger.warning(
+                    "pm_engine",
+                    f"Planner judge run 因 spec 冻结被终止 — hold-state "
+                    f"'{spec_name}'（保持原状）: {frozen_err}",
+                )
+                return None
             # ── 人工取消 hold-state（add-run-cancel D4，judge 同语义）──
             # judge run 被取消：spec 保持 testing 原状，只写 error。
             if getattr(judge_result, "cancelled", False):
