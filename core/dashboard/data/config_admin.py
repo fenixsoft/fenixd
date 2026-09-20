@@ -338,7 +338,7 @@ def read_config(scope_root, scope: str = "project") -> dict:
             "verify_redo_budget": 3,
             "max_same_cause_redispatches": 3,
         },
-        "gates": {"approve_mode": "manual", "promote_mode": "auto", "start_after_scope": "dispatch"},
+        "gates": {"approve_mode": "manual", "promote_mode": "auto", "spec_review_mode": "auto", "start_after_scope": "dispatch"},
         "runs": {"keep": 50},
         "verify": {"static_scope": "main", "deps_mode": "hardlink", "serving_reclaim": {"enabled": True},
                    # add-impl-code-review-tuning：三运行参数恒回显缺省（600/2/low——
@@ -579,7 +579,7 @@ def read_effective_config(project_root) -> dict:
             "verify_redo_budget": 3,
             "max_same_cause_redispatches": 3,
         },
-        "gates": {"approve_mode": "manual", "promote_mode": "auto", "start_after_scope": "dispatch"},
+        "gates": {"approve_mode": "manual", "promote_mode": "auto", "spec_review_mode": "auto", "start_after_scope": "dispatch"},
         "runs": {"keep": 50},
         "verify": {"static_scope": "main", "deps_mode": "hardlink", "serving_reclaim": {"enabled": True},
                    # add-impl-code-review-tuning：三运行参数恒回显缺省（600/2/low——
