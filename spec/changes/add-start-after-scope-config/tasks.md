@@ -145,9 +145,9 @@
 
 ## 4. Dashboard 前端（类型 + 审批页签控件）
 
-- [ ] 4.1 `core/dashboard/static/src/services/dashboard.ts` 的 `GatesConfig` 接口新增
+- [x] 4.1 `core/dashboard/static/src/services/dashboard.ts` 的 `GatesConfig` 接口新增
       `start_after_scope?: 'full' | 'dispatch'`，附注释说明两档与缺省 `dispatch`。
-- [ ] 4.2 `ApprovalModePanel.tsx`：`useEffect` / `initialValues` 两处补
+- [x] 4.2 `ApprovalModePanel.tsx`：`useEffect` / `initialValues` 两处补
       `start_after_scope: config.gates.start_after_scope || 'dispatch'`；新增一个
       `Form.Item name="start_after_scope"`（`Radio.Group`，两个选项，每项带 Text 副说明），
       位置置于「SPEC 方案评审」与「推送审批模式」之间；`handleSave` 的 `gates` 载荷补
@@ -155,8 +155,8 @@
       - `dispatch` — 只约束实现派发（定时/待激活 SPEC 立即晋升并跑方案评审，实现等到点）
       - `full` — 同时按住晋升与评审（SPEC 停在草稿态，到期/激活才晋升并评审）
       `useEffect` 依赖数组补 `config.gates.start_after_scope`。
-- [ ] 4.3 面板顶部说明文案补一句 scope 的作用（「定时拾取（start_after）的覆盖范围」）。
-- [ ] 4.4 在 `core/dashboard/static` 下跑 `npx tsc --noEmit` 与 `npm run build`，两者均须
+- [x] 4.3 面板顶部说明文案补一句 scope 的作用（「定时拾取（start_after）的覆盖范围」）。
+- [x] 4.4 在 `core/dashboard/static` 下跑 `npx tsc --noEmit` 与 `npm run build`，两者均须
       通过（`dist/` 为 gitignored 构建产物，不入库）。
       **核对结论（2026-09-20 实测）**：该目录**改动前 tsc 即失败**（`npx tsc --noEmit`
       退出码 1、52 条 error，含 `ApprovalModePanel.tsx:25/27/39/59` 的
