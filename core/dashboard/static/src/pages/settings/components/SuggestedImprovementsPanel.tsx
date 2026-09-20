@@ -24,7 +24,6 @@ import type { ConfigData, EvolutionItem, EvolutionDoc } from '@/services/dashboa
 import type { SelfEvolutionSectionHandle } from './selfEvolutionSection';
 import { MaximizeTitle, useMaximizeModal } from '@/components/useMaximizeModal';
 import ScheduleFields, {
-  START_AFTER_MANUAL,
   describeStartAfter,
   isStartAfterValid,
   nextRunAtISO,

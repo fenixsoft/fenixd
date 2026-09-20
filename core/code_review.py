@@ -780,23 +780,61 @@ def _resolve_fix_spec_name(project_root, state_machine, slug: str, first_fp: str
     return candidate
 
 
-def generate_fix_spec(project_root, state_machine, item_ids: List[str]) -> dict:
+def _normalize_start_after(value) -> Tuple[bool, Optional[str], str]:
+    """归一化 ``start_after`` 三态（与 ``set_spec_start_after`` 同源口径）。
+
+    Returns: ``(ok, normalized, error)``——ok=False 时 normalized 无意义。
+    - None / 空串 → ``(True, None, "")``（立即执行）
+    - ``"manual"``（大小写不敏感 + strip）→ ``(True, "manual", "")``（待激活哨兵，
+      跳过 ``parse_utc``——哨兵不是时间）
+    - 合法 ISO8601 → ``(True, <归一 ISO>, "")``
+    - 其它 → ``(False, None, <错误文案>)``（调用方拒绝写入，不半写）
+    """
+    from core.state_machine import parse_utc
+
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return True, None, ""
+    if isinstance(value, str) and value.strip().lower() == "manual":
+        return True, "manual", ""
+    dt = parse_utc(value) if isinstance(value, str) else None
+    if dt is None:
+        return False, None, f"start_after 非法 ISO8601: {value!r}"
+    return True, dt.isoformat(), ""
+
+
+def generate_fix_spec(
+    project_root, state_machine, item_ids: List[str], start_after=None
+) -> dict:
     """从选中问题条目机械合成为一个修复 SPEC（复用 evolution 链路）。
 
     - 筛出 ``status == "open"`` 且 ``file`` 非空的选中条目（其余进 skipped，
       不整批失败）；无有效条目返回错误；
+    - ``start_after`` 三态（None/空 = 立即执行，``"manual"`` = 待激活哨兵，
+      ISO8601 = 定时拾取）经 ``_normalize_start_after`` 归一后随 entry 注册；
+      非法值在落盘**之前**拒绝（不半写）；
     - 复用 core.deliverables.lint_declared / lint_tasks_parseable 同源 lint
       预检，违规则删除草稿、返回错误、条目状态不变（不半写）；
     - 命名 ``fix-cr-<slug>``（slug 由首个条目 category/短标题推导），冲突
       追加 ``-<fingerprint[:6]>`` 重试；判重覆盖 spec/changes / STATE /
       spec/archive 三处；仍冲突返回错误不覆盖；
     - 落地：复制草稿到 spec/changes/<name> → git add+commit → add_spec
-      (drafted, priority=5)；成功后参与条目置 in_spec 并写 spec_name；
+      (drafted, priority=5[, start_after])；成功后参与条目置 in_spec 并写 spec_name；
     - 幂等：同批 item_ids 已成功（全部 in_spec 且同 spec_name）时返回既有
       spec_name，不重复生成。
 
-    Returns: ``{"ok": bool, "spec_name": str|null, "skipped": [..], "error": str|null}``
+    Returns: ``{"ok": bool, "spec_name": str|null, "skipped": [..],
+              "error": str|null, "start_after": str|null}``
     """
+    ok_sa, normalized_sa, sa_err = _normalize_start_after(start_after)
+    if not ok_sa:
+        return {
+            "ok": False,
+            "spec_name": None,
+            "skipped": [],
+            "error": sa_err,
+            "start_after": None,
+        }
+
     items = read_items(project_root)
     candidates: List[dict] = []
     skipped: List[dict] = []
@@ -827,9 +865,16 @@ def generate_fix_spec(project_root, state_machine, item_ids: List[str]) -> dict:
                 "spec_name": next(iter(in_spec_names)),
                 "skipped": skipped,
                 "error": None,
+                "start_after": normalized_sa,
                 "idempotent": True,
             }
-        return {"ok": False, "spec_name": None, "skipped": skipped, "error": "无有效的 open 条目可生成"}
+        return {
+            "ok": False,
+            "spec_name": None,
+            "skipped": skipped,
+            "error": "无有效的 open 条目可生成",
+            "start_after": None,
+        }
 
     # slug 推导（首个候选的 category 或短标题）
     first = candidates[0]
@@ -948,6 +993,49 @@ def _mark_in_spec(project_root, item_ids: List[str], spec_name: str) -> None:
     _with_lock(path, _do)
 
 
+def _indent_block(text: str, prefix: str = "  ") -> List[str]:
+    """把多行文本逐行加前缀（空行保留为裸空行），供嵌入 Markdown 列表。
+
+    描述/证据字段可能含换行（实测台账存在多行 description）。直接内插会破坏
+    列表缩进或撞上 tasks.md 的行首正则，故一律逐行加前缀后再拼接。
+    """
+    if not text:
+        return []
+    return [f"{prefix}{ln}" if ln.strip() else "" for ln in str(text).splitlines()]
+
+
+def _problem_lines(it: dict, detail_prefix: str = "  ") -> List[str]:
+    """单条问题的结构化详情块（严重度 / 位置 / 描述 / 建议 / 证据）。
+
+    修复 agent 需要问题**内容**而不仅是标题：只给一行标题会丢失
+    description 里的复现路径与建议（2026-09-20 用户反馈）。四字段各自可选
+    ——suggestion 实测大量为空，缺失时整段不渲染。
+    """
+    lines: List[str] = []
+    for label, key in (("问题描述", "description"), ("修复建议", "suggestion"), ("证据", "evidence")):
+        value = str(it.get(key) or "").strip()
+        if not value:
+            continue
+        lines.append(f"{detail_prefix}**{label}**：")
+        lines.append("")
+        lines.extend(_indent_block(value, detail_prefix))
+        lines.append("")
+    return lines
+
+
+def _unique_deliverable_paths(items: List[dict]) -> List[str]:
+    """去重后的交付路径清单（按首次出现顺序）。
+
+    多个问题可能指向同一文件，逐条声明会写出重复 ``path:`` 条目。
+    """
+    seen: List[str] = []
+    for it in items:
+        path = str(it.get("file") or "").strip()
+        if path and path not in seen:
+            seen.append(path)
+    return seen
+
+
 def _proposal_md(name: str, items: List[dict]) -> str:
     lines = [
         "## Why",
@@ -960,9 +1048,13 @@ def _proposal_md(name: str, items: List[dict]) -> str:
         "",
     ]
     for it in items:
-        lines.append(f"  - [{it.get('severity')}] {it.get('title')}（{it.get('file')}:{it.get('line')}）")
+        lines.append(f"### [{it.get('severity')}] {it.get('title')}")
+        lines.append("")
+        lines.append(f"- 类别：`{it.get('category')}`")
+        lines.append(f"- 位置：`{it.get('file')}:{it.get('line')}`")
+        lines.append("")
+        lines.extend(_problem_lines(it, ""))
     lines += [
-        "",
         "## Capabilities",
         "",
         "### New Capabilities",
@@ -989,9 +1081,12 @@ def _spec_md(capability: str, items: List[dict]) -> str:
         "",
     ]
     for it in items:
-        lines.append(f"- `{it.get('file')}:{it.get('line')}` — {it.get('title')}")
+        lines.append(f"#### `{it.get('file')}:{it.get('line')}` — {it.get('title')}")
+        lines.append("")
+        lines.append(f"- 严重度：{it.get('severity')}")
+        lines.append("")
+        lines.extend(_problem_lines(it, ""))
     lines += [
-        "",
         "#### Scenario: 修复完成",
         "",
         "- **WHEN** 修复提交",
@@ -1013,7 +1108,13 @@ def _design_md(name: str, items: List[dict]) -> str:
         "",
         "- 逐条修复选中问题，目标文件见 Deliverables 声明。",
         "",
+        "## 逐条修复方向",
+        "",
     ]
+    for it in items:
+        lines.append(f"### `{it.get('file')}:{it.get('line')}` — {it.get('title')}")
+        lines.append("")
+        lines.extend(_problem_lines(it, ""))
     return "\n".join(lines)
 
 
@@ -1025,9 +1126,9 @@ def _tasks_md(name: str, items: List[dict]) -> str:
         "",
         "```yaml",
     ]
-    for it in items:
-        lines.append(f"- path: {it.get('file')}")
-        lines.append(f"  kind: modify")
+    for path in _unique_deliverable_paths(items):
+        lines.append(f"- path: {path}")
+        lines.append("  kind: modify")
     lines += [
         "```",
         "",
@@ -1035,9 +1136,16 @@ def _tasks_md(name: str, items: List[dict]) -> str:
         "",
     ]
     for idx, it in enumerate(items, start=1):
+        # 行首形态 MUST 保持 `- [ ] <编号>. <短标题>`：parse_tasks_md 的
+        # `^- \[(x| )\] (\d+\.\d+[a-z]?)` 与产物归属 lint 都只认行首，
+        # 破坏它等于任务清单在进度跟踪里静默消失（tasks.md 分组格式漂移事故）。
+        # 完整内容一律以缩进子项挂在任务行下（缩进后不匹配 `^- \[`，也不
+        # 参与归属校验）。
         lines.append(
             f"- [ ] {idx}.{idx} {it.get('title')} — {it.get('file')}:{it.get('line')}"
         )
+        lines.append("")
+        lines.extend(_problem_lines(it))
     lines.append("")
     return "\n".join(lines)
 
