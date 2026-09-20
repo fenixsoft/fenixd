@@ -57,8 +57,9 @@
 - `core/state_machine.py` 的 `start_after_pending(entry)` **保持不变**（无 config 参数），
   仍是「未到期或哨兵」的纯判定；
 - 新增模块级函数 `start_after_blocks_promotion(entry, config=None) -> bool`，
-  实现为 `start_after_pending(entry) and ConfigLoader.get_start_after_scope(config) == "full"`，
-  带 fail-open（判定异常返回 `False` = 不阻塞）。
+  实现为 `start_after_pending(entry) and ConfigLoader.get_start_after_scope(config) == "full"`。
+  谓词本身**不吞异常**（纯组合、无 try/except）：fail-open 由四处调用点既有的
+  try/except + warning 原样承担，与本 SPEC 之前的行为一致（理由见 D3）。
 
 **理由**：
 - `start_after_pending` 有 6 个调用点（`admin_monitor.py:596`、`event_bus.py:224/:246/:444`、
@@ -70,16 +71,22 @@
 - 新谓词入参 `config=None`：缺省即 `dispatch`（不阻塞），与存量调用点零改动的兜底一致。
 
 **替代方案**：在 `_on_spec_drafted` 内直接写 `if scope == "full" and start_after_pending(...)`。
-否决——4 处重复判定逻辑，且 fail-open 处理会各写一份；单点谓词杜绝漂移。
+否决——4 处重复判定逻辑，且 scope 判定会各写一份（字符串常量散落四处）；单点谓词杜绝漂移
+（fail-open 本身仍由四处调用点各自的 try/except 承担，见 D3）。
 
-### D3：fail-open 语义在组合谓词内统一收口
+### D3：fail-open 语义由四处调用点承担，新谓词**不吞异常**
 
-**决策**：`start_after_blocks_promotion` 内部 try/except 全包，任何异常返回 `False`
-（不阻塞 = 放行）。原 4 个调用点的各自 `try/except ... fail-open` 保留（仅记 warning），
-但谓词内部异常不再向上传播。
+**决策**：原 4 个调用点各自的 `try/except ... fail-open + warning` **原样保留且是唯一收口处**；
+新谓词 `start_after_blocks_promotion` 内部**不写 try/except**，异常正常向上传播到调用点。
 
-**理由**：与既有 `_recover_ready` 的 fail-open 设计一致（`event_bus.py:451`），新闸门
-MUST NOT 吞掉既有能力。调用点保留 try/except 是为了**记日志**（谓词内不持 logger）。
+**理由（实测证据）**：
+- 若谓词内部吞掉异常（原稿方案），调用点的 `except` 分支将**永不进入**——
+  `tests/test_start_after_gate.py:438/456/477` 三条 fail-open 用例断言
+  `logger.warning` 含「start_after 门控判定异常」，实测（monkeypatch
+  `start_after_pending` 抛异常 + 谓词内 try/except）该 warning 不可达，三例必失败。
+- 语义不变：调用点 fail-open 即「不阻塞 = 放行」，与谓词返回 `False` 等价；
+  异常穿透到调用点后行为与改动前逐字节一致，且保住「判定异常须留痕」的既有契约。
+- 谓词保持为两条件的纯组合，无分支、无日志依赖（谓词内不持 logger），单点可测。
 
 ### D4：`manual` 哨兵同受 scope 约束（用户选定）
 
@@ -136,6 +143,20 @@ D1 通道 ③④ 的既有结论一致）。
 - **测试基线**：`tests/test_start_after_gate.py`（23 用例）当前断言的是 `full` 档行为，需
   在 setUp 的 `_auto_config()` 中加入 `start_after_scope: "full"` 以保持断言成立，并**新增**
   `dispatch` 档用例。既有断言不容许被静默改写（tasks 显式列该调整）。
+
+  **必须同步补 scope 的点位（实测核对，2026-09-20；漏一处即既有用例转红）**：该文件共
+  10 处构造点（`_make_engine(..., _auto_config())` 6 处、`_make_engine(..., {})` 4 处、
+  `EventBus(..., {}, ...)` 2 处），另有 1 处**文件外**：
+
+  | 位置 | 现状 | 新缺省档下的实际行为（实测） | 处置 |
+  |------|------|------------------------------|------|
+  | `_auto_config()` | 无 scope | 等同 dispatch | 加 `start_after_scope: "full"`（覆盖 6 处） |
+  | 同文件 4 处 `_make_engine(..., {})`（`:204` / `:222` / `:235` / `:464`） | 无 gates 段 | 等同 dispatch | 逐处改传 `_auto_config()`（**MUST NOT** 只改 `_auto_config()` 就以为覆盖全） |
+  | 同文件 2 处 `EventBus(..., {}, ...)`（`:261` / `:488`） | 无 gates 段 | 等同 dispatch | 逐处传 `_auto_config()`（`_recover_one` 早退用例依赖 full 档） |
+  | `tests/test_spec_review_async_dispatch.py:90-105` `test_start_after_blocks_enqueue` | `_make_engine` 传 `{}`（`:45`） | **实测：`dispatch` 档下该用例转红**（入队 1 条，断言 0 条） | 该用例的 `_make_engine` 传 `{"gates": {"start_after_scope": "full"}}`，**或**在 tasks 5.5 的回归清单显式登记为「缺省档变更的预期差异」并按其语义改写 |
+
+  `python3 -m pytest tests/test_spec_review_async_dispatch.py` 已作为基线跑通（36 例全绿），
+  可用作改动后的对照。
 
 ## Open Questions
 
