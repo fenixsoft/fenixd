@@ -223,12 +223,12 @@
 
 ## 6. 文档
 
-- [ ] 6.1 `docs/help/09-config.md` 的 `gates` 键表新增一行
+- [x] 6.1 `docs/help/09-config.md` 的 `gates` 键表新增一行
       `| start_after_scope | dispatch | full/dispatch | 热更新 |`，并在
       `gates.spec_review_mode` 说明段之后补 `gates.start_after_scope` 两档说明（一段）。
-- [ ] 6.2 `docs/help/09-config.md` 的「Dashboard 设置页与配置键映射」表中
+- [x] 6.2 `docs/help/09-config.md` 的「Dashboard 设置页与配置键映射」表中
       「配置管理」行的 gates 键清单补 `gates.start_after_scope`。
-- [ ] 6.3 `docs/help/06-governance.md` 的「SPEC 手工激活（待激活）」小节：把现有
+- [x] 6.3 `docs/help/06-governance.md` 的「SPEC 手工激活（待激活）」小节：把现有
       「**只拦派发、不拦晋升**」一句改写为「**拦不拦晋升取决于 `gates.start_after_scope`**」，
       说明两档下 `manual` 哨兵的行为差异，并明确「哨兵不自动实现的保证恒成立」（实现派发口
       无条件）。同时在「SPEC 方案评审门禁」小节的触发条件附近补一句：`start_after` 未到期
