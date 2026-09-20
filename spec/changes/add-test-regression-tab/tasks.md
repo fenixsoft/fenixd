@@ -121,3 +121,9 @@
 
 - [x] 7.1 全量跑 `tests/` 确认无回归（存量失败除外）
 - [x] 7.2 在 `core/regression.py` 与 `core/verify_contract.py` 的 regression 相关改动处补齐设计理由注释（对齐仓内长注释风格：JUnit XML 跨语言取舍、单快照 Non-Goal、独立防重状态的理由）
+
+## 验证修复（原地打回第 1 轮）
+
+- [ ] 先复核失败有效性：逐条核对 `spec/changes/add-test-regression-tab/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
+- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
+- [ ] 修复后重跑验证确认通过
