@@ -548,6 +548,20 @@ class PRepairLaneMixin:
         if getattr(remerge_info, "wip_gate_blocked", False):
             self._report_mergeback_wip_overlap(spec_name, remerge_info, branch, merge_error)
             return
+        # ── spec 目录在飞编辑顺延（evo-merge-back-spec-dir-inflight-guard D1/D1a）──
+        # repair 后 re-merge-back 被卫检查顺延（spec_dir_inflight=True）：主树 spec
+        # 目录有未提交改动。MUST NOT 消费 _repair_awaiting_remerge 标记——原样保留
+        # 待下一轮恢复/重排再试（清除会让「仅剩合并」的分支退回 ready 全新派发）。
+        # 亦不经 fp 记账/blocked/repair 轮（顺延不是 merge 失败）。顺延的有界上限
+        # 由 dispatch 调用方承载；repair 车道是同一轮内失败即返回的有界短窗。
+        if getattr(remerge_info, "spec_dir_inflight", False):
+            self._pm.logger.warning(
+                "pm_engine",
+                f"repair 后 re-merge-back 顺延 '{spec_name}'（branch '{branch}'）: "
+                f"{merge_error} — spec 目录在飞编辑，保留 _repair_awaiting_remerge "
+                f"待下一轮再试（不消费标记、不重派）",
+            )
+            return
         spec_entry = self._pm.state_machine.read_one(spec_name) or {}
         fp = self._pm._merge_fingerprint(merge_error)
         prev_fp = spec_entry.get("_merge_fp")

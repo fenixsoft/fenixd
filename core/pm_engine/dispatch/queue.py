@@ -1322,168 +1322,35 @@ class QQQueueMixin:
                                 spec_name, merge_info, result.branch, merge_error
                             )
                             return
+                        # ── 可重试 merge-back 失败分类（evo-merge-back-spec-dir-inflight-guard D2）──
+                        # 插点（task 0.2 固化）：rehearsed（上方早退）→
+                        # wip_gate_blocked（上方早退）→ **本分类** → 指纹熔断记账。
+                        # 可重试（主树脏 / spec 目录在飞编辑 / 锁冲突）时保留已成功
+                        # 分支与产物、仅重试合并（不重派实现 run）；判不准 fail-open
+                        # 回既有指纹熔断通道（D2 假阴性方向：真实失败被无限重试）。
+                        if self._handle_retryable_mergeback_failure(
+                            spec_name, merge_info, merge_error, result.branch
+                        ):
+                            return
                         # merge 失败：指纹熔断（fix-fenix-token-waste）。
                         # 同一错误指纹连续失败 ≥ 阈值 → spec 进入 blocked 停止自动重试，
                         # 避免「根因不消除 → 全量重跑 → 再败」的无限烧钱循环。
-                        spec_entry = self._pm.state_machine.read_one(spec_name)
-                        max_r = self._pm._get_config("agents.max_retries", 3)
-                        fp = self._pm._merge_fingerprint(merge_error)
-                        prev_fp = spec_entry.get("_merge_fp")
-                        try:
-                            prev_streak = int(spec_entry.get("_merge_streak", 0) or 0)
-                        except (TypeError, ValueError):
-                            prev_streak = 0
-                        streak = prev_streak + 1 if prev_fp == fp else 1
-                        final_error = f"Merge-back failed (fp={fp}): {merge_error}"
-
-                        # 状态回写保护（fix-startup-double-dispatch）：
-                        # merge-back 失败回写 ready 前，检查 spec 当前状态——若已在
-                        # testing/implemented 且存在活跃 tester run，不降级 ready，
-                        # 只记录冲突并待验证结束后统一处置（避免覆写在飞验证态）。
-                        current_status = (spec_entry or {}).get("status", "")
-                        active_tester = (spec_entry or {}).get("tester_run")
-                        if current_status in ("testing", "implemented") and active_tester:
-                            self._pm.logger.warning(
-                                "pm_engine",
-                                f"Merge-back failed for '{spec_name}' but spec is in "
-                                f"'{current_status}' with active tester run {active_tester} "
-                                f"— not downgrading to ready, conflict logged",
-                            )
-                            # 记录冲突但不降级状态，保持 testing/implemented
-                            self._pm.state_machine.update_spec(
-                                spec_name,
-                                {
-                                    "error": final_error,
-                                    "_merge_fp": fp,
-                                    "_merge_streak": streak,
-                                },
-                            )
-                            return
-
-                        breaker_threshold = self._pm._get_config(
-                            "agents.merge_breaker_threshold", 2
+                        # （实现体提取为 _handle_merge_back_real_failure，供 merge-only
+                        # 重试点复用同一判定基准——evo-merge-back-spec-dir-inflight-guard D2）
+                        self._handle_merge_back_real_failure(
+                            spec_name, merge_info, merge_error, result.branch
                         )
-                        if streak >= breaker_threshold:
-                            # 熔断触发：blocked 后 repair 通道一并停止
-                            # （spec-merge-circuit-breaker：repair 不绕过熔断）。
-                            # fix-observability-gaps 2.2：merge 熔断 blocked（自动降级路径）
-                            self._pm.state_machine.transition(
-                                spec_name, "blocked",
-                                trigger_run_id=None, agent_type="implementer", channel="auto",
-                            )
-                            self._pm.state_machine.update_spec(
-                                spec_name,
-                                {
-                                    "error": final_error,
-                                    "_merge_fp": fp,
-                                    "_merge_streak": streak,
-                                    "_retry_count": 0,
-                                },
-                            )
-                            self._pm.logger.error(
-                                "pm_engine",
-                                f"Circuit breaker tripped for '{spec_name}' (fp={fp}) — spec blocked",
-                            )
-                        elif self._pm._should_enter_repair(
-                            spec_name, merge_info, streak, breaker_threshold
-                        ):
-                            # ── repair 通道（add-merge-back-repair-lane）──
-                            # 语义冲突失败且熔断未触发：派 repair agent 原地修复
-                            # （把 main 合入分支解决冲突），而非 abort 后全新重派。
-                            self._pm._dispatch_repair_lane(
-                                spec_name,
-                                merge_info,
-                                result.branch,
-                                fp=fp,
-                                streak=streak,
-                            )
-                        else:
-                            try:
-                                prev_retries = int(spec_entry.get("_retry_count", 0) or 0)
-                            except (TypeError, ValueError):
-                                prev_retries = 0
-                            retries = prev_retries + 1
-                            self._pm.state_machine.update_spec(
-                                spec_name,
-                                {
-                                    "status": "ready",
-                                    "error": final_error,
-                                    "_merge_fp": fp,
-                                    "_merge_streak": streak,
-                                    "_retry_count": retries,
-                                },
-                            )
-                            self._pm.logger.warning(
-                                "pm_engine",
-                                f"Retry {retries}/{max_r} for '{spec_name}' (merge-back failed)",
-                            )
                     else:
                         # stash 恢复已在 merge_back_from_branch 的 guard 段内完成
                         # （fix-autostash-orphans），此处只推进状态。
-                        # fix-observability-gaps 2.2：implementer merge 成功收口
-                        # 合并收尾 ready 态兜底（evo-spec-concurrency-flight-guard
-                        # D3）：status=ready（评审收尾竞态回退残留）时先补记合法转移
-                        # ready→implementing，再推进 implemented——消除 ready→
-                        # implemented 非法转移 ERROR 与 83 分钟状态矛盾。
-                        self._pm._merge_ready_fallback(
+                        # （实现体提取为 _finalize_merge_success，供 merge-only
+                        # 重试点复用同一收口逻辑——evo-merge-back-spec-dir-inflight-guard D2）
+                        self._finalize_merge_success(
                             spec_name,
                             result.run_id,
-                            "implementer",
                             getattr(result, "branch", None) or None,
-                        )
-                        self._pm.state_machine.transition(
-                            spec_name, "implemented",
-                            trigger_run_id=result.run_id,
-                            agent_type="implementer", channel="auto",
-                        )
-                        self._pm.state_machine.update_spec(
-                            spec_name,
-                            {
-                                "implementer_run": result.run_id,
-                                # 记录真实实现分支（带时间戳后缀）：push 时按此分支推送，
-                                # 否则回退 fenix/<spec> 不存在导致 auto-push 全部失败。
-                                "branch": getattr(result, "branch", None) or None,
-                                "error": None,
-                                "_retry_count": 0,
-                                "_merge_fp": None,
-                                "_merge_streak": 0,
-                                # 派发成功即清零锁冲突计数（improve-run-lifecycle-governance D5）
-                                **self._pm._clear_dispatch_conflict(spec_name),
-                            },
-                        )
-                        # pop 冲突自愈后：被丢弃的 stash 改动文件清单写入 error 字段，
-                        # 触发 admin 告警（stash 条目保留、可 git stash show 找回，
-                        # 不阻塞 merge-back 与状态推进）。须放在上面 update_spec(error=None)
-                        # 之后，避免被清空。见 fix-stashpop-deadlock。
-                        if conflict_files:
-                            self._pm._report_stash_pop_conflict(
-                                spec_name, conflict_files, merge_info=merge_info
-                            )
-                        # 写侧确定性回写：把已完成的任务勾选同步进主树 tasks.md
-                        # （add-task-progress-sync）。任何异常都不阻塞 run 终态主流程。
-                        try:
-                            self._pm._sync_task_progress(spec_name)
-                        except Exception as e:
-                            self._pm.logger.warning(
-                                "pm_engine",
-                                f"任务进度回写未成功 '{spec_name}'（非阻塞）: {e}",
-                            )
-                        # 恢复重派遗产回收（add-recovery-legacy-check 1.3）：后继 run 成功
-                        # merge 后，该 spec 的遗产已被收编/不再需要，consume_legacy 触发回收。
-                        # worktree 物理回收在 run_implementer 的 cleanup（成功路径保留分支、
-                        # 由 merge 前已清理）完成后由既有路径处理；此处仅清内存态遗产登记，
-                        # 使清扫器不再对其豁免。
-                        try:
-                            wm.consume_legacy(spec_name)
-                        except Exception as e:
-                            self._pm.logger.warning(
-                                "pm_engine",
-                                f"consume_legacy 失败 '{spec_name}'（非阻塞）: {e}",
-                            )
-                        # Immediately queue verifier at FRONT so it runs next
-                        self._enqueue_front(spec_name, "verifier")
-                        self._pm.logger.info(
-                            "pm_engine", f"Implement done, verifier queued for '{spec_name}'"
+                            merge_info,
+                            conflict_files,
                         )
                 else:
                     # ── 人工取消 hold-state（add-run-cancel D4）──────
@@ -1731,6 +1598,435 @@ class QQQueueMixin:
                     else:
                         self._active_priority_counts[priority] = cnt
             self._pm._process_queue()
+
+    # ── merge-back 可重试分类与仅重试合并（evo-merge-back-spec-dir-inflight-guard D2）──
+    # 插点：_run_agent_worker 的 merge 失败分支，位于 rehearsed / wip_gate_blocked
+    # 早退之后、指纹熔断记账之前（task 0.2 固化）。D2 判据按层分离：
+    #   带 git 退出码文本（self-heal 兜底后仍被拒的原文片段）→ 文本匹配；
+    #   不带退出码文本（spec 目录在飞编辑顺延 / dispatch 级锁冲突）→ 结构化字段；
+    #   判不准 fail-open 回既有指纹熔断/repair/ready 通道。
+
+    _RETRYABLE_MERGE_ERROR_FRAGMENTS = ("would be overwritten by merge", "would be lost")
+
+    def _retryable_merge_error_text(self, merge_error: str) -> bool:
+        """merge 错误文本是否命中「主树脏」可重试形态（D2 文本匹配判据）。
+
+        只锚定 git 原文片段（``would be overwritten by merge`` / ``would be lost``），
+        MUST NOT 用宽泛正则（如单独 ``overwritten``）——判不准 fail-open 回既有
+        指纹熔断（D2 假阴性方向：真实失败被无限重试）。
+        """
+        err = merge_error or ""
+        return any(frag in err for frag in self._RETRYABLE_MERGE_ERROR_FRAGMENTS)
+
+    def _dispatch_lock_conflict_pending(self, spec_name: str) -> bool:
+        """既有 dispatch 级锁冲突信号判据（D2）：``_dispatch_backoff_until`` 未到期。
+
+        锁冲突（``_queue_lock`` / ``main_tree_lock`` 获取失败，见
+        ``_clear_dispatch_conflict`` 家族）与 spec 目录顺延一样**不带 git 退出码
+        文本**——MUST 用既有结构化字段判据识别，禁止文本匹配（靠「错误文本含
+        lock」会把任何含该词的真失败误判为可重试）。merge-back 失败时刻该信号
+        理论上不成立（run 已启动说明派发锁已取得），本判据为防御性识别；判不准
+        fail-open 回既有指纹熔断。
+        """
+        entry = self._pm.state_machine.read_one(spec_name) or {}
+        until = entry.get("_dispatch_backoff_until")
+        if not until:
+            return False
+        try:
+            return float(until) > time.time()
+        except (TypeError, ValueError):
+            return False
+
+    def _handle_retryable_mergeback_failure(
+        self, spec_name: str, merge_info, merge_error: str, branch: str
+    ) -> bool:
+        """merge-back 失败可重试分类（D2 判据入口）。
+
+        可重试 = 主树脏 / spec 目录在飞编辑 / 锁冲突。命中时保留已成功分支与产物、
+        仅重试合并（不重派实现 run）：spec 保持 implementing、保留 branch/
+        implementer_run 锚点，逐项不动 ``_retry_count`` / ``_merge_fp`` /
+        ``_merge_streak`` / 同因重派指纹，不进入「新轮次派发清除旧锚点」分支，
+        不递增实现尝试预算（未派生新 run）。
+
+        Returns: True = 已按可重试处置（调用方早退）；False = 判不准/非可重试，
+        调用方继续既有指纹熔断/repair/ready 通道（fail-open）。
+        """
+        if getattr(merge_info, "spec_dir_inflight", False):
+            self._defer_merge_back(spec_name, merge_info, branch, merge_error)
+            return True
+        if self._retryable_merge_error_text(merge_error):
+            self._defer_merge_back(spec_name, merge_info, branch, merge_error)
+            return True
+        if self._dispatch_lock_conflict_pending(spec_name):
+            self._defer_merge_back(spec_name, merge_info, branch, merge_error)
+            return True
+        return False
+
+    def _defer_merge_back(self, spec_name: str, merge_info, branch: str, merge_error: str) -> None:
+        """可重试 merge-back 失败：顺延等待，仅重试合并（D1a/D2）。
+
+        语义（逐项点名，MUST）：spec 保持 **implementing**（不降级 ready，避免
+        落入「新轮次派发清除旧锚点」）；保留 branch/implementer_run 锚点；逐项
+        不动 ``_retry_count`` / ``_merge_fp`` / ``_merge_streak`` /
+        ``_redispatch_same_cause_streak`` / ``_redispatch_cause_fp``；**不进入**
+        「新轮次派发清除旧锚点」分支；不递增实现尝试预算（未派生新 run，D3）。
+
+        有界性（D1a/D2，MUST）：顺延窗口固化
+        ``mergeback.spec_dir_inflight_grace_minutes``（缺省 30，自首次顺延起算）
+        与连续顺延轮数 ``mergeback.spec_dir_inflight_max_rounds``（缺省 3），任一
+        超限 → 回落「告警 + 等待人工处置」通道
+        （``_report_mergeback_spec_dir_inflight_stuck``），MUST NOT 无限顺延；
+        上限 MUST 先于 ``agents.impl_run_budget``（缺省 6）耗尽收敛（D2 边界约定）。
+        """
+        entry = self._pm.state_machine.read_one(spec_name) or {}
+        now = time.time()
+        grace_minutes = self._merge_retry_grace_minutes()
+        max_rounds = self._merge_retry_max_rounds()
+        try:
+            count = int(entry.get("_merge_retry_count", 0) or 0)
+        except (TypeError, ValueError):
+            count = 0
+        first_at = entry.get("_merge_retry_first_at")
+        try:
+            first_f = float(first_at) if first_at else None
+        except (TypeError, ValueError):
+            first_f = None
+        if first_f is None:
+            first_f = now  # 自首次顺延起算窗口
+        count += 1
+        try:
+            self._pm.state_machine.update_spec(
+                spec_name,
+                {
+                    "_merge_retry_pending": True,
+                    "_merge_retry_count": count,
+                    "_merge_retry_first_at": int(first_f),
+                    "error": (
+                        f"merge-back 顺延等待 spec 目录提交动作解除"
+                        f"（{count} 轮，首轮 {int(first_f)}）: {merge_error}"
+                    ),
+                },
+            )
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"顺延记账写入失败 '{spec_name}'（非阻塞）: {e}",
+            )
+        window_exceeded = (now - first_f) / 60.0 >= grace_minutes
+        if window_exceeded or count >= max_rounds:
+            self._report_mergeback_spec_dir_inflight_stuck(
+                spec_name, merge_info, branch, merge_error, count, int(first_f),
+            )
+            return
+        self._schedule_merge_retry(spec_name, self._merge_retry_delay_seconds())
+
+    def _merge_retry_grace_minutes(self) -> float:
+        """顺延窗口（分钟）：``mergeback.spec_dir_inflight_grace_minutes``，缺省 30。"""
+        try:
+            return max(
+                0.0,
+                float(
+                    self._pm._get_config("mergeback.spec_dir_inflight_grace_minutes", 30)
+                ),
+            )
+        except (TypeError, ValueError):
+            return 30.0
+
+    def _merge_retry_max_rounds(self) -> int:
+        """顺延/重试轮数上限：``mergeback.spec_dir_inflight_max_rounds``，缺省 3。"""
+        try:
+            return max(
+                1,
+                int(self._pm._get_config("mergeback.spec_dir_inflight_max_rounds", 3) or 3),
+            )
+        except (TypeError, ValueError):
+            return 3
+
+    def _merge_retry_delay_seconds(self) -> float:
+        """重试节拍（秒）：``mergeback.spec_dir_inflight_retry_delay_seconds``，缺省 60。"""
+        try:
+            return max(
+                5.0,
+                float(self._pm._get_config("mergeback.spec_dir_inflight_retry_delay_seconds", 60)),
+            )
+        except (TypeError, ValueError):
+            return 60.0
+
+    def _schedule_merge_retry(self, spec_name: str, delay: float) -> None:
+        """merge-only 重试排程（D2/task 2.3）：短程无预算定时器范式。
+
+        与 ``_schedule_backoff_retry``（backoff.py:107）同构：``threading.Timer``
+        到期回调 ``_on_merge_retry``（仅重试合并、不重派实现 run），定时器登记进
+        ``_backoff_timers`` 惰性清理。不递增 ``_retry_count``、不递增实现尝试预算
+        （未派生新 run）。MUST NOT 复用 ``_schedule_transient_recovery``（该通道带
+        ``agents.transient_*`` 熔断与预算语义，语义不同）。
+        """
+        timer = threading.Timer(
+            max(0.5, float(delay)),
+            self._on_merge_retry,
+            args=(spec_name,),
+        )
+        timer.daemon = True
+        with self._queue_lock:
+            self._backoff_timers = [t for t in getattr(self, "_backoff_timers", []) if t.is_alive()]
+            self._backoff_timers.append(timer)
+        timer.start()
+        self._pm.logger.info(
+            "pm_engine",
+            f"merge-only 重试已排程 '{spec_name}'（{int(max(0.5, float(delay)))}s，"
+            f"不重派实现 run、不计实现预算）",
+        )
+
+    def _on_merge_retry(self, spec_name: str) -> None:
+        """merge 重试定时器到期回调（D2）：仅重试合并，不重派实现 run。
+
+        与 backoff 家族回调（``_on_instant_fail_recovery`` 等）同构：收尾触发
+        ``_process_queue`` 释放并发槽语义。
+        """
+        self._pm.logger.info(
+            "pm_engine",
+            f"merge 重试定时器到期 '{spec_name}' — 仅重试合并（不重派实现 run）",
+        )
+        try:
+            self._retry_merge_back_only(spec_name)
+        finally:
+            self._pm._process_queue()
+
+    def _retry_merge_back_only(self, spec_name: str) -> None:
+        """merge-only 重试体（D2/task 2.4/2.6）：重试合并而非重派实现。
+
+        预算耗尽 MUST NOT 被本通道绕过（task 2.6）：先经 ``_check_impl_budget_exhausted``
+        （budget.py:443，与派发前预算闸门同一判据）——耗尽时该闸门自行置 blocked +
+        写 ``impl_budget_exhausted`` 告警（人工通道），本通道不再尝试合并。本路径
+        未派生新实现 run（D3）：**不递增** 实现尝试预算，也**不需要** ``bump_impl_budget(-1)``
+        事后回退（无计数可退；``_reconcile_impl_budget`` 以 runs 实际计数对账，
+        本条路径不产生新 run 产物，不构成偏差）。
+        """
+        wm = self._pm.agent_runner.worktree_manager
+        entry = self._pm.state_machine.read_one(spec_name) or {}
+        branch = entry.get("branch")
+        if not branch:
+            self._pm.logger.error(
+                "pm_engine",
+                f"merge 重试 '{spec_name}' 无分支锚点 — 无法仅重试合并，"
+                f"保持 implementing 等待人工处置（既有告警/巡检可见）",
+            )
+            return
+        # 预算闸门（D2/task 2.6）：同派发前闸门，阻塞则不再尝试（闸门自身置 blocked+告警）
+        if self._pm._check_impl_budget_exhausted(spec_name):
+            self._pm.logger.warning(
+                "pm_engine",
+                f"merge 重试 '{spec_name}' 触发实现预算闸门 — 已 blocked/告警，"
+                f"不再重试合并（D2 不绕过 impl_budget_exhausted）",
+            )
+            return
+        try:
+            merge_info = wm.merge_back_from_branch(branch)
+            merge_ok, merge_error = merge_info
+        except Exception as e:
+            self._pm.logger.error(
+                "pm_engine",
+                f"merge 重试异常 '{spec_name}'（branch '{branch}'）: {e}",
+            )
+            return
+        if merge_ok:
+            # 合并成功：清顺延记账（_finalize_merge_success 内收口）并推进 implemented
+            self._finalize_merge_success(
+                spec_name,
+                entry.get("implementer_run"),
+                branch,
+                merge_info,
+                list(getattr(wm, "last_stash_pop_conflicts", []) or []),
+            )
+            return
+        # 再次顺延（有界，自首轮起算）或真失败（fail-open 回既有通道）
+        if self._handle_retryable_mergeback_failure(spec_name, merge_info, merge_error, branch):
+            return
+        self._handle_merge_back_real_failure(
+            spec_name, merge_info, merge_error, branch
+        )
+
+    def _handle_merge_back_real_failure(
+        self, spec_name: str, merge_info, merge_error: str, branch: str
+    ) -> None:
+        """merge-back 真失败：指纹熔断记账 + repair/ready 降级（D2 fail-open 通道）。
+
+        从 ``_run_agent_worker`` 提取（task 0.2 插点之后、非可重试形态的唯一出口），
+        供实现 run 失败分支与 merge-only 重试点复用同一判定基准。rehearsed /
+        wip_gate_blocked / 可重试形态均已在调用方早退，本方法只处理真失败。
+        """
+        spec_entry = self._pm.state_machine.read_one(spec_name)
+        max_r = self._pm._get_config("agents.max_retries", 3)
+        fp = self._pm._merge_fingerprint(merge_error)
+        prev_fp = spec_entry.get("_merge_fp")
+        try:
+            prev_streak = int(spec_entry.get("_merge_streak", 0) or 0)
+        except (TypeError, ValueError):
+            prev_streak = 0
+        streak = prev_streak + 1 if prev_fp == fp else 1
+        final_error = f"Merge-back failed (fp={fp}): {merge_error}"
+
+        # 状态回写保护（fix-startup-double-dispatch）：
+        # merge-back 失败回写 ready 前，检查 spec 当前状态——若已在
+        # testing/implemented 且存在活跃 tester run，不降级 ready，
+        # 只记录冲突并待验证结束后统一处置（避免覆写在飞验证态）。
+        current_status = (spec_entry or {}).get("status", "")
+        active_tester = (spec_entry or {}).get("tester_run")
+        if current_status in ("testing", "implemented") and active_tester:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"Merge-back failed for '{spec_name}' but spec is in "
+                f"'{current_status}' with active tester run {active_tester} "
+                f"— not downgrading to ready, conflict logged",
+            )
+            # 记录冲突但不降级状态，保持 testing/implemented
+            self._pm.state_machine.update_spec(
+                spec_name,
+                {
+                    "error": final_error,
+                    "_merge_fp": fp,
+                    "_merge_streak": streak,
+                },
+            )
+            return
+
+        breaker_threshold = self._pm._get_config(
+            "agents.merge_breaker_threshold", 2
+        )
+        if streak >= breaker_threshold:
+            # 熔断触发：blocked 后 repair 通道一并停止
+            # （spec-merge-circuit-breaker：repair 不绕过熔断）。
+            # fix-observability-gaps 2.2：merge 熔断 blocked（自动降级路径）
+            self._pm.state_machine.transition(
+                spec_name, "blocked",
+                trigger_run_id=None, agent_type="implementer", channel="auto",
+            )
+            self._pm.state_machine.update_spec(
+                spec_name,
+                {
+                    "error": final_error,
+                    "_merge_fp": fp,
+                    "_merge_streak": streak,
+                    "_retry_count": 0,
+                },
+            )
+            self._pm.logger.error(
+                "pm_engine",
+                f"Circuit breaker tripped for '{spec_name}' (fp={fp}) — spec blocked",
+            )
+        elif self._pm._should_enter_repair(
+            spec_name, merge_info, streak, breaker_threshold
+        ):
+            # ── repair 通道（add-merge-back-repair-lane）──
+            # 语义冲突失败且熔断未触发：派 repair agent 原地修复
+            # （把 main 合入分支解决冲突），而非 abort 后全新重派。
+            self._pm._dispatch_repair_lane(
+                spec_name,
+                merge_info,
+                branch,
+                fp=fp,
+                streak=streak,
+            )
+        else:
+            try:
+                prev_retries = int(spec_entry.get("_retry_count", 0) or 0)
+            except (TypeError, ValueError):
+                prev_retries = 0
+            retries = prev_retries + 1
+            self._pm.state_machine.update_spec(
+                spec_name,
+                {
+                    "status": "ready",
+                    "error": final_error,
+                    "_merge_fp": fp,
+                    "_merge_streak": streak,
+                    "_retry_count": retries,
+                },
+            )
+            self._pm.logger.warning(
+                "pm_engine",
+                f"Retry {retries}/{max_r} for '{spec_name}' (merge-back failed)",
+            )
+
+    def _finalize_merge_success(
+        self, spec_name: str, run_id, branch: str, merge_info, conflict_files: list
+    ) -> None:
+        """merge-back 成功收口（从 ``_run_agent_worker`` 提取，供主路径与重试点复用）。
+
+        与提取前逐字节同语义：合并收尾 ready 态兜底 → implemented 转移 → 字段清账
+        （error/_retry_count/_merge_fp/_merge_streak/锁冲突计数/顺延记账）→
+        pop 冲突告警 → 任务进度回写 → consume_legacy → verifier 入队。
+        """
+        # fix-observability-gaps 2.2：implementer merge 成功收口
+        # 合并收尾 ready 态兜底（evo-spec-concurrency-flight-guard
+        # D3）：status=ready（评审收尾竞态回退残留）时先补记合法转移
+        # ready→implementing，再推进 implemented——消除 ready→
+        # implemented 非法转移 ERROR 与 83 分钟状态矛盾。
+        self._pm._merge_ready_fallback(
+            spec_name,
+            run_id,
+            "implementer",
+            branch,
+        )
+        self._pm.state_machine.transition(
+            spec_name, "implemented",
+            trigger_run_id=run_id,
+            agent_type="implementer", channel="auto",
+        )
+        self._pm.state_machine.update_spec(
+            spec_name,
+            {
+                "implementer_run": run_id,
+                # 记录真实实现分支（带时间戳后缀）：push 时按此分支推送，
+                # 否则回退 fenix/<spec> 不存在导致 auto-push 全部失败。
+                "branch": branch,
+                "error": None,
+                "_retry_count": 0,
+                "_merge_fp": None,
+                "_merge_streak": 0,
+                # 派发成功即清零锁冲突计数（improve-run-lifecycle-governance D5）
+                **self._pm._clear_dispatch_conflict(spec_name),
+                # 顺延记账清账（evo-merge-back-spec-dir-inflight-guard D2）：
+                # merge 成功即解除顺延态，防陈旧计数污染下一轮
+                "_merge_retry_pending": False,
+                "_merge_retry_count": 0,
+                "_merge_retry_first_at": None,
+            },
+        )
+        # pop 冲突自愈后：被丢弃的 stash 改动文件清单写入 error 字段，
+        # 触发 admin 告警（stash 条目保留、可 git stash show 找回，
+        # 不阻塞 merge-back 与状态推进）。须放在上面 update_spec(error=None)
+        # 之后，避免被清空。见 fix-stashpop-deadlock。
+        if conflict_files:
+            self._pm._report_stash_pop_conflict(
+                spec_name, conflict_files, merge_info=merge_info
+            )
+        # 写侧确定性回写：把已完成的任务勾选同步进主树 tasks.md
+        # （add-task-progress-sync）。任何异常都不阻塞 run 终态主流程。
+        try:
+            self._pm._sync_task_progress(spec_name)
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"任务进度回写未成功 '{spec_name}'（非阻塞）: {e}",
+            )
+        # 恢复重派遗产回收（add-recovery-legacy-check 1.3）：后继 run 成功
+        # merge 后，该 spec 的遗产已被收编/不再需要，consume_legacy 触发回收。
+        # worktree 物理回收在 run_implementer 的 cleanup（成功路径保留分支、
+        # 由 merge 前已清理）完成后由既有路径处理；此处仅清内存态遗产登记，
+        # 使清扫器不再对其豁免。
+        try:
+            self._pm.agent_runner.worktree_manager.consume_legacy(spec_name)
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"consume_legacy 失败 '{spec_name}'（非阻塞）: {e}",
+            )
+        # Immediately queue verifier at FRONT so it runs next
+        self._enqueue_front(spec_name, "verifier")
+        self._pm.logger.info(
+            "pm_engine", f"Implement done, verifier queued for '{spec_name}'"
+        )
 
     def _run_spec_review_worker(self, spec_name: str, priority: int):
         """评审 run worker 线程体（fix-spec-review-blocking-dispatch 1.8）。

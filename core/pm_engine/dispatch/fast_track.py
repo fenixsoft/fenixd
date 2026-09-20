@@ -514,6 +514,23 @@ class FFastTrackMixin:
                 if getattr(merge_info, "wip_gate_blocked", False):
                     self._report_mergeback_wip_overlap(spec_name, merge_info, branch, merge_error)
                     return False
+                # ── spec 目录在飞编辑顺延（evo-merge-back-spec-dir-inflight-guard
+                # D1/D1a）── 与 wip_gate_blocked 同族：卫检查是前置拦截而非 merge
+                # 失败（主树零污染，未 stash/merge/pop）——不推进状态、不经
+                # _merge_fp/_merge_streak 记账、不 blocked。保留 worktree 供重派
+                # 继承；spec 保持 in-flight（implementing），branch/implementer_run
+                # 锚点原样保留，由外部提交动作解除后经下一轮恢复/重排再试合并。
+                # 顺延的有界上限由 dispatch 调用方承载；fast-track 车道是同一轮内
+                # 失败即返回的有界短窗（不自旋）。
+                if getattr(merge_info, "spec_dir_inflight", False):
+                    self._keep_fast_track_worktree(spec_name, result)
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"fast-track merge-back 顺延 '{spec_name}'（branch '{branch}'）: "
+                        f"{merge_error} — spec 目录在飞编辑，不推进状态，"
+                        f"保留 worktree/锚点待解除后重试",
+                    )
+                    return False
                 spec_entry = self._pm.state_machine.read_one(spec_name) or {}
                 # （code-review item 9f857a108821）此处旧有 `max_r = ...
                 # agents.max_retries` 赋值从未被本方法读取（下方 merge 失败分岔只用

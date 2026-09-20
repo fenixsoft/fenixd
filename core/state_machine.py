@@ -348,6 +348,10 @@ class StateParser:
                     "_cancelled_hold",
                     "_repair_awaiting_remerge",
                     "_judge_cap_frozen",
+                    # evo-merge-back-spec-dir-inflight-guard D2：merge-only 重试
+                    # 顺延标记——False 不转会被误判为恒顺延（_defer_merge_back
+                    # 读回字符串 "False" 为 truthy）。
+                    "_merge_retry_pending",
                 ):
                     # 布尔字段显式转换：字符串 "False" 也是 truthy，不转会把
                     # 解冻后的 spec 永久误判为冻结（fix-restart-dual-dispatch S4）；
@@ -371,6 +375,10 @@ class StateParser:
                     "reviewer_run",
                     "_repair_base_tip",
                     "_repair_merge_error",
+                    # evo-merge-back-spec-dir-inflight-guard D2：顺延窗口起点
+                    # （epoch 秒）可空——None 经 serialize 写 null、解析回退 None，
+                    # 否则 "null" 字符串被 float() 吃掉整条顺延记账。
+                    "_merge_retry_first_at",
                     # 同因重派熔断（fix-redispatch-loop-governance D3.2）：归因指纹
                     # 可空字段——None 经 serialize 写 null、解析回退 None（否则
                     # 「null」字符串会被 prev_fp == fp 比较吞掉，跨重启熔断失效）。
@@ -1305,6 +1313,21 @@ class StateMachine:
             )
             return False
         if not remerge_ok:
+            # ── spec 目录在飞编辑顺延（evo-merge-back-spec-dir-inflight-guard
+            # D1/D1a）── 恢复期 re-merge-back 被卫检查顺延（spec_dir_inflight=True）：
+            # 主树 spec 目录有未提交改动，**MUST NOT** 消费 _repair_awaiting_remerge
+            # 标记——原样保留待下一轮恢复/重排再试（等价于「视为尚未尝试合并」）。
+            # 若清除标记会让「仅剩合并」的分支退回 ready 全新派发，白废已完成的实现。
+            # 顺延的有界上限由 dispatch 调用方（D2）承载；此处是 daemon 重启单次的
+            # 有界短窗（不自旋），由下一次重启/人工提交解除。
+            if getattr(merge_info, "spec_dir_inflight", False):
+                self.logger.warning(
+                    "state_machine",
+                    f"恢复期 re-merge-back 顺延 '{name}'（branch '{branch}'）: "
+                    f"{remerge_error} — spec 目录在飞编辑，保留待 re-merge 标记"
+                    f"待下一轮再试",
+                )
+                return False
             # re-merge 失败：清除标记后回落既有保留续做路径（tasks 4.3）——
             # 保留 branch/implementer_run + _recovery_resume，spec 落 ready，
             # 由下一轮 run 的正常 merge-back 经 _should_enter_repair 进入
