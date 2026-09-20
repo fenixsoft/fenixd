@@ -688,6 +688,7 @@ def snapshot_declaration_baseline(spec_name, run_id, project_root) -> "dict | No
         "entries": entries,
     }
     target = root / ".fenix" / "verify-progress" / spec_name / "declaration-baseline.json"
+    tmp = None
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         tmp = target.with_name(target.name + ".tmp")
@@ -698,8 +699,10 @@ def snapshot_declaration_baseline(spec_name, run_id, project_root) -> "dict | No
             "deliverables",
             f"基线快照写入失败 '{spec_name}'（仅 WARNING 不阻塞派发）: {e}",
         )
+        # tmp 可能因 mkdir 本身失败而从未绑定（UnboundLocalError 会逃出本函数、
+        # 破坏「写入异常仅 WARNING 不阻塞派发」契约），故显式守 None。
         try:
-            if tmp.exists():
+            if tmp is not None and tmp.exists():
                 tmp.unlink()
         except OSError:
             pass

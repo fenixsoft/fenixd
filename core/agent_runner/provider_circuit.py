@@ -11,7 +11,7 @@ import re
 import time
 from core.agent_runner.run_files import append_run_line
 from datetime import datetime, timezone
-from typing import Optional, Dict, Any
+from typing import Optional, Dict
 
 # ── provider 熔断（fix-stashpop-deadlock：provider-fault-fuse） ──────────────
 # 同一 provider 在滚动窗口内累计 HTTP 4xx（400/401/404）达阈值 → circuit_open，
@@ -26,7 +26,9 @@ PROVIDER_CIRCUIT_COOLDOWN_SECONDS = 1800  # 冷却 30 分钟
 # 反复原地重试烧链预算，fix-403-auth-failover-blindspot 一并纳入）
 PROVIDER_CIRCUIT_4XX = (400, 401, 403, 404)
 # 半开探针成功判据：claude CLI 正常退出（视作网关 200）。解析不到 code 视为失败、不计数。
-PROVIDER_CIRCUIT_PROBE_SUCCESS_CODE = 0
+# （code-review item 8f7f04802d6b）原 PROVIDER_CIRCUIT_PROBE_SUCCESS_CODE 常量
+# 全仓零引用——探针成败实际以 `_record_provider_probe(success=bool)` 的实参为准，
+# 该常量是与真实逻辑脱节的死配置（可能静默漂移），已移除。
 
 # ── provider 切换冷却（add-provider-failover：failover-dispatch） ──────────
 # 与 4xx 熔断（provider-fault-fuse）独立的字段：切换类错误（unrecognized_model / 5xx /
@@ -90,14 +92,20 @@ class TransientAttempt:
     空串占位并正常记账，MUST NOT 阻断熔断记账。
     """
 
-    __slots__ = ("spec", "run_id", "provider", "at")
+    __slots__ = ("spec", "run_id", "provider", "at", "at_wall")
 
     def __init__(self, spec: str = "", run_id: str = "", provider: str = "",
-                 at: float = 0.0):
+                 at: float = 0.0, at_wall: float | None = None):
         self.spec = spec or ""
         self.run_id = run_id or ""
         self.provider = provider or ""
+        # at：单调秒，仅供滑窗剔除（now - t <= window）。
+        # at_wall：墙钟秒，仅供告警上下文展示（code-review item cbaa42ed2281）——
+        # 旧实现把单调时间戳直接 fromtimestamp 成「时钟时间」，得到 1970 年附近
+        # 的无意义时刻，污染 escalation description/evidence 与 resolve_note。
+        # 缺省回退 at（旧调用点未传墙钟时行为与既有测试一致）。
         self.at = at
+        self.at_wall = at if at_wall is None else at_wall
 
 
 class ProviderCircuit:
@@ -336,9 +344,13 @@ class ProviderCircuit:
         if not provider_name:
             return
         runs_dir = self._pm.project_root / ".fenix" / "runs"
-        runs_dir.mkdir(parents=True, exist_ok=True)
         run_file = runs_dir / f"{run_id}.jsonl"
         try:
+            # mkdir 移入 try（code-review item b42d9b865018）：旧实现 mkdir 在
+            # try 外，权限/只读盘下的 OSError 会从标记写入中途逃逸，打断 attempt
+            # 启动；且写失败被 `except OSError: pass` 静默吞掉，丢失 provider
+            # 可追溯性而无任何痕迹。现 mkdir 一并守卫，失败记 WARNING。
+            runs_dir.mkdir(parents=True, exist_ok=True)
             append_run_line(
                 run_file,
                 {
@@ -351,8 +363,11 @@ class ProviderCircuit:
                     "chain_len": chain_len,
                 },
             )
-        except OSError:
-            pass
+        except OSError as e:
+            self._pm.logger.warning(
+                "agent_runner",
+                f"provider_marker 写入失败 {run_file}（不阻断 attempt）: {e}",
+            )
 
     def _record_daily_provider_attempt(self, provider_name: str) -> None:
         """per-provider 当日 attempt 计数 + 单次 WARNING 告警（design D5 / spec 4.2）。
@@ -521,12 +536,15 @@ class ProviderCircuit:
         events = self._transient_break_events.setdefault(fingerprint, [])
         if window is not None and window > 0:
             events = [t for t in events if now - t.at <= window]
+        # 墙钟时刻与单调 now 一并固化：告警上下文展示用 at_wall（真实时钟），
+        # 滑窗用 at（单调，防时钟回拨）。code-review item cbaa42ed2281。
         events.append(
             TransientAttempt(
                 spec=spec or "",
                 run_id=run_id or "",
                 provider=provider or "",
                 at=now,
+                at_wall=time.time(),
             )
         )
         self._transient_break_events[fingerprint] = events
@@ -552,7 +570,9 @@ class ProviderCircuit:
                         "run_id": ev.run_id,
                         "spec": ev.spec,
                         "provider": ev.provider,
-                        "at": datetime.fromtimestamp(ev.at, timezone.utc).isoformat(),
+                        "at": datetime.fromtimestamp(
+                            getattr(ev, "at_wall", ev.at), timezone.utc
+                        ).isoformat(),
                     }
                 )
         return out, truncated
@@ -981,6 +1001,25 @@ class ProviderCircuit:
             f"provider circuit open: {provider_name} " f"(HTTP {code} x {count}) — {cooldown_info}"
         )
 
+    @staticmethod
+    def _positive_number(value, default) -> float:
+        """把配置值容错归一为正数（失败/非正 → default）。
+
+        与 _signal_kill_cooldown_seconds 同口径（code-review item 12595e41e08f）：
+        provider_circuit 的 window/threshold/cooldown 此前直接消费原始配置值，
+        非数值（字符串）会让滑窗过滤在失败路径抛 TypeError，0/负数则让熔断瞬间
+        失效。此处统一钳制——不可解析或 <= 0 时回落常量缺省，保证熔断语义始终成立。
+        """
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            return float(default)
+        if v != v or v in (float("inf"), float("-inf")):  # NaN / inf 兜底
+            return float(default)
+        if v <= 0:
+            return float(default)
+        return v
+
     def _record_provider_4xx(self, provider_name: str, code: int, now: float | None = None) -> None:
         """记录一次 provider 网关 4xx，按滚动窗口计数，达阈值置 open。
 
@@ -990,14 +1029,28 @@ class ProviderCircuit:
             return
         now = self._pm._now() if now is None else now
         st = self._circuit_state(provider_name)
-        window = self._pm._get_config(
-            "agents.provider_circuit_window_seconds", PROVIDER_CIRCUIT_WINDOW_SECONDS
+        # 数值容错（code-review item 12595e41e08f）：window/threshold/cooldown 直接
+        # 取配置并参与 `now - t <= window` / `>= threshold` / `now + cooldown`——若
+        # 用户写入非数值（字符串）会在此抛 TypeError 打挂 provider 失败路径；0/负数
+        # 冷却则让熔断瞬间失效。与本文件 signal-kill 助手同口径：
+        # try/except (TypeError, ValueError) + 下限钳制。
+        window = self._positive_number(
+            self._pm._get_config(
+                "agents.provider_circuit_window_seconds", PROVIDER_CIRCUIT_WINDOW_SECONDS
+            ),
+            PROVIDER_CIRCUIT_WINDOW_SECONDS,
         )
-        threshold = self._pm._get_config(
-            "agents.provider_circuit_threshold", PROVIDER_CIRCUIT_THRESHOLD
+        threshold = self._positive_number(
+            self._pm._get_config(
+                "agents.provider_circuit_threshold", PROVIDER_CIRCUIT_THRESHOLD
+            ),
+            PROVIDER_CIRCUIT_THRESHOLD,
         )
-        cooldown = self._pm._get_config(
-            "agents.provider_circuit_cooldown_seconds", PROVIDER_CIRCUIT_COOLDOWN_SECONDS
+        cooldown = self._positive_number(
+            self._pm._get_config(
+                "agents.provider_circuit_cooldown_seconds", PROVIDER_CIRCUIT_COOLDOWN_SECONDS
+            ),
+            PROVIDER_CIRCUIT_COOLDOWN_SECONDS,
         )
 
         # 滑出滚动窗口外的旧事件

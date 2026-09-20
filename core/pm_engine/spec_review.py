@@ -628,14 +628,27 @@ class SpecReviewManager:
         if not spec_dir.is_dir():
             return f"SPEC 目录不存在: {spec_dir}"
 
-        # 1. repairs 路径合法性
+        # 1. repairs 路径合法性（解析后归属校验，code-review item bdec829dca96）
+        # 评审结果 JSON 由 LLM 产出（不可信输入），此处是写入边界的唯一硬门。
+        # 旧实现只做字符串前缀 startswith("spec/changes/")：`spec/changes/../foo.txt`
+        # 未归一化即可穿过，且 `/` 形态的绝对/跨 spec 路径只要文件存在也能通过。
+        # 改为 Path 解析 + 归属校验：归一化后唯一合法落点必须是**本 spec** 目录
+        # （spec/changes/<spec_name>/）内的文件。
+        spec_root = (self.project_root / "spec" / "changes").resolve()
+        allowed_dir = (spec_root / spec_name).resolve()
         repairs = review_data.get("repairs") or []
         for repair in repairs:
             path = repair.get("path", "")
-            if not path.startswith(SPEC_CHANGES_PREFIX):
-                return f"repairs 路径越界: {path}"
-            # 检查是否确实存在于 SPEC 目录内（path 为项目根相对路径）
-            if not (self.project_root / path).exists():
+            if not isinstance(path, str) or not path:
+                return f"repairs 路径越界: {path!r}"
+            candidate = Path(path)
+            if candidate.is_absolute():
+                return f"repairs 路径越界（绝对路径）: {path}"
+            resolved = (self.project_root / candidate).resolve()
+            # 归一化后必须落在本 spec 目录内（startswith 于父目录且不等于父目录本身）
+            if resolved != allowed_dir and allowed_dir not in resolved.parents:
+                return f"repairs 路径越界（须落在 {spec_name}/ 内）: {path}"
+            if not resolved.exists():
                 return f"repairs 路径不存在: {path}"
 
         # 2. 快照比对（需要从临时文件加载派发前快照）

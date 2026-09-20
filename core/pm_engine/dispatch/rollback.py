@@ -124,11 +124,26 @@ class RRollbackMixin:
                 # run 无收工结果产出（进程消失/零输出/网关链路耗尽），回退本次
                 # 启动的预算计数。计数在 worker 启动处先行递增，此处补偿回退。
                 # run_reason 传入 exc 信息（派发异常不属监督超时/停滞，应豁免）。
-                self._pm._exempt_dead_run_budget(
-                    spec_name,
-                    f"dispatch exception: {str(exc)[:80]}",
-                    run_reason=str(exc) if exc else None,
-                )
+                #
+                # 隔离（code-review item a986aab6fa9d）：豁免是**尽力而为的记账**
+                # （bump_impl_budget / bump_budget_exempt_runs 均写状态文件），若它
+                # 自己抛异常（状态文件锁/IO、_impl_run_budget_used 读取失败），
+                # 控制流会直接跳到外层 except，使下面的
+                # update_spec(→ready)/_last_dispatch_error/_enqueue **永远执行不到**
+                # ——spec 卡在 implementing 且无队列条目，正是本方法要修复的故障。
+                # 故必须独立 try/except，让豁免失败不能中止回滚。
+                try:
+                    self._pm._exempt_dead_run_budget(
+                        spec_name,
+                        f"dispatch exception: {str(exc)[:80]}",
+                        run_reason=str(exc) if exc else None,
+                    )
+                except Exception as exempt_exc:  # noqa: BLE001 —— 记账失败不阻塞回滚
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"budget exempt failed for '{spec_name}'（按未豁免继续回滚）: "
+                        f"{type(exempt_exc).__name__}: {exempt_exc}",
+                    )
                 self._pm.logger.info(
                     "pm_engine",
                     f"budget_exempt_audit: spec={spec_name}, "

@@ -40,8 +40,13 @@ const BASE_MENU_ITEMS = [
   { key: 'self-evolution', label: '自进化' },
 ];
 
-// 作用域 Select 的值编码：'user' 或 'project:<name>'
+  // 作用域 Select 的值编码：'user' 或 'project:<name>'
 const USER_SCOPE = 'user';
+
+// 仅项目级存在的页签：切回用户级作用域时若停留在这些页签上，菜单项会消失、
+// 选中态悬空（渲染出 project 为 undefined 的面板），必须回落到通用页签。
+// 新增项目级页签时同步登记此集合（QUALITY: code-review item 66123be10772）。
+const PROJECT_ONLY_KEYS = new Set(['self-review', 'project-profile', 'hook']);
 
 function decodeScopeValue(value: string): { scope: 'user' | 'project'; project?: string } {
   if (value.startsWith('project:')) {
@@ -96,8 +101,8 @@ export default function SettingsPage() {
     const { scope: nextScope, project: nextProject } = decodeScopeValue(value);
     setScope(nextScope);
     setProject(nextProject);
-    // 自省/Hook 页签仅项目级存在：切回用户级时不能停留在已消失的页签上
-    if (nextScope === 'user' && (activeKey === 'hook' || activeKey === 'self-review')) {
+    // 项目级页签仅项目级存在：切回用户级时不能停留在已消失的页签上
+    if (nextScope === 'user' && PROJECT_ONLY_KEYS.has(activeKey)) {
       setActiveKey('llm');
     }
   };

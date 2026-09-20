@@ -27,7 +27,7 @@ import sys
 import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 _logger = logging.getLogger("fenixd.code_review")
 
@@ -148,12 +148,19 @@ def read_items(project_root) -> Dict[str, dict]:
     return out
 
 
-def write_items(project_root, records: Iterable[dict]) -> None:
+def write_items(project_root, records) -> None:
     """全量写回 items.jsonl（读-改-写 + flock + 原子替换展开见 upsert_findings）。
 
-    每条一行 JSON；调用方传入的 records 为 item_id→记录 dict 或可迭代记录。
+    每条一行 JSON；调用方传入 ``records`` 兼容两种入参（docstring 既有契约）：
+    - ``item_id → 记录 dict`` 的映射（直接取 .values()）；
+    - 可迭代的记录序列。
+    旧实现只按可迭代处理：真传入 dict 时迭代得到字符串键、全部被 continue
+    跳过，最终 ``content = ""`` 会把台账整体清空——一次静默的全量丢失
+    （code-review item f81b36084781）。此处入口统一归一化。
     同一 item_id MUST 只保留一条（dict 天然保证）。
     """
+    if isinstance(records, dict):
+        records = list(records.values())
     recs: Dict[str, dict] = {}
     for rec in records:
         if not isinstance(rec, dict) or not isinstance(rec.get("item_id"), str):
@@ -201,6 +208,32 @@ def _item_id(project: str, file: str, fp: str) -> str:
 
 def _now_iso() -> str:
     return datetime.now(timezone_utc()).isoformat()
+
+
+def _coerce_line(value) -> int:
+    """把 LLM/ocr 产出的 ``line`` 字段容错归一为 int。
+
+    agent 常写出非纯数字形态（``"12-15"`` / ``"L12"`` / ``"N/A"`` / 浮点串），
+    直接 ``int()`` 会抛 ValueError/TypeError 并穿透 ``_with_lock``，使整轮落账
+    被判失败（code-review item 26cc257399e7 / 9e4636798ccd）——与本函数「缺
+    关键字段的发现跳过，不整批失败」的取向相悖。容错策略：先试 int，失败则
+    用正则提取首个整数段，仍无则回退 1（行号仅用于排序展示，非事实字段）。
+    """
+    if value is None or value == "":
+        return 1
+    if isinstance(value, bool):
+        return 1
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value) if value == value and abs(value) != float("inf") else 1
+    m = re.search(r"\d+", str(value))
+    if m:
+        try:
+            return int(m.group(0))
+        except ValueError:
+            return 1
+    return 1
 
 
 def timezone_utc():
@@ -261,7 +294,7 @@ def upsert_findings(
             rec = by_fp.get(fp)
             base = {
                 "file": file_,
-                "line": int(finding.get("line") or 1),
+                "line": _coerce_line(finding.get("line")),
                 "severity": str(finding.get("severity") or "info"),
                 "category": category,
                 "title": title,
@@ -448,31 +481,34 @@ _SOURCE_EXTS = {
     ".jsx",
     ".css",
 }
-_EXCLUDED_DIRS = {
+# 排除规则单一来源（code-review item 3bc2bb0880a3 / 8dc7328123b8）：
+# 顶层排除目录同时需要「路径前缀」与「任意层目录名」两种判据，此前
+# _EXCLUDED_DIRS / _EXCLUDED_PREFIXES 两处各自列举、需人工同步（漏一处即
+# 静默失效）。现由 _EXCLUDED_TOP_DIRS 单表派生两套判据，消除漂移面。
+_EXCLUDED_TOP_DIRS = (
     "spec",
     "docs",
     "dist",
     ".fenix",
     ".git",
-    "node_modules",
-    "__pycache__",
-    ".venv",
-    "venv",
-    "archive",
-    "static/dist",
     # 测试代码不作为审查对象（2026-09-19 用户决策）：审查面对准产品代码。
     # 全仓 474 文件里 tests/ 占 251，且过半是断言细节而非产品逻辑——
     # 逐文件 LLM 审查既稀释了产品代码的注意力预算，也让 manifest 规模失去意义。
     # 测试自身的质量由测试套件自身把关。
     "tests",
+)
+# 任意层级的排除目录名（不限于顶层）：顶层表 ∪ 依赖/缓存/归档目录。
+# 注：多段路径（如 'static/dist'）不能放入此集合——判定按 ``p.split("/")``
+# 的**单段**目录名比较，多段字符串永不相等（旧值的静默失效项，已移除；
+# 构建产物由 _EXCLUDED_PREFIXES 的 core/dashboard/static/dist/ 覆盖）。
+_EXCLUDED_DIRS = set(_EXCLUDED_TOP_DIRS) | {
+    "node_modules",
+    "__pycache__",
+    ".venv",
+    "venv",
+    "archive",
 }
-_EXCLUDED_PREFIXES = (
-    "spec/",
-    "docs/",
-    "dist/",
-    ".fenix/",
-    ".git/",
-    "tests/",
+_EXCLUDED_PREFIXES = tuple(f"{d}/" for d in _EXCLUDED_TOP_DIRS) + (
     "core/dashboard/static/dist/",
 )
 # 生成物文件名判据（无法靠目录排除的）：``*.gen.css`` 等由构建命令产出
@@ -539,11 +575,17 @@ def collect_manifest(project_root, scope: str, window_start: Optional[datetime] 
         raw = _git(project_root, ["ls-files"])
         files = [line for line in raw.splitlines() if line.strip()]
     else:
-        # 窗口：window_start 之后变更的文件（--since 走本地时间）
+        # 窗口：window_start 之后变更的文件（--since 走本地时间）。
+        # 加 --diff-filter=ACMR：排除 D（删除）与其它无内容形态——已删除文件
+        # 列入 manifest 会让审查对该文件空转（读不到内容，白烧一轮 token）。
+        # code-review item f27271f33580。
         since = window_start.isoformat() if window_start is not None else None
         if since is None:
             return []
-        raw = _git(project_root, ["log", "--since", since, "--name-only", "--pretty=format:"])
+        raw = _git(
+            project_root,
+            ["log", "--since", since, "--diff-filter=ACMR", "--name-only", "--pretty=format:"],
+        )
         files = [line for line in raw.splitlines() if line.strip()]
     seen: set = set()
     out: List[str] = []
@@ -561,7 +603,15 @@ def collect_manifest(project_root, scope: str, window_start: Optional[datetime] 
 
 
 def _latest_review_run(project_root) -> Optional[str]:
-    """最新一次 review run 的 run_id（按内嵌 epoch 排序），无则 None。"""
+    """最新一次 review run 的 run_id（按内嵌 epoch 排序），无则 None。
+
+    run_id 形如 ``code-review-<epoch>``，撞名退避时追加 ``-<n>``
+    （maintenance_runs._unique_code_review_run_id，如 ``code-review-<epoch>-2``）。
+    旧正则要求名字**以** 9~10 位数字结尾，这类带退避后缀的 run 会被跳过，
+    使 read_progress 取到更旧的一次 run（total/done 全错、running 恒 false，
+    并让 409 重复触发守卫失效）。故匹配「epoch 后可跟多个 -<n> 段」的形态，
+    取首个 epoch 段排序（code-review item ab5d3b4c3fa9）。
+    """
     d = code_review_dir(project_root)
     if not d.is_dir():
         return None
@@ -570,7 +620,7 @@ def _latest_review_run(project_root) -> Optional[str]:
     try:
         for p in d.glob("manifest-*.json"):
             name = p.name[len("manifest-") : -len(".json")]
-            m = re.search(r"(\d{9,10})$", name)
+            m = re.search(r"(\d{9,10})(?:-\d+)*$", name)
             if not m:
                 continue
             ts = int(m.group(1))
@@ -716,7 +766,6 @@ def save_code_review_state(project_root, date_str: str) -> None:
 # ── 修复 SPEC 生成（复用 evolution 链路，分组 6） ──────────────────
 
 _KEBAB_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
-_SPEC_YAML_TEMPLATE = "schema: spec-driven\ncreated: {created}\nmode: full\n"
 
 
 def _spec_yaml_content(created: str) -> str:
@@ -726,15 +775,18 @@ def _spec_yaml_content(created: str) -> str:
 
 
 def _slugify(text: str) -> str:
-    """把任意文本推导为 kebab-case slug（^[a-z0-9][a-z0-9-]*$）。"""
+    """把任意文本推导为 kebab-case slug（^[a-z0-9][a-z0-9-]*$）。
+
+    ``re.sub(r"[^a-z0-9]+", "-", ...).strip("-")`` 归一后 s 首字符必为
+    [a-z0-9]（或 s 为空，已回退 "fix"），故无需再判「非字母数字前缀」的
+    不可达分支（code-review item 4796c2e0774c 已移除该死代码）。
+    """
     if not isinstance(text, str):
         text = str(text)
     s = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
     s = re.sub(r"-{2,}", "-", s)
     if not s:
         s = "fix"
-    if not s[0].isdigit() and not s[0].isalpha():
-        s = "fix-" + s
     return s
 
 
@@ -1129,6 +1181,12 @@ def _spec_md(capability: str, items: List[dict]) -> str:
 
 
 def _design_md(name: str, items: List[dict]) -> str:
+    """生成 design.md：Context/Decisions 为静态文案，「逐条修复方向」段
+    引用 items（与 _proposal_md/_spec_md/_tasks_md 同口径）。
+
+    注：code-review item 457092d12994 称本函数 items 未使用——经复核为误报，
+    下方循环实际使用 items 渲染逐条修复方向，故保持签名不变。
+    """
     lines = [
         f"# Design: {name}",
         "",

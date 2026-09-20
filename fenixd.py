@@ -21,6 +21,7 @@ Architecture:
 """
 
 import os
+import re
 import sys
 import signal
 import subprocess
@@ -2215,8 +2216,13 @@ class FenixDaemon:
                 break
         else:
             return None
-        if "-a" in rest:
-            rest = rest.rsplit("-a", 1)[0]
+        # attempt 后缀剥离 MUST 只匹配尾部 `-a<digits>`（code-review item
+        # 8c50a8d93441）：旧实现用 `if "-a" in rest: rest.rsplit("-a", 1)[0]`，
+        # spec 名本身含 "-a"（my-app-fix、fix-a-b）时会在错误的 '-a' 处切分，
+        # 得到 "my" 之类的错误 spec 名——排水保全 sidecar / 中断恢复续做均依赖
+        # 该解析。用正则尾部锚定，且允许多段 attempt（与 runner._normalize_run_id
+        # 的 (?:-a\d+|-r\d+)+$ 口径一致）。
+        rest = re.sub(r"(?:-a\d+|-r\d+)+$", "", rest)
         parts = rest.rsplit("-", 1)
         if len(parts) == 2 and parts[0] and parts[1].isdigit():
             return parts[0]

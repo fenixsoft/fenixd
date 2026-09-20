@@ -20,9 +20,9 @@ registry.py — 多项目发现与注册（dashboard-server D3）。
 
 import errno
 import logging
-import errno
-import logging
 import os
+import tempfile
+import threading
 import yaml
 from pathlib import Path
 
@@ -36,6 +36,14 @@ DEFAULT_CONFIG = Path.home() / ".config" / "fenixd" / "dashboard.yaml"
 
 class Registry:
     """读写监控配置并执行多项目发现。"""
+
+    # 配置读-改-写的进程内互斥（code-review item 2f4301b32a85）：dashboard 经
+    # ThreadingHTTPServer 服务请求，add_ignored/remove_project/mark_fixture 等
+    # 直接走 `load() → mutate → save()`。无锁时两个并发请求会互相覆盖（整份
+    # YAML 文档后写者胜），且旧 save 复用同一临时路径 `.yaml.tmp`，重叠写会把
+    # 两次写入交错进同一文件。类级 RLock：同进程内所有 Registry 实例共用一把锁
+    # （跨进程场景由 CLI/dashboard 各自单写，不在本锁范围）。
+    _SAVE_LOCK = threading.RLock()
 
     def __init__(self, config_path=None):
         self.config_path = Path(config_path) if config_path else DEFAULT_CONFIG
@@ -58,7 +66,9 @@ class Registry:
 
     # pathlib.Path.is_file()/_is_dir() 内部只吞 ENOENT/ENOTDIR/EBADF/ELOOP，
     # 但 EIO 等其它 OSError 会直接上抛。这里显式捕获以区分「正常不存在」与「不可读」。
-    _ABSENT_ERRNOS = {errno.ENOENT, errno.ENOTDIR, errno.EBADF, errno.ELOOP}
+    # （code-review item f7dc193f07fe：原 _ABSENT_ERRNOS 常量声明后从未被引用，
+    # 自相矛盾地「记录了未实现的行为」——probe_child 实际对任一 OSError 都判
+    # unreadable。已删除该死常量，语义以 _log_unreadable 实现为准。）
 
     def probe_child(self, child: Path) -> str:
         """对扫描候选子目录执行 is_dir() + .fenix/STATE.md is_file() 探测。
@@ -129,16 +139,59 @@ class Registry:
         return out
 
     def save(self, data: dict):
-        """写回配置（确保目录存在）。"""
+        """写回配置（确保目录存在；原子替换，唯一临时路径）。
+
+        用 ``tempfile.mkstemp`` 取进程唯一临时名 + ``os.replace`` 原子替换：
+        旧实现固定借用 ``<config>.yaml.tmp``，两个并发 save 会写同一文件并
+        互相截断（code-review item 2f4301b32a85）。
+        """
         self.config_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.config_path.with_suffix(".yaml.tmp")
-        tmp.write_text(
-            yaml.safe_dump(data, allow_unicode=True, sort_keys=False),
-            encoding="utf-8",
+        fd, tmp_str = tempfile.mkstemp(
+            prefix=f".{self.config_path.name}.", suffix=".tmp", dir=str(self.config_path.parent)
         )
-        tmp.replace(self.config_path)
+        try:
+            with open(fd, "w", encoding="utf-8") as f:
+                f.write(yaml.safe_dump(data, allow_unicode=True, sort_keys=False))
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_str, str(self.config_path))
+        finally:
+            tmp_path = Path(tmp_str)
+            if tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
 
     # ── 发现 ─────────────────────────────────────────────────
+
+    @staticmethod
+    def _dir_exists(path: Path) -> bool:
+        """``is_dir()`` 的 OSError 容错包装：探测失败按 False（不可达 ≠ 存在）。
+
+        裸 ``rp.is_dir()`` 在 EIO/EACCES 等 pathlib 不吞的 errno 上抛 OSError，
+        会中止整个 ``discover()``（丢掉后续全部显式项目与扫描结果，
+        code-review item a0e0813c0f88）。探测失败降级 exists=False + WARNING。
+        """
+        try:
+            return path.is_dir()
+        except OSError as exc:
+            logger.warning("发现层探测项目路径失败 %s: %s", path, exc)
+            return False
+
+    @staticmethod
+    def _state_md_is_file(path: Path) -> bool:
+        """``is_file()`` 的 OSError 容错包装：探测失败按 False + WARNING。
+
+        同 _dir_exists：裸 is_file() 的 EIO/EACCES 会逃出 ``add_project``，
+        破坏其「返回 (added, message) 元组」契约并崩掉 HTTP 路由/CLI
+        （code-review item a0e0813c0f88）。
+        """
+        try:
+            return path.is_file()
+        except OSError as exc:
+            logger.warning("发现层探测 STATE.md 失败 %s: %s", path, exc)
+            return False
 
     def discover(self) -> list:
         """合并显式配置与目录扫描，返回 [{name, path, discovered, exists, fixture}]。
@@ -176,7 +229,7 @@ class Registry:
                     "name": name,
                     "path": key,
                     "discovered": False,
-                    "exists": rp.is_dir(),
+                    "exists": self._dir_exists(rp),
                     "fixture": p.get("fixture") is True,
                 }
             )
@@ -240,29 +293,32 @@ class Registry:
             return False, f"无效路径: {path}"
         key = str(rp)
 
-        data = self.load()
-        for p in data.get("projects", []):
-            if not isinstance(p, dict):
-                continue
-            try:
-                existing = str(Path(p.get("path", "")).expanduser().resolve())
-            except (OSError, RuntimeError):
-                continue
-            if existing == key:
-                return False, f"项目已在监控列表: {key}"
+        # load→mutate→save 整段持锁（code-review item 2f4301b32a85：
+        # ThreadingHTTPServer 下并发写请求会互相覆盖整份 YAML）。
+        with self._SAVE_LOCK:
+            data = self.load()
+            for p in data.get("projects", []):
+                if not isinstance(p, dict):
+                    continue
+                try:
+                    existing = str(Path(p.get("path", "")).expanduser().resolve())
+                except (OSError, RuntimeError):
+                    continue
+                if existing == key:
+                    return False, f"项目已在监控列表: {key}"
 
-        if not (rp / ".fenix" / "STATE.md").is_file():
-            return False, f"目录不是 Fenixd 项目（缺少 STATE.md）: {key}"
+            if not Registry._state_md_is_file(rp / ".fenix" / "STATE.md"):
+                return False, f"目录不是 Fenixd 项目（缺少 STATE.md）: {key}"
 
-        data.setdefault("projects", []).append(
-            {
-                "name": name or (rp.name or key),
-                "path": key,
-                "fixture": fixture,
-            }
-        )
-        self.save(data)
-        return True, f"已注册项目: {key}"
+            data.setdefault("projects", []).append(
+                {
+                    "name": name or (rp.name or key),
+                    "path": key,
+                    "fixture": fixture,
+                }
+            )
+            self.save(data)
+            return True, f"已注册项目: {key}"
 
     def mark_fixture(self, path, fixture=True) -> tuple:
         """按规范化路径定位配置条目并写入/更新 `fixture` 键后写回。
@@ -279,19 +335,20 @@ class Registry:
             return False, f"无效路径: {path}"
         key = str(rp)
 
-        data = self.load()
-        for p in data.get("projects", []):
-            if not isinstance(p, dict):
-                continue
-            try:
-                existing = str(Path(p.get("path", "")).expanduser().resolve())
-            except (OSError, RuntimeError):
-                continue
-            if existing == key:
-                p["fixture"] = bool(fixture)
-                self.save(data)
-                return True, f"已更新夹具标记: {key}"
-        return False, f"项目未在监控列表（无需变更）: {key}"
+        with self._SAVE_LOCK:
+            data = self.load()
+            for p in data.get("projects", []):
+                if not isinstance(p, dict):
+                    continue
+                try:
+                    existing = str(Path(p.get("path", "")).expanduser().resolve())
+                except (OSError, RuntimeError):
+                    continue
+                if existing == key:
+                    p["fixture"] = bool(fixture)
+                    self.save(data)
+                    return True, f"已更新夹具标记: {key}"
+            return False, f"项目未在监控列表（无需变更）: {key}"
 
     def remove_project(self, path) -> tuple:
         """从配置 `projects` 移除显式注册的项目（按规范化路径匹配）并写回。
@@ -305,28 +362,29 @@ class Registry:
             return False, f"无效路径: {path}"
         key = str(rp)
 
-        data = self.load()
-        remaining = []
-        removed = False
-        for p in data.get("projects", []):
-            if not isinstance(p, dict):
+        with self._SAVE_LOCK:
+            data = self.load()
+            remaining = []
+            removed = False
+            for p in data.get("projects", []):
+                if not isinstance(p, dict):
+                    remaining.append(p)
+                    continue
+                try:
+                    existing = str(Path(p.get("path", "")).expanduser().resolve())
+                except (OSError, RuntimeError):
+                    remaining.append(p)
+                    continue
+                if existing == key:
+                    removed = True
+                    continue
                 remaining.append(p)
-                continue
-            try:
-                existing = str(Path(p.get("path", "")).expanduser().resolve())
-            except (OSError, RuntimeError):
-                remaining.append(p)
-                continue
-            if existing == key:
-                removed = True
-                continue
-            remaining.append(p)
 
-        if not removed:
-            return False, f"项目未在监控列表（无法移除）: {key}"
-        data["projects"] = remaining
-        self.save(data)
-        return True, f"已从监控列表移除: {key}"
+            if not removed:
+                return False, f"项目未在监控列表（无法移除）: {key}"
+            data["projects"] = remaining
+            self.save(data)
+            return True, f"已从监控列表移除: {key}"
 
     def add_ignored(self, path) -> tuple:
         """把规范化路径追加进 `ignored` 列表（去重）并写回。
@@ -336,28 +394,27 @@ class Registry:
 
         Returns: (added: bool, message: str)
         """
-        try:
-            key = self._norm(path)
-        except (OSError, RuntimeError):
-            return False, f"无效路径: {path}"
+        # `_norm` 内部已吞 OSError/RuntimeError 并恒返回 str（code-review item
+        # ff5c3d5d74d9：此处旧有的 try/except 永不可达），直接调用即可。
+        key = self._norm(path)
 
-        data = self.load()
-        ignored = data.get("ignored") or []
-        if not isinstance(ignored, list):
-            ignored = []
-        if key in {self._norm(x) for x in ignored if x}:
-            return False, f"项目已在忽略列表: {key}"
-        ignored.append(key)
-        data["ignored"] = ignored
-        self.save(data)
-        return True, f"已加入忽略列表: {key}"
+        with self._SAVE_LOCK:
+            data = self.load()
+            ignored = data.get("ignored") or []
+            if not isinstance(ignored, list):
+                ignored = []
+            if key in {self._norm(x) for x in ignored if x}:
+                return False, f"项目已在忽略列表: {key}"
+            ignored.append(key)
+            data["ignored"] = ignored
+            self.save(data)
+            return True, f"已加入忽略列表: {key}"
 
     def is_ignored(self, path) -> bool:
         """查询某路径是否已被忽略（按规范化路径比较）。"""
-        try:
-            key = self._norm(path)
-        except (OSError, RuntimeError):
-            return False
+        # _norm 恒返回 str（内部已吞 OSError），无需外层 try/except
+        # （code-review item ff5c3d5d74d9）。
+        key = self._norm(path)
         data = self.load()
         return key in {self._norm(x) for x in data.get("ignored", []) if x}
 

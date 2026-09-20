@@ -9,6 +9,8 @@ SPEC 状态经门面回引 self._pm.state_machine（design D3 规则 3）；
 from pathlib import Path
 import hashlib
 import json
+import os
+import tempfile
 import time
 from datetime import datetime
 
@@ -91,27 +93,65 @@ class RecoveryWatch:
         return self._pm.project_root / ".fenix" / RECOVERY_WATCH_FILE
 
     def _load_recovery_watch(self) -> None:
-        """重启后从 .fenix/recovery_watch.json 续查观察项（损坏/缺失按空兜底）。"""
+        """重启后从 .fenix/recovery_watch.json 续查观察项（损坏/缺失按空兜底）。
+
+        读取失败**不再静默**（code-review item 905fe4cac7b2）：文件存在但整份
+        JSON 损坏时记 WARNING 并把损坏文件改名为 ``.corrupt`` 移开，避免下一次
+        写入前一直读取坏文件、且丢失现场无从排查。缺失文件属正常首次启动，不
+        记日志。
+        """
+        path = self._pm._recovery_watch_path()
+        if not path.exists():
+            return
         try:
-            data = json.loads(self._pm._recovery_watch_path().read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"recovery_watch.json 读取失败（按空续查，损坏文件改名移开）: "
+                f"{type(e).__name__}: {e}",
+            )
+            try:
+                path.replace(path.with_name(path.name + ".corrupt"))
+            except OSError:
+                pass
             return
         if isinstance(data, dict):
             self._recovery_watch = {k: v for k, v in data.items() if isinstance(v, dict)}
 
     def _save_recovery_watch(self) -> None:
+        """原子持久化观察项（tempfile + fsync + os.replace）。
+
+        旧实现 ``path.write_text`` 原地截断后写：崩溃/SIGKILL/磁盘满发生在截断与
+        落盘之间会留下半截（非法）JSON，配合上面的加载侧会**整份**丢弃观察项，
+        使卡死 spec 在 daemon 重启后再不被复查/升级——正是本组件要防的故障
+        （code-review item 905fe4cac7b2）。改用与 agent_runner / dashboard data
+        同款的原子替换惯用法。
+        """
+        path = self._pm._recovery_watch_path()
+        tmp_path = None
         try:
-            path = self._pm._recovery_watch_path()
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(
-                json.dumps(self._recovery_watch, ensure_ascii=False, indent=2),
-                encoding="utf-8",
+            fd, tmp_str = tempfile.mkstemp(
+                prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
             )
+            tmp_path = Path(tmp_str)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(json.dumps(self._recovery_watch, ensure_ascii=False, indent=2))
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_str, str(path))
         except OSError as e:
             self._pm.logger.warning(
                 "pm_engine",
                 f"Failed to persist recovery watch: {e}",
             )
+            if tmp_path is not None:
+                try:
+                    if tmp_path.exists():
+                        tmp_path.unlink()
+                except OSError:
+                    pass
 
     def register_recovery_watch(self, spec_name: str, reason: str) -> None:
         """登记恢复观察项：followup_check_minutes 后复查 spec 是否真实恢复推进。

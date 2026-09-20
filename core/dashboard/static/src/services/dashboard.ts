@@ -58,7 +58,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     }
     throw new Error(msg);
   }
-  return res.json() as Promise<T>;
+  // 部分端点（DELETE / 裸 POST）合法返回 204 或空体，此时 res.json() 会抛
+  // SyntaxError 把成功调用误报为失败。按状态码与原文长度短路，空体统一返回
+  // undefined（调用方对这些端点不消费返回值）。
+  if (res.status === 204 || res.status === 205) return undefined as T;
+  const text = await res.text();
+  if (!text) return undefined as T;
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw new Error(`响应不是合法 JSON（HTTP ${res.status}）`);
+  }
 }
 
 export async function getOverview(): Promise<OverviewData> {

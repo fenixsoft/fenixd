@@ -863,10 +863,23 @@ class TestImplResultSnapshot(unittest.TestCase):
         self.sm.read_one = MagicMock(return_value={"status": "implementing"})
         self.sm.transition = MagicMock()
         self.sm.update_spec = MagicMock()
+        # 预算豁免回退 mock 缝：_exempt_dead_run_budget 末尾 `exempt >= threshold`
+        # 在 mock 环境下抛 TypeError（MagicMock ≥ int）。旧代码因此异常中止
+        # 回滚、跳过 _enqueue 而「假通过」（code-review item a986aab6fa9d 把
+        # 豁免包进独立 try/except 后，回滚继续执行到 _enqueue）。补齐该缝，
+        # 让豁免真正走通而不是静默依赖旧 bug。
+        self.sm.bump_impl_budget = MagicMock(return_value=0)
+        self.sm.bump_budget_exempt_runs = MagicMock(return_value=0)
         self.engine = PMEngine(
             self.sm, MagicMock(), {}, self.project_root, self.logger,
         )
         self.engine._enqueue = MagicMock()
+        # 回滚路径内 `self._enqueue` 落在 dispatcher 实例（门面委托层
+        # `engine._enqueue = mock` 只遮住门面，不遮 dispatcher），故同时遮住
+        # dispatcher 的真实入队——否则失败回滚重入队 → finally 的
+        # `_process_queue` 再派发，配合 read_one 恒为 implementing 的 mock
+        # 形态会自旋（code-review item a986aab6fa9d 修复后暴露的测试形态）。
+        self.engine._dispatcher._enqueue = MagicMock()
         self.sm.add_spec = MagicMock()
         self.sm.add_spec("demo", {"priority": 5})
 

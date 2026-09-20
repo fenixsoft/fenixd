@@ -71,6 +71,10 @@ SELF_EVOLUTION_SPEC_RUN_AT_DEFAULT = None
 # 避免 30 分钟扫描热更新时反复刷屏。
 _DEPRECATED_STUCK_WARNED = False
 _SUPERVISION_BOUNDS_WARNED = False
+# 运行期下限兜底 ERROR 的独立去重标记（code-review item bbfc01b9388a）：
+# 与 _SUPERVISION_BOUNDS_WARNED（_check_supervision_consistency 的对齐诊断）
+# 分开——共用一个标记会让先触发者压制另一条诊断整个进程生命周期。
+_SUPERVISION_RUNTIME_FLOOR_WARNED = False
 # supervision-timeout-config-consistency：最近一次「自动对齐」抬升到的配置层
 # 下限（进程级记录，供 daemon 在 resolve_config 后经既有写路径持久化）。
 # _validate 对齐时写入、daemon 消费即复位（take_supervision_alignment）；
@@ -190,7 +194,15 @@ class ConfigLoader:
         先例同 ``_shutdown_drain_seconds``）。空串视为关闭原地退避（设计 Migration
         Plan：`transient_backoff_schedule: ""` 关闭原地退避），保持原样返回。
         """
-        if raw is None or not isinstance(raw, str):
+        if raw is None:
+            return cls.TRANSIENT_BACKOFF_SCHEDULE_DEFAULT
+        if isinstance(raw, (list, tuple)):
+            # 列表形态与 _validate 的接受集对齐（code-review item da6a06e5b48d）：
+            # 校验显式接受 list，而旧规范化对非 str 一律回落缺省——合法通过的
+            # 列表配置在运行时被静默替换为缺省，校验与消费口径不一致。此处把
+            # 列表按逗号序列同口径规范化（元素须为正整数）。
+            raw = ",".join(str(x) for x in raw)
+        if not isinstance(raw, str):
             return cls.TRANSIENT_BACKOFF_SCHEDULE_DEFAULT
         if not raw.strip():
             return ""  # 显式空串 = 关闭原地退避（Migration Plan）
@@ -323,7 +335,11 @@ class ConfigLoader:
                 _logger.error("%s配置顶层不是对象，按空配置处理: %s", label, path)
                 return {}
             return loaded
-        except (yaml.YAMLError, OSError) as e:
+        except (yaml.YAMLError, OSError, UnicodeDecodeError) as e:
+            # UnicodeDecodeError 是 ValueError 子类（非 OSError）：非 UTF-8 配置
+            # 文件旧实现会逃出本兜底，中止 daemon 启动或 30s 热重载
+            # （code-review item 40b623c7090b）。并入捕获集，兑现 docstring
+            # 「任何读取/解析失败降级空 dict」。
             _logger.error("%s配置解析失败，按空配置处理: %s (%s)", label, path, e)
             return {}
 
@@ -360,7 +376,10 @@ class ConfigLoader:
         # Validate schedule
         schedule = config.get("schedule") or {}
         poll = schedule.get("poll_interval_minutes", 30)
-        if not isinstance(poll, (int, float)) or poll <= 0:
+        # 排除 bool（code-review item e9c679fb1bb3）：bool 是 int 子类，
+        # YAML `poll_interval_minutes: true` 会通过 isinstance 校验并以 True 参与
+        # 运算（True*60）。显式拒绝 bool。
+        if isinstance(poll, bool) or not isinstance(poll, (int, float)) or poll <= 0:
             raise ValueError(f"schedule.poll_interval_minutes must be positive: {poll}")
 
         # Validate agents — max_concurrent / max_retries / max_turns 均为可选，
@@ -369,7 +388,8 @@ class ConfigLoader:
         for field in ["max_concurrent", "max_retries", "max_turns"]:
             if field in agents:
                 val = agents[field]
-                if not isinstance(val, int) or val <= 0:
+                # 排除 bool（bool 是 int 子类，code-review item e9c679fb1bb3）
+                if isinstance(val, bool) or not isinstance(val, int) or val <= 0:
                     raise ValueError(f"agents.{field} must be a positive integer: {val}")
 
         # fix-provider-transient-backoff（D6）：瞬断治理五键防御式校验。非法值不
@@ -1230,10 +1250,12 @@ class ConfigLoader:
             ib = {}
         threshold = ib.get("threshold", 3)
         cooldown = ib.get("cooldown_minutes", 30)
-        # 校验：必须为正数
-        if not isinstance(threshold, (int, float)) or threshold <= 0:
+        # 校验：必须为整数 ≥ 1（排除 bool，code-review item 46b77a7d7e83）。
+        # 旧实现 `isinstance(threshold, (int,float)) and > 0` 后 int() 截断——
+        # 0.5 通过校验却变成 0（熔断阈值 0 = 首次即判失败），bool 亦会静默变 1。
+        if isinstance(threshold, bool) or not isinstance(threshold, (int, float)) or threshold < 1:
             threshold = 3
-        if not isinstance(cooldown, (int, float)) or cooldown <= 0:
+        if not isinstance(cooldown, (int, float)) or isinstance(cooldown, bool) or cooldown <= 0:
             cooldown = 30
         return {
             "threshold": int(threshold),
@@ -1350,7 +1372,11 @@ class ConfigLoader:
         cfg = dict(SUPERVISION_DEFAULTS)
         sup = cls._supervision_segment(config)
         if sup is not None:
-            for key in ("enabled", "extension_seconds", "max_extensions"):
+            # 拷全部 SUPERVISION_DEFAULTS 键（code-review item b724b5ae63a4）：
+            # 旧实现只拷 enabled/extension_seconds/max_extensions，用户配置的
+            # absolute_max_seconds / judge_window 被静默忽略（调用方读到的恒为
+            # 硬编码缺省 7200 / 600）——静默覆盖用户配置。改为按键表全量拷贝。
+            for key in SUPERVISION_DEFAULTS:
                 if key in sup and sup[key] is not None:
                     cfg[key] = sup[key]
         return cfg
@@ -1440,9 +1466,13 @@ class ConfigLoader:
         if not isinstance(configured, (int, float)):
             return None
         if float(configured) < float(floor):
-            global _SUPERVISION_BOUNDS_WARNED
+            # 独立去重标记（code-review item bbfc01b9388a）：运行时下限兜底 ERROR
+            # 与 _check_supervision_consistency 的对齐 ERROR 此前共用同一个全局
+            # 标记，先触发者会让另一个在整个进程生命周期内静默——真实运行时兜底
+            # 可能因早前一次加载已对齐而不留任何痕迹。改用各自的标记。
+            global _SUPERVISION_RUNTIME_FLOOR_WARNED
             floor_int = int(floor) if float(floor).is_integer() else float(floor)
-            if not _SUPERVISION_BOUNDS_WARNED:
+            if not _SUPERVISION_RUNTIME_FLOOR_WARNED:
                 _logger.error(
                     "timeout_supervision.absolute_max_seconds=%s 低于配置校验层下限 %s"
                     "（max(生效超时) + (max_extensions + %s)×extension_seconds），按 %s 兜底"
@@ -1452,7 +1482,7 @@ class ConfigLoader:
                     SUPERVISION_FAST_TRACK_EXTRA_EXTENSIONS,
                     floor_int,
                 )
-                _SUPERVISION_BOUNDS_WARNED = True
+                _SUPERVISION_RUNTIME_FLOOR_WARNED = True
             return float(floor)
         return float(configured)
 
@@ -1628,8 +1658,10 @@ class ConfigLoader:
         正常 daemon 生命周期内只打一次；单测需多次验证「首次告警 / 二次静默」时显式重置。
         """
         global _DEPRECATED_STUCK_WARNED, _SUPERVISION_BOUNDS_WARNED, _SUPERVISION_LAST_ALIGNED
+        global _SUPERVISION_RUNTIME_FLOOR_WARNED
         _DEPRECATED_STUCK_WARNED = False
         _SUPERVISION_BOUNDS_WARNED = False
+        _SUPERVISION_RUNTIME_FLOOR_WARNED = False
         _SUPERVISION_LAST_ALIGNED = None
         _UNKNOWN_AGENT_MODEL_KEYS_WARNED.clear()
 

@@ -43,6 +43,15 @@ class EventBus:
         self._initial_scan_thread = None
         self._last_checksum = None
         self._known_specs: Dict[str, str] = {}  # spec_name → status (last known)
+        # 并发保护（code-review item c076ad6c840c）：``_known_specs`` 的
+        # 「读旧值 → diff → 整体重写」是一段 read-modify-write 临界区，由三条
+        # 线程共享——``_watch_loop``、``_periodic_scan_loop``（→ _dispatch_changes）、
+        # ``fenixd-initial-scan``。无锁时两个重叠轮次会（a）读到同一 old_status 而
+        # **重复派发**同一状态迁移（重复 spec_* 事件 / hook 回调），或（b）一方的
+        # ``_update_known_state`` 重写覆盖另一方刚建立的快照，使迁移双方都观测不到、
+        # 事件被静默丢弃到下一轮全扫。``_dispatch_changes`` 对 PM Engine 非幂等，
+        # 故整段临界区持锁（见 _state_lock）。
+        self._state_lock = threading.RLock()
 
     def start(self):
         """Start monitoring STATE.md for changes."""
@@ -710,12 +719,61 @@ class EventBus:
             return ""
 
     def _update_known_state(self):
-        """Update internal snapshot of known SPEC states."""
+        """Update internal snapshot of known SPEC states（持 _state_lock 串行化）。"""
         specs = self.state_machine.read_all()
-        self._known_specs = {name: entry.get("status", "drafted") for name, entry in specs.items()}
+        with self._state_lock:
+            self._known_specs = {
+                name: entry.get("status", "drafted") for name, entry in specs.items()
+            }
 
     def _dispatch_changes(self, current_specs: dict):
-        """Compare current state against known state and dispatch events."""
+        """Compare current state against known state and dispatch events.
+
+        「读快照 → diff → 重写快照」整段持 ``_state_lock``（RLock 允许重入：
+        收尾阶段的 ``pm_engine`` 回调若再读 ``_known_specs`` 不会自锁）。
+        PM Engine 处理与依赖唤醒放在锁外执行——它们可能耗时且会回调状态机，
+        不应阻塞 watch/scan 的另一条线程超过必要时间。
+        """
+        with self._state_lock:
+            events, accepted_names = self._diff_specs(current_specs)
+
+        # Dispatch events to PM Engine
+        for event_kind, spec_name, spec_entry in events:
+            self.logger.info(
+                "event_bus",
+                f"Event: {event_kind} for '{spec_name}'",
+            )
+            try:
+                self.pm_engine.handle_event(event_kind, spec_name, spec_entry)
+            except Exception as e:
+                self.logger.error(
+                    "event_bus",
+                    f"PM Engine failed to handle {event_kind}: {e}",
+                )
+
+        # 1.1/1.2/1.5：依赖定向唤醒——为每个转入接受态的 SPEC 反查 dependents
+        # 并经 PMEngine 门面触发重评（D5：EventBus 只识别事实，派发决策留在
+        # PMEngine；复用已读入的 current_specs 字典，不额外读盘的百量级遍历）。
+        for accepted_name in accepted_names:
+            try:
+                dependents = EventBus._find_dependents(current_specs, accepted_name)
+                if dependents:
+                    self.pm_engine._wakeup_dependents(accepted_name, dependents)
+                # 无 dependents → 零副作用、零日志（Task 1.4）
+            except Exception as e:
+                # 1.5 异常隔离：单条异常本轮内捕获降级为 WARNING，MUST NOT 中断
+                # 其他事件派发（full-scan-resilience 同口径）。
+                self.logger.warning(
+                    "event_bus",
+                    f"Dependency wakeup skipped for '{accepted_name}': " f"{type(e).__name__}: {e}",
+                )
+
+    def _diff_specs(self, current_specs: dict):
+        """纯函数段：与已知快照 diff 出事件与依赖唤醒候选，并原子重写快照。
+
+        MUST 在 ``_state_lock`` 内调用（调用方 ``_dispatch_changes`` 已持锁）。
+        Returns: ``(events, accepted_names)``。
+        """
         events = []
         # 依赖唤醒候选（dispatch-dependency-wakeup 1.1/1.2）：本轮转入依赖闸门
         # 接受态的 SPEC 名列表（old → new 变化者，且 new ∈ 接受态集合）。
@@ -751,37 +809,7 @@ class EventBus:
         self._known_specs = {
             name: entry.get("status", "drafted") for name, entry in current_specs.items()
         }
-
-        # Dispatch events to PM Engine
-        for event_kind, spec_name, spec_entry in events:
-            self.logger.info(
-                "event_bus",
-                f"Event: {event_kind} for '{spec_name}'",
-            )
-            try:
-                self.pm_engine.handle_event(event_kind, spec_name, spec_entry)
-            except Exception as e:
-                self.logger.error(
-                    "event_bus",
-                    f"PM Engine failed to handle {event_kind}: {e}",
-                )
-
-        # 1.1/1.2/1.5：依赖定向唤醒——为每个转入接受态的 SPEC 反查 dependents
-        # 并经 PMEngine 门面触发重评（D5：EventBus 只识别事实，派发决策留在
-        # PMEngine；复用已读入的 current_specs 字典，不额外读盘的百量级遍历）。
-        for accepted_name in accepted_names:
-            try:
-                dependents = EventBus._find_dependents(current_specs, accepted_name)
-                if dependents:
-                    self.pm_engine._wakeup_dependents(accepted_name, dependents)
-                # 无 dependents → 零副作用、零日志（Task 1.4）
-            except Exception as e:
-                # 1.5 异常隔离：单条异常本轮内捕获降级为 WARNING，MUST NOT 中断
-                # 其他事件派发（full-scan-resilience 同口径）。
-                self.logger.warning(
-                    "event_bus",
-                    f"Dependency wakeup skipped for '{accepted_name}': " f"{type(e).__name__}: {e}",
-                )
+        return events, accepted_names
 
     @staticmethod
     def _find_dependents(current_specs: dict, dep_name: str) -> list:
