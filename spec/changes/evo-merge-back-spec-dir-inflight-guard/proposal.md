@@ -14,3 +14,5 @@
 2. **merge-back 失败分类**：区分「可重试（主树脏 / spec 在飞编辑 / 锁冲突）」与「run 真失败」——可重试时保留已成功分支与产物、等待主树干净后**仅重试合并**，等待/重试不消耗实现尝试预算（used count），不重派实现整轮。
 
 与既有机制的关系：evo-merge-back-wip-overlap-gate（2026-09-02 归档）覆盖「主树 WIP 与分支重叠」的 stash 形态；add-merge-back-repair-lane（2026-09-09 归档）覆盖「merge 语义冲突」的原地修复；本 SPEC 覆盖「spec 目录被外部在飞编辑」这一未覆盖变体。
+
+**有界性（MUST，与「不重派」目标同等重要）**：两条机制都**必须设硬上限**。原事故之所以收敛，是因为约 11 分钟后系统重新派发实现整轮；若把该重派换成**无上限**的顺延等待，则变成「spec 永不再被处理」——比事故更差（原事故至少收敛）。故：顺延窗口固化（缺省 30 分钟）+ 顺延轮数上限（缺省 3 轮），超限回落既有「告警 + 等待人工处置」通道；且上限 MUST 先于实现预算（`agents.impl_run_budget`，缺省 6）耗尽收敛。取证（库内提交通道清点）：**没有任何通道会为「已 ready / implementing 的在飞 spec」提交 spec/changes**——`ensure_spec_committed` 只在派发实现前调用（queue.py:831）、`_sync_task_progress` 只在 merge 成功后调用（queue.py:1465）且工作树脏时直接跳过（engine.py:1535-1538）；故顺延的解除者与上限均须在 design/tasks 中显式点名（见 design D1a），不得留给实现者。
