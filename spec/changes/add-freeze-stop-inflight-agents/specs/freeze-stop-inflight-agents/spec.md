@@ -66,11 +66,20 @@ STATE MUST 新增布尔字段 `_frozen_hold`，与既有 `_cancelled_hold` **并
 - **WHEN** 某 spec 已带 `_cancelled_hold: True`，随后被冻结并触发冻结终止
 - **THEN** 冻结终止写入 `_frozen_hold: True` 且将 `_cancelled_hold` 置为 False，两字段不同时为真
 
+### Requirement: 冻结时保留续做锚点
+
+`freeze_spec` 写 `blocked + frozen: True` 时 MUST NOT 清空该 spec 的 `branch` / `implementer_run` / `reviewer_run` 锚点；锚点必须与冻结标记同一次原子写（或原地保留），否则解冻续做判定（见「解冻后在保留分支自动续做」）在冻结终止之前就已失去全部锚点、只能降级为从零重派。
+
+#### Scenario: 冻结不清锚点
+
+- **WHEN** 某 spec 处于 `implementing` 且 `branch` / `implementer_run` 非空，用户将其冻结
+- **THEN** 冻结后 STATE 中 `branch` / `implementer_run` 仍为原值（未清空），`status: blocked`、`frozen: True`
+
 ### Requirement: 冻结终止结果不重试不重派
 
 dispatch 侧对 `frozen_terminated=True` 的 run 结果 MUST 走冻结保持分支：不重试、不重派、不翻转 status、不动重试计数与合并指纹字段，并写 `_frozen_hold` 标记。该分支 MUST 独立于既有的 `cancelled=True` 分支（`_cancelled_hold` 写入点），MUST NOT 复用同一代码路径。
 
-覆盖范围 MUST 包含该 SPEC 名下全部 agent 类型的终止结果收口路径（implementer / fast-track / verifier / repair / spec-review / planner / judge / administrator），与既有 `cancelled=True` 分支的覆盖范围同宽。
+覆盖范围 MUST 包含该 SPEC 名下全部**经 dispatch 收口**的 agent 类型的终止结果收口路径（implementer / fast-track / verifier / repair / spec-review / planner / judge），与既有 `cancelled=True` 分支的覆盖范围同宽。**非 dispatch 收口的角色**（administrator / code-review / self-review / evolution）无 spec 级收口分支，其冻结终止由 runner 层终止序列与文件信号取消覆盖即可，MUST NOT 为其新增 `_frozen_hold` 写点。
 
 #### Scenario: 冻结终止不触发重派
 
@@ -114,20 +123,6 @@ dispatch 侧对 `frozen_terminated=True` 的 run 结果 MUST 走冻结保持分�
 #### Scenario: 前缀相似的兄弟 spec 不被误伤
 
 - **WHEN** `fix-x` 与 `fix-x-y` 同时有在跑 run，对 `fix-x` 触发停止
-- **THEN** 只停止 `fix-x` 名下的 run，`fix-x-y` 的 run 不受影响
-
-#### Scenario: 非主链路 agent 同样被停止
-
-- **WHEN** 某 spec 同时有在跑的 implementer 与 spec-review run，触发冻结
-- **THEN** 两个 run 均被停止（不限于实现主链路）
-
-### Requirement: 停止动作覆盖该 SPEC 名下全部在跑 run
-
-冻结触发的停止动作 MUST 按 spec 归属匹配目标 run，归属判定 MUST 用全等比较（`run_spec_part(run_id) == spec`），MUST NOT 使用子串或前缀 glob。覆盖 MUST 包含全部 agent 前缀（administrator / dispute-judge / spec-review / code-review / planner / planner-judge / implementer / fast-track / repair / verifier / tester）。
-
-#### Scenario: 前缀相似的兄弟 spec 不被误伤
-
-- **WHEN** `fix-x` 与 `fix-x-y` 同时有在跑 run，对 `fix-x` 触发冻结
 - **THEN** 只停止 `fix-x` 名下的 run，`fix-x-y` 的 run 不受影响
 
 #### Scenario: 非主链路 agent 同样被停止
