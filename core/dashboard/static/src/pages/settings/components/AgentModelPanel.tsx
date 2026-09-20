@@ -88,10 +88,16 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
   // 仅存活于本组件生命周期（刷新即失效），用于把一份配置快速套用到其他角色。
   const [clipboard, setClipboard] = useState<{ label: string; value: RoleValue } | null>(null);
 
-  const initialValues = { roleList: toRoleList(config.agents.models) };
+  const initialValues = {
+    roleList: toRoleList(config.agents.models),
+    subagentModelOverride: (config.agents as Record<string, unknown>).subagent_model_override || '',
+  };
 
   useEffect(() => {
-    form.setFieldsValue({ roleList: toRoleList(config.agents.models) });
+    form.setFieldsValue({
+      roleList: toRoleList(config.agents.models),
+      subagentModelOverride: (config.agents as Record<string, unknown>).subagent_model_override || '',
+    });
   }, [config.agents.models, form]);
 
   // 监听表单值：行内 Provider 选项回显保真 + 模型输入框 placeholder 随角色级缺省联动
@@ -170,7 +176,12 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
         );
         return;
       }
-      await onSave({ agents: { models: toModels(roleList) } });
+      await onSave({
+        agents: {
+          models: toModels(roleList),
+          subagent_model_override: (values.subagentModelOverride || '').trim(),
+        },
+      });
     } catch (error) {
       console.error('Validation failed:', error);
     }
@@ -189,6 +200,13 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
         </div>
       )}
       <Form form={form} initialValues={initialValues} layout="vertical" style={{ marginTop: 12 }}>
+        <Form.Item
+          name="subagentModelOverride"
+          label="子代理模型覆盖（Subagent Model Override）"
+          tooltip="非空时，直连 Provider 车道的隔离 settings.json 的 env 子代理 tier 映射（CLAUDE_CODE_SUBAGENT_MODEL 等）使用该值而非 provider 默认模型。留空 = 使用 provider model。"
+        >
+          <Input placeholder="模型名（如 deepseek-v4-flash），留空使用 Provider 默认" />
+        </Form.Item>
         <Form.List name="roleList">
           {(fields) => (
             <>

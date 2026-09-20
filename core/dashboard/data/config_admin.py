@@ -38,6 +38,10 @@ _AGENTS_MANAGED_SUBKEYS = [
     # 超时活性监督（agents.timeout_supervision 段，supervision-timeout-config-consistency）：
     # 自动对齐持久化与设置页直连写回共用此受管子键
     "timeout_supervision",
+    # fix-agent-lane-efficiency D1：子代理模型覆盖（subagent model override）。
+    # 非空时，直连 Provider 车道下隔离 settings.json 的 env 子代理 tier 映射使用
+    # 该值而非 provider 自身 model。空串（缺省）= 使用 provider model。
+    "subagent_model_override",
 ]
 
 # 用户级配置文件路径（与项目级同名 `.fenix/config.yaml`，作用域由所在目录决定）
@@ -85,6 +89,8 @@ _SOURCE_KEYS = [
     "verify.impl_code_review_timeout_sec",
     "verify.impl_code_review_concurrency",
     "verify.impl_code_review_effort",
+    # fix-agent-lane-efficiency D3：上下文经济性诊断告警阈值
+    "verify.context_cost_per_turn_threshold",
     "verify.serving_reclaim.enabled",
     # add-planner-efficiency：planner 生成节流上限
     "verify.planner_max_concurrent",
@@ -96,6 +102,8 @@ _SOURCE_KEYS = [
     "agents.transient_break_threshold",
     "agents.transient_break_window_seconds",
     "agents.transient_break_cooldown_seconds",
+    # fix-agent-lane-efficiency D1：子代理模型覆盖键（设置页「模型」面板可编辑）
+    "agents.subagent_model_override",
     # add-stale-code-selfheal：陈旧自愈配置节两键
     "stale_code_selfheal.enabled",
     "stale_code_selfheal.idle_confirm_seconds",
@@ -135,6 +143,19 @@ def _echo_agents_int_keys(agents_src) -> dict:
             if isinstance(agents_src.get(k), int):
                 out[k] = agents_src[k]
     return out
+
+
+def _echo_agents_str_key(agents_src, key: str) -> str:
+    """回显 agents 字符串标量键（subagent_model_override：仅 str 值回显，缺省空串）。
+
+    fix-agent-lane-efficiency D1：子代理模型覆盖键为字符串（模型名），
+    非法类型（非 str）视为未配置 → 回显空串（语义 = 使用 provider model）。
+    """
+    if isinstance(agents_src, dict):
+        val = agents_src.get(key)
+        if isinstance(val, str):
+            return val.strip()
+    return ""
 
 # 受管键的默认回显值（add-daily-self-review；与 ConfigLoader.get_self_review_config
 # 保持一致：enabled/read_todo 缺省 false，run_at 缺省 02:00）
@@ -332,6 +353,8 @@ def read_config(scope_root, scope: str = "project") -> dict:
             "impl_run_budget": 4,
             "verify_redo_budget": 3,
             "max_same_cause_redispatches": 3,
+            # fix-agent-lane-efficiency D1：子代理模型覆盖（缺省空串 = 用 provider model）
+            "subagent_model_override": "",
         },
         "gates": {"approve_mode": "manual", "promote_mode": "auto"},
         "runs": {"keep": 50},
@@ -340,7 +363,9 @@ def read_config(scope_root, scope: str = "project") -> dict:
                    # 与 impl_code_review「缺省不回显」语义相反，spec「缺省回显」Scenario）
                    "impl_code_review_timeout_sec": 600,
                    "impl_code_review_concurrency": 2,
-                   "impl_code_review_effort": "low"},
+                   "impl_code_review_effort": "low",
+                   # fix-agent-lane-efficiency D3：上下文经济性告警阈值（0=关闭）
+                   "context_cost_per_turn_threshold": 200000},
         # add-spec-archive D5：自动归档阈值（0 = 禁用，默认 50）
         "archive": {"auto_threshold": 50},
         # add-daily-self-review：admin.self_review 三键（缺省 false/false/02:00）
@@ -398,6 +423,10 @@ def read_config(scope_root, scope: str = "project") -> dict:
                 agents_raw["models"], llm_providers
             )
         agents_result.update(_echo_agents_int_keys(agents_raw))
+        # fix-agent-lane-efficiency D1：子代理模型覆盖键回显（str 才回显，缺省空串）
+        agents_result["subagent_model_override"] = _echo_agents_str_key(
+            agents_raw, "subagent_model_override"
+        )
         # 同因重派熔断阈值回显（agents.max_same_cause_redispatches）——经
         # ConfigLoader 单点归一化（正整数 1–100，非法回退缺省 3）
         from core.config import ConfigLoader as _CLMSC
@@ -466,6 +495,11 @@ def read_config(scope_root, scope: str = "project") -> dict:
         result["verify"]["impl_code_review_effort"] = (
             _CLICRT.get_impl_code_review_effort(raw)
         )
+        # fix-agent-lane-efficiency D3：上下文经济性告警阈值回显（正整数才回显，
+        # 缺省 200000 由缺省段兜底；0 = 关闭告警）
+        _cct = verify_raw.get("context_cost_per_turn_threshold")
+        if isinstance(_cct, int) and not isinstance(_cct, bool) and _cct >= 0:
+            result["verify"]["context_cost_per_turn_threshold"] = _cct
         sr_raw = verify_raw.get("serving_reclaim")
         if isinstance(sr_raw, dict) and isinstance(sr_raw.get("enabled"), bool):
             result["verify"]["serving_reclaim"]["enabled"] = sr_raw["enabled"]
@@ -563,6 +597,8 @@ def read_effective_config(project_root) -> dict:
             "impl_run_budget": 4,
             "verify_redo_budget": 3,
             "max_same_cause_redispatches": 3,
+            # fix-agent-lane-efficiency D1：子代理模型覆盖（缺省空串 = 用 provider model）
+            "subagent_model_override": "",
         },
         "gates": {"approve_mode": "manual", "promote_mode": "auto"},
         "runs": {"keep": 50},
@@ -571,7 +607,9 @@ def read_effective_config(project_root) -> dict:
                    # 与 impl_code_review「缺省不回显」语义相反，spec「缺省回显」Scenario）
                    "impl_code_review_timeout_sec": 600,
                    "impl_code_review_concurrency": 2,
-                   "impl_code_review_effort": "low"},
+                   "impl_code_review_effort": "low",
+                   # fix-agent-lane-efficiency D3：上下文经济性告警阈值（0=关闭）
+                   "context_cost_per_turn_threshold": 200000},
         # add-spec-archive D5：自动归档阈值（0 = 禁用，默认 50）
         "archive": {"auto_threshold": 50},
         # add-daily-self-review：admin.self_review 三键（缺省 false/false/02:00）
@@ -784,6 +822,13 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
         ):
             if _tk in patch["agents"]:
                 merged["agents"][_tk] = patch["agents"][_tk]
+        # fix-agent-lane-efficiency D1：子代理模型覆盖合并分支。
+        # 非空字符串覆盖、空串视为"未配置"（保留原值）——与 read_config 回显语义
+        # （空串 = 使用 provider model）一致：用户在 UI 保存空串意为"用 provider
+        # 默认值"，清空此前的覆盖。
+        _sro = patch["agents"].get("subagent_model_override")
+        if isinstance(_sro, str):
+            merged["agents"]["subagent_model_override"] = _sro.strip()
 
     if "gates" in patch and isinstance(patch["gates"], dict):
         if (
@@ -846,6 +891,11 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
         _ice = patch["verify"].get("impl_code_review_effort")
         if _ice in ("low", "medium", "high"):
             merged["verify"]["impl_code_review_effort"] = _ice
+        # fix-agent-lane-efficiency D3：上下文经济性告警阈值合并（非负整数才合并，
+        # 缺省 200000 由缺省段兜底；0 = 关闭告警）
+        _cct = patch["verify"].get("context_cost_per_turn_threshold")
+        if isinstance(_cct, int) and not isinstance(_cct, bool) and _cct >= 0:
+            merged["verify"]["context_cost_per_turn_threshold"] = _cct
     # add-spec-archive D5：archive.auto_threshold（非负整数，0=禁用，非法值静默忽略）
     if "archive" in patch and isinstance(patch["archive"], dict):
         at = patch["archive"].get("auto_threshold")
@@ -1114,6 +1164,11 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
                 f"verify.impl_code_review_effort must be one of ['low', 'medium', 'high']: "
                 f"{v_patch['impl_code_review_effort']!r}"
             )
+        # fix-agent-lane-efficiency D3：上下文经济性告警阈值校验（非负整数，0=关闭告警）
+        if "context_cost_per_turn_threshold" in v_patch and v_patch["context_cost_per_turn_threshold"] is not None:
+            _cct = v_patch["context_cost_per_turn_threshold"]
+            if isinstance(_cct, bool) or not isinstance(_cct, int) or _cct < 0:
+                return fail(f"verify.context_cost_per_turn_threshold must be a non-negative integer: {_cct!r}")
         sr_patch = v_patch.get("serving_reclaim")
         if isinstance(sr_patch, dict) and sr_patch.get("enabled") is not None and not isinstance(sr_patch["enabled"], bool):
             return fail(f"verify.serving_reclaim.enabled must be a boolean: {sr_patch['enabled']!r}")
@@ -1356,6 +1411,15 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
             vrb = agents["verify_redo_budget"]
             if not isinstance(vrb, int) or vrb < 1 or vrb > 10:
                 raise ValueError(f"agents.verify_redo_budget must be an integer in [1, 10]: {vrb}")
+        # fix-agent-lane-efficiency D1：子代理模型覆盖键校验。
+        # 类型：仅接受 str 或 None（None 视为未配置）；空串合法（= 使用 provider
+        # model）。非 str 类型（int/bool/list）拒绝，防止用户误填导致类型混淆。
+        _sro = agents.get("subagent_model_override")
+        if _sro is not None and not isinstance(_sro, str):
+            raise ValueError(
+                f"agents.subagent_model_override must be a string "
+                f"(model name or empty): {_sro!r}"
+            )
         if "scale_precheck" in agents and agents["scale_precheck"] is not None:
             # 规模预检（agents.scale_precheck）：enabled 必须布尔；两阈值正整数
             # 且 higher < full（倒挂或相等即拒绝——否则档位语义不自洽）。

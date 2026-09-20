@@ -62,7 +62,9 @@ class TestDashboardConfigIO(unittest.TestCase):
                           "serving_reclaim": {"enabled": True},
                           "impl_code_review_timeout_sec": 600,
                           "impl_code_review_concurrency": 2,
-                          "impl_code_review_effort": "low"})
+                          "impl_code_review_effort": "low",
+                          # fix-agent-lane-efficiency D3：上下文经济性告警阈值
+                          "context_cost_per_turn_threshold": 200000})
 
         result = write_config(self.tmpdir, {
             "verify": {"static_scope": "worktree", "deps_mode": "hardlink"},
@@ -74,7 +76,8 @@ class TestDashboardConfigIO(unittest.TestCase):
                           "serving_reclaim": {"enabled": True},
                           "impl_code_review_timeout_sec": 600,
                           "impl_code_review_concurrency": 2,
-                          "impl_code_review_effort": "low"})
+                          "impl_code_review_effort": "low",
+                          "context_cost_per_turn_threshold": 200000})
         self.assertEqual(echoed["sources"]["verify.deps_mode"], "project")
 
         # 非法值拒绝（不落盘）

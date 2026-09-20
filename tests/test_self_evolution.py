@@ -1454,7 +1454,7 @@ class _FakeEvolutionRunner(AgentRunner):
         from core.config import ConfigLoader
         return ConfigLoader.get(self.config, key, default)
 
-    def _ensure_agent_config_dir(self, provider_name):
+    def _ensure_agent_config_dir(self, provider_name, provider_model=""):
         d = self.project_root / ".fenix" / "cc" / provider_name
         d.mkdir(parents=True, exist_ok=True)
         return d

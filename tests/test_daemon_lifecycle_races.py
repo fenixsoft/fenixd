@@ -476,7 +476,14 @@ class TestRuntimeDanglingRunSweep(unittest.TestCase):
         self.assertEqual(len(terminal), 1, "应恰好一条 error 终态行")
         self.assertIn("run thread crashed", terminal[0]["error"])
         self.assertIn("TypeError", terminal[0]["error"], "error 行须含 repr 归因")
-        self.assertEqual(lines[-1], terminal[0], "error 行为文件末行")
+        # fix-agent-lane-efficiency D3：run_metrics 行在终态行之后追加（终态行之后
+        # 有一行 run_metrics），不再要求 error 行是文件末行
+        metrics = [l for l in lines if l.get("type") == "run_metrics"]
+        self.assertEqual(len(metrics), 1, "应恰好一条 run_metrics 行")
+        self.assertTrue(
+            lines.index(terminal[0]) < lines.index(metrics[0]),
+            "error 行必须在 run_metrics 行之前",
+        )
 
     # ── 4.6 挂载点异常降级 ───────────────────────────────────────────
     def _make_event_bus(self, order=None):

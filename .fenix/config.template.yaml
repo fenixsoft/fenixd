@@ -86,6 +86,12 @@ agents:
   daily_run_limit: 300
   # Timeout in seconds for a single Agent run
   run_timeout_seconds: 9000
+  # fix-agent-lane-efficiency D1：子代理模型覆盖（subagent model override）。
+  # 非空时，直连 Provider 车道下隔离 settings.json 的 env 子代理 tier 映射
+  # （CLAUDE_CODE_SUBAGENT_MODEL / ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL）
+  # 使用该值而非 provider 自身 model。空串（缺省）= 使用 provider model。
+  # 注意：已弃用的 agents.subagent_model 为死键（无读点），不生效。
+  # subagent_model_override: ""
   # run_timeout 按 agent_type 覆盖（per-agent-timeout-override）：键 ∈ 全部七类
   # agent run（implementer/verifier/planner-plan/planner-judge/fast-track/repair/
   # administrator）+ supervision-judge；agent run 值须为 ≥300 整数，supervision-judge
@@ -266,6 +272,14 @@ verify:
   # 但 recall 偏低（ocr precision 优先的刻意取舍），可随时上调。经提示词命令
   # 示例承载——实现者须照抄命令串才生效（软约束）。
   impl_code_review_effort: low
+  # fix-agent-lane-efficiency D3：run 级上下文经济性诊断告警阈值
+  # （context_cost_per_turn）。单 run 的平均每轮 input tokens（assistant 事件
+  # 数除累计 `message.usage.input_tokens`）超过该值时，run 末打诊断 WARNING
+  # （含 run_id 与实测值），提示该 run 上下文成本接近 O(轮数²) 结构。缺省
+  # 200000（即 per-turn 均值 20 万 token）；0 = 关闭告警。告警不阻断 run、
+  # 不触发独立人工告警（告警降噪铁律）；turns < 5 的零轮/短跑只落指标不打
+  # 告警（最小样本门槛，空跑噪声抑制）。
+  context_cost_per_turn_threshold: 200000
   # verify-serving 目录生命周期回收（fix-verify-serving-disk-reclaim）：
   # daemon 启动 reconcile + 600s 周期清扫，对无主 worktree（spec 不在
   # changes/archive、未登记、无活进程、超宽限期）执行 git worktree remove --force
