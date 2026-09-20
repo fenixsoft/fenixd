@@ -924,3 +924,82 @@ class TestSpecReviewConfig(unittest.TestCase):
         provider 漂移（网关欠费时该 run 秒挂）。本用例锁定其已纳入可分配角色。
         """
         self.assertIn("dispute-judge", ConfigLoader.KNOWN_AGENT_TYPES)
+
+
+class TestStartAfterScopeConfig(unittest.TestCase):
+    """add-start-after-scope-config 1.4：gates.start_after_scope 校验/缺省与 getter。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.config_path = Path(self.tmpdir) / "config.yaml"
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _write_config(self, config_dict):
+        import yaml
+        with open(self.config_path, "w") as f:
+            yaml.dump(config_dict, f)
+
+    def _write_valid(self, **overrides):
+        """写一份最小合法配置，可按点路径覆盖单键。"""
+        cfg = _valid_cfg()
+        for dotted, value in overrides.items():
+            _cfg_set(cfg, dotted, value)
+        self._write_config(cfg)
+
+    def test_start_after_scope_invalid_rejected(self):
+        """非枚举值（strict 路径）加载报错并指明合法取值。"""
+        self._write_valid(gates__start_after_scope="sometimes")
+        with self.assertRaises(ValueError) as cm:
+            ConfigLoader.load(self.config_path)
+        self.assertIn("start_after_scope", str(cm.exception))
+        self.assertIn("full", str(cm.exception))
+        self.assertIn("dispatch", str(cm.exception))
+
+    def test_start_after_scope_valid_values_accepted(self):
+        """full/dispatch 均为合法取值。"""
+        for scope in ("full", "dispatch"):
+            self._write_valid(gates__start_after_scope=scope)
+            config = ConfigLoader.load(self.config_path)
+            self.assertEqual(config["gates"]["start_after_scope"], scope)
+
+    def test_start_after_scope_default_dispatch(self):
+        """未配置时 get_start_after_scope 缺省 dispatch。"""
+        self.assertEqual(ConfigLoader.get_start_after_scope({}), "dispatch")
+
+    def test_start_after_scope_resolve_config_project_value(self):
+        """resolve_config 路径（patch USER_CONFIG_DIR 隔离用户级配置，防 home
+        敏感——测试不得读取真实 ~/.fenix/config.yaml）：项目级 start_after_scope
+        生效。"""
+        proot = Path(self.tmpdir) / "proj"
+        (proot / ".fenix").mkdir(parents=True, exist_ok=True)
+        (proot / ".fenix" / "config.yaml").write_text(
+            "project:\n  name: proj\ngates:\n  start_after_scope: full\n",
+            encoding="utf-8",
+        )
+        with patch("core.config.USER_CONFIG_DIR", Path(self.tmpdir) / "user"):
+            config = ConfigLoader.resolve_config(proot)
+        self.assertEqual(config["gates"]["start_after_scope"], "full")
+        self.assertEqual(ConfigLoader.get_start_after_scope(config), "full")
+
+    def test_start_after_scope_resolve_config_default(self):
+        """resolve_config 未配置 start_after_scope → getter 缺省 dispatch。"""
+        proot = Path(self.tmpdir) / "proj"
+        (proot / ".fenix").mkdir(parents=True, exist_ok=True)
+        (proot / ".fenix" / "config.yaml").write_text(
+            "project:\n  name: proj\n",
+            encoding="utf-8",
+        )
+        with patch("core.config.USER_CONFIG_DIR", Path(self.tmpdir) / "user"):
+            config = ConfigLoader.resolve_config(proot)
+        self.assertEqual(ConfigLoader.get_start_after_scope(config), "dispatch")
+
+    def test_start_after_scope_getter_reads_input_not_cache(self):
+        """getter 读的是入参 dict 而非模块级缓存——热更新对
+        「晋升/评审门」与「派发口」一致生效。"""
+        config1 = {"gates": {"start_after_scope": "full"}}
+        config2 = {"gates": {"start_after_scope": "dispatch"}}
+        self.assertEqual(ConfigLoader.get_start_after_scope(config1), "full")
+        self.assertEqual(ConfigLoader.get_start_after_scope(config2), "dispatch")

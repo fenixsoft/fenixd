@@ -129,6 +129,21 @@ def start_after_pending(entry: dict, now: Optional[datetime] = None) -> bool:
     return when > now
 
 
+def start_after_blocks_promotion(entry: dict, config=None) -> bool:
+    """组合谓词：start_after 未到期且 scope 为 full 时阻塞晋升/评审入口。
+
+    仅用于**晋升/评审**入口（_on_spec_drafted、_on_spec_reviewing、
+    _recover_one drafted/reviewing 分支）；**实现派发口** MUST 继续直接调
+    ``start_after_pending``（无条件语义）。
+
+    ``config=None`` 等价 ``dispatch``（不阻塞），与存量调用点零改动的兜底一致。
+    异常不在此处吞——fail-open 由四处调用点既有的 try/except + warning 原样承担
+    （design D3）。
+    """
+    from core.config import ConfigLoader
+    return start_after_pending(entry) and ConfigLoader.get_start_after_scope(config) == "full"
+
+
 def parse_orig_status(error) -> str:
     """从冻结 error 中解析「原状态 X」（人工冻结文本契约的共享读函数）。
 

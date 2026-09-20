@@ -142,12 +142,19 @@ agents:
 | approve_mode | `manual` | manual/auto | 热更新 |
 | promote_mode | `auto` | auto/manual | 热更新 |
 | spec_review_mode | `auto` | auto/never | 热更新 |
+| start_after_scope | `dispatch` | full/dispatch | 热更新 |
 
 `gates.spec_review_mode`（方案评审门禁，add-spec-review-gate D2/D11）：
 - `auto`（默认）：草稿晋升时全部 SPEC 进入方案评审；仅当 `mode == fast-track` 且能力目录数 ≤ 1 且交付物声明条目 ≤ 3 且非 `evo-` 前缀时跳过评审直通 `ready`。`evo-` 前缀为硬否决项（永不跳过）。
 - `never`：跳过方案评审门禁，drafted 晋升直接进入 ready 并调度（整体逃生门，行为回到无评审时代）。
 
 设置页「审批」页签可调（与草稿晋升模式相邻）。评审流程与人工恢复路径见[治理规则](06-governance.md#spec-方案评审门禁)。
+
+`gates.start_after_scope`（定时拾取覆盖范围，add-start-after-scope-config）：
+- `dispatch`（默认）：`start_after` 只约束实现派发链——定时/待激活 SPEC 立即晋升并跑方案评审，实现等到点（`fix-start-after-premature-pickup` 之前的旧行为）。
+- `full`：`start_after` 同时约束晋升/评审入口——SPEC 停留草稿态，到期/激活才晋升并评审（`fix-start-after-premature-pickup` 之后的行为）。
+
+该键同时作用于定时值与 `manual` 哨兵；未配置时等价 `dispatch`（旧行为），需要守持行为的项目须显式设 `full`。
 
 ### verify
 
@@ -437,7 +444,7 @@ hook 分发与动作执行在 daemon 后台线程进行，不阻塞状态机写�
 
 | 设置页面板 | 对应配置键 |
 |-----------|-----------|
-| 配置管理 | llm.providers / agents.models / gates.approve_mode / gates.promote_mode / gates.spec_review_mode |
+| 配置管理 | llm.providers / agents.models / gates.approve_mode / gates.promote_mode / gates.spec_review_mode / gates.start_after_scope |
 | Token 预算面板 | agents.token_budget_millions |
 | 验证 | verify.static_scope / verify.deps_mode（存于 config.yaml；`.fenix/verify.yaml` 契约手工编辑，不经设置页改写） |
 | 质量 | verify.impl_code_review（实现阶段收尾代码质量审查开关，自「验证」页迁出；页签顶部的 ocr 环境探测/一键安装不写配置键）；verify.impl_code_review_timeout_sec / verify.impl_code_review_concurrency / verify.impl_code_review_effort（收尾审查三运行参数：超时秒/并发/力度，缺省 600/2/low）；admin.code_review.enabled（周期性代码审查开关，2026-09-19 自项目页「代码审查」分面迁来） |

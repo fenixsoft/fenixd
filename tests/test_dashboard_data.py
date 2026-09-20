@@ -2390,5 +2390,97 @@ class TestNormalizeDependsOn(unittest.TestCase):
         self.assertIsNone(self.fn(None))
 
 
+class TestStartAfterScopeDashboardConfig(unittest.TestCase):
+    """add-start-after-scope-config 3.7：gates.start_after_scope 读写回显、校验、同步。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.proot = Path(self.tmpdir) / "proj"
+        (self.proot / ".fenix").mkdir(parents=True)
+        self.config_path = self.proot / ".fenix" / "config.yaml"
+        self.user_dir = Path(self.tmpdir) / "user-fenix"
+        self.user_dir.mkdir()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_read_config_default_dispatch(self):
+        """(a) 未配置时 gates.start_after_scope 回显 dispatch。"""
+        from core.dashboard.data import read_config
+
+        result = read_config(self.proot)
+        self.assertEqual(result["gates"]["start_after_scope"], "dispatch")
+
+    def test_read_config_explicit_full(self):
+        """(b) 配置 full 后回显 full + sources 标 project。"""
+        from core.dashboard.data import read_config
+
+        import yaml
+        with open(self.config_path, "w", encoding="utf-8") as f:
+            yaml.dump({"gates": {"start_after_scope": "full"}}, f)
+        result = read_config(self.proot)
+        self.assertEqual(result["gates"]["start_after_scope"], "full")
+        self.assertEqual(result["sources"].get("gates.start_after_scope"), "project")
+
+    def test_write_config_readback_consistent(self):
+        """(c) write_config 写入 full 后读回一致。"""
+        from core.dashboard.data import write_config, read_config
+
+        result = write_config(self.proot, {"gates": {"start_after_scope": "full"}})
+        self.assertTrue(result["ok"], result.get("error"))
+        echoed = read_config(self.proot)
+        self.assertEqual(echoed["gates"]["start_after_scope"], "full")
+
+    def test_write_config_invalid_rejected(self):
+        """(d) write_config 传非法值 sometimes 返回 ok=False 且不写盘。"""
+        from core.dashboard.data import write_config, read_config
+
+        result = write_config(self.proot, {"gates": {"start_after_scope": "sometimes"}})
+        self.assertFalse(result["ok"])
+        self.assertIn("start_after_scope", result["error"])
+        # 不写盘——回显仍为缺省
+        echoed = read_config(self.proot)
+        self.assertEqual(echoed["gates"]["start_after_scope"], "dispatch")
+
+    def test_sync_approval_page_copies_start_after_scope(self):
+        """(e) sync_config_from_user 的 approval 页能同步 start_after_scope 从用户级到项目级。"""
+        from core.dashboard.data import sync_config_from_user
+
+        self._write_user({"gates": {"start_after_scope": "full"}})
+        with patch("core.dashboard.data.USER_CONFIG_PATH", self.user_dir / "config.yaml"):
+            result = sync_config_from_user(self.proot, "approval")
+        self.assertTrue(result["ok"], result.get("error"))
+        # synced 字典应含 start_after_scope
+        self.assertIn("start_after_scope", result["synced"]["gates"])
+        self.assertEqual(result["synced"]["gates"]["start_after_scope"], "full")
+        # 项目级文件实际写入
+        import yaml
+        with open(self.config_path, encoding="utf-8") as f:
+            proj = yaml.safe_load(f)
+        self.assertEqual(proj["gates"]["start_after_scope"], "full")
+
+    def test_read_config_approve_mode_does_not_drop_other_gates(self):
+        """(f) 项目级显式配了 approve_mode 时，read_config 的 gates 段 MUST 仍含
+        promote_mode / spec_review_mode / start_after_scope（锁定 3.2 修复）。"""
+        from core.dashboard.data import read_config
+
+        import yaml
+        with open(self.config_path, "w", encoding="utf-8") as f:
+            yaml.dump({"gates": {"approve_mode": "auto"}}, f)
+        result = read_config(self.proot)
+        gates = result["gates"]
+        # approve_mode 显式配置了
+        self.assertEqual(gates["approve_mode"], "auto")
+        # 其余三键不应被丢弃
+        self.assertIn("promote_mode", gates)
+        self.assertIn("spec_review_mode", gates)
+        self.assertIn("start_after_scope", gates)
+
+    def _write_user(self, cfg):
+        import yaml
+        with open(self.user_dir / "config.yaml", "w", encoding="utf-8") as f:
+            yaml.dump(cfg, f, allow_unicode=True)
+
+
 if __name__ == "__main__":
     unittest.main()

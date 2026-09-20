@@ -223,9 +223,12 @@ class TestSystemAdminExistingSectionsNoRegression(unittest.TestCase):
                   "daily_run_limit", "token_budget_millions", "impl_run_budget"):
             self.assertIn(k, echoed["agents"], k)
         self.assertEqual(echoed["agents"]["max_concurrent"], 2)
-        # gates / verify（add-draft-promotion-gate：读侧缺省填充 promote_mode=auto）
+        # gates / verify（add-draft-promotion-gate：读侧缺省填充 promote_mode=auto；
+        # add-spec-review-gate 补 spec_review_mode=auto；
+        # add-start-after-scope-config 补 start_after_scope=dispatch）
         self.assertEqual(echoed["gates"],
-                         {"approve_mode": "manual", "promote_mode": "auto"})
+                         {"approve_mode": "manual", "promote_mode": "auto",
+                          "spec_review_mode": "auto", "start_after_scope": "dispatch"})
         self.assertEqual(echoed["verify"],
                          {"static_scope": "main", "deps_mode": "hardlink",
                           "serving_reclaim": {"enabled": True},

@@ -130,7 +130,10 @@ daemon 重启时，处于 `implementing`/`testing` 中断状态的 SPEC 自动�
 定时拾取（`start_after` ISO8601）能表达「某个绝对时间点之后拾取」，但缺少「永不到期、等人发话才拾取」这一档。`start_after` 取值域扩展出第三个哨兵值 `manual`（add-spec-manual-activation）：
 
 - **语义**：`start_after: manual` 的 SPEC **永不到期**，不会被调度器拾取，须人工激活后方可进入调度。它与定时拾取、冻结同属「有意等待」语义——不写 error、不翻状态、不触发告警巡检。
-- **只拦派发、不拦晋升**：手工激活只拦「ready → 派发」；「drafted → ready」的晋升（含 `promote_mode` 语义）不受影响。
+- **拦不拦晋升取决于 `gates.start_after_scope`**：手工激活的「拦截」以**实现派发口**为界恒成立；晋升/评审入口是否同样被按住由 `gates.start_after_scope` 决定（见[配置参考](09-config.md#gates)）：
+  - `dispatch`（默认）：只拦实现派发——`manual` 哨兵照常晋升（含 `promote_mode` 语义）并（按评审判定）起评审，评审通过后停在 `ready`，不派发实现直到人工激活；
+  - `full`：同时按住晋升与评审——`manual` 哨兵停留 `drafted`，晋升与评审一并等到人工激活。
+  - 两种档位下**哨兵「不自动实现」的保证恒成立**：实现派发口的 `start_after` 门无条件，`ready + manual` 恒不派发。
 - **与非目标区分**：`depends_on` 的调度语义不变（仅列表展示依赖标记）。
 
 **激活入口清单**：
@@ -159,6 +162,8 @@ daemon 重启时，处于 `implementing`/`testing` 中断状态的 SPEC 自动�
 4. **名称非 `evo-` 前缀**
 
 `evo-` 前缀是**硬否决项**：自进化批量产出的 SPEC 即使同时满足前三项也必须评审（无人工方案背书，是本特性最主要的目标受众）。字段缺失（无 `mode`、无声明段）时保守取「不跳过」——判据判错时偏向多评审而非漏审。`gates.spec_review_mode: never` 时跳过全部评审（整体逃生门，见[配置参考](09-config.md#gates))。
+
+`start_after` 未到期的 SPEC 是否进入评审由 `gates.start_after_scope` 决定：`dispatch`（默认）档下定时/待激活 SPEC 照常进入评审（提前拿到评审结论，实现等到期）；`full` 档下停留 `drafted`，到期/激活才晋升并评审（见[配置参考](09-config.md#gates)）。
 
 **三种评审结论**：
 

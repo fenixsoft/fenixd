@@ -75,11 +75,13 @@ def _setup_spec_project(tmpdir, spec_name="myspec", status="drafted",
 
 
 def _auto_config() -> dict:
-    """promote_mode=auto + spec_review_mode=never → _on_spec_drafted 恒分流 ready。
+    """promote_mode=auto + spec_review_mode=never + start_after_scope=full → _on_spec_drafted 恒分流 ready。
 
-    （评审分流判定独立于本 SPEC，测试锁定「drafted → ready」通道以隔离变量。）
+    本文件锁定 full 档行为（定时/哨兵 SPEC 不提前晋升/评审）；dispatch 档用例见
+    tests/test_start_after_scope.py。（评审分流判定独立于本 SPEC，测试锁定
+    「drafted → ready」通道以隔离变量。）
     """
-    return {"gates": {"promote_mode": "auto", "spec_review_mode": "never"}}
+    return {"gates": {"promote_mode": "auto", "spec_review_mode": "never", "start_after_scope": "full"}}
 
 
 def _make_engine(sm, proot, config=None):
@@ -201,7 +203,7 @@ class TestOnSpecReviewingGate(unittest.TestCase):
         """
         proot, sm, _ = _setup_spec_project(
             self.tmpdir, status="reviewing", start_after=_future_iso())
-        engine, logger = _make_engine(sm, proot, {})
+        engine, logger = _make_engine(sm, proot, _auto_config())
         initial_q = list(engine._dispatcher._run_queue)
         engine._on_spec_reviewing("myspec")
         # 队列无新增评审条目（早退未入队）
@@ -219,7 +221,7 @@ class TestOnSpecReviewingGate(unittest.TestCase):
         """
         proot, sm, _ = _setup_spec_project(
             self.tmpdir, status="reviewing", start_after=_past_iso())
-        engine, _ = _make_engine(sm, proot, {})
+        engine, _ = _make_engine(sm, proot, _auto_config())
         engine._on_spec_reviewing("myspec")
         entries = [e for e in engine._dispatcher._run_queue if e[2] == "spec-review"]
         self.assertEqual(len(entries), 1, "队列应有一条 spec-review 条目")
@@ -232,7 +234,7 @@ class TestOnSpecReviewingGate(unittest.TestCase):
         dispatch_review 被调用）。
         """
         proot, sm, _ = _setup_spec_project(self.tmpdir, status="reviewing")
-        engine, logger = _make_engine(sm, proot, {})
+        engine, logger = _make_engine(sm, proot, _auto_config())
         engine._on_spec_reviewing("missing-spec")
         # missing-spec 不在 state 里 → read_one 返回 None → 入口守卫不早退 →
         # 入队（_enqueue 可能 raise 或忽略，但不抛到测试层）
@@ -258,7 +260,7 @@ class TestRecoverOneGate(unittest.TestCase):
 
         self.pm = MagicMock()
         self.logger = MagicMock()
-        self.bus = EventBus(self.state_path, self.sm, self.pm, {}, self.logger)
+        self.bus = EventBus(self.state_path, self.sm, self.pm, _auto_config(), self.logger)
 
     def tearDown(self):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
@@ -461,7 +463,7 @@ class TestGateFailOpen(unittest.TestCase):
         """
         proot, sm, _ = _setup_spec_project(
             self.tmpdir, status="reviewing", start_after=_future_iso())
-        engine, logger = _make_engine(sm, proot, {})
+        engine, logger = _make_engine(sm, proot, _auto_config())
         with patch("core.state_machine.start_after_pending",
                    side_effect=RuntimeError("boom")):
             engine._on_spec_reviewing("myspec")
@@ -485,7 +487,7 @@ class TestGateFailOpen(unittest.TestCase):
 
             pm = MagicMock()
             logger = MagicMock()
-            bus = EventBus(state_path, sm, pm, {}, logger)
+            bus = EventBus(state_path, sm, pm, _auto_config(), logger)
             entry = {"status": "drafted", "start_after": _future_iso()}
             with patch("core.state_machine.start_after_pending",
                        side_effect=RuntimeError("boom")):

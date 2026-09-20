@@ -38,11 +38,11 @@ def _mk_project(tmpdir: Path, spec_name: str = "demo") -> StateMachine:
     return sm
 
 
-def _make_engine(root: Path, logger=None):
+def _make_engine(root: Path, logger=None, config=None):
     from core.pm_engine import PMEngine
     logger = logger or MagicMock()
     engine = PMEngine(StateMachine(root / ".fenix" / "STATE.md", logger),
-                      MagicMock(), {}, root, logger)
+                      MagicMock(), config or {}, root, logger)
     engine._check_impl_budget_exhausted = MagicMock(return_value=False)
     engine._check_spec_content_missing = MagicMock(return_value=False)
     engine._dependencies_satisfied = MagicMock(return_value=True)
@@ -88,10 +88,13 @@ class TestOnSpecReviewingEnqueues(unittest.TestCase):
         self.assertEqual(len(entries), 1)
 
     def test_start_after_blocks_enqueue(self):
-        """start_after 未到期 → 不入队。"""
+        """start_after 未到期 → 不入队（scope=full 时保持该语义）。"""
         from datetime import datetime, timedelta, timezone
         _mk_project(self.tmpdir)
-        engine, _ = _make_engine(self.tmpdir)
+        engine, _ = _make_engine(
+            self.tmpdir,
+            config={"gates": {"start_after_scope": "full"}},
+        )
         future = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
         engine.state_machine.add_spec("demo", {
             "status": "reviewing",

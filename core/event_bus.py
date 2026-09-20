@@ -211,17 +211,19 @@ class EventBus:
         try:
             status = entry.get("status", "")
             if status == "drafted":
-                # fix-start-after-premature-pickup 2.1：start_after 定时拾取早退
-                # （与 _recover_ready 既有早退同源，本文件 :337-347）。未到期/哨兵的
-                # SPEC 不被恢复路径晋升——否则每轮扫描生产「re-triggering promote」
-                # 噪音事件并提前拾取（实证 add-project-detail-tabs 提前 42 分钟）。
+                # add-start-after-scope-config 2.4：start_after 定时拾取早退
+                # （与 _recover_ready 既有早退同源，本文件 :337-347）——本分支受
+                # gates.start_after_scope 条件约束：full 时未到期/哨兵的 SPEC 不被
+                # 恢复路径晋升（否则每轮扫描生产「re-triggering promote」噪音事件并
+                # 提前拾取，实证 add-project-detail-tabs 提前 42 分钟）；dispatch 时
+                # 回到旧行为（照常恢复晋升）。
                 # 级别偏离登记：_recover_ready 同类跳过现为 info（:341），本处取
                 # debug 是为避免每个定时 SPEC 每 60s 一条噪音；_recover_ready 保持
                 # 不动（Non-Goals，本 SPEC 不顺带改）。
                 try:
-                    from core.state_machine import start_after_pending
+                    from core.state_machine import start_after_blocks_promotion
 
-                    if start_after_pending(entry):
+                    if start_after_blocks_promotion(entry, self.config):
                         self.logger.debug(
                             "event_bus",
                             f"Recovery: skip '{name}' — start_after scheduled pickup "
@@ -237,13 +239,14 @@ class EventBus:
                 self.logger.info("event_bus", f"Recovery: re-triggering promote for '{name}'")
                 self.pm_engine.handle_event("spec_drafted", name, entry)
             elif status == "reviewing":
-                # fix-start-after-premature-pickup 2.2：同源早退（reviewing 分支），
-                # 措辞复用 _recover_ready 既有串 + 分支后缀，debug 级，MUST NOT 打
-                # 「re-triggering spec_reviewing」日志、不写 STATE。
+                # add-start-after-scope-config 2.5：同源早退（reviewing 分支，受
+                # scope 条件约束），措辞复用 _recover_ready 既有串 + 分支后缀，
+                # debug 级，MUST NOT 打「re-triggering spec_reviewing」日志、
+                # 不写 STATE。
                 try:
-                    from core.state_machine import start_after_pending
+                    from core.state_machine import start_after_blocks_promotion
 
-                    if start_after_pending(entry):
+                    if start_after_blocks_promotion(entry, self.config):
                         self.logger.debug(
                             "event_bus",
                             f"Recovery: skip '{name}' — start_after scheduled pickup "
