@@ -299,7 +299,14 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', minHeight: 480, maxHeight: 'calc(100vh - 320px)' }}>
+    // 分面高度 = 视口 − 页面 chrome，纯 CSS 计算（无 JS 量算）。
+    // 内联分面的父链（ant-pro 布局 / antd Tabs 内部 holder）不被拉伸到视口高度，
+    // 故 flex:1 撑不满——必须显式给出视口填充高度，否则回落到内容高度（旧的
+    // minHeight 480 独占），输入区停在视口中部（本项目实测：1000px 视口停在 670）。
+    // 顶部 190 = 布局顶栏 56 + 页头 72 + Tabs 导航 46 + Tabs 内容上边距 16；
+    // 底部 32 = 内容容器 padding-bottom。两者在 375~1920 宽 / 700~1440 高下实测恒定。
+    // 超短视口（<552）由 minHeight 保底，退化为页面滚动。
+    <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 222px)', minHeight: 320 }}>
       {loading ? (
         <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <Spin size="small" />
