@@ -83,7 +83,7 @@
       保留「不产生 re-triggering promote 日志」的既有措辞与 debug 级别。
 - [x] 2.5 `core/event_bus.py` 的 `_recover_one` **reviewing 分支**：同 2.4（reviewing 分支、
       `re-triggering spec_reviewing` 日志）。
-- [ ] 2.6 逐点自查实现派发口**未被改**：`core/pm_engine/engine.py` 的 `_on_spec_ready`
+- [x] 2.6 逐点自查实现派发口**未被改**：`core/pm_engine/engine.py` 的 `_on_spec_ready`
       （`start_after_pending(spec)`）与假就绪巡检豁免、`core/event_bus.py` 的
       `_recover_ready`、`core/pm_engine/dispatch/queue.py` 两处、`core/admin_monitor.py`
       一处 MUST 仍直接调用 `start_after_pending`（无条件）。用
@@ -92,11 +92,11 @@
 
 ## 3. Dashboard 后端受管键（config_admin.py）
 
-- [ ] 3.1 `_SOURCE_KEYS` 里在 `gates.spec_review_mode` 之后新增
+- [x] 3.1 `_SOURCE_KEYS` 里在 `gates.spec_review_mode` 之后新增
       `"gates.start_after_scope"`；`_managed_key_sources` 中新增来源标注分支（
       `gates_raw.get("start_after_scope") in ("full", "dispatch")` → `sources[...] = "project"`，
       非枚举不标注，对齐 `spec_review_mode` 写法）。
-- [ ] 3.2 `read_config`（项目级文件回显）：对齐 `spec_review_mode` 分支，合法枚举才写
+- [x] 3.2 `read_config`（项目级文件回显）：对齐 `spec_review_mode` 分支，合法枚举才写
       `result["gates"]["start_after_scope"]`。
       **同一任务内 MUST 修掉既有缺陷（实测复现，本 SPEC 的门禁与设置页回显直接依赖它）**：
       `config_admin.py:431` 的 `result["gates"] = {"approve_mode": gates_raw["approve_mode"]}`
@@ -112,25 +112,25 @@
       的读侧兜底语义）。
       缺省 dict（`"gates": {"approve_mode": "manual", "promote_mode": "auto"}`，两处
       `:336` / `:567`）中的 `start_after_scope` 缺省 `"dispatch"` 仍照原计划补
-- [ ] 3.3 `read_effective_config`（生效值回显）：经
+- [x] 3.3 `read_effective_config`（生效值回显）：经
       `ConfigLoader.get_start_after_scope(effective)` 回显（缺失/非法回退 `dispatch`，
       与 getter 单点同源），对齐 `spec_review_mode` 的 `result["gates"]["spec_review_mode"] = ...`
       写法。
-- [ ] 3.4 `_deep_merge_managed` 的 gates 合并段：把 `start_after_scope` 加入
+- [x] 3.4 `_deep_merge_managed` 的 gates 合并段：把 `start_after_scope` 加入
       「任一键存在则确保 gates 为 dict」的判定条件，并新增
       `merged["gates"]["start_after_scope"] = patch["gates"]["start_after_scope"]` 分支
       （**缺此分支会被静默丢弃**——`promote_mode` / `spec_review_mode` 历史同坑）。
-- [ ] 3.5 `write_config` 前置校验：新增 `gates` patch 段的 `start_after_scope` 校验
+- [x] 3.5 `write_config` 前置校验：新增 `gates` patch 段的 `start_after_scope` 校验
       （非 None 且不在 `("full", "dispatch")` → `return fail(...)`，错误信息含合法取值）。
       同时在文件顶部 docstring 的补丁键列表（`含 llm / agents.models / gates.approve_mode`）
       补 `gates.start_after_scope`。
-- [ ] 3.6 `_SYNC_PAGE_KEYS` 的 `"approval"` 项扩展为
+- [x] 3.6 `_SYNC_PAGE_KEYS` 的 `"approval"` 项扩展为
       `{"gates": ["promote_mode", "approve_mode", "spec_review_mode", "start_after_scope"]}`。
       **实测核对结论（2026-09-20）**：既有值为 `{"gates": ["promote_mode", "approve_mode"]}`
       （`config_admin.py:1634`）——**确实缺 `spec_review_mode`**，本任务 MUST 一并补上
       （缺键会导致「同步用户级设置」静默漏同步，`spec_review_mode` 自 add-spec-review-gate
       起即有此缺口）。
-- [ ] 3.7 在 `tests/test_dashboard_api.py` 新增用例：经 `read_config`（或既有测试同款
+- [x] 3.7 在 `tests/test_dashboard_api.py` 新增用例：经 `read_config`（或既有测试同款
       入口）验证 (a) 未配置时 `gates.start_after_scope` 回显 `dispatch`；(b) 配置
       `full` 后回显 `full`；(c) `write_config` 写入 `full` 后读回一致；(d) `write_config`
       传非法值 `"sometimes"` 返回 `ok=False` 且不写盘；(e) `sync_config_from_user` 的
