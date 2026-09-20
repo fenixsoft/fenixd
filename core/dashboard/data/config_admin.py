@@ -62,6 +62,8 @@ _SOURCE_KEYS = [
     "gates.promote_mode",
     # add-spec-review-gate：方案评审模式
     "gates.spec_review_mode",
+    # add-start-after-scope-config：start_after 门控覆盖范围
+    "gates.start_after_scope",
     # add-daily-self-review：admin.self_review 三键
     "admin.self_review",
     # add-code-review-agent-and-quality-tab：admin.code_review 两键（周期代码审查）
@@ -184,6 +186,9 @@ def _managed_key_sources(raw: dict) -> dict:
     # add-spec-review-gate：方案评审模式显式定义 → project
     if isinstance(gates_raw, dict) and "spec_review_mode" in gates_raw:
         sources["gates.spec_review_mode"] = "project"
+    # add-start-after-scope-config：start_after 门控覆盖范围（full/dispatch）
+    if isinstance(gates_raw, dict) and gates_raw.get("start_after_scope") in ("full", "dispatch"):
+        sources["gates.start_after_scope"] = "project"
     verify_src = raw.get("verify")
     if isinstance(verify_src, dict):
         if "static_scope" in verify_src:
@@ -333,7 +338,7 @@ def read_config(scope_root, scope: str = "project") -> dict:
             "verify_redo_budget": 3,
             "max_same_cause_redispatches": 3,
         },
-        "gates": {"approve_mode": "manual", "promote_mode": "auto"},
+        "gates": {"approve_mode": "manual", "promote_mode": "auto", "start_after_scope": "dispatch"},
         "runs": {"keep": 50},
         "verify": {"static_scope": "main", "deps_mode": "hardlink", "serving_reclaim": {"enabled": True},
                    # add-impl-code-review-tuning：三运行参数恒回显缺省（600/2/low——
@@ -426,7 +431,11 @@ def read_config(scope_root, scope: str = "project") -> dict:
                 result["agents"][k] = v
     gates_raw = raw.get("gates")
     if isinstance(gates_raw, dict) and "approve_mode" in gates_raw:
-        result["gates"] = {"approve_mode": gates_raw["approve_mode"]}
+        # add-start-after-scope-config 3.2：MUST NOT 整段替换 result["gates"]
+        # ——项目级显式配置 approve_mode 时其余 gates 键（promote_mode /
+        # spec_review_mode / start_after_scope）会在此分支后被丢弃（实测复现）。
+        # 改为单键赋值，保留其余键（对齐其余分支写法）。
+        result.setdefault("gates", {})["approve_mode"] = gates_raw["approve_mode"]
     # add-draft-promotion-gate：promote_mode 提取（合法枚举才回显，非法留空由读侧缺省兜底）
     if isinstance(gates_raw, dict) and gates_raw.get("promote_mode") in ("auto", "manual"):
         if "gates" not in result:
@@ -437,6 +446,12 @@ def read_config(scope_root, scope: str = "project") -> dict:
         if "gates" not in result:
             result["gates"] = {}
         result["gates"]["spec_review_mode"] = gates_raw["spec_review_mode"]
+    # add-start-after-scope-config：start_after_scope 提取（合法枚举才回显，
+    # 非法留空由读侧缺省兜底，对齐 spec_review_mode 写法）
+    if isinstance(gates_raw, dict) and gates_raw.get("start_after_scope") in ("full", "dispatch"):
+        if "gates" not in result:
+            result["gates"] = {}
+        result["gates"]["start_after_scope"] = gates_raw["start_after_scope"]
     verify_raw = raw.get("verify")
     if isinstance(verify_raw, dict):
         if verify_raw.get("static_scope") in ("main", "worktree"):
@@ -564,7 +579,7 @@ def read_effective_config(project_root) -> dict:
             "verify_redo_budget": 3,
             "max_same_cause_redispatches": 3,
         },
-        "gates": {"approve_mode": "manual", "promote_mode": "auto"},
+        "gates": {"approve_mode": "manual", "promote_mode": "auto", "start_after_scope": "dispatch"},
         "runs": {"keep": 50},
         "verify": {"static_scope": "main", "deps_mode": "hardlink", "serving_reclaim": {"enabled": True},
                    # add-impl-code-review-tuning：三运行参数恒回显缺省（600/2/low——
@@ -652,7 +667,9 @@ def read_effective_config(project_root) -> dict:
         result["agents"]["scale_precheck"] = _get_sp_eff(effective)
     gates_eff = effective.get("gates")
     if isinstance(gates_eff, dict) and "approve_mode" in gates_eff:
-        result["gates"] = {"approve_mode": gates_eff["approve_mode"]}
+        # add-start-after-scope-config 3.2：MUST NOT 整段替换 result["gates"]
+        # （同 read_config 既有缺陷——其余 gates 键在分支后丢失），单键赋值。
+        result.setdefault("gates", {})["approve_mode"] = gates_eff["approve_mode"]
     # add-draft-promotion-gate：草稿晋升模式回显（缺省 auto）
     if isinstance(gates_eff, dict) and "promote_mode" in gates_eff:
         val = gates_eff["promote_mode"]
@@ -670,6 +687,9 @@ def read_effective_config(project_root) -> dict:
     if "gates" not in result:
         result["gates"] = {}
     result["gates"]["spec_review_mode"] = ConfigLoader.get_spec_review_mode(effective)
+    # add-start-after-scope-config：start_after 门控覆盖范围回显（经
+    # get_start_after_scope 生效值，缺失/非法回退 dispatch——与 getter 单点同源）
+    result["gates"]["start_after_scope"] = ConfigLoader.get_start_after_scope(effective)
     verify_eff = effective.get("verify")
     if isinstance(verify_eff, dict):
         if verify_eff.get("static_scope") in ("main", "worktree"):
@@ -790,6 +810,7 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
             "approve_mode" in patch["gates"]
             or "promote_mode" in patch["gates"]
             or "spec_review_mode" in patch["gates"]
+            or "start_after_scope" in patch["gates"]
         ):
             if not isinstance(merged.get("gates"), dict):
                 merged["gates"] = {}
@@ -802,6 +823,10 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
         # add-spec-review-gate：spec_review_mode 缺合并分支会被静默丢弃（同 promote_mode）
         if "spec_review_mode" in patch["gates"]:
             merged["gates"]["spec_review_mode"] = patch["gates"]["spec_review_mode"]
+        # add-start-after-scope-config：start_after_scope 缺合并分支会被静默丢弃
+        # （同 promote_mode / spec_review_mode 历史同坑）
+        if "start_after_scope" in patch["gates"]:
+            merged["gates"]["start_after_scope"] = patch["gates"]["start_after_scope"]
 
     if "runs" in patch and isinstance(patch["runs"], dict):
         keep = patch["runs"].get("keep")
@@ -963,7 +988,8 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
 
     Args:
         scope_root: 项目根路径（scope="project" 时使用；scope="user" 忽略）
-        config_patch: 含 llm / agents.models / gates.approve_mode 的 patch dict
+        config_patch: 含 llm / agents.models / gates.approve_mode /
+            gates.start_after_scope 的 patch dict
         scope: "user" 写 ~/.fenix/config.yaml（自动建目录）；"project" 写项目文件
 
     Returns: {"ok": bool, "error": str|null, "scope": "user"|"project", "path": str}
@@ -1175,6 +1201,16 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
         ):
             return fail(
                 f"gates.spec_review_mode must be one of ['auto', 'never']: {g_patch['spec_review_mode']!r}"
+            )
+        # add-start-after-scope-config：gates.start_after_scope 前置校验（枚举拒绝
+        # full/dispatch，与 promote_mode 同模式；None 视为「未提交」，不校验）
+        if (
+            "start_after_scope" in g_patch
+            and g_patch["start_after_scope"] is not None
+            and g_patch["start_after_scope"] not in ("full", "dispatch")
+        ):
+            return fail(
+                f"gates.start_after_scope must be one of ['full', 'dispatch']: {g_patch['start_after_scope']!r}"
             )
 
     # add-spec-hooks D7：hooks 段前置校验（非法值直接拒绝 400 且不写入——规则：
@@ -1631,7 +1667,9 @@ _SYNC_PAGE_KEYS = {
             "impl_code_review_effort",
         ]
     },
-    "approval": {"gates": ["promote_mode", "approve_mode"]},
+    "approval": {
+        "gates": ["promote_mode", "approve_mode", "spec_review_mode", "start_after_scope"]
+    },
     "misc": {"archive": ["auto_threshold"]},
     "system": {
         "admin": [
