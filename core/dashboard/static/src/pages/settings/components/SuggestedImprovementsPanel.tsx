@@ -23,6 +23,13 @@ import type { CSSProperties, Key } from 'react';
 import type { ConfigData, EvolutionItem, EvolutionDoc } from '@/services/dashboard';
 import type { SelfEvolutionSectionHandle } from './selfEvolutionSection';
 import { MaximizeTitle, useMaximizeModal } from '@/components/useMaximizeModal';
+import ScheduleFields, {
+  START_AFTER_MANUAL,
+  describeStartAfter,
+  isStartAfterValid,
+  nextRunAtISO,
+} from '@/components/ScheduleFields';
+import type { AcceptSchedule } from '@/components/ScheduleFields';
 import { markdownComponents } from '@/pages/projects/components/SpecDocModal';
 import {
   EVOLUTION_STATUS_LABELS,
@@ -180,15 +187,6 @@ function MarkdownBody({
 
 // ── 配置（7.2）──────────────────────────────────────────────────────
 
-/** 「同意立项」弹窗里回传本次执行时刻的可变载体（共享组件 ScheduleFields 定义）。 */
-import ScheduleFields, {
-  START_AFTER_MANUAL,
-  describeStartAfter,
-  isStartAfterValid,
-  nextRunAtISO,
-} from '@/components/ScheduleFields';
-import type { AcceptSchedule } from '@/components/ScheduleFields';
-
 interface SuggestedImprovementsPanelProps {
   config: ConfigData;
   scope: 'user' | 'project';
@@ -200,28 +198,6 @@ const DEFAULT_MAX_ITEMS = 20;
 const MAX_ITEMS_UPPER = 200;
 /** 「在指定时间执行」刚被选中、还没挑时刻时的预填值（用户可改）。 */
 const DEFAULT_SPEC_RUN_AT = '02:00';
-
-// ── SPEC 执行时刻（self_evolution.spec_run_at）────────────────────────
-//
-// 配置值是「每日 HH:mm」（本地时区），立项时要换成具体的一次性时刻写进
-// STATE.start_after。换算规则与后端 core/evolution.py: next_spec_run_at
-// 同一句话：取当日该时刻，已过（或正好等于现在）则取次日。
-// 后端只在自动接受路径自算；人工同意走本函数算好的确切值提交，故两边不会
-// 对同一次立项各算一遍。
-
-/** 把 "HH:mm" 换算成下一次到期的 UTC ISO；空/非法返回 null（= 立即执行）。 */
-function nextRunAtISO(runAt?: string | null): string | null {
-  if (!runAt) return null;
-  const [h, m] = runAt.split(':').map(Number);
-  if (!Number.isInteger(h) || !Number.isInteger(m)
-      || h < 0 || h > 23 || m < 0 || m > 59) {
-    return null;
-  }
-  const now = dayjs();
-  let target = now.hour(h).minute(m).second(0).millisecond(0);
-  if (!target.isAfter(now)) target = target.add(1, 'day');
-  return target.toISOString(); // dayjs 的 toISOString 输出 UTC（带 Z）
-}
 
 // ── 评估结论摘要（7.3）──────────────────────────────────────────────
 
