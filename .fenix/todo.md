@@ -64,7 +64,7 @@
   - 建议：无需新增动作（91b1557e 已修 7 处并加 AST 静态防线）；可将「配置显式值生效性」纳入 daemon 启动自检（启动时校验已裁决键读入值与 config.yaml 一致），避免同类静默失效再次发生。
 
 - **QualityPanel 交付物两次被 stash 自愈丢弃**
-  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：接受 · 删除：否
   - 影响：设置页 QualityPanel.tsx（承载「周期性代码审查」开关等配置界面）在本窗口两次交付物丢失：12:17 项目页「质量」分面开关首丢，20:33 设置页「质量」页签的周期性代码审查开关卡片再丢，后者约 9 分钟由 admin 从 stash（git 暂存的改动）手工找回（commit 978f9f65），前者由后续实现轮次补回——为 [2026-09-19#失误#2]（VerifyPanel 并发改致开关丢失）同类复发两起。
   - 证据：admin 找回提交 978f9f65 正文自述「该文件两次交付物丢失同因：add-code-review-agent-and-quality-tab 的 5.7（分面开关）在 12:17 首丢一次，本次（20:32）把设置页『质量』页签的第二张卡片再丢」，找回动作含恢复 Form.Item code_review_enabled 与 handleSave 写回 code_review 子段、npm run build 通过；日志 2026-09-19T12:33:13Z「Stash pop conflict self-healed; discarded stash changes on 1 file(s): [QualityPanel.tsx] (stash preserved, recover via: git show 7cd88ca8…)」；日志 12:32:46Z 记录 WIP overlap gate（policy=auto，即默认策略）把 6 个重叠文件收入 stash。
   - 调查评估：在 add-impl-code-review-tuning 合流时暴露（第二起）。已核实 978f9f65 与日志：根因是 merge-back 前 WIP 重叠闸门在 auto 策略下把主树未提交改动 stash，merge 后 pop 在 QualityPanel.tsx 冲突，自愈逻辑直接丢弃 stash 版（仅留 git show 口令供找回）；该文件窗口内两度被同批多 spec 并发修改，故两度命中。与存量关系：[2026-09-19#失误#2] 同根（上次 VerifyPanel 开关丢失），其建议的「合并后配置键回归断言」与「同文件多路修改冲突提示」均未落地，故判未闭环；另 91b1557e 证实此前显式 block 策略因配置误读未生效，加剧了丢弃面。结论：复发两起、机制缺口确认，建议立项补自愈回归通道。
