@@ -295,7 +295,10 @@ class PRepairLaneMixin:
             # repair run 被冻结终止：spec 保持原状（blocked），只写
             # _frozen_hold 标记 + error，不动 _retry_count/_merge_fp/
             # _merge_streak、不入队重派。
-            if getattr(r, "frozen_terminated", False):
+            # 判定用 `is True`（修复验证轮 BUG：MagicMock 替身自动生成
+            # truthy 属性，裸布尔会误判；r=None（派发异常）时 getattr 取
+            # 缺省 False）；生产结果 frozen_terminated 为显式 bool。
+            if getattr(r, "frozen_terminated", False) is True:
                 ft_err = getattr(r, "error", None) or repair_error or ""
                 frozen_err = (
                     f"repair run 因 spec 冻结被终止（进度已保全，解冻后续做）"

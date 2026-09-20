@@ -1536,7 +1536,10 @@ class VerificationPipeline:
             # judge run 因 spec 冻结被终止：独立保持分支，在 cancelled 分支之前
             #（spec 级 > run 级）。写 _frozen_hold 标记 + error、保持原 status
             #（testing/blocked），不复用取消的 _cancelled_hold 代码路径。
-            if getattr(judge_result, "frozen_terminated", False):
+            # 判定用 `is True`（修复验证轮 BUG：MagicMock 替身自动生成
+            # truthy 属性，裸布尔会误判）；生产结果 frozen_terminated 为
+            # 显式 bool。
+            if getattr(judge_result, "frozen_terminated", False) is True:
                 j_err = judge_result.error or ""
                 frozen_err = (
                     f"judge run 因 spec 冻结被终止（进度已保全，解冻后续做）"
