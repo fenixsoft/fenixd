@@ -72,7 +72,7 @@
 
 ### 可改进
 - **每日自省 run 统计只计未归档在跑记录**
-  - 自进化：问题成立 / 建议部分合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
+  - 自进化：问题成立 / 建议部分合理 / ✓ 值得立项 · 处理：接受 · 删除：否
   - 影响：本窗口有 10+ 个实现/评审 run 完成并归档，而每日自省摘要「总 run 数: 1、成功 0、失败 0」——run 统计实际只反映 .fenix/runs/ 当前目录里尚未归档的记录（即只剩在飞 run），窗口内的成功/失败/成本全部不可见，本窗口最大浪费（transient-storm 白跑 $8.97 双 run）在框架汇总层面无迹可循，同类浪费的每日观测持续丢失。
   - 证据：core/self_review.py:272 collect_runs_stats（近 24 小时窗口 runs 统计函数）只 glob .fenix/runs/*.jsonl，不读 .fenix/runs/archive/；日志 2026-09-19T10:17:09Z「runs 保留: 终态 run 移入归档」证实终态 run 即刻移出当前目录；.fenix/runs/archive/ 现有 50 个归档运行文件，其中窗口内完成的有 impl-evo-transient-storm-alert-context-1789773909/-1789778425、impl-evo-frozen-scenario-contract-versioning-1789774274、impl-evo-deliverable-declaration-drift-align-1789774839、impl-evo-spec-concurrency-flight-guard 系列 4 个、impl-add-code-review-agent-and-quality-tab 系列 2 个等，与摘要「总 run 数: 1」直接矛盾；.fenix/runs/ 当前仅剩在飞 impl-fix-spec-review-blocking-dispatch-1789833879-a1。
   - 调查评估：该统计函数口径与每日自省窗口语义不符：窗口内完成的 run 因已归档而不计入，只有「跨窗口仍在飞」的 run 被计为 running。已核实（源码 + 归档目录对照）。根因：归档时机（终态即移）早于自省统计时点，统计未把归档清单（runs-archive-manifest）纳入窗口归属判定。与存量关系：无既有 spec 覆盖（此前摘要数字在低并发时段刚好与直觉一致，未暴露）。结论：观测面缺口成立，直接削弱自省做浪费/成本归因的能力，值得立项补归档并集统计。
