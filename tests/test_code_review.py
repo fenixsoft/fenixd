@@ -337,6 +337,209 @@ class TestGenerateFixSpec(unittest.TestCase):
         self.assertEqual(len(res["skipped"]), 1)
 
 
+class _RecordingSM(_FakeSM):
+    """记录 add_spec 收到的 entry（供 start_after 透传断言）。"""
+
+    def __init__(self, names=None):
+        super().__init__(names)
+        self.entries = {}
+
+    def add_spec(self, name, entry):
+        ok = super().add_spec(name, entry)
+        if ok:
+            self.entries[name] = dict(entry)
+        return ok
+
+
+class TestGenerateFixSpecContent(unittest.TestCase):
+    """生成 SPEC 的正文必须带上问题内容（description/suggestion/evidence）。
+
+    2026-09-20 用户反馈：原实现四份文档只写标题 + 文件:行，修复 agent 拿不到
+    问题内容，无法正确理解要修什么。
+    """
+
+    def setUp(self):
+        from core.code_review import upsert_findings
+
+        self.repo = _make_repo()
+        self.sm = _RecordingSM()
+        upsert_findings(self.repo, [
+            {"file": "core/a.py", "category": "correctness", "title": "None deref",
+             "severity": "critical", "line": 7,
+             "description": "Deref of possibly-None value at core/a.py:7.",
+             "suggestion": "Guard with a None check.",
+             "evidence": "core/a.py:7（ocr scan）"},
+            {"file": "core/b.py", "category": "perf", "title": "Repeated IO",
+             "severity": "minor", "line": 3,
+             "description": "File is read once per iteration.",
+             "suggestion": "",  # suggestion 可为空：缺失时整段 MUST NOT 渲染
+             "evidence": "core/b.py:3"},
+        ], "code-review-c1", "manual_full")
+        self.item_ids = self._ids()
+
+    def tearDown(self):
+        import shutil
+
+        shutil.rmtree(str(self.repo.parent), ignore_errors=True)
+
+    def _ids(self):
+        from core.code_review import read_items
+
+        return {it["file"]: iid for iid, it in read_items(self.repo).items()}
+
+    def test_content_written_to_all_documents(self):
+        from core.code_review import generate_fix_spec
+
+        res = generate_fix_spec(self.repo, self.sm, list(self.item_ids.values()))
+        self.assertTrue(res["ok"], res)
+        spec_dir = self.repo / "spec" / "changes" / res["spec_name"]
+
+        for doc in ("proposal.md", "design.md"):
+            text = (spec_dir / doc).read_text(encoding="utf-8")
+            self.assertIn("Deref of possibly-None value", text, doc)
+            self.assertIn("Guard with a None check.", text, doc)
+            self.assertIn("ocr scan", text, doc)
+            self.assertIn("File is read once per iteration.", text, doc)
+
+        # specs/<cap>/spec.md 同样带内容
+        spec_md = next((spec_dir / "specs").rglob("spec.md"))
+        spec_text = spec_md.read_text(encoding="utf-8")
+        self.assertIn("Deref of possibly-None value", spec_text)
+        self.assertIn("Guard with a None check.", spec_text)
+
+        # tasks.md：完整内容以缩进子项挂在任务行下
+        tasks = (spec_dir / "tasks.md").read_text(encoding="utf-8")
+        self.assertIn("Deref of possibly-None value", tasks)
+        self.assertIn("Guard with a None check.", tasks)
+
+    def test_empty_suggestion_omits_section(self):
+        from core.code_review import generate_fix_spec
+
+        res = generate_fix_spec(self.repo, self.sm, list(self.item_ids.values()))
+        self.assertTrue(res["ok"], res)
+        proposal = (self.repo / "spec" / "changes" / res["spec_name"] / "proposal.md").read_text(
+            encoding="utf-8"
+        )
+        # core/b.py 的 suggestion 为空：两份条目的「修复建议」段数 = 1（仅 a.py）
+        self.assertEqual(proposal.count("**修复建议**"), 1, proposal)
+
+    def test_tasks_md_still_parseable(self):
+        """任务行 MUST 保持 `^- [ ] N.N <标题>` 行首形态（进度跟踪正则）。"""
+        from core.code_review import generate_fix_spec
+        from core.run_task_track import parse_tasks_md
+
+        res = generate_fix_spec(self.repo, self.sm, list(self.item_ids.values()))
+        self.assertTrue(res["ok"], res)
+        all_ids, checked = parse_tasks_md(self.repo, res["spec_name"])
+        self.assertEqual(all_ids, ["1.1", "2.2"], all_ids)
+        self.assertEqual(checked, set())
+
+    def test_deliverables_dedup_same_file(self):
+        """多个问题指向同一文件时 Deliverables MUST NOT 重复声明。"""
+        from core.code_review import upsert_findings, generate_fix_spec
+
+        upsert_findings(self.repo, [
+            {"file": "core/a.py", "category": "style", "title": "Second issue in a.py",
+             "severity": "minor", "line": 9, "description": "d2",
+             "suggestion": "", "evidence": "e2"},
+        ], "code-review-c2", "manual_full")
+        ids = self._ids()
+        res = generate_fix_spec(self.repo, self.sm, [ids["core/a.py"]])
+        self.assertTrue(res["ok"], res)
+        tasks = (self.repo / "spec" / "changes" / res["spec_name"] / "tasks.md").read_text(
+            encoding="utf-8"
+        )
+        decl = tasks.split("```")[1]
+        self.assertEqual(decl.count("path: core/a.py"), 1, decl)
+
+
+class TestGenerateFixSpecStartAfter(unittest.TestCase):
+    """start_after 三态随 SPEC 注册透传（立即 / 定时 / 手工激活哨兵）。"""
+
+    def setUp(self):
+        from core.code_review import upsert_findings
+
+        self.repo = _make_repo()
+        self.sm = _RecordingSM()
+        upsert_findings(self.repo, [
+            {"file": "core/a.py", "category": "correctness", "title": "T",
+             "severity": "major", "line": 1, "description": "d",
+             "suggestion": "", "evidence": "e"},
+        ], "code-review-sa", "manual_full")
+
+    def tearDown(self):
+        import shutil
+
+        shutil.rmtree(str(self.repo.parent), ignore_errors=True)
+
+    def _one_id(self):
+        from core.code_review import read_items
+
+        return next(iter(read_items(self.repo)))
+
+    def test_immediate_leaves_no_start_after(self):
+        from core.code_review import generate_fix_spec
+
+        res = generate_fix_spec(self.repo, self.sm, [self._one_id()])
+        self.assertTrue(res["ok"], res)
+        self.assertIsNone(res["start_after"], res)
+        entry = self.sm.entries[res["spec_name"]]
+        self.assertNotIn("start_after", entry, entry)
+
+    def test_scheduled_iso_persisted(self):
+        from core.code_review import generate_fix_spec
+
+        res = generate_fix_spec(
+            self.repo, self.sm, [self._one_id()], "2026-12-01T02:00:00+00:00"
+        )
+        self.assertTrue(res["ok"], res)
+        entry = self.sm.entries[res["spec_name"]]
+        self.assertEqual(entry["start_after"], "2026-12-01T02:00:00+00:00", entry)
+        self.assertEqual(res["start_after"], "2026-12-01T02:00:00+00:00", res)
+
+    def test_manual_sentinel_persisted(self):
+        from core.code_review import generate_fix_spec
+
+        res = generate_fix_spec(self.repo, self.sm, [self._one_id()], "manual")
+        self.assertTrue(res["ok"], res)
+        self.assertEqual(self.sm.entries[res["spec_name"]]["start_after"], "manual")
+        self.assertEqual(res["start_after"], "manual", res)
+
+    def test_illegal_start_after_rejected_before_write(self):
+        from core.code_review import generate_fix_spec, read_items
+
+        res = generate_fix_spec(self.repo, self.sm, [self._one_id()], "not-a-time")
+        self.assertFalse(res["ok"], res)
+        self.assertIn("start_after", res["error"] or "", res)
+        # 不半写：无 spec 目录、无注册、条目状态不变
+        self.assertFalse((self.repo / "spec" / "changes").exists())
+        self.assertEqual(self.sm.entries, {})
+        self.assertEqual(read_items(self.repo)[self._one_id()]["status"], "open")
+
+    def test_blank_start_after_is_immediate(self):
+        from core.code_review import generate_fix_spec
+
+        res = generate_fix_spec(self.repo, self.sm, [self._one_id()], "  ")
+        self.assertTrue(res["ok"], res)
+        self.assertNotIn("start_after", self.sm.entries[res["spec_name"]])
+
+
+class TestNormalizeStartAfter(unittest.TestCase):
+    def test_tristate(self):
+        from core.code_review import _normalize_start_after
+
+        self.assertEqual(_normalize_start_after(None), (True, None, ""))
+        self.assertEqual(_normalize_start_after(""), (True, None, ""))
+        self.assertEqual(_normalize_start_after("  "), (True, None, ""))
+        self.assertEqual(_normalize_start_after("MANUAL"), (True, "manual", ""))
+        ok, value, err = _normalize_start_after("2026-12-01T02:00:00+00:00")
+        self.assertTrue(ok, err)
+        self.assertTrue(value.startswith("2026-12-01T02:00:00"), value)
+        ok, value, err = _normalize_start_after("garbage")
+        self.assertFalse(ok)
+        self.assertIn("start_after", err)
+
+
 class TestSpecNameResolution(unittest.TestCase):
     def setUp(self):
         self.repo = _make_repo()
