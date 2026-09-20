@@ -106,6 +106,19 @@ proposal.md、design.md、tasks.md 与 specs/ 是 spec-driven 流程的 change a
 
 评审 run_id 前缀 `spec-review-`，流转录在 `.fenix/runs/spec-review-<spec>-<timestamp>.jsonl`。评审相关冻结（`frozen: true`，error 内嵌 `spec-review-rejected:` / `spec-review-incomplete:` 标识）的恢复见[生命周期](03-lifecycle.md#blocked-的两种语义冻结-vs-阻塞)，非冻结历史评审 blocked 条目的重新评审入口见[治理规则](06-governance.md#spec-方案评审门禁)。
 
+## .fenix/regression/ 全量回归产物（gitignored，非交付物）
+
+全量回归车道（`add-test-regression-tab`，执行声明见[配置参考](09-config.md#verifyyaml-的-regression-段全量回归执行声明)）的运行时产物：
+
+| 文件 | 语义 |
+|------|------|
+| `last-run.json` | 最近一次回归结果快照（**覆盖式单快照**，design D5——首版不保留多轮历史）：`status`（`passed` / `failed` / `timeout` / `parse_error` / `never_run`）+ `cmd` / `output` / `started_at` / `finished_at` / `duration_seconds` / 计数（total/passed/failed/errors/skipped）+ `failures[]`（name/file/line/time/kind/message）+ `long_tests[]`（name/file/line/time）+ `long_test_threshold_seconds` + `reason`（timeout/parse_error 时非空） |
+| `state.json` | 周期调度防重状态：`last_run_date`（同一自然日防重；**独立于**自省/code-review 的防重状态文件，design D4） |
+| `.running` | 运行中标记（started_at + timeout_seconds，供 `POST /api/regression/run` 的 409 单飞守卫与分面 `running` 字段判定；超窗视为崩溃残留，按未运行处理） |
+| `junit.xml` 等 | `regression.cmd` 产出的 JUnit XML（路径由 `regression.output` 声明，随各项目而异） |
+
+信号文件 `.fenix/regression_request.json`（手动触发，dashboard 原子写 → daemon 主循环消费，同 code-review 信号族）在消费后即被清除。
+
 ## 出问题去哪查对照表
 
 | 现象 | 查哪里 |
@@ -125,6 +138,7 @@ proposal.md、design.md、tasks.md 与 specs/ 是 spec-driven 流程的 change a
 | 当日待办/自省 | `.fenix/todo.md` |
 | 建议改进项 / 自进化草稿 | `.fenix/evolution/items.jsonl` + `drafts/<id>/`（Dashboard 设置页「自进化」页签） |
 | 任务进度 | `spec/changes/<spec>/tasks.md` 勾选状态 |
+| 全量回归结果 | `.fenix/regression/last-run.json`（Dashboard 项目页「测试回归」分面）；周期防重在 `state.json` 的 `last_run_date`，手动触发信号见 `.fenix/regression_request.json` |
 
 ## 相关文档
 

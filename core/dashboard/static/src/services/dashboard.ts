@@ -983,6 +983,12 @@ export interface CodeReviewConfig {
   max_files?: number;
 }
 
+/** 周期性全量回归（admin.regression；add-test-regression-tab） */
+export interface RegressionConfig {
+  /** 是否启用周期性全量回归（缺省 false；手动触发不受此开关约束） */
+  enabled?: boolean;
+}
+
 // add-settings-system-tab：系统页签受管 admin.* 键（read_config 白名单 6 键）
 export interface AdminConfig {
   /** 自动自愈总开关（缺省 true） */
@@ -1227,6 +1233,8 @@ export interface ConfigData {
   /** add-code-review-agent-and-quality-tab：周期性代码审查（admin.code_review 两键，
    *  设置页「质量」页签读写；项目页「代码审查」分面只读触发按钮与进度） */
   code_review?: CodeReviewConfig;
+  /** add-test-regression-tab：周期性全量回归（admin.regression；设置页「质量」页签开关） */
+  regression?: RegressionConfig;
   scope: 'user' | 'project';
   raw_exists: boolean;
   sources: Record<string, string>;
@@ -1607,4 +1615,69 @@ export async function registerSessionWatch(project: string, cid: string): Promis
 export async function unregisterSessionWatch(project: string, cid: string): Promise<void> {
   const q = `?project=${encodeURIComponent(project)}&cid=${encodeURIComponent(cid)}`;
   await request(`/api/session/watch${q}`, { method: 'DELETE' });
+}
+
+// ── 全量回归（add-test-regression-tab）────────────────────────────────
+
+/** 单个失败/错误用例（JUnit XML 的 failure/error 子元素）。kind 区分
+ *  failure（断言失败）与 error（执行错误）；time 为用例耗时（秒）。 */
+export interface RegressionFailure {
+  name: string;
+  file: string;
+  line: number;
+  time: number;
+  kind: 'failure' | 'error';
+  message: string;
+}
+
+/** 长耗时用例（time > long_test_threshold_seconds，含通过的用例）。 */
+export interface RegressionLongTest {
+  name: string;
+  file: string;
+  line: number;
+  time: number;
+}
+
+/** GET /api/regression/result 快照（design D6 结构）。
+ *
+ * status 五态：passed（全绿）/ failed（有失败或错误）/ timeout（硬超时中止）/
+ * parse_error（XML 缺失或不可解析，附 reason）/ never_run（尚未执行过）。
+ * running 为读侧补充的「是否正在执行」标记（marker 新鲜度判定），
+ * 供分面在跨刷新后仍能显示运行中态（task 5.6：MUST NOT 依赖前端本地计时）。
+ */
+export interface RegressionResult {
+  status: 'passed' | 'failed' | 'timeout' | 'parse_error' | 'never_run';
+  running?: boolean;
+  cmd?: string;
+  output?: string;
+  started_at?: string;
+  finished_at?: string;
+  duration_seconds?: number;
+  total?: number;
+  passed?: number;
+  failed?: number;
+  errors?: number;
+  skipped?: number;
+  long_test_threshold_seconds?: number;
+  failures?: RegressionFailure[];
+  long_tests?: RegressionLongTest[];
+  reason?: string;
+}
+
+/** 读取项目最近一次全量回归快照（分面 active 门控轮询）。 */
+export async function getRegressionResult(project: string): Promise<RegressionResult> {
+  const q = `?project=${encodeURIComponent(project)}`;
+  return request<RegressionResult>(`/api/regression/result${q}`);
+}
+
+/** 手动触发一次全量回归（POST /api/regression/run）。409/400 时抛错带后端文案 */
+export function triggerRegression(project: string) {
+  return request<{ ok: boolean; requested_at: string }>(
+    `/api/regression/run?project=${encodeURIComponent(project)}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    },
+  );
 }

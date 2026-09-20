@@ -49,6 +49,7 @@ import AdminInvokeModal from './components/AdminInvokeModal';
 import SpecStatusModal from './components/SpecStatusModal';
 import SessionPanel from './components/SessionPanel';
 import QualityTab from './components/QualityTab';
+import RegressionTab from './components/RegressionTab';
 
 const REFRESH_THROTTLE_MS = 500;
 // dashboard-sse-refresh：增量 patch 去重窗口（同 spec 1s 内多事件只应用最新）
@@ -1278,8 +1279,10 @@ export default function SpecListPage() {
           {
             key: 'regression',
             label: '测试回归',
-            // add-project-test-regression-tab：测试回归视图占位，内容待后续 SPEC 补充
-            children: null,
+            // add-test-regression-tab：承载全量回归结果视图。RegressionTab
+            // active 门控：仅在选中本分面时拉取 GET /api/regression/result，
+            // 未选中零请求（对齐 QualityTab/SessionPanel 按需加载语义）
+            children: <RegressionTab project={name} active={activeTab === 'regression'} />,
           },
           {
             key: 'session',

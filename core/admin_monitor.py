@@ -679,6 +679,12 @@ class AdminMonitor:
         # 用锁把判定+置位压成临界区（fix-ocr finding low）。
         self._code_review_in_flight = False
         self._code_review_lock = threading.Lock()
+        # add-test-regression-tab：regression 在途标记（对齐 _code_review_in_flight
+        # 形态）：投递即置位、worker 收尾复位。锁定：检查点（admin 巡检线程）与
+        # 手动信号消费（fenixd 主循环线程）双线程读-改-写，GIL 不保证原子，
+        # 用锁把判定+置位压成临界区（同 code_review 同款处理）。
+        self._regression_in_flight = False
+        self._regression_lock = threading.Lock()
 
     # ── 配置读取 ────────────────────────────────────────────────
 
@@ -784,6 +790,14 @@ class AdminMonitor:
             self._run_code_review_checkpoint()
         except Exception as e:
             self.logger.error("admin_monitor", f"Code-review checkpoint failed: {e}")
+        # add-test-regression-tab：回归检查点（独立于 code-review/self_review 的
+        # 防重状态文件；守卫链 = enabled → run_at 时点 → 同自然日防重 → 单飞 →
+        # 有 regression 段）。放 code_review 之后：与自省时点同频，但不依赖
+        # self_review_state 字段，顺序不敏感。
+        try:
+            self._run_regression_checkpoint()
+        except Exception as e:
+            self.logger.error("admin_monitor", f"Regression checkpoint failed: {e}")
         try:
             self._run_self_review_checkpoint()
         except Exception as e:
@@ -925,6 +939,100 @@ class AdminMonitor:
             with self._code_review_lock:
                 self._code_review_in_flight = False
             self.logger.error("admin_monitor", f"code-review 周期审查派发失败: {e}")
+            return {"triggered": True, "ok": False, "reason": f"exception: {e}", "date": local_today_str()}
+
+    def _run_regression_checkpoint(self) -> dict:
+        """周期性全量回归调度检查点（add-test-regression-tab）。
+
+        守卫链与 code-review 检查点同源：
+        ``admin.regression.enabled`` → ``run_at`` 时点 → 同自然日防重（独立
+        状态文件 .fenix/regression/state.json 的 last_run_date，MUST NOT
+        复用自省/code-review 的防重状态）→ 单飞（_regression_in_flight）→
+        项目 verify.yaml 有有效 regression 段（无则跳过并记日志）。
+
+        派发经 ``_code_review_executor`` 同款 executor（_admin_executor）
+        投递后台 worker，MUST NOT 在巡检线程内同步跑完整回归——回归可跑
+        1800s，照搬会让 admin 巡检停摆整个回归时长。单飞标记在投递即置位、
+        worker 收尾复位（对齐 _code_review_in_flight）。
+
+        返回调度结果 dict（供测试断言；巡检本身不消费返回值）。
+        """
+        from .config import ConfigLoader
+        from .self_review import _parse_run_at, local_today_str
+
+        from core.regression import read_state, save_state
+        from core.verify_contract import load_verify_contract
+
+        reg_cfg = ConfigLoader.get_regression_config(self.config)
+        if not reg_cfg.get("enabled"):
+            return {"triggered": False, "reason": "disabled"}
+
+        sr_cfg = ConfigLoader.get_self_review_config(self.config)
+        now = datetime.now()
+
+        # run_at 未到不触发（与自省同口径：与每日自省同周期）
+        if now < _parse_run_at(sr_cfg["run_at"], now.date()):
+            return {"triggered": False, "reason": "before_run_at"}
+
+        # 同自然日防重（独立状态文件，MUST NOT 复用 self_review/code_review
+        # 的 last_run_date——code-review 当年踩过的坑）
+        state = read_state(self.project_root)
+        if state.get("last_run_date") == local_today_str():
+            return {"triggered": False, "reason": "already_ran_today"}
+
+        # 单飞：已有回归在跑 → 跳过
+        with self._regression_lock:
+            if self._regression_in_flight:
+                return {"triggered": False, "reason": "already_running"}
+            if self.agent_runner is not None:
+                running = getattr(self.agent_runner, "_running_agents", None) or {}
+                if any(str(rid).startswith("regression-") for rid in running):
+                    self._regression_in_flight = True
+                    return {"triggered": False, "reason": "already_running_agent"}
+            self._regression_in_flight = True
+
+        # 无有效 regression 段 → 跳过并复位单飞标志
+        contract = load_verify_contract(self.project_root, logger=self.logger)
+        if contract is None or contract.regression is None:
+            with self._regression_lock:
+                self._regression_in_flight = False
+            self.logger.info(
+                "admin_monitor",
+                "regression: 项目未配置全量回归（verify.yaml regression 段缺失），"
+                "跳过周期回归",
+            )
+            return {"triggered": False, "reason": "not_configured"}
+
+        spec = contract.regression
+        # 防重状态写入（投递前即写——投递成功/失败均不重试，与自省同口径）
+        save_state(self.project_root, local_today_str())
+
+        def _worker():
+            try:
+                result = self.agent_runner.run_regression(spec, reason="scheduled")
+                self.logger.info(
+                    "admin_monitor",
+                    f"regression 周期回归完成：run_id={result.run_id}, "
+                    f"status={result.status}"
+                    + (f", error={result.error}" if result.error else ""),
+                )
+            except Exception as e:
+                self.logger.error("admin_monitor", f"regression 周期回归异常: {e}")
+            finally:
+                with self._regression_lock:
+                    self._regression_in_flight = False
+
+        try:
+            if self._code_review_executor is not None:
+                self._code_review_executor.submit(_worker)
+            else:
+                # executor 不可用（测试/禁用态）：同步执行（行为不变，保逃生门）
+                _worker()
+            return {"triggered": True, "ok": True, "reason": "scheduled", "date": local_today_str()}
+        except Exception as e:
+            with self._regression_lock:
+                self._regression_in_flight = False
+            self.logger.error("admin_monitor", f"regression 周期回归派发失败: {e}")
             return {"triggered": True, "ok": False, "reason": f"exception: {e}", "date": local_today_str()}
 
     def _run_alert_lifecycle(self, specs: dict) -> int:

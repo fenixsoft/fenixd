@@ -52,6 +52,18 @@
 - **serve 段合法**：`serve.kind ∈ {static, command}` 且对应必填字段非空（`root` for static, `cmd` for command）
 - 满足以上两点 = 有效契约，一律不碰
 
+### regression 段起草（add-test-regression-tab）
+起草 verify.yaml 时，**若项目有测试体系 MUST 一并生成 `regression` 段**（全量回归声明，design D1/D2）：
+1. **识别测试体系**：读 `package.json` 的 `scripts.test`（Jest/Vitest）、`pyproject.toml`/`requirements*.txt` 的 pytest、`go.mod` 的 Go test、`pom.xml` 的 surefire 等——确认语言、测试框架、测试目录（如 `tests/`、`__tests__/`、`src/**/*.test.*`）
+2. **生成产出 JUnit XML 的 cmd 与 output**：
+   - pytest：`python3 -m pytest tests/ -q --junit-xml=.fenix/regression/junit.xml` + `output: .fenix/regression/junit.xml`
+   - Jest：`npx jest --ci --reporters=jest-junit`（需配 `jest-junit` output 路径），其余框架找各自 JUnit 报告器
+   - `output` 必填（命令产出的 XML 相对项目根路径）；`timeout_seconds` 按实测套件耗时设合理值（缺省 1800）
+3. **自证后落位**：`python3 bin/fenix_verify_contract.py <项目根>` 的 regression 段自证会按 `cmd` 跑一次确认 `output` 产出可解析 JUnit XML（独立一行输出，不计入三段退出码）——该行显示成功才把 regression 段随草稿一并落位
+4. **无测试体系 / 探测不出可产出 JUnit XML 的命令时 MUST 省略该段**（`regression` 段可选）：臆造命令会让周期回归每天以 parse_error 空转，比不配更糟——省略即「未配置」，周期检查点跳过、分面显示引导态
+
+**边界**：不得为补全 regression 段而编造不存在的测试命令；`format` 仅支持 `junit` 一值（声明其它格式整段无效）。
+
 ## 构建产物路径起草手册
 
 ### 输入源（信息收集）

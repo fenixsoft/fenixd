@@ -136,6 +136,26 @@ DEPS_MODES = ("prefer-offline", "hardlink")
 DEFAULT_DEPS_MODE = "hardlink"
 
 
+def _positive_int_or_default(value, default: int) -> int:
+    """阈值/超时非法值（非正数、类型错误）回退缺省值。
+
+    对齐 get_code_review_config 的缺省回退范式（task 1.3）：
+    只认正整数（排除 bool——bool 是 int 子类），非法一律静默回退缺省。
+    """
+    if value is None:
+        return default
+    # 排除 bool（bool 是 int 子类，显式前判；否则 True 会被 int() 变 1）
+    if isinstance(value, bool):
+        return default
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return default
+    if n <= 0:
+        return default
+    return n
+
+
 @dataclass
 class PrepareStep:
     """一条构建步骤：``run`` 在 ``cwd``（相对项目根）下执行。"""
@@ -166,6 +186,25 @@ class ReadyProbe:
 
 
 @dataclass
+class RegressionSpec:
+    """全量回归执行声明：``cmd`` 在项目根执行并产出 JUnit XML（``output``）。
+
+    Fenix 是通用开发框架，被管项目不一定是 Python 项目——回归命令形态、
+    测试目录、测试数量均由项目声明（design D1/D2），框架只按 JUnit XML 解析
+    （跨语言事实标准：pytest --junit-xml、jest-junit、go-junit-report、
+    maven-surefire 均可产出；``testcase@time`` 天然承载耗时，正是
+    「长耗时用例」所需）。``format`` 本次只允许 ``junit`` 一值，声明其它值
+    时整段视为无效（design D2 边界：不得静默按 junit 处理）。
+    """
+
+    cmd: object  # str（shell）或 list（argv）；cwd 为项目根
+    output: str  # 命令产出的 JUnit XML 路径（相对项目根）
+    timeout_seconds: int = 1800  # 硬超时（秒）；超过则中止进程并按超时归类
+    format: str = "junit"  # 结果格式；本次仅支持 JUnit XML
+    long_test_threshold_seconds: int = 10  # 单用例耗时超过即计入长耗时表（正数）
+
+
+@dataclass
 class VerifyContract:
     """验证契约：prepare（构建）→ serve（被测实例）→ ready（就绪探针）。"""
 
@@ -173,6 +212,9 @@ class VerifyContract:
     serve: Optional[ServeSpec] = None
     ready: ReadyProbe = field(default_factory=ReadyProbe)
     deps_mode: str = ""  # worktree node_modules 供给模式；空=未指定（走 config/默认）
+    # 全量回归执行声明（design D1：归 verify.yaml 而非 config.yaml——与
+    # prepare/serve/ready 同属「项目如何被测」语义域；缺失=未配置回归，零迁移）
+    regression: Optional[RegressionSpec] = None
 
 
 def load_verify_contract(project_root: Path, logger=None) -> Optional[VerifyContract]:
@@ -254,7 +296,59 @@ def load_verify_contract(project_root: Path, logger=None) -> Optional[VerifyCont
                 f"verify.yaml deps_mode 非法（忽略，可用值 {list(DEPS_MODES)}）: "
                 f"{data['deps_mode']}",
             )
-    return VerifyContract(prepare=prepare, serve=serve, ready=ready, deps_mode=deps_mode)
+    # regression 段（design D1/D2）：可选。缺段 → regression=None（未配置回归，
+    # 分面引导态、周期检查点跳过、触发端点 400，存量项目零迁移）。缺 cmd/output
+    # 或 format 非 junit 均视整段无效 → None + WARNING——MUST NOT 静默按 junit
+    # 去解析其它格式产物（那必然产出 parse_error 且无解释）。非法数值回退缺省
+    # （对齐 get_code_review_config 的缺省回退范式，task 1.3）。
+    regression = None
+    reg_data = data.get("regression")
+    if reg_data is not None:
+        if not isinstance(reg_data, dict):
+            if logger:
+                logger.warning(
+                    "verify_contract",
+                    f"verify.yaml regression 段非法（非映射，按未配置处理）: {reg_data}",
+                )
+        else:
+            cmd = reg_data.get("cmd")
+            output = reg_data.get("output")
+            fmt = reg_data.get("format") or "junit"
+            if not cmd or not output:
+                if logger:
+                    logger.warning(
+                        "verify_contract",
+                        "verify.yaml regression 段缺少必填字段 cmd/output"
+                        f"（cmd={cmd!r}, output={output!r}，按未配置处理）",
+                    )
+            elif fmt != "junit":
+                # design D2 边界：只支持 junit 一值。声明其它格式整段无效，
+                # 不得降级成 junit 去解析（会产出无解释的 parse_error）。
+                if logger:
+                    logger.warning(
+                        "verify_contract",
+                        "verify.yaml regression 段 format 仅支持 junit"
+                        f"（声明为 {fmt!r}，整段按未配置处理）",
+                    )
+            else:
+                regression = RegressionSpec(
+                    cmd=cmd,
+                    output=str(output),
+                    timeout_seconds=_positive_int_or_default(
+                        reg_data.get("timeout_seconds"), 1800
+                    ),
+                    format="junit",
+                    long_test_threshold_seconds=_positive_int_or_default(
+                        reg_data.get("long_test_threshold_seconds"), 10
+                    ),
+                )
+    return VerifyContract(
+        prepare=prepare,
+        serve=serve,
+        ready=ready,
+        deps_mode=deps_mode,
+        regression=regression,
+    )
 
 
 @dataclass

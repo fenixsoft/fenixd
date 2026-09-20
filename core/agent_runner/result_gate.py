@@ -319,6 +319,33 @@ class CodeReviewResult:
         self.output = output
 
 
+class RegressionResult:
+    """全量回归 run 的结果（run_regression 返回，add-test-regression-tab）。
+
+    与 CodeReviewResult 同形态：维护型 run 的结果信封。run_regression
+    不经 LLM——直接执行 regression.cmd 并解析 JUnit XML（core/regression.py），
+    故本类只承载信封字段：status 沿用快照状态（passed/failed/timeout/
+    parse_error/skipped），snapshot 为完整快照（含计数/耗时/failures/
+    long_tests，design D6）。
+    """
+
+    def __init__(
+        self,
+        run_id: str = "",
+        success: bool = True,
+        status: str = "",
+        error: str = "",
+        snapshot: dict = None,
+        output: str = "",
+    ):
+        self.run_id = run_id
+        self.success = success
+        self.status = status
+        self.error = error
+        self.snapshot = snapshot or {}
+        self.output = output
+
+
 # ── 产物门族（add-judge-artifact-gate / add-planready-artifact-gate /
 #     fix-verdict-read-failclosed / fix-impl-tasks-completion-gate）──
 #
