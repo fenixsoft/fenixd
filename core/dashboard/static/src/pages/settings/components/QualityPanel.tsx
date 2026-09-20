@@ -133,39 +133,44 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
     <div>
       <h3>代码质量</h3>
       <Text type="secondary">实现阶段的代码质量门相关设置。</Text>
-      <Card style={{ marginTop: 12 }}>
-        {/* 环境状态行：已装 → 绿色提示；未装 → 橙色提示 + 一键安装按钮 */}
-        {ocr === null ? (
-          <Text type="secondary">正在检测 open-code-review 环境…</Text>
-        ) : ocr.installed ? (
-          <Alert
-            type="success"
-            showIcon
-            message="已安装 open-code-review"
-            description={ocr.version || ocr.bin || '检测到 ocr 可执行文件'}
-            data-testid="ocr-installed-alert"
-          />
-        ) : (
-          <Alert
-            type="warning"
-            showIcon
-            message="未检测到 open-code-review"
-            description="代码质量审查依赖 ocr（@alibaba-group/open-code-review）。未安装时该开关不可用，运行期也会按 unavailable 降级跳过。"
-            action={
-              <Button
-                type="primary"
-                size="small"
-                loading={installing}
-                onClick={handleInstall}
-                data-testid="ocr-install-btn"
-              >
-                一键安装
-              </Button>
-            }
-            data-testid="ocr-missing-alert"
-          />
-        )}
-        <Form form={form} layout="vertical" style={{ marginTop: 16 }}>
+      {/* 统一 Form 包裹全部三个卡片（fix-verify-bug 2026-09-21）：旧实现把
+          周期代码审查 / 周期全量回归两个开关放在 <Form> 外的 <div> 容器里，
+          rc-field-form 的 Form.Item 只在 <form> 内注册字段——validateFields()
+          不返回脱管字段，handleSave 恒提交 enabled:false（视觉开启但后端未
+          持久化，api-regression-config-persisted 验证实测确证）。 */}
+      <Form form={form} layout="vertical" style={{ marginTop: 16 }}>
+        <Card style={{ marginTop: 12 }}>
+          {/* 环境状态行：已装 → 绿色提示；未装 → 橙色提示 + 一键安装按钮 */}
+          {ocr === null ? (
+            <Text type="secondary">正在检测 open-code-review 环境…</Text>
+          ) : ocr.installed ? (
+            <Alert
+              type="success"
+              showIcon
+              message="已安装 open-code-review"
+              description={ocr.version || ocr.bin || '检测到 ocr 可执行文件'}
+              data-testid="ocr-installed-alert"
+            />
+          ) : (
+            <Alert
+              type="warning"
+              showIcon
+              message="未检测到 open-code-review"
+              description="代码质量审查依赖 ocr（@alibaba-group/open-code-review）。未安装时该开关不可用，运行期也会按 unavailable 降级跳过。"
+              action={
+                <Button
+                  type="primary"
+                  size="small"
+                  loading={installing}
+                  onClick={handleInstall}
+                  data-testid="ocr-install-btn"
+                >
+                  一键安装
+                </Button>
+              }
+              data-testid="ocr-missing-alert"
+            />
+          )}
           {/* 开关行与其它设置页一致：开关在前、名称紧随同行（.switch-inline-row） */}
           <div className="switch-inline-row">
             <Form.Item name="impl_code_review" valuePropName="checked" noStyle>
@@ -280,71 +285,74 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
             （precision 优先的刻意取舍），medium 为 ocr 官方默认，high 深度审查。
             经提示词命令示例承载，实现者须照抄命令串才生效。
           </Text>
-        </Form>
-      </Card>
-      <Card style={{ marginTop: 12 }}>
-        {/* 与上方质量卡片共用同一 Form 实例（code-review item a7f58be138e4）：
-            旧实现在两个 <Form> 上绑同一 Form.useForm() 实例——rc-field-form 要求
-            一个实例对应一个 <form>，两个 <form> 注册进同一 store 会让
-            validateFields/setFieldsValue/错误渲染耦合到挂载顺序（「instance is not
-            connected to any Form element」的已知来源）。此处改用非 Form 容器承载
-            后续项，仍由同一 form 实例管理字段。 */}
-        <div>
-          {/* 周期性代码审查开关（2026-09-19 从项目页「代码审查」分面迁到本页签）：
-              它是项目级配置（admin.code_review.enabled），与手动触发按钮的性质不同
-              ——分面负责「看结果 + 手动触发」，配置归设置页统一管理。
-              注：本条改动在 merge-back 中两次因「先 stash 后 merge」被丢弃，本卡片
-              由 admin 处置（stash_pop_conflict）从 stash 找回，见 admin_disposition。 */}
-          <div className="switch-inline-row">
-            <Form.Item name="code_review_enabled" valuePropName="checked" noStyle>
-              <Switch data-testid="code-review-enabled-switch" />
-            </Form.Item>
-            <span className="switch-inline-label">
-              周期性代码审查
-              <span className="label-note">（admin.code_review.enabled）</span>
-            </span>
+        </Card>
+        <Card style={{ marginTop: 12 }}>
+          {/* 与上方质量卡片共用同一 Form 实例（code-review item a7f58be138e4）：
+              add-test-regression-tab 修复验证打回 BUG-01 的根因：旧实现中
+              code_review_enabled / regression_enabled 两个开关 Form.Item 位于
+              首个 Card 内 <Form> 之外（第二、三 Card 用 <div> 承载），
+              rc-field-form 的 Form.Item 只在 <form> 内注册字段——
+              validateFields() 不返回脱管字段，handleSave 恒提交 enabled:false
+              （视觉开启但后端未持久化）。修复：统一 <Form> 包裹全部三个 Card
+              （见首个 Card 上方注释），开关 Form.Item 在 <Form> 内部注册字段，
+              validateFields() 才能返回 code_review_enabled / regression_enabled。 */}
+          <div>
+            {/* 周期性代码审查开关（2026-09-19 从项目页「代码审查」分面迁到本页签）：
+                它是项目级配置（admin.code_review.enabled），与手动触发按钮的性质不同
+                ——分面负责「看结果 + 手动触发」，配置归设置页统一管理。
+                注：本条改动在 merge-back 中两次因「先 stash 后 merge」被丢弃，本卡片
+                由 admin 处置（stash_pop_conflict）从 stash 找回，见 admin_disposition。 */}
+            <div className="switch-inline-row">
+              <Form.Item name="code_review_enabled" valuePropName="checked" noStyle>
+                <Switch data-testid="code-review-enabled-switch" />
+              </Form.Item>
+              <span className="switch-inline-label">
+                周期性代码审查
+                <span className="label-note">（admin.code_review.enabled）</span>
+              </span>
+            </div>
+            <Text type="secondary" style={{ display: 'block', marginTop: 8 }}>
+              开启后与每日自省同周期（admin.self_review.run_at 时点）自动派发
+              code-review agent，审查窗口内开发 SPEC 的产品代码质量，问题沉淀到
+              .fenix/code-review/items.jsonl 台账，供项目页「代码审查」分面展示与消费。
+              需要环境已安装 ocr（未安装时审查仍以 LLM 逐文件执行，仅少了扫描加速）。
+              手动触发（全仓库审查 / 当期提交审查）不受本开关约束。
+            </Text>
           </div>
-          <Text type="secondary" style={{ display: 'block', marginTop: 8 }}>
-            开启后与每日自省同周期（admin.self_review.run_at 时点）自动派发
-            code-review agent，审查窗口内开发 SPEC 的产品代码质量，问题沉淀到
-            .fenix/code-review/items.jsonl 台账，供项目页「代码审查」分面展示与消费。
-            需要环境已安装 ocr（未安装时审查仍以 LLM 逐文件执行，仅少了扫描加速）。
-            手动触发（全仓库审查 / 当期提交审查）不受本开关约束。
-          </Text>
-        </div>
-      </Card>
-      {/* add-test-regression-tab：周期性全量回归开关（admin.regression.enabled）。
-          与 code_review 同层同形态：开关归设置页，项目页「测试回归」分面只读
-          展示 + 手动触发。开启前提 = 项目 .fenix/verify.yaml 有有效 regression 段
-          （无段时周期检查点跳过、不派发空跑）；长耗时阈值归 verify.yaml 声明
-          （regression.long_test_threshold_seconds 缺省 10），本卡片只读说明其来源，
-          MUST NOT 另开第二个阈值写入路径（双写会让阈值来源分叉，design R4）——
-          编辑入口复用既有 GET/POST /api/verify-yaml（项目设置「项目简介」面板）。 */}
-      <Card style={{ marginTop: 12 }}>
-        <div>
-          <div className="switch-inline-row">
-            <Form.Item name="regression_enabled" valuePropName="checked" noStyle>
-              <Switch data-testid="regression-enabled-switch" />
-            </Form.Item>
-            <span className="switch-inline-label">
-              周期性全量回归
-              <span className="label-note">（admin.regression.enabled）</span>
-            </span>
+        </Card>
+        {/* add-test-regression-tab：周期性全量回归开关（admin.regression.enabled）。
+            与 code_review 同层同形态：开关归设置页，项目页「测试回归」分面只读
+            展示 + 手动触发。开启前提 = 项目 .fenix/verify.yaml 有有效 regression 段
+            （无段时周期检查点跳过、不派发空跑）；长耗时阈值归 verify.yaml 声明
+            （regression.long_test_threshold_seconds 缺省 10），本卡片只读说明其来源，
+            MUST NOT 另开第二个阈值写入路径（双写会让阈值来源分叉，design R4）——
+            编辑入口复用既有 GET/POST /api/verify-yaml（项目设置「项目简介」面板）。 */}
+        <Card style={{ marginTop: 12 }}>
+          <div>
+            <div className="switch-inline-row">
+              <Form.Item name="regression_enabled" valuePropName="checked" noStyle>
+                <Switch data-testid="regression-enabled-switch" />
+              </Form.Item>
+              <span className="switch-inline-label">
+                周期性全量回归
+                <span className="label-note">（admin.regression.enabled）</span>
+              </span>
+            </div>
+            <Text type="secondary" style={{ display: 'block', marginTop: 8 }}>
+              开启后与每日自省同周期（admin.self_review.run_at 时点）自动执行一次
+              全量回归（需项目 .fenix/verify.yaml 配置 regression 段），结果落到
+              .fenix/regression/last-run.json，供项目页「测试回归」分面展示。
+              同一自然日防重；与 implementer 收尾的全量套件互斥（主机级锁）。
+              手动触发（项目页「立即执行全量回归」）不受本开关约束。
+            </Text>
+            <Text type="secondary" style={{ display: 'block', marginTop: 8 }}>
+              长耗时用例阈值来自 verify.yaml 的 regression.long_test_threshold_seconds
+              （缺省 10 秒），属项目测试体系声明——请在「项目简介」面板的
+              verify.yaml 编辑入口中调整，本卡片不提供第二个写入路径。
+            </Text>
           </div>
-          <Text type="secondary" style={{ display: 'block', marginTop: 8 }}>
-            开启后与每日自省同周期（admin.self_review.run_at 时点）自动执行一次
-            全量回归（需项目 .fenix/verify.yaml 配置 regression 段），结果落到
-            .fenix/regression/last-run.json，供项目页「测试回归」分面展示。
-            同一自然日防重；与 implementer 收尾的全量套件互斥（主机级锁）。
-            手动触发（项目页「立即执行全量回归」）不受本开关约束。
-          </Text>
-          <Text type="secondary" style={{ display: 'block', marginTop: 8 }}>
-            长耗时用例阈值来自 verify.yaml 的 regression.long_test_threshold_seconds
-            （缺省 10 秒），属项目测试体系声明——请在「项目简介」面板的
-            verify.yaml 编辑入口中调整，本卡片不提供第二个写入路径。
-          </Text>
-        </div>
-      </Card>
+        </Card>
+      </Form>
       <div style={project ? SETTINGS_ACTIONS_ROW_STYLE : { textAlign: 'right', marginTop: 24 }}>
         {project && onConfigSynced && (
           <SyncFromUserButton project={project} page="quality" onSynced={onConfigSynced} />
