@@ -47,13 +47,22 @@ class FakePipe:
         self.written = []         # 假 stdin 收到的行
         self.closed = False
         self.eof = eof
+        # eof=False 时迭代需「阻塞等待」模拟存活进程未 EOF。**必须用 Event 阻塞，
+        # 不可 busy-wait**：reader 线程（session_manager._start_reader_threads，
+        # daemon=True）会一直迭代本 pipe；旧实现 ``while not eof: time.sleep(0.05)``
+        # 令线程存活期内每 0.05s 醒一次抢 GIL，且 kill() 不置 eof → 线程永不退出、
+        # 跨测试累积，持续拖慢其后所有用例（实测 test_dashboard_session 之后的
+        # test_dispatch_aging 0.05s→11.2s，×200）。Event.wait() 阻塞不占 GIL，
+        # 与真实管道 read() 的阻塞语义一致。
+        self._eof_event = threading.Event()
+        if eof:
+            self._eof_event.set()
 
     # stdout/stderr 迭代器语义：逐行产出后按 eof 决定是否阻塞
     def __iter__(self):
         for line in self.lines:
             yield line
-        while not self.eof:
-            time.sleep(0.05)
+        self._eof_event.wait()
 
     def write(self, data):
         self.written.append(data)
@@ -64,6 +73,7 @@ class FakePipe:
     def close(self):
         self.closed = True
         self.eof = True
+        self._eof_event.set()
 
 
 class FakeProc:
@@ -98,6 +108,11 @@ class FakeProc:
         self.killed = True
         if self._exit_code is None:
             self._exit_code = 9
+        # 真实 Popen.kill() 关闭管道 → reader 迭代结束。置 read pipe 为 EOF
+        # 才能让读线程退出（否则 Event.wait() 永久阻塞、线程跨测试泄漏——
+        # 旧实现 busy-wait 同因 kill 不置 eof 而泄漏，本处一并堵死）。
+        self.stdout.close()
+        self.stderr.close()
 
 
 class FakeHub:
