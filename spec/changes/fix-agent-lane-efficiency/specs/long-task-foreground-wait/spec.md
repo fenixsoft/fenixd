@@ -10,15 +10,15 @@
 2. **等待或并行独立工作**：启动后 MUST 等待完成通知，或在等待期间做与该任务无数据依赖的独立工作；MUST NOT 启动后直接收工（「启动即忘」）；
 3. **有界入口优先**：若任务存在能在 600s 内返回的有界入口（如 `bin/run_full_suite.py --timeout <t>`），MUST 优先直接前台跑该入口。
 
-提示词 MUST NOT 声明与本条矛盾的能力描述（如「本车道无后台节拍」），除非有实测证据支持。
+契约 MUST 区分两类后台能力，MUST NOT 混为一谈：**后台 Bash 任务**的完成通知真实可用（转录中 26 条 `Background command "…"` 完成通知为证，`.fenix/runs/archive/impl-fix-spec-review-blocking-dispatch-1789819306-a1.jsonl`）；**`ScheduleWakeup` 定时唤醒**在非交互派发（`claude -p`）下不产生唤醒。提示词 MUST NOT 声明与本条矛盾的能力描述（如把「后台等待」整体判为违规），除非有实测证据支持。
 
 #### Scenario: 实现者车道契约段含后台等待规则
 - **WHEN** 构建 `implementer` / `fast-track` 车道 prompt
 - **THEN** 含「一次后台启动 + 等待通知或并行独立工作」的契约文本
 
-#### Scenario: 不再声明「无后台节拍」
+#### Scenario: 两类后台能力被区分
 - **WHEN** 构建实现者车道 prompt
-- **THEN** 结果文件硬门段不含「本车道无后台节拍」这一表述（该表述与实际后台完成通知能力不符）
+- **THEN** 文本明示后台 Bash 完成通知可用，且明示 `ScheduleWakeup` 在非交互派发下不产生唤醒——二者不混同
 
 #### Scenario: 有界入口优先
 - **WHEN** 存在 600s 内可返回的有界入口

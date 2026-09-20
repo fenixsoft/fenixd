@@ -4,7 +4,7 @@
 
 对 `.fenix/runs/archive/` 下 29 份实现/评审/规划 run 转录（合计 $524.6）做事件级取证后，除模型吞吐外确认**四类工程侧浪费**：
 
-1. **子代理模型解析无兜底 → 并行探测原语全灭**：`Explore` 子代理 24 次派发**全部** `model_not_found`（HTTP 404，`model sent: claude-opus-4-8`）失败，跨 4 个 run。根因是直连 provider 时宿主环境仍带 cc-switch 的 `ANTHROPIC_DEFAULT_OPUS_MODEL=claude-opus-4-8[1M]`，而 provider 隔离 `settings.json` 刻意**不复制** `env`（含本可救场的 `CLAUDE_CODE_SUBAGENT_MODEL`），模型解析无任何回退。直接损失约 $79，隐性后果是模型失去唯一并行探测原语、退回串行 grep。
+1. **子代理模型解析无兜底 → 并行探测原语全灭**：`Explore` 子代理派发在直连 provider 车道下**系统性** `model_not_found`（HTTP 404，`model sent: claude-opus-4-8`）失败——归档 run `impl-add-code-review-agent-and-quality-tab-1789791537-a1` 的 12 次 `Explore` 派发实测 8 处 opus tier 404 文案，在跑 run `impl-add-test-regression-tab-1789909813-a1` 同形态重现。（原文「24 次派发全部失败、跨 4 个 run」的计数口径未经复核，已按 2026-09-20 实测改写。）根因是直连 provider 时宿主环境仍带 cc-switch 的 `ANTHROPIC_DEFAULT_OPUS_MODEL=claude-opus-4-8[1M]`（daemon 进程 env 实测携带，被子进程继承），而 provider 隔离 `settings.json` 刻意**不复制** `env`（含本可救场的 `CLAUDE_CODE_SUBAGENT_MODEL`），模型解析无任何回退。直接损失约 $79，隐性后果是模型失去唯一并行探测原语、退回串行 grep。
 2. **串行单工具调用 + 重复/超大文件读取**：主 run 每助手消息平均仅 **1.14–1.92** 个工具调用（503 次调用对 391 条消息）；重复 Read 159 次、重复 Edit 176 次、重复 Bash 179 次；**28%** 的 tool_result 字节来自 >20KB 的整文件 Read（单条最大 107KB）。
 3. **长车道的上下文成本为 O(轮数²)**（已实测定案）：以最贵的 `spec-review` run（$72.9 / 197 轮）分解——固定脚手架 **17.4K/turn**（空会话实测，与 skills/plugins 无关，为 claude CLI 内建）+ 对话累积回放（末轮 82.5K，线性增长），合计 197 轮 ≈ **12.2M input**（校验：3.4M + 8.1M ≈ 实测 12.16M）。即 **28% 来自每轮重复的脚手架，72% 来自对话前缀被逐轮重放**。该 run 的 160 次 Bash 中 **63 次是 OCR 超时复现探针**，是对话累积的主要来源。
    **前缀缓存不可依赖（探针定案）**：直连各 provider 实测——`cache_control` 显式写入后，同一前缀第二次调用 `cache_read` 仅 113（`inferaiapi.com`）或恒 0（`maomaoai`/`bigmodel.cn`/`deepseek`），即**网关不产生可复用命中**；且全部 provider 一致，非某一家的问题。因此「靠缓存摊薄上下文」这条路不通，唯一一阶杠杆是**压轮数与压每轮增量**。

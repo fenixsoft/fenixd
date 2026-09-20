@@ -12,7 +12,7 @@
 | 前缀缓存不可依赖 | `cache_control` 写入后同前缀二次调用 `cache_read` 仅 113（inferaiapi）或恒 0（maomaoai/bigmodel/deepseek） | 网关侧（**非**框架缺陷，见 D3） |
 | 600s 工具超时自旋 | 10 次超时；`sleep → echo RUNNING` 编排原文 | `prompt_builder.py:_result_gate_section` 的「无后台节拍」措辞 |
 
-关键事实（决定 D4）：后台 Bash 任务的**完成通知是真实投递的**——转录中存在成对的 `task_notification`（如 `bvqufrbm3`「背景命令 … completed (exit code 0)」）。因此「无后台节拍」这一表述与实际能力不符，正是 `sleep` 轮询反模式的来源。
+关键事实（决定 D4）：后台 Bash 任务的**完成通知是真实投递的**——转录中存在成对的 `task_notification`（26 条 `Background command "…"` summary，如 `.fenix/runs/archive/impl-fix-spec-review-blocking-dispatch-1789819306-a1.jsonl`）。**注意区分**：该证据只证明 **Bash 后台任务**通知可用，**不**证明 `ScheduleWakeup` 可用——`ScheduleWakeup` 在非交互派发下不产生唤醒的事实未被任何证据推翻，故提示词中的该句能力描述应**保留**。真正与实际能力不符的是紧随其后的行为约束「MUST NOT 采用『后台运行 + 轮询等待』的收尾编排」：它被模型读成「后台等待即违规」，正是 `sleep` 轮询反模式的来源。
 
 ## Goals / Non-Goals
 
@@ -44,7 +44,11 @@
 
 **配置键**：新增 `agents.subagent_model_override`（缺省空 = 用 provider `model`）。**必须**同步 Dashboard 设置页 UI（配置键与 UI 同步铁律）。
 
-**失败可见化**：子代理启动失败（如仍 404）MUST 在 run 转录落显式 WARNING/告警事件，MUST NOT 静默吞掉——现状是失败只体现为 `task_notification` 的 failed 态，模型与运维都难以及时归因。
+**命名冲突处置（2026-09-20 实测）**：`.fenix/config.yaml:17` 已存在 `agents.subagent_model: claude-sonnet-5`（2026-09-02-add-agent-llm-isolation 遗留），但该键**全库无任何 Python 读点**（`grep -rn subagent_model core/ bin/ --include=*.py` 仅命中 `core/config.py:1059` 的一句 docstring 说明，无读取器），是事实上的死键；`.fenix/config.template.yaml` 中亦无该键。故实现者 MUST 二择一并登记理由：①**复用** `agents.subagent_model`（兼作死键收编，语义一致）——推荐，避免同一语义出现两个键；②保留新键 `agents.subagent_model_override`，但 MUST 在实现记录与 `docs/help/09-config.md` 明确二者语义边界（`subagent_model` 为死键、不生效）。无论哪种，MUST NOT 留下两个都能被用户读作「子代理模型」的活配置键。
+
+**失败可见化**：子代理启动失败（如仍 404）MUST 在 run 转录落显式 WARNING/告警事件，MUST NOT 静默吞掉——现状是失败只体现为 `task_notification` 的 failed 态，模型与运维都难以及时归因。**实现落点**：子代理通知由 supervisor 侧消费（`bin/fenixd_supervisor.py`，任务输出落 `/tmp/.../tasks/*.output`，manifest 路径随 RunResult 持久化到 `.fenix/tasks/<run>.json`），可见化 MUST 落在该消费点及其日志，**不**改 `_run_claude` 的流式处理时序（与 Non-Goals 一致）。
+
+**幂等陷阱（实现者 MUST 处理）**：`_ensure_agent_config_dir`（`runner.py:1189`）在 `settings.json` 已存在时**直接 return**（`if marker.is_file(): return cfg_dir`），不重建内容。而仓库内 `.fenix/agent-config/{bigmodel.cn,deepseek,inferaiapi.com,maomaoai,xianyu}/settings.json` 均已存在且无 `env` 段（2026-09-20 实测），故只改 `_build_isolated_settings` 在该机器上**不会生效**。实现 MUST 处理其一：① 版本标记 + 内容不匹配时原子重写（沿用既有 `tempfile` + `os.replace` 手法）；② 显式记录「需人工清理隔离目录」并在 run 转录/日志落提示。测试 MUST 覆盖「已存在旧 settings.json 时新映射仍生效」，MUST NOT 只覆盖首次创建路径。
 
 **备选**：在 `_run_claude` 的进程 `env_overrides` 注入而非 settings.json。取舍：进程 env 与 settings.json `env` 两条通道的优先级需实测确认（既有记忆：settings.json `env` 覆盖子进程 env）。实现阶段 MUST 以实测确定生效通道，并在设计记录结论。
 
@@ -91,16 +95,24 @@
 2. **保留可复现探针** `bin/probe_prompt_cache.py`（输出 JSON 判据），供网关升级后复验；探针结论落文档。
 3. **转向 token 经济性可观测**：run 末落逐 run 指标（轮数 / 上下文峰值 / input / cache_read），在 `context_cost_per_turn` 超阈值时打诊断告警，使 O(N²) 结构可见、防回归。
 
+**落点与读数约定（避免两处 `run_metrics` 同名漂移）**：日志侧已有收尾指标设施 `runner._log_run_metrics`（`runner.py:4408`，写 `metric_type=run_metrics` 的 JSON 日志行，字段含 `turns` / `input_tokens` / `cache_read_input_tokens`），dashboard 读侧 `core/dashboard/data/runs.py:_read_run_metric_index`（`:55-95`）按 `context.metric_type == "run_metrics"` 增量索引日志。本次**不另起炉灶**：上下文经济性字段（`context_peak_tokens` / `per_turn_input_tokens`）SHOULD 并入既有 `_log_run_metrics` 调用，转录侧再追加 `{"type": "run_metrics"}` 行；二者 MUST 同名同义（日志侧为 `metric_type`，转录侧为 `type`），MUST NOT 让 dashboard 读侧需要同时理解两套字段语义。
+
+**指标来源口径（重要）**：`turns` / `input_tokens` / `cache_read_input_tokens` MUST 从**本 run 转录事件**（`assistant` 事件数与 `message.usage`）累计取得，MUST NOT 取自 CLI 的 `result.modelUsage`——D3 记账段已实测网关 `modelUsage.cacheReadInputTokens` 与 `result.usage` 相互矛盾（1.2 亿 vs 1200 万），金额与 `modelUsage` 不可信。`context_peak_tokens` 为**估算值**（对话上下文峰值），其估算口径 MUST 在实现记录中写死并在 `docs/help/09-config.md` 说明「估算」性质。
+
+**空跑噪声（实现者 MUST 处理）**：daemon 的每个 agent 均经 `_run_claude`，含大量**零轮空跑**（读侧 `input_tokens=0`）与维护类 run（admin / self-review / code-review）。若对其一律打「超阈值」WARNING，会把诊断信号淹成噪声（违反告警降噪铁律）。实现 MUST 设最小样本门槛（`turns` 低于下限或缺 usage 时只落指标、不打告警），门槛取值写入实现记录。
+
+**阈值键的可调性**：阈值键（`context_cost_per_turn` 或等价名）MUST 在 `.fenix/config.template.yaml` 中给出注释与缺省值，并**登记进 dashboard 受管键白名单**（`core/dashboard/data/config_admin.py`）——否则用户在设置页看不到、也无法调（与 `agents.subagent_model_override` 同一条铁律）。
+
 **记账告警（重要）**：实测网关的 token 记账自相矛盾——同一 run 的 `modelUsage.cacheReadInputTokens` 记 1.2 亿而 `result.usage.cache_read_input_tokens` 记 1200 万。故**具体金额**不可全信，但「轮数×上下文的 O(N²) 结构」是转录事实。实现阶段以转录事件为指标来源，不以 `modelUsage` 金额为准。
 
 ### D4 长任务：后台单次等待，禁止 sleep 自旋
 
 **决定**：修正 `_result_gate_section` 的实现者分支措辞：
-- 删除「无后台节拍」表述（与实际通知能力不符）；
-- 改为：可能超过 600s 的任务 MUST 用**一次** `run_in_background: true` 启动，然后**继续独立工作或等待完成通知**；MUST NOT 用 `sleep` / 周期性 `ps` 轮询；
+- **保留**「`ScheduleWakeup` 在非交互派发下不产生唤醒」这一能力事实（实测成立，未被证伪）；
+- 把其后的行为约束改为：可能超过 600s 的任务 MUST 用**一次** `run_in_background: true` 启动，然后**继续独立工作或等待完成通知**；MUST NOT 用 `sleep` / 周期性 `ps` 轮询；并明示**后台 Bash 任务的完成通知真实可用**（与 `ScheduleWakeup` 不可用是两件事）；
 - 有界入口（`bin/run_full_suite.py --timeout`）若能在 600s 内返回则前台直接跑。
 
-**理由**：`sleep → echo RUNNING` 自旋的根因是把「后台等待」当违规，逼迫模型用前台 sleep 模拟等待。后台通知已在既有链路可用，无需新机制。
+**连带处置（必做）**：`tests/test_impl_resultfile_contract.py:99` 断言 prompt 含「无后台节拍」字样，`spec/changes/fix-impl-resultfile-contract-gap/specs/impl-resultfile-contract/spec.md:13` 也把该措辞列为硬门必备要素——若把该句整体删除，这两处会立刻破红且与在飞 SPEC 的红线冲突。故本变更 MUST 按「保留能力事实、只改行为约束」的口径落地，并同步更新该测试的断言锚点（已列入 tasks 5.4 与 Deliverables）。
 
 **备选**：框架侧把长命令自动降级为后台并注入轮询。取舍：改动面大且与「不改流式时序」冲突；提示词修正成本最低、可立即观测轮次下降。
 

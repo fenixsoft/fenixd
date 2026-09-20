@@ -26,6 +26,15 @@
 - **WHEN** agent 未配置任何 provider（走默认网关）
 - **THEN** 不写入上述 provider 隔离映射，行为与变更前逐字节一致
 
+### Requirement: 既有隔离目录的幂等重建
+
+provider 隔离目录的写入 MUST 在 `settings.json` **已存在**（且内容不含新映射）时仍然生效——`_ensure_agent_config_dir` 现行「marker 存在即 return」的幂等语义会在已部署机器上使新映射永不落盘（仓库内 5 个 provider 目录实测均已存在无 `env` 的 settings.json）。框架 SHALL 版本标记 + 内容不匹配时原子重写（沿用既有 `tempfile` + `os.replace` 手法），或落显式提示要求清理；MUST NOT 静默保持旧内容。
+
+#### Scenario: 已存在的旧 settings.json 被更新
+
+- **WHEN** `.fenix/agent-config/P/settings.json` 已存在且不含 `env` 映射，随后某 agent 被分配 provider `P`
+- **THEN** 该文件被原子重写为含 provider 模型映射的版本（或落显式提示），且 `.fenix/agent-config/P/` 下的 `skills` / `plugins` symlink 不被破坏
+
 ### Requirement: 子代理启动失败可见化
 
 子代理（`Explore` / `general-purpose` / `Plan` 等）派发后以 `model_not_found`、认证失败或其它启动期错误终止时，框架 SHALL 在 run 转录与 daemon 日志落显式 WARNING（含子代理类型、错误类别与原文摘要），MUST NOT 静默吞掉。该可见化 MUST NOT 改变 run 的终态判定。
