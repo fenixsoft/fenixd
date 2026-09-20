@@ -332,7 +332,12 @@ def _dev_server_worktree_root(tokens: list) -> Optional[Path]:
             continue
         if "/worktrees/" not in t:
             continue
-        prefix, rest = t.split("/worktrees/", 1)
+        # rsplit 取末段（修复验证轮 BUG）：框架 worktree 内跑 pytest 时
+        # basetemp 位于 <framework-wt>/.fenix/pytest-basetemp，测试 worktree
+        # 的静态根路径含两段 /worktrees/（框架段 + 测试段），split 取首段会
+        # 把归属误判为框架 worktree 自身（其含存活 claude 进程 → 误豁免，
+        # 孤儿判定落空）。worktree 名以路径末段为准。
+        prefix, rest = t.rsplit("/worktrees/", 1)
         wt_name = rest.split("/", 1)[0]
         if wt_name:
             return Path(prefix) / "worktrees" / wt_name
