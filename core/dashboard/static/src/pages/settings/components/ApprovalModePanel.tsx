@@ -23,8 +23,9 @@ export default function ApprovalModePanel({ config, onSave, project, onConfigSyn
       promote_mode: config.gates.promote_mode || 'auto',
       approve_mode: config.gates.approve_mode || 'manual',
       spec_review_mode: config.gates.spec_review_mode || 'auto',
+      start_after_scope: config.gates.start_after_scope || 'dispatch',
     });
-  }, [config.gates.approve_mode, config.gates.promote_mode, config.gates.spec_review_mode, form]);
+  }, [config.gates.approve_mode, config.gates.promote_mode, config.gates.spec_review_mode, config.gates.start_after_scope, form]);
 
   const handleSave = async () => {
     try {
@@ -37,6 +38,7 @@ export default function ApprovalModePanel({ config, onSave, project, onConfigSyn
           promote_mode: values.promote_mode,
           approve_mode: values.approve_mode,
           spec_review_mode: values.spec_review_mode,
+          start_after_scope: values.start_after_scope,
         },
       });
     } catch (error) {
@@ -49,6 +51,7 @@ export default function ApprovalModePanel({ config, onSave, project, onConfigSyn
       <h3>审批</h3>
       <Text type="secondary">
         草稿晋升（drafted → ready）与推送审批（done → push）行为。auto 推送模式将自动执行 git push 到远端，请谨慎使用。
+        定时拾取（start_after）的覆盖范围：只约束实现派发，或同时按住晋升与评审。
       </Text>
       <Card style={{ marginTop: 12 }}>
         <Form
@@ -57,6 +60,7 @@ export default function ApprovalModePanel({ config, onSave, project, onConfigSyn
             promote_mode: config.gates.promote_mode || 'auto',
             approve_mode: config.gates.approve_mode || 'manual',
             spec_review_mode: config.gates.spec_review_mode || 'auto',
+            start_after_scope: config.gates.start_after_scope || 'dispatch',
           }}
           layout="vertical"
         >
@@ -121,6 +125,39 @@ export default function ApprovalModePanel({ config, onSave, project, onConfigSyn
                   <div>
                     <Text type="secondary">
                       跳过方案评审门禁，drafted 晋升直接进入 ready 并调度（整体逃生门）。
+                    </Text>
+                  </div>
+                </Radio>
+              </div>
+            </Radio.Group>
+          </Form.Item>
+          {/* 定时拾取覆盖范围（add-start-after-scope-config，置于方案评审与推送审批之间） */}
+          <Form.Item
+            name="start_after_scope"
+            label={
+              <>
+                定时拾取覆盖范围<span className="label-note">（gates.start_after_scope）</span>
+              </>
+            }
+            rules={[{ required: true, message: '请选择定时拾取覆盖范围' }]}
+          >
+            <Radio.Group>
+              <div style={{ display: 'block', marginBottom: 16 }}>
+                <Radio value="dispatch">
+                  <strong>dispatch</strong> — 只约束实现派发
+                  <div>
+                    <Text type="secondary">
+                      定时/待激活 SPEC 立即晋升并跑方案评审，实现等到点（缺省）。
+                    </Text>
+                  </div>
+                </Radio>
+              </div>
+              <div style={{ display: 'block' }}>
+                <Radio value="full">
+                  <strong>full</strong> — 同时按住晋升与评审
+                  <div>
+                    <Text type="secondary">
+                      SPEC 停在草稿态，到期/激活才晋升并评审。
                     </Text>
                   </div>
                 </Radio>

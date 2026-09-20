@@ -938,6 +938,10 @@ export interface GatesConfig {
   approve_mode?: 'manual' | 'auto';
   /** 草稿晋升模式（add-draft-promotion-gate）：manual 时 drafted SPEC 停留草稿态等待人工放行（/fenix-ready / 项目页按钮 / CLI promote） */
   promote_mode?: 'manual' | 'auto';
+  /** 方案评审模式（add-spec-review-gate）：auto=默认全量评审，never=完全关闭 */
+  spec_review_mode?: 'auto' | 'never';
+  /** start_after 门控覆盖范围（add-start-after-scope-config）：dispatch（缺省）= 只约束实现派发链（旧行为），full = 同时约束晋升/评审入口 */
+  start_after_scope?: 'full' | 'dispatch';
 }
 
 export interface VerifyConfig {
