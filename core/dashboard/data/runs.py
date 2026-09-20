@@ -118,7 +118,10 @@ def _logged_run_duration(project_root: Path, run_file_stem: str,
 
 # run 终态事件类型 → classify_run 状态映射。写侧唯一权威是
 # core.agent_runner.liveness.RUN_TERMINAL_EVENT_TYPES（result=自然完成,
-# error=进程异常终止, interrupted=daemon 停机/启动终态补写, cancelled=人工取消），
+# error=进程异常终止, interrupted=daemon 停机/启动终态补写, cancelled=人工取消,
+# frozen-terminated=spec 冻结终止（add-freeze-stop-inflight-agents D2，
+# 行来源：runner.py _run_claude finally 段在 join 后、与 cancelled 行同级
+# 追加——读侧缺该映射会把已冻结终止的 run 永远判成 running）），
 # 读侧缺类型会把已终结 run 永远判成 running（overview 活跃 Agent 数虚高事故：
 # 11 个被杀 run 全部计入活跃，真实活跃仅 1）。测试锁两侧同步。
 # fix-retry-orphan-active-runs 追加变体：运行期间原地重试换新 sub_run_id 弃置
@@ -130,6 +133,7 @@ _RUN_TERMINAL_STATUS_MAP = {
     "error": "error",
     "interrupted": "interrupted",
     "cancelled": "cancelled",
+    "frozen-terminated": "frozen-terminated",
     "superseded": "superseded",  # fix-retry-orphan-active-runs：原地重试弃置产物终态
 }
 

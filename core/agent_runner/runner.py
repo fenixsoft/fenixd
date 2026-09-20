@@ -33,6 +33,7 @@ from core.agent_runner.result_gate import (  # noqa: F401
     AdminDisposition,
     AgentRunResult,
     EvolutionResult,
+    FrozenTerminatedError,
     RunCancelledError,
     SelfReviewResult,
     _ARTIFACT_FRESHNESS_GRACE_SECONDS,
@@ -90,6 +91,7 @@ from core.agent_runner.token_budget import TokenAccountant
 from core.agent_runner.v2_server import V2ServerManager
 from core.wip_checkpoint import (
     ANCHOR_EXTENSION_TAIL,
+    ANCHOR_FREEZE_HOLD,
     ANCHOR_TRANSIENT_BACKOFF,
     ANCHOR_TURN_LIMIT,
     commit_wip_checkpoint,
@@ -356,6 +358,10 @@ class _AttemptState:
     # add-run-cancel D3/D5：本轮 run 是否被人工取消
     cancelled_flag: bool = False
     cancel_reason: str = ""
+    # add-freeze-stop-inflight-agents D1：本轮 run 是否因 spec 冻结被终止
+    # （与 cancelled_flag 并列、互不读写——dispatch 据此写 _frozen_hold
+    # 而非 _cancelled_hold）。
+    frozen_terminated_flag: bool = False
     # shutdown-interrupted 守卫（2026-09-09 事故）
     shutdown_interrupted: bool = False
     # run 终态指标落盘需 usage_info（早夭分支引用前初始化，unobserved 语义）
@@ -1871,6 +1877,7 @@ class AgentRunner:
             cancelled_flag=False,
             cancel_reason="",
             shutdown_interrupted=False,
+            frozen_terminated_flag=False,
         )
         # 别名：原变量名 → st 字段（保留，函数体暂不改为 st.xxx）
         wt_path = st.wt_path
@@ -1887,6 +1894,7 @@ class AgentRunner:
         cancelled_flag = st.cancelled_flag
         cancel_reason = st.cancel_reason
         shutdown_interrupted = st.shutdown_interrupted
+        frozen_terminated_flag = st.frozen_terminated_flag
 
         for attempt in range(1, max_retries + 1):
             attempt_run_id = f"{run_id}-a{attempt}"
@@ -2110,6 +2118,23 @@ class AgentRunner:
                     )
                     usage_info = self._extract_usage_info(None)
                     break  # 原地重试子循环：取消退出 while
+                except FrozenTerminatedError as e:
+                    # add-freeze-stop-inflight-agents D1/D3：冻结终止专用捕获
+                    # ——不重试、不计秒挂、不触发 provider 链切换，与取消同列但
+                    # 走独立 frozen_terminated 结果通道（dispatch 写 _frozen_hold）。
+                    output = ""
+                    turns = 0
+                    success = False
+                    frozen_terminated_flag = True
+                    error = (FROZEN_TERMINATED_ERROR_PREFIX
+                             + (f": {e.reason}" if e.reason else ""))
+                    self.logger.info(
+                        "agent_runner",
+                        f"{agent_type} for '{spec_name}' run 因 spec 冻结被终止"
+                        f"（attempt {attempt}）：{error}",
+                    )
+                    usage_info = self._extract_usage_info(None)
+                    break  # 原地重试子循环：冻结退出 while
                 except AgentArtifactGateError as e:
                     # add-judge-artifact-gate D1：exit 0 但产物缺失/为空/非法 JSON
                     # → 按瞬态失败走既有原地退避重试（见 _handle_artifact_gate_retry）。
@@ -2284,6 +2309,7 @@ class AgentRunner:
                     provider_name=provider_name, model=model,
                     error=error, cancelled_flag=cancelled_flag,
                     shutdown_interrupted=shutdown_interrupted,
+                    frozen_terminated_flag=frozen_terminated_flag,
                     st=st, handed_off=handed_off,
                 )
                 wt_path = st.wt_path
@@ -2296,6 +2322,7 @@ class AgentRunner:
             error=error, turns=turns, usage_info=usage_info,
             provider_name=provider_name, model=model,
             cancelled_flag=cancelled_flag, shutdown_interrupted=shutdown_interrupted,
+            frozen_terminated_flag=frozen_terminated_flag,
             kept_wt_path=kept_wt_path,
         )
 
@@ -2783,6 +2810,7 @@ class AgentRunner:
                 success=False, duration_seconds=time.time() - start_time,
                 error=(f"{FROZEN_TERMINATED_ERROR_PREFIX} — auto-retry terminated "
                        f"(attempt {attempt}/{max_retries})"),
+                frozen_terminated=True,
                 provider_used=st.provider_name, model_used=st.model,
             )
         # add-run-cancel D3：attempt 循环顶部检查取消旗标（与 frozen 检查同
@@ -3013,7 +3041,8 @@ class AgentRunner:
                                provider_name, model,
                                error, cancelled_flag: bool,
                                shutdown_interrupted: bool,
-                               st: _AttemptState, handed_off: set) -> bool:
+                               frozen_terminated_flag: bool = False,
+                               st: _AttemptState = None, handed_off: set = None) -> bool:
         """失败终态分型（等价搬移，D1 R8）：重试等待 or 终态 keep。
 
         返回 True 表示 should_break（cancelled_flag or shutdown_interrupted 触发的
@@ -3038,8 +3067,13 @@ class AgentRunner:
         # - 其他 / 终态失败：清理 worktree 并回收其 dev-server，下次 attempt 全新创建。
         # add-run-cancel D5：取消（cancelled_flag）时不再进入下一 attempt——
         # 走终态清理路径后 break，由循环后的 cancelled 收口返回 cancelled=True。
+        # add-freeze-stop-inflight-agents（D2/task 1.6）：冻结终止
+        # （frozen_terminated_flag）MUST 同样 break——不进入下一 attempt、不
+        # sleep(10) 重试；worktree 按 shutdown_interrupted 同款「保留现场」处理
+        #（implementer 亦保留：既有 else 分支的 cleanup(success=False) 会删除
+        # implementer 的 worktree 目录，使 WIP 保全与解冻后续做双双落空）。
         if attempt < max_retries and not cancelled_flag \
-                and not shutdown_interrupted:
+                and not shutdown_interrupted and not frozen_terminated_flag:
             time.sleep(10)  # Wait before retry
             # fix-provider-transient-backoff（D3）：attempt 间 worktree
             # 保留扩展到全部 agent_type——非 implementer 族复用前仍过
@@ -3054,6 +3088,29 @@ class AgentRunner:
             # （续做与否由下一 daemon recovery 单源决定）。
             st.kept_wt_path = st.wt_path
             handed_off.add(st.wt_path)
+        elif frozen_terminated_flag:
+            # add-freeze-stop-inflight-agents task 1.6：冻结终止「保留现场」——
+            # WIP 保全（锚点 freeze-hold）已在轮询环内完成，worktree 目录与
+            # 分支必须原样保留供解冻后续做（_frozen_hold + _recovery_resume
+            # 依据 branch/implementer_run 锚点）。含 implementer 在内的全部
+            # agent_type 均走此分支，MUST NOT 落入 cleanup(success=False)。
+            # 登记为在册 worktree（keep_for_reuse 路径形态即目录保留），使
+            # stale_sweep 的 _branch_protected_by_state 扩展判据（frozen +
+            # _frozen_hold → branch 受保护）能够兜底跨 daemon 重启。
+            st.kept_wt_path = st.wt_path
+            handed_off.add(st.wt_path)
+            try:
+                if st.wt_path is not None:
+                    self.worktree_manager.keep_for_reuse(
+                        spec_name, st.wt_path, agent_type=agent_type)
+            except Exception as e:
+                # keep_for_reuse 失败不阻断冻结终止收口（目录已保留，
+                # 登记仅影响跨 daemon 重启的回收保护）
+                self.logger.debug(
+                    "agent_runner",
+                    f"freeze-terminated keep_for_reuse failed for "
+                    f"'{spec_name}': {e}",
+                )
         elif agent_type == "fast-track":
             self.worktree_manager.keep_for_reuse(spec_name, st.wt_path)
             st.kept_wt_path = st.wt_path
@@ -3081,7 +3138,7 @@ class AgentRunner:
         else:
             self.worktree_manager.cleanup(st.wt_path, success=False)
         st.wt_path = None
-        return cancelled_flag or shutdown_interrupted
+        return cancelled_flag or shutdown_interrupted or frozen_terminated_flag
 
     # ── R2: 候选链解析与选择（等价搬移，D1 R2 表）─────────────────────
     # 模型分配 → 指针推进 → 全链耗尽/4xx 熔断拦截 → 记当日 attempt。
@@ -3196,6 +3253,7 @@ class AgentRunner:
                           provider_name=None, model=None,
                           cancelled_flag: bool = False,
                           shutdown_interrupted: bool = False,
+                          frozen_terminated_flag: bool = False,
                           kept_wt_path=None) -> AgentRunResult:
         """全重试耗尽三型返回（等价搬移，D1 R9）：cancelled / shutdown / 全失败。"""
         # All retries exhausted
@@ -3217,6 +3275,24 @@ class AgentRunner:
                 success=False, duration_seconds=duration,
                 error=error,
                 cancelled=True,
+                provider_used=provider_name, model_used=model,
+                worktree_path=kept_wt_path,
+                worktree_kept=kept_wt_path is not None,
+            )
+        if frozen_terminated_flag:
+            # add-freeze-stop-inflight-agents D1/D3：冻结终止独立收口——与取消
+            # 同列（不重试、不重派由 dispatch 侧保证）但走独立 frozen_terminated
+            # 结果字段（dispatch 写 _frozen_hold 而非 _cancelled_hold）。
+            self._log_run_metrics(
+                run_id=run_id, spec_name=spec_name, agent_type=agent_type,
+                duration_seconds=duration, turns=turns, usage_info=usage_info,
+                terminal="frozen", provider=provider_name, model=model,
+            )
+            return AgentRunResult(
+                run_id, spec_name, agent_type,
+                success=False, duration_seconds=duration,
+                error=error,
+                frozen_terminated=True,
                 provider_used=provider_name, model_used=model,
                 worktree_path=kept_wt_path,
                 worktree_kept=kept_wt_path is not None,
@@ -3610,6 +3686,10 @@ class AgentRunner:
         # terminate→grace→kill→写 cancelled 终态行→抛 RunCancelledError
         base_run_id = self._normalize_run_id(run_id)
         cancel_error: RunCancelledError | None = None
+        # add-freeze-stop-inflight-agents D1：冻结终止独立异常（与取消并列、
+        # 不复用取消语义）。轮询环命中 spec frozen 时置位，finally 段并列
+        # cancel_error 落 frozen-terminated 终态行后抛出。
+        frozen_error: FrozenTerminatedError | None = None
         # add-planner-efficiency（run-latency-observability）：run 末延迟摘要文本。
         # 在 finally（读线程 join 后）计算并打日志；失败/取消路径把摘要拼入
         # error 上下文（卡死 vs 慢可判）。
@@ -3620,6 +3700,44 @@ class AgentRunner:
         extension_tail_triggered = False
         try:
             while True:
+                # ── 冻结检查（add-freeze-stop-inflight-agents D1）──
+                # 放在取消旗标检查之前：冻结是 spec 级、取消是 run 级，
+                # spec 级优先级更高。轮询环每 1 秒直接读 STATE 结构化 frozen
+                # 字段（_spec_is_frozen fail-open：读取异常不终止）。
+                # 顺序上先于 poll()：run 恰在冻结瞬间完成时，poll() 已观察到
+                # rc 非 None 走自然收工（上一轮），不误判为冻结终止。
+                if self._spec_is_frozen(spec_name):
+                    self.logger.info(
+                        "agent_runner",
+                        f"spec '{spec_name}' frozen — 终止在飞 agent 子进程"
+                        f"（attempt {run_id}，base {base_run_id}）",
+                    )
+                    # 终止前 WIP 保全（锚点 freeze-hold）：子进程仍活着时提交
+                    # 未落盘现场——冻结终止即停，不再有下一 attempt 的退避窗口
+                    # 保全机会；无 worktree 载体/失败仅 WARNING 不阻断。
+                    self._wip_checkpoint_on_forced_kill(
+                        spec_name, cwd, anchor=ANCHOR_FREEZE_HOLD)
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=AGENT_TERMINATE_GRACE_SECONDS)
+                    except subprocess.TimeoutExpired:
+                        self.logger.warning(
+                            "agent_runner",
+                            f"run '{base_run_id}' frozen grace 窗口内未退出，SIGKILL",
+                        )
+                        proc.kill()
+                        try:
+                            proc.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            pass
+                    returncode = -15  # SIGTERM 对应语义
+                    frozen_error = FrozenTerminatedError(
+                        reason=f"spec '{spec_name}' frozen", by="admin")
+                    # 冻结命中清理残留 cancel 旗标（spec 级 > run 级）：防止
+                    # 解冻后续做时被残留旗标立即再终止。
+                    self._cancel_clear(base_run_id)
+                    break
+
                 # ── 取消旗标检查（add-run-cancel D1/D3）──
                 # 放在超时检查之前：人工取消优先级高于自动超时，管理员
                 # 想终止就不必等超时到点。
@@ -3858,10 +3976,28 @@ class AgentRunner:
                 # 取消已在轮询环内消费：run 收尾清理旗标防泄漏（幂等；
                 # _execute_agent 层的 _cancel_clear 亦会兜底）。
                 self._cancel_clear(base_run_id)
+            # add-freeze-stop-inflight-agents D1：frozen-terminated 终态行与
+            # cancelled 行同位置（finally 内、join 之后、result 行后）——保证
+            # 为文件末行级终态（run_metrics 行在终态行之后追加是既有常态、
+            # 不属于终态事件，不影响 classify_run 的末行判定）。
+            if frozen_error is not None:
+                append_run_line(run_file, {
+                    "type": "frozen-terminated",
+                    "reason": frozen_error.reason,
+                    "by": frozen_error.by,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                })
             # 产物文件可能因崩溃等遗留为"活动但不再增长"，清理时按时间淘汰即可
 
         if cancel_error is not None:
             raise cancel_error
+
+        if frozen_error is not None:
+            # add-freeze-stop-inflight-agents D1：冻结终止独立异常通道——
+            # 不重试、不计秒挂、不触发 provider 切换（与 RunCancelledError
+            # 并列的收口语义），dispatch 侧据此写 _frozen_hold 而非
+            # _cancelled_hold。
+            raise frozen_error
 
         if timeout_error is not None:
             # 锚点 C（add-turn-limit-anchor-c D1）：超时强杀收口前的 WIP 保全。

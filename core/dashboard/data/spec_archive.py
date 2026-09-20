@@ -16,47 +16,129 @@ from core.archive_commit import commit_archive_move
 from .state import parse_state
 from core.agent_runner.run_files import run_spec_part
 
+# 删除先停后删的等待总上限（add-freeze-stop-inflight-agents 5.3：admin_actions
+# 与 spec_archive 共用同一常量；顶层导入使测试可 patch 覆盖窗口时长）
+from .admin_actions import SPEC_DELETE_STOP_WAIT_TOTAL_SECONDS  # noqa: F401
 
-def soft_delete_spec(project_root, spec: str) -> dict:
+
+def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
     """软删除 SPEC：STATE.md 移除条目 + spec/changes/<name>/ 移入 archive。
 
     两步任一失败则尽量回滚以保持两端数据一致，由调用方依据返回码处理：
     - STATE.md 不含该 spec → {found: False}（幂等，不发任何文件操作）
-    - 运行中检测：runs 目录该 spec 有 mtime 在最近 120 秒内的运行产物 →
-      {running: True, error: "spec 有进行中的运行"}（409 拒绝，不改数据）
+    - 运行中保护：扫描 ``.fenix/runs/*.jsonl`` 顶层（活跃目录），用末行
+      非终态判定在跑（终态口径 = ``RUN_TERMINAL_EVENT_TYPES`` 并集，含
+      frozen-terminated，不复用 ``classify_run``：superseded 不在终态集合内）。
+      归属全等匹配（``run_spec_part(p.stem) == spec``）。
+      - 有在跑 + stop_callback 为 None → {running: True}（回退既有 409
+        拒绝语义，保持既有单测零改动）。
+      - 有在跑 + stop_callback 非 None → 调用停止回调并有界等待终态
+        （每 run 宽限 10s + 总上限 SPEC_DELETE_STOP_WAIT_TOTAL_SECONDS）；
+        超时 → {ok: False, running: True, pending: [...]}（不改 STATE/
+        目录）；全部终止 → 继续正常删除。
     - 正常：remove_spec 原子剔除条目；目录若存在则 shutil.move 到
       spec/archive/<name>-<Unix秒>/；目录缺失仅清状态（幂等）。
     - 归档同名冲突（极小概率）：在名字追加毫秒后缀重试，直至成功。
 
     Returns:
         {"found", "running", "archived": bool, "archive_path": str|null,
-         "error": str|null}
+         "error": str|null, "pending": list|null, "stopped": int|null}
     """
+    from core.agent_runner.liveness import (
+        AGENT_TERMINATE_GRACE_SECONDS,
+        RUN_TERMINAL_EVENT_TYPES,
+    )
+    # SPEC_DELETE_STOP_WAIT_TOTAL_SECONDS 已在模块顶层导入（测试可 patch 覆盖）
+    from .admin_actions import running_run_ids_for_spec
     proot = Path(project_root)
+    # 初始在跑计数（stopped 字段：有在跑 agent 时记录回调前计数，无在跑为 None）
+    initial_running_count = 0
     specs = parse_state(proot)
     if spec not in specs:
         return {"found": False}
 
-    # 运行中保护：runs 目录该 spec 的任意 run 文件 mtime < 120s → 拒绝
-    # 归属全等匹配（fix-robustness-edge-cases 1.1 纳入）：本点原为子串 glob
-    # ``glob(f"*{spec}*.jsonl")``（比前缀 glob 更易误命中，spec a-b 命中
-    # impl-a-b-c-<ts>.jsonl → 误拦 soft-delete）；承接方 refactor-dashboard-
-    # data-module / fix-dashboard-read-path-performance 均已合入，随本 SPEC 修正。
-    runs_dir = proot / ".fenix" / "runs"
-    protect_window = 120
-    now = time.time()
-    if runs_dir.is_dir():
+    # ── 运行中保护：末行非终态判定（add-freeze-stop-inflight-agents 4.1/4.2）──
+    # 扫描 .fenix/runs/*.jsonl 顶层（活跃目录），用 run_spec_part 全等归属
+    # + 末行非终态判定在跑。末行终态 = RUN_TERMINAL_EVENT_TYPES（含本 SPEC
+    # 新增的 frozen-terminated），superseded 不在该集合内（原地重试弃置，
+    # 其后还有新 attempt 在跑）——classify_run 误判 superseded 为终态会把
+    # 活跃 run 当已终态，让删除在 run 仍可能写盘时移走目录。
+    running_ids: list = running_run_ids_for_spec(proot, spec)
+
+    if running_ids:
+        if stop_callback is None:
+            # 回退既有 409 拒绝语义（保持既有单测零改动）
+            return {
+                "found": True,
+                "running": True,
+                "archived": False,
+                "archive_path": None,
+                "error": "spec 有进行中的运行",
+                "pending": None,
+                "stopped": None,
+            }
+        # 有在跑 agent → 经回调请求停止，有界等待终态
+        initial_running_count = len(running_ids)
         try:
-            for p in runs_dir.glob("*.jsonl"):
-                if run_spec_part(p.stem) != spec:
-                    continue
+            stop_callback(running_ids)
+        except Exception as e:
+            return {
+                "found": True,
+                "running": True,
+                "archived": False,
+                "archive_path": None,
+                "error": f"停止回调执行失败: {e}",
+                "pending": running_ids,
+                "stopped": 0,
+            }
+        # 有界等待：每 AGENT_TERMINATE_GRACE_SECONDS 轮询一次，总上限
+        deadline = time.time() + SPEC_DELETE_STOP_WAIT_TOTAL_SECONDS
+        import json
+        runs_dir = proot / ".fenix" / "runs"
+        while time.time() < deadline:
+            still_running: list = []
+            if runs_dir.is_dir():
                 try:
-                    if now - p.stat().st_mtime < protect_window:
-                        return {"found": True, "running": True, "error": "spec 有进行中的运行"}
+                    for p in runs_dir.glob("*.jsonl"):
+                        if run_spec_part(p.stem) != spec:
+                            continue
+                        last_type = None
+                        try:
+                            with p.open("r", encoding="utf-8", errors="replace") as f:
+                                for line in f:
+                                    line = line.strip()
+                                    if not line:
+                                        continue
+                                    try:
+                                        entry = json.loads(line)
+                                    except (json.JSONDecodeError, ValueError):
+                                        continue
+                                    if isinstance(entry, dict) and entry.get("type"):
+                                        last_type = entry.get("type")
+                        except OSError:
+                            last_type = None
+                        if last_type not in RUN_TERMINAL_EVENT_TYPES:
+                            still_running.append(p.stem)
                 except OSError:
-                    continue
-        except OSError:
-            pass
+                    pass
+            if not still_running:
+                running_ids = []
+                break
+            running_ids = still_running
+            time.sleep(min(AGENT_TERMINATE_GRACE_SECONDS,
+                           deadline - time.time()))
+        if running_ids:
+            # 超时仍有 run 未终止 → 返回失败，不改 STATE/目录
+            return {
+                "found": True,
+                "running": True,
+                "archived": False,
+                "archive_path": None,
+                "error": f"等待超时仍有 {len(running_ids)} 个 run 未终止",
+                "pending": running_ids,
+                "stopped": 0,
+            }
+        # 全部已终止，继续正常删除流程
 
     from core.state_machine import StateMachine
 
@@ -71,7 +153,7 @@ def soft_delete_spec(project_root, spec: str) -> dict:
     archive_path = None
     if spec_dir.is_dir():
         archive_root.mkdir(parents=True, exist_ok=True)
-        ts = int(now)
+        ts = int(time.time())
         base_name = f"{spec}-{ts}"
         dest = archive_root / base_name
         # 同名冲突：追加毫秒后缀重试，避免 shutil.move 覆盖丢失数据
@@ -97,6 +179,10 @@ def soft_delete_spec(project_root, spec: str) -> dict:
         "archived": archived,
         "archive_path": archive_path,
         "error": None,
+        "pending": None,
+        # 有在跑 agent 时登记已停止计数（initial_running_count 在回调前记录，
+        # 等待循环把 running_ids 置空后仍可引用）；无在跑时为 None
+        "stopped": initial_running_count if initial_running_count else None,
     }
     # 归档自动提交：目录确实移动成功才提交（fail-open，见 core/archive_commit.py）
     if archived:

@@ -27,6 +27,14 @@ from core.state_machine import (
 # 跨组引用（D4：叶子→中枢，直接导入无环）
 from .state import parse_state
 
+# run 归属全等匹配（add-freeze-stop-inflight-agents 4.4：running_run_ids_for_spec
+# 与 daemon 消费方共用——run_spec_part 已剥 agent 前缀与 -a<n>/-r<n>/时间戳）
+from core.agent_runner.run_files import run_spec_part
+
+# 托管态判定（add-freeze-stop-inflight-agents 4.3/5.1：request_spec_delete 前置
+# 校验 daemon 未托管时信号无人消费——模块顶层导入使单测可 patch 该绑定）
+from core.fenix_session import hosting_state as _hosting_state
+
 # fix-deferred-findings CYC-1：request_admin_invoke 与 ADMIN_INVOKE_REQUEST
 # 已迁入中性模块 core.signals（pm_engine 侧消费点不再反向 import
 # dashboard.data），此处 re-export 保住既有门面导入路径。
@@ -134,6 +142,170 @@ def is_spec_frozen(entry: dict) -> bool:
     return (entry.get("error") or "").startswith(FREEZE_ERROR_PREFIX)
 
 
+SPEC_DELETE_REQUEST = ".fenix/spec_delete_request.json"
+# 删除先停后删的等待总上限（task 5.3：daemon 消费侧与数据层共用常量；
+# 每 run 宽限沿用 liveness.AGENT_TERMINATE_GRACE_SECONDS=10s，总窗口
+# 足够覆盖该 spec 全部在跑 run 的 terminate→grace→kill 序列）
+SPEC_DELETE_STOP_WAIT_TOTAL_SECONDS = 60
+
+
+def running_run_ids_for_spec(project_root, spec: str) -> list:
+    """枚举某 spec 名下仍在跑的 run_id 列表（add-freeze-stop-inflight-agents 4.4）。
+
+    扫描 ``.fenix/runs/*.jsonl`` 顶层（活跃目录）——``_resolve_run_file`` 的
+    archive 回读口径不适用于「在跑」判定（已归档 run 不可能在跑）。归属用
+    ``run_spec_part(p.stem) == spec`` 全等（复用 run_files 已剥前后缀）；
+    在跑判定 = 末行**非**终态。终态口径 MUST 用写侧权威集合并集：
+    ``liveness.RUN_TERMINAL_EVENT_TYPES``（result/interrupted/error/cancelled/
+    frozen-terminated）——MUST NOT 复用 ``classify_run``：其读侧映射含
+    ``superseded``，而 superseded 不在终态集合内（原地重试弃置事件，其后
+    还有新 attempt 在跑），复用会把活跃 run 误判为已终态、让删除在 run 仍
+    可能写盘时移走 spec 目录（违反「等待超时不删除」硬约束）。
+
+    Returns: 仍在跑的 run 产物 stem 列表（含 -a<n>/-r<n> 后缀，供调用方
+    精确终止/展示）。
+    """
+    from core.agent_runner.liveness import RUN_TERMINAL_EVENT_TYPES
+
+    runs_dir = Path(project_root) / ".fenix" / "runs"
+    running: list = []
+    if not runs_dir.is_dir():
+        return running
+    try:
+        for p in runs_dir.glob("*.jsonl"):
+            if run_spec_part(p.stem) != spec:
+                continue
+            # 末行终态判定（逐行扫描取末行，损坏 JSON 行跳过——与
+            # liveness._file_has_terminal_event 同口径；文件不可读视为在跑，
+            # 宁可保守不删）
+            last_type = None
+            try:
+                with p.open("r", encoding="utf-8", errors="replace") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            entry = json.loads(line)
+                        except (json.JSONDecodeError, ValueError):
+                            continue
+                        if isinstance(entry, dict) and entry.get("type"):
+                            last_type = entry.get("type")
+            except OSError:
+                last_type = None
+            if last_type not in RUN_TERMINAL_EVENT_TYPES:
+                running.append(p.stem)
+    except OSError:
+        pass
+    return running
+
+
+def request_spec_delete(project_root, spec: str, stopping: int = 0) -> dict:
+    """写入 SPEC 删除请求的文件信号（.fenix/spec_delete_request.json）。
+
+    异步受理契约（add-freeze-stop-inflight-agents D5/4.3）：该 spec 有在跑
+    agent 时，dashboard 侧不阻塞等待终止——写信号立即返回受理结果，由
+    daemon 主循环消费（停 agent → 有界等待终态 → soft_delete_spec）。原子写
+    tmp+rename+fsync（与 request_run_cancel 同构）。
+
+    前置校验（对齐 request_spec_approve_push 契约）：
+    - daemon 未受 supervisor 托管（hosting_state != "managed"）→ 信号无人
+      消费，返回 unmanaged/daemon_down 拒绝；
+    - 已存在未消费信号 → conflict 409（对齐 request_run_cancel 语义）。
+
+    Args:
+        stopping: 待停止的在跑 agent 计数（API 侧经 running_run_ids_for_spec
+            预先计数，写进信号供 daemon 日志/审计）。
+
+    Returns:
+        {"ok", "conflict", "unmanaged", "daemon_down", "file", "created",
+         "error"}
+    """
+    proot = Path(project_root)
+    # _hosting_state 已在模块顶层导入（测试可 patch 该绑定）
+
+    try:
+        state = _hosting_state(proot)
+    except Exception:
+        state = "stopped"
+    if state == "unmanaged":
+        return {
+            "ok": False,
+            "conflict": False,
+            "unmanaged": True,
+            "daemon_down": False,
+            "file": None,
+            "created": None,
+            "error": (
+                "本项目 daemon 未受 supervisor 托管，删除信号不会被消费。"
+                "经 Dashboard 项目页「安装托管」或 /fenix-setup 恢复"
+                "supervisor 托管后重试"
+            ),
+        }
+    if state != "managed":
+        return {
+            "ok": False,
+            "conflict": False,
+            "unmanaged": False,
+            "daemon_down": True,
+            "file": None,
+            "created": None,
+            "error": "daemon 未运行，请先启动 daemon",
+        }
+
+    req_path = proot / SPEC_DELETE_REQUEST
+    if req_path.exists():
+        existing_created = None
+        try:
+            existing = json.loads(req_path.read_text(encoding="utf-8"))
+            if isinstance(existing, dict):
+                existing_created = existing.get("created")
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            pass
+        return {
+            "ok": False,
+            "conflict": True,
+            "unmanaged": False,
+            "daemon_down": False,
+            "file": str(req_path),
+            "created": existing_created,
+            "error": "已有进行中的删除请求",
+        }
+
+    created = datetime.now(timezone.utc).isoformat()
+    payload = {
+        "spec": spec,
+        "source": "dashboard",
+        "created": created,
+        "stopping": int(stopping or 0),
+    }
+    req_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(req_path.parent), prefix=".spec_delete_request.", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, req_path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+    return {
+        "ok": True,
+        "conflict": False,
+        "unmanaged": False,
+        "daemon_down": False,
+        "file": str(req_path),
+        "created": created,
+        "error": None,
+    }
+
+
 def freeze_spec(project_root, spec_name: str, reason: str = "") -> dict:
     """人工冻结 SPEC：status→blocked，error 以「用户指令冻结：」开头并记录原状态。
 
@@ -177,6 +349,11 @@ def unfreeze_spec(project_root, spec_name: str) -> dict:
     委托 StateMachine.unfreeze_spec（D4 收编）：status 传解析出的原状态，
     恢复为冻结前状态并清 error/frozen_until。此前直写 update_spec 对带
     frozen 标记的结构化冻结 spec 会被冻结保护剥离 status，残留半死态。
+
+    add-freeze-stop-inflight-agents 2.6：传入 project_root 与就地构造的
+    WorktreeManager（dashboard 独立进程，此前零处 import）；构造失败或
+    工作目录异常时降级为 None（跳过续做判定，与脚本/测试场景同语义）——
+    MUST NOT 因构造失败使解冻本身失败。
     """
     specs = parse_state(project_root)
     if spec_name not in specs:
@@ -191,9 +368,20 @@ def unfreeze_spec(project_root, spec_name: str) -> dict:
         return {"ok": True, "found": True, "frozen": False, "error": None}
     orig = parse_orig_status(entry.get("error"))
     from core.state_machine import StateMachine
-
     sm = StateMachine(Path(project_root) / ".fenix" / "STATE.md", None)
-    sm.unfreeze_spec(spec_name, status=orig)
+    _wt_mgr = None
+    try:
+        from core.worktree_manager import WorktreeManager
+        _wt_mgr = WorktreeManager(
+            base_dir=Path(project_root) / ".fenix",
+            project_root=Path(project_root),
+            logger=None,
+        )
+    except Exception:
+        pass
+    sm.unfreeze_spec(spec_name, status=orig,
+                     project_root=Path(project_root),
+                     worktree_manager=_wt_mgr)
     return {"ok": True, "found": True, "frozen": False, "error": None}
 
 

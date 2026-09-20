@@ -682,7 +682,11 @@ class H3SpecRoutesMixin:
         软删除 SPEC：STATE.md 移除条目 + SPEC 目录移入 spec/archive。
         - project 不存在 → 404
         - spec 不在项目 STATE.md → 404（幂等，不发文件操作）
-        - spec 有进行中的运行（runs 目录 mtime<120s）→ 409「spec 有进行中的运行」
+        - spec 有进行中的运行（末行非终态判定，含 frozen-terminated）→
+          异步受理：写 spec_delete_request.json 信号 → 202 受理结果
+          {accepted: true, stopping: N}（daemon 消费：停 agent → 有界等待
+          终态 → 软删除）；无在跑 agent 时保持既有同步软删除。
+        - 托管态非 managed / 已有未消费信号 → 409（信号无人消费/重复受理）
         - 成功 → 200 + {ok: true, archived, archive_path}
         """
         spec = query.get("spec", [None])[0]
@@ -697,6 +701,38 @@ class H3SpecRoutesMixin:
             self._error(404, "spec required")
             return
         proot = Path(project["path"])
+        # ── 异步受理分支（add-freeze-stop-inflight-agents 5.1）──
+        # 先取该 spec 的在跑 run：无在跑 → 既有同步软删除；有在跑 →
+        # 写 spec_delete_request.json 信号立即返回受理（不阻塞等待终止）。
+        running_ids = dashboard_data.running_run_ids_for_spec(proot, spec)
+        if running_ids:
+            req = dashboard_data.request_spec_delete(
+                proot, spec, stopping=len(running_ids))
+            if req.get("unmanaged"):
+                self._error(409, req.get("error") or "daemon 未托管")
+                return
+            if req.get("daemon_down"):
+                self._error(409, req.get("error") or "daemon 未运行")
+                return
+            if req.get("conflict"):
+                self._error(409, req.get("error") or "已有进行中的删除请求")
+                return
+            if not req.get("ok"):
+                self._error(409, req.get("error") or "删除请求写入失败")
+                return
+            # 202 受理：请求已受理，正在停止 N 个进行中的 agent
+            self._json(
+                {
+                    "ok": True,
+                    "accepted": True,
+                    "project": project["name"],
+                    "spec": spec,
+                    "stopping": len(running_ids),
+                    "created": req.get("created"),
+                },
+                status=202,
+            )
+            return
         try:
             result = dashboard_data.soft_delete_spec(proot, spec)
         except Exception as e:  # noqa: BLE001 兜底：写回/移动异常不崩溃进程

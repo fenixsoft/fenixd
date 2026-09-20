@@ -38,6 +38,7 @@ D6_NAMES = [
     "AgentRunResult",
     "AgentArtifactGateError",
     "RunCancelledError",
+    "FrozenTerminatedError",
     "AdminDisposition",
     "SelfReviewResult",
     "EvolutionResult",
@@ -52,7 +53,7 @@ class TestD6PatchGap:
     def test_result_classes_reexport_same_object(self):
         for name in ("AgentRunResult", "AdminDisposition", "SelfReviewResult",
                      "EvolutionResult", "AgentArtifactGateError",
-                     "RunCancelledError"):
+                     "RunCancelledError", "FrozenTerminatedError"):
             assert getattr(runner_mod, name) is getattr(result_gate, name)
 
     def test_commigrated_constants_same_object(self):

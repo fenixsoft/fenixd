@@ -183,6 +183,17 @@ class G7StaleSweepMixin:
                     # ready 仅当带 _recovery_resume 标记才算在飞引用
                     if status != "ready" or entry.get("_recovery_resume"):
                         return True, f"STATE 字段引用（{sname}: {status}）"
+            # add-freeze-stop-inflight-agents 2.7：frozen + _frozen_hold 的 spec
+            # 其 branch 属在飞引用（保留分支）。冻结终止的保留分支所在 spec 是
+            # blocked（不在既有豁免集内），而 _reclaim_expired_legacy 不查本保护
+            # 地 git branch -D（legacy_registry），宽限期仅 LEGACY_GRACE_SECONDS
+            # = 120s——若不扩展，冻结终止后在解冻前重启 daemon（cleanup_stale
+            # _worktrees 在 fenixd 启动路径）就可能删该分支，使「解冻后续做」
+            # 降级为从零重派。entry.get(branch) 已在上方分支命中；此处按 status
+            # 为 blocked 且 frozen+_frozen_hold 命中时直接判受保护。
+            if status == "blocked" and entry.get("frozen") and entry.get("_frozen_hold"):
+                if entry.get("branch") == branch:
+                    return True, f"STATE 冻结保持引用（{sname}: blocked+frozen）"
         # (b) 命名空间口径：任一 implementing spec 的 <prefix>/<spec>-<ts>
         for sname, entry in states.items():
             if entry.get("status") != "implementing":

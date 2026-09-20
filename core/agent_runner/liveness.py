@@ -72,13 +72,19 @@ HANG_MIN_TOOL_COMPLETIONS = 3
 # run jsonl 的终态事件类型（对齐 runner.py _run_was_interrupted 与
 # admin_monitor.py _run_has_interrupted_marker 的判定口径）：
 # result=自然完成, interrupted=daemon shutdown, error=进程异常终止,
-# cancelled=人工取消。任一类型出现即视为 run 已终结。
+# cancelled=人工取消, frozen-terminated=spec 冻结终止。任一类型出现即视为
+# run 已终结。
+# add-freeze-stop-inflight-agents D2：frozen-terminated 为写侧权威，必须同时
+# 登记进 core/dashboard/data/runs.py::_RUN_TERMINAL_STATUS_MAP（读侧映射）——
+# 两侧同步义务：缺写侧该 run 不会被清扫器/在跑判定终结；缺读侧 dashboard
+# 永远把该 run 判成 running。
 RUN_TERMINAL_EVENT_TYPES = frozenset(
     {
         "result",
         "interrupted",
         "error",
         "cancelled",
+        "frozen-terminated",
     }
 )
 

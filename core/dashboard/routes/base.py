@@ -575,10 +575,10 @@ class H0BaseMixin:
             return gzip.compress(body, 5)
         return body
 
-    def _json(self, payload):
+    def _json(self, payload, status: int = 200):
         body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         self._mark_response_started()
-        self.send_response(200)
+        self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-cache")
         body = self._maybe_gzip(body)

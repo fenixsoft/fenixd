@@ -232,6 +232,26 @@ class SpecReviewManager:
         if not run_ok:
             self.logger.error("spec_review", f"评审 run 执行失败: {spec_name}: {run_err}")
 
+            # ③0 add-freeze-stop-inflight-agents 3.5：冻结终止在失败分类之前拦截——
+            # 评审 run 因 spec 冻结被终止（frozen_terminated=True）：写
+            # _frozen_hold 标记、保持 reviewing、不重派、不递增 _review_attempts、
+            # 不触发熔断。MUST NOT 走 _classify_run_failure 的 content/infra
+            # 分支（_INFRA_FINGERPRINTS 含裸 "503"，评审 run 的 503 重试会被
+            # 误判 infra 而递增计数/熔断）。
+            if getattr(result, "frozen_terminated", False):
+                rev_err = getattr(result, "error", None) or run_err or ""
+                frozen_err = (
+                    f"评审 run 因 spec 冻结被终止（进度已保全，解冻后续做）"
+                    f"{': ' + rev_err if rev_err else ''}"
+                )
+                self.state_machine.mark_frozen_hold(spec_name, frozen_err)
+                self.logger.warning(
+                    "spec_review",
+                    f"评审 run 因 spec 冻结被终止 — hold-state '{spec_name}'"
+                    f"（保持 reviewing，不重派）: {frozen_err}",
+                )
+                return False
+
             # ① 结果捞回（run 失败时尝试从转录代写落盘，避免白烧重试）
             salvage = getattr(self.agent_runner, "_salvage_spec_review_result", None)
             if callable(salvage):

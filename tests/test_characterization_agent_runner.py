@@ -64,6 +64,7 @@ class TestResultClassesChar:
             "model_used": "deepseek-v4-flash",
             "chain_exhausted": False,
             "cancelled": False,
+            "frozen_terminated": False,
             "output_summary": ("done" * 300)[-500:],
         }
 

@@ -204,12 +204,15 @@ class TestTerminalStateSweep(unittest.TestCase):
         self.assertEqual(lines[-1]["reason"], "startup terminal-state sweep")
 
     def test_sweep_skips_terminal_runs_any_type(self):
-        """任一终态事件（result/interrupted/error/cancelled）均不补写。"""
+        """任一终态事件（result/interrupted/error/cancelled/frozen-terminated）均不补写。"""
         samples = {
             "a-result": [{"type": "assistant"}, {"type": "result", "result": "ok"}],
             "b-interrupted": [{"type": "assistant"}, {"type": "interrupted", "reason": "shutdown"}],
             "c-error": [{"type": "assistant"}, {"type": "error", "error": "boom", "exit_code": 1}],
             "d-cancelled": [{"type": "assistant"}, {"type": "cancelled", "reason": "user"}],
+            # add-freeze-stop-inflight-agents：frozen-terminated 为写侧权威终态
+            # 事件（RUN_TERMINAL_EVENT_TYPES 之一），含该行的 run 不得补写。
+            "e-frozen": [{"type": "assistant"}, {"type": "frozen-terminated", "reason": "spec frozen"}],
         }
         terminals = list(RUN_TERMINAL_EVENT_TYPES)
         self.assertEqual(len(samples), len(terminals))

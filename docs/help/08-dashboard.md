@@ -57,7 +57,9 @@ Fenix Web Dashboard（`http://localhost:8787`）是跨项目的可视化监控�
 
 详情页上半部分是 SPEC 元数据：状态、优先级、创建/更新时间、分支与 error。文档区提供五个页签：需求背景（proposal）、详细设计（design）、任务清单（tasks）、验证报告、测试场景清单。
 
-详情行工具条集中了针对单个 SPEC 的运维操作：设置优先级（1-9，P1 最高）、冻结/解冻（人工冻结为 blocked + 标记，解冻恢复）、清除错误（在线清除 error 字段并写回 STATE.md）、归档（终态 SPEC 目录移入 archive）、删除（软删除，剔除 STATE.md 条目并把目录移入 archive，运行中返回 409），以及呼叫 Admin（手动唤起 Administrator，写 admin_invoke_request.json）。
+详情行工具条集中了针对单个 SPEC 的运维操作：设置优先级（1-9，P1 最高）、冻结/解冻（人工冻结为 blocked + 标记，解冻恢复）、清除错误（在线清除 error 字段并写回 STATE.md）、归档（终态 SPEC 目录移入 archive）、删除（软删除，剔除 STATE.md 条目并把目录移入 archive），以及呼叫 Admin（手动唤起 Administrator，写 admin_invoke_request.json）。
+
+**冻结**操作会立即终止该 SPEC 名下所有在跑的 agent（包括评审、实现、验证、修复等），现场经 WIP checkpoint 保全；解冻后若保留分支有未合并提交，自动在保留分支上 resume 续做（无需从零重做）。**删除**操作会先停止该 SPEC 的所有在跑 agent 并等待终态，终态齐备后才移入归档目录；有在跑 agent 时为异步受理（API 返回 `stopping: N`，前端提示「已受理，正在停止 N 个进行中的 agent」，spec 行在完成后消失），daemon 未托管时返回 409 拒绝。
 
 详情页还有「Hook」页签（「失败截图」页签之后），分三个区块：「生效中的 Hooks」合并展示全局 hooks 与该 SPEC 的 spec 级 hooks（来源列标注「全局/本 spec」，含启停状态）；「本 spec 的 Hooks」对该 SPEC 的专属订阅做增删改与启停，表单为订阅事件多选 + 动作下拉 + 按动作类型显隐的参数（Webhook URL / Shell 命令 / 提交信息模板 / 超时秒数 / 目标 tmux 会话）；「最近执行」展示该 SPEC 的 hook 审计尾部（时间/动作/结果/耗时/摘要，失败可见错误详情）。事件与动作的完整语义见[配置参考](09-config.md#hooks)。
 

@@ -619,6 +619,15 @@ class FenixDaemon:
                     self._check_approve_push_requests()
                 except Exception as e:
                     self.logger.error("fenixd", f"approve_push pickup failed: {e}")
+                # add-freeze-stop-inflight-agents 5.2：SPEC 删除信号（异步受理）
+                # dashboard 写入 .fenix/spec_delete_request.json（含 spec/source/
+                # created/stopping），主循环下一轮消费：枚举该 spec 在跑 run
+                # → cancel_run 逐个停止 → 有界等待终态 → soft_delete_spec 完成
+                # 删除。信号文件先读后删，损坏 JSON 删除防卡死。
+                try:
+                    self._check_spec_delete_requests()
+                except Exception as e:
+                    self.logger.error("fenixd", f"spec_delete pickup failed: {e}")
                 # add-code-review-agent-and-quality-tab：code-review 手动触发
                 # 文件信号拾取（dashboard 写入 .fenix/code_review_request.json），
                 # 主循环下一轮消费（scope→review_kind 映射 + manifest 收集 +
@@ -1491,6 +1500,131 @@ class FenixDaemon:
                 f"审批推送未成功 spec='{spec}'（非 done/退避期内/推送失败），"
                 "不重试，退避与 recovery 兜底覆盖",
             )
+
+    # ── SPEC 删除信号消费（add-freeze-stop-inflight-agents 5.2/5.3）────────
+
+    def _check_spec_delete_requests(self):
+        """主循环每轮扫描「SPEC 删除」的文件信号并消费（先停后删）。
+
+        dashboard 的 /api/spec-delete 在检测到在跑 agent 时原子写入
+        .fenix/spec_delete_request.json（含 spec/source/created/stopping）；
+        本方法在主循环（1s 粒度）中检测其存在：读取→删除→枚举该 spec 在跑
+        run→逐个 cancel_run 停止→有界等待终态→调 soft_delete_spec 完成删除。
+        与 _check_cancel_requests / _check_approve_push_requests 同构：
+        损坏 JSON 删除防卡死；删除失败（先读后删被并发消费）下轮再试。
+
+        有界等待（task 5.3）：复用 running_run_ids 轮询 + drain_wait 形态，
+        总超时上限 SPEC_DELETE_STOP_WAIT_TOTAL_SECONDS；超时记 WARNING、
+        放弃本轮删除且**不再重写信号**（避免无限循环），交由用户重试或
+        人工处置。
+
+        软删除以注入停止回调调 ``soft_delete_spec(stop_callback=...)`` 完成
+        ——回调内已对全部在跑 run 发 cancel_run；等待融入 soft_delete_spec
+        的既有有界窗口，删除内部完成「全部终止 → 移目录 → 剔 STATE」。
+        """
+        req_path = PROJECT_ROOT / ".fenix" / "spec_delete_request.json"
+        if not req_path.exists():
+            return
+        try:
+            with req_path.open("r", encoding="utf-8") as f:
+                payload = json.load(f)
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+            # 损坏的信号文件：删除避免每轮报错卡死
+            try:
+                req_path.unlink()
+            except OSError:
+                pass
+            return
+        # 先读后删：删除失败（被并发消费）则本次跳过，下一轮再试
+        try:
+            req_path.unlink()
+        except OSError:
+            return
+
+        spec = payload.get("spec")
+        if not spec:
+            self.logger.warning("fenixd", "spec_delete 请求缺少 spec，忽略")
+            return
+
+        self.logger.info(
+            "fenixd",
+            f"消费 SPEC 删除信号：spec='{spec}'，stopping="
+            f"{payload.get('stopping', 0)}，source={payload.get('source', 'dashboard')}",
+        )
+        from core.dashboard.data.admin_actions import (
+            SPEC_DELETE_STOP_WAIT_TOTAL_SECONDS,
+            running_run_ids_for_spec,
+        )
+        try:
+            # 停止回调：对该 spec 全部在跑 run 逐个 cancel_run（只设旗标，
+            # 微秒级——终止由各 run 属主线程在轮询环内执行）
+            def _stop_running(run_ids):
+                for rid in run_ids:
+                    try:
+                        self.agent_runner.cancel_run(
+                            rid, reason="spec 删除（先停后删）", by="admin")
+                    except Exception as e:
+                        self.logger.warning(
+                            "fenixd",
+                            f"spec_delete 停止 run {rid} 失败: {e}",
+                        )
+
+            result = self._soft_delete_with_bounded_wait(
+                spec, _stop_running, SPEC_DELETE_STOP_WAIT_TOTAL_SECONDS)
+            if result is not None and result.get("ok") is False:
+                self.logger.warning(
+                    "fenixd",
+                    f"spec_delete 停止/删除未完成 spec='{spec}'："
+                    f"{result.get('error') or result}（不重写信号，用户可重试）",
+                )
+        except Exception as e:
+            self.logger.error(
+                "fenixd",
+                f"spec_delete 消费异常 spec='{spec}'（不重写信号）: {e}",
+            )
+
+    def _soft_delete_with_bounded_wait(self, spec, stop_callback, total_timeout: float):
+        """先停后删的有界等待实现（add-freeze-stop-inflight-agents 5.3）。
+
+        以 running_run_ids_for_spec 轮询在跑 run（末行非终态，含
+        frozen-terminated），总超时上限 total_timeout；全部终止后调
+        dashboard_data.soft_delete_spec 完成删除。超时未终止 → 记 WARNING
+        并返回失败（信号已消费不重写，避免无限循环）。
+
+        Returns: soft_delete_spec 的删除结果 dict；等待超时返回
+        {"ok": False, "error": ...}。
+        """
+        from core.dashboard.data import (
+            running_run_ids_for_spec,
+            soft_delete_spec,
+        )
+        import time as _time
+
+        proot = PROJECT_ROOT
+        deadline = _time.time() + max(1.0, float(total_timeout))
+        try:
+            # 停止回调先发（对当前在跑 run 逐个 cancel_run）
+            stop_callback(running_run_ids_for_spec(proot, spec))
+        except Exception as e:
+            self.logger.warning(
+                "fenixd",
+                f"spec_delete 停止回调异常 spec='{spec}': {e}（有界等待仍继续）",
+            )
+        # 有界等待终态：轮询 running_run_ids_for_spec 直到该 spec 无在跑 run
+        while _time.time() < deadline:
+            if not running_run_ids_for_spec(proot, spec):
+                break
+            _time.sleep(min(1.0, max(0.1, deadline - _time.time())))
+        if running_run_ids_for_spec(proot, spec):
+            self.logger.warning(
+                "fenixd",
+                f"spec_delete 等待超时 spec='{spec}'：仍有 run 未落终态，"
+                f"放弃本轮删除（不重写信号）",
+            )
+            return {"ok": False, "error": "等待超时仍有 run 未终止"}
+        # 全部终止 → 软删除（stop_callback 已由 signal 消费方在停止阶段执行，
+        # 此处不再传——避免二次 stop；直接调用保持既有删除语义）
+        return soft_delete_spec(proot, spec)
 
     # ── 手动触发 code-review 文件信号消费（add-code-review-agent-and-quality-tab D1）──
 
