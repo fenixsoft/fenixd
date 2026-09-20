@@ -315,6 +315,13 @@ def freeze_spec(project_root, spec_name: str, reason: str = "") -> dict:
       [ · reason]``），daemon 经 STATE.md watcher 感知后停止调度。此前直写
       update_spec 只写 {status, error} 不写 frozen 标记，与 StateMachine 冻结
       双轨并行时产生「解冻后 status 被冻结保护剥离」的半死态，本版本消除。
+
+    add-freeze-stop-inflight-agents 6.x 验证修复（BUG-01）：冻结成功时统计
+    并返回 ``stopped_agents``（冻结时刻在跑 agent 计数），供前端展示
+    「已停止 N 个在跑 agent，进度已留存，解冻后可续做」。冻结写入本身为
+    非阻塞 STATE 更新，计数基于冻结写入前的 run 文件快照；在冻结写入与
+    runner 轮询环感知之间的短暂窗口内，仍有 run 文件非终态但已不可见
+    对新 freeze_spec 调用的影响极小（daemon 下一轮 watcher 触发）。
     """
     specs = parse_state(project_root)
     if spec_name not in specs:
@@ -336,11 +343,15 @@ def freeze_spec(project_root, spec_name: str, reason: str = "") -> dict:
         }
     orig = entry.get("status") or "ready"
     note = f"原状态 {orig}" + (f" · {reason}" if reason else "")
+    # 冻结前统计在跑 agent 数（proposal Impact「freeze_spec 返回值扩展
+    # （stopped_agents 计数）」；验证 BUG-01 修复点）——冻结 STATE 写入
+    # 后 runner 轮询环感知到 frozen 终止，计数为终止窗口前的快照值。
+    running = running_run_ids_for_spec(project_root, spec_name)
     from core.state_machine import StateMachine
 
     sm = StateMachine(Path(project_root) / ".fenix" / "STATE.md", None)
     sm.freeze_spec(spec_name, reason=note)
-    return {"ok": True, "found": True, "frozen": True, "error": None}
+    return {"ok": True, "found": True, "frozen": True, "error": None, "stopped_agents": len(running)}
 
 
 def unfreeze_spec(project_root, spec_name: str) -> dict:

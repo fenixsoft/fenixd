@@ -167,7 +167,9 @@ class H3SpecRoutesMixin:
         （admin_monitor 认此模式为有意等待态，免超时误报）。
         - project 不存在 → 404；spec 不在项目 STATE.md → 404
         - 终态（done/pushed）→ 200 + {ok: true, frozen: false, error: 原因}
-        - 成功 → 200 + {ok: true, frozen: true}
+        - 成功 → 200 + {ok: true, frozen: true, stopped_agents: N}（N 为
+          冻结时刻在跑 agent 计数，add-freeze-stop-inflight-agents BUG-01
+          修复；前端据 >0 展示「已停止 N 个在跑 agent」提示）
         """
         spec = query.get("spec", [None])[0]
         project = self._project_from_query(query)

@@ -18,6 +18,7 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.dashboard.data.admin_actions import (
+    freeze_spec,
     running_run_ids_for_spec,
     request_spec_delete,
     SPEC_DELETE_REQUEST,
@@ -238,3 +239,62 @@ def test_no_stop_callback_fallback_409(tmp_path):
     # 不改 STATE/目录
     sm = StateMachine(proot / ".fenix" / "STATE.md", MagicMock())
     assert sm.read_one("fix-x") is not None
+
+
+# ── BUG-01 修复验证：freeze_spec 返回 stopped_agents 计数 ────────
+
+
+def _setup_implementing_spec(tmp_path, spec_name="fix-x"):
+    """创建一个处于 implementing 状态的 spec 的最小项目 fixture。"""
+    proot = _mk_project(tmp_path)
+    sm = StateMachine(proot / ".fenix" / "STATE.md", MagicMock())
+    sm.add_spec(spec_name, {"priority": 5})
+    sm.update_spec(spec_name, {"status": "implementing"})
+    return proot
+
+
+def test_freeze_spec_stopped_agents_counted(tmp_path):
+    """BUG-01：冻结有在跑 agent 的 spec → stopped_agents 包含在跑 run 计数。"""
+    proot = _setup_implementing_spec(tmp_path)
+    _write_run(proot, f"impl-fix-x-{TS}-a1", [
+        {"type": "assistant", "message": {"content": []}},
+        {"type": "user", "role": "user"},
+    ])
+    result = freeze_spec(proot, "fix-x")
+    assert result.get("ok") is True, result
+    assert result.get("frozen") is True, result
+    assert result.get("stopped_agents") == 1, result
+    # freeze 后 spec 为 blocked（frozen）
+    sm = StateMachine(proot / ".fenix" / "STATE.md", MagicMock())
+    entry = sm.read_one("fix-x")
+    assert entry.get("frozen") is True or (entry.get("error") or "").startswith("用户指令冻结：")
+
+
+def test_freeze_spec_no_running_stopped_agents_zero(tmp_path):
+    """BUG-01：冻结无在跑 agent 的 spec → stopped_agents 为 0。"""
+    proot = _setup_implementing_spec(tmp_path)
+    result = freeze_spec(proot, "fix-x")
+    assert result.get("ok") is True, result
+    assert result.get("frozen") is True, result
+    assert result.get("stopped_agents") == 0, result
+
+
+def test_freeze_spec_multiple_inflight_stopped_agents_count(tmp_path):
+    """BUG-01：冻结有多个在跑 agent 的 spec → stopped_agents = 在跑 run 数。"""
+    proot = _setup_implementing_spec(tmp_path)
+    _write_run(proot, f"impl-fix-x-{TS}-a1", [{"type": "assistant"}])
+    _write_run(proot, f"spec-review-fix-x-{TS}-a1", [{"type": "assistant"}])
+    result = freeze_spec(proot, "fix-x")
+    assert result.get("ok") is True, result
+    assert result.get("frozen") is True, result
+    assert result.get("stopped_agents") == 2, result
+
+
+def test_freeze_spec_terminal_no_stopped_agents(tmp_path):
+    """BUG-01：终态 spec 不可冻结 → frozen=False，stopped_agents 不出现（无需计数）。"""
+    proot = _setup_implementing_spec(tmp_path)
+    sm = StateMachine(proot / ".fenix" / "STATE.md", MagicMock())
+    sm.update_spec("fix-x", {"status": "done"})
+    result = freeze_spec(proot, "fix-x")
+    assert result.get("frozen") is False, result
+    assert "stopped_agents" not in result, "终态不可冻结时不应返回 stopped_agents"
