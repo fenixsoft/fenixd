@@ -169,7 +169,7 @@
 
 ## 5. 回归测试适配与新增（tests/）
 
-- [ ] 5.1 `tests/test_start_after_gate.py`：其 `_auto_config()` 当前返回
+- [x] 5.1 `tests/test_start_after_gate.py`：其 `_auto_config()` 当前返回
       `{"gates": {"promote_mode": "auto", "spec_review_mode": "never"}}`——在新缺省
       `dispatch` 下这些断言（未来 start_after 不晋升 / manual 不晋升）会失败。把
       `_auto_config()` 改为**含 `start_after_scope: "full"`** 的配置（保持既有断言
@@ -186,7 +186,7 @@
       `test_future_start_after_no_dispatch` / `test_drafted_future_skips` /
       `test_reviewing_future_skips` / `test_manual_sentinel_drafted_skips` /
       `test_cleared_start_after_promotes_again` 等 11 条用例转红。
-- [ ] 5.2 新增 `tests/test_start_after_scope.py`，覆盖 `dispatch` 档（缺省）行为，复用
+- [x] 5.2 新增 `tests/test_start_after_scope.py`，覆盖 `dispatch` 档（缺省）行为，复用
       `test_start_after_gate.py` 的 fixture 构造手法（tmpdir 最小项目，不触真实项目
       STATE/用户级配置）：
       (a) `drafted` + 未来 `start_after` + `dispatch` → **照常晋升**（status 变 ready，
@@ -205,17 +205,17 @@
       (f) `full` 档下同四点多加一条对照组，证明开关双向生效
       （**注意 pass-through 路径如 `check_scheduling_deadlines` / kick 唤起的用例必须
       在 `full` 档下写**：它们在调用 handler 前已确认到期，dispatch 档下测不出门的存在）。
-- [ ] 5.3 在 `tests/test_start_after_scope.py` 中新增用例锁定「实现派发口恒受门约束，
+- [x] 5.3 在 `tests/test_start_after_scope.py` 中新增用例锁定「实现派发口恒受门约束，
       与 scope 无关」：`ready` + 未来 `start_after`（或 `manual`），分别在 `dispatch` 与
       `full` 配置下调用 `_on_spec_ready` / `Dispatcher._process_queue` 候选筛选相关函数
       （沿用 `tests/test_spec_scheduling.py` 既有手法），两档均**不派发**。
-- [ ] 5.4 在 `tests/test_start_after_scope.py` 中新增 fail-open 用例：monkeypatch
+- [x] 5.4 在 `tests/test_start_after_scope.py` 中新增 fail-open 用例：monkeypatch
       `core.state_machine.start_after_pending` 抛异常，**断言谓词自身把异常向上传播**
       （谓词内 MUST NOT 吞；若断言为「返回 False」则与 2.1 的决策矛盾），且
       `_on_spec_drafted` / `_on_spec_reviewing` / `_recover_one` 三入口经各自
       try/except 走既有逻辑（不被新谓词吞掉），并如既有用例断言 warning 日志含
       「start_after 门控判定异常」（`tests/test_start_after_gate.py:438/456/477` 同款）。
-- [ ] 5.5 跑 `python3 -m pytest tests/test_config.py tests/test_dashboard_api.py
+- [x] 5.5 跑 `python3 -m pytest tests/test_config.py tests/test_dashboard_api.py
       tests/test_start_after_gate.py tests/test_start_after_scope.py
       tests/test_spec_scheduling.py tests/test_event_bus.py tests/test_pm_promotion_gate.py -q`
       全绿；如有失败，逐条定位是「实现缺陷」还是「缺省档变更的预期差异」——后者须显式
