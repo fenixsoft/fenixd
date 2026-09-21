@@ -135,6 +135,13 @@ _RUN_TERMINAL_STATUS_MAP = {
     "cancelled": "cancelled",
     "frozen-terminated": "frozen-terminated",
     "superseded": "superseded",  # fix-retry-orphan-active-runs：原地重试弃置产物终态
+    # add-timeline-gate-failure-display D3：门禁因产物硬门失败终止本次 attempt 的
+    # 终态（写侧 runner.py _append_gate_blocked，两侧同步义务见 liveness.py
+    # RUN_TERMINAL_EVENT_TYPES）。superseded 是同一失败链的**中间弃置件**（紧随其后的
+    # gate-blocked 才是收口终态），两者并存但语义不同——MUST NOT 把 superseded 当
+    # gate-blocked 的替代，也不必把 superseded 从本映射移除（弃置文件仍需判终态，
+    # 否则旧产物永远判 running）。
+    "gate-blocked": "gate-blocked",
 }
 
 # 读侧 mtime 陈旧兜底阈值（fix-retry-orphan-active-runs D2）：末行非终态
@@ -729,9 +736,12 @@ def run_activity(project_root, spec_name, *, now: float | None = None, files=Non
 _RETENTION_MOVE_PER_CYCLE_MAX = 100  # 每周期最多移入归档数（单轮 I/O 尖峰抑制）
 _RETENTION_DELETE_PER_CYCLE_MAX = 100  # 每周期最多删除数（5.1a：分批清理）
 _RETENTION_KEEP_DEFAULT = 50  # 缺省上限（与 Dashboard 设置页 runs.keep 缺省同源）
-# 可归档状态：终态（result/error/interrupted/cancelled/superseded）+ stale 断尾
-# 尸体（末行非终态且 mtime 停更超 _RUN_STALE_SECONDS——进程被杀无终态补写，
-# 不可复活，留活跃目录只会让有界性落空）。
+# 可归档状态：终态（result/error/interrupted/cancelled/superseded/gate-blocked）
+# + stale 断尾尸体（末行非终态且 mtime 停更超 _RUN_STALE_SECONDS——进程被杀
+# 无终态补写，不可复活，留活跃目录只会让有界性落空）。
+# add-timeline-gate-failure-display D4：集合由 _RUN_TERMINAL_STATUS_MAP.values()
+# 派生，新增 gate-blocked 映射后自动纳入，**零改代码**——但 MUST 有用例锁定
+# （否则后人把本行改成硬编码清单时会静默漏掉新终态）。
 _RETENTION_ARCHIVABLE_STATUSES = frozenset(_RUN_TERMINAL_STATUS_MAP.values()) | {"stale"}
 
 
@@ -782,8 +792,8 @@ def runs_retention_check(project_root, config: dict | None = None, logger=None) 
     """daemon 周期 runs 保留清理（fix-dashboard-read-path-performance D4）。
 
     两步（各自独立失败互不阻断，异常记日志不抛）：
-    1. 终态（done/error/interrupted/cancelled/superseded，及 stale 断尾）run
-       从活跃 runs/ 移入 archive/——活跃目录有界性由「终态即移出」保证。
+    1. 终态（done/error/interrupted/cancelled/superseded/gate-blocked，及 stale
+       断尾）run 从活跃 runs/ 移入 archive/——活跃目录有界性由「终态即移出」保证。
     2. 归档目录按 ``runs.keep`` 上限清理：超过上限时按 mtime 升序（最旧优先）
        删除直至 ≤ 上限；逐条记日志（文件名可追溯）、每周期删除量有批次上限
        （_RETENTION_DELETE_PER_CYCLE_MAX），不静默大批量删除（5.1a）。

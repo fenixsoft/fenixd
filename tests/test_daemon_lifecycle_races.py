@@ -204,7 +204,8 @@ class TestTerminalStateSweep(unittest.TestCase):
         self.assertEqual(lines[-1]["reason"], "startup terminal-state sweep")
 
     def test_sweep_skips_terminal_runs_any_type(self):
-        """任一终态事件（result/interrupted/error/cancelled/frozen-terminated）均不补写。"""
+        """任一终态事件（result/interrupted/error/cancelled/frozen-terminated/
+        gate-blocked）均不补写。"""
         samples = {
             "a-result": [{"type": "assistant"}, {"type": "result", "result": "ok"}],
             "b-interrupted": [{"type": "assistant"}, {"type": "interrupted", "reason": "shutdown"}],
@@ -213,6 +214,13 @@ class TestTerminalStateSweep(unittest.TestCase):
             # add-freeze-stop-inflight-agents：frozen-terminated 为写侧权威终态
             # 事件（RUN_TERMINAL_EVENT_TYPES 之一），含该行的 run 不得补写。
             "e-frozen": [{"type": "assistant"}, {"type": "frozen-terminated", "reason": "spec frozen"}],
+            # add-timeline-gate-failure-display：gate-blocked 为门禁失败终止本次
+            # attempt 的写侧终态；该文件此后无写入者，补写 interrupted 会把它
+            # 变成「daemon 停机遗留」误归因。
+            "f-gate-blocked": [{"type": "assistant"},
+                               {"type": "gate-blocked", "spec": "spec-a",
+                                "provider": "p", "reason": "artifact_gate",
+                                "error": "门禁拒绝（impl-code-review-gate）"}],
         }
         terminals = list(RUN_TERMINAL_EVENT_TYPES)
         self.assertEqual(len(samples), len(terminals))
