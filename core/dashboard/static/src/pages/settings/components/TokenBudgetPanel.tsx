@@ -166,7 +166,7 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
             rules={[{ required: true, message: '请输入同因重派熔断阈值' }]}
             style={{ marginTop: 24 }}
           >
-            <InputNumber min={1} max={100} step={1} style={{ width: '100%' }} />
+            <InputNumber min={1} max={100} step={1} style={{ width: '100%' }} addonAfter="次" />
           </Form.Item>
           <Text type="secondary">
             默认 3。同一 SPEC 连续以<b>同一归因</b>（归一化指纹：剔除 run_id / 时间戳 / worktree 路径后的失败文案）判失败重派达该阈值 → 冻结转人工处置并发人工升级告警，不再自动重派（替代「清零重试计数后照样重派」的空转）。每轮原因都在变化时计数不累积，不会误熔断真实需要多轮修复的 SPEC。
@@ -207,7 +207,7 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
                 rules={[{ required: true, message: '请输入 higher 档阈值' }]}
                 style={{ marginTop: 24 }}
               >
-                <InputNumber min={1} max={10000} step={1} style={{ width: '100%' }} />
+                <InputNumber min={1} max={10000} step={1} style={{ width: '100%' }} addonAfter="分" />
               </Form.Item>
               <Text type="secondary">
                 默认 30。分值<b>大于</b>此值（严格大于，等于不升档）时进入 higher 档：SPEC 仍走 fast-track 单 run，
@@ -236,7 +236,7 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
                 ]}
                 style={{ marginTop: 24 }}
               >
-                <InputNumber min={1} max={10000} step={1} style={{ width: '100%' }} />
+                <InputNumber min={1} max={10000} step={1} style={{ width: '100%' }} addonAfter="分" />
               </Form.Item>
               <Text type="secondary">
                 默认 45。分值<b>大于</b>此值（严格大于）时判定为 full 档：该 SPEC 的 .spec.yaml 中 mode 会被自动改写为

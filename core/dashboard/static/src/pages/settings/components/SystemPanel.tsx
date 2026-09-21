@@ -19,6 +19,8 @@ const ADMIN_ANNOTATIONS: {
   key: string;
   label: string;
   note: string;
+  /** 输入单位（addonAfter 附加框）；开关 / 下拉项无单位 */
+  unit?: string;
   rule?: object[];
 }[] = [
   {
@@ -28,7 +30,8 @@ const ADMIN_ANNOTATIONS: {
   },
   {
     key: 'interval_minutes',
-    label: '巡检周期（分钟）',
+    label: '巡检周期',
+    unit: '分钟',
     note: '自愈监视器巡检周期：每这么久扫描一次困境信号；也参与卡顿判定的宽限期计算（间隔×2）。',
     rule: [{
       validator: (_: unknown, v: number | undefined | null) =>
@@ -37,7 +40,8 @@ const ADMIN_ANNOTATIONS: {
   },
   {
     key: 'escalation_cooldown_minutes',
-    label: '唤起冷却（分钟）',
+    label: '唤起冷却',
+    unit: '分钟',
     note: '同一 SPEC 同类困境信号的唤起冷却：冷却期内不重复唤起，避免同一问题反复烧钱。',
     rule: [{
       validator: (_: unknown, v: number | undefined | null) =>
@@ -46,7 +50,8 @@ const ADMIN_ANNOTATIONS: {
   },
   {
     key: 'stuck_silence_minutes',
-    label: 'stuck 处置后静默期（分钟）',
+    label: 'stuck 处置后静默期',
+    unit: '分钟',
     note: 'stuck 信号成功处置（resolved / partially-resolved）后的静默窗口：窗口内同 SPEC stuck 信号不复发，避免处置成功后短期反复触发。0=不静默。',
     rule: [{
       validator: (_: unknown, v: number | undefined | null) =>
@@ -56,6 +61,7 @@ const ADMIN_ANNOTATIONS: {
   {
     key: 'merge_breaker_threshold',
     label: 'merge 熔断阈值',
+    unit: '次',
     note: 'merge 熔断阈值：同一 SPEC merge-back 连续失败达该次数仍滞留时触发熔断信号（缺省沿用 agents 同名键=2）。',
     rule: [{
       validator: (_: unknown, v: number | undefined | null) =>
@@ -66,7 +72,8 @@ const ADMIN_ANNOTATIONS: {
   },
   {
     key: 'shutdown_drain_seconds',
-    label: '重启排水窗口（秒）',
+    label: '重启排水窗口',
+    unit: '秒',
     note: '计划性重启排水窗口（秒）：restart_request 后等在跑任务自然收工的上限，0=立即快速停机（在飞任务标记中断、重启后续做）；supervisor 强杀等待=本值+120s。',
     rule: [{
       validator: (_: unknown, v: number | undefined | null) =>
@@ -88,11 +95,14 @@ const TRANSIENT_ANNOTATIONS: {
   key: string;
   label: string;
   note: string;
+  /** 输入单位（addonAfter 附加框） */
+  unit?: string;
   rule?: object[];
 }[] = [
   {
     key: 'transient_backoff_schedule',
-    label: '原地退避序列（秒）',
+    label: '原地退避序列',
+    unit: '秒',
     note: '网关瞬断（model 拒绝 / 5xx / 断连）首败后同 provider 原地退避的秒序列，逗号分隔，长度=单 attempt 内原地重试上限。留空关闭原地退避。',
     rule: [{
       validator: (_: unknown, v: string | undefined | null) => {
@@ -109,7 +119,8 @@ const TRANSIENT_ANNOTATIONS: {
   },
   {
     key: 'transient_redispatch_delay_seconds',
-    label: '重派等待（秒）',
+    label: '重派等待',
+    unit: '秒',
     note: '瞬断终态（[provider-transient] 标记）后排程延迟重派秒数，不写 retries exhausted。缺省 600。',
     rule: [{
       validator: (_: unknown, v: number | undefined | null) =>
@@ -120,7 +131,8 @@ const TRANSIENT_ANNOTATIONS: {
   },
   {
     key: 'transient_break_threshold',
-    label: '熔断阈值（次数）',
+    label: '熔断阈值',
+    unit: '次',
     note: '全局同错误指纹在窗口内出现次数达此值触发全局派发冻结；0=关闭熔断。缺省 3。',
     rule: [{
       validator: (_: unknown, v: number | undefined | null) =>
@@ -131,7 +143,8 @@ const TRANSIENT_ANNOTATIONS: {
   },
   {
     key: 'transient_break_window_seconds',
-    label: '熔断窗口（秒）',
+    label: '熔断窗口',
+    unit: '秒',
     note: '全局同错误指纹计数的滑动窗口秒数。缺省 600。',
     rule: [{
       validator: (_: unknown, v: number | undefined | null) =>
@@ -142,7 +155,8 @@ const TRANSIENT_ANNOTATIONS: {
   },
   {
     key: 'transient_break_cooldown_seconds',
-    label: '熔断冷却（秒）',
+    label: '熔断冷却',
+    unit: '秒',
     note: '触发全局熔断后冻结新 run 派发的时长。缺省 600。',
     rule: [{
       validator: (_: unknown, v: number | undefined | null) =>
@@ -251,7 +265,7 @@ export default function SystemPanel({ config, onSave, project, onConfigSynced }:
           系统级行为（自愈监视器、重启排水等）的设置界面。保存后约 30 秒经配置热更新生效。
         </Text>
         <Card style={{ marginTop: 12 }}>
-          {ADMIN_ANNOTATIONS.map(({ key, label, note, rule }) => (
+          {ADMIN_ANNOTATIONS.map(({ key, label, note, unit, rule }) => (
             // 行距由行内最后元素的下边距（24/8px）collapse 提供，此处不挂 inline
             // margin——否则末行会在卡底残留（global.less 的 :last-child 清零压不过
             // inline style）
@@ -279,7 +293,7 @@ export default function SystemPanel({ config, onSave, project, onConfigSynced }:
                 >
                   <Select
                     data-testid={`system-control-${key}`}
-                    style={{ width: 260 }}
+                    style={{ width: '100%' }}
                     options={[
                       { value: 'inplace', label: '原地打回（inplace）' },
                       { value: 'derive', label: '派生 fix SPEC（derive）' },
@@ -300,9 +314,10 @@ export default function SystemPanel({ config, onSave, project, onConfigSynced }:
                 >
                   <InputNumber
                     data-testid={`system-control-${key}`}
-                    style={{ width: 220 }}
+                    style={{ width: '100%' }}
                     step={1}
                     precision={0}
+                    addonAfter={unit}
                   />
                 </Form.Item>
               )}
@@ -316,7 +331,7 @@ export default function SystemPanel({ config, onSave, project, onConfigSynced }:
           provider 网关瞬时故障（model 拒绝 / 5xx / 断连）的退避与熔断策略。保存后约 30 秒经配置热更新生效。
         </Text>
         <Card style={{ marginTop: 12 }}>
-          {TRANSIENT_ANNOTATIONS.map(({ key, label, note, rule }) => (
+          {TRANSIENT_ANNOTATIONS.map(({ key, label, note, unit, rule }) => (
             <div key={key} style={{ marginBottom: 4 }}>
               {key === 'transient_backoff_schedule' ? (
                 <Form.Item
@@ -332,9 +347,10 @@ export default function SystemPanel({ config, onSave, project, onConfigSynced }:
                 >
                   <InputNumber
                     data-testid={`system-control-${key}`}
-                    style={{ width: 220 }}
+                    style={{ width: '100%' }}
                     stringMode
                     placeholder="30,60,120"
+                    addonAfter={unit}
                   />
                 </Form.Item>
               ) : (
@@ -351,9 +367,10 @@ export default function SystemPanel({ config, onSave, project, onConfigSynced }:
                 >
                   <InputNumber
                     data-testid={`system-control-${key}`}
-                    style={{ width: 220 }}
+                    style={{ width: '100%' }}
                     step={1}
                     precision={0}
+                    addonAfter={unit}
                   />
                 </Form.Item>
               )}

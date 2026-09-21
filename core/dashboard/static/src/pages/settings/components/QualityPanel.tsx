@@ -251,6 +251,7 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
             <InputNumber
               min={1}
               style={{ width: '100%' }}
+              addonAfter="个"
               data-testid="impl-code-review-concurrency"
             />
           </Form.Item>

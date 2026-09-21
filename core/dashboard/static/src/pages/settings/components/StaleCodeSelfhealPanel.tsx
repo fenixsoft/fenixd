@@ -102,7 +102,7 @@ const StaleCodeSelfhealPanel = forwardRef<
               min={1}
               max={MAX_IDLE_SECONDS}
               precision={0}
-              style={{ width: 160 }}
+              style={{ width: '100%' }}
               addonAfter="秒"
             />
           </Form.Item>

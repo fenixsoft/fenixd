@@ -65,7 +65,7 @@ export default function MiscSettingsPanel({ config, onSave, project, onConfigSyn
               },
             ]}
           >
-            <InputNumber step={10} style={{ width: '100%' }} />
+            <InputNumber step={10} style={{ width: '100%' }} addonAfter="个" />
           </Form.Item>
           <Text type="secondary">
             默认 50。已完成（done/pushed）的 SPEC 数量超过此阈值时，自动将最久完成的归档到 archive 目录（保留 STATE.md 条目，可在「已归档」视图查看）。

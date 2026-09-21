@@ -139,7 +139,7 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
           // 保存进行中禁止切换 agent（code-review item 9bb2f4e7caaa）：在飞请求
           // 期间切换会让 refetch 把旧 agent 的值写回草稿而 UI 显示新 agent。
           disabled={saving}
-          style={{ width: 260 }}
+          style={{ width: '100%' }}
           options={Object.keys(AGENT_LABELS).map((k) => ({ value: k, label: AGENT_LABELS[k] }))}
         />
       </div>

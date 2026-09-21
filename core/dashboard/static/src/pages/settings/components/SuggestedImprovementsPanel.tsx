@@ -1014,7 +1014,7 @@ const SuggestedImprovementsPanel = forwardRef<
               message: `须为 1-${MAX_ITEMS_UPPER} 的整数`,
             }]}
           >
-            <InputNumber min={1} max={MAX_ITEMS_UPPER} precision={0} style={{ width: 160 }} addonAfter="条" />
+            <InputNumber min={1} max={MAX_ITEMS_UPPER} precision={0} style={{ width: '100%' }} addonAfter="条" />
           </Form.Item>
           <Text type="secondary">
             缺省 20（1-200）。单轮分析 run 最多复核的条目数。超出部分保持待决策，
