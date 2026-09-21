@@ -643,6 +643,16 @@ class PromptBuilder:
         --effort 与并发同走单一提示词通道（design D2/D6）——对实现者仍是软约束，
         命令示例给出完整串；若实现者不照抄即失效，单测断言命令串压低该风险。
         两读取器调用 MUST 位于开关关闭提前返回之后（开关关闭零注入：不调用）。
+
+        路径语义（fix-impl-code-review-writepath）：implementer 的 code-review.json
+        是**唯一** in-worktree 的 verify-progress 产物——门
+        result_gate._check_impl_code_review_artifact 读 worktree 路径（wt_path /
+        ".fenix"/"verify-progress"/<spec>/code-review.json），_copyback_verify_progress
+        单向 worktree→主树。这与 verifier/planner/fast-track 的 verify-progress
+        产物（写在主树，经 --add-dir <主树>/verify-progress 授权）不同：故本段给
+        实现者的路径一律是 worktree 内相对路径，MUST NOT 让实现者写主树同名目录
+        （写主树会被产物硬门判「报告缺失」）。维护者改本段时不得引入主树绝对路径
+        字样，免得重蹈「交付物声明读一侧、实现写另一侧」错层。
         """
         try:
             from core.config import ConfigLoader
@@ -686,17 +696,21 @@ class PromptBuilder:
             "4. **评估义务**：逐条判断发现是真实问题还是误报。**修正真实问题的裁量"
             "权归你**（发现的真实问题应修正）；误报可驳回，但须在处置中给理由。\n"
             "5. **结果登记**：把 ocr 原始报告规整为框架侧规整契约写入 "
-            f"`{report_path}`（`status`/`llm`/`findings` + 逐条 `disposition`，取"
-            "值 `\"fixed\"`/`\"rejected\"`/`\"deferred\"`，后两者 MUST 附非空 "
-            "`reason`）。注意 `code-review.json` 是框架侧规整契约，**与 ocr 原始 "
+            f"`{report_path}`（**相对当前工作目录（worktree）的相对路径**；"
+            "MUST NOT 用主树绝对路径写此文件——主树同名目录不是本 run 的落点，"
+            "产物硬门只读 worktree 内该路径）。内容含 `status`/`llm`/"
+            "`findings` + 逐条 `disposition`，取值 `\"fixed\"`/`\"rejected\"`/"
+            "`\"deferred\"`，后两者 MUST 附非空 `reason`）。注意 "
+            "`code-review.json` 是框架侧规整契约，**与 ocr 原始 "
             "JSON 报告不同构**：实测 ocr 原始报告顶层键为 `status`（值 "
             "`\"complete\"`/`\"failed\"`）/`llm`/`comments`（发现数组，逐条含 "
             "`path`/`start_line`/`category`/`severity`/`content`）/`summary`/"
             "`manifest`——你 MUST 把原始报告的发现数组规整为 `findings`，并对 "
             "`status` 做值映射（`\"complete\"` → `\"completed\"`；底层非零退出/"
             "`\"failed\"` → `\"unavailable\"` + 非空 `reason`）。具体键名以你现场"
-            "跑出的报告为准，不得凭猜测硬编码。请同时保留原始报告副本（如"
-            f"`{raw_copy_path}`）以便审计。\n"
+            "跑出的原始报告为准，不得凭猜测硬编码。请同时保留原始报告副本（如"
+            f"`{raw_copy_path}`，同为相对当前工作目录（worktree）的相对路径）"
+            "以便审计；该副本仅框架读取，无需你主动写主树。\n"
             "6. **结果文件登记**：在 `.fenix-run-result.json` 顶层增设 `code_review` "
             "段：**键名 MUST 恰为 `dispositions`**——一个与 `code-review.json` 的 "
             "`findings` 等长、逐条对应的数组，逐条含 `disposition`（`\"fixed\"`/"

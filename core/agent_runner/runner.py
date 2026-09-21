@@ -201,6 +201,15 @@ _PLANNER_SEMAPHORE_LOCK = threading.Lock()
 # 防 recovery watch 把「已派发、在持槽等待」误判为 stuck/dispatch_stalled）。
 THROTTLED_WAIT_HEARTBEAT_SECONDS = 60.0
 
+# 主树 verify-progress 目录非其工作区的车道（fix-impl-code-review-writepath D2）：
+# 这三条车道的 verify-progress 产物全在 worktree 内或别处——implementer 的
+# code-review.json 在 worktree（门读 wt_path、_copyback 单向 worktree→主树）、
+# repair 与 implementer 同工作区、spec-review 写 .fenix/spec-review/。主树
+# `<project_root>/.fenix/verify-progress` 不是它们的工作区，_run_claude 不再为
+# 它们注入 `--add-dir`，只给 verifier/planner/fast-track/dispute-judge/administrator
+# 等确有主树 verify-progress 落点的车道保留。
+_NO_MAIN_TREE_VERIFY_PROGRESS_LANES = ("implementer", "repair", "spec-review")
+
 
 def _route_map_head(wt_path: Path, logger) -> str:
     """读取 worktree 当前 HEAD（git rev-parse），失败返回空串（不阻断生成）。"""
@@ -3510,9 +3519,18 @@ class AgentRunner:
             "--output-format", "stream-json",
             "--verbose",  # claude CLI 要求: --print + --output-format=stream-json 必须带 --verbose
             "--add-dir", str(cwd),
-            "--add-dir", str(progress_dir),
             "--permission-mode", "bypassPermissions",
         ]
+        # --add-dir 车道化注入（fix-impl-code-review-writepath D2）：主树
+        # verify-progress 只授给确有该落点的车道（verifier/planner/fast-track/
+        # dispute-judge/administrator，见 _NO_MAIN_TREE_VERIFY_PROGRESS_LANES 注释）。
+        # implementer/repair/spec-review 的该产物在 worktree 内，主树该目录不是其
+        # 工作区——保留注入会把「verify-progress 是主树共享目录」的语义错误外溢到
+        # 这些车道（后果：实现者据"授权"写主树，门读 worktree 恒判缺失）。缺省
+        # （agent_type is None 或表外值）保持注入——maintenance/admin/dashboard
+        # 会话等既有调用点零行为变化。
+        if agent_type not in _NO_MAIN_TREE_VERIFY_PROGRESS_LANES:
+            cmd += ["--add-dir", str(progress_dir)]
         # 注入 agent 专用 settings（PreToolUse hook：阻止 Read 图片文件）。
         # 模型（deepseek-v4-flash 经本地代理）不支持图像输入，verifier/planner
         # 读截图会把图片送进对话导致 400 整轮失败。

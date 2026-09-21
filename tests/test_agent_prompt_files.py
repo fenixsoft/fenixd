@@ -802,3 +802,37 @@ class TestImplCodeReviewSectionInjection:
         assert nc_pos >= 0, "缺少非交互契约段"
         assert cr_pos >= 0, "缺少收尾审查段"
         assert cr_pos > nc_pos, "审查段应在非交互契约段之后"
+
+
+# ── fix-impl-code-review-writepath 任务 4.3：工作目录段消歧 ─────────────
+
+
+class TestWorkdirSectionVerifyProgressDisambiguation:
+    """Scenario: 契约文本消歧——「验证进度目录」显式限定为 worktree 内。
+
+    读 agents/*.md 原文，断言「工作目录（worktree 隔离，强制）」段第三条含
+    「worktree 内」限定与「不是主树的同名目录」提示，且 MUST NOT 再出现未限定的
+    裸表述「验证进度目录 `.fenix/verify-progress/`（框架已显式授权）」。
+    """
+
+    _AGENTS = ("agents/implementer.md", "agents/fast-track.md")
+
+    def _content(self, rel: str) -> str:
+        return (Path(__file__).resolve().parent.parent / rel).read_text(
+            encoding="utf-8"
+        )
+
+    @pytest.mark.parametrize("rel", _AGENTS)
+    def test_worktree_qualified_and_main_tree_warning(self, rel):
+        content = self._content(rel)
+        assert "**worktree 内**的 `.fenix/verify-progress/`" in content, (
+            f"{rel} 缺少「worktree 内」限定"
+        )
+        assert "不是主树的同名目录" in content, f"{rel} 缺少「不是主树的同名目录」提示"
+        assert "产物硬门判为「报告缺失」" in content, f"{rel} 缺少写主树被门判缺失的警告"
+
+    @pytest.mark.parametrize("rel", _AGENTS)
+    def test_no_unqualified_legacy_phrasing(self, rel):
+        content = self._content(rel)
+        legacy = "验证进度目录 `.fenix/verify-progress/`（框架已显式授权）"
+        assert legacy not in content, f"{rel} 仍残留未限定的「验证进度目录」裸表述"
