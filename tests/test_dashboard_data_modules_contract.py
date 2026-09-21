@@ -77,7 +77,7 @@ KEY_FUNCTIONS = [
     # admin_alerts
     "get_alerts", "alerts_summary", "get_admin_activities",
     # spec_docs
-    "resolve_spec_dir", "get_spec_doc", "count_scenarios",
+    "resolve_spec_dir", "get_spec_doc", "count_scenarios", "count_planned_scenarios",
     # spec_archive
     "soft_delete_spec", "archive_spec", "auto_archive_check",
     # admin_actions

@@ -1850,6 +1850,48 @@ class TestGenerationProgressCounting(unittest.TestCase):
         self._write("garbage")
         self.assertEqual(count_generated_scenarios(self.tmpdir, "spec-x"), 0)
 
+    def test_planned_scenarios_counts_all_entries_incl_skeleton(self):
+        """分母（count_planned_scenarios）= 场景条目总数，骨架也计入。
+
+        骨架落盘即含全部 id（steps/assertions 空），故分母从首批起即达终值，
+        分子（带肉数）随后爬升——done≤total 恒成立。
+        """
+        from core.dashboard.data import count_planned_scenarios
+        self.assertEqual(count_planned_scenarios(self.tmpdir, "spec-x"), 0)
+        skeleton = self._skeleton(3)
+        self._write(skeleton)
+        self.assertEqual(count_planned_scenarios(self.tmpdir, "spec-x"), 3,
+                         "骨架（含全部 id）也应计入分母")
+        self._write([self._flesh(skeleton[0])] + skeleton[1:])
+        self.assertEqual(count_planned_scenarios(self.tmpdir, "spec-x"), 3,
+                         "分母不随补全变化")
+        self._write("garbage")
+        self.assertEqual(count_planned_scenarios(self.tmpdir, "spec-x"), 0)
+
+    def test_generation_progress_total_is_entry_count_not_spec_md(self):
+        """回归（分子比分母大）：出题进度 total 必须与 done 同源。
+
+        根因：曾用 count_scenarios（数 specs/<cap>/spec.md 的 `#### Scenario:`
+        块）作分母——planner 会把单个 Scenario 按交付物形态拆成多形态条目
+        （web/cli/api），二者单位不同（实测 20/11）；非「多形态验收」类 spec
+        的 spec.md 更是 0 场景。total 须改数 test_scenarios.json 条目总数。
+        """
+        from core.dashboard.data import spec_generation_progress
+        # spec.md 只有 2 个 Scenario 块，但 planner 拆出 5 个多形态条目
+        sd = Path(self.tmpdir) / "spec" / "changes" / "spec-x" / "specs" / "cap"
+        sd.mkdir(parents=True)
+        (sd / "spec.md").write_text(
+            "# cap\n\n#### Scenario: a\n- **WHEN** x\n\n#### Scenario: b\n- **WHEN** y\n",
+            encoding="utf-8")
+        self._write([{"id": f"s{i}", "kind": "cli", "description": "d",
+                      "steps": [{"action": "run"}], "assertions": [{"type": "exit_code"}]}
+                     for i in range(5)])
+        gen = spec_generation_progress(self.tmpdir, "spec-x", {"status": "testing"}, vp={})
+        self.assertIsNotNone(gen)
+        self.assertEqual(gen["total"], 5, "分母应为场景条目数（5），非 spec.md 块数（2）")
+        self.assertLessEqual(gen["done"], gen["total"],
+                             f"分子不得大于分母：{gen}")
+
 
 class TestRunTailInsightsTerminalReason(unittest.TestCase):
     """_run_tail_insights 提取终态事件原因（时间轴 run 节点错误原因可见化）。
