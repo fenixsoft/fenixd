@@ -494,7 +494,7 @@ export default function HookManager({
           )}
           {(editingAction === 'shell' || editingAction === 'webhook') && (
             <Form.Item name="timeout_seconds" label="超时（秒，可选）" extra={editingAction === 'webhook' ? '缺省 10' : '缺省 60'}>
-              <InputNumber min={1} max={3600} style={{ width: 120 }} />
+              <InputNumber min={1} max={3600} style={{ width: '100%' }} addonAfter="秒" />
             </Form.Item>
           )}
           {editingAction === 'restart-dashboard' && (
