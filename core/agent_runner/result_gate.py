@@ -499,49 +499,22 @@ def _check_agent_result_artifact(
     return None
 
 
-def _check_impl_code_review_artifact(
-    runner, spec_name: str, wt_path: Path | None, data: dict
+def _validate_code_review_report(
+    cr_data, data: dict, report_rel: str
 ) -> str | None:
-    """收尾代码质量审查产物硬门（add-impl-code-review-gate，任务 6.1）。
+    """收尾审查报告校验体（fix-impl-code-review-gate-readback D1，双候选共用）。
 
-    开关关闭时返回 None（零校验）。开启时校验 code-review.json 存在且结构合法、
-    status 在允许枚举内、findings 与逐条处置条数匹配、rejected/deferred 须附
-    非空 reason。status == "unavailable" 时 MUST 放行（设计 D7，环境缺失降级）。
-    所有失败原因 MUST 含报告路径与具体缺口，格式与既有硬门文案风格一致。
+    worktree / 主树两条候选路径读到 ``code-review.json`` 内容后都走本函数，
+    逐字相同的判定语义，杜绝双实现漂移。``report_rel`` 仅用于归因文案拼接
+    （统一用相对路径字样，与既有文案风格一致）。
+
+    校验顺序与 add-impl-code-review-gate 任务 6.1 完全一致（行为零变化）：
+    ``cr_data`` 顶层须为 dict → ``status`` 在 completed/unavailable 白名单内 →
+    unavailable 须附非空 ``reason``（否则放行，环境缺失降级）→ ``findings``
+    为 list → 结果文件 ``code_review`` 段存在 → ``dispositions`` 别名解析 →
+    逐条 disposition 白名单（fixed/rejected/deferred）且 rejected/deferred
+    须附非空 ``reason``。
     """
-    try:
-        from core.config import ConfigLoader
-
-        enabled = ConfigLoader.get_impl_code_review_enabled(runner.config)
-    except Exception as e:  # noqa: BLE001
-        # 静默吞异常会把整个硬门变成 no-op（code-review item 42781988b0a6）：
-        # 懒导入/配置查找里的意外错误（ImportError/AttributeError/配置形态异常）
-        # 会让门「消失」而非 fail-closed。此处记 WARNING 留痕（仍返回 None 以
-        # 保持与既有降级语义一致——门消失不足以拦下一轮，但至少可观测）。
-        runner.logger.warning(
-            "agent_runner",
-            f"impl-code-review 门开关读取失败（按未启用降级，留痕）: "
-            f"{type(e).__name__}: {e}",
-        )
-        return None
-    if not enabled:
-        return None
-    if wt_path is None:
-        return None  # worktree 不可得时不校验（与 _check_impl_result_artifact 入口同语义）
-    report_path = wt_path / ".fenix" / "verify-progress" / spec_name / "code-review.json"
-    report_rel = f".fenix/verify-progress/{spec_name}/code-review.json"
-    if not report_path.is_file():
-        return (
-            f"exit 0 但收尾审查报告缺失（impl-code-review-gate）: {report_rel}"
-        )
-    try:
-        raw = report_path.read_text(encoding="utf-8")
-        cr_data = json.loads(raw)
-    except (OSError, json.JSONDecodeError) as e:
-        return (
-            f"exit 0 但收尾审查报告无法解析（impl-code-review-gate）: "
-            f"{report_rel} ({e})"
-        )
     if not isinstance(cr_data, dict):
         return (
             f"exit 0 但收尾审查报告顶层非对象（impl-code-review-gate）: {report_rel}"
@@ -617,6 +590,130 @@ def _check_impl_code_review_artifact(
                     f"缺非空 reason（impl-code-review-gate）: {report_rel}"
                 )
     return None
+
+
+def _check_impl_code_review_artifact(
+    runner,
+    spec_name: str,
+    wt_path: Path | None,
+    data: dict,
+    run_started_at: float | None = None,
+    is_resumed_worktree: bool = False,
+) -> str | None:
+    """收尾代码质量审查产物硬门（add-impl-code-review-gate，任务 6.1）。
+
+    开关关闭时返回 None（零校验）。开启时按「worktree 优先、主树回退」
+    （fix-impl-code-review-gate-readback D2）两处候选路径探测
+    ``.fenix/verify-progress/<spec>/code-review.json``：worktree 内存在即以其
+    为判定对象（现状行为，零变化）；worktree 缺失时回退读
+    ``<project_root>/.../code-review.json``（主树回退候选经
+    ``_check_artifact_json_file`` 施加存在/非空/mtime 新鲜/可解析校验，
+    ``is_resumed_worktree=True`` 时跳过 mtime 硬拦，见 D3）。两处候选读到
+    数据后走**同一套**校验体 ``_validate_code_review_report``（status 白名单 /
+    findings 与逐条处置对账 / rejected/deferred 须附非空 reason，D1）。
+
+    两处均缺失时才报缺失，文案同时给出两个已探测位置；候选「文件存在但未过
+    校验」（无法解析/陈旧/空等）时原样上抛该候选归因，MUST NOT 折叠为缺失。
+    所有失败原因 MUST 含报告路径与具体缺口，格式与既有硬门文案风格一致。
+    """
+    try:
+        from core.config import ConfigLoader
+
+        enabled = ConfigLoader.get_impl_code_review_enabled(runner.config)
+    except Exception as e:  # noqa: BLE001
+        # 静默吞异常会把整个硬门变成 no-op（code-review item 42781988b0a6）：
+        # 懒导入/配置查找里的意外错误（ImportError/AttributeError/配置形态异常）
+        # 会让门「消失」而非 fail-closed。此处记 WARNING 留痕（仍返回 None 以
+        # 保持与既有降级语义一致——门消失不足以拦下一轮，但至少可观测）。
+        runner.logger.warning(
+            "agent_runner",
+            f"impl-code-review 门开关读取失败（按未启用降级，留痕）: "
+            f"{type(e).__name__}: {e}",
+        )
+        return None
+    if not enabled:
+        return None
+
+    # ── 候选路径收集（fix-impl-code-review-gate-readback D2）──
+    # worktree 候选先行；主树回退候选仅在 project_root 为真 Path 载体时加入
+    # （裸 getattr 对 MagicMock 替身无效：其任意属性恒 truthy，`isinstance`
+    # 判定才能拦下替身，防 json.loads(mock.read_text()) 抛 TypeError 逸出）。
+    report_rel = f".fenix/verify-progress/{spec_name}/code-review.json"
+    candidates = []
+    if wt_path is not None:
+        candidates.append(
+            ("worktree", Path(wt_path) / ".fenix" / "verify-progress" / spec_name / "code-review.json")
+        )
+    root = getattr(runner, "project_root", None)
+    if isinstance(root, (str, Path)):
+        candidates.append(
+            ("main", Path(root) / ".fenix" / "verify-progress" / spec_name / "code-review.json")
+        )
+    # 按 Path.resolve() 去重（wt_path == project_root / 测试用 tmp_path 同时
+    # 充当两者）：保留**先出现者**的校验模式——worktree 语义，不做 mtime 硬拦。
+    seen = set()
+    dedup_candidates = []
+    for mode, path in candidates:
+        resolved = path.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        dedup_candidates.append((mode, path))
+    candidates = dedup_candidates
+    if not candidates:
+        # 缺载体不校验（与现状 wt_path is None → return None 同语义；MUST NOT
+        # 落到下方「两处皆缺」缺失归因，与 spec「无 worktree 载体时不误判」一致）
+        return None
+
+    # ── 探测循环（fix-impl-code-review-gate-readback D3/D4）──
+    # first_err：记住「文件存在但未过校验」的首个归因（含主树陈旧 err，其文案
+    # 含「陈旧」）。全部候选无有效数据时：曾命中非法/陈旧 → 返回该 err；
+    # 所有候选文件均不存在 → 缺失归因。
+    first_err = None
+    for mode, path in candidates:
+        if not path.is_file():
+            continue
+        if mode == "worktree":
+            # worktree 候选保持现状：read_text + json.loads，不做 mtime 硬拦
+            # （本轮 run 写出的文件本就晚于 run_started_at，加拦无收益）。
+            try:
+                raw = path.read_text(encoding="utf-8")
+                cr_data = json.loads(raw)
+            except (OSError, json.JSONDecodeError) as e:
+                if first_err is None:
+                    first_err = (
+                        f"exit 0 但收尾审查报告无法解析（impl-code-review-gate）: "
+                        f"{report_rel} ({e})"
+                    )
+                continue
+        else:
+            # 主树回退候选：与其它产物门同源的基础校验（存在/非空/mtime 新鲜/
+            # 可解析 JSON）；is_resumed_worktree=True 时跳过 mtime 硬拦（D3，
+            # resume 轮的主树陈留报告只剩内容判据保证）。
+            err, cr_data = runner._check_artifact_json_file(
+                path, "implementer", run_started_at,
+                is_resumed_worktree=is_resumed_worktree,
+            )
+            if err is not None:
+                # 文件存在但未过校验（陈旧/空/不可读/非法 JSON）→ 记住归因并
+                # 继续尝试下一候选；「缺失」err 不属此类（先行 is_file 已排除，
+                # 仅防御探测竞态）。MUST NOT 折叠成缺失归因——spec「主树报告
+                # 陈旧 → 文案 MUST 指明陈旧」场景依赖此终态。
+                if "缺失" not in err and first_err is None:
+                    first_err = err
+                continue
+        # 读到有效数据 → 同一套校验体（worktree / 主树逐字相同的判定语义）；
+        # 结构校验失败即作为本轮候选的判定结果上抛（MUST NOT 继续探测）。
+        return _validate_code_review_report(cr_data, data, report_rel)
+
+    if first_err is not None:
+        return first_err
+    # 所有候选文件均不存在 → 缺失归因，文案列出两个已探测位置（既有测试断言
+    # 依赖 `报告缺失` 与 `code-review.json` 字样，动态部分追加探测范围说明）。
+    return (
+        f"exit 0 但收尾审查报告缺失（impl-code-review-gate）: {report_rel}"
+        f"（已探测 worktree 与主树两个位置）"
+    )
 
 
 def _check_repo_code_review_artifact(manifest: list, out_path: Path) -> str | None:
@@ -747,8 +844,13 @@ def _check_impl_result_artifact(
     # 形态差异）；partial 且仍存在未勾任务时 MUST NOT 调用（末轮诚实申报不因
     # 缺审查报告被拦）。返回非 None 即作为本函数的失败原因。
     if status == "success" or not (unchecked_ids - unattainable_ids):
+        # fix-impl-code-review-gate-readback D3：透传 run_started_at /
+        # is_resumed_worktree——主树回退候选须过 mtime 新鲜度守卫，resume
+        # 轮复用 worktree 时跳过硬拦。
         code_review_err = runner._check_impl_code_review_artifact(
-            spec_name, wt_path, data
+            spec_name, wt_path, data,
+            run_started_at=run_started_at,
+            is_resumed_worktree=is_resumed_worktree,
         )
         if code_review_err is not None:
             return code_review_err

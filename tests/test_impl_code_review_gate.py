@@ -14,6 +14,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -270,21 +271,39 @@ class TestWriteRunOcrConfig:
 # ── 7.3 硬门 ─────────────────────────────────────────────────────────
 
 
-def _mock_runner(config, wt_path=None):
-    """构造硬门用的最小 mock runner。"""
+def _mock_runner(config, wt_path=None, project_root=None):
+    """构造硬门用的最小 mock runner。
+
+    project_root 非 None 时指向真实 Path（主树回退候选载体，
+    fix-impl-code-review-gate-readback）；缺省不设 → MagicMock 自动属性
+    （非 Path 载体，isinstance 判定下跳过主树候选，行为等价现状）。
+
+    _check_artifact_json_file 必须接到模块级真实实现（3.1）：裸 MagicMock
+    的该方法恒回非 None mock 值（truthy），主树回退用例的 err 判定失真、
+    陈旧 err 甚至不是 str，断言 `"陈旧" in err` 会 TypeError。
+    """
+    from core.agent_runner.result_gate import _check_artifact_json_file
     runner = MagicMock()
     runner.config = config
     runner._IMPL_RESULT_STATUSES = ("success", "partial", "error")
+    if project_root is not None:
+        runner.project_root = project_root
+    runner._check_artifact_json_file = _check_artifact_json_file
     return runner
 
 
 class TestCodeReviewArtifactGate:
     """_check_impl_code_review_artifact 各种边界。"""
 
-    def _gate(self, config, wt_path, data):
+    def _gate(self, config, wt_path, data, project_root=None,
+              run_started_at=None, is_resumed_worktree=False):
         from core.agent_runner.result_gate import _check_impl_code_review_artifact
-        runner = _mock_runner(config, wt_path)
-        return _check_impl_code_review_artifact(runner, "demo-spec", wt_path, data)
+        runner = _mock_runner(config, wt_path, project_root=project_root)
+        return _check_impl_code_review_artifact(
+            runner, "demo-spec", wt_path, data,
+            run_started_at=run_started_at,
+            is_resumed_worktree=is_resumed_worktree,
+        )
 
     def test_disabled_no_gate(self, tmp_path):
         """开关关闭 → 报告缺失不判失败（None 放行）。"""
@@ -509,3 +528,171 @@ class TestCodeReviewArtifactGate:
         )
         # 审查门未被调用：失败原因 MUST NOT 含「收尾审查报告缺失」
         assert err is None or "code-review.json" not in err
+
+
+# ── fix-impl-code-review-gate-readback：主树回退 + 新鲜度守卫 ─────────────
+
+
+class TestCodeReviewArtifactGateMainTreeFallback:
+    """_check_impl_code_review_artifact 双候选路径探测（worktree 优先、主树
+    回退）+ 主树新鲜度守卫（spec「收尾审查报告产物硬门」ADDED Requirements）。"""
+
+    def _gate(self, config, wt_path, data, project_root=None,
+              run_started_at=None, is_resumed_worktree=False):
+        from core.agent_runner.result_gate import _check_impl_code_review_artifact
+        runner = _mock_runner(config, wt_path, project_root=project_root)
+        return _check_impl_code_review_artifact(
+            runner, "demo-spec", wt_path, data,
+            run_started_at=run_started_at,
+            is_resumed_worktree=is_resumed_worktree,
+        )
+
+    def test_worktree_report_wins(self, tmp_path):
+        """① worktree 有合法报告 → 放行（以 worktree 为准，MUST NOT 因主树
+        同名文件缺失/陈旧判失败）——独立钉住「worktree 优先」场景（3.1①，
+        既有 7.3 用例亦覆盖放行形态，此处补主树在场景中缺席的组合）。"""
+        config = {"verify": {"impl_code_review": True}}
+        rpt_dir = tmp_path / ".fenix" / "verify-progress" / "demo-spec"
+        rpt_dir.mkdir(parents=True)
+        (rpt_dir / "code-review.json").write_text(
+            json.dumps({"status": "completed", "findings": [{"path": "a.py"}]}),
+            encoding="utf-8",
+        )
+        proot = tmp_path / "proj"  # 主树存在但无报告
+        proot.mkdir()
+        data = {
+            "status": "success",
+            "code_review": {"dispositions": [{"disposition": "fixed"}]},
+        }
+        assert self._gate(config, tmp_path, data, project_root=proot) is None
+
+    def test_main_tree_fresh_report_passes(self, tmp_path):
+        """② worktree 缺失 + 主树本轮新鲜合法报告 → 放行（主树回退）。"""
+        config = {"verify": {"impl_code_review": True}}
+        wt = tmp_path / "wt"
+        wt.mkdir()
+        proot = tmp_path / "proj"
+        rpt_dir = proot / ".fenix" / "verify-progress" / "demo-spec"
+        rpt_dir.mkdir(parents=True)
+        rpt = rpt_dir / "code-review.json"
+        rpt.write_text(json.dumps({"status": "completed", "findings": []}), encoding="utf-8")
+        now = time.time()
+        os.utime(rpt, (now + 1, now + 1))  # mtime 晚于本轮启动（新鲜）
+        data = {"status": "success", "code_review": {"dispositions": []}}
+        err = self._gate(config, wt, data, project_root=proot, run_started_at=now)
+        assert err is None
+
+    def test_main_tree_stale_report_fails(self, tmp_path):
+        """③ worktree 缺失 + 主树报告 mtime 陈旧（早于 run_started_at - grace）
+        且非 resume → 判失败，文案 MUST 指明「陈旧」（spec 场景）。"""
+        config = {"verify": {"impl_code_review": True}}
+        wt = tmp_path / "wt"
+        wt.mkdir()
+        proot = tmp_path / "proj"
+        rpt_dir = proot / ".fenix" / "verify-progress" / "demo-spec"
+        rpt_dir.mkdir(parents=True)
+        rpt = rpt_dir / "code-review.json"
+        rpt.write_text(json.dumps({"status": "completed", "findings": []}), encoding="utf-8")
+        now = time.time()
+        os.utime(rpt, (now - 100, now - 100))  # mtime 早于本轮启动（陈旧）
+        data = {"status": "success", "code_review": {"dispositions": []}}
+        err = self._gate(config, wt, data, project_root=proot, run_started_at=now)
+        assert err is not None
+        assert "陈旧" in err
+        # 陈旧归因 MUST NOT 折叠成「报告缺失」
+        assert "报告缺失" not in err
+
+    def test_main_tree_stale_report_resume_passes(self, tmp_path):
+        """④ 同③但 is_resumed_worktree=True → 跳过 mtime 硬拦，按内容判据
+        校验 → 放行（resume 复用 worktree 语义）。"""
+        config = {"verify": {"impl_code_review": True}}
+        wt = tmp_path / "wt"
+        wt.mkdir()
+        proot = tmp_path / "proj"
+        rpt_dir = proot / ".fenix" / "verify-progress" / "demo-spec"
+        rpt_dir.mkdir(parents=True)
+        rpt = rpt_dir / "code-review.json"
+        rpt.write_text(json.dumps({"status": "completed", "findings": []}), encoding="utf-8")
+        now = time.time()
+        os.utime(rpt, (now - 100, now - 100))
+        data = {"status": "success", "code_review": {"dispositions": []}}
+        err = self._gate(
+            config, wt, data, project_root=proot, run_started_at=now,
+            is_resumed_worktree=True,
+        )
+        assert err is None
+
+    def test_both_missing_reports_both_paths(self, tmp_path):
+        """⑤ 两处皆缺 → 判失败，文案同时含「报告缺失」「code-review.json」
+        与「worktree 与主树」（两个已探测位置）。"""
+        config = {"verify": {"impl_code_review": True}}
+        wt = tmp_path / "wt"
+        wt.mkdir()
+        proot = tmp_path / "proj"
+        proot.mkdir()
+        err = self._gate(config, wt, {"status": "success"}, project_root=proot)
+        assert err is not None
+        assert "报告缺失" in err
+        assert "code-review.json" in err
+        assert "worktree 与主树" in err
+
+    def test_project_root_not_path_carrier_skips_main(self, tmp_path):
+        """⑥ runner.project_root 非 Path 载体（None / MagicMock / 属性缺失）
+        → 跳过主树候选、不抛异常、行为等价现状（worktree 缺失仍报缺失）。"""
+        config = {"verify": {"impl_code_review": True}}
+        wt = tmp_path / "wt"
+        wt.mkdir()
+        # 显式 None / MagicMock（自动属性恒 truthy，isinstance 判定拦下）
+        for proot in (None, MagicMock()):
+            err = self._gate(config, wt, {"status": "success"}, project_root=proot)
+            assert err is not None
+            assert "报告缺失" in err
+        # 属性缺失（_mock_runner 缺省不设 project_root）
+        err = self._gate(config, wt, {"status": "success"})
+        assert err is not None
+        assert "报告缺失" in err
+
+    def test_wt_equals_project_root_dedup_worktree_semantics(self, tmp_path):
+        """⑦ wt_path == project_root（tmp_path 同时充当两者）→ 候选按
+        Path.resolve() 去重只保留先出现者（worktree 语义），陈旧 mtime 的
+        合法报告不做硬拦 → 放行（保现状零变化）。"""
+        config = {"verify": {"impl_code_review": True}}
+        rpt_dir = tmp_path / ".fenix" / "verify-progress" / "demo-spec"
+        rpt_dir.mkdir(parents=True)
+        rpt = rpt_dir / "code-review.json"
+        rpt.write_text(
+            json.dumps({"status": "completed", "findings": [{"path": "a.py"}]}),
+            encoding="utf-8",
+        )
+        now = time.time()
+        os.utime(rpt, (now - 100, now - 100))  # 陈旧——但 worktree 语义不硬拦
+        data = {
+            "status": "success",
+            "code_review": {"dispositions": [{"disposition": "fixed"}]},
+        }
+        err = self._gate(
+            config, tmp_path, data, project_root=tmp_path, run_started_at=now,
+        )
+        assert err is None
+
+    def test_no_worktree_carrier_skips_gate(self, tmp_path):
+        """spec「无 worktree 载体时不误判」：wt_path 为 None 且 project_root
+        不可得（非 Path 载体）→ 候选集为空 → 返回 None，MUST NOT 报缺失。"""
+        config = {"verify": {"impl_code_review": True}}
+        proot = tmp_path / "proj"
+        proot.mkdir()
+        # wt_path=None + project_root=None → 空候选集
+        from core.agent_runner.result_gate import _check_impl_code_review_artifact
+        runner = _mock_runner(config, wt_path=None)
+        err = _check_impl_code_review_artifact(
+            runner, "demo-spec", None, {"status": "success"},
+            run_started_at=None, is_resumed_worktree=False,
+        )
+        assert err is None
+        # wt_path=None + project_root=真实 Path → 仅主树候选存在，缺报告 → 缺失
+        runner2 = _mock_runner(config, wt_path=None, project_root=proot)
+        err2 = _check_impl_code_review_artifact(
+            runner2, "demo-spec", None, {"status": "success"},
+        )
+        assert err2 is not None
+        assert "报告缺失" in err2
