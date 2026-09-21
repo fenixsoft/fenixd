@@ -20,9 +20,14 @@ from unittest.mock import MagicMock
 import pytest
 
 from core.agent_runner import AgentRunner
+from core.agent_runner import runner as runner_module
 from core.agent_runner.prompt_builder import (
     PromptBuilder,
     planner_result_path,
+)
+from core.agent_runner.result_gate import (
+    AgentArtifactGateError,
+    TASK_GATE_ERROR_PREFIX,
 )
 from tests.helpers import FakeLogger
 
@@ -578,3 +583,180 @@ class TestCheckpointRecoverySection:
         reuse_lines = [l for l in prompt.splitlines() if "early-1" in l]
         assert reuse_lines, "沿用清单必须逐 id 列出"
         assert "仅对" in prompt and "缺失或非法" in prompt
+
+# ═══════════════════════════════════════════════════════════════════════════
+# add-timeline-gate-failure-display：门禁归因落盘 + gate-blocked 终态（Task 4.1/4.3）
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _gate_events(proot: Path, sub_run_id: str) -> list:
+    """读单个 sub_run 产物文件的全部事件（按行序）。"""
+    f = proot / ".fenix" / "runs" / f"{sub_run_id}.jsonl"
+    if not f.is_file():
+        return []
+    return [json.loads(l) for l in f.read_text(encoding="utf-8").splitlines() if l.strip()]
+
+
+class TestGateBlockedTerminal:
+    """门禁失败在 run jsonl 留痕：error 文案 + gate-blocked 终态事件。
+
+    事故形态（2026-09-21 add-freeze-stop-inflight-agents 收尾）：门禁连续 7 次
+    拒绝，run jsonl 里零归因（transient_retry/superseded 都不含 error），预算
+    耗尽后末行仍是 CLI 的 result（is_error:false）→ 读侧判 done → 时间轴一串
+    绿点，用户以为 Agent 反复顺利收工。写侧 MUST 把归因与终态落到产物里。
+    """
+
+    def _call_gate(self, runner, tmp_path, error_msg, *,
+                   transient_retries: int = 0, transient_budget=None,
+                   provider=None, agent_type: str = "planner-judge",
+                   sub_run_id: str = "run-x-a1"):
+        """直接驱动门禁处置（只覆盖分支派发，不跑 attempt 循环）。"""
+        return runner._handle_artifact_gate_retry(
+            AgentArtifactGateError(error_msg),
+            spec_name="spec-x", agent_type=agent_type,
+            run_id="run-x", attempt=1,
+            attempt_run_id="run-x-a1", sub_run_id=sub_run_id,
+            provider_name=provider, model="m1",
+            wt_path=tmp_path / "wt",
+            transient_retries=transient_retries,
+            transient_budget=list(transient_budget or []),
+            start_time=time.time(), turns=1, usage_info=_usage_ok(),
+        )
+
+    # ── ① ② 原地重试两条事件都带 error（集成路径）────────────────────
+
+    def test_gate_failure_records_error_on_retry_and_superseded(
+            self, tmp_path, monkeypatch):
+        """门禁失败 → transient_retry / superseded 均含非空 error 且含门禁名。"""
+        monkeypatch.setattr(time, "sleep", lambda _: None)
+        runner = _make_runner(tmp_path, _standard_chain_config("planner-judge"))
+        wt = tmp_path / "wt"
+        wt.mkdir(parents=True)
+        runner.worktree_manager = MagicMock()
+        runner.worktree_manager.create.return_value = wt
+        runner.worktree_manager.get_branch_name.return_value = "fenix/spec-x"
+
+        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+                            resume_session_id=None, max_turns=None,
+                            spec_name=None, agent_type=None):
+            # 复刻真实 _run_claude 的 CLI 收尾行：门禁是在 exit 0「之后」判的，
+            # 故 result 行必然先落盘——gate-blocked MUST 成为其后的末行
+            p = tmp_path / ".fenix" / "runs" / f"{run_id}.jsonl"
+            with p.open("a", encoding="utf-8") as f:
+                f.write(json.dumps({"type": "result", "result": "done"}) + "\n")
+            return ("done", 1, "sess-gate", _usage_ok())
+
+        runner._run_claude = fake_run_claude
+        result = runner._execute_agent("spec-x", "planner-judge", "run-gb1")
+        assert result.success is False
+
+        events = _run_file_events(tmp_path, "run-gb1", "-a1")
+        retries = [e for e in events if e.get("type") == "transient_retry"]
+        superseded = [e for e in events if e.get("type") == "superseded"]
+        assert retries, "应含 artifact_gate 原地重试事件"
+        assert superseded, "应含弃置事件"
+        for e in retries:
+            assert e.get("error"), f"transient_retry 缺 error 归因: {e}"
+            assert "结果文件缺失" in e["error"] or "产物硬门" in e["error"]
+        for e in superseded:
+            assert e.get("error"), f"superseded 缺 error 归因: {e}"
+
+        # ③④ 末次 attempt 文件末行为 gate-blocked（结构类 → artifact_gate），
+        # 且不得以 CLI 的 result 收尾（否则读侧判 done）
+        last_file = _gate_events(tmp_path, "run-gb1-a2-r1")
+        assert last_file, "末次原地重试产物缺失"
+        assert last_file[-1]["type"] == "gate-blocked", last_file[-1]
+        assert last_file[-1]["reason"] == "artifact_gate"
+        assert last_file[-1]["error"], "gate-blocked 缺 error"
+        for stem in ("run-gb1-a1", "run-gb1-a1-r1", "run-gb1-a2",
+                     "run-gb1-a2-r1"):
+            evs = _gate_events(tmp_path, stem)
+            assert evs, f"{stem} 产物缺失"
+            assert evs[-1]["type"] != "result", (
+                f"{stem} 以 result 收尾 → 读侧会判成功: {evs[-1]}")
+
+    # ── ③ 任务完成度类分支 reason 必须是 task_gate ────────────────────
+
+    def test_task_gate_branch_reason_is_task_gate(self, tmp_path):
+        """`[task-gate]` 类终止 → 末行 gate-blocked 且 reason == "task_gate"。
+
+        归因 MUST NOT 写成 artifact_gate——那是产物结构门的归因，混用会让读侧/前端
+        把「任务完成度门」误标为「产物结构门」。
+        """
+        runner = _make_runner(tmp_path)
+        assert TASK_GATE_ERROR_PREFIX == "[task-gate]"  # 与真实产出门前缀对齐
+        error, _retries, _yielded, do_continue, do_break = self._call_gate(
+            runner, tmp_path,
+            f"{TASK_GATE_ERROR_PREFIX} 未勾选任务：1.2（impl-tasks-completion-gate）",
+        )
+        assert do_break is True and do_continue is False
+        assert "[task-gate]" in error
+        events = _gate_events(tmp_path, "run-x-a1")
+        assert events[-1]["type"] == "gate-blocked"
+        assert events[-1]["reason"] == "task_gate"
+        assert events[-1]["error"]
+
+    # ── ③ provider 为 None 仍可序列化 ────────────────────────────────
+
+    def test_gate_blocked_serializes_none_provider(self, tmp_path):
+        """provider 缺位（None）→ gate-blocked 写 "" 而非 null，JSON 可解析。"""
+        runner = _make_runner(tmp_path)
+        self._call_gate(runner, tmp_path, "结果文件缺失（impl-code-review-gate）",
+                        transient_budget=[], provider=None)
+        events = _gate_events(tmp_path, "run-x-a1")
+        assert events[-1]["type"] == "gate-blocked"
+        assert events[-1]["provider"] == ""
+        assert events[-1]["reason"] == "artifact_gate"
+
+    # ── ⑤ 截断口径：字符（code point），非字节 ────────────────────────
+
+    def test_error_truncated_to_1024_chars_not_bytes(self, tmp_path):
+        """超长归因截断至 ≤1024 字符（UTF-8 ≤4096 字节），口径为字符切片。"""
+        assert runner_module._GATE_ERROR_TRUNCATE == 1024
+        runner = _make_runner(tmp_path)
+        # 2000 个 CJK 字符 = 2000 字符 / UTF-8 6000 字节：字节口径只会剩 ~341
+        # 字符，字符口径应恰好切到 1024
+        self._call_gate(runner, tmp_path, "门" * 2000, transient_budget=[])
+        events = _gate_events(tmp_path, "run-x-a1")
+        err = events[-1]["error"]
+        assert len(err) <= 1024, f"字符数超上限: {len(err)}"
+        assert len(err.encode("utf-8")) <= 4096, "UTF-8 编码后超 4096 字节"
+        assert len(err) == 1024, "应恰好截到 1024 字符（字符口径，非字节）"
+        assert len(err.encode("utf-8")) > 1024, "字符口径下 CJK 字节数必然 > 字符数"
+
+    def test_transient_retry_error_truncated(self, tmp_path, monkeypatch):
+        """原地重试事件的 error 同样受 1024 字符上限约束。"""
+        monkeypatch.setattr(time, "sleep", lambda _: None)
+        runner = _make_runner(tmp_path)
+        # 让退避后的让位复查直接通过（不依赖 state_machine）
+        runner._should_give_up_before_retry = lambda *a, **k: False
+        runner._wip_checkpoint_before_backoff = lambda *a, **k: None
+        self._call_gate(runner, tmp_path, "工" * 3000, transient_budget=[0])
+        events = _gate_events(tmp_path, "run-x-a1")
+        retry = [e for e in events if e.get("type") == "transient_retry"]
+        assert retry, events
+        assert len(retry[0]["error"]) == 1024
+
+
+class TestGateBlockedBudgetAccounting:
+    """4.3：门禁终态不被计作「死亡 run」（预算不外溢豁免）。"""
+
+    def test_gate_blocked_run_not_counted_dead(self, tmp_path):
+        """末行 gate-blocked → _run_file_died 返回 False（仍计入已耗预算）。
+
+        门禁失败已经烧掉一轮实现预算，MUST NOT 因「不是 error 终态」被当成
+        死亡 run 而豁免（那会让门禁连环拒绝对预算对账失去意义）。
+        """
+        from core.pm_engine.budget import ImplBudget
+        p = tmp_path / "impl-spec-x-1700000000-a2-r1.jsonl"
+        p.write_text(
+            json.dumps({"type": "result", "result": "done"}) + "\n"
+            + json.dumps({"type": "gate-blocked", "reason": "artifact_gate",
+                          "error": "x"}) + "\n",
+            encoding="utf-8")
+        assert ImplBudget._run_file_died(p) is False
+        # 对照：末行确为 error 时才算死亡
+        p2 = tmp_path / "impl-spec-x-1700000001-a1.jsonl"
+        p2.write_text(json.dumps({"type": "error", "error": "boom"}) + "\n",
+                      encoding="utf-8")
+        assert ImplBudget._run_file_died(p2) is True
