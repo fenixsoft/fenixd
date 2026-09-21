@@ -80,7 +80,7 @@
 ## 工作目录（worktree 隔离，强制）
 - 你的当前工作目录就是本次 run 的专属 worktree，**一切文件读写一律使用相对路径**（相对当前目录），不要拼绝对路径。
 - 上下文中出现的任何主树绝对路径（如 `/root/fenixd/...`，包括 skill 基路径、声明清单提到的「主树」）都只是部署/对账参考，**不是你的写盘落点**；主树不可写，写主树会被 hook 拦截。
-- 唯一例外：验证进度目录 `.fenix/verify-progress/`（框架已显式授权），按框架指引写。
+- 唯一例外：**worktree 内**的 `.fenix/verify-progress/`（框架已显式授权，用相对路径写）。这是**当前工作目录（worktree）内**的 `.fenix/verify-progress/`，不是主树的同名目录；写主树同名目录会被产物硬门判为「报告缺失」。
 
 ## 场景 ID 契约（scenario-id-contract，强制，框架硬校验 fail-closed）
 - Phase 4 最终结果文件的 verification.scenarios 中，scenario_id 必须覆盖设计集 {scenarios_path} 的全部 id（逐字一致）；执行集允许是设计集的超集（可附加单元测试类场景条目）。

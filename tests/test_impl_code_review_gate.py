@@ -530,6 +530,55 @@ class TestCodeReviewArtifactGate:
         assert err is None or "code-review.json" not in err
 
 
+# ── fix-impl-code-review-writepath 任务 4.2：报告路径锚定 worktree ──────
+
+
+class TestImplCodeReviewSectionWritepath:
+    """Scenario: 提示词强调 worktree 相对路径 / 开关关闭零注入 / 收紧后报告路径仍可达。
+
+    收尾审查段对实现者的唯一落点指示 MUST 是 worktree 内相对路径；开关关闭时该段
+    返回空串（逐字节不变）；1.3 收敛 raw_copy 表述后报告落盘字样仍可识别，且 MUST
+    NOT 残留主树 verify-progress 的绝对路径字样。
+    """
+
+    def _prompt(self, proot, enabled: bool) -> str:
+        from test_agent_runner import make_runner
+
+        d = proot / "spec" / "changes" / "demo"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "tasks.md").write_text("# Tasks\n\n- [ ] 1.1 do it\n", encoding="utf-8")
+        runner = make_runner(proot)
+        runner.config = {"verify": {"impl_code_review": enabled}}
+        return runner._prompt_builder._build_prompt("demo", "implementer")
+
+    def test_anchors_worktree_relative_path(self, tmp_path):
+        """开启时：段内含「相对当前工作目录（worktree）」与「MUST NOT 用主树绝对路径」字样。"""
+        prompt = self._prompt(tmp_path / "proj", True)
+        assert "相对当前工作目录（worktree）" in prompt, "缺少 worktree 相对路径表述"
+        assert "MUST NOT 用主树绝对路径" in prompt, "缺少禁止主树绝对路径表述"
+
+    def test_report_path_still_relative_after_raw_copy_convergence(self, tmp_path):
+        """1.3 收敛 raw_copy 表述后：报告落盘字样仍为相对路径，无主树绝对路径残留。"""
+        prompt = self._prompt(tmp_path / "proj", True)
+        # 报告落盘字样（相对、worktree 内、供门读取）仍可识别
+        assert ".fenix/verify-progress/demo/code-review.json" in prompt
+        # raw_copy 同轮收敛为 worktree 相对表述 + 明确「仅框架读取、无需你写主树」
+        assert ".fenix/verify-progress/demo/code-review-raw.json" in prompt
+        assert "无需你主动写主树" in prompt
+        # MUST NOT 残留主树 verify-progress 绝对路径字样
+        assert "/root/fenixd/.fenix/verify-progress" not in prompt
+
+    def test_disabled_zero_injection_byte_identical(self, tmp_path):
+        """开关 false：该段返回空串，提示词逐字节不变（零注入）。"""
+        from test_agent_runner import make_runner
+
+        proot = tmp_path / "proj"
+        runner = make_runner(proot)
+        runner.config = {"verify": {"impl_code_review": False}}
+        section = runner._prompt_builder._impl_code_review_section("demo")
+        assert section == ""
+
+
 # ── fix-impl-code-review-gate-readback：主树回退 + 新鲜度守卫 ─────────────
 
 
