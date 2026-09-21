@@ -20,6 +20,8 @@ from core.state_machine import (
     # 导入可避开 pm_engine 包循环：pm_engine/__init__ → engine → dashboard.data）
     IMPL_RUN_BUDGET_OVERRIDE_FIELD,
 )
+# 取消保持标记归一读值单点（add-cancelled-spec-resume-action D1；叶子模块，无环）
+from .state import normalize_bool_flag
 
 # ── daemon 健康检测（D4：TTL memo 避免高频轮询重复 spawn tmux） ──────
 
@@ -335,6 +337,11 @@ def spec_summary(project_root, spec_name: str, entry: dict, runs_files: list | N
         # 冻结态（结构化字段优先，回退文本前缀）：前端据此渲染解冻入口。
         # 自动冻结（内容完整性闸门 / 预算闸门 / env 阻塞）只认文本会漏判。
         "frozen": _facade.is_spec_frozen(entry),
+        # 取消保持态（add-cancelled-spec-resume-action D4）：前端「恢复运行」
+        # 区块渲染判据。取值为归一化布尔——_cancelled_hold 已登记进
+        # state.py parse_state 归一化表（与 frozen 同口径），文本 False 不再
+        # 以真值字符串漏出；此处不写 bool(entry.get(...))，保持防回归口径。
+        "cancelled_hold": normalize_bool_flag(entry.get("_cancelled_hold")) if entry else False,
         # add-task-progress-verify-phase：阶段判定单点在后端——仅 testing 切
         # verify（验证引擎运行中），其余一切状态按 impl；fast-track 经
         # _fast_track_advance_to_verified 瞬时连转 testing→verified 不停留，
@@ -436,6 +443,9 @@ _ENTRY_SIG_KEYS = (
     "start_after",
     "frozen_until",
     "frozen",
+    # add-cancelled-spec-resume-action 2.4：摘要新增读取取消保持字段，
+    # 缓存指纹白名单同步登记（宁多勿漏契约：仅保持标记变化时也要失效缓存）
+    "_cancelled_hold",
     "depends_on",
     IMPL_RUN_BUDGET_OVERRIDE_FIELD,
     "_impl_run_budget_used",
@@ -676,6 +686,9 @@ def spec_detail(project_root, spec_name: str, entry: dict) -> dict:
         "branch": entry.get("branch"),
         "implementer_run": entry.get("implementer_run"),
         "tester_run": entry.get("tester_run"),
+        # add-cancelled-spec-resume-action 2.2：取消保持标记透传（与列表摘要
+        # 同口径单点归一，零漂移；弹窗详情态渲染判据）
+        "cancelled_hold": normalize_bool_flag(entry.get("_cancelled_hold")) if entry else False,
         "depends_on": entry.get("depends_on"),
         "tasks": _facade.parse_tasks(project_root, spec_name, spec_status),
         "tasks_note": _facade.tasks_note(project_root, spec_name, spec_status),

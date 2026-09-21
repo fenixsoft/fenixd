@@ -185,6 +185,9 @@ def _post_spec_start_after(s, p, q, m):
 def _post_spec_activate(s, p, q, m):
     s._api_spec_activate(q)
 
+def _post_spec_resume(s, p, q, m):
+    s._api_spec_resume(q)
+
 def _post_spec_freeze_config(s, p, q, m):
     s._api_spec_freeze_config(q)
 
@@ -343,6 +346,7 @@ _API_POST_ROUTES = [
     ("exact", "/api/spec-unfreeze",       _post_spec_unfreeze),
     ("exact", "/api/spec-start-after",    _post_spec_start_after),
     ("exact", "/api/spec-activate",        _post_spec_activate),
+    ("exact", "/api/spec-resume",         _post_spec_resume),
     ("exact", "/api/spec-freeze-config",  _post_spec_freeze_config),
     ("exact", "/api/spec-budget",         _post_spec_budget),
     ("exact", "/api/spec-archive",        _post_spec_archive),

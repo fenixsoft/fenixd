@@ -296,6 +296,12 @@ export interface SpecSummary {
   budget_max?: number;
   /** add-spec-manual-activation D12：前置依赖（规范化后，null=无依赖，否则逗号分隔依赖名串） */
   depends_on?: string | null;
+  /**
+   * 取消保持态（add-cancelled-spec-resume-action D4）：SPEC 因人工取消 run 被
+   * daemon 置为有意等待（_cancelled_hold: true），全部自动恢复链路对其跳过，
+   * 唯一出路是「恢复运行」显式复位。后端单点归一化布尔，前端据此条件渲染。
+   */
+  cancelled_hold?: boolean;
 }
 
 export async function getSpecs(project: string): Promise<{ project: string; specs: SpecSummary[] }> {
@@ -468,6 +474,31 @@ export interface ActivateResult {
 export function activateSpec(project: string, spec: string) {
   return request<ActivateResult>(
     `/api/spec-activate?project=${encodeURIComponent(project)}&spec=${encodeURIComponent(spec)}`,
+    { method: 'POST' },
+  );
+}
+
+/** 恢复取消保持态 SPEC 结果（add-cancelled-spec-resume-action D4） */
+export interface ResumeSpecResult {
+  ok: boolean;
+  project?: string;
+  spec?: string;
+  /** 降级标志：无可保留分支，已降级全新重派 */
+  degraded?: boolean;
+  /** 降级原因（degraded=true 时）或拒绝原因（ok=false 时） */
+  reason?: string;
+  /** 即时唤醒信号写出失败：非空时须提示「由下次扫描派发」 */
+  warning?: string;
+  error?: string;
+}
+
+/**
+ * 恢复取消保持态 SPEC（复位 ready + 保留分支续做/降级全新重派 + 即时唤醒派发）。
+ * 非取消保持态/冻结态/wm 不可用返回 {ok:false, reason}（幂等拒绝，STATE 零变更）。
+ */
+export function resumeSpec(project: string, spec: string) {
+  return request<ResumeSpecResult>(
+    `/api/spec-resume?project=${encodeURIComponent(project)}&spec=${encodeURIComponent(spec)}`,
     { method: 'POST' },
   );
 }

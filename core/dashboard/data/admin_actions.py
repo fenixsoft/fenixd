@@ -25,7 +25,7 @@ from core.state_machine import (
 )
 
 # 跨组引用（D4：叶子→中枢，直接导入无环）
-from .state import parse_state
+from .state import normalize_bool_flag, parse_state
 
 # run 归属全等匹配（add-freeze-stop-inflight-agents 4.4：running_run_ids_for_spec
 # 与 daemon 消费方共用——run_spec_part 已剥 agent 前缀与 -a<n>/-r<n>/时间戳）
@@ -625,6 +625,146 @@ def activate_spec(project_root, spec: str) -> dict:
         "start_after": None,
         "scheduling_kick": {"ok": kick_result["ok"], "error": kick_result.get("error")},
     }
+
+
+def _hold_state_true(v) -> bool:
+    """取消保持标记归一化读值（add-cancelled-spec-resume-action D1）。
+
+    单点委托 core.dashboard.data.state.normalize_bool_flag（与 parse_state
+    对 frozen/_cancelled_hold 归一化口径逐字一致）。
+    """
+    return normalize_bool_flag(v)
+
+
+def resume_cancelled_spec(project_root, spec: str) -> dict:
+    """恢复取消保持态 SPEC：复位 ready 并按保留分支续做（add-cancelled-spec-resume-action）。
+
+    取消保持态（``_cancelled_hold: true``，fix-cancel-holdstate-recovery）是
+    「有意等待」：全部自动恢复链路对其显式跳过，唯一出路是显式复位。本动作
+    是该状态的界面出口，语义与冻结终止的「解冻续做」（unfreeze_spec +
+    ``_frozen_hold``）对齐：
+
+    - 命中：调 ``StateMachine._resolve_preserved_branch``（context=
+      "Cancel-hold resume"）解析保留分支，通过则单次原子写续做集
+      （收口字段集与 ``state_machine.py`` ``_recovery_preserve_spec`` 续做
+      先例同集），携带 status 即由 update_spec 自动清 ``_cancelled_hold``
+      （既有 D4 语义），后写 scheduling_kick 即时唤醒派发；
+    - 降级：共享判定**真正运行过**且不通过（三层锚点均不可得 / 分支零提交 /
+      载体不可用）→ WARNING 留痕 + 原子写降级集（branch/implementer_run
+      清空、不置 ``_recovery_resume``），返回 ``degraded: true`` + 原因；
+    - fail-closed：WorktreeManager 构造失败（保留判定根本未运行）MUST 拒绝
+      且 STATE 零变更——该情形下「无可保留分支」没有依据，降级清锚点会把
+      仍可续做的保留分支从 STATE 脱钩（正是本动作要消除的事故面）。
+
+    拒绝语义（对齐 freeze-config 家族幂等拒绝）：
+    - spec 不存在 → ``{ok: False, found: False, error}``
+    - 终态（done/pushed）→ ``{ok: False, terminal: True, error}``（路由 403）
+    - 冻结态（结构化 frozen 或文本前缀）→ ``{ok: False, reason}``（须先解冻，
+      禁止绕过）
+    - ``_cancelled_hold`` 非 true → ``{ok: False, reason}``（幂等拒绝，
+      STATE 零变更）
+    """
+    from core.state_machine import StateMachine
+
+    proot = Path(project_root)
+    specs = parse_state(proot)
+    if spec not in specs:
+        return {"ok": False, "found": False, "error": f"spec not found: {spec}"}
+    entry = specs[spec]
+    status = entry.get("status")
+    if status in ("done", "pushed"):
+        return {
+            "ok": False,
+            "found": True,
+            "terminal": True,
+            "error": f"终态 spec（{status}）不可恢复",
+        }
+    if is_spec_frozen(entry):
+        return {
+            "ok": False,
+            "found": True,
+            "reason": "冻结 SPEC 须先解冻，禁止绕过冻结直接恢复（unfreeze_spec 后再恢复）",
+        }
+    if not _hold_state_true(entry.get("_cancelled_hold")):
+        return {
+            "ok": False,
+            "found": True,
+            "reason": f"该 SPEC 并非取消保持态（_cancelled_hold 非 true，status={status}）",
+        }
+    # 就地构造 WorktreeManager（dashboard 独立进程，与 unfreeze_spec 先例同型）。
+    # 构造失败 → fail-closed 拒绝（保留判定未运行，禁止降级清锚点）。
+    try:
+        from core.worktree_manager import WorktreeManager
+        wm = WorktreeManager(
+            base_dir=proot / ".fenix",
+            project_root=proot,
+            logger=None,
+        )
+    except Exception:
+        wm = None
+    if wm is None:
+        return {
+            "ok": False,
+            "found": True,
+            "reason": "worktree 管理器不可用，无法判定保留分支",
+        }
+    sm = StateMachine(proot / ".fenix" / "STATE.md", None)
+    resolved_branch, _wt = sm._resolve_preserved_branch(
+        spec, entry, proot, wm, context="Cancel-hold resume")
+    if resolved_branch is not None:
+        # 命中 → 保留分支续做（收口字段集与 state_machine _recovery_preserve_spec
+        # 续做先例同集：tester_run 清空防误读为在飞验证锚点，_merge_*/重派
+        # 计数归零防陈旧计数触发误熔断/误告警）。
+        sm.update_spec(spec, {
+            "status": "ready",
+            "error": f"Recovered from cancelled hold (resume preserved branch)：原状态 {status}",
+            "branch": resolved_branch,
+            "implementer_run": entry.get("implementer_run"),
+            "_recovery_resume": True,
+            "tester_run": None,
+            "_retry_count": 0,
+            "_merge_fp": None,
+            "_merge_streak": 0,
+            "_redispatch_same_cause_streak": 0,
+            "_redispatch_cause_fp": None,
+        })
+        result = {"ok": True, "found": True, "spec": spec, "degraded": False}
+    else:
+        # 降级：共享判定已实际运行且给出「不可保留」结论 → 普通全新重派。
+        # _resolve_preserved_branch 各失败层内已有 WARNING 留痕；此处写降级集
+        # （不置 _recovery_resume），携带 status 即自动清保持标记。
+        sm.update_spec(spec, {
+            "status": "ready",
+            "error": "Recovered from cancelled hold (no preserved branch — fresh dispatch)"
+                     f"：原状态 {status}",
+            "branch": None,
+            "implementer_run": None,
+            # 降级同为人工裁决出口，陈旧计数无条件清零（与 unfreeze_spec 命中/
+            # 降级两路径同款，state_machine.py 人工处置清零先例）：取消收尾刻意
+            # 保留的 _retry_count/_merge_*/重派计数若残留，全新重派首几轮即可
+            # 误触发同因熔断/合并告警——正是命中分支注释点名的同一事故面。
+            "_retry_count": 0,
+            "_merge_fp": None,
+            "_merge_streak": 0,
+            "_redispatch_same_cause_streak": 0,
+            "_redispatch_cause_fp": None,
+        })
+        result = {
+            "ok": True,
+            "found": True,
+            "spec": spec,
+            "degraded": True,
+            "reason": "无可保留分支（STATE.branch 缺失 / 分支相对 main 零提交 / 载体不可用），降级全新重派",
+        }
+    # 即时唤醒派发（与 activate_spec 同一通路）；写入失败如实回传 warning，
+    # STATE 已变更不回滚（语义对齐 spec-activate 的 D3 诚实回报）。
+    kick_result = _write_scheduling_kick_signal(proot, spec)
+    if not kick_result["ok"]:
+        result["warning"] = (
+            "已复位 ready，但即时唤醒信号写入失败，将由下次扫描"
+            "（缺省 ≤30 分钟，即 schedule.poll_interval_minutes）派发"
+        )
+    return result
 
 
 def get_spec_start_after(entry: dict) -> str | None:

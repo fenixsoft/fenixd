@@ -154,6 +154,7 @@ from .admin_actions import (
     get_frozen_until,
     set_spec_start_after,
     activate_spec,
+    resume_cancelled_spec,
     set_spec_budget,
     configure_spec_freeze,
     request_spec_approve_push,
