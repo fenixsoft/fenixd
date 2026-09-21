@@ -98,9 +98,16 @@ daemon 由 `fenixd_supervisor.py` 托管的完整重启协议是自愈链路的�
 
 daemon 进程持有的是启动时刻的代码副本（Python import 后不重载磁盘文件），在自我开发场景下「代码陈旧」是常态而非异常。陈旧检测（`fenixd.py` 每 30s 检测点比对 `fenixd.py` + `core/**/*.py` mtime 与启动 baseline）是持续状态而非一次性事件：命中后保持 `self._code_stale` 为真、落一条 `signal_type: stale_code`、`severity: warning` 的 escalation 告警，直到重启刷新 baseline 或磁盘代码回退才解除。该告警为 `warning` 级——陈旧属可经空闲自愈收敛的持续状态，无需人工介入，故写入即自动标记已处理：**不进**人工告警横幅与待处理队列，仅在运维记录页/历史区可见；告警写入由状态边沿（假→真）触发，单个陈旧周期内不重复堆积。
 
-陈旧自愈的触发条件是**同时**满足：陈旧为真、`stale_code_selfheal.enabled` 为真（缺省开启）、项目受 supervisor 托管（`managed`）、`.fenix/restart_request` 不在册。空闲判定口径是**同时**满足：`agent_runner` 无活跃 run（planner / implementer / verifier / judge 全部形态均在 `_active_runs` 内）且 admin 处置 worker 池无在途任务（worker 池未启用时该维度视为空闲），任一非零即判非空闲，倒逼计时清零。连续空闲达到 `stale_code_selfheal.idle_confirm_seconds`（缺省 120s）后 daemon touch `.fenix/restart_request`，supervisor 执行的仍是既有优雅重启协议（restart_request 协议本身不变）。未托管项目（`unmanaged`）不自愈——`restart_request` 无人消费，写了即死信，此时仅维持陈旧告警，交由 Dashboard「安装托管」或 `/fenix-setup` 的安装托管路径处置。
+陈旧自愈的触发条件是**同时**满足：陈旧为真、`stale_code_selfheal.enabled` 为真（缺省开启）、项目受 supervisor 托管（`managed`）、`.fenix/restart_request` 不在册。空闲判定口径是**同时**满足三源皆空：（1）`pm_engine._active_runs` 无活跃 run（planner / implementer / verifier / judge 全部形态均在其内）；（2）`agent_runner._running_agents` 无在飞 agent run——spec-review 评审 run 不占 `pm_engine._active_runs`（`_active_reviews` 独立登记），只在 `_running_agents` 内可见，缺这一维则重启会在评审中途杀掉在飞评审 run（`evo-stale-selfheal-restart-cooldown` 2.1 补全）；（3）admin 处置 worker 池无在途任务（worker 池未启用时该维度视为空闲）。任一非零即判非空闲，倒逼计时清零。连续空闲达到 `stale_code_selfheal.idle_confirm_seconds`（缺省 120s）后 daemon touch `.fenix/restart_request`，supervisor 执行的仍是既有优雅重启协议（restart_request 协议本身不变）。未托管项目（`unmanaged`）不自愈——`restart_request` 无人消费，写了即死信，此时仅维持陈旧告警，交由 Dashboard「安装托管」或 `/fenix-setup` 的安装托管路径处置。
 
 自动重启会把新代码引入运行中的系统：若新代码无法启动，supervisor 的启动失败熔断兜底——daemon 启动后 60 秒内退出计为一次启动失败，连续 3 次失败时停止自动拉起，写熔断标记 `.fenix/supervisor_fused`（独立文件，含时间戳/失败次数/自身 pid，便于手工删除），在 `supervisor.log` 落 critical 记录并经既有告警通道产出 `severity: critical` 的 `supervisor_fused` 告警。人工恢复路径：修复代码 → 删除 `.fenix/supervisor_fused` → 重启 supervisor；或直接重启 supervisor 进程（计数与熔断不被新进程继承）。daemon 存活超过 60 秒重置连续失败计数为 0，容忍偶发的单次启动抖动。配置关停（`stale_code_selfheal.enabled: false`）是另一个退出通道：此时陈旧状态与告警仍产生（正确的长期提醒，因为陈旧确实是持续缺陷），只是不再自动触发重启。
+
+**重启冷却与自触发识别**（`evo-stale-selfheal-restart-cooldown`）：自愈重启本身也可能形成正反馈——「重启 → 新进程很快又判陈旧 → 再重启」在 47 分钟内触发过 27 次重启（2026-09-20 事故），杀掉在飞评审 run 并造成大量无意义全量扫描。因此每次自愈重启都向 `.fenix/restart_history.jsonl` 追加一条 `{"ts", "self_triggered", "self_triggered_streak"}`（超过 24 小时的条目在检测点清理；文件缺失/行损坏按空或该条忽略，不阻断自愈），触发前依次施加两道闸：
+
+- **冷却**：`cooldown_window_seconds`（缺省 1800s）窗口内自愈重启次数 ≥ `cooldown_threshold`（缺省 3），**或**冷却锁存未到期（自首次进入冷却起 `cooldown_duration_seconds`，缺省 600s）→ 跳过触发并清零 idle 计时。锁存是「冷却持续 10 分钟」的落地点：只有窗口计数会因条目老化提前回落，锁存确保冷却期满前不再触发。首次进入冷却（状态边沿）落一条 `signal_type: stale_selfheal_cooldown`、`severity: warning` 的 escalation 告警（1s 粒度 tick 不重复堆积）；冷却期间陈旧告警仍保持显示，只是不再触发重启。
+- **自触发识别**：距上次自愈重启不足 `self_triggered_window_seconds`（缺省 300s）又检测到陈旧再现 → 判为自触发型陈旧，只记一条 WARNING、**不写** `restart_request`（此刻重启只会延长循环），本周期标记为自触发，窗口过期后由后续周期照常收尾（同一段连续空闲即触发，不再额外重算）。连续自触发次数以「重启周期」为单位持久化累计：窗口内延续的重启 streak + 1，距上条 ≥ 窗口的过期重启使 streak 归零（循环已断）；streak 达 `self_triggered_threshold`（缺省 3）的那一次升 `signal_type: stale_selfheal_loop`、`severity: critical` 告警，交人工判断是否为 evo run / 代码更新形成的循环。计数只放进程内存则阈值恒不可达（每次自触发都伴随一次重启、新进程归零），故必须持久化。
+
+两机制**无独立开关**：整体关闭即 `stale_code_selfheal.enabled: false`（向后兼容，缺省行为不变）。五个新键经 `.fenix/config.yaml` 配置 + 30s 热更新生效（缺省 1800 / 3 / 600 / 300 / 3，非正整数回退缺省，`0` 不等效关闭），Dashboard 面板未暴露，详见[配置参考](09-config.md#stale_code_selfheal代码陈旧自愈)。
 
 ## 告警系统：自愈无法覆盖时升级人工
 
