@@ -304,6 +304,21 @@ class TestOrphanDetection:
         ]
         assert _dev_server_worktree_root(tokens) == Path("/tmp/wt/.claude/worktrees/impl-target-9")
 
+    def test_parser_nested_worktree_takes_last_segment(self):
+        """静态根含两段 /worktrees/（框架段 + 测试段）时 MUST 取末段归属到嵌套的
+        测试 worktree（回归守卫：split 取首段会把归属误判为框架 worktree 自身，
+        使其含存活 claude 进程而误豁免、孤儿判定落空）。"""
+        tokens = [
+            "node",
+            "/root/fenixd/worktrees/fw/.fenix/pytest-basetemp/pytest-1/"
+            "test_demo0/.claude/worktrees/impl-target-9/core/dashboard/static",
+            "19003", "fenix-v2-dev-server",
+        ]
+        assert _dev_server_worktree_root(tokens) == Path(
+            "/root/fenixd/worktrees/fw/.fenix/pytest-basetemp/pytest-1/"
+            "test_demo0/.claude/worktrees/impl-target-9"
+        )
+
     def test_orphan_detected_when_no_claude(self, tmp_path):
         """worktree 存在但无 claude 引用 → 判为孤儿。"""
         wt = make_worktree(tmp_path, f"impl-orphan-{os.getpid()}")
