@@ -31,10 +31,30 @@
 把 `read_all` → mutate → 持久化 三段收进同一把 `.STATE.md.lock` 的 `flock(LOCK_EX)` 内，采用 `_bump_counter` 同款范式。**备选**：乐观 CAS 重试（改动面更大、需给 STATE.md 加版本号）；全进程单例锁（不适用——dashboard 是独立进程，必须跨进程文件锁）。**约束**：同进程对同一文件重复 `flock` 会自阻塞（`_write_all_locked` 注释已载明），故锁内 MUST 调 `_write_all_locked` 而 MUST NOT 再调 `write_all`。
 
 ### D2: 同源收敛所有 STATE.md 写入路径
-`add_spec` / `remove_spec` / `update_spec` / `_bump_counter` 统一走 D1 的锁内原子路径；核查是否存在无日志的直接 `write_all` 调用点（2026-09-21 观测到一次 `updated=03:43:24` 的写入在日志中**无对应 "Updated SPEC" 记录**，指向非 `update_spec` 路径，需在实现期定位并一并收敛）。
+`add_spec` / `remove_spec` / `update_spec` / `_bump_counter` 统一走 D1 的锁内原子路径。三条路径的 read-modify-write 均非原子（`state_machine.py:703-731` / `:969-987` / `:993-1006`），须一并收敛；`remove_spec` 的 docstring（`:991-1000`）现声称「a concurrent writer cannot resurrect the entry」——该不变式在现状下**不成立**（并发写者持陈旧快照整体回写即可复活条目），收敛后 MUST 同步订正该注释，MUST NOT 留下与实现不符的不变式声明。
 
-### D3: 空闲判定纳入「未收口的在飞 run」
-`_is_idle()` 的判据 MUST 覆盖 run 的全部形态：除 `pm_engine._active_runs == 0` 外，MUST 核对 run 进程存活但 transcription 暂不增长（API 重试/停滞）时是否仍计入 active；若 `_active_runs` 在停滞期被误减，MUST 以「在册 run 未收口」补正。**反向约束**：对确已死亡/收口的 run MUST NOT 永久占位（否则自愈永不触发）——以 run 的终态/进程存活为界，不引入新的永真条件。
+**「无日志写入」的调用者已定位（取代草案的待查项）**：生产代码中对 `write_all` 的直接调用仅 3 处，全部在 `core/state_machine.py`（`:731` / `:987` / `:1006`）且均有日志——静默来源不是写入路径缺失日志，而是**写入者未获注入 logger**：`StateMachine.__init__`（`:498-502`）在 `logger=None` 时兜底为 `_NullLogger`（`:473-489`，全部方法空实现），而 dashboard 侧多处以无 logger 形态构造：
+
+- `core/dashboard/data/spec_archive.py:145` — `StateMachine(proot / ".fenix" / "STATE.md")`（归档/删除路径，会走 `remove_spec`）；
+- `core/dashboard/routes/evolution_routes.py:30` — `StateMachine(..., None)`；
+- `core/dashboard/routes/code_review_routes.py:243` — `StateMachine(..., None)`。
+
+这三处正是 2026-09-21 观测到的「`updated` 变了但 `fenixd.log` 无 "Updated SPEC" 记录」的成因（dashboard 为独立进程，与 daemon 的 `update_spec` 并发 → 同时满足「无日志」与「跨进程丢失更新」两个特征）。故 tasks 1.3 的「写入必留痕」MUST 覆盖这三处构造点的 logger 注入，仅改 `core/state_machine.py` 无法达成该 Requirement。
+
+### D3: 空闲判定纳入「未收口的在飞 run」——缺口在评审车道，不在 `_active_runs` 递减
+
+**根因（实现期已核实，取代本 SPEC 草案的 `_active_runs` 误减假设）**：`_is_idle()`（`fenixd.py:979-999`）只读 `pm_engine._active_runs` 与 admin 池在途数。而**评审 run 从不计入 `_active_runs`**——`DispatchQueue` 的派发分支对 `agent_type == "spec-review"` 显式 `MUST NOT 增减 _active_runs / _active_priorities`（`core/pm_engine/dispatch/queue.py:556-564`），只把 spec 记入独立的 `_active_reviews` 集合。因此**只要在飞的是评审 run，`_active_runs` 恒为 0**——`_is_idle()` 判空闲与「run 是否停滞」无关，`_active_runs` 的递减时机本身没有缺陷。故本 SPEC 的修法 MUST NOT 以「核对 `_active_runs` 递减时机」为实现路径（照此核对会得出「无需修改」的错误结论，目标落空）。
+
+**MUST 复用的既有判据（不得新造在飞判定）**：评审在飞判定的唯一既有权威是双判据合取，已用于派发守卫（`core/pm_engine/engine.py:750-773`）：
+
+1. `PMEngine.is_review_in_flight(spec_name)`（`core/pm_engine/engine.py:3522`，只读查询 `_active_reviews`）——覆盖「条目已出队、`reviewer_run` 锚点尚未落盘」的窗口；
+2. `LivenessSupervisor.reviewer_in_flight(spec_name, reviewer_run)`（`core/agent_runner/liveness.py:454`）——分层判据为 `_active_reviews` → **进程表 `running_run_ids()`** → 流文件新鲜度 → 陈旧锚点。**判据 2（进程表）正是「停滞 run 仍算在飞」的成立依据**：评审 run 以子进程形态全程登记在 `_running_agents`，API 长重试期间转录不增长但进程仍存活 → `(True, "process")`。MUST NOT 仅用流文件新鲜度（`_run_stream_alive`）作在飞依据——停滞 run 的流本就不增长，会退化为判据 4 的 `stale`，缺陷原样复现。
+
+**MUST NOT 只加 `_active_reviews` 一个维度**：`_active_reviews` 的释放时点**早于** `dispatch_review`（`queue.py:2129`，`MUST NOT 晚于四步链锚点 reviewer_run 落盘`），锚点落盘后该登记即消失，`_active_reviews` 单独判据会漏掉评审 run 的绝大部分生命周期。必须以「`reviewer_run` 锚点 + `reviewer_in_flight`」接力。
+
+**实现形态**：`_is_idle()` 在既有两维度之外，增补「STATE 中 `reviewer_run` 非空的 spec 逐个经上述双判据复核」。为免 1s 粒度轮询（`fenixd.py:586` `time.sleep(1)` → `:597` `_maybe_stale_selfheal_tick` → `:1067` `_is_idle()`）引入每 tick 全量扫描开销，MUST 以「短路 + 候选收窄」约束：候选仅取 `reviewer_run` 非空的条目（拒绝全量 `read_all()` 逐条判），命中任一在飞即立即返回 False，不做其余条目判定；多 spec 复核可加短 TTL 缓存（TTL MUST 显著小于 `idle_confirm_seconds`）。
+
+**反向约束**：对确已死亡/收口的 run MUST NOT 永久占位（否则自愈永不触发）——`reviewer_in_flight` 判据 4 已对「run 已终态但锚点残留」返回 `(False, "stale")`，即天然不占位；以该判据为界，MUST NOT 引入新的永真条件。
 
 ### D4: 回归以「并发交错」与「停滞 run」两个契约为锚
 新增测试 MUST 能复现原缺陷：① 两线程/两路径并发 `update_spec` 不同字段，断言两个字段的改动都保留（当前实现会丢一个）；② 冻结 error 在一次并发写入后仍可被 `parse_orig_status` 读出原状态。③ 构造一个「登记在册但转录停滞」的 run，断言 `_is_idle()` 返回 False、`restart_request` 不被写入。
@@ -52,5 +72,8 @@
 
 ## Open Questions
 
-- 2026-09-21 `updated=03:43:24` 那次「无日志写入」的确切调用者（候选：直接 `write_all` 路径 / 跨进程写入）——实现期须以「写入必留痕」为目标补齐可观测性。
-- 停滞 run 的「在册未收口」判据具体字段（`_active_runs` vs registry vs run 流文件末行终态）——实现期核对 `_is_idle` 上游计数的递减时机后定夺。
+（草案的两项均已由评审期取证关闭，实现期按 D2/D3 的结论推进即可。）
+
+- ~~2026-09-21 `updated=03:43:24` 那次「无日志写入」的确切调用者~~ → **已定位**：非 `write_all` 路径缺失日志，而是 dashboard 侧以 `logger=None` 构造 `StateMachine` 触发 `_NullLogger` 兜底（D2 列出的三处构造点）。
+- ~~停滞 run 的「在册未收口」判据具体字段（`_active_runs` vs registry vs run 流文件末行终态）~~ → **已定**：`_active_runs` 不覆盖评审车道（评审 run 从不递增它），MUST 复用 `PMEngine.is_review_in_flight` + `LivenessSupervisor.reviewer_in_flight` 的双判据合取；进程表判据（判据 2）负责覆盖停滞 run，流文件新鲜度 MUST NOT 单独作在飞依据（D3）。
+- **待实现期确认的唯一残留项**：`_is_idle()` 增补评审维度后的每 tick 开销实测（候选收窄 + 短路 + 可选短 TTL 缓存，见 D3）——若在 1s 粒度下开销可观，以缓存方案收敛，不得放弃该维度。
