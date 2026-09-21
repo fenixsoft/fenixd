@@ -82,7 +82,7 @@ export default function ParallelSettingsPanel({ config, onSave, project, onConfi
             }
             rules={[{ required: true, message: '请输入并行度' }]}
           >
-            <InputNumber min={1} step={1} style={{ width: '100%' }} />
+            <InputNumber min={1} step={1} style={{ width: '100%' }} addonAfter="个" />
           </Form.Item>
           <Text type="secondary">默认 2。保存后约 30 秒内热加载生效。</Text>
 
@@ -96,7 +96,7 @@ export default function ParallelSettingsPanel({ config, onSave, project, onConfi
             rules={[{ required: true, message: '请输入轮次上限' }]}
             style={{ marginTop: 24 }}
           >
-            <InputNumber min={1} step={1} style={{ width: '100%' }} />
+            <InputNumber min={1} step={1} style={{ width: '100%' }} addonAfter="轮" />
           </Form.Item>
           <Text type="secondary">默认 400（上限而非目标值）。单个 Agent 运行轮次达到此值即被终止并触发重试。</Text>
 
@@ -104,13 +104,13 @@ export default function ParallelSettingsPanel({ config, onSave, project, onConfi
             name="run_timeout_seconds"
             label={
               <>
-                单次 Agent 运行时长上限<span className="label-note">（agents.run_timeout_seconds，秒）</span>
+                单次 Agent 运行时长上限<span className="label-note">（agents.run_timeout_seconds）</span>
               </>
             }
             rules={[{ required: true, message: '请输入时长上限' }]}
             style={{ marginTop: 24 }}
           >
-            <InputNumber min={60} step={60} style={{ width: '100%' }} />
+            <InputNumber min={60} step={60} style={{ width: '100%' }} addonAfter="秒" />
           </Form.Item>
           <Text type="secondary">默认 9000（2.5 小时）。单个 Agent 运行超时即终止并触发重试。以上两个参数应随你项目 SPEC 的规模大小而定。</Text>
 
@@ -139,7 +139,7 @@ export default function ParallelSettingsPanel({ config, onSave, project, onConfi
               rules={[{ required: true, message: '请输入上限' }]}
               style={{ marginTop: 24 }}
             >
-              <InputNumber min={1} max={10} step={1} style={{ width: '100%' }} />
+              <InputNumber min={1} max={10} step={1} style={{ width: '100%' }} addonAfter="个" />
             </Form.Item>
           ) : null}
         </Form>

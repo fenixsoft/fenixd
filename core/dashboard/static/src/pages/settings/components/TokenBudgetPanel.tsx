@@ -81,12 +81,12 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
             name="token_budget_millions"
             label={
               <>
-                Token 预算<span className="label-note">（百万，0=关闭）</span>
+                Token 预算<span className="label-note">（agents.token_budget_millions，百万，0=关闭）</span>
               </>
             }
             rules={[{ required: true, message: '请输入 Token 预算' }]}
           >
-            <InputNumber min={0} max={1000} step={1} style={{ width: '100%' }} />
+            <InputNumber min={0} max={1000} step={1} style={{ width: '100%' }} addonAfter="百万" />
           </Form.Item>
           <Text type="secondary">
             默认 50（百万 input token）。保存后约 30 秒内热加载生效；设为 0 表示关闭预算检查。单 SPEC 累计 input token 达到 80% 发提醒级告警、达到 100% 发升级级告警，不自动冻结，由人工决定是否处置。
@@ -102,7 +102,7 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
             rules={[{ required: true, message: '请输入每日运行限额' }]}
             style={{ marginTop: 24 }}
           >
-            <InputNumber min={0} step={1} style={{ width: '100%' }} />
+            <InputNumber min={0} step={1} style={{ width: '100%' }} addonAfter="次/日" />
           </Form.Item>
           <Text type="secondary">
             默认 50。单个 UTC 自然日内所有 Agent 类型成功运行的累计上限（实现/验证/管理共用一个池），达到后当日停止派发，UTC 次日 0 点自动归零。设为 0 表示不限制。
@@ -118,7 +118,7 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
             rules={[{ required: true, message: '请输入实现尝试预算' }]}
             style={{ marginTop: 24 }}
           >
-            <InputNumber min={1} max={1000} step={1} style={{ width: '100%' }} />
+            <InputNumber min={1} max={1000} step={1} style={{ width: '100%' }} addonAfter="次" />
           </Form.Item>
           <Text type="secondary">
             默认 4。每 SPEC 跨修复周期的实现 run 启动次数上限（含首次实现与每轮修复重派）。达到上限即冻结该 SPEC 并交人工裁决，需人工调大预算或推进状态。合法范围 1 至「实现尝试预算上限」（下方可配，缺省 100，硬天花板 1000）。
@@ -134,7 +134,7 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
             rules={[{ required: true, message: '请输入实现尝试预算上限' }]}
             style={{ marginTop: 24 }}
           >
-            <InputNumber min={1} max={1000} step={1} style={{ width: '100%' }} />
+            <InputNumber min={1} max={1000} step={1} style={{ width: '100%' }} addonAfter="次" />
           </Form.Item>
           <Text type="secondary">
             默认 100。per-spec 预算覆盖值与上面的全局实现尝试预算均按此上限夹紧；上限键自身硬天花板 1000。调大它可让长链条 SPEC 在机制摩擦后仍有修复轮次余额。
@@ -150,7 +150,7 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
             rules={[{ required: true, message: '请输入重启重验预算' }]}
             style={{ marginTop: 24 }}
           >
-            <InputNumber min={1} max={10} step={1} style={{ width: '100%' }} />
+            <InputNumber min={1} max={10} step={1} style={{ width: '100%' }} addonAfter="次" />
           </Form.Item>
           <Text type="secondary">
             默认 3。daemon 重启恢复路径（testing → implemented 重派 verify）的累计重验次数上限。达上限即冻结该 SPEC 并交人工裁决（人工解冻后计数清零），防止「毒 SPEC 借反复重启无限重验」烧 token。合法范围 1-10。
