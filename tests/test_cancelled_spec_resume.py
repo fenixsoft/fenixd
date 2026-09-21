@@ -118,6 +118,53 @@ class ResumeCancelledSpecHitTest(unittest.TestCase):
             self.assertTrue((kick_dir / "s1.json").exists())
 
 
+class ResumeCancelledSpecRebuildRealWmTest(unittest.TestCase):
+    """BUG-01 回归：载体缺失（WT_REBUILDABLE）重建路径 × logger=None 构造。
+
+    验证报告 api-resume-hit-rebuild-worktree 场景缺陷修复回归：dashboard 侧
+    resume_cancelled_spec 以 logger=None 构造 WorktreeManager（与 unfreeze
+    先例同型），而重建路径 create_worktree_on_branch 成功/失败分支均无条件
+    调 self.logger——构造器缺 _NullLogger 兜底时 AttributeError 未捕获 →
+    路由 500、STATE 零变更，续做功能完全不可用。本用例不 mock
+    WorktreeManager：真实构造走完整重建链（保留分支在位、无在册 worktree）。
+    """
+
+    def test_rebuild_path_with_logger_none_wm_succeeds(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            # _mk_repo：fenix/s1-x 领先 main 一提交，未建任何 worktree（载体缺失）
+            repo = _mk_repo(Path(td))
+            sm = _mk_sm(repo)
+            _mk_spec(sm, "s1", branch="fenix/s1-x", implementer_run="impl-a1")
+            result = resume_cancelled_spec(repo, "s1")
+            self.assertTrue(result["ok"], result)
+            self.assertFalse(result.get("degraded"))
+            self.assertEqual(result["spec"], "s1")
+            entry = sm.read_one("s1")
+            self.assertEqual(entry["status"], "ready")
+            self.assertEqual(entry["branch"], "fenix/s1-x")
+            self.assertIs(entry["_recovery_resume"], True)
+            # 重建的 worktree 真实在场（create_worktree_on_branch 真实执行）
+            from core.worktree_manager import WorktreeManager
+            wm = WorktreeManager(base_dir=repo / ".fenix", project_root=repo,
+                                 logger=None)
+            self.assertIsNotNone(wm.find_worktree_path("fenix/s1-x"))
+
+    def test_create_worktree_on_branch_tolerates_logger_none(self):
+        """直接单测构造器兜底：logger=None 构造后成功/失败分支均不崩。"""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            repo = _mk_repo(Path(td))
+            from core.worktree_manager import WorktreeManager
+            wm = WorktreeManager(base_dir=repo / ".fenix", project_root=repo,
+                                 logger=None)
+            # 成功分支：info 留痕路径
+            wt = wm.create_worktree_on_branch("s1", "fenix/s1-x")
+            self.assertIsNotNone(wt)
+            # 失败分支（分支不存在）：error 留痕路径，返回 None 不抛
+            self.assertIsNone(wm.create_worktree_on_branch("s1", "fenix/no-such"))
+
+
 class ResumeCancelledSpecDegradedTest(unittest.TestCase):
     """降级：共享判定运行过且不通过 → 普通全新重派。"""
 

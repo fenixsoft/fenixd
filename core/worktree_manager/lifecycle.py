@@ -44,6 +44,14 @@ class G1LifecycleMixin:
     ):
         self.base_dir = Path(base_dir)
         self.project_root = Path(project_root)
+        # logger=None 兜底（add-cancelled-spec-resume-action BUG-01）：dashboard
+        # 侧独立进程以 logger=None 构造（admin_actions.py unfreeze/resume 两处），
+        # 而各组 mixin（如 queries.create_worktree_on_branch）无条件调
+        # self.logger → AttributeError。对齐 state_machine.py:502 的 _NullLogger
+        # 先例（延迟导入避免模块级循环依赖，stale_sweep 同款）。
+        if logger is None:
+            from core.state_machine import _NullLogger
+            logger = _NullLogger()
         self.logger = logger
         self._active_worktrees: Set[str] = set()
         self._wt_branches: Dict[str, str] = {}  # wt_path -> branch name
