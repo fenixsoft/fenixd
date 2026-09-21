@@ -64,7 +64,9 @@
 - **[加锁引入死锁]** → 严格遵循「锁内只用 `_write_all_locked`」，禁止锁内再 `write_all`；沿用 `_bump_counter` 已验证的调用结构。
 - **[锁粒度变粗致写放大]** → 单进程内写入本已串行；跨进程（dashboard）写入频率低，可接受。
 - **[空闲判定加强致自愈永不触发]** → 以「run 是否收口/进程是否存活」为界，不用转录新鲜度作唯一依据（停滞 run 转录本就不增长）；确保死亡 run 会被正常清理出在册集合。
-- **[error 清理路径未定位]** → 若实现期仍无法定位 03:43:24 的写入者，则以 D1/D2 的锁内原子化兜底（原子写保证任何路径都不会用陈旧快照覆盖 error），并在测试中固化「冻结后任意并发写不丢 error」。
+- **[error 清理路径未定位]** → **已关闭**：静默写入者即 dashboard 侧无 logger 构造的三处（D2）。`error` 丢失机理确认为跨进程丢失更新（dashboard 持陈旧快照整体回写覆盖 daemon 写入的冻结 `error`），由 D1/D2 的锁内原子化消除根本成因；测试固化「冻结后任意并发写不丢 error」。
+- **[dashboard 侧注入 logger 的跨进程可达性]** → 三处构造点分布在不同 dashboard 路由/数据模块，实现期 MUST 逐个核对实际写入路径（`spec_archive.py` 走 `remove_spec`；两条 route 的写入面在实现期确认），MUST NOT 只改其中一处便宣称「写入必留痕」已达成。
+- **[改写 MODIFIED Requirement 时遗漏同能力互斥条款]** → 本变更改的是 `stale-code-selfheal` 的「空闲感知的陈旧自愈触发」，而该能力另有「空闲判定语义」Requirement（`spec/archive/2026-09-18-add-stale-code-selfheal/specs/stale-code-selfheal/spec.md`）把「空闲」定义为 `_active_runs == 0` + admin 池空、并声明 MUST NOT 扫描外部进程列表；若不同步改写，两条 MUST 会指向相反方向。本 SPEC 已在 `specs/stale-code-selfheal/spec.md` 同步 MODIFIED 该条（并改写其「MUST NOT 扫描外部进程列表」为「MUST NOT 以外部 `ps`/`/proc` 扫描反推」，以容纳进程表判据 `running_run_ids()`——该判据读的是 daemon 进程内注册表，非外部进程列表）。实现期 MUST 同批落地，MUST NOT 只改其一。
 
 ## Migration Plan
 
