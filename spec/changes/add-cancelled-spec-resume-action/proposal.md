@@ -23,7 +23,8 @@ SPEC 的实现 run 被人工取消后（Dashboard「取消 run」），daemon �
 ## Impact
 
 - `core/dashboard/data/admin_actions.py`：新增 `resume_cancelled_spec` 动作（复用 StateMachine/WorktreeManager/signals 既有单点）。
-- `core/dashboard/data/summary.py`：spec 摘要新增 `cancelled_hold` 字段（`spec_detail` 同步）。
+- `core/dashboard/data/summary.py`：spec 摘要新增 `cancelled_hold` 字段（`spec_detail` 同步），`_ENTRY_SIG_KEYS` 增列该字段。
+- `core/dashboard/data/state.py`：`_cancelled_hold` 登记进 `parse_state` 布尔归一化表——现状只归一化 `frozen`，文本 `False` 会以真值字符串进入保持态判定。
 - `core/dashboard/routes/spec_routes.py` + `base.py`：新增 POST 路由 `/api/spec-resume`。
 - `core/dashboard/static/src/services/dashboard.ts`：新增 API 封装。
 - `core/dashboard/static/src/pages/projects/components/SpecStatusModal.tsx`：新增「恢复运行」区块（危险操作确认）。

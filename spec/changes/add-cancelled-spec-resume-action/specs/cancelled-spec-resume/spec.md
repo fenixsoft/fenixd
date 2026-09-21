@@ -5,8 +5,13 @@
 ### Requirement: 取消保持态在列表摘要与详情中可见
 
 Dashboard 的 SPEC 摘要（列表页 `/api/specs` 条目）与详情（`/api/specs/<spec>`）MUST 下发
-`cancelled_hold` 布尔字段，取值为 STATE 条目 `_cancelled_hold` 的规范布尔值
-（字符串 `"true"/"false"` 须按 StateParser 同口径转为布尔）。
+`cancelled_hold` 布尔字段，取值为 STATE 条目 `_cancelled_hold` 的规范布尔值。
+
+STATE.md 序列化 Python 字面量（`- _cancelled_hold: False`），而 dashboard 侧
+`core/dashboard/data/state.py:parse_state` **只**归一化 `frozen`、未归一化
+`_cancelled_hold`——读到的文本 `"False"` 是**真值字符串**。故取值 MUST 经归一化
+（`str(v).strip().lower() in ("true","1","yes")`，与 `parse_state` 对 `frozen` 同口径；
+或先将 `_cancelled_hold` 登记进该归一化表），MUST NOT 使用裸 `bool(entry.get(...))`。
 
 #### Scenario: 取消保持 SPEC 暴露保持标记
 - **WHEN** 某 SPEC 的 STATE 条目含 `_cancelled_hold: true`
@@ -24,8 +29,10 @@ Dashboard MUST 提供 POST 端点（`/api/spec-resume?project=<name>&spec=<name>
 - `status: ready`（携带 status 即由 `update_spec` 自动清 `_cancelled_hold`）；
 - `branch` 写为解析出的保留分支、`implementer_run` 保留原锚点；
 - `_recovery_resume: true`——dispatch 据此在保留分支 worktree 内续做而非从零新建；
-- `_retry_count` / `_redispatch_same_cause_streak` / `_redispatch_cause_fp` 归零，
-  避免恢复后陈旧同因计数立即触发熔断；
+- `tester_run` 清空、`_retry_count` / `_merge_fp` / `_merge_streak` /
+  `_redispatch_same_cause_streak` / `_redispatch_cause_fp` 归零，避免恢复后
+  陈旧验证锚点被误读为在飞、陈旧 merge-back 计数触发误熔断/误告警
+  （收口字段集与 `state_machine.py:1610-1620` 续做先例同集）；
 - `error` 写恢复留痕文案（含原状态与「resume preserved branch」语义）。
 
 保留分支解析 MUST 复用 `_resolve_preserved_branch` 共享判定（STATE.branch →
@@ -42,9 +49,16 @@ scheduling_kick 信号即时唤醒派发；写失败 MUST 如实回传 warning�
 
 #### Scenario: 无可保留分支时降级普通重派
 - **WHEN** 取消保持 SPEC 三层锚点均不可得，或分支相对 main 零提交，或载体不可用
+  （共享判定已实际运行并给出该结论）
 - **THEN** 动作返回 `ok: true` 并携带 `degraded: true` 与降级原因；STATE 落 ready
   （锚点清空、不置 `_recovery_resume`），daemon 走普通全新派发；降级 MUST 有
   WARNING 留痕
+
+#### Scenario: 载体工具不可用时拒绝而非降级
+- **WHEN** WorktreeManager 构造失败（保留判定根本未运行）
+- **THEN** 动作返回 `ok: false` 与原因（无法判定保留分支），STATE.md 零变更
+  ——MUST NOT 以「无可保留分支」为由降级清锚点（会把仍可续做的保留分支
+  从 STATE 脱钩）
 
 #### Scenario: 恢复后即时派发
 - **WHEN** 恢复动作成功且 scheduling_kick 信号写入成功
@@ -58,7 +72,9 @@ scheduling_kick 信号即时唤醒派发；写失败 MUST 如实回传 warning�
 
 - spec 不存在于项目 STATE.md → not found；
 - 终态（done/pushed）→ 终态不可恢复；
-- `_cancelled_hold` 非 true（含冻结态）→ 非取消保持态，幂等拒绝并附原因；
+- `_cancelled_hold` 非 true → 非取消保持态，幂等拒绝并附原因（判据 MUST 走归一化
+  布尔读值，MUST NOT 裸真值判定——文本 `False` 为真值字符串，裸判定会误纳非保持
+  态 SPEC 并把它强置 ready）；
 - 冻结态（`frozen` 结构化标记或文本前缀命中）→ 冻结 SPEC 须先解冻，禁止绕过。
 
 #### Scenario: 非取消保持态幂等拒绝
