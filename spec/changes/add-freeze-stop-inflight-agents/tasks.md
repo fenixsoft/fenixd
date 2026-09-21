@@ -121,6 +121,6 @@
 - [x] 8.3 全量回归（有界入口：`python3 -m pytest tests -x -q --timeout=3600`，与既有 `tests/` 布局一致；若确需分档则用 `pytest -k` 分批），修复本次引入的失败
 - [x] 8.4 更新 `docs/help/09-config.md` 或 `docs/help/02-concepts.md` 中关于冻结/删除语义的段落，说明「冻结即停在跑 agent、解冻自动续做」「删除先停后删」的新行为## 验证修复（原地打回第 2 轮）
 
-- [ ] 先复核失败有效性：逐条核对 `spec/changes/add-freeze-stop-inflight-agents/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
-- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
-- [ ] 修复后重跑验证确认通过
+- [x] 先复核失败有效性：逐条核对 `spec/changes/add-freeze-stop-inflight-agents/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
+- [x] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
+- [x] 修复后重跑验证确认通过
