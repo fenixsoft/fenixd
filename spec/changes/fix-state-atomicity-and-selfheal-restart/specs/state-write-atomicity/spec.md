@@ -9,6 +9,11 @@
 - **WHEN** 两条写入路径并发地对同一 spec 的不同字段执行更新（如 A 写 `reviewer_run`、B 写 `error`）
 - **THEN** 最终 STATE.md 中两个字段的改动 MUST 同时存在，MUST NOT 有任一被覆盖回旧值
 
+#### Scenario: 跨进程并发写入不丢失更新
+
+- **WHEN** daemon 进程与 dashboard 进程（各自持有独立的 `StateMachine` 实例）并发写同一 spec 的不同字段
+- **THEN** 两者改动 MUST 同时存在；锁 MUST 为跨进程文件锁（`flock`），MUST NOT 仅依赖进程内单例锁
+
 #### Scenario: 评审派发写入的 reviewer_run 不被并发覆盖
 
 - **WHEN** daemon 并发派发多个 spec 的评审 run 并分别写入各自 `reviewer_run`
