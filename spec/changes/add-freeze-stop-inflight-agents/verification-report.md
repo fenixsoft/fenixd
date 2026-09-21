@@ -1,13 +1,13 @@
 # 验证报告：add-freeze-stop-inflight-agents
 
-> ⚠️ 本报告由框架于 2026-09-21T02:02:46Z 自动合成（裁决 Agent 未写报告，已由框架合成），内容为结构化验证产物（report.json / .fenix-run-result.json）的忠实渲染。
-> 报告时效标记（判定本报告是否属上一轮）：合成源轮次指纹：report.json@2026-09-21T02:00:48.420111+00:00
+> ⚠️ 本报告由框架于 2026-09-21T03:56:17Z 自动合成（裁决 Agent 未写报告，已由框架合成），内容为结构化验证产物（report.json / .fenix-run-result.json）的忠实渲染。
+> 报告时效标记（判定本报告是否属上一轮）：合成源轮次指纹：report.json@2026-09-21T03:36:16.408108+00:00
 
 ## 结论：❌ 未通过（Bug Found）
 
 **状态：bug-found — 21/22 场景通过，1 失败，0 错误（1 个真实产品 Bug）**
 
-22 场景 21 通过 1 失败：web-freeze-inflight-stopped-hint 为产品缺陷（product-bug，冻结停止反馈缺失），上报 bug-found。静态情报 double_han_text_selector（web-freeze-idle-confirm-success「阻塞」）经执行证据核实为误报——该场景断言实际通过（pass），antd autoInsertSpace 未致失配，无需修复。
+共 22 场景，21 pass，1 fail（product-bug）；冻结有在跑 agent 的 toast 停止提示缺失——后端 stopped_agents 字段实现缺口。静态缺陷情报 web-freeze-idle-confirm-success 为误报（selector 为持久 DOM tr 行文本，非 Button，autoInsertSpace 不影响，已 pass）。
 
 | 指标 | 数量 |
 | --- | --- |
@@ -15,17 +15,17 @@
 | 失败 | 1 |
 | 错误 | 0 |
 | 产品 Bug | 1 |
-| 本链增量 Token（输入） | 21.98M |
+| 本链增量 Token（输入） | 22.35M |
 | 本链增量 Token（输出） | 0.32M |
 
 
 ## 真实产品 Bug
 
-### BUG-01（severity=major）· text_contains
+### BUG-01（severity=major）· text_contains / json_path
 
-- 关联场景：web-freeze-inflight-stopped-hint
-- 描述：冻结有在跑 agent 的 SPEC（fs-web-inflight）后 toast 无停止反馈：期望「已停止 1 个在跑 agent」与「进度已留存，解冻后可续做」，实际走缺省分支「SPEC「fs-web-inflight」已冻结，daemon 停止调度」（无停止计数、无进度留存说明）。
-- 根因：freeze_spec（admin_actions.py:309-343）返回值未含 stopped_agents 字段 → SpecStatusModal.tsx:165 if(result?.stopped_agents) 恒 false → 前端 stopped_agents>0 提示分支整体不可达。
+- 关联场景：web-freeze-inflight-stopped-hint、api-freeze-inflight-stopped-agents
+- 描述：freeze_spec API 未返回 stopped_agents 计数，导致前端停止反馈文案走缺省分支：冻结有在跑 agent 的 spec 后 toast 无「已停止 N 个在跑 agent」与「进度已留存」提示
+- 根因：admin_actions.py freeze_spec() 未实现 stopped_agents 计数返回（proposal Impact 声明但 tasks 6.x 仅扩展前端类型），SpecStatusModal.tsx:165 if(result?.stopped_agents) 恒 false
 - 证据（场景 web-freeze-inflight-stopped-hint 结构化证据，引用）：
   - failed_assertions: [{"type": "text_contains", "selector": ".ant-message-notice-content", "expected": "已停止 1 个在跑 agent", "actual": "toast 文案走缺省分支：SPEC「fs-web-inflight」已冻结，daemon 停止调度（无停止计数提示）"}, {"type": "text_contains", "selector": ".ant-message-notice-content", "expected": "进度已留存，解冻后可续做", "actual": "toast 文案走缺省分支，无进度留存说明"}]
   - screenshots: ["/root/fenixd/.fenix/verify-progress/add-freeze-stop-inflight-agents/screenshots/web-freeze-inflight-stopped-hint_assert_fail.png"]
@@ -68,5 +68,7 @@
 
 ## 本轮场景集变更
 
-场景集与持久化集一致，无变更。
+当前稳定场景集共 22 个（第 2 轮）。
+
+首轮写入 22 个场景
 
