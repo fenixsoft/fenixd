@@ -448,11 +448,24 @@ class CodeFixOrchestrator:
         if callable(raw):
             raw = raw()
         if raw is None:
+            # daemon 装配形态（fenixd.py 传 config=None）：读 **根** config。
+            # `ConfigLoader.get_code_review_fix_config` 的契约是根形态（内部
+            # `config.get("admin")`），而 `runner._get_config("admin.code_review_fix")`
+            # 按嵌套键路径返回的是**子段**——直接把子段交给读取器会被判定「段缺失」
+            # 而恒返回缺省 disabled，令设置页开关在唯一的生产路径上静默失效
+            # （两路激活都经 checkpoint，整条自动修复车道不生效）。
+            # 直接取 runner.config（与 runner._get_config 同源对象，热更新同样生效）。
             runner = self._agent_runner
-            try:
-                raw = runner._get_config("admin.code_review_fix", {})
-            except Exception:  # noqa: BLE001 — 测试 fake runner 可能无此方法
-                raw = {}
+            root = getattr(runner, "config", None)
+            if isinstance(root, dict):
+                raw = root
+            else:
+                # 退化：runner 无根 config 属性（测试替身）时，把子段回包成根形态
+                try:
+                    seg = runner._get_config("admin.code_review_fix", {})
+                except Exception:  # noqa: BLE001 — 测试 fake runner 可能无此方法
+                    seg = {}
+                raw = {"admin": {"code_review_fix": seg}} if isinstance(seg, dict) else {}
         return ConfigLoader.get_code_review_fix_config(raw or {})
 
     def _code_fix_running(self) -> bool:

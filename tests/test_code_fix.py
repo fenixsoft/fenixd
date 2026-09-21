@@ -542,6 +542,63 @@ def _write_verify_yaml(proot: Path, with_regression=True):
 _CFG_ON = {"admin": {"code_review_fix": {"enabled": True, "batch_size": 20}}}
 
 
+class _RealCfgRunner(_FakeRunner):
+    """对齐真实 AgentRunner 的配置读取：``config`` 为**根**形态，``_get_config``
+    按嵌套键路径返回**子段**（真实 runner 即 `ConfigLoader.get(self.config, key)`）。
+    """
+
+    def _get_config(self, key, default=None):
+        from core.config import ConfigLoader
+
+        return ConfigLoader.get(self.config, key, default)
+
+
+class TestOrchestratorDaemonConfigPath(unittest.TestCase):
+    """daemon 装配形态（config=None）MUST 读到根 config 下的段（生产回归锁）。
+
+    回归锁：`_get_config` 回落原先直接把 `runner._get_config("admin.code_review_fix")`
+    的**子段**交给 `ConfigLoader.get_code_review_fix_config`，而该读取器的契约是
+    **根 config**（内部 `config.get("admin")`）→ 子段里无 `admin` 键 → 判定段缺失
+    → 恒返回缺省 `enabled=False`。fenixd.py 是唯一走 `config=None` 的调用点，故
+    设置页开关打开后整条自动修复车道静默失效（两路激活都经 checkpoint）。
+    既有测试均显式传根形态 config，覆盖不到这条 daemon 路径。
+    """
+
+    def test_daemon_enabled_reads_root_config(self):
+        from core.code_fix import CodeFixOrchestrator
+
+        proot = _make_project_root()
+        runner = _RealCfgRunner(proot)
+        runner.config = {"admin": {"code_review_fix": {"enabled": True, "batch_size": 50}}}
+        orch = CodeFixOrchestrator(runner, proot, config=None, logger=None)
+        cfg = orch._get_config()
+        self.assertTrue(cfg["enabled"],
+                        "config=None（daemon）MUST 读根 config 下的段，"
+                        "不得因子段/根形态错配恒判 disabled")
+        self.assertEqual(cfg["batch_size"], 50)
+
+    def test_daemon_disabled_reads_root_config(self):
+        """反向锁：根 config 段关闭时 MUST 仍判 disabled（不得恒真/硬编码）。"""
+        from core.code_fix import CodeFixOrchestrator
+
+        proot = _make_project_root()
+        runner = _RealCfgRunner(proot)
+        runner.config = {"admin": {"code_review_fix": {"enabled": False}}}
+        orch = CodeFixOrchestrator(runner, proot, config=None, logger=None)
+        self.assertFalse(orch._get_config()["enabled"])
+
+    def test_daemon_checkpoint_no_longer_disabled(self):
+        """端到端：daemon 形态 + 根 config 开启 → checkpoint MUST NOT 返回 disabled。"""
+        from core.code_fix import CodeFixOrchestrator
+
+        proot = _make_project_root()
+        _write_items(proot, {"a": _item("a")})
+        runner = _RealCfgRunner(proot)
+        runner.config = {"admin": {"code_review_fix": {"enabled": True, "batch_size": 20}}}
+        orch = CodeFixOrchestrator(runner, proot, config=None, logger=None)
+        self.assertNotEqual(orch.checkpoint().get("reason"), "disabled")
+
+
 class TestOrchestratorGuards(unittest.TestCase):
     def test_disabled_zero_action(self):
         from core.code_fix import CodeFixOrchestrator
