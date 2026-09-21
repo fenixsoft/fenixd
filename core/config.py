@@ -1162,6 +1162,26 @@ class ConfigLoader:
     STALE_CODE_SELFHEAL_ENABLED_DEFAULT = True
     STALE_CODE_SELFHEAL_IDLE_SECONDS_DEFAULT = 120
     STALE_CODE_SELFHEAL_MAX_SECONDS = 86400  # 仅建议上界（警告不拒绝），保持读取宽容语义
+    # evo-stale-selfheal-restart-cooldown：重启冷却与自触发识别缺省
+    # （窗口 / 阈值 / 锁存时长 / 自触发窗口 / 自触发升级阈值）
+    STALE_CODE_SELFHEAL_COOLDOWN_WINDOW_SECONDS_DEFAULT = 1800
+    STALE_CODE_SELFHEAL_COOLDOWN_THRESHOLD_DEFAULT = 3
+    STALE_CODE_SELFHEAL_COOLDOWN_DURATION_SECONDS_DEFAULT = 600
+    STALE_CODE_SELFHEAL_SELF_TRIGGERED_WINDOW_SECONDS_DEFAULT = 300
+    STALE_CODE_SELFHEAL_SELF_TRIGGERED_THRESHOLD_DEFAULT = 3
+
+    @classmethod
+    def _stale_selfheal_positive_int(cls, section: Dict[str, Any], key: str, default: int) -> int:
+        """取 ``section[key]`` 的正整数，非法/缺失回退 ``default``（不抛异常）。
+
+        bool 是 int 子类须显式排除（``True``/``False`` 不是合法的秒数/次数）；
+        float 取整；``0`` / 负数 / 字符串 / None 一律回退缺省——与
+        ``idle_confirm_seconds`` 同款校验范式（``0`` 不等效关闭）。
+        """
+        value = section.get(key, default)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+            return default
+        return int(value)
 
     @classmethod
     def get_stale_code_selfheal_config(cls, config: Dict[str, Any]) -> Dict[str, Any]:
@@ -1170,6 +1190,11 @@ class ConfigLoader:
         - enabled: 布尔，缺省 True（非布尔回退缺省——布尔缺省语义下非法即用缺省）
         - idle_confirm_seconds: 正整数秒，缺省 120（非整数/负数/0 回退缺省；
           bool 是 int 子类须显式排除）
+        - cooldown_window_seconds / cooldown_threshold / cooldown_duration_seconds /
+          self_triggered_window_seconds / self_triggered_threshold: 正整数，缺省
+          1800 / 3 / 600 / 300 / 3（evo-stale-selfheal-restart-cooldown）。冷却
+          无独立开关，整体关闭走 enabled: false；五键经 .fenix/config.yaml 配置
+          + 30s 热更新生效，本 SPEC 不扩展 Dashboard 面板/写白名单
 
         节缺失、键缺失或值非法时不抛异常、不使 daemon 启动失败；读取走既有
         config 对象，30s 配置热更新自然生效（下一检测周期起采用新值）。
@@ -1191,7 +1216,36 @@ class ConfigLoader:
                 seconds,
                 cls.STALE_CODE_SELFHEAL_MAX_SECONDS,
             )
-        return {"enabled": enabled, "idle_confirm_seconds": seconds}
+        pos = cls._stale_selfheal_positive_int
+        return {
+            "enabled": enabled,
+            "idle_confirm_seconds": seconds,
+            "cooldown_window_seconds": pos(
+                section,
+                "cooldown_window_seconds",
+                cls.STALE_CODE_SELFHEAL_COOLDOWN_WINDOW_SECONDS_DEFAULT,
+            ),
+            "cooldown_threshold": pos(
+                section,
+                "cooldown_threshold",
+                cls.STALE_CODE_SELFHEAL_COOLDOWN_THRESHOLD_DEFAULT,
+            ),
+            "cooldown_duration_seconds": pos(
+                section,
+                "cooldown_duration_seconds",
+                cls.STALE_CODE_SELFHEAL_COOLDOWN_DURATION_SECONDS_DEFAULT,
+            ),
+            "self_triggered_window_seconds": pos(
+                section,
+                "self_triggered_window_seconds",
+                cls.STALE_CODE_SELFHEAL_SELF_TRIGGERED_WINDOW_SECONDS_DEFAULT,
+            ),
+            "self_triggered_threshold": pos(
+                section,
+                "self_triggered_threshold",
+                cls.STALE_CODE_SELFHEAL_SELF_TRIGGERED_THRESHOLD_DEFAULT,
+            ),
+        }
 
     @classmethod
     def get_self_evolution_config(cls, config: Dict[str, Any]) -> Dict[str, Any]:

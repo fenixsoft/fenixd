@@ -238,14 +238,30 @@ supervisor 每次启动时原子覆写 `.fenix/supervisor_runtime.json`，供 da
 |----|--------|------|---------|
 | enabled | `true` | bool | 热更新（下一检测周期生效） |
 | idle_confirm_seconds | `120` | 正整数秒（建议 ≤ 86400，过大仅警告不拒绝） | 热更新（下一检测周期生效） |
+| cooldown_window_seconds | `1800` | 正整数秒（重启计数滑动窗口） | 热更新（下一检测周期生效） |
+| cooldown_threshold | `3` | 正整数（窗口内自愈重启次数阈值） | 热更新（下一检测周期生效） |
+| cooldown_duration_seconds | `600` | 正整数秒（冷却锁存时长） | 热更新（下一检测周期生效） |
+| self_triggered_window_seconds | `300` | 正整数秒（自触发检测窗口） | 热更新（下一检测周期生效） |
+| self_triggered_threshold | `3` | 正整数（自触发 streak 升级阈值） | 热更新（下一检测周期生效） |
 
 ```yaml
 stale_code_selfheal:
   enabled: true        # 关闭后不再自动触发重启，但陈旧状态与告警仍产生
   idle_confirm_seconds: 120
+  # 重启冷却（evo-stale-selfheal-restart-cooldown）：冷却**无独立开关**，整体关闭
+  # 走 enabled: false；五键非正整数回退缺省（`0` 不等效关闭）。经 .fenix/config.yaml
+  # 配置 + 30s 热更新生效；Dashboard 面板未暴露这五键（面板只读写上面两键，
+  # 保存面板不会清除本节的文件侧冷却键）。
+  cooldown_window_seconds: 1800       # 窗口内自愈重启 ≥ cooldown_threshold 即进入冷却
+  cooldown_threshold: 3
+  cooldown_duration_seconds: 600      # 首次进入冷却起锁存 600s，期间暂停自愈触发
+  self_triggered_window_seconds: 300  # 距上次重启 < 该值又判可触发 → 仅告警、不重启
+  self_triggered_threshold: 3         # 连续自触发重启周期达 3 次 → critical 告警
 ```
 
-语义：daemon 每 30s 检测点比对 `fenixd.py` + `core/**/*.py` 的 mtime 与进程启动 baseline，命中即置「陈旧」持续状态，除日志 WARNING 外写一条 `signal_type: stale_code`、`severity: warning` 的 escalation 告警（写入即自动标记已处理，不进人工告警横幅/待处理队列，仅运维记录页可见；状态边沿触发，单周期内不重复堆积）。当 陈旧为真 + `enabled: true` + 项目受 supervisor 托管 + 连续空闲达到 `idle_confirm_seconds`（空闲 = 无活跃 agent run 且无 admin 处置在途任务）时，daemon touch `.fenix/restart_request`，supervisor 执行优雅重启使新代码生效；重启后新 baseline 刷新，陈旧状态自然解除。任一活跃信号出现立即清零空闲计时。未受托管的项目（`unmanaged`）不自愈——`restart_request` 无人消费，写它只会制造死信，此时仅维持陈旧告警，等待经 Dashboard「安装托管」或 `/fenix-setup` 恢复托管。自动重启引入的新代码若无法启动，supervisor 会在连续 3 次启动后 60 秒内崩溃时熔断停止拉起并落 critical 告警，不会无限重启（见[保障机制](07-safeguards.md#代码陈旧自愈与启动失败熔断)）。
+语义：daemon 每 30s 检测点比对 `fenixd.py` + `core/**/*.py` 的 mtime 与进程启动 baseline，命中即置「陈旧」持续状态，除日志 WARNING 外写一条 `signal_type: stale_code`、`severity: warning` 的 escalation 告警（写入即自动标记已处理，不进人工告警横幅/待处理队列，仅运维记录页可见；状态边沿触发，单周期内不重复堆积）。当 陈旧为真 + `enabled: true` + 项目受 supervisor 托管 + 连续空闲达到 `idle_confirm_seconds`（空闲 = 无活跃 agent run（`pm_engine._active_runs` 与 `agent_runner._running_agents` 双源，后者覆盖不占 `_active_runs` 的在飞评审 run）且无 admin 处置在途任务）时，daemon touch `.fenix/restart_request`，supervisor 执行优雅重启使新代码生效；重启后新 baseline 刷新，陈旧状态自然解除。任一活跃信号出现立即清零空闲计时。未受托管的项目（`unmanaged`）不自愈——`restart_request` 无人消费，写它只会制造死信，此时仅维持陈旧告警，等待经 Dashboard「安装托管」或 `/fenix-setup` 恢复托管。自动重启引入的新代码若无法启动，supervisor 会在连续 3 次启动后 60 秒内崩溃时熔断停止拉起并落 critical 告警，不会无限重启（见[保障机制](07-safeguards.md#代码陈旧自愈与启动失败熔断)）。
+
+**重启冷却与自触发识别**（`cooldown_*` / `self_triggered_*` 五键，`evo-stale-selfheal-restart-cooldown`）：每次自愈重启都会向 `.fenix/restart_history.jsonl` 追加一条 `{"ts", "self_triggered", "self_triggered_streak"}`（超 24 小时的条目在检测点自动清理）。触发重启前先查冷却：`cooldown_window_seconds`（缺省 1800s）窗口内自愈重启次数 ≥ `cooldown_threshold`（缺省 3），**或**冷却锁存未到期（自首次进入冷却起 `cooldown_duration_seconds`，缺省 600s——锁存期内即使窗口计数因条目老化回落仍保持冷却）→ 跳过触发并清零空闲计时，首次进入时落一条 `signal_type: stale_selfheal_cooldown`、`severity: warning` 的 escalation 告警（边沿一次，不逐周期堆积）。此外，距上次自愈重启不足 `self_triggered_window_seconds`（缺省 300s）又检测到陈旧再现时判为**自触发型陈旧**：只记一条 WARNING、不写 `restart_request`（此刻重启只会延长循环），该重启周期被标记为自触发，窗口过期后由后续周期照常收尾（同一段连续空闲即触发），并按持久化规则累计 `self_triggered_streak`（窗口内延续 → streak + 1；过期重启 → 归零），streak 达 `self_triggered_threshold`（缺省 3）时升 `signal_type: stale_selfheal_loop`、`severity: critical` 告警，交人工判断是否为 evo run / 代码更新循环。冷却与自触发**无独立开关**：整体关闭即 `enabled: false`。
 
 ### self_evolution（框架自进化）
 
