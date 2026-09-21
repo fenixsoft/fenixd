@@ -2,7 +2,7 @@
 
 ### 浪费
 - **Stale selfheal 重启风暴：06:19-07:06 连续 27 次重启杀评审 run**
-  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：接受 · 删除：否
   - 影响：06:19 至 07:06+ 连续触发 27 次 stale_code_selfheal 重启（窗口内共 93 次），daemon 每 2-3 分钟重启一次。06:33:20 重启时 SIGTERM 杀死正在运行的 add-test-regression-tab 评审 run（仅跑了 3 轮即 Exit 143），该评审的全部工作量（~3 轮对话 + 启动开销）作废。整个风暴期间 daemon 反复执行全量 STATE.md 扫描（每次 270+ spec），造成无意义 I/O 和 CPU 消耗。
   - 证据：fenixd.log 统计："陈旧自愈触发" 窗口内共 93 条，其中 06-07 点 27 条。06:33:20 agent_runner Sent SIGTERM to running agent: spec-review-add-test-regression-tab-1789885982 → 06:33:21 Exit code: 143（3 rounds, median 3.5s）。每次重启间隔约 2-3 分钟（06:19→06:25→06:28→06:30→06:33→06:37→06:41→06:45→06:48→06:51→06:54→06:57→06:59→07:02→07:06），supervisor 日志确认每次都是 restart_request detected — SIGTERM daemon for restart。
   - 调查评估：在处置 evo-self-review-runs-archive-stats/evo-merge-back-spec-dir-inflight-guard（implementing）与 add-freeze-stop-inflight-agents（reviewing）等 SPEC 期间暴露。已核实 fenixd.log 与 supervisor.log 时间线吻合。根因：stale_code_selfheal 检测到 core/**/*.py mtime 超 baseline 后触发重启，但重启后新进程的 baseline 又立即超（可能有实现中的 worktree 持续向主树提交核心代码，或 evolution checkpoint 修改了 registry.py），形成'重启→检测→重启'正反馈循环。add-stale-code-selfheal 机制缺少'连续重启后冷却'保护——_maybe_stale_selfheal_tick 只在 restart_request 不存在时触发，但 supervisor 每次消费后立即清除文件，导致下一轮检测立刻续上。与既有 SPEC 关系：evo-sigterm-source-tracking-cooldown（已 pushed）覆盖 SIGTERM 来源追踪，但不覆盖重启风暴的冷却节流；add-freeze-stop-inflight-agents 覆盖冻结/删除时停 agent，但不覆盖 daemon 重启场景。结论：这是 stale selfheal 设计层面的冷却缺口，与前述两个 SPEC 互补但未被覆盖。
@@ -17,7 +17,7 @@
 
 ### 失误
 - **Evolution checkpoint 写坏 registry.py 触发重启风暴加剧**
-  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：拒绝 · 删除：否
   - 影响：06:24:43 Evolution checkpoint failed: 'expected an indented block after function definition on line 167 (registry.py, line 168)'。evo analysis run 修改了 core/dashboard/registry.py 但留下了 Python 语法错误，导致后续 daemon 每次启动 import registry.py 时触发异常，且修改本身刷新了文件 mtime → 立即触发 stale 检测 → 又重启，与 #1 的重启风暴形成闭环。
   - 证据：fenixd.log 06:24:43 ERROR Evolution checkpoint failed: expected an indented block after function definition on line 167 (registry.py, line 168)。当前仓库 registry.py 第 167-168 行为 '@staticmethod' 定义（正常），说明语法错误已被后续提交修复（或 evo run 回滚）。git log -- core/dashboard/registry.py 窗口内无直接提交，错误来源为 evo analysis run 的运行时文件修改。
   - 调查评估：在处置 evo-self-review-runs-archive-stats/evo-merge-back-spec-dir-inflight-guard 的 implementer 阶段暴露。已核实 fenixd.log、当前 registry.py 内容与 _check_evolution_checkpoint 代码（fenixd.py:1640）。根因：evolution analysis run 有权修改 core/ 下的文件（如 registry.py）以推进自进化，但写入后未做 py_compile 校验即落盘，导致语法错误的代码被持久化。该错误直接加剧了 #1 的重启风暴——daemon 重启后 import registry.py → 成功（修复后）/失败（修复前）→ 不管哪种，文件 mtime 已变 → stale 触发。与 add-freeze-stop-inflight-agents 无直接关系，但与 evo 机制的可靠性缺口相关。结论：evo run 的写入缺少原子性校验，属于实现层面失误。

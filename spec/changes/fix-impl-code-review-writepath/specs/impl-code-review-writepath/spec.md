@@ -17,6 +17,14 @@
 - **WHEN** `verify.impl_code_review` 为 `false`
 - **THEN** 提示词 MUST NOT 包含收尾审查段，且 MUST 与未引入本 change 时逐字节一致
 
+#### Scenario: 收紧后报告路径字样仍可达
+
+- **WHEN** 收尾审查段按本要求与 D4 收敛了 raw_copy 路径表述（去掉主树绝对路径字样）
+- **THEN** 该段 MUST 仍可识别出报告落盘字样
+  `.fenix/verify-progress/<spec>/code-review.json`（相对、worktree 内、供门读取），
+  MUST NOT 因收敛而删去报告落盘指示；且该段 MUST NOT 残留主树
+  verify-progress 的绝对路径字样
+
 ### Requirement: 工作目录契约显式区分两台树
 
 `agents/implementer.md` 与 `agents/fast-track.md` 的「工作目录（worktree 隔离，强制）」

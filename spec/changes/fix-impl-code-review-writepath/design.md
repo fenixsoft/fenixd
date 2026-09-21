@@ -53,6 +53,24 @@ planner 成立的）事实**外溢**到了 implementer 车道，而 implementer 
 >   注意：这是**当前工作目录（worktree）内**的 `.fenix/verify-progress/`，不是主树的同名目录；
 >   写主树同名目录会被产物硬门判为「报告缺失」。
 
+### D4 raw_copy 路径表述与 D2 同步收敛
+
+`_impl_code_review_section` 内除 `report_path`（`:649`）外的**第二处**路径字样是 raw_copy 段
+（`raw_copy_path`，`:650` 与后续分支）：该段会把**主树 verify-progress 的绝对路径**字符串
+嵌进提示词。D2 去掉该车道的 `--add-dir <主树>/verify-progress` 后，若仍保留该绝对路径字样，
+提示词里会留下一处「被显式引用、却已不在授权目录内」的主树路径——二义照旧存在，只是换了
+位置。二者 MUST 同轮一起收敛，取以下任一写法（实现者择一，须与 §4.2 断言同步）：
+
+- 改为 worktree 内相对路径表述，或
+- 明确写成「该文件仅框架读取、无需你写」（不给出可执行落点）。
+
+**不变量**：无论取哪种写法，报告路径（相对、worktree 内、供门读取）字样 MUST 仍可被识别
+（见 spec「收紧后报告路径字样仍可达」Scenario）——不得因去掉绝对路径字样而连带删掉报告
+落盘指示。
+
+**理由**：本 SPEC 的全部价值在「消除诱导」，判据是提示词对实现者**只**指向 worktree 一处
+落点；留下任何主树绝对路径字样都让该判据失效（测试只看若干字样，看不出二义）。
+
 **理由**：根因是措辞歧义。事实层面 implementer 的 `code-review.json`（门读 worktree）、
 fast-track 的 `{result_path}`/`{scenarios_path}`（主树，经 `--add-dir`）语义本就不同，
 提示词必须逐车道说清，不能让「验证进度目录」一词同时指两棵树。

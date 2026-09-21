@@ -102,7 +102,7 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
             rules={[{ required: true, message: '请输入每日运行限额' }]}
             style={{ marginTop: 24 }}
           >
-            <InputNumber min={0} step={1} style={{ width: '100%' }} addonAfter="次/日" />
+            <InputNumber min={0} step={1} style={{ width: '100%' }} addonAfter="次" />
           </Form.Item>
           <Text type="secondary">
             默认 50。单个 UTC 自然日内所有 Agent 类型成功运行的累计上限（实现/验证/管理共用一个池），达到后当日停止派发，UTC 次日 0 点自动归零。设为 0 表示不限制。

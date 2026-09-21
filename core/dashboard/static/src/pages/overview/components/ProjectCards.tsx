@@ -306,20 +306,20 @@ export default function ProjectCards({
                 description={
                   project.exists ? (
                     <div>
-                      {/* 项目路径显示在简介上方 */}
-                      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                      {/* 项目路径显示在简介上方（code 标签样式对齐代码审查分面「文件:行」） */}
+                      <Typography.Text code style={{ fontSize: 12, display: 'block', width: 'fit-content', marginBottom: 4 }}>
                         {project.path}
                       </Typography.Text>
                       {/* 简介：pre-wrap 保留原文换行，空值占位 */}
                       {project.description ? (
                         <Typography.Paragraph
-                          style={{ marginBottom: 0, fontSize: 12, whiteSpace: 'pre-wrap' }}
+                          style={{ marginBottom: 4, fontSize: 12, whiteSpace: 'pre-wrap' }}
                           type="secondary"
                         >
                           {project.description}
                         </Typography.Paragraph>
                       ) : (
-                        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                        <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 4 }}>
                           暂无简介
                         </Typography.Text>
                       )}

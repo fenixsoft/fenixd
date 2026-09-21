@@ -47,6 +47,15 @@ body {
   white-space: nowrap;
 }
 
+// 带单位（addonAfter）的 InputNumber 会被 antd v6 包进 .ant-space-compact
+// （display: inline-flex，宽度由内容决定）——内层 input 的 width:100% 只撑到
+// 该包装器，包装器本身仍收窄到内容宽度（约 237px），同一表单里带单位与不带
+// 单位的输入框宽度因此不一致。把设置页表单里的紧凑包装器拉满，宽度口径回到
+// 与其它控件一致（100% 减去附加框自身宽度）。
+#root .settings-page .ant-form-item-control-input-content > .ant-space-compact {
+  width: 100%;
+}
+
 // 设置项与紧随其后的注释文字：注释须贴近所属设置项——前置 Form.Item/开关行的
 // 24px 下边距压到 8px；注释自身带 24px 下边距与下一设置项分隔（块流中与后者
 // 显式 marginTop:24 折叠取大，全页节奏统一「8 / 24」）
