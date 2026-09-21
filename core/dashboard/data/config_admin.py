@@ -1048,6 +1048,23 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
         ):
             if ak in patch["admin"] and patch["admin"][ak] is not None:
                 merged["admin"][ak] = patch["admin"][ak]
+        # add-code-review-auto-fix：「同步用户级设置」按 _SYNC_PAGE_KEYS 构造
+        # {"admin": {"code_review_fix": {...}}} 形态的 patch 进入本分支（顶层
+        # code_review_fix 键只有设置页保存路径走）——不在此显式合并子段，该值
+        # 会被上面的标量白名单静默丢弃，sync 返回 ok 但项目配置未落盘（ocr
+        # 审查实证，正是上方 regression 注释点名的「缺分支静默丢弃保存」坑）。
+        crf_sync = patch["admin"].get("code_review_fix")
+        if isinstance(crf_sync, dict):
+            existing_crf = merged["admin"].get("code_review_fix")
+            if not isinstance(existing_crf, dict):
+                existing_crf = {}
+            merged_crf = dict(existing_crf)
+            if isinstance(crf_sync.get("enabled"), bool):
+                merged_crf["enabled"] = crf_sync["enabled"]
+            _bs = crf_sync.get("batch_size")
+            if isinstance(_bs, int) and not isinstance(_bs, bool) and _bs > 0:
+                merged_crf["batch_size"] = _bs
+            merged["admin"]["code_review_fix"] = merged_crf
     # description 分支：patch 顶层 description（str）写入 merged["project"]["description"]
     if "description" in patch and isinstance(patch["description"], str):
         if not isinstance(merged.get("project"), dict):

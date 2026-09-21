@@ -36,6 +36,8 @@ AGENT_PROMPT_FILES = {
     "evolution": "evolution.md",
     "spec-review": "spec-review.md",
     "code-review": "code-review.md",
+    # add-code-review-auto-fix：新增 code-fix（自动修复车道 agent，可改码）。
+    "code-fix": "code-fix.md",
 }
 
 
@@ -269,6 +271,11 @@ class PromptBuilder:
         # 增量落盘路径）。
         if agent_type == "code-review":
             return self._build_code_review_prompt(spec_name, detail or {})
+
+        # add-code-review-auto-fix：code-fix（自动修复车道）run prompt 独立
+        # 构建（无 spec 维度占位符，注入本批条目 JSON、产物路径与 worktree）。
+        if agent_type == "code-fix":
+            return self._build_code_fix_prompt(spec_name, detail or {})
 
         template = self._load_agent_template(agent_type)
         prompt = self._fill_placeholders(template, agent_type, spec_name, detail)

@@ -64,9 +64,9 @@
 
 ## 1. 配置层（`admin.code_review_fix.*`）
 
-- [ ] 1.1 在 `core/config.py` 的 `KNOWN_AGENT_TYPES` 追加 `"code-fix"`（附注释：不登记会被 `_hash_gate` 静默跳过 `agents.models.code-fix` 并回退默认网关）
-- [ ] 1.2 在 `core/config.py` 新增 `ConfigLoader.get_code_review_fix_config(config)`：读取 `admin.code_review_fix` 段，`enabled` 缺省 False 且严格 bool（非 bool 回退 False）、`batch_size` 缺省 20 且必须为正整数（bool / ≤0 / 非整数回退 20）；段非 dict 视为缺省；docstring 说明缺省语义与「关闭=全链路零动作」
-- [ ] 1.3 在 `tests/test_code_fix.py` 断言 `get_code_review_fix_config` 的缺省/非法值回退矩阵、`code-fix` 在 `KNOWN_AGENT_TYPES` 中（`core/config.py:118-132`，紧邻既有 `"code-review"`）
+- [x] 1.1 在 `core/config.py` 的 `KNOWN_AGENT_TYPES` 追加 `"code-fix"`（附注释：不登记会被 `_hash_gate` 静默跳过 `agents.models.code-fix` 并回退默认网关）
+- [x] 1.2 在 `core/config.py` 新增 `ConfigLoader.get_code_review_fix_config(config)`：读取 `admin.code_review_fix` 段，`enabled` 缺省 False 且严格 bool（非 bool 回退 False）、`batch_size` 缺省 20 且必须为正整数（bool / ≤0 / 非整数回退 20）；段非 dict 视为缺省；docstring 说明缺省语义与「关闭=全链路零动作」
+- [x] 1.3 在 `tests/test_code_fix.py` 断言 `get_code_review_fix_config` 的缺省/非法值回退矩阵、`code-fix` 在 `KNOWN_AGENT_TYPES` 中（`core/config.py:118-132`，紧邻既有 `"code-review"`）
 
 ## 2. code-fix agent 注册与提示词
 

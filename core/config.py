@@ -129,6 +129,11 @@ class ConfigLoader:
         # 代码审查）。不登记会被 _hash_gate 静默跳过 agents.models.code-review
         # 并回退默认网关（dispute-judge 前科）。
         "code-review",
+        # add-code-review-auto-fix: code-fix（自动修复车道 agent）。不登记会被
+        # _hash_gate 静默跳过 agents.models.code-fix 并回退默认网关——模型链
+        # （code-fix → code-review → self-review → administrator → 默认网关）中
+        # code-review 级回退将失效，恒走默认网关。
+        "code-fix",
     ]
 
     # ── run_timeout 按 agent_type 覆盖（per-agent-timeout-override）──────
@@ -1283,6 +1288,36 @@ class ConfigLoader:
         return {
             "enabled": bool(cr.get("enabled", False)),
             "max_files": int(max_files),
+        }
+
+    @classmethod
+    def get_code_review_fix_config(cls, config: Dict[str, Any]) -> Dict[str, Any]:
+        """Return the ``admin.code_review_fix.*`` 段，缺失项填默认值。
+
+        默认值（add-code-review-auto-fix D9）：
+        - enabled: False（总开关；关闭 = 全链路零动作——不选批、不派 run、
+          不写进度。严格 bool：非 bool 值（如字符串/数字）回退 False）
+        - batch_size: 20（每批条目数；必须为正整数，bool / ≤0 / 非整数
+          回退 20）
+        段缺失或非 dict 时整体视为缺省，不抛异常。
+        """
+        admin = config.get("admin") if isinstance(config, dict) else None
+        crf = admin.get("code_review_fix") if isinstance(admin, dict) else None
+        if not isinstance(crf, dict):
+            crf = {}
+        enabled = crf.get("enabled", False)
+        if not isinstance(enabled, bool):
+            enabled = False
+        batch_size = crf.get("batch_size", 20)
+        if (
+            not isinstance(batch_size, int)
+            or isinstance(batch_size, bool)
+            or batch_size <= 0
+        ):
+            batch_size = 20
+        return {
+            "enabled": enabled,
+            "batch_size": int(batch_size),
         }
 
     @classmethod
