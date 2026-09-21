@@ -342,6 +342,69 @@ class H3SpecRoutesMixin:
         self._json(resp)
 
 
+    def _api_spec_resume(self, query) -> dict:
+        """POST /api/spec-resume?project=<name>&spec=<name>
+        body: 无参
+
+        恢复取消保持态 SPEC（add-cancelled-spec-resume-action D1）：复位 ready
+        并按保留分支续做（无可保留分支时降级全新重派），后写 scheduling_kick
+        即时唤醒派发。错误语义对齐 spec-activate：
+        - project 缺失/不存在 → 404；spec 不在项目 STATE.md → 404
+        - 终态（done/pushed）→ 403「终态不可恢复」
+        - 冻结态 / 非取消保持态 / WorktreeManager 构造失败 → 200 +
+          {ok: false, reason}（STATE 零变更，幂等拒绝）
+        - 成功 → 200 + {ok: true, spec, degraded?, reason?, warning?}
+          degraded=true 表示无可保留分支、已降级全新重派；warning 表示即时
+          唤醒信号写出失败（STATE 已复位，将由下次扫描派发）
+        """
+        spec = query.get("spec", [None])[0]
+        project = self._project_from_query(query)
+        if project is None:
+            self._error(404, "unknown project")
+            return
+        if not project.get("exists"):
+            self._error(404, "project not found")
+            return
+        if not spec:
+            self._error(404, "spec required")
+            return
+        proot = Path(project["path"])
+        try:
+            result = dashboard_data.resume_cancelled_spec(proot, spec)
+        except Exception as e:  # noqa: BLE001 兜底：写回异常不崩溃进程
+            self._error(500, f"resume spec failed: {e}")
+            return
+        if not result.get("found"):
+            self._error(404, result.get("error") or "spec not found")
+            return
+        if result.get("terminal"):
+            self._error(403, result.get("error") or "终态不可恢复")
+            return
+        if not result.get("ok"):
+            # 幂等拒绝（非取消保持态 / 冻结态 / wm 构造失败）：200 + reason
+            self._json(
+                {
+                    "ok": False,
+                    "project": project["name"],
+                    "spec": spec,
+                    "reason": result.get("reason") or "该 SPEC 并非取消保持态",
+                }
+            )
+            return
+        resp = {
+            "ok": True,
+            "project": project["name"],
+            "spec": spec,
+        }
+        if result.get("degraded"):
+            resp["degraded"] = True
+        if result.get("reason"):
+            resp["reason"] = result.get("reason")
+        if result.get("warning"):
+            resp["warning"] = result.get("warning")
+        self._json(resp)
+
+
     def _api_spec_freeze_config(self, query) -> dict:
         """POST /api/spec-freeze-config?project=<name>&spec=<name>
         body: {"mode": "permanent"|"scheduled"|"unfreeze", "until": "<iso-utc>"?}

@@ -40,6 +40,7 @@ import {
   setSpecBudget,
   setSpecFreezeConfig,
   activateSpec,
+  resumeSpec,
   setSpecStartAfter,
 } from '@/services/dashboard';
 import type { SpecSummary } from '@/services/dashboard';
@@ -98,6 +99,9 @@ export default function SpecStatusModal({
   const nonTerminal = summary && !terminal;
   // fix-impl-tasks-completion-gate P1′：task-gap 拦截滞留 verified 的可回炉判定
   const taskGapStuck = isTaskGapStuck(summary);
+  // add-cancelled-spec-resume-action D4：取消保持态（人工取消 run 的有意等待）
+  // 的「恢复运行」区块渲染判据——终态之外才可恢复。
+  const cancelledHold = summary?.cancelled_hold === true;
 
   // 打开时初始化预算覆盖值
   useEffect(() => {
@@ -344,6 +348,58 @@ export default function SpecStatusModal({
     });
   }, [project, spec, summary, onDone, message, appModal]);
 
+  // ── 恢复运行（取消保持态，add-cancelled-spec-resume-action D4） ──────────
+  // 取消保持态（_cancelled_hold: true）是「有意等待」：全部自动恢复链路对其
+  // 跳过，本区块是其唯一界面出口。确认后调用 /api/spec-resume 复位 ready：
+  // 有保留分支时按保留分支续做（不丢已提交成果），无可保留分支时降级全新重派
+  // （degraded=true 独立提示）。恢复=立即派发实现，消耗一次实现尝试预算，
+  // 确认文案必须明示。被拒绝（非保持态/冻结/终态）时展示后端拒绝原因。
+  const handleResume = useCallback(() => {
+    if (!summary) return;
+    appModal.confirm({
+      title: '恢复运行 SPEC',
+      content: (
+        <div style={{ whiteSpace: 'pre-wrap' }}>
+          {`确认恢复运行 SPEC「${summary.name}」？\n\n`}
+          该 SPEC 因 run 被人工取消而挂起等待。恢复将复位为 ready 并即时唤醒派发：
+          有保留分支时在保留分支上续做（已提交成果不丢失）；无可保留分支时
+          降级为全新重派。
+          {'\n'}恢复会消耗一次实现尝试预算。
+        </div>
+      ),
+      okText: '恢复运行',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: async () => {
+        setLoading(true);
+        try {
+          const result = await resumeSpec(project, spec);
+          if (result.ok) {
+            if (result.degraded) {
+              message.warning(
+                `SPEC「${spec}」无可保留分支，已降级全新重派：${result.reason || ''}`,
+              );
+            } else {
+              message.success(`SPEC「${spec}」已复位 ready，daemon 将在保留分支上续做`);
+            }
+            // 即时唤醒信号写出失败：成功/降级两分支均须如实告知
+            // （降级消息本身不携带「由下次扫描派发」语义，单独提示）
+            if (result.warning) {
+              message.warning(result.warning);
+            }
+            onDone();
+          } else {
+            message.error(`恢复被拒绝：${result.reason || '该 SPEC 并非取消保持态'}`);
+          }
+        } catch (err) {
+          message.error(`恢复失败：${err instanceof Error ? err.message : String(err)}`);
+        } finally {
+          setLoading(false);
+        }
+      },
+    });
+  }, [project, spec, summary, onDone, message, appModal]);
+
   // ── 预算保存（setSpecBudget） ──────────────────────
   const handleBudgetSave = useCallback(async () => {
     setLoading(true);
@@ -472,6 +528,22 @@ export default function SpecStatusModal({
               loading={loading}
             >
               审批推送
+            </Button>
+          </div>
+        )}
+
+        {/* ── 恢复运行区块（取消保持态非终态；add-cancelled-spec-resume-action D4） ── */}
+        {cancelledHold && nonTerminal && (
+          <div style={{ marginBottom: 16 }}>
+            <Typography.Text strong style={{ fontSize: 14 }}>恢复运行</Typography.Text>
+            <Typography.Paragraph type="secondary" style={{ margin: '4px 0 8px' }}>
+              该 SPEC 因 run 被人工取消而处于取消保持态，daemon 全部自动恢复链路
+              对其跳过，需显式恢复。恢复将复位为 ready 并即时唤醒派发：有保留
+              分支时在保留分支上续做（已提交成果不丢失）；无可保留分支时降级为
+              全新重派。恢复会消耗一次实现尝试预算。
+            </Typography.Paragraph>
+            <Button danger onClick={handleResume} loading={loading}>
+              恢复运行
             </Button>
           </div>
         )}
