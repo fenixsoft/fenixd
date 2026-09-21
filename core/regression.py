@@ -534,6 +534,7 @@ def run_regression(
     project_root,
     spec: RegressionSpec,
     logger=None,
+    lock_root=None,
 ) -> Dict[str, Any]:
     """执行一次全量回归：加锁 → spawn cmd → 超时中止 → 解析 XML → 写盘。
 
@@ -544,6 +545,12 @@ def run_regression(
     - XML 不可解析 → status: parse_error（附非空 reason）；
     - 主机级锁互斥（D7）；拿不到锁即放弃并记日志。
 
+    lock_root（add-code-review-auto-fix D10）：主机级锁锚定根。缺省 None
+    回落 project_root（既有调用点零迁移）；非 None 时锁文件取
+    ``lock_root/.fenix/full-suite.lock`` 而 cwd 与产物仍取 project_root——
+    供 worktree 内回归（执行根=worktree）与主树共用同一把锁，串行化
+    同一主机的全量测试。
+
     返回值包含 status（passed/failed/timeout/parse_error）+ 计数 +
     时间 + failures + long_tests（design D6）。
     """
@@ -553,8 +560,11 @@ def run_regression(
     output_rel = str(spec.output)
     output_abs = Path(project_root) / output_rel
 
-    # D7: 主机级锁互斥——同一主机只允许一套全量测试
-    lock = _SuiteLock(project_root, log_fn=lambda m: log.info("regression", m))
+    # D7: 主机级锁互斥——同一主机只允许一套全量测试（D10：锁根可锚定主树）
+    lock = _SuiteLock(
+        lock_root if lock_root is not None else project_root,
+        log_fn=lambda m: log.info("regression", m),
+    )
     with lock:
         if not lock.acquired:
             # 放弃本次（D7：首版不重试，单快照语义下无历史可查）
@@ -701,17 +711,22 @@ def run_and_write_regression(
     project_root,
     spec: RegressionSpec,
     logger=None,
+    lock_root=None,
 ) -> Dict[str, Any]:
     """执行回归并写入快照盘（write_result），返回结果 dict。
 
     供 maintenance_runs.run_regression / admin_monitor checkpoint 调用。
     起跑前写运行中标记（供 POST /api/regression/run 的 409 守卫与分面
     「运行中」判定），收尾 finally 清除——崩溃残留由新鲜度判定兜底。
+
+    lock_root（add-code-review-auto-fix D10）：透传给 run_regression 的
+    主机级锁锚定根（缺省 None 回落 project_root，既有调用点零迁移）。
+    worktree 内回归传 ``lock_root=<主树根>`` 使其与主树共用同一把锁。
     """
     log = logger or _default_logger
     mark_running(project_root, spec.timeout_seconds)
     try:
-        result = run_regression(project_root, spec, logger=log)
+        result = run_regression(project_root, spec, logger=log, lock_root=lock_root)
         if result.get("status") != "skipped":
             write_result(project_root, result)
             log.info(

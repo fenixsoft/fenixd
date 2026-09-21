@@ -126,6 +126,9 @@ def _get_code_review_items(s, p, q, m):
 def _get_code_review_progress(s, p, q, m):
     s._api_code_review_progress(q)
 
+def _get_code_review_fix_progress(s, p, q, m):
+    s._api_code_review_fix_progress(q)
+
 # ── regression（add-test-regression-tab）──────────────────────────
 
 def _get_regression_result(s, p, q, m):
@@ -321,6 +324,8 @@ _API_GET_ROUTES = [
     # code-review（add-code-review-agent-and-quality-tab）：台账与进度（GET，无副作用）
     ("exact", "/api/code-review/items", _get_code_review_items),
     ("exact", "/api/code-review/progress", _get_code_review_progress),
+    # code-review 自动修复进度（add-code-review-auto-fix，GET，无副作用）
+    ("exact", "/api/code-review/fix-progress", _get_code_review_fix_progress),
     # regression（add-test-regression-tab）：最近一次回归快照（GET，无副作用）
     ("exact", "/api/regression/result", _get_regression_result),
     # regression：verify.yaml regression 段配置状态（GET，无副作用）

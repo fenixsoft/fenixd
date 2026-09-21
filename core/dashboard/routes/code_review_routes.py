@@ -55,6 +55,20 @@ class H11CodeReviewRoutesMixin:
             return
         self._json(dashboard_data.read_code_review_progress(str(project["path"])))
 
+    def _api_code_review_fix_progress(self, query):
+        """GET /api/code-review/fix-progress?project=<name>（task 8.2）
+
+        自动修复进度只读端点（无副作用）：返回
+        ``{running, phase, total, done, current, batch_no, reason,
+        activation_id}``。项目不存在 → 404；进度文件缺失 → 缺省态（MUST
+        NOT 500，形态对齐 _api_code_review_progress）。
+        """
+        project = self._project_from_query(query)
+        if project is None or not project.get("exists"):
+            self._error(404, "project not found")
+            return
+        self._json(dashboard_data.read_code_review_fix_progress(str(project["path"])))
+
     def _api_code_review_run(self, query):
         """POST /api/code-review/run — body {project, scope: "full"|"window"}
 

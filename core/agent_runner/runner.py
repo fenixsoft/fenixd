@@ -117,6 +117,7 @@ from core.agent_runner.maintenance_runs import (
     admin_disposition_path,
     run_administrator,
     run_code_review,
+    run_code_fix,
     run_evolution,
     run_regression,
     run_self_review,
@@ -452,6 +453,10 @@ class AgentRunner:
         "run_self_review": run_self_review,
         "run_evolution": run_evolution,
         "run_code_review": run_code_review,
+        # add-code-review-auto-fix（task 6.4）：code-fix 运维车道同处注册。
+        # code-fix 不在 _execute_agent 路径（不占 spec 维度预算、不计入每日
+        # agent run 计数），仅经本转发表被编排器调用。
+        "run_code_fix": run_code_fix,
         "run_regression": run_regression,
         "_get_admin_model": _get_admin_model,
         "_check_agent_result_artifact": _check_agent_result_artifact,

@@ -202,6 +202,17 @@ class EventBus:
             f"total={len(current_specs)}",
         )
 
+        # 自动修复周期兜底激活（add-code-review-auto-fix，task 7.2 / design D4
+        # 路径二）：每轮 full scan 末尾触发一次编排检查点，覆盖 daemon 重启、
+        # 异常中断后的续做。经可选的 code_fix_orchestrator（未装配时静默跳过，
+        # 形态对齐既有可选组件调用）；异常记 WARNING 不阻断扫描。
+        _fix_orch = getattr(self, "code_fix_orchestrator", None)
+        if _fix_orch is not None:
+            try:
+                _fix_orch.checkpoint()
+            except Exception as e:  # noqa: BLE001 — 兜底激活失败不影响扫描
+                self.logger.warning("event_bus", f"code-fix checkpoint failed: {e}")
+
     def _recover_one(self, name: str, entry: dict) -> bool:
         """对单个 SPEC 执行 recovery 动作；返回 True 表示处理成功（含有意跳过）。
 
