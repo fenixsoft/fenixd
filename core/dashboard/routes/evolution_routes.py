@@ -25,9 +25,14 @@ class H7EvolutionRoutesMixin:
     def _evolution_state_machine():
         """框架根 StateMachine（accept_item 注册用；惰性构造，无缓存需求）。"""
         from core.dashboard import server as _server_mod  # noqa: E402 — D3 缝隙
-        from core.state_machine import StateMachine
+        from core.state_machine import StateMachine, project_state_logger
 
-        return StateMachine(_server_mod.FRAMEWORK_ROOT / ".fenix" / "STATE.md", None)
+        # 跨进程写入者 MUST 注入真实 logger（fix-state-atomicity-and-selfheal-restart
+        # 1.3/D2）：accept_item 经 add_spec 写 STATE，无 logger 构造会静默。
+        return StateMachine(
+            _server_mod.FRAMEWORK_ROOT / ".fenix" / "STATE.md",
+            project_state_logger(_server_mod.FRAMEWORK_ROOT),
+        )
 
 
     def _api_evolution_items(self, query):

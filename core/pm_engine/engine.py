@@ -3532,6 +3532,57 @@ class PMEngine:
         with self._queue_lock:
             return spec_name in self._active_reviews
 
+    def has_queued_review(self) -> bool:
+        """是否存在已入队未收口的评审登记（``_active_reviews`` 非空，只读）。
+
+        fix-state-atomicity-and-selfheal-restart D3：评审在飞的**完整生命周期由两段
+        拼成**，缺一即漏判——
+
+        ①「评审条目已入队/已出队、``reviewer_run`` 锚点尚未落盘」的窗口只体现在
+           ``_active_reviews``（``dispatch/queue.py`` 评审派发分支登记），此时
+           STATE 里还没有任何锚点可枚举；
+        ② 锚点落盘后该登记即被释放（``dispatch_review`` 前 discard），此后由
+           ``reviewer_run`` 锚点 + ``reviewer_in_flight`` 接力。
+
+        本查询给第①段一个 O(1) 只读入口（与 ``is_review_in_flight`` 同锁语义），
+        MUST NOT 用它替代第②段——单靠 ``_active_reviews`` 会漏掉评审 run 的绝大
+        部分生命周期（登记释放早于锚点落盘）。
+
+        Returns: True 表示存在未收口的评审登记。
+        """
+        with self._queue_lock:
+            return bool(self._active_reviews)
+
+    def review_anchors(self) -> dict:
+        """STATE 中 ``reviewer_run`` 非空的 spec → run_id（只读候选枚举）。
+
+        fix-state-atomicity-and-selfheal-restart D3：陈旧自愈的空闲判定
+        （fenixd ``_is_idle``，1s 粒度轮询）须把「未收口的在飞评审 run」计入
+        非空闲，而状态机里评审在飞的**唯一落点**是 ``reviewer_run`` 锚点。
+
+        本方法只做**候选收窄**：把「可能持有在飞评审」的 spec 圈出来，避免轮询侧
+        对 STATE 全量条目逐条做在飞复核（每次复核要摸进程表与 run 流文件）。在飞
+        **结论**仍由既有判据给出（``is_review_in_flight`` 覆盖入队/出队窗口 +
+        ``LivenessSupervisor.reviewer_in_flight`` 覆盖进程/流/陈旧锚点分层），
+        本方法 MUST NOT 自行判定在飞，也 MUST NOT 触碰
+        ``_active_runs`` / ``_active_reviews`` 语义。
+
+        Returns: ``{spec_name: reviewer_run}``（无锚点为空 dict）。STATE 不可读时
+        返回空 dict 记 WARNING——调用方另有保守处理，且「读不出候选」不等于
+        「有在飞」，不在此处代判。
+        """
+        anchors: dict = {}
+        try:
+            specs = self.state_machine.read_all()
+        except Exception as e:  # noqa: BLE001 — 候选枚举失败不抛出（调用方保守兜底）
+            self.logger.warning("pm_engine", f"review_anchors 读取 STATE 失败: {e}")
+            return anchors
+        for name, entry in specs.items():
+            run_id = entry.get("reviewer_run")
+            if run_id:
+                anchors[name] = run_id
+        return anchors
+
     @property
     def _active_priorities(self):
         return self._dispatcher._active_priorities

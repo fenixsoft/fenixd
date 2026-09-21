@@ -36,12 +36,12 @@ def _resolve_project_root(args_project: str | None) -> Path:
 def cmd_promote(args):
     """晋升 drafted SPEC → ready / reviewing（按评审判定分流）。"""
     from core.pm_engine.promotion import promote_drafted
-    from core.state_machine import StateMachine
+    from core.state_machine import StateMachine, project_state_logger
     from core.logger import Logger
     from core.config import ConfigLoader
 
     proot = _resolve_project_root(args.project)
-    sm = StateMachine(proot / ".fenix" / "STATE.md", None)
+    sm = StateMachine(proot / ".fenix" / "STATE.md", project_state_logger(proot))
     logger = Logger(proot)
 
     # 解析项目有效配置（用户级 + 项目级深合并），使评审分流判定与 daemon
@@ -78,11 +78,11 @@ def cmd_promote(args):
 
 def cmd_review(args):
     """重新评审 blocked SPEC（评审相关 blocked → reviewing）。"""
-    from core.state_machine import StateMachine, FROZEN_FIELD
+    from core.state_machine import StateMachine, project_state_logger
     from core.logger import Logger
 
     proot = _resolve_project_root(args.project)
-    sm = StateMachine(proot / ".fenix" / "STATE.md", None)
+    sm = StateMachine(proot / ".fenix" / "STATE.md", project_state_logger(proot))
     logger = Logger(proot)
 
     entry = sm.read_one(args.spec)
@@ -148,11 +148,11 @@ def cmd_reflow(args):
     （add-spec-review-gate 的 CLI 绕过评审分流教训）。
     """
     from core.pm_engine.task_reflow import reflow_spec
-    from core.state_machine import StateMachine
+    from core.state_machine import StateMachine, project_state_logger
     from core.logger import Logger
 
     proot = _resolve_project_root(args.project)
-    sm = StateMachine(proot / ".fenix" / "STATE.md", None)
+    sm = StateMachine(proot / ".fenix" / "STATE.md", project_state_logger(proot))
     logger = Logger(proot)
 
     result = reflow_spec(proot, args.spec, state_machine=sm, logger=logger, source="cli")
