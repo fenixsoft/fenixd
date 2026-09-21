@@ -19,6 +19,11 @@
 - **WHEN** 任一路径修改 STATE.md 中某 spec 的字段
 - **THEN** MUST 产生对应的可观测日志（含 spec 名与所改字段），MUST NOT 存在无日志的静默写入路径
 
+> **留痕的构造层前提**：「写入必留痕」要求 MUST 覆盖**跨进程写入者**。`StateMachine.__init__` 在 `logger=None`
+> 时兜底为静默日志器（`core/state_machine.py:498-502` / `:473-489`），故凡是会写 STATE.md 的
+> `StateMachine` 构造点 MUST 注入真实 logger；已知的无 logger 构造点（dashboard 侧）
+> 见 design.md D2。仅改 `core/state_machine.py` 无法满足本 Scenario。
+
 ### Requirement: 冻结 error 的可靠持久化
 
 `freeze_for_human` / `freeze_spec` 写入的 `error`（内嵌「原状态 X」子串，是 `parse_orig_status` 解析解冻目标的唯一来源）MUST 持续存在于 STATE.md 直至该 spec 被解冻；解冻时 MUST 能读出真实原状态。
