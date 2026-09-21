@@ -49,8 +49,11 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
       // add-test-regression-tab：周期性全量回归开关（admin.regression.enabled）
       // 缺省 false；分面只读展示 + 手动触发，配置归设置页「质量」页签
       regression_enabled: config.regression?.enabled === true,
+      // add-code-review-auto-fix：自动修复开关 + 批大小（回填缺省 false/20）
+      code_review_fix_enabled: config.code_review_fix?.enabled === true,
+      code_review_fix_batch_size: config.code_review_fix?.batch_size ?? 20,
     });
-  }, [config.verify, config.code_review, config.regression, form]);
+  }, [config.verify, config.code_review, config.code_review_fix, config.regression, form]);
 
   useEffect(() => {
     let alive = true;
@@ -171,6 +174,13 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
         // 缺省 false；与 code_review 同周期：admin.self_review.run_at 时点）
         regression: {
           enabled: values.regression_enabled === true,
+        },
+        // add-code-review-auto-fix：自动修复开关 + 批大小（与开关同处一个
+        // <Form> 实例内，validateFields 恒返回两字段；1–1000 由表单校验把关，
+        // 后端 write_config 权威兜底）
+        code_review_fix: {
+          enabled: values.code_review_fix_enabled === true,
+          batch_size: values.code_review_fix_batch_size,
         },
       });
     } catch (err) {
@@ -366,6 +376,54 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
             .fenix/code-review/items.jsonl 台账，供项目页「代码审查」分面展示与消费。
             需要环境已安装 ocr（未安装时审查仍以 LLM 逐文件执行，仅少了扫描加速）。
             手动触发（全仓库审查 / 当期提交审查）不受本开关约束。
+          </Text>
+        </Card>
+        {/* 自动修复代码问题（add-code-review-auto-fix，task 9.2）：位于「周期性
+            代码审查」卡片之下（spec code-fix-config 硬约束）。同一 <Form> 实例内
+            （脱管字段 validateFields 不返回 → 恒提交缺省，见上方统一 Form 注释）。 */}
+        <Card style={{ marginTop: 12 }} data-testid="code-review-fix-card">
+          <div className="switch-inline-row">
+            <Form.Item name="code_review_fix_enabled" valuePropName="checked" noStyle>
+              <Switch data-testid="code-review-fix-enabled-switch" />
+            </Form.Item>
+            <span className="switch-inline-label">
+              自动修复代码问题
+              <span className="label-note">（admin.code_review_fix.enabled）</span>
+            </span>
+          </div>
+          <Form.Item
+            name="code_review_fix_batch_size"
+            label={
+              <>
+                每批条目数
+                <span className="label-note">（admin.code_review_fix.batch_size）</span>
+              </>
+            }
+            rules={[
+              {
+                validator: (_: unknown, v: number | undefined | null) =>
+                  v != null && Number.isInteger(v) && v >= 1 && v <= 1000
+                    ? Promise.resolve()
+                    : Promise.reject(new Error('须为 1–1000 的整数')),
+              },
+            ]}
+            style={{ marginTop: 16, maxWidth: 240 }}
+          >
+            <InputNumber
+              min={1}
+              max={1000}
+              precision={0}
+              style={{ width: '100%' }}
+              data-testid="code-review-fix-batch-size"
+            />
+          </Form.Item>
+          <Text type="secondary">
+            开启后把审查台账 open 条目按批（每批 batch_size 条，缺省 20）派
+            code-fix agent 在独立 worktree 内修复并提交，每批必过全量回归
+            （verify.yaml regression 段）才合回主树并把条目置 resolved；回归
+            未通过自动重试一次，仍失败则保留现场待人工。无有效 regression 段时
+            fail-closed 不合回。关闭（缺省）= 全链路零动作。进度见项目页
+            「代码审查」分面。
           </Text>
         </Card>
         {/* 回归测试：标题与说明置于卡片外，与上方「代码质量」节同构 */}

@@ -1263,3 +1263,60 @@ print("SMOKE_OK")
             [sys.executable, "-c", code, str(repo_root)],
             capture_output=True, text=True, timeout=120)
         self.assertIn("SMOKE_OK", out.stdout, f"stderr: {out.stderr[-2000:]}")
+
+
+# ── 10.4 配置读写（admin.code_review_fix 受管键）──────────────────────
+
+
+class TestCodeReviewFixConfigAdmin(unittest.TestCase):
+    """admin.code_review_fix 受管键：登记 / sources / 回显 / 写读 / 非法拒绝（task 10.1/10.4）。"""
+
+    def test_source_keys_registered(self):
+        from core.dashboard.data import _SOURCE_KEYS
+
+        self.assertIn("admin.code_review_fix", _SOURCE_KEYS)
+
+    def test_sync_page_keys_contains_section(self):
+        from core.dashboard.data.config_admin import _SYNC_PAGE_KEYS
+
+        self.assertIn("code_review_fix", _SYNC_PAGE_KEYS["quality"].get("admin", []))
+
+    def test_default_echo(self):
+        from core.dashboard.data import read_config, read_effective_config
+
+        proot = _make_project_root()
+        rc = read_config(proot)
+        self.assertEqual(rc["code_review_fix"], {"enabled": False, "batch_size": 20})
+        self.assertEqual(rc["sources"]["admin.code_review_fix"], "user")
+        eff = read_effective_config(proot)
+        self.assertEqual(eff["code_review_fix"], {"enabled": False, "batch_size": 20})
+
+    def test_write_read_roundtrip(self):
+        from core.dashboard.data import read_config, write_config
+
+        proot = _make_project_root()
+        r = write_config(proot, {"code_review_fix": {"enabled": True, "batch_size": 30}})
+        self.assertIsNone(r.get("error"), r)
+        rc = read_config(proot)
+        self.assertEqual(rc["code_review_fix"], {"enabled": True, "batch_size": 30})
+        self.assertEqual(rc["sources"]["admin.code_review_fix"], "project")
+
+    def test_invalid_batch_size_rejected_no_half_write(self):
+        from core.dashboard.data import read_config, write_config
+
+        proot = _make_project_root()
+        # 先写一个合法值
+        r = write_config(proot, {"code_review_fix": {"enabled": True, "batch_size": 30}})
+        self.assertIsNone(r.get("error"))
+        # 非法 batch_size → 拒绝且不半写
+        for bad in (0, -3, True, "20"):
+            r = write_config(proot, {"code_review_fix": {"batch_size": bad}})
+            self.assertIsNotNone(r.get("error"), f"batch_size={bad!r} MUST 拒绝")
+            self.assertIn("positive integer", r["error"])
+        # enabled 非 bool → 拒绝
+        r = write_config(proot, {"code_review_fix": {"enabled": "yes"}})
+        self.assertIsNotNone(r.get("error"))
+        self.assertIn("boolean", r["error"])
+        # 落盘值保持原值（不半写）
+        rc = read_config(proot)
+        self.assertEqual(rc["code_review_fix"], {"enabled": True, "batch_size": 30})

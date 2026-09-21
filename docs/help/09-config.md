@@ -287,6 +287,29 @@ admin:
 - 模型链：`agents.models.code-review` → `agents.models.self-review` → `agents.models.administrator` → `admin.agent_model` → 默认网关。
 - token 归账到 `.fenix/cost/code_review_tokens.json`（与每日自省同结构，不写 STATE）。
 
+### admin.code_review_fix（自动修复代码问题）
+
+设置页「质量」页签「周期性代码审查」卡片**下方**的「自动修复代码问题」开关（`add-code-review-auto-fix`）：开启后把代码审查台账 `.fenix/code-review/items.jsonl` 的 `open` 条目按批（`batch_size` 条/批，缺省 20）派 `code-fix` agent 在独立 worktree 内修复并提交，框架在该 worktree 上跑**全量回归**（`verify.yaml` regression 段），通过才 merge-back 主树并把该批 `fixed` 条目置 `resolved`；随后自驱动推进下一批直至无 `open` 条目。两路激活：审查 run 收尾（本轮产生新 `open` 条目时立即触发）+ 30 分钟 full scan 周期兜底（覆盖 daemon 重启后续做）。幂等守卫：开关关闭 / 已有 `code-fix` 在跑 / 无 `open` 条目时不投递。
+
+| 键 | 默认值 | 范围 | 生效方式 |
+|----|--------|------|---------|
+| enabled | `false` | bool | 热更新（下一检查点生效） |
+| batch_size | `20` | 正整数 | 热更新（下一次选批生效） |
+
+```yaml
+admin:
+  code_review_fix:
+    enabled: false      # 自动修复总开关（缺省 false = 全链路零动作）
+    batch_size: 20      # 每批修复的台账条目数（正整数，缺省 20）：批次粒度即节流阀
+```
+
+- `enabled` 缺省 `false`：关闭时不选批、不派 run、不写进度文件（全链路零动作），旧配置零迁移。
+- 回归契约缺失的 **fail-closed**：项目 `verify.yaml` 无有效 `regression` 段时本批不合回、不派 run——契约整体缺失发 `verify_contract_missing` 信号、仅缺段发 `verify_regression_missing` 信号，复用既有 AI 起草通道（administrator 起草/补段后下一轮 full scan 自动续做）；进度记 `phase=blocked` 与原因。
+- 回归失败处置：首次不通过在同一 worktree 内自动重试一次（prompt 注入失败用例摘要）；仍不通过则丢弃该批（不合回、条目保持 `open`、worktree 保留待人工），并把该批条目写入失败保留集合（`.fenix/code-review/fix-failed.json`）防止重复派发——人工处置后调 `core.code_fix.release_failed_batch` 解除，同时在 `.fenix/todo.md` 登记待清理项。
+- 批内零有效修复（产物行全 `skipped` 或分支无提交）MUST NOT 合回、不核销——防「空跑白洗 resolved」。
+- `code-fix` agent 模型链复用 code-review 的 LLM 配置：`agents.models.code-fix` → `agents.models.code-review` → `agents.models.self-review` → `agents.models.administrator` → 默认网关（缺省即与 code-review 同源，显式配 `code-fix` 可独立覆盖）。
+- 进度落 `.fenix/code-review/fix-progress.json`，项目页「代码审查」分面经 `GET /api/code-review/fix-progress` 呈现「已处理 done/total 条」进度条。
+
 ### admin.regression（周期性全量回归）
 
 设置页「质量」页签的开关（`add-test-regression-tab`）：开启后与每日自省**同周期**（`admin.self_review.run_at` 时点）自动执行一次全量回归，结果落到 `.fenix/regression/last-run.json`，供项目页「测试回归」分面展示。**前置条件**：项目 `.fenix/verify.yaml` 须有有效 `regression` 段（见下节）——无段时周期检查点跳过（reason: not_configured），不会派发空跑。同自然日防重（独立状态文件 `.fenix/regression/state.json` 的 `last_run_date`，不复用自省/code-review 的防重状态）；与 implementer 收尾的全量套件互斥（抢占 `bin/run_full_suite.py` 的同一把主机级锁 `.fenix/full-suite.lock`，等待上限 600s，拿不到即放弃本次并记日志——同一主机同一时刻只跑一套完整测试）。
@@ -447,7 +470,7 @@ hook 分发与动作执行在 daemon 后台线程进行，不阻塞状态机写�
 | 配置管理 | llm.providers / agents.models / gates.approve_mode / gates.promote_mode / gates.spec_review_mode / gates.start_after_scope |
 | Token 预算面板 | agents.token_budget_millions |
 | 验证 | verify.static_scope / verify.deps_mode（存于 config.yaml；`.fenix/verify.yaml` 契约手工编辑，不经设置页改写） |
-| 质量 | verify.impl_code_review（实现阶段收尾代码质量审查开关，自「验证」页迁出；页签顶部的 ocr 环境探测/一键安装不写配置键）；verify.impl_code_review_timeout_sec / verify.impl_code_review_concurrency / verify.impl_code_review_effort（收尾审查三运行参数：超时秒/并发/力度，缺省 600/2/low）；admin.code_review.enabled（周期性代码审查开关，2026-09-19 自项目页「代码审查」分面迁来） |
+| 质量 | verify.impl_code_review（实现阶段收尾代码质量审查开关，自「验证」页迁出；页签顶部的 ocr 环境探测/一键安装不写配置键）；verify.impl_code_review_timeout_sec / verify.impl_code_review_concurrency / verify.impl_code_review_effort（收尾审查三运行参数：超时秒/并发/力度，缺省 600/2/low）；admin.code_review.enabled（周期性代码审查开关，2026-09-19 自项目页「代码审查」分面迁来）；admin.code_review_fix.enabled（自动修复代码问题开关）；admin.code_review_fix.batch_size（自动修复每批条目数） |
 | 提示词管理 | agents/ 通用层 + .fenix/agents/ 项目级 |
 | 系统 | admin.enabled / admin.interval_minutes / admin.escalation_cooldown_minutes / admin.merge_breaker_threshold / admin.shutdown_drain_seconds |
 | 系统·瞬断治理 | agents.transient_backoff_schedule / agents.transient_redispatch_delay_seconds / agents.transient_break_threshold / agents.transient_break_window_seconds / agents.transient_break_cooldown_seconds |

@@ -46,6 +46,7 @@ import {
   triggerCodeReview,
 } from '../../../services/dashboard';
 import type { CodeReviewItem, CodeReviewProgress } from '../../../services/dashboard';
+import CodeFixProgressCard from './CodeFixProgressCard';
 import ScheduleFields, {
   describeStartAfter,
   isStartAfterValid,
@@ -690,6 +691,11 @@ export default function QualityTab({ project, active }: QualityTabProps) {
           </Space>
         </Card>
       ) : null}
+
+      {/* 自动修复进度卡片（add-code-review-auto-fix，task 9.4）：与「审查进行中」
+          卡片并存（两条进度各自独立读取/轮询，不共用响应字段）。进入终态时
+          回调刷新条目表格（核销/状态变化落台账后用户立即可见）。 */}
+      <CodeFixProgressCard project={project} onSettled={() => void loadItems()} />
 
       <Table<CodeReviewItem>
         rowKey="item_id"

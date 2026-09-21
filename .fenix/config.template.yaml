@@ -349,6 +349,20 @@ admin:
   #   # 全量审查耗时过长/烧钱。窗口审查按窗口收集，也受此上限约束。
   #   max_files: 500
 
+  # ---- 自动修复代码问题（add-code-review-auto-fix，可选）----
+  # 设置页「质量」页签「周期性代码审查」下方提供该开关（读/写 GET/POST
+  # /api/config 的 admin.code_review_fix.*）。开启后把审查台账 open 条目按批
+  # 派 code-fix agent 在独立 worktree 内修复，每批必过全量回归（verify.yaml
+  # regression 段）才合回主树并把条目置 resolved；两路激活（审查收尾 +
+  # 30 分钟 full scan 兜底）。无有效 regression 段时 fail-closed 不合回，
+  # 并经既有 AI 起草通道补段。关闭（缺省）= 全链路零动作。
+  # code_review_fix:
+  #   # 是否启用自动修复车道（严格 bool，缺省 false）
+  #   enabled: false
+  #   # 每批修复的台账条目数（正整数，缺省 20）：批次粒度即节流阀，
+  #   # 每批之间有一次全量回归。
+  #   batch_size: 20
+
   # ---- 周期性全量回归（add-test-regression-tab，可选）----
   # 设置页「质量」页签提供该开关（读/写 GET/POST /api/config 的
   # admin.regression.enabled）。开启后与每日自省同周期（admin.self_review.run_at
