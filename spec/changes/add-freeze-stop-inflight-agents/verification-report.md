@@ -1,35 +1,35 @@
 # 验证报告：add-freeze-stop-inflight-agents
 
-> ⚠️ 本报告由框架于 2026-09-20T22:42:37Z 自动合成（裁决 Agent 未写报告，已由框架合成），内容为结构化验证产物（report.json / .fenix-run-result.json）的忠实渲染。
-> 报告时效标记（判定本报告是否属上一轮）：合成源轮次指纹：report.json@2026-09-20T22:40:53.076645+00:00
+> ⚠️ 本报告由框架于 2026-09-21T02:02:46Z 自动合成（裁决 Agent 未写报告，已由框架合成），内容为结构化验证产物（report.json / .fenix-run-result.json）的忠实渲染。
+> 报告时效标记（判定本报告是否属上一轮）：合成源轮次指纹：report.json@2026-09-21T02:00:48.420111+00:00
 
 ## 结论：❌ 未通过（Bug Found）
 
-**状态：bug-found — 20/22 场景通过，2 失败，0 错误（1 个真实产品 Bug）**
+**状态：bug-found — 21/22 场景通过，1 失败，0 错误（1 个真实产品 Bug）**
 
-22 场景 20 通过 2 失败（均为跨轮已裁决 product-bug，同根因合并为 1 个 Bug：freeze_spec 后端未返回 stopped_agents）。静态缺陷情报 web-freeze-idle-confirm-success（double_han_text_selector）经源码核实为误报：断言带 selector 限定 tr[data-row-key=fs-web-idle] 匹配持久 DOM 状态列「阻塞」而非按钮文本，antd autoInsertSpace 不适用，场景已 pass 无需修复。
+22 场景 21 通过 1 失败：web-freeze-inflight-stopped-hint 为产品缺陷（product-bug，冻结停止反馈缺失），上报 bug-found。静态情报 double_han_text_selector（web-freeze-idle-confirm-success「阻塞」）经执行证据核实为误报——该场景断言实际通过（pass），antd autoInsertSpace 未致失配，无需修复。
 
 | 指标 | 数量 |
 | --- | --- |
-| 通过 | 20 |
-| 失败 | 2 |
+| 通过 | 21 |
+| 失败 | 1 |
 | 错误 | 0 |
 | 产品 Bug | 1 |
-| 本链增量 Token（输入） | 18.81M |
-| 本链增量 Token（输出） | 0.26M |
+| 本链增量 Token（输入） | 21.98M |
+| 本链增量 Token（输出） | 0.32M |
 
 
 ## 真实产品 Bug
 
-### BUG-01（severity=major）· json_path（stopped_agents）+ text_contains
+### BUG-01（severity=major）· text_contains
 
-- 关联场景：api-freeze-inflight-stopped-agents、web-freeze-inflight-stopped-hint
-- 描述：冻结有在跑 agent 的 spec 时，freeze_spec 后端返回值未扩展 stopped_agents 计数（admin_actions.py:309-343 仅返回 ok/found/frozen/error），proposal Impact「freeze_spec 返回值扩展（stopped_agents 计数）」未实现；前端 SpecStatusModal.tsx:165 if(result?.stopped_agents) 恒 false，toast 走缺省分支「已冻结，daemon 停止调度」，停止计数与「进度已留存，解冻后可续做」反馈缺失
-- 根因：freeze_spec（admin_actions.py:309-343）未统计并返回被停止的在跑 agent 数；tasks 6.x 仅扩展了前端类型，后端计数缺失，导致前后端契约不一致
-- 证据（场景 api-freeze-inflight-stopped-agents 结构化证据，引用）：
-  - failed_assertions: [{"type": "json_path", "path": "stopped_agents", "expected": 1, "actual": null, "label": "冻结返回值含 stopped_agents=1"}]
-  - screenshots: []
-  - first_failed_step: 步骤1: POST /api/spec-freeze?spec=fs-api-inflight 返回 200，响应缺 stopped_agents 字段（proposal Impact 声明 freeze_spec 返回值扩展计数，实际 admin_actions.py:309 未返回）
+- 关联场景：web-freeze-inflight-stopped-hint
+- 描述：冻结有在跑 agent 的 SPEC（fs-web-inflight）后 toast 无停止反馈：期望「已停止 1 个在跑 agent」与「进度已留存，解冻后可续做」，实际走缺省分支「SPEC「fs-web-inflight」已冻结，daemon 停止调度」（无停止计数、无进度留存说明）。
+- 根因：freeze_spec（admin_actions.py:309-343）返回值未含 stopped_agents 字段 → SpecStatusModal.tsx:165 if(result?.stopped_agents) 恒 false → 前端 stopped_agents>0 提示分支整体不可达。
+- 证据（场景 web-freeze-inflight-stopped-hint 结构化证据，引用）：
+  - failed_assertions: [{"type": "text_contains", "selector": ".ant-message-notice-content", "expected": "已停止 1 个在跑 agent", "actual": "toast 文案走缺省分支：SPEC「fs-web-inflight」已冻结，daemon 停止调度（无停止计数提示）"}, {"type": "text_contains", "selector": ".ant-message-notice-content", "expected": "进度已留存，解冻后可续做", "actual": "toast 文案走缺省分支，无进度留存说明"}]
+  - screenshots: ["/root/fenixd/.fenix/verify-progress/add-freeze-stop-inflight-agents/screenshots/web-freeze-inflight-stopped-hint_assert_fail.png"]
+  - first_failed_step: 步骤10: 确认冻结后 toast 出现（element_visible 通过）但文案为缺省分支「已冻结，daemon 停止调度」；text_contains 期望「已停止 1 个在跑 agent」「进度已留存，解冻后可续做」均失败——SpecStatusModal.tsx:165 if(result?.stopped_agents) 因后端未返回 stopped_agents 恒 false
 
 
 ## 场景结果
@@ -45,7 +45,7 @@
 | cli-delete-soft-delete-lifecycle | soft_delete_spec 先停后删生命周期：无在跑零等待直接删除（回归）、停止回调使其终态后删除成功（stopped 计数）、停止后仍不落终态超时返回 running 且 STATE/目录不变（不产生半删状态）、stop_callback 缺省回退既有 409 拒绝语义。来源：spec delete-stop-inflight-agents/spec.md『删除 SPEC 先停止在跑 agent 再软删除』全部场景；测试文件 tests/test_delete_stop_inflight_agents.py（test_no_running_direct_delete / test_stop_callback_terminates_then_delete / test_timeout_still_running_no_delete / test_no_stop_callback_fallback_409）。 | pass | 0/5 | - |
 | cli-seed-freeze-delete-fixtures | 种子场景：向 fixture 项目 /root/scheduling-showcase 写入本 SPEC 涉及的补充夹具——fs-api-idle（ready 可冻结）、fs-api-inflight（implementing + 末行非终态 run 文件，供冻结 stopped_agents 计数）、fs-web-idle / fs-web-inflight（web 场景专用同型）、fs-done（done 终态不可冻结）、fs-hold（blocked+frozen+_frozen_hold+error=用户指令冻结：原状态 implementing+保留锚点，供解冻续做/冻结态渲染）、dl-api-idle / dl-web-idle（无在跑可删除）、dl-inflight（implementing + 非终态 run 文件，供删除 409）；全部建 spec/changes/<name>/ 目录防 archived 过滤；幂等复位（移除跨轮残留同名单 + 清 archive 残留）。出处：spec/changes/add-freeze-stop-inflight-agents/specs/freeze-stop-inflight-agents/spec.md 与 delete-stop-inflight-agents/spec.md 各验收场景的 WHEN 前置（implementing + 在跑 run / done / blocked+frozen+_frozen_hold）；写路径复用 add-spec-status-modal-budget 轮 seed 边界（StateMachine.add_spec 落 /root/scheduling-showcase/.fenix/STATE.md，fresh 实例由本轮独占）。 | pass | 0/2 | - |
 | api-freeze-idle-success | POST /api/spec-freeze 冻结无在跑 agent 的 spec：200 + {ok:true, frozen:true}；随后 GET /api/specs 列表确认该 spec 状态为 blocked。出处：core/dashboard/routes/spec_routes.py:163（_api_spec_freeze，成功 → 200 + ok/frozen）；spec freeze-stop-inflight-agents/spec.md『冻结即停』WHEN 冻结。 | pass | 0/5 | - |
-| api-freeze-inflight-stopped-agents | POST /api/spec-freeze 冻结有在跑 implementer 的 spec：按 proposal Impact『freeze_spec 返回值扩展（stopped_agents 计数）』与前端冻结反馈验收，响应须含 stopped_agents 计数（本 fixture 有 1 个在跑 run → stopped_agents:1）。当前实现实测 freeze_spec 返回值无 stopped_agents 字段（tasks 6.x 仅扩展前端类型，后端计数缺失）——本场景按 SPEC 验收断言，若失败即为实现缺口。出处：proposal.md Impact『core/dashboard/data/：freeze_spec 返回值扩展（stopped_agents 计数）』；core/dashboard/static/src/pages/projects/components/SpecStatusModal.tsx:165（stopped_agents>0 提示分支）。 | failed（已修正） | 1/4 | product-bug |
+| api-freeze-inflight-stopped-agents | POST /api/spec-freeze 冻结有在跑 implementer 的 spec：按 proposal Impact『freeze_spec 返回值扩展（stopped_agents 计数）』与前端冻结反馈验收，响应须含 stopped_agents 计数（本 fixture 有 1 个在跑 run → stopped_agents:1）。当前实现实测 freeze_spec 返回值无 stopped_agents 字段（tasks 6.x 仅扩展前端类型，后端计数缺失）——本场景按 SPEC 验收断言，若失败即为实现缺口。出处：proposal.md Impact『core/dashboard/data/：freeze_spec 返回值扩展（stopped_agents 计数）』；core/dashboard/static/src/pages/projects/components/SpecStatusModal.tsx:165（stopped_agents>0 提示分支）。 | pass | 0/4 | - |
 | api-freeze-done-terminal-rejected | POST /api/spec-freeze 冻结 done 终态 spec：200 + {ok:true, frozen:false, error 含终态原因}（终态不可冻结，不破坏语义）。出处：core/dashboard/routes/spec_routes.py:163 契约（终态 → 200 + frozen:false）；spec freeze-stop-inflight-agents 无直接场景，属『冻结即停』边界防破坏。 | pass | 0/4 | - |
 | api-freeze-not-found-404 | POST /api/spec-freeze 冻结不存在的 spec：404 + 错误信息（spec not found）。出处：core/dashboard/routes/spec_routes.py:171（!found → 404）。 | pass | 0/2 | - |
 | api-unfreeze-hold-restores-status | POST /api/spec-unfreeze 解冻带 _frozen_hold 的冻结 spec：200 + {ok:true, frozen:false}，随后 GET /api/specs/fs-hold?project= 详情确认 status 恢复为冻结前原状态 implementing。出处：core/dashboard/routes/spec_routes.py:191（_api_spec_unfreeze）；spec freeze-stop-inflight-agents/spec.md『解冻后在保留分支自动续做』（状态恢复为冻结前状态）。 | pass | 0/5 | - |
