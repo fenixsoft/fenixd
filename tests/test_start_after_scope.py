@@ -188,6 +188,71 @@ class TestDispatchModeBehavior(unittest.TestCase):
         engine._on_spec_ready.assert_called_once_with("myspec")
 
 
+# ── 队列层评审派发（2026-09-21 事故回归）────────────────────────────
+
+class TestQueueLevelReviewDispatch(unittest.TestCase):
+    """队列 start_after 门按 agent_type 分流（2026-09-21 事故回归）。
+
+    事故：``queue._process_queue`` 两处扫描裸调**无条件** ``start_after_pending``，
+    对 ``spec-review`` 条目也开火——``start_after=manual``（或未来时间）的 SPEC
+    其评审条目**入队后永久滞留**（无日志、无派发、无评审 run），dispatch 档
+    （缺省）被静默抬高成 full 档行为，与 ``add-start-after-scope-config`` 的
+    「dispatch 档下 reviewing SPEC 照常派发评审」契约矛盾，也解释了状态面板
+    「状态=评审中但无评审 Agent」的现象。
+
+    既有 ``test_future_start_after_dispatches_review`` 只断言**入队**（``_make_engine``
+    把 ``_process_queue`` mock 掉），故队列层拦截从未被任何用例覆盖——本条补上
+    **端到端**：force-enqueue → 真调 ``_process_queue`` → 断言真派发。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.dispatched = []
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _run_queue(self, config, status, start_after, agent_type):
+        """构造最小工程，force-enqueue 后真跑一次队列，返回派发的 (spec, type)。"""
+        proot, sm, _ = _setup_spec_project(
+            self.tmpdir, status=status, start_after=start_after)
+        engine, _ = _make_engine(sm, proot, config)
+        # 覆盖 fixture 的 mock：真调队列处理 + 拦 worker 记录派发
+        engine.agent_runner.reviewer_in_flight = MagicMock(return_value=(False, None))
+        engine._dispatcher._run_agent_worker = (
+            lambda s, a, p: self.dispatched.append((s, a)))
+        engine._dispatcher._enqueue("myspec", agent_type)
+        engine._dispatcher._process_queue()
+        return self.dispatched
+
+    def test_dispatch_mode_dispatches_review_manual_sentinel(self):
+        """dispatch 档 + reviewing + manual 哨兵 → 评审条目**真派发**（事故核心）。"""
+        got = self._run_queue(_DISPATCH_CONFIG, "reviewing", "manual", "spec-review")
+        self.assertEqual(got, [("myspec", "spec-review")],
+                         "dispatch 档下 manual 哨兵 reviewing 应派发评审 run")
+
+    def test_dispatch_mode_dispatches_review_future_time(self):
+        """dispatch 档 + reviewing + 未来 start_after → 评审条目真派发。"""
+        got = self._run_queue(_DISPATCH_CONFIG, "reviewing", _future_iso(), "spec-review")
+        self.assertEqual(got, [("myspec", "spec-review")],
+                         "dispatch 档下定时 reviewing 应派发评审 run")
+
+    def test_full_mode_blocks_review_at_queue(self):
+        """full 档 + reviewing + manual → 队列层拦截，不派发（对照组，行为不变）。"""
+        got = self._run_queue(_FULL_CONFIG, "reviewing", "manual", "spec-review")
+        self.assertEqual(got, [], "full 档下 manual reviewing 不得派发评审 run")
+
+    def test_impl_lane_scope_invariant_manual(self):
+        """实现车道不受 scope 影响：dispatch 档下 ready + manual 仍不派发实现。"""
+        got = self._run_queue(_DISPATCH_CONFIG, "ready", "manual", "implementer")
+        self.assertEqual(got, [], "实现派发口对 manual 哨兵恒跳过（哨兵不自动实现）")
+
+    def test_impl_lane_scope_invariant_future(self):
+        """实现车道不受 scope 影响：dispatch 档下 ready + 未来时间仍不派发实现。"""
+        got = self._run_queue(_DISPATCH_CONFIG, "ready", _future_iso(), "implementer")
+        self.assertEqual(got, [], "实现派发口对未到期 start_after 恒跳过")
+
+
 # ── 5.3 实现派发口与 scope 无关 ──────────────────────────────────────
 
 class TestDispatchScopeInvariance(unittest.TestCase):

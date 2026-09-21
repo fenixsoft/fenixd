@@ -19,7 +19,11 @@ import threading
 import time
 from typing import Dict
 
-from core.state_machine import TASK_GATE_REJECTIONS_FIELD, start_after_pending
+from core.state_machine import (
+    TASK_GATE_REJECTIONS_FIELD,
+    start_after_blocks_promotion,
+    start_after_pending,
+)
 
 
 class QQQueueMixin:
@@ -256,6 +260,41 @@ class QQQueueMixin:
             return True
         return not in_flight
 
+    def _start_after_blocks_entry(self, spec: dict, sname: str, atype: str) -> bool:
+        """队列 start_after 门控（按 agent_type 分流）**单一落点**。
+
+        `_process_queue` 的 best_valid_prio 扫描与 dispatch_idx 扫描两处须同口径
+        顺延，提取为本方法避免两处重复守卫漂移（对齐 ``_review_entry_ready`` /
+        ``_should_defer_for_reviewer`` 的单一落点范式）。
+
+        **分流依据（2026-09-21 事故）**：队列在
+        ``fix-spec-review-blocking-dispatch``（评审派发异步化）之后**同时承载
+        ``spec-review`` 条目**，不再是纯实现派发口。旧实现两处均裸调无条件谓词
+        ``start_after_pending(spec)``，对评审条目也开火——``start_after=manual``
+        的 SPEC 其评审条目**入队后永久滞留**（无日志、无派发、无评审 run），
+        dispatch 档（缺省）被静默抬高成 full 档行为，与
+        ``add-start-after-scope-config`` 的「dispatch 档下 reviewing SPEC 照常
+        派发评审」契约矛盾。
+
+        - **实现车道**（implementer / fast-track / verifier / repair 等）：保持
+          无条件 ``start_after_pending``——「到点才实现」是 start_after 的无条件
+          本职语义，与 scope 取值无关（scope 只控制「是否提前晋升/评审」）。
+        - **``spec-review`` 条目**：改经 scope 感知的 ``start_after_blocks_promotion``
+          ——与 ``_on_spec_reviewing`` 入口守卫同谓词、同 config 口径（dispatch
+          档放行、full 档拦截），杜绝入口放行 / 队列二次拦截的口径分裂。
+        - 判定异常 fail-open 放行（不阻塞候选扫描，与其它候选闸门一致）。
+        """
+        if atype != "spec-review":
+            return start_after_pending(spec)
+        try:
+            return start_after_blocks_promotion(spec, getattr(self._pm, "config", None))
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"start_after 门控判定异常 '{sname}'（fail-open 放行）: {e}",
+            )
+            return False
+
     def _process_queue(self):
         """Process the run queue — relaxed-priority parallel scheduling.
 
@@ -367,7 +406,9 @@ class QQQueueMixin:
                     # add-spec-scheduling-controls D2：start_after 未到期静默跳过
                     # （不写 error 不翻状态，对齐退避门控的防自触发设计）；到期后由
                     # 60s 定时唤起 / full_scan 兜底恢复调度。
-                    if start_after_pending(spec):
+                    # 分流落点见 _start_after_blocks_entry：实现车道无条件，
+                    # spec-review 条目走 scope 感知谓词（dispatch 档放行）。
+                    if self._start_after_blocks_entry(spec, sname, atype):
                         self._pm.logger.debug(
                             "pm_engine",
                             f"start_after 未到期，跳过 {atype} 派发 '{sname}'（定时拾取）",
@@ -470,7 +511,9 @@ class QQQueueMixin:
                     # add-spec-scheduling-controls D2：start_after 未到期静默跳过
                     # （不写 error 不翻状态，对齐退避门控的防自触发设计）；到期后由
                     # 60s 定时唤起 / full_scan 兜底恢复调度。
-                    if start_after_pending(spec):
+                    # 分流落点见 _start_after_blocks_entry：实现车道无条件，
+                    # spec-review 条目走 scope 感知谓词（dispatch 档放行）。
+                    if self._start_after_blocks_entry(spec, sname, atype):
                         self._pm.logger.debug(
                             "pm_engine",
                             f"start_after 未到期，跳过 {atype} 派发 '{sname}'（定时拾取）",

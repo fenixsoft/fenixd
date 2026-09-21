@@ -1,35 +1,22 @@
 # 验证报告：add-test-regression-tab
 
-> ⚠️ 本报告由框架于 2026-09-20T20:54:37Z 自动合成（裁决 Agent 未写报告，已由框架合成），内容为结构化验证产物（report.json / .fenix-run-result.json）的忠实渲染。
-> 报告时效标记（判定本报告是否属上一轮）：合成源轮次指纹：report.json@2026-09-20T20:39:28.553974+00:00
+> ⚠️ 本报告由框架于 2026-09-20T22:19:54Z 自动合成（裁决 Agent 未写报告，已由框架合成），内容为结构化验证产物（report.json / .fenix-run-result.json）的忠实渲染。
+> 报告时效标记（判定本报告是否属上一轮）：合成源轮次指纹：report.json@2026-09-20T22:19:53.961161+00:00
 
-## 结论：❌ 未通过（Bug Found）
+## 结论：✅ 通过（verified）
 
-**状态：bug-found — 21/22 场景通过，1 失败，0 错误（1 个真实产品 Bug）**
+**状态：verified — 22/22 场景通过，0 失败，0 错误（全部场景通过）**
 
-22 场景 21 通过 1 失败。唯一失败 api-regression-config-persisted 经复现确证产品 bug：QualityPanel 回归开关 Form.Item 脱管致保存恒发 enabled:false（视觉开启但后端未持久化）。web-settings-regression-switch-toggle 的 aria-checked=true 为假通过（只验前端视觉）。另核实现场 double_han_text_selector 情报为误报：antd Menu.Item 不触发 autoInsertSpace，实测「质量」文本精确匹配，两 web 设置场景通过无需修场景文件。
+全绿快道: 22/22 场景通过、0 失败 0 警告——无分类对象，跳过 judge 机械 verified
 
 | 指标 | 数量 |
 | --- | --- |
-| 通过 | 21 |
-| 失败 | 1 |
+| 通过 | 22 |
+| 失败 | 0 |
 | 错误 | 0 |
-| 产品 Bug | 1 |
+| 产品 Bug | 0 |
 | 本链增量 Token（输入） | 43.02M |
 | 本链增量 Token（输出） | 0.31M |
-
-
-## 真实产品 Bug
-
-### BUG-01（severity=major）· json_path
-
-- 关联场景：api-regression-config-persisted
-- 描述：设置页「质量」页签回归开关（admin.regression.enabled）UI 开启后无法持久化：点击开关视觉 aria-checked=true 且显示「保存成功」，但保存请求体 regression.enabled 恒为 false，后端 config.yaml 落盘保持 false，GET /api/config 回显 false（api-regression-config-persisted 断言 regression.enabled==true 失败）。
-- 根因：QualityPanel.tsx L326-327 回归开关 Form.Item（name=regression_enabled, valuePropName=checked）未注册到表单 store（DOM 实测 regInForm=false，Form.Item 位于 <Form> 外），form.validateFields() 不返回该字段，handleSave 中 values.regression_enabled 为 undefined → enabled: false 恒提交。curl 直发 POST /api/config {regression:{enabled:true}} 可正常写入并回显，后端写读路径无缺陷，根因在前端表单提交。同型影响 code_review_enabled 开关（crInForm=false）。
-- 证据（场景 api-regression-config-persisted 结构化证据，引用）：
-  - failed_assertions: [{"type": "json_path", "path": "regression.enabled", "expected": true, "actual": false}]
-  - screenshots: []
-  - first_failed_step: api-regression-config-persisted: GET /api/config?project=fenixd 断言 regression.enabled == true，实际 false——保存后未持久化
 
 
 ## 场景结果
@@ -49,7 +36,7 @@
 | web-regression-tab-never-run | 项目页「测试回归」分面引导态：快照 never_run 时展示「尚未执行过全量回归」引导文案 + 手动触发按钮。RegressionTab.tsx:211-239 三态渲染never_run分支。路由 #/projects/fenixd → Tabs → 点击「测试回归」tab。 | pass | 0/5 | - |
 | web-settings-regression-switch-toggle | 设置页「质量」页签开启周期性全量回归：项目级作用域切换 → 勾选 regression-enabled-switch → 保存（POST /api/config {regression: {enabled: true}}）→ 前端回显开关开启。对齐 add-settings-system-tab 的项目级保存模式。QualityPanel.tsx:326-345 回归开关卡片。 | pass | 0/4 | - |
 | cli-seed-passed-snapshot | 写入全绿回归快照到 .fenix/regression/last-run.json（status=passed, total=5045, passed=5045, duration=200s）。供后续 api/web passed 状态场景消费。写路径相对 scenario_root（= serving worktree root = 项目路径）。 | pass | 0/4 | - |
-| api-regression-config-persisted | GET /api/config?project=fenixd → json_path regression.enabled == true，验证 admin.regression.enabled 经 POST /api/config 写入后落盘回显。config_admin.py:649 _DEFAULT_REGRESSION 为 {enabled: False}，写入后回显 true。 | failed | 1/2 | product-bug |
+| api-regression-config-persisted | GET /api/config?project=fenixd → json_path regression.enabled == true，验证 admin.regression.enabled 经 POST /api/config 写入后落盘回显。config_admin.py:649 _DEFAULT_REGRESSION 为 {enabled: False}，写入后回显 true。 | pass | 0/2 | - |
 | api-regression-result-valid-snapshot | GET /api/regression/result?project=fenixd → 200，status=passed，含 cmd/total=5045/passed=5045/duration_seconds/failures=[]/long_tests=[]。regression_routes.py:38-42 读 last-run.json 快照全字段。 | pass | 0/7 | - |
 | web-regression-tab-passed-overview | 项目页「测试回归」分面全绿概览：快照 status=passed 时展示概览卡片（Tag「全部通过」+ Descriptions 测试路径/用例总数/通过数/执行时间/总耗时）。RegressionTab.tsx:326-380 概览卡片渲染。 | pass | 0/7 | - |
 | cli-seed-failed-snapshot | 写入失败回归快照：status=failed, total=5045, passed=5041, failed=2, errors=1, skipped=1, failures 含 test_auth_edge_case(failure) + test_db_timeout(error), long_tests 含 test_auth_edge_case(12.5s) + test_slow_query(15.3s)。buildRows 去重后渲染3行（失败/错误/长耗时）。 | pass | 0/4 | - |
@@ -59,16 +46,7 @@
 | api-regression-result-parse-error | GET /api/regression/result?project=fenixd → 200，json_path status == parse_error，json_path reason 非空。regression_routes.py:38-42 → core/regression.py:316 read_result → JSONDecodeError → parse_error。MUST NOT 500。 | pass | 0/4 | - |
 | web-regression-tab-parse-error | 项目页「测试回归」分面不可解析态：快照 parse_error 时展示「回归结果不可解析」文案 + reason。RegressionTab.tsx:242-258 三态渲染 parse_error 分支。 | pass | 0/5 | - |
 
-
-## 断言级豁免清单
-
-以下失败断言被归类为非产品缺陷（不记产品 Bug），逐条列出供人工复核豁免是否掩盖真实缺陷（场景级一句话归因不足以复核）。
-
-无非 product-bug 的被豁免失败断言。
-
 ## 本轮场景集变更
 
-当前稳定场景集共 10 个（第 1 轮）。
-
-- 首轮写入 10 个场景
+场景集与持久化集一致，无变更。
 
