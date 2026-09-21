@@ -93,6 +93,14 @@ SUPERVISOR_KILL_MARGIN_SECONDS = 120
 # 残留文件的漂移必然超限，恰是「文件残留自旧进程」的检出信号。
 SUPERVISOR_RUNTIME_DRIFT_SECONDS = 24 * 3600
 
+# 评审锚点候选的短 TTL 缓存（fix-state-atomicity-and-selfheal-restart D3/3.3）：
+# 空闲判定经主循环 1s 粒度轮询，每次 read_all 都要解析整份 STATE.md——实测真实
+# 项目（279 条 spec）单次约 14ms（≈1.4% 单核），且「陈旧待自愈」期间可持续数
+# 小时。缓存只存**候选集合**（哪些 spec 带 reviewer_run 锚点），在飞结论仍逐次
+# 实时复核；TTL MUST 显著小于 stale_code_selfheal.idle_confirm_seconds（缺省
+# 120s），以免延迟在飞识别——2s 远小于 120s 确认窗口，不会造成误触发。
+STALE_SELFHEAL_REVIEW_ANCHOR_CACHE_SECONDS = 2.0
+
 
 def _read_preserve_sidecar() -> list:
     """读取中断保全 sidecar（.fenix/interrupted_runs.json）。
@@ -977,13 +985,22 @@ class FenixDaemon:
             )
 
     def _is_idle(self) -> bool:
-        """空闲判定（add-stale-code-selfheal D2）：双源内部状态，不依赖外部进程扫描。
+        """空闲判定（add-stale-code-selfheal D2 + fix-state-atomicity-and-selfheal-restart D3）。
 
-        「空闲」= agent_runner 无活跃 run（_active_runs == 0，覆盖 planner /
-        implementer / verifier / judge 全部 run 形态）**且** admin 处置 worker 池
-        无在途任务。任一非零即判非空闲；_admin_executor 为 None（admin.workers=0
-        同步回退）时该维度视为空闲。admin 池在途数 = submitted - completed -
-        failed（_admin_pool_stats 计数，独立成法便于单测隔离）。
+        「空闲」= ①``agent_runner`` 无活跃 run（``_active_runs == 0``，覆盖
+        planner / implementer / verifier / judge 全部 run 形态）**且** ②不存在
+        未收口的在飞评审 run **且** ③admin 处置 worker 池无在途任务。任一非空即
+        判非空闲；``_admin_executor`` 为 None（admin.workers=0 同步回退）时该维度视为
+        空闲。admin 池在途数 = submitted - completed - failed（``_admin_pool_stats``
+        计数，独立成法便于单测隔离）。
+
+        ②为本次加强项（fix-state-atomicity-and-selfheal-restart D3）：评审 run
+        **从不计入 ``_active_runs``**（``dispatch/queue.py`` 对 spec-review 派发
+        分支显式 MUST NOT 增减它，只记 ``_active_reviews``），故
+        ``_active_runs == 0`` 与「评审是否在飞」无关。2026-09-21 事故即评审 run
+        处于 API 长重试（转录不增长）时被判空闲，连续 120s 后自愈 SIGTERM 杀掉
+        在跑 run。故 MUST NOT 以「核对 ``_active_runs`` 递减时机」为修法，也 MUST NOT
+        以转录新鲜度单独作在飞依据（停滞 run 的转录本就不增长）。
         """
         if self.pm_engine is not None:
             try:
@@ -991,12 +1008,102 @@ class FenixDaemon:
                     return False
             except Exception:
                 return False  # 内部状态不可读按非空闲处理，宁紧勿松
+            try:
+                if self._review_lane_busy():
+                    return False
+            except Exception as e:  # noqa: BLE001 — 判定异常按非空闲处理（宁紧勿松）
+                self.logger.warning(
+                    "fenixd",
+                    f"评审车道在飞判定异常（按非空闲处理，不触发自愈重启）: {e}",
+                )
+                return False
         if self._admin_executor is not None:
             with self._admin_pool_lock:
                 stats = dict(self._admin_pool_stats)
             if stats["submitted"] - stats["completed"] - stats["failed"] > 0:
                 return False
         return True
+
+    def _review_anchor_candidates(self) -> dict:
+        """带短 TTL 的评审锚点候选读取（收敛 1s 轮询的 STATE 解析开销）。
+
+        ``PMEngine.review_anchors()`` 每次都要解析整份 STATE.md（实测 279 条 spec
+        约 14ms）；1s 粒度轮询下这是可观的固定开销，故按 design D3 加
+        ``STALE_SELFHEAL_REVIEW_ANCHOR_CACHE_SECONDS``（2s，远小于
+        ``idle_confirm_seconds``）短缓存。
+
+        缓存对象**只是候选集合**：哪些 spec 带 ``reviewer_run`` 锚点。在飞**结论**
+        每次都经 ``is_review_in_flight`` / ``reviewer_in_flight`` 实时复核，故
+        缓存最多把「新出现的在飞评审」晚识别 TTL 秒（≪ 120s 确认窗口），
+        MUST NOT 把在飞判成空闲超过该窗口。
+
+        实例属性用 ``getattr`` 惰性初始化：测试以 ``FenixDaemon.__new__`` 构造裸
+        对象（不跑 ``__init__``），不得因此抛 AttributeError。
+        """
+        now = time.time()
+        cached = getattr(self, "_review_anchor_cache", None)
+        if cached is not None and now - cached[0] < STALE_SELFHEAL_REVIEW_ANCHOR_CACHE_SECONDS:
+            return cached[1]
+        anchors = self.pm_engine.review_anchors()
+        if not isinstance(anchors, dict):
+            anchors = {}
+        self._review_anchor_cache = (now, anchors)
+        return anchors
+
+    def _review_lane_busy(self) -> bool:
+        """是否存在未收口的在飞评审 run（候选收窄 + 命中即短路）。
+
+        fix-state-atomicity-and-selfheal-restart D3：判定口径与派发守卫
+        （``core/pm_engine/engine.py:_on_spec_ready`` 派发前在飞评审校验）**同源**，
+        按评审在飞生命周期的两段拼合：
+
+        ⓪ ``PMEngine.has_queued_review()``——覆盖「评审条目已入队、``reviewer_run``
+           锚点尚未落盘」的窗口（此段 STATE 里没有任何锚点可枚举，只有
+           ``_active_reviews`` 登记）；
+        ① ``PMEngine.is_review_in_flight(spec_name)``——同上窗口的 per-spec 口径；
+        ② ``LivenessSupervisor.reviewer_in_flight(spec_name, reviewer_run)``——
+           分层判据（``_active_reviews`` → **进程表 ``running_run_ids()``** →
+           流文件新鲜度 → 陈旧锚点）。**进程表判据**才是「停滞 run 仍算在飞」的
+           成立依据（API 长重试期转录不增长但进程存活），流文件新鲜度 MUST NOT
+           单独作在飞依据。
+
+        开销约束（主循环 1s 粒度，见 ``_maybe_stale_selfheal_tick``）：候选先经
+        ``_review_anchor_candidates`` 收窄为 ``reviewer_run`` 非空者（拒绝全量
+        STATE 条目逐条判定），命中任一在飞**立即返回**，不做其余条目判定。实测
+        真实 STATE.md（279 条 spec）单次解析约 14ms，按 design D3 以 2s 短 TTL
+        缓存候选集合收敛该固定开销（在飞结论仍逐次实时复核）。
+
+        反向约束（D3/3.2）：陈旧锚点（run 已终态但锚点残留）经判据 ② 返回
+        ``(False, "stale")`` 天然不占位——本方法 MUST NOT 自造「锚点非空即非空闲」
+        的永真条件，否则自愈永不触发。
+        """
+        # ① 入队未落盘窗口：评审登记已在册但 STATE 尚无锚点（O(1) 锁读，
+        #    锚点枚举覆盖不到这一段）。只在返回真 bool 时采纳——瘦门面/替身
+        #    返回非 bool 不误判为非空闲。
+        queried = self.pm_engine.has_queued_review()
+        if isinstance(queried, bool) and queried:
+            return True
+        anchors = self._review_anchor_candidates()
+        if not isinstance(anchors, dict) or not anchors:
+            # 无候选（含瘦门面/替身返回非 dict）：无在飞评审，不启用评审维度。
+            # 候选为空即无评审 run 的锚点落点，无需再做任何探测。
+            return False
+        for spec_name, reviewer_run in anchors.items():
+            try:
+                if self.pm_engine.is_review_in_flight(spec_name):
+                    return True  # ② 入队/出队窗口，命中即短路
+            except Exception:  # noqa: BLE001 — 判据异常按在飞处理（宁紧勿松）
+                return True
+            try:
+                in_flight, _reason = self.pm_engine.agent_runner.reviewer_in_flight(
+                    spec_name, reviewer_run
+                )
+            except Exception:  # noqa: BLE001 — 判据异常按在飞处理（宁紧勿松）
+                return True
+            if in_flight:
+                # ③ 进程存活（停滞 run 亦命中）/ 流新鲜；"stale" 等否定结论不占位
+                return True
+        return False
 
     def _maybe_stale_selfheal_tick(self) -> None:
         """陈旧自愈触发（add-stale-code-selfheal 2.2/2.3，主循环 1s 粒度轮询）。
@@ -1065,7 +1172,7 @@ class FenixDaemon:
 
         self._heal_block_reason = None
         if not self._is_idle():
-            # 任一非空闲信号（活跃 run / admin 在途）出现 → 立即清零计时
+            # 任一非空闲信号（活跃 run / 在飞评审 run / admin 在途）出现 → 立即清零计时
             self._stale_idle_since = None
             return
 

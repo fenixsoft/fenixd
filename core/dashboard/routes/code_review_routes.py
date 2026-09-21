@@ -238,6 +238,11 @@ class H11CodeReviewRoutesMixin:
         注册到**框架根** STATE，目标项目 daemon 读不到该 spec、永不晋升。改为指向
         目标项目路径（单项目/框架自托管部署下二者一致，行为不变）。
         """
-        from core.state_machine import StateMachine
+        from core.state_machine import StateMachine, project_state_logger
 
-        return StateMachine(Path(project_path) / ".fenix" / "STATE.md", None)
+        # 跨进程写入者 MUST 注入真实 logger（fix-state-atomicity-and-selfheal-restart
+        # 1.3/D2）：generate_fix_spec 经 add_spec 写 STATE，无 logger 构造会静默。
+        return StateMachine(
+            Path(project_path) / ".fenix" / "STATE.md",
+            project_state_logger(project_path),
+        )
