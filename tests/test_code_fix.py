@@ -765,6 +765,77 @@ class TestOrchestratorGuards(unittest.TestCase):
         prog = read_progress(proot)
         self.assertEqual(prog["done"], 1)
 
+    def test_retry_fixed_items_are_resolved_by_union(self):
+        """重试轮各自 fixed 的条目按两轮产物**并集**核销（只读首次 run 会漏）。
+
+        回归锁：ocr 审查发现——重试轮写独立的 ``fix-out-<retry_run_id>.jsonl``，
+        仅读首次 run 的产物会把「重试才修复」的条目合回主树却仍留 open，
+        下轮被反复重派。
+        """
+        from core.code_fix import CodeFixOrchestrator, read_progress
+        from core.code_review import read_items
+
+        proot = _make_project_root()
+        _write_items(proot, {"a": _item("a"), "b": _item("b")})
+        _write_verify_yaml(proot)
+        # 首次：a fixed / b skipped；重试：a skipped / b fixed
+        runner = _FakeRunner(
+            proot,
+            fix_statuses=[["fixed", "skipped"], ["skipped", "fixed"]],
+            regression_statuses=["failed", "passed"],
+        )
+        orch = CodeFixOrchestrator(runner, proot, config=_CFG_ON, logger=None)
+        orch.checkpoint()
+        self.assertEqual(len(runner.fix_calls), 2, "首次回归失败后重试一次")
+        self.assertEqual(len(runner.worktree_manager.merge_calls), 1)
+        items = read_items(proot)
+        self.assertEqual(items["a"]["status"], "resolved")
+        self.assertEqual(items["b"]["status"], "resolved",
+                         "重试轮才修复的条目也必须核销（并集口径）")
+        self.assertEqual(read_progress(proot)["done"], 2)
+
+    def test_retry_run_failed_cleans_up_without_failed_set(self):
+        """重试 run 失败（第二次回归未跑）→ 不入失败保留集合，cleanup 释放锁。
+
+        回归锁：ocr 审查发现——原实现把「重试 run 失败」记进
+        ``fix-failed.json``（该文件语义是「两次回归均失败」）且不 cleanup，
+        令 spec 锁永久占用（后续 create() 恒 None，车道首批后即死），
+        同时把很可能是一次性失败的条目永久排除出选批。
+        """
+        from types import SimpleNamespace
+
+        from core.code_fix import (CodeFixOrchestrator, load_failed_batches,
+                                   read_progress)
+        from core.code_review import read_items
+
+        proot = _make_project_root()
+        _write_items(proot, {"a": _item("a")})
+        _write_verify_yaml(proot)
+        runner = _FakeRunner(proot, regression_statuses=["failed", "failed"])
+        real_fix = runner.run_code_fix
+        calls = {"n": 0}
+
+        def flaky_fix(worktree_root, items, run_id=None, failure_summary=""):
+            calls["n"] += 1
+            if calls["n"] == 2:  # 重试 run 直接失败（产物硬门）
+                return SimpleNamespace(run_id="code-fix-retry", success=False,
+                                       fixed=0, skipped=0, error="重试产物缺失",
+                                       output="")
+            return real_fix(worktree_root, items, run_id=run_id,
+                            failure_summary=failure_summary)
+
+        runner.run_code_fix = flaky_fix
+        orch = CodeFixOrchestrator(runner, proot, config=_CFG_ON, logger=None)
+        orch.checkpoint()
+        self.assertEqual(runner.worktree_manager.merge_calls, [])
+        self.assertTrue(runner.worktree_manager.cleanup_calls,
+                        "重试 run 失败也必须释放 spec 锁")
+        self.assertEqual(read_items(proot)["a"]["status"], "open")
+        self.assertEqual(load_failed_batches(proot), [],
+                         "run 失败 ≠ 两次回归均失败，MUST NOT 入失败保留集合")
+        prog = read_progress(proot)
+        self.assertIn("regression_retry_run_failed", prog["reason"])
+
     def test_agent_run_failed_cleans_up_and_retries_later(self):
         """run 失败（产物硬门）→ 不合回不核销，cleanup 释放锁，条目保持 open。"""
         from types import SimpleNamespace

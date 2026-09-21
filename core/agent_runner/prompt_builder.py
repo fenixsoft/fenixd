@@ -1365,7 +1365,6 @@ class PromptBuilder:
         items: list = detail.get("items") or []
         items_txt = json.dumps(items, ensure_ascii=False, indent=2) or "[]"
         prompt = prompt.replace("{items}", items_txt)
-        prompt = prompt.replace("{total_files}", str(len(items)))
         out_path = detail.get("out_path")
         if not out_path:
             wt = detail.get("worktree") or self._pm.project_root

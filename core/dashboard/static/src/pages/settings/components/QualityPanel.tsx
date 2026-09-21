@@ -402,7 +402,7 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
             rules={[
               {
                 validator: (_: unknown, v: number | undefined | null) =>
-                  v != null && Number.isInteger(v) && v >= 1 && v <= 1000
+                  v !== null && v !== undefined && Number.isInteger(v) && v >= 1 && v <= 1000
                     ? Promise.resolve()
                     : Promise.reject(new Error('须为 1–1000 的整数')),
               },

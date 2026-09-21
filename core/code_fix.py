@@ -638,7 +638,7 @@ class CodeFixOrchestrator:
             self._log("error", f"code-fix run 失败（run {result.run_id}）: {result.error}")
             # agent run 失败：不合回不核销；清理 worktree 释放 spec 锁
             #（否则下一批 create() 恒 None，车道死锁），条目保持 open 待下轮重试
-            _safe_cleanup(wm, wt, success=False)
+            _safe_cleanup(wm, wt, success=False, logger=self._logger)
             self._finish(
                 "failed",
                 reason=f"agent_run_failed: {result.error}"[:500],
@@ -647,6 +647,7 @@ class CodeFixOrchestrator:
             return False
 
         # 第一次全量回归（执行根=worktree、锁根=主树，D10）
+        retry_run_id: str | None = None
         write_progress(
             root,
             phase="regressing",
@@ -673,13 +674,19 @@ class CodeFixOrchestrator:
                     "error",
                     f"code-fix 重试 run 失败（run {retry_result.run_id}）: {retry_result.error}",
                 )
-                record_failed_batch(root, item_ids, wt)
-                write_regression_failed_alert(root, item_ids, wt, summary)
+                # run 失败（第二次回归根本没跑）≠「两次回归均失败」：不入失败
+                # 保留集合，改走与首次 run 失败同一条语义——清理 worktree 释放
+                # spec 锁（否则 code-review-fix:code-fix 被永久持有，下一批
+                # create() 恒返回 None，车道首批后即死），条目保持 open 待下轮
+                # full scan 重试。
+                _safe_cleanup(wm, wt, success=False, logger=self._logger)
                 self._finish(
                     "failed",
                     reason=f"regression_retry_run_failed: {retry_result.error}"[:500],
+                    current=f"第 {batch_no} 批重试 run 失败",
                 )
                 return False
+            retry_run_id = retry_result.run_id
             reg = runner.run_regression(
                 reg_spec, reason="code-fix", project_root=wt, lock_root=root
             )
@@ -704,9 +711,15 @@ class CodeFixOrchestrator:
         # 建树点有提交。merge_back 对「分支已是 HEAD 祖先」返回成功——无此
         # 守卫，全 skipped 的批会以「零改动合并成功 + 回归必过」白洗 resolved。
         rows = read_fix_out(wt, result.run_id)
+        if retry_run_id:
+            # 重试轮产物是独立文件（fix-out-<retry_run_id>.jsonl）：两轮改动都落在
+            # 同一 worktree、随同一次合回进主树，故核销按**并集**口径；只读首次
+            # run 会漏掉「重试才修复」的条目（已合回却仍留 open，被反复重派）。
+            rows.extend(read_fix_out(wt, retry_run_id))
         fixed_ids = [
             r.get("item_id") for r in rows if r.get("status") == "fixed"
         ]
+        fixed_ids = list(dict.fromkeys(fixed_ids))
         commits = _worktree_commit_count(wt, created_sha) if created_sha else 0
         if not fixed_ids or commits <= 0:
             self._log(
@@ -714,7 +727,7 @@ class CodeFixOrchestrator:
                 f"code-fix 第 {batch_no} 批零有效修复（fixed={len(fixed_ids)}, "
                 f"commits={commits}），拒合回",
             )
-            _safe_cleanup(wm, wt, success=False)
+            _safe_cleanup(wm, wt, success=False, logger=self._logger)
             self._finish(
                 "failed",
                 reason="no_effective_fix",
@@ -739,7 +752,7 @@ class CodeFixOrchestrator:
             )
             return False
         hit = mark_resolved(root, fixed_ids)
-        _safe_cleanup(wm, wt, success=True)
+        _safe_cleanup(wm, wt, success=True, logger=self._logger)
         new_done = done + hit
         write_progress(
             root,
@@ -755,12 +768,16 @@ class CodeFixOrchestrator:
         return True
 
 
-def _safe_cleanup(wm, wt, success: bool) -> None:
+def _safe_cleanup(wm, wt, success: bool, logger=None) -> None:
     """cleanup 包裹：异常只记日志不炸批 worker（锁泄漏比异常更糟，宁可多试）。"""
     try:
         wm.cleanup(wt, success=success)
     except Exception as e:  # noqa: BLE001
-        pass
+        if logger is not None:
+            try:
+                logger.warning("code-fix", f"worktree cleanup 失败（{wt}）: {e}")
+            except Exception:  # noqa: BLE001 — 日志失败不影响批收尾
+                pass
 
 
 def _failure_summary(reg) -> str:
