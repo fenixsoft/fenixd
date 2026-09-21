@@ -5,7 +5,7 @@
 > 2. **读取尽量一步到位**：优先一次读完整个文件或一次 `grep -rn` 拿到全部命中；不要在「先 Grep 定位行号、再 Read 那几行」之间来回多轮。文件大时才按区间分段。
 > 3. **不要重复求证**：同一条事实（某文件是否存在、某符号是否被引用）只查一次，把结论记在评审笔记里复用；禁止换个命令再查同一件事。
 > 4. **取证深度上限**（fix-agent-lane-efficiency）：取证以「**足以判定结论的最小可判反证**」为限——判定 `blocking`（前提被证伪）vs `repairable`（文档内可修）所必需的最小证据即可；MUST NOT 为完整复现 SPEC 的每条断言而穷尽探测/重复重跑。输出裁剪：大块命令输出（探针/日志）MUST 裁剪后入对话（`head -c` / 只取关键行 / 落临时文件只回读关键片段）。
-> 5. **长任务前台有界等待**（fix-agent-lane-efficiency）：`ScheduleWakeup` 在非交互派发下不产生唤醒——但后台 Bash 任务的**完成通知真实可用**。可能超过 600s 工具上限的长任务 MUST 用**一次** `run_in_background: true` 启动（有界入口 `bin/run_full_suite.py --timeout 3600` 自身在超时内必返回时 MUST 优先前台直接跑），然后等待完成通知或做无数据依赖的独立工作。MUST NOT 用 `sleep` / 周期性 `ps` 轮询模拟等待。
+> 5. **长任务前台等待**（fix-agent-lane-efficiency）：`ScheduleWakeup` 在非交互派发（`claude -p`）下不产生唤醒；**后台 Bash 任务的完成通知同样不会送达**——本 run 结束当前 turn 即进程终止，后台子进程随之被杀（「后台启动 + 等通知」≡「启动即忘」）。可能超过 600s 工具上限的长任务：存在超时内必返回的有界入口（如 `bin/run_full_suite.py --timeout 3600`）时 MUST **前台直接跑**；无有界入口时才用**一次** `run_in_background: true`，且必须显式 `Read` 其输出文件确认完成，MUST NOT 依赖「完成通知」，MUST NOT 用 `sleep` 空转。
 
 ## 背景
 

@@ -64,18 +64,25 @@ class TestForensicDepthSection:
 
 
 class TestLongTaskWaitSection:
-    """长任务前台有界等待段注入测试。"""
+    """长任务前台等待段注入测试。"""
 
     @pytest.mark.parametrize("agent_type", ["implementer", "fast-track"])
     def test_impl_lanes_inject_long_task(self, tmp_path, agent_type):
-        """Scenario: 实现者两车道 prompt 含「长任务前台有界等待」段。"""
+        """Scenario: 实现者两车道 prompt 含「长任务前台等待」段。
+
+        2026-09-21 更正（writepath 冻结事故）：旧文案「后台完成通知真实可用」
+        被证伪——非交互派发下一次 turn 结束即杀后台子进程。现文案 MUST 明确
+        通知不送达 + 有界入口前台直跑。
+        """
         pb = _make_prompt_builder(tmp_path)
         section = pb._long_task_wait_section(agent_type)
-        assert "长任务前台有界等待" in section
+        assert "长任务前台等待" in section
         assert "run_in_background" in section
         assert "完成通知" in section
+        assert "不会送达" in section  # 能力事实更正：通知不可依赖
         assert "ScheduleWakeup" in section
         assert "sleep" in section  # MUST NOT 用 sleep 自旋
+        assert "启动即忘" in section  # 后台启动+等通知等价于启动即忘
 
     @pytest.mark.parametrize("agent_type", ["spec-review", "planner-judge", "planner-plan", "verifier"])
     def test_non_impl_lanes_zero_injection(self, tmp_path, agent_type):
@@ -115,7 +122,7 @@ class TestInjectionOrderInvariant:
         wt = tmp_path / "wt-demo"
         wt.mkdir(parents=True)
         prompt = pb._build_prompt("demo", "implementer", wt_path=wt)
-        # 动态契约段（工具调用效率/取证深度上限/长任务前台有界等待）
+        # 动态契约段（工具调用效率/取证深度上限/长任务前台等待）
         # 注入位置：非交互契约段之后、项目级附加段之前。模板本体（agents/
         # implementer.md）可能含效率措辞（task 3.4 同步），故以非交互契约段
         # 之后的片段校验三段的相对顺序（动态段追加顺序：效率→取证→长任务）。
@@ -126,6 +133,6 @@ class TestInjectionOrderInvariant:
         # 检查动态段全部出现在非交互契约段之后（使用 rfind 定位最后出现位置）
         assert prompt.rfind("工具调用效率") > noninter_pos
         assert prompt.rfind("取证深度上限") > noninter_pos
-        assert prompt.rfind("长任务前台有界等待") > noninter_pos
+        assert prompt.rfind("长任务前台等待") > noninter_pos
         # 三段相对顺序：效率 → 取证 → 长任务
-        assert prompt.rfind("工具调用效率") < prompt.rfind("取证深度上限") < prompt.rfind("长任务前台有界等待")
+        assert prompt.rfind("工具调用效率") < prompt.rfind("取证深度上限") < prompt.rfind("长任务前台等待")

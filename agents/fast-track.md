@@ -6,9 +6,11 @@
 > 3. **取证深度上限**：取证以「足以判定结论的最小可判反证」为限；MUST NOT 为完整复现 SPEC 的每条断言而穷尽探测/重复重跑全量套件。
 > 4. **输出裁剪**：大块输出 MUST 裁剪（`head -c` / 取关键行 / 落临时文件后只回读关键片段）；MUST NOT 将数十 KB 原始输出整块投入对话上下文。
 
-> ⚠️ **长任务前台有界等待（fix-agent-lane-efficiency，强制）**：
-> - `ScheduleWakeup` 在非交互派发下不产生唤醒——但后台 Bash 任务的**完成通知真实可用**（二者是两件事，勿混为一谈）。
-> - 可能超过 600s 工具上限的长任务 MUST 用**一次** `run_in_background: true` 启动（有界入口 `bin/run_full_suite.py --timeout 3600` 自身在超时内必返回时 MUST 优先前台直接跑），然后等待完成通知或在等待期间做无数据依赖的独立工作。MUST NOT 用 `sleep` / 周期性 `ps` 轮询模拟等待，MUST NOT 启动后直接收工（「启动即忘」）。
+> ⚠️ **长任务前台等待（fix-agent-lane-efficiency，强制）**：
+> - `ScheduleWakeup` 在非交互派发（`claude -p`）下不产生唤醒；**后台 Bash 任务的完成通知同样不会送达**——本 run 一旦结束当前 turn（收工）即整个进程终止，后台子进程随之被杀。**在本模式下「后台启动 + 等通知」与「启动即忘」是同一件事**，MUST NOT 采用。
+> - 可能超过 600s 工具上限的长任务（全量回归/大范围构建/超时探针）：若存在能在超时内必然返回的有界入口（如 `bin/run_full_suite.py --timeout 3600`），MUST **前台直接跑**该入口——它自身受硬超时约束，必在返回前给你完整结果。
+> - 仅在**没有任何有界入口**、任务可能无限期运行时，才可用**一次** `run_in_background: true` 启动；此时 MUST NOT 在等待期间收工——必须显式轮询该后台任务的**输出文件**（`Read` 其 `output-file` 路径）确认完成或失败，MUST NOT 依赖任何「完成通知」。
+> - MUST NOT 用 `sleep` 空转模拟等待。
 
 ## PHASE 1 — 实现
 1. 读取 {spec_dir}/proposal.md、{spec_dir}/design.md、{spec_dir}/specs/\*.md、{spec_dir}/tasks.md。

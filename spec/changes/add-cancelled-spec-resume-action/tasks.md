@@ -53,3 +53,9 @@
 - [x] 5.1 新增 `tests/test_cancelled_spec_resume.py`：命中（STATE 落点逐字段断言：ready/branch/_recovery_resume/hold 清除/tester_run 清空/计数归零 + kick 文件存在）、降级（degraded:true、无 `_recovery_resume`、锚点清空）、非保持态幂等拒绝（STATE 零变更）、冻结拒绝、终态拒绝
 - [x] 5.2 负例①：STATE 文本写作 `_cancelled_hold: False`（大写 F，同存量条目）时摘要 `cancelled_hold` 为 `false` 且动作幂等拒绝；负例②：WorktreeManager 构造失败时动作拒绝、STATE 逐字段零变更（MUST NOT 降级清锚点）
 - [x] 5.3 `python3 -m pytest tests/test_cancelled_spec_resume.py tests/test_cancel_holdstate_recovery.py tests/test_dashboard_freeze.py -q` 全绿（与既有取消保持/冻结测试无回归冲突）
+
+## 验证修复（原地打回第 1 轮）
+
+- [ ] 先复核失败有效性：逐条核对 `spec/changes/add-cancelled-spec-resume-action/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
+- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
+- [ ] 修复后重跑验证确认通过

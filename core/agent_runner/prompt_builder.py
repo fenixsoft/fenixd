@@ -583,29 +583,38 @@ class PromptBuilder:
         )
 
     def _long_task_wait_section(self, agent_type: str) -> str:
-        """长任务前台有界等待段（spec long-task-foreground-wait，D4）。
+        """长任务前台等待段（fix-agent-lane-efficiency，D4）。
 
-        一次后台启动 + 等待完成通知或并行独立工作；MUST NOT 用 sleep / 周期性
-        ps 自旋；有界入口（600s 内必返回）优先前台直接跑。区分两类后台能力：
-        后台 Bash 完成通知真实可用 vs ScheduleWakeup 在非交互派发下不产生唤醒。
+        一次后台启动 + 显式轮询输出文件；MUST NOT 用 sleep / 周期性 ps 自旋；
+        有界入口（超时内必返回）优先前台直接跑。
+
+        **能力事实（2026-09-21 更正）**：非交互派发（`claude -p`）下既无
+        `ScheduleWakeup` 定时唤醒，后台 Bash 任务的**完成通知也不会送达**——
+        run 结束当前 turn 即进程终止，后台子进程随之被杀。「后台启动 + 等通知」
+        在本模式下与「启动即忘」等价（writepath 冻结事故：模型依旧文案起后台
+        回归等通知 → 每轮 partial 占位 → 同因熔断）。旧文案「完成通知真实可用」
+        已废弃。
+
         仅注入实现者两条车道（implementer / fast-track）。
         """
         if agent_type not in ("implementer", "fast-track"):
             return ""
         return (
-            "\n\n## 长任务前台有界等待（fix-agent-lane-efficiency，强制）\n"
-            "- **一次后台启动**：可能超过工具单次调用时限（600s）的长任务（全量"
-            "回归、大范围构建、超时探针等）MUST 用**一次**后台调用（`run_in_"
-            "background: true`）启动，MUST NOT 用 `sleep` / 周期性 `ps` 轮询"
-            "模拟等待。\n"
-            "- **等待或并行独立工作**：启动后 MUST 等待完成通知，或在等待期间做"
-            "与该任务无数据依赖的独立工作；MUST NOT 启动后直接收工（「启动即忘」"
-            "）。\n"
-            "- **有界入口优先**：若任务存在能在 600s 内返回的有界入口（如 `bin/"
-            "run_full_suite.py --timeout <t>`），MUST 优先直接前台跑该入口。\n"
-            "- **两类后台能力区分**：后台 Bash 任务的**完成通知真实可用**；"
-            "`ScheduleWakeup` 定时唤醒在非交互派发（`claude -p`）下**不产生唤醒**"
-            "——二者不混同，MUST NOT 把「后台等待」整体判为违规。\n"
+            "\n\n## 长任务前台等待（fix-agent-lane-efficiency，强制）\n"
+            "- **两类后台能力均不可用于等待**：非交互派发（`claude -p`）下"
+            "既无 `ScheduleWakeup` 定时唤醒，后台 Bash 任务的**完成通知也不会"
+            "送达**——run 结束当前 turn 即进程终止，后台子进程随之被杀。"
+            "「后台启动 + 等通知」在本模式下与「启动即忘」是同一件事。\n"
+            "- **有界入口优先前台直跑**：可能超过 600s 工具上限的长任务（全量"
+            "回归、大范围构建、超时探针等），若存在受硬超时约束、必在返回前给"
+            "出完整结果的有界入口（如 `bin/run_full_suite.py --timeout <t>`），"
+            "MUST 直接前台跑该入口。\n"
+            "- **无有界入口才用后台**：确无有界入口且任务可能无限期运行时，"
+            "才用**一次**后台调用（`run_in_background: true`）启动；启动后"
+            "MUST NOT 在等待期间收工——必须显式 `Read` 该后台任务的**输出"
+            "文件**（`output-file` 路径）确认完成或失败，MUST NOT 依赖任何"
+            "「完成通知」。\n"
+            "- **禁止空转**：MUST NOT 用 `sleep` / 周期性 `ps` 空转模拟等待。\n"
         )
 
     def _impl_code_review_section(self, spec_name: str) -> str:
@@ -1940,14 +1949,16 @@ class PromptBuilder:
                 "- 结果文件 MUST 为合法 JSON——字符串内换行/引号/控制字符必须转义"
                 "（建议以 `json.dump` 生成而非手工拼接文本）。\n"
                 "- 本车道无定时唤醒节拍：`ScheduleWakeup` 在非交互派发下不产生"
-                "唤醒——但后台 Bash 任务的**完成通知真实可用**（与 `ScheduleWakeup` "
-                "不可用是两件事，勿混为一谈）。\n"
+                "唤醒，后台 Bash 任务的**完成通知同样不会送达**（run 结束当前 "
+                "turn 即进程终止、后台子进程被杀）——「后台启动 + 等通知」在本"
+                "模式下等价于「启动即忘」，MUST NOT 采用。\n"
                 "- 长任务（可能超过 600s 工具上限：全量回归/大范围构建/超时探针）"
-                "MUST 用**一次** `run_in_background: true` 启动（若存在 600s 内"
-                "必然返回的有界入口，如 `python3 bin/run_full_suite.py --timeout "
-                "3600`，MUST 优先前台直接跑），然后等待完成通知或在等待期间做与该"
-                "任务无数据依赖的独立工作；MUST NOT 用 `sleep` / 周期性 `ps` 轮询"
-                "模拟等待，MUST NOT 启动后直接收工（「启动即忘」）。\n"
+                "若存在受硬超时约束、必在返回前给出完整结果的有界入口，如 "
+                "`python3 bin/run_full_suite.py --timeout 3600`，MUST **前台"
+                "直接跑**该入口。仅在确无有界入口时才用**一次** "
+                "`run_in_background: true` 启动，且启动后 MUST NOT 收工——必须"
+                "显式 `Read` 其输出文件（`output-file` 路径）确认完成或失败。"
+                "MUST NOT 用 `sleep` / 周期性 `ps` 空转模拟等待。\n"
             )
         result_path = planner_result_path(self._pm.project_root, spec_name, "planner-judge")
         scenarios_path = planner_result_path(self._pm.project_root, spec_name, "planner-plan")
