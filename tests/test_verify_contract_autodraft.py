@@ -556,5 +556,74 @@ class TestValidateContractCLI(unittest.TestCase):
         self.assertIn("无效", out)
 
 
+class TestVerifyRegressionMissingSignal(unittest.TestCase):
+    """verify_regression_missing 信号注册 + admin_monitor 摄取唤起 Administrator。
+
+    场景：契约有效但缺 regression 段，用户在设置页「质量」页签点「使用 AI 生成」
+    → 写本信号 → 巡检按 evidence 项目名解析唤起 Administrator，仅补 regression 段。
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def test_signal_registered_and_recommendation_semantics(self):
+        """注册断言：类型纳入摄取管道、severity major、指引含「仅补段」语义。"""
+        from core.admin_monitor import (
+            SIGNAL_RECOMMENDATION,
+            SIGNAL_SEVERITY,
+            STORED_SIGNAL_TYPES,
+        )
+
+        self.assertIn("verify_regression_missing", STORED_SIGNAL_TYPES)
+        self.assertEqual(SIGNAL_SEVERITY["verify_regression_missing"], "major")
+        rec = SIGNAL_RECOMMENDATION["verify_regression_missing"]
+        self.assertIn("仅补 regression 段", rec)
+        self.assertIn("MUST NOT 改动", rec)
+        # 指引区别于整契约起草（missing）与覆盖重起草（redraft）
+        self.assertNotEqual(rec, SIGNAL_RECOMMENDATION["verify_contract_missing"])
+        self.assertNotEqual(rec, SIGNAL_RECOMMENDATION["verify_contract_redraft"])
+
+    def test_signal_picked_up_and_admin_invoked(self):
+        """未 escalated 的 regression_missing 信号被巡检拾取、按 evidence 提取项目名唤起。"""
+        from core.admin_monitor import AdminMonitor
+        from core.admin_store import AdminStore, SIGNAL
+
+        store = AdminStore(self.tmp, _FakeLogger())
+        store.append({
+            "kind": SIGNAL,
+            "signal_type": "verify_regression_missing",
+            "spec": None,  # UI 手动触发：spec 留空，项目名从 evidence 提取
+            "severity": "major",
+            "description": "AI 补写 regression 段请求（UI 手动触发）",
+            "evidence": "项目名=fenixd",
+            "source": "ui-manual",
+        })
+        runner = _FakeRunner()
+        mon = AdminMonitor(
+            {"admin": {"enabled": True}},
+            _FakeSM({"fenixd": {"status": "testing"}}),
+            self.tmp,
+            _FakeLogger(),
+            store=store,
+            agent_runner=runner,
+        )
+        signals = mon.run_once()
+
+        self.assertEqual(len(runner.calls), 1, "regression_missing 信号应唤起 Administrator 一次")
+        call = runner.calls[0]
+        self.assertEqual(call["signal_type"], "verify_regression_missing")
+        self.assertEqual(call["spec"], "fenixd", "项目名应从 evidence 提取")
+        self.assertIn("仅补 regression 段", call["recommended_action"])
+        self.assertGreaterEqual(len(signals), 1)
+        # 摄取后源记录已 escalated（同记录不反复唤起）
+        self.assertTrue(all(
+            r.get("escalated")
+            for r in store.read_all()
+            if r.get("kind") == SIGNAL
+            and r.get("signal_type") == "verify_regression_missing"
+        ))
+
+
 if __name__ == "__main__":
     unittest.main()

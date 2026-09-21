@@ -28,7 +28,7 @@
 - `read_config` / `read_effective_config` MUST 经 `ConfigLoader.get_code_review_fix_config` 回显生效值。
 - `_deep_merge_managed` MUST 支持该段的合并写入。
 - `write_config` MUST 前置校验：`enabled` 严格 bool、`batch_size` 正整数，非法 MUST 明确失败（不静默忽略、不半写）。
-- `_SYNC_PAGE_KEYS` 的 `quality` 页签 MUST 含该段（用户级同步）。
+- `_SYNC_PAGE_KEYS` 的 `quality` 页签 MUST 含该段（用户级同步）；`_SYNC_PAGE_KEYS` 的现行形态为「页签 → {配置段: [键名]}」映射（`core/dashboard/data/config_admin.py:1750-1800`，如 `"quality": {"verify": [...]}`、`"system": {"admin": [...]}`），故该段 MUST 以 `"admin": ["code_review_fix"]` 形态登记在 `quality` 页签下。
 - 缺失该段时读侧 MUST 回显缺省，MUST NOT 500。
 
 #### Scenario: 保存后回显
@@ -45,7 +45,7 @@
 
 系统 SHALL 把新配置键同步到入库的模板与文档，MUST NOT 只落代码。
 
-- `.fenix/config.template.yaml` MUST 含 `admin.code_review_fix` 段示例（`enabled: false` / `batch_size: 20`，惰性注释或显式值形态与既有 `admin.code_review` 一致）。
+- `.fenix/config.template.yaml` MUST 含 `admin.code_review_fix` 段示例（`enabled: false` / `batch_size: 20`），形态 MUST 与既有 `admin.code_review` 一致——该文件（`git ls-files` 命中，入库交付）中的 admin 段以**整段注释**的惰性形态存在（`.fenix/config.template.yaml:341-350` 的 `# code_review:` / `#   enabled: false`），MUST NOT 写成未被注释的活配置（那会改变所有项目的生效缺省）。
 - `docs/help/09-config.md` 的「Dashboard 设置页与配置键映射」表 MUST 含 `admin.code_review_fix.enabled` 与 `admin.code_review_fix.batch_size`，并 MUST 有专节说明语义与缺省。
 
 #### Scenario: 模板含新键

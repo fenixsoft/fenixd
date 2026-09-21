@@ -5,16 +5,17 @@
 系统 SHALL 把自动修复的工作情况以结构化进度暴露，供 Dashboard 呈现「已处理数 / 总数 / 进度条」。
 
 - 进度 MUST 落盘为单文件覆盖式快照 `.fenix/code-review/fix-progress.json`（形态对齐既有 `.fenix/regression/last-run.json`），MUST NOT 依赖多轮历史。
-- 结构 MUST 至少含：`running`（bool）、`phase`（字符串）、`total`（int）、`done`（int）、`current`（字符串）、`batch_no`（int）、`reason`（失败/阻塞原因，可为空）。
-- `total` MUST 为本次激活开始时的 `open` 条目总数（激活期间不变的快照）；`done` MUST 为已合回主树的条目累计数。
+- 结构 MUST 至少含：`running`（bool）、`phase`（字符串）、`total`（int）、`done`（int）、`current`（字符串）、`batch_no`（int）、`reason`（失败/阻塞原因，可为空）、`activation_id`（激活链标识，可为空）。
+- `activation_id` MUST 由编排器在**新激活链**起点生成并持久化；同链内的自驱动再投递 MUST 沿用同一 `activation_id`，读到进度文件 `running=true` 且 `activation_id` 未变时 MUST NOT 重算 `total`（否则每批收尾复位单飞后再投递会把 `total` 重置为已缩小的 `open` 数，前端出现「已处理 0/40」的倒退，与「激活期间不变的快照」自相矛盾）。
+- `total` MUST 为本次激活链开始时的 `open` 条目总数（链内不变）；`done` MUST 为**实际被置为 `resolved`** 的条目累计数（= 各批 `mark_resolved` 命中数之和），MUST NOT 以批条数计（`skipped` 条目与未命中 `item_id` 不计入）。
 - `phase` MUST 取下列之一：`idle` / `selecting` / `fixing` / `regressing` / `retrying` / `merging` / `blocked` / `failed`。
 - `running` MUST 由编排器在途判据决定（`_in_flight` 标记或存在 `code-fix-` 前缀在飞 run），MUST NOT 以「进度文件存在」近似判定。
 - 进度文件缺失时，读侧 MUST 返回 `{running: false, phase: "idle", total: 0, done: 0, ...}` 的缺省态，MUST NOT 报错。
 
 #### Scenario: 修复中可查真实进度
 
-- **WHEN** 本次激活 `open` 总数 60，已合回 20 条，当前正在修复第 2 批
-- **THEN** `GET /api/code-review/fix-progress` MUST 返回 `running=true, phase="fixing", total=60, done=20, batch_no=2`，前端据此渲染进度条
+- **WHEN** 本次激活链 `open` 总数 60，已实际核销 20 条，当前正在修复第 2 批
+- **THEN** `GET /api/code-review/fix-progress` MUST 返回 `running=true, phase="fixing", total=60, done=20, batch_no=2`，前端据此渲染进度条；第 2 批收尾再投递检查点时 `total` MUST 仍为 60（MUST NOT 因本批已合回而重置）
 
 #### Scenario: 无进度文件返回缺省态
 

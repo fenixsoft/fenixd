@@ -1,11 +1,16 @@
-import { Alert, Button, Card, Form, InputNumber, Select, Switch, Typography, message } from 'antd';
-import { useEffect, useState } from 'react';
+import { Alert, Button, Card, Descriptions, Form, InputNumber, Select, Switch, Typography, message } from 'antd';
+import { useEffect, useRef, useState } from 'react';
 import type { ConfigData } from '@/services/dashboard';
-import { getOcrStatus, installOcr } from '@/services/dashboard';
-import type { OcrStatus } from '@/services/dashboard';
+import { autodraftRegression, getOcrStatus, getRegressionConfig, installOcr } from '@/services/dashboard';
+import type { OcrStatus, RegressionConfigStatus } from '@/services/dashboard';
 import SyncFromUserButton, { SETTINGS_ACTIONS_ROW_STYLE } from './SyncFromUserButton';
 
 const { Text } = Typography;
+
+/** regression.cmd 可为 str（shell）或 list（argv）；展示统一成可读串 */
+function formatCmd(cmd: string | string[]): string {
+  return Array.isArray(cmd) ? cmd.join(' ') : cmd;
+}
 
 interface QualityPanelProps {
   config: ConfigData;
@@ -21,6 +26,13 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
   // ocr 环境探测状态：null=加载中；未安装时开关置灰并给出「一键安装」
   const [ocr, setOcr] = useState<OcrStatus | null>(null);
   const [installing, setInstalling] = useState(false);
+  // 项目作用域：verify.yaml regression 段配置状态（null=加载中/未加载）
+  const [regressionCfg, setRegressionCfg] = useState<RegressionConfigStatus | null>(null);
+  const [regressionCfgError, setRegressionCfgError] = useState<string | null>(null);
+  const [regressionDrafting, setRegressionDrafting] = useState(false);
+  // 补段请求同步防重入锁（同 ProjectProfilePanel 的 autodraftInFlight 约定：loading
+  // 渲染生效存在调度间隙，useRef 写读同帧原子）
+  const regressionDraftInFlight = useRef(false);
 
   useEffect(() => {
     form.setFieldsValue({
@@ -54,6 +66,29 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
     };
   }, []);
 
+  // 项目作用域：拉取 verify.yaml 的 regression 段配置状态（切换项目重拉；
+  // alive 守卫丢弃被取代的旧响应）
+  useEffect(() => {
+    if (!project) {
+      setRegressionCfg(null);
+      setRegressionCfgError(null);
+      return;
+    }
+    let alive = true;
+    setRegressionCfg(null);
+    setRegressionCfgError(null);
+    getRegressionConfig(project)
+      .then((d) => {
+        if (alive) setRegressionCfg(d);
+      })
+      .catch((e) => {
+        if (alive) setRegressionCfgError(e instanceof Error ? e.message : String(e));
+      });
+    return () => {
+      alive = false;
+    };
+  }, [project]);
+
   const handleInstall = async () => {
     setInstalling(true);
     try {
@@ -84,6 +119,26 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
       }
     } finally {
       setInstalling(false);
+    }
+  };
+
+  // 「使用 AI 生成」：请求 Administrator 补写 regression 段（写信号，巡检分钟级消费）
+  const handleRegressionAutodraft = async () => {
+    if (!project || regressionDraftInFlight.current) return;
+    regressionDraftInFlight.current = true;
+    setRegressionDrafting(true);
+    try {
+      const res = await autodraftRegression(project);
+      if (res.status === 'skipped') {
+        message.info(res.message || 'regression 段已配置，无需补写');
+      } else {
+        message.success(res.message || '已提交 AI 补写 regression 段请求');
+      }
+    } catch (err) {
+      message.error(`AI 生成失败：${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      regressionDraftInFlight.current = false;
+      setRegressionDrafting(false);
     }
   };
 
@@ -346,6 +401,65 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
               （缺省 10 秒），属项目测试体系声明——请在「项目简介」面板的
               verify.yaml 编辑入口中调整，本卡片不提供第二个写入路径。
             </Text>
+
+            {/* 项目作用域专属：verify.yaml regression 段配置状态（只读）+ AI 补段。
+                用户级作用域不显示（verify.yaml 是项目级文件）。
+                判定走后端 load_verify_contract（前端无 yaml 解析库，正则判段不可靠）。 */}
+            {project && (
+              <div style={{ marginTop: 16 }} data-testid="regression-config-section">
+                {regressionCfgError ? (
+                  <Alert
+                    type="error"
+                    showIcon
+                    message="读取 verify.yaml regression 段失败"
+                    description={regressionCfgError}
+                  />
+                ) : regressionCfg === null ? (
+                  <Text type="secondary">正在读取 verify.yaml 的 regression 段…</Text>
+                ) : regressionCfg.regression ? (
+                  <>
+                    <Text type="secondary">已配置回归段（.fenix/verify.yaml）：</Text>
+                    <Descriptions size="small" column={1} bordered style={{ marginTop: 8 }}>
+                      <Descriptions.Item label="执行命令">
+                        <Text code>{formatCmd(regressionCfg.regression.cmd)}</Text>
+                      </Descriptions.Item>
+                      <Descriptions.Item label="结果文件">
+                        <Text code>{regressionCfg.regression.output}</Text>
+                      </Descriptions.Item>
+                      <Descriptions.Item label="硬超时">
+                        {regressionCfg.regression.timeout_seconds} 秒
+                      </Descriptions.Item>
+                      <Descriptions.Item label="长耗时阈值">
+                        {regressionCfg.regression.long_test_threshold_seconds} 秒
+                      </Descriptions.Item>
+                    </Descriptions>
+                  </>
+                ) : !regressionCfg.exists ? (
+                  <Alert
+                    type="info"
+                    showIcon
+                    message="项目尚无 verify.yaml，未配置 regression 段"
+                    description="开启周期性全量回归不会实际执行。点「使用 AI 生成」将引导 Administrator 起草验证契约（有测试体系时一并生成 regression 段）。"
+                  />
+                ) : (
+                  <Alert
+                    type="warning"
+                    showIcon
+                    message="未配置 regression 段"
+                    description=".fenix/verify.yaml 存在但没有有效的 regression 段，开启周期性全量回归不会实际执行。点「使用 AI 生成」由 Administrator 探测测试体系后补写（不改动契约其它内容）。"
+                  />
+                )}
+                <div style={{ marginTop: 12 }}>
+                  <Button
+                    onClick={handleRegressionAutodraft}
+                    loading={regressionDrafting}
+                    data-testid="regression-autodraft-btn"
+                  >
+                    使用 AI 生成
+                  </Button>
+                </div>
+              </div>
+            )}
           </div>
         </Card>
       </Form>

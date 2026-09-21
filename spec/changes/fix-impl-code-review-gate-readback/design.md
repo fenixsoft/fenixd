@@ -57,7 +57,21 @@ candidates.append(runner.project_root / ".fenix" / "verify-progress" / spec_name
 - 两处皆缺 → 返回缺失归因，文案列出两个路径。
 
 **去重**：`wt_path` 与 `project_root` 相同时（无 worktree 的车道，或测试用 `tmp_path` 为 root）
-候选路径会重复，MUST 去重（按 `Path.resolve()`），避免同一文件被判两次新鲜度。
+候选路径会重复，MUST 去重（按 `Path.resolve()`），避免同一文件被判两次新鲜度。去重后保留的
+候选 MUST 沿用**先出现者**的校验模式：`wt_path == project_root` 时按 worktree 语义（不做 mtime
+硬拦）判定，以保现状零变化（既有测试 `tests/test_impl_code_review_gate.py` 的 `_gate` 即以
+`tmp_path` 同时充当两者）。
+
+**空候选集**：`wt_path` 为 None 且 `runner.project_root` 不可得（非 Path 载体）时候选集为空，
+门 MUST 直接返回 None（缺载体不校验，与现状 `wt_path is None → return None` 同语义），
+MUST NOT 落到 D4 的「两处皆缺」缺失归因——否则 spec「无 worktree 载体时不误判」场景
+（要求返回 None）与 D4 相互矛盾。
+
+**Path 载体校验**：主树候选 MUST 仅在 `isinstance(root, (str, Path))` 成立时才加入。
+仅用 `getattr(runner, "project_root", None)` 不足以防替身：`MagicMock` 的任意属性都返回
+可 truthy 的 mock，`mock / ".fenix"` 与 `mock.is_file()` 亦为 truthy，随后
+`json.loads(mock.read_text())` 抛 `TypeError` 逸出 `_check_impl_code_review_artifact` 的
+`except (OSError, json.JSONDecodeError)` 捕获面（实测见评审笔记），会使原有 mock 用例崩溃。
 
 ### D3 新鲜度守卫透传
 
@@ -89,7 +103,14 @@ exit 0 但收尾审查报告缺失（impl-code-review-gate）:
 - **风险**：主树回退会否让「上一轮陈留报告」误过门？**缓解**：D3 新鲜度守卫 + 复用
   `_check_artifact_json_file`（其 `is_resumed_worktree` 语义已被 `add-worktree-verify-progress-copyback`
   家族验证）。
-- **风险**：`runner.project_root` 属性在替身测试里缺失。**缓解**：用 `getattr(runner, "project_root", None)`，
-  为 None 时跳过主树候选（等价现状），不抛异常。
+- **风险**：`runner.project_root` 在替身测试里缺失或非 Path（`MagicMock` 自动属性恒 truthy）。
+  **缓解**：`getattr(runner, "project_root", None)` **且** `isinstance(root, (str, Path))` 双重判定，
+  不满足即跳过主树候选（等价现状）、不抛异常。测试侧 MUST 把 `runner._check_artifact_json_file`
+  接到模块级真实实现（`tests/test_impl_code_review_gate.py:273-278` 的 `_mock_runner` 是裸
+  `MagicMock`，不接线则其 `_check_artifact_json_file` 恒回非 None mock 值，主树候选永远判失败）。
+- **风险**：`is_resumed_worktree=True` 时新鲜度硬拦被跳过（D3 沿用语义）——resume 轮的主树
+  陈留报告只剩内容判据（findings 与结果文件 `code_review.dispositions` 逐条对账）。**缓解/接受**：
+  resume 轮本就以「上一轮产物可复用」为前提，且对账仍要求报告与**本轮**结果文件自洽；若日后
+  出现 resume 轮误放行实测，再引入「主树候选须晚于本 spec 上一轮启动」的更细判据（本 SPEC 不做）。
 - **取舍**：门只读不写，主树有报告时**不会**把 worktree 补齐，故下次 run 仍可能重复触发同一场景。
   这是刻意的——写侧修正归姊妹 SPEC；门只负责「不在确定事实面前误判」。

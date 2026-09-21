@@ -51,7 +51,7 @@
 #### Scenario: 逐条增量落盘
 
 - **WHEN** agent 处置完清单中第 5 条（共 20 条）
-- **THEN** out 文件 MUST 已含 5 行结果，框架侧批内 `done` MUST 为 5，MUST NOT 等到 20 条全处置完才落盘
+- **THEN** out 文件 MUST 已含 5 行结果，框架侧批内进度 MUST 为 5，MUST NOT 等到 20 条全处置完才落盘
 
 #### Scenario: agent 不写主树
 

@@ -7,7 +7,7 @@
 - `_handle_artifact_gate_retry`（`:2653`）在门禁失败时：
   - `self.logger.warning("agent_runner", f"Artifact gate failed for …: {error}")`（`:2669-2673`）→ 仅 daemon log；
   - 落盘 `transient_retry`（字段：`type/spec/provider/backoff_seconds/retry_number/reason="artifact_gate"/timestamp`，
-    `:2709-2721`）与 `superseded`（字段：`type/spec/provider/timestamp`，`:2722-2731`）——**均无 error 文案**。
+    `:2709-2721`）与 `superseded`（字段：`type/spec/provider/timestamp`，`:2724-2732`）——**均无 error 文案**。
 - provider 瞬断路径 `_maybe_in_place_retry`（`:2555`）字段与门禁路径对称，同样不含 error。
 - 预算耗尽后 attempt 层失败（`:2704-2706` → `break`）走 `_finalize_failure_keep`（`:3037`），**只打日志**
   （`:` 3054-3058，`error` 仅作日志 `context`）；`_exhausted_result` 同样只 `_log_run_metrics`。
@@ -64,24 +64,41 @@ flowchart LR
 - `transient_retry`（门禁路径）增 `"error": error`（已带 `[artifact-structural]` 等归因标签的全文）；
 - `superseded`（门禁路径）增 `"error": error`。
 - 归因文案可能超 `append_run_line` 的 8 KiB 缓冲（`run_files.py:56-71` 注释明示超缓冲大行有并发交错
-  风险），故 MUST 先 `error[:1024]` 截断再落两个事件——留可判归因（gate 名 + 路径）即够，不外溢风险。
+  风险），故 MUST 先截断再落两个事件——留可判归因（gate 名 + 路径）即够，不外溢风险。
+- **截断单位（MUST NOT 歧义）**：`error[:1024]` 是**字符（code point）切片**，不是字节切片。UTF-8 下
+  1024 字符最坏 ≤4 KiB，仍低于 8 KiB 单行缓冲阈值，字符口径即满足「不外溢」；反过来说 MUST NOT 把
+  该上限当字节读并按字节截断（会与实现的切片口径不一致，用例断言与实现互斥）。用例断言口径统一为
+  「字符数 ≤1024 且 UTF-8 编码后 ≤4096 字节」。
 
 **取舍**：不改 provider 瞬断路径（`_maybe_in_place_retry`）的字段——本 SPEC 聚焦门禁可见性，瞬断
 已有既有告警链路；保持改动面收敛。
 
 ### D2 写侧：新增终态事件 `gate-blocked`
 
-门禁路径**终止当前 attempt 文件**时（原地预算耗尽 `:2704-2706` 返回 `do_break`，以及任何其它 `break`
-本 attempt 的门禁分支），追加：
+门禁路径**终止当前 attempt 文件**时，向该 attempt 文件追加：
 
 ```json
 {"type": "gate-blocked", "spec": …, "provider": …,
- "reason": "artifact_gate", "error": "<门禁归因全文，≤1024B>",
+ "reason": "<按分支取值：artifact_gate | task_gate>",
+ "error": "<门禁归因全文，≤1024 字符>",
  "timestamp": "…"}
 ```
 
+**分支与 `reason` 取值（穷举，MUST NOT 用同一个值糊过去）**：
+
+| 分支 | 位置（`core/agent_runner/runner.py`） | 是否写 `gate-blocked` | `reason` |
+|---|---|---|---|
+| 结构类原地预算耗尽（返回 `do_break`） | `:2704-2706` | MUST | `artifact_gate` |
+| 任务完成度类 `is_task_gate`（返回 `do_break`） | `:2702-2703` | MUST | `task_gate` |
+| 退避后让位（spec 已被接管，返回 yielded result） | `:2751-2775` | MUST NOT | 不适用 |
+
+**让位分支为何 MUST NOT 写**：该分支的弃置原因是「spec 已被人工/其它链路接管」，不是门禁判定本身；
+其终态已由 D1 补齐为 `superseded` + `error`（`:2724`），时间轴节点仍带门禁归因，不需要（也不应）再
+追加一个红节点——否则会把「被接管」误标成「门禁拒绝」，且同一次失败在时间轴上出现两个失败节点。
+让位分支写 `gate-blocked` 属**误标**，本 SPEC 明令排除。
+
 **位置不变量**：MUST 写在该 attempt 文件**末行**（`append_run_line` 追加即满足），维持框架既有
-「终态后置」不变量。
+「终态后置」不变量（该文件此后无任何写入者：attempt 终止，重试在新文件继续）。
 
 **理由**：现状「预算耗尽 → 末行仍是 CLI 的 `result`（`is_error:false`）」正是 `classify_run` 判 `done`
 的直接原因；没有新终态事件，读侧无从区分「真收工」与「门禁拒绝后放弃」。
@@ -102,8 +119,20 @@ flowchart LR
 |---|---|---|
 | 归档判定 | `runs.py:736` `_RETENTION_ARCHIVABLE_STATUSES = frozenset(_RUN_TERMINAL_STATUS_MAP.values()) \| {"stale"}` | **自动纳入**（集合由映射派生），无需改代码，但 MUST 有用例锁定 |
 | 活跃计数 | `runs.py:526` `active_run_count`（`running`/`empty` 才算活跃） | `gate-blocked` 不计活跃（自动正确） |
-| 预算计数 | `budget.py:415-437` `_run_file_died`（末行 `type == "error"` 才算死亡） | `gate-blocked` **不**算死亡 → 计入已耗预算（正确：门禁失败已烧一轮预算，MUST NOT 被豁免） |
-| 状态回退读侧 | `state_machine` / `timeline` 的 `superseded` 排除出终态集合等 | 新增枚举不改变现有集合语义，MUST 回归确认 |
+| 预算计数 | `core/pm_engine/budget.py:417` `_run_file_died`（末行 `type == "error"` 才算死亡） | `gate-blocked` **不**算死亡 → 计入已耗预算（正确：门禁失败已烧一轮预算，MUST NOT 被豁免）。该判据只认 `type == "error"`，与终态集合登记互不影响 |
+| 在跑判定（删除/归档保护） | `core/dashboard/data/admin_actions.py:152` `running_run_ids_for_spec` + `core/dashboard/data/spec_archive.py:24` `soft_delete_spec`（末行 `type` ∈ `liveness.RUN_TERMINAL_EVENT_TYPES` 才算已终结，否则判在跑） | `gate-blocked` **MUST** 被认作已终结——否则刚被门禁拦下的 SPEC 会被判「有进行中的运行」：`stop_callback` 为 None 时直接 409 拒绝删除，非 None 时无进程可停 → 有界等待超时后删除失败（`add-freeze-stop-inflight-agents` 同款事故形态）。**故 MUST 同步登记进 `RUN_TERMINAL_EVENT_TYPES`**（见下方两侧同步义务） |
+| code-review 进度 | `core/code_review.py:713` `_terminal_status_map()`（`read_progress` 的 running 判定） | 自动生效（延迟解析读侧映射）：门禁终止的 review run 不再判 running——期望语义 |
+| 存活探测 | `core/agent_runner/liveness.py:390` `_stream_recent` → `has_live_attempt`（mtime 新鲜 **且** 末行非终态 = 有生命） | 随两侧同步生效：`gate-blocked` 文件不再作为存活依据（该文件已无写入者）。与 `superseded` 的**故意排除**（`:170-180`）不同：superseded 写在退避 sleep 之前、窗口内没有别的文件代表该 run，排除正是为了防退避窗口双派发；两者差异 MUST 写进代码注释，避免后人「统一口径」时踩雷 |
+
+**两侧同步义务（MUST，有框架先例）**：`liveness.py:75-80` 已就 `frozen-terminated` 立下规则——
+「写侧权威的终态类型 MUST 同时登记进 `_RUN_TERMINAL_STATUS_MAP`」。本 SPEC 新增的 `gate-blocked`
+是写侧终态事件类型，MUST 同时登记两侧：
+
+1. 读侧映射 `_RUN_TERMINAL_STATUS_MAP`（D3）——缺它时间轴永远把该 run 判 `running`；
+2. 写侧终态集合 `RUN_TERMINAL_EVENT_TYPES`（`core/agent_runner/liveness.py:81-90`）——缺它末行
+   `gate-blocked` 的文件在**在跑判定**里永生为「在跑」（删除/归档被误拦）。
+
+两处 MUST 各有用例锁定（tasks 4.2 / 4.4）。
 
 ### D5 前端：门禁拒绝专属渲染
 

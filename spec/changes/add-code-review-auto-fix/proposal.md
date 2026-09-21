@@ -39,7 +39,7 @@
   - `fenixd.py` / `core/admin_monitor.py`（审查收尾同步触发点与 executor 注入）
   - `core/dashboard/data/config_admin.py`（受管键读写回显/校验）
   - `core/dashboard/data/code_review.py` + `core/dashboard/routes/code_review_routes.py` + `core/dashboard/routes/base.py`（进度 API）
-  - 前端 `core/dashboard/static/src/services/dashboard.ts`、`pages/settings/components/QualityPanel.tsx`、`pages/projects/components/QualityTab.tsx`
+  - 前端 `core/dashboard/static/src/services/dashboard.ts`、`pages/settings/components/QualityPanel.tsx`、`pages/settings/components/PromptsPanel.tsx` + `AgentModelPanel.tsx`（两个硬编码 agent 角色列表须与后端同步，否则新角色在提示词/模型编辑器中不可见）、`pages/projects/components/QualityTab.tsx` + 新建 `pages/projects/components/CodeFixProgressCard.tsx`（进度卡片独立成文件，避免扰动既有 `QualityTab` 渲染面与其测试）
   - `.fenix/config.template.yaml`、`docs/help/09-config.md`（配置模板与映射表）
 - **兼容性**：`admin.code_review_fix.enabled` 缺省 false 时全链路零动作；无 `regression` 段项目 fail-closed 不合回、不报错刷屏。
 - **依赖**：复用既有 `verify.yaml regression` 契约、`worktree_manager` 的 create/merge-back、`core/regression.run_regression` 执行原语、既有 AI 契约起草通道；不引入新第三方依赖。

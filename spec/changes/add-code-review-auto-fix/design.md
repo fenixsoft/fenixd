@@ -59,6 +59,9 @@
 - 失败重试（D6）在**同一** worktree 内续做（agent 看到上一轮回归失败输出）。
 - 合回经 `worktree_manager.merge_back(wt_path)`（已持 `_main_tree_lock`、含 merge-tree 预演 / WIP 重叠闸 / spec 目录在飞闸）。分支名形如 `fenix/code-review-fix-<ts>`。
 - 回归**在 worktree 内**执行（改动在 worktree，主树不含）。`verify.yaml` 已入库（`git ls-files` 命中 `.fenix/verify.yaml`），worktree 内可见；`regression.output` 相对路径在 worktree 内落盘。
+- **批收尾 MUST 释放 worktree**：成功合回后 MUST 调 `worktree_manager.cleanup(wt_path, success=True)`。`create()` 在 `_spec_locks` 登记 `"code-review-fix:code-fix"`，**只有 `cleanup()` 会释放该锁**（`core/worktree_manager/lifecycle.py:131` 的重复判定 / `:498-502` 的 finally 释放）。漏掉 cleanup → 第 2 批 `create()` 直接返回 `None`（"Worktree already active for code-review-fix:code-fix"），车道在首批成功后即死。
+- 失败批（D6 第二次回归仍失败）MUST NOT 调 `cleanup()`（保留现场），其条目集合经 D6 的跳过机制排除，不阻塞后续批次；`release_failed_batch` 不接 UI，故 MUST 同时在 `.fenix/todo.md` 登记待人工清理。
+- `create()` 返回 `None`（锁占用 / git 失败）→ 本次不派 run、不合回，进度 `phase="failed"`、`reason="worktree_create_failed"`，条目保持 `open`，下一轮 full scan 重试。
 
 **理由**：worktree 隔离是既有全 agent 的硬约束（主树只读 hook `block-main-tree-write.py` 拦截直接写主树）；每批新 worktree 使合回后的下一批从干净 HEAD 增量修复，避免累积。
 
@@ -80,7 +83,9 @@
 `checkpoint()` 选批后、派 run 前，经 `load_verify_contract` 检查 `regression` 段：
 
 - 有有效 `regression` 段 → 正常进入批次；
-- 缺失/无效 → **复用既有起草通道**：经 `AdminStore.append` 发 `verify_contract_missing` 信号（既有 `_write_verify_contract_missing` 同款 payload，administrator agent 按 `agents/administrator.md` 的「regression 段起草」手册探测测试体系 → 生成 `regression` 段 → `bin/fenix_verify_contract.py` 自证 → 落位）；本次**fail-closed**：不派批、不合回，进度 `phase=blocked` 记原因（`reason=regression_contract_missing`），下一轮 full scan 再试。
+- **契约整体缺失**（`load_verify_contract` 返回 `None`）→ 经 `AdminStore.append` 发 `verify_contract_missing` 信号（administrator 按手册起草**完整契约**，含 regression 段）；
+- **契约有效但仅缺 regression 段**（`contract.regression is None`，本仓现状）→ 发 `verify_regression_missing` 信号（administrator **仅补段**，MUST NOT 动 prepare/serve/ready）。分流口径 MUST 对齐既有 `core/dashboard/routes/regression_routes.py:_api_regression_autodraft_post`（:195-236 的 `verify_contract_missing if contract is None else verify_regression_missing`）与 `core/admin_monitor.py:214-216` 的既有区分——**用错信号会令 administrator 重写一份有效且在服务的 prepare/serve/ready**（回归风险），而两信号均已在 `admin_monitor` 的 `STORED_SIGNAL_TYPES`/severity 表中（同 major），切换零成本。payload 形态对齐既有 `_write_verify_contract_missing`（`signal_type`/`spec`/`severity:"major"`/`description`/`evidence`/`recommended_action`）。
+- 两路信号后本次均 **fail-closed**：不派批、不合回，进度 `phase=blocked` 记原因（`reason="regression_contract_missing"` / `"regression_section_missing"`），下一轮 full scan 再试。
 
 **理由**：无回归即无法证明「未引入新缺陷」，合回违反本需求的唯一铁律；fail-closed + 起草通道符合用户「生成失败则 fail-closed 并记录原因」的指令。不重复发信号由既有信号节流（`_throttled`）承担。
 
@@ -105,8 +110,8 @@
 
 落盘 `.fenix/code-review/fix-progress.json`（单文件覆盖式，与 `.fenix/regression/last-run.json` 同型），由编排器每步刷新：
 
-- `total`：本次激活开始时的 `open` 条目总数（快照，激活期间不变）。
-- `done`：已合回主树的条目累计数（按批推进；含重试后成功的批）。
+- `total`：**本次激活链**开始时的 `open` 条目总数（链内不变）。「激活链」由自驱动再投递串联（D4），链身份 MUST 持久化在进度文件的 `activation_id` 字段：`checkpoint()` 读到进度文件 `running=true` 且 `activation_id` 未变 → 视为同一条链，MUST NOT 重算 `total`；链终止（`no_open_items` / `disabled` / 人工复位）后的下一次激活 MUST 生成新 `activation_id` 并重算 `total`。否则每批收尾复位单飞后再投递，`total` 会被重置为**已缩小**的 `open` 数，前端出现「已处理 0/40」的倒退（与「激活期间不变的快照」自相矛盾）。
+- `done`：已合回主树并**实际置 `resolved`** 的条目累计数（= 各批 `mark_resolved` 命中数之和），MUST NOT 以批条数计——`skipped` 条目与未命中 `item_id` 不计入。
 - `current`：当前批正在处理的条目/阶段描述（如「第 2 批修复中（20/60 条）」）。
 - `phase`：`selecting` / `fixing` / `regressing` / `retrying` / `merging` / `blocked` / `failed` / `idle`。
 - `running`：当前是否有未收尾的激活（编排器判据：`_in_flight` 或存在 `code-fix-` 在飞 run）。
@@ -130,6 +135,8 @@
 
 `core.regression.run_regression` 新增可选参数 `lock_root=None`（缺省回落 `project_root`，零迁移）：code-fix 调用时传**主树根**，使 worktree 内回归与主树/其它 worktree 的回归共用同一把主机级锁（`.fenix/full-suite.lock`），串行化整套全量测试。
 
+调用形态 MUST 能同时表达「执行根 = worktree、锁根 = 主树」：`run_regression(project_root=<worktree>, lock_root=<main>)`。`core/agent_runner/maintenance_runs.py` 的门面 `run_regression(runner, spec, reason)` 以 `runner.project_root`（= main 树）为执行根，**无法表达 worktree 执行根**——门面 MUST 增加可选 `project_root`（缺省 `runner.project_root`，既有调用点零迁移）并与 `lock_root` 一并透传到 `core.regression.run_and_write_regression`。注意快照（`.fenix/regression/last-run.json` / `run-<id>.json`）随 `project_root` 落盘：worktree 内回归的快照落在 worktree（门禁用途），MUST NOT 依赖其出现在主树「测试回归」分面——分面仍以主树快照为准。
+
 **理由**：worktree 的 `.fenix` 是独立目录（仅 `verify.yaml` 入库），锁若锚定 worktree 则与主树锁不同路径 → 两套全量测试并行（CPU/磁盘/端口互扰，`core/regression.py` 模块注释点名的既有风险）。锚定主树恢复互斥语义。
 
 ## Risks
@@ -151,5 +158,6 @@
 
 - **不占 spec 维度预算**：`code-fix` 与 `code-review`/`regression` 同属运维车道，MUST NOT 走 `_execute_agent`（不经 spec 预算/每日计数）。run_id 前缀 `code-fix-<epoch>`。
 - **产物硬门**：agent MUST 每修完一条问题向框架注入的绝对路径 out 文件追加一行（`{item_id, status, file}`）；框架据此算批内 `done`，并对「run exit 0 但 out 文件缺失/零有效行」判失败（对齐 code-review 的 `_check_repo_code_review_artifact` 形态）。
-- **绝不空集合回**：批内零有效产物 → 不合回、不置 `resolved`、记失败（防「空跑=成功」白洗）。
+- **绝不空集合回（两种形态）**：(a) 批内零有效产物行 → 不合回、不置 `resolved`、记失败（防「空跑=成功」白洗）；(b) **批内零有效修复**（产物行全部为 `status: skipped`，或 worktree 分支相对创建点无任何提交）→ 同样 MUST NOT 合回、MUST NOT 置 `resolved`，进度 `phase="failed"`、`reason="no_effective_fix"`。形态 (b) 是本设计的真实白洗口：`merge_back` 对「分支已是 HEAD 祖先」**返回成功**（`core/worktree_manager/mergeback.py:37-45` 幂等语义），若只守 (a)，一个把 20 条全判 `skipped` 的 run 会以「零改动分支合并成功 + 回归必过」把 20 条问题置 `resolved`（D7 语义=「问题已消失」），台账从此永久少报这些仍然存在的缺陷（复现时 `upsert_findings` MUST NOT 覆盖 `status`，条目永不复原）。
+- **`skipped` 条目的终态**：`skipped` = 未修复，MUST 保持 `open`（或人工置 `ignored`），MUST NOT 由自动通道置 `resolved`。
 - **`resolved` 只能由合回成功驱动**：回归未通过或未合回时 MUST NOT 置该批条目 `resolved`。

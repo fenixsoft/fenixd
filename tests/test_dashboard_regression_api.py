@@ -236,3 +236,158 @@ class TestRegressionRunningMarker:
         assert is_regression_running(proot) is True
         clear_running(proot)
         assert is_regression_running(proot) is False
+
+
+class TestRegressionConfigAPI:
+    """GET /api/regression/config：regression 段配置状态（设置页「质量」页签）。"""
+
+    def test_valid_regression(self, tmp_path):
+        proot = make_project(tmp_path)
+        _write_verify_yaml(proot, REGRESSION_VALID)
+        srv = _server(tmp_path, proot)
+        try:
+            status, body = srv.get("/api/regression/config?project=proj-a")
+            assert status == 200
+            assert body["exists"] is True
+            assert body["contract_valid"] is True
+            assert body["regression"]["cmd"] == "pytest --junit-xml=.fenix/regression/junit.xml"
+            assert body["regression"]["output"] == ".fenix/regression/junit.xml"
+            assert body["regression"]["format"] == "junit"
+            assert body["regression"]["timeout_seconds"] == 1800
+            assert body["regression"]["long_test_threshold_seconds"] == 10
+        finally:
+            srv.stop()
+
+    def test_contract_valid_without_regression(self, tmp_path):
+        """契约有效但缺 regression 段 → contract_valid True + regression null。"""
+        proot = make_project(tmp_path)
+        _write_verify_yaml(proot)  # 无 regression 段
+        srv = _server(tmp_path, proot)
+        try:
+            status, body = srv.get("/api/regression/config?project=proj-a")
+            assert status == 200
+            assert body["exists"] is True
+            assert body["contract_valid"] is True
+            assert body["regression"] is None
+        finally:
+            srv.stop()
+
+    def test_invalid_format_degrades_to_none(self, tmp_path):
+        """format 非 junit → 整段无效（load_verify_contract 同口径）→ null。"""
+        proot = make_project(tmp_path)
+        _write_verify_yaml(
+            proot,
+            "regression:\n  cmd: \"pytest\"\n  output: \"o.xml\"\n  format: json\n",
+        )
+        srv = _server(tmp_path, proot)
+        try:
+            status, body = srv.get("/api/regression/config?project=proj-a")
+            assert status == 200
+            assert body["regression"] is None
+        finally:
+            srv.stop()
+
+    def test_no_verify_yaml(self, tmp_path):
+        proot = make_project(tmp_path)  # make_project 不写 verify.yaml
+        srv = _server(tmp_path, proot)
+        try:
+            status, body = srv.get("/api/regression/config?project=proj-a")
+            assert status == 200
+            assert body["exists"] is False
+            assert body["contract_valid"] is False
+            assert body["regression"] is None
+        finally:
+            srv.stop()
+
+    def test_unknown_project_404(self, tmp_path):
+        proot = make_project(tmp_path)
+        srv = _server(tmp_path, proot)
+        try:
+            status, _ = srv.get("/api/regression/config?project=nope")
+            assert status == 404
+        finally:
+            srv.stop()
+
+
+class TestRegressionAutodraftAPI:
+    """POST /api/regression/autodraft：AI 补 regression 段（按契约状态分流写信号）。"""
+
+    def _signals(self, proot: Path):
+        p = proot / ".fenix" / "admin_alerts.json"
+        if not p.is_file():
+            return []
+        return json.loads(p.read_text(encoding="utf-8"))
+
+    def test_missing_contract_writes_contract_missing(self, tmp_path):
+        """契约整个缺失 → 走 verify_contract_missing（起草整契约含 regression 段）。"""
+        proot = make_project(tmp_path)
+        srv = _server(tmp_path, proot)
+        try:
+            status, body = srv.post_json("/api/regression/autodraft?project=proj-a", {})
+            assert status == 200
+            assert body["status"] == "dispatched"
+            sigs = self._signals(proot)
+            assert any(r.get("signal_type") == "verify_contract_missing" for r in sigs)
+            assert not any(r.get("signal_type") == "verify_regression_missing" for r in sigs)
+        finally:
+            srv.stop()
+
+    def test_valid_contract_without_regression_writes_regression_missing(self, tmp_path):
+        """契约有效但缺 regression 段 → 走 verify_regression_missing（仅补段）。"""
+        proot = make_project(tmp_path)
+        _write_verify_yaml(proot)
+        srv = _server(tmp_path, proot)
+        try:
+            status, body = srv.post_json("/api/regression/autodraft?project=proj-a", {})
+            assert status == 200
+            assert body["status"] == "dispatched"
+            sigs = self._signals(proot)
+            assert any(r.get("signal_type") == "verify_regression_missing" for r in sigs)
+            # 证据携带项目名供无 spec 形态解析
+            rec = [r for r in sigs if r.get("signal_type") == "verify_regression_missing"][0]
+            assert "项目名=proj-a" in (rec.get("evidence") or "")
+        finally:
+            srv.stop()
+
+    def test_has_regression_skipped_without_signal(self, tmp_path):
+        """已有有效 regression 段 → skipped，且不写任何信号。"""
+        proot = make_project(tmp_path)
+        _write_verify_yaml(proot, REGRESSION_VALID)
+        srv = _server(tmp_path, proot)
+        try:
+            status, body = srv.post_json("/api/regression/autodraft?project=proj-a", {})
+            assert status == 200
+            assert body["status"] == "skipped"
+            assert self._signals(proot) == []
+        finally:
+            srv.stop()
+
+    def test_inflight_dedup(self, tmp_path):
+        """同项目同类型第二次请求 → 不重复写信号，仍 dispatched 附在途文案。"""
+        proot = make_project(tmp_path)
+        _write_verify_yaml(proot)
+        srv = _server(tmp_path, proot)
+        try:
+            s1, b1 = srv.post_json("/api/regression/autodraft?project=proj-a", {})
+            s2, b2 = srv.post_json("/api/regression/autodraft?project=proj-a", {})
+            assert s1 == s2 == 200
+            assert b1["status"] == "dispatched"
+            assert b2["status"] == "dispatched"
+            assert "在途" in b2["message"]
+            sigs = [
+                r
+                for r in self._signals(proot)
+                if r.get("signal_type") == "verify_regression_missing"
+            ]
+            assert len(sigs) == 1
+        finally:
+            srv.stop()
+
+    def test_unknown_project_404(self, tmp_path):
+        proot = make_project(tmp_path)
+        srv = _server(tmp_path, proot)
+        try:
+            status, _ = srv.post_json("/api/regression/autodraft?project=nope", {})
+            assert status == 404
+        finally:
+            srv.stop()

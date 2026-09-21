@@ -12,6 +12,9 @@ stale_code_selfheal 机制在检测到代码陈旧且连续空闲后会触发 da
 
 ## 影响范围
 
-- 修改 `core/fenixd.py` 中 `_maybe_stale_selfheal_tick` 和 `_is_idle` 方法
+- 修改 `fenixd.py`（仓库根，非 `core/fenixd.py`）中 `_maybe_stale_selfheal_tick` 和 `_is_idle` 方法
+- `core/config.py`：`get_stale_code_selfheal_config` 增加五个冷却/自触发键（经 `.fenix/config.yaml`
+  配置、30s 热更新生效；本 SPEC 不扩展 Dashboard 面板）
 - 新增 `.fenix/restart_history.jsonl` 持久化文件
+- 同步更新 `docs/help/07-safeguards.md`（空闲判定口径含评审 run）与 `docs/help/09-config.md`（键表）
 - 可能影响 `add-stale-code-selfheal` SPEC 的行为语义（向后兼容：enabled 默认行为不变）

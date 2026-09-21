@@ -11,6 +11,10 @@
 - 两处候选路径经过同一套校验（`status` 白名单 / `findings` 与 `code_review.dispositions`
   逐条对账 / `rejected`/`deferred` 须附非空 `reason`），MUST NOT 双实现漂移。
 - **两处均缺失**时才判失败，且失败文案 MUST 同时给出两个已探测位置。
+- 候选**文件存在但未过校验**（陈旧 / 非空 / 可解析 / 结构判据任一不满足）时，门 MUST 原样
+  上抛该候选的失败归因（陈旧候选 MUST 给出含「陈旧」的归因），MUST NOT 折叠为「报告缺失」。
+- 候选集为空（`wt_path` 为 None 且 `runner.project_root` 非 Path 载体）时，门 MUST 返回
+  None（缺载体不校验），MUST NOT 报缺失。
 - 开关为 `false` 时 MUST 仍为「零校验放行」（返回 None）。
 
 #### Scenario: worktree 有报告 → 以其为准

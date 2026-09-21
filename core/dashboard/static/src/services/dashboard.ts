@@ -1694,3 +1694,44 @@ export function triggerRegression(project: string) {
     },
   );
 }
+
+/** 有效 regression 段的解析字段（GET /api/regression/config）。 */
+export interface RegressionSpecView {
+  /** 执行命令：str（shell）或 list（argv）；cwd 为项目根 */
+  cmd: string | string[];
+  /** 命令产出的 JUnit XML 路径（相对项目根） */
+  output: string;
+  timeout_seconds: number;
+  format: string;
+  long_test_threshold_seconds: number;
+}
+
+/** verify.yaml regression 段配置状态（权威判定走后端 load_verify_contract）。 */
+export interface RegressionConfigStatus {
+  project: string;
+  /** .fenix/verify.yaml 文件是否存在 */
+  exists: boolean;
+  /** 契约文件存在且可解析（load_verify_contract 非 None） */
+  contract_valid: boolean;
+  /** 有效 regression 段字段；无段 / 整段无效 → null */
+  regression: RegressionSpecView | null;
+}
+
+/** 读取项目 verify.yaml 的 regression 段配置状态（设置页「质量」页签）。 */
+export async function getRegressionConfig(project: string): Promise<RegressionConfigStatus> {
+  const q = `?project=${encodeURIComponent(project)}`;
+  return request<RegressionConfigStatus>(`/api/regression/config${q}`);
+}
+
+/** 触发 AI 补写 regression 段（POST /api/regression/autodraft）。
+ *  dispatched = 已写信号（巡检分钟级消费）；skipped = 段已配置，无需补写。 */
+export async function autodraftRegression(
+  project: string,
+): Promise<{ ok: boolean; project: string; status: 'dispatched' | 'skipped'; message: string }> {
+  const q = `?project=${encodeURIComponent(project)}`;
+  return request(`/api/regression/autodraft${q}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+}

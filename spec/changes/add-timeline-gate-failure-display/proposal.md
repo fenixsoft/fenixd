@@ -32,8 +32,12 @@ daemon 日志与 STATE.md**，run jsonl 里一处都没有。
   `_run_tail_insights` 继续从终态事件取 `reason`（`superseded` / `gate-blocked` 自此带上原因），
   时间轴 run 节点据此下发 `reason` 与终态 `status`。
 - **前端（节点渲染）**：`detail.tsx` run 节点增 `gate-blocked` 状态专属渲染（红点 +「门禁拒绝」Tag +
-  「门禁拒绝：<文案>」原因行）；`superseded` 节点在有原因时以中性色显示「原地重试：<文案>」，不再
-  落绿色兜底误导为成功。
+  「门禁拒绝：<文案>」原因行）；`superseded` 节点在有原因时以中性色显示「原地重试：<文案>」原因行
+  （圆点仍为绿色——它是被弃置的中间产物，失败归因由紧随其后的 `gate-blocked` 节点承担，避免同一次
+  失败出现两个红节点；据此**不再**呈现为「无原因绿点」）。
+- **写侧终态类型两侧同步**：新终态 `gate-blocked` 必须同时登记进读侧映射
+  `_RUN_TERMINAL_STATUS_MAP` 与写侧终态集合 `RUN_TERMINAL_EVENT_TYPES`（`liveness.py`）——缺后者会
+  让刚被门禁拦下的 SPEC 在「在跑判定」里被判为有进行中的运行，删除/归档被误拦。
 
 ## Capabilities
 
@@ -45,10 +49,12 @@ daemon 日志与 STATE.md**，run jsonl 里一处都没有。
 ## Impact
 
 - 受影响代码：`core/agent_runner/runner.py`、`core/dashboard/data/runs.py`、
-  `core/dashboard/static/src/pages/projects/detail.tsx`（+ 构建产物）。
-- 受影响测试：`tests/test_agent_runner_gate.py`、`tests/test_dashboard_data.py`。
+  `core/agent_runner/liveness.py`、`core/dashboard/static/src/pages/projects/detail.tsx`（+ 构建产物）。
+- 受影响测试：`tests/test_agent_runner_gate.py`、`tests/test_dashboard_data.py`、
+  `tests/test_freeze_stop_inflight_agents.py`。
 - 行为影响面：新增一个终态状态枚举 `gate-blocked`。所有消费 `_RUN_TERMINAL_STATUS_MAP` 的读侧
-  （归档判定、活跃计数、预算计数）需同步核对——本 SPEC 明确要求逐处复核，MUST NOT 让门禁失败被
-  误判为「死亡 run」而绕过实现预算（明细见 design D4）。
+  （归档判定、活跃计数、预算计数、在跑判定、code-review 进度）需同步核对——本 SPEC 明确要求逐处
+  复核，MUST NOT 让门禁失败被误判为「死亡 run」而绕过实现预算，也 MUST NOT 被误判为「在跑」而拦下
+  删除/归档（明细见 design D4）。
 - 非目标：不改门禁判据本身；不引入新的配置项；不改 `_retry_count` 语义（原地门禁重试次数不并入
   该计数，另见 design 非目标）。

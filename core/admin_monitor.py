@@ -212,6 +212,9 @@ SIGNAL_SEVERITY = {
     "inconclusive_loop": "major",
     # fix-verify-contract-signal-semantics B：契约有效 + 用户显式覆盖确认的重起草信号
     "verify_contract_redraft": "major",
+    # add-test-regression-tab 增强：契约有效但缺 regression 段时，UI 请求 AI 仅补段
+    # （区别于 verify_contract_missing 的整契约起草——该场景契约本身有效，只缺段）。
+    "verify_regression_missing": "major",
     # fix-artifact-paths-hardcoded-default D3：merge-back WIP 重叠闸门检出产物
     # 配置未裁决（has_build_artifacts 缺省或 true 配空路径），呼叫 Administrator
     # 起草产物路径配置——与 verify_contract_missing 同级（配置缺口，需人工/起草
@@ -275,6 +278,9 @@ SIGNAL_RECOMMENDATION = {
     # 有效契约按 D4 权限边界默认不碰，用户已显式授权覆盖（evidence 含「覆盖确认=是」）
     # 时方可重起草；重起草草稿同样须经 bin/fenix_verify_contract.py 三段自证全通才落位。
     "verify_contract_redraft": "复核现有契约有效性：若契约仍有效，Administrator 按权限边界默认不碰，仅当用户已显式授权覆盖（evidence 含「覆盖确认=是」）时方可重起草；重起草草稿写临时路径 → bin/fenix_verify_contract.py 自证 → 全通才落位 → git 提交 → spec 复位 ready 触发重验证",
+    # add-test-regression-tab 增强：仅补 regression 段（不动其余顶层键）。指引与
+    # agents/administrator.md「仅补 regression 段」小节同源。
+    "verify_regression_missing": "Administrator 仅补 regression 段（MUST NOT 改动 verify.yaml 的 prepare/serve/ready 与其它顶层键）：读现有契约 → 探测测试体系（package.json scripts.test / pyproject.toml pytest / go.mod / pom.xml surefire）→ 生成可产出 JUnit XML 的 cmd/output（模板见 agents/administrator.md）→ 把 regression 段追加/替换进 .fenix/verify.yaml → bin/fenix_verify_contract.py 自证 regression 行 → git 提交 → 处置记录留痕；无测试体系或探测不出可产出 JUnit XML 的命令时 MUST 省略该段并结案说明（不得臆造命令）",
     # fix-artifact-paths-hardcoded-default D3：产物路径起草手册指引——探测输入源、
     # 校验口径、确无产物的结案方式均见 agents/administrator.md「构建产物路径起草
     # 手册」小节；探测脚本 bin/fenix_detect_artifacts.py 输出候选路径（纯本地）。
@@ -334,6 +340,9 @@ STORED_SIGNAL_TYPES = (
     # 无法单独兜底其可见性，本信号是本 SPEC 自有的告警出口（D1a 点名）。
     "mergeback_spec_dir_inflight_stuck",
     "verify_contract_redraft",
+    # add-test-regression-tab 增强：UI 手动请求「仅补 regression 段」——未收录则
+    # 记录落 store 后无人摄取（信号石沉大海）。证据含「项目名=」供无 spec 形态解析。
+    "verify_regression_missing",
     # add-verdict-credibility-gate / design D6：连续 blocked-env 达阈值时
     # pm_engine 写入、本监视器摄取唤起（写入即待唤起型，recovery 尊重暂停
     # 标记，人工处置是唯一出路）。
@@ -1177,6 +1186,9 @@ class AdminMonitor:
             if not spec and stype in (
                 "verify_contract_missing",
                 "verify_contract_redraft",
+                # add-test-regression-tab 增强：UI 手动「仅补 regression 段」信号同
+                # 无 spec，按「项目名=」解析（未加入则 spec=None → 被丢弃）。
+                "verify_regression_missing",
                 # fix-artifact-paths-hardcoded-default D3：WIP 闸门信号无 spec
                 # （非常规分支名退化为仅靠 evidence）时同样从「项目名=」解析。
                 "build_artifact_paths_missing",
