@@ -43,7 +43,7 @@
   kind: modify
 - path: core/dashboard/static/src/pages/settings/components/AgentModelPanel.tsx
   kind: modify
-- path: core/dashboard/static/src/pages/settings/components/CodeFixProgressCard.tsx
+- path: core/dashboard/static/src/pages/projects/components/CodeFixProgressCard.tsx
   kind: new
 - path: core/dashboard/static/src/pages/projects/components/QualityTab.tsx
   kind: modify
