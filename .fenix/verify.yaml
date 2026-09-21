@@ -93,3 +93,13 @@ ready:
   url: /api/alerts
   expect: 200
   timeout: 60
+
+# regression 段（admin 补 2026-09-21，verify_regression_missing 信号）：
+# 项目测试体系 = pytest（tests/ 下 241 个 test_*.py，conftest.py collect_ignore_glob
+# 已排除 fixtures 夹具套件）。全量回归实测 5297 用例 / 254s，故 timeout_seconds
+# 设 1800（7 倍余量）。cmd 走 pytest 原生 --junit-xml 产出 JUnit XML。
+regression:
+  cmd: python3 -m pytest tests/ -q --junit-xml=.fenix/regression/junit.xml
+  output: .fenix/regression/junit.xml
+  format: junit
+  timeout_seconds: 1800
