@@ -223,6 +223,7 @@ class SpecReviewManager:
 
         # ③ 阻塞执行评审 run（正常收工或异常后返回）
         attempt_started_at = time.time()
+        result = None  # 异常路径下不绑定（修复验证轮 BUG：UnboundLocalError）
         try:
             result = self.agent_runner.run_spec_review(spec_name, run_id=run_id)
             run_ok = bool(getattr(result, "success", False))
@@ -238,7 +239,11 @@ class SpecReviewManager:
             # 不触发熔断。MUST NOT 走 _classify_run_failure 的 content/infra
             # 分支（_INFRA_FINGERPRINTS 含裸 "503"，评审 run 的 503 重试会被
             # 误判 infra 而递增计数/熔断）。
-            if getattr(result, "frozen_terminated", False):
+            # 判定用 `is True` 严格等值（修复验证轮 BUG）：MagicMock 等替身
+            # 在属性访问时自动生成 truthy 子对象，`if getattr(...)` 裸布尔会把
+            # 非冻结的替身结果误判为冻结终止、跳过重试递增——生产结果
+            # AgentRunResult.frozen_terminated 为显式 bool，严格等值判定不受影响。
+            if result is not None and getattr(result, "frozen_terminated", False) is True:
                 rev_err = getattr(result, "error", None) or run_err or ""
                 frozen_err = (
                     f"评审 run 因 spec 冻结被终止（进度已保全，解冻后续做）"

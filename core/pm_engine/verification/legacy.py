@@ -37,7 +37,10 @@ def _run_legacy_verification(pipeline, spec_name: str):
     # 不得 transition bug-found / 调用 _on_spec_bug_found（否则会派生伪 fix
     # 级联，与 implementer 路径的 fix-fix-stashpop-deadlock 同理）。保持 spec
     # 在 implemented（由 full_scan recovery 兜底重排），写入 error 供 dashboard 可见。
-    if getattr(result, "frozen_terminated", False):
+    # 判定用 `is True`（修复验证轮 BUG：MagicMock 替身自动生成 truthy 属性，
+    # 裸布尔会把非冻结替身结果误判为冻结终止）；生产结果 frozen_terminated
+    # 为显式 bool。
+    if getattr(result, "frozen_terminated", False) is True:
         # ── 冻结终止 hold-state（add-freeze-stop-inflight-agents 3.4）──
         # verifier run 因 spec 冻结被终止：独立保持分支，在 cancelled 分支
         # 之前（spec 级 > run 级）。写 _frozen_hold 标记 + error、保持原

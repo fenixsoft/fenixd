@@ -193,7 +193,9 @@ class FFastTrackMixin:
         #（spec 级 > run 级）。只写 _frozen_hold 标记 + error、不翻转 status、
         # 不动 _retry_count/_merge_fp/_merge_streak、不入队重派、不豁免预算；
         # worktree 保留语义不变（runner 保留现场供解冻后续做）。
-        if getattr(result, "frozen_terminated", False):
+        # 判定用 `is True`（修复验证轮 BUG：MagicMock 替身自动生成 truthy
+        # 属性，裸布尔会误判）；生产结果 frozen_terminated 为显式 bool。
+        if getattr(result, "frozen_terminated", False) is True:
             ft_err = getattr(result, "error", None) or ""
             frozen_err = (
                 f"run 因 spec 冻结被终止（进度已保全，解冻后续做）"

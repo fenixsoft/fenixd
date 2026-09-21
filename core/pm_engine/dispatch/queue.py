@@ -1360,7 +1360,9 @@ class QQQueueMixin:
                     # 不动 _retry_count/_merge_fp/_merge_streak、不入队重派、
                     # 不豁免预算（区别于死亡 run 豁免）。解冻后经 _frozen_hold
                     # + 保留分支续做。
-                    if getattr(result, "frozen_terminated", False):
+                    # 判定用 `is True`（修复验证轮 BUG：MagicMock 替身自动
+                    # 生成 truthy 属性，裸布尔会误判；生产结果为显式 bool）。
+                    if getattr(result, "frozen_terminated", False) is True:
                         ft_err = getattr(result, "error", None) or final_error or ""
                         frozen_err = (
                             f"run 因 spec 冻结被终止（进度已保全，解冻后续做）"
