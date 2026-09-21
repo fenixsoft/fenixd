@@ -1190,9 +1190,17 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
                 )
 
     # add-code-review-auto-fix：前端提交的 code_review_fix patch 后端校验
-    # （enabled 严格 bool、batch_size 正整数；非法直接拒绝不落盘、不半写）
+    # （enabled 严格 bool、batch_size 正整数；非法直接拒绝不落盘、不半写）。
+    # 顶层 code_review_fix（设置页保存）与嵌套 admin.code_review_fix
+    # （「同步用户级设置」经 _SYNC_PAGE_KEYS 构造）两条路径同口径校验。
+    _crf_patches = []
     if isinstance(config_patch.get("code_review_fix"), dict):
-        crf_patch = config_patch["code_review_fix"]
+        _crf_patches.append(config_patch["code_review_fix"])
+    if isinstance(config_patch.get("admin"), dict) and isinstance(
+        config_patch["admin"].get("code_review_fix"), dict
+    ):
+        _crf_patches.append(config_patch["admin"]["code_review_fix"])
+    for crf_patch in _crf_patches:
         if (
             "enabled" in crf_patch
             and crf_patch["enabled"] is not None
