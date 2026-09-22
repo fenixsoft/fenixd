@@ -28,7 +28,7 @@
 
 ## 2. dashboard 信号端点与 API 封装
 
-- [ ] 2.1 `core/dashboard/routes/code_review_routes.py` 新增 `POST /api/code-review/fix-run`（注册进 base.py 路由表）：项目 404 / daemon stopped 400 / unmanaged 409 前置拦截（对齐 `_api_code_review_run` 的 `hosting_state` 判据）；通过后预删旧结果文件、`O_CREAT|O_EXCL` 原子写 `.fenix/code_fix_request.json`（payload `{source: "dashboard", created: <UTC ISO>}`），FileExistsError → 409；返回 `{ok, requested_at}`
+- [ ] 2.1 `core/dashboard/routes/code_review_routes.py` 新增 `POST /api/code-review/fix-run`（注册进 base.py 路由表；project 取自 query，经 `_project_from_query`，对齐 `_api_code_review_run` 形态）：项目 404 / daemon stopped 400 / unmanaged 409 前置拦截（对齐 `_api_code_review_run` 的 `hosting_state` 判据）；通过后预删旧结果文件、`O_CREAT|O_EXCL` 原子写 `.fenix/code_fix_request.json`（payload `{source: "dashboard", created: <UTC ISO>}`），FileExistsError → 409；返回 `{ok, requested_at}`
 - [ ] 2.2 同文件新增 `GET /api/code-review/fix-run-result?project=`（注册进 base.py）：只读返回 `.fenix/code_fix_request_result.json` 内容，缺失返回缺省态 `{}`（MUST NOT 500，形态对齐 `_api_code_review_fix_progress`）；`core/dashboard/data` 层补对应读取函数
 - [ ] 2.3 `core/dashboard/static/src/services/dashboard.ts` 新增 `triggerCodeFixRun(project)` 与 `getCodeFixRunResult(project)` 封装及结果类型（含 `request_created/triggered/reason/message/finished_at`）
 

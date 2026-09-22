@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: 手动修复触发信号端点
-质量页签提供「立即自动修复」动作，系统 SHALL 提供 `POST /api/code-review/fix-run` 端点（body `{project}`），向目标项目原子写入 `.fenix/code_fix_request.json` 触发信号（`O_CREAT|O_EXCL` 独占创建，payload 含 `source: "dashboard"` 与 `created` UTC 时间戳），由 daemon 主循环消费。项目不存在 SHALL 返回 404。
+质量页签提供「立即自动修复」动作，系统 SHALL 提供 `POST /api/code-review/fix-run` 端点（project 取 query `?project=<name>`，对齐既有 `POST /api/code-review/run` 的 `_project_from_query` 形态），向目标项目原子写入 `.fenix/code_fix_request.json` 触发信号（`O_CREAT|O_EXCL` 独占创建，payload 含 `source: "dashboard"` 与 `created` UTC 时间戳），由 daemon 主循环消费。项目不存在 SHALL 返回 404。
 
 #### Scenario: 受理成功
 - **WHEN** 对存在且 daemon 托管正常的项目 POST fix-run
