@@ -2,7 +2,7 @@
 
 ### Requirement: 失败批现场即弃与锁释放
 
-自动修复车道的全部批失败路径 MUST 在收尾前清理 worktree（`_safe_cleanup`），不得保留现场等待人工。其中「两次回归均失败」与「合回冲突」两条原保留现场路径，MUST 在 cleanup 前把 `branch` 与 `tip_sha`（分支末梢提交 SHA）写入失败档案记录。
+自动修复车道凡已建树（`worktree_manager.create` 成功）的批失败路径 MUST 在收尾前清理 worktree（`_safe_cleanup`），不得保留现场等待人工。其中「两次回归均失败」与「合回冲突」两条原保留现场路径，MUST 在 cleanup 前把 `branch` 与 `tip_sha`（分支末梢提交 SHA）写入失败档案记录。
 
 #### Scenario: 合回冲突批失败后 worktree 被清理且锁释放
 - **WHEN** 某批合回 `merge_back` 返回失败（merge_back_conflict）
@@ -14,7 +14,7 @@
 
 ### Requirement: 批收尾三态与链自驱动条件
 
-`_run_batch_inner` 的收尾返回 MUST 为三态：`success`（批成功合回并核销）、`consumed`（该批条目已全部离开可选池：批成功、两次回归失败、合回冲突、agent run 失败、重试 run 失败）、`halt`（环境性失败：worktree_create_failed、worktree_manager_missing、批 worker 异常）。批 worker 对 `success` 与 `consumed` 均 MUST 执行 `_resubmit()` 推进下一批；仅 `halt` 终止链。
+`_run_batch_inner` 的收尾返回 MUST 为三态：`success`（批成功合回并核销）、`consumed`（该批条目已全部离开可选池：批成功、两次回归失败、合回冲突、agent run 失败、重试 run 失败、零有效修复拒合回）、`halt`（环境性失败：worktree_create_failed、worktree_manager_missing、批 worker 异常）。批 worker 对 `success` 与 `consumed` 均 MUST 执行 `_resubmit()` 推进下一批；仅 `halt` 终止链。
 
 #### Scenario: 合回冲突批失败后链继续推进下一批
 - **WHEN** 第 N 批以 merge_back_conflict 收尾（consumed）
@@ -24,8 +24,8 @@
 - **WHEN** 第 N 批以 regression_failed_twice 收尾（consumed）
 - **THEN** 编排器自驱动再投递下一批，剩余可选条目继续被消费
 
-#### Scenario: agent run 失败批链继续且条目入链内跳过集
-- **WHEN** 某批首次修复 run 失败（agent_run_failed）或重试 run 失败（regression_retry_run_failed）
+#### Scenario: agent run 失败/零产物批链继续且条目入链内跳过集
+- **WHEN** 某批首次修复 run 失败（agent_run_failed）、重试 run 失败（regression_retry_run_failed）或零有效修复拒合回（no_effective_fix）
 - **THEN** 该批条目写入进度快照 `chain_skipped` 字段，worktree 清理，链继续推进下一批；条目不进入 fix-failed.json 永久档案
 
 #### Scenario: 环境性失败保持链终止
@@ -62,7 +62,7 @@
 
 #### Scenario: 达到重试上限后永久跳过并一次性告警
 - **WHEN** 某条目集的 `fail_count` 递增至 FAIL_RETRY_MAX（3）
-- **THEN** 入档当时发一条 warning 级告警（列明条目与原因），该记录此后不再被新链释放；重复链启动不重复发告警
+- **THEN** 入档当时发一条 warning 级告警（列明条目与原因）并在 `.fenix/todo.md` 追加待人工清理项（指引按 `branch`/`tip_sha` 追溯，不引用已清理的 worktree 路径），该记录此后不再被新链释放；重复链启动不重复发告警
 
 #### Scenario: 混合预算档案的选择性释放
 - **WHEN** 新链启动时档案中存在 fail_count=1、fail_count=2、fail_count=3 三条记录
