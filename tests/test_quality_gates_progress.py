@@ -11,6 +11,7 @@
 """
 
 import json
+import logging
 import shutil
 import subprocess
 import sys
@@ -19,8 +20,11 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from core.agent_runner import result_gate
 from core.dashboard.data import parse_quality_gates
 
 # 契约固化顺序（specs/quality-gates-progress/spec.md）
@@ -420,3 +424,150 @@ class TestCurrentText(QualityGatesTestBase):
     def test_no_progress_empty_current(self):
         out = parse_quality_gates(self.root, self.SPEC, {"status": "drafted"})
         assert out["current"] == ""
+
+
+# ── 写侧（任务 3.3）：prompt 注入契约断言 + result_gate 宽松对账 ──────────
+
+
+def _mk_prompt(tmp_path: Path, agent_type: str) -> str:
+    from test_agent_runner import make_runner
+
+    proot = tmp_path / "proj"
+    d = proot / "spec" / "changes" / "demo"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "tasks.md").write_text("# Tasks\n\n- [ ] 1.1 do it\n", encoding="utf-8")
+    runner = make_runner(proot)
+    return runner._prompt_builder._build_prompt("demo", agent_type)
+
+
+class TestQualityGatesPromptSection:
+    """3.3：注入段含契约路径与键名字面断言。"""
+
+    @pytest.mark.parametrize("agent_type", ["implementer", "fast-track"])
+    def test_contract_path_literal(self, tmp_path, agent_type):
+        prompt = _mk_prompt(tmp_path, agent_type)
+        assert ".fenix/verify-progress/demo/quality-gates.json" in prompt
+
+    @pytest.mark.parametrize("agent_type", ["implementer", "fast-track"])
+    def test_schema_gate_ids_and_enum_literals(self, tmp_path, agent_type):
+        prompt = _mk_prompt(tmp_path, agent_type)
+        assert '"gates"' in prompt
+        assert "updated_at" in prompt
+        for gid in ("full-suite", "frontend-build", "interaction-contract"):
+            assert gid in prompt, gid
+        for st in ("passed", "failed", "running", "skipped"):
+            assert st in prompt, st
+
+    @pytest.mark.parametrize("agent_type", ["implementer", "fast-track"])
+    def test_progressive_mkdir_and_forbidden_code_review_key(self, tmp_path, agent_type):
+        prompt = _mk_prompt(tmp_path, agent_type)
+        # 渐进更新要求
+        assert "渐进" in prompt
+        # 写前创建父目录（mkdir -p 语义）
+        assert "mkdir" in prompt
+        # 无 code-review 键义务声明（ocr 归框架侧异步车道）
+        assert "MUST NOT" in prompt and "code-review" in prompt
+        # 与内联 ocr 段无耦合：本段不含 code-review.json 字样
+        assert "code-review.json" not in prompt
+
+    def test_non_impl_lanes_not_injected(self, tmp_path):
+        for agent_type in ("verifier", "planner-plan", "spec-review"):
+            prompt = _mk_prompt(tmp_path, agent_type)
+            assert "quality-gates.json" not in prompt, agent_type
+
+
+class TestResultGateSoftCheck:
+    """3.3：result_gate 对 quality-gates.json 宽松对账（缺失零拦截、违规仅 WARNING）。"""
+
+    def _setup(self, tmp_path):
+        from test_agent_runner import make_runner
+
+        proot = tmp_path / "proj"
+        proot.mkdir()
+        wt = tmp_path / "wt"
+        wt.mkdir()
+        return make_runner(proot), proot, wt
+
+    def _gates_path(self, base: Path) -> Path:
+        return base / ".fenix" / "verify-progress" / "demo" / "quality-gates.json"
+
+    def test_missing_file_zero_warning_zero_interception(self, tmp_path, caplog):
+        runner, proot, wt = self._setup(tmp_path)
+        with caplog.at_level("WARNING", logger="fenixd.agent_runner.result_gate"):
+            out = result_gate._check_quality_gates_soft(runner, "demo", wt)
+        assert out is None
+        assert not [r for r in caplog.records if "quality-gates" in r.getMessage()]
+
+    def test_bad_json_warning_only_and_run_verdict_unaffected(self, tmp_path, caplog):
+        runner, proot, wt = self._setup(tmp_path)
+        p = self._gates_path(wt)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("{broken", encoding="utf-8")
+        with caplog.at_level("WARNING", logger="fenixd.agent_runner.result_gate"):
+            out = result_gate._check_quality_gates_soft(runner, "demo", wt)
+        assert out is None  # run 判定不受影响（无失败终态）
+        warnings = [r for r in caplog.records if "quality-gates" in r.getMessage()]
+        assert warnings and all(r.levelno == logging.WARNING for r in warnings)
+
+    def test_out_of_enum_status_warns(self, tmp_path, caplog):
+        runner, proot, wt = self._setup(tmp_path)
+        p = self._gates_path(wt)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(
+            {"gates": {"full-suite": {"status": "ok"}}}, ensure_ascii=False),
+            encoding="utf-8")
+        with caplog.at_level("WARNING", logger="fenixd.agent_runner.result_gate"):
+            result_gate._check_quality_gates_soft(runner, "demo", wt)
+        assert any("不在枚举" in r.getMessage() for r in caplog.records)
+
+    def test_out_of_contract_gate_id_warns(self, tmp_path, caplog):
+        runner, proot, wt = self._setup(tmp_path)
+        p = self._gates_path(wt)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(
+            {"gates": {"code-review": {"status": "passed"}}}, ensure_ascii=False),
+            encoding="utf-8")
+        with caplog.at_level("WARNING", logger="fenixd.agent_runner.result_gate"):
+            result_gate._check_quality_gates_soft(runner, "demo", wt)
+        assert any("契约外 gate-id" in r.getMessage() for r in caplog.records)
+
+    def test_valid_file_no_warning(self, tmp_path, caplog):
+        runner, proot, wt = self._setup(tmp_path)
+        p = self._gates_path(wt)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(
+            {"gates": {"full-suite": {"status": "passed", "passed": 1, "failed": 0}},
+             "updated_at": "2026-09-22T00:00:00Z"}, ensure_ascii=False),
+            encoding="utf-8")
+        with caplog.at_level("WARNING", logger="fenixd.agent_runner.result_gate"):
+            result_gate._check_quality_gates_soft(runner, "demo", wt)
+        assert not [r for r in caplog.records if "quality-gates" in r.getMessage()]
+
+    def test_soft_check_called_in_impl_chain_never_blocks(self, tmp_path, caplog):
+        """impl 产物硬门链路接入点：软检查被链路调用且不改变判定（缺失零拦截）。"""
+        from test_agent_runner import make_runner
+
+        proot = tmp_path / "proj"
+        wt = proot / "wt"
+        (wt / "spec" / "changes" / "demo").mkdir(parents=True)
+        (wt / "spec" / "changes" / "demo" / "tasks.md").write_text(
+            "## 1. 阶段一\n\n- [x] 1.1 任务一\n", encoding="utf-8")
+        (wt / ".fenix-run-result.json").write_text(json.dumps(
+            {"status": "success", "spec": "demo", "completed_tasks": ["1.1"]},
+            ensure_ascii=False),
+            encoding="utf-8")
+        runner = make_runner(proot)
+        calls = []
+        orig = runner._check_quality_gates_soft
+
+        def _spy(spec, wt_path):
+            calls.append((spec, wt_path))
+            return orig(spec, wt_path)
+
+        runner._check_quality_gates_soft = _spy
+        with caplog.at_level("WARNING", logger="fenixd.agent_runner.result_gate"):
+            err = runner._check_impl_result_artifact("demo", None, wt)
+        assert err is None  # 链路放行
+        assert calls and calls[0][0] == "demo"  # 软检查确实在链路中被调用
+        # 文件缺失 → 零 WARNING 零拦截
+        assert not [r for r in caplog.records if "quality-gates" in r.getMessage()]

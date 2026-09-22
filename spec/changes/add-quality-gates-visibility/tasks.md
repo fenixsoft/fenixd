@@ -42,9 +42,9 @@
 
 ## 3. 写侧：prompt 注入与守卫宽松对账
 
-- [ ] 3.1 `core/agent_runner/prompt_builder.py` implementer 收尾检查注入段（新增独立段，与已退役的内联 ocr 段无耦合）：补 quality-gates.json 契约段——逐字固化路径 `.fenix/verify-progress/<spec>/quality-gates.json`、顶层 schema（gates/updated_at）、gate-id 全集（run 内 3 项：full-suite/frontend-build/interaction-contract，**无 code-review**）与 status 四值枚举、渐进更新要求（每完成一项即全量重写）、frontend-build 仅涉前端改动时执行否则 skipped+非空 reason、写前先创建 `.fenix/verify-progress/<spec>/` 父目录（worktree 内该子目录可能不存在）；注明读侧对 worktree/主树双位置 fail-open 兜底（fast-track 持主树 verify-progress 写授权，允许直落主树）
-- [ ] 3.2 `core/agent_runner/result_gate.py` impl 产物硬门链路：quality-gates.json 存在时仅做机械合法性检查（JSON 可解析、status 在枚举内、gate-id 在全集内），违规仅记 WARNING 放行；缺失零拦截；不新增任何失败终态与打回路径
-- [ ] 3.3 写侧单测：注入段含契约路径与键名字面断言；result_gate 对缺失文件零告警零拦截、对坏 JSON 仅 WARNING（caplog 断言）且 run 判定结果不受影响
+- [x] 3.1 `core/agent_runner/prompt_builder.py` implementer 收尾检查注入段（新增独立段，与已退役的内联 ocr 段无耦合）：补 quality-gates.json 契约段——逐字固化路径 `.fenix/verify-progress/<spec>/quality-gates.json`、顶层 schema（gates/updated_at）、gate-id 全集（run 内 3 项：full-suite/frontend-build/interaction-contract，**无 code-review**）与 status 四值枚举、渐进更新要求（每完成一项即全量重写）、frontend-build 仅涉前端改动时执行否则 skipped+非空 reason、写前先创建 `.fenix/verify-progress/<spec>/` 父目录（worktree 内该子目录可能不存在）；注明读侧对 worktree/主树双位置 fail-open 兜底（fast-track 持主树 verify-progress 写授权，允许直落主树）
+- [x] 3.2 `core/agent_runner/result_gate.py` impl 产物硬门链路：quality-gates.json 存在时仅做机械合法性检查（JSON 可解析、status 在枚举内、gate-id 在全集内），违规仅记 WARNING 放行；缺失零拦截；不新增任何失败终态与打回路径
+- [x] 3.3 写侧单测：注入段含契约路径与键名字面断言；result_gate 对缺失文件零告警零拦截、对坏 JSON 仅 WARNING（caplog 断言）且 run 判定结果不受影响
 
 ## 4. 前端类型与详情页「质量门禁」Card
 

@@ -43,6 +43,7 @@ from core.agent_runner.result_gate import (  # noqa: F401
     _check_artifact_json_file,
     _check_impl_code_review_artifact,
     _check_impl_result_artifact,
+    _check_quality_gates_soft,
     _check_repo_code_review_artifact,
     _check_partial_consistency,
     _check_success_completion,
@@ -474,6 +475,9 @@ class AgentRunner:
         "_check_agent_result_artifact": _check_agent_result_artifact,
         "_check_impl_code_review_artifact": _check_impl_code_review_artifact,
         "_check_impl_result_artifact": _check_impl_result_artifact,
+        # add-quality-gates-visibility：quality-gates.json 宽松对账（仅 WARNING，
+        # 零拦截——登记供门面转发，与其它 _check_* 同机制）
+        "_check_quality_gates_soft": _check_quality_gates_soft,
         "_check_repo_code_review_artifact": _check_repo_code_review_artifact,
         "_check_success_completion": _check_success_completion,
         "_check_partial_consistency": _check_partial_consistency,
