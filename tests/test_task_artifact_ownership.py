@@ -299,9 +299,13 @@ class TestZeroFalsePositive:
     任务 6.2（历史事故任务行）。测试内动态扫描（MUST NOT 硬编码文件数），
     允许的违规集仅为该事故 spec 的 tasks.md（实现期可重写其为零违规，
     两种终局都放行），其余任何文件出现违规即失败。
+
+    允许清单按 spec 名匹配（非完整路径）：该事故 spec 2026-09-23 归档入库后
+    文件已迁至 ``spec/archive/2026-09-23-fix-verify-serving-disk-reclaim/``，
+    按名匹配使允许清单跟随在册/归档两种位置，归档迁移不再构成「非事故文件」。
     """
 
-    _KNOWN_ACCIDENT_TASKS = "spec/changes/fix-verify-serving-disk-reclaim/tasks.md"
+    _KNOWN_ACCIDENT_SPEC = "fix-verify-serving-disk-reclaim"
 
     def test_no_violations_in_existing_specs(self):
         """对全库（changes + archive）既有 tasks.md 运行 lint_tasks_text，
@@ -320,7 +324,7 @@ class TestZeroFalsePositive:
         unexpected = [
             (tf, vs)
             for tf, vs in violations_by_file
-            if str(tf) != self._KNOWN_ACCIDENT_TASKS
+            if self._KNOWN_ACCIDENT_SPEC not in str(tf)
         ]
         if unexpected:
             details = "\n".join(
@@ -339,15 +343,34 @@ class TestAccidentAnchor:
     新判据下不再违规，说明新规则失效（事故形态漏出），测试即失败。
     """
 
-    _ACCIDENT_FILE = Path(
-        "spec/changes/fix-verify-serving-disk-reclaim/tasks.md"
-    )
+    _ACCIDENT_SPEC = "fix-verify-serving-disk-reclaim"
+
+    @classmethod
+    def _locate_accident_file(cls):
+        """事故 SPEC 定位：changes/ 在册优先，归档后回退 archive/<date>-<name>/。
+
+        2026-09-23 归档入库后该文件已迁至
+        spec/archive/2026-09-23-fix-verify-serving-disk-reclaim/tasks.md；
+        锚点跟随归档继续生效，而非从此 skip 失效。
+        """
+        candidates = [Path(f"spec/changes/{cls._ACCIDENT_SPEC}/tasks.md")]
+        candidates.extend(
+            Path(p)
+            for p in sorted(
+                glob.glob(f"spec/archive/*-{cls._ACCIDENT_SPEC}/tasks.md")
+            )
+        )
+        for c in candidates:
+            if c.exists():
+                return c
+        return None
 
     def test_accident_line_6_2_flagged(self):
         """任务 6.2（持久化场景集到 verify-progress）在新判据下判违规。"""
-        if not self._ACCIDENT_FILE.exists():
-            pytest.skip("事故 SPEC 已被归档，锚点文件不存在")
-        text = self._ACCIDENT_FILE.read_text(encoding="utf-8")
+        accident_file = self._locate_accident_file()
+        if accident_file is None:
+            pytest.skip("事故 SPEC 不在 changes/ 且无归档副本，锚点文件不存在")
+        text = accident_file.read_text(encoding="utf-8")
         line6_2 = next(
             (
                 ln
