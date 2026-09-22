@@ -222,13 +222,37 @@ def _run_gate_status(raw, gid: str, source_ok: bool = True) -> tuple:
     return (status, detail)
 
 
-def _code_review_status(project_root, spec_name, spec_status: str, entry: dict) -> tuple:
+def _ocr_lane_inflight(runs: list) -> bool:
+    """ocr 车道在飞判据（add-timeline-ocr-lane-visibility 任务 1.3）。
+
+    runs（get_runs 产物）中存在 run_id 前缀 ``impl-ocr-`` 且无终态事件的
+    run 即在飞：车道 jsonl 启动写 ``start``、收尾写 ``result``/``error``，
+    无终态即 in-flight——与既有 no-terminal→running 判定同约定（读侧合成
+    status 为 running/empty；stale 是 mtime 兜底的断尾弃置，非真实在飞，
+    不计）。runs 缺省（None）不判在飞（fail-open 落回产物状态）。
+    """
+    for r in runs or []:
+        if not isinstance(r, dict):
+            continue
+        rid = str(r.get("run_id") or "")
+        if rid.startswith("impl-ocr-") and r.get("status") in ("running", "empty"):
+            return True
+    return False
+
+
+def _code_review_status(
+    project_root, spec_name, spec_status: str, entry: dict, runs: list | None = None
+) -> tuple:
     """ocr 门：按 ocr 异步车道产物三态合成（与车道降级不阻塞语义一致）。
 
-    在飞/产物 running → running；completed → passed（detail 附 findings 与
-    处置计数摘要）；unavailable → skipped（detail 附 reason，计入 done——已了结
-    而非未做）；产物不可见（含损坏/指纹陈旧）→ pending。
+    车道在飞（活跃 impl-ocr run 无终态事件）/产物 running → running；
+    completed → passed（detail 附 findings 与处置计数摘要）；unavailable →
+    skipped（detail 附 reason，计入 done——已了结而非未做）；产物不可见
+    （含损坏/指纹陈旧）→ pending。在飞判据优先于磁盘产物状态（重审轮
+    head 前移后上一轮产物指纹陈旧，本就不可采信）。
     """
+    if _ocr_lane_inflight(runs):
+        return ("running", "ocr 并行审查进行中")
     product = _load_lane_product(project_root, spec_name, spec_status, entry)
     if product is None:
         return ("pending", "")
@@ -352,7 +376,9 @@ def parse_quality_gates(project_root, spec_name: str, entry=None, runs=None) -> 
             # RUN_GATE_IDS 遍历面内 → 忽略，不污染合成
             status, detail = _run_gate_status(file_gates.get(gid), gid, source_ok=parsed)
         elif gid == "code-review":
-            status, detail = _code_review_status(project_root, spec_name, spec_status, entry)
+            status, detail = _code_review_status(
+                project_root, spec_name, spec_status, entry, runs
+            )
         elif gid == "result-artifact-gate":
             status, detail = _result_artifact_gate_status(entry, runs, project_root)
         else:

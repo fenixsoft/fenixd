@@ -303,6 +303,101 @@ class TestTimelineFoldChain(unittest.TestCase):
             node["chain"],
             ["implementing", "implemented", "testing", "verified", "done"])
 
+
+class TestTimelineOcrLaneVisibility(unittest.TestCase):
+    """add-timeline-ocr-lane-visibility 任务 1.1/1.2：
+
+    - ocr 车道 run 节点透出转录 start 事件 message（lane_summary）；
+    - 最新「→ testing」状态节点附 ocr 门当前状态（ocr_gate，entry 透传时）。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        logs_dir = Path(self.tmpdir) / ".fenix" / "logs"
+        logs_dir.mkdir(parents=True)
+        runs_dir = Path(self.tmpdir) / ".fenix" / "runs"
+        runs_dir.mkdir(parents=True)
+        log_entry = {
+            "timestamp": "2026-09-07T03:57:54.000000Z",
+            "component": "state_machine",
+            "message": "Transition: demo-spec implementing → testing",
+        }
+        (logs_dir / "fenixd.log").write_text(
+            json.dumps(log_entry) + "\n", encoding="utf-8")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _write_ocr_run(self, lines: str) -> None:
+        (Path(self.tmpdir) / ".fenix" / "runs" / "impl-ocr-demo-spec-1788260731.jsonl"
+         ).write_text(lines, encoding="utf-8")
+
+    def test_ocr_run_node_carries_lane_summary(self):
+        from core.dashboard.data import get_spec_timeline
+        self._write_ocr_run(
+            '{"type": "start", "message": "ocr 车道启动: fenix/demo 8f17a0b..a917c3d"}\n'
+        )
+        timeline = get_spec_timeline(self.tmpdir, "demo-spec")
+        runs = [e for e in timeline if e["kind"] == "run"]
+        self.assertEqual(len(runs), 1)
+        self.assertEqual(runs[0]["agent_type"], "impl-ocr")
+        self.assertEqual(
+            runs[0]["lane_summary"],
+            "ocr 车道启动: fenix/demo 8f17a0b..a917c3d")
+
+    def test_run_node_without_start_omits_lane_summary(self):
+        from core.dashboard.data import get_spec_timeline
+        # 无 start 事件（仅 provider_marker）→ 静默省字段
+        self._write_ocr_run('{"type": "provider_marker"}\n')
+        timeline = get_spec_timeline(self.tmpdir, "demo-spec")
+        runs = [e for e in timeline if e["kind"] == "run"]
+        self.assertEqual(len(runs), 1)
+        self.assertNotIn("lane_summary", runs[0])
+
+    def test_latest_testing_node_carries_ocr_gate_running(self):
+        from core.dashboard.data import get_spec_timeline
+        # 仅 start 无终态 → get_runs 判 running → 在飞 → ocr 门 running
+        self._write_ocr_run(
+            '{"type": "start", "message": "ocr 车道启动: fenix/demo 8f17a0b..a917c3d"}\n'
+        )
+        entry = {"status": "testing", "created": "2026-09-07T03:00:00Z"}
+        timeline = get_spec_timeline(self.tmpdir, "demo-spec", entry=entry)
+        states = [e for e in timeline if e["kind"] == "state"]
+        self.assertEqual(len(states), 1)
+        self.assertEqual(states[0]["to"], "testing")
+        self.assertEqual(states[0]["ocr_gate"]["status"], "running")
+        self.assertIn("进行中", states[0]["ocr_gate"]["detail"])
+
+    def test_non_testing_latest_node_has_no_ocr_gate(self):
+        from core.dashboard.data import get_spec_timeline
+        logs_dir = Path(self.tmpdir) / ".fenix" / "logs"
+        extra = {
+            "timestamp": "2026-09-07T04:00:00.000000Z",
+            "component": "state_machine",
+            "message": "Transition: demo-spec testing → verified",
+        }
+        with (logs_dir / "fenixd.log").open("a", encoding="utf-8") as f:
+            f.write(json.dumps(extra) + "\n")
+        self._write_ocr_run(
+            '{"type": "start", "message": "ocr 车道启动: fenix/demo 8f17a0b..a917c3d"}\n'
+        )
+        entry = {"status": "verified", "created": "2026-09-07T03:00:00Z"}
+        timeline = get_spec_timeline(self.tmpdir, "demo-spec", entry=entry)
+        states = [e for e in timeline if e["kind"] == "state"]
+        # 最新节点 to=verified：即使 ocr 门在飞也不附注记
+        latest = states[-1]
+        self.assertEqual(latest["to"], "verified")
+        self.assertTrue(all("ocr_gate" not in e for e in states))
+
+    def test_no_entry_no_ocr_gate(self):
+        from core.dashboard.data import get_spec_timeline
+        # 既有调用点不透传 entry：任何节点不附 ocr_gate（向后兼容）
+        self._write_ocr_run(
+            '{"type": "start", "message": "ocr 车道启动: fenix/demo 8f17a0b..a917c3d"}\n'
+        )
+        timeline = get_spec_timeline(self.tmpdir, "demo-spec")
+        self.assertTrue(all("ocr_gate" not in e for e in timeline))
+
     def test_single_transition_has_no_chain(self):
         """单条转换不折叠（无 chain 字段），前端回退 from/to 渲染。"""
         logs_dir = Path(self.tmpdir) / ".fenix" / "logs"

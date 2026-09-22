@@ -702,7 +702,9 @@ def spec_detail(project_root, spec_name: str, entry: dict) -> dict:
     import core.dashboard.data as _facade
 
     timeline = _facade._timeline_with_retry(
-        _facade.get_spec_timeline(project_root, spec_name, entry.get("created") or ""),
+        # entry 透传（add-timeline-ocr-lane-visibility 任务 1.2）：最新「→ testing」
+        # 节点附 ocr 门状态，与下方 quality_gates Card 同参同源合成
+        _facade.get_spec_timeline(project_root, spec_name, entry.get("created") or "", entry=entry),
         project_root,
         entry,
     )

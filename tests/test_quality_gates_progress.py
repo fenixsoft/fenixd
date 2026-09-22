@@ -348,6 +348,77 @@ class TestLaneFingerprint(QualityGatesTestBase):
         assert self._item(out, "code-review")["status"] == "pending"
 
 
+class TestOcrLaneInflight(QualityGatesTestBase):
+    """add-timeline-ocr-lane-visibility 任务 1.3：ocr 门在飞检测补全。
+
+    契约源 quality-gates-progress「车道在飞或产物 running 为 running」——
+    车道仅在 run_impl_ocr 收尾一次性 tmp+replace 落盘 code-review.json
+    （status 白名单 completed|unavailable），在飞窗口磁盘无 running 产物，
+    读侧须以活跃 impl-ocr run（无终态事件）判在飞，且优先于磁盘产物状态。
+    """
+
+    @staticmethod
+    def _run(run_id: str, status: str) -> dict:
+        return {"run_id": run_id, "status": status, "agent_type": "impl-ocr"}
+
+    def test_inflight_impl_ocr_run_is_running(self):
+        out = parse_quality_gates(
+            self.root, self.SPEC, {"status": "testing"},
+            runs=[self._run("impl-ocr-demo-1770000000", "running")],
+        )
+        item = self._item(out, "code-review")
+        assert item["status"] == "running"
+        assert "进行中" in item["detail"]
+
+    def test_inflight_empty_status_counts(self):
+        # 无终态事件的另一读侧形态（空产物文件）同样在飞
+        out = parse_quality_gates(
+            self.root, self.SPEC, {"status": "testing"},
+            runs=[self._run("impl-ocr-demo-1770000001", "empty")],
+        )
+        assert self._item(out, "code-review")["status"] == "running"
+
+    def test_inflight_overrides_completed_product(self):
+        # 在飞判据优先于磁盘产物：重审轮 head 前移后上一轮产物指纹陈旧不可采信
+        self._write_lane({"status": "completed", "findings": []})
+        out = parse_quality_gates(
+            self.root, self.SPEC, {"status": "testing"},
+            runs=[self._run("impl-ocr-demo-1770000002", "running")],
+        )
+        assert self._item(out, "code-review")["status"] == "running"
+
+    def test_stale_run_not_inflight_falls_back_to_product(self):
+        # mtime 兜底 stale（断尾弃置）非真实在飞：落回产物状态
+        self._write_lane({"status": "completed", "findings": []})
+        out = parse_quality_gates(
+            self.root, self.SPEC, {"status": "testing"},
+            runs=[self._run("impl-ocr-demo-1770000003", "stale")],
+        )
+        assert self._item(out, "code-review")["status"] == "passed"
+
+    def test_non_ocr_running_run_not_inflight(self):
+        # 非 impl-ocr 前缀（实现者/验证者等 run）不触发在飞
+        out = parse_quality_gates(
+            self.root, self.SPEC, {"status": "testing"},
+            runs=[self._run("impl-demo-1770000004", "running")],
+        )
+        assert self._item(out, "code-review")["status"] == "pending"
+
+    def test_terminal_ocr_run_not_inflight(self):
+        # 已终态（done/error/...）的 impl-ocr run 非在飞 → 落回产物状态（缺失 pending）
+        out = parse_quality_gates(
+            self.root, self.SPEC, {"status": "testing"},
+            runs=[self._run("impl-ocr-demo-1770000005", "done")],
+        )
+        assert self._item(out, "code-review")["status"] == "pending"
+
+    def test_runs_none_keeps_original_tri_state(self):
+        # runs 缺省（None，不判在飞）：completed/unavailable/缺失 → 原三态不回归
+        self._write_lane({"status": "completed", "findings": []})
+        out = parse_quality_gates(self.root, self.SPEC, {"status": "testing"})
+        assert self._item(out, "code-review")["status"] == "passed"
+
+
 class TestWorktreePriority(QualityGatesTestBase):
     """1.4 worktree 优先读取策略。"""
 
