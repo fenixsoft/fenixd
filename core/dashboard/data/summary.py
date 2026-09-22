@@ -408,10 +408,34 @@ def spec_summary(project_root, spec_name: str, entry: dict, runs_files: list | N
         # 为生命周期累计观测值（不归零，同 _budget_exempt_runs 范式）。
         "verify_infra_rounds": int(entry.get("_verify_infra_rounds", 0) or 0) if entry else 0,
         "infra_failure_count": int(entry.get("_infra_failure_count", 0) or 0) if entry else 0,
+        # add-verify-lane-throughput 3.3：judge 治理读侧观测（design 决策 5）——
+        # fast-track 复用命中与真实派发的生命周期累计，fast-track 命中率 =
+        # hits / (hits + dispatches) 由消费方计算；历史 spec 无记录 → None
+        # （缺失容错，与 0 区分「未启用期」）。
+        "judge_fasttrack_hits": _judge_stat_or_none(
+            entry.get("_judge_fasttrack_hits") if entry else None
+        ),
+        "judge_real_dispatches": _judge_stat_or_none(
+            entry.get("_judge_real_dispatches") if entry else None
+        ),
     }
 
 
 # ── spec 摘要索引（dashboard-spec-summary-index D1） ─────────────
+
+
+def _judge_stat_or_none(value):
+    """judge 治理统计字段容错读（add-verify-lane-throughput 3.3）。
+
+    合法整数（含数字串）→ int；缺失/None/非法 → None（fail-open，历史
+    spec 无该字段时读侧不炸、不为 0）。
+    """
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _stat_sig(path: Path):

@@ -21,9 +21,239 @@ from core.agent_runner.run_files import run_spec_part
 # judge-rerun-stability R1：单 spec judge 重跑硬上限（judge run 总数）。
 _MAX_JUDGE_RERUNS = 5
 
+# ── judge 轮内重裁决治理（add-verify-lane-throughput 3.1/3.2）─────────────
+# 轮内真实派发阈值：同一 (spec, 验证轮) 内真实派发（非 fast-track 复用命中）
+# 达 2 次仍需再派 → 停止第 3 次派发，人工升级告警 + spec 保持可重试状态。
+# 与既有 spec 级硬上限（_MAX_JUDGE_RERUNS=5）并存，轮内阈值先触发。
+_JUDGE_ROUND_MAX_REAL_DISPATCHES = 2
+# 证据扩充每轮上限（3.2）：低置信可补类型（缺 evidence/截断）优先补证重判，
+# 扩充不计入重派计数，每轮至多 1 次。
+_JUDGE_ROUND_MAX_EXPANSIONS = 1
+
+# 轮级计数器的 STATE 字段（随验证轮重置）与生命周期统计字段（跨轮累计，
+# 读侧 summary 消费，见 dashboard/data/summary.py judge_fasttrack_hits /
+# judge_real_dispatches）。
+_JUDGE_ROUND_ID_FIELD = "_judge_round_id"
+_JUDGE_ROUND_REAL_FIELD = "_judge_round_real"
+_JUDGE_ROUND_EXPANDED_FIELD = "_judge_round_expanded"
+_JUDGE_ROUND_ESCALATED_FIELD = "_judge_round_escalated"
+_JUDGE_ROUND_REPORT_MTIME_FIELD = "_judge_round_report_mtime"
+_JUDGE_FASTTRACK_HITS_FIELD = "_judge_fasttrack_hits"
+_JUDGE_REAL_DISPATCHES_FIELD = "_judge_real_dispatches"
+
+
+def _judge_verify_round(pipeline, spec_name: str) -> int:
+    """当前验证轮次（= ``_verify_fail_rounds``，首轮 0；读取异常按 0）。"""
+    entry = pipeline._context.state_machine.read_one(spec_name) or {}
+    try:
+        return int(entry.get("_verify_fail_rounds", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _judge_report_mtime_ns(pipeline, spec_name: str):
+    """当前 report.json mtime_ns（判定上下文指纹）；缺失返回 None。"""
+    from pathlib import Path
+
+    p = (
+        Path(pipeline._context.project_root)
+        / ".fenix"
+        / "verify-progress"
+        / spec_name
+        / "report.json"
+    )
+    try:
+        return p.stat().st_mtime_ns
+    except OSError:
+        return None
+
+
+def _judge_round_state(pipeline, spec_name: str) -> dict:
+    """读 (spec, 验证轮, 判定上下文) 维度计数器；上下文变化即重置（3.1）。
+
+    轮次键 = ``_verify_fail_rounds``（bug-found 修复递增）；同轮判定上下文
+    键 = report.json mtime——**场景修复重入（scenario-repaired）每轮合法
+    重执行并重派 judge**，report 已重写即视为新判定上下文，计数从零计
+    （治理目标只是「同一份报告反复重裁决」，不拦合法的新执行轮）。
+    """
+    entry = pipeline._context.state_machine.read_one(spec_name) or {}
+    current_round = _judge_verify_round(pipeline, spec_name)
+    current_mtime = _judge_report_mtime_ns(pipeline, spec_name)
+
+    def _int_or(v, d=0):
+        try:
+            return int(v or 0)
+        except (TypeError, ValueError):
+            return d
+
+    try:
+        stored_round = entry.get(_JUDGE_ROUND_ID_FIELD)
+        same_round = stored_round is not None and int(stored_round) == current_round
+    except (TypeError, ValueError):
+        same_round = False
+    if same_round:
+        stored_mtime = entry.get(_JUDGE_ROUND_REPORT_MTIME_FIELD)
+        try:
+            stored_mtime = int(stored_mtime) if stored_mtime is not None else None
+        except (TypeError, ValueError):
+            stored_mtime = None
+        if (
+            stored_mtime is not None
+            and current_mtime is not None
+            and stored_mtime != current_mtime
+        ):
+            same_round = False  # report 重执行 → 新判定上下文
+    if not same_round:
+        reset = {
+            _JUDGE_ROUND_ID_FIELD: current_round,
+            _JUDGE_ROUND_REAL_FIELD: 0,
+            _JUDGE_ROUND_EXPANDED_FIELD: 0,
+            _JUDGE_ROUND_ESCALATED_FIELD: False,
+        }
+        if current_mtime is not None:
+            reset[_JUDGE_ROUND_REPORT_MTIME_FIELD] = current_mtime
+        pipeline._context.state_machine.update_spec(spec_name, reset)
+        return {"round": current_round, "real": 0, "expanded": 0, "escalated": False}
+    return {
+        "round": current_round,
+        "real": _int_or(entry.get(_JUDGE_ROUND_REAL_FIELD)),
+        "expanded": _int_or(entry.get(_JUDGE_ROUND_EXPANDED_FIELD)),
+        # STATE 属性以字符串持久化（布尔落盘为 'False'/'True'）——不能用
+        # bool() 直接包（bool('False') 为真会误判「本轮已升级」而吞掉告警）。
+        "escalated": str(entry.get(_JUDGE_ROUND_ESCALATED_FIELD, False)).strip().lower()
+        in ("true", "1"),
+    }
+
+
+def _judge_round_bump(pipeline, spec_name: str, field: str) -> int:
+    """轮内/生命周期计数字段 +1（返回新值；写失败不影响主流程）。"""
+    entry = pipeline._context.state_machine.read_one(spec_name) or {}
+    try:
+        value = int(entry.get(field, 0) or 0) + 1
+    except (TypeError, ValueError):
+        value = 1
+    pipeline._context.state_machine.update_spec(spec_name, {field: value})
+    return value
+
+
+def _judge_charge_real_dispatch(pipeline, spec_name: str) -> int:
+    """记一次真实派发：轮内计数 +1、生命周期 ``_judge_real_dispatches`` +1。
+
+    同时刷新判定上下文键（当前 report.json mtime）——后续 gate 以此识别
+    「同轮 report 重执行」并重置轮内计数（合法新执行轮不受阈值约束）。
+    """
+    _judge_round_bump(pipeline, spec_name, _JUDGE_ROUND_REAL_FIELD)
+    mtime = _judge_report_mtime_ns(pipeline, spec_name)
+    if mtime is not None:
+        pipeline._context.state_machine.update_spec(
+            spec_name, {_JUDGE_ROUND_REPORT_MTIME_FIELD: mtime}
+        )
+    return _judge_round_bump(pipeline, spec_name, _JUDGE_REAL_DISPATCHES_FIELD)
+
+
+def _judge_charge_fasttrack_hit(pipeline, spec_name: str) -> int:
+    """记一次 fast-track 复用命中（``_judge_fasttrack_hits``，不计真实派发）。"""
+    return _judge_round_bump(pipeline, spec_name, _JUDGE_FASTTRACK_HITS_FIELD)
+
+
+def _judge_charge_verdict_retry(pipeline, spec_name: str, violations: list) -> str:
+    """对一次 judge 重裁决派发分类记账（add-verify-lane-throughput 3.2）。
+
+    记账前先做轮次键校验（``_judge_round_state``：验证轮变化即重置）。分类：
+      - violations 全为可补类型（evidence 缺失/截断，``is_expandable_evidence_violation``）
+        且轮内扩充名额未用尽 → 占用扩充名额，本次重判 **不计入** 重派计数，
+        返回 "expansion"；
+      - 否则（含不可补类型、名额耗尽、violations 为空）→ 记一次真实派发
+        （轮内 +1、生命周期 ``_judge_real_dispatches`` +1），返回 "real"。
+
+    调用点：``_verify_verdict_evidence`` 违规重派处（该路径直接 run_planner
+    不经 gate，轮内计数必须在此同步记账）。
+    """
+    from core.verdict_check import is_expandable_evidence_violation
+
+    state = _judge_round_state(pipeline, spec_name)
+    expandable = bool(violations) and all(
+        is_expandable_evidence_violation(v.get("reason") if isinstance(v, dict) else "")
+        for v in violations
+    )
+    if expandable and state["expanded"] < _JUDGE_ROUND_MAX_EXPANSIONS:
+        _judge_round_bump(pipeline, spec_name, _JUDGE_ROUND_EXPANDED_FIELD)
+        pipeline._context.logger.info(
+            "pm_engine",
+            f"judge 重裁决定性为证据扩充 '{spec_name}'（违规均属可补类型，"
+            f"本轮扩充 {state['expanded'] + 1}/{_JUDGE_ROUND_MAX_EXPANSIONS}）"
+            "— 不计入重派计数",
+        )
+        return "expansion"
+    _judge_charge_real_dispatch(pipeline, spec_name)
+    return "real"
+
+
+def _judge_round_verdict_history(pipeline, spec_name: str, limit: int = 5) -> str:
+    """历次 judge 结论摘要（升级告警 evidence 用，fail-open 空串）。"""
+    try:
+        from core.verify_report import read_verdict_stability
+
+        data = read_verdict_stability(pipeline._context.project_root, spec_name) or {}
+        rounds = data.get("rounds") or []
+        parts = []
+        for r in rounds[-limit:]:
+            if isinstance(r, dict):
+                parts.append(
+                    f"{r.get('at') or r.get('timestamp') or '?'}: {r.get('status', '?')}"
+                )
+        return "；".join(parts)
+    except Exception:
+        return ""
+
+
+def _judge_round_escalate(pipeline, spec_name: str, state: dict) -> None:
+    """轮内停派的人工升级（只发一次/轮，复用 human-escalation-alert 通道）。
+
+    spec 保持 testing 可重试状态（MUST NOT 冻结、MUST NOT 销毁产物）：人工
+    处置后重入 testing 按正常路径执行；重复命中（stuck 兜底重入验证轮）仅
+    INFO 留痕，不重复告警。
+    """
+    fresh = _judge_round_state(pipeline, spec_name)
+    if fresh["escalated"]:
+        pipeline._context.logger.info(
+            "pm_engine",
+            f"judge 轮内重裁决已达阈值（本轮已升级）'{spec_name}' — 保持 testing "
+            f"等待人工处置，不重复告警",
+        )
+        return
+    pipeline._context.state_machine.update_spec(
+        spec_name, {_JUDGE_ROUND_ESCALATED_FIELD: True}
+    )
+    history = _judge_round_verdict_history(pipeline, spec_name)
+    pipeline._context.logger.error(
+        "pm_engine",
+        f"judge 轮内重裁决达阈值 '{spec_name}'（本轮真实派发 "
+        f"{fresh['real']} 次，仍需第 {fresh['real'] + 1} 次）— 停止派发，人工升级；"
+        f"spec 保持 testing 可重试",
+    )
+    pipeline._context.escalation_notifier(
+        spec_name=spec_name,
+        signal_type="judge_round_rerun_cap",
+        severity="major",
+        description=(
+            f"'{spec_name}' 第 {state['round']} 轮验证内 judge 重裁决达阈值"
+            f"（真实派发 {fresh['real']} 次，第 {fresh['real'] + 1} 次派发被阻止）—"
+            "已停止派发等待人工处置，spec 保持可重试状态"
+        ),
+        evidence=(
+            f"spec={spec_name}; verify_round={state['round']}; "
+            f"round_real_dispatches={fresh['real']}; 历次结论: {history or '无记录'}"
+        ),
+        recommended_action=(
+            "检查本轮 judge 反复重裁决根因（场景集是否冻结生效/失败是否复现一致/"
+            "产物是否被并发改写）；人工处置后重入 testing 即按正常路径执行"
+        ),
+    )
+
 
 def _judge_dispatch_gate(pipeline, spec_name: str):
-    """judge 派发前置守卫（judge-rerun-stability R1）。
+    """judge 派发前置守卫（judge-rerun-stability R1 + add-verify-lane-throughput 3.1）。
 
     调用点在阶段3 judge 派发处（三阶段主路径 + 全绿快道回退）：
       - judge_rerun_count +1（含被稳定性复用跳过但未实际派发的判定次数）；
@@ -31,12 +261,17 @@ def _judge_dispatch_gate(pipeline, spec_name: str):
         触发时 judge_rerun_count 与 _verify_fail_rounds 一并冻结
         （_judge_cap_frozen 标记，两者的自动递增全部失效）；
       - verdict 稳定（spec 戳未变 && report.json mtime 未变 && 连续两轮
-        一致）→ 返回合成复用结果（不新起 judge run，叫停连发重派）。
+        一致）→ 返回合成复用结果（不新起 judge run，叫停连发重派），并记
+        fast-track 命中（``_judge_fasttrack_hits``，不计真实派发）；
+      - 轮内重裁决阈值（3.1，先于全局硬上限触发的语义位在稳定性复用之后）：
+        本轮真实派发已达 2 次仍需再派 → 停止派发 + 人工升级告警（含历次结论
+        摘要），spec 保持 testing 可重试，返回 False 供调用方让位退出。
 
     Returns:
-      - None：正常派发 judge；
+      - None：正常派发 judge（已记一次真实派发）；
       - AgentRunResult：verdict 稳定复用的合成结果（调用方直接采纳）；
-      - False：硬上限已 blocked，调用方应 return。
+      - False：硬上限已 blocked，或轮内重裁决停派（人工升级已发），调用方应
+        return 让位。
     """
     from core.verify_report import is_verdict_stable, read_verdict_stability
 
@@ -45,7 +280,21 @@ def _judge_dispatch_gate(pipeline, spec_name: str):
         pipeline._judge_hard_cap_freeze(spec_name, count)
         return False
     if not is_verdict_stable(pipeline._context.project_root, spec_name):
+        # ── 轮内重裁决阈值门（add-verify-lane-throughput 3.1）──
+        # 治理对象是「同一份已落盘报告的反复重裁决」：report.json 缺失
+        # （内存/合成执行环境、judge 前置产物未落盘）即无可治理的判定
+        # 上下文，放行且不计数（spec 级硬上限仍然兜底）。
+        if _judge_report_mtime_ns(pipeline, spec_name) is None:
+            return None
+        state = _judge_round_state(pipeline, spec_name)
+        if state["real"] >= _JUDGE_ROUND_MAX_REAL_DISPATCHES:
+            _judge_round_escalate(pipeline, spec_name, state)
+            return False
+        _judge_charge_real_dispatch(pipeline, spec_name)
         return None
+    # 稳定性复用命中 = fast-track 命中（design 决策 5：gate 返回合成结果即
+    # 命中，不计入真实派发）。
+    _judge_charge_fasttrack_hit(pipeline, spec_name)
     # 稳定性复用：返回合成结果，下游采纳尾段继续（_read_planner_result
     # 读到上次 judge 落盘的 .fenix-run-result.json，verdict 一致即等价）。
     data = read_verdict_stability(pipeline._context.project_root, spec_name) or {}

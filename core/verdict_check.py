@@ -138,6 +138,21 @@ def triage_entries(scenario: dict) -> List[dict]:
     return [t for t in triage if isinstance(t, dict)]
 
 
+def is_expandable_evidence_violation(reason: str) -> bool:
+    """判断 judge 违规是否属「可补证据」类型（add-verify-lane-throughput 3.2）。
+
+    可补 = evidence 缺失/截断类（validate_report 产出的 reason 以 "evidence"
+    开头，如 "evidence 为空"）——补证后局部重判即可修复；
+    不可补 = classification 非法（"classification 缺失或取值非法"）、逐断言
+    归因违规（"assertion_triage …"）、report 结构损坏（"report.json 非对象"）
+    等，须按真实重裁决记账。
+
+    前缀判定保持与 validate_report reason 词表解耦：词表新增 evidence 类
+    reason（如截断）自动纳入可补集，无需改本函数。
+    """
+    return isinstance(reason, str) and reason.startswith("evidence")
+
+
 def triage_violation(scenario: dict) -> Optional[str]:
     """逐断言归因合规性检查（add-interaction-contract-and-per-assert-triage D3）。
 
@@ -1247,12 +1262,211 @@ def save_verdict_cache(project_root, spec_name, cache: dict) -> None:
     """原子写跨轮裁决缓存（每轮采纳后整体重写，消失/变化的场景自然出清）。
 
     写失败静默——缓存缺失只导致下轮全量重裁，不影响正确性。
+
+    add-verify-lane-throughput 4.1：写入时自动注入顶层 ``_meta`` 特殊键
+    （当前含 ``head_at_write`` = 写入时 git HEAD，修复轮 diff 失效判据的
+    基准点）。``_meta`` 非场景条目，读侧消费方按 scenario_id 取条目不会
+    误命中。
     """
     p = _verdict_cache_path(project_root, spec_name)
+    payload = dict(cache) if isinstance(cache, dict) else {}
+    if "_meta" not in payload:
+        payload["_meta"] = {"head_at_write": compute_head_at_write(project_root)}
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
         tmp = p.with_name(p.name + ".tmp")
-        tmp.write_text(json.dumps(cache, ensure_ascii=False, indent=1), encoding="utf-8")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
         tmp.replace(p)
     except OSError:
         pass
+
+
+# ── verdict 缓存键四元组（add-verify-lane-throughput 4.1，design 决策 6）──
+# 采信判据 =（场景 id, 场景内容指纹, 被测构建指纹, 验证配置指纹）全等。
+# 存疑即 fail-closed：任一分量缺失/不匹配 → 不采信缓存、照跑。
+
+
+# 场景定义指纹的**白名单键**：只取定义性字段参与指纹。不采用「排除易变键」
+# 的黑名单口径——写侧条目来自 report 场景 dict（键名 scenario_id、含执行
+# 富集），读侧来自冻结文件 TestScenario.to_dict()（键名 id、归一形状），两侧
+# 键集天然不同，黑名单无法归一；白名单（id 与 scenario_id 并收）保证同一
+# 场景两侧投影一致。status/evidence/assertion_triage/classification/
+# cached_source/attribution_level/assertion_results 等易变键天然不在白名单。
+_SCENARIO_DEFINITION_KEYS = (
+    "id",
+    "scenario_id",
+    "name",
+    "description",
+    "kind",
+    "steps",
+    "assertions",
+    "depends_on",
+    "visual_baseline",
+    "external_net_errors_ok",
+)
+
+# 场景出处标注正则（description 末尾「文件:行号」形态，agents/planner-plan.md
+# 出题规范）；文件扩展名覆盖被测应用常见源码/配置类型。
+_SCENARIO_SOURCE_FILE_RE = re.compile(
+    r"([\w./\\-]+\.(?:py|ts|tsx|js|jsx|mjs|vue|go|java|rb|php|sh|ya?ml|json|html|css|md)):(\d+)"
+)
+
+# 被测构建指纹的依赖/构建清单候选（取项目根现存文件集，不存在者跳过）。
+_BUILD_MANIFEST_CANDIDATES = (
+    "package.json",
+    "package-lock.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    "requirements.txt",
+    "requirements-dev.txt",
+    "pyproject.toml",
+    "poetry.lock",
+    "Pipfile",
+    "Pipfile.lock",
+    "setup.py",
+    "setup.cfg",
+    "Cargo.toml",
+    "Cargo.lock",
+    "go.mod",
+    "go.sum",
+)
+
+# 验证配置文件路径（验证配置指纹数据源）。
+_VERIFY_CONFIG_RELATIVE_PATH = ".fenix/verify.yaml"
+
+
+def scenario_definition_fingerprint(scenario: dict) -> str:
+    """场景定义内容指纹（缓存键分量②）：定义白名单键投影后稳定 hash。
+
+    与 :func:`scenario_fingerprint`（非 PASS 断言指纹，判定失败复现）互补：
+    本指纹判定「场景定义本身是否变化」——定义变 ⇒ 上轮结论作废（失效条件①）。
+    白名单口径保证写侧（report 场景 dict）与读侧（TestScenario.to_dict()）
+    两侧投影一致；易变键（status/evidence/assertion_triage 等）不在白名单，
+    天然不影响指纹。异常/空载荷返回空串（fail-closed，按不可采信处理）。
+    """
+    import hashlib as _hashlib
+
+    try:
+        payload = json.dumps(
+            {k: scenario.get(k) for k in _SCENARIO_DEFINITION_KEYS},
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        )
+        return _hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+    except (TypeError, ValueError, AttributeError):
+        return ""
+
+
+def _stable_file_hash(path: Path) -> str:
+    """单文件内容 sha256；读取失败返回 ""（该文件视作缺席）。"""
+    import hashlib as _hashlib
+
+    try:
+        return _hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return ""
+
+
+def compute_build_fingerprint(project_root) -> str:
+    """被测构建指纹（缓存键分量③）：依赖/构建清单文件集内容哈希。
+
+    取项目根 ``_BUILD_MANIFEST_CANDIDATES`` 中现存文件的 (相对路径, 内容
+    hash) 集合稳定哈希。**不取 git HEAD**：修复通常不改依赖清单，以文件集
+    为准可避免无关提交击穿缓存；「修复 diff 触碰场景出处文件」的文件级失效
+    由 4.2 消费侧以 head_at_write 基准另行判定，二者正交。
+
+    项目根无任何清单 → 返回 ""（fail-closed：无法刻画被测构建则不采信）。
+    """
+    import hashlib as _hashlib
+
+    root = Path(project_root)
+    parts = []
+    for name in _BUILD_MANIFEST_CANDIDATES:
+        f = root / name
+        if not f.is_file():
+            continue
+        h = _stable_file_hash(f)
+        if h:
+            parts.append(f"{name}:{h}")
+    if not parts:
+        return ""
+    return _hashlib.sha256("\n".join(sorted(parts)).encode("utf-8")).hexdigest()[:16]
+
+
+def compute_verify_config_fingerprint(project_root) -> str:
+    """验证配置指纹（缓存键分量④）：``.fenix/verify.yaml`` 内容哈希。
+
+    配置缺失/读取失败 → ""（fail-closed：无法确认验证配置未变则不采信）。
+    """
+    f = Path(project_root) / _VERIFY_CONFIG_RELATIVE_PATH
+    return _stable_file_hash(f)
+
+
+def compute_head_at_write(project_root) -> str:
+    """当前 git HEAD（写侧 ``_meta.head_at_write``）；失败返回 ""（fail-open）。"""
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(project_root),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if out.returncode == 0:
+            return (out.stdout or "").strip()
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return ""
+
+
+def extract_scenario_source_files(description) -> Set[str]:
+    """从场景 description 提取出处关联文件集（失效条件②的交集判据数据源）。
+
+    出处标注形态 = ``文件路径:行号``（planner-plan 出题规范）。提取失败/无
+    标注 → 空集（消费侧空集 ⇒ 交集必空 ⇒ 该场景按「出处未关联」处理，
+    是否采信由调用方 fail-closed 策略决定）。
+    """
+    if not isinstance(description, str):
+        return set()
+    files = set()
+    for m in _SCENARIO_SOURCE_FILE_RE.finditer(description):
+        f = m.group(1)
+        while f.startswith("./"):
+            f = f[2:]  # 仅剥 ./ 前缀（lstrip 会误伤 ../ 相对段）
+        if f:
+            files.add(f)
+    return files
+
+
+def verdict_cache_entry_valid(
+    entry: Any,
+    scenario: dict,
+    build_fingerprint: str,
+    verify_config_fingerprint: str,
+) -> bool:
+    """缓存条目四元组采信校验（add-verify-lane-throughput 4.1）。
+
+    全部成立才可采信：
+      - 条目为对象且含定义指纹；
+      - 被测构建指纹/验证配置指纹非空且与条目记载一致；
+      - 场景定义指纹与当前场景一致（定义未变）。
+
+    任一不成立（含分量缺失）→ False（fail-closed：存疑即照跑）。
+    """
+    if not isinstance(entry, dict):
+        return False
+    if not build_fingerprint or not verify_config_fingerprint:
+        return False
+    if entry.get("build_fingerprint") != build_fingerprint:
+        return False
+    if entry.get("verify_config_fingerprint") != verify_config_fingerprint:
+        return False
+    if not scenario:
+        return False
+    dfp = scenario_definition_fingerprint(scenario)
+    if not dfp or entry.get("definition_fingerprint") != dfp:
+        return False
+    return True
