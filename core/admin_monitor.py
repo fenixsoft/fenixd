@@ -931,11 +931,49 @@ class AdminMonitor:
                     return {"triggered": False, "reason": "already_running_agent"}
             self._code_review_in_flight = True
 
+        # 审查范围（add-code-review-scope-config task 2.1）：读配置缺省回退已由
+        # get_code_review_config 统一兜底（此处恒拿到 "window"/"full" 二值）。
+        # scope 只改变「收集什么」（full 档 window_start=None），不改变「何时
+        # 触发、算谁跑的」——review_kind 恒为 scheduled（见下方投递处）。
+        review_scope = cr_cfg.get("scope") if cr_cfg.get("scope") == "full" else "window"
+
         # 窗口 + manifest（与自省同源窗口口径，task 3.3 MUST 在 self_review 之前
-        # 调用，保证 window_start 读到上一次自省时刻而非本轮自省刚写入的 now）
+        # 调用，保证 window_start 读到上一次自省时刻而非本轮自省刚写入的 now）。
+        # window 档：窗口收集（window_start 同源自省）；full 档：全仓收集
+        # （window_start=None，对齐 manual_full 形态；不消费自省窗口，但自省
+        # 本身不受影响——两者只是共享触发时点）。
         window_start, window_kind = compute_window(self.project_root)
-        manifest = collect_manifest(self.project_root, scope="window", window_start=window_start)
+        if review_scope == "full":
+            manifest = collect_manifest(self.project_root, scope="full", window_start=None)
+        else:
+            manifest = collect_manifest(self.project_root, scope="window", window_start=window_start)
         if not manifest:
+            # manifest 为空：记录并跳过（不派发空 run——design Risk「空场景
+            # 白洗」），同日防重仍然写入（当日不重试，与自省零活动跳过同口径）。
+            # 复位单飞标志（上方锁内已置位）——否则本车道永久被「已运行」挡住。
+            #
+            # add-code-review-scope-config task 2.2：本分支对 full 档实际不可达
+            # ——full 档走 git ls-files 全仓受控文件，受控仓必有文件；真为空只
+            # 可能是仓已非受控态（异常态），按既有 no_files 路径记录并跳过即可，
+            # 不新增分支。日志文案按档位区分：full 档 window_start=None，既有
+            # 「窗口内无文件变更…window_start=…」措辞失真（误导排障判别），改带
+            # scope 标注；window 档日志保持逐字节不变。
+            with self._code_review_lock:
+                self._code_review_in_flight = False
+            save_code_review_state(self.project_root, local_today_str())
+            if review_scope == "full":
+                self.logger.info(
+                    "admin_monitor",
+                    "code-review: 全仓 manifest 为空（异常态，受控仓不应出现），"
+                    f"跳过本次周期审查（scope={review_scope}）",
+                )
+            else:
+                self.logger.info(
+                    "admin_monitor",
+                    "code-review: 窗口内无文件变更，跳过本次周期审查"
+                    f"（window_start={window_start.isoformat()}, kind={window_kind}）",
+                )
+            return {"triggered": True, "ok": True, "reason": "no_files", "date": local_today_str()}
             # manifest 为空：记录并跳过（不派发空 run——design Risk「空场景
             # 白洗」），同日防重仍然写入（当日不重试，与自省零活动跳过同口径）。
             # 复位单飞标志（上方锁内已置位）——否则本车道永久被「已运行」挡住。
@@ -965,8 +1003,8 @@ class AdminMonitor:
                 result = self.agent_runner.run_code_review(
                     manifest,
                     review_kind=review_kind,
-                    window_start=window_start,
-                    scope="window",
+                    window_start=window_start if review_scope == "window" else None,
+                    scope=review_scope,
                 )
                 self.logger.info(
                     "admin_monitor",
