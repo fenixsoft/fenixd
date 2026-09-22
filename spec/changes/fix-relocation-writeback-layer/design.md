@@ -98,6 +98,34 @@ ready 续走重实现，故既有封顶（`adjudication.py:1675-1681`）在本�
 态实证：31 小时在飞期间 `.fenix/STATE.md` 的 `_retry_count` 恒为 `0`。独立字段 MUST NOT
 随 blocked→ready / 恢复续做清零，仅在修正复检通过或退出本形态时清零。
 
+### D6 解冻续做锚点耐久（同族静默降级根除）
+
+同族根因（「降级路径无人可见」）的第二个落点在解冻入口。`freeze_spec` 会把
+`branch` / `implementer_run` 锚点与冻结标记同写（`add-freeze-stop-inflight-agents`），
+冻结终止也保锚点；但 `unfreeze_spec` 的续做接线有一段硬门槛：
+
+```python
+if frozen_hold and project_root is not None and worktree_manager is not None:
+    ..._resolve_preserved_branch → 置 _recovery_resume / 保留 branch
+```
+
+调用方未显式传这两个上下文时，**整段续做解析被跳过**，随后 `updates["branch"]` 不写 →
+读侧归一为空 → `pm_engine` 落 `新轮次派发清除旧锚点` 分支 → 从 main 新建分支。实测
+（2026-09-22，add-code-review-auto-fix）：worktree 已清理只剩分支时，经**裸**
+`unfreeze_spec(name, status=…)` 解冻，`_frozen_hold` 随即被清 → 下一轮
+`find_branches_by_spec` 不再枚举该保留分支 → 6 提交 / 48 勾选的实现被弃，从零重做并
+再耗预算。现有传参调用点（`admin_actions.py:393` 的 Dashboard 解冻）行为正确；裸调用
+（本次人工操作、`engine.py:992` 定时解冻、`admin_actions.py:971/995` scheduled）会静默降级。
+
+决策：
+- 保留判定 MUST NOT 以「调用方是否传上下文」为前置条件——未显式传时由 spec 名自解析
+  项目根后再尝试（实例持有上下文则用之）。
+- worktree 已清理只剩分支时，经命名空间枚举定位后 MUST **记录续做分支**
+  （`updates["branch"]=resolved_branch` + `_recovery_resume=True`），MUST NOT 因载体缺失
+  而整体丢弃分支锚点。
+- 判定确实不通过时才降级，且 MUST 落 `Unfreeze resume degrade` WARNING——**绝无静默**
+  （与 D1/D2 的写读错层同族：让降级可见）。
+
 ## Risks
 
 - **回归面**：改动触及裁决流水线（judge 执行 + 守卫）。须 fail-safe：任何异常回退既有
@@ -119,6 +147,11 @@ ready 续走重实现，故既有封顶（`adjudication.py:1675-1681`）在本�
   （`_commit_softened_declaration`、删除/软化路径）不回归。
 - **凭据核销误伤**：仅当替代路径真实存在于分支 HEAD 才核销，杜绝「凭据在册但交付物
   从未落地」的空洞放行。
+- **解冻续做回归**：D6 触及 `unfreeze_spec` 的既有分支，显式传参路径（Dashboard/
+  `admin_actions.py:393`）MUST 行为不变；`_frozen_hold` 缺失的普通解冻 MUST 与改动前
+  逐位一致（`freeze-stop-inflight-agents` 既有 Scenario 不回归）。worktree 已被实现 run
+  占用时，「续做分支 + 载体重建」须走既有 `resolve_resume_site` 三态，MUST NOT 误删在场
+  worktree。
 
 ## Migration
 

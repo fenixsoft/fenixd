@@ -11,6 +11,8 @@
   kind: modify
 - path: core/pm_engine/verification/branch_guard.py
   kind: modify
+- path: core/state_machine.py
+  kind: modify
 - path: tests/test_relocation_writeback_layer.py
   kind: new
 ```
@@ -18,7 +20,8 @@
 > 说明：`.fenix/dispute_audits.jsonl` 为运行时文件（gitignored），仅读取，不列为交付物；
 > `core/deliverables.py` 的 `_has_relocation_credential`（布尔判定，不返回替代路径）
 > 为既有函数，本轮另需在 `core/deliverables.py` 新增一个**返回替代路径**的查询辅助
-> （见 4.1），供守卫核销前校验「替代路径在分支 HEAD 存在」。
+> （见 4.1），供守卫核销前校验「替代路径在分支 HEAD 存在」。`core/state_machine.py`
+> 为第 7 节（解冻续做锚点耐久）的改动目标。
 
 ## 1. 写回层解析与提交根
 
@@ -56,11 +59,18 @@
 
 - [ ] 5.1 复发计数 MUST 用**独立字段**（如 `_writeback_recur_streak` + `_writeback_recur_path`，落 STATE.md spec entry），**MUST NOT 复用 `_retry_count`**：该字段在恢复续做/阻塞复位路径被清零（`state_machine.py:1729` 恢复续做 `_recovery_resume` 分支、`:1469` 重建分支均写 `"_retry_count": 0`），而 `resolve_env_blocked_reset_path`（`branch_guard.py:23-53`）会把本类 loop 的 blocked 复位为 ready 续走重实现——事故态实证：31 小时在飞期间 `.fenix/STATE.md` 的 `_retry_count` 为 `0`，既有封顶（`adjudication.py:1675-1681`）从未生效。独立字段 MUST NOT 随 blocked→ready / 恢复续做清零（仅在 typo 修正复检通过或 SPEC 退出本形态时清零）
 - [ ] 5.2 达 `agents.max_retries` 上限（或专用阈值，取其一并在实现中写明）→ 置 `blocked`，error 文案区分「修正未生效于读取基准」形态（相对既有「缺件」文案），不再自动重派
-- [ ] 5.3 单元测试：连续 N 轮同路径复发（含中间穿插 blocked→ready 复位）→ 断言独立计数不被复位清零、第 N 轮置 blocked；typo 修正复检通过 → 断言计数清零
+- [ ] 5.3 单元测试：连续 N 轮复发（含中间穿插 blocked→ready 复位）→ 断言独立计数不被复位清零、第 N 轮置 blocked；typo 修正复检通过 → 断言计数清零
+
+## 7. 解冻续做锚点耐久（同族静默降级根除）
+
+- [ ] 7.1 `core/state_machine.py::unfreeze_spec` 消除「必须外部传 `project_root`/`worktree_manager` 才走续做解析」的静默降级面：未显式传入时 MUST 由 spec 名自解析项目根（或经实例持有的上下文，若存在）再尝试 `_resolve_preserved_branch`——核心不变量为「带 `_frozen_hold` 的解冻 ⇔ 保留分支被续做或**显式告警降级**，绝无静默丢弃」。判据分支不可达时才降级，且 MUST 落 WARNING
+- [ ] 7.2 worktree 已被清理（只剩分支）时的载体三态：`_resolve_preserved_branch` 经分支命名空间枚举命中后，须同时**记录续做分支**（`updates["branch"]=resolved_branch` + `_recovery_resume=True`）使 dispatch 在该分支上 resume，MUST NOT 因载体缺失而整体丢弃分支锚点（事故：worktree 清理 + 裸解冻 → `新轮次派发清除旧锚点` → 从 main 新建分支，保留分支不再被枚举）
+- [ ] 7.3 单元测试：带 `_frozen_hold` + 保留分支的 spec（worktree 已清理）经**裸** `unfreeze_spec(name, status=...)` 解冻 → 断言保留分支未被丢弃（`branch` 保留 / `_recovery_resume` 置位 / 或至少落 `Unfreeze resume degrade` 告警，二者至少其一，杜绝静默）；对照 `unfreeze_spec(..., project_root=…, worktree_manager=…)` 显式路径断言续做分支被采用
+- [ ] 7.4 回归 `tests/test_freeze_*` / `tests/test_unfreeze_*` / 涉及冻结终止续做的既有套件全绿（如 `tests/` 下冻结/恢复相关用例），确认显式路径与 Dashboard 调用（`admin_actions.py:393` 传参形态）行为不回归
 
 ## 6. 端到端回归与预演
 
 - [ ] 6.1 `tests/test_relocation_writeback_layer.py` 覆盖各态：有 worktree → 修正写 worktree 并提交该分支；`source == "main"` → 就地写主树并提交（同源，不得被判错层）；`source == "branch"` → 不写主树（走打回 + 裁决落册）；复检不一致告警；残留凭据核销；worktree 写入冲突降级
 - [ ] 6.2 回归 `tests/test_deliverable_*` / `tests/test_declaration_*` 相关套件全绿（含 `add-declaration-relocation-protocol` 既有 Scenario 不回归）。重点核对「改写落点」断言族：(a) `tests/test_deliverable_declaration_triage.py::TestSoftenedDeclarationIsCommitted`（`tests/test_deliverable_declaration_triage.py:912-967`，fixture 无真实 worktree、`git show` 不命中 → 解析为 `source == "main"`）——1.1 的 main 来源 `writable=True` 与既有的「主树就地软化 + 立即提交」语义一致，MUST 继续通过（该断言背后是 2026-09-15 merge-back 死锁修复，不得回归）；(b) 若存在以「`source == "branch"`（`spec_dir=None`）仍改写主树并提交」为断言的测试，即属旧错层语义，MUST 改为「不写主树 + 走打回/凭据」，并在勾选本任务前完成更新
 - [ ] 6.3 `_preclassify_missing` / `_preclassify_orphan` 既有单测（`tests/test_deliverable_declaration_premechanize.py`、`tests/test_deliverable_orphan_preclassify.py`）回归全绿（其 fixture 同为 `source == "main"`，按 1.1 落点不变）
-- [ ] 6.4 装配复现预演：以「声明的 typo 路径 + 分支携带旧声明（`source == "branch"`）+ 主树已修正」构造夹具，跑守卫对账，断言新逻辑下缺件被凭据核销（复现事故态并验证脱困）；再以 `source == "main"` 夹具断言就地写入 + 复检通过（不误判为错层）
+- [ ] 6.4 装配复现预演：以「声明的 typo 路径 + 分支携带旧声明（`source == "branch"`）+ 主树已修正」构造夹具，跑守卫对账，断言新逻辑下缺件被凭据核销（复现事故态并验证脱困）；再以 `source == "main"` 夹具断言就地写入 + 复检通过（不误判为错层）；再以「带保留分支的冻结 spec + worktree 已清理 + 裸解冻」夹具断言第 7 节锚点不被静默丢弃
