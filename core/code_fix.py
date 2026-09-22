@@ -504,7 +504,21 @@ class CodeFixOrchestrator:
 
             batch = select_batch(root, cfg.get("batch_size", 20))
             if not batch:
-                # open 条目全部被失败保留集合排除 → 静默空转（等待人工解除）
+                # open 条目全部被失败保留集合排除 → 静默空转（等待人工解除）。
+                # 进度顺带刷新为终态（ocr 收尾审查）：链曾置 running=true，若维持
+                # 旧快照，前端会停在「第 N 批修复中」的陈旧文案上。
+                prev_snapshot = read_progress(root)
+                if prev_snapshot.get("running") or prev_snapshot.get("phase") in (
+                    "failed",
+                    "blocked",
+                ):
+                    write_progress(
+                        root,
+                        running=False,
+                        phase="blocked",
+                        reason="failed_batch_retained",
+                        current="open 条目均在失败保留集合中，待人工 release_failed_batch",
+                    )
                 return {"triggered": False, "reason": "no_open_items"}
 
             # 进度链身份：同链沿用 total/activation_id，新链重算
@@ -550,31 +564,45 @@ class CodeFixOrchestrator:
                 )
                 return {"triggered": False, "reason": "regression_section_missing"}
 
-            # 投递：置单飞 → 写运行中进度 → 批 worker（经 executor 或同步）
+            # 投递：置单飞 → 写运行中进度 → 批 worker（经 executor 或同步）。
+            # 异常安全（ocr 收尾审查）：置位后任一步（进度盘写 / executor.submit）
+            # 抛出时必须复位单飞，否则后续 checkpoint 恒 already_running，车道死锁。
             self._in_flight = True
-            item_ids = [rec.get("item_id") for rec in batch]
-            write_progress(
-                root,
-                running=True,
-                phase="selecting",
-                activation_id=activation_id,
-                total=total,
-                done=done,
-                batch_no=batch_no,
-                current=f"第 {batch_no} 批启动（{len(batch)}/{total} 条）",
-                reason="",
-            )
-            ctx = {
-                "activation_id": activation_id,
-                "total": total,
-                "done": done,
-                "batch_no": batch_no,
-                "items": batch,
-                "item_ids": item_ids,
-                "regression_spec": contract.regression,
-            }
+            try:
+                item_ids = [rec.get("item_id") for rec in batch]
+                write_progress(
+                    root,
+                    running=True,
+                    phase="selecting",
+                    activation_id=activation_id,
+                    total=total,
+                    done=done,
+                    batch_no=batch_no,
+                    current=f"第 {batch_no} 批启动（{len(batch)}/{total} 条）",
+                    reason="",
+                )
+                ctx = {
+                    "activation_id": activation_id,
+                    "total": total,
+                    "done": done,
+                    "batch_no": batch_no,
+                    "items": batch,
+                    "item_ids": item_ids,
+                    "regression_spec": contract.regression,
+                }
+            except Exception as exc:
+                self._in_flight = False
+                self._log("error", f"code-fix 投递前置异常（已复位单飞）: {exc}")
+                return {"triggered": False, "reason": "dispatch_prepare_error"}
         # 锁外投递（worker 内会再进 checkpoint，锁内 submit 会死锁）
-        self._dispatch(ctx)
+        try:
+            self._dispatch(ctx)
+        except Exception as exc:
+            # 同步模式下批 worker 自身已兜底（_run_batch 的 try/finally），
+            # 走到这里的是 submit 被拒（解释器关闭）等投递层异常。
+            self._in_flight = False
+            self._log("error", f"code-fix 投递异常（已复位单飞）: {exc}")
+            return {"triggered": False, "reason": "dispatch_error"}
         return {"triggered": True, "reason": "dispatched"}
 
     def _dispatch(self, ctx: dict) -> None:
@@ -644,6 +672,29 @@ class CodeFixOrchestrator:
             return False
         wt = Path(wt)
         created_sha = _worktree_head(wt)
+        try:
+            return self._run_batch_created(wm, wt, created_sha, ctx)
+        except Exception:
+            # 未预期异常兜底（ocr 收尾审查）：create() 已登记 code-review-fix:code-fix
+            # spec 锁，仅 cleanup() 释放——漏掉则下一批 create() 恒 None（车道死锁）。
+            # 枚举失败分支各自已按语义 cleanup 或保留现场，不经此路径。
+            _safe_cleanup(wm, wt, success=False, logger=self._logger)
+            raise
+
+    def _run_batch_created(self, wm, wt: Path, created_sha, ctx: dict) -> bool:
+        """执行已建树批次的主体（首次/重试 run、回归、守卫、合回核销清理）。
+
+        返回 True 表示批成功（可推进下一批）。由 _run_batch_inner 在建树成功后
+        调用；未预期异常在本层被兜底 cleanup 后原样上抛（_run_batch 收口）。
+        """
+        root = self.project_root
+        runner = self._agent_runner
+        batch_no = ctx["batch_no"]
+        items = ctx["items"]
+        item_ids = ctx["item_ids"]
+        total = ctx["total"]
+        done = ctx["done"]
+        reg_spec = ctx["regression_spec"]
 
         # 第一次修复 run
         result = runner.run_code_fix(wt, items)

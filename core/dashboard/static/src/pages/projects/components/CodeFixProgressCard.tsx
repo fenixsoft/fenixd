@@ -23,10 +23,11 @@ import { getCodeReviewFixProgress } from '../../../services/dashboard';
 import type { CodeReviewFixProgress } from '../../../services/dashboard';
 
 const POLL_INTERVAL_MS = 2000;
-// 终止态：轮询停止（spec「blocked/failed 停止轮询并刷新条目表格」）。以
-// `ReadonlySet<CodeReviewFixProgress['phase']>` 收口：元素必须是 phase 联合类型的
-// 合法取值，后端 `FIX_PHASES`（core/code_fix.py）新增/改名 phase 时此处编译期
-// 报错，而非静默漂移成「终止态漏停」。
+// 终止态：轮询停止（spec「blocked/failed 停止轮询并刷新条目表格」）。
+// `ReadonlySet<CodeReviewFixProgress['phase']>` 只约束**本文件字面量**必须是 TS 侧
+// phase 联合类型的合法取值（防拼写漂移成「终止态漏停」）；它看不到 Python 侧
+// `FIX_PHASES`（core/code_fix.py），不存在跨 FE/BE 边界的编译期检查——后端新增/
+// 改名 phase 的漂移由运行时 `PHASE_LABELS[phase] || phase` 兜底展示。
 const STOP_PHASES: ReadonlySet<CodeReviewFixProgress['phase']> =
   new Set(['blocked', 'failed']);
 // 连续读取失败上限：达到即停轮询（无退避的 2s 空转无意义）
@@ -55,6 +56,9 @@ export default function CodeFixProgressCard(
   { project, active, onSettled }: CodeFixProgressCardProps,
 ) {
   const [progress, setProgress] = useState<CodeReviewFixProgress | null>(null);
+  // 连续读取失败停轮询后的展示标记：此时最后一帧可能仍是 running=true，
+  // MUST NOT 以 active 进度条无限展示陈旧「进行中」（ocr 收尾审查）。
+  const [readFailed, setReadFailed] = useState(false);
   // onSettled 经 ref 传递：轮询 effect 不因回调身份变化重启（父组件未 memo 时
   // 每帧新函数会让 2s 轮询不断重置）。赋值在 effect 内（post-commit），
   // MUST NOT 在渲染期写 ref——渲染必须保持纯净。
@@ -68,6 +72,7 @@ export default function CodeFixProgressCard(
     // <Tabs> 未设 destroyInactiveTabPane，本组件首次激活后会一直挂载；若修复链
     // 卡在 running=true，分面切走后仍会每 2s 打 fix-progress。
     if (!active || !project) return;
+    setReadFailed(false);
     let alive = true;
     let timer: ReturnType<typeof setTimeout> | null = null;
     let errors = 0;
@@ -97,6 +102,7 @@ export default function CodeFixProgressCard(
         if (!alive) return;
         errors += 1;
         settled = errors >= MAX_CONSECUTIVE_ERRORS;
+        if (settled) setReadFailed(true);
       }
       if (settled) {
         // 进入终态/收尾：停轮询，必要时通知父组件刷新（一次）
@@ -127,7 +133,9 @@ export default function CodeFixProgressCard(
 
   const { phase, total, done, current, reason } = progress;
   const percent = total > 0 ? Math.round((done / total) * 100) : 0;
-  const stopped = terminal;
+  // 终止渲染判定（非纯别名）：phase 终态，或连续读取失败停轮询——后者下最后一帧
+  // 可能 running=true，以 exception 呈现而非无限 active（ocr 收尾审查）。
+  const stopped = terminal || readFailed;
 
   return (
     <Card
@@ -147,6 +155,7 @@ export default function CodeFixProgressCard(
           已处理 {done}/{total} 条
           {current ? ` · ${current}` : ''}
           {stopped && reason ? ` · 原因：${reason}` : ''}
+          {stopped && !reason && readFailed ? ' · 进度读取失败，已停止轮询' : ''}
         </Typography.Text>
       </Space>
     </Card>
