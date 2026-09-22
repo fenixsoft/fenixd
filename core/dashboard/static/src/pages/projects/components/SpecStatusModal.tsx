@@ -434,7 +434,6 @@ export default function SpecStatusModal({
 
   // ── 调度区：手工激活 / 激活（add-spec-manual-activation D10） ──────────
   const isManualPending = summary?.start_after === 'manual';
-  const isReady = summary?.status === 'ready';
 
   const handleActivate = useCallback(() => {
     appModal.confirm({
@@ -658,8 +657,12 @@ export default function SpecStatusModal({
           </div>
         )}
 
-        {/* ── 调度区块（非终态，add-spec-manual-activation D10）── */}
-        {nonTerminal && isReady && (
+        {/* ── 调度区块（非终态，add-spec-manual-activation D10）──
+            D10 原限定 status==='ready'——reviewing 态诞生（add-spec-review-gate）且
+            start_after 门下沉 drafted/reviewing 派发口（fix-start-after-premature-pickup）
+            后，manual 哨兵可合法存在于任意非终态；后端 activate/start-after 本就只拒
+            终态（admin_actions.py），故放宽为 nonTerminal 对齐后端契约（2026-09-22 热修）。 */}
+        {nonTerminal && (
           <div style={{ marginBottom: 16 }}>
             <Divider style={{ margin: '4px 0 12px' }} />
             <Typography.Text strong style={{ fontSize: 14 }}>调度</Typography.Text>
@@ -676,6 +679,7 @@ export default function SpecStatusModal({
               <>
                 <Typography.Paragraph type="secondary" style={{ margin: '4px 0 8px' }}>
                   将 start_after 设为 manual，daemon 停止自动调度，直到手动激活。
+                  不影响正在执行的 run（与冻结一致，只挡后续派发）。
                 </Typography.Paragraph>
                 <Button onClick={handleSetManual} loading={loading}>
                   设为待激活
