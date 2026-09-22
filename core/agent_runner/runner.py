@@ -11,6 +11,7 @@ import functools
 import re
 import shutil
 import subprocess
+import tempfile
 import sys
 import threading
 import time
@@ -4794,6 +4795,53 @@ class AgentRunner:
             rid for rid, proc in list(self._running_agents.items())
             if proc.poll() is None
         ]
+
+    def broadcast_restart_checkpoint(self, reason: str = "planned restart") -> list:
+        """restart 排水前向每个在飞 run 广播一次 checkpoint 信号（写即返回）。
+
+        add-pipeline-throughput-governance D3 / graceful-restart-drain：daemon 收到
+        restart_request、停止新派发后调用。对每个在飞 run 原子写 run 控制旗标
+        ``.fenix/runs/<run_id>.checkpoint.json``（含 created/reason），促使实现侧
+        有响应语义的 run 尽快落盘进度声明收尾；无响应语义的 run 不读该文件、
+        best-effort 忽略——处理路径与未广播时完全一致（无新增失败终态、无打回，
+        超窗强杀与恢复续做行为不变）。
+
+        写后即返回，MUST NOT 阻塞排水等待；单 run 写入失败只记 warning
+        （逐 run best-effort，不影响其余 run 与排水流程）。
+
+        Returns: 成功写入旗标的 run_id 列表（供调用方留痕于排水日志）。
+        """
+        dispatched: list = []
+        for rid in self.running_run_ids():
+            try:
+                runs_dir = self.project_root / ".fenix" / "runs"
+                runs_dir.mkdir(parents=True, exist_ok=True)
+                flag = runs_dir / f"{rid}.checkpoint.json"
+                payload = {
+                    "run_id": rid,
+                    "action": "checkpoint",
+                    "reason": reason,
+                    "created": datetime.now(timezone.utc).isoformat(),
+                }
+                fd, tmp = tempfile.mkstemp(
+                    dir=str(runs_dir), prefix=f".{rid}.checkpoint.", suffix=".tmp"
+                )
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(payload, f, ensure_ascii=False, indent=2)
+                os.replace(tmp, flag)
+                dispatched.append(rid)
+                self.logger.info(
+                    "agent_runner",
+                    f"restart checkpoint broadcast: '{rid}' 旗标已写"
+                    f"（reason={reason}；无响应语义的 run best-effort 忽略）",
+                )
+            except Exception as e:
+                self.logger.warning(
+                    "agent_runner",
+                    f"restart checkpoint broadcast: '{rid}' 写旗标失败"
+                    f"（best-effort 忽略，不影响排水）: {e}",
+                )
+        return dispatched
 
     def drain_wait(self, timeout: float) -> list:
         """规划性重启排水：等在跑 run 自然终态，不再对其发 terminate。

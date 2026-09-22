@@ -260,7 +260,7 @@ class TestWipOverlapGateArtifactScope:
         (root / "src" / "main.py").write_text("SRC-WIP\n", encoding="utf-8")
         (root / "dist" / "index.html").write_text("DIST-WIP\n", encoding="utf-8")
 
-        wm = make_wm(root, build_artifact_paths=["dist/"], has_build_artifacts=True)
+        wm = make_wm(root, mergeback_wip_overlap_policy="auto", build_artifact_paths=["dist/"], has_build_artifacts=True)
         blocked, overlap = wm._wip_overlap_gate("fenix/impl")
         assert blocked is None  # 默认 auto 策略
         assert overlap == ["src/main.py"], f"语义重叠仍计入: {overlap}"
@@ -486,7 +486,7 @@ class TestD3bChainBreak:
                 len(a) >= 1 and isinstance(a[0], list) and a[0][:5] == ["git", "-C", str(root), "checkout", "HEAD"]
             ) else real_run(*a, **k),
         ):
-            wm = make_wm(root, build_artifact_paths=["dist/"], has_build_artifacts=True)
+            wm = make_wm(root, mergeback_wip_overlap_policy="auto", build_artifact_paths=["dist/"], has_build_artifacts=True)
             blocked, overlap = wm._wip_overlap_gate("fenix/impl")
             assert blocked is None, "对齐失败 MUST NOT 阻塞 merge-back"
             assert "dist/index.html" in overlap, \

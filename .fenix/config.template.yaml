@@ -39,7 +39,17 @@ agents:
   # 调度采用严格优先级并行：高优先级（priority 数值小）先执行；
   # 同一优先级内的任务可并行至该上限；不同优先级不并行
   # （低优先级等高优先级全部完成后才启动，不抢占已在运行的任务）。
-  max_concurrent: 2
+  # 推荐值 5（add-pipeline-throughput-governance D1，与代码缺省值一致）。
+  # 上调前的资源前提自查：
+  #   * worktree 磁盘：每个并发实现 run 一个独立 worktree，约 N × 仓库大小，
+  #     确认剩余空间充足再上调；
+  #   * 网关并发压力：N 路并发 run 会放大模型网关的并发请求与长尾，
+  #     网关侧瞬断熔断与 failover 已有治理兜底，但配额需自行确认；
+  #   * 回归锁串行化：多 run 同时到达收尾回归检查点时由 full-suite.lock
+  #     主机级互斥串行执行（等待上限 600s、超时 skip），并发上调不改变
+  #     回归互斥语义，只增加锁排队。
+  # 显式配置优先级高于代码缺省值；随时可人工调回任意值（如 3）即时生效。
+  max_concurrent: 5
   # Maximum retry attempts for a failed Agent run
   max_retries: 3
   # 实现尝试总预算（add-fail-counter-budget D2/D3）：每 spec 跨修复周期的实现
@@ -205,6 +215,11 @@ agents:
 worktree:
   # Base directory for git worktrees
   base_dir: ".claude/worktrees"
+  # merge 前置预检逃生门（add-pipeline-throughput-governance 2.3）：true 时
+  # 跳过 merge-back 的 WIP 重叠预检直接 merge（紧急推送用），冲突时按既有
+  # 失败路径处理。缺省 false——缺省预检行为 =「主树 WIP 未提交改动 ∩ 分支
+  # 触碰文件」非空即拦截并升级人工（spec 保持可重试，不发起 merge）。
+  merge_precheck_bypass: false
   # Branch prefix for implementer worktrees
   implement_branch_prefix: "fenix"
   # Branch prefix for verifier worktrees

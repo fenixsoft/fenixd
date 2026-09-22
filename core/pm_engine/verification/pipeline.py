@@ -96,6 +96,16 @@ from core.pm_engine.verification.scenario_gate import (
     _write_verify_contract_missing,
 )
 
+# add-pipeline-throughput-governance 4.x：bug-found 小缺陷 fastlane（三条件判定
+# /code-fix 承接/子集重验）独立模块，经门面转发注册表暴露为管线方法。
+from core.pm_engine.verification.fastlane import (
+    evaluate_fastlane,
+    dispatch_minor_defect_fastlane,
+    fastlane_decision_path,
+    subset_scenario_ids,
+    merge_subset_report,
+)
+
 # refactor-verification-module 阶段3.6：judge 派发门/重跑上限/降级上下文组已迁 judge_gate.py，
 # 8 个方法与 _MAX_JUDGE_RERUNS 常量以薄委托保留在门面（见类内同名方法）。
 from core.pm_engine.verification.judge_gate import (
@@ -315,6 +325,10 @@ class VerificationPipeline:
         "_last_planner_run_cost": _last_planner_run_cost,
         "_write_degrade_context": _write_degrade_context,
         "_clear_degrade_context": _clear_degrade_context,
+        # add-pipeline-throughput-governance 4.x：bug-found 小缺陷 fastlane
+        "_evaluate_fastlane": evaluate_fastlane,
+        "_dispatch_minor_defect_fastlane": dispatch_minor_defect_fastlane,
+        "_fastlane_decision_path": fastlane_decision_path,
     }
 
     # 静态式转发（5 个，首参非 pipe）：MUST NOT 进入 _FORWARDER_REGISTRY——
@@ -866,6 +880,25 @@ class VerificationPipeline:
             return
         # 到达 bug-found 归因（全部门禁已过、非 infra）＝ product 类——
         # unknown 按 product 保守处置，台账 failure_class 记 product。
+        # ── bug-found 小缺陷 fastlane（add-pipeline-throughput-governance 4.1/4.2）──
+        # 三条件全满足（失败场景数=1 + judge 影响面≤3 文件 + 无争议）→ code-fix
+        # 轻量修复 + 子集重验，不派生 fix SPEC；任一不满足 / 承接失败 / 判定异常
+        # → 既有 bug-found→fix SPEC 整轮路径原样。判定与路径选择全程落盘
+        # （fastlane_decision.json + 日志）可追溯；连续 2 次失败强制回落整轮。
+        try:
+            _fastlane_decision = self._evaluate_fastlane(spec_name, report)
+            if _fastlane_decision.get("eligible"):
+                _fastlane_lane = self._dispatch_minor_defect_fastlane(
+                    spec_name, _fastlane_decision
+                )
+                if _fastlane_lane.get("dispatched"):
+                    return
+        except Exception as _fastlane_err:
+            self._context.logger.warning(
+                "pm_engine",
+                f"fastlane 判定/承接异常 '{spec_name}'（回落整轮 fix SPEC 路径）: "
+                f"{_fastlane_err!r}",
+            )
         self._context.on_spec_bug_found(
             spec_name,
             failure_class="product",

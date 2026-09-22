@@ -412,6 +412,34 @@ class ConfigLoader:
                 if isinstance(val, bool) or not isinstance(val, int) or val <= 0:
                     raise ValueError(f"agents.{field} must be a positive integer: {val}")
 
+        # add-pipeline-throughput-governance D3：restart 排水窗口上限
+        # agents.run_drain_max_seconds（缺省 60，专管 restart 场景；常规停机仍走
+        # admin.shutdown_drain_seconds 不变）。显式提供时校验非负数值；与
+        # admin.shutdown_drain_seconds 均显式且后者 > 0 时 MUST 满足
+        # run_drain ≤ shutdown——supervisor 的 SIGKILL 等待 = shutdown + 120s
+        # 余量（bin/fenixd_supervisor.py），违反即排水窗口可能被强杀截断。
+        # 仅两者均显式时拒绝（缺省 60 与较小显式 shutdown 的组合由读取门面
+        # get_run_drain_max_seconds 的 min 夹紧兜底，不把缺省值变成地雷）。
+        if "run_drain_max_seconds" in agents and agents["run_drain_max_seconds"] is not None:
+            rdm = agents["run_drain_max_seconds"]
+            if isinstance(rdm, bool) or not isinstance(rdm, (int, float)) or rdm < 0:
+                raise ValueError(
+                    f"agents.run_drain_max_seconds must be a non-negative number: {rdm!r}"
+                )
+            _sd = (config.get("admin") or {}).get("shutdown_drain_seconds")
+            if (
+                isinstance(_sd, (int, float))
+                and not isinstance(_sd, bool)
+                and _sd > 0
+                and rdm > _sd
+            ):
+                raise ValueError(
+                    f"agents.run_drain_max_seconds ({rdm}) must be <= "
+                    f"admin.shutdown_drain_seconds ({_sd}) — supervisor SIGKILL "
+                    f"wait = shutdown_drain_seconds + 120s, a larger run-drain "
+                    f"window risks being killed mid-drain"
+                )
+
         # fix-provider-transient-backoff（D6）：瞬断治理五键防御式校验。非法值不
         # 拒绝加载——由 get_transient_config / 消费方回退缺省（Migration Plan 回滚
         # 语义 = 配置键置空），仅对「值类型极端非法以致无法安全解析」打 ERROR。
@@ -1086,6 +1114,41 @@ class ConfigLoader:
         if scope not in cls.VALID_START_AFTER_SCOPES:
             return "dispatch"
         return scope
+
+    @classmethod
+    @classmethod
+    def get_run_drain_max_seconds(cls, config: Dict[str, Any]) -> float:
+        """restart 排水窗口生效值（秒）：agents.run_drain_max_seconds，缺省 60。
+
+        add-pipeline-throughput-governance D3：专管 daemon restart 流程等待在飞
+        run 排水的时长上限；常规停机仍走 admin.shutdown_drain_seconds 语义不变。
+        协调规则（graceful-restart-drain）：该值 MUST ≤ admin.shutdown_drain_seconds
+        ——supervisor 的 SIGKILL 等待 = shutdown + 120s 余量，满足不等式即保证
+        supervisor 不会先于 daemon 排水窗口动作。校验层已拒绝「两者均显式且违反」
+        的组合；本门面对旁路脏配置与「缺省 60 遇较小显式 shutdown」的组合按
+        min(raw, shutdown 生效值) 兜底夹紧（shutdown=0 快速停机时联动为 0，
+        restart 不排水，与既有 drain=0 语义一致）。非法值一律回退缺省 60。
+        """
+        raw = cls.get(config, "agents.run_drain_max_seconds", None)
+        if raw is None:
+            value = 60.0
+        else:
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                value = 60.0
+            # `not (value >= 0)` 同时捕获负数与 NaN（NaN 参与比较恒 False）
+            if not (value >= 0):
+                value = 60.0
+        admin = config.get("admin") if isinstance(config, dict) else None
+        sd_raw = admin.get("shutdown_drain_seconds") if isinstance(admin, dict) else None
+        try:
+            shutdown = float(1800 if sd_raw is None else sd_raw)
+        except (TypeError, ValueError):
+            shutdown = 1800.0
+        if not (shutdown >= 0):
+            shutdown = 1800.0
+        return min(value, max(shutdown, 0.0))
 
     @classmethod
     def get_admin_config(cls, config: Dict[str, Any]) -> Dict[str, Any]:
