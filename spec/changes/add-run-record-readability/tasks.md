@@ -65,3 +65,9 @@
 - [x] 5.1 前端单测全绿（cd core/dashboard/static && npm test）且 npm run build 成功（dist 为 gitignored 构建产物，构建成功即可，不入库）
 - [x] 5.2 后端相关 pytest 通过（tests/test_dashboard_api.py 全文件），确认既有 run tail 消费方（detail 时间轴/AdminRunModal/AdminInvokeModal/RunRecordModal 打开路径）无回归
 - [x] 5.3 合成样本流 + 主树归档样本冒烟：构造含全部事件类型（心跳/语义/回填/终态）的最小 jsonl 与从主树 .fenix/runs/archive 复制一份真实大 run 流到临时目录，经 get_run_events 各 offset 窗口取事件后走 runEventsToChatMessages+groupConsecutiveTools 断言渲染序列（心跳零出现、分组聚合、计数与 total_events 一致）
+
+## 验证修复（原地打回第 1 轮）
+
+- [ ] 先复核失败有效性：逐条核对 `spec/changes/add-run-record-readability/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
+- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
+- [ ] 修复后重跑验证确认通过
