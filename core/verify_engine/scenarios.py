@@ -171,7 +171,10 @@ def migrate_frozen_contract(
     登记表逐段推进（支持跳版本：v1 直迁当前版 = 依次执行各段逻辑，
     前段产物直接喂后段）。未登记版本段 fail-closed——MUST NOT 猜测或
     跳过版本，返回 ``aborted='no_migration_path'`` 交回既有 corrupt →
-    env_blocked 人工通道。
+    env_blocked 人工通道。集内版本号新于目标版本同理 fail-closed（降级
+    部署 / 新 fenix 写出的文件）：旧规则集 MUST NOT 静默校验未知更新
+    schema，同以 ``aborted='no_migration_path'`` 交人工通道（code-review
+    item c542bb97d171）。
 
     Args:
         scenarios: 冻结场景 dict 列表（原始 JSON 数组，未过 load_scenarios）。
@@ -184,11 +187,19 @@ def migrate_frozen_contract(
           - migrated: 已迁移（含版本戳）的场景 dict 列表（已剔除无法迁移项）
           - pending_replan: 无法机械迁移的场景 id 列表
           - aborted: 'all_scenarios_stale'（迁移后无任何合法场景 / 空集）
-            | 'no_migration_path'（未登记版本段） | ''（正常）
+            | 'no_migration_path'（未登记版本段 / 集内版本新于目标版本）
+            | ''（正常）
     """
     if not scenarios:
         return {"migrated": [], "pending_replan": [], "aborted": "all_scenarios_stale"}
     current = frozen_contract_version(scenarios)
+    if current > current_version:
+        # fail-closed：无「降级迁移」概念，不猜不静默放行（c542bb97d171）
+        return {
+            "migrated": [],
+            "pending_replan": [],
+            "aborted": "no_migration_path",
+        }
     migrated = scenarios
     pending_replan: list = []
     while current < current_version:

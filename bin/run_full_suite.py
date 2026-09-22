@@ -367,8 +367,17 @@ def run_baseline_comparison(project_root, ref, timeout, basetemp_unique=False) -
                 basetemp_unique=basetemp_unique,
             )
             failed = collect_failed_tests(baseline.get("stderr", ""), baseline.get("stdout", ""))
+            # 基线运行自身结论（code-review item d0945089bcd0）：旧实现传
+            # classify_outcome([], failed)——空当前失败集在 classify_baseline
+            # 短路返回「pass（全绿）」，基线套件自身有失败也被报告为全绿，
+            # classification 不带真实信息。基线侧没有「当前 vs 基线」两侧可
+            # 对比，按实际失败集如实陈述：全绿才 pass，否则带失败计数指向
+            # baseline_failures。引入/存量的真实归类由调用方（main）用
+            # classify_baseline(current, baseline) 完成，不受本值影响。
             classification = (
-                classify_outcome([], failed) if not baseline.get("timed_out") else "baseline-hang"
+                ("pass（全绿）" if not failed else
+                 f"baseline-failed（基线自身 {len(failed)} 项失败，见 baseline_failures）")
+                if not baseline.get("timed_out") else "baseline-hang"
             )
             return {
                 "ref": ref,

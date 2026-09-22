@@ -1020,6 +1020,15 @@ class VAdjudicationMixin:
                     "diff": {
                         "before": before_text,
                         "after": after_text,
+                        # 逐元素 diff 输出（code-review item d07089f200f3，同
+                        # _preclassify_missing 先例 7d3b13d266dc）：文件级
+                        # before/after 之外补逐条删除 diff，孤儿删除审计可溯源
+                        # 到条目——此前逐元素收集后从未被读。
+                        "by_element": {
+                            k: {"before": d.get("before"), "after": d.get("after")}
+                            for k, d in diff_by_element.items()
+                            if isinstance(d, dict)
+                        },
                     },
                 }
             )

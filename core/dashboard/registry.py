@@ -52,11 +52,22 @@ class Registry:
 
     @staticmethod
     def _norm(path) -> str:
-        """规范化路径（展开 ~ 与软链接，解析为绝对路径）。"""
+        """规范化路径（展开 ~ 与软链接，解析为绝对路径）。
+
+        恒返回 str（code-review item d8c059571002）：畸形条目一律降级——
+        非字符串（如 ignored: [123] 的 int，Path() 抛 TypeError）、无法解析
+        的 ~user（expanduser 抛 RuntimeError）、resolve 的 OSError，MUST NOT
+        让单条脏配置炸穿 discover/add_ignored 等调用方。旧实现的 except
+        处理器自身在守卫外再调 expanduser，同类异常会二次抛出。
+        """
         try:
             return str(Path(path).expanduser().resolve())
-        except (OSError, RuntimeError):
+        except (OSError, RuntimeError, TypeError, ValueError):
+            pass
+        try:
             return str(Path(path).expanduser())
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return str(path)
 
     # ── 子目录探测（容错三态：present / absent / unreadable）──────────
 

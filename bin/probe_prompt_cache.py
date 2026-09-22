@@ -156,9 +156,17 @@ def probe(provider_name: str, config_path: Path) -> dict:
 
     # cache_supported 判据：第二轮有读取且第二轮 cache_read 显著（>0）。
     # 第1轮 cache_read 高而第2轮低（或恒 0）= 写入不可复用，不支持。
+    # 失败轮 ≠ 阴性（code-review item d0ea5e53913c）：任一轮网络/HTTP/解析
+    # 异常时该轮 usage 缺失、r2_cr 恒 0——旧实现把一次失败探测静默裁成
+    # cache_supported=False、main() 还 exit 0，与「连接错误应 exit 1」的
+    # 模块契约相悖。存在失败轮次时两轮协议未完成，裁决标 unknown（None），
+    # main() 据此 exit 1（与下方 rounds_distinct 的「不可信」口径一致）。
     r2 = rounds[1] if len(rounds) > 1 else {}
     r2_cr = int(r2.get("cache_read_input_tokens") or 0)
-    cache_supported = r2_cr > 0
+    if any("error" in r for r in rounds):
+        cache_supported = None
+    else:
+        cache_supported = r2_cr > 0
 
     evidence = {"rounds": rounds}
     if errors:

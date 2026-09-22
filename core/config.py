@@ -1193,6 +1193,21 @@ class ConfigLoader:
         breaker = cls.get(config, "admin.merge_breaker_threshold", None)
         if breaker is None:
             breaker = cls.get(config, "agents.merge_breaker_threshold", 2)
+        # 类型校验 fail-open（code-review item d2344d1546c2）：_validate 只在
+        # dashboard 写路径把关（须正整数 ≥1），手改 config.yaml 的非数字值
+        # （"two"/list/dict）此前让下方 int(breaker) 抛 ValueError/TypeError
+        # 而非回退默认，打破本类其余读取助手的 fail-open 归一哲学。bool
+        # （int 子类，恒通过 isinstance int 检查）与 ≤0（熔断阈值无意义：
+        # 0/负值使 _merge_streak 恒触发）同按非法回文档默认 2。
+        if isinstance(breaker, bool):
+            breaker = 2
+        else:
+            try:
+                breaker = int(breaker)
+            except (TypeError, ValueError):
+                breaker = 2
+            if breaker <= 0:
+                breaker = 2
         brm = admin.get("bug_repair_mode", "inplace")
         if brm not in VALID_BUG_REPAIR_MODES:
             # 校验层已拦截非法值；运行期兜底（直读脏配置的旁路调用）回退缺省
@@ -1572,7 +1587,12 @@ class ConfigLoader:
         cls._maybe_warn_deprecated_stuck_keys(config)
         agents = config.get("agents") or {}
         rt = agents.get("run_timeout_seconds")
-        if not isinstance(rt, (int, float)) or rt <= 0:
+        # bool 排除与 effective_run_timeout_seconds 同口径（code-review item
+        # d5c6b590a12b）：bool 是 int 子类，agents.run_timeout_seconds: true
+        # 此前通过检查得 float(True)+600=601s 而非文档 9600s 回退，使 stuck/
+        # auto-recovery 阈值比其派生源 run 超时（9000s 回退）早约 15 倍触发，
+        # 打破单源派生保证。
+        if not isinstance(rt, (int, float)) or isinstance(rt, bool) or rt <= 0:
             _logger.warning(
                 "agents.run_timeout_seconds 缺失或 ≤0，stuck 阈值按 %ss 回退生效"
                 "（=9000 默认超时 + %ss 宽限）；建议显式配置 run_timeout_seconds",

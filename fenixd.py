@@ -3398,6 +3398,19 @@ class FenixDaemon:
         if self._shutdown_started:
             return
         self._shutdown_started = True
+
+        def _safe_log(level, msg):
+            # 启动窗口信号安全（code-review item c94df33874ea）：docstring 承诺
+            # 副作用全部 None-safe，但旧实现只有首条日志受守卫——非 drain 分支
+            # debug、worktree_manager 清理日志、收尾 "fenixd stopped" 等仍直接
+            # 调 self.logger，启动窗口（initialize 未完成）信号进入时抛
+            # AttributeError，击穿 stderr 回退与 sys.exit(0)。全部后续日志统一
+            # 经本助手：logger 缺失时回退 stderr。
+            if self.logger is not None:
+                getattr(self.logger, level)("fenixd", msg)
+            else:
+                sys.stderr.write(f"fenixd: {msg}\n")
+
         if self.logger is not None:
             self.logger.info("fenixd", "Shutting down...")
         else:
@@ -3450,19 +3463,19 @@ class FenixDaemon:
                     # 故如实记「已取消且无 disposition 记录」，不再声称「由 pending
                     # 标记可追溯」——人工可据本条 WARNING 的计数与请求文件已删除的
                     # 事实反查（运维记录中该轮无对应条目即为被取消的那批）。
-                    self.logger.warning(
-                        "fenixd",
+                    _safe_log(
+                        "warning",
                         f"Admin worker pool 关闭：{_dropped} 条已提交但未开跑的处置被取消"
                         f"（未写入 disposition 记录，如需重放请核对运维记录中缺失的条目）",
                     )
             except Exception as e:
-                self.logger.error("fenixd", f"Admin worker pool shutdown failed: {e}")
+                _safe_log("error", f"Admin worker pool shutdown failed: {e}")
             with self._admin_pool_lock:
                 stats = dict(self._admin_pool_stats)
             in_flight = max(0, stats["submitted"] - stats["completed"] - stats["failed"])
             if in_flight:
-                self.logger.info(
-                    "fenixd",
+                _safe_log(
+                    "info",
                     f"Admin worker pool shutdown: {in_flight} 处置在途，由 pending "
                     f"disposition 标记可追溯",
                 )
@@ -3489,16 +3502,16 @@ class FenixDaemon:
             # checkpoint 信号（写 run 控制旗标即返回，不阻塞排水等待，不产生
             # 新增失败终态）。广播清单计入排水日志留痕。
             checkpointed = self.agent_runner.broadcast_restart_checkpoint()
-            self.logger.info(
-                "fenixd",
+            _safe_log(
+                "info",
                 f"Drain: planned restart, drain window {drain_seconds}s, "
                 f"waiting runs: {wait_list}, "
                 f"checkpoint broadcast: {len(checkpointed)}/{len(wait_list)}",
             )
             start_ts = time.time()
             remaining = self.agent_runner.drain_wait(timeout=drain_seconds)
-            self.logger.info(
-                "fenixd",
+            _safe_log(
+                "info",
                 f"Drain finished after {time.time() - start_ts:.0f}s, "
                 f"remaining runs: {remaining}",
             )
@@ -3517,8 +3530,8 @@ class FenixDaemon:
             )
             preserved_wts.extend(spec_preserved)
         else:
-            self.logger.debug(
-                "fenixd",
+            _safe_log(
+                "debug",
                 f"Shutdown mode: planned={planned_restart}, "
                 f"drain={drain_seconds}s → "
                 f"{'drain' if planned_restart and drain_seconds > 0 else 'fast'}",
@@ -3541,7 +3554,7 @@ class FenixDaemon:
             try:
                 self.agent_runner._v2_stop_all()
             except Exception as e:
-                self.logger.error("fenixd", f"V2 dev-server cleanup on shutdown failed: {e}")
+                _safe_log("error", f"V2 dev-server cleanup on shutdown failed: {e}")
         if self.worktree_manager:
             # 清理协调（D6 + fix-preserve-chain-first-round-gap D3）：保全在册
             # worktree 传入保护集，禁止清理与保全互删。sidecar 历史条目 worktree
@@ -3587,13 +3600,13 @@ class FenixDaemon:
             except Exception as e:
                 # 来源 (c) 构造失败：WARNING 且至少保留 sidecar 来源，
                 # MUST NOT 使保护集静默退化为空集（tasks 5.3）
-                self.logger.warning(
-                    "fenixd",
+                _safe_log(
+                    "warning",
                     f"来源 (c) 保护集构造失败——保留 sidecar 来源（非阻塞）: {e}",
                 )
             # 保护集构成日志（tasks 5.4）：各来源条目数可事后归因
-            self.logger.info(
-                "fenixd",
+            _safe_log(
+                "info",
                 f"cleanup_orphans 保护集构成：来源 (a) drain 保全 "
                 f"{len(preserved_wts)} 项；来源 (b) sidecar {src_b_count} 项；"
                 f"来源 (c) implementing spec {src_c_count} 项；保护集合计 "
@@ -3601,7 +3614,7 @@ class FenixDaemon:
             )
             self.worktree_manager.cleanup_orphans(protected=protected)
 
-        self.logger.info("fenixd", "fenixd stopped")
+        _safe_log("info", "fenixd stopped")
         sys.exit(0)
 
 

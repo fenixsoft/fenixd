@@ -478,8 +478,26 @@ class ProviderCircuit:
             self._daily_reset_date = today
         count = self._daily_provider_attempts.get(provider_name, 0) + 1
         self._daily_provider_attempts[provider_name] = count
-        warn = self._pm._get_config("pm.failover.daily_attempts_warn", PROVIDER_DAILY_ATTEMPTS_WARN)
-        if warn and count > warn and not self._daily_provider_warned.get(provider_name, False):
+        raw_warn = self._pm._get_config(
+            "pm.failover.daily_attempts_warn", PROVIDER_DAILY_ATTEMPTS_WARN
+        )
+        # 防御转换（code-review item c945454d3b4d）：非数字配置（如 "50"）原样
+        # 参与 count > warn 比较会在 attempt 记账时抛 TypeError 打断记账。数字
+        # 字符串/浮点转 int；bool（int 子类）按畸形回默认；0/None 保留「禁用
+        # 告警」语义，负值无意义同禁用——不走 _positive_number（其把 0 归一
+        # 为默认值，会复活显式关闭的告警）。
+        warn: int | None = None
+        if raw_warn is not None and type(raw_warn) is not bool:
+            try:
+                warn = int(raw_warn)
+            except (TypeError, ValueError):
+                warn = PROVIDER_DAILY_ATTEMPTS_WARN
+        if (
+            warn is not None
+            and warn > 0
+            and count > warn
+            and not self._daily_provider_warned.get(provider_name, False)
+        ):
             self._daily_provider_warned[provider_name] = True
             self._pm.logger.warning(
                 "agent_runner",
