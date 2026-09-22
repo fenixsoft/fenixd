@@ -13,8 +13,10 @@
   kind: modify
 - path: core/dashboard/data/quality_gates.py
   kind: modify
-- path: docs/help/model-chain-ops.md
+- path: docs/help/13-model-chain-ops.md
   kind: new
+- path: docs/help/README.md
+  kind: modify
 - path: tests/test_impl_selfcheck_model_probe.py
   kind: new
 ```
@@ -30,7 +32,7 @@
 - [ ] 2.1 unrecognized_model 错误识别（stderr `[claude-code:unrecognized_model]` 或等价结构化类别）：命中即记 WARNING（provider/model/run_id）并沿该 agent 类型模型链原地切换下一可用模型继续当前 run，不整轮重派、不递增 transient/同因重派计数
 - [ ] 2.2 链尾模型仍被拒时按既有失败路径收场且归因含全链模型不可用语义；5xx/超时/黑洞等其余 provider 错误处理路径行为不变（回归断言固化）
 - [ ] 2.3 `.fenix/config.template.yaml` 各 agent 类型默认链删除 `maomaoai + deepseek-v4.1-flash` 组合条目（全部出现处），摘除后各链剩余条目 ≥3
-- [ ] 2.4 新增 `docs/help/model-chain-ops.md`：摘除理由（12 次拒模型实测）、恢复条件、运行时 `.fenix/config.yaml` 的人工同步修改步骤（人工步骤仅入文档，不改运行时配置）
+- [ ] 2.4 新增 `docs/help/13-model-chain-ops.md` 并在 `docs/help/README.md` 完整目录表登记（#13 一行）：摘除理由（12 次拒模型实测）、恢复条件、运行时 `.fenix/config.yaml` 的人工同步修改步骤（人工步骤仅入文档，不改运行时配置）
 - [ ] 2.5 单测（落 `tests/test_impl_selfcheck_model_probe.py`）覆盖：首选拒立即切链不重派、全链拒收场归因、其余错误路径回归不变、模板链无该条目
 
 ## 3. 回归双跑合并

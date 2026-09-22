@@ -31,7 +31,7 @@
 
 3. **拒模型 failover 挂在模型链选择/重试判定处**：`unrecognized_model` 错误（provider_marker 后 stderr 出现 `[claude-code:unrecognized_model]` 或等价结构化类别）识别为**确定性失败**而非 transient：当前模型立即标记不可用（记 WARNING 含 provider/model），直接沿链取下一个模型原地继续（不整轮重派、不消耗同因重派计数、不计入 transient 熔断）。链尾仍失败才按既有失败路径收场。备选「派发前主动 probe」被否：每次 run 前多一次 LLM 往返，成本与延迟不划算，且拒模型是 provider 明确返回的类别，事后识别零成本。
 
-4. **模板默认链摘除 maomaoai/deepseek-v4.1-flash**：`.fenix/config.template.yaml`（入库文件）各 agent 链删除该条目。运行时 `.fenix/config.yaml` 的同步修改是人工运维步骤——写入 `docs/help/` 运维文档（含摘除理由与恢复条件），并在 `.fenix/todo.md` 登记提醒；**不进 tasks.md**（主树运行时配置，Agent 在 worktree 内改不到生效副本）。
+4. **模板默认链摘除 maomaoai/deepseek-v4.1-flash**：`.fenix/config.template.yaml`（入库文件）各 agent 链删除该条目。运行时 `.fenix/config.yaml` 的同步修改是人工运维步骤——写入 `docs/help/13-model-chain-ops.md`（并在 `docs/help/README.md` 索引登记；含摘除理由与恢复条件），并在 `.fenix/todo.md` 登记提醒；**不进 tasks.md**（主树运行时配置，Agent 在 worktree 内改不到生效副本）。
 
 5. **full-suite 门数据源优先级：框架侧回归产物 > run 内自查 > pending（fail-open）**：读侧合成处（`core/dashboard/data/` 门禁合成）先查框架侧回归车道产物（`core/regression.py` 落盘的回归结果快照，含分支指纹校验，模式对齐 ocr 门的 `(branch, base, head_commit)` 指纹语义）；产物不可见或指纹陈旧时回退读 quality-gates.json 的 run 内自查值（兼容存量与降级路径）；两者皆无 → pending。**状态枚举与键名全集零变化**（`quality-gates-progress` 能力 delta 仅扩展数据源，不破坏既有读侧）。
 
