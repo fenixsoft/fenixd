@@ -2,7 +2,7 @@
 
 ### Requirement: 手动唤起信号透传底层 signal_type
 
-daemon 消费 `.fenix/admin_invoke_request.json` 构造 Administrator 处置信号时，MUST 反查该 spec 最近一条未处置（非 handled）的 SIGNAL/ESCALATION 记录，取其 `signal_type` 写入信号的 `underlying_signal_type` 字段；查不到时该字段为 None。信号顶层 `signal_type` MUST 保持 `manual-intervention`（store 记录、节流锚点、活动区展示语义不变）。
+daemon 消费 `.fenix/admin_invoke_request.json` 构造 Administrator 处置信号时，MUST 反查该 spec 最近一条未处置（非 handled）的 SIGNAL/ESCALATION 记录（按 created 取最新，MUST 排除 `signal_type == "manual-intervention"` 的手动通道自产记录），取其 `signal_type` 写入信号的 `underlying_signal_type` 字段；查不到时该字段为 None。信号顶层 `signal_type` MUST 保持 `manual-intervention`（store 记录、节流锚点、活动区展示语义不变）。
 
 #### Scenario: 存在未处置信号时透传底层类型
 - **WHEN** spec 存在一条未处置的 `verify_env_blocked` 信号记录，人工经 Dashboard 唤起 Administrator
@@ -11,6 +11,10 @@ daemon 消费 `.fenix/admin_invoke_request.json` 构造 Administrator 处置信�
 #### Scenario: 无可反查信号时缺省 None
 - **WHEN** spec 无任何未处置信号记录时被手动唤起
 - **THEN** 处置信号 `underlying_signal_type` 为 None，顶层 `signal_type` 仍为 `manual-intervention`，唤起流程不报错
+
+#### Scenario: 手动通道自产记录不被误反查
+- **WHEN** spec 存在一条未处置的 `manual-intervention` ESCALATION 记录（上次手动派发失败遗留），其后另有一条未处置的 `verify_env_blocked` 信号记录，人工再次唤起
+- **THEN** `underlying_signal_type=verify_env_blocked`（manual-intervention 记录被排除，不作为底层类型）
 
 ### Requirement: 处置收尾自动复位判定门感知透传类型
 
@@ -26,4 +30,4 @@ daemon 消费 `.fenix/admin_invoke_request.json` 构造 Administrator 处置信�
 
 #### Scenario: 节流与记录零回归
 - **WHEN** 同一 spec 短时间内两次手动唤起
-- **THEN** store 记录与节流锚点仍按 `manual-intervention` 类型判定，透传字段不参与节流、不产生重复告警
+- **THEN** 手动通道 store 落痕（disposition/escalation）仍按 `manual-intervention` 类型记录，自动通道既有节流（按其自身 signal_type 判定）不受影响，透传字段不参与节流、不产生重复告警

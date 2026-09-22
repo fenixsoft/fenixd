@@ -9,13 +9,13 @@
 
 ## Decisions
 
-- **D1 daemon 侧反查而非入口带参**：请求文件加字段的方案要求改 Dashboard/CLI 两条入口且旧格式请求文件兼容期行为含糊；daemon 消费时用既有 `admin_store` 查询（`unhandled_for` 同族）反查 spec 最近未处置信号的 signal_type，入口零改动、新旧请求文件通用。
+- **D1 daemon 侧反查而非入口带参**：请求文件加字段的方案要求改 Dashboard/CLI 两条入口且旧格式请求文件兼容期行为含糊；daemon 消费时基于 `admin_store.read_all()`（created 倒序）过滤该 spec 的未处置（非 handled）SIGNAL/ESCALATION 记录、取最新一条的 signal_type——既有 `unhandled_for` / `unhandled_signal_for` 均以 signal_type 为入参、`unhandled()` 仅覆盖 ESCALATION，都不能用于「发现」类型，故反查是新增过滤逻辑（或等价的新 store 查询方法），入口零改动、新旧请求文件通用。反查 MUST 排除 `signal_type == "manual-intervention"` 的记录：手动通道会自产此类记录（派发失败/agent_runner 不可用落 manual-intervention 的 ESCALATION），且在下次唤起反查时仍可能未 handled——不排除会把上次手动信号反查成底层类型，使复位门永不命中。
 - **D2 新增 `underlying_signal_type` 字段而非替换顶层类型**：若把顶层 signal_type 换成底层类型，store 记录/节流锚点/活动区展示全部跟着变，可能与自动检测通道的 latest_signal 节流互相吞并（既有注释明确「二者各自走 store 记录与节流锚点，互不吞并」）。独立字段让复位门扩展一处生效，其余零回归。
 - **D3 复位门扩展收在判定点**：`admin_monitor.py` 调用点前置检查与 `_reset_env_blocked_after_disposition` 的守卫均改为「signal_type 或 underlying_signal_type 命中」，单点改动，orphaned_state 等独立复位路径不动。
 
 ## Risks / Trade-offs
 
-- [反查到陈旧信号类型] → 只查未处置（非 handled）记录且取最新一条；处置完成后该记录被 mark_handled，二次唤起自然取到新信号。
+- [反查到陈旧信号类型] → 只查未处置（非 handled）记录、排除 manual-intervention 自产记录且按 created 取最新一条。注意 `mark_handled` / `close_escalations_for_run` 仅作用于 kind=ESCALATION 记录——典型底层记录（verify_env_blocked 等，经 merge_signal 落 kind=SIGNAL）处置后并不会被 mark_handled；正确性由「取最新一条」保证（新问题会产生更新的记录），并由复位路径自身状态守卫兜底（`resolve_env_blocked_reset_path` 对非 blocked/frozen spec 返回 None，误反查的陈旧类型至多 no-op，不会错误复位）。
 - [透传字段被未来消费点误读] → 字段可选、缺省 None，仅复位门消费；在字段写入处注释语义与消费点清单。
 
 ## Migration Plan
