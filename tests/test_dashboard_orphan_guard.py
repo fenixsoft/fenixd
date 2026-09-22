@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from core.dashboard.server import (
     _bind_parent_lifecycle,
     _claude_watchdog_loop,
+    _is_tmux_hosted,
     _proc_starttime,
     _start_claude_watchdog,
 )
@@ -143,6 +144,9 @@ def test_watchdog_assembled_for_agent_env(monkeypatch):
     """
     monkeypatch.setenv("FENIX_DASHBOARD_DETACH", "1")
     monkeypatch.setenv("CLAUDE_PID", str(os.getpid()))
+    # 显式隔离新判据：tmux 直接承载 pytest（tmux new-session "pytest …"）时
+    # 真实父进程即 tmux server，不隔离会被判为常驻而假失败
+    monkeypatch.setattr("core.dashboard.server._is_tmux_hosted", lambda ppid=None: False)
     assert _start_claude_watchdog() is True
     t = _wait_thread("claude-watchdog")
     assert t is not None, "应出现名为 claude-watchdog 的线程"
@@ -153,6 +157,8 @@ def test_bind_parent_lifecycle_detaches_with_watchdog(monkeypatch):
     """集成：DETACH=1 + CLAUDE_PID 下 _bind_parent_lifecycle 装配 watchdog（本次缺口的行为修复点）。"""
     monkeypatch.setenv("FENIX_DASHBOARD_DETACH", "1")
     monkeypatch.setenv("CLAUDE_PID", str(os.getpid()))
+    # 同上：隔离真实父进程身份（tmux 承载 pytest 时判据会命中常驻）
+    monkeypatch.setattr("core.dashboard.server._is_tmux_hosted", lambda ppid=None: False)
     calls = []
     monkeypatch.setattr(ctypes, "CDLL", lambda *a, **k: calls.append(a) or _FakeLibc(0))
     _bind_parent_lifecycle()
@@ -204,3 +210,158 @@ def test_watchdog_loop_fires_on_pid_reuse_starttime_mismatch():
         if stranger.poll() is None:
             stranger.kill()
             stranger.wait()
+
+
+# ── 显式长驻判据：_is_tmux_hosted（2026-09-22 8787 误杀事故）──────────
+
+
+def _patch_proc_files(monkeypatch, mapping):
+    """把模块内 Path 对 /proc/<pid>/… 的读取重定向到临时文件。
+
+    mapping 形如 {"/proc/4242/comm": tmp_path/"comm"}；未映射的路径原样透传。
+    """
+    import core.dashboard.server as server_mod
+
+    real_path = Path
+
+    def fake_path(p, *a, **k):
+        p = str(p)
+        if p in mapping:
+            return real_path(mapping[p])
+        return real_path(p)
+
+    monkeypatch.setattr(server_mod, "Path", fake_path)
+
+
+def test_is_tmux_hosted_detects_tmux_parent(monkeypatch, tmp_path):
+    """comm 恰为 'tmux: server' → True；非 tmux comm → False；/proc 读取失败 → False。"""
+    comm = tmp_path / "comm"
+    comm.write_text("tmux: server\n")
+    _patch_proc_files(monkeypatch, {"/proc/4242/comm": comm})
+    assert _is_tmux_hosted(4242) is True
+
+    comm.write_text("bash\n")
+    assert _is_tmux_hosted(4242) is False
+
+    # comm 不匹配 → 回退 cmdline：argv[0] basename 恰为 tmux → True；
+    # 仅含 tmux 子串（agent 自测包装脚本形态）→ False
+    cmdline = tmp_path / "cmdline"
+    _patch_proc_files(
+        monkeypatch, {"/proc/4242/comm": comm, "/proc/4242/cmdline": cmdline}
+    )
+    comm.write_text("sleep\n")
+    cmdline.write_bytes(b"tmux\x00attach\x00\x00")
+    assert _is_tmux_hosted(4242) is True
+    cmdline.write_bytes(b"/tmp/tmux_selftest.sh\x00\x00")
+    assert _is_tmux_hosted(4242) is False
+
+    # /proc 读取失败（进程不存在等）：按非长驻处理 → False
+    _patch_proc_files(monkeypatch, {"/proc/4242/comm": tmp_path / "gone" / "comm"})
+    assert _is_tmux_hosted(4242) is False
+
+
+def test_watchdog_skipped_when_tmux_hosted(monkeypatch):
+    """tmux 承载（显式长驻）：即使 CLAUDE_PID 指向存活进程也不装配 watchdog。"""
+    monkeypatch.setenv("FENIX_DASHBOARD_DETACH", "1")
+    monkeypatch.setenv("CLAUDE_PID", str(os.getpid()))
+    monkeypatch.setattr("core.dashboard.server._is_tmux_hosted", lambda ppid=None: True)
+    before = {t.name for t in threading.enumerate()}
+    assert _start_claude_watchdog() is False
+    assert {t.name for t in threading.enumerate()} == before, "不应新装配任何线程"
+
+
+def test_watchdog_still_assembled_when_not_tmux_hosted(monkeypatch):
+    """非 tmux 承载（agent nohup 自测形态）：既有防泄漏不变，仍装配 watchdog。"""
+    monkeypatch.setenv("FENIX_DASHBOARD_DETACH", "1")
+    monkeypatch.setenv("CLAUDE_PID", str(os.getpid()))
+    monkeypatch.setattr("core.dashboard.server._is_tmux_hosted", lambda ppid=None: False)
+    before = sum(1 for t in threading.enumerate() if t.name == "claude-watchdog")
+    assert _start_claude_watchdog() is True
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        now = sum(1 for t in threading.enumerate() if t.name == "claude-watchdog")
+        if now > before:
+            break
+        time.sleep(0.02)
+    else:
+        pytest.fail("应新装配一个 claude-watchdog 线程")
+
+
+def test_is_tmux_hosted_ignores_tmux_env(monkeypatch):
+    """自身环境含 TMUX（agent_runner 透传形态）不改变判据：真实 sleep 进程 → False。
+
+    MUST 调用未经 stub 的真实 _is_tmux_hosted：stub 后断言与装配用例同义反复，
+    证明不了判据未读 TMUX。
+    """
+    monkeypatch.setenv("TMUX", "/tmp/tmux-0/default,631314,0")
+    victim = subprocess.Popen(["sleep", "30"])
+    try:
+        assert _is_tmux_hosted(victim.pid) is False
+    finally:
+        if victim.poll() is None:
+            victim.kill()
+            victim.wait()
+
+
+def _wait_proc_state(pid: int, expected_comm: str, timeout: float = 5.0) -> bool:
+    """等待 /proc/<pid>/comm 变为期望值（夹具 exec/prctl 完成的就绪信号）。"""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            if Path(f"/proc/{pid}/comm").read_text().strip() == expected_comm:
+                return True
+        except OSError:
+            pass
+        time.sleep(0.05)
+    return False
+
+
+def test_is_tmux_hosted_with_real_fixture():
+    """真实 /proc 路径覆盖（非纯 monkeypatch）：comm 主判据 + argv 回退 + 负例。"""
+    # comm 主判据：prctl(PR_SET_NAME) 把 comm 改为 "tmux: server"（exec -a 只改
+    # argv[0] 不改 comm，覆盖不到主判据，故必须用 prctl 夹具）
+    renamed = subprocess.Popen(
+        [
+            "python3",
+            "-c",
+            "import ctypes,time; "
+            "ctypes.CDLL('libc.so.6').prctl(15, b'tmux: server', 0, 0, 0);"
+            " time.sleep(30)",
+        ]
+    )
+    try:
+        assert _wait_proc_state(renamed.pid, "tmux: server"), "夹具未就绪"
+        assert _is_tmux_hosted(renamed.pid) is True
+    finally:
+        if renamed.poll() is None:
+            renamed.kill()
+            renamed.wait()
+
+    # argv 回退：exec -a 后 comm 仍为 sleep、argv[0] basename 恰为 tmux → True
+    argv_tmux = subprocess.Popen(["bash", "-c", "exec -a tmux sleep 30"])
+    try:
+        assert _wait_proc_state(argv_tmux.pid, "sleep"), "夹具未就绪"
+        assert _is_tmux_hosted(argv_tmux.pid) is True
+    finally:
+        if argv_tmux.poll() is None:
+            argv_tmux.kill()
+            argv_tmux.wait()
+
+    # 负例：argv[0] basename 含 tmux 子串但非 tmux/tmux: 前缀（自测包装脚本）→ False
+    argv_sub = subprocess.Popen(["bash", "-c", "exec -a /tmp/tmux_selftest.sh sleep 30"])
+    try:
+        assert _wait_proc_state(argv_sub.pid, "sleep"), "夹具未就绪"
+        assert _is_tmux_hosted(argv_sub.pid) is False
+    finally:
+        if argv_sub.poll() is None:
+            argv_sub.kill()
+            argv_sub.wait()
+
+    # 负例：普通 sleep 进程 → False
+    plain = subprocess.Popen(["sleep", "30"])
+    try:
+        assert _is_tmux_hosted(plain.pid) is False
+    finally:
+        if plain.poll() is None:
+            plain.kill()
+            plain.wait()
