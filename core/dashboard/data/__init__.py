@@ -13,7 +13,10 @@ _D8 约定_（可 patch 名契约，code-review item 895133450e96 修正：原�
     archive_spec_runs   (spec_archive.py:201，显式 D8 注释),
     spec_summary        (summary.py:585),
     parse_verify_progress (spec_docs.py:191),
-    classify_run        (tasks.py:206)
+    classify_run        (tasks.py:206),
+    parse_quality_gates (quality_gates.py，summary.py 经门面消费),
+    find_implementer_worktree (tasks.py，quality_gates.py 经门面解析),
+    _resolve_run_file, _read_run_lines (runs.py，quality_gates.py 经门面解析)
 
 MUST NOT 把这些 `_facade.X` 访问「整理」成直接 import——会静默破坏
 monkeypatch 语义（对应测试会以难定位的方式失败）。
@@ -252,6 +255,17 @@ from .code_review import (
     read_code_review_items,
     read_code_review_progress,
     read_code_review_fix_progress,
+)
+
+# ── quality_gates 组（add-quality-gates-visibility）──
+from .quality_gates import (
+    RUN_GATE_IDS,
+    GATE_STATUSES,
+    GATE_ORDER,
+    GATE_DESCS,
+    DELIVERABLE_BLOCKED_KEYWORDS,
+    current_lane_fingerprint,
+    parse_quality_gates,
 )
 
 # ── regression 组（add-test-regression-tab）──

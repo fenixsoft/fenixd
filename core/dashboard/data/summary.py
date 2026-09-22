@@ -286,6 +286,31 @@ def spec_summary(project_root, spec_name: str, entry: dict, runs_files: list | N
     vp = _facade.parse_verify_progress(project_root, spec_name)
     # 含归档：run 产物被清理后列表页耗时统计不缩水
     runs = _facade.get_runs(project_root, spec_name, include_archive=True, files=runs_files)
+    # add-quality-gates-visibility：质量门禁读侧合成（fail-open，详情页同源；
+    # D8：经门面解析供测试打桩）
+    gates = _facade.parse_quality_gates(project_root, spec_name, entry=entry, runs=runs)
+    # ocr 车道在飞（gates 阶段第二支判据）
+    lane_running = any(
+        isinstance(it, dict) and it.get("id") == "code-review" and it.get("status") == "running"
+        for it in gates.get("items", [])
+    )
+    # add-task-progress-verify-phase + add-quality-gates-visibility 修订：阶段
+    # 判定单点在后端（前端只消费不重复判定）。窗口两支——
+    #   ① implementing ∧ 任务全勾 ∧ 门禁可见 ∧ 未全了结 → gates（收尾门禁进行中）
+    #   ② testing ∧ ocr 车道 running → gates（并行审查进行中，优先于 verify）
+    # 其余一切状态按 impl；fast-track 瞬时连转不停留 testing，天然恒 impl。
+    if entry.get("status") == "testing":
+        phase = "gates" if lane_running else "verify"
+    elif (
+        entry.get("status") == "implementing"
+        and total > 0
+        and done == total
+        and gates.get("exists")
+        and gates.get("done", 0) < gates.get("total", 6)
+    ):
+        phase = "gates"
+    else:
+        phase = "impl"
     total_duration = _spec_total_duration(project_root, spec_name, entry, runs)
     # add-fast-track-mode（task 7.1）：执行模式（读 .spec.yaml，缺省 full）
     from core.spec_mode import read_spec_mode
@@ -342,12 +367,15 @@ def spec_summary(project_root, spec_name: str, entry: dict, runs_files: list | N
         # state.py parse_state 归一化表（与 frozen 同口径），文本 False 不再
         # 以真值字符串漏出；此处不写 bool(entry.get(...))，保持防回归口径。
         "cancelled_hold": normalize_bool_flag(entry.get("_cancelled_hold")) if entry else False,
-        # add-task-progress-verify-phase：阶段判定单点在后端——仅 testing 切
-        # verify（验证引擎运行中），其余一切状态按 impl；fast-track 经
-        # _fast_track_advance_to_verified 瞬时连转 testing→verified 不停留，
-        # 天然恒 impl，无需 mode 特判。前端只消费该字段，不重复判定。
-        "progress_phase": "verify" if entry.get("status") == "testing" else "impl",
+        # add-task-progress-verify-phase + add-quality-gates-visibility：阶段
+        # 判定单点在后端（见上方窗口两支注释），前端只消费该字段不重复判定。
+        "progress_phase": phase,
         "verify_current": vp.get("current", ""),
+        # add-quality-gates-visibility：门禁完成度与当前进展文案（列表 gates
+        # 阶段渲染数据源；门禁不可见时 done=0/total=6/current 空串）
+        "gates_done": gates.get("done", 0),
+        "gates_total": gates.get("total", 6),
+        "gates_current": gates.get("current", ""),
         "task_done": done,
         "task_total": total,
         # run 层实时进度（fix-implementer-task-progress D3）：tasks.md 快照失效
@@ -508,6 +536,16 @@ def _spec_dep_sigs(proot: Path, spec_name: str, entry: dict, runs_sigs: dict) ->
     vp_dir = proot / ".fenix" / "verify-progress" / spec_name
     add(vp_dir / "report.json")
     add(vp_dir / "test_scenarios.json")
+    # add-quality-gates-visibility：门禁落盘与 ocr 车道产物入摘要失效签名
+    # （渐进落盘期间列表 gates 阶段须实时刷新）
+    add(vp_dir / "quality-gates.json")
+    add(vp_dir / "code-review.json")
+    if entry and entry.get("status") == "implementing":
+        wt = _facade.find_implementer_worktree(proot, spec_name)
+        if wt is not None:
+            add(wt / "spec" / "changes" / spec_name / "tasks.md")
+            add(wt / ".fenix" / "verify-progress" / spec_name / "quality-gates.json")
+            add(wt / ".fenix" / "verify-progress" / spec_name / "code-review.json")
     # add-spec-status-modal-budget D3：budget_effective 依赖全局 config
     # （agents.impl_run_budget 覆盖优先解析的兜底来源），项目级与用户级
     # config.yaml 变化须触发摘要失效（宁多勿漏原则）。
@@ -695,6 +733,11 @@ def spec_detail(project_root, spec_name: str, entry: dict) -> dict:
         "run_progress": _facade.run_task_progress(project_root, spec_name),
         "run_activity": _facade.run_activity(project_root, spec_name),
         "verify_progress": _facade.parse_verify_progress(project_root, spec_name),
+        # add-quality-gates-visibility：详情页「质量门禁」Card 数据源
+        # （{exists, done, total, current, items}；SSE 全量 detail 推送自动携带）
+        "quality_gates": _facade.parse_quality_gates(
+            project_root, spec_name, entry=entry, runs=runs
+        ),
         # verification-phase-progress：出题进度（生成阶段 verify_progress 为空态，
         # 详情页验证进度卡片据此展示「出题 N/M」而非「暂无验证进度」）
         "generation": _facade.spec_generation_progress(project_root, spec_name, entry),
