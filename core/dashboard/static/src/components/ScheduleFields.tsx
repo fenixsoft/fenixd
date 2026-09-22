@@ -25,20 +25,23 @@ export interface AcceptSchedule {
 /** 哨兵值：手工激活（永不到期）。与后端 START_AFTER_MANUAL 字面量一致。 */
 export const START_AFTER_MANUAL = 'manual';
 
+// 与后端 ConfigLoader.is_valid_hhmm 同一锚定正则（^([01]\d|2[0-3]):[0-5]\d$）
+// （code-review item 792cae005f21：旧 split(':').map(Number) 比后端校验宽松——
+// '9:5'、'12:'（空分钟 → Number('') === 0）、'12:30:45'（秒被静默丢弃）都能
+// 通过前端换算而后端拒绝，与 docstring「两侧共享同一转换规则」断言相悖）。
+const HHMM_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+
 /**
  * 把 "HH:mm" 换算成下一次到期的 UTC ISO；空/非法返回 null（= 立即执行）。
  *
  * 换算规则与后端 core/evolution.py: next_spec_run_at 同一句话：取当日该时刻，
  * 已过（或正好等于现在）则取次日。后端只在自动接受路径自算；人工同意走本函数
- * 算好的确切值提交，故两边不会对同一次立项各算一遍。
+ * 算好的确切值提交，故两边不会对同一次立项各算一遍。合法性锚定检查与后端
+ * is_valid_hhmm 同规则（见 HHMM_RE）。
  */
 export function nextRunAtISO(runAt?: string | null): string | null {
-  if (!runAt) return null;
+  if (!runAt || !HHMM_RE.test(runAt)) return null;
   const [h, m] = runAt.split(':').map(Number);
-  if (!Number.isInteger(h) || !Number.isInteger(m)
-      || h < 0 || h > 23 || m < 0 || m > 59) {
-    return null;
-  }
   const now = dayjs();
   let target = now.hour(h).minute(m).second(0).millisecond(0);
   if (!target.isAfter(now)) target = target.add(1, 'day');

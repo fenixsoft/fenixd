@@ -1062,6 +1062,12 @@ class FFastTrackMixin:
                     "_retry_count": retries,
                 },
             )
+            # 复位 ready 后显式重新入队（code-review item 6e6259821f64）：调用方
+            # _run_fast_track_flow 失败分支立即 return，本模块其它「复位 ready」
+            # 点（零变更哨/_hard_check/merge-retry）均 _enqueue_front 显式驱动
+            # 重派——只翻状态不入队时「自动重试」承诺落空，spec 悬挂 ready 只能
+            # 等周期恢复兜底（队列去重吸收重复条目，见 _enqueue_front）。
+            self._enqueue_front(spec_name, "fast-track")
             self._pm.logger.warning(
                 "pm_engine",
                 f"fast-track retry {retries}/{max_r} '{spec_name}'",

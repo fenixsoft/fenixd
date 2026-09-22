@@ -3,10 +3,14 @@
 承载 4 个端点：
 - GET  /api/regression/result    （query project）→ 最近一次回归快照
 - GET  /api/regression/config    （query project）→ verify.yaml regression 段配置状态
-- POST /api/regression/run       （body {project}）→ 写手动触发信号
-- POST /api/regression/autodraft （body {project}）→ 写 AI 补 regression 段信号
+- POST /api/regression/run       （query project）→ 写手动触发信号
+- POST /api/regression/autodraft （query project）→ 写 AI 补 regression 段信号
 
-端点 handler 走既有 mixin 形态（self._json / self._error / _read_json_body）。
+端点 handler 走既有 mixin 形态（self._json / self._error）。两个 POST 端点的
+项目均从 query string 解析，不消费请求体（code-review item 6e9597e51e90：
+旧实现读 body 却不用，且 _read_json_body 对空 body 回 400，把遵循契约
+不带 body 的客户端拒之门外；残留 body 字节由派发层
+_drain_remaining_request_body 排空，keep-alive 不受影响）。
 手动触发走 code-review 同款「dashboard 原子写 → daemon 主循环消费」范式：
 POST 只写 ``.fenix/regression_request.json`` 文件信号，MUST NOT 在 HTTP
 线程内同步跑回归（回归可跑 1800s）。
@@ -110,7 +114,7 @@ class H12RegressionRoutesMixin:
         )
 
     def _api_regression_run(self, query):
-        """POST /api/regression/run — body {project}
+        """POST /api/regression/run — query project
 
         写 ``.fenix/regression_request.json`` 文件信号 → daemon 主循环消费
         （不直接同步跑回归）。
@@ -126,9 +130,6 @@ class H12RegressionRoutesMixin:
         project = self._project_from_query(query)
         if project is None or not project.get("exists"):
             self._error(404, "project not found")
-            return
-        body = self._read_json_body()
-        if body is None:
             return
         proot = Path(project["path"])
 
@@ -238,7 +239,7 @@ class H12RegressionRoutesMixin:
         self._json({"ok": True, "requested_at": created})
 
     def _api_regression_autodraft_post(self, query):
-        """POST /api/regression/autodraft — body {project}
+        """POST /api/regression/autodraft — query project
 
         触发 AI 补写 regression 段（设置页「质量」页签回归卡片「使用 AI 生成」）。
         只补段、不重整契约，按契约状态分流（判定走 ``load_verify_contract``）：
@@ -256,9 +257,6 @@ class H12RegressionRoutesMixin:
         在途去重（未 escalated 且未 handled 的同类信号已存在 → 不重复写，仍回
         ``dispatched`` 并注明已有在途请求）。
         """
-        body = self._read_json_body()
-        if body is None:
-            return
         project = self._project_from_query(query)
         if project is None or not project.get("exists"):
             self._error(404, "project not found")

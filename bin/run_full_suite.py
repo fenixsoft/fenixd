@@ -420,12 +420,19 @@ def main(argv=None) -> int:
                 result["baseline_failures"] = base.get("baseline_failures", [])
                 result["baseline_ref"] = args.baseline
             else:
-                classification = classify_outcome(current_failed, base["baseline_failures"])
-                result["classification"] = classification
+                # verdict 门只认机器可读键（code-review item 790b30bcb7bb）：改用
+                # classify_baseline 的稳定键（pass/baseline_only/introduced/mixed）
+                # 判定，不再耦合 classify_outcome 的中文展示文案——该函数任何措辞/
+                # 格式改动不再静默禁用 verdict 与 exit 1。展示文案仍经
+                # classify_outcome 输出，行为不变。
+                cls_key = classify_baseline(current_failed, base["baseline_failures"])
+                result["classification"] = classify_outcome(
+                    current_failed, base["baseline_failures"]
+                )
                 result["baseline_failures"] = base["baseline_failures"]
                 result["baseline_ref"] = args.baseline
                 # 按 spec：混合情形 MUST 判为存在本次引入回归（分类文案已体现）。
-                if classification not in ("pass（全绿）", "存量"):
+                if cls_key in ("introduced", "mixed"):
                     result["verdict"] = "本次引入回归"
         print(f"\n[run_full_suite] 基线对比 ref={args.baseline} " f"→ {result['classification']}")
         if current_failed:

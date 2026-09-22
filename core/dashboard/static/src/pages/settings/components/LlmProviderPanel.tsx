@@ -3,7 +3,8 @@ import { DownOutlined, MinusCircleOutlined, PlusOutlined, RightOutlined } from '
 import { useEffect, useRef, useState } from 'react';
 import type { ConfigData, LlmProvider, ProviderBillingPrice } from '@/services/dashboard';
 
-import SyncFromUserButton, { SETTINGS_ACTIONS_ROW_STYLE } from './SyncFromUserButton';
+import SyncFromUserButton from './SyncFromUserButton';
+import { SETTINGS_ACTIONS_ROW_STYLE } from '../styles';
 
 const { Text } = Typography;
 

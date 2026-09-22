@@ -468,7 +468,9 @@ const SuggestedImprovementsPanel = forwardRef<
   const [viewContent, setViewContent] = useState('');
   const [viewLoading, setViewLoading] = useState(false);
   const [viewError, setViewError] = useState<string | null>(null);
-  const [viewFound, setViewFound] = useState(true);
+  // （code-review item 758f448e9b38：原 viewFound state 三处写入但渲染树从不
+  // 读取——空/缺失态实际由 viewContent+viewEmptyText 推导，死 state 每次切
+  // tab 多一次渲染，已删。）
 
   // 页签渲染条件（合并 evo-item-retention-doc-tracking 3.3 的数据驱动语义）：
   // 草稿目录在（has_draft）或草稿已删但可从 SPEC 位置读回（doc_source 非 null）时，
@@ -479,17 +481,14 @@ const SuggestedImprovementsPanel = forwardRef<
   const loadView = useCallback(async (item: EvolutionItem, tab: ViewTab) => {
     setViewLoading(true);
     setViewError(null);
-    setViewFound(true);
     try {
       const data = tab === 'analysis'
         ? await getEvolutionAnalysis(item.id)
         : await getEvolutionDraft(item.id, tab);
       if (!mountedRef.current) return;
       if (!data.found) {
-        setViewFound(false);
         setViewContent('');
       } else {
-        setViewFound(true);
         setViewContent(data.content || '（空）');
       }
     } catch (e: any) {

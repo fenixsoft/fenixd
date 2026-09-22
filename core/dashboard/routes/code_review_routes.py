@@ -166,10 +166,25 @@ class H11CodeReviewRoutesMixin:
             self._error(500, "审查触发信号写入失败")
             return
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
+            # fdopen 失败路径显式关 fd（code-review item 71d502440d3b，先例
+            # regression_routes item 655c860e2e6e）：fdopen() 自身抛错时裸 fd
+            # 未被包装也无人关闭（with 的 close 只在 fdopen 成功后才生效）——
+            # 请求线程描述符泄漏。改为显式接管：f 为 None（fdopen 未成功）时
+            # 兜底 os.close；成功后统一经 finally close（等价 with 语义）。
+            f = None
+            try:
+                f = os.fdopen(fd, "w", encoding="utf-8")
                 json.dump(payload, f, ensure_ascii=False, indent=2)
                 f.flush()
                 os.fsync(f.fileno())
+            finally:
+                if f is not None:
+                    f.close()
+                else:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
         except Exception:
             # 写中途失败：清掉临时文件（轮询路径尚未创建，无半写残留可误消费）
             try:
@@ -264,10 +279,22 @@ class H11CodeReviewRoutesMixin:
             self._error(500, "修复触发信号写入失败")
             return
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
+            # fdopen 失败路径显式关 fd（code-review item 71d502440d3b，同
+            # _api_code_review_run 修法）：fdopen() 自身抛错时裸 fd 无人关闭。
+            f = None
+            try:
+                f = os.fdopen(fd, "w", encoding="utf-8")
                 json.dump(payload, f, ensure_ascii=False, indent=2)
                 f.flush()
                 os.fsync(f.fileno())
+            finally:
+                if f is not None:
+                    f.close()
+                else:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
         except Exception:
             # 写中途失败：清掉半写文件，避免残留被 daemon 误消费
             try:

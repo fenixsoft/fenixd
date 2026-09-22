@@ -1,7 +1,8 @@
 import { Button, Card, Form, Radio, Typography } from 'antd';
 import { useEffect, useState } from 'react';
 import type { ConfigData } from '@/services/dashboard';
-import SyncFromUserButton, { SETTINGS_ACTIONS_ROW_STYLE } from './SyncFromUserButton';
+import SyncFromUserButton from './SyncFromUserButton';
+import { SETTINGS_ACTIONS_ROW_STYLE } from '../styles';
 
 const { Text } = Typography;
 

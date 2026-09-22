@@ -245,6 +245,12 @@ def _migrate_contract_to_v2(scenarios: list, base_url: str = ""):
          ``{"action": "navigate", "value": <url>, "description": ...}`` 插入
          steps 首位（与「web 场景先打开页面再交互」语义一致）并盖戳；
          两者皆无 → 该场景移入 pending_replan、从迁移结果剔除。
+      4. web 场景 ``steps`` 存在但非列表（dict/str/None）：场景文件已损坏
+         → 原样透传（不盖版本戳、不合成 navigate），由读端
+         ``validate_scenario_dicts`` 以字段级差异报 corrupt → env_blocked
+         人工通道（code-review item 73e706677c11：旧实现非空 base_url 下
+         静默丢弃原 steps 换成 [nav_step]，把本应报损坏的文件白洗成
+         「合法单 navigate 场景」）。
 
     Returns:
         (migrated, pending)：同一版本段的无副作用迁移结果。
@@ -263,6 +269,11 @@ def _migrate_contract_to_v2(scenarios: list, base_url: str = ""):
             migrated.append({**item, CONTRACT_VERSION_FIELD: 2})
             continue
         steps = item.get("steps")
+        # 损坏 steps 不迁移（见 docstring 4，含缺失/显式 null）：与上方非 dict
+        # 条目同款透传，交回读端校验失败通道。
+        if not isinstance(steps, list):
+            migrated.append(item)
+            continue
         has_navigate = isinstance(steps, list) and any(
             isinstance(s, dict) and s.get("action") == "navigate" for s in steps
         )

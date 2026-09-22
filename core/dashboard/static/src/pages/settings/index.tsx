@@ -4,6 +4,9 @@ import { useEffect, useRef, useState } from 'react';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { getConfig, getOverview, saveConfig } from '@/services/dashboard';
 import type { ConfigData, OverviewData } from '@/services/dashboard';
+// PAGE_LABELS 单一来源移入无依赖共享模块（code-review item 6df16f377728）：
+// 子组件不再从本文件反向导入，消除 index → panels → button → index 模块循环。
+import { PAGE_LABELS } from './pageLabels';
 import LlmProviderPanel from './components/LlmProviderPanel';
 import AgentModelPanel from './components/AgentModelPanel';
 import ParallelSettingsPanel from './components/ParallelSettingsPanel';
@@ -22,25 +25,6 @@ import SuggestedImprovementsPanel from './components/SuggestedImprovementsPanel'
 import type { SelfEvolutionSectionHandle } from './components/selfEvolutionSection';
 
 const { Text } = Typography;
-
-// 页签 key → 标签 单一来源（code-review item e0b8f3aefec7）：供
-// SyncFromUserButton 等子组件复用，避免手工副本漂移。BASE_MENU_ITEMS 由其派生。
-export const PAGE_LABELS: Record<string, string> = {
-  llm: '模型',
-  agents: '模型分配',
-  prompts: '提示词',
-  parallel: '并行',
-  token: '预算',
-  verify: '验证',
-  quality: '质量',
-  approval: '审批',
-  misc: '归档',
-  system: '系统',
-  'self-evolution': '自进化',
-  'self-review': '自省',
-  'project-profile': '项目',
-  hook: 'Hook',
-};
 
 const BASE_MENU_ITEMS = [
   { key: 'llm', label: '模型' },

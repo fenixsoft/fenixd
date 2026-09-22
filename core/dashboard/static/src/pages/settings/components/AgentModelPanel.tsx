@@ -7,10 +7,11 @@ import {
   SnippetsOutlined,
 } from '@ant-design/icons';
 import { useEffect, useState } from 'react';
-import type { AgentModelAssignment, AgentsModels, ConfigData } from '@/services/dashboard';
+import type { AgentModelAssignment, AgentsConfig, AgentsModels, ConfigData } from '@/services/dashboard';
 import { cloneRoleValue, type RoleValue } from '@/utils/agentModels';
 
-import SyncFromUserButton, { SETTINGS_ACTIONS_ROW_STYLE } from './SyncFromUserButton';
+import SyncFromUserButton from './SyncFromUserButton';
+import { SETTINGS_ACTIONS_ROW_STYLE } from '../styles';
 
 const { Text } = Typography;
 
@@ -79,6 +80,16 @@ function toModels(roleList: RoleValue[] = []): AgentsModels {
   return models;
 }
 
+// config.agents → 表单值单一构造点（code-review item 6c1f14c01b5c）：
+// initialValues 与 useEffect 原各自展开同一份键清单，增删键会漂移——抽
+// buildFormValues 供两处复用。
+function buildFormValues(agents: AgentsConfig) {
+  return {
+    roleList: toRoleList(agents.models),
+    subagentModelOverride: (agents as Record<string, unknown>).subagent_model_override || '',
+  };
+}
+
 interface AgentModelPanelProps {
   config: ConfigData;
   onSave: (values: Partial<ConfigData>) => Promise<void>;
@@ -103,17 +114,11 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
   const [dragReady, setDragReady] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState<string | null>(null);
 
-  const initialValues = {
-    roleList: toRoleList(config.agents.models),
-    subagentModelOverride: (config.agents as Record<string, unknown>).subagent_model_override || '',
-  };
+  const initialValues = buildFormValues(config.agents);
 
   useEffect(() => {
-    form.setFieldsValue({
-      roleList: toRoleList(config.agents.models),
-      subagentModelOverride: (config.agents as Record<string, unknown>).subagent_model_override || '',
-    });
-  }, [config.agents.models, form]);
+    form.setFieldsValue(buildFormValues(config.agents));
+  }, [config.agents, form]);
 
   // 监听表单值：行内 Provider 选项回显保真 + 模型输入框 placeholder 随角色级缺省联动
   const watchList: RoleValue[] = Form.useWatch('roleList', form) || [];

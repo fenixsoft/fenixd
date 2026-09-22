@@ -144,7 +144,11 @@ def _provision_from_template() -> None:
         if not src.is_file():
             continue
         rel = src.relative_to(TEMPLATE)
-        if rel.parts and rel.parts[0] in ("README.md", "conftest.py"):
+        # 按文件名匹配（code-review item 769ce141db5b）：旧比较 rel.parts[0]
+        # 只挡顶层 README.md/conftest.py，骨架中嵌套的 conftest.py（如
+        # tests/conftest.py，pytest 收集 hook 的自然位置）会被拷入运行 fixture，
+        # 与「把 pytest 收集文件挡在 fixture 外」的意图相悖。
+        if rel.name in ("README.md", "conftest.py"):
             continue  # 骨架自述/收集排除文件，非运行时资产
         dst = ROOT / rel
         if dst.exists():

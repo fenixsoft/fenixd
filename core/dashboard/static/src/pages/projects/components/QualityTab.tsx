@@ -217,7 +217,11 @@ export default function QualityTab({ project, active }: QualityTabProps) {
   const loadedOnceRef = useRef(false);
 
   // ── 数据拉取（active 门控：未选中零请求） ────────────────────────
-  const loadItems = useCallback(async () => {
+  // opts.background：后台刷新（30s 心跳/SSE state|run_meta 帧/轮询完成兜底）
+  // 置真——失败静默不弹 toast（code-review item 6e920015ea87）：瞬态后端故障
+  // 不再每 30s（及每个 SSE 帧）弹「加载失败」直到恢复；仅用户动作（进入页签/
+  // 切换过滤/手动触发后的刷新）报错。
+  const loadItems = useCallback(async (opts?: { background?: boolean }) => {
     if (!active || !project) return;
     const seq = ++loadSeqRef.current;
     const firstLoad = !loadedOnceRef.current;
@@ -232,7 +236,9 @@ export default function QualityTab({ project, active }: QualityTabProps) {
       loadedOnceRef.current = true;
     } catch (e) {
       if (seq !== loadSeqRef.current) return;
-      message.error(`加载失败: ${e instanceof Error ? e.message : String(e)}`);
+      if (!opts?.background) {
+        message.error(`加载失败: ${e instanceof Error ? e.message : String(e)}`);
+      }
     } finally {
       if (firstLoad && seq === loadSeqRef.current) setLoading(false);
     }
@@ -261,8 +267,9 @@ export default function QualityTab({ project, active }: QualityTabProps) {
                 pollTimerRef.current = null;
               }
               // 运行结束：刷新问题表格（经 ref 取最新 loader，避免沿用创建
-              // interval 时捕获的旧 statusFilter——见上方 loadItemsRef 注释）
-              void loadItemsRef.current();
+              // interval 时捕获的旧 statusFilter——见上方 loadItemsRef 注释；
+              // 后台兜底刷新，失败静默）
+              void loadItemsRef.current({ background: true });
             }
           } catch {
             // 轮询失败继续（下轮重试）
@@ -318,7 +325,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
         (msg.type === 'state' || msg.type === 'run_meta') &&
         (!msg.project || msg.project === project)
       ) {
-        void loadItemsRef.current();
+        void loadItemsRef.current({ background: true });
         void loadProgressRef.current();
       }
     };
@@ -330,7 +337,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
     // 表格刷新——事件流不可达时数据仍保持新鲜）
     const heartbeat = window.setInterval(() => {
       if (!disposed) {
-        void loadItemsRef.current();
+        void loadItemsRef.current({ background: true });
         void loadProgressRef.current();
       }
     }, 30000);
