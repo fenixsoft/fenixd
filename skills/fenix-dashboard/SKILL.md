@@ -78,7 +78,9 @@ find_actual_port() {
 }
 if [ -z "$TMUX_RUNNING" ] && [ -z "$PORT_ALIVE" ]; then
     echo "🟢 启动 Dashboard 服务（tmux session: fenix-dashboard）..."
-    tmux new-session -d -s fenix-dashboard "python3 $DASH --serve"
+    # env -u CLAUDE_PID：防 claude-watchdog 绑会话自杀（tmux server 会把启动 shell 的
+    # CLAUDE_PID 继承进 pane；与 hook_engine restart-dashboard 固化命令对齐）
+    tmux new-session -d -s fenix-dashboard "env -u CLAUDE_PID python3 $DASH --serve"
     ACTUAL_PORT="$(find_actual_port)"
     if [ -z "$ACTUAL_PORT" ]; then
         echo "⚠️ 服务启动失败或超时，请检查 tmux session 'fenix-dashboard'（tmux attach -t fenix-dashboard 查看日志）"

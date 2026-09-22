@@ -110,7 +110,7 @@
 ## Dashboard 服务运维手册
 - 脚本: python3 {dash_script}（bin/fenix_dashboard.py），默认端口 8787
 - 【探活】必须双重校验：/api/projects 返回含 "projects" 字段的 JSON 且首页返回 200；仅检查 HTTP 200 会误判（SPA fallback 对任意路径返回 200）
-- 【常驻启动】未运行时使用 tmux 常驻：tmux new-session -d -s fenix-dashboard "python3 {dash_script} --serve"，随后轮询探活至就绪（约 1 秒）；tmux 常驻不受你的子进程退出影响
+- 【常驻启动】未运行时使用 tmux 常驻：tmux new-session -d -s fenix-dashboard "env -u CLAUDE_PID python3 {dash_script} --serve"（env -u 防 claude-watchdog 绑会话自杀，与 hook_engine restart-dashboard 固化命令对齐），随后轮询探活至就绪（约 1 秒）；tmux 常驻不受你的子进程退出影响
 - 【注册监控】python3 {dash_script} --add-project <项目根目录>；【列表】--list-projects；【停止】tmux kill-session -t fenix-dashboard
 - 若你处置期间发现 dashboard 已退出/未监听，恢复常驻是你的职责（探测 → 重启 → 注册）
 
