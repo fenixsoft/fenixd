@@ -55,3 +55,14 @@ def read_code_review_items(project_root, statuses=None):
 def read_code_review_progress(project_root) -> dict:
     """转导 ``core.code_review.read_progress``（进度结构保持一致）。"""
     return read_progress(project_root)
+
+
+def read_code_review_fix_progress(project_root) -> dict:
+    """转导 ``core.code_fix.read_progress``（自动修复进度，task 8.1）。
+
+    缺失/损坏由 core 层兜底返回缺省态（``running=false, phase="idle",
+    total=0, done=0``），不抛异常——读侧 MUST NOT 500。
+    """
+    from core.code_fix import read_progress as _fix_read_progress
+
+    return _fix_read_progress(project_root)

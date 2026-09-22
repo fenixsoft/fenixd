@@ -15,7 +15,7 @@ import SyncFromUserButton, { SETTINGS_ACTIONS_ROW_STYLE } from './SyncFromUserBu
 
 const { Text } = Typography;
 
-// 与后端 KNOWN_AGENT_TYPES 严格一致（含 code-review 共 10 个角色，勿增删；
+// 与后端 KNOWN_AGENT_TYPES 严格一致（含 code-review 共 11 个角色，勿增删；
 // code-review item f62e36d1531f：旧注释写 9 个，已漂移）
 const AGENT_ROLES = [
   { key: 'implementer', label: 'Implementer（执行）' },
@@ -32,6 +32,9 @@ const AGENT_ROLES = [
   // add-code-review-agent-and-quality-tab：code-review（周期性仓库级代码审查），
   // 独立模型链（agents.models.code-review → 回退 self-review → administrator）
   { key: 'code-review', label: 'Code-Review（代码审查）' },
+  // add-code-review-auto-fix：code-fix（自动修复车道），模型链复用 code-review
+  // （agents.models.code-fix → 回退 code-review → self-review → administrator）
+  { key: 'code-fix', label: 'Code-Fix（自动修复）' },
 ];
 
 // 后端 normalize_agent_models 输出 → 编辑器行（str / 对象 / 混合数组统一为 {provider, model}）

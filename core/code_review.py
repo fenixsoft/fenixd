@@ -1077,6 +1077,47 @@ def _mark_in_spec(project_root, item_ids: List[str], spec_name: str) -> None:
     _with_lock(path, _do)
 
 
+def mark_resolved(project_root, item_ids: List[str]) -> int:
+    """自动修复车道核销（add-code-review-auto-fix D7）：把指定条目置 ``resolved``。
+
+    与 ``set_item_status`` 的分工：后者是**人工**流转（仅 open/ignored），
+    ``resolved`` 不可人工置入；本函数是**框架内部写路径**，形态对齐
+    ``_mark_in_spec``（读-改-写走 ``_with_lock`` + ``_atomic_write``，只动
+    命中条目）。约束（design 契约要点）：``resolved`` 只能由**合回成功**
+    驱动——调用方（code-fix 批 worker）MUST 在 merge-back 成功后才调本函数，
+    回归未通过或未合回时 MUST NOT 置 resolved。
+
+    参数:
+        project_root: 项目根（主树——台账在主树）。
+        item_ids: 本批中产物行 ``status == "fixed"`` 的条目 id 列表。
+            缺失的 item_id 静默跳过（不报错——台账并发演进下属正常态）。
+
+    返回:
+        命中并置为 resolved 的条目数（供进度 ``done`` 累计，MUST 以本值为准
+        而非批条数——skipped 与未命中不计入）。
+    """
+    path = items_path(project_root)
+    hit = 0
+
+    def _do() -> None:
+        nonlocal hit
+        current = _read_items_unlocked(path)
+        for iid in dict.fromkeys(item_ids):  # 去重：重复 id 只命中一次
+            rec = current.get(iid)
+            if rec is None:
+                continue
+            rec["status"] = "resolved"
+            rec["resolution"] = "code-fix-auto"
+            hit += 1
+        content = "".join(
+            json.dumps(current[k], ensure_ascii=False) + "\n" for k in sorted(current)
+        )
+        _atomic_write(path, content)
+
+    _with_lock(path, _do)
+    return hit
+
+
 def _indent_block(text: str, prefix: str = "  ") -> List[str]:
     """把多行文本逐行加前缀（空行保留为裸空行），供嵌入 Markdown 列表。
 

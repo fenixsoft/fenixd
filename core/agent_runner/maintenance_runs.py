@@ -950,6 +950,22 @@ def run_code_review(
                         if _log is not None:
                             _log.warning("code-review", f"全仓快照核销失败（run {run_id}）")
 
+    # ── 自动修复激活（task 7.1 / design D4 路径一）────────────────────────
+    # 成功落账且本轮 inserted > 0（产生了新 open 条目）→ 触发一次编排检查点。
+    # 经可选的 runner._code_fix_orchestrator（未装配时静默跳过）；异常记
+    # WARNING 不使审查 run 失败（评审车道异常不得影响审查既有判定）。
+    if run_ok and inserted > 0:
+        _orch = getattr(runner, "_code_fix_orchestrator", None)
+        if _orch is not None:
+            try:
+                _orch.checkpoint()
+            except Exception as e:  # noqa: BLE001 — 激活失败不影响审查 run
+                _log = getattr(runner, "logger", None)
+                if _log is not None:
+                    _log.warning(
+                        "code-review", f"code-fix 检查点触发失败（已忽略）: {e}"
+                    )
+
     return CodeReviewResult(
         run_id=run_id,
         success=run_ok,
@@ -1053,7 +1069,7 @@ def _unique_regression_run_id(runner) -> str:
         candidate = f"{base}-{n}"
 
 
-def run_regression(runner, spec, reason: str = "manual") -> RegressionResult:
+def run_regression(runner, spec, reason: str = "manual", project_root=None, lock_root=None) -> RegressionResult:
     """执行一次全量回归（task 3.1，对齐 run_code_review 形态）。
 
     与 run_code_review 不同：**不经 LLM**——直接按 verify.yaml regression.cmd
@@ -1067,6 +1083,13 @@ def run_regression(runner, spec, reason: str = "manual") -> RegressionResult:
             project_root/logger）。
         spec: 已解析的 RegressionSpec（verify.yaml regression 段）。
         reason: manual / scheduled（写进结果快照供审计，缺省 manual）。
+        project_root: 执行根（add-code-review-auto-fix D10）。缺省 None
+            回落 ``runner.project_root``（既有调用点零迁移）。code-fix 批
+            worker 传 worktree 根——回归命令 cwd 与快照均落 worktree
+            （快照不指望出现在主树「测试回归」分面）。
+        lock_root: 主机级锁锚定根（D10）。缺省 None。code-fix 批 worker
+            传主树根，使 worktree 内回归与主树/其它 worktree 共用同一把
+            ``.fenix/full-suite.lock``。
 
     返回:
         RegressionResult(status=快照状态, snapshot=完整快照)。
@@ -1075,12 +1098,14 @@ def run_regression(runner, spec, reason: str = "manual") -> RegressionResult:
 
     run_id = _unique_regression_run_id(runner)
     log = getattr(runner, "logger", None)
+    exec_root = project_root if project_root is not None else runner.project_root
 
     try:
         snapshot = run_and_write_regression(
-            runner.project_root,
+            exec_root,
             spec,
             logger=log,
+            lock_root=lock_root,
         )
     except Exception as e:  # noqa: BLE001 — 执行异常兜底为失败快照
         snapshot = {
@@ -1110,3 +1135,232 @@ def run_regression(runner, spec, reason: str = "manual") -> RegressionResult:
         error=snapshot.get("reason", "") if not ok else "",
         snapshot=snapshot,
     )
+
+
+# ── 自动修复执行（add-code-review-auto-fix，task 6.1-6.3）────────────────
+
+
+class CodeFixResult:
+    """code-fix run 的结果信封（run_code_fix 返回，add-code-review-auto-fix）。
+
+    与 CodeReviewResult / RegressionResult 同形态的维护型 run 结果：
+    - ``fixed`` / ``skipped``: out 产物行中 status=fixed / skipped 的计数
+      （skipped 条目 MUST 保持 open——由编排器在合回成功后只核销 fixed）；
+    - ``error``: success=False 时的失败原因（含产物硬门拦截文案）。
+    """
+
+    def __init__(
+        self,
+        run_id: str = "",
+        success: bool = True,
+        fixed: int = 0,
+        skipped: int = 0,
+        error: str = "",
+        output: str = "",
+    ):
+        self.run_id = run_id
+        self.success = success
+        self.fixed = fixed
+        self.skipped = skipped
+        self.error = error
+        self.output = output
+
+
+def _unique_code_fix_run_id(runner) -> str:
+    """生成不冲突的 ``code-fix-<epoch>`` run_id（task 6.2）。
+
+    撞名判据（对齐 _unique_code_review_run_id 的退避形态）：runner 侧在飞
+    run_id + 主树 ``.fenix/code-review/fix-out-<candidate>.jsonl`` 残留
+    （run 的产物文件落在 worktree，此处以主树残留近似兜底并发窗口）。
+    目标已占时追加 ``-<n>`` 退避（n 从 1 起递增）。
+    """
+    base = f"code-fix-{int(time.time())}"
+    candidate = base
+    n = 0
+    cr_dir = runner.project_root / ".fenix" / "code-review"
+    running = getattr(runner, "_running_agents", None) or {}
+    while True:
+        if candidate in running or (cr_dir / f"fix-out-{candidate}.jsonl").exists():
+            n += 1
+            candidate = f"{base}-{n}"
+            continue
+        return candidate
+
+
+def _check_code_fix_artifact(items, out_path: Path) -> str | None:
+    """code-fix run 的产物硬门（task 6.2，对齐 _check_repo_code_review_artifact）。
+
+    判据（fail-closed）：
+    - ``items`` 为空 → None（调用方前置跳过场景，不重复判定）；
+    - ``out_path`` 不存在，或存在但**零有效行** → 返回失败原因。
+
+    「有效行」与编排侧 ``read_fix_out`` 同口径：非空、可解析为 dict、含
+    非空 ``item_id`` 且 ``status ∈ {fixed, skipped}``——「该条处置完了」的
+    登记形态。run exit 0 但无产物即判失败，空跑不得当成功。
+    """
+    if not items:
+        return None
+    if not out_path.is_file():
+        return (
+            f"code-fix 产物缺失: 注入清单 {len(items)} 条但 out 文件不存在"
+            f"（{out_path}）——run 正常退出但零产物，判失败（fail-closed）"
+        )
+    valid = 0
+    for line in out_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if (
+            isinstance(rec, dict)
+            and rec.get("item_id")
+            and rec.get("status") in ("fixed", "skipped")
+        ):
+            valid += 1
+    if valid == 0:
+        return (
+            f"code-fix 产物零有效行: 注入清单 {len(items)} 条但 {out_path} "
+            "无一条可解析的 {item_id, status} 行，判失败（fail-closed）"
+        )
+    return None
+
+
+def run_code_fix(
+    runner,
+    worktree_root,
+    items: list,
+    run_id: str | None = None,
+    failure_summary: str = "",
+) -> CodeFixResult:
+    """执行一次 code-fix（自动修复）run（task 6.1，对齐 run_code_review 形态）。
+
+    与 run_code_review 的差异：**在 worktree 内执行**（cwd=worktree_root，
+    agent 可改码）；产物为逐条处置结果 ``fix-out-<run_id>.jsonl``（每行
+    ``{item_id, status: fixed|skipped, file}``）；不经台账（核销由编排器在
+    合回成功后经 ``core.code_review.mark_resolved`` 驱动）。
+
+    - run_id 前缀 ``code-fix-<epoch>``：运维车道，不占 spec 维度预算、
+      不计入每日 agent run 计数（不走 _execute_agent）；
+    - 模型解析链（design D1）：agents.models.code-fix 分配优先 → 回退
+      agents.models.code-review → 回退 self-review → 回退 administrator →
+      再回退 _get_admin_model → 默认网关（缺省即与 code-review 同源）；
+    - 产物硬门：注入清单非空而 out 缺失/零有效行 → success=False；
+    - ``failure_summary`` 非空时注入 prompt（回归失败重试轮，task 5.6）。
+
+    Args:
+        runner: AgentRunner 实例（门面依赖注入，D2b 规则 1）。
+        worktree_root: 本批 worktree 根（agent 工作目录）。
+        items: 本批台账条目 record 列表（select_batch 产物）。
+        run_id: 缺省自动生成（code-fix-<epoch>）。
+        failure_summary: 重试轮注入的失败用例摘要（首轮为空）。
+    """
+    run_id = run_id or _unique_code_fix_run_id(runner)
+    wt = Path(worktree_root)
+    out_path = wt / ".fenix" / "code-review" / f"fix-out-{run_id}.jsonl"
+    try:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        return CodeFixResult(
+            run_id=run_id, success=False, error=f"out 目录创建失败: {e}"
+        )
+
+    prompt = runner._build_prompt(
+        run_id,
+        "code-fix",
+        detail={
+            "items": items,
+            "out_path": str(out_path),
+            "worktree": str(wt),
+            "failure_summary": failure_summary,
+        },
+    )
+
+    # 模型解析链（D1）：code-fix > code-review > self-review > administrator
+    # > _get_admin_model → 默认网关（缺省与 code-review 同源）
+    env_overrides: Dict[str, str] = {}
+    assignment = (
+        runner._get_agent_model_assignment("code-fix")
+        or runner._get_agent_model_assignment("code-review")
+        or runner._get_agent_model_assignment("self-review")
+        or runner._get_agent_model_assignment("administrator")
+    )
+    if assignment:
+        provider, model_override = assignment[0]
+        env_overrides["ANTHROPIC_BASE_URL"] = provider["baseurl"]
+        env_overrides["ANTHROPIC_API_KEY"] = provider["apikey"]
+        env_overrides["ANTHROPIC_MODEL"] = model_override
+        env_overrides["CLAUDE_CONFIG_DIR"] = str(runner._ensure_agent_config_dir(provider["name"], model_override))
+        for k, v in (provider.get("env") or {}).items():
+            env_overrides[k] = v
+    else:
+        model_override = runner._get_admin_model()
+
+    try:
+        output, _turns, _session_id, _usage_info = runner._run_claude(
+            prompt,
+            wt,
+            run_id,
+            model_override,
+            env_overrides,
+            max_turns=runner._get_config("agents.max_turns", 300),
+            spec_name="code-review-fix",
+            agent_type="code-fix",
+        )
+        run_ok = True
+        error = ""
+    except Exception as e:  # noqa: BLE001 — run 异常兜底为失败信封
+        output = ""
+        run_ok = False
+        error = str(e)
+
+    # ── 产物硬门（task 6.2）：run exit 0 但 out 缺失/零有效行 → 判失败 ──
+    if run_ok:
+        gate_err = _check_code_fix_artifact(items, out_path)
+        if gate_err is not None:
+            run_ok = False
+            error = gate_err
+            _log = getattr(runner, "logger", None)
+            if _log is not None:
+                _log.error(
+                    "code-fix",
+                    f"产物硬门拦截: run={run_id} items={len(items)} — {gate_err}",
+                )
+
+    # out 解析（fixed/skipped 计数；skipped 条目由编排器保持 open）
+    fixed = skipped = 0
+    if run_ok:
+        for rec in _read_fix_out_rows(out_path):
+            if rec.get("status") == "fixed":
+                fixed += 1
+            elif rec.get("status") == "skipped":
+                skipped += 1
+
+    return CodeFixResult(
+        run_id=run_id,
+        success=run_ok,
+        fixed=fixed,
+        skipped=skipped,
+        error=error,
+        output=output,
+    )
+
+
+def _read_fix_out_rows(out_path: Path) -> list:
+    """读取 out 产物行（dict 列表；损坏行跳过、缺文件返回空）。"""
+    rows: list = []
+    if not out_path.is_file():
+        return rows
+    for line in out_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(rec, dict) and rec.get("item_id"):
+            rows.append(rec)
+    return rows
