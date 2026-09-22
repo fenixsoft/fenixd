@@ -15,8 +15,12 @@ D3 patch 缝隙：本组使用 `time` 模块（入队时刻/老化计时），�
 
 from __future__ import annotations
 
+import json
+import os
+import subprocess
 import threading
 import time
+from pathlib import Path
 from typing import Dict
 
 from core.state_machine import (
@@ -66,6 +70,11 @@ class QQQueueMixin:
         # 瞬断终态触发后按 `transient_redispatch_delay_seconds`（缺省 600s）延迟重入
         # _on_spec_ready，同 instant_fail_timers 同款幂等去重。
         self._transient_timers: set = set()
+        # add-impl-ocr-parallel-lane（任务 4.1/4.2）：ocr 审查车道在飞登记
+        # {spec_name: True} + 专锁。单飞去重判据（join 侧幂等触发与 merge-back
+        # 时点启动共用）；车道线程完成回调经同锁摘除登记。
+        self._ocr_lane_lock = threading.Lock()
+        self._ocr_lane_inflight: Dict[str, bool] = {}
 
     def _get_spec_priority(self, spec_name: str) -> int:
         """读取 SPEC 的 priority，缺省为 5。"""
@@ -1307,12 +1316,23 @@ class QQQueueMixin:
                     # 派发，不残留本轮锚点。
                     # ── 锚点清除见 _run_agent_worker 入口（tasks 1.5）──────
                     if result.branch:
+                        # add-impl-ocr-parallel-lane（任务 4.1）：ocr join 指纹的
+                        # base 分量在本点捕获（全部 merge 前置闸门之后、merge-back
+                        # 之前）——merge 后 merge-base(main, branch) 恒为 branch
+                        # head（空 diff），base MUST 在 merge 前取。随锚点同批
+                        # 持久化，重启窗口内恢复链仍可按当前指纹重跑车道。
+                        # 捕获失败置 None（车道启动时回退 merge-base 语义，见
+                        # _start_impl_ocr_lane 调用点）。
+                        _ocr_base = None
+                        if self._impl_ocr_enabled():
+                            _ocr_base = self._git_merge_base_main(result.branch)
                         try:
                             self._pm.state_machine.update_spec(
                                 spec_name,
                                 {
                                     "branch": result.branch,
                                     "implementer_run": result.run_id,
+                                    "_ocr_base_commit": _ocr_base,
                                 },
                             )
                             self._pm.logger.info(
@@ -2093,6 +2113,500 @@ class QQQueueMixin:
         self._pm.logger.info(
             "pm_engine", f"Implement done, verifier queued for '{spec_name}'"
         )
+        # add-impl-ocr-parallel-lane（任务 4.1）：merge-back 成功且 tester 派发的
+        # 同一时点启动 ocr 审查车道——与 verifier 车道并行，join 于 testing 出口
+        # （_ocr_join_gate）。指纹取本方法开头持久化的锚点（_ocr_base_commit）+
+        # 分支 head；任何异常都不阻塞 merge 收尾主流程（车道缺席时 join 门禁会
+        # 幂等补启，见 4.2）。
+        try:
+            fp = self._ocr_current_fingerprint(spec_name)
+            if fp is not None:
+                self._start_impl_ocr_lane(spec_name, fp)
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"ocr 车道启动失败 '{spec_name}'（非阻塞，join 门禁兜底补启）: "
+                f"{type(e).__name__}: {e}",
+            )
+
+    # ── impl ocr 审查车道接线与 testing 出口 join（add-impl-ocr-parallel-lane
+    #    任务 4.1-4.6）───────────────────────────────────────────────────────
+
+    def _impl_ocr_enabled(self) -> bool:
+        """车道总开关（verify.impl_code_review）。关闭时 join 门禁零校验放行。"""
+        from core.config import ConfigLoader
+
+        return ConfigLoader.get_impl_code_review_enabled(self._pm.config)
+
+    def _git_merge_base_main(self, branch: str) -> str | None:
+        """``git merge-base main <branch>``（merge 前捕获 ocr 指纹 base 分量）。
+
+        失败（非 git 仓库/分支不存在/超时）返回 None——调用方以分支 head 兜底
+        （空 diff → 0 findings 优雅降级，design D4）。
+        """
+        try:
+            r = subprocess.run(
+                ["git", "-C", str(self._pm.project_root), "merge-base", "main", branch],
+                capture_output=True, text=True, timeout=15,
+            )
+            if r.returncode == 0:
+                return r.stdout.strip() or None
+        except Exception:  # noqa: BLE001
+            pass
+        return None
+
+    def _git_rev_parse(self, ref: str) -> str | None:
+        """``git rev-parse <ref>``（车道指纹 head 分量）。失败返回 None。"""
+        try:
+            r = subprocess.run(
+                ["git", "-C", str(self._pm.project_root), "rev-parse", ref],
+                capture_output=True, text=True, timeout=15,
+            )
+            if r.returncode == 0:
+                return r.stdout.strip() or None
+        except Exception:  # noqa: BLE001
+            pass
+        return None
+
+    def _ocr_current_fingerprint(self, spec_name: str) -> dict | None:
+        """join 读侧权威指纹 ``(branch, merge_base, head_commit)``（任务 4.3）。
+
+        base 分量取 spec entry 持久化的 ``_ocr_base_commit``（merge 前锚点捕获），
+        缺失时以 head 兜底（与车道写侧 `base or head` 回退同构，两侧相等才视为
+        新鲜）。分支不可得返回 None（无审查对象）。
+        """
+        entry = self._pm.state_machine.read_one(spec_name) or {}
+        branch = entry.get("branch")
+        if not branch:
+            return None
+        head = self._git_rev_parse(branch)
+        if not head:
+            return None
+        base = entry.get("_ocr_base_commit") or head
+        return {"branch": branch, "merge_base": base, "head_commit": head}
+
+    def _read_ocr_artifact(self, spec_name: str) -> dict | None:
+        """读主树车道产物 ``.fenix/verify-progress/<spec>/code-review.json``。
+
+        缺失/损坏/非对象 → None（join 按「产物缺失」分支处理）。
+        """
+        path = (
+            Path(self._pm.project_root)
+            / ".fenix" / "verify-progress" / spec_name / "code-review.json"
+        )
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return data if isinstance(data, dict) else None
+
+    def _ocr_lane_running(self, spec_name: str) -> bool:
+        """车道单飞判据：在飞登记表命中即 True。"""
+        with self._ocr_lane_lock:
+            return bool(self._ocr_lane_inflight.get(spec_name))
+
+    def _start_impl_ocr_lane(self, spec_name: str, fingerprint: dict) -> str | None:
+        """幂等启动 ocr 审查车道线程（任务 4.1/4.2）。
+
+        在飞单飞去重（返回 None）；线程体跑 ``runner.run_impl_ocr``（维护型
+        run 形态：不占 spec 预算、不走 _execute_agent），完成回调
+        ``_on_impl_ocr_lane_finished`` 唤醒 join 重评。返回启动的标记串
+        （"started"）或 None（未启动：开关关/已在飞/分支不可得）。
+
+        Args:
+            fingerprint: ``_ocr_current_fingerprint`` 产物（branch/merge_base/
+                head_commit）。base 缺失时以 head 兜底（空 diff 优雅降级）。
+        """
+        if not self._impl_ocr_enabled():
+            return None
+        branch = fingerprint.get("branch")
+        head = fingerprint.get("head_commit")
+        if not branch or not head:
+            return None
+        base = fingerprint.get("merge_base") or head
+        with self._ocr_lane_lock:
+            if self._ocr_lane_inflight.get(spec_name):
+                return None
+            self._ocr_lane_inflight[spec_name] = True
+
+        def _run() -> None:
+            run_id = spec_name
+            try:
+                artifact = self._pm.agent_runner.run_impl_ocr(
+                    spec_name=spec_name,
+                    branch=branch,
+                    base_commit=base,
+                    head_commit=head,
+                )
+                if isinstance(artifact, dict) and artifact.get("run_id"):
+                    run_id = str(artifact["run_id"])
+            except Exception as e:  # noqa: BLE001 — 车道线程异常由产物缺失分支兜底
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"ocr 车道线程异常 '{spec_name}'（非阻塞）: "
+                    f"{type(e).__name__}: {e}",
+                )
+            finally:
+                with self._ocr_lane_lock:
+                    self._ocr_lane_inflight.pop(spec_name, None)
+                try:
+                    self._on_impl_ocr_lane_finished(spec_name, run_id)
+                except Exception as e:  # noqa: BLE001 — 回调异常不影响主流程
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"ocr 车道完成回调异常 '{spec_name}'（非阻塞）: "
+                        f"{type(e).__name__}: {e}",
+                    )
+
+        threading.Thread(
+            target=_run, name=f"impl-ocr-lane-{spec_name}", daemon=True
+        ).start()
+        self._pm.logger.info(
+            "pm_engine",
+            f"ocr 车道已启动 '{spec_name}': {branch} "
+            f"{str(base)[:8]}..{str(head)[:8]}",
+        )
+        return "started"
+
+    def _ocr_join_pending_fields(self, origin: str) -> dict:
+        """停等-唤醒 pending 标量字段（STATE 字典字段不回传，一律标量）。"""
+        return {"_ocr_join_wait": 1, "_ocr_join_agent": origin}
+
+    @staticmethod
+    def _ocr_join_pending_cleared() -> dict:
+        """pending 字段清账形态（join 出口三支共用）。"""
+        return {"_ocr_join_wait": None, "_ocr_join_agent": None}
+
+    def _ocr_join_clear_pending(self, spec_name: str) -> None:
+        """清 pending 停等标记（放行/裁决完成时调用；失败静默）。"""
+        try:
+            self._pm.state_machine.update_spec(
+                spec_name, self._ocr_join_pending_cleared()
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _ocr_join_await_lane(self, spec_name: str, origin: str, fingerprint: dict,
+                             reason: str) -> str:
+        """停等分支：幂等触发车道 + 落 pending 标量 + 返回 defer（任务 4.2）。
+
+        车道启动失败且不在飞 → MUST NOT 无限停等：fail-open 放行 + WARNING
+        留痕（对齐 unavailable 的环境降级语义）。
+        """
+        started = None
+        try:
+            started = self._start_impl_ocr_lane(spec_name, fingerprint)
+        except Exception as e:  # noqa: BLE001
+            self._pm.logger.warning(
+                "pm_engine",
+                f"ocr 车道幂等触发失败 '{spec_name}': {type(e).__name__}: {e}",
+            )
+        if started is None and not self._ocr_lane_running(spec_name):
+            self._pm.logger.warning(
+                "pm_engine",
+                f"ocr join 停等放弃 '{spec_name}'（车道未启动且不在飞，"
+                f"fail-open 放行）: {reason}",
+            )
+            self._ocr_join_clear_pending(spec_name)
+            return "pass"
+        self._pm.state_machine.update_spec(
+            spec_name, self._ocr_join_pending_fields(origin)
+        )
+        self._pm.logger.info(
+            "pm_engine",
+            f"ocr join 停等 '{spec_name}'（{reason}）——spec 停留 testing，"
+            f"车道完成回调唤醒重评",
+        )
+        return "defer"
+
+    def _ocr_join_reject(self, spec_name: str, entry: dict, actionable: list,
+                         rounds: int, artifact: dict) -> str:
+        """gate 档打回（任务 4.4）：testing → bug-found → 修复轮重派。
+
+        与验证失败既有打回同通道（零新状态）：transition bug-found →
+        error 注明 ocr findings → ``_ocr_fix_rounds`` 递增持久化 → 写修复轮
+        directive（任务 5.1 join 侧写点）→ ``_on_spec_bug_found`` 原地打回重派。
+        """
+        sm = self._pm.state_machine
+        lane_run_id = str(artifact.get("run_id") or "")
+        sm.transition(
+            spec_name, "bug-found",
+            trigger_run_id=entry.get("tester_run") or None,
+            agent_type="planner-judge", channel="auto",
+        )
+        sm.update_spec(
+            spec_name,
+            {
+                "error": (
+                    f"ocr 收尾审查发现 {len(actionable)} 条未裁决 findings"
+                    f"（gate 档打回，修复轮 {rounds + 1}/1）"
+                ),
+                "_ocr_fix_rounds": rounds + 1,
+                **self._ocr_join_pending_cleared(),
+            },
+        )
+        self._write_ocr_findings_directive(spec_name, actionable, rounds + 1)
+        self._pm.logger.warning(
+            "pm_engine",
+            f"ocr join gate 打回 '{spec_name}': {len(actionable)} 条 findings，"
+            f"修复轮 {rounds + 1}/1（lane run {lane_run_id}）",
+        )
+        self._pm._on_spec_bug_found(
+            spec_name, failure_class="product", run_id=lane_run_id
+        )
+        return "reject"
+
+    def _write_ocr_findings_directive(self, spec_name: str, findings: list,
+                                      round_no: int) -> None:
+        """写修复轮 directive 文件（任务 5.1 join 侧写点，prompt_builder 读）。
+
+        原子替换；写失败仅 WARNING（修复轮注入缺席时实现者按无义务轮处理，
+        gate 轮次上限仍兜底防死循环）。
+        """
+        path = (
+            Path(self._pm.project_root)
+            / ".fenix" / "verify-progress" / spec_name
+            / "ocr_findings_directive.json"
+        )
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_name(".ocr_findings_directive.json.tmp")
+            tmp.write_text(
+                json.dumps(
+                    {
+                        "spec": spec_name,
+                        "round": round_no,
+                        "max_rounds": 1,
+                        "findings": findings,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            os.replace(tmp, path)
+        except OSError as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"ocr findings directive 写入失败 '{spec_name}'（非阻塞）: {e}",
+            )
+
+    def _ocr_transfer_findings_to_ledger(self, spec_name: str, findings: list,
+                                         lane_run_id: str, why: str) -> None:
+        """findings 转 code-review 台账（任务 4.5/4.6，status=open）。
+
+        台账条目词表仅 open/resolved/ignored（无 deferred，业务语义 deferred
+        以 open + 描述注记承载）；spec_name 归属本 spec（spec_map 按同源指纹
+        函数现算）；finding 附处置 reason（拼入 description）。落账异常仅
+        WARNING——转台账是放行路径的观测增强，不阻塞 join。
+        """
+        try:
+            from core.code_review import fingerprint as cr_fingerprint, upsert_findings
+
+            mapped = []
+            spec_map = {}
+            for f in findings:
+                if not isinstance(f, dict):
+                    continue
+                file_ = str(f.get("path") or "")
+                content = str(f.get("content") or "").strip()
+                if not file_:
+                    continue
+                category = str(f.get("category") or "general")
+                title = content[:120] or "ocr finding"
+                reason = str(f.get("reason") or "").strip()
+                desc = content
+                if reason:
+                    desc = f"{content}\n\n[impl-ocr 处置注记] {reason}"
+                mapped.append(
+                    {
+                        "file": file_,
+                        "line": f.get("start_line") or 1,
+                        "severity": str(f.get("severity") or "info"),
+                        "category": category,
+                        "title": title,
+                        "description": desc,
+                        "suggestion": str(f.get("suggestion") or ""),
+                    }
+                )
+                spec_map[cr_fingerprint(file_, category, title)] = spec_name
+            if not mapped:
+                return
+            stats = upsert_findings(
+                self._pm.project_root,
+                mapped,
+                review_id=lane_run_id or f"impl-ocr-{spec_name}",
+                review_kind="impl-ocr",
+                spec_map=spec_map,
+            )
+            self._pm.logger.info(
+                "pm_engine",
+                f"ocr findings 转台账 '{spec_name}'（{why}）: "
+                f"inserted={stats.get('inserted', 0)} "
+                f"updated={stats.get('updated', 0)}",
+            )
+        except Exception as e:  # noqa: BLE001
+            self._pm.logger.warning(
+                "pm_engine",
+                f"ocr findings 转台账失败 '{spec_name}'（非阻塞）: "
+                f"{type(e).__name__}: {e}",
+            )
+
+    def _ocr_join_gate(self, spec_name: str, origin: str) -> str:
+        """testing 出口 ocr join 门禁（任务 4.2-4.6 的机械裁决单点）。
+
+        由 ``pipeline._apply_verified``（verified transition 前）与
+        ``fast_track._fast_track_advance_to_verified``（testing 转移后）调用。
+
+        Returns:
+            - ``"pass"``：放行，调用方继续 verified 推进；
+            - ``"defer"``：车道未就绪——已落 pending 停等标记/已幂等触发车道，
+              调用方 MUST 停止推进（spec 停留 testing，tester 不重派）；
+            - ``"reject"``：gate 档打回已在本方法内完成（bug-found + 修复轮
+              重派），调用方直接返回。
+        """
+        from core.config import ConfigLoader
+
+        if not self._impl_ocr_enabled():
+            return "pass"
+        fingerprint = self._ocr_current_fingerprint(spec_name)
+        if fingerprint is None:
+            # 无实现分支/分支 ref 不可得：无审查对象，放行留痕
+            self._pm.logger.warning(
+                "pm_engine",
+                f"ocr join 放行 '{spec_name}'（分支指纹不可得，无审查对象）",
+            )
+            self._ocr_join_clear_pending(spec_name)
+            return "pass"
+        artifact = self._read_ocr_artifact(spec_name)
+        status = artifact.get("status") if isinstance(artifact, dict) else None
+
+        if status == "unavailable":
+            # 任务 4.6：unavailable 两档均放行 + WARNING 审计留痕
+            self._pm.logger.warning(
+                "pm_engine",
+                f"ocr 车道产物 unavailable，join 放行 '{spec_name}': "
+                f"{str(artifact.get('reason') or '')[:200]}",
+            )
+            self._ocr_join_clear_pending(spec_name)
+            return "pass"
+
+        if status == "completed":
+            fp = artifact.get("fingerprint") or {}
+            if (
+                fp.get("branch"),
+                fp.get("merge_base"),
+                fp.get("head_commit"),
+            ) != (
+                fingerprint["branch"],
+                fingerprint["merge_base"],
+                fingerprint["head_commit"],
+            ):
+                # 任务 4.3：指纹 stale fail-closed——不采信不放行，触发按当前
+                # 指纹重跑（在跑单飞去重），spec 停等。
+                return self._ocr_join_await_lane(
+                    spec_name, origin, fingerprint,
+                    reason="产物指纹不新鲜（stale fail-closed），按当前指纹重跑",
+                )
+            findings = artifact.get("findings")
+            if not isinstance(findings, list):
+                findings = []
+            actionable = [
+                f for f in findings
+                if isinstance(f, dict) and f.get("disposition") != "rejected"
+            ]
+            self._ocr_join_clear_pending(spec_name)
+            if not actionable:
+                return "pass"  # 双绿放行
+            mode = ConfigLoader.get_impl_code_review_mode(self._pm.config)
+            lane_run_id = str(artifact.get("run_id") or "")
+            if mode == "advisory":
+                # 任务 4.6：advisory 恒写台账后放行，永不打回
+                self._ocr_transfer_findings_to_ledger(
+                    spec_name, actionable, lane_run_id, "advisory 档放行"
+                )
+                return "pass"
+            entry = self._pm.state_machine.read_one(spec_name) or {}
+            try:
+                rounds = int(entry.get("_ocr_fix_rounds", 0) or 0)
+            except (TypeError, ValueError):
+                rounds = 0
+            if rounds < 1:
+                return self._ocr_join_reject(
+                    spec_name, entry, actionable, rounds, artifact
+                )
+            # 任务 4.5：修复轮上限（_ocr_fix_rounds >= 1）仍出现的 findings
+            # 全部转台账（status=open、spec 归属本 spec），join 放行防死循环。
+            self._ocr_transfer_findings_to_ledger(
+                spec_name, actionable, lane_run_id,
+                f"修复轮上限（{rounds}）后仍出现，转台账放行",
+            )
+            return "pass"
+
+        # 产物缺失/损坏（车道未运行或未完成）→ 幂等触发 + 停等（任务 4.2，
+        # 覆盖 daemon 重启恢复经重派路径再派 verifier、无 merge-back 事件的形态）
+        return self._ocr_join_await_lane(
+            spec_name, origin, fingerprint, reason="产物缺失或车道未完成"
+        )
+
+    def _on_impl_ocr_lane_finished(self, spec_name: str, run_id: str) -> None:
+        """车道完成回调（任务 4.1/4.2 唤醒侧）：重评 join 并应用 deferred 推进。
+
+        仅当 spec 停留在 testing 且 pending 停等标记在场时动作；其余形态
+        （tester 未完成/规格已迁移/旧回调）幂等空转。
+        """
+        sm = self._pm.state_machine
+        entry = sm.read_one(spec_name) or {}
+        if not entry.get("_ocr_join_wait"):
+            return  # tester 未完成或无停等义务——tester 出口时 join 门禁即时裁决
+        if entry.get("status") != "testing":
+            return  # spec 已迁移（冻结/人工接管等）——不再唤醒推进
+        origin = entry.get("_ocr_join_agent") or "planner-judge"
+        self._pm.logger.info(
+            "pm_engine",
+            f"ocr 车道完成唤醒 join 重评 '{spec_name}'（origin={origin}，"
+            f"lane run {run_id}）",
+        )
+        decision = self._ocr_join_gate(spec_name, origin)
+        if decision == "pass":
+            self._resume_verified_after_ocr(spec_name, origin)
+        # "reject"：打回已在 gate 内完成；"defer"：gate 幂等重触发新车道后继续停等
+
+    def _resume_verified_after_ocr(self, spec_name: str, origin: str) -> None:
+        """停等唤醒后的 verified 推进续做（任务 4.2）。
+
+        - pipeline 起源（origin=planner-judge）：重载验证报告后重入
+          ``_apply_verified``——门禁（进度核对/报告闸/洗白门）幂等重跑，通过后
+          完成 testing → verified；
+        - fast-track 起源：重入 ``_fast_track_advance_to_verified``——
+          implemented→testing 已发生，同状态转移幂等保证安全。
+        """
+        from types import SimpleNamespace
+
+        entry = self._pm.state_machine.read_one(spec_name) or {}
+        tester_run = entry.get("tester_run") or "ocr-join-resume"
+        try:
+            if origin == "fast-track":
+                self._fast_track_advance_to_verified(
+                    spec_name, SimpleNamespace(run_id=tester_run)
+                )
+                return
+            report = None
+            try:
+                from core.verify_report import _load_report_json
+
+                report = _load_report_json(self._pm.project_root, spec_name)
+            except Exception:  # noqa: BLE001 — 报告重载失败按空失败集记录
+                report = None
+            self._pm._verification._apply_verified(
+                spec_name, SimpleNamespace(run_id=tester_run), report
+            )
+        except Exception as e:  # noqa: BLE001 — 续做失败不崩溃，留下次唤醒/扫描兜底
+            self._pm.logger.warning(
+                "pm_engine",
+                f"ocr join 续做 verified 失败 '{spec_name}'（非阻塞）: "
+                f"{type(e).__name__}: {e}",
+            )
 
     def _run_spec_review_worker(self, spec_name: str, priority: int):
         """评审 run worker 线程体（fix-spec-review-blocking-dispatch 1.8）。

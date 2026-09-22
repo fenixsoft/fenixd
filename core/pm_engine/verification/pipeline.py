@@ -915,6 +915,14 @@ class VerificationPipeline:
         # 0 通过或 env 失败不得放行，升级 admin 处置
         if not self._env_whitewash_gate(spec_name):
             return
+        # add-impl-ocr-parallel-lane（任务 4.2）：testing 出口 ocr join 门禁。
+        # defer → 车道未就绪，spec 停留 testing（车道完成回调唤醒重评，tester
+        # 不重派）；reject → gate 档打回已在门禁内完成。两支都不再继续推进。
+        # 门禁经 context 成员委托 Dispatcher（D10 惯例，不回引门面私有）；
+        # 桩 context 未接线时缺省恒放行。
+        ocr_decision = self._context.ocr_join_gate(spec_name, "planner-judge")
+        if ocr_decision != "pass":
+            return
         # fix-observability-gaps 2.2：planner-judge 判定 verified（自动来源）
         self._context.state_machine.transition(
             spec_name, "verified",
