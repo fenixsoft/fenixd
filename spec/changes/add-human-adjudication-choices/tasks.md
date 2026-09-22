@@ -86,3 +86,9 @@
 
 - [x] 7.1 新建 `tests/test_adjudication_choices.py`：注册表完整性（8 类信号选项集、未注册空集、字段四件套）；告警记录 choices 写入与无字段兼容；三个新动词的前置校验拒绝/成功路径/留痕断言；alert-resolve 端点闭环（成功/非法 choice/重复处置/动作失败不假成功）；发射点逐信号断言（注册表覆盖的 signal_type 写告警必含 choices；build_artifact_paths_missing 断言 mergeback SIGNAL 记录携 choices）
 - [x] 7.2 存量测试回归：`pytest tests/test_dashboard_api.py tests/test_transient_backoff.py` 及受影响模块测试全绿（对齐测试目录既有命名与 fixture 范式，basetemp 遵循 conftest 约定）
+
+## 验证修复（原地打回第 1 轮）
+
+- [ ] 先复核失败有效性：逐条核对 `spec/changes/add-human-adjudication-choices/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
+- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
+- [ ] 修复后重跑验证确认通过
