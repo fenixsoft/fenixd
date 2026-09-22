@@ -4,7 +4,7 @@
 import { useMemo, useState } from 'react';
 
 import type { ChatMessage } from './types';
-import { describeToolInput, formatElapsedSeconds, parseToolInput } from './toolGrouping';
+import { formatElapsedSeconds, parseToolInput, toolCardPreview } from './toolGrouping';
 
 function prettyJson(value: unknown): string {
   if (typeof value === 'string') return value;
@@ -32,9 +32,11 @@ export default function ToolCard({ message }: { message: ChatMessage }) {
   const [expanded, setExpanded] = useState(false);
   const toolName = message.toolName || 'UnknownTool';
   const parsedInput = useMemo(() => parseToolInput(message.toolInput), [message.toolInput]);
-  const preview = useMemo(() => describeToolInput(message.toolInput), [message.toolInput]);
+  // BUG-01 修复：task_started 回填的 taskDescription 优先作卡片预览
+  const preview = useMemo(() => toolCardPreview(message), [message]);
   const elapsedSeconds =
     typeof message.toolElapsedSeconds === 'number' ? message.toolElapsedSeconds : null;
+  const taskSummary = typeof message.taskSummary === 'string' ? message.taskSummary.trim() : '';
   const isError = Boolean(message.toolResult?.isError);
   const hasDetail = message.toolInput != null || message.toolResult != null;
 
@@ -66,6 +68,19 @@ export default function ToolCard({ message }: { message: ChatMessage }) {
           </span>
         )}
       </button>
+
+      {/* task_notification 回填的任务终态摘要（BUG-01 修复）：折叠态常显，
+          状态点视觉与 MessageItem 任务通知行一致（completed 绿 / 其余琥珀） */}
+      {taskSummary && (
+        <div className="mt-0.5 flex items-center gap-1.5 pl-6 text-xs text-muted-foreground">
+          <span
+            className={`inline-block h-1.5 w-1.5 flex-shrink-0 rounded-full ${
+              message.taskStatus === 'completed' ? 'bg-green-400' : 'bg-amber-400'
+            }`}
+          />
+          <span className="min-w-0 truncate">{taskSummary}</span>
+        </div>
+      )}
 
       {expanded && (
         <div className="mt-1 space-y-2 pl-5">

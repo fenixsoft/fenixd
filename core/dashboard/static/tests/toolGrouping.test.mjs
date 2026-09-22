@@ -10,6 +10,7 @@ import {
   formatElapsedSeconds,
   groupConsecutiveTools,
   isToolGroupItem,
+  toolCardPreview,
   toolClassOf,
   toolGroupTitle,
 } from '../src/components/claude-msg/toolGrouping.ts';
@@ -203,4 +204,32 @@ test('toolClassOf / toolGroupTitle 映射表', () => {
   assert.equal(toolGroupTitle('read', 3), '查阅 3 个文件/模式');
   assert.equal(toolGroupTitle('bash', 5), '执行 5 条命令');
   assert.equal(toolGroupTitle('edit', 2), '编辑 2 个文件');
+});
+
+// ── toolCardPreview：task_started 回填字段优先（BUG-01 回归锚定） ────
+
+test('toolCardPreview 优先回填的 taskDescription', () => {
+  const msg = { ...toolMsg('Task', { prompt: '跑全量测试并汇报' }), taskDescription: 'Run dispatch tests' };
+  assert.equal(toolCardPreview(msg), 'Run dispatch tests');
+});
+
+test('toolCardPreview 无回填时回落工具输入摘要（description 优先既有语义不变）', () => {
+  assert.equal(toolCardPreview(toolMsg('Bash', { command: 'npm test' })), 'npm test');
+  assert.equal(toolCardPreview(toolMsg('Read', { file_path: '/a/b.py', description: '看配置' })), '看配置');
+});
+
+test('toolCardPreview 回填为空白串时回落输入摘要', () => {
+  const msg = { ...toolMsg('Task', { description: '输入里的描述' }), taskDescription: '   ' };
+  assert.equal(toolCardPreview(msg), '输入里的描述');
+});
+
+// ── rendersNothing：兜底强制渲染的 thinking 照常断组（BUG-02 回归锚定） ──
+
+test('兜底强制渲染的 thinking（thinkingForced）真实可见，打断同类连续分组', () => {
+  const a = toolMsg('Bash', { command: 'echo a' });
+  const t = { type: 'assistant', isThinking: true, content: '思考', timestamp: '2026-09-22T10:05:00', thinkingForced: true };
+  const b = toolMsg('Bash', { command: 'echo b' });
+  const items = groupConsecutiveTools([a, t, b], false);
+  assert.equal(items.length, 3, '强制渲染的 thinking 可见，须断组');
+  assert.ok(!items.some(isToolGroupItem), '断组后阈值不足不聚合');
 });

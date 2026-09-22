@@ -104,17 +104,21 @@ test('默认关闭（有正文流）：thinking 不渲染且不断组', () => {
   assert.equal(msgs.some((m) => String(m.content || '') === '中间的思考'), false);
 });
 
-test('关闭开关时 thinking 位置不打断同类工具分组', () => {
+test('关闭开关时 thinking 位置不打断同类工具分组（有正文流，thinking 真被隐藏）', () => {
+  // 修复 BUG-02 后「全程无正文」的流兜底强制渲染 thinking（可见即断组），
+  // 本用例锚定的是隐藏路径，夹具须含非空正文
   const events = [
+    assistantEventAt('2026-09-22T05:00:00', [textBlock('开场正文')]),
     assistantEventAt('2026-09-22T05:00:01', [bashBlock('t1', 'ls')]),
     assistantEventAt('2026-09-22T05:00:02', [thinkingBlock('思考')]),
     assistantEventAt('2026-09-22T05:00:03', [bashBlock('t2', 'pwd')]),
   ];
   const msgs = runEventsToChatMessages(events, false);
+  assert.ok(!msgs.some((m) => m.isThinking), '有正文流开关关闭时 thinking 被抑制');
   const items = groupConsecutiveTools(msgs, false);
-  assert.equal(items.length, 1);
-  assert.equal(isToolGroupItem(items[0]), true);
-  assert.equal(items[0].messages.length, 2);
+  const groups = items.filter(isToolGroupItem);
+  assert.equal(groups.length, 1, '隐藏的 thinking 不打断同类分组');
+  assert.equal(groups[0].messages.length, 2);
 });
 
 test('全程无正文（deepseek 系形态）时兜底强制渲染 thinking', () => {
@@ -145,4 +149,44 @@ test('流式 thinking_tokens 旧形态同样受开关控制', () => {
   ];
   assert.equal(runEventsToChatMessages(events, false).filter((m) => m.isThinking).length, 0);
   assert.equal(runEventsToChatMessages(events, true).filter((m) => m.isThinking).length, 1);
+});
+
+// ── 无正文兜底强制渲染标记（BUG-02 回归锚定：兜底须传导到渲染层） ──────
+
+test('全程无正文流 + 开关关闭：兜底产出的 thinking 带 thinkingForced 标记', () => {
+  const events = [
+    assistantEventAt('2026-09-22T05:12:24', [thinkingBlock('尾部收尾思考')]),
+    assistantEventAt('2026-09-22T05:12:29', [thinkingBlock('真正的最后思考')]),
+  ];
+  const msgs = runEventsToChatMessages(events, false);
+  const thinkings = msgs.filter((m) => m.isThinking);
+  assert.ok(thinkings.length >= 1, '兜底应强制产出 thinking 条目');
+  for (const m of thinkings) {
+    assert.equal(m.thinkingForced, true, '兜底消息必须带 thinkingForced 标记，渲染层据此豁免隐藏');
+  }
+});
+
+test('流内有非空正文 + 开关关闭：thinking 不产出（无兜底，无标记）', () => {
+  const events = [
+    assistantEventAt('2026-09-22T05:12:24', [thinkingBlock('被开关关闭的思考'), textBlock('正文结论')]),
+  ];
+  const msgs = runEventsToChatMessages(events, false);
+  assert.equal(msgs.filter((m) => m.isThinking).length, 0);
+  assert.ok(msgs.some((m) => m.type === 'assistant' && !m.isThinking));
+});
+
+test('开关打开时 thinking 不带 thinkingForced（正常渲染路径）', () => {
+  const events = [assistantEventAt('2026-09-22T05:12:24', [thinkingBlock('思考')])];
+  const thinking = runEventsToChatMessages(events, true).find((m) => m.isThinking);
+  assert.ok(thinking);
+  assert.equal(thinking.thinkingForced, undefined);
+});
+
+test('groupConsecutiveTools：兜底强制渲染的 thinking 照常打断同类分组', () => {
+  const a = { type: 'tool', isToolUse: true, toolName: 'Bash', toolInput: { command: 'echo a' }, toolId: 'f1', timestamp: '2026-09-22T05:00:01' };
+  const t = { type: 'assistant', isThinking: true, content: '思考', timestamp: '2026-09-22T05:00:02', thinkingForced: true };
+  const b = { type: 'tool', isToolUse: true, toolName: 'Bash', toolInput: { command: 'echo b' }, toolId: 'f2', timestamp: '2026-09-22T05:00:03' };
+  const items = groupConsecutiveTools([a, t, b], false);
+  assert.equal(items.length, 3, '强制渲染的 thinking 可见，须断组');
+  assert.ok(!items.some(isToolGroupItem), '断组后阈值不足不聚合');
 });

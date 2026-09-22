@@ -68,6 +68,6 @@
 
 ## 验证修复（原地打回第 1 轮）
 
-- [ ] 先复核失败有效性：逐条核对 `spec/changes/add-run-record-readability/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
-- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
-- [ ] 修复后重跑验证确认通过
+- [x] 6.1 先复核失败有效性：逐条核对 `spec/changes/add-run-record-readability/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码（复核结论：BUG-01/BUG-02 均为真实产品缺陷——ToolCard 全仓无 taskDescription/taskSummary 消费点；MessageItem.tsx showThinking 隐藏判定无兜底豁免，与报告根因一致，修产品代码）
+- [x] 6.2 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码（acb33f41：toolCardPreview 回填优先 + taskSummary 状态行常显；thinkingForced 标记传导至 MessageItem 隐藏判定与 rendersNothing 断组判定；补回归单测 6 例）
+- [x] 6.3 修复后重跑验证确认通过（前端单测 123/123 全绿、npm run build 成功且 tsc 改动文件清零、后端 test_dashboard_api.py 115 全绿、真实夹具流冒烟 16/16（BUG-01 回填断言/BUG-02 兜底文案逐字命中/分组不回归）、有界全量回归 245s 无挂起：4 项当前失败均为 origin/main 基线存量（test_task_track TestCliWarning ×4），无本次引入）
