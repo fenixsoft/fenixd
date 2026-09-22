@@ -1889,8 +1889,12 @@ class ConfigLoader:
     def get_impl_code_review_concurrency(cls, config: Dict[str, Any]) -> int:
         """读取 ``verify.impl_code_review_concurrency``（add-impl-code-review-tuning）。
 
-        ocr 并发子任务上限，经提示词命令示例 ``--concurrency <n>`` 承载。缺省 2；
-        语义与 ``get_impl_code_review_timeout_sec`` 同——仅接受**正整数 int**
+        ocr 并发子任务上限，经车道命令 ``--concurrency <n>`` 注入。缺省 4
+        （add-impl-ocr-parallel-lane D7：实测 concurrency 2 对大 diff 明显喂不饱
+        ——570s 连第一组都没跑完——故缺省 2→4；显式配置不受影响，但
+        ``.fenix/config.template.yaml`` 的显式示例值已同步改 4，否则模板派生
+        配置恒为显式 2、本缺省调整失效）；语义与
+        ``get_impl_code_review_timeout_sec`` 同——仅接受**正整数 int**
         （``bool`` 不算 int），其余（缺失 / verify 节缺失或非 dict / str / float /
         ≤0）一律回退缺省（fail-open，脏值不中断派发）。
 
@@ -1899,13 +1903,13 @@ class ConfigLoader:
         """
         verify = config.get("verify")
         if not isinstance(verify, dict):
-            return 2
+            return 4
         val = verify.get("impl_code_review_concurrency")
         if isinstance(val, bool):
-            return 2
+            return 4
         if isinstance(val, int) and val > 0:
             return val
-        return 2
+        return 4
 
     @classmethod
     def get_impl_code_review_effort(cls, config: Dict[str, Any]) -> str:
@@ -1926,6 +1930,61 @@ class ConfigLoader:
         if val in ("low", "medium", "high"):
             return val
         return "low"
+
+    @classmethod
+    def get_impl_code_review_mode(cls, config: Dict[str, Any]) -> str:
+        """读取 ``verify.impl_code_review_mode``（add-impl-ocr-parallel-lane）。
+
+        join 裁决双档模式：``gate``（缺省——join 时存在非 rejected findings 走
+        bug_found 打回修复轮）| ``advisory``（findings 一律入 code-review 台账、
+        join 永不打回）。仅接受白名单两值；其余取值（缺失 / verify 节缺失或非
+        dict / 大小写不匹配 / 非 str / 空串）一律回退缺省 ``"gate"`` 并记 DEBUG
+        留痕（fail-open，脏值不中断派发）。
+
+        注意：该键 MUST NOT 进入 ``resolve_config`` 的缺省填充列表——缺省只由本
+        读取器单点提供（与 ``get_impl_code_review_enabled`` 同款）。
+        """
+        verify = config.get("verify")
+        if not isinstance(verify, dict):
+            return "gate"
+        val = verify.get("impl_code_review_mode")
+        if val in ("gate", "advisory"):
+            return val
+        if val is not None:
+            # 仅对「配置了但非法」的值留痕（缺失/None 静默回退，不打日志噪声）
+            _logger.debug(
+                "verify.impl_code_review_mode 非法值 %r（合法：gate/advisory），"
+                "回退缺省 gate",
+                val,
+            )
+        return "gate"
+
+    @classmethod
+    def get_impl_code_review_lane_timeout_sec(cls, config: Dict[str, Any]) -> int:
+        """读取 ``verify.impl_code_review_lane_timeout_sec``（add-impl-ocr-parallel-lane）。
+
+        **ocr 车道级硬超时**（秒）：框架侧 ``run_impl_ocr`` 维护 run 从启动到
+        出产物的整体墙钟上限，超时降级 ``unavailable`` 不阻塞 spec。缺省 2400。
+
+        ⚠️ 按键分离（design D2）：本键与既有 ``impl_code_review_timeout_sec``
+        （缺省 600，ocr LLM **单请求**超时，被 ``runner._write_run_ocr_config``
+        消费）是两种粒度，MUST NOT 共用一键。语义与
+        ``get_impl_code_review_timeout_sec`` 同款——仅接受**正整数 int**（
+        ``bool`` 不算 int），其余（缺失 / verify 节缺失或非 dict / str / float /
+        ≤0）一律回退缺省（fail-open，脏值不中断派发）。
+
+        注意：该键 MUST NOT 进入 ``resolve_config`` 的缺省填充列表——缺省只由本
+        读取器单点提供（与 ``get_impl_code_review_enabled`` 同款）。
+        """
+        verify = config.get("verify")
+        if not isinstance(verify, dict):
+            return 2400
+        val = verify.get("impl_code_review_lane_timeout_sec")
+        if isinstance(val, bool):
+            return 2400
+        if isinstance(val, int) and val > 0:
+            return val
+        return 2400
 
     @classmethod
     def get_subagent_model_override(cls, config: Dict[str, Any]) -> str:

@@ -254,19 +254,32 @@ verify:
   #   主树无 node_modules 时 hardlink 自动降级 prefer-offline（MUST NOT 失败）。
   deps_mode: "hardlink"
   # 实现阶段末尾的代码质量审查开关（调用 ocr，alibaba open-code-review）：
-  # 开启后实现者会在收尾阶段调用 bin/ocr_review.py 审查本次改动并自行修正
-  # 真实问题；需要环境已安装 ocr，未安装时自动按 unavailable 降级跳过。
+  # 开启后框架在 merge-back 成功、tester 派发时点启动 impl-ocr 异步车道审查
+  # 本次改动，与测试验证并行执行，join 于 testing 出口裁决（add-impl-ocr-
+  # parallel-lane）；需要环境已安装 ocr，未安装时自动按 unavailable 降级跳过。
   impl_code_review: false
+  # 收尾审查 join 裁决模式（add-impl-ocr-parallel-lane D3）：
+  #   gate（缺省，保守）— join 时存在非 rejected findings → 经 bug_found 打回
+  #     实现者修复轮（上限 1 次，仍出的 findings 转台账后放行）；
+  #   advisory — findings 一律写入 code-review 台账（喂 code-fix 自动修复车道），
+  #     join 永不打回。
+  impl_code_review_mode: gate
   # 收尾审查 ocr LLM 单请求超时（秒，add-impl-code-review-tuning）：
   # 正整数，缺省 600。不配置时 ocr 走其内置 300s 默认——实测 8 路并发 +
   # 300s 单请求超时会撞穿首字节等待导致大面积文件级 timeout。写入 run 级
   # ocr 配置 custom_providers.fenix-impl.timeout_sec，确定性生效。
   impl_code_review_timeout_sec: 600
-  # 收尾审查 ocr 并发子任务上限（--concurrency，add-impl-code-review-tuning）：
-  # 正整数，缺省 2（ocr 内置缺省 8）。实测 8 路并发同时打同一 provider 网关会
-  # 放大首字节延迟；降到 2 以吞吐换稳定。该参数无持久化配置键，经提示词命令
-  # 示例承载——实现者须照抄命令串才生效（软约束）。
-  impl_code_review_concurrency: 2
+  # impl-ocr 车道级硬超时（秒，add-impl-ocr-parallel-lane）：框架侧 run_impl_ocr
+  # 从启动到出产物的整体墙钟上限，缺省 2400。注意与上方
+  # impl_code_review_timeout_sec（LLM 单请求超时，缺省 600）是两种粒度、
+  # 按键分离。超时降级 unavailable，不阻塞 spec 推进。
+  impl_code_review_lane_timeout_sec: 2400
+  # 收尾审查 ocr 并发子任务上限（--concurrency，add-impl-code-review-tuning；
+  # 缺省 4 由 add-impl-ocr-parallel-lane D7 从 2 上调——实测 2 对大 diff 明显
+  # 喂不饱，570s 连第一组都没跑完。ocr 内置缺省 8。模板示例值即显式配置、
+  # 会压过读取器缺省）。实测 8 路并发同时打同一 provider 网关会放大首字节
+  # 延迟；4 以吞吐换稳定。
+  impl_code_review_concurrency: 4
   # 收尾审查 ocr 审查力度（--effort，add-impl-code-review-tuning）：
   # 合法值 low | medium | high，缺省 low（ocr 内置缺省 medium）。low 更快更省
   # 但 recall 偏低（ocr precision 优先的刻意取舍），可随时上调。经提示词命令
