@@ -755,6 +755,19 @@ class AdminMonitor:
 
         return ConfigLoader.get(self.config, key, default)
 
+    def _cfg_float(self, key: str, default: float) -> float:
+        """配置 float 读取容错（code-review item 05dd3957faf7）。
+
+        非法/缺类型值回落缺省，与 ``reschedule_max`` 的容错风格一致——
+        巡检路径不得因单个配置键非法（如 "120m"）抛 ValueError 而中断
+        整轮检测（_detect/_detect_orphaned_state 均无兜底）。
+        """
+        raw = self.admin_cfg.get(key, default)
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return default
+
     # ── 主入口 ──────────────────────────────────────────────────
 
     def has_in_progress_specs(self) -> bool:
@@ -1415,7 +1428,7 @@ class AdminMonitor:
         signals = []
         threshold_minutes = self.admin_cfg["stuck_threshold_minutes"]
         grace_minutes = max(STUCK_GRACE_MINUTES, self.interval_minutes * 2)
-        silence_minutes = float(self.admin_cfg.get("stuck_silence_minutes", 120))
+        silence_minutes = self._cfg_float("stuck_silence_minutes", 120)
         runs_dir = self.project_root / ".fenix" / "runs"
         # D1：进程存活反证数据源——agent_runner 存在时取「进程仍存活」的
         # run_id 集（_running_agents 进程表为真相）；None（CLI/测试态）→
@@ -1544,10 +1557,8 @@ class AdminMonitor:
             Signal throttled: orphaned_state … (cooldown 15m)）。
         """
         signals = []
-        threshold_minutes = float(
-            self.admin_cfg.get(
-                "orphaned_state_threshold_minutes", DEFAULT_ORPHANED_STATE_THRESHOLD_MINUTES
-            )
+        threshold_minutes = self._cfg_float(
+            "orphaned_state_threshold_minutes", DEFAULT_ORPHANED_STATE_THRESHOLD_MINUTES
         )
         for name, entry in specs.items():
             status = entry.get("status")
@@ -1597,7 +1608,7 @@ class AdminMonitor:
             # 它也在），再补发 orphaned_state 只产生双信号/双唤起（实证：
             # 200 分钟无 run 悬置同时命中 stuck 与孤儿两路）。≤ stuck_threshold
             # 时的 orphaned 先于 stuck 触发（4.5 回归场景）。
-            stuck_threshold = float(self.admin_cfg.get("stuck_threshold_minutes", 0) or 0)
+            stuck_threshold = self._cfg_float("stuck_threshold_minutes", 0)
             if stuck_threshold > 0 and elapsed_minutes > stuck_threshold:
                 continue
             # 注入 pm_engine（2026-09-18 修复）：条件 ④「无排队中的派发条目」——

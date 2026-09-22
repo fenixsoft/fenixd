@@ -28,6 +28,7 @@ from core.state_machine import (
     start_after_blocks_promotion,
     start_after_pending,
 )
+from core.agent_runner.provider_circuit import MODEL_CHAIN_UNAVAILABLE_MARKER
 
 
 class QQQueueMixin:
@@ -328,12 +329,25 @@ class QQQueueMixin:
             return
         # fix-provider-transient-backoff D4：全局瞬断熔断冻结期间暂停一切新派发。
         # 与 instant_fail_cooled 同构：冷却到期自动恢复；在飞 run 不受影响。
+        # 队列里已有条目被本闸门挡下时以 INFO 留痕（2026-09-22 事故：解冻后的
+        # spec_ready 已入队，但熔断闸门只在 debug 级留痕、生产日志全库 0 条
+        # DEBUG——「ready 却 4 分钟不派发」在日志里完全不可见）。熔断积压条目
+        # 的最终放出由到期唤醒兜底（ProviderCircuit._wake_dispatch_after_break）。
         if self._pm._global_transient_break_active():
-            self._pm.logger.debug(
-                "pm_engine",
-                "Global transient break active — dispatch paused "
-                "(fix-provider-transient-backoff D4)",
-            )
+            with self._queue_lock:
+                held = len(self._run_queue)
+            if held:
+                self._pm.logger.info(
+                    "pm_engine",
+                    f"Global transient break active — {held} queued dispatch(es) "
+                    f"held (fix-provider-transient-backoff D4)",
+                )
+            else:
+                self._pm.logger.debug(
+                    "pm_engine",
+                    "Global transient break active — dispatch paused "
+                    "(fix-provider-transient-backoff D4)",
+                )
             return
         # 并发缺省值 2→5（add-pipeline-throughput-governance D1）：全历史耗时
         # 显示实现排队 893h（37.1%）为最大时间池，缺省 2 的槽位串行是主因之一。
@@ -1527,6 +1541,23 @@ class QQQueueMixin:
                             },
                         )
                         self._schedule_transient_recovery(spec_name)
+                    elif final_error and MODEL_CHAIN_UNAVAILABLE_MARKER in final_error:
+                        # add-impl-selfcheck-model-probe（2.2）：链尾拒模型 →
+                        # 全链模型不可用终态。同因重派必然撞同一拒模型链（确定性
+                        # 失败，非瞬态），不排程、不增 retry、不翻转状态机；spec
+                        # 原状保持，error 落盘供 dashboard/admin 可见。摘除拒模型
+                        # 条目后恢复属人工运维（docs/help/13-model-chain-ops.md）。
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"Model chain unavailable for '{spec_name}' — holding "
+                            f"state, no redispatch/retry/state flip: {final_error}",
+                        )
+                        self._pm.state_machine.update_spec(
+                            spec_name,
+                            {
+                                "error": final_error,
+                            },
+                        )
                     else:
                         # Retry or mark error
                         spec_entry = self._pm.state_machine.read_one(spec_name)

@@ -243,6 +243,26 @@ class AdminStore:
         self._mutate(lambda records: records.append(rec))
         return rec
 
+    def append_if_absent(self, entry: dict, is_inflight) -> "dict | None":
+        """单次排他锁内完成「在途查重 → 追加」（code-review item 0d7c2ef12e33）。
+
+        旧模式 read_all() 查重后 append() 是 check-then-act：两次独立锁获取
+        不原子，ThreadingHTTPServer 并发同参 POST 可都观测到空在飞集并各自
+        append，产生重复信号（每个重复消耗一次 Administrator run）。
+        ``is_inflight(record)`` 以已读取的记录逐条判定是否在途；无在途才写入。
+        返回落地的记录；存在在途（未写）返回 None。
+        """
+        rec = self._normalize_entry(entry)
+
+        def fn(records: list) -> bool:
+            if any(is_inflight(r) for r in records):
+                return False
+            records.append(rec)
+            return True
+
+        written = self._mutate(fn, skip_unchanged=True)
+        return rec if written else None
+
     def merge_signal(self, entry: dict, status_hash: str):
         """沉淀式写入 per-spec 检测信号（admin-signal-consolidation D1）。
 

@@ -1807,6 +1807,12 @@ class FenixDaemon:
           （先唤起后删：唤起异常时信号保留留待下轮重试，删除失败亦留待下轮；
           重复唤起由下游 handler 既有幂等谓词吸收）
         - spec 已不在 STATE.md → 删除信号并记日志
+
+        注（code-review item 0e1eafada5d6）：本消费器**有意不走**
+        _consume_request_file 原子消费——彼者「先消费后处理」，而本车道
+        语义是「唤起成功才删，失败/未就绪信号保留留待下轮重试」（D4/D5）；
+        payload 形状校验（isinstance dict）在任何删除动作之前完成，不存在
+        「先 unlink 后 payload.get」丢请求形态。
         """
         try:
             with path.open("r", encoding="utf-8") as f:
@@ -1961,24 +1967,15 @@ class FenixDaemon:
         来源各有既有兜底——非 done（幂等拒绝，重试无意义）、退避期内
         （_is_push_backoffed，重放由 recovery full_scan 覆盖）、推送失败
         （_handle_push_failure 已写回退避标记或升级 push_failed 信号）。
+
+        消费走 _consume_request_file 原子模式（code-review item
+        0e1eafada5d6）：先 rename 占位再读（payload 非法/损坏一律已消费返回
+        None），消灭「先 unlink 后 payload.get」对合法 JSON 非对象值的
+        AttributeError 丢请求形态与 read-unlink 窗口竞态。
         """
         req_path = PROJECT_ROOT / ".fenix" / "approve_push_request.json"
-        if not req_path.exists():
-            return
-        try:
-            with req_path.open("r", encoding="utf-8") as f:
-                payload = json.load(f)
-        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
-            # 损坏的信号文件：删除避免每轮报错卡死
-            try:
-                req_path.unlink()
-            except OSError:
-                pass
-            return
-        # 先读后删：删除失败（被并发消费）则本次跳过，下一轮再试
-        try:
-            req_path.unlink()
-        except OSError:
+        payload = self._consume_request_file(req_path)
+        if payload is None:
             return
 
         spec = payload.get("spec")
@@ -2153,25 +2150,17 @@ class FenixDaemon:
         二次校验防御性兜底（如信号文件被绕过写入）。
 
         单飞：已有 code-review run 在跑 → 忽略请求并记录。
+
+        消费走 _consume_request_file 原子模式（code-review item
+        0e1eafada5d6）：先 rename 占位再读（payload 非法/损坏一律已消费返回
+        None），消灭「先 unlink 后 payload.get」丢请求形态与 read-unlink
+        窗口竞态。
         """
         from core.fenix_session import hosting_state
 
         req_path = PROJECT_ROOT / ".fenix" / "code_review_request.json"
-        if not req_path.exists():
-            return
-        try:
-            with req_path.open("r", encoding="utf-8") as f:
-                payload = json.load(f)
-        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
-            try:
-                req_path.unlink()
-            except OSError:
-                pass
-            return
-        # 先读后删：删除失败（被并发消费）则本次跳过，下一轮再试
-        try:
-            req_path.unlink()
-        except OSError:
+        payload = self._consume_request_file(req_path)
+        if payload is None:
             return
 
         scope = str(payload.get("scope") or "window")
@@ -2305,25 +2294,17 @@ class FenixDaemon:
         hosting_state == unmanaged 时信号无人消费；已有回归在跑时单飞
         忽略请求（不排队、不并发）。信号文件在框架根 PROJECT_ROOT
         （单项目自托管形态，MUST NOT 按多项目 registry 逐项目扫描）。
+
+        消费走 _consume_request_file 原子模式（code-review item
+        0e1eafada5d6）：先 rename 占位再读（payload 非法/损坏一律已消费返回
+        None），消灭「先 unlink 后 payload.get」丢请求形态与 read-unlink
+        窗口竞态。
         """
         from core.fenix_session import hosting_state
 
         req_path = PROJECT_ROOT / ".fenix" / "regression_request.json"
-        if not req_path.exists():
-            return
-        try:
-            with req_path.open("r", encoding="utf-8") as f:
-                payload = json.load(f)
-        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
-            try:
-                req_path.unlink()
-            except OSError:
-                pass
-            return
-        # 先读后删：删除失败（被并发消费）则本次跳过，下一轮再试
-        try:
-            req_path.unlink()
-        except OSError:
+        payload = self._consume_request_file(req_path)
+        if payload is None:
             return
 
         # 守卫：daemon 未运行或 unmanaged 时信号无人消费

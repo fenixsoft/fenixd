@@ -188,12 +188,20 @@ function SpecNameCell({ project, record }: { project: string; record: SpecSummar
 
 // ── 验证列悬浮提示（悬浮显示验证结论，形式同名称 Why 提示） ──
 
-const verdictCache = new Map<string, Promise<SpecDetail['verdict'] | null>>();
+const verdictCache = new Map<
+  string,
+  { promise: Promise<SpecDetail['verdict'] | null>; at: number }
+>();
+
+// 短 TTL（30s）：页面长生命周期下，重验证 run（或任何碰该 spec 的 SSE patch）
+// 后永久缓存会让 hover 一直显示陈旧裁决/结论（code-review item 2c54c970f681）。
+const VERDICT_CACHE_TTL_MS = 30_000;
 
 function fetchVerdict(project: string, spec: string): Promise<SpecDetail['verdict'] | null> {
   const key = `${project}│${spec}`;
   const cached = verdictCache.get(key);
-  if (cached) return cached;
+  if (cached && Date.now() - cached.at < VERDICT_CACHE_TTL_MS) return cached.promise;
+  verdictCache.delete(key);
   const p = getSpecDetail(project, spec)
     .then((d) => d.verdict ?? null)
     .catch(() => {
@@ -203,7 +211,7 @@ function fetchVerdict(project: string, spec: string): Promise<SpecDetail['verdic
       verdictCache.delete(key);
       return null;
     });
-  verdictCache.set(key, p);
+  verdictCache.set(key, { promise: p, at: Date.now() });
   return p;
 }
 
@@ -1086,32 +1094,31 @@ export default function SpecListPage() {
               ) : (
                 <Typography.Text type="secondary" data-testid="task-progress-cell">
                   {record.task_done}/{record.task_total}
-                  {runAhead && rp ? (
-                    <Typography.Text type="warning" style={{ marginLeft: 4 }}>
-                      run {rp.done}/{rp.total} 已汇报
-                    </Typography.Text>
-                  ) : null}
-                  {runCurrent ? (
-                    <Typography.Text
-                      type="warning"
-                      style={{ marginLeft: 4, fontSize: 12, verticalAlign: 'text-bottom' }}
-                    >
-                      进行中 {runCurrent.join('、')}
-                    </Typography.Text>
-                  ) : null}
-                  {runActive ? (
-                    <Typography.Text
-                      type="warning"
-                      data-testid="run-activity-active"
-                      style={{ marginLeft: 4, fontSize: 12, verticalAlign: 'text-bottom' }}
-                    >
-                      进行中
-                    </Typography.Text>
-                  ) : null}
                 </Typography.Text>
               )}
               <Typography.Text type="secondary">{p}%</Typography.Text>
             </div>
+            {!isVerify && !isGates && (runAhead || runCurrent || runActive) ? (
+              // run 层线索与计数换行分离（与 verify_current/gates_current 同款
+              // 二行结构统一）；marginLeft 4 保留 run 已汇报与进行中并存时的间距
+              <div style={{ fontSize: 12, lineHeight: '18px' }}>
+                {runAhead && rp ? (
+                  <Typography.Text type="warning">
+                    run {rp.done}/{rp.total} 已汇报
+                  </Typography.Text>
+                ) : null}
+                {runCurrent ? (
+                  <Typography.Text type="warning" style={{ marginLeft: 4 }}>
+                    进行中 {runCurrent.join('、')}
+                  </Typography.Text>
+                ) : null}
+                {runActive ? (
+                  <Typography.Text type="warning" data-testid="run-activity-active">
+                    进行中
+                  </Typography.Text>
+                ) : null}
+              </div>
+            ) : null}
             {isVerify && record.verify_current ? (
               <div style={{ fontSize: 12, lineHeight: '18px', color: '#52c41a' }}>
                 {record.verify_current}

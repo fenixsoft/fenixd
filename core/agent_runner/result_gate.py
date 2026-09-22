@@ -18,6 +18,7 @@ result_gate.py — 结果数据结构与产物门（refactor-agent-runner-module
 import json
 import logging
 import re
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -509,6 +510,45 @@ def _check_agent_result_artifact(
     return None
 
 
+# disposition 合法值白名单（add-impl-selfcheck-model-probe 1.1 提为模块常量）：
+# 校验体与自检 CLI 的 prompt 注入（正反例措辞）共用同一来源，禁止第二份同义词表。
+DISPOSITION_WHITELIST = ("fixed", "rejected", "deferred")
+
+
+def _validate_disposition_entries(cr_dispositions, report_rel: str) -> str | None:
+    """逐条 disposition 条目校验体（add-impl-selfcheck-model-probe 1.1 抽取）。
+
+    自 ``_validate_code_review_report`` 的条目循环原样抽出（判定语义零变化），
+    供两处共用同一函数对象：①收尾审查报告硬门（daemon 侧 ocr join）；
+    ②实现者收工自检 CLI（结果文件自带 code_review 段时的条目形状自证）。
+    前置条件：``cr_dispositions`` 已为 list 且长度与 findings 对齐（调用方保证）。
+
+    逐条判据：条目须为对象（含 ``disposition`` 键）→ disposition 在
+    DISPOSITION_WHITELIST → rejected/deferred 须附非空 ``reason``。
+    """
+    for idx, disp in enumerate(cr_dispositions):
+        if not isinstance(disp, dict):
+            return (
+                f"exit 0 但 code_review.dispositions[{idx}] 非对象"
+                f"（impl-code-review-gate）: {report_rel}"
+            )
+        d = disp.get("disposition", "")
+        if d not in DISPOSITION_WHITELIST:
+            return (
+                f"exit 0 但 code_review.dispositions[{idx}].disposition='{d}' 不在"
+                f"白名单（合法值为 fixed/rejected/deferred）（impl-code-review-gate）: "
+                f"{report_rel}"
+            )
+        if d in ("rejected", "deferred"):
+            r = disp.get("reason", "")
+            if not isinstance(r, str) or not r.strip():
+                return (
+                    f"exit 0 但 code_review.dispositions[{idx}] disposition={d} "
+                    f"缺非空 reason（impl-code-review-gate）: {report_rel}"
+                )
+    return None
+
+
 def _validate_code_review_report(
     cr_data, data: dict, report_rel: str
 ) -> str | None:
@@ -523,7 +563,7 @@ def _validate_code_review_report(
     unavailable 须附非空 ``reason``（否则放行，环境缺失降级）→ ``findings``
     为 list → 结果文件 ``code_review`` 段存在 → ``dispositions`` 别名解析 →
     逐条 disposition 白名单（fixed/rejected/deferred）且 rejected/deferred
-    须附非空 ``reason``。
+    须附非空 ``reason``（条目循环在 ``_validate_disposition_entries``）。
     """
     if not isinstance(cr_data, dict):
         return (
@@ -579,27 +619,7 @@ def _validate_code_review_report(
             f" code_review.dispositions 条数({len(cr_dispositions)})不匹配"
             f"（impl-code-review-gate）: {report_rel}"
         )
-    for idx, disp in enumerate(cr_dispositions):
-        if not isinstance(disp, dict):
-            return (
-                f"exit 0 但 code_review.dispositions[{idx}] 非对象"
-                f"（impl-code-review-gate）: {report_rel}"
-            )
-        d = disp.get("disposition", "")
-        if d not in ("fixed", "rejected", "deferred"):
-            return (
-                f"exit 0 但 code_review.dispositions[{idx}].disposition='{d}' 不在"
-                f"白名单（合法值为 fixed/rejected/deferred）（impl-code-review-gate）: "
-                f"{report_rel}"
-            )
-        if d in ("rejected", "deferred"):
-            r = disp.get("reason", "")
-            if not isinstance(r, str) or not r.strip():
-                return (
-                    f"exit 0 但 code_review.dispositions[{idx}] disposition={d} "
-                    f"缺非空 reason（impl-code-review-gate）: {report_rel}"
-                )
-    return None
+    return _validate_disposition_entries(cr_dispositions, report_rel)
 
 
 def _check_impl_code_review_artifact(
@@ -1241,13 +1261,13 @@ def _check_partial_consistency(
         raw_un = []
     if not isinstance(raw_ct, list) or not isinstance(raw_un, list):
         return (
-            f"exit 0 但结果文件 partial 缺 completed_tasks/unfinished 数组"
+            f"{TASK_GATE_ERROR_PREFIX} exit 0 但结果文件 partial 缺 completed_tasks/unfinished 数组"
             f"（{agent_type} 产物硬门）: {result_path}"
         )
     bad = runner._invalid_completed_ids(raw_ct) + runner._invalid_completed_ids(raw_un)
     if bad:
         return (
-            f"exit 0 但结果文件 partial 清单含非法任务 id"
+            f"{TASK_GATE_ERROR_PREFIX} exit 0 但结果文件 partial 清单含非法任务 id"
             f"（{agent_type} 产物硬门）: {result_path} {runner._format_gap_list(bad)}"
         )
     ct_set, un_set = set(raw_ct), set(raw_un)
@@ -1461,3 +1481,197 @@ def _clear_task_gate_rejections(runner, spec_name: str) -> None:
             "agent_runner",
             f"task-gate 拒绝计数清零失败 '{spec_name}'（不阻断）: {e}",
         )
+
+
+# ── 收工自证 CLI（add-impl-selfcheck-model-probe 1.1）────────────────────────
+# 把 daemon 侧收工硬门的生产校验体暴露为零网络 CLI：agent 在 run 内、写完
+# .fenix-run-result.json 后即可自证形状合法性（dispositions 字符串数组等契约
+# 陷阱在退出前发现并修复），不再依赖 daemon 侧打回整轮重派。
+#
+# 同源保证：校验调用的是本模块**同一批函数对象**（_check_artifact_json_file /
+# _check_impl_result_artifact / _validate_code_review_report 等），非复制逻辑；
+# daemon 侧硬门判定保持不变（本入口只加出口，不改判定）。
+
+
+_SELFHECK_LOGGER = logging.getLogger("fenixd.agent_runner.result_gate")
+
+
+class _SelfcheckShim:
+    """自检 CLI 的门面依赖替身（D2b 规则 1 的离线等价物）。
+
+    ``_check_impl_result_artifact`` 等门族函数首参为 ``runner``，经实例访问
+    门面依赖（``_IMPL_RESULT_STATUSES`` / 兄弟门函数 / ``_format_gap_list``）。
+    自检 CLI 无 AgentRunner 实例（零 daemon 依赖），本替身把这些依赖**委托回
+    本模块的同一批函数对象**——不复制任何判定逻辑。
+
+    有意缺失（与生产语义对齐的 fail-open/skip）：
+    - ``state_machine = None``：task-gate 跨轮拒绝计数在无状态机时按 0 处理
+      （``_bump_task_gate_rejections`` 的既有 fail-open 分支），不降级放行；
+    - ``_check_taskupdate_crosscheck`` 恒 None：TaskCreate/TaskUpdate 覆盖
+      核对依赖本轮 run 转录（init.tools 能力探测），自检进程无该载体——与
+      生产 D4「工具不可用 → 跳过该项核对并放行」同语义；
+    - ``_check_quality_gates_soft`` 恒 None：quality-gates.json 宽松对账是
+      纯 WARNING 审计、零拦截，不产生自证违规（也避免 logging 通道噪音混入
+      stderr 明细）。
+    """
+
+    def __init__(self, project_root):
+        self.project_root = project_root
+        self.state_machine = None
+        self.logger = _SELFHECK_LOGGER
+        # 惰性导入（函数运行期，非模块加载期——本模块 MUST NOT import runner）：
+        # 白名单以 AgentRunner 类属性为单源，禁止在本处另写一份字面量。
+        from core.agent_runner.runner import AgentRunner
+
+        self._IMPL_RESULT_STATUSES = AgentRunner._IMPL_RESULT_STATUSES
+
+    # ── 兄弟门函数/纯助手：委托回本模块同一函数对象（D2b 规则 2）──
+    _check_artifact_json_file = staticmethod(_check_artifact_json_file)
+    _format_gap_list = staticmethod(_format_gap_list)
+    _invalid_completed_ids = staticmethod(_invalid_completed_ids)
+
+    def _check_success_completion(self, spec_name, result_path, data, all_ids, checked_ids):
+        return _check_success_completion(
+            self, spec_name, result_path, data, all_ids, checked_ids)
+
+    def _check_partial_consistency(self, spec_name, result_path, data, all_ids,
+                                   checked_ids, unattainable_ids=None):
+        return _check_partial_consistency(
+            self, spec_name, result_path, data, all_ids, checked_ids,
+            unattainable_ids=unattainable_ids,
+        )
+
+    def _check_taskupdate_crosscheck(self, spec_name, checked_ids):
+        return None  # 见类 docstring：无 run 转录载体，fail-open 跳过
+
+    def _check_quality_gates_soft(self, spec_name, wt_path):
+        return None  # 见类 docstring：纯 WARNING 审计，不进自证明细
+
+
+def _selfcheck_dispositions_violations(data: dict, wt_path: Path, spec_name: str) -> list:
+    """收尾审查处置形状自证（ocr join 硬门同源判据，add-impl-selfcheck-model-probe）。
+
+    add-impl-ocr-parallel-lane 起 dispositions 的权威判定点在框架侧 join
+    （``_check_impl_code_review_artifact`` / ``_validate_code_review_report``），
+    不在产物硬门内——但形状陷阱（字符串数组）正是打回整轮的重烧源，自检
+    必须覆盖：
+
+    - worktree 内存在 ``.fenix/verify-progress/<spec>/code-review.json`` →
+      用 join 侧同一校验体 ``_validate_code_review_report`` 全量校验；
+    - 报告缺席但结果文件自带 ``code_review`` 段（含 dispositions 别名键）→
+      仅校验条目形状（``_validate_disposition_entries`` 同一函数对象）；
+      条数对账需 findings 清单（在 code-review.json 内），报告缺席时无对账
+      义务，跳过条数检查与生产「门关闭/报告缺失」语义一致；
+    - 两者皆无 → 无处置义务，零违规。
+    """
+    violations: list = []
+    code_review = data.get("code_review")
+    report_rel = f".fenix/verify-progress/{spec_name}/code-review.json"
+    report_path = Path(wt_path) / ".fenix" / "verify-progress" / spec_name / "code-review.json"
+    if spec_name and report_path.is_file():
+        try:
+            cr_data = json.loads(report_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, UnicodeDecodeError) as e:
+            return [
+                f"收尾审查报告无法解析（impl-code-review-gate 自证）: "
+                f"{report_rel} ({e})"
+            ]
+        err = _validate_code_review_report(cr_data, data, report_rel)
+        if err is not None:
+            violations.append(err)
+        return violations
+    if isinstance(code_review, dict):
+        cr_dispositions = None
+        for alias in ("dispositions", "findings_summary"):
+            val = code_review.get(alias)
+            if val is not None:
+                cr_dispositions = val
+                break
+        if cr_dispositions is not None:
+            if not isinstance(cr_dispositions, list):
+                violations.append(
+                    f"code_review.{alias} 非数组（逐条处置 MUST 为对象数组，"
+                    f"每项含 disposition 键）（impl-code-review-gate 自证）: "
+                    f"{report_rel}"
+                )
+            else:
+                err = _validate_disposition_entries(cr_dispositions, report_rel)
+                if err is not None:
+                    violations.append(err)
+    return violations
+
+
+_SELFHECK_USAGE = (
+    "用法: python3 -m core.agent_runner.result_gate --selfcheck <结果文件路径>\n"
+    "对 .fenix-run-result.json 执行与 daemon 侧收工硬门同源的自证校验\n"
+    "（worktree 内可跑、零网络、零 daemon 依赖；只读目标文件，零副作用）。\n"
+    "退出码: 0=PASS, 1=FAIL（违规明细逐条打 stderr）, 2=用法错误。\n"
+)
+
+
+def run_selfcheck(result_file) -> int:
+    """结果文件收工自证（退出码 0=PASS / 1=FAIL）。
+
+    复用生产校验体（同一函数对象，非复制逻辑），对指定结果文件依次执行：
+
+    1. 基础结构校验（``_check_artifact_json_file``：存在/非空/可解析 JSON，
+       ``run_started_at=None``——自检无「本轮启动」概念，不做 mtime 新鲜度判）；
+    2. 实现者产物硬门全量判据（``_check_impl_result_artifact``：status 白名单 /
+       tasks.md 勾选对账 / completed_tasks·unfinished·unattainable 一致性）；
+    3. 收尾审查处置形状（``_selfcheck_dispositions_violations``，join 同源）。
+
+    违规明细逐条输出到 stderr（每行一条，含字段路径与期望形态）；PASS 时
+    stdout 打一行确认、stderr 保持干净。除读取目标文件、worktree 内 tasks.md
+    与 code-review.json 外无任何文件写入或网络请求。
+    """
+    path = Path(result_file)
+    violations: list = []
+    err, data = _check_artifact_json_file(path, "implementer", None)
+    if err is not None:
+        violations.append(err)
+    elif not isinstance(data, dict):
+        violations.append(f"结果文件顶层非对象（implementer 产物硬门）: {path}")
+    else:
+        spec_name = data.get("spec")
+        if not isinstance(spec_name, str) or not spec_name.strip():
+            violations.append(
+                f"结果文件缺非空 spec 字段（implementer 产物硬门，自检无法定位 "
+                f"tasks.md 对账）: {path}"
+            )
+            spec_name = ""
+        wt_path = path.resolve().parent
+        gate_err = _check_impl_result_artifact(
+            _SelfcheckShim(wt_path), spec_name, None, wt_path)
+        if gate_err is not None:
+            violations.append(gate_err)
+        violations.extend(
+            _selfcheck_dispositions_violations(data, wt_path, spec_name))
+    if violations:
+        for v in violations:
+            sys.stderr.write(f"selfcheck FAIL: {v}\n")
+        sys.stderr.write(
+            f"selfcheck: {len(violations)} 条违规——按上方明细修复后重跑至退出码 0"
+            f"方可收工\n")
+        return 1
+    sys.stdout.write(f"selfcheck PASS: {path}\n")
+    return 0
+
+
+def main(argv=None) -> int:
+    """CLI 入口（``python3 -m core.agent_runner.result_gate --selfcheck <路径>``）。
+
+    参数缺失/文件不存在 → 输出用法并以非零码（2）退出。
+    """
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if len(argv) != 2 or argv[0] != "--selfcheck" or not argv[1].strip():
+        sys.stderr.write(_SELFHECK_USAGE)
+        return 2
+    if not Path(argv[1]).is_file():
+        sys.stderr.write(f"selfcheck: 结果文件不存在: {argv[1]}\n")
+        sys.stderr.write(_SELFHECK_USAGE)
+        return 2
+    return run_selfcheck(argv[1])
+
+
+if __name__ == "__main__":  # pragma: no cover
+    sys.exit(main())

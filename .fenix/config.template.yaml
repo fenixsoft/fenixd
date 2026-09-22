@@ -200,6 +200,13 @@ agents:
   # model 解析顺序（design D1）：元素自带 model > 角色级 model > providers 条目 model。
   # 三者皆空的元素在运行期被跳过（ERROR 日志记录元素下标，不阻塞加载）。
   # 角色级 model 不再要求非空（design D2），语义为全链缺省。
+  #
+  # 拒模型链卫生（add-impl-selfcheck-model-probe）：链条目里的 (provider, model)
+  # 若被该 provider 明确拒绝（unrecognized_model），属确定性失败——每次派发都会
+  # 撞同一拒绝。runner 会记 WARNING（Unrecognized model rejected by provider），
+  # 全链候选均被拒时失败归因带 [model-chain-unavailable] 标记且不自动重派。
+  # 应人工从运行时 .fenix/config.yaml 各链摘除该条目（摘除/恢复步骤见
+  # docs/help/13-model-chain-ops.md），并在 .fenix/todo.md 登记提醒。
   # models:
   #   implementer:
   #     provider: "volc-engine"

@@ -5,6 +5,7 @@
 状态文件独立防重、config 回显读写（task 3.4-3.6 辅助覆盖）。
 """
 
+import datetime
 import json
 import logging
 import shutil
@@ -22,7 +23,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from core.regression import (
     extract_long_tests,
     local_today_str,
+    mark_running,
     parse_junit_xml,
+    read_progress,
     read_result,
     read_state,
     run_regression,
@@ -318,6 +321,23 @@ class TestRunRegression(unittest.TestCase):
         self.assertEqual(result["status"], "parse_error")
         self.assertTrue(result["reason"])
 
+    def test_stdout_written_to_log(self):
+        """stdout 落 <output>.log（read_progress 的进度数据源）。"""
+        cmd = (
+            "python3 -c \"print('.......                                [ 50%]'); "
+            "import xml.etree.ElementTree as ET; "
+            "root=ET.Element('testsuites'); "
+            "suite=ET.SubElement(root,'testsuite',attrib={'name':'t','tests':'1'}); "
+            "ET.SubElement(suite,'testcase',attrib={'classname':'c','name':'n','time':'0.1'}); "
+            "ET.ElementTree(root).write('junit.xml')\""
+        )
+        spec = self._spec(cmd)
+        result = run_regression(self.tmp, spec)
+        self.assertEqual(result["status"], "passed")
+        log_path = self.tmp / "junit.xml.log"
+        self.assertTrue(log_path.is_file())
+        self.assertIn("[ 50%]", log_path.read_text(encoding="utf-8"))
+
     def test_invalid_xml_parse_error(self):
         """命令产出非法 XML → parse_error + 非空 reason。"""
         spec = self._spec("python3 -c 'open(\"junit.xml\",\"w\").write(\"not xml\")'")
@@ -344,6 +364,76 @@ class TestRunRegression(unittest.TestCase):
         lt = result["long_tests"][0]
         self.assertEqual(lt["name"], "slow")
         self.assertEqual(lt["time"], 12.5)
+
+
+class TestReadProgress(unittest.TestCase):
+    """read_progress 三级口径：真实终端标记 / 耗时估算 / 未知（进度条数据源）。"""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        # 上次快照：total=100 / duration=100s / output=junit.xml（log 派生为
+        # junit.xml.log，与 output 同路径 + .log）
+        write_result(self.tmp, {
+            "status": "passed",
+            "total": 100,
+            "duration_seconds": 100.0,
+            "output": "junit.xml",
+        })
+        # 运行中 marker（started_at=now，elapsed≈0）
+        mark_running(self.tmp, 1800)
+
+    def _write_log(self, content: str) -> None:
+        (self.tmp / "junit.xml.log").write_text(content, encoding="utf-8")
+
+    def test_real_terminal_marker(self):
+        """stdout 日志含 pytest 终端标记 → 取最后一个，estimated=False。"""
+        self._write_log(".......                                [ 41%]\n"
+                        "........                               [ 42%]\n")
+        p = read_progress(self.tmp)
+        self.assertEqual(p["percent"], 42)
+        self.assertFalse(p["estimated"])
+        self.assertIsNotNone(p["elapsed_seconds"])
+        self.assertEqual(p["total_estimate"], 100)
+
+    def test_cap_at_99_even_if_marker_100(self):
+        """收尾 [100%] 已出现但快照未写盘 → 恒封顶 99，不假完成。"""
+        self._write_log("all done                            [100%]\n")
+        self.assertEqual(read_progress(self.tmp)["percent"], 99)
+
+    def test_estimated_fallback_without_marker(self):
+        """日志无标记（非 pytest/未刷新）→ 已耗时/上次总耗时估算（elapsed≈0 → 0）。"""
+        self._write_log("no progress markers here\n")
+        p = read_progress(self.tmp)
+        self.assertTrue(p["estimated"])
+        self.assertEqual(p["percent"], 0)
+        self.assertEqual(p["last_duration_seconds"], 100.0)
+
+    def test_estimated_clamped_to_99(self):
+        """已耗时远超上次总耗时 → 估算封顶 99。"""
+        meta = {
+            "started_at": (
+                datetime.datetime.now(datetime.timezone.utc)
+                - datetime.timedelta(hours=2)
+            ).isoformat(),
+            "timeout_seconds": 1800,
+        }
+        (self.tmp / ".fenix" / "regression" / ".running").write_text(
+            json.dumps(meta), encoding="utf-8"
+        )
+        p = read_progress(self.tmp)
+        self.assertTrue(p["estimated"])
+        self.assertEqual(p["percent"], 99)
+
+    def test_unknown_without_snapshot_and_log(self):
+        """无快照（never_run）无日志 → percent=None（前端不确定动画）。"""
+        tmp2 = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp2, ignore_errors=True)
+        mark_running(tmp2, 1800)
+        p = read_progress(tmp2)
+        self.assertIsNone(p["percent"])
+        self.assertFalse(p["estimated"])
+        self.assertIsNotNone(p["elapsed_seconds"])
 
 
 class TestCheckpointDisabledZeroAction(unittest.TestCase):

@@ -13,7 +13,11 @@
 running 字段：分面轮询期间运行中态始终可见。
 """
 
-from core.regression import read_result, is_regression_running  # noqa: F401
+from core.regression import (  # noqa: F401
+    is_regression_running,
+    read_progress,
+    read_result,
+)
 
 
 def read_regression_result(project_root) -> dict:
@@ -22,6 +26,8 @@ def read_regression_result(project_root) -> dict:
     直接透传 core.regression.read_result 的结果（含 never_run/parse_error
     降级），并附加 ``running`` 字段（marker 新鲜度判定，见 task 5.6）。
     读侧 MUST NOT 因快照问题抛异常——路由层据此 200 返回而非 500。
+    运行中（running=True）附加 ``progress``（read_progress：终端真实标记 /
+    耗时估算 / 未知三级口径），供分面渲染执行进度条。
     """
     result = read_result(project_root)
     if not isinstance(result, dict):
@@ -31,4 +37,10 @@ def read_regression_result(project_root) -> dict:
         result["running"] = bool(is_regression_running(project_root))
     except Exception:
         result["running"] = False
+    # 运行中透出执行进度；任何异常吞掉（进度条缺失不应影响快照展示）
+    if result["running"]:
+        try:
+            result["progress"] = read_progress(project_root)
+        except Exception:
+            pass
     return result

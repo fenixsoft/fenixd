@@ -1,8 +1,7 @@
 import { Button, Card, Col, Form, Input, Row, Select, Space, Typography, message } from 'antd';
 import {
-  ArrowDownOutlined,
-  ArrowUpOutlined,
   CopyOutlined,
+  HolderOutlined,
   MinusCircleOutlined,
   PlusOutlined,
   SnippetsOutlined,
@@ -37,7 +36,8 @@ const AGENT_ROLES = [
   { key: 'code-fix', label: 'Code-Fix（自动修复）' },
 ];
 
-// 后端 normalize_agent_models 输出 → 编辑器行（str / 对象 / 混合数组统一为 {provider, model}）
+// 后端 normalize_agent_models 输出 → 编辑器行（str / 对象 / 混合数组统一为 {provider, model}；
+// 行内自带 roleKey，保存时按 key 映射回后端，不依赖「第 i 项 == 第 i 角色」下标不变量）
 function toRoleList(models: AgentsModels = {}): RoleValue[] {
   return AGENT_ROLES.map(({ key }) => {
     const m: AgentModelAssignment | undefined = models[key];
@@ -50,17 +50,22 @@ function toRoleList(models: AgentsModels = {}): RoleValue[] {
       )
       .filter((r) => r.provider !== '');
     return {
+      roleKey: key,
       roleModel: (m && m.model) || '',
       rows,
     };
   });
 }
 
-// 编辑器状态 → agents.models patch（仅收集已选 provider 的行；未配置的角色不写）
+// 编辑器状态 → agents.models patch（仅收集已选 provider 的行；未配置的角色不写）。
+// 按 roleKey 映射（code-review item 042e1dc46cb4）：按下标映射依赖「表单第 i 项
+// == AGENT_ROLES 第 i 项」的隐式不变量，角色表调整/外部 setFieldsValue 注入/后端
+// merge 回填使顺序或长度漂移时，某角色的模型会被静默写到错误的后端键上。缺
+// roleKey 的行（异常注入形态）回落下标，索引越界则跳过。
 function toModels(roleList: RoleValue[] = []): AgentsModels {
   const models: AgentsModels = {};
   roleList.forEach((rv, index) => {
-    const key = AGENT_ROLES[index]?.key;
+    const key = rv?.roleKey || AGENT_ROLES[index]?.key;
     if (!key) return;
     const roleModel = (rv?.roleModel || '').trim();
     const chain = (rv?.rows || [])
@@ -90,6 +95,13 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
   // 「复制/粘贴」临时剪贴板：存放某个角色当前的分配（角色级默认模型 + Provider 行链）。
   // 仅存活于本组件生命周期（刷新即失效），用于把一份配置快速套用到其他角色。
   const [clipboard, setClipboard] = useState<{ label: string; value: RoleValue } | null>(null);
+
+  // 行拖拽排序（原生 HTML5 DnD，零依赖）：
+  // - dragReady：当前「按住手柄」的行（`${roleIndex}-${rowIndex}`）——行默认
+  //   draggable=false，仅按住手柄时启用，避免输入框/下拉的正常选词被拖拽劫持
+  // - dragOver：拖动中悬停的目标行（同结构），用于落位高亮
+  const [dragReady, setDragReady] = useState<string | null>(null);
+  const [dragOver, setDragOver] = useState<string | null>(null);
 
   const initialValues = {
     roleList: toRoleList(config.agents.models),
@@ -142,10 +154,15 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
     message.success(`已复制「${roleLabel}」的模型分配`);
   };
 
-  // 把剪贴板内容覆盖到某角色（角色级默认模型与全部 Provider 行一起替换）
+  // 把剪贴板内容覆盖到某角色（角色级默认模型与全部 Provider 行一起替换）。
+  // roleKey 重写为目标卡片的 key：粘贴体携带的是源角色的 key，不改写会把
+  // 本卡（B 角色）的分配经 roleKey 直写进源角色（A）的后端键。
   const handlePaste = (index: number) => {
     if (!clipboard) return;
-    form.setFieldValue(['roleList', index], cloneRoleValue(clipboard.value));
+    form.setFieldValue(['roleList', index], {
+      ...cloneRoleValue(clipboard.value),
+      roleKey: AGENT_ROLES[index]?.key,
+    });
     message.success(
       `已粘贴「${clipboard.label}」的模型分配到「${AGENT_ROLES[index]?.label ?? `角色 ${index + 1}`}」`,
     );
@@ -262,27 +279,68 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
                         <>
                           {rowFields.map((rowField, rIdx) => {
                             const curProvider = ((watchList[index]?.rows || [])[rIdx]?.provider || '').trim();
+                            const rowId = `${index}-${rIdx}`;
+                            const dragging = dragReady === rowId;
+                            const isOverTarget = dragOver === rowId && dragReady !== null && dragReady !== rowId;
                             return (
-                              <Row key={rowField.key} gutter={8} align="middle" style={{ marginBottom: 8 }}>
-                                <Col flex="64px">
-                                  <Space size={0}>
-                                    <Button
-                                      type="text"
-                                      size="small"
-                                      icon={<ArrowUpOutlined />}
-                                      title="上移"
-                                      disabled={rIdx === 0}
-                                      onClick={() => moveRow(rIdx, rIdx - 1)}
-                                    />
-                                    <Button
-                                      type="text"
-                                      size="small"
-                                      icon={<ArrowDownOutlined />}
-                                      title="下移"
-                                      disabled={rIdx === rowFields.length - 1}
-                                      onClick={() => moveRow(rIdx, rIdx + 1)}
-                                    />
-                                  </Space>
+                              <Row
+                                key={rowField.key}
+                                gutter={8}
+                                align="middle"
+                                style={{
+                                  marginBottom: 8,
+                                  // 拖动中的源行淡显；悬停目标行顶部插入指示线。
+                                  // 注意 draggable 放手柄 span 上——antd Row 不透传
+                                  // draggable 到 DOM（实测被吞），手柄是原生元素可靠；
+                                  // dragstart 自手柄冒泡到本行处理器。
+                                  opacity: dragging ? 0.5 : undefined,
+                                  boxShadow: isOverTarget ? 'inset 0 2px 0 #1677ff' : undefined,
+                                  borderRadius: isOverTarget ? 4 : undefined,
+                                }}
+                                onDragStart={(e) => {
+                                  e.dataTransfer.effectAllowed = 'move';
+                                  // Firefox 需要 setData 才会进入拖拽
+                                  e.dataTransfer.setData('text/plain', rowId);
+                                }}
+                                onDragOver={(e) => {
+                                  if (dragReady === null || dragReady === rowId) return;
+                                  e.preventDefault(); // 允许成为 drop 目标
+                                  e.dataTransfer.dropEffect = 'move';
+                                  setDragOver(rowId);
+                                }}
+                                onDrop={(e) => {
+                                  e.preventDefault();
+                                  const fromId = dragReady;
+                                  setDragReady(null);
+                                  setDragOver(null);
+                                  if (!fromId || fromId === rowId) return;
+                                  const [fromRole, fromRow] = fromId.split('-').map(Number);
+                                  // 只允许同角色卡片内换序（跨卡片行分属不同 Form.List）
+                                  if (fromRole !== index) return;
+                                  moveRow(fromRow, rIdx);
+                                }}
+                                onDragEnd={() => {
+                                  // 拖拽取消/落点无效时也要复位（drop 不总触发）
+                                  setDragReady(null);
+                                  setDragOver(null);
+                                }}
+                              >
+                                <Col flex="32px" style={{ textAlign: 'center' }}>
+                                  <span
+                                    title="拖动调整顺序"
+                                    aria-label={`拖动调整第 ${rIdx + 1} 行顺序`}
+                                    draggable={dragging}
+                                    style={{
+                                      cursor: dragging ? 'grabbing' : 'grab',
+                                      color: '#999',
+                                      padding: '4px 6px',
+                                      userSelect: 'none',
+                                    }}
+                                    onMouseDown={() => setDragReady(rowId)}
+                                    onMouseUp={() => setDragReady(null)}
+                                  >
+                                    <HolderOutlined />
+                                  </span>
                                 </Col>
                                 <Col flex="220px">
                                   <Form.Item name={[rowField.name, 'provider']} noStyle>

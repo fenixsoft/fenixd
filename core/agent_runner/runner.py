@@ -75,6 +75,7 @@ from core.agent_runner.liveness import (
 )
 from core.agent_runner.session import SessionTracker
 from core.agent_runner.provider_circuit import (
+    MODEL_CHAIN_UNAVAILABLE_MARKER,
     PROVIDER_CIRCUIT_4XX,
     PROVIDER_CIRCUIT_COOLDOWN_SECONDS,
     PROVIDER_CIRCUIT_THRESHOLD,
@@ -82,6 +83,7 @@ from core.agent_runner.provider_circuit import (
     PROVIDER_DAILY_ATTEMPTS_WARN,
     PROVIDER_SWITCH_COOLDOWN_SECONDS,
     ProviderCircuit,
+    annotate_model_chain_unavailable,
 )
 from core.agent_runner.run_files import (
     archive_spec_runs,
@@ -107,6 +109,7 @@ from core.agent_runner.maintenance_runs import (
     ADMIN_DISPOSITION_PREFIX,
     DEFAULT_GATEWAY_MODEL,
     DEFAULT_OCR_BIN,
+    _accumulate_code_review_tokens,
     _accumulate_evolution_tokens,
     _accumulate_self_review_tokens,
     _clear_admin_disposition,
@@ -116,7 +119,9 @@ from core.agent_runner.maintenance_runs import (
     _delete_self_review_out,
     _get_admin_model,
     _read_admin_disposition,
+    _read_code_review_out,
     _read_self_review_out,
+    _unique_code_review_run_id,
     admin_disposition_path,
     run_administrator,
     run_code_review,
@@ -397,6 +402,11 @@ class _AttemptState:
     turns: int = 0
     # 用于 "provider switched" 跨 attempt 打点
     last_provider_used: Optional[str] = None
+    # add-impl-selfcheck-model-probe（2.1/2.2）：本 run 内 unrecognized_model
+    # 拒模型命中计数（全链不可用归因里报告规模用）与「链尾仍被拒」旗标
+    # （置位后 attempt 预算立即收场——对同一拒模型再起必败进程是纯浪费）。
+    chain_reject_hits: int = 0
+    chain_rejected_exhausted: bool = False
 
 
 class AgentRunner:
@@ -431,6 +441,9 @@ class AgentRunner:
         "is_circuit_open": ("_provider_circuit", "is_circuit_open"),
         "is_switch_cooldown": ("_provider_circuit", "is_switch_cooldown"),
         "_record_switch_cooldown": ("_provider_circuit", "_record_switch_cooldown"),
+        # add-impl-selfcheck-model-probe（2.1）：拒模型识别告警经组件单点，
+        # 门面转发保持与其它 provider 记账原语同机制。
+        "_record_unrecognized_model": ("_provider_circuit", "record_unrecognized_model"),
         "_write_provider_marker": ("_provider_circuit", "_write_provider_marker"),
         "_record_daily_provider_attempt": ("_provider_circuit", "_record_daily_provider_attempt"),
         "_circuit_open_error": ("_provider_circuit", "_circuit_open_error"),
@@ -470,6 +483,12 @@ class AgentRunner:
         "run_self_review": run_self_review,
         "run_evolution": run_evolution,
         "run_code_review": run_code_review,
+        # code-review 车道三 helper 同走门面（code-review item 0c9577c146d9）：
+        # run_code_review 内部经 runner.<helper> 调用（实例属性打桩有效）——
+        # 直接调模块函数会绕过 __getattr__，打桩被静默忽略。
+        "_unique_code_review_run_id": _unique_code_review_run_id,
+        "_read_code_review_out": _read_code_review_out,
+        "_accumulate_code_review_tokens": _accumulate_code_review_tokens,
         # add-code-review-auto-fix（task 6.4）：code-fix 运维车道同处注册。
         # code-fix 不在 _execute_agent 路径（不占 spec 维度预算、不计入每日
         # agent run 计数），仅经本转发表被编排器调用。
@@ -527,6 +546,8 @@ class AgentRunner:
     _read_init_tools = staticmethod(_read_init_tools)
     parse_api_error_status = staticmethod(ProviderCircuit.parse_api_error_status)
     classify_switch_error = staticmethod(ProviderCircuit.classify_switch_error)
+    classify_unrecognized_model_error = staticmethod(
+        ProviderCircuit.classify_unrecognized_model_error)
     classify_transient_error = staticmethod(ProviderCircuit.classify_transient_error)
     _summarize_snapshot = staticmethod(LivenessSupervisor._summarize_snapshot)
     _parse_verdict_json = staticmethod(LivenessSupervisor._parse_verdict_json)
@@ -2289,6 +2310,19 @@ class AgentRunner:
                     # provider 不 resume，见 _resumable_session_id）。
                     # 4xx 配额/鉴权类不触发（维持既有熔断语义、链指针不动）。
                     if _may_switch and self.classify_switch_error(error):
+                        # add-impl-selfcheck-model-probe（2.1）：unrecognized_model
+                        # 命中即记 WARNING（provider/model/run_id，供链摘除决策）。
+                        # 链尾模型仍被拒 → 归因注入「全链模型不可用」语义（2.2，
+                        # 派发器据此跳过同因重派）并置旗标：attempt 预算立即收场，
+                        # 对同一拒模型再起必败进程是纯浪费。
+                        if self.classify_unrecognized_model_error(error):
+                            self._record_unrecognized_model(
+                                provider_name, model, attempt_run_id, spec_name)
+                            st.chain_reject_hits += 1
+                            if st.chain_cursor + 1 >= len(chain):
+                                error = annotate_model_chain_unavailable(
+                                    error, provider_name, model, st.chain_reject_hits)
+                                st.chain_rejected_exhausted = True
                         self._record_switch_cooldown(provider_name)
                         # 仅当链上还有后续候选才前进指针；否则保持当前（全链耗尽将
                         # 在下一 attempt 的 _select_chain_candidate 中判定为 chain_exhausted）。
@@ -2352,7 +2386,11 @@ class AgentRunner:
                 )
                 wt_path = st.wt_path
                 kept_wt_path = st.kept_wt_path
-                if should_break:
+                # add-impl-selfcheck-model-probe（2.2）：链尾拒模型已注入
+                # [model-chain-unavailable] 归因 → 同因重派必然撞同一拒模型链，
+                # 剩余 attempt 预算立即放弃（error 已带归因，走 _exhausted_result
+                # 既有失败终态路径）。
+                if should_break or st.chain_rejected_exhausted:
                     break
 
         return self._exhausted_result(
@@ -2524,6 +2562,15 @@ class AgentRunner:
         # 运气至预算耗尽的形态即由该通道熔断）。
         if error and error.startswith("[signal-kill:"):
             return error, False, False
+        # add-impl-selfcheck-model-probe（2.1）：unrecognized_model 是 provider
+        # 明确返回的**确定性拒模型**，判定须先于 4xx 解析——拒模型常伴随 404
+        # 形态（unrecognized_model 对应 404），先走 4xx 分支会误入熔断计数且
+        # 不切链。命中：非瞬态（不进原地退避重试、不记全局瞬断指纹、不递增
+        # 同因重派计数）、may_switch=True（调用方沿链前进 + switch 短冷却，
+        # 复用 add-provider-failover 既有机制，无平行切换路径）。WARNING 告警
+        # 与链尾归因标注在调用方 attempt 循环（该作用域有 model / run_id）。
+        if error and self.classify_unrecognized_model_error(error):
+            return error, False, True
         code = self.parse_api_error_status(error)
         if code is not None and code in PROVIDER_CIRCUIT_4XX:
             # 4xx 熔断计数（fix-stashpop-deadlock：provider-fault-fuse）。

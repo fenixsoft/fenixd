@@ -24,6 +24,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -794,7 +795,7 @@ def run_code_review(
             manual_full 为 None=全仓）。
         scope: full / window（写进 manifest 供审计）。
     """
-    run_id = _unique_code_review_run_id(runner)
+    run_id = runner._unique_code_review_run_id()
     mpath = runner.project_root / ".fenix" / "code-review" / f"manifest-{run_id}.json"
     opath = runner.project_root / ".fenix" / "code-review" / f"out-{run_id}.jsonl"
     try:
@@ -868,8 +869,10 @@ def run_code_review(
         error = str(e)
         usage_info = runner._extract_usage_info(None)
 
-    # token 归账到独立类目（不写 STATE，与自省同一约束）
-    _accumulate_code_review_tokens(runner, run_id, usage_info)
+    # token 归账到独立类目（不写 STATE，与自省同一约束）。经门面调用
+    # （对齐 run_administrator/run_self_review 的 runner.<method> 形态）：
+    # 直接调模块函数会绕过 __getattr__，实例属性打桩被静默忽略。
+    runner._accumulate_code_review_tokens(run_id, usage_info)
 
     # ── 产物硬门（2026-09-19 原地修复：此前该车道**全链无任何产物门**）────
     # 事故取证：run exit 0（subtype=success）但 agent 从未写过 out-<run_id>.jsonl
@@ -894,7 +897,7 @@ def run_code_review(
     inserted = updated = resolved = 0
     if run_ok:
         try:
-            findings = _read_code_review_out(opath)
+            findings = runner._read_code_review_out(opath)
         except OSError as e:
             run_ok = False
             error = f"读取审查产物失败: {e}"
@@ -1004,11 +1007,15 @@ def _unique_code_review_run_id(runner) -> str:
         candidate = f"{base}-{n}"
 
 
-def _read_code_review_out(opath: Path) -> list:
+def _read_code_review_out(runner, opath: Path) -> list:
     """读取审查增量产物 ``out-<run_id>.jsonl``。
 
     每行为一个文件的审查结果 JSON（file/findings[]）。非 dict 行忽略；
     损坏行跳过；文件缺失返回空列表（run 失败路径已由 success=False 兜底）。
+
+    ``runner`` 首参为门面注册表契约（self 首参模块函数）预留：本函数体
+    不读 runner 状态，但经 ``runner._read_code_review_out(...)`` 转发时
+    partial 会注入 runner 首参（code-review item 0c9577c146d9）。
     """
     out: list = []
     if not opath.is_file():
@@ -1589,6 +1596,80 @@ def _write_impl_ocr_run_events(project_root: Path, run_id: str, spec_name: str,
         pass
 
 
+# ── ocr 车道运行中心跳（fix-ocr-lane-orphaned-state-misfire D1/D2）──────────
+# 间隔 MUST 小于 ORPHANED_RUN_GRACE_SECONDS=120s（core/admin_monitor.py，无驱动
+# 探针条件①的 run mtime 宽限窗）：45s 留出线程调度与写盘抖动余量——心跳持续
+# 刷新 run 转录 mtime → 条件①持续为假 → 车道在跑不再被误判「无驱动」。模块级
+# 常量（读在 _start_impl_ocr_heartbeat 调用时而非缺省参数绑定）：测试经
+# monkeypatch 缩至亚秒级，套件时长不被真实间隔放大。不引入配置键（D4）。
+IMPL_OCR_HEARTBEAT_INTERVAL_SECONDS = 45.0
+
+# 停跳 join 上限（秒）：Event 置位后循环至多再写一条 progress 即退出，正常
+# 亚秒返回；上限仅防极端写阻塞拖住车道收尾（观测通道不值得久等）。
+IMPL_OCR_HEARTBEAT_JOIN_TIMEOUT_SECONDS = 5.0
+
+
+def _start_impl_ocr_heartbeat(project_root: Path, run_id: str, spec_name: str,
+                              from_commit: str, head_commit: str) -> tuple:
+    """启动车道运行中心跳线程，返回 ``(stop_event, thread)``。
+
+    审查子进程运行期间按 ``IMPL_OCR_HEARTBEAT_INTERVAL_SECONDS`` 间隔经既有
+    ``_write_impl_ocr_run_events`` 向车道 run 转录追加 ``progress`` 事件
+    （review 区间 from/to + 自启动起 ``time.monotonic`` 已用时秒数）。消费
+    orphaned_state 无驱动探针条件①（run mtime 宽限窗）：``_has_recent_spec_run``
+    因心跳持续为真 → ``spec_is_undriven`` 为假，大 diff 长审查不再误报孤儿；
+    探针判定函数本体零改动。daemon 重启心跳自然停止 → 宽限+阈值过后真孤儿
+    仍被正常上报（不加任何 ``_ocr_join_wait`` 有意等待豁免，不遮蔽自愈链）。
+
+    调用方收尾 MUST 先 ``stop_event.set()`` + ``thread.join(有上限)`` 停跳、
+    再写终态事件（``result``/``error`` 末行后置不变量，D2 顺序）。心跳写失败
+    静默（``_write_impl_ocr_run_events`` 既有语义，观测通道不阻断车道）。
+    daemon=True + try/finally 全覆盖兜底：任何路径漏 set 停跳位也不阻塞进程
+    退出（线程泄漏风险的最后防线，见 SPEC Risks）。
+    """
+    interval = IMPL_OCR_HEARTBEAT_INTERVAL_SECONDS
+    started = time.monotonic()
+    stop_event = threading.Event()
+
+    def _loop() -> None:
+        # Event.wait(interval) 可中断等待：置位即退出（含正在等待的余程），
+        # 超时返回 False 才发一条心跳——停跳延迟至多一个间隔。
+        while not stop_event.wait(interval):
+            _write_impl_ocr_run_events(
+                project_root,
+                run_id,
+                spec_name,
+                [(
+                    "progress",
+                    {
+                        "message": "ocr 审查进行中（运行中心跳）",
+                        "review_range": {"from": from_commit, "to": head_commit},
+                        "elapsed_seconds": round(time.monotonic() - started, 3),
+                    },
+                )],
+            )
+
+    thread = threading.Thread(
+        target=_loop, name=f"impl-ocr-heartbeat-{run_id}", daemon=True
+    )
+    thread.start()
+    return stop_event, thread
+
+
+def _stop_impl_ocr_heartbeat(stop_event, thread) -> None:
+    """停跳（D2 顺序约束）：置位 + 有上限 join，先于终态事件写入。
+
+    幂等（Event.set 可重入、join 已死线程立即返回），供子进程收尾 finally
+    与车道整体 finally 双重调用（意外异常路径同样停跳）。返回后心跳线程
+    不再追加任何 ``progress`` 行，主线程独占写——终态事件得以保持文件末行，
+    归档/worktree 清理也不会被迟到的心跳复活旧文件。
+    """
+    if stop_event is not None:
+        stop_event.set()
+    if thread is not None and thread.is_alive():
+        thread.join(timeout=IMPL_OCR_HEARTBEAT_JOIN_TIMEOUT_SECONDS)
+
+
 def run_impl_ocr(
     runner,
     spec_name: str,
@@ -1616,6 +1697,21 @@ def run_impl_ocr(
 
     本函数 **MUST NOT 抛未捕获异常**（任务 3.3）：任何意外异常都折算为
     ``unavailable`` 产物收尾；detached 检出在 finally 中清理。
+
+    运行中心跳（fix-ocr-lane-orphaned-state-misfire 1.1）：审查子进程运行
+    期间由后台定时线程（daemon=True + ``threading.Event`` 停跳位，循环
+    ``Event.wait`` 可中断）按 ``IMPL_OCR_HEARTBEAT_INTERVAL_SECONDS``（45s，
+    小于 orphaned_state 探针条件①的 ``ORPHANED_RUN_GRACE_SECONDS``=120s 宽限，
+    留调度抖动余量）经 ``_write_impl_ocr_run_events`` 向车道 run 转录追加
+    ``progress`` 事件（review 区间 + 已用时），持续刷新 run 文件 mtime——
+    消费 ``spec_is_undriven`` 条件①，车道在跑（无论审查多久）不再被判
+    「无驱动」，探针判定函数本体零改动。子进程返回（完成/非零退出/车道
+    硬超时）先 ``stop_event.set()`` + ``join(有上限)`` 停跳、再写终态事件
+    （``result``/``error`` 末行后置不变量）；try/finally 覆盖一切退出路径，
+    停跳后不再有任何 ``progress`` 追加；心跳写失败静默不影响收尾。daemon
+    重启心跳自然停止 → 宽限+阈值过后真孤儿仍被正常上报（不加任何
+    ``_ocr_join_wait`` 有意等待豁免——该字段无 boot 恢复，重启场景恰恰依赖
+    orphaned_state 兜底）。
     """
     from core.config import ConfigLoader
 
@@ -1649,6 +1745,7 @@ def run_impl_ocr(
     )
 
     wt = None
+    heartbeat = None  # (stop_event, thread)；审查子进程运行期非 None
     try:
         # ── provider 注入（任务 3.2）：复用 implementer 分配 + 同源 _write_run_ocr_config ──
         env_overrides: Dict[str, str] = {"FENIX_OCR_BIN": DEFAULT_OCR_BIN}
@@ -1723,6 +1820,12 @@ def run_impl_ocr(
                 "--format", "json",
                 "--output", str(raw_path),
             ]
+            # ── 运行中心跳（fix-ocr-lane-orphaned-state-misfire 1.1）：子进程
+            # 运行期唯一启跳（elapsed 自子进程启动起计）；返回/超时先停跳再
+            # 走分类收尾，终态事件保持末行后置（1.2 顺序约束）。──
+            heartbeat = _start_impl_ocr_heartbeat(
+                runner.project_root, run_id, spec_name, from_commit, head_commit
+            )
             try:
                 proc = subprocess.run(
                     cmd,
@@ -1738,6 +1841,10 @@ def run_impl_ocr(
             except subprocess.TimeoutExpired:
                 proc = None
                 timed_out = True
+            finally:
+                # 完成/非零退出/硬超时/意外异常四路同收口：停跳后本线程独占
+                # 写（幂等，车道整体 finally 二次调用无害）。
+                _stop_impl_ocr_heartbeat(*heartbeat)
 
             if timed_out:
                 lane_timeout = ConfigLoader.get_impl_code_review_lane_timeout_sec(
@@ -1780,6 +1887,11 @@ def run_impl_ocr(
                 f"impl-ocr 车道内部异常（run {run_id}）: {type(e).__name__}: {e}",
             )
     finally:
+        # 停跳兜底（1.2 全路径覆盖）：心跳启动后任何未预期异常路径（含降级
+        # unavailable 各分支）都先停跳，再清理 worktree——归档/清理不会被
+        # 迟到的 progress 复活旧文件。心跳未启动（前置分支失败）时为 no-op。
+        if heartbeat is not None:
+            _stop_impl_ocr_heartbeat(*heartbeat)
         _remove_impl_ocr_worktree(runner.project_root, wt)
 
     # ── 产物原子落盘（unavailable/completed 两条路径都写，join 读侧以文件为准）──

@@ -85,3 +85,7 @@
   - 证据：fenixd.log「发现层跳过不可读路径 /root/GSM8K_200（EIO, errno=5）」与 /root/dmla-data 同款，窗口切片内各 248 条、17 个整点小时无间断；同窗口「Autostash reclaim check failed」0 次（末次为 09-20T04:51:48，故前日条目的 autostash 半边本轮未复现）。
   - 调查评估：承接 2026-09-21#可改进#2。已核实：两条路径的 EIO WARNING 计数、按小时分布与首末时间点来自 .fenix/logs/fenixd.log 的脚本聚合；Autostash reclaim check failed 在窗口内 0 次（仅轮转文件 fenixd.log.1 有 1 条，09-20T04:51:48），故该条目只剩 EIO 一半，autostash 半边可视为未复现。根因归属：宿主挂载的数据集目录 I/O 错误（环境侧外部因素），而发现层未对已知不可读路径做缓存/黑名单（框架侧可修）——系统性缺口。与存量工作关系：spec/changes 活跃区无同题 SPEC；spec/archive/2026-09-21-fix-robustness-edge-cases 处理的是验证健壮性边角，不含发现层路径黑名单。结论：仍需立项，代价是日志质量与扫描开销（正确性无影响），清晰度已足够直接起草。
   - 建议：Registry.discover 增加 EIO 路径缓存（首次 EIO 后写入 .fenix/eio_blacklist.json 并按 TTL 跳过，默认 1 小时，可配置），命中期降为 DEBUG 或不记；并把该黑名单在状态日志中按小时汇总一条，替代逐次刷屏。
+
+### 人工运维（SPEC 激活后执行，对应 spec 的 docs/help 文档）
+- **add-impl-selfcheck-model-probe 合入后**：同步修改运行时 `.fenix/config.yaml`——各 agent 类型模型链摘除 `maomaoai + deepseek-v4.1-flash` 条目（近 48h 实测 12 次 unrecognized_model 秒死 run；详见 spec 交付的 docs/help/model-chain-ops.md）。改完 `fenixd` 30s 热更新自动生效。
+- **add-pipeline-throughput-governance 合入后**：同步修改运行时 `.fenix/config.yaml`——`agents.max_concurrent: 3 → 5`（观察网关压力与回归锁排队，异常即调回 3；详见 spec 交付的 docs/help/pipeline-throughput-ops.md）。

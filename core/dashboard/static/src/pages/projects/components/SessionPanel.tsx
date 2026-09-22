@@ -68,8 +68,15 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
   const watchRegisteredRef = useRef(false);
 
   const syncEvents = (next: SessionEvent[]) => {
-    // 全量重拉：清空重建去重集合（design D6——重拉是唯一可能重复的路径）
-    seenUuidsRef.current.clear();
+    // 全量重拉：以快照 uuids 重建去重集合（code-review item 12c190b15530）——
+    // 旧实现只 clear，重拉后到达的 SSE session_events 帧若携带快照中已有的
+    // 事件（「reload 兜注册窗口」设计必然制造的重叠）会被再次 append 成重复
+    // 消息。重建集合后 SSE 增量照旧跳过已见项（design D6）。
+    seenUuidsRef.current = new Set(
+      next
+        .map((ev) => (ev ? (ev.uuid as string | undefined) : undefined))
+        .filter((u): u is string => Boolean(u)),
+    );
     setEvents(next);
   };
 
@@ -95,75 +102,86 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
     if (!active || !project) return;
     let disposed = false;
 
-    const loadAll = async (): Promise<string | null> => {
-      try {
-        setLoading(true);
-        const data = await getSession(project);
-        if (disposed) return null;
-        if (data.session) {
-          sessionIdRef.current = data.session.id;
-          setSessionId(data.session.id);
-          setStarted(true);
-          setEnded(false);
-          syncEvents(data.events || []);
-          setTruncated(Boolean(data.truncated));
-          setError('');
-        } else {
-          // 会话未启动：空态，等待「开始会话」
-          sessionIdRef.current = null;
-          setSessionId(null);
-          setStarted(false);
-          syncEvents([]);
-          setTruncated(false);
-        }
-        return data.session?.id ?? null;
-      } catch (e) {
-        if (!disposed) setError(e instanceof Error ? e.message : String(e));
-        return null;
-      } finally {
-        if (!disposed) setLoading(false);
-      }
+    // 快照加载串行化（code-review item 112623f4c6ed）：挂载时 loadAll 与
+    // hello 触发的 afterHello 重载并发执行、各自带全量快照调 syncEvents、无
+    // 排序守卫——早发出者后返回时旧快照覆盖新快照，中间送达的事件从渲染
+    // 列表丢失。经 promise 链按发起顺序串行应用快照（后应用的必然是更晚
+    // 发起的加载，包含更新的服务端状态）。
+    let loadChain: Promise<void> = Promise.resolve();
+    const enqueueSnapshotLoad = (task: () => Promise<void>): Promise<void> => {
+      loadChain = loadChain.then(task).catch(() => {});
+      return loadChain;
     };
+
+    const loadAll = () =>
+      enqueueSnapshotLoad(async () => {
+        try {
+          setLoading(true);
+          const data = await getSession(project);
+          if (disposed) return;
+          if (data.session) {
+            sessionIdRef.current = data.session.id;
+            setSessionId(data.session.id);
+            setStarted(true);
+            setEnded(false);
+            syncEvents(data.events || []);
+            setTruncated(Boolean(data.truncated));
+            setError('');
+          } else {
+            // 会话未启动：空态，等待「开始会话」
+            sessionIdRef.current = null;
+            setSessionId(null);
+            setStarted(false);
+            syncEvents([]);
+            setTruncated(false);
+          }
+        } catch (e) {
+          if (!disposed) setError(e instanceof Error ? e.message : String(e));
+        } finally {
+          if (!disposed) setLoading(false);
+        }
+      });
 
     // 注册 watch 后重拉一次（兜住注册前的窗口）。
     // 无会话项目（空态）不注册 watch：注册必然 404 → console.error，
     // 污染 web 场景 no_console_error 断言（验证 BUG-01 实证）。
-    const afterHello = async (cid: string) => {
-      try {
-        const data = await getSession(project);
-        if (disposed) return;
-        if (data.session) {
-          sessionIdRef.current = data.session.id;
-          setSessionId(data.session.id);
-          setStarted(true);
-          setEnded(false);
-          syncEvents(data.events || []);
-          setTruncated(Boolean(data.truncated));
-          // 会话存在：用服务端 hello 分配的 cid 注册 watch
-          try {
-            await registerSessionWatch(project, cid);
-            watchRegisteredRef.current = true;
-          } catch (e) {
-            console.error('Failed to register session watch:', e);
-          }
-          // 注册后重拉一次（兜住注册前的窗口，design D6）
-          const again = await getSession(project);
+    const afterHello = (cid: string) =>
+      enqueueSnapshotLoad(async () => {
+        try {
+          const data = await getSession(project);
           if (disposed) return;
-          if (again.session) {
-            syncEvents(again.events || []);
-            setTruncated(Boolean(again.truncated));
+          if (data.session) {
+            sessionIdRef.current = data.session.id;
+            setSessionId(data.session.id);
+            setStarted(true);
+            setEnded(false);
+            syncEvents(data.events || []);
+            setTruncated(Boolean(data.truncated));
+            // 会话存在：用服务端 hello 分配的 cid 注册 watch
+            try {
+              await registerSessionWatch(project, cid);
+              watchRegisteredRef.current = true;
+            } catch (e) {
+              console.error('Failed to register session watch:', e);
+            }
+            // 注册后重拉一次（兜住注册前的窗口，design D6）
+            const again = await getSession(project);
+            if (disposed) return;
+            if (again.session) {
+              syncEvents(again.events || []);
+              setTruncated(Boolean(again.truncated));
+            }
+          } else {
+            // 无会话（空态）：跳过注册，仅设空态（避免 404 + console.error）
+            sessionIdRef.current = null;
+            setSessionId(null);
+            setStarted(false);
+            syncEvents([]);
           }
-        } else {
-          // 无会话（空态）：跳过注册，仅设空态（避免 404 + console.error）
-          sessionIdRef.current = null;
-          setSessionId(null);
-          setStarted(false);
-          syncEvents([]);
+        } catch (e) {
+          if (!disposed) setError(e instanceof Error ? e.message : String(e));
         }
-      } catch (e) {
-        if (!disposed) setError(e instanceof Error ? e.message : String(e));
-      }
-    };
+      });
 
     void loadAll();
 

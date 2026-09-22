@@ -2028,3 +2028,73 @@ def sync_config_from_user(project_root, page: str) -> dict:
         "synced": patch if result["ok"] else None,
         "path": result.get("path"),
     }
+
+
+def clear_project_page_keys(project_root, page: str) -> dict:
+    """从项目级 config.yaml 删除 page 页签对应的受管键（「清空」按钮）。
+
+    项目级不再显式覆盖这些键后，用户级配置/内置默认值自然生效（sources 回
+    "user"）——与「同步用户级设置」互补：同步=显式对齐，清空=取消项目级覆盖。
+    删空的 section 整段移除；非受管键与其它 section 原样保留；原子写盘。
+
+    Args:
+        project_root: 项目根路径
+        page: 页面标识（_SYNC_PAGE_KEYS 键）
+
+    Returns: {"ok": bool, "error": str|null, "cleared": dict|None, "path": str}
+        cleared = 实际删除的键（{section: {key: 原值}}），None = 项目级文件不存在
+        （本来就没有覆盖，幂等 no-op）。
+    """
+    if page not in _SYNC_PAGE_KEYS:
+        return {"ok": False, "error": f"未知页面标识: {page}", "cleared": None, "path": None}
+
+    import core.dashboard.data as _facade
+
+    config_path = Path(project_root) / ".fenix" / "config.yaml"
+    fail = lambda err: {"ok": False, "error": err, "cleared": None, "path": str(config_path)}
+
+    if not config_path.exists():
+        return {"ok": True, "error": None, "cleared": None, "path": str(config_path)}
+
+    raw = {}
+    try:
+        with config_path.open("r", encoding="utf-8") as f:
+            loaded = yaml.safe_load(f)
+        if isinstance(loaded, dict):
+            raw = loaded
+    except (yaml.YAMLError, OSError) as e:
+        return fail(f"读取现有配置失败: {e}")
+
+    cleared = {}
+    for section, keys in _SYNC_PAGE_KEYS[page].items():
+        sec_raw = raw.get(section)
+        if not isinstance(sec_raw, dict):
+            continue
+        removed = {k: sec_raw.pop(k) for k in keys if k in sec_raw}
+        if removed:
+            cleared[section] = removed
+            if not sec_raw:
+                raw.pop(section)  # section 删空整段移除，不留空 mapping
+
+    if not cleared:
+        # 没有可删的键：不重写文件（保留原文件 mtime，避免无意义触碰配置热更新）
+        return {"ok": True, "error": None, "cleared": {}, "path": str(config_path)}
+
+    config_dir = config_path.parent
+    try:
+        fd, tmp_path = tempfile.mkstemp(dir=str(config_dir), prefix=".config-", suffix=".yaml.tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(_CONFIG_HEADER_COMMENT)
+                yaml.safe_dump(raw, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+            os.replace(tmp_path, config_path)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+    except OSError as e:
+        return fail(f"写入配置文件失败: {e}")
+
+    return {"ok": True, "error": None, "cleared": cleared, "path": str(config_path)}

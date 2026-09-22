@@ -146,10 +146,16 @@ def probe(provider_name: str, config_path: Path) -> dict:
     if errors:
         evidence["errors"] = errors
     # D3 定案记录：网关不接受可复用前缀缓存时输出 false 与实测差异。
-    distinct = len(set(
-        int(r.get("cache_read_input_tokens") or 0) for r in rounds if "error" not in r
-    )) > 1
-    evidence["rounds_distinct"] = distinct
+    # 任一轮失败时差异不可判定（成功轮子集可能缩成单元素，把真实差异
+    # 掩盖为「相同」），显式标注跳过而非给出误导性 distinct=False。
+    if any("error" in r for r in rounds):
+        evidence["rounds_distinct"] = None
+        evidence["rounds_distinct_note"] = "存在失败轮次，差异判定不可信，已跳过"
+    else:
+        distinct = len(set(
+            int(r.get("cache_read_input_tokens") or 0) for r in rounds
+        )) > 1
+        evidence["rounds_distinct"] = distinct
     return {
         "provider": provider_name,
         "cache_supported": cache_supported,

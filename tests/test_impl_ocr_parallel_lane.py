@@ -22,6 +22,7 @@ import json
 import os
 import subprocess
 import textwrap
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -48,6 +49,14 @@ _FAKE_OCR_SCRIPT = textwrap.dedent(
         sys.exit(3)
     if os.environ.get("FAKE_OCR_MODE") == "hang":
         time.sleep(60)
+    # fix-ocr-lane-orphaned-state-misfire 任务 1.3：可调时长的慢审查模式
+    # （配合心跳间隔 monkeypatch 至亚秒级，模拟「阻塞超过 2 个心跳间隔」）
+    if os.environ.get("FAKE_OCR_MODE") == "sleep":
+        time.sleep(float(os.environ.get("FAKE_OCR_SLEEP", "0.3")))
+    if os.environ.get("FAKE_OCR_MODE") == "sleep-fail":
+        time.sleep(float(os.environ.get("FAKE_OCR_SLEEP", "0.3")))
+        sys.stderr.write("fake provider unreachable after slow review")
+        sys.exit(3)
     report = {
         "comments": [{
             "path": "src/a.py",
@@ -819,3 +828,221 @@ class TestPipelineContextGateWiring:
         ctx = PipelineContext.from_pm(pm)
         assert ctx.ocr_join_gate("demo", "planner-judge") == "defer"
         assert calls == [("demo", "planner-judge")]
+
+
+# ── fix-ocr-lane-orphaned-state-misfire：车道运行中心跳与探针/分类器相容 ────
+
+
+class TestOcrLaneHeartbeat:
+    """车道运行中心跳行为（任务 1.3）。
+
+    全部用例经 monkeypatch 把间隔常量缩至亚秒级（0.05s）后运行，MUST NOT
+    真实等待 ≥45s——间隔常量为模块级可 patch 形态
+    （``IMPL_OCR_HEARTBEAT_INTERVAL_SECONDS``，``_start_impl_ocr_heartbeat``
+    在调用时读取全局而非缺省参数绑定），套件时长不被心跳间隔放大。
+    """
+
+    HEARTBEAT_INTERVAL = 0.05
+
+    @pytest.fixture(autouse=True)
+    def _fast_heartbeat(self, monkeypatch):
+        from core.agent_runner import maintenance_runs
+
+        monkeypatch.setattr(
+            maintenance_runs,
+            "IMPL_OCR_HEARTBEAT_INTERVAL_SECONDS",
+            self.HEARTBEAT_INTERVAL,
+        )
+
+    def _only_run_file(self, repo: Path) -> Path:
+        run_files = list((repo / ".fenix" / "runs").glob("impl-ocr-*.jsonl"))
+        assert len(run_files) == 1, run_files
+        return run_files[0]
+
+    def _read_lines(self, path: Path) -> list:
+        return [
+            json.loads(line)
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+
+    def test_long_review_appends_progress_and_refreshes_mtime(
+        self, tmp_path, monkeypatch
+    ):
+        """a) 长审查（子进程阻塞 > 2 个心跳间隔）期间转录持续追加 progress
+        且 mtime 持续刷新——orphaned_state 条件①（mtime 宽限窗）因此为假。"""
+        repo = _init_repo_with_fake_ocr(tmp_path)
+        monkeypatch.setenv("FAKE_OCR_MODE", "sleep")
+        monkeypatch.setenv("FAKE_OCR_SLEEP", "0.35")  # > 2 × 0.05s 间隔
+        artifact = _run_lane(repo)
+        assert artifact["status"] == "completed"
+
+        lines = self._read_lines(self._only_run_file(repo))
+        types = [ln["type"] for ln in lines]
+        progress = [ln for ln in lines if ln["type"] == "progress"]
+        # 运行期持续追加：start 首行、progress ≥ 2 条（运行 0.35s / 间隔 0.05s）
+        assert types[0] == "start"
+        assert len(progress) >= 2, types
+        for ln in progress:
+            assert ln["agent_type"] == "impl-ocr"
+            assert ln["spec"] == "demo"
+            assert set(ln["review_range"]) == {"from", "to"}
+            assert ln["review_range"]["to"] == artifact["fingerprint"]["head_commit"]
+            assert ln["elapsed_seconds"] >= self.HEARTBEAT_INTERVAL
+        # 已用时单调递增＝事件按序追加（每次追加即一次 mtime 刷新的转录证据）
+        elapsed = [ln["elapsed_seconds"] for ln in progress]
+        assert elapsed == sorted(elapsed)
+        assert elapsed[-1] > elapsed[0]
+
+    def test_heartbeat_stops_and_terminal_is_last_line(self, tmp_path, monkeypatch):
+        """b) 子进程收尾后停跳：不再追加 progress，终态事件是文件末行。"""
+        repo = _init_repo_with_fake_ocr(tmp_path)
+        monkeypatch.setenv("FAKE_OCR_MODE", "sleep")
+        monkeypatch.setenv("FAKE_OCR_SLEEP", "0.2")
+        artifact = _run_lane(repo)
+        assert artifact["status"] == "completed"
+
+        run_file = self._only_run_file(repo)
+        types = [ln["type"] for ln in self._read_lines(run_file)]
+        assert types[0] == "start"
+        assert "progress" in types
+        assert types[-1] == "result"
+        assert self._read_lines(run_file)[-1]["status"] == "completed"
+        # 停跳：等 > 2 个心跳间隔后行集不变（无迟到心跳、无终态后追加）
+        frozen = self._read_lines(run_file)
+        time.sleep(2 * self.HEARTBEAT_INTERVAL + 0.05)
+        assert self._read_lines(run_file) == frozen
+
+    def test_error_and_timeout_paths_stop_heartbeat_terminal_last(
+        self, tmp_path, monkeypatch
+    ):
+        """c) 异常收尾路径（非零退出/车道硬超时）同样停跳且终态末行。"""
+        # 慢审查后非零退出：心跳只在子进程运行期，失败收尾停跳
+        repo = _init_repo_with_fake_ocr(tmp_path)
+        monkeypatch.setenv("FAKE_OCR_MODE", "sleep-fail")
+        monkeypatch.setenv("FAKE_OCR_SLEEP", "0.2")
+        artifact = _run_lane(repo)
+        assert artifact["status"] == "unavailable"
+        assert "非零退出" in artifact["reason"]
+        run_file = self._only_run_file(repo)
+        lines = self._read_lines(run_file)
+        types = [ln["type"] for ln in lines]
+        assert "progress" in types
+        assert types[-1] == "result"
+        assert lines[-1]["status"] == "unavailable"
+
+        # 车道硬超时：hang 子进程被 TimeoutExpired 打断，停跳后终态末行
+        timeout_root = tmp_path / "timeout"
+        timeout_root.mkdir()
+        repo2 = _init_repo_with_fake_ocr(timeout_root)
+        monkeypatch.setenv("FAKE_OCR_MODE", "hang")
+        artifact2 = _run_lane(repo2, impl_code_review_lane_timeout_sec=1)
+        assert artifact2["status"] == "unavailable"
+        assert "硬超时" in artifact2["reason"]
+        run_file2 = self._only_run_file(repo2)
+        lines2 = self._read_lines(run_file2)
+        types2 = [ln["type"] for ln in lines2]
+        assert types2[0] == "start"
+        # 运行期（1s ≫ 0.05s 间隔）确有心跳，被打断后停跳
+        assert "progress" in types2
+        assert types2[-1] == "result"
+        assert lines2[-1]["status"] == "unavailable"
+        time.sleep(2 * self.HEARTBEAT_INTERVAL + 0.05)
+        assert self._read_lines(run_file2) == lines2
+
+
+class TestOcrLaneProbeCompat:
+    """无驱动探针相容回归（任务 2.1）。
+
+    直接调 ``core.admin_monitor.spec_is_undriven``（实现零改动、不打桩）：
+    心跳方案的效果链恰是「车道 run 转录 mtime 新鲜 → 条件①
+    ``_has_recent_spec_run`` 为真 → AND 链为假 → 返回 False」。
+    """
+
+    def _write_heartbeat_run(self, repo: Path, spec: str) -> Path:
+        runs_dir = repo / ".fenix" / "runs"
+        runs_dir.mkdir(parents=True, exist_ok=True)
+        run_file = runs_dir / f"impl-ocr-{spec}-1790086106.jsonl"
+        entries = (
+            {
+                "type": "start",
+                "spec": spec,
+                "agent_type": "impl-ocr",
+                "timestamp": "2026-09-22T12:00:00+00:00",
+            },
+            {
+                "type": "progress",
+                "spec": spec,
+                "agent_type": "impl-ocr",
+                "timestamp": "2026-09-22T12:01:00+00:00",
+                "review_range": {"from": "a" * 40, "to": "b" * 40},
+                "elapsed_seconds": 60.0,
+            },
+        )
+        run_file.write_text(
+            "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in entries),
+            encoding="utf-8",
+        )
+        return run_file
+
+    def test_fresh_heartbeat_mtime_means_driven(self, tmp_path):
+        """a) 车道在跑（心跳写入后 mtime 新鲜）→ False，不误报孤儿。"""
+        from core.admin_monitor import spec_is_undriven
+
+        spec = "probe-lane-live-1790086106"
+        self._write_heartbeat_run(tmp_path, spec)
+        entry = {"name": spec, "status": "testing"}
+        assert spec_is_undriven(tmp_path, spec, entry) is False
+
+    def test_stale_mtime_after_restart_still_reports_orphan(self, tmp_path):
+        """b) daemon 重启停跳后 mtime 停滞超宽限窗且无其他驱动 → True，
+        自愈链（orphaned_state → admin 处置 → 重验入队）不被遮蔽。"""
+        from core.admin_monitor import ORPHANED_RUN_GRACE_SECONDS, spec_is_undriven
+
+        spec = "probe-lane-dead-1790086106"
+        run_file = self._write_heartbeat_run(tmp_path, spec)
+        # 心跳线程随 daemon 进程消失：mtime 回拨到宽限窗外
+        stale = time.time() - (ORPHANED_RUN_GRACE_SECONDS + 300)
+        os.utime(run_file, (stale, stale))
+        entry = {"name": spec, "status": "testing"}
+        assert spec_is_undriven(tmp_path, spec, entry) is True
+
+
+class TestOcrLaneTerminalClassifierCompat:
+    """终态分类回归钉住（任务 2.2）。
+
+    ``progress`` 不在 ``_RUN_TERMINAL_STATUS_MAP`` / ``_run_terminal_status``
+    的终态判定中，两侧实现零改动（缺省 ``running`` 兜底即契约）——防未来
+    终态映射表扩张时把心跳误判终态。
+    """
+
+    _PROGRESS = {
+        "type": "progress",
+        "spec": "demo",
+        "agent_type": "impl-ocr",
+        "timestamp": "2026-09-22T12:01:00+00:00",
+        "review_range": {"from": "a" * 40, "to": "b" * 40},
+        "elapsed_seconds": 60.0,
+    }
+
+    def test_classify_run_progress_last_line_is_running(self):
+        from core.dashboard.data.runs import classify_run
+
+        lines = [
+            {"type": "start", "spec": "demo", "agent_type": "impl-ocr",
+             "timestamp": "2026-09-22T12:00:00+00:00"},
+            dict(self._PROGRESS),
+        ]
+        assert classify_run(lines) == "running"
+
+    def test_admin_monitor_run_terminal_status_progress_is_running(self, tmp_path):
+        from core.admin_monitor import AdminMonitor
+
+        run_file = tmp_path / "impl-ocr-demo-1790086106.jsonl"
+        run_file.write_text(
+            json.dumps({"type": "start", "spec": "demo",
+                        "agent_type": "impl-ocr"}) + "\n"
+            + json.dumps(self._PROGRESS) + "\n",
+            encoding="utf-8",
+        )
+        assert AdminMonitor._run_terminal_status(run_file) == "running"

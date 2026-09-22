@@ -1,6 +1,6 @@
 import { Button, Card, Col, Form, Input, InputNumber, Popconfirm, Row, Switch, Typography, message } from 'antd';
-import { MinusCircleOutlined, PlusOutlined } from '@ant-design/icons';
-import { useEffect } from 'react';
+import { DownOutlined, MinusCircleOutlined, PlusOutlined, RightOutlined } from '@ant-design/icons';
+import { useEffect, useRef, useState } from 'react';
 import type { ConfigData, LlmProvider, ProviderBillingPrice } from '@/services/dashboard';
 
 import SyncFromUserButton, { SETTINGS_ACTIONS_ROW_STYLE } from './SyncFromUserButton';
@@ -43,6 +43,25 @@ const PRICE_FIELDS: Array<{
   { key: 'cache_read_per_million', label: '缓存读' },
   { key: 'cache_creation_per_million', label: '缓存写' },
 ];
+
+// 折叠区头部行样式（「启用计费」「自定义环境变量」共用）：整行可点切换展开
+const COLLAPSE_HEADER_STYLE: React.CSSProperties = {
+  display: 'flex',
+  justifyContent: 'space-between',
+  alignItems: 'center',
+  cursor: 'pointer',
+  userSelect: 'none',
+  padding: '4px 0',
+};
+
+// 折叠箭头（展开 ↓ / 折叠 →）
+function CollapseArrow({ open }: { open: boolean }) {
+  return open ? (
+    <DownOutlined style={{ color: '#999', fontSize: 12 }} />
+  ) : (
+    <RightOutlined style={{ color: '#999', fontSize: 12 }} />
+  );
+}
 
 function toEnvEntries(env?: Record<string, string>): EnvEntry[] {
   return Object.entries(env || {}).map(([key, value]) => ({ key, value }));
@@ -100,6 +119,13 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
   const [form] = Form.useForm();
   // 观察整个 providers 数组以驱动每张卡片「启用计费」开关对价格区的显隐
   const providersWatch = Form.useWatch('providers', form);
+  // 每卡片两个折叠区（环境变量 / 计费价格）的展开态，key=Form.List field.key
+  // （稳定 id；删除卡片后残留条目无害）。默认全部折叠。
+  const [envOpenMap, setEnvOpenMap] = useState<Record<number, boolean>>({});
+  const [billingOpenMap, setBillingOpenMap] = useState<Record<number, boolean>>({});
+  // 渲染期收集活跃卡片 key：校验失败时一键展开，让藏在折叠区的错误可见
+  // （折叠用 display 切换，字段恒注册，值与校验不受折叠影响）
+  const activeKeysRef = useRef<number[]>([]);
 
   // 初始化表单数据
   const initialValues = {
@@ -122,6 +148,17 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
       })),
     });
   }, [config.llm.providers, form]);
+
+  // 校验/拦截失败时展开全部折叠区——错误行（价格必填、重复 model）可能藏在
+  // 折叠区内，不展开会让保存看起来「静默失败」
+  const expandAllSections = () => {
+    const allOpen: Record<number, boolean> = {};
+    activeKeysRef.current.forEach((k) => {
+      allOpen[k] = true;
+    });
+    setEnvOpenMap((m) => ({ ...m, ...allOpen }));
+    setBillingOpenMap((m) => ({ ...m, ...allOpen }));
+  };
 
   const handleSave = async () => {
     try {
@@ -155,6 +192,7 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
             message.error(
               `价格行重复：Provider「${p?.name || i + 1}」内存在重复模型名 ${model}，请修改后重试`
             );
+            expandAllSections(); // 重复行可能在折叠区内，展开让用户可见可改
             return;
           }
           seen.add(model);
@@ -164,6 +202,8 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
       const providers = toProviders(values);
       await onSave({ llm: { providers } });
     } catch (error) {
+      // 校验失败：展开全部折叠区，让藏在折叠区的错误（如价格行必填）可见
+      expandAllSections();
       console.error('Validation failed:', error);
     }
   };
@@ -176,7 +216,19 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
         <Form.List name="providers">
           {(fields, { add, remove }) => (
             <>
-              {fields.map((field, index) => (
+              {/* 渲染期收集活跃卡片 key（供 handleSave 校验失败时一键展开折叠区） */}
+              {void (activeKeysRef.current = fields.map((f) => f.key))}
+              {fields.map((field, index) => {
+                // 折叠态与概要计数（useWatch 驱动；field.key 为卡片稳定 id）
+                const envOpen = !!envOpenMap[field.key];
+                const billingOpen = !!billingOpenMap[field.key];
+                const envCount = ((providersWatch?.[field.name]?.envEntries || []) as EnvEntry[]).filter(
+                  (e) => (e?.key || '').trim(),
+                ).length;
+                const priceCount = ((providersWatch?.[field.name]?.prices || []) as PriceRowValues[]).filter(
+                  (r) => !isBlankPriceRow(r),
+                ).length;
+                return (
                 <Card
                   key={field.key}
                   style={{ marginBottom: 16 }}
@@ -192,11 +244,17 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
                     </Popconfirm>
                   }
                 >
+                  {/* 名称 / Base URL / API Key / 默认模型名：标签与输入框同行
+                      （单项 horizontal 覆盖 Form 的 vertical），labelCol 固定宽
+                      保证四行输入框左缘对齐、等宽拉伸 */}
                   <Row gutter={16}>
                     <Col xs={24} md={12}>
                       <Form.Item
                         name={[field.name, 'name']}
                         label="名称"
+                        layout="horizontal"
+                        labelCol={{ flex: '0 0 96px' }}
+                        wrapperCol={{ flex: '1 1 0%' }}
                         rules={[{ required: true, message: '请输入 Provider 名称' }]}
                       >
                         <Input placeholder="例如：openai" />
@@ -206,6 +264,9 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
                       <Form.Item
                         name={[field.name, 'baseurl']}
                         label="Base URL"
+                        layout="horizontal"
+                        labelCol={{ flex: '0 0 96px' }}
+                        wrapperCol={{ flex: '1 1 0%' }}
                         rules={[{ required: true, message: '请输入 Base URL' }]}
                       >
                         <Input placeholder="https://api.openai.com/v1" />
@@ -217,6 +278,9 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
                       <Form.Item
                         name={[field.name, 'apikey']}
                         label="API Key"
+                        layout="horizontal"
+                        labelCol={{ flex: '0 0 96px' }}
+                        wrapperCol={{ flex: '1 1 0%' }}
                         rules={[{ required: true, message: '请输入 API Key' }]}
                       >
                         <Input.Password placeholder="sk-..." />
@@ -226,21 +290,35 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
                       <Form.Item
                         name={[field.name, 'model']}
                         label="默认模型名"
+                        layout="horizontal"
+                        labelCol={{ flex: '0 0 96px' }}
+                        wrapperCol={{ flex: '1 1 0%' }}
                       >
                         <Input placeholder="deepseek-v4-flash" />
                       </Form.Item>
                     </Col>
                   </Row>
-                  <Form.Item
-                    label={
-                      <>
-                        自定义环境变量
-                        <span className="label-note">
-                          （选填，运行时注入子进程，如 CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000）
-                        </span>
-                      </>
-                    }
+                  {/* 折叠区 1：自定义环境变量（默认折叠；display 切换保 Form.List
+                      注册，折叠时值与校验不受影响——保存照常带上隐藏行） */}
+                  <div
+                    style={COLLAPSE_HEADER_STYLE}
+                    onClick={() => setEnvOpenMap((m) => ({ ...m, [field.key]: !m[field.key] }))}
+                    data-testid={`env-collapse-${index}`}
                   >
+                    <span>
+                      自定义环境变量
+                      <span className="label-note">
+                        （选填，运行时注入子进程，如 CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000）
+                      </span>
+                      {!envOpen && envCount > 0 && (
+                        <span className="label-note" style={{ marginLeft: 8 }}>
+                          已配置 {envCount} 项
+                        </span>
+                      )}
+                    </span>
+                    <CollapseArrow open={envOpen} />
+                  </div>
+                  <div style={{ display: envOpen ? undefined : 'none', marginBottom: 16, marginTop: 8 }}>
                     <Form.List name={[field.name, 'envEntries']}>
                       {(envFields, { add: addEnv, remove: removeEnv }) => (
                         <>
@@ -272,36 +350,54 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
                         </>
                       )}
                     </Form.List>
-                  </Form.Item>
-                  {/* improve-provider-billing-config（task 3.2）：卡片级「启用计费」开关，
-                      价格编辑区仅该卡片开关开启时出现；文字紧随开关同行 */}
-                  <Form.Item style={{ marginBottom: 16 }}>
-                    <Form.Item
-                      name={[field.name, 'billingEnabled']}
-                      valuePropName="checked"
-                      noStyle
-                    >
-                      <Switch
-                        data-testid={`billing-switch-${index}`}
-                        onChange={(checked) => {
-                          // 开启计费时若无价格行则自动补一行（预填卡片默认模型名），免手工点击
-                          if (!checked) return;
-                          const prices = form.getFieldValue(['providers', field.name, 'prices']);
-                          if (Array.isArray(prices) && prices.length > 0) return;
-                          const cardModel = form.getFieldValue(['providers', field.name, 'model']) || '';
-                          form.setFieldValue(['providers', field.name, 'prices'], [{ model: cardModel }]);
-                        }}
-                      />
-                    </Form.Item>
-                    <span style={{ marginLeft: 8 }}>
-                      启用计费
-                      <span className="label-note">
-                        （开启后按实际 model@provider 与配置单价本地计算每 run 成本，价格单位 $/1M tokens）
+                  </div>
+                  {/* 折叠区 2：启用计费（task 3.2 开关 + 折叠箭头同行；开关开启
+                      自动展开价格编辑区；点开关不触发折叠切换） */}
+                  <div
+                    style={COLLAPSE_HEADER_STYLE}
+                    onClick={() => setBillingOpenMap((m) => ({ ...m, [field.key]: !m[field.key] }))}
+                    data-testid={`billing-collapse-${index}`}
+                  >
+                    <span>
+                      <Form.Item
+                        name={[field.name, 'billingEnabled']}
+                        valuePropName="checked"
+                        noStyle
+                      >
+                        <Switch
+                          data-testid={`billing-switch-${index}`}
+                          onClick={(_, e) => e.stopPropagation()}
+                          onChange={(checked) => {
+                            // 开启计费：自动展开价格区；若无价格行则自动补一行
+                            // （预填卡片默认模型名），免手工点击
+                            if (!checked) return;
+                            setBillingOpenMap((m) => ({ ...m, [field.key]: true }));
+                            const prices = form.getFieldValue(['providers', field.name, 'prices']);
+                            if (Array.isArray(prices) && prices.length > 0) return;
+                            const cardModel = form.getFieldValue(['providers', field.name, 'model']) || '';
+                            form.setFieldValue(['providers', field.name, 'prices'], [{ model: cardModel }]);
+                          }}
+                        />
+                      </Form.Item>
+                      <span style={{ marginLeft: 8 }}>
+                        启用计费
+                        <span className="label-note">
+                          （开启后按实际 model@provider 与配置单价本地计算每 run 成本，价格单位 $/1M tokens）
+                        </span>
                       </span>
+                      {!billingOpen && priceCount > 0 && (
+                        <span className="label-note" style={{ marginLeft: 8 }}>
+                          已配置 {priceCount} 个模型
+                        </span>
+                      )}
                     </span>
-                  </Form.Item>
-                  {!!(providersWatch?.[field.name]?.billingEnabled) && (
-                    <>
+                    <CollapseArrow open={billingOpen} />
+                  </div>
+                  {/* 价格编辑区：开关开启且折叠展开时可见。外层 display 保
+                      Form.List 恒注册——折叠不丢行、校验照常（开关关闭仍条件
+                      渲染，与旧语义一致：关=不带价格行保存） */}
+                  <div style={{ display: billingOpen ? undefined : 'none' }}>
+                    {!!(providersWatch?.[field.name]?.billingEnabled) && (
                       <Form.List name={[field.name, 'prices']}>
                         {(priceFields, { add: addPrice, remove: removePrice }) => (
                           <>
@@ -383,10 +479,11 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
                           </>
                         )}
                       </Form.List>
-                    </>
-                  )}
+                    )}
+                  </div>
                 </Card>
-              ))}
+                );
+              })}
               <Button
                 type="dashed"
                 onClick={() => add()}

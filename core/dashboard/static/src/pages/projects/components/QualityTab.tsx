@@ -6,7 +6,7 @@
 //   （内容最多两行，悬浮浮层显示全文）；
 //   浮层用 Popover + Markdown 渲染（与「SPEC 开发」分面「名称」列的 Why 浮层同形制，
 //   描述里的 `` `code` `` / 列表 / 表格按 Markdown 排版）
-// - 右上角四个动作按钮（全仓库审查 / 当期提交审查 / 生成修复 SPEC / 全部忽略）
+// - 右上角五个动作按钮（全库审查 / 当期审查 / 自动修复 / 生成修复 SPEC / 全部忽略）
 //   「生成修复 SPEC」MUST 先弹确认框（含执行时间三档，2026-09-20 用户要求）；
 //   时刻选择器与设置页「同意立项」共用 ScheduleFields（单一实现点）
 // - 运行中真实进度条（done/total 百分比）+ 当前文件 + 取消按钮
@@ -205,7 +205,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
   // 置 progress，在「新一轮 run 已开始 / run 刚结束」窗口内可重复触发或取消到
   // 错误 review_id。用独立的 pending 态在这两个动作进行期间禁用按钮。
   const [actionPending, setActionPending] = useState(false);
-  // 「立即自动修复」独立 pending 门控（add-code-fix-manual-trigger 4.1）：
+  // 「自动修复」独立 pending 门控（add-code-fix-manual-trigger 4.1）：
   // 触发流程含最长 20s 的结果轮询，不复用 actionPending——否则轮询期间
   // 其余动作按钮被连带禁用 20s。
   const [fixRunPending, setFixRunPending] = useState(false);
@@ -354,7 +354,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
 
   // ── 手动触发按钮（5.4） ────────────────────────────────────────
   const handleTrigger = async (scope: 'full' | 'window') => {
-    const label = scope === 'full' ? '全仓库审查' : '当期提交审查';
+    const label = scope === 'full' ? '全库审查' : '当期审查';
     if (actionPending) return; // pending 门控（code-review item 133cba8a5748）
     setActionPending(true);
     try {
@@ -376,7 +376,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
     }
   };
 
-  // ── 立即自动修复（add-code-fix-manual-trigger 4.1） ─────────────
+  // ── 自动修复（add-code-fix-manual-trigger 4.1） ─────────────
   // 手动即临时授权：点击写文件信号，daemon 以 override_enabled=True 消费
   // （开关关闭也修这一批）。受理后 1s 间隔轮询判定结果（上限 20s），仅认
   // request_created 回链本次 requested_at 的结果；触发成功不额外操作——
@@ -417,7 +417,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
       if (errMsg.includes('已有未消费的修复触发请求')) {
         message.warning(errMsg);
       } else {
-        message.error(`立即自动修复失败: ${errMsg}`);
+        message.error(`自动修复失败: ${errMsg}`);
       }
     } finally {
       setFixRunPending(false);
@@ -688,32 +688,36 @@ export default function QualityTab({ project, active }: QualityTabProps) {
           </Typography.Text>
         </Space>
         <Space wrap>
-          {/* 两个触发按钮同为默认样式（用户要求样式一致）；
+          {/* 三个触发按钮均为 primary（蓝底白字，用户 2026-09-22 要求，
+              覆盖此前 2026-09-20 的「默认样式一致」约定）；
               「生成修复 SPEC」保持 primary（主操作按钮）；
               「全部忽略」为 primary + danger（红底白字，用户 2026-09-20 要求） */}
           <Button
+            type="primary"
             disabled={progress?.running || actionPending}
             loading={actionPending}
             onClick={() => void handleTrigger('full')}
           >
-            全仓库审查
+            全库审查
           </Button>
           <Button
+            type="primary"
             disabled={progress?.running || actionPending}
             loading={actionPending}
             onClick={() => void handleTrigger('window')}
           >
-            当期提交审查
+            当期审查
           </Button>
-          {/* 「立即自动修复」（add-code-fix-manual-trigger）：手动触发即临时授权
-              （开关关闭也修这一批），默认样式与相邻触发按钮一致；触发流程
+          {/* 「自动修复」（add-code-fix-manual-trigger）：手动触发即临时授权
+              （开关关闭也修这一批），蓝底白字与相邻触发按钮一致；触发流程
               （含结果轮询）进行中呈 loading 态并防连点 */}
           <Button
+            type="primary"
             disabled={actionPending}
             loading={fixRunPending}
             onClick={() => void handleTriggerFixRun()}
           >
-            立即自动修复
+            自动修复
           </Button>
           <Button
             type="primary"

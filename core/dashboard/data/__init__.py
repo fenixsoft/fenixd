@@ -313,4 +313,5 @@ from .config_admin import (
     write_config,
     _SYNC_PAGE_KEYS,
     sync_config_from_user,
+    clear_project_page_keys,
 )

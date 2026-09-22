@@ -753,6 +753,128 @@ class TestConfigSyncFromUserAPI:
             srv.stop()
 
 
+class TestConfigClearPageKeysAPI:
+    """POST /api/config/sync-from-user action=clear：删除项目级 page 页签受管键。
+
+    清空后项目级不再显式覆盖这些键，用户级/默认值自然生效（sources 回 "user"）。
+    """
+
+    def _make_server(self, tmp_path, registry):
+        return _TestServer(registry, Path(__file__).resolve().parents[1] / "core" / "dashboard" / "static")
+
+    def _write_project_config(self, proot, data):
+        import yaml
+        with open(proot / ".fenix" / "config.yaml", "w", encoding="utf-8") as f:
+            yaml.dump(data, f, allow_unicode=True)
+
+    def test_clear_removes_page_keys_and_preserves_others(self, tmp_path, monkeypatch):
+        import yaml
+        proot = make_project(tmp_path)
+        self._write_project_config(proot, {
+            "project": {"name": "fake"},
+            "gates": {"promote_mode": "manual", "approve_mode": "manual", "custom_keep": 1},
+            "llm": {"providers": [{"name": "p1", "baseurl": "https://x", "apikey": "k", "model": "m"}]},
+            "agents": {"max_concurrent": 3},
+        })
+        cfg = tmp_path / "dashboard.yaml"
+        reg = Registry(config_path=cfg)
+        reg.save({"port": 8787, "projects": [{"name": "proj-a", "path": str(proot)}],
+                  "scan_dirs": [str(tmp_path / "scan-empty")]})
+        srv = self._make_server(tmp_path, reg)
+        try:
+            status, body = srv.post_json("/api/config/sync-from-user?project=proj-a",
+                          {"page": "approval", "action": "clear"})
+            assert status == 200 and body["saved"] is True
+            # cleared 只含实际删除的键（spec_review_mode / start_after_scope 原本就没配）
+            assert body["cleared"] == {"gates": {"promote_mode": "manual", "approve_mode": "manual"}}
+            proj_cfg = yaml.safe_load((proot / ".fenix" / "config.yaml").read_text(encoding="utf-8"))
+            # 受管键删除；非受管键 custom_keep 保留（section 未删空不移除）
+            assert proj_cfg["gates"] == {"custom_keep": 1}
+            # 其它 section 不受影响
+            assert proj_cfg["llm"]["providers"][0]["name"] == "p1"
+            assert proj_cfg["agents"]["max_concurrent"] == 3
+            assert proj_cfg["project"]["name"] == "fake"
+            # 生效视图 sources：被清空键回落用户级
+            assert body["sources"].get("gates.promote_mode") == "user"
+        finally:
+            srv.stop()
+
+    def test_clear_removes_emptied_section(self, tmp_path, monkeypatch):
+        import yaml
+        proot = make_project(tmp_path)
+        # archive 段只有受管键 auto_threshold：清空后整段消失
+        self._write_project_config(proot, {"archive": {"auto_threshold": 10}})
+        cfg = tmp_path / "dashboard.yaml"
+        reg = Registry(config_path=cfg)
+        reg.save({"port": 8787, "projects": [{"name": "proj-a", "path": str(proot)}],
+                  "scan_dirs": [str(tmp_path / "scan-empty")]})
+        srv = self._make_server(tmp_path, reg)
+        try:
+            status, body = srv.post_json("/api/config/sync-from-user?project=proj-a",
+                          {"page": "misc", "action": "clear"})
+            assert status == 200
+            proj_cfg = yaml.safe_load((proot / ".fenix" / "config.yaml").read_text(encoding="utf-8"))
+            assert "archive" not in proj_cfg
+        finally:
+            srv.stop()
+
+    def test_clear_without_project_config_is_noop(self, tmp_path, monkeypatch):
+        proot = make_project(tmp_path)
+        (proot / ".fenix" / "config.yaml").unlink()
+        cfg = tmp_path / "dashboard.yaml"
+        reg = Registry(config_path=cfg)
+        reg.save({"port": 8787, "projects": [{"name": "proj-a", "path": str(proot)}],
+                  "scan_dirs": [str(tmp_path / "scan-empty")]})
+        srv = self._make_server(tmp_path, reg)
+        try:
+            status, body = srv.post_json("/api/config/sync-from-user?project=proj-a",
+                          {"page": "approval", "action": "clear"})
+            assert status == 200 and body["cleared"] is None
+        finally:
+            srv.stop()
+
+    def test_clear_unknown_page_returns_400(self, tmp_path):
+        proot = make_project(tmp_path)
+        cfg = tmp_path / "dashboard.yaml"
+        reg = Registry(config_path=cfg)
+        reg.save({"port": 8787, "projects": [{"name": "proj-a", "path": str(proot)}],
+                  "scan_dirs": [str(tmp_path / "scan-empty")]})
+        srv = self._make_server(tmp_path, reg)
+        try:
+            status, body = srv.post_json("/api/config/sync-from-user?project=proj-a",
+                          {"page": "bogus", "action": "clear"})
+            assert status == 400 and "未知页面标识" in body["error"]
+        finally:
+            srv.stop()
+
+    def test_clear_unknown_project_returns_400(self, tmp_path):
+        cfg = tmp_path / "dashboard.yaml"
+        reg = Registry(config_path=cfg)
+        reg.save({"port": 8787, "projects": [], "scan_dirs": [str(tmp_path / "scan-empty")]})
+        srv = self._make_server(tmp_path, reg)
+        try:
+            status, body = srv.post_json("/api/config/sync-from-user?project=ghost",
+                          {"page": "approval", "action": "clear"})
+            assert status == 400 and body["error"]
+        finally:
+            srv.stop()
+
+    def test_clear_broken_project_config_returns_400(self, tmp_path):
+        proot = make_project(tmp_path)
+        (proot / ".fenix" / "config.yaml").write_text("{unbalanced", encoding="utf-8")
+        cfg = tmp_path / "dashboard.yaml"
+        reg = Registry(config_path=cfg)
+        reg.save({"port": 8787, "projects": [{"name": "proj-a", "path": str(proot)}],
+                  "scan_dirs": [str(tmp_path / "scan-empty")]})
+        srv = self._make_server(tmp_path, reg)
+        try:
+            status, body = srv.post_json("/api/config/sync-from-user?project=proj-a",
+                          {"page": "approval", "action": "clear"})
+            assert status == 400 and "读取" in body["error"]
+        finally:
+            srv.stop()
+
+
 class TestProjectDescribeAPI:
     """测试 /api/project/describe 端点"""
 

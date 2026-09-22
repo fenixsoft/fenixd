@@ -31,3 +31,11 @@ test('健壮性：rows 缺省时归一为空数组，roleModel 归为字符串',
   assert.deepEqual(cloneRoleValue({ roleModel: '' }), { roleModel: '', rows: [] });
   assert.deepEqual(cloneRoleValue(undefined), { roleModel: '', rows: [] });
 });
+
+test('roleKey 保留：克隆/粘贴不丢角色键（item 042e1dc46cb4）', () => {
+  const src = { roleKey: 'verifier', roleModel: 'm', rows: [{ provider: 'p', model: '' }] };
+  const copy = cloneRoleValue(src);
+  assert.equal(copy.roleKey, 'verifier');
+  // 无 roleKey 的源不引入 roleKey: undefined 键（既有 deepEqual 语义不变）
+  assert.deepEqual(cloneRoleValue({ roleModel: '', rows: [] }), { roleModel: '', rows: [] });
+});

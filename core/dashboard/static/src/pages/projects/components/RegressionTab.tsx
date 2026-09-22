@@ -18,13 +18,18 @@
 // 时点在前端本地计时——回归可跑 1800s，跨刷新后本地态丢失会让分面回落到
 // 「上次结果」。运行中轮询快照（2s），running 回落即刷新结果。
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { App, Button, Card, Descriptions, Space, Table, Tag, Typography } from 'antd';
+import { App, Button, Card, Descriptions, Progress, Space, Table, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import {
   getRegressionResult,
   triggerRegression,
 } from '../../../services/dashboard';
-import type { RegressionFailure, RegressionLongTest, RegressionResult } from '../../../services/dashboard';
+import type {
+  RegressionFailure,
+  RegressionLongTest,
+  RegressionProgress,
+  RegressionResult,
+} from '../../../services/dashboard';
 
 interface RegressionTabProps {
   project: string;
@@ -61,8 +66,47 @@ const KIND_COLOR: Record<string, string> = {
   long: 'gold',
 };
 
-/** 合并 failure/error 用例与长耗时用例为统一结果表（带分类列）。 */
-function buildRows(snapshot: RegressionResult): Array<
+// ── 运行中/等待启动进度视图 ──────────────────────────────────────────
+// 三态（对齐后端 read_progress 口径）：percent 确定值 → 确定进度条
+// （estimated 注明口径）；percent null（或等待 daemon 启动窗口）→
+// 满条流动动画（antd active 状态）表达「进行中但进度未知」。
+function RunningProgressView({
+  progress,
+  waiting,
+}: {
+  progress?: RegressionProgress | null;
+  waiting?: boolean;
+}) {
+  const sub: string[] = [];
+  if (waiting) {
+    sub.push('已受理，等待 daemon 启动回归…');
+  } else if (progress?.estimated) {
+    sub.push('按上次总耗时估算');
+  }
+  if (!waiting && progress?.elapsed_seconds != null) {
+    sub.push(`已耗时 ${fmtDuration(progress.elapsed_seconds)}`);
+  }
+  return (
+    <div>
+      <Progress
+        percent={progress?.percent ?? 100}
+        showInfo={progress?.percent != null}
+        status="active"
+        size="small"
+        // width:100% 压过 .ant-progress 的 inline 排版（否则与说明文字同行），
+        // maxWidth 480 避免宽视口下条长横穿卡片
+        style={{ width: '100%', maxWidth: 480 }}
+      />
+      {sub.length > 0 ? (
+        <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block' }}>
+          {sub.join(' · ')}
+        </Typography.Text>
+      ) : null}
+    </div>
+  );
+}
+
+/** 合并 failure/error 用例与长耗时用例为统一结果表（带分类列）。 */function buildRows(snapshot: RegressionResult): Array<
   { key: string; name: string; file: string; line: number; time: number; kind: string; message?: string }
 > {
   const rows: Array<{
@@ -122,6 +166,10 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
   const [snapshot, setSnapshot] = useState<RegressionResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [triggering, setTriggering] = useState(false);
+  // 受理已提交、daemon 尚未 mark_running 的过渡态：点击受理到服务端 running
+  // 置位之间有主循环消费时延，此窗口内以「等待启动」动画条给即时反馈，
+  // 按钮（及重复触发）同步禁用；running 置位或 120s 超时自动退出。
+  const [awaitingStart, setAwaitingStart] = useState(false);
   const pollTimerRef = useRef<number | null>(null);
   // 请求序号守卫（对齐 QualityTab）：轮询与手动刷新并发时较慢的早期响应
   // 不得覆盖较新数据。
@@ -157,6 +205,28 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
     void loadResult();
   }, [active, project, loadResult]);
 
+  // 服务端 running 置位 → 等待启动过渡态结束（进度条接管）
+  const running = snapshot?.running ?? false;
+  useEffect(() => {
+    if (running) setAwaitingStart(false);
+  }, [running]);
+
+  // 等待启动超时兜底：daemon 长时间未消费信号（如中途退出）不再无限等待
+  useEffect(() => {
+    if (!awaitingStart) return;
+    const t = window.setTimeout(() => setAwaitingStart(false), 120_000);
+    return () => window.clearTimeout(t);
+  }, [awaitingStart]);
+
+  // 等待启动窗口轮询：loadResult 的自轮询只在 running=true 时挂载，而受理
+  // 到 daemon mark_running 之间有主循环消费时延——此窗口不轮询会让页面
+  // 感知不到运行态置位（停在等待态直到超时）。2s 轮询直至 running 接管。
+  useEffect(() => {
+    if (!awaitingStart || !active) return;
+    const t = window.setInterval(() => void loadResult(), 2000);
+    return () => window.clearInterval(t);
+  }, [awaitingStart, active, loadResult]);
+
   // 切离分面清理轮询
   useEffect(() => {
     if (!active && pollTimerRef.current !== null) {
@@ -181,6 +251,9 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
     try {
       await triggerRegression(project);
       message.success('已受理，daemon 将开始执行全量回归');
+      // 受理成功 → 等待启动过渡态（动画条即时反馈，running 置位后由
+      // 真实进度接管；见 awaitingStart 注释）
+      setAwaitingStart(true);
       // 触发成功立即刷新：新一轮运行中态（running=true）由服务端 marker 提供，
       // 轮询接管（task 5.6）
       void loadResult();
@@ -202,7 +275,6 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
   if (!active) return null;
 
   const status = snapshot?.status ?? 'never_run';
-  const running = snapshot?.running ?? false;
 
   // ── 三态渲染（spec Requirement 1）─────────────────────────────
   // 状态机：
@@ -215,6 +287,7 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
           {running ? (
             <>
               <Typography.Text strong>全量回归正在执行中…</Typography.Text>
+              <RunningProgressView progress={snapshot?.progress} />
               <Typography.Text type="secondary">
                 回归完成后此分面将展示结果。回归可运行较长时间，请稍候。
               </Typography.Text>
@@ -227,9 +300,15 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
                 （cmd / output / 硬超时 / 长耗时阈值）。未配置时可在项目设置中编辑
                 verify.yaml；配置完成后点击下方按钮手动触发一次。
               </Typography.Text>
-              <div>
-                <Button type="primary" loading={triggering} onClick={() => void handleTrigger()}>
-                  立即执行全量回归
+              {awaitingStart ? <RunningProgressView waiting /> : null}
+              <div style={{ textAlign: 'right' }}>
+                <Button
+                  type="primary"
+                  loading={triggering}
+                  disabled={awaitingStart}
+                  onClick={() => void handleTrigger()}
+                >
+                  {awaitingStart ? '等待启动…' : '立即执行全量回归'}
                 </Button>
               </div>
             </>
@@ -247,9 +326,16 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
           <Typography.Text type="secondary">
             {snapshot?.reason || 'JUnit XML 缺失或不可解析'}
           </Typography.Text>
-          <div>
-            <Button type="primary" loading={triggering} onClick={() => void handleTrigger()}>
-              立即执行全量回归
+          {running ? <RunningProgressView progress={snapshot?.progress} /> : null}
+          {awaitingStart ? <RunningProgressView waiting /> : null}
+          <div style={{ textAlign: 'right' }}>
+            <Button
+              type="primary"
+              loading={triggering}
+              disabled={running || awaitingStart}
+              onClick={() => void handleTrigger()}
+            >
+              {running ? '回归进行中…' : awaitingStart ? '等待启动…' : '立即执行全量回归'}
             </Button>
           </div>
         </Space>
@@ -275,7 +361,8 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
     {
       title: '文件:行',
       key: 'loc',
-      width: 220,
+      // 用例名列过宽：文件:行固定占表宽 30%（配 tableLayout=fixed，用例名吃剩余）
+      width: '30%',
       render: (_: unknown, rec) => {
         if (!rec.file) return '—';
         const loc = rec.line > 0 ? `${rec.file}:${rec.line}` : rec.file;
@@ -319,9 +406,12 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
       <Card size="small" style={{ marginBottom: 12, background: '#fafafa' }}>
         <Space direction="vertical" size={8} style={{ width: '100%' }}>
           {running ? (
-            <Space>
-              <Tag color="processing">运行中</Tag>
-              <Typography.Text strong>全量回归正在执行…</Typography.Text>
+            <Space direction="vertical" size={4} style={{ width: '100%' }}>
+              <Space>
+                <Tag color="processing">运行中</Tag>
+                <Typography.Text strong>全量回归正在执行…</Typography.Text>
+              </Space>
+              <RunningProgressView progress={snapshot?.progress} />
             </Space>
           ) : (
             <Tag
@@ -331,6 +421,7 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
             </Tag>
           )}
           <Descriptions
+            className="regression-overview-desc"
             size="small"
             column={{ xs: 1, sm: 2, md: 3 }}
             items={[
@@ -385,14 +476,15 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
               原因：{snapshot.reason}
             </Typography.Text>
           ) : null}
-          <div style={{ marginTop: 4 }}>
+          {awaitingStart && !running ? <RunningProgressView waiting /> : null}
+          <div style={{ marginTop: 4, textAlign: 'right' }}>
             <Button
               type="primary"
               loading={triggering}
-              disabled={running}
+              disabled={running || awaitingStart}
               onClick={() => void handleTrigger()}
             >
-              {running ? '回归进行中…' : '立即执行全量回归'}
+              {running ? '回归进行中…' : awaitingStart ? '等待启动…' : '立即执行全量回归'}
             </Button>
           </div>
         </Space>
@@ -402,10 +494,12 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
           失败/错误/超时/长耗时用例；全绿且无长耗时用例时不渲染表格 */}
       {hasIssues && rows.length > 0 ? (
         <Table
+          className="regression-result-table"
           rowKey="key"
           loading={loading}
           dataSource={rows}
           columns={columns}
+          tableLayout="fixed"
           size="small"
           pagination={{ pageSize: 10, showSizeChanger: false, hideOnSinglePage: true }}
           locale={{ emptyText: '无异常用例' }}
