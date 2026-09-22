@@ -112,6 +112,7 @@ from core.pm_engine.verification.judge_gate import (
     _MAX_JUDGE_RERUNS,
     _all_green_fast_path,
     _clear_degrade_context,
+    _judge_charge_verdict_retry,
     _judge_dispatch_gate,
     _judge_hard_cap_freeze,
     _judge_rerun_count,
@@ -119,6 +120,26 @@ from core.pm_engine.verification.judge_gate import (
     _last_planner_run_cost,
     _write_degrade_context,
 )
+
+def _parallel_plan_scenario_def(sc) -> dict:
+    """场景元素 → 定义视图 dict（add-verify-lane-throughput 4.2 内部助手）。
+
+    生产路径场景元素是 ``load_scenarios`` 产出的 TestScenario 对象（属性访问
+    、``to_dict()`` 序列化），dict 仅见于测试/合成路径。裁剪与合成只读定义
+    字段（id/description/depends_on）作指纹与出处判定，本助手把两种形态归一
+    为 dict 视图；非法元素返回 {}（调用方按未标记处理，fail-closed 照跑）。
+    """
+    if isinstance(sc, dict):
+        return sc
+    to_dict = getattr(sc, "to_dict", None)
+    if callable(to_dict):
+        try:
+            d = to_dict()
+            return d if isinstance(d, dict) else {}
+        except Exception:  # noqa: BLE001
+            return {}
+    return {}
+
 
 # refactor-verification-module 阶段3.5：serving 工作树/实例/端口组已迁 serving.py，
 # 18 个方法以薄委托保留在门面（见类内同名方法）。
@@ -317,6 +338,7 @@ class VerificationPipeline:
         "_persist_verdict_cache": _persist_verdict_cache,
         "_verified_verdict_persisted": _verified_verdict_persisted,
         "_verified_gate_refuses": _verified_gate_refuses,
+        "_judge_charge_verdict_retry": _judge_charge_verdict_retry,
         "_judge_dispatch_gate": _judge_dispatch_gate,
         "_judge_hard_cap_freeze": _judge_hard_cap_freeze,
         "_judge_rerun_count": _judge_rerun_count,
@@ -1338,6 +1360,244 @@ class VerificationPipeline:
         self._run_three_stage_verification(spec_name, _repair_depth=_repair_depth + 1)
         return True
 
+    # ── 修复轮重验场景集裁剪（add-verify-lane-throughput 4.2，design 决策 6）──
+    # 前提三条件（任一不满足即全量，fail-open）：非首轮（_verify_fail_rounds>0）、
+    # 缓存有有效 PASS 条目、上轮 report.json 可读出失败集。执行集 = 失败 ∪
+    # 失效（四元组不匹配/出处缺失/出处触碰 fix diff）∪ 其 depends_on 递归闭包；
+    # 其余场景采信缓存判定（合成报告时标注 cached_source）。
+    def _fix_diff_files(self, head_at_write: str):
+        """head_at_write..HEAD 的修复 diff 文件集；无法计算返回 None（fail-closed）。"""
+        import subprocess
+
+        try:
+            out = subprocess.run(
+                ["git", "diff", "--name-only", f"{head_at_write}..HEAD"],
+                cwd=str(self._context.project_root),
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            if out.returncode == 0:
+                return {ln.strip() for ln in (out.stdout or "").splitlines() if ln.strip()}
+        except (OSError, subprocess.SubprocessError):
+            pass
+        return None
+
+    def _prune_rescan_scenarios(self, spec_name: str, scenarios: list):
+        """计算本轮实际执行子集与可采信缓存条目（4.2 主体）。
+
+        返回 (executed_scenarios, cached_results, note)：
+        - executed_scenarios：传给引擎的场景列表（全量或裁剪子集）；
+        - cached_results：{sid: 上轮 PASS 场景判定}——非空即本轮发生了裁剪，
+          引擎跑完后由 _merge_cached_scenario_results 合成全量报告；
+        - note：决策说明（日志用）。
+
+        任一前提不满足 / 中途异常 → 原样全量返回（fail-open，缓存消费绝不
+        产生新增打回，见 4.3）。
+
+        场景元素兼容两种形态：``load_scenarios`` 产物是 TestScenario 对象
+        （生产路径），dict 仅见于测试/合成路径——定义读取经
+        ``_parallel_plan_scenario_def`` 归一，**传给引擎的元素保持原对象**
+        （dfn= definition 视图，仅作指纹/出处/依赖读取）。
+        """
+        from core.verdict_check import (
+            _is_non_pass,
+            compute_build_fingerprint,
+            compute_verify_config_fingerprint,
+            extract_scenario_source_files,
+            load_verdict_cache,
+            verdict_cache_entry_valid,
+        )
+
+        full = [sc for sc in (scenarios or []) if sc is not None]
+        defs = [_parallel_plan_scenario_def(sc) for sc in full]
+        ids = [str(d.get("scenario_id") or d.get("id") or f"#{i}") for i, d in enumerate(defs)]
+
+        def _full(note: str):
+            return full, {}, note
+
+        try:
+            entry = self._context.state_machine.read_one(spec_name) or {}
+            try:
+                fail_rounds = int(entry.get("_verify_fail_rounds", 0) or 0)
+            except (TypeError, ValueError):
+                fail_rounds = 0
+            if fail_rounds <= 0:
+                return _full("首轮验证（fail_rounds=0），全量执行")
+
+            cache = load_verdict_cache(self._context.project_root, spec_name)
+            entries = {k: v for k, v in cache.items() if k != "_meta"}
+            if not entries:
+                return _full("无 verdict 缓存，全量执行")
+
+            prev_path = (
+                Path(self._context.project_root)
+                / ".fenix"
+                / "verify-progress"
+                / spec_name
+                / "report.json"
+            )
+            try:
+                prev = json.loads(prev_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+                return _full("上轮 report.json 不可读，全量执行")
+            prev_scenarios = prev.get("scenarios") if isinstance(prev, dict) else None
+            if not isinstance(prev_scenarios, list):
+                return _full("上轮 report 无场景列表，全量执行")
+            prev_by_id = {
+                str(sc.get("scenario_id")): sc
+                for sc in prev_scenarios
+                if isinstance(sc, dict) and sc.get("scenario_id") is not None
+            }
+            failed_ids = {
+                sid
+                for sid, sc in prev_by_id.items()
+                if _is_non_pass(sc.get("status"))
+            }
+
+            build_fp = compute_build_fingerprint(self._context.project_root)
+            config_fp = compute_verify_config_fingerprint(self._context.project_root)
+            meta = cache.get("_meta") if isinstance(cache.get("_meta"), dict) else {}
+            head_at_write = str(meta.get("head_at_write") or "")
+            fix_files = self._fix_diff_files(head_at_write) if head_at_write else None
+
+            cached_results = {}
+            seed_executed = set(failed_ids)
+            for sc, d, sid in zip(full, defs, ids):
+                if sid in seed_executed:
+                    continue  # 失败场景恒重跑
+                centry = entries.get(sid)
+                if not verdict_cache_entry_valid(centry, d, build_fp, config_fp):
+                    seed_executed.add(sid)  # 四元组不匹配/分量缺失 → 失效
+                    continue
+                prev_sc = prev_by_id.get(sid)
+                if not isinstance(prev_sc, dict) or prev_sc.get("status") not in (
+                    "pass",
+                    "passed",
+                ):
+                    seed_executed.add(sid)  # 无上轮 PASS 判定可采信
+                    continue
+                if fix_files is None:
+                    seed_executed.add(sid)  # 修复 diff 不可算（fail-closed）
+                    continue
+                source_files = extract_scenario_source_files(d.get("description"))
+                if not source_files:
+                    seed_executed.add(sid)  # 出处标注缺失（fail-closed：存疑即照跑）
+                    continue
+                if source_files & fix_files:
+                    seed_executed.add(sid)  # 失效条件②：fix diff 触碰出处文件
+                    continue
+                cached_results[sid] = prev_sc
+
+            if not cached_results:
+                return _full("无可采信缓存条目，全量执行")
+
+            # depends_on 递归闭包：执行集须含失败∪失效场景的前置链
+            dep_map = {
+                sid: [str(x) for x in (d.get("depends_on") or [])] for d, sid in zip(defs, ids)
+            }
+            closure = set(seed_executed)
+            frontier = list(seed_executed)
+            known = set(ids)
+            while frontier:
+                sid = frontier.pop()
+                for dep in dep_map.get(sid, []):
+                    if dep and dep not in closure and dep in known:
+                        closure.add(dep)
+                        frontier.append(dep)
+            # 被闭包征用为前置的缓存场景改为真实执行（其采信资格让位）
+            for sid in list(cached_results):
+                if sid in closure:
+                    del cached_results[sid]
+
+            if not cached_results:
+                return _full("闭包征用后无可采信缓存条目，全量执行")
+            executed = [sc for sc, sid in zip(full, ids) if sid in closure]
+            # executed 允许为空（fail_rounds>0 但上轮全 pass 的收敛态）：全缓存
+            # 采信零执行出报告（任务 4.2 字面语义），由调用方走零执行合成路径。
+            note = (
+                f"修复轮重验裁剪：执行 {len(executed)}/{len(full)}"
+                f"（缓存采信 {len(cached_results)}，失败 {len(failed_ids & closure)}）"
+            )
+            return executed, cached_results, note
+        except Exception as e:  # noqa: BLE001 — 裁剪层任何异常不得阻断验证
+            return full, {}, f"裁剪异常（fail-open 全量执行）: {type(e).__name__}: {e}"
+
+    def _merge_cached_scenario_results(
+        self, spec_name: str, report: dict, full_scenarios: list, cached_results: dict
+    ) -> dict:
+        """裁剪执行后合成全量报告并覆写 report.json（4.2 收尾）。
+
+        执行结果 + 缓存采信条目（沿用上轮 PASS 场景完整判定，标注
+        ``cached_source="verdict_cache"``）；摘要按引擎 _build_report 同口径
+        重算（blocked-env 计入 warnings）。覆写必须在 engine.run 之后——引擎
+        只写了子集报告。写盘失败不抛（fail-open：子集 report.json 已在盘，
+        judge 按子集裁决，采信条目本轮缺席仅损失效率）。
+        """
+        from core.verdict_check import save_report
+
+        merged = {
+            str(sc.get("scenario_id")): sc
+            for sc in (report.get("scenarios") or [])
+            if isinstance(sc, dict)
+        }
+        for sid, prev in cached_results.items():
+            if sid in merged:
+                continue  # 引擎实际跑了（防御，以执行结果为准）
+            cc = dict(prev)
+            cc["cached_source"] = "verdict_cache"
+            merged[sid] = cc
+        ordered = []
+        for sc in full_scenarios:
+            d = _parallel_plan_scenario_def(sc)
+            sid = str(d.get("scenario_id") or d.get("id") or "")
+            if sid and sid in merged:
+                ordered.append(merged.pop(sid))
+        ordered.extend(merged.values())  # 防御：报告多出的 sid 保留尾部
+
+        summary = {
+            "total": len(ordered),
+            "passed": 0,
+            "warnings": 0,
+            "failed": 0,
+            "errors": 0,
+            "blocked_env": 0,
+        }
+        for sc in ordered:
+            st = sc.get("status")
+            if st in ("pass", "passed"):
+                summary["passed"] += 1
+            elif st == "warning":
+                summary["warnings"] += 1
+            elif st in ("fail", "failed"):
+                summary["failed"] += 1
+            elif st == "error":
+                summary["errors"] += 1
+            elif st == "blocked-env":
+                summary["blocked_env"] += 1
+        summary["warnings"] += summary["blocked_env"]
+        report["scenarios"] = ordered
+        report["summary"] = summary
+        report["resumed_from_cache"] = sorted(cached_results)
+        report["pruned_execution"] = {
+            "executed": len(ordered) - len(cached_results),
+            "resumed": len(cached_results),
+        }
+        try:
+            save_report(self._context.project_root, spec_name, report)
+        except OSError as e:
+            self._context.logger.warning(
+                "pm_engine",
+                f"裁剪合成全量报告写盘失败 '{spec_name}'（沿用子集报告）: {e}",
+            )
+        self._context.logger.info(
+            "pm_engine",
+            f"[阶段2] 裁剪重验合成全量报告 '{spec_name}': 执行 "
+            f"{len(ordered) - len(cached_results)} + 缓存采信 {len(cached_results)}"
+            f" = {len(ordered)} 场景",
+        )
+        return report
+
     # ── B3: 阶段2 引擎执行段（等价搬移，不含 env_error 回写段）──────
     # D1 B3 段落（D2：引擎执行段可提，env_error 回写段含 continue/break 留循环体）。
     # 加载场景 → 应用可达性自愈 → 静态缺陷扫描 → VerifyEngine 创建/运行。
@@ -1420,6 +1680,38 @@ class VerificationPipeline:
             # fail-open——任何异常记 WARNING，不阻断验证执行。
             self._run_scenario_static_check(spec_name)
 
+            # ── 修复轮重验场景集裁剪（add-verify-lane-throughput 4.2）──
+            # 失败∪受影响∪前置链照跑，其余采信缓存判定；任一前提不满足
+            # 即原样全量（fail-open，绝不因裁剪产生新增打回）。
+            executed_scenarios, cached_results, prune_note = self._prune_rescan_scenarios(
+                spec_name, scenarios
+            )
+            self._context.logger.info("pm_engine", f"[阶段2] {prune_note} '{spec_name}'")
+
+            if not executed_scenarios and cached_results:
+                # ── 零执行全缓存采信（add-verify-lane-throughput 4.2）──
+                # 裁剪后执行集为空（上轮已全 pass 的收敛态）：不构造引擎、
+                # 不启动浏览器，直接以全缓存条目合成全量报告（执行 0 + 采信 N）。
+                self._context.logger.info(
+                    "pm_engine",
+                    f"[阶段2] 裁剪后零执行（全缓存采信 {len(cached_results)} 场景）"
+                    f"'{spec_name}' — 跳过引擎直接合成报告",
+                )
+                empty_report = {
+                    "spec": spec_name,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "effective_parallel": self._context.config_reader(
+                        "verify.max_parallel", 5
+                    ),
+                    "summary": {"total": 0, "passed": 0, "warnings": 0,
+                                "failed": 0, "errors": 0, "blocked_env": 0},
+                    "scenarios": [],
+                }
+                report = self._merge_cached_scenario_results(
+                    spec_name, empty_report, scenarios, cached_results
+                )
+                return None, report, app_reachable, reach_note, False
+
             # 场景执行根：worktree 轮传入 serving worktree 根（CLI 步骤
             # 缺省 cwd 以此为准，seed 写入落验证树而非主树）；
             # 无 worktree 轮不传（回退主树 project_root，行为不变）。
@@ -1461,8 +1753,24 @@ class VerificationPipeline:
             # 实例地址，直接分发各 Runner（web/api URL origin 改写依据、
             # 环境门探针定位依据）。无实例形态（纯 cli）为空串无害空操作。
             engine.base_url = self._current_instance_base_url(spec_name)
-            report = asyncio.run(engine.run(scenarios))
+            report = asyncio.run(engine.run(executed_scenarios))
             env_error = report.get("env_error")
+            if env_error is None and cached_results:
+                # 裁剪生效：合成「执行结果+缓存采信」全量报告并覆写
+                # report.json（engine.run 只写了子集）。env 轮不合成——
+                # 环境错误轮走 replan/降级链，子集报告足以承载。
+                # 4.3：合成链任何异常 → 沿用引擎子集报告（fail-open），
+                # 缓存消费全链零新增打回（judge 按子集照常裁决）。
+                try:
+                    report = self._merge_cached_scenario_results(
+                        spec_name, report, scenarios, cached_results
+                    )
+                except Exception as e:  # noqa: BLE001
+                    self._context.logger.warning(
+                        "pm_engine",
+                        f"裁剪合成全量报告异常（沿用子集报告）'{spec_name}': "
+                        f"{type(e).__name__}: {e}",
+                    )
 
         return env_error, report, app_reachable, reach_note, False
 
@@ -1667,6 +1975,141 @@ class VerificationPipeline:
             return None
         return judge_result
 
+    # ── 并行出题产物消费（add-verify-lane-throughput 1.3）──────────────────
+
+    # 在飞并行出题的有界等待：轮询间隔与超时（配置键
+    # verify.parallel_planning_wait_timeout，秒）。超时即取消在飞 run 转串行
+    # 重出，杜绝「并行出题 run 与串行重出同时可写 test_scenarios.json」。
+    _PARALLEL_PLAN_WAIT_POLL_SECONDS = 5.0
+    _PARALLEL_PLAN_WAIT_TIMEOUT_DEFAULT = 900
+
+    def _consume_parallel_plan_product(self, spec_name: str, verify_dir) -> bool:
+        """testing 进入时消费并行出题产物（就绪短路 / 损坏回落 / 在飞等待）。
+
+        返回 False 表示并行出题在飞且状态已迁移（人工接管），调用方 MUST
+        return 丢弃本流水线；返回 True 表示可继续正常流程（产物有效 → 下方
+        冻结复用分支直接命中 = 零出题短路；产物缺失/损坏已隔离 → frozen=None
+        走既有串行出题回落通道）。
+
+        判定全部以并行出题状态标记（parallel_plan.json）为准，无标记/已消费
+        → 行为与现状一致（frozen 复用或串行出题，零新逻辑）。任何异常
+        fail-open 返回 True（回落正常流程，绝不因消费校验故障打断验证轮）。
+        """
+        try:
+            lane = self._context.parallel_plan_lane
+            marker = lane.read_marker(spec_name) or {}
+            status = marker.get("status")
+            if status in (None, "consumed"):
+                return True
+            if status == "dispatched":
+                # ── 在飞：有界等待（spec Scenario「testing 进入时并行出题仍在飞」）──
+                deadline = time.monotonic() + self._parallel_plan_wait_timeout()
+                prefix = f"planner-plan-{spec_name}-"
+                while time.monotonic() < deadline:
+                    # 等待期间状态迁移（人工接管）→ 丢弃本流水线（D6 同语义）
+                    if (self._context.state_machine.read_one(spec_name) or {}).get(
+                        "status"
+                    ) != "testing":
+                        return False
+                    # run 已死（daemon 重启丢队列/attempt 收尾未写标记）→ 停等
+                    runners = getattr(self._pm.agent_runner, "_running_agents", None) or {}
+                    if not any(
+                        isinstance(aid, str) and aid.startswith(prefix) for aid in runners
+                    ):
+                        break
+                    marker = lane.read_marker(spec_name) or {}
+                    status = marker.get("status")
+                    if status != "dispatched":
+                        break
+                    time.sleep(self._PARALLEL_PLAN_WAIT_POLL_SECONDS)
+                if marker.get("status") == "dispatched":
+                    # 超时（或 run 死亡未写标记）：取消在飞 run、隔离半成品、
+                    # 转串行重出（既有回落通道）。
+                    lane.stop(spec_name, "并行出题等待超时，取消后转串行重出")
+                    lane.quarantine(spec_name, "testing 等待并行出题超时，半成品隔离")
+                    lane.write_marker(
+                        spec_name, {"status": "discarded", "reason": "wait_timeout"}
+                    )
+                    self._context.logger.warning(
+                        "pm_engine",
+                        f"并行出题等待超时 '{spec_name}' — 已取消在飞 run 并隔离"
+                        f"半成品，转串行重出",
+                    )
+                    return True
+                status = marker.get("status")
+            if status == "completed":
+                # ── 产物就绪：过既有校验（可解析 + load_scenarios 验收）→ 短路 ──
+                ok, reason = self._validate_parallel_product(spec_name, verify_dir)
+                if ok:
+                    lane.write_marker(
+                        spec_name, {"status": "consumed", "consumed_at": reason}
+                    )
+                    self._context.logger.info(
+                        "pm_engine",
+                        f"[阶段1] 并行出题产物就绪，短路出题直接进场景执行 "
+                        f"'{spec_name}'（{reason} 个场景）",
+                    )
+                    return True
+                # 损坏/契约不匹配：隔离坏产物 + 串行重出（既有回落通道，
+                # 场景 Scenario「并行产物损坏回落串行出题」）
+                lane.quarantine(spec_name, f"产物校验不过: {reason}")
+                lane.write_marker(
+                    spec_name, {"status": "discarded", "reason": str(reason)[:200]}
+                )
+                self._context.logger.warning(
+                    "pm_engine",
+                    f"并行出题产物校验不过 '{spec_name}' — 已隔离并转串行重出: "
+                    f"{reason}",
+                )
+                return True
+            # failed / cancelled / frozen / discarded：产物已被车道隔离，走串行
+            self._context.logger.info(
+                "pm_engine",
+                f"并行出题未产出可用场景 '{spec_name}'（status={status}）— "
+                f"按既有串行出题路径执行",
+            )
+            return True
+        except Exception as e:  # fail-open：消费校验异常不阻断验证轮
+            self._context.logger.warning(
+                "pm_engine",
+                f"并行出题产物消费异常 '{spec_name}'（回落正常流程）: "
+                f"{type(e).__name__}: {e}",
+            )
+            return True
+
+    def _parallel_plan_wait_timeout(self) -> float:
+        raw = self._context.config_reader(
+            "verify.parallel_planning_wait_timeout",
+            self._PARALLEL_PLAN_WAIT_TIMEOUT_DEFAULT,
+        )
+        try:
+            return max(0.0, float(raw))
+        except (TypeError, ValueError):
+            return float(self._PARALLEL_PLAN_WAIT_TIMEOUT_DEFAULT)
+
+    def _validate_parallel_product(self, spec_name: str, verify_dir) -> tuple:
+        """并行产物就绪校验（同一文件、既有校验口径：可解析 + 验收通过）。
+
+        Returns: (True, 场景数) 或 (False, 失败原因)。import 留函数体内（D4：
+        scenarios 模块在 _reload_verify_engine_modules reload 清单内）。
+        """
+        from core.verify_engine.scenarios import load_scenarios
+
+        path = verify_dir / "test_scenarios.json"
+        if not path.is_file():
+            return False, "产物文件缺失"
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError) as e:
+            return False, f"JSON 不可解析: {type(e).__name__}"
+        if not isinstance(raw, list):
+            return False, f"根节点非数组（{type(raw).__name__}）"
+        try:
+            scenarios = load_scenarios(path)
+        except ValueError as e:
+            return False, f"场景验收失败: {str(e)[:200]}"
+        return True, len(scenarios)
+
     def _run_three_stage_verification(self, spec_name: str, _repair_depth: int = 0):
         """三步验证流水线主逻辑。"""
         # 入口状态判据：非 testing → 丢弃本流水线结果（D6，见 _check_entry_status）
@@ -1691,6 +2134,15 @@ class VerificationPipeline:
         report = None
         app_reachable = True
         reach_note = ""
+        # ── 并行出题产物消费（add-verify-lane-throughput 1.3）──
+        # 先于冻结加载：产物就绪且过既有校验 → 标记 consumed，下方冻结复用
+        # 分支直接命中（零出题短路）；产物缺失/损坏 → 已隔离，frozen=None 走
+        # 既有串行出题回落通道；并行出题仍在飞 → 有界等待或取消后串行重出，
+        # 全程保证任意时刻至多一个 planner-plan run 可写 test_scenarios.json。
+        # 返回 False = 等待期间状态已迁移（人工接管），丢弃本流水线。
+        if not self._consume_parallel_plan_product(spec_name, verify_dir):
+            return
+
         # ── 场景冻结加载 + 损坏升级（见 _load_frozen_or_escalate）──
         frozen, _frozen_aborted = self._load_frozen_or_escalate(spec_name, verify_dir)
         if _frozen_aborted:

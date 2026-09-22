@@ -763,9 +763,15 @@ class TestSupersededConvergence(_DriftDispatchFixture):
             self.engine._on_spec_ready("evo-merge-back-wip-overlap-gate-575976")
         entry = self.sm.read_one("evo-merge-back-wip-overlap-gate-575976")
         self.assertEqual(entry["status"], "ready", "生效落点应保持可派发")
-        enqueue_spy.assert_called_once_with(
+        # （add-verify-lane-throughput 1.1：主车道派发成功后附加一次
+        # planner-plan 并行出题车道入队；生效落点语义不变，逐一断言两类调用）
+        enqueue_spy.assert_any_call(
             "evo-merge-back-wip-overlap-gate-575976", "implementer"
         )
+        enqueue_spy.assert_any_call(
+            "evo-merge-back-wip-overlap-gate-575976", "planner-plan"
+        )
+        self.assertEqual(enqueue_spy.call_count, 2)
 
     def test_process_queue_superseded_entry_removed_blocked(self):
         """_process_queue 候选筛选同口径兜底：旁路入队的收敛源条目被移除+blocked。"""

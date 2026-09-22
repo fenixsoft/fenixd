@@ -36,6 +36,28 @@ def _ocr_join_gate_disabled(spec_name: str, origin: str) -> str:
     return "pass"
 
 
+def _parallel_plan_lane(pm: Any) -> Any:
+    """并行出题车道控制包装（add-verify-lane-throughput 1.3）。
+
+    SimpleNamespace 成员 lambda **延迟解析** pm 私有方法（属性访问推迟到
+    真正调用时，与 from_pm 委托成员同约定）：SimpleNamespace 式 pm 桩未声明
+    对应私有属性时，调用才 AttributeError——消费侧外层 try/except fail-open
+    回落串行出题，不影响验证轮。
+    """
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        read_marker=lambda spec_name: pm._read_parallel_plan_marker(spec_name),
+        write_marker=lambda spec_name, payload: pm._write_parallel_plan_marker(
+            spec_name, payload
+        ),
+        quarantine=lambda spec_name, reason: pm._quarantine_parallel_product(
+            spec_name, reason
+        ),
+        stop=lambda spec_name, reason: pm._stop_parallel_planning(spec_name, reason),
+    )
+
+
 @dataclass(frozen=False)
 class PipelineContext:
     """VerificationPipeline 显式依赖注入容器。
@@ -85,6 +107,12 @@ class PipelineContext:
         repr=False, default=_ocr_join_gate_disabled
     )
     env_infra_markers: tuple[str, ...] = field(default=(), repr=True)
+
+    # ── add-verify-lane-throughput 1.3：并行出题车道控制（SimpleNamespace，
+    # 成员 lambda 委托 pm 私有方法——pipeline 侧零 self._pm._ 回引，契约
+    # test_no_self_pm_private_in_pipeline）。有缺省：桩 context 不提供即视
+    # 为车道未启用（消费侧 fail-open 回落串行）。
+    parallel_plan_lane: Any = field(default=None, repr=False)
 
     # ── 便捷构造（从 PMEngine 实例一键创建）─────────────────────────────────
 
@@ -183,5 +211,6 @@ class PipelineContext:
             read_implementer_result=_read_implementer_result,
             exempt_infra_run_budget=_exempt_infra_run_budget,
             ocr_join_gate=_ocr_join_gate,
+            parallel_plan_lane=_parallel_plan_lane(pm),
             env_infra_markers=getattr(pm, "_ENV_INFRA_MARKERS", ()),
         )

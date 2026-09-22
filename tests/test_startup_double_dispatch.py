@@ -87,7 +87,10 @@ class TestSingleFlightGuard(unittest.TestCase):
 
         # Only one dispatch should have proceeded (the first one)
         # The second should have been blocked by the single-flight guard
-        self.assertEqual(len(enqueue_calls), 1)
+        # （add-verify-lane-throughput 1.1：主车道派发成功后附加一次
+        # planner-plan 并行出题车道入队，不属单飞守卫管辖，过滤后断言）
+        impl_calls = [c for c in enqueue_calls if c[1] != "planner-plan"]
+        self.assertEqual(len(impl_calls), 1)
         self.assertEqual(len(results), 2)
 
     def test_single_flight_guard_allows_sequential_dispatch(self):
@@ -108,7 +111,9 @@ class TestSingleFlightGuard(unittest.TestCase):
 
         # First dispatch
         self.engine._on_spec_ready("test-spec")
-        self.assertEqual(len(enqueue_calls), 1)
+        # （1.1 并行出题车道：ready 派发成功附加 planner-plan 入队，过滤后断言主车道）
+        impl_calls = [c for c in enqueue_calls if c[1] != "planner-plan"]
+        self.assertEqual(len(impl_calls), 1)
 
         # 冷却窗口豁免（双派发穿透原地修 2026-09-06）：成功派发后 DISPATCH_COOLDOWN_SECONDS
         # 内的顺序重复触发被冷却跳过——单飞键的「不误伤顺序派发」语义由冷却过期后
@@ -118,7 +123,8 @@ class TestSingleFlightGuard(unittest.TestCase):
 
         # Second dispatch (after first completes + cooldown) should be allowed
         self.engine._on_spec_ready("test-spec")
-        self.assertEqual(len(enqueue_calls), 2)
+        impl_calls = [c for c in enqueue_calls if c[1] != "planner-plan"]
+        self.assertEqual(len(impl_calls), 2)
 
     def test_single_flight_guard_cleanup_on_success(self):
         """Test that the single-flight guard cleans up after successful dispatch."""

@@ -52,6 +52,13 @@ class QQQueueMixin:
         # 释放（MUST NOT 晚于锚点 reviewer_run 落盘），锚点落盘后由 reviewer_run
         # 判据接力；finally 幂等兜底释放（异常路径也释放）。
         self._active_reviews: set = set()
+        # 并行出题在飞集合（add-verify-lane-throughput 2.1）：spec 名集合，
+        # planner-plan 并行条目独立登记、不占 _active_runs/_active_priorities
+        # （出题与实现并行，占实现槽位会抵消并行收益）。生命周期对齐评审条目：
+        # 出队时置位、worker 收尾 finally 幂等释放（异常路径也释放）。
+        # 在飞数即豁免上限计量（_PARALLEL_PLAN_INFLIGHT_CAP），与
+        # agents.max_concurrent 解耦（调大实现并发不放大豁免上限）。
+        self._active_parallel_plans: set = set()
         # Pending (priority, spec_name, agent_type, enqueued_at) tuples。
         # enqueued_at 为入队时刻 time.time()，仅供内存态老化计时（design D3）：
         # 不持久化，daemon 重启重建队列即视为等待清零。
@@ -76,6 +83,37 @@ class QQQueueMixin:
         # 时点启动共用）；车道线程完成回调经同锁摘除登记。
         self._ocr_lane_lock = threading.Lock()
         self._ocr_lane_inflight: Dict[str, bool] = {}
+
+    # ── 验证车道槽位豁免（add-verify-lane-throughput 2.1）──────────────────
+    # 槽位豁免车道全集：spec-review（既有先例，fix-spec-review-blocking-dispatch）
+    # + planner-plan（本 SPEC 新增的并行出题条目）。planner-judge 维持验证管线内
+    # 同步派发（随 verifier 条目 worker 执行、不过派发队列），本期不建独立队列
+    # 条目；若后续 judge 独立成队列条目，沿用同模式豁免与上限（design D4）。
+    _SLOT_EXEMPT_LANE_TYPES = ("spec-review", "planner-plan")
+    # 并行 planner-plan 独立在飞上限（design D4）：同时最多 1 个并行出题 run，
+    # 防出题分片（低优先级任务 5.1）挤占网关。独立常量、不走 agents.max_concurrent
+    # ——调大实现并发不放大豁免上限（spec Scenario: 实现并发上调不放大豁免）。
+    _PARALLEL_PLAN_INFLIGHT_CAP = 1
+    # 并行出题条目可派发的 spec 状态集：ready（触发时刻）/ implementing /
+    # implemented（impl 先完成、出题仍在排队的追平窗口）。drafted/blocked（含
+    # 冻结——freeze_spec 置 blocked）等回退态一律不可派发（任务 1.2：回退即停）。
+    _PARALLEL_PLAN_DISPATCHABLE_STATUS = ("ready", "implementing", "implemented")
+
+    def _parallel_plan_cap_reached(self) -> bool:
+        """并行 planner-plan 豁免上限判定（在飞 ≥1 即达上限）。"""
+        return len(self._active_parallel_plans) >= self._PARALLEL_PLAN_INFLIGHT_CAP
+
+    def _parallel_plan_entry_ready(self, spec: dict, sname: str) -> bool:
+        """并行出题条目候选可派发判定（对齐 _review_entry_ready 单一落点范式）。
+
+        供 ``_process_queue`` 的 best_valid_prio 扫描与 dispatch_idx 扫描两处
+        共用：状态合法（_PARALLEL_PLAN_DISPATCHABLE_STATUS）且豁免上限未满。
+        状态非法（打回 drafted / 冻结 blocked / spec 已删除）→ False（条目
+        滞留队列不再派发，半成品产物由消费侧校验兜底，任务 1.2）。
+        """
+        if (spec or {}).get("status") not in self._PARALLEL_PLAN_DISPATCHABLE_STATUS:
+            return False
+        return not self._parallel_plan_cap_reached()
 
     def _get_spec_priority(self, spec_name: str) -> int:
         """读取 SPEC 的 priority，缺省为 5。"""
@@ -122,6 +160,20 @@ class QQQueueMixin:
                 self._pm.logger.debug(
                     "pm_engine", f"Queued: {spec_name} ({agent_type}, P{priority})"
                 )
+
+    def _remove_queued_entry(self, spec_name: str, agent_type: str) -> bool:
+        """按 (spec, agent_type) 摘除队列条目（线程安全）。
+
+        供车道停止路径消费（add-verify-lane-throughput 1.2：spec 状态回退时
+        摘除在队并行出题条目）。返回是否实际摘除。
+        """
+        with self._queue_lock:
+            before = len(self._run_queue)
+            self._run_queue = [
+                e for e in self._run_queue
+                if not (e[1] == spec_name and e[2] == agent_type)
+            ]
+            return len(self._run_queue) < before
 
     def _enqueue_front(self, spec_name: str, agent_type: str):
         """Insert a run request at the front of its priority bucket (thread-safe).
@@ -377,6 +429,8 @@ class QQQueueMixin:
                 # 于旧早退，不做独立预扫描防双倍读盘）。
                 slots_full = self._active_runs >= max_concurrent
                 if slots_full:
+                    # 槽位占满时仅豁免车道可派发（评审 + 并行出题，2.1）：
+                    # 实现条目照旧滞留，评审/出题条目照常扫描派发。
                     has_review = any(
                         e[2] == "spec-review"
                         and (e[1], e[2]) not in suppressed
@@ -385,7 +439,17 @@ class QQQueueMixin:
                         )
                         for e in self._run_queue
                     )
-                    if not has_review:
+                    # 并行出题条目（add-verify-lane-throughput 2.1）：实现槽满
+                    # 不滞留出题（出题与实现并行、不占实现槽位），上限内可派发。
+                    has_parallel_plan = any(
+                        e[2] == "planner-plan"
+                        and (e[1], e[2]) not in suppressed
+                        and self._parallel_plan_entry_ready(
+                            self._pm.state_machine.read_one(e[1]) or {}, e[1]
+                        )
+                        for e in self._run_queue
+                    )
+                    if not (has_review or has_parallel_plan):
                         return
                 if not self._run_queue:
                     return
@@ -397,15 +461,21 @@ class QQQueueMixin:
                     prio, sname, atype, enqueued_at = entry
                     if (sname, atype) in suppressed:
                         continue
-                    # 槽位占满时实现车道条目不参与候选（评审条目放行，1.5b）
-                    if slots_full and atype != "spec-review":
+                    # 槽位占满时实现车道条目不参与候选（评审/并行出题条目放行，
+                    # 1.5b + add-verify-lane-throughput 2.1）
+                    if slots_full and atype not in self._SLOT_EXEMPT_LANE_TYPES:
                         continue
                     eff = self._pm._effective_priority(prio, enqueued_at, now)
                     spec = self._pm.state_machine.read_one(sname)
                     if not spec:
                         continue
                     status = spec.get("status")
-                    if atype == "spec-review":
+                    if atype == "planner-plan":
+                        # 并行出题条目候选判定（2.1）：状态合法且豁免上限未满；
+                        # 命中不了则跳过（条目保留队列待重判，与评审条目同语义）。
+                        if not self._parallel_plan_entry_ready(spec, sname):
+                            continue
+                    elif atype == "spec-review":
                         # 评审条目候选判定（1.2/1.3）：状态必须 reviewing 且无
                         # 在飞评审；命中则跳过（条目保留队列待重判）。
                         if not self._review_entry_ready(spec, sname):
@@ -502,8 +572,9 @@ class QQQueueMixin:
                     prio, sname, atype, enqueued_at = entry
                     if (sname, atype) in suppressed:
                         continue
-                    # 槽位占满时实现车道条目不可派发（评审条目放行，1.5b）
-                    if slots_full and atype != "spec-review":
+                    # 槽位占满时实现车道条目不可派发（评审/并行出题条目放行，
+                    # 1.5b + add-verify-lane-throughput 2.1）
+                    if slots_full and atype not in self._SLOT_EXEMPT_LANE_TYPES:
                         continue
                     if self._pm._effective_priority(prio, enqueued_at, now) != target_prio:
                         continue
@@ -511,7 +582,11 @@ class QQQueueMixin:
                     if not spec:
                         continue
                     status = spec.get("status")
-                    if atype == "spec-review":
+                    if atype == "planner-plan":
+                        # 并行出题条目候选判定：与 best_valid_prio 扫描同口径
+                        if not self._parallel_plan_entry_ready(spec, sname):
+                            continue
+                    elif atype == "spec-review":
                         # 评审条目候选判定（1.4）：与 best_valid_prio 扫描同口径
                         if not self._review_entry_ready(spec, sname):
                             continue
@@ -589,6 +664,14 @@ class QQQueueMixin:
                     # 可观测。释放时点见 _run_spec_review_worker（MUST NOT 晚于
                     # 四步链锚点 reviewer_run 落盘，design D4 重入安全性）。
                     self._active_reviews.add(spec_name)
+                    active_count = self._active_runs
+                elif agent_type == "planner-plan":
+                    # 并行出题条目不占实现车道槽位（add-verify-lane-throughput
+                    # 2.1，spec Scenario「在飞期间不计入实现槽位计数」）：登记
+                    # _active_parallel_plans 供豁免上限计量与防重派，MUST NOT
+                    # 增减 _active_runs/_active_priorities。释放点见 worker
+                    # finally 幂等兜底。
+                    self._active_parallel_plans.add(spec_name)
                     active_count = self._active_runs
                 else:
                     self._active_runs += 1
@@ -714,6 +797,12 @@ class QQQueueMixin:
                     spec_name, "testing",
                     trigger_run_id=None, agent_type="verifier", channel="auto",
                 )
+            elif agent_type == "planner-plan":
+                # 并行出题条目不迁移 spec 状态（add-verify-lane-throughput 1.1）：
+                # 出题与实现并行在飞，spec 状态机由实现车道驱动；此处零状态写。
+                # 预算/内容完整性闸门同 spec-review 逻辑不适用（出题不消耗实现
+                # 预算，无实现内容可校验）。
+                pass
             elif agent_type == "spec-review":
                 # 评审条目状态推进（fix-spec-review-blocking-dispatch 1.6）：
                 # 不调用 transition——状态已由晋升链（promote_drafted 的
@@ -1689,6 +1778,20 @@ class QQQueueMixin:
             elif agent_type == "verifier":
                 self._pm._run_verification_pipeline(spec_name)
 
+            elif agent_type == "planner-plan":
+                # ── 并行出题车道（add-verify-lane-throughput 1.1/2.1）──
+                # 出题 run 与实现车道独立在飞：run 失败走既有 planner 失败路径
+                # （transient 重试/升级，由 _run_parallel_plan_lane 内部处置），
+                # 异常吞并留痕，MUST NOT 影响实现车道派发与状态机。半成品场景集
+                # 的不采信由消费侧（pipeline 并行产物校验）兜底（任务 1.2/1.3）。
+                try:
+                    self._pm._run_parallel_plan_lane(spec_name)
+                except Exception as e:  # pragma: no cover - 防御性兜底
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"并行出题车道异常 '{spec_name}'（不影响实现车道）: {e}",
+                    )
+
         except Exception as e:
             self._pm.logger.error("pm_engine", f"Agent run exception: {e}")
             # 派发/执行异常必须回滚滞留中间态的 spec（fix: 伪 bug 卡死根因）。
@@ -1709,6 +1812,11 @@ class QQQueueMixin:
                     # 由 recovery 的 reviewing 分支兜底拾取（spec-review-recovery
                     # spec Scenario「未完成状态可被恢复通道重新拾取」）。
                     self._active_reviews.discard(spec_name)
+                elif agent_type == "planner-plan":
+                    # 并行出题条目释放（add-verify-lane-throughput 2.1）：仅摘除
+                    # 在飞登记（豁免上限计量恢复），不触碰 _active_runs/
+                    # _active_priorities（条目从未递增它们）。
+                    self._active_parallel_plans.discard(spec_name)
                 else:
                     self._active_runs -= 1
                     # 宽松优先级：按优先级计数释放，仅当该档最后一个 run 结束才移除该档，

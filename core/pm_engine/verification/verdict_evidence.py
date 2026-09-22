@@ -147,10 +147,16 @@ def _verify_verdict_evidence(pipeline, spec_name: str, retry_judge: bool = False
     if retry_judge:
         violations_1 = result["violations"]
         pipeline._write_verdict_violations(spec_name, violations_1)
+        # ── 轮内重裁决记账（add-verify-lane-throughput 3.1/3.2）──
+        # 此路径直接 run_planner 不经 _judge_dispatch_gate，轮内计数在此记账：
+        # 全为可补类型（evidence 缺失/截断）→ 证据扩充（每轮 1 次，不计重派）；
+        # 否则记真实派发（轮内达阈值即由 gate 在下次派发前停派+升级）。
+        retry_kind = pipeline._judge_charge_verdict_retry(spec_name, violations_1)
         pipeline._context.logger.warning(
             "pm_engine",
-            f"裁决证据分类校验未通过 '{spec_name}'（{len(violations_1)} 项），"
-            f"重试 judge 一次：{[v['scenario_id'] for v in violations_1]}",
+            f"裁决证据分类校验未通过 '{spec_name}'（{len(violations_1)} 项，"
+            f"记账={retry_kind}），重试 judge 一次："
+            f"{[v['scenario_id'] for v in violations_1]}",
         )
         try:
             re_judge = pipeline._pm.agent_runner.run_planner(spec_name, "judge")
@@ -972,21 +978,101 @@ def _record_verdict_adoption(pipeline, spec_name: str, status: str, report=None)
         )
 
 
+def _def_view(sc) -> dict:
+    """场景定义视图归一：TestScenario（to_dict）与 dict 两形态统一为 dict。
+
+    与 pipeline._parallel_plan_scenario_def 同口径（此处鸭子类型内联实现，
+    避免模块级回引 pipeline 造成循环导入）。
+    """
+    if isinstance(sc, dict):
+        return sc
+    try:
+        return sc.to_dict()
+    except Exception:  # noqa: BLE001 — 异常形态返回空视图（fail-closed）
+        return {}
+
+
+def _round_definition_fingerprints(pipeline, spec_name: str) -> dict:
+    """本轮定义指纹表（add-verify-lane-throughput 4.1 写读两侧同源）。
+
+    写侧唯一可靠的定义源是本轮**冻结场景文件**：引擎判定 dict 只携带
+    scenario_id/description/kind，steps/assertions 已不可考，直接对判定 dict
+    取定义指纹会与读侧（prune 从同一文件 load 的 TestScenario.to_dict 投影）
+    键集失配、四元组永不匹配、裁剪恒失效。重放同一冻结文件 ⇒ 两侧同形。
+
+    重放失败返回空表（fail-closed：PASS 条目无 dfp 不入缓存，只损失效率
+    不损正确性——缓存缺失只导致下轮全量重跑）。
+    """
+    from core.verify_engine.scenarios import load_scenarios
+    from core.verdict_check import scenario_definition_fingerprint
+
+    path = (
+        Path(pipeline._context.project_root)
+        / ".fenix"
+        / "verify-progress"
+        / spec_name
+        / "test_scenarios.json"
+    )
+    try:
+        scenarios = load_scenarios(path)
+    except Exception:  # noqa: BLE001
+        return {}
+    by_sid: dict = {}
+    for i, sc in enumerate(scenarios or []):
+        if sc is None:
+            continue
+        d = _def_view(sc)
+        if not d:
+            continue
+        sid = str(d.get("scenario_id") or d.get("id") or f"#{i}")
+        by_sid[sid] = scenario_definition_fingerprint(d)
+    return by_sid
+
+
 def _persist_verdict_cache(pipeline, spec_name: str, report: dict) -> None:
     """采纳成功后持久化跨轮裁决缓存（judge 效率治理 E，2026-09-06）。
 
-    每个已裁决 non-PASS 场景记 {fingerprint, classification, evidence,
+    每个 non-PASS 已裁决场景记 {fingerprint, classification, evidence,
     assertion_triage}；下轮派发 judge 前由 prompt_builder 按指纹命中注入，
-    命中场景免复现。每轮整体重写（场景消失/变化自然出清）；失败静默
-    （fail-open，缓存缺失只导致下轮全量重裁，不影响正确性）。
-    """
-    from core.verdict_check import scenario_fingerprint, save_verdict_cache
+    命中场景免复现。
 
+    add-verify-lane-throughput 4.1（design 决策 6）：PASS 场景同样入缓存
+    （写侧此前显式跳过 pass——读侧「通过场景采信缓存」无数据可采信），
+    条目补齐缓存键四元组分量（definition_fingerprint / build_fingerprint /
+    verify_config_fingerprint，写入时计算）；non-PASS 条目一并补齐分量供
+    后续消费。每轮整体重写（场景消失/变化自然出清）；分量计算失败落 ""，
+    消费侧校验对 "" 一律不采信（fail-closed）；写盘失败静默（fail-open，
+    缓存缺失只导致下轮全量重跑，不影响正确性）。
+    """
+    from core.verdict_check import (
+        compute_build_fingerprint,
+        compute_verify_config_fingerprint,
+        scenario_fingerprint,
+        save_verdict_cache,
+    )
+
+    project_root = pipeline._context.project_root
+    build_fp = compute_build_fingerprint(project_root)
+    config_fp = compute_verify_config_fingerprint(project_root)
+    # 定义指纹从冻结场景文件重放（写读同源），不从判定 dict 取——判定 dict
+    # 缺 steps/assertions 等定义键，投影与读侧失配（见 _round_definition_fingerprints）
+    dfp_by_sid = _round_definition_fingerprints(pipeline, spec_name)
     cache = {}
     for sc in report.get("scenarios") or []:
         if not isinstance(sc, dict):
             continue
+        sid = str(sc.get("scenario_id"))
         if sc.get("status") in ("pass", "passed"):
+            # PASS 条目：无需 classification/evidence，采信判据只看四元组
+            dfp = dfp_by_sid.get(sid, "")
+            if not dfp:
+                continue
+            cache[sid] = {
+                "status": "pass",
+                "definition_fingerprint": dfp,
+                "build_fingerprint": build_fp,
+                "verify_config_fingerprint": config_fp,
+            }
             continue
         cls = sc.get("classification")
         if not cls:
@@ -994,17 +1080,22 @@ def _persist_verdict_cache(pipeline, spec_name: str, report: dict) -> None:
         fp = scenario_fingerprint(sc)
         if not fp:
             continue
-        cache[str(sc.get("scenario_id"))] = {
+        cache[sid] = {
             "fingerprint": fp,
             "classification": cls,
             "evidence": sc.get("evidence"),
             "assertion_triage": sc.get("assertion_triage"),
+            "definition_fingerprint": dfp_by_sid.get(sid, ""),
+            "build_fingerprint": build_fp,
+            "verify_config_fingerprint": config_fp,
         }
-    save_verdict_cache(pipeline._context.project_root, spec_name, cache)
+    save_verdict_cache(project_root, spec_name, cache)
     if cache:
         pipeline._context.logger.info(
             "pm_engine",
-            f"跨轮裁决缓存已更新 '{spec_name}': {len(cache)} 个场景结论入缓存",
+            f"跨轮裁决缓存已更新 '{spec_name}': {len(cache)} 个场景结论入缓存"
+            f"（四元组分量 build={'✓' if build_fp else '✗'}/"
+            f"config={'✓' if config_fp else '✗'}）",
         )
 
 
