@@ -45,7 +45,11 @@ const MessageItem = memo(({ message, prevMessage, showThinking = false }: Messag
     () => new Date(message.timestamp).toLocaleTimeString(),
     [message.timestamp],
   );
-  const shouldHideThinkingMessage = Boolean(message.isThinking && !showThinking);
+  // thinkingForced：无正文兜底强制渲染的 thinking（design D4）不受开关隐藏，
+  // 否则 thinking-only 流的兜底产物在渲染层被击穿（verification BUG-02）
+  const shouldHideThinkingMessage = Boolean(
+    message.isThinking && !showThinking && !message.thinkingForced,
+  );
 
   if (shouldHideThinkingMessage) {
     return null;

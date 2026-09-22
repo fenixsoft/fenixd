@@ -52,6 +52,15 @@ export function describeToolInput(toolInput: unknown): string {
   return summarize(parsed);
 }
 
+// 卡片预览（verification BUG-01 修复）：task_started 凭 tool_use_id 回填的
+// taskDescription 是任务意图的权威描述，优先于工具输入摘要（Task 工具输入只
+// 有 prompt 长文）；无回填时回落 describeToolInput 既有兜底。
+export function toolCardPreview(message: ChatMessage): string {
+  const backfilled =
+    typeof message.taskDescription === 'string' ? message.taskDescription.trim() : '';
+  return backfilled || describeToolInput(message.toolInput);
+}
+
 // 工具耗时标注格式（design D3）：秒 → 「XmYs」；非法/负值返回空串（调用方
 // 无值不渲染）。
 export function formatElapsedSeconds(seconds: number): string {
@@ -131,7 +140,8 @@ function isGroupableToolMessage(message: ChatMessage): message is ChatMessage & 
 // or entries muted by the run-stream noise filter) shouldn't split an
 // otherwise-continuous run of same-class tools.
 function rendersNothing(message: ChatMessage, showThinking: boolean): boolean {
-  if (message.isThinking && !showThinking) return true;
+  // 兜底强制渲染的 thinking（thinkingForced）真实可见，须照常打断同类连续分组
+  if (message.isThinking && !showThinking && message.thinkingForced !== true) return true;
   // 防御：被静默的消息（runEventsToChatMessages 已不产出条目，此处兜底）
   return message.rendersNothing === true;
 }

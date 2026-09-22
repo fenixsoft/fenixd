@@ -6,7 +6,7 @@ import { useMemo, useState } from 'react';
 
 import type { ChatMessage } from './types';
 import type { ToolClass, ToolGroupItem } from './toolGrouping';
-import { describeToolInput, editFilePaths } from './toolGrouping';
+import { editFilePaths, toolCardPreview } from './toolGrouping';
 import MessageItem from './MessageItem';
 import ToolCard from './ToolCard';
 
@@ -61,7 +61,7 @@ export default function ToolGroupContainer({
     }
     const visiblePreviews = group.messages
       .slice(0, 2)
-      .map((m) => describeToolInput(m.toolInput))
+      .map((m) => toolCardPreview(m))
       .filter(Boolean);
 
     const extraCount = group.messages.length - visiblePreviews.length;

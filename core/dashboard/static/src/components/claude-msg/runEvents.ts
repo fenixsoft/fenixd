@@ -245,6 +245,10 @@ export function runEventsToChatMessages(events: RunEvent[], showThinking: boolea
       return;
     }
     const msg: ChatMessage = { type: 'assistant', isThinking: true, content: text, timestamp };
+    // 兜底强制渲染（design D4）：用户开关关闭但全流无非空正文时打标记，渲染层
+    //（MessageItem / rendersNothing）据此豁免隐藏——只改转换层不传导标记会被
+    // MessageItem 的 showThinking 隐藏逻辑击穿（verification BUG-02）
+    if (!showThinking) msg.thinkingForced = true;
     currentThinking = msg;
     out.push(msg);
   };
