@@ -54,6 +54,23 @@ from core.pm_engine.verification import (
 # 非 blocked）由 resolve_env_blocked_reset_path 判定。
 DISPOSITION_AUTO_RESET_SIGNAL_TYPES = ENV_BLOCK_SIGNAL_TYPES + ("blocked_stuck",)
 
+
+def disposition_signal_hits_auto_reset(signal) -> bool:
+    """处置信号是否命中自动复位集合（fix-manual-invoke-signal-type-passthrough 2.1）。
+
+    `signal_type` 或 `underlying_signal_type` 任一命中
+    DISPOSITION_AUTO_RESET_SIGNAL_TYPES 即触发：手动唤起通道顶层恒为
+    manual-intervention（store 记录/节流锚点/活动区展示语义），底层类型经
+    underlying_signal_type 透传（fenixd._check_admin_invoke_requests 反查写入），
+    复位门须同时感知两个字段；自动检测通道仅携带 signal_type，行为不变。
+    """
+    if not isinstance(signal, dict):
+        return False
+    return (
+        signal.get("signal_type") in DISPOSITION_AUTO_RESET_SIGNAL_TYPES
+        or signal.get("underlying_signal_type") in DISPOSITION_AUTO_RESET_SIGNAL_TYPES
+    )
+
 # admin-dispatch-failure-escalation D1：派发期编程错误异常类型集合——
 # TypeError/AttributeError/NameError/ValueError 是代码缺陷的典型签名
 # （实参不符/属性缺失/未定义名/参数构造错误），Administrator 无法修复，
@@ -2589,16 +2606,17 @@ class AdminMonitor:
 
         # env 阻塞 / blocked_stuck 处置收尾复位（add-blocked-reverify-lane D2 +
         # frozen-scenario-schema-migration D3）：result 为 resolved/
-        # partially-resolved 且信号属复位集合（env 族 + blocked_stuck）时，
-        # 框架机械判定复位路径——实现分支已合并 → transition_gate(testing)
-        # 直通道重验（跳过全量重实现）；否则 → 既有 transition(ready)。
-        # 两条路径均保留阻塞轮次（不清零，生命周期累计语义），仅清 error。
+        # partially-resolved 且信号属复位集合（env 族 + blocked_stuck；人工唤起
+        # 通道经 underlying_signal_type 透传底层类型感知，见
+        # disposition_signal_hits_auto_reset）时，框架机械判定复位路径——实现
+        # 分支已合并 → transition_gate(testing) 直通道重验（跳过全量重实现）；
+        # 否则 → 既有 transition(ready)。两条路径均保留阻塞轮次（不清零，
+        # 生命周期累计语义），仅清 error。
         # escalated 表示 admin 升级人工，不触发自动复位（人工处置是唯一出路）。
         if disp.result in ("resolved", "partially-resolved"):
-            sig_type = signal.get("signal_type")
-            if sig_type in DISPOSITION_AUTO_RESET_SIGNAL_TYPES:
+            if disposition_signal_hits_auto_reset(signal):
                 self._reset_env_blocked_after_disposition(signal, disp)
-            elif sig_type == "orphaned_state":
+            elif signal.get("signal_type") == "orphaned_state":
                 # 孤儿状态复位（orphaned-state-signal R3）：独立复位路径
                 # （非 env 阻塞族）——testing→verifier 重验入队；implementing
                 # →ready 重实现。resolve_env_blocked_reset_path 入口守卫要求
@@ -2875,8 +2893,9 @@ class AdminMonitor:
         """阻塞处置收尾自动复位（add-blocked-reverify-lane D2 +
         frozen-scenario-schema-migration D3）。
 
-        result=resolved/partially-resolved + signal_type∈自动复位集合
-        （env 族 + blocked_stuck）→ 框架机械判定：branch 已合并 →
+        result=resolved/partially-resolved + 信号命中自动复位集合（env 族 +
+        blocked_stuck；signal_type 或 underlying_signal_type 任一命中，见
+        disposition_signal_hits_auto_reset）→ 框架机械判定：branch 已合并 →
         transition_gate(testing) 直通道 + verifier 入队重验；未合并/无
         branch → transition(ready) + implementer 重派。两条路径均保留
         阻塞轮次（不清零，生命周期累计语义），仅清 error。
@@ -2891,6 +2910,11 @@ class AdminMonitor:
         # 防御：result 非 resolved/partially-resolved（如 escalated/failed）不触发
         # 自动复位——消费点已前置检查，此处再兜底，杜绝调用路径遗漏。
         if getattr(disp, "result", None) not in ("resolved", "partially-resolved"):
+            return
+        # 防御：信号类型不属复位集合不触发（fix-manual-invoke-signal-type-
+        # passthrough 2.1：感知 underlying_signal_type 透传）——消费点已前置
+        # 检查，此处再兜底，杜绝调用路径遗漏。
+        if not disposition_signal_hits_auto_reset(signal):
             return
         spec = signal.get("spec")
         if not spec:
