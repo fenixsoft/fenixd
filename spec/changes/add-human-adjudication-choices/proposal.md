@@ -25,7 +25,7 @@
 ## Impact
 
 - `core/admin_store.py`：告警记录新增可选 `choices` 字段（append/去重/read 路径兼容）
-- `core/pm_engine/budget.py`、`core/pm_engine/family.py`、`core/pm_engine/spec_review.py`、`core/pm_engine/verification/judge_gate.py`：发射点接线 choices
+- `core/pm_engine/budget.py`、`core/pm_engine/family.py`、`core/pm_engine/spec_review.py`、`core/pm_engine/verification/judge_gate.py`、`core/pm_engine/dispatch/queue.py`、`core/pm_engine/dispatch/fast_track.py`、`core/agent_runner/token_budget.py`、`core/worktree_manager/mergeback.py`（配置裁决类，kind=SIGNAL）：发射点接线 choices
 - `core/dashboard/data/adjudication_choices.py`（新建）：静态注册表
 - `core/dashboard/data/admin_actions.py`：新增 3 个裁决动词
 - `core/dashboard/routes/alert_routes.py`：新增 `POST /api/alert-resolve`

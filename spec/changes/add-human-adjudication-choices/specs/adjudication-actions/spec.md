@@ -14,7 +14,7 @@
 
 ### Requirement: force_advance 裁决动词
 
-`core/dashboard/data/admin_actions.py` MUST 新增 `force_advance(project_root, spec, target_status="done", note="")`：语义为「人工裁定接受现状，豁免剩余缺口推进」。执行序列：(1) 前置校验——spec 存在且处于冻结或 blocked 态，否则拒绝；(2) 解除冻结；(3) 经状态机合法推进路径将 spec 推进到 `target_status`（缺省 done），清 error 字段；(4) 裁决依据（note）写入推进留痕（STATE Transition 记录或处置记录，MUST 可追溯「这是人工豁免推进而非自然达成」）。该动词是 `/fenix-approve` 人工豁免语义在 dashboard 侧的最小等价物；MUST NOT 触碰实现分支内容或主树工作区文件。
+`core/dashboard/data/admin_actions.py` MUST 新增 `force_advance(project_root, spec, target_status="done", note="")`：语义为「人工裁定接受现状，豁免剩余缺口推进」。执行序列：(1) 前置校验——spec 存在且处于冻结或 blocked 态，否则拒绝；(2) 解除冻结；(3) 将 spec 推进到 `target_status`（缺省 done），清 error 字段。推进路径约定：冻结 spec 实际处于 blocked（或 reviewing）态，而 `blocked→done` 不在 `VALID_TRANSITIONS`（core/state_machine.py，blocked 仅可达 ready/reviewing）——本步骤 MUST 走 `StateMachine.update_spec` 显式豁免通道（updates 同时携带 `frozen=False` 与 `status`，冻结剥离守卫对自带 frozen 键的更新原样放行），与 design D4 及既有 admin 处置复位路径同一范式；MUST NOT 为达成推进直写 STATE.md；(4) 裁决依据（note）写入推进留痕（STATE Transition 记录或处置记录，MUST 可追溯「这是人工豁免推进而非自然达成」）。该动词是 `/fenix-approve` 人工豁免语义在 dashboard 侧的最小等价物；MUST NOT 触碰实现分支内容或主树工作区文件。
 
 #### Scenario: 冻结 spec 豁免推进 done
 - **WHEN** 对实现预算耗尽冻结的 spec 调用 force_advance（缺省 target_status=done，note 说明依据）

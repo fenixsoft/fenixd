@@ -10,12 +10,14 @@
 |---|---|
 | `impl_budget_exhausted` | continue_auto_fix（解冻+调大预算继续）/ manual_fixed_reverify（人工已修复，重置验证重跑）/ force_advance（接受现状收尾推进）/ abandon（撤销丢弃） |
 | `judge_rerun_cap` | manual_fixed_reverify / force_advance / abandon |
-| 升级闸门族（验证失败连续 N 轮冻结，`verify_fail_rounds` 触发） | continue_auto_fix（解冻+重置失败轮计数）/ manual_fixed_reverify / force_advance / abandon |
+| `verify_fail_escalation`（验证失败升级闸门冻结，`_verify_fail_rounds` 达阈值触发，发射于 family.py） | continue_auto_fix（解冻+重置失败轮计数）/ manual_fixed_reverify / force_advance / abandon |
 | `redispatch_loop_detected` | continue_auto_fix（解冻+清同因计数）/ manual_fixed_reverify / force_advance / abandon |
-| SPEC 评审否决达上限（方向不成立冻结） | revise_reproposal（按否决意见改方案重评）/ force_advance / abandon |
+| `spec-review-rejected`（评审否决达上限，方向不成立冻结，发射于 spec_review.py） | revise_reproposal（按否决意见改方案重评）/ force_advance / abandon |
 | `spec-review-incomplete`（评审器连坏） | retry_review（解冻重派评审）/ skip_review_gate / abandon |
 | `token_budget` | ignore（知情确认）/ freeze_stop_loss（冻结止损）/ raise_budget（调大预算） |
 | `build_artifact_paths_missing` | open_config（引导到配置表单）/ declare_no_artifacts（声明无产物） |
+
+消费通道约定：上表除 `build_artifact_paths_missing` 外，各信号的告警记录均为 `kind=ESCALATION`（经 `freeze_for_human`/升级告警入口成对写入），进前端告警区渲染下拉。`build_artifact_paths_missing` 的发射点在 `core/worktree_manager/mergeback.py`（`_maybe_signal_build_artifact_paths_missing`），写 `kind=SIGNAL` 记录——SIGNAL 记录不进前端告警区（`get_unhandled_alerts`/`AdminStore.unhandled()` 仅含 ESCALATION），其 choices 由 Administrator 处置契约消费（见 admin-choices-contract），不经前端下拉渲染。
 
 #### Scenario: 注册表按信号类型返回选项
 - **WHEN** 查询 `signal_type=impl_budget_exhausted` 的裁决选项
@@ -27,7 +29,7 @@
 
 ### Requirement: 告警记录携带 choices 字段
 
-桶 2 信号的发射点（`core/pm_engine/budget.py` 预算耗尽与 token 告警、`core/pm_engine/family.py` 升级闸门、`core/pm_engine/spec_review.py` 评审否决上限与评审器失败上限、`core/pm_engine/verification/judge_gate.py` judge 重跑上限、`core/admin_monitor.py` 同因重派熔断与配置裁决）写 `admin_alerts.json` 记录时 MUST 同时写入 `choices` 字段（取自注册表）。桶 0 知情/自愈类信号（`stale_code`、`transient_break_storm`、`run_infra_failure` 自动恢复、`run_cancelled`、误报类）MUST NOT 携带 `choices`。`choices` 字段 MUST 可缺省：无该字段的存量告警记录读取路径 MUST 兼容（按无选项处理）。
+桶 2 信号的发射点（`core/pm_engine/budget.py` 预算耗尽与 token 告警、`core/pm_engine/family.py` 升级闸门、`core/pm_engine/spec_review.py` 评审否决上限与评审器失败上限、`core/pm_engine/verification/judge_gate.py` judge 重跑上限、`core/pm_engine/dispatch/queue.py` 与 `core/pm_engine/dispatch/fast_track.py` 同因重派熔断、`core/agent_runner/token_budget.py` token 预算、`core/worktree_manager/mergeback.py` 配置裁决）写 `admin_alerts.json` 记录时 MUST 同时写入 `choices` 字段（取自注册表；`core/admin_monitor.py` 为 SIGNAL 摄取侧与桶 0 发射侧，仅按桶 0 约定确认不携带）。桶 0 知情/自愈类信号（`stale_code`、`transient_break_storm`、`run_infra_failure` 自动恢复、`run_cancelled`、误报类）MUST NOT 携带 `choices`。`choices` 字段 MUST 可缺省：无该字段的存量告警记录读取路径 MUST 兼容（按无选项处理）。
 
 #### Scenario: 真裁决告警携带选项
 - **WHEN** 实现预算耗尽触发冻结并写入告警记录

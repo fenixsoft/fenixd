@@ -27,6 +27,8 @@
   kind: modify
 - path: core/admin_monitor.py
   kind: modify
+- path: core/worktree_manager/mergeback.py
+  kind: modify
 - path: core/dashboard/static/src/services/dashboard.ts
   kind: modify
 - path: core/dashboard/static/src/pages/projects/detail.tsx
@@ -51,16 +53,16 @@
 
 - [ ] 2.1 `core/pm_engine/budget.py`：实现预算耗尽冻结告警与 token_budget 告警写记录时携 `choices=choices_for(signal_type)`
 - [ ] 2.2 `core/pm_engine/family.py`：验证失败升级闸门冻结告警携 choices（continue_auto_fix 语义选项）
-- [ ] 2.3 `core/pm_engine/spec_review.py`：评审否决达上限冻结告警与评审器失败上限（spec-review-incomplete）告警各携对应 choices
+- [ ] 2.3 `core/pm_engine/spec_review.py`：评审否决达上限（spec-review-rejected）冻结告警与评审器失败上限（spec-review-incomplete）告警各携对应 choices
 - [ ] 2.4 `core/pm_engine/verification/judge_gate.py`：judge 重跑上限告警携 choices
 - [ ] 2.5 `core/pm_engine/dispatch/queue.py` 与 `core/pm_engine/dispatch/fast_track.py`：同因重派熔断告警携 choices
 - [ ] 2.6 `core/agent_runner/token_budget.py`：token 预算告警携 choices（ignore/freeze_stop_loss/raise_budget）
-- [ ] 2.7 `core/admin_monitor.py`：配置裁决类（build_artifact_paths_missing）告警携 choices；确认桶 0 信号（stale_code/transient_break_storm/run_infra_failure/run_cancelled）发射路径不携带 choices
+- [ ] 2.7 `core/worktree_manager/mergeback.py`：配置裁决类（build_artifact_paths_missing，`kind=SIGNAL`）发射携 choices（消费通道见 registry 消费通道约定，不经前端告警区渲染）；`core/admin_monitor.py` 仅作桶 0 确认：确认 stale_code/transient_break_storm/run_infra_failure/run_cancelled 发射路径不携带 choices
 
 ## 3. 三个新裁决动词
 
 - [ ] 3.1 `core/dashboard/data/admin_actions.py` 新增 `reset_verification`：前置校验（冻结/blocked 且属验证链信号）→ 删 `.fenix/verify-progress/<spec>/` 场景与进度文件（按 spec 名精确匹配，禁通配）→ 清 judge 重跑与验证失败轮计数 → 解冻并按 `resolve_env_blocked_reset_path` 推进（testing 直通道或 ready）→ 返回执行步骤明细
-- [ ] 3.2 `core/dashboard/data/admin_actions.py` 新增 `force_advance`：前置校验（冻结/blocked）→ 解冻 → 经状态机合法推进到 target_status（缺省 done）并清 error → 留痕标注「人工豁免推进」与 note
+- [ ] 3.2 `core/dashboard/data/admin_actions.py` 新增 `force_advance`：前置校验（冻结/blocked）→ 解冻 → 经 `update_spec` 显式豁免通道（updates 携 frozen=False+status；`blocked→done` 不在 VALID_TRANSITIONS，不走 transition）推进到 target_status（缺省 done）并清 error → 留痕标注「人工豁免推进」与 note
 - [ ] 3.3 `core/dashboard/data/admin_actions.py` 新增 `skip_review_gate`：前置校验（reviewing+frozen 且属评审器失败冻结）→ 解冻推进 ready → 留痕「人工授权跳过评审」；评审否决类冻结拒绝
 
 ## 4. alert-resolve 端点
@@ -82,5 +84,5 @@
 
 ## 7. 测试
 
-- [ ] 7.1 新建 `tests/test_adjudication_choices.py`：注册表完整性（8 类信号选项集、未注册空集、字段四件套）；告警记录 choices 写入与无字段兼容；三个新动词的前置校验拒绝/成功路径/留痕断言；alert-resolve 端点闭环（成功/非法 choice/重复处置/动作失败不假成功）；发射点逐信号断言（注册表覆盖的 signal_type 写告警必含 choices）
+- [ ] 7.1 新建 `tests/test_adjudication_choices.py`：注册表完整性（8 类信号选项集、未注册空集、字段四件套）；告警记录 choices 写入与无字段兼容；三个新动词的前置校验拒绝/成功路径/留痕断言；alert-resolve 端点闭环（成功/非法 choice/重复处置/动作失败不假成功）；发射点逐信号断言（注册表覆盖的 signal_type 写告警必含 choices；build_artifact_paths_missing 断言 mergeback SIGNAL 记录携 choices）
 - [ ] 7.2 存量测试回归：`pytest tests/test_dashboard_api.py tests/test_transient_backoff.py` 及受影响模块测试全绿（对齐测试目录既有命名与 fixture 范式，basetemp 遵循 conftest 约定）

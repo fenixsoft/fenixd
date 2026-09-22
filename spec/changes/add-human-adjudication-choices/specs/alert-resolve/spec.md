@@ -2,7 +2,7 @@
 
 ### Requirement: alert-resolve 端点一次选择完成处置闭环
 
-系统 MUST 新增端点 `POST /api/alert-resolve`（`core/dashboard/routes/alert_routes.py`），接受 `{project, alert_id, choice_id, note?}`。端点 MUST 按序完成且原子性表现为一次调用：(1) 校验告警存在且未 handled，按 alert 的 `signal_type` 从注册表校验 `choice_id` 合法；(2) 执行 choice 映射的后端动作（复用 `core/dashboard/data/admin_actions.py` 既有动词或新增裁决动词）；(3) 将 spec 状态机推进到该裁决的目标终态（含冻结解除、计数器处置、error 清理）；(4) `mark_handled` 该告警并落处置留痕（复用 DISPOSITION 记录：choice_id、note、执行结果）。任一步失败 MUST 返回结构化错误且不标记 handled（已执行的前序动作 MUST 在错误信息中如实报告，不做虚假回滚声明）。
+系统 MUST 新增端点 `POST /api/alert-resolve`（`core/dashboard/routes/alert_routes.py`），接受 `{project, alert_id, choice_id, note?}`。端点 MUST 按序完成且原子性表现为一次调用：(1) 校验告警存在且未 handled，按 alert 的 `signal_type` 从注册表校验 `choice_id` 合法；(2) 执行 choice 映射的后端动作（复用 `core/dashboard/data/admin_actions.py` 既有动词或新增裁决动词）；(3) 将 spec 状态机推进到该裁决的目标终态（含冻结解除、计数器处置、error 清理）；(4) 标记该告警 handled 并落处置留痕（复用 DISPOSITION 记录：choice_id、note、执行结果）。kind 差异约定：`kind=ESCALATION` 告警走既有 `AdminStore.mark_handled`（该方法仅匹配 ESCALATION）；`kind=SIGNAL` 记录（`build_artifact_paths_missing`，见 adjudication-choices-registry 消费通道约定）由端点直接更新其 handled 字段（存储层兼容见 tasks 1.3）。任一步失败 MUST 返回结构化错误且不标记 handled（已执行的前序动作 MUST 在错误信息中如实报告，不做虚假回滚声明）。
 
 #### Scenario: 选择即完整闭环
 - **WHEN** 对 `impl_budget_exhausted` 冻结告警选择 `force_advance` 并附 note
