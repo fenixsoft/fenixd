@@ -1,38 +1,10 @@
 // 单条工具调用卡片 —— 迁移自 claudecodeui 的工具展示视觉（ToolGroupContainer/ToolErrorDisplay），
 // 以通用折叠形式呈现工具名 + 输入摘要 + 结果（原项目的 40+ 工具专属渲染器不在迁移范围）。
+// add-run-record-readability 2.3：摘要优先输入 description、右侧标注心跳观测耗时。
 import { useMemo, useState } from 'react';
 
 import type { ChatMessage } from './types';
-
-function parseToolInput(toolInput: unknown): unknown {
-  if (typeof toolInput !== 'string') {
-    return toolInput;
-  }
-  try {
-    return JSON.parse(toolInput);
-  } catch {
-    return toolInput;
-  }
-}
-
-function summarize(value: unknown, depth = 0): string {
-  if (value == null) return '';
-  if (typeof value === 'string') return value;
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
-  if (Array.isArray(value)) return value.slice(0, 3).map((v) => summarize(v, depth + 1)).join(', ');
-  if (typeof value === 'object') {
-    const entries = Object.entries(value as Record<string, unknown>);
-    const primaryKeys = ['command', 'file_path', 'path', 'pattern', 'url', 'query', 'description', 'prompt'];
-    const preferred = primaryKeys
-      .map((k) => entries.find(([key]) => key === k))
-      .filter((entry) => entry != null)
-      .slice(0, 2)
-      .map(([, v]) => summarize(v, depth + 1));
-    if (preferred.length > 0) return preferred.join(' | ');
-    return entries.slice(0, 2).map(([k, v]) => `${k}=${summarize(v, depth + 1)}`).join(' ');
-  }
-  return String(value);
-}
+import { describeToolInput, formatElapsedSeconds, parseToolInput } from './toolGrouping';
 
 function prettyJson(value: unknown): string {
   if (typeof value === 'string') return value;
@@ -60,7 +32,9 @@ export default function ToolCard({ message }: { message: ChatMessage }) {
   const [expanded, setExpanded] = useState(false);
   const toolName = message.toolName || 'UnknownTool';
   const parsedInput = useMemo(() => parseToolInput(message.toolInput), [message.toolInput]);
-  const preview = useMemo(() => summarize(parsedInput), [parsedInput]);
+  const preview = useMemo(() => describeToolInput(message.toolInput), [message.toolInput]);
+  const elapsedSeconds =
+    typeof message.toolElapsedSeconds === 'number' ? message.toolElapsedSeconds : null;
   const isError = Boolean(message.toolResult?.isError);
   const hasDetail = message.toolInput != null || message.toolResult != null;
 
@@ -82,6 +56,14 @@ export default function ToolCard({ message }: { message: ChatMessage }) {
         <span className="min-w-0 flex-shrink-0 text-xs font-medium text-foreground">{toolName}</span>
         {preview && (
           <span className="min-w-0 truncate font-mono text-xs text-muted-foreground">{preview}</span>
+        )}
+        {elapsedSeconds != null && (
+          <span
+            className="ml-auto flex-shrink-0 text-[10px] tabular-nums text-muted-foreground"
+            title="工具耗时（按心跳观测估算）"
+          >
+            {formatElapsedSeconds(elapsedSeconds)}
+          </span>
         )}
       </button>
 

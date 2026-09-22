@@ -886,6 +886,14 @@ export interface RunEvent {
   agent?: string;
   status?: string;
   content?: string;
+  // SDK 侧结构化事件形态（type:"system" + subtype，add-run-record-readability D1）
+  subtype?: string;
+  // stderr 事件原始行
+  line?: string;
+  // 任务生命周期/心跳事件载荷（task_started/notification、tool_progress）
+  tool_use_id?: string;
+  parent_tool_use_id?: string;
+  elapsed_time_seconds?: number;
   // 终态事件原因：error 事件为 error，interrupted/cancelled 事件为 reason
   error?: string;
   reason?: string;
@@ -904,9 +912,18 @@ export interface RunDetail {
   total_events: number;
 }
 
-export async function getRunTail(runId: string, project: string, tail: number = 300): Promise<RunDetail> {
+// 读取 run 尾部窗口：tail=尾部条数（默认 300），offsetFromEnd=窗口右端距流尾的
+// 偏移（add-run-record-readability 4.3 向前分页；缺省 0 = 既有尾部截取语义）。
+// 返回 total_events 为 run 流总事件行数（面板计数「共 M 条」）。
+export async function getRunTail(
+  runId: string,
+  project: string,
+  tail: number = 300,
+  offsetFromEnd: number = 0,
+): Promise<RunDetail> {
+  const offsetQuery = offsetFromEnd > 0 ? `&offset_from_end=${offsetFromEnd}` : '';
   return request<RunDetail>(
-    `/api/runs/${encodeURIComponent(runId)}?project=${encodeURIComponent(project)}&tail=${tail}`,
+    `/api/runs/${encodeURIComponent(runId)}?project=${encodeURIComponent(project)}&tail=${tail}${offsetQuery}`,
   );
 }
 

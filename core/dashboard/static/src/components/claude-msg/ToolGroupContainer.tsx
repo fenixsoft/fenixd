@@ -1,11 +1,20 @@
 // 连续同类工具调用合并折叠 —— 迁移自 claudecodeui ToolGroupContainer.tsx（精简版）：
 // 去 getToolConfig 依赖，图标/标签取自 ToolCard 的映射逻辑。
+// add-run-record-readability 2.1：同类连续组渲染语义化组标题；编辑组收起态按
+// 首现顺序去重展示文件路径。
 import { useMemo, useState } from 'react';
 
 import type { ChatMessage } from './types';
-import type { ToolGroupItem } from './toolGrouping';
+import type { ToolClass, ToolGroupItem } from './toolGrouping';
+import { describeToolInput, editFilePaths } from './toolGrouping';
 import MessageItem from './MessageItem';
 import ToolCard from './ToolCard';
+
+const CLASS_ICONS: Record<ToolClass, string> = {
+  read: '📄',
+  bash: '$',
+  edit: '✏️',
+};
 
 const TOOL_ICONS: Record<string, string> = {
   Bash: '$',
@@ -19,36 +28,6 @@ const TOOL_ICONS: Record<string, string> = {
   TodoWrite: '☑️',
   Task: '🤖',
 };
-
-function parseToolInput(toolInput: unknown): unknown {
-  if (typeof toolInput !== 'string') {
-    return toolInput;
-  }
-  try {
-    return JSON.parse(toolInput);
-  } catch {
-    return toolInput;
-  }
-}
-
-function summarize(value: unknown): string {
-  if (value == null) return '';
-  if (typeof value === 'string') return value;
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
-  if (Array.isArray(value)) return value.slice(0, 3).map((v) => summarize(v)).join(', ');
-  if (typeof value === 'object') {
-    const entries = Object.entries(value as Record<string, unknown>);
-    const primaryKeys = ['command', 'file_path', 'path', 'pattern', 'url', 'query', 'description', 'prompt'];
-    const preferred = primaryKeys
-      .map((k) => entries.find(([key]) => key === k))
-      .filter((entry) => entry != null)
-      .slice(0, 2)
-      .map(([, v]) => summarize(v));
-    if (preferred.length > 0) return preferred.join(' | ');
-    return entries.slice(0, 2).map(([k, v]) => `${k}=${summarize(v)}`).join(' ');
-  }
-  return String(value);
-}
 
 interface ToolGroupContainerProps {
   group: ToolGroupItem;
@@ -64,13 +43,25 @@ export default function ToolGroupContainer({
   showThinking = false,
 }: ToolGroupContainerProps) {
   const [isExpanded, setIsExpanded] = useState(false);
-  const label = group.toolName;
-  const icon = TOOL_ICONS[group.toolName] || group.toolName.slice(0, 1).toUpperCase();
+  // 同类组用语义化标题（组名已含计数，省去 xN 徽标）；同名连续组沿用工具名
+  const label = group.groupTitle || group.toolName;
+  const icon = group.groupKind
+    ? CLASS_ICONS[group.groupKind]
+    : TOOL_ICONS[group.toolName] || group.toolName.slice(0, 1).toUpperCase();
 
   const preview = useMemo(() => {
+    // 编辑组收起态：按首现顺序去重展示文件路径（design D2）
+    if (group.groupKind === 'edit') {
+      const paths = editFilePaths(group.messages);
+      const visible = paths.slice(0, 3);
+      const text = visible.join(', ');
+      if (!text) return '';
+      const extra = paths.length - visible.length;
+      return extra > 0 ? `${text}, +${extra} 个文件` : text;
+    }
     const visiblePreviews = group.messages
       .slice(0, 2)
-      .map((m) => summarize(parseToolInput(m.toolInput)))
+      .map((m) => describeToolInput(m.toolInput))
       .filter(Boolean);
 
     const extraCount = group.messages.length - visiblePreviews.length;
@@ -81,7 +72,7 @@ export default function ToolGroupContainer({
     }
 
     return extraCount > 0 ? `${previewText}, +${extraCount} more` : previewText;
-  }, [group.messages]);
+  }, [group.messages, group.groupKind]);
 
   return (
     <div className="chat-message tool px-3 sm:px-0">
@@ -107,9 +98,11 @@ export default function ToolGroupContainer({
           {icon}
         </span>
         <span className="min-w-0 flex-shrink-0 text-xs font-medium text-foreground">{label}</span>
-        <span className="flex-shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-          x{group.messages.length}
-        </span>
+        {!group.groupTitle && (
+          <span className="flex-shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+            x{group.messages.length}
+          </span>
+        )}
         {preview && (
           <>
             <span className="text-[10px] text-muted-foreground/40">/</span>
