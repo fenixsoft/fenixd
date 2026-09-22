@@ -15,9 +15,11 @@
 
 解析入口返回的 `spec_dir`（改写目标）MUST 用于**读取**与**写入**两个方向时语义一致：
 当它要被消费方用于**写入**（重定位 / `typo` 修正 / 软化 / 删除）时，MUST 为**实际
-命中（生效）的那一层**——worktree 命中则为 worktree 内 spec 目录；仅命中主树回退
-时，`spec_dir` 主树路径 MUST NOT 被用作修正写入落点（修正须改走打回 / 凭据通道，
-见 `relocation-writeback-layer`），以免写读错层。
+命中（生效）的那一层**——worktree 命中则为 worktree 内 spec 目录；主树命中则为主树
+spec 目录（此时守卫读取基准即主树，就地写入同源，**允许且不得禁止**）；
+`source == "branch"` 时 `spec_dir` 为 `None`（无落盘位置），消费方 MUST NOT 回落主树
+`spec/changes/<spec>/` 作为修正写入落点（修正须改走打回 / 凭据通道，见
+`relocation-writeback-layer`），以免写读错层。
 
 #### Scenario: 分支版本优先
 
@@ -50,8 +52,11 @@
 
 解析入口返回的结果 MUST 附带 `source`（`worktree` / `branch` / `main`）与 `spec_dir`，
 供消费方判定「修正写入落点是否与读取基准同源」。消费方在写入前 MUST 校验
-`source`：仅当 `source == "worktree"` 且 `spec_dir` 指向 worktree 内时才可就地写入；
-其余（`branch` / `main`）MUST NOT 以主树为落点就地写入。
+`source`，落点取**命中层**：`source == "worktree"` → 写入 `spec_dir`（worktree 内）
+并提交到该 worktree 分支；`source == "main"` → 写入主树 `spec_dir` 并提交到主树
+（此时主树即读取基准）；`source == "branch"`（`spec_dir` 为 `None`）→ **不可就地
+写入**，MUST 走打回 / 凭据通道。判据 MUST NOT 把 `main` 与 `branch` 同等归为
+「一律不可写」——`main` 来源的就地写入是同源写入，禁止它会误伤既有可用路径。
 
 #### Scenario: 来源标注可判定写回层
 

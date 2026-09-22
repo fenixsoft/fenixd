@@ -15,6 +15,12 @@
 核销后 MUST 以生效声明复检真实路径是否落地（防「凭据在册但交付物从未落地」的空洞
 核销）：替代路径在实现分支 HEAD 不存在时 MUST NOT 核销。
 
+核销的判定 MUST 能**取得凭据中的替代路径**（`new_path` / `actual_path`）以完成上述
+落地校验——仅有「该路径是否有凭据」的布尔判定不足以判定核销。
+
+核销作用域 MUST 限于 `violation == "missing"`：`undeleted`（`kind: delete` 反判）与
+`removed`（收缩防护）MUST NOT 因本核销而不计入违规清单。
+
 #### Scenario: 残留凭据核销缺件
 
 - **GIVEN** 缺件 `pages/settings/X.tsx` 在审计流已有 `typo` 凭据（替代路径

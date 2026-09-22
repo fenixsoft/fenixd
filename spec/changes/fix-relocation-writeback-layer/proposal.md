@@ -20,18 +20,21 @@ dispute judge 裁决 `typo`（声明路径笔误）后，机械修正**只写主
 ## What Changes
 
 - **修正写回层对齐**：judge 的 `typo` / `reference` 修正，其改写目标与提交根 MUST 取
-  **生效声明所在工作树**（实现 worktree 优先）——与守卫读取基准同源；MUST NOT 在
-  无 worktree 时改主树并假装「修正已生效」。
-- **无 worktree 时不产生「读不回来」的修正**：无实现 worktree 时，修正 MUST 交由实现方
-  在分支上续做（走既有缺件打回 / relocate 凭据通道），MUST NOT 把修正写进主树而让
-  守卫继续按分支/主树顺序读回旧路径。
+  **生效声明命中层**——worktree 命中写 worktree（分支提交）、主树命中写主树（此时守卫
+  读取基准即主树，同源）、`source == "branch"`（无落盘位置）不可就地写入；与守卫读取
+  基准同源；MUST NOT 在守卫读分支时改主树并假装「修正已生效」。
+- **分支为唯一命中层时不产生「读不回来」的修正**：`source == "branch"`（worktree 已
+  清理、声明只存在于分支对象库）时，修正 MUST 交由实现方在分支上续做（走既有缺件打回
+  / relocate 凭据通道），该条裁决落 dispute 审计流（供跨轮核销），MUST NOT 把修正写进
+  主树而让守卫继续按分支顺序读回旧路径。
 - **修正后复检熔断**：机械修正后 MUST 以**守卫读取基准**复检该路径（旧路径不再作为
   生效声明硬校验项）；读回仍是旧路径 → 记入 error 明细，MUST NOT 静默销账。
 - **跨轮脱困（残留核销）**：读取到的缺件若在 dispute 审计流已存在该路径的 typo /
   重定位凭据，则**以凭据核销为收敛动作**（旧路径不再要求存在），MUST NOT 仅因
   「本轮无新凭据」无限重派。
-- 新增迁移期 TTL 熔断：`typo` 修正后同路径连续 N 轮复发（读取基准未对齐）→ blocked
-  待人工（上限后不再烧预算）。
+- 新增迁移期复发熔断：`typo` 修正后同路径连续 N 轮复发（读取基准未对齐）→ blocked
+  待人工（上限后不再烧预算）。计数 MUST 用独立持久字段——现有 `_retry_count` 在恢复
+  续做/阻塞复位时被清零，事故态 31 小时在飞期间该值恒为 `0`，既有封顶形同不存在。
 
 ## Capabilities
 
@@ -42,20 +45,29 @@ dispute judge 裁决 `typo`（声明路径笔误）后，机械修正**只写主
 
 ### Modified Capabilities
 
-- `declaration-relocation-protocol`: 机械执行的改写目标由「生效声明所在位置（可回退主树）」
-  收紧为「生效声明所在工作树（worktree）」，并补「无工作树时改走凭据/打回、不写主树」。
+- `declaration-relocation-protocol`: 机械执行的改写目标由「生效声明所在位置（`spec_dir`
+  `or` 主树回退）」收紧为「生效声明**命中层**」（worktree → 该 worktree；main → 主树，
+  同源，可写），并补「`source == "branch"`（无落盘位置）时改走凭据/打回、不写主树」。
 - `deliverable-declaration-resolution`: 补「写回层对齐」要求——解析入口返回的
-  `spec_dir` 用于**写入**时，MUST 与实际生效（读取命中）的那一层同源；主树回退仅用于
-  读取兜底，MUST NOT 作为修正写入落点。
+  `spec_dir` 用于**写入**时，MUST 与实际生效（读取命中）的那一层同源；`source ==
+  "branch"`（`spec_dir` 为 `None`）时 MUST NOT 回落主树目录作为写入落点（main 命中层
+  可就地写入，不得禁止）。
 - `implementer-deliverable-gate`: 缺件判定补「凭据核销」收敛路径——缺件路径若已有
   typo / 重定位凭据在册，则视为可收敛（核销），与既有 `removed` 收缩防护豁免同源。
 
 ## Impact
 
-- **代码**：`core/pm_engine/dispatch/adjudication.py`（judge typo/reference 执行与
-  复检熔断）、`core/deliverables.py`（写回层解析辅助 / 凭据查询）、
-  `core/pm_engine/engine.py`（`_git_commit` 支持提交根）。
-- **行为**：judge 裁决后的声明修正不再写主树；守卫生效声明与修正落点同源。
-- **风险**：改动触及裁决流水线——须 fail-safe（无法写入工作树时不得误改主树、不得静默
-  放行），并有回归测试覆盖「无 worktree / 有 worktree / 复检不一致 / 凭据残留」四态。
+- **代码**：`core/pm_engine/dispatch/adjudication.py`（judge typo/reference 执行、
+  `_preclassify_missing` / `_preclassify_orphan` 写入点与复检熔断）、
+  `core/deliverables.py`（写回层解析辅助 / 凭据查询含替代路径）、
+  `core/pm_engine/verification/branch_guard.py`（缺件凭据核销）、
+  `core/pm_engine/engine.py`（`_git_commit` 支持提交根）、
+  `tests/test_relocation_writeback_layer.py`（新增回归）。
+- **行为**：judge 裁决后的声明修正不再在「守卫读取层为分支」时写主树；写入落点与守卫
+  读取基准同源（worktree / main 命中层可就地写，branch 命中层走打回+凭据）。
+- **风险**：改动触及裁决流水线——须 fail-safe（不可写入命中层时不得误改主树、不得静默
+  放行），并有回归测试覆盖「有 worktree / 主树命中就地写 / 分支命中不写主树 / 复检
+  不一致 / 凭据残留 / worktree 写入冲突降级」六态；另须清点 `tasks.md` 声明段**全部**
+  写入点（含 `_preclassify_missing` / `_preclassify_orphan` / 晋升软化），并核对既有
+  「主树就地软化 + 立即提交」断言（2026-09-15 merge-back 死锁修复）不回归。
 - **数据**：`.fenix/dispute_audits.jsonl`（凭据查询，运行时文件，`reference`）。
