@@ -13,7 +13,11 @@
 running 字段：分面轮询期间运行中态始终可见。
 """
 
+import logging
+
 from core.regression import read_result, is_regression_running  # noqa: F401
+
+logger = logging.getLogger("fenixd.dashboard.data.regression")
 
 
 def read_regression_result(project_root) -> dict:
@@ -26,9 +30,14 @@ def read_regression_result(project_root) -> dict:
     result = read_result(project_root)
     if not isinstance(result, dict):
         result = {"status": "parse_error", "reason": "快照非对象"}
-    # never_run/parse_error 同样透出运行中态（触发后、快照未写盘窗口内）
+    # never_run/parse_error 同样透出运行中态（触发后、快照未写盘窗口内）。
+    # fail-closed 回退保留（running=False），但降级可观测（item 0d1ba0c6efc0）：
+    # 文件系统/探测异常被静默报告为未运行会让「在跑却显示空闲」无从诊断。
     try:
         result["running"] = bool(is_regression_running(project_root))
-    except Exception:
+    except Exception as exc:
+        logger.warning(
+            "is_regression_running 探测失败，降级 running=False: %r", exc
+        )
         result["running"] = False
     return result

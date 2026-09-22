@@ -246,28 +246,35 @@ class TestCheckApprovePushRequests:
         assert not req.exists()
         assert any("pm_engine 未初始化" in str(a) for a in logger.warnings)
 
-    def test_unlink_failure_skips_and_retries_next_cycle(self, tmp_path, monkeypatch):
-        """先读后删失败（被并发消费）→ 本轮跳过，下一轮再试。"""
+    def test_atomic_consume_failure_keeps_signal_next_cycle_retries(self, tmp_path, monkeypatch):
+        """原子消费（os.replace 占位）失败 → 信号保留本轮跳过，下一轮再消费。
+
+        code-review item 0e1eafada5d6：消费统一走 _consume_request_file 原子
+        模式（rename 占位后读私有副本），旧的「先读后 unlink 失败下轮再试」
+        窗口被 replace 失败重试取代——失败时信号文件原样保留、未调 approve_push。
+        """
+        import os as _os
+
         proot = _make_done_project(tmp_path)[0]
         mock_engine = type("MockEngine", (), {"approve_push": lambda self, spec: True})()
         logger = FakeLogger()
         daemon = _FakeDaemon(proot, mock_engine, logger)
         req = self._write_signal(proot)
-        # 模拟 unlink 失败
-        original_unlink = Path.unlink
+        # 模拟原子占位失败
+        original_replace = _os.replace
         call_count = [0]
-        def failing_unlink(self_path, *args, **kwargs):
-            if "approve_push_request" in str(self_path):
+        def failing_replace(src, dst, *args, **kwargs):
+            if "approve_push_request" in str(src):
                 call_count[0] += 1
                 if call_count[0] == 1:
-                    raise OSError("simulated concurrent delete")
-                return original_unlink(self_path, *args, **kwargs)
-            return original_unlink(self_path, *args, **kwargs)
-        monkeypatch.setattr(Path, "unlink", failing_unlink)
-        # 第一轮：unlink 失败，跳过
+                    raise OSError("simulated replace failure")
+            return original_replace(src, dst, *args, **kwargs)
+        monkeypatch.setattr(_os, "replace", failing_replace)
+        # 第一轮：占位失败，信号保留、未消费
         self._pickup(monkeypatch, proot, daemon)
         assert req.exists()
-        # 第二轮：unlink 成功，消费
+        assert not any("审批推送成功" in str(a) for a in logger.infos)
+        # 第二轮：占位成功，正常消费
         self._pickup(monkeypatch, proot, daemon)
         assert not req.exists()
 

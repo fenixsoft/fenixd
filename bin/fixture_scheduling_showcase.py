@@ -280,7 +280,10 @@ def _reset_fixture_body() -> int:
     # 夹具 daemon 的 worktree 管理需要 git；丢历史后此处首次 init（含基线提交，
     # 给 worktree add 一个 HEAD 可依）。已存在则不动历史，避免每轮 reset 产生
     # 提交churn——STATE.md 的复位靠上面的无条件写回，不再依赖 git。
-    if not (ROOT / ".git").exists():
+    # 判定用 HEAD 实际存在（code-review item 0a5e888166c2）而非 .git 目录存在：
+    # 上次运行可能已 init 而 _commit_baseline 失败（故意不留 HEAD），只看 .git
+    # 会跳过基线提交、打印「fixture reset」返回 0——静默留下无 HEAD 夹具。
+    if _git("rev-parse", "--verify", "--quiet", "HEAD").returncode != 0:
         init = _git("init", "-q")
         if init.returncode != 0:
             print(
@@ -289,7 +292,12 @@ def _reset_fixture_body() -> int:
             )
             return 1
         if not _commit_baseline():
-            return 1
+            # 并发 reset 竞态：败者的 commit 因 nothing to commit 非零——
+            # 此时 HEAD 已由胜者建好，本方视为成功而非 FAIL。
+            if _git("rev-parse", "--verify", "--quiet", "HEAD").returncode == 0:
+                print("fixture baseline already committed by concurrent reset")
+            else:
+                return 1
         print("fixture created (fresh baseline commit)")
     else:
         print("fixture reset (baseline files rewritten)")

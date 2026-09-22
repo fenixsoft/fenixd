@@ -143,8 +143,15 @@ class H12RegressionRoutesMixin:
 
         try:
             state = _hosting_state(str(proot))
-        except Exception:
-            state = "stopped"  # 判定异常按未运行兜底，宁拒勿假放行
+        except Exception as exc:
+            # 判定异常按未运行兜底，宁拒勿假放行；降级可观测（item 0d1ba0c6efc0）
+            state = "stopped"
+            _log = getattr(self, "logger", None)
+            if _log is not None:
+                _log.warning(
+                    "regression_routes",
+                    f"hosting_state 判定异常，按 stopped 兜底（宁拒勿假放行）: {exc!r}",
+                )
         if state == "unmanaged":
             self._error(
                 409,
@@ -160,7 +167,9 @@ class H12RegressionRoutesMixin:
         # ThreadingHTTPServer 并发线程下非原子 exists 检查会互相覆盖信号，
         # 独占创建成功即胜出；FileExistsError → 409（已有未消费请求）。
         created = datetime.now(timezone.utc).isoformat()
-        payload = {"source": "dashboard", "created": created}
+        # 键名与消费者契约一致（fenixd._check_regression_requests 读
+        # requested_at；item 117af27b759a：写 created 使 daemon 恒记空时间戳）
+        payload = {"source": "dashboard", "requested_at": created}
         req_path = proot / REGRESSION_REQUEST
         req_path.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -176,13 +185,21 @@ class H12RegressionRoutesMixin:
                 json.dump(payload, f, ensure_ascii=False, indent=2)
                 f.flush()
                 os.fsync(f.fileno())
-        except Exception:
-            # 写中途失败：清掉半写文件，避免残留被 daemon 误消费
+        except Exception as exc:
+            # 写中途失败：清掉半写文件，避免残留被 daemon 误消费（半写文件
+            # 存活会让后续每个 POST 都 409 直到 daemon 消费）。清理失败必须
+            # 留痕并携带底层异常——静默吞掉会让 500 无从诊断。
             try:
                 os.unlink(str(req_path))
-            except OSError:
-                pass
-            self._error(500, "回归触发信号写入失败")
+            except OSError as un_err:
+                _log = getattr(self, "logger", None)
+                if _log is not None:
+                    _log.warning(
+                        "regression_routes",
+                        f"回归触发信号半写文件清理失败 {req_path}: {un_err!r}"
+                        f"（原写入异常: {exc!r}）；残留文件将使后续触发持续 409",
+                    )
+            self._error(500, f"回归触发信号写入失败: {exc}")
             return
         self._json({"ok": True, "requested_at": created})
 

@@ -188,12 +188,20 @@ function SpecNameCell({ project, record }: { project: string; record: SpecSummar
 
 // ── 验证列悬浮提示（悬浮显示验证结论，形式同名称 Why 提示） ──
 
-const verdictCache = new Map<string, Promise<SpecDetail['verdict'] | null>>();
+const verdictCache = new Map<
+  string,
+  { promise: Promise<SpecDetail['verdict'] | null>; at: number }
+>();
+
+// 短 TTL（30s）：页面长生命周期下，重验证 run（或任何碰该 spec 的 SSE patch）
+// 后永久缓存会让 hover 一直显示陈旧裁决/结论（code-review item 2c54c970f681）。
+const VERDICT_CACHE_TTL_MS = 30_000;
 
 function fetchVerdict(project: string, spec: string): Promise<SpecDetail['verdict'] | null> {
   const key = `${project}│${spec}`;
   const cached = verdictCache.get(key);
-  if (cached) return cached;
+  if (cached && Date.now() - cached.at < VERDICT_CACHE_TTL_MS) return cached.promise;
+  verdictCache.delete(key);
   const p = getSpecDetail(project, spec)
     .then((d) => d.verdict ?? null)
     .catch(() => {
@@ -203,7 +211,7 @@ function fetchVerdict(project: string, spec: string): Promise<SpecDetail['verdic
       verdictCache.delete(key);
       return null;
     });
-  verdictCache.set(key, p);
+  verdictCache.set(key, { promise: p, at: Date.now() });
   return p;
 }
 

@@ -794,7 +794,7 @@ def run_code_review(
             manual_full 为 None=全仓）。
         scope: full / window（写进 manifest 供审计）。
     """
-    run_id = _unique_code_review_run_id(runner)
+    run_id = runner._unique_code_review_run_id()
     mpath = runner.project_root / ".fenix" / "code-review" / f"manifest-{run_id}.json"
     opath = runner.project_root / ".fenix" / "code-review" / f"out-{run_id}.jsonl"
     try:
@@ -868,8 +868,10 @@ def run_code_review(
         error = str(e)
         usage_info = runner._extract_usage_info(None)
 
-    # token 归账到独立类目（不写 STATE，与自省同一约束）
-    _accumulate_code_review_tokens(runner, run_id, usage_info)
+    # token 归账到独立类目（不写 STATE，与自省同一约束）。经门面调用
+    # （对齐 run_administrator/run_self_review 的 runner.<method> 形态）：
+    # 直接调模块函数会绕过 __getattr__，实例属性打桩被静默忽略。
+    runner._accumulate_code_review_tokens(run_id, usage_info)
 
     # ── 产物硬门（2026-09-19 原地修复：此前该车道**全链无任何产物门**）────
     # 事故取证：run exit 0（subtype=success）但 agent 从未写过 out-<run_id>.jsonl
@@ -894,7 +896,7 @@ def run_code_review(
     inserted = updated = resolved = 0
     if run_ok:
         try:
-            findings = _read_code_review_out(opath)
+            findings = runner._read_code_review_out(opath)
         except OSError as e:
             run_ok = False
             error = f"读取审查产物失败: {e}"
@@ -1004,11 +1006,15 @@ def _unique_code_review_run_id(runner) -> str:
         candidate = f"{base}-{n}"
 
 
-def _read_code_review_out(opath: Path) -> list:
+def _read_code_review_out(runner, opath: Path) -> list:
     """读取审查增量产物 ``out-<run_id>.jsonl``。
 
     每行为一个文件的审查结果 JSON（file/findings[]）。非 dict 行忽略；
     损坏行跳过；文件缺失返回空列表（run 失败路径已由 success=False 兜底）。
+
+    ``runner`` 首参为门面注册表契约（self 首参模块函数）预留：本函数体
+    不读 runner 状态，但经 ``runner._read_code_review_out(...)`` 转发时
+    partial 会注入 runner 首参（code-review item 0c9577c146d9）。
     """
     out: list = []
     if not opath.is_file():

@@ -106,6 +106,7 @@ from core.agent_runner.maintenance_runs import (
     ADMIN_DISPOSITION_PREFIX,
     DEFAULT_GATEWAY_MODEL,
     DEFAULT_OCR_BIN,
+    _accumulate_code_review_tokens,
     _accumulate_evolution_tokens,
     _accumulate_self_review_tokens,
     _clear_admin_disposition,
@@ -115,7 +116,9 @@ from core.agent_runner.maintenance_runs import (
     _delete_self_review_out,
     _get_admin_model,
     _read_admin_disposition,
+    _read_code_review_out,
     _read_self_review_out,
+    _unique_code_review_run_id,
     admin_disposition_path,
     run_administrator,
     run_code_review,
@@ -469,6 +472,12 @@ class AgentRunner:
         "run_self_review": run_self_review,
         "run_evolution": run_evolution,
         "run_code_review": run_code_review,
+        # code-review 车道三 helper 同走门面（code-review item 0c9577c146d9）：
+        # run_code_review 内部经 runner.<helper> 调用（实例属性打桩有效）——
+        # 直接调模块函数会绕过 __getattr__，打桩被静默忽略。
+        "_unique_code_review_run_id": _unique_code_review_run_id,
+        "_read_code_review_out": _read_code_review_out,
+        "_accumulate_code_review_tokens": _accumulate_code_review_tokens,
         # add-code-review-auto-fix（task 6.4）：code-fix 运维车道同处注册。
         # code-fix 不在 _execute_agent 路径（不占 spec 维度预算、不计入每日
         # agent run 计数），仅经本转发表被编排器调用。

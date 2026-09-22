@@ -255,12 +255,15 @@ def load_verify_contract(project_root: Path, logger=None) -> Optional[VerifyCont
     serve = None
     serve_data = data.get("serve")
     if isinstance(serve_data, dict) and serve_data.get("kind") in ("static", "command"):
-        port = serve_data.get("port")
+        # port 是可选 legacy 端口提示：非正整数（如 port: auto）按无提示
+        # 回退 None，不得从 load_verify_contract 抛 ValueError——违背
+        # 「解析失败按无契约回退」约定（复用 _positive_int_or_default 范式）。
+        port = _positive_int_or_default(serve_data.get("port"), 0) or None
         serve = ServeSpec(
             kind=serve_data["kind"],
             root=str(serve_data.get("root") or ""),
             cmd=str(serve_data.get("cmd") or ""),
-            port=int(port) if port else None,
+            port=port,
         )
     ready_data = data.get("ready") or {}
     ready = ReadyProbe(
@@ -1277,12 +1280,13 @@ def entry_preflight_error(cmd: str, cwd: Path) -> Optional[str]:
     错误（含缺失路径全文 + 同目录 *.js/index.js 存在候选提示），存在或
     无法解析返回 None。此为 spawn 前 fail-fast 的判定函数（design D1）。
 
-    Examples
-    --------
-    >>> entry_preflight_error("node dist/server.js", Path("/prj"))
-    若 dist/server.js 不存在：'入口存在性预检失败: /prj/dist/server.js 不存在（...）'
-    >>> entry_preflight_error("npm run build && node x.js", Path("/prj"))
-    None  # 复合命令跳过
+    示例（结果依赖文件系统状态，非可执行 doctest）::
+
+        entry_preflight_error("node dist/server.js", Path("/prj"))
+        # dist/server.js 不存在时 →
+        # '入口存在性预检失败: /prj/dist/server.js 不存在（候选: ... 存在）'
+        entry_preflight_error("npm run build && node x.js", Path("/prj"))
+        # 复合命令跳过 → None
     """
     entry = resolve_entry_path(cmd, cwd)
     if entry is None:

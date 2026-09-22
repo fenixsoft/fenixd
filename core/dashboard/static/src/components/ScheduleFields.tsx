@@ -122,9 +122,17 @@ export default function ScheduleFields({
             value={when}
             disabledDate={(d) => d && d < dayjs().startOf('day')}
             onChange={(v) => {
-              const next = v || when;
-              setWhen(next);
-              commit('scheduled', next);
+              if (!v) {
+                // 清除（allowClear）回退「立即执行」档（code-review item
+                // 0cec6ea1c2f8）：旧实现 v || when 恢复旧值后仍 commit
+                // scheduled——清除变无操作且无反馈。回退后下拉档位随可见状态
+                // 一同切换，即为本操作的可见反馈。
+                setMode('immediate');
+                commit('immediate', when);
+                return;
+              }
+              setWhen(v);
+              commit('scheduled', v);
             }}
             style={{ flex: 'none' }}
             data-testid="accept-schedule-at"
