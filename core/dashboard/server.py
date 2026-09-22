@@ -290,7 +290,10 @@ def _is_tmux_hosted(ppid: int | None = None) -> bool:
     if ppid is None:
         ppid = os.getppid()
     try:
-        comm = Path(f"/proc/{ppid}/comm").read_text().strip()
+        # 字节读 + replace 解码：comm 可经 PR_SET_NAME 写入任意字节，严格解码的
+        # UnicodeDecodeError（ValueError）会逃逸 OSError 处理器、违反「读取失败
+        # → False」的 fail-safe 契约（code-review 发现）
+        comm = Path(f"/proc/{ppid}/comm").read_bytes().decode("utf-8", "replace").strip()
     except OSError:
         return False
     if comm == "tmux: server":

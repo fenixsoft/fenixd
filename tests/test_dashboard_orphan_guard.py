@@ -260,6 +260,18 @@ def test_is_tmux_hosted_detects_tmux_parent(monkeypatch, tmp_path):
     assert _is_tmux_hosted(4242) is False
 
 
+def test_is_tmux_hosted_tolerates_undecodable_comm(monkeypatch, tmp_path):
+    """comm 含非法 UTF-8 字节（PR_SET_NAME 可写任意字节）→ replace 解码按非匹配处理。
+
+    UnicodeDecodeError 是 ValueError 不是 OSError，若判据用严格 read_text 解码会
+    逃逸处理器、违反「读取失败 → False」契约（code-review 发现的回归锚）。
+    """
+    comm = tmp_path / "comm"
+    comm.write_bytes(b"tmux: \xff\xfe server\n")
+    _patch_proc_files(monkeypatch, {"/proc/4242/comm": comm})
+    assert _is_tmux_hosted(4242) is False
+
+
 def test_watchdog_skipped_when_tmux_hosted(monkeypatch):
     """tmux 承载（显式长驻）：即使 CLAUDE_PID 指向存活进程也不装配 watchdog。"""
     monkeypatch.setenv("FENIX_DASHBOARD_DETACH", "1")
