@@ -296,11 +296,13 @@ class VAdjudicationMixin:
             return None
         return data
 
-    def _commit_softened_declaration(self, spec_name: str, element: str) -> None:
+    def _commit_softened_declaration(
+        self, spec_name: str, element: str, repo_root=None
+    ) -> bool:
         """软化/修正声明段后立即提交 tasks.md（fix-merge-back-deadlock 同类修复）。
 
-        ``soften_declared_kind`` / ``replace_declared_path`` 直接改写主树
-        ``spec/changes/<spec>/tasks.md`` 但不提交，使 merge-back 陷入死锁：
+        ``soften_declared_kind`` / ``replace_declared_path`` 直接改写生效声明所在
+        位置的 ``spec/changes/<spec>/tasks.md`` 但不提交，使 merge-back 陷入死锁：
         ``ensure_clean_tree`` 的 autostash 显式 ``:(exclude)spec/changes``
         （fix-comment：spec 文件是框架运行必需，不得被卷走），于是该文件永远
         以 dirty 状态进 merge，而实现分支同样改了该文件 → git 拒绝
@@ -313,26 +315,303 @@ class VAdjudicationMixin:
         干净 → 下一次 merge-back 的 autostash 不再命中该文件。提交失败仅
         WARNING（软化内容仍在工作区，不静默丢失；下一次派发前的
         ``ensure_spec_committed`` 会兜底提交）。
+
+        ``repo_root``（fix-relocation-writeback-layer Task 1.3）：提交根随**写回层**
+        ——生效声明命中 worktree 时 MUST 提交到该 worktree 的分支（`git -C
+        <worktree>`），命中主树时提交到 ``project_root``（缺省保持既有行为）。
+        返回 True 表示已成功提交（调用方据此判定「修正是否已落命中层」，失败时
+        走打回/凭据降级通道，MUST NOT 误判成功）。
         """
         rel = f"spec/changes/{spec_name}/tasks.md"
         try:
-            ok, err = self._pm._git_commit([rel], f"[fenix] {spec_name}: 声明段修正（{element}）")
+            ok, err = self._pm._git_commit(
+                [rel],
+                f"[fenix] {spec_name}: 声明段修正（{element}）",
+                repo_root=repo_root,
+            )
             if ok:
                 self._pm.logger.info(
                     "pm_engine",
-                    f"声明段软化已提交 '{spec_name}': {element}",
+                    f"声明段软化已提交 '{spec_name}': {element}"
+                    + (f"（提交根 {repo_root}）" if repo_root else "（主树）"),
                 )
-            else:
-                self._pm.logger.warning(
-                    "pm_engine",
-                    f"声明段软化提交失败 '{spec_name}'（{element}，非阻塞，"
-                    f"派发前 ensure_spec_committed 兜底）: {err}",
-                )
+                return True
+            self._pm.logger.warning(
+                "pm_engine",
+                f"声明段软化提交失败 '{spec_name}'（{element}，非阻塞，"
+                f"派发前 ensure_spec_committed 兜底）: {err}",
+            )
         except Exception as e:
             self._pm.logger.warning(
                 "pm_engine",
                 f"声明段软化提交异常 '{spec_name}'（{element}，非阻塞）: {e}",
             )
+        return False
+
+    def _writeback_target(self, spec_name: str, result=None) -> dict:
+        """裁决侧写回层判定入口（fix-relocation-writeback-layer D1，Task 1.1）。
+
+        与守卫读取同源（``_effective_declaration``）：同一 ``resolve_effective
+        _declaration`` 优先序下的 ``source`` 决定修正的写入落点与提交根。返回
+        ``{"writable", "spec_dir", "source", "commit_root", "declaration"}``。
+        """
+        from core.deliverables import resolve_writeback_target
+
+        branch = getattr(result, "branch", None) if result is not None else None
+        worktree_path = None
+        if branch:
+            try:
+                worktree_path = self._pm.agent_runner.worktree_manager.find_worktree_path(
+                    branch
+                )
+            except Exception:
+                worktree_path = None
+        return resolve_writeback_target(
+            spec_name,
+            branch=branch,
+            worktree_path=worktree_path,
+            project_root=self._pm.project_root,
+        )
+
+    def _apply_declaration_correction(
+        self, spec_name: str, element: str, apply_fn, *, wb: dict
+    ) -> tuple:
+        """在**写回层**执行声明改写并立即提交（fix-relocation-writeback-layer 1.3/1.4）。
+
+        ``apply_fn(spec_dir)`` 为文本改写（``replace_declared_path`` /
+        ``soften_declared_kind`` / ``remove_declared_entry``）。写回层不可写
+        （``source == "branch"`` 无落盘位置 / 两处均不可用）或改写/提交失败
+        （worktree 被实现 run 占用、git add/commit 冲突或异常）→ 返回
+        ``(False, 原因, None)``，调用方 MUST 走打回/凭据降级通道——MUST NOT 改落
+        主树「兜底」、MUST NOT 静默判修正成功。
+
+        Returns:
+            ``(ok, detail, diff)``：``ok`` 为「改写已落命中层且已提交」；
+            ``diff`` 为改写函数返回的条目级 diff（异常时 None）。
+        """
+        if not wb.get("writable") or not wb.get("spec_dir"):
+            return False, f"写回层不可写（source={wb.get('source')}）", None
+        # Task 1.4：改写前快照 tasks.md——提交失败时回滚半写残留。不回滚的话
+        # 写回层磁盘上是未提交的新路径，守卫（同源读取该层）下一轮读到的是
+        # 「从未提交」的声明：旧路径凭据核销（D4）与复发计数（D5）双双失锚，
+        # 死循环换个形态继续。
+        tasks_file = Path(wb["spec_dir"]) / "tasks.md"
+        try:
+            before_bytes = tasks_file.read_bytes()
+        except Exception:
+            before_bytes = None
+
+        def _rollback(reason: str) -> None:
+            if before_bytes is None:
+                return
+            try:
+                tasks_file.write_bytes(before_bytes)
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"声明改写已回滚 '{spec_name}'（{wb.get('source')} 层"
+                    f"改写/提交失败，还原半写残留防读取错层）: {reason}",
+                )
+            except Exception as rb_err:
+                self._pm.logger.error(
+                    "pm_engine",
+                    f"声明改写回滚失败 '{spec_name}'（写回层残留未提交改写，"
+                    f"需人工核对声明落层）: {rb_err}",
+                )
+
+        try:
+            diff = apply_fn(wb["spec_dir"])
+        except Exception as e:
+            _rollback(f"改写异常: {e}")
+            return False, f"声明改写失败（{wb.get('spec_dir')}）: {e}", None
+        if not self._commit_softened_declaration(
+            spec_name, element, repo_root=wb.get("commit_root")
+        ):
+            if wb.get("source") == "worktree":
+                # Task 1.4（worktree 层）：worktree 被实现 run 占用、git 冲突
+                # → 回滚半写残留 + 降级打回/凭据通道。不回滚的话写回层磁盘上
+                # 是未提交的新路径，凭据核销（D4）/复发计数（D5）双双失锚。
+                _rollback(f"提交失败（commit_root={wb.get('commit_root')}）")
+                return (
+                    False,
+                    "改写已落盘但提交失败（worktree 层占用/冲突，已回滚）",
+                    diff if isinstance(diff, dict) else None,
+                )
+            # main 层（Task 6.2a 既有语义，2026-09-15 merge-back 死锁修复）：
+            # 守卫读取基准就是主树工作区——软化内容即刻生效，提交失败仅
+            # WARNING（_commit_softened_declaration 已记），ensure_spec_committed
+            # 派发前兜底提交。MUST NOT 回滚（会让软化内容丢失、裁决错判）。
+            self._pm.logger.warning(
+                "pm_engine",
+                f"main 层声明修正提交失败（内容已生效，ensure_spec_committed "
+                f"兜底提交）'{spec_name}': {element}",
+            )
+            return (
+                True,
+                "main 层提交失败但内容已生效（ensure_spec_committed 兜底）",
+                diff if isinstance(diff, dict) else None,
+            )
+        return True, "", diff if isinstance(diff, dict) else None
+
+    def _readback_correction(
+        self, spec_name: str, result, corrected_path: str, kind: str = None
+    ) -> tuple:
+        """修正后读取一致性复检（Task 3.1/3.2）。
+
+        以守卫读取基准（生效声明解析入口）复读：``corrected_path`` 已被替代路径
+        取代（或不再以原 ``kind`` 出现）即通过。复检不一致 → 记 error 明细
+        （source/spec_dir）并 ``logger.warning``，MUST NOT 静默销账。
+
+        ``kind``（可选）：reference 软化后条目仍在声明中、仅 kind 变为
+        ``reference``——复检 MUST 限定「原 kind」（否则软化的条目仍以新 kind
+        在册会被误判未修正；typo 修正传原 kind 同样更精确）。
+
+        Returns:
+            ``(ok, detail)``：``detail`` 含 ``source`` / ``spec_dir``（供 error 明细）。
+        """
+        from core.deliverables import verify_correction_readback
+
+        branch = getattr(result, "branch", None) if result is not None else None
+        worktree_path = None
+        if branch:
+            try:
+                worktree_path = self._pm.agent_runner.worktree_manager.find_worktree_path(
+                    branch
+                )
+            except Exception:
+                worktree_path = None
+        try:
+            ok = verify_correction_readback(
+                spec_name,
+                corrected_path,
+                branch=branch,
+                worktree_path=worktree_path,
+                project_root=self._pm.project_root,
+                kind=kind,
+            )
+        except Exception as e:
+            ok = False
+            self._pm.logger.warning(
+                "pm_engine",
+                f"声明修正复检异常 '{spec_name}'（{corrected_path}）: {e}",
+            )
+        wb = self._writeback_target(spec_name, result)
+        detail = {"source": wb.get("source"), "spec_dir": wb.get("spec_dir")}
+        if not ok:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"声明修正复检不一致 '{spec_name}': {corrected_path} 仍以原 kind "
+                f"出现在生效声明（读取基准 source={detail['source']}, "
+                f"spec_dir={detail['spec_dir']}）——修正未生效于读取基准，"
+                f"MUST NOT 判为修正成功",
+            )
+        return ok, detail
+
+    def _audit_deferred_correction(
+        self, spec_name: str, elements: list, *, verdict: str, reason: str,
+        actual_paths: "dict | None" = None,
+    ) -> None:
+        """不可写层（分支命中）修正的裁决落册（Task 2.1/2.2 留册要求）。
+
+        ``source == "branch"``（无落盘位置）时修正交由实现方在分支续做，但该条
+        裁决（typo 的 element + actual_path / reference 的 element）MUST 落
+        dispute 审计流——供下一轮凭据核销（D4）与跨轮核销收敛动作，而不是仅因
+        「本轮无新凭据」无限重派。
+
+        ``actual_paths``（element → 替代路径，可选）：typo 裁决 MUST 携带——
+        ``relocation_credential_target``（Task 4.1）据 verdicts 中
+        ``element``/``verdict == "typo"``/``actual_path`` 三元组识别凭据，缺
+        ``actual_path`` 的落册无法被守卫核销（Task 4.2），留册即空转。
+        """
+        if not elements:
+            return
+        actual_paths = actual_paths or {}
+        try:
+            from core.admin_store import DisputeAuditStore
+
+            DisputeAuditStore(self._pm.project_root, self._pm.logger).append(
+                {
+                    "spec": spec_name,
+                    "trigger_run_id": "",
+                    "judge_run_id": "",
+                    "verdicts": [
+                        {
+                            "element": e,
+                            "verdict": verdict,
+                            "reasoning": reason,
+                            **(
+                                {"actual_path": actual_paths[e]}
+                                if actual_paths.get(e)
+                                else {}
+                            ),
+                        }
+                        for e in elements
+                    ],
+                    "diff": {"before": "", "after": ""},
+                }
+            )
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"不可写层修正裁决落册失败 '{spec_name}'（非阻塞）: {e}",
+            )
+
+    def _writeback_recur_bump(self, spec_name: str, path: str) -> bool:
+        """typo 修正后同路径复发计数递增（fix-relocation-writeback-layer D5，
+        Task 5.1/5.2）。
+
+        计数 MUST 用**独立字段**（``_writeback_recur_streak`` +
+        ``_writeback_recur_path``，落 STATE.md spec entry），MUST NOT 复用
+        ``_retry_count``——后者在恢复续做（``_recovery_resume`` 分支）与重建
+        分支时被显式清零，且 ``resolve_env_blocked_reset_path`` 会把本类 loop
+        的 blocked 复位为 ready 续走重实现（事故态实证：31 小时在飞期间
+        ``_retry_count`` 恒为 0，既有封顶从未生效）。独立字段不随 blocked→ready
+        / 恢复续做清零——**仅在 typo 修正复检通过**（``_writeback_recur_reset``）
+        **或 SPEC 退出本形态**（守卫放行）时清零。同路径延续 streak、换路径重置。
+
+        Returns:
+            True 表示已达 ``agents.max_retries`` 上限（调用方置 blocked，
+            不再自动重派）。
+        """
+        entry = self._pm.state_machine.read_one(spec_name) or {}
+        streak = int(entry.get("_writeback_recur_streak") or 0)
+        if entry.get("_writeback_recur_path") != path:
+            streak = 0
+        streak += 1
+        try:
+            max_r = int(self._pm._get_config("agents.max_retries", 3) or 3)
+        except Exception:
+            max_r = 3
+        max_r = max(max_r, 1)
+        self._pm.state_machine.update_spec(
+            spec_name,
+            {"_writeback_recur_streak": streak, "_writeback_recur_path": path},
+        )
+        self._pm.logger.warning(
+            "pm_engine",
+            f"声明修正复发计数 '{spec_name}': {path} 第 {streak}/{max_r} 轮"
+            f"（独立字段 _writeback_recur_streak，不随 blocked→ready/恢复续做清零）",
+        )
+        return streak >= max_r
+
+    def _writeback_recur_reset(self, spec_name: str) -> None:
+        """复发计数清零（Task 5.1）：typo 修正复检通过 / SPEC 退出本形态时调用。
+
+        先读后条件写（无残留字段时零写盘，避免每轮 typo 修正多余一次 STATE 写）。
+        """
+        try:
+            entry = self._pm.state_machine.read_one(spec_name) or {}
+        except Exception:
+            return
+        # STATE.md 行式存储把 int/None 读回成 str（0→'0'、None→'null'），
+        # 条件须按存储现实判（既有 _retry_count 读侧 int() 强转同惯例）。
+        if int(entry.get("_writeback_recur_streak") or 0) or (
+            entry.get("_writeback_recur_path") not in (None, "", "null")
+        ):
+            self._pm.state_machine.update_spec(
+                spec_name,
+                {"_writeback_recur_streak": 0, "_writeback_recur_path": None},
+            )
+
 
     def _preclassify_missing(self, spec_name: str, result, missing: list) -> dict:
         """守卫缺件确定性预分类（add-declaration-premechanize D4，Task 4.1-4.3）。
@@ -361,10 +640,16 @@ class VAdjudicationMixin:
         if not entries:
             return {"action": "fallback"}
 
-        # 软化执行目标 = 生效声明所在位置（worktree 内 → 分支 → 主树回退）
-        spec_dir = resolved.get("spec_dir")
-        if not spec_dir:
-            spec_dir = self._pm.project_root / "spec" / "changes" / spec_name
+        # 软化执行目标 = **写回层**（fix-relocation-writeback-layer Task 2.2）：
+        # 写入 MUST 与守卫读取基准同源——source == "worktree" 写该 worktree
+        # （提交到该分支）；source == "main" 就地写主树（此时守卫读取基准即主树，
+        # 同源）；source == "branch"（无落盘位置，spec_dir is None）MUST NOT 回落
+        # 主树目录作为软化落点（读分支、写主树的错层正是本次事故根因）。
+        wb = self._writeback_target(spec_name, result)
+        # 读取用目录（快照 before/after 文本）：不可写时仅为审计读取，不落盘改写
+        spec_dir = wb.get("spec_dir") or str(
+            self._pm.project_root / "spec" / "changes" / spec_name
+        )
 
         # 快照软化前 tasks.md 声明段（供审计 diff.before）
         before_text = ""
@@ -405,31 +690,72 @@ class VAdjudicationMixin:
             # 无可软化缺件 → 回退 judge 流程（remaining == missing）
             return {"action": "fallback"}
 
-        # 逐条软化（单条异常留在 remaining 并 warning）
+        if not wb.get("writable"):
+            # 生效声明命中层为分支（无落盘位置）→ MUST NOT 软化主树（写读错层）。
+            # 该条 reference 裁决落 dispute 审计流（供 D4 跨轮核销），条目留在
+            # remaining 交后继缺件处置（打回重派 / 终审），修正由实现方在分支续做。
+            self._audit_deferred_correction(
+                spec_name,
+                list(deterministic),
+                verdict="reference",
+                reason=(
+                    "guard-preclassify-deferred: 生效声明命中层为分支（无落盘位置），"
+                    "MUST NOT 软化主树，转打回/凭据通道"
+                ),
+            )
+            self._pm.logger.warning(
+                "pm_engine",
+                f"预分类软化跳过 '{spec_name}'（写回层不可写，source="
+                f"{wb.get('source')}）— MUST NOT 软化主树，转打回/凭据通道: "
+                f"{deterministic}",
+            )
+            remaining.extend(deterministic)
+            return {"action": "continue", "remaining": remaining}
+
+        # 逐条软化（单条异常/未落命中层留在 remaining 并 warning）
         # diff_by_element 收集各条改写 diff 并喂入下方审计留痕的 "diff"
         # （code-review item 7d3b13d266dc：旧实现声明后从未被读，审计实际取自
         # 文件级 before_text/after_text，此处补上逐条 diff，使留痕可溯源到条目）。
         diff_by_element: dict = {}
+        soft_failed: list = []
         for m in deterministic[:]:  # copy以便异常时移除
             entry = entry_by_path[m]
-            try:
-                from core.deliverables import soften_declared_kind
+            from core.deliverables import soften_declared_kind
 
-                diff = soften_declared_kind(spec_dir, m)
-                diff_by_element[m] = diff
-                self._commit_softened_declaration(spec_name, m)
-            except Exception as exc:
-                # 单条软化异常：留在 remaining 清单（异常不阻塞其余）
+            ok, detail, diff = self._apply_declaration_correction(
+                spec_name,
+                m,
+                lambda d, _m=m: soften_declared_kind(d, _m),
+                wb=wb,
+            )
+            if not ok:
+                # 软化未落命中层（改写/提交失败）：留在 remaining 转打回，
+                # MUST NOT 改落主树兜底（Task 1.4）
                 remaining.append(m)
                 deterministic.remove(m)
+                soft_failed.append(m)
                 self._pm.logger.warning(
                     "pm_engine",
-                    f"预分类软化异常 '{spec_name}'（{m} 回退 judge）: {exc}",
+                    f"预分类软化未落地 '{spec_name}'（{m} 转打回/凭据通道）: {detail}",
                 )
+                continue
+            diff_by_element[m] = diff
+
+        if soft_failed:
+            # 未落地的软化裁决一并落册（供下一轮凭据/人工核销）
+            self._audit_deferred_correction(
+                spec_name,
+                soft_failed,
+                verdict="reference",
+                reason=(
+                    "guard-preclassify-deferred: 软化未落生效声明命中层"
+                    "（改写/提交失败），转打回/凭据通道"
+                ),
+            )
 
         if not deterministic:
-            # 全部软化异常 → 回退 judge
-            return {"action": "fallback"}
+            # 全部软化未落地 → 回退既有缺件处置（remaining 已含全部条目）
+            return {"action": "continue", "remaining": remaining}
 
         # 审计留痕（reasoning 前缀 guard-preclassify）
         try:
@@ -552,12 +878,18 @@ class VAdjudicationMixin:
         # 直读（读分支、写主树的错层正是 refactor-giant-classes 事故根因）。
         resolved = self._effective_declaration(spec_name, result)
         entries = resolved.get("entries") or []
-        spec_dir = resolved.get("spec_dir")
         if not entries:
             # 声明段无条目 → 无声明可删，回退 blocked 待人工
             return {"action": "fallback"}
-        if not spec_dir:
-            spec_dir = self._pm.project_root / "spec" / "changes" / spec_name
+        # fix-relocation-writeback-layer Task 2.4：删除条目落点 = 写回层（与守卫
+        # 读取基准同源，1.1 判据）。source == "branch"（声明只在分支对象库、
+        # 无落盘位置）MUST NOT 回落主树目录删除并提交（读分支、写主树错层）
+        # ——回退既有 blocked 待人工/续走通道，不留主树提交。
+        wb = self._writeback_target(spec_name, result)
+        # 读取用目录（孤儿判定基准）：不可写时仅为只读判定，不落盘改写
+        spec_dir = wb.get("spec_dir") or str(
+            self._pm.project_root / "spec" / "changes" / spec_name
+        )
 
         # 缺件入参兼容 list[dict]（path/kind/violation）与 list[str]
         missing_paths = [m["path"] if isinstance(m, dict) else str(m) for m in missing]
@@ -596,6 +928,17 @@ class VAdjudicationMixin:
             # 无孤儿可删 → 全量维持 blocked 待人工（非孤儿/判定异常）
             return {"action": "fallback"}
 
+        # Task 2.4：写回层不可写（branch 命中无落盘位置/两处均不可用）→ 不删
+        # 主树、不留主树提交，孤儿条目维持 disputed 回退既有 blocked 待人工。
+        if not wb.get("writable"):
+            self._pm.logger.warning(
+                "pm_engine",
+                f"孤儿删除跳过 '{spec_name}'（写回层不可写，source="
+                f"{wb.get('source')}）— MUST NOT 删主树声明并提交，回退 "
+                f"blocked 待人工: {orphans}",
+            )
+            return {"action": "fallback"}
+
         # 快照删除前 tasks.md 声明段（供审计 diff.before）
         before_text = ""
         tasks_path = Path(spec_dir) / "tasks.md"
@@ -613,9 +956,25 @@ class VAdjudicationMixin:
                 # .history 备份（对齐 admin 处置备份惯例）：备份文件不可写/
                 # 目录异常不阻塞删除本身（备份是附加留痕，fail-open）。
                 self._backup_to_history(spec_name, m, before_text)
-                diff = remove_declared_entry(spec_dir, m)
+                # Task 1.4/2.4：删除经统一落点执行器（写回层 + 立即提交）；
+                # 改写/提交失败（worktree 占用、git 冲突）→ 该条保留人工，
+                # MUST NOT 改落主树兜底、MUST NOT 静默判删除成功。
+                ok_del, detail_del, diff = self._apply_declaration_correction(
+                    spec_name,
+                    m,
+                    lambda d, _m=m: remove_declared_entry(d, _m),
+                    wb=wb,
+                )
+                if not ok_del:
+                    non_orphans.append(m)
+                    orphans.remove(m)
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"孤儿声明删除未落地 '{spec_name}'（{m} 保留人工）: "
+                        f"{detail_del}",
+                    )
+                    continue
                 diff_by_element[m] = diff
-                self._commit_softened_declaration(spec_name, m)
                 deleted.append(m)
             except Exception as exc:
                 # 单条删除异常：保留 disputed 走人工（异常不阻塞其余，也不整段
@@ -1085,8 +1444,14 @@ class VAdjudicationMixin:
         entry_still_present = any(
             isinstance(e, dict) and e.get("path") == old_path for e in entries
         )
+        # fix-relocation-writeback-layer Task 2.3（与 1.1 判据对齐去重）：文本
+        # 改写落点 MUST 是生效声明**命中层**（source ∈ {worktree, main} 且有
+        # 落盘位置）。source == "branch"（spec_dir is None）走下方凭据登记分支
+        # （3.6，MUST NOT 写主树）——判据与 resolve_writeback_target 同源，
+        # 防「spec_dir or 主树」型回退再次漂移进来。
+        wb_writable = resolved.get("source") in ("worktree", "main") and bool(spec_dir)
         try:
-            if entry_still_present and spec_dir:
+            if entry_still_present and wb_writable:
                 # 3.2/3.3：文本改写（生效声明所在位置）——kind 保持、同名去重
                 diff = relocate_declared_path(spec_dir, old_path, new_path)
                 from core.admin_store import DisputeAuditStore
@@ -1377,6 +1742,9 @@ class VAdjudicationMixin:
         #    与守卫读侧同源——MUST NOT 硬编码主树 spec 目录直读）。typo 命中陈日
         #    信号时按重定位协议执行（3.2/3.3 改写或 3.6 凭据登记，4.3）。
         executed_verdicts: list = []
+        # 写回层不可写而 deferred 的 typo 条目（旧路径）——供守卫重跑后的
+        # 复发计数（D5）识别「typo 裁决过但读取基准仍判 missing」的条目集。
+        deferred_typo_elements: list = []
         diff_by_element: dict = {}
         # 生效声明上下文（改写目标 spec_dir + 条目级 kind/陈日判定基准）
         effective_resolved = self._effective_declaration(spec_name, result)
@@ -1439,6 +1807,16 @@ class VAdjudicationMixin:
                             "before": audit_before,
                             "after": after_text,
                         }
+                        # Task 3.2：陈日重定位（文本改写路径）同样复检读取
+                        # 一致性——改写落层与守卫读取基准错层时不判成功（D3
+                        # 不变量同款：修正被执行 ⇔ 下一次守卫读取能看到修正）。
+                        rb_ok, _rb_detail = self._readback_correction(
+                            spec_name, result, m, kind=kind_m
+                        )
+                        if not rb_ok:
+                            verdict_by_element[m] = {"verdict": "unclear"}
+                            continue
+                        self._writeback_recur_reset(spec_name)
                         executed_verdicts.append({"element": m, **v})
                         self._pm.logger.warning(
                             "pm_engine",
@@ -1448,16 +1826,65 @@ class VAdjudicationMixin:
                     else:
                         from core.deliverables import replace_declared_path
 
-                        diff = replace_declared_path(eff_spec_dir, m, actual_path)
+                        # fix-relocation-writeback-layer Task 2.1（事故点接线）：
+                        # 改写落点 = 写回层（与守卫读取基准同源，D1）。eff_spec_dir
+                        # 由 ``spec_dir or 主树`` 回退而来——source == "branch"
+                        # （声明只在分支对象库、无落盘位置）时写主树即「写主树、
+                        # 守卫读分支」的事故本身，MUST NOT 以此为落点假装修正已
+                        # 生效：转打回/凭据通道，并把该条 typo 裁决（element +
+                        # actual_path）落 dispute 审计流（供 Task 4.1/4.2 下一轮
+                        # 凭据核销）。worktree/main 命中就地改写 + 提交到该层
+                        # （Task 1.3/1.4：提交失败走打回，不改落主树兜底）。
+                        wb = self._writeback_target(spec_name, result)
+                        ok_w, detail_w, diff = self._apply_declaration_correction(
+                            spec_name,
+                            m,
+                            lambda d, _m=m, _a=actual_path: replace_declared_path(
+                                d, _m, _a
+                            ),
+                            wb=wb,
+                        )
+                        if not ok_w:
+                            # Task 2.1：不可写/提交失败 → **打回/凭据通道**，不判
+                            # unclear——unclear 会落「blocked 待人工」，凭据核销
+                            # （D4）与复发熔断（D5）在下一轮根本没有运行机会，
+                            # 事故态死循环换个形态继续。deferred 标记让分类循环
+                            # 把该条按缺件打回（verdict 仍 typo，actual_path 供
+                            # 核销识别）。
+                            verdict_by_element[m] = {
+                                "verdict": "typo", "deferred": True,
+                            }
+                            self._audit_deferred_correction(
+                                spec_name,
+                                [m],
+                                verdict="typo",
+                                reason=(
+                                    f"judge-typo-deferred: 写回层不可写"
+                                    f"（source={wb.get('source')}），MUST NOT 改写"
+                                    f"主树，转打回/凭据通道: {detail_w}"
+                                ),
+                                actual_paths={m: actual_path},
+                            )
+                            deferred_typo_elements.append(m)
+                            continue
                         diff_by_element[m] = diff
+                        # Task 3.2：修正后以守卫读取基准复检；读回仍是旧路径
+                        # → 不判修正成功（不落 executed_verdicts、转 unclear，
+                        # 守卫重跑按仍缺件走打回），复发计数交守卫重跑后判定。
+                        rb_ok, _rb_detail = self._readback_correction(
+                            spec_name, result, m, kind=kind_m
+                        )
+                        if not rb_ok:
+                            verdict_by_element[m] = {"verdict": "unclear"}
+                            continue
+                        # Task 5.1：typo 修正复检通过 → 复发计数清零
+                        self._writeback_recur_reset(spec_name)
                         executed_verdicts.append({"element": m, **v})
                         self._pm.logger.warning(
                             "pm_engine",
                             f"dispute judge 裁决 typo '{spec_name}': "
-                            f"{m} → {actual_path}（声明段已修正）",
-                        )
-                        self._commit_softened_declaration(
-                            spec_name, f"{m} → {actual_path}（typo 修正）"
+                            f"{m} → {actual_path}（声明段已修正于写回层 "
+                            f"source={wb.get('source')}，复检通过）",
                         )
                 elif verdict == "reference" and kind_m == "delete":
                     # 4.3 防洗白：delete 条目的 reference 归宿被机械拒绝——
@@ -1485,15 +1912,50 @@ class VAdjudicationMixin:
                 elif verdict == "reference":
                     from core.deliverables import soften_declared_kind
 
-                    diff = soften_declared_kind(eff_spec_dir, m)
+                    # fix-relocation-writeback-layer Task 2.2：软化落点 = 写回层
+                    #（与守卫读取基准同源）。不可写（source == "branch"）MUST NOT
+                    # 软化主树——该条 reference 裁决落 dispute 审计流转打回；改写
+                    # /提交失败（worktree 占用等）同样降级，不静默判成功（Task 1.4）。
+                    wb = self._writeback_target(spec_name, result)
+                    ok_w, detail_w, diff = self._apply_declaration_correction(
+                        spec_name,
+                        m,
+                        lambda d, _m=m: soften_declared_kind(d, _m),
+                        wb=wb,
+                    )
+                    if not ok_w:
+                        # Task 2.2：同 2.1——deferred 标记走打回（不判 unclear
+                        # 短路成 blocked 待人工），该条裁决已落审计流。
+                        verdict_by_element[m] = {
+                            "verdict": "reference", "deferred": True,
+                        }
+                        self._audit_deferred_correction(
+                            spec_name,
+                            [m],
+                            verdict="reference",
+                            reason=(
+                                f"judge-reference-deferred: 写回层不可写或提交失败"
+                                f"（source={wb.get('source')}），MUST NOT 软化主树，"
+                                f"转打回/凭据通道: {detail_w}"
+                            ),
+                        )
+                        continue
                     diff_by_element[m] = diff
+                    # Task 3.2：复检须限定原 kind——软化后条目仍在声明中、仅
+                    # kind 变 reference，不限 kind 会误判「仍读到旧路径」。
+                    rb_ok, _rb_detail = self._readback_correction(
+                        spec_name, result, m, kind=kind_m
+                    )
+                    if not rb_ok:
+                        verdict_by_element[m] = {"verdict": "unclear"}
+                        continue
                     executed_verdicts.append({"element": m, **v})
                     self._pm.logger.warning(
                         "pm_engine",
                         f"dispute judge 裁决 reference '{spec_name}': "
-                        f"{m} 已软化为 reference（转软校验）",
+                        f"{m} 已软化为 reference（写回层 source={wb.get('source')}"
+                        f"，复检通过）",
                     )
-                    self._commit_softened_declaration(spec_name, m)
             except Exception as e:
                 # 声明段修正失败（并发改写/格式漂移）→ 该条等价 unclear（D6）
                 verdict_by_element[m] = {"verdict": "unclear"}
@@ -1555,6 +2017,8 @@ class VAdjudicationMixin:
                 "pm_engine",
                 f"dispute judge 裁决执行后守卫重跑通过 '{spec_name}' — 放行 merge",
             )
+            # Task 5.1：SPEC 退出本形态（守卫放行）→ 复发计数清零
+            self._writeback_recur_reset(spec_name)
             # 终审期间置 blocked 属临时态：恢复 in-flight（implementing），
             # worker 合并路径的 implementing → implemented 转换才合法
             self._pm.state_machine.update_spec(
@@ -1568,6 +2032,44 @@ class VAdjudicationMixin:
 
         # 规范化 remaining（list[dict]）为路径列表 + 保留条目供下游
         remaining_paths = [r["path"] if isinstance(r, dict) else str(r) for r in remaining]
+
+        # fix-relocation-writeback-layer D5（Task 5.1/5.2）：typo 修正后同路径
+        # 复发熔断。守卫重跑（读取基准）仍判**旧路径** missing ⇔「修正未生效于
+        # 读取基准」复发——修正生效时旧路径已不在生效声明，守卫只会报替代路径
+        # 缺件（真缺交付物，打回实现方），不属复发。计数用独立字段
+        # _writeback_recur_streak（MUST NOT 复用 _retry_count：恢复续做/重建
+        # 分支显式清零之、env-blocked 复位旁路之，事故态 31h 在飞恒为 0），仅
+        # 复检通过或本形态放行时清零（Task 5.3）。达 agents.max_retries 上限
+        # → blocked（「修正未生效」形态文案），不再自动重派（迁移期兜住未覆盖
+        # 形态，防 31h/$44.98 型空转）。
+        typo_touched = {
+            ed["element"]
+            for ed in executed_verdicts
+            if ed.get("verdict") == "typo"
+        } | set(deferred_typo_elements)
+        for recur_path in sorted(set(remaining_paths) & typo_touched):
+            if not self._writeback_recur_bump(spec_name, recur_path):
+                continue
+            try:
+                max_r = int(self._pm._get_config("agents.max_retries", 3) or 3)
+            except Exception:
+                max_r = 3
+            recur_entry = self._pm.state_machine.read_one(spec_name) or {}
+            err = (
+                f"声明修正连续复发熔断（形态=修正未生效于读取基准，非普通缺件）: "
+                f"{recur_path} 经 typo 修正/凭据落册后连续 {max_r} 轮守卫仍判 "
+                f"missing（streak={recur_entry.get('_writeback_recur_streak')}）"
+                f"——需人工核对声明落层与凭据核销条件"
+            )
+            self._pm.state_machine.update_spec(
+                spec_name,
+                {"status": "blocked", "error": err, "tester_run": None},
+            )
+            self._pm.logger.error(
+                "pm_engine",
+                f"声明修正复发熔断置 blocked '{spec_name}': {err}",
+            )
+            return {"action": "handled"}
 
         # 仍有缺件：分类 remaining 的归宿。remaining 可能含 typo 修正后的
         # actual_path（非原 element）——凡能追溯到「已执行 typo 修正」或

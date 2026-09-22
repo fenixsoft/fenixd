@@ -994,6 +994,36 @@ class StateMachine:
         resume_status = None  # 仅续做判定通过时设为解析出的目标状态
         resume_branch = None
         resume_impl_run = None
+        # fix-relocation-writeback-layer D6（Task 7.1）：保留判定 MUST NOT 以
+        # 「调用方是否显式传上下文」为前置条件。实测（2026-09-22，add-code-
+        # review-auto-fix）：裸 ``unfreeze_spec(name, status=…)``（人工操作/
+        # 定时解冻/scheduled）会整段跳过续做解析，``_frozen_hold`` 随解冻被清 →
+        # 下一轮 ``find_branches_by_spec`` 不再枚举保留分支 → dispatch 落
+        # 「新轮次派发清除旧锚点」从 main 新建分支（6 提交/48 勾选的实现被弃）。
+        # 未显式传入时自解析：STATE.md 位于 ``<project_root>/.fenix/STATE.md``，
+        # worktree_manager 以 Dashboard 解冻（admin_actions）同参形态自构造。
+        # 判据分支不可达（自解析失败）才降级，且 MUST 落 WARNING——绝无静默。
+        if frozen_hold and (project_root is None or worktree_manager is None):
+            _auto_root = None
+            try:
+                _auto_root = self.state_path.parent.parent
+                if project_root is None:
+                    project_root = _auto_root
+                if worktree_manager is None:
+                    from core.worktree_manager import WorktreeManager
+
+                    worktree_manager = WorktreeManager(
+                        base_dir=_auto_root / ".fenix",
+                        project_root=_auto_root,
+                        logger=None,
+                    )
+            except Exception as _e:
+                self.logger.warning(
+                    "state_machine",
+                    f"Unfreeze resume degrade: spec '{spec_name}' 带 _frozen_hold "
+                    f"但续做上下文自解析失败（project_root={_auto_root}: {_e}）"
+                    f"——保留判定不可达，清标记走普通重派（从零）",
+                )
         if frozen_hold and project_root is not None and worktree_manager is not None:
             _resolved_branch, _wt = self._resolve_preserved_branch(
                 spec_name, entry, project_root, worktree_manager,
@@ -1010,6 +1040,23 @@ class StateMachine:
                     f"在保留分支 '{resume_branch}' 上续做（_recovery_resume），"
                     f"worktree={_wt}",
                 )
+            elif _resolved_branch is not None:
+                # Task 7.2：分支命名空间枚举命中但载体三态暂不可用（worktree
+                # 被实现 run 占用等）——MUST NOT 因载体缺失整体丢弃分支锚点：
+                # 仍记录续做分支 + _recovery_resume，dispatch 拾取后按既有
+                # resolve_resume_site 三态自行重建/重试载体（载体是续做的执行
+                # 细节，锚点丢失才是不可逆损失——worktree 清理后锚点不再被
+                # 枚举，实现成果被弃从零重做）。
+                resume_status = status or SpecStatus.READY
+                resume_branch = _resolved_branch
+                resume_impl_run = entry.get("implementer_run")
+                self.logger.warning(
+                    "state_machine",
+                    f"Unfreeze resume: spec '{spec_name}' 保留分支 "
+                    f"'{_resolved_branch}' 命中但载体暂不可用——仍记录续做分支"
+                    f"锚点（branch + _recovery_resume），由 dispatch 续做路径"
+                    f"按 resolve_resume_site 三态重建载体",
+                )
             else:
                 self.logger.warning(
                     "state_machine",
@@ -1017,6 +1064,15 @@ class StateMachine:
                     f"但保留判定未通过（分支缺失/零提交/载体不可用）——清标记走 "
                     f"普通重派（从零）",
                 )
+        elif frozen_hold:
+            # Task 7.1：自解析后判据分支仍不可达（project_root/worktree_manager
+            # 均不可得）——显式告警降级，杜绝静默丢弃保留分支锚点。
+            self.logger.warning(
+                "state_machine",
+                f"Unfreeze resume degrade: spec '{spec_name}' 带 _frozen_hold "
+                f"但续做上下文不可得（project_root/worktree_manager 均不可用）"
+                f"——保留判定不可达，清标记走普通重派（从零）",
+            )
         updates: dict = {FROZEN_FIELD: False}
         if status is not None and resume_status is None and not (frozen_hold and resume_branch):
             updates["status"] = status
@@ -1612,8 +1668,9 @@ class StateMachine:
         第三层命中时走既有 rev-list 非空闸门与 resolve_resume_site 载体处置。
 
         Returns: ``(resolved_branch, wt)`` 判定通过（分支可解析、相对 main
-        有未合并提交、载体可用）；``(None, None)`` 判定不通过。wt 为
-        resolve_resume_site 三态后的可用载体。
+        有未合并提交、载体可用）；``(branch, None)`` 分支可解析且有未合并
+        提交但载体三态暂不可用（Task 7.2：锚点不丢，交调用方重建载体）；
+        ``(None, None)`` 判定不通过（锚点不可得/分支缺失/零提交）。
         """
         if project_root is None or worktree_manager is None:
             return None, None
@@ -1677,12 +1734,18 @@ class StateMachine:
         # 三态载体处置：在场原地 / 缺失重建 / 不可用降级
         wt, resolved_branch = worktree_manager.resolve_resume_site(name, branch)
         if wt is None:
+            # fix-relocation-writeback-layer Task 7.2：载体三态暂不可用
+            # （worktree 被实现 run 占用/重建失败）MUST NOT 连带丢弃已解析的
+            # 分支锚点——返回 ``(branch, None)`` 让 unfreeze 续做接线仍记录
+            # 续做分支 + _recovery_resume，由 dispatch 按三态重建载体。
+            # 兼容性：_recovery_preserve_spec 以 ``wt is None`` 判定不通过，
+            # 行为不变；unfreeze_spec 据第二元是否为 None 分流。
             self.logger.warning(
                 "state_machine",
                 f"{context} unavailable for '{name}': branch '{branch}' "
-                f"无可用载体（三态判定失败）——降级清空重建",
+                f"无可用载体（三态判定失败）——保留分支锚点交 dispatch 重建",
             )
-            return None, None
+            return branch, None
         return resolved_branch, wt
 
     def _recovery_preserve_spec(

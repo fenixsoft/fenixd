@@ -568,6 +568,20 @@ class _AdjudicationFixture(unittest.TestCase):
         self.tmpdir = Path(tempfile.mkdtemp())
         self.project_root = self.tmpdir
         (self.project_root / ".fenix").mkdir(exist_ok=True)
+        # fix-relocation-writeback-layer：主树补真实 git 仓库（声明修正的
+        # 「写后立即提交」语义在新写回层契约下是修正生效判定的一环——提交
+        # 失败即降级打回，不再「内容在工作区即算成功」；无 .git 的 tmp 夹具
+        # 会让 main 命中层的合法就地修正被误降级，与真实主树形态不符）。
+        import subprocess as _sp
+
+        for cmd in (
+            ["git", "init", "-q"],
+            ["git", "config", "user.email", "test@fenix.local"],
+            ["git", "config", "user.name", "fenix-test"],
+            ["git", "add", "-A"],
+            ["git", "commit", "-qm", "init"],
+        ):
+            _sp.run(cmd, cwd=self.project_root, capture_output=True)
         self.logger = _FakeLogger()
         self.sm = StateMachine(self.project_root / ".fenix" / "STATE.md",
                                self.logger)

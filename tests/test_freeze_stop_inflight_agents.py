@@ -409,10 +409,31 @@ def test_unfreeze_resume_preserves_branch(tmp_path):
     assert entry.get("frozen") is False
 
 
-def test_unfreeze_no_resume_degrade(tmp_path):
-    """7.4：分支零提交/载体不可用 → 清 _frozen_hold、不置 _recovery_resume。"""
+def test_unfreeze_carrier_unavailable_keeps_anchor(tmp_path):
+    """7.2（fix-relocation-writeback-layer）：载体三态不可用 MUST NOT 整体丢弃
+    分支锚点——旧契约「载体不可用 → 不置 _recovery_resume」正是事故形态
+    （worktree 清理 + 裸解冻 → 保留分支不再被枚举 → 6 提交实现被弃从零重做）。
+    新契约：仍记录续做分支 + _recovery_resume，由 dispatch 按
+    resolve_resume_site 三态重建载体。"""
     proot, sm = _mk_resume_fixture(str(tmp_path))
     wm = _mk_wt_mgr(proot, available=False)  # 载体不可用
+    ok = sm.unfreeze_spec("s1", status="implementing",
+                          project_root=proot, worktree_manager=wm)
+    assert ok
+    entry = sm.read_one("s1")
+    assert entry.get(FROZEN_HOLD_FIELD) is False
+    assert entry.get("branch") == "fenix/s1-123"
+    assert entry.get("_recovery_resume") is True
+    assert entry.get("status") == "implementing"
+
+
+def test_unfreeze_no_resume_degrade(tmp_path):
+    """7.4：分支不可解析/零提交（保留判定本身不通过，非载体问题）→ 清
+    _frozen_hold、不置 _recovery_resume，降级落 WARNING 绝无静默。"""
+    proot, sm = _mk_resume_fixture(str(tmp_path))
+    # STATE.branch 指向不存在的分支 → rev-list 失败 → 保留判定不通过
+    sm.update_spec("s1", {"branch": "fenix/s1-zero"})
+    wm = _mk_wt_mgr(proot, available=False)
     ok = sm.unfreeze_spec("s1", status="implementing",
                           project_root=proot, worktree_manager=wm)
     assert ok
