@@ -305,7 +305,7 @@ admin:
 
 ### admin.code_review_fix（自动修复代码问题）
 
-设置页「质量」页签「周期性代码审查」卡片**下方**的「自动修复代码问题」开关（`add-code-review-auto-fix`）：开启后把代码审查台账 `.fenix/code-review/items.jsonl` 的 `open` 条目按批（`batch_size` 条/批，缺省 20）派 `code-fix` agent 在独立 worktree 内修复并提交，框架在该 worktree 上跑**全量回归**（`verify.yaml` regression 段），通过才 merge-back 主树并把该批 `fixed` 条目置 `resolved`；随后自驱动推进下一批直至无 `open` 条目。两路激活：审查 run 收尾（本轮产生新 `open` 条目时立即触发）+ 30 分钟 full scan 周期兜底（覆盖 daemon 重启后续做）。幂等守卫：开关关闭 / 已有 `code-fix` 在跑 / 无 `open` 条目时不投递。
+设置页「质量」页签「代码质量」卡片内「周期性代码审查」**下方**的「自动修复代码问题」开关（`add-code-review-auto-fix`）：开启后把代码审查台账 `.fenix/code-review/items.jsonl` 的 `open` 条目按批（`batch_size` 条/批，缺省 20）派 `code-fix` agent 在独立 worktree 内修复并提交，框架在该 worktree 上跑**全量回归**（`verify.yaml` regression 段），通过才 merge-back 主树并把该批 `fixed` 条目置 `resolved`；随后自驱动推进下一批直至无 `open` 条目。两路激活：审查 run 收尾（本轮产生新 `open` 条目时立即触发）+ 30 分钟 full scan 周期兜底（覆盖 daemon 重启后续做）。幂等守卫：开关关闭 / 已有 `code-fix` 在跑 / 无 `open` 条目时不投递。
 
 | 键 | 默认值 | 范围 | 生效方式 |
 |----|--------|------|---------|
