@@ -117,7 +117,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   try {
     return JSON.parse(text) as T;
   } catch {
-    throw new Error(`响应不是合法 JSON（HTTP ${res.status}）`);
+    // 契约：本文件对外恒抛 ApiError（code-review item 29fcb06957b6）——
+    // 裸 Error 会让按 e.kind/e.status 分支的调用方静默落空。200 但体非法
+    // JSON 属服务端异常形态，归 'server'。
+    throw new ApiError(`响应不是合法 JSON（HTTP ${res.status}）`, res.status, 'server');
   }
 }
 

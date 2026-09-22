@@ -23,6 +23,10 @@ interface QualityPanelProps {
 
 export default function QualityPanel({ config, onSave, project, onConfigSynced }: QualityPanelProps) {
   const [form] = Form.useForm();
+  // 环境门只拦「开启」不拦「关闭」（code-review item 1bcde4921884）：ocr 未
+  // 就绪时若把开关一律禁用，已配 verify.impl_code_review:true 的项目从此无法
+  // 在 UI 关掉该 gate（禁用开关不可切换，handleSave 还会原样重提 true）。
+  const implCodeReviewOn = Form.useWatch('impl_code_review', form) === true;
   // ocr 环境探测状态：null=加载中；未安装时开关置灰并给出「一键安装」
   const [ocr, setOcr] = useState<OcrStatus | null>(null);
   const [installing, setInstalling] = useState(false);
@@ -191,15 +195,61 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
         },
       });
     } catch (err) {
-      // 区分「校验失败」与「保存失败」（code-review item d91325bb73dd）：旧实现
-      // 单一裸 catch 把 onSave 的网络/500 失败一并静默吞掉，用户得不到任何提示。
+      // 当前接线下此 catch 实际不可达（code-review item 330164f11711）：父级
+      // handleSave（settings/index.tsx）已把 saveConfig 包 try/catch、自显
+      // 「保存失败」提示并以 resolve(false) 结束——子层观察不到保存失败，
+      // 上方「校验失败」与「保存失败」的区分并不成立。保留兜底捕获：未来
+      // 父组件改为透传失败时，保存失败不致被静默吞掉。
       message.error(`保存失败：${err instanceof Error ? err.message : String(err)}`);
     }
   };
 
-  // 环境门控：ocr 未安装（或探测失败）时开关不可用——避免开启一个运行期必然
-  // 降级跳过的开关。探测未返回（加载中）时同样置灰，避免先开后关的闪变。
+  // 环境门控：ocr 未安装（或探测失败）时阻止「开启」——避免开启一个运行期必然
+  // 降级跳过的开关。探测未返回（加载中）时对关闭态同样置灰，避免先开后关的
+  // 闪变；已开启的 gate 不禁用，保证关闭路径始终可用（见上方 useWatch 注释）。
   const ocrReady = ocr?.installed === true;
+
+  // ocr 环境状态行（code-review item 2f3f9bd1b013）：旧实现嵌套三元违反前端
+  // 规则，抽 helper 以 if/else 表达「加载中 / 已装 / 未装」三分支。
+  const renderOcrStatus = () => {
+    if (ocr === null) {
+      return <Text type="secondary">正在检测 open-code-review 环境…</Text>;
+    }
+    if (ocr.installed) {
+      return (
+        <Alert
+          type="success"
+          showIcon
+          message="已安装 open-code-review"
+          description={ocr.version || ocr.bin || '检测到 ocr 可执行文件'}
+          // 下边距与卡片 body 上内边距（24px）对齐：Alert 自身无默认外边距，
+          // 否则它会紧贴下方开关行，视觉上「上松下紧」。
+          style={{ marginBottom: 24 }}
+          data-testid="ocr-installed-alert"
+        />
+      );
+    }
+    return (
+      <Alert
+        type="warning"
+        showIcon
+        message="未检测到 open-code-review"
+        description="代码质量审查依赖 ocr（@alibaba-group/open-code-review）。未安装时该开关不可开启，运行期也会按 unavailable 降级跳过。"
+        action={
+          <Button
+            type="primary"
+            size="small"
+            loading={installing}
+            onClick={handleInstall}
+            data-testid="ocr-install-btn"
+          >
+            一键安装
+          </Button>
+        }
+        data-testid="ocr-missing-alert"
+      />
+    );
+  };
 
   return (
     <div>
@@ -212,44 +262,16 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
           持久化，api-regression-config-persisted 验证实测确证）。 */}
       <Form form={form} layout="vertical" style={{ marginTop: 16 }}>
         <Card style={{ marginTop: 12 }}>
-          {/* 环境状态行：已装 → 绿色提示；未装 → 橙色提示 + 一键安装按钮 */}
-          {ocr === null ? (
-            <Text type="secondary">正在检测 open-code-review 环境…</Text>
-          ) : ocr.installed ? (
-            <Alert
-              type="success"
-              showIcon
-              message="已安装 open-code-review"
-              description={ocr.version || ocr.bin || '检测到 ocr 可执行文件'}
-              // 下边距与卡片 body 上内边距（24px）对齐：Alert 自身无默认外边距，
-              // 否则它会紧贴下方开关行，视觉上「上松下紧」。
-              style={{ marginBottom: 24 }}
-              data-testid="ocr-installed-alert"
-            />
-          ) : (
-            <Alert
-              type="warning"
-              showIcon
-              message="未检测到 open-code-review"
-              description="代码质量审查依赖 ocr（@alibaba-group/open-code-review）。未安装时该开关不可用，运行期也会按 unavailable 降级跳过。"
-              action={
-                <Button
-                  type="primary"
-                  size="small"
-                  loading={installing}
-                  onClick={handleInstall}
-                  data-testid="ocr-install-btn"
-                >
-                  一键安装
-                </Button>
-              }
-              data-testid="ocr-missing-alert"
-            />
-          )}
+          {/* 环境状态行：已装 → 绿色提示；未装 → 橙色提示 + 一键安装按钮
+              （渲染逻辑抽 renderOcrStatus，见其注释） */}
+          {renderOcrStatus()}
           {/* 开关行与其它设置页一致：开关在前、名称紧随同行（.switch-inline-row） */}
           <div className="switch-inline-row">
             <Form.Item name="impl_code_review" valuePropName="checked" noStyle>
-              <Switch data-testid="impl-code-review-switch" disabled={!ocrReady} />
+              <Switch
+                data-testid="impl-code-review-switch"
+                disabled={!ocrReady && !implCodeReviewOn}
+              />
             </Form.Item>
             <span className="switch-inline-label">
               收尾代码质量审查

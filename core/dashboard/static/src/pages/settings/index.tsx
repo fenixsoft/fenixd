@@ -119,6 +119,10 @@ export default function SettingsPage() {
         if (cancelled) return;
         const msg = e instanceof Error ? e.message : String(e);
         console.error('Failed to load config:', e);
+        // 失败即清空旧 config（code-review item 35bce3eaab39）：保留旧作用域的
+        // config 会在错误横幅下继续渲染上一份配置面板，用户可编辑/保存过时值
+        //（把上个项目/作用域的配置写进新作用域）。清空后失败路径只渲染错误态。
+        setConfig(null);
         setLoadError(msg);
       } finally {
         if (!cancelled) setLoading(false);

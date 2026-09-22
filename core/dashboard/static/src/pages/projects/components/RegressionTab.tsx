@@ -37,7 +37,8 @@ interface RegressionTabProps {
 }
 
 function fmtDuration(sec?: number | null) {
-  if (sec == null || Number.isNaN(sec)) return '—';
+  // 显式判空（code-review item 30024ba4279f）：项目 lint 禁止宽松相等
+  if (sec === null || sec === undefined || Number.isNaN(sec)) return '—';
   const s = Math.max(0, Math.round(sec));
   if (s < 60) return `${s}秒`;
   const m = Math.floor(s / 60);
@@ -83,14 +84,14 @@ function RunningProgressView({
   } else if (progress?.estimated) {
     sub.push('按上次总耗时估算');
   }
-  if (!waiting && progress?.elapsed_seconds != null) {
+  if (!waiting && progress?.elapsed_seconds !== null && progress?.elapsed_seconds !== undefined) {
     sub.push(`已耗时 ${fmtDuration(progress.elapsed_seconds)}`);
   }
   return (
     <div>
       <Progress
         percent={progress?.percent ?? 100}
-        showInfo={progress?.percent != null}
+        showInfo={progress?.percent !== null && progress?.percent !== undefined}
         status="active"
         size="small"
         // width:100% 压过 .ant-progress 的 inline 排版（否则与说明文字同行），
@@ -378,7 +379,9 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
       dataIndex: 'time',
       key: 'time',
       width: 100,
-      render: (t: number) => (t != null ? `${t}s` : '—'),
+      // 显式判空（code-review item 30024ba4279f）：项目 lint 禁止宽松相等
+      render: (t: number) =>
+        t !== null && t !== undefined ? `${t}s` : '—',
     },
     {
       title: '分类',

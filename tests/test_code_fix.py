@@ -1479,14 +1479,24 @@ class TestCodeReviewFixConfigAdmin(unittest.TestCase):
         self.assertIn("code_review_fix", _SYNC_PAGE_KEYS["quality"].get("admin", []))
 
     def test_default_echo(self):
+        from unittest import mock
+
         from core.dashboard.data import read_config, read_effective_config
 
         proot = _make_project_root()
-        rc = read_config(proot)
-        self.assertEqual(rc["code_review_fix"], {"enabled": False, "batch_size": 20})
-        self.assertEqual(rc["sources"]["admin.code_review_fix"], "user")
-        eff = read_effective_config(proot)
-        self.assertEqual(eff["code_review_fix"], {"enabled": False, "batch_size": 20})
+        # 用户级 config.yaml 随部署环境漂移（本机真实部署已显式配置
+        # code_review_fix.enabled=true）——patch 双常量锁定缺省回显：
+        # 门面 USER_CONFIG_PATH（dashboard 读侧）+ core.config.USER_CONFIG_DIR
+        # （resolve_config 合并读侧），与 test_fenix_tui_reports 同款。
+        with mock.patch("core.dashboard.data.USER_CONFIG_PATH",
+                        proot / "user-config-absent.yaml"), \
+             mock.patch("core.config.USER_CONFIG_DIR",
+                        proot / ".user-fenix-absent"):
+            rc = read_config(proot)
+            self.assertEqual(rc["code_review_fix"], {"enabled": False, "batch_size": 20})
+            self.assertEqual(rc["sources"]["admin.code_review_fix"], "user")
+            eff = read_effective_config(proot)
+            self.assertEqual(eff["code_review_fix"], {"enabled": False, "batch_size": 20})
 
     def test_write_read_roundtrip(self):
         from core.dashboard.data import read_config, write_config
