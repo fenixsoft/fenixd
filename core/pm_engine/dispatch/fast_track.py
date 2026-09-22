@@ -973,8 +973,15 @@ class FFastTrackMixin:
         try:
             ft_result = self._pm._read_implementer_result(spec_name)
             impl_status = ft_result.get("status") if ft_result else None
-        except Exception:
-            pass
+        except Exception as e:
+            # 读失败不阻断失败处置，但 MUST 留痕（code-review item
+            # b7bd800cd5a0）：静默吞掉会把瞬态 IO/parse 错误误成「无
+            # run-result」→ 下方 _exempt_dead_run_budget 预算豁免无痕迹。
+            self._pm.logger.warning(
+                "pm_engine",
+                f"fast-track 读取 run-result 失败 '{spec_name}'"
+                f"（按无结果处置，触发预算豁免）: {type(e).__name__}: {e}",
+            )
         if impl_status is None:
             self._pm._exempt_dead_run_budget(
                 spec_name,

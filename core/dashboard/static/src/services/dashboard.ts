@@ -48,8 +48,18 @@ export interface OverviewData {
 
 /** 请求超时（毫秒）。code-review item 9985f4b5f79a：旧实现 fetch 无 signal/
     timeout，后端挂起（daemon 重启/supervisor 排水/网络黑洞）时 Promise 永不
-    settle，UI 转圈无出路。长耗时端点目前无，统一 30s。 */
+    settle，UI 转圈无出路。统一 30s；个别长耗时端点经 request 第三参覆盖。 */
 const REQUEST_TIMEOUT_MS = 30000;
+
+/** ocr 一键安装的 per-call 超时（毫秒，code-review item bbd22d435c3e）：
+    服务端 install_ocr 同步执行 `npm install -g`、预算 _INSTALL_TIMEOUT=300s，
+    统一 30s 超时会让用户看到「安装失败：请求超时」而安装仍在跑（重试又得
+    「安装进行中」）。给足 300s + 余量，客户端等到服务端真实结论。 */
+const OCR_INSTALL_TIMEOUT_MS = 330000;
+
+/** SSE 事件流端点（业务端点，跨视图组件复用——code-review item ba13417eb1ff：
+    以共享服务层常量单源，视图不再各自硬编码字面量）。 */
+export const STREAM_URL = '/api/stream';
 
 /** API 错误：携带 HTTP 状态码与错误类别（code-review item e49991904b1f：
     旧实现把所有失败压成裸 Error，调用方无法区分网络/鉴权/业务/服务端）。 */
@@ -84,7 +94,11 @@ function classifyHttpKind(status: number): ApiError['kind'] {
   return 'unknown';
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+async function request<T>(
+  path: string,
+  init?: RequestInit,
+  opts?: { timeoutMs?: number },
+): Promise<T> {
   // AbortController 超时（code-review item 9985f4b5f79a）。与调用方自带
   // signal 组合：item 08d0dff8eb09——旧实现 `init?.signal ?? controller.signal`
   // 只保留一个信号，调用方传自己 signal 时内部超时定时器永不到达 fetch。
@@ -96,10 +110,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   // 期间 abort 定时器已消失——后端先发头再挂起（流式/hung handler）时
   // promise 永挂。timer 现于最外层 finally（整段读毕）才清。
   let timedOut = false;
+  const timeoutMs = opts?.timeoutMs ?? REQUEST_TIMEOUT_MS;
   const timer = setTimeout(() => {
     timedOut = true;
     controller.abort();
-  }, REQUEST_TIMEOUT_MS);
+  }, timeoutMs);
   const externalSignal = init?.signal;
   const forwardExternalAbort = () => controller.abort(externalSignal?.reason);
   if (externalSignal) {
@@ -111,7 +126,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   // 成 >30s 超时。
   const classifyAbort = () =>
     timedOut
-      ? new ApiError(`请求超时（>${REQUEST_TIMEOUT_MS / 1000}s）`, 0, 'timeout')
+      ? new ApiError(`请求超时（>${timeoutMs / 1000}s）`, 0, 'timeout')
       : new ApiError('请求已取消', 0, 'cancelled');
   try {
     let res: Response;
@@ -138,10 +153,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       }
       throw new ApiError(msg, res.status, classifyHttpKind(res.status), code);
     }
-    // 部分端点（DELETE / 裸 POST）合法返回 204 或空体，此时 res.json() 会抛
-    // SyntaxError 把成功调用误报为失败。按状态码与原文长度短路，空体统一返回
-    // undefined（调用方对这些端点不消费返回值）。
-    if (res.status === 204 || res.status === 205) return undefined as T;
+    // 204/205 无体响应（code-review item be91f3a413fe）：不得以 undefined 冒充
+    // T——`undefined as T` 让声明泛型对空 body 撒谎，解构类型化结果的调用方
+    // （const {ok} = await …）编译通过、运行时 TypeError。本文件对外恒抛
+    // ApiError（item 29fcb06957b6），无体响应对「期望 JSON 体」的端点即契约
+    // 违约，归 server 类显式抛出（服务端处理器经 _json/_error 恒写 JSON 体，
+    // 本分支纯防御，现网行为不变）。
+    if (res.status === 204 || res.status === 205) {
+      throw new ApiError(`响应无 body（HTTP ${res.status}）`, res.status, 'server');
+    }
     let text: string;
     try {
       text = await res.text();
@@ -155,7 +175,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
         'network',
       );
     }
-    if (!text) return undefined as T;
+    if (!text) {
+      throw new ApiError(`响应为空 body（HTTP ${res.status}）`, res.status, 'server');
+    }
     try {
       return JSON.parse(text) as T;
     } catch {
@@ -1760,9 +1782,12 @@ export async function installOcr(): Promise<{
 }> {
   // 补 error 字段（code-review item 52c15fcd9bc1）：后端失败路径返回
   // {ok:false, error:"…", version:null}，前端旧类型缺 error 使调用方无法透出原因。
+  // per-call 超时 330s（code-review item bbd22d435c3e）：服务端同步安装预算
+  // 300s，统一 30s 超时会先行中止、把仍在跑的安装误报为「请求超时」。
   return request<{ ok: boolean; version: string | null; error?: string | null }>(
     `/api/quality/ocr-install`,
     { method: 'POST' },
+    { timeoutMs: OCR_INSTALL_TIMEOUT_MS },
   );
 }
 

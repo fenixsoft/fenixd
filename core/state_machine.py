@@ -733,11 +733,47 @@ class StateMachine:
         """任务完成度类产物硬门拒绝计数原子增减（``_impl_gate_task_rejections``）。
 
         改进①「只卡第一次」：每次 [task-gate] 类失败 +1，达阈值后 runner 降级
-        放行；门禁干净通过或全新派发时以 delta=-1*current 清零（下限 0）。
+        放行；门禁干净通过或全新派发时经 ``reset_task_gate_rejections`` 清零。
 
         Returns: 增减后的累计值（跨重启持久化）。
         """
         return self._bump_counter(spec_name, TASK_GATE_REJECTIONS_FIELD, delta)
+
+    def reset_task_gate_rejections(self, spec_name: str) -> int:
+        """任务完成度类产物硬门拒绝计数原子归零（code-review item c08bc3db202d）。
+
+        「读当前值 → 置 0」在同一文件锁临界区内完成。调用方不得再走
+        ``read_one → bump_task_gate_rejections(delta=-cur)`` 两段式：读与写
+        分持两把锁，其间并发 bump 会被 -cur 补偿吞掉（或留下过时正值）——
+        正是 ``_bump_counter`` 注释声称已修复的丢失更新形态。
+
+        Returns: 归零前的计数值（0 = 本就干净；spec 不存在记 warning 返回 0）。
+        """
+        lock_path = self.state_path.parent / ".STATE.md.lock"
+        with open(lock_path, "w") as lock_f:
+            fcntl.flock(lock_f, fcntl.LOCK_EX)
+            try:
+                specs = self.read_all()
+                if spec_name not in specs:
+                    self.logger.warning(
+                        "state_machine",
+                        "reset task_gate_rejections failed: "
+                        f"SPEC not found: {spec_name}",
+                    )
+                    return 0
+                try:
+                    current = int(
+                        specs[spec_name].get(TASK_GATE_REJECTIONS_FIELD, 0) or 0
+                    )
+                except (TypeError, ValueError):
+                    current = 0
+                if current != 0:
+                    specs[spec_name][TASK_GATE_REJECTIONS_FIELD] = 0
+                    specs[spec_name]["updated"] = datetime.now(timezone.utc).isoformat()
+                    self._write_all_locked(specs)
+                return current
+            finally:
+                fcntl.flock(lock_f, fcntl.LOCK_UN)
 
     def bump_budget_exempt_runs(self, spec_name: str) -> int:
         """死亡豁免侧车计数原子递增（``_budget_exempt_runs``）。

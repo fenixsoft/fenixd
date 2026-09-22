@@ -66,8 +66,13 @@ def _build_request(provider: dict) -> dict:
     }
 
 
-def _post_once(provider: dict, body: dict) -> dict:
-    """向 provider 的 messages 端点发一次请求，返回 (usage_dict, raw)。
+def _post_once(provider: dict, body: dict) -> tuple:
+    """向 provider 的 messages 端点发一次请求，返回 (parsed_response_body, raw)。
+
+    第一元素是**完整响应体**的 JSON 解析结果（dict；usage 是其中的子字典，
+    由调用方 ``parsed.get("usage")`` 自取），非 usage 载荷本身（code-review
+    item b74eff2a140a：旧 docstring 称返回 usage_dict 与实现不符）。响应体
+    非法 JSON 时回退 ({"raw": 前500字符}, raw)。
 
     使用 stdlib urllib，避免依赖 requests；超时 120s。
     """

@@ -71,14 +71,21 @@ class H5SettingsRoutesMixin:
         if body is None:
             return
 
-        project = self._project_from_query(query)
+        # 缺参 / 未知项目区分（code-review item b9e7765dc1de）：_project_from_query
+        # 把「无 project 查询参数」与「project 名不在 registry（笔误/项目已删/
+        # registry TTL 缓存过期）」折叠成 None——POST 两种情形都落入 None 分支，
+        # 会把项目级值静默并入用户级 ~/.fenix/config.yaml、覆盖用户全局配置。
+        # 先看参数是否在场：缺席才允许默认用户级；在场但解析失败一律 400 拒绝，
+        # 不写任何 scope。
+        project_param = query.get("project", [None])[0]
+        project = self._project_from_query(query) if project_param else None
+        if project_param and (project is None or not project.get("exists")):
+            self._error(400, "project not found")
+            return
         if project is None:
             # 用户模式：写 ~/.fenix/config.yaml
             result = dashboard_data.write_config(None, body, scope="user")
         else:
-            if not project.get("exists"):
-                self._error(400, "project not found")
-                return
             result = dashboard_data.write_config(project["path"], body, scope="project")
 
         if not result["ok"]:

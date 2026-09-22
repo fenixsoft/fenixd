@@ -44,6 +44,7 @@ import {
   getCodeReviewProgress,
   getConfig,
   setCodeReviewItemStatus,
+  STREAM_URL,
   triggerCodeFixRun,
   triggerCodeReview,
 } from '../../../services/dashboard';
@@ -107,7 +108,15 @@ const STATUS_COLOR: Record<string, string> = {
 // 视口自适应（无固定 width），故在悬浮时实测所在 td 宽度再换算，而非写死 px。
 // 延迟（2026-09-20 用户要求）：鼠标悬停满 1s 才弹出浮层，快速划过不触发
 // （避免浏览列表时浮层乱闪）；移出即时关闭并清除定时器。
+// 魔数收敛（code-review item ba13417eb1ff）：本组件用到的间隔/比例一律抽
+// 具名模块常量，SSE 端点走 services/dashboard 的 STREAM_URL 单源。
 const POPOVER_DELAY_MS = 1000;
+// 浮层宽度 = 所在「问题」列 td 实测宽度的比例（见上方「宽度」注释）
+const POPOVER_WIDTH_RATIO = 0.8;
+// 运行中进度轮询间隔（运行结束即 clearInterval）
+const PROGRESS_POLL_INTERVAL_MS = 2000;
+// 心跳兜底刷新间隔（SSE 不可达时保底新鲜度，见下方 effect 注释）
+const HEARTBEAT_REFRESH_INTERVAL_MS = 30000;
 
 function ProblemCell({ rec }: { rec: CodeReviewItem }) {
   const [open, setOpen] = useState(false);
@@ -130,7 +139,7 @@ function ProblemCell({ rec }: { rec: CodeReviewItem }) {
       timerRef.current = null;
       const td = cellRef.current?.closest('td');
       const colWidth = td?.getBoundingClientRect().width ?? 0;
-      if (colWidth > 0) setPopoverWidth(Math.round(colWidth * 0.8));
+      if (colWidth > 0) setPopoverWidth(Math.round(colWidth * POPOVER_WIDTH_RATIO));
       setOpen(true);
     }, POPOVER_DELAY_MS);
   };
@@ -274,7 +283,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
           } catch {
             // 轮询失败继续（下轮重试）
           }
-        }, 2000);
+        }, PROGRESS_POLL_INTERVAL_MS);
       }
     } catch {
       // 进度读取失败静默（非关键路径）
@@ -304,7 +313,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
     if (!active || !project) return;
     let disposed = false;
 
-    const es = new EventSource('/api/stream');
+    const es = new EventSource(STREAM_URL);
     es.onmessage = (ev: MessageEvent) => {
       if (disposed) return;
       let msg: { type?: string; project?: string } = {};
@@ -340,7 +349,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
         void loadItemsRef.current({ background: true });
         void loadProgressRef.current();
       }
-    }, 30000);
+    }, HEARTBEAT_REFRESH_INTERVAL_MS);
 
     return () => {
       disposed = true;

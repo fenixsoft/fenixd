@@ -485,10 +485,16 @@ class H0BaseMixin:
     def _handle(self, method: str = "GET"):
         # 线程上限（dashboard-connection-limit D6）
         if not self.server._try_acquire_request_slot():
+            # 快速拒绝路径同样处于「新请求」边界，先复位每请求状态再判断排空
+            # （code-review item c0cf0404d004）：_request_body_consumed 的常规
+            # 复位在 _handle_inner 开头，而本分支在其之前执行——keep-alive 第二
+            # 个请求时计数器仍持上一请求的已消费字节数，若该值 ≥ 本请求
+            # Content-Length，_drain_remaining_request_body 算得 remaining≤0
+            # 跳过读取，重新引入正文失步（残留字节被当下一请求解析）。
+            self._request_body_consumed = 0
             # 快速拒绝前 MUST 排空请求体（code-review item 265e22d75797）：HTTP/1.1
             # keep-alive 下未读的 body 字节会被当作下一请求的请求行解析——正是
-            # POST/DELETE 分支下方小心规避的 BUG-01 失步类。_request_body_consumed
-            # 在本处尚未复位（该复位在 _handle_inner 开头），故用 getattr 兜底为 0。
+            # POST/DELETE 分支下方小心规避的 BUG-01 失步类。
             self._drain_remaining_request_body()
             self._error(503, "server busy")
             return

@@ -210,7 +210,10 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
         if (!p) return true; // 空 provider 行保存时丢弃
         return !!((r?.model || '').trim() || roleDefault || providerDefaults[p]);
       });
-      if (!roleDefault && !allRowsHaveModel) {
+      // 只判 allRowsHaveModel（code-review item bc1ba7979cf5）：roleDefault
+      // 非空时 every 的或链恒真，旧写法 `!roleDefault && !allRowsHaveModel`
+      // 的前半永不成立——语义与 `!allRowsHaveModel` 等价，去掉死条件免误导。
+      if (!allRowsHaveModel) {
         missing.push(AGENT_ROLES[index]?.label ?? `角色 ${index + 1}`);
       }
     });

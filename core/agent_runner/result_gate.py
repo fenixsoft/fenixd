@@ -35,7 +35,6 @@ from core.run_task_track import (
     parse_tasks_md,
     parse_unattainable,
 )
-from core.state_machine import TASK_GATE_REJECTIONS_FIELD
 
 # 任务完成度类硬门失败前缀（2026-09-16 改进②/① 的机械识别标记）。
 #
@@ -1473,19 +1472,15 @@ def _clear_task_gate_rejections(runner, spec_name: str) -> None:
     """门禁干净通过时清零 task-gate 拒绝计数（改进①，防陈旧计数误降级）。
 
     走 state_machine 的原子计数原语（与 _bump_task_gate_rejections 对称，
-    code-review item 7037da170e00）：旧实现是 ``read_one → update_spec(=0)``
-    非原子读改写，并发 bump 会丢失（或把新拒绝静默归零），使「只卡第一次」
-    阈值两向失真；且 ``except Exception: pass`` 无任何日志，持久失败无从排查。
-    现用 ``bump_task_gate_rejections(delta=-cur)`` 在文件锁内原子归零，失败
-    记 WARNING（非静默）。
+    code-review item 7037da170e00）。归零用 ``reset_task_gate_rejections``
+    单临界区原语（code-review item c08bc3db202d）：旧两段式
+    ``read_one → bump(delta=-cur)`` 的读与写分持两把锁，其间并发 bump 会被
+    -cur 补偿吞掉或留下过时正值（丢失更新）。失败记 WARNING（非静默）。
     """
     if runner.state_machine is None:
         return
     try:
-        entry = runner.state_machine.read_one(spec_name) or {}
-        cur = int(entry.get(TASK_GATE_REJECTIONS_FIELD, 0) or 0)
-        if cur > 0:
-            runner.state_machine.bump_task_gate_rejections(spec_name, -cur)
+        runner.state_machine.reset_task_gate_rejections(spec_name)
     except Exception as e:
         runner.logger.warning(
             "agent_runner",

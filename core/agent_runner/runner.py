@@ -1684,6 +1684,22 @@ class AgentRunner:
                 f"{e} — non-blocking",
             )
 
+    def _turn_branch_state_forget(self, run_id: str) -> None:
+        """run 收尾摘除该 run 的轮次分支基线（code-review item b9f426346304）。
+
+        ``_turn_branch_state`` 按 run_id（每次 run 唯一）记忆分支提交基线，
+        仅 ``_turn_limit_action`` 在 run 存续期消费；run 终态后不摘除会在
+        长跑 daemon 内随 run 数无界累积（实例级泄漏）。success / exhausted
+        两类收尾（cancelled / shutdown / frozen 分型经 exhausted）统一在
+        此摘除；摘除失败不阻断收口。
+        """
+        state = getattr(self, "_turn_branch_state", None)
+        if state:
+            try:
+                state.pop(run_id, None)
+            except Exception:  # noqa: BLE001 — 清理失败绝不影响 run 收尾
+                pass
+
     def _turn_limit_action(self, run_file: Path, spec_name: str | None,
                            run_id: str, turn_extensions_used: int,
                            wt_path, agent_type: str | None = None,
@@ -3024,6 +3040,8 @@ class AgentRunner:
         半开探针闭合 → wt_dirty 取证 → 终态零提交门 → worktree 分型清理 →
         token 入账 → 结构化指标 → 返回 success 结果。
         """
+        # 轮次分支基线按 run 摘除（code-review item b9f426346304）
+        self._turn_branch_state_forget(run_id)
         # 半开探针闭合（fix-stashpop-deadlock）：若该 provider 此前已进入熔断但
         # 冷却已到期（半开），此派发成功即视为网关恢复，闭合熔断（design D4）。
         if provider_name:
@@ -3415,6 +3433,8 @@ class AgentRunner:
         # cancelled_flag 为 True 时（RunCancelledError 已 break 到此处）
         # 返回 cancelled=True 结果；否则走既有终态失败返回。
         self._cancel_clear(run_id)
+        # 轮次分支基线按 run 摘除（code-review item b9f426346304）
+        self._turn_branch_state_forget(run_id)
         if cancelled_flag:
             # fix-observability-gaps 1.1：取消收尾写结构化指标
             # （run_id 记基础 run_id，读侧按 base 匹配）

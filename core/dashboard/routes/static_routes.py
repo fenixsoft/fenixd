@@ -88,7 +88,11 @@ class H10StaticRoutesMixin:
 
         project = self.server.project_by_name(project_name)
         if project is None or not project.get("exists"):
-            self._error(403, "Forbidden")
+            # 未知/非活跃项目答 404（code-review item bd493b870156）：与本包
+            # 其余路由（spec_routes/run_routes/project_routes/code_review_routes
+            # 均为 404 project not found）语义一致；403 会区分「项目存在性」
+            # 并把鉴权失败与资源缺失混同。
+            self._error(404, "project not found")
             return
 
         screenshots_dir = (
