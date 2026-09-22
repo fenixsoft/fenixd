@@ -38,6 +38,11 @@ _FAKE_OCR_SCRIPT = textwrap.dedent(
     out = args[args.index("--output") + 1]
     frm = args[args.index("--from") + 1]
     to = args[args.index("--to") + 1]
+    # 仓库发现钉住契约：ocr 子进程 MUST 以 GIT_DIR/GIT_WORK_TREE 显式指向
+    # detached worktree（漂移到主检出会审错区间），否则直接失败暴露。
+    if os.environ.get("GIT_WORK_TREE") != os.getcwd():
+        sys.stderr.write("GIT_WORK_TREE not pinned to worktree cwd")
+        sys.exit(9)
     if os.environ.get("FAKE_OCR_MODE") == "fail":
         sys.stderr.write("fake provider unreachable")
         sys.exit(3)

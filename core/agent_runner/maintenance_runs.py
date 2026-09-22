@@ -1701,6 +1701,13 @@ def run_impl_ocr(
                 prev_findings = []
 
             # ── 跑 ocr（硬超时 = 车道级 impl_code_review_lane_timeout_sec，任务 3.3）──
+            # GIT_DIR/GIT_WORK_TREE 钉住 detached worktree：ocr 的仓库发现在
+            # linked worktree（.git 为文件）里会漂移到主检出（实测：实现者
+            # 收尾审查在 worktree 直跑时 --from 被归一成与主树 HEAD 的
+            # merge-base，审查区间整体漂到 main 侧），显式 env 钉住后 git
+            # 子命令一律解析回本 wt。
+            env_overrides["GIT_DIR"] = str(wt / ".git")
+            env_overrides["GIT_WORK_TREE"] = str(wt)
             raw_path.parent.mkdir(parents=True, exist_ok=True)
             cmd = [
                 sys.executable, "bin/ocr_review.py", "review",
