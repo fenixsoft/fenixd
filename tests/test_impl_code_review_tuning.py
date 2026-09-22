@@ -218,11 +218,17 @@ class TestReadersIndependence:
         """三键 MUST NOT 进入 resolve_config 缺省填充——键缺失时读取器回退缺省，
         且有效配置 dict 中不出现三个键（对齐 get_impl_code_review_enabled）。"""
         # 不经过文件解析的轻量断言：resolve_config 的 defaults 填充列表不含三键。
-        # 直接验证 resolve_config 干跑（临时目录无配置文件）→ 有效配置无 verify 节
+        # 直接验证 resolve_config 干跑（临时目录无配置文件）→ 有效配置无 verify 节。
         import tempfile
 
-        with tempfile.TemporaryDirectory() as td:
-            effective = ConfigLoader.resolve_config(td)
+        # 隔离用户级配置目录：resolve_config 无条件合并 ~/.fenix/config.yaml，
+        # 宿主机该文件含真实 verify.impl_code_review* 三键（本机非缺省）→ 不隔离
+        # 则「有效配置 dict 不出现三键」必然假失败（home-sensitive，2026-09-22
+        # 全量回归）。同款修法见 test_config.py / test_supervision_timeout_consistency.py。
+        with tempfile.TemporaryDirectory() as base:
+            with patch("core.config.USER_CONFIG_DIR", Path(base) / "user"):
+                with tempfile.TemporaryDirectory(dir=base) as td:
+                    effective = ConfigLoader.resolve_config(td)
         verify = effective.get("verify")
         assert verify is None or "impl_code_review_timeout_sec" not in verify
         assert verify is None or "impl_code_review_concurrency" not in verify

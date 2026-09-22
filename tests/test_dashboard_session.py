@@ -519,6 +519,23 @@ def _claude_available() -> bool:
     return shutil.which(CLAUDE_BIN) is not None
 
 
+# 真实 CLI 端到端测试为 opt-in：拉起真实 ``claude`` 子进程、单跑约 20s、全量
+# 套件并发下可达 ~80s（占全量总时长绝大部分），且依赖外部 CLI/网关可用性——
+# 非确定项不该阻塞默认回归。置 ``FENIX_E2E=1`` 才纳入（对齐「E2E 类测试须显式
+# 开启」的惯例；仓库暂无其它 E2E 用例，故用环境变量而非 pytest marker）。
+def _e2e_enabled() -> bool:
+    import os
+
+    return os.environ.get("FENIX_E2E", "").strip().lower() in ("1", "true", "yes")
+
+
+_E2E_SKIP_REASON = (
+    "真实 CLI E2E 为 opt-in：设 FENIX_E2E=1 纳入（默认跳过，防外部 CLI/网关"
+    "非确定性与长耗时污染全量回归）"
+)
+
+
+@pytest.mark.skipif(not _e2e_enabled(), reason=_E2E_SKIP_REASON)
 @pytest.mark.skipif(not _claude_available(), reason="环境无 claude CLI")
 class TestRealProcessIntegration:
     def test_two_rounds_assistant_events(self, tmp_path):

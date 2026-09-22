@@ -104,7 +104,18 @@ def _isolated_basetemp_cleanup(request):
 
     对**给定 basetemp**（--basetemp 传入）pytest 会先清空再建——故即使上一轮
     进程被 SIGKILL 未走本清理，下一轮也从干净目录起跑，不会无限增长。
+
+    C：进程级 ``GIT_CEILING_DIRECTORIES`` 钉到 basetemp 根，切断 git 仓库向上
+    发现。成因：basetemp 落在 fenixd 仓库内部（``.fenix/pytest-basetemp``，gitignore
+    仅挡提交、不挡发现）→ 用例在 ``tmp_path`` 里再建临时目录时，任何不加 ``-C``
+    的 ``git`` 调用都会经父目录链上溯命中 /root/fenixd/.git 主树。典型假失败：
+    自省摘要 `_collect_recent_commits` 对「非 git 目录」本该降级为「（git log
+    读取失败）」，却读到**主树提交**→ 降级分支永不触发（2026-09-22 全量回归
+    ``TestSummaryGitCommits::test_daily_summary_git_unavailable_degrades``）。
+    钉 ceiling 使 tmp 树对 git 呈「非仓库」态，与 /tmp 落点语义一致。仅设一次
+    （setdefault）：尊重任何既有 ceiling。
     """
+    import os
     import shutil
 
     factory = request.session.config._tmp_path_factory
@@ -114,10 +125,17 @@ def _isolated_basetemp_cleanup(request):
         base = project_root / ".fenix" / "pytest-basetemp"
         base.parent.mkdir(parents=True, exist_ok=True)
         factory._given_basetemp = base
+    # C：git 仓库发现上溯不得越过 basetemp 根（见 docstring）。
+    base = factory._basetemp or factory._given_basetemp
+    if base is not None:
+        existing = os.environ.get("GIT_CEILING_DIRECTORIES")
+        os.environ.setdefault(
+            "GIT_CEILING_DIRECTORIES",
+            str(base) + ((os.pathsep + existing) if existing else ""),
+        )
     yield
     # 会话结束清理本次 basetemp（given 或自建），忽略失败（并发/权限）。
     try:
-        base = factory._basetemp or factory._given_basetemp
         if base is not None:
             shutil.rmtree(base, ignore_errors=True)
     except Exception:
