@@ -54,6 +54,19 @@ FIX_PROGRESS_DEFAULT = {
     # 再投递（_resubmit → checkpoint 无 override）凭它越过 enabled 总开关。
     # 仅在链 live（running=true）时被消费；终态（idle/blocked/failed）清除。
     "manual_authorized": False,
+    # 批上下文（add-code-fix-item-level-progress D2）：本批 worktree 绝对路径
+    # /run_id/批条目数。编排器在建树成功后、agent run 启动前写入（run_id 预
+    # 生成并经 run_code_fix 既有 run_id 形参传入）；批收尾清除。白名单合并
+    # 语义要求新键 MUST 进本缺省集（缺省 null），否则读侧不可见、且会被下
+    # 一次合并写剥离（先例：manual_authorized）。
+    "worktree": None,
+    "run_id": None,
+    "batch_total": None,
+    # 条级进度合成字段（D1，读侧实时派生）：read_progress 每次读时经
+    # read_fix_out 现算，write_progress 会剥离、不落盘（避免陈旧快照被合并
+    # 写持久化成误导性数字）。null 三态语义见 _synthesize_item_progress。
+    "item_done": None,
+    "current_item": None,
 }
 
 # phase 合法值（spec code-fix-progress）
@@ -90,17 +103,23 @@ def read_progress(project_root) -> dict:
 
     返回 dict 的字段集与 FIX_PROGRESS_DEFAULT 一致（缺字段补齐），调用方
     可安全取键。
+
+    条级进度（add-code-fix-item-level-progress）：``running=true`` 且批上下
+    文在场时，经 ``read_fix_out`` 实时合成 ``item_done``/``current_item``
+    （见 ``_synthesize_item_progress``）；其余场景两键为 null。
     """
     out = dict(FIX_PROGRESS_DEFAULT)
     try:
         raw = _progress_path(project_root).read_text(encoding="utf-8")
         data = json.loads(raw)
     except (OSError, ValueError):
+        _synthesize_item_progress(project_root, out)
         return out
     if isinstance(data, dict):
         for k in FIX_PROGRESS_DEFAULT:
             if k in data:
                 out[k] = data[k]
+    _synthesize_item_progress(project_root, out)
     return out
 
 
@@ -110,12 +129,95 @@ def write_progress(project_root, **fields) -> dict:
     幂等安全：进度文件不存在时从缺省态起改。返回写盘后的完整进度。
     """
     current = read_progress(project_root)
+    # 条级合成字段是读侧实时派生值，MUST NOT 落盘：合并基线来自
+    # read_progress（已含现算结果），剥离后交由后续读侧重算，避免陈旧快照
+    # 被合并写持久化成误导性数字（add-code-fix-item-level-progress D1）。
+    current.pop("item_done", None)
+    current.pop("current_item", None)
     current.update(fields)
     _atomic_write(
         _progress_path(project_root),
         json.dumps(current, ensure_ascii=False, indent=2),
     )
     return current
+
+
+def _preset_run_id(runner, exclude=()) -> str:
+    """预生成 code-fix run_id（与 run_code_fix 缺省生成同口径，task 2.1）。
+
+    编排器在建树成功后、投递 run 前调用：只有预生成才能在 run 启动**前**
+    把 run_id 写进进度文件（run 在飞期间读侧即可据此定位 out 文件）；随后
+    经 ``run_code_fix(..., run_id=...)`` 传入，run 内部不再自行生成。
+    保持 ``code-fix-`` 前缀并按 ``_unique_code_fix_run_id`` 同口径去重（对
+    ``_running_agents`` 在飞集 + 主树 out 残留退避）——``_code_fix_running``
+    在途判据依赖该前缀。``exclude`` 为本批已 issued 的 run_id 禁用集（重试
+    轮传入首轮 run_id：重试产物落同一 worktree，主树残留判据覆盖不到，同
+    秒撞名会复用首轮 out 文件、破坏「重试独立文件并集」口径）。函数级
+    import 规避装载环（maintenance_runs 属 agent_runner 侧，不反向依赖本
+    模块）。
+    """
+    from core.agent_runner.maintenance_runs import _unique_code_fix_run_id
+
+    return _unique_code_fix_run_id(runner, exclude=exclude)
+
+
+def _synthesize_item_progress(project_root, progress: dict) -> None:
+    """条级进度实时合成（add-code-fix-item-level-progress D1/D3/D4）。
+
+    D5 实证结论（task 1.1；观察方法：最小夹具批 2 条 item，stub `_run_claude`
+    模拟 agent 逐条 append+flush 驱动真实 `run_code_fix`，在 run 期间与收尾
+    后分别探测 `<worktree>/.fenix/code-review/fix-out-<run_id>.jsonl` 的存在
+    性与行数）：
+    - out 目录由 `run_code_fix` 在 run 启动时即创建（maintenance_runs
+      `out_path.parent.mkdir`），先于 agent 首条处置；
+    - agent 逐条追加的每一行在 run 在飞期间即可被 `read_fix_out` 读到
+      （实证 mid-run 探测可见行数 1→2 逐条递增）；
+    - run 收尾返回后、worktree cleanup 之前文件完整在场。
+    故「run 在飞期间实时合成」的路径假设成立；worktree cleanup 后读不到
+    out 属预期（批已收尾、批上下文已清，条级字段让位）。
+
+    容错语义（D4 null 三态）：`running != true`、批上下文缺失、out 缺失/
+    零有效行、`read_fix_out` 任何异常 → `item_done`/`current_item` 均置
+    null（MUST NOT 500、MUST NOT 回退 0/空对象等可被误读的值）。函数无条
+    件先置 null 再尝试计算，保证每次 read_progress 输出都携带两键。
+    """
+    progress["item_done"] = None
+    progress["current_item"] = None
+    if progress.get("running") is not True:
+        return
+    worktree = progress.get("worktree")
+    run_id = progress.get("run_id")
+    if not worktree or not run_id:
+        return
+    try:
+        rows = read_fix_out(worktree, run_id)
+    except Exception:  # noqa: BLE001 — 读产物任何异常都兜底为明细不可得
+        return
+    if not rows:
+        return
+    # item_done：有效行按 item_id 去重（同条目重复追加只计一次，取末次）
+    latest: dict = {}
+    for row in rows:
+        latest[row.get("item_id")] = row
+    progress["item_done"] = len(latest)
+    # current_item：最近一条有效结果行（D3：title/line 以台账回查补全——
+    # 台账是唯一持久化且字段齐全的清单源；匹配失败或台账读异常降级为仅含
+    # out 行自带字段 item_id/status/file）。
+    last = rows[-1]
+    current: dict = {
+        "item_id": last.get("item_id"),
+        "status": last.get("status"),
+        "file": last.get("file"),
+    }
+    try:
+        rec = read_items(project_root).get(last.get("item_id"))
+    except Exception:  # noqa: BLE001 — 台账读异常降级，不影响条级计数
+        rec = None
+    if isinstance(rec, dict):
+        current["title"] = rec.get("title")
+        if rec.get("line") is not None:
+            current["line"] = rec.get("line")
+    progress["current_item"] = current
 
 
 # ── 失败批保留集合（5.7 / D6）──────────────────────────────────────────
@@ -523,6 +625,9 @@ class CodeFixOrchestrator:
                         phase="blocked",
                         reason="disabled",
                         current="自动修复总开关已关闭，链终止（可重新触发）",
+                        worktree=None,
+                        run_id=None,
+                        batch_total=None,
                         manual_authorized=False,
                     )
                 return {"triggered": False, "reason": "disabled"}
@@ -540,6 +645,9 @@ class CodeFixOrchestrator:
                         phase="idle",
                         current="",
                         reason="",
+                        worktree=None,
+                        run_id=None,
+                        batch_total=None,
                         manual_authorized=False,
                     )
                 return {"triggered": False, "reason": "no_open_items"}
@@ -560,6 +668,9 @@ class CodeFixOrchestrator:
                         phase="blocked",
                         reason="failed_batch_retained",
                         current="open 条目均在失败保留集合中，待人工 release_failed_batch",
+                        worktree=None,
+                        run_id=None,
+                        batch_total=None,
                         manual_authorized=False,
                     )
                 return {"triggered": False, "reason": "no_open_items"}
@@ -592,6 +703,9 @@ class CodeFixOrchestrator:
                     activation_id=activation_id,
                     total=total,
                     done=done,
+                    worktree=None,
+                    run_id=None,
+                    batch_total=None,
                     manual_authorized=False,
                 )
                 return {"triggered": False, "reason": "regression_contract_missing"}
@@ -606,6 +720,9 @@ class CodeFixOrchestrator:
                     activation_id=activation_id,
                     total=total,
                     done=done,
+                    worktree=None,
+                    run_id=None,
+                    batch_total=None,
                     manual_authorized=False,
                 )
                 return {"triggered": False, "reason": "regression_section_missing"}
@@ -626,6 +743,13 @@ class CodeFixOrchestrator:
                     batch_no=batch_no,
                     current=f"第 {batch_no} 批启动（{len(batch)}/{total} 条）",
                     reason="",
+                    # 批上下文防御性归零（D2）：上一批收尾写点已清三键，此处
+                    # 显式置 null 保证「切批 selecting 写时批上下文必为 null」
+                    # （含保留 worktree 的失败批防陈旧索引）；新批上下文在建
+                    # 树成功后的 fixing 写点才落。
+                    worktree=None,
+                    run_id=None,
+                    batch_total=None,
                     # 手动授权随链持久化：本批由 override 投出，或延续 live
                     # 链已有的授权（batch 间 phase 改写不得丢失旗标）。
                     manual_authorized=bool(override_enabled) or chain_authorized,
@@ -673,11 +797,21 @@ class CodeFixOrchestrator:
     def _finish(self, phase: str, reason: str = "", **fields) -> None:
         """批收尾：复位单飞 + 刷新进度（running 保持链语义，由下次 checkpoint 收尾）。
 
-        链终止（失败批不再自驱动），授权旗标一并清除。
+        链终止（失败批不再自驱动），授权旗标一并清除；批上下文三键同步
+        清除——本函数是全部失败收尾的唯一出口且**不置 running=false**，
+        不清则读侧会带着陈旧 worktree/run_id 继续合成条级字段（保留现场
+        的失败批尤其如此，D2 防陈旧索引）。
         """
         self._in_flight = False
         write_progress(
-            self.project_root, phase=phase, reason=reason, manual_authorized=False, **fields
+            self.project_root,
+            phase=phase,
+            reason=reason,
+            worktree=None,
+            run_id=None,
+            batch_total=None,
+            manual_authorized=False,
+            **fields,
         )
 
     def _run_batch(self, ctx: dict) -> None:
@@ -707,12 +841,6 @@ class CodeFixOrchestrator:
         done = ctx["done"]
         reg_spec = ctx["regression_spec"]
 
-        write_progress(
-            root,
-            phase="fixing",
-            current=f"第 {batch_no} 批修复中（{len(items)}/{total} 条）",
-        )
-
         # 建树（5.4）：create() 返回 None 即收尾——不派 run、不合回、条目保持
         # open、复位单飞，进度 failed（下一轮 full scan 重试）。
         wm = getattr(runner, "worktree_manager", None)
@@ -725,9 +853,24 @@ class CodeFixOrchestrator:
             self._finish("failed", reason="worktree_create_failed")
             return False
         wt = Path(wt)
+        # 批上下文落盘（task 2.1）：phase="fixing" 写点整体后移至建树成功
+        # 之后、agent run 启动之前——原写点位于建树前，彼时 worktree/run_id
+        # 均不存在。run_id 由编排器预生成（_preset_run_id，code-fix- 前缀 +
+        # 同口径去重）并经 run_code_fix 既有 run_id 形参传入（缺省在其内部
+        # 生成、run 返回前编排器无从得知），保证 run 在飞期间进度文件已可
+        # 解析（读侧定位 out 文件实时合成条级进度）。
+        run_id = _preset_run_id(runner)
+        write_progress(
+            root,
+            phase="fixing",
+            current=f"第 {batch_no} 批修复中（{len(items)}/{total} 条）",
+            worktree=str(wt),
+            run_id=run_id,
+            batch_total=len(items),
+        )
         created_sha = _worktree_head(wt)
         try:
-            return self._run_batch_created(wm, wt, created_sha, ctx)
+            return self._run_batch_created(wm, wt, created_sha, ctx, run_id=run_id)
         except Exception:
             # 未预期异常兜底（ocr 收尾审查）：create() 已登记 code-review-fix:code-fix
             # spec 锁，仅 cleanup() 释放——漏掉则下一批 create() 恒 None（车道死锁）。
@@ -735,11 +878,12 @@ class CodeFixOrchestrator:
             _safe_cleanup(wm, wt, success=False, logger=self._logger)
             raise
 
-    def _run_batch_created(self, wm, wt: Path, created_sha, ctx: dict) -> bool:
+    def _run_batch_created(self, wm, wt: Path, created_sha, ctx: dict, run_id: str) -> bool:
         """执行已建树批次的主体（首次/重试 run、回归、守卫、合回核销清理）。
 
         返回 True 表示批成功（可推进下一批）。由 _run_batch_inner 在建树成功后
         调用；未预期异常在本层被兜底 cleanup 后原样上抛（_run_batch 收口）。
+        ``run_id`` 为编排器预生成的首轮 run 标识（进度文件已携带同值）。
         """
         root = self.project_root
         runner = self._agent_runner
@@ -750,8 +894,8 @@ class CodeFixOrchestrator:
         done = ctx["done"]
         reg_spec = ctx["regression_spec"]
 
-        # 第一次修复 run
-        result = runner.run_code_fix(wt, items)
+        # 第一次修复 run（run_id 预生成传入，与进度文件 run_id 一致）
+        result = runner.run_code_fix(wt, items, run_id=run_id)
         if not result.success:
             self._log("error", f"code-fix run 失败（run {result.run_id}）: {result.error}")
             # agent run 失败：不合回不核销；清理 worktree 释放 spec 锁
@@ -781,12 +925,21 @@ class CodeFixOrchestrator:
                 f"code-fix 第 {batch_no} 批首次回归未通过（{reg.status}），重试一次",
             )
             summary = _failure_summary(reg)
+            # 重试轮 run_id 变更（task 2.2）：新预生成并刷新进度（worktree/
+            # batch_total 不变），保证重试 run 在飞期间读侧解析的是当前轮
+            # out 文件（fix-out-<retry_run_id>.jsonl），而非首轮残留。exclude
+            # 排除首轮 run_id（同 worktree 内主树残留判据覆盖不到，同秒撞名
+            # 会复用首轮 out 文件）。
+            retry_run_id = _preset_run_id(runner, exclude=(run_id,))
             write_progress(
                 root,
                 phase="retrying",
                 current=f"第 {batch_no} 批回归失败重试中（{len(items)}/{total} 条）",
+                run_id=retry_run_id,
             )
-            retry_result = runner.run_code_fix(wt, items, failure_summary=summary)
+            retry_result = runner.run_code_fix(
+                wt, items, failure_summary=summary, run_id=retry_run_id
+            )
             if not retry_result.success:
                 self._log(
                     "error",
@@ -878,6 +1031,11 @@ class CodeFixOrchestrator:
             done=new_done,
             current=f"第 {batch_no} 批完成（已核销 {hit} 条，累计 {new_done}/{total}）",
             reason="",
+            # 批收尾清除批上下文（D2）：worktree 已 cleanup、out 随之不可达，
+            # 条级字段让位给批级进度（spec「批收尾后条级字段让位」）。
+            worktree=None,
+            run_id=None,
+            batch_total=None,
         )
         self._log(
             "info",

@@ -1181,12 +1181,16 @@ class CodeFixResult:
         self.output = output
 
 
-def _unique_code_fix_run_id(runner) -> str:
+def _unique_code_fix_run_id(runner, exclude=()) -> str:
     """生成不冲突的 ``code-fix-<epoch>`` run_id（task 6.2）。
 
     撞名判据（对齐 _unique_code_review_run_id 的退避形态）：runner 侧在飞
     run_id + 主树 ``.fenix/code-review/fix-out-<candidate>.jsonl`` 残留
-    （run 的产物文件落在 worktree，此处以主树残留近似兜底并发窗口）。
+    （run 的产物文件落在 worktree，此处以主树残留近似兜底并发窗口）+
+    ``exclude`` 额外禁用集（编排器预生成重试轮 run_id 时传入本批已 issued
+    的 run_id——重试产物落**同一 worktree**，主树残留判据覆盖不到，同秒
+    撞名会让重试轮复用首轮 out 文件、破坏「重试独立文件并集」口径，
+    add-code-fix-item-level-progress 2.2）。
     目标已占时追加 ``-<n>`` 退避（n 从 1 起递增）。
     """
     base = f"code-fix-{int(time.time())}"
@@ -1195,7 +1199,11 @@ def _unique_code_fix_run_id(runner) -> str:
     cr_dir = runner.project_root / ".fenix" / "code-review"
     running = getattr(runner, "_running_agents", None) or {}
     while True:
-        if candidate in running or (cr_dir / f"fix-out-{candidate}.jsonl").exists():
+        if (
+            candidate in running
+            or candidate in exclude
+            or (cr_dir / f"fix-out-{candidate}.jsonl").exists()
+        ):
             n += 1
             candidate = f"{base}-{n}"
             continue
