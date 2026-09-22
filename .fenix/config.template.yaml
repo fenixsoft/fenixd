@@ -155,10 +155,12 @@ agents:
   transient_break_cooldown_seconds: 600
 
   # 按 Agent 角色分配模型（可选）。未列出的角色使用默认模型。
-  # 角色可选: implementer | planner-plan | planner-judge | verifier | administrator | self-review | fast-track | code-review
+  # 角色可选: implementer | planner-plan | planner-judge | verifier | administrator | self-review | fast-track | code-review | code-fix
   # self-review 为每日自省与框架自进化（evolution）共用的分配。
   # code-review 为周期性仓库级代码审查（add-code-review-agent-and-quality-tab）：
   #   模型链回退 code-review → self-review → administrator → 默认网关。
+  # code-fix 为审查台账自动修复（add-code-review-auto-fix）：缺省与 code-review
+  #   同源，模型链回退 code-fix → code-review → self-review → administrator → 默认网关。
   #
   # provider 支持三种形态（逐字节向后兼容）：
   #   形态 1（字符串）：单值链，角色级 model 或 provider 条目 model 作为缺省。
@@ -195,6 +197,9 @@ agents:
   #   planner-plan:
   #     provider: "volc-engine"
   #     model: "deepseek-v4-pro"
+  #   code-fix:
+  #     provider: "volc-engine"
+  #     model: "deepseek-v4-flash"
 
 # ---- Worktree Configuration ----
 worktree:

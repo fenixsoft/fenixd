@@ -143,3 +143,9 @@
 
 - [x] 11.1 冒烟预演：全新 Python 进程 `import` `core.code_fix` / `core.config` / `core.dashboard.data.code_review` / `core.dashboard.routes.code_review_routes`，构造 `CodeFixOrchestrator`（fake runner + 临时项目根），断言 `checkpoint()` 在 `enabled=false` 时返回 `disabled`、在缺 `regression` 段时返回 `regression_contract_missing` 并落 `blocked` 进度——无需真实 daemon/agent
 - [x] 11.2 运行 `python3 -m pytest tests/test_code_fix.py tests/test_regression_execution.py tests/test_code_review.py -q` 全绿（本变更新增/改动的相关测试）
+
+## 验证修复（原地打回第 1 轮）
+
+- [x] 先复核失败有效性：逐条核对 `spec/changes/add-code-review-auto-fix/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码（复核结论：5 失败 = 1 真实产品 Bug（BUG-01 config.template.yaml 缺 code-fix 模型分配示例，spec MUST 项）+ 4 场景文件缺陷）
+- [x] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码（4 场景缺陷已由验证轮原地修复；BUG-01 经人工裁决在主树手工补齐——config.template.yaml 角色可选清单与 models 注释块追加 code-fix 及分配示例，形态同既有 code-review 段）
+- [x] 修复后重跑验证确认通过（人工裁决豁免整轮重验：BUG-01 修复后已对失败断言 `models_has_code_fix` 机械复核通过——config.template.yaml 角色可选清单（158 行）与 models 注释块分配示例（200 行）均含 code-fix；其余 4 个失败场景为场景文件缺陷、验证轮已原地修复。整轮重跑由 admin 处置记录人工裁决豁免，处置留痕见 .fenix/admin_disposition-admin-add-code-review-auto-fix-*.json）
