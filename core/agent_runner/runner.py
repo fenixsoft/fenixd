@@ -104,6 +104,7 @@ from core.agent_runner.maintenance_runs import (
     ADMIN_DISPOSITION_GLOB,
     ADMIN_DISPOSITION_PREFIX,
     DEFAULT_GATEWAY_MODEL,
+    DEFAULT_OCR_BIN,
     _accumulate_evolution_tokens,
     _accumulate_self_review_tokens,
     _clear_admin_disposition,
@@ -119,6 +120,7 @@ from core.agent_runner.maintenance_runs import (
     run_code_review,
     run_code_fix,
     run_evolution,
+    run_impl_ocr,
     run_regression,
     run_self_review,
 )
@@ -163,9 +165,10 @@ RETRY_YIELDED_ERROR_PREFIX = "[retry-yielded]"
 _GATE_ERROR_TRUNCATE = 1024
 
 # ── add-impl-code-review-gate：ocr 包装器默认可执行名 ──────────────────
-# ocr 可执行文件的默认裸名（包装器 bin/ocr_review.py 以 os.execvp 解析 PATH，
-# 裸名可用；模块级常量由 env 注入处引用，不在 agents 配置新增键）。
-DEFAULT_OCR_BIN = "ocr"
+# add-impl-ocr-parallel-lane：消费点随 run_impl_ocr 迁 maintenance_runs.py
+# （D2b 规则 3，同 DEFAULT_GATEWAY_MODEL），DEFAULT_OCR_BIN 改由上方导入块
+# re-export，保持既有导入路径可用（ocr 可执行文件的默认裸名，包装器
+# bin/ocr_review.py 以 os.execvp 解析 PATH）。
 
 # agent_type → spec 预期态（fix-verdict-dedup-resynthesis D4）：该 agent 正在
 # 跑时 spec 应处于此态；被人工接管（status 迁移/blocked/frozen 等）后，退避
@@ -470,6 +473,10 @@ class AgentRunner:
         # agent run 计数），仅经本转发表被编排器调用。
         "run_code_fix": run_code_fix,
         "run_regression": run_regression,
+        # add-impl-ocr-parallel-lane（任务 3.1/3.2）：ocr 审查车道同处注册——
+        # 不走 _execute_agent（不占 spec 预算、不计每日 run 计数），仅经本
+        # 转发表被派发接线（queue join 评估）调用。
+        "run_impl_ocr": run_impl_ocr,
         "_get_admin_model": _get_admin_model,
         "_check_agent_result_artifact": _check_agent_result_artifact,
         "_check_impl_code_review_artifact": _check_impl_code_review_artifact,
