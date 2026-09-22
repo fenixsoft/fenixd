@@ -1387,7 +1387,7 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
                 f"verify.impl_code_review_mode must be one of ['gate', 'advisory']: "
                 f"{v_patch['impl_code_review_mode']!r}"
             )
-        # ocr 审查 finding#1：车道级硬超时前置校验（正整数拒绝，同 timeout_sec）
+        # ocr 审查 finding#1：车道级硬超时前置校验（非正整数拒绝，同 timeout_sec）
         if (
             "impl_code_review_lane_timeout_sec" in v_patch
             and v_patch["impl_code_review_lane_timeout_sec"] is not None
