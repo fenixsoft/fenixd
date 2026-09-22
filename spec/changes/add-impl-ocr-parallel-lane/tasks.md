@@ -72,4 +72,4 @@
 ## 7. 车道与 join 测试
 
 - [x] 7.1 新增 `tests/test_impl_ocr_parallel_lane.py`：覆盖车道启动时点、指纹 stale fail-closed、超时降级 unavailable、join 三分支（双绿放行/gate 打回/上限转台账）、advisory 永不打回、增量游标回退全量、tester 停等不重派、产物缺失/车道未运行幂等触发启动（含重启恢复重派路径）、fast-track 同点启动与出口 join
-- [ ] 7.2 全量回归走有界入口自证：与基线对比零引入失败
+- [x] 7.2 全量回归走有界入口自证：与基线对比零引入失败（`bin/run_full_suite.py --timeout 3600 --baseline 0605684` classification=「存量」——current_failures 4 条 test_task_track 全部在基线失败集合内，基线另含 callsite_arity_guard 1 + dashboard_api 2 条 flaky 存量）
