@@ -1551,6 +1551,14 @@ class FenixDaemon:
             tmp_path = Path(tmp_str)
             os.replace(str(req_path), str(tmp_path))
         except FileNotFoundError:
+            # 信号文件不存在（稀疏事件的绝大多数轮次）：mkstemp 已建出私有临时
+            # 副本路径，此处必须清理，否则主循环每轮泄漏一个零字节 .consumed.* 文件
+            # （线上实测堆积 11 万+）。与下方 OSError 分支同样清理 tmp_path。
+            if tmp_path is not None:
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
             return None
         except OSError:
             if tmp_path is not None:
