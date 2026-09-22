@@ -41,8 +41,12 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
       // read_config / read_effective_config 恒回显缺省，前端回填与之一致；
       // 既有开关「缺省不回显」约定不变：impl_code_review 缺席仍为关）
       impl_code_review_timeout_sec: config.verify?.impl_code_review_timeout_sec ?? 600,
-      impl_code_review_concurrency: config.verify?.impl_code_review_concurrency ?? 2,
+      // add-impl-ocr-parallel-lane（任务 1.2）：后端缺省 2→4，回填与之一致
+      impl_code_review_concurrency: config.verify?.impl_code_review_concurrency ?? 4,
       impl_code_review_effort: config.verify?.impl_code_review_effort ?? 'low',
+      // add-impl-ocr-parallel-lane：join 双档模式回填缺省 gate（后端恒回显，
+      // 前端回填与之一致）
+      impl_code_review_mode: config.verify?.impl_code_review_mode ?? 'gate',
       // 周期性代码审查（2026-09-19 从项目页「代码审查」分面迁来）：
       // 开关是项目级配置（admin.code_review.enabled），归设置页而非项目页
       code_review_enabled: config.code_review?.enabled === true,
@@ -164,6 +168,9 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
           impl_code_review_timeout_sec: values.impl_code_review_timeout_sec,
           impl_code_review_concurrency: values.impl_code_review_concurrency,
           impl_code_review_effort: values.impl_code_review_effort,
+          // add-impl-ocr-parallel-lane：join 双档模式序列化（表单回填后恒有值，
+          // 白名单枚举由表单校验先行把关，后端 write_config 再权威兜底）
+          impl_code_review_mode: values.impl_code_review_mode,
         },
         // add-code-review-agent-and-quality-tab：周期性代码审查开关
         // （2026-09-19 从项目页「代码审查」分面迁到设置页「质量」页签）
@@ -321,8 +328,9 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
             />
           </Form.Item>
           <Text type="secondary">
-            默认 2。ocr 并发子任务上限（--concurrency）：实测 8 路并发同时打同一
-            provider 网关会把首字节延迟放大到撞穿超时线；降到 2 以吞吐换稳定。
+            默认 4。ocr 并发子任务上限（--concurrency）：实测 8 路并发同时打同一
+            provider 网关会把首字节延迟放大到撞穿超时线；add-impl-ocr-parallel-lane
+            由 2 上调至 4（审查转异步车道后不再卡实现者收工，吞吐优先）。
             经提示词命令示例承载，实现者须照抄命令串才生效。
           </Text>
 
@@ -353,6 +361,38 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
             默认 low。ocr 审查力度预设（--effort）：low 更快更省但 recall 偏低
             （precision 优先的刻意取舍），medium 为 ocr 官方默认，high 深度审查。
             经提示词命令示例承载，实现者须照抄命令串才生效。
+          </Text>
+
+          {/* add-impl-ocr-parallel-lane：join 双档模式选择（gate/advisory）。
+              车道在实现分支合并后异步跑 ocr，tester 判定 verified 时 join 裁决：
+              gate 档非 rejected findings 打回修复轮（上限 1 轮，超限转台账）；
+              advisory 档 findings 一律写 code-review 台账、join 永不打回。 */}
+          <Form.Item
+            name="impl_code_review_mode"
+            label={
+              <>
+                车道裁决模式<span className="label-note">（verify.impl_code_review_mode）</span>
+              </>
+            }
+            rules={[
+              {
+                validator: (_: unknown, v: string | undefined | null) =>
+                  v && ['gate', 'advisory'].includes(v)
+                    ? Promise.resolve()
+                    : Promise.reject(new Error('须为 gate/advisory')),
+              },
+            ]}
+            style={{ marginTop: 24 }}
+          >
+            <Select data-testid="impl-code-review-mode">
+              <Select.Option value="gate">gate（打回修复）</Select.Option>
+              <Select.Option value="advisory">advisory（仅台账）</Select.Option>
+            </Select>
+          </Form.Item>
+          <Text type="secondary">
+            默认 gate。实现分支合并后异步 ocr 车道的发现如何参与验证收口：gate
+            档发现非 rejected findings 时把 spec 打回修复轮（最多 1 轮，超限全部
+            转 code-review 台账后放行）；advisory 档 findings 只写台账、永不打回。
           </Text>
 
           {/* 周期性代码审查开关（2026-09-19 从项目页「代码审查」分面迁到本页签）：
