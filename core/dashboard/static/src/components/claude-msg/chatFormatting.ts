@@ -1,5 +1,20 @@
 // 迁移自 claudecodeui src/components/chat/utils/chatFormatting.ts（取渲染所需子集）
 
+// thinking 折叠头文案（add-run-record-readability 3.1）：「已思考 N 秒 · <预览>」。
+// 时长缺失/非正数回退「已思考数秒」（含下一事件缺失、时间戳缺失、负值差场景）；
+// 预览缺失只出时长段。
+export function formatThinkingLabel(
+  staticDuration?: number | null,
+  preview?: string,
+): string {
+  const durationPart =
+    typeof staticDuration === 'number' && Number.isFinite(staticDuration) && staticDuration > 0
+      ? `已思考 ${Math.round(staticDuration)} 秒`
+      : '已思考数秒';
+  const trimmed = (preview || '').trim();
+  return trimmed ? `${durationPart} · ${trimmed}` : durationPart;
+}
+
 export function normalizeInlineCodeFences(text: string) {
   if (!text || typeof text !== 'string') return text;
   try {

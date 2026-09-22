@@ -1729,3 +1729,84 @@ class TestKeepAliveErrorPathHygiene:
             assert "背景".encode("utf-8") in data
         finally:
             conn.close()
+
+
+# ── runs.get_run_events 窗口切片（add-run-record-readability 4.5） ────
+class TestRunTailWindow:
+    """get_run_events offset_from_end 向前分页窗口：offset=0 等价现状、
+    中段窗口、越界钳制、total_events 与 status 不受窗口影响。"""
+
+    RUN_ID = "impl-window-test-1790000000"
+
+    @staticmethod
+    def _write_run(proot, n_events: int) -> Path:
+        """写一条 n_events 条 status 心跳 + 1 条 result 终态的 run 流。"""
+        import json
+
+        run_file = proot / ".fenix" / "runs" / f"{TestRunTailWindow.RUN_ID}.jsonl"
+        run_file.parent.mkdir(parents=True, exist_ok=True)
+        lines = [
+            json.dumps({"type": "system", "subtype": "status", "seq": i}, ensure_ascii=False)
+            for i in range(n_events)
+        ]
+        lines.append(json.dumps({"type": "result", "result": "ok"}, ensure_ascii=False))
+        run_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return run_file
+
+    def test_offset_zero_equivalent_to_legacy_tail(self, tmp_path):
+        proot = make_project(tmp_path)
+        self._write_run(proot, 12)
+        legacy = dash_data.get_run_events(proot, self.RUN_ID, tail=5)
+        windowed = dash_data.get_run_events(proot, self.RUN_ID, tail=5, offset_from_end=0)
+        assert windowed == legacy
+        assert len(windowed["events"]) == 5
+        assert windowed["events"][-1]["type"] == "result"
+
+    def test_mid_window_slice(self, tmp_path):
+        proot = make_project(tmp_path)
+        self._write_run(proot, 10)
+        # 全流 11 条（10 心跳 + 1 result）：窗口 [11-3-2, 11-2) = seq 6,7,8
+        data = dash_data.get_run_events(proot, self.RUN_ID, tail=3, offset_from_end=2)
+        assert [e["seq"] for e in data["events"]] == [6, 7, 8]
+        assert data["total_events"] == 11
+
+    def test_offset_clamps_beyond_stream_start(self, tmp_path):
+        proot = make_project(tmp_path)
+        self._write_run(proot, 4)
+        # 越界：offset=100 → end 钳到 0，窗口为空
+        data = dash_data.get_run_events(proot, self.RUN_ID, tail=3, offset_from_end=100)
+        assert data["events"] == []
+        assert data["total_events"] == 5
+        # 半越界：offset=3, tail=100 → start 钳到 0，取流首 2 条
+        data = dash_data.get_run_events(proot, self.RUN_ID, tail=100, offset_from_end=3)
+        assert [e.get("seq") for e in data["events"] if "seq" in e] == [0, 1]
+        # 负 offset 按 0 钳制（等价现状）
+        data = dash_data.get_run_events(proot, self.RUN_ID, tail=2, offset_from_end=-5)
+        assert len(data["events"]) == 2
+
+    def test_status_and_total_unaffected_by_window(self, tmp_path):
+        proot = make_project(tmp_path)
+        self._write_run(proot, 7)
+        full = dash_data.get_run_events(proot, self.RUN_ID, tail=1000)
+        for offset in (0, 2, 5, 50):
+            data = dash_data.get_run_events(proot, self.RUN_ID, tail=3, offset_from_end=offset)
+            assert data["status"] == full["status"] == "done"
+            assert data["total_events"] == full["total_events"] == 8
+            assert data["exists"] is True
+
+    def test_route_passes_offset_from_end(self, server_fx):
+        proot, srv = server_fx
+        # 缺省：既有响应不变（尾部 2 条，含 result 终态）
+        status, data = srv.get("/api/runs/impl-myspec-1780000000?project=proj-a&tail=2")
+        assert status == 200
+        assert data["status"] == "done"
+        assert data["total_events"] == 3
+        assert data["events"][-1]["type"] == "result"
+        # 透传 offset_from_end：跳过终态行，窗口止于心跳/正文事件
+        status, data = srv.get(
+            "/api/runs/impl-myspec-1780000000?project=proj-a&tail=2&offset_from_end=1"
+        )
+        assert status == 200
+        assert data["total_events"] == 3
+        assert data["events"][-1]["type"] == "assistant"
+        assert data["events"][-1]["type"] != "result"

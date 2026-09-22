@@ -80,7 +80,14 @@ class H4RunRoutesMixin:
             tail = min(int(query.get("tail", ["300"])[0]), 2000)
         except (TypeError, ValueError):
             tail = 300
-        run = dashboard_data.get_run_events(Path(project["path"]), run_id, tail=tail)
+        # 向前分页窗口（add-run-record-readability 4.2）：缺省 0 = 既有尾部截取
+        try:
+            offset_from_end = max(int(query.get("offset_from_end", ["0"])[0]), 0)
+        except (TypeError, ValueError):
+            offset_from_end = 0
+        run = dashboard_data.get_run_events(
+            Path(project["path"]), run_id, tail=tail, offset_from_end=offset_from_end
+        )
         run["project"] = project["name"]
         return run
 

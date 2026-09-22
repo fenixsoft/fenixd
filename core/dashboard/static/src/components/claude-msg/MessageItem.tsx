@@ -141,7 +141,11 @@ const MessageItem = memo(({ message, prevMessage, showThinking = false }: Messag
                 )}
               </>
             ) : message.isThinking ? (
-              <Reasoning defaultOpen={false}>
+              <Reasoning
+                defaultOpen={false}
+                staticDuration={typeof message.thinkingSeconds === 'number' ? message.thinkingSeconds : undefined}
+                preview={typeof message.thinkingPreview === 'string' ? message.thinkingPreview : undefined}
+              >
                 <Markdown className="prose prose-sm prose-gray max-w-none">
                   {message.content}
                 </Markdown>
