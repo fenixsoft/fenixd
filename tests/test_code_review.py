@@ -651,7 +651,7 @@ class TestGetCodeReviewConfig(unittest.TestCase):
         from core.config import ConfigLoader
 
         cfg = ConfigLoader.get_code_review_config({})
-        self.assertEqual(cfg, {"enabled": False, "max_files": 500})
+        self.assertEqual(cfg, {"enabled": False, "max_files": 500, "scope": "window"})
 
     def test_invalid_max_files_fallback(self):
         from core.config import ConfigLoader
@@ -666,7 +666,7 @@ class TestGetCodeReviewConfig(unittest.TestCase):
         cfg = ConfigLoader.get_code_review_config(
             {"admin": {"code_review": {"enabled": True, "max_files": 100}}}
         )
-        self.assertEqual(cfg, {"enabled": True, "max_files": 100})
+        self.assertEqual(cfg, {"enabled": True, "max_files": 100, "scope": "window"})
 
 
 class TestCheckpointDisabledZeroAction(unittest.TestCase):
@@ -771,7 +771,7 @@ class TestDashboardConfigRoundtrip(unittest.TestCase):
         result = write_config(self.tmpdir, {"code_review": {"enabled": True, "max_files": 200}})
         self.assertTrue(result["ok"], result)
         echoed = read_config(self.tmpdir)
-        self.assertEqual(echoed["code_review"], {"enabled": True, "max_files": 200})
+        self.assertEqual(echoed["code_review"], {"enabled": True, "max_files": 200, "scope": "window"})
         # 与 self_review 同形态：code_review 不在受管 admin 键集内
         self.assertNotIn("code_review", echoed["admin"])
         self.assertEqual(echoed["sources"].get("admin.code_review"), "project")

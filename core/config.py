@@ -1390,6 +1390,14 @@ class ConfigLoader:
           「开关只管周期调度」语义一致）
         - max_files: 500（全仓审查 manifest 上限；窗口审查按窗口收集。
           非法值（非正整数/类型错误）回退缺省）
+        - scope: "window"（add-code-review-scope-config：周期审查范围两档）
+          - "window"（缺省）：窗口审查——只审 window_start（自省同源）之后
+            变更文件；
+          - "full"：全库审查——collect_manifest 全仓受控源码文件，与项目页
+            「全库审查」手动按钮同语义；max_files 上限两档同样生效。
+          回退规则：值恰为字符串 "full" 才生效为 full；其余一切（键缺失、
+          "window"、非法字面量、非字符串类型）一律回退 "window"——周期
+          巡检路径 MUST NOT 因配置脏值中断，且缺省即历史行为（向后兼容）。
         """
         admin = config.get("admin") if isinstance(config, dict) else None
         cr = admin.get("code_review") if isinstance(admin, dict) else None
@@ -1402,9 +1410,15 @@ class ConfigLoader:
             or max_files <= 0
         ):
             max_files = 500
+        # scope 白名单：恰为 "full" 才取 full，其余（缺失/window/非法字面量/
+        # 非字符串类型）一律回退 "window"（add-code-review-scope-config D1）
+        scope = cr.get("scope", "window")
+        if scope != "full":
+            scope = "window"
         return {
             "enabled": bool(cr.get("enabled", False)),
             "max_files": int(max_files),
+            "scope": scope,
         }
 
     @classmethod
