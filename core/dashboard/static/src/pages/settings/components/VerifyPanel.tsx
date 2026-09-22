@@ -2,7 +2,8 @@ import { Alert, Button, Card, Form, Input, Radio, Space, Switch, Typography } fr
 import { MinusCircleOutlined, PlusOutlined } from '@ant-design/icons';
 import { useEffect } from 'react';
 import type { ConfigData } from '@/services/dashboard';
-import SyncFromUserButton, { SETTINGS_ACTIONS_ROW_STYLE } from './SyncFromUserButton';
+import SyncFromUserButton from './SyncFromUserButton';
+import { SETTINGS_ACTIONS_ROW_STYLE } from '../styles';
 
 const { Text } = Typography;
 

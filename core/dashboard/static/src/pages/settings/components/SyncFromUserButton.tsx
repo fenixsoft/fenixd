@@ -3,11 +3,12 @@ import { useState } from 'react';
 import { syncConfigFromUser } from '@/services/dashboard';
 import type { ConfigData } from '@/services/dashboard';
 
-// 页标识 → 页签名：单一来源取 settings/index.tsx 的 BASE_MENU_ITEMS
+// 页标识 → 页签名：单一来源在无依赖共享模块 pageLabels.ts
 // （code-review item e0b8f3aefec7：旧实现是手工副本，页签增删/改名会漂移；
-// 且 `?? page` 回退会把内部 key 暴露到用户可见弹窗）。此处集中导入并在回退
-// 分支给出可控提示而非裸 key。
-import { PAGE_LABELS } from '../index';
+// 且 `?? page` 回退会把内部 key 暴露到用户可见弹窗）。回退分支给出可控提示
+// 而非裸 key。（code-review item 6df16f377728：改从共享模块导入——旧
+// `from '../index'` 是 index → panels → button → index 模块循环的一环。）
+import { PAGE_LABELS } from '../pageLabels';
 
 interface SyncFromUserButtonProps {
   /** 当前项目名（项目级作用域才渲染本按钮） */
@@ -114,13 +115,3 @@ export default function SyncFromUserButton({ project, page, onSynced }: SyncFrom
     </>
   );
 }
-
-// 页签底部操作行的统一布局：右对齐，「同步用户级设置」紧邻「保存」左侧。
-// 面板各自的保存按钮行引用此样式，保持八个页签视觉一致。
-export const SETTINGS_ACTIONS_ROW_STYLE: React.CSSProperties = {
-  display: 'flex',
-  justifyContent: 'flex-end',
-  alignItems: 'center',
-  gap: 8,
-  marginTop: 24,
-};

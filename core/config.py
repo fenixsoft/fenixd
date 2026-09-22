@@ -1425,8 +1425,14 @@ class ConfigLoader:
         scope = cr.get("scope", "window")
         if scope != "full":
             scope = "window"
+        # 严格 bool：bool(...) 会把任何 truthy 非 bool 值（如 YAML 引号串
+        # enabled: "false"）静默转 True、意外开启周期审查；非 bool 回退文档
+        # 缺省 False（与 get_code_review_fix_config 同范式）。
+        enabled = cr.get("enabled", False)
+        if not isinstance(enabled, bool):
+            enabled = False
         return {
-            "enabled": bool(cr.get("enabled", False)),
+            "enabled": enabled,
             "max_files": int(max_files),
             "scope": scope,
         }
@@ -1474,8 +1480,14 @@ class ConfigLoader:
         reg = admin.get("regression") if isinstance(admin, dict) else None
         if not isinstance(reg, dict):
             reg = {}
+        # 严格 bool：bool(...) 会把任何 truthy 非 bool 值（如 YAML 引号串
+        # enabled: "false"）静默转 True、意外开启周期回归；非 bool 回退文档
+        # 缺省 False（与 get_code_review_fix_config 同范式）。
+        enabled = reg.get("enabled", False)
+        if not isinstance(enabled, bool):
+            enabled = False
         return {
-            "enabled": bool(reg.get("enabled", False)),
+            "enabled": enabled,
         }
 
     @classmethod

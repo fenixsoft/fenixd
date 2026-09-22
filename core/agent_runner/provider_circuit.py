@@ -201,7 +201,10 @@ class ProviderCircuit:
         状态码（design D4）；解析不到返回 None（视为非 4xx、不计数、探针失败也不计数——
         R2 防护：避免把偶发解析不出 code 的响应误判闭合）。
 
-        返回 int 状态码；非 4xx（5xx/网络错误）返回 None。
+        返回解析出的 int 状态码（所有已识别的 3 位码，含 5xx——code-review
+        item 6f50f872a842：旧 docstring 声称「非 4xx 返回 None」与实现不符，
+        classify_switch_error 恰依赖 5xx 的返回值驱动链前进）；调用方 MUST 自行
+        按 ``PROVIDER_CIRCUIT_4XX`` 成员检查区分 4xx 与其它码。
         """
         if not error_text:
             return None
@@ -401,8 +404,13 @@ class ProviderCircuit:
             return
         now = self._pm._now() if now is None else now
         st = self._circuit_state(provider_name)
-        cooldown = self._pm._get_config(
-            "pm.failover.switch_cooldown_seconds", PROVIDER_SWITCH_COOLDOWN_SECONDS
+        # 数值钳制（code-review item 7729e93d1efe，与 _record_provider_4xx 同口径）：
+        # 非数值配置会让 now + cooldown 抛 TypeError，0/负数静默禁用冷却。
+        cooldown = self._positive_number(
+            self._pm._get_config(
+                "pm.failover.switch_cooldown_seconds", PROVIDER_SWITCH_COOLDOWN_SECONDS
+            ),
+            PROVIDER_SWITCH_COOLDOWN_SECONDS,
         )
         st["switch_cooldown_until"] = now + cooldown
         self._pm.logger.info(
@@ -1203,8 +1211,13 @@ class ProviderCircuit:
         if st is None:
             return
         now = self._pm._now() if now is None else now
-        cooldown = self._pm._get_config(
-            "agents.provider_circuit_cooldown_seconds", PROVIDER_CIRCUIT_COOLDOWN_SECONDS
+        # 数值钳制（code-review item 7729e93d1efe，与 _record_provider_4xx 同口径）：
+        # 非数值配置会让 now + cooldown 抛 TypeError，0/负数静默禁用重冷却。
+        cooldown = self._positive_number(
+            self._pm._get_config(
+                "agents.provider_circuit_cooldown_seconds", PROVIDER_CIRCUIT_COOLDOWN_SECONDS
+            ),
+            PROVIDER_CIRCUIT_COOLDOWN_SECONDS,
         )
         if success:
             self._pm.logger.info(

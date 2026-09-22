@@ -344,61 +344,24 @@ def extract_paths_typed(spec_dir) -> dict:
 
 
 def extract_declared_entries(spec_dir) -> "list | None":
-    """tasks.md ``## Deliverables`` 声明段原始条目（path + kind，保序）。
+    """tasks.md ``## Deliverables`` 声明段原始条目（path + kind，保序去重）。
 
     ``extract_declared`` 与派发处方快照（add-deliverable-declaration-triage
     PR2 2.1）共用的条目级解析：返回过滤后的 ``[{"path": ..., "kind": ...}]``
     列表（kind ∈ new/modify/delete/reference）；无声明段、无有效围栏块、yaml 解析
     失败或全部条目非法 → ``None``。``extract_declared`` 按 kind 归类复用本函数，
     快照按条目级做存在性检查与 basename 匹配（kind 语义不可从归类结果反推）。
-    """
-    import yaml as _yaml
 
+    解析逻辑单点在 ``_declared_entries_from_text``（code-review item
+    6b203e598e09：本函数读文本后直接委托，消除两份同构拷贝——kind 白名单/过滤
+    规则演进漏改一处会导致文件来源与文本来源解析漂移）。
+    """
     tasks = Path(spec_dir) / "tasks.md"
     try:
         text = tasks.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return None
-    lines = text.splitlines()
-    start = None
-    for i, line in enumerate(lines):
-        if _DECLARED_HEADING_RE.match(line):
-            start = i + 1
-            break
-    if start is None:
-        return None
-
-    block: List[str] = []
-    in_fence = False
-    for line in lines[start:]:
-        if _H2_RE.match(line):
-            break
-        if _FENCE_RE.match(line):
-            in_fence = not in_fence
-            continue
-        if in_fence:
-            block.append(line)
-    if not block:
-        return None
-    try:
-        entries = _yaml.safe_load("\n".join(block))
-    except Exception:
-        return None
-    if not isinstance(entries, list):
-        return None
-
-    out: List[dict] = []
-    for e in entries:
-        if not isinstance(e, dict):
-            continue
-        path = str(e.get("path") or "").strip()
-        kind = str(e.get("kind") or "").strip().lower()
-        if not path or kind not in _DECLARED_KINDS:
-            continue
-        if _ABSOLUTE_RE.match(path) or _WILDCARD_RE.search(path) or _DIRECTORY_RE.search(path):
-            continue
-        out.append({"path": path, "kind": kind})
-    return out if out else None
+    return _declared_entries_from_text(text)
 
 
 def extract_declared(spec_dir) -> "dict | None":

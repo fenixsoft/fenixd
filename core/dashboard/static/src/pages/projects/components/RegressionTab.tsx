@@ -140,12 +140,15 @@ function RunningProgressView({
     });
   }
   // timeout：快照本身无独立用例表，以「整体超时」一行呈现（结果表 MUST 含
-  // 超时行——spec Scenario「2 个失败用例 + 1 个超时 + 3 个长耗时用例」）
+  // 超时行——spec Scenario「2 个失败用例 + 1 个超时 + 3 个长耗时用例」）。
+  // file 置空串（「文件:行」列显示 —，code-review item 72c04148d4c9：旧实现
+  // 把整段原始命令输出冒充 file 渲染进该列，误导）；output/reason 落概览卡
+  // 的超时详情区（见下方渲染）。
   if (snapshot.status === 'timeout') {
     rows.push({
       key: `t-${rows.length}`,
       name: '（本次回归整体超时）',
-      file: snapshot.output || '',
+      file: '',
       line: 0,
       time: snapshot.duration_seconds ?? 0,
       kind: 'timeout',
@@ -489,6 +492,17 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
               原因：{snapshot.reason}
             </Typography.Text>
+          ) : null}
+          {/* 超时详情区（code-review item 72c04148d4c9）：原始命令输出不再冒充
+              结果表的「文件:行」值，落此独立展示（默认折叠 4 行可展开） */}
+          {status === 'timeout' && snapshot?.output ? (
+            <Typography.Paragraph
+              type="secondary"
+              style={{ fontSize: 12, marginBottom: 0, whiteSpace: 'pre-wrap' }}
+              ellipsis={{ rows: 4, expandable: true, symbol: '展开' }}
+            >
+              {`输出：${snapshot.output}`}
+            </Typography.Paragraph>
           ) : null}
           {awaitingStart && !running ? <RunningProgressView waiting /> : null}
           <div style={{ marginTop: 4, textAlign: 'right' }}>

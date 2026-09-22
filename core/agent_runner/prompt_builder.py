@@ -12,11 +12,21 @@ self._pm，不在本组件持有状态。
 """
 
 import json
+import logging
+import re
 from pathlib import Path
 
 # 框架根（与 core/spec_gen.py SCHEMA_DIR 同型推导）；agents/ 提示词目录
 FRAMEWORK_ROOT = Path(__file__).resolve().parents[2]
 AGENT_PROMPT_DIR = FRAMEWORK_ROOT / "agents"
+
+# 可传播到 fenixd 已挂载 handler 的结构化日志器（与 pm_engine.spec_integrity 同型）
+_logger = logging.getLogger("fenixd.agent_runner.prompt_builder")
+
+# 未解析占位符扫描（add-code-review-auto-fix）：填充后残留的 {snake_case} 记
+# warning——模板笔误/重命名占位符、条件键未注入（如非 verifier/fast-track 的
+# progress_path）原样留在派发提示词属 fail-open，静默丢失预期注入。
+_PLACEHOLDER_RE = re.compile(r"\{[a-z_]+\}")
 
 # 十类 agent → 提示词文件名（agent-type 白名单的单一来源，Dashboard 端点复用）
 # add-daily-self-review：新增 self-review（每日自省）类型。
@@ -217,10 +227,12 @@ class PromptBuilder:
             values["{prev_review_rejection}"] = _prev_rej
         values.update(
             {
-                "{sig_type}": sig.get("signal_type") or "unknown",
-                "{sig_spec}": sig.get("spec") or spec_name,
-                "{severity}": sig.get("severity") or "major",
-                "{description}": sig.get("description") or "",
+                # 信号字段统一走 _str_field（历史/直发记录可能是结构化值，非字符串
+                # 到达 str.replace 抛 TypeError 中止整个提示词构建——归一不对称防回归）。
+                "{sig_type}": _str_field(sig.get("signal_type")) or "unknown",
+                "{sig_spec}": _str_field(sig.get("spec")) or spec_name,
+                "{severity}": _str_field(sig.get("severity")) or "major",
+                "{description}": _str_field(sig.get("description")),
                 "{evidence}": _str_field(sig.get("evidence")),
                 "{recommendation}": _str_field(sig.get("recommended_action")),
                 "{disp_path}": str(
@@ -232,6 +244,17 @@ class PromptBuilder:
         out = template
         for key, val in values.items():
             out = out.replace(key, val)
+        # 廉价后置检查（add-code-review-auto-fix）：存在未解析占位符记 warning，
+        # 不阻断派发（fail-open），但让模板漂移导致的注入静默丢失在日志可见。
+        leftover = sorted(set(_PLACEHOLDER_RE.findall(out)) - set(values))
+        if leftover:
+            _logger.warning(
+                "提示词占位符未解析（模板漂移，注入内容可能静默丢失）: "
+                "agent=%s spec=%s leftover=%s",
+                agent_type,
+                spec_name,
+                leftover,
+            )
         return out
 
     def _build_prompt(
@@ -1280,7 +1303,9 @@ class PromptBuilder:
                 - repair_round: 当前是第几轮 repair
         """
         spec_dir = f"spec/changes/{spec_name}"
-        merge_error = conflict_summary.get("merge_error", "（未提供原始错误）")
+        # _str_field 归一：键缺失、显式 None 或结构化值都安全（None 切片 [:2000] 抛
+        # TypeError——历史修复防回归）。
+        merge_error = _str_field(conflict_summary.get("merge_error")) or "（未提供原始错误）"
         conflict_paths = conflict_summary.get("conflict_paths", [])
         repair_round = conflict_summary.get("repair_round", 1)
 

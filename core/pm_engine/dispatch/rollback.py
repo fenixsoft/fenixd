@@ -69,13 +69,31 @@ class RRollbackMixin:
         except (TypeError, ValueError):
             return False
 
+    def _dispatch_rollback_backoff_seconds(self) -> int:
+        """派发异常回滚后的防振荡退避窗（秒）。
+
+        可配 ``pm.dispatch_rollback_backoff_seconds``，默认 300s
+        （code-review item 7b281a0886ea：原硬编码 +300 与可配置的
+        ``pm.dispatch_backoff_schedule`` 双源不统一，调参/行为诊断困难）。
+        非正数/非法值回退缺省。
+        """
+        default = 300
+        try:
+            v = float(self._pm._get_config("pm.dispatch_rollback_backoff_seconds", default))
+        except (TypeError, ValueError):
+            return default
+        if v != v or v in (float("inf"), float("-inf")) or v <= 0:
+            return default
+        return int(v)
+
     def _rollback_failed_dispatch(self, spec_name: str, agent_type: str, exc: Exception):
         """派发/执行异常时回滚滞留中间态的 spec 到可重试态（fix: 伪 bug 卡死）。
 
         - implementer 失败：implementing → ready，清空 run 字段；error 置 None 以便
           full_scan 的 spec_ready recovery 再次拾起（错误详情记入 _last_dispatch_error）。
         - verifier 失败：testing → implemented，清 tester_run；实现保留（不重实现）。
-        设置 _dispatch_backoff_until（5 分钟）吸收 inotify 触发的即时重派振荡；
+        设置 _dispatch_backoff_until（默认 5 分钟，可配
+        ``pm.dispatch_rollback_backoff_seconds``）吸收 inotify 触发的即时重派振荡；
         重试由队列条目 + full_scan recovery 兜底（最长 30 分钟窗口）。
         """
         try:
@@ -83,7 +101,9 @@ class RRollbackMixin:
             if not spec_entry:
                 return
             status = spec_entry.get("status")
-            backoff_until = int(datetime.now(timezone.utc).timestamp()) + 300
+            backoff_until = int(datetime.now(timezone.utc).timestamp()) + (
+                self._dispatch_rollback_backoff_seconds()
+            )
             if agent_type == "verifier" and status == "testing":
                 self._pm.state_machine.update_spec(
                     spec_name,
