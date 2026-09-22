@@ -85,39 +85,39 @@ class TestGetImplCodeReviewTimeoutSec:
 
 
 class TestGetImplCodeReviewConcurrency:
-    """ConfigLoader.get_impl_code_review_concurrency：缺省 2，仅正整数 int。"""
+    """ConfigLoader.get_impl_code_review_concurrency：缺省 4（add-impl-ocr-parallel-lane D7 由 2 上调），仅正整数 int。"""
 
     def test_missing_verify_section(self):
-        """verify 节缺失 → 2"""
-        assert ConfigLoader.get_impl_code_review_concurrency({}) == 2
+        """verify 节缺失 → 4"""
+        assert ConfigLoader.get_impl_code_review_concurrency({}) == 4
 
     def test_missing_key(self):
-        """verify 存在但无该键 → 2（spec：键缺失取缺省）"""
-        assert ConfigLoader.get_impl_code_review_concurrency({"verify": {}}) == 2
+        """verify 存在但无该键 → 4（spec：键缺失取缺省）"""
+        assert ConfigLoader.get_impl_code_review_concurrency({"verify": {}}) == 4
 
     def test_zero_value(self):
-        """值为 0（≤0）→ 2（spec：非法值回退缺省）"""
+        """值为 0（≤0）→ 4（spec：非法值回退缺省）"""
         assert ConfigLoader.get_impl_code_review_concurrency(
             {"verify": {"impl_code_review_concurrency": 0}}
-        ) == 2
+        ) == 4
 
     def test_negative_value(self):
-        """值为 -1 → 2"""
+        """值为 -1 → 4"""
         assert ConfigLoader.get_impl_code_review_concurrency(
             {"verify": {"impl_code_review_concurrency": -1}}
-        ) == 2
+        ) == 4
 
     def test_string_value(self):
-        """值为 "4"（字符串）→ 2"""
+        """值为 "4"（字符串）→ 4"""
         assert ConfigLoader.get_impl_code_review_concurrency(
             {"verify": {"impl_code_review_concurrency": "4"}}
-        ) == 2
+        ) == 4
 
     def test_bool_value(self):
-        """值为 True（bool 不算 int）→ 2"""
+        """值为 True（bool 不算 int）→ 4"""
         assert ConfigLoader.get_impl_code_review_concurrency(
             {"verify": {"impl_code_review_concurrency": True}}
-        ) == 2
+        ) == 4
 
     def test_valid_positive_int(self):
         """值为 4（合法正整数）→ 4（spec：合法值透传）"""
@@ -235,7 +235,8 @@ class TestReadersIndependence:
         assert verify is None or "impl_code_review_effort" not in verify
         # 读取器仍按缺省生效
         assert ConfigLoader.get_impl_code_review_timeout_sec(effective) == 600
-        assert ConfigLoader.get_impl_code_review_concurrency(effective) == 2
+        # 缺省 4（add-impl-ocr-parallel-lane D7：2 → 4，显式配置不受影响）
+        assert ConfigLoader.get_impl_code_review_concurrency(effective) == 4
         assert ConfigLoader.get_impl_code_review_effort(effective) == "low"
 
 
@@ -291,11 +292,16 @@ class TestWriteRunOcrConfigTimeoutInject:
         assert cfg["custom_providers"]["fenix-impl"]["timeout_sec"] == 600
 
 
-# ── 7.3 / 7.3b prompt_builder._impl_code_review_section ─────────────────
+# ── add-impl-ocr-parallel-lane 5.1：prompt_builder._ocr_findings_section ──
 
 
-class TestImplCodeReviewSection:
-    """_impl_code_review_section 命令串注入 / 零注入 / 文案一致性。"""
+class TestOcrFindingsSection:
+    """_ocr_findings_section：directive 文件驱动注入 / 零注入 / 处置契约文案。
+
+    内联收尾审查段（_impl_code_review_section）已退役——收尾 ocr 由框架侧
+    异步车道承载（add-impl-ocr-parallel-lane），实现者提示词只在被 join 打回
+    的修复轮收到 findings 清单与 disposition 处置契约。
+    """
 
     def _make_pb(self, tmp_path: Path, config: dict):
         from test_agent_runner import make_runner
@@ -305,97 +311,185 @@ class TestImplCodeReviewSection:
         runner.config = dict(config)
         return PromptBuilder(runner)
 
-    def test_injects_concurrency_and_effort_explicit(self, tmp_path):
-        """显式 concurrency=3 / effort="medium" → 命令串含 --concurrency 3 --effort medium。"""
-        pb = self._make_pb(
-            tmp_path,
-            {
-                "verify": {
-                    "impl_code_review": True,
-                    "impl_code_review_concurrency": 3,
-                    "impl_code_review_effort": "medium",
-                }
-            },
+    def _write_directive(self, tmp_path: Path, findings, round_no=1):
+        d = tmp_path / ".fenix" / "verify-progress" / "demo"
+        d.mkdir(parents=True, exist_ok=True)
+        payload = {"spec": "demo", "round": round_no, "max_rounds": 1, "findings": findings}
+        (d / "ocr_findings_directive.json").write_text(
+            json.dumps(payload, ensure_ascii=False), encoding="utf-8"
         )
-        section = pb._impl_code_review_section("demo")
-        assert "--concurrency 3" in section
-        assert "--effort medium" in section
-        # 既有串保持不变
-        assert "--format json --output /tmp/ocr-raw.json" in section
-        assert "bin/ocr_review.py review --from <base> --to HEAD" in section
 
-    def test_injects_defaults(self, tmp_path):
-        """未配置 concurrency/effort → 命令串含缺省 --concurrency 2 --effort low。"""
+    def test_no_directive_zero_injection(self, tmp_path):
+        """directive 文件缺失 → 空串（零注入，非打回轮 prompt 逐字节不变）。"""
         pb = self._make_pb(tmp_path, {"verify": {"impl_code_review": True}})
-        section = pb._impl_code_review_section("demo")
-        assert "--concurrency 2" in section
-        assert "--effort low" in section
+        assert pb._ocr_findings_section("demo") == ""
 
-    def test_no_max_tokens_budget(self, tmp_path):
-        """命令示例串 MUST NOT 含 --max-tokens-budget（可执行的注入命令不得带
-        该 flag）；成本控制条的「MUST NOT 传」禁止性文案保留（任务 3.2 要求
-        保持既有约束文案——那是说明文字，不是可执行命令）。"""
-        pb = self._make_pb(
+    def test_directive_injects_findings_and_contract(self, tmp_path):
+        """directive 存在 → 注入 findings 清单 + disposition 契约 + 重验要求。"""
+        self._write_directive(
             tmp_path,
-            {"verify": {"impl_code_review": True, "impl_code_review_effort": "high"}},
+            [
+                {
+                    "path": "core/x.py",
+                    "start_line": 12,
+                    "category": "correctness",
+                    "severity": "major",
+                    "content": "空跑被判成功（fail-closed 缺失）",
+                }
+            ],
         )
-        section = pb._impl_code_review_section("demo")
-        # 命令示例行（含 bin/ocr_review.py review 的那一行）不得含该 flag
-        for line in section.splitlines():
-            if "bin/ocr_review.py review" in line:
-                assert "--max-tokens-budget" not in line
-        # 成本控制条保留「MUST NOT 传 --max-tokens-budget」既有约束文案
-        assert "MUST NOT 传 `--max-tokens-budget`" in section
+        pb = self._make_pb(tmp_path, {"verify": {"impl_code_review": True}})
+        section = pb._ocr_findings_section("demo")
+        assert "core/x.py:12" in section
+        assert "correctness" in section
+        assert "空跑被判成功" in section
+        # 处置契约：三值白名单 + rejected/deferred 须附非空 reason
+        assert '"disposition"' in section
+        assert '"fixed"' in section and '"rejected"' in section and '"deferred"' in section
+        assert "非空" in section
+        # 处置登记路径为 worktree 相对路径，MUST NOT 出现主树绝对路径字样
+        assert ".fenix/verify-progress/demo/code-review.json" in section
+        assert str(tmp_path) not in section
+        # 修码后重验：定向测试 + 全量回归有界入口前台直跑
+        assert "bin/run_full_suite.py" in section
+        assert "定向测试" in section
+        # 实现者不再自跑 ocr
+        assert "MUST NOT" in section and "自己跑 ocr" in section
 
-    def test_switch_off_zero_injection(self, tmp_path):
-        """开关关闭 → 段为空串，且不调用 concurrency/effort 两读取器
-        （patch 两读取器抛 AssertionError——被调用即失败）。"""
-        from core.config import ConfigLoader
+    def test_round_counter_injected(self, tmp_path):
+        """round 字段注入修复轮次与上限语义（达上限转台账提示）。"""
+        self._write_directive(tmp_path, [{"path": "a.py", "content": "x"}], round_no=1)
+        pb = self._make_pb(tmp_path, {})
+        section = pb._ocr_findings_section("demo")
+        assert "第 1 轮" in section
+        assert "上限" in section
 
-        pb = self._make_pb(tmp_path, {"verify": {"impl_code_review": False}})
-        with patch.object(
-            ConfigLoader, "get_impl_code_review_concurrency",
-            side_effect=AssertionError("MUST NOT call concurrency when disabled"),
-        ), patch.object(
-            ConfigLoader, "get_impl_code_review_effort",
-            side_effect=AssertionError("MUST NOT call effort when disabled"),
-        ):
-            section = pb._impl_code_review_section("demo")
-        assert section == ""
-
-    def test_switch_missing_zero_injection(self, tmp_path):
-        """开关键缺失 → 段为空串（fail-open，不注入）。"""
-        pb = self._make_pb(tmp_path, {"verify": {}})
-        assert pb._impl_code_review_section("demo") == ""
-
-    def test_cost_control_wording_no_self_effort_choice(self, tmp_path):
-        """7.3b：改写后的成本控制文案与新命令示例不冲突——段内不得再出现
-        「自行选择 effort」类措辞（防注入值被实现者覆盖的回归）。"""
-        pb = self._make_pb(
-            tmp_path,
-            {"verify": {"impl_code_review": True, "impl_code_review_effort": "low"}},
+    def test_corrupt_directive_zero_injection(self, tmp_path):
+        """directive 非法 JSON / findings 非列表 → 空串（fail-open 零注入）。"""
+        d = tmp_path / ".fenix" / "verify-progress" / "demo"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "ocr_findings_directive.json").write_text("{not-json", encoding="utf-8")
+        pb = self._make_pb(tmp_path, {})
+        assert pb._ocr_findings_section("demo") == ""
+        (d / "ocr_findings_directive.json").write_text(
+            json.dumps({"findings": "nope"}), encoding="utf-8"
         )
-        section = pb._impl_code_review_section("demo")
-        # 不得再出现「改用 --effort low|medium|high 控制」类自我选择措辞
-        assert "改用 `--effort low|medium|high`" not in section
-        # 不得出现「自行选择」与 effort 相邻的自我选择措辞（命令形态微调
-        # 用「按改动规模自行选择」仍允许——那指 --from/--to/--commit/工作区模式）
-        assert "自行选择 `--effort" not in section
-        assert "自行选择 --effort" not in section
-        assert "自行选择 effort" not in section
-        # 新文案应声明框架已注入 + MUST NOT 自行改写
-        assert "已由框架经" in section
-        assert "MUST NOT 自行改写" in section
-        # 用户可配置键名出现在文案中（可调性说明保留）
-        assert "verify.impl_code_review_effort" in section
-        assert "verify.impl_code_review_concurrency" in section
+        assert pb._ocr_findings_section("demo") == ""
 
-    def test_effort_injected_value_consistent_with_section(self, tmp_path):
-        """命令串中的 effort 取值与「用户可配置」声明的键一致——注入值出现于命令。"""
-        pb = self._make_pb(
-            tmp_path,
-            {"verify": {"impl_code_review": True, "impl_code_review_effort": "high"}},
+    def test_empty_findings_zero_injection(self, tmp_path):
+        """findings 空列表 → 空串（无义务可注入）。"""
+        self._write_directive(tmp_path, [])
+        pb = self._make_pb(tmp_path, {})
+        assert pb._ocr_findings_section("demo") == ""
+
+
+class TestGetImplCodeReviewMode:
+    """get_impl_code_review_mode（add-impl-ocr-parallel-lane 1.1）：缺省 gate，
+    仅接受 gate/advisory 白名单，非法值回退缺省。"""
+
+    def test_missing_verify_section(self):
+        """verify 节缺失 → 'gate'"""
+        assert ConfigLoader.get_impl_code_review_mode({}) == "gate"
+
+    def test_missing_key(self):
+        """verify 存在但无该键 → 'gate'（缺省）"""
+        assert ConfigLoader.get_impl_code_review_mode({"verify": {}}) == "gate"
+
+    def test_gate_value(self):
+        """值为 'gate' → 'gate'（合法透传）"""
+        assert (
+            ConfigLoader.get_impl_code_review_mode({"verify": {"impl_code_review_mode": "gate"}})
+            == "gate"
         )
-        section = pb._impl_code_review_section("demo")
-        assert "--effort high" in section
-        assert "--concurrency 2" in section  # 未配置并发 → 缺省注入
+
+    def test_advisory_value(self):
+        """值为 'advisory' → 'advisory'（合法透传）"""
+        assert (
+            ConfigLoader.get_impl_code_review_mode(
+                {"verify": {"impl_code_review_mode": "advisory"}}
+            )
+            == "advisory"
+        )
+
+    def test_invalid_value_falls_back(self):
+        """值为 'strict'（白名单外）→ 'gate'（fail-open 回退）"""
+        assert (
+            ConfigLoader.get_impl_code_review_mode({"verify": {"impl_code_review_mode": "strict"}})
+            == "gate"
+        )
+
+    def test_case_sensitive(self):
+        """值为 'GATE'（大小写不匹配）→ 'gate'"""
+        assert (
+            ConfigLoader.get_impl_code_review_mode({"verify": {"impl_code_review_mode": "GATE"}})
+            == "gate"
+        )
+
+    def test_non_string_value(self):
+        """值为 1（非 str）→ 'gate'"""
+        assert ConfigLoader.get_impl_code_review_mode({"verify": {"impl_code_review_mode": 1}}) == "gate"
+
+    def test_empty_string_value(self):
+        """值为 ''（空串）→ 'gate'"""
+        assert ConfigLoader.get_impl_code_review_mode({"verify": {"impl_code_review_mode": ""}}) == "gate"
+
+
+class TestGetImplCodeReviewLaneTimeoutSec:
+    """get_impl_code_review_lane_timeout_sec（add-impl-ocr-parallel-lane 1.1b）：
+    车道级硬超时，缺省 2400，与单请求超时键按键分离，仅正整数 int。"""
+
+    def test_missing_verify_section(self):
+        """verify 节缺失 → 2400"""
+        assert ConfigLoader.get_impl_code_review_lane_timeout_sec({}) == 2400
+
+    def test_missing_key(self):
+        """verify 存在但无该键 → 2400（缺省）"""
+        assert ConfigLoader.get_impl_code_review_lane_timeout_sec({"verify": {}}) == 2400
+
+    def test_valid_positive_int(self):
+        """值为 3600（合法正整数）→ 3600"""
+        assert (
+            ConfigLoader.get_impl_code_review_lane_timeout_sec(
+                {"verify": {"impl_code_review_lane_timeout_sec": 3600}}
+            )
+            == 3600
+        )
+
+    def test_zero_and_negative(self):
+        """0 / -1（≤0）→ 2400（非法回退缺省）"""
+        for bad in (0, -1):
+            assert (
+                ConfigLoader.get_impl_code_review_lane_timeout_sec(
+                    {"verify": {"impl_code_review_lane_timeout_sec": bad}}
+                )
+                == 2400
+            )
+
+    def test_string_value(self):
+        """值为 "3000"（字符串）→ 2400"""
+        assert (
+            ConfigLoader.get_impl_code_review_lane_timeout_sec(
+                {"verify": {"impl_code_review_lane_timeout_sec": "3000"}}
+            )
+            == 2400
+        )
+
+    def test_bool_value(self):
+        """值为 True（bool 不算 int）→ 2400"""
+        assert (
+            ConfigLoader.get_impl_code_review_lane_timeout_sec(
+                {"verify": {"impl_code_review_lane_timeout_sec": True}}
+            )
+            == 2400
+        )
+
+    def test_independent_of_request_timeout(self):
+        """按键分离：车道超时键设置不影响单请求超时键，反之亦然。"""
+        config = {
+            "verify": {
+                "impl_code_review_timeout_sec": 900,
+                "impl_code_review_lane_timeout_sec": 3600,
+            }
+        }
+        assert ConfigLoader.get_impl_code_review_timeout_sec(config) == 900
+        assert ConfigLoader.get_impl_code_review_lane_timeout_sec(config) == 3600

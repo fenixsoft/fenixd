@@ -426,11 +426,14 @@ class PromptBuilder:
         prompt += self._forensic_depth_section(agent_type)
         prompt += self._long_task_wait_section(agent_type)
 
-        # add-impl-code-review-gate（任务 5.2）：收尾代码质量审查注入——统一收尾
-        # 处注入（非交互契约段之后、项目级附加段之前），只覆盖两条实现车道；
-        # 开关关闭时返回空串（prompt += "" 逐字节不变）。
+        # add-impl-ocr-parallel-lane（任务 5.1）：ocr 修复轮 findings 注入——
+        # 统一收尾处注入（非交互契约段之后、项目级附加段之前），只覆盖两条实现
+        # 车道；框架侧 join 打回时写 ocr_findings_directive.json，非打回轮文件
+        # 缺失零注入（prompt += "" 逐字节不变）。收尾 ocr 审查本身已由实现者
+        # 内联义务退役为框架侧异步车道（impl-ocr-parallel-lane），实现者不再
+        # 在收工前自跑 ocr。
         if agent_type in ("implementer", "fast-track"):
-            prompt += self._impl_code_review_section(spec_name)
+            prompt += self._ocr_findings_section(spec_name)
 
         # 项目级附加提示词（D2）：附加在完整 prompt（通用主体 + 动态段）之后
         prompt += self._project_extra_section(agent_type, spec_name, wt_path)
@@ -624,111 +627,94 @@ class PromptBuilder:
             "- **禁止空转**：MUST NOT 用 `sleep` / 周期性 `ps` 空转模拟等待。\n"
         )
 
-    def _impl_code_review_section(self, spec_name: str) -> str:
-        """收尾代码质量审查段（add-impl-code-review-gate，任务 5.1）。
+    def _ocr_findings_section(self, spec_name: str) -> str:
+        """ocr 修复轮 findings 注入段（add-impl-ocr-parallel-lane，任务 5.1）。
 
-        开关关闭时返回空串（零注入，保证提示词逐字节不变）。开关读取经
-        ConfigLoader.get_impl_code_review_enabled（合并后的结果）；config 经
-        `self._pm.config`（AgentRunner 实例直接持有 config）获取。
+        文件驱动（对齐 `_scenario_reroute_directive_section` 手法）：框架侧 join
+        裁决在 gate 档打回时把 findings 清单写入主树
+        ``.fenix/verify-progress/<spec>/ocr_findings_directive.json``，本段读同
+        一文件生成注入；非打回轮文件缺失/不可读 → 零注入（空串）。
 
-        开启时返回一段中文说明，覆盖：触发时机（全部 tasks.md 任务完成并提交
-        之后、写 .fenix-run-result.json 之前）；审查范围（本次实现分支相对基线
-        的 diff，merge-base 模式）；工具为 bin/ocr_review.py 包装器（MUST NOT
-        直接调 ocr，因为 provider 配置由 run 级注入承载）；评估义务（逐条判断
-        真实问题 vs 误报，修正真实问题的裁量权归实现者，误报可驳回但须给理由）；
-        成本控制（MUST NOT 传 --max-tokens-budget——按 token 预算中止会令多数
-        文件判 failed 只产出部分 findings，审查覆盖残缺；并发与力度由框架注入，
-        取值来自配置，实现者 MUST NOT 自行改写）；
-        报告落盘路径与 code_review 段格式；环境不可用时的降级动作。
+        覆盖三块义务：findings 清单（逐条 path/line/category/severity/content）；
+        disposition 处置契约（fixed/rejected/deferred 三值，rejected/deferred
+        MUST 附非空 reason——复用既有 disposition 语义）；修码后重验要求（定向
+        测试 + 全量回归走有界入口 `bin/run_full_suite.py` 前台直跑）。
 
-        add-impl-code-review-tuning（任务 3.1/3.2/3.2b/3.3）：并发（--concurrency）
-        与力度（--effort）经命令示例注入，取值来自
-        ConfigLoader.get_impl_code_review_concurrency / get_impl_code_review_effort
-        （用户可配置 verify.impl_code_review_concurrency / _effort，缺省 2 / "low"）。
-        二者与 timeout_sec 的注入通道不同：timeout_sec 经 run 级 ocr 配置确定性
-        注入（runner._write_run_ocr_config），而 --concurrency 无持久化配置键、
-        --effort 与并发同走单一提示词通道（design D2/D6）——对实现者仍是软约束，
-        命令示例给出完整串；若实现者不照抄即失效，单测断言命令串压低该风险。
-        两读取器调用 MUST 位于开关关闭提前返回之后（开关关闭零注入：不调用）。
-
-        路径语义（fix-impl-code-review-writepath）：implementer 的 code-review.json
-        是**唯一** in-worktree 的 verify-progress 产物——门
-        result_gate._check_impl_code_review_artifact 读 worktree 路径（wt_path /
-        ".fenix"/"verify-progress"/<spec>/code-review.json），_copyback_verify_progress
-        单向 worktree→主树。这与 verifier/planner/fast-track 的 verify-progress
-        产物（写在主树，经 --add-dir <主树>/verify-progress 授权）不同：故本段给
-        实现者的路径一律是 worktree 内相对路径，MUST NOT 让实现者写主树同名目录
-        （写主树会被产物硬门判「报告缺失」）。维护者改本段时不得引入主树绝对路径
-        字样，免得重蹈「交付物声明读一侧、实现写另一侧」错层。
+        路径语义（沿用 fix-impl-code-review-writepath 教训）：给实现者的处置
+        登记路径一律是 **worktree 相对路径**（实现者在自己的 worktree 内写
+        ``.fenix/verify-progress/<spec>/code-review.json`` 的逐条 disposition，
+        经既有拷回通道单向 worktree→主树）；本段 MUST NOT 出现主树绝对路径字样。
+        本段自身读框架写的 directive 文件走主树路径（框架侧读，与实现者写侧
+        分离），该主树路径不出现在注入文本中。
         """
-        try:
-            from core.config import ConfigLoader
-
-            config = self._pm.config
-            enabled = ConfigLoader.get_impl_code_review_enabled(config)
-        except Exception:
-            return ""
-        if not enabled:
-            return ""
-        concurrency = ConfigLoader.get_impl_code_review_concurrency(config)
-        effort = ConfigLoader.get_impl_code_review_effort(config)
-        report_path = f".fenix/verify-progress/{spec_name}/code-review.json"
-        raw_copy_path = f".fenix/verify-progress/{spec_name}/code-review-raw.json"
-        return (
-            "\n\n## 收尾代码质量审查（impl-code-review-gate，强制）\n"
-            "在全部 tasks.md 任务完成并提交之后、写 `.fenix-run-result.json` 之前，"
-            "你 MUST 执行一次代码质量审查：\n"
-            "1. **审查范围**：本次实现分支相对其基线的 diff（merge-base 模式），"
-            "命令示例（在 worktree 根执行）：\n"
-            "   `python3 bin/ocr_review.py review --from <base> --to HEAD "
-            f"--concurrency {concurrency} --effort {effort} "
-            "--format json --output /tmp/ocr-raw.json`\n"
-            "   其中 <base> 为实现分支的基线（如 main）。若不确定 base，可用 "
-            "`--commit` 逐提交审或直接 `python3 bin/ocr_review.py review` 工作区"
-            "模式兜底——具体命令形态由你按改动规模自行选择（`--concurrency` / "
-            "`--effort` 除外，其取值已由框架注入，不得改写）。\n"
-            "2. **工具**：MUST 用仓库内包装器 `bin/ocr_review.py`，MUST NOT 直接调 "
-            "`ocr`——provider 配置由 run 级注入承载（环境变量 FENIX_OCR_HOME/OCR "
-            "专用 HOME，其下 .opencodereview/config.json 由框架写入，复用分配给本 "
-            "run 的 provider，与 fenix 成本记账同源）。\n"
-            "3. **成本控制**：MUST NOT 传 `--max-tokens-budget`（或 `--max-tokens`）"
-            "——它按累计 token 预算硬中止审查，超预算的文件直接判 failed，实测导致 "
-            "「8 个待审文件 7 个 failed、仅产出 3 条残缺 findings」，审查覆盖形同虚设。"
-            "审查力度已由框架经 `--effort <值>` 注入（用户可配置 "
-            "`verify.impl_code_review_effort`），并发上限亦已由框架经 "
-            "`--concurrency <值>` 注入（用户可配置 "
-            "`verify.impl_code_review_concurrency`）——MUST NOT 自行改写这两个取值"
-            "；若确需限制规模，用 `--exclude` 排除生成物/夹具等非本次改动文件，"
-            "而非砍预算。\n"
-            "4. **评估义务**：逐条判断发现是真实问题还是误报。**修正真实问题的裁量"
-            "权归你**（发现的真实问题应修正）；误报可驳回，但须在处置中给理由。\n"
-            "5. **结果登记**：把 ocr 原始报告规整为框架侧规整契约写入 "
-            f"`{report_path}`（**相对当前工作目录（worktree）的相对路径**；"
-            "MUST NOT 用主树绝对路径写此文件——主树同名目录不是本 run 的落点，"
-            "产物硬门只读 worktree 内该路径）。内容含 `status`/`llm`/"
-            "`findings` + 逐条 `disposition`，取值 `\"fixed\"`/`\"rejected\"`/"
-            "`\"deferred\"`，后两者 MUST 附非空 `reason`）。注意 "
-            "`code-review.json` 是框架侧规整契约，**与 ocr 原始 "
-            "JSON 报告不同构**：实测 ocr 原始报告顶层键为 `status`（值 "
-            "`\"complete\"`/`\"failed\"`）/`llm`/`comments`（发现数组，逐条含 "
-            "`path`/`start_line`/`category`/`severity`/`content`）/`summary`/"
-            "`manifest`——你 MUST 把原始报告的发现数组规整为 `findings`，并对 "
-            "`status` 做值映射（`\"complete\"` → `\"completed\"`；底层非零退出/"
-            "`\"failed\"` → `\"unavailable\"` + 非空 `reason`）。具体键名以你现场"
-            "跑出的原始报告为准，不得凭猜测硬编码。请同时保留原始报告副本（如"
-            f"`{raw_copy_path}`，同为相对当前工作目录（worktree）的相对路径）"
-            "以便审计；该副本仅框架读取，无需你主动写主树。\n"
-            "6. **结果文件登记**：在 `.fenix-run-result.json` 顶层增设 `code_review` "
-            "段：**键名 MUST 恰为 `dispositions`**——一个与 `code-review.json` 的 "
-            "`findings` 等长、逐条对应的数组，逐条含 `disposition`（`\"fixed\"`/"
-            "`\"rejected\"`/`\"deferred\"`，后两者 MUST 附非空 `reason`）。该数组"
-            "是硬门机械对账的依据（按 `len(findings) == len(dispositions)` 比对，"
-            "逐条校验 disposition 白名单与 reason 非空），MUST NOT 改用其它同义"
-            "键名（如 `findings_summary`）。段内另含 `report_path` 相对路径。\n"
-            "7. **环境不可用降级**：若 ocr 未安装 / provider 不可达 / 非 git 仓库 / "
-            "审查异常终止，写 `status: \"unavailable\"` + 非空 `reason`（MUST 非空，"
-            "空原因会被判为登记非法）后照常收工，MUST NOT 因审查失败而判 run 失败。\n"
+        directive_path = (
+            self._pm.project_root
+            / ".fenix"
+            / "verify-progress"
+            / spec_name
+            / "ocr_findings_directive.json"
         )
+        try:
+            raw = directive_path.read_text(encoding="utf-8")
+            data = json.loads(raw)
+        except (OSError, ValueError):
+            return ""
+        if not isinstance(data, dict):
+            return ""
+        findings = data.get("findings")
+        if not isinstance(findings, list) or not findings:
+            return ""
+        try:
+            round_no = int(data.get("round", 1) or 1)
+        except (TypeError, ValueError):
+            round_no = 1
+        max_rounds = data.get("max_rounds", 1)
+        lines = [
+            "\n\n## ocr 代码审查 findings 修复义务（impl-ocr-join-gate，强制）\n"
+            f"你本轮是被框架侧 ocr 代码审查车道打回的**修复轮**"
+            f"（第 {round_no} 轮，修复轮上限 {max_rounds} 次——达上限后仍出现的 "
+            "findings 将全部转入 code-review 台账、不再打回）。以下是逐条 findings，"
+            "它们是你的**修复义务**：\n"
+        ]
+        for i, f in enumerate(findings, start=1):
+            if not isinstance(f, dict):
+                continue
+            loc = str(f.get("path") or f.get("file") or "?")
+            start_line = f.get("start_line", f.get("line", "?"))
+            category = str(f.get("category") or "general")
+            severity = str(f.get("severity") or "info")
+            content = str(f.get("content") or f.get("description") or "").strip()
+            if len(content) > 600:
+                content = content[:600] + "…"
+            lines.append(
+                f"{i}. `{loc}:{start_line}` [{severity}/{category}] {content}\n"
+            )
+        artifact_rel = f".fenix/verify-progress/{spec_name}/code-review.json"
+        lines.append(
+            "### disposition 处置契约（机械对账）\n"
+            "对上面每条 finding 逐条评估「真实问题 vs 误报」，**修正真实问题的"
+            "裁量权归你**（发现的真实问题应修正）；并把处置登记到 "
+            f"`{artifact_rel}`（**相对当前工作目录（worktree）的相对路径**，"
+            "MUST NOT 用主树绝对路径）：文件不存在则按该路径新建，结构为 "
+            '`{"status": "completed", "findings": [...]}`；在对应 finding 对象上'
+            "增写两个字段：\n"
+            '- `"disposition"`：`"fixed"`（已修码）/ `"rejected"`（误报驳回）/'
+            ' `"deferred"`（本轮不修）；\n'
+            '- `"reason"`：`rejected`/`deferred` MUST 附**非空**理由'
+            "（fixed 可附验证方式）。\n"
+            "逐条都须有处置——缺处置的 finding 视为未裁决，下轮 join 仍按"
+            "「非 rejected findings」计数。\n"
+            "### 修码后重验（强制）\n"
+            "修码完成后 MUST 重验，MUST NOT 跳过：\n"
+            "1. **定向测试**：先跑与本轮改动直接相关的测试文件/用例，全绿；\n"
+            "2. **全量回归**：走有界入口 `python3 bin/run_full_suite.py "
+            "--timeout 3600` **前台直跑**（它自身受硬超时约束必在返回前给出完整"
+            "结果），MUST NOT 裸调 `pytest tests/` 无限等待；与基线对比零引入失败。\n"
+            "3. 完成后照常逐项勾选 tasks.md、提交、写 `.fenix-run-result.json` "
+            "收工。merge-back 成功后框架侧车道会对增量自动重审，你 **MUST NOT** "
+            "自己跑 ocr。\n"
+        )
+        return "".join(lines)
 
     def _project_extra_section(
         self, agent_type: str, spec_name: str = "", wt_path: Path | None = None
