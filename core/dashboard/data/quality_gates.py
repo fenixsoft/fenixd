@@ -222,6 +222,73 @@ def _run_gate_status(raw, gid: str, source_ok: bool = True) -> tuple:
     return (status, detail)
 
 
+# 框架侧回归产物（.fenix/regression/last-run.json）status → 门状态映射
+# （add-impl-selfcheck-model-probe 3.2）。映射外状态（parse_error 等）视为
+# 本源异常 → fail-open 逐级回落，MUST NOT 硬译成 unknown。
+_FULL_SUITE_PRODUCT_STATUS = {
+    "passed": "passed",
+    "failed": "failed",
+    "timeout": "failed",
+    "skipped": "skipped",
+    "running": "running",
+}
+
+
+def _full_suite_product_status(project_root) -> tuple:
+    """full-suite 门的框架侧产物源：``.fenix/regression/last-run.json``。
+
+    可见性按分支指纹校验（add-impl-selfcheck-model-probe 3.2）：快照带
+    ``repo_fingerprint`` 且与当前仓库指纹 (branch, merge_base, head_commit)
+    完全一致才可见——存量快照无指纹字段或指纹陈旧（HEAD / merge-base 已
+    移动，产物对应旧代码）按不可见。产物缺失 / 损坏 / 当前指纹采集失败 /
+    状态映射外 → ``(None, "")`` 表示本源不可用，调用方 fail-open 逐级回落。
+    """
+    import core.regression as _reg
+
+    data = _reg.read_result(project_root)
+    status_raw = data.get("status") if isinstance(data, dict) else None
+    if status_raw not in ("passed", "failed", "timeout", "skipped", "running"):
+        # never_run / parse_error / 状态映射外 → 本源不可用
+        return None, ""
+    stamp = data.get("repo_fingerprint")
+    if not isinstance(stamp, dict):
+        return None, ""  # 存量快照无指纹字段 → 不可见（按 3.2 契约）
+    current = _reg.current_repo_fingerprint(project_root)
+    if current is None:
+        return None, ""  # 当前指纹采集失败 → 新鲜度不可验证 → 不可见
+    if (stamp.get("branch"), stamp.get("merge_base"), stamp.get("head_commit")) != (
+            current.get("branch"), current.get("merge_base"),
+            current.get("head_commit")):
+        return None, ""  # 指纹陈旧：产物对应旧 HEAD / merge-base
+    status = _FULL_SUITE_PRODUCT_STATUS[status_raw]
+    parts = ["框架侧回归产物 .fenix/regression/last-run.json（分支指纹匹配）"]
+    p, f = _int_or_none(data.get("passed")), _int_or_none(data.get("failed"))
+    if p is not None or f is not None:
+        parts.append(f"通过 {p if p is not None else '?'}，失败 {f if f is not None else '?'}")
+    if status_raw == "skipped":
+        reason = str(data.get("reason") or "").strip()
+        if reason:
+            parts.append(reason)
+    return status, "，".join(parts)
+
+
+def _full_suite_status(project_root, raw, source_ok: bool = True) -> tuple:
+    """full-suite 单门合成，数据源优先级：框架产物 > run 自查值 > 既有回落。
+
+    add-impl-selfcheck-model-probe 3.2：全量回归由验证链执行后，run 内默认
+    不写 full-suite 键（3.1 降级措辞）——读侧以框架侧回归产物为首选数据源
+    （分支指纹校验新鲜度，结论不一致取产物）；产物不可见时回落 run 内自查
+    值（``_run_gate_status`` 既有语义逐字节不变：文件可读键缺 → pending，
+    文件整体缺失/损坏 → unknown 既有语义，键名全集与状态枚举零变化）。
+    产物侧的缺失/损坏/存量无指纹/指纹陈旧/状态映射外均 fail-open 逐级回落，
+    不向落盘面注入新的失败终态。
+    """
+    status, detail = _full_suite_product_status(project_root)
+    if status is not None:
+        return status, detail
+    return _run_gate_status(raw, "full-suite", source_ok=source_ok)
+
+
 def _code_review_status(project_root, spec_name, spec_status: str, entry: dict) -> tuple:
     """ocr 门：按 ocr 异步车道产物三态合成（与车道降级不阻塞语义一致）。
 
@@ -349,8 +416,15 @@ def parse_quality_gates(project_root, spec_name: str, entry=None, runs=None) -> 
     for gid in GATE_ORDER:
         if gid in RUN_GATE_IDS:
             # 契约外 gate-id（含实现者误写的 code-review 键）天然不在
-            # RUN_GATE_IDS 遍历面内 → 忽略，不污染合成
-            status, detail = _run_gate_status(file_gates.get(gid), gid, source_ok=parsed)
+            # RUN_GATE_IDS 遍历面内 → 忽略，不污染合成。
+            # full-suite 走双源优先级合成（add-impl-selfcheck-model-probe 3.2），
+            # 其余 run 内项维持 _run_gate_status 单源语义。
+            if gid == "full-suite":
+                status, detail = _full_suite_status(
+                    project_root, file_gates.get(gid), source_ok=parsed)
+            else:
+                status, detail = _run_gate_status(
+                    file_gates.get(gid), gid, source_ok=parsed)
         elif gid == "code-review":
             status, detail = _code_review_status(project_root, spec_name, spec_status, entry)
         elif gid == "result-artifact-gate":

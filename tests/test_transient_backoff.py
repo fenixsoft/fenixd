@@ -131,10 +131,14 @@ class TestClassifyTransientError:
         assert ProviderCircuit.classify_transient_error(stderr, 1, False) is True
 
     def test_4xx_not_transient(self):
-        """4xx 配额/鉴权类错误 → 不判瞬断（走 4xx 熔断路径）。"""
+        """4xx 配额/鉴权类错误 → 不判瞬断（走 4xx 熔断路径）。
+
+        （add-impl-selfcheck-model-probe 2.1 起「model not found」文本按拒模型
+        类驱动切换，夹具改用纯配额 4xx 以保留本测试「4xx 不判瞬断」的意图。）
+        """
         stderr = [
             "HTTP 404 Not Found",
-            "API error (404): model not found",
+            "API error (404): quota exceeded",
         ]
         assert ProviderCircuit.classify_transient_error(stderr, 1, False) is False
 

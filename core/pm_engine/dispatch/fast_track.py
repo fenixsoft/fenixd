@@ -24,6 +24,7 @@ from core.fast_track_result import (
     get_scale_precheck_config,
 )
 from core.state_machine import ENV_BLOCK_ROUNDS_FIELD
+from core.agent_runner.provider_circuit import MODEL_CHAIN_UNAVAILABLE_MARKER
 
 
 class FFastTrackMixin:
@@ -996,6 +997,18 @@ class FFastTrackMixin:
             )
             self._pm.state_machine.update_spec(spec_name, {"error": final_error})
             self._schedule_transient_recovery(spec_name)
+            return
+        # 全链模型不可用终态（add-impl-selfcheck-model-probe 2.2，fast-track 车道
+        # 对等）：链尾拒模型是确定性失败，同因重派必然撞同一拒模型链——不重派、
+        # 不增 retry、不翻转状态机，error 落盘供 dashboard/admin 可见。摘除拒模型
+        # 条目后恢复属人工运维（docs/help/13-model-chain-ops.md）。
+        if final_error and MODEL_CHAIN_UNAVAILABLE_MARKER in final_error:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"fast-track model chain unavailable '{spec_name}' — holding "
+                f"state, no redispatch/retry/state flip: {final_error}",
+            )
+            self._pm.state_machine.update_spec(spec_name, {"error": final_error})
             return
         # 重试
         spec_entry = self._pm.state_machine.read_one(spec_name) or {}

@@ -441,6 +441,13 @@ class PromptBuilder:
         if agent_type in ("implementer", "fast-track"):
             prompt += self._quality_gates_section(spec_name)
 
+        # add-impl-selfcheck-model-probe（1.2/3.1）：收工自证契约段——自检
+        # CLI 完整命令 + dispositions 正反例 + status/必填键固化说明。统一
+        # 收尾处注入（项目级附加段之前），只覆盖两条实现车道（fast-track
+        # 收尾同样写结果文件，同等受自检义务约束）。
+        if agent_type in ("implementer", "fast-track"):
+            prompt += self._selfcheck_section(spec_name, wt_path)
+
         # 项目级附加提示词（D2）：附加在完整 prompt（通用主体 + 动态段）之后
         prompt += self._project_extra_section(agent_type, spec_name, wt_path)
         return prompt
@@ -738,7 +745,9 @@ class PromptBuilder:
         return (
             "\n\n## 质量门禁落盘（quality-gates.json，强制）\n"
             "收尾检查阶段（全部 tasks.md 任务完成并提交之后、写 `.fenix-run-result.json`"
-            "之前）逐项完成 run 内自查 3 项，并把结果**渐进**写入 worktree 内相对路径：\n"
+            "之前）逐项完成 run 内自查（`frontend-build` / `interaction-contract` "
+            "两项常规执行；`full-suite` 仅降级路径执行，见下），并把结果**渐进**写入 "
+            "worktree 内相对路径：\n"
             f"`{path}`\n"
             "- **写入前先创建父目录**：`.fenix/verify-progress/<spec>/` 子目录在新建 "
             "worktree 中不保证存在（`.fenix/` 运行时目录经 .gitignore 不入库），须先以 "
@@ -751,6 +760,10 @@ class PromptBuilder:
             "自查）。**没有 `code-review` 一项**——ocr 代码审查与处置由框架侧异步车道"
             "执行，不在 run 内自查之列，你 MUST NOT 向本文件写 `code-review` 键（写了"
             "也被读侧忽略）。\n"
+            "- **full-suite 降级路径（add-impl-selfcheck-model-probe 3.1）**：全量"
+            "回归由验证链执行，收尾**默认不跑回归、也不写 `full-suite` 键**（读侧"
+            "按数据源优先级呈现，缺项零打回）；仅当确认框架侧回归产物不可用"
+            "（如验证链被冻结/跳过）时才在 run 内执行并落盘该键。\n"
             "- **status 四值枚举**：`passed` / `failed` / `running` / `skipped`；"
             "未写入的 gate-id 由读侧视为 pending。\n"
             "- **渐进更新**：每完成一项检查即**全量重写**该文件（小文件原子重写，"
@@ -765,6 +778,53 @@ class PromptBuilder:
             "- **双位置兜底**：读侧对 worktree/主树双位置 fail-open 兜底——本 run "
             "正常写 worktree 相对路径即可；fast-track 车道持主树 verify-progress "
             "写授权，允许直落主树同名目录，两种落点读侧均可见。\n"
+        )
+
+    def _selfcheck_section(self, spec_name: str, wt_path: Path | None = None) -> str:
+        """收工自证契约段（add-impl-selfcheck-model-probe 1.2）。
+
+        把 daemon 侧收工硬门的自检 CLI（``python3 -m core.agent_runner.result_gate
+        --selfcheck``）与结果文件形状契约注入实现者收尾检查：agent 在退出前即可
+        发现 dispositions 字符串数组等形状陷阱并修复，不再依赖 daemon 侧打回整轮
+        重派（add-impl-ocr-parallel-lane r2/r3 连烧实证）。
+
+        单源纪律：status 枚举取自 ``AgentRunner._IMPL_RESULT_STATUSES``、
+        disposition 白名单取自 ``result_gate.DISPOSITION_WHITELIST``（均惰性
+        导入，prompt_builder 模块层 MUST NOT import result_gate——result_gate
+        反向依赖本模块，模块层互 import 会成环），MUST NOT 在本段另写一份
+        可能与校验体漂移的字面量。正反例 JSON 片段逐字固化（spec 契约措辞）。
+        """
+        if wt_path is not None:
+            result_path = str(impl_result_path(wt_path))
+        else:
+            result_path = ".fenix-run-result.json（worktree 根目录）"
+        from core.agent_runner.runner import AgentRunner
+        from core.agent_runner.result_gate import DISPOSITION_WHITELIST
+
+        statuses = " / ".join(f'`"{s}"`' for s in AgentRunner._IMPL_RESULT_STATUSES)
+        dispositions = " / ".join(f'`"{d}"`' for d in DISPOSITION_WHITELIST)
+        return (
+            "\n\n## 结果文件收工自证（result-gate selfcheck，强制，"
+            "add-impl-selfcheck-model-probe）\n"
+            "- **结果文件写完必跑自检、非零退出不得收工**：`.fenix-run-result.json` "
+            "写完（含每次修复改写后）MUST 立即运行：\n"
+            f"  `python3 -m core.agent_runner.result_gate --selfcheck {result_path}`\n"
+            "  它与 daemon 侧收工硬门同源（同一校验函数对象，零网络零 daemon 依赖，"
+            "只读不写）。退出码 0=PASS；**非零退出不得收工**——按 stderr 逐条违规"
+            "明细（含字段路径与期望形态）修复后重跑自检，直至退出码 0 再继续收尾。\n"
+            "- **status 必填键固化**（以校验体为单源）：顶层 `status` 枚举仅 "
+            f"{statuses}；`spec`/`summary` 必填；`status=\"success\"` 时 "
+            "`completed_tasks` 数组必填且与 tasks.md 勾选集合逐条一致；"
+            "`status=\"partial\"` 时 `completed_tasks` + `unfinished` "
+            "（+ 可选 `unattainable`）申报必须能对上全部数字任务。\n"
+            "- **dispositions 形状正反例**（逐字对照，字符串数组是历史连烧两轮的"
+            "实锢单点）：若结果文件含 `code_review` 段，`dispositions` MUST 为"
+            "**对象数组**——\n"
+            "  - 合法正例：`[{\"disposition\": \"fixed\"}, {\"disposition\": "
+            "\"deferred\", \"reason\": \"<非空理由>\"}]`\n"
+            "  - 非法反例：`[\"fixed\", \"fixed\"]`（字符串数组必被硬门拒绝）\n"
+            f"  - 每项 `disposition` 枚举仅 {dispositions}；`rejected`/`deferred` "
+            "MUST 附非空 `reason`。\n"
         )
 
     def _project_extra_section(
@@ -1163,8 +1223,11 @@ class PromptBuilder:
             f"- 收尾时逐项 Edit tasks.md，把每条已完成任务 `- [ ]` 改为 `- [x]`，"
             f"与 completed_tasks 清单一一对应，不留半勾。\n"
             f"\n## 有界全量套件入口（fix-run-hang-amplification 3.3，强制）\n"
-            f"全量回归（``pytest tests/ -q``）**必须**通过 ``python3 bin/run_full_suite.py "
-            f"--timeout 3600`` 执行，MUST NOT 裸调 ``pytest`` 无限等待。"
+            f"全量回归由验证链执行，run 内**默认不跑**（add-impl-selfcheck-model-probe "
+            f"3.1：仅当确认框架侧回归产物不可用时才在 run 内执行并落盘）。一旦在 "
+            f"run 内执行，全量回归（``pytest tests/ -q``）**必须**通过 "
+            f"``python3 bin/run_full_suite.py --timeout 3600`` 执行，"
+            f"MUST NOT 裸调 ``pytest`` 无限等待。"
             f"有界入口以硬超时运行套件并启用 faulthandler，挂起时中止并输出挂起测试标识"
             f"（栈顶用例）；超时/挂起时的失败可按 ``--baseline <ref>`` 归类存量/引入"
             f"（见设计文档）。裸调 ``pytest`` 无限等待在存量挂起时可烧穿全部预算（14.5h 事故实证）。\n"
@@ -2040,8 +2103,9 @@ class PromptBuilder:
                 "退避重试（整轮 token 重烧）**。\n"
                 "- **正文里的 JSON 不算交付**：框架不解析正文，只读文件——正文里的"
                 "JSON 会被当作「结果文件缺失」→ 本次 run 判**失败**。\n"
-                "- **先落盘再深入**：先写一份最小可判的结果文件，再做全量套件回归"
-                " / 交付物核实等收尾工作——深入调查/验证不会为产物缺失兜底。\n"
+                "- **先落盘再深入**：先写一份最小可判的结果文件，再做（降级路径的）"
+                "全量套件回归 / 交付物核实等收尾工作——深入调查/验证不会为产物缺失"
+                "兜底。\n"
                 "- 结果文件 MUST 为合法 JSON——字符串内换行/引号/控制字符必须转义"
                 "（建议以 `json.dump` 生成而非手工拼接文本）。\n"
                 "- 本车道无定时唤醒节拍：`ScheduleWakeup` 在非交互派发下不产生"
