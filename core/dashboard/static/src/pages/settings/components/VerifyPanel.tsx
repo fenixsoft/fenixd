@@ -115,9 +115,11 @@ export default function VerifyPanel({ config, onSave, project, onConfigSynced }:
         } else if (values.has_build_artifacts === 'false') {
           payload.worktree.has_build_artifacts = false;
         } else {
-          // unset：显式清除（null 语义由 write 路径处理为移除该键）
-          (payload.worktree as { has_build_artifacts?: boolean | null }).has_build_artifacts =
-            null;
+          // unset：显式清除（null 语义由 write 路径处理为移除该键）。
+          // ConfigData['worktree'].has_build_artifacts 已声明 boolean | null
+          // （code-review item b7d40351517d）：直接赋 null，「有意写 null」
+          // 由类型系统表达，不再用断言掩盖（断言会静默挫败未来收紧）。
+          payload.worktree.has_build_artifacts = null;
         }
       }
       await onSave(payload);

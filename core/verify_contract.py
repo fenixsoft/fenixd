@@ -265,12 +265,33 @@ def load_verify_contract(project_root: Path, logger=None) -> Optional[VerifyCont
             cmd=str(serve_data.get("cmd") or ""),
             port=port,
         )
-    ready_data = data.get("ready") or {}
-    ready = ReadyProbe(
-        url=str(ready_data.get("url") or "/") or "/",
-        expect=int(ready_data.get("expect") or 200),
-        timeout=int(ready_data.get("timeout") or DEFAULT_READY_TIMEOUT),
-    )
+    # ready 段（code-review item c2d140a513b9）：先类型校验再取值——ready: 为
+    # 标量/字符串（如 ready: /health）时 .get 抛 AttributeError、expect/timeout
+    # 为非数字时 int() 抛 ValueError，均从本函数直接冒出，违背文档「解析失败
+    # 按无契约处理并记 warning」约定（selfcheck_contract_light 的调用不在 try
+    # 内，消费期会崩溃）。非法映射/非法数值一律记 warning 并按无契约回退。
+    ready_data = data.get("ready")
+    if ready_data is not None and not isinstance(ready_data, dict):
+        if logger:
+            logger.warning(
+                "verify_contract",
+                f"verify.yaml ready 段非法（须为映射，按无契约回退）: {ready_data!r}",
+            )
+        return None
+    ready_data = ready_data or {}
+    try:
+        ready = ReadyProbe(
+            url=str(ready_data.get("url") or "/") or "/",
+            expect=int(ready_data.get("expect") or 200),
+            timeout=int(ready_data.get("timeout") or DEFAULT_READY_TIMEOUT),
+        )
+    except (TypeError, ValueError) as e:
+        if logger:
+            logger.warning(
+                "verify_contract",
+                f"verify.yaml ready 段数值非法（按无契约回退）: {e}",
+            )
+        return None
     # 端口注入迁移告警（不阻断）：cmd 未引用注入端口时实例会与既有实例
     # 争抢固定端口（dashboard 端口独占语义下 = 杀掉占用者接管，2026-09-05
     # 验证实例顺带杀主树 dashboard 事故的根源），由未消费注入的兜底发现

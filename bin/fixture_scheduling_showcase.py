@@ -332,8 +332,15 @@ def show_status() -> int:
     print(f"git:  baseline={((ROOT / '.git').exists())}")
     if not ROOT.exists():
         return 0
-    r = _git("status", "--porcelain")
-    print(f"dirty:\n{r.stdout or '  (clean)'}")
+    try:
+        r = _git("status", "--porcelain")
+        print(f"dirty:\n{r.stdout or '  (clean)'}")
+    except OSError as e:
+        # 只读诊断路径降级而非裸崩（code-review item bed211cd560c）：git 二进制
+        # 缺失/不可执行时 subprocess.run 抛 FileNotFoundError，--status 此前在
+        # 任何 try 外、会裸 traceback（reset_fixture 已整体 try/except，status
+        # 探针同款处置）。
+        print(f"dirty:    unknown (git unavailable: {e})")
     try:
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
         from core.dashboard.registry import Registry

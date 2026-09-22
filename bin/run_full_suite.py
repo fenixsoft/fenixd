@@ -55,7 +55,11 @@ LOCK_FILE_REL = ".fenix/full-suite.lock"
 BASETEMP_REL = ".fenix/pytest-basetemp"
 # 锁等待超时（秒）：等不到锁也执行（保守不阻塞），但写日志留痕供复盘。
 LOCK_WAIT_TIMEOUT_SECONDS = 600
-# 基线 ref 上运行同一套件时使用较短的硬超时（基线只需复现失败集合，不必等满主套件）。
+# 基线 ref 上运行同一套件时的硬超时上界（code-review item b6c85da8bccb：旧注释
+# 称「较短的硬超时」与常量相悖）。实际生效值 = min(本常量, 调用方超时 × 2)：
+# 基线跑的是同一套件、必须收齐**完整**失败集合才能做引入归类——不刻意短于
+# 主套件（短超时会产生不完整失败集，把基线打成 baseline-hang 使归类不可信），
+# 只设放大上界（7200s）防病态配置下的无限等待。
 BASELINE_TIMEOUT_SECONDS = 7200
 
 PYTEST_BASE_ARGS = [
@@ -327,8 +331,12 @@ class SuiteLock:
 # ── 基线 worktree 对比（3.2）──────────────────────────────────────────
 
 
-def run_baseline_comparison(project_root, ref, timeout) -> dict:
+def run_baseline_comparison(project_root, ref, timeout, basetemp_unique=False) -> dict:
     """在基线 ref 的临时 worktree 跑同一套件，与当前结果做失败集合差异归类。
+
+    Args:
+        basetemp_unique: 主机锁获取失败时置 True——与主套件同语义（见 run_suite），
+            回退 pid 唯一 basetemp 防并发套件互删临时目录。
 
     Returns: {"ref", "baseline_failures", "baseline_rc",
               "baseline_timed_out", "classification", "hanging"}。
@@ -354,7 +362,10 @@ def run_baseline_comparison(project_root, ref, timeout) -> dict:
         try:
             # 基线 worktree 需要 .fenix 目录（配置模板）才能被 pytest 导入；
             # 按真实运行结果归类（部分测试跳过时不影响失败集合）。
-            baseline = run_suite(wt, timeout=min(BASELINE_TIMEOUT_SECONDS, timeout * 2))
+            baseline = run_suite(
+                wt, timeout=min(BASELINE_TIMEOUT_SECONDS, timeout * 2),
+                basetemp_unique=basetemp_unique,
+            )
             failed = collect_failed_tests(baseline.get("stderr", ""), baseline.get("stdout", ""))
             classification = (
                 classify_outcome([], failed) if not baseline.get("timed_out") else "baseline-hang"
@@ -408,12 +419,23 @@ def main(argv=None) -> int:
     os.chdir(project_root)
     lock = SuiteLock(project_root)
 
+    base = None
     with lock:
         # 锁获取失败（等待超时）→ 回退 pid 唯一 basetemp：固定 basetemp 下
         # 并发套件会在会话开始互相清空对方临时目录，正是主机锁要防的损坏。
         current = run_suite(
             project_root, timeout=args.timeout, basetemp_unique=not lock.acquired
         )
+        # baseline 执行纳入同一锁作用域（code-review item b8556d5a478e）：
+        # run_baseline_comparison 会再启一套完整 pytest，「同一主机全量套件
+        # 串行」必须同时覆盖它——否则基线套件可与另一进程的主套件并发执行，
+        # 主机锁只护住一半。锁获取失败时 baseline 与主套件同样回退 pid 唯一
+        # basetemp。
+        if args.baseline:
+            base = run_baseline_comparison(
+                project_root, args.baseline, args.timeout,
+                basetemp_unique=not lock.acquired,
+            )
 
     result = {
         "timed_out": current.get("timed_out"),
@@ -423,7 +445,7 @@ def main(argv=None) -> int:
     }
 
     if args.baseline:
-        base = run_baseline_comparison(project_root, args.baseline, args.timeout)
+        # base 已在上方锁作用域内执行（见 with lock 块内注释）
         current_failed = collect_failed_tests(current.get("stderr", ""), current.get("stdout", ""))
         if current.get("timed_out"):
             classification = "current-hang"

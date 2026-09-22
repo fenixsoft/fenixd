@@ -544,7 +544,16 @@ class ConfigLoader:
         ):
             if field in admin and admin[field] is not None:
                 val = admin[field]
-                if not isinstance(val, (int, float)) or val <= 0:
+                # bool 须排除（code-review item b8822ad7bae7）：Python 里
+                # bool 是 int 子类，不排除时 admin.interval_minutes: true 通过
+                # 校验并被 get_admin_config 转成 float(True)=1.0——巡检间隔
+                # 静默缩到 1 分钟。与下方 stuck_silence_minutes/workers/
+                # shutdown_drain_seconds 护栏同型。
+                if (
+                    not isinstance(val, (int, float))
+                    or isinstance(val, bool)
+                    or val <= 0
+                ):
                     raise ValueError(f"admin.{field} must be positive: {val}")
         # stuck-signal-hygiene D4：stuck 处置后静默期——非负护栏（0 = 不静默），
         # 与 escalation_cooldown_minutes 同型（负数/非法类型拒绝）。
@@ -1761,6 +1770,13 @@ class ConfigLoader:
         白名单 + 原子写 + 配置头注释），由 daemon（fenxid.py）在 resolve_config
         后调用；本模块 MUST NOT 直接写配置文件。
         """
+        # 对齐记录按次清零（code-review item c0436bc5e566）：_SUPERVISION_LAST_ALIGNED
+        # 若只在对齐分支赋值，不需要对齐的验证 pass 会保留上次记录——不消费该
+        # 记录的读方可把过时值带给 daemon 热重载，覆盖用户显式配置的更高
+        # absolute_max_seconds。入口先复位：本 pass 未走对齐分支即恒为 None，
+        # take_supervision_alignment() 不会读到陈旧值。
+        global _SUPERVISION_LAST_ALIGNED
+        _SUPERVISION_LAST_ALIGNED = None
         floor = cls.supervision_config_floor(config)
         if floor is None:
             return  # supervision 未启用（enabled=false / 段缺失）：不校验
@@ -1786,7 +1802,8 @@ class ConfigLoader:
                 )
             )
         # 默认自动对齐：ERROR 留痕 + 内存抬升（持久化由 daemon 经写路径完成）
-        global _SUPERVISION_BOUNDS_WARNED, _SUPERVISION_LAST_ALIGNED
+        # （_SUPERVISION_LAST_ALIGNED 已在函数入口声明 global 并复位）
+        global _SUPERVISION_BOUNDS_WARNED
         aligned_value = int(floor) if float(floor).is_integer() else float(floor)
         if not _SUPERVISION_BOUNDS_WARNED:
             _logger.error(

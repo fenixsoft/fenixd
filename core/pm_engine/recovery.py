@@ -921,15 +921,23 @@ class RecoveryWatch:
 
         entry = self._pm.state_machine.read_one(spec_name) or {}
         fp = fingerprint or self._pm._spec_fingerprint(entry)
-        cooldown = (
-            float(
-                self._pm._get_config(
-                    "pm.recovery.signal_cooldown_minutes", DEFAULT_SIGNAL_COOLDOWN_MINUTES
+        # 取值容错（code-review item c31eb4352989）：裸 float 在畸形
+        # pm.recovery.signal_cooldown_minutes（非数值字符串）时抛 ValueError
+        # 逃出 check_recovery_watch 循环，静默跳过其余到期观察项的升级；
+        # `or DEFAULT_` 只兜 None/0，兜不住非法字符串。与本文件下方
+        # get_admin_config 取值同款 try/except 回落权威缺省。
+        try:
+            cooldown = (
+                float(
+                    self._pm._get_config(
+                        "pm.recovery.signal_cooldown_minutes", DEFAULT_SIGNAL_COOLDOWN_MINUTES
+                    )
+                    or DEFAULT_SIGNAL_COOLDOWN_MINUTES
                 )
-                or DEFAULT_SIGNAL_COOLDOWN_MINUTES
+                * 60
             )
-            * 60
-        )
+        except (TypeError, ValueError):
+            cooldown = DEFAULT_SIGNAL_COOLDOWN_MINUTES * 60
         prev = self._signal_fingerprints.get(spec_name)
         now = time.time()
         if prev and prev[0] == fp and (now - prev[1]) < cooldown:
