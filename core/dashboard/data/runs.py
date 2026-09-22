@@ -466,12 +466,15 @@ def _parse_run_lines(lines) -> list:
     return events
 
 
-def get_run_events(project_root, run_id: str, tail: int = 300) -> dict:
-    """读取单次运行产物流的尾部（前端只展示最近 N 条，全量拉取是浪费）。
+def get_run_events(project_root, run_id: str, tail: int = 300, offset_from_end: int = 0) -> dict:
+    """读取单次运行产物流的尾部窗口（前端默认展示最近 N 条，全量拉取是浪费）。
 
     返回: {run_id, exists, status, events, total_events, error}
-    events 为最后 tail 条逐行解析结果；status/error 仍由全文件判定
-    （终态行 result/error 决定），total_events 为实际总事件数。
+    events 为窗口 [len-tail-offset_from_end, len-offset_from_end) 的逐行解析结果
+    （add-run-record-readability 4.1 向前分页；offset_from_end 为负时按 0 钳制，
+    窗口越出流首时按流首截断）；offset_from_end=0 时与既有尾部截取 events[-tail:]
+    逐字段一致。status/error 仍由全文件判定（终态行 result/error 决定），
+    total_events 为实际总事件数（不受窗口影响）。
     """
     run_file = _resolve_run_file(project_root, run_id)
     if not run_file.exists():
@@ -500,12 +503,20 @@ def get_run_events(project_root, run_id: str, tail: int = 300) -> dict:
             "total_events": 0,
             "error": {"error": "unreadable"},
         }
+    total = len(events)
+    offset = max(int(offset_from_end or 0), 0)
+    if offset > 0:
+        end = max(total - offset, 0)
+        start = max(end - tail, 0)
+        window = events[start:end]
+    else:
+        window = events[-tail:]
     return {
         "run_id": run_id,
         "exists": True,
         "status": classify_run(events),
-        "events": events[-tail:],
-        "total_events": len(events),
+        "events": window,
+        "total_events": total,
         "error": error,
     }
 

@@ -339,4 +339,4 @@ git commit -m "[fenix] spec: <spec-name>"
   - **手工激活档（add-spec-manual-activation）**：MUST 写哨兵值 `manual`，MUST NOT 用未来时间模拟（那会到期后自动拾取，破坏「等人发话」语义）
   - 未指定时 MUST NOT 写 `start_after` 字段（缺省 null，daemon 立即按既有逻辑拾取）
   - `--modify <name>` 更新时若用户调整定时，同步更新 STATE.md 的 `start_after` 字段
-- **确定能力全集时必须搜索归档目录**：`spec/specs/` 仅存放当前活跃的 specs，历史的 specs 已归档到 `spec/archive/` 中。判断某个能力是新增还是修改时，必须同时搜索 `spec/archive/` 下的所有 `specs/` 子目录，确保不会将已存在的归档能力误判为新能力。
+- **确定能力全集时必须搜索归档目录**：仓库**不存在** `spec/specs/` 目录；能力快照分布在两处——活跃变更在 `spec/changes/<name>/specs/`，已归档变更在 `spec/archive/<date-name>/specs/`。判断某个能力是新增还是修改时，必须同时搜索 `spec/changes/` 与 `spec/archive/` 下的所有 `specs/` 子目录，确保不会将已存在的能力（尤其已归档能力）误判为新能力。

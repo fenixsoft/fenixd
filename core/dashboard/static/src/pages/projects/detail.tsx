@@ -795,7 +795,13 @@ export default function SpecDetailPage() {
         )}
       </Space>
     ),
-    onBack: () => history.push(`/projects/${name}`),
+    onBack: () => {
+      // 返回列表优先历史回退：列表页过滤态承载在 URL query 上
+      // （add-spec-list-filter-stickiness），push 裸 URL 会新开无参历史条目，
+      // 列表重挂载时过滤归零；仅新标签直达详情（无回退历史）时兜底 push。
+      if (window.history.length > 1) history.back();
+      else history.push(`/projects/${name}`);
+    },
   };
 
   if (loading) {

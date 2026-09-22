@@ -1,7 +1,11 @@
 // 迁移自 claudecodeui src/shared/view/ui/Reasoning.tsx（精简版）：
 // 原 UI 依赖 radix Collapsible / Shimmer / lucide，此处以受控展开的极简实现等价替代，
 // 保留 streaming 时自动展开、结束后自动收起 + "思考了 N 秒" 文案。
+// add-run-record-readability 3.1：静态回放折叠头显示「已思考 N 秒 · <首行预览>」，
+// 时长由相邻 assistant 事件 timestamp 差估算（runEventsToChatMessages 产出）。
 import * as React from 'react';
+
+import { formatThinkingLabel } from './chatFormatting';
 
 const AUTO_CLOSE_DELAY = 1000;
 
@@ -9,12 +13,18 @@ export interface ReasoningProps extends React.HTMLAttributes<HTMLDivElement> {
   isStreaming?: boolean;
   defaultOpen?: boolean;
   duration?: number;
+  /** 静态回放：估算时长（秒）；缺失/非正回退「已思考数秒」 */
+  staticDuration?: number | null;
+  /** 静态回放：thinking 首个非空行内容预览 */
+  preview?: string;
 }
 
 export const Reasoning: React.FC<ReasoningProps> = ({
   className,
   isStreaming = false,
   defaultOpen,
+  staticDuration,
+  preview,
   children,
   style,
   ...props
@@ -57,10 +67,12 @@ export const Reasoning: React.FC<ReasoningProps> = ({
       }, AUTO_CLOSE_DELAY);
       return () => clearTimeout(timer);
     }
+    return undefined;
   }, [isStreaming, isOpen, hasAutoClosed]);
 
-  const thinkingMessage =
-    isStreaming ? '思考中…' : duration === undefined ? '已思考数秒' : `已思考 ${duration} 秒`;
+  const thinkingMessage = isStreaming
+    ? '思考中…'
+    : formatThinkingLabel(staticDuration ?? duration, preview);
 
   return (
     <div
