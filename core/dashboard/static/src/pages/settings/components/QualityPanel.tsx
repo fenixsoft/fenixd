@@ -12,6 +12,34 @@ function formatCmd(cmd: string | string[]): string {
   return Array.isArray(cmd) ? cmd.join(' ') : cmd;
 }
 
+// ── 共享常量与校验器（code-review item 6562160caeaa）────────────────
+// 「正整数」校验器旧实现为 timeout_sec / concurrency 逐字复制粘贴；effort
+// 枚举与 600/4/low 缺省在回填 effect、校验器、<Select.Option>、help 文本
+// 多处各写一份（实测已漂移一次：回填注释曾停留在缺省 2）——抽模块级单源。
+const POSITIVE_INT_RULE = {
+  validator: (_: unknown, v: number | undefined | null) =>
+    v != null && Number.isInteger(v) && v > 0
+      ? Promise.resolve()
+      : Promise.reject(new Error('须为正整数')),
+};
+
+// 缺省值与后端 read_config / read_effective_config 恒回显值一致（改动时须
+// 与 core/verify_contract.py 同步）
+const IMPL_REVIEW_DEFAULTS = {
+  timeoutSec: 600,
+  concurrency: 4,
+  effort: 'low',
+} as const;
+
+const EFFORT_OPTIONS = ['low', 'medium', 'high'] as const;
+
+const EFFORT_RULE = {
+  validator: (_: unknown, v: string | undefined | null) =>
+    v && (EFFORT_OPTIONS as readonly string[]).includes(v)
+      ? Promise.resolve()
+      : Promise.reject(new Error('须为 low/medium/high')),
+};
+
 interface QualityPanelProps {
   config: ConfigData;
   onSave: (values: Partial<ConfigData>) => Promise<void>;
@@ -41,13 +69,15 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
   useEffect(() => {
     form.setFieldsValue({
       impl_code_review: config.verify?.impl_code_review === true,
-      // add-impl-code-review-tuning：三运行参数回填缺省（600/4/low——后端
-      // read_config / read_effective_config 恒回显缺省，前端回填与之一致；
-      // 既有开关「缺省不回显」约定不变：impl_code_review 缺席仍为关）
-      impl_code_review_timeout_sec: config.verify?.impl_code_review_timeout_sec ?? 600,
+      // add-impl-code-review-tuning：三运行参数回填缺省（IMPL_REVIEW_DEFAULTS
+      // 单源——后端 read_config / read_effective_config 恒回显缺省，前端回填
+      // 与之一致；既有开关「缺省不回显」约定不变：impl_code_review 缺席仍为关）
+      impl_code_review_timeout_sec:
+        config.verify?.impl_code_review_timeout_sec ?? IMPL_REVIEW_DEFAULTS.timeoutSec,
       // add-impl-ocr-parallel-lane（任务 1.2）：后端缺省 2→4，回填与之一致
-      impl_code_review_concurrency: config.verify?.impl_code_review_concurrency ?? 4,
-      impl_code_review_effort: config.verify?.impl_code_review_effort ?? 'low',
+      impl_code_review_concurrency:
+        config.verify?.impl_code_review_concurrency ?? IMPL_REVIEW_DEFAULTS.concurrency,
+      impl_code_review_effort: config.verify?.impl_code_review_effort ?? IMPL_REVIEW_DEFAULTS.effort,
       // add-impl-ocr-parallel-lane：join 双档模式回填缺省 gate（后端恒回显，
       // 前端回填与之一致）
       impl_code_review_mode: config.verify?.impl_code_review_mode ?? 'gate',
@@ -307,14 +337,7 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
                 审查超时<span className="label-note">（verify.impl_code_review_timeout_sec）</span>
               </>
             }
-            rules={[
-              {
-                validator: (_: unknown, v: number | undefined | null) =>
-                  v != null && Number.isInteger(v) && v > 0
-                    ? Promise.resolve()
-                    : Promise.reject(new Error('须为正整数')),
-              },
-            ]}
+            rules={[POSITIVE_INT_RULE]}
             style={{ marginTop: 24 }}
           >
             <InputNumber
@@ -325,7 +348,7 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
             />
           </Form.Item>
           <Text type="secondary">
-            默认 600。ocr LLM 单请求超时（秒，含等待响应头）：不配置时 ocr 走其内置
+            默认 {IMPL_REVIEW_DEFAULTS.timeoutSec}。ocr LLM 单请求超时（秒，含等待响应头）：不配置时 ocr 走其内置
             300s 默认，实测 8 路并发 + 300s 单请求超时会撞穿首字节等待导致大面积
             文件级 timeout。写入 run 级 ocr 配置（custom_providers.fenix-impl.timeout_sec），
             确定性生效。
@@ -338,14 +361,7 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
                 审查并发<span className="label-note">（verify.impl_code_review_concurrency）</span>
               </>
             }
-            rules={[
-              {
-                validator: (_: unknown, v: number | undefined | null) =>
-                  v != null && Number.isInteger(v) && v > 0
-                    ? Promise.resolve()
-                    : Promise.reject(new Error('须为正整数')),
-              },
-            ]}
+            rules={[POSITIVE_INT_RULE]}
             style={{ marginTop: 24 }}
           >
             <InputNumber
@@ -356,7 +372,7 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
             />
           </Form.Item>
           <Text type="secondary">
-            默认 4。ocr 并发子任务上限（--concurrency）：实测 8 路并发同时打同一
+            默认 {IMPL_REVIEW_DEFAULTS.concurrency}。ocr 并发子任务上限（--concurrency）：实测 8 路并发同时打同一
             provider 网关会把首字节延迟放大到撞穿超时线；add-impl-ocr-parallel-lane
             由 2 上调至 4（审查转异步车道后不再卡实现者收工，吞吐优先）。
             经提示词命令示例承载，实现者须照抄命令串才生效。
@@ -369,24 +385,19 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
                 审查力度<span className="label-note">（verify.impl_code_review_effort）</span>
               </>
             }
-            rules={[
-              {
-                validator: (_: unknown, v: string | undefined | null) =>
-                  v && ['low', 'medium', 'high'].includes(v)
-                    ? Promise.resolve()
-                    : Promise.reject(new Error('须为 low/medium/high')),
-              },
-            ]}
+            rules={[EFFORT_RULE]}
             style={{ marginTop: 24 }}
           >
             <Select data-testid="impl-code-review-effort">
-              <Select.Option value="low">low</Select.Option>
-              <Select.Option value="medium">medium</Select.Option>
-              <Select.Option value="high">high</Select.Option>
+              {EFFORT_OPTIONS.map((opt) => (
+                <Select.Option key={opt} value={opt}>
+                  {opt}
+                </Select.Option>
+              ))}
             </Select>
           </Form.Item>
           <Text type="secondary">
-            默认 low。ocr 审查力度预设（--effort）：low 更快更省但 recall 偏低
+            默认 {IMPL_REVIEW_DEFAULTS.effort}。ocr 审查力度预设（--effort）：low 更快更省但 recall 偏低
             （precision 优先的刻意取舍），medium 为 ocr 官方默认，high 深度审查。
             经提示词命令示例承载，实现者须照抄命令串才生效。
           </Text>

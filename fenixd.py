@@ -2759,19 +2759,28 @@ class FenixDaemon:
         if self._admin_executor is None:
             self._execute_admin_disposition(signal)
             return True
+        # submit 前先递增 submitted（code-review item 5786fd76ad49）：旧时序在
+        # submit 返回后才计数——worker 可在其间领跑并先递增 completed/failed，
+        # 在飞推导式 submitted - completed - failed 转负：_is_idle() 误报空闲
+        # （喂给 stale-code 自重启决策），shutdown 的 _dropped 计数低估。先增
+        # 后投、被拒回滚，保证任意瞬间 submitted ≥ completed + failed。
+        with self._admin_pool_lock:
+            stats = dict(self._admin_pool_stats)
+            stats["submitted"] += 1
+            self._admin_pool_stats = stats
         try:
             self._admin_executor.submit(self._admin_run_worker, signal)
         except RuntimeError as e:
+            with self._admin_pool_lock:
+                stats = dict(self._admin_pool_stats)
+                stats["submitted"] -= 1
+                self._admin_pool_stats = stats
             self.logger.error(
                 "fenixd",
                 f"Administrator 处置投递被拒绝（SPEC {spec}）：{e}",
             )
             self._record_failed_admin_disposition(spec, f"投递被拒绝：{e}")
             return False
-        with self._admin_pool_lock:
-            stats = dict(self._admin_pool_stats)
-            stats["submitted"] += 1
-            self._admin_pool_stats = stats
         queued = stats["submitted"] - stats["completed"] - stats["failed"]
         self.logger.info(
             "fenixd",

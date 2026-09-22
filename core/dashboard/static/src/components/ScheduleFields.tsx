@@ -58,6 +58,30 @@ export function describeStartAfter(startAfter: string | null): string {
   return '';
 }
 
+// ── 过去时刻置灰（code-review item 5bc7a80927c6）────────────────────
+// disabledDate 只禁更早的天——今天已过的钟点仍可选，过去时刻经 holder 写入
+// 后只能靠调用方 onOk 的 isStartAfterValid 兜底报通用「执行时间必须晚于当前
+// 时间」。过去时刻不应出现在 UI 中：disabledTime 按选中日精确置灰已流逝的
+// 小时/分钟，对齐 projects/list.tsx disablePastTime 的同款约定（antd 6
+// getDisabledHours/getDisabledMinutes）。本 picker 粒度为 HH:mm（秒面板未开、
+// 提交时 second/millisecond 归零），且校验要求严格晚于现在——故当前分钟的
+// :00 亦属过去，分钟置灰含当前分钟（与 list.tsx 的秒级粒度变体略宽一档）。
+function rangeArray(start: number, endExclusive: number) {
+  const out: number[] = [];
+  for (let i = start; i < endExclusive; i += 1) out.push(i);
+  return out;
+}
+
+function disablePastTimeSlot(picked: Dayjs | null) {
+  const now = dayjs();
+  if (!picked || !picked.isSame(now, 'day')) return {};
+  return {
+    disabledHours: () => rangeArray(0, now.hour()),
+    disabledMinutes: (hour: number) =>
+      hour === now.hour() ? rangeArray(0, now.minute() + 1) : [],
+  };
+}
+
 /**
  * 「执行时间」三档选择（立即 / 指定时间 / 手工激活）。
  *
@@ -121,6 +145,7 @@ export default function ScheduleFields({
             format="YYYY-MM-DD HH:mm"
             value={when}
             disabledDate={(d) => d && d < dayjs().startOf('day')}
+            disabledTime={disablePastTimeSlot}
             onChange={(v) => {
               if (!v) {
                 // 清除（allowClear）回退「立即执行」档（code-review item

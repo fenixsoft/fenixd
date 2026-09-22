@@ -57,10 +57,13 @@ export default function SyncFromUserButton({ project, page, onSynced }: SyncFrom
         message.warning(`操作成功但刷新失败：${e instanceof Error ? e.message : String(e)}`);
       }
     } catch (err) {
-      // 失败不关弹窗，用户可直接重试（对齐旧 confirm 行为）
-      message.error(
-        `${action === 'sync' ? '同步' : '清空'}失败：${err instanceof Error ? err.message : String(err)}`,
-      );
+      // 失败不关弹窗，用户可直接重试（对齐旧 confirm 行为）。toast 只给
+      // 通用消息（code-review item 654c992e806a）：services/dashboard 抛出的
+      // 错误文本含传输/后端细节（「响应不是合法 JSON（HTTP 500）」、proxy
+      // HTML body、类栈文本等），原样上 toast 不友好且可能泄露内部信息——
+      // 原始细节留 console 供诊断。
+      console.error('[sync-from-user] 操作失败:', err);
+      message.error(`${action === 'sync' ? '同步' : '清空'}失败，请稍后重试（详情见浏览器控制台）`);
     } finally {
       setBusy(null);
     }

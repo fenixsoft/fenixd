@@ -18,6 +18,7 @@ import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
+from uuid import uuid4
 
 from core.dashboard import data as dashboard_data
 
@@ -147,11 +148,20 @@ class H11CodeReviewRoutesMixin:
         payload = {"scope": scope, "source": "dashboard", "requested_at": created}
         req_path = proot / CODE_REVIEW_REQUEST
         req_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # 先填内容、再原子挂到轮询路径（code-review item 502bc934c4c6）：旧实现
+        # O_CREAT|O_EXCL 直接创建轮询路径、之后才 json.dump——daemon 1s 主循环
+        # tick 落在创建与填充之间的空窗会读到空/半写文件并 unlink 之，用户触发
+        # 静默丢失。改为三步：
+        #   1. 写同目录唯一临时文件（同目录保证 link 原子性），完整 JSON + fsync；
+        #   2. os.link(2) 原子挂到轮询路径——目标已存在抛 FileExistsError，
+        #      保留 item d3c1d2ef4a88 的独占创建语义（并发第二 POST → 409）；
+        #   3. 消费者要么看不到文件、要么看到完整 JSON，空窗不复存在。
+        tmp_path = (
+            req_path.parent / f".{req_path.name}.{os.getpid()}.{uuid4().hex}.tmp"
+        )
         try:
-            fd = os.open(str(req_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-        except FileExistsError:
-            self._error(409, "已有未消费的审查触发请求（请稍后重试）")
-            return
+            fd = os.open(str(tmp_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
         except OSError:
             self._error(500, "审查触发信号写入失败")
             return
@@ -161,13 +171,27 @@ class H11CodeReviewRoutesMixin:
                 f.flush()
                 os.fsync(f.fileno())
         except Exception:
-            # 写中途失败：清掉半写文件，避免残留被 daemon 误消费
+            # 写中途失败：清掉临时文件（轮询路径尚未创建，无半写残留可误消费）
             try:
-                os.unlink(str(req_path))
+                os.unlink(str(tmp_path))
             except OSError:
                 pass
             self._error(500, "审查触发信号写入失败")
             return
+        try:
+            os.link(str(tmp_path), str(req_path))
+        except FileExistsError:
+            self._error(409, "已有未消费的审查触发请求（请稍后重试）")
+            return
+        except OSError:
+            self._error(500, "审查触发信号写入失败")
+            return
+        finally:
+            # 链接成功/失败临时文件均无存在必要（成功后内容已由 link 名可见）
+            try:
+                os.unlink(str(tmp_path))
+            except OSError:
+                pass
         self._json({"ok": True, "scope": scope, "requested_at": created})
 
     def _api_code_review_fix_run(self, query):

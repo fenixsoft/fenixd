@@ -796,24 +796,38 @@ class CommandVerifyServer:
         self, injected: Optional[int], timeout: int, legacy_hint: Optional[int], legacy_pre: set
     ) -> Optional[int]:
         deadline = time.monotonic() + max(timeout, 5)
+
+        def _probe_in_budget(url: str) -> bool:
+            # deadline 下沉到探针粒度（code-review item 65a895e36c3d）：旧实现
+            # 只在每轮循环顶部检查一次 deadline，单轮内可执行注入端口探（1s）
+            # + 全部进程归属端口探（各 1s）+ 邻近扫描 51 次 1s 探（外加一次
+            # ss timeout=5s），最坏单轮数十秒——调用方 ready.timeout（缺省
+            # 60s）被突破，就绪判定等待时间不可控。现每个探针超时按剩余预算
+            # 取 min；预算耗尽不再发起新探针，单轮总耗时被钳在 deadline 附近
+            # （至多一个在飞探针的尾部）。
+            budget = deadline - time.monotonic()
+            if budget <= 0:
+                return False
+            return self._probe(url, timeout=min(1.0, budget))
+
         try:
             pgid = os.getpgid(self._proc.pid)
         except OSError:
             pgid = None
         while time.monotonic() < deadline:
             # 1) 注入端口精确探
-            if injected and self._probe(f"http://127.0.0.1:{injected}/"):
+            if injected and _probe_in_budget(f"http://127.0.0.1:{injected}/"):
                 return injected
             # 2) 进程归属发现（实例无视注入端口自绑端口的兜底）
             for p in self._owned_listening_ports(pgid):
-                if p != injected and self._probe(f"http://127.0.0.1:{p}/"):
+                if p != injected and _probe_in_budget(f"http://127.0.0.1:{p}/"):
                     return p
             # 3) 邻近扫描（legacy：服务自身上探邻近端口的存量契约）
             if legacy_hint:
                 for p in range(legacy_hint, legacy_hint + 51):
                     if p in legacy_pre or p == injected:
                         continue
-                    if self._probe(f"http://127.0.0.1:{p}/"):
+                    if _probe_in_budget(f"http://127.0.0.1:{p}/"):
                         return p
             if self._proc.poll() is not None:
                 self.failure_note = (
@@ -822,7 +836,8 @@ class CommandVerifyServer:
                     "（{port} 占位符 / $FENIX_VERIFY_PORT 环境变量）"
                 )
                 return None
-            time.sleep(1)
+            # 睡眠同样不越过 deadline（剩余不足 1s 时按剩余睡）
+            time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
         self.failure_note = (
             f"验证命令实例未就绪：注入端口 {injected} 未被消费，进程归属与"
             "邻近扫描亦未发现 HTTP 监听——检查 serve.cmd 是否引用 {port} "

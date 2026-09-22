@@ -993,8 +993,16 @@ class PromptBuilder:
             )
         if not isinstance(diag, dict) or not diag.get("terminal"):
             return ""
-        branch = diag.get("progress", {}).get("branch") or "unknown"
-        tasks = diag.get("progress", {}).get("tasks_checked")
+        # progress 守卫（code-review item 4fb225d924c3）：存储诊断可含
+        # "progress": null 或非 dict（与上文 json.loads / 非 dict 守卫同源
+        # 的脏数据面），.get 默认值仅在键缺席时生效——链式 .get 会抛
+        # AttributeError 中断重派 attempt 的提示词构建，与 fail-safe 姿态
+        # 不符。非 dict 一律按空 dict 缺省呈现。
+        progress = diag.get("progress")
+        if not isinstance(progress, dict):
+            progress = {}
+        branch = progress.get("branch") or "unknown"
+        tasks = progress.get("tasks_checked")
         # 截断守卫（2.2）：attribution / conclusion 各自截断防提示词膨胀。
         attr = str(diag.get("attribution") or "")[:500]
         conc = str(diag.get("conclusion") or "")[:800]
