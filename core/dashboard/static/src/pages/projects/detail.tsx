@@ -1,12 +1,12 @@
 import { PageContainer } from '@ant-design/pro-components';
-import { Alert, App, Badge, Button, Card, Checkbox, Collapse, Descriptions, Dropdown, Empty, Image, Progress, Space, Spin, Tabs, Tag, Timeline, Tooltip, Typography } from 'antd';
+import { Alert, App, Badge, Button, Card, Checkbox, Collapse, Descriptions, Dropdown, Empty, Image, Input, Popconfirm, Progress, Select, Space, Spin, Tabs, Tag, Timeline, Tooltip, Typography } from 'antd';
 import { CloseOutlined, DownOutlined, ExclamationCircleFilled, FullscreenOutlined, InfoCircleFilled } from '@ant-design/icons';
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import { history, useParams } from '@umijs/max';
 import dayjs from 'dayjs';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { clearSpecError, getAlerts, getConfig, getHookAudit, getSpecDetail, getSpecs, markAlertHandled, saveConfig, statusMeta } from '@/services/dashboard';
+import { clearSpecError, getAlerts, getConfig, getHookAudit, getSpecDetail, getSpecs, markAlertHandled, resolveAlert, saveConfig, statusMeta } from '@/services/dashboard';
 import type { AlertItem, ConfigData, HookAuditRecord, HookConfig, HooksConfig, SpecDetail, SpecSummary } from '@/services/dashboard';
 import HookManager from '@/components/HookManager';
 import { markdownComponents } from './components/SpecDocModal';
@@ -566,6 +566,12 @@ export default function SpecDetailPage() {
   const [docInitial, setDocInitial] = useState<DocType>('proposal');
   // 告警内容默认折叠（只显示标题），展开后的告警 id 集合
   const [expandedAlerts, setExpandedAlerts] = useState<Set<string>>(new Set());
+  // add-human-adjudication-choices 5.2/5.3：告警内嵌选择题交互状态——
+  // 选项值/note 按告警 id 分键；resolving 防重；执行结果/失败信息按告警留显
+  const [alertChoiceSels, setAlertChoiceSels] = useState<Record<string, string>>({});
+  const [alertNotes, setAlertNotes] = useState<Record<string, string>>({});
+  const [resolvingAlerts, setResolvingAlerts] = useState<Set<string>>(new Set());
+  const [alertResolveMsgs, setAlertResolveMsgs] = useState<Record<string, { text: string; tone: 'error' | 'info' }>>({});
   // 场景结果状态过滤（'' = 全部）
   const [scenarioFilter, setScenarioFilter] = useState<'pass' | 'warning' | 'fail' | 'error' | ''>('');
   // 任务背景描述 = proposal 文档 ## Why 段（spec 列表悬停同名内容），懒加载
@@ -821,6 +827,43 @@ export default function SpecDetailPage() {
       message.error(`标记失败：${err instanceof Error ? err.message : String(err)}`);
     }
     loadSpecAlerts();
+  };
+
+  // add-human-adjudication-choices 5.2：人工裁决一次选择完成处置闭环
+  // （动作执行 + 状态推进 + handled + 处置留痕）。loading 防重；成功提示
+  // 留痕已写入并回显执行步骤；失败展示错误与已执行步骤且恢复可交互
+  // （告警保持未处理，可调整后重试）。
+  const handleResolveAlert = async (a: AlertItem, choiceId: string) => {
+    if (resolvingAlerts.has(a.id)) return;
+    setResolvingAlerts((s) => new Set(s).add(a.id));
+    setAlertResolveMsgs((m) => {
+      const n = { ...m };
+      delete n[a.id];
+      return n;
+    });
+    try {
+      const r = await resolveAlert(a.project, a.id, choiceId, alertNotes[a.id] || '');
+      const steps = Array.isArray(r.steps) ? r.steps : [];
+      setAlertResolveMsgs((m) => ({
+        ...m,
+        [a.id]: { text: `裁决已执行，处置留痕已写入${steps.length ? `：${steps.join('；')}` : ''}`, tone: 'info' },
+      }));
+      message.success('裁决已执行，处置留痕已写入');
+      loadSpecAlerts();
+      getSpecDetail(name, spec).then(setDetail).catch(() => {});
+    } catch (err) {
+      setAlertResolveMsgs((m) => ({
+        ...m,
+        [a.id]: { text: err instanceof Error ? err.message : String(err), tone: 'error' },
+      }));
+      message.error('裁决执行失败，告警保持未处理，可调整后重试');
+    } finally {
+      setResolvingAlerts((s) => {
+        const n = new Set(s);
+        n.delete(a.id);
+        return n;
+      });
+    }
   };
 
   // 清除 spec 信息（同列表页清除 error）；成功后重拉详情使信息条消失
@@ -1590,6 +1633,27 @@ export default function SpecDetailPage() {
             const evidenceText = fmtEvidence(a.evidence);
             const hasContent = !!(a.recommended_action || evidenceText);
             const expanded = expandedAlerts.has(a.id);
+            /* add-human-adjudication-choices 5.2：带 choices 的告警渲染裁决
+               选择题（Select + note + 执行）；无 choices 保持「知道了」形态 */
+            const adjudicable = Array.isArray(a.choices) && a.choices.length > 0;
+            const selChoiceId = alertChoiceSels[a.id] || '';
+            const selChoice = (a.choices || []).find((c) => c.id === selChoiceId);
+            /* 5.3：撤销丢弃 / 跳过评审门为不可逆或越权语义，执行前二次确认 */
+            const needsConfirm = selChoiceId === 'abandon' || selChoiceId === 'skip_review_gate';
+            const resolving = resolvingAlerts.has(a.id);
+            const resolveMsg = alertResolveMsgs[a.id];
+            const execBtn = (
+              <Button
+                size="small"
+                type={needsConfirm ? 'primary' : 'default'}
+                danger={needsConfirm}
+                loading={resolving}
+                disabled={!selChoiceId || resolving}
+                onClick={() => selChoiceId && !needsConfirm && void handleResolveAlert(a, selChoiceId)}
+              >
+                执行
+              </Button>
+            );
             return (
               <Alert
                 key={a.id}
@@ -1608,21 +1672,74 @@ export default function SpecDetailPage() {
                   </Space>
                 }
                 description={
-                  hasContent ? (
-                    /* description 常驻（折叠时仅 display:none）：Alert 始终保持 with-description
-                       变体，展开/收起不再触发布局切换导致箭头与叉号移位 */
-                    <div style={expanded ? { fontSize: 12, whiteSpace: 'pre-wrap', marginTop: 8 } : { display: 'none' }}>
-                      {a.recommended_action && (
-                        <div>
-                          <Typography.Text type="secondary">建议：{a.recommended_action}</Typography.Text>
+                  hasContent || adjudicable || resolveMsg ? (
+                    <>
+                      {hasContent && (
+                        /* description 常驻（折叠时仅 display:none）：Alert 始终保持 with-description
+                           变体，展开/收起不再触发布局切换导致箭头与叉号移位 */
+                        <div style={expanded ? { fontSize: 12, whiteSpace: 'pre-wrap', marginTop: 8 } : { display: 'none' }}>
+                          {a.recommended_action && (
+                            <div>
+                              <Typography.Text type="secondary">建议：{a.recommended_action}</Typography.Text>
+                            </div>
+                          )}
+                          {evidenceText && (
+                            <div>
+                              <Typography.Text type="secondary">证据：{evidenceText}</Typography.Text>
+                            </div>
+                          )}
                         </div>
                       )}
-                      {evidenceText && (
-                        <div>
-                          <Typography.Text type="secondary">证据：{evidenceText}</Typography.Text>
+                      {adjudicable && (
+                        /* 裁决控件常驻（不随折叠隐藏）：wrap 布局适配窄屏 */
+                        <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6 }}>
+                          <Select
+                            size="small"
+                            style={{ minWidth: 220, flex: '1 1 220px' }}
+                            placeholder="选择裁决项"
+                            value={selChoiceId || undefined}
+                            onChange={(v) => setAlertChoiceSels((m) => ({ ...m, [a.id]: v }))}
+                            disabled={resolving}
+                            options={(a.choices || []).map((c) => ({ value: c.id, label: c.label, title: c.desc }))}
+                          />
+                          <Input
+                            size="small"
+                            style={{ width: 200, flex: '1 1 160px' }}
+                            maxLength={200}
+                            placeholder="处置依据（可选）"
+                            value={alertNotes[a.id] || ''}
+                            onChange={(e) => setAlertNotes((m) => ({ ...m, [a.id]: e.target.value }))}
+                            disabled={resolving}
+                          />
+                          {needsConfirm ? (
+                            <Popconfirm
+                              title="确认执行该裁决？"
+                              description={selChoice?.desc || '该操作可能不可自动恢复，请确认'}
+                              okText="确认执行"
+                              cancelText="取消"
+                              onConfirm={() => selChoiceId && void handleResolveAlert(a, selChoiceId)}
+                              disabled={resolving}
+                            >
+                              {execBtn}
+                            </Popconfirm>
+                          ) : (
+                            execBtn
+                          )}
                         </div>
                       )}
-                    </div>
+                      {selChoice?.desc && adjudicable && (
+                        <div style={{ marginTop: 4, fontSize: 12 }}>
+                          <Typography.Text type="secondary">{selChoice.desc}</Typography.Text>
+                        </div>
+                      )}
+                      {resolveMsg && (
+                        <div style={{ marginTop: 4, fontSize: 12, whiteSpace: 'pre-wrap' }}>
+                          <Typography.Text type={resolveMsg.tone === 'error' ? 'danger' : 'secondary'}>
+                            {resolveMsg.text}
+                          </Typography.Text>
+                        </div>
+                      )}
+                    </>
                   ) : undefined
                 }
                 action={

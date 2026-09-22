@@ -216,6 +216,19 @@ export interface AlertItem {
   handled_by?: string;
   handled_at?: string;
   resolve_note?: string;
+  /** add-human-adjudication-choices：裁决选项集（发射点快照；无该字段=非裁决类，只出「知道了」） */
+  choices?: AlertChoice[];
+}
+
+export interface AlertChoice {
+  /** 稳定选项 id（同信号内唯一），alert-resolve 提交用 */
+  id: string;
+  /** 中文短标签（下拉框显示） */
+  label: string;
+  /** 一句话说明执行内容（下拉选项次行 / 二次确认文案） */
+  desc?: string;
+  /** 映射的后端动词标识（前端仅展示，不据此分派） */
+  action?: string;
 }
 
 export interface AlertsData {
@@ -232,6 +245,33 @@ export async function getAlerts(): Promise<AlertsData> {
 export function markAlertHandled(project: string | undefined, id: string) {
   const q = project ? `?project=${encodeURIComponent(project)}` : '';
   return request(`/api/alerts/${encodeURIComponent(id)}/handled${q}`, { method: 'POST' });
+}
+
+/** add-human-adjudication-choices 5.1：人工裁决一次选择完成处置闭环。
+ * 成功 = 动作执行 + 状态推进 + 告警 handled + 处置留痕一次完成；
+ * 失败抛 ApiError（msg 含已执行步骤说明），告警保持未处理可重试。 */
+export interface AlertResolveResult {
+  ok?: boolean;
+  id?: string;
+  choice_id?: string;
+  action?: string;
+  steps?: string[];
+  marked?: boolean;
+  note?: string;
+}
+
+export async function resolveAlert(
+  project: string | undefined,
+  alertId: string,
+  choiceId: string,
+  note = '',
+): Promise<AlertResolveResult> {
+  const q = project ? `?project=${encodeURIComponent(project)}` : '';
+  return request<AlertResolveResult>(`/api/alert-resolve${q}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ project, alert_id: alertId, choice_id: choiceId, note }),
+  });
 }
 
 export function clearAllAlerts() {
