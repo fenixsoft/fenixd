@@ -87,3 +87,12 @@ export function shouldRenderGatesCard(
   if (!exists && (status === 'drafted' || status === 'ready')) return false;
   return true;
 }
+
+// testing 停等注记（add-timeline-ocr-lane-visibility 任务 2.1）：时间轴最新
+// 「→ testing」状态节点在 ocr 门（gate id code-review）状态为 running 时附注记；
+// 其余状态（pending/skipped/completed/unknown/无记录）→ null（前端零渲染，
+// 历史节点不携带与当前无关的进行时语义）
+export function ocrJoinNote(status: string): string | null {
+  if (status === 'running') return 'ocr 审查车道进行中，完成自动推进';
+  return null;
+}

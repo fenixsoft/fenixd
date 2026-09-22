@@ -18,6 +18,7 @@ import {
   gateSuffix,
   gateTextColor,
   normalizeGateItems,
+  ocrJoinNote,
   shouldRenderGatesCard,
 } from '../src/pages/projects/qualityGates.ts';
 import {
@@ -254,4 +255,22 @@ test('配色零回归：impl 蓝、verify 绿、出题青优先', () => {
 test('pct 边界：total=0 → 0%，四舍五入', () => {
   assert.equal(phasePct({ task_done: 0, task_total: 0, verify_done: 0, verify_total: 0 }), 0);
   assert.equal(phasePct({ task_done: 2, task_total: 3, verify_done: 0, verify_total: 0 }), 67);
+});
+
+// ── add-timeline-ocr-lane-visibility 任务 2.4：testing 停等注记纯函数 ──────
+
+test('ocrJoinNote：running → 注记文案', () => {
+  assert.equal(ocrJoinNote('running'), 'ocr 审查车道进行中，完成自动推进');
+});
+
+test('ocrJoinNote：pending/skipped/completed/unknown → null（前端零渲染）', () => {
+  assert.equal(ocrJoinNote('pending'), null);
+  assert.equal(ocrJoinNote('skipped'), null);
+  assert.equal(ocrJoinNote('completed'), null);
+  assert.equal(ocrJoinNote('unknown'), null);
+});
+
+test('ocrJoinNote：空串/缺失状态 → null（历史节点无注记）', () => {
+  assert.equal(ocrJoinNote(''), null);
+  assert.equal(ocrJoinNote(undefined), null);
 });
