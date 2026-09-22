@@ -1127,6 +1127,8 @@ export interface CodeReviewConfig {
   enabled?: boolean;
   /** 全仓审查 manifest 上限（正整数，缺省 500）：超过截断 */
   max_files?: number;
+  /** 审查范围（add-code-review-scope-config）：window（缺省）| full，非法值回退 window */
+  scope?: 'window' | 'full';
 }
 
 /** 自动修复代码问题（admin.code_review_fix；add-code-review-auto-fix） */

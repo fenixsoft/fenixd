@@ -54,6 +54,9 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
       // 周期性代码审查（2026-09-19 从项目页「代码审查」分面迁来）：
       // 开关是项目级配置（admin.code_review.enabled），归设置页而非项目页
       code_review_enabled: config.code_review?.enabled === true,
+      // add-code-review-scope-config：审查范围（admin.code_review.scope），
+      // 配置缺失回显 window（后端 get_code_review_config 缺省同源）
+      code_review_scope: config.code_review?.scope ?? 'window',
       // add-test-regression-tab：周期性全量回归开关（admin.regression.enabled）
       // 缺省 false；分面只读展示 + 手动触发，配置归设置页「质量」页签
       regression_enabled: config.regression?.enabled === true,
@@ -178,8 +181,11 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
         },
         // add-code-review-agent-and-quality-tab：周期性代码审查开关
         // （2026-09-19 从项目页「代码审查」分面迁到设置页「质量」页签）
+        // add-code-review-scope-config：审查范围并入同段写回（表单回填后
+        // 恒有值，枚举由 Select 选项约束，后端 get_code_review_config 权威兜底）
         code_review: {
           enabled: values.code_review_enabled === true,
+          scope: values.code_review_scope,
         },
         // add-test-regression-tab：周期性全量回归开关（admin.regression.enabled，
         // 缺省 false；与 code_review 同周期：admin.self_review.run_at 时点）
@@ -438,6 +444,30 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
             .fenix/code-review/items.jsonl 台账，供项目页「代码审查」分面展示与消费。
             需要环境已安装 ocr（未安装时审查仍以 LLM 逐文件执行，仅少了扫描加速）。
             手动触发（全仓库审查 / 当期提交审查）不受本开关约束。
+          </Text>
+
+          {/* add-code-review-scope-config：审查范围下拉（admin.code_review.scope）。
+              文案与项目页手动触发按钮（全库审查 / 当期审查）语义对齐，不引入
+              第三套叫法；保存并入既有 admin.code_review 受管段（见 handleSave）。 */}
+          <Form.Item
+            name="code_review_scope"
+            label={
+              <>
+                审查范围<span className="label-note">（admin.code_review.scope）</span>
+              </>
+            }
+            style={{ marginTop: 24 }}
+          >
+            <Select data-testid="code-review-scope">
+              <Select.Option value="window">当期审查（window）</Select.Option>
+              <Select.Option value="full">全库审查（full）</Select.Option>
+            </Select>
+          </Form.Item>
+          <Text type="secondary">
+            默认当期审查（window）：只审自省窗口内变更的文件。全库审查（full）与
+            项目页「全库审查」按钮同语义，审查全仓受控源码文件，同样受
+            admin.code_review.max_files 上限约束（超限截断）；两档共用同一套
+            调度守卫（同自然日防重 / run_at / 开关）。
           </Text>
 
           {/* 自动修复代码问题（add-code-review-auto-fix，task 9.2）：2026-09-22
