@@ -198,7 +198,7 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
       if (data.running) {
         if (pollTimerRef.current === null) {
           pollTimerRef.current = window.setInterval(() => {
-            void loadResult();
+            void loadResultRef.current();
           }, POLL_INTERVAL_MS);
         }
       } else if (pollTimerRef.current !== null) {
@@ -210,6 +210,17 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
       message.error(`加载失败: ${e instanceof Error ? e.message : String(e)}`);
     }
   }, [active, project, message]);
+
+  // 最新 loadResult 经 ref 供长生命周期 interval 调用（code-review item
+  // 828b713abd5b）：running 轮询 interval 只在首次创建后跨渲染复用，回调若
+  // 直接闭包捕获创建时渲染的 loadResult 会绑定当时的 project——running 期间
+  // 切换项目（或 active/project 身份变化）后旧 interval 继续轮询上个项目、
+  // 把其快照写进当前视图。经 ref 取最新闭包，轮询目标始终跟随当前
+  // active/project。
+  const loadResultRef = useRef(loadResult);
+  useEffect(() => {
+    loadResultRef.current = loadResult;
+  }, [loadResult]);
 
   // active 门控：进入分面加载，离开分面停止轮询（未选中零请求）
   useEffect(() => {

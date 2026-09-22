@@ -346,25 +346,34 @@ class RecoveryWatch:
                     f"to stale check",
                 )
 
-            # pop + 落盘作为一个整体持锁（code-review item 1fa5c6b99aad）：两次
-            # 交错巡检否则会把对方刚 pop 的项写回（复活）或丢失未落盘的变更。
-            with self._watch_lock:
-                self._recovery_watch.pop(spec_name, None)
-                self._pm._save_recovery_watch()
-            # read_one 异常隔离（code-review item 3c7ed59e424d）：本处此前无守卫，
-            # 而下方升级前重读刻意包裹（「重读失败保守升级」）。STATE.md 瞬态 I/O
-            # 异常会让异常逃出 check_recovery_watch、中止**其余全部**到期观察项的
-            # 本轮处置（daemon 只记一条 "Recovery watch check failed"）。单条失败
-            # 仅跳过该条并记 WARNING，保持其余继续。
+            # 读取先于 pop（code-review item 8af911fa12a3）：观察项此前在读取
+            # STATE 之前就被 pop 并从磁盘移除，读取失败的 except 只记 WARNING
+            # 后 continue——一次瞬态 STATE 读取失败会永久丢弃该观察项（丢失=
+            # 真实卡死从此无人告警），与本文件「MUST NOT 静默丢弃观察项」不变量
+            # 直接冲突（同族先例：_register_watch_entry/第 3 层重读均按失败
+            # 保守处理）。现改为仅读取成功后才 pop；读取失败保留观察项并顺延
+            # due（重试窗口沿用 inflight_retry_minutes 口径），下轮巡检重试。
             try:
                 entry = self._pm.state_machine.read_one(spec_name)
             except Exception as e:
+                retry_due = now + self._inflight_retry_minutes() * 60
+                with self._watch_lock:
+                    item["due"] = retry_due
+                    self._pm._save_recovery_watch()
                 self._pm.logger.warning(
                     "pm_engine",
-                    f"Recovery watch 复查读取 STATE 失败 '{spec_name}'（跳过本条）: "
+                    f"Recovery watch 复查读取 STATE 失败 '{spec_name}'"
+                    f"（保留观察项，顺延 due={retry_due:.0f}）: "
                     f"{type(e).__name__}: {e}",
                 )
                 continue
+            # pop + 落盘作为一个整体持锁（code-review item 1fa5c6b99aad）：两次
+            # 交错巡检否则会把对方刚 pop 的项写回（复活）或丢失未落盘的变更。
+            # 读取成功后才 pop（read_one 异常隔离，code-review item 3c7ed59e424d
+            # 语义保持：单条失败仅跳过该条并记 WARNING，其余观察项继续）。
+            with self._watch_lock:
+                self._recovery_watch.pop(spec_name, None)
+                self._pm._save_recovery_watch()
             if not entry:
                 continue  # spec 已消失（被人工清理）：观察项静默关闭（2.4 不变）
             status = entry.get("status")

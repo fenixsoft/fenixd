@@ -15,7 +15,7 @@
 import { DatePicker, Select } from 'antd';
 import dayjs from 'dayjs';
 import type { Dayjs } from 'dayjs';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 /** 三档执行时刻的可变载体（经 holder 向 Modal.confirm 的 onOk 回传）。 */
 export interface AcceptSchedule {
@@ -120,6 +120,19 @@ export default function ScheduleFields({
         : null;
     }
   };
+
+  // 挂载即按 initial 同步 holder（code-review item 8fc0c907083b）：holder 原本
+  // 只在 Select/DatePicker onChange 时写入——正确性静默依赖每个调用方把 holder
+  // 预填为与 initial 完全一致的值。若调用方传未预填（或值已漂离 initial）的
+  // holder，未触控控件直接提交会发出过时/undefined 的 start_after，而
+  // isStartAfterValid(undefined) 恒真、绕过校验。挂载时用与 onChange 同一条
+  // commit 路径回写（mode/when 即由 initial 派生），触控前后提交语义一致。
+  useEffect(() => {
+    commit(mode, when);
+    // Modal.confirm 的内容渲染在独立 React root、仅挂载一次，initial 为建弹窗
+    // 时的定值，只需同步一次。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <>

@@ -196,7 +196,21 @@ class RRollbackMixin:
                     f"Rolled back '{spec_name}' implementing → ready "
                     f"({agent_type} never started): {exc}",
                 )
-                self._enqueue(spec_name, agent_type)
+                # 入队独立守卫（code-review item 9842741702fe）：_enqueue 原在大
+                # try 内任何守卫外——队列写入抛错（锁/IO）会跳到外层 except 记
+                # 误导性「State rollback failed」（尽管上方 update_spec 已把 spec
+                # 复位 ready）且重派条目静默丢失，正是本方法要修复的卡死状态
+                # （只剩 full_scan recovery 兜底）。单独守卫：失败如实记 ERROR，
+                # 不覆盖状态复位成果。
+                try:
+                    self._enqueue(spec_name, agent_type)
+                except Exception as enqueue_exc:  # noqa: BLE001 —— 入队失败不吞回滚成果
+                    self._pm.logger.error(
+                        "pm_engine",
+                        f"Redispatch enqueue failed for '{spec_name}' "
+                        f"(state rolled back to ready, pending full_scan "
+                        f"recovery): {type(enqueue_exc).__name__}: {enqueue_exc}",
+                    )
             else:
                 # 未覆盖 (agent_type, status) 组合（code-review item 01c0160765d2）：
                 # 旧 if/elif 链无兜底——静默返回、无日志、无回滚，残余卡死形态在

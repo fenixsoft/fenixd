@@ -193,7 +193,6 @@ class VAdjudicationMixin:
         命中行 ±2 行上下文（每文档独立段落清单）；tasks.md 的声明段经
         ``extract_declared_entries`` 结构化摘录。读取失败静默跳过（fail-open）。
         """
-        import re as _re
         from pathlib import Path as _Path
 
         spec_dir = _Path(self._pm.project_root) / "spec" / "changes" / spec_name
@@ -2188,7 +2187,12 @@ class VAdjudicationMixin:
             f"run={getattr(result, 'run_id', '') or ''}",
         )
         if updates["status"] != "blocked":
-            self._enqueue_front(spec_name, "implementer")
+            # 车道透传（code-review item 9ea41826c63f）：agent_type 由调用方
+            # 声明并用于选择重派车道（fast_track.py 以 agent_type="fast-track"
+            # 转发至此），此前被忽略、无条件入队 implementer——fast-track 失败
+            # 被重派进完整 implementer 车道，与 docstring「full 重派 implementer，
+            # fast-track 重派 fast-track」的契约相悖。
+            self._enqueue_front(spec_name, agent_type)
 
     # ── tasks.md 收口复检门禁处置（add-tasksmd-relint-gate）─────────────────
     # 读取与判定逻辑在 VerificationPipeline._tasks_md_relint_from_branch /

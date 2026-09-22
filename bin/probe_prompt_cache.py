@@ -104,6 +104,15 @@ def probe(provider_name: str, config_path: Path) -> dict:
         cache_supported: bool
         evidence: dict（round1 / round2 usage 摘要）
     """
+    # 配置文件缺失与 provider 名缺失区分（code-review item 9c3cc76cd230）：
+    # 两者此前同返 None，probe() 恒报「provider 不在配置文件」——--config
+    # 路径给错时诊断指向错误原因。文件缺失先行短路并如实报错。
+    if not config_path.exists():
+        return {
+            "provider": provider_name,
+            "cache_supported": None,
+            "error": f"配置文件不存在: {config_path}",
+        }
     provider = _load_provider(config_path, provider_name)
     if provider is None:
         return {
