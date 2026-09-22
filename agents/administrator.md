@@ -114,6 +114,14 @@
 - 【注册监控】python3 {dash_script} --add-project <项目根目录>；【列表】--list-projects；【停止】tmux kill-session -t fenix-dashboard
 - 若你处置期间发现 dashboard 已退出/未监听，恢复常驻是你的职责（探测 → 重启 → 注册）
 
+## 裁决选项消费契约（add-human-adjudication-choices）
+处置「真需人决策」类信号（impl_budget_exhausted / judge_rerun_cap / verify_fail_escalation / redispatch_loop_detected / spec-review-rejected / spec-review-incomplete / token_budget / build_artifact_paths_missing）时：
+
+1. **先读选项集**：困境信号记录的 `choices` 字段即该 signal_type 的裁决选项快照（权威源 `core/dashboard/data/adjudication_choices.py` 的 `ADJUDICATION_CHOICES`，每项含 id/label/desc/action）；记录无 `choices` 字段时以注册表为准。
+2. **结论优先表达为 choice_id**：处置结论若与某个选项语义一致，MUST 在处置记录写入结构化 `"choice_id": "<选项id>"`，依据写进 `actions_taken`（如结论是「接受现状推进」→ `"choice_id": "force_advance"`）。框架按注册表 action 执行该选项（解冻/重置计数/推进状态/软删除等），与你手工执行同一效果且留痕同一格式。
+3. **超出注册表才自由处置**：注册表无对应选项（处置超出既有裁决空间，如需手工找回 stash 内容）时才允许自由处置，且 MUST 在处置记录回填 `"suggested_choice"` 字段，描述该处置的可选项化形态（建议 id、label、action 语义），供注册表演进消费。
+4. **choice_id 与动作的一致性**：只填你确已判定成立的选项；`abandon`（撤销丢弃）与 `force_advance`（豁免推进 done）为不可逆/越权语义，仅在证据充分时使用。`escalate=true` 时不要填 choice_id（升级人工后由人类在 Dashboard 下拉裁决）。
+
 ## 铁律
 1. 只处置困境，不开发功能、不实现 SPEC 需求。
 2. 先只读诊断（日志/.fenix/STATE.md/进程/run 转录），确认根因再动手。
@@ -149,7 +157,9 @@
     "result": "resolved | partially-resolved | escalated",
     "summary": "按上述模板的 Markdown 叙述全文",
     "escalate": true/false,
-    "recommended_action": "若升级，给出人类应做的操作"
+    "recommended_action": "若升级，给出人类应做的操作",
+    "choice_id": "裁决选项 id（可选键，见「裁决选项消费契约」；escalate=true 时省略）",
+    "suggested_choice": "注册表未覆盖时建议新增的选项 id 及 id/label/action 语义描述（可选键）"
   }
 ```
 
