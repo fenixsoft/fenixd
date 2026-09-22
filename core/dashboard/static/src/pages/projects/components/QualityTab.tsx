@@ -19,7 +19,7 @@
 //
 // active 门控（对齐 SessionPanel）：仅在选中本分面时拉取数据与订阅 SSE，
 // 未选中零请求（project-page-tabs 按需加载语义）。
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   App,
   Button,
@@ -595,16 +595,30 @@ export default function QualityTab({ project, active }: QualityTabProps) {
     });
   };
 
-  // 选中项与可见行求交（code-review item 01f6207c6b11）：忽略/清除归属/后端流转
-  // 为 resolved/in_spec、或切换严重度/状态过滤后，旧选中 key 会残留为「幽灵
-  // 选中」，使「已选 N 条」计数错误、并把不可见/已失效 item_id 提交给后端。
+  // 过滤后的实际渲染行（useMemo 稳定身份，供表格与幽灵选中清理共用同一谓词）
+  const filteredItems = useMemo(
+    () =>
+      items.filter(
+        (it) =>
+          (!severityFilter || it.severity === severityFilter) &&
+          (!statusFilter || it.status === statusFilter),
+      ),
+    [items, severityFilter, statusFilter],
+  );
+
+  // 选中项与**实际渲染行**求交（code-review item 01f6207c6b11 + a4922e615ddf）：
+  // 忽略/清除归属/后端流转为 resolved/in_spec、或严重度/状态过滤收窄后，旧
+  // 选中 key 会残留为「幽灵选中」，使「已选 N 条」计数错误、并把不可见/
+  // 已失效 item_id 提交给后端。旧实现只与服务端全量 items 求交且 deps 不含
+  // 过滤器——severityFilter 收窄后现在不可见的键仍留在 selectedKeys 被提交；
+  // 改为与 filteredItems 求交并把过滤值纳入依赖。
   useEffect(() => {
     setSelectedKeys((prev) => {
-      const visible = new Set(items.map((it) => String(it.item_id)));
+      const visible = new Set(filteredItems.map((it) => String(it.item_id)));
       const next = prev.filter((k) => visible.has(String(k)));
       return next.length === prev.length ? prev : next;
     });
-  }, [items]);
+  }, [filteredItems]);
 
   // 行操作渲染（code-review item ca92db5ea623 抽三元）：把原嵌套三元改为早返回。
   const renderOps = (rec: CodeReviewItem) => {
@@ -624,12 +638,6 @@ export default function QualityTab({ project, active }: QualityTabProps) {
     }
     return null;
   };
-
-  const filteredItems = items.filter(
-    (it) =>
-      (!severityFilter || it.severity === severityFilter) &&
-      (!statusFilter || it.status === statusFilter),
-  );
 
   const columns: ColumnsType<CodeReviewItem> = [
     {

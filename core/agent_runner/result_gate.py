@@ -1058,7 +1058,9 @@ def salvage_result_from_transcript(
                 for c in (d.get("message") or {}).get("content") or []:
                     if isinstance(c, dict) and c.get("type") == "text":
                         last_text = c.get("text") or ""
-    except OSError:
+    except (OSError, UnicodeDecodeError):
+        # 转录含无效 UTF-8 视为「不可读」（同 _check_artifact_json_file 口径），
+        # 不抛异常、不落盘返回 False。
         return False
     if not last_text:
         return False

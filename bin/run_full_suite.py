@@ -69,15 +69,20 @@ PYTEST_BASE_ARGS = [
 ]
 
 
-def _with_basetemp(cmd: list, project_root) -> list:
+def _with_basetemp(cmd: list, project_root, unique: bool = False) -> list:
     """给 pytest 命令注入项目内 basetemp（隔离系统 /tmp，且可由 conftest 自清）。
 
     ``--basetemp`` 指向 ``<project_root>/<BASETEMP_REL>``；pytest 会**先清空**该
     目录再建（given basetemp 语义），故每轮套件从干净目录起跑，天然不累积。
+
+    ``unique=True``（主机锁获取失败的并发回退）：追加 ``-<pid>`` 后缀——
+    固定 basetemp 下两个并发套件会在会话开始互相清空对方临时目录（正是
+    主机锁要防的损坏）；锁失效时改用进程唯一目录，宁可留残目录也不互删。
     """
     if any(str(a).startswith("--basetemp") for a in cmd):
         return cmd  # 调用方已显式指定，不覆盖
-    base = Path(project_root) / BASETEMP_REL
+    rel = f"{BASETEMP_REL}-{os.getpid()}" if unique else BASETEMP_REL
+    base = Path(project_root) / rel
     # pytest 以 ``mkdir(mode=0o700)``（非 parents=True）创建给定 basetemp，
     # 故父目录须先存在（主树 .fenix 已在；基线临时 worktree 需兜底）。
     base.parent.mkdir(parents=True, exist_ok=True)
@@ -118,23 +123,33 @@ def _suite_env() -> dict:
 
 
 def extract_hanging_test(stderr: str) -> "str | None":
-    """从 faulthandler 栈输出提取挂起测试标识（栈顶用例）。
+    """从 faulthandler 栈输出提取挂起测试标识（优先 tests/ 路径下的帧）。
 
     faulthandler 输出形如：
         Thread 0x7f... (most recent call first):
           File "/repo/tests/test_x.py", line 42, in test_hang
           ...
-    取**第一个** File 行 → ``tests/test_x.py:test_hang``（compat：路径可相对）。
+    faulthandler 会为**每个线程**各打一份栈，且 dump 的首个 File 帧常是
+    主线程或 pytest/faulthandler 内部帧而非挂起用例——盲取首帧会把调试
+    引向完全无关的方向。故优先取**路径在 tests/ 下**的首个 File 帧（自然
+    排除 pytest/pluggy 等内部帧），无 tests/ 帧再回退首帧
+    （compat：路径可相对）。
 
     无匹配返回 None（不误报）。
     """
+    first = None
     for line in (stderr or "").splitlines():
         m = re.search(r'File "([^"]+)", line \d+, in (.+)', line)
-        if m:
-            path = m.group(1)
-            func = m.group(2).strip()
+        if not m:
+            continue
+        path = m.group(1)
+        func = m.group(2).strip()
+        if first is None:
+            first = f"{path}:{func}"
+        norm = path.replace("\\", "/")
+        if norm.startswith("tests/") or "/tests/" in norm:
             return f"{path}:{func}"
-    return None
+    return first
 
 
 # ── 命令运行（有界）────────────────────────────────────────────────────
@@ -166,7 +181,8 @@ def run_command(cmd, timeout, cwd, env=None) -> tuple:
 
 
 def run_suite(
-    project_root, timeout=DEFAULT_TIMEOUT_SECONDS, env=None, cmd_override=None, log=print
+    project_root, timeout=DEFAULT_TIMEOUT_SECONDS, env=None, cmd_override=None, log=print,
+    basetemp_unique=False,
 ) -> dict:
     """运行一次全量套件（有界）；返回 summary dict。
 
@@ -176,12 +192,14 @@ def run_suite(
 
     Args:
         cmd_override: 测试注入——替代 pytest 命令（如固定输出的假命令）。
+        basetemp_unique: 主机锁获取失败时置 True——回退 pid 唯一 basetemp，
+            防并发套件互相清空对方临时目录。
     """
     started = time.time()
     if cmd_override is not None:
         cmd = list(cmd_override)
     else:
-        cmd = _with_basetemp(list(PYTEST_BASE_ARGS), project_root)
+        cmd = _with_basetemp(list(PYTEST_BASE_ARGS), project_root, unique=basetemp_unique)
     rc, out, err, timed_out = run_command(cmd, timeout, cwd=project_root, env=env or _suite_env())
     elapsed = round(time.time() - started, 1)
     hanging = extract_hanging_test(err) if timed_out else None
@@ -260,7 +278,9 @@ class SuiteLock:
     """主机级全量套件互斥（.fenix/full-suite.lock fcntl 文件锁）。
 
     同一主机并发全量套件串行：获取失败（已被其他进程持有）时等待
-    LOCK_WAIT_TIMEOUT_SECONDS；等不到也继续执行（保守不阻塞），但写日志留痕。
+    LOCK_WAIT_TIMEOUT_SECONDS；等不到也继续执行（保守不阻塞），但写日志
+    留痕，并把 ``self.acquired`` 置 False——调用方据此回退 pid 唯一
+    basetemp（并发套件共用固定 basetemp 会在会话开始互删对方临时目录）。
     """
 
     def __init__(self, project_root: Path, log=print):
@@ -268,6 +288,7 @@ class SuiteLock:
         self._lock_path.parent.mkdir(parents=True, exist_ok=True)
         self._file = None
         self._log = log
+        self.acquired = False
 
     def __enter__(self):
         self._file = self._lock_path.open("w")
@@ -281,13 +302,14 @@ class SuiteLock:
             except OSError:
                 time.sleep(2)
         waited = round(time.time() - start, 1)
+        self.acquired = acquired
         if acquired:
             # 阻塞等待中拿到锁（说明曾与其他并发套件争抢）
             self._log(f"[run_full_suite] 主机级锁获取成功（wait={waited}s）")
         else:
             self._log(
                 f"[run_full_suite] 主机级锁等待超时（>{LOCK_WAIT_TIMEOUT_SECONDS}s），"
-                f"继续执行但无串行保证（供复盘）"
+                f"继续执行但无串行保证，回退 pid 唯一 basetemp（供复盘）"
             )
         return self
 
@@ -387,7 +409,11 @@ def main(argv=None) -> int:
     lock = SuiteLock(project_root)
 
     with lock:
-        current = run_suite(project_root, timeout=args.timeout)
+        # 锁获取失败（等待超时）→ 回退 pid 唯一 basetemp：固定 basetemp 下
+        # 并发套件会在会话开始互相清空对方临时目录，正是主机锁要防的损坏。
+        current = run_suite(
+            project_root, timeout=args.timeout, basetemp_unique=not lock.acquired
+        )
 
     result = {
         "timed_out": current.get("timed_out"),

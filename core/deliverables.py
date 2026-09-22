@@ -80,19 +80,19 @@ class _LenientLogAdapter:
 
     def info(self, *a, **k):
         msg, args = self._fmt(a)
-        self._delegate.info(msg, *args, **k) if args else self._delegate.info(msg)
+        self._delegate.info(msg, *args, **k)
 
     def warning(self, *a, **k):
         msg, args = self._fmt(a)
-        self._delegate.warning(msg, *args, **k) if args else self._delegate.warning(msg)
+        self._delegate.warning(msg, *args, **k)
 
     def error(self, *a, **k):
         msg, args = self._fmt(a)
-        self._delegate.error(msg, *args, **k) if args else self._delegate.error(msg)
+        self._delegate.error(msg, *args, **k)
 
     def debug(self, *a, **k):
         msg, args = self._fmt(a)
-        self._delegate.debug(msg, *args, **k) if args else self._delegate.debug(msg)
+        self._delegate.debug(msg, *args, **k)
 
 
 _resolution_logger = _LenientLogAdapter(logging.getLogger("fenixd.deliverables"))
@@ -1449,18 +1449,12 @@ def classify_unsatisfiable(entry, project_root) -> bool:
         return False
     # 规则 2：目录路径（软化为 reference 后 lint 不再拦截，但目录不可交付）
     if kind == "modify":
-        candidates_dir = [path]
-        normalized_dir = normalize_check_path(path)
-        if normalized_dir != path:
-            candidates_dir.append(normalized_dir)
+        # .fenix 归一化已退役（恒等映射），目录判定按字面路径单候选
         pr = Path(project_root)
-        if any(pr.joinpath(c).is_dir() for c in candidates_dir):
+        if pr.joinpath(path).is_dir():
             return False
-    # ── 正向命中判定 ──
+    # ── 正向命中判定（.fenix 归一化已退役 → 单候选=原路径）──
     candidates = [path]
-    normalized = normalize_check_path(path)
-    if normalized != path:
-        candidates.append(normalized)
     if _path_is_gitignored(project_root, candidates):
         return True
     return _path_is_outside_root(project_root, candidates)
@@ -1506,11 +1500,8 @@ def soften_unsatisfiable_declarations(spec_dir, project_root) -> list:
         # 判定 reason（供审计 reasoning 区分 gitignored / outside-root）
         reason = "gitignored"
         try:
-            # 归一化候选与 classify 同源
+            # .fenix 归一化已退役 → 单候选=原路径，与 classify 同源
             candidates = [path]
-            normalized = normalize_check_path(path)
-            if normalized != path:
-                candidates.append(normalized)
             if not _path_is_gitignored(project_root, candidates):
                 reason = "outside-root"
         except Exception:
@@ -1687,10 +1678,8 @@ def is_orphan_declaration(project_root, spec_name: str, entry: dict, spec_dir=No
     # （.fenix/** 等）或路径本身不可能在仓内（仓库外），git grep 恒零命中对
     # 孤儿判定零信息量；且该形态已有 lint 规则 5/6 专属拒绝，孤儿检查不得在
     # 其上报双层违规。
+    # .fenix 归一化已退役（恒等映射）→ 单候选=原路径
     candidates = [path]
-    normalized = normalize_check_path(path)
-    if normalized != path:
-        candidates.append(normalized)
     if _path_is_gitignored(project_root, candidates) or _path_is_outside_root(
         project_root, candidates
     ):
@@ -2104,9 +2093,6 @@ def lint_declared(spec_dir, project_root) -> List[str]:
             continue
         # 目录声明按字面路径判定（.fenix 归一化已退役，恒等映射自然退化）
         candidates = [path]
-        normalized = normalize_check_path(path)
-        if normalized != path:
-            candidates.append(normalized)
         # 规则 5（gitignored 不可满足声明，add-spec-hooks dist 守卫自伤防复发
         # 2026-09-06）：modify/new 语义均以「文件可入 git」为前提，被 .gitignore
         # 排除即任何分支不可满足。不 continue：目录/存在性校验相互独立，可叠加。

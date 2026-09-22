@@ -340,7 +340,9 @@ class H5SettingsRoutesMixin:
             return
         try:
             data = yaml.safe_load(content)
-        except yaml.YAMLError as e:
+        except Exception as e:
+            # 宽捕获同 load_verify_contract 口径：对抗性/深度嵌套输入可抛
+            # RecursionError 等非 YAMLError 异常，一律按 400 可读拒绝而非 500。
             self._error(
                 400, f"YAML 语法错误，拒绝保存（坏契约会被框架按「无契约」" f"静默回退）: {e}"
             )

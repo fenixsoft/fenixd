@@ -380,11 +380,20 @@ const SuggestedImprovementsPanel = forwardRef<
   const [filterProject, setFilterProject] = useState<string | undefined>();
   const [filterDateRange, setFilterDateRange] = useState<[Dayjs, Dayjs] | null>(null);
 
-  // 缺省状态下拉随数据重算（无粘性）：只要存在「待决策」（pending）条目就把状态
-  // 缺省筛成 pending，把待用户决策的条目顶到眼前；一条都没有则不加任何过滤，原样
-  // 展示全部。items 仅在 loadItems() 成功后换引用，故「重算」落在每次数据重载上
-  // ——用户手动改动筛选后保留到下一次重载为止，不会被无谓重置。
+  // 缺省状态下拉只在首个非空数据集落定一次（code-review item b53ce5d316fb）：
+  // 旧实现在每次 items 身份变化（accept/reject/delete 后 loadItems）都重推
+  // 默认过滤，用户刻意选的过滤（如状态=已拒绝）被静默替换回 pending，与
+  // 「保留用户选择」意图相悖。加 hasAppliedDefaultFilter 一次性门控后，
+  // 缺省过滤只在初始加载应用，之后由用户全权掌管（resetFilters 可显式复位）。
+  const hasAppliedDefaultFilter = useRef(false);
   useEffect(() => {
+    // scope/project 变化而组件被复用时重置一次性门，让新作用域重新落默认
+    hasAppliedDefaultFilter.current = false;
+  }, [scope, project]);
+  useEffect(() => {
+    if (hasAppliedDefaultFilter.current) return;
+    if (items.length === 0) return; // 空数据（加载中/无数据）不落默认
+    hasAppliedDefaultFilter.current = true;
     setFilterStatus(items.some((i) => i.status === 'pending') ? 'pending' : undefined);
   }, [items]);
 
@@ -687,9 +696,12 @@ const SuggestedImprovementsPanel = forwardRef<
             }
           }
         } finally {
-          setBatchRunning(false);
+          // unmount 守卫（code-review item ab67eda51983）：批量运行中用户导航
+          // 离开（面板卸载）时，多 await 之后的 state 更新不得打到已卸载组件
+          // ——与 loadItems/loadView 的 mountedRef 口径一致。
+          if (mountedRef.current) setBatchRunning(false);
         }
-        setSelectedRowKeys([]);
+        if (mountedRef.current) setSelectedRowKeys([]);
         await loadItems();
 
         const parts = [`成功 ${succeeded} 条`];
