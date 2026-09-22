@@ -163,6 +163,11 @@ from .admin_actions import (
     request_spec_approve_push,
     clear_spec_error,
     set_spec_priority,
+    # 裁决动词与 choice 映射执行器（add-human-adjudication-choices 3.x/4.x）
+    reset_verification,
+    force_advance,
+    skip_review_gate,
+    execute_adjudication_choice,
 )
 
 # fix-scheduling-kick-single-slot D2：SCHEDULING_KICK_DIR / write_scheduling_kick
@@ -272,6 +277,17 @@ from .quality_gates import (
 from .regression import (
     read_regression_result,
     is_regression_running,
+)
+
+# ── adjudication_choices 组（add-human-adjudication-choices）──
+# 裁决选项静态注册表：发射点（choices_for 快照）、前端渲染与 alert-resolve
+# 端点三处共用的事实源（design D1）。
+from .adjudication_choices import (
+    ADJUDICATION_CHOICES,
+    SIGNAL_CHANNEL_SIGNAL_TYPES,
+    choices_for,
+    is_adjudicable,
+    registered_signal_types,
 )
 
 # ── state 组 ──
