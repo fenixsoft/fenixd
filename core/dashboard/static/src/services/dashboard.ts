@@ -1492,6 +1492,21 @@ export interface CodeReviewFixProgress {
   batch_no: number;
   reason: string;
   activation_id: string;
+  /** add-code-fix-item-level-progress：本批已处置条数（明细不可得时 null） */
+  item_done: number | null;
+  /** 最近一条处置结果摘要（明细不可得/尚未产生时 null） */
+  current_item: CodeReviewFixProgressCurrentItem | null;
+  /** 本批条目数（批上下文缺失时 null，条级文案分母） */
+  batch_total: number | null;
+}
+
+/** add-code-fix-item-level-progress：最近一条处置结果摘要（title/line 由台账回查补全，降级时缺省） */
+export interface CodeReviewFixProgressCurrentItem {
+  item_id: string;
+  status: string;
+  file: string;
+  title?: string;
+  line?: number;
 }
 
 /** add-code-review-auto-fix：读取自动修复进度（无副作用，缺失文件返回缺省态） */
