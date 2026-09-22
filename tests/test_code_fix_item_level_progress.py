@@ -526,8 +526,9 @@ class TestOrchestratorBatchContext(unittest.TestCase):
         self.assertIsNotNone(rid)
 
     def test_context_cleared_on_failure_finish(self):
-        """失败收尾（零有效修复，_finish 出口）清除批上下文三键。"""
-        from core.code_fix import CodeFixOrchestrator, read_progress
+        """失败收尾清除批上下文三键（selfheal 后零有效修复走 consumed 出口，同样清除）。"""
+        from core.code_fix import (CodeFixOrchestrator, load_failed_batches,
+                                   read_progress)
 
         proot = _make_project_root()
         _write_items(proot, {"a": _item("a")})
@@ -536,8 +537,12 @@ class TestOrchestratorBatchContext(unittest.TestCase):
         orch = CodeFixOrchestrator(runner, proot, config=_CFG_ON, logger=None)
         orch.checkpoint()
         prog = read_progress(proot)
-        self.assertEqual(prog["phase"], "failed")
-        self.assertEqual(prog["reason"], "no_effective_fix")
+        # consumed（链内跳过）：链自驱动收敛到「选批为空」终态
+        self.assertEqual(prog["phase"], "blocked")
+        self.assertIn("下轮自动重试", prog["current"])
+        self.assertEqual(prog["chain_skipped"], ["a"])
+        self.assertEqual(load_failed_batches(proot), [])
+        # 批上下文三键同步清除（防陈旧索引）
         self.assertIsNone(prog["worktree"])
         self.assertIsNone(prog["run_id"])
         self.assertIsNone(prog["batch_total"])

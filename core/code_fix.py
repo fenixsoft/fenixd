@@ -18,9 +18,15 @@ agent run 在独立 worktree 内修复并提交；框架在该 worktree 上跑�
   （`merge_back` 对「分支已是 HEAD 祖先」返回成功，无守卫会把全 skipped
   的批白洗成 resolved）。
 - **resolved 只能由合回成功驱动**；skipped 条目保持 open。
-- **失败批保留集合**：两次回归均失败的批 item_ids 落
-  `.fenix/code-review/fix-failed.json`，`select_batch` 跳过（防重复派发）；
-  不接 UI 且车道自身不释放 → MUST 同时在 `.fenix/todo.md` 登记待人工清理。
+- **批失败自愈（add-code-fix-batch-failure-selfheal）**：批收尾三态
+  `success`/`consumed`/`halt`——`success` 与 `consumed`（条目已离开可选池）
+  均自驱动推进下一批，仅 `halt`（环境性失败）终止链。确定性失败（两次回归
+  均失败/合回冲突）现场即弃：branch/tip_sha 入 `.fenix/code-review/
+  fix-failed.json` 失败档案（记录带 `fail_count` 自动重试预算）后清理
+  worktree 释放锁；新链启动自动释放 `fail_count < FAIL_RETRY_MAX` 的记录
+  （下轮自动重试），达上限永久跳过并一次性告警 + todo.md 登记待人工。
+  瞬态失败（agent run 失败/重试 run 失败/零有效修复）只进进度快照
+  `chain_skipped`（链内跳过，新链启动重置），不烧跨轮重试预算。
 """
 
 import json
@@ -37,8 +43,14 @@ from core.verify_contract import load_verify_contract
 
 # 进度快照（单文件覆盖式，与 .fenix/regression/last-run.json 同型，D8）
 FIX_PROGRESS_REL = ".fenix/code-review/fix-progress.json"
-# 失败批保留集合（两次回归均失败，D6/D3：保留现场 + 条目跳过）
+# 失败批档案（确定性失败：两次回归均失败/合回冲突；带 fail_count 自动重试
+# 预算，新链启动自动释放预算内记录——add-code-fix-batch-failure-selfheal D3）
 FIX_FAILED_REL = ".fenix/code-review/fix-failed.json"
+
+# 失败档案自动重试预算上限（selfheal D3）：同条目集 fail_count 递增至本值的
+# 那次入档发一次性 warning 告警并登记 todo 待人工项，此后不再自动重试。
+# 模块常量、不新增配置键（预算语义无需按项目调节）。
+FAIL_RETRY_MAX = 3
 
 # 进度缺省态（读侧缺文件/损坏时返回，MUST NOT 抛异常）
 FIX_PROGRESS_DEFAULT = {
@@ -67,6 +79,10 @@ FIX_PROGRESS_DEFAULT = {
     # 写持久化成误导性数字）。null 三态语义见 _synthesize_item_progress。
     "item_done": None,
     "current_item": None,
+    # 链内跳过集（add-code-fix-batch-selfheal）：本链因瞬态失败（agent run
+    # 失败/重试 run 失败/零有效修复）被跳过的条目 id。select_batch 排除口径
+    # = 失败档案并集 ∪ 本字段；新链启动（activation_id 更替）时重置为空。
+    "chain_skipped": [],
 }
 
 # phase 合法值（spec code-fix-progress）
@@ -245,25 +261,71 @@ def _failed_item_ids(project_root) -> set:
     return ids
 
 
-def record_failed_batch(project_root, item_ids, worktree) -> None:
-    """把「两次回归均失败」的批落盘到 fix-failed.json（原子写，追加式）。
+def record_failed_batch(
+    project_root, item_ids, worktree, reason="", branch="", tip_sha=""
+) -> None:
+    """把确定性失败批落盘到 fix-failed.json（原子写；同条目集复用记录）。
 
-    同时在 `.fenix/todo.md` 登记待人工清理项：失败集合不接 UI 且车道自身
-    不会释放，无人工项时该批条目会被永久跳过（tasks 5.7 硬约束）。
+    自动重试预算语义（add-code-fix-batch-failure-selfheal D3/D4）：记录带
+    ``fail_count``——首记 1；同条目集（item_id 集合相同）再次入档时复用既有
+    记录递增并刷新 ``reason``/``branch``/``tip_sha``/``failed_at``（不追加
+    重复记录）。新链启动经 ``release_retryable_failed_batches`` 自动释放
+    ``fail_count < FAIL_RETRY_MAX`` 的记录（下轮自动重试，无需人工）；
+    ``fail_count`` 递增至 ``FAIL_RETRY_MAX`` 的那次入档发一条一次性 warning
+    告警并在 todo.md 登记待人工项，此后永久跳过、不再重试/告警。
+
+    ``reason``/``branch``/``tip_sha`` 为可选关键字参数（缺省空串，兼容既有
+    调用点）；``branch``/``tip_sha`` 是现场即弃后修复提交的 git 追溯线索。
     """
     records = load_failed_batches(project_root)
-    records.append(
-        {
-            "item_ids": list(item_ids),
-            "worktree": str(worktree),
-            "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        }
-    )
+    key = {str(i) for i in item_ids}
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    target = None
+    for rec in records:
+        if {str(i) for i in rec.get("item_ids") or []} == key:
+            target = rec
+            break
+    if target is not None:
+        target["fail_count"] = int(target.get("fail_count") or 0) + 1
+    else:
+        target = {"item_ids": list(item_ids), "fail_count": 1}
+        records.append(target)
+    target["worktree"] = str(worktree)
+    target["reason"] = reason
+    target["branch"] = branch
+    target["tip_sha"] = tip_sha
+    target["failed_at"] = now
     _atomic_write(
         _failed_path(project_root),
         json.dumps(records, ensure_ascii=False, indent=2),
     )
-    _append_todo_entry(project_root, item_ids, worktree)
+    if target["fail_count"] == FAIL_RETRY_MAX:
+        # 递增至预算上限的「那次入档」才告警 + 登记 todo（一次性，D4）；
+        # 预算内入档可自动重试，不产生人工项。
+        _write_retry_exhausted_alert(project_root, item_ids, reason, branch, tip_sha)
+        _append_todo_entry(project_root, item_ids, reason, branch, tip_sha)
+
+
+def release_retryable_failed_batches(project_root) -> int:
+    """释放 ``fail_count < FAIL_RETRY_MAX`` 的失败档案记录（selfheal D3）。
+
+    新链启动时调用（等效原人工 ``release_failed_batch`` 的预算内自动化）：
+    预算内条目回到可选池实现下轮自动重试；``fail_count >= FAIL_RETRY_MAX``
+    的记录保持跳过（达上限永久跳过）。返回释放的记录条数（供日志/进度文案）。
+    """
+    records = load_failed_batches(project_root)
+    kept = [
+        rec
+        for rec in records
+        if int(rec.get("fail_count") or 1) >= FAIL_RETRY_MAX
+    ]
+    released = len(records) - len(kept)
+    if released:
+        _atomic_write(
+            _failed_path(project_root),
+            json.dumps(kept, ensure_ascii=False, indent=2),
+        )
+    return released
 
 
 def release_failed_batch(project_root, item_ids) -> int:
@@ -293,16 +355,23 @@ def release_failed_batch(project_root, item_ids) -> int:
     return released
 
 
-def _append_todo_entry(project_root, item_ids, worktree) -> None:
-    """在 .fenix/todo.md 追加待人工清理项（含 worktree 路径与解除用法）。"""
+def _append_todo_entry(project_root, item_ids, reason="", branch="", tip_sha="") -> None:
+    """达重试上限的失败批在 .fenix/todo.md 追加待人工排查项（一次性，D4）。
+
+    现场即弃语义下 worktree 已清理，指引按 ``branch``/``tip_sha`` 追溯
+    （丢弃的修复提交可经 git reflog 找回）；MUST NOT 再引用 worktree 路径。
+    """
     todo_path = Path(project_root) / ".fenix" / "todo.md"
     ids_txt = ", ".join(str(i) for i in item_ids)
     entry = (
-        "\n## [code-fix] 失败批待人工清理（add-code-review-auto-fix）\n\n"
+        "\n## [code-fix] 失败批已达自动重试上限，待人工排查"
+        "（add-code-fix-batch-failure-selfheal）\n\n"
         f"- 记录时间：{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}\n"
-        f"- 保留 worktree：`{worktree}`（两次全量回归均未通过，未合回；"
-        "排查后可手工提取修复或直接删除该 worktree）\n"
-        f"- 被跳过的条目集合（保持 open，车道不再自动重派）：{ids_txt}\n"
+        f"- 失败原因：{reason or 'unknown'}（自动重试 {FAIL_RETRY_MAX} 轮均失败，"
+        "已停止自动重派）\n"
+        f"- 追溯线索：branch=`{branch}`、tip_sha=`{tip_sha}`（worktree 已清理，"
+        "丢弃的修复提交可经 git reflog 按 tip_sha 找回）\n"
+        f"- 被跳过的条目集合（保持 open）：{ids_txt}\n"
         "- 解除跳过（人工确认处置后）：\n"
         "  `python3 -c \"from core.code_fix import release_failed_batch; "
         "release_failed_batch('<project_root>', ['<item_id>', ...])\"`\n"
@@ -319,9 +388,13 @@ def _append_todo_entry(project_root, item_ids, worktree) -> None:
 # ── 选批（5.2）────────────────────────────────────────────────────────
 
 
-def select_batch(project_root, batch_size: int) -> list:
+def select_batch(project_root, batch_size: int, exclude_ids=None) -> list:
     """从台账选下一批：open 条目按 first_seen_at 升序（缺失回退 item_id
-    稳定排序）取前 batch_size 条，排除失败保留集合中的条目（5.7 防重派）。
+    稳定排序）取前 batch_size 条。
+
+    排除口径 = 失败档案条目并集 ∪ ``exclude_ids``（add-code-fix-batch-
+    selfheal：链内跳过集 chain_skipped，瞬态失败条目本链不再选批；缺省
+    None 向后兼容，既有调用点零改动）。
 
     返回条目 record 列表（含 item_id/file/line/severity/category/title/
     description/suggestion 等 prompt 注入字段）。
@@ -330,7 +403,7 @@ def select_batch(project_root, batch_size: int) -> list:
         items = read_items(project_root)
     except Exception:  # noqa: BLE001 — 台账读失败按无条目处理（fail-closed）
         return []
-    excluded = _failed_item_ids(project_root)
+    excluded = _failed_item_ids(project_root) | set(exclude_ids or ())
     open_items = [
         rec
         for rec in items.values()
@@ -414,6 +487,20 @@ def _worktree_head(worktree) -> str:
         return ""
 
 
+def _worktree_branch(worktree) -> str:
+    """worktree 分支名（失败档案的追溯线索之一，selfheal D2；异常返回空串）。"""
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(worktree), "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        return out.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
 # ── 回归契约缺失信号（5.5 / D5，分流口径对齐 regression_routes 既有区分）──
 
 
@@ -484,8 +571,15 @@ def write_regression_signal(project_root, signal_type: str, logger=None) -> None
             pass
 
 
-def write_regression_failed_alert(project_root, item_ids, worktree, failures_summary: str) -> None:
-    """回归两次均失败丢弃批时写失败告警（D6：major，附 worktree 路径与失败用例）。"""
+def write_regression_failed_alert(
+    project_root, item_ids, worktree, failures_summary: str,
+    branch="", tip_sha="",
+) -> None:
+    """回归两次均失败丢弃批时写失败告警（selfheal：已跳过，下轮自动重试）。
+
+    ``worktree`` 形参保留兼容既有签名，但现场即弃后 worktree 已清理，
+    evidence 改以 ``branch``/``tip_sha`` 作为追溯线索（git reflog 可找回）。
+    """
     from core.admin_store import AdminStore, SIGNAL
 
     store = AdminStore(project_root, logger=None)
@@ -494,19 +588,53 @@ def write_regression_failed_alert(project_root, item_ids, worktree, failures_sum
             "kind": SIGNAL,
             "signal_type": "code_fix_regression_failed",
             "spec": None,
-            "severity": "major",
+            "severity": "warning",
             "description": (
-                "code-fix 批两次全量回归均未通过，已丢弃（未合回、条目保持 open，"
-                "worktree 保留待人工排查）"
+                "code-fix 批两次全量回归均未通过，已跳过（未合回、条目保持 open，"
+                "worktree 已清理，下轮自动重试）"
             ),
             "evidence": (
-                f"项目名={Path(project_root).name}; worktree={worktree}; "
+                f"项目名={Path(project_root).name}; branch={branch or 'unknown'}; "
+                f"tip_sha={tip_sha or 'unknown'}; "
                 f"item_ids={', '.join(str(i) for i in item_ids)}; "
                 f"失败用例摘要: {failures_summary[:2000]}"
             ),
             "source": "code-fix-lane",
             "recommended_action": (
-                "人工排查保留 worktree 中的修复（可手工提取后走正常流程），处置完成后"
+                "已跳过，下轮自动重试（达重试上限后需人工介入）；丢弃的修复提交"
+                "可按 branch/tip_sha 经 git reflog 追溯"
+            ),
+        }
+    )
+
+
+def _write_retry_exhausted_alert(project_root, item_ids, reason, branch, tip_sha) -> None:
+    """失败档案条目集 fail_count 达 FAIL_RETRY_MAX 时的一次性 warning 告警（D4）。
+
+    点名录条目集与历次失败原因；此后该记录不再被释放、不再触发新告警。
+    """
+    from core.admin_store import AdminStore, SIGNAL
+
+    store = AdminStore(project_root, logger=None)
+    store.append(
+        {
+            "kind": SIGNAL,
+            "signal_type": "code_fix_retry_budget_exhausted",
+            "spec": None,
+            "severity": "warning",
+            "description": (
+                f"code-fix 失败批自动重试已达上限（{FAIL_RETRY_MAX} 轮），"
+                "停止自动重派，待人工排查"
+            ),
+            "evidence": (
+                f"项目名={Path(project_root).name}; branch={branch or 'unknown'}; "
+                f"tip_sha={tip_sha or 'unknown'}; "
+                f"item_ids={', '.join(str(i) for i in item_ids)}; "
+                f"失败原因: {reason or 'unknown'}"
+            ),
+            "source": "code-fix-lane",
+            "recommended_action": (
+                "按 branch/tip_sha 经 git reflog 追溯丢弃的修复提交，人工排查后"
                 "调用 core.code_fix.release_failed_batch 解除该批条目的跳过"
             ),
         }
@@ -605,6 +733,15 @@ class CodeFixOrchestrator:
         进度链身份（D8）：读到 ``running=true`` 且 activation_id 未变 → 视为
         同一激活链，MUST NOT 重算 total（否则每批收尾再投递会把 total 重置为
         已缩小的 open 数，前端出现「已处理 0/40」倒退）。
+
+        批失败自愈（add-code-fix-batch-selfheal）：链身份判定前移到选批之前
+        ——新链启动（非同一 activation_id）先释放预算内失败档案
+        （``release_retryable_failed_batches``，等效人工 release 的自动化）
+        并重置 ``chain_skipped``，再选批；否则上一链以全跳过收敛后，下一
+        checkpoint 会因 open 条目全被排除而恒走「选批为空」早退，永远到不了
+        新链分支，车道锁死（自愈失效）。选批排除口径 = 失败档案 ∪
+        ``chain_skipped``；「选批为空」是 consumed 链的正常收敛出口，文案按
+        排除来源区分（D5），不误报为故障。
         """
         with self._lock:
             cfg = self._get_config()
@@ -629,6 +766,7 @@ class CodeFixOrchestrator:
                         run_id=None,
                         batch_total=None,
                         manual_authorized=False,
+                        chain_skipped=[],
                     )
                 return {"triggered": False, "reason": "disabled"}
             if self._code_fix_running():
@@ -637,7 +775,8 @@ class CodeFixOrchestrator:
             root = self.project_root
             total_open = count_open_items(root)
             if total_open == 0:
-                # 链收尾（无 open 条目）：进度落 running=false（若曾有链）
+                # 链收尾（无 open 条目）：进度落 running=false（若曾有链）；
+                # 链上状态（授权旗标/链内跳过集）随链终止一并清除。
                 if _progress_path(root).exists():
                     write_progress(
                         root,
@@ -649,33 +788,14 @@ class CodeFixOrchestrator:
                         run_id=None,
                         batch_total=None,
                         manual_authorized=False,
+                        chain_skipped=[],
                     )
                 return {"triggered": False, "reason": "no_open_items"}
 
-            batch = select_batch(root, cfg.get("batch_size", 20))
-            if not batch:
-                # open 条目全部被失败保留集合排除 → 静默空转（等待人工解除）。
-                # 进度顺带刷新为终态（ocr 收尾审查）：链曾置 running=true，若维持
-                # 旧快照，前端会停在「第 N 批修复中」的陈旧文案上。
-                prev_snapshot = read_progress(root)
-                if prev_snapshot.get("running") or prev_snapshot.get("phase") in (
-                    "failed",
-                    "blocked",
-                ):
-                    write_progress(
-                        root,
-                        running=False,
-                        phase="blocked",
-                        reason="failed_batch_retained",
-                        current="open 条目均在失败保留集合中，待人工 release_failed_batch",
-                        worktree=None,
-                        run_id=None,
-                        batch_total=None,
-                        manual_authorized=False,
-                    )
-                return {"triggered": False, "reason": "no_open_items"}
-
-            # 进度链身份：同链沿用 total/activation_id，新链重算
+            # 进度链身份（D8）：同链沿用 total/activation_id，新链重算。判定
+            # 前移到选批之前（selfheal）：新链启动先释放预算内失败档案并重置
+            # chain_skipped——放在选批之后会让「上一链全跳过收敛」后的下一
+            # checkpoint 恒走选批为空早退，新链分支不可达（车道锁死）。
             # （复用守卫段已读的 prev_chain——中间无其他进度写者）
             prev = prev_chain
             if prev.get("running") and prev.get("activation_id"):
@@ -683,11 +803,59 @@ class CodeFixOrchestrator:
                 total = prev.get("total") or total_open
                 done = prev.get("done") or 0
                 batch_no = prev.get("batch_no") or 0
+                chain_skipped = list(prev.get("chain_skipped") or [])
             else:
                 activation_id = f"{int(time.time())}-{uuid.uuid4().hex[:8]}"
                 total = total_open
                 done = 0
                 batch_no = 0
+                # 新链启动：预算内失败档案自动释放（下轮自动重试，等效原人工
+                # release_failed_batch）；链内跳过集随链身份更替重置为空。
+                chain_skipped = []
+                released = release_retryable_failed_batches(root)
+                if released:
+                    self._log(
+                        "info",
+                        f"code-fix 新链启动：释放 {released} 条预算内失败档案"
+                        "（下轮自动重试）",
+                    )
+            batch = select_batch(
+                root, cfg.get("batch_size", 20), exclude_ids=chain_skipped
+            )
+            if not batch:
+                # open 条目全被排除（失败档案 ∪ chain_skipped）→ consumed 链的
+                # 正常收敛出口（selfheal D5），MUST NOT 误报为故障；进度刷新为
+                # 终态防前端停在陈旧的「修复中」快照，文案按排除来源区分：
+                # 链内跳过/预算内档案=下轮自动重试，仅达上限档案保留人工指引。
+                prev_snapshot = read_progress(root)
+                if prev_snapshot.get("running") or prev_snapshot.get("phase") in (
+                    "failed",
+                    "blocked",
+                ):
+                    maxed = any(
+                        int(rec.get("fail_count") or 1) >= FAIL_RETRY_MAX
+                        for rec in load_failed_batches(root)
+                    )
+                    if maxed:
+                        current = (
+                            "open 条目均已跳过（含已达自动重试上限的条目，需人工排查）；"
+                            "其余条目下轮自动重试"
+                        )
+                    else:
+                        current = "open 条目均已跳过（链内跳过/预算内失败），下轮自动重试"
+                    write_progress(
+                        root,
+                        running=False,
+                        phase="blocked",
+                        reason="failed_batch_retained",
+                        current=current,
+                        worktree=None,
+                        run_id=None,
+                        batch_total=None,
+                        manual_authorized=False,
+                        chain_skipped=chain_skipped,
+                    )
+                return {"triggered": False, "reason": "no_open_items"}
             batch_no += 1
 
             # 回归契约守卫（D5 fail-closed）：契约缺失/缺段 → 发信号、不派批
@@ -707,6 +875,7 @@ class CodeFixOrchestrator:
                     run_id=None,
                     batch_total=None,
                     manual_authorized=False,
+                    chain_skipped=chain_skipped,
                 )
                 return {"triggered": False, "reason": "regression_contract_missing"}
             if contract.regression is None:
@@ -724,6 +893,7 @@ class CodeFixOrchestrator:
                     run_id=None,
                     batch_total=None,
                     manual_authorized=False,
+                    chain_skipped=chain_skipped,
                 )
                 return {"triggered": False, "reason": "regression_section_missing"}
 
@@ -753,6 +923,9 @@ class CodeFixOrchestrator:
                     # 手动授权随链持久化：本批由 override 投出，或延续 live
                     # 链已有的授权（batch 间 phase 改写不得丢失旗标）。
                     manual_authorized=bool(override_enabled) or chain_authorized,
+                    # 链内跳过集：同链沿用（merge 语义下显式透传防剥落），新链
+                    # 已在上分支重置为空——写入 [] 覆盖上一链残留。
+                    chain_skipped=chain_skipped,
                 )
                 ctx = {
                     "activation_id": activation_id,
@@ -795,12 +968,13 @@ class CodeFixOrchestrator:
     # -- 批 worker（5.4/5.6/5.8）-------------------------------------------
 
     def _finish(self, phase: str, reason: str = "", **fields) -> None:
-        """批收尾：复位单飞 + 刷新进度（running 保持链语义，由下次 checkpoint 收尾）。
+        """halt 收尾（链终止）：复位单飞 + 刷新进度（running 由下次 checkpoint 收尾）。
 
-        链终止（失败批不再自驱动），授权旗标一并清除；批上下文三键同步
-        清除——本函数是全部失败收尾的唯一出口且**不置 running=false**，
-        不清则读侧会带着陈旧 worktree/run_id 继续合成条级字段（保留现场
-        的失败批尤其如此，D2 防陈旧索引）。
+        仅环境性失败路径使用（worktree_manager_missing / worktree_create_failed /
+        批 worker 异常，selfheal D1）：链终止、不自驱动，授权旗标一并清除；
+        批上下文三键同步清除——不清则读侧会带着陈旧 worktree/run_id 继续合成
+        条级字段（D2 防陈旧索引）。consumed 失败收尾走 ``_consumed_progress``
+        （链继续，不请旗标）。
         """
         self._in_flight = False
         write_progress(
@@ -814,44 +988,78 @@ class CodeFixOrchestrator:
             **fields,
         )
 
+    def _consumed_progress(self, current: str, reason: str = "", chain_skip_ids=None) -> None:
+        """consumed 失败收尾（selfheal D6）：链内跳过 + 非终态进度，链继续。
+
+        与 ``_finish``（halt 终态）相对：不复位 running、不清 manual_authorized
+        （链上授权随自驱动继续生效）；``chain_skip_ids`` 非 None 时把该批条目
+        并入进度快照 ``chain_skipped``（原子写合并语义，本链 select_batch 不再
+        选中，新链启动时重置）；批上下文三键同步清除（worktree 已 cleanup，
+        D2 防陈旧索引）。
+        """
+        self._in_flight = False
+        fields = {}
+        if chain_skip_ids is not None:
+            prev_ids = read_progress(self.project_root).get("chain_skipped") or []
+            fields["chain_skipped"] = list(
+                dict.fromkeys(
+                    [str(i) for i in prev_ids] + [str(i) for i in chain_skip_ids]
+                )
+            )
+        write_progress(
+            self.project_root,
+            phase="fixing",
+            reason=reason,
+            current=current,
+            worktree=None,
+            run_id=None,
+            batch_total=None,
+            **fields,
+        )
+
     def _run_batch(self, ctx: dict) -> None:
         batch_no = ctx["batch_no"]
-        ok = False
+        outcome = "halt"
         try:
-            ok = self._run_batch_inner(ctx)
+            outcome = self._run_batch_inner(ctx)
         except Exception as e:  # noqa: BLE001 — 批异常兜底：不炸线程池/不挂死单飞
             self._log("error", f"批 worker 异常（第 {batch_no} 批）: {e}")
             self._finish("failed", reason=f"batch_worker_error: {e}")
+            outcome = "halt"
         finally:
             self._in_flight = False
-        # 自驱动链（D4）：仅成功批推进下一批；失败批终止链（条目保持 open，
-        # 由下一轮 full scan 兜底重试）——失败即再投递会在同步模式下无限递归、
-        # 在 executor 模式下无限空转（worktree_create_failed 每轮必复现）。
-        if ok:
+        # 自驱动链（selfheal D1/D4）：success 与 consumed 均推进下一批——
+        # consumed 批的条目已全部离开可选池（失败档案 ∪ chain_skipped），
+        # 可选池严格单调缩小，再投递循环必然收敛；原「失败即终止」的无限
+        # 递归/空转顾虑只对「条目未离开可选池的失败」（halt：如
+        # worktree_create_failed 每轮复现同批）成立，halt 保持终止链、条目
+        # 保持 open，由下一轮 full scan 兜底重试。
+        if outcome in ("success", "consumed"):
             self._resubmit()
 
-    def _run_batch_inner(self, ctx: dict) -> bool:
-        """执行一批；返回 True 表示批成功（可推进下一批），False 表示链终止。"""
+    def _run_batch_inner(self, ctx: dict) -> str:
+        """执行一批；返回三态收尾（selfheal D1）。
+
+        ``"success"`` 批成功合回并核销；``"consumed"`` 该批条目已全部离开
+        可选池（可推进下一批）；``"halt"`` 环境性失败（链终止，条目保持 open）。
+        """
         root = self.project_root
         runner = self._agent_runner
         batch_no = ctx["batch_no"]
         items = ctx["items"]
-        item_ids = ctx["item_ids"]
         total = ctx["total"]
-        done = ctx["done"]
-        reg_spec = ctx["regression_spec"]
 
         # 建树（5.4）：create() 返回 None 即收尾——不派 run、不合回、条目保持
-        # open、复位单飞，进度 failed（下一轮 full scan 重试）。
+        # open、复位单飞，进度 failed（halt：下一轮 full scan 重试）。
         wm = getattr(runner, "worktree_manager", None)
         if wm is None:
             self._finish("failed", reason="worktree_manager_missing")
-            return False
+            return "halt"
         wt = wm.create(spec_name="code-review-fix", agent_type="code-fix")
         if wt is None:
             self._log("warning", "code-fix: worktree 创建失败（锁占用或 git 失败）")
             self._finish("failed", reason="worktree_create_failed")
-            return False
+            return "halt"
         wt = Path(wt)
         # 批上下文落盘（task 2.1）：phase="fixing" 写点整体后移至建树成功
         # 之后、agent run 启动之前——原写点位于建树前，彼时 worktree/run_id
@@ -874,16 +1082,17 @@ class CodeFixOrchestrator:
         except Exception:
             # 未预期异常兜底（ocr 收尾审查）：create() 已登记 code-review-fix:code-fix
             # spec 锁，仅 cleanup() 释放——漏掉则下一批 create() 恒 None（车道死锁）。
-            # 枚举失败分支各自已按语义 cleanup 或保留现场，不经此路径。
+            # 枚举失败分支各自已按语义 cleanup，不经此路径。
             _safe_cleanup(wm, wt, success=False, logger=self._logger)
             raise
 
-    def _run_batch_created(self, wm, wt: Path, created_sha, ctx: dict, run_id: str) -> bool:
+    def _run_batch_created(self, wm, wt: Path, created_sha, ctx: dict, run_id: str) -> str:
         """执行已建树批次的主体（首次/重试 run、回归、守卫、合回核销清理）。
 
-        返回 True 表示批成功（可推进下一批）。由 _run_batch_inner 在建树成功后
-        调用；未预期异常在本层被兜底 cleanup 后原样上抛（_run_batch 收口）。
-        ``run_id`` 为编排器预生成的首轮 run 标识（进度文件已携带同值）。
+        返回三态收尾（selfheal D1，语义见 ``_run_batch_inner``）。由
+        _run_batch_inner 在建树成功后调用；未预期异常在本层被兜底 cleanup 后
+        原样上抛（_run_batch 收口）。``run_id`` 为编排器预生成的首轮 run 标识
+        （进度文件已携带同值）。
         """
         root = self.project_root
         runner = self._agent_runner
@@ -898,15 +1107,17 @@ class CodeFixOrchestrator:
         result = runner.run_code_fix(wt, items, run_id=run_id)
         if not result.success:
             self._log("error", f"code-fix run 失败（run {result.run_id}）: {result.error}")
-            # agent run 失败：不合回不核销；清理 worktree 释放 spec 锁
-            #（否则下一批 create() 恒 None，车道死锁），条目保持 open 待下轮重试
+            # agent run 失败（瞬态，selfheal D3）：不合回不核销；条目入
+            # chain_skipped（链内跳过，不烧跨轮预算）；清理 worktree 释放
+            # spec 锁（否则下一批 create() 恒 None，车道死锁）；consumed：
+            # 链继续推进下一批。
             _safe_cleanup(wm, wt, success=False, logger=self._logger)
-            self._finish(
-                "failed",
+            self._consumed_progress(
+                current=f"第 {batch_no} 批失败已跳过（run 失败）— 继续后续批次",
                 reason=f"agent_run_failed: {result.error}"[:500],
-                current=f"第 {batch_no} 批 run 失败",
+                chain_skip_ids=item_ids,
             )
-            return False
+            return "consumed"
 
         # 第一次全量回归（执行根=worktree、锁根=主树，D10）
         retry_run_id: str | None = None
@@ -946,37 +1157,48 @@ class CodeFixOrchestrator:
                     f"code-fix 重试 run 失败（run {retry_result.run_id}）: {retry_result.error}",
                 )
                 # run 失败（第二次回归根本没跑）≠「两次回归均失败」：不入失败
-                # 保留集合，改走与首次 run 失败同一条语义——清理 worktree 释放
-                # spec 锁（否则 code-review-fix:code-fix 被永久持有，下一批
-                # create() 恒返回 None，车道首批后即死），条目保持 open 待下轮
-                # full scan 重试。
+                # 档案（不烧跨轮预算），与首次 run 失败同语义——条目入
+                # chain_skipped；清理 worktree 释放 spec 锁（否则
+                # code-review-fix:code-fix 被永久持有，下一批 create() 恒返回
+                # None，车道首批后即死）；consumed：链继续。
                 _safe_cleanup(wm, wt, success=False, logger=self._logger)
-                self._finish(
-                    "failed",
+                self._consumed_progress(
+                    current=f"第 {batch_no} 批失败已跳过（重试 run 失败）— 继续后续批次",
                     reason=f"regression_retry_run_failed: {retry_result.error}"[:500],
-                    current=f"第 {batch_no} 批重试 run 失败",
+                    chain_skip_ids=item_ids,
                 )
-                return False
+                return "consumed"
             retry_run_id = retry_result.run_id
             reg = runner.run_regression(
                 reg_spec, reason="code-fix", project_root=wt, lock_root=root
             )
             if reg.status != "passed":
-                # 两次均失败 → 丢弃该批：不合回、不置 resolved、条目保持
-                # open、保留 worktree（MUST NOT cleanup）、写失败告警与保留集合
+                # 两次均失败 → 现场即弃（selfheal D2）：cleanup **前**把
+                # branch/tip_sha 连同 reason 写入失败档案（fail_count 预算），
+                # 随后清理 worktree 释放锁——不再保留现场待人工（锁死车道），
+                # 丢弃的修复提交由下轮重试重新生成，tip_sha 留作 reflog 追溯。
+                # consumed：条目已入档案（离开可选池），链继续推进下一批。
                 self._log(
                     "error",
-                    f"code-fix 第 {batch_no} 批两次回归均未通过，丢弃（worktree 保留: {wt}）",
+                    f"code-fix 第 {batch_no} 批两次回归均未通过，现场即弃"
+                    f"（branch/tip_sha 入档案，worktree 清理: {wt}）",
                 )
                 summary2 = _failure_summary(reg)
-                record_failed_batch(root, item_ids, wt)
-                write_regression_failed_alert(root, item_ids, wt, summary2)
-                self._finish(
-                    "failed",
-                    reason=f"regression_failed_twice: {reg.status}",
-                    current=f"第 {batch_no} 批已丢弃（待人工）",
+                tip_sha = _worktree_head(wt)
+                branch = _worktree_branch(wt)
+                record_failed_batch(
+                    root, item_ids, wt,
+                    reason="regression_failed_twice", branch=branch, tip_sha=tip_sha,
                 )
-                return False
+                write_regression_failed_alert(
+                    root, item_ids, wt, summary2, branch=branch, tip_sha=tip_sha
+                )
+                _safe_cleanup(wm, wt, success=False, logger=self._logger)
+                self._consumed_progress(
+                    current=f"第 {batch_no} 批失败已跳过（两次回归未通过）— 继续后续批次",
+                    reason=f"regression_failed_twice: {reg.status}",
+                )
+                return "consumed"
 
         # 5.8 零有效修复守卫（合回之前）：产物行至少一条 fixed 且分支相对
         # 建树点有提交。merge_back 对「分支已是 HEAD 祖先」返回成功——无此
@@ -993,18 +1215,21 @@ class CodeFixOrchestrator:
         fixed_ids = list(dict.fromkeys(fixed_ids))
         commits = _worktree_commit_count(wt, created_sha) if created_sha else 0
         if not fixed_ids or commits <= 0:
+            # 零有效修复拒合回（selfheal：链内跳过而非终止链）——零产物批按
+            # halt 终止链，因选批 earliest-first 会永久堵在队列头，违背「单批
+            # 失败不堵塞车道」目标；条目入 chain_skipped 随下一链重试。
             self._log(
                 "warning",
                 f"code-fix 第 {batch_no} 批零有效修复（fixed={len(fixed_ids)}, "
                 f"commits={commits}），拒合回",
             )
             _safe_cleanup(wm, wt, success=False, logger=self._logger)
-            self._finish(
-                "failed",
+            self._consumed_progress(
+                current=f"第 {batch_no} 批失败已跳过（无有效修复）— 继续后续批次",
                 reason="no_effective_fix",
-                current=f"第 {batch_no} 批无有效修复，未合回",
+                chain_skip_ids=item_ids,
             )
-            return False
+            return "consumed"
 
         # 合回（既有 merge-back 闸门不绕过）→ 核销 fixed 条目 → 清理 worktree
         write_progress(
@@ -1014,14 +1239,23 @@ class CodeFixOrchestrator:
         )
         merge_info = wm.merge_back(wt)
         if not getattr(merge_info, "success", False):
-            self._log("error", f"code-fix 第 {batch_no} 批合回冲突，交人工")
-            record_failed_batch(root, item_ids, wt)
-            self._finish(
-                "failed",
-                reason="merge_back_conflict",
-                current=f"第 {batch_no} 批合回冲突（待人工）",
+            # 合回冲突 → 现场即弃（selfheal D2）：cleanup 前把 branch/tip_sha
+            # 写入失败档案（fail_count 预算），随后清理 worktree 释放锁——
+            # 不再保留现场待人工（原语义锁死车道至 daemon 重启）。consumed：
+            # 条目已入档案，链继续。
+            self._log("error", f"code-fix 第 {batch_no} 批合回冲突，现场即弃（branch/tip_sha 入档案）")
+            tip_sha = _worktree_head(wt)
+            branch = _worktree_branch(wt)
+            record_failed_batch(
+                root, item_ids, wt,
+                reason="merge_back_conflict", branch=branch, tip_sha=tip_sha,
             )
-            return False
+            _safe_cleanup(wm, wt, success=False, logger=self._logger)
+            self._consumed_progress(
+                current=f"第 {batch_no} 批失败已跳过（合回冲突）— 继续后续批次",
+                reason="merge_back_conflict",
+            )
+            return "consumed"
         hit = mark_resolved(root, fixed_ids)
         _safe_cleanup(wm, wt, success=True, logger=self._logger)
         new_done = done + hit
@@ -1041,7 +1275,7 @@ class CodeFixOrchestrator:
             "info",
             f"code-fix 第 {batch_no} 批合回成功：resolved {hit}/{len(items)} 条",
         )
-        return True
+        return "success"
 
 
 def _safe_cleanup(wm, wt, success: bool, logger=None) -> None:
