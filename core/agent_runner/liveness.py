@@ -78,6 +78,17 @@ HANG_MIN_TOOL_COMPLETIONS = 3
 # 登记进 core/dashboard/data/runs.py::_RUN_TERMINAL_STATUS_MAP（读侧映射）——
 # 两侧同步义务：缺写侧该 run 不会被清扫器/在跑判定终结；缺读侧 dashboard
 # 永远把该 run 判成 running。
+# add-timeline-gate-failure-display D4：gate-blocked 同承两侧同步义务——它是
+# 门禁失败终止本次 attempt 的写侧终态（runner.py _append_gate_blocked），MUST
+# 同时登记读侧 _RUN_TERMINAL_STATUS_MAP：缺写侧则末行 gate-blocked 的文件在
+# 在跑判定（running_run_ids_for_spec / soft_delete_spec）里永被判为「在跑」，
+# 刚被门禁拦下的 SPEC 删除/归档被误拦（无进程可停 → 有界等待超时后删除失败，
+# add-freeze-stop-inflight-agents 同款事故形态）。
+# ⚠️ 与 superseded **故意排除**（见 _file_tail_is_terminal 注释）不矛盾：
+# gate-blocked 写在 attempt 终止之后，该文件再无写入者（重试在新 sub_run_id
+# 文件），把它判终态正确；superseded 写在退避 sleep 之前、其窗口内没有别的
+# 文件代表该 run，排除正是为了防退避窗口双派发。两者差异 MUST NOT 被「统一
+# 口径」抹平。
 RUN_TERMINAL_EVENT_TYPES = frozenset(
     {
         "result",
@@ -85,6 +96,7 @@ RUN_TERMINAL_EVENT_TYPES = frozenset(
         "error",
         "cancelled",
         "frozen-terminated",
+        "gate-blocked",
     }
 )
 

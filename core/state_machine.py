@@ -13,6 +13,7 @@ import os
 import re
 import subprocess
 import tempfile
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -474,6 +475,9 @@ class _NullLogger:
     """静默日志器：logger 为 None 时兜底，避免各方法无条件调用 self.logger 崩溃。
 
     适用于脚本直接构造 StateMachine（如 spec 流程）且不需要日志的场景。
+    凡**会写 STATE.md 的生产构造点** MUST NOT 落到本兜底（会形成无日志的静默
+    写入路径）——dashboard 侧的跨进程写入者经 ``project_state_logger`` 注入
+    真实 logger（fix-state-atomicity-and-selfheal-restart D2/1.3）。
     """
 
     def debug(self, *args, **kwargs):
@@ -487,6 +491,45 @@ class _NullLogger:
 
     def error(self, *args, **kwargs):
         pass
+
+
+# ── 跨进程写入者的真实日志器（fix-state-atomicity-and-selfheal-restart 1.3）──
+
+_STATE_LOGGER_CACHE: Dict[str, object] = {}
+_STATE_LOGGER_CACHE_LOCK = threading.Lock()
+
+
+def project_state_logger(project_root):
+    """构造（并按项目根复用）指向 ``<project_root>/.fenix/logs`` 的真实日志器。
+
+    ``StateMachine.__init__`` 在 ``logger=None`` 时兜底 ``_NullLogger``，使写入
+    完全静默。dashboard 是**独立进程**的 STATE.md 写入者，此前三处构造点均以无
+    logger 形态构造（design D2），正是 2026-09-21「``updated`` 已变但
+    fenixd.log 无 "Updated SPEC" 记录」的成因。本 helper 让这些构造点注入与
+    daemon 同源的 ``core.logger.Logger``（JSON 行落
+    ``.fenix/logs/fenixd.log``，即 dashboard 的日志观测通道）。
+
+    按项目根缓存实例：``core.logger.Logger.__init__`` 会重绑全局 "fenixd" 根
+    日志器的 handler，重复构造会关掉前一实例的 handler；缓存后每个项目只构造
+    一次（多项目部署下不再互相踩 handler）。
+
+    Args:
+        project_root: 目标项目根（STATE.md 所在 ``.fenix/`` 的父目录）。
+
+    Returns: 具备 ``debug/info/warning/error(component, message, context=None)``
+        接口的日志器实例。
+    """
+    key = str(Path(project_root).resolve())
+    with _STATE_LOGGER_CACHE_LOCK:
+        cached = _STATE_LOGGER_CACHE.get(key)
+    if cached is not None:
+        return cached
+    from core.logger import Logger  # 延迟 import：仅跨进程写入点需要
+
+    built = Logger(Path(project_root) / ".fenix" / "logs")
+    with _STATE_LOGGER_CACHE_LOCK:
+        # 并发构造同项目：先到者生效，二者语义等价（同路径同格式）
+        return _STATE_LOGGER_CACHE.setdefault(key, built)
 
 
 class StateMachine:
@@ -596,6 +639,39 @@ class StateMachine:
                 except OSError:
                     pass
 
+    # ── 锁内原子读改写范式（fix-state-atomicity-and-selfheal-restart D1）──
+
+    def _mutate_locked(self, mutate):
+        """在 ``.STATE.md.lock`` 的 ``flock(LOCK_EX)`` 内执行「读 → 改 → 写」。
+
+        ``mutate(specs)`` 在持锁期间被调用，MUST 返回 ``(result, changed)``；
+        ``changed`` 为真时经 ``_write_all_locked`` 落盘，否则只读不写。
+
+        收紧的正是丢失更新窗口：改动前 ``update_spec`` / ``add_spec`` /
+        ``remove_spec`` 的 ``read_all()`` 与 ``write_all()`` 分处锁外锁内，
+        并发写者（daemon 多 worker 线程 + dashboard 独立进程）各自持陈旧快照
+        整体回写，后写者覆盖先写者（2026-09-21 事故：评审 run 写入的
+        ``reviewer_run`` 被更早快照覆盖回 ``null``，评审结果永不消费）。收进
+        同一把锁后读到的永远是上一写入者提交后的最新态——与 ``_bump_counter``
+        同范式（该路径已在 fix-budget-counting-semantics D2 验证）。
+
+        锁内 MUST 只调 ``_write_all_locked``：``write_all`` 会对同一文件再取
+        一次 flock，同进程二次 flock 自阻塞（见 ``_write_all_locked`` 注释）。
+
+        Returns: ``mutate`` 返回的 ``result``（类型由调用方约定）。
+        """
+        lock_path = self.state_path.parent / ".STATE.md.lock"
+        with open(lock_path, "w") as lock_f:
+            fcntl.flock(lock_f, fcntl.LOCK_EX)
+            try:
+                specs = self.read_all()
+                result, changed = mutate(specs)
+                if changed:
+                    self._write_all_locked(specs)
+                return result
+            finally:
+                fcntl.flock(lock_f, fcntl.LOCK_UN)
+
     # ── 预算计数原子原语（fix-budget-counting-semantics D2）──────────
 
     def _bump_counter(self, spec_name: str, field: str, delta: int) -> int:
@@ -699,40 +775,57 @@ class StateMachine:
         return self._bump_counter(spec_name, VERIFY_REDO_COUNT_FIELD, delta)
 
     def update_spec(self, spec_name: str, updates: dict) -> bool:
-        """Update a single SPEC's fields atomically. Returns True if updated."""
-        specs = self.read_all()
-        if spec_name not in specs:
+        """Update a single SPEC's fields atomically. Returns True if updated.
+
+        原子性（fix-state-atomicity-and-selfheal-restart D1）：读 STATE.md →
+        内存改目标字段 → 持久化的三段全部收进 ``.STATE.md.lock`` 的 flock 内。
+        并发的 update_spec（daemon 多 worker 线程 + dashboard 独立进程）不再
+        各持陈旧快照互相覆盖——任一已提交写入的字段改动 MUST NOT 丢失。
+        冻结剥离判定同样在锁内基于**最新**条目进行（锁外快照会把「刚被冻结」
+        误判为「未冻结」而漏剥离自动 status 写）。
+        """
+        applied: dict = {}
+
+        def _mutate(specs):
+            if spec_name not in specs:
+                return False, False
+            entry = specs[spec_name]
+            local = dict(updates)
+            # 人工冻结保护（fix-restart-dual-dispatch S4）：frozen spec 的自动
+            # status 改写一律剥离——dispatch Retry/恢复路径实测会把人工冻结覆盖
+            # 回 ready。更新自带 frozen 键视为冻结/解冻操作本身，原样放行。
+            if entry.get(FROZEN_FIELD) and FROZEN_FIELD not in local and "status" in local:
+                applied["_stripped"] = local.pop("status")
+            # 取消保持解锁（fix-cancel-holdstate-recovery D4）：显式携带 status 的
+            # 更新（admin 处置复位、面板重派、unfreeze 等复位路径）即人工裁决，
+            # 顺带清除取消保持标记；仅 error 等隐式 updates 不清。
+            if "status" in local:
+                local["_cancelled_hold"] = False
+            specs[spec_name].update(local)
+            specs[spec_name]["updated"] = datetime.now(timezone.utc).isoformat()
+            applied.update(local)
+            return True, True
+
+        if not self._mutate_locked(_mutate):
             self.logger.warning("state_machine", f"SPEC not found: {spec_name}")
             return False
-
-        # 人工冻结保护（fix-restart-dual-dispatch S4）：frozen spec 的自动 status
-        # 改写一律剥离——dispatch Retry/恢复路径实测会把人工冻结覆盖回 ready。
-        # 更新自带 frozen 键视为冻结/解冻操作本身，原样放行。
-        entry = specs[spec_name]
-        updates = dict(updates)
-        if entry.get(FROZEN_FIELD) and FROZEN_FIELD not in updates and "status" in updates:
-            stripped = updates.pop("status")
+        if "_stripped" in applied:
             self.logger.warning(
                 "state_machine",
-                f"Frozen SPEC '{spec_name}': status update '{stripped}' "
-                f"stripped — manual freeze intact, unfreeze via "
-                f"unfreeze_spec() to resume",
+                f"Frozen SPEC '{spec_name}': status update "
+                f"'{applied['_stripped']}' stripped — manual freeze intact, "
+                f"unfreeze via unfreeze_spec() to resume",
             )
-
-        # Apply updates
-        # 取消保持解锁（fix-cancel-holdstate-recovery D4）：显式携带 status 的
-        # 更新（admin 处置复位、面板重派、unfreeze 等复位路径）即人工裁决，
-        # 顺带清除取消保持标记；仅 error 等隐式 updates 不清（取消收尾自身
-        # 只写 error，不自清）。
-        if "status" in updates:
-            updates["_cancelled_hold"] = False
-        specs[spec_name].update(updates)
-        specs[spec_name]["updated"] = datetime.now(timezone.utc).isoformat()
-        self.write_all(specs)
+        # 「写入必留痕」（含 spec 名与本次所改字段键）MUST 在原子写成功后输出：
+        # 锁内日志会让持锁窗口包含 I/O，故把留痕移到落盘之后。
         self.logger.info(
             "state_machine",
             f"Updated SPEC '{spec_name}'",
-            {"updates": {k: v for k, v in updates.items() if k != "updated"}},
+            {
+                "updates": {
+                    k: v for k, v in applied.items() if k not in ("updated", "_stripped")
+                }
+            },
         )
         return True
 
@@ -965,45 +1058,63 @@ class StateMachine:
         return self.update_spec(spec_name, updates)
 
     def add_spec(self, spec_name: str, entry: dict) -> bool:
-        """Add a new SPEC entry. Returns False if already exists."""
-        specs = self.read_all()
-        if spec_name in specs:
+        """Add a new SPEC entry. Returns False if already exists.
+
+        原子性（D1/D2）：存在性查重与插入在同一把 ``.STATE.md.lock`` 内完成。
+        查重与写盘分处锁外时，两个并发 add 会各持「尚无该条目」的快照整体回写，
+        后写者把先写者刚注册的 spec 整条抹掉（同源丢失更新）。
+        """
+        added: dict = {}
+
+        def _mutate(specs):
+            if spec_name in specs:
+                return False, False
+            entry.setdefault("status", SpecStatus.DRAFTED)
+            entry.setdefault("priority", 5)
+            entry.setdefault("created", datetime.now(timezone.utc).isoformat())
+            entry.setdefault("updated", datetime.now(timezone.utc).isoformat())
+            entry.setdefault("implementer_run", None)
+            entry.setdefault("tester_run", None)
+            entry.setdefault("branch", None)
+            entry.setdefault("error", None)
+            entry.setdefault("depends_on", None)
+            entry.setdefault("reviewer_run", None)
+            entry.setdefault("_review_attempts", 0)
+
+            specs[spec_name] = entry
+            added["status"] = entry["status"]
+            return True, True
+
+        if not self._mutate_locked(_mutate):
             self.logger.warning("state_machine", f"SPEC already exists: {spec_name}")
             return False
-
-        entry.setdefault("status", SpecStatus.DRAFTED)
-        entry.setdefault("priority", 5)
-        entry.setdefault("created", datetime.now(timezone.utc).isoformat())
-        entry.setdefault("updated", datetime.now(timezone.utc).isoformat())
-        entry.setdefault("implementer_run", None)
-        entry.setdefault("tester_run", None)
-        entry.setdefault("branch", None)
-        entry.setdefault("error", None)
-        entry.setdefault("depends_on", None)
-        entry.setdefault("reviewer_run", None)
-        entry.setdefault("_review_attempts", 0)
-
-        specs[spec_name] = entry
-        self.write_all(specs)
-        self.logger.info("state_machine", f"Added SPEC '{spec_name}'", {"status": entry["status"]})
+        self.logger.info(
+            "state_machine", f"Added SPEC '{spec_name}'", {"status": added["status"]}
+        )
         return True
 
     def remove_spec(self, spec_name: str) -> bool:
         """Remove a SPEC entry atomically. Returns True if removed, False if absent.
 
-        Mutates only the in-memory dict then atomically writes back, so a
-        concurrent writer cannot resurrect the entry. Used by soft-delete
-        (add-spec-priority-and-delete-api): the caller is responsible for
-        moving the spec.s directory into spec/archive beforehand/afterward
-        and keeping the two operations consistent.
-        """
-        specs = self.read_all()
-        if spec_name not in specs:
-            self.logger.warning("state_machine", f"Cannot remove nonexistent SPEC: {spec_name}")
-            return False
+        唯一不变式：读取-剔除-写回在 ``.STATE.md.lock`` 的 flock 内完成，故并发
+        写者 MUST NOT 以陈旧快照整体回写而复活该条目（锁外快照的旧实现做不到
+        这一点——design D2 已指出原 docstring 的该声明与实现不符）。
 
-        specs.pop(spec_name)
-        self.write_all(specs)
+        **注意**：本方法只保证 STATE.md 自身的一致性。删除与目录归档
+        （spec/changes → spec/archive）是两次独立系统操作，二者的一致性由调用方
+        负责（add-spec-priority-and-delete-api 的既有契约）。
+        """
+        def _mutate(specs):
+            if spec_name not in specs:
+                return False, False
+            specs.pop(spec_name)
+            return True, True
+
+        if not self._mutate_locked(_mutate):
+            self.logger.warning(
+                "state_machine", f"Cannot remove nonexistent SPEC: {spec_name}"
+            )
+            return False
         self.logger.info("state_machine", f"Removed SPEC '{spec_name}'")
         return True
 

@@ -298,6 +298,22 @@ function agentLabel(item: { agent_type?: string; run_id?: string }): string {
   return AGENT_LABEL[t] || '未知 Agent';
 }
 
+/** run 终态原因行的呈现（add-timeline-gate-failure-display D5）：语气 + 前缀。
+ *
+ * 门禁拒绝（gate-blocked）与 error 同为失败（danger 红，前缀区分「门禁拒绝：」与
+ * 「失败原因：」——一眼分清「产物门拒绝」与「运行崩了」）；superseded 是被弃置的
+ * 中间产物（secondary + 「原地重试：」，失败归因由紧随其后的 gate-blocked 节点承担）；
+ * 其余中止类（interrupted/cancelled）橙色 warning。未知状态落 warning/中止原因，
+ * 与改动前行为一致。映射单一真源，渲染处 MUST NOT 再内联重复该条件链。 */
+function reasonTone(
+  st: string,
+): { tone: 'danger' | 'warning' | 'secondary'; prefix: string } {
+  if (st === 'gate-blocked') return { tone: 'danger', prefix: '门禁拒绝：' };
+  if (st === 'error') return { tone: 'danger', prefix: '失败原因：' };
+  if (st === 'superseded') return { tone: 'secondary', prefix: '原地重试：' };
+  return { tone: 'warning', prefix: '中止原因：' };
+}
+
 // 回退原因含「verification report」时渲染为链接（点击打开验证报告弹窗）
 const VERIFICATION_LINK_RE = /^(.*?)verification report(.*)$/i;
 
@@ -1008,21 +1024,30 @@ export default function SpecDetailPage() {
           // 运行节点
           const st = item.status || '';
           const isErr = st === 'error';
+          // 门禁拒绝（add-timeline-gate-failure-display D5）：产物硬门失败终止本次
+          // attempt 的独立终态，语义等同 error（失败）——不并入失败分支会落入下方
+          // 绿色兜底，重现「门禁连续拒绝显示成一串顺利收工绿点」的误导
+          const isGateBlocked = st === 'gate-blocked';
+          // 原地重试弃置件（superseded）：本身不是失败终态（圆点/Tag 仍绿——失败归因由
+          // 紧随其后的 gate-blocked 节点承担，避免同一次失败出现两个红节点），但带原因
+          // 时由 reasonTone 渲染中性色「原地重试：」行，MUST NOT 呈现为无原因绿点
+          const isFailed = isErr || isGateBlocked;
+          const reasonView = reasonTone(st);
           // interrupted/cancelled：已终结但非崩溃（daemon 停机/启动清扫补写/
           // 人工取消），橙色区别于 error 红；不处理会落入 else 误显成功绿
           const isAborted = st === 'interrupted' || st === 'cancelled';
           const isRunning = st === 'running' || st === 'empty';
           // stale（fix-retry-orphan-active-runs）：弃置/断尾——原地重试换文件
           // 弃置或进程被杀无终态，读侧 mtime 兜底判定；灰色区别于 running 蓝 /
-          // error 红，归入非在飞非错误分支
-          const dotColor = isErr ? 'red' : isAborted ? 'orange' : st === 'stale' ? 'gray' : isRunning ? 'blue' : 'green';
+          // error 红，归入非在飞非错误分支。未知 status 行为不变（绿兜底）
+          const dotColor = isFailed ? 'red' : isAborted ? 'orange' : st === 'stale' ? 'gray' : isRunning ? 'blue' : 'green';
           const dur = item.duration_seconds != null ? fmtDuration(item.duration_seconds) : '';
           const isFix = item.spec && String(item.spec).startsWith('fix-');
 
           return {
             color: dotColor,
             children: (
-              <div style={cardBox(isErr)}>
+              <div style={cardBox(isFailed)}>
                 <div style={headRow}>
                   <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                     {fmtTime(item.time)}
@@ -1039,8 +1064,8 @@ export default function SpecDetailPage() {
                       重试 {item.retry_count}{item.retry_max ? `/${item.retry_max}` : ''}
                     </Tag>
                   )}
-                  <Tag color={isErr ? 'red' : st === 'stale' ? 'gray' : isRunning ? 'blue' : 'green'} style={{ marginInlineEnd: 0 }}>
-                    {st || '未知状态'}
+                  <Tag color={isFailed ? 'red' : st === 'stale' ? 'gray' : isRunning ? 'blue' : 'green'} style={{ marginInlineEnd: 0 }}>
+                    {isGateBlocked ? '门禁拒绝' : st || '未知状态'}
                   </Tag>
                   {isFix && <Tag color="orange">🔧 {item.spec}</Tag>}
                   {dur && (
@@ -1065,13 +1090,17 @@ export default function SpecDetailPage() {
                     </Typography.Text>
                   )}
                 </div>
-                {/* 终态原因（run 产物 error/interrupted/cancelled 事件的人类可读原因）：
-                    不展开运行记录即可见死因；运行中/成功 run 下发空串不渲染。
-                    error 红色，interrupted/cancelled 已终结非崩溃用橙色（同节点圆点语义） */}
+                {/* 终态原因（run 产物 error/interrupted/cancelled/superseded/
+                    gate-blocked 事件的人类可读原因）：不展开运行记录即可见死因；
+                    运行中/成功 run 下发空串不渲染。
+                    error 与门禁拒绝（gate-blocked）红色（同节点圆点语义）；门禁拒绝
+                    前缀与失败原因区分，便于一眼分清「产物门拒绝」与「运行崩了」；
+                    superseded 为被弃置的中间产物，中性色 + 「原地重试：」前缀；
+                    interrupted/cancelled 已终结非崩溃用橙色 */}
                 {!!item.reason && (
                   <div style={{ marginBottom: 8 }}>
-                    <Typography.Text type={isErr ? 'danger' : 'warning'} style={{ fontSize: 13 }}>
-                      {isErr ? '失败原因：' : '中止原因：'}
+                    <Typography.Text type={reasonView.tone} style={{ fontSize: 13 }}>
+                      {reasonView.prefix}
                       {item.reason}
                     </Typography.Text>
                   </div>

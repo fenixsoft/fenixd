@@ -253,13 +253,33 @@ class TestIdleSelfhealTrigger(unittest.TestCase):
         assert self.d._is_idle() is True
 
 
+def _panel_pair(section: dict) -> dict:
+    """stale_code_selfheal 节中**面板受管**的两键。
+
+    冷却五键（evo-stale-selfheal-restart-cooldown）经配置文件 + 30s 热更新生效、
+    不在 Dashboard 面板暴露，但读视图（read_config / read_effective_config）经
+    get_stale_code_selfheal_config 一并回显其生效值——本断言只锁定面板受管两键
+    的往返一致，不因冷却键的回显而失真。
+    """
+    return {k: section[k] for k in ("enabled", "idle_confirm_seconds")}
+
+
 # ── 3.5 配置与 /api/config 读写 ────────────────────────────────────
 
 class TestStaleConfigDefaults(unittest.TestCase):
     def test_missing_section_defaults(self):
-        """节缺失 → 缺省值生效：enabled: true / idle_confirm_seconds: 120。"""
+        """节缺失 → 缺省值生效：enabled: true / idle_confirm_seconds: 120
+        （冷却五键于 evo-stale-selfheal-restart-cooldown 1.1 加入，缺省一并生效）。"""
         cfg = ConfigLoader.get_stale_code_selfheal_config({})
-        assert cfg == {"enabled": True, "idle_confirm_seconds": 120}
+        assert cfg == {
+            "enabled": True,
+            "idle_confirm_seconds": 120,
+            "cooldown_window_seconds": 1800,
+            "cooldown_threshold": 3,
+            "cooldown_duration_seconds": 600,
+            "self_triggered_window_seconds": 300,
+            "self_triggered_threshold": 3,
+        }
 
     def test_invalid_values_fallback_no_raise(self):
         """非法值回退不中断：非布尔 / 非正整数 / bool 陷阱 / 非 dict 节均不抛异常。"""
@@ -277,10 +297,17 @@ class TestStaleConfigDefaults(unittest.TestCase):
             assert isinstance(cfg["enabled"], bool), raw
             assert isinstance(cfg["idle_confirm_seconds"], int) and \
                 cfg["idle_confirm_seconds"] > 0, raw
-        # 合法值透传（小数取整）
-        assert ConfigLoader.get_stale_code_selfheal_config(
+        # 合法值透传（小数取整）；未配置的冷却五键回退缺省
+        passthrough = ConfigLoader.get_stale_code_selfheal_config(
             {"stale_code_selfheal": {"enabled": False, "idle_confirm_seconds": 30}}
-        ) == {"enabled": False, "idle_confirm_seconds": 30}
+        )
+        assert passthrough["enabled"] is False
+        assert passthrough["idle_confirm_seconds"] == 30
+        assert (passthrough["cooldown_window_seconds"],
+                passthrough["cooldown_threshold"],
+                passthrough["cooldown_duration_seconds"],
+                passthrough["self_triggered_window_seconds"],
+                passthrough["self_triggered_threshold"]) == (1800, 3, 600, 300, 3)
 
     def test_api_config_roundtrip(self):
         """/api/config 读写该节往返一致；非法写拒绝且不落盘。"""
@@ -297,10 +324,10 @@ class TestStaleConfigDefaults(unittest.TestCase):
                 scope="project")
             assert ok["ok"], ok
             eff = dash_data.read_effective_config(proot)
-            assert eff["stale_code_selfheal"] == {
+            assert _panel_pair(eff["stale_code_selfheal"]) == {
                 "enabled": False, "idle_confirm_seconds": 45}
             raw_view = dash_data.read_config(proot, scope="project")
-            assert raw_view["stale_code_selfheal"] == {
+            assert _panel_pair(raw_view["stale_code_selfheal"]) == {
                 "enabled": False, "idle_confirm_seconds": 45}
             assert raw_view["sources"]["stale_code_selfheal.enabled"] == "project"
             assert raw_view["sources"][
@@ -315,7 +342,7 @@ class TestStaleConfigDefaults(unittest.TestCase):
                 scope="project")
             assert not bad2["ok"]
             eff2 = dash_data.read_effective_config(proot)
-            assert eff2["stale_code_selfheal"] == {
+            assert _panel_pair(eff2["stale_code_selfheal"]) == {
                 "enabled": False, "idle_confirm_seconds": 45}
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
@@ -352,12 +379,12 @@ def test_api_config_http_roundtrip(server_fx):
         {"stale_code_selfheal": {"enabled": True, "idle_confirm_seconds": 90}},
     )
     assert status == 200 and body["saved"] is True
-    assert body["stale_code_selfheal"] == {
+    assert _panel_pair(body["stale_code_selfheal"]) == {
         "enabled": True, "idle_confirm_seconds": 90}
     # 读回
     status, body = srv.get("/api/config?project=proj-a")
     assert status == 200
-    assert body["stale_code_selfheal"] == {
+    assert _panel_pair(body["stale_code_selfheal"]) == {
         "enabled": True, "idle_confirm_seconds": 90}
     # 非法写 → 400 可读错误而非静默接受
     status, body = srv.post_json(

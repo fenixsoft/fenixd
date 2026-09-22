@@ -150,6 +150,18 @@ CANCELLED_BY_ADMIN_ERROR_PREFIX = "cancelled by admin"
 # 其它失败分支）按温和处置识别为「人工接管让位」而非网关故障。
 RETRY_YIELDED_ERROR_PREFIX = "[retry-yielded]"
 
+# ── add-timeline-gate-failure-display：门禁归因落 run jsonl 的截断上限 ────
+# 门禁归因文案（含 [artifact-structural]/[task-gate] 标签、gate 名与目标路径）
+# 落进 run jsonl 前必须先截断：append_run_line 的单行原子性只在行数据不超过
+# TextIOWrapper 内部缓冲（默认约 8 KiB）时才成立，超缓冲大行会绕过缓冲分发为
+# 多次 raw write，与并发 writer 交错产生半行 JSON（run_files.py:56-71 注释）。
+#
+# 单位 = **字符（code point）**，MUST NOT 当字节读并按字节截断：实现用字符切片
+# ``error[:_GATE_ERROR_TRUNCATE]``，UTF-8 下 1024 字符最坏 ≤4 KiB，仍低于 8 KiB
+# 单行缓冲阈值，字符口径即已满足「不外溢」。用例断言口径与之统一为「字符数
+# ≤1024 且 UTF-8 编码后 ≤4096 字节」。
+_GATE_ERROR_TRUNCATE = 1024
+
 # ── add-impl-code-review-gate：ocr 包装器默认可执行名 ──────────────────
 # ocr 可执行文件的默认裸名（包装器 bin/ocr_review.py 以 os.execvp 解析 PATH，
 # 裸名可用；模块级常量由 env 注入处引用，不在 agents 配置新增键）。
@@ -2654,6 +2666,40 @@ class AgentRunner:
             ), False
         return transient_retries, None, True
 
+    def _append_gate_blocked(self, *, sub_run_id: str, spec_name: str,
+                             provider_name, error: str, reason: str,
+                             agent_type: str) -> None:
+        """追加门禁终态事件 ``gate-blocked``（add-timeline-gate-failure-display D2）。
+
+        调用时机 = 门禁失败**终止当前 attempt 产物文件**的两条分支（结构类原地
+        预算耗尽 / 任务完成度类 `[task-gate]`）。写入即追加，故为文件末行——维持
+        框架「终态后置」不变量（该文件此后无任何写入者：attempt 终止，重试在新
+        sub_run_id 文件继续）。
+
+        ``reason`` 按分支取值（`artifact_gate` / `task_gate`），MUST NOT 一律填
+        同一个值——读侧/时间轴据它区分门类。**退避后让位分支 MUST NOT 调用本
+        方法**：该分支弃置原因是「spec 已被接管」而非门禁判定，其终态已由
+        ``superseded``（带 error）承担；再追加会把「被接管」误标成「门禁拒绝」，
+        且同一次失败在时间轴上出现两个失败节点。
+
+        ``provider`` 写 ``provider_name or ""``：provider 为 None（配置缺失/
+        链耗尽）时仍可序列化，下游解析不因 null 异常。
+        """
+        append_run_line(
+            self.project_root / ".fenix" / "runs" / f"{sub_run_id}.jsonl", {
+                "type": "gate-blocked",
+                "spec": spec_name,
+                "provider": provider_name or "",
+                "reason": reason,
+                "error": error[:_GATE_ERROR_TRUNCATE],
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
+        self.logger.warning(
+            "agent_runner",
+            f"Artifact gate for '{spec_name}' ({agent_type}) terminal: "
+            f"gate-blocked (reason={reason}) for {sub_run_id}",
+        )
+
     # ── R5: except 产物门（等价搬移，D1 R5 表，Task 5.3）────────────
     # add-judge-artifact-gate D1：exit 0 但产物缺失/为空/非法 JSON → 按瞬态
     # 失败走既有原地退避重试（fix-provider-transient-backoff 通道原样复用，
@@ -2679,6 +2725,12 @@ class AgentRunner:
         - yielded_result 非 None → 调用者 MUST return yielded_result（让位）
         - do_continue=True → 调用者 MUST continue（原地重试）
         - do_break=True → 调用者 MUST break（原地预算耗尽，attempt 层继续重试）
+
+        add-timeline-gate-failure-display D1/D2：本方法在终止当前 attempt 文件的
+        两条 do_break 分支（结构类原地预算耗尽 / 任务完成度类）写入 ``gate-blocked``
+        终态事件（末行，带截断后的 error 与分支归因 reason），并在原地重试分支的
+        ``transient_retry`` / ``superseded`` payload 里带上同一 error 文案；让位
+        分支不写 ``gate-blocked``（详见 ``_append_gate_blocked``）。
         """
         error = str(e)
         self.logger.warning(
@@ -2713,13 +2765,31 @@ class AgentRunner:
                 self, error, agent_type, sub_run_id)
         # 任务完成度类：不进原地瞬态退避预算 → 退出 while，attempt 层继续重试
         #（不消耗 transient_budget；重试由 gate 降级与 attempt 层承担）。
+        # add-timeline-gate-failure-display D2：终止本 attempt 文件前追加门禁
+        # 终态——reason 按分支取 task_gate（任务完成度门），MUST NOT 写
+        # artifact_gate（那是产物结构门的归因，混用会让读侧无法区分门类）。
         if is_task_gate:
+            self._append_gate_blocked(
+                sub_run_id=sub_run_id, spec_name=spec_name,
+                provider_name=provider_name, error=error,
+                reason="task_gate", agent_type=agent_type,
+            )
             return error, transient_retries, None, False, True
         if transient_retries >= len(transient_budget):
-            # 原地预算耗尽 → 退出 while，attempt 层继续重试
+            # 原地预算耗尽 → 退出 while，attempt 层继续重试。
+            # add-timeline-gate-failure-display D2：同理追加门禁终态（结构类 →
+            # reason=artifact_gate）。缺此步该文件末行仍是 CLI 的 result
+            # （is_error:false），classify_run 会把门禁拒绝判成 done（绿点误导）。
+            self._append_gate_blocked(
+                sub_run_id=sub_run_id, spec_name=spec_name,
+                provider_name=provider_name, error=error,
+                reason="artifact_gate", agent_type=agent_type,
+            )
             return error, transient_retries, None, False, True
         backoff = transient_budget[transient_retries]
         transient_retries += 1
+        # add-timeline-gate-failure-display D1：门禁归因随事件落盘
+        #（原先只进 daemon log），截断口径见 _GATE_ERROR_TRUNCATE。
         append_run_line(
             self.project_root / ".fenix" / "runs"
             / f"{sub_run_id}.jsonl", {
@@ -2729,18 +2799,23 @@ class AgentRunner:
                 "backoff_seconds": backoff,
                 "retry_number": transient_retries,
                 "reason": "artifact_gate",
+                "error": error[:_GATE_ERROR_TRUNCATE],
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             })
         # fix-retry-orphan-active-runs D1：superseded 终态补写
         # ——与 provider 瞬断通道同语义：superseded 紧跟
         # transient_retry = 本文件终态，重试在新 sub_run_id 文件
         # 继续（runner.py:1922 换新注释处交叉引用）。
+        # add-timeline-gate-failure-display D1：本文件被弃置后读侧只能从事件取
+        # 原因，门禁归因 MUST 一并带上（否则时间轴该节点 reason 为空 =
+        # 「无原因绿点」误导）。
         append_run_line(
             self.project_root / ".fenix" / "runs"
             / f"{sub_run_id}.jsonl", {
                 "type": "superseded",
                 "spec": spec_name,
                 "provider": provider_name,
+                "error": error[:_GATE_ERROR_TRUNCATE],
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             })
         self.logger.warning(
@@ -2759,6 +2834,10 @@ class AgentRunner:
         # 人工/其它链路接管（status 迁出预期态/frozen/hold）——
         # 重派前复查，命中即让位（返回语义化失败，不再产生新的
         # transient_retry 重派，19:48 事故 $4.77 白烧根因）。
+        # add-timeline-gate-failure-display D2：让位分支 MUST NOT 追加
+        # gate-blocked —— 弃置原因是「spec 已被接管」而非门禁判定，本文件
+        # 终态已由上方 superseded（带 error）承担；再写会把「被接管」误标成
+        # 「门禁拒绝」，且同一次失败在时间轴出现两个失败节点。
         if self._should_give_up_before_retry(
                 spec_name, agent_type, check_lock=False):
             self.logger.warning(

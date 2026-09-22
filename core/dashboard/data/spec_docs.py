@@ -172,15 +172,47 @@ def count_generated_scenarios(project_root, spec_name) -> int:
     )
 
 
+def count_planned_scenarios(project_root, spec_name) -> int:
+    """统计 planner 本轮规划的场景条目总数（骨架含全部 id）。
+
+    读本轮 planner 出题产物 `.fenix/verify-progress/<spec>/test_scenarios.json`
+    的场景条目数——这是**「出题 N/M」分母的权威来源**。分批落盘强制骨架先行
+    （fix-planner-scenarios-batching-hook）后，骨架即含全部 id（steps/assertions
+    空），故骨架落盘瞬间 total 即达最终值，分子（已补全数）随每 1/3 重写爬升，
+    done≤total 恒成立。
+
+    缺失/损坏/非列表以 0 计（fail-open，与 count_generated_scenarios 同风格）。
+
+    ⚠️ 曾误用 count_scenarios（数 specs/<cap>/spec.md 的 `#### Scenario:` 块）作
+    分母——但 planner 会把单个 Scenario 按其交付物形态**拆成多形态条目**
+    （web/cli/api，见 agents/planner-plan.md 判定树），二者单位不同、数量无
+    绑定关系（实测 243/267 个 spec 出现 done>total，如 20/11）；且非「多形态
+    验收」类 spec 的 spec.md 根本不含 `#### Scenario:` 块（分母为 0）。
+    """
+    pf = Path(project_root) / ".fenix" / "verify-progress" / spec_name / "test_scenarios.json"
+    if not pf.exists():
+        return 0
+    try:
+        data = json.loads(pf.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+        return 0
+    if isinstance(data, dict):
+        data = data.get("scenarios")
+    if not isinstance(data, list):
+        return 0
+    return sum(1 for sc in data if isinstance(sc, dict))
+
+
 def spec_generation_progress(project_root, spec_name, entry, vp=None) -> dict | None:
     """出题进度（verification-phase-progress）：场景生成阶段的 N/M 进度。
 
     场景生成（planner-plan）是验证链主要耗时而后续执行很快——testing 且执行
-    进度未产生（verify_total=0）时返回 {"done": 已落盘场景数, "total": spec
-    场景目标数}；其余状态 / 执行已开始 / 尚无场景落盘均返回 None。
+    进度未产生（verify_total=0）时返回 {"done": 已补全场景数, "total": 本轮规划
+    场景条目总数}；其余状态 / 执行已开始 / 尚无场景落盘均返回 None。
 
-    total 可为 0（spec 无 `#### Scenario:` 块而出题有多形态扩展），前端对
-    total=0 只展示计数不出百分比。done>0 才返回（0 场景无进度可言）。
+    total 与 done **同源**（同一份 test_scenarios.json 的条目数），只是 done 只
+    数 steps/assertions 非空的（带肉）。骨架落盘即 total 达终值，done 随每批
+    重写爬升，done≤total 恒成立。done>0 才返回（0 场景无进度可言）。
     """
     if entry.get("status") != "testing":
         return None
@@ -194,4 +226,4 @@ def spec_generation_progress(project_root, spec_name, entry, vp=None) -> dict | 
     done = count_generated_scenarios(project_root, spec_name)
     if not done:
         return None
-    return {"done": done, "total": count_scenarios(project_root, spec_name)}
+    return {"done": done, "total": count_planned_scenarios(project_root, spec_name)}

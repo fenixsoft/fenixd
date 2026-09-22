@@ -2,8 +2,8 @@
 
 覆盖：
 - 7.6 running_run_ids_for_spec：全等归属（fix-x 不被 impl-fix-x-y-* 命中）、
-  -a<n>/-r<n> 后缀正确剥离、末行为 frozen-terminated/cancelled/result/error
-  判非在跑；末行为 superseded MUST 判仍在跑（superseded 不在
+  -a<n>/-r<n> 后缀正确剥离、末行为 frozen-terminated/cancelled/result/error/
+  gate-blocked 判非在跑；末行为 superseded MUST 判仍在跑（superseded 不在
   RUN_TERMINAL_EVENT_TYPES 内——防误用 classify_run 口径）。
 - 7.7 request_spec_delete：原子写与冲突（unmanaged/daemon_down 拒绝且不写文件）。
 - 7.8 soft_delete_spec 先停后删：无在跑零等待直接删除（回归）；有在跑且停止
@@ -35,6 +35,10 @@ TERMINAL_SAMPLES = {
     "error": {"type": "error", "error": "boom", "exit_code": 1},
     "interrupted": {"type": "interrupted", "reason": "shutdown"},
     "frozen-terminated": {"type": "frozen-terminated", "reason": "spec frozen"},
+    # add-timeline-gate-failure-display：门禁失败终止本次 attempt 的终态——该文件
+    # 此后无写入者，判非在跑；缺它则刚被门禁拦下的 SPEC 删除/归档被误拦
+    "gate-blocked": {"type": "gate-blocked", "spec": "fix-x", "provider": "p",
+                     "reason": "artifact_gate", "error": "门禁拒绝", "timestamp": "…"},
 }
 
 
@@ -93,13 +97,49 @@ def test_suffix_stripping(tmp_path):
 
 
 def test_terminal_last_line_not_running(tmp_path):
-    """末行为 result/cancelled/error/interrupted/frozen-terminated → 判非在跑。"""
+    """末行为 result/cancelled/error/interrupted/frozen-terminated/gate-blocked → 判非在跑。"""
     proot = _mk_project(tmp_path)
     for i, (key, line) in enumerate(TERMINAL_SAMPLES.items()):
         stem = f"impl-fix-x-{TS + i}-a1"
         _write_run(proot, stem, [{"type": "assistant"}, line])
     running = running_run_ids_for_spec(proot, "fix-x")
     assert running == [], f"全部终态 run 判非在跑，但返回 {running}"
+
+
+def test_gate_blocked_sides_registered():
+    """4.4①：gate-blocked MUST 两侧同步登记（写侧集合 + 读侧映射）。
+
+    只登记一侧 = 半接入事故：读侧缺 → 时间轴永远把该 run 判 running；写侧缺 →
+    在跑判定里永为「在跑」（无进程可停 → 有界等待超时后删除失败）。
+    """
+    from core.agent_runner.liveness import RUN_TERMINAL_EVENT_TYPES
+    from core.dashboard.data.runs import _RUN_TERMINAL_STATUS_MAP
+    assert "gate-blocked" in RUN_TERMINAL_EVENT_TYPES
+    assert "gate-blocked" in _RUN_TERMINAL_STATUS_MAP
+
+
+def test_gate_blocked_only_run_soft_delete_without_callback(tmp_path):
+    """4.4③：仅剩末行 gate-blocked run 的 spec → soft_delete_spec 正常软删除。
+
+    stop_callback=None 时若仍判「在跑」，删除走 409 拒绝分支（回退语义），
+    gate-blocked MUST 不触发该分支。
+    """
+    proot = _mk_project(tmp_path)
+    _make_spec_dir(proot)
+    _write_run(proot, f"impl-fix-x-{TS}-a2-r1", [
+        {"type": "result", "result": "done"},  # 门禁判定前的 CLI 收尾行
+        {"type": "gate-blocked", "spec": "fix-x", "provider": "p",
+         "reason": "artifact_gate", "error": "门禁拒绝（impl-code-review-gate）",
+         "timestamp": "…"},
+    ])
+    assert running_run_ids_for_spec(proot, "fix-x") == []
+    result = soft_delete_spec(proot, "fix-x")  # stop_callback=None
+    assert result.get("found") is True
+    assert result.get("running") is False, result
+    assert result.get("archived") is True, result
+    sm = StateMachine(proot / ".fenix" / "STATE.md", MagicMock())
+    assert sm.read_one("fix-x") is None
+    assert not (proot / "spec" / "changes" / "fix-x").exists()
 
 
 def test_superseded_last_line_still_running(tmp_path):

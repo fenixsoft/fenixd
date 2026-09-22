@@ -191,6 +191,7 @@ from .spec_docs import (
     _read_spec_scenarios,
     count_scenarios,
     count_generated_scenarios,
+    count_planned_scenarios,
     spec_generation_progress,
 )
 

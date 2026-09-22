@@ -140,9 +140,12 @@ def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
             }
         # 全部已终止，继续正常删除流程
 
-    from core.state_machine import StateMachine
+    from core.state_machine import StateMachine, project_state_logger
 
-    sm = StateMachine(proot / ".fenix" / "STATE.md")
+    # 跨进程写入者 MUST 注入真实 logger（fix-state-atomicity-and-selfheal-restart
+    # 1.3/D2）：dashboard 与 daemon 是不同进程，无 logger 构造会让
+    # remove_spec 的「Removed SPEC」留痕静默丢失。
+    sm = StateMachine(proot / ".fenix" / "STATE.md", project_state_logger(proot))
 
     # 1. 先移动目录（若失败，STATE.md 尚未改动，天然一致）
     changes_root = proot / "spec" / "changes"

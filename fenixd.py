@@ -93,6 +93,14 @@ SUPERVISOR_KILL_MARGIN_SECONDS = 120
 # 残留文件的漂移必然超限，恰是「文件残留自旧进程」的检出信号。
 SUPERVISOR_RUNTIME_DRIFT_SECONDS = 24 * 3600
 
+# 评审锚点候选的短 TTL 缓存（fix-state-atomicity-and-selfheal-restart D3/3.3）：
+# 空闲判定经主循环 1s 粒度轮询，每次 read_all 都要解析整份 STATE.md——实测真实
+# 项目（279 条 spec）单次约 14ms（≈1.4% 单核），且「陈旧待自愈」期间可持续数
+# 小时。缓存只存**候选集合**（哪些 spec 带 reviewer_run 锚点），在飞结论仍逐次
+# 实时复核；TTL MUST 显著小于 stale_code_selfheal.idle_confirm_seconds（缺省
+# 120s），以免延迟在飞识别——2s 远小于 120s 确认窗口，不会造成误触发。
+STALE_SELFHEAL_REVIEW_ANCHOR_CACHE_SECONDS = 2.0
+
 
 def _read_preserve_sidecar() -> list:
     """读取中断保全 sidecar（.fenix/interrupted_runs.json）。
@@ -238,6 +246,14 @@ class FenixDaemon:
         self._code_stale = False
         self._stale_idle_since = None
         self._heal_block_reason = None
+        # 重启冷却锁存起点（evo-stale-selfheal-restart-cooldown）：None=不在冷却中；
+        # 首次因滑动窗口计数进入冷却的那个 tick 时刻——锁存是「冷却持续
+        # cooldown_duration_seconds」的落地点（窗口计数会因条目老化提前回落）。
+        # _self_triggered_cycle 标记「本重启周期内曾判定为自触发型 stale」，
+        # 周期收尾重启时据此累计持久化 streak（进程重启后由 restart_history 续算）。
+        # 两者均以 getattr 读取，容忍未走 initialize 的裸对象（既有测试形态）。
+        self._cooldown_started_at = None
+        self._self_triggered_cycle = False
         # 收口幂等守卫（fix-supervisor-hosting-chain 验证修复 BUG-01）：supervisor
         # 见 stop flag 会主动 SIGTERM daemon（停止协作），与 stop_daemon 的 SIGTERM
         # 可能叠加成双重信号。Python 信号处理器在字节码边界打断主线程——若在第一次
@@ -998,13 +1014,31 @@ class FenixDaemon:
             )
 
     def _is_idle(self) -> bool:
-        """空闲判定（add-stale-code-selfheal D2）：双源内部状态，不依赖外部进程扫描。
+        """空闲判定（add-stale-code-selfheal D2 + fix-state-atomicity-and-selfheal-restart D3
+        + evo-stale-selfheal-restart-cooldown 2.1）：内部状态判定，不依赖外部进程扫描。
 
-        「空闲」= agent_runner 无活跃 run（_active_runs == 0，覆盖 planner /
-        implementer / verifier / judge 全部 run 形态）**且** admin 处置 worker 池
-        无在途任务。任一非零即判非空闲；_admin_executor 为 None（admin.workers=0
-        同步回退）时该维度视为空闲。admin 池在途数 = submitted - completed -
-        failed（_admin_pool_stats 计数，独立成法便于单测隔离）。
+        「空闲」= ①``pm_engine`` 无活跃 run（``_active_runs == 0``，覆盖 planner /
+        implementer / verifier / judge 全部 run 形态）**且** ②不存在未收口的在飞
+        评审 run **且** ③``agent_runner._running_agents`` 为空 **且** ④admin 处置
+        worker 池无在途任务。任一非空即判非空闲；``_admin_executor`` 为 None
+        （admin.workers=0 同步回退）时该维度视为空闲。admin 池在途数 = submitted -
+        completed - failed（``_admin_pool_stats`` 计数，独立成法便于单测隔离）。
+
+        ②为加强项（fix-state-atomicity-and-selfheal-restart D3）：评审 run
+        **从不计入 ``_active_runs``**（``dispatch/queue.py`` 对 spec-review 派发
+        分支显式 MUST NOT 增减它，只记 ``_active_reviews``），故
+        ``_active_runs == 0`` 与「评审是否在飞」无关。2026-09-21 事故即评审 run
+        处于 API 长重试（转录不增长）时被判空闲，连续 120s 后自愈 SIGTERM 杀掉
+        在跑 run。故 MUST NOT 以「核对 ``_active_runs`` 递减时机」为修法，也 MUST NOT
+        以转录新鲜度单独作在飞依据（停滞 run 的转录本就不增长）。
+
+        ③为 evo-stale-selfheal-restart-cooldown 2.1 的进程注册表维度：
+        ``agent_runner._running_agents`` 是 daemon 进程内 run 注册表（键 = run_id，
+        值 = Popen），任何登记在册的 run 都计非空闲（含 ② 的分层判据尚未覆盖的
+        窗口）。读法用 getattr 链（与 fenixd.py 其它调用点同款）：裸对象 / CLI 态
+        缺 agent_runner 属性时该维度视为空，MUST NOT 抛异常——本方法的「异常按
+        非空闲」策略会把 AttributeError 吞成非空闲，使既有用例
+        （tests/test_stale_code_selfheal.py::_DaemonParts 未设置该属性）失真。
         """
         if self.pm_engine is not None:
             try:
@@ -1012,12 +1046,326 @@ class FenixDaemon:
                     return False
             except Exception:
                 return False  # 内部状态不可读按非空闲处理，宁紧勿松
+            try:
+                if self._review_lane_busy():
+                    return False
+            except Exception as e:  # noqa: BLE001 — 判定异常按非空闲处理（宁紧勿松）
+                self.logger.warning(
+                    "fenixd",
+                    f"评审车道在飞判定异常（按非空闲处理，不触发自愈重启）: {e}",
+                )
+                return False
+        if getattr(getattr(self, "agent_runner", None), "_running_agents", None) or {}:
+            return False  # 有在飞 agent run（含评审 run）→ 非空闲
         if self._admin_executor is not None:
             with self._admin_pool_lock:
                 stats = dict(self._admin_pool_stats)
             if stats["submitted"] - stats["completed"] - stats["failed"] > 0:
                 return False
         return True
+
+    # 重启历史保留窗口（evo-stale-selfheal-restart-cooldown）：超过该时长的条目
+    # 在 tick 入口清理，避免文件无界增长（只影响统计，不影响自愈正确性）。
+    _RESTART_HISTORY_KEEP_SECONDS = 24 * 3600
+
+    @staticmethod
+    def _restart_history_path() -> Path:
+        """自愈重启历史文件路径（append-only JSONL，冷却与自触发判定的数据源）。"""
+        return PROJECT_ROOT / ".fenix" / "restart_history.jsonl"
+
+    @staticmethod
+    def _parse_history_ts(raw) -> Optional[float]:
+        """解析 restart_history 条目的 ``ts``（ISO8601；容忍 Z 后缀与 epoch 数值）。
+
+        无法解析返回 None（调用方按「该条忽略」处理，不抛异常）。
+        """
+        if isinstance(raw, bool):
+            return None
+        if isinstance(raw, (int, float)):
+            return float(raw)
+        if not isinstance(raw, str) or not raw.strip():
+            return None
+        text = raw.strip()
+        if text.endswith(("Z", "z")):
+            text = text[:-1] + "+00:00"
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.timestamp()
+
+    @staticmethod
+    def _history_streak(rec: dict) -> int:
+        """读一条历史记录的 self_triggered_streak，缺失/非法按 0（该条忽略该字段）。"""
+        value = rec.get("self_triggered_streak", 0)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+            return 0
+        return int(value)
+
+    def _read_restart_history(self, now: float) -> list:
+        """读取 .fenix/restart_history.jsonl → ``[{ts: float, self_triggered_streak: int}]``。
+
+        同时清理超过 _RESTART_HISTORY_KEEP_SECONDS（24h）的旧条目（仅在确有过期
+        条目时整体重写，避免每秒 tick 空写）。容错：文件不存在 / 不可读按空处理，
+        单行损坏 / 非对象 / ts 不可解析的条目按「该条忽略」，任何异常不向上抛、
+        不阻断自愈。
+        """
+        path = self._restart_history_path()
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except Exception:  # noqa: BLE001 — 历史文件非关键路径，缺失/损坏按空
+            return []
+        entries = []
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                rec = json.loads(line)
+            except Exception:  # noqa: BLE001 — 单行损坏按该条忽略
+                continue
+            if not isinstance(rec, dict):
+                continue
+            ts = self._parse_history_ts(rec.get("ts"))
+            if ts is None:
+                continue
+            entries.append(
+                {
+                    "ts": ts,
+                    "self_triggered": bool(rec.get("self_triggered", False)),
+                    "self_triggered_streak": self._history_streak(rec),
+                }
+            )
+        cutoff = now - self._RESTART_HISTORY_KEEP_SECONDS
+        fresh = [e for e in entries if e["ts"] >= cutoff]
+        if len(fresh) != len(entries):
+            self._write_restart_history(fresh)
+        return fresh
+
+    def _write_restart_history(self, entries: list) -> None:
+        """整体重写历史文件（仅清理路径使用，temp+rename 原子替换）；失败仅记日志。"""
+        path = self._restart_history_path()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            payload = "".join(
+                json.dumps(
+                    {
+                        "ts": datetime.fromtimestamp(e["ts"], tz=timezone.utc).isoformat(),
+                        "self_triggered": bool(e.get("self_triggered", False)),
+                        "self_triggered_streak": e["self_triggered_streak"],
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+                for e in entries
+            )
+            tmp = path.with_name(path.name + ".tmp")
+            tmp.write_text(payload, encoding="utf-8")
+            tmp.replace(path)
+        except Exception as e:  # noqa: BLE001 — 清理失败不影响自愈
+            self.logger.warning("fenixd", f"restart_history 清理写入失败（non-blocking）: {e}")
+
+    def _append_restart_history(self, record: dict) -> None:
+        """追加一条重启记录到 .fenix/restart_history.jsonl；写失败不阻断重启。
+
+        追加而非重写：同一路径由 tick（清理）与重启成功路径并发使用时，append
+        模式的写窗口最小（清理走 temp+rename，见 _write_restart_history）。
+        """
+        path = self._restart_history_path()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except Exception as e:  # noqa: BLE001 — 写失败仅记日志（SPEC：不阻断重启）
+            self.logger.warning("fenixd", f"restart_history 追加失败（non-blocking）: {e}")
+
+    def _record_selfheal_restart(
+        self, *, history: list, window: int, threshold: int
+    ) -> int:
+        """记录一次自愈重启，返回累计 self_triggered_streak。
+
+        streak 以「重启周期」为单位（同一进程内多次 tick 只计一次，收尾重启时
+        才落一条），并按下列规则持久化累计——只放进程内存则阈值恒不可达：
+          - 本周期在自触发窗口内陈旧再现（_self_triggered_cycle）→ 上一条
+            streak + 1（循环延续：本次重启正是上一轮重启的后果）；
+          - 否则（距上条记录 ≥ window 的过期重启）→ 归零（循环已断）。
+
+        抑制门保证「窗口内不会写入历史」（窗口内一律不触发重启），故这里的延续
+        判定只由 _self_triggered_cycle 承载：窗口内重启的 +1 等价于该标记，距上条
+        ≥ window 的归零等价于标记为空——无须再比对 gap（那样得到的恒为同一结论）。
+
+        streak 达 threshold 的那一次（边沿）经 AdminStore 升
+        ``signal_type: stale_selfheal_loop`` / ``severity: critical`` 告警——
+        不逐周期重复堆积同一循环的告警。
+        """
+        prev_streak = int(history[-1]["self_triggered_streak"]) if history else 0
+        self_triggered = bool(getattr(self, "_self_triggered_cycle", False))
+        streak = prev_streak + 1 if self_triggered else 0
+        self._append_restart_history(
+            {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "self_triggered": self_triggered,
+                "self_triggered_streak": streak,
+            }
+        )
+        self._self_triggered_cycle = False
+        if streak == threshold:
+            self._alert_selfheal_loop(streak, threshold, window)
+        return streak
+
+    def _alert_selfheal_cooldown(
+        self, recent_count: int, threshold: int, window: int, duration: int
+    ) -> None:
+        """冷却首次进入（边沿）：INFO 日志 + stale_selfheal_cooldown 告警（warning）。
+
+        MUST NOT 复用 stale_code 类型——该类型写入即自动 mark_handled
+        （_update_stale_code_state），复用会被当已处置吞掉，人工看不到过频重启。
+        """
+        self.logger.info(
+            "fenixd",
+            f"陈旧自愈进入冷却：{int(window)}s 窗口内自愈重启 {recent_count} 次"
+            f"（阈值 {threshold}），暂停自愈触发 {int(duration)}s"
+            "（陈旧状态与告警仍保持，仅跳过触发重启）",
+        )
+        try:
+            admin_store = getattr(self, "admin_store", None)
+            if admin_store is not None:
+                admin_store.append(
+                    {
+                        "kind": ESCALATION,
+                        "signal_type": "stale_selfheal_cooldown",
+                        "spec": None,
+                        "severity": "warning",
+                        "description": (
+                            "陈旧自愈重启过频（滑动窗口内达阈值），已进入冷却并暂停"
+                            "自愈触发，避免重启正反馈循环杀死在飞 run"
+                        ),
+                        "evidence": (
+                            f"restart_history 窗口 {int(window)}s 内 {recent_count} 次"
+                            f"自愈重启，阈值 {threshold}；冷却锁存 {int(duration)}s"
+                        ),
+                        "action_taken": "冷却锁存期内跳过自愈触发（陈旧状态与告警仍保持）",
+                        "recommended_action": (
+                            "无需立即干预：冷却期满自动恢复；若反复进入冷却，核查是否"
+                            "存在重启循环（.fenix/restart_history.jsonl），必要时临时"
+                            "置 stale_code_selfheal.enabled: false"
+                        ),
+                    }
+                )
+        except Exception as e:  # noqa: BLE001 — 告警写入失败不阻断自愈
+            self.logger.warning("fenixd", f"stale_selfheal_cooldown 告警写入失败（non-blocking）: {e}")
+
+    def _alert_selfheal_loop(self, streak: int, threshold: int, window: int) -> None:
+        """自触发 streak 达阈值：stale_selfheal_loop 告警（critical，需人工判断）。"""
+        try:
+            admin_store = getattr(self, "admin_store", None)
+            if admin_store is not None:
+                admin_store.append(
+                    {
+                        "kind": ESCALATION,
+                        "signal_type": "stale_selfheal_loop",
+                        "spec": None,
+                        "severity": "critical",
+                        "description": (
+                            f"陈旧自愈重启自触发循环：连续 {streak} 个重启周期在"
+                            f"自触发窗口内再次判为陈旧（阈值 {threshold}）"
+                        ),
+                        "evidence": (
+                            f"restart_history.self_triggered_streak={streak} ≥ "
+                            f"{threshold}（自触发窗口 {int(window)}s）"
+                        ),
+                        "action_taken": "已记录自触发 streak 达阈值（重启仍按冷却策略节流）",
+                        "recommended_action": (
+                            "人工核查是否 evo run / 代码更新形成重启循环："
+                            "查 .fenix/restart_history.jsonl 与近期 run 记录，"
+                            "必要时临时置 stale_code_selfheal.enabled: false"
+                        ),
+                    }
+                )
+        except Exception as e:  # noqa: BLE001 — 告警写入失败不阻断自愈
+            self.logger.warning("fenixd", f"stale_selfheal_loop 告警写入失败（non-blocking）: {e}")
+
+    def _review_anchor_candidates(self) -> dict:
+        """带短 TTL 的评审锚点候选读取（收敛 1s 轮询的 STATE 解析开销）。
+
+        ``PMEngine.review_anchors()`` 每次都要解析整份 STATE.md（实测 279 条 spec
+        约 14ms）；1s 粒度轮询下这是可观的固定开销，故按 design D3 加
+        ``STALE_SELFHEAL_REVIEW_ANCHOR_CACHE_SECONDS``（2s，远小于
+        ``idle_confirm_seconds``）短缓存。
+
+        缓存对象**只是候选集合**：哪些 spec 带 ``reviewer_run`` 锚点。在飞**结论**
+        每次都经 ``is_review_in_flight`` / ``reviewer_in_flight`` 实时复核，故
+        缓存最多把「新出现的在飞评审」晚识别 TTL 秒（≪ 120s 确认窗口），
+        MUST NOT 把在飞判成空闲超过该窗口。
+
+        实例属性用 ``getattr`` 惰性初始化：测试以 ``FenixDaemon.__new__`` 构造裸
+        对象（不跑 ``__init__``），不得因此抛 AttributeError。
+        """
+        now = time.time()
+        cached = getattr(self, "_review_anchor_cache", None)
+        if cached is not None and now - cached[0] < STALE_SELFHEAL_REVIEW_ANCHOR_CACHE_SECONDS:
+            return cached[1]
+        anchors = self.pm_engine.review_anchors()
+        if not isinstance(anchors, dict):
+            anchors = {}
+        self._review_anchor_cache = (now, anchors)
+        return anchors
+
+    def _review_lane_busy(self) -> bool:
+        """是否存在未收口的在飞评审 run（候选收窄 + 命中即短路）。
+
+        fix-state-atomicity-and-selfheal-restart D3：判定口径与派发守卫
+        （``core/pm_engine/engine.py:_on_spec_ready`` 派发前在飞评审校验）**同源**，
+        按评审在飞生命周期的两段拼合：
+
+        ⓪ ``PMEngine.has_queued_review()``——覆盖「评审条目已入队、``reviewer_run``
+           锚点尚未落盘」的窗口（此段 STATE 里没有任何锚点可枚举，只有
+           ``_active_reviews`` 登记）；
+        ① ``PMEngine.is_review_in_flight(spec_name)``——同上窗口的 per-spec 口径；
+        ② ``LivenessSupervisor.reviewer_in_flight(spec_name, reviewer_run)``——
+           分层判据（``_active_reviews`` → **进程表 ``running_run_ids()``** →
+           流文件新鲜度 → 陈旧锚点）。**进程表判据**才是「停滞 run 仍算在飞」的
+           成立依据（API 长重试期转录不增长但进程存活），流文件新鲜度 MUST NOT
+           单独作在飞依据。
+
+        开销约束（主循环 1s 粒度，见 ``_maybe_stale_selfheal_tick``）：候选先经
+        ``_review_anchor_candidates`` 收窄为 ``reviewer_run`` 非空者（拒绝全量
+        STATE 条目逐条判定），命中任一在飞**立即返回**，不做其余条目判定。实测
+        真实 STATE.md（279 条 spec）单次解析约 14ms，按 design D3 以 2s 短 TTL
+        缓存候选集合收敛该固定开销（在飞结论仍逐次实时复核）。
+
+        反向约束（D3/3.2）：陈旧锚点（run 已终态但锚点残留）经判据 ② 返回
+        ``(False, "stale")`` 天然不占位——本方法 MUST NOT 自造「锚点非空即非空闲」
+        的永真条件，否则自愈永不触发。
+        """
+        # ① 入队未落盘窗口：评审登记已在册但 STATE 尚无锚点（O(1) 锁读，
+        #    锚点枚举覆盖不到这一段）。只在返回真 bool 时采纳——瘦门面/替身
+        #    返回非 bool 不误判为非空闲。
+        queried = self.pm_engine.has_queued_review()
+        if isinstance(queried, bool) and queried:
+            return True
+        anchors = self._review_anchor_candidates()
+        if not isinstance(anchors, dict) or not anchors:
+            # 无候选（含瘦门面/替身返回非 dict）：无在飞评审，不启用评审维度。
+            # 候选为空即无评审 run 的锚点落点，无需再做任何探测。
+            return False
+        for spec_name, reviewer_run in anchors.items():
+            try:
+                if self.pm_engine.is_review_in_flight(spec_name):
+                    return True  # ② 入队/出队窗口，命中即短路
+            except Exception:  # noqa: BLE001 — 判据异常按在飞处理（宁紧勿松）
+                return True
+            try:
+                in_flight, _reason = self.pm_engine.agent_runner.reviewer_in_flight(
+                    spec_name, reviewer_run
+                )
+            except Exception:  # noqa: BLE001 — 判据异常按在飞处理（宁紧勿松）
+                return True
+            if in_flight:
+                # ③ 进程存活（停滞 run 亦命中）/ 流新鲜；"stale" 等否定结论不占位
+                return True
+        return False
 
     def _maybe_stale_selfheal_tick(self) -> None:
         """陈旧自愈触发（add-stale-code-selfheal 2.2/2.3，主循环 1s 粒度轮询）。
@@ -1029,13 +1377,30 @@ class FenixDaemon:
         语义）并记录触发日志（含触发原因与等待时长）。任一阻断/非空闲信号
         出现立即清零计时。阻断原因按状态边沿记日志（原因变化时打一次），
         不刷屏。
+
+        evo-stale-selfheal-restart-cooldown 增量（插在 in-flight 阻断之后、
+        _is_idle 之前，不影响首次触发流程）：
+          - 重启历史：tick 入口读取 .fenix/restart_history.jsonl 并清理 24h 前
+            条目（容错，见 _read_restart_history）。
+          - 冷却：窗口内重启数 ≥ cooldown_threshold **或** 冷却锁存未到期
+            （now - _cooldown_started_at < cooldown_duration_seconds）→ 不触发、
+            清零 idle 计时；首次进入（边沿）落一条 stale_selfheal_cooldown 告警。
+          - 自触发：距上次重启 < self_triggered_window_seconds 而再次判可触发 →
+            只记一次 WARNING、不写 restart_request（本周期标记自触发），窗口
+            过期后照常重启并在写历史时累计 streak，达阈值升
+            stale_selfheal_loop critical 告警。
         """
         req = PROJECT_ROOT / ".fenix" / "restart_request"
         if not self._code_stale:
-            # 状态解除：清零计时与边沿记忆，恢复正常
+            # 状态解除：清零计时与边沿记忆，恢复正常（自触发周期随陈旧一并收尾）
             self._stale_idle_since = None
             self._heal_block_reason = None
+            self._self_triggered_cycle = False
             return
+
+        now = time.time()
+        # 重启历史（冷却窗口计数 / 自触发窗口 / streak 累计的数据源），入口清理
+        history = self._read_restart_history(now)
 
         # 阻断原因判定（边沿日志：仅原因变化时打一次明示，避免 1s 粒度刷屏）
         reason = None
@@ -1046,6 +1411,11 @@ class FenixDaemon:
         enabled, confirm_seconds = bool(cfg.get("enabled", True)), cfg.get(
             "idle_confirm_seconds", 120
         )
+        cooldown_window = cfg.get("cooldown_window_seconds", 1800)
+        cooldown_threshold = cfg.get("cooldown_threshold", 3)
+        cooldown_duration = cfg.get("cooldown_duration_seconds", 600)
+        self_triggered_window = cfg.get("self_triggered_window_seconds", 300)
+        self_triggered_threshold = cfg.get("self_triggered_threshold", 3)
         if not enabled:
             reason = "disabled"
         elif req.exists():
@@ -1084,21 +1454,69 @@ class FenixDaemon:
             self._stale_idle_since = None
             return
 
+        # 自触发型 stale 判定与标记（FR-3）：距上次自愈重启 < self_triggered_window_seconds
+        # 时陈旧再现 → 本轮陈旧是上一轮重启的自触发产物（重启后 5 分钟内再次检测到
+        # stale），本周期标记为自触发并落一次 WARNING；窗口过期前不写 restart_request
+        # （此刻重启只会延长循环），窗口过期后由同一连续空闲收尾重启，收尾时按标记
+        # 累计持久化 streak。
+        # 位置约束：MUST 早于冷却早退——否则窗口计数达冷却阈值后永远到不了标记分支，
+        # self_triggered_streak 恒不可达阈值（缺省阈值下 critical 告警永不触发）。
+        last_restart = history[-1]["ts"] if history else None
+        self_triggered_now = (
+            last_restart is not None and (now - last_restart) < self_triggered_window
+        )
+        if self_triggered_now and not getattr(self, "_self_triggered_cycle", False):
+            self._self_triggered_cycle = True
+            self.logger.warning(
+                "fenixd",
+                f"检测到自触发型陈旧：距上次自愈重启仅 {now - last_restart:.0f}s"
+                f"（< {int(self_triggered_window)}s 窗口）陈旧再现，本周期仅告警、"
+                "不触发重启（待窗口过期后由后续周期收尾）；若反复出现说明存在"
+                "重启循环（见 stale_selfheal_loop 告警）",
+            )
+
+        # 冷却检查（窗口计数 OR 锁存未到期）：两个条件任一成立即不触发重启。
+        # 放此位置：in-flight 阻断之后、_is_idle 之前——不影响正常的首次触发流程。
+        cooldown_started = getattr(self, "_cooldown_started_at", None)
+        latched = (
+            cooldown_started is not None
+            and (now - cooldown_started) < cooldown_duration
+        )
+        recent_restarts = len(
+            [e for e in history if (now - e["ts"]) <= cooldown_window]
+        )
+        if latched or recent_restarts >= cooldown_threshold:
+            if cooldown_started is None:
+                # 首次进入冷却（边沿）：置锁存起点 + 一次告警/日志，后续 tick 不重复
+                self._cooldown_started_at = now
+                self._alert_selfheal_cooldown(
+                    recent_restarts, cooldown_threshold, cooldown_window, cooldown_duration
+                )
+            self._stale_idle_since = None
+            return
+        # 冷却已退出：清锁存起点，使下次进入重新按边沿告警
+        self._cooldown_started_at = None
+
         self._heal_block_reason = None
         if not self._is_idle():
-            # 任一非空闲信号（活跃 run / admin 在途）出现 → 立即清零计时
+            # 任一非空闲信号（活跃 run / 在飞评审 run / admin 在途）出现 → 立即清零计时
             self._stale_idle_since = None
             return
 
-        now = time.time()
         if self._stale_idle_since is None:
             self._stale_idle_since = now
             return
         waited = now - self._stale_idle_since
         if waited >= confirm_seconds:
+            if self_triggered_now:
+                # 自触发窗口内不写 restart_request（仅告警）；不清零计时——窗口过期后
+                # 由同一段连续空闲立即收尾，本周期标记在收尾重启时转为 streak
+                return
+            wrote = False
             try:
                 req.parent.mkdir(parents=True, exist_ok=True)
                 req.write_text(datetime.now(timezone.utc).isoformat() + "\n", encoding="utf-8")
+                wrote = True
                 self.logger.warning(
                     "fenixd",
                     f"陈旧自愈触发：daemon 持旧代码且连续空闲 {waited:.0f}s"
@@ -1109,6 +1527,13 @@ class FenixDaemon:
                 self.logger.error("fenixd", f"restart_request 写入失败: {e}")
             finally:
                 self._stale_idle_since = None
+            if wrote:
+                # 成功触发后才落历史（写失败仅记日志，不回滚重启）
+                self._record_selfheal_restart(
+                    history=history,
+                    window=self_triggered_window,
+                    threshold=self_triggered_threshold,
+                )
 
     def _admin_monitor_loop(self):
         """周期运行健康检查（间隔 admin.interval_minutes）。
@@ -1147,6 +1572,14 @@ class FenixDaemon:
             tmp_path = Path(tmp_str)
             os.replace(str(req_path), str(tmp_path))
         except FileNotFoundError:
+            # 信号文件不存在（稀疏事件的绝大多数轮次）：mkstemp 已建出私有临时
+            # 副本路径，此处必须清理，否则主循环每轮泄漏一个零字节 .consumed.* 文件
+            # （线上实测堆积 11 万+）。与下方 OSError 分支同样清理 tmp_path。
+            if tmp_path is not None:
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
             return None
         except OSError:
             if tmp_path is not None:

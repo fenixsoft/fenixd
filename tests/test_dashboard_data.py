@@ -1850,6 +1850,48 @@ class TestGenerationProgressCounting(unittest.TestCase):
         self._write("garbage")
         self.assertEqual(count_generated_scenarios(self.tmpdir, "spec-x"), 0)
 
+    def test_planned_scenarios_counts_all_entries_incl_skeleton(self):
+        """分母（count_planned_scenarios）= 场景条目总数，骨架也计入。
+
+        骨架落盘即含全部 id（steps/assertions 空），故分母从首批起即达终值，
+        分子（带肉数）随后爬升——done≤total 恒成立。
+        """
+        from core.dashboard.data import count_planned_scenarios
+        self.assertEqual(count_planned_scenarios(self.tmpdir, "spec-x"), 0)
+        skeleton = self._skeleton(3)
+        self._write(skeleton)
+        self.assertEqual(count_planned_scenarios(self.tmpdir, "spec-x"), 3,
+                         "骨架（含全部 id）也应计入分母")
+        self._write([self._flesh(skeleton[0])] + skeleton[1:])
+        self.assertEqual(count_planned_scenarios(self.tmpdir, "spec-x"), 3,
+                         "分母不随补全变化")
+        self._write("garbage")
+        self.assertEqual(count_planned_scenarios(self.tmpdir, "spec-x"), 0)
+
+    def test_generation_progress_total_is_entry_count_not_spec_md(self):
+        """回归（分子比分母大）：出题进度 total 必须与 done 同源。
+
+        根因：曾用 count_scenarios（数 specs/<cap>/spec.md 的 `#### Scenario:`
+        块）作分母——planner 会把单个 Scenario 按交付物形态拆成多形态条目
+        （web/cli/api），二者单位不同（实测 20/11）；非「多形态验收」类 spec
+        的 spec.md 更是 0 场景。total 须改数 test_scenarios.json 条目总数。
+        """
+        from core.dashboard.data import spec_generation_progress
+        # spec.md 只有 2 个 Scenario 块，但 planner 拆出 5 个多形态条目
+        sd = Path(self.tmpdir) / "spec" / "changes" / "spec-x" / "specs" / "cap"
+        sd.mkdir(parents=True)
+        (sd / "spec.md").write_text(
+            "# cap\n\n#### Scenario: a\n- **WHEN** x\n\n#### Scenario: b\n- **WHEN** y\n",
+            encoding="utf-8")
+        self._write([{"id": f"s{i}", "kind": "cli", "description": "d",
+                      "steps": [{"action": "run"}], "assertions": [{"type": "exit_code"}]}
+                     for i in range(5)])
+        gen = spec_generation_progress(self.tmpdir, "spec-x", {"status": "testing"}, vp={})
+        self.assertIsNotNone(gen)
+        self.assertEqual(gen["total"], 5, "分母应为场景条目数（5），非 spec.md 块数（2）")
+        self.assertLessEqual(gen["done"], gen["total"],
+                             f"分子不得大于分母：{gen}")
+
 
 class TestRunTailInsightsTerminalReason(unittest.TestCase):
     """_run_tail_insights 提取终态事件原因（时间轴 run 节点错误原因可见化）。
@@ -1973,6 +2015,117 @@ class TestTimelineRunNodeTerminalReason(unittest.TestCase):
         self.assertEqual(len(nodes), 1)
         self.assertEqual(nodes[0]["status"], "done")
         self.assertFalse(nodes[0].get("reason"))
+
+
+class TestGateBlockedRunVisibility(unittest.TestCase):
+    """add-timeline-gate-failure-display：门禁终态 gate-blocked 的读侧全链路。
+
+    写侧（runner._append_gate_blocked）在门禁失败终止本次 attempt 时追加末行
+    gate-blocked（带 error/reason）。读侧 MUST 把它当**终态**：
+    classify_run 查表返回 "gate-blocked"、可归档、不计活跃、时间轴节点下发
+    status/reason；同时 MUST 在写侧终态集合（liveness.RUN_TERMINAL_EVENT_TYPES）
+    登记——缺它末行 gate-blocked 的 run 在在跑判定里永被判「在跑」，刚被门禁
+    拦下的 SPEC 删除/归档被误拦（tests/test_delete_stop_inflight_agents.py 同锁）。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.runs_dir = Path(self.tmpdir) / ".fenix" / "runs"
+        self.runs_dir.mkdir(parents=True)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _write_run(self, run_id: str, events: list) -> Path:
+        p = self.runs_dir / f"{run_id}.jsonl"
+        p.write_text(
+            "\n".join(json.dumps(e, ensure_ascii=False) for e in events) + "\n",
+            encoding="utf-8")
+        return p
+
+    def test_classify_run_returns_gate_blocked(self):
+        """① 末行 gate-blocked → classify_run 返回 "gate-blocked"（非 running）。"""
+        from core.dashboard.data import classify_run
+        self.assertEqual(classify_run([{"type": "gate-blocked"}]), "gate-blocked")
+        # CLI 的 result 在前、gate-blocked 收口在后（终态后置不变量）
+        self.assertEqual(
+            classify_run([{"type": "result"}, {"type": "gate-blocked"}]),
+            "gate-blocked")
+        # 写侧终态集合同步登记（两侧同步义务：缺它时间轴/在跑判定半接入）
+        from core.agent_runner.liveness import RUN_TERMINAL_EVENT_TYPES
+        self.assertIn("gate-blocked", RUN_TERMINAL_EVENT_TYPES)
+
+    def test_gate_blocked_is_archivable(self):
+        """② 可归档集合由映射派生 → gate-blocked 零改代码自动纳入。"""
+        # 叶子模块直导（门面未转导该私有助手）
+        from core.dashboard.data.runs import _is_run_archivable
+        p = self._write_run("impl-demo-1789000000-a1", [
+            {"type": "result", "result": "done"},
+            {"type": "gate-blocked", "reason": "artifact_gate",
+             "error": "结果文件缺失（impl-code-review-gate）"},
+        ])
+        self.assertTrue(_is_run_archivable(p))
+
+    def test_gate_blocked_not_counted_active(self):
+        """④ active_run_count 不计 gate-blocked（否则活跃数虚高）。"""
+        from core.dashboard.data import active_run_count
+        ts = int(time.time())
+        self._write_run(f"impl-s-{ts}-a1", [
+            {"type": "result", "result": "done"},
+            {"type": "gate-blocked", "reason": "artifact_gate", "error": "e"},
+        ])
+        self._write_run(f"impl-s-{ts}-a2", [{"type": "assistant", "content": "x"}])
+        self.assertEqual(active_run_count(self.tmpdir), 1)
+
+    def test_tail_insights_gate_blocked_reason(self):
+        """③ _run_tail_insights 从 gate-blocked 末行取非空 reason。"""
+        from core.dashboard.data import _run_tail_insights
+        p = self._write_run("impl-demo-1789000001-a1", [
+            {"type": "gate-blocked", "reason": "artifact_gate",
+             "error": "[artifact-structural] 结果文件缺失（impl-code-review-gate）"},
+        ])
+        ins = _run_tail_insights(p)
+        self.assertIn("impl-code-review-gate", ins["reason"])
+
+    def test_tail_insights_superseded_reason_from_error(self):
+        """③ 弃置件 superseded 带 error → reason 非空（不再是无原因绿点）。"""
+        from core.dashboard.data import _run_tail_insights
+        p = self._write_run("impl-demo-1789000002-a1", [
+            {"type": "transient_retry", "reason": "artifact_gate", "error": "g"},
+            {"type": "superseded",
+             "error": "[artifact-structural] 结果文件缺失（impl-code-review-gate）"},
+        ])
+        ins = _run_tail_insights(p)
+        self.assertIn("impl-code-review-gate", ins["reason"])
+
+    def test_timeline_run_node_gate_blocked_status_and_reason(self):
+        """⑤ 时间轴 run 节点下发 status=gate-blocked 与非空 reason。"""
+        from core.dashboard.data import get_spec_timeline
+        ts = int(time.time())
+        self._write_run(f"impl-demo-spec-{ts}-a1", [
+            {"type": "assistant", "content": "x"},
+            {"type": "gate-blocked", "reason": "artifact_gate",
+             "error": "[artifact-structural] 结果文件缺失（impl-code-review-gate）"},
+        ])
+        nodes = [e for e in get_spec_timeline(self.tmpdir, "demo-spec")
+                 if e.get("kind") == "run"]
+        self.assertEqual(len(nodes), 1)
+        self.assertEqual(nodes[0]["status"], "gate-blocked")
+        self.assertIn("impl-code-review-gate", nodes[0]["reason"])
+
+    def test_timeline_run_node_superseded_reason(self):
+        """⑤ 弃置节点（superseded）同样下发非空 reason。"""
+        from core.dashboard.data import get_spec_timeline
+        ts = int(time.time())
+        self._write_run(f"impl-demo-spec-{ts}-a2", [
+            {"type": "transient_retry", "reason": "artifact_gate", "error": "g"},
+            {"type": "superseded", "error": "门禁拒绝（impl-code-review-gate）"},
+        ])
+        nodes = [e for e in get_spec_timeline(self.tmpdir, "demo-spec")
+                 if e.get("kind") == "run"]
+        self.assertEqual(len(nodes), 1)
+        self.assertEqual(nodes[0]["status"], "superseded")
+        self.assertIn("impl-code-review-gate", nodes[0]["reason"])
 
 
 class TestGatesPromoteModeConfigIO(unittest.TestCase):

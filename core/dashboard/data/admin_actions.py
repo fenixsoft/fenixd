@@ -347,9 +347,9 @@ def freeze_spec(project_root, spec_name: str, reason: str = "") -> dict:
     # （stopped_agents 计数）」；验证 BUG-01 修复点）——冻结 STATE 写入
     # 后 runner 轮询环感知到 frozen 终止，计数为终止窗口前的快照值。
     running = running_run_ids_for_spec(project_root, spec_name)
-    from core.state_machine import StateMachine
+    from core.state_machine import StateMachine, project_state_logger
 
-    sm = StateMachine(Path(project_root) / ".fenix" / "STATE.md", None)
+    sm = StateMachine(Path(project_root) / ".fenix" / "STATE.md", project_state_logger(project_root))
     sm.freeze_spec(spec_name, reason=note)
     return {"ok": True, "found": True, "frozen": True, "error": None, "stopped_agents": len(running)}
 
@@ -378,8 +378,8 @@ def unfreeze_spec(project_root, spec_name: str) -> dict:
     if not is_spec_frozen(entry):
         return {"ok": True, "found": True, "frozen": False, "error": None}
     orig = parse_orig_status(entry.get("error"))
-    from core.state_machine import StateMachine
-    sm = StateMachine(Path(project_root) / ".fenix" / "STATE.md", None)
+    from core.state_machine import StateMachine, project_state_logger
+    sm = StateMachine(Path(project_root) / ".fenix" / "STATE.md", project_state_logger(project_root))
     _wt_mgr = None
     try:
         from core.worktree_manager import WorktreeManager
@@ -416,7 +416,7 @@ def reclassify_infra_rounds(
         dict：{ok, fail_rounds, status, applied, error?}。
         spec 不存在 → {ok: False, found: False, error}.
     """
-    from core.state_machine import StateMachine
+    from core.state_machine import StateMachine, project_state_logger
     from core.pm_engine.verification import reclassify_infra_rounds as _recl
 
     specs = parse_state(project_root)
@@ -424,7 +424,7 @@ def reclassify_infra_rounds(
         return {"ok": False, "found": False, "error": f"spec not found: {spec_name}"}
     if not str(audit_reason or "").strip():
         return {"ok": False, "found": True, "error": "audit_reason 必填（审计留痕要求）"}
-    sm = StateMachine(Path(project_root) / ".fenix" / "STATE.md", None)
+    sm = StateMachine(Path(project_root) / ".fenix" / "STATE.md", project_state_logger(project_root))
     try:
         result = _recl(
             project_root,
@@ -459,12 +459,12 @@ def promote_spec(project_root, spec_name: str) -> dict:
     if spec_name not in specs:
         return {"ok": False, "found": False, "error": f"spec not found: {spec_name}"}
     from core.pm_engine.promotion import promote_drafted
-    from core.state_machine import StateMachine
+    from core.state_machine import StateMachine, project_state_logger
     from core.logger import Logger
     from core.config import ConfigLoader
 
     proot = Path(project_root)
-    sm = StateMachine(proot / ".fenix" / "STATE.md", None)
+    sm = StateMachine(proot / ".fenix" / "STATE.md", project_state_logger(proot))
     logger = Logger(proot)
     # 解析项目有效配置传给 promote_drafted，使评审分流判定与 daemon 同源
     # （add-spec-review-gate 3.4/3.5：不传 config 无法评估跳过白名单，恒直通 ready）
@@ -509,11 +509,11 @@ def reflow_spec(project_root, spec_name: str) -> dict:
     if spec_name not in specs:
         return {"ok": False, "found": False, "reason": f"spec not found: {spec_name}"}
     from core.pm_engine.task_reflow import reflow_spec as _reflow
-    from core.state_machine import StateMachine
+    from core.state_machine import StateMachine, project_state_logger
     from core.logger import Logger
 
     proot = Path(project_root)
-    sm = StateMachine(proot / ".fenix" / "STATE.md", None)
+    sm = StateMachine(proot / ".fenix" / "STATE.md", project_state_logger(proot))
     logger = Logger(proot)
     result = _reflow(proot, spec_name, state_machine=sm, logger=logger, source="api")
     result.setdefault("found", True)
@@ -535,11 +535,11 @@ def re_review_spec(project_root, spec_name: str) -> dict:
     if spec_name not in specs:
         return {"ok": False, "found": False, "error": f"spec not found: {spec_name}"}
     from core.pm_engine.spec_review import SpecReviewManager
-    from core.state_machine import StateMachine
+    from core.state_machine import StateMachine, project_state_logger
     from core.logger import Logger
 
     proot = Path(project_root)
-    sm = StateMachine(proot / ".fenix" / "STATE.md", None)
+    sm = StateMachine(proot / ".fenix" / "STATE.md", project_state_logger(proot))
     logger = Logger(proot)
     # agent_runner=None：跳过同步派发，由 daemon 全扫 recovery 的 reviewing
     # 分支拾取派发（与 CLI cmd_review 同构）；Dashboard 侧请求发往常驻 daemon
@@ -590,7 +590,7 @@ def activate_spec(project_root, spec: str) -> dict:
     - 命中 → update_spec 清 start_after + 写 kick 信号
       → ``{ok: True, found: True, spec, start_after: None}``
     """
-    from core.state_machine import StateMachine
+    from core.state_machine import StateMachine, project_state_logger
 
     proot = Path(project_root)
     specs = parse_state(proot)
@@ -615,7 +615,7 @@ def activate_spec(project_root, spec: str) -> dict:
         }
     # 命中 → 清 start_after + 唤醒信号；写入结果如实回报（D3），
     # CLI 与 Dashboard 依 ok 分支文案，不再无条件宣称「立即恢复调度」
-    sm = StateMachine(proot / ".fenix" / "STATE.md", None)
+    sm = StateMachine(proot / ".fenix" / "STATE.md", project_state_logger(proot))
     sm.update_spec(spec, {"start_after": None})
     kick_result = _write_scheduling_kick_signal(proot, spec)
     return {
@@ -664,7 +664,7 @@ def resume_cancelled_spec(project_root, spec: str) -> dict:
     - ``_cancelled_hold`` 非 true → ``{ok: False, reason}``（幂等拒绝，
       STATE 零变更）
     """
-    from core.state_machine import StateMachine
+    from core.state_machine import StateMachine, project_state_logger
 
     proot = Path(project_root)
     specs = parse_state(proot)
@@ -708,7 +708,7 @@ def resume_cancelled_spec(project_root, spec: str) -> dict:
             "found": True,
             "reason": "worktree 管理器不可用，无法判定保留分支",
         }
-    sm = StateMachine(proot / ".fenix" / "STATE.md", None)
+    sm = StateMachine(proot / ".fenix" / "STATE.md", project_state_logger(proot))
     resolved_branch, _wt = sm._resolve_preserved_branch(
         spec, entry, proot, wm, context="Cancel-hold resume")
     if resolved_branch is not None:
@@ -816,7 +816,7 @@ def set_spec_start_after(project_root, spec: str, value) -> dict:
     - 成功 → {ok: True, start_after: <ISO8601 UTC 或 None 或 "manual">}
     写入经 StateMachine.update_spec（flock + 原子 rename，与 daemon 并发写安全）。
     """
-    from core.state_machine import StateMachine, parse_utc
+    from core.state_machine import StateMachine, parse_utc, project_state_logger
 
     proot = Path(project_root)
     specs = parse_state(proot)
@@ -846,7 +846,7 @@ def set_spec_start_after(project_root, spec: str, value) -> dict:
                 "error": f"start_after 非法 ISO8601: {value!r}",
             }
         normalized = dt.isoformat()
-    sm = StateMachine(proot / ".fenix" / "STATE.md", None)
+    sm = StateMachine(proot / ".fenix" / "STATE.md", project_state_logger(proot))
     sm.update_spec(spec, {"start_after": normalized})
     # 清空即唤醒（2026-09-08 fix-run-cancel-retry-flag-miss 事故路径）：status 恒为
     # ready，event_bus watcher 只盯 status 不发事件、check_scheduling_deadlines 只管
@@ -895,9 +895,9 @@ def set_spec_budget(project_root, spec: str, budget) -> dict:
         }
     # null 清除
     if budget is None:
-        from core.state_machine import StateMachine
+        from core.state_machine import StateMachine, project_state_logger
 
-        sm = StateMachine(proot / ".fenix" / "STATE.md", None)
+        sm = StateMachine(proot / ".fenix" / "STATE.md", project_state_logger(proot))
         sm.update_spec(spec, {"impl_run_budget_override": None})
         return {"ok": True, "found": True, "budget": None}
     # 非法值校验（int，非 bool，[1, 有效上限]）
@@ -931,9 +931,9 @@ def set_spec_budget(project_root, spec: str, budget) -> dict:
             "invalid": True,
             "error": f"budget must be an integer between 1 and {budget_max} (or null to clear)",
         }
-    from core.state_machine import StateMachine
+    from core.state_machine import StateMachine, project_state_logger
 
-    sm = StateMachine(proot / ".fenix" / "STATE.md", None)
+    sm = StateMachine(proot / ".fenix" / "STATE.md", project_state_logger(proot))
     sm.update_spec(spec, {"impl_run_budget_override": budget})
     return {"ok": True, "found": True, "budget": budget}
 
@@ -952,7 +952,7 @@ def configure_spec_freeze(project_root, spec: str, mode: str, until=None) -> dic
     写入经 StateMachine（flock + 原子 rename）：frozen_until 更新不带 status
     键，不触发冻结保护剥离；带 status 的解冻一律走 unfreeze_spec 官方通道。
     """
-    from core.state_machine import StateMachine, parse_utc
+    from core.state_machine import StateMachine, parse_utc, project_state_logger
 
     proot = Path(project_root)
     specs = parse_state(proot)
@@ -965,7 +965,7 @@ def configure_spec_freeze(project_root, spec: str, mode: str, until=None) -> dic
             "found": True,
             "error": "spec 未处于冻结态（冻结管理仅对冻结 spec 生效）",
         }
-    sm = StateMachine(proot / ".fenix" / "STATE.md", None)
+    sm = StateMachine(proot / ".fenix" / "STATE.md", project_state_logger(proot))
     if mode == "unfreeze":
         orig = parse_orig_status(entry.get("error"))
         sm.unfreeze_spec(spec, status=orig)
@@ -1186,9 +1186,9 @@ def clear_spec_error(project_root, spec: str) -> dict:
     specs = parse_state(proot)
     if spec not in specs:
         return {"found": False}
-    from core.state_machine import StateMachine
+    from core.state_machine import StateMachine, project_state_logger
 
-    sm = StateMachine(proot / ".fenix" / "STATE.md")
+    sm = StateMachine(proot / ".fenix" / "STATE.md", project_state_logger(proot))
     sm.update_spec(spec, {"error": None})
     return {"found": True}
 
@@ -1219,8 +1219,8 @@ def set_spec_priority(project_root, spec: str, priority) -> dict:
     if spec not in specs:
         return {"found": False}
 
-    from core.state_machine import StateMachine
+    from core.state_machine import StateMachine, project_state_logger
 
-    sm = StateMachine(proot / ".fenix" / "STATE.md")
+    sm = StateMachine(proot / ".fenix" / "STATE.md", project_state_logger(proot))
     sm.update_spec(spec, {"priority": p})
     return {"found": True, "priority": p}
