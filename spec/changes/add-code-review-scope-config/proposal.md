@@ -26,5 +26,5 @@
 - `core/config.py`（`get_code_review_config` 缺省值与合法性校验）
 - `core/admin_monitor.py`（周期触发两处 scope 取值改读配置）
 - `core/dashboard/static/src/pages/settings/components/QualityPanel.tsx`（下拉 UI + 回显 + 保存）
-- `.fenix/config.template.yaml`（模板示例补键；`.fenix/` 下 gitignored 运行时模板，属 reference）
+- `.fenix/config.template.yaml`（模板示例补键；仓库受控模板，git 追踪，交付清单 kind=modify）
 - 无状态机变更、无数据迁移；缺省值保证零行为变更。
