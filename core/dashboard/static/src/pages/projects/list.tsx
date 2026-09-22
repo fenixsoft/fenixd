@@ -55,8 +55,10 @@ import RegressionTab from './components/RegressionTab';
 import {
   pct,
   phasePct,
+  renderPercent,
   strokeColorFor,
   trailColorFor,
+  GATES_STROKE,
   TRACK_LIGHT,
 } from './progressPhase';
 
@@ -1013,13 +1015,7 @@ export default function SpecListPage() {
           isVerify && record.verify_total === 0 && record.generation && record.generation.total > 0
             ? record.generation
             : null;
-        const p = isGates
-          ? phasePct(record)
-          : isVerify
-            ? gen
-              ? Math.min(100, pct(gen.done, gen.total))
-              : pct(record.verify_done, record.verify_total)
-            : pct(record.task_done, record.task_total);
+        const p = renderPercent(record, gen);
         // run 层实时线索（fix-implementer-task-progress D3）：tasks.md 快照落后于
         // run 实际推进（subject 无编号 / agent 未勾 tasks.md）时叠加 run 完成度，
         // 任一数据源失效都不再呈现静止的 0/N；快照已覆盖时不重复打扰。
@@ -1093,8 +1089,8 @@ export default function SpecListPage() {
             ) : null}
             {isGates && record.gates_current ? (
               // add-quality-gates-visibility：gates 阶段辅助文案（running 门或
-              // failed 归因，后端非空才返回），橙字与进度条同色系
-              <div style={{ fontSize: 12, lineHeight: '18px', color: '#fa8c16' }}>
+              // failed 归因，后端非空才返回），橙字与进度条同色系（复用常量防漂移）
+              <div style={{ fontSize: 12, lineHeight: '18px', color: GATES_STROKE }}>
                 {record.gates_current}
               </div>
             ) : null}

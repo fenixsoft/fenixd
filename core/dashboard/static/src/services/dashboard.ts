@@ -260,8 +260,10 @@ export interface SpecSummary {
    * 会漏判——前端 MUST 用该字段判定冻结，不得自行 startsWith。
    */
   frozen?: boolean;
-  /** add-task-progress-verify-phase：任务进度列阶段——"verify" 仅当 status==testing，其余 "impl"（判定单点在后端） */
-  progress_phase?: 'verify' | 'impl';
+  /** add-task-progress-verify-phase：任务进度列阶段——"verify" 仅当 status==testing；
+   * add-quality-gates-visibility 增 "gates"（implementing 收尾 / testing ocr 在飞），
+   * 其余 "impl"（判定单点在后端） */
+  progress_phase?: 'verify' | 'impl' | 'gates';
   /** add-task-progress-verify-phase：verify 阶段当前步骤文案（验证引擎 current，非空才渲染） */
   verify_current?: string;
   /**

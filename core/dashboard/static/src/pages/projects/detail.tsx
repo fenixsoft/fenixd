@@ -29,7 +29,6 @@ import {
   gateStrikeThrough,
   gateSuffix,
   gateTextColor,
-  gatesEmptyText,
   normalizeGateItems,
   shouldRenderGatesCard,
 } from './qualityGates';
@@ -1787,7 +1786,7 @@ export default function SpecDetailPage() {
               ))}
             </>
           ) : (
-            <Typography.Text type="secondary">{gatesEmptyText(!!detail?.quality_gates?.exists)}</Typography.Text>
+            <Typography.Text type="secondary">暂无质量门禁记录</Typography.Text>
           )}
         </Card>
       ) : null}

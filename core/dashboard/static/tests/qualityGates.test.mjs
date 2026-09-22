@@ -17,13 +17,13 @@ import {
   gateStrikeThrough,
   gateSuffix,
   gateTextColor,
-  gatesEmptyText,
   normalizeGateItems,
   shouldRenderGatesCard,
 } from '../src/pages/projects/qualityGates.ts';
 import {
   GATES_TRAIL,
   phasePct,
+  renderPercent,
   strokeColorFor,
   trailColorFor,
 } from '../src/pages/projects/progressPhase.ts';
@@ -103,11 +103,6 @@ test('其余状态 exists=false 恒渲染（空态兜底）', () => {
   assert.equal(shouldRenderGatesCard('testing', false), true);
   assert.equal(shouldRenderGatesCard('verified', false), true);
   assert.equal(shouldRenderGatesCard(null, false), true);
-});
-
-test('空态文案：不可见→「暂无质量门禁记录」，可见→空串', () => {
-  assert.equal(gatesEmptyText(false), '暂无质量门禁记录');
-  assert.equal(gatesEmptyText(true), '');
 });
 
 // ── 4.3：未知 gate-id / 异常形状容错不崩 ─────────────────────────────
@@ -201,6 +196,29 @@ test('gates 阶段门禁完成度计数文案含 skipped（4 + 2 skipped = 6/6�
   // 后端 done 含 skipped；前端 gates_done/gates_total 直读不二次加工
   const record = { progress_phase: 'gates', task_done: 9, task_total: 9, verify_done: 0, verify_total: 0, gates_done: 6, gates_total: 6 };
   assert.equal(phasePct(record), 100);
+});
+
+// ── ocr 收尾审查 finding#1 修补：renderPercent 具名函数（替代嵌套三元） ──
+
+test('renderPercent：gates 分支走门禁完成度', () => {
+  assert.equal(
+    renderPercent({ progress_phase: 'gates', task_done: 9, task_total: 9, verify_done: 0, verify_total: 0, gates_done: 1, gates_total: 6 }, null),
+    17,
+  );
+});
+
+test('renderPercent：verify 分支 gen 出题进度封顶 100%', () => {
+  const rec = { progress_phase: 'verify', task_done: 9, task_total: 9, verify_done: 0, verify_total: 0 };
+  assert.equal(renderPercent(rec, { done: 3, total: 10 }), 30);
+  assert.equal(renderPercent(rec, { done: 99, total: 10 }), 100);
+  assert.equal(renderPercent(rec, null), 0);
+});
+
+test('renderPercent：impl 分支任务完成度', () => {
+  assert.equal(
+    renderPercent({ progress_phase: 'impl', task_done: 1, task_total: 4, verify_done: 5, verify_total: 5 }, null),
+    25,
+  );
 });
 
 // ── 5.2：impl/verify 渲染零回归断言 ──────────────────────────────────

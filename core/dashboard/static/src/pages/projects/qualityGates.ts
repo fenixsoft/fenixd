@@ -79,16 +79,11 @@ export function gateDetailText(item: GateItem): string {
 }
 
 // Card 渲染条件（任务 4.2）：drafted/ready 且无门禁文件 → 不渲染本 Card；
-// 其余状态恒渲染（文件不可见时显示空态兜底）
+// 其余状态恒渲染（文件不可见时由调用方直接渲染「暂无质量门禁记录」空态文案）
 export function shouldRenderGatesCard(
   status: string | null | undefined,
   exists: boolean,
 ): boolean {
   if (!exists && (status === 'drafted' || status === 'ready')) return false;
   return true;
-}
-
-// 空态文案：门禁文件不可见（历史 spec / implementing 早期）→ 提示无记录
-export function gatesEmptyText(exists: boolean): string {
-  return exists ? '' : '暂无质量门禁记录';
 }

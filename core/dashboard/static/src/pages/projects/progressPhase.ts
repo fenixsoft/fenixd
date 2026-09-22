@@ -39,6 +39,19 @@ export function phasePct(record: PhaseRecord): number {
   return pct(record.task_done, record.task_total);
 }
 
+// 任务进度列的渲染百分比（ocr 收尾审查 finding#1：具名函数替代嵌套三元，
+// ca92db5ea623 先例）。gen 仅 verify 阶段出现：执行未开始时进度条展示出题进度。
+export function renderPercent(
+  record: PhaseRecord,
+  gen: { done: number; total: number } | null,
+): number {
+  if (record.progress_phase === 'gates') return phasePct(record);
+  if (record.progress_phase === 'verify') {
+    return gen ? Math.min(100, pct(gen.done, gen.total)) : pct(record.verify_done, record.verify_total);
+  }
+  return pct(record.task_done, record.task_total);
+}
+
 // 进度条配色（code-review item ca92db5ea623 先例：具名函数替代嵌套三元）：
 // 出题青 > 门禁橙 > verify 绿 > impl 蓝（gen 仅 verify 阶段出现，优先级只防
 // 误用，实际互斥）。
