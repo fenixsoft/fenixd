@@ -1027,12 +1027,18 @@ export interface VerifyConfig {
    *  正整数；写入 run 级 ocr provider 配置 custom_providers.fenix-impl.timeout_sec，
    *  确定性生效） */
   impl_code_review_timeout_sec?: number;
-  /** 收尾审查 ocr 并发子任务上限（add-impl-code-review-tuning，缺省 2，正整数；
-   *  经提示词命令示例 --concurrency <n> 承载，实现者须照抄命令示例） */
+  /** 收尾审查 ocr 并发子任务上限（add-impl-code-review-tuning，缺省 4——
+   *  add-impl-ocr-parallel-lane 由 2 上调；正整数；经提示词命令示例
+   *  --concurrency <n> 承载，实现者须照抄命令示例） */
   impl_code_review_concurrency?: number;
   /** 收尾审查 ocr 力度预设（add-impl-code-review-tuning，缺省 'low'；经提示词
    *  命令示例 --effort <v> 承载，实现者须照抄命令示例） */
   impl_code_review_effort?: 'low' | 'medium' | 'high';
+  /** 实现分支合并后异步 ocr 车道的 join 裁决双档模式
+   *  （add-impl-ocr-parallel-lane，缺省 'gate'）：gate=车道发现非 rejected
+   *  findings 时打回修复轮（上限 1 轮，超限转台账）；advisory=findings 一律
+   *  写 code-review 台账、join 永不打回 */
+  impl_code_review_mode?: 'gate' | 'advisory';
 }
 
 export interface SelfReviewConfig {

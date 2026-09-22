@@ -18,8 +18,11 @@ DEFAULT_GATEWAY_MODEL 随 `_get_admin_model` 同迁本模块（D2b 规则 3）�
 """
 
 import fcntl
+import hashlib
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import time
 from datetime import datetime, timezone
@@ -38,6 +41,7 @@ from core.code_review import (
     upsert_findings,
 )
 from core.agent_runner.result_gate import _check_repo_code_review_artifact
+from core.agent_runner.run_files import append_run_line
 
 # 无 provider 分配的 agent（含 Administrator）走默认网关（cc-switch）时 --model 用的
 # 官方模型名。provider 已分配的 agent，其 --model 直接取该 agent 分配的网关模型名
@@ -1364,3 +1368,447 @@ def _read_fix_out_rows(out_path: Path) -> list:
         if isinstance(rec, dict) and rec.get("item_id"):
             rows.append(rec)
     return rows
+
+
+# ── impl ocr 异步审查车道（add-impl-ocr-parallel-lane，任务 3.1-3.4）──────
+#
+# 车道 = 维护型 run（对齐 run_code_review/run_regression 形态）：不经
+# _execute_agent、不占 spec 预算、不创建 worktree 语义由「自建 detached
+# 检出」替代——审的是已 merge-back 的实现分支 head（merge-back 不改分支
+# ref，head_commit 即分支最新形态）。与 tester 验证并行启动，join 于
+# testing 出口（裁决在 core/pm_engine/dispatch/queue.py 的 join 评估）。
+
+# ocr 可执行文件的默认裸名（包装器 bin/ocr_review.py 以 os.execvp 解析 PATH，
+# 裸名可用；随车道消费点迁入本模块，runner.py re-export——D2b 规则 3 先例
+# 同 DEFAULT_GATEWAY_MODEL）。
+DEFAULT_OCR_BIN = "ocr"
+
+
+def _impl_ocr_paths(project_root: Path, spec_name: str) -> tuple:
+    """车道产物的主树路径三元组 ``(artifact, raw, cursor)``。"""
+    vp = Path(project_root) / ".fenix" / "verify-progress" / spec_name
+    return (
+        vp / "code-review.json",
+        vp / "code-review-raw.json",
+        vp / "ocr-cursor.json",
+    )
+
+
+def _unique_impl_ocr_run_id(spec_name: str) -> str:
+    """车道 run_id：``impl-ocr-<spec>-<epoch>``（前缀登记见 run_files 3.5）。
+
+    同 spec 车道单飞（join 侧在飞登记去重）+ 秒级时间戳，撞名窗口可忽略；
+    即便同秒双实例，产物写侧为原子替换，后写者覆盖亦无害。
+    """
+    return f"impl-ocr-{spec_name}-{int(time.time())}"
+
+
+def _ocr_finding_fingerprint(finding: dict) -> str:
+    """finding 指纹：``sha1(path|category|content[:200])``（车道写侧与 join
+    读侧共用同一口径，杜绝双实现漂移；对齐 code-review 台账指纹思想）。"""
+    path = str(finding.get("path") or finding.get("file") or "")
+    category = str(finding.get("category") or "")
+    content = str(finding.get("content") or finding.get("description") or "")[:200]
+    return hashlib.sha1(f"{path}|{category}|{content}".encode("utf-8")).hexdigest()
+
+
+def _normalize_impl_ocr_findings(comments) -> list:
+    """ocr 原始报告 comments → 车道产物 findings（宽松解析，design D7）。
+
+    「具体键名以现场跑出的原始报告为准」教训延续：path/file、
+    start_line/line、content/description/message 逐级回退；缺 path 的行
+    丢弃（无锚点的 finding 对修复轮不可定位）。MUST NOT 抛异常。
+    """
+    out: list = []
+    if not isinstance(comments, list):
+        return out
+    for c in comments:
+        if not isinstance(c, dict):
+            continue
+        path = str(c.get("path") or c.get("file") or "").strip()
+        if not path:
+            continue
+        try:
+            start_line = int(c.get("start_line", c.get("line", 0)) or 0)
+        except (TypeError, ValueError):
+            start_line = 0
+        out.append(
+            {
+                "path": path,
+                "start_line": start_line,
+                "category": str(c.get("category") or "general"),
+                "severity": str(c.get("severity") or "info"),
+                "content": str(
+                    c.get("content") or c.get("description") or c.get("message") or ""
+                ).strip(),
+            }
+        )
+    return out
+
+
+def _carry_forward_ocr_findings(prev_findings, new_findings: list) -> list:
+    """上一产物中未裁决 findings 携带进新产物（增量审查防丢失）。
+
+    增量审查只覆盖 cursor 以来的提交，上一轮报告的 findings 不会重现；
+    实现者已在 worktree 处置文件上标注 disposition 并经拷回通道覆盖主树
+    产物时，disposition ∈ {fixed, rejected} 的视为已裁决不携带；其余
+    （未处置/deferred/处置文件缺失）按指纹去重后并入新 findings。已在本轮
+    重现的 finding 以新版本为准（不叠加旧注释字段）。
+    """
+    new_fps = {_ocr_finding_fingerprint(f) for f in new_findings}
+    out: list = []
+    if not isinstance(prev_findings, list):
+        return out
+    for f in prev_findings:
+        if not isinstance(f, dict):
+            continue
+        if f.get("disposition") in ("fixed", "rejected"):
+            continue
+        if _ocr_finding_fingerprint(f) in new_fps:
+            continue
+        out.append(dict(f))
+    return out
+
+
+def _read_ocr_cursor(cursor_path: Path) -> str | None:
+    """读增量游标 ``last_reviewed_commit``；缺失/损坏/非字符串 → None。"""
+    try:
+        data = json.loads(cursor_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    commit = data.get("last_reviewed_commit")
+    return commit if isinstance(commit, str) and commit else None
+
+
+def _write_ocr_cursor(cursor_path: Path, commit: str) -> None:
+    """审查成功后推进游标（原子替换；失败静默——下次回退全量，不影响正确性）。"""
+    try:
+        cursor_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = cursor_path.with_name(".ocr-cursor.json.tmp")
+        tmp.write_text(
+            json.dumps(
+                {
+                    "last_reviewed_commit": commit,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        os.replace(tmp, cursor_path)
+    except OSError:
+        pass
+
+
+def _git_is_ancestor(project_root: Path, ancestor: str, descendant: str) -> bool:
+    """``git merge-base --is-ancestor`` 包装（超时/异常一律按非祖先处理）。"""
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(project_root), "merge-base", "--is-ancestor",
+             ancestor, descendant],
+            capture_output=True, text=True, timeout=15,
+        )
+        return r.returncode == 0
+    except Exception:  # noqa: BLE001 — 游标可用性判定，失败回退全量
+        return False
+
+
+def _remove_impl_ocr_worktree(project_root: Path, wt) -> None:
+    """车道 detached 检出清理（remove --force + prune，对齐 serving 手法）。"""
+    if wt is None:
+        return
+    try:
+        subprocess.run(
+            ["git", "-C", str(project_root), "worktree", "remove", "--force", str(wt)],
+            capture_output=True, text=True, timeout=30,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        subprocess.run(
+            ["git", "-C", str(project_root), "worktree", "prune"],
+            capture_output=True, timeout=15,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _accumulate_impl_ocr_tokens(runner, run_id: str, summary) -> None:
+    """车道 token 记账（对齐 _accumulate_code_review_tokens 形态，任务 3.1）。
+
+    追加到 ``.fenix/cost/code_review_tokens.json``，agent_type 标注
+    ``impl-ocr``。ocr 原始 summary 的 input_tokens **已含** cache_read
+    （实测 total_tokens = input + output 闭合），MUST NOT 再叠加
+    cache_read_tokens 重复计费。写失败静默降级（观测增强，不阻断车道）。
+    """
+    try:
+        if not isinstance(summary, dict):
+            summary = {}
+        tokens_json = runner.project_root / ".fenix" / "cost" / "code_review_tokens.json"
+        entry = {
+            "agent_type": "impl-ocr",
+            "date": run_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "input_tokens": int(summary.get("input_tokens", 0) or 0),
+            "output_tokens": int(summary.get("output_tokens", 0) or 0),
+            "cost_usd": summary.get("cost_usd"),
+        }
+        _append_token_run(tokens_json, entry)
+    except Exception:  # noqa: BLE001 — 记账失败不影响车道结论
+        pass
+
+
+def _write_impl_ocr_run_events(project_root: Path, run_id: str, spec_name: str,
+                               events: list) -> None:
+    """车道 run jsonl 最小生命周期（时间线可见，不经 _run_claude）。
+
+    events 为 (type, extra_dict) 序列；末行为终态语义由调用方保证
+    （result/error 二选一）。写失败静默（观测通道，不阻断车道）。
+    """
+    try:
+        run_file = Path(project_root) / ".fenix" / "runs" / f"{run_id}.jsonl"
+        run_file.parent.mkdir(parents=True, exist_ok=True)
+        for ev_type, extra in events:
+            append_run_line(
+                run_file,
+                {
+                    "type": ev_type,
+                    "spec": spec_name,
+                    "agent_type": "impl-ocr",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    **(extra or {}),
+                },
+            )
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def run_impl_ocr(
+    runner,
+    spec_name: str,
+    branch: str,
+    base_commit: str,
+    head_commit: str,
+) -> dict:
+    """实现分支收尾 ocr 审查车道（add-impl-ocr-parallel-lane，任务 3.1-3.4）。
+
+    在 ``head_commit`` 的 detached 检出内跑
+    ``bin/ocr_review.py review --from <base> --to <head>``（--concurrency/
+    --effort 取配置注入；provider 注入复用 implementer 分配 +
+    ``_write_run_ocr_config`` 同源机制，任务 3.2）。产物由框架直写主树
+    ``.fenix/verify-progress/<spec>/code-review.json``：
+
+    - ``status`` 白名单 ``completed | unavailable``；unavailable MUST 附
+      非空 ``reason``（超时/非零退出/provider 不可达/非 git 仓库/解析失败）；
+    - ``fingerprint`` = ``(branch, merge_base, head_commit)``——join 读侧
+      fail-closed 的比对键（4.3），MUST 为触发时捕获的指纹而非增量游标；
+    - 原始报告副本落同目录 ``code-review-raw.json``（供审计/重解析）。
+
+    增量游标（任务 3.4）：``ocr-cursor.json`` 记 ``last_reviewed_commit``；
+    重跑优先 ``--from <cursor>``，cursor 缺失/非 head 祖先回退全量；成功后
+    推进游标。fingerprint 不随游标走（join 比对的仍是触发指纹）。
+
+    本函数 **MUST NOT 抛未捕获异常**（任务 3.3）：任何意外异常都折算为
+    ``unavailable`` 产物收尾；detached 检出在 finally 中清理。
+    """
+    from core.config import ConfigLoader
+
+    run_id = _unique_impl_ocr_run_id(spec_name)
+    log = getattr(runner, "logger", None)
+    artifact_path, raw_path, cursor_path = _impl_ocr_paths(
+        runner.project_root, spec_name
+    )
+    artifact: dict = {
+        "status": "unavailable",  # 缺省失败态，成功路径显式改写
+        "spec": spec_name,
+        "run_id": run_id,
+        "kind": "impl-ocr-lane",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "fingerprint": {
+            "branch": branch,
+            "merge_base": base_commit,
+            "head_commit": head_commit,
+        },
+        "review_range": {},
+        "llm": {},
+        "findings": [],
+        "reason": "",
+    }
+
+    _write_impl_ocr_run_events(
+        runner.project_root,
+        run_id,
+        spec_name,
+        [("start", {"message": f"ocr 车道启动: {branch} {base_commit[:8]}..{head_commit[:8]}"})],
+    )
+
+    wt = None
+    try:
+        # ── provider 注入（任务 3.2）：复用 implementer 分配 + 同源 _write_run_ocr_config ──
+        env_overrides: Dict[str, str] = {"FENIX_OCR_BIN": DEFAULT_OCR_BIN}
+        assignment = runner._get_agent_model_assignment("implementer")
+        if assignment:
+            provider, model_override = assignment[0]
+            ocr_home = runner._write_run_ocr_config(provider, model_override)
+            if ocr_home is not None:
+                env_overrides["FENIX_OCR_HOME"] = str(ocr_home)
+            artifact["llm"] = {
+                "provider": provider.get("name"),
+                "model": model_override,
+            }
+
+        # ── detached 检出（审的是分支 head；非 git 仓库在此折算 unavailable）──
+        serving_root = runner.project_root / ".fenix" / "verify-serving"
+        serving_root.mkdir(parents=True, exist_ok=True)
+        wt = serving_root / f"ocr-{run_id}"
+        r = subprocess.run(
+            ["git", "-C", str(runner.project_root), "worktree", "add", "--detach",
+             str(wt), head_commit],
+            capture_output=True, text=True, timeout=60,
+        )
+        if r.returncode != 0:
+            artifact["reason"] = (
+                f"车道 detached 检出失败（head={head_commit[:8]}）: "
+                f"{(r.stderr or r.stdout).strip()[-300:]}"
+            )
+        else:
+            # ── 增量游标（任务 3.4）：cursor 缺失/非祖先回退全量 ──
+            from_commit = base_commit
+            incremental = False
+            cursor = _read_ocr_cursor(cursor_path)
+            if (
+                cursor
+                and cursor != head_commit
+                and _git_is_ancestor(runner.project_root, cursor, head_commit)
+            ):
+                from_commit = cursor
+                incremental = True
+            artifact["review_range"] = {
+                "from": from_commit,
+                "to": head_commit,
+                "incremental": incremental,
+            }
+
+            # ── 上一产物 findings 预读（carry-forward 供成功路径合并）──
+            prev_findings: list = []
+            try:
+                prev = json.loads(artifact_path.read_text(encoding="utf-8"))
+                if isinstance(prev, dict) and isinstance(prev.get("findings"), list):
+                    prev_findings = prev["findings"]
+            except (OSError, ValueError):
+                prev_findings = []
+
+            # ── 跑 ocr（硬超时 = 车道级 impl_code_review_lane_timeout_sec，任务 3.3）──
+            # GIT_DIR/GIT_WORK_TREE 钉住 detached worktree：ocr 的仓库发现在
+            # linked worktree（.git 为文件）里会漂移到主检出（实测：实现者
+            # 收尾审查在 worktree 直跑时 --from 被归一成与主树 HEAD 的
+            # merge-base，审查区间整体漂到 main 侧），显式 env 钉住后 git
+            # 子命令一律解析回本 wt。
+            env_overrides["GIT_DIR"] = str(wt / ".git")
+            env_overrides["GIT_WORK_TREE"] = str(wt)
+            raw_path.parent.mkdir(parents=True, exist_ok=True)
+            cmd = [
+                sys.executable, "bin/ocr_review.py", "review",
+                "--from", from_commit,
+                "--to", head_commit,
+                "--concurrency",
+                str(ConfigLoader.get_impl_code_review_concurrency(runner.config)),
+                "--effort", ConfigLoader.get_impl_code_review_effort(runner.config),
+                "--format", "json",
+                "--output", str(raw_path),
+            ]
+            try:
+                proc = subprocess.run(
+                    cmd,
+                    cwd=str(wt),
+                    env={**os.environ, **env_overrides},
+                    capture_output=True,
+                    text=True,
+                    timeout=ConfigLoader.get_impl_code_review_lane_timeout_sec(
+                        runner.config
+                    ),
+                )
+                timed_out = False
+            except subprocess.TimeoutExpired:
+                proc = None
+                timed_out = True
+
+            if timed_out:
+                lane_timeout = ConfigLoader.get_impl_code_review_lane_timeout_sec(
+                    runner.config
+                )
+                artifact["reason"] = (
+                    f"车道硬超时（>{lane_timeout}s，verify."
+                    f"impl_code_review_lane_timeout_sec）"
+                )
+            elif proc.returncode != 0:
+                artifact["reason"] = (
+                    f"ocr 非零退出（rc={proc.returncode}）: "
+                    f"{(proc.stderr or proc.stdout or '').strip()[-400:]}"
+                )
+            else:
+                raw = None
+                try:
+                    raw = json.loads(raw_path.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    raw = None
+                if not isinstance(raw, dict):
+                    artifact["reason"] = (
+                        "ocr 原始报告缺失或不可解析（exit 0 但无有效 JSON）"
+                    )
+                else:
+                    # ── 成功路径：规范化 findings + carry-forward + 记账 + 推进游标 ──
+                    findings = _normalize_impl_ocr_findings(raw.get("comments"))
+                    findings.extend(_carry_forward_ocr_findings(prev_findings, findings))
+                    artifact["status"] = "completed"
+                    artifact["findings"] = findings
+                    artifact["reason"] = ""
+                    _accumulate_impl_ocr_tokens(runner, run_id, raw.get("summary"))
+                    _write_ocr_cursor(cursor_path, head_commit)
+    except Exception as e:  # noqa: BLE001 — 车道内部异常折算 unavailable（任务 3.3）
+        artifact["status"] = "unavailable"
+        artifact["reason"] = f"车道内部异常: {type(e).__name__}: {e}"
+        if log is not None:
+            log.warning(
+                "agent_runner",
+                f"impl-ocr 车道内部异常（run {run_id}）: {type(e).__name__}: {e}",
+            )
+    finally:
+        _remove_impl_ocr_worktree(runner.project_root, wt)
+
+    # ── 产物原子落盘（unavailable/completed 两条路径都写，join 读侧以文件为准）──
+    try:
+        artifact_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = artifact_path.with_name(".code-review.json.tmp")
+        tmp.write_text(
+            json.dumps(artifact, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        os.replace(tmp, artifact_path)
+    except OSError as e:
+        if log is not None:
+            log.warning("agent_runner", f"impl-ocr 产物落盘失败（run {run_id}）: {e}")
+
+    _write_impl_ocr_run_events(
+        runner.project_root,
+        run_id,
+        spec_name,
+        [
+            (
+                "result",
+                {
+                    "status": artifact["status"],
+                    "findings": len(artifact["findings"]),
+                    "reason": artifact["reason"],
+                },
+            )
+        ],
+    )
+    if log is not None:
+        log.info(
+            "agent_runner",
+            f"impl-ocr 车道完成（run {run_id}）: status={artifact['status']} "
+            f"findings={len(artifact['findings'])}",
+        )
+    return artifact

@@ -38,6 +38,10 @@ RUN_ID_AGENT_PREFIXES: tuple[tuple[str, str], ...] = (
     ("planner-judge-", "planner-judge"),
     ("planner-plan-", "planner-plan"),
     ("planner-", "planner"),
+    # add-impl-ocr-parallel-lane（任务 3.5）：impl-ocr- 独立前缀，MUST 排在
+    # 其子串前缀 impl- 之前（顺序敏感，首个命中即止）——否则车道 run 在
+    # 时间线上会退化为 implementer 归属。
+    ("impl-ocr-", "impl-ocr"),
     ("impl-", "implementer"),
     ("repair-", "repair"),
     ("verify-", "verifier"),

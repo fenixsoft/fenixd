@@ -264,29 +264,36 @@ class TestImplCodeReviewTuningConfigAdmin:
         assert "impl_code_review_timeout_sec" in qv
         assert "impl_code_review_concurrency" in qv
         assert "impl_code_review_effort" in qv
+        # add-impl-ocr-parallel-lane：join 双档模式随质量页签同步
+        assert "impl_code_review_mode" in qv
 
     def test_default_echo_both_sides(self, tmp_path):
-        """缺省恒回显：read_config 与 read_effective_config 两侧均含 600/2/low。
+        """缺省恒回显：read_config 侧含 600/4/low/gate（add-impl-ocr-parallel-lane：
+        并发缺省 2→4、新增 mode 键缺省 gate）。
         项目级 read_config 侧既有 impl_code_review 开关仍缺席（5.4「缺省不回显」
-        约定不变）；read_effective_config 侧含开关与否取决于用户级配置（合并
-        用户级后的有效值，本环境用户级显式配置了 impl_code_review）——只断言
-        三新键缺省恒出。"""
+        约定不变）；read_effective_config 侧是合并用户级后的有效值（数值随环境
+        的用户级显式配置漂移）——只断参数键恒出且值合法。"""
         from core.dashboard.data import read_config, read_effective_config
 
         rc = read_config(tmp_path)
         assert rc["verify"]["impl_code_review_timeout_sec"] == 600
-        assert rc["verify"]["impl_code_review_concurrency"] == 2
+        assert rc["verify"]["impl_code_review_concurrency"] == 4
         assert rc["verify"]["impl_code_review_effort"] == "low"
+        assert rc["verify"]["impl_code_review_mode"] == "gate"
         assert "impl_code_review" not in rc["verify"]
 
         eff = read_effective_config(tmp_path)
-        assert eff["verify"]["impl_code_review_timeout_sec"] == 600
-        assert eff["verify"]["impl_code_review_concurrency"] == 2
-        assert eff["verify"]["impl_code_review_effort"] == "low"
+        # eff 侧是合并用户级后的有效值：本环境用户级显式配置了 600/2/low，
+        # 数值随环境漂移（显式压过缺省），只断键恒出 + 值合法（类型契约）。
+        assert eff["verify"]["impl_code_review_timeout_sec"] >= 1
+        assert eff["verify"]["impl_code_review_concurrency"] >= 1
+        assert eff["verify"]["impl_code_review_effort"] in ("low", "medium", "high")
+        assert eff["verify"]["impl_code_review_mode"] in ("gate", "advisory")
         # 缺省 sources == "user"
         assert rc["sources"]["verify.impl_code_review_timeout_sec"] == "user"
         assert rc["sources"]["verify.impl_code_review_concurrency"] == "user"
         assert rc["sources"]["verify.impl_code_review_effort"] == "user"
+        assert rc["sources"]["verify.impl_code_review_mode"] == "user"
 
     def test_write_read_roundtrip(self, tmp_path):
         """写 900/4/high → 读回同值（sources 标注 project）。"""
@@ -386,3 +393,45 @@ class TestImplCodeReviewTuningConfigAdmin:
         rc = read_config(tmp_path)
         assert "impl_code_review" not in rc["verify"]
         assert rc["sources"]["verify.impl_code_review"] == "user"
+
+    def test_lane_timeout_admin_surface(self, tmp_path):
+        """ocr 审查 finding#1 回归锁：车道级硬超时全 admin 链路纳管。
+
+        lane_timeout_sec 与三运行参数同款七触点：_SOURCE_KEYS 登记 /
+        sources 标注 / 两缺省回显块 / 提取处生效回显 / 合并白名单 /
+        write_config 前置校验 / _SYNC_PAGE_KEYS 同步白名单。"""
+        from core.dashboard.data import (
+            _SOURCE_KEYS,
+            _SYNC_PAGE_KEYS,
+            read_config,
+            read_effective_config,
+        )
+
+        assert "verify.impl_code_review_lane_timeout_sec" in _SOURCE_KEYS
+        assert "impl_code_review_lane_timeout_sec" in _SYNC_PAGE_KEYS["quality"]["verify"]
+
+        # 缺省回显 2400（经读取器取，与 ConfigLoader 缺省同源）
+        rc = read_config(tmp_path)
+        assert rc["verify"]["impl_code_review_lane_timeout_sec"] == 2400
+        assert rc["sources"]["verify.impl_code_review_lane_timeout_sec"] == "user"
+
+        # 写 1800 → 读回 project 标注；eff 侧同值
+        from core.dashboard.data import write_config
+
+        res = write_config(
+            tmp_path, {"verify": {"impl_code_review_lane_timeout_sec": 1800}}
+        )
+        assert res["ok"], res.get("error")
+        rc = read_config(tmp_path)
+        assert rc["verify"]["impl_code_review_lane_timeout_sec"] == 1800
+        assert rc["sources"]["verify.impl_code_review_lane_timeout_sec"] == "project"
+        eff = read_effective_config(tmp_path)
+        assert eff["verify"]["impl_code_review_lane_timeout_sec"] == 1800
+
+        # 非法值拒绝：bool / 0 / 负 / 字符串 / float → 不落盘
+        for bad in (True, 0, -5, "abc", 60.5):
+            bad_res = write_config(
+                tmp_path, {"verify": {"impl_code_review_lane_timeout_sec": bad}}
+            )
+            assert not bad_res["ok"], f"{bad!r} 应被拒绝"
+            assert "impl_code_review_lane_timeout_sec" in bad_res["error"]

@@ -95,6 +95,11 @@ _SOURCE_KEYS = [
     "verify.impl_code_review_timeout_sec",
     "verify.impl_code_review_concurrency",
     "verify.impl_code_review_effort",
+    # add-impl-ocr-parallel-lane：join 裁决双档模式（gate/advisory）
+    "verify.impl_code_review_mode",
+    # add-impl-ocr-parallel-lane（ocr 审查 finding#1 补纳管）：ocr 车道级硬超时
+    # （秒，缺省 2400，消费方 run_impl_ocr；与单请求超时 timeout_sec 按键分离）
+    "verify.impl_code_review_lane_timeout_sec",
     # fix-agent-lane-efficiency D3：上下文经济性诊断告警阈值
     "verify.context_cost_per_turn_threshold",
     "verify.serving_reclaim.enabled",
@@ -244,6 +249,14 @@ def _managed_key_sources(raw: dict) -> dict:
                 sources["verify.impl_code_review_concurrency"] = "project"
         if verify_src.get("impl_code_review_effort") in ("low", "medium", "high"):
             sources["verify.impl_code_review_effort"] = "project"
+        # add-impl-ocr-parallel-lane：mode 枚举合法值才标注 project（缺省/非法不标）
+        if verify_src.get("impl_code_review_mode") in ("gate", "advisory"):
+            sources["verify.impl_code_review_mode"] = "project"
+        # ocr 审查 finding#1：lane_timeout 正整数才标注 project（与 timeout_sec 同款）
+        if isinstance(verify_src.get("impl_code_review_lane_timeout_sec"), int) and \
+                not isinstance(verify_src.get("impl_code_review_lane_timeout_sec"), bool):
+            if verify_src["impl_code_review_lane_timeout_sec"] > 0:
+                sources["verify.impl_code_review_lane_timeout_sec"] = "project"
         sr_raw = verify_src.get("serving_reclaim")
         if isinstance(sr_raw, dict) and "enabled" in sr_raw:
             sources["verify.serving_reclaim.enabled"] = "project"
@@ -359,6 +372,8 @@ def read_config(scope_root, scope: str = "project") -> dict:
     容错：文件不存在返回空结构 + raw_exists=False；解析失败返回 error。
     """
     import core.dashboard.data as _facade
+    # 缺省回显块经读取器取缺省（单一天然来源，见 verify 块注释）
+    from core.config import ConfigLoader as _CLICRT
 
     config_path = (
         _facade.USER_CONFIG_PATH if scope == "user" else Path(scope_root) / ".fenix" / "config.yaml"
@@ -381,11 +396,20 @@ def read_config(scope_root, scope: str = "project") -> dict:
         "gates": {"approve_mode": "manual", "promote_mode": "auto", "spec_review_mode": "auto", "start_after_scope": "dispatch"},
         "runs": {"keep": 50},
         "verify": {"static_scope": "main", "deps_mode": "hardlink", "serving_reclaim": {"enabled": True},
-                   # add-impl-code-review-tuning：三运行参数恒回显缺省（600/2/low——
-                   # 与 impl_code_review「缺省不回显」语义相反，spec「缺省回显」Scenario）
-                   "impl_code_review_timeout_sec": 600,
-                   "impl_code_review_concurrency": 2,
-                   "impl_code_review_effort": "low",
+                   # add-impl-code-review-tuning：三运行参数恒回显缺省（与
+                   # impl_code_review「缺省不回显」语义相反，spec「缺省回显」
+                   # Scenario）。缺省值经 ConfigLoader 读取器取（传空配置即回
+                   # 缺省）——单一来源，杜绝手工字面量镜像漂移（ocr 审查
+                   # finding#2；保存时会把回显值显式落盘，镜像停在旧值会压过
+                   # 新缺省，本次 2→4 已实际踩中）
+                   "impl_code_review_timeout_sec": _CLICRT.get_impl_code_review_timeout_sec({}),
+                   "impl_code_review_concurrency": _CLICRT.get_impl_code_review_concurrency({}),
+                   "impl_code_review_effort": _CLICRT.get_impl_code_review_effort({}),
+                   # add-impl-ocr-parallel-lane：join 双档模式恒回显缺省（gate——
+                   # 与上方三运行参数「缺省回显」同款语义）
+                   "impl_code_review_mode": _CLICRT.get_impl_code_review_mode({}),
+                   # ocr 审查 finding#1：车道级硬超时同样纳入缺省回显（2400）
+                   "impl_code_review_lane_timeout_sec": _CLICRT.get_impl_code_review_lane_timeout_sec({}),
                    # fix-agent-lane-efficiency D3：上下文经济性告警阈值（0=关闭）
                    "context_cost_per_turn_threshold": 200000},
         # add-spec-archive D5：自动归档阈值（0 = 禁用，默认 50）
@@ -531,6 +555,16 @@ def read_config(scope_root, scope: str = "project") -> dict:
         result["verify"]["impl_code_review_effort"] = (
             _CLICRT.get_impl_code_review_effort(raw)
         )
+        # add-impl-ocr-parallel-lane：join 双档模式生效值回显（读取器对非法值
+        # 回退缺省 gate，回显与生效值一致；与三运行参数「缺省回显」同款）
+        result["verify"]["impl_code_review_mode"] = (
+            _CLICRT.get_impl_code_review_mode(raw)
+        )
+        # ocr 审查 finding#1：车道级硬超时生效值回显（读取器对非法值回退
+        # 缺省 2400，与 timeout_sec 同款正整数语义）
+        result["verify"]["impl_code_review_lane_timeout_sec"] = (
+            _CLICRT.get_impl_code_review_lane_timeout_sec(raw)
+        )
         # fix-agent-lane-efficiency D3：上下文经济性告警阈值回显（正整数才回显，
         # 缺省 200000 由缺省段兜底；0 = 关闭告警）
         _cct = verify_raw.get("context_cost_per_turn_threshold")
@@ -622,6 +656,8 @@ def read_effective_config(project_root) -> dict:
     proj_path = proot / ".fenix" / "config.yaml"
 
     import core.dashboard.data as _facade
+    # 缺省回显块经读取器取缺省（单一天然来源，见 verify 块注释）
+    from core.config import ConfigLoader as _CLICRT
 
     cache_key = (_config_file_sig(_facade.USER_CONFIG_PATH), _config_file_sig(proj_path))
     cached = _EFFECTIVE_CONFIG_CACHE.get(cache_key)
@@ -646,11 +682,20 @@ def read_effective_config(project_root) -> dict:
         "gates": {"approve_mode": "manual", "promote_mode": "auto", "spec_review_mode": "auto", "start_after_scope": "dispatch"},
         "runs": {"keep": 50},
         "verify": {"static_scope": "main", "deps_mode": "hardlink", "serving_reclaim": {"enabled": True},
-                   # add-impl-code-review-tuning：三运行参数恒回显缺省（600/2/low——
-                   # 与 impl_code_review「缺省不回显」语义相反，spec「缺省回显」Scenario）
-                   "impl_code_review_timeout_sec": 600,
-                   "impl_code_review_concurrency": 2,
-                   "impl_code_review_effort": "low",
+                   # add-impl-code-review-tuning：三运行参数恒回显缺省（与
+                   # impl_code_review「缺省不回显」语义相反，spec「缺省回显」
+                   # Scenario）。缺省值经 ConfigLoader 读取器取（传空配置即回
+                   # 缺省）——单一来源，杜绝手工字面量镜像漂移（ocr 审查
+                   # finding#2；保存时会把回显值显式落盘，镜像停在旧值会压过
+                   # 新缺省，本次 2→4 已实际踩中）
+                   "impl_code_review_timeout_sec": _CLICRT.get_impl_code_review_timeout_sec({}),
+                   "impl_code_review_concurrency": _CLICRT.get_impl_code_review_concurrency({}),
+                   "impl_code_review_effort": _CLICRT.get_impl_code_review_effort({}),
+                   # add-impl-ocr-parallel-lane：join 双档模式恒回显缺省（gate——
+                   # 与上方三运行参数「缺省回显」同款语义）
+                   "impl_code_review_mode": _CLICRT.get_impl_code_review_mode({}),
+                   # ocr 审查 finding#1：车道级硬超时同样纳入缺省回显（2400）
+                   "impl_code_review_lane_timeout_sec": _CLICRT.get_impl_code_review_lane_timeout_sec({}),
                    # fix-agent-lane-efficiency D3：上下文经济性告警阈值（0=关闭）
                    "context_cost_per_turn_threshold": 200000},
         # add-spec-archive D5：自动归档阈值（0 = 禁用，默认 50）
@@ -783,6 +828,15 @@ def read_effective_config(project_root) -> dict:
         )
         result["verify"]["impl_code_review_effort"] = (
             ConfigLoader.get_impl_code_review_effort(effective)
+        )
+        # add-impl-ocr-parallel-lane：join 双档模式生效值回显（非法值回退缺省
+        # gate，回显与生效值一致）
+        result["verify"]["impl_code_review_mode"] = (
+            ConfigLoader.get_impl_code_review_mode(effective)
+        )
+        # ocr 审查 finding#1：车道级硬超时生效值回显（非法值回退缺省 2400）
+        result["verify"]["impl_code_review_lane_timeout_sec"] = (
+            ConfigLoader.get_impl_code_review_lane_timeout_sec(effective)
         )
         sr_eff = verify_eff.get("serving_reclaim")
         if isinstance(sr_eff, dict) and isinstance(sr_eff.get("enabled"), bool):
@@ -953,6 +1007,16 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
         _ice = patch["verify"].get("impl_code_review_effort")
         if _ice in ("low", "medium", "high"):
             merged["verify"]["impl_code_review_effort"] = _ice
+        # add-impl-ocr-parallel-lane：join 双档模式合并（白名单枚举才合并，
+        # 缺失不填充、非法值由前置校验拒绝；与 effort 同款「界面可填、保存
+        # 不静默丢弃」对称）
+        _icm = patch["verify"].get("impl_code_review_mode")
+        if _icm in ("gate", "advisory"):
+            merged["verify"]["impl_code_review_mode"] = _icm
+        # ocr 审查 finding#1：车道级硬超时合并（正整数才合并，同款对称）
+        _icl = patch["verify"].get("impl_code_review_lane_timeout_sec")
+        if isinstance(_icl, int) and not isinstance(_icl, bool) and _icl > 0:
+            merged["verify"]["impl_code_review_lane_timeout_sec"] = _icl
         # fix-agent-lane-efficiency D3：上下文经济性告警阈值合并（非负整数才合并，
         # 缺省 200000 由缺省段兜底；0 = 关闭告警）
         _cct = patch["verify"].get("context_cost_per_turn_threshold")
@@ -1312,6 +1376,27 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
                 f"verify.impl_code_review_effort must be one of ['low', 'medium', 'high']: "
                 f"{v_patch['impl_code_review_effort']!r}"
             )
+        # add-impl-ocr-parallel-lane：join 双档模式前置校验（白名单枚举拒绝，
+        # 「非 None 且非法 → fail」与 effort 同款；None 视为「未提交」不校验）
+        if (
+            "impl_code_review_mode" in v_patch
+            and v_patch["impl_code_review_mode"] is not None
+            and v_patch["impl_code_review_mode"] not in ("gate", "advisory")
+        ):
+            return fail(
+                f"verify.impl_code_review_mode must be one of ['gate', 'advisory']: "
+                f"{v_patch['impl_code_review_mode']!r}"
+            )
+        # ocr 审查 finding#1：车道级硬超时前置校验（非正整数拒绝，同 timeout_sec）
+        if (
+            "impl_code_review_lane_timeout_sec" in v_patch
+            and v_patch["impl_code_review_lane_timeout_sec"] is not None
+        ):
+            _icl = v_patch["impl_code_review_lane_timeout_sec"]
+            if isinstance(_icl, bool) or not isinstance(_icl, int) or _icl <= 0:
+                return fail(
+                    f"verify.impl_code_review_lane_timeout_sec must be a positive integer: {_icl!r}"
+                )
         # fix-agent-lane-efficiency D3：上下文经济性告警阈值校验（非负整数，0=关闭告警）
         if "context_cost_per_turn_threshold" in v_patch and v_patch["context_cost_per_turn_threshold"] is not None:
             _cct = v_patch["context_cost_per_turn_threshold"]
@@ -1851,6 +1936,11 @@ _SYNC_PAGE_KEYS = {
             "impl_code_review_timeout_sec",
             "impl_code_review_concurrency",
             "impl_code_review_effort",
+            # add-impl-ocr-parallel-lane：join 双档模式随质量页签同步（缺此步时
+            # 「同步用户级设置」按钮会静默漏同步该键——功能对用户不可见）
+            "impl_code_review_mode",
+            # ocr 审查 finding#1：车道级硬超时随质量页签同步（同款理由）
+            "impl_code_review_lane_timeout_sec",
         ],
         # add-code-review-auto-fix：admin.code_review_fix 段随质量页签同步
         "admin": ["code_review_fix"],

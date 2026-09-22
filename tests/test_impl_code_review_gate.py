@@ -491,12 +491,13 @@ class TestCodeReviewArtifactGate:
 
     def test_partial_still_has_unchecked_no_gate(self, tmp_path):
         """末轮零误拦：_check_impl_result_artifact 对 status=partial 且仍有未勾任务
-        （未覆盖 unattainable）的收口 MUST NOT 调审查硬门——缺失报告不放行不成问题。
+        （未覆盖 unattainable）的收口按既有任务完成度判据处置，MUST NOT 因
+        「审查报告缺失」判失败。
 
-        6.2 的接入条件是 ``status == "success" or not (unchecked_ids - unattainable_ids)``：
-        partial + 有未勾任务 → 不满足条件，审查门不被调用。本测试钉住该边界：
-        无 code-review.json 时 partial 收口仍按既有任务完成度判据处置（不因
-        「审查报告缺失」而失败）。
+        add-impl-ocr-parallel-lane 任务 2.2 摘除内联审查门调用点后，审查校验
+        已整体退出实现者硬门（无论 success/partial）；本用例保留为 partial
+        收口不回潮校验的回归钉。无 code-review.json 时 partial 收口仅看任务
+        完成度一致性与审查产物无关。
         """
         from core.agent_runner.result_gate import _check_impl_result_artifact
         from test_agent_runner import make_runner
@@ -530,53 +531,73 @@ class TestCodeReviewArtifactGate:
         assert err is None or "code-review.json" not in err
 
 
-# ── fix-impl-code-review-writepath 任务 4.2：报告路径锚定 worktree ──────
+# ── add-impl-ocr-parallel-lane 任务 2.3：内联门摘除后的过门语义 ──────────
 
 
-class TestImplCodeReviewSectionWritepath:
-    """Scenario: 提示词强调 worktree 相对路径 / 开关关闭零注入 / 收紧后报告路径仍可达。
+class TestImplResultGateNoInlineCodeReview:
+    """实现者产物硬门不再校验 code_review 段（任务 2.2 摘除调用点）。
 
-    收尾审查段对实现者的唯一落点指示 MUST 是 worktree 内相对路径；开关关闭时该段
-    返回空串（逐字节不变）；1.3 收敛 raw_copy 表述后报告落盘字样仍可识别，且 MUST
-    NOT 残留主树 verify-progress 的绝对路径字样。
+    收尾 ocr 由框架侧异步车道承载、裁决点移至 testing 出口 join 后：实现者
+    结果文件**不带** code_review/dispositions 段、worktree 内也无
+    code-review.json 时，success 收口仍须正常过门（MUST NOT 因「审查报告
+    缺失/段缺失」判失败）；partial 收口同理（既有末轮零误拦语义保持）。
     """
 
-    def _prompt(self, proot, enabled: bool) -> str:
+    def _run_gate(self, proot, data):
+        from core.agent_runner.result_gate import _check_impl_result_artifact
         from test_agent_runner import make_runner
 
-        d = proot / "spec" / "changes" / "demo"
-        d.mkdir(parents=True, exist_ok=True)
-        (d / "tasks.md").write_text("# Tasks\n\n- [ ] 1.1 do it\n", encoding="utf-8")
         runner = make_runner(proot)
-        runner.config = {"verify": {"impl_code_review": enabled}}
-        return runner._prompt_builder._build_prompt("demo", "implementer")
+        runner.config = {"verify": {"impl_code_review": True}}
+        runner._IMPL_RESULT_STATUSES = ("success", "error", "partial")
+        spec_dir = proot / "spec" / "changes" / "demo-spec"
+        spec_dir.mkdir(parents=True, exist_ok=True)
+        (spec_dir / "tasks.md").write_text(
+            "# Tasks\n\n- [x] 1.1 done\n", encoding="utf-8"
+        )
+        (proot / ".fenix-run-result.json").write_text(
+            json.dumps(data), encoding="utf-8"
+        )
+        return _check_impl_result_artifact(
+            runner, "demo-spec", run_started_at=None, wt_path=proot,
+        )
 
-    def test_anchors_worktree_relative_path(self, tmp_path):
-        """开启时：段内含「相对当前工作目录（worktree）」与「MUST NOT 用主树绝对路径」字样。"""
-        prompt = self._prompt(tmp_path / "proj", True)
-        assert "相对当前工作目录（worktree）" in prompt, "缺少 worktree 相对路径表述"
-        assert "MUST NOT 用主树绝对路径" in prompt, "缺少禁止主树绝对路径表述"
-
-    def test_report_path_still_relative_after_raw_copy_convergence(self, tmp_path):
-        """1.3 收敛 raw_copy 表述后：报告落盘字样仍为相对路径，无主树绝对路径残留。"""
-        prompt = self._prompt(tmp_path / "proj", True)
-        # 报告落盘字样（相对、worktree 内、供门读取）仍可识别
-        assert ".fenix/verify-progress/demo/code-review.json" in prompt
-        # raw_copy 同轮收敛为 worktree 相对表述 + 明确「仅框架读取、无需你写主树」
-        assert ".fenix/verify-progress/demo/code-review-raw.json" in prompt
-        assert "无需你主动写主树" in prompt
-        # MUST NOT 残留主树 verify-progress 绝对路径字样
-        assert "/root/fenixd/.fenix/verify-progress" not in prompt
-
-    def test_disabled_zero_injection_byte_identical(self, tmp_path):
-        """开关 false：该段返回空串，提示词逐字节不变（零注入）。"""
-        from test_agent_runner import make_runner
-
+    def test_success_without_code_review_section_passes(self, tmp_path):
+        """开关开启 + 无 code_review 段 + 无 code-review.json → success 正常过门。"""
         proot = tmp_path / "proj"
-        runner = make_runner(proot)
-        runner.config = {"verify": {"impl_code_review": False}}
-        section = runner._prompt_builder._impl_code_review_section("demo")
-        assert section == ""
+        proot.mkdir()
+        err = self._run_gate(
+            proot,
+            {"status": "success", "completed_tasks": ["1.1"], "summary": "done"},
+        )
+        assert err is None
+        # 双重保险：worktree 内也不存在审查产物，门确实「无物可校验」仍放行
+        assert not (proot / ".fenix" / "verify-progress" / "demo-spec" / "code-review.json").exists()
+
+    def test_partial_without_code_review_section_passes(self, tmp_path):
+        """partial（无未勾任务义务）同样不受审查段缺失影响。"""
+        proot = tmp_path / "proj"
+        proot.mkdir()
+        err = self._run_gate(
+            proot,
+            {"status": "partial", "completed_tasks": ["1.1"], "unfinished": []},
+        )
+        assert err is None or "code-review.json" not in err
+
+    def test_stale_code_review_section_still_tolerated(self, tmp_path):
+        """结果文件残留 code_review 段（旧格式）→ 门不做校验、不因白名单外
+        disposition 值判失败（摘除调用点后该段对实现者门为纯透传）。"""
+        proot = tmp_path / "proj"
+        proot.mkdir()
+        err = self._run_gate(
+            proot,
+            {
+                "status": "success",
+                "completed_tasks": ["1.1"],
+                "code_review": {"dispositions": [{"disposition": "bogus"}]},
+            },
+        )
+        assert err is None
 
 
 # ── fix-impl-code-review-gate-readback：主树回退 + 新鲜度守卫 ─────────────

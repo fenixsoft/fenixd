@@ -26,6 +26,16 @@ class _Logger(Protocol):
     def error(self, *a: Any, **kw: Any) -> None: ...
 
 
+def _ocr_join_gate_disabled(spec_name: str, origin: str) -> str:
+    """ocr join 门禁缺省实现：恒放行（"pass"）。
+
+    add-impl-ocr-parallel-lane：供 ocr_join_gate 字段作 dataclass 缺省值——
+    手动构造 context 的纯管道单测不提供该成员时，门禁视为未启用，验证管道
+    行为与车道引入前逐字节一致（缺省关闭零行为变化）。
+    """
+    return "pass"
+
+
 @dataclass(frozen=False)
 class PipelineContext:
     """VerificationPipeline 显式依赖注入容器。
@@ -48,6 +58,10 @@ class PipelineContext:
         exempt_infra_run_budget  委托 pm._exempt_infra_run_budget(spec_name,
                                 reason, refund_key="")
         env_infra_markers     只读 tuple，来自 pm._ENV_INFRA_MARKERS
+        ocr_join_gate         委托 pm._dispatcher._ocr_join_gate(spec_name,
+                              origin) → "pass"/"defer"/"reject"
+                              （add-impl-ocr-parallel-lane：Dispatcher 未组合
+                              的桩 pm 缺省恒放行，见 _ocr_join_gate_disabled）
     """
 
     # ── D1 核心成员 ─────────────────────────────────────────────────────────
@@ -65,6 +79,11 @@ class PipelineContext:
     on_spec_bug_found: Callable[..., None] = field(repr=False)
     read_implementer_result: Callable[[str], Optional[dict]] = field(repr=False)
     exempt_infra_run_budget: Callable[..., bool] = field(repr=False)
+    # add-impl-ocr-parallel-lane：testing 出口 ocr join 门禁（有缺省，桩 context
+    # 不提供即视为车道未启用）。
+    ocr_join_gate: Callable[[str, str], str] = field(
+        repr=False, default=_ocr_join_gate_disabled
+    )
     env_infra_markers: tuple[str, ...] = field(default=(), repr=True)
 
     # ── 便捷构造（从 PMEngine 实例一键创建）─────────────────────────────────
@@ -142,6 +161,15 @@ class PipelineContext:
         ) -> bool:
             return pm._exempt_infra_run_budget(spec_name, reason, refund_key=refund_key)
 
+        def _ocr_join_gate(spec_name: str, origin: str) -> str:
+            # add-impl-ocr-parallel-lane：属性访问推迟到调用时（与上方委托
+            # 包装同惯例）。桩 pm 未组合 Dispatcher（无 _dispatcher 属性）时
+            # 恒放行——车道缺省关闭，纯管道单测零行为变化。
+            dispatcher = getattr(pm, "_dispatcher", None)
+            if dispatcher is None:
+                return "pass"
+            return dispatcher._ocr_join_gate(spec_name, origin)
+
         return cls(
             logger=pm.logger,
             project_root=pm.project_root,
@@ -154,5 +182,6 @@ class PipelineContext:
             on_spec_bug_found=_on_spec_bug_found,
             read_implementer_result=_read_implementer_result,
             exempt_infra_run_budget=_exempt_infra_run_budget,
+            ocr_join_gate=_ocr_join_gate,
             env_infra_markers=getattr(pm, "_ENV_INFRA_MARKERS", ()),
         )

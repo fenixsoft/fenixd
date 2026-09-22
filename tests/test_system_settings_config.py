@@ -233,9 +233,14 @@ class TestSystemAdminExistingSectionsNoRegression(unittest.TestCase):
                          {"static_scope": "main", "deps_mode": "hardlink",
                           "serving_reclaim": {"enabled": True},
                           # add-impl-code-review-tuning：三运行参数恒回显缺省
+                          # （add-impl-ocr-parallel-lane：并发缺省 2→4）
                           "impl_code_review_timeout_sec": 600,
-                          "impl_code_review_concurrency": 2,
+                          "impl_code_review_concurrency": 4,
                           "impl_code_review_effort": "low",
+                          # add-impl-ocr-parallel-lane：join 双档模式恒回显缺省
+                          "impl_code_review_mode": "gate",
+                          # ocr 审查 finding#1：车道级硬超时恒回显缺省
+                          "impl_code_review_lane_timeout_sec": 2400,
                           # fix-agent-lane-efficiency D3：上下文经济性告警阈值
                           "context_cost_per_turn_threshold": 200000})
 
@@ -252,9 +257,12 @@ class TestSystemAdminExistingSectionsNoRegression(unittest.TestCase):
                          {"static_scope": "worktree", "deps_mode": "hardlink",
                           "serving_reclaim": {"enabled": True},
                           # add-impl-code-review-tuning：三运行参数恒回显缺省
+                          # （add-impl-ocr-parallel-lane：并发缺省 2→4、补 mode 键）
                           "impl_code_review_timeout_sec": 600,
-                          "impl_code_review_concurrency": 2,
+                          "impl_code_review_concurrency": 4,
                           "impl_code_review_effort": "low",
+                          "impl_code_review_mode": "gate",
+                          "impl_code_review_lane_timeout_sec": 2400,
                           "context_cost_per_turn_threshold": 200000})
         self.assertEqual(echoed["self_review"]["enabled"], True)
         self.assertEqual(echoed["admin"]["shutdown_drain_seconds"], 300)

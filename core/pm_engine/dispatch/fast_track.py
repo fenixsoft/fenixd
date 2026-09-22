@@ -509,6 +509,21 @@ class FFastTrackMixin:
         wm = self._pm.agent_runner.worktree_manager
         branch = result.branch
         if branch:
+            # add-impl-ocr-parallel-lane（任务 4.1）：ocr join 指纹 base 分量
+            # MUST 在 merge 前捕获（merge 后 merge-base(main, branch) 恒为
+            # branch head），随锚点同批持久化——与 queue 主路径同语义。
+            _ocr_base = None
+            if self._impl_ocr_enabled():
+                _ocr_base = self._git_merge_base_main(branch)
+                try:
+                    self._pm.state_machine.update_spec(
+                        spec_name, {"_ocr_base_commit": _ocr_base}
+                    )
+                except Exception as e:  # noqa: BLE001 — 非阻塞（缺失以 head 兜底）
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"ocr base 捕获落盘失败 '{spec_name}'（非阻塞）: {e}",
+                    )
             merge_info = wm.merge_back_from_branch(branch)
             merge_ok, merge_error = merge_info
             if not merge_ok:
@@ -662,6 +677,20 @@ class FFastTrackMixin:
                 f"consume_legacy 清理失败 '{spec_name}'（非阻塞）: "
                 f"{type(e).__name__}: {e}",
             )
+        # add-impl-ocr-parallel-lane（任务 4.1）：fast-track merge-back 成功时点
+        # 同点启动 ocr 车道（与 implementer 主路径 merge 成功启动点同语义）；
+        # join 于 _fast_track_advance_to_verified 的 testing 出口。异常不阻塞
+        # merge 收尾（join 门禁幂等补启兜底）。
+        try:
+            fp = self._ocr_current_fingerprint(spec_name)
+            if fp is not None:
+                self._start_impl_ocr_lane(spec_name, fp)
+        except Exception as e:  # noqa: BLE001
+            self._pm.logger.warning(
+                "pm_engine",
+                f"fast-track ocr 车道启动失败 '{spec_name}'（非阻塞）: "
+                f"{type(e).__name__}: {e}",
+            )
         return True
 
     # ── repair 通道（add-merge-back-repair-lane D1/D2/D4/D5/D6）──────────────
@@ -786,6 +815,13 @@ class FFastTrackMixin:
             trigger_run_id=getattr(result, "run_id", None) or None,
             agent_type="fast-track", channel="auto",
         )
+        # add-impl-ocr-parallel-lane（任务 4.1/4.2）：fast-track 出口 join 门禁
+        # ——插在 testing 转移之后、verified 之前：defer 时 spec 停留 testing
+        # （车道完成回调经 _resume_verified_after_ocr 重入本方法，同状态转移
+        # 幂等保证安全）；reject 时打回已在门禁内完成。
+        ocr_decision = self._ocr_join_gate(spec_name, "fast-track")
+        if ocr_decision != "pass":
+            return
         self._pm.state_machine.transition(
             spec_name, "verified",
             trigger_run_id=getattr(result, "run_id", None) or None,
