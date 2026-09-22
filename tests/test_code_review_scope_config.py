@@ -95,7 +95,7 @@ class _MonitorHarness:
         ]
         self.mocks = [p.start() for p in self._patches]
 
-    def cleanup(self):
+    def dispose(self):
         for p in self._patches:
             p.stop()
         shutil.rmtree(str(self.repo), ignore_errors=True)
@@ -204,7 +204,7 @@ class TestCheckpointScopeDispatch(unittest.TestCase):
                 {"review_kind": "scheduled", "window_start": h.window_start, "scope": "window"},
             )
         finally:
-            h.cleanup()
+            h.dispose()
 
     def test_full_scope_dispatch_args(self):
         # scope=full：全仓收集（window_start=None），run_code_review scope="full"、
@@ -221,7 +221,7 @@ class TestCheckpointScopeDispatch(unittest.TestCase):
                 {"review_kind": "scheduled", "window_start": None, "scope": "full"},
             )
         finally:
-            h.cleanup()
+            h.dispose()
 
     def test_full_scope_empty_manifest_no_files_path(self):
         # task 2.2：full 档 manifest 空（异常态）→ 既有 no_files 路径记录并跳过，
@@ -237,7 +237,7 @@ class TestCheckpointScopeDispatch(unittest.TestCase):
             joined = "\n".join(h.logger.records)
             self.assertIn("scope=full", joined)
         finally:
-            h.cleanup()
+            h.dispose()
 
 
 # ── 3. 守卫两档行为一致 ─────────────────────────────────────────────
@@ -255,7 +255,7 @@ class TestCheckpointGuardsBothScopes(unittest.TestCase):
                 # 零动作：不写任何 code-review 产物
                 h.mocks[3].assert_not_called()
             finally:
-                h.cleanup()
+                h.dispose()
 
     def test_before_run_at_both_scopes(self):
         # run_at 未到（23:59）不触发——两档守卫同源
@@ -272,7 +272,7 @@ class TestCheckpointGuardsBothScopes(unittest.TestCase):
                 self.assertEqual(result, {"triggered": False, "reason": "before_run_at"}, f"cr={cr}")
                 self.assertEqual(len(h.runner.calls), 0)
             finally:
-                h.cleanup()
+                h.dispose()
 
     def test_already_ran_today_both_scopes(self):
         # 同自然日防重：预写今日状态 → 跳过（不派发、不覆盖状态）
@@ -286,7 +286,7 @@ class TestCheckpointGuardsBothScopes(unittest.TestCase):
                 self.assertEqual(len(h.runner.calls), 0)
                 h.mocks[3].assert_not_called()
             finally:
-                h.cleanup()
+                h.dispose()
 
 
 if __name__ == "__main__":
