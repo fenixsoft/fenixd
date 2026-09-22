@@ -95,6 +95,13 @@ class FakeProc:
 class FakeRunner:
     def __init__(self, running: dict | None = None):
         self._running_agents = dict(running or {})
+        self.checkpoint_broadcasts = []
+
+    def broadcast_restart_checkpoint(self, reason="planned restart"):
+        """对齐 runner 真实契约：向在飞 run 广播 checkpoint 旗标（写即返回）。"""
+        dispatched = self.running_run_ids()
+        self.checkpoint_broadcasts.append((reason, list(dispatched)))
+        return dispatched
 
     def running_run_ids(self):
         return [rid for rid, p in self._running_agents.items() if p.poll() is None]

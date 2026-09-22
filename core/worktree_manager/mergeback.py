@@ -80,19 +80,25 @@ class G4MergebackMixin:
 
             self.last_stash_pop_conflicts = []
             self.last_stash_entry_fate = {"kept": True, "sha": ""}
-            # WIP 重叠闸门（evo-merge-back-wip-overlap-gate D1/D2）：预演闸放行后、
-            # stash 之前，把「主树脏 tracked ∩ 分支改动」（已排除 spec/changes，见
-            # _detect_wip_overlap）从「只预警」升级为执行级前置处置：
+            # WIP 重叠闸门（evo-merge-back-wip-overlap-gate D1/D2；缺省处置已由
+            # add-pipeline-throughput-governance D2/merge-back-precheck 从 auto
+            # 收纳改为升级拦截，策略解析与变更依据见 _wip_gate_policy）：预演闸
+            # 放行后、stash 之前，把「主树脏 tracked ∩ 分支改动」（已排除
+            # spec/changes，见 _detect_wip_overlap）升级为执行级前置处置：
             #   * 无重叠 / 检测命令失败 → 放行现行 autostash→merge→pop 路径
             #     （逐字节不变；闸门自身异常 MUST 退化为不阻塞、不新增 stash）；
-            #   * 有重叠 + 默认自动收纳策略 → 放行：重叠改动随 ensure_clean_tree
-            #     的 stash 卷走（闸门专用前缀 WIP_GATE_STASH_PREFIX，与
-            #     AUTOSTASH_MSG_PREFIX 隔离），merge 成功后恢复；pop 冲突时保留
-            #     条目 + 记录去向（last_stash_entry_fate）+ 逐文件找回命令；
-            #   * 有重叠 + 显式配置阻塞策略（worktree.mergeback_wip_overlap_policy
-            #     =block）→ 中止返回携带 wip_gate_blocked=True 的可区分失败
-            #     （不 stash、不 merge、不 pop，主树零污染），dispatch 层据此
-            #     旁路熔断记账、只发告警等待人工处置。
+            #   * 有重叠 + 缺省（escalate）或显式 block 策略 → 拦截：不发起
+            #     merge（不 stash、不 merge、不 pop，主树零污染），返回携带
+            #     wip_gate_blocked=True 的可区分失败，dispatch 层据此旁路熔断
+            #     记账、直发人工升级告警（含交集清单与两侧来源），spec 保持
+            #     可重试状态（不冻结、不销毁分支与产物）；
+            #   * 有重叠 + 显式 worktree.mergeback_wip_overlap_policy=auto →
+            #     保留收纳语义（读侧兼容）：重叠改动随 ensure_clean_tree 的
+            #     stash 卷走（闸门专用前缀 WIP_GATE_STASH_PREFIX），merge 成功
+            #     后恢复；pop 冲突时保留条目 + 记录去向（last_stash_entry_fate）
+            #     + 逐文件找回命令；
+            #   * worktree.merge_precheck_bypass=true 逃生门（2.3）→ 跳过预检
+            #     直接 merge（紧急推送用，冲突按既有失败路径处理）。
             gate_blocked, wip_overlap = self._wip_overlap_gate(branch)
             if gate_blocked is not None:
                 return gate_blocked
@@ -122,23 +128,48 @@ class G4MergebackMixin:
                         self.last_stash_pop_conflicts = list(conflict_files)
 
     def _wip_gate_policy(self) -> str:
-        """merge-back 前 WIP 重叠闸门策略（evo-merge-back-wip-overlap-gate D1）。
+        """merge-back 前 WIP 重叠闸门策略（evo-merge-back-wip-overlap-gate D1，
+        add-pipeline-throughput-governance D2 策略变更）。
 
-        默认自动收纳（auto）；仅显式配置 ``worktree.mergeback_wip_overlap_policy=
-        block``（或等价布尔开关）时阻塞（design：重叠 ≠ 冲突——不同 hunk 可自动
-        合并，以阻塞为默认把可自动完成的 merge-back 转成失败，属净回归）。
+        **缺省升级拦截（escalate）**——本方法的有意策略变更
+        （add-pipeline-throughput-governance D2/merge-back-precheck）：交集
+        非空的缺省处置从 auto stash 收纳（静默放行）改为升级人工拦截。变更
+        依据：全历史 done→pushed 均值 41m（P50 仅 14s）几乎全由「尝试
+        merge→冲突→autostash→回滚→重试」失败循环贡献（138 次 git 冲突告警），
+        auto 收纳后的 pop 冲突是该循环的上游放大器——把可预判的重叠前置拦截，
+        换取无效 merge 轮次归零。已知 trade-off：不同 hunk 本可自动合并的重叠
+        也会被拦（设计 Risks「预检误拦」条目），由逃生门
+        ``worktree.merge_precheck_bypass`` 与「告警附交集清单供人工秒判」兜底。
 
-        配置经构造参数注入（缺省 None → auto）；读取/解析异常一律回退 auto——
-        闸门自身故障 MUST NOT 把默认收纳语义改成阻塞。
+        读侧兼容：显式 ``worktree.mergeback_wip_overlap_policy=auto`` 的项目
+        维持旧收纳语义不变；显式 ``block`` 并入升级出口（escalate 与 block 同
+        为「不发起 merge、人工处置」，返回同构 ``wip_gate_blocked=True``，
+        消费端 dispatch 层旁路熔断记账、直发人工告警的既有语义复用）。
+        读取/解析异常回退 escalate——缺省方向宁紧勿松（本能力的目的正是把
+        静默放行改为显式升级，故障回退 auto 会把闸门失效藏回静默路径）。
         """
-        policy = getattr(self, "_mergeback_wip_overlap_policy", None) or "auto"
+        policy = getattr(self, "_mergeback_wip_overlap_policy", None)
         if isinstance(policy, bool):
-            return "block" if policy else "auto"
-        return (
-            "block"
-            if str(policy).strip().lower() in ("block", "1", "true", "yes", "on")
-            else "auto"
-        )
+            return "escalate" if policy else "auto"
+        text = str(policy).strip().lower() if policy is not None else ""
+        if text in ("auto", "0", "false", "no", "off"):
+            return "auto"
+        # 缺省（None）/ block / 未知值 → 升级拦截（block 语义并入升级出口）
+        return "escalate"
+
+    def _merge_precheck_bypass_enabled(self) -> bool:
+        """merge_precheck_bypass 逃生门（add-pipeline-throughput-governance 2.3）。
+
+        true 时跳过 WIP 重叠预检直接 merge（紧急推送用）：预检、产物对齐与
+        重叠收纳均不执行，冲突时按既有 merge 失败路径处理（与未引入预检能力
+        前一致）。配置经构造参数注入（缺省 False，即 ``worktree.
+        merge_precheck_bypass``）；读取异常一律 False——逃生门故障 fail-open
+        回预检，MUST NOT 把配置事故放大为静默跳过治理。
+        """
+        bypass = getattr(self, "_merge_precheck_bypass", False)
+        if isinstance(bypass, bool):
+            return bypass
+        return str(bypass).strip().lower() in ("1", "true", "yes", "on")
 
     def _check_spec_dir_inflight(self, branch: str):
         """spec/changes/<spec>/ 在飞未提交编辑检测（evo-merge-back-spec-dir-inflight-guard D1）。
@@ -226,6 +257,16 @@ class G4MergebackMixin:
         # 常见形态永不触发起草，配置缺口被静默掩盖（本 SPEC 要消灭的「默认值
         # 掩盖配置缺口」问题的复刻）。信号不改闸门判定，只呼叫 Administrator 起草。
         self._maybe_signal_build_artifact_paths_missing(branch)
+        # merge_precheck_bypass 逃生门（add-pipeline-throughput-governance 2.3）：
+        # 显式豁免预检（紧急推送用）——放行现行 autostash→merge→pop 路径，
+        # 与未引入预检能力前一致；冲突时按既有失败路径处理。
+        if self._merge_precheck_bypass_enabled():
+            self.logger.warning(
+                "worktree_manager",
+                "merge_precheck_bypass=true：跳过 WIP 重叠预检直接 merge"
+                "（冲突时按既有失败路径处理）",
+            )
+            return None, []
         overlap = self._detect_wip_overlap(branch)
         if not overlap:
             return None, []
@@ -281,21 +322,27 @@ class G4MergebackMixin:
         if not semantic_overlap:
             return None, []
         overlap = semantic_overlap  # 语义重叠（产物已干净或回落为语义）
-        if self._wip_gate_policy() == "block":
+        # 升级拦截出口（add-pipeline-throughput-governance D2/merge-back-precheck）：
+        # 缺省（escalate）与显式 block（并入升级出口）一致——不发起 merge、
+        # 主树零污染，返回 wip_gate_blocked=True 由 dispatch 层直发人工升级
+        # 告警（含交集清单与两侧来源：主树 WIP 未提交 × 分支已提交改动）、
+        # spec 保持可重试状态（不冻结、不销毁分支与产物）。
+        if self._wip_gate_policy() == "escalate":
             error = (
-                f"Merge-back blocked by WIP overlap gate (policy=block): "
+                f"Merge-back blocked by WIP overlap precheck (policy=escalate): "
                 f"{len(overlap)} main-tree tracked file(s) with uncommitted changes "
                 f"overlap branch '{branch}' changes: {overlap}. "
                 f"处置：提交（git add/commit）或 stash（git stash push）主树这些"
-                f"改动后重新放行该 spec——git stash list 查条目去向、"
-                f"git show <sha>:<file> 按文件找回"
+                f"改动后重新放行该 spec（spec 保持可重试）——git stash list 查条目"
+                f"去向、git show <sha>:<file> 按文件找回；紧急情况可配置 "
+                f"worktree.merge_precheck_bypass=true 豁免预检"
             )
             self.logger.error("worktree_manager", error)
             return (
                 MergeConflictInfo(False, error, wip_overlap=overlap, wip_gate_blocked=True),
                 overlap,
             )
-        # 默认自动收纳：重叠改动随 ensure_clean_tree 的 stash 卷走（闸门专用前缀，
+        # 显式 auto（读侧兼容保留）：重叠改动随 ensure_clean_tree 的 stash 卷走（闸门专用前缀，
         # 与 reclaim_stale_autostash 只认的 AUTOSTASH_MSG_PREFIX 隔离），merge
         # 成功后恢复；pop 冲突保留条目 + 去向可见。
         self.logger.warning(

@@ -10,6 +10,7 @@ import re
 import subprocess
 import time
 from pathlib import Path
+from pathlib import Path
 from typing import Dict, Optional, Tuple
 
 from core.state_machine import (
@@ -63,6 +64,48 @@ _INFRA_FINGERPRINTS = (
 )
 # CLI 进程级崩溃：error 含 "Exit code: <N>" 且 N 非 0/1
 _CLI_EXIT_CODE_RE = re.compile(r"Exit code:\s*(-?\d+)")
+
+
+# spec-review 打回理由结构化分类（add-pipeline-throughput-governance 5.1/5.2）
+# 枚举固化：format=草稿结构/契约段/键名等可机械修复问题；substantive=方案、
+# 场景覆盖、正确性等实质问题。缺字段/非法值按 unknown 兼容（存量结果零迁移、
+# 不因缺该字段被判非法）；通过（approved/repaired）结果不要求该字段。
+REJECTION_CLASS_WHITELIST = ("format", "substantive")
+
+
+def normalize_rejection_class(raw) -> str:
+    """rejection_class 归一化：合法枚举原样返回；缺失/非法值按 ``unknown`` 兼容。
+
+    读侧 fail-open：历史打回结果无该字段时解析不失败、不告警升级，统计归入
+    unknown 桶（add-pipeline-throughput-governance 5.2 存量零迁移）。
+    """
+    if not isinstance(raw, str):
+        return "unknown"
+    value = raw.strip().lower()
+    return value if value in REJECTION_CLASS_WHITELIST else "unknown"
+
+
+def rejection_class_stats(project_root) -> dict:
+    """按 ``rejection_class`` 分桶统计打回结果（读侧数据层查询函数）。
+
+    扫描 ``.fenix/spec-review/*/.fenix-run-result.json`` 中 ``status=rejected``
+    的结果文件，按归一化分类分桶（format/substantive/unknown）。fail-open：
+    无数据/目录缺失返回空 dict、单文件损坏跳过，MUST NOT 抛异常。
+    ``format`` 桶占比用于评估「机械可预防打回」规模。
+    """
+    buckets = {"format": 0, "substantive": 0, "unknown": 0}
+    base = Path(project_root) / ".fenix" / "spec-review"
+    if not base.is_dir():
+        return {}
+    for path in base.glob("*/.fenix-run-result.json"):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            continue
+        if not isinstance(data, dict) or data.get("status") != "rejected":
+            continue
+        buckets[normalize_rejection_class(data.get("rejection_class"))] += 1
+    return buckets
 
 
 class SpecReviewManager:
@@ -445,6 +488,11 @@ class SpecReviewManager:
             except (TypeError, ValueError):
                 rejections = 0
             rejections += 1
+            # rejection_class 结构化打回分类（add-pipeline-throughput-governance
+            # 5.2）：缺字段/非法值按 unknown 兼容，读侧解析不失败、不告警升级；
+            # 分类随 STATE 持久化供统计分桶（统计查询函数 rejection_class_stats
+            # 直接扫结果文件，此处记录为 spec 级可追溯冗余）。
+            rejection_class = normalize_rejection_class(data.get("rejection_class"))
 
             if rejections < MAX_REJECT_REDO:
                 # 未达上限：不冻结，回 reviewing 触发复评
@@ -454,6 +502,7 @@ class SpecReviewManager:
                         "reviewer_run": None,
                         "_review_attempts": 0,
                         "_review_rejections": rejections,
+                        "_review_rejection_class": rejection_class,
                         "error": (f"spec-review-rejected: {blocked_summary}"),
                     },
                 )
@@ -508,6 +557,8 @@ class SpecReviewManager:
                     "reviewer_run": None,
                     "_review_attempts": 0,
                     "_review_rejections": 0,
+                    # 最后一次打回的分类留痕（freeze 时保留，unknown 兼容缺字段）
+                    "_review_rejection_class": rejection_class,
                 },
             )
             self.logger.info(

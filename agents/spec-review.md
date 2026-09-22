@@ -65,6 +65,7 @@ SPEC `{spec_name}` 已完成草案（drafted），即将进入实现阶段。框
 结果文件为如下结构的 JSON 对象（字段示意，**不要**把它当正文输出）：
 
 - `status`：`"approved" | "repaired" | "rejected"`
+- `rejection_class`：打回理由分类（**仅 `status=rejected` 时必填**，枚举 `"format" | "substantive"`，判定标准见下节；`approved`/`repaired` 结果可省略或为 null）
 - `summary`：一句话结论
 - `findings`：数组，每项含 `severity`（`blocking | repairable | note`）、`aspect`（`goal-fit | hole | regression`）、`detail`、`evidence`
 - `repairs`：数组，每项含 `path`（须落在 `spec/changes/{spec_name}/` 内）、`summary`
@@ -77,6 +78,22 @@ SPEC `{spec_name}` 已完成草案（drafted），即将进入实现阶段。框
 - **approved**：方案可行且未作改动（`repairs` 必须为空）。
 - **repaired**：方案可行但已就地修补可修补漏洞（`repairs` 必须非空）。**SPEC 文档内部的不一致、数值不可达、清单遗漏、两条要求互斥、缺约定等，一律属此列**——即便问题当前让 SPEC 自相矛盾，只要修法是在文档内改数字、补条目、删条目、加约束，就 MUST 修补后判 repaired，MUST NOT 判 rejected。
 - **rejected**：**仅当**方案的前提或方向本身不成立——SPEC 对代码库/世界的断言被你的实测证伪、或方案的目标/因果归因/时序在机制上不可实现（即使重写文档也无法表达一个成立的方案，须重新定义需求）。此时 `findings` 必须至少含一条 `severity: blocking`，且 `repairs` 必须为空（`rejected` 伴随文档改动属自相矛盾，会被写边界校验拒绝）。
+
+### rejection_class 判定标准（`status=rejected` 时 MUST 写）
+
+打回（`rejected`）结果 MUST 携带 `rejection_class` 字段，用于统计与降噪（格式类打回可机械预防）。两类边界逐条列出：
+
+- **`format`（格式类打回）**——问题属「SPEC 对自己的表述」且可机械修复，仅当该表述问题已严重到无法确认方案成立时才构成打回：
+  - 草稿结构缺失/残缺（如缺 design.md、tasks.md 无任务条目、specs/ 目录结构与 proposal 声明不符）；
+  - 契约段缺失（spec.md 无 ADDED/MODIFIED Requirements、Scenario 缺 WHEN/THEN）；
+  - 键名/字段/引用错误（引用不存在的文件路径拼写、tasks.md 交付清单键错位、交付路径格式不合仓库布局约定）；
+  - 数值/清单类笔误（阈值单位错写、清单编号断裂）。
+- **`substantive`（实质类打回）**——问题属「方案本身」：
+  - 方案方向/因果归因不成立（proposal 的 Why 被实测证伪、design 的机制时序矛盾）；
+  - 场景覆盖缺口（核心功能点无对应 Requirement/Scenario）；
+  - 正确性问题（方案与既有机制冲突、依赖不存在的机制、预算/阈值算术上不可达且非文档笔误所致）。
+
+判定测试：若把打回理由读给作者、作者**无需重新设计方案、只改文本/结构即可消解** → `format`；**需要重想方案、补做设计、或承认目标本身不成立** → `substantive`。拿不准时倾向 `substantive`（宁高勿低，格式桶用于机械预防投资决策，虚高会误导）。
 
 ### severity 判定标准（MUST 遵循，防止误拦可修补方案）
 

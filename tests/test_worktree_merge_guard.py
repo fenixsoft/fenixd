@@ -720,7 +720,7 @@ class TestSupersededStashDrop:
         (root / "extra.py").write_text("BASE-EXTRA\n", encoding="utf-8")
         # extra.py 与 BASE 内容相同 → 主树不脏；改用 shared.py 制造脏（与 BASE 不同）
         (root / "shared.py").write_text("WIP\n", encoding="utf-8")
-        wm = make_wm(root)
+        wm = make_wm(root, mergeback_wip_overlap_policy="auto")
         info = wm.merge_back_from_branch("fenix/impl")
         success, err = info
         assert success, f"merge 应成功，实际失败: {err}"
@@ -856,7 +856,7 @@ class TestWipOverlapPrecheck:
         # 主树 WIP：改 core/a.py（与分支相交）与 core/b.py（不相交的另一个）
         (root / "core" / "a.py").write_text("WIP-A\n", encoding="utf-8")
 
-        wm = make_wm(root)
+        wm = make_wm(root, mergeback_wip_overlap_policy="auto")
         overlap = wm._detect_wip_overlap("fenix/impl")
         assert overlap == ["core/a.py"], f"应仅含相交文件: {overlap}"
         warn_logs = [w for w in wm.logger.warnings
@@ -988,7 +988,7 @@ class TestWipOverlapGate:
         # 主树 WIP 与分支同路径（内容不同 → pop 必冲突）
         (root / "core" / "a.py").write_text("WIP-A\n", encoding="utf-8")
 
-        wm = make_wm(root)  # 默认 auto
+        wm = make_wm(root, mergeback_wip_overlap_policy="auto")  # 默认 auto
         info = wm.merge_back_from_branch("fenix/impl")
         success, err = info
         assert success, f"收纳策略下 merge 应成功: {err}"
@@ -1032,7 +1032,7 @@ class TestWipOverlapGate:
         (root / "core" / "a.py").write_text("L1-BASE\nL2-WIP-A\n", encoding="utf-8")
         (root / "notes" / "scratch.txt").write_text("SCRATCH-WIP\n", encoding="utf-8")
 
-        wm = make_wm(root)  # 默认 auto
+        wm = make_wm(root, mergeback_wip_overlap_policy="auto")  # 默认 auto
         info = wm.merge_back_from_branch("fenix/impl")
         success, err = info
         assert success, f"收纳策略下 merge 应成功: {err}"

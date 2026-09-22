@@ -303,11 +303,21 @@ class FenixDaemon:
         _impl_prefix = ConfigLoader.get(
             self.config, "worktree.implement_branch_prefix", "fenix"
         )
-        # merge-back 前 WIP 重叠闸门策略（evo-merge-back-wip-overlap-gate D1）：
-        # 默认 auto（自动收纳重叠改动）；显式 worktree.mergeback_wip_overlap_policy
-        # =block 时阻塞等待人工处置（不 stash/不 merge/不 pop，主树零污染）。
+        # merge-back 前 WIP 重叠闸门策略（evo-merge-back-wip-overlap-gate D1；
+        # add-pipeline-throughput-governance D2 起缺省升级拦截 escalate）：
+        # 交集非空缺省不再 auto stash 收纳，而是拦截升级人工（spec 保持可重试）；
+        # 显式 auto 保留收纳语义、显式 block 并入升级出口（解析见
+        # mergeback._wip_gate_policy）。
         _wip_policy = ConfigLoader.get(
-            self.config, "worktree.mergeback_wip_overlap_policy", "auto"
+            self.config, "worktree.mergeback_wip_overlap_policy", None
+        )
+        # merge 前置预检逃生门（add-pipeline-throughput-governance 2.3）：
+        # worktree.merge_precheck_bypass=true（兼容顶层 merge_precheck_bypass）
+        # 时跳过 WIP 重叠预检直接 merge（紧急推送用）。
+        _precheck_bypass = ConfigLoader.get(
+            self.config,
+            "worktree.merge_precheck_bypass",
+            ConfigLoader.get(self.config, "merge_precheck_bypass", False),
         )
         # 构建产物路径判定配置（evo-merge-back-wip-artifact-scope D2/D4 /
         # fix-artifact-paths-hardcoded-default D1/D4）：项目可声明自己的产物根
@@ -331,7 +341,8 @@ class FenixDaemon:
             # 分支在飞引用保护（D6）：注入 STATE 读取器——stale 清扫删分支前
             # 检查在飞/待收口 spec 的分支引用（宁可多留分支不可误删成果）。
             state_reader=self.state_machine.read_all,
-            mergeback_wip_overlap_policy=str(_wip_policy) if _wip_policy else "auto",
+            mergeback_wip_overlap_policy=str(_wip_policy) if _wip_policy else None,
+            merge_precheck_bypass=bool(_precheck_bypass),
             build_artifact_paths=_artifact_paths,
             has_build_artifacts=_has_build_artifacts,
         )
@@ -2832,11 +2843,16 @@ class FenixDaemon:
                 continue
 
     def _shutdown_drain_seconds(self) -> float:
-        """规划性重启排水窗口（admin.shutdown_drain_seconds，缺省 1800，0=现行快速停机）。
+        """停机排水窗口基线（admin.shutdown_drain_seconds，缺省 1800，0=现行快速停机）。
 
         interrupt-recovery-preserve D1：非法值（负/非数字）回退缺省；0 显式回退
         现行快速停机（不排水、不保全）。接受整值/浮点（测试以小数值构造排水超时
         路径，避免真等整秒；生产配置仍为整数秒）。
+
+        add-pipeline-throughput-governance D3：restart_request 触发的在飞 run
+        排水等待上限改由 ``_run_drain_max_seconds``（agents.run_drain_max_seconds，
+        缺省 60，MUST ≤ 本值）单源提供；本方法保留为 supervisor 一致性自检与
+        既有语义的基线读取方。
         """
         raw = ConfigLoader.get(self.config, "admin.shutdown_drain_seconds", 1800)
         try:
@@ -2850,6 +2866,18 @@ class FenixDaemon:
         if value < 0:
             return 1800
         return value
+
+    def _run_drain_max_seconds(self) -> float:
+        """restart 排水窗口上限（agents.run_drain_max_seconds，缺省 60）。
+
+        add-pipeline-throughput-governance D3：专管 restart_request 触发的在飞
+        run 排水等待；常规停机语义不变。单源经
+        ``ConfigLoader.get_run_drain_max_seconds``（含 MUST ≤
+        admin.shutdown_drain_seconds 的 min 夹紧——supervisor SIGKILL 等待 =
+        shutdown + 120s 余量，不会先于本排水窗口强杀）。缺省组合下重启到新
+        daemon 就绪无 1800s 级空等。
+        """
+        return ConfigLoader.get_run_drain_max_seconds(self.config)
 
     def _drain_log_waiting(self) -> list:
         """排水开始日志 + 等待的 run 清单（interrupt-recovery-preserve 4.3）。"""
@@ -3410,14 +3438,23 @@ class FenixDaemon:
         # （restart_request 不在册）或 drain=0 时行为逐字节不变（快速 terminate，
         # 无保全）。
         planned_restart = (PROJECT_ROOT / ".fenix" / "restart_request").exists()
-        drain_seconds = self._shutdown_drain_seconds()
+        # add-pipeline-throughput-governance D3：restart 排水窗口改由
+        # agents.run_drain_max_seconds（缺省 60，MUST ≤ shutdown_drain_seconds）
+        # 单源提供——治「排水窗口本身过长」（缺省 1800s 而在飞 run 多数不会
+        # 窗内自行收尾，重启白等半小时）；常规停机语义不受影响。
+        drain_seconds = self._run_drain_max_seconds()
         preserved_wts: list = []
         if planned_restart and drain_seconds > 0 and self.agent_runner:
             wait_list = self._drain_log_waiting()
+            # graceful-restart-drain：排水等待前向每个在飞 run 广播一次
+            # checkpoint 信号（写 run 控制旗标即返回，不阻塞排水等待，不产生
+            # 新增失败终态）。广播清单计入排水日志留痕。
+            checkpointed = self.agent_runner.broadcast_restart_checkpoint()
             self.logger.info(
                 "fenixd",
                 f"Drain: planned restart, drain window {drain_seconds}s, "
-                f"waiting runs: {wait_list}",
+                f"waiting runs: {wait_list}, "
+                f"checkpoint broadcast: {len(checkpointed)}/{len(wait_list)}",
             )
             start_ts = time.time()
             remaining = self.agent_runner.drain_wait(timeout=drain_seconds)

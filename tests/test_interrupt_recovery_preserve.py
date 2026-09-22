@@ -107,6 +107,13 @@ class FakeRunner:
         self._running_agents = dict(running or {})
         self.terminate_calls = 0
         self.drain_calls = []
+        self.checkpoint_broadcasts = []
+
+    def broadcast_restart_checkpoint(self, reason="planned restart"):
+        """对齐 runner 真实契约：向在飞 run 广播 checkpoint 旗标（写即返回）。"""
+        dispatched = self.running_run_ids()
+        self.checkpoint_broadcasts.append((reason, list(dispatched)))
+        return dispatched
 
     def running_run_ids(self):
         return [rid for rid, p in self._running_agents.items() if p.poll() is None]
@@ -169,7 +176,13 @@ def make_daemon(monkeypatch, tmp_path, *, restart_request, drain_seconds,
     monkeypatch.setattr(fenixd.sys, "exit", lambda code=0: (_ for _ in ()).throw(SystemExit(code)))
 
     daemon = fenixd.FenixDaemon()
-    daemon.config = {"admin": {"shutdown_drain_seconds": drain_seconds}}
+    # restart 排水窗口单源 agents.run_drain_max_seconds（pipeline-throughput
+    # 3.1），常规停机仍走 admin.shutdown_drain_seconds；夹紧规则下两值一致时
+    # 窗口=传入值，语义与既有断言兼容
+    daemon.config = {
+        "admin": {"shutdown_drain_seconds": drain_seconds},
+        "agents": {"run_drain_max_seconds": drain_seconds},
+    }
     daemon.logger = FakeLogger()
     daemon.state_machine = FakeSM(sm_entries)
     daemon.worktree_manager = FakeWM(wt_by_branch, spec_to_wt)

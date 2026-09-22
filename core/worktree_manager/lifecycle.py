@@ -39,6 +39,7 @@ class G1LifecycleMixin:
         implement_branch_prefix: str = None,
         state_reader=None,
         mergeback_wip_overlap_policy=None,
+        merge_precheck_bypass=False,
         build_artifact_paths=None,
         has_build_artifacts=None,
     ):
@@ -103,12 +104,18 @@ class G1LifecycleMixin:
         # D1/D2）：{"kept": bool, "sha": str}——kept=False 表示已被自动 drop（sha
         # 可 gc 前找回），kept=True 表示条目保留。dispatch 层读走并入告警文本。
         self.last_stash_entry_fate: dict = {"kept": True, "sha": ""}
-        # merge-back 前 WIP 重叠闸门策略（evo-merge-back-wip-overlap-gate D1）：
-        # "auto"（默认）= 自动收纳重叠改动（stash→merge→恢复，pop 冲突保留条目）；
-        # "block" = 显式配置时阻塞（不 stash/不 merge/不 pop，主树零污染）等待人工
-        # 处置。缺省 None → auto；fenixd 从 worktree.mergeback_wip_overlap_policy
-        # 解析注入。读取/解析异常一律回退 auto（闸门故障决不把默认语义改成阻塞）。
+        # merge-back 前 WIP 重叠闸门策略（evo-merge-back-wip-overlap-gate D1；
+        # add-pipeline-throughput-governance D2 缺省处置改为升级拦截）：
+        # 缺省 None → escalate（交集非空即拦截，不发起 merge、人工升级告警、
+        # spec 保持可重试）；显式 "auto" = 保留自动收纳（stash→merge→恢复，pop
+        # 冲突保留条目）；显式 "block" 并入升级出口。fenixd 从
+        # worktree.mergeback_wip_overlap_policy 解析注入；解析细节与变更依据见
+        # mergeback._wip_gate_policy。
         self._mergeback_wip_overlap_policy = mergeback_wip_overlap_policy
+        # merge 前置预检逃生门（add-pipeline-throughput-governance 2.3）：
+        # true 时跳过 WIP 重叠预检直接 merge（紧急推送用，冲突按既有失败路径
+        # 处理）。fenixd 从 worktree.merge_precheck_bypass（兼容顶层键）注入。
+        self._merge_precheck_bypass = merge_precheck_bypass
 
         # 构建产物路径判定器（evo-merge-back-wip-artifact-scope D4 /
         # fix-artifact-paths-hardcoded-default D1）：产物判定从全局常量改为实例

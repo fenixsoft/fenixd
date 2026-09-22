@@ -349,7 +349,12 @@ class QQQueueMixin:
                     "(fix-provider-transient-backoff D4)",
                 )
             return
-        max_concurrent = self._pm._get_config("agents.max_concurrent", 2)
+        # 并发缺省值 2→5（add-pipeline-throughput-governance D1）：全历史耗时
+        # 显示实现排队 893h（37.1%）为最大时间池，缺省 2 的槽位串行是主因之一。
+        # 显式配置优先级不变——.fenix/config.yaml 写了 agents.max_concurrent
+        # 即按配置值生效，代码缺省只对无配置部署生效；full-suite.lock 主机级
+        # 回归锁（等待上限 600s、超时 skip）保证多 run 回归互斥语义不变。
+        max_concurrent = self._pm._get_config("agents.max_concurrent", 5)
 
         # 本轮调用内已被守卫三抑制的条目（spec, agent_type）。
         # 被抑制条目保持 queued（后到抑制），但绝不能阻塞其后的条目派发

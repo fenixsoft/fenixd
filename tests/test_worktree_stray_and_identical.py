@@ -32,10 +32,10 @@ from test_worktree_merge_guard import git, init_repo
 FAKE_SLEEP = "import time; time.sleep(20)"
 
 
-def make_wm(root: Path) -> WorktreeManager:
+def make_wm(root: Path, **kwargs) -> WorktreeManager:
     base = root / ".claude" / "worktrees"
     base.mkdir(parents=True, exist_ok=True)
-    return WorktreeManager(base, root, FakeLogger())
+    return WorktreeManager(base, root, FakeLogger(), **kwargs)
 
 
 def spawn_proc(token: str, fake_argv0: str) -> subprocess.Popen:
@@ -208,7 +208,7 @@ class TestDiscardIdenticalLocalChanges:
         # 主树留一份与分支相同的未提交修改（implementer 副本污染形态）
         (repo / "skill.md").write_text("NEW\n", encoding="utf-8")
 
-        wm = make_wm(repo)
+        wm = make_wm(repo, mergeback_wip_overlap_policy="auto")  # auto 收纳语义回归保护
         success, err = wm.merge_back_from_branch("fenix/impl-identical")
         assert success, f"merge 应经 autostash 成功，实际失败: {err}"
         assert (repo / "skill.md").read_text(encoding="utf-8") == "NEW\n"
@@ -223,7 +223,7 @@ class TestDiscardIdenticalLocalChanges:
                                  "OLD\n", "NEW\n")
         (repo / "skill.md").write_text("LOCAL\n", encoding="utf-8")
 
-        wm = make_wm(repo)
+        wm = make_wm(repo, mergeback_wip_overlap_policy="auto")  # auto 收纳语义回归保护
         success, err = wm.merge_back_from_branch("fenix/impl-divergent")
         assert success, f"merge 应在 autostash+pop 三态自愈下成功，实际失败: {err}"
         # 态 2 恢复：stash 版 LOCAL\n 落工作区（两侧改动都保留），不再断言分支版胜出
@@ -248,7 +248,7 @@ class TestDiscardIdenticalLocalChanges:
         (repo / "a.md").write_text("NEW\n", encoding="utf-8")
         (repo / "b.md").write_text("LOCAL\n", encoding="utf-8")
 
-        wm = make_wm(repo)
+        wm = make_wm(repo, mergeback_wip_overlap_policy="auto")  # auto 收纳语义回归保护
         success, err = wm.merge_back_from_branch("fenix/impl-mixed")
         assert success, f"merge 应在 autostash+pop 三态自愈下成功，实际失败: {err}"
         assert (repo / "a.md").read_text(encoding="utf-8") == "NEW\n"

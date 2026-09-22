@@ -110,9 +110,10 @@ class TestSignalWrittenWhenUnresolved:
         # 主树脏改动 → WIP 重叠
         (root / "src" / "app.py").write_text("WIP\n", encoding="utf-8")
 
-        wm = make_wm(root)
+        wm = make_wm(root, mergeback_wip_overlap_policy="auto")
         blocked, overlap = wm._wip_overlap_gate("fenix/impl")
-        # 有语义重叠（src/app.py 非产物）→ 重叠集合非空但 default auto → 放行
+        # 有语义重叠（src/app.py 非产物）→ 重叠集合非空但显式 auto → 放行
+        # （缺省已变 escalate/pipeline-throughput 2.2，auto 放行语义在此保留覆盖）
         assert blocked is None
         assert overlap == ["src/app.py"]
 
