@@ -50,6 +50,15 @@ import SpecStatusModal from './components/SpecStatusModal';
 import SessionPanel from './components/SessionPanel';
 import QualityTab from './components/QualityTab';
 import RegressionTab from './components/RegressionTab';
+// add-quality-gates-visibility：阶段→完成度/配色映射抽到纯函数模块（node:test
+// 可加载 .ts），list.tsx 原地 import 替换本地定义，调用点零改动
+import {
+  pct,
+  phasePct,
+  strokeColorFor,
+  trailColorFor,
+  TRACK_LIGHT,
+} from './progressPhase';
 
 const REFRESH_THROTTLE_MS = 500;
 // dashboard-sse-refresh：增量 patch 去重窗口（同 spec 1s 内多事件只应用最新）
@@ -58,8 +67,6 @@ const PATCH_COALESCE_MS = 1000;
 const HEARTBEAT_MS = 30000;
 // 搜索/筛选输入防抖
 const SEARCH_DEBOUNCE_MS = 300;
-const TRACK_LIGHT = '#e6f4ff'; // antd blue-1，与 #1677ff 同 ramp
-const TRACK_GREEN = 'rgb(225, 236, 215)'; // 淡绿底轨（用户指定色），verify 阶段空条可辨
 // 未完成（非 done/pushed 终态）spec 行底色：浅蓝紫提示仍在进行中
 const ROW_INCOMPLETE_BG = 'rgb(250, 250, 255)';
 
@@ -72,30 +79,6 @@ const TONE_DOT: Record<string, string> = {
   good: '#52c41a',
   aqua: '#13c2c2',
 };
-
-function pct(done: number, total: number) {
-  return total > 0 ? Math.round((done / total) * 100) : 0;
-}
-
-// add-task-progress-verify-phase：按阶段取排序/渲染用完成度——verify 阶段用
-// 验证完成度，impl 阶段用任务完成度（「显示什么按什么排」）。
-function phasePct(record: SpecSummary) {
-  return record.progress_phase === 'verify'
-    ? pct(record.verify_done, record.verify_total)
-    : pct(record.task_done, record.task_total);
-}
-
-// 进度文案（code-review item ca92db5ea623）：抽出内联三元，避免嵌套三元表达式。
-// 进度条配色（code-review item ca92db5ea623）：抽出嵌套三元为具名函数。
-function strokeColorFor(gen: boolean, isVerify: boolean) {
-  if (gen) return '#13c2c2';
-  return isVerify ? '#52c41a' : '#1677ff';
-}
-
-function trailColorFor(gen: boolean, isVerify: boolean) {
-  if (!isVerify) return TRACK_LIGHT;
-  return gen ? TRACK_LIGHT : TRACK_GREEN;
-}
 
 function progressText(progress: number) {
   return progress >= 100 ? '已完成' : `${progress}%`;
@@ -1020,6 +1003,9 @@ export default function SpecListPage() {
         // 阶段感知（add-task-progress-verify-phase）：仅 testing（progress_phase
         // = "verify"）切绿色验证进度，其余状态维持 impl 蓝色路径零回归。
         const isVerify = record.progress_phase === 'verify';
+        // add-quality-gates-visibility：implementing 收尾 / ocr 车道在飞
+        // （progress_phase = "gates"，判定单点在后端）切门禁橙，展示门禁完成度
+        const isGates = record.progress_phase === 'gates';
         // verification-phase-progress：执行未开始（verify_total=0）而后端已统计到
         // 出题落盘数时，进度条展示场景生成进度——出题是验证链主要耗时，不能让
         // 进度条在生成阶段长期停在 0/0。青色区分生成与执行两段。
@@ -1027,11 +1013,13 @@ export default function SpecListPage() {
           isVerify && record.verify_total === 0 && record.generation && record.generation.total > 0
             ? record.generation
             : null;
-        const p = isVerify
-          ? gen
-            ? Math.min(100, pct(gen.done, gen.total))
-            : pct(record.verify_done, record.verify_total)
-          : pct(record.task_done, record.task_total);
+        const p = isGates
+          ? phasePct(record)
+          : isVerify
+            ? gen
+              ? Math.min(100, pct(gen.done, gen.total))
+              : pct(record.verify_done, record.verify_total)
+            : pct(record.task_done, record.task_total);
         // run 层实时线索（fix-implementer-task-progress D3）：tasks.md 快照落后于
         // run 实际推进（subject 无编号 / agent 未勾 tasks.md）时叠加 run 完成度，
         // 任一数据源失效都不再呈现静止的 0/N；快照已覆盖时不重复打扰。
@@ -1054,11 +1042,18 @@ export default function SpecListPage() {
               percent={p}
               size="small"
               showInfo={false}
-              strokeColor={strokeColorFor(!!gen, isVerify)}
-              trailColor={trailColorFor(!!gen, isVerify)}
+              strokeColor={strokeColorFor(!!gen, isVerify, isGates)}
+              trailColor={trailColorFor(!!gen, isVerify, isGates)}
             />
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, lineHeight: '18px' }}>
-              {isVerify ? (
+              {isGates ? (
+                // add-quality-gates-visibility：gates 阶段展示门禁完成度计数，
+                // run 层线索（run_progress/存活心跳）不渲染——门禁完成度由
+                // 落盘文件与后端合成驱动，run 任务汇报与门禁无对应关系
+                <Typography.Text type="secondary" data-testid="task-progress-cell">
+                  {record.gates_done ?? 0}/{record.gates_total ?? 0}
+                </Typography.Text>
+              ) : isVerify ? (
                 <Typography.Text type="secondary" data-testid="task-progress-cell">
                   {gen ? `出题 ${gen.done}/${gen.total}` : `${record.verify_done}/${record.verify_total}`}
                 </Typography.Text>
@@ -1094,6 +1089,13 @@ export default function SpecListPage() {
             {isVerify && record.verify_current ? (
               <div style={{ fontSize: 12, lineHeight: '18px', color: '#52c41a' }}>
                 {record.verify_current}
+              </div>
+            ) : null}
+            {isGates && record.gates_current ? (
+              // add-quality-gates-visibility：gates 阶段辅助文案（running 门或
+              // failed 归因，后端非空才返回），橙字与进度条同色系
+              <div style={{ fontSize: 12, lineHeight: '18px', color: '#fa8c16' }}>
+                {record.gates_current}
               </div>
             ) : null}
           </div>

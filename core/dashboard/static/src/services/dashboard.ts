@@ -264,6 +264,15 @@ export interface SpecSummary {
   progress_phase?: 'verify' | 'impl';
   /** add-task-progress-verify-phase：verify 阶段当前步骤文案（验证引擎 current，非空才渲染） */
   verify_current?: string;
+  /**
+   * add-quality-gates-visibility：门禁阶段（"gates"）——implementing 收尾
+   * （任务全勾且门禁文件可见未了结）或 testing 且 ocr 车道在飞（判定单点在后端
+   * spec_summary）。gates 阶段下任务进度列展示门禁完成度 gates_done/gates_total。
+   */
+  gates_done?: number;
+  gates_total?: number;
+  /** gates 阶段当前进展文案（running 门或 failed 归因，非空才渲染） */
+  gates_current?: string;
   task_done: number;
   task_total: number;
   /** run 层实时进度（fix-implementer-task-progress D3）：不依赖 tasks.md 编号 */
@@ -622,6 +631,20 @@ export interface SpecDetail {
     current?: string;
     step?: string | null;
     error?: string | null;
+  };
+  // 质量门禁 — add-quality-gates-visibility：parse_quality_gates() 返回结构，
+  // items 恒 6 道且顺序同后端 GATE_ORDER（前端不排序不翻译）
+  quality_gates?: {
+    exists: boolean;
+    done: number;
+    total: number;
+    current?: string;
+    items: Array<{
+      id: string;
+      desc: string;
+      status: 'passed' | 'failed' | 'running' | 'pending' | 'skipped' | 'unknown';
+      detail?: string;
+    }>;
   };
   // verification-phase-progress：出题进度（生成阶段 verify_progress 为空态时有值）
   generation?: { done: number; total: number } | null;

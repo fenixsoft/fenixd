@@ -48,14 +48,14 @@
 
 ## 4. 前端类型与详情页「质量门禁」Card
 
-- [ ] 4.1 `core/dashboard/static/src/services/dashboard.ts`：`SpecDetail` 增 `quality_gates` 类型（exists/done/total/current/items: {id,desc,status,detail}）；`SpecSummary` 增 gates_done/gates_total/gates_current 可选字段
-- [ ] 4.2 `core/dashboard/static/src/pages/projects/detail.tsx`：任务清单 Card 之后、验证进度 Card 之前新增「质量门禁」Card——`ProgressBarTile` 参数化可选 strokeColor（门禁橙 #fa8c16）+ 6 道门禁勾选列表（与任务清单同款 Checkbox disabled；passed 勾选+删除线；failed 红色+detail 归因辅助文案；running「进行中」标识；pending 灰色；skipped「不适用」样式区分；unknown「无记录」灰色）；drafted/ready 且 exists=false 不渲染本 Card；其余状态 exists=false 显示「暂无质量门禁记录」空态
-- [ ] 4.3 前端 node:test 新建 `core/dashboard/static/tests/qualityGates.test.mjs`：状态→渲染语义映射用例（done 计数含 skipped、failed 归因展示、空态与不渲染条件、未知 gate-id 容错不崩、ocr 车道三态映射呈现）
+- [x] 4.1 `core/dashboard/static/src/services/dashboard.ts`：`SpecDetail` 增 `quality_gates` 类型（exists/done/total/current/items: {id,desc,status,detail}）；`SpecSummary` 增 gates_done/gates_total/gates_current 可选字段
+- [x] 4.2 `core/dashboard/static/src/pages/projects/detail.tsx`：任务清单 Card 之后、验证进度 Card 之前新增「质量门禁」Card——`ProgressBarTile` 参数化可选 strokeColor（门禁橙 #fa8c16）+ 6 道门禁勾选列表（与任务清单同款 Checkbox disabled；passed 勾选+删除线；failed 红色+detail 归因辅助文案；running「进行中」标识；pending 灰色；skipped「不适用」样式区分；unknown「无记录」灰色）；drafted/ready 且 exists=false 不渲染本 Card；其余状态 exists=false 显示「暂无质量门禁记录」空态
+- [x] 4.3 前端 node:test 新建 `core/dashboard/static/tests/qualityGates.test.mjs`：状态→渲染语义映射用例（done 计数含 skipped、failed 归因展示、空态与不渲染条件、未知 gate-id 容错不崩、ocr 车道三态映射呈现）
 
 ## 5. 前端列表 gates 阶段渲染
 
-- [ ] 5.1 `core/dashboard/static/src/pages/projects/list.tsx`：`phasePct` 增 gates 分支（pct(gates_done, gates_total)）；`strokeColorFor`/`trailColorFor` 增门禁橙 `#fa8c16` 与淡橙底轨；文案 `gates_done/gates_total` + `gates_current` 辅助文案（非空才渲染）；run 层线索不渲染；列 sorter 按 phase 切换为门禁完成度；impl/verify 两分支 JSX 与数据源零改动
-- [ ] 5.2 前端 node:test：gates 阶段渲染映射用例 + impl/verify 渲染零回归断言
+- [x] 5.1 `core/dashboard/static/src/pages/projects/list.tsx`：`phasePct` 增 gates 分支（pct(gates_done, gates_total)）；`strokeColorFor`/`trailColorFor` 增门禁橙 `#fa8c16` 与淡橙底轨；文案 `gates_done/gates_total` + `gates_current` 辅助文案（非空才渲染）；run 层线索不渲染；列 sorter 按 phase 切换为门禁完成度；impl/verify 两分支 JSX 与数据源零改动
+- [x] 5.2 前端 node:test：gates 阶段渲染映射用例 + impl/verify 渲染零回归断言
 
 ## 6. 构建、回归与真实数据冒烟
 
