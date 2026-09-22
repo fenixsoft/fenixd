@@ -88,8 +88,13 @@ def selfcheck_regression(project_root: Path) -> tuple:
             cmd,
             shell=use_shell,
             cwd=str(project_root),
+            # stderr 与 stdout 同走 DEVNULL（code-review item 5ca4b05ef37a，
+            # critical）：本函数只关心退出码与 JUnit XML 产物、从不读
+            # proc.stderr——PIPE 从不排空，verbose 回归命令（pytest/node 输出）
+            # 写满约 64KB 管道缓冲后 write() 永久阻塞，子进程挂死、
+            # wait(timeout) 必然超时，run 被误报「回归命令超时」。
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
     except OSError as e:

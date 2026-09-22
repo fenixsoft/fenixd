@@ -1392,7 +1392,16 @@ class AdminMonitor:
 
         per_spec: dict = {}
         for p in files:
-            mtime = p.stat().st_mtime
+            # stat 守卫（code-review item 57cb3554af55）：glob 与 stat 之间
+            # .fenix/runs 会被 runs 保留清理并发删除/归档（archive/），文件被
+            # 移走时 p.stat() 抛 FileNotFoundError/OSError——run_once 对
+            # _detect 规则链无兜底 try，任一异常即中断当轮全部信号检测与后续
+            # code-review/self-review 检查点。跳过消失的文件，与同文件
+            # _has_recent_spec_run / _has_recent_progress 的既有保护对齐。
+            try:
+                mtime = p.stat().st_mtime
+            except OSError:
+                continue
             if mtime < cutoff:
                 continue
             # orphaned-state-probe-calibration：失败计数 MUST 用失败前缀子集

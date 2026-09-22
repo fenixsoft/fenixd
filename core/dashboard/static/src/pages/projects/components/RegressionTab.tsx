@@ -66,6 +66,16 @@ const KIND_COLOR: Record<string, string> = {
   long: 'gold',
 };
 
+// ── 模块级命名常量（code-review item 5130098995b7）：2s 轮询（运行中与
+// 等待启动两处）、结果表 pageSize、长耗时阈值展示缺省、概览卡底色原散落
+// 多处硬编码——收敛命名单源，调参只改这里。
+const POLL_INTERVAL_MS = 2000;
+const RESULT_PAGE_SIZE = 10;
+// 快照缺失时的展示回退，与后端 RegressionSpec.long_test_threshold_seconds
+// 缺省口径一致（改动须与 core/verify_contract.py 同步）
+const DEFAULT_LONG_TEST_THRESHOLD_SECONDS = 10;
+const OVERVIEW_CARD_BACKGROUND = '#fafafa';
+
 // ── 运行中/等待启动进度视图 ──────────────────────────────────────────
 // 三态（对齐后端 read_progress 口径）：percent 确定值 → 确定进度条
 // （estimated 注明口径）；percent null（或等待 daemon 启动窗口）→
@@ -186,7 +196,7 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
         if (pollTimerRef.current === null) {
           pollTimerRef.current = window.setInterval(() => {
             void loadResult();
-          }, 2000);
+          }, POLL_INTERVAL_MS);
         }
       } else if (pollTimerRef.current !== null) {
         window.clearInterval(pollTimerRef.current);
@@ -222,7 +232,7 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
   // 感知不到运行态置位（停在等待态直到超时）。2s 轮询直至 running 接管。
   useEffect(() => {
     if (!awaitingStart || !active) return;
-    const t = window.setInterval(() => void loadResult(), 2000);
+    const t = window.setInterval(() => void loadResult(), POLL_INTERVAL_MS);
     return () => window.clearInterval(t);
   }, [awaitingStart, active, loadResult]);
 
@@ -407,7 +417,7 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
     <Card variant="borderless">
       {/* 概览卡片（spec「全绿概览」Scenario）：测试路径 / 用例总数 / 通过数 /
           执行时间 / 总耗时 */}
-      <Card size="small" style={{ marginBottom: 12, background: '#fafafa' }}>
+      <Card size="small" style={{ marginBottom: 12, background: OVERVIEW_CARD_BACKGROUND }}>
         <Space direction="vertical" size={8} style={{ width: '100%' }}>
           {running ? (
             <Space direction="vertical" size={4} style={{ width: '100%' }}>
@@ -471,7 +481,7 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
               {
                 key: 'threshold',
                 label: '长耗时阈值',
-                children: `${snapshot?.long_test_threshold_seconds ?? 10}s`,
+                children: `${snapshot?.long_test_threshold_seconds ?? DEFAULT_LONG_TEST_THRESHOLD_SECONDS}s`,
               },
             ]}
           />
@@ -504,7 +514,11 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
           columns={columns}
           tableLayout="fixed"
           size="small"
-          pagination={{ pageSize: 10, showSizeChanger: false, hideOnSinglePage: true }}
+          pagination={{
+            pageSize: RESULT_PAGE_SIZE,
+            showSizeChanger: false,
+            hideOnSinglePage: true,
+          }}
           locale={{ emptyText: '无异常用例' }}
         />
       ) : null}

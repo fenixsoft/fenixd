@@ -235,7 +235,15 @@ class ConfigLoader:
 
     @classmethod
     def _normalize_transient_seconds(cls, config, key: str, default: int) -> int:
-        """读取并规范化某瞬断治理秒/次数字段（非负整数，非法回退缺省）。"""
+        """读取并规范化某瞬断治理秒/次数字段（非负整数，非法回退缺省）。
+
+        非整数拒绝（code-review item 5bfa7e1a80ca）：旧实现放行任意非负数后
+        ``int(val)`` 截断——``transient_break_threshold: 0.5`` 截成 0，按文档
+        0 = 「熔断器禁用」，分数阈值反而把保护静默关掉（或在计数阈值读法下
+        首次失败即触发）。与 admin.run_infra_breaker.threshold 已修复的同类
+        缺陷（item 46b77a7d7e83）对齐：小数值一律回退文档默认值；整值浮点
+        （如 ``30.0``）按整数接受，显式 ``0``（禁用）保持合法。
+        """
         try:
             val = cls.get(config, key, None)
         except Exception:
@@ -245,6 +253,8 @@ class ConfigLoader:
         if isinstance(val, bool) or not isinstance(val, (int, float)):
             return default
         if val < 0:
+            return default
+        if isinstance(val, float) and not val.is_integer():
             return default
         return int(val)
 

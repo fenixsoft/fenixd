@@ -65,6 +65,21 @@ class H10StaticRoutesMixin:
             return
         project_name = urllib.parse.unquote(parts[2])
         spec = urllib.parse.unquote(parts[3])
+        # spec 段防穿越（code-review item 5544a9f69b3b，critical）：spec 解码后
+        # 可能还原出「..」组件——它会在 .resolve() 之前被嵌入基础目录，把
+        # screenshots_dir 本身搬迁到约束目录之外（如
+        # /screenshots/<project>/..%2F..%2Ftmp%2Fscreenshots），此时下方
+        # target.is_relative_to(screenshots_dir) 对搬迁后目录内任意文件平凡
+        # 通过。先校验 spec 不含「..」路径组件再拼接；file_part 的「..」仍由
+        # 既有 resolve + is_relative_to 兜底（基础目录此后不可被搬迁）。
+        spec_norm = spec.replace("\\", "/")
+        if (
+            not spec_norm
+            or spec_norm in (".", "..")
+            or ".." in spec_norm.split("/")
+        ):
+            self._error(403, "Forbidden")
+            return
         # 剩余部分一并 decode（code-review item 206cc192537f）：SPA 以
         # encodeURIComponent(file) 构建 URL，文件名含空格/#/%/非 ASCII 的截图
         # 在网络上恒为 percent-encoded，不解码则合法图片 404。解码后可能还原

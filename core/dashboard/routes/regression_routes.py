@@ -200,12 +200,23 @@ class H12RegressionRoutesMixin:
         except OSError:
             self._error(500, "回归触发信号写入失败")
             return
+        f = None
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(payload, f, ensure_ascii=False, indent=2)
-                f.flush()
-                os.fsync(f.fileno())
+            # fdopen 失败路径显式关 fd（code-review item 655c860e2e6e）：旧
+            # `with os.fdopen(...)` 形态下 fdopen() 自身抛错时裸 fd 未被包装
+            # 也无人关闭（with 的 close 只在 fdopen 成功后才生效）——请求线程
+            # 描述符泄漏。改为显式接管：f 为 None（fdopen 未成功）时兜底
+            # os.close；成功后统一经 finally close（等价 with 语义）。
+            f = os.fdopen(fd, "w", encoding="utf-8")
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
         except Exception as exc:
+            if f is None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
             # 写中途失败：清掉半写文件，避免残留被 daemon 误消费（半写文件
             # 存活会让后续每个 POST 都 409 直到 daemon 消费）。清理失败必须
             # 留痕并携带底层异常——静默吞掉会让 500 无从诊断。
@@ -221,6 +232,9 @@ class H12RegressionRoutesMixin:
                     )
             self._error(500, f"回归触发信号写入失败: {exc}")
             return
+        finally:
+            if f is not None:
+                f.close()
         self._json({"ok": True, "requested_at": created})
 
     def _api_regression_autodraft_post(self, query):

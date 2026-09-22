@@ -1351,16 +1351,26 @@ def match_basename_in_tree(project_root, path: str) -> List[str]:
     excluded = set(_BASENAME_EXCLUDE_DIRS)
     hits: List[str] = []
     try:
-        for p in root.rglob(name):
-            if not p.is_file():
-                continue
-            try:
-                rel = p.relative_to(root).as_posix()
-            except ValueError:
-                continue
-            if set(rel.split("/")) & excluded:
-                continue
-            hits.append(rel)
+        # os.walk + 就地剪枝（code-review item 5f9ed67a5538）：旧 rglob 先整树
+        # 遍历、再在结果阶段按路径组件过滤 _BASENAME_EXCLUDE_DIRS，.git/
+        # node_modules/dist 等大目录仍被深入扫描——本函数被晋升 lint 与派发
+        # 处方共用，大型仓库单次判定耗时被无谓放大。改为遍历时剪枝：命中排除
+        # 名的目录不再下探（语义与旧「任一组件命中即跳过」等价）；os.walk 缺省
+        # 不跟随目录符号链接，与 rglob 的 ``**`` 递归行为一致。is_file 守卫
+        # 保留（与旧实现对齐：同名目录/断链 symlink 不计命中）。
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if d not in excluded]
+            for fn in filenames:
+                if fn != name:
+                    continue
+                p = Path(dirpath) / fn
+                if not p.is_file():
+                    continue
+                try:
+                    rel = p.relative_to(root).as_posix()
+                except ValueError:
+                    continue
+                hits.append(rel)
     except OSError:
         return []
     hits.sort()
@@ -2017,7 +2027,7 @@ def lint_declared(spec_dir, project_root) -> List[str]:
        合法模式（.fenix/config.yaml、dist/index.html 先例）。
     6. 仓库外路径（add-declaration-premechanize D3）——``kind: modify``/``kind:
        new`` 的路径解析后（``~`` 展开、``..`` 越界、绝对路径归一）不在项目根内，
-       规则 5 的 gitignore 机制覆盖不到仓库外，该声明任何分支不可交付。```
+       规则 5 的 gitignore 机制覆盖不到仓库外，该声明任何分支不可交付。
        ``kind: reference`` 不受限：仓库外引用（``~/.claude/settings.json`` 等）
        本就是非交付物语义，合法放行。
     7. ``kind: delete`` 的路径被 .gitignore 排除（add-deliverable-delete-kind

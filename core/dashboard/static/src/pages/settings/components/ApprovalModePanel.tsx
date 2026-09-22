@@ -1,9 +1,18 @@
 import { Button, Card, Form, Radio, Typography } from 'antd';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import type { ConfigData } from '@/services/dashboard';
 import SyncFromUserButton, { SETTINGS_ACTIONS_ROW_STYLE } from './SyncFromUserButton';
 
 const { Text } = Typography;
+
+// 单选选项行样式收敛（code-review item 5184fd263e11）：4 组 × 2 行共 8 个
+// 选项行重复书写两组静态内联样式（组内首行带下间距、次行不带）——抽模块级
+// 常量单源，避免逐处漂移。
+const RADIO_OPTION_ROW_SPACED_STYLE: React.CSSProperties = {
+  display: 'block',
+  marginBottom: 16,
+};
+const RADIO_OPTION_ROW_STYLE: React.CSSProperties = { display: 'block' };
 
 // gates 缺省值单源（code-review item 3f618ddb51cb）：四个缺省值旧实现
 // 在 useEffect 与 <Form initialValues> 中各写一份，只改一处会漂移——抽
@@ -35,6 +44,10 @@ interface ApprovalModePanelProps {
 
 export default function ApprovalModePanel({ config, onSave, project, onConfigSynced }: ApprovalModePanelProps) {
   const [form] = Form.useForm();
+  // 保存重入守卫（code-review item 589c1c98c5a4）：onSave 是异步，提交期间
+  // 按钮可继续点击会发出重叠保存请求（并发写同一配置文件，结果取决于响应
+  // 到达顺序）——saving 期间置 loading/disabled 并在入口短路。
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     // 确保字段有值，使用配置值或默认值
@@ -42,6 +55,10 @@ export default function ApprovalModePanel({ config, onSave, project, onConfigSyn
   }, [config.gates, form]);
 
   const handleSave = async () => {
+    if (saving) {
+      return;
+    }
+    setSaving(true);
     try {
       const values = await form.validateFields();
       // add-spec-review-gate（task 5.2）：保存载荷 MUST 同时提交新键与既有
@@ -57,6 +74,8 @@ export default function ApprovalModePanel({ config, onSave, project, onConfigSyn
       });
     } catch (error) {
       console.error('Validation failed:', error);
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -89,7 +108,7 @@ export default function ApprovalModePanel({ config, onSave, project, onConfigSyn
               缺省 auto。
             </Text>
             <Radio.Group>
-              <div style={{ display: 'block', marginBottom: 16 }}>
+              <div style={RADIO_OPTION_ROW_SPACED_STYLE}>
                 <Radio value="manual">
                   <strong>manual</strong> — 人工审批
                   <div>
@@ -99,7 +118,7 @@ export default function ApprovalModePanel({ config, onSave, project, onConfigSyn
                   </div>
                 </Radio>
               </div>
-              <div style={{ display: 'block' }}>
+              <div style={RADIO_OPTION_ROW_STYLE}>
                 <Radio value="auto">
                   <strong>auto</strong> — 自动晋升
                   <div>
@@ -127,7 +146,7 @@ export default function ApprovalModePanel({ config, onSave, project, onConfigSyn
               never 完全关闭门禁，作为逃生门跳过评审直接调度。缺省 auto。
             </Text>
             <Radio.Group>
-              <div style={{ display: 'block', marginBottom: 16 }}>
+              <div style={RADIO_OPTION_ROW_SPACED_STYLE}>
                 <Radio value="auto">
                   <strong>auto</strong> — 默认全量评审
                   <div>
@@ -138,7 +157,7 @@ export default function ApprovalModePanel({ config, onSave, project, onConfigSyn
                   </div>
                 </Radio>
               </div>
-              <div style={{ display: 'block' }}>
+              <div style={RADIO_OPTION_ROW_STYLE}>
                 <Radio value="never">
                   <strong>never</strong> — 完全关闭
                   <div>
@@ -166,7 +185,7 @@ export default function ApprovalModePanel({ config, onSave, project, onConfigSyn
               到期/激活才一并放行。缺省 dispatch。
             </Text>
             <Radio.Group>
-              <div style={{ display: 'block', marginBottom: 16 }}>
+              <div style={RADIO_OPTION_ROW_SPACED_STYLE}>
                 <Radio value="dispatch">
                   <strong>dispatch</strong> — 只约束实现派发
                   <div>
@@ -176,7 +195,7 @@ export default function ApprovalModePanel({ config, onSave, project, onConfigSyn
                   </div>
                 </Radio>
               </div>
-              <div style={{ display: 'block' }}>
+              <div style={RADIO_OPTION_ROW_STYLE}>
                 <Radio value="full">
                   <strong>full</strong> — 同时按住晋升与评审
                   <div>
@@ -203,7 +222,7 @@ export default function ApprovalModePanel({ config, onSave, project, onConfigSyn
               请谨慎使用。缺省 manual。
             </Text>
             <Radio.Group>
-              <div style={{ display: 'block', marginBottom: 16 }}>
+              <div style={RADIO_OPTION_ROW_SPACED_STYLE}>
                 <Radio value="manual">
                   <strong>manual</strong> — 人工审批
                   <div>
@@ -213,7 +232,7 @@ export default function ApprovalModePanel({ config, onSave, project, onConfigSyn
                   </div>
                 </Radio>
               </div>
-              <div style={{ display: 'block' }}>
+              <div style={RADIO_OPTION_ROW_STYLE}>
                 <Radio value="auto">
                   <strong>auto</strong> — 自动推送
                   <div>
@@ -231,7 +250,7 @@ export default function ApprovalModePanel({ config, onSave, project, onConfigSyn
         {project && onConfigSynced && (
           <SyncFromUserButton project={project} page="approval" onSynced={onConfigSynced} />
         )}
-        <Button type="primary" onClick={handleSave}>
+        <Button type="primary" onClick={handleSave} loading={saving} disabled={saving}>
           保存
         </Button>
       </div>

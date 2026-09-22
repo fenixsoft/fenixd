@@ -912,7 +912,14 @@ def run_and_write_regression(
     worktree 内回归传 ``lock_root=<主树根>`` 使其与主树共用同一把锁。
     """
     log = logger or _default_logger
-    mark_running(project_root, spec.timeout_seconds)
+    # 声明窗口计入锁等待预算（code-review item 652febabc458）：run_regression
+    # 在计时命令启动前先在 _SuiteLock.__enter__ 中阻塞多达
+    # _LOCK_WAIT_TIMEOUT_SECONDS（600s）——marker 若只声明 spec.timeout_seconds，
+    # 锁等待耗尽新鲜度窗口后 is_regression_running 已报 False，POST
+    # /api/regression/run 的 409 守卫放行第二个并发触发。声明窗口 =
+    # timeout + 锁等待上限（+ 既有 30s 宽限在读取侧）；正常收尾 finally 仍
+    # 清 marker，仅崩溃残留的兜底窗口变长，代价可忽略。
+    mark_running(project_root, spec.timeout_seconds + _LOCK_WAIT_TIMEOUT_SECONDS)
     try:
         result = run_regression(project_root, spec, logger=log, lock_root=lock_root)
         if result.get("status") != "skipped":

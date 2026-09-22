@@ -170,6 +170,16 @@ export default function SettingsPage() {
       staleSelfhealRef.current?.collect(),
       suggestionsRef.current?.collect(),
     ]);
+    // ref 未挂载 ≠ 空收集（code-review item 51a0f171bc8c）：ref 未挂（卡片
+    // 未渲染/面板卸载）时 ``?.collect()`` 得 undefined——旧空检查只拒 null
+    // 哨兵，undefined 落入 ``?? {}`` 被当空数据合并：(a) 两 ref 都未挂时
+    // 用户看到「没有需要保存的变更」尽管啥也没收集；(b) 部分 ref 在场时真
+    // 数据与「未收集」混为一谈。undefined（面板未就绪）与 null（校验失败）
+    // 分开提示，均中止保存。
+    if (parts.some((p) => p === undefined)) {
+      message.warning('自进化面板未就绪，无法收集本节配置，请稍后重试');
+      return;
+    }
     // 校验失败/无变更不再静默返回（code-review item 57ca856f0531）：旧实现两处
     // 裸 return 使用户以为已保存，实际什么都没发生。
     if (parts.some((p) => p === null)) {

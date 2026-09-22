@@ -1147,12 +1147,20 @@ def classify_and_enrich_artifact_error(
 
 
 def _format_gap_list(gap: list, limit: int = 20) -> str:
-    """缺口任务 id 清单格式化（2.7 归因可诊断）：超 limit 项截断并标注总数。"""
+    """缺口任务 id 清单格式化（2.7 归因可诊断）：超 limit 项截断并标注总数。
+
+    元素统一转 str 再排序/拼接（code-review item 58ae4e08513b）：入参直接来自
+    解析后的 result-file JSON（completed_tasks/unfinished/unattainable），格式
+    并不受控——异构载荷（如 ``[1, "1.1"]``）会让 ``sorted`` 抛 TypeError、
+    同构非字符串列表会让 ``join`` 抛 TypeError。gate 的预期姿态是 fail-closed
+    落失败消息，MUST NOT 以未捕获异常崩溃硬门本身。
+    """
     if not gap:
         return ""
-    if len(gap) <= limit:
-        return "、".join(sorted(gap))
-    return "、".join(sorted(gap)[:limit]) + f" 等共 {len(gap)} 项"
+    items = sorted(str(x) for x in gap)
+    if len(items) <= limit:
+        return "、".join(items)
+    return "、".join(items[:limit]) + f" 等共 {len(gap)} 项"
 
 
 def _invalid_completed_ids(items) -> list:
