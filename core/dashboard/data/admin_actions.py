@@ -1224,3 +1224,535 @@ def set_spec_priority(project_root, spec: str, priority) -> dict:
     sm = StateMachine(proot / ".fenix" / "STATE.md", project_state_logger(proot))
     sm.update_spec(spec, {"priority": p})
     return {"found": True, "priority": p}
+
+
+# ── 裁决动词（add-human-adjudication-choices 3.x）────────────────────────
+# 语义：人工对桶 2 冻结信号的裁决收敛为注册表选择题（D1），本节提供选项
+# ``action`` 映射的后端动词；alert-resolve 端点与 Administrator 处置消费
+# 共用 :func:`execute_adjudication_choice` 单一映射执行器。
+
+# 验证链信号（reset_verification 适用域）：signal_type 显式传入时按此精确
+# 判别；无 signal_type 上下文（直接动词调用）时回退 error 文本关键词判别。
+VERIFY_CHAIN_SIGNAL_TYPES = frozenset({
+    "impl_budget_exhausted",
+    "judge_rerun_cap",
+    "verify_fail_escalation",
+    "redispatch_loop_detected",
+})
+_VERIFY_CHAIN_ERROR_MARKERS = (
+    "judge", "验证", "重派", "预算", "verify", "inconclusive", "env",
+)
+
+# 冻结场景与验证进度运行时文件（reset_verification 删除清单：按 spec 名
+# 精确拼路径，禁通配；tokens.json 为生命周期成本审计侧车，保留不清）。
+_VERIFY_PROGRESS_RUNTIME_FILES = (
+    "test_scenarios.json",
+    "_scenarios_full.json",
+    "report.json",
+    ".fenix-run-result.json",
+    "degrade_context.json",
+)
+
+# 重置/继续修复时清零的重试计数器（unfreeze_spec 自动清零集的超集补充：
+# judge/verify 失败轮不在其清零面）。布尔标记清 False——与 unfreeze_spec 清
+# _verify_parallel_override 同款先例：STATE.md 是文本表，落盘规范形即
+# `False` 字面量，生产读者经 StateMachine.parse 的布尔归一清单
+# （_judge_cap_frozen/_verify_parallel_override 在列，state_machine.py）读回
+# 真 False；计数清 0 后消费端 int(...or 0) 语义不变。生命周期累计字段
+# （_tokens_*、_cost_usd）与实现预算 _impl_run_budget_used 不在此——后者仅
+# continue_auto_fix 语义清零，reset_verification 不重发实现预算。
+_RETRY_COUNTER_RESETS = {
+    "_judge_rerun_count": 0,
+    "_judge_cap_frozen": False,
+    "_verify_fail_rounds": 0,
+    "_verify_redo_count": 0,
+    "_verify_parallel_override": False,
+    "_inconclusive_attempts": 0,
+    "_env_block_rounds": 0,
+    "_redispatch_same_cause_streak": 0,
+    "_redispatch_cause_fp": None,
+}
+
+# force_advance 允许的目标状态（design D4：校验目标可达性，不开放任意跳转）
+_FORCE_ADVANCE_TARGETS = ("done", "verified")
+
+
+def _adjudication_sm(project_root):
+    """裁决动词共用的 StateMachine 构造（flock + 原子写，与 daemon 并发安全）。"""
+    from core.state_machine import StateMachine, project_state_logger
+
+    return StateMachine(
+        Path(project_root) / ".fenix" / "STATE.md",
+        project_state_logger(project_root),
+    )
+
+
+def reset_verification(project_root, spec: str, note: str = "", signal_type: str = "") -> dict:
+    """裁决动词：人工裁定验证链输入已失真，重置验证重跑（add-human-adjudication-choices 3.1）。
+
+    执行序列：前置校验（冻结/blocked 且属验证链信号）→ 删该 spec 的场景与
+    验证进度运行时文件（精确 spec 名拼路径，禁通配）→ 清 judge 重跑与验证
+    失败轮计数并剥冻结清 error（保持 blocked）→ 按
+    ``resolve_env_blocked_reset_path`` 推进（分支已合并走 BLOCKED→TESTING
+    门禁直通道重验，否则 BLOCKED→READY 回实现并写调度唤醒信号）→ 返回执行
+    步骤明细。生命周期累计字段（tokens/cost 审计）不清零。
+
+    Returns:
+        {"ok": bool, "found": bool, "steps": [str], "target_status": str|null,
+         "error": str|null}
+    """
+    proot = Path(project_root)
+    specs = parse_state(proot)
+    if spec not in specs:
+        return {"ok": False, "found": False, "steps": [], "target_status": None,
+                "error": f"spec not found: {spec}"}
+    entry = specs[spec]
+    if not (is_spec_frozen(entry) or entry.get("status") == "blocked"):
+        return {
+            "ok": False, "found": True, "steps": [], "target_status": None,
+            "error": (f"spec 未处于冻结/blocked 态（当前 {entry.get('status')}），"
+                      "重置验证仅对验证链冻结/blocked 开放"),
+        }
+    if signal_type:
+        if signal_type not in VERIFY_CHAIN_SIGNAL_TYPES:
+            return {
+                "ok": False, "found": True, "steps": [], "target_status": None,
+                "error": (f"signal_type '{signal_type}' 不属验证链信号，"
+                          "重置验证被拒绝"),
+            }
+    else:
+        error_text = str(entry.get("error") or "")
+        if not any(m in error_text for m in _VERIFY_CHAIN_ERROR_MARKERS):
+            return {
+                "ok": False, "found": True, "steps": [], "target_status": None,
+                "error": "冻结原因不属验证链信号（error 文本无验证链特征），重置验证被拒绝",
+            }
+
+    steps: list = []
+    # 2. 删该 spec 自己的场景/进度文件（路径按 spec 名精确构造，无 glob）
+    vp_dir = proot / ".fenix" / "verify-progress" / spec
+    for fname in _VERIFY_PROGRESS_RUNTIME_FILES:
+        fpath = vp_dir / fname
+        if fpath.is_file():
+            try:
+                fpath.unlink()
+                steps.append(f"已删除 {fpath.relative_to(proot)}")
+            except OSError as e:
+                return {"ok": False, "found": True, "steps": steps,
+                        "target_status": None,
+                        "error": f"删除验证进度文件失败 {fname}: {e}"}
+    if not any(s.startswith("已删除") for s in steps):
+        steps.append("无场景/进度文件可删（verify-progress 目录不存在或已清）")
+
+    # 3+4a. 清计数 + 剥冻结 + 清 error（自带 frozen 键走 update_spec 显式豁免，
+    # status 保持 blocked 供复位路径判定）
+    sm = _adjudication_sm(proot)
+    updates = {"frozen": False, "error": None, "frozen_until": None}
+    updates.update(_RETRY_COUNTER_RESETS)
+    sm.update_spec(spec, updates)
+    steps.append("已清零 judge 重跑/验证失败轮等重试计数并解除冻结（保持 blocked）")
+
+    # 4b. 复位路径判定（基于清除后的干净 entry）
+    from core.pm_engine.verification.branch_guard import resolve_env_blocked_reset_path
+
+    entry2 = parse_state(proot).get(spec) or {}
+    if entry2.get("status") != "blocked":
+        steps.append(f"spec 已不在 blocked（当前 {entry2.get('status')}），无需复位转换")
+        target = entry2.get("status")
+    else:
+        path = resolve_env_blocked_reset_path(entry2, proot)
+        if path == "testing":
+            sm.transition_gate(spec, "testing", channel="manual")
+            target = "testing"
+            steps.append("实现分支已合并：BLOCKED→TESTING 门禁直通道重验")
+        else:
+            sm.transition(spec, "ready", channel="manual")
+            target = "ready"
+            kicked = ""
+            try:
+                if _write_scheduling_kick_signal(proot, spec).get("ok"):
+                    kicked = "，已写调度唤醒信号"
+            except Exception:
+                pass
+            steps.append("实现分支未合并或缺 branch：BLOCKED→READY 回实现通道" + kicked)
+    if note:
+        steps.append(f"裁决依据：{note}")
+    return {"ok": True, "found": True, "steps": steps, "target_status": target, "error": None}
+
+
+def force_advance(project_root, spec: str, target_status: str = "done", note: str = "") -> dict:
+    """裁决动词：人工裁定接受现状，豁免剩余缺口推进（add-human-adjudication-choices 3.2）。
+
+    前置校验（冻结/blocked）→ 经 ``update_spec`` 显式豁免通道（updates 同时
+    携 ``frozen=False`` 与 ``status``，冻结剥离守卫对自带 frozen 键的更新原样
+    放行）推进到 target_status 并清 error。``blocked→done`` 不在
+    VALID_TRANSITIONS，不走 transition；MUST NOT 直写 STATE.md。留痕以
+    channel=manual 的 Transition 日志标注「人工豁免推进」与 note 原文，
+    可追溯「人工豁免而非自然达成」。不触碰实现分支内容或主树工作区文件。
+
+    Returns:
+        {"ok": bool, "found": bool, "steps": [str], "from_status": str|null,
+         "status": str|null, "error": str|null}
+    """
+    proot = Path(project_root)
+    specs = parse_state(proot)
+    if spec not in specs:
+        return {"ok": False, "found": False, "steps": [], "from_status": None,
+                "status": None, "error": f"spec not found: {spec}"}
+    entry = specs[spec]
+    if not (is_spec_frozen(entry) or entry.get("status") == "blocked"):
+        return {
+            "ok": False, "found": True, "steps": [], "from_status": None,
+            "status": None,
+            "error": (f"spec 未处于冻结/blocked 态（当前 {entry.get('status')}），"
+                      "人工豁免推进仅对冻结/blocked 开放"),
+        }
+    if target_status not in _FORCE_ADVANCE_TARGETS:
+        return {
+            "ok": False, "found": True, "steps": [], "from_status": None,
+            "status": None,
+            "error": (f"不支持的目标状态 '{target_status}'"
+                      f"（允许：{'/'.join(_FORCE_ADVANCE_TARGETS)}）"),
+        }
+    old_status = entry.get("status")
+    sm = _adjudication_sm(proot)
+    sm.update_spec(spec, {"frozen": False, "status": target_status, "error": None})
+    basis = "人工豁免推进" + (f"：{note}" if note else "")
+    sm.logger.info(
+        "state_machine",
+        f"Transition: {spec} {old_status} → {target_status}",
+        {"channel": "manual", "note": basis},
+    )
+    steps = [
+        f"冻结解除 + error 清空（显式豁免通道：{old_status} → {target_status}，"
+        "不走 VALID_TRANSITIONS）",
+        f"留痕：{basis}",
+    ]
+    return {"ok": True, "found": True, "steps": steps, "from_status": old_status,
+            "status": target_status, "error": None}
+
+
+def skip_review_gate(project_root, spec: str, note: str = "") -> dict:
+    """裁决动词：评审器持续基础设施失败时人工授权跳过评审门（3.3）。
+
+    前置校验仅对 ``spec-review-incomplete``（评审器自身失败）冻结开放；
+    评审否决（``spec-review-rejected``，方向不成立）类冻结 MUST 拒绝——
+    方向不成立时「跳过评审」语义不成立。执行：显式豁免通道解除冻结并从
+    blocked 直推 ready（reviewing→ready 本属合法边），清评审器重试计数，
+    写调度唤醒信号；留痕标注「人工授权跳过评审」与 note。
+
+    Returns:
+        {"ok": bool, "found": bool, "steps": [str], "status": str|null,
+         "error": str|null}
+    """
+    proot = Path(project_root)
+    specs = parse_state(proot)
+    if spec not in specs:
+        return {"ok": False, "found": False, "steps": [], "status": None,
+                "error": f"spec not found: {spec}"}
+    entry = specs[spec]
+    error_text = str(entry.get("error") or "")
+    if not is_spec_frozen(entry):
+        return {
+            "ok": False, "found": True, "steps": [], "status": None,
+            "error": (f"spec 未处于冻结态（当前 {entry.get('status')}），"
+                      "跳过评审门仅对评审器失败冻结开放"),
+        }
+    if "spec-review-rejected" in error_text:
+        return {
+            "ok": False, "found": True, "steps": [], "status": None,
+            "error": ("评审否决（方向不成立）类冻结不支持跳过评审门，"
+                      "处置请走 revise_reproposal / force_advance / abandon"),
+        }
+    if "spec-review-incomplete" not in error_text:
+        return {
+            "ok": False, "found": True, "steps": [], "status": None,
+            "error": "非评审器失败冻结（error 无 spec-review-incomplete 特征），跳过评审门被拒绝",
+        }
+    sm = _adjudication_sm(proot)
+    sm.update_spec(spec, {
+        "frozen": False, "status": "ready", "error": None,
+        "reviewer_run": None, "_review_attempts": 0,
+    })
+    basis = "人工授权跳过评审" + (f"：{note}" if note else "")
+    sm.logger.info(
+        "state_machine",
+        f"Transition: {spec} blocked → ready",
+        {"channel": "manual", "note": basis},
+    )
+    kicked = ""
+    try:
+        if _write_scheduling_kick_signal(proot, spec).get("ok"):
+            kicked = "，已写调度唤醒信号"
+    except Exception:
+        pass
+    steps = [
+        "冻结解除 + 评审器重试计数清零（reviewer_run/_review_attempts）",
+        "blocked → ready 直推（跳过评审门），进入正常实现调度" + kicked,
+        f"留痕：{basis}",
+    ]
+    return {"ok": True, "found": True, "steps": steps, "status": "ready", "error": None}
+
+
+# ── choice_id → 动作映射执行器（alert-resolve 端点与 Administrator 消费共用）──
+
+def _exec_review_unfreeze(project_root, spec: str, note: str, marker: str, label: str) -> dict:
+    """评审族共用解冻回 reviewing：revise_reproposal / retry_review 的公共体。"""
+    proot = Path(project_root)
+    specs = parse_state(proot)
+    if spec not in specs:
+        return {"ok": False, "steps": [], "error": f"spec not found: {spec}"}
+    entry = specs[spec]
+    if marker not in str(entry.get("error") or ""):
+        return {"ok": False, "steps": [],
+                "error": f"该冻结非 {marker} 类，{label}被拒绝"}
+    sm = _adjudication_sm(proot)
+    sm.update_spec(spec, {
+        "frozen": False, "status": "reviewing", "error": None,
+        "reviewer_run": None, "_review_attempts": 0,
+    })
+    sm.logger.info(
+        "state_machine",
+        f"Transition: {spec} blocked → reviewing",
+        {"channel": "manual", "note": f"{label}（人工裁决）"},
+    )
+    kicked = ""
+    try:
+        if _write_scheduling_kick_signal(proot, spec).get("ok"):
+            kicked = "，已写调度唤醒信号"
+    except Exception:
+        pass
+    steps = [
+        f"冻结解除 + 评审计数清零，回 reviewing {label}" + kicked,
+    ]
+    if note:
+        steps.append(f"裁决依据：{note}")
+    return {"ok": True, "steps": steps, "status": "reviewing", "error": None}
+
+
+def _exec_abandon(project_root, spec: str, note: str = "") -> dict:
+    """abandon：软删除归档（撤销并丢弃该 spec 的工作，留处置痕）。"""
+    from .spec_archive import soft_delete_spec
+
+    r = soft_delete_spec(project_root, spec)
+    if r.get("found") and not r.get("running") and not r.get("error"):
+        steps = ["STATE.md 条目已移除"
+                 + (f"，spec 目录归档至 {r.get('archive_path')}" if r.get("archived")
+                    else "（spec 目录不存在，仅清状态）")]
+        if note:
+            steps.append(f"裁决依据：{note}")
+        return {"ok": True, "steps": steps, "archived": r.get("archived"),
+                "archive_path": r.get("archive_path"), "error": None}
+    if r.get("running"):
+        return {"ok": False, "steps": [],
+                "error": (f"spec 仍有在跑 agent（pending: {r.get('pending')}），"
+                          "撤销丢弃被拒绝；请先停止在跑 agent")}
+    return {"ok": False, "steps": [],
+            "error": r.get("error") or (None if r.get("found") else f"spec not found: {spec}")
+            or "软删除失败"}
+
+
+def _exec_continue_auto_fix(project_root, spec: str, note: str = "") -> dict:
+    """continue_auto_fix：解冻 + 清全部重试计数（含实现预算）→ ready 继续自动修复。
+
+    对各验证链信号按注册表语义是「重置对应预算/轮次」，此处统一清全部
+    重试计数器——超集无害（均为可重试预算类字段），避免 per-signal 分支漂移。
+    """
+    proot = Path(project_root)
+    specs = parse_state(proot)
+    if spec not in specs:
+        return {"ok": False, "steps": [], "error": f"spec not found: {spec}"}
+    entry = specs[spec]
+    if not (is_spec_frozen(entry) or entry.get("status") == "blocked"):
+        return {"ok": False, "steps": [],
+                "error": (f"spec 未处于冻结/blocked 态（当前 {entry.get('status')}），"
+                          "继续自动修复被拒绝")}
+    sm = _adjudication_sm(proot)
+    updates = {"frozen": False, "error": None, "frozen_until": None}
+    updates.update(_RETRY_COUNTER_RESETS)
+    updates["_impl_run_budget_used"] = 0
+    sm.update_spec(spec, updates)
+    sm.transition(spec, "ready", channel="manual")
+    kicked = ""
+    try:
+        if _write_scheduling_kick_signal(proot, spec).get("ok"):
+            kicked = "，已写调度唤醒信号"
+    except Exception:
+        pass
+    steps = [
+        "解冻并清零实现预算与验证链重试计数（重新获得完整自动修复预算）",
+        "BLOCKED→READY 回实现通道" + kicked,
+    ]
+    if note:
+        steps.append(f"裁决依据：{note}")
+    return {"ok": True, "steps": steps, "status": "ready", "error": None}
+
+
+def _exec_raise_budget(project_root, spec: str) -> dict:
+    """raise_budget：agents.token_budget_millions 翻倍 + 复位告警幂等标记。"""
+    from .config_admin import read_config, write_config
+
+    proot = Path(project_root)
+    current_val = 50.0
+    try:
+        agents_cfg = (read_config(proot) or {}).get("agents") or {}
+        raw = agents_cfg.get("token_budget_millions")
+        if raw is not None:
+            current_val = float(raw)
+    except (TypeError, ValueError):
+        pass
+    if current_val <= 0:
+        # 0=关闭语义无法翻倍，回缺省基线翻倍（与 _check_token_budget 缺省一致）
+        current_val = 50.0
+    new_val = current_val * 2
+    new_val_i = int(new_val) if float(new_val).is_integer() else new_val
+    r = write_config(proot, {"agents": {"token_budget_millions": new_val_i}}, scope="project")
+    if not r.get("ok"):
+        return {"ok": False, "steps": [], "error": f"写入预算配置失败: {r.get('error')}"}
+    steps = [f"agents.token_budget_millions {current_val:g}M → {new_val:g}M"
+             "（写入 .fenix/config.yaml）"]
+    try:
+        sm = _adjudication_sm(proot)
+        sm.update_spec(spec, {"_token_warn_80": False, "_token_alert_100": False})
+        steps.append("已复位 _token_warn_80/_token_alert_100 告警幂等标记")
+    except Exception:
+        pass
+    return {"ok": True, "steps": steps, "error": None}
+
+
+def _exec_declare_no_artifacts(project_root, spec: str, note: str = "") -> dict:
+    """declare_no_artifacts：原子写 worktree.has_build_artifacts=false 结案。"""
+    import yaml as _yaml
+
+    proot = Path(project_root)
+    config_path = proot / ".fenix" / "config.yaml"
+    raw = {}
+    if config_path.is_file():
+        try:
+            loaded = _yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                raw = loaded
+        except (_yaml.YAMLError, OSError) as e:
+            return {"ok": False, "steps": [], "error": f"读取现有配置失败: {e}"}
+    wt = raw.get("worktree")
+    if not isinstance(wt, dict):
+        wt = {}
+    wt["has_build_artifacts"] = False
+    raw["worktree"] = wt
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = config_path.with_suffix(config_path.suffix + ".tmp")
+    try:
+        tmp_path.write_text(
+            _yaml.safe_dump(raw, allow_unicode=True, sort_keys=False), encoding="utf-8"
+        )
+        os.replace(tmp_path, config_path)
+    except OSError as e:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        return {"ok": False, "steps": [], "error": f"写配置失败: {e}"}
+    steps = ["worktree.has_build_artifacts=false 已写入 .fenix/config.yaml"
+             "（原子写，声明本项目无构建产物，结案）"]
+    if note:
+        steps.append(f"裁决依据：{note}")
+    return {"ok": True, "steps": steps, "error": None}
+
+
+def execute_adjudication_choice(project_root, spec: str, choice_id: str,
+                                note: str = "", signal_type: str = "") -> dict:
+    """choice_id → 后端动作统一映射执行器（add-human-adjudication-choices 4.1/4.2）。
+
+    alert-resolve 端点与 Administrator 处置记录消费共用本执行器：同一动作
+    映射、同一留痕格式，自动处置与人工下拉处置收敛为同一裁决空间（D1）。
+    action 判定：signal_type 注册表内精确匹配优先；缺 signal_type 上下文时
+    按 choice_id 全表反查（同一 id 在各信号下 action 语义一致）。
+
+    本函数只执行动作，不做告警 handled 标记与 disposition 留痕——由调用方
+    （端点 / admin 消费路径）按各自通道收口。
+
+    Returns:
+        {"ok": bool, "choice_id": str, "action": str, "steps": [str],
+         "error": str|null, ...动作附加字段}
+    """
+    from .adjudication_choices import ADJUDICATION_CHOICES
+
+    if not choice_id or not str(choice_id).strip():
+        return {"ok": False, "choice_id": choice_id or "", "action": None,
+                "steps": [], "error": "choice_id is required"}
+    choice_id = str(choice_id).strip()
+    sig = str(signal_type or "")
+    action = None
+    for c in ADJUDICATION_CHOICES.get(sig, ()):
+        if c.get("id") == choice_id:
+            action = c.get("action")
+            break
+    if action is None and sig in ADJUDICATION_CHOICES:
+        # signal_type 已注册：choice 必须落在该信号选项集内（alert-resolve
+        # 契约「按 alert 的 signal_type 校验 choice_id 合法」），不做跨信号放行
+        return {"ok": False, "choice_id": choice_id, "action": None, "steps": [],
+                "error": (f"非法 choice_id '{choice_id}'"
+                          f"（不在信号 '{sig}' 的选项集内）")}
+    if action is None:
+        # signal_type 缺失/未注册（直接调用 / Administrator 自由处置带建议 id）：
+        # 按 id 全表反查（同一 id 在各信号下 action 语义一致）
+        for sig_choices in ADJUDICATION_CHOICES.values():
+            for c in sig_choices:
+                if c.get("id") == choice_id:
+                    action = c.get("action")
+                    break
+            if action:
+                break
+    if action is None:
+        return {"ok": False, "choice_id": choice_id, "action": None, "steps": [],
+                "error": f"非法 choice_id '{choice_id}'（注册表无此选项）"}
+
+    try:
+        if action == "reset_verification":
+            r = reset_verification(project_root, spec, note=note, signal_type=signal_type)
+        elif action == "force_advance":
+            r = force_advance(project_root, spec, target_status="done", note=note)
+        elif action == "skip_review_gate":
+            r = skip_review_gate(project_root, spec, note=note)
+        elif action == "abandon":
+            r = _exec_abandon(project_root, spec, note)
+        elif action == "continue_auto_fix":
+            r = _exec_continue_auto_fix(project_root, spec, note)
+        elif action == "revise_reproposal":
+            r = _exec_review_unfreeze(project_root, spec, note,
+                                      "spec-review-rejected", "修订重评")
+        elif action == "retry_review":
+            r = _exec_review_unfreeze(project_root, spec, note,
+                                      "spec-review-incomplete", "重派评审")
+        elif action == "freeze_stop_loss":
+            r = freeze_spec(project_root, spec, reason=note or "token 预算止损（人工裁决）")
+            if r.get("ok") and not r.get("frozen") and r.get("error"):
+                r = {"ok": False, "steps": [], "error": r.get("error")}
+        elif action == "raise_budget":
+            r = _exec_raise_budget(project_root, spec)
+        elif action == "declare_no_artifacts":
+            r = _exec_declare_no_artifacts(project_root, spec, note)
+        elif action == "ignore":
+            r = {"ok": True, "steps": ["知情确认：仅关闭本条告警，不改动 spec 状态"],
+                 "error": None}
+        elif action == "open_config":
+            r = {"ok": True,
+                 "steps": ["确认信号：请到 Dashboard 配置表单填写 "
+                           "worktree.has_build_artifacts / build_artifact_paths"
+                           "（本动作仅确认，不代填配置）"],
+                 "error": None}
+        else:
+            r = {"ok": False, "steps": [],
+                 "error": f"注册表 action '{action}' 无执行器映射"}
+    except Exception as e:
+        return {"ok": False, "choice_id": choice_id, "action": action,
+                "steps": [], "error": f"动作执行异常: {e}"}
+    if not isinstance(r, dict):
+        r = {"ok": False, "steps": [], "error": "执行器返回非结构化结果"}
+    r = dict(r)
+    r.setdefault("steps", [])
+    r["choice_id"] = choice_id
+    r["action"] = action
+    if not r.get("ok") and not r.get("error"):
+        r["error"] = "动作未成功执行"
+    return r

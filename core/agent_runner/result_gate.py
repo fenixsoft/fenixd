@@ -214,6 +214,8 @@ class AdminDisposition:
         output: str = "",
         family_waiver: bool = False,
         failure_evidence: dict | None = None,
+        choice_id: str = "",
+        suggested_choice: str = "",
     ):
         self.run_id = run_id
         self.spec = spec
@@ -234,6 +236,12 @@ class AdminDisposition:
         # 独立字段，不参与 error 归因文本（error-attribution-denoise D5 语义
         # 不变）；成功或无证据时为空 dict。
         self.failure_evidence = failure_evidence or {}
+        # add-human-adjudication-choices 4.2：处置结论的结构化裁决表达——
+        # choice_id 非空时框架按注册表 action 执行（与人工 alert-resolve 同一
+        # 执行路径）；suggested_choice 为注册表未覆盖处置的建议新增选项 id。
+        # 可选键缺省空串，既有处置记录（无这两个键）完全兼容。
+        self.choice_id = choice_id or ""
+        self.suggested_choice = suggested_choice or ""
 
     def to_dict(self) -> dict:
         return {
@@ -247,6 +255,8 @@ class AdminDisposition:
             "recommended_action": self.recommended_action,
             "summary": self.summary,
             "error": self.error,
+            "choice_id": self.choice_id,
+            "suggested_choice": self.suggested_choice,
         }
 
 
