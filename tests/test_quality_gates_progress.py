@@ -347,6 +347,30 @@ class TestLaneFingerprint(QualityGatesTestBase):
         out = parse_quality_gates(self.root, self.SPEC, self.entry)
         assert self._item(out, "code-review")["status"] == "pending"
 
+    def test_nested_fingerprint_product_accepted(self):
+        # add-timeline-ocr-lane-visibility 修复轮：真实车道产物（run_impl_ocr
+        # 写侧）指纹嵌套在 fingerprint 子对象——须与顶层平铺形态同样采信
+        self._write_lane({
+            "status": "completed",
+            "findings": [],
+            "fingerprint": {"branch": self.fp["branch"],
+                            "merge_base": self.fp["merge_base"],
+                            "head_commit": self.fp["head_commit"]},
+        })
+        out = parse_quality_gates(self.root, self.SPEC, self.entry)
+        assert self._item(out, "code-review")["status"] == "passed"
+
+    def test_nested_fingerprint_stale_not_trusted(self):
+        self._write_lane({
+            "status": "completed",
+            "findings": [],
+            "fingerprint": {"branch": self.fp["branch"],
+                            "merge_base": self.fp["merge_base"],
+                            "head_commit": "0" * 40},
+        })
+        out = parse_quality_gates(self.root, self.SPEC, self.entry)
+        assert self._item(out, "code-review")["status"] == "pending"
+
 
 class TestOcrLaneInflight(QualityGatesTestBase):
     """add-timeline-ocr-lane-visibility 任务 1.3：ocr 门在飞检测补全。

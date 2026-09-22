@@ -155,16 +155,23 @@ def _lane_fingerprint_ok(product: dict, expected) -> bool:
     - 产物缺 branch/head_commit（未绑定指纹的产物）→ 不采信（车道契约保证
       指纹在场，缺失即形态异常）；
     - 指纹与当前不符（修复轮 head 前移等）→ 不采信 stale 报告。
+
+    指纹字段形态兼容（add-timeline-ocr-lane-visibility 修复轮）：真实车道
+    产物（run_impl_ocr 写侧）把指纹嵌套在 ``fingerprint`` 子对象，历史
+    手工/测试产物平铺在顶层——嵌套形态此前被误判「未绑定指纹」恒不采信，
+    completed 产物永远回落 pending，翻转回落语义在真实产物下不可达。
     """
     if not isinstance(expected, dict):
         return True
-    p_branch = str(product.get("branch") or "").strip()
-    p_head = str(product.get("head_commit") or "").strip()
+    fp = product.get("fingerprint")
+    src = fp if isinstance(fp, dict) else product
+    p_branch = str(src.get("branch") or "").strip()
+    p_head = str(src.get("head_commit") or "").strip()
     if not p_branch or not p_head:
         return False
     if p_branch != expected.get("branch") or p_head != expected.get("head_commit"):
         return False
-    p_mb = str(product.get("merge_base") or "").strip()
+    p_mb = str(src.get("merge_base") or "").strip()
     if expected.get("merge_base") and p_mb and p_mb != expected["merge_base"]:
         return False
     return True
