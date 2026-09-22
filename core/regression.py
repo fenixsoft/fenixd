@@ -293,12 +293,56 @@ def _atomic_write(path: Path, content: str) -> None:
                 pass
 
 
+def current_repo_fingerprint(project_root) -> Dict[str, Any] | None:
+    """采集当前仓库指纹 ``(branch, merge_base, head_commit)``（3.2）。
+
+    读侧（quality-gates full-suite 门）据此判定框架侧回归产物是否对应当前
+    仓库状态：快照指纹与当前指纹**完全一致**才可见；HEAD / merge-base 移动
+    即判陈旧。git 子进程采集，任一步失败返回 None（fail-open：调用方照常
+    落盘快照、读侧按不可见逐级回落，MUST NOT 抛异常阻断写/读路径）。
+    project_root 非 git 仓库 / 裸目录同样 fail-open。
+
+    ``merge_base`` 取 ``git merge-base HEAD main``；无 main 分支的仓库置空串
+    （读写两侧同式采集，比较仍自洽）。
+    """
+    root = str(project_root)
+
+    def _git(*args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["git", "-C", root, *args],
+            capture_output=True, text=True, timeout=10,
+        )
+
+    try:
+        head = _git("rev-parse", "HEAD")
+        if head.returncode != 0:
+            return None
+        branch = _git("rev-parse", "--abbrev-ref", "HEAD")
+        merge_base = _git("merge-base", "HEAD", "main")
+        return {
+            "head_commit": head.stdout.strip(),
+            "branch": branch.stdout.strip() if branch.returncode == 0 else "",
+            "merge_base": merge_base.stdout.strip() if merge_base.returncode == 0 else "",
+        }
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
 def write_result(project_root, result: Dict[str, Any]) -> None:
     """原子写入 .fenix/regression/last-run.json（单快照覆盖式）。
 
     写坏在系统层面不可能出现（atomic_write 同式）。
+
+    add-impl-selfcheck-model-probe 3.2：落盘前 stamp 仓库指纹
+    ``repo_fingerprint = {branch, merge_base, head_commit}``，读侧
+    quality-gates 据此校验产物新鲜度（指纹陈旧/存量无指纹按不可见）。
+    指纹采集失败 fail-open：快照照常落盘，仅缺该字段（读侧按存量快照
+    处置）。不改写调用方传入的 dict。
     """
     path = _result_path(project_root)
+    stamp = current_repo_fingerprint(project_root)
+    if stamp is not None:
+        result = {**result, "repo_fingerprint": stamp}
     _atomic_write(path, json.dumps(result, ensure_ascii=False, indent=2))
 
 
