@@ -13,11 +13,11 @@
 running 字段：分面轮询期间运行中态始终可见。
 """
 
-import logging
-
-from core.regression import read_result, is_regression_running  # noqa: F401
-
-logger = logging.getLogger("fenixd.dashboard.data.regression")
+from core.regression import (  # noqa: F401
+    is_regression_running,
+    read_progress,
+    read_result,
+)
 
 
 def read_regression_result(project_root) -> dict:
@@ -26,18 +26,21 @@ def read_regression_result(project_root) -> dict:
     直接透传 core.regression.read_result 的结果（含 never_run/parse_error
     降级），并附加 ``running`` 字段（marker 新鲜度判定，见 task 5.6）。
     读侧 MUST NOT 因快照问题抛异常——路由层据此 200 返回而非 500。
+    运行中（running=True）附加 ``progress``（read_progress：终端真实标记 /
+    耗时估算 / 未知三级口径），供分面渲染执行进度条。
     """
     result = read_result(project_root)
     if not isinstance(result, dict):
         result = {"status": "parse_error", "reason": "快照非对象"}
-    # never_run/parse_error 同样透出运行中态（触发后、快照未写盘窗口内）。
-    # fail-closed 回退保留（running=False），但降级可观测（item 0d1ba0c6efc0）：
-    # 文件系统/探测异常被静默报告为未运行会让「在跑却显示空闲」无从诊断。
+    # never_run/parse_error 同样透出运行中态（触发后、快照未写盘窗口内）
     try:
         result["running"] = bool(is_regression_running(project_root))
-    except Exception as exc:
-        logger.warning(
-            "is_regression_running 探测失败，降级 running=False: %r", exc
-        )
+    except Exception:
         result["running"] = False
+    # 运行中透出执行进度；任何异常吞掉（进度条缺失不应影响快照展示）
+    if result["running"]:
+        try:
+            result["progress"] = read_progress(project_root)
+        except Exception:
+            pass
     return result
