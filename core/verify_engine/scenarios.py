@@ -152,7 +152,10 @@ def frozen_contract_version(scenarios: list) -> int:
             versions.append(1)
             continue
         v = item.get(CONTRACT_VERSION_FIELD)
-        versions.append(v if isinstance(v, int) else 1)
+        # type(...) is int（code-review item 380e0508406d）：bool 是 int 子类，
+        # isinstance 会把 contract_version:true 当成 1 放行；精确类型拒绝 bool，
+        # 与「非整型→1」的文档语义一致。
+        versions.append(v if type(v) is int else 1)
     return min(versions) if versions else 1
 
 
@@ -942,10 +945,12 @@ class TestScenario:
         其余形态一律忽略（回退桌面缺省），不制造新的验收失败模式。"""
         if not isinstance(raw, dict):
             return None
-        try:
-            w, h = int(raw["width"]), int(raw["height"])
-        except (KeyError, TypeError, ValueError):
+        # 精确 int（code-review item 380e0508406d）：bool 是 int 子类，
+        # isinstance + int(...) 强转会让 {'width': true, 'height': true}
+        # 静默变成 1×1 viewport 而非回退桌面缺省；type(...) is int 拒绝 bool。
+        if type(raw.get("width")) is not int or type(raw.get("height")) is not int:
             return None
+        w, h = raw["width"], raw["height"]
         if w <= 0 or h <= 0 or w > 3840 or h > 2160:
             return None
         return {"width": w, "height": h}

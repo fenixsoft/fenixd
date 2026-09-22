@@ -169,33 +169,42 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
   };
 
   const handleSave = async () => {
+    // 分离「表单校验」与「保存持久化」（code-review item 3086b7e96c4f）：旧实现
+    // 两者混在同一 try/catch 且只 console.error，把校验失败与网络/500 混为一谈，
+    // 对纯校验失败可能违反 no_console_error 断言，onSave 拒绝时也无用户反馈。
+    let values;
     try {
-      const values = await form.validateFields();
-      const roleList: RoleValue[] = values.roleList;
-      // v1 improve-failover-model-mapping-ui D4 校验：已配置的链不允许整链无可用模型
-      const providerDefaults: Record<string, string> = {};
-      providers.forEach((p) => {
-        if (p.name) providerDefaults[p.name] = p.model || '';
+      values = await form.validateFields();
+    } catch {
+      // 校验失败：antd 已在表单内渲染提示，不落 console
+      return;
+    }
+    const roleList: RoleValue[] = values.roleList;
+    // v1 improve-failover-model-mapping-ui D4 校验：已配置的链不允许整链无可用模型
+    const providerDefaults: Record<string, string> = {};
+    providers.forEach((p) => {
+      if (p.name) providerDefaults[p.name] = p.model || '';
+    });
+    const missing: string[] = [];
+    roleList.forEach((rv, index) => {
+      if (!rv?.rows || rv.rows.length === 0) return;
+      const roleDefault = (rv.roleModel || '').trim();
+      const allRowsHaveModel = rv.rows.every((r) => {
+        const p = (r?.provider || '').trim();
+        if (!p) return true; // 空 provider 行保存时丢弃
+        return !!((r?.model || '').trim() || roleDefault || providerDefaults[p]);
       });
-      const missing: string[] = [];
-      roleList.forEach((rv, index) => {
-        if (!rv?.rows || rv.rows.length === 0) return;
-        const roleDefault = (rv.roleModel || '').trim();
-        const allRowsHaveModel = rv.rows.every((r) => {
-          const p = (r?.provider || '').trim();
-          if (!p) return true; // 空 provider 行保存时丢弃
-          return !!((r?.model || '').trim() || roleDefault || providerDefaults[p]);
-        });
-        if (!roleDefault && !allRowsHaveModel) {
-          missing.push(AGENT_ROLES[index]?.label ?? `角色 ${index + 1}`);
-        }
-      });
-      if (missing.length > 0) {
-        message.error(
-          `保存失败：${missing.join('、')} 无可用模型（角色级缺省与逐行模型均为空，且 Provider 也无默认模型）`,
-        );
-        return;
+      if (!roleDefault && !allRowsHaveModel) {
+        missing.push(AGENT_ROLES[index]?.label ?? `角色 ${index + 1}`);
       }
+    });
+    if (missing.length > 0) {
+      message.error(
+        `保存失败：${missing.join('、')} 无可用模型（角色级缺省与逐行模型均为空，且 Provider 也无默认模型）`,
+      );
+      return;
+    }
+    try {
       await onSave({
         agents: {
           models: toModels(roleList),
@@ -203,7 +212,8 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
         },
       });
     } catch (error) {
-      console.error('Validation failed:', error);
+      // 保存持久化失败：给用户显式反馈而非静默
+      message.error(`保存失败：${error instanceof Error ? error.message : String(error)}`);
     }
   };
 

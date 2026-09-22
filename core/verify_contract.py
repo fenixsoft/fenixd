@@ -493,6 +493,10 @@ def validate_contract(project_root: Path, logger=None) -> ValidateResult:
     # validate_command_stop_order 修复）——须在 try 外声明，static 形态或
     # prepare 失败路径下 finally 才不致 UnboundLocalError（2026-09-09 修复）。
     srv = None
+    # command 形态的 Popen 句柄（code-review item 14f978f49d7f）：构造
+    # CommandVerifyServer 失败（srv 仍为 None）时，finally 据此兜底收掉
+    # 进程组，防孤儿服务。
+    proc = None
     ready_ok = True
     ready_error = ""
     ready_url = ""
@@ -536,18 +540,25 @@ def validate_contract(project_root: Path, logger=None) -> ValidateResult:
                     # serve 命令启动失败是运行时问题，不是契约格式问题——契约结构有效
                 if serve_ok:
                     # 使用 CommandVerifyServer 进行端口发现（注入端口精确探 +
-                    # 进程归属发现 + 邻近扫描）
-                    srv = CommandVerifyServer(
-                        proc,
-                        injected_port,
-                        timeout=contract.ready.timeout or 60,
-                        legacy_hint=contract.serve.port,
-                    )
-                    if not srv.ok:
+                    # 进程归属发现 + 邻近扫描）。构造失败（端口发现内部异常）
+                    # 时 srv 保持 None，进程兜底清理交 finally（本条为运行时
+                    # 问题，不是契约格式问题——契约结构有效）。
+                    try:
+                        srv = CommandVerifyServer(
+                            proc,
+                            injected_port,
+                            timeout=contract.ready.timeout or 60,
+                            legacy_hint=contract.serve.port,
+                        )
+                    except Exception as e:
+                        srv = None
+                        serve_ok = False
+                        serve_error = f"serve 端口发现异常: {e}"
+                    if srv is not None and not srv.ok:
                         serve_ok = False
                         serve_error = srv.failure_note or "serve 命令未就绪（注入端口未被消费）"
                         # serve 命令未就绪是运行时问题，不是契约格式问题——契约结构有效
-                    else:
+                    elif srv is not None:
                         base_url = srv.base_url
                     # 注意：command 形态不在这里 stop——先探 ready 再统一 stop
                     # （validate_command_stop_order 2026-09-08 修复）
@@ -572,13 +583,28 @@ def validate_contract(project_root: Path, logger=None) -> ValidateResult:
                     server.stop()
                 except Exception:
                     pass
-            # command 形态：srv 在 finally 再 stop（先探 ready 再停实例，
-            # 修复 validate_command_stop_order 2026-09-08）
-            if srv is not None and srv.ok:
+            # command 形态：srv 在 finally 无条件 stop（先探 ready 再停实例，
+            # 修复 validate_command_stop_order 2026-09-08）。不限定 srv.ok——
+            # 端口发现超时（srv.ok=False 但进程仍存活）时进程组同样要收掉，
+            # 否则泄漏孤儿服务（code-review item 14f978f49d7f）；stop 内部已
+            # 对已退出/无权限进程分 try/except 兜底，重复调用安全。
+            if srv is not None:
                 try:
                     srv.stop()
                 except Exception:
                     pass
+            elif proc is not None:
+                # 构造 CommandVerifyServer 失败（srv 仍为 None）的兜底：
+                # 进程组照常收掉，防孤儿服务（同上 item）。
+                try:
+                    if proc.poll() is None:
+                        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                        proc.wait(timeout=5)
+                except Exception:
+                    try:
+                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    except Exception:
+                        pass
 
     return ValidateResult(
         valid=valid,
@@ -1048,7 +1074,11 @@ def probe_ready(base_url: str, ready: ReadyProbe) -> tuple:
 
     Returns: (ok, note)
     """
-    url = f"{base_url.rstrip('/')}{ready.url}"
+    # 分隔符归一化（code-review item 223b2d551f24）：ready.url 不以 / 开头
+    # （如 api/health）时直接拼接会得到 http://127.0.0.1:8080api/health 非法
+    # URL，probe_ready 恒异常直至超时且用户难定位根因。
+    ready_path = ready.url if ready.url.startswith("/") else f"/{ready.url}"
+    url = f"{base_url.rstrip('/')}{ready_path}"
     deadline = time.time() + max(1, ready.timeout)
     last_err = ""
     while time.time() < deadline:

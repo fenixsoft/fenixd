@@ -137,17 +137,27 @@ function SpecNameCell({ project, record }: { project: string; record: SpecSummar
   const [open, setOpen] = useState(false);
   const [why, setWhy] = useState<string | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // 在飞 promise 守卫（code-review item 23afb102a432）：卸载只清防抖 timer，
+  // 200ms 已过、fetch 在飞时 promise 仍会 setWhy/setOpen——行（或整表）已
+  // 消失后为 specMap 中已不存在的 spec 开 popover。alive 标志丢弃卸载后的
+  // 回写；挂载时复位以兼容 StrictMode 模拟卸载-重挂载（ref 不随重挂载重置）。
+  const aliveRef = useRef(true);
 
   // 卸载清理（code-review item 2d5f6ca39f91）：悬停启动的 200ms 定时器若在
   // 触发前组件被卸载（列表刷新/行删除/切 Tab），其回调仍会 setWhy/setOpen，
   // 造成卸载后 setState。统一在卸载时清掉。
-  useEffect(() => () => {
-    if (timerRef.current) clearTimeout(timerRef.current);
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => {
+      aliveRef.current = false;
+      if (timerRef.current) clearTimeout(timerRef.current);
+    };
   }, []);
 
   const onEnter = () => {
     timerRef.current = setTimeout(() => {
       void fetchProposalWhy(project, record.name).then((text) => {
+        if (!aliveRef.current) return;
         if (text) {
           setWhy(text);
           setOpen(true);

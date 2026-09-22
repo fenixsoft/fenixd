@@ -3821,9 +3821,20 @@ class AgentRunner:
                                     e_ts - latency_state["last_tool_result_ts"])
                                 latency_state["last_tool_result_ts"] = None
                     append_run_line(run_file, entry)
-            except Exception:
-                # 读取线程异常不应导致主流程崩溃；半成品产物仍可被 Dashboard 读取
-                pass
+            except Exception as e:
+                # 读取线程异常不应导致主流程崩溃；半成品产物仍可被 Dashboard 读取。
+                # 但不零痕迹（code-review item 2fffcc8e3be1）：与模块内「失败记
+                # warning 不阻断」惯例一致，留一条含 run_id 的可审计日志，避免
+                # 排查时只能靠 run 文件提前停止增长反推夭折原因。
+                self.logger.warning(
+                    "agent_runner",
+                    f"read stream thread aborted: {e!r}",
+                    {
+                        "run_id": run_id,
+                        "is_stderr": is_stderr,
+                        "event": "read_stream_thread_error",
+                    },
+                )
 
         t_out = threading.Thread(target=_read_stream, args=(proc.stdout, False), daemon=True)
         t_err = threading.Thread(target=_read_stream, args=(proc.stderr, True), daemon=True)

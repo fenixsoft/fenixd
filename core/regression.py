@@ -469,9 +469,20 @@ def is_regression_running(project_root) -> bool:
         return False
     try:
         meta = json.loads(path.read_text(encoding="utf-8"))
-        started = datetime.datetime.fromisoformat(meta.get("started_at", ""))
+        # 畸形 marker 防御（code-review item 1e2951cac732）：合法 JSON 非对象
+        # （null/[]/字符串）没有 .get，AttributeError 不在捕获元组；朴素 ISO
+        # 时间戳（无偏移，旧/外部写手）能过 fromisoformat 但与 tz-aware
+        # now() 相减抛 TypeError 且发生在 try 外——两者都会渗入 HTTP 409
+        # 守卫。此处归一：非 dict 视为 stale；朴素时间戳按系统本地时区解释
+        # （astimezone() 的 naive 语义——外部写手多为本地 now().isoformat()，
+        # 按 UTC 解释会让东侧时区的陈旧 marker 多锁一个时区偏移）。
+        if not isinstance(meta, dict):
+            return False
+        started = datetime.datetime.fromisoformat(str(meta.get("started_at", "")))
+        if started.tzinfo is None:
+            started = started.astimezone()
         timeout_seconds = int(meta.get("timeout_seconds", 1800))
-    except (json.JSONDecodeError, ValueError, TypeError):
+    except (json.JSONDecodeError, ValueError, TypeError, OSError):
         return False
     life = datetime.datetime.now(datetime.timezone.utc) - started
     return life.total_seconds() < timeout_seconds + 30

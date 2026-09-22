@@ -239,6 +239,11 @@ export default function QualityTab({ project, active }: QualityTabProps) {
     }
   }, [active, project, statusFilter, message]);
 
+  // loadItems 的 ref 视图（code-review item 2723381276fb）：轮询 interval 这类
+  // 长生命周期闭包经此读取最新 loader——statusFilter 变化会重建 loadItems，
+  // interval 回调直呼创建时捕获的旧闭包会用旧过滤条件的结果覆盖正确过滤的列表。
+  const loadItemsRef = useRef(loadItems);
+
   const loadProgress = useCallback(async () => {
     if (!active || !project) return;
     try {
@@ -258,8 +263,9 @@ export default function QualityTab({ project, active }: QualityTabProps) {
                 pollTimerRef.current = null;
               }
               runningRef.current = false;
-              // 运行结束：刷新问题表格
-              void loadItems();
+              // 运行结束：刷新问题表格（经 ref 取最新 loader，避免沿用创建
+              // interval 时捕获的旧 statusFilter——见上方 loadItemsRef 注释）
+              void loadItemsRef.current();
             }
           } catch {
             // 轮询失败继续（下轮重试）
@@ -282,8 +288,8 @@ export default function QualityTab({ project, active }: QualityTabProps) {
     void loadProgress();
   }, [active, project, loadItems, loadProgress]);
 
-  // SSE 增量刷新订阅 + 心跳兜底（仅依赖 active/project，转义为 ref 读取最新 loader）
-  const loadItemsRef = useRef(loadItems);
+  // SSE 增量刷新订阅 + 心跳兜底（仅依赖 active/project，转义为 ref 读取最新
+  // loader；loadItemsRef 声明在 loadProgress 之前供轮询回调共用）
   const loadProgressRef = useRef(loadProgress);
   useEffect(() => {
     loadItemsRef.current = loadItems;
@@ -460,11 +466,26 @@ export default function QualityTab({ project, active }: QualityTabProps) {
     }
   };
 
+  // 弹窗重入门（code-review item 2639d933f356）：generating 在 onOk 内才置位，
+  // 两次快速点击都能通过检查、各自 await configStartAfter 后各开一个确认框
+  // （及两次 getConfig）。useRef 写读同帧原子：await 前先占住门，弹窗最终
+  // 关闭再释放（afterClose 对 ok/cancel 两条路径都触发；onOk 校验失败保持
+  // 弹窗打开期间门不释放，与「弹窗开着」一致）。
+  const generateModalOpenRef = useRef(false);
+
   // 打开弹窗前把配置里的默认执行时刻算好（异步；算完再弹，避免弹窗内
   // 初始值闪一下从「立即」跳到「定时」）
   const handleGenerate = async () => {
-    if (selectedKeys.length === 0 || generating) return;
-    const initial = await configStartAfter();
+    if (selectedKeys.length === 0 || generating || generateModalOpenRef.current) return;
+    generateModalOpenRef.current = true;
+    let initial: string | null;
+    try {
+      initial = await configStartAfter();
+    } catch {
+      // configStartAfter 内部已吞错，此处纯防御：取值失败释放重入门
+      generateModalOpenRef.current = false;
+      return;
+    }
     const count = selectedKeys.length;
     const holder: AcceptSchedule = { startAfter: initial };
     modal.confirm({
@@ -511,6 +532,10 @@ export default function QualityTab({ project, active }: QualityTabProps) {
         } finally {
           setGenerating(false);
         }
+      },
+      // 弹窗最终关闭（确定/取消两条路径）后释放重入门（见上方注释）
+      afterClose: () => {
+        generateModalOpenRef.current = false;
       },
     });
   };

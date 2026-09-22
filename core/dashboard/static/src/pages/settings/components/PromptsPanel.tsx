@@ -34,6 +34,12 @@ interface PromptsPanelProps {
   project?: string;
 }
 
+// 项目附加提示词提取单点（code-review item 190361647678）：加载回填、
+// serverDraftFor、保存后回填三处共用同一空安全与缺省规则，防止漂移。
+function projectExtraOf(d: PromptsData | null | undefined, agentType: string): string {
+  return d?.project ? d.project.extras[agentType] ?? '' : '';
+}
+
 export default function PromptsPanel({ project }: PromptsPanelProps) {
   const [data, setData] = useState<PromptsData | null>(null);
   const [activeAgent, setActiveAgent] = useState<string>('implementer');
@@ -57,7 +63,7 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
           // 内容而选择器显示 verifier——点保存会把 implementer 内容写进
           // .fenix/agents/verifier.md（静默错写文件）。复位后二者一致。
           setActiveAgent('implementer');
-          setExtraDraft(d.project ? d.project.extras['implementer'] ?? '' : '');
+          setExtraDraft(projectExtraOf(d, 'implementer'));
         }
       } catch (e) {
         console.error('Failed to load prompts:', e);
@@ -73,8 +79,7 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
   // 切换 agent 时把项目附加草稿重置为服务端现值；若当前草稿有未保存改动，
   // 先确认再丢弃（code-review item 60bca994744d：旧实现无条件覆盖，静默丢失
   // 用户已输入未保存的内容）。
-  const serverDraftFor = (atype: string) =>
-    data?.project ? data.project.extras[atype] ?? '' : '';
+  const serverDraftFor = (atype: string) => projectExtraOf(data, atype);
 
   const handleAgentChange = (atype: string) => {
     if (extraDraft !== serverDraftFor(activeAgent) && !window.confirm('当前 agent 的修改尚未保存，切换将丢弃，确定继续？')) {
@@ -116,7 +121,7 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
       setData(d);
       // 仅当用户仍停在同一 agent 时才回填草稿（避免覆盖刚切到的 agent）
       if (targetAgent === activeAgent) {
-        setExtraDraft(d.project ? d.project.extras[targetAgent] ?? '' : '');
+        setExtraDraft(projectExtraOf(d, targetAgent));
       }
     } catch (e) {
       message.warning(`已保存，但刷新列表失败：${e instanceof Error ? e.message : String(e)}`);

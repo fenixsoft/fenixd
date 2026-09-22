@@ -118,6 +118,13 @@ def probe(provider_name: str, config_path: Path) -> dict:
     for i in (1, 2):
         try:
             parsed, _raw = _post_once(provider, body)
+        except Exception as e:  # 网络/解析/HTTP 错误：round 留空并记录
+            errors.append(f"round{i}: {e!r}")
+            rounds.append({"round": i, "error": f"{e!r}"})
+        else:
+            # usage 归一化在守卫外（code-review item 14a31e7379a3）：int() 遇
+            # 非数值 usage 属编程/数据错误，应向上抛真实异常——收窄守卫区域
+            # 到网络调用后不再被静默记成网络型轮错误、掩盖缺陷仍产出裁决。
             usage = parsed.get("usage") or {}
             rounds.append(
                 {
@@ -131,9 +138,6 @@ def probe(provider_name: str, config_path: Path) -> dict:
                     ),
                 }
             )
-        except Exception as e:  # 网络/解析/HTTP 错误：round 留空并记录
-            errors.append(f"round{i}: {e!r}")
-            rounds.append({"round": i, "error": f"{e!r}"})
         time.sleep(1)
 
     # cache_supported 判据：第二轮有读取且第二轮 cache_read 显著（>0）。

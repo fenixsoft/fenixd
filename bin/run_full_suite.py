@@ -403,14 +403,30 @@ def main(argv=None) -> int:
             classification = "current-hang"
             result["classification"] = "当前套件挂起（无完整失败集合对比）"
         else:
-            classification = classify_outcome(current_failed, base["baseline_failures"])
-            result["classification"] = classification
+            # baseline 自身错误态显式处置（code-review item 33596cced7f6）：
+            # worktree 创建失败时 baseline_failures 为空集，直接归类会把每个
+            # 当前失败都判「本次引入」产生假回归；baseline 超时只给出部分失败
+            # 集，归类不可靠。两者都不做引入归类、不给 verdict，交人工判读
+            # （当前套件自身失败仍经下方 exit_code 透出，不 mask）。
             result["current_failures"] = current_failed
-            result["baseline_failures"] = base["baseline_failures"]
-            result["baseline_ref"] = args.baseline
-            # 按 spec：混合情形 MUST 判为存在本次引入回归（分类文案已体现）。
-            if classification not in ("pass（全绿）", "存量"):
-                result["verdict"] = "本次引入回归"
+            base_cls = base.get("classification")
+            if base_cls == "baseline-worktree-error":
+                result["classification"] = "基线不可用（worktree 创建失败），无法对比归类"
+                result["baseline_ref"] = args.baseline
+                if base.get("error"):
+                    result["baseline_error"] = base["error"]
+            elif base_cls == "baseline-hang":
+                result["classification"] = "基线不可用（基线套件超时，失败集合不完整），归类不可信"
+                result["baseline_failures"] = base.get("baseline_failures", [])
+                result["baseline_ref"] = args.baseline
+            else:
+                classification = classify_outcome(current_failed, base["baseline_failures"])
+                result["classification"] = classification
+                result["baseline_failures"] = base["baseline_failures"]
+                result["baseline_ref"] = args.baseline
+                # 按 spec：混合情形 MUST 判为存在本次引入回归（分类文案已体现）。
+                if classification not in ("pass（全绿）", "存量"):
+                    result["verdict"] = "本次引入回归"
         print(f"\n[run_full_suite] 基线对比 ref={args.baseline} " f"→ {result['classification']}")
         if current_failed:
             print("[run_full_suite] 当前失败清单:")
