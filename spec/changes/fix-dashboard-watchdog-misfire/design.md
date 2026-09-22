@@ -53,8 +53,10 @@ Claude 会话上。
   （daemon，`comm==python3`），其 nohup dashboard 的父是 Bash shell（退出后 reparent
   为 1）。**父进程身份不随环境变量继承传播**，判据干净。✅
 
-**Decision**：读 `os.getppid()` 的 `/proc/<ppid>/comm`，值为 `tmux: server`（或 argv
-含 `tmux`）即判显式常驻，不装配 watchdog。读取失败（/proc 不可用、非 Linux）回退到
+**Decision**：读 `os.getppid()` 的 `/proc/<ppid>/comm`，值**恰为** `tmux: server`
+即判显式常驻，不装配 watchdog；comm 可读但不匹配时才回退 `cmdline`，且仅当 `argv[0]`
+的 basename 恰为 `tmux` 或以 `tmux:` 开头才算命中（不用「argv 含 `tmux` 子串」——
+agent 自测包装脚本名含 `tmux` 会造成假阳性、漏掉防泄漏）。读取失败（/proc 不可用、非 Linux）回退到
 「按非长驻处理」，保持 watchdog 的既有防泄漏（fail-safe 偏向防泄漏，与既有代码在非
 Linux 上「仅告警不阻断」的取向一致）。
 

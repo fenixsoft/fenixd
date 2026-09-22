@@ -1,0 +1,61 @@
+# 交付物声明修正：写回层与读取基准对齐
+
+## Why
+
+dispute judge 裁决 `typo`（声明路径笔误）后，机械修正**只写主树** `spec/changes/<spec>/tasks.md`
+并提交到主树，而守卫/裁决的**声明读取**优先序是 `worktree > 分支 > 主树`
+（`declaration-relocation-protocol` 的分层解析契约）。
+
+事故实证（add-code-review-auto-fix，2026-09-21）：该 SPEC 的进度卡片声明路径笔误
+（`pages/settings/…` 应为 `pages/projects/…`）。judge 判 `typo` 并「修正声明段」，
+但修正落在主树；实现 worktree 与分支里那份声明**仍是旧路径**，且**分支提交已携带**该
+旧路径。于是此后每轮实现完成的收工守卫都按分支版本解析 → 又读到旧路径 → 判缺件 →
+打回重派 → 实现方无任何信息可改（文件确实在真实路径）→ 原地打转，叠加 daemon 重启续做，
+累计 31 小时 / $44.98 仍在 `implementing`。
+
+根因是**「修正写入层」与「守卫读取层」不一致**：同一份声明的写口径（主树）与读口径
+（分支/worktree 优先）错层，修正永远读不回来。本变更把两者对齐，并补上「修正后校验
+读取路径一致」的熔断与跨轮脱困路径。
+
+## What Changes
+
+- **修正写回层对齐**：judge 的 `typo` / `reference` 修正，其改写目标与提交根 MUST 取
+  **生效声明所在工作树**（实现 worktree 优先）——与守卫读取基准同源；MUST NOT 在
+  无 worktree 时改主树并假装「修正已生效」。
+- **无 worktree 时不产生「读不回来」的修正**：无实现 worktree 时，修正 MUST 交由实现方
+  在分支上续做（走既有缺件打回 / relocate 凭据通道），MUST NOT 把修正写进主树而让
+  守卫继续按分支/主树顺序读回旧路径。
+- **修正后复检熔断**：机械修正后 MUST 以**守卫读取基准**复检该路径（旧路径不再作为
+  生效声明硬校验项）；读回仍是旧路径 → 记入 error 明细，MUST NOT 静默销账。
+- **跨轮脱困（残留核销）**：读取到的缺件若在 dispute 审计流已存在该路径的 typo /
+  重定位凭据，则**以凭据核销为收敛动作**（旧路径不再要求存在），MUST NOT 仅因
+  「本轮无新凭据」无限重派。
+- 新增迁移期 TTL 熔断：`typo` 修正后同路径连续 N 轮复发（读取基准未对齐）→ blocked
+  待人工（上限后不再烧预算）。
+
+## Capabilities
+
+### New Capabilities
+
+- `relocation-writeback-layer`: 声明修正的「写回层」契约——修正写入位置 MUST 与守卫
+  读取基准同源（生效声明所在工作树）；修正后复检读取一致性；跨轮残留凭据核销。
+
+### Modified Capabilities
+
+- `declaration-relocation-protocol`: 机械执行的改写目标由「生效声明所在位置（可回退主树）」
+  收紧为「生效声明所在工作树（worktree）」，并补「无工作树时改走凭据/打回、不写主树」。
+- `deliverable-declaration-resolution`: 补「写回层对齐」要求——解析入口返回的
+  `spec_dir` 用于**写入**时，MUST 与实际生效（读取命中）的那一层同源；主树回退仅用于
+  读取兜底，MUST NOT 作为修正写入落点。
+- `implementer-deliverable-gate`: 缺件判定补「凭据核销」收敛路径——缺件路径若已有
+  typo / 重定位凭据在册，则视为可收敛（核销），与既有 `removed` 收缩防护豁免同源。
+
+## Impact
+
+- **代码**：`core/pm_engine/dispatch/adjudication.py`（judge typo/reference 执行与
+  复检熔断）、`core/deliverables.py`（写回层解析辅助 / 凭据查询）、
+  `core/pm_engine/engine.py`（`_git_commit` 支持提交根）。
+- **行为**：judge 裁决后的声明修正不再写主树；守卫生效声明与修正落点同源。
+- **风险**：改动触及裁决流水线——须 fail-safe（无法写入工作树时不得误改主树、不得静默
+  放行），并有回归测试覆盖「无 worktree / 有 worktree / 复检不一致 / 凭据残留」四态。
+- **数据**：`.fenix/dispute_audits.jsonl`（凭据查询，运行时文件，`reference`）。

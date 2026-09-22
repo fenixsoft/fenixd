@@ -6,7 +6,7 @@
 
 任何情况下启动失败的实例 MUST 在 5 秒内退出进程，不得保留「已运行但未监听」的僵尸实例堆积。
 
-claude 生命周期 watchdog（`_start_claude_watchdog`，防 agent 经 CLI nohup 临时自测的实例泄漏）MUST 只绑定**非显式长驻**的实例。判定「显式长驻」的判据为：dashboard 进程的**父进程是 tmux server**（`/proc/<ppid>/comm` 为 `tmux: server`，或父进程 argv 含 `tmux`）。命中该判据时 MUST NOT 装配 watchdog，`CLAUDE_PID` 环境变量是否存在均不影响——tmux 承载即视为人工可经 `tmux kill-session` 收口的常驻服务。未命中的实例（含 agent 经 nohup 拉起、父进程非 tmux 者）行为不变，仍按现有逻辑装配 watchdog。
+claude 生命周期 watchdog（`_start_claude_watchdog`，防 agent 经 CLI nohup 临时自测的实例泄漏）MUST 只绑定**非显式长驻**的实例。判定「显式长驻」的判据为：dashboard 进程的**父进程是 tmux server**——`/proc/<ppid>/comm` **恰为** `tmux: server`；comm 可读但不匹配时回退父进程 `cmdline`，且仅当 `argv[0]` 的 basename **恰为** `tmux` 或以 `tmux:` 开头方可判为显式常驻（MUST NOT 采用「argv 任一项含 `tmux` 子串」：以含 `tmux` 子串的包装脚本为父进程的 agent 自测实例会被误判为常驻，漏掉防泄漏）。命中该判据时 MUST NOT 装配 watchdog，`CLAUDE_PID` 环境变量是否存在均不影响——tmux 承载即视为人工可经 `tmux kill-session` 收口的常驻服务。未命中的实例（含 agent 经 nohup 拉起、父进程非 tmux 者）行为不变，仍按现有逻辑装配 watchdog。
 
 判据 MUST NOT 采用「进程自身环境变量含 `TMUX`」：daemon 由 tmux 下的 supervisor 启动，其 `TMUX` 变量会被 `agent_runner` 透传给 agent 子进程，agent 经 Bash 工具 nohup 起的 dashboard 亦带 `TMUX`，会把 agent 临时自测实例误判为显式常驻、漏掉防泄漏；父进程判据无此继承污染。
 
