@@ -8,6 +8,8 @@ D5 约定：各组方法采用 mixin 模式，DashboardHandler 继承各组 mixi
 
 from __future__ import annotations
 
+import os
+import tempfile
 from pathlib import Path
 
 import yaml
@@ -20,6 +22,33 @@ from core.agent_runner.prompt_builder import (
     AGENT_PROMPT_FILES,
     project_agents_dir,
 )
+
+
+def _atomic_write_text(target: Path, content: str) -> None:
+    """整文件原子覆写：同目录临时文件 + ``os.replace``（对齐
+    config_admin.write_config 的 temp+os.replace 模式）。
+
+    code-review item efb4c656783a：直接 ``Path.write_text`` 非原子——崩溃/
+    ENOSPC 中途会留截断文件；verify.yaml 非纯装饰（``load_verify_contract``
+    可能并发读到部分文档而静默回退「无契约」），todo.md 同理。写失败时
+    清理半写临时文件后原样抛出，由调用方统一报告。
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(target.parent), prefix=f".{target.name}-", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, str(target))
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 class H5SettingsRoutesMixin:
@@ -259,8 +288,7 @@ class H5SettingsRoutesMixin:
         proot = Path(project["path"])
         target = proot / ".fenix" / "todo.md"
         try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(content, encoding="utf-8")
+            _atomic_write_text(target, content)
         except OSError as e:
             self._error(500, f"todo.md 保存失败: {e}")
             return
@@ -327,8 +355,7 @@ class H5SettingsRoutesMixin:
         proot = Path(project["path"])
         target = proot / ".fenix" / "verify.yaml"
         try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(content, encoding="utf-8")
+            _atomic_write_text(target, content)
         except OSError as e:
             self._error(500, f"verify.yaml 保存失败: {e}")
             return

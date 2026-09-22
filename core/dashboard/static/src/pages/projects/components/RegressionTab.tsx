@@ -21,12 +21,11 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { App, Button, Card, Descriptions, Progress, Space, Table, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import {
+  ApiError,
   getRegressionResult,
   triggerRegression,
 } from '../../../services/dashboard';
 import type {
-  RegressionFailure,
-  RegressionLongTest,
   RegressionProgress,
   RegressionResult,
 } from '../../../services/dashboard';
@@ -165,7 +164,6 @@ function RunningProgressView({
 export default function RegressionTab({ project, active }: RegressionTabProps) {
   const { message } = App.useApp();
   const [snapshot, setSnapshot] = useState<RegressionResult | null>(null);
-  const [loading, setLoading] = useState(false);
   const [triggering, setTriggering] = useState(false);
   // 受理已提交、daemon 尚未 mark_running 的过渡态：点击受理到服务端 running
   // 置位之间有主循环消费时延，此窗口内以「等待启动」动画条给即时反馈，
@@ -259,13 +257,16 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
       // 轮询接管（task 5.6）
       void loadResult();
     } catch (e) {
-      const errMsg = e instanceof Error ? e.message : String(e);
-      if (errMsg.includes('已有回归在进行中')) {
+      // 业务拒绝按稳定错误码分支（code-review item 934af264345f）：旧实现
+      // 对后端中文消息做子串匹配，措辞/locale 改动静默落入通用错误分支。
+      // 错误码由后端 _coded_error 下发、ApiError.code 承载。
+      if (e instanceof ApiError && e.code === 'regression_already_running') {
         message.warning('已有回归在进行中');
         void loadResult();
-      } else if (errMsg.includes('未配置全量回归')) {
+      } else if (e instanceof ApiError && e.code === 'regression_not_configured') {
         message.warning('该项目未配置全量回归（verify.yaml regression 段）');
       } else {
+        const errMsg = e instanceof Error ? e.message : String(e);
         message.error(`触发失败: ${errMsg}`);
       }
     } finally {
@@ -499,7 +500,6 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
         <Table
           className="regression-result-table"
           rowKey="key"
-          loading={loading}
           dataSource={rows}
           columns={columns}
           tableLayout="fixed"

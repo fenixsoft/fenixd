@@ -5,6 +5,25 @@ import SyncFromUserButton, { SETTINGS_ACTIONS_ROW_STYLE } from './SyncFromUserBu
 
 const { Text } = Typography;
 
+// gates 缺省值单源（code-review item 3f618ddb51cb）：四个缺省值旧实现
+// 在 useEffect 与 <Form initialValues> 中各写一份，只改一处会漂移——抽
+// DEFAULT_GATES 常量 + gatesFormValues 构建函数供两处复用。
+const DEFAULT_GATES = {
+  promote_mode: 'auto',
+  approve_mode: 'manual',
+  spec_review_mode: 'auto',
+  start_after_scope: 'dispatch',
+} as const;
+
+function gatesFormValues(gates: ConfigData['gates']) {
+  return {
+    promote_mode: gates.promote_mode || DEFAULT_GATES.promote_mode,
+    approve_mode: gates.approve_mode || DEFAULT_GATES.approve_mode,
+    spec_review_mode: gates.spec_review_mode || DEFAULT_GATES.spec_review_mode,
+    start_after_scope: gates.start_after_scope || DEFAULT_GATES.start_after_scope,
+  };
+}
+
 interface ApprovalModePanelProps {
   config: ConfigData;
   onSave: (values: Partial<ConfigData>) => Promise<void>;
@@ -19,13 +38,8 @@ export default function ApprovalModePanel({ config, onSave, project, onConfigSyn
 
   useEffect(() => {
     // 确保字段有值，使用配置值或默认值
-    form.setFieldsValue({
-      promote_mode: config.gates.promote_mode || 'auto',
-      approve_mode: config.gates.approve_mode || 'manual',
-      spec_review_mode: config.gates.spec_review_mode || 'auto',
-      start_after_scope: config.gates.start_after_scope || 'dispatch',
-    });
-  }, [config.gates.approve_mode, config.gates.promote_mode, config.gates.spec_review_mode, config.gates.start_after_scope, form]);
+    form.setFieldsValue(gatesFormValues(config.gates));
+  }, [config.gates, form]);
 
   const handleSave = async () => {
     try {
@@ -56,12 +70,7 @@ export default function ApprovalModePanel({ config, onSave, project, onConfigSyn
       <Card style={{ marginTop: 12 }}>
         <Form
           form={form}
-          initialValues={{
-            promote_mode: config.gates.promote_mode || 'auto',
-            approve_mode: config.gates.approve_mode || 'manual',
-            spec_review_mode: config.gates.spec_review_mode || 'auto',
-            start_after_scope: config.gates.start_after_scope || 'dispatch',
-          }}
+          initialValues={gatesFormValues(config.gates)}
           layout="vertical"
         >
           {/* 草稿晋升模式（add-draft-promotion-gate D5，值语义对齐 approve_mode） */}

@@ -260,7 +260,11 @@ export default function VerifyPanel({ config, onSave, project, onConfigSynced }:
               ) : (
                 <Form.List name="build_artifact_paths">
                   {(fields, { add, remove }) => (
-                    <>
+                    // 组容器保留共享 id 供批量查询；行内 Input 的 testid 带行
+                    // 索引（code-review item 2c30d035c56b）——旧实现各行复用
+                    // 同一 testid，测试只能 getAllByTestId+index 整体寻址，
+                    // 无法可靠定位/重排特定行。
+                    <div data-testid="artifact-path-inputs">
                       {fields.map((field) => (
                         <Space key={field.key} align="baseline" style={{ display: 'flex', marginBottom: 8 }}>
                           <Form.Item
@@ -268,7 +272,10 @@ export default function VerifyPanel({ config, onSave, project, onConfigSynced }:
                             rules={[{ validator: artifactPathRule }]}
                             style={{ marginBottom: 0, minWidth: 280 }}
                           >
-                            <Input placeholder="例如 dist/ 或 release-*.zip" data-testid="artifact-path-input" />
+                            <Input
+                              placeholder="例如 dist/ 或 release-*.zip"
+                              data-testid={`artifact-path-input-${field.name}`}
+                            />
                           </Form.Item>
                           <Button
                             type="text"
@@ -287,7 +294,7 @@ export default function VerifyPanel({ config, onSave, project, onConfigSynced }:
                       >
                         添加产物路径
                       </Button>
-                    </>
+                    </div>
                   )}
                 </Form.List>
               )}

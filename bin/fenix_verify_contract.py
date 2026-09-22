@@ -73,8 +73,15 @@ def selfcheck_regression(project_root: Path) -> tuple:
     if output_abs.is_file():
         try:
             output_abs.unlink()
-        except OSError:
-            pass
+        except OSError as e:
+            # 清理失败 MUST NOT 静默（code-review item e0100af58b0f）：unlink
+            # 的全部意义是「确保解析的是本次执行产出」——删除失败（EACCES/
+            # EBUSY/只读 fs）且后续回归命令失败未重写文件时，陈旧 XML 会被
+            # 解析并报成功（假通过）。显式失败退出自证，交人工处置。
+            return False, (
+                f"陈旧 JUnit XML 清理失败（{e}），无法确保解析的是本次执行"
+                f"产出，拒绝自证: {output_rel}"
+            )
     use_shell = isinstance(cmd, str)
     try:
         proc = subprocess.Popen(

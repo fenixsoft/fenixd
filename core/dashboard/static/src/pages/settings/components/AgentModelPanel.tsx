@@ -368,7 +368,10 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
                                       placeholder={
                                         roleModel
                                           ? `留空用角色级缺省 ${roleModel}`
-                                          : '模型名（留空用角色级缺省）'
+                                          // 无角色级缺省时按保存校验口径提示
+                                          //（逐行须自带模型或依赖 Provider 默认
+                                          // 模型；code-review item 7c607abbfc9b）
+                                          : '模型名（留空用 Provider 默认模型）'
                                       }
                                     />
                                   </Form.Item>

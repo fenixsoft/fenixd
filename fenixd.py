@@ -102,6 +102,11 @@ SUPERVISOR_RUNTIME_DRIFT_SECONDS = 24 * 3600
 # 120s），以免延迟在飞识别——2s 远小于 120s 确认窗口，不会造成误触发。
 STALE_SELFHEAL_REVIEW_ANCHOR_CACHE_SECONDS = 2.0
 
+# 单飞 fallback 锁的惰性创建守卫（code-review item d51f639c500c）：旧实现
+# 「检查→为 None→new Lock→写回」非原子，两线程可各建一把锁并同时通过
+# check-then-set——创建本身必须互斥。
+_SINGLEFLIGHT_FALLBACK_GUARD = threading.Lock()
+
 
 def _read_preserve_sidecar() -> list:
     """读取中断保全 sidecar（.fenix/interrupted_runs.json）。
@@ -2136,6 +2141,30 @@ class FenixDaemon:
 
     # ── 手动触发 code-review 文件信号消费（add-code-review-agent-and-quality-tab D1）──
 
+    def _singleflight_lock(self, monitor_attr: str, fallback_attr: str) -> threading.Lock:
+        """单飞置位/复位共用的锁单点（code-review item d51f639c500c）。
+
+        优先取 ``admin_monitor`` 的锁；缺失（fallback 路径）时回落本实例的
+        惰性 fallback 锁——经 ``_SINGLEFLIGHT_FALLBACK_GUARD`` 双检创建，
+        进程内唯一。置位与复位 MUST 都经本方法取锁：旧实现置位端在 lock
+        缺失时用 ``self._code_review_fallback_lock``，复位端却直取
+        ``admin_monitor._code_review_lock``——fallback 路径下该属性缺失时
+        finally 抛 AttributeError 遮蔽 worker 结果（或标志留在 True 永不复位）。
+        """
+        monitor = self.admin_monitor
+        if monitor is not None:
+            lock = getattr(monitor, monitor_attr, None)
+            if lock is not None:
+                return lock
+        lock = getattr(self, fallback_attr, None)
+        if lock is None:
+            with _SINGLEFLIGHT_FALLBACK_GUARD:
+                lock = getattr(self, fallback_attr, None)
+                if lock is None:
+                    lock = threading.Lock()
+                    setattr(self, fallback_attr, lock)
+        return lock
+
     def _check_code_review_requests(self):
         """主循环每轮扫描 code-review 手动触发文件信号并投递后台执行。
 
@@ -2184,8 +2213,9 @@ class FenixDaemon:
 
         # 单飞：已有 code-review run 在跑
         # （判定+置位在锁内原子完成，防 admin 巡检线程与主循环线程双线程
-        # 同时通过单飞判定导致同一 run_id 被覆盖）
-        lock = getattr(self.admin_monitor, "_code_review_lock", None)
+        # 同时通过单飞判定导致同一 run_id 被覆盖。置位/复位统一经
+        # _singleflight_lock 取同一把锁——item d51f639c500c）
+        lock = self._singleflight_lock("_code_review_lock", "_code_review_fallback_lock")
 
         def _in_flight_check_and_set() -> bool:
             """原子检查并置位单飞标志；返回 True 表示「已有在途」应跳过。
@@ -2193,17 +2223,10 @@ class FenixDaemon:
             code-review item cfdf9a6819a8：旧实现在 lock 缺失时直接裸跑
             ``_check_set_locked``（无任何同步），docstring 却声称「判定+置位在锁内
             原子完成」——保证静默降级而非显式失败。改为 lock 缺失时回落到本实例的
-            私有锁（进程内仍有互斥；两个线程若分别持不同锁对象才会失去保证，而
-            admin_monitor 缺失本身即属异常态），并记一条 DEBUG 说明降级。
+            私有锁（经 _singleflight_lock 单点惰性创建，进程内唯一），并记一条
+            DEBUG 说明降级。
             """
-            if lock is not None:
-                with lock:
-                    return _check_set_locked()
-            fallback = getattr(self, "_code_review_fallback_lock", None)
-            if fallback is None:
-                fallback = threading.Lock()
-                self._code_review_fallback_lock = fallback
-            with fallback:
+            with lock:
                 return _check_set_locked()
 
         def _check_set_locked() -> bool:
@@ -2267,8 +2290,13 @@ class FenixDaemon:
             try:
                 _worker()
             finally:
+                # 复位与置位同锁（item d51f639c500c）：经 _singleflight_lock
+                # 取锁，fallback 路径不再直取 admin_monitor._code_review_lock
+                #（缺失时 AttributeError 会遮蔽 worker 结果且漏复位）。
                 if self.admin_monitor is not None:
-                    with self.admin_monitor._code_review_lock:
+                    with self._singleflight_lock(
+                        "_code_review_lock", "_code_review_fallback_lock"
+                    ):
                         self.admin_monitor._code_review_in_flight = False
 
         try:
@@ -2278,7 +2306,9 @@ class FenixDaemon:
                 _worker_with_flag()
         except Exception as e:
             if self.admin_monitor is not None:
-                with self.admin_monitor._code_review_lock:
+                with self._singleflight_lock(
+                    "_code_review_lock", "_code_review_fallback_lock"
+                ):
                     self.admin_monitor._code_review_in_flight = False
             self.logger.error("fenixd", f"code_review 手动审查投递失败: {e}")
 
@@ -2336,19 +2366,13 @@ class FenixDaemon:
             return
         spec = contract.regression
 
-        # 单飞：已有回归在跑 → 忽略请求（不排队、不并发）
-        lock = getattr(self.admin_monitor, "_regression_lock", None)
+        # 单飞：已有回归在跑 → 忽略请求（不排队、不并发）。置位/复位统一经
+        # _singleflight_lock 取同一把锁（item d51f639c500c，同 code-review 路径）
+        lock = self._singleflight_lock("_regression_lock", "_regression_fallback_lock")
 
         def _in_flight_check_and_set() -> bool:
             """原子检查并置位回归单飞标志；返回 True 表示「已有在途」应跳过。"""
-            if lock is not None:
-                with lock:
-                    return _check_set_locked()
-            fallback = getattr(self, "_regression_fallback_lock", None)
-            if fallback is None:
-                fallback = threading.Lock()
-                self._regression_fallback_lock = fallback
-            with fallback:
+            with lock:
                 return _check_set_locked()
 
         def _check_set_locked() -> bool:
@@ -2390,8 +2414,12 @@ class FenixDaemon:
             try:
                 _worker()
             finally:
+                # 复位与置位同锁（item d51f639c500c）：经 _singleflight_lock
+                # 取锁，fallback 路径不再直取 admin_monitor._regression_lock。
                 if self.admin_monitor is not None:
-                    with self.admin_monitor._regression_lock:
+                    with self._singleflight_lock(
+                        "_regression_lock", "_regression_fallback_lock"
+                    ):
                         self.admin_monitor._regression_in_flight = False
 
         try:
@@ -2401,7 +2429,9 @@ class FenixDaemon:
                 _worker_with_flag()
         except Exception as e:
             if self.admin_monitor is not None:
-                with self.admin_monitor._regression_lock:
+                with self._singleflight_lock(
+                    "_regression_lock", "_regression_fallback_lock"
+                ):
                     self.admin_monitor._regression_in_flight = False
             self.logger.error("fenixd", f"回归手动执行投递失败: {e}")
 

@@ -2326,19 +2326,25 @@ class PromptBuilder:
         counts_txt = (
             "、".join(f"{k}={v}" for k, v in counts.items()) if counts else "全 test-defect"
         )
+        # 申报落点 = judge 结果文件（与 _result_gate_section 同源计算；
+        # code-review item 8fbab623b92d：旧实现字符串缺 f 前缀，占位符
+        # 原样吐出，counts_txt/id_line 成死变量且 result_path 不在作用域）
+        result_path = planner_result_path(
+            self._pm.project_root, spec_name, "planner-judge"
+        )
         return (
-            "\n\n## ⚠️ 场景缺陷改道（MANDATORY：按原地修复协议申报 scenario-repaired）\n"
-            "\n"
-            "- 框架已判定：上一轮失败清单全部为**场景文件缺陷**（classification "
-            "分布 {counts_txt}，product-bug=0）——打回 implementer 修场景是错误路由，"
-            "**修场景是你的职责**（与出题同源知识 + 本轮执行证据）。\n"
-            "- **MUST 按文末「原地修复协议」直接修场景文件并在 {result_path} "
-            "申报 ``scenario-repaired``**；禁止申报 ``bug-found``（仅当你在修复过程"
-            "中发现真产品缺陷——选择器/场景与源码对证为产品 bug——才允许改判 "
-            "product-bug 并申报 bug-found）。\n"
-            "- 本上轮清单场景：{id_line}——修复前先核对场景文件现状，确认缺陷"
-            "根因后逐条修复（补自建夹具/seed、修正客观错误步骤与断言、补 "
-            "depends_on 串接）。\n"
+            f"\n\n## ⚠️ 场景缺陷改道（MANDATORY：按原地修复协议申报 scenario-repaired）\n"
+            f"\n"
+            f"- 框架已判定：上一轮失败清单全部为**场景文件缺陷**（classification "
+            f"分布 {counts_txt}，product-bug=0）——打回 implementer 修场景是错误路由，"
+            f"**修场景是你的职责**（与出题同源知识 + 本轮执行证据）。\n"
+            f"- **MUST 按文末「原地修复协议」直接修场景文件并在 {result_path} "
+            f"申报 ``scenario-repaired``**；禁止申报 ``bug-found``（仅当你在修复过程"
+            f"中发现真产品缺陷——选择器/场景与源码对证为产品 bug——才允许改判 "
+            f"product-bug 并申报 bug-found）。\n"
+            f"- 本上轮清单场景：{id_line}——修复前先核对场景文件现状，确认缺陷"
+            f"根因后逐条修复（补自建夹具/seed、修正客观错误步骤与断言、补 "
+            f"depends_on 串接）。\n"
             "- **修复已裁决场景（含跨轮写回场景）合法**：受冻结 diff 记账保护，"
             "无理由的移除才会被确定性补齐——有理由的修复/移除不会被回补，"
             "不视为冻结违规。\n"
