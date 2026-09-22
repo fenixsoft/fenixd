@@ -172,8 +172,9 @@ def _echo_agents_str_key(agents_src, key: str) -> str:
 # 保持一致：enabled/read_todo 缺省 false，run_at 缺省 02:00）
 _DEFAULT_SELF_REVIEW = {"enabled": False, "run_at": "02:00", "read_todo": False}
 # add-code-review-agent-and-quality-tab：admin.code_review 缺省（与
-# ConfigLoader.get_code_review_config 一致：enabled 缺省 false，max_files 缺省 500）
-_DEFAULT_CODE_REVIEW = {"enabled": False, "max_files": 500}
+# ConfigLoader.get_code_review_config 一致：enabled 缺省 false，max_files 缺省 500，
+# scope 缺省 window——add-code-review-scope-config）
+_DEFAULT_CODE_REVIEW = {"enabled": False, "max_files": 500, "scope": "window"}
 # add-code-review-auto-fix：admin.code_review_fix 缺省（与
 # ConfigLoader.get_code_review_fix_config 一致：enabled 缺省 false，
 # batch_size 缺省 20）
@@ -1066,6 +1067,10 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
             and max_files > 0
         ):
             cr["max_files"] = max_files
+        # add-code-review-scope-config：scope 白名单应用（非法值由前置校验拒绝，
+        # 此处只应用合法值——对齐 max_files 同款合并语义）
+        if patch["code_review"].get("scope") in ("window", "full"):
+            cr["scope"] = patch["code_review"]["scope"]
         merged["admin"]["code_review"] = cr
     # add-code-review-auto-fix：admin.code_review_fix 两键（enabled 严格 bool、
     # batch_size 正整数；非法值由 write_config 前置校验拒绝，此处只应用合法值
@@ -1268,6 +1273,14 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
             if isinstance(mf, bool) or not isinstance(mf, int) or mf <= 0:
                 return fail(
                     f"admin.code_review.max_files must be a positive integer: {mf!r}"
+                )
+        # add-code-review-scope-config：scope 枚举校验（非法直接拒绝不落盘，
+        # 对齐 max_files 同款「非 None 且非法 → fail」；合法值 window | full）
+        if "scope" in cr_patch and cr_patch["scope"] is not None:
+            if cr_patch["scope"] not in ("window", "full"):
+                return fail(
+                    f"admin.code_review.scope must be 'window' or 'full': "
+                    f"{cr_patch['scope']!r}"
                 )
 
     # add-code-review-auto-fix：前端提交的 code_review_fix patch 后端校验

@@ -790,7 +790,7 @@ class TestDashboardConfigRoundtrip(unittest.TestCase):
         from core.dashboard.data import read_config
 
         echoed = read_config(self.tmpdir)
-        self.assertEqual(echoed["code_review"], {"enabled": False, "max_files": 500})
+        self.assertEqual(echoed["code_review"], {"enabled": False, "max_files": 500, "scope": "window"})
         self.assertEqual(echoed["sources"].get("admin.code_review"), "user")
 
 

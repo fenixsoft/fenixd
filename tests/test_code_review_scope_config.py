@@ -135,6 +135,49 @@ class TestScopeConfig(unittest.TestCase):
         self.assertEqual(cfg["scope"], "window")
 
 
+class TestDashboardWriteChainScope(unittest.TestCase):
+    """设置页保存链（config_admin）的 scope 写入/校验/回显。"""
+
+    def setUp(self):
+        self.tmpdir = Path(tempfile.mkdtemp(prefix="cr-scope-cfg-"))
+        (self.tmpdir / ".fenix").mkdir(parents=True, exist_ok=True)
+
+    def tearDown(self):
+        shutil.rmtree(str(self.tmpdir), ignore_errors=True)
+
+    def test_write_scope_full_persists_and_echoes(self):
+        from core.dashboard.data import write_config, read_config
+
+        result = write_config(
+            self.tmpdir, {"code_review": {"enabled": True, "scope": "full", "max_files": 200}}
+        )
+        self.assertTrue(result["ok"], result)
+        echoed = read_config(self.tmpdir)
+        self.assertEqual(echoed["code_review"]["scope"], "full")
+        self.assertEqual(echoed["code_review"]["enabled"], True)
+        # 落盘 yaml 实文件含 scope（write 链不得丢键）
+        import yaml
+
+        raw = yaml.safe_load((self.tmpdir / ".fenix" / "config.yaml").read_text())
+        self.assertEqual(raw["admin"]["code_review"]["scope"], "full")
+
+    def test_write_invalid_scope_rejected_no_partial_write(self):
+        from core.dashboard.data import write_config, read_config
+
+        result = write_config(self.tmpdir, {"code_review": {"scope": "today"}})
+        self.assertFalse(result["ok"])
+        self.assertIn("scope", result.get("error", ""))
+        # 拒绝不半写：config.yaml 不产生 code_review 段
+        echoed = read_config(self.tmpdir)
+        self.assertEqual(echoed["code_review"]["scope"], "window")
+
+    def test_user_scope_default_echo_includes_window(self):
+        from core.dashboard.data import read_config
+
+        echoed = read_config(self.tmpdir)
+        self.assertEqual(echoed["code_review"], {"enabled": False, "max_files": 500, "scope": "window"})
+
+
 # ── 2. 周期触发两档实参断言 ─────────────────────────────────────────
 
 
