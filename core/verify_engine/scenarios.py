@@ -6,7 +6,7 @@ scenarios.py — 测试场景数据结构定义与校验
 """
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 import re
 
 # ── schema 版本标记（frozen-scenario-schema-migration D2）──────────
@@ -832,7 +832,12 @@ class Assertion:
     type: str
     selector: str = ""
     label: str = ""
-    expected: str = ""
+    # expected 的「未设置」哨兵是 None 而非空串：空串是 json_path / text_match
+    # 等断言的合法期望值（如「detail 为空串」）。曾以 str = "" 兼作哨兵，to_dict
+    # 按 `!= ""` 丢键，合法空串期望经 from_dict→to_dict 往返后被丢、运行时按
+    # None 比较——合法断言确定性误判失败，且路径缺失时 None==None 误判通过
+    # （add-impl-selfcheck-model-probe 验证修复轮 BUG-01）。
+    expected: Any = None
     threshold: float = 0.2
     extra: dict = field(default_factory=dict)
 
@@ -850,7 +855,7 @@ class Assertion:
             d["selector"] = self.selector
         if self.label:
             d["label"] = self.label
-        if self.expected != "":
+        if self.expected is not None:
             d["expected"] = self.expected
         if self.threshold != 0.2:
             d["threshold"] = self.threshold
@@ -868,7 +873,7 @@ class Assertion:
             type=d["type"],
             selector=d.get("selector", ""),
             label=d.get("label", ""),
-            expected=d.get("expected", ""),
+            expected=d.get("expected"),
             threshold=d.get("threshold", 0.2),
             extra=extra,
         )

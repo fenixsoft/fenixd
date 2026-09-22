@@ -92,10 +92,10 @@ function RunningProgressView({
         percent={progress?.percent ?? 100}
         showInfo={progress?.percent !== null && progress?.percent !== undefined}
         status="active"
-        size="small"
-        // width:100% 压过 .ant-progress 的 inline 排版（否则与说明文字同行），
-        // maxWidth 480 避免宽视口下条长横穿卡片
-        style={{ width: '100%', maxWidth: 480 }}
+        // 样式对齐 spec 详情页 ProgressBarTile：标准蓝绿渐变 + 默认尺寸 + 占满容器
+        strokeColor={{ '0%': '#108ee9', '100%': '#87d068' }}
+        // width:100% 压过 .ant-progress 的 inline 排版（否则与说明文字同行）
+        style={{ width: '100%' }}
       />
       {sub.length > 0 ? (
         <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block' }}>

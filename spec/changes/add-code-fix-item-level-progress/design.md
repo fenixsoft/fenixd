@@ -23,11 +23,17 @@ code-fix 车道（add-code-review-auto-fix）的进度模型是批级：编排�
 
 ### D2 批上下文经进度文件传递（而非读侧反推）
 
-`fix-progress.json` 新增 `worktree`/`run_id` 两键，编排器批启动时与 `phase="fixing"` 同次原子写入，批收尾清除。备选「读侧按 `.claude/worktrees/impl-code-review-fix-*` glob 反推最新 worktree」被否：glob 前缀归属歧义是本仓已知事故模式（spec 名互为前缀误归属、run 流前缀盲区两案），显式落盘消除猜测。
+`fix-progress.json` 新增 `worktree`/`run_id`/`batch_total` 三键，编排器在**建树成功之后、agent run 启动之前**原子写入（`phase="fixing"` 写点整体后移至此），批收尾清除。评审更正时序：原「批启动时（`phase="fixing"` 写入点）同次写入」不可实现——现写点（code_fix.py:710）位于建树（:722）与 run 启动（:754）之前，彼时 worktree/run_id 均不存在；且 `run_code_fix` 同步阻塞、run_id 缺省在其内部生成——若不预生成，编排器在 run 返回前无从得知 run_id，功能恰好在目标窗口（run 在飞的约 60 分钟）失效。故 `run_id` 由编排器**预生成**并经 `run_code_fix` 既有 `run_id` 形参（core/agent_runner/maintenance_runs.py:1250、:1272「缺省自动生成」）传入。备选「读侧按 `.claude/worktrees/impl-code-review-fix-*` glob 反推最新 worktree」被否：glob 前缀归属歧义是本仓已知事故模式（spec 名互为前缀误归属、run 流前缀盲区两案），显式落盘消除猜测。
 
-### D3 `current_item` 的 title/file 以注入清单补全
+机制约定（评审补充，硬约束）：
 
-out 行只含 `{item_id, status, file}`，`title`/`line` 等展示字段从编排器注入本批的清单条目（批启动时已在内存/可从批次文件取）回查匹配 `item_id` 得到。清单匹配失败（清单外条目、历史脏行）时 `current_item` 降级为仅含 out 行自带的 `item_id/status/file`。
+- **新键 MUST 进 `FIX_PROGRESS_DEFAULT`（缺省 null）**：`read_progress()` 只放行缺省键集内的键（code_fix.py:100-103 白名单合并），`write_progress()` 以 `read_progress()` 返回值为合并基线（:112-113）——键不在缺省集则读侧不可见、且在下一次合并写时被静默剥离。先例：`manual_authorized`（:56）。
+- **清除点按实际写点枚举**：`_finish()`（:673，全部失败收尾的唯一出口，注意它**不置 running=false**，须显式清）+ checkpoint 各终态 write（:520/:537/:557/:586/:600）+ merging 完成写（:875）；切批 selecting 写（:619）时三键须已为 null（上一批已清，含保留 worktree 的失败批防陈旧索引）。
+- 预生成 run_id 须保持 `code-fix-` 前缀并按 `_unique_code_fix_run_id` 同口径对 `_running_agents` 去重（`_code_fix_running` 在途判据依赖该前缀）。
+
+### D3 `current_item` 的 title 以台账回查补全（评审更正数据源）
+
+out 行只含 `{item_id, status, file}`，`title`（及可选 `line`）从**台账** `.fenix/code-review/items.jsonl`（`read_items()`）按 `item_id` 回查补全。评审更正：原表述「批启动时已在内存/可从批次文件取」两源皆不可达——`read_progress()` 是纯文件读函数（无编排器实例可达，也无跨函数内存通道），磁盘上亦无独立批次文件（批清单 `ctx["items"]` 仅在内存，code_fix.py:633-641）；台账是唯一持久化且字段齐全的清单源（批内条目在合回核销前保持 `open`，含 item_id/file/line/severity/category/title，见 `select_batch` docstring code_fix.py:221-226）。匹配失败（清单外条目、历史脏行、台账读异常）时 `current_item` 降级为仅含 out 行自带的 `item_id/status/file`。
 
 ### D4 兜底语义：null 三态而非 0
 
@@ -35,7 +41,7 @@ out 行只含 `{item_id, status, file}`，`title`/`line` 等展示字段从编�
 
 ### D5 风险：out 文件落盘时序实证
 
-设计期取证发现一疑点：fenixd 第 1 批 run 中途（21:32，agent 已完成 6/9 任务组）`<worktree>/.fenix` 目录暂不可见，而批次最终成功（产物硬门要求 out 有效行非空，说明收尾时文件在场）。可能解释包括 worktree 清理时序观察误差或目录创建时机晚于首条完成。**不阻塞本设计**（读侧对缺失场景已兜底），但 tasks 安排先用最小批次复现实证 out 文件的落盘时序与路径，若实证发现 agent 实际不遵守逐条追加契约，则以实证结果修订读侧字段口径后再落地（实现者按实证结论实现，不臆测）。
+设计期取证发现一疑点：fenixd 第 1 批 run 中途（21:32，agent 已完成 6/9 任务组）`<worktree>/.fenix` 目录暂不可见，而批次最终成功（产物硬门要求 out 有效行非空，说明收尾时文件在场）。可能解释包括 worktree 清理时序观察误差或目录创建时机晚于首条完成。**不阻塞本设计**（读侧对缺失场景已兜底），但 tasks 安排先用最小批次复现实证 out 文件的落盘时序与路径，若实证发现 agent 实际不遵守逐条追加契约，则以实证结果修订读侧字段口径后再落地（实现者按实证结论实现，不臆测）。实证预期基线（评审补充）：out 目录由 `run_code_fix` 在 run 启动时即创建（maintenance_runs.py:1279 `out_path.parent.mkdir`），先于 agent 首条处置——「.fenix 目录暂不可见」的历史观察与该代码事实不符，实证重点可收窄为「agent 是否逐条 flush 追加」而非「目录何时出现」。
 
 ## Risks / Trade-offs
 

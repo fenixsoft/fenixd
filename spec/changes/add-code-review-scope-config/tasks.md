@@ -24,7 +24,7 @@
 ## 2. 触发层：周期路径按配置取 scope
 
 - [ ] 2.1 `core/admin_monitor.py` 周期触发路径两处解硬编码：`collect_manifest` 调用按配置传 `scope="full"`（此时 `window_start=None`）或 `scope="window"`（既有 `window_start` 同源值）；`run_code_review` 调用同样按配置传 `scope`，`review_kind` 恒为 `scheduled`、其余实参不变；scope=`window` 路径的行为与改动前逐字节一致（含 manifest 空跳过、防重写入、单飞复位）
-- [ ] 2.2 scope=`full` 时「窗口内无文件变更跳过」分支语义复核：全仓收集为空属异常态（受控仓必有文件），按既有 no_files 路径记录并跳过即可，不新增分支——在代码注释注明该判定对 full 档实际不可达的原因
+- [ ] 2.2 scope=`full` 时「窗口内无文件变更跳过」分支语义复核：全仓收集为空属异常态（受控仓必有文件），按既有 no_files 路径记录并跳过即可，不新增分支——在代码注释注明该判定对 full 档实际不可达的原因；full 档若真走该分支，日志文案须带 scope 标注（`admin_monitor.py` 既有文案写死「窗口内无文件变更…window_start=…」，full 档 window_start=None 下措辞失真、误导排障判别；文案改写落在 admin_monitor.py 内，scope=window 档日志保持逐字节不变）
 
 ## 3. 设置页 UI：审查范围下拉
 
@@ -37,5 +37,5 @@
 
 ## 5. 测试与收尾
 
-- [ ] 5.1 新增 `tests/test_code_review_scope_config.py`：覆盖 `get_code_review_config` scope 缺省/合法/非法回退；`admin_monitor` 周期触发在 scope=window 与 full 两档下 `collect_manifest`/`run_code_review` 的实参断言（沿用既有 admin_monitor 测试的替身注入模式）；守卫（防重/run_at/enabled 关闭）两档行为一致；临时文件走 tmp_path，不触真实用户级配置（对齐历史「用户级配置敏感测试」教训）
+- [ ] 5.1 新增 `tests/test_code_review_scope_config.py`：覆盖 `get_code_review_config` scope 缺省/合法/非法回退；`admin_monitor` 周期触发在 scope=window 与 full 两档下 `collect_manifest`/`run_code_review` 的实参断言（沿用既有周期审查替身注入模式，落点 `tests/test_code_review.py:674-745`：AdminMonitor `_run_code_review_checkpoint` + fake `run_code_review` 注入形态）；守卫（防重/run_at/enabled 关闭）两档行为一致；临时文件走 tmp_path，不触真实用户级配置（对齐历史「用户级配置敏感测试」教训）
 - [ ] 5.2 定向回归：`pytest tests/test_code_review_scope_config.py` 与既有 admin_monitor / code-review 相关定向测试全绿

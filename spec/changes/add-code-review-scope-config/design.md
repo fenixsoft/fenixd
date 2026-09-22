@@ -19,7 +19,7 @@
 
 ### D2 scope 只改变「收集什么」，不改变「何时触发、算谁跑的」
 
-`review_kind` 保持 `scheduled`（台账审计口径：periodic 触发与手动触发的区分依据是 review_kind，不是 scope；scope 在 manifest 审计字段里如实记录）。full 档 `window_start=None` 传给 `collect_manifest` 与 `run_code_review`——`run_code_review` 既有签名已支持（`manual_full` 即此形态），无需改函数签名。
+`review_kind` 保持 `scheduled`（台账审计口径：periodic 触发与手动触发的区分依据是 review_kind，不是 scope；scope 在 manifest 审计字段里如实记录）。full 档 `window_start=None` 传给 `collect_manifest` 与 `run_code_review`——`run_code_review` 既有签名已支持（`manual_full` 即此形态），无需改函数签名。收尾全仓核销例外（D5「只增不核销」的唯一例外）按 `review_kind == "manual_full"` 判定（`core/agent_runner/maintenance_runs.py:922`），与 scope 无关——周期 full 档（scheduled）MUST NOT 触发 `resolve_snapshot` 全仓核销，实现时不得让 scope 参与该判定。
 
 ### D3 UI 语义命名对齐手动按钮
 

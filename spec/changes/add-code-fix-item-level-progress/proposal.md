@@ -8,9 +8,9 @@ code-fix 自动修复车道的进度粒度是**批级**：`fix-progress.json` �
 
 ## What Changes
 
-- `fix-progress.json` 新增 `worktree` / `run_id` 两个批上下文字段（编排器批启动时写入，批收尾清除）。
-- `read_progress()` 在 `running=true` 且批上下文可用时，经 `read_fix_out()` 实时合成条级字段：`item_done`（本批已处置条数）、`current_item`（最近一条处置结果对应的台账条目摘要）。
-- Dashboard 转导层透传新字段；`CodeFixProgressCard` 增加条级文案「本批已处置 N/M 条 · 刚完成：<file>:<line> <标题>」。
+- `fix-progress.json` 新增 `worktree` / `run_id` / `batch_total` 三个批上下文字段（编排器在建树成功后、agent run 启动前写入；`run_id` 由编排器预生成并经 `run_code_fix` 既有 `run_id` 形参传入，保证 run 在飞期间读侧即可解析；批收尾清除）。
+- `read_progress()` 在 `running=true` 且批上下文可用时，经 `read_fix_out()` 实时合成条级字段：`item_done`（本批已处置条数，按 item_id 去重）、`current_item`（最近一条处置结果对应的台账条目摘要）。
+- Dashboard 转导层透传新字段；`CodeFixProgressCard` 增加条级文案「本批已处置 N/M 条 · 刚完成：<file> <标题>」（M=`batch_total`）。
 - 全链路容错：out 文件缺失/损坏/批上下文缺失时条级字段回退 null，前端不显示误导性数字——批级行为与现状完全一致（纯增量，零行为变更）。
 
 ## Capabilities

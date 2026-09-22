@@ -439,12 +439,12 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
             需要环境已安装 ocr（未安装时审查仍以 LLM 逐文件执行，仅少了扫描加速）。
             手动触发（全仓库审查 / 当期提交审查）不受本开关约束。
           </Text>
-        </Card>
-        {/* 自动修复代码问题（add-code-review-auto-fix，task 9.2）：位于「周期性
-            代码审查」卡片之下（spec code-fix-config 硬约束）。同一 <Form> 实例内
-            （脱管字段 validateFields 不返回 → 恒提交缺省，见上方统一 Form 注释）。 */}
-        <Card style={{ marginTop: 12 }} data-testid="code-review-fix-card">
-          <div className="switch-inline-row">
+
+          {/* 自动修复代码问题（add-code-review-auto-fix，task 9.2）：2026-09-22
+              自独立卡片并入本卡，位于「周期性代码审查」之后（spec code-fix-config
+              位置约束同步改为「同卡其后」）。同一 <Form> 实例内（脱管字段
+              validateFields 不返回 → 恒提交缺省，见上方统一 Form 注释）。 */}
+          <div className="switch-inline-row" style={{ marginTop: 24 }}>
             <Form.Item name="code_review_fix_enabled" valuePropName="checked" noStyle>
               <Switch data-testid="code-review-fix-enabled-switch" />
             </Form.Item>
@@ -453,6 +453,17 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
               <span className="label-note">（admin.code_review_fix.enabled）</span>
             </span>
           </div>
+          <Text type="secondary">
+            开启后把审查台账 open 条目按批（每批 batch_size 条，缺省 20）派
+            code-fix agent 在独立 worktree 内修复并提交，每批必过全量回归
+            （verify.yaml regression 段）才合回主树并把条目置 resolved；回归
+            未通过自动重试一次，仍失败则保留现场待人工。无有效 regression 段时
+            fail-closed 不合回。关闭（缺省）= 全链路零动作。进度见项目页
+            「代码审查」分面。
+          </Text>
+          {/* 批大小与「审查超时/并发」同形态：整宽 + addonAfter 单位。旧实现
+              maxWidth:240 会把 inline-flex label 里的裸文本节点压到 min-content
+              （一字一行竖排，机制见 global.less 移动端 label 修复注释）。 */}
           <Form.Item
             name="code_review_fix_batch_size"
             label={
@@ -469,24 +480,17 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
                     : Promise.reject(new Error('须为 1–1000 的整数')),
               },
             ]}
-            style={{ marginTop: 16, maxWidth: 240 }}
+            style={{ marginTop: 24 }}
           >
             <InputNumber
               min={1}
               max={1000}
               precision={0}
               style={{ width: '100%' }}
+              addonAfter="条"
               data-testid="code-review-fix-batch-size"
             />
           </Form.Item>
-          <Text type="secondary">
-            开启后把审查台账 open 条目按批（每批 batch_size 条，缺省 20）派
-            code-fix agent 在独立 worktree 内修复并提交，每批必过全量回归
-            （verify.yaml regression 段）才合回主树并把条目置 resolved；回归
-            未通过自动重试一次，仍失败则保留现场待人工。无有效 regression 段时
-            fail-closed 不合回。关闭（缺省）= 全链路零动作。进度见项目页
-            「代码审查」分面。
-          </Text>
         </Card>
         {/* 回归测试：标题与说明置于卡片外，与上方「代码质量」节同构 */}
         <h3 style={{ marginTop: 32 }}>回归测试</h3>

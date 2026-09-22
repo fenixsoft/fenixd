@@ -41,9 +41,6 @@ FIX_PROGRESS_REL = ".fenix/code-review/fix-progress.json"
 FIX_FAILED_REL = ".fenix/code-review/fix-failed.json"
 
 # 进度缺省态（读侧缺文件/损坏时返回，MUST NOT 抛异常）
-# manual_authorized：手动授权旗标（授权**整条链**跑完，非一批）——持久化在
-# fix-progress.json 随链身份传播；仅当链 live（running=true）时被 checkpoint
-# 消费，终态（idle/blocked/failed）一律清除（2026-09-22 事故修复）。
 FIX_PROGRESS_DEFAULT = {
     "running": False,
     "phase": "idle",
@@ -53,6 +50,9 @@ FIX_PROGRESS_DEFAULT = {
     "batch_no": 0,
     "reason": "",
     "activation_id": "",
+    # 手动授权旗标（随链身份持久化）：True 表示本链由手动触发授权，自驱动
+    # 再投递（_resubmit → checkpoint 无 override）凭它越过 enabled 总开关。
+    # 仅在链 live（running=true）时被消费；终态（idle/blocked/failed）清除。
     "manual_authorized": False,
 }
 
@@ -490,15 +490,15 @@ class CodeFixOrchestrator:
         ``override_enabled``（add-code-fix-manual-trigger）：手动触发即临时授权
         ——为 True 时跳过 ``enabled`` 守卫（唯一调用方是 daemon 手动信号消费
         函数 ``fenixd._check_code_fix_requests``），其余守卫（单飞 already_running
-        / 无 open 条目 / 失败保留 / 回归契约 fail-closed）原样生效——临时授权
-        只授权「不等调度」，不授权「跳过安全链」。缺省 False，既有两路调用点
-        （含 ``_resubmit`` 自驱动再投递）不传参、行为零变化。
+        / 无 open 条目 / 失败保留 / 回归契约 fail-closed）原样生效。缺省 False。
 
-        手动授权链（2026-09-22 事故修复）：``override_enabled=True`` 的手动触发
-        授权的是**整条链**而非一批——授权旗标 ``manual_authorized`` 随进度持久
-        化，链 live（running=true）期间的批间自驱动再投递（``_resubmit`` 不传
-        参）凭旗标通过 ``enabled`` 守卫；链落终态（idle/blocked/failed）或撞
-        disabled 时旗标一并清除，收尾链的授权不外溢到新链。
+        手动授权语义（2026-09-22 事故修复）：授权的是**整条链**而非一批。手动
+        投递时把 ``manual_authorized=true`` 写进进度快照（随链身份持久化），
+        批收尾后 ``_resubmit`` 的 checkpoint（无 override）凭「链 live 且旗标
+        为真」越过 enabled 总开关，自驱动跑完剩余 open 条目；终态（idle /
+        blocked / failed）清除旗标——收尾链的授权不外溢到新链。仅当 live 链
+        撞上 disabled（开关被中途关闭）时落终态进度（phase=blocked /
+        reason=disabled），MUST NOT 静默冻结在 running=true。
 
         进度链身份（D8）：读到 ``running=true`` 且 activation_id 未变 → 视为
         同一激活链，MUST NOT 重算 total（否则每批收尾再投递会把 total 重置为
@@ -506,33 +506,33 @@ class CodeFixOrchestrator:
         """
         with self._lock:
             cfg = self._get_config()
-            root = self.project_root
-            prev = read_progress(root)
-            chain_authorized = bool(prev.get("running")) and bool(
-                prev.get("manual_authorized")
+            # 链上授权旗标：只有 live 链（running=true）的旗标被消费，
+            # 收尾链残留的旗标不外溢到新链。
+            prev_chain = read_progress(self.project_root)
+            chain_authorized = bool(prev_chain.get("running")) and bool(
+                prev_chain.get("manual_authorized")
             )
             if not cfg.get("enabled") and not override_enabled and not chain_authorized:
-                # 开关关闭 = 不投递。纯关闭态（盘上无 live 链）零动作（不写进度）；
-                # live 链撞 disabled（开关被中途关闭且无授权）MUST 落终态进度——
-                # 静默早退会把 fix-progress.json 永久冻结在 running=true，
-                # 前端停在「合回主树中」（2026-09-22 事故缺陷面二）。
-                if prev.get("running"):
+                # 开关关闭且无授权 = 不投递；但 live 链撞上 disabled（开关被
+                # 中途关闭）必须落终态进度——静默早退会让前端永久停在陈旧的
+                # 「进行中」快照上（2026-09-22「合回主树中」冻结事故缺陷面）。
+                if prev_chain.get("running"):
                     write_progress(
-                        root,
+                        self.project_root,
                         running=False,
                         phase="blocked",
                         reason="disabled",
-                        current="开关已关闭，链终止（等待重新启用或手动触发）",
+                        current="自动修复总开关已关闭，链终止（可重新触发）",
                         manual_authorized=False,
                     )
                 return {"triggered": False, "reason": "disabled"}
             if self._code_fix_running():
                 return {"triggered": False, "reason": "already_running"}
 
+            root = self.project_root
             total_open = count_open_items(root)
             if total_open == 0:
-                # 链收尾（无 open 条目）：进度落 running=false（若曾有链），
-                # 授权旗标随终态清除（不外溢到新链）
+                # 链收尾（无 open 条目）：进度落 running=false（若曾有链）
                 if _progress_path(root).exists():
                     write_progress(
                         root,
@@ -549,7 +549,8 @@ class CodeFixOrchestrator:
                 # open 条目全部被失败保留集合排除 → 静默空转（等待人工解除）。
                 # 进度顺带刷新为终态（ocr 收尾审查）：链曾置 running=true，若维持
                 # 旧快照，前端会停在「第 N 批修复中」的陈旧文案上。
-                if prev.get("running") or prev.get("phase") in (
+                prev_snapshot = read_progress(root)
+                if prev_snapshot.get("running") or prev_snapshot.get("phase") in (
                     "failed",
                     "blocked",
                 ):
@@ -564,6 +565,8 @@ class CodeFixOrchestrator:
                 return {"triggered": False, "reason": "no_open_items"}
 
             # 进度链身份：同链沿用 total/activation_id，新链重算
+            # （复用守卫段已读的 prev_chain——中间无其他进度写者）
+            prev = prev_chain
             if prev.get("running") and prev.get("activation_id"):
                 activation_id = prev["activation_id"]
                 total = prev.get("total") or total_open
@@ -623,9 +626,9 @@ class CodeFixOrchestrator:
                     batch_no=batch_no,
                     current=f"第 {batch_no} 批启动（{len(batch)}/{total} 条）",
                     reason="",
-                    # 手动触发（或授权链延续）在盘上立旗：批间自驱动再投递
-                    # 凭此通过 enabled 守卫；非手动链显式写 False 防陈旧旗标外溢
-                    manual_authorized=bool(override_enabled or chain_authorized),
+                    # 手动授权随链持久化：本批由 override 投出，或延续 live
+                    # 链已有的授权（batch 间 phase 改写不得丢失旗标）。
+                    manual_authorized=bool(override_enabled) or chain_authorized,
                 )
                 ctx = {
                     "activation_id": activation_id,
@@ -670,13 +673,12 @@ class CodeFixOrchestrator:
     def _finish(self, phase: str, reason: str = "", **fields) -> None:
         """批收尾：复位单飞 + 刷新进度（running 保持链语义，由下次 checkpoint 收尾）。
 
-        终态（idle/blocked/failed）顺带清除手动授权旗标——链已终止，
-        授权不外溢到后续链（2026-09-22 事故修复）。
+        链终止（失败批不再自驱动），授权旗标一并清除。
         """
         self._in_flight = False
-        if phase in ("idle", "blocked", "failed"):
-            fields.setdefault("manual_authorized", False)
-        write_progress(self.project_root, phase=phase, reason=reason, **fields)
+        write_progress(
+            self.project_root, phase=phase, reason=reason, manual_authorized=False, **fields
+        )
 
     def _run_batch(self, ctx: dict) -> None:
         batch_no = ctx["batch_no"]

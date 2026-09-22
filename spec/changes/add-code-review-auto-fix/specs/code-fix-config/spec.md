@@ -65,7 +65,7 @@
 - 开关 MUST 绑定 `code_review_fix_enabled`（bool），回填自 `config.code_review_fix?.enabled === true`。
 - 批大小 MUST 绑定 `code_review_fix_batch_size`（数值输入，合法范围 1–1000），回填自 `config.code_review_fix?.batch_size`（缺失回退 20）。
 - 保存时必须经**同一个** `<Form>` 实例提交（`code_review_fix: {enabled, batch_size}`），MUST NOT 因控件脱管而提交恒缺省值。
-- 开关与批大小卡片 MUST 位于「周期性代码审查」卡片之后（其下）。
+- 开关与批大小 MUST 位于「周期性代码审查」之下（2026-09-22 起并入同一「代码质量」卡片、渲染在其后；原独立卡片约束作废）。
 - 前端 service 类型 MUST 含 `CodeReviewFixConfig { enabled?, batch_size? }` 与 `ConfigData.code_review_fix?`。
 
 #### Scenario: 开关可开启并持久化
@@ -81,4 +81,4 @@
 #### Scenario: 开关位于周期性代码审查下方
 
 - **WHEN** 打开设置页「质量」页签
-- **THEN** 「自动修复代码问题」卡片 MUST 渲染在「周期性代码审查」卡片之后
+- **THEN** 「自动修复代码问题」开关 MUST 渲染在「周期性代码审查」之后（同一「代码质量」卡片内）
