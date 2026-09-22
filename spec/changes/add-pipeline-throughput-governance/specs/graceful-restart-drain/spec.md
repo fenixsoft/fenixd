@@ -6,7 +6,7 @@
 
 ### Requirement: 排水窗口配置化与宽限协调
 
-新增排水窗口配置项（如 `agents.run_drain_max_seconds`），代码缺省值 MUST 与 supervisor 的 SIGKILL 宽限（60s）一致；daemon restart 流程等待在飞 run 排水的时长上限 MUST 取该配置值，超窗后按既有强杀路径收场。缺省组合下的「重启到新 daemon 就绪」总时长 MUST 显著短于现状（现状 drain 上限 1800s 配 supervisor 60s 强杀，等价于白等）。配置 MUST 可人工调整（如调大给长排水留裕量），代码缺省变更不影响显式配置优先级。
+新增排水窗口配置项（如 `agents.run_drain_max_seconds`，代码缺省 60s），专管 daemon restart 流程等待在飞 run 排水的时长上限，超窗后按既有强杀路径收场；该值 MUST ≤ 既有 `admin.shutdown_drain_seconds`（缺省 1800）——supervisor 的 SIGKILL 等待 = `shutdown_drain_seconds + 120s` 余量（`bin/fenixd_supervisor.py`，interrupt-recovery-preserve D2 起可配；并非固定 60s），满足该不等式即保证 supervisor 不会先于 daemon 排水窗口强杀。缺省组合下的「重启到新 daemon 就绪」总时长 MUST 显著短于现状（现状病根是排水上限 1800s 而在飞 run 多数不会窗内自行收尾，重启白等半小时；supervisor 侧等待为 drain+120s，非截断瓶颈）。常规停机仍走 `admin.shutdown_drain_seconds` 语义不变。配置 MUST 可人工调整（如调大给长排水留裕量），代码缺省变更不影响显式配置优先级。
 
 #### Scenario: 缺省配置下重启快速收敛
 

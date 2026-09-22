@@ -6,7 +6,7 @@
 
 ### Requirement: merge 前置交集预检
 
-merge-back 发起前 MUST 计算主树 WIP 脏文件集（`git status --porcelain` 解析的未提交文件集）与实现分支触碰文件集（`merge-base..branch` diff 文件集）的交集；交集非空时 MUST NOT 发起 merge，MUST 转为人工升级告警（复用既有人工告警通道，内容含交集文件清单与两侧来源说明），spec 保持可重试状态（不冻结、不销毁分支与产物）。人工清理主树 WIP（提交/暂存/手术式分拣）后重试，或显式配置豁免。实现 MUST 先读 `evo-merge-back-wip-overlap-gate` 归档 spec 与 `core/wip_checkpoint.py` 现状，既有 overlap-gate 已覆盖的判定直接复用/前置调用，MUST NOT 重复实现同语义判定。
+merge-back 发起前 MUST 计算主树 WIP 脏文件集（`git status --porcelain` 解析的未提交文件集）与实现分支触碰文件集（`merge-base..branch` diff 文件集）的交集；交集非空时 MUST NOT 发起 merge，MUST 转为人工升级告警（复用既有人工告警通道，内容含交集文件清单与两侧来源说明），spec 保持可重试状态（不冻结、不销毁分支与产物）。人工清理主树 WIP（提交/暂存/手术式分拣）后重试，或显式配置豁免。实现 MUST 复用 `core/worktree_manager/mergeback.py` 的 `_wip_overlap_gate`/`_detect_wip_overlap` 既有判定（evo-merge-back-wip-overlap-gate 治理已合入代码；`spec/archive/` 无同名归档目录，`core/wip_checkpoint.py` 为锚点提交机制），MUST NOT 重复实现同语义判定。本能力对既有闸门缺省行为属有意变更：交集非空的缺省处置从 auto stash 收纳（`_wip_gate_policy` 缺省，依据「重叠 ≠ 冲突」）改为升级人工拦截，实现 MUST 记录该策略变更依据并保留 `worktree.mergeback_wip_overlap_policy` 读侧兼容（block 并入升级出口）。
 
 #### Scenario: WIP 重叠时拦截升级
 
