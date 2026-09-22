@@ -189,4 +189,4 @@ SPEC 每次状态转换（包括 Dashboard 处置、人工冻结这类不经状�
 
 - [验证体系](05-verification.md) — 三步流水线与门禁判定细节
 - [调度与治理规则](06-governance.md) — 预算、熔断、人工恢复
-- [FAQ 与故障排查](11-faq.md) — SPEC 卡住怎么办
+- [FAQ 与故障排查](12-faq.md) — SPEC 卡住怎么办

@@ -24,7 +24,7 @@
       evo-*.jsonl               # 框架自进化分析 run 事件（自托管时）
       ...                       # 其它 agent 类型
     logs/              # 框架日志
-      fenixd-<year>.log         # daemon 滚动日志
+      fenixd.log         # daemon 滚动日志（10MB×5 轮转，格式见日志体系章）
     admin_alerts.json  # 告警与处置记录
     hook_audit.jsonl   # hook 触发与执行审计（append-only）
     admin_invoke_request.json   # Admin 唤起请求信号（daemon 拾取后清除）
@@ -124,7 +124,7 @@ proposal.md、design.md、tasks.md 与 specs/ 是 spec-driven 流程的 change a
 | 现象 | 查哪里 |
 |------|--------|
 | SPEC 状态/优先级 | `.fenix/STATE.md` 该 spec 条目 |
-| SPEC 卡在 ready 不派发 | `.fenix/logs/fenixd-<year>.log` 的 dispatch 记录 |
+| SPEC 卡在 ready 不派发 | `.fenix/logs/fenixd.log` 的 dispatch 记录 |
 | 实现进展 | `.fenix/runs/impl-<spec>-*.jsonl` 尾部事件 |
 | SPEC 卡在 reviewing | `.fenix/runs/spec-review-<spec>-*.jsonl` 尾部事件 + `.fenix/spec-review/<spec>/.fenix-run-result.json`（评审结果契约）；仍在评审中则看评审 run 是否在跑 |
 | SPEC 因评审进 blocked | `.fenix/STATE.md` 该 spec 条目 `frozen: true` + error 字段（内嵌 `spec-review-rejected:` 需人工裁决方案；`spec-review-incomplete:` 需看评审器为什么没跑成；完整格式 `用户指令冻结：原状态 reviewing · …`），见[生命周期](03-lifecycle.md#blocked-的两种语义冻结-vs-阻塞) |
@@ -133,7 +133,7 @@ proposal.md、design.md、tasks.md 与 specs/ 是 spec-driven 流程的 change a
 | 告警与自动处置 | `.fenix/admin_alerts.json` |
 | Hook 触发与执行结果 | `.fenix/hook_audit.jsonl`（spec/event/action/status/duration，尾部倒序） |
 | Administrator 时间线 | Dashboard「运维记录」页 / admin_alerts.json disposition 记录 |
-| daemon 日志 | `.fenix/logs/fenixd-<year>.log` |
+| daemon 日志 | `.fenix/logs/fenixd.log` |
 | 项目事件时间线 | `.fenix/PROJECT_LOG.md` |
 | 当日待办/自省 | `.fenix/todo.md` |
 | 建议改进项 / 自进化草稿 | `.fenix/evolution/items.jsonl` + `drafts/<id>/`（Dashboard 设置页「自进化」页签） |
@@ -143,5 +143,6 @@ proposal.md、design.md、tasks.md 与 specs/ 是 spec-driven 流程的 change a
 ## 相关文档
 
 - [Dashboard 使用指南](08-dashboard.md) — 图形界面看同一份数据
+- [日志体系](11-logs.md) — 各日志文件的用途、格式、轮转与归档
 - [验证体系](05-verification.md) — 验证产物语义
-- [FAQ 与故障排查](11-faq.md) — 按现象直连处置
+- [FAQ 与故障排查](12-faq.md) — 按现象直连处置

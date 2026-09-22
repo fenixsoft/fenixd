@@ -8,7 +8,7 @@
 
 **根因**（按概率排序）：有更高优先级 SPEC 占用并发额度（`agents.max_concurrent`）；达到每日运行上限 `agents.daily_run_limit`；达到实现尝试预算（`_impl_run_budget_used >= impl_run_budget`）；SPEC 处于派发锁退避期（`pm.dispatch_backoff_schedule`，error 记录 backoff until）；或者 daemon 根本没有运行。
 
-**处置**：先用 `/fenix-status` 与 Dashboard 概览页确认 daemon 健康；再查 `.fenix/logs/fenixd-<year>.log` 的 dispatch 相关记录，以及 STATE.md 中该 spec 的 `error` 与 `_impl_run_budget_used` 字段。若确认是预算耗尽，人工评估后调整 `agents.impl_run_budget`（约 30 秒热更新）并 reset spec。
+**处置**：先用 `/fenix-status` 与 Dashboard 概览页确认 daemon 健康；再查 `.fenix/logs/fenixd.log` 的 dispatch 相关记录，以及 STATE.md 中该 spec 的 `error` 与 `_impl_run_budget_used` 字段。若确认是预算耗尽，人工评估后调整 `agents.impl_run_budget`（约 30 秒热更新）并 reset spec。
 
 相关：[调度与治理规则](06-governance.md#三类预算)、[SPEC 生命周期与状态机](03-lifecycle.md#blocked阻塞)
 
@@ -62,7 +62,7 @@
 
 **根因**：daemon 由 supervisor 托管（`fenixd_supervisor.py`），异常退出会被自动拉起；重启后 `implementing`/`testing` 回退 ready。
 
-**处置**：查 daemon 日志 `.fenix/logs/fenixd-<year>.log` 尾部确认崩溃原因；必要时 `/fenix-setup` 重建环境，或用 `/fenix-dashboard` 跨项目统一管理。需要说明的是，重启恢复是设计行为（[03 生命周期](03-lifecycle.md#daemon-重启中断恢复)），不是数据丢失。
+**处置**：查 daemon 日志 `.fenix/logs/fenixd.log` 尾部确认崩溃原因；必要时 `/fenix-setup` 重建环境，或用 `/fenix-dashboard` 跨项目统一管理。需要说明的是，重启恢复是设计行为（[03 生命周期](03-lifecycle.md#daemon-重启中断恢复)），不是数据丢失。
 
 ## 8. 项目在跑但 restart_request 永不生效（概览显示「运行中·未托管」）
 
