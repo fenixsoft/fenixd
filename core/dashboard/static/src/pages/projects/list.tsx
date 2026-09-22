@@ -27,7 +27,7 @@ import type { ColumnsType } from 'antd/es/table';
 import type { MenuProps } from 'antd';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Key } from 'react';
-import { history, useParams } from '@umijs/max';
+import { history, useParams, useSearchParams } from '@umijs/max';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import dayjs from 'dayjs';
 import Markdown from 'react-markdown';
@@ -50,6 +50,13 @@ import SpecStatusModal from './components/SpecStatusModal';
 import SessionPanel from './components/SessionPanel';
 import QualityTab from './components/QualityTab';
 import RegressionTab from './components/RegressionTab';
+// add-spec-list-filter-stickiness：过滤状态 ↔ URL 查询参数白名单与 fail-safe
+// 解析（纯函数单测见 tests/listFilters.test.mjs）
+import {
+  LIST_STATUSES,
+  parseListFilters,
+} from './listFilters';
+import type { ListTab, ListTypeFilter as TypeFilter } from './listFilters';
 
 const REFRESH_THROTTLE_MS = 500;
 // dashboard-sse-refresh：增量 patch 去重窗口（同 spec 1s 内多事件只应用最新）
@@ -137,8 +144,6 @@ function rangeArray(start: number, endExclusive: number) {
   for (let i = start; i < endExclusive; i += 1) out.push(i);
   return out;
 }
-
-type TypeFilter = '' | 'active' | 'completed';
 
 // ── 名称列 Why 悬浮提示（对齐 v1 why-hint：悬停 200ms 拉取 proposal 的 ## Why 段） ──
 // 提取与缓存逻辑在 src/utils/proposalWhy.ts（任务详情页「任务背景描述」共用）
@@ -534,18 +539,25 @@ export default function SpecListPage() {
   const { name = '' } = useParams<{ name: string }>();
   const isMobile = useIsMobile();
   const { message } = App.useApp();
+  // add-spec-list-filter-stickiness：过滤状态持久化到 URL 查询参数（replace 写回）
+  const [searchParams, setSearchParams] = useSearchParams();
+  // 读侧（D1）：挂载时惰性初始化一次性解析 URL（useState 惰性函数只在首渲染
+  // 执行），后续渲染不再读 URL 覆盖用户操作；此后 UI 由 state 驱动、变更写回
+  const [initialFilters] = useState(() => parseListFilters(searchParams));
   // dashboard-sse-refresh D3：本地 spec 摘要表（Map<spec_name, summary>），
   // 首屏 /api/specs 全量建立，此后 SSE 增量事件 patch 单行（含新增/删除）。
   const [specMap, setSpecMap] = useState<Record<string, SpecSummary>>({});
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
-  const [q, setQ] = useState('');
+  // 读侧恢复（1.2）：URL q 同时灌入输入框回显（q）与生效过滤值（debouncedQ），
+  // 不出现「先闪全量列表、300ms 后才过滤」的中间态
+  const [q, setQ] = useState(initialFilters.q);
   // 搜索/筛选输入防抖 ≥300ms（3.4），本地表过滤；本地空才回退后端
-  const [debouncedQ, setDebouncedQ] = useState('');
-  const [statusList, setStatusList] = useState<string[]>([]);
-  const [type, setType] = useState<TypeFilter>('');
+  const [debouncedQ, setDebouncedQ] = useState(initialFilters.q);
+  const [statusList, setStatusList] = useState<string[]>(initialFilters.statusList);
+  const [type, setType] = useState<TypeFilter>(initialFilters.type);
   // add-spec-archive：归档状态过滤（false=未归档默认，true=已归档）
-  const [archivedOnly, setArchivedOnly] = useState(false);
+  const [archivedOnly, setArchivedOnly] = useState(initialFilters.archivedOnly);
   const lastRefreshRef = useRef(0);
 
   // 增量 patch 队列：同 spec 1s 内多事件只应用最新（3.1 去重合并）。
@@ -574,9 +586,10 @@ export default function SpecListPage() {
   // add-spec-status-modal-budget：修改状态弹窗（归档/冻结/晋升/预算 四区块收敛入口）
   const [statusModal, setStatusModal] = useState<{ spec: string } | null>(null);
 
-  // add-project-detail-tabs D1：项目页分面选中态（SPEC 开发/代码审查/测试回归/Claude Code 会话），
-  // 仅存组件内存、不持久化到 URL——刷新回默认「SPEC 开发」
-  const [activeTab, setActiveTab] = useState<'dev' | 'quality' | 'regression' | 'session'>('dev');
+  // add-project-detail-tabs D1：项目页分面选中态（SPEC 开发/代码审查/测试回归/Claude Code 会话）；
+  // add-spec-list-filter-stickiness 改写：选中态持久化到 URL `tab` 参数（合法值
+  // 见 listFilters.ts LIST_TABS，缺省 dev 且缺省不写参），读侧恢复复用既有 active 门控
+  const [activeTab, setActiveTab] = useState<ListTab>(initialFilters.tab);
 
   const load = useCallback(async () => {
     if (!name) return;
@@ -709,6 +722,23 @@ export default function SpecListPage() {
     }, SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(t);
   }, [q, load]);
+
+  // add-spec-list-filter-stickiness（2.1/2.2）：写侧——过滤状态任一变化时以
+  // replace 语义写回 URL（不新增历史条目、路由路径 /projects/:name 不变、
+  // 不触发重挂载）。缺省值不写参（tab=dev / q 空 / statusList 空 / type 空 /
+  // 未归档均移除对应参数），默认视图下 URL 恢复无参干净形态；挂载后首跑即把
+  // 脏参数清洗为干净形态（D3 解析即消毒）。q 只跟随 debouncedQ 节拍落 URL
+  // （D4），输入框逐字符不写；setSearchParams 为稳定引用，不入 deps。
+  useEffect(() => {
+    const next = new URLSearchParams();
+    if (activeTab !== 'dev') next.set('tab', activeTab);
+    if (debouncedQ.trim()) next.set('q', debouncedQ.trim());
+    if (statusList.length > 0) next.set('status', statusList.join(','));
+    if (type) next.set('type', type);
+    if (archivedOnly) next.set('archived', '1');
+    setSearchParams(next, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [debouncedQ, statusList, type, archivedOnly, activeTab]);
 
   const filtered = useMemo(() => {
     const kw = debouncedQ.trim().toLowerCase();
@@ -1166,7 +1196,8 @@ export default function SpecListPage() {
       }}
     >
       {/* add-project-detail-tabs D1：项目页分面 Tabs——「SPEC 开发」（默认）/「代码审查」/
-          「测试回归」/「Claude Code 会话」；选中态不持久化到 URL；
+          「测试回归」/「Claude Code 会话」；add-spec-list-filter-stickiness：选中态
+          持久化到 URL `tab`（replace 写回、缺省不写参）；
           会话 Panel 的 active 门控见「Claude Code 会话」分面 children */}
       <Tabs
         activeKey={activeTab}
@@ -1207,10 +1238,7 @@ export default function SpecListPage() {
             value={statusList}
             onChange={setStatusList}
             style={{ minWidth: 200, maxWidth: 300 }}
-            options={[
-              'drafted', 'ready', 'reviewing', 'implementing', 'implemented', 'testing',
-              'verified', 'bug-found', 'blocked', 'done', 'pushed',
-            ].map((k) => ({ value: k, label: statusMeta(k).label }))}
+            options={LIST_STATUSES.map((k) => ({ value: k, label: statusMeta(k).label }))}
           />
           <Radio.Group
             optionType="button"
