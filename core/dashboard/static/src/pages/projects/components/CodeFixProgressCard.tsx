@@ -43,6 +43,12 @@ const PHASE_LABELS: Record<CodeReviewFixProgress['phase'], string> = {
   blocked: '已阻塞',
   failed: '失败',
 };
+// 条级状态中文（模块作用域）。后端 out 行 status ∈ {fixed, skipped}，未知值
+// 原样回显（与 PHASE_LABELS 的运行时兜底同口径）。
+const ITEM_STATUS_LABELS: Record<string, string> = {
+  fixed: '已修复',
+  skipped: '已跳过',
+};
 
 interface CodeFixProgressCardProps {
   project: string;
@@ -137,6 +143,27 @@ export default function CodeFixProgressCard(
   // 可能 running=true，以 exception 呈现而非无限 active（ocr 收尾审查）。
   const stopped = terminal || readFailed;
 
+  // 条级进度文案（add-code-fix-item-level-progress 5.1）：仅 fixing 阶段渲染。
+  // item_done 为 null 表示「明细尚未产生/不可得」（D4：与「已处置 0 条」是
+  // 两件事——null 渲染可读提示，绝不显示 0/N 这类可被误读为卡死的计数）。
+  const itemDone = progress.item_done;
+  const batchTotal = progress.batch_total;
+  const currentItem = progress.current_item;
+  let itemProgressText: string;
+  if (itemDone != null) {
+    itemProgressText =
+      batchTotal != null
+        ? `本批已处置 ${itemDone}/${batchTotal} 条`
+        : `本批已处置 ${itemDone} 条`;
+    if (currentItem) {
+      const statusLabel = ITEM_STATUS_LABELS[currentItem.status] ?? currentItem.status;
+      const titlePart = currentItem.title ? ` ${currentItem.title}` : '';
+      itemProgressText += ` · 刚完成：${statusLabel}：${currentItem.file}${titlePart}`;
+    }
+  } else {
+    itemProgressText = '批内明细尚未产生（agent 处置中）';
+  }
+
   return (
     <Card
       size="small"
@@ -157,6 +184,15 @@ export default function CodeFixProgressCard(
           {stopped && reason ? ` · 原因：${reason}` : ''}
           {stopped && !reason && readFailed ? ' · 进度读取失败，已停止轮询' : ''}
         </Typography.Text>
+        {phase === 'fixing' && (
+          <Typography.Text
+            type="secondary"
+            style={{ fontSize: 12 }}
+            data-testid="code-fix-item-progress"
+          >
+            {itemProgressText}
+          </Typography.Text>
+        )}
       </Space>
     </Card>
   );
