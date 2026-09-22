@@ -279,6 +279,10 @@ def run_administrator(runner, signal: dict) -> AdminDisposition:
         output=output,
         family_waiver=bool(disp.get("family_waiver", False)),
         failure_evidence=failure_evidence,
+        # add-human-adjudication-choices 4.2：处置记录结构化裁决字段透传
+        # （缺省空串兼容无键的存量处置记录）
+        choice_id=str(disp.get("choice_id") or ""),
+        suggested_choice=str(disp.get("suggested_choice") or ""),
     )
 
 

@@ -222,6 +222,16 @@ class AdminStore:
         evidence = rec.get("evidence")
         if evidence is not None and not isinstance(evidence, str):
             rec["evidence"] = json.dumps(evidence, ensure_ascii=False)
+        # add-human-adjudication-choices 1.3：告警可选 choices 字段（裁决选项集
+        # 快照，写告警时自注册表取）。append/merge_signal 原样透传；非法形态
+        # （非列表 / 元素非 dict）归一为 None——读取路径按无选项处理，不抛异常。
+        # 去重（merge_signal）只比对 (spec, signal_type, status_hash)，choices
+        # 不参与状态变化判定，不会因新字段误判合并；无该字段的存量记录按无
+        # 选项兼容读取。
+        if "choices" in rec:
+            ch = rec.get("choices")
+            if not (isinstance(ch, list) and all(isinstance(c, dict) for c in ch)):
+                rec["choices"] = None
         return rec
 
     def append(self, entry: dict) -> dict:
@@ -301,6 +311,28 @@ class AdminStore:
             changed = False
             for rec in records:
                 if rec.get("id") == alert_id and rec.get("kind") == ESCALATION:
+                    if not rec.get("handled"):
+                        rec["handled"] = True
+                        rec["handled_at"] = _utcnow_iso()
+                        changed = True
+            return changed
+
+        return self._mutate(mutate)
+
+    def mark_signal_handled(self, alert_id: str) -> bool:
+        """将某条 kind=SIGNAL 记录标记已处理（add-human-adjudication-choices 4.1）。
+
+        ``mark_handled`` 仅匹配 ESCALATION（既有人工告警闭环锚点，语义不可
+        放宽），而配置裁决类信号（build_artifact_paths_missing）写 kind=SIGNAL
+        记录——alert-resolve 端点对其经本方法直接更新 handled 族字段。仅改写
+        handled/handled_at（与 mark_handled 同集，不伪造 handled_by），已处理
+        条目幂等返回 False。
+        """
+
+        def mutate(records):
+            changed = False
+            for rec in records:
+                if rec.get("id") == alert_id and rec.get("kind") == SIGNAL:
                     if not rec.get("handled"):
                         rec["handled"] = True
                         rec["handled_at"] = _utcnow_iso()

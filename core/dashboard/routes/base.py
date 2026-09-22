@@ -231,6 +231,9 @@ def _post_alert_handled(s, p, q, m):
     alert_id = urllib.parse.unquote(m.group(1))
     s._api_alert_handled(alert_id, q)
 
+def _post_alert_resolve(s, p, q, m):
+    s._api_alert_resolve(q)
+
 def _post_run_watch(s, p, q, m):
     rest = urllib.parse.unquote(m.group(1))[: -len("/watch")]
     s._json(s._api_run_watch(rest, q, watch=True))
@@ -360,6 +363,8 @@ _API_POST_ROUTES = [
     ("exact", "/api/spec-re-review",      _post_spec_re_review),
     ("exact", "/api/spec-approve-push",   _post_spec_approve_push),
     ("exact", "/api/alerts/clear",        _post_alerts_clear),
+    # add-human-adjudication-choices 4.1：告警内嵌下拉「选完即闭环」裁决端点
+    ("exact", "/api/alert-resolve",       _post_alert_resolve),
     ("exact", "/api/evolution/accept",    _post_evolution_accept),
     ("exact", "/api/evolution/reject",    _post_evolution_reject),
     ("exact", "/api/evolution/delete",    _post_evolution_delete),

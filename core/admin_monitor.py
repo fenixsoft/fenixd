@@ -1302,6 +1302,13 @@ class AdminMonitor:
         return signals
 
     def _make_signal(self, signal_type: str, spec, description: str, evidence) -> dict:
+        # add-human-adjudication-choices 2.7 桶 0 确认：本监视器发射的
+        # stale_code / transient_break_storm / run_infra_failure / run_cancelled
+        # 属桶 0（系统级/自动收敛信号， Administrator 无操作杠杆或走内部处置），
+        # 裁决注册表（core.dashboard.data.adjudication_choices）不覆盖——
+        # 本构造器不注入 ``choices`` 键，前端告警区对其保持「知道了」形态。
+        # 桶 2 信号的 choices 注入在各发射点（family._send_human_escalation_alert
+        # 中心接线 / token_budget / mergeback），不经本路径。
         # 归一：多路径复用 _make_signal 注入 evidence，结构化值（dict/list）会在
         # 此处直接进 prompt（str.replace）→ TypeError，故在信号构造点先序列化为
         # JSON 串（与 admin_store._coerce_evidence 同口径，双保险）。
@@ -2586,6 +2593,11 @@ class AdminMonitor:
                         and disp.failure_evidence
                         else None
                     ),
+                    # add-human-adjudication-choices 4.2：结构化裁决字段
+                    # （choice_id 非空时框架按注册表 action 执行；空值写 None
+                    # 保持记录形状稳定，前端按无裁决处理）
+                    "choice_id": getattr(disp, "choice_id", "") or None,
+                    "suggested_choice": getattr(disp, "suggested_choice", "") or None,
                 }
             )
         except Exception as e:
@@ -2603,6 +2615,11 @@ class AdminMonitor:
         # 文本显式声明「回拨 N 轮」→ 从 _verify_fail_rounds 减回误计入的
         # infra 轮次并解冻（幂等，审计留痕 admin_store DISPOSITION）。
         self._apply_infra_reclassification(signal, disp)
+
+        # add-human-adjudication-choices 4.2：处置结论表达为结构化 choice_id
+        # 时，走与人工 alert-resolve 相同的动作映射执行路径（同一动作映射、
+        # 同一留痕格式），自动处置与人工处置收敛为同一裁决空间。
+        self._apply_choice_execution(signal, disp)
 
         # env 阻塞 / blocked_stuck 处置收尾复位（add-blocked-reverify-lane D2 +
         # frozen-scenario-schema-migration D3）：result 为 resolved/
@@ -3131,6 +3148,57 @@ class AdminMonitor:
             self.logger.debug(
                 "admin_monitor",
                 f"孤儿信号但 spec '{spec}' 状态 {status} 无需复位（可能已被处置）",
+            )
+
+    def _apply_choice_execution(self, signal: dict, disp) -> None:
+        """Administrator 处置 choice_id 非空 → 执行注册表动作映射（4.2）。
+
+        与人工 alert-resolve 端点共用 ``execute_adjudication_choice``：同一
+        动作映射、同一留痕格式。执行结果只记审计日志（最终 DISPOSITION
+        记录已含 choice_id 留痕，动作步骤入日志 context）；执行失败记
+        ERROR 不阻塞后续收尾（escalation 闭环 / 升级告警），失败状态由
+        日志与既有告警面呈现。
+        """
+        choice_id = str(getattr(disp, "choice_id", "") or "").strip()
+        if not choice_id:
+            return
+        spec = signal.get("spec") or disp.spec
+        if not spec:
+            self.logger.warning(
+                "admin_monitor",
+                f"处置 choice_id={choice_id} 无关联 spec，跳过执行",
+            )
+            return
+        # 依据原文随执行留痕（截断防日志膨胀；完整依据已在 DISPOSITION 记录）
+        basis = str(getattr(disp, "actions_taken", "") or "")[:200]
+        try:
+            from core.dashboard.data.admin_actions import execute_adjudication_choice
+
+            result = execute_adjudication_choice(
+                self.project_root,
+                spec,
+                choice_id,
+                note=basis,
+                signal_type=str(signal.get("signal_type") or ""),
+            )
+        except Exception as e:
+            self.logger.error(
+                "admin_monitor",
+                f"处置 choice 执行异常 choice_id={choice_id} spec='{spec}': {e}",
+            )
+            return
+        if result.get("ok"):
+            self.logger.info(
+                "admin_monitor",
+                f"处置 choice 执行成功 choice_id={choice_id} spec='{spec}'",
+                {"steps": result.get("steps") or [], "action": result.get("action")},
+            )
+        else:
+            self.logger.error(
+                "admin_monitor",
+                f"处置 choice 执行失败 choice_id={choice_id} spec='{spec}': "
+                f"{result.get('error')}",
+                {"steps": result.get("steps") or []},
             )
 
     def _apply_family_waiver(self, signal: dict, disp) -> None:

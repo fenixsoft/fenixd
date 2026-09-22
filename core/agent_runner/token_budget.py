@@ -145,25 +145,32 @@ class TokenAccountant:
 
             store = AdminStore(self._pm.project_root, self._pm.logger)
             pct = tokens_in / (float(budget) * 1_000_000) * 100.0
-            rec = store.append(
-                {
-                    "kind": ESCALATION,
-                    "signal_type": "token_budget",
-                    "spec": spec_name,
-                    "severity": severity,
-                    "description": (
-                        f"{title}：spec '{spec_name}' 累计 input token 已用 "
-                        f"{tokens_in / 1_000_000:.2f}M / 预算 {budget:.0f}M（{pct:.0f}%）"
-                    ),
-                    "evidence": (
-                        f"_tokens_in={tokens_in}; budget_millions={budget}; " f"ratio={pct:.1f}%"
-                    ),
-                    "recommended_action": (
-                        "检查是否失控烧钱；如需冻结请在 Dashboard / STATE.md 人工处置"
-                        "（本告警不自动冻结 spec）"
-                    ),
-                }
-            )
+            payload = {
+                "kind": ESCALATION,
+                "signal_type": "token_budget",
+                "spec": spec_name,
+                "severity": severity,
+                "description": (
+                    f"{title}：spec '{spec_name}' 累计 input token 已用 "
+                    f"{tokens_in / 1_000_000:.2f}M / 预算 {budget:.0f}M（{pct:.0f}%）"
+                ),
+                "evidence": (
+                    f"_tokens_in={tokens_in}; budget_millions={budget}; " f"ratio={pct:.1f}%"
+                ),
+                "recommended_action": (
+                    "检查是否失控烧钱；如需冻结请在 Dashboard / STATE.md 人工处置"
+                    "（本告警不自动冻结 spec）"
+                ),
+            }
+            # add-human-adjudication-choices 2.6：token_budget 在裁决注册表内
+            # （ignore/freeze_stop_loss/raise_budget）——发射点快照 choices 进
+            # 告警记录（本路径直写 AdminStore，不经 _send_human_escalation_alert）。
+            from core.dashboard.data.adjudication_choices import choices_for
+
+            choices = choices_for("token_budget")
+            if choices:
+                payload["choices"] = list(choices)
+            rec = store.append(payload)
             if not severity_needs_human(severity):
                 store.mark_handled(rec["id"])
             self._pm.logger.warning(

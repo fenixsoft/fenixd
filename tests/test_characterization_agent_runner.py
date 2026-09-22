@@ -111,6 +111,9 @@ class TestResultClassesChar:
             "recommended_action": "ra",
             "summary": "sm",
             "error": "boom",
+            # add-human-adjudication-choices 4.2：结构化裁决字段进 to_dict
+            "choice_id": "",
+            "suggested_choice": "",
         }
         assert a.family_waiver is True  # 内部字段，不进 to_dict
 

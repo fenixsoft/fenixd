@@ -135,6 +135,144 @@ class H6AlertRoutesMixin:
         self._json({"ok": True, "id": alert_id})
 
 
+    def _api_alert_resolve(self, query) -> dict:
+        """POST /api/alert-resolve — 人工裁决一次选择完成处置闭环（4.1）。
+
+        body ``{project, alert_id, choice_id, note?}``。按序：
+        (1) 校验告警存在且未 handled，按 alert ``signal_type`` 从注册表校验
+        ``choice_id`` 合法（记录内 choices 优先，缺失回退注册表）；(2) 执行
+        choice 映射动作（``execute_adjudication_choice`` 共享执行器）；(3)
+        标记告警 handled（ESCALATION 走 ``mark_handled``，SIGNAL 走
+        ``mark_signal_handled``）并落 DISPOSITION 处置留痕（choice_id/note/
+        动作步骤摘要）；(4) SSE 广播刷新横幅。
+
+        任一步失败返回结构化错误且不标记 handled；已执行的前序动作在错误
+        信息中如实报告（不做虚假回滚声明）。
+        """
+        project_name = (query.get("project", [None])[0]) or None
+        body = self._read_json_body()
+        if body is None:
+            return
+        alert_id = str(body.get("alert_id") or "").strip()
+        choice_id = str(body.get("choice_id") or "").strip()
+        note = str(body.get("note") or "")
+        if not project_name:
+            project_name = str(body.get("project") or "").strip()
+        if not project_name:
+            self._error(400, "missing project")
+            return
+        project = self.server.project_by_name(project_name)
+        if project is None or not project.get("exists"):
+            self._error(404, "project not found")
+            return
+        if not alert_id or not choice_id:
+            self._error(400, "alert_id and choice_id are required")
+            return
+        proot = Path(project["path"])
+
+        from core.admin_store import AdminStore, DISPOSITION, SIGNAL
+        from core.dashboard.data.adjudication_choices import (
+            choices_for,
+            is_adjudicable,
+        )
+
+        store = AdminStore(proot, logger)
+        alert = next((r for r in store.read_all() if r.get("id") == alert_id), None)
+        if alert is None:
+            self._error(404, "alert not found")
+            return
+        if alert.get("handled"):
+            self._error(409, "alert already handled（不重复执行动作）")
+            return
+
+        signal_type = str(alert.get("signal_type") or "")
+        spec = str(alert.get("spec") or "")
+        # choice 合法性：记录内 choices 优先（发射点快照），缺失回退注册表
+        record_choices = alert.get("choices") or choices_for(signal_type)
+        valid_ids = [c.get("id") for c in record_choices if isinstance(c, dict)]
+        if is_adjudicable(signal_type) and choice_id not in valid_ids:
+            legal = "、".join(
+                f"{c.get('id')}({c.get('label')})"
+                for c in record_choices
+                if isinstance(c, dict)
+            )
+            self._error(400, f"非法 choice_id '{choice_id}'，该信号合法选项：{legal}")
+            return
+
+        # 执行映射动作（共享执行器：与 Administrator 处置消费同一路径）
+        try:
+            result = dashboard_data.execute_adjudication_choice(
+                proot, spec, choice_id, note=note, signal_type=signal_type
+            )
+        except Exception as e:  # 动作执行异常：不标记 handled，如实报告
+            logger.exception("alert-resolve 动作执行异常 alert=%s", alert_id)
+            self._error(500, f"动作执行异常: {e}（告警保持未处理，可重试裁决）")
+            return
+        steps = result.get("steps") or []
+        if not result.get("ok"):
+            self._error(
+                400,
+                f"{result.get('error') or '动作未成功执行'}"
+                + (f"（已执行步骤：{'；'.join(steps)}）" if steps else "")
+                + "（告警保持未处理，可调整后重试）",
+            )
+            return
+
+        # handled 标记：kind 差异约定（ESCALATION→mark_handled，
+        # SIGNAL→mark_signal_handled 直接更新 handled 字段）
+        marked = (
+            store.mark_signal_handled(alert_id)
+            if alert.get("kind") == SIGNAL
+            else store.mark_handled(alert_id)
+        )
+
+        # 处置留痕：DISPOSITION 记录（choice_id/note/动作步骤摘要，
+        # 对 dashboard admin 活动区可见，作为裁决审计轨迹）
+        try:
+            store.append(
+                {
+                    "kind": DISPOSITION,
+                    "signal_type": signal_type or None,
+                    "spec": spec or None,
+                    "severity": alert.get("severity"),
+                    "description": alert.get("description"),
+                    "action_taken": "；".join(steps),
+                    "result": "success",
+                    "recommended_action": "",
+                    "summary": f"人工裁决 {choice_id}（{result.get('action')}）"
+                    + (f"：{note}" if note else ""),
+                    "choice_id": choice_id,
+                    "note": note,
+                    "source": "alert-resolve",
+                    "error": "",
+                }
+            )
+        except Exception as e:
+            # 留痕失败不回滚已执行的动作与 handled 标记，如实告知
+            logger.warning("alert-resolve 处置留痕写入失败 alert=%s: %s", alert_id, e)
+
+        try:
+            self.server.sse_hub.broadcast(
+                {
+                    "project": project["name"],
+                    "type": "alerts",
+                    "summary": dashboard_data.alerts_summary(proot),
+                }
+            )
+        except Exception as e:
+            logger.warning("SSE 广播失败（告警已处置，横幅可能滞后）: %s", e)
+        self._json(
+            {
+                "ok": True,
+                "id": alert_id,
+                "choice_id": choice_id,
+                "action": result.get("action"),
+                "steps": steps,
+                "marked": bool(marked),
+                "note": note,
+            }
+        )
+
     def _api_alerts_clear(self):
         """清理所有事件：把全部项目未处理升级告警标记为已处理；逐项目广播刷新横幅。
 

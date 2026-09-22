@@ -1,14 +1,17 @@
-import { Alert, App, Button, Card, Collapse, List, Space, Tag, Typography } from 'antd';
+import { Alert, App, Button, Card, Collapse, Input, List, Popconfirm, Select, Space, Tag, Typography } from 'antd';
 import dayjs from 'dayjs';
 import { useCallback, useEffect, useState } from 'react';
 import type { AlertItem, AlertsData } from '@/services/dashboard';
-import { clearAllAlerts, getAlerts, markAlertHandled } from '@/services/dashboard';
+import { clearAllAlerts, getAlerts, markAlertHandled, resolveAlert } from '@/services/dashboard';
 import { fmtEvidence } from '@/utils/evidence';
 
 /**
  * 人工升级告警横幅（对齐 v1：/api/alerts + SSE alerts 事件驱动刷新）。
  * antd 组合：Alert banner（条）+ List（待处理项，含标记已处理）+ Collapse（已解决折叠区）。
  * 乐观移除：点击标记后先前端隐藏，后端确认消失后才真正清除（防 3s 收敛窗口内重现）。
+ * add-human-adjudication-choices 5.4：带 choices 的告警内嵌裁决选择题
+ * （Select + note + 执行，与 SPEC 详情页同一 alert-resolve 闭环端点），
+ * abandon / skip_review_gate 执行前二次确认；无 choices 保持「标记已处理」。
  */
 const SEV_LABEL: Record<string, string> = { critical: '严重', major: '较高', warning: '警告', minor: '一般' };
 const SEV_COLOR: Record<string, string> = { critical: 'red', major: 'orange', minor: 'blue' };
@@ -76,6 +79,11 @@ export default function AlertBanner({ refreshTick }: { refreshTick: number }) {
   const [data, setData] = useState<AlertsData | null>(null);
   const [optimistic, setOptimistic] = useState<string[]>([]);
   const [expanded, setExpanded] = useState(true);
+  // add-human-adjudication-choices 5.4：裁决选择题交互状态（按告警 id 分键）
+  const [alertChoiceSels, setAlertChoiceSels] = useState<Record<string, string>>({});
+  const [alertNotes, setAlertNotes] = useState<Record<string, string>>({});
+  const [resolvingAlerts, setResolvingAlerts] = useState<Set<string>>(new Set());
+  const [alertResolveMsgs, setAlertResolveMsgs] = useState<Record<string, { text: string; tone: 'error' | 'info' }>>({});
 
   const load = useCallback(async () => {
     try {
@@ -117,6 +125,40 @@ export default function AlertBanner({ refreshTick }: { refreshTick: number }) {
       message.error(`标记失败：${err instanceof Error ? err.message : String(err)}`);
     }
     void load();
+  };
+
+  // add-human-adjudication-choices 5.4：横幅内人工裁决闭环（同详情页语义：
+  // loading 防重、成功回显步骤、失败展示错误且恢复可交互可重试）
+  const handleResolve = async (a: AlertItem, choiceId: string) => {
+    if (resolvingAlerts.has(a.id)) return;
+    setResolvingAlerts((s) => new Set(s).add(a.id));
+    setAlertResolveMsgs((m) => {
+      const n = { ...m };
+      delete n[a.id];
+      return n;
+    });
+    try {
+      const r = await resolveAlert(a.project, a.id, choiceId, alertNotes[a.id] || '');
+      const steps = Array.isArray(r.steps) ? r.steps : [];
+      setAlertResolveMsgs((m) => ({
+        ...m,
+        [a.id]: { text: `裁决已执行，处置留痕已写入${steps.length ? `：${steps.join('；')}` : ''}`, tone: 'info' },
+      }));
+      message.success('裁决已执行，处置留痕已写入');
+      void load();
+    } catch (err) {
+      setAlertResolveMsgs((m) => ({
+        ...m,
+        [a.id]: { text: err instanceof Error ? err.message : String(err), tone: 'error' },
+      }));
+      message.error('裁决执行失败，告警保持未处理，可调整后重试');
+    } finally {
+      setResolvingAlerts((s) => {
+        const n = new Set(s);
+        n.delete(a.id);
+        return n;
+      });
+    }
   };
 
   const handleClearAll = async () => {
@@ -162,17 +204,98 @@ export default function AlertBanner({ refreshTick }: { refreshTick: number }) {
           <List
             size="small"
             dataSource={alerts}
-            renderItem={(a) => (
-              <List.Item
-                actions={[
-                  <Button key="handled" size="small" onClick={() => void handleOne(a)}>
-                    标记已处理
-                  </Button>,
-                ]}
-              >
-                <List.Item.Meta title={<AlertTitle item={a} />} description={<AlertLines item={a} />} />
-              </List.Item>
-            )}
+            renderItem={(a) => {
+              const adjudicable = Array.isArray(a.choices) && a.choices.length > 0;
+              const selChoiceId = alertChoiceSels[a.id] || '';
+              const selChoice = (a.choices || []).find((c) => c.id === selChoiceId);
+              /* 撤销丢弃 / 跳过评审门：不可逆或越权语义，执行前二次确认（5.3） */
+              const needsConfirm = selChoiceId === 'abandon' || selChoiceId === 'skip_review_gate';
+              const resolving = resolvingAlerts.has(a.id);
+              const resolveMsg = alertResolveMsgs[a.id];
+              const execBtn = (
+                <Button
+                  key="exec"
+                  size="small"
+                  type={needsConfirm ? 'primary' : 'default'}
+                  danger={needsConfirm}
+                  loading={resolving}
+                  disabled={!selChoiceId || resolving}
+                  onClick={() => selChoiceId && !needsConfirm && void handleResolve(a, selChoiceId)}
+                >
+                  执行
+                </Button>
+              );
+              return (
+                <List.Item
+                  actions={[
+                    adjudicable ? (
+                      needsConfirm ? (
+                        <Popconfirm
+                          key="exec"
+                          title="确认执行该裁决？"
+                          description={selChoice?.desc || '该操作可能不可自动恢复，请确认'}
+                          okText="确认执行"
+                          cancelText="取消"
+                          onConfirm={() => selChoiceId && void handleResolve(a, selChoiceId)}
+                          disabled={resolving}
+                        >
+                          {execBtn}
+                        </Popconfirm>
+                      ) : (
+                        execBtn
+                      )
+                    ) : null,
+                    <Button key="handled" size="small" onClick={() => void handleOne(a)}>
+                      标记已处理
+                    </Button>,
+                  ].filter(Boolean)}
+                >
+                  <List.Item.Meta
+                    title={<AlertTitle item={a} />}
+                    description={
+                      <>
+                        <AlertLines item={a} />
+                        {adjudicable && (
+                          /* 裁决控件常驻；wrap 布局适配窄屏（screen-xs 自查） */
+                          <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6 }}>
+                            <Select
+                              size="small"
+                              style={{ minWidth: 220, flex: '1 1 220px' }}
+                              placeholder="选择裁决项"
+                              value={selChoiceId || undefined}
+                              onChange={(v) => setAlertChoiceSels((m) => ({ ...m, [a.id]: v }))}
+                              disabled={resolving}
+                              options={(a.choices || []).map((c) => ({ value: c.id, label: c.label, title: c.desc }))}
+                            />
+                            <Input
+                              size="small"
+                              style={{ width: 200, flex: '1 1 160px' }}
+                              maxLength={200}
+                              placeholder="处置依据（可选）"
+                              value={alertNotes[a.id] || ''}
+                              onChange={(e) => setAlertNotes((m) => ({ ...m, [a.id]: e.target.value }))}
+                              disabled={resolving}
+                            />
+                          </div>
+                        )}
+                        {adjudicable && selChoice?.desc && (
+                          <div style={{ marginTop: 4, fontSize: 12 }}>
+                            <Typography.Text type="secondary">{selChoice.desc}</Typography.Text>
+                          </div>
+                        )}
+                        {resolveMsg && (
+                          <div style={{ marginTop: 4, fontSize: 12, whiteSpace: 'pre-wrap' }}>
+                            <Typography.Text type={resolveMsg.tone === 'error' ? 'danger' : 'secondary'}>
+                              {resolveMsg.text}
+                            </Typography.Text>
+                          </div>
+                        )}
+                      </>
+                    }
+                  />
+                </List.Item>
+              );
+            }}
           />
         </Card>
       ) : null}
