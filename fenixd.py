@@ -428,6 +428,27 @@ class FenixDaemon:
 
         self.logger.info("fenixd", "All components initialized successfully")
 
+        # 8. 自动修复编排器装配（add-code-review-auto-fix，task 7.3）：在
+        # admin_monitor/executor 就绪后构造，注入 agent_runner（审查收尾触发，
+        # task 7.1）与 event_bus（full scan 兜底，task 7.2）。executor 复用
+        # _admin_executor（对齐 _code_review_executor 注入形态）；宿主禁用态
+        # （admin_monitor is None / admin.workers=0）构造仍成功，checkpoint()
+        # 的 enabled 守卫缺省关 → 返回 disabled（全链路零动作）。
+        # config 传 None：checkpoint 时经 runner._get_config 实时读取
+        # admin.code_review_fix（配置热更新 30s 内生效）。
+        from core.code_fix import CodeFixOrchestrator
+
+        self.code_fix_orchestrator = CodeFixOrchestrator(
+            self.agent_runner,
+            PROJECT_ROOT,
+            config=None,
+            logger=self.logger,
+            executor=self._admin_executor,
+        )
+        self.agent_runner._code_fix_orchestrator = self.code_fix_orchestrator
+        self.event_bus.code_fix_orchestrator = self.code_fix_orchestrator
+        self.logger.info("fenixd", "CodeFixOrchestrator initialized")
+
         # 记录启动时配置文件 mtime，供主循环热更新检测基线
         self._config_snapshot = self._config_mtimes()
 

@@ -36,6 +36,8 @@ AGENT_PROMPT_FILES = {
     "evolution": "evolution.md",
     "spec-review": "spec-review.md",
     "code-review": "code-review.md",
+    # add-code-review-auto-fix：新增 code-fix（自动修复车道 agent，可改码）。
+    "code-fix": "code-fix.md",
 }
 
 
@@ -269,6 +271,11 @@ class PromptBuilder:
         # 增量落盘路径）。
         if agent_type == "code-review":
             return self._build_code_review_prompt(spec_name, detail or {})
+
+        # add-code-review-auto-fix：code-fix（自动修复车道）run prompt 独立
+        # 构建（无 spec 维度占位符，注入本批条目 JSON、产物路径与 worktree）。
+        if agent_type == "code-fix":
+            return self._build_code_fix_prompt(spec_name, detail or {})
 
         template = self._load_agent_template(agent_type)
         prompt = self._fill_placeholders(template, agent_type, spec_name, detail)
@@ -1337,6 +1344,44 @@ class PromptBuilder:
         if not out_path:
             out_path = self._pm.project_root / ".fenix" / "code-review" / f"out-{run_id}.jsonl"
         prompt = prompt.replace("{out_path}", str(out_path))
+        # 非交互契约段（fix-agent-noninteractive-contract D2）：独立构建路径
+        # 不走统一收尾处注入，就地追加（return 之前）。
+        prompt += self._noninteractive_contract_section()
+        return prompt
+
+    def _build_code_fix_prompt(self, run_id: str, detail: dict) -> str:
+        """构建 code-fix（自动修复车道）run 的 prompt。
+
+        加载 agents/code-fix.md（文件化体系，缺失 fail-fast），以 str.replace
+        填充占位符（不用 str.format——正文含大量 {} JSON 示例）：
+        - {items}: 本批条目 JSON（item_id/file/line/severity/category/
+          title/description/suggestion 列表，多行缩进渲染）
+        - {out_path}: 逐条增量落盘路径（缺省 worktree 内
+          .fenix/code-review/fix-out-<run_id>.jsonl）
+        - {worktree}: 本批 worktree 根路径（agent 工作目录）
+        """
+        template = self._load_agent_template("code-fix")
+        prompt = template
+        items: list = detail.get("items") or []
+        items_txt = json.dumps(items, ensure_ascii=False, indent=2) or "[]"
+        prompt = prompt.replace("{items}", items_txt)
+        out_path = detail.get("out_path")
+        if not out_path:
+            wt = detail.get("worktree") or self._pm.project_root
+            out_path = Path(wt) / ".fenix" / "code-review" / f"fix-out-{run_id}.jsonl"
+        prompt = prompt.replace("{out_path}", str(out_path))
+        worktree = detail.get("worktree") or self._pm.project_root
+        prompt = prompt.replace("{worktree}", str(worktree))
+        # 回归失败重试轮注入（task 5.6）：上一轮全量回归的失败用例摘要——
+        # 令 agent 优先修复其上轮修复引入的回归，再继续处置清单剩余条目。
+        failure_summary = detail.get("failure_summary")
+        if failure_summary:
+            prompt += (
+                "\n\n## 上一轮回归失败用例（重试轮注入）\n\n"
+                "上一轮全量回归未通过（你的修复可能引入了回归）。请**优先**修复"
+                "下列失败用例对应的回归，再继续处置清单中的剩余条目：\n\n"
+                f"{failure_summary}\n"
+            )
         # 非交互契约段（fix-agent-noninteractive-contract D2）：独立构建路径
         # 不走统一收尾处注入，就地追加（return 之前）。
         prompt += self._noninteractive_contract_section()

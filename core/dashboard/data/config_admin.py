@@ -72,6 +72,8 @@ _SOURCE_KEYS = [
     "admin.self_review",
     # add-code-review-agent-and-quality-tab：admin.code_review 两键（周期代码审查）
     "admin.code_review",
+    # add-code-review-auto-fix：admin.code_review_fix 两键（自动修复车道）
+    "admin.code_review_fix",
     # add-test-regression-tab：admin.regression 键（周期全量回归开关）
     "admin.regression",
     # add-settings-system-tab：admin.* 受管键（5 键）
@@ -167,6 +169,10 @@ _DEFAULT_SELF_REVIEW = {"enabled": False, "run_at": "02:00", "read_todo": False}
 # add-code-review-agent-and-quality-tab：admin.code_review 缺省（与
 # ConfigLoader.get_code_review_config 一致：enabled 缺省 false，max_files 缺省 500）
 _DEFAULT_CODE_REVIEW = {"enabled": False, "max_files": 500}
+# add-code-review-auto-fix：admin.code_review_fix 缺省（与
+# ConfigLoader.get_code_review_fix_config 一致：enabled 缺省 false，
+# batch_size 缺省 20）
+_DEFAULT_CODE_REVIEW_FIX = {"enabled": False, "batch_size": 20}
 # add-test-regression-tab：admin.regression 缺省（与 ConfigLoader.get_regression_config
 # 一致：enabled 缺省 false——周期全量回归开关缺省关闭零动作）
 _DEFAULT_REGRESSION = {"enabled": False}
@@ -248,6 +254,9 @@ def _managed_key_sources(raw: dict) -> dict:
     # add-code-review-agent-and-quality-tab：admin.code_review 段显式定义 → project
     if isinstance(admin_raw, dict) and isinstance(admin_raw.get("code_review"), dict):
         sources["admin.code_review"] = "project"
+    # add-code-review-auto-fix：admin.code_review_fix 段显式定义 → project
+    if isinstance(admin_raw, dict) and isinstance(admin_raw.get("code_review_fix"), dict):
+        sources["admin.code_review_fix"] = "project"
     # add-test-regression-tab：admin.regression 段显式定义 → project
     if isinstance(admin_raw, dict) and isinstance(admin_raw.get("regression"), dict):
         sources["admin.regression"] = "project"
@@ -385,6 +394,8 @@ def read_config(scope_root, scope: str = "project") -> dict:
         "self_review": dict(_DEFAULT_SELF_REVIEW),
         # add-code-review-agent-and-quality-tab：admin.code_review 两键（缺省 false/500）
         "code_review": dict(_DEFAULT_CODE_REVIEW),
+        # add-code-review-auto-fix：admin.code_review_fix 两键（缺省 false/20）
+        "code_review_fix": dict(_DEFAULT_CODE_REVIEW_FIX),
         # add-test-regression-tab：admin.regression 键（缺省 false，周期全量回归开关）
         "regression": dict(_DEFAULT_REGRESSION),
         # add-settings-system-tab：admin.* 受管键（5 键 + 缺省填充）
@@ -550,6 +561,9 @@ def read_config(scope_root, scope: str = "project") -> dict:
         # （经 ConfigLoader 生效值回显，与 self_review 同形态：顶层独立子键、
         # 不进 _managed_admin_keys 键集）
         result["code_review"] = _CL.get_code_review_config(raw)
+        # add-code-review-auto-fix：admin.code_review_fix 两键（经 ConfigLoader
+        # 生效值回显，与 code_review 同形态：顶层独立子键）
+        result["code_review_fix"] = _CL.get_code_review_fix_config(raw)
         # add-test-regression-tab：admin.regression 键（经 ConfigLoader 生效值
         # 回显，与 code_review 同形态：顶层独立子键、不进 _managed_admin_keys
         # 键集——未知 admin 键由白名单狭窄回显，读不懂写入值）
@@ -645,6 +659,8 @@ def read_effective_config(project_root) -> dict:
         "self_review": dict(_DEFAULT_SELF_REVIEW),
         # add-code-review-agent-and-quality-tab：admin.code_review 两键（缺省 false/500）
         "code_review": dict(_DEFAULT_CODE_REVIEW),
+        # add-code-review-auto-fix：admin.code_review_fix 两键（缺省 false/20）
+        "code_review_fix": dict(_DEFAULT_CODE_REVIEW_FIX),
         # add-test-regression-tab：admin.regression 键（缺省 false，周期全量回归开关）
         "regression": dict(_DEFAULT_REGRESSION),
         # add-settings-system-tab：admin.* 受管键（5 键 + 缺省填充）
@@ -785,6 +801,8 @@ def read_effective_config(project_root) -> dict:
     # add-code-review-agent-and-quality-tab：code_review 生效值回显（与
     # self_review 同形态：顶层独立子键、经 get_code_review_config 归一化缺省）
     result["code_review"] = ConfigLoader.get_code_review_config(effective)
+    # add-code-review-auto-fix：code_review_fix 生效值回显（同形态）
+    result["code_review_fix"] = ConfigLoader.get_code_review_fix_config(effective)
     # add-test-regression-tab：regression 生效值回显（与 code_review 同形态：
     # 顶层独立子键、经 get_regression_config 归一化缺省）
     result["regression"] = ConfigLoader.get_regression_config(effective)
@@ -985,6 +1003,22 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
         ):
             cr["max_files"] = max_files
         merged["admin"]["code_review"] = cr
+    # add-code-review-auto-fix：admin.code_review_fix 两键（enabled 严格 bool、
+    # batch_size 正整数；非法值由 write_config 前置校验拒绝，此处只应用合法值
+    # ——对齐 code_review 合并语义）
+    if "code_review_fix" in patch and isinstance(patch["code_review_fix"], dict):
+        if not isinstance(merged.get("admin"), dict):
+            merged["admin"] = {}
+        existing_crf = merged["admin"].get("code_review_fix")
+        if not isinstance(existing_crf, dict):
+            existing_crf = {}
+        crf = dict(existing_crf)
+        if isinstance(patch["code_review_fix"].get("enabled"), bool):
+            crf["enabled"] = patch["code_review_fix"]["enabled"]
+        bs = patch["code_review_fix"].get("batch_size")
+        if isinstance(bs, int) and not isinstance(bs, bool) and bs > 0:
+            crf["batch_size"] = bs
+        merged["admin"]["code_review_fix"] = crf
     # add-test-regression-tab：admin.regression 键（enabled 严格 bool；非法值
     # 由 write_config 前置校验拒绝，此处只应用合法值——对齐 code_review 合并
     # 语义；未知 admin 键由 _managed_admin_keys 白名单狭窄回显，读不懂写入值，
@@ -1014,6 +1048,23 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
         ):
             if ak in patch["admin"] and patch["admin"][ak] is not None:
                 merged["admin"][ak] = patch["admin"][ak]
+        # add-code-review-auto-fix：「同步用户级设置」按 _SYNC_PAGE_KEYS 构造
+        # {"admin": {"code_review_fix": {...}}} 形态的 patch 进入本分支（顶层
+        # code_review_fix 键只有设置页保存路径走）——不在此显式合并子段，该值
+        # 会被上面的标量白名单静默丢弃，sync 返回 ok 但项目配置未落盘（ocr
+        # 审查实证，正是上方 regression 注释点名的「缺分支静默丢弃保存」坑）。
+        crf_sync = patch["admin"].get("code_review_fix")
+        if isinstance(crf_sync, dict):
+            existing_crf = merged["admin"].get("code_review_fix")
+            if not isinstance(existing_crf, dict):
+                existing_crf = {}
+            merged_crf = dict(existing_crf)
+            if isinstance(crf_sync.get("enabled"), bool):
+                merged_crf["enabled"] = crf_sync["enabled"]
+            _bs = crf_sync.get("batch_size")
+            if isinstance(_bs, int) and not isinstance(_bs, bool) and _bs > 0:
+                merged_crf["batch_size"] = _bs
+            merged["admin"]["code_review_fix"] = merged_crf
     # description 分支：patch 顶层 description（str）写入 merged["project"]["description"]
     if "description" in patch and isinstance(patch["description"], str):
         if not isinstance(merged.get("project"), dict):
@@ -1153,6 +1204,33 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
             if isinstance(mf, bool) or not isinstance(mf, int) or mf <= 0:
                 return fail(
                     f"admin.code_review.max_files must be a positive integer: {mf!r}"
+                )
+
+    # add-code-review-auto-fix：前端提交的 code_review_fix patch 后端校验
+    # （enabled 严格 bool、batch_size 正整数；非法直接拒绝不落盘、不半写）。
+    # 顶层 code_review_fix（设置页保存）与嵌套 admin.code_review_fix
+    # （「同步用户级设置」经 _SYNC_PAGE_KEYS 构造）两条路径同口径校验。
+    _crf_patches = []
+    if isinstance(config_patch.get("code_review_fix"), dict):
+        _crf_patches.append(config_patch["code_review_fix"])
+    if isinstance(config_patch.get("admin"), dict) and isinstance(
+        config_patch["admin"].get("code_review_fix"), dict
+    ):
+        _crf_patches.append(config_patch["admin"]["code_review_fix"])
+    for crf_patch in _crf_patches:
+        if (
+            "enabled" in crf_patch
+            and crf_patch["enabled"] is not None
+            and not isinstance(crf_patch["enabled"], bool)
+        ):
+            return fail(
+                f"admin.code_review_fix.enabled must be a boolean: {crf_patch['enabled']}"
+            )
+        if "batch_size" in crf_patch and crf_patch["batch_size"] is not None:
+            bs = crf_patch["batch_size"]
+            if isinstance(bs, bool) or not isinstance(bs, int) or bs <= 0:
+                return fail(
+                    f"admin.code_review_fix.batch_size must be a positive integer: {bs!r}"
                 )
 
     # add-test-regression-tab：前端提交的 regression patch 后端校验（enabled
@@ -1773,7 +1851,9 @@ _SYNC_PAGE_KEYS = {
             "impl_code_review_timeout_sec",
             "impl_code_review_concurrency",
             "impl_code_review_effort",
-        ]
+        ],
+        # add-code-review-auto-fix：admin.code_review_fix 段随质量页签同步
+        "admin": ["code_review_fix"],
     },
     "approval": {
         "gates": ["promote_mode", "approve_mode", "spec_review_mode", "start_after_scope"]

@@ -10,7 +10,7 @@ import type { PromptsData } from '@/services/dashboard';
 const { Text, Title } = Typography;
 const { TextArea } = Input;
 
-// key 集合与后端 AGENT_PROMPT_FILES 严格一致（含 code-review 共 11 个 agent，
+// key 集合与后端 AGENT_PROMPT_FILES 严格一致（含 code-review 共 12 个 agent，
 // 勿增删；code-review item f62e36d1531f：旧注释写 10 个，已漂移）
 const AGENT_LABELS: Record<string, string> = {
   implementer: 'Implementer（实现）',
@@ -25,6 +25,8 @@ const AGENT_LABELS: Record<string, string> = {
   'spec-review': 'Spec Review（方案评审）',
   // add-code-review-agent-and-quality-tab：新增 code-review（周期性仓库级代码审查）
   'code-review': 'Code-Review（代码审查）',
+  // add-code-review-auto-fix：新增 code-fix（自动修复车道，可改码）
+  'code-fix': 'Code-Fix（自动修复）',
 };
 
 interface PromptsPanelProps {

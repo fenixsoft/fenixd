@@ -1027,6 +1027,14 @@ export interface CodeReviewConfig {
   max_files?: number;
 }
 
+/** 自动修复代码问题（admin.code_review_fix；add-code-review-auto-fix） */
+export interface CodeReviewFixConfig {
+  /** 自动修复总开关（缺省 false = 全链路零动作） */
+  enabled?: boolean;
+  /** 每批修复的台账条目数（正整数，缺省 20，1–1000） */
+  batch_size?: number;
+}
+
 /** 周期性全量回归（admin.regression；add-test-regression-tab） */
 export interface RegressionConfig {
   /** 是否启用周期性全量回归（缺省 false；手动触发不受此开关约束） */
@@ -1279,6 +1287,9 @@ export interface ConfigData {
   code_review?: CodeReviewConfig;
   /** add-test-regression-tab：周期性全量回归（admin.regression；设置页「质量」页签开关） */
   regression?: RegressionConfig;
+  /** add-code-review-auto-fix：自动修复代码问题（admin.code_review_fix 两键，
+   *  设置页「质量」页签读写；项目页「代码审查」分面呈现进度） */
+  code_review_fix?: CodeReviewFixConfig;
   scope: 'user' | 'project';
   raw_exists: boolean;
   sources: Record<string, string>;
@@ -1362,6 +1373,26 @@ export async function getCodeReviewItems(
 export async function getCodeReviewProgress(project: string): Promise<CodeReviewProgress> {
   return request<CodeReviewProgress>(
     `/api/code-review/progress?project=${encodeURIComponent(project)}`,
+  );
+}
+
+/** 自动修复进度（add-code-review-auto-fix；GET /api/code-review/fix-progress） */
+export interface CodeReviewFixProgress {
+  running: boolean;
+  phase: 'idle' | 'selecting' | 'fixing' | 'regressing' | 'retrying' | 'merging'
+    | 'blocked' | 'failed';
+  total: number;
+  done: number;
+  current: string;
+  batch_no: number;
+  reason: string;
+  activation_id: string;
+}
+
+/** add-code-review-auto-fix：读取自动修复进度（无副作用，缺失文件返回缺省态） */
+export async function getCodeReviewFixProgress(project: string): Promise<CodeReviewFixProgress> {
+  return request<CodeReviewFixProgress>(
+    `/api/code-review/fix-progress?project=${encodeURIComponent(project)}`,
   );
 }
 
