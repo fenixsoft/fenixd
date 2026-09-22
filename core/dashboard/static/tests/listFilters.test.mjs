@@ -88,3 +88,14 @@ test('spec 页签全部合法值均被接受', () => {
     assert.equal(parseListFilters(sp(`?tab=${t}`)).tab, t);
   }
 });
+
+test('status 空值参数（?status=）视为无参', () => {
+  assert.deepEqual(parseListFilters(sp('?status=')).statusList, []);
+});
+
+test('白名单大小写敏感：tab=DEV / type=ACTIVE / status=READY 一律回退默认', () => {
+  const f = parseListFilters(sp('?tab=DEV&type=ACTIVE&status=READY'));
+  assert.equal(f.tab, 'dev');
+  assert.equal(f.type, '');
+  assert.deepEqual(f.statusList, []);
+});

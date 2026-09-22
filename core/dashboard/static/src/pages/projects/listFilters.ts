@@ -8,13 +8,16 @@ export type ListTypeFilter = '' | 'active' | 'completed';
 export const LIST_TABS: readonly ListTab[] = ['dev', 'quality', 'regression', 'session'];
 
 // 状态合法枚举（11 项）：与列表「全部状态」过滤下拉同源（list.tsx 的 Select
-// options 直接引用此常量），键序与 services/dashboard.ts 的 STATUS_META 一致
+// options 直接引用此常量），键序即 list.tsx 过滤下拉的既有展示序。
+// 注意：与 services/dashboard.ts 的 STATUS_META 键序**不同**——reviewing
+// （add-spec-review-gate 追加）在彼处居末位，在此处沿用下拉原有第三位。
 export const LIST_STATUSES: readonly string[] = [
   'drafted', 'ready', 'reviewing', 'implementing', 'implemented', 'testing',
   'verified', 'bug-found', 'blocked', 'done', 'pushed',
 ];
 
-// 类型过滤合法值域
+// 类型过滤合法值域。ListTypeFilter 的 '' 仅为解析器「无过滤」回退值，
+// 不是合法 URL 值（type= 空串或非法值一律回 ''，缺省不写参），故白名单不含 ''。
 export const LIST_TYPES: readonly ListTypeFilter[] = ['active', 'completed'];
 
 export interface ListFilters {
