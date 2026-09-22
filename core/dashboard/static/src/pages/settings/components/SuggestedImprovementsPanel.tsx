@@ -759,6 +759,26 @@ const SuggestedImprovementsPanel = forwardRef<
   const canPrev = viewIndex > 0;
   const canNext = viewIndex >= 0 && viewIndex < filteredItems.length - 1;
 
+  // 最新视图状态 ref（code-review item 8786ca79694a）：nextAfterAction 在
+  // await loadItems() 之后的决策点读取视图状态，须读最新提交值而非点击时
+  // 渲染的闭包快照（期间用户可能已关窗/翻页/改过滤）；每轮提交后同步。
+  const latestViewStateRef = useRef({
+    viewVisible,
+    viewIndex,
+    filterStatus,
+    filterProject,
+    filterDateRange,
+  });
+  useEffect(() => {
+    latestViewStateRef.current = {
+      viewVisible,
+      viewIndex,
+      filterStatus,
+      filterProject,
+      filterDateRange,
+    };
+  });
+
   const goRelative = (delta: -1 | 1) => {
     if (viewIndex < 0) return;
     const target = filteredItems[viewIndex + delta];
@@ -780,23 +800,31 @@ const SuggestedImprovementsPanel = forwardRef<
     current: EvolutionItem,
     onDone?: () => void,
   ) => {
+    // 决策点重读最新视图状态（code-review item 8786ca79694a）：本函数在点击
+    // 时渲染中创建，却在 await loadItems() 之后才执行——期间用户可能已关窗、
+    // 翻页或改过滤，闭包捕获的 viewVisible/viewIndex/过滤值已过时，「窗内
+    // 翻页 vs 关窗」决策与回退 seq[viewIndex] 可能出错。统一经 ref 取最新
+    // 提交态。
+    const { viewVisible: visibleNow, viewIndex: idxNow,
+      filterStatus: statusNow, filterProject: projectNow,
+      filterDateRange: dateRangeNow } = latestViewStateRef.current;
     const seq = items.filter((item) =>
       // 过滤谓词与 filteredItems 同源（item 7ea5eaa7b3c8）：跳转序列恒与
       // 表格所见一致
       matchesFilter(item, {
-        status: filterStatus,
-        project: filterProject,
-        dateRange: filterDateRange,
+        status: statusNow,
+        project: projectNow,
+        dateRange: dateRangeNow,
       }),
     );
     const idx = seq.findIndex((i) => i.id === current.id);
     // 当前条目仍在过滤结果里 → 取其后的那一条；已被过滤掉（状态变了，例如
     // 「待决策」筛选下同意后的条目）→ 后续条目整体前移一格，原下标处就是它的
     // 后继（也是用户眼里原来位于下方的那一行）。
-    const target = idx >= 0 ? seq[idx + 1] : seq[viewIndex];
+    const target = idx >= 0 ? seq[idx + 1] : seq[idxNow];
     // 只有「查看」弹窗开着时才在窗内翻页——操作列菜单发起的同名动作没有
     // 弹窗可翻，保持原行为（仅刷新表格）。
-    if (target && viewVisible) {
+    if (target && visibleNow) {
       setViewItem(target);
       setViewTab('analysis'); // 与首次打开同构：页签回到分析结论
       return;

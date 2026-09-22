@@ -206,8 +206,20 @@ def run_administrator(runner, signal: dict) -> AdminDisposition:
                 "recommended_action": signal.get("recommended_action"),
             }
         )
-    except Exception:
-        pass
+    except Exception as e:
+        # fix-admin-self-heal 守卫降级不可静默：若 AdminStore import/append
+        # 持续失败（权限/schema/磁盘），pending 记录从不写入但 run 照常——
+        # 整个 self-heal 告警路径静默失效（被 kill 的 admin 不留任何可升级
+        # 的痕迹）。至少 WARNING 留痕（code-review item 8353a3138b0f）；
+        # logger 判空与本文件其它调用点统一走 getattr。
+        _log = getattr(runner, "logger", None)
+        if _log is not None:
+            _log.warning(
+                "agent_runner",
+                f"Administrator pending disposition write failed (run {run_id}): "
+                f"{type(e).__name__}: {e}",
+                {"run_id": run_id, "spec": spec, "error": str(e)},
+            )
 
     runner._clear_admin_disposition(disp_path)
     failure_evidence: dict = {}

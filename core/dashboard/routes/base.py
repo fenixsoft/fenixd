@@ -500,6 +500,11 @@ class H0BaseMixin:
     def _handle_inner(self, method: str = "GET"):
         # 每请求复位 body 消费计数（BUG-01 排空判定基准；keep-alive 下同连接多请求）
         self._request_body_consumed = 0
+        # 每请求复位响应已开始标记（code-review item 970c8c0c63b5）：handler
+        # 实例在 keep-alive 下跨请求复用，_response_started 若不复位，首个
+        # 请求置 True 后后续每个请求的 500 兜底都看到过时 True 而静默跳过
+        # ——在写任何字节前失败的请求收不到任何响应。
+        self._response_started = False
         try:
             parsed = urllib.parse.urlparse(self.path)
             path = parsed.path
@@ -567,6 +572,12 @@ class H0BaseMixin:
             self._error(400, "Empty request body")
             return None
         if content_length > max_body:
+            # 413 不排空（code-review item 9cbdd2e25696）：残留交 finally 排空
+            # 时会对攻击者声明的超大 Content-Length（实际无数据发送）执行无界
+            # rfile.read(remaining)，阻塞 worker 线程达 socket 超时、占用请求
+            # 槽/连接预算。改为标记连接不可复用（close_connection），排空跳过、
+            # 响应后关闭连接让客户端重连，body 残留随之作废。
+            self.close_connection = True
             self._error(413, "Request body too large")
             return None
         try:
@@ -591,6 +602,11 @@ class H0BaseMixin:
         ``{...}POST /api/...`` 之类的非法命令 → 501 Unsupported method。
         排空后连接回到干净状态；已消费（_read_json_body 读满）时为 no-op。
         """
+        if getattr(self, "close_connection", False):
+            # 连接已标记不可复用（如 413 超大 body，code-review item
+            # 9cbdd2e25696）：残留字节随连接关闭作废，不再盲排（无界 read
+            # 阻塞 worker 线程）。
+            return
         try:
             content_length = int(self.headers.get("Content-Length", "0") or "0")
         except ValueError:

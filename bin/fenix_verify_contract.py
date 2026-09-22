@@ -97,7 +97,11 @@ def selfcheck_regression(project_root: Path) -> tuple:
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
-    except OSError as e:
+    except (OSError, TypeError, ValueError) as e:
+        # 不只 OSError：load_verify_contract 原样存 regression.cmd（仅 truthiness
+        # 检查，非字符串/含非字符串项的列表会漏到这里），Popen 对畸形 cmd 抛
+        # TypeError/ValueError——须与 OSError 同转 (False, "回归命令启动失败: …")
+        # 而非裸 traceback（code-review item 92ffb7d32798）。
         return False, f"回归命令启动失败: {e}"
     try:
         proc.wait(timeout=spec.timeout_seconds)

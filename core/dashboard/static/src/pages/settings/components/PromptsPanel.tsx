@@ -56,6 +56,17 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
       try {
         const d = await getPrompts(project);
         if (!cancelled) {
+          // HTTP-200 错误载荷显式上报（code-review item 9a019b10302a）：
+          // _api_prompts_get 出错时经 _json 返回 {error: "…"} 且 HTTP 200
+          // （request() 仅在 !res.ok 时抛），旧实现静默吞掉——错误响应与
+          // 「合法空提示词」不可区分（面板渲染空只读视图无反馈）。
+          const errPayload = (d as { error?: string }).error;
+          if (errPayload) {
+            message.warning(`提示词加载返回错误：${errPayload}`);
+            setData(null);
+            setExtraDraft('');
+            return;
+          }
           setData(d);
           // 切换项目时同步把 activeAgent 复位为 implementer（code-review item
           // 67694883ca76）：旧实现只重置草稿（恒取 implementer 的 extra）而不重置
@@ -67,7 +78,15 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
         }
       } catch (e) {
         console.error('Failed to load prompts:', e);
-        if (!cancelled) message.error(`加载提示词失败：${e instanceof Error ? e.message : e}`);
+        if (!cancelled) {
+          message.error(`加载提示词失败：${e instanceof Error ? e.message : e}`);
+          // 失败路径复位（code-review item 96880454231c）：切到项目 B 后其
+          // fetch 失败时 data/extraDraft 若残留项目 A 的内容，textarea 仍持
+          // A 的 extra prompt 且保存可用——handleSave 会把 A 的内容写进 B
+          // （跨项目错写）。复位后保存亦被 handleSave 的 data 判空阻断。
+          setData(null);
+          setExtraDraft('');
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -98,7 +117,9 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
   );
 
   const handleSave = async () => {
-    if (!project) return;
+    // data 判空（code-review item 96880454231c）：加载失败/尚未成功加载时
+    // extraDraft 不代表服务端现值，保存可能把过时/空内容写进当前项目。
+    if (!project || !data) return;
     // 固化本次保存的目标 agent（code-review item 9bb2f4e7caaa）：旧实现
     // 保存后 refetch 时仍读闭包里的 activeAgent，若请求在飞期间用户切换了
     // agent，会把**旧 agent** 的值写回 extraDraft 而 UI 显示新 agent。
@@ -145,7 +166,9 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
           onChange={handleAgentChange}
           // 保存进行中禁止切换 agent（code-review item 9bb2f4e7caaa）：在飞请求
           // 期间切换会让 refetch 把旧 agent 的值写回草稿而 UI 显示新 agent。
-          disabled={saving}
+          // 加载中同样禁用（code-review item 96880454231c）：loading 期间
+          // data/extraDraft 可能仍是上一项目的残留。
+          disabled={saving || loading}
           style={{ width: '100%' }}
           options={Object.keys(AGENT_LABELS).map((k) => ({ value: k, label: AGENT_LABELS[k] }))}
         />
@@ -207,6 +230,9 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
               type="primary"
               data-testid="prompts-extra-save"
               loading={saving}
+              // 加载中禁用（code-review item 96880454231c）：草稿可能是上一
+              // 项目的残留内容，保存会跨项目错写。
+              disabled={loading}
               onClick={handleSave}
             >
               保存项目附加提示词

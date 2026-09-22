@@ -213,9 +213,17 @@ class Registry:
             if not isinstance(p, dict):
                 continue
             raw = p.get("path", "")
+            # 类型校验（code-review item 90f925a2042b）：path 缺失/为空时
+            # Path("").resolve() 返回当前工作目录——畸形条目会静默把 dashboard
+            # 进程 CWD 注册成受监控项目（exists=True）；非字符串 path（手改/
+            # 畸形 YAML 的 path: 123、path: {a: b}）让 Path(...) 抛 TypeError
+            # 穿透 discover，破坏模块故障隔离契约。两类条目一律跳过并告警。
+            if not isinstance(raw, str) or not raw.strip():
+                logger.warning("显式项目条目 path 缺失/为空/非字符串，跳过: %r", p)
+                continue
             try:
                 rp = Path(raw).expanduser().resolve()
-            except (OSError, RuntimeError):
+            except (OSError, RuntimeError, ValueError):
                 continue
             key = str(rp)
             if key in ignored:

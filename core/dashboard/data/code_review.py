@@ -28,7 +28,10 @@ def _line_key(value) -> int:
         return value
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError：非有限浮点（int(float('inf'))）。json.loads 默认接受
+        # Infinity/-Infinity 字面量，LLM 产出台账行 line: Infinity 时会走到这里
+        # ——不捕获会穿透本函数使列表端点 500（code-review item 7ff80c561c99）。
         import re
 
         m = re.search(r"\d+", str(value))

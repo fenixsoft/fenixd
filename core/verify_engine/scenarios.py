@@ -942,6 +942,12 @@ class TestScenario:
             # frozen-scenario-schema-migration D2：写入端恒定写 schema 版本标记，
             # 读侧按版本路由迁移（无版本=旧 schema 走迁移，当前版本直通）。
             "schema_version": SCHEMA_VERSION,
+            # evo-frozen-scenario-contract-versioning：contract_version 与
+            # schema_version 两戳一起盖（同 prepare_scenarios_for_write 口径）。
+            # 此前本方法漏盖 contract_version，经 to_dict() 序列化的写路径
+            # （save_scenarios 等）产出的文件被 frozen_contract_version 读成
+            # v1，下次加载不必要触发契约迁移（code-review item 8e30615ecdd4）。
+            CONTRACT_VERSION_FIELD: CURRENT_CONTRACT_VERSION,
             "steps": [s.to_dict() for s in self.steps],
             "assertions": [a.to_dict() for a in self.assertions],
         }

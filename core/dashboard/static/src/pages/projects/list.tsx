@@ -94,7 +94,9 @@ function progressText(progress: number) {
 }
 
 function fmtDuration(sec?: number | null) {
-  if (sec == null || Number.isNaN(sec)) return '';
+  // 显式 null/undefined 判等（code-review item 95013c6683be）：宽松相等被
+  // 项目 lint 禁止，意图为「null 或 undefined」时逐值显式比较。
+  if (sec === null || sec === undefined || Number.isNaN(sec)) return '';
   let s = Math.max(0, Math.round(sec));
   if (s < 60) return `${s}秒`;
   const m = Math.floor(s / 60);
@@ -422,7 +424,8 @@ function buildTree(specs: SpecSummary[]): SpecSummary[] {
       }
       candidate = up;
     }
-    if (parent == null) {
+    // 显式 null/undefined 判等（code-review item 95013c6683be，宽松相等被 lint 禁止）
+    if (parent === null || parent === undefined) {
       roots.push(s);
     } else {
       const arr = childrenMap.get(parent) || [];
@@ -648,7 +651,8 @@ export default function SpecListPage() {
   // 入队一条增量 patch；同 spec 在 1s 窗口内只保留最新值
   const enqueuePatch = useCallback((spec: string, summary: SpecSummary | null) => {
     pendingPatchesRef.current[spec] = summary;
-    if (patchTimerRef.current == null) {
+    // 显式 null/undefined 判等（code-review item 95013c6683be，宽松相等被 lint 禁止）
+    if (patchTimerRef.current === null || patchTimerRef.current === undefined) {
       patchTimerRef.current = setTimeout(flushPatches, PATCH_COALESCE_MS);
     }
   }, [flushPatches]);
@@ -698,7 +702,7 @@ export default function SpecListPage() {
       es.close();
       // 清理时 MUST 把 ref 置回 null 并清空待处理队列（code-review item
       // cf865713d17b）：旧实现只 clearTimeout 不置 null，而 enqueuePatch 仅在
-      // `patchTimerRef.current == null` 时创建新定时器——该 effect 一旦因路由
+      // `patchTimerRef.current === null || === undefined` 时创建新定时器——该 effect 一旦因路由
       // 切换（name 变化 → load 变化）重建，ref 便永久留着一个已清除的非 null id，
       // 此后所有 SSE 增量 patch 都不再被调度刷新（pendingPatchesRef 无限累积、
       // 界面停止增量更新）。同时陈旧队列若不清空，会在后续 flush 时被应用到
@@ -777,6 +781,14 @@ export default function SpecListPage() {
   // 旧实现 `[tree]` 依赖会在流式更新期间反复把用户手工收起的树弹开，且与受控
   // 展开 onExpandedRowsChange 互相打架。用 ref 标记首次初始化。
   const expandedInitRef = useRef(false);
+  // 项目切换复位闩锁（code-review item 9dd9b3c6679b）：本路由组件在同一路径
+  // /projects/:name 下复用不重挂载，expandedInitRef 是锚定不到项目的一次性
+  // 闩锁——name 变化时不复位则新项目树保持折叠、expandedKeys 残留上一项目的
+  // spec 名。复位后由下方 init effect 在新项目 tree 首次到达时重新展开。
+  useEffect(() => {
+    expandedInitRef.current = false;
+    setExpandedKeys([]);
+  }, [name]);
   useEffect(() => {
     if (expandedInitRef.current) return;
     if (tree.length === 0) return;

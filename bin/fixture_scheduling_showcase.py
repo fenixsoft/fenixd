@@ -214,7 +214,23 @@ def _atomic_write_text(path: Path, text: str) -> None:
     fd, tmp_str = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
     tmp_path = Path(tmp_str)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
+        # fdopen 本身可能抛异常（如 fd 无效/编码问题）：此时 fd 仍未被接管，
+        # finally 只 unlink 路径、不关 fd，会泄漏文件描述符（重复 --reset
+        # 运行累积泄漏）。显式兜底关闭，镜像 _reset_alerts_baseline 的加固
+        # （code-review item 804a6cf78f92）。
+        f = os.fdopen(fd, "w", encoding="utf-8")
+    except Exception:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
+        raise
+    try:
+        with f:
             f.write(text)
             f.flush()
             os.fsync(f.fileno())
