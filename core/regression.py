@@ -454,7 +454,13 @@ class _SuiteLock:
             self._lock_path.parent.mkdir(parents=True, exist_ok=True)
             self._file = self._lock_path.open("w")
         except OSError as e:
-            # 锁文件无法创建（权限问题等）——保守继续，不阻断回归
+            # 锁文件无法创建（权限问题等）——保守继续，不阻断回归。
+            # code-review item 138d7e3202e6：旧实现只记 WARNING 即 return、
+            # `_acquired` 未置位，acquired=False 使 run_regression 短路成
+            # skipped/full_suite_lock_not_acquired——本分支声称容忍的降级
+            # 场景被静默丢弃（且无快照落盘）。显式标记 bypassed，调用方
+            # 据此继续执行（无串行保证，与类注释的保守语义一致）。
+            self._bypassed = True
             self._log(f"regression: 无法创建主机级锁文件（跳过锁，无串行保证）: {e}")
             return self
         start = time.time()
@@ -482,8 +488,17 @@ class _SuiteLock:
 
     @property
     def acquired(self) -> bool:
-        """锁是否成功获取（文件句柄不可用时也返回 False）。"""
+        """锁是否成功获取（文件句柄不可用时也返回 False）。
+
+        bypassed（锁文件不可用而按无锁继续）不改变本属性——「拿到锁」与
+        「绕过锁」是两个维度，调用方以 ``acquired or bypassed`` 判定可否执行。
+        """
         return getattr(self, "_acquired", False)
+
+    @property
+    def bypassed(self) -> bool:
+        """锁文件不可用而按「无锁继续」降级（区别于等待超时的放弃执行）。"""
+        return getattr(self, "_bypassed", False)
 
     def __exit__(self, *exc):
         try:
@@ -566,10 +581,17 @@ def run_regression(
         log_fn=lambda m: log.info("regression", m),
     )
     with lock:
-        if not lock.acquired:
-            # 放弃本次（D7：首版不重试，单快照语义下无历史可查）
+        if not lock.acquired and not lock.bypassed:
+            # 放弃本次（D7：首版不重试，单快照语义下无历史可查）。
+            # bypassed（锁文件不可用）不在此列：按「跳过锁，无串行保证」继续
+            # 执行（item 138d7e3202e6——旧实现把该降级也短路成 skipped）。
             log.warning("regression", "主机级锁未获取，放弃本次回归")
             return {"status": "skipped", "reason": "full_suite_lock_not_acquired"}
+        if lock.bypassed:
+            log.warning(
+                "regression",
+                "主机级锁不可用，按无锁继续执行本次回归（无串行保证）",
+            )
 
         # 清理旧产物（确保解析的是本次执行产出，不是上次残留）
         if output_abs.is_file():

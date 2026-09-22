@@ -1241,13 +1241,13 @@ def _check_partial_consistency(
         raw_un = []
     if not isinstance(raw_ct, list) or not isinstance(raw_un, list):
         return (
-            f"exit 0 但结果文件 partial 缺 completed_tasks/unfinished 数组"
+            f"{TASK_GATE_ERROR_PREFIX} exit 0 但结果文件 partial 缺 completed_tasks/unfinished 数组"
             f"（{agent_type} 产物硬门）: {result_path}"
         )
     bad = runner._invalid_completed_ids(raw_ct) + runner._invalid_completed_ids(raw_un)
     if bad:
         return (
-            f"exit 0 但结果文件 partial 清单含非法任务 id"
+            f"{TASK_GATE_ERROR_PREFIX} exit 0 但结果文件 partial 清单含非法任务 id"
             f"（{agent_type} 产物硬门）: {result_path} {runner._format_gap_list(bad)}"
         )
     ct_set, un_set = set(raw_ct), set(raw_un)

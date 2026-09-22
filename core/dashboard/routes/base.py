@@ -82,7 +82,10 @@ def _get_hooks_audit(s, p, q, m):
     s._json(s._api_hooks_audit(q))
 
 def _get_prompts(s, p, q, m):
-    s._json(s._api_prompts_get(q))
+    # _api_prompts_get 是自含响应 handler：读失败自写 _error（可读 500）——
+    # 不得再包 _json 双重写响应（keep-alive 下残留第二响应 200+null 污染
+    # 下一请求，同 _get_spec_doc 注记）
+    s._api_prompts_get(q)
 
 def _get_todo(s, p, q, m):
     s._api_todo_get(q)

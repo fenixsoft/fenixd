@@ -97,36 +97,49 @@ class H5SettingsRoutesMixin:
         self._json(config)
 
 
-    def _api_prompts_get(self, query) -> dict:
-        """GET /api/prompts[?project=<name>] — agent 提示词读取。
+    def _api_prompts_get(self, query) -> None:
+        """GET /api/prompts[?project=<name>] — agent 提示词读取（自含响应）。
 
         缺省 → 仅通用层六文件（用户级只读视图）；带 project → 追加项目级
         .fenix/agents/ 附加内容。通用层一律只读，端点不提供通用层写入。
+
+        读失败转可读 500（code-review item 113782f1517d）：通用层或项目
+        extras 文件的权限/IO 错误静默降级空串会让 UI 显示空白编辑器、与
+        真空提示词无法区分——与同文件 todo.md/verify.yaml 读取器一致。
         """
         agents = []
         for atype, fname in AGENT_PROMPT_FILES.items():
             path = AGENT_PROMPT_DIR / fname
             try:
                 content = path.read_text(encoding="utf-8") if path.is_file() else ""
-            except OSError:
-                content = ""
+            except OSError as e:
+                self._error(500, f"提示词读取失败（{atype}）: {e}")
+                return
             agents.append({"type": atype, "file": fname, "content": content})
         out: dict = {"agents": agents}
         project = self._project_from_query(query)
         if project is None:
-            return out
+            self._json(out)
+            return
         if not project.get("exists"):
-            return {"error": "project not found"}
+            self._json({"error": "project not found"})
+            return
         proot = Path(project["path"])
+        try:
+            extras = {
+                atype: self._read_project_extra(proot, atype)
+                for atype in AGENT_PROMPT_FILES
+            }
+        except OSError as e:
+            self._error(500, f"项目附加提示词读取失败: {e}")
+            return
         out["project"] = {
             "name": project["name"],
             "path": project["path"],
             # 所有项目一视同仁（含 fenixd 自身）；仅废弃软链布局 extras 为空串
-            "extras": {
-                atype: self._read_project_extra(proot, atype) for atype in AGENT_PROMPT_FILES
-            },
+            "extras": extras,
         }
-        return out
+        self._json(out)
 
 
     @staticmethod
@@ -137,10 +150,9 @@ class H5SettingsRoutesMixin:
         path = agents_dir / AGENT_PROMPT_FILES[agent_type]
         if not path.is_file():
             return ""
-        try:
-            return path.read_text(encoding="utf-8")
-        except OSError:
-            return ""
+        # 读失败不吞（item 113782f1517d）：OSError 由 _api_prompts_get 转可读
+        # 500——静默空串与真空提示词无法区分。
+        return path.read_text(encoding="utf-8")
 
 
     def _api_prompts_post(self, query):
@@ -397,26 +409,19 @@ class H5SettingsRoutesMixin:
                     return seg[len("项目名="):].strip()
             return ""
 
-        inflight = [
-            r
-            for r in store.read_all()
-            if r.get("kind") == SIGNAL
-            and r.get("signal_type") == signal_type
-            and not r.get("handled")
-            and not r.get("escalated")
-            and _evidence_project(r.get("evidence")) == project["name"]
-        ]
-        if inflight:
-            self._json(
-                {
-                    "ok": True,
-                    "project": project["name"],
-                    "status": "dispatched",
-                    "message": "已有在途的验证契约处理请求，无需重复触发；Administrator 将在下一轮巡检拾取（数分钟内），结果见运维记录。",
-                }
+        def _is_inflight(r: dict) -> bool:
+            return (
+                r.get("kind") == SIGNAL
+                and r.get("signal_type") == signal_type
+                and not r.get("handled")
+                and not r.get("escalated")
+                and _evidence_project(r.get("evidence")) == project["name"]
             )
-            return
-        store.append(
+
+        # 在途查重与写入在单次排他锁内完成（code-review item 0d7c2ef12e33）：
+        # 旧 read_all() 查重后 append() 是 check-then-act（两次独立锁获取），
+        # 并发同参 POST 可都观测空在飞集、各自落一条重复信号。
+        rec = store.append_if_absent(
             {
                 "kind": SIGNAL,
                 "signal_type": signal_type,
@@ -427,8 +432,19 @@ class H5SettingsRoutesMixin:
                 "source": "ui-manual",
                 "overwrite": overwrite,
                 "recommended_action": "Administrator 将在下一轮巡检拾取（数分钟内），结果见运维记录；完成后可点重新加载查看新契约。",
-            }
+            },
+            _is_inflight,
         )
+        if rec is None:
+            self._json(
+                {
+                    "ok": True,
+                    "project": project["name"],
+                    "status": "dispatched",
+                    "message": "已有在途的验证契约处理请求，无需重复触发；Administrator 将在下一轮巡检拾取（数分钟内），结果见运维记录。",
+                }
+            )
+            return
         self._json(
             {
                 "ok": True,

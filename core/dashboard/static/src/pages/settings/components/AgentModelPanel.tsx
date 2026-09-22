@@ -37,7 +37,8 @@ const AGENT_ROLES = [
   { key: 'code-fix', label: 'Code-Fix（自动修复）' },
 ];
 
-// 后端 normalize_agent_models 输出 → 编辑器行（str / 对象 / 混合数组统一为 {provider, model}）
+// 后端 normalize_agent_models 输出 → 编辑器行（str / 对象 / 混合数组统一为 {provider, model}；
+// 行内自带 roleKey，保存时按 key 映射回后端，不依赖「第 i 项 == 第 i 角色」下标不变量）
 function toRoleList(models: AgentsModels = {}): RoleValue[] {
   return AGENT_ROLES.map(({ key }) => {
     const m: AgentModelAssignment | undefined = models[key];
@@ -50,17 +51,22 @@ function toRoleList(models: AgentsModels = {}): RoleValue[] {
       )
       .filter((r) => r.provider !== '');
     return {
+      roleKey: key,
       roleModel: (m && m.model) || '',
       rows,
     };
   });
 }
 
-// 编辑器状态 → agents.models patch（仅收集已选 provider 的行；未配置的角色不写）
+// 编辑器状态 → agents.models patch（仅收集已选 provider 的行；未配置的角色不写）。
+// 按 roleKey 映射（code-review item 042e1dc46cb4）：按下标映射依赖「表单第 i 项
+// == AGENT_ROLES 第 i 项」的隐式不变量，角色表调整/外部 setFieldsValue 注入/后端
+// merge 回填使顺序或长度漂移时，某角色的模型会被静默写到错误的后端键上。缺
+// roleKey 的行（异常注入形态）回落下标，索引越界则跳过。
 function toModels(roleList: RoleValue[] = []): AgentsModels {
   const models: AgentsModels = {};
   roleList.forEach((rv, index) => {
-    const key = AGENT_ROLES[index]?.key;
+    const key = rv?.roleKey || AGENT_ROLES[index]?.key;
     if (!key) return;
     const roleModel = (rv?.roleModel || '').trim();
     const chain = (rv?.rows || [])
@@ -142,10 +148,15 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
     message.success(`已复制「${roleLabel}」的模型分配`);
   };
 
-  // 把剪贴板内容覆盖到某角色（角色级默认模型与全部 Provider 行一起替换）
+  // 把剪贴板内容覆盖到某角色（角色级默认模型与全部 Provider 行一起替换）。
+  // roleKey 重写为目标卡片的 key：粘贴体携带的是源角色的 key，不改写会把
+  // 本卡（B 角色）的分配经 roleKey 直写进源角色（A）的后端键。
   const handlePaste = (index: number) => {
     if (!clipboard) return;
-    form.setFieldValue(['roleList', index], cloneRoleValue(clipboard.value));
+    form.setFieldValue(['roleList', index], {
+      ...cloneRoleValue(clipboard.value),
+      roleKey: AGENT_ROLES[index]?.key,
+    });
     message.success(
       `已粘贴「${clipboard.label}」的模型分配到「${AGENT_ROLES[index]?.label ?? `角色 ${index + 1}`}」`,
     );

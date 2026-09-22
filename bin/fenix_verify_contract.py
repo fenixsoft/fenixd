@@ -61,7 +61,14 @@ def selfcheck_regression(project_root: Path) -> tuple:
 
     cmd = spec.cmd
     output_rel = str(spec.output)
-    output_abs = Path(project_root) / output_rel
+    # output 原样读自 verify.yaml：绝对路径或 .. 穿越会把 unlink/解析
+    # 指向项目外文件，触达前先约束解析路径在项目根内
+    root = Path(project_root).resolve()
+    output_abs = (root / output_rel).resolve()
+    try:
+        output_abs.relative_to(root)
+    except ValueError:
+        return False, f"regression.output 越界项目根，拒绝触达: {output_rel}"
     # 清理旧产物，确保解析的是本次执行产出
     if output_abs.is_file():
         try:

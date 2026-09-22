@@ -116,8 +116,15 @@ class H11CodeReviewRoutesMixin:
 
         try:
             state = _hosting_state(str(proot))
-        except Exception:
-            state = "stopped"  # 判定异常按未运行兜底，宁拒勿假放行
+        except Exception as exc:
+            # 判定异常按未运行兜底，宁拒勿假放行；降级可观测（item 0d1ba0c6efc0）
+            state = "stopped"
+            _log = getattr(self, "logger", None)
+            if _log is not None:
+                _log.warning(
+                    "code_review_routes",
+                    f"hosting_state 判定异常，按 stopped 兜底（宁拒勿假放行）: {exc!r}",
+                )
         if state == "unmanaged":
             self._error(
                 409,
@@ -135,7 +142,9 @@ class H11CodeReviewRoutesMixin:
         # 静默覆盖前者的信号（或覆盖一条已存在未消费的请求），丢失一次用户触发。
         # 独占创建成功即胜出；FileExistsError → 409（已有未消费请求）。
         created = datetime.now(timezone.utc).isoformat()
-        payload = {"scope": scope, "source": "dashboard", "created": created}
+        # 键名与消费者契约一致（fenixd._check_code_review_requests 读
+        # requested_at；item 117af27b759a：写 created 使 daemon 恒记空时间戳）
+        payload = {"scope": scope, "source": "dashboard", "requested_at": created}
         req_path = proot / CODE_REVIEW_REQUEST
         req_path.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -190,8 +199,15 @@ class H11CodeReviewRoutesMixin:
 
         try:
             state = _hosting_state(str(proot))
-        except Exception:
-            state = "stopped"  # 判定异常按未运行兜底，宁拒勿假放行
+        except Exception as exc:
+            # 判定异常按未运行兜底，宁拒勿假放行；降级可观测（item 0d1ba0c6efc0）
+            state = "stopped"
+            _log = getattr(self, "logger", None)
+            if _log is not None:
+                _log.warning(
+                    "code_review_routes",
+                    f"hosting_state 判定异常，按 stopped 兜底（宁拒勿假放行）: {exc!r}",
+                )
         if state == "unmanaged":
             self._error(
                 409,

@@ -7,15 +7,21 @@ export interface ChainRow {
 }
 
 export interface RoleValue {
+  /** 后端角色 key（agents.models 键）：表单行与后端键按此映射，不依赖下标
+   * （code-review item 042e1dc46cb4——顺序/长度漂移时下标映射会静默写错键）。 */
+  roleKey?: string;
   roleModel: string;
   rows: ChainRow[];
 }
 
 // 深拷贝一份角色配置：复制到剪贴板、从剪贴板粘贴回卡片都经此归一。
 // 深拷贝保证之后编辑卡片（含 rows 增删改）不会引用串改已复制的内容。
+// roleKey 仅在源上有值时携带（避免 undefined 键改变既有 deepEqual 语义）。
 export function cloneRoleValue(value?: RoleValue): RoleValue {
-  return {
+  const copy: RoleValue = {
     roleModel: value?.roleModel ?? '',
     rows: (value?.rows ?? []).map((r) => ({ provider: r.provider, model: r.model })),
   };
+  if (value?.roleKey !== undefined) copy.roleKey = value.roleKey;
+  return copy;
 }
