@@ -85,7 +85,14 @@ class TestVerdictCacheRoundtrip(unittest.TestCase):
         cache = {"s1": {"fingerprint": "abc", "classification": "test-defect",
                         "evidence": {"x": 1}, "assertion_triage": []}}
         save_verdict_cache(self.pr, "spec", cache)
-        self.assertEqual(load_verdict_cache(self.pr, "spec"), cache)
+        loaded = load_verdict_cache(self.pr, "spec")
+        # add-verify-lane-throughput 4.1：save 注入 _meta（head_at_write 供
+        # 修复轮 fix-diff 判据），既有条目内容不受影响
+        self.assertIn("_meta", loaded)
+        self.assertIn("head_at_write", loaded["_meta"])
+        self.assertEqual(
+            {k: v for k, v in loaded.items() if k != "_meta"}, cache
+        )
 
     def test_missing_returns_empty(self):
         self.assertEqual(load_verdict_cache(self.pr, "ghost"), {})
