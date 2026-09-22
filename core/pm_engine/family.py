@@ -821,6 +821,17 @@ class FamilyGovernor:
             }
             if trigger:
                 entry["trigger"] = trigger
+            # add-human-adjudication-choices 2.1-2.5：桶 2 发射点接线（D1「发射点
+            # 只引用注册表」+ D2「写告警时快照」）——按 signal_type 从裁决选项
+            # 注册表取 choices 并入告警记录。本单点是全部 ESCALATION 告警的
+            # 共同写入口（预算耗尽/升级闸门/评审两族/judge 重跑上限/同因重派
+            # 熔断/恢复期 human_alert_callback 均汇聚于此），注册表未覆盖的
+            # 信号（桶 0 知情/自愈类等）返回空集、不写该字段——MUST NOT 携带。
+            from core.dashboard.data.adjudication_choices import choices_for
+
+            choices = choices_for(signal_type)
+            if choices:
+                entry["choices"] = list(choices)
             rec = store.append(entry)
             if not severity_needs_human(severity):
                 store.mark_handled(rec["id"])

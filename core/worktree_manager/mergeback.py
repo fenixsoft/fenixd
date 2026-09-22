@@ -345,10 +345,17 @@ class G4MergebackMixin:
             ]
             if inflight:
                 return
+            # add-human-adjudication-choices 2.7：配置裁决类发射点快照 choices
+            # （open_config/declare_no_artifacts）。kind=SIGNAL 记录不进前端
+            # 告警区（unhandled 仅含 ESCALATION），choices 由 Administrator
+            # 处置契约 / alert-resolve 端点消费。局部导入避免模块级环依赖。
+            from core.dashboard.data.adjudication_choices import choices_for
+
             store.append(
                 {
                     "kind": SIGNAL,
                     "signal_type": "build_artifact_paths_missing",
+                    "choices": list(choices_for("build_artifact_paths_missing")),
                     "spec": spec or "",
                     "severity": "major",
                     "description": (
