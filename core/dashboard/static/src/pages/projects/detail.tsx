@@ -20,6 +20,18 @@ import { useIsMobile } from '@/hooks/useIsMobile';
 import { fmtEvidence } from '@/utils/evidence';
 import { fetchProposalWhy } from '@/utils/proposalWhy';
 import { fmtInputTokens, fmtMillions } from '@/utils/tokens';
+// add-quality-gates-visibility：六态渲染语义映射抽到纯函数模块（node:test 可
+// 加载 .ts），本文件只做 JSX 套用
+import {
+  GATES_STROKE,
+  gateChecked,
+  gateDetailText,
+  gateStrikeThrough,
+  gateSuffix,
+  gateTextColor,
+  normalizeGateItems,
+  shouldRenderGatesCard,
+} from './qualityGates';
 
 // 与 v2 static/app.js renderVerdict 保持同一判定逻辑：
 // parse_verdict 的 status 串自带 emoji 前缀（如 "❌ 未通过（Bug Found）"），先剥离再判定，
@@ -199,8 +211,10 @@ function KindBadge({ kind }: { kind?: string }) {
   return <Tag color={meta.color} style={{ marginInlineEnd: 0 }}>{meta.label}</Tag>;
 }
 
-// overview「任务进度」同款进度条控件：大百分比 + 已完成 x/y + 渐变进度条（验证进度/任务清单共用）
-function ProgressBarTile({ done, total }: { done: number; total: number }) {
+// overview「任务进度」同款进度条控件：大百分比 + 已完成 x/y + 渐变进度条（验证进度/任务清单共用）。
+// add-quality-gates-visibility：strokeColor 可选参数化——质量门禁 Card 传门禁橙，
+// 缺省渐变不变（验证进度/任务清单零回归）。
+function ProgressBarTile({ done, total, strokeColor }: { done: number; total: number; strokeColor?: string }) {
   const p = total > 0 ? Math.round((done / total) * 100) : 0;
   return (
     <>
@@ -215,7 +229,7 @@ function ProgressBarTile({ done, total }: { done: number; total: number }) {
       </div>
       <Progress
         percent={p}
-        strokeColor={{ '0%': '#108ee9', '100%': '#87d068' }}
+        strokeColor={strokeColor ?? { '0%': '#108ee9', '100%': '#87d068' }}
         status="active"
         style={{ marginBottom: 12 }}
       />
@@ -1729,6 +1743,53 @@ export default function SpecDetailPage() {
           <Typography.Text type="secondary">暂无任务清单</Typography.Text>
         )}
       </Card>
+
+      {/* 质量门禁（add-quality-gates-visibility）：统一 6 道门禁勾选列表。
+          drafted/ready 且无门禁文件不渲染本 Card（早期 spec 无门禁可言）；
+          其余状态文件不可见时显示空态兜底 */}
+      {shouldRenderGatesCard(detail?.status, !!detail?.quality_gates?.exists) ? (
+        <Card title="质量门禁" size="small" style={{ marginBottom: 16 }} data-testid="quality-gates-card">
+          {detail?.quality_gates?.exists ? (
+            <>
+              <ProgressBarTile
+                done={detail.quality_gates.done}
+                total={detail.quality_gates.total}
+                strokeColor={GATES_STROKE}
+              />
+              {detail.quality_gates.current ? (
+                <Typography.Text type="secondary" style={{ display: 'block', marginBottom: 8 }}>
+                  当前：{detail.quality_gates.current}
+                </Typography.Text>
+              ) : null}
+              {normalizeGateItems(detail.quality_gates.items).map((item, idx) => (
+                <div
+                  key={item.id || idx}
+                  data-testid="quality-gate-item"
+                  style={{ display: 'flex', alignItems: 'flex-start', marginBottom: 10 }}
+                >
+                  <Checkbox checked={gateChecked(item)} disabled style={{ marginRight: 8 }} />
+                  <Typography.Text
+                    style={{
+                      textDecoration: gateStrikeThrough(item) ? 'line-through' : 'none',
+                      color: gateTextColor(item),
+                    }}
+                  >
+                    {item.desc}
+                    {gateSuffix(item)}
+                  </Typography.Text>
+                  {gateDetailText(item) ? (
+                    <Typography.Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
+                      {gateDetailText(item)}
+                    </Typography.Text>
+                  ) : null}
+                </div>
+              ))}
+            </>
+          ) : (
+            <Typography.Text type="secondary">暂无质量门禁记录</Typography.Text>
+          )}
+        </Card>
+      ) : null}
 
       {/* 验证进度（overview 任务进度同款控件 + 当前步骤） */}
       <Card title="验证进度" size="small" style={{ marginBottom: 16 }}>

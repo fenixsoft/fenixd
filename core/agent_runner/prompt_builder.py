@@ -432,6 +432,12 @@ class PromptBuilder:
         if agent_type in ("implementer", "fast-track"):
             prompt += self._impl_code_review_section(spec_name)
 
+        # add-quality-gates-visibility（任务 3.1）：质量门禁落盘契约注入——
+        # 独立段，与收尾审查段无耦合；同样只覆盖两条实现车道（fast-track 收尾
+        # 同样落盘门禁数据），统一收尾处、项目级附加段之前。
+        if agent_type in ("implementer", "fast-track"):
+            prompt += self._quality_gates_section(spec_name)
+
         # 项目级附加提示词（D2）：附加在完整 prompt（通用主体 + 动态段）之后
         prompt += self._project_extra_section(agent_type, spec_name, wt_path)
         return prompt
@@ -728,6 +734,51 @@ class PromptBuilder:
             "7. **环境不可用降级**：若 ocr 未安装 / provider 不可达 / 非 git 仓库 / "
             "审查异常终止，写 `status: \"unavailable\"` + 非空 `reason`（MUST 非空，"
             "空原因会被判为登记非法）后照常收工，MUST NOT 因审查失败而判 run 失败。\n"
+        )
+
+    def _quality_gates_section(self, spec_name: str) -> str:
+        """质量门禁落盘契约段（add-quality-gates-visibility，任务 3.1）。
+
+        对 implementer / fast-track 无条件注入（落盘是 prompt 软约束，读侧
+        fail-open，无配置开关）。内容按 spec 逐字固化：路径、顶层 schema、
+        gate-id 全集（run 内自查 3 项，**无 code-review 键**——ocr 由框架侧
+        异步车道执行，add-impl-ocr-parallel-lane）、status 四值枚举、渐进更新
+        要求、frontend-build 条件执行语义、父目录创建指示、读侧双位置兜底。
+
+        与 `_impl_code_review_section` 无耦合：本段不含 ocr 命令与
+        code-review.json 字样，两段可独立增删。
+        """
+        path = f".fenix/verify-progress/{spec_name}/quality-gates.json"
+        return (
+            "\n\n## 质量门禁落盘（quality-gates.json，强制）\n"
+            "收尾检查阶段（全部 tasks.md 任务完成并提交之后、写 `.fenix-run-result.json`"
+            "之前）逐项完成 run 内自查 3 项，并把结果**渐进**写入 worktree 内相对路径：\n"
+            f"`{path}`\n"
+            "- **写入前先创建父目录**：`.fenix/verify-progress/<spec>/` 子目录在新建 "
+            "worktree 中不保证存在（`.fenix/` 运行时目录经 .gitignore 不入库），须先以 "
+            "mkdir -p 语义创建再写。\n"
+            "- **顶层 schema 固定**：`{\"gates\": {<gate-id>: {\"status\": <枚举>, "
+            "...详情键}}, \"updated_at\": \"<UTC ISO8601>\"}`。键名 MUST 与本段逐字"
+            "一致，禁止同义改写（历史键名漂移事故教训）。\n"
+            "- **gate-id 全集（仅 3 项，无第 4 项）**：`full-suite`（全量回归测试）/ "
+            "`frontend-build`（前端构建与类型检查）/ `interaction-contract`（交互契约"
+            "自查）。**没有 `code-review` 一项**——ocr 代码审查与处置由框架侧异步车道"
+            "执行，不在 run 内自查之列，你 MUST NOT 向本文件写 `code-review` 键（写了"
+            "也被读侧忽略）。\n"
+            "- **status 四值枚举**：`passed` / `failed` / `running` / `skipped`；"
+            "未写入的 gate-id 由读侧视为 pending。\n"
+            "- **渐进更新**：每完成一项检查即**全量重写**该文件（小文件原子重写，"
+            "无并发写者），让 Dashboard 在 run 进行中即可见进展——不得等收工一次性写。\n"
+            "- **frontend-build 条件执行**：仅当本次改动涉及前端"
+            "（`core/dashboard/static/`）时执行构建与类型检查；无前端改动时写 "
+            "`{\"status\": \"skipped\", \"reason\": \"<非空中文说明>\"}`（skipped "
+            "MUST 附非空 reason）。\n"
+            "- **full-suite 详情键**：可附 `passed` / `failed` 计数，如 `{\"status\": "
+            "\"passed\", \"passed\": 128, \"failed\": 0}`；failed 时建议附 "
+            "`reason`。\n"
+            "- **双位置兜底**：读侧对 worktree/主树双位置 fail-open 兜底——本 run "
+            "正常写 worktree 相对路径即可；fast-track 车道持主树 verify-progress "
+            "写授权，允许直落主树同名目录，两种落点读侧均可见。\n"
         )
 
     def _project_extra_section(

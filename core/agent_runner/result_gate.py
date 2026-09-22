@@ -716,6 +716,71 @@ def _check_impl_code_review_artifact(
     )
 
 
+def _check_quality_gates_soft(runner, spec_name: str, wt_path: Path | None) -> None:
+    """quality-gates.json 宽松对账（add-quality-gates-visibility，任务 3.2）。
+
+    落盘是 prompt 软约束，本检查 MUST NOT 产生任何失败终态/打回/预算消耗：
+    - 文件缺失 → 零拦截、零告警（历史 spec 与偶尔漏写的 run 零打回）；
+    - 文件存在 → 仅做机械合法性检查（JSON 可解析、status 在枚举内、gate-id 在
+      全集内），违规仅记 WARNING 日志并放行。
+
+    双位置候选与读侧一致（worktree 优先、主树兜底），两处各自独立检查。
+    常量经懒导入取自 dashboard 读侧单点（模块加载期反向 import 会成环，D4
+    先例；调用点在 run 收尾，无循环风险）。键名以 quality_gates.py 固化契约为
+    唯一真源，禁止在本处另写同义词表。
+    """
+    from core.dashboard.data.quality_gates import GATE_STATUSES, RUN_GATE_IDS
+
+    rel = f".fenix/verify-progress/{spec_name}/quality-gates.json"
+    candidates = []
+    if wt_path is not None:
+        candidates.append(
+            Path(wt_path) / ".fenix" / "verify-progress" / spec_name / "quality-gates.json"
+        )
+    root = getattr(runner, "project_root", None)
+    if isinstance(root, (str, Path)):
+        candidates.append(
+            Path(root) / ".fenix" / "verify-progress" / spec_name / "quality-gates.json"
+        )
+    seen: set = set()
+    for path in candidates:
+        resolved = path.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        try:
+            if not path.is_file():
+                continue
+        except OSError:
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, UnicodeDecodeError) as e:
+            _soft_gate_logger.warning(
+                "quality-gates.json 无法解析（宽松对账，仅告警放行）: %s (%s)", rel, e
+            )
+            continue
+        gates = data.get("gates") if isinstance(data, dict) else None
+        if not isinstance(gates, dict):
+            _soft_gate_logger.warning(
+                "quality-gates.json 顶层缺 gates 对象（宽松对账，仅告警放行）: %s", rel
+            )
+            continue
+        for gid, entry in gates.items():
+            if gid not in RUN_GATE_IDS:
+                _soft_gate_logger.warning(
+                    "quality-gates.json 出现契约外 gate-id='%s'（宽松对账，仅告警"
+                    "放行；合法集 %s）: %s", gid, list(RUN_GATE_IDS), rel,
+                )
+            if not isinstance(entry, dict) or entry.get("status") not in GATE_STATUSES:
+                bad = entry.get("status") if isinstance(entry, dict) else "<非对象>"
+                _soft_gate_logger.warning(
+                    "quality-gates.json gate-id='%s' status='%s' 不在枚举（宽松对账，"
+                    "仅告警放行；合法值 %s）: %s", gid, bad, list(GATE_STATUSES), rel,
+                )
+    return None
+
+
 def _check_repo_code_review_artifact(manifest: list, out_path: Path) -> str | None:
     """周期性代码审查 run 的产物硬门（2026-09-19 原地修复）。
 
@@ -855,6 +920,11 @@ def _check_impl_result_artifact(
         if code_review_err is not None:
             return code_review_err
 
+    # add-quality-gates-visibility（任务 3.2）：quality-gates.json 宽松对账——
+    # 独立于上方判定：存在则仅机械合法性检查、违规仅 WARNING 放行；缺失零拦截。
+    # 本调用 MUST NOT 影响返回值（无失败终态，不新增打回路径）。
+    runner._check_quality_gates_soft(spec_name, wt_path)
+
     if status == "success":
         # 诚实退出（改进②）：无法完成的已申报任务从「全部任务」基准里扣除，
         # 使「未勾选硬缺口」不含它们，同时 completed_tasks 仍须 == 已勾选集合。
@@ -901,6 +971,11 @@ def _check_impl_result_artifact(
 _FENCED_JSON_RE = re.compile(r"```(?:json)?\s*\n(.*?)\n```", re.DOTALL)
 
 _salvage_logger = logging.getLogger("fenixd.agent_runner.result_gate")
+
+# quality-gates.json 宽松对账告警通道（add-quality-gates-visibility 任务 3.2）：
+# 与 salvage 同一标准 logging 通道，caplog 可断言；MUST NOT 走 runner.logger
+# （测试替身无法被 caplog 捕获）。
+_soft_gate_logger = logging.getLogger("fenixd.agent_runner.result_gate")
 
 
 def salvage_result_from_transcript(

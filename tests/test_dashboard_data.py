@@ -2635,5 +2635,122 @@ class TestStartAfterScopeDashboardConfig(unittest.TestCase):
             yaml.dump(cfg, f, allow_unicode=True)
 
 
+class TestSpecSummaryGatesPhase(unittest.TestCase):
+    """add-quality-gates-visibility 1.5：spec_summary gates 阶段判定与字段透传。
+
+    判定单点在后端（task-progress-phase-display 修订）：窗口两支——
+    (implementing ∧ 任务全勾 ∧ 门禁可见 ∧ 未全了结) ∨ (testing ∧ ocr 车道 running，
+    后者优先于 verify)；其余一切状态恒 impl。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.root = Path(self.tmpdir)
+        (self.root / ".fenix").mkdir(parents=True, exist_ok=True)
+        (self.root / ".fenix" / "STATE.md").write_text("", encoding="utf-8")
+        d = self.root / "spec" / "changes" / "demo"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / ".spec.yaml").write_text(
+            "schema: spec-driven\ncreated: 2026-09-05\n", encoding="utf-8")
+        # 缺省任务全勾（gates 第一支前提）
+        (d / "tasks.md").write_text(
+            "# Tasks\n\n## 1. x\n\n- [x] 1.1 do\n", encoding="utf-8")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _qg(self, gates):
+        p = self.root / ".fenix" / "verify-progress" / "demo" / "quality-gates.json"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(
+            json.dumps({"gates": gates, "updated_at": "2026-09-22T00:00:00Z"}),
+            encoding="utf-8")
+
+    def _qg_corrupt(self):
+        p = self.root / ".fenix" / "verify-progress" / "demo" / "quality-gates.json"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("{broken", encoding="utf-8")
+
+    def _lane(self, status):
+        p = self.root / ".fenix" / "verify-progress" / "demo" / "code-review.json"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps({"status": status}), encoding="utf-8")
+
+    def _summary(self, status):
+        from core.dashboard.data import spec_summary
+        return spec_summary(self.root, "demo", {"status": status})
+
+    def test_implementing_all_tasks_gates_visible_partial_is_gates(self):
+        """① implementing+全勾+门禁可见未了结 → gates，gates_* 字段透传。"""
+        self._qg({"full-suite": {"status": "running"}})
+        s = self._summary("implementing")
+        self.assertEqual(s["progress_phase"], "gates")
+        self.assertEqual(s["gates_total"], 6)
+        self.assertLess(s["gates_done"], 6)
+        self.assertIn("全量回归测试", s["gates_current"])
+
+    def test_tasks_not_all_done_stays_impl(self):
+        """② implementing 任务未全勾 → impl（门禁进展只在详情页可见）。"""
+        d = self.root / "spec" / "changes" / "demo"
+        (d / "tasks.md").write_text(
+            "# Tasks\n\n## 1. x\n\n- [ ] 1.1 do\n", encoding="utf-8")
+        self._qg({"full-suite": {"status": "running"}})
+        s = self._summary("implementing")
+        self.assertEqual(s["progress_phase"], "impl")
+
+    def test_gates_all_done_falls_back_impl(self):
+        """③ 门禁全了结（done==total）→ impl（满格橙条不滞留）。
+
+        implementing 态框架守卫项恒 pending、done 实际到不了 6，此处经 D8
+        patch 缝伪造合成结果直接验证判定谓词本身。
+        """
+        import core.dashboard.data as dash
+        fake = {"exists": True, "done": 6, "total": 6, "current": "", "items": []}
+        with patch.object(dash, "parse_quality_gates", return_value=fake):
+            s = self._summary("implementing")
+        self.assertEqual(s["progress_phase"], "impl")
+
+    def test_gates_invisible_stays_impl(self):
+        """④ quality-gates 不可见（exists=false）→ impl（历史 spec 不闪橙）。"""
+        s = self._summary("implementing")
+        self.assertEqual(s["progress_phase"], "impl")
+        self.assertEqual(s["gates_done"], 0)
+        self.assertEqual(s["gates_total"], 6)
+        self.assertEqual(s["gates_current"], "")
+
+    def test_corrupt_gates_file_visible_partial_still_gates(self):
+        """⑤ 门禁数据损坏（可见但全 unknown、done 计 0）→ gates。"""
+        self._qg_corrupt()
+        s = self._summary("implementing")
+        self.assertEqual(s["progress_phase"], "gates")
+        self.assertEqual(s["gates_done"], 0)
+
+    def test_testing_lane_running_is_gates_over_verify(self):
+        """⑥ testing+ocr 车道 running → gates（优先于 verify）。"""
+        self._lane("running")
+        s = self._summary("testing")
+        self.assertEqual(s["progress_phase"], "gates")
+        self.assertIn("ocr", s["gates_current"])
+
+    def test_testing_lane_not_running_is_verify(self):
+        """⑦ testing+车道非 running → verify 回归不变。"""
+        self._lane("completed")
+        s = self._summary("testing")
+        self.assertEqual(s["progress_phase"], "verify")
+
+    def test_testing_without_lane_product_is_verify(self):
+        """⑧ testing 无车道产物 → verify（既有语义零回归）。"""
+        s = self._summary("testing")
+        self.assertEqual(s["progress_phase"], "verify")
+
+    def test_non_implementing_testing_statuses_stay_impl(self):
+        """⑨ 完成侧/其余状态恒 impl。"""
+        self._qg({"full-suite": {"status": "running"}})
+        for status in ("drafted", "ready", "implemented", "verified",
+                       "bug-found", "blocked", "done"):
+            s = self._summary(status)
+            self.assertEqual(s["progress_phase"], "impl", f"status {status}")
+
+
 if __name__ == "__main__":
     unittest.main()
