@@ -27,6 +27,7 @@
 - 不改场景执行引擎（Playwright 断言逻辑）本身。
 - 不做前端组件（judge 指标本期只落读侧数据层字段）。
 - 不改出题 prompt 的场景覆盖规则与选择器规范。
+- 不豁免 verifier（场景执行）队列条目本身的实现槽钳制：场景执行依赖 implemented 产物、无法与实现并行，跨 spec 争抢实现槽的排队是验证排队中本 SPEC 不处理的大头剩余项，留待后续 SPEC 评估。
 
 ## Decisions
 
@@ -36,11 +37,11 @@
 
 3. **并行出题读 pre-impl 源码是可接受偏差**：出题读被测应用现有源码锚定路由/选择器，impl 若改动 UI 结构则部分场景失准。兜底链：场景执行失败 → bug-found/REPLAN 既有回环修正；scenario_gate 静态校验拦截臆测选择器。备选「等 impl 完成再出题但移出关键路径预跑 dry-run」被否：复杂度高且仍串行。风险由 Scenario 固化（并行产物在 REPLAN 时全量修正）。
 
-4. **槽位豁免带上限**：planner-plan / planner-judge 豁免 `max_concurrent` 钳制，但新增豁免车道并发上限（同时最多各 1 个 planner-plan 与 1 个 planner-judge 在飞），防 judge 风暴与出题分片（本 SPEC 低优先级任务）挤占网关。豁免实现复用 spec-review 先例的 `slots_full` 放行点，上限用独立计数器，不走 `max_concurrent`。
+4. **槽位豁免带上限（对象 = 入队的并行 planner-plan 条目）**：现状澄清——judge 派发是验证管线内同步调用（`pipeline._dispatch_judge_or_reuse` → `agent_runner.run_planner(spec, "judge")`），随 verifier 队列条目在其 worker 内执行，本身不过派发队列、不被 `max_concurrent` 单独钳制；过队列受实现槽钳制的验证环节是 verifier 条目本身（queue.py 将 verifier 归入实现车道）。因此本豁免的落点是 **capability 1 新增的并行 planner-plan 队列条目**：复用 spec-review 先例的 `slots_full` 放行点（queue.py 两处 `atype != "spec-review"` 判定扩展），并加独立在飞上限（同时最多 1 个并行 planner-plan 在飞），防出题分片（本 SPEC 低优先级任务）挤占网关。上限用独立计数器，不走 `max_concurrent`。planner-judge 维持管线内同步派发：管线随 verifier 条目启动后即不再受额外槽位检查（现状成立），本期不为 judge 建独立队列条目，同模式独立上限计数仅作接口预留。
 
-5. **judge 重裁决治理阈值 = 同 spec 同验证轮内 ≥2 次重裁决即停**：第 3 次派发前检查计数，达标则不发、转人工升级告警（复用既有 human-escalation-alert 通道）并保持 spec 可重试状态。低置信判定优先「证据扩充」：仅当 judge 产物缺 evidence 或 evidence 截断可补时触发补证重判（局部重跑），整轮重裁决是最后手段。计数器随验证轮重置（新一轮 bug-found 修复后从零计）。fast-track 命中率 = 快道复用次数 / (快道复用 + 真实派发)，落读侧 summary 字段（数据层），前端不做。
+5. **judge 重裁决治理阈值 = 同 spec 同验证轮内 ≥2 次重裁决即停**：第 3 次派发前检查计数，达标则不发、转人工升级告警（复用既有 human-escalation-alert 通道）并保持 spec 可重试状态。低置信判定优先「证据扩充」：仅当 judge 产物缺 evidence 或 evidence 截断可补时触发补证重判（局部重跑），整轮重裁决是最后手段。计数器随验证轮重置（新一轮 bug-found 修复后从零计）。fast-track 命中率 = 快道复用次数 / (快道复用 + 真实派发)，落读侧 summary 字段（数据层），前端不做。**与既有 judge-rerun-stability R1 机制共存**：`judge_gate._judge_dispatch_gate` 已有 spec 级重跑硬上限（`_MAX_JUDGE_RERUNS=5`，超限 blocked + 升级）与 verdict 稳定复用快道；本决策新增的（spec, 验证轮）计数器独立于既有 spec 级 `_judge_rerun_count`，二者并存、轮内阈值（2）先于全局硬上限（5）触发；verdict 稳定复用命中即 fast-track 命中的统计来源（gate 返回合成结果 = 命中，返回 None = 真实派发），不计入真实派发。
 
-6. **verdict 缓存键 =（场景 id, 场景内容指纹, 被测构建指纹, 验证配置指纹）**：四元组全等才采信缓存。失效条件固化：①场景定义变化（内容指纹不匹配）；②修复 diff 触碰场景出处关联文件（场景 description 出处标注的文件:行号 所在文件与 fix diff 文件集求交）；③验证配置变化（配置指纹）。重验场景集 = 失败场景 ∪ 受影响场景 ∪ 其 depends_on 前置链；其余场景采信缓存判定写报告。**存疑即 fail-closed**：出处标注缺失/指纹不全的场景不采信缓存、照跑。缓存写入时机不变（验证引擎判定后），本 SPEC 只加读侧消费与失效判定。
+6. **verdict 缓存键 =（场景 id, 场景内容指纹, 被测构建指纹, 验证配置指纹）**：四元组全等才采信缓存。失效条件固化：①场景定义变化（内容指纹不匹配）；②修复 diff 触碰场景出处关联文件（场景 description 出处标注的文件:行号 所在文件与 fix diff 文件集求交）；③验证配置变化（配置指纹）。重验场景集 = 失败场景 ∪ 受影响场景 ∪ 其 depends_on 前置链；其余场景采信缓存判定写报告。**存疑即 fail-closed**：出处标注缺失/指纹不全的场景不采信缓存、照跑。既有写侧不足以支撑本能力，须同步扩展：现 `_persist_verdict_cache`（verdict_evidence.py）**只持久化非 PASS 条目**（显式跳过 pass/passed），键为 `scenario_id → {场景指纹, classification, evidence}` 且每轮整体重写——读侧「通过场景采信缓存」在现状下无数据可采信。本 SPEC 扩展写侧：PASS 判定同样入缓存，条目补齐四元组分量（被测构建指纹、验证配置指纹在写入时计算），改动落 `core/verdict_check.py`（save/load/fingerprint 所在）与调用方；写入时机沿用（judge 判定采纳后），读取消费在重验入口。
 
 7. **分片出题放任务组末位、允许 unattainable 申报**：按场景功能组（SPEC 功能点维度）切分为 N 个分片 run 并行生成、框架合并去重（id 冲突时后到者重编号并记 WARNING）。若实现期发现与并行派发编排冲突（如豁免上限挡住分片并发），可申报 unattainable 收敛，不构成打回理由。
 

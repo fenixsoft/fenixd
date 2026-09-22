@@ -6,7 +6,7 @@
 
 ### Requirement: 重裁决计数与阈值升级
 
-验证管线 MUST 按（spec, 验证轮）维度维护 judge 派发计数：真实派发（非 fast-track 复用命中）每次递增；计数随验证轮重置（bug-found 修复进入新一轮验证时从零计）。当本轮真实派发次数达到 2 且仍需再次派发 judge 时，MUST NOT 发起第 3 次派发，转而：①发送人工升级告警（复用既有 human-escalation-alert 通道，内容含 spec、验证轮、历次 judge 结论摘要）；②spec 保持可重试状态（不冻结、不销毁产物），人工处置后重入 testing 按正常路径执行。
+验证管线 MUST 按（spec, 验证轮）维度维护 judge 派发计数：真实派发（非 fast-track 复用命中）每次递增；计数随验证轮重置（bug-found 修复进入新一轮验证时从零计）。当本轮真实派发次数达到 2 且仍需再次派发 judge 时，MUST NOT 发起第 3 次派发，转而：①发送人工升级告警（复用既有 human-escalation-alert 通道，内容含 spec、验证轮、历次 judge 结论摘要）；②spec 保持可重试状态（不冻结、不销毁产物），人工处置后重入 testing 按正常路径执行。本（spec, 验证轮）计数器与既有 judge-rerun-stability R1 机制并存：`_judge_dispatch_gate` 的 spec 级重跑硬上限（`_MAX_JUDGE_RERUNS=5`）与 verdict 稳定复用快道保持不变，轮内阈值（2）先于全局硬上限（5）触发；稳定复用命中（gate 返回合成结果）即 fast-track 命中，MUST NOT 计入真实派发。
 
 #### Scenario: 连续两次重裁决后停派升级
 

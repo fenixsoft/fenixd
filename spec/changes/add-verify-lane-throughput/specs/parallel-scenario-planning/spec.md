@@ -20,7 +20,7 @@ spec 状态迁移至 `ready` 时，pm_engine MUST 触发该 spec 的 planner-pla
 
 ### Requirement: testing 进入时场景集就绪短路
 
-spec 进入 `testing` 时，若 `.fenix/verify-progress/<spec>/test_scenarios.json` 已存在且通过既有冻结复用分支的全部校验（文件可解析、契约版本匹配、指纹有效），验证管线 MUST 直接短路阶段 1 出题、进入场景执行，MUST NOT 再次派发 planner-plan（零重复出题）。校验不通过（损坏/契约不匹配）时 MUST 走既有回落出题通道串行重出，行为与现状一致。就绪短路与场景冻结复用（scenario-reuse-on-reenter）共存：并行出题产出的场景集在首轮验证完成后同样进入冻结通道，修复轮重验按冻结复用语义执行。
+spec 进入 `testing` 时，若 `.fenix/verify-progress/<spec>/test_scenarios.json` 已存在且通过既有冻结复用分支的全部校验（文件可解析、契约版本匹配、指纹有效），验证管线 MUST 直接短路阶段 1 出题、进入场景执行，MUST NOT 再次派发 planner-plan（零重复出题）。校验不通过（损坏/契约不匹配）时 MUST 走既有回落出题通道串行重出，行为与现状一致。并行出题仍在飞（产物未落全）时，管线 MUST 等待其完成（有界）或先按既有取消路径停止再串行重出，MUST NOT 与在飞出题 run 并发写同一产物文件。就绪短路与场景冻结复用（scenario-reuse-on-reenter）共存：并行出题产出的场景集在首轮验证完成后同样进入冻结通道，修复轮重验按冻结复用语义执行。
 
 #### Scenario: 场景集先于实现就绪
 
@@ -36,3 +36,8 @@ spec 进入 `testing` 时，若 `.fenix/verify-progress/<spec>/test_scenarios.js
 
 - **WHEN** 某 spec ready 时不满足并行出题触发条件（如既有场景集已冻结复用）或并行出题被配置关闭
 - **THEN** testing 进入后按既有串行出题路径执行，端到端行为与未引入本能力前一致
+
+#### Scenario: testing 进入时并行出题仍在飞
+
+- **WHEN** spec 进入 testing 时并行出题 run 尚未完成（`test_scenarios.json` 未落全）
+- **THEN** 管线等待该 run 完成（有界超时）或先取消再走既有回落串行重出；同一 spec 任意时刻至多一个 planner-plan run 处于可写 `test_scenarios.json` 的状态，不出现双写
