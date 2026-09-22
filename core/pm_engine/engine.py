@@ -445,6 +445,10 @@ class PMEngine:
         Gates: if gates.promote_mode is 'manual', spec stays drafted
         (no promotion, no error, no dispatch) — awaiting manual promotion.
         """
+        # 并行出题回退停派（add-verify-lane-throughput 1.2）：spec 出现 drafted
+        # 事件即视为状态回退（打回 drafted 或初次创建——初次创建时无在飞并行
+        # 出题，本调用为幂等 no-op），摘除在队条目并终止在飞并行出题 run。
+        self._stop_parallel_planning(spec_name, "spec 状态回退 drafted")
         # add-start-after-scope-config D1：start_after 定时拾取门控（对齐
         # _on_spec_ready 既有守卫，engine.py:552）——本入口受
         # gates.start_after_scope 条件门控：full 时行为同 fix-start-after-premature-pickup
@@ -826,12 +830,235 @@ class PMEngine:
             self._enqueue(spec_name, agent_type)
             # 冷却起点（双派发穿透原地修 2026-09-06）：以实际入队时刻计时
             self._last_dispatch_at[spec_name] = time.time()
+            # 并行出题触发（add-verify-lane-throughput 1.1）：spec 进入 ready 且
+            # 满足触发条件即注册 planner-plan 并行条目，出题与实现车道并行在飞；
+            # 触发失败只 WARNING，不影响刚完成的实现派发。
+            self._trigger_parallel_planning(spec_name)
             # 返回 True 表示成功入队（post-recovery-patrol D4：就地派发的
             # 「派发成立」判据）。既有调用方均忽略返回值，无兼容影响。
             return True
         finally:
             # 派发完成（成功或失败），从 pending 中移除，允许未来派发
             self._pending_dispatches.discard(spec_name)
+
+    # ── 并行出题车道（add-verify-lane-throughput 1.1/1.2）──────────────────
+
+    # 并行出题产物就绪状态标记（车道侧车道产物，随 verify-progress 拷回机制落
+    # 主树）：.fenix/verify-progress/<spec>/parallel_plan.json。状态机：
+    #   dispatched（run 已派发在飞）→ completed（run 成功收工，产物待消费校验）
+    #   / failed / cancelled / frozen（run 失败/取消/冻结终止，产物已隔离）
+    #   → consumed（验证管线首轮消费校验通过，后续按冻结复用既有语义）。
+    PARALLEL_PLAN_MARKER_FILENAME = "parallel_plan.json"
+
+    def _parallel_plan_marker_path(self, spec_name: str) -> Path:
+        return (
+            self.project_root / ".fenix" / "verify-progress" / spec_name
+            / self.PARALLEL_PLAN_MARKER_FILENAME
+        )
+
+    def _read_parallel_plan_marker(self, spec_name: str) -> dict:
+        """读并行出题状态标记；缺失/损坏返回 {}（fail-open，消费侧按无标记走）。"""
+        p = self._parallel_plan_marker_path(spec_name)
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def _write_parallel_plan_marker(self, spec_name: str, payload: dict) -> None:
+        """原子写并行出题状态标记；写失败仅 WARNING（观测增强，不阻断车道）。"""
+        p = self._parallel_plan_marker_path(spec_name)
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            tmp = p.with_name(p.name + ".tmp")
+            tmp.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8"
+            )
+            tmp.replace(p)
+        except (OSError, ValueError) as e:
+            self.logger.warning(
+                "pm_engine",
+                f"并行出题状态标记写入失败 '{spec_name}'（非阻塞）: {e}",
+            )
+
+    def _quarantine_parallel_product(self, spec_name: str, reason: str) -> None:
+        """隔离并行出题半成品/失败产物（任务 1.2：不被后续验证轮直接采信）。
+
+        重命名保留现场（test_scenarios.json → .parallel-discarded），重命名失败
+        退 unlink；两皆失败仅 WARNING——消费侧（pipeline 冻结复用分支校验）对
+        残留坏产物仍会按「并行产物损坏回落串行出题」兜底（任务 1.3）。
+        """
+        scenarios_path = (
+            self.project_root / ".fenix" / "verify-progress" / spec_name
+            / "test_scenarios.json"
+        )
+        if not scenarios_path.is_file():
+            return
+        try:
+            scenarios_path.rename(scenarios_path.with_name("test_scenarios.json.parallel-discarded"))
+        except OSError:
+            try:
+                scenarios_path.unlink()
+            except OSError as e:
+                self.logger.warning(
+                    "pm_engine",
+                    f"并行出题失败产物隔离失败 '{spec_name}'（消费侧校验兜底）: {e}",
+                )
+                return
+        self.logger.warning(
+            "pm_engine",
+            f"并行出题产物已隔离（不被采信）'{spec_name}': {reason}",
+        )
+
+    def _trigger_parallel_planning(self, spec_name: str) -> None:
+        """spec 进入 ready 态时注册并派发 planner-plan 并行出题（任务 1.1）。
+
+        触发条件（全部满足才入队，缺一回退现状串行出题）：
+        - 配置开关 ``verify.parallel_planning``（默认开启）；
+        - full 模式 spec（fast-track 单 run 全包含场景设计步，并行出题与其
+          内部设计会双写同一产物文件，不参与）；
+        - 无既有可用场景集（``test_scenarios.json`` 不存在）；
+        - 状态标记非 dispatched/completed/consumed（在飞/待消费/已消费不重派；
+          failed/cancelled/frozen 允许 ready 重入时再试，与实现车道重派同语义）；
+        - 同 spec 无在飞并行出题 run（``_active_parallel_plans`` 防重）。
+
+        派发主体是派发队列的 ``planner-plan`` 条目（槽位豁免车道，2.1）：输入/
+        prompt/产物路径与既有 testing 阶段串行出题完全一致；run 失败走既有
+        planner 失败路径（本车道收尾隔离产物），MUST NOT 影响实现车道派发与
+        状态机——本方法任何异常吞并 WARNING，不向调用方传播。
+        """
+        try:
+            if not self._get_config("verify.parallel_planning", True):
+                return
+            from core.spec_mode import read_spec_mode
+
+            if read_spec_mode(self.project_root, spec_name) == "fast-track":
+                return
+            scenarios_path = (
+                self.project_root / ".fenix" / "verify-progress" / spec_name
+                / "test_scenarios.json"
+            )
+            if scenarios_path.is_file():
+                return
+            marker = self._read_parallel_plan_marker(spec_name)
+            if marker.get("status") in ("dispatched", "completed", "consumed"):
+                return
+            if spec_name in self._active_parallel_plans:
+                return
+            self._dispatcher._enqueue(spec_name, "planner-plan")
+            self.logger.info(
+                "pm_engine",
+                f"并行出题已注册（ready 触发，与实现并行）: {spec_name}",
+            )
+        except Exception as e:
+            self.logger.warning(
+                "pm_engine",
+                f"并行出题触发失败 '{spec_name}'（不影响实现车道）: {e}",
+            )
+
+    def _run_parallel_plan_lane(self, spec_name: str) -> None:
+        """并行出题车道 worker 主体（由派发队列 planner-plan 条目唤起）。
+
+        执行与既有串行出题完全一致的 ``run_planner(spec, "plan")``；产物
+        （``test_scenarios.json``）由 planner run 自写，消费在 testing 进入
+        （pipeline 并行产物校验，任务 1.3）。状态标记全程落盘，供消费侧判定
+        「在飞等待 / 产物校验 / 失败回落串行」。
+        """
+        scenarios_path = (
+            self.project_root / ".fenix" / "verify-progress" / spec_name
+            / "test_scenarios.json"
+        )
+        marker = {
+            "status": "dispatched",
+            "dispatched_at": datetime.now(timezone.utc).isoformat(),
+        }
+        # 派发前重查（与队列候选判定同口径；窗口内状态回退/产物已就绪即放弃）
+        spec = self.state_machine.read_one(spec_name) or {}
+        if spec.get("status") not in ("ready", "implementing", "implemented"):
+            self.logger.info(
+                "pm_engine",
+                f"并行出题放弃（状态已回退 '{spec.get('status')}'，零写入）: {spec_name}",
+            )
+            return
+        if not self._get_config("verify.parallel_planning", True):
+            return
+        if scenarios_path.is_file():
+            return
+        self._write_parallel_plan_marker(spec_name, marker)
+        try:
+            result = self.agent_runner.run_planner(spec_name, "plan")
+        except Exception as e:
+            self._write_parallel_plan_marker(
+                spec_name, {"status": "failed", "error": str(e)[:300]}
+            )
+            self._quarantine_parallel_product(spec_name, f"并行出题异常: {e}")
+            return
+        # run 收尾后状态重查：spec 已删除/回退 → 产物按半成品隔离（任务 1.2）
+        spec = self.state_machine.read_one(spec_name) or {}
+        if not spec:
+            self._write_parallel_plan_marker(
+                spec_name, {"status": "discarded", "run_id": getattr(result, "run_id", "")}
+            )
+            self._quarantine_parallel_product(spec_name, "spec 已删除")
+            return
+        if getattr(result, "success", False):
+            self._write_parallel_plan_marker(
+                spec_name,
+                {
+                    "status": "completed",
+                    "run_id": getattr(result, "run_id", ""),
+                    "completed_at": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+            self.logger.info(
+                "pm_engine",
+                f"并行出题完成（产物待 testing 消费校验）: {spec_name} "
+                f"run={getattr(result, 'run_id', '')}",
+            )
+            return
+        if getattr(result, "frozen_terminated", False) is True:
+            status = "frozen"
+        elif getattr(result, "cancelled", False):
+            status = "cancelled"
+        else:
+            status = "failed"
+        self._write_parallel_plan_marker(
+            spec_name,
+            {
+                "status": status,
+                "run_id": getattr(result, "run_id", ""),
+                "error": (getattr(result, "error", "") or "")[:300],
+            },
+        )
+        self._quarantine_parallel_product(spec_name, f"并行出题 {status}")
+
+    def _stop_parallel_planning(self, spec_name: str, reason: str) -> None:
+        """spec 状态回退（打回 drafted / 删除）时停止并行出题（任务 1.2）。
+
+        两段：①摘除在队 planner-plan 条目（纯队列操作）；②终止在飞并行出题
+        run——经既有取消原语 ``cancel_run``（旗标登记 + 属主线程 terminate），
+        目标 run 由本车道派发、本车道属主停止（cancel_run 文档的调用方限制指
+        transition/recovery/gate/freeze 等旁链不得越权终止他人 run；车道对自己
+        派发的 run 做生命周期收尾正是该原语的本职用法，任务 1.2 明示「既有取消
+        路径」）。冻结回退不经此处：freeze 后 runner 轮询环按 spec frozen 态
+        自动终止在飞 run（add-freeze-stop-inflight-agents 既有机制）。
+        """
+        try:
+            removed = self._dispatcher._remove_queued_entry(spec_name, "planner-plan")
+            cancel_ret = self.agent_runner.cancel_run(
+                f"planner-plan-{spec_name}", reason=reason, by="parallel-plan-lane"
+            )
+            if removed or cancel_ret.get("status") == "cancel_requested":
+                self.logger.info(
+                    "pm_engine",
+                    f"并行出题已停止（{reason}）: {spec_name} "
+                    f"(queued_removed={removed}, cancel={cancel_ret.get('status')})",
+                )
+        except Exception as e:
+            self.logger.warning(
+                "pm_engine",
+                f"并行出题停止失败 '{spec_name}'（消费侧校验兜底）: {e}",
+            )
 
     def _merge_ready_fallback(
         self, spec_name: str, run_id: str | None, agent_type: str, branch: str | None
@@ -3524,6 +3751,20 @@ class PMEngine:
     @_active_reviews.deleter
     def _active_reviews(self):
         del self._dispatcher._active_reviews
+
+    @property
+    def _active_parallel_plans(self):
+        # 并行出题在飞集合透传（add-verify-lane-throughput 2.1）：与
+        # _active_reviews 同族——测试与触发点以属性路径访问队列态。
+        return self._dispatcher._active_parallel_plans
+
+    @_active_parallel_plans.setter
+    def _active_parallel_plans(self, value):
+        self._dispatcher._active_parallel_plans = value
+
+    @_active_parallel_plans.deleter
+    def _active_parallel_plans(self):
+        del self._dispatcher._active_parallel_plans
 
     def is_review_in_flight(self, spec_name: str) -> bool:
         """评审在飞只读查询（fix-spec-review-blocking-dispatch 3.7）。
