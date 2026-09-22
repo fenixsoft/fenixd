@@ -341,11 +341,19 @@ export default function VerifyPanel({ config, onSave, project, onConfigSynced }:
               </div>
               {config.worktree?.build_artifact_paths?.length ? (
                 <ul style={{ margin: '12px 0 0', paddingLeft: 20 }}>
-                  {config.worktree.build_artifact_paths.map((p, i) => (
-                    <li key={i}>
-                      <code>{p}</code>
-                    </li>
-                  ))}
+                  {config.worktree.build_artifact_paths.map((p, i) => {
+                    // code-review item c5b0bd57f3db：稳定 key——配置路径实际唯一，
+                    // 直接用路径本身；病态重复条目回退「路径-索引」防 React 撞
+                    // key。索引 key 会在重排/插入/删除时按位置复用错误 DOM 节点。
+                    // 可选链：map 回调内 TS 收窄失效，外层守卫已保证非空。
+                    const key =
+                      config.worktree?.build_artifact_paths?.indexOf(p) === i ? p : `${p}-${i}`;
+                    return (
+                      <li key={key}>
+                        <code>{p}</code>
+                      </li>
+                    );
+                  })}
                 </ul>
               ) : (
                 config.worktree?.has_build_artifacts !== false &&

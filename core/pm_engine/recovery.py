@@ -187,7 +187,6 @@ class RecoveryWatch:
         同款的原子替换惯用法。
         """
         path = self._pm._recovery_watch_path()
-        tmp_path = None
         with self._watch_lock:
             self.__save_recovery_watch_locked(path)
             return
@@ -237,7 +236,6 @@ class RecoveryWatch:
         except (TypeError, ValueError):
             minutes = float(DEFAULT_FOLLOWUP_CHECK_MINUTES)
         due = time.time() + max(0.5, minutes) * 60
-        entry = self._pm.state_machine.read_one(spec_name) or {}
         with self._watch_lock:
             self._register_watch_entry(spec_name, reason, minutes, due)
         return

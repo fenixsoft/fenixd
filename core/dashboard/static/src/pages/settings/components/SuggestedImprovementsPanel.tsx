@@ -198,6 +198,16 @@ const MAX_ITEMS_UPPER = 200;
 /** 「在指定时间执行」刚被选中、还没挑时刻时的预填值（用户可改）。 */
 const DEFAULT_SPEC_RUN_AT = '02:00';
 
+// 错误消息收窄（code-review item d0500faecda8）：catch (e: any) 违反 TS any
+// 规则且在 loadItems/execOne/loadView/handleClearAllTodo 重复——统一改为
+// unknown 捕获 + 本助手收窄。语义与旧 `e?.message || fallback` 完全一致：
+// 携带 string message 的对象取 message，其余（含 thrown 标量/undefined）
+// 回落占位文案。
+const errText = (e: unknown, fallback: string): string => {
+  const msg = (e as { message?: unknown } | null | undefined)?.message;
+  return typeof msg === 'string' && msg ? msg : fallback;
+};
+
 // ── 评估结论摘要（7.3）──────────────────────────────────────────────
 
 // 结论三态 → 中文映射（code-review item 6ac78de43384：旧实现嵌套三元链，
@@ -352,9 +362,9 @@ const SuggestedImprovementsPanel = forwardRef<
       const next = (await getEvolutionItems(project)).items || [];
       if (mountedRef.current) setItems(next);
       return next;
-    } catch (e: any) {
+    } catch (e) {
       if (mountedRef.current) {
-        const msg = e?.message || '加载失败';
+        const msg = errText(e, '加载失败');
         setError(msg);
         setItems([]);
       }
@@ -456,8 +466,8 @@ const SuggestedImprovementsPanel = forwardRef<
       if (action === 'accept') return await acceptEvolutionItem(item.id, startAfter ?? null);
       if (action === 'reject') return await rejectEvolutionItem(item.id);
       return await deleteEvolutionItem(item.id);
-    } catch (e: any) {
-      return { ok: false, error: e?.message || '请求失败' };
+    } catch (e) {
+      return { ok: false, error: errText(e, '请求失败') };
     }
   };
 
@@ -500,8 +510,8 @@ const SuggestedImprovementsPanel = forwardRef<
       } else {
         setViewContent(data.content || '（空）');
       }
-    } catch (e: any) {
-      if (mountedRef.current) setViewError(e?.message || '加载失败');
+    } catch (e) {
+      if (mountedRef.current) setViewError(errText(e, '加载失败'));
     } finally {
       if (mountedRef.current) setViewLoading(false);
     }
@@ -976,8 +986,8 @@ const SuggestedImprovementsPanel = forwardRef<
           } else {
             message.success(text);
           }
-        } catch (e: any) {
-          message.error(e?.message || '清理失败');
+        } catch (e) {
+          message.error(errText(e, '清理失败'));
         } finally {
           setClearingTodo(false);
         }

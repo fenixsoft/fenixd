@@ -54,7 +54,6 @@ import RegressionTab from './components/RegressionTab';
 // 可加载 .ts），list.tsx 原地 import 替换本地定义，调用点零改动
 import {
   pct,
-  phasePct,
   renderPercent,
   strokeColorFor,
   trailColorFor,
@@ -91,6 +90,20 @@ const TONE_DOT: Record<string, string> = {
 
 function progressText(progress: number) {
   return progress >= 100 ? '已完成' : `${progress}%`;
+}
+
+// code-review item c3df4a612450：排序键与单元格渲染同源——gen 推导与渲染体
+// 完全一致（verify 且执行未开始、有落盘出题数时按出题进度），统一走
+// renderPercent，消除「生成阶段按用户不可见的 verify 0/0 指标排序」错位。
+function progressSortPct(record: SpecSummary): number {
+  const gen =
+    record.progress_phase === 'verify' &&
+    record.verify_total === 0 &&
+    record.generation &&
+    record.generation.total > 0
+      ? record.generation
+      : null;
+  return renderPercent(record, gen);
 }
 
 function fmtDuration(sec?: number | null) {
@@ -1069,7 +1082,9 @@ export default function SpecListPage() {
       width: '15%',
       // add-task-progress-verify-phase：排序键跟随显示值——verify 阶段按验证完成度，
       // impl 阶段按任务完成度，消除「显示 A 排序按 B」错位。
-      sorter: (a: SpecSummary, b: SpecSummary) => phasePct(a) - phasePct(b),
+      // code-review item c3df4a612450：gen 出题阶段排序键同步 renderPercent
+      // （含 generation 分支），与单元格显示值一致。
+      sorter: (a: SpecSummary, b: SpecSummary) => progressSortPct(a) - progressSortPct(b),
       render: (_: unknown, record: SpecSummary) => {
         // 阶段感知（add-task-progress-verify-phase）：仅 testing（progress_phase
         // = "verify"）切绿色验证进度，其余状态维持 impl 蓝色路径零回归。

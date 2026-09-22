@@ -400,7 +400,17 @@ class H11CodeReviewRoutesMixin:
         try:
             result = set_item_status(str(proot), item_id, status)
         except Exception as e:  # noqa: BLE001
-            self._error(500, f"状态流转失败: {e}")
+            # 不外泄裸异常文本（code-review item c74cd0e8859d）：`{e}` 会把
+            # 内部路径/细节透给 HTTP 客户端，与 _api_code_review_generate_spec
+            # 已声明的泛化文案策略同款（本文件同款 logger 兜底模式）——
+            # 细节降级经服务端日志留痕，客户端收通用消息。
+            _log = getattr(self, "logger", None)
+            if _log is not None:
+                _log.warning(
+                    "code_review_routes",
+                    f"状态流转异常（item_id={item_id}）: {type(e).__name__}: {e}",
+                )
+            self._error(500, "状态流转失败（详见服务端日志）")
             return
         if not result.get("ok"):
             self._error(400, result.get("error") or "状态流转失败")

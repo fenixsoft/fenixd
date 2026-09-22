@@ -233,7 +233,15 @@ def main():
         elif not result.ready_ok:
             exit_code = 4  # ready 失败
         else:
-            exit_code = 1
+            # 不可达（code-review item d43d9fd814db）：进入外层 else 意味着
+            # valid/prepare_ok/serve_ok/ready_ok 至少一个为 False，前置分支已
+            # 覆盖全部剩余组合（四者皆 True 时函数已在上方 exit 0）。不存在
+            # 第五种失败模式——真到达此处属判定逻辑被改坏的编程错误，fail-fast
+            # 而非伪装成退出码 1 的「契约无效」。
+            raise RuntimeError(
+                "fenix_verify_contract: 校验失败分支不可达（valid/prepare/serve/ready"
+                " 全通过却未走 exit 0）——判定逻辑存在缺陷"
+            )
 
         print(f"校验失败（exit {exit_code}）: 契约存在错误，无法作为有效验证契约生效")
         sys.exit(exit_code)

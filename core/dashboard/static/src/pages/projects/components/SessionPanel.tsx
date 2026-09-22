@@ -9,6 +9,7 @@
 // 切离分面（active=false）：unregister watch + eventSource.close() + 清空本地状态，
 // 切回分面时重新执行 loadAll() 接回；MUST NOT 终止会话进程本身。
 import { useEffect, useRef, useState } from 'react';
+import type { CSSProperties } from 'react';
 import {
   App,
   Button,
@@ -39,6 +40,50 @@ interface SessionPanelProps {
   active: boolean;
 }
 
+// 静态布局样式常量（code-review item d42f28cde496）：内联对象原在渲染体每
+// 渲染重建。分面高度 = 视口 − 页面 chrome，纯 CSS 计算（无 JS 量算）：
+// 内联分面的父链（ant-pro 布局 / antd Tabs 内部 holder）不被拉伸到视口高度，
+// 故 flex:1 撑不满——必须显式给出视口填充高度，否则回落到内容高度（旧的
+// minHeight 480 独占），输入区停在视口中部（本项目实测：1000px 视口停在 670）。
+// 顶部 190 = 布局顶栏 56 + 页头 72 + Tabs 导航 46 + Tabs 内容上边距 16；
+// 底部 32 = 内容容器 padding-bottom。两者在 375~1920 宽 / 700~1440 高下实测恒定。
+// 超短视口（<542）由 minHeight 保底，退化为页面滚动。
+const PANEL_LAYOUT_STYLE: CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  height: 'calc(100vh - 222px)',
+  minHeight: 320,
+};
+// 空态/错误分支的视口居中容器（loading 与 error/空态两种主轴方向）
+const FILL_CENTER_STYLE: CSSProperties = {
+  flex: 1,
+  display: 'flex',
+  flexDirection: 'column',
+  alignItems: 'center',
+  justifyContent: 'center',
+  gap: 12,
+};
+const LOADING_ROW_STYLE: CSSProperties = {
+  flex: 1,
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+};
+const MESSAGE_AREA_STYLE: CSSProperties = { flex: 1, minHeight: 0, position: 'relative' };
+const TRUNCATED_BAR_STYLE: CSSProperties = {
+  position: 'absolute',
+  top: 8,
+  left: 0,
+  right: 0,
+  textAlign: 'center',
+};
+const INPUT_ROW_STYLE: CSSProperties = {
+  display: 'flex',
+  alignItems: 'flex-start',
+  gap: 8,
+  marginTop: 12,
+};
+
 export default function SessionPanel({ project, active }: SessionPanelProps) {
   const { message } = App.useApp();
   const [events, setEvents] = useState<SessionEvent[]>([]);
@@ -65,6 +110,10 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
   // 服务端无会话返回 404 → console.error，污染所有访问项目页的
   // no_console_error 断言（本项目验证实测）。仅注册过才注销。
   const watchRegisteredRef = useRef(false);
+  // 重试入口（code-review item ca2aab0e3956）：effect 内 loadAll 闭包经本 ref
+  // 暴露给 error 分支「重试」按钮——旧实现只清 error，不重跑失败的加载，
+  // 用户掉回空/旧面板而无任何重试发生。
+  const reloadRef = useRef<(() => void) | null>(null);
 
   const syncEvents = (next: SessionEvent[]) => {
     // 全量重拉：以快照 uuids 重建去重集合（code-review item 12c190b15530）——
@@ -149,6 +198,11 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
     // 注册 watch 后重拉一次（兜住注册前的窗口）。
     // 无会话项目（空态）不注册 watch：注册必然 404 → console.error，
     // 污染 web 场景 no_console_error 断言（验证 BUG-01 实证）。
+    // 错误分支「重试」按钮的重跑入口（code-review item ca2aab0e3956）
+    reloadRef.current = () => {
+      void loadAll();
+    };
+
     const afterHello = (cid: string) =>
       enqueueSnapshotLoad(async () => {
         try {
@@ -217,6 +271,7 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
 
     return () => {
       disposed = true;
+      reloadRef.current = null;
       es.close();
       eventSourceRef.current = null;
     };
@@ -312,86 +367,101 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
     }
   };
 
-  return (
-    // 分面高度 = 视口 − 页面 chrome，纯 CSS 计算（无 JS 量算）。
-    // 内联分面的父链（ant-pro 布局 / antd Tabs 内部 holder）不被拉伸到视口高度，
-    // 故 flex:1 撑不满——必须显式给出视口填充高度，否则回落到内容高度（旧的
-    // minHeight 480 独占），输入区停在视口中部（本项目实测：1000px 视口停在 670）。
-    // 顶部 190 = 布局顶栏 56 + 页头 72 + Tabs 导航 46 + Tabs 内容上边距 16；
-    // 底部 32 = 内容容器 padding-bottom。两者在 375~1920 宽 / 700~1440 高下实测恒定。
-    // 超短视口（<542）由 minHeight 保底，退化为页面滚动。
-    <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 222px)', minHeight: 320 }}>
-      {loading ? (
-        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+  // 渲染分支抽具名 helper（code-review item d42f28cde496）：渲染体原为
+  // loading→error→!started→默认会话视图的链式嵌套三元（项目规则禁止），
+  // 分支语义不可读；改 if/else 早返回，样式引用模块级常量。
+  const renderBody = () => {
+    if (loading) {
+      return (
+        <div style={LOADING_ROW_STYLE}>
           <Spin size="small" />
           <Typography.Text type="secondary" style={{ marginLeft: 8 }}>
             加载会话...
           </Typography.Text>
         </div>
-      ) : error ? (
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12 }}>
+      );
+    }
+    if (error) {
+      return (
+        <div style={FILL_CENTER_STYLE}>
           <Typography.Text type="danger">加载失败: {error}</Typography.Text>
-          <Button onClick={() => setError('')}>重试</Button>
+          {/* 重试 = 清 error + 重跑加载路径（code-review item ca2aab0e3956：
+              loadAll 经 reloadRef 从 effect 内暴露；旧实现只清 error，
+              不发生任何实际重试） */}
+          <Button
+            onClick={() => {
+              setError('');
+              reloadRef.current?.();
+            }}
+          >
+            重试
+          </Button>
         </div>
-      ) : !started ? (
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12 }}>
+      );
+    }
+    if (!started) {
+      return (
+        <div style={FILL_CENTER_STYLE}>
           <Typography.Text type="secondary">尚未接入会话</Typography.Text>
           <Button type="primary" icon={<MessageOutlined />} onClick={() => void handleStart()}>
             开始会话
           </Button>
         </div>
-      ) : (
-        <>
-          <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
-            <ClaudeMessageList messages={runEventsToChatMessages(events)} showThinking />
-            {truncated ? (
-              <div style={{ position: 'absolute', top: 8, left: 0, right: 0, textAlign: 'center' }}>
-                <Typography.Text type="secondary" style={{ fontSize: 12, background: '#fff', padding: '0 8px' }}>
-                  更早的消息已省略
-                </Typography.Text>
-              </div>
-            ) : null}
-          </div>
-          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginTop: 12 }}>
-            <Input.TextArea
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              placeholder={ended ? '会话已结束' : '输入消息…（Enter 发送，Shift+Enter 换行）'}
-              autoSize={{ minRows: 1, maxRows: 5 }}
-              disabled={ended || sending}
-              onPressEnter={(e) => {
-                if (!e.shiftKey) {
-                  e.preventDefault();
-                  void handleSend();
-                }
-              }}
-              style={{ flex: 1 }}
-            />
-            <Button
-              type="primary"
-              icon={<SendOutlined />}
-              disabled={ended || sending || !text.trim()}
-              loading={sending}
-              onClick={() => void handleSend()}
-            >
-              发送
-            </Button>
-            <Button
-              danger
-              icon={<StopOutlined />}
-              disabled={ended}
-              onClick={() => void handleStop()}
-            >
-              停止会话
-            </Button>
-          </div>
-          {ended ? (
-            <Typography.Text type="secondary" style={{ display: 'block', marginTop: 8, fontSize: 12 }}>
-              会话已结束。切离本分面再切回可开始新会话。
-            </Typography.Text>
+      );
+    }
+    return (
+      <>
+        <div style={MESSAGE_AREA_STYLE}>
+          <ClaudeMessageList messages={runEventsToChatMessages(events)} showThinking />
+          {truncated ? (
+            <div style={TRUNCATED_BAR_STYLE}>
+              <Typography.Text type="secondary" style={{ fontSize: 12, background: '#fff', padding: '0 8px' }}>
+                更早的消息已省略
+              </Typography.Text>
+            </div>
           ) : null}
-        </>
-      )}
-    </div>
-  );
+        </div>
+        <div style={INPUT_ROW_STYLE}>
+          <Input.TextArea
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder={ended ? '会话已结束' : '输入消息…（Enter 发送，Shift+Enter 换行）'}
+            autoSize={{ minRows: 1, maxRows: 5 }}
+            disabled={ended || sending}
+            onPressEnter={(e) => {
+              if (!e.shiftKey) {
+                e.preventDefault();
+                void handleSend();
+              }
+            }}
+            style={{ flex: 1 }}
+          />
+          <Button
+            type="primary"
+            icon={<SendOutlined />}
+            disabled={ended || sending || !text.trim()}
+            loading={sending}
+            onClick={() => void handleSend()}
+          >
+            发送
+          </Button>
+          <Button
+            danger
+            icon={<StopOutlined />}
+            disabled={ended}
+            onClick={() => void handleStop()}
+          >
+            停止会话
+          </Button>
+        </div>
+        {ended ? (
+          <Typography.Text type="secondary" style={{ display: 'block', marginTop: 8, fontSize: 12 }}>
+            会话已结束。切离本分面再切回可开始新会话。
+          </Typography.Text>
+        ) : null}
+      </>
+    );
+  };
+
+  return <div style={PANEL_LAYOUT_STYLE}>{renderBody()}</div>;
 }
