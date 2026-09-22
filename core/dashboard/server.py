@@ -273,6 +273,39 @@ def _claude_watchdog_loop(pid: int, starttime: int, on_death, interval: float = 
             return
 
 
+def _is_tmux_hosted(ppid: int | None = None) -> bool:
+    """给定 pid（默认 os.getppid()）判断其是否为 tmux server（显式长驻判据）。
+
+    2026-09-22 8787 误杀事故：tmux server 会把启动 shell 的 CLAUDE_PID 当普通
+    环境变量继承进 pane，人工常驻实例被 claude-watchdog 误绑到某个 Claude 会话，
+    会话续接/分叉/退出即自杀。主判据读 /proc/<ppid>/comm 恰为 "tmux: server"；
+    comm 可读但不匹配才回退 /proc/<ppid>/cmdline，且仅当 argv[0] 的 basename
+    恰为 "tmux" 或以 "tmux:" 开头才命中——不用「argv 任一项含 tmux 子串」
+    （agent 自测包装脚本作父进程时 argv[0] 形如 .../tmux_selftest.sh，子串命中
+    会把 agent 自测实例误判为常驻、漏掉防泄漏）。读取失败（非 Linux / /proc
+    不可用 / 进程已退出）→ False，按非长驻处理保持 watchdog 既有防泄漏
+    （fail-safe 偏向防泄漏）。父进程身份不随环境变量继承传播，判据不受
+    TMUX 透传污染。
+    """
+    if ppid is None:
+        ppid = os.getppid()
+    try:
+        # 字节读 + replace 解码：comm 可经 PR_SET_NAME 写入任意字节，严格解码的
+        # UnicodeDecodeError（ValueError）会逃逸 OSError 处理器、违反「读取失败
+        # → False」的 fail-safe 契约（code-review 发现）
+        comm = Path(f"/proc/{ppid}/comm").read_bytes().decode("utf-8", "replace").strip()
+    except OSError:
+        return False
+    if comm == "tmux: server":
+        return True
+    try:
+        argv0 = Path(f"/proc/{ppid}/cmdline").read_bytes().split(b"\0")[0]
+    except OSError:
+        return False
+    base = os.path.basename(argv0.decode("utf-8", "replace"))
+    return base == "tmux" or base.startswith("tmux:")
+
+
 def _start_claude_watchdog(env=None) -> bool:
     """CLAUDE_PID 生命周期绑定（agent 豁免通道的防泄漏阀，2026-09-04 8790 泄漏）。
 
@@ -282,7 +315,15 @@ def _start_claude_watchdog(env=None) -> bool:
     轮询该进程（starttime 比对防 PID 复用），目标消失 → 自杀 SIGTERM。
 
     纯人 CLI（无 CLAUDE_PID 或目标已死）→ False，长驻豁免行为不变。
+
+    tmux 承载（父进程为 tmux server）→ 显式人工常驻，不装配（2026-09-22 8787
+    误杀事故）。不可用自身 TMUX 环境变量判定长驻：daemon 由 tmux 下 supervisor
+    启动，其 TMUX 会被 agent_runner（os.environ.copy() 不清洗）透传给 agent
+    子进程，agent nohup 自测实例同样带 TMUX，会把临时自测实例误判为常驻、漏掉
+    防泄漏；父进程是否为 tmux 无此继承污染，判据见 _is_tmux_hosted。
     """
+    if _is_tmux_hosted():
+        return False
     env = os.environ if env is None else env
     try:
         pid = int(env.get("CLAUDE_PID", ""))
