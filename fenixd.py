@@ -682,6 +682,15 @@ class FenixDaemon:
                     self._check_regression_requests()
                 except Exception as e:
                     self.logger.error("fenixd", f"regression pickup failed: {e}")
+                # add-code-fix-manual-trigger：手动「立即自动修复」文件信号
+                # 拾取（dashboard 写入 .fenix/code_fix_request.json），主循环
+                # 下一轮消费（先读后删 + override_enabled=True 临时授权调
+                # checkpoint + 判定结果原子写回），与 _check_code_review_requests
+                # 同构。
+                try:
+                    self._check_code_fix_requests()
+                except Exception as e:
+                    self.logger.error("fenixd", f"code_fix pickup failed: {e}")
                 # 配置热更新：每 30s 检查配置文件 mtime，变更则原地重载
                 if time.time() - config_check_ts >= 30:
                     config_check_ts = time.time()
@@ -2403,6 +2412,117 @@ class FenixDaemon:
                 with self.admin_monitor._regression_lock:
                     self.admin_monitor._regression_in_flight = False
             self.logger.error("fenixd", f"回归手动执行投递失败: {e}")
+
+    # ── 手动「立即自动修复」信号消费（add-code-fix-manual-trigger 3.1）──
+
+    # 判定 reason → 用户可见中文文案（一处收口）：前端只渲染 message、不再
+    # 各自翻译 reason；未登记 reason 走兜底模板。
+    CODE_FIX_RESULT_MESSAGES = {
+        "dispatched": "已投递一批自动修复，可在进度卡片查看进展",
+        "already_running": "已有自动修复批次在跑，请等当前批完成后再试",
+        "no_open_items": "当前没有待修复的 open 问题",
+        "regression_contract_missing": "回归契约缺失（verify.yaml 尚未起草），按 fail-closed 拒绝投递",
+        "regression_section_missing": "verify.yaml 缺 regression 段，按 fail-closed 拒绝投递",
+        "orchestrator_missing": "自动修复编排器未装配，无法投递（daemon 初始化异常或版本过旧）",
+        "dispatch_prepare_error": "自动修复投递前置异常，本批未投递（详见 daemon 日志）",
+        "dispatch_error": "自动修复投递失败，本批未投递（详见 daemon 日志）",
+        "dispatch_exception": "自动修复消费异常，本批未投递（详见 daemon 日志）",
+        "disabled": "自动修复开关处于关闭状态",
+    }
+
+    def _write_code_fix_request_result(self, result_path, request_created, triggered,
+                                       reason, message=None):
+        """原子写回手动触发判定结果文件（tmp + os.replace，防半写被前端读到）。
+
+        无论 triggered 与否都落盘（task 3.1）；写失败仅记日志——结果文件写不进
+        属基础设施异常，无更好的用户反馈通道。
+        """
+        if message is None:
+            message = self.CODE_FIX_RESULT_MESSAGES.get(
+                reason, f"自动修复触发判定：{reason or '未知'}")
+        payload = {
+            "request_created": request_created,
+            "triggered": bool(triggered),
+            "reason": reason,
+            "message": message,
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+        }
+        tmp_path = result_path.with_name(result_path.name + ".tmp")
+        try:
+            result_path.parent.mkdir(parents=True, exist_ok=True)
+            with tmp_path.open("w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(str(tmp_path), str(result_path))
+        except OSError as e:
+            self.logger.error("fenixd", f"code_fix 手动触发结果写入失败: {e}")
+
+    def _check_code_fix_requests(self):
+        """主循环每轮扫描手动「立即自动修复」文件信号并消费（task 3.1）。
+
+        dashboard 的 POST /api/code-review/fix-run 原子写入
+        ``.fenix/code_fix_request.json``（含 source、created）；本方法在主循环
+        （1s 粒度）中检测其存在：读取 → 删除 → 经
+        ``getattr(agent_runner, "_code_fix_orchestrator", None)`` 取编排器 →
+        以 ``override_enabled=True``（手动即临时授权：绕过 enabled 总开关，
+        单飞/无 open 条目/失败保留/回归契约 fail-closed 守卫原样）调
+        ``checkpoint()`` → 无论 triggered 与否原子写结果文件
+        ``.fenix/code_fix_request_result.json``（``{request_created, triggered,
+        reason, message, finished_at}``，``request_created`` 回链信号 created）。
+
+        对齐 _check_code_review_requests：信号先读后删（读/删失败跳过本轮，
+        损坏 JSON 删除防卡死，异常不复活信号）；编排器未装配不静默（落
+        orchestrator_missing 结果）；checkpoint 抛异常落 dispatch_exception
+        结果而非静默丢信号。
+        """
+        req_path = PROJECT_ROOT / ".fenix" / "code_fix_request.json"
+        if not req_path.exists():
+            return
+        try:
+            with req_path.open("r", encoding="utf-8") as f:
+                payload = json.load(f)
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+            try:
+                req_path.unlink()
+            except OSError:
+                pass
+            return
+        # 先读后删：删除失败（被并发消费）则本次跳过，下一轮再试
+        try:
+            req_path.unlink()
+        except OSError:
+            return
+
+        request_created = str(payload.get("created") or "")
+        result_path = PROJECT_ROOT / ".fenix" / "code_fix_request_result.json"
+        self.logger.info("fenixd", f"消费 code-fix 手动触发信号：created={request_created}")
+
+        # 编排器未装配不静默：落 orchestrator_missing 结果，用户可见明确原因
+        orchestrator = getattr(self.agent_runner, "_code_fix_orchestrator", None)
+        if orchestrator is None:
+            self.logger.warning(
+                "fenixd", "code-fix 编排器未装配，手动触发信号落 orchestrator_missing 结果")
+            self._write_code_fix_request_result(
+                result_path, request_created, False, "orchestrator_missing")
+            return
+
+        try:
+            res = orchestrator.checkpoint(override_enabled=True)
+        except Exception as e:  # noqa: BLE001 — 消费端兜底：异常也 MUST 落结果不静默
+            self.logger.error("fenixd", f"code-fix 手动触发消费异常: {e}")
+            self._write_code_fix_request_result(
+                result_path, request_created, False, "dispatch_exception")
+            return
+
+        triggered = bool(res.get("triggered"))
+        reason = str(res.get("reason") or "")
+        if triggered:
+            self.logger.info(
+                "fenixd", f"code-fix 手动触发已投递一批（request_created={request_created}）")
+        else:
+            self.logger.info("fenixd", f"code-fix 手动触发被拒：reason={reason}")
+        self._write_code_fix_request_result(result_path, request_created, triggered, reason)
 
     # ── 框架自进化检查点（add-framework-self-evolution 5.x） ────────
 

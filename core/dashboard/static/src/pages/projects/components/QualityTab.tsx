@@ -39,13 +39,15 @@ import { markdownComponents } from './SpecDocModal';
 import {
   cancelRun,
   generateFixSpec,
+  getCodeFixRunResult,
   getCodeReviewItems,
   getCodeReviewProgress,
   getConfig,
   setCodeReviewItemStatus,
+  triggerCodeFixRun,
   triggerCodeReview,
 } from '../../../services/dashboard';
-import type { CodeReviewItem, CodeReviewProgress } from '../../../services/dashboard';
+import type { CodeFixRunResult, CodeReviewItem, CodeReviewProgress } from '../../../services/dashboard';
 import CodeFixProgressCard from './CodeFixProgressCard';
 import ScheduleFields, {
   describeStartAfter,
@@ -203,6 +205,10 @@ export default function QualityTab({ project, active }: QualityTabProps) {
   // 置 progress，在「新一轮 run 已开始 / run 刚结束」窗口内可重复触发或取消到
   // 错误 review_id。用独立的 pending 态在这两个动作进行期间禁用按钮。
   const [actionPending, setActionPending] = useState(false);
+  // 「立即自动修复」独立 pending 门控（add-code-fix-manual-trigger 4.1）：
+  // 触发流程含最长 20s 的结果轮询，不复用 actionPending——否则轮询期间
+  // 其余动作按钮被连带禁用 20s。
+  const [fixRunPending, setFixRunPending] = useState(false);
   const pollTimerRef = useRef<number | null>(null);
   const runningRef = useRef<boolean>(false);
   // 请求序号守卫（code-review item 103bd502bd1e）：loadItems 会被 SSE 回调、
@@ -367,6 +373,54 @@ export default function QualityTab({ project, active }: QualityTabProps) {
       }
     } finally {
       setActionPending(false);
+    }
+  };
+
+  // ── 立即自动修复（add-code-fix-manual-trigger 4.1） ─────────────
+  // 手动即临时授权：点击写文件信号，daemon 以 override_enabled=True 消费
+  // （开关关闭也修这一批）。受理后 1s 间隔轮询判定结果（上限 20s），仅认
+  // request_created 回链本次 requested_at 的结果；触发成功不额外操作——
+  // CodeFixProgressCard 既有 2s 轮询自动接管进度展示。
+  const handleTriggerFixRun = async () => {
+    if (fixRunPending || actionPending) return; // pending 门控防连点
+    setFixRunPending(true);
+    try {
+      const res = await triggerCodeFixRun(project);
+      const wantedAt = res.requested_at;
+      const deadline = Date.now() + 20_000;
+      let result: CodeFixRunResult | null = null;
+      while (Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        try {
+          const snap = await getCodeFixRunResult(project);
+          if (snap.request_created && snap.request_created === wantedAt) {
+            result = snap;
+            break;
+          }
+        } catch {
+          // 单轮读取失败不终止轮询（daemon 消费稍后补结果文件）
+        }
+      }
+      if (result) {
+        if (result.triggered) {
+          message.success(result.message || '已投递一批自动修复，可在进度卡片查看进展');
+        } else {
+          // 拒绝原因（无待修条目/已有修复在跑/回归契约缺失等）由 daemon
+          // 结果文件的 message 如实回显，不让用户对着无反应的按钮猜
+          message.warning(result.message || `未能投递：${result.reason}`);
+        }
+      } else {
+        message.info('触发结果尚未就绪，请稍后在进度卡片或 daemon 日志确认');
+      }
+    } catch (e) {
+      const errMsg = e instanceof Error ? e.message : String(e);
+      if (errMsg.includes('已有未消费的修复触发请求')) {
+        message.warning(errMsg);
+      } else {
+        message.error(`立即自动修复失败: ${errMsg}`);
+      }
+    } finally {
+      setFixRunPending(false);
     }
   };
 
@@ -650,6 +704,16 @@ export default function QualityTab({ project, active }: QualityTabProps) {
             onClick={() => void handleTrigger('window')}
           >
             当期提交审查
+          </Button>
+          {/* 「立即自动修复」（add-code-fix-manual-trigger）：手动触发即临时授权
+              （开关关闭也修这一批），默认样式与相邻触发按钮一致；触发流程
+              （含结果轮询）进行中呈 loading 态并防连点 */}
+          <Button
+            disabled={actionPending}
+            loading={fixRunPending}
+            onClick={() => void handleTriggerFixRun()}
+          >
+            立即自动修复
           </Button>
           <Button
             type="primary"

@@ -260,6 +260,7 @@ from .code_review import (
     read_code_review_items,
     read_code_review_progress,
     read_code_review_fix_progress,
+    read_code_fix_request_result,
 )
 
 # ── quality_gates 组（add-quality-gates-visibility）──

@@ -4,6 +4,8 @@
 - GET  /api/code-review/items      （query project、可选 status）→ 台账列表
 - GET  /api/code-review/progress   （query project）→ 运行进度
 - POST /api/code-review/run        （body {project, scope}）→ 写手动触发信号
+- POST /api/code-review/fix-run    （query project）→ 写手动「立即自动修复」信号（add-code-fix-manual-trigger）
+- GET  /api/code-review/fix-run-result（query project）→ 只读手动触发判定结果（add-code-fix-manual-trigger）
 - POST /api/code-review/generate-spec（body {project, item_ids, start_after?}）→ 生成修复 SPEC
 - POST /api/code-review/items/status（body {project, item_id, status}）→ 人工状态流转
 
@@ -23,6 +25,12 @@ from core.dashboard import data as dashboard_data
 # 与 admin_invoke_request / cancel_run_request / approve_push_request 同属
 # 「dashboard 原子写 → daemon 主循环消费」文件信号族。
 CODE_REVIEW_REQUEST = ".fenix/code_review_request.json"
+
+# 手动「立即自动修复」信号与判定结果文件（add-code-fix-manual-trigger）。
+# 信号由 daemon 主循环经 fenixd._check_code_fix_requests 消费；结果文件由
+# 消费端原子写回，GET fix-run-result 只读透传。
+CODE_FIX_REQUEST = ".fenix/code_fix_request.json"
+CODE_FIX_REQUEST_RESULT = ".fenix/code_fix_request_result.json"
 
 
 class H11CodeReviewRoutesMixin:
@@ -152,6 +160,97 @@ class H11CodeReviewRoutesMixin:
             self._error(500, "审查触发信号写入失败")
             return
         self._json({"ok": True, "scope": scope, "requested_at": created})
+
+    def _api_code_review_fix_run(self, query):
+        """POST /api/code-review/fix-run — query ?project=<name>（task 2.1）
+
+        手动「立即自动修复」：写 ``.fenix/code_fix_request.json`` 文件信号 →
+        daemon 主循环消费（``fenixd._check_code_fix_requests`` 以
+        ``override_enabled=True`` 临时授权调 checkpoint——手动即临时授权，
+        开关关闭也投递这一批）。
+
+        - 项目不存在 → 404
+        - 消费方守卫（hosting_state 判据，对齐 _api_code_review_run）：
+          daemon 未受 supervisor 托管（unmanaged）→ 409 明确拒绝（信号无人
+          消费会永久滞留并在 daemon 下次启动时被消费成一次用户并未请求的
+          修复）；stopped → 400「daemon 未运行」。
+        - 受理前预删旧结果文件：防止上一轮残留判定被前端误当本次反馈
+          （与 request_created 回链双重防御）。
+        - 受理 → 200 + {ok, requested_at}；O_CREAT|O_EXCL 独占创建，
+          FileExistsError → 409（并发第二次 POST 或上一信号尚未被消费）。
+        """
+        project = self._project_from_query(query)
+        if project is None or not project.get("exists"):
+            self._error(404, "project not found")
+            return
+        proot = Path(project["path"])
+
+        # 消费方守卫（hosting_state 判据，先例 request_spec_approve_push）
+        from core.fenix_session import hosting_state as _hosting_state
+
+        try:
+            state = _hosting_state(str(proot))
+        except Exception:
+            state = "stopped"  # 判定异常按未运行兜底，宁拒勿假放行
+        if state == "unmanaged":
+            self._error(
+                409,
+                "本项目 daemon 未受 supervisor 托管，修复信号不会被消费。"
+                "经项目页「安装托管」或 /fenix-setup 恢复 supervisor 托管后重试",
+            )
+            return
+        if state != "managed":
+            self._error(400, "daemon 未运行，请先启动 daemon")
+            return
+
+        # 预删旧结果文件（残留判定 MUST NOT 被前端当本次反馈；删除失败不阻塞受理）
+        result_path = proot / CODE_FIX_REQUEST_RESULT
+        try:
+            result_path.unlink()
+        except OSError:
+            pass
+
+        # 原子创建信号文件（O_CREAT|O_EXCL 独占创建，对齐 _api_code_review_run）
+        created = datetime.now(timezone.utc).isoformat()
+        payload = {"source": "dashboard", "created": created}
+        req_path = proot / CODE_FIX_REQUEST
+        req_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            fd = os.open(str(req_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except FileExistsError:
+            self._error(409, "已有未消费的修复触发请求（请稍后重试）")
+            return
+        except OSError:
+            self._error(500, "修复触发信号写入失败")
+            return
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+        except Exception:
+            # 写中途失败：清掉半写文件，避免残留被 daemon 误消费
+            try:
+                os.unlink(str(req_path))
+            except OSError:
+                pass
+            self._error(500, "修复触发信号写入失败")
+            return
+        self._json({"ok": True, "requested_at": created})
+
+    def _api_code_review_fix_run_result(self, query):
+        """GET /api/code-review/fix-run-result?project=<name>（task 2.2）
+
+        手动触发判定结果只读透传：返回 daemon 消费端写回的
+        ``.fenix/code_fix_request_result.json`` 内容（``{request_created,
+        triggered, reason, message, finished_at}``）。文件缺失/损坏 → 缺省态
+        ``{}``（MUST NOT 500，形态对齐 _api_code_review_fix_progress）。
+        """
+        project = self._project_from_query(query)
+        if project is None or not project.get("exists"):
+            self._error(404, "project not found")
+            return
+        self._json(dashboard_data.read_code_fix_request_result(str(project["path"])))
 
     def _api_code_review_generate_spec(self, query):
         """POST /api/code-review/generate-spec — body {project, item_ids: [...]}

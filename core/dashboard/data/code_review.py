@@ -6,6 +6,9 @@ generate-spec）由 routes 层直接调 ``core.code_review``（与 evolution
 items 的 accept/reject 端点同构），本模块不承载写逻辑。
 """
 
+import json
+from pathlib import Path
+
 from core.code_review import read_items, read_progress
 
 _SEVERITY_ORDER = {"critical": 0, "major": 1, "minor": 2, "info": 3}
@@ -66,3 +69,21 @@ def read_code_review_fix_progress(project_root) -> dict:
     from core.code_fix import read_progress as _fix_read_progress
 
     return _fix_read_progress(project_root)
+
+
+def read_code_fix_request_result(project_root) -> dict:
+    """读手动「立即自动修复」触发判定结果（add-code-fix-manual-trigger 2.2）。
+
+    只读透传 daemon 消费端写回的 ``.fenix/code_fix_request_result.json``
+    （``{request_created, triggered, reason, message, finished_at}``）；
+    文件缺失/损坏/非 dict → 缺省态 ``{}``（读侧 MUST NOT 500，形态对齐
+    read_code_review_fix_progress）。前端以 ``request_created`` 与本次触发
+    返回的 ``requested_at`` 回链判定是否本次结果。
+    """
+    path = Path(project_root) / ".fenix" / "code_fix_request_result.json"
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}

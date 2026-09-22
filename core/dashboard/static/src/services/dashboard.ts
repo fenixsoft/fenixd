@@ -1496,6 +1496,37 @@ export function triggerCodeReview(project: string, scope: 'full' | 'window') {
   );
 }
 
+/** 手动「立即自动修复」触发判定结果（add-code-fix-manual-trigger；
+ *  GET /api/code-review/fix-run-result 透传 .fenix/code_fix_request_result.json）
+ *
+ * 缺省态（文件缺失/未消费完）为全空字段：``request_created`` 为 null，
+ * 前端以此判定「暂无结果」。``request_created`` 回链触发信号的 created
+ * 时间戳，仅与本次 ``requested_at`` 一致时才视为本次反馈。
+ */
+export interface CodeFixRunResult {
+  request_created: string | null;
+  triggered: boolean;
+  reason: string;
+  message: string;
+  finished_at: string | null;
+}
+
+/** add-code-fix-manual-trigger：手动触发自动修复（写文件信号，daemon 消费）。
+ *  受理返回 200 {ok, requested_at}；409（并发/残留未消费信号）抛错带后端文案。 */
+export function triggerCodeFixRun(project: string) {
+  return request<{ ok: boolean; requested_at: string }>(
+    `/api/code-review/fix-run?project=${encodeURIComponent(project)}`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' } },
+  );
+}
+
+/** add-code-fix-manual-trigger：读取手动触发判定结果（无副作用，缺失返回缺省态） */
+export async function getCodeFixRunResult(project: string): Promise<CodeFixRunResult> {
+  return request<CodeFixRunResult>(
+    `/api/code-review/fix-run-result?project=${encodeURIComponent(project)}`,
+  );
+}
+
 /** add-code-review-agent-and-quality-tab：把选中条目批量生成修复 SPEC
  *
  * ``startAfter`` 三态（与设置页「同意立项」同一语义，见 ScheduleFields）：

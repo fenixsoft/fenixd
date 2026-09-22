@@ -920,6 +920,75 @@ class TestOrchestratorGuards(unittest.TestCase):
         self.assertIn("agent_run_failed", prog["reason"])
 
 
+class TestOverrideEnabled(unittest.TestCase):
+    """checkpoint(override_enabled=True) 临时授权语义（add-code-fix-manual-trigger 1.2）。
+
+    手动触发绕过总开关，但其余守卫（单飞 / 无 open 条目 / 失败保留 / 回归
+    契约 fail-closed）原样生效；不传参的两路后台激活形态在 enabled=false
+    下仍不投递（现状逐字节一致）。
+    """
+
+    def test_override_dispatches_when_disabled(self):
+        from core.code_fix import CodeFixOrchestrator
+
+        proot = _make_project_root()
+        _write_items(proot, {"a": _item("a")})
+        _write_verify_yaml(proot)
+        runner = _FakeRunner(proot)
+        orch = CodeFixOrchestrator(runner, proot,
+                                   config={"admin": {"code_review_fix": {"enabled": False}}},
+                                   logger=None)
+        res = orch.checkpoint(override_enabled=True)
+        self.assertTrue(res["triggered"], "开关关闭 + 手动临时授权 MUST 仍投递这一批")
+        self.assertEqual(len(runner.fix_calls), 1)
+
+    def test_override_still_respects_already_running(self):
+        from core.code_fix import CodeFixOrchestrator
+
+        proot = _make_project_root()
+        _write_items(proot, {"a": _item("a")})
+        _write_verify_yaml(proot)
+        runner = _FakeRunner(proot)
+        runner._running_agents = {"code-fix-123": object()}
+        orch = CodeFixOrchestrator(runner, proot,
+                                   config={"admin": {"code_review_fix": {"enabled": False}}},
+                                   logger=None)
+        res = orch.checkpoint(override_enabled=True)
+        self.assertEqual(res, {"triggered": False, "reason": "already_running"})
+        self.assertEqual(runner.fix_calls, [])
+
+    def test_override_still_respects_regression_contract_missing(self):
+        from core.code_fix import CodeFixOrchestrator
+
+        proot = _make_project_root()
+        _write_items(proot, {"a": _item("a")})
+        # 不写 verify.yaml → 回归契约整体缺失；fail-closed 不因手动触发放宽
+        runner = _FakeRunner(proot)
+        orch = CodeFixOrchestrator(runner, proot,
+                                   config={"admin": {"code_review_fix": {"enabled": False}}},
+                                   logger=None)
+        res = orch.checkpoint(override_enabled=True)
+        self.assertEqual(res, {"triggered": False, "reason": "regression_contract_missing"})
+        self.assertEqual(runner.fix_calls, [])
+
+    def test_default_no_override_disabled_still_blocks(self):
+        """两路后台激活形态（不传参）在 enabled=false 下仍不投递（现状不变）。"""
+        from core.code_fix import CodeFixOrchestrator
+
+        proot = _make_project_root()
+        _write_items(proot, {"a": _item("a")})
+        _write_verify_yaml(proot)
+        runner = _FakeRunner(proot)
+        orch = CodeFixOrchestrator(runner, proot,
+                                   config={"admin": {"code_review_fix": {"enabled": False}}},
+                                   logger=None)
+        res = orch.checkpoint()
+        self.assertEqual(res, {"triggered": False, "reason": "disabled"})
+        self.assertEqual(runner.fix_calls, [])
+        self.assertFalse((proot / ".fenix" / "code-review" / "fix-progress.json").exists(),
+                         "开关关闭（未授权）MUST NOT 写进度")
+
+
 class TestConcurrentCheckpoint(unittest.TestCase):
     def test_two_concurrent_checkpoints_dispatch_once(self):
         """两路并发到同一 checkpoint → 至多一次投递（单飞锁）。"""
