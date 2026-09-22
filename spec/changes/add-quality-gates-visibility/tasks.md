@@ -27,18 +27,18 @@
 
 ## 1. 测试先行（TDD 红）
 
-- [ ] 1.1 新建 `tests/test_quality_gates_progress.py`：合法 quality-gates.json（run 内 3 项落盘、frontend-build 为 skipped+reason）解析用例——items 恒 6 道且顺序符合契约（full-suite/frontend-build/code-review/interaction-contract/result-artifact-gate/deliverable-guard）、done=passed+skipped、total=6、未写入条目为 pending
-- [ ] 1.2 容错用例：文件缺失→run 内 3 项 unknown、不抛异常、无 error 字段；JSON 损坏→同上；枚举外 status 或契约外 gate-id（含实现者误写的 code-review 键）→该项按 unknown/容错渲染处理且不崩
-- [ ] 1.3 框架 3 项合成用例：STATE=implemented/testing/verified/done/pushed→result-artifact-gate 与 deliverable-guard 均 passed；最新 impl run 为 gate-blocked→result-artifact-gate failed 且 detail 含截断归因；implementing 在飞且无 gate-blocked 痕迹→两守卫项 pending；ocr 车道产物 running→code-review running、completed→passed（detail 含 findings 计数）、unavailable→skipped（detail 含 reason）、产物不可见→pending、指纹陈旧→pending
-- [ ] 1.4 worktree 优先用例：implementing 且 worktree 内 quality-gates.json 存在→读 worktree 版本（主树无文件也可见）；worktree 不存在→读主树拷回版本；worktree 存在但 worktree 内无该文件、主树有（fast-track 直落主树形态）→读主树版本；code-review 项对车道产物同策略（worktree 优先、主树兜底）
-- [ ] 1.5 `tests/test_dashboard_data.py` 新增 spec_summary 扩展用例：implementing+全勾+门禁可见未了结→`progress_phase: "gates"` 且 gates_done/gates_total/gates_current 透传；任务未全勾→"impl"；门禁全了结→"impl"；quality-gates 不可见（exists=false）→"impl"；testing+ocr 车道 running→"gates"（优先于 verify）；testing+车道非 running→"verify" 回归不变（预期先失败）
+- [x] 1.1 新建 `tests/test_quality_gates_progress.py`：合法 quality-gates.json（run 内 3 项落盘、frontend-build 为 skipped+reason）解析用例——items 恒 6 道且顺序符合契约（full-suite/frontend-build/code-review/interaction-contract/result-artifact-gate/deliverable-guard）、done=passed+skipped、total=6、未写入条目为 pending
+- [x] 1.2 容错用例：文件缺失→run 内 3 项 unknown、不抛异常、无 error 字段；JSON 损坏→同上；枚举外 status 或契约外 gate-id（含实现者误写的 code-review 键）→该项按 unknown/容错渲染处理且不崩
+- [x] 1.3 框架 3 项合成用例：STATE=implemented/testing/verified/done/pushed→result-artifact-gate 与 deliverable-guard 均 passed；最新 impl run 为 gate-blocked→result-artifact-gate failed 且 detail 含截断归因；implementing 在飞且无 gate-blocked 痕迹→两守卫项 pending；ocr 车道产物 running→code-review running、completed→passed（detail 含 findings 计数）、unavailable→skipped（detail 含 reason）、产物不可见→pending、指纹陈旧→pending
+- [x] 1.4 worktree 优先用例：implementing 且 worktree 内 quality-gates.json 存在→读 worktree 版本（主树无文件也可见）；worktree 不存在→读主树拷回版本；worktree 存在但 worktree 内无该文件、主树有（fast-track 直落主树形态）→读主树版本；code-review 项对车道产物同策略（worktree 优先、主树兜底）
+- [x] 1.5 `tests/test_dashboard_data.py` 新增 spec_summary 扩展用例：implementing+全勾+门禁可见未了结→`progress_phase: "gates"` 且 gates_done/gates_total/gates_current 透传；任务未全勾→"impl"；门禁全了结→"impl"；quality-gates 不可见（exists=false）→"impl"；testing+ocr 车道 running→"gates"（优先于 verify）；testing+车道非 running→"verify" 回归不变（预期先失败）
 
 ## 2. 后端读侧（TDD 绿）
 
-- [ ] 2.1 新建 `core/dashboard/data/quality_gates.py`：契约常量（gate-id 全集与顺序、status 枚举、固定中文 desc）+ 解析合成函数（fail-open、implementing 时 worktree 优先读取、框架守卫 2 项按 run 终态/STATE 合成、code-review 按 ocr 车道产物三态合成并校验指纹、current 进展文案）
-- [ ] 2.2 `core/dashboard/data/__init__.py`：新增 re-export 并按 D8 约定在门面文档块登记 patch 缝
-- [ ] 2.3 `core/dashboard/data/summary.py`：`spec_detail` 新增 `quality_gates` 字段（exists/done/total/current/items）；`spec_summary` 新增 `gates_done`/`gates_total`/`gates_current` 并在 `progress_phase` 判定单点处扩展 gates 分支（机械条件两支：implementing ∧ 任务全勾 ∧ 门禁可见 ∧ 未全了结；testing ∧ ocr 车道 running，后者优先于 verify）
-- [ ] 2.4 跑通 1.x 全部新用例及 `tests/test_dashboard_data.py`、`tests/test_dashboard_mode.py` 既有用例（spec_summary/spec_detail 既有字段零回归）
+- [x] 2.1 新建 `core/dashboard/data/quality_gates.py`：契约常量（gate-id 全集与顺序、status 枚举、固定中文 desc）+ 解析合成函数（fail-open、implementing 时 worktree 优先读取、框架守卫 2 项按 run 终态/STATE 合成、code-review 按 ocr 车道产物三态合成并校验指纹、current 进展文案）
+- [x] 2.2 `core/dashboard/data/__init__.py`：新增 re-export 并按 D8 约定在门面文档块登记 patch 缝
+- [x] 2.3 `core/dashboard/data/summary.py`：`spec_detail` 新增 `quality_gates` 字段（exists/done/total/current/items）；`spec_summary` 新增 `gates_done`/`gates_total`/`gates_current` 并在 `progress_phase` 判定单点处扩展 gates 分支（机械条件两支：implementing ∧ 任务全勾 ∧ 门禁可见 ∧ 未全了结；testing ∧ ocr 车道 running，后者优先于 verify）
+- [x] 2.4 跑通 1.x 全部新用例及 `tests/test_dashboard_data.py`、`tests/test_dashboard_mode.py` 既有用例（spec_summary/spec_detail 既有字段零回归）
 
 ## 3. 写侧：prompt 注入与守卫宽松对账
 
