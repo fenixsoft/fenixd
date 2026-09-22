@@ -562,3 +562,50 @@ class TestRegressionDualRunMerge:
         write_result(root, {"status": "parse_error", "reason": "xml broken"})
         assert self._item(
             parse_quality_gates(root, SPEC, entry={}, runs=[]))["status"] == "pending"
+
+
+class TestAssertionEmptyStringSentinel:
+    """验证修复轮 BUG-01：Assertion.expected 的「未设置」哨兵是 None 而非空串。
+
+    空串是 json_path 等断言的合法期望值（如「quality_gates.items[0].detail
+    为空串」）；曾以 ``str = ""`` 兼作哨兵，to_dict 按 ``!= ""`` 丢键，合法
+    空串期望经 from_dict→to_dict 往返后被丢、运行时按 None 比较——合法断言
+    确定性误判失败，且路径缺失时 None==None 误判通过。
+    """
+
+    def test_empty_string_expected_survives_roundtrip(self):
+        """expected="" 是合法期望：from_dict→to_dict 往返保留键（丢键回归）。"""
+        from core.verify_engine.scenarios import Assertion
+        a = Assertion.from_dict(
+            {"type": "json_path", "path": "quality_gates.items[0].detail",
+             "expected": ""})
+        assert a.expected == ""
+        assert a.to_dict()["expected"] == ""
+
+    def test_unset_expected_omitted_in_to_dict(self):
+        """未设置 expected：属性为 None、to_dict 不输出该键（哨兵语义不变）。"""
+        from core.verify_engine.scenarios import Assertion
+        a = Assertion(type="element_visible", selector=".x")
+        assert a.expected is None
+        assert "expected" not in a.to_dict()
+
+    def test_json_path_empty_expected_exact_semantics(self):
+        """执行体级双向防线：actual="" vs expected="" 判过；
+        路径缺失 actual=None vs expected="" 判败（None==None 误判通过防线）。"""
+        import asyncio
+
+        from core.verify_engine.api_assertions import ApiAssertionRunner
+        runner = ApiAssertionRunner.__new__(ApiAssertionRunner)
+
+        hit = asyncio.run(runner._assert_json_path(
+            {"json": {"quality_gates": {"items": [{"detail": ""}]}}},
+            {"type": "json_path", "path": "quality_gates.items[0].detail",
+             "expected": ""}))
+        assert hit["pass"] is True
+        assert hit["expected"] == ""
+
+        miss = asyncio.run(runner._assert_json_path(
+            {"json": {"other": 1}},
+            {"type": "json_path", "path": "quality_gates.items[0].detail",
+             "expected": ""}))
+        assert miss["pass"] is False
