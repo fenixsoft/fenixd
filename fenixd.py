@@ -68,6 +68,7 @@ from core.admin_store import (
     AdminStore,
     DISPOSITION,
     ESCALATION,
+    SIGNAL,
     severity_needs_human,
 )
 from core.admin_monitor import AdminMonitor
@@ -1623,6 +1624,35 @@ class FenixDaemon:
             self.logger.warning("fenixd", "admin_invoke 请求缺少 spec，忽略")
             return
 
+        # 反查底层 signal_type（fix-manual-invoke-signal-type-passthrough 1.1）：
+        # 手动唤起通道把信号压平为 manual-intervention，处置收尾自动复位判定门
+        # （admin_monitor 对 DISPOSITION_AUTO_RESET_SIGNAL_TYPES 的前置检查）因此
+        # 对人工唤起通道永不命中。此处基于 admin_store.read_all()（created 倒序）
+        # 过滤该 spec 最近一条未处置（非 handled）SIGNAL/ESCALATION 记录，取其
+        # signal_type 以独立字段透传；查不到为 None（字段可选，缺省 None）。
+        # MUST 排除 signal_type == "manual-intervention" 的记录：手动通道自产
+        # （派发失败/agent_runner 不可用落的 ESCALATION），且下次唤起时仍可能未
+        # handled——不排除会把上次手动信号反查成「底层类型」，使复位门永不命中。
+        underlying_signal_type = None
+        try:
+            for rec in self.admin_store.read_all():
+                if rec.get("kind") not in (SIGNAL, ESCALATION):
+                    continue
+                if rec.get("handled"):
+                    continue
+                if rec.get("spec") != spec:
+                    continue
+                if rec.get("signal_type") == "manual-intervention":
+                    continue
+                underlying_signal_type = rec.get("signal_type")
+                break
+        except Exception as e:  # noqa: BLE001 — 反查失败不阻塞唤起，退化为不透传
+            self.logger.warning(
+                "fenixd",
+                f"admin_invoke 反查底层 signal_type 失败（spec={spec}）: {e}",
+            )
+            underlying_signal_type = None
+
         signal = {
             "signal_type": "manual-intervention",
             "spec": spec,
@@ -1633,6 +1663,13 @@ class FenixDaemon:
             "description": (
                 payload.get("prompt") or f"人工呼叫：检查 SPEC {spec} 出现什么问题并尝试处置"
             ),
+            # 底层 signal_type 透传字段（fix-manual-invoke-signal-type-passthrough
+            # D2）：独立字段而非替换顶层类型——顶层保持 manual-intervention 不变
+            # （store 记录、节流锚点、活动区展示零回归）。消费点清单：仅
+            # core/admin_monitor.py 的处置收尾自动复位判定门（signal_type 或
+            # underlying_signal_type 任一命中 DISPOSITION_AUTO_RESET_SIGNAL_TYPES
+            # 即触发）；其余消费方不读该字段。
+            "underlying_signal_type": underlying_signal_type,
         }
         self.logger.info(
             "fenixd",
