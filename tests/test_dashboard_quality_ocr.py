@@ -393,3 +393,45 @@ class TestImplCodeReviewTuningConfigAdmin:
         rc = read_config(tmp_path)
         assert "impl_code_review" not in rc["verify"]
         assert rc["sources"]["verify.impl_code_review"] == "user"
+
+    def test_lane_timeout_admin_surface(self, tmp_path):
+        """ocr 审查 finding#1 回归锁：车道级硬超时全 admin 链路纳管。
+
+        lane_timeout_sec 与三运行参数同款七触点：_SOURCE_KEYS 登记 /
+        sources 标注 / 两缺省回显块 / 提取处生效回显 / 合并白名单 /
+        write_config 前置校验 / _SYNC_PAGE_KEYS 同步白名单。"""
+        from core.dashboard.data import (
+            _SOURCE_KEYS,
+            _SYNC_PAGE_KEYS,
+            read_config,
+            read_effective_config,
+        )
+
+        assert "verify.impl_code_review_lane_timeout_sec" in _SOURCE_KEYS
+        assert "impl_code_review_lane_timeout_sec" in _SYNC_PAGE_KEYS["quality"]["verify"]
+
+        # 缺省回显 2400（经读取器取，与 ConfigLoader 缺省同源）
+        rc = read_config(tmp_path)
+        assert rc["verify"]["impl_code_review_lane_timeout_sec"] == 2400
+        assert rc["sources"]["verify.impl_code_review_lane_timeout_sec"] == "user"
+
+        # 写 1800 → 读回 project 标注；eff 侧同值
+        from core.dashboard.data import write_config
+
+        res = write_config(
+            tmp_path, {"verify": {"impl_code_review_lane_timeout_sec": 1800}}
+        )
+        assert res["ok"], res.get("error")
+        rc = read_config(tmp_path)
+        assert rc["verify"]["impl_code_review_lane_timeout_sec"] == 1800
+        assert rc["sources"]["verify.impl_code_review_lane_timeout_sec"] == "project"
+        eff = read_effective_config(tmp_path)
+        assert eff["verify"]["impl_code_review_lane_timeout_sec"] == 1800
+
+        # 非法值拒绝：bool / 0 / 负 / 字符串 / float → 不落盘
+        for bad in (True, 0, -5, "abc", 60.5):
+            bad_res = write_config(
+                tmp_path, {"verify": {"impl_code_review_lane_timeout_sec": bad}}
+            )
+            assert not bad_res["ok"], f"{bad!r} 应被拒绝"
+            assert "impl_code_review_lane_timeout_sec" in bad_res["error"]

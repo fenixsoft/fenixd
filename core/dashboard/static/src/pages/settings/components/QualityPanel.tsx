@@ -37,7 +37,7 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
   useEffect(() => {
     form.setFieldsValue({
       impl_code_review: config.verify?.impl_code_review === true,
-      // add-impl-code-review-tuning：三运行参数回填缺省（600/2/low——后端
+      // add-impl-code-review-tuning：三运行参数回填缺省（600/4/low——后端
       // read_config / read_effective_config 恒回显缺省，前端回填与之一致；
       // 既有开关「缺省不回显」约定不变：impl_code_review 缺席仍为关）
       impl_code_review_timeout_sec: config.verify?.impl_code_review_timeout_sec ?? 600,
@@ -271,7 +271,7 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
           {/* add-impl-code-review-tuning：三运行参数编辑控件（超时秒 / 并发 / 力度）。
               与 ocr 参数对应：timeout_sec 写入 run 级 ocr provider 配置（确定性生效）；
               --concurrency / --effort 经提示词命令示例承载（软约束，实现者须照抄命令串）。
-              缺省回填 600 / 2 / low（后端 read_config / read_effective_config 恒回显缺省）。 */}
+              缺省回填 600 / 4 / low（后端 read_config / read_effective_config 恒回显缺省）。 */}
           <Form.Item
             name="impl_code_review_timeout_sec"
             label={

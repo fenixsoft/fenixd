@@ -65,6 +65,7 @@ class TestDashboardConfigIO(unittest.TestCase):
                           "impl_code_review_concurrency": 4,
                           "impl_code_review_effort": "low",
                           "impl_code_review_mode": "gate",
+                          "impl_code_review_lane_timeout_sec": 2400,
                           # fix-agent-lane-efficiency D3：上下文经济性告警阈值
                           "context_cost_per_turn_threshold": 200000})
 
@@ -80,6 +81,7 @@ class TestDashboardConfigIO(unittest.TestCase):
                           "impl_code_review_concurrency": 4,
                           "impl_code_review_effort": "low",
                           "impl_code_review_mode": "gate",
+                          "impl_code_review_lane_timeout_sec": 2400,
                           "context_cost_per_turn_threshold": 200000})
         self.assertEqual(echoed["sources"]["verify.deps_mode"], "project")
 

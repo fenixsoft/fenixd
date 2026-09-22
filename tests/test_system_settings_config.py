@@ -239,6 +239,8 @@ class TestSystemAdminExistingSectionsNoRegression(unittest.TestCase):
                           "impl_code_review_effort": "low",
                           # add-impl-ocr-parallel-lane：join 双档模式恒回显缺省
                           "impl_code_review_mode": "gate",
+                          # ocr 审查 finding#1：车道级硬超时恒回显缺省
+                          "impl_code_review_lane_timeout_sec": 2400,
                           # fix-agent-lane-efficiency D3：上下文经济性告警阈值
                           "context_cost_per_turn_threshold": 200000})
 
@@ -260,6 +262,7 @@ class TestSystemAdminExistingSectionsNoRegression(unittest.TestCase):
                           "impl_code_review_concurrency": 4,
                           "impl_code_review_effort": "low",
                           "impl_code_review_mode": "gate",
+                          "impl_code_review_lane_timeout_sec": 2400,
                           "context_cost_per_turn_threshold": 200000})
         self.assertEqual(echoed["self_review"]["enabled"], True)
         self.assertEqual(echoed["admin"]["shutdown_drain_seconds"], 300)

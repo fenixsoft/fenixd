@@ -2261,12 +2261,43 @@ class QQQueueMixin:
         threading.Thread(
             target=_run, name=f"impl-ocr-lane-{spec_name}", daemon=True
         ).start()
+        # ocr 审查 finding#5 第二道防线：新车道启动即旧修复义务作废——打回轮
+        # directive 在重派实现 prompt 构建时已被消费（注入先于 merge），此处
+        # 清除防 pass 出口未覆盖的残留形态（冻结/人工接管的打回轮后再实现）。
+        self._ocr_clear_findings_directive(spec_name)
         self._pm.logger.info(
             "pm_engine",
             f"ocr 车道已启动 '{spec_name}': {branch} "
             f"{str(base)[:8]}..{str(head)[:8]}",
         )
         return "started"
+
+    def _ocr_clear_findings_directive(self, spec_name: str) -> None:
+        """清除修复轮 directive 文件（ocr 审查 finding#5：义务消费即失效）。
+
+        接线两道防线：join 放行（pass 出口）= 修复义务消费完毕；新车道启动 =
+        旧义务作废（防 pass 后残留 directive 被同 spec 后续无关实现轮——
+        verified 后 bug-found 打回、verifier 修复、人工返工——的 prompt_builder
+        误读误注入）。文件缺失幂等静默；删除失败仅 WARNING（下次启动/放行重试）。
+        """
+        path = (
+            Path(self._pm.project_root)
+            / ".fenix" / "verify-progress" / spec_name
+            / "ocr_findings_directive.json"
+        )
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            return
+        except OSError as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"ocr findings directive 清理失败 '{spec_name}'（非阻塞）: {e}",
+            )
+            return
+        self._pm.logger.info(
+            "pm_engine", f"ocr findings directive 已清除 '{spec_name}'"
+        )
 
     def _ocr_join_pending_fields(self, origin: str) -> dict:
         """停等-唤醒 pending 标量字段（STATE 字典字段不回传，一律标量）。"""
@@ -2308,6 +2339,7 @@ class QQQueueMixin:
                 f"fail-open 放行）: {reason}",
             )
             self._ocr_join_clear_pending(spec_name)
+            self._ocr_clear_findings_directive(spec_name)
             return "pass"
         self._pm.state_machine.update_spec(
             spec_name, self._ocr_join_pending_fields(origin)
@@ -2468,6 +2500,7 @@ class QQQueueMixin:
         from core.config import ConfigLoader
 
         if not self._impl_ocr_enabled():
+            self._ocr_clear_findings_directive(spec_name)
             return "pass"
         fingerprint = self._ocr_current_fingerprint(spec_name)
         if fingerprint is None:
@@ -2477,6 +2510,7 @@ class QQQueueMixin:
                 f"ocr join 放行 '{spec_name}'（分支指纹不可得，无审查对象）",
             )
             self._ocr_join_clear_pending(spec_name)
+            self._ocr_clear_findings_directive(spec_name)
             return "pass"
         artifact = self._read_ocr_artifact(spec_name)
         status = artifact.get("status") if isinstance(artifact, dict) else None
@@ -2489,6 +2523,7 @@ class QQQueueMixin:
                 f"{str(artifact.get('reason') or '')[:200]}",
             )
             self._ocr_join_clear_pending(spec_name)
+            self._ocr_clear_findings_directive(spec_name)
             return "pass"
 
         if status == "completed":
@@ -2517,6 +2552,7 @@ class QQQueueMixin:
             ]
             self._ocr_join_clear_pending(spec_name)
             if not actionable:
+                self._ocr_clear_findings_directive(spec_name)
                 return "pass"  # 双绿放行
             mode = ConfigLoader.get_impl_code_review_mode(self._pm.config)
             lane_run_id = str(artifact.get("run_id") or "")
@@ -2525,6 +2561,7 @@ class QQQueueMixin:
                 self._ocr_transfer_findings_to_ledger(
                     spec_name, actionable, lane_run_id, "advisory 档放行"
                 )
+                self._ocr_clear_findings_directive(spec_name)
                 return "pass"
             entry = self._pm.state_machine.read_one(spec_name) or {}
             try:
@@ -2541,6 +2578,7 @@ class QQQueueMixin:
                 spec_name, actionable, lane_run_id,
                 f"修复轮上限（{rounds}）后仍出现，转台账放行",
             )
+            self._ocr_clear_findings_directive(spec_name)
             return "pass"
 
         # 产物缺失/损坏（车道未运行或未完成）→ 幂等触发 + 停等（任务 4.2，

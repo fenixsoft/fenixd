@@ -547,6 +547,52 @@ class TestOcrJoinGate:
         dispatcher._git_rev_parse = lambda ref: None
         assert dispatcher._ocr_join_gate("demo", "planner-judge") == "pass"
 
+    # ── ocr 审查 finding#5：directive 消费即失效（放行/启动双防线清理）──
+
+    @staticmethod
+    def _write_stale_directive(proot: Path) -> Path:
+        d = proot / ".fenix" / "verify-progress" / "demo"
+        d.mkdir(parents=True, exist_ok=True)
+        p = d / "ocr_findings_directive.json"
+        p.write_text('{"findings": [{"path": "src/a.py"}]}', encoding="utf-8")
+        return p
+
+    def test_gate_pass_clears_stale_directive(self, tmp_path):
+        """join 放行出口（双绿）清除残留 directive——后续无关实现轮零误注入。"""
+        dispatcher, _ = self._dispatcher_with_fingerprint(
+            tmp_path, {"verify": {"impl_code_review": True}}
+        )
+        _write_completed_artifact(tmp_path, dict(self.FP), findings=[])
+        directive = self._write_stale_directive(tmp_path)
+        assert dispatcher._ocr_join_gate("demo", "planner-judge") == "pass"
+        assert not directive.exists()
+
+    def test_gate_pass_directive_absent_is_silent(self, tmp_path):
+        """放行出口对无 directive 场景幂等（缺失静默、不报错）。"""
+        dispatcher, _ = self._dispatcher_with_fingerprint(
+            tmp_path, {"verify": {"impl_code_review": True}}
+        )
+        _write_completed_artifact(tmp_path, dict(self.FP), findings=[])
+        assert dispatcher._ocr_join_gate("demo", "planner-judge") == "pass"
+
+    def test_lane_start_clears_stale_directive(self, tmp_path):
+        """新车道启动即旧修复义务作废（第二道防线：pass 出口未覆盖的
+        冻结/人工接管打回轮后再实现形态）。"""
+        dispatcher, pm = _make_dispatcher(
+            tmp_path, {"verify": {"impl_code_review": True}}
+        )
+        directive = self._write_stale_directive(tmp_path)
+        started = dispatcher._start_impl_ocr_lane("demo", dict(self.FP))
+        assert started == "started"
+        assert not directive.exists()
+        # 车道线程异步：等在飞标记释放（伪造 runner 立即返回）
+        import time as _time
+
+        for _ in range(100):
+            if not dispatcher._ocr_lane_inflight.get("demo"):
+                break
+            _time.sleep(0.05)
+
 
 class TestJoinWakeAndResume:
     """停等-唤醒闭环（任务 4.1/4.2：车道完成回调唤醒 join 重评）。"""
