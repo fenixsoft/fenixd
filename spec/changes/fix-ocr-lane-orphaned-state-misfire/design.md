@@ -38,7 +38,7 @@ add-impl-ocr-parallel-lane 把实现分支收尾代码审查摘成框架侧并�
 
 ### D3 事件类型命名 `progress` 与分类器兼容
 
-`progress` 不在 `_RUN_TERMINAL_STATUS_MAP`（runs.py:131）→ `classify_run` 走缺省 `"running"`；`AdminMonitor._run_terminal_status` 只认 `result`/`error` → 亦判 running。两侧**零改动**，但各加一条回归测试钉住：未来任何人往终态映射表加类型时不会悄悄把心跳当终态。渲染层（RunRecordModal/时间轴）对未知事件类型既有降级路径容忍，验证场景覆盖不报错。
+`progress` 不在 `_RUN_TERMINAL_STATUS_MAP`（runs.py:131）→ `classify_run` 走缺省 `"running"`；`AdminMonitor._run_terminal_status` 只认 `result`/`error` → 亦判 running。两侧**零改动**，但各加一条回归测试钉住：未来任何人往终态映射表加类型时不会悄悄把心跳当终态。渲染层对未知事件类型的容忍已按既有代码核实（评审留痕）：车道 run 事件级渲染链为 RunRecordModal → ClaudeOutputPane → `runEvents.ts` 分类表，`progress` 不在分类表与 `SILENT_KINDS`、且无顶层字符串 content → 落入 fallback 静默路径，不产出可见行、不报错。本 SPEC 不涉前端改动，tasks 清单亦不新增前端验证场景（2.2 仅钉后端两分类器），本句仅为设计依据留痕。
 
 ### D4 显式不作为
 

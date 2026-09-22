@@ -1,4 +1,5 @@
-import { App, Button } from 'antd';
+import { App, Button, Modal } from 'antd';
+import { useState } from 'react';
 import { syncConfigFromUser } from '@/services/dashboard';
 import type { ConfigData } from '@/services/dashboard';
 
@@ -11,63 +12,103 @@ import { PAGE_LABELS } from '../index';
 interface SyncFromUserButtonProps {
   /** 当前项目名（项目级作用域才渲染本按钮） */
   project: string;
-  /** 当前页签标识（决定只同步该页对应的设置键） */
+  /** 当前页签标识（决定只操作该页对应的设置键） */
   page: string;
-  /** 同步成功后回调（父组件用它回填表单） */
+  /** 同步/清空成功后回调（父组件用它回填表单） */
   onSynced: (config: ConfigData) => void;
 }
 
 /**
  * 「同步用户级设置」按钮（白色底，保存按钮左侧）：把用户级 config.yaml 中
- * 当前页签对应的设置值覆盖写入项目级。覆盖前 Modal 确认；只覆盖当前页面
- * 的设置值（后端 _SYNC_PAGE_KEYS 白名单），其它页签与项目级特有键不受影响。
+ * 当前页签对应的设置值覆盖写入项目级。确认弹窗提供两个互斥操作——
+ * · 覆盖：用户级值写入项目级（同步）；
+ * · 清空：删除项目级该页签受管键，此后本项目直接沿用用户级配置/默认值
+ *   （项目级不再显式覆盖，sources 回 "user"）。
+ * 只影响当前页签的设置值（后端 _SYNC_PAGE_KEYS 白名单），其它页签不受影响。
+ *
+ * 用受控 Modal 而非 modal.confirm（本组件需同弹窗三按钮 + 独立 loading；
+ * 且 JSX 渲染天然消费 <AntdApp> 上下文——code-review item 633923ee6b0b）。
  */
 export default function SyncFromUserButton({ project, page, onSynced }: SyncFromUserButtonProps) {
-  // 消费 App 上下文（code-review item 633923ee6b0b）：静态 Modal/message 无法
-  // 消费 <AntdApp> 上下文，会与 App.useApp() 页面产生主题/locale 不一致并在开发
-  // 环境触发 antd 静态方法告警。
-  const { message, modal } = App.useApp();
+  const { message } = App.useApp();
   // 回退不再直接暴露内部 key（code-review item e0b8f3aefec7）
   const pageLabel = PAGE_LABELS[page] ?? '当前页签';
+  const [open, setOpen] = useState(false);
+  // 当前进行中的操作（互斥 loading；null = 空闲）
+  const [busy, setBusy] = useState<null | 'sync' | 'clear'>(null);
 
-  const handleClick = () => {
-    modal.confirm({
-      title: '同步用户级设置',
-      content: (
-        <div style={{ whiteSpace: 'pre-wrap' }}>
-          {`确认把用户级的「${pageLabel}」设置覆盖到项目「${project}」？\n\n`}
-          仅覆盖本页签对应的设置项，项目级其它设置不受影响；覆盖后立即生效写盘。
-        </div>
-      ),
-      okText: '覆盖',
-      okButtonProps: { danger: true },
-      cancelText: '取消',
-      onOk: async () => {
-        let config: ConfigData;
-        try {
-          config = await syncConfigFromUser(project, page);
-          message.success(`已同步用户级「${pageLabel}」设置到项目「${project}」`);
-        } catch (err) {
-          message.error(`同步失败：${err instanceof Error ? err.message : String(err)}`);
-          // 失败时 reject 让弹窗保持打开（用户可直接重试，无需重新打开）
-          // （code-review item 689fe8681e9a）
-          throw err;
-        }
-        // 后端已写盘成功，回填回调移出 try（code-review item 689fe8681e9a）：
-        // 旧实现把 onSynced 放在同一 try，回调抛错会被误报为「同步失败」。
-        try {
-          onSynced(config);
-        } catch (e) {
-          message.warning(`同步成功但刷新失败：${e instanceof Error ? e.message : String(e)}`);
-        }
-      },
-    });
+  const runAction = async (action: 'sync' | 'clear') => {
+    setBusy(action);
+    try {
+      const config = await syncConfigFromUser(project, page, action);
+      if (action === 'sync') {
+        message.success(`已同步用户级「${pageLabel}」设置到项目「${project}」`);
+      } else if (config.cleared == null) {
+        message.info(`项目级没有「${pageLabel}」的显式设置，无需清空`);
+      } else {
+        message.success(`已清空项目级「${pageLabel}」设置，现沿用用户级配置`);
+      }
+      setOpen(false);
+      // 后端已写盘成功，回填回调失败不误报为「操作失败」（对齐 code-review
+      // item 689fe8681e9a：写盘成功与前端刷新分开报告）
+      try {
+        onSynced(config);
+      } catch (e) {
+        message.warning(`操作成功但刷新失败：${e instanceof Error ? e.message : String(e)}`);
+      }
+    } catch (err) {
+      // 失败不关弹窗，用户可直接重试（对齐旧 confirm 行为）
+      message.error(
+        `${action === 'sync' ? '同步' : '清空'}失败：${err instanceof Error ? err.message : String(err)}`,
+      );
+    } finally {
+      setBusy(null);
+    }
   };
 
   return (
-    <Button onClick={handleClick} data-testid={`sync-from-user-btn-${page}`}>
-      同步用户级设置
-    </Button>
+    <>
+      <Button onClick={() => setOpen(true)} data-testid={`sync-from-user-btn-${page}`}>
+        同步用户级设置
+      </Button>
+      <Modal
+        title="同步用户级设置"
+        open={open}
+        onCancel={() => setOpen(false)}
+        maskClosable={busy === null}
+        footer={[
+          <Button key="cancel" disabled={busy !== null} onClick={() => setOpen(false)}>
+            取消
+          </Button>,
+          <Button
+            key="clear"
+            data-testid={`clear-page-config-${page}`}
+            loading={busy === 'clear'}
+            disabled={busy !== null && busy !== 'clear'}
+            onClick={() => runAction('clear')}
+          >
+            清空
+          </Button>,
+          <Button
+            key="sync"
+            type="primary"
+            danger
+            loading={busy === 'sync'}
+            disabled={busy !== null && busy !== 'sync'}
+            onClick={() => runAction('sync')}
+          >
+            覆盖
+          </Button>,
+        ]}
+      >
+        <div style={{ whiteSpace: 'pre-wrap' }}>
+          {`· 覆盖：把用户级「${pageLabel}」设置覆盖写入项目「${project}」。
+· 清空：删除项目级「${pageLabel}」设置，此后本项目直接沿用用户级配置（或默认值）。
+
+两者只影响本页签对应的设置项，其它页签与项目级特有键不受影响；操作立即生效写盘。`}
+        </div>
+      </Modal>
+    </>
   );
 }
 

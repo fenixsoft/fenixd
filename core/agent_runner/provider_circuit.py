@@ -606,10 +606,43 @@ class ProviderCircuit:
                 "Global transient break expired — dispatch resumed, "
                 "fingerprint window reset",
             )
+            # 熔断自然过期主动唤醒派发（见 _wake_dispatch_after_break 文档）。
+            self._wake_dispatch_after_break()
             # 熔断自然过期自动核销（紧邻 WARNING 之后；异常静默不阻断闸门语义）
             self._auto_resolve_transient_storm(summary, truncated)
             return False
         return True
+
+    def _wake_dispatch_after_break(self) -> None:
+        """熔断自然过期后主动唤醒派发队列（最小改动缺口修复）。
+
+        背景（2026-09-22 事故取证）：``_process_queue`` 的首道闸门
+        （``core/pm_engine/dispatch/queue.py`` ``_global_transient_break_active``）
+        在熔断期直接 return——解冻/恢复产生的 ``spec_ready`` 虽经 ``_on_spec_ready``
+        入队成立，队列条目却出不来。而本组件是**惰性自清**的：仅在被查询时才检
+        测到期。「熔断到期」与「有人查询队列」两个事件若彼此错开，被挡下的条目
+        只能等下一个人为触发点（实测为 60s 一轮的 ``recover_orphan_ready``，最坏
+        ~60s 额外延迟；本轮因解冻比到期早约 4 分钟，表现为「解冻后完全没派发」）。
+
+        到期即在此处显式唤醒：经 PMEngine 门面触发一次 ``_process_queue``，把
+        熔断期积压的队列条目立即放出。唤醒 MUST NOT 递归——``_process_queue``
+        再次查询本方法时熔断已清零（上方赋值先于调用），返回 False 放行。
+
+        fail-open：任何异常静默吞掉，绝不阻断「熔断到期 → 恢复派发」这一闸门
+        语义（对齐既有 _auto_resolve 的异常处理取向）。无 PMEngine 回引
+        （测试 / CLI 场景，``AgentRunner`` 以 ``__new__`` 构造）时零操作。
+        """
+        pm_engine = getattr(self._pm, "_pm_engine_ref", None)
+        process_queue = getattr(pm_engine, "_process_queue", None)
+        if not callable(process_queue):
+            return
+        try:
+            process_queue()
+        except Exception as e:
+            self._pm.logger.warning(
+                "agent_runner",
+                f"熔断到期唤醒派发失败（不阻断恢复）: {e}",
+            )
 
     def _alert_transient_break(
         self,

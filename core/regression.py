@@ -51,6 +51,7 @@ import fcntl
 import json
 import logging
 import os
+import re
 import signal
 import subprocess
 import tempfile
@@ -432,6 +433,97 @@ def is_regression_running(project_root) -> bool:
     return life.total_seconds() < timeout_seconds + 30
 
 
+# ── 运行中进度读取（dashboard 进度条数据源）──────────────────────────
+
+# tail 窗口：pytest 进度标记集中在输出尾部（行满换行 + [ NN%]），8KB 足以
+# 覆盖最近数百个用例的进度行，无需整文件读。
+_PROGRESS_TAIL_BYTES = 8192
+# pytest terminal reporter 的进度标记（-q 与默认模式均为 [ NN%] 形态；
+# 其他测试框架无此标记 → 自然落入耗时估算/未知口径）
+_PROGRESS_MARKER_RE = re.compile(r"\[\s*(\d+)%\]")
+
+
+def read_progress(project_root) -> Dict[str, Any]:
+    """读取运行中回归的执行进度（GET /api/regression/result 透出 progress）。
+
+    三级口径（框架无关——模块头 MUST NOT 假设 pytest，只是真实进度源
+    恰好是 pytest 终端标记时精度最高）：
+
+    - 真实进度：tail 本次 stdout 日志（``<output>.log``），取最后一个
+      pytest 终端进度标记 ``[ NN%]``；
+    - 估算进度：无标记（非 pytest / 输出尚未刷新）时用
+      已耗时 ÷ 上次快照总耗时 合成近似百分比（estimated=True）；
+    - 未知：marker 不可读或无上次耗时 → percent=None，前端渲染
+      不确定动画条。
+
+    返回 {elapsed_seconds, percent, estimated, total_estimate,
+    last_duration_seconds}。读侧 MUST NOT 抛异常（dashboard data 层不设防
+    二次兜底）。
+    """
+    info: Dict[str, Any] = {
+        "elapsed_seconds": None,
+        "percent": None,
+        "estimated": False,
+        "total_estimate": None,
+        "last_duration_seconds": None,
+    }
+    # marker 已耗时（started_at 起算）
+    output_rel: Optional[str] = None
+    try:
+        meta = json.loads(
+            _running_marker_path(project_root).read_text(encoding="utf-8")
+        )
+        started = datetime.datetime.fromisoformat(meta.get("started_at", ""))
+        info["elapsed_seconds"] = round(
+            max(
+                0.0,
+                (datetime.datetime.now(datetime.timezone.utc) - started).total_seconds(),
+            ),
+            1,
+        )
+    except (OSError, json.JSONDecodeError, ValueError, TypeError):
+        pass
+    # 上次快照：分母（total）、估算基准（duration）、stdout 日志路径（output）
+    try:
+        last = read_result(project_root)
+        if isinstance(last, dict) and last.get("status") not in ("never_run", "parse_error"):
+            info["total_estimate"] = last.get("total")
+            info["last_duration_seconds"] = last.get("duration_seconds")
+            output_rel = last.get("output")
+    except Exception:
+        pass
+    # 真实进度：tail stdout 日志找最后一个 [ NN%]
+    percent_real: Optional[int] = None
+    try:
+        if output_rel:
+            log_abs = Path(str(Path(project_root) / output_rel) + ".log")
+            if log_abs.is_file():
+                with log_abs.open("rb") as f:
+                    f.seek(0, os.SEEK_END)
+                    size = f.tell()
+                    f.seek(max(0, size - _PROGRESS_TAIL_BYTES))
+                    chunk = f.read().decode("utf-8", "replace")
+                marks = _PROGRESS_MARKER_RE.findall(chunk)
+                if marks:
+                    percent_real = int(marks[-1])
+    except Exception:
+        pass
+    if percent_real is not None:
+        # 运行中恒封顶 99（收尾统计行 [100%] 出现即命令已近结束，但快照
+        # 尚未写盘——显示 99% 比假 100% 诚实）
+        info["percent"] = min(99, percent_real)
+    else:
+        last_dur = info.get("last_duration_seconds")
+        elapsed = info.get("elapsed_seconds")
+        if (
+            isinstance(last_dur, (int, float)) and last_dur > 0
+            and isinstance(elapsed, (int, float))
+        ):
+            info["percent"] = min(99, int(elapsed / last_dur * 100))
+            info["estimated"] = True
+    return info
+
+
 # ── 主机级全量套件互斥锁（task 2.7 + design D7）─────────────────────
 
 
@@ -574,6 +666,10 @@ def run_regression(
     cmd_display = spec.cmd if isinstance(spec.cmd, str) else " ".join(str(s) for s in spec.cmd)
     output_rel = str(spec.output)
     output_abs = Path(project_root) / output_rel
+    # stdout 进度日志（与 XML 同名 + .log，junit.xml → junit.xml.log）：运行中
+    # 由 read_progress tail 提取 pytest 终端进度标记 [ NN%]（junit XML 9.x 是
+    # sessionfinish 一次性写盘，运行中不可读，进度只能来自 stdout）。
+    log_abs = Path(str(output_abs) + ".log")
 
     # D7: 主机级锁互斥——同一主机只允许一套全量测试（D10：锁根可锚定主树）
     lock = _SuiteLock(
@@ -599,6 +695,11 @@ def run_regression(
                 output_abs.unlink()
             except OSError:
                 pass
+        if log_abs.is_file():
+            try:
+                log_abs.unlink()
+            except OSError:
+                pass
 
         started_at = now_iso()
         started_mono = time.monotonic()
@@ -606,12 +707,19 @@ def run_regression(
 
         # D8: start_new_session=True 创建独立进程组，超时后 killpg
         use_shell = isinstance(spec.cmd, str)
+        # stdout 落进度日志；打开失败回退 DEVNULL（进度退化为耗时估算，
+        # 执行本身不受影响）。Popen 成功 dup2 到子进程后父进程侧即可关闭。
+        try:
+            log_abs.parent.mkdir(parents=True, exist_ok=True)
+            log_fh = log_abs.open("wb")
+        except OSError:
+            log_fh = None
         try:
             proc = subprocess.Popen(
                 spec.cmd,
                 shell=use_shell,
                 cwd=str(project_root),
-                stdout=subprocess.DEVNULL,
+                stdout=log_fh if log_fh is not None else subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
                 start_new_session=True,
             )
@@ -629,6 +737,9 @@ def run_regression(
                 "reason": f"回归命令启动失败: {e}",
                 "long_test_threshold_seconds": spec.long_test_threshold_seconds,
             }
+        finally:
+            if log_fh is not None:
+                log_fh.close()
 
         # 等待完成或超时
         try:

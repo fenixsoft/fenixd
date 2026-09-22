@@ -133,6 +133,31 @@ body {
   width: auto;
 }
 
+// 回归分面概览（RegressionTab）：三列（sm=2/md=3）宽度平均分配——同
+// spec-detail-desc 手法：fixed 布局 + 首行 td 显式列宽（仅 fixed 在 Chromium
+// 不均分）；xs 单列回退 auto/自适应。
+#root .regression-overview-desc .ant-descriptions-view > table {
+  table-layout: fixed;
+}
+#root .regression-overview-desc td.ant-descriptions-item {
+  width: 33.33%;
+}
+#root .screen-xs .regression-overview-desc .ant-descriptions-view > table {
+  table-layout: auto;
+}
+#root .screen-xs .regression-overview-desc td.ant-descriptions-item {
+  width: auto;
+}
+// xs 窄屏回退：fixed + 30% 会把用例名压没（100px×2 定宽列挤占），回退 auto
+// 布局与 220px 文件列提示（等价改版前行为）。tableLayout/列宽是内联样式，须
+// !important 覆盖。
+#root .screen-xs .regression-result-table .ant-table-content > table {
+  table-layout: auto !important;
+}
+#root .screen-xs .regression-result-table .ant-table-content colgroup col:nth-child(2) {
+  width: 220px !important;
+}
+
 // SPEC 详情下拉快速切换面板：行 hover 高亮提示可点击（表格行样式）
 .spec-quick-switch-panel .spec-quick-switch-row:hover {
   background: #f5f5f5;
@@ -259,6 +284,17 @@ body {
 // 移动端隐藏顶栏全局面包屑（与返回箭头语义重复）
 #root .screen-xs .global-header-crumb {
   display: none;
+}
+
+// 移动端抽屉菜单背景透明修复：ProLayout 移动端菜单 = inline drawer
+// （.ant-drawer-inline，position:absolute 渲染在 layout 容器内，白底在
+// .ant-pro-drawer-sider 层）+ position:fixed 的 sider 本体（fixSiderbar）。
+// 页面滚离顶部后 absolute 的白底/遮罩随文档滚出视口，fixed 的菜单层自身
+// 透明，底层内容透出（菜单与页面重叠）。把 drawer 根节点钉回视口，三层
+// 重新对齐；:has 限定只命中移动端菜单抽屉，桌面端与其它弹层零影响。
+#root .ant-drawer.ant-drawer-inline:has(.ant-pro-drawer-sider) {
+  position: fixed;
+  inset: 0;
 }
 
 // 全站 Modal 移动端宽度上限：防止固定宽度（如 520px）在窄屏溢出视口

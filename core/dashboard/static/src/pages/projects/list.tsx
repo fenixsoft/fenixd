@@ -1094,32 +1094,31 @@ export default function SpecListPage() {
               ) : (
                 <Typography.Text type="secondary" data-testid="task-progress-cell">
                   {record.task_done}/{record.task_total}
-                  {runAhead && rp ? (
-                    <Typography.Text type="warning" style={{ marginLeft: 4 }}>
-                      run {rp.done}/{rp.total} 已汇报
-                    </Typography.Text>
-                  ) : null}
-                  {runCurrent ? (
-                    <Typography.Text
-                      type="warning"
-                      style={{ marginLeft: 4, fontSize: 12, verticalAlign: 'text-bottom' }}
-                    >
-                      进行中 {runCurrent.join('、')}
-                    </Typography.Text>
-                  ) : null}
-                  {runActive ? (
-                    <Typography.Text
-                      type="warning"
-                      data-testid="run-activity-active"
-                      style={{ marginLeft: 4, fontSize: 12, verticalAlign: 'text-bottom' }}
-                    >
-                      进行中
-                    </Typography.Text>
-                  ) : null}
                 </Typography.Text>
               )}
               <Typography.Text type="secondary">{p}%</Typography.Text>
             </div>
+            {!isVerify && !isGates && (runAhead || runCurrent || runActive) ? (
+              // run 层线索与计数换行分离（与 verify_current/gates_current 同款
+              // 二行结构统一）；marginLeft 4 保留 run 已汇报与进行中并存时的间距
+              <div style={{ fontSize: 12, lineHeight: '18px' }}>
+                {runAhead && rp ? (
+                  <Typography.Text type="warning">
+                    run {rp.done}/{rp.total} 已汇报
+                  </Typography.Text>
+                ) : null}
+                {runCurrent ? (
+                  <Typography.Text type="warning" style={{ marginLeft: 4 }}>
+                    进行中 {runCurrent.join('、')}
+                  </Typography.Text>
+                ) : null}
+                {runActive ? (
+                  <Typography.Text type="warning" data-testid="run-activity-active">
+                    进行中
+                  </Typography.Text>
+                ) : null}
+              </div>
+            ) : null}
             {isVerify && record.verify_current ? (
               <div style={{ fontSize: 12, lineHeight: '18px', color: '#52c41a' }}>
                 {record.verify_current}

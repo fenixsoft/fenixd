@@ -1,9 +1,12 @@
 // 弹窗最大化共享逻辑：标题栏最大化/还原按钮 + 几何参数切换。
 // 最大化 = 占满视口（100vw × calc(100vh - 80px)、top 0）；还原 = 各弹窗默认宽高。
+// 移动端（<768px）默认即全屏——还原态的 80% 宽高在窄屏可用面积太小，且与最大化
+// 态重合后切换按钮无意义，一并隐藏；桌面端行为不变。
 import { Button } from 'antd';
 import { FullscreenExitOutlined, FullscreenOutlined } from '@ant-design/icons';
 import { useCallback, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
+import { useIsMobile } from '@/hooks/useIsMobile';
 
 interface UseMaximizeModalOptions {
   // 还原态尺寸
@@ -26,9 +29,10 @@ export function useMaximizeModal({
   footerHeight = 0,
 }: UseMaximizeModalOptions) {
   const [maximized, setMaximized] = useState(false);
+  const isMobile = useIsMobile();
   const toggle = useCallback(() => setMaximized((v) => !v), []);
 
-  const modalProps = maximized
+  const modalProps = maximized || isMobile
     ? {
         width: '100vw' as string | number,
         centered: false,
@@ -54,8 +58,9 @@ export function useMaximizeModal({
       };
 
   // 按钮绝对定位到标题右侧：antd 关闭按钮为绝对定位（占 modal 右缘约 12~44px），
-  // 按钮放其左侧；标题文本需预留右侧空间并允许断词换行，避免移动端重叠
-  const maximizeButton: ReactNode = (
+  // 按钮放其左侧；标题文本需预留右侧空间并允许断词换行，避免移动端重叠。
+  // 移动端默认与最大化态重合，按钮不渲染（MaximizeTitle 依此收缩标题留白）
+  const maximizeButton: ReactNode = isMobile ? null : (
     <Button
       type="text"
       size="small"
@@ -69,11 +74,12 @@ export function useMaximizeModal({
   return { maximized, toggle, modalProps, maximizeButton };
 }
 
-// 标题容器标准包装：relative 定位承载最大化按钮，文本右留白防重叠
+// 标题容器标准包装：relative 定位承载最大化按钮，文本右留白防重叠；
+// button 为 null（移动端）时仅保留关闭按钮需要的最小留白
 export function MaximizeTitle({ text, extra, button }: { text: ReactNode; extra?: ReactNode; button: ReactNode }) {
   return (
     <div style={{ position: 'relative' }}>
-      <span style={{ display: 'inline-block', paddingRight: 56, wordBreak: 'break-all' }}>
+      <span style={{ display: 'inline-block', paddingRight: button ? 56 : 12, wordBreak: 'break-all' }}>
         {text}
         {extra}
       </span>

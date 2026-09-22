@@ -69,11 +69,13 @@ class H5SettingsRoutesMixin:
 
 
     def _api_config_sync_from_user(self, query):
-        """POST /api/config/sync-from-user?project=<name>  body: {"page": "<页标识>"}
+        """POST /api/config/sync-from-user?project=<name>  body: {"page": "<页标识>", "action": "sync"|"clear"}
 
-        把用户级 config.yaml 中 page 页签对应的受管键覆盖写入项目级配置
-        （设置页项目级「同步用户级设置」按钮）。page 白名单见
-        data._SYNC_PAGE_KEYS；成功返回最新项目级生效配置（读回以确认）。
+        action=sync（缺省）：把用户级 config.yaml 中 page 页签对应的受管键覆盖
+        写入项目级配置（「同步用户级设置」按钮）。
+        action=clear：从项目级 config.yaml 删除 page 页签受管键（「清空」按钮，
+        清空后用户级/默认值自然生效）。page 白名单见 data._SYNC_PAGE_KEYS；
+        成功返回最新项目级生效配置（读回以确认）。
         """
         body = self._read_json_body()
         if body is None:
@@ -86,14 +88,23 @@ class H5SettingsRoutesMixin:
         if not isinstance(page, str) or not page:
             self._error(400, "body.page 必须为页面标识字符串")
             return
-        result = dashboard_data.sync_config_from_user(project["path"], page)
+        action = body.get("action", "sync")
+        if action not in ("sync", "clear"):
+            self._error(400, f"body.action 必须为 sync|clear: {action!r}")
+            return
+        if action == "clear":
+            result = dashboard_data.clear_project_page_keys(project["path"], page)
+            cleared_field, fail_word = "cleared", "清空"
+        else:
+            result = dashboard_data.sync_config_from_user(project["path"], page)
+            cleared_field, fail_word = "synced", "同步"
         if not result["ok"]:
-            self._error(400, result.get("error") or "同步失败")
+            self._error(400, result.get("error") or f"{fail_word}失败")
             return
         config = dashboard_data.read_effective_config(project["path"])
         config["project"] = project["name"]
         config["saved"] = True
-        config["synced"] = result["synced"]
+        config[cleared_field] = result[cleared_field]
         self._json(config)
 
 

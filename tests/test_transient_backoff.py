@@ -826,6 +826,66 @@ class TestGlobalTransientBreak:
         assert pc.record_transient_error("unrecognized model deepseek-v4", now=1200) is True
         assert pc.is_global_transient_break(now=1200) is True
 
+    # ── 熔断到期主动唤醒派发（2026-09-22 事故回归）───────────────────────
+    # 缺口：`_process_queue` 首道闸门在熔断期直接 return——解冻/恢复产生的
+    # `spec_ready` 虽经 `_on_spec_ready` 入队成立，条目却出不来；而熔断是
+    # 惰性自清（仅被查询时检测到期），到期与「有人查询队列」错开时被挡条目
+    # 只能等下一个触发点（实测最坏约 4 分钟后才派发）。到期须显式唤醒一次
+    # `_process_queue`。
+
+    def _make_circuit_with_engine(self):
+        """构造带 PMEngine 回引（记录 `_process_queue` 调用）的熔断实例。"""
+        calls: list = []
+
+        class _Engine:
+            def _process_queue(self):
+                calls.append(True)
+
+        pm = self._FakePM()
+        pm._pm_engine_ref = _Engine()
+        return ProviderCircuit(pm), pm, calls
+
+    def _trigger(self, pc):
+        pc.record_transient_error("unrecognized model deepseek-v4", now=1000)
+        pc.record_transient_error("unrecognized model deepseek-v4", now=1100)
+        assert pc.record_transient_error(
+            "unrecognized model deepseek-v4", now=1200) is True
+
+    def test_expiry_wakes_dispatch_queue_once(self):
+        """冷却到期查询 → 唤醒 `_process_queue` 恰一次（幂等，不重复唤醒）。"""
+        pc, pm, calls = self._make_circuit_with_engine()
+        self._trigger(pc)
+        # 冻结中查询不唤醒（`_process_queue` 本就该被闸门挡住）
+        assert pc.is_global_transient_break(now=1700) is True
+        assert calls == []
+        # 冷却到期（缺省 600s）→ 解除并唤醒一次
+        assert pc.is_global_transient_break(now=1801) is False
+        assert calls == [True]
+        # 已解除后再查询不再重复唤醒（熔断态已清零，早退分支）
+        assert pc.is_global_transient_break(now=1900) is False
+        assert calls == [True]
+
+    def test_expiry_wake_failure_does_not_block_resume(self):
+        """唤醒异常 MUST NOT 阻断「熔断到期 → 恢复派发」闸门语义（fail-open）。"""
+        class _BoomEngine:
+            def _process_queue(self):
+                raise RuntimeError("boom")
+
+        pc, pm, _ = self._make_circuit_with_engine()
+        pm._pm_engine_ref = _BoomEngine()
+        self._trigger(pc)
+        assert pc.is_global_transient_break(now=1801) is False
+        # 熔断态确已清零（恢复派发不被异常吞掉）
+        assert pc.is_global_transient_break(now=1900) is False
+
+    def test_expiry_without_engine_ref_is_noop(self):
+        """无 PMEngine 回引（测试/CLI 场景）时零操作、不抛异常。"""
+        pc, pm = self._make_circuit()
+        self._trigger(pc)
+        assert pc.is_global_transient_break(now=1801) is False
+        assert pc.is_global_transient_break(now=1900) is False
+
+
 
 class TestDispatchWorkerTransientBranch:
     """Task 4.4 — dispatch worker 读侧：transient 终态不写 retries exhausted。

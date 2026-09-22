@@ -328,12 +328,25 @@ class QQQueueMixin:
             return
         # fix-provider-transient-backoff D4：全局瞬断熔断冻结期间暂停一切新派发。
         # 与 instant_fail_cooled 同构：冷却到期自动恢复；在飞 run 不受影响。
+        # 队列里已有条目被本闸门挡下时以 INFO 留痕（2026-09-22 事故：解冻后的
+        # spec_ready 已入队，但熔断闸门只在 debug 级留痕、生产日志全库 0 条
+        # DEBUG——「ready 却 4 分钟不派发」在日志里完全不可见）。熔断积压条目
+        # 的最终放出由到期唤醒兜底（ProviderCircuit._wake_dispatch_after_break）。
         if self._pm._global_transient_break_active():
-            self._pm.logger.debug(
-                "pm_engine",
-                "Global transient break active — dispatch paused "
-                "(fix-provider-transient-backoff D4)",
-            )
+            with self._queue_lock:
+                held = len(self._run_queue)
+            if held:
+                self._pm.logger.info(
+                    "pm_engine",
+                    f"Global transient break active — {held} queued dispatch(es) "
+                    f"held (fix-provider-transient-backoff D4)",
+                )
+            else:
+                self._pm.logger.debug(
+                    "pm_engine",
+                    "Global transient break active — dispatch paused "
+                    "(fix-provider-transient-backoff D4)",
+                )
             return
         max_concurrent = self._pm._get_config("agents.max_concurrent", 2)
 

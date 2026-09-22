@@ -144,13 +144,18 @@ export function installHosting(name: string) {
   return request(`/api/projects/${encodeURIComponent(name)}/install-hosting`, { method: 'POST' });
 }
 
-/** 同步用户级设置：把用户级 config.yaml 中 page 页签对应的受管键覆盖写入项目级。
+/** 同步/清空用户级设置：sync=把用户级 config.yaml 中 page 页签对应的受管键覆盖
+ *  写入项目级；clear=删除项目级该页签受管键（清空后沿用用户级/默认值）。
  *  page 白名单：llm/agents/parallel/token/verify/approval/misc/system */
-export function syncConfigFromUser(project: string, page: string): Promise<ConfigData> {
+export function syncConfigFromUser(
+  project: string,
+  page: string,
+  action: 'sync' | 'clear' = 'sync',
+): Promise<ConfigData> {
   return request<ConfigData>(`/api/config/sync-from-user?project=${encodeURIComponent(project)}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ page }),
+    body: JSON.stringify({ page, action }),
   });
 }
 
@@ -1386,6 +1391,9 @@ export interface ConfigData {
   description?: string;
   saved?: boolean;
   path?: string;
+  /** sync-from-user action=clear 返回：实际删除的项目级键（{section: {key: 原值}}）；
+   *  null = 项目级文件不存在（本来就没有覆盖） */
+  cleared?: Record<string, Record<string, unknown>> | null;
 }
 
 export async function getConfig(project?: string): Promise<ConfigData> {
@@ -1496,7 +1504,7 @@ export function triggerCodeReview(project: string, scope: 'full' | 'window') {
   );
 }
 
-/** 手动「立即自动修复」触发判定结果（add-code-fix-manual-trigger；
+/** 手动「自动修复」触发判定结果（add-code-fix-manual-trigger；
  *  GET /api/code-review/fix-run-result 透传 .fenix/code_fix_request_result.json）
  *
  * 缺省态（文件缺失/未消费完）为全空字段：``request_created`` 为 null，
@@ -1839,9 +1847,24 @@ export interface RegressionLongTest {
  * running 为读侧补充的「是否正在执行」标记（marker 新鲜度判定），
  * 供分面在跨刷新后仍能显示运行中态（task 5.6：MUST NOT 依赖前端本地计时）。
  */
+/**
+ * 运行中执行进度（read_progress 三级口径）：
+ * - percent 非 null + estimated=false → stdout 终端标记的真实进度
+ * - percent 非 null + estimated=true  → 已耗时/上次总耗时的估算进度
+ * - percent null → 进度未知（前端渲染不确定动画条）
+ */
+export interface RegressionProgress {
+  elapsed_seconds?: number | null;
+  percent?: number | null;
+  estimated?: boolean;
+  total_estimate?: number | null;
+  last_duration_seconds?: number | null;
+}
+
 export interface RegressionResult {
   status: 'passed' | 'failed' | 'timeout' | 'parse_error' | 'never_run';
   running?: boolean;
+  progress?: RegressionProgress;
   cmd?: string;
   output?: string;
   started_at?: string;
