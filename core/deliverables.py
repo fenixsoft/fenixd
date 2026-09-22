@@ -658,6 +658,104 @@ def resolve_effective_declaration(
     }
 
 
+def resolve_writeback_target(
+    spec_name, *, branch=None, worktree_path=None, project_root=None
+) -> dict:
+    """声明修正**写回层**判定（fix-relocation-writeback-layer D1，Task 1.1）。
+
+    判据 = **写入层是否等于守卫实际读到的那一层**（``resolve_effective_declaration``
+    返回的 ``source``，同源原则）——修正被执行 ⇔ 下一次守卫读取能看到修正：
+
+    - ``source == "worktree"``：``writable=True``，落点 = worktree 内 spec 目录，
+      提交根 = 该 worktree（提交落实现分支）；
+    - ``source == "main"``：``writable=True``，落点 = **主树** spec 目录、提交根 =
+      ``project_root``——前两层均未命中时守卫读取基准**就是主树**，就地写入即同源，
+      不构成错层（禁止它会误伤 2026-09-15 merge-back 死锁修复的既有主树就地软化路径）；
+    - ``source == "branch"``（``spec_dir is None``，声明只存在于分支对象库、无落盘
+      位置）：``writable=False``——**这才是事故态**（写主树、守卫读分支）；
+    - ``source is None``（两处均不可用）：``writable=False``。
+
+    Args:
+        spec_name: spec 名。
+        branch: 实现分支名（可选；解析基准之一）。
+        worktree_path: worktree 根路径（可选；最高优先层）。
+        project_root: 主树项目根（可选）。
+
+    Returns:
+        ``{"writable": bool, "spec_dir": str|None, "source": str|None,
+        "commit_root": str|None, "declaration": dict}``。``commit_root`` 为修正落盘后
+        提交所应使用的 git 仓库根（worktree 命中 → 该 worktree；main 命中 →
+        ``project_root``；不可写 → None）；``declaration`` 为底层解析结果（避免调用方
+        二次解析）。
+    """
+    resolved = resolve_effective_declaration(
+        spec_name,
+        branch=branch,
+        worktree_path=worktree_path,
+        project_root=project_root,
+    )
+    source = resolved.get("source")
+    spec_dir = resolved.get("spec_dir")
+    # main 命中层的提交根即主树（project_root 缺失时无提交根基可言——但 source
+    # == "main" 蕴含主树读取成功，project_root 必然可用）。
+    commit_root = None
+    if source == "worktree" and spec_dir:
+        commit_root = str(worktree_path) if worktree_path else None
+    elif source == "main" and spec_dir:
+        commit_root = str(project_root) if project_root else None
+    writable = bool(
+        spec_dir and source in ("worktree", "main") and commit_root
+    )
+    return {
+        "writable": writable,
+        "spec_dir": spec_dir if writable else None,
+        "source": source,
+        "commit_root": commit_root if writable else None,
+        "declaration": resolved,
+    }
+
+
+def verify_correction_readback(
+    spec_name, corrected_path, *, branch=None, worktree_path=None,
+    project_root=None, kind=None,
+) -> bool:
+    """修正后读取一致性复检（fix-relocation-writeback-layer D3，Task 3.1）。
+
+    以**守卫读取基准**（``resolve_effective_declaration``，优先序 worktree >
+    branch > main）复读：被修正的旧路径 ``corrected_path`` 不再以原 ``kind``
+    出现在生效声明条目中即视为生效。核心不变量：**修正被执行 ⇔ 下一次守卫读取
+    能看到修正**；读回仍是旧路径（写读错层，add-code-review-auto-fix 事故根因）
+    → 返回 False，调用方 MUST NOT 判为修正成功。
+
+    Fail-safe 取向：解析来源为 ``None``（两处均不可用）→ 返回 False（无读取基准
+    可证修正生效，不静默销账）。
+
+    Args:
+        spec_name: spec 名。
+        corrected_path: 被修正的旧路径（typo 元素 / 软化条目）。
+        kind: 可选；限定「原 kind」比对（None = 任何 kind 命中即算未修正）。
+        branch / worktree_path / project_root: 解析上下文（与守卫同参）。
+
+    Returns:
+        True 表示旧路径已不在生效声明中（复检通过）；False 表示仍读到旧路径 /
+        无读取基准。
+    """
+    resolved = resolve_effective_declaration(
+        spec_name,
+        branch=branch,
+        worktree_path=worktree_path,
+        project_root=project_root,
+    )
+    if resolved.get("source") is None:
+        return False
+    for e in resolved.get("entries") or []:
+        if not isinstance(e, dict) or e.get("path") != corrected_path:
+            continue
+        if kind is None or e.get("kind") == kind:
+            return False
+    return True
+
+
 def snapshot_declaration_baseline(spec_name, run_id, project_root) -> "dict | None":
     """派发时快照主树声明条目到实现 Agent 不可触及的位置（D3）。
 
@@ -764,24 +862,37 @@ def _declared_satisfied_on_branch(path, kind, branch, project_root) -> bool:
     return exists
 
 
-def _has_relocation_credential(project_root, path) -> bool:
-    """旧路径在 dispute 审计流是否已有重定位凭据（D3 豁免条款 1）。
+def relocation_credential_target(project_root, path) -> "str | None":
+    """旧路径在 dispute 审计流中的**替代路径**（fix-relocation-writeback-layer D4，Task 4.1）。
 
-    凭据形态（两种，均落在跨 run 持久审计流）：
-    1. ``type == "relocation"`` 且 ``old_path`` 等于该路径（3.6 凭据登记 /
-       3.2-3.4 机械重定位改写随审计流落册）；
-    2. judge ``typo`` 裁决在册（``verdicts`` 数组中 ``element == path`` 且
-       ``verdict == "typo"`` 且带 ``actual_path``）——typo 改写即声明路径
-       修正（旧路径 → actual_path），视同重定位凭据（4.3 重定位接入裁决）。
-    两种形态任一命中即豁免。审计流跨 run 持久——上一轮重定位后本轮未
-    merge-back，豁免判定仍可命中。读取失败/缺失 → False（fail-safe，不误豁免）。
+    与 ``_has_relocation_credential`` 同源同形态读 ``.fenix/dispute_audits.jsonl``
+    （跨 run 持久），但返回凭据携带的替代路径而非布尔值——守卫据其完成「替代路径
+    在实现分支 HEAD 存在」的核销前落地校验（布尔判定不足以完成该校验，防空洞核销）。
+
+    凭据形态（两种，任一命中即取其替代路径）：
+    1. ``type == "relocation"`` 且 ``old_path`` 等于该路径 → 取 ``new_path``；
+    2. judge ``typo`` 裁决在册（``verdicts`` 中 ``element == path`` 且
+       ``verdict == "typo"``）→ 取 ``actual_path``。
+
+    读取失败/缺失/凭据替代路径为空 → None（fail-safe，不误核销）。
+
+    Args:
+        project_root: 项目根（审计流读取基准）。
+        path: 旧路径。
+
+    Returns:
+        替代路径字符串；无凭据或无替代路径时 None。
     """
     try:
         from core.admin_store import DisputeAuditStore
 
         for rec in DisputeAuditStore(project_root).read_all():
+            if not isinstance(rec, dict):
+                continue
             if rec.get("type") == _RELOCATION_AUDIT_TYPE and rec.get("old_path") == path:
-                return True
+                target = rec.get("new_path")
+                if target:
+                    return str(target)
             # typo 裁决改写在册：judge 给出 actual_path 的修正即「旧路径 → 替代
             # 路径」的有据改写（审计流已落 diff），收缩防护视同重定位凭据
             for v in rec.get("verdicts") or []:
@@ -791,10 +902,28 @@ def _has_relocation_credential(project_root, path) -> bool:
                     and v.get("verdict") == "typo"
                     and v.get("actual_path")
                 ):
-                    return True
+                    return str(v["actual_path"])
     except Exception:
-        return False
-    return False
+        return None
+    return None
+
+
+def _has_relocation_credential(project_root, path) -> bool:
+    """旧路径在 dispute 审计流是否已有重定位凭据（D3 豁免条款 1）。
+
+    凭据形态见 ``relocation_credential_target``（同源读同一审计流）：
+    1. ``type == "relocation"`` 且 ``old_path`` 等于该路径（3.6 凭据登记 /
+       3.2-3.4 机械重定位改写随审计流落册）；
+    2. judge ``typo`` 裁决在册（``verdicts`` 数组中 ``element == path`` 且
+       ``verdict == "typo"`` 且带 ``actual_path``）——typo 改写即声明路径
+       修正（旧路径 → actual_path），视同重定位凭据（4.3 重定位接入裁决）。
+    两种形态任一命中即豁免。审计流跨 run 持久——上一轮重定位后本轮未
+    merge-back，豁免判定仍可命中。读取失败/缺失 → False（fail-safe，不误豁免）。
+
+    实现委托 ``relocation_credential_target``（fix-relocation-writeback-layer
+    Task 4.1）：布尔判定与「替代路径可取得」同源，杜绝两条读取路径各自漂移。
+    """
+    return relocation_credential_target(project_root, path) is not None
 
 
 def _has_soften_audit(project_root, path) -> bool:

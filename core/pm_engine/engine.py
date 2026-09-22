@@ -1632,15 +1632,21 @@ class PMEngine:
         except Exception:
             return True
 
-    def _git_commit(self, paths: list, message: str) -> tuple:
-        """在 project_root 对指定路径执行 git add + commit。
+    def _git_commit(self, paths: list, message: str, repo_root=None) -> tuple:
+        """在 ``repo_root``（缺省 ``project_root``）对指定路径执行 git add + commit。
+
+        ``repo_root``（fix-relocation-writeback-layer Task 1.2）：声明修正的写回层
+        为 worktree 命中时，改写发生在该 worktree 内，提交 MUST 落在**该 worktree
+        的分支**——故提交根随落点（同源原则）。缺省 ``None`` 保持既有行为（主树
+        提交，调用点不回归）。``paths`` 为相对该根的路径。
 
         Returns: (success: bool, error_message: str)
         """
+        root = str(repo_root) if repo_root else str(self.project_root)
         try:
             add = subprocess.run(
                 ["git", "add", "--"] + paths,
-                cwd=str(self.project_root),
+                cwd=root,
                 capture_output=True,
                 text=True,
                 timeout=60,
@@ -1649,7 +1655,7 @@ class PMEngine:
                 return False, add.stderr.strip() or f"git add exit {add.returncode}"
             commit = subprocess.run(
                 ["git", "commit", "-m", message, "--"] + paths,
-                cwd=str(self.project_root),
+                cwd=root,
                 capture_output=True,
                 text=True,
                 timeout=120,

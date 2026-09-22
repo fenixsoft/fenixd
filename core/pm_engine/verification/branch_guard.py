@@ -180,6 +180,7 @@ def _deliverable_gate_missing(pipeline, spec_name: str, result) -> list:
         check_declaration_shrinkage,
         extract_paths_typed,
         load_declaration_baseline,
+        relocation_credential_target,
         resolve_effective_declaration,
     )
 
@@ -282,6 +283,44 @@ def _deliverable_gate_missing(pipeline, spec_name: str, result) -> list:
             )
         # 合并入结构化返回（2.5）：removed 与 missing 同源供下游按 kind 分化
         violations.extend(removed_items)
+
+    # 凭据核销（fix-relocation-writeback-layer D4，Task 4.2/4.3）：仅对
+    # ``violation == "missing"`` 条目判定——旧路径在 dispute 审计流已有
+    # typo/重定位凭据（``relocation_credential_target`` 返回替代路径）**且替代
+    # 路径在实现分支 HEAD 真实存在** → 视为已核销，不加入违规清单。该路径不
+    # 依赖本轮 judge 是否再跑：上一轮落册的凭据在下一轮未 merge-back 时仍生效
+    # ——正是「重派但无从改」死循环（add-code-review-auto-fix 31h 事故）的解药。
+    # 作用域守卫：``undeleted``/``removed`` MUST NOT 被本条吞掉（其豁免仍走既有
+    # ``check_declaration_shrinkage`` 通道）。防空洞核销：替代路径为空或不在
+    # 分支 HEAD → 不核销，走既有缺件处置。
+    redeemed_violations: list = []
+    kept_violations: list = []
+    for v in violations:
+        if v.get("violation") != "missing":
+            kept_violations.append(v)
+            continue
+        try:
+            cred_target = relocation_credential_target(project_root, v["path"])
+        except Exception as e:
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"凭据核销查询异常 '{spec_name}'（{v['path']}，保守不核销）: {e}",
+            )
+            cred_target = None
+        if cred_target and _exists_on_branch(cred_target):
+            redeemed_violations.append((v["path"], cred_target))
+            continue
+        kept_violations.append(v)
+    for old_path, target in redeemed_violations:
+        pipeline._context.logger.info(
+            "pm_engine",
+            f"缺件凭据核销 '{spec_name}': {old_path} → {target}"
+            f"（来源=dispute 凭据，替代路径在分支 {branch} HEAD 存在）"
+            f"—视为已收敛，不报 missing",
+            context={"spec": spec_name, "branch": branch,
+                     "old_path": old_path, "new_path": target},
+        )
+    violations = kept_violations
 
     violations.sort(key=lambda v: v["path"])
 
