@@ -131,14 +131,19 @@ def is_spec_frozen(entry: dict) -> bool:
     """判定 SPEC 是否处于冻结态。
 
     结构化 ``frozen`` 字段优先（state_machine 侧已声明「结构化字段替代 error
-    文本契约」）；文本前缀仅作存量兼容回退。自动冻结（内容完整性闸门 /
-    预算闸门 / env 阻塞）一律写自有文案而非「用户指令冻结：」，只认文本会让
-    它们在 dashboard 里既不显示冻结态也走不了解冻入口。
+    文本契约」），且为**独立判据**——任意 status 下 ``frozen=True`` 即冻结。
+    验证 BUG-01（add-human-adjudication-choices）：原实现首行
+    ``status != 'blocked'`` 提前返回，reviewing+frozen 的评审器失败冻结
+    （SPEC 语义形态：冻结起源态 reviewing 经「原状态 reviewing」内嵌保留）
+    被误判为未冻结，skip_review_gate 在 CLI/API/Web 三条消费通道全被拒。
+    文本前缀仅作存量兼容回退。自动冻结（内容完整性闸门 / 预算闸门 / env
+    阻塞）一律写自有文案而非「用户指令冻结：」，只认文本会让它们在
+    dashboard 里既不显示冻结态也走不了解冻入口。
     """
-    if entry.get("status") != "blocked":
-        return False
     if entry.get("frozen") is True:
         return True
+    if entry.get("status") != "blocked":
+        return False
     return (entry.get("error") or "").startswith(FREEZE_ERROR_PREFIX)
 
 

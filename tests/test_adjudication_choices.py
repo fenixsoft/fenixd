@@ -404,6 +404,42 @@ class TestSkipReviewGate:
         # 留痕：人工授权跳过评审 + note
         assert any("人工授权跳过评审" in s and "模型链已修复" in s for s in r["steps"])
 
+    def test_success_on_reviewing_structured_frozen(self, tmp_path):
+        """BUG-01 回归：结构化 frozen=True 是独立判据，reviewing+frozen 可跳过。
+
+        SPEC 语义形态（specs/adjudication-actions「状态 reviewing + frozen」）：
+        冻结起源态 reviewing 直接携结构化冻结标记时，原实现首行
+        ``status != 'blocked'`` 提前返回误判未冻结，CLI/API/Web 三条消费
+        通道全被拒（验证 5 场景聚合 Bug）。
+        """
+        proot = _make_proot(tmp_path)
+        _freeze(proot, "spec-frozen", "spec-review-incomplete: 评审尝试已达上限",
+                status="reviewing", _review_attempts=3, reviewer_run="run-x")
+        from core.dashboard.data import skip_review_gate
+
+        r = skip_review_gate(proot, "spec-frozen", note="模型链已修复")
+        assert r["ok"] is True
+        assert r["status"] == "ready"
+        entry = _entry(proot, "spec-frozen")
+        assert entry["status"] == "ready"
+        assert not entry.get("frozen")
+        assert entry["error"] is None
+        assert int(entry.get("_review_attempts") or 0) == 0
+
+    def test_reject_rejected_freeze_on_reviewing_structured_frozen(self, tmp_path):
+        """BUG-01 回归：reviewing+frozen 的评审否决冻结走专属拒绝分支而非「未冻结」。"""
+        proot = _make_proot(tmp_path)
+        _freeze(proot, "spec-rejected", "spec-review-rejected: 方向不成立（原状态 reviewing）",
+                status="reviewing")
+        from core.dashboard.data import skip_review_gate
+
+        r = skip_review_gate(proot, "spec-rejected", note="x")
+        assert not r["ok"]
+        assert "不支持跳过" in r["error"]
+        entry = _entry(proot, "spec-rejected")
+        assert entry["status"] == "reviewing"
+        assert entry.get("frozen") is True
+
 
 # ── 5. choice 映射执行器（含 4.2 消费路径） ──────────────────────────────
 
