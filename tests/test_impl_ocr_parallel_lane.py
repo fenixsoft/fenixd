@@ -99,9 +99,12 @@ class FakeSM:
     def update_spec(self, spec_name, patch):
         self.entries.setdefault(spec_name, {}).update(patch)
 
-    def transition(self, spec_name, to, **kw):
+    def transition(self, spec_name, to, *, trigger_run_id=None,
+                   agent_type=None, channel="auto") -> bool:
+        # 签名对齐生产 StateMachine.transition（双保真：不比 prod 更宽容）
         self.transitions.append((spec_name, to))
         self.entries.setdefault(spec_name, {})["status"] = to
+        return True
 
 
 class FakeRunner:
