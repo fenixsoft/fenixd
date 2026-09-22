@@ -16,6 +16,7 @@ MUST NOT 真跑 agent——全部用 fake runner / 临时目录。
 import json
 import logging
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -339,6 +340,17 @@ class TestMarkResolved(unittest.TestCase):
 
 
 class TestProgressIO(unittest.TestCase):
+    def test_progress_default_contains_chain_skipped(self):
+        """chain_skipped 进 FIX_PROGRESS_DEFAULT（selfheal 1.4）：读侧缺文件/缺字段补齐 []。"""
+        from core.code_fix import FIX_PROGRESS_DEFAULT, read_progress, write_progress
+
+        proot = _make_project_root()
+        self.assertIn("chain_skipped", FIX_PROGRESS_DEFAULT)
+        self.assertEqual(read_progress(proot)["chain_skipped"], [])
+        # 合并写：未传字段保留现值
+        write_progress(proot, chain_skipped=["a"])
+        self.assertEqual(read_progress(proot)["chain_skipped"], ["a"])
+
     def test_read_progress_missing_returns_default(self):
         from core.code_fix import FIX_PROGRESS_DEFAULT, read_progress
 
@@ -413,6 +425,21 @@ class TestSelectBatch(unittest.TestCase):
         self.assertEqual(released, 1)
         self.assertEqual([r["item_id"] for r in select_batch(proot, 10)], ["a"])
 
+    def test_exclude_ids_extends_exclusion(self):
+        """exclude_ids（chain_skipped）与失败档案并集构成排除口径（selfheal 1.4）。"""
+        from core.code_fix import select_batch
+
+        proot = _make_project_root()
+        _write_items(proot, {
+            "a": _item("a", first_seen_at="2026-01-01T00:00:00Z"),
+            "b": _item("b", first_seen_at="2026-02-01T00:00:00Z"),
+            "c": _item("c", first_seen_at="2026-03-01T00:00:00Z"),
+        })
+        batch = select_batch(proot, 10, exclude_ids=["a", "b"])
+        self.assertEqual([r["item_id"] for r in batch], ["c"])
+        # 缺省 None 向后兼容：不引入额外排除
+        self.assertEqual(len(select_batch(proot, 10)), 3)
+
     def test_corrupt_failed_file_treated_as_empty(self):
         from core.code_fix import select_batch
 
@@ -438,19 +465,32 @@ def _make_git_repo() -> Path:
 
 
 class _FakeWM:
-    """fake worktree_manager：create/merge_back/cleanup 记录调用。"""
+    """fake worktree_manager：create/merge_back/cleanup 记录调用。
 
-    def __init__(self, create_result="git"):
+    ``enforce_lock=True`` 时模拟真实 worktree_manager 的进程内 spec 锁语义：
+    存在未 cleanup 的 active worktree 时 ``create()`` 返回 None（「Worktree
+    already active」锁拒绝）；``cleanup()`` 释放锁并删除 worktree 目录
+    （现场即弃的锁/目录级断言用，add-code-fix-batch-failure-selfheal 3.2）。
+    """
+
+    def __init__(self, create_result="git", enforce_lock=False):
         self.create_calls = []
         self.merge_calls = []
         self.cleanup_calls = []
         self._create_result = create_result  # "git" | None
+        self._enforce_lock = enforce_lock
+        self._active = set()  # str(wt_path)：模拟 code-review-fix:code-fix spec 锁
 
     def create(self, spec_name, agent_type="implementer"):
         self.create_calls.append((spec_name, agent_type))
+        if self._enforce_lock and self._active:
+            return None  # 模拟锁拒绝
         if self._create_result is None:
             return None
-        return _make_git_repo()
+        repo = _make_git_repo()
+        if self._enforce_lock:
+            self._active.add(str(repo))
+        return repo
 
     def merge_back(self, wt_path):
         self.merge_calls.append(str(wt_path))
@@ -459,6 +499,9 @@ class _FakeWM:
 
     def cleanup(self, wt_path, success=True):
         self.cleanup_calls.append((str(wt_path), success))
+        self._active.discard(str(wt_path))
+        # 模拟真实 cleanup：worktree 目录被删除
+        shutil.rmtree(str(wt_path), ignore_errors=True)
 
 
 class _FakeRunner:
@@ -758,8 +801,9 @@ class TestOrchestratorGuards(unittest.TestCase):
         self.assertEqual(read_items(proot)["a"]["status"], "open")
 
     def test_zero_effective_fix_rejects_merge(self):
-        """产物行全 skipped → 不合回、不核销、reason=no_effective_fix。"""
-        from core.code_fix import CodeFixOrchestrator, read_progress
+        """产物行全 skipped → 不合回、不核销、条目入 chain_skipped（链继续收敛）。"""
+        from core.code_fix import (CodeFixOrchestrator, load_failed_batches,
+                                   read_progress)
         from core.code_review import read_items
 
         proot = _make_project_root()
@@ -773,11 +817,17 @@ class TestOrchestratorGuards(unittest.TestCase):
         self.assertEqual(items["a"]["status"], "open")
         self.assertEqual(items["b"]["status"], "open")
         prog = read_progress(proot)
-        self.assertEqual(prog["phase"], "failed")
-        self.assertEqual(prog["reason"], "no_effective_fix")
+        # consumed（链内跳过）：不终止链，自驱动收敛到「选批为空」终态
+        self.assertEqual(prog["chain_skipped"], ["a", "b"])
+        self.assertEqual(load_failed_batches(proot), [],
+                         "零有效修复 ≠ 确定性失败，MUST NOT 入失败档案")
+        self.assertEqual(prog["phase"], "blocked")
+        self.assertIn("下轮自动重试", prog["current"])
 
-    def test_regression_failed_twice_discards_and_keeps_worktree(self):
-        """两次回归均失败 → 不合回、不核销、保留 worktree（不 cleanup）、失败集合跳过。"""
+    def test_regression_failed_twice_discards_and_continues(self):
+        """两次回归均失败 → 现场即弃（cleanup 释放现场）、branch/tip_sha 入档案、链继续。"""
+        from core.admin_store import AdminStore
+
         from core.code_fix import (CodeFixOrchestrator, load_failed_batches,
                                    read_progress, select_batch)
         from core.code_review import read_items
@@ -789,22 +839,66 @@ class TestOrchestratorGuards(unittest.TestCase):
         orch = CodeFixOrchestrator(runner, proot, config=_CFG_ON, logger=None)
         orch.checkpoint()
         self.assertEqual(runner.worktree_manager.merge_calls, [])
-        self.assertEqual(runner.worktree_manager.cleanup_calls, [],
-                         "失败批 MUST NOT cleanup（保留现场）")
+        # 现场即弃（selfheal 1.2，替代原「MUST NOT cleanup 保留现场」语义）
+        self.assertEqual(len(runner.worktree_manager.cleanup_calls), 1,
+                         "失败批 MUST cleanup（现场即弃 + 释放 spec 锁）")
+        self.assertFalse(runner.worktree_manager.cleanup_calls[0][1])
         self.assertEqual(len(runner.fix_calls), 2, "首次失败后重试一次")
         self.assertTrue(runner.fix_calls[1][2], "重试 prompt 注入失败用例摘要")
         items = read_items(proot)
         self.assertTrue(all(r["status"] == "open" for r in items.values()))
-        prog = read_progress(proot)
-        self.assertEqual(prog["phase"], "failed")
-        self.assertIn("regression_failed_twice", prog["reason"])
-        # 失败批落盘 + 下轮跳过
+        # 失败档案：fail_count 预算 + branch/tip_sha/reason/failed_at 追溯字段
         failed = load_failed_batches(proot)
         self.assertEqual(len(failed), 1)
         self.assertEqual(set(failed[0]["item_ids"]), {"a", "b"})
-        self.assertEqual(select_batch(proot, 10), [], "失败集合条目被跳过")
-        todo = (proot / ".fenix" / "todo.md").read_text(encoding="utf-8")
-        self.assertIn("release_failed_batch", todo)
+        self.assertEqual(failed[0]["reason"], "regression_failed_twice")
+        self.assertTrue(failed[0]["branch"], "branch 追溯线索 MUST 在场")
+        self.assertTrue(failed[0]["tip_sha"], "tip_sha 追溯线索 MUST 在场")
+        self.assertTrue(failed[0]["failed_at"])
+        self.assertEqual(failed[0]["fail_count"], 1)
+        self.assertEqual(select_batch(proot, 10), [], "失败档案条目被跳过")
+        # 告警去人工化措辞（selfheal 2.4）
+        store = AdminStore(proot, logger=None)
+        alerts = [r for r in store.read_all()
+                  if r.get("signal_type") == "code_fix_regression_failed"]
+        self.assertEqual(len(alerts), 1)
+        self.assertIn("已跳过，下轮自动重试", alerts[0]["recommended_action"])
+        self.assertNotIn("待人工", alerts[0]["description"])
+        # 预算内（fail_count=1）入档不产生 todo 人工项（selfheal 2.1）
+        todo_path = proot / ".fenix" / "todo.md"
+        self.assertFalse(todo_path.exists(),
+                         "预算内失败 MUST NOT 登记 todo 人工项（下轮自动重试）")
+        # consumed 链收敛：选批为空终态文案按 D5 改写（不误报为故障）
+        prog = read_progress(proot)
+        self.assertEqual(prog["phase"], "blocked")
+        self.assertIn("下轮自动重试", prog["current"])
+
+    def test_regression_failed_twice_consumed_chain_continues(self):
+        """回归两败批 consumed 后链自驱动推进下一批（selfheal 3.1）。"""
+        from core.code_fix import CodeFixOrchestrator, load_failed_batches
+        from core.code_review import read_items
+
+        proot = _make_project_root()
+        _write_items(proot, {
+            "a": _item("a", first_seen_at="2026-01-01T00:00:00Z"),
+            "b": _item("b", first_seen_at="2026-02-01T00:00:00Z"),
+        })
+        _write_verify_yaml(proot)
+        # 批 a 两次回归失败（2 次 run + 2 次回归）→ consumed；批 b 正常成功
+        runner = _FakeRunner(proot, regression_statuses=["failed", "failed", "passed"])
+        orch = CodeFixOrchestrator(
+            runner, proot,
+            config={"admin": {"code_review_fix": {"enabled": True, "batch_size": 1}}},
+            logger=None)
+        orch.checkpoint()
+        self.assertEqual(len(runner.fix_calls), 3,
+                         "失败批 consumed 后 MUST 自驱动推进批 b（2+1 次 run）")
+        self.assertEqual(len(runner.worktree_manager.merge_calls), 1, "仅批 b 合回")
+        items = read_items(proot)
+        self.assertEqual(items["a"]["status"], "open", "入档案条目保持 open")
+        self.assertEqual(items["b"]["status"], "resolved", "后续批照常核销")
+        self.assertEqual({tuple(sorted(r["item_ids"])) for r in load_failed_batches(proot)},
+                         {("a",)})
 
     def test_regression_retry_then_pass_merges(self):
         """首次回归失败、重试后通过 → 正常合回核销。"""
@@ -852,7 +946,7 @@ class TestOrchestratorGuards(unittest.TestCase):
         self.assertEqual(read_progress(proot)["done"], 2)
 
     def test_retry_run_failed_cleans_up_without_failed_set(self):
-        """重试 run 失败（第二次回归未跑）→ 不入失败保留集合，cleanup 释放锁。
+        """重试 run 失败（第二次回归未跑）→ 入 chain_skipped（不入档案），cleanup 释放锁，链继续。
 
         回归锁：ocr 审查发现——原实现把「重试 run 失败」记进
         ``fix-failed.json``（该文件语义是「两次回归均失败」）且不 cleanup，
@@ -866,15 +960,18 @@ class TestOrchestratorGuards(unittest.TestCase):
         from core.code_review import read_items
 
         proot = _make_project_root()
-        _write_items(proot, {"a": _item("a")})
+        _write_items(proot, {
+            "a": _item("a", first_seen_at="2026-01-01T00:00:00Z"),
+            "b": _item("b", first_seen_at="2026-02-01T00:00:00Z"),
+        })
         _write_verify_yaml(proot)
-        runner = _FakeRunner(proot, regression_statuses=["failed", "failed"])
+        runner = _FakeRunner(proot, regression_statuses=["failed", "passed"])
         real_fix = runner.run_code_fix
         calls = {"n": 0}
 
         def flaky_fix(worktree_root, items, run_id=None, failure_summary=""):
             calls["n"] += 1
-            if calls["n"] == 2:  # 重试 run 直接失败（产物硬门）
+            if calls["n"] == 2:  # 批 a 的重试 run 直接失败（产物硬门）
                 return SimpleNamespace(run_id="code-fix-retry", success=False,
                                        fixed=0, skipped=0, error="重试产物缺失",
                                        output="")
@@ -882,26 +979,37 @@ class TestOrchestratorGuards(unittest.TestCase):
                             failure_summary=failure_summary)
 
         runner.run_code_fix = flaky_fix
-        orch = CodeFixOrchestrator(runner, proot, config=_CFG_ON, logger=None)
+        orch = CodeFixOrchestrator(
+            runner, proot,
+            config={"admin": {"code_review_fix": {"enabled": True, "batch_size": 1}}},
+            logger=None)
         orch.checkpoint()
-        self.assertEqual(runner.worktree_manager.merge_calls, [])
-        self.assertTrue(runner.worktree_manager.cleanup_calls,
-                        "重试 run 失败也必须释放 spec 锁")
-        self.assertEqual(read_items(proot)["a"]["status"], "open")
+        # 批 a：fix1 ok → reg failed → 重试 run 失败 → consumed（chain_skipped）
+        # 批 b：链自驱动，正常合回核销
+        self.assertEqual(len(runner.worktree_manager.merge_calls), 1, "仅批 b 合回")
+        self.assertEqual(len(runner.worktree_manager.cleanup_calls), 2,
+                         "失败批与成功批均释放现场（spec 锁不残留）")
+        items = read_items(proot)
+        self.assertEqual(items["a"]["status"], "open")
+        self.assertEqual(items["b"]["status"], "resolved", "consumed 后链 MUST 继续推进")
         self.assertEqual(load_failed_batches(proot), [],
-                         "run 失败 ≠ 两次回归均失败，MUST NOT 入失败保留集合")
+                         "run 失败 ≠ 两次回归均失败，MUST NOT 入失败档案")
         prog = read_progress(proot)
-        self.assertIn("regression_retry_run_failed", prog["reason"])
+        self.assertEqual(prog["chain_skipped"], ["a"], "瞬态失败条目入链内跳过集")
 
     def test_agent_run_failed_cleans_up_and_retries_later(self):
-        """run 失败（产物硬门）→ 不合回不核销，cleanup 释放锁，条目保持 open。"""
+        """run 失败（产物硬门）→ 不合回不核销，cleanup 释放锁，条目入 chain_skipped，链继续。"""
         from types import SimpleNamespace
 
-        from core.code_fix import CodeFixOrchestrator, read_progress
+        from core.code_fix import (CodeFixOrchestrator, load_failed_batches,
+                                   read_progress)
         from core.code_review import read_items
 
         proot = _make_project_root()
-        _write_items(proot, {"a": _item("a")})
+        _write_items(proot, {
+            "a": _item("a", first_seen_at="2026-01-01T00:00:00Z"),
+            "b": _item("b", first_seen_at="2026-02-01T00:00:00Z"),
+        })
         _write_verify_yaml(proot)
         runner = _FakeRunner(proot)
 
@@ -910,14 +1018,22 @@ class TestOrchestratorGuards(unittest.TestCase):
                                    skipped=0, error="产物缺失", output="")
 
         runner.run_code_fix = failing_fix
-        orch = CodeFixOrchestrator(runner, proot, config=_CFG_ON, logger=None)
+        orch = CodeFixOrchestrator(
+            runner, proot,
+            config={"admin": {"code_review_fix": {"enabled": True, "batch_size": 1}}},
+            logger=None)
         orch.checkpoint()
         self.assertEqual(runner.worktree_manager.merge_calls, [])
-        self.assertTrue(runner.worktree_manager.cleanup_calls, "agent 失败也要释放锁")
-        self.assertEqual(read_items(proot)["a"]["status"], "open")
+        self.assertEqual(len(runner.worktree_manager.cleanup_calls), 2,
+                         "agent 失败也要释放锁（两批各 cleanup 一次）")
+        items = read_items(proot)
+        self.assertEqual(items["a"]["status"], "open")
+        self.assertEqual(items["b"]["status"], "open")
+        self.assertEqual(load_failed_batches(proot), [],
+                         "瞬态 run 失败 MUST NOT 烧跨轮重试预算")
         prog = read_progress(proot)
-        self.assertEqual(prog["phase"], "failed")
-        self.assertIn("agent_run_failed", prog["reason"])
+        self.assertEqual(prog["chain_skipped"], ["a", "b"])
+        self.assertIn("下轮自动重试", prog["current"])
 
 
 class TestOverrideEnabled(unittest.TestCase):
@@ -1036,26 +1152,37 @@ class TestManualAuthorizationChain(unittest.TestCase):
         self.assertFalse(prog.get("manual_authorized", True),
                          "链收尾 MUST 清除授权旗标")
 
-    def test_manual_chain_stops_at_failed_batch_and_clears_flag(self):
-        """链内批两次回归失败 → 链终止（现状语义不变），授权旗标一并清除。"""
+    def test_manual_chain_continues_past_failed_batch(self):
+        """链内批两次回归失败 → 现场即弃 + 链继续（selfheal 改写原「失败批终止链」语义），授权旗标随链延续、收敛终态清除。"""
         from core.code_fix import CodeFixOrchestrator, read_progress
+        from core.code_review import read_items
 
         proot = _make_project_root()
-        _write_items(proot, {"a": _item("a"), "b": _item("b")})
+        _write_items(proot, {
+            "a": _item("a", first_seen_at="2026-01-01T00:00:00Z"),
+            "b": _item("b", first_seen_at="2026-02-01T00:00:00Z"),
+            "c": _item("c", first_seen_at="2026-03-01T00:00:00Z"),
+        })
         _write_verify_yaml(proot)
-        runner = _FakeRunner(proot, regression_statuses=["failed", "failed"])
+        # 批 a 两次回归失败（2 run）→ consumed；批 b、c 链自驱动成功（各 1 run）
+        runner = _FakeRunner(proot, regression_statuses=["failed", "failed", "passed", "passed"])
         orch = CodeFixOrchestrator(
             runner, proot,
-            config={"admin": {"code_review_fix": {"enabled": False}}},
+            config={"admin": {"code_review_fix": {"enabled": False, "batch_size": 1}}},
             logger=None)
         res = orch.checkpoint(override_enabled=True)
         self.assertEqual(res, {"triggered": True, "reason": "dispatched"})
-        self.assertEqual(len(runner.fix_calls), 2, "首次回归失败后重试一次（现状）")
+        self.assertEqual(len(runner.fix_calls), 4,
+                         "失败批 consumed MUST NOT 终止手动授权链（2+1+1 次 run）")
+        items = read_items(proot)
+        self.assertEqual(items["a"]["status"], "open", "失败批条目入档案保持 open")
+        self.assertEqual(items["b"]["status"], "resolved")
+        self.assertEqual(items["c"]["status"], "resolved")
         prog = read_progress(proot)
-        self.assertEqual(prog["phase"], "failed")
-        self.assertIn("regression_failed_twice", prog["reason"])
+        self.assertEqual(prog["done"], 2)
+        self.assertFalse(prog["running"], "链收敛（剩余条目全被排除）后落终态")
         self.assertFalse(prog.get("manual_authorized", True),
-                         "链终止 MUST 清除授权旗标")
+                         "链收敛终态 MUST 清除授权旗标")
 
     def test_manual_authorization_not_carried_to_new_chain(self):
         """收尾链的授权旗标不外溢：新增 open 条目后无授权 checkpoint → disabled。"""
@@ -1657,3 +1784,428 @@ class TestCodeReviewFixConfigAdmin(unittest.TestCase):
         # 落盘值保持原值（不半写）
         rc = read_config(proot)
         self.assertEqual(rc["code_review_fix"], {"enabled": True, "batch_size": 30})
+
+
+# ── add-code-fix-batch-failure-selfheal：三态收尾 / 锁释放 / 重试预算 / 链内跳过 ──
+
+
+class _CapturingExecutor:
+    """捕获 executor 作业（不执行）：手动逐个跑，断言自驱动/终止行为。"""
+
+    def __init__(self):
+        self.jobs = []
+
+    def submit(self, fn, *args, **kwargs):
+        self.jobs.append((fn, args, kwargs))
+
+    def run_one(self):
+        """FIFO 跑一个作业，返回其是否为批 worker（args 非空）。"""
+        fn, args, _ = self.jobs.pop(0)
+        fn(*args)
+        return bool(args)
+
+
+class TestBatchOutcomeSelfDrive(unittest.TestCase):
+    """三态收尾与自驱动（selfheal 3.1）：success/consumed 均推进下一批，halt 终止。"""
+
+    def _orch(self, proot, runner, batch_size=1):
+        from core.code_fix import CodeFixOrchestrator
+
+        return CodeFixOrchestrator(
+            runner, proot,
+            config={"admin": {"code_review_fix": {"enabled": True, "batch_size": batch_size}}},
+            logger=None)
+
+    def test_merge_back_conflict_consumed_resubmits_next_batch(self):
+        """合回冲突批 consumed → 自驱动批 b 合回核销；冲突批条目入档案。"""
+        from core.code_fix import CodeFixOrchestrator, load_failed_batches
+        from core.code_review import read_items
+
+        proot = _make_project_root()
+        _write_items(proot, {
+            "a": _item("a", first_seen_at="2026-01-01T00:00:00Z"),
+            "b": _item("b", first_seen_at="2026-02-01T00:00:00Z"),
+        })
+        _write_verify_yaml(proot)
+        runner = _FakeRunner(proot)
+        wm = runner.worktree_manager
+        real_merge = wm.merge_back
+
+        def conflict_once(wt_path):
+            if not wm.merge_calls:  # 批 a 合回冲突
+                import types as _t
+                wm.merge_calls.append(str(wt_path))
+                return _t.SimpleNamespace(success=False, error="conflict")
+            return real_merge(wt_path)
+
+        wm.merge_back = conflict_once
+        orch = self._orch(proot, runner)
+        orch.checkpoint()
+        self.assertEqual(len(wm.merge_calls), 2, "冲突批 consumed 后 MUST 自驱动批 b 合回")
+        items = read_items(proot)
+        self.assertEqual(items["a"]["status"], "open")
+        self.assertEqual(items["b"]["status"], "resolved")
+        failed = load_failed_batches(proot)
+        self.assertEqual(len(failed), 1)
+        self.assertEqual(set(failed[0]["item_ids"]), {"a"})
+        self.assertEqual(failed[0]["reason"], "merge_back_conflict")
+        self.assertTrue(failed[0]["branch"] and failed[0]["tip_sha"])
+
+    def test_no_effective_fix_consumed_resubmits_next_batch(self):
+        """零有效修复批 consumed → 自驱动批 b；条目入 chain_skipped 不入档案。"""
+        from core.code_fix import CodeFixOrchestrator, load_failed_batches, read_progress
+        from core.code_review import read_items
+
+        proot = _make_project_root()
+        _write_items(proot, {
+            "a": _item("a", first_seen_at="2026-01-01T00:00:00Z"),
+            "b": _item("b", first_seen_at="2026-02-01T00:00:00Z"),
+        })
+        _write_verify_yaml(proot)
+        runner = _FakeRunner(proot, fix_statuses=[["skipped"], ["fixed"]])
+        orch = self._orch(proot, runner)
+        orch.checkpoint()
+        self.assertEqual(len(runner.fix_calls), 2, "零产物批 consumed 后 MUST 自驱动批 b")
+        self.assertEqual(len(runner.worktree_manager.merge_calls), 1)
+        items = read_items(proot)
+        self.assertEqual(items["a"]["status"], "open")
+        self.assertEqual(items["b"]["status"], "resolved")
+        self.assertEqual(load_failed_batches(proot), [])
+        self.assertEqual(read_progress(proot)["chain_skipped"], ["a"])
+
+    def test_worktree_create_failed_halt_no_resubmit(self):
+        """halt（worktree_create_failed）：链终止不自驱动（executor 无再投递作业）。"""
+        from core.code_fix import CodeFixOrchestrator, read_progress
+
+        proot = _make_project_root()
+        _write_items(proot, {"a": _item("a"), "b": _item("b")})
+        _write_verify_yaml(proot)
+        runner = _FakeRunner(proot, create_result=None)
+        executor = _CapturingExecutor()
+        orch = CodeFixOrchestrator(runner, proot, config=_CFG_ON, logger=None,
+                                   executor=executor)
+        self.assertTrue(orch.checkpoint()["triggered"])
+        self.assertTrue(executor.run_one(), "批 worker 已被投递并执行")
+        self.assertEqual(executor.jobs, [], "halt 批 MUST NOT 自驱动再投递")
+        self.assertEqual(runner.fix_calls, [])
+        prog = read_progress(proot)
+        self.assertEqual(prog["phase"], "failed")
+        self.assertEqual(prog["reason"], "worktree_create_failed")
+
+    def test_batch_worker_exception_halt_no_resubmit(self):
+        """批 worker 异常（run 抛异常）→ 兜底 cleanup 释放锁 + 链终止不自驱动。"""
+        from core.code_fix import CodeFixOrchestrator, read_progress
+
+        proot = _make_project_root()
+        _write_items(proot, {"a": _item("a"), "b": _item("b")})
+        _write_verify_yaml(proot)
+        runner = _FakeRunner(proot)
+
+        def boom(*a, **k):
+            raise RuntimeError("agent exploded")
+
+        runner.run_code_fix = boom
+        executor = _CapturingExecutor()
+        orch = CodeFixOrchestrator(runner, proot, config=_CFG_ON, logger=None,
+                                   executor=executor)
+        self.assertTrue(orch.checkpoint()["triggered"])
+        executor.run_one()
+        self.assertEqual(executor.jobs, [], "批 worker 异常 MUST NOT 自驱动再投递")
+        self.assertTrue(runner.worktree_manager.cleanup_calls,
+                        "异常兜底 MUST cleanup 释放 spec 锁")
+        prog = read_progress(proot)
+        self.assertEqual(prog["phase"], "failed")
+        self.assertIn("batch_worker_error", prog["reason"])
+
+    def test_consumed_failure_progress_wording(self):
+        """consumed 失败收尾：非终态 phase + 「失败已跳过 — 继续后续批次」文案（D6）。"""
+        from types import SimpleNamespace
+
+        from core.code_fix import CodeFixOrchestrator, read_progress
+
+        proot = _make_project_root()
+        _write_items(proot, {"a": _item("a"), "b": _item("b")})
+        _write_verify_yaml(proot)
+        runner = _FakeRunner(proot)
+
+        def failing_fix(worktree_root, items, run_id=None, failure_summary=""):
+            return SimpleNamespace(run_id="code-fix-x", success=False, fixed=0,
+                                   skipped=0, error="产物缺失", output="")
+
+        runner.run_code_fix = failing_fix
+        executor = _CapturingExecutor()
+        orch = CodeFixOrchestrator(
+            runner, proot,
+            config={"admin": {"code_review_fix": {"enabled": True, "batch_size": 1}}},
+            logger=None, executor=executor)
+        orch.checkpoint()
+        executor.run_one()  # 批 a worker：run 失败 → consumed
+        prog = read_progress(proot)
+        self.assertEqual(prog["phase"], "fixing", "consumed 收尾 MUST 用非终态 phase")
+        self.assertFalse(prog["running"] is False, "consumed 收尾不复位 running（链继续）")
+        self.assertIn("失败已跳过", prog["current"])
+        self.assertIn("继续后续批次", prog["current"])
+        self.assertIn("agent_run_failed", prog["reason"])
+        self.assertEqual(prog["chain_skipped"], ["a"])
+        # 随后 checkpoint 自驱动被投递（链继续）
+        self.assertEqual(len(executor.jobs), 1)
+
+
+class TestFailureLockRelease(unittest.TestCase):
+    """现场即弃的锁释放（selfheal 3.2）：失败收尾清理 worktree 目录并释放 spec 锁。"""
+
+    def _runner(self, proot, **kw):
+        runner = _FakeRunner(proot, **kw)
+        runner.worktree_manager = _FakeWM(enforce_lock=True)
+        return runner
+
+    def _orch(self, proot, runner, batch_size=1):
+        from core.code_fix import CodeFixOrchestrator
+
+        return CodeFixOrchestrator(
+            runner, proot,
+            config={"admin": {"code_review_fix": {"enabled": True, "batch_size": batch_size}}},
+            logger=None)
+
+    def test_regression_failed_twice_releases_lock_for_next_batch(self):
+        """回归两败批现场即弃：目录清理 + 锁释放，同链下一批 create 不被拒。"""
+        from core.code_fix import load_failed_batches
+        from core.code_review import read_items
+
+        proot = _make_project_root()
+        _write_items(proot, {
+            "a": _item("a", first_seen_at="2026-01-01T00:00:00Z"),
+            "b": _item("b", first_seen_at="2026-02-01T00:00:00Z"),
+        })
+        _write_verify_yaml(proot)
+        runner = self._runner(proot, regression_statuses=["failed", "failed"])
+        orch = self._orch(proot, runner)
+        orch.checkpoint()
+        wm = runner.worktree_manager
+        self.assertEqual(
+            len(wm.create_calls), 2,
+            "批 b 的 create MUST NOT 被批 a 残留的 code-review-fix 锁拒绝")
+        self.assertEqual(wm._active, set(), "两批失败收尾后锁集合必为空")
+        for path, success in wm.cleanup_calls:
+            self.assertFalse(success)
+            self.assertFalse(Path(path).exists(), "失败批 worktree 目录 MUST 被清理")
+        failed = load_failed_batches(proot)
+        self.assertEqual(len(failed), 2)
+        for rec in failed:
+            self.assertTrue(rec["branch"] and rec["tip_sha"] and rec["failed_at"])
+        self.assertEqual(read_items(proot)["a"]["status"], "open")
+
+    def test_merge_back_conflict_releases_lock_for_next_batch(self):
+        """合回冲突批现场即弃：目录清理 + 锁释放，同链下一批正常建树合回。"""
+        from core.code_fix import load_failed_batches
+        from core.code_review import read_items
+
+        proot = _make_project_root()
+        _write_items(proot, {
+            "a": _item("a", first_seen_at="2026-01-01T00:00:00Z"),
+            "b": _item("b", first_seen_at="2026-02-01T00:00:00Z"),
+        })
+        _write_verify_yaml(proot)
+        runner = self._runner(proot)
+        wm = runner.worktree_manager
+        real_merge = wm.merge_back
+
+        def conflict_once(wt_path):
+            if not wm.merge_calls:
+                import types as _t
+                wm.merge_calls.append(str(wt_path))
+                return _t.SimpleNamespace(success=False, error="conflict")
+            return real_merge(wt_path)
+
+        wm.merge_back = conflict_once
+        orch = self._orch(proot, runner)
+        orch.checkpoint()
+        self.assertEqual(len(wm.create_calls), 2, "批 b 建树 MUST NOT 被残留锁拒绝")
+        self.assertEqual(wm._active, set())
+        conflict_dirs = [p for p, s in wm.cleanup_calls if not s]
+        self.assertEqual(len(conflict_dirs), 1)
+        self.assertFalse(Path(conflict_dirs[0]).exists(), "冲突批 worktree MUST 被清理")
+        self.assertEqual(read_items(proot)["b"]["status"], "resolved")
+        self.assertEqual(load_failed_batches(proot)[0]["reason"], "merge_back_conflict")
+
+
+class TestRetryBudget(unittest.TestCase):
+    """失败档案自动重试预算（selfheal 3.3 / D3/D4）。"""
+
+    def _signals(self, proot, signal_type):
+        from core.admin_store import AdminStore
+
+        store = AdminStore(proot, logger=None)
+        return [r for r in store.read_all() if r.get("signal_type") == signal_type]
+
+    def test_first_record_fail_count_one_with_trace_fields(self):
+        from core.code_fix import load_failed_batches, record_failed_batch
+
+        proot = _make_project_root()
+        record_failed_batch(
+            proot, ["a", "b"], "/tmp/wt-x",
+            reason="regression_failed_twice",
+            branch="fenix/code-review-fix-x", tip_sha="abc1234")
+        recs = load_failed_batches(proot)
+        self.assertEqual(len(recs), 1)
+        self.assertEqual(recs[0]["fail_count"], 1)
+        self.assertEqual(recs[0]["reason"], "regression_failed_twice")
+        self.assertEqual(recs[0]["branch"], "fenix/code-review-fix-x")
+        self.assertEqual(recs[0]["tip_sha"], "abc1234")
+        self.assertTrue(recs[0]["failed_at"])
+        # 预算内入档：无告警、无 todo 人工项
+        self.assertEqual(self._signals(proot, "code_fix_retry_budget_exhausted"), [])
+        todo_path = proot / ".fenix" / "todo.md"
+        self.assertFalse(todo_path.exists())
+
+    def test_same_item_set_increments_without_duplicate(self):
+        from core.code_fix import load_failed_batches, record_failed_batch
+
+        proot = _make_project_root()
+        record_failed_batch(proot, ["a", "b"], "/tmp/wt-1",
+                            reason="regression_failed_twice", branch="br-1", tip_sha="s1")
+        record_failed_batch(proot, ["b", "a"], "/tmp/wt-2",
+                            reason="merge_back_conflict", branch="br-2", tip_sha="s2")
+        recs = load_failed_batches(proot)
+        self.assertEqual(len(recs), 1, "同条目集（集合相等，与顺序无关）MUST 复用记录")
+        self.assertEqual(recs[0]["fail_count"], 2)
+        self.assertEqual(recs[0]["reason"], "merge_back_conflict", "其余字段刷新")
+        self.assertEqual(recs[0]["branch"], "br-2")
+        self.assertEqual(recs[0]["tip_sha"], "s2")
+
+    def test_new_chain_releases_below_max_keeps_at_max(self):
+        from core.code_fix import (FAIL_RETRY_MAX, load_failed_batches,
+                                   record_failed_batch,
+                                   release_retryable_failed_batches)
+
+        proot = _make_project_root()
+        # 三条档案：fail_count 1 / 2 / 3（selfheal 混合预算场景）
+        record_failed_batch(proot, ["c1"], "/tmp/wt-a", reason="r")
+        record_failed_batch(proot, ["c2"], "/tmp/wt-b", reason="r")
+        record_failed_batch(proot, ["c2"], "/tmp/wt-b", reason="r")
+        for _ in range(FAIL_RETRY_MAX):
+            record_failed_batch(proot, ["c3"], "/tmp/wt-c", reason="r")
+        released = release_retryable_failed_batches(proot)
+        self.assertEqual(released, 2, "仅 fail_count<3 的两条被释放")
+        remaining = load_failed_batches(proot)
+        self.assertEqual(len(remaining), 1)
+        self.assertEqual(remaining[0]["fail_count"], FAIL_RETRY_MAX)
+        self.assertEqual(set(remaining[0]["item_ids"]), {"c3"})
+
+    def test_max_alert_exactly_once_then_never_again(self):
+        from core.code_fix import (FAIL_RETRY_MAX, record_failed_batch,
+                                   release_retryable_failed_batches)
+
+        proot = _make_project_root()
+        for i in range(FAIL_RETRY_MAX):
+            record_failed_batch(proot, ["x"], f"/tmp/wt-{i}",
+                                reason="regression_failed_twice",
+                                branch="br", tip_sha=f"sha-{i}")
+        alerts = self._signals(proot, "code_fix_retry_budget_exhausted")
+        self.assertEqual(len(alerts), 1, "递增至 FAIL_RETRY_MAX 的那次恰好一条告警")
+        self.assertIn("x", alerts[0]["evidence"])
+        # 再次入档（>MAX）与新链启动释放均不再发告警
+        record_failed_batch(proot, ["x"], "/tmp/wt-4", reason="r", branch="br", tip_sha="s")
+        release_retryable_failed_batches(proot)
+        self.assertEqual(len(self._signals(proot, "code_fix_retry_budget_exhausted")), 1,
+                         "达上限后 MUST NOT 重复告警")
+
+    def test_todo_entry_only_at_max_with_trace_fields(self):
+        from core.code_fix import FAIL_RETRY_MAX, record_failed_batch
+
+        proot = _make_project_root()
+        todo_path = proot / ".fenix" / "todo.md"
+        for i in range(FAIL_RETRY_MAX - 1):
+            record_failed_batch(proot, ["y"], f"/tmp/wt-{i}",
+                                reason="regression_failed_twice",
+                                branch="br-y", tip_sha=f"sha-{i}")
+            self.assertFalse(todo_path.exists(),
+                             "预算内入档 MUST NOT 产生 todo 人工项")
+        record_failed_batch(proot, ["y"], "/tmp/wt-final",
+                            reason="regression_failed_twice", branch="br-y", tip_sha="sha-final")
+        todo = todo_path.read_text(encoding="utf-8")
+        self.assertIn("br-y", todo)
+        self.assertIn("sha-final", todo)
+        self.assertIn("y", todo)
+        self.assertNotIn("/tmp/wt-final", todo, "现场即弃后 MUST NOT 引用 worktree 路径")
+        self.assertNotIn("保留 worktree", todo)
+        self.assertNotIn("车道不再自动重派", todo)
+
+
+class TestChainSkippedLifecycle(unittest.TestCase):
+    """链内跳过集生命周期（selfheal 3.4 / D3）。"""
+
+    def test_chain_skipped_not_in_archive_and_reselected_by_new_chain(self):
+        """agent run 失败条目：本链不再选批、不入档案；新链启动重置后重新可选。"""
+        from types import SimpleNamespace
+
+        from core.code_fix import (CodeFixOrchestrator, load_failed_batches,
+                                   read_progress)
+        from core.code_review import read_items
+
+        proot = _make_project_root()
+        _write_items(proot, {
+            "a": _item("a", first_seen_at="2026-01-01T00:00:00Z"),
+            "b": _item("b", first_seen_at="2026-02-01T00:00:00Z"),
+        })
+        _write_verify_yaml(proot)
+        runner = _FakeRunner(proot)
+
+        def failing_fix(worktree_root, items, run_id=None, failure_summary=""):
+            return SimpleNamespace(run_id="code-fix-x", success=False, fixed=0,
+                                   skipped=0, error="产物缺失", output="")
+
+        runner.run_code_fix = failing_fix
+        executor = _CapturingExecutor()
+        orch = CodeFixOrchestrator(
+            runner, proot,
+            config={"admin": {"code_review_fix": {"enabled": True, "batch_size": 1}}},
+            logger=None, executor=executor)
+        # 批 a：失败 → consumed（chain_skipped=[a]）→ 自驱动 checkpoint
+        orch.checkpoint()
+        executor.run_one()
+        self.assertEqual(read_progress(proot)["chain_skipped"], ["a"])
+        self.assertEqual(len(executor.jobs), 1, "consumed 后自驱动 checkpoint 已投递")
+        executor.run_one()  # checkpoint：选批排除 a → 批 b
+        # 批 b：失败 → chain_skipped=[a, b] → 自驱动 checkpoint → 选批为空收敛
+        executor.run_one()
+        self.assertEqual(read_progress(proot)["chain_skipped"], ["a", "b"])
+        executor.run_one()
+        self.assertEqual(executor.jobs, [], "可选池耗尽后链收敛，无新投递")
+        prog = read_progress(proot)
+        self.assertEqual(prog["phase"], "blocked")
+        self.assertIn("下轮自动重试", prog["current"])
+        self.assertEqual(load_failed_batches(proot), [],
+                         "瞬态失败 MUST NOT 写 fix-failed.json")
+        items = read_items(proot)
+        self.assertEqual(items["a"]["status"], "open")
+        self.assertEqual(items["b"]["status"], "open")
+        # 新链启动（下一轮激活）：chain_skipped 重置为空，条目重新可选
+        runner.run_code_fix = _FakeRunner(proot).run_code_fix.__get__(runner)
+        res = orch.checkpoint()
+        self.assertTrue(res["triggered"], "新链 MUST 重新组批被跳过条目")
+        prog = read_progress(proot)
+        self.assertEqual(prog["chain_skipped"], [], "新链启动 MUST 重置链内跳过集")
+        self.assertEqual(prog["batch_no"], 1, "新链批号重置")
+        self.assertEqual(len(executor.jobs), 1, "新链已投递批 worker")
+        executor.run_one()
+        items = read_items(proot)
+        self.assertEqual(items["a"]["status"], "resolved", "上链被跳过条目被重新消费")
+
+    def test_no_effective_fix_entries_skip_rest_of_chain(self):
+        """零有效修复条目：本链 select_batch 不再选中，随收敛终态下轮自动重试。"""
+        from core.code_fix import (CodeFixOrchestrator, load_failed_batches,
+                                   read_progress, select_batch)
+        from core.code_review import read_items
+
+        proot = _make_project_root()
+        _write_items(proot, {"a": _item("a"), "b": _item("b")})
+        _write_verify_yaml(proot)
+        runner = _FakeRunner(proot, fix_statuses=[["skipped", "skipped"]])
+        orch = CodeFixOrchestrator(runner, proot, config=_CFG_ON, logger=None)
+        orch.checkpoint()  # 单批全 skipped → no_effective_fix → consumed → 收敛
+        self.assertEqual(read_progress(proot)["chain_skipped"], ["a", "b"])
+        self.assertEqual(load_failed_batches(proot), [])
+        # 本链口径：排除 chain_skipped 后无可选条目
+        self.assertEqual(select_batch(proot, 10, exclude_ids=["a", "b"]), [])
+        self.assertEqual(read_items(proot)["a"]["status"], "open")
