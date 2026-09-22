@@ -4,7 +4,8 @@
 
 implementer 勾选完 tasks.md 全部任务后，到 merge 前还要过 6 道检查/门禁（实测占成功 run 时长 67%，打回循环可连续烧数小时），Dashboard 上除 `gate-blocked` 红点外完全不可见。既有可复用机制：
 
-- **verify-progress 范式**：验证引擎逐场景原子写 `.fenix/verify-progress/<spec>.json`，dashboard 只读解析 + fail-open；ocr 审查产物已落 `.fenix/verify-progress/<spec>/code-review.json`（同目录），run 结束时 runner 既有逻辑整体拷回主树（`core/agent_runner/runner.py` verify-progress 拷回段）。
+- **verify-progress 范式**：验证引擎逐场景原子写 `.fenix/verify-progress/<spec>.json`，dashboard 只读解析 + fail-open；ocr 审查产物落 `.fenix/verify-progress/<spec>/code-review.json`（同目录）。
+- **依赖前置（add-impl-ocr-parallel-lane）**：ocr 审查已由框架侧异步车道执行（merge-back 后与 tester 并行，testing 窗口内跑），车道产物 `.fenix/verify-progress/<spec>/code-review.json` 由框架写入并拷回主树（含 `status: running|completed|unavailable` 与 `(branch, base, head_commit)` 指纹）；实现者 run 不再内联跑 ocr。本 SPEC 的 ocr 门数据源因此**必须**是该车道产物，而非实现者落盘。本 SPEC MUST 在该车道合入后再激活。
 - **task-progress-phase-display**：列表进度条按后端单点判定的 `progress_phase` 换源换色（impl 蓝/verify 绿/出题青）。
 - **worktree 优先先例**：`core/dashboard/data/tasks.py` 在 implementing 态优先读 worktree 内 tasks.md（run 进行中即可见）。
 
@@ -27,18 +28,19 @@ implementer 勾选完 tasks.md 全部任务后，到 merge 前还要过 6 道检
 ## Decisions
 
 1. **落盘文件与 runner 零改动**：`quality-gates.json` 放 `.fenix/verify-progress/<spec>/` 目录（与 `code-review.json` 并列），随 runner 既有目录拷回机制落主树。备选「写 `.fenix-run-result.json` 新节」被否：结果文件是收工一次性写，无法渐进可见，且混入守卫刚性对账面。
-2. **渐进更新而非收工一次性写**：prompt 注入段要求每完成一项检查即重写该 JSON（全量重写小文件，无并发写者——implementer 单线程收尾）。这是用户核心诉求（ocr 一跑十几分钟，要看到「进行中」）。
+2. **渐进更新而非收工一次性写（诉求两半分承载）**：prompt 注入段要求每完成一项检查即重写该 JSON（全量重写小文件，无并发写者——implementer 单线程收尾），承载收尾自查 3 项的「进行中」。ocr 门的「进行中」诉求由 ocr 异步车道天然承载：车道跑起来即写产物（running→completed/unavailable），dashboard 读侧直接可见——用户核心诉求（ocr 一跑十几分钟，要看到「进行中」）不再依赖实现者代跑，而是看车道真跑。
 3. **守卫宽松对账（fail-open）**：`result_gate` 对 quality-gates.json 只做「存在则查格式」的合法性检查，违规仅 WARNING；缺失零拦截。理由：落盘是软约束，若设硬门则 implementer 漏写即打回重烧——正是本 spec 要治理的摩擦模式（impl-code-review-gate 键名契约缺口教训）。键名在 spec 中逐字固化。
-4. **框架 2 项由读侧合成、不落盘**：产物硬门的权威判定已在 run 终态（gate-blocked/success），交付物守卫的权威判定已在 STATE 状态——读侧从既有数据源推导，避免框架进程新增写者引入竞态。run 内 4 项以落盘为权威，两组不交叉覆盖。
+4. **框架 3 项由读侧合成、不落盘**：产物硬门的权威判定已在 run 终态（gate-blocked/success），交付物守卫的权威判定已在 STATE 状态，ocr 门的权威判定已在 ocr 车道产物（`code-review.json`：车道在飞→running、completed→passed（detail 附 findings 计数）、unavailable→skipped+reason，与车道 D4 降级语义一致）——三者读侧从既有数据源推导，避免框架进程新增写者引入竞态。run 内 3 项以落盘为权威，两组不交叉覆盖。
 5. **worktree 优先读取**：implementing 且 worktree 存在时优先读 worktree 内文件（复用 tasks.py 既有解析与先例），使 run 进行中即可见；run 结束后读主树拷回版本，时序无缝衔接。
-6. **`progress_phase` 扩展 gates 枚举**：判定单点留在 `spec_summary`（既有约定），条件 = implementing ∧ 任务全勾 ∧ 门禁可见 ∧ 未全了结；全了结回退 impl（不滞留满格橙条）。门禁数据完全不可见（exists=false）不进 gates 阶段，避免历史 spec 列表闪烁新颜色。
+6. **`progress_phase` 扩展 gates 枚举（窗口两支）**：判定单点留在 `spec_summary`（既有约定），条件 = (implementing ∧ 任务全勾 ∧ 门禁可见 ∧ 未全了结) ∨ (testing ∧ ocr 车道 running)。第二支覆盖 ocr 并行审查窗口：testing 态下 ocr 车道在飞时橙条延续呈现 ocr 进展，车道结束（completed/unavailable）回退 verify（绿）。第一支全了结回退 impl（不滞留满格橙条）。门禁数据完全不可见（exists=false）不进 gates 阶段，避免历史 spec 列表闪烁新颜色。
 7. **skipped 计入 done**：`total` 恒 6，`done = passed + skipped`（skipped 是「已了结」而非「未做」），进度条可走满。`unknown`/`pending`/`failed`/`running` 均不计入。
 8. **门禁专属配色**：橙 `#fa8c16` + 淡橙底轨（对齐 verify 绿 `#52c41a` + 淡绿底轨的做法），与 impl 蓝/verify 绿/出题青四色互斥。详情页 Card 内 `ProgressBarTile` 以参数化单色变体复用（现有控件渐变色写死，需加可选 `strokeColor` 参数）。
 9. **新数据层模块**：解析与合成函数放 `core/dashboard/data/quality_gates.py`（新文件），`__init__.py` 登记 re-export 与 D8 patch 缝；`summary.py` 仅消费。避免 spec_docs.py 继续膨胀。
 
 ## Risks / Trade-offs
 
-- [implementer 漏写/写坏 quality-gates.json → UI 缺数据] → fail-open 显示 unknown；prompt 注入含逐字 schema；守卫 WARNING 留观测痕迹。接受「偶尔缺数据」换「零新增打回」。
+- [implementer 漏写/写坏 quality-gates.json → UI 缺数据] → fail-open 显示 unknown；prompt 注入含逐字 schema；守卫 WARNING 留观测痕迹。接受「偶尔缺数据」换「零新增打回」。ocr 门不受此风险影响（数据源是框架车道产物，非实现者落盘）。
+- [ocr 车道产物尚未落盘（车道未启动/刚启动）→ ocr 门 pending] → 与其余 pending 项同语义；gates 阶段第二支仅在车道产物可见 running 时触发，无产物不误判。
 - [键名漂移复发（同义改写 gate-id/status）] → spec 逐字固化键名 + 前端按未知 gate-id 容错渲染（不崩、显示原始 id）。
 - [worktree 路径推导在 resume/重建场景失效] → 复用 tasks.py 既有解析；解析失败静默回退主树版本，最坏退化为「run 结束后才可见」。
 - [gates 阶段误判（重试轮、fast-track 瞬时连转）] → 判定条件纯机械且单点函数化，边界 Scenario 全覆盖（未全勾/全了结/exists=false/fast-track）。
