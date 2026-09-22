@@ -9,6 +9,8 @@
   kind: modify
 - path: core/agent_runner/runner.py
   kind: modify
+- path: core/regression.py
+  kind: modify
 - path: .fenix/config.template.yaml
   kind: modify
 - path: core/dashboard/data/quality_gates.py
@@ -29,15 +31,15 @@
 
 ## 2. 拒模型快速 failover
 
-- [ ] 2.1 unrecognized_model 错误识别（stderr `[claude-code:unrecognized_model]` 或等价结构化类别）：命中即记 WARNING（provider/model/run_id）并沿该 agent 类型模型链原地切换下一可用模型继续当前 run，不整轮重派、不递增 transient/同因重派计数
-- [ ] 2.2 链尾模型仍被拒时按既有失败路径收场且归因含全链模型不可用语义；5xx/超时/黑洞等其余 provider 错误处理路径行为不变（回归断言固化）
-- [ ] 2.3 `.fenix/config.template.yaml` 各 agent 类型默认链删除 `maomaoai + deepseek-v4.1-flash` 组合条目（全部出现处），摘除后各链剩余条目 ≥3
-- [ ] 2.4 新增 `docs/help/13-model-chain-ops.md` 并在 `docs/help/README.md` 完整目录表登记（#13 一行）：摘除理由（12 次拒模型实测）、恢复条件、运行时 `.fenix/config.yaml` 的人工同步修改步骤（人工步骤仅入文档，不改运行时配置）
-- [ ] 2.5 单测（落 `tests/test_impl_selfcheck_model_probe.py`）覆盖：首选拒立即切链不重派、全链拒收场归因、其余错误路径回归不变、模板链无该条目
+- [ ] 2.1 unrecognized_model 错误识别（stderr `[claude-code:unrecognized_model]` 或等价结构化类别；复用既有 `classify_switch_error`/候选链前进/switch 冷却机制，MUST NOT 新建平行切换路径）：命中即记 WARNING（provider/model/run_id）并沿该 agent 类型模型链原地切换下一可用模型继续当前 run，不整轮重派、不递增 transient/同因重派计数
+- [ ] 2.2 链尾模型仍被拒时按既有失败路径收场且归因含全链模型不可用语义，派发器 MUST NOT 对该归因走同因重派（阻断「冷却复位→再撞」循环）；5xx/超时/黑洞等其余 provider 错误处理路径行为不变（回归断言固化）
+- [ ] 2.3 `.fenix/config.template.yaml` 链卫生（评审实核：模板本无活动模型链定义，链在运行时 `.fenix/config.yaml`）：断言模板不含 `maomaoai + deepseek-v4.1-flash` 组合条目（单测固化），并在模板 models 注释示例处加一行拒模型警示注释（模板唯一实际改动）；运行时各链摘除该条目与「摘除后各链剩余条目 ≥3」核对项写入运维文档人工步骤
+- [ ] 2.4 新增 `docs/help/13-model-chain-ops.md` 并在 `docs/help/README.md` 完整目录表登记（#13 一行）：摘除理由（12 次拒模型实测）、恢复条件、运行时 `.fenix/config.yaml` 的人工同步修改步骤、及「在 `.fenix/todo.md` 登记提醒」的指示（人工步骤仅入文档，实现轮不改运行时配置与 todo.md——implementer 车道无主树写授权）
+- [ ] 2.5 单测（落 `tests/test_impl_selfcheck_model_probe.py`）覆盖：首选拒立即切链不重派、全链拒收场归因且不同因重派、其余错误路径回归不变、模板无该组合条目且含警示注释
 
 ## 3. 回归双跑合并
 
 - [ ] 3.1 prompt_builder 收尾段全量回归措辞改为降级路径（「全量回归由验证链执行；仅当确认框架侧回归产物不可用时才在 run 内执行并落盘」），frontend-build / interaction-contract 两项自查要求不变
-- [ ] 3.2 读侧 quality-gates 合成的 full-suite 门数据源优先级：框架侧回归产物（带分支指纹校验，指纹陈旧按不可见）> quality-gates.json run 内自查值 > pending；任一来源异常 fail-open 逐级回落，键名全集与状态枚举零变化
+- [ ] 3.2 框架侧回归产物指纹 stamp + 读侧优先级：`core/regression.py` 写快照（`write_result`）时 stamp `(branch, merge_base, head_commit)` 指纹字段（现有 `last-run.json` 快照无分支字段，评审实核）；读侧 quality-gates 合成的 full-suite 门数据源优先级：框架侧回归产物（带分支指纹校验，指纹陈旧或存量快照无指纹字段按不可见）> quality-gates.json run 内自查值 > pending；任一来源异常 fail-open 逐级回落，键名全集与状态枚举零变化
 - [ ] 3.3 断言固化：result_gate / 交付物守卫不因 full-suite 项缺失或 pending 新增任何打回/失败终态（回归测试覆盖）
-- [ ] 3.4 单测（落 `tests/test_impl_selfcheck_model_probe.py`）覆盖：框架侧产物优先（结论不一致取产物）、指纹陈旧回退自查值、双源皆无 pending、缺项零打回
+- [ ] 3.4 单测（落 `tests/test_impl_selfcheck_model_probe.py`）覆盖：框架侧产物优先（结论不一致取产物）、指纹陈旧与存量无指纹字段回退自查值、双源皆无 pending、缺项零打回、写侧 stamp 字段落盘

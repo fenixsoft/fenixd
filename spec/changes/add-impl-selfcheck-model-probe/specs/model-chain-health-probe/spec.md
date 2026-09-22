@@ -23,16 +23,16 @@ provider 返回 `unrecognized_model` 类错误（stderr 出现 `[claude-code:unr
 - **WHEN** provider 返回 5xx 过载或连接超时（非 unrecognized_model）
 - **THEN** 处理路径与未引入本能力前完全一致（transient 延迟重派等既有语义）
 
-### Requirement: 模板默认链摘除无效模型条目
+### Requirement: 链卫生（模板确认 + 运行时人工摘除）
 
-`.fenix/config.template.yaml`（入库模板）中各 agent 类型的默认模型链 MUST 删除 `provider: maomaoai, model: deepseek-v4.1-flash` 条目（全部出现处）。删除理由与恢复条件 MUST 写入运维文档；运行时 `.fenix/config.yaml` 的同步修改为人工运维步骤，MUST 登记到 `.fenix/todo.md` 提醒（不作为 tasks.md 门禁任务）。摘除后模板各链剩余条目数 ≥3，链尾 failover 语义不受影响。
+`.fenix/config.template.yaml`（入库模板）MUST NOT 含 `provider: maomaoai, model: deepseek-v4.1-flash` 组合条目，并在 models 注释示例处含拒模型警示注释（评审实核：模板本就不含任何活动模型链定义，链仅存在于运行时 `.fenix/config.yaml`——模板侧交付为确认 + 警示注释）。摘除理由与恢复条件 MUST 写入运维文档；运行时 `.fenix/config.yaml` 各 agent 链摘除该条目（摘除后各链剩余条目数 ≥3，链尾 failover 语义不受影响）为人工运维步骤，运维文档 MUST 含修改步骤及「在 `.fenix/todo.md` 登记提醒」的指示（人工步骤仅入文档：实现轮 MUST NOT 直接改主树运行时配置或 todo.md——implementer 车道无主树写授权，且 Agent 在 worktree 内改不到生效副本）。
 
-#### Scenario: 模板链不再含拒模型条目
+#### Scenario: 模板不含拒模型条目且含警示
 
-- **WHEN** 检查入库模板 `.fenix/config.template.yaml` 全部 agent 类型默认链
-- **THEN** 无任何 `maomaoai + deepseek-v4.1-flash` 组合条目；implementer/planner/verifier 等链各自仍有 ≥3 个备选模型
+- **WHEN** 检查入库模板 `.fenix/config.template.yaml` 全文
+- **THEN** 无任何 `maomaoai + deepseek-v4.1-flash` 组合条目，models 注释示例处含拒模型警示注释（模板不含活动链定义，运行时链的 ≥3 备选核对项记录于运维文档）
 
-#### Scenario: 人工步骤已登记
+#### Scenario: 人工步骤已文档化
 
-- **WHEN** 查阅运维文档与 `.fenix/todo.md`
-- **THEN** 文档含摘除理由、恢复条件与运行时配置修改步骤；todo.md 存在对 `.fenix/config.yaml` 同步摘除的人工提醒条目
+- **WHEN** 查阅运维文档 `docs/help/13-model-chain-ops.md`（及 README 索引）
+- **THEN** 文档含摘除理由、恢复条件、运行时配置修改步骤，以及「在 `.fenix/todo.md` 登记提醒」的人工指示（todo.md 条目本身由人工登记，不作为实现轮验收项）

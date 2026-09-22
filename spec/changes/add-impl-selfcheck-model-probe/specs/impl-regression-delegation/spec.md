@@ -6,7 +6,7 @@
 
 ### Requirement: implementer 收尾自查的回归降级路径
 
-implementer 收尾检查注入段（`prompt_builder.py`）对全量回归的措辞 MUST 从「必跑并落盘」改为「全量回归由验证链执行；仅当确认框架侧回归产物不可用时才在 run 内执行并落盘」。frontend-build 与 interaction-contract 两项自查要求 MUST 保持现状不变。框架侧（result_gate、交付物守卫等）MUST NOT 因 quality-gates.json 的 `full-suite` 项缺失或为 pending 而新增任何打回/失败终态（沿用 quality-gates 既有 fail-open 语义）。
+implementer 收尾检查注入段（`prompt_builder.py`）对全量回归的措辞 MUST 从「必跑并落盘」改为「全量回归由验证链执行；仅当确认框架侧回归产物不可用时才在 run 内执行并落盘」。frontend-build 与 interaction-contract 两项自查要求 MUST 保持现状不变。框架侧（result_gate、交付物守卫等）MUST NOT 因 quality-gates.json 的 `full-suite` 项缺失或为 pending 而新增任何打回/失败终态（沿用 quality-gates 既有 fail-open 语义）。本条隐含修订 add-quality-gates-visibility「quality-gates.json 落盘契约」的「收尾 MUST 写入 3 项」条款：自本 SPEC 起 `full-suite` 键仅在 run 内实际执行回归（降级路径）时写入，未执行时不写该键（读侧按 pending 呈现）；gate-id 全集、status 枚举与其余两键的落盘契约不变。
 
 #### Scenario: 不跑回归可正常收工
 
