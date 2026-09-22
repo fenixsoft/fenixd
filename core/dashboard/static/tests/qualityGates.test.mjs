@@ -61,11 +61,19 @@ test('failed 无 detail 时辅助文案为空串（不渲染占位）', () => {
   assert.equal(gateDetailText(gi('failed')), '');
 });
 
-test('pending/unknown 灰色；passed 无着色；passed/running 不渲染归因', () => {
+test('pending/unknown 灰色；passed 无着色；passed detail 透传为辅助文案', () => {
   assert.equal(gateTextColor(gi('pending')), '#999');
   assert.equal(gateTextColor(gi('unknown')), '#999');
   assert.equal(gateTextColor(gi('passed')), undefined);
-  assert.equal(gateDetailText(gi('passed', { detail: '审查完成：发现 2 条、处置 2 条' })), '');
+  assert.equal(
+    gateDetailText(gi('passed', { detail: '审查完成：发现 2 条、处置 2 条' })),
+    '审查完成：发现 2 条、处置 2 条',
+  );
+  assert.equal(gateDetailText(gi('passed', { detail: '通过 214，失败 0' })), '通过 214，失败 0');
+});
+
+test('running 不渲染 detail（状态由「进行中」后缀承载，detail 为同义文案）', () => {
+  assert.equal(gateDetailText(gi('running', { detail: 'ocr 并行审查进行中' })), '');
 });
 
 // ── 4.3：状态后缀标识 ────────────────────────────────────────────────
@@ -141,7 +149,7 @@ test('ocr 在飞：合成 running → 「进行中」标识，不计入完成度
   assert.equal(gateChecked(item), false);
 });
 
-test('ocr completed：合成 passed → 勾选+删除线，detail（发现/处置计数）不作归因渲染', () => {
+test('ocr completed：合成 passed → 勾选+删除线，发现/处置计数透传为辅助文案', () => {
   const item = {
     id: 'code-review',
     desc: 'ocr 代码审查与处置',
@@ -150,7 +158,7 @@ test('ocr completed：合成 passed → 勾选+删除线，detail（发现/处�
   };
   assert.equal(gateChecked(item), true);
   assert.equal(gateStrikeThrough(item), true);
-  assert.equal(gateDetailText(item), '');
+  assert.equal(gateDetailText(item), '审查完成：发现 2 条、处置 2 条');
 });
 
 test('ocr unavailable：合成 skipped → 勾选+「不适用」，计入完成度（已了结而非未做）', () => {

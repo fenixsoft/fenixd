@@ -59,6 +59,6 @@
 
 ## 6. 构建、回归与真实数据冒烟
 
-- [ ] 6.1 worktree 内 `npm run build` 构建通过（dist 不提交，merge 后由框架重建）；`npm test` 全绿
-- [ ] 6.2 pytest 后端相关文件全绿（`tests/test_quality_gates_progress.py`、`tests/test_dashboard_data.py`、`tests/test_dashboard_mode.py`）
-- [ ] 6.3 worktree 内以独立端口起 daemon + fixture 项目（伪造 quality-gates.json 各状态样本、ocr 车道产物 running/completed/unavailable 样本与 gate-blocked 归因），playwright 截图冒烟：详情页 Card 六状态渲染、进度条从零走、列表 gates 橙条两窗口（implementing 收尾窗 + testing ocr 窗）与辅助文案（截图入 `.history`，不提交）
+- [x] 6.1 worktree 内 `npm run build` 构建通过（dist 不提交，merge 后由框架重建）；`npm test` 全绿
+- [x] 6.2 pytest 后端相关文件全绿（`tests/test_quality_gates_progress.py`、`tests/test_dashboard_data.py`、`tests/test_dashboard_mode.py`）
+- [x] 6.3 worktree 内以独立端口起 daemon + fixture 项目（伪造 quality-gates.json 各状态样本、ocr 车道产物 running/completed/unavailable 样本与 gate-blocked 归因），playwright 截图冒烟：详情页 Card 六状态渲染、进度条从零走、列表 gates 橙条两窗口（implementing 收尾窗 + testing ocr 窗）与辅助文案（截图入 `.history`，不提交）

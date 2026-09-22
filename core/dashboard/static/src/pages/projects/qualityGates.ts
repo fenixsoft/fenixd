@@ -71,11 +71,11 @@ export function gateSuffix(item: GateItem): string {
   return '';
 }
 
-// 归因辅助文案：failed 取 detail（产物硬门截断归因原文），unknown 取 detail；
-// 其余状态不渲染
+// 辅助文案：detail 透传（failed 归因原文 / passed 通过失败计数 / skipped 不适用
+// reason）；running 不渲染——其状态由「进行中」后缀承载，detail 为同义文案
 export function gateDetailText(item: GateItem): string {
-  if (item.status === 'failed' || item.status === 'unknown') return item.detail || '';
-  return '';
+  if (item.status === 'running') return '';
+  return item.detail || '';
 }
 
 // Card 渲染条件（任务 4.2）：drafted/ready 且无门禁文件 → 不渲染本 Card；
