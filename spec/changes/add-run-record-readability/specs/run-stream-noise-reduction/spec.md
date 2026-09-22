@@ -2,7 +2,9 @@
 
 ### Requirement: 心跳类事件静默渲染
 
-系统 SHALL 在 run 事件转聊天气泡时静默丢弃以下事件类型，使其不产生任何可见行：`tool_progress`、`background_tasks_changed`、`commands_changed`、`run_metrics`、`init`、非错误 `stderr`（`line` 不含错误标识）、`hook_started`、`hook_response`。
+系统 SHALL 在 run 事件转聊天气泡时静默丢弃以下事件类型，使其不产生任何可见行：`tool_progress`、`background_tasks_changed`、`commands_changed`、`run_metrics`、`init`、`status`、`task_updated`、`timeout_extension`、非错误 `stderr`（`line` 不含错误标识）、`hook_started`、`hook_response`。
+
+事件类型判定 SHALL 基于 kind 归一化：顶层 `type` 非 `system` 时取 `type`，`type` 为 `system` 时取 `subtype`（SDK 侧结构化事件实测均为 `type:"system", subtype:<名>` 形态，如 `system/init`、`system/status`、`system/task_started`；按顶层 `type` 直配会使本条与语义化名单整体失效）。
 
 被静默的事件 MUST NOT 打断连续工具的分组判定（等效于不可见分隔符）。
 
@@ -24,8 +26,8 @@
 
 - `provider_marker` → 模型路由条：`模型路由 <model> @ <provider>（第 <chain_index+1>/共 <chain_len> 棒）`
 - `transient_retry` → 告警条：含 `reason`、`backoff_seconds`、`retry_number`、`error` 摘要
-- `compact_boundary` → 压缩条：含 `compact_metadata.trigger`、`pre_tokens`、`post_tokens`
-- `vcs_state_changed`（`kind=commit`）→ 提交条：含短哈希与分支名
+- `compact_boundary` → 压缩条：含 `compact_metadata.trigger`、`compact_metadata.pre_tokens`、`compact_metadata.post_tokens`（实测载荷整体嵌套于 `compact_metadata` 内）
+- `vcs_state_changed`（`kind=commit`）→ 提交条：含分支名（实测载荷仅 `kind`/`branch`/`cwd`，无哈希字段时不渲染哈希；写侧未来补哈希字段时可附短哈希）
 
 载荷缺失时 MUST 优雅降级为仅类型中文名（如「模型路由」），MUST NOT 渲染 `[label]` 裸行或空行。
 

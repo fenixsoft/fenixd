@@ -5,7 +5,7 @@
 ## What Changes
 
 - **心跳行降噪与语义化（P0）**：`runEvents.ts` 对结构化事件分类处理，替代当前「无字符串 content 一律落 `[label]` 裸行」的兜底：
-  - 静默丢弃：`tool_progress`（30 秒一条存活心跳）、`background_tasks_changed`、`commands_changed`、`run_metrics`、`init`、非错误 `stderr`。
+  - 静默丢弃：`tool_progress`（30 秒一条存活心跳）、`background_tasks_changed`、`commands_changed`、`run_metrics`、`init`、`status`、`task_updated`、`timeout_extension`、非错误 `stderr`（判定口径与完整名单见 design D1 的 kind 归一化分类表）。
   - 渲染为一行有信息的系统条：`provider_marker` → 模型路由信息（model@provider + chain 位置）；`transient_retry` → 瞬断告警（原因 + 退避 + 重试序号）；`compact_boundary` → 上下文压缩（pre→post tokens）；`vcs_state_changed(commit)` → 提交摘要。
   - `task_started` / `task_notification` 不再渲染独立行，凭共享 `tool_use_id` 回填到对应 Task 工具卡片（描述/状态/summary）。
   - 被静默的事件不再打断连续同名工具分组（`rendersNothing` 语义扩展）。

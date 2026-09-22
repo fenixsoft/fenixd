@@ -28,21 +28,23 @@
 所有降噪/语义化/回填判定都在 `runEventsToChatMessages` 内完成，产出 `ChatMessage` 时把「静默」表达为不产出条目、把「回填」表达为修改既有条目字段，替代当前 `runEvents.ts:218-224` 的 `[label]` 兜底。
 理由：四个消费入口共用该函数；写侧零改动。备选「后端过滤事件」被否——会破坏 SSE 增量与归档产物的一致性，且丢信息不可逆。
 
+**kind 归一化（判定前置约定，2026-09-22 评审实测补）**：fenixd 自有事件为顶层 `type` 形态（`tool_progress`/`provider_marker`/`transient_retry`/`superseded`/`turn_extension`/`timeout_extension`/`stderr`/`error` 等），SDK 侧结构化事件实测全部为 `type:"system"` + `subtype` 形态（归档 run `impl-add-impl-ocr-parallel-lane-1790053998-a1`：`system/init`、`system/status`、`system/task_started`、`system/task_notification`、`system/task_updated`、`system/hook_started`、`system/hook_response`、`system/background_tasks_changed`、`system/commands_changed`、`system/compact_boundary`、`system/vcs_state_changed`）。分类判定 MUST 先做 kind 归一化——`type !== "system"` 取 `type`，`type === "system"` 取 `subtype`——再查本表；fail-open 占位条同样显示归一化 kind（否则 system 形态统一落「系统事件（system）」，整张名单失效）。
+
 **事件分类表**（唯一权威口径，实现与单测对齐此表）：
 
-| 类型 | 判定 | 处理 |
+| kind | 判定 | 处理 |
 |---|---|---|
-| `tool_progress` | 无条件 | 静默；但按 `parent_tool_use_id` 记录 `max(elapsed_time_seconds)` 供耗时标注 |
-| `background_tasks_changed` / `commands_changed` / `run_metrics` / `init` | 无条件 | 静默 |
+| `tool_progress` | 无条件 | 静默；但按 `parent_tool_use_id` 记录 `max(elapsed_time_seconds)` 供耗时标注（实测载荷含 `tool_use_id`/`tool_name`/`parent_tool_use_id`/`elapsed_time_seconds`） |
+| `background_tasks_changed` / `commands_changed` / `run_metrics` / `init` / `status` / `task_updated` | 无条件 | 静默（`status` 即量化点名的 `[status]`×21 零信息心跳本体；`task_updated` 实测载荷为 `task_id`+`patch`、无 `tool_use_id` 无法回填，信息被 `task_notification` 覆盖） |
 | `stderr` | `line` 含错误关键词（`error`、`Error`、`Traceback`、`failed`、`FATAL`、`refused`，大小写敏感词表固化在常量） | 命中→系统行；未命中→静默 |
 | `hook_started` / `hook_response` | 无条件 | 静默 |
 | `provider_marker` | 无条件 | 系统条：`模型路由 <model> @ <provider>（第 i/共 n 棒）`；字段缺失降级为「模型路由」 |
-| `transient_retry` | 无条件 | 错误样式系统条：`网关瞬断（<reason>），<backoff_seconds>s 后第 <retry_number> 次重试：<error 摘要 80 字>` |
-| `compact_boundary` | 无条件 | 系统条：`上下文压缩（<trigger>）：<pre_tokens> → <post_tokens> tokens` |
-| `vcs_state_changed` | `kind=commit` | 系统条：`提交 <short_hash> @ <branch>`；其他 kind 静默 |
-| `task_started` / `task_notification` | `tool_use_id` 能匹配已产出工具条目 | 回填该条目（started→`taskDescription`；notification→`taskStatus`/`taskSummary`），不产出行 |
+| `transient_retry` | 无条件 | 错误样式系统条：`网关瞬断（<reason>），<backoff_seconds>s 后第 <retry_number> 次重试：<error 摘要 80 字>`（部分发射点如 `runner.py:2614` 缺 `reason`/`error` 字段，按总则降级） |
+| `compact_boundary` | 无条件 | 系统条：`上下文压缩（<trigger>）：<pre_tokens> → <post_tokens> tokens`（实测载荷嵌套于 `compact_metadata`，取 `compact_metadata.trigger/pre_tokens/post_tokens`） |
+| `vcs_state_changed` | `kind=commit` | 系统条：`提交 @ <branch>`；实测载荷仅 `kind`/`branch`/`cwd`、无哈希字段，故不渲染短哈希（写侧未来补哈希字段时可附显示）。其他 kind 静默 |
+| `task_started` / `task_notification` | `tool_use_id` 能匹配已产出工具条目 | 回填该条目（started→`taskDescription`；notification→`taskStatus`/`taskSummary`），不产出行（实测载荷含 `task_id`+`tool_use_id`+`description`/`status`/`summary`，以 `tool_use_id` 为匹配键） |
 | `task_started` / `task_notification` | 无匹配 | 系统条兜底（含 description/summary 摘要） |
-| `superseded` / `turn_extension` | 无条件 | 静默（轮转/续期是框架内部心跳） |
+| `superseded` / `turn_extension` / `timeout_extension` | 无条件 | 静默（轮转/续期是框架内部心跳，`timeout_extension` 与 `turn_extension` 同族）；`liveness_shortcut` 不入名单、走 fail-open 占位条（守卫触发低频且值得可见） |
 
 现有 `session_ended` / `error` / `interrupted` / `cancelled` 分支保持不变（既有测试锚定）。
 
@@ -61,7 +63,7 @@
 
 - 时长：thinking 所在 assistant 事件的 `timestamp` 与**流中下一个 assistant 事件**的 `timestamp` 差（秒，四舍五入，负值/缺失回退「已思考数秒」）。注：assistant/user 事件带 ISO timestamp（SDK 注入），system 类事件不带——只用 assistant 事件间差。
 - 预览：thinking 文本首个非空行截断 ~40 字符。
-- 开关：`ClaudeOutputPane` 内部 state + 头部 Switch，默认**关闭**（现状默认开启，属行为变更，理由：量化数据显示 thinking 占 14-19% 且恒为折叠态，开启只贡献「已思考数秒」噪声行并打断工具聚合）。无正文兜底在 `runEventsToChatMessages` 内实现：全流无非空 text 块时忽略 `showThinking=false`。原 `showThinking` prop 保留，四个消费方无需改动。
+- 开关：`ClaudeOutputPane` 内部 state + 头部 Switch，默认**关闭**（现状默认开启，属行为变更，理由：量化数据显示 thinking 占 14-19% 且恒为折叠态，开启只贡献「已思考数秒」噪声行并打断工具聚合）。无正文兜底在 `runEventsToChatMessages` 内实现：全流无非空 text 块时忽略 `showThinking=false`。为此 `runEventsToChatMessages` 新增可选参数 `showThinking`（默认 `true`）——既有直调方 `SessionPanel.tsx:332` 不传参，行为不变；`ClaudeOutputPane` 把开关 state 同时传入该函数与既有 `ClaudeMessageList` 渲染层 prop。原 `showThinking` prop 保留，四个消费方无需改动。
 - `Reasoning.tsx` 折叠头文案改为「已思考 N 秒 · <预览>」；流式「思考中…」不变。
 
 ### D5 向前分页：后端加窗口参数，前端「加载更早」
@@ -69,10 +71,11 @@
 - 后端 `get_run_events(project_root, run_id, tail=300, offset_from_end=0)`：返回 `events[len-tail-offset : len-offset]`（负索引安全钳制），既有字段（`status`/`total_events`/`error`）语义不变；`offset_from_end=0` 时行为与现状完全一致。路由 `run_routes.py` 透传 query 参数。
 - 前端 `ClaudeOutputPane`：头部计数「显示尾部 N / 共 M 条事件」（N=已加载条数，M=`total_events`）+「加载更早事件」按钮，点击以 `offset_from_end=当前长度` 重拉并**前置拼接**（SSE 增量只追加尾部，互不冲突）；`已加载 ≥ total_events` 时按钮禁用。历史 SSE `reset` 分支语义不变。
 - 批大小沿用 tail 默认 300。
+- live run 竞态对界：客户端计算 `offset_from_end` 与后端切片读取之间，活跃 run 可能又追加了 G 条 → 实际窗口整体后移 G 条（尾部与已加载内容重叠、头部漏 G 条）。前置拼接前 MUST 按重叠段去重（与已加载最早事件对界）；头部缺口接受近似——live run 边界少看 G 条、下一次翻页照常推进，归档 run（评审主场景）无追加、窗口精确。不为对界引入事件唯一 ID 或写侧改动（Non-Goals）。
 
 ## Risks / Trade-offs
 
-- [静默误伤：未来新增事件类型被当成心跳吞掉] → 分类表显式枚举静默名单，未命中名单的结构化事件仍走「系统条」渲染（fail-open 显示而非 fail-close 吞掉）；名单外事件渲染为「系统事件（<type>）」占位条。
+- [静默误伤：未来新增事件类型被当成心跳吞掉] → 分类表显式枚举静默名单，未命中名单的结构化事件仍走「系统条」渲染（fail-open 显示而非 fail-close 吞掉）；名单外事件渲染为「系统事件（<kind>）」占位条（kind 为归一化名）。
 - [耗时估算不准（心跳间隔 30s，粒度粗）] → 标注为约数即可（用途是「一眼分辨长命令」）；无心跳不显示，不造数。
 - [thinking 时长把 API 等待也算进「思考」] → 文案用「已思考 N 秒」而非「耗时 N 秒」，接受近似；仅作导航信号。
 - [offset 窗口边界行截断语义] → `get_run_events` 全量解析后按事件序号切片（非字节偏移），无半行问题；`read_run_events_between`（SSE 增量）不动。
