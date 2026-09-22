@@ -44,6 +44,24 @@ SWITCH_ERROR_TEXT_PATTERNS = (
     r"unrecognized model",
     r"model.*not.*found",
 )
+# ── 拒模型快速 failover（add-impl-selfcheck-model-probe 2.1）───────────────
+# unrecognized_model 是 provider **明确返回**的确定性模型失败（非瞬态网关故障）：
+# 同一 (provider, model) 再试必然再拒。既有 add-provider-failover 已把它纳入
+# SWITCH_ERROR_TEXT_PATTERNS 驱动链前进，但既有 transient 判定（通道 1 全量
+# stderr 匹配 switch patterns）同时让它落入瞬断通道——原地退避重试同一拒模型 +
+# 记全局瞬断指纹，均为纯浪费（2026-09 实测 22 个 impl run 秒死、同因重派每
+# 2-5 分钟一个）。本组常量把 unrecognized_model 从瞬态中**收窄**出来：识别命中
+# 即记 WARNING 并沿链原地切换下一可用模型，不进原地重试、不递增 transient
+# 熔断/同因重派计数。
+UNRECOGNIZED_MODEL_TEXT_PATTERNS = (
+    r"unrecognized_model",
+    r"unrecognized model",
+)
+# 全链模型不可用语义标记（add-impl-selfcheck-model-probe 2.2）：链尾模型仍被拒
+# 时注入失败归因，派发器读侧据此**跳过同因重派**（阻断「switch 冷却到期复位 →
+# 重派再撞同一拒模型链」的 2-5 分钟循环）。摘除拒模型条目为人工运维步骤
+# （docs/help/13-model-chain-ops.md）。
+MODEL_CHAIN_UNAVAILABLE_MARKER = "[model-chain-unavailable]"
 # 连接类异常关键字（网络错误 / DNS / 超时 / 连接拒绝）——属瞬态，驱动链前进
 SWITCH_ERROR_CONN_PATTERNS = (
     r"connection.*(refused|reset|error|timeout)",
@@ -81,6 +99,28 @@ TRANSIENT_BREAK_ATTEMPT_LIST_LIMIT = 20
 SIGNAL_KILL_COOLDOWN_AFTER = 3  # 同 spec 信号死法连续达此数 → 冷却
 SIGNAL_KILL_COOLDOWN_SECONDS = 600  # 冷却时长（秒，与瞬断冷却同量级）
 SIGNAL_KILL_ALERT_THROTTLE_MINUTES = 15  # major 告警节流（分钟）
+
+
+def annotate_model_chain_unavailable(error_text: str, provider_name, model,
+                                     rejected_count: int) -> str:
+    """链尾模型仍被拒时给失败归因注入「全链模型不可用」语义（2.2）。
+
+    幂等：归因已含 ``MODEL_CHAIN_UNAVAILABLE_MARKER`` 时原样返回（同一链尾
+    反复撞拒不叠加标注）。派发器读侧（queue / fast_track）以标记子串识别该
+    归因并跳过同因重派——这是阻断「冷却复位 → 再撞」循环的关键；标记后的
+    归因仍走既有失败路径收场（终态记录/告警/keep-for-reuse 不变）。
+    """
+    if error_text and MODEL_CHAIN_UNAVAILABLE_MARKER in error_text:
+        return error_text
+    detail = (
+        f"全链模型不可用：provider {provider_name!r} 拒绝模型 {model!r}"
+        f"（unrecognized_model，链尾无更多候选；本 run 已有 {rejected_count} 个"
+        f"链上候选被拒）——同因重派必然再撞同一拒模型链，摘除拒模型条目为"
+        f"人工运维步骤（docs/help/13-model-chain-ops.md）"
+    )
+    if error_text:
+        return f"{MODEL_CHAIN_UNAVAILABLE_MARKER} {detail} ｜ {error_text}"
+    return f"{MODEL_CHAIN_UNAVAILABLE_MARKER} {detail}"
 
 
 class TransientAttempt:
@@ -201,7 +241,17 @@ class ProviderCircuit:
         if not error_text:
             return False
         text = error_text
-        # 1) HTTP 5xx（5xx 属瞬态网关故障，驱动切换；5xx 的 code 解析不出也算失败但会被
+        # 1) unrecognized_model 文本（add-impl-selfcheck-model-probe 2.1：判定
+        #    MUST 先于 4xx code 解析——拒模型几乎总伴随 404 形态，先走 code
+        #    解析会命中「4xx 不切换」提前返回，链永远不前进，正是设计要修的
+        #    「误入熔断计数且不切链」盲区。拒模型是确定性失败：唯一正确处置
+        #    就是切下一链候选；今日真实故障：inferaiapi/aliyun 各自拒绝
+        #    deepseek 变体）。命中即与 classify_unrecognized_model_error 同判
+        #    （后者是本判定的真子集）。
+        for pat in SWITCH_ERROR_TEXT_PATTERNS:
+            if re.search(pat, text, re.IGNORECASE):
+                return True
+        # 2) HTTP 5xx（5xx 属瞬态网关故障，驱动切换；5xx 的 code 解析不出也算失败但会被
         #    下方连接/文本兜底覆盖）。先排除明确 4xx（解析出的 4xx 不触发切换）。
         code = ProviderCircuit.parse_api_error_status(text)
         if code is not None:
@@ -209,15 +259,50 @@ class ProviderCircuit:
                 return False  # 4xx 配额/鉴权：交既有熔断，不切换
             if 500 <= code <= 599:
                 return True  # 5xx：切换
-        # 2) unrecognized_model 文本（今日真实故障：inferaiapi/aliyun 各自拒绝 deepseek 变体）
-        for pat in SWITCH_ERROR_TEXT_PATTERNS:
-            if re.search(pat, text, re.IGNORECASE):
-                return True
         # 3) 连接类异常（网络错误 / DNS / 超时 / 连接拒绝）——瞬态，切换
         for pat in SWITCH_ERROR_CONN_PATTERNS:
             if re.search(pat, text, re.IGNORECASE):
                 return True
         return False
+
+    @staticmethod
+    def classify_unrecognized_model_error(error_text: str) -> bool:
+        """判断错误文本是否属于「拒模型」确定性失败（add-impl-selfcheck-model-probe 2.1）。
+
+        仅严格匹配 unrecognized_model 结构化类别（stderr
+        ``[claude-code:unrecognized_model]`` 或等价文本形态）。5xx / 超时 /
+        连接类 / 4xx 配额鉴权等其余错误 MUST NOT 命中（处理路径行为不变，
+        回归断言固化）——本判定是 ``classify_switch_error`` 的**真子集**，
+        独立存在的原因是拒模型要按确定性失败收窄处理（不进瞬断通道，
+        见 UNRECOGNIZED_MODEL_TEXT_PATTERNS 注释）。
+
+        Args:
+            error_text: claude CLI 打到 stderr / 被 runner 转成 str 的错误文本。
+        """
+        if not error_text:
+            return False
+        for pat in UNRECOGNIZED_MODEL_TEXT_PATTERNS:
+            if re.search(pat, error_text, re.IGNORECASE):
+                return True
+        return False
+
+    def record_unrecognized_model(self, provider_name, model, run_id,
+                                  spec_name: str = "") -> None:
+        """拒模型识别命中即记 WARNING（add-impl-selfcheck-model-probe 2.1 ①）。
+
+        含 provider / model / run_id（设计 D3 ①），供链摘除决策：同一
+        (provider, model) 反复出现本告警即应人工摘除该链条目
+        （docs/help/13-model-chain-ops.md）。仅告警留痕，不改变任何计数。
+        """
+        self._pm.logger.warning(
+            "agent_runner",
+            f"Unrecognized model rejected by provider "
+            f"(add-impl-selfcheck-model-probe) — provider={provider_name!r} "
+            f"model={model!r} run_id={run_id!r} spec={spec_name!r}: "
+            f"deterministic model failure, advancing chain without "
+            f"transient/same-cause counting; consider removing this chain entry "
+            f"(see docs/help/13-model-chain-ops.md)",
+        )
 
     @staticmethod
     def classify_transient_error(stderr_lines: list, exit_code: int, has_result: bool) -> bool:

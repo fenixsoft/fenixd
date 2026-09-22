@@ -236,7 +236,10 @@ class TestCircuitHalfOpenRecovery:
         monkeypatch.setattr(runner, "_now", lambda: probe_time)
 
         def fake_run_claude(*a, **k):
-            raise RuntimeError("claude CLI failed: HTTP 404 unrecognized_model")
+            # add-impl-selfcheck-model-probe（2.1）：unrecognized_model 现为独立
+            # 判定类（确定性拒模型 → 切链，不入 4xx 熔断计数），本测试验证的是
+            # 半开探针仍 4xx → 重新冷却，夹具须用纯 404（不含 unrecognized_model）。
+            raise RuntimeError("claude CLI failed: HTTP 404 model_not_found")
 
         patch_runner_for_exec(runner, tmp_path, claude_side_effect=fake_run_claude)
         monkeypatch.setattr("time.sleep", lambda _s: None)  # 吞掉 attempt 间退避

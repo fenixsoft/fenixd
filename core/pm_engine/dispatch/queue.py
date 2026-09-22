@@ -28,6 +28,7 @@ from core.state_machine import (
     start_after_blocks_promotion,
     start_after_pending,
 )
+from core.agent_runner.provider_circuit import MODEL_CHAIN_UNAVAILABLE_MARKER
 
 
 class QQQueueMixin:
@@ -1522,6 +1523,23 @@ class QQQueueMixin:
                             },
                         )
                         self._schedule_transient_recovery(spec_name)
+                    elif final_error and MODEL_CHAIN_UNAVAILABLE_MARKER in final_error:
+                        # add-impl-selfcheck-model-probe（2.2）：链尾拒模型 →
+                        # 全链模型不可用终态。同因重派必然撞同一拒模型链（确定性
+                        # 失败，非瞬态），不排程、不增 retry、不翻转状态机；spec
+                        # 原状保持，error 落盘供 dashboard/admin 可见。摘除拒模型
+                        # 条目后恢复属人工运维（docs/help/13-model-chain-ops.md）。
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"Model chain unavailable for '{spec_name}' — holding "
+                            f"state, no redispatch/retry/state flip: {final_error}",
+                        )
+                        self._pm.state_machine.update_spec(
+                            spec_name,
+                            {
+                                "error": final_error,
+                            },
+                        )
                     else:
                         # Retry or mark error
                         spec_entry = self._pm.state_machine.read_one(spec_name)
