@@ -20,7 +20,7 @@ merge-back 成功且 tester 派发时，框架 MUST 在同一时点启动一次 
 
 ### Requirement: ocr 车道绑定 (branch, base, head_commit) 指纹且独立硬超时
 
-ocr 审查 MUST 绑定 `(branch, merge_base, head_commit)` 三元组指纹并写入产物；车道 MUST 受 `verify.impl_code_review_timeout_sec`（缺省 2400s）硬超时约束。超时、非零退出、provider 不可达、非 git 仓库等失败形态 MUST 降级为 `status: "unavailable"` + 非空 `reason`，MUST NOT 阻塞 spec 推进。
+ocr 审查 MUST 绑定 `(branch, merge_base, head_commit)` 三元组指纹并写入产物；车道 MUST 受 `verify.impl_code_review_lane_timeout_sec`（新键，缺省 2400s；与既有 LLM 单请求超时键 `impl_code_review_timeout_sec` 缺省 600s 按键分离）硬超时约束。超时、非零退出、provider 不可达、非 git 仓库等失败形态 MUST 降级为 `status: "unavailable"` + 非空 `reason`，MUST NOT 阻塞 spec 推进。
 
 #### Scenario: 指纹不匹配的报告按 stale 处理
 - **WHEN** join 判据读到一份 code-review 产物，其指纹与当前 spec 的 `(branch, merge_base, head_commit)` 不一致（如修复轮后 head 前移）

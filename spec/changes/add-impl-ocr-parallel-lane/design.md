@@ -31,7 +31,7 @@
 
 ### D2：join 于 testing 出口，打回复用 BUG_FOUND 通道
 
-`testing → verified` 的门禁自动路径增加 ocr 完成判据（产物在 + status 白名单 + 指纹新鲜）。tester 先完成 → spec 停 testing 等 ocr 完成事件唤醒（文件信号/既有唤醒机制），tester_run 单飞语义不变。gate 档下发现非 rejected findings → `testing → bug_found`（reason=ocr findings）→ implementing 修复轮——与验证失败的既有打回同通道，零新状态。ocr 修复轮计数器 `_ocr_fix_rounds` 持久化于 spec entry，上限 1：第二轮仍出的 findings 全部转台账 deferred，join 放行（防死循环，`fenix-token-waste-incident` 教训）。
+`testing → verified` 的门禁自动路径增加 ocr 完成判据（产物在 + status 白名单 + 指纹新鲜）。tester 先完成 → spec 停 testing 等 ocr 完成事件唤醒（文件信号/既有唤醒机制），tester_run 单飞语义不变。gate 档下发现非 rejected findings → `testing → bug_found`（reason=ocr findings）→ implementing 修复轮——与验证失败的既有打回同通道，零新状态。ocr 修复轮计数器 `_ocr_fix_rounds` 持久化于 spec entry，上限 1：第二轮仍出的 findings 全部转台账（status=open、spec_name 归属本 spec；业务语义＝deferred；台账条目词表仅 open/resolved/ignored，无 deferred 状态——core/code_review.py:314,383），join 放行（防死循环，`fenix-token-waste-incident` 教训）。车道独立硬超时用**新键** `impl_code_review_lane_timeout_sec`（缺省 2400s），与既有 `impl_code_review_timeout_sec`（LLM 单请求超时、缺省 600s、被 `_write_run_ocr_config` 消费）按键分离——一种粒度一个键。
 
 ### D3：gate | advisory 双档，缺省 gate
 
@@ -41,6 +41,7 @@
 
 - 产物 `completed` 但 `(branch, merge_base, head_commit)` 指纹不新鲜 → **不得采信、不得放行**（fail-closed，陈旧报告洗白防线，先例：陈旧 dist verified 治理）；处置 = 车道按当前指纹重跑。
 - 车道超时/非零退出/环境不可用 → `unavailable` + 非空 reason → join 放行 + WARNING 审计（fail-open，与现行「环境不可用降级照常收工」语义一致——质量审查缺位不阻塞交付，但必须留痕）。
+- 产物缺失或车道未运行（如 daemon 重启恢复后 tester 经 `testing → implemented` 重派 verifier 路径再派，无「merge-back 成功」事件可触发车道）→ join 判据必须幂等触发 `run_impl_ocr`（在跑单飞去重），MUST NOT 无限停等而车道从未启动。
 
 ### D5：实现者/fdt 内联段摘除与修复轮 findings 段
 

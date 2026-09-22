@@ -4,7 +4,7 @@
 
 ### Requirement: testing 出口 join 裁决
 
-`testing → verified` 的门禁自动路径 MUST 增加 ocr 车道完成判据：产物存在、`status` 在白名单（`completed`/`unavailable`）、指纹新鲜。tester 先完成而 ocr 未完成时，spec MUST 停留 testing（tester_run 单飞语义保持，不得重派 tester），由 ocr 车道完成事件唤醒 join 评估。ocr 车道 MUST NOT 单独阻塞在无唤醒的停等态。
+`testing → verified` 的门禁自动路径 MUST 增加 ocr 车道完成判据：产物存在、`status` 在白名单（`completed`/`unavailable`）、指纹新鲜。tester 先完成而 ocr 未完成时，spec MUST 停留 testing（tester_run 单飞语义保持，不得重派 tester），由 ocr 车道完成事件唤醒 join 评估。ocr 车道 MUST NOT 单独阻塞在无唤醒的停等态。产物缺失或车道未运行时（如 daemon 重启恢复后 tester 经重派路径再派、无 merge-back 事件），join 判据 MUST 幂等触发车道（在跑单飞去重），MUST NOT 无限停等而车道从未启动。
 
 #### Scenario: tester 先完成时停等 ocr
 - **WHEN** tester run 产物判定通过，但 ocr 车道仍在执行
@@ -16,7 +16,7 @@
 
 ### Requirement: gate 档打回走既有 bug_found 通道且有轮次上限
 
-`verify.impl_code_review_mode: gate`（缺省）时，join 读到 `completed` 且存在非 rejected findings：首次 MUST 经 `testing → bug_found`（reason 注明 ocr findings）→ `implementing` 重派实现者修复，修复轮提示词 MUST 注入 findings 清单与 disposition 处置契约（fixed/rejected/deferred + 非空 reason），修码后重验（定向测试+全量回归）。ocr 修复轮 MUST 有上限 1 次（计数器持久化于 spec entry）；达上限后仍出现的 findings MUST 一律转台账（deferred，附 reason）且 join 放行。
+`verify.impl_code_review_mode: gate`（缺省）时，join 读到 `completed` 且存在非 rejected findings：首次 MUST 经 `testing → bug_found`（reason 注明 ocr findings）→ `implementing` 重派实现者修复，修复轮提示词 MUST 注入 findings 清单与 disposition 处置契约（fixed/rejected/deferred + 非空 reason），修码后重验（定向测试+全量回归）。ocr 修复轮 MUST 有上限 1 次（计数器持久化于 spec entry）；达上限后仍出现的 findings MUST 一律转台账（`items.jsonl`，status=open——台账词表仅 open/resolved/ignored、无 deferred 状态，spec_name 归属本 spec、finding 附处置 reason）且 join 放行。
 
 #### Scenario: gate 档首次发现可修正问题走打回
 - **WHEN** gate 档 join 发现 ocr 产物含非 rejected findings，且该 spec 的 `_ocr_fix_rounds` 计数为 0

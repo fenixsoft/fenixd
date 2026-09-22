@@ -14,8 +14,8 @@
 
 - **实现者收工不再等 ocr**：删除/替换实现者与 fast-track 提示词中的内联收尾审查段（`_impl_code_review_section`）——实现者完成全部任务并提交后直接收工，`code_review` 段与 `dispositions` 不再是其收工义务；产物硬门同步摘除该项校验。
 - **新增框架侧 ocr 异步车道**：`maintenance_runs` 形态的 `run_impl_ocr`（对齐 `run_code_review`/`run_regression`），在 merge-back 成功、tester 派发时点启动，与测试验证**并行**执行；ocr 审查范围绑定 `(branch, merge_base, head_commit)` 指纹；run 级 provider 注入复用 `_write_run_ocr_config` 同源机制（框架驱动，不占 agent turn、不占 spec 预算）。
-- **join 裁决于 testing 出口**：`testing → verified` 门槛增加 ocr 车道完成判据（报告存在 + 指纹新鲜）——tester 先完成时 spec 停在 testing 等 ocr 完成事件唤醒推进；ocr 车道独立硬超时（`impl_code_review_timeout_sec`，缺省 2400s），**超时/失败降级 `unavailable` 不阻塞 spec**（与现行「环境不可用降级」语义一致）。
-- **gate 双档模式**：新增 `verify.impl_code_review_mode: gate | advisory`（缺省 `gate`）。gate 档：join 时存在需修正 findings → 走既有 `testing → bug_found → implementing` 打回通道，实现者修复轮以 ocr findings 为修复义务，修复后重验（定向测试+全量回归）；**ocr 修复轮上限 1 次**（计数器持久化于 spec entry），第二轮仍出的 findings 一律转台账（deferred）。advisory 档：findings 全部入 code-review 台账（`items.jsonl`，喂给 code-fix 自动修复车道），join 永不打回。
+- **join 裁决于 testing 出口**：`testing → verified` 门槛增加 ocr 车道完成判据（报告存在 + 指纹新鲜）——tester 先完成时 spec 停在 testing 等 ocr 完成事件唤醒推进；ocr 车道独立硬超时（**新键 `impl_code_review_lane_timeout_sec`**，缺省 2400s；MUST NOT 复用既有 `impl_code_review_timeout_sec`——该键语义是 ocr LLM **单请求**超时、缺省 600s，正被 run 级 provider 注入 `_write_run_ocr_config`（core/agent_runner/runner.py:1361）消费，两种粒度的超时不得共用一键），**超时/失败降级 `unavailable` 不阻塞 spec**（与现行「环境不可用降级」语义一致）。
+- **gate 双档模式**：新增 `verify.impl_code_review_mode: gate | advisory`（缺省 `gate`）。gate 档：join 时存在需修正 findings → 走既有 `testing → bug_found → implementing` 打回通道，实现者修复轮以 ocr findings 为修复义务，修复后重验（定向测试+全量回归）；**ocr 修复轮上限 1 次**（计数器持久化于 spec entry），第二轮仍出的 findings 一律转 code-review 台账（status=open、spec_name 归属本 spec；业务语义＝deferred、不再阻塞 join；台账条目词表仅 open/resolved/ignored，无 deferred 状态）。advisory 档：findings 全部入 code-review 台账（`items.jsonl`，喂给 code-fix 自动修复车道），join 永不打回。
 - **findings 评估义务机械化**：join 裁决只做机械分类（有无非 rejected findings）；「真实问题 vs 误报」的驳回裁量归修复轮实现者（提示词注入 findings 清单与处置契约，复用现行 disposition 语义）。
 - **配置读取器与设置页**：`ConfigLoader.get_impl_code_review_mode` 单点读取器；设置页「验证」面板新增模式选择（gate/advisory）——新配置键必须带 Dashboard 界面。
 - **顺手项**：`impl_code_review_concurrency` 缺省 2→4；恢复续做轮 ocr 增量审查——已审过 commit 范围记入 worktree 侧游标文件，重跑只审游标之后的增量 commit。
@@ -33,13 +33,13 @@
 
 ## Impact
 
-- **配置契约**：`.fenix/config.yaml` 新增可选 `verify.impl_code_review_mode`（缺省 gate，旧配置零迁移）；`impl_code_review_concurrency` 缺省值 2→4（显式配置不受影响）。
+- **配置契约**：`.fenix/config.yaml` 新增可选 `verify.impl_code_review_mode`（缺省 gate，旧配置零迁移）与 `verify.impl_code_review_lane_timeout_sec`（缺省 2400，旧配置零迁移）；`impl_code_review_concurrency` 缺省值 2→4（显式配置不受影响，但 `.fenix/config.template.yaml` 的显式示例值 2 必须同步改 4，否则模板派生配置恒为显式 2、调整失效）。
 - **代码**：
   - `core/agent_runner/prompt_builder.py`（内联段摘除 + 修复轮 findings 段注入）
   - `core/agent_runner/result_gate.py`(实现者门摘除 ocr 校验；join 判据辅助函数)
   - `core/agent_runner/maintenance_runs.py`（`run_impl_ocr` 执行函数）
   - `core/agent_runner/runner.py`（ocr 车道启动钩子、provider 注入复用、产物拷回）
-  - `core/pm_engine/dispatch/queue.py`（tester 派发时点启动车道、testing 出口 join、唤醒接线）
+  - `core/pm_engine/dispatch/queue.py`（tester 派发时点启动车道、testing 出口 join、唤醒接线；fast-track 车道同 treatment——在其 merge-back 成功时点同点启动、于其验证出口以同判据 join）
   - `core/config.py`（mode 读取器 + concurrency 缺省调整）
   - `core/dashboard/data/config_admin.py` + `core/dashboard/static/src/pages/settings/components/VerifyPanel.tsx` + `core/dashboard/static/src/services/dashboard.ts`（mode 键受管读写回显与设置页 UI）
 - **风险**：gate 档修复轮引入「修码后重验」成本（定向测试+全量回归，实测回归 275s，可接受）；join 停等期间 spec 占用 testing 态（tester_run 单飞不受影响）；ocr 上游行为变化只影响车道内部，指纹机制保证 stale 报告不被采信。
