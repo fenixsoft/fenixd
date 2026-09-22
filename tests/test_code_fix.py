@@ -989,6 +989,136 @@ class TestOverrideEnabled(unittest.TestCase):
                          "开关关闭（未授权）MUST NOT 写进度")
 
 
+class TestManualAuthorizationChain(unittest.TestCase):
+    """手动授权语义 = 授权**整条链**跑完，而非一批（2026-09-22 事故修复）。
+
+    事故：enabled=false 下手动触发投出批 1，批 1 合回成功后 `_resubmit` 的
+    checkpoint（不带 override）命中 disabled 守卫**静默早退**（不写进度）
+    → fix-progress.json 永久冻结在 running=true/phase=merging，前端永远
+    显示「合回主树中」。设计本意：手动授权覆盖整条链直至 open 条目清零。
+
+    契约：
+    - 授权旗标 ``manual_authorized`` 持久化在 fix-progress.json，随链身份
+      传播（batch 间的 phase 改写不得丢失）；仅当链 live（running=true）
+      时生效——收尾链的旗标不外溢到新链；
+    - 终态（idle / blocked / failed）清除旗标；
+    - live 链撞 disabled 守卫（开关被中途关闭）MUST 落终态进度，不得静默
+      冻结在 running=true。
+    """
+
+    def test_manual_chain_runs_to_completion_while_disabled(self):
+        """核心回归锁：enabled=false + 手动授权 → 链自驱动跑完全部 open 条目。"""
+        from core.code_fix import CodeFixOrchestrator, read_progress
+        from core.code_review import read_items
+
+        proot = _make_project_root()
+        _write_items(proot, {
+            "a": _item("a", first_seen_at="2026-01-01T00:00:00Z"),
+            "b": _item("b", first_seen_at="2026-02-01T00:00:00Z"),
+            "c": _item("c", first_seen_at="2026-03-01T00:00:00Z"),
+        })
+        _write_verify_yaml(proot)
+        runner = _FakeRunner(proot)
+        orch = CodeFixOrchestrator(
+            runner, proot,
+            config={"admin": {"code_review_fix": {"enabled": False, "batch_size": 2}}},
+            logger=None)
+        res = orch.checkpoint(override_enabled=True)  # 同步模式：链内自驱动推进
+        self.assertEqual(res, {"triggered": True, "reason": "dispatched"})
+        self.assertEqual(len(runner.fix_calls), 2,
+                         "3 条 batch_size=2 → 手动授权 MUST 自驱动跑满 2 批（非一批即停）")
+        items = read_items(proot)
+        self.assertTrue(all(r["status"] == "resolved" for r in items.values()),
+                        f"全部核销: {[(k, v['status']) for k, v in items.items()]}")
+        prog = read_progress(proot)
+        self.assertEqual(prog["done"], 3)
+        self.assertFalse(prog["running"], "链收尾（无 open 条目）MUST 落终态")
+        self.assertFalse(prog.get("manual_authorized", True),
+                         "链收尾 MUST 清除授权旗标")
+
+    def test_manual_chain_stops_at_failed_batch_and_clears_flag(self):
+        """链内批两次回归失败 → 链终止（现状语义不变），授权旗标一并清除。"""
+        from core.code_fix import CodeFixOrchestrator, read_progress
+
+        proot = _make_project_root()
+        _write_items(proot, {"a": _item("a"), "b": _item("b")})
+        _write_verify_yaml(proot)
+        runner = _FakeRunner(proot, regression_statuses=["failed", "failed"])
+        orch = CodeFixOrchestrator(
+            runner, proot,
+            config={"admin": {"code_review_fix": {"enabled": False}}},
+            logger=None)
+        res = orch.checkpoint(override_enabled=True)
+        self.assertEqual(res, {"triggered": True, "reason": "dispatched"})
+        self.assertEqual(len(runner.fix_calls), 2, "首次回归失败后重试一次（现状）")
+        prog = read_progress(proot)
+        self.assertEqual(prog["phase"], "failed")
+        self.assertIn("regression_failed_twice", prog["reason"])
+        self.assertFalse(prog.get("manual_authorized", True),
+                         "链终止 MUST 清除授权旗标")
+
+    def test_manual_authorization_not_carried_to_new_chain(self):
+        """收尾链的授权旗标不外溢：新增 open 条目后无授权 checkpoint → disabled。"""
+        from core.code_fix import CodeFixOrchestrator, read_progress
+
+        proot = _make_project_root()
+        _write_items(proot, {
+            "a": _item("a", first_seen_at="2026-01-01T00:00:00Z"),
+            "b": _item("b", first_seen_at="2026-02-01T00:00:00Z"),
+        })
+        _write_verify_yaml(proot)
+        runner = _FakeRunner(proot)
+        orch = CodeFixOrchestrator(
+            runner, proot,
+            config={"admin": {"code_review_fix": {"enabled": False, "batch_size": 2}}},
+            logger=None)
+        orch.checkpoint(override_enabled=True)  # 链跑完（a、b 全 resolved）
+        self.assertEqual(len(runner.fix_calls), 1)
+        # 链收尾后新进一条 open 条目；不传 override 的后台激活 MUST NOT 被旧旗标放行
+        _write_items(proot, {
+            "a": _item("a", status="resolved", first_seen_at="2026-01-01T00:00:00Z"),
+            "b": _item("b", status="resolved", first_seen_at="2026-02-01T00:00:00Z"),
+            "d": _item("d", first_seen_at="2026-04-01T00:00:00Z"),
+        })
+        res = orch.checkpoint()
+        self.assertEqual(res, {"triggered": False, "reason": "disabled"})
+        self.assertEqual(len(runner.fix_calls), 1,
+                         "收尾链的授权 MUST NOT 外溢到新链")
+        self.assertFalse(read_progress(proot).get("manual_authorized", True))
+
+    def test_disabled_mid_chain_lands_terminal_progress(self):
+        """事故缺陷面二：live 链撞 disabled 守卫 MUST 落终态进度（不静默冻结）。"""
+        from core.code_fix import CodeFixOrchestrator, read_progress
+
+        class _CapturingExecutor:
+            def __init__(self):
+                self.jobs = []
+
+            def submit(self, fn, *args, **kwargs):
+                self.jobs.append((fn, args, kwargs))
+
+        proot = _make_project_root()
+        _write_items(proot, {"a": _item("a")})
+        _write_verify_yaml(proot)
+        runner = _FakeRunner(proot)
+        executor = _CapturingExecutor()
+        cfg = {"admin": {"code_review_fix": {"enabled": True}}}
+        orch = CodeFixOrchestrator(runner, proot, config=cfg,
+                                   logger=None, executor=executor)
+        self.assertTrue(orch.checkpoint()["triggered"])
+        self.assertTrue(read_progress(proot)["running"], "链已在盘上 live")
+        # 模拟开关被中途关闭（config 字典原地翻转）
+        cfg["admin"]["code_review_fix"]["enabled"] = False
+        res = orch.checkpoint()
+        self.assertEqual(res, {"triggered": False, "reason": "disabled"})
+        prog = read_progress(proot)
+        self.assertFalse(prog["running"],
+                         "live 链撞 disabled MUST 落终态，不得冻结在 running=true")
+        self.assertEqual(prog["phase"], "blocked")
+        self.assertEqual(prog["reason"], "disabled")
+        self.assertEqual(len(executor.jobs), 1, "disabled 后 MUST NOT 再投递")
+
+
 class TestConcurrentCheckpoint(unittest.TestCase):
     def test_two_concurrent_checkpoints_dispatch_once(self):
         """两路并发到同一 checkpoint → 至多一次投递（单飞锁）。"""
@@ -1479,19 +1609,19 @@ class TestCodeReviewFixConfigAdmin(unittest.TestCase):
         self.assertIn("code_review_fix", _SYNC_PAGE_KEYS["quality"].get("admin", []))
 
     def test_default_echo(self):
-        from unittest import mock
+        from unittest.mock import patch
 
         from core.dashboard.data import read_config, read_effective_config
 
         proot = _make_project_root()
-        # 用户级 config.yaml 随部署环境漂移（本机真实部署已显式配置
-        # code_review_fix.enabled=true）——patch 双常量锁定缺省回显：
-        # 门面 USER_CONFIG_PATH（dashboard 读侧）+ core.config.USER_CONFIG_DIR
-        # （resolve_config 合并读侧），与 test_fenix_tui_reports 同款。
-        with mock.patch("core.dashboard.data.USER_CONFIG_PATH",
-                        proot / "user-config-absent.yaml"), \
-             mock.patch("core.config.USER_CONFIG_DIR",
-                        proot / ".user-fenix-absent"):
+        # 用户级配置隔离（patch USER_CONFIG_DIR，仓库既定模式，对齐
+        # test_fenix_tui_reports 双 patch）：本测试断言「任何作用域都未配置」
+        # 的缺省回显，而总开关（admin.code_review_fix）落地后用户级
+        # ~/.fenix/config.yaml 常开——不隔离则缺省断言随宿主环境漂移
+        # （用户级配置敏感测试类，daily_self_review/billing 空表同源）。
+        with patch("core.config.USER_CONFIG_DIR", proot / ".user-none"), \
+             patch("core.dashboard.data.USER_CONFIG_PATH",
+                   proot / ".user-none" / "config.yaml"):
             rc = read_config(proot)
             self.assertEqual(rc["code_review_fix"], {"enabled": False, "batch_size": 20})
             self.assertEqual(rc["sources"]["admin.code_review_fix"], "user")
