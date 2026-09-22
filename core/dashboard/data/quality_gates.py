@@ -155,16 +155,23 @@ def _lane_fingerprint_ok(product: dict, expected) -> bool:
     - 产物缺 branch/head_commit（未绑定指纹的产物）→ 不采信（车道契约保证
       指纹在场，缺失即形态异常）；
     - 指纹与当前不符（修复轮 head 前移等）→ 不采信 stale 报告。
+
+    指纹字段形态兼容（add-timeline-ocr-lane-visibility 修复轮）：真实车道
+    产物（run_impl_ocr 写侧）把指纹嵌套在 ``fingerprint`` 子对象，历史
+    手工/测试产物平铺在顶层——嵌套形态此前被误判「未绑定指纹」恒不采信，
+    completed 产物永远回落 pending，翻转回落语义在真实产物下不可达。
     """
     if not isinstance(expected, dict):
         return True
-    p_branch = str(product.get("branch") or "").strip()
-    p_head = str(product.get("head_commit") or "").strip()
+    fp = product.get("fingerprint")
+    src = fp if isinstance(fp, dict) else product
+    p_branch = str(src.get("branch") or "").strip()
+    p_head = str(src.get("head_commit") or "").strip()
     if not p_branch or not p_head:
         return False
     if p_branch != expected.get("branch") or p_head != expected.get("head_commit"):
         return False
-    p_mb = str(product.get("merge_base") or "").strip()
+    p_mb = str(src.get("merge_base") or "").strip()
     if expected.get("merge_base") and p_mb and p_mb != expected["merge_base"]:
         return False
     return True
@@ -220,6 +227,24 @@ def _run_gate_status(raw, gid: str, source_ok: bool = True) -> tuple:
         # 契约：skipped MUST 附非空 reason；缺 reason 按 unknown 容错
         return ("unknown", "")
     return (status, detail)
+
+
+def _ocr_lane_inflight(runs: list) -> bool:
+    """ocr 车道在飞判据（add-timeline-ocr-lane-visibility 任务 1.3）。
+
+    runs（get_runs 产物）中存在 run_id 前缀 ``impl-ocr-`` 且无终态事件的
+    run 即在飞：车道 jsonl 启动写 ``start``、收尾写 ``result``/``error``，
+    无终态即 in-flight——与既有 no-terminal→running 判定同约定（读侧合成
+    status 为 running/empty；stale 是 mtime 兜底的断尾弃置，非真实在飞，
+    不计）。runs 缺省（None）不判在飞（fail-open 落回产物状态）。
+    """
+    for r in runs or []:
+        if not isinstance(r, dict):
+            continue
+        rid = str(r.get("run_id") or "")
+        if rid.startswith("impl-ocr-") and r.get("status") in ("running", "empty"):
+            return True
+    return False
 
 
 # 框架侧回归产物（.fenix/regression/last-run.json）status → 门状态映射
@@ -289,13 +314,19 @@ def _full_suite_status(project_root, raw, source_ok: bool = True) -> tuple:
     return _run_gate_status(raw, "full-suite", source_ok=source_ok)
 
 
-def _code_review_status(project_root, spec_name, spec_status: str, entry: dict) -> tuple:
+def _code_review_status(
+    project_root, spec_name, spec_status: str, entry: dict, runs: list | None = None
+) -> tuple:
     """ocr 门：按 ocr 异步车道产物三态合成（与车道降级不阻塞语义一致）。
 
-    在飞/产物 running → running；completed → passed（detail 附 findings 与
-    处置计数摘要）；unavailable → skipped（detail 附 reason，计入 done——已了结
-    而非未做）；产物不可见（含损坏/指纹陈旧）→ pending。
+    车道在飞（活跃 impl-ocr run 无终态事件）/产物 running → running；
+    completed → passed（detail 附 findings 与处置计数摘要）；unavailable →
+    skipped（detail 附 reason，计入 done——已了结而非未做）；产物不可见
+    （含损坏/指纹陈旧）→ pending。在飞判据优先于磁盘产物状态（重审轮
+    head 前移后上一轮产物指纹陈旧，本就不可采信）。
     """
+    if _ocr_lane_inflight(runs):
+        return ("running", "ocr 并行审查进行中")
     product = _load_lane_product(project_root, spec_name, spec_status, entry)
     if product is None:
         return ("pending", "")
@@ -426,7 +457,9 @@ def parse_quality_gates(project_root, spec_name: str, entry=None, runs=None) -> 
                 status, detail = _run_gate_status(
                     file_gates.get(gid), gid, source_ok=parsed)
         elif gid == "code-review":
-            status, detail = _code_review_status(project_root, spec_name, spec_status, entry)
+            status, detail = _code_review_status(
+                project_root, spec_name, spec_status, entry, runs
+            )
         elif gid == "result-artifact-gate":
             status, detail = _result_artifact_gate_status(entry, runs, project_root)
         else:

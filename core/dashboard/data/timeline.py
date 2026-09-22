@@ -153,7 +153,40 @@ def _admin_events_for_spec(project_root, spec_name: str) -> list:
     return nodes
 
 
-def get_spec_timeline(project_root, spec_name: str, created: str = "") -> list:
+def _ocr_lane_summary(project_root, run_id: str) -> str:
+    """ocr 车道 run 转录 start 事件的 message（审查对象摘要，车道可见性 1.1）。
+
+    start 是车道 jsonl 首事件（maintenance_runs._write_impl_ocr_run_events：
+    ``ocr 车道启动: <branch> <from8>..<to8>``），头扫前 20 行命中即停（与
+    _first_run_event_ts 同模式——run 通用尾读口 _read_run_lines 读不到头部）。
+    转录缺失/无 start/message 为空返回 ""（调用方静默省字段，不报错）。
+    """
+    try:
+        import core.dashboard.data as _facade
+
+        path = _facade._resolve_run_file(project_root, run_id)
+        with path.open("rb") as f:
+            for _ in range(20):
+                raw = f.readline()
+                if not raw:
+                    break
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    ev = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if isinstance(ev, dict) and ev.get("type") == "start":
+                    return str(ev.get("message") or "").strip()
+    except OSError:
+        pass
+    return ""
+
+
+def get_spec_timeline(
+    project_root, spec_name: str, created: str = "", entry: "dict | None" = None
+) -> list:
     """构建 SPEC 生命周期时间轴（按时间排序）。
 
     数据源：
@@ -167,6 +200,11 @@ def get_spec_timeline(project_root, spec_name: str, created: str = "") -> list:
     每条:
     - 状态: {time, kind:"state", from, to, reason}  （回退节点带 reason）
     - 运行: {time, kind:"run", run_id, agent_type, status}
+
+    可选 ``entry``（STATE 条目，调用方 spec_detail 透传）：提供时最新的
+    「→ testing」状态节点附 ``ocr_gate: {status, detail}``——ocr 门当前状态，
+    经 quality_gates.parse_quality_gates 公开入口与门禁 Card 同参合成（同源
+    硬约束：MUST NOT 复制第二套三态判定）；缺省时任何节点不附该字段。
     """
     logs_dir = Path(project_root) / ".fenix" / "logs"
     events: list[dict] = []
@@ -203,12 +241,14 @@ def get_spec_timeline(project_root, spec_name: str, created: str = "") -> list:
                 if spec_name not in line:
                     continue
                 try:
-                    entry = json.loads(line)
+                    log_entry = json.loads(line)
                 except (json.JSONDecodeError, ValueError):
                     continue
-                msg = entry.get("message", "")
-                ts = entry.get("timestamp", "")
-                ctx = entry.get("context") or {}
+                # log_entry：行级局部名——MUST NOT 遮蔽函数参 entry（STATE 条目，
+                # 注记块同参透传判据；遮蔽会让「不透传 entry」的调用点误附 ocr_gate）
+                msg = log_entry.get("message", "")
+                ts = log_entry.get("timestamp", "")
+                ctx = log_entry.get("context") or {}
                 if not isinstance(ctx, dict):
                     ctx = {}
                 # ── 结构化优先（fix-observability-gaps 3.1）──
@@ -243,7 +283,7 @@ def get_spec_timeline(project_root, spec_name: str, created: str = "") -> list:
                 # f"Updated SPEC '{spec_name}'"）：子串匹配会让前缀名 spec
                 # （如 add-foo）吸收姊妹 spec（add-foo-ui）的状态更新
                 if "Updated SPEC" in msg and f"'{spec_name}'" in msg:
-                    updates = entry.get("context", {}).get("updates", {}) or {}
+                    updates = log_entry.get("context", {}).get("updates", {}) or {}
                     err = updates.get("error")
                     if err:
                         errors_at.append((ts, str(err)))
@@ -263,7 +303,8 @@ def get_spec_timeline(project_root, spec_name: str, created: str = "") -> list:
     # 跨组引用（runs 组）经门面延迟解析（D4）
     import core.dashboard.data as _facade
 
-    for r in _facade.get_runs(project_root, spec_name, include_archive=True):
+    runs = _facade.get_runs(project_root, spec_name, include_archive=True)
+    for r in runs:
         insights = _facade._run_tail_insights(_facade._resolve_run_file(project_root, r["run_id"]))
         node = {
             "time": r["started"],
@@ -277,6 +318,11 @@ def get_spec_timeline(project_root, spec_name: str, created: str = "") -> list:
             "llm": insights["llm"],
             "reason": insights["reason"],
         }
+        if r.get("agent_type") == "impl-ocr":
+            # 车道可见性 1.1：审查对象摘要（转录 start 事件 message），缺失静默省字段
+            lane_summary = _ocr_lane_summary(project_root, r["run_id"])
+            if lane_summary:
+                node["lane_summary"] = lane_summary
         if billing_table:
             model, provider = _facade._split_llm_marker(insights["llm"])
             cost = _facade.compute_run_cost(insights["usage"], model, provider, billing_table)
@@ -373,6 +419,32 @@ def get_spec_timeline(project_root, spec_name: str, created: str = "") -> list:
 
     # 连续的前向状态转换折叠为一次（回退/运行节点打断）
     events = _collapse_timeline(events)
+
+    # ── testing 停等注记（add-timeline-ocr-lane-visibility 任务 1.2）──
+    # 最新状态转移节点 to == "testing" 时附 ocr 门**当前**状态（表达进行时语义，
+    # 非历史转移时刻状态）。同源硬约束：经 quality_gates.parse_quality_gates
+    # 公开入口（MUST NOT import 私有 _code_review_status 绕过 entry/runs 解析），
+    # entry/runs 与门禁 Card 同参透传——worktree 候选与指纹校验逐字同源，两处
+    # 口径永不漂移。仅最新一个节点可携带（历史节点天然无注记）；entry 缺省
+    # （既有调用点）与非 testing 节点不附字段；合成异常 fail-open 不影响时间轴。
+    if entry is not None:
+        latest_state = next((e for e in reversed(events) if e.get("kind") == "state"), None)
+        if latest_state is not None and latest_state.get("to") == "testing":
+            try:
+                gates = _facade.parse_quality_gates(
+                    project_root, spec_name, entry=entry, runs=runs
+                )
+                ocr = next(
+                    (it for it in gates.get("items", []) if it.get("id") == "code-review"),
+                    None,
+                )
+                if isinstance(ocr, dict):
+                    latest_state["ocr_gate"] = {
+                        "status": str(ocr.get("status") or ""),
+                        "detail": str(ocr.get("detail") or ""),
+                    }
+            except Exception:  # noqa: BLE001 —— 注记缺失不影响时间轴渲染
+                pass
 
     # 回退节点补充 Agent 记录的 error 作为原因（取时间最近的一条，10 分钟内）；
     # 打回重建节点（_precise_reason）reason 已是同行精确 error，不覆盖

@@ -744,6 +744,12 @@ export interface SpecDetail {
     retry_max?: number;
     // add-model-billing-cost-display：可计价 run 的本地计算成本（$；不可计价不渲染）
     cost_usd?: number;
+    // ocr 车道 run 节点（add-timeline-ocr-lane-visibility）：审查对象摘要
+    // （转录 start 事件 message：分支与 from..to 审查区间；缺失不下发不渲染）
+    lane_summary?: string;
+    // 最新「→ testing」状态节点（add-timeline-ocr-lane-visibility）：ocr 门
+    // 当前状态（与质量门禁 Card 同源合成；非 running 前端零渲染注记）
+    ocr_gate?: { status: string; detail?: string };
     // admin 运维节点（add-timeline-admin-events）：escalation/disposition 事件
     record_kind?: 'escalation' | 'disposition';
     signal_type?: string;

@@ -30,6 +30,7 @@ import {
   gateSuffix,
   gateTextColor,
   normalizeGateItems,
+  ocrJoinNote,
   shouldRenderGatesCard,
 } from './qualityGates';
 
@@ -275,6 +276,7 @@ const SEV_COLOR: Record<string, string> = { critical: 'red', major: 'orange', mi
 // agent_type 为泛型 'agent' 或缺失时，按 run_id 前缀（RUN_ID_PREFIX_LABEL）判别。
 const AGENT_LABEL: Record<string, string> = {
   implementer: '开发 Agent',
+  'impl-ocr': '代码审查 Agent',
   planner: '规划 Agent',
   'planner-plan': '生成场景 Agent',
   'planner-judge': '判定结果 Agent',
@@ -288,12 +290,14 @@ const AGENT_LABEL: Record<string, string> = {
 
 // run_id 前缀兜底。⚠️ 必须按完整前缀匹配（不能用 split('-')[0]）：spec-review- /
 // dispute-judge- / planner-plan- 等是多段前缀，首段 'spec'/'dispute'/'planner'
-// 无法唯一归属；长的排前面，首个命中即止。
+// 无法唯一归属；长的排前面，首个命中即止（impl-ocr- 必须排在 impl- 之前，
+// 否则被 impl- 先命中、车道节点标签退回「开发 Agent」）。
 const RUN_ID_PREFIX_LABEL: [prefix: string, label: string][] = [
   ['planner-judge-', '判定结果 Agent'],
   ['planner-plan-', '生成场景 Agent'],
   ['dispute-judge-', '争议裁决 Agent'],
   ['spec-review-', '需求评审 Agent'],
+  ['impl-ocr-', '代码审查 Agent'],
   ['impl-', '开发 Agent'],
   ['repair-', '修复 Agent'],
   ['admin-', '运维 Agent'],
@@ -949,6 +953,10 @@ export default function SpecDetailPage() {
                 <OutlinedTag tone={statusMeta(s || '').tone}>{s ? statusMeta(s).label : '?'}</OutlinedTag>
               </Fragment>
             ));
+            // testing 停等注记（add-timeline-ocr-lane-visibility 任务 2.3）：最新
+            // 「→ testing」节点在 ocr 门 running 时显示（后端仅对该节点下发 ocr_gate，
+            // 其余状态 ocrJoinNote 返回 null 零渲染）；detail 为门禁合成同源辅助文案
+            const ocrNote = ocrJoinNote(String(item.ocr_gate?.status || ''));
             return {
               color: isRollback ? '#ec835a' : 'gray',
               children: (
@@ -963,6 +971,14 @@ export default function SpecDetailPage() {
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                     {statusSeq}
                   </div>
+                  {ocrNote && (
+                    <div style={{ whiteSpace: 'pre-wrap', marginTop: 10 }}>
+                      <Typography.Text type="warning" style={{ fontSize: 13 }}>
+                        {ocrNote}
+                        {item.ocr_gate?.detail ? `（${item.ocr_gate.detail}）` : ''}
+                      </Typography.Text>
+                    </div>
+                  )}
                   {isRollback && (
                     <div style={{ whiteSpace: 'pre-wrap', marginTop: 10 }}>
                       <ReasonText reason={item.reason || '状态回退'} onOpenReport={() => openDocModal('verification')} />
@@ -1165,6 +1181,15 @@ export default function SpecDetailPage() {
                     <Typography.Text type={reasonView.tone} style={{ fontSize: 13 }}>
                       {reasonView.prefix}
                       {item.reason}
+                    </Typography.Text>
+                  </div>
+                )}
+                {/* ocr 车道审查对象摘要（add-timeline-ocr-lane-visibility 任务 2.3）：
+                    转录 start 事件 message（分支与 from..to 审查区间）；缺失不渲染 */}
+                {item.lane_summary && (
+                  <div style={{ marginBottom: 8 }}>
+                    <Typography.Text type="secondary" style={{ fontSize: 13 }}>
+                      {item.lane_summary}
                     </Typography.Text>
                   </div>
                 )}
