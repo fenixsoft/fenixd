@@ -29,7 +29,15 @@ def read_regression_result(project_root) -> dict:
     运行中（running=True）附加 ``progress``（read_progress：终端真实标记 /
     耗时估算 / 未知三级口径），供分面渲染执行进度条。
     """
-    result = read_result(project_root)
+    try:
+        result = read_result(project_root)
+    except Exception as e:
+        # 读侧 MUST NOT 抛（code-review item d8c0bf7369c7）：core.regression.
+        # read_result 只捕 JSONDecodeError/OSError，无效 UTF-8 会让
+        # read_text 抛 UnicodeDecodeError（ValueError 族）——不守卫会传播成
+        # GET /api/regression/result 的 500。原地降级 parse_error，公共
+        # 尾部仍能附 running。
+        result = {"status": "parse_error", "reason": f"快照读取失败: {e}"}
     if not isinstance(result, dict):
         result = {"status": "parse_error", "reason": "快照非对象"}
     # never_run/parse_error 同样透出运行中态（触发后、快照未写盘窗口内）

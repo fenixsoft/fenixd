@@ -55,72 +55,118 @@ const REQUEST_TIMEOUT_MS = 30000;
     旧实现把所有失败压成裸 Error，调用方无法区分网络/鉴权/业务/服务端）。 */
 export class ApiError extends Error {
   status: number;
-  kind: 'network' | 'timeout' | 'auth' | 'client' | 'server' | 'unknown';
-  constructor(message: string, status: number, kind: ApiError['kind']) {
+  kind: 'network' | 'timeout' | 'cancelled' | 'auth' | 'client' | 'server' | 'unknown';
+  /** 后端错误体携带的稳定机器可读业务错误码（缺省 undefined；
+      code-review item 934af264345f：客户端控制流按 code 分支，
+      不依赖中文消息子串——措辞/locale 改动不再静默丢失定向提示）。 */
+  code?: string;
+  constructor(message: string, status: number, kind: ApiError['kind'], code?: string) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
     this.kind = kind;
+    if (code !== undefined) this.code = code;
   }
 }
 
 /** 后端错误体形状（code-review item e49991904b1f：此前 await res.json() 得 any）。 */
 interface ApiErrorBody {
   error?: string;
+  code?: string;
+}
+
+/** HTTP 状态码 → 错误类别（code-review item 8806027630b2：旧实现为 3 层
+    嵌套三元链，难读且被项目审查清单禁止）。 */
+function classifyHttpKind(status: number): ApiError['kind'] {
+  if (status === 401 || status === 403) return 'auth';
+  if (status >= 500) return 'server';
+  if (status >= 400) return 'client';
+  return 'unknown';
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  // AbortController 超时（code-review item 9985f4b5f79a）。调用方自带 signal 时
-  // 与之共存：任一 abort 均生效。
+  // AbortController 超时（code-review item 9985f4b5f79a）。与调用方自带
+  // signal 组合：item 08d0dff8eb09——旧实现 `init?.signal ?? controller.signal`
+  // 只保留一个信号，调用方传自己 signal 时内部超时定时器永不到达 fetch。
+  // 改为把外部 signal 的 abort 转发给内部 controller（两信号叠加，任一
+  // 触发均生效），fetch 恒用内部 signal。
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-  let res: Response;
+  // 超时保护覆盖到 body 消费完毕（item eebe470f0864）：旧实现 finally 的
+  // clearTimeout 在响应头一到达就执行，body 下方 await res.json()/res.text()
+  // 期间 abort 定时器已消失——后端先发头再挂起（流式/hung handler）时
+  // promise 永挂。timer 现于最外层 finally（整段读毕）才清。
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, REQUEST_TIMEOUT_MS);
+  const externalSignal = init?.signal;
+  const forwardExternalAbort = () => controller.abort(externalSignal?.reason);
+  if (externalSignal) {
+    if (externalSignal.aborted) controller.abort(externalSignal.reason);
+    else externalSignal.addEventListener('abort', forwardExternalAbort);
+  }
+  // abort 分类（item 08d0dff8eb09）：只有内部定时器真正触发过才归 timeout，
+  // 调用方经外部 signal 的主动取消（unmount/切页）归 cancelled，不再误标
+  // 成 >30s 超时。
+  const classifyAbort = () =>
+    timedOut
+      ? new ApiError(`请求超时（>${REQUEST_TIMEOUT_MS / 1000}s）`, 0, 'timeout')
+      : new ApiError('请求已取消', 0, 'cancelled');
   try {
-    res = await fetch(path, { ...init, signal: init?.signal ?? controller.signal });
-  } catch (e) {
-    // 网络失败 / 超时区分（e49991904b1f）
-    if (e instanceof DOMException && e.name === 'AbortError') {
-      throw new ApiError(`请求超时（>${REQUEST_TIMEOUT_MS / 1000}s）`, 0, 'timeout');
+    let res: Response;
+    try {
+      res = await fetch(path, { ...init, signal: controller.signal });
+    } catch (e) {
+      // 网络失败 / 超时区分（e49991904b1f）
+      if (e instanceof DOMException && e.name === 'AbortError') throw classifyAbort();
+      throw new ApiError(
+        `网络请求失败：${e instanceof Error ? e.message : String(e)}`,
+        0,
+        'network',
+      );
     }
-    throw new ApiError(
-      `网络请求失败：${e instanceof Error ? e.message : String(e)}`,
-      0,
-      'network',
-    );
+    if (!res.ok) {
+      let msg = `HTTP ${res.status}`;
+      let code: string | undefined;
+      try {
+        const body = (await res.json()) as ApiErrorBody;
+        if (body?.error) msg = body.error;
+        if (body?.code) code = body.code;
+      } catch {
+        // 非 JSON 错误体，保留 HTTP 状态码信息
+      }
+      throw new ApiError(msg, res.status, classifyHttpKind(res.status), code);
+    }
+    // 部分端点（DELETE / 裸 POST）合法返回 204 或空体，此时 res.json() 会抛
+    // SyntaxError 把成功调用误报为失败。按状态码与原文长度短路，空体统一返回
+    // undefined（调用方对这些端点不消费返回值）。
+    if (res.status === 204 || res.status === 205) return undefined as T;
+    let text: string;
+    try {
+      text = await res.text();
+    } catch (e) {
+      // body 消费期间的 abort（挂起流被超时中止）同样纳入分类（item
+      // eebe470f0864）——不得永挂，也不得误报为网络失败。
+      if (e instanceof DOMException && e.name === 'AbortError') throw classifyAbort();
+      throw new ApiError(
+        `读取响应失败：${e instanceof Error ? e.message : String(e)}`,
+        res.status,
+        'network',
+      );
+    }
+    if (!text) return undefined as T;
+    try {
+      return JSON.parse(text) as T;
+    } catch {
+      // 契约：本文件对外恒抛 ApiError（code-review item 29fcb06957b6）——
+      // 裸 Error 会让按 e.kind/e.status 分支的调用方静默落空。200 但体非法
+      // JSON 属服务端异常形态，归 'server'。
+      throw new ApiError(`响应不是合法 JSON（HTTP ${res.status}）`, res.status, 'server');
+    }
   } finally {
     clearTimeout(timer);
-  }
-  if (!res.ok) {
-    let msg = `HTTP ${res.status}`;
-    try {
-      const body = (await res.json()) as ApiErrorBody;
-      if (body?.error) msg = body.error;
-    } catch {
-      // 非 JSON 错误体，保留 HTTP 状态码信息
-    }
-    const kind: ApiError['kind'] =
-      res.status === 401 || res.status === 403
-        ? 'auth'
-        : res.status >= 500
-          ? 'server'
-          : res.status >= 400
-            ? 'client'
-            : 'unknown';
-    throw new ApiError(msg, res.status, kind);
-  }
-  // 部分端点（DELETE / 裸 POST）合法返回 204 或空体，此时 res.json() 会抛
-  // SyntaxError 把成功调用误报为失败。按状态码与原文长度短路，空体统一返回
-  // undefined（调用方对这些端点不消费返回值）。
-  if (res.status === 204 || res.status === 205) return undefined as T;
-  const text = await res.text();
-  if (!text) return undefined as T;
-  try {
-    return JSON.parse(text) as T;
-  } catch {
-    // 契约：本文件对外恒抛 ApiError（code-review item 29fcb06957b6）——
-    // 裸 Error 会让按 e.kind/e.status 分支的调用方静默落空。200 但体非法
-    // JSON 属服务端异常形态，归 'server'。
-    throw new ApiError(`响应不是合法 JSON（HTTP ${res.status}）`, res.status, 'server');
+    if (externalSignal) externalSignal.removeEventListener('abort', forwardExternalAbort);
   }
 }
 

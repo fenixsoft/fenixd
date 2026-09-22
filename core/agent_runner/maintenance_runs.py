@@ -684,18 +684,19 @@ def run_evolution(
                 run_ok = False
                 error = str(e)
                 contract = None
-            finally:
-                # 清理移入 finally（code-review item 2417c0bb0bf9）：read_contract
-                # 抛 ContractError 或落地 import 失败时旧实现不执行
-                # _delete_evolution_out，产物残留 .fenix/evolution/ 累积垃圾
-                # （与方法 docstring「run 结束读取并清理」不符）。finally 保证
-                # 无论读写成败都清理本 run 的产物文件。
-                runner._delete_evolution_out(out_path)
         except Exception as e:
             # 落地异常不应穿透（检查点统一捕获）；整轮视为失败带原因
             run_ok = False
             error = f"分析落地异常: {e}"
             contract = None
+        finally:
+            # 清理放外层 finally（code-review item f1ef92e5ca50）：``from
+            # core.evolution import`` 在外层 try 内执行，其失败被外层 except
+            # 捕获、从未进入内层 try/finally——旧清理位置盖不到 import 路径，
+            # out-<run_id>.json 残留 .fenix/evolution/ 累积垃圾（与 docstring
+            # 「run 结束读取并清理」不符）。finally 上移保证无论 import/
+            # 读写成败都清理本 run 的产物文件。
+            runner._delete_evolution_out(out_path)
         if run_ok and contract:
             degraded = contract.get("degraded")
             for item in contract.get("items") or []:

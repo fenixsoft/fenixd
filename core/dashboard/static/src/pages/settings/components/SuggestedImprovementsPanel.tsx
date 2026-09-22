@@ -200,12 +200,27 @@ const DEFAULT_SPEC_RUN_AT = '02:00';
 
 // ── 评估结论摘要（7.3）──────────────────────────────────────────────
 
+// 结论三态 → 中文映射（code-review item 6ac78de43384：旧实现嵌套三元链，
+// 项目前端规则禁止；未登记值按否定态兜底）。
+const VERDICT_PROBLEM_LABELS: Record<string, string> = {
+  yes: '成立',
+  partial: '部分成立',
+};
+const VERDICT_SUGGESTION_LABELS: Record<string, string> = {
+  yes: '合理',
+  partial: '部分合理',
+};
+
 function verdictSummary(item: EvolutionItem): string {
   const v = item.verdict;
   if (!v) return '';
   const parts: string[] = [];
-  if (v.problem_exists) parts.push(`问题${v.problem_exists === 'yes' ? '成立' : v.problem_exists === 'partial' ? '部分成立' : '不成立'}`);
-  if (v.suggestion_sound) parts.push(`建议${v.suggestion_sound === 'yes' ? '合理' : v.suggestion_sound === 'partial' ? '部分合理' : '不合理'}`);
+  if (v.problem_exists) {
+    parts.push(`问题${VERDICT_PROBLEM_LABELS[v.problem_exists] ?? '不成立'}`);
+  }
+  if (v.suggestion_sound) {
+    parts.push(`建议${VERDICT_SUGGESTION_LABELS[v.suggestion_sound] ?? '不合理'}`);
+  }
   parts.push(v.worth_spec ? '✓ 值得立项' : '— 不需要');
   return parts.join(' / ');
 }
@@ -218,6 +233,31 @@ const ACTIONS = [
   { key: 'reject', label: '拒绝', danger: true },
   { key: 'delete', label: '删除', danger: true },
 ] as const;
+
+/** 行过滤谓词单源（code-review item 7ea5eaa7b3c8）：filteredItems 与
+ *  nextAfterAction 旧实现逐字重复，两拷贝漂移（date_section/缺值语义微妙）
+ *  会让「下一项」跳转与表格显示不一致——抽单谓词两处复用。
+ *  date_section 为 'YYYY-MM-DD'，缺值时不被日期条件排除。 */
+function matchesFilter(
+  item: EvolutionItem,
+  filters: { status?: string; project?: string; dateRange: [Dayjs, Dayjs] | null },
+): boolean {
+  const start = filters.dateRange?.[0]?.format('YYYY-MM-DD');
+  const end = filters.dateRange?.[1]?.format('YYYY-MM-DD');
+  if (filters.status && item.status !== filters.status) return false;
+  if (filters.project && item.project !== filters.project) return false;
+  if (start && item.date_section && item.date_section < start) return false;
+  if (end && item.date_section && item.date_section > end) return false;
+  return true;
+}
+
+/** 查看弹窗空态文案（code-review item 6ac78de43384：旧实现嵌套三元链
+ *  拍平为 if 链——分析结论缺失与草稿缺失是两回事）。 */
+function viewEmptyTextFor(tab: ViewTab, docSource: EvolutionItem['doc_source']): string {
+  if (tab === 'analysis') return '分析结论不存在';
+  if (docSource === 'spec') return '文档读自 SPEC 位置，对应文档不存在。';
+  return '草稿文档不存在或已被接受删除。';
+}
 
 function getActionDisabled(status: string): Record<string, boolean> {
   // 「查看」不设状态门：分析结论恒可查看，有无草稿由弹窗自行分支（原「查看
@@ -370,18 +410,17 @@ const SuggestedImprovementsPanel = forwardRef<
     setFilterDateRange(null);
   };
 
-  const filteredItems = useMemo(() => {
-    const start = filterDateRange?.[0]?.format('YYYY-MM-DD');
-    const end = filterDateRange?.[1]?.format('YYYY-MM-DD');
-    return items.filter((item) => {
-      if (filterStatus && item.status !== filterStatus) return false;
-      if (filterProject && item.project !== filterProject) return false;
-      // date_section 为 'YYYY-MM-DD'，缺值时不被日期条件排除
-      if (start && item.date_section && item.date_section < start) return false;
-      if (end && item.date_section && item.date_section > end) return false;
-      return true;
-    });
-  }, [items, filterStatus, filterProject, filterDateRange]);
+  const filteredItems = useMemo(
+    () =>
+      items.filter((item) =>
+        matchesFilter(item, {
+          status: filterStatus,
+          project: filterProject,
+          dateRange: filterDateRange,
+        }),
+      ),
+    [items, filterStatus, filterProject, filterDateRange],
+  );
 
   // ── 多选与批量（7.6）────────────────────────────────────────────
 
@@ -471,11 +510,7 @@ const SuggestedImprovementsPanel = forwardRef<
   }, [viewVisible, viewItem, viewTab, loadView]);
 
   // 空态文案随页签而变：分析结论缺失与草稿缺失是两回事
-  const viewEmptyText = viewTab === 'analysis'
-    ? '分析结论不存在'
-    : viewItem?.doc_source === 'spec'
-      ? '文档读自 SPEC 位置，对应文档不存在。'
-      : '草稿文档不存在或已被接受删除。';
+  const viewEmptyText = viewEmptyTextFor(viewTab, viewItem?.doc_source);
 
   // ── 接受 / 拒绝（7.5 二次确认）──────────────────────────────────
   //
@@ -746,15 +781,15 @@ const SuggestedImprovementsPanel = forwardRef<
     current: EvolutionItem,
     onDone?: () => void,
   ) => {
-    const start = filterDateRange?.[0]?.format('YYYY-MM-DD');
-    const end = filterDateRange?.[1]?.format('YYYY-MM-DD');
-    const seq = items.filter((item) => {
-      if (filterStatus && item.status !== filterStatus) return false;
-      if (filterProject && item.project !== filterProject) return false;
-      if (start && item.date_section && item.date_section < start) return false;
-      if (end && item.date_section && item.date_section > end) return false;
-      return true;
-    });
+    const seq = items.filter((item) =>
+      // 过滤谓词与 filteredItems 同源（item 7ea5eaa7b3c8）：跳转序列恒与
+      // 表格所见一致
+      matchesFilter(item, {
+        status: filterStatus,
+        project: filterProject,
+        dateRange: filterDateRange,
+      }),
+    );
     const idx = seq.findIndex((i) => i.id === current.id);
     // 当前条目仍在过滤结果里 → 取其后的那一条；已被过滤掉（状态变了，例如
     // 「待决策」筛选下同意后的条目）→ 后续条目整体前移一格，原下标处就是它的

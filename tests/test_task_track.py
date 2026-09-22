@@ -364,11 +364,18 @@ class TestCliWarning(unittest.TestCase):
         (self.pr / ".fenix" / "bin").mkdir(parents=True)
         shutil.copy(PROJECT_ROOT / "bin" / "fenix_process.py",
                     self.pr / ".fenix" / "bin" / "fenix_process.py")
+        # 软链源按所在检出形态解析：主树有 .fenix/core 部署软链；裸 worktree /
+        # CI 检出无该运行时软链（.fenix/* 被 gitignore，不随建树产生）——
+        # symlink_to 对悬空目标不报错，夹具会静默产出不可导入的坏链接，
+        # 故缺失时回退仓库根 core/ 包（与部署软链指向同一份代码）。
+        core_src = PROJECT_ROOT / ".fenix" / "core"
+        if not core_src.exists():
+            core_src = PROJECT_ROOT / "core"
         try:
             (self.pr / ".fenix" / "core").symlink_to(
-                PROJECT_ROOT / ".fenix" / "core", target_is_directory=True)
+                core_src, target_is_directory=True)
         except OSError:
-            shutil.copytree(PROJECT_ROOT / ".fenix" / "core",
+            shutil.copytree(core_src,
                             self.pr / ".fenix" / "core",
                             ignore=shutil.ignore_patterns("__pycache__"))
         (self.pr / ".fenix" / "STATE.md").write_text(

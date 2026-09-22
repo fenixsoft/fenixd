@@ -369,13 +369,19 @@ function PriorityCell({
   record,
   onEdit,
   muted,
+  editable = true,
 }: {
   record: SpecSummary;
   onEdit: (record: SpecSummary) => void;
   // 移动端卡片场景：不可编辑时保持灰色 secondary 字体
   muted?: boolean;
+  // 归档视图门控（code-review item 740a46d99bf6）：archivedOnly 下
+  // specMenuItems 已移除全部调度条目（归档 SPEC 不得重排），内联单元格
+  // 点击 MUST 复用同一门——不可编辑时渲染纯文本（与终态分支同形），
+  // 不再绕过菜单仍开优先级弹窗。
+  editable?: boolean;
 }) {
-  if (PRIORITY_TERMINAL.has(record.status || '')) {
+  if (!editable || PRIORITY_TERMINAL.has(record.status || '')) {
     return muted ? (
       <Typography.Text type="secondary">P{record.priority ?? '?'}</Typography.Text>
     ) : (
@@ -440,11 +446,13 @@ interface SpecCardListProps {
   onMenu: (record: SpecSummary, key: string) => void;
   menuItems: (record: SpecSummary) => MenuProps['items'];
   onClearError: (record: SpecSummary) => void;
+  /** 归档视图（add-spec-archive）：与 specMenuItems 同门——归档 SPEC 不可重排优先级 */
+  archivedOnly?: boolean;
 }
 
 // 移动端（<768px）卡片形态：字段与桌面表格列一一对应，扁平化树并按层级缩进。
 // 仅在 md 断点以下渲染，桌面 Table 分支不受影响。
-function SpecCardList({ data, project, loading, onDocView, onMenu, menuItems, onClearError }: SpecCardListProps) {
+function SpecCardList({ data, project, loading, onDocView, onMenu, menuItems, onClearError, archivedOnly }: SpecCardListProps) {
   type FlatNode = { record: SpecSummary; level: number };
   const flat = useMemo<FlatNode[]>(() => {
     const out: FlatNode[] = [];
@@ -493,7 +501,7 @@ function SpecCardList({ data, project, loading, onDocView, onMenu, menuItems, on
                 </Dropdown>
               </div>
               <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginTop: 4, fontSize: 12 }}>
-                <PriorityCell record={record} onEdit={(r) => onMenu(r, 'priority')} muted />
+                <PriorityCell record={record} editable={!archivedOnly} onEdit={(r) => onMenu(r, 'priority')} muted />
                 <Typography.Text type="secondary">
                   {created && created.isValid() ? created.format('YYYY-MM-DD HH:mm') : '—'}
                 </Typography.Text>
@@ -1023,6 +1031,7 @@ export default function SpecListPage() {
       render: (_: number | null, record: SpecSummary) => (
         <PriorityCell
           record={record}
+          editable={!archivedOnly}
           onEdit={(r) => setPriorityEdit({ spec: r.name, value: r.priority ?? 5 })}
         />
       ),
@@ -1289,6 +1298,7 @@ export default function SpecListPage() {
             onMenu={onSpecMenu}
             menuItems={specMenuItems}
             onClearError={handleClearError}
+            archivedOnly={archivedOnly}
           />
         ) : (
           <Table

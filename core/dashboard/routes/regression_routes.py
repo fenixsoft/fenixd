@@ -46,6 +46,15 @@ def _evidence_project(evidence: str) -> str:
 class H12RegressionRoutesMixin:
     """H12 regression（design 表 C H12）。"""
 
+    def _coded_error(self, status: int, msg: str, code: str) -> None:
+        """带稳定机器可读 ``code`` 的错误响应。
+
+        code-review item 934af264345f：前端控制流按业务错误码分支，不依赖
+        中文消息子串（措辞/locale 改动不再静默落入通用错误分支）。仅本
+        mixin 需要编码的业务拒绝走此helper，其余错误照旧 ``_error``。
+        """
+        self._json({"error": msg, "code": code}, status)
+
     def _api_regression_result(self, query):
         """GET /api/regression/result?project=<name>
 
@@ -128,14 +137,17 @@ class H12RegressionRoutesMixin:
 
         contract = load_verify_contract(proot, logger=getattr(self, "logger", None))
         if contract is None or contract.regression is None:
-            self._error(400, "该项目未配置全量回归（verify.yaml regression 段）")
+            self._coded_error(
+                400, "该项目未配置全量回归（verify.yaml regression 段）",
+                "regression_not_configured",
+            )
             return
 
         # 运行中守卫（已有回归在跑 → 409，单飞不并发；基于 marker 新鲜度
         # 判定，与 code_review 的 progress.running 同义——marker 不存在
         # 或超窗 stale 即视为未运行）
         if dashboard_data.is_regression_running(proot):
-            self._error(409, "已有回归在进行中")
+            self._coded_error(409, "已有回归在进行中", "regression_already_running")
             return
 
         # 消费方守卫（hosting_state 判据，先例 request_spec_approve_push）
@@ -171,7 +183,15 @@ class H12RegressionRoutesMixin:
         # requested_at；item 117af27b759a：写 created 使 daemon 恒记空时间戳）
         payload = {"source": "dashboard", "requested_at": created}
         req_path = proot / REGRESSION_REQUEST
-        req_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            req_path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            # mkdir 与其余写路径一并包 try（code-review item 6c873c1c07ed）：
+            # 权限/IO 失败不再逃逸 handler 被 dispatcher 转成通用 Internal
+            # Server Error（具体错误文本泄漏进 HTTP 响应），与其余写路径
+            # 一致报告。
+            self._error(500, f"回归触发信号写入失败: {e}")
+            return
         try:
             fd = os.open(str(req_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
         except FileExistsError:

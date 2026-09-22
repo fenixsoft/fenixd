@@ -210,7 +210,6 @@ export default function QualityTab({ project, active }: QualityTabProps) {
   // 其余动作按钮被连带禁用 20s。
   const [fixRunPending, setFixRunPending] = useState(false);
   const pollTimerRef = useRef<number | null>(null);
-  const runningRef = useRef<boolean>(false);
   // 请求序号守卫（code-review item 103bd502bd1e）：loadItems 会被 SSE 回调、
   // 30s 心跳、轮询结束兜底与 filter 变化并发触发，较慢的早期响应会覆盖较新数据。
   const loadSeqRef = useRef(0);
@@ -249,7 +248,6 @@ export default function QualityTab({ project, active }: QualityTabProps) {
     try {
       const p = await getCodeReviewProgress(project);
       setProgress(p);
-      runningRef.current = Boolean(p.running);
       if (p.running) {
         // 运行中：轮询进度（2s），结束兜底刷新表格
         if (pollTimerRef.current !== null) return;
@@ -262,7 +260,6 @@ export default function QualityTab({ project, active }: QualityTabProps) {
                 window.clearInterval(pollTimerRef.current);
                 pollTimerRef.current = null;
               }
-              runningRef.current = false;
               // 运行结束：刷新问题表格（经 ref 取最新 loader，避免沿用创建
               // interval 时捕获的旧 statusFilter——见上方 loadItemsRef 注释）
               void loadItemsRef.current();
@@ -354,7 +351,6 @@ export default function QualityTab({ project, active }: QualityTabProps) {
     if (!active && pollTimerRef.current !== null) {
       window.clearInterval(pollTimerRef.current);
       pollTimerRef.current = null;
-      runningRef.current = false;
     }
   }, [active]);
 
@@ -366,8 +362,6 @@ export default function QualityTab({ project, active }: QualityTabProps) {
     try {
       await triggerCodeReview(project, scope);
       message.success(`${label} 已受理，daemon 将开始执行`);
-      // 进入运行中态（触发成功标志，下一轮进度轮询接管）
-      runningRef.current = true;
       void loadProgress();
       void loadItems();
     } catch (e) {
