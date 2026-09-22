@@ -179,9 +179,17 @@ class TestRegressionConfigAdmin:
 
         assert "admin.regression" in _SOURCE_KEYS
 
-    def test_default_echo(self, tmp_path):
+    def test_default_echo(self, tmp_path, monkeypatch):
         from core.dashboard.data import read_config, read_effective_config
 
+        # 用户级 config.yaml 随部署环境漂移（本机真实部署已显式开启
+        # regression）——patch 双常量锁定缺省回显语义：门面
+        # USER_CONFIG_PATH（dashboard 读侧）+ core.config.USER_CONFIG_DIR
+        # （resolve_config 合并读侧），与 test_fenix_tui_reports 同款。
+        monkeypatch.setattr("core.dashboard.data.USER_CONFIG_PATH",
+                            tmp_path / "user-config-absent.yaml")
+        monkeypatch.setattr("core.config.USER_CONFIG_DIR",
+                            tmp_path / ".user-fenix-absent")
         rc = read_config(tmp_path)
         assert rc["regression"]["enabled"] is False
         assert rc["sources"]["admin.regression"] == "user"
