@@ -268,7 +268,8 @@ class VAdjudicationMixin:
         if judge_result is None or not getattr(judge_result, "success", False):
             self._pm.logger.warning(
                 "pm_engine",
-                f"dispute judge run 失败 '{spec_name}'（等价 unclear）: "
+                f"dispute judge run 失败 '{spec_name}'（judge run {judge_run_id}，"
+                f"等价 unclear）: "
                 f"{getattr(judge_result, 'error', '') or ''}",
             )
             return None
@@ -277,20 +278,23 @@ class VAdjudicationMixin:
         except (OSError, json.JSONDecodeError, UnicodeDecodeError):
             self._pm.logger.warning(
                 "pm_engine",
-                f"dispute judge 结果 JSON 不合法 '{spec_name}'（等价 unclear）",
+                f"dispute judge 结果 JSON 不合法 '{spec_name}'"
+                f"（judge run {judge_run_id}，等价 unclear）",
             )
             return None
         if not isinstance(data, dict) or data.get("status") != "success":
             self._pm.logger.warning(
                 "pm_engine",
-                f"dispute judge 结果 status 非 success '{spec_name}'（等价 unclear）",
+                f"dispute judge 结果 status 非 success '{spec_name}'"
+                f"（judge run {judge_run_id}，等价 unclear）",
             )
             return None
         verdicts = data.get("verdicts")
         if not isinstance(verdicts, list) or not verdicts:
             self._pm.logger.warning(
                 "pm_engine",
-                f"dispute judge 结果缺 verdicts '{spec_name}'（等价 unclear）",
+                f"dispute judge 结果缺 verdicts '{spec_name}'"
+                f"（judge run {judge_run_id}，等价 unclear）",
             )
             return None
         return data
@@ -1973,9 +1977,14 @@ class VAdjudicationMixin:
                         "spec": spec_name,
                         "trigger_run_id": getattr(result, "run_id", "") or "",
                         "judge_run_id": judge_run_id,
+                        # judge 原始 verdicts 与执行层改写后 verdicts 都落审计：
+                        # 防白洗改写（如 delete-kind reference 被拒改写为
+                        # unclear 带 judge_original/rewrite_reason）若只写
+                        # judge 原始输出，改写事实在审计轨迹中不可见。
                         "verdicts": (
                             verdict_data.get("verdicts") if verdict_data else executed_verdicts
                         ),
+                        "executed_verdicts": executed_verdicts,
                         "diff": {
                             k: {"before": d.get("before"), "after": d.get("after")}
                             for k, d in diff_by_element.items()

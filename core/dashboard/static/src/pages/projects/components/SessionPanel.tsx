@@ -42,7 +42,6 @@ interface SessionPanelProps {
 export default function SessionPanel({ project, active }: SessionPanelProps) {
   const { message } = App.useApp();
   const [events, setEvents] = useState<SessionEvent[]>([]);
-  const [sessionId, setSessionId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [sending, setSending] = useState(false);
   const [text, setText] = useState('');
@@ -97,6 +96,26 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
     }
   };
 
+  // 快照应用单源（code-review item a4bbea6af729）：会话状态更新块曾在
+  // loadAll / afterHello / handleStart 三处复制粘贴，易漂移——抽单一 helper。
+  // 会话存在 → 记 cid、置已启动、全量替换事件；不存在 → 空态。
+  const applySnapshot = (data: Awaited<ReturnType<typeof getSession>>) => {
+    if (data.session) {
+      sessionIdRef.current = data.session.id;
+      setStarted(true);
+      setEnded(false);
+      syncEvents(data.events || []);
+      setTruncated(Boolean(data.truncated));
+      setError('');
+    } else {
+      // 会话未启动：空态，等待「开始会话」
+      sessionIdRef.current = null;
+      setStarted(false);
+      syncEvents([]);
+      setTruncated(false);
+    }
+  };
+
   // 拉全量 + 建立 SSE（分面激活时执行；切离后重新接回）
   useEffect(() => {
     if (!active || !project) return;
@@ -119,22 +138,7 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
           setLoading(true);
           const data = await getSession(project);
           if (disposed) return;
-          if (data.session) {
-            sessionIdRef.current = data.session.id;
-            setSessionId(data.session.id);
-            setStarted(true);
-            setEnded(false);
-            syncEvents(data.events || []);
-            setTruncated(Boolean(data.truncated));
-            setError('');
-          } else {
-            // 会话未启动：空态，等待「开始会话」
-            sessionIdRef.current = null;
-            setSessionId(null);
-            setStarted(false);
-            syncEvents([]);
-            setTruncated(false);
-          }
+          applySnapshot(data);
         } catch (e) {
           if (!disposed) setError(e instanceof Error ? e.message : String(e));
         } finally {
@@ -150,13 +154,8 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
         try {
           const data = await getSession(project);
           if (disposed) return;
+          applySnapshot(data);
           if (data.session) {
-            sessionIdRef.current = data.session.id;
-            setSessionId(data.session.id);
-            setStarted(true);
-            setEnded(false);
-            syncEvents(data.events || []);
-            setTruncated(Boolean(data.truncated));
             // 会话存在：用服务端 hello 分配的 cid 注册 watch
             try {
               await registerSessionWatch(project, cid);
@@ -171,13 +170,8 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
               syncEvents(again.events || []);
               setTruncated(Boolean(again.truncated));
             }
-          } else {
-            // 无会话（空态）：跳过注册，仅设空态（避免 404 + console.error）
-            sessionIdRef.current = null;
-            setSessionId(null);
-            setStarted(false);
-            syncEvents([]);
           }
+          // 无会话（空态）：跳过注册，避免 404 + console.error
         } catch (e) {
           if (!disposed) setError(e instanceof Error ? e.message : String(e));
         }
@@ -243,7 +237,6 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
       cidRef.current = null;
       // 切离时清空本地状态，切回重新接回（events/started 由 loadAll 重置）
       sessionIdRef.current = null;
-      setSessionId(null);
       setEnded(false);
       setSending(false);
       setText('');
@@ -257,7 +250,6 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
       setLoading(true);
       const res = await startSession(project);
       sessionIdRef.current = res.session.id;
-      setSessionId(res.session.id);
       setStarted(true);
       setEnded(false);
       // 会话由无变有：此前空态 when hello 到达时 afterHello 跳过了 watch 注册
@@ -275,8 +267,7 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
       }
       const data = await getSession(project);
       if (data.session) {
-        syncEvents(data.events || []);
-        setTruncated(Boolean(data.truncated));
+        applySnapshot(data);
       }
       setError('');
     } catch (e) {
@@ -298,7 +289,12 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
     try {
       await sendSessionMessage(project, t);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      // 瞬态发送失败经 message.error 呈现（同 handleStop 口径），不落 error
+      // state——error 分支会替换整块对话视图+输入区（转录被隐藏、无法就地
+      // 重试，code-review item b1609f78d29c）。并把已乐观清空的草稿还原，
+      // 避免失败后用户输入丢失。
+      message.error(`发送失败：${e instanceof Error ? e.message : String(e)}`);
+      setText(t);
     } finally {
       setSending(false);
     }

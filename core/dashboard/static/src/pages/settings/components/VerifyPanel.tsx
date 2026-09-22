@@ -74,6 +74,18 @@ export default function VerifyPanel({ config, onSave, project, onConfigSynced }:
     });
   }, [config.verify, config.worktree, form]);
 
+  // 「无派生物」时清空路径 List 的 store 值（code-review item aceafc981274）：
+  // 三态切到 false 时整个 Form.List（name='build_artifact_paths'）卸载，
+  // rc-field-form 默认保留卸载项值且 validateFields 只校验在场字段——此前
+  // 输入的任意行（含 artifactPathRule 校验失败行，如 dist 缺尾斜杠）残留在
+  // form store 被 handleSave 原样提交。切到「无派生物」即显式清值，保证
+  // 提交口径与所见一致；再切回「有派生物」时从空列表开始，不受残留行污染。
+  useEffect(() => {
+    if (hasBuildArtifacts === 'false') {
+      form.setFieldValue('build_artifact_paths', []);
+    }
+  }, [hasBuildArtifacts, form]);
+
   const handleSave = async () => {
     try {
       const values = await form.validateFields();

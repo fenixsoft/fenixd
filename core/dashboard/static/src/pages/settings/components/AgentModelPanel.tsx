@@ -6,7 +6,7 @@ import {
   PlusOutlined,
   SnippetsOutlined,
 } from '@ant-design/icons';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { AgentModelAssignment, AgentsConfig, AgentsModels, ConfigData } from '@/services/dashboard';
 import { cloneRoleValue, type RoleValue } from '@/utils/agentModels';
 
@@ -116,8 +116,19 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
 
   const initialValues = buildFormValues(config.agents);
 
+  // 回填门控（code-review item 9f98edec21fa）：effect 读取的字段不止
+  // config.agents.models，还有 subagent_model_override——仅以 models 引用作
+  // 变化依据时，仅 override 变化的父组件回填不会刷新输入框；且无条件
+  // setFieldsValue 会用外部 config 覆盖用户正在编辑、尚未保存的内容（保存
+  // 后重载/其它面板保存触发的刷新）。改为对 buildFormValues 产物做序列化
+  // 比较，只在真正变化时回填。
+  const lastAgentsBackfillRef = useRef('');
   useEffect(() => {
-    form.setFieldsValue(buildFormValues(config.agents));
+    const next = buildFormValues(config.agents);
+    const key = JSON.stringify(next);
+    if (key === lastAgentsBackfillRef.current) return;
+    lastAgentsBackfillRef.current = key;
+    form.setFieldsValue(next);
   }, [config.agents, form]);
 
   // 监听表单值：行内 Provider 选项回显保真 + 模型输入框 placeholder 随角色级缺省联动

@@ -66,6 +66,17 @@ const KIND_COLOR: Record<string, string> = {
   long: 'gold',
 };
 
+// ── 概览状态 Tag：颜色/文案查找表（code-review item a22a55ff970a：嵌套
+// 三元违反项目风格规则，改查找表单源；failed 与未知态缺省 = 红 / 存在失败）──
+const STATUS_TAG_COLOR: Record<string, string> = {
+  passed: 'green',
+  timeout: 'purple',
+};
+const STATUS_TAG_TEXT: Record<string, string> = {
+  passed: '全部通过',
+  timeout: '超时中止',
+};
+
 // ── 模块级命名常量（code-review item 5130098995b7）：2s 轮询（运行中与
 // 等待启动两处）、结果表 pageSize、长耗时阈值展示缺省、概览卡底色原散落
 // 多处硬编码——收敛命名单源，调参只改这里。
@@ -442,10 +453,8 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
               <RunningProgressView progress={snapshot?.progress} />
             </Space>
           ) : (
-            <Tag
-              color={status === 'passed' ? 'green' : status === 'timeout' ? 'purple' : 'red'}
-            >
-              {status === 'passed' ? '全部通过' : status === 'timeout' ? '超时中止' : '存在失败'}
+            <Tag color={STATUS_TAG_COLOR[status] ?? 'red'}>
+              {STATUS_TAG_TEXT[status] ?? '存在失败'}
             </Tag>
           )}
           <Descriptions

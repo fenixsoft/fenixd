@@ -6,6 +6,7 @@ Handles result parsing, retry logic, and token/turn budget control.
 """
 
 import json
+import logging
 import os
 import functools
 import re

@@ -1,5 +1,5 @@
 import { Button, Card, Form, Radio, Typography } from 'antd';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ConfigData } from '@/services/dashboard';
 import SyncFromUserButton from './SyncFromUserButton';
 import { SETTINGS_ACTIONS_ROW_STYLE } from '../styles';
@@ -49,10 +49,20 @@ export default function ApprovalModePanel({ config, onSave, project, onConfigSyn
   // 按钮可继续点击会发出重叠保存请求（并发写同一配置文件，结果取决于响应
   // 到达顺序）——saving 期间置 loading/disabled 并在入口短路。
   const [saving, setSaving] = useState(false);
+  // 上次回填的 gates 序列化值（配合下方 effect 的回填门控）
+  const lastGatesBackfillRef = useRef('');
 
   useEffect(() => {
-    // 确保字段有值，使用配置值或默认值
-    form.setFieldsValue(gatesFormValues(config.gates));
+    // 确保字段有值，使用配置值或默认值。回填门控（code-review item
+    // a8786c075c4f）：config.gates 引用变化但内容相同时（保存后父组件
+    // setConfig 重载、其它面板保存触发的刷新）不无条件 setFieldsValue——
+    // 否则会静默丢弃用户尚未保存的单选修改。「同步用户级设置」等显式操作
+    // 带来的是真正内容变化，序列化值不同，仍会回填覆盖。
+    const next = gatesFormValues(config.gates);
+    const key = JSON.stringify(next);
+    if (key === lastGatesBackfillRef.current) return;
+    lastGatesBackfillRef.current = key;
+    form.setFieldsValue(next);
   }, [config.gates, form]);
 
   const handleSave = async () => {
