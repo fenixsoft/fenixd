@@ -65,10 +65,21 @@ def read_code_review_fix_progress(project_root) -> dict:
 
     缺失/损坏由 core 层兜底返回缺省态（``running=false, phase="idle",
     total=0, done=0``），不抛异常——读侧 MUST NOT 500。
+
+    条级字段（add-code-fix-item-level-progress 4.1）：``item_done`` /
+    ``current_item`` / ``batch_total`` 原样透传（字段缺失补 null，对齐既有
+    缺省态兜底口径）；``worktree``/``run_id`` 是读侧定位 out 产物的内部
+    索引，MUST NOT 外泄给前端。
     """
     from core.code_fix import read_progress as _fix_read_progress
 
-    return _fix_read_progress(project_root)
+    data = _fix_read_progress(project_root)
+    out = dict(data)
+    for key in ("item_done", "current_item", "batch_total"):
+        out[key] = data.get(key)
+    out.pop("worktree", None)
+    out.pop("run_id", None)
+    return out
 
 
 def read_code_fix_request_result(project_root) -> dict:
