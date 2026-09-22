@@ -129,6 +129,9 @@ def _get_code_review_progress(s, p, q, m):
 def _get_code_review_fix_progress(s, p, q, m):
     s._api_code_review_fix_progress(q)
 
+def _get_code_review_fix_run_result(s, p, q, m):
+    s._api_code_review_fix_run_result(q)
+
 # ── regression（add-test-regression-tab）──────────────────────────
 
 def _get_regression_result(s, p, q, m):
@@ -244,6 +247,9 @@ def _post_project_describe(s, p, q, m):
 def _post_code_review_run(s, p, q, m):
     s._api_code_review_run(q)
 
+def _post_code_review_fix_run(s, p, q, m):
+    s._api_code_review_fix_run(q)
+
 def _post_regression_run(s, p, q, m):
     s._api_regression_run(q)
 
@@ -329,6 +335,8 @@ _API_GET_ROUTES = [
     ("exact", "/api/code-review/progress", _get_code_review_progress),
     # code-review 自动修复进度（add-code-review-auto-fix，GET，无副作用）
     ("exact", "/api/code-review/fix-progress", _get_code_review_fix_progress),
+    # 手动「立即自动修复」判定结果只读（add-code-fix-manual-trigger，GET，无副作用）
+    ("exact", "/api/code-review/fix-run-result", _get_code_review_fix_run_result),
     # regression（add-test-regression-tab）：最近一次回归快照（GET，无副作用）
     ("exact", "/api/regression/result", _get_regression_result),
     # regression：verify.yaml regression 段配置状态（GET，无副作用）
@@ -376,6 +384,8 @@ _API_POST_ROUTES = [
     ("exact", "/api/project/describe",   _post_project_describe),
     # code-review（add-code-review-agent-and-quality-tab）：手动触发 / generate-spec / 状态流转
     ("exact", "/api/code-review/run", _post_code_review_run),
+    # 手动「立即自动修复」信号（add-code-fix-manual-trigger，写文件信号，daemon 消费）
+    ("exact", "/api/code-review/fix-run", _post_code_review_fix_run),
     ("exact", "/api/code-review/generate-spec", _post_code_review_generate_spec),
     ("exact", "/api/code-review/items/status", _post_code_review_items_status),
     # regression（add-test-regression-tab）：手动触发（写文件信号，daemon 消费）

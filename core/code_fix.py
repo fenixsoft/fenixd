@@ -477,19 +477,28 @@ class CodeFixOrchestrator:
 
     # -- 检查点（单一入口）--------------------------------------------------
 
-    def checkpoint(self) -> dict:
+    def checkpoint(self, override_enabled: bool = False) -> dict:
         """激活检查点：守卫链判定，通过则投递一批（返回 ``{triggered, reason}``）。
 
         两路激活（审查收尾 / full scan）与批 worker 的自驱动再投递共用本入口；
         幂等（开关关闭 / 已在跑 / 无 open 条目 / 回归契约缺失均不投递）。
+
+        ``override_enabled``（add-code-fix-manual-trigger）：手动触发即临时授权
+        ——为 True 时跳过 ``enabled`` 守卫（唯一调用方是 daemon 手动信号消费
+        函数 ``fenixd._check_code_fix_requests``），其余守卫（单飞 already_running
+        / 无 open 条目 / 失败保留 / 回归契约 fail-closed）原样生效——临时授权
+        只授权「不等调度」，不授权「跳过安全链」。缺省 False，既有两路调用点
+        （含 ``_resubmit`` 自驱动再投递）不传参、行为零变化。
+
         进度链身份（D8）：读到 ``running=true`` 且 activation_id 未变 → 视为
         同一激活链，MUST NOT 重算 total（否则每批收尾再投递会把 total 重置为
         已缩小的 open 数，前端出现「已处理 0/40」倒退）。
         """
         with self._lock:
             cfg = self._get_config()
-            if not cfg.get("enabled"):
+            if not cfg.get("enabled") and not override_enabled:
                 # 开关关闭 = 全链路零动作（不选批、不派 run、不写进度）
+                # （override_enabled=True 的手动触发除外——临时授权，见 docstring）
                 return {"triggered": False, "reason": "disabled"}
             if self._code_fix_running():
                 return {"triggered": False, "reason": "already_running"}

@@ -1729,3 +1729,172 @@ class TestKeepAliveErrorPathHygiene:
             assert "背景".encode("utf-8") in data
         finally:
             conn.close()
+
+
+class TestCodeFixRunAPI:
+    """POST /api/code-review/fix-run + GET /api/code-review/fix-run-result
+    （add-code-fix-manual-trigger task 5.1）HTTP 全分支语义。
+
+    fix-run 写 ``.fenix/code_fix_request.json`` 文件信号（O_CREAT|O_EXCL 独
+    占创建）由 daemon 消费；fix-run-result 只读透传判定结果文件，缺失返回
+    缺省态 ``{}``（MUST NOT 500）。消费方守卫（hosting_state 判据）对齐
+    POST /api/code-review/run。
+    """
+
+    _SIG = ".fenix/code_fix_request.json"
+    _RESULT = ".fenix/code_fix_request_result.json"
+
+    def _server_for(self, proot, tmp_path):
+        cfg = tmp_path / "dashboard.yaml"
+        reg = Registry(config_path=cfg)
+        reg.save({"port": 8787, "projects": [{"name": "proj-a", "path": str(proot)}],
+                  "scan_dirs": [str(tmp_path / "scan-empty")]})
+        return _TestServer(reg, Path(__file__).resolve().parents[1] / "core" / "dashboard" / "static")
+
+    def test_fix_run_success_200_writes_signal(self, tmp_path, monkeypatch):
+        """受理成功：200 + {ok, requested_at}，信号文件被创建（source/created）。"""
+        import json as _json
+        proot = make_project(tmp_path, name="proj-a", otherspec=False)
+        monkeypatch.setattr("core.fenix_session.hosting_state", lambda p: "managed")
+        srv = self._server_for(proot, tmp_path)
+        try:
+            status, body = srv.post("/api/code-review/fix-run?project=proj-a")
+            assert status == 200
+            assert body["ok"] is True
+            assert isinstance(body["requested_at"], str)
+            sig = proot / self._SIG
+            assert sig.exists()
+            payload = _json.loads(sig.read_text(encoding="utf-8"))
+            assert payload["source"] == "dashboard"
+            assert payload["created"] == body["requested_at"]
+        finally:
+            srv.stop()
+
+    def test_fix_run_existing_signal_409_no_overwrite(self, tmp_path, monkeypatch):
+        """残留/并发未消费信号 → 409，MUST NOT 覆盖已有信号。"""
+        import json as _json
+        proot = make_project(tmp_path, name="proj-a", otherspec=False)
+        monkeypatch.setattr("core.fenix_session.hosting_state", lambda p: "managed")
+        sig = proot / self._SIG
+        sig.parent.mkdir(parents=True, exist_ok=True)
+        sig.write_text(_json.dumps({"source": "dashboard", "created": "stale"}),
+                       encoding="utf-8")
+        srv = self._server_for(proot, tmp_path)
+        try:
+            status, body = srv.post("/api/code-review/fix-run?project=proj-a")
+            assert status == 409
+            assert "修复触发请求" in body["error"]
+            # 原信号未被覆盖
+            assert _json.loads(sig.read_text(encoding="utf-8"))["created"] == "stale"
+        finally:
+            srv.stop()
+
+    def test_fix_run_unknown_project_404(self, tmp_path, monkeypatch):
+        """项目不存在 → 404，不写信号。"""
+        proot = make_project(tmp_path, name="proj-a", otherspec=False)
+        monkeypatch.setattr("core.fenix_session.hosting_state", lambda p: "managed")
+        srv = self._server_for(proot, tmp_path)
+        try:
+            status, body = srv.post("/api/code-review/fix-run?project=ghost")
+            assert status == 404
+            assert not (proot / self._SIG).exists()
+        finally:
+            srv.stop()
+
+    def test_fix_run_stopped_400(self, tmp_path, monkeypatch):
+        """daemon stopped → 400「daemon 未运行」，不写信号。"""
+        proot = make_project(tmp_path, name="proj-a", otherspec=False)
+        monkeypatch.setattr("core.fenix_session.hosting_state", lambda p: "stopped")
+        srv = self._server_for(proot, tmp_path)
+        try:
+            status, body = srv.post("/api/code-review/fix-run?project=proj-a")
+            assert status == 400
+            assert "daemon 未运行" in body["error"]
+            assert not (proot / self._SIG).exists()
+        finally:
+            srv.stop()
+
+    def test_fix_run_unmanaged_409(self, tmp_path, monkeypatch):
+        """daemon 未受 supervisor 托管 → 409 明确文案，不写信号。"""
+        proot = make_project(tmp_path, name="proj-a", otherspec=False)
+        monkeypatch.setattr("core.fenix_session.hosting_state", lambda p: "unmanaged")
+        srv = self._server_for(proot, tmp_path)
+        try:
+            status, body = srv.post("/api/code-review/fix-run?project=proj-a")
+            assert status == 409
+            assert "未受 supervisor 托管" in body["error"]
+            assert not (proot / self._SIG).exists()
+        finally:
+            srv.stop()
+
+    def test_fix_run_predeletes_stale_result(self, tmp_path, monkeypatch):
+        """受理前预删旧结果文件：陈旧残留判定 MUST NOT 被前端当本次反馈。"""
+        import json as _json
+        proot = make_project(tmp_path, name="proj-a", otherspec=False)
+        monkeypatch.setattr("core.fenix_session.hosting_state", lambda p: "managed")
+        result = proot / self._RESULT
+        result.parent.mkdir(parents=True, exist_ok=True)
+        result.write_text(_json.dumps({"request_created": "stale",
+                                       "triggered": False, "reason": "no_open_items",
+                                       "message": "旧", "finished_at": "stale"}),
+                          encoding="utf-8")
+        srv = self._server_for(proot, tmp_path)
+        try:
+            status, _ = srv.post("/api/code-review/fix-run?project=proj-a")
+            assert status == 200
+            assert not result.exists(), "受理成功 MUST 预删旧结果文件"
+        finally:
+            srv.stop()
+
+    def test_fix_run_result_default_empty(self, tmp_path, monkeypatch):
+        """结果文件缺失 → 200 缺省态 {}（MUST NOT 500）。"""
+        proot = make_project(tmp_path, name="proj-a", otherspec=False)
+        srv = self._server_for(proot, tmp_path)
+        try:
+            status, body = srv.get("/api/code-review/fix-run-result?project=proj-a")
+            assert status == 200
+            assert body == {}
+        finally:
+            srv.stop()
+
+    def test_fix_run_result_passthrough(self, tmp_path, monkeypatch):
+        """结果文件存在 → 内容原样透传（回链字段齐全）。"""
+        import json as _json
+        proot = make_project(tmp_path, name="proj-a", otherspec=False)
+        result = proot / self._RESULT
+        result.parent.mkdir(parents=True, exist_ok=True)
+        payload = {"request_created": "2026-09-22T00:00:00+00:00",
+                   "triggered": True, "reason": "dispatched",
+                   "message": "已投递一批自动修复", "finished_at": "2026-09-22T00:00:01+00:00"}
+        result.write_text(_json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        srv = self._server_for(proot, tmp_path)
+        try:
+            status, body = srv.get("/api/code-review/fix-run-result?project=proj-a")
+            assert status == 200
+            assert body == payload
+        finally:
+            srv.stop()
+
+    def test_fix_run_result_corrupt_returns_default(self, tmp_path, monkeypatch):
+        """结果文件损坏 → 缺省态 {}（读侧 MUST NOT 500）。"""
+        proot = make_project(tmp_path, name="proj-a", otherspec=False)
+        result = proot / self._RESULT
+        result.parent.mkdir(parents=True, exist_ok=True)
+        result.write_text("{broken", encoding="utf-8")
+        srv = self._server_for(proot, tmp_path)
+        try:
+            status, body = srv.get("/api/code-review/fix-run-result?project=proj-a")
+            assert status == 200
+            assert body == {}
+        finally:
+            srv.stop()
+
+    def test_fix_run_result_unknown_project_404(self, tmp_path):
+        """项目不存在 → 404（对齐其余 GET 端点形态）。"""
+        proot = make_project(tmp_path, name="proj-a", otherspec=False)
+        srv = self._server_for(proot, tmp_path)
+        try:
+            status, _ = srv.get("/api/code-review/fix-run-result?project=ghost")
+            assert status == 404
+        finally:
+            srv.stop()
