@@ -273,14 +273,15 @@ def _full_suite_product_status(project_root) -> tuple:
 
 
 def _full_suite_status(project_root, raw, source_ok: bool = True) -> tuple:
-    """full-suite 单门合成，数据源优先级：框架产物 > run 自查值 > pending。
+    """full-suite 单门合成，数据源优先级：框架产物 > run 自查值 > 既有回落。
 
     add-impl-selfcheck-model-probe 3.2：全量回归由验证链执行后，run 内默认
     不写 full-suite 键（3.1 降级措辞）——读侧以框架侧回归产物为首选数据源
     （分支指纹校验新鲜度，结论不一致取产物）；产物不可见时回落 run 内自查
-    值（``_run_gate_status`` 既有语义逐字节不变）；双源皆无 → pending。
-    任一来源异常 fail-open 逐级回落；键名全集与状态枚举零变化；源缺失
-    （缺项/存量无指纹）MUST NOT 产生 unknown——「没跑」如实呈现为 pending。
+    值（``_run_gate_status`` 既有语义逐字节不变：文件可读键缺 → pending，
+    文件整体缺失/损坏 → unknown 既有语义，键名全集与状态枚举零变化）。
+    产物侧的缺失/损坏/存量无指纹/指纹陈旧/状态映射外均 fail-open 逐级回落，
+    不向落盘面注入新的失败终态。
     """
     status, detail = _full_suite_product_status(project_root)
     if status is not None:
