@@ -43,3 +43,9 @@
 - [x] 3.2 框架侧回归产物指纹 stamp + 读侧优先级：`core/regression.py` 写快照（`write_result`）时 stamp `(branch, merge_base, head_commit)` 指纹字段（现有 `last-run.json` 快照无分支字段，评审实核）；读侧 quality-gates 合成的 full-suite 门数据源优先级：框架侧回归产物（带分支指纹校验，指纹陈旧或存量快照无指纹字段按不可见）> quality-gates.json run 内自查值 > pending；任一来源异常 fail-open 逐级回落，键名全集与状态枚举零变化
 - [x] 3.3 断言固化：result_gate / 交付物守卫不因 full-suite 项缺失或 pending 新增任何打回/失败终态（回归测试覆盖）
 - [x] 3.4 单测（落 `tests/test_impl_selfcheck_model_probe.py`）覆盖：框架侧产物优先（结论不一致取产物）、指纹陈旧与存量无指纹字段回退自查值、双源皆无 pending、缺项零打回、写侧 stamp 字段落盘
+
+## 验证修复（原地打回第 1 轮）
+
+- [ ] 先复核失败有效性：逐条核对 `spec/changes/add-impl-selfcheck-model-probe/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
+- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
+- [ ] 修复后重跑验证确认通过
