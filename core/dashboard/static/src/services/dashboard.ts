@@ -336,6 +336,9 @@ export interface AlertResolveResult {
   action?: string;
   steps?: string[];
   marked?: boolean;
+  /** 后端留痕写入是否成功（留痕失败不回滚动作，后端仅 WARNING 留痕）；
+   * 前端据此组织成功文案，不再假称「留痕已写入」（item 896c7e54dafd） */
+  disposition_logged?: boolean;
   note?: string;
 }
 
@@ -345,8 +348,10 @@ export async function resolveAlert(
   choiceId: string,
   note = '',
 ): Promise<AlertResolveResult> {
-  const q = project ? `?project=${encodeURIComponent(project)}` : '';
-  return request<AlertResolveResult>(`/api/alert-resolve${q}`, {
+  // project 只走 body 通道（code-review item 7045ef4ae4c7）：POST 载荷本就
+  // 内聚 project/alert_id/choice_id/note，旧的 ?project= 双通道系冗余
+  //（后端 query 优先、body 兜底，两通道并存只会邀请日后失配）
+  return request<AlertResolveResult>('/api/alert-resolve', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ project, alert_id: alertId, choice_id: choiceId, note }),

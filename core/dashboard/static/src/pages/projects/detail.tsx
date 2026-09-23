@@ -822,9 +822,11 @@ export default function SpecDetailPage() {
   };
 
   // add-human-adjudication-choices 5.2：人工裁决一次选择完成处置闭环
-  // （动作执行 + 状态推进 + handled + 处置留痕）。loading 防重；成功提示
-  // 留痕已写入并回显执行步骤；失败展示错误与已执行步骤且恢复可交互
-  // （告警保持未处理，可调整后重试）。
+  // （动作执行 + 状态推进 + handled + 处置留痕）。loading 防重；成功回显执行
+  // 步骤并按后端结果如实组织文案（code-review item a09d0b6c26dd：后端动作
+  // 成功但 marked/disposition_logged 为 false 时告警未入已处理/留痕缺失，
+  // 旧实现一律报「留痕已写入」会诱导用户对不可逆裁决重复执行）；失败展示
+  // 错误与已执行步骤且恢复可交互（告警保持未处理，可调整后重试）。
   const handleResolveAlert = async (a: AlertItem, choiceId: string) => {
     if (resolvingAlerts.has(a.id)) return;
     setResolvingAlerts((s) => new Set(s).add(a.id));
@@ -836,11 +838,20 @@ export default function SpecDetailPage() {
     try {
       const r = await resolveAlert(a.project, a.id, choiceId, alertNotes[a.id] || '');
       const steps = Array.isArray(r.steps) ? r.steps : [];
-      setAlertResolveMsgs((m) => ({
-        ...m,
-        [a.id]: { text: `裁决已执行，处置留痕已写入${steps.length ? `：${steps.join('；')}` : ''}`, tone: 'info' },
-      }));
-      message.success('裁决已执行，处置留痕已写入');
+      const stepSuffix = steps.length ? `：${steps.join('；')}` : '';
+      const caveat = !r.marked || r.disposition_logged === false;
+      const caveats: string[] = [];
+      if (r.marked === false) caveats.push('告警未入已处理（可重试「标记已处理」）');
+      if (r.disposition_logged === false) caveats.push('处置留痕写入失败（审计轨迹缺失）');
+      const text = caveat
+        ? `裁决已执行${stepSuffix}（${caveats.join('；')}）`
+        : `裁决已执行，处置留痕已写入${stepSuffix}`;
+      setAlertResolveMsgs((m) => ({ ...m, [a.id]: { text, tone: 'info' } }));
+      if (caveat) {
+        message.warning(text);
+      } else {
+        message.success('裁决已执行，处置留痕已写入');
+      }
       loadSpecAlerts();
       getSpecDetail(name, spec).then(setDetail).catch(() => {});
     } catch (err) {
@@ -1651,8 +1662,16 @@ export default function SpecDetailPage() {
             const adjudicable = Array.isArray(a.choices) && a.choices.length > 0;
             const selChoiceId = alertChoiceSels[a.id] || '';
             const selChoice = (a.choices || []).find((c) => c.id === selChoiceId);
-            /* 5.3：撤销丢弃 / 跳过评审门为不可逆或越权语义，执行前二次确认 */
-            const needsConfirm = selChoiceId === 'abandon' || selChoiceId === 'skip_review_gate';
+            /* 5.3：不可逆/越权裁决（撤销丢弃 / 跳过评审门）执行前二次确认。
+               确认门由注册表的 destructive 标志驱动（code-review item
+               4768e8f73d62：adjudication_choices.py 是裁决空间单源，前端硬编码
+               业务 id 会让未来新增的不可逆选项静默失去二次确认；同 overview
+               AlertBanner 已改的口子）；历史告警快照（D2 不回写）缺该字段时，
+               按已知不可逆 id 回退保底。 */
+            const needsConfirm =
+              selChoice?.destructive === true ||
+              (selChoice?.destructive === undefined &&
+                (selChoiceId === 'abandon' || selChoiceId === 'skip_review_gate'));
             const resolving = resolvingAlerts.has(a.id);
             const resolveMsg = alertResolveMsgs[a.id];
             const execBtn = (

@@ -6,6 +6,7 @@ refactor-dashboard-data-module D3 分组：本模块承载 admin 写操作职责
 """
 
 import json
+import logging
 import os
 import re
 import shutil
@@ -48,6 +49,12 @@ from core.signals import (  # noqa: F401
 )
 
 CANCEL_RUN_REQUEST = ".fenix/cancel_run_request.json"
+
+# 裁决动词的失败留痕通道（code-review item 7e377b667b7b）：旧的
+# `except Exception: pass` 把调度唤醒信号/幂等标记复位失败静默吞掉——
+# 丢 kick 会让 deferred start_after 滞留无迹，丢标记复位会让预算告警被
+# token_budget 幂等门永久静默。统一 WARNING 留痕 + 步骤后缀如实回显。
+logger = logging.getLogger("fenixd.dashboard.admin_actions")
 
 
 def request_run_cancel(project_root, run_id: str, reason: str = "") -> dict:
@@ -577,6 +584,25 @@ def _write_scheduling_kick_signal(project_root, spec: str) -> dict:
         "file": kick_result["file"],
         "error": kick_result.get("error"),
     }
+
+
+def _kick_step_suffix(project_root, spec: str) -> str:
+    """裁决动词写调度唤醒信号并返回步骤后缀（code-review item 7e377b667b7b）。
+
+    失败不再静默（新动词旧实现 `except Exception: pass`）：丢 kick 会让
+    spec 的 deferred ``start_after`` 滞留不清且无迹可查。WARNING 留痕 + 步骤
+    后缀如实报告（经 alert-resolve/处置回显透出），供人工补清 start_after。
+    """
+    try:
+        kick = _write_scheduling_kick_signal(project_root, spec)
+        if kick.get("ok"):
+            return "，已写调度唤醒信号"
+        reason = kick.get("error") or "写入被拒"
+        logger.warning("scheduling kick 写入失败 spec=%s: %s", spec, reason)
+        return f"（调度唤醒信号写入失败：{reason}；如带 start_after 延迟将不会被清除）"
+    except Exception as e:
+        logger.warning("scheduling kick 写入异常 spec=%s: %s", spec, e)
+        return "（调度唤醒信号写入异常；如带 start_after 延迟将不会被清除）"
 
 
 def activate_spec(project_root, spec: str) -> dict:
@@ -1387,12 +1413,7 @@ def reset_verification(project_root, spec: str, note: str = "", signal_type: str
         else:
             sm.transition(spec, "ready", channel="manual")
             target = "ready"
-            kicked = ""
-            try:
-                if _write_scheduling_kick_signal(proot, spec).get("ok"):
-                    kicked = "，已写调度唤醒信号"
-            except Exception:
-                pass
+            kicked = _kick_step_suffix(proot, spec)
             steps.append("实现分支未合并或缺 branch：BLOCKED→READY 回实现通道" + kicked)
     if note:
         steps.append(f"裁决依据：{note}")
@@ -1499,12 +1520,7 @@ def skip_review_gate(project_root, spec: str, note: str = "") -> dict:
         f"Transition: {spec} blocked → ready",
         {"channel": "manual", "note": basis},
     )
-    kicked = ""
-    try:
-        if _write_scheduling_kick_signal(proot, spec).get("ok"):
-            kicked = "，已写调度唤醒信号"
-    except Exception:
-        pass
+    kicked = _kick_step_suffix(proot, spec)
     steps = [
         "冻结解除 + 评审器重试计数清零（reviewer_run/_review_attempts）",
         "blocked → ready 直推（跳过评审门），进入正常实现调度" + kicked,
@@ -1544,12 +1560,7 @@ def _exec_review_unfreeze(project_root, spec: str, note: str, marker: str, label
         f"Transition: {spec} blocked → reviewing",
         {"channel": "manual", "note": f"{label}（人工裁决）"},
     )
-    kicked = ""
-    try:
-        if _write_scheduling_kick_signal(proot, spec).get("ok"):
-            kicked = "，已写调度唤醒信号"
-    except Exception:
-        pass
+    kicked = _kick_step_suffix(proot, spec)
     steps = [
         f"冻结解除 + 评审计数清零，回 reviewing {label}" + kicked,
     ]
@@ -1601,12 +1612,7 @@ def _exec_continue_auto_fix(project_root, spec: str, note: str = "") -> dict:
     updates["_impl_run_budget_used"] = 0
     sm.update_spec(spec, updates)
     sm.transition(spec, "ready", channel="manual")
-    kicked = ""
-    try:
-        if _write_scheduling_kick_signal(proot, spec).get("ok"):
-            kicked = "，已写调度唤醒信号"
-    except Exception:
-        pass
+    kicked = _kick_step_suffix(proot, spec)
     steps = [
         "解冻并清零实现预算与验证链重试计数（重新获得完整自动修复预算）",
         "BLOCKED→READY 回实现通道" + kicked,
@@ -1639,12 +1645,26 @@ def _exec_raise_budget(project_root, spec: str) -> dict:
         return {"ok": False, "steps": [], "error": f"写入预算配置失败: {r.get('error')}"}
     steps = [f"agents.token_budget_millions {current_val:g}M → {new_val:g}M"
              "（写入 .fenix/config.yaml）"]
+    # 幂等标记复位失败不再静默成功（code-review item 7e377b667b7b）：update_spec
+    # False（spec 不在 STATE.md/写入被拒）或异常曾被 `except: pass` 吞掉且仍追加
+    # 成功步骤——token_budget.py 的幂等门（`ratio >= 1.0 and not alert_flag`）会让
+    # 下次预算耗尽不再告警，裁决看似闭环、spec 实则静音。预算翻倍此时已生效且
+    # 不可安全回退（回退会让重试再翻倍），故保持 ok:True，但 WARNING 留痕 +
+    # 步骤警告如实透出，提示人工核查。
     try:
         sm = _adjudication_sm(proot)
-        sm.update_spec(spec, {"_token_warn_80": False, "_token_alert_100": False})
-        steps.append("已复位 _token_warn_80/_token_alert_100 告警幂等标记")
-    except Exception:
-        pass
+        if sm.update_spec(spec, {"_token_warn_80": False, "_token_alert_100": False}):
+            steps.append("已复位 _token_warn_80/_token_alert_100 告警幂等标记")
+        else:
+            logger.warning(
+                "raise_budget 告警幂等标记复位失败 spec=%s（update_spec False）", spec
+            )
+            steps.append("警告：告警幂等标记复位失败（spec 未找到或写入被拒），"
+                         "预算 80%/100% 告警可能保持静默，请人工核查")
+    except Exception as e:
+        logger.warning("raise_budget 告警幂等标记复位异常 spec=%s: %s", spec, e)
+        steps.append("警告：告警幂等标记复位异常，预算 80%/100% 告警可能保持静默，"
+                     "请人工核查")
     return {"ok": True, "steps": steps, "error": None}
 
 

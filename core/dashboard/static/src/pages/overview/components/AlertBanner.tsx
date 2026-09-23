@@ -140,11 +140,22 @@ export default function AlertBanner({ refreshTick }: { refreshTick: number }) {
     try {
       const r = await resolveAlert(a.project, a.id, choiceId, alertNotes[a.id] || '');
       const steps = Array.isArray(r.steps) ? r.steps : [];
-      setAlertResolveMsgs((m) => ({
-        ...m,
-        [a.id]: { text: `裁决已执行，处置留痕已写入${steps.length ? `：${steps.join('；')}` : ''}`, tone: 'info' },
-      }));
-      message.success('裁决已执行，处置留痕已写入');
+      // 成功文案按后端结果如实组织（code-review item 896c7e54dafd）：留痕写入
+      // 失败后端只落 WARNING 不回滚动作，marked=false（kind 不匹配/并发处置）
+      // 时告警仍在——旧实现一律断言「留痕已写入」，审计轨迹缺失时误导用户
+      const caveats: string[] = [];
+      if (r.marked === false) caveats.push('告警未入已处理（可重试「标记已处理」）');
+      if (r.disposition_logged === false) caveats.push('处置留痕写入失败（审计轨迹缺失）');
+      const stepSuffix = steps.length ? `：${steps.join('；')}` : '';
+      const text = caveats.length
+        ? `裁决已执行${stepSuffix}（${caveats.join('；')}）`
+        : `裁决已执行，处置留痕已写入${stepSuffix}`;
+      setAlertResolveMsgs((m) => ({ ...m, [a.id]: { text, tone: 'info' } }));
+      if (caveats.length) {
+        message.warning(text);
+      } else {
+        message.success('裁决已执行，处置留痕已写入');
+      }
       void load();
     } catch (err) {
       setAlertResolveMsgs((m) => ({
@@ -263,11 +274,13 @@ export default function AlertBanner({ refreshTick }: { refreshTick: number }) {
                       <>
                         <AlertLines item={a} />
                         {adjudicable && (
-                          /* 裁决控件常驻；wrap 布局适配窄屏（screen-xs 自查） */
-                          <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6 }}>
+                          /* 裁决控件常驻；wrap 布局适配窄屏（screen-xs 自查）。
+                             静态样式落样式表类（code-review item d893e16d11de），
+                             行内 style 只留真正动态的值 */
+                          <div className="alert-adjudication-row">
                             <Select
                               size="small"
-                              style={{ minWidth: 220, flex: '1 1 220px' }}
+                              className="alert-adjudication-select"
                               placeholder="选择裁决项"
                               value={selChoiceId || undefined}
                               onChange={(v) => setAlertChoiceSels((m) => ({ ...m, [a.id]: v }))}
@@ -276,7 +289,7 @@ export default function AlertBanner({ refreshTick }: { refreshTick: number }) {
                             />
                             <Input
                               size="small"
-                              style={{ width: 200, flex: '1 1 160px' }}
+                              className="alert-adjudication-input"
                               maxLength={200}
                               placeholder="处置依据（可选）"
                               value={alertNotes[a.id] || ''}
@@ -286,12 +299,12 @@ export default function AlertBanner({ refreshTick }: { refreshTick: number }) {
                           </div>
                         )}
                         {adjudicable && selChoice?.desc && (
-                          <div style={{ marginTop: 4, fontSize: 12 }}>
+                          <div className="alert-adjudication-desc">
                             <Typography.Text type="secondary">{selChoice.desc}</Typography.Text>
                           </div>
                         )}
                         {resolveMsg && (
-                          <div style={{ marginTop: 4, fontSize: 12, whiteSpace: 'pre-wrap' }}>
+                          <div className="alert-resolve-msg">
                             <Typography.Text type={resolveMsg.tone === 'error' ? 'danger' : 'secondary'}>
                               {resolveMsg.text}
                             </Typography.Text>

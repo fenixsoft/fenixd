@@ -393,14 +393,23 @@ export function runEventsToChatMessages(events: RunEvent[], showThinking: boolea
     }
 
     // 静默名单：零信息心跳/框架内部事件，不产出任何可见行。
-    // 例外（code-review item 3c0281837ea5）：旧形态 system 事件（type:"system" +
+    // 例外一（code-review item 3c0281837ea5）：旧形态 system 事件（type:"system" +
     // subtype 命中名单）携带非空字符串 content 时不在此吞掉——静默只针对零载荷
     // 心跳，带内容的旧形态事件落到下方 content 回退照旧渲染（该回退分支本就
     // 载明「旧形态 system 事件带字符串内容：直接渲染」，此早检此前与其矛盾）。
+    // 例外二（code-review item 3dda29b6297c）：名单内事件带非空 error 载荷时
+    // 渲染原因条，不整段吞掉——实测 backend superseded 事件携带门失败 error
+    // 字段（runner.py 注释明确要求原因读侧可恢复），整吞会让死因不可见，
+    // 违背 design 的 fail-open 原则（旧实现至少还渲染 [superseded] 占位行）。
     if (SILENT_KINDS.has(kind)) {
       const hasLegacyText =
         ev.type === 'system' && typeof ev.content === 'string' && ev.content.trim() !== '';
-      if (!hasLegacyText) continue;
+      if (!hasLegacyText) {
+        const errorPayload = strField(rec, 'error').trim();
+        if (!errorPayload) continue;
+        pushSystem(`系统事件（${kind}）：${truncateText(errorPayload, 80)}`, timestamp);
+        continue;
+      }
     }
 
     // 信息类事件 → 携带关键载荷的语义化系统条（中文），替代 [label] 裸行
