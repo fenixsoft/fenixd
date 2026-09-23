@@ -1,9 +1,12 @@
-import { Alert, App, Button, Card, Collapse, Input, List, Popconfirm, Select, Space, Tag, Typography } from 'antd';
+import { Alert, App, Button, Card, Collapse, Input, List, Select, Space, Tag, Typography } from 'antd';
 import dayjs from 'dayjs';
 import { useCallback, useEffect, useState } from 'react';
 import type { AlertItem, AlertsData } from '@/services/dashboard';
-import { clearAllAlerts, getAlerts, markAlertHandled, resolveAlert } from '@/services/dashboard';
+import { clearAllAlerts, getAlerts, markAlertHandled } from '@/services/dashboard';
 import { fmtEvidence } from '@/utils/evidence';
+// 裁决交互收敛共享 hook（code-review item f86171cc149d）：状态四元组、结果
+// 文案、destructive 二次确认门与 SPEC 详情页同源，本组件只注入刷新回调
+import { AlertAdjudicationExec, useAlertAdjudication } from '@/hooks/useAlertAdjudication';
 
 /**
  * 人工升级告警横幅（对齐 v1：/api/alerts + SSE alerts 事件驱动刷新）。
@@ -79,11 +82,13 @@ export default function AlertBanner({ refreshTick }: { refreshTick: number }) {
   const [data, setData] = useState<AlertsData | null>(null);
   const [optimistic, setOptimistic] = useState<string[]>([]);
   const [expanded, setExpanded] = useState(true);
-  // add-human-adjudication-choices 5.4：裁决选择题交互状态（按告警 id 分键）
-  const [alertChoiceSels, setAlertChoiceSels] = useState<Record<string, string>>({});
-  const [alertNotes, setAlertNotes] = useState<Record<string, string>>({});
-  const [resolvingAlerts, setResolvingAlerts] = useState<Set<string>>(new Set());
-  const [alertResolveMsgs, setAlertResolveMsgs] = useState<Record<string, { text: string; tone: 'error' | 'info' }>>({});
+  // add-human-adjudication-choices 5.4：裁决选择题交互状态经共享 hook
+  //（按告警 id 分键；与 SPEC 详情页同源，item f86171cc149d）
+  const adj = useAlertAdjudication();
+  const {
+    alertChoiceSels, setAlertChoiceSels, alertNotes, setAlertNotes,
+    resolvingAlerts, alertResolveMsgs,
+  } = adj;
 
   const load = useCallback(async () => {
     try {
@@ -127,50 +132,9 @@ export default function AlertBanner({ refreshTick }: { refreshTick: number }) {
     void load();
   };
 
-  // add-human-adjudication-choices 5.4：横幅内人工裁决闭环（同详情页语义：
-  // loading 防重、成功回显步骤、失败展示错误且恢复可交互可重试）
-  const handleResolve = async (a: AlertItem, choiceId: string) => {
-    if (resolvingAlerts.has(a.id)) return;
-    setResolvingAlerts((s) => new Set(s).add(a.id));
-    setAlertResolveMsgs((m) => {
-      const n = { ...m };
-      delete n[a.id];
-      return n;
-    });
-    try {
-      const r = await resolveAlert(a.project, a.id, choiceId, alertNotes[a.id] || '');
-      const steps = Array.isArray(r.steps) ? r.steps : [];
-      // 成功文案按后端结果如实组织（code-review item 896c7e54dafd）：留痕写入
-      // 失败后端只落 WARNING 不回滚动作，marked=false（kind 不匹配/并发处置）
-      // 时告警仍在——旧实现一律断言「留痕已写入」，审计轨迹缺失时误导用户
-      const caveats: string[] = [];
-      if (r.marked === false) caveats.push('告警未入已处理（可重试「标记已处理」）');
-      if (r.disposition_logged === false) caveats.push('处置留痕写入失败（审计轨迹缺失）');
-      const stepSuffix = steps.length ? `：${steps.join('；')}` : '';
-      const text = caveats.length
-        ? `裁决已执行${stepSuffix}（${caveats.join('；')}）`
-        : `裁决已执行，处置留痕已写入${stepSuffix}`;
-      setAlertResolveMsgs((m) => ({ ...m, [a.id]: { text, tone: 'info' } }));
-      if (caveats.length) {
-        message.warning(text);
-      } else {
-        message.success('裁决已执行，处置留痕已写入');
-      }
-      void load();
-    } catch (err) {
-      setAlertResolveMsgs((m) => ({
-        ...m,
-        [a.id]: { text: err instanceof Error ? err.message : String(err), tone: 'error' },
-      }));
-      message.error('裁决执行失败，告警保持未处理，可调整后重试');
-    } finally {
-      setResolvingAlerts((s) => {
-        const n = new Set(s);
-        n.delete(a.id);
-        return n;
-      });
-    }
-  };
+  // add-human-adjudication-choices 5.4：横幅内人工裁决闭环——交互实体在共享
+  // hook（同详情页语义：loading 防重、成功回显步骤、失败展示错误且恢复可交互
+  // 可重试），刷新回调经执行按钮的 onResolved 注入
 
   const handleClearAll = async () => {
     try {
@@ -219,49 +183,16 @@ export default function AlertBanner({ refreshTick }: { refreshTick: number }) {
               const adjudicable = Array.isArray(a.choices) && a.choices.length > 0;
               const selChoiceId = alertChoiceSels[a.id] || '';
               const selChoice = (a.choices || []).find((c) => c.id === selChoiceId);
-              /* 不可逆/越权裁决（撤销丢弃 / 跳过评审门）执行前二次确认（5.3）。
-                 确认门由注册表的 destructive 标志驱动（code-review item
-                 19f72b875e8f：业务 id 由后端单源拥有，前端硬编码会在 id 改名
-                 时静默丢失二次确认）；历史告警快照（D2 不回写）缺该字段时，
-                 按已知不可逆 id 回退保底。 */
-              const needsConfirm =
-                selChoice?.destructive === true ||
-                (selChoice?.destructive === undefined &&
-                  (selChoiceId === 'abandon' || selChoiceId === 'skip_review_gate'));
               const resolving = resolvingAlerts.has(a.id);
               const resolveMsg = alertResolveMsgs[a.id];
-              const execBtn = (
-                <Button
-                  key="exec"
-                  size="small"
-                  type={needsConfirm ? 'primary' : 'default'}
-                  danger={needsConfirm}
-                  loading={resolving}
-                  disabled={!selChoiceId || resolving}
-                  onClick={() => selChoiceId && !needsConfirm && void handleResolve(a, selChoiceId)}
-                >
-                  执行
-                </Button>
-              );
               return (
                 <List.Item
                   actions={[
                     adjudicable ? (
-                      needsConfirm ? (
-                        <Popconfirm
-                          key="exec"
-                          title="确认执行该裁决？"
-                          description={selChoice?.desc || '该操作可能不可自动恢复，请确认'}
-                          okText="确认执行"
-                          cancelText="取消"
-                          onConfirm={() => selChoiceId && void handleResolve(a, selChoiceId)}
-                          disabled={resolving}
-                        >
-                          {execBtn}
-                        </Popconfirm>
-                      ) : (
-                        execBtn
-                      )
+                      /* 执行按钮（含 destructive 二次确认门）经共享控件，
+                         确认门与详情页同源（item f86171cc149d）；裁决成功后
+                         重拉横幅数据 */
+                      <AlertAdjudicationExec key="exec" alert={a} adj={adj} onResolved={() => void load()} />
                     ) : null,
                     <Button key="handled" size="small" onClick={() => void handleOne(a)}>
                       标记已处理

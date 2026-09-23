@@ -4,7 +4,7 @@
 import { useMemo, useState } from 'react';
 
 import type { ChatMessage } from './types';
-import { formatElapsedSeconds, parseToolInput, toolCardPreview } from './toolGrouping';
+import { formatElapsedSeconds, parseToolInput, taskStatusDotClass, toolCardPreview } from './toolGrouping';
 
 function prettyJson(value: unknown): string {
   if (typeof value === 'string') return value;
@@ -70,13 +70,12 @@ export default function ToolCard({ message }: { message: ChatMessage }) {
       </button>
 
       {/* task_notification 回填的任务终态摘要（BUG-01 修复）：折叠态常显，
-          状态点视觉与 MessageItem 任务通知行一致（completed 绿 / 其余琥珀） */}
+          状态点配色经 taskStatusDotClass 与 MessageItem 任务通知行同源
+          （completed 绿 / 其余琥珀，item 1dd4d551b484） */}
       {taskSummary && (
         <div className="mt-0.5 flex items-center gap-1.5 pl-6 text-xs text-muted-foreground">
           <span
-            className={`inline-block h-1.5 w-1.5 flex-shrink-0 rounded-full ${
-              message.taskStatus === 'completed' ? 'bg-green-400' : 'bg-amber-400'
-            }`}
+            className={`inline-block h-1.5 w-1.5 flex-shrink-0 rounded-full ${taskStatusDotClass(message.taskStatus)}`}
           />
           <span className="min-w-0 truncate">{taskSummary}</span>
         </div>

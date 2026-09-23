@@ -142,14 +142,24 @@ function isGroupableToolMessage(message: ChatMessage): message is ChatMessage & 
   return Boolean(message.isToolUse && message.toolName && !message.isSubagentContainer);
 }
 
-// Messages that render nothing (e.g. reasoning hidden when showThinking is off)
-// shouldn't split an otherwise-continuous run of same-class tools.
-function rendersNothing(message: ChatMessage, showThinking: boolean): boolean {
+// thinking 隐藏判定（唯一权威口径，code-review item 2faec963d2ea）：开关关闭
+// 且非兜底强制渲染的 thinking 消息不可见。渲染层（MessageItem 隐藏分支）与
+// 分组层（隐藏消息不打断同类连续分组）共用本谓词——此前两处各自内联同一
+// 不变式（`!thinkingForced` vs `thinkingForced !== true`），单侧改动就会产出
+// 「隐藏但破坏分组」或「可见却被分组」的不一致。
+export function isThinkingHidden(message: ChatMessage, showThinking: boolean): boolean {
   // 兜底强制渲染的 thinking（thinkingForced）真实可见，须照常打断同类连续分组。
-  // （静默事件在 runEventsToChatMessages 即不产出条目，本函数不再保留
+  // （静默事件在 runEventsToChatMessages 即不产出条目，此处不再保留
   // rendersNothing 防御标记分支——全仓无赋值点的死标记只会误导读者，
   // code-review item fcd96aabd6d9）
   return Boolean(message.isThinking && !showThinking && message.thinkingForced !== true);
+}
+
+// 任务通知状态点配色（唯一权威口径，code-review item 1dd4d551b484）：
+// MessageItem 任务通知行与 ToolCard 终态摘要行共用，completed 绿 / 其余琥珀，
+// 色彩映射单源持有防两处视觉漂移（如未来 failed 独立配色只改这里）。
+export function taskStatusDotClass(status?: string): string {
+  return status === 'completed' ? 'bg-green-400' : 'bg-amber-400';
 }
 
 // 同组判定：同类（read/bash/edit）连续即可成组；类外工具沿用同名连续
@@ -183,7 +193,7 @@ export function groupConsecutiveTools(
     while (nextIndex < messages.length) {
       const candidate = messages[nextIndex];
 
-      if (rendersNothing(candidate, showThinking)) {
+      if (isThinkingHidden(candidate, showThinking)) {
         nextIndex += 1;
         continue;
       }
