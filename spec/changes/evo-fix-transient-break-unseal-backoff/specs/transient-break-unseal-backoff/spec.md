@@ -4,7 +4,7 @@
 
 ### Requirement: 解封后渐进恢复而非立即全量放行
 
-core/agent_runner/provider_circuit.py 的全局瞬断熔断到期解封路径 MUST NOT 立即一次性放行全部积压：解封后 MUST 先进入 post-unseal hold（时长为 unseal_backoff_base_seconds×同指纹已解封次数，封顶 unseal_backoff_max_seconds），hold 期满先放行恰好一条最高优先级派发作为探针；同指纹解封次数 MUST 有状态记忆，并在稳定观察窗（无新熔断）后衰减复位。
+core/agent_runner/provider_circuit.py 的全局瞬断熔断到期解封路径 MUST NOT 立即一次性放行全部积压：解封后 MUST 先进入 post-unseal hold（时长为 unseal_backoff_base_seconds×解封后的当前解封次数，多指纹并存时取各指纹次数最大值，封顶 unseal_backoff_max_seconds），hold 期满先放行恰好一条最高优先级派发作为探针；同指纹解封次数 MUST 有状态记忆，并在稳定观察窗（无新熔断）后衰减复位；hold 期满与探针观察窗期满 MUST 主动唤醒派发通道，MUST NOT 依赖外部触发点才被发现。
 
 #### Scenario: 解封不立即全量放行
 
@@ -13,8 +13,8 @@ core/agent_runner/provider_circuit.py 的全局瞬断熔断到期解封路径 MU
 
 #### Scenario: hold 随解封次数渐进且封顶
 
-- **WHEN** 同一指纹第二次解封
-- **THEN** hold 时长为基数×2 且不超过封顶值
+- **WHEN** 同一指纹第二次解封（首轮探针未失败，如在飞积压失败再次触发熔断）
+- **THEN** hold 时长为基数×2 且不超过封顶值（首轮探针失败路径按 design D2 计数规则相应加长）
 
 #### Scenario: 稳定后衰减复位
 
