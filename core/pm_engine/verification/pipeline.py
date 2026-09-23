@@ -102,8 +102,6 @@ from core.pm_engine.verification.fastlane import (
     evaluate_fastlane,
     dispatch_minor_defect_fastlane,
     fastlane_decision_path,
-    subset_scenario_ids,
-    merge_subset_report,
 )
 
 # refactor-verification-module 阶段3.6：judge 派发门/重跑上限/降级上下文组已迁 judge_gate.py，

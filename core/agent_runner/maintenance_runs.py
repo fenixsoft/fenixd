@@ -131,6 +131,33 @@ def admin_disposition_path(project_root: Path, run_id: str) -> Path:
     return Path(project_root) / ".fenix" / f"{ADMIN_DISPOSITION_PREFIX}{run_id}.json"
 
 
+def _unique_admin_run_id(runner, spec: str) -> str:
+    """生成不冲突的 ``admin-<spec>-<epoch>`` run_id（code-review item d543e3aaf129）。
+
+    秒级时间戳在「同 spec 并行多实例」（如 manual-intervention 与 blocked_stuck
+    各一）下可能撞名：admin_disposition-<run_id>.json 实例文件与
+    runs/admin-<run_id>.jsonl 会互相覆盖，与 fix-admin-run-blocks-mainloop D3
+    声称的「并行实例互不覆盖」相悖。对齐 _unique_code_review_run_id 的退避
+    形态：候选的处置实例文件或在飞 run 日志任一已存在，即追加 ``-<n>`` 退避
+    （n 从 1 起递增）。探测退避而非 O_CREAT|O_EXCL 申领：处置实例文件由
+    管理员按 prompt 注入的路径写入、读取即清理，抢先落申领占位文件会改变
+    该文件的写入时序与生命周期，故不做原子抢占。
+    """
+    base = f"admin-{spec}-{int(time.time())}"
+    candidate = base
+    n = 0
+    runs_dir = runner.project_root / ".fenix" / "runs"
+    while True:
+        if (
+            admin_disposition_path(runner.project_root, candidate).exists()
+            or (runs_dir / f"{candidate}.jsonl").exists()
+        ):
+            n += 1
+            candidate = f"{base}-{n}"
+            continue
+        return candidate
+
+
 def run_administrator(runner, signal: dict) -> AdminDisposition:
     """唤起 Administrator Agent 处置困境信号（administrator-agent spec）。
 
@@ -149,7 +176,7 @@ def run_administrator(runner, signal: dict) -> AdminDisposition:
             （signal_type/spec/severity/description/evidence/recommended_action）。
     """
     spec = signal.get("spec") or "global"
-    run_id = f"admin-{spec}-{int(time.time())}"
+    run_id = _unique_admin_run_id(runner, spec)
     # 实例路径注入提示词（prompt_builder 把写入指令指向该文件）
     disp_path = admin_disposition_path(runner.project_root, run_id)
     prompt_detail = dict(signal)

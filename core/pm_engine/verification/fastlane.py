@@ -401,9 +401,13 @@ def subset_reverify(pipeline, spec_name: str, subset_ids: list) -> dict:
         s.to_dict() if hasattr(s, "to_dict") else s for s in subset
     ]
     subset_path = verify_dir / "test_scenarios.fastlane.json"
-    subset_path.write_text(
-        json.dumps(subset_payload, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    try:
+        subset_path.write_text(
+            json.dumps(subset_payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    except OSError as e:
+        # 写盘失败（磁盘满/权限等）按 fastlane 失败回落整轮，维持返回值契约
+        return {"ok": False, "report": None, "reason": f"子集场景文件写盘失败: {e}"}
     env_error, report, _app_reachable, _reach_note, aborted = pipeline._execute_stage2(
         spec_name, verify_dir, subset_path
     )

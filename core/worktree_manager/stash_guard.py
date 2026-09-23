@@ -502,8 +502,9 @@ class G6StashGuardMixin:
           - 主树脏说明用户正在工作，不抢；
           - 人工手工 stash 的条目无此前缀，永不触碰。
 
-        pop 冲突时沿用 restore_after_merge 的自愈策略（丢弃 stash 版本保 HEAD、
-        清 UU 使主树可写）。自愈完成后 drop 该条目（fix-autostash-conflict-loop）：
+        pop 冲突时按「丢弃 stash 版保 HEAD」的旧策略自愈（checkout -f HEAD 覆盖
+        冲突文件、清 UU 使主树可写；与三态自愈刻意不同：本路径条目即将 drop，
+        无需保留 stash 版内容）。自愈完成后 drop 该条目（fix-autostash-conflict-loop）：
         冲突方内容已按策略丢弃、非冲突方改动已落工作区，条目保留不再有恢复价值；
         而本巡检每 60s 跑一次，条目若滞留栈顶会被原样重试 → 每分钟一条 ERROR 的
         无限循环（2026-09-07 指纹 a6fd0e29 事故），daemon 重启无法清除（状态在

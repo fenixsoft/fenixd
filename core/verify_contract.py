@@ -1287,10 +1287,25 @@ def rewrite_scenarios_origin(scenarios_path: Path, base_url: str) -> int:
     rewritten, n = _rewrite_origin_in_scenarios(raw, base_url)
     if not n:
         return 0
+    # 原子写回（同目录临时文件 + os.replace，与 verdict_check.save_report 同约定）：
+    # 中途被杀/断电不会留下截断 JSON 损坏冻结场景集。
+    import tempfile
+
     try:
-        scenarios_path.write_text(
-            json.dumps(rewritten, ensure_ascii=False, indent=2), encoding="utf-8"
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(scenarios_path.parent), prefix=".scenarios.", suffix=".json.tmp"
         )
+        try:
+            with open(fd, "w", encoding="utf-8") as f:
+                json.dump(rewritten, f, ensure_ascii=False, indent=2)
+                f.flush()
+            os.replace(tmp_path, scenarios_path)
+        except OSError:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
     except OSError:
         return 0
     return n

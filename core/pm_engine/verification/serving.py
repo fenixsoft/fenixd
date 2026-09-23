@@ -846,8 +846,11 @@ def _open_boot_log(pipeline, spec_name: str):
         log_dir.mkdir(parents=True, exist_ok=True)
         return open(log_dir / f"{spec_name}-boot.log", "wb")
     except OSError as e:
-        pipeline._context.logger.warning("pm_engine", f"boot.log 打开失败（回退丢弃输出）: {e}")
-        return subprocess.DEVNULL
+        # 打开 boot.log 失败时回退写 os.devnull，保持可 close 的文件对象语义
+        # （subprocess.DEVNULL 是 int 哨兵值，调用方 boot_log.close() 会
+        # AttributeError 炸穿降级路径）
+        pipeline._context.logger.warning("pm_engine", f"boot.log 打开失败（回退写 os.devnull）: {e}")
+        return open(os.devnull, "wb")
 
 
 def _read_boot_log_tail(pipeline, spec_name: str, handle) -> str:

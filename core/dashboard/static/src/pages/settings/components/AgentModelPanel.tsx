@@ -1,4 +1,4 @@
-import { Button, Card, Col, Form, Input, Row, Select, Space, Typography, message } from 'antd';
+import { App, Button, Card, Col, Form, Input, Row, Select, Space, Typography } from 'antd';
 import {
   CopyOutlined,
   HolderOutlined,
@@ -100,6 +100,7 @@ interface AgentModelPanelProps {
 }
 
 export default function AgentModelPanel({ config, onSave, project, onConfigSynced }: AgentModelPanelProps) {
+  const { message } = App.useApp();
   const [form] = Form.useForm();
   const providers = config.llm.providers || [];
 

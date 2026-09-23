@@ -186,10 +186,10 @@ def _load_shutdown_drain_seconds() -> int:
     解析失败（文件缺失/非 YAML/字段缺失/非法值）回退 0 —— 调用方按
     ``0 = 现行快速停机`` 语义回退 DEFAULT_SIGKILL_WAIT_SECONDS，保持向后兼容。
     """
-    import yaml
-
     cfg_path = FENIX_DIR / "config.yaml"
     try:
+        import yaml
+
         if not cfg_path.exists():
             return 0
         data = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
@@ -203,6 +203,10 @@ def _load_shutdown_drain_seconds() -> int:
             return 0
         value = int(raw)
         return value if value >= 0 else 0
+    except ImportError:
+        # PyYAML 缺失时按契约回退 0（= 现行快速停机），仅告警不中断看门狗
+        log("PyYAML 未安装，无法解析 admin.shutdown_drain_seconds，回退 0 (non-blocking)")
+        return 0
     except Exception:
         return 0
 

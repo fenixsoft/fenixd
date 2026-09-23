@@ -259,7 +259,7 @@ class H2ProjectRoutesMixin:
             pass
         self._json({"ok": True, "path": project["path"]})
 
-    # ── 建议改进项端点（add-framework-self-evolution 6.6）────────────
+    # ── 项目简介生成端点 ────────────────────────────────────────
 
 
 
@@ -365,5 +365,4 @@ class H2ProjectRoutesMixin:
             return None
         return self.server.project_by_name(name)
 
-    # ── SSE 推送流 ──────────────────────────────────────────────
 

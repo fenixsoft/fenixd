@@ -22,8 +22,6 @@ import json
 import sys
 from pathlib import Path
 
-# 项目根（经 .fenix/bin/ 软链接调用时 = 项目目录）
-PROJECT_ROOT = Path(__file__).absolute().parent.parent.parent
 # 框架根：core/ 所在目录（直连与经软链接调用都能定位）
 FRAMEWORK_ROOT = Path(__file__).resolve().parent.parent
 if str(FRAMEWORK_ROOT) not in sys.path:
@@ -80,6 +78,9 @@ def expand_globs(paths) -> list:
         import glob
 
         matched = sorted(Path(m) for m in glob.glob(str(p)))
+        if not matched:
+            # 既不存在也无 glob 匹配：向 stderr 告警后跳过，与文档一致
+            print(f"[analyze_run_latency] 路径无匹配，跳过: {raw}", file=sys.stderr)
         out.extend(matched)
     # 去重保序
     seen = set()
