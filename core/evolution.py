@@ -1180,7 +1180,10 @@ def accept_item(
 
     顺序固定：前置状态校验 → resolve_spec_name → 复制到 spec/changes →
     仅 add 该目录并提交 → add_spec(drafted, priority=5[, start_after]) →
-    删暂存草稿 → 标 accepted/auto_accepted。失败分支：
+    删暂存草稿 → 标 accepted/auto_accepted。校验到写回全程持 items.jsonl
+    同一把 flock（compare-and-set，code-review item fba717748316）：daemon
+    自动接受与 dashboard 人工同意并发时只有先到者通过 pending 校验并立项，
+    后到者锁内重读即见最终状态、按幂等语义返回现状。失败分支：
     - 提交失败 → 删除 spec/changes 副本（避免主树未跟踪文件）、保留暂存
       草稿、置 accept_failed + 告警；
     - 注册失败 → 清理已提交的 spec/changes 副本（git rm + 路径限定提交，
@@ -1196,159 +1199,179 @@ def accept_item(
     accept_failed 状态幂等返回现状（不重复提交或注册）。
     """
     now = datetime.now(timezone.utc).isoformat()
-    items = read_items(project_root)
-    rec = items.get(item_id_)
-    if rec is None:
-        return {"ok": False, "status": None, "spec_name": None, "error": f"条目不存在: {item_id_}"}
-    if rec.get("status") not in ("pending", "accept_failed"):
-        # 其它状态幂等返回现状（accepted/auto_accepted/rejected/analyzed/
-        # draft_failed 均不重复提交或注册）
-        return {
-            "ok": True,
-            "status": rec.get("status"),
-            "spec_name": rec.get("spec_name"),
-            "error": None,
-        }
+    path = items_path(project_root)
 
-    spec = rec.get("spec") if isinstance(rec.get("spec"), dict) else None
-    if spec is None:
-        rec["status"] = "draft_failed"
-        rec["draft_failed_reason"] = "条目无 spec 内容，无法接受"
-        upsert_item(project_root, rec)
-        return {
-            "ok": False,
-            "status": "draft_failed",
-            "spec_name": None,
-            "error": rec["draft_failed_reason"],
-        }
-    name = resolve_spec_name(spec.get("name"), item_id_, project_root, state_machine)
-    if name is None:
-        rec["status"] = "draft_failed"
-        rec["draft_failed_reason"] = "SPEC 名无法消解冲突"
-        upsert_item(project_root, rec)
-        _write_admin_warning(project_root, f"自进化条目 {item_id_} 接受失败：SPEC 名冲突无法消解")
-        return {
-            "ok": False,
-            "status": "draft_failed",
-            "spec_name": None,
-            "error": rec["draft_failed_reason"],
-        }
+    def _persist(rec: dict) -> None:
+        # 锁内单条写回：与 upsert_item 的锁内主体同型（读-改-写 + 原子替换），
+        # 但 MUST NOT 再走 upsert_item/read_items——同进程对同一把
+        # ``.items.jsonl.lock`` 二次 flock 会自阻塞（见 _with_lock）。
+        current = _read_items_unlocked(path)
+        current[rec["id"]] = rec
+        _atomic_write(
+            path,
+            "".join(json.dumps(current[k], ensure_ascii=False) + "\n" for k in sorted(current)),
+        )
 
-    # 路径越界校验（code-review item 79a8a0a141f5）：eid 可携 ``..``/分隔符
-    # （agent 产出 JSON 未校验 id），拼路径可越出 drafts 基目录——成功后
-    # ``shutil.rmtree(src)`` 会删任意目录。与 reject_item/delete_item 同款
-    # _safe_draft_dir 防护，越界置 accept_failed 并告警。
-    src = _safe_draft_dir(project_root, str(item_id_ or ""))
-    if src is None:
-        rec["status"] = "accept_failed"
-        rec["draft_failed_reason"] = "草稿目录路径非法或越界"
-        upsert_item(project_root, rec)
-        _write_admin_warning(project_root, f"自进化条目 {item_id_} 接受失败：草稿目录路径非法或越界")
-        return {
-            "ok": False,
-            "status": "accept_failed",
-            "spec_name": None,
-            "error": rec["draft_failed_reason"],
-        }
-    dest = Path(project_root) / "spec" / "changes" / name
-    if dest.exists():
-        # 同名目录已被他人/重试创建：清掉再复制，防残留污染
-        shutil.rmtree(dest, ignore_errors=True)
-    try:
-        if src.is_dir():
-            shutil.copytree(src, dest)
-        else:
+    def _do() -> dict:
+        # 「状态校验 → 复制/提交/注册 → 写回」整体持 items.jsonl flock 构成
+        # compare-and-set（code-review item fba717748316）：daemon 自动接受与
+        # dashboard 人工同意并发时，后到者在锁内重读必见先到者写回的最终状态，
+        # 走幂等分支返回现状，不再各自立项出两份 spec 目录与两次 STATE 注册。
+        items = _read_items_unlocked(path)
+        rec = items.get(item_id_)
+        if rec is None:
+            return {"ok": False, "status": None, "spec_name": None, "error": f"条目不存在: {item_id_}"}
+        if rec.get("status") not in ("pending", "accept_failed"):
+            # 其它状态幂等返回现状（accepted/auto_accepted/rejected/analyzed/
+            # draft_failed 均不重复提交或注册）
+            return {
+                "ok": True,
+                "status": rec.get("status"),
+                "spec_name": rec.get("spec_name"),
+                "error": None,
+            }
+
+        spec = rec.get("spec") if isinstance(rec.get("spec"), dict) else None
+        if spec is None:
+            rec["status"] = "draft_failed"
+            rec["draft_failed_reason"] = "条目无 spec 内容，无法接受"
+            _persist(rec)
+            return {
+                "ok": False,
+                "status": "draft_failed",
+                "spec_name": None,
+                "error": rec["draft_failed_reason"],
+            }
+        name = resolve_spec_name(spec.get("name"), item_id_, project_root, state_machine)
+        if name is None:
+            rec["status"] = "draft_failed"
+            rec["draft_failed_reason"] = "SPEC 名无法消解冲突"
+            _persist(rec)
+            _write_admin_warning(project_root, f"自进化条目 {item_id_} 接受失败：SPEC 名冲突无法消解")
+            return {
+                "ok": False,
+                "status": "draft_failed",
+                "spec_name": None,
+                "error": rec["draft_failed_reason"],
+            }
+
+        # 路径越界校验（code-review item 79a8a0a141f5）：eid 可携 ``..``/分隔符
+        # （agent 产出 JSON 未校验 id），拼路径可越出 drafts 基目录——成功后
+        # ``shutil.rmtree(src)`` 会删任意目录。与 reject_item/delete_item 同款
+        # _safe_draft_dir 防护，越界置 accept_failed 并告警。
+        src = _safe_draft_dir(project_root, str(item_id_ or ""))
+        if src is None:
             rec["status"] = "accept_failed"
-            rec["draft_failed_reason"] = "暂存草稿目录缺失"
-            upsert_item(project_root, rec)
-            _write_admin_warning(project_root, f"自进化条目 {item_id_} 接受失败：暂存草稿目录缺失")
+            rec["draft_failed_reason"] = "草稿目录路径非法或越界"
+            _persist(rec)
+            _write_admin_warning(project_root, f"自进化条目 {item_id_} 接受失败：草稿目录路径非法或越界")
             return {
                 "ok": False,
                 "status": "accept_failed",
                 "spec_name": None,
                 "error": rec["draft_failed_reason"],
             }
-    except OSError as e:
-        rec["status"] = "accept_failed"
-        rec["draft_failed_reason"] = f"草稿复制失败: {e}"
-        upsert_item(project_root, rec)
-        _write_admin_warning(project_root, f"自进化条目 {item_id_} 接受失败：{e}")
-        return {
-            "ok": False,
-            "status": "accept_failed",
-            "spec_name": None,
-            "error": rec["draft_failed_reason"],
-        }
+        dest = Path(project_root) / "spec" / "changes" / name
+        if dest.exists():
+            # 同名目录已被他人/重试创建：清掉再复制，防残留污染
+            shutil.rmtree(dest, ignore_errors=True)
+        try:
+            if src.is_dir():
+                shutil.copytree(src, dest)
+            else:
+                rec["status"] = "accept_failed"
+                rec["draft_failed_reason"] = "暂存草稿目录缺失"
+                _persist(rec)
+                _write_admin_warning(project_root, f"自进化条目 {item_id_} 接受失败：暂存草稿目录缺失")
+                return {
+                    "ok": False,
+                    "status": "accept_failed",
+                    "spec_name": None,
+                    "error": rec["draft_failed_reason"],
+                }
+        except OSError as e:
+            rec["status"] = "accept_failed"
+            rec["draft_failed_reason"] = f"草稿复制失败: {e}"
+            _persist(rec)
+            _write_admin_warning(project_root, f"自进化条目 {item_id_} 接受失败：{e}")
+            return {
+                "ok": False,
+                "status": "accept_failed",
+                "spec_name": None,
+                "error": rec["draft_failed_reason"],
+            }
 
-    ok, err = _git_commit(project_root, dest, name)
-    if not ok:
-        # 提交失败：删除副本（主树无未跟踪文件），保留暂存草稿可重试
-        shutil.rmtree(dest, ignore_errors=True)
-        rec["status"] = "accept_failed"
-        rec["draft_failed_reason"] = err
-        upsert_item(project_root, rec)
-        _write_admin_warning(project_root, f"自进化条目 {item_id_} 接受失败（提交失败）: {err}")
-        return {"ok": False, "status": "accept_failed", "spec_name": name, "error": err}
+        ok, err = _git_commit(project_root, dest, name)
+        if not ok:
+            # 提交失败：删除副本（主树无未跟踪文件），保留暂存草稿可重试
+            shutil.rmtree(dest, ignore_errors=True)
+            rec["status"] = "accept_failed"
+            rec["draft_failed_reason"] = err
+            _persist(rec)
+            _write_admin_warning(project_root, f"自进化条目 {item_id_} 接受失败（提交失败）: {err}")
+            return {"ok": False, "status": "accept_failed", "spec_name": name, "error": err}
 
-    # 提交成功 → 注册；start_after 非空 = 定时拾取（到点前 dispatch 门控跳过），
-    # 为空则 drafted 立即进入调度（原行为）。
-    # 哨兵字符串 "manual"（add-spec-manual-activation D5，evo 同意立项的「手工
-    # 激活」档）原样落入 entry：MUST NOT 在此引入 parse_utc 时间换算——哨兵
-    # 不是时间，经 start_after_pending 显式判等后即「永不到期、待人工激活」。
-    registered = False
-    entry = {"status": "drafted", "priority": 5}
-    if start_after:
-        entry["start_after"] = start_after
-    try:
-        if state_machine is not None:
-            registered = state_machine.add_spec(name, entry)
-        else:
-            registered = True  # state_machine 缺失（如纯路径测试）视为注册成功
-    except Exception as e:
-        _logger.warning("evolution: 条目 %s 注册 %s 失败: %s", item_id_, name, e)
+        # 提交成功 → 注册；start_after 非空 = 定时拾取（到点前 dispatch 门控跳过），
+        # 为空则 drafted 立即进入调度（原行为）。
+        # 哨兵字符串 "manual"（add-spec-manual-activation D5，evo 同意立项的「手工
+        # 激活」档）原样落入 entry：MUST NOT 在此引入 parse_utc 时间换算——哨兵
+        # 不是时间，经 start_after_pending 显式判等后即「永不到期、待人工激活」。
         registered = False
-        err = str(e)
+        entry = {"status": "drafted", "priority": 5}
+        if start_after:
+            entry["start_after"] = start_after
+        try:
+            if state_machine is not None:
+                registered = state_machine.add_spec(name, entry)
+            else:
+                registered = True  # state_machine 缺失（如纯路径测试）视为注册成功
+        except Exception as e:
+            _logger.warning("evolution: 条目 %s 注册 %s 失败: %s", item_id_, name, e)
+            registered = False
+            err = str(e)
 
-    if not registered:
-        # 注册失败：清理已提交的 spec/changes/<name> 副本（code-review item
-        # 9d550ea7ac1c）——否则重试时 resolve_spec_name 判该名冲突换后缀
-        # 立项，主树留下两份同一逻辑 spec 的目录、前一份成无主残留。清理
-        # 失败（git 状态不确定）不掩盖注册失败本身，降级为在告警中说明
-        # 残留目录与重试后缀策略。
-        rel_dir = f"spec/changes/{name}"
-        cleaned, clean_err = _git_remove_committed_dir(project_root, rel_dir)
-        rec["status"] = "accept_failed"
-        rec["draft_failed_reason"] = err or "STATE 注册失败"
-        rec["spec_name"] = name
-        upsert_item(project_root, rec)
-        if cleaned:
-            residue_note = f"已清理 {rel_dir} 副本，重试可复用原名"
-        else:
-            residue_note = (
-                f"{rel_dir} 副本残留未清理: {clean_err}；重试将改用"
-                f" -{str(item_id_)[:6]} 后缀立项，残留目录需人工处理"
+        if not registered:
+            # 注册失败：清理已提交的 spec/changes/<name> 副本（code-review item
+            # 9d550ea7ac1c）——否则重试时 resolve_spec_name 判该名冲突换后缀
+            # 立项，主树留下两份同一逻辑 spec 的目录、前一份成无主残留。清理
+            # 失败（git 状态不确定）不掩盖注册失败本身，降级为在告警中说明
+            # 残留目录与重试后缀策略。
+            rel_dir = f"spec/changes/{name}"
+            cleaned, clean_err = _git_remove_committed_dir(project_root, rel_dir)
+            rec["status"] = "accept_failed"
+            rec["draft_failed_reason"] = err or "STATE 注册失败"
+            rec["spec_name"] = name
+            _persist(rec)
+            if cleaned:
+                residue_note = f"已清理 {rel_dir} 副本，重试可复用原名"
+            else:
+                residue_note = (
+                    f"{rel_dir} 副本残留未清理: {clean_err}；重试将改用"
+                    f" -{str(item_id_)[:6]} 后缀立项，残留目录需人工处理"
+                )
+            _write_admin_warning(
+                project_root,
+                f"自进化条目 {item_id_} 接受失败（注册失败）: "
+                f"{rec['draft_failed_reason']}（{residue_note}）",
             )
-        _write_admin_warning(
-            project_root,
-            f"自进化条目 {item_id_} 接受失败（注册失败）: "
-            f"{rec['draft_failed_reason']}（{residue_note}）",
-        )
-        return {
-            "ok": False,
-            "status": "accept_failed",
-            "spec_name": name,
-            "error": rec["draft_failed_reason"],
-        }
+            return {
+                "ok": False,
+                "status": "accept_failed",
+                "spec_name": name,
+                "error": rec["draft_failed_reason"],
+            }
 
-    # 注册成功 → 删暂存草稿 + 更新状态
-    shutil.rmtree(src, ignore_errors=True)
-    rec["status"] = "auto_accepted" if decided_by == "auto" else "accepted"
-    rec["decided_by"] = decided_by
-    rec["decided_at"] = now
-    rec["spec_name"] = name
-    upsert_item(project_root, rec)
-    write_todo_marker(rec, disposition=_disposition_from_status(rec["status"]))
-    return {"ok": True, "status": rec["status"], "spec_name": name, "error": None}
+        # 注册成功 → 删暂存草稿 + 更新状态
+        shutil.rmtree(src, ignore_errors=True)
+        rec["status"] = "auto_accepted" if decided_by == "auto" else "accepted"
+        rec["decided_by"] = decided_by
+        rec["decided_at"] = now
+        rec["spec_name"] = name
+        _persist(rec)
+        write_todo_marker(rec, disposition=_disposition_from_status(rec["status"]))
+        return {"ok": True, "status": rec["status"], "spec_name": name, "error": None}
+
+    return _with_lock(path, _do)
 
 
 # ── 任务 3.6：拒绝路径 ─────────────────────────────────────────────

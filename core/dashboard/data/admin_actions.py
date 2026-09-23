@@ -25,6 +25,10 @@ from core.state_machine import (
 # 跨组引用（D4：叶子→中枢，直接导入无环）
 from .state import normalize_bool_flag, parse_state
 
+# set_spec_priority 的校验异常（Raises 契约；routes 侧经门面
+# dashboard_data.InvalidPriority 捕获映射 400）
+from .spec_docs import InvalidPriority
+
 # run 归属全等匹配（add-freeze-stop-inflight-agents 4.4：running_run_ids_for_spec
 # 与 daemon 消费方共用——run_spec_part 已剥 agent 前缀与 -a<n>/-r<n>/时间戳）
 from core.agent_runner.run_files import run_spec_part

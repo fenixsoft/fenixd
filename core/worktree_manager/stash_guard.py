@@ -305,10 +305,11 @@ class G6StashGuardMixin:
           保留两侧），显式登记 disposition 兜底 —— **绝不静默丢弃**，stash
           条目保留、stash_pop_conflict 信号照发。
 
-        ``_drop_superseded_stash_entry``（``零独有内容才 drop`` 判据）保持不动：
-        恢复 commit 后 HEAD 已含 stash 版、树级 diff 恒为空，drop 判据会误命中
-        「被合并结果取代」——而这里内容是被自愈重新入库，条目保留作审计
-        （D3：入恢复 commit 与条目保留并存按保留记账）。
+        「零独有内容才 drop」判据已退役（原 ``_drop_superseded_stash_entry``，
+        D3 后冲突条目一律保留，无生产调用方）：恢复 commit 后 HEAD 已含
+        stash 版、树级 diff 恒为空，该判据会误命中「被合并结果取代」——而
+        这里内容是被自愈重新入库，条目保留作审计（D3：入恢复 commit 与
+        条目保留并存按保留记账）。
         """
         # ── 态 1：三方重试（ours=HEAD / base=stash 父 / theirs=stash） ──
         remaining: list = []
@@ -409,87 +410,6 @@ class G6StashGuardMixin:
                 f"preserved in worktree — state-3 disposition recorded",
             )
             return 3, f"state-2 recovery commit failed: {exc}"
-
-    def _drop_superseded_stash_entry(self, pinned_sha: str, conflict_files: list) -> bool:
-        """pop 冲突自愈后判定 stash 条目是否已被合并结果完全取代（D2）。
-
-        判据（树级 diff 而非文本比较，二进制/模式变更天然覆盖）：对每个 UU 文件
-        ``git diff --quiet <sha> HEAD -- <file>``——stash 提交树即 stash 时刻工作区
-        快照，HEAD 已含合并结果，退出码 0 即「stash 版被完全取代」。全部 0 → 零
-        独有内容，drop 该条目；任一非 0 → 保留。
-
-        drop 前核对 sha 仍在栈顶（reclaim_stale_autostash 同款防线，防并发新条目
-        插队误删）；sha 未知/不在栈顶/drop 失败均保留条目并记跳过原因。
-
-        Returns: True = 已 drop；False = 保留（差异 / sha 防线未通过）。
-        """
-        if not pinned_sha:
-            self.logger.warning(
-                "worktree_manager",
-                "Superseded-stash check skipped: pop 前 sha 未知 — 条目保留",
-            )
-            return False
-        superseded = True
-        for f in conflict_files:
-            try:
-                d = subprocess.run(
-                    [
-                        "git",
-                        "-C",
-                        str(self.project_root),
-                        "diff",
-                        "--quiet",
-                        pinned_sha,
-                        "HEAD",
-                        "--",
-                        f,
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                )
-            except (subprocess.TimeoutExpired, OSError):
-                superseded = False
-                break
-            if d.returncode != 0:
-                superseded = False
-                break
-        if not superseded:
-            return False
-        # sha 仍在栈顶才 drop（防并发 autostash 插队误删）
-        cur = subprocess.run(
-            ["git", "-C", str(self.project_root), "rev-parse", "--verify", "stash@{0}"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        if cur.returncode != 0 or cur.stdout.strip() != pinned_sha:
-            self.logger.warning(
-                "worktree_manager",
-                f"Superseded stash entry not dropped: stash@{{0}} 已变化 "
-                f"(pinned={pinned_sha[:12]}) — 条目保留",
-            )
-            return False
-        dropped = subprocess.run(
-            ["git", "-C", str(self.project_root), "stash", "drop", "stash@{0}"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        if dropped.returncode != 0:
-            self.logger.warning(
-                "worktree_manager",
-                f"Superseded stash entry drop failed "
-                f"(commit {pinned_sha[:12]}, recoverable until gc): "
-                f"{dropped.stderr.strip()}",
-            )
-            return False
-        self.logger.warning(
-            "worktree_manager",
-            f"Superseded stash entry auto-dropped (commit {pinned_sha[:12]}, "
-            f"recoverable until gc) — stash 版已被合并结果完全取代",
-        )
-        return True
 
     def reclaim_stale_autostash(self) -> bool:
         """兜底回收滞留的 pre-dispatch autostash 条目（fix-autostash-orphans）。

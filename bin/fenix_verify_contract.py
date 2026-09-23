@@ -40,7 +40,13 @@ _project_root = _script_dir.parent
 if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
-from core.verify_contract import load_verify_contract, validate_contract
+from core.verify_contract import (
+    FAIL_CONTRACT_MISSING,
+    FAIL_CONTRACT_PARSE,
+    FAIL_SERVE_INVALID,
+    load_verify_contract,
+    validate_contract,
+)
 from core.regression import parse_junit_xml
 
 
@@ -214,18 +220,19 @@ def main():
         print("校验通过（exit 0）: 三段契约全部通过，可作为有效验证契约生效")
         sys.exit(0)
     else:
-        # 确定退出码（按优先级：契约无效 > prepare > serve > ready）
+        # 确定退出码（按优先级：契约无效 > prepare > serve > ready）。
+        # valid=False 的细分映射走结构化 fail_kind 枚举（code-review item
+        # fdb60ffde7a8），不依赖错误文案的中文子串匹配——文案漂移不再使退
+        # 出码静默降级；枚举缺失/None 一律短路兜底 exit 1，不再对错误字段
+        # 做子串 in 判断（顺带杜绝 in None TypeError）。
         if not result.valid:
-            if "不存在" in result.prepare_error:
-                exit_code = 1  # 契约文件不存在
-            elif "解析失败" in result.prepare_error:
-                exit_code = 1  # 契约 YAML 解析失败
-            elif "非法" in result.serve_error:
+            fail_kind = getattr(result, "fail_kind", None)
+            if fail_kind == FAIL_SERVE_INVALID:
                 exit_code = 5  # 契约格式无效（serve 段非法）
-            elif "为空" in result.serve_error:
-                exit_code = 5  # 契约格式无效（必填字段为空）
+            elif fail_kind in (FAIL_CONTRACT_MISSING, FAIL_CONTRACT_PARSE):
+                exit_code = 1  # 契约文件不存在 / 契约 YAML 解析失败
             else:
-                exit_code = 1  # 其他无效原因
+                exit_code = 1  # 其他无效原因（含 fail_kind 缺失/None 的兜底）
         elif not result.prepare_ok:
             exit_code = 2  # prepare 失败
         elif not result.serve_ok:

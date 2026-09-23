@@ -387,6 +387,15 @@ def load_verify_contract(project_root: Path, logger=None) -> Optional[VerifyCont
     )
 
 
+# valid=False 时的结构化失败原因枚举（code-review item fdb60ffde7a8）：CLI 按
+# 枚举映射退出码，不再依赖人类可读文案的中文子串匹配——文案可自由调整而不
+# 影响退出码语义。空串 = 非格式失败（valid=True，或失败属 prepare/serve/ready
+# 运行时维度，退出码由对应段的 ok 标志决定）。
+FAIL_CONTRACT_MISSING = "contract_missing"  # 契约文件不存在（exit 1）
+FAIL_CONTRACT_PARSE = "contract_parse_error"  # 契约 YAML 解析失败（exit 1）
+FAIL_SERVE_INVALID = "serve_invalid"  # serve 段非法（kind 非法/必填为空，exit 5）
+
+
 @dataclass
 class ValidateResult:
     """契约校验结果：逐段通过与否与错误详情，以及 valid 判定。
@@ -403,6 +412,9 @@ class ValidateResult:
     serve_error: str
     ready_ok: bool
     ready_error: str
+    # 结构化失败原因枚举（仅 valid=False 时非空，取值见上方 FAIL_* 常量）；
+    # prepare_error/serve_error 文案字段保留向后兼容。
+    fail_kind: str = ""
     # 段级详细信息（供 CLI 输出）
     prepare_steps_run: int = 0
     serve_kind: str = ""
@@ -449,6 +461,7 @@ def validate_contract(project_root: Path, logger=None) -> ValidateResult:
             serve_error="",
             ready_ok=False,
             ready_error="",
+            fail_kind=FAIL_CONTRACT_PARSE,
         )
 
     if contract is None:
@@ -462,6 +475,7 @@ def validate_contract(project_root: Path, logger=None) -> ValidateResult:
                 serve_error="",
                 ready_ok=False,
                 ready_error="",
+                fail_kind=FAIL_CONTRACT_MISSING,
             )
         else:
             return ValidateResult(
@@ -472,12 +486,14 @@ def validate_contract(project_root: Path, logger=None) -> ValidateResult:
                 serve_error="",
                 ready_ok=False,
                 ready_error="",
+                fail_kind=FAIL_CONTRACT_PARSE,
             )
 
     # 2. valid 判定（D4：YAML 可解析 + serve 段合法）
     valid = True
     serve_ok = True
     serve_error = ""
+    fail_kind = ""
     serve_kind = ""
     serve_port = None
 
@@ -491,14 +507,17 @@ def validate_contract(project_root: Path, logger=None) -> ValidateResult:
                 if raw_kind not in ("static", "command"):
                     valid = False
                     serve_ok = False
+                    fail_kind = FAIL_SERVE_INVALID
                     serve_error = f"serve.kind 非法: {raw_kind}（应为 static 或 command）"
                 elif raw_kind == "static" and not raw_serve.get("root"):
                     valid = False
                     serve_ok = False
+                    fail_kind = FAIL_SERVE_INVALID
                     serve_error = "serve.root 为空（kind=static 必填）"
                 elif raw_kind == "command" and not raw_serve.get("cmd"):
                     valid = False
                     serve_ok = False
+                    fail_kind = FAIL_SERVE_INVALID
                     serve_error = "serve.cmd 为空（kind=command 必填）"
     except Exception:
         pass  # YAML 解析失败已在上方处理
@@ -661,6 +680,7 @@ def validate_contract(project_root: Path, logger=None) -> ValidateResult:
         serve_error=serve_error,
         ready_ok=ready_ok,
         ready_error=ready_error,
+        fail_kind=fail_kind,
         prepare_steps_run=prepare_steps_run,
         serve_kind=serve_kind,
         serve_port=serve_port,
