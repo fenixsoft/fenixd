@@ -161,7 +161,18 @@ class Registry:
             prefix=f".{self.config_path.name}.", suffix=".tmp", dir=str(self.config_path.parent)
         )
         try:
-            with open(fd, "w", encoding="utf-8") as f:
+            try:
+                f = open(fd, "w", encoding="utf-8")
+            except OSError:
+                # open 失败不会接管 fd（code-review item e55c2da78214）：不显式
+                # 关闭则描述符泄漏——finally 只负责 unlink 临时文件。close 自身
+                # 再失败（fd 已坏）不吞掉原始异常。
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+                raise
+            with f:
                 f.write(yaml.safe_dump(data, allow_unicode=True, sort_keys=False))
                 f.flush()
                 os.fsync(f.fileno())

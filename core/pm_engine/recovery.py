@@ -170,7 +170,17 @@ class RecoveryWatch:
                 f"{type(e).__name__}: {e}",
             )
             try:
-                path.replace(path.with_name(path.name + ".corrupt"))
+                # 损坏现场带时间戳留存（code-review item f305d725e2b0）：固定
+                # ``.corrupt`` 名会让下一次损坏覆盖上一次现场（循环损坏只剩
+                # 最后一份，与「丢失现场无从排查」目标相悖）。时间戳 + 存在性
+                # 退避保留历史备份；全部候选都建不出时按旧语义放弃改名。
+                stamp = time.strftime("%Y%m%d-%H%M%S")
+                corrupt = path.with_name(f"{path.name}.{stamp}.corrupt")
+                seq = 0
+                while corrupt.exists():
+                    seq += 1
+                    corrupt = path.with_name(f"{path.name}.{stamp}.{seq}.corrupt")
+                path.replace(corrupt)
             except OSError:
                 pass
             return
@@ -313,8 +323,12 @@ class RecoveryWatch:
                 # （保留观察项、推进 due），MUST NOT 静默丢弃观察项或关闭它。
                 deferred_due = self._transition_defer_due(spec_name, now)
                 if deferred_due is not None:
-                    item["due"] = deferred_due
-                    self._pm._save_recovery_watch()
+                    # due 顺延读改写 + 落盘持锁（code-review item dbf6069ef584）：
+                    # 本方法可从 daemon 定时器与 PMEngine.check_blockers 并发进入，
+                    # 无锁 RMW 会让交错巡检覆盖对方刚推进的 due（重复派发）。
+                    with self._watch_lock:
+                        item["due"] = deferred_due
+                        self._pm._save_recovery_watch()
                     self._pm.logger.info(
                         "pm_engine",
                         f"Recovery watch deferred for '{spec_name}' "
@@ -328,8 +342,10 @@ class RecoveryWatch:
                 # 输出——顺延让框架内推进先行，避免唤起无效 admin run）。
                 retry_due = self._inflight_retry_defer_due(spec_name, now)
                 if retry_due is not None:
-                    item["due"] = retry_due
-                    self._pm._save_recovery_watch()
+                    # 同上：读改写 + 落盘整体持锁（code-review item dbf6069ef584）
+                    with self._watch_lock:
+                        item["due"] = retry_due
+                        self._pm._save_recovery_watch()
                     self._pm.logger.info(
                         "pm_engine",
                         f"Recovery watch deferred for '{spec_name}' "
@@ -936,16 +952,23 @@ class RecoveryWatch:
             )
         except (TypeError, ValueError):
             cooldown = DEFAULT_SIGNAL_COOLDOWN_MINUTES * 60
-        prev = self._signal_fingerprints.get(spec_name)
-        now = time.time()
-        if prev and prev[0] == fp and (now - prev[1]) < cooldown:
+        # 指纹冷却 check-then-act 持锁（code-review item dbf6069ef584）：
+        # check_recovery_watch 并发进入时，两线程可同时通过下方指纹检查并各自
+        # 写 admin store（重复信号）。与 _recovery_watch 同一把可重入锁序列化
+        # 「查指纹 + 记指纹」，判定与记录不再交错。
+        with self._watch_lock:
+            prev = self._signal_fingerprints.get(spec_name)
+            now = time.time()
+            suppressed = bool(prev and prev[0] == fp and (now - prev[1]) < cooldown)
+            if not suppressed:
+                self._signal_fingerprints[spec_name] = (fp, now)
+        if suppressed:
             self._pm.logger.info(
                 "pm_engine",
                 f"dispatch_stalled for '{spec_name}' suppressed (same fingerprint "
                 f"{fp} within {int(cooldown / 60)}m cooldown) — logged only",
             )
             return
-        self._signal_fingerprints[spec_name] = (fp, now)
 
         # 同源路径（family.py bug_repair_mode 先例）：get_admin_config 缺省填充，
         # 旁路 _get_config + 硬编码 fallback 会与权威缺省漂移（缺省现为 60 分钟）。

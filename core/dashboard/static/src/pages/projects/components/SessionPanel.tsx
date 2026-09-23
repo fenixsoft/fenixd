@@ -288,7 +288,8 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
         void unregisterSessionWatch(project, cid).catch(() => {});
         watchRegisteredRef.current = false;
       }
-      // 注销后清空：卸载时本 effect 会再跑一次，cid 不清会被重复 DELETE（404）
+      // 注销后清空：active→false 转换路径下方清理函数已先行注销（标记已否），
+      // cid 不清会在再次切离时被重复 DELETE（404）
       cidRef.current = null;
       // 切离时清空本地状态，切回重新接回（events/started 由 loadAll 重置）
       sessionIdRef.current = null;
@@ -296,6 +297,21 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
       setSending(false);
       setText('');
     }
+    // 卸载守卫（code-review item e71b2c2de7cf）：组件在 active===true 且已注册
+    // watch 时被销毁，本 effect 主体不会「再跑」（React 卸载只执行清理函数，
+    // 旧注释声称的「卸载时本 effect 会再跑」不成立）——服务端订阅泄漏，只剩
+    // 显式 !active 转换才释放。清理函数覆盖 unmount（及 active 翻转重建）：
+    // 仅注销实际注册过的 watch，并先行清标记，防 active→false 路径主体重复
+    // DELETE（404 污染 no_console_error 断言）。
+    return () => {
+      if (watchRegisteredRef.current) {
+        const cid = cidRef.current;
+        watchRegisteredRef.current = false;
+        if (cid && project) {
+          void unregisterSessionWatch(project, cid).catch(() => {});
+        }
+      }
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active]);
 

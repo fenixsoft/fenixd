@@ -218,6 +218,16 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
       }
     } catch (e) {
       if (seq !== seqRef.current) return;
+      // 轮询失败止损（code-review item e419d82ceb2b）：旧实现失败处不清
+      // interval——持久后端错误时 running 轮询每 2s 持续打请求并重复弹同一
+      // toast（请求风暴 + 刷屏）。失败即停 running 轮询并退出等待启动过渡态
+      // （快照保留原值，重进分面/手动触发即恢复轮询）；等待启动窗口的
+      // 120s 超时兜底因此不必等到期。
+      if (pollTimerRef.current !== null) {
+        window.clearInterval(pollTimerRef.current);
+        pollTimerRef.current = null;
+      }
+      setAwaitingStart(false);
       message.error(`加载失败: ${e instanceof Error ? e.message : String(e)}`);
     }
   }, [active, project, message]);
