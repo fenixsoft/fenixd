@@ -30,17 +30,24 @@ interface ClaudeOutputPaneProps {
 // 之间可能又追加了 G 条 → 后端窗口整体后移 G 条，窗口尾部与已加载头部重叠。
 // 取「older 的后缀 == loaded 的前缀」的最长重叠段剔除（归档 run 无追加、重叠为
 // 0，原样前置拼接）；头部缺口接受近似，不引入事件唯一 ID（Non-Goals）。
+// 序列化各做一次 O(n)（code-review item 700e560a4062）：旧实现对每个重叠候选
+// 反复 JSON.stringify older 后缀项，最坏 ~n²/2 次大对象序列化卡主线程。
 function prependWithoutOverlap(older: RunEvent[], loaded: RunEvent[]): RunEvent[] {
   const maxOverlap = Math.min(older.length, loaded.length);
   if (maxOverlap === 0) return older;
-  const loadedHeads: string[] = [];
+  const loadedHeads: string[] = new Array(maxOverlap);
   for (let i = 0; i < maxOverlap; i++) {
-    loadedHeads.push(JSON.stringify(loaded[i]));
+    loadedHeads[i] = JSON.stringify(loaded[i]);
+  }
+  // 只需 older 的后缀 maxOverlap 项参与比对
+  const olderTails: string[] = new Array(maxOverlap);
+  for (let i = 0; i < maxOverlap; i++) {
+    olderTails[i] = JSON.stringify(older[older.length - maxOverlap + i]);
   }
   for (let overlap = maxOverlap; overlap > 0; overlap--) {
     let matched = true;
     for (let i = 0; i < overlap; i++) {
-      if (JSON.stringify(older[older.length - overlap + i]) !== loadedHeads[i]) {
+      if (olderTails[maxOverlap - overlap + i] !== loadedHeads[i]) {
         matched = false;
         break;
       }
@@ -50,6 +57,37 @@ function prependWithoutOverlap(older: RunEvent[], loaded: RunEvent[]): RunEvent[
     }
   }
   return older;
+}
+
+// 尾部追加对界去重（code-review item 289e589fb89b）：SSE hello 重同步窗口
+//（流上最后 tail 条）与已加载列表按「newer 的前缀 == loaded 的后缀」的最长
+// 重叠段剔除，只把真正新增的尾部追加进来——保留用户「加载更早事件」拉到的
+// 前缀历史（旧实现整体替换，每次重连都把已加载前缀塌缩回尾窗、计数跳变）。
+// 流轮转/截断走 reset 分支整体重拉，不经本函数。
+function appendWithoutOverlap(newer: RunEvent[], loaded: RunEvent[]): RunEvent[] {
+  const maxOverlap = Math.min(newer.length, loaded.length);
+  if (maxOverlap === 0) return newer;
+  const loadedTails: string[] = new Array(maxOverlap);
+  for (let i = 0; i < maxOverlap; i++) {
+    loadedTails[i] = JSON.stringify(loaded[loaded.length - maxOverlap + i]);
+  }
+  const newerHeads: string[] = new Array(maxOverlap);
+  for (let i = 0; i < maxOverlap; i++) {
+    newerHeads[i] = JSON.stringify(newer[i]);
+  }
+  for (let overlap = maxOverlap; overlap > 0; overlap--) {
+    let matched = true;
+    for (let i = 0; i < overlap; i++) {
+      if (newerHeads[i] !== loadedTails[maxOverlap - overlap + i]) {
+        matched = false;
+        break;
+      }
+    }
+    if (matched) {
+      return newer.slice(overlap);
+    }
+  }
+  return newer;
 }
 
 export default function ClaudeOutputPane({
@@ -70,6 +108,12 @@ export default function ClaudeOutputPane({
   const eventSourceRef = useRef<EventSource | null>(null);
   const cidRef = useRef<string>(`claude-output-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`);
   const isMountedRef = useRef(true);
+  // 响应币值守卫（code-review item 5dbf7b6044bf）：detail.tsx / AdminRunModal.tsx
+  // 等无 key 调用点在 runId 切换时复用本组件实例（不卸载），仅 isMountedRef
+  // 拦不住旧 run 的在飞响应——请求时捕获 runId/project，响应回来与最新值比对，
+  // 不匹配即丢弃（防止上一 run 的事件前置/覆盖进新 run 列表）。
+  const activeRunIdRef = useRef(runId);
+  const activeProjectRef = useRef(project);
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -78,26 +122,33 @@ export default function ClaudeOutputPane({
     };
   }, []);
 
+  useEffect(() => {
+    activeRunIdRef.current = runId;
+    activeProjectRef.current = project;
+  }, [runId, project]);
+
   // 拉取尾部事件
   useEffect(() => {
     if (!runId || !project) return;
 
+    const reqRunId = runId;
+    const reqProject = project;
     const loadTail = async () => {
       try {
         setLoading(true);
-        const data = await getRunTail(runId, project, tail);
-        if (isMountedRef.current) {
+        const data = await getRunTail(reqRunId, reqProject, tail);
+        if (isMountedRef.current && activeRunIdRef.current === reqRunId && activeProjectRef.current === reqProject) {
           setEvents(data.events || []);
           setTotalEvents(data.total_events || 0);
           setError('');
           onRunStatus?.(data.status || '');
         }
       } catch (e) {
-        if (isMountedRef.current) {
+        if (isMountedRef.current && activeRunIdRef.current === reqRunId && activeProjectRef.current === reqProject) {
           setError(e instanceof Error ? e.message : String(e));
         }
       } finally {
-        if (isMountedRef.current) {
+        if (isMountedRef.current && activeRunIdRef.current === reqRunId) {
           setLoading(false);
         }
       }
@@ -110,10 +161,12 @@ export default function ClaudeOutputPane({
   // SSE 增量只追加尾部互不冲突；已加载 ≥ total 时按钮禁用
   const loadOlder = useCallback(async () => {
     if (!runId || !project || loadingMore) return;
+    const reqRunId = runId;
+    const reqProject = project;
     setLoadingMore(true);
     try {
-      const data = await getRunTail(runId, project, tail, events.length);
-      if (isMountedRef.current) {
+      const data = await getRunTail(reqRunId, reqProject, tail, events.length);
+      if (isMountedRef.current && activeRunIdRef.current === reqRunId && activeProjectRef.current === reqProject) {
         setTotalEvents(data.total_events || 0);
         onRunStatus?.(data.status || '');
         const older = prependWithoutOverlap(data.events || [], events);
@@ -124,7 +177,7 @@ export default function ClaudeOutputPane({
     } catch (e) {
       console.error('Failed to load earlier events:', e);
     } finally {
-      if (isMountedRef.current) {
+      if (isMountedRef.current && activeRunIdRef.current === reqRunId) {
         setLoadingMore(false);
       }
     }
@@ -160,13 +213,21 @@ export default function ClaudeOutputPane({
             console.error('Failed to register run watch:', e);
           }
           // 注册后重拉一次尾部：兜底「run 在 watch 注册前已结束」或「SSE 断线
-          // 重连期间错过终态事件」的场景，否则外层永远收不到完成回调
+          // 重连期间错过终态事件」的场景，否则外层永远收不到完成回调。
+          // 重同步改为尾部追加合并（code-review item 289e589fb89b）：整体替换
+          // 会在每次 hello（含 EventSource 自动重连）把「加载更早事件」拉到的
+          // 前缀历史塌缩回尾窗、计数跳变；appendWithoutOverlap 只补真正新增的
+          // 尾部。币值守卫防旧 run 的迟到响应污染新 run（item 5dbf7b6044bf）。
           try {
             const data = await getRunTail(runId, project, tail);
-            if (isMountedRef.current) {
-              setEvents(data.events || []);
+            if (isMountedRef.current && activeRunIdRef.current === runId && activeProjectRef.current === project) {
               setTotalEvents(data.total_events || 0);
               onRunStatus?.(data.status || '');
+              const newerEvents = data.events || [];
+              setEvents((prev) => {
+                const newer = appendWithoutOverlap(newerEvents, prev);
+                return newer.length > 0 ? [...prev, ...newer] : prev;
+              });
             }
           } catch (e) {
             console.error('Failed to resync run tail:', e);
@@ -177,11 +238,11 @@ export default function ClaudeOutputPane({
 
       if (msg.type === 'run_events' && msg.run_id === runId) {
         if (msg.reset) {
-          // 产物被轮转/截断：重新拉取完整尾部
+          // 产物被轮转/截断：重新拉取完整尾部（整体替换合理：旧列表已失效）
           void (async () => {
             try {
               const data = await getRunTail(runId, project, tail);
-              if (isMountedRef.current) {
+              if (isMountedRef.current && activeRunIdRef.current === runId && activeProjectRef.current === project) {
                 setEvents(data.events || []);
                 setTotalEvents(data.total_events || 0);
                 onRunStatus?.(data.status || '');

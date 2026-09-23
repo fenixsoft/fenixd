@@ -475,6 +475,10 @@ def get_run_events(project_root, run_id: str, tail: int = 300, offset_from_end: 
     窗口越出流首时按流首截断）；offset_from_end=0 时与既有尾部截取 events[-tail:]
     逐字段一致。status/error 仍由全文件判定（终态行 result/error 决定），
     total_events 为实际总事件数（不受窗口影响）。
+
+    tail 下限归一为 ≥1（code-review item 590aa3c551db）：路由层只做上限钳制，
+    tail=0/负值会到达本函数——events[-0:] 即 events[0:] 使 offset=0 分支返回
+    全量流、offset>0 分支返回空窗，同一参数两侧语义相悖；统一钳到 1 消除分歧。
     """
     run_file = _resolve_run_file(project_root, run_id)
     if not run_file.exists():
@@ -505,6 +509,7 @@ def get_run_events(project_root, run_id: str, tail: int = 300, offset_from_end: 
         }
     total = len(events)
     offset = max(int(offset_from_end or 0), 0)
+    tail = max(int(tail), 1)  # 下限归一：防 tail=0 走 events[-0:]=全量（见 docstring）
     if offset > 0:
         end = max(total - offset, 0)
         start = max(end - tail, 0)

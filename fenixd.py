@@ -71,7 +71,7 @@ from core.admin_store import (
     SIGNAL,
     severity_needs_human,
 )
-from core.admin_monitor import AdminMonitor
+from core.admin_monitor import AdminMonitor, DISPOSITION_AUTO_RESET_SIGNAL_TYPES
 from core.hook_engine import HookEngine
 from core.pm_engine import PMEngine
 
@@ -1710,9 +1710,13 @@ class FenixDaemon:
         # 对人工唤起通道永不命中。此处基于 admin_store.read_all()（created 倒序）
         # 过滤该 spec 最近一条未处置（非 handled）SIGNAL/ESCALATION 记录，取其
         # signal_type 以独立字段透传；查不到为 None（字段可选，缺省 None）。
-        # MUST 排除 signal_type == "manual-intervention" 的记录：手动通道自产
-        # （派发失败/agent_runner 不可用落的 ESCALATION），且下次唤起时仍可能未
-        # handled——不排除会把上次手动信号反查成「底层类型」，使复位门永不命中。
+        # MUST 只透传复位门可消费的类型（code-review item db8c9b226fe4）：
+        # 透传字段唯一消费方是自动复位判定门，机制自产、永不命中复位集合的
+        # 记录（manual-intervention 自产 ESCALATION、admin_dispatch/programming
+        # error 族——signal_rec=None 使 close_dispatch_failure_alerts 也不关它）
+        # 一旦成为最新未处置记录会永久遮蔽其下真实 env 阻塞记录，人工处置成功
+        # 后复位门仍不命中。跳过这类记录继续向前反查，取最近一条命中
+        # DISPOSITION_AUTO_RESET_SIGNAL_TYPES 的记录。
         underlying_signal_type = None
         try:
             for rec in self.admin_store.read_all():
@@ -1722,7 +1726,7 @@ class FenixDaemon:
                     continue
                 if rec.get("spec") != spec:
                     continue
-                if rec.get("signal_type") == "manual-intervention":
+                if rec.get("signal_type") not in DISPOSITION_AUTO_RESET_SIGNAL_TYPES:
                     continue
                 underlying_signal_type = rec.get("signal_type")
                 break

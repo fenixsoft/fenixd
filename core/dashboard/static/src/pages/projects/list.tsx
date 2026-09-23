@@ -446,13 +446,21 @@ function PriorityCell({
 }
 
 /**
+ * buildTree 输出节点（code-review item f693a3125b78）：SpecSummary + 归并树
+ * children 子节点。树形由前端内存构造（后端 /api/specs 不返回 children），
+ * 声明为独立导出类型，buildTree 返回边界与 SpecCardListProps.data 边界统一
+ * 使用——避免 children 字段在类型边界被丢弃、下游读 n.children 与声明类型漂移。
+ */
+export type SpecSummaryNode = SpecSummary & { children?: SpecSummaryNode[] };
+
+/**
  * fix-* 规格归并成树（对齐 v1）：fix-fix-a 的父是 fix-a（若存在），再是 a；
  * 无父 fix 归入顶层。
  */
-function buildTree(specs: SpecSummary[]): SpecSummary[] {
+function buildTree(specs: SpecSummary[]): SpecSummaryNode[] {
   const byName = new Map(specs.map((s) => [s.name, s]));
   const childrenMap = new Map<string, string[]>();
-  const roots: SpecSummary[] = [];
+  const roots: SpecSummaryNode[] = [];
   specs.forEach((s) => {
     if (!s.name.startsWith('fix-')) {
       roots.push(s);
@@ -478,8 +486,7 @@ function buildTree(specs: SpecSummary[]): SpecSummary[] {
       childrenMap.set(parent, arr);
     }
   });
-  type Node = SpecSummary & { children?: Node[] };
-  const attach = (s: SpecSummary): Node => {
+  const attach = (s: SpecSummary): SpecSummaryNode => {
     const kids = childrenMap.get(s.name);
     return kids ? { ...s, children: kids.map((n) => attach(byName.get(n)!)) } : { ...s };
   };
@@ -487,7 +494,7 @@ function buildTree(specs: SpecSummary[]): SpecSummary[] {
 }
 
 interface SpecCardListProps {
-  data: SpecSummary[];
+  data: SpecSummaryNode[];
   project: string;
   loading: boolean;
   onDocView: (spec: string) => void;
@@ -504,7 +511,7 @@ function SpecCardList({ data, project, loading, onDocView, onMenu, menuItems, on
   type FlatNode = { record: SpecSummary; level: number };
   const flat = useMemo<FlatNode[]>(() => {
     const out: FlatNode[] = [];
-    const walk = (nodes: SpecSummary[], level: number) => {
+    const walk = (nodes: SpecSummaryNode[], level: number) => {
       nodes.forEach((n) => {
         out.push({ record: n, level });
         if (n.children) walk(n.children, level + 1);

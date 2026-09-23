@@ -38,14 +38,15 @@ const SILENT_KINDS = new Set([
   'timeout_extension',
 ]);
 
-// stderr 错误词表（固化于常量）。匹配时同步比对大写形态：归档流实测存在
-// "ECONNREFUSED ..." 这类全大写错误行（spec 场景锚定其必须渲染为系统行），
-// 纯大小写敏感匹配会把它静默掉。
-const STDERR_ERROR_KEYWORDS = ['error', 'Error', 'Traceback', 'failed', 'FATAL', 'refused'];
+// stderr 错误词表（固化于常量，统一小写存储）：匹配时对行取小写后 includes，
+// 天然大小写不敏感——归档流实测存在 "ECONNREFUSED ..." 这类全大写错误行
+//（spec 场景锚定其必须渲染为系统行）。（code-review item 288bc70996d0：
+// 旧表混入大小写敏感条目 'Error'/'FATAL' 是死重，大小写不敏感兜底本就覆盖。）
+const STDERR_ERROR_KEYWORDS = ['error', 'traceback', 'failed', 'fatal', 'refused'];
 
 function stderrLooksError(line: string): boolean {
-  const upper = line.toUpperCase();
-  return STDERR_ERROR_KEYWORDS.some((kw) => line.includes(kw) || upper.includes(kw.toUpperCase()));
+  const lower = line.toLowerCase();
+  return STDERR_ERROR_KEYWORDS.some((kw) => lower.includes(kw));
 }
 
 function strField(rec: Record<string, unknown>, key: string): string {
@@ -66,7 +67,7 @@ function providerMarkerText(rec: Record<string, unknown>): string {
   const chainIndex = typeof rec.chain_index === 'number' ? rec.chain_index : null;
   const chainLen = typeof rec.chain_len === 'number' ? rec.chain_len : null;
   if (model && provider) {
-    if (chainIndex != null && chainLen != null) {
+    if (chainIndex !== null && chainLen !== null) {
       return `模型路由 ${model} @ ${provider}（第 ${chainIndex + 1}/${chainLen} 棒）`;
     }
     return `模型路由 ${model} @ ${provider}`;
@@ -82,11 +83,11 @@ function transientRetryText(rec: Record<string, unknown>): string {
   const retry = typeof rec.retry_number === 'number' ? rec.retry_number : null;
   const error = strField(rec, 'error');
   let text = reason ? `网关瞬断（${reason}）` : '网关瞬断';
-  if (backoff != null && retry != null) {
+  if (backoff !== null && retry !== null) {
     text += `，${backoff}s 后第 ${retry} 次重试`;
-  } else if (backoff != null) {
+  } else if (backoff !== null) {
     text += `，${backoff}s 后重试`;
-  } else if (retry != null) {
+  } else if (retry !== null) {
     text += `，第 ${retry} 次重试`;
   }
   if (error) {
@@ -104,7 +105,7 @@ function compactBoundaryText(rec: Record<string, unknown>): string {
     const trigger = strField(m, 'trigger');
     const pre = typeof m.pre_tokens === 'number' ? m.pre_tokens : null;
     const post = typeof m.post_tokens === 'number' ? m.post_tokens : null;
-    if (pre != null && post != null) {
+    if (pre !== null && post !== null) {
       const head = trigger ? `上下文压缩（${trigger}）` : '上下文压缩';
       return `${head}：${pre} → ${post} tokens`;
     }
@@ -126,7 +127,7 @@ function vcsCommitText(rec: Record<string, unknown>): string {
 }
 
 function resultContentToText(content: unknown): string {
-  if (content == null) return '';
+  if (content === null || content === undefined) return '';
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) {
     return content
@@ -210,7 +211,7 @@ function streamHasAnyAssistantText(events: RunEvent[]): boolean {
 }
 
 function parseTimestampMs(timestamp: unknown): number | null {
-  if (timestamp == null) return null;
+  if (timestamp === null || timestamp === undefined) return null;
   const t = new Date(timestamp as string | number | Date).getTime();
   return Number.isFinite(t) ? t : null;
 }
@@ -279,7 +280,7 @@ export function runEventsToChatMessages(events: RunEvent[], showThinking: boolea
       if (results.length > 0) {
         for (const { toolUseId, result } of results) {
           const idx = toolIndexById.get(toolUseId);
-          if (idx != null && out[idx]) {
+          if (idx !== undefined && out[idx]) {
             out[idx].toolResult = result;
           }
         }
@@ -391,8 +392,16 @@ export function runEventsToChatMessages(events: RunEvent[], showThinking: boolea
       continue;
     }
 
-    // 静默名单：零信息心跳/框架内部事件，不产出任何可见行
-    if (SILENT_KINDS.has(kind)) continue;
+    // 静默名单：零信息心跳/框架内部事件，不产出任何可见行。
+    // 例外（code-review item 3c0281837ea5）：旧形态 system 事件（type:"system" +
+    // subtype 命中名单）携带非空字符串 content 时不在此吞掉——静默只针对零载荷
+    // 心跳，带内容的旧形态事件落到下方 content 回退照旧渲染（该回退分支本就
+    // 载明「旧形态 system 事件带字符串内容：直接渲染」，此早检此前与其矛盾）。
+    if (SILENT_KINDS.has(kind)) {
+      const hasLegacyText =
+        ev.type === 'system' && typeof ev.content === 'string' && ev.content.trim() !== '';
+      if (!hasLegacyText) continue;
+    }
 
     // 信息类事件 → 携带关键载荷的语义化系统条（中文），替代 [label] 裸行
     if (kind === 'provider_marker') {
@@ -420,7 +429,7 @@ export function runEventsToChatMessages(events: RunEvent[], showThinking: boolea
     if (kind === 'task_started' || kind === 'task_notification') {
       const toolUseId = strField(rec, 'tool_use_id');
       const idx = toolUseId ? toolIndexById.get(toolUseId) : undefined;
-      if (idx != null && out[idx]) {
+      if (idx !== undefined && out[idx]) {
         const msg = out[idx];
         if (kind === 'task_started') {
           const description = strField(rec, 'description');
@@ -441,7 +450,13 @@ export function runEventsToChatMessages(events: RunEvent[], showThinking: boolea
 
     // stderr：命中错误词表 → 系统行；未命中 → 静默（30s 存活 stderr 噪声）
     if (kind === 'stderr') {
-      const line = typeof rec.line === 'string' ? rec.line : typeof ev.content === 'string' ? ev.content : '';
+      // 嵌套三元展开为 if/else（项目清单禁嵌套三元，code-review item 4ac183111d64）
+      let line = '';
+      if (typeof rec.line === 'string') {
+        line = rec.line;
+      } else if (typeof ev.content === 'string') {
+        line = ev.content;
+      }
       const label = line.trim();
       if (label && label !== '[success]' && label !== '[error]' && stderrLooksError(label)) {
         pushSystem(label, timestamp);
@@ -486,7 +501,7 @@ export function runEventsToChatMessages(events: RunEvent[], showThinking: boolea
   if (elapsedByToolId.size > 0) {
     for (const [toolId, idx] of toolIndexById) {
       const elapsed = elapsedByToolId.get(toolId);
-      if (elapsed != null) {
+      if (elapsed !== undefined) {
         out[idx].toolElapsedSeconds = elapsed;
       }
     }
@@ -499,16 +514,16 @@ export function runEventsToChatMessages(events: RunEvent[], showThinking: boolea
   for (const ev of events) {
     if (!ev || ev.type !== 'assistant') continue;
     const t = parseTimestampMs(ev.timestamp);
-    if (t != null) assistantTimes.push(t);
+    if (t !== null) assistantTimes.push(t);
   }
   for (const msg of out) {
     if (!msg.isThinking) continue;
     msg.thinkingPreview = thinkingPreviewText(String(msg.content || ''));
     if (assistantTimes.length < 2) continue;
     const t = parseTimestampMs(msg.timestamp);
-    if (t == null) continue;
+    if (t === null) continue;
     const next = assistantTimes.find((x) => x > t);
-    if (next == null) continue;
+    if (next === undefined) continue;
     const seconds = Math.round((next - t) / 1000);
     if (seconds > 0) msg.thinkingSeconds = seconds;
   }

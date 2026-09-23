@@ -801,8 +801,10 @@ def _git_object_exists_on_branch(branch, path, project_root) -> bool:
     try:
         r = subprocess.run(
             ["git", "-C", str(project_root), "cat-file", "-e", f"{branch}:{path}"],
-            capture_output=True,
-            text=True,
+            # 只用 returncode 判存在性：输出丢弃到 DEVNULL，免无谓管道与
+            # 缓冲（code-review item feccb157c1d5）。
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
             timeout=_GIT_READ_TIMEOUT_SECONDS,
         )
         return r.returncode == 0
@@ -1005,8 +1007,10 @@ def is_stale_declaration(entry, project_root) -> bool:
     try:
         r = subprocess.run(
             ["git", "-C", str(project_root), "cat-file", "-e", f"HEAD:{path}"],
-            capture_output=True,
-            text=True,
+            # 同 _git_object_exists_on_branch：只看 returncode，输出走 DEVNULL
+            # （code-review item feccb157c1d5）。
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
             timeout=_GIT_READ_TIMEOUT_SECONDS,
         )
         if r.returncode == 0:
@@ -1360,7 +1364,10 @@ def _path_is_gitignored(project_root, candidates: List[str]) -> bool:
             r = subprocess.run(
                 ["git", "-c", "core.fsmonitor=", "check-ignore", "-q", "--", cand],
                 cwd=str(project_root),
-                capture_output=True,
+                # 只用 returncode（0=被排除）：输出走 DEVNULL
+                # （code-review item feccb157c1d5）。
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
                 timeout=10,
             )
         except (OSError, subprocess.SubprocessError):

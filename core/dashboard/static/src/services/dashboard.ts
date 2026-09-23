@@ -1601,16 +1601,18 @@ export function triggerCodeReview(project: string, scope: 'full' | 'window') {
 /** 手动「自动修复」触发判定结果（add-code-fix-manual-trigger；
  *  GET /api/code-review/fix-run-result 透传 .fenix/code_fix_request_result.json）
  *
- * 缺省态（文件缺失/未消费完）为全空字段：``request_created`` 为 null，
- * 前端以此判定「暂无结果」。``request_created`` 回链触发信号的 created
- * 时间戳，仅与本次 ``requested_at`` 一致时才视为本次反馈。
+ * wire 契约：缺省态（文件缺失/损坏/未消费完）后端返回**空对象 ``{}``**——
+ * 全部字段缺席（运行时 undefined），并非「全 null 字段的对象」（code-review
+ * item 74c58ba954c8：类型如实声明为可选，与缺省响应形态一致）。前端以
+ * ``request_created`` 真值且与本次触发返回的 ``requested_at`` 一致回链判定
+ * 是否本次结果。
  */
 export interface CodeFixRunResult {
-  request_created: string | null;
-  triggered: boolean;
-  reason: string;
-  message: string;
-  finished_at: string | null;
+  request_created?: string | null;
+  triggered?: boolean;
+  reason?: string;
+  message?: string;
+  finished_at?: string | null;
 }
 
 /** add-code-fix-manual-trigger：手动触发自动修复（写文件信号，daemon 消费）。

@@ -165,9 +165,22 @@ function ProblemCell({ rec }: { rec: CodeReviewItem }) {
     <div ref={cellRef}>
       <Space direction="vertical" size={2} style={{ width: '100%' }}>
         {/* 第一行：问题标题 + 文件:行（同一行，`文件:行` 过长时单行省略，
-            不换行——用户 2026-09-20 要求） */}
+            不换行——用户 2026-09-20 要求）。标题同样 nowrap + 省略（code-review
+            item f5f87cee3ace）：缺省 whiteSpace 下长标题会换行、挤压 `文件:行`，
+            破坏单行布局契约；flex 收缩 + 省略后超长标题截断展示。 */}
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, minWidth: 0 }}>
-          <span style={{ fontWeight: 500, minWidth: 0 }}>{rec.title}</span>
+          <span
+            style={{
+              fontWeight: 500,
+              flex: '0 1 auto',
+              minWidth: 0,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {rec.title}
+          </span>
           <Typography.Text
             code
             style={{ fontSize: 12, flex: '0 1 auto', minWidth: 0 }}
@@ -229,6 +242,11 @@ export default function QualityTab({ project, active }: QualityTabProps) {
   // 其余动作按钮被连带禁用 20s。
   const [fixRunPending, setFixRunPending] = useState(false);
   const pollTimerRef = useRef<number | null>(null);
+  // 自动修复 20s 轮询取消哨（code-review item 34247364a750）：卸载/切页签/
+  // 切项目时由 SSE effect 清理置位（与 pollTimerRef 同点清理），轮询每轮与
+  // 出消息前检查——不再对用户已离开的页面继续 1s 轮询 20s、也不向已卸载
+  // 组件弹成功/失败 toast。
+  const fixRunPollAbortedRef = useRef(false);
   // 请求序号守卫（code-review item 103bd502bd1e）：loadItems 会被 SSE 回调、
   // 30s 心跳、轮询结束兜底与 filter 变化并发触发，较慢的早期响应会覆盖较新数据。
   const loadSeqRef = useRef(0);
@@ -369,6 +387,8 @@ export default function QualityTab({ project, active }: QualityTabProps) {
         window.clearInterval(pollTimerRef.current);
         pollTimerRef.current = null;
       }
+      // 卸载/active 翻转/project 切换都会走本清理：连带置位自动修复轮询取消哨
+      fixRunPollAbortedRef.current = true;
     };
   }, [active, project]);
 
@@ -378,6 +398,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
       window.clearInterval(pollTimerRef.current);
       pollTimerRef.current = null;
     }
+    if (!active) fixRunPollAbortedRef.current = true;
   }, [active]);
 
   // ── 手动触发按钮（5.4） ────────────────────────────────────────
@@ -410,13 +431,17 @@ export default function QualityTab({ project, active }: QualityTabProps) {
   const handleTriggerFixRun = async () => {
     if (fixRunPending || actionPending) return; // pending 门控防连点
     setFixRunPending(true);
+    fixRunPollAbortedRef.current = false; // 本轮请求开启新哨（上一轮取消状态作废）
     try {
       const res = await triggerCodeFixRun(project);
       const wantedAt = res.requested_at;
       const deadline = Date.now() + 20_000;
       let result: CodeFixRunResult | null = null;
       while (Date.now() < deadline) {
+        // 卸载/切走后停止轮询与提示（finally 复位 pending）
+        if (fixRunPollAbortedRef.current) return;
         await new Promise((resolve) => setTimeout(resolve, 1000));
+        if (fixRunPollAbortedRef.current) return;
         try {
           const snap = await getCodeFixRunResult(project);
           if (snap.request_created && snap.request_created === wantedAt) {
@@ -427,6 +452,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
           // 单轮读取失败不终止轮询（daemon 消费稍后补结果文件）
         }
       }
+      if (fixRunPollAbortedRef.current) return;
       if (result) {
         if (result.triggered) {
           message.success(result.message || '已投递一批自动修复，可在进度卡片查看进展');

@@ -2,7 +2,7 @@ import { PageContainer } from '@ant-design/pro-components';
 import { Alert, App, Badge, Button, Card, Checkbox, Collapse, Descriptions, Dropdown, Empty, Image, Input, Popconfirm, Select, Space, Spin, Tabs, Tag, Timeline, Tooltip, Typography } from 'antd';
 import { CloseOutlined, DownOutlined, ExclamationCircleFilled, FullscreenOutlined, InfoCircleFilled } from '@ant-design/icons';
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
-import { history, useParams } from '@umijs/max';
+import { history, useParams, useLocation } from '@umijs/max';
 import dayjs from 'dayjs';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -530,6 +530,7 @@ function SpecHooksSection({ name, spec, readOnly = false }: { name: string; spec
 
 export default function SpecDetailPage() {
   const { name = '', spec = '' } = useParams<{ name: string; spec: string }>();
+  const location = useLocation();
   const isMobile = useIsMobile();
   const [detail, setDetail] = useState<SpecDetail | null>(null);
   const [specAlerts, setSpecAlerts] = useState<AlertItem[]>([]);
@@ -778,8 +779,13 @@ export default function SpecDetailPage() {
     onBack: () => {
       // 返回列表优先历史回退：列表页过滤态承载在 URL query 上
       // （add-spec-list-filter-stickiness），push 裸 URL 会新开无参历史条目，
-      // 列表重挂载时过滤归零；仅新标签直达详情（无回退历史）时兜底 push。
-      if (window.history.length > 1) history.back();
+      // 列表重挂载时过滤归零；仅直达打开（无应用内历史）时兜底 push。
+      // 币值守卫（code-review item 1c4f3c30258d）：window.history.length 是
+      // 会话级计数——外链/重定向链进入时 length>1 但上一条目在应用外，
+      // history.back() 会退出 dashboard 或落在无关页面；react-router v6 的
+      // location.key !== 'default' 才表示本条目由应用路由推入（存在应用内
+      // 上一条目），刷新后 key 复位为 default，此时兜底 push 不会退出应用。
+      if (location.key !== 'default') history.back();
       else history.push(`/projects/${name}`);
     },
   };
