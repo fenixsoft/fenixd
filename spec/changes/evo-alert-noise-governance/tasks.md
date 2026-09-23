@@ -30,9 +30,9 @@ core/dashboard/registry.py 为 fixture:true 标记的权威读取源（fix-fixtu
 ## 1. 闸门分类修正（源头）
 
 - [ ] 1.1 core/pm_engine/spec_integrity.py：check_spec_content_missing 入口对终态（done/archived）短路——不冻结、不出 spec_content_missing（与既有 status==blocked 幂等短路并列，状态以 STATE.md 当前值为准），并注释固化「终态豁免不等于放行派发」。
-- [ ] 1.2 core/pm_engine/spec_integrity.py：命中空判定且目录存在 verification-report.md 时，改产 spec_delivered_no_content 信号（新常量），不冻结，文案引导人工裁决（补 tasks.md 归档凭据或明确废弃）；无验证报告时维持既有 spec_content_missing + 冻结路径。
+- [ ] 1.2 core/pm_engine/spec_integrity.py：命中空判定且目录存在 verification-report.md 时，改产 spec_delivered_no_content 信号（新常量），不冻结，文案引导人工裁决（补 tasks.md 归档凭据或明确废弃）；无验证报告时维持既有 spec_content_missing + 冻结路径。该分支 MUST 自带幂等短路——不冻结则状态不变，闸门会随恢复精触发（60s）与 full_scan 反复命中，重复命中时若已存在同 spec 同 signal_type 未处理告警 MUST NOT 追加新记录（对齐 admin_monitor._throttled 的「已存在未处理升级告警」判据），防止每分钟一条 major 告警风暴。
 - [ ] 1.3 core/pm_engine/spec_integrity.py：spec_has_content 四选一判据不动——verification-report.md MUST NOT 进入认可名单，注释固化理由（防止 STATE 被外部重置的已交付 spec 被盲目重派，09-12 实证事故）。
-- [ ] 1.4 core/alert_lifecycle.py：_SIGNAL_CONDITIONS 注册 spec_delivered_no_content → CONDITION_SPEC_TERMINAL_OR_UNBLOCKED（补内容/离开 blocked/到达终态即自动闭环）。
+- [ ] 1.4 core/alert_lifecycle.py：注册独立闭环条件 spec_delivered_adjudicated（新常量）并加入 _SIGNAL_CONDITIONS；evaluate_alert 为其新增判定分支——仅当关联 SPEC 到达终态（done/archived）才闭环，非终态（含 ready/blocked）保持原状。MUST NOT 复用 CONDITION_SPEC_TERMINAL_OR_UNBLOCKED：该条件在 evaluate_alert 中仅以 blocked 为未解除出口（alert_lifecycle.py:135-138），本信号产生时 SPEC 停在 ready 待裁决，复用会使告警被下一轮 auto_resolve 立即闭环、人工无从看见。
 
 ## 2. 恢复路径与派发链 frozen 复核（断重放）
 
@@ -42,7 +42,7 @@ core/dashboard/registry.py 为 fixture:true 标记的权威读取源（fix-fixtu
 
 ## 3. daemon_errors 升级冷却与孪生合并（降敏）
 
-- [ ] 3.1 core/admin_monitor.py：_detect_daemon_errors 增加指纹级冷却——记录指纹上次唤起时间戳，daemon 启动后冷却窗内已知指纹不计满升级阈值、不召唤（INFO 留痕冷却决策）；冷却常量与 DAEMON_ERROR_THRESHOLD 同层声明，不新增配置键。
+- [ ] 3.1 core/admin_monitor.py：_detect_daemon_errors 增加指纹级冷却——记录指纹上次唤起时间戳，daemon 启动后冷却窗内已知指纹不计满升级阈值、不召唤（INFO 留痕冷却决策）；冷却常量与 DAEMON_ERROR_THRESHOLD 同层声明，不新增配置键。「已知指纹」识别 MUST 覆盖跨重启场景（治理目标正是重启后首扫回放）：生命周期内用内存时间戳，跨重启对账 admin store 既有 daemon_errors 告警——store 记录无结构化指纹字段（_fp 仅内存传递不落库，admin_monitor.py:1728-1731），须以 description 内嵌指纹前缀文本对账，或为 daemon_errors 告警 entry 增补结构化指纹字段，二者任务内定其一。
 - [ ] 3.2 core/admin_monitor.py：同轮扫描的孪生/成对指纹按 fp 聚合合并为一条召唤信号（一次 Administrator run）。
 - [ ] 3.3 core/admin_monitor.py：冷却仅约束重启后首扫窗口，窗后复现或全新指纹照常升级；与既有 _throttled 节流的关系在注释中说明（补口而非替代）。
 
@@ -53,7 +53,7 @@ core/dashboard/registry.py 为 fixture:true 标记的权威读取源（fix-fixtu
 
 ## 5. 召唤通道 fixture 抑制（消费端 ②）
 
-- [ ] 5.1 core/admin_monitor.py：distress 升级召唤决策点查项目 fixture 标记，命中则记 INFO（含错误指纹与抑制原因）并跳过自动召唤（含全局巡检类 admin-global run）；人工显式触发通道不受限。
+- [ ] 5.1 core/admin_monitor.py：distress 升级召唤决策点查项目 fixture 标记，命中则记 INFO（含错误指纹与抑制原因）并跳过自动召唤（含全局巡检类 admin-global run）；人工显式触发通道不受限。抑制判定 MUST 置于各自动检测路径调用 _invoke_administrator 之前（自动调用点 admin_monitor.py:1352/1908/2085/2332 一带），MUST NOT 放进 _invoke_administrator 本体——人工显式触发（run_administrator）与自动检测共用该入口（admin_monitor.py:2539 注释），放本体必误伤人工通道。
 - [ ] 5.2 core/admin_monitor.py：抑制决策 MUST NOT 修改/删除告警记录本身（看板仍可见），仅阻断召唤动作。
 
 ## 6. 测试

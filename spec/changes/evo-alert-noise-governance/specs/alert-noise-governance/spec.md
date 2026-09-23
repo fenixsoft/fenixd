@@ -18,7 +18,12 @@
 
 ### Requirement: 已交付未落盘的独立分类
 
-目录无认可内容（proposal.md/design.md/tasks.md/specs/**/*.md 四类）但存在 verification-report.md 时，闸门 MUST 产出独立信号 spec_delivered_no_content 而非 spec_content_missing：不冻结 SPEC，文案引导人工裁决（补 tasks.md 归档凭据或明确废弃）。派发拦截语义 MUST 保持不变：spec_has_content 对该目录仍判无内容，命中即回滚派发槽，MUST NOT 派出实现 run。
+目录无认可内容（proposal.md/design.md/tasks.md/specs/**/*.md 四类）但存在 verification-report.md 时，闸门 MUST 产出独立信号 spec_delivered_no_content 而非 spec_content_missing：不冻结 SPEC，文案引导人工裁决（补 tasks.md 归档凭据或明确废弃）。派发拦截语义 MUST 保持不变：spec_has_content 对该目录仍判无内容，命中即回滚派发槽，MUST NOT 派出实现 run。该分类 MUST 自带幂等短路：既有 spec_content_missing 的幂等完全依赖「冻结改 blocked → 下次 status==blocked 短路」，本分支放弃冻结即失去该保护，而 SPEC 状态不变会使闸门随恢复精触发（60 秒）与 full_scan 反复命中——重复命中时若已存在同 spec 同 signal_type 的未处理告警，MUST NOT 追加新告警记录（对齐 admin_monitor._throttled 的「已存在未处理升级告警」判据）。
+
+#### Scenario: 重复命中不重复告警
+
+- **WHEN** 仅含 verification-report.md 的 ready spec 在恢复精触发与 full_scan 中被闸门反复命中
+- **THEN** 已有未处理的 spec_delivered_no_content 告警时不追加新告警记录，且派发仍被拦截
 
 #### Scenario: 仅含验证报告的目录出分类信号
 
@@ -32,12 +37,17 @@
 
 ### Requirement: 新信号接入生命周期闭环
 
-spec_delivered_no_content MUST 接入 core/alert_lifecycle.py 的闭环条件映射：SPEC 补齐认可内容、离开 blocked 或到达终态时告警自动闭环。
+spec_delivered_no_content MUST 接入 core/alert_lifecycle.py 的闭环条件映射，且 MUST NOT 复用 spec_terminal_or_unblocked 条件——该条件在 evaluate_alert 中仅以 blocked 为未解除出口，对非 blocked 的 spec 一律判「已解除」，而本信号产生时 SPEC 恰恰停在 ready 等待裁决，复用会使告警在下一轮 auto_resolve 立即自动闭环、人工无从看见。MUST 注册独立条件 spec_delivered_adjudicated：仅当关联 SPEC 到达终态（done/archived）时自动闭环，非终态（含 ready/blocked）一律保持原状；evaluate_alert 为该条件新增判定分支。「补 tasks.md 归档凭据」裁决路径的告警收口为人工 handled 或置终态——evaluate_alert 只读状态表、不读目录，MUST NOT 承诺纯 status 判定无法达成的「补内容即自动闭环」。
 
-#### Scenario: 裁决后告警自动闭环
+#### Scenario: 待裁决期间告警保持可见
 
-- **WHEN** 人工按已交付裁决补 tasks.md 并解冻，或明确置终态
-- **THEN** 对应 spec_delivered_no_content 告警自动闭环，无需人工清除
+- **WHEN** spec_delivered_no_content 告警产生且关联 SPEC 仍处于 ready
+- **THEN** auto_resolve 不闭环该告警，人工待处理队列持续可见
+
+#### Scenario: 裁决后告警闭环
+
+- **WHEN** 人工明确将 SPEC 置终态，或以 handled 记录裁决结论
+- **THEN** 置终态路径由 spec_delivered_adjudicated 条件自动闭环，handled 路径按既有人工闭环语义收口，均无需再人工清除
 
 ### Requirement: 恢复路径复核 frozen
 

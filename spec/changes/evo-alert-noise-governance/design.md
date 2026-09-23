@@ -2,10 +2,10 @@
 
 ## Context
 
-- 闸门：core/pm_engine/spec_integrity.py——check_spec_content_missing（约 82-134 行）仅对 status == blocked 幂等短路，命中空判定只有「冻结 + spec_content_missing major 告警」一个出口；spec_has_content（38-69 行）四选一派发内容判据。调用点 core/pm_engine/dispatch/queue.py:672,694 与 core/pm_engine/recovery.py:855-856 复用同一方法。
+- 闸门：core/pm_engine/spec_integrity.py——check_spec_content_missing（约 82-134 行）仅对 status == blocked 幂等短路，命中空判定只有「冻结 + spec_content_missing major 告警」一个出口；spec_has_content（38-69 行）四选一派发内容判据。调用点 core/pm_engine/dispatch/queue.py:761,783 与 core/pm_engine/recovery.py:878-879 复用同一方法。
 - 恢复路径：core/event_bus.py _recover_ready（446-503）早退清单仅 start_after 与存活子进程；recover_orphan_ready（505-594）早退仅 status 筛选/_cancelled_hold/派发退避；全文件 grep frozen 零命中。
 - 派发链：core/pm_engine/engine.py _on_spec_ready（约 656-880）守卫链（shutting_down/冷却/单飞/worktree 锁/退避/start_after/依赖/在飞评审）无 frozen 检查；_frozen_state 助手（约 1172 行）现有消费点不在派发/恢复端。_diff_specs（event_bus.py）纯 status diff，daemon 重启空快照整批回放 spec_ready。
-- 升级路径：core/admin_monitor.py _detect_daemon_errors（约 1625-1696）——DAEMON_ERROR_THRESHOLD=2、10 分钟窗、末两次间隔 ≤5 分钟（112-114），无指纹冷却；告警写路径裸追加，同轮孪生指纹各产一条 escalation；召唤入口 distress→_invoke_administrator 无夹具识别。与既有 _throttled（按 spec+signal_type）的关系：daemon 级信号 spec=None 无 status_hash，既有节流覆盖不完整。
+- 升级路径：core/admin_monitor.py _detect_daemon_errors（约 1683-1733）——DAEMON_ERROR_THRESHOLD=2、10 分钟窗、末两次间隔 ≤5 分钟（常量与语义注释 106-109），无指纹冷却；告警写路径裸追加，同轮孪生指纹各产一条 escalation；召唤入口 distress→_invoke_administrator 无夹具识别。与既有 _throttled（按 spec+signal_type，:1910）的关系：daemon 级信号 spec=None 无 status_hash，既有节流覆盖不完整。
 - 日审：core/self_review.py _collect_admin_summary（约 724-765 行）直读 self.store.read_all()，无 fixture 概念。
 - 标记权威源：dashboard.yaml 项目条目 fixture:true（fix-fixture-project-alert-noise 落地，core/dashboard/registry.py 既有读取入口）。
 - 实证链（2026-09-22，showcase）：9 轮重放、18 条闸门 ERROR、3 笔 admin-global 召唤（1790077896 计 45 轮被停机截断）；09-12 链：已交付 spec 重置→闸门冻结反向处置、06:33Z 盲目重实现 05:42Z 已合并成果。
@@ -28,11 +28,11 @@
 
 ## 改动点
 
-1. core/pm_engine/spec_integrity.py：check_spec_content_missing 入口终态（done/archived）短路（与既有 status==blocked 幂等短路并列，同一 STATE 读取路径，无新增竞态面）；命中空判定后、冻结动作前加分类分支——目录存在 verification-report.md → 产 spec_delivered_no_content（新常量）不冻结，否则维持既有 spec_content_missing + 冻结路径；spec_has_content 不动，注释固化「验证报告不进认可名单」理由。
-2. core/alert_lifecycle.py：_SIGNAL_CONDITIONS（约 44-50 行）注册 spec_delivered_no_content → CONDITION_SPEC_TERMINAL_OR_UNBLOCKED（补内容/离开 blocked/到达终态自动闭环）。调用点无需改动（信号类型由方法内部决定）。
+1. core/pm_engine/spec_integrity.py：check_spec_content_missing 入口终态（done/archived）短路（与既有 status==blocked 幂等短路并列，同一 STATE 读取路径，无新增竞态面）；命中空判定后、冻结动作前加分类分支——目录存在 verification-report.md → 产 spec_delivered_no_content（新常量）不冻结，否则维持既有 spec_content_missing + 冻结路径；spec_has_content 不动，注释固化「验证报告不进认可名单」理由。分类分支 MUST 自带幂等短路（写告警前查 admin store 已有同 spec 同 signal_type 未处理告警则跳过，对齐 admin_monitor._throttled 的「已存在未处理升级告警」判据）——既有 spec_content_missing 的幂等完全依赖「冻结改 blocked → 下次短路」（spec_integrity.py:99-101），本分支放弃冻结即失去该保护，spec 保持 ready 会被恢复精触发（60s）与 full_scan 每轮重命中，无幂等则每分钟追加一条 major 告警。
+2. core/alert_lifecycle.py：注册独立闭环条件 spec_delivered_adjudicated（新常量）并加入 _SIGNAL_CONDITIONS（约 44-50 行）；evaluate_alert 为其新增判定分支——仅当关联 SPEC 到达终态（done/archived）才闭环，非终态（含 ready/blocked）保持原状。MUST NOT 复用 CONDITION_SPEC_TERMINAL_OR_UNBLOCKED：该条件在 evaluate_alert 中仅以 blocked 为未解除出口（alert_lifecycle.py:135-138），对非 blocked spec 一律判「已解除」，而本信号产生时 SPEC 停在 ready 待裁决，复用会被下一轮 auto_resolve 立即闭环、人工无从看见；且「补齐认可内容」维度 evaluate_alert 只读状态表不读目录、无法判定，补内容裁决路径由人工 handled 或置终态收口。pm_engine 写入点经 _send_human_escalation_alert 的 build_trigger 统一推导，调用点无需改动。
 3. core/event_bus.py：_recover_ready 读 entry 后、清 error 前加 frozen 早退（True 即 INFO 跳过，含 spec 名与原因）；同步 recover_orphan_ready docstring 早退清单；早退路径零 STATE 写入（该函数仅在 error 非空时写 STATE）。
-4. core/pm_engine/engine.py：_on_spec_ready 守卫链在既有 read_one（约 745 行）之后、闸门内容校验之前加 frozen 检查（可复用 _frozen_state 助手保持 legacy 文本契约兼容），命中即 INFO 跳过派发。
-5. core/admin_monitor.py（两处正交治理）：_detect_daemon_errors 增加指纹级冷却（记录指纹上次唤起时间戳，daemon 启动后冷却窗内已知指纹不计满）+ 同轮孪生/成对指纹按 fp 聚合合并为一条召唤信号（冷却常量与 DAEMON_ERROR_THRESHOLD 同层声明，不入 config）；distress 升级召唤决策点查项目 fixture 标记，命中记 INFO（含指纹与抑制原因）并跳过自动召唤，人工显式触发通道不在该决策点、不受限。
+4. core/pm_engine/engine.py：_on_spec_ready（约 660-789）守卫链在既有 read_one（约 720 行）之后、闸门内容校验之前加 frozen 检查（可复用 _frozen_state 助手保持 legacy 文本契约兼容，recovery.py:865 的 in-place redispatch 已有同款先例），命中即 INFO 跳过派发。
+5. core/admin_monitor.py（两处正交治理）：_detect_daemon_errors 增加指纹级冷却（记录指纹上次唤起时间戳，daemon 启动后冷却窗内已知指纹不计满）+ 同轮孪生/成对指纹按 fp 聚合合并为一条召唤信号（冷却常量与 DAEMON_ERROR_THRESHOLD 同层声明，不入 config）；distress 升级召唤决策点查项目 fixture 标记，命中记 INFO（含指纹与抑制原因）并跳过自动召唤，人工显式触发通道不在该决策点、不受限。两处落点锚定：冷却的「已知指纹」MUST 覆盖跨重启识别（治理目标正是重启后首扫回放）——store 记录无结构化指纹字段（_fp 仅内存传递不落库，admin_monitor.py:1728-1731），须以 description 内嵌指纹前缀对账或为 daemon_errors 告警 entry 增补结构化指纹字段（任务内定其一）；fixture 抑制判定置于各自动检测路径调用 _invoke_administrator 之前（自动调用点 admin_monitor.py:1352/1908/2085/2332），MUST NOT 放进 _invoke_administrator 本体——人工显式触发（run_administrator）与自动检测共用该入口（:2539）。
 6. core/self_review.py：_collect_admin_summary 装配前识别项目 fixture 标记（复用 registry 既有读取入口，依赖方向不允许时经配置层注入，核对 import 方向避免反向依赖环）；标记项目告警不进未处理计数，摘要以 fixture 标注单独呈现。
 7. core/dashboard/registry.py：fixture:true 标记权威读取源，只读不改（reference）。
 
