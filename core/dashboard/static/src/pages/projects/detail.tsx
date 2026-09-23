@@ -1,12 +1,12 @@
 import { PageContainer } from '@ant-design/pro-components';
-import { Alert, App, Badge, Button, Card, Checkbox, Collapse, Descriptions, Dropdown, Empty, Image, Input, Popconfirm, Select, Space, Spin, Tabs, Tag, Timeline, Tooltip, Typography } from 'antd';
+import { Alert, App, Badge, Button, Card, Checkbox, Collapse, Descriptions, Dropdown, Empty, Image, Input, Select, Space, Spin, Tabs, Tag, Timeline, Tooltip, Typography } from 'antd';
 import { CloseOutlined, DownOutlined, ExclamationCircleFilled, FullscreenOutlined, InfoCircleFilled } from '@ant-design/icons';
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import { history, useParams, useLocation } from '@umijs/max';
 import dayjs from 'dayjs';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { clearSpecError, getAlerts, getConfig, getHookAudit, getSpecDetail, getSpecs, markAlertHandled, resolveAlert, saveConfig, statusMeta } from '@/services/dashboard';
+import { clearSpecError, getAlerts, getConfig, getHookAudit, getSpecDetail, getSpecs, markAlertHandled, saveConfig, statusMeta } from '@/services/dashboard';
 import type { AlertItem, ConfigData, HookAuditRecord, HookConfig, HooksConfig, SpecDetail, SpecSummary } from '@/services/dashboard';
 import HookManager from '@/components/HookManager';
 import { markdownComponents } from './components/SpecDocModal';
@@ -19,6 +19,9 @@ import ProgressBarTile from './components/ProgressBarTile';
 import { ClaudeOutputPane } from '@/components/claude-msg';
 import { OutlinedTag } from '@/components/StatusTag';
 import { useIsMobile } from '@/hooks/useIsMobile';
+// 告警裁决交互共享 hook + 执行按钮（与 overview AlertBanner 同源，
+// code-review item f86171cc149d）
+import { AlertAdjudicationExec, useAlertAdjudication } from '@/hooks/useAlertAdjudication';
 import { fmtEvidence } from '@/utils/evidence';
 import { fetchProposalWhy } from '@/utils/proposalWhy';
 import { fmtInputTokens, fmtMillions } from '@/utils/tokens';
@@ -548,11 +551,14 @@ export default function SpecDetailPage() {
   // 告警内容默认折叠（只显示标题），展开后的告警 id 集合
   const [expandedAlerts, setExpandedAlerts] = useState<Set<string>>(new Set());
   // add-human-adjudication-choices 5.2/5.3：告警内嵌选择题交互状态——
-  // 选项值/note 按告警 id 分键；resolving 防重；执行结果/失败信息按告警留显
-  const [alertChoiceSels, setAlertChoiceSels] = useState<Record<string, string>>({});
-  const [alertNotes, setAlertNotes] = useState<Record<string, string>>({});
-  const [resolvingAlerts, setResolvingAlerts] = useState<Set<string>>(new Set());
-  const [alertResolveMsgs, setAlertResolveMsgs] = useState<Record<string, { text: string; tone: 'error' | 'info' }>>({});
+  // 选项值/note 按告警 id 分键；resolving 防重；执行结果/失败信息按告警留显。
+  // 交互实体经共享 hook（与 overview AlertBanner 同源，code-review item
+  // f86171cc149d），刷新回调在告警渲染处经执行按钮 onResolved 注入
+  const adj = useAlertAdjudication();
+  const {
+    alertChoiceSels, setAlertChoiceSels, alertNotes, setAlertNotes,
+    resolvingAlerts, alertResolveMsgs,
+  } = adj;
   // 场景结果状态过滤（'' = 全部）
   const [scenarioFilter, setScenarioFilter] = useState<'pass' | 'warning' | 'fail' | 'error' | ''>('');
   // 任务背景描述 = proposal 文档 ## Why 段（spec 列表悬停同名内容），懒加载
@@ -819,54 +825,6 @@ export default function SpecDetailPage() {
       message.error(`标记失败：${err instanceof Error ? err.message : String(err)}`);
     }
     loadSpecAlerts();
-  };
-
-  // add-human-adjudication-choices 5.2：人工裁决一次选择完成处置闭环
-  // （动作执行 + 状态推进 + handled + 处置留痕）。loading 防重；成功回显执行
-  // 步骤并按后端结果如实组织文案（code-review item a09d0b6c26dd：后端动作
-  // 成功但 marked/disposition_logged 为 false 时告警未入已处理/留痕缺失，
-  // 旧实现一律报「留痕已写入」会诱导用户对不可逆裁决重复执行）；失败展示
-  // 错误与已执行步骤且恢复可交互（告警保持未处理，可调整后重试）。
-  const handleResolveAlert = async (a: AlertItem, choiceId: string) => {
-    if (resolvingAlerts.has(a.id)) return;
-    setResolvingAlerts((s) => new Set(s).add(a.id));
-    setAlertResolveMsgs((m) => {
-      const n = { ...m };
-      delete n[a.id];
-      return n;
-    });
-    try {
-      const r = await resolveAlert(a.project, a.id, choiceId, alertNotes[a.id] || '');
-      const steps = Array.isArray(r.steps) ? r.steps : [];
-      const stepSuffix = steps.length ? `：${steps.join('；')}` : '';
-      const caveat = !r.marked || r.disposition_logged === false;
-      const caveats: string[] = [];
-      if (r.marked === false) caveats.push('告警未入已处理（可重试「标记已处理」）');
-      if (r.disposition_logged === false) caveats.push('处置留痕写入失败（审计轨迹缺失）');
-      const text = caveat
-        ? `裁决已执行${stepSuffix}（${caveats.join('；')}）`
-        : `裁决已执行，处置留痕已写入${stepSuffix}`;
-      setAlertResolveMsgs((m) => ({ ...m, [a.id]: { text, tone: 'info' } }));
-      if (caveat) {
-        message.warning(text);
-      } else {
-        message.success('裁决已执行，处置留痕已写入');
-      }
-      loadSpecAlerts();
-      getSpecDetail(name, spec).then(setDetail).catch(() => {});
-    } catch (err) {
-      setAlertResolveMsgs((m) => ({
-        ...m,
-        [a.id]: { text: err instanceof Error ? err.message : String(err), tone: 'error' },
-      }));
-      message.error('裁决执行失败，告警保持未处理，可调整后重试');
-    } finally {
-      setResolvingAlerts((s) => {
-        const n = new Set(s);
-        n.delete(a.id);
-        return n;
-      });
-    }
   };
 
   // 清除 spec 信息（同列表页清除 error）；成功后重拉详情使信息条消失
@@ -1662,30 +1620,8 @@ export default function SpecDetailPage() {
             const adjudicable = Array.isArray(a.choices) && a.choices.length > 0;
             const selChoiceId = alertChoiceSels[a.id] || '';
             const selChoice = (a.choices || []).find((c) => c.id === selChoiceId);
-            /* 5.3：不可逆/越权裁决（撤销丢弃 / 跳过评审门）执行前二次确认。
-               确认门由注册表的 destructive 标志驱动（code-review item
-               4768e8f73d62：adjudication_choices.py 是裁决空间单源，前端硬编码
-               业务 id 会让未来新增的不可逆选项静默失去二次确认；同 overview
-               AlertBanner 已改的口子）；历史告警快照（D2 不回写）缺该字段时，
-               按已知不可逆 id 回退保底。 */
-            const needsConfirm =
-              selChoice?.destructive === true ||
-              (selChoice?.destructive === undefined &&
-                (selChoiceId === 'abandon' || selChoiceId === 'skip_review_gate'));
             const resolving = resolvingAlerts.has(a.id);
             const resolveMsg = alertResolveMsgs[a.id];
-            const execBtn = (
-              <Button
-                size="small"
-                type={needsConfirm ? 'primary' : 'default'}
-                danger={needsConfirm}
-                loading={resolving}
-                disabled={!selChoiceId || resolving}
-                onClick={() => selChoiceId && !needsConfirm && void handleResolveAlert(a, selChoiceId)}
-              >
-                执行
-              </Button>
-            );
             return (
               <Alert
                 key={a.id}
@@ -1723,7 +1659,9 @@ export default function SpecDetailPage() {
                         </div>
                       )}
                       {adjudicable && (
-                        /* 裁决控件常驻（不随折叠隐藏）：wrap 布局适配窄屏 */
+                        /* 裁决控件常驻（不随折叠隐藏）：wrap 布局适配窄屏。
+                           执行按钮（含 destructive 二次确认门）经共享控件，
+                           确认门与 overview AlertBanner 同源（item f86171cc149d）*/
                         <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6 }}>
                           <Select
                             size="small"
@@ -1743,20 +1681,15 @@ export default function SpecDetailPage() {
                             onChange={(e) => setAlertNotes((m) => ({ ...m, [a.id]: e.target.value }))}
                             disabled={resolving}
                           />
-                          {needsConfirm ? (
-                            <Popconfirm
-                              title="确认执行该裁决？"
-                              description={selChoice?.desc || '该操作可能不可自动恢复，请确认'}
-                              okText="确认执行"
-                              cancelText="取消"
-                              onConfirm={() => selChoiceId && void handleResolveAlert(a, selChoiceId)}
-                              disabled={resolving}
-                            >
-                              {execBtn}
-                            </Popconfirm>
-                          ) : (
-                            execBtn
-                          )}
+                          <AlertAdjudicationExec
+                            alert={a}
+                            adj={adj}
+                            /* 裁决成功后重拉告警列表与 spec 详情（处置闭环回显） */
+                            onResolved={() => {
+                              loadSpecAlerts();
+                              getSpecDetail(name, spec).then(setDetail).catch(() => {});
+                            }}
+                          />
                         </div>
                       )}
                       {selChoice?.desc && adjudicable && (

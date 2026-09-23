@@ -200,13 +200,14 @@ class TestTokenBudgetAlert:
         assert entry.get("_token_alert_100") != "True"
         # spec 状态不受影响（不自动冻结）
         assert entry["status"] == "implementing"
-        # 警告级默认标记人工已处理（2026-09-01 降噪决策）：不进待处理队列
+        # 注册表覆盖（choices 已快照）的告警保持未处理进待办队列（item
+        # ded34cd04dc5）：born-handled 会让前端下拉与 alert-resolve 永不可达
         from core.admin_store import AdminStore
         store = AdminStore(proot)
         alerts = [a for a in store.read_all()
                   if a.get("signal_type") == "token_budget"]
-        assert alerts and alerts[-1]["handled"] is True
-        assert store.unhandled() == []
+        assert alerts and not alerts[-1].get("handled")
+        assert [a["id"] for a in store.unhandled()] == [alerts[-1]["id"]]
 
         # 再次越过 80% 线（已置位）不应重复发告警 —— 验证幂等：flag 保持
         runner._token_accountant._accumulate_token_usage("spec-d", {
@@ -231,14 +232,15 @@ class TestTokenBudgetAlert:
         entry = sm.read_one("spec-e")
         assert entry["_token_alert_100"] == "True"
         assert entry["status"] == "implementing"  # 不冻结
-        # 100% 线同为警告级（2026-09-01 降噪决策），不发 critical，默认已处理
+        # 100% 线同为警告级（2026-09-01 降噪决策），不发 critical；保持未处理
+        # 进待办队列（item ded34cd04dc5，同 80% 档）
         from core.admin_store import AdminStore
         store = AdminStore(proot)
         alerts = [a for a in store.read_all()
                   if a.get("signal_type") == "token_budget"]
         assert alerts and alerts[-1]["severity"] == "warning"
-        assert alerts[-1]["handled"] is True
-        assert store.unhandled() == []
+        assert not alerts[-1].get("handled")
+        assert [a["id"] for a in store.unhandled()] == [alerts[-1]["id"]]
 
     def test_budget_zero_disabled(self, tmp_path):
         proot = tmp_path / "proj"

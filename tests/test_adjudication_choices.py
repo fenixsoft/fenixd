@@ -233,13 +233,15 @@ class TestEmissionWiring:
             assert not rec.get("choices"), f"桶 0 信号 {sig} 不应携 choices"
 
     def test_token_budget_alert_carries_choices(self, proot):
-        """2.6：token 预算告警直写 AdminStore，携 choices（warning 写入即 handled）。"""
+        """2.6：token 预算告警直写 AdminStore，携 choices；记录保持未处理进
+        待办队列（item ded34cd04dc5）——born-handled 会让选项永不可裁决。"""
         from core.agent_runner.token_budget import TokenAccountant
 
         ta = TokenAccountant(SimpleNamespace(project_root=proot, logger=FakeLogger()))
         ta._send_token_alert("spec-x", 60_000_000, 50.0, "warning", "预算 100% 警告")
         rec = self._latest(proot, "token_budget")
         assert rec.get("choices") == list(choices_for("token_budget"))
+        assert not rec.get("handled")
 
     def test_mergeback_signal_carries_choices(self, proot):
         """2.7 前半：build_artifact_paths_missing 写 kind=SIGNAL 记录携 choices。"""

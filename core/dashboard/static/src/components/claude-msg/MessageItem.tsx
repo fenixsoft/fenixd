@@ -6,6 +6,9 @@ import { memo, useMemo } from 'react';
 
 import type { ChatMessage } from './types';
 import { formatUsageLimitText } from './chatFormatting';
+// 隐藏判定与任务状态点配色与 toolGrouping 同源单点（code-review item
+// 2faec963d2ea / 1dd4d551b484）：渲染与分组共用同一谓词，防双写漂移
+import { isThinkingHidden, taskStatusDotClass } from './toolGrouping';
 import { Markdown } from './Markdown';
 import { Reasoning } from './Reasoning';
 import ClaudeLogo from './ClaudeLogo';
@@ -46,12 +49,9 @@ const MessageItem = memo(({ message, prevMessage, showThinking = false }: Messag
     [message.timestamp],
   );
   // thinkingForced：无正文兜底强制渲染的 thinking（design D4）不受开关隐藏，
-  // 否则 thinking-only 流的兜底产物在渲染层被击穿（verification BUG-02）
-  const shouldHideThinkingMessage = Boolean(
-    message.isThinking && !showThinking && !message.thinkingForced,
-  );
-
-  if (shouldHideThinkingMessage) {
+  // 否则 thinking-only 流的兜底产物在渲染层被击穿（verification BUG-02）。
+  // 判定经 toolGrouping.isThinkingHidden 与分组层同源（item 2faec963d2ea）
+  if (isThinkingHidden(message, showThinking)) {
     return null;
   }
 
@@ -88,9 +88,7 @@ const MessageItem = memo(({ message, prevMessage, showThinking = false }: Messag
         <div className="w-full">
           <div className="flex items-center gap-2 py-0.5">
             <span
-              className={`inline-block h-1.5 w-1.5 flex-shrink-0 rounded-full ${
-                message.taskStatus === 'completed' ? 'bg-green-400' : 'bg-amber-400'
-              }`}
+              className={`inline-block h-1.5 w-1.5 flex-shrink-0 rounded-full ${taskStatusDotClass(message.taskStatus)}`}
             />
             <span className="text-xs text-muted-foreground">{message.content}</span>
           </div>

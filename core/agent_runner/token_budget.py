@@ -137,8 +137,14 @@ class TokenAccountant:
         """写一条 token 预算 human-escalation-alert（复用 AdminStore，与 pm_engine 同管道）。
 
         severity 统一为 warning（80%/100% 两档均为警告级，2026-09-01 用户降噪决策）。
-        警告级不进人工待处理队列：写入即标记 handled，仅留历史记录。
-        不修改 spec 状态。
+        告警携带裁决注册表 choices（ignore/freeze_stop_loss/raise_budget）时保持
+        未处理进待处理队列——前端告警区只对 unhandled 记录渲染裁决下拉，且
+        alert-resolve 对 handled 记录 409 拒绝，born-handled 会让快照的 choices
+        永不可消费、注册表与 alert-resolve 的 token_budget 场景全部落空
+        （code-review item ded34cd04dc5；对本信号有意调整 2026-09-01
+        「警告级不进待办」的降噪口径——「知情确认」选项本身即降噪出口）。
+        choices 为空（信号未来退出注册表）时维持旧降噪决策：写入即标记
+        handled，仅留历史记录。不修改 spec 状态。
         """
         try:
             from core.admin_store import AdminStore, ESCALATION, severity_needs_human
@@ -171,7 +177,10 @@ class TokenAccountant:
             if choices:
                 payload["choices"] = list(choices)
             rec = store.append(payload)
-            if not severity_needs_human(severity):
+            # 注册表覆盖（choices 已快照）→ 保持未处理进待办队列，选项才有人可
+            # 执行（item ded34cd04dc5）；无 choices 的警告级仍按 2026-09-01 降噪
+            # 决策 born-handled，不占待办
+            if not choices and not severity_needs_human(severity):
                 store.mark_handled(rec["id"])
             self._pm.logger.warning(
                 "agent_runner",
