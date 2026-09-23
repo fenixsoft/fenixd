@@ -9,11 +9,32 @@ D5 约定：各组方法采用 mixin 模式，DashboardHandler 继承各组 mixi
 from __future__ import annotations
 
 import logging
+import threading
 from pathlib import Path
 
 from core.dashboard import data as dashboard_data
 
 logger = logging.getLogger("fenixd.dashboard.alert_routes")
+
+# alert-resolve 复合序列的 per-alert 串行化锁（code-review item 3c57cd9db3e8）：
+# handler 跑在 ThreadingHTTPServer（最多 64 并发线程）上，而「handled 快照检查 →
+# 执行映射动作 → mark handled」是复合序列，AdminStore 的锁/flock 只串行化单次
+# 写入——两个同告警并发 POST（如双击）可同时通过检查、把动作执行两遍
+#（double abandon / force_advance / raise_budget 预算翻两倍）并落重复
+# DISPOSITION 留痕。dashboard 为单进程，进程内 per-alert_id 锁即足够：
+# 同告警的第二请求阻塞到第一请求完成 mark 后再读快照，命中 409 不重复执行。
+_ADJUDICATION_LOCKS_GUARD = threading.Lock()
+_ADJUDICATION_LOCKS: dict = {}
+
+
+def _adjudication_lock(alert_id: str) -> threading.Lock:
+    """按 alert_id 取（懒建）进程内互斥锁；字典只在告警裁决时增长，量级有限。"""
+    with _ADJUDICATION_LOCKS_GUARD:
+        lock = _ADJUDICATION_LOCKS.get(alert_id)
+        if lock is None:
+            lock = threading.Lock()
+            _ADJUDICATION_LOCKS[alert_id] = lock
+        return lock
 
 
 class H6AlertRoutesMixin:
@@ -135,7 +156,7 @@ class H6AlertRoutesMixin:
         self._json({"ok": True, "id": alert_id})
 
 
-    def _api_alert_resolve(self, query) -> dict:
+    def _api_alert_resolve(self, query) -> None:
         """POST /api/alert-resolve — 人工裁决一次选择完成处置闭环（4.1）。
 
         body ``{project, alert_id, choice_id, note?}``。按序：
@@ -147,8 +168,13 @@ class H6AlertRoutesMixin:
         ``mark_signal_handled``）并落 DISPOSITION 处置留痕（choice_id/note/
         动作步骤摘要）；(4) SSE 广播刷新横幅。
 
-        任一步失败返回结构化错误且不标记 handled；已执行的前序动作在错误
-        信息中如实报告（不做虚假回滚声明）。
+        (1)→(3) 全程持有 per-alert 进程内锁（code-review item 3c57cd9db3e8）：
+        handler 跑在 ThreadingHTTPServer 上，store 锁只串行化单次写入，不锁
+        复合序列——不串行化则同告警并发 POST 可双双通过 handled 快照检查、
+        把动作执行两遍。任一步失败返回结构化错误且不标记 handled；已执行的
+        前序动作在错误信息中如实报告（不做虚假回滚声明）。注解 ``-> None``：
+        全部路径经 ``self._error``/``self._json`` 直写响应、不返回值
+        （code-review item 5df694db80ea）。
         """
         project_name = (query.get("project", [None])[0]) or None
         body = self._read_json_body()
@@ -174,92 +200,98 @@ class H6AlertRoutesMixin:
         from core.admin_store import AdminStore, DISPOSITION, SIGNAL
         from core.dashboard.data.adjudication_choices import choices_for
 
-        store = AdminStore(proot, logger)
-        alert = next((r for r in store.read_all() if r.get("id") == alert_id), None)
-        if alert is None:
-            self._error(404, "alert not found")
-            return
-        if alert.get("handled"):
-            self._error(409, "alert already handled（不重复执行动作）")
-            return
+        # check(handled 快照)→execute→mark 全程串行化（见 docstring）
+        with _adjudication_lock(alert_id):
+            store = AdminStore(proot, logger)
+            alert = next((r for r in store.read_all() if r.get("id") == alert_id), None)
+            if alert is None:
+                self._error(404, "alert not found")
+                return
+            if alert.get("handled"):
+                self._error(409, "alert already handled（不重复执行动作）")
+                return
 
-        signal_type = str(alert.get("signal_type") or "")
-        spec = str(alert.get("spec") or "")
-        # choice 合法性：记录内 choices 优先（发射点快照），缺失回退注册表。
-        # 合法集为空（不可裁决信号：桶 0/自愈类、signal_type 缺失——
-        # choices_for() 返回空元组且记录无快照）→ 直接 400 拒绝（code-review
-        # item 14b854aeccf9）：此前的空集直通会让 execute_adjudication_choice
-        # 的注册表级反查接受任意已注册 choice_id（含 abandon/force_advance/
-        # skip_review_gate 等破坏性动词）执行到本告警 spec 上，与端点契约相悖。
-        record_choices = alert.get("choices") or choices_for(signal_type)
-        valid_ids = [c.get("id") for c in record_choices if isinstance(c, dict)]
-        if not valid_ids:
-            self._error(
-                400,
-                f"该告警不可人工裁决（signal_type={signal_type or '缺失'}，无合法 "
-                "choice 集）：知情/自愈类信号请用「标记已处理」完成处置",
-            )
-            return
-        if choice_id not in valid_ids:
-            legal = "、".join(
-                f"{c.get('id')}({c.get('label')})"
-                for c in record_choices
-                if isinstance(c, dict)
-            )
-            self._error(400, f"非法 choice_id '{choice_id}'，该信号合法选项：{legal}")
-            return
+            signal_type = str(alert.get("signal_type") or "")
+            spec = str(alert.get("spec") or "")
+            # choice 合法性：记录内 choices 优先（发射点快照），缺失回退注册表。
+            # 合法集为空（不可裁决信号：桶 0/自愈类、signal_type 缺失——
+            # choices_for() 返回空元组且记录无快照）→ 直接 400 拒绝（code-review
+            # item 14b854aeccf9）：此前的空集直通会让 execute_adjudication_choice
+            # 的注册表级反查接受任意已注册 choice_id（含 abandon/force_advance/
+            # skip_review_gate 等破坏性动词）执行到本告警 spec 上，与端点契约相悖。
+            record_choices = alert.get("choices") or choices_for(signal_type)
+            valid_ids = [c.get("id") for c in record_choices if isinstance(c, dict)]
+            if not valid_ids:
+                self._error(
+                    400,
+                    f"该告警不可人工裁决（signal_type={signal_type or '缺失'}，无合法 "
+                    "choice 集）：知情/自愈类信号请用「标记已处理」完成处置",
+                )
+                return
+            if choice_id not in valid_ids:
+                legal = "、".join(
+                    f"{c.get('id')}({c.get('label')})"
+                    for c in record_choices
+                    if isinstance(c, dict)
+                )
+                self._error(400, f"非法 choice_id '{choice_id}'，该信号合法选项：{legal}")
+                return
 
-        # 执行映射动作（共享执行器：与 Administrator 处置消费同一路径）
-        try:
-            result = dashboard_data.execute_adjudication_choice(
-                proot, spec, choice_id, note=note, signal_type=signal_type
-            )
-        except Exception as e:  # 动作执行异常：不标记 handled，如实报告
-            logger.exception("alert-resolve 动作执行异常 alert=%s", alert_id)
-            self._error(500, f"动作执行异常: {e}（告警保持未处理，可重试裁决）")
-            return
-        steps = result.get("steps") or []
-        if not result.get("ok"):
-            self._error(
-                400,
-                f"{result.get('error') or '动作未成功执行'}"
-                + (f"（已执行步骤：{'；'.join(steps)}）" if steps else "")
-                + "（告警保持未处理，可调整后重试）",
-            )
-            return
+            # 执行映射动作（共享执行器：与 Administrator 处置消费同一路径）
+            try:
+                result = dashboard_data.execute_adjudication_choice(
+                    proot, spec, choice_id, note=note, signal_type=signal_type
+                )
+            except Exception as e:  # 动作执行异常：不标记 handled，如实报告
+                logger.exception("alert-resolve 动作执行异常 alert=%s", alert_id)
+                self._error(500, f"动作执行异常: {e}（告警保持未处理，可重试裁决）")
+                return
+            steps = result.get("steps") or []
+            if not result.get("ok"):
+                self._error(
+                    400,
+                    f"{result.get('error') or '动作未成功执行'}"
+                    + (f"（已执行步骤：{'；'.join(steps)}）" if steps else "")
+                    + "（告警保持未处理，可调整后重试）",
+                )
+                return
 
-        # handled 标记：kind 差异约定（ESCALATION→mark_handled，
-        # SIGNAL→mark_signal_handled 直接更新 handled 字段）
-        marked = (
-            store.mark_signal_handled(alert_id)
-            if alert.get("kind") == SIGNAL
-            else store.mark_handled(alert_id)
-        )
-
-        # 处置留痕：DISPOSITION 记录（choice_id/note/动作步骤摘要，
-        # 对 dashboard admin 活动区可见，作为裁决审计轨迹）
-        try:
-            store.append(
-                {
-                    "kind": DISPOSITION,
-                    "signal_type": signal_type or None,
-                    "spec": spec or None,
-                    "severity": alert.get("severity"),
-                    "description": alert.get("description"),
-                    "action_taken": "；".join(steps),
-                    "result": "success",
-                    "recommended_action": "",
-                    "summary": f"人工裁决 {choice_id}（{result.get('action')}）"
-                    + (f"：{note}" if note else ""),
-                    "choice_id": choice_id,
-                    "note": note,
-                    "source": "alert-resolve",
-                    "error": "",
-                }
+            # handled 标记：kind 差异约定（ESCALATION→mark_handled，
+            # SIGNAL→mark_signal_handled 直接更新 handled 字段）
+            marked = (
+                store.mark_signal_handled(alert_id)
+                if alert.get("kind") == SIGNAL
+                else store.mark_handled(alert_id)
             )
-        except Exception as e:
-            # 留痕失败不回滚已执行的动作与 handled 标记，如实告知
-            logger.warning("alert-resolve 处置留痕写入失败 alert=%s: %s", alert_id, e)
+
+            # 处置留痕：DISPOSITION 记录（choice_id/note/动作步骤摘要，
+            # 对 dashboard admin 活动区可见，作为裁决审计轨迹）
+            disposition_logged = False
+            try:
+                store.append(
+                    {
+                        "kind": DISPOSITION,
+                        "signal_type": signal_type or None,
+                        "spec": spec or None,
+                        "severity": alert.get("severity"),
+                        "description": alert.get("description"),
+                        "action_taken": "；".join(steps),
+                        "result": "success",
+                        "recommended_action": "",
+                        "summary": f"人工裁决 {choice_id}（{result.get('action')}）"
+                        + (f"：{note}" if note else ""),
+                        "choice_id": choice_id,
+                        "note": note,
+                        "source": "alert-resolve",
+                        "error": "",
+                    }
+                )
+                disposition_logged = True
+            except Exception as e:
+                # 留痕失败不回滚已执行的动作与 handled 标记，如实告知
+                #（结果经 disposition_logged 下发，前端不再假称「留痕已写入」，
+                # code-review item 896c7e54dafd）
+                logger.warning("alert-resolve 处置留痕写入失败 alert=%s: %s", alert_id, e)
 
         try:
             self.server.sse_hub.broadcast(
@@ -279,6 +311,7 @@ class H6AlertRoutesMixin:
                 "action": result.get("action"),
                 "steps": steps,
                 "marked": bool(marked),
+                "disposition_logged": disposition_logged,
                 "note": note,
             }
         )

@@ -307,3 +307,31 @@ body {
 #root .todo-md-tabs > .ant-tabs-nav {
   margin-bottom: 0;
 }
+
+// 告警横幅裁决控件（AlertBanner，add-human-adjudication-choices 5.4）：
+// 静态样式落样式表类（code-review item d893e16d11de），行内 style 只留真正
+// 动态的值。#root 前缀压过 antd 组件级默认（同上全库惯例）。
+#root .alert-adjudication-row {
+  margin-top: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+#root .alert-adjudication-select {
+  min-width: 220px;
+  flex: 1 1 220px;
+}
+#root .alert-adjudication-input {
+  width: 200px;
+  flex: 1 1 160px;
+}
+#root .alert-adjudication-desc {
+  margin-top: 4px;
+  font-size: 12px;
+}
+#root .alert-resolve-msg {
+  margin-top: 4px;
+  font-size: 12px;
+  white-space: pre-wrap;
+}

@@ -48,6 +48,25 @@ test('静默名单：system+subtype 形态不产出行（kind 归一化前置）
   }
 });
 
+// 静默例外二（code-review item 3dda29b6297c）：名单内事件带非空 error 载荷
+// 渲染原因条，不再整段吞掉（superseded 的门失败原因此前不可见）
+test('静默例外：名单内事件带非空 error 载荷渲染原因条，零载荷仍静默', () => {
+  const msgs = runEventsToChatMessages([
+    { type: 'superseded', error: '[artifact-structural] exit 0 但交付物缺失' },
+  ]);
+  assert.equal(msgs.length, 1);
+  assert.equal(msgs[0].type, 'system');
+  assert.match(String(msgs[0].content), /系统事件（superseded）/);
+  assert.match(String(msgs[0].content), /\[artifact-structural\]/);
+  // 长 error 截断到 80 字
+  const long = 'x'.repeat(200);
+  const truncated = runEventsToChatMessages([{ type: 'superseded', error: long }]);
+  assert.ok(String(truncated[0].content).length < 200);
+  assert.ok(String(truncated[0].content).endsWith('…'));
+  // 零载荷心跳照旧静默
+  assert.equal(runEventsToChatMessages([{ type: 'superseded' }]).length, 0);
+});
+
 test('tool_progress 心跳穿插不打断连续同名工具分组', () => {
   const tool = (id) => ({
     type: 'assistant',
