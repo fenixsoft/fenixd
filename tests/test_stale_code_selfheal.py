@@ -252,6 +252,46 @@ class TestIdleSelfhealTrigger(unittest.TestCase):
         """双源皆空 → 空闲判定为真（无 agent run 且无 admin 在途）。"""
         assert self.d._is_idle() is True
 
+    # ── fix-fasttrack-implemented-deadstate 2.3：在飞 ocr 车道维度 ──────
+
+    def test_ocr_lane_inflight_not_idle_and_blocks_selfheal(self):
+        """车道在飞 120s+ 不触发 restart_request：空闲第五维判非空闲 +
+        阻断原因体系 reason="ocr-lane"（车道线程不进 _active_runs/
+        _running_agents，缺本维度时自愈 SIGTERM 杀在飞车道 run）。"""
+        self.d.pm_engine.ocr_lane_busy = mock.MagicMock(return_value=True)
+        assert self.d._is_idle() is False
+        self._tick()  # 开始计时（此前应已被 ocr-lane 阻断清零）
+        self.d._stale_idle_since = time.time() - 300  # 远超 120s 阈值
+        self._tick()
+        assert not self.req.exists()
+        infos = " ".join(str(c) for c in self.d.logger.info.call_args_list)
+        assert "impl-ocr 车道在飞" in infos and "自愈跳过" in infos
+
+    def test_ocr_lane_finish_resumes_idle_accumulation(self):
+        """车道收尾（登记清理）后空闲判定恢复为真，重新累计满阈值照常触发。"""
+        self.d.pm_engine.ocr_lane_busy = mock.MagicMock(return_value=True)
+        self._tick()
+        assert self.d._stale_idle_since is None  # 在飞期间计时清零
+        self.d.pm_engine.ocr_lane_busy = mock.MagicMock(return_value=False)
+        assert self.d._is_idle() is True
+        self._tick()  # 车道收尾后重新开始计时
+        assert self.d._stale_idle_since is not None
+        # 重新累计满阈值 → 正常触发
+        self.d._stale_idle_since = time.time() - 130
+        self._tick()
+        assert self.req.exists()
+
+    def test_ocr_lane_busy_exception_not_idle(self):
+        """ocr_lane_busy 判定异常 → 按非空闲处理（宁紧勿松，不触发自愈）。"""
+        self.d.pm_engine.ocr_lane_busy = mock.MagicMock(
+            side_effect=RuntimeError("boom"))
+        assert self.d._is_idle() is False
+        self.d._stale_idle_since = time.time() - 300
+        self._tick()
+        assert not self.req.exists()
+        warns = " ".join(str(c) for c in self.d.logger.warning.call_args_list)
+        assert "ocr 车道在飞判定异常" in warns
+
 
 def _panel_pair(section: dict) -> dict:
     """stale_code_selfheal 节中**面板受管**的两键。

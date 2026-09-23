@@ -820,6 +820,20 @@ class FFastTrackMixin:
         # ——插在 testing 转移之后、verified 之前：defer 时 spec 停留 testing
         # （车道完成回调经 _resume_verified_after_ocr 重入本方法，同状态转移
         # 幂等保证安全）；reject 时打回已在门禁内完成。
+        # fix-fasttrack-implemented-deadstate 1.1：testing 之后段抽取为
+        # _fast_track_finalize_after_testing，与重启恢复重入路径共用。
+        self._fast_track_finalize_after_testing(spec_name, result)
+
+    def _fast_track_finalize_after_testing(self, spec_name: str, result) -> None:
+        """testing 出口收尾段：join 门禁 → verified 转移 → 清零点 update →
+        ``_on_spec_verified``（fix-fasttrack-implemented-deadstate 1.1）。
+
+        自 ``_fast_track_advance_to_verified`` 抽取的私有方法，正常收尾流与
+        重启恢复重入（``_resume_fast_track_after_restart``）两处复用——
+        **禁止**复制粘贴状态推进序列（清零点字段集漂移即事故）。defer 时
+        spec 停留 testing（车道完成回调既有唤醒路径接手）；reject 已在
+        门禁内完成。
+        """
         ocr_decision = self._ocr_join_gate(spec_name, "fast-track")
         if ocr_decision != "pass":
             return
@@ -850,6 +864,38 @@ class FFastTrackMixin:
             f"fast-track verified: '{spec_name}' → 推进 verified",
         )
         self._pm._on_spec_verified(spec_name)
+
+    def _resume_fast_track_after_restart(self, spec_name: str) -> None:
+        """重启恢复重入：implemented 死态 → testing → 收尾段（Cap 1 / D2）。
+
+        fast-track spec 卡 ``implemented`` 死态（daemon 重启恢复形态：重启把
+        testing 回滚 implemented、event-bus 每 30 分钟重发 spec_implemented 被
+        engine 既有短路吞掉）时的收尾重入入口，由 engine
+        ``_on_spec_implemented`` 恢复三条件全成立时调用：
+
+        - transition ``implemented → testing``（channel=auto，
+          trigger_run_id=implementer_run）；
+        - 随后复用 ``_fast_track_finalize_after_testing`` 收尾段（join 门禁 →
+          verified → 清零点 → ``_on_spec_verified``）；defer 时车道完成回调
+          ``_on_impl_ocr_lane_finished`` 既有唤醒路径接手（回调前置
+          status==testing，重入后恰好满足，闭环）。
+
+        **不读** fast-track 共享结果文件（早已在首次收尾时消费清理）：验证
+        结论以 per-spec impl-result 快照（merge 成功时点已落盘）+ tasks 勾选
+        为准（verified→done 门禁 ``_task_completion_blocker`` 读快照）。
+        """
+        entry = self._pm.state_machine.read_one(spec_name) or {}
+        implementer_run = entry.get("implementer_run") or None
+        self._pm.state_machine.transition(
+            spec_name, "testing",
+            trigger_run_id=implementer_run,
+            agent_type="fast-track", channel="auto",
+        )
+        from types import SimpleNamespace
+
+        self._fast_track_finalize_after_testing(
+            spec_name, SimpleNamespace(run_id=implementer_run)
+        )
 
     def _rewrite_fast_track_to_full(self, spec_name: str) -> None:
         """把 .spec.yaml 的 mode 从 fast-track 改写为 full（升级路径复用）。

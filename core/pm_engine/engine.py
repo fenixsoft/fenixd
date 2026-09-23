@@ -306,6 +306,9 @@ class PMEngine:
         "_check_repair_commit_facts": ("_dispatcher", "_check_repair_commit_facts"),
         "_handle_remerge_failure": ("_dispatcher", "_handle_remerge_failure"),
         "_fallback_after_repair": ("_dispatcher", "_fallback_after_repair"),
+        # fix-fasttrack-implemented-deadstate 2.1：在飞 impl-ocr 车道公开判定
+        # （_is_idle 第五维 + fast-track 恢复三条件③共用，带参/无参双口径）。
+        "ocr_lane_busy": ("_dispatcher", "ocr_lane_busy"),
         "_recovery_watch_path": ("_recovery", "_recovery_watch_path"),
         "_load_recovery_watch": ("_recovery", "_load_recovery_watch"),
         "_save_recovery_watch": ("_recovery", "_save_recovery_watch"),
@@ -1295,6 +1298,11 @@ class PMEngine:
         from core.spec_mode import is_fast_track
 
         if is_fast_track(self.project_root, spec_name):
+            # fix-fasttrack-implemented-deadstate Cap 1：短路之前先判恢复形态
+            # ——implemented 死态（重启恢复）三条件全成立时重入收尾推进，
+            # 否则维持既有短路（孤儿 planner 防线不变）。
+            if self._fasttrack_recovery_reentry(spec_name):
+                return
             self.logger.debug(
                 "pm_engine",
                 f"Skipping verifier enqueue for fast-track '{spec_name}' "
@@ -1302,6 +1310,76 @@ class PMEngine:
             )
             return
         self._enqueue(spec_name, "verifier")
+
+    def _implementer_run_transcript_expired(self, implementer_run) -> bool:
+        """实现者 run 流转录新鲜度判定（恢复三条件②，fix-fasttrack-implemented-deadstate D1）。
+
+        转录文件（``.fenix/runs/<implementer_run>.jsonl``）mtime 超过
+        ``ORPHANED_RUN_GRACE_SECONDS``（admin_monitor 孤儿探针同源宽限语义：
+        活 run 心跳持续刷新转录 mtime，超窗即 run 已死）或文件不存在
+        （run 未在写）→ True（run 已死）。``implementer_run`` 为空保守返回
+        False（条件①已挡，不在此误判）。
+        """
+        if not implementer_run:
+            return False
+        run_file = self.project_root / ".fenix" / "runs" / f"{implementer_run}.jsonl"
+        try:
+            mtime = run_file.stat().st_mtime
+        except OSError:
+            return True  # 转录不存在 = run 未在写 → 已死
+        from core.admin_monitor import ORPHANED_RUN_GRACE_SECONDS
+
+        return (time.time() - mtime) > ORPHANED_RUN_GRACE_SECONDS
+
+    def _fasttrack_recovery_reentry(self, spec_name: str) -> bool:
+        """fast-track implemented 死态恢复形态判定与重入（Cap 1 / D1）。
+
+        恢复三条件同时成立才放行恢复重入，任一不成立维持既有短路（孤儿
+        planner 防线不变，debug 留痕）：
+
+        ① ``status == "implemented"`` 且 ``implementer_run`` 非空（收尾流已过
+           merge 点）；
+        ② 实现者 run 转录 mtime 超 ``ORPHANED_RUN_GRACE_SECONDS`` 宽限窗
+           （``_implementer_run_transcript_expired``）→ run 已死；
+        ③ ``ocr_lane_busy(spec_name)`` 为假（公开方法带参判定，不直读
+           ``_ocr_lane_inflight``）→ 收尾重入不与在飞车道竞态；判定异常按
+           在飞处理（不重入，宁紧勿松）。
+
+        Returns:
+            True = 恢复形态成立且已触发重入（``_resume_fast_track_after_restart``）；
+            False = 维持既有短路。
+        """
+        entry = self.state_machine.read_one(spec_name) or {}
+        implementer_run = entry.get("implementer_run")
+        cond_status = entry.get("status") == "implemented" and bool(implementer_run)
+        cond_dead = self._implementer_run_transcript_expired(implementer_run)
+        try:
+            cond_no_lane = not self.ocr_lane_busy(spec_name)
+        except Exception:  # noqa: BLE001 — 车道判定不可得按在飞处理，不重入
+            cond_no_lane = False
+        if not (cond_status and cond_dead and cond_no_lane):
+            self.logger.debug(
+                "pm_engine",
+                f"fast-track 短路维持 '{spec_name}'（恢复判据 "
+                f"status_ok={cond_status}/run_dead={cond_dead}/no_lane={cond_no_lane} "
+                "不全成立，非恢复形态）",
+            )
+            return False
+        self.logger.info(
+            "pm_engine",
+            f"fast-track 恢复重入 '{spec_name}'：implemented 死态（run 转录超宽限"
+            f"={cond_dead}，无在飞车道={cond_no_lane}）→ 重入收尾推进 "
+            "(implemented → testing → ocr join 门禁 → verified)",
+        )
+        try:
+            self._dispatcher._resume_fast_track_after_restart(spec_name)
+        except Exception as e:  # noqa: BLE001 — 重入失败不崩溃，事件周期重发兜底
+            self.logger.warning(
+                "pm_engine",
+                f"fast-track 恢复重入失败 '{spec_name}'（非阻塞，等下次事件重发）: "
+                f"{type(e).__name__}: {e}",
+            )
+        return True
 
     def _on_spec_verified(self, spec_name: str):
         """Mark verified SPEC as done."""
