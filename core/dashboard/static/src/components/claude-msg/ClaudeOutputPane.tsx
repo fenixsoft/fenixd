@@ -5,7 +5,7 @@
 // add-run-record-readability：头部「显示思考过程」开关（默认关闭，3.2）与
 // 「显示尾部 N / 共 M 条事件」计数 + 「加载更早事件」向前分页（D5）。
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Button, Spin, Switch, Typography } from 'antd';
+import { App, Button, Spin, Switch, Typography } from 'antd';
 import { getRunTail, registerRunWatch } from '@/services/dashboard';
 import type { RunEvent } from '@/services/dashboard';
 
@@ -16,10 +16,6 @@ interface ClaudeOutputPaneProps {
   runId: string;
   project: string;
   tail?: number;
-  /** 兼容保留（add-run-record-readability 3.2）：思考显示改由面板头部开关控制
-   * （组件内 state，默认关闭），该 prop 不再作为初值；全程无正文形态由
-   * runEventsToChatMessages 兜底强制渲染 thinking */
-  showThinking?: boolean;
   /** 事件数变化回调（供外层在标题处显示"共 N 条事件"） */
   onEventsCount?: (count: number) => void;
   /** run 终态回调：done / error / missing（供外层恢复输入与按钮状态） */
@@ -102,7 +98,9 @@ export default function ClaudeOutputPane({
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState('');
-  // 显示思考过程开关：默认关闭（thinking 占比 14-19% 且恒为折叠态，关闭后
+  // 分页失败/零进展的瞬时反馈（code-review item 1717797b5fc1）：初载路径有
+  // error 态兜底，「加载更早事件」此前只 console.error，点击无任何可见反馈
+  const { message } = App.useApp();  // 显示思考过程开关：默认关闭（thinking 占比 14-19% 且恒为折叠态，关闭后
   // 不再以「已思考数秒」噪声行打断工具聚合）；无正文兜底见 runEvents
   const [thinkingVisible, setThinkingVisible] = useState(false);
   const eventSourceRef = useRef<EventSource | null>(null);
@@ -172,10 +170,18 @@ export default function ClaudeOutputPane({
         const older = prependWithoutOverlap(data.events || [], events);
         if (older.length > 0) {
           setEvents((prev) => [...older, ...prev]);
+        } else if (events.length < (data.total_events || 0)) {
+          // 零进展提示（code-review item 1717797b5fc1）：快进流下后端窗口整体
+          // 滑过已加载前缀 → 去重后无新内容，events.length 不增长、canLoadOlder
+          // 仍为 true，静默重试会让用户反复点击同一窗口
+          message.info('本轮未取到更早事件（窗口已被追加推过），请稍后重试');
         }
       }
     } catch (e) {
       console.error('Failed to load earlier events:', e);
+      // 失败反馈（code-review item 1717797b5fc1）：分页失败此前只落 console，
+      // 用户侧表现为点了没反应
+      message.error(`加载更早事件失败：${e instanceof Error ? e.message : String(e)}`);
     } finally {
       if (isMountedRef.current && activeRunIdRef.current === reqRunId) {
         setLoadingMore(false);
@@ -252,8 +258,16 @@ export default function ClaudeOutputPane({
             }
           })();
         } else if (msg.events && msg.events.length > 0) {
-          setEvents((prev) => [...prev, ...msg.events!]);
-          const terminal = msg.events.find((ev) => ev.type === 'result' || ev.type === 'error');
+          const incoming = msg.events;
+          setEvents((prev) => [...prev, ...incoming]);
+          // 增量同步推进总数（code-review item 7ae6c2b659c2）：watcher 的
+          // run_events 只带增量 events 不带 total，不推进会让「共 M 条」停在
+          // 最近一次 REST 拉取值——live run 流入条数超过 stale total 后
+          // canLoadOlder（events.length < totalEvents）恒 false，「加载更早
+          // 事件」被错误禁用而更早历史仍在。reset/重同步路径整体重拉 total，
+          // 不经本分支。
+          setTotalEvents((prev) => prev + incoming.length);
+          const terminal = incoming.find((ev) => ev.type === 'result' || ev.type === 'error');
           if (terminal) onRunStatus?.(terminal.type === 'result' ? 'done' : 'error');
         }
       }

@@ -1248,6 +1248,13 @@ _VERIFY_CHAIN_ERROR_MARKERS = (
     "judge", "验证", "重派", "预算", "verify", "inconclusive", "env",
 )
 
+# 非验证链冻结 reason 排除表（code-review item 0d6dd05975ba）：token_budget 的
+# freeze_stop_loss 裁决写「用户指令冻结：token 预算止损（人工裁决）」，reason
+# 含「预算」——上面的单 marker 子串判别会把它误划进验证链，对验证链之外的
+# spec 删验证进度文件并清零计数。命中 marker 前先按本表显式排除（逐案补充
+# 已知非验证链用户指令 reason；排除优先于命中）。
+_NON_VERIFY_CHAIN_FREEZE_REASONS = ("token 预算止损",)
+
 # 冻结场景与验证进度运行时文件（reset_verification 删除清单：按 spec 名
 # 精确拼路径，禁通配；tokens.json 为生命周期成本审计侧车，保留不清）。
 _VERIFY_PROGRESS_RUNTIME_FILES = (
@@ -1327,6 +1334,13 @@ def reset_verification(project_root, spec: str, note: str = "", signal_type: str
             }
     else:
         error_text = str(entry.get("error") or "")
+        # 显式排除先行（code-review item 0d6dd05975ba）：成本止损类用户指令
+        # 冻结的 reason 含「预算」，不排除会被 marker 子串误放行
+        if any(r in error_text for r in _NON_VERIFY_CHAIN_FREEZE_REASONS):
+            return {
+                "ok": False, "found": True, "steps": [], "target_status": None,
+                "error": "冻结原因属用户指令成本止损（非验证链信号），重置验证被拒绝",
+            }
         if not any(m in error_text for m in _VERIFY_CHAIN_ERROR_MARKERS):
             return {
                 "ok": False, "found": True, "steps": [], "target_status": None,
@@ -1508,6 +1522,15 @@ def _exec_review_unfreeze(project_root, spec: str, note: str, marker: str, label
     if spec not in specs:
         return {"ok": False, "steps": [], "error": f"spec not found: {spec}"}
     entry = specs[spec]
+    # 状态前置（code-review item 3628279ba8e6）：与 reset_verification /
+    # force_advance / _exec_continue_auto_fix（frozen/blocked）和
+    # skip_review_gate（frozen）同门——非冻结/blocked 态一律拒绝，防只改了
+    # status、error 残留评审族标记的在途 spec 被陈旧/重放裁决拽回 reviewing
+    # 并清零其评审计数、丢弃当前在途状态
+    if not (is_spec_frozen(entry) or entry.get("status") == "blocked"):
+        return {"ok": False, "steps": [],
+                "error": (f"spec 未处于冻结/blocked 态（当前 {entry.get('status')}），"
+                          f"{label}被拒绝")}
     if marker not in str(entry.get("error") or ""):
         return {"ok": False, "steps": [],
                 "error": f"该冻结非 {marker} 类，{label}被拒绝"}

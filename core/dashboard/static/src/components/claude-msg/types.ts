@@ -35,10 +35,8 @@ export interface ChatMessage {
   thinkingPreview?: string;
   /** 无正文兜底强制渲染标记（3.2）：showThinking=false 但全流无非空正文时，
    * 兜底产出的 thinking 消息带此标记；渲染层（MessageItem 隐藏判定与
-   * rendersNothing 分组判定）据此豁免隐藏——缺了它兜底会在渲染层被击穿
+   * toolGrouping 分组判定）据此豁免隐藏——缺了它兜底会在渲染层被击穿
    *（verification BUG-02） */
   thinkingForced?: boolean;
-  /** 防御标记：被静默的消息不渲染且不打断同类连续分组（2.2） */
-  rendersNothing?: boolean;
   [key: string]: unknown;
 }

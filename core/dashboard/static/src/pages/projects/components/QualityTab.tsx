@@ -37,6 +37,7 @@ import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { markdownComponents } from './SpecDocModal';
 import {
+  ApiError,
   cancelRun,
   generateFixSpec,
   getCodeFixRunResult,
@@ -413,7 +414,10 @@ export default function QualityTab({ project, active }: QualityTabProps) {
       void loadItems();
     } catch (e) {
       const errMsg = e instanceof Error ? e.message : String(e);
-      if (errMsg.includes('已有审查在进行中')) {
+      // 业务拒绝按稳定错误码分支（code-review item fbdb437a22a0）：旧实现对
+      // 后端中文文案做子串匹配，措辞一改即静默落入通用错误分支；错误码由
+      // 后端 _coded_error 下发、ApiError.code 承载（同 RegressionTab 先例）
+      if (e instanceof ApiError && e.code === 'code_review_running') {
         message.warning('已有审查在进行中');
       } else {
         message.error(`${label}失败: ${errMsg}`);
@@ -466,7 +470,10 @@ export default function QualityTab({ project, active }: QualityTabProps) {
       }
     } catch (e) {
       const errMsg = e instanceof Error ? e.message : String(e);
-      if (errMsg.includes('已有未消费的修复触发请求')) {
+      // 业务拒绝按稳定错误码分支（code-review item fbdb437a22a0）：409「已有
+      // 未消费的修复触发请求」由后端 _coded_error 下发 code，不再对展示文案
+      // 做子串匹配（措辞一改即静默落入通用错误分支）
+      if (e instanceof ApiError && e.code === 'fix_run_request_pending') {
         message.warning(errMsg);
       } else {
         message.error(`自动修复失败: ${errMsg}`);

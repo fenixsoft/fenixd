@@ -1,5 +1,7 @@
 // groupConsecutiveTools 同类连续聚合 + 工具卡片纯函数（add-run-record-readability 2.4）。
-// 零依赖，node 原生 type-stripping 加载 .ts 源。
+// 零依赖，node 原生 type-stripping 直载 .ts 源——需 Node ≥22.18（22.6–22.17 须
+// 显式 --experimental-strip-types，20.x 不支持；下限同记于 package.json
+// engines.node 与 release.yml CI 测试步骤，code-review item d2264576cec6）。
 // 运行：cd core/dashboard/static && node --test tests/toolGrouping.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -15,16 +17,22 @@ import {
   toolGroupTitle,
 } from '../src/components/claude-msg/toolGrouping.ts';
 
-let seq = 0;
-function toolMsg(toolName, input) {
-  seq += 1;
-  return {
-    type: 'tool',
-    isToolUse: true,
-    toolName,
-    toolInput: input,
-    toolId: `call_${seq}`,
-    timestamp: `2026-09-22T10:00:${String(seq % 60).padStart(2, '0')}`,
+// 每用例独立工厂（code-review item 899393aaf80c）：模块级共享 seq 会让
+// toolId（call_1…call_N）依赖用例执行顺序——重排用例、--test-name-pattern
+// 过滤或拆分文件后，ID 相关失败难以定位。改为工厂闭包内计数，各用例自建
+// toolMsg，跨用例零共享状态。
+function makeToolMsgFactory() {
+  let seq = 0;
+  return (toolName, input) => {
+    seq += 1;
+    return {
+      type: 'tool',
+      isToolUse: true,
+      toolName,
+      toolInput: input,
+      toolId: `call_${seq}`,
+      timestamp: `2026-09-22T10:00:${String(seq % 60).padStart(2, '0')}`,
+    };
   };
 }
 
@@ -39,6 +47,7 @@ function groupTitles(items) {
 // ── 同类连续聚合 ─────────────────────────────────────────────────────
 
 test('查阅类：Read/Grep/Glob 混合同类连续成组，标题带计数', () => {
+  const toolMsg = makeToolMsgFactory();
   const items = groupConsecutiveTools([
     toolMsg('Read', { file_path: '/a.py' }),
     toolMsg('Grep', { pattern: 'foo' }),
@@ -50,6 +59,7 @@ test('查阅类：Read/Grep/Glob 混合同类连续成组，标题带计数', ()
 });
 
 test('命令类：连续 Bash 聚合为「执行 N 条命令」', () => {
+  const toolMsg = makeToolMsgFactory();
   const items = groupConsecutiveTools([
     toolMsg('Bash', { command: 'ls' }),
     toolMsg('Bash', { command: 'pwd' }),
@@ -59,6 +69,7 @@ test('命令类：连续 Bash 聚合为「执行 N 条命令」', () => {
 });
 
 test('编辑类：连续 Edit/Write 混合成组为「编辑 N 个文件」', () => {
+  const toolMsg = makeToolMsgFactory();
   const items = groupConsecutiveTools([
     toolMsg('Edit', { file_path: '/a.py', old_string: 'x', new_string: 'y' }),
     toolMsg('Write', { file_path: '/b.py', content: 'x' }),
@@ -69,6 +80,7 @@ test('编辑类：连续 Edit/Write 混合成组为「编辑 N 个文件」', ()
 });
 
 test('间隔 thinking（开关关闭）不断组：Bash×2 + thinking + Bash×3 → 单组 5 条', () => {
+  const toolMsg = makeToolMsgFactory();
   const items = groupConsecutiveTools(
     [
       toolMsg('Bash', { command: 'a' }),
@@ -86,6 +98,7 @@ test('间隔 thinking（开关关闭）不断组：Bash×2 + thinking + Bash×3 
 });
 
 test('开关打开时 thinking 打断分组：Bash×2 + thinking + Bash×3 → 2 组 + thinking', () => {
+  const toolMsg = makeToolMsgFactory();
   const items = groupConsecutiveTools(
     [
       toolMsg('Bash', { command: 'a' }),
@@ -103,6 +116,7 @@ test('开关打开时 thinking 打断分组：Bash×2 + thinking + Bash×3 → 2
 });
 
 test('异类断组：Bash×2 + Edit → 「执行 2 条命令」+ 独立 Edit 卡片', () => {
+  const toolMsg = makeToolMsgFactory();
   const items = groupConsecutiveTools([
     toolMsg('Bash', { command: 'a' }),
     toolMsg('Bash', { command: 'b' }),
@@ -115,6 +129,7 @@ test('异类断组：Bash×2 + Edit → 「执行 2 条命令」+ 独立 Edit �
 });
 
 test('类外工具沿用同名连续：连续 Task 聚合但无语义化标题（badge 形态）', () => {
+  const toolMsg = makeToolMsgFactory();
   const items = groupConsecutiveTools([
     toolMsg('Task', { prompt: 'a' }),
     toolMsg('Task', { prompt: 'b' }),
@@ -129,6 +144,7 @@ test('类外工具沿用同名连续：连续 Task 聚合但无语义化标题�
 // ── 阈值 ─────────────────────────────────────────────────────────────
 
 test('阈值 2：单条工具不聚合、逐条展示', () => {
+  const toolMsg = makeToolMsgFactory();
   assert.equal(TOOL_GROUP_THRESHOLD, 2);
   const items = groupConsecutiveTools([toolMsg('Bash', { command: 'a' })]);
   assert.equal(items.length, 1);
@@ -138,6 +154,7 @@ test('阈值 2：单条工具不聚合、逐条展示', () => {
 // ── 编辑组路径去重 ───────────────────────────────────────────────────
 
 test('editFilePaths：5 次调用 3 个路径按首现顺序去重', () => {
+  const toolMsg = makeToolMsgFactory();
   const paths = editFilePaths([
     toolMsg('Edit', { file_path: '/a.py' }),
     toolMsg('Write', { file_path: '/b.py', content: 'x' }),
@@ -149,6 +166,7 @@ test('editFilePaths：5 次调用 3 个路径按首现顺序去重', () => {
 });
 
 test('editFilePaths：path 字段回退与非对象输入容错', () => {
+  const toolMsg = makeToolMsgFactory();
   const paths = editFilePaths([
     toolMsg('Edit', { path: '/rel.py' }),
     toolMsg('Edit', ''),
@@ -209,16 +227,19 @@ test('toolClassOf / toolGroupTitle 映射表', () => {
 // ── toolCardPreview：task_started 回填字段优先（BUG-01 回归锚定） ────
 
 test('toolCardPreview 优先回填的 taskDescription', () => {
+  const toolMsg = makeToolMsgFactory();
   const msg = { ...toolMsg('Task', { prompt: '跑全量测试并汇报' }), taskDescription: 'Run dispatch tests' };
   assert.equal(toolCardPreview(msg), 'Run dispatch tests');
 });
 
 test('toolCardPreview 无回填时回落工具输入摘要（description 优先既有语义不变）', () => {
+  const toolMsg = makeToolMsgFactory();
   assert.equal(toolCardPreview(toolMsg('Bash', { command: 'npm test' })), 'npm test');
   assert.equal(toolCardPreview(toolMsg('Read', { file_path: '/a/b.py', description: '看配置' })), '看配置');
 });
 
 test('toolCardPreview 回填为空白串时回落输入摘要', () => {
+  const toolMsg = makeToolMsgFactory();
   const msg = { ...toolMsg('Task', { description: '输入里的描述' }), taskDescription: '   ' };
   assert.equal(toolCardPreview(msg), '输入里的描述');
 });
@@ -226,6 +247,7 @@ test('toolCardPreview 回填为空白串时回落输入摘要', () => {
 // ── rendersNothing：兜底强制渲染的 thinking 照常断组（BUG-02 回归锚定） ──
 
 test('兜底强制渲染的 thinking（thinkingForced）真实可见，打断同类连续分组', () => {
+  const toolMsg = makeToolMsgFactory();
   const a = toolMsg('Bash', { command: 'echo a' });
   const t = { type: 'assistant', isThinking: true, content: '思考', timestamp: '2026-09-22T10:05:00', thinkingForced: true };
   const b = toolMsg('Bash', { command: 'echo b' });

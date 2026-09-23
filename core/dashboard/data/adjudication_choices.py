@@ -27,6 +27,11 @@ from __future__ import annotations
 #   desc   一句话说明执行内容（下拉选项次行 / 二次确认文案）
 #   action 映射的后端动词标识（admin_actions 既有动词或新增裁决动词；
 #          alert-resolve 端点按它分派 execute_adjudication_choice）
+# 可选第五字段：
+#   destructive  True=不可逆/越权语义（abandon/skip_review_gate）；前端据此
+#                决定执行前二次确认——确认门由注册表单源驱动，前端不再
+#                硬编码业务 id（code-review item 19f72b875e8f；历史告警
+#                快照缺该字段时前端按已知不可逆 id 回退）
 ADJUDICATION_CHOICES: dict = {
     # ── 验证循环耗尽族 ────────────────────────────────────────────
     "impl_budget_exhausted": (
@@ -53,6 +58,7 @@ ADJUDICATION_CHOICES: dict = {
             "label": "撤销丢弃",
             "desc": "撤销并丢弃该 spec 的工作（软删除归档，留处置痕，不可自动恢复）",
             "action": "abandon",
+            "destructive": True,
         },
     ),
     "judge_rerun_cap": (
@@ -73,6 +79,7 @@ ADJUDICATION_CHOICES: dict = {
             "label": "撤销丢弃",
             "desc": "撤销并丢弃该 spec 的工作（软删除归档，留处置痕，不可自动恢复）",
             "action": "abandon",
+            "destructive": True,
         },
     ),
     "verify_fail_escalation": (
@@ -99,6 +106,7 @@ ADJUDICATION_CHOICES: dict = {
             "label": "撤销丢弃",
             "desc": "撤销并丢弃该 spec 的工作（软删除归档，留处置痕，不可自动恢复）",
             "action": "abandon",
+            "destructive": True,
         },
     ),
     "redispatch_loop_detected": (
@@ -125,6 +133,7 @@ ADJUDICATION_CHOICES: dict = {
             "label": "撤销丢弃",
             "desc": "撤销并丢弃该 spec 的工作（软删除归档，留处置痕，不可自动恢复）",
             "action": "abandon",
+            "destructive": True,
         },
     ),
     # ── 评审族 ───────────────────────────────────────────────────
@@ -147,6 +156,7 @@ ADJUDICATION_CHOICES: dict = {
             "label": "撤销丢弃",
             "desc": "撤销并丢弃该 spec 的工作（软删除归档，留处置痕，不可自动恢复）",
             "action": "abandon",
+            "destructive": True,
         },
     ),
     "spec-review-incomplete": (
@@ -162,12 +172,14 @@ ADJUDICATION_CHOICES: dict = {
             "desc": "评审器持续基础设施失败时人工授权放行：reviewing 直推 ready 进入"
             "正常实现调度（留授权痕）",
             "action": "skip_review_gate",
+            "destructive": True,
         },
         {
             "id": "abandon",
             "label": "撤销丢弃",
             "desc": "撤销并丢弃该 spec 的工作（软删除归档，留处置痕，不可自动恢复）",
             "action": "abandon",
+            "destructive": True,
         },
     ),
     # ── token 预算 ───────────────────────────────────────────────
