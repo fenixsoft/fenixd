@@ -18,9 +18,6 @@ from pathlib import Path
 from core.agent_runner.runner import FROZEN_TERMINATED_ERROR_PREFIX
 from core.verify_engine.judge_files import ATTRIBUTION_STATUS_ACCEPT, ATTRIBUTION_STATUS_REQUEUE
 
-# resynthesis 指令文件名与重合成预算（随组迁移）
-_RESYNTHESIS_DIRECTIVE_FILENAME = "dedup_resynthesis_directive.json"
-_RESYNTHESIS_MAX_ATTEMPTS = 2
 from typing import Optional
 
 

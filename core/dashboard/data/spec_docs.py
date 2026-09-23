@@ -49,7 +49,7 @@ class InvalidSpecName(ValueError):
 
 
 class InvalidSpecDoc(ValueError):
-    """doc 参数非法（不在 {proposal, design, tasks} 白名单）。"""
+    """doc 参数非法（不在 _SPEC_DOC_WHITELIST 白名单——单一来源，防注释漂移）。"""
 
 
 class InvalidPriority(ValueError):

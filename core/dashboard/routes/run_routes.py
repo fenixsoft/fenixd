@@ -18,6 +18,12 @@ from core.dashboard.registry import Registry
 class H4RunRoutesMixin:
     """H4 run/events/hooks-audit。"""
 
+    def _coded_error(self, status: int, msg: str, code: str) -> None:
+        """带稳定机器可读 ``code`` 的错误响应（code-review item
+        813aa61cb08f）：前端控制流按业务错误码分支，不依赖中文消息子串。
+        先例：H12 regression / code_review mixin 同名 helper。"""
+        self._json({"error": msg, "code": code}, status)
+
     def _api_run_cancel(self, query):
         """POST /api/run-cancel?project=<name>&run_id=<id>（可选 reason）
 
@@ -25,7 +31,7 @@ class H4RunRoutesMixin:
         主循环下一轮拾取并调 agent_runner.cancel_run。
         - project 不存在 → 404
         - run_id 缺失 → 400
-        - 已有未消费请求 → 409
+        - 已有未消费请求 → 409（code=cancel_run_request_pending）
         - 受理 → 200 + {"requested": true}
         """
         project = self._project_from_query(query)
@@ -58,7 +64,9 @@ class H4RunRoutesMixin:
             self._error(400, "run_id required")
             return
         if result.get("conflict"):
-            self._error(409, result.get("error") or "已有进行中的取消请求")
+            self._coded_error(
+                409, result.get("error") or "已有进行中的取消请求", "cancel_run_request_pending"
+            )
             return
         self._json(
             {

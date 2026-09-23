@@ -856,7 +856,14 @@ def materialize_draft(item: dict, project_root) -> Tuple[Optional[Path], str]:
         str(item.get("section", "")),
         str(item.get("title", "")),
     )
-    d = draft_dir(project_root, eid)
+    eid = str(eid or "")
+    # 路径越界校验（code-review item 79a8a0a141f5，与 reject_item/delete_item
+    # 同款防护）：eid 来自 agent 产出 JSON（read_contract 不校验 id），可携带
+    # ``..`` 或路径分隔符——直接拼草稿路径可写出 drafts 基目录。越界拒绝落盘
+    # （调用方置 draft_failed）。
+    d = _safe_draft_dir(project_root, eid)
+    if d is None:
+        return None, f"条目 id 非法（草稿路径越界风险）: {eid!r}"
     try:
         d.mkdir(parents=True, exist_ok=True)
         spec_sub = d / "specs" / capability
@@ -1190,7 +1197,22 @@ def accept_item(
             "error": rec["draft_failed_reason"],
         }
 
-    src = draft_dir(project_root, item_id_)
+    # 路径越界校验（code-review item 79a8a0a141f5）：eid 可携 ``..``/分隔符
+    # （agent 产出 JSON 未校验 id），拼路径可越出 drafts 基目录——成功后
+    # ``shutil.rmtree(src)`` 会删任意目录。与 reject_item/delete_item 同款
+    # _safe_draft_dir 防护，越界置 accept_failed 并告警。
+    src = _safe_draft_dir(project_root, str(item_id_ or ""))
+    if src is None:
+        rec["status"] = "accept_failed"
+        rec["draft_failed_reason"] = "草稿目录路径非法或越界"
+        upsert_item(project_root, rec)
+        _write_admin_warning(project_root, f"自进化条目 {item_id_} 接受失败：草稿目录路径非法或越界")
+        return {
+            "ok": False,
+            "status": "accept_failed",
+            "spec_name": None,
+            "error": rec["draft_failed_reason"],
+        }
     dest = Path(project_root) / "spec" / "changes" / name
     if dest.exists():
         # 同名目录已被他人/重试创建：清掉再复制，防残留污染

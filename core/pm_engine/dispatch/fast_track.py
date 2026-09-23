@@ -581,7 +581,15 @@ class FFastTrackMixin:
                 except (TypeError, ValueError):
                     prev_streak = 0
                 streak = prev_streak + 1 if prev_fp == fp else 1
-                breaker_threshold = self._pm._get_config("agents.merge_breaker_threshold", 2)
+                # 配置侧 int() 归一（code-review item 74317ab4a77a，与 budget.py
+                # _budget_exempt_alert_threshold 同款）：字符串配置裸用于比较抛
+                # TypeError 中断 merge 失败处置，非法值回退缺省。
+                try:
+                    breaker_threshold = int(
+                        self._pm._get_config("agents.merge_breaker_threshold", 2) or 2
+                    )
+                except (TypeError, ValueError):
+                    breaker_threshold = 2
                 final_error = f"Merge-back failed (fp={fp}): {merge_error}"
                 if streak >= breaker_threshold:
                     # fix-observability-gaps 2.2：repair/fast-track merge 熔断 blocked
@@ -1076,7 +1084,12 @@ class FFastTrackMixin:
         except (TypeError, ValueError):
             prev_retries = 0
         retries = prev_retries + 1
-        max_r = self._pm._get_config("agents.max_retries", 3)
+        # 配置侧 int() 归一（code-review item 74317ab4a77a）：字符串配置裸用于
+        # `retries >= max_r` 比较抛 TypeError 中断失败重派，非法值回退缺省。
+        try:
+            max_r = int(self._pm._get_config("agents.max_retries", 3) or 3)
+        except (TypeError, ValueError):
+            max_r = 3
         # fix-redispatch-loop-governance 3.4（fast-track 车道对等）：retries 达
         # max_r 时真正终止自动重试——冻结转人工（freeze_for_human，error 内嵌
         # 「原状态 X」供 parse_orig_status 解冻还原）。原实现「清零 _retry_count

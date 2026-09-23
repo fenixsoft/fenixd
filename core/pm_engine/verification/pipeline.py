@@ -723,6 +723,12 @@ class VerificationPipeline:
                     f"裁决结果不可读 '{spec_name}'（reason={verifier_result.reason}）"
                     f"— 重派 judge 一次后复读: {verifier_result.detail}",
                 )
+                # 轮内记账（code-review item 68d9074a2c0f，judge_gate.py 调用点
+                # 规则）：此路径直接 run_planner 不经 gate，与 _verify_verdict_evidence
+                # 重派路径同口径——反复不可读的结果文件若不记账可绕过轮内 2 次
+                # 与全局 5 次重裁决阈值。空 violations 必然落入 "real" 分支
+                # （记轮内 +1 与生命周期 _judge_real_dispatches）。
+                self._judge_charge_verdict_retry(spec_name, [])
                 retry_judge = self._pm.agent_runner.run_planner(spec_name, "judge")
                 if retry_judge.success:
                     verifier_result = self._read_verdict(spec_name)

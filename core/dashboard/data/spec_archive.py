@@ -350,13 +350,11 @@ def auto_archive_check(project_root, config: dict, logger=None) -> dict:
             "total_terminal_unarchived": total,
         }
 
-    # 按 updated 升序（最久完成的先归档）
+    # 按 updated 升序（最久完成的先归档）；缺 updated 归队尾（空串最小）。
+    # 纯 return 无异常面，try/except 属不可达死代码（code-review item
+    # 81f539cc3de8）；updated 经 `or ""` 归一为字符串，排序比较安全。
     def _sort_key(item):
-        updated = item[1].get("updated") or ""
-        try:
-            return updated  # ISO8601 字符串排序即时间排序
-        except Exception:
-            return ""
+        return item[1].get("updated") or ""
 
     candidates.sort(key=_sort_key)
 

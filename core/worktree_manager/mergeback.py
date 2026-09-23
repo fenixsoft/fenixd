@@ -651,6 +651,7 @@ class G4MergebackMixin:
         冲突路径清单与语义冲突分类（add-merge-back-repair-lane D1，供调度层
         决定是否进入 repair 通道）。
         """
+        backup = None  # TimeoutExpired 早于备份创建时 except 分支的兜底初值
         try:
             # Idempotency check: is branch already an ancestor of HEAD?
             ancestor = subprocess.run(
@@ -850,6 +851,22 @@ class G4MergebackMixin:
             )
 
         except subprocess.TimeoutExpired:
+            # 超时收口（code-review item 80e2f0795662，与既有失败路径对齐）：
+            # merge 子进程被杀后索引/工作区可能停在半合并（unmerged）态——不
+            # abort 会让后续 restore_after_merge 的 stash pop 失败或告警失真；
+            # 已移开的 untracked 备份也不归还，会在 .fenix/merge-backup 下无限
+            # 期残留。abort 幂等（无合并进行时静默失败），自身异常不再外抛。
+            try:
+                subprocess.run(
+                    ["git", "-C", str(self.project_root), "merge", "--abort"],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+            except Exception:  # noqa: BLE001 — abort 失败不掩盖原始超时错误
+                pass
+            if backup is not None:
+                self._restore_backup(backup)
             return MergeConflictInfo(False, "git merge timed out after 120s")
         except Exception as e:
             return MergeConflictInfo(False, str(e))

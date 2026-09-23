@@ -2641,7 +2641,14 @@ class PMEngine:
 
     def _handle_push_failure(self, spec_name: str, spec: dict, error_msg: str, ref: str):
         """处理推送失败：记录退避/重试状态；超限升级 push_failed 信号（D3）。"""
-        max_retries = int(self._get_config("pm.push.max_retries", 3) or 3)
+        # 配置非法值防御（code-review item 752b5436252d，与
+        # _ready_stall_threshold_minutes 同款）：非数字字符串裸 int() 抛
+        # ValueError/TypeError，从 _push_lock 内穿透 approve_push 一路炸到
+        # _on_spec_done 调用方，中断 push 退避与升级链路——回退默认值。
+        try:
+            max_retries = int(self._get_config("pm.push.max_retries", 3) or 3)
+        except (TypeError, ValueError):
+            max_retries = 3
         backoff_seconds = [300, 900]  # 默认指数退避：5 分钟、15 分钟
         cfg_backoff = self._get_config("pm.push.retry_backoff_seconds")
         if isinstance(cfg_backoff, list) and len(cfg_backoff) >= 2:

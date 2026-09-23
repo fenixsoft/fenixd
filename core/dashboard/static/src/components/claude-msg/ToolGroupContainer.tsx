@@ -18,14 +18,12 @@ const CLASS_ICONS: Record<ToolClass, string> = {
 
 interface ToolGroupContainerProps {
   group: ToolGroupItem;
-  prevMessage: ChatMessage | null;
   getMessageKey: (message: ChatMessage) => string;
   showThinking?: boolean;
 }
 
 export default function ToolGroupContainer({
   group,
-  prevMessage,
   getMessageKey,
   showThinking = false,
 }: ToolGroupContainerProps) {
@@ -104,7 +102,7 @@ export default function ToolGroupContainer({
             <MessageItem
               key={getMessageKey(message)}
               message={message}
-              prevMessage={index > 0 ? group.messages[index - 1] : prevMessage}
+              prevMessage={index > 0 ? group.messages[index - 1] : null}
               showThinking={showThinking}
             />
           ))}
