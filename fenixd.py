@@ -1046,9 +1046,11 @@ class FenixDaemon:
         「空闲」= ①``pm_engine`` 无活跃 run（``_active_runs == 0``，覆盖 planner /
         implementer / verifier / judge 全部 run 形态）**且** ②不存在未收口的在飞
         评审 run **且** ③``agent_runner._running_agents`` 为空 **且** ④admin 处置
-        worker 池无在途任务。任一非空即判非空闲；``_admin_executor`` 为 None
-        （admin.workers=0 同步回退）时该维度视为空闲。admin 池在途数 = submitted -
-        completed - failed（``_admin_pool_stats`` 计数，独立成法便于单测隔离）。
+        worker 池无在途任务 **且** ⑤无在飞 impl-ocr 车道（fix-fasttrack-implemented-
+        deadstate 2.2，``pm_engine.ocr_lane_busy()`` 为假）。任一非空即判非空闲；
+        ``_admin_executor`` 为 None（admin.workers=0 同步回退）时该维度视为空闲。
+        admin 池在途数 = submitted - completed - failed（``_admin_pool_stats`` 计数，
+        独立成法便于单测隔离）。
 
         ②为加强项（fix-state-atomicity-and-selfheal-restart D3）：评审 run
         **从不计入 ``_active_runs``**（``dispatch/queue.py`` 对 spec-review 派发
@@ -1081,6 +1083,22 @@ class FenixDaemon:
                     f"评审车道在飞判定异常（按非空闲处理，不触发自愈重启）: {e}",
                 )
                 return False
+            # ⑤ fix-fasttrack-implemented-deadstate 2.2：在飞 impl-ocr 车道维度
+            # （公开方法 ocr_lane_busy() 无参口径，与②同构；getattr 链容错 +
+            # 仅采纳真 bool，瘦门面/替身返回非 bool 不误判为非空闲——
+            # _review_lane_busy 读侧同纪律）。车道线程不进 _active_runs /
+            # _running_agents（裸后台线程跑维护型 run），缺本维度时车道在飞
+            # 即被判空闲，120s 后自愈 SIGTERM 杀掉在飞车道 run（2026-09-23 事故）。
+            try:
+                busy_fn = getattr(self.pm_engine, "ocr_lane_busy", None)
+                if callable(busy_fn) and busy_fn() is True:
+                    return False
+            except Exception as e:  # noqa: BLE001 — 判定异常按非空闲处理（宁紧勿松）
+                self.logger.warning(
+                    "fenixd",
+                    f"ocr 车道在飞判定异常（按非空闲处理，不触发自愈重启）: {e}",
+                )
+                return False
         if getattr(getattr(self, "agent_runner", None), "_running_agents", None) or {}:
             return False  # 有在飞 agent run（含评审 run）→ 非空闲
         if self._admin_executor is not None:
@@ -1089,6 +1107,32 @@ class FenixDaemon:
             if stats["submitted"] - stats["completed"] - stats["failed"] > 0:
                 return False
         return True
+
+    def _ocr_lane_selfheal_block(self) -> bool:
+        """在飞 impl-ocr 车道自愈阻断判定（fix-fasttrack-implemented-deadstate 2.2）。
+
+        供 ``_maybe_stale_selfheal_tick`` 阻断原因体系（reason="ocr-lane" 边沿
+        日志）使用，与 ``_is_idle`` 第五维同源（``pm_engine.ocr_lane_busy()``
+        无参口径）：
+
+        - getattr 链容错：瘦门面/替身缺 ``ocr_lane_busy`` 属性时该维度不阻断
+          （不抛异常，替身用例不失真）；
+        - 仅采纳真 bool True（``_review_lane_busy`` 读侧同纪律：替身返回非
+          bool 不误判为阻断）；
+        - 判定异常按阻断处理（宁紧勿松：车道在飞期间自愈重启会 SIGTERM 杀掉
+          在飞车道 run）。
+        """
+        busy_fn = getattr(self.pm_engine, "ocr_lane_busy", None)
+        if not callable(busy_fn):
+            return False
+        try:
+            return busy_fn() is True
+        except Exception as e:  # noqa: BLE001 — 判定异常按阻断处理（宁紧勿松）
+            self.logger.warning(
+                "fenixd",
+                f"ocr 车道在飞判定异常（按阻断处理，不触发自愈重启）: {e}",
+            )
+            return True
 
     # 重启历史保留窗口（evo-stale-selfheal-restart-cooldown）：超过该时长的条目
     # 在 tick 入口清理，避免文件无界增长（只影响统计，不影响自愈正确性）。
@@ -1455,6 +1499,11 @@ class FenixDaemon:
                 supervised = False  # /proc 不可读等：按未托管处理，宁紧勿松
             if not supervised:
                 reason = "unmanaged"
+            elif self._ocr_lane_selfheal_block():
+                # fix-fasttrack-implemented-deadstate 2.2：在飞 impl-ocr 车道
+                # 挂入阻断原因体系——车道跑着不自愈（重启会 SIGTERM 杀掉在飞
+                # 车道 run），空闲计时一并清零，车道收尾后重新累计。
+                reason = "ocr-lane"
 
         if reason is not None:
             # 阻断 → 清零空闲计时；边沿日志明示原因
@@ -1471,6 +1520,12 @@ class FenixDaemon:
                         "fenixd",
                         "未受 supervisor 托管，自愈跳过（restart_request 无人消费，"
                         "陈旧告警维持，等待恢复托管）",
+                    )
+                elif reason == "ocr-lane":
+                    self.logger.info(
+                        "fenixd",
+                        "impl-ocr 车道在飞，自愈跳过（不杀在飞车道 run），"
+                        "空闲计时清零，待车道收尾后重新累计",
                     )
                 else:  # in-flight
                     self.logger.info(

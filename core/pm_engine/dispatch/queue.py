@@ -2349,6 +2349,26 @@ class QQQueueMixin:
         with self._ocr_lane_lock:
             return bool(self._ocr_lane_inflight.get(spec_name))
 
+    def ocr_lane_busy(self, spec_name: str | None = None) -> bool:
+        """在飞 impl-ocr 车道公开判定（fix-fasttrack-implemented-deadstate 2.1/D3）。
+
+        - 带参：按该 spec 判 ``_ocr_lane_inflight``（engine 恢复三条件③用
+          ——重入前确认本 spec 无在飞车道，不与在飞收尾竞态）；
+        - 无参：任一在飞即 busy（fenixd ``_is_idle`` 第五维用）；
+        - 内部异常按 busy 处理（宁紧勿松：车道在飞期间自愈重启会 SIGTERM
+          杀掉在飞车道 run，与 ``_is_idle`` 既有异常策略一致）。
+
+        公开方法封装——调用方（engine / fenixd）MUST NOT 跨层直读
+        ``_ocr_lane_inflight`` 私有字典。
+        """
+        try:
+            with self._ocr_lane_lock:
+                if spec_name is None:
+                    return bool(self._ocr_lane_inflight)
+                return bool(self._ocr_lane_inflight.get(spec_name))
+        except Exception:  # noqa: BLE001 — 判定异常按 busy 处理（宁紧勿松）
+            return True
+
     def _start_impl_ocr_lane(self, spec_name: str, fingerprint: dict) -> str | None:
         """幂等启动 ocr 审查车道线程（任务 4.1/4.2）。
 
