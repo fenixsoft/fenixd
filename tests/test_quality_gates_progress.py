@@ -371,6 +371,53 @@ class TestLaneFingerprint(QualityGatesTestBase):
         out = parse_quality_gates(self.root, self.SPEC, self.entry)
         assert self._item(out, "code-review")["status"] == "pending"
 
+    def test_mergeback_fingerprint_completed_accepted(self):
+        # fix-quality-gates-terminal-blindspot 1.2①：merge-back 后
+        # merge-base 构造性前移到分支尖（merge_base == head_commit），产物
+        # 记录的评审基线是 merge-back 前的 merge-base——结构性必现失配，
+        # 豁免后 completed 产物照常采信
+        self._git("checkout", "-q", "main")
+        self._git("merge", "-q", "--ff-only", "fenix/demo")
+        from core.dashboard.data import current_lane_fingerprint
+        fp2 = current_lane_fingerprint(self.root, self.entry)
+        assert fp2["merge_base"] == fp2["head_commit"]  # 分支已完整合入
+        self._write_lane({
+            "status": "completed",
+            "findings": [{"id": "f1"}],
+            "fingerprint": {"branch": self.fp["branch"],
+                            "merge_base": self.fp["merge_base"],  # 评审时基线
+                            "head_commit": self.fp["head_commit"]},
+        })
+        out = parse_quality_gates(self.root, self.SPEC, self.entry)
+        assert self._item(out, "code-review")["status"] == "passed"
+
+    def test_mergeback_head_moved_not_trusted(self):
+        # 1.2②：豁免仅跳过 merge_base 比对——head 前移（修复轮重审）照旧拒采信
+        self._git("checkout", "-q", "main")
+        self._git("merge", "-q", "--ff-only", "fenix/demo")
+        self._write_lane({
+            "status": "completed",
+            "findings": [],
+            "fingerprint": {"branch": self.fp["branch"],
+                            "merge_base": self.fp["merge_base"],
+                            "head_commit": "0" * 40},
+        })
+        out = parse_quality_gates(self.root, self.SPEC, self.entry)
+        assert self._item(out, "code-review")["status"] == "pending"
+
+    def test_unmerged_merge_base_mismatch_not_trusted(self):
+        # 1.2③：分支未合入（当前 merge_base ≠ head_commit）时 merge_base
+        # 失配仍按不可见——既有 stale 拒采信语义不变
+        self._write_lane({
+            "status": "completed",
+            "findings": [],
+            "fingerprint": {"branch": self.fp["branch"],
+                            "merge_base": "1" * 40,
+                            "head_commit": self.fp["head_commit"]},
+        })
+        out = parse_quality_gates(self.root, self.SPEC, self.entry)
+        assert self._item(out, "code-review")["status"] == "pending"
+
 
 class TestOcrLaneInflight(QualityGatesTestBase):
     """add-timeline-ocr-lane-visibility 任务 1.3：ocr 门在飞检测补全。
@@ -441,6 +488,70 @@ class TestOcrLaneInflight(QualityGatesTestBase):
         self._write_lane({"status": "completed", "findings": []})
         out = parse_quality_gates(self.root, self.SPEC, {"status": "testing"})
         assert self._item(out, "code-review")["status"] == "passed"
+
+
+class TestFullSuiteTerminalExempt(QualityGatesTestBase):
+    """fix-quality-gates-terminal-blindspot 2.2：full-suite 门终态豁免。
+
+    终态（verified/done/pushed）后 main 持续前进，框架回归产物指纹必然
+    陈旧不可见，且实现者默认不写 full-suite 自查键——终态 SPEC 该门恒
+    pending 语义错误；豁免短路置于数据源优先级最前（确定性显示语义）。
+    """
+
+    def _git(self, *args) -> str:
+        out = subprocess.run(["git", "-C", str(self.root), *args],
+                             capture_output=True, text=True)
+        assert out.returncode == 0, out.stderr
+        return out.stdout.strip()
+
+    def setup_method(self):
+        super().setup_method()
+        subprocess.run(["git", "init", "-b", "main", str(self.root)],
+                       capture_output=True, check=True)
+        self._git("config", "user.email", "t@t")
+        self._git("config", "user.name", "t")
+        (self.root / "base.txt").write_text("base", encoding="utf-8")
+        self._git("add", "-A")
+        self._git("commit", "-qm", "init")
+        # run 自查文件可读但无 full-suite 键（add-impl-selfcheck-model-probe
+        # 3.1 后实现者默认不写）——非终态时该门既有回落语义 = pending
+        self._write_gates({"frontend-build": {"status": "skipped",
+                                              "reason": "无前端改动"}})
+
+    def _stale_snapshot(self) -> None:
+        from core.regression import write_result
+        write_result(self.root, {"status": "failed", "passed": 90, "failed": 10})
+        (self.root / "g.txt").write_text("y", encoding="utf-8")
+        self._git("add", "-A")
+        self._git("commit", "-qm", "second")  # HEAD 前移 → 快照指纹陈旧
+
+    def test_pushed_stale_product_no_selfcheck_skipped_counts_done(self):
+        # 2.2①：pushed + 产物指纹陈旧 + 自查键缺 → skipped 固定文案、计入 done
+        self._stale_snapshot()
+        out = parse_quality_gates(self.root, self.SPEC,
+                                  {"status": "pushed"}, runs=[])
+        item = self._item(out, "full-suite")
+        assert item["status"] == "skipped"
+        assert item["detail"] == "SPEC 已终态，全量回归跟踪移交主树"
+        # done 含 skipped 的 full-suite：2 框架守卫 passed + 2 skipped
+        assert out["done"] == 4
+
+    def test_pushed_fresh_failed_product_still_skipped(self):
+        # 2.2②：产物指纹恰好匹配（且产物 failed）→ 仍 skipped（豁免优先于产物）
+        from core.regression import write_result
+        write_result(self.root, {"status": "failed", "passed": 1, "failed": 1})
+        out = parse_quality_gates(self.root, self.SPEC,
+                                  {"status": "pushed"}, runs=[])
+        item = self._item(out, "full-suite")
+        assert item["status"] == "skipped"
+        assert item["detail"] == "SPEC 已终态，全量回归跟踪移交主树"
+
+    def test_testing_same_stale_conditions_pending(self):
+        # 2.2③：testing 非终态同等陈旧条件 → pending（既有回落行为不变）
+        self._stale_snapshot()
+        out = parse_quality_gates(self.root, self.SPEC,
+                                  {"status": "testing"}, runs=[])
+        assert self._item(out, "full-suite")["status"] == "pending"
 
 
 class TestWorktreePriority(QualityGatesTestBase):

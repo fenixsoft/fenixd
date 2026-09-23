@@ -60,6 +60,16 @@ _FRAMEWORK_PASSED_STATUSES = ("implemented", "testing", "verified", "done", "pus
 _LANE_PRODUCT_NAME = "code-review.json"
 _GATES_FILE_NAME = "quality-gates.json"
 
+# full-suite 门终态豁免（fix-quality-gates-terminal-blindspot 2.1）：
+# spec 进入终态后 main 持续前进，框架回归产物指纹必然陈旧不可见，且
+# add-impl-selfcheck-model-probe 3.1 后实现者默认不写 full-suite 自查键
+# ——终态 SPEC 该门恒 pending 语义错误（回归跟踪责任已移交主树）。
+# 终态集合与 _FRAMEWORK_PASSED_STATUSES 有意不同：implemented/testing 仍在
+# 流水线内（可能修复轮、回归重跑），显示实时状态；verified 起进入收尾。
+# 键名/文案固化惯例，禁止同义改写。
+_TERMINAL_EXEMPT_STATUSES = ("verified", "done", "pushed")
+_TERMINAL_EXEMPT_REASON = "SPEC 已终态，全量回归跟踪移交主树"
+
 
 def _int_or_none(v):
     """宽松整数读值：bool 不算 int（防 True 计数）。"""
@@ -160,6 +170,15 @@ def _lane_fingerprint_ok(product: dict, expected) -> bool:
     产物（run_impl_ocr 写侧）把指纹嵌套在 ``fingerprint`` 子对象，历史
     手工/测试产物平铺在顶层——嵌套形态此前被误判「未绑定指纹」恒不采信，
     completed 产物永远回落 pending，翻转回落语义在真实产物下不可达。
+
+    merge-back 豁免（fix-quality-gates-terminal-blindspot 1.1）：当前指纹
+    ``merge_base == head_commit``（均非空）即分支尖已是主基线祖先 = 分支已
+    完整合入——merge-back 后 ``git merge-base <branch> main`` 构造性前移到
+    分支尖自身，与产物记录的评审基线（merge-back 前的 merge-base）必然不
+    等，此前被判 stale 致已 completed 审查恒 pending（结构性必现：任何成功
+    push 的 spec 该门恒 pending）。此形态下产物 merge_base 是历史事实而非
+    陈旧，跳过该项比对；豁免不覆盖 branch/head_commit（修复轮 head 前移的
+    重审拒采信语义不变），分支未合入路径逐字节不变。
     """
     if not isinstance(expected, dict):
         return True
@@ -171,6 +190,10 @@ def _lane_fingerprint_ok(product: dict, expected) -> bool:
         return False
     if p_branch != expected.get("branch") or p_head != expected.get("head_commit"):
         return False
+    cur_mb = str(expected.get("merge_base") or "").strip()
+    cur_head = str(expected.get("head_commit") or "").strip()
+    if cur_mb and cur_head and cur_mb == cur_head:
+        return True  # merge-back 豁免：仅跳过 merge_base 比对，branch/head 已全等
     p_mb = str(src.get("merge_base") or "").strip()
     if expected.get("merge_base") and p_mb and p_mb != expected["merge_base"]:
         return False
@@ -297,8 +320,15 @@ def _full_suite_product_status(project_root) -> tuple:
     return status, "，".join(parts)
 
 
-def _full_suite_status(project_root, raw, source_ok: bool = True) -> tuple:
-    """full-suite 单门合成，数据源优先级：框架产物 > run 自查值 > 既有回落。
+def _full_suite_status(
+    project_root, raw, source_ok: bool = True, spec_status: str = ""
+) -> tuple:
+    """full-suite 单门合成，数据源优先级：终态豁免 > 框架产物 > run 自查值 > 既有回落。
+
+    fix-quality-gates-terminal-blindspot 2.1：spec status ∈ 终态集合时短路
+    返回 skipped（固定文案，计入 done）——终态显示语义确定性，优先级高于
+    框架产物源，不随后续 main 推进/回归重跑摆动；非终态数据源优先级与
+    逐字节行为不变。
 
     add-impl-selfcheck-model-probe 3.2：全量回归由验证链执行后，run 内默认
     不写 full-suite 键（3.1 降级措辞）——读侧以框架侧回归产物为首选数据源
@@ -308,6 +338,8 @@ def _full_suite_status(project_root, raw, source_ok: bool = True) -> tuple:
     产物侧的缺失/损坏/存量无指纹/指纹陈旧/状态映射外均 fail-open 逐级回落，
     不向落盘面注入新的失败终态。
     """
+    if str(spec_status or "").strip() in _TERMINAL_EXEMPT_STATUSES:
+        return ("skipped", _TERMINAL_EXEMPT_REASON)
     status, detail = _full_suite_product_status(project_root)
     if status is not None:
         return status, detail
@@ -452,7 +484,8 @@ def parse_quality_gates(project_root, spec_name: str, entry=None, runs=None) -> 
             # 其余 run 内项维持 _run_gate_status 单源语义。
             if gid == "full-suite":
                 status, detail = _full_suite_status(
-                    project_root, file_gates.get(gid), source_ok=parsed)
+                    project_root, file_gates.get(gid), source_ok=parsed,
+                    spec_status=spec_status)
             else:
                 status, detail = _run_gate_status(
                     file_gates.get(gid), gid, source_ok=parsed)
