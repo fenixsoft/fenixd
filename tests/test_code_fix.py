@@ -180,6 +180,47 @@ class TestCodeFixAgentRegistration(unittest.TestCase):
         self.assertIn("core/a.py", prompt)
         self.assertIn(str(proot / ".fenix" / "code-review" / "fix-out-abc.jsonl"), prompt)
 
+    def test_build_prompt_items_field_whitelist(self):
+        """items 注入按白名单序列化：台账原始行的框架字段不得外泄（09-23 提速）。"""
+        proot = _make_project_root()
+        runner = _make_runner(proot)
+        detail = {
+            "items": [
+                {
+                    "item_id": "item-1",
+                    "file": "core/a.py",
+                    "line": 3,
+                    "severity": "major",
+                    "category": "correctness",
+                    "title": "t",
+                    "description": "d",
+                    "suggestion": "s",
+                    # 台账原始行附带的框架字段——MUST NOT 注入 prompt
+                    "project": "fenixd",
+                    "review_id": "impl-ocr-noise-1",
+                    "review_kind": "impl-ocr",
+                    "reviewed_at": "2026-09-23T00:00:00+00:00",
+                    "spec": "",
+                    "status": "open",
+                    "spec_name": "add-noise-spec",
+                    "fingerprint": "fp-noise-1",
+                }
+            ],
+            "out_path": str(proot / ".fenix" / "code-review" / "fix-out-abc.jsonl"),
+            "worktree": str(proot),
+        }
+        prompt = runner._build_prompt("runner", "code-fix", detail)
+        # 白名单字段在场
+        for keep in ('"item_id"', '"file"', '"severity"', '"category"',
+                     '"title"', '"description"', '"suggestion"'):
+            self.assertIn(keep, prompt)
+        # 框架噪音字段（键与值）均不在场
+        for noise_key in ('"project"', '"review_id"', '"review_kind"',
+                          '"reviewed_at"', '"spec_name"', '"fingerprint"'):
+            self.assertNotIn(noise_key + ":", prompt)
+        for noise_val in ("impl-ocr-noise-1", "add-noise-spec", "fp-noise-1"):
+            self.assertNotIn(noise_val, prompt)
+
     def test_build_prompt_no_detail_no_crash(self):
         """_build_prompt("code-fix") 无 detail 时不得抛异常（test_agent_prompt_files 参数化）。"""
         proot = _make_project_root()

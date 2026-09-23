@@ -1494,6 +1494,25 @@ def _ocr_finding_fingerprint(finding: dict) -> str:
     return hashlib.sha1(f"{path}|{category}|{content}".encode("utf-8")).hexdigest()
 
 
+def _read_ocr_exclude_patterns(project_root) -> list:
+    """读项目级 ocr 审查排除域 ``<project_root>/.fenix/ocr-exclude.txt``。
+
+    逐行一条 gitignore 风格 pattern；空行与 `#` 注释行跳过。文件缺失/读失败
+    → 空列表（调用方零注入，ocr 命令与无此文件时逐字节一致）。
+    """
+    try:
+        text = (Path(project_root) / ".fenix" / "ocr-exclude.txt").read_text(
+            encoding="utf-8"
+        )
+    except OSError:
+        return []
+    return [
+        ln.strip()
+        for ln in text.splitlines()
+        if ln.strip() and not ln.strip().startswith("#")
+    ]
+
+
 def _normalize_impl_ocr_findings(comments) -> list:
     """ocr 原始报告 comments → 车道产物 findings（宽松解析，design D7）。
 
@@ -1891,6 +1910,13 @@ def run_impl_ocr(
                 "--format", "json",
                 "--output", str(raw_path),
             ]
+            # 项目级排除域（09-23 误报治理）：`.fenix/ocr-exclude.txt` 存在且
+            # 含有效行（非空、非 `#` 注释）时逐行拼成逗号分隔串，经 ocr
+            # `--exclude`（gitignore 风格，与 rule.json excludes 合并）下发；
+            # 文件缺失/空 → 零注入（命令与现状逐字节一致）。
+            exclude_patterns = _read_ocr_exclude_patterns(runner.project_root)
+            if exclude_patterns:
+                cmd += ["--exclude", ",".join(exclude_patterns)]
             # ── 运行中心跳（fix-ocr-lane-orphaned-state-misfire 1.1）：子进程
             # 运行期唯一启跳（elapsed 自子进程启动起计）；返回/超时先停跳再
             # 走分类收尾，终态事件保持末行后置（1.2 顺序约束）。──

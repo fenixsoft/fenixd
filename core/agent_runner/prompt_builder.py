@@ -50,6 +50,15 @@ AGENT_PROMPT_FILES = {
     "code-fix": "code-fix.md",
 }
 
+# code-fix prompt {items} 注入字段白名单（09-23 提速）：台账原始行的框架
+# 字段（project/review_id/review_kind/reviewed_at/spec/status/spec_name/
+# fingerprint 等）对修复 agent 无用，注入只会稀释注意力与放大 prompt——
+# 只保留定位与判定所需字段；None/缺失字段整键剔除。
+_CODE_FIX_ITEM_FIELDS = (
+    "item_id", "file", "line", "severity", "category",
+    "title", "description", "suggestion",
+)
+
 
 def _str_field(value) -> str:
     """占位符填充前的字符串归一：dict/list 序列化为 JSON 串。
@@ -1487,8 +1496,10 @@ class PromptBuilder:
 
         加载 agents/code-fix.md（文件化体系，缺失 fail-fast），以 str.replace
         填充占位符（不用 str.format——正文含大量 {} JSON 示例）：
-        - {items}: 本批条目 JSON（item_id/file/line/severity/category/
-          title/description/suggestion 列表，多行缩进渲染）
+        - {items}: 本批条目 JSON（按 ``_CODE_FIX_ITEM_FIELDS`` 白名单序列化——
+          台账原始行的框架字段（project/review_id/review_kind/reviewed_at/
+          spec/status/spec_name/fingerprint 等）不注入 prompt，缺省值字段
+          同样剔除；多行缩进渲染）
         - {out_path}: 逐条增量落盘路径（缺省 worktree 内
           .fenix/code-review/fix-out-<run_id>.jsonl）
         - {worktree}: 本批 worktree 根路径（agent 工作目录）
@@ -1496,7 +1507,11 @@ class PromptBuilder:
         template = self._load_agent_template("code-fix")
         prompt = template
         items: list = detail.get("items") or []
-        items_txt = json.dumps(items, ensure_ascii=False, indent=2) or "[]"
+        slim_items = [
+            {k: it[k] for k in _CODE_FIX_ITEM_FIELDS if it.get(k) is not None}
+            for it in items if isinstance(it, dict)
+        ]
+        items_txt = json.dumps(slim_items, ensure_ascii=False, indent=2) or "[]"
         prompt = prompt.replace("{items}", items_txt)
         out_path = detail.get("out_path")
         if not out_path:

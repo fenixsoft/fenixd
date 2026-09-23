@@ -39,6 +39,12 @@ _FAKE_OCR_SCRIPT = textwrap.dedent(
     out = args[args.index("--output") + 1]
     frm = args[args.index("--from") + 1]
     to = args[args.index("--to") + 1]
+    # 记录完整 argv（--exclude 接线断言用）
+    try:
+        with open(out + ".argv.json", "w", encoding="utf-8") as af:
+            json.dump(args, af)
+    except OSError:
+        pass
     # 仓库发现钉住契约：ocr 子进程 MUST 以 GIT_DIR/GIT_WORK_TREE 显式指向
     # detached worktree（漂移到主检出会审错区间），否则直接失败暴露。
     if os.environ.get("GIT_WORK_TREE") != os.getcwd():
@@ -278,6 +284,41 @@ class TestRunImplOcrLane:
         # detached worktree 已清理
         serving = repo / ".fenix" / "verify-serving"
         assert not [p for p in serving.glob("ocr-*")], list(serving.iterdir())
+
+    def test_exclude_file_wired_to_ocr_cmd(self, tmp_path):
+        """`.fenix/ocr-exclude.txt` 含有效行 → 拼接为 ocr --exclude（09-23 误报治理）。
+
+        生成/快照类文件（playwright 页面捕获 yml 等）不入审：注释行与空行
+        跳过，其余逐行拼成逗号分隔串。
+        """
+        repo = _init_repo_with_fake_ocr(tmp_path)
+        (repo / ".fenix").mkdir(exist_ok=True)
+        (repo / ".fenix" / "ocr-exclude.txt").write_text(
+            "# 生成/快照类文件不入审\n"
+            "core/dashboard/static/*.yml\n"
+            "\n"
+            "**/.playwright-cli/**\n",
+            encoding="utf-8",
+        )
+        _run_lane(repo)
+        raw_argv = _artifact_path(repo).with_name("code-review-raw.json.argv.json")
+        argv = json.loads(raw_argv.read_text(encoding="utf-8"))
+        assert "--exclude" in argv
+        assert argv[argv.index("--exclude") + 1] == (
+            "core/dashboard/static/*.yml,**/.playwright-cli/**"
+        )
+
+    def test_exclude_file_comment_only_zero_injection(self, tmp_path):
+        """排除文件缺失/只有注释 → 命令零注入（无 --exclude，逐字节同现状）。"""
+        repo = _init_repo_with_fake_ocr(tmp_path)
+        (repo / ".fenix").mkdir(exist_ok=True)
+        (repo / ".fenix" / "ocr-exclude.txt").write_text(
+            "# 只有注释\n", encoding="utf-8"
+        )
+        _run_lane(repo)
+        raw_argv = _artifact_path(repo).with_name("code-review-raw.json.argv.json")
+        argv = json.loads(raw_argv.read_text(encoding="utf-8"))
+        assert "--exclude" not in argv
 
     def test_incremental_cursor_then_corrupt_fallback_full(self, tmp_path):
         repo = _init_repo_with_fake_ocr(tmp_path)
