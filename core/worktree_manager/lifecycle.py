@@ -271,6 +271,24 @@ class G1LifecycleMixin:
         """
         return f"{spec_name}:{agent_type}" in self._spec_locks
 
+    def release_spec_lock(self, spec_name: str, agent_type: str = "implementer") -> bool:
+        """释放该 spec+agent_type 的在册 spec 锁（code-fix defer 车道专用原语）。
+
+        fix-codefix-wipgate-defer D3：defer 收尾保留 worktree 目录/分支与
+        ``_active_worktrees`` 在册（sweeper 扫孤儿跳过在册目录、重试收尾
+        ``cleanup`` 语义不变），仅摘锁——``create()`` 对同键命中即返回 None、
+        批 worker 对 None 走 halt 终止链，不放锁则 defer 后下一批建树必败、
+        整条车道在主树脏期间死锁。``wip_gate_blocked`` 标志与闸门策略零改动。
+
+        Returns: 是否确有在册锁被释放（无锁时 False，幂等安全）。
+        """
+        lock_key = f"{spec_name}:{agent_type}"
+        with self._spec_lock_th:
+            released = lock_key in self._spec_locks
+            self._spec_locks.discard(lock_key)
+            self._lock_since.pop(lock_key, None)
+        return released
+
     def _seed_spec(self, spec_name: str, wt_path: Path):
         """Seed SPEC source files into a new worktree.
 
