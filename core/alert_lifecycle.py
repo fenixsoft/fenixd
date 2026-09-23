@@ -24,10 +24,21 @@ alert_lifecycle.py — 告警生命周期闭环（add-alert-auto-resolve）。
 # spec 终态（与 admin_monitor._TERMINAL_SPEC_STATUSES 同口径）
 TERMINAL_SPEC_STATUSES = ("done", "pushed")
 
+# spec_delivered_adjudicated 条件的闭环终态口径（alert-noise-governance 1.4）：
+# 与 TERMINAL_SPEC_STATUSES 同口径，另纳入 spec.md 场景文本的 archived 拼写
+# （状态机当前不产出该值，向前兼容）。
+DELIVERED_ADJUDICATED_TERMINAL_STATUSES = TERMINAL_SPEC_STATUSES + ("archived",)
+
 # 闭环判定条件枚举（design D2）：保守起步，仅一种。
 CONDITION_SPEC_TERMINAL_OR_UNBLOCKED = "spec_terminal_or_unblocked"
 # spec.md 场景文本中的同义拼写，作别名兼容（同一判定，不构成新条件）
 _CONDITION_ALIAS = "spec_reach_terminal_or_unblocked"
+# spec_delivered_no_content 的独立裁决闭环条件（alert-noise-governance 1.4）：
+# 仅当关联 SPEC 到达终态才自动闭环。MUST NOT 复用 spec_terminal_or_unblocked
+# ——该条件在 evaluate_alert 仅以 blocked 为未解除出口，对非 blocked spec 一
+# 律判「已解除」，而本信号产生时 SPEC 恰恰停在 ready 等待人工裁决，复用会被
+# 下一轮 auto_resolve 立即闭环、告警离开人工待处理队列、人工无从看见。
+CONDITION_SPEC_DELIVERED_ADJUDICATED = "spec_delivered_adjudicated"
 
 # 存量回填（design D4）：无 trigger 字段的存量告警按 signal_type 推断 condition
 BACKFILL_SIGNAL_TYPES = ("verify_fail_escalation", "blocked_stuck")
@@ -42,10 +53,16 @@ AUTO_RESOLVE_BY = "auto-resolve"
 # 产生——两条写入管道都经 attach_trigger 统一埋点。
 # spec_content_missing（add-spec-content-integrity-gate D4）：派发前内容完整性
 # 闸门命中产生；spec 补内容解冻离开 blocked（或到达终态）即自动闭环。
+# spec_delivered_no_content（alert-noise-governance 1.4）：内容闸门「已交付
+# 未落盘」分类产生（spec_integrity.SPEC_DELIVERED_NO_CONTENT_SIGNAL），独立
+# 条件 spec_delivered_adjudicated——仅终态闭环（信号产生时 SPEC 停在 ready
+# 待裁决，见条件常量处注释）；「补 tasks.md 归档凭据」裁决路径的告警收口为
+# 人工 handled（本模块只读状态表不读目录，不承诺「补内容即自动闭环」）。
 _SIGNAL_CONDITIONS = {
     "verify_fail_escalation": CONDITION_SPEC_TERMINAL_OR_UNBLOCKED,
     "blocked_stuck": CONDITION_SPEC_TERMINAL_OR_UNBLOCKED,
     "spec_content_missing": CONDITION_SPEC_TERMINAL_OR_UNBLOCKED,
+    "spec_delivered_no_content": CONDITION_SPEC_DELIVERED_ADJUDICATED,
 }
 
 
@@ -79,7 +96,11 @@ def attach_trigger(entry: dict) -> dict:
 
 
 def _recognized(condition) -> bool:
-    return condition in (CONDITION_SPEC_TERMINAL_OR_UNBLOCKED, _CONDITION_ALIAS)
+    return condition in (
+        CONDITION_SPEC_TERMINAL_OR_UNBLOCKED,
+        _CONDITION_ALIAS,
+        CONDITION_SPEC_DELIVERED_ADJUDICATED,
+    )
 
 
 def _resolve_note_for_condition(spec_name: str, entry: dict, backfill: bool) -> str:
@@ -133,6 +154,18 @@ def evaluate_alert(alert: dict, specs: dict, backfill: bool = False):
     if not isinstance(entry, dict):
         return None  # spec 不在状态表中：无法判定，保持原状
     status = str(entry.get("status") or "")
+    if has_trigger and trigger.get("condition") == CONDITION_SPEC_DELIVERED_ADJUDICATED:
+        # 独立条件（alert-noise-governance 1.4）：仅终态自动闭环，非终态
+        # （含 ready/blocked）一律保持原状——信号产生时 SPEC 停在 ready 待
+        # 裁决，提前闭环会让告警离开人工待处理队列。「补 tasks.md 归档凭据」
+        # 裁决路径的收口为人工 handled（本判定只读状态表、不读目录，MUST
+        # NOT 承诺纯 status 判定无法达成的「补内容即自动闭环」）。
+        if status not in DELIVERED_ADJUDICATED_TERMINAL_STATUSES:
+            return None
+        return (
+            f"spec {spec_name} 已到达终态 {status}，"
+            f"spec_delivered_no_content 人工裁决完成（终态收口）"
+        )
     if status == "blocked":
         return None  # 条件未解除
     return _resolve_note_for_condition(spec_name, entry, backfill=not has_trigger)

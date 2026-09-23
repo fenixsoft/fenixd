@@ -27,7 +27,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.admin_monitor import AdminMonitor
 from core.admin_store import AdminStore, ESCALATION
-from core.alert_lifecycle import _SIGNAL_CONDITIONS, CONDITION_SPEC_TERMINAL_OR_UNBLOCKED
+from core.alert_lifecycle import (
+    _SIGNAL_CONDITIONS,
+    CONDITION_SPEC_DELIVERED_ADJUDICATED,
+    CONDITION_SPEC_TERMINAL_OR_UNBLOCKED,
+    evaluate_alert,
+)
 from core.state_machine import StateMachine
 from core.pm_engine.spec_integrity import spec_has_content, SpecIntegrityGate
 
@@ -359,6 +364,284 @@ class TestAlertLifecycleClosedLoop(unittest.TestCase):
             self.assertEqual(trigger["spec"], "empty-spec")
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# alert-noise-governance：闸门源头分类（1.1/1.2/1.3）、生命周期闭环（1.4）
+# 与 frozen 重放断链（2.1/2.2/2.3）
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestTerminalExemption(_Base):
+    """alert-noise-governance 1.1：终态（done/archived）spec 豁免内容闸门。
+
+    背景（c-sched-set 实证）：已交付 spec（实现已合并、验证 25/25 通过）被
+    外部 STATE 重置打回后，闸门按「空 spec」冻结并挂 major 告警——处置方向
+    与事实相反。
+    """
+
+    def _terminal_spec(self, name, status, files):
+        _mk_spec_dir(self.project_root, name, files)
+        self.sm.add_spec(name, {"priority": 5})
+        self.sm.update_spec(name, {"status": status})
+        return name
+
+    def test_done_empty_dir_not_frozen_no_alert(self):
+        """done 态空目录：闸门放行（不冻结、不告警），状态保持 done。"""
+        self._terminal_spec("done-spec", "done", [])
+        self.assertFalse(self.engine._check_spec_content_missing("done-spec"))
+        entry = self.sm.read_one("done-spec")
+        self.assertEqual(entry["status"], "done")
+        self.assertFalse(entry.get("frozen"))
+        self.assertEqual(self._alerts("spec_content_missing", "done-spec"), [])
+        self.assertEqual(
+            self._alerts("spec_delivered_no_content", "done-spec"), [])
+
+    def test_archived_also_exempt(self):
+        """archived 拼写同享豁免（spec.md 场景语言；状态机当前不产出该值，
+        STATE 序列化会丢弃之——此处直接以条目形态驱动闸门分类判定）。"""
+        _mk_spec_dir(self.project_root, "arch-spec", [])
+        gate = self.engine._spec_integrity
+        with patch.object(self.sm, "read_one",
+                          return_value={"status": "archived"}):
+            self.assertFalse(gate.check_spec_content_missing("arch-spec"))
+        self.assertEqual(self._alerts("spec_content_missing", "arch-spec"), [])
+
+    def test_terminal_exemption_does_not_touch_blocked_idempotent(self):
+        """终态豁免与既有 blocked 幂等短路并列：blocked 语义不受影响。"""
+        self._terminal_spec("blk-spec", "blocked", [])
+        self.assertTrue(self.engine._check_spec_content_missing("blk-spec"))
+
+
+class TestDeliveredNoContent(_Base):
+    """alert-noise-governance 1.2：仅存 verification-report.md 的独立分类。"""
+
+    def _delivered_ready_spec(self, name="delivered-spec"):
+        _mk_spec_dir(self.project_root, name, ["verification-report.md"])
+        self.sm.add_spec(name, {"priority": 5})
+        self.sm.transition(name, "ready")
+        return name
+
+    def test_report_only_dir_produces_delivered_signal_not_frozen(self):
+        name = self._delivered_ready_spec()
+        self.assertTrue(self.engine._check_spec_content_missing(name))
+        entry = self.sm.read_one(name)
+        # 不冻结：状态不被改写为 blocked+frozen（人工裁决上下文保留在 ready）
+        self.assertEqual(entry["status"], "ready")
+        self.assertFalse(entry.get("frozen"))
+        alerts = self._alerts("spec_delivered_no_content", name)
+        self.assertEqual(len(alerts), 1)
+        self.assertEqual(alerts[0]["severity"], "major")
+        self.assertIn("二选一裁决", alerts[0]["recommended_action"])
+        self.assertIn("spec_delivered_adjudicated", alerts[0]["recommended_action"])
+
+    def test_repeat_hit_no_duplicate_alert(self):
+        """幂等短路：重复命中不追加告警（恢复精触发 60s 一轮，防告警风暴）。"""
+        name = self._delivered_ready_spec()
+        self.assertTrue(self.engine._check_spec_content_missing(name))
+        self.assertTrue(self.engine._check_spec_content_missing(name))
+        self.assertTrue(self.engine._check_spec_content_missing(name))
+        self.assertEqual(len(self._alerts("spec_delivered_no_content", name)), 1)
+
+    def test_dispatch_still_blocked(self):
+        """派发拦截语义不变：分类分支仍返回 True，不派出实现 run。"""
+        name = self._delivered_ready_spec()
+        self.sm.update_spec(name, {"status": "ready"})
+        self.engine._run_agent_worker = MagicMock()
+        self.engine._enqueue(name, "implementer")
+        self.engine._process_queue()
+        self.engine._run_agent_worker.assert_not_called()
+        self.assertEqual(self.sm.read_one(name)["status"], "ready")
+
+    def test_no_report_still_freezes_semantics_regression(self):
+        """无验证报告仍走既有冻结路径（语义回归）。"""
+        name = "empty-spec"
+        _mk_spec_dir(self.project_root, name, [])
+        self.sm.add_spec(name, {"priority": 5})
+        self.sm.transition(name, "ready")
+        self.assertTrue(self.engine._check_spec_content_missing(name))
+        entry = self.sm.read_one(name)
+        self.assertEqual(entry["status"], "blocked")
+        self.assertIs(entry.get("frozen"), True)
+        self.assertEqual(len(self._alerts("spec_content_missing", name)), 1)
+        self.assertEqual(
+            self._alerts("spec_delivered_no_content", name), [])
+
+    def test_spec_has_content_ignores_verification_report(self):
+        """1.3：verification-report.md 不进认可名单（防盲目重实现，09-12 实证）。"""
+        _mk_spec_dir(self.project_root, "report-only", ["verification-report.md"])
+        self.assertFalse(spec_has_content(self.project_root, "report-only"))
+        # 报告 + 无关文件同样不算内容
+        _mk_spec_dir(self.project_root, "report-noise",
+                     ["verification-report.md", "run.log"])
+        self.assertFalse(spec_has_content(self.project_root, "report-noise"))
+        # 报告 + 任一认可文件仍算有内容（判据本身不动）
+        _mk_spec_dir(self.project_root, "report-tasks",
+                     ["verification-report.md", "tasks.md"])
+        self.assertTrue(spec_has_content(self.project_root, "report-tasks"))
+
+
+class TestDeliveredNoContentLifecycle(unittest.TestCase):
+    """alert-noise-governance 1.4：spec_delivered_no_content 接入生命周期闭环。"""
+
+    def test_signal_condition_registered(self):
+        self.assertEqual(
+            _SIGNAL_CONDITIONS.get("spec_delivered_no_content"),
+            CONDITION_SPEC_DELIVERED_ADJUDICATED,
+        )
+
+    def test_trigger_attached_via_unified_entry(self):
+        """经统一告警入口写入时 trigger 自动推导为 spec_delivered_adjudicated。"""
+        import tempfile
+        import shutil
+        tmpdir = tempfile.mkdtemp()
+        try:
+            project_root = Path(tmpdir)
+            (project_root / ".fenix").mkdir(parents=True, exist_ok=True)
+            logger = MagicMock()
+            engine, sm = _mk_engine(project_root, logger)
+            _mk_spec_dir(project_root, "dlv-spec", ["verification-report.md"])
+            sm.add_spec("dlv-spec", {"priority": 5})
+            sm.transition("dlv-spec", "ready")
+            engine._check_spec_content_missing("dlv-spec")
+
+            alerts = [a for a in AdminStore(project_root, logger).read_all()
+                      if a.get("signal_type") == "spec_delivered_no_content"]
+            self.assertEqual(len(alerts), 1)
+            trigger = alerts[0].get("trigger")
+            self.assertIsNotNone(trigger)
+            self.assertEqual(trigger["condition"], CONDITION_SPEC_DELIVERED_ADJUDICATED)
+            self.assertEqual(trigger["spec"], "dlv-spec")
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def _alert(self, spec="dlv-spec"):
+        return {
+            "kind": "escalation",
+            "signal_type": "spec_delivered_no_content",
+            "spec": spec,
+            "trigger": {
+                "type": "spec_delivered_no_content",
+                "spec": spec,
+                "condition": CONDITION_SPEC_DELIVERED_ADJUDICATED,
+            },
+        }
+
+    def test_pending_adjudication_alert_stays_visible(self):
+        """待裁决期间（ready/blocked）auto_resolve 不闭环，人工队列持续可见。"""
+        for status in ("ready", "blocked", "implemented", "testing"):
+            specs = {"dlv-spec": {"status": status}}
+            self.assertIsNone(evaluate_alert(self._alert(), specs),
+                              f"status={status} 非终态不得自动闭环")
+
+    def test_terminal_adjudication_auto_resolves(self):
+        """人工置终态后由 spec_delivered_adjudicated 条件自动闭环。"""
+        for status in ("done", "pushed", "archived"):
+            specs = {"dlv-spec": {"status": status}}
+            note = evaluate_alert(self._alert(), specs)
+            self.assertIsNotNone(note, f"status={status} 终态应自动闭环")
+            self.assertIn("dlv-spec", note)
+
+    def test_handled_path_stays_human_closed(self):
+        """「补 tasks.md 归档凭据」路径：handled 记录不可被 auto 覆盖。"""
+        alert = self._alert()
+        alert["handled"] = True
+        specs = {"dlv-spec": {"status": "done"}}
+        self.assertIsNone(evaluate_alert(alert, specs))
+
+    def test_condition_registered_constant(self):
+        self.assertEqual(CONDITION_SPEC_DELIVERED_ADJUDICATED,
+                         "spec_delivered_adjudicated")
+
+
+class TestFrozenReplayGuards(unittest.TestCase):
+    """alert-noise-governance 2.1/2.2/2.3：冻结 spec 不被恢复/派发链重放。
+
+    背景（2026-09-22 实证）：外部回置把冻结 spec 的 status 打回 ready 后，
+    恢复与派发链均不复核 frozen，同日重放 9 轮「就绪→派发→拦截→冻结」，
+    全天 18 条闸门 ERROR。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.project_root = Path(self.tmpdir)
+        (self.project_root / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.state_path = self.project_root / ".fenix" / "STATE.md"
+        self.logger = MagicMock()
+        self.sm = StateMachine(self.state_path, self.logger)
+        self.runner = MagicMock()
+        self.runner.worktree_manager = MagicMock()
+        self.runner.worktree_manager.has_active_worktree.return_value = False
+        self.runner.has_live_attempt.return_value = False
+        from core.pm_engine import PMEngine
+        from core.event_bus import EventBus
+        self.engine = PMEngine(self.sm, self.runner, {}, self.project_root, self.logger)
+        self.engine._process_queue = MagicMock()  # 防止 worker 线程异步副作用
+        self.bus = EventBus(self.state_path, self.sm, self.engine, {}, self.logger)
+        self.store = AdminStore(self.project_root, self.logger)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _frozen_reset_spec(self, name="frozen-spec"):
+        """写入「外部部分回置」形态：status=ready + frozen=True + error 非空。"""
+        self.sm.add_spec(
+            name, {"status": "ready", "error": "dispatch stalled", "frozen": True}
+        )
+
+    def _escalations(self):
+        return [a for a in self.store.read_all() if a.get("kind") == ESCALATION]
+
+    # ── 2.1：孤儿恢复 frozen 复核 ────────────────────────────────
+
+    def test_frozen_orphan_recovery_skips_without_state_write(self):
+        self._frozen_reset_spec()
+        with patch.object(self.engine, "handle_event") as mock_handle:
+            self.bus.recover_orphan_ready()
+        mock_handle.assert_not_called()
+        entry = self.sm.read_one("frozen-spec")
+        # 零 STATE 写入：error 不被清、frozen/status 保持原样
+        self.assertEqual(entry["error"], "dispatch stalled")
+        self.assertIs(entry.get("frozen"), True)
+        self.assertEqual(entry["status"], "ready")
+        # INFO 留痕（含 spec 名与原因）
+        info_texts = " ".join(
+            str(c.args[1] if len(c.args) > 1 else c.args[0])
+            for c in self.logger.info.call_args_list
+        )
+        self.assertIn("frozen-spec", info_texts)
+        self.assertIn("frozen", info_texts.lower())
+
+    def test_non_frozen_orphan_recovery_unchanged(self):
+        """2.3 语义回归：非冻结孤儿 ready 恢复行为不变（清 error + 重派）。"""
+        self.sm.add_spec("orphan-spec", {"status": "ready", "error": "stalled"})
+        with patch.object(self.engine, "handle_event") as mock_handle:
+            self.bus.recover_orphan_ready()
+        mock_handle.assert_called_once()
+        entry = self.sm.read_one("orphan-spec")
+        self.assertIsNone(entry.get("error"))
+
+    # ── 2.2：派发链 frozen 复核 ──────────────────────────────────
+
+    def test_frozen_replay_dispatch_skipped_no_gate_error(self):
+        """重启回放经 _on_spec_ready 跳过派发，不再产生闸门 ERROR。"""
+        self._frozen_reset_spec()
+        self.engine._enqueue = MagicMock()
+        self.engine._on_spec_ready("frozen-spec")
+        self.engine._enqueue.assert_not_called()
+        entry = self.sm.read_one("frozen-spec")
+        self.assertEqual(entry["status"], "ready")
+        self.assertIs(entry.get("frozen"), True)
+        # 闸门未运行 → 零升级告警（不再重放「派发→拦截→冻结」）
+        self.assertEqual(self._escalations(), [])
+
+    def test_non_frozen_dispatch_unchanged(self):
+        """2.3 语义回归：非冻结 ready spec 派发守卫链行为不变（正常入队）。"""
+        _mk_spec_dir(self.project_root, "ready-spec", ["tasks.md"])
+        self.sm.add_spec("ready-spec", {"status": "ready"})
+        self.engine._enqueue = MagicMock()
+        self.engine._on_spec_ready("ready-spec")
+        self.engine._enqueue.assert_called_once_with("ready-spec", "implementer")
 
 
 if __name__ == "__main__":

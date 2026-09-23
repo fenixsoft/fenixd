@@ -490,3 +490,168 @@ def _force_past_retry_due(store: AdminStore, alert_id: str):
                 return True
         return False
     store._mutate(mutate)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# alert-noise-governance 3：daemon_errors 指纹级重启冷却（3.1）与
+# 同轮孪生/成对指纹合并召唤（3.2）、冷却窗语义（3.3）
+# ═══════════════════════════════════════════════════════════════════
+
+from core.admin_monitor import (  # noqa: E402
+    DAEMON_ERROR_RESTART_COOLDOWN_MINUTES,
+    _error_fingerprint,
+)
+
+
+class RecordingLogger:
+    """记录型 logger（断言 INFO 留痕；FakeLogger 为静默版不可断言）。"""
+
+    def __init__(self):
+        self.infos = []
+
+    def debug(self, *a, **k):
+        pass
+
+    def info(self, component, message, **k):
+        self.infos.append(str(message))
+
+    def warning(self, *a, **k):
+        pass
+
+    def error(self, *a, **k):
+        pass
+
+
+class TestDaemonErrorRestartCooldown:
+    """tasks.md 3.1/3.3：重启后首扫回放的已知指纹不召唤，窗后照常升级。"""
+
+    def _write_error_log(self, tmp_path, entries):
+        """写入 fenixd.log 形态的单行 JSON ERROR 序列（[(msg, ts_epoch)]）。"""
+        log = tmp_path / ".fenix" / "logs" / "fenixd.log"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        lines = []
+        for msg, ts in entries:
+            lines.append(json.dumps({
+                "level": "ERROR",
+                "timestamp": datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
+                "component": "pm_engine",
+                "message": msg,
+            }, ensure_ascii=False))
+        log.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return log
+
+    def _monitor(self, tmp_path, store, logger, started_at=None):
+        _, mon = _make_monitor(tmp_path, {}, RecordingFakeRunner(),)
+        mon.project_root = tmp_path
+        mon.store = store
+        mon.logger = logger
+        mon._started_at = started_at if started_at is not None else time.time()
+        mon._daemon_fp_escalated_at = {}
+        return mon
+
+    def test_known_fp_in_restart_window_not_escalated(self, tmp_path, monkeypatch):
+        """重启后首扫命中停机前已知指纹：冷却窗内不产信号不召唤（INFO 留痕）。"""
+        monkeypatch.setattr("core.admin_monitor._is_fixture_project",
+                            lambda root: False)
+        now = time.time()
+        msg = "内容完整性闸门命中：'c-x' 空 spec（attempt 1）"
+        fp = _error_fingerprint("pm_engine", msg)
+        self._write_error_log(
+            tmp_path,
+            [(msg, now - 60), (msg.replace("1）", "2）"), now - 30)],
+        )
+        store = AdminStore(tmp_path, FakeLogger())
+        # 跨重启在案：停机前已召唤过（store 记录 description 内嵌指纹前缀）
+        store.append({
+            "kind": SIGNAL,
+            "signal_type": "daemon_errors",
+            "spec": None,
+            "description": f"fenixd 日志同错误（指纹 {fp[:8]}）在 10 分钟窗口内复现 2 次",
+            "escalated": True,
+        })
+        logger = RecordingLogger()
+        mon = self._monitor(tmp_path, store, logger)  # 刚启动 → 冷却窗内
+
+        signals = mon._detect_daemon_errors(now)
+
+        assert signals == []
+        assert any("指纹冷却" in m and fp[:8] in m for m in logger.infos), logger.infos
+
+    def test_twin_fingerprints_merged_single_summon(self, tmp_path, monkeypatch):
+        """3.2：同轮孪生指纹达阈值 → 一条召唤信号、一次 Administrator run。"""
+        monkeypatch.setattr("core.admin_monitor._is_fixture_project",
+                            lambda root: False)
+        now = time.time()
+        msg_a = "alpha gate error for spec-a (attempt 1)"
+        msg_b = "beta gate error for spec-b (attempt 1)"
+        self._write_error_log(tmp_path, [
+            (msg_a, now - 60), (msg_a.replace("9)", "10)"), now - 30),
+            (msg_b, now - 50), (msg_b.replace("9)", "10)"), now - 20),
+        ])
+        fp_a = _error_fingerprint("pm_engine", msg_a)
+        fp_b = _error_fingerprint("pm_engine", msg_b)
+        runner = RecordingFakeRunner()
+        _, mon = _make_monitor(tmp_path, {}, runner)
+        mon.project_root = tmp_path
+        mon.logger = RecordingLogger()
+
+        signals = mon._detect_daemon_errors(now)
+        assert len(signals) == 1, "同轮成对指纹必须合并为一条信号"
+        merged = signals[0]
+        assert fp_a[:8] in merged["description"]
+        assert fp_b[:8] in merged["description"]
+
+        mon._handle_signal(merged)
+        assert len(runner.calls) == 1, "成对命中只产一次 Administrator run"
+
+    def test_new_fp_escalates_within_restart_window(self, tmp_path, monkeypatch):
+        """全新指纹不受冷却压制（冷却仅约束已知指纹的首扫回放）。"""
+        monkeypatch.setattr("core.admin_monitor._is_fixture_project",
+                            lambda root: False)
+        now = time.time()
+        msg = "brand new failure mode (attempt 9)"
+        self._write_error_log(
+            tmp_path,
+            [(msg, now - 60), (msg.replace("9)", "10)"), now - 30)],
+        )
+        store = AdminStore(tmp_path, FakeLogger())
+        mon = self._monitor(tmp_path, store, RecordingLogger())
+
+        signals = mon._detect_daemon_errors(now)
+        assert len(signals) == 1
+        assert signals[0]["_fp"] == _error_fingerprint("pm_engine", msg)
+
+    def test_recurrence_after_cooldown_window_escalates(self, tmp_path, monkeypatch):
+        """3.3：冷却窗后同指纹复现照常升级（重启前记录在案仍升级）。"""
+        monkeypatch.setattr("core.admin_monitor._is_fixture_project",
+                            lambda root: False)
+        now = time.time()
+        msg = "内容完整性闸门命中：'c-y' 空 spec（attempt 1）"
+        fp = _error_fingerprint("pm_engine", msg)
+        self._write_error_log(
+            tmp_path,
+            [(msg, now - 60), (msg.replace("1）", "2）"), now - 30)],
+        )
+        store = AdminStore(tmp_path, FakeLogger())
+        store.append({
+            "kind": SIGNAL,
+            "signal_type": "daemon_errors",
+            "spec": None,
+            "description": f"fenixd 日志同错误（指纹 {fp[:8]}）在 10 分钟窗口内复现 2 次",
+            "escalated": True,
+        })
+        # 启动锚点拨回冷却窗外
+        mon = self._monitor(
+            tmp_path, store, RecordingLogger(),
+            started_at=now - (DAEMON_ERROR_RESTART_COOLDOWN_MINUTES + 5) * 60,
+        )
+
+        signals = mon._detect_daemon_errors(now)
+        assert len(signals) == 1
+        assert signals[0]["_fp"] == fp
+
+    def test_cooldown_constant_layered_with_threshold(self):
+        """冷却常量与 DAEMON_ERROR_THRESHOLD 同层声明（模块常量不入 config）。"""
+        import core.admin_monitor as am
+        assert isinstance(DAEMON_ERROR_RESTART_COOLDOWN_MINUTES, int)
+        assert hasattr(am, "DAEMON_ERROR_THRESHOLD")

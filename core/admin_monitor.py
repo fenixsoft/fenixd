@@ -109,6 +109,18 @@ FLAPPING_THRESHOLD = 3
 DAEMON_ERROR_THRESHOLD = 2
 DAEMON_ERROR_WINDOW_MINUTES = 10
 DAEMON_ERROR_RECURRENCE_MAX_GAP_MINUTES = 5
+# alert-noise-governance 3.1：指纹级重启冷却窗（模块常量不入 config，对齐本
+# 层既有做法，规避「新增配置项必须带 Dashboard UI」约束）。
+# 治理目标 = 重启后首扫回放：daemon 重启不清日志，首扫即命中与停机前相同
+# 指纹的 ERROR——重启前已召唤过一次（记账在案），同批指纹重启后短期重复召
+# 唤收益趋零（design D5）。窗内已知指纹不计满升级阈值、不召唤（INFO 留痕冷
+# 却决策）；窗后复现或全新指纹照常升级（3.3）。
+# 与既有节流的关系（3.3）：_throttled 按 (spec, signal_type) 做「冷却窗口内
+# 已唤起 / 已有未处理升级告警」判定——它是**信号级**节流，覆盖同信号重唤起；
+# 本冷却是**指纹级**补口而非替代：孪生指纹各算各的时会绕开单条信号记录的锚
+# 定（同轮 3 笔 admin-global 召唤实证），且跨重启首扫的已知指纹不应再次点燃
+# 召唤。两道判定并存，_throttled 语义不变。
+DAEMON_ERROR_RESTART_COOLDOWN_MINUTES = 30
 STUCK_GRACE_MINUTES = 10  # run 文件 mtime 距现在小于此值视为"有进度"，不算卡死
 RESTART_REQUEST_TIMEOUT_MINUTES = 10  # restart_request 超时未清除 → 重启失败 → 升级
 
@@ -186,6 +198,29 @@ _RECLASSIFY_NEGATION_PHRASES = (
 # 「写入即待唤起」信号的终态守卫：spec 已达这些状态时不再唤起 Administrator
 # （done/pushed 之后族谱不可能再派生，困境实质已消失）。
 _TERMINAL_SPEC_STATUSES = ("done", "pushed")
+
+
+def _is_fixture_project(project_root) -> bool:
+    """项目是否带 fixture:true 标记（alert-noise-governance 5）。
+
+    权威源 = dashboard.yaml 项目条目（fix-fixture-project-alert-noise 落地，
+    core/dashboard/registry.py Registry.discover 只读消费，本模块不改动该文
+    件）。函数内延迟导入：registry 仅依赖 stdlib+yaml，无反向依赖环，延迟
+    是为避免加载序副作用（对齐本模块 ConfigLoader 的延迟导入风格）。
+
+    fail-open（design D4）：registry 读取异常 / 项目不在册 / 标记非布尔真，
+    一律按非夹具处理——MUST NOT 因标记异常让召唤/摘要失效。
+    """
+    try:
+        from core.dashboard.registry import Registry
+
+        root = str(Path(project_root).resolve())
+        for p in Registry().discover():
+            if p.get("path") == root:
+                return p.get("fixture") is True
+    except Exception:
+        return False
+    return False
 
 # ── dispatch_stalled 前提复核（陈旧快照守卫，2026-09-17 事故）────────────
 # dispatch_stalled 是**快照式**信号：pm_engine 在巡检瞬间把「ready 滞留」这一
@@ -725,6 +760,13 @@ class AdminMonitor:
         # 用锁把判定+置位压成临界区（同 code_review 同款处理）。
         self._regression_in_flight = False
         self._regression_lock = threading.Lock()
+        # alert-noise-governance 3.1：daemon_errors 指纹级冷却状态。
+        # _started_at：进程启动锚点（重启后冷却窗 = now − _started_at）；
+        # _daemon_fp_escalated_at：fp → 本生命周期内最近一次产生升级信号的时刻
+        # （生命周期内用内存时间戳；跨重启识别经 _daemon_fp_known 对账 admin
+        # store 既有 daemon_errors 记录的 description 内嵌指纹前缀）。
+        self._started_at = time.time()
+        self._daemon_fp_escalated_at = {}
 
     # ── 配置读取 ────────────────────────────────────────────────
 
@@ -1344,6 +1386,11 @@ class AdminMonitor:
                     f"{stype}: mark_escalated 未命中记录 id={rec.get('id')}"
                     f"（spec={spec}），该记录可能被反复摄取",
                 )
+            # fixture 项目抑制（alert-noise-governance 5.1）：记录已 mark
+            # escalated（消费掉「写入即待唤起」语义，防每轮重复摄取与重复
+            # INFO），但不创建 admin run；记录本身保留可查（5.2 不删除）。
+            if self._fixture_invocation_suppressed(signal):
+                continue
             self.logger.warning(
                 "admin_monitor",
                 f"{stype}: invoking Administrator for '{spec}'",
@@ -1688,6 +1735,14 @@ class AdminMonitor:
         靠窗口滑动自然过期（重载成功不写 ERROR，10 分钟后自动归零）。中间被
         INFO/WARNING/其他错误打断不影响同指纹复现计数；单条瞬时错误不升级；
         两条不同错误各 1 次不聚合（指纹不同）。
+
+        alert-noise-governance 治理（3.1/3.2/3.3）：
+        - 指纹级重启冷却——daemon 启动后冷却窗内，「已知指纹」（本生命周期
+          已升级过，或 admin store 既有 daemon_errors 记录在案——跨重启对账）
+          不计满阈值、不产信号不召唤（INFO 留痕冷却决策）；窗后复现或全新指
+          纹照常升级。与 _throttled 的关系见常量注释（指纹级补口而非替代）。
+        - 同轮孪生/成对指纹合并——同一轮扫描多个指纹同时达阈值时按 fp 聚合
+          为一条召唤信号（一次 Administrator run），不再各指纹各召唤一次。
         """
         log_file = self.project_root / ".fenix" / "logs" / "fenixd.log"
         if not log_file.exists():
@@ -1699,13 +1754,30 @@ class AdminMonitor:
         for ts, component, message in self._read_tail_error_entries(log_file):
             by_fp.setdefault(_error_fingerprint(component, message), []).append(ts)
 
-        signals = []
+        cooldown = DAEMON_ERROR_RESTART_COOLDOWN_MINUTES * 60
+        # __new__ 直构（单测）无 _started_at：按「刚启动」处理（冷却窗生效），
+        # 与真实 daemon 启动后的首扫行为一致
+        in_restart_window = (now - getattr(self, "_started_at", now)) < cooldown
+
+        escalating = []  # [(fp, count, last_str, missing_ts)]
         for fp, stamps in by_fp.items():
             in_window = [t for t in stamps if t is None or (now - window <= t <= now)]
             if len(in_window) < DAEMON_ERROR_THRESHOLD:
                 continue
             ts_ok = sorted(t for t in in_window if t is not None)
             if len(ts_ok) >= 2 and (ts_ok[-1] - ts_ok[-2]) > max_gap:
+                continue
+            known, source = self._daemon_fp_known(fp)
+            if known and in_restart_window:
+                # 冷却命中（3.1）：重启后首扫窗口内的已知指纹不计满、不召唤，
+                # INFO 留痕冷却决策；窗后复现照常升级（3.3，冷却仅约束首扫窗口）
+                self.logger.info(
+                    "admin_monitor",
+                    f"daemon_errors 指纹冷却：指纹 {fp[:8]} 为已知指纹"
+                    f"（{source}），处于重启后冷却窗（"
+                    f"{DAEMON_ERROR_RESTART_COOLDOWN_MINUTES} 分钟）内，"
+                    f"不升级不召唤（alert-noise-governance 3.1）",
+                )
                 continue
             count = len(in_window)
             last_ts = ts_ok[-1] if ts_ok else None
@@ -1715,22 +1787,87 @@ class AdminMonitor:
                 else "无可用时间戳"
             )
             missing_ts = sum(1 for t in in_window if t is None)
-            sig = self._make_signal(
-                "daemon_errors",
-                None,
-                f"fenixd 日志同错误（指纹 {fp[:8]}）在 {DAEMON_ERROR_WINDOW_MINUTES} 分钟"
-                f"窗口内复现 {count} 次，建议检查根因并重启 daemon",
-                f"同指纹 ERROR 复现 {count} 次（最近一次 {last_str}"
-                + (f"；{missing_ts} 条缺时间戳按窗口内计入" if missing_ts else "")
-                + f"）；升级条件：同指纹 ≥{DAEMON_ERROR_THRESHOLD} 次且最近两次间隔"
-                f" ≤{DAEMON_ERROR_RECURRENCE_MAX_GAP_MINUTES} 分钟",
+            escalating.append((fp, count, last_str, missing_ts))
+
+        if not escalating:
+            return []
+        # 记录指纹上次唤起时间戳（3.1「生命周期内用内存时间戳」）
+        for fp, *_ in escalating:
+            self._daemon_fp_escalated_at[fp] = now
+        if len(escalating) == 1:
+            return [self._make_daemon_error_signal(*escalating[0])]
+        # 同轮孪生/成对指纹合并（3.2）：一条召唤信号、一次 Administrator run
+        return [self._make_daemon_error_signal_merged(escalating)]
+
+    def _daemon_fp_known(self, fp: str) -> tuple:
+        """指纹是否「已知」（alert-noise-governance 3.1）。
+
+        已知 = 本生命周期内已产生过升级信号（内存时间戳在案），或 admin
+        store 存在携带该指纹的 daemon_errors 记录（跨重启对账——store 记录
+        无结构化指纹字段，_fp 仅内存传递不落库，故以本模块产出 description
+        的稳定文案「指纹 <fp[:8]>」前缀对账）。返回 (known, source)。
+
+        store 读取失败按未知指纹处理（fail-open：冷却缺失的最坏后果是重启
+        后多召唤一次，不掩盖真实新故障）。
+        """
+        if fp in getattr(self, "_daemon_fp_escalated_at", {}):
+            return True, "本生命周期已升级过（内存时间戳在案）"
+        prefix = fp[:8]
+        try:
+            for rec in self.store.read_all():
+                if rec.get("signal_type") != "daemon_errors":
+                    continue
+                if f"指纹 {prefix}" in str(rec.get("description") or ""):
+                    return True, "store 既有 daemon_errors 记录在案（跨重启识别）"
+        except Exception:
+            pass
+        return False, ""
+
+    def _make_daemon_error_signal(self, fp: str, count, last_str, missing_ts) -> dict:
+        """单指纹 daemon_errors 信号（文案与治理前保持一致，语义回归）。"""
+        sig = self._make_signal(
+            "daemon_errors",
+            None,
+            f"fenixd 日志同错误（指纹 {fp[:8]}）在 {DAEMON_ERROR_WINDOW_MINUTES} 分钟"
+            f"窗口内复现 {count} 次，建议检查根因并重启 daemon",
+            f"同指纹 ERROR 复现 {count} 次（最近一次 {last_str}"
+            + (f"；{missing_ts} 条缺时间戳按窗口内计入" if missing_ts else "")
+            + f"）；升级条件：同指纹 ≥{DAEMON_ERROR_THRESHOLD} 次且最近两次间隔"
+            f" ≤{DAEMON_ERROR_RECURRENCE_MAX_GAP_MINUTES} 分钟",
+        )
+        # admin-signal-consolidation D1：daemon 级信号（spec=None）的
+        # status_hash 回退判据 = 稳定错误指纹（_signal_status_hash 消费，
+        # 不落库——signal 字典仅作本次检测的传递载体）。
+        sig["_fp"] = fp
+        return sig
+
+    def _make_daemon_error_signal_merged(self, escalating: list) -> dict:
+        """同轮多指纹合并信号（alert-noise-governance 3.2）。
+
+        description 对每个指纹保留「指纹 <fp[:8]>」文案——跨重启已知指纹对账
+        （_daemon_fp_known 对 store 记录的 description 前缀匹配）依赖该子串，
+        合并形态下逐指纹仍可命中；evidence 另载各指纹复现明细。
+        """
+        fp_summary = "、".join(
+            f"指纹 {fp[:8]}（复现 {count} 次）" for fp, count, _, _ in escalating
+        )
+        sig = self._make_signal(
+            "daemon_errors",
+            None,
+            f"fenixd 日志同轮 {len(escalating)} 项错误同时达升级阈值（{fp_summary}），"
+            f"已合并为一条召唤信号、一次 Administrator run（alert-noise-governance"
+            f" 3.2），建议检查根因并重启 daemon",
+            "；".join(
+                f"指纹 {fp[:8]} 复现 {count} 次（最近一次 {last_str}）"
+                for fp, count, last_str, _ in escalating
             )
-            # admin-signal-consolidation D1：daemon 级信号（spec=None）的
-            # status_hash 回退判据 = 稳定错误指纹（_signal_status_hash 消费，
-            # 不落库——signal 字典仅作本次检测的传递载体）。
-            sig["_fp"] = fp
-            signals.append(sig)
-        return signals
+            + f"；升级条件：同指纹 ≥{DAEMON_ERROR_THRESHOLD} 次且最近两次间隔"
+            f" ≤{DAEMON_ERROR_RECURRENCE_MAX_GAP_MINUTES} 分钟",
+        )
+        # 合并信号的 status_hash 判据 = 全部指纹的稳定拼接（同集合同 hash，
+        # 沉淀合并语义与单指纹一致）
+        sig["_fp"] = "|".join(fp for fp, *_ in escalating)
+        return sig
 
     @staticmethod
     def _parse_error_line(line: str):
@@ -1834,6 +1971,36 @@ class AdminMonitor:
             "escalated": escalated,
         }
 
+    def _fixture_invocation_suppressed(self, signal: dict) -> bool:
+        """fixture 标记项目的自动召唤抑制（alert-noise-governance 5.1）。
+
+        监控项目带 fixture:true 标记时，其告警（含 spec 级与 daemon 级全局
+        巡检类）为验证噪音——自动召唤 Administrator 只会烧出空转 admin run
+        （2026-09-22 实证：夹具噪音点燃 3 笔 admin-global 召唤）。命中即记
+        INFO（含错误指纹与抑制原因）并返回 True，由调用点跳过自动召唤。
+
+        落点约束：本判定置于各自动检测路径调用 _invoke_administrator 之前
+        （_detect_family_explosion / _handle_signal / _retry_due_dispatch_failures
+        / _recover_orphaned_dispositions 四处），MUST NOT 放进
+        _invoke_administrator 本体——人工显式触发（run_administrator）与自动
+        检测共用该入口，放本体必误伤人工通道（5.1）。抑制只阻断召唤动作，
+        MUST NOT 修改/删除告警记录本身（5.2，看板仍可见）。
+        """
+        # getattr 兜底：半初始化实例（如测试用 __new__ 绕过 __init__）无该
+        # 属性时按非 fixture 处理（fail-open，与 _is_fixture_project 同语义）。
+        if not _is_fixture_project(getattr(self, "project_root", None)):
+            return False
+        fp = signal.get("_fp")
+        self.logger.info(
+            "admin_monitor",
+            f"fixture 项目抑制自动召唤: signal={signal.get('signal_type')} "
+            f"spec={signal.get('spec') or 'daemon'}"
+            + (f" 指纹={str(fp)[:8]}" if fp else "")
+            + "（项目带 fixture:true 标记，告警为验证噪音；"
+            f"人工显式触发不受限 — alert-noise-governance 5.1）",
+        )
+        return True
+
     def _handle_signal(self, signal: dict):
         """处理单条信号：状态沉淀记录 + 节流判定 + 唤起 Administrator。"""
         spec = signal.get("spec")
@@ -1883,6 +2050,17 @@ class AdminMonitor:
                 return
 
         # 节流通过：先记录 signal（作为本次唤起的冷却锚点），再唤起
+
+        # fixture 项目自动召唤抑制（alert-noise-governance 5.1）：置于唤起
+        # 决策（escalated=True 锚点写入）之前；信号仍按沉淀语义入库
+        # （escalated=False，不虚报已唤起），告警记录原样可见（5.2），仅召唤
+        # 动作被阻断。
+        if self._fixture_invocation_suppressed(signal):
+            self.store.merge_signal(
+                self._signal_record(signal, escalated=False), status_hash
+            )
+            return
+
         signal_rec, _ = self.store.merge_signal(
             self._signal_record(signal, escalated=True), status_hash
         )
@@ -2076,6 +2254,11 @@ class AdminMonitor:
             if signal is None:
                 continue
             signal["_dispatch_retry_id"] = rec.get("id")
+            # fixture 项目抑制（alert-noise-governance 5.1）：到期重派同属
+            # 自动召唤，跳过（升级记录保留不删除，5.2）；不 bump retry_count
+            # ——抑制非派发失败，下轮巡检到期仍会重评（窗内维持阻断）。
+            if self._fixture_invocation_suppressed(signal):
+                continue
             self.logger.warning(
                 "admin_monitor",
                 f"Dispatch failure retry due: re-invoking Administrator for "
@@ -2296,6 +2479,12 @@ class AdminMonitor:
                     if signal is not None and not self._has_active_admin_run_for(
                         spec, sig_type, exclude_run_id=rid
                     ):
+                        # fixture 项目抑制（alert-noise-governance 5.1）：置于
+                        # superseded 记录写入与重派之前——不写「已重派」审计、
+                        # 不重入队 admin run；原 pending 记录保持待下一轮重评
+                        # （人工显式触发不受限）。
+                        if self._fixture_invocation_suppressed(signal):
+                            continue
                         # 审计留痕：原 pending disposition 追加 status=superseded 记录
                         # （同 admin_run_id），携带 reschedule_count 新值；非 pending
                         # 记录即令该 run 被判 final，孤儿循环终止。MUST NOT 额外写

@@ -58,6 +58,29 @@ _TODO_SECTION_RE = re.compile(r"^### (.+?)\s*$")
 # 空小节占位（_append_todo 写入）；收集闭环判定条目时排除。
 _EMPTY_MARKER = "（当日无）"
 
+
+def _is_fixture_project(project_root) -> bool:
+    """项目是否带 fixture:true 标记（alert-noise-governance 4.1）。
+
+    权威源 = dashboard.yaml 项目条目（fix-fixture-project-alert-noise 落地，
+    core/dashboard/registry.py Registry.discover 只读消费，本模块不改动该文
+    件）。函数内延迟导入：registry 仅依赖 stdlib+yaml，无反向依赖环，延迟是
+    为避免加载序副作用（对齐本模块 ConfigLoader 的延迟导入风格）。
+
+    fail-open（design D4）：registry 读取异常 / 项目不在册 / 标记非布尔真，
+    一律按非夹具处理——MUST NOT 因标记异常让日审摘要失效（4.2 行为保持现状）。
+    """
+    try:
+        from core.dashboard.registry import Registry
+
+        root = str(Path(project_root).resolve())
+        for p in Registry().discover():
+            if p.get("path") == root:
+                return p.get("fixture") is True
+    except Exception:
+        return False
+    return False
+
 # 秒挂（instant-hang）签名：错误文本命中即归类为秒挂（claude 启动即死）。
 _INSTANT_FAIL_PATTERNS = (
     "No conversation found with session ID",
@@ -726,6 +749,12 @@ class SelfReviewScheduler:
     ) -> List[str]:
         """聚合 admin 记录。
 
+        fixture 项目过滤（alert-noise-governance 4.1）：项目带 fixture:true
+        标记时其告警为验证噪音——不进未处理告警计数，以 [fixture] 标注单独
+        呈现，不与真实项目告警混排；MUST NOT 删除/改写告警记录本身。标记
+        读取失败或无标记按非夹具走既有路径（4.2 fail-open，计数口径与摘要
+        结构不变）。
+
         Args:
             window_start: 窗口下界
             window_end: 窗口上界；None 时为实时 datetime.now()
@@ -746,6 +775,25 @@ class SelfReviewScheduler:
         escalations = [r for r in window_records if r.get("kind") == "escalation"]
         dispositions = [r for r in window_records if r.get("kind") == "disposition"]
         unhandled = [r for r in escalations if not r.get("handled")]
+        if _is_fixture_project(self.project_root):
+            # 夹具项目（alert-noise-governance 4.1）：未处理计数不含夹具告警
+            # （计 0），夹具未处理告警以 [fixture] 标注单列备查（不混入真实
+            # 待办口径）；告警记录本身只读不动。
+            lines = [
+                f"- 信号: {len(signals)} 条",
+                f"- 升级告警: {len(escalations)} 条（未处理 0 条计入——"
+                f"{len(unhandled)} 条 fixture 告警不计入待办）",
+                f"- 处置记录: {len(dispositions)} 条",
+                f"- fixture 未处理升级告警: {len(unhandled)} 条（验证噪音，单列备查）",
+            ]
+            for u in unhandled[:5]:
+                lines.append(
+                    f"  - [fixture] 未处理升级 [{u.get('signal_type')}] "
+                    f"spec={u.get('spec')}: {str(u.get('description') or '')[:160]}"
+                )
+            if not window_records:
+                return ["- （窗口内无 admin 记录）"]
+            return lines
         lines = [
             f"- 信号: {len(signals)} 条",
             f"- 升级告警: {len(escalations)} 条（未处理 {len(unhandled)} 条）",
