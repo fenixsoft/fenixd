@@ -15,12 +15,32 @@
 - **WHEN** 目标项目 daemon 未运行（stopped）或未受 supervisor 托管（unmanaged）
 - **THEN** 分别返回 400 / 409 明确文案，不写信号（对齐 POST /api/code-review/run 的消费方守卫）
 
-### Requirement: 手动触发即临时授权
-daemon 消费手动修复信号时，SHALL 以临时授权形态调用 `CodeFixOrchestrator.checkpoint()`：绕过「自动修复代码问题」总开关（`enabled`）守卫，即使开关关闭也投递这一批。checkpoint 的其余守卫 MUST 全部保留：单飞（already_running）、无 open 条目（no_open_items）、失败保留集合、回归契约 fail-closed（regression_contract_missing / regression_section_missing）。
+### Requirement: 手动触发即整链授权
+daemon 消费手动修复信号时，SHALL 以授权形态调用 `CodeFixOrchestrator.checkpoint()`：绕过「自动修复代码问题」总开关（`enabled`）守卫投递一批，且授权覆盖**整条自驱动链**——授权旗标（`manual_authorized`）持久化在 fix-progress.json 随链身份传播，批收尾后 `_resubmit` 的 checkpoint（无旁路参数）凭「链 live（running=true）且旗标为真」越过 enabled 守卫继续投递，直至 open 条目清零或链终止。旗标 SHALL 在链终态（idle / blocked / failed）清除，收尾链的授权 MUST NOT 外溢到新链。checkpoint 的其余守卫 MUST 全部保留：单飞（already_running）、无 open 条目（no_open_items）、失败保留集合、回归契约 fail-closed（regression_contract_missing / regression_section_missing）。live 链撞 enabled 守卫（开关被中途关闭）SHALL 落终态进度（phase=blocked / reason=disabled），MUST NOT 静默保持 running=true。
+
+> 修订（2026-09-22）：原语义「临时授权只覆盖一批」与本意不符——手动触发后
+> 链在批间被 enabled 守卫静默挡停（不写进度），前端永久冻结在「合回主树中」。
+> 授权粒度由「批」改为「链」，并补齐 live 链撞 disabled 的终态落盘。
 
 #### Scenario: 总开关关闭时手动触发仍投递
 - **WHEN** `admin.code_review_fix.enabled` 为 false 且 daemon 消费到手动修复信号
-- **THEN** checkpoint 绕过 enabled 守卫完成投递，进度文件进入 running=true
+- **THEN** checkpoint 绕过 enabled 守卫完成投递，进度文件进入 running=true 且授权旗标置位
+
+#### Scenario: 授权链在开关关闭下自驱动跑完
+- **WHEN** enabled=false 下手动链的某批合回成功、`_resubmit` 以无旁路参数重入 checkpoint
+- **THEN** 凭 live 链上的授权旗标继续投递下一批，直至 open 条目清零（进度落 idle 且旗标清除）
+
+#### Scenario: 收尾链的授权不外溢
+- **WHEN** 手动授权链已收尾（running=false）后出现新的 open 条目，且无新授权
+- **THEN** 后台激活 checkpoint 不被旧旗标放行（enabled=false 时判定 disabled）
+
+#### Scenario: 链终止时旗标一并清除
+- **WHEN** 授权链内某批进入终态（两次回归失败丢弃 / 合回冲突 / 零有效修复 / worker 异常）
+- **THEN** 进度 reason 如实反映失败且 manual_authorized=false，链不自驱动重试失败批
+
+#### Scenario: 开关中途关闭落终态进度
+- **WHEN** live 链（running=true）重入 checkpoint 时 enabled=false 且无授权旗标
+- **THEN** 进度落终态（running=false / phase=blocked / reason=disabled），MUST NOT 静默保持 running=true
 
 #### Scenario: 已有修复在跑时拒绝
 - **WHEN** 手动信号被消费时存在在途 code-fix 批（编排器单飞或 code-fix- 前缀 run）
@@ -35,7 +55,7 @@ daemon 消费手动修复信号时，SHALL 以临时授权形态调用 `CodeFixO
 - **THEN** 不投递（fail-closed 不因手动触发放宽），按契约缺失反馈前端
 
 #### Scenario: 既有后台激活路径行为不变
-- **WHEN** 审查收尾或异常中断续做这两路既有激活调用 checkpoint
+- **WHEN** 审查收尾或异常中断续做这两路既有激活调用 checkpoint，且无 live 授权链
 - **THEN** 未传旁路参数时行为与现状完全一致（enabled=false 时不投递）
 
 ### Requirement: 触发判定结果反馈
