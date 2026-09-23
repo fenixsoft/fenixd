@@ -66,21 +66,14 @@
 
 ### 仅补 regression 段（`verify_regression_missing` 信号）
 
-当收到 `verify_regression_missing` 信号（用户在设置页「质量」页签点「使用 AI 生成」，
-契约有效但缺 `regression` 段）时，与「整契约起草」不同——**只补段、不动其余内容**：
+当收到 `verify_regression_missing` 信号（用户在设置页「质量」页签点「使用 AI 生成」，契约有效但缺 `regression` 段）时，与「整契约起草」不同——**只补段、不动其余内容**：
 
-1. **读现有契约**：`.fenix/verify.yaml` 已有效（prepare/serve/ready 齐备）。**MUST NOT 改动
-   prepare / serve / ready 与其它任何顶层键**——只追加（或替换同名的）`regression` 段。
-2. **探测测试体系并生成段**：按上方「regression 段起草」第 1-2 步识别语言/框架，
-   生成可产出 JUnit XML 的 `cmd` + `output`（pytest / Jest / Go / surefire 等模板同上）。
-3. **自证后落位**：把 regression 段并入 `.fenix/verify.yaml`（**保持其余顶层键一字不动**）→
-   `python3 bin/fenix_verify_contract.py <项目根>`：三段自证仍应全通，且 regression 段自证
-   独立一行显示成功才算数 → git 提交。
-4. **无测试体系 / 探测不出可产出 JUnit XML 的命令**：MUST 省略该段并在处置记录说明
-   「项目无可用测试体系，未臆造回归命令」结案——臆造会让周期回归每天 parse_error 空转。
+1. **读现有契约**：`.fenix/verify.yaml` 已有效（prepare/serve/ready 齐备）。**MUST NOT 改动 prepare / serve / ready 与其它任何顶层键**，只追加（或替换同名的）`regression` 段。
+2. **探测测试体系并生成段**：按上方「regression 段起草」第 1-2 步识别语言/框架，生成可产出 JUnit XML 的 `cmd` + `output`（pytest / Jest / Go / surefire 等模板同上）。
+3. **自证后落位**：把 regression 段并入 `.fenix/verify.yaml`（**保持其余顶层键一字不动**）→ `python3 bin/fenix_verify_contract.py <项目根>`：三段自证仍应全通，且 regression 段自证独立一行显示成功才算数 → git 提交。
+4. **无测试体系 / 探测不出可产出 JUnit XML 的命令**：MUST 省略该段并在处置记录说明「项目无可用测试体系，未臆造回归命令」结案——臆造会让周期回归每天 parse_error 空转。
 
-**边界**：同「regression 段起草」——不臆造命令；`format` 仅 `junit`。补段失败（2 轮）时置
-`escalate=true` 附当前草稿与自证失败证据。
+**边界**：同「regression 段起草」——不臆造命令；`format` 仅 `junit`。补段失败（2 轮）时置 `escalate=true` 附当前草稿与自证失败证据。
 
 ## 构建产物路径起草手册
 
@@ -163,4 +156,4 @@
   }
 ```
 
-然后结束，无需额外输出。不要直接编辑 .fenix/admin_alerts.json——daemon 会基于你的处置记录写入。
+然后结束，无需额外输出。不要直接编辑 .fenix/admin_alerts.json，daemon 会基于你的处置记录写入。

@@ -39,7 +39,7 @@
 ## 铁律（MUST NOT）
 1. 只产出回顾，**禁止**创建任何 SPEC（不写 spec/changes/、不注册 .fenix/STATE.md 条目）。
 2. **禁止**派发任何 implementer/verifier/planner agent，不修改框架代码。
-3. 不要修改 .fenix/STATE.md、tasks.md 或任何源码文件——你的唯一产物是下面的回顾 JSON。
+3. 不要修改 .fenix/STATE.md、tasks.md 或任何源码文件，你的唯一产物是下面的回顾 JSON。
 4. read_todo=true 时：判定已闭环的历史条目**不再重述进新节**，改写入 `resolved`（闭环判定）；仍存在的历史条目在重述时标注「（新增）/（恶化）」。
 
 ## 完成后
@@ -52,4 +52,4 @@
   "resolved": [{"id": "日期#小节#序号", "reason": "判定依据（可核实证据）"}],
   "summary": "一句话总结近24小时整体表现"
 }
-然后结束，无需额外输出。不要直接编辑 todo.md——daemon 会把你的回顾结构化追加进 .fenix/todo.md、按 resolved 移除已闭环条目并自动提交。
+然后结束，无需额外输出。不要直接编辑 todo.md，daemon 会把你的回顾结构化追加进 .fenix/todo.md、按 resolved 移除已闭环条目并自动提交。
