@@ -1134,7 +1134,7 @@ def _read_code_review_out(runner, project_root, run_id: str) -> list:
         if _log is not None:
             _log.warning(
                 "code-review",
-                f"分片读取失败跳过（run {run_id}）: {src.name} ({exc})",
+                f"审查产物来源读取失败跳过（run {run_id}）: {src.name} ({exc})",
             )
 
     out: list = []
