@@ -73,6 +73,10 @@ class G7StaleSweepMixin:
                 )
                 if br.returncode == 0:
                     branch = br.stdout.strip()
+                # 硬删前留档（lifecycle D2 同款约定）：本路径清的恰是上次异常
+                # 退出遗留、最可能携带未提交现场的孤儿，删前必须快照留档，
+                # 消灭「先删后查」取证盲区；失败降级 WARNING，不阻塞删除。
+                self._snapshot_dirty_worktree(wt_dir, branch or None)
                 res = subprocess.run(
                     [
                         "git",

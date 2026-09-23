@@ -650,12 +650,13 @@ class TestDistBuildContractDriven:
 
 
 class TestSupersededStashDrop:
-    """fix-mergeback-stashpop-silent-loss D2：pop 冲突自愈后被取代条目自动 drop。
+    """pop 冲突条目保留语义回归。
 
-    三个 spec scenario：
-      1. stash 版被合并结果完全取代（树级 diff 全 0）→ 条目自动 drop
-      2. stash 版有独立差异 → 条目保留（端到端 pop 冲突自愈路径）
-      3. pop 后 sha 被新条目顶掉 → 放弃 drop
+    「零独有内容才 drop」判据（fix-mergeback-stashpop-silent-loss D2 的
+    ``_drop_superseded_stash_entry``）已退役：evo-stash-pop-conflict-triage
+    D3 后冲突条目一律保留，函数已删。保留两用例守住「不 drop、不丢内容」：
+      1. pop 干净成功（无 UU）→ 不触发 drop、内容完整回贴
+      2. 真实 pop 冲突走三态恢复 commit 路径 → 条目保留 + 找回命令
     """
 
     def _branch_modifies_shared(self, root: Path, branch_content: str):
@@ -671,9 +672,9 @@ class TestSupersededStashDrop:
     def _make_conflicting_stash(self, root: Path, wip_content: str) -> str:
         """构造「HEAD 已含合并结果 + 主树 WIP 已 autostash」的判定现场。
 
-        _drop_superseded_stash_entry 的判定语义是「stash 版 vs 合并后 HEAD 版」，
-        因此先写 WIP（≠ 当前 BASE，保证主树脏可 autostash）→ ensure_clean_tree
-        stash → 再推进 HEAD 到分支（等价 merge 结果已入 HEAD）。stash 提交树
+        判定语义是「stash 版 vs 合并后 HEAD 版」的树级对比，因此先写 WIP
+        （≠ 当前 BASE，保证主树脏可 autostash）→ ensure_clean_tree stash →
+        再推进 HEAD 到分支（等价 merge 结果已入 HEAD）。stash 提交树
         即 WIP 时刻工作区快照，此后 stash 版与推进后的 HEAD 版可逐 blob 对比。
         """
         (root / "shared.py").write_text(wip_content, encoding="utf-8")
@@ -685,24 +686,6 @@ class TestSupersededStashDrop:
             "-m", "[fenix] merge impl (simulated)")
         assert (root / "shared.py").read_text(encoding="utf-8") == "MERGED\n"
         return git(root, "rev-parse", "--verify", "stash@{0}").stdout.strip()
-
-    def test_stash_subsumed_by_merge_result_is_dropped(self, tmp_path):
-        """scenario 1: stash 版 == 合并后 HEAD 版（树级 diff 全 0）→ 条目自动 drop。"""
-        root = tmp_path / "repo"
-        init_repo(root)
-        self._branch_modifies_shared(root, "MERGED\n")
-        # WIP 与分支版一致：stash 提交树中 shared.py == 合并后 HEAD 版
-        sha = self._make_conflicting_stash(root, "MERGED\n")
-
-        wm = make_wm(root)
-        assert wm._drop_superseded_stash_entry(sha, ["shared.py"]) is True
-
-        lst = git(root, "stash", "list")
-        assert "fenix: pre-dispatch autostash" not in lst.stdout, \
-            f"被取代条目应被 drop，实际栈: {lst.stdout!r}"
-        drop_logs = [w for w in wm.logger.warnings
-                     if "auto-dropped" in w and sha[:12] in w]
-        assert drop_logs, f"应记录含 drop sha 的日志: {wm.logger.warnings}"
 
     def test_clean_pop_no_drop_side_effect(self, tmp_path):
         """scenario 1 补充：pop 干净成功（无 UU）→ 不触发 drop 判定、内容完整回贴。"""
@@ -730,20 +713,6 @@ class TestSupersededStashDrop:
         lst = git(root, "stash", "list")
         assert "fenix: wip-overlap gate stash" in lst.stdout
         assert (root / "extra.py").read_text(encoding="utf-8") == "BASE-EXTRA\n"
-
-    def test_stash_with_unique_diff_is_preserved(self, tmp_path):
-        """scenario 2: stash 版与合并后 HEAD 版树级 diff 非空 → 条目保留 + 找回命令。"""
-        root = tmp_path / "repo"
-        init_repo(root)
-        self._branch_modifies_shared(root, "MERGED\n")
-        sha = self._make_conflicting_stash(root, "WIP-UNIQUE\n")
-
-        wm = make_wm(root)
-        assert wm._drop_superseded_stash_entry(sha, ["shared.py"]) is False
-
-        lst = git(root, "stash", "list")
-        assert "fenix: pre-dispatch autostash" in lst.stdout, \
-            f"有独立差异的条目应保留，实际栈: {lst.stdout!r}"
 
     def test_restore_conflict_preserves_entry_and_logs_recover_cmd(self, tmp_path):
         """scenario 2 端到端：真实 pop 冲突走三态恢复 commit 路径，条目保留且
@@ -774,49 +743,6 @@ class TestSupersededStashDrop:
         keep_logs = [w for w in wm.logger.warnings
                      if f"git show {sha}:shared.py" in w]
         assert keep_logs, f"应记录逐文件找回命令: {wm.logger.warnings}"
-
-    def test_sha_no_longer_top_aborts_drop(self, tmp_path, monkeypatch):
-        """scenario 3: drop 前栈顶核对发现 sha 被新条目顶掉 → 放弃 drop。"""
-        root = tmp_path / "repo"
-        init_repo(root)
-        self._branch_modifies_shared(root, "MERGED\n")
-        sha = self._make_conflicting_stash(root, "MERGED\n")
-
-        wm = make_wm(root)
-        # 模拟「自愈期间有新条目入栈」：drop 前的栈顶核对返回不同 sha
-        orig_run = subprocess.run
-
-        def fake_run(cmd, **kw):
-            if "rev-parse" in cmd and any("stash@{0}" in a for a in cmd):
-                class R:
-                    returncode = 0
-                    stdout = "f" * 40 + "\n"
-                    stderr = ""
-                return R()
-            return orig_run(cmd, **kw)
-
-        import core.worktree_manager as twm
-        monkeypatch.setattr(twm.subprocess, "run", fake_run)
-        assert wm._drop_superseded_stash_entry(sha, ["shared.py"]) is False
-
-        # 条目保留
-        lst = git(root, "stash", "list")
-        assert "fenix: pre-dispatch autostash" in lst.stdout, \
-            f"放弃 drop 后条目应保留，实际栈: {lst.stdout!r}"
-        skip_logs = [w for w in wm.logger.warnings if "已变化" in w]
-        assert skip_logs, f"应记录跳过原因: {wm.logger.warnings}"
-
-    def test_unknown_pinned_sha_skips_drop(self, tmp_path):
-        """sha 未知（pop 前 rev-parse 失败）→ 保守保留条目。"""
-        root = tmp_path / "repo"
-        init_repo(root)
-        self._branch_modifies_shared(root, "MERGED\n")
-        sha = self._make_conflicting_stash(root, "MERGED\n")
-
-        wm = make_wm(root)
-        assert wm._drop_superseded_stash_entry("", ["shared.py"]) is False
-        lst = git(root, "stash", "list")
-        assert "fenix: pre-dispatch autostash" in lst.stdout
 
 
 class TestWipOverlapPrecheck:
