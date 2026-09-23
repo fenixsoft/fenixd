@@ -1,5 +1,5 @@
 import { PageContainer } from '@ant-design/pro-components';
-import { Alert, App, Badge, Button, Card, Checkbox, Collapse, Descriptions, Dropdown, Empty, Image, Input, Popconfirm, Progress, Select, Space, Spin, Tabs, Tag, Timeline, Tooltip, Typography } from 'antd';
+import { Alert, App, Badge, Button, Card, Checkbox, Collapse, Descriptions, Dropdown, Empty, Image, Input, Popconfirm, Select, Space, Spin, Tabs, Tag, Timeline, Tooltip, Typography } from 'antd';
 import { CloseOutlined, DownOutlined, ExclamationCircleFilled, FullscreenOutlined, InfoCircleFilled } from '@ant-design/icons';
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import { history, useParams } from '@umijs/max';
@@ -14,6 +14,8 @@ import SpecDocModal from './components/SpecDocModal';
 import type { DocType } from './components/SpecDocModal';
 import RunRecordModal from './components/RunRecordModal';
 import RunCancelModal from './components/RunCancelModal';
+// 「任务进度」同款进度条控件 2026-09-23 抽出共享（CodeFixProgressCard 复用），原内联定义已删
+import ProgressBarTile from './components/ProgressBarTile';
 import { ClaudeOutputPane } from '@/components/claude-msg';
 import { OutlinedTag } from '@/components/StatusTag';
 import { useIsMobile } from '@/hooks/useIsMobile';
@@ -210,32 +212,6 @@ const KIND_META: Record<string, { color: string; label: string }> = {
 function KindBadge({ kind }: { kind?: string }) {
   const meta = KIND_META[kind || 'web'] || { color: 'default', label: kind || 'web' };
   return <Tag color={meta.color} style={{ marginInlineEnd: 0 }}>{meta.label}</Tag>;
-}
-
-// overview「任务进度」同款进度条控件：大百分比 + 已完成 x/y + 渐变进度条（验证进度/任务清单共用）。
-// add-quality-gates-visibility：strokeColor 可选参数化——质量门禁 Card 传门禁橙，
-// 缺省渐变不变（验证进度/任务清单零回归）。
-function ProgressBarTile({ done, total, strokeColor }: { done: number; total: number; strokeColor?: string }) {
-  const p = total > 0 ? Math.round((done / total) * 100) : 0;
-  return (
-    <>
-      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', margin: '4px 0 10px', flexWrap: 'wrap' }}>
-        <span style={{ fontSize: 28, fontWeight: 600, lineHeight: '40px' }}>{p}%</span>
-        <span>
-          <Typography.Text type="secondary">已完成 </Typography.Text>
-          <Typography.Text strong>
-            {done} / {total}
-          </Typography.Text>
-        </span>
-      </div>
-      <Progress
-        percent={p}
-        strokeColor={strokeColor ?? { '0%': '#108ee9', '100%': '#87d068' }}
-        status="active"
-        style={{ marginBottom: 12 }}
-      />
-    </>
-  );
 }
 
 function VerdictPanel({ verdict }: { verdict: NonNullable<SpecDetail['verdict']> }) {

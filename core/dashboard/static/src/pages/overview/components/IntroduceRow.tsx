@@ -101,20 +101,24 @@ function TaskProgressTile({ totals }: { totals: OverviewTotals }) {
   );
 }
 
-// 活跃 Agent 类型展示分类（planner 家族合并为「规划」，评审独立（含需求评审）；administrator 为运维；未知类型归「其它」）
+// 活跃 Agent 类型展示分类（与 core/agent_runner/run_files.py RUN_ID_AGENT_PREFIXES 对齐：
+// fast-track/impl-ocr 归实现家族，code-review 归评审，code-fix/repair 归修复；
+// planner 家族合并为「规划」；administrator 为运维；未知类型归「其它」）
 const AGENT_CATS: [keys: string[], label: string][] = [
-  [['implementer'], '实现'],
+  [['implementer', 'fast-track', 'impl-ocr'], '实现'],
   [['planner', 'planner-plan'], '规划'],
-  [['planner-judge', 'spec-review', 'dispute-judge'], '评审'],
+  [['planner-judge', 'spec-review', 'dispute-judge', 'code-review'], '评审'],
   [['verifier'], '验证'],
   [['tester'], '测试'],
+  [['code-fix', 'repair'], '修复'],
   [['administrator'], '运维'],
 ];
 
-// 分类调色板（按 AGENT_CATS 顺序 + 其它），已过 dataviz 六项校验（light 模式，7 色，
-// 含 CVD 相邻对；运维棕 #8c5f0f 与现有 6 色逐一配对 normal≥15/CVD≥8 全过）；
+// 分类调色板（按 AGENT_CATS 顺序 + 其它），已过 dataviz 六项校验（light 模式，8 色，
+// 含 CVD 相邻对；「修复」品红 #c41d7f 与相邻 测试绿/运维棕 配对 normal≥15/CVD≥8 全过，
+// 最差相邻对 运维棕↔品红 deutan 11.9）；
 // 橙/绿对白底对比度 WARN 由柱顶直接数值标签缓解
-const AGENT_PALETTE = ['#1677ff', '#fa8c16', '#08979c', '#722ed1', '#52c41a', '#8c5f0f', '#eb2f96'];
+const AGENT_PALETTE = ['#1677ff', '#fa8c16', '#08979c', '#722ed1', '#52c41a', '#c41d7f', '#8c5f0f', '#eb2f96'];
 
 /** 归一化单行堆叠条（part-to-whole）：分段宽度按占比，段内白字数值，2px 间隙，悬浮显示类型/数值/占比 */
 function NormalizedBar({
@@ -166,7 +170,7 @@ function ActiveAgentTile({ totals }: { totals: OverviewTotals }) {
     { type: '其它', value: other, color: AGENT_PALETTE[AGENT_CATS.length] },
   ].filter((d) => d.value > 0);
   return (
-    <Tile title="活跃 Agent 运行" tooltip="运行中/刚启动的 agent run 按类型占比">
+    <Tile title="活跃 Agent" tooltip="运行中/刚启动的 agent run 按类型占比">
       <div
         className="overview-tile-numrow"
         style={{

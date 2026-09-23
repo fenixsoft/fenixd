@@ -646,7 +646,7 @@ export default function SpecListPage() {
   // add-spec-status-modal-budget：修改状态弹窗（归档/冻结/晋升/预算 四区块收敛入口）
   const [statusModal, setStatusModal] = useState<{ spec: string } | null>(null);
 
-  // add-project-detail-tabs D1：项目页分面选中态（SPEC 开发/代码审查/测试回归/Claude Code 会话）；
+  // add-project-detail-tabs D1：项目页分面选中态（功能开发/代码审查/测试回归/会话接入）；
   // add-spec-list-filter-stickiness 改写：选中态持久化到 URL `tab` 参数（合法值
   // 见 listFilters.ts LIST_TABS，缺省 dev 且缺省不写参），读侧恢复复用既有 active 门控
   const [activeTab, setActiveTab] = useState<ListTab>(initialFilters.tab);
@@ -1259,17 +1259,17 @@ export default function SpecListPage() {
         onBack: () => history.push('/overview'),
       }}
     >
-      {/* add-project-detail-tabs D1：项目页分面 Tabs——「SPEC 开发」（默认）/「代码审查」/
-          「测试回归」/「Claude Code 会话」；add-spec-list-filter-stickiness：选中态
+      {/* add-project-detail-tabs D1：项目页分面 Tabs——「功能开发」（默认）/「代码审查」/
+          「测试回归」/「会话接入」；add-spec-list-filter-stickiness：选中态
           持久化到 URL `tab`（replace 写回、缺省不写参）；
-          会话 Panel 的 active 门控见「Claude Code 会话」分面 children */}
+          会话 Panel 的 active 门控见「会话接入」分面 children */}
       <Tabs
         activeKey={activeTab}
         onChange={setActiveTab}
         items={[
           {
             key: 'dev',
-            label: 'SPEC 开发',
+            label: '功能开发',
             children: (
               <>
                 {error ? (
@@ -1385,7 +1385,7 @@ export default function SpecListPage() {
             label: '代码审查',
             // add-code-review-agent-and-quality-tab：承载代码审查质量视图——
             // QualityTab active 门控：仅在选中本分面时拉取数据与订阅事件流。
-            // 卡片由 QualityTab 自身渲染（与「SPEC 开发」分面同层，避免嵌套 Card 双倍内边距）
+            // 卡片由 QualityTab 自身渲染（与「功能开发」分面同层，避免嵌套 Card 双倍内边距）
             children: <QualityTab project={name} active={activeTab === 'quality'} />,
           },
           {
@@ -1398,7 +1398,7 @@ export default function SpecListPage() {
           },
           {
             key: 'session',
-            label: 'Claude Code 会话',
+            label: '会话接入',
             // add-project-detail-tabs D2/D3：会话界面内联承载（由项目级会话全屏 Modal
             // 迁移而来）。active 门控：仅在选中本分面时拉取会话状态与订阅事件流，未选中零请求
             children: <SessionPanel project={name} active={activeTab === 'session'} />,

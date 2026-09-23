@@ -56,9 +56,13 @@ function MiniStat({ label, value, color }: { label: string; value: React.ReactNo
 export default function ProjectCards({
   projects,
   onChanged,
+  onProjectRemoved,
+  onProjectSettle,
 }: {
   projects: ProjectSummary[];
   onChanged: () => void;
+  onProjectRemoved?: (name: string) => void;
+  onProjectSettle?: (name: string) => void;
 }) {
   const { message, modal } = App.useApp();
   const [pendingName, setPendingName] = useState('');
@@ -74,12 +78,32 @@ export default function ProjectCards({
   });
 
   const runAction = async (name: string, action: 'start' | 'stop' | 'delete' | 'install') => {
+    // 删除走乐观路径：后端 DELETE 同步等 stop_daemon 轮询（上限 30s），若等返回
+    // 再刷新，列表/菜单会滞留十几秒——先本地摘除（列表经 onProjectRemoved、菜单经
+    // initialState），后端完成后 onChanged() 校准；失败也经 onChanged() 回滚摘除。
+    if (action === 'delete') {
+      onProjectRemoved?.(name);
+      const key = `del-${name}`;
+      message.loading({ content: `正在移除项目「${name}」…`, key, duration: 0 });
+      try {
+        await deleteProject(name);
+        message.success({ content: `已移除项目「${name}」`, key });
+      } catch (err) {
+        message.error({
+          content: `项目「${name}」移除失败：${err instanceof Error ? err.message : String(err)}`,
+          key,
+        });
+      } finally {
+        // 先解除在飞删除标记，再刷新——load() 恢复采用服务端真值
+        // （成功=确认移除；失败=回滚乐观摘除，项目重新出现）
+        onProjectSettle?.(name);
+        onChanged();
+      }
+      return;
+    }
     setPendingName(name);
     try {
-      if (action === 'delete') {
-        await deleteProject(name);
-        message.success(`已移除项目「${name}」`);
-      } else if (action === 'start') {
+      if (action === 'start') {
         await startProject(name);
         message.success(`项目「${name}」已启动`);
       } else if (action === 'install') {
@@ -111,7 +135,10 @@ export default function ProjectCards({
       okText: '移除',
       okButtonProps: { danger: true },
       cancelText: '取消',
-      onOk: () => runAction(project.name, 'delete'),
+      // 不返回 promise：立即关弹窗，移除在后台进行（项目行已乐观消失）
+      onOk: () => {
+        void runAction(project.name, 'delete');
+      },
     });
   };
 

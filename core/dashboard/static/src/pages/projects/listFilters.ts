@@ -1,4 +1,4 @@
-// add-spec-list-filter-stickiness D2/D3：SPEC 开发列表过滤状态 ↔ URL 查询参数
+// add-spec-list-filter-stickiness D2/D3：功能开发列表过滤状态 ↔ URL 查询参数
 // 的白名单与缺省约定。纯函数形态（零依赖、无 JSX），便于纳入 node --test 纯函数单测。
 
 export type ListTab = 'dev' | 'quality' | 'regression' | 'session';

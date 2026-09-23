@@ -1,6 +1,7 @@
 import { PageContainer } from '@ant-design/pro-components';
 import { Alert, Button, Card, Space, Spin } from 'antd';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { useModel } from '@umijs/max';
 import { getOverview } from '@/services/dashboard';
 import type { OverviewData } from '@/services/dashboard';
 import AlertBanner from './components/AlertBanner';
@@ -15,11 +16,22 @@ export default function OverviewPage() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [alertsTick, setAlertsTick] = useState(0);
+  // 侧边栏「项目」子菜单数据源自启动时 getInitialState（此后永不自更新），
+  // overview 是项目全集的最新来源——用 setInitialState 保持菜单与列表一致
+  const { setInitialState } = useModel('@@initialState');
+  // 在飞删除的项目名（ref：load 回调闭包读取，不进依赖避免重建 load→重挂 effect）
+  const deletingRef = useRef<Set<string>>(new Set());
 
   const load = useCallback(async () => {
     try {
       const d = await getOverview();
-      setData(d);
+      // 删除在飞期间（后端 stop_daemon 轮询可达 30s）overview 仍返回该项目，
+      // 心跳/visibilitychange 补刷会把它刷回列表——过滤在飞删除项，
+      // 直到删除落定（settleProjectLocal）后才恢复采用服务端真值
+      const projects = (d.projects || []).filter((p) => !deletingRef.current.has(p.name));
+      setData({ ...d, projects });
+      // 菜单校准：自动发现/他端删除后，侧边栏子菜单跟随最新项目全集
+      setInitialState((prev) => ({ ...(prev || { projects: [] }), projects: projects.map((p) => p.name) }));
       setError('');
     } catch (e) {
       // fix-dashboard-fault-isolation 3.1：请求失败 MUST NOT 清空已成功加载的
@@ -28,6 +40,25 @@ export default function OverviewPage() {
     } finally {
       setLoading(false);
     }
+  }, [setInitialState]);
+
+  // 乐观摘除：删除确认后立即从列表与侧边栏菜单移除该项目，
+  // 不等后端 stop_daemon 轮询收尾（失败由 load() 重拉回滚）
+  const removeProjectLocal = useCallback(
+    (name: string) => {
+      deletingRef.current.add(name);
+      setData((prev) => (prev ? { ...prev, projects: prev.projects.filter((p) => p.name !== name) } : prev));
+      setInitialState((prev) => ({
+        ...(prev || { projects: [] }),
+        projects: (prev?.projects || []).filter((n) => n !== name),
+      }));
+    },
+    [setInitialState],
+  );
+
+  // 删除落定（成功或失败）：解除在飞标记，随后的 load() 重新采用服务端真值
+  const settleProjectLocal = useCallback((name: string) => {
+    deletingRef.current.delete(name);
   }, []);
 
   useEffect(() => {
@@ -91,7 +122,12 @@ export default function OverviewPage() {
       ) : data ? (
         <Space direction="vertical" size={16} style={{ width: '100%' }}>
           <IntroduceRow totals={data.totals} tokenRecent={data.token_usage?.recent ?? []} />
-          <ProjectCards projects={data.projects} onChanged={() => void load()} />
+          <ProjectCards
+            projects={data.projects}
+            onChanged={() => void load()}
+            onProjectRemoved={removeProjectLocal}
+            onProjectSettle={settleProjectLocal}
+          />
         </Space>
       ) : null}
     </PageContainer>

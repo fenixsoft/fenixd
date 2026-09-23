@@ -4,7 +4,7 @@
 // - 可复选问题表格（严重度/问题/状态列，严重度与状态过滤排序）；
 //   「问题」列两行堆叠：第一行 标题 + 文件:行（同行不换行）/ 第二行 内容
 //   （内容最多两行，悬浮浮层显示全文）；
-//   浮层用 Popover + Markdown 渲染（与「SPEC 开发」分面「名称」列的 Why 浮层同形制，
+//   浮层用 Popover + Markdown 渲染（与「功能开发」分面「名称」列的 Why 浮层同形制，
 //   描述里的 `` `code` `` / 列表 / 表格按 Markdown 排版）
 // - 右上角五个动作按钮（全库审查 / 当期审查 / 自动修复 / 生成修复 SPEC / 全部忽略）
 //   「生成修复 SPEC」MUST 先弹确认框（含执行时间三档，2026-09-20 用户要求）；
@@ -64,10 +64,17 @@ interface QualityTabProps {
 
 // 严重度排序权重（code-review item 2cde5d51a359）：spec 要求表格 MUST 支持按
 // 严重度/状态过滤**与排序**，但严重度/状态列此前均无 sorter。
+// high/medium/low 三档是 ocr scan 产出经 agent「原样透传」落台账的漂移值
+// （提示词 agents/code-review.md 契约四档 critical|major|minor|info，归一责任
+// 在 agent，实测 fenixd 台账漂移 80/543 条）。权重/色系按 artifacts.py
+// severity_map 的归一口径对齐：high/medium→major 档，low→minor 档。
 const SEVERITY_ORDER: Record<string, number> = {
   critical: 0,
+  high: 1,
   major: 1,
+  medium: 1,
   minor: 2,
+  low: 2,
   info: 3,
 };
 const STATUS_ORDER: Record<string, number> = {
@@ -79,8 +86,11 @@ const STATUS_ORDER: Record<string, number> = {
 
 const SEVERITY_COLOR: Record<string, string> = {
   critical: 'red',
+  high: 'orange',
   major: 'orange',
+  medium: 'orange',
   minor: 'gold',
+  low: 'gold',
   info: 'blue',
 };
 
@@ -101,7 +111,7 @@ const STATUS_COLOR: Record<string, string> = {
 // ── 「问题」列单元格：两行堆叠 + 内容行悬浮浮层 ──────────────────────
 // 行布局（2026-09-20 用户要求）：第一行 = 问题标题 + `文件:行`（同一行不换行，
 // `文件:行` 过长时单行省略 + 原生 tooltip）；第二行 = 内容。
-// 浮层形制对齐「SPEC 开发」分面「名称」列的 Why 浮层（Popover + Markdown 渲染）：
+// 浮层形制对齐「功能开发」分面「名称」列的 Why 浮层（Popover + Markdown 渲染）：
 // 描述里常见 `` `code` `` / 列表 / 表格，纯文本 Tooltip 会原样显示反引号，
 // 这里按 Markdown 排版。
 // 宽度（2026-09-20 用户要求）：浮层宽度 = 所在「问题」列宽度的 80%——列宽随
@@ -707,23 +717,30 @@ export default function QualityTab({ project, active }: QualityTabProps) {
             style={{ width: 110 }}
             value={severityFilter}
             onChange={setSeverityFilter}
+            // 三档漂移值 high/medium/low 插在对应严重度档位之间（排序同
+            // SEVERITY_ORDER 口径），台账存量漂移条目即可过滤
             options={[
               { value: 'critical', label: 'critical' },
+              { value: 'high', label: 'high' },
               { value: 'major', label: 'major' },
+              { value: 'medium', label: 'medium' },
               { value: 'minor', label: 'minor' },
+              { value: 'low', label: 'low' },
               { value: 'info', label: 'info' },
             ]}
           />
           <Select
             placeholder="状态"
-            style={{ width: 130 }}
+            style={{ width: 190 }}
             value={statusFilter}
             onChange={setStatusFilter}
+            // 状态中文解释（用户 2026-09-23 要求）：仅下拉选项文案，表格
+            // Tag 仍走 STATUS_TEXT 英文短标签
             options={[
-              { value: 'open', label: 'open（默认）' },
-              { value: 'in_spec', label: 'in_spec' },
-              { value: 'resolved', label: 'resolved' },
-              { value: 'ignored', label: 'ignored' },
+              { value: 'open', label: 'open（待处置）' },
+              { value: 'in_spec', label: 'in_spec（已立项修复）' },
+              { value: 'resolved', label: 'resolved（已修复）' },
+              { value: 'ignored', label: 'ignored（已忽略）' },
             ]}
           />
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>

@@ -4,9 +4,9 @@
 // QualityTab.test.tsx 以测试替身隔离渲染，新增进度轮询会改动其渲染面与
 // 既有断言。本组件自带轮询生命周期，对 QualityTab 是零耦合挂载点。
 //
-// 呈现契约（spec code-fix-progress）：
-// - 「已处理 {done}/{total} 条」+ Progress percent={done/total*100} +
-//   当前阶段/描述（与「审查进行中」卡片同款式：Card + Progress + 次级文案）；
+// 呈现契约（spec code-fix-progress；进度条 2026-09-23 起换用 spec 详情页同款
+// ProgressBarTile 控件，shared：components/ProgressBarTile.tsx）：
+// - ProgressBarTile（大百分比 + 已完成 x/y + 渐变条）+ 当前阶段/次级文案；
 // - running=true 时 2s 轮询；running=false **或** phase ∈ {blocked, failed}
 //   即停止（两者是「或」——后端 `_finish("failed", …)` 不回写 running，
 //   失败链会长期停在 running=true/phase=failed，只看 running 会无限轮询）；
@@ -18,7 +18,8 @@
 // - total=0 或读取失败静默降级（不渲染、不阻断页签既有布局）；连续读取失败
 //   达上限后停轮询（4xx/5xx 常态下 2s 空转没有意义），且 MUST NOT 回调刷新。
 import { useEffect, useRef, useState } from 'react';
-import { Card, Progress, Space, Typography } from 'antd';
+import { Card, Space, Typography } from 'antd';
+import ProgressBarTile from './ProgressBarTile';
 import { getCodeReviewFixProgress } from '../../../services/dashboard';
 import type { CodeReviewFixProgress } from '../../../services/dashboard';
 
@@ -138,7 +139,6 @@ export default function CodeFixProgressCard(
   }
 
   const { phase, total, done, current, reason } = progress;
-  const percent = total > 0 ? Math.round((done / total) * 100) : 0;
   // 终止渲染判定（非纯别名）：phase 终态，或连续读取失败停轮询——后者下最后一帧
   // 可能 running=true，以 exception 呈现而非无限 active（ocr 收尾审查）。
   const stopped = terminal || readFailed;
@@ -164,33 +164,41 @@ export default function CodeFixProgressCard(
     itemProgressText = '批内明细尚未产生（agent 处置中）';
   }
 
+  // 次级文案段：已处置条数已由 ProgressBarTile 头部「已完成 x / y」承载，这里
+  // 保留当前文件/条级进度/终止原因/读取失败提示（段间「 · 」连接）。条级进度
+  // 并入本行（用户 2026-09-23 要求不换行，接在前段后同排显示）。
+  const sub: string[] = [];
+  if (current) sub.push(current);
+  if (phase === 'fixing') sub.push(itemProgressText);
+  if (stopped && reason) sub.push(`原因：${reason}`);
+  if (stopped && !reason && readFailed) sub.push('进度读取失败，已停止轮询');
+
   return (
     <Card
       size="small"
-      style={{ marginBottom: 12, background: '#fafafa' }}
+      style={{ marginTop: 8, marginBottom: 12, background: '#fafafa' }}
       data-testid="code-fix-progress-card"
     >
       <Space direction="vertical" style={{ width: '100%' }} size={4}>
         <Typography.Text strong>
           自动修复代码问题（第 {progress.batch_no} 批 · {PHASE_LABELS[phase] || phase}）
         </Typography.Text>
-        <Progress
-          percent={percent}
+        {/* spec 详情页同款进度条控件（ProgressBarTile）；终止态/读取失败传
+            exception + 纯红 strokeColor——antd 的 strokeColor 会压过 status
+            配色，渐变缺省下须显式给红才保得住失败视觉信号。 */}
+        <ProgressBarTile
+          done={done}
+          total={total}
           status={stopped ? 'exception' : 'active'}
+          strokeColor={stopped ? '#ff4d4f' : undefined}
         />
-        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          已处理 {done}/{total} 条
-          {current ? ` · ${current}` : ''}
-          {stopped && reason ? ` · 原因：${reason}` : ''}
-          {stopped && !reason && readFailed ? ' · 进度读取失败，已停止轮询' : ''}
-        </Typography.Text>
-        {phase === 'fixing' && (
+        {sub.length > 0 && (
           <Typography.Text
             type="secondary"
             style={{ fontSize: 12 }}
-            data-testid="code-fix-item-progress"
+            data-testid={phase === 'fixing' ? 'code-fix-item-progress' : undefined}
           >
-            {itemProgressText}
+            {sub.join(' · ')}
           </Typography.Text>
         )}
       </Space>
