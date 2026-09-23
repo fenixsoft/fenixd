@@ -15,13 +15,13 @@
     1. package.json 的 scripts.build / scripts.dist / scripts.release
        + 根级/子级 dist/、build/、out/ 目录存在性
     2. pyproject.toml 的 [build-system]（poetry setuptools 等 → 检查 dist/）
-    3. 项目目录结构：根级 dist/、build/、target/、out/、release-*.zip 通配
+    3. 项目目录结构：根级 dist/、build/、target/、out/ 目录、release-*.zip 等命名的产物文件（写入具体文件名）
     4. Fenix 框架项目（core/dashboard/static/dist/ 存在时自动包含）
 
 输出（JSON）：
     {
       "has_build_artifacts": true,
-      "build_artifact_paths": ["dist/", "release-*.zip"],
+      "build_artifact_paths": ["dist/", "release-1.0.zip"],
       "sources": ["package.json scripts.build", "dist/ 存在"],
       "status": "success"
     }
@@ -117,7 +117,7 @@ def detect_build_artifacts(project_root: Path) -> dict:
         except OSError:
             pass
 
-    # ── 4. 根级通配产物（release-*.zip 等）────────────────────────────────────
+    # ── 4. 根级产物文件（release-*.zip 等命名 → 写入具体文件名）──────────────
     try:
         for f in project_root.iterdir():
             if f.is_file():
@@ -132,14 +132,13 @@ def detect_build_artifacts(project_root: Path) -> dict:
                         for tag in ("release", "build", "dist", "v")
                     )
                 ):
-                    if "*" not in name:  # glob 通配不含 / 只匹配根级
-                        paths_found.add(name)  # 如 release-*.zip → 通配
-                        sources.append(f"根级通配产物: {name}")
+                    paths_found.add(name)  # 具体文件名（如 release-1.0.zip），非通配
+                    sources.append(f"根级通配产物: {name}")
     except OSError:
         pass
 
     # ── 汇总 ─────────────────────────────────────────────────────────────────
-    # 对通配文件名添加 * 模式（目录前缀保留 /）
+    # 目录前缀保留 / 尾缀，文件为具体文件名（不生成通配模式）
     final_paths = sorted(paths_found)
     if final_paths:
         result["has_build_artifacts"] = True

@@ -278,11 +278,14 @@ class FamilyGovernor:
             wt_root = self._pm.project_root / ".claude" / "worktrees"
             if not wt_root.is_dir():
                 return False
-            pat = f"impl-{spec_name}-" if "verify" not in spec_name else f"verify-{spec_name}-"
+            # 精确前缀归属守卫（对齐 queries.find_implementer_worktree 范式）：
+            # 子串匹配会把同根后代 fix-fix-x 的 worktree 误记到 fix-x 头上
             for d in wt_root.iterdir():
                 if not d.is_dir():
                     continue
-                if spec_name in d.name:
+                if d.name.startswith(f"impl-{spec_name}-") or d.name.startswith(
+                    f"verify-{spec_name}-"
+                ):
                     r = _sp.run(
                         ["pgrep", "-f", f"worktrees/{d.name}"],
                         capture_output=True,

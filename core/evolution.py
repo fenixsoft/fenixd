@@ -194,8 +194,10 @@ def read_items(project_root) -> Dict[str, dict]:
 def write_items(project_root, records: Iterable[dict]) -> None:
     """全量写回 items.jsonl（读-改-写 + flock + 原子替换展开见 upsert_items）。
 
-    每条一行 JSON；调用方传入的 records 为 id→记录 dict 或可迭代记录。
-    同一 id MUST 只保留一条（dict 天然保证）。
+    每条一行 JSON；records MUST 是可迭代的记录（逐条为含 id 字段的 dict），
+    MUST NOT 传 id→记录 dict——实现直接遍历 records，传 dict 会把键字符串
+    当记录全部丢弃、全量写回空文件（既有条目全部丢失）。同一 id 只保留
+    一条（后写覆盖先写）。
     """
     recs: Dict[str, dict] = {}
     for rec in records:
@@ -1086,6 +1088,39 @@ def _git_commit(project_root, draft_copy: Path, spec_name: str) -> Tuple[bool, s
     return True, ""
 
 
+def _git_remove_committed_dir(project_root, rel_path: str) -> Tuple[bool, str]:
+    """rm 已提交的目录副本并路径限定提交（注册失败回滚专用）。
+
+    ``git rm -r`` + 仅含该路径的 commit（MUST NOT ``git add -A``／裹挟索引中
+    其他暂存内容）。任一步失败返回 ``(False, 错误)``，由调用方降级为告警
+    说明残留目录，MUST NOT 让清理失败掩盖注册失败本身。
+    """
+    git = ["git", "-C", str(project_root)]
+    try:
+        rm = subprocess.run(
+            git + ["rm", "-r", "-q", "--", rel_path],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return False, f"git rm 失败: {e}"
+    if rm.returncode != 0:
+        return False, f"git rm 失败: {rm.stderr.strip()[:300]}"
+    try:
+        commit = subprocess.run(
+            git + ["commit", "-m", f"[fenix] spec: remove {rel_path}", "--", rel_path],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return False, f"git commit 失败: {e}"
+    if commit.returncode != 0:
+        return False, f"git commit 失败: {commit.stderr.strip()[:300]}"
+    return True, ""
+
+
 def _write_admin_warning(project_root, message: str) -> None:
     """写一条 admin WARNING 告警（AdminStore escalation，major 级）。
 
@@ -1148,7 +1183,9 @@ def accept_item(
     删暂存草稿 → 标 accepted/auto_accepted。失败分支：
     - 提交失败 → 删除 spec/changes 副本（避免主树未跟踪文件）、保留暂存
       草稿、置 accept_failed + 告警；
-    - 注册失败 → 保留暂存草稿、置 accept_failed + 告警。
+    - 注册失败 → 清理已提交的 spec/changes 副本（git rm + 路径限定提交，
+      使重试可复用原名；清理失败则保留副本并在告警中说明残留与重试
+      后缀策略）、保留暂存草稿、置 accept_failed + 告警。
 
     ``start_after``：UTC ISO8601，非空则写进新 SPEC 的 STATE 条目，dispatch
     在到点前静默跳过（定时拾取，add-spec-scheduling-controls D2）；None 表示
@@ -1273,13 +1310,28 @@ def accept_item(
         err = str(e)
 
     if not registered:
+        # 注册失败：清理已提交的 spec/changes/<name> 副本（code-review item
+        # 9d550ea7ac1c）——否则重试时 resolve_spec_name 判该名冲突换后缀
+        # 立项，主树留下两份同一逻辑 spec 的目录、前一份成无主残留。清理
+        # 失败（git 状态不确定）不掩盖注册失败本身，降级为在告警中说明
+        # 残留目录与重试后缀策略。
+        rel_dir = f"spec/changes/{name}"
+        cleaned, clean_err = _git_remove_committed_dir(project_root, rel_dir)
         rec["status"] = "accept_failed"
         rec["draft_failed_reason"] = err or "STATE 注册失败"
         rec["spec_name"] = name
         upsert_item(project_root, rec)
+        if cleaned:
+            residue_note = f"已清理 {rel_dir} 副本，重试可复用原名"
+        else:
+            residue_note = (
+                f"{rel_dir} 副本残留未清理: {clean_err}；重试将改用"
+                f" -{str(item_id_)[:6]} 后缀立项，残留目录需人工处理"
+            )
         _write_admin_warning(
             project_root,
-            f"自进化条目 {item_id_} 接受失败（注册失败）: {rec['draft_failed_reason']}",
+            f"自进化条目 {item_id_} 接受失败（注册失败）: "
+            f"{rec['draft_failed_reason']}（{residue_note}）",
         )
         return {
             "ok": False,

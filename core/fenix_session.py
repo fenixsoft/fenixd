@@ -337,7 +337,8 @@ def start_daemon(root: str | None = None) -> dict:
     错误且不产生 daemon 进程。幂等：已运行则直接返回 already，不重复拉起。
     启动前清除陈旧 `.fenix/stop`（仅当 daemon 与 supervisor 均未在跑时删除，
     避免误删一次正在进行的停止操作留下的标记）。启动后轮询 `is_running`
-    至多约 5 秒，命中再返回成功。
+    至多约 5 秒，命中再返回成功；窗口耗尽则经 `tmux has-session` 复核会话
+    存活——会话已退出（启动命令失败）返回 ok=False。
 
     返回: {"ok": bool, "error": str|None, "session": str|None, "already": bool}
     任何 subprocess/tmux 异常均返回 ok=False 的错误对象，不抛异常。
@@ -401,7 +402,28 @@ def start_daemon(root: str | None = None) -> dict:
         if is_running(proot):
             return {"ok": True, "error": None, "session": session, "already": False}
         time.sleep(START_DAEMON_PROBE_INTERVAL_SECONDS)
-    # 即便 is_running 因环境不可判（/proc 不可读）未命中，session 也已创建成功
+    # 探测窗口耗尽后区分两种情况：/proc 不可判但会话仍存活 → 维持宽容成功；
+    # 会话已消失 → tmux 内命令失败退出（会话随命令退出关闭），不能误报成功。
+    try:
+        probe = subprocess.run(
+            ["tmux", "has-session", "-t", session],
+            capture_output=True,
+            timeout=2,
+        )
+    except Exception as e:
+        return {
+            "ok": False,
+            "error": f"无法确认 daemon 会话存活（tmux 异常）: {e}，请查看 .fenix/logs/supervisor.log",
+            "session": session,
+            "already": False,
+        }
+    if probe.returncode != 0:
+        return {
+            "ok": False,
+            "error": "daemon 启动探测超时且 tmux 会话已退出（启动命令可能失败），请查看 .fenix/logs/supervisor.log",
+            "session": session,
+            "already": False,
+        }
     return {"ok": True, "error": None, "session": session, "already": False}
 
 

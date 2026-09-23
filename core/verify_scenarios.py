@@ -200,7 +200,13 @@ def load_scenario_set(project_root, spec_name: str) -> Optional[ScenarioSet]:
                 "、".join(rejected),
             )
             data = {**data, "scenarios": kept}
-    return ScenarioSet.from_dict(data)
+    try:
+        return ScenarioSet.from_dict(data)
+    except (ValueError, TypeError, AttributeError):
+        # 数值字段非整型（int(...) 抛 ValueError/TypeError）或 scenarios 为
+        # 非列表标量（对字符调 .get 抛 AttributeError）等损坏形态：
+        # 按「损坏返回 None」契约降级，不向调用方上抛中断验证流程
+        return None
 
 
 def _atomic_write(path: Path, data: dict) -> None:
@@ -318,7 +324,8 @@ def declares_new_delivery(fix_section: Optional[str]) -> bool:
     """
     if not fix_section:
         return False
-    # 排除「修复」语境：含新增交付关键词即视为声明新范围
+    # 无「修复」语境排除逻辑：命中（新增|追加|增加）…（交付|范围|…）即判为
+    # 声明新范围；纯修复文本（如「追加对场景 X 的修复」）也会命中
     return bool(_NEW_DELIVERY_RE.search(fix_section))
 
 
@@ -493,7 +500,8 @@ def diff_planner_output(
     removed_ids = {e.id for e, _ in reasoned}
     added = [e for e in persisted.scenarios if e.id not in removed_ids]
     new_entries = []
-    for sid in planner_ids:
+    # 按 sid 排序遍历：set 迭代序随 PYTHONHASHSEED 跨进程抖动，违背模块 D3 确定性
+    for sid in sorted(planner_ids):
         if sid in persisted_ids:
             continue
         s = planner_by_id[sid]

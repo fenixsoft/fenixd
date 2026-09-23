@@ -64,7 +64,9 @@ async function renderMermaid(code: string, container: HTMLDivElement) {
     mermaid.initialize({
       startOnLoad: false,
       theme: 'neutral',
-      securityLevel: 'loose',
+      // strict（默认级别）：帮助文档 mermaid 图无 click 交互/图内 HTML 需求，
+      // 保持 HTML/事件净化，避免文档内容引入外部内容时放大为 XSS 面
+      securityLevel: 'strict',
       themeVariables: { fontSize: '14px' },
       sequence: { actorFontSize: 14, messageFontSize: 14, noteFontSize: 14 },
     });

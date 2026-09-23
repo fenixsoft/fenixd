@@ -93,7 +93,11 @@ def new_change(project_root: Path, name: str) -> Path:
     if change_dir.exists():
         raise ValueError(f"Change '{name}' already exists at {change_dir}")
 
-    change_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        # 原子建目录判重：并发同名调用只有一个能创建成功，避免先检查后创建的竞态覆写。
+        change_dir.mkdir(parents=True)
+    except FileExistsError:
+        raise ValueError(f"Change '{name}' already exists at {change_dir}") from None
     metadata = f"schema: {DEFAULT_SCHEMA}\ncreated: {date.today().isoformat()}\n"
     (change_dir / ".spec.yaml").write_text(metadata, encoding="utf-8")
     return change_dir

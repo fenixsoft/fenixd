@@ -250,7 +250,3 @@ class H7EvolutionRoutesMixin:
                 "failed": failed,
             }
         )
-
-    # ── POST API ────────────────────────────────────────────
-
-
