@@ -3,6 +3,8 @@
 ```yaml
 - path: agents/code-fix.md
   kind: modify
+- path: tests/test_code_fix.py
+  kind: modify
 ```
 
 ## 1. 并行处置协议（提示词改造，D1–D3）

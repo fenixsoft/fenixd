@@ -53,7 +53,7 @@
 |------|------|
 | 子代理并发改动隐式冲突（共享导入/常量文件被多组同时编辑） | 分组按 file 粒度互斥；跨组共享文件场景与串行现状等价；验证一次兜底 |
 | 并发放大网关限流（api_retry 变多） | 波次 ≤3 保守上限；子代理失败有 D5 兜底 |
-| 子代理产物缺 title/file 等字段 → 落行非法 | orchestrator 落盘前校验必填键；非法行按 D5③ 重试 |
+| 子代理产物缺 out 契约必填字段 → 落行非法 | orchestrator 落盘前校验 item_id/status（file 可由条目清单回填）；非法行按 D5③ 重试 |
 | 忽略标记（fenix-ignore）在并行下重复添加 | 标记规则随组 prompt 下发（组内文件互斥 → 无跨组重复）|
 | 轮次消耗上升（编排轮次） | 上限已解除（max_turns=None）；编排轮次 ≈ 组数/波次，远小于节省的处置轮次 |
 | 批退化路径回归（单组/双条目批行为漂移） | D7 硬规则 + Scenario 锁定 |
@@ -62,4 +62,4 @@
 
 - 提示词每次派发现读 → 合回后下一批即生效，无需重启；串行路径（单组/小批）逐字保留。
 - 框架侧（code_fix.py / maintenance_runs.py）零改动——回归风险集中在提示词语义，由 Scenario 1–5 锁定。
-- 效果基线：瘦身批 94 轮/~30min agent 段；并行后预期 agent 段 ~12–15min（3 并发），对比口径见 [[fenixd-codefix-prompt-slim-baseline]]。
+- 效果基线：agent 段实测 94–166 轮/~15–30min（与 Context 行同口径，批全程 37min 基线对应 ~30min 重批）；并行后（3 并发）预期 agent 段 ~10–15min（重批 ÷2–3），对应批全程 37min → 15–20min，对比口径见 [[fenixd-codefix-prompt-slim-baseline]]。
