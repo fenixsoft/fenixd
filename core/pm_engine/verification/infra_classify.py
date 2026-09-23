@@ -170,7 +170,7 @@ def _record_infra_failure(pipeline, spec_name: str, reason: str, run_id: str = "
 
 
 def _detect_uniform_verify_failure(pipeline, spec_name: str, report: dict) -> bool:
-    """全场景同因失败哨：pass=0 且全部失败场景错误签名一致 → 疑环境/场景问题。
+    """全场景同因失败哨：pass=0 且全部失败场景（fail/error）错误签名一致 → 疑环境/场景问题。
 
     呼叫 admin 介入判断（verify_uniform_failure 信号，major）；不判
     bug-found、不派生 fix。连续 3 轮同因 → blocked 交人工。
@@ -179,14 +179,20 @@ def _detect_uniform_verify_failure(pipeline, spec_name: str, report: dict) -> bo
     summary = report.get("summary") or {}
     try:
         passed = int(summary.get("passed", 0) or 0)
+        # failed 与 errors 分开计数（与 fastlane 子集重验同源口径），失败轮合计看两者
         failed = int(summary.get("failed", 0) or 0)
+        errors = int(summary.get("errors", 0) or 0)
         total = int(summary.get("total", 0) or 0)
     except (TypeError, ValueError):
         return False
-    if passed != 0 or failed < 3:
+    fail_total = failed + errors
+    if passed != 0 or fail_total < 3:
         return False
-    failed_scns = [s for s in (report.get("scenarios") or []) if s.get("status") == "fail"]
-    if len(failed_scns) < failed:
+    # 非 PASS 场景即纳入哨（fail/failed/error），纯 error 轮也要覆盖
+    failed_scns = [
+        s for s in (report.get("scenarios") or []) if s.get("status") not in ("pass", "passed")
+    ]
+    if len(failed_scns) < fail_total:
         return False  # 报告口径不一致，不哨
     sigs: set[str] = set()
     for s in failed_scns:
@@ -210,7 +216,7 @@ def _detect_uniform_verify_failure(pipeline, spec_name: str, report: dict) -> bo
     except (TypeError, ValueError):
         attempts = 1
     note = (
-        f'全场景同因失败（{failed}/{total}，签名一致: "{signature[:60]}"）'
+        f'全场景同因失败（{fail_total}/{total}，签名一致: "{signature[:60]}"）'
         f"——疑似环境或场景问题，已呼叫 admin 介入判断（第 {attempts} 次）"
     )
     from core.admin_store import AdminStore, SIGNAL
@@ -224,7 +230,7 @@ def _detect_uniform_verify_failure(pipeline, spec_name: str, report: dict) -> bo
                 "spec": spec_name,
                 "severity": "major",
                 "description": note,
-                "evidence": f"signature={signature[:120]}; failed={failed}",
+                "evidence": f"signature={signature[:120]}; failed={fail_total}",
                 "recommended_action": (
                     "判断失败类别：环境问题（实例/端口/构建）→ 修复后把 spec 拨回 "
                     "implemented 重验；场景/plan 问题 → 修正或重写场景；确认真实 "

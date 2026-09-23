@@ -101,6 +101,12 @@ STATUS_FAILURE = "failure"
 STATUS_NOOP = "noop"
 STATUS_SKIPPED = "skipped"
 
+# 审计尾读参数（read_hook_audit）：审计文件 append-only 且无轮转，读取端
+# 按块（64KB）从文件尾倒序回退，行数按 limit 的 8 倍超采样——过滤后仍可能
+# 凑满 limit，避免全量读入随文件增长而开销失控。
+AUDIT_TAIL_BLOCK_BYTES = 64 * 1024
+AUDIT_TAIL_OVERSAMPLE = 8
+
 
 def _utcnow_iso() -> str:
     """UTC ISO 时间戳（Z 后缀，与既有日志格式一致）。"""
@@ -253,6 +259,29 @@ def match_hooks(config: dict, spec: str, event_type: str) -> List[Tuple[dict, st
     return matched
 
 
+def _read_audit_tail_lines(path: Path, min_lines: int) -> List[str]:
+    """从文件尾按块倒序读取原始行，凑满 min_lines 行或到文件头即止。
+
+    块边界切断的行按字节拼接还原，返回的行保持文件原始顺序（从头到尾）。
+    仅当收集行数达 min_lines 时提前止步，此时文件更靠前的内容不读入。
+    """
+    lines: List[str] = []
+    remainder = b""  # 块首被切断的半行（其行头在更靠前的块里），留给下一轮回拼
+    with path.open("rb") as f:
+        f.seek(0, os.SEEK_END)
+        pos = f.tell()
+        while pos > 0 and len(lines) < min_lines:
+            read_size = min(AUDIT_TAIL_BLOCK_BYTES, pos)
+            pos -= read_size
+            f.seek(pos)
+            parts = (f.read(read_size) + remainder).split(b"\n")
+            # 块首（非文件头）可能切断一行：保留半行，其余均为完整行
+            remainder = parts.pop(0) if pos > 0 else b""
+            lines.extend(p.decode("utf-8") for p in reversed(parts))
+    lines.reverse()
+    return lines
+
+
 def read_hook_audit(project_root, spec: Optional[str] = None, limit: int = 20) -> list:
     """读取 .fenix/hook_audit.jsonl 尾部（D6 / tasks 1.3 / 4.1）。
 
@@ -263,17 +292,22 @@ def read_hook_audit(project_root, spec: Optional[str] = None, limit: int = 20) -
         return []
     out: list = []
     try:
-        with path.open(encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    d = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(d, dict) and (spec is None or d.get("spec") == spec):
-                    out.append(d)
+        # 读取层：limit>0 时尾读 limit 的 8 倍行数即可（过滤/坏行冗余）；
+        # limit<=0 语义为不截断返回全量，须整文件读入。
+        if limit and limit > 0:
+            raw_lines = _read_audit_tail_lines(path, limit * AUDIT_TAIL_OVERSAMPLE)
+        else:
+            raw_lines = path.read_text(encoding="utf-8").splitlines()
+        for line in raw_lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                d = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(d, dict) and (spec is None or d.get("spec") == spec):
+                out.append(d)
     except OSError:
         return []
     out.sort(key=lambda e: e.get("ts", ""), reverse=True)

@@ -64,6 +64,16 @@ function CollapseArrow({ open }: { open: boolean }) {
   );
 }
 
+// 渲染后把活跃卡片 key 同步进 ref（供 handleSave 校验失败时一键展开折叠区）。
+// 写 ref 必须落在 effect 内、渲染保持纯净（同 CodeFixProgressCard 约定：
+// 渲染期写 ref 在并发渲染下可能带上被丢弃渲染的值）
+function ActiveKeysSync({ keys, target }: { keys: number[]; target: { current: number[] } }) {
+  useEffect(() => {
+    target.current = keys;
+  }, [target, keys]);
+  return null;
+}
+
 function toEnvEntries(env?: Record<string, string>): EnvEntry[] {
   return Object.entries(env || {}).map(([key, value]) => ({ key, value }));
 }
@@ -124,8 +134,8 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
   // （稳定 id；删除卡片后残留条目无害）。默认全部折叠。
   const [envOpenMap, setEnvOpenMap] = useState<Record<number, boolean>>({});
   const [billingOpenMap, setBillingOpenMap] = useState<Record<number, boolean>>({});
-  // 渲染期收集活跃卡片 key：校验失败时一键展开，让藏在折叠区的错误可见
-  // （折叠用 display 切换，字段恒注册，值与校验不受折叠影响）
+  // 活跃卡片 key（由 ActiveKeysSync 渲染后写入）：校验失败时一键展开，
+  // 让藏在折叠区的错误可见（折叠用 display 切换，字段恒注册，值与校验不受折叠影响）
   const activeKeysRef = useRef<number[]>([]);
 
   // 初始化表单数据
@@ -234,8 +244,8 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
         <Form.List name="providers">
           {(fields, { add, remove }) => (
             <>
-              {/* 渲染期收集活跃卡片 key（供 handleSave 校验失败时一键展开折叠区） */}
-              {void (activeKeysRef.current = fields.map((f) => f.key))}
+              {/* 渲染后收集活跃卡片 key（供 handleSave 校验失败时一键展开折叠区） */}
+              <ActiveKeysSync keys={fields.map((f) => f.key)} target={activeKeysRef} />
               {fields.map((field, index) => {
                 // 折叠态与概要计数（useWatch 驱动；field.key 为卡片稳定 id）
                 const envOpen = !!envOpenMap[field.key];

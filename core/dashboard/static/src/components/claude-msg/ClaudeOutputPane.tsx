@@ -102,7 +102,8 @@ export default function ClaudeOutputPane({
   const [error, setError] = useState('');
   // 分页失败/零进展的瞬时反馈（code-review item 1717797b5fc1）：初载路径有
   // error 态兜底，「加载更早事件」此前只 console.error，点击无任何可见反馈
-  const { message } = App.useApp();  // 显示思考过程开关：默认关闭（thinking 占比 14-19% 且恒为折叠态，关闭后
+  const { message } = App.useApp();
+  // 显示思考过程开关：默认关闭（thinking 占比 14-19% 且恒为折叠态，关闭后
   // 不再以「已思考数秒」噪声行打断工具聚合）；无正文兜底见 runEvents
   const [thinkingVisible, setThinkingVisible] = useState(false);
   const eventSourceRef = useRef<EventSource | null>(null);

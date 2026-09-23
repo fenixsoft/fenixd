@@ -219,6 +219,13 @@ def get_spec_timeline(
             log_files = sorted(logs_dir.glob("fenixd*.log"), reverse=True)
         except OSError:
             log_files = []
+        # 状态转移正则只依赖循环不变的 spec_name，提到文件循环外只编译一次
+        pat = re.compile(r"Transition: " + re.escape(spec_name) + r"\s+([\w-]+)\s*→\s*([\w-]+)")
+        # fix-observability-gaps 3.1：Gate transition（小写 t，state_machine
+        # transition_gate 前缀）旧正则 `Transition: ` 不命中（`pat.search
+        # ('Gate transition: fix-foo verified → testing')` → False）；结构化
+        # 写侧两条前缀同判，正则兜底只覆盖 `Transition: `（旧格式无 Gate 行）。
+        gate_pat = re.compile(r"Gate transition: " + re.escape(spec_name) + r"\s+([\w-]+)\s*→\s*([\w-]+)")
         for lf in log_files:
             try:
                 # created 锚定窗口（原尾部 1MB 尾窗对早期事件静默截断）；
@@ -231,18 +238,16 @@ def get_spec_timeline(
                 )
             except OSError:
                 continue
-            pat = re.compile(r"Transition: " + re.escape(spec_name) + r"\s+([\w-]+)\s*→\s*([\w-]+)")
-            # fix-observability-gaps 3.1：Gate transition（小写 t，state_machine
-            # transition_gate 前缀）旧正则 `Transition: ` 不命中（`pat.search
-            # ('Gate transition: fix-foo verified → testing')` → False）；结构化
-            # 写侧两条前缀同判，正则兜底只覆盖 `Transition: `（旧格式无 Gate 行）。
-            gate_pat = re.compile(r"Gate transition: " + re.escape(spec_name) + r"\s+([\w-]+)\s*→\s*([\w-]+)")
             for line in content.split("\n"):
                 if spec_name not in line:
                     continue
                 try:
                     log_entry = json.loads(line)
                 except (json.JSONDecodeError, ValueError):
+                    continue
+                # 合法 JSON 但非对象（裸字符串/数组等）的行取不到字段，跳过，
+                # 避免 AttributeError 令整个时间轴接口失败
+                if not isinstance(log_entry, dict):
                     continue
                 # log_entry：行级局部名——MUST NOT 遮蔽函数参 entry（STATE 条目，
                 # 注记块同参透传判据；遮蔽会让「不透传 entry」的调用点误附 ocr_gate）
@@ -283,7 +288,8 @@ def get_spec_timeline(
                 # f"Updated SPEC '{spec_name}'"）：子串匹配会让前缀名 spec
                 # （如 add-foo）吸收姊妹 spec（add-foo-ui）的状态更新
                 if "Updated SPEC" in msg and f"'{spec_name}'" in msg:
-                    updates = log_entry.get("context", {}).get("updates", {}) or {}
+                    # 复用上方已 isinstance 归一化的 ctx 取 updates（非 dict 视为缺失）
+                    updates = ctx.get("updates", {}) or {}
                     err = updates.get("error")
                     if err:
                         errors_at.append((ts, str(err)))

@@ -156,7 +156,11 @@ def get_active_agents():
                 {"pid": pid, "cpu": cpu, "mem": mem, "role": role, "spec": spec, "cmd": cmd[:200]}
             )
         return agents
-    except:
+    except OSError as e:
+        # ps 不可用等环境问题：告警一行便于排查，但不中断仪表盘刷新
+        print(f"{DIM}get_active_agents: ps 不可用: {e}{RESET}", file=sys.stderr)
+        return []
+    except Exception:
         return []
 
 

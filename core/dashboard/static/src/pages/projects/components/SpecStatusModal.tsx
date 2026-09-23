@@ -94,7 +94,6 @@ export default function SpecStatusModal({
 
   const frozen = isFrozen(summary);
   const terminal = isTerminal(summary);
-  const done = summary?.status === 'done' || summary?.status === 'pushed';
   const drafted = summary?.status === 'drafted';
   const nonTerminal = summary && !terminal;
   // fix-impl-tasks-completion-gate P1′：task-gap 拦截滞留 verified 的可回炉判定
@@ -568,7 +567,7 @@ export default function SpecStatusModal({
         )}
 
         {/* ── 归档区块（终态 done/pushed） ─────────────── */}
-        {done && (
+        {terminal && (
           <div style={{ marginBottom: 16 }}>
             <Typography.Text strong style={{ fontSize: 14 }}>归档</Typography.Text>
             <Typography.Paragraph type="secondary" style={{ margin: '4px 0 8px' }}>
