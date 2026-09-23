@@ -76,7 +76,8 @@ def shard_paths(project_root, run_id: str) -> List[Path]:
             if n < 1 or not p.is_file():
                 continue
             found.append((n, p))
-    except OSError:
+    except OSError as e:
+        _logger.warning("code_review: 分片目录 %s 列举失败（按无分片处理）: %s", d, e)
         return []
     found.sort(key=lambda t: t[0])
     return [p for _, p in found]

@@ -854,12 +854,21 @@ def _check_repo_code_review_artifact(manifest: list, project_root, run_id: str) 
     shards = shard_paths(project_root, run_id)
     sources = [*shards, main]
     valids = 0
+    unreadable: list[str] = []
     for src in sources:
         if not src.is_file():
             continue
         try:
             text = src.read_text(encoding="utf-8", errors="replace")
-        except OSError:
+        except OSError as e:
+            # 静默跳过会把「文件系统读取失败」误归因为「agent 没落行」，
+            # 取证门失真——记 WARNING（经 _soft_gate_logger，caplog 可断言）
+            # 并收集名单进失败文案，供 valids<=0 时区分环境侧根因。
+            unreadable.append(src.name)
+            _soft_gate_logger.warning(
+                "审查产物读取失败（repo-code-review-gate，该来源不计入有效行）"
+                ": %s (%s)", src.name, e,
+            )
             continue
         for line in text.splitlines():
             line = line.strip()
@@ -872,10 +881,19 @@ def _check_repo_code_review_artifact(manifest: list, project_root, run_id: str) 
             if isinstance(rec, dict) and isinstance(rec.get("findings"), list):
                 valids += 1
     if valids <= 0:
-        return (
+        base = (
             f"审查产物为零有效行（repo-code-review-gate）：run {run_id} manifest "
             f"{len(manifest)} 个文件，主产物 {main.name} 与 {len(shards)} 个分片"
-            f"合计无任何有效结果行——run 退出码为 0 不等于审查完成，agent MUST "
+            f"合计无任何有效结果行"
+        )
+        if unreadable:
+            return (
+                f"{base}；其中 {'、'.join(unreadable)} 存在但读取失败（OSError，"
+                f"已记 WARNING）——有来源因文件系统级异常被排除出有效行统计，"
+                f"优先排查环境侧读取错误而非 agent 转录"
+            )
+        return (
+            f"{base}——run 退出码为 0 不等于审查完成，agent MUST "
             f"逐文件落结果行（主产物或分片均可）"
         )
     return None
