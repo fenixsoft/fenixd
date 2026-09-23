@@ -2168,19 +2168,30 @@ class VAdjudicationMixin:
         _wm = self._pm.agent_runner.worktree_manager
         _branch = getattr(result, "branch", None)
         if _branch and hasattr(_wm, "register_legacy"):
-            _wm.register_legacy(spec_name, None, _branch)
-            # fixed-relint-redispatch-legacy 一致性：打 reuse 标记使仅分支遗产可被
-            # 下轮 create 经 _take_reusable_worktree 认领同一分支（与 relint 打回
-            # 路径同语义；register_legacy 自身不置 reuse，keep_for_reuse 同源标记）。
-            if hasattr(_wm, "mark_legacy_reusable"):
-                _wm.mark_legacy_reusable(spec_name)
+            # 登记异常捕获降级 WARNING 不阻断处置（与 _redispatch_tasks_relint
+            # 同款防护）：登记失败不应中断缺件打回的状态写回与重派。
+            try:
+                _wm.register_legacy(spec_name, None, _branch)
+                # fixed-relint-redispatch-legacy 一致性：打 reuse 标记使仅分支遗产可被
+                # 下轮 create 经 _take_reusable_worktree 认领同一分支（与 relint 打回
+                # 路径同语义；register_legacy 自身不置 reuse，keep_for_reuse 同源标记）。
+                if hasattr(_wm, "mark_legacy_reusable"):
+                    _wm.mark_legacy_reusable(spec_name)
+            except Exception as e:
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"缺件打回遗产登记失败（非阻塞）'{spec_name}': {e}",
+                )
         spec_entry = self._pm.state_machine.read_one(spec_name) or {}
         try:
             prev_retries = int(spec_entry.get("_retry_count", 0) or 0)
         except (TypeError, ValueError):
             prev_retries = 0
         retries = prev_retries + 1
-        max_r = self._pm._get_config("agents.max_retries", 3)
+        try:
+            max_r = int(self._pm._get_config("agents.max_retries", 3) or 3)
+        except Exception:
+            max_r = 3
         # 按 kind 分化话术：undeleted 用「未删除」语义、missing 保持「缺件」语义
         missing_q = "、".join(
             (
@@ -2281,7 +2292,10 @@ class VAdjudicationMixin:
         except (TypeError, ValueError):
             prev_retries = 0
         retries = prev_retries + 1
-        max_r = self._pm._get_config("agents.max_retries", 3)
+        try:
+            max_r = int(self._pm._get_config("agents.max_retries", 3) or 3)
+        except Exception:
+            max_r = 3
         detail = "；".join(relint)
         err_note = (
             f"tasks.md 收口复检违规 — 不合并不推进，重派修正（第 {retries} 次）："

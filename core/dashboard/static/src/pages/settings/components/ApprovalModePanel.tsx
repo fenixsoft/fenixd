@@ -1,4 +1,4 @@
-import { Button, Card, Form, Radio, Typography } from 'antd';
+import { Button, Card, Form, Radio, Typography, message } from 'antd';
 import { useEffect, useRef, useState } from 'react';
 import type { ConfigData } from '@/services/dashboard';
 import SyncFromUserButton from './SyncFromUserButton';
@@ -71,20 +71,28 @@ export default function ApprovalModePanel({ config, onSave, project, onConfigSyn
     }
     setSaving(true);
     try {
+      // 分离「表单校验」与「保存持久化」（code-review item 568b0ff8cce2，
+      // 同 AgentModelPanel item 3086b7e96c4f）：校验失败 antd 已在表单内
+      // 渲染提示，静默返回不落 console（防污染 no_console_error 断言）。
       const values = await form.validateFields();
       // add-spec-review-gate（task 5.2）：保存载荷 MUST 同时提交新键与既有
       // approve_mode/promote_mode——后端按 patch 整段合并，缺键会被 _deep_merge_managed
       // 视作「未提交」保留原值，但并发/双轨写入时整段覆盖有丢失既有设置的风险。
-      await onSave({
-        gates: {
-          promote_mode: values.promote_mode,
-          approve_mode: values.approve_mode,
-          spec_review_mode: values.spec_review_mode,
-          start_after_scope: values.start_after_scope,
-        },
-      });
-    } catch (error) {
-      console.error('Validation failed:', error);
+      try {
+        await onSave({
+          gates: {
+            promote_mode: values.promote_mode,
+            approve_mode: values.approve_mode,
+            spec_review_mode: values.spec_review_mode,
+            start_after_scope: values.start_after_scope,
+          },
+        });
+      } catch (error) {
+        // 保存持久化失败（网络/500）：给用户显式反馈而非静默
+        message.error(`保存失败：${error instanceof Error ? error.message : String(error)}`);
+      }
+    } catch {
+      // 校验失败：antd 已在表单内渲染提示，不落 console
     } finally {
       setSaving(false);
     }

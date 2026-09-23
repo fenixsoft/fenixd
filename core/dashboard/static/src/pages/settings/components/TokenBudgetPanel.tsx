@@ -223,6 +223,7 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
                     full 档阈值<span className="label-note">（agents.scale_precheck.full_threshold）</span>
                   </>
                 }
+                dependencies={['scale_precheck_higher']}
                 rules={[
                   { required: true, message: '请输入 full 档阈值' },
                   ({ getFieldValue }) => ({

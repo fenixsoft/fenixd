@@ -7,9 +7,11 @@
 // 呈现契约（spec code-fix-progress；进度条 2026-09-23 起换用 spec 详情页同款
 // ProgressBarTile 控件，shared：components/ProgressBarTile.tsx）：
 // - ProgressBarTile（大百分比 + 已完成 x/y + 渐变条）+ 当前阶段/次级文案；
-// - running=true 时 2s 轮询；running=false **或** phase ∈ {blocked, failed}
-//   即停止（两者是「或」——后端 `_finish("failed", …)` 不回写 running，
-//   失败链会长期停在 running=true/phase=failed，只看 running 会无限轮询）；
+// - running=true 时 2s 轮询；**观察到链在跑后转非 running** 或 phase ∈
+//   {blocked, failed} 才停止（code-review item 62f764043d88：仅看 running=false
+//   会把常驻挂载期的缺省 idle 首帧当收尾而永久停轮询，之后新启动的修复链
+//   无人观察——后端 `_finish("failed", …)` 不回写 running，失败链仍须靠
+//   phase 收口）；QualityTab 触发成功经 restartKey 重启轮询；
 // - `active` 门控：分面未选中零请求（本组件在 QualityTab 内常驻挂载）；
 // - blocked/failed 展示原因（**与 running 无关**：后端 blocked 置
 //   running=false，若按 running 过滤则该分支永不渲染）；
@@ -57,10 +59,16 @@ interface CodeFixProgressCardProps {
   active: boolean;
   /** 进度进入终止态/收尾时回调（QualityTab 据此刷新条目表格） */
   onSettled?: () => void;
+  /**
+   * 外部重启信号（code-review item 62f764043d88）：QualityTab 触发成功后递增。
+   * 本组件随 Tab 常驻挂载、轮询停即死——新启动的修复链须靠该信号重启轮询，
+   * 否则触发成功后进度卡片永不渲染（QualityTab 依赖本组件自动接管展示）。
+   */
+  restartKey?: number;
 }
 
 export default function CodeFixProgressCard(
-  { project, active, onSettled }: CodeFixProgressCardProps,
+  { project, active, onSettled, restartKey }: CodeFixProgressCardProps,
 ) {
   const [progress, setProgress] = useState<CodeReviewFixProgress | null>(null);
   // 连续读取失败停轮询后的展示标记：此时最后一帧可能仍是 running=true，
@@ -97,9 +105,13 @@ export default function CodeFixProgressCard(
         errors = 0;
         if (p.running) sawRunning = true;
         setProgress(p);
-        // 「或」语义：running=false 停（链已收尾/无进度），终止态停（失败链
-        // 的 running 仍为 true，须靠 phase 收口）
-        settled = p.running === false || STOP_PHASES.has(p.phase);
+        // 收尾判据（code-review item 62f764043d88）：running=false **且**本轮
+        // 曾观察到在跑（sawRunning）才停——首个 tick 的缺省 idle 态（组件常驻
+        // 挂载、修复链尚未启动时 running=false/total=0）不作为停轮询依据，
+        // 否则之后点击「自动修复」启动的新链永远无人观察。终止态（blocked/
+        // failed）不受 sawRunning 门限（失败链 running 可能恒 true，且挂在
+        // 陈旧终态上持续 2s 空转无意义）。
+        settled = (sawRunning && p.running === false) || STOP_PHASES.has(p.phase);
         // 仅在观察到链收尾（sawRunning）或进入终止态时通知刷新
         notify = sawRunning || STOP_PHASES.has(p.phase);
       } catch {
@@ -126,7 +138,9 @@ export default function CodeFixProgressCard(
       alive = false;
       if (timer !== null) clearTimeout(timer);
     };
-  }, [active, project]);
+    // restartKey 入依赖（code-review item 62f764043d88）：QualityTab 触发
+    // 成功后递增，重启已停的轮询接管新链展示。
+  }, [active, project, restartKey]);
 
   if (!progress) {
     return null;

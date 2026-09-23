@@ -240,7 +240,14 @@ class BBackoffMixin:
         """锁内实现（fix-provider-transient-backoff）排程 transient 恢复定时器。"""
         if spec_name in self._transient_timers:
             return
-        delay = float(self._pm._get_config("agents.transient_redispatch_delay_seconds", 600))
+        # 配置容错（与 _dispatch_backoff_schedule 同口径）：非法配置值回退
+        # 缺省 600s，不得中断瞬断恢复排程。
+        try:
+            delay = float(
+                self._pm._get_config("agents.transient_redispatch_delay_seconds", 600)
+            )
+        except (TypeError, ValueError):
+            delay = 600.0
         delay = max(10.0, delay)  # 最小等待 10s，避免零值/负值
         timer = threading.Timer(
             delay,

@@ -492,6 +492,21 @@ class H0BaseMixin:
             # Content-Length，_drain_remaining_request_body 算得 remaining≤0
             # 跳过读取，重新引入正文失步（残留字节被当下一请求解析）。
             self._request_body_consumed = 0
+            # 超大声明 Content-Length 比照 413 处置（code-review item
+            # 4f09f474f524，同 _read_json_body 413 分支的无界 read 防御）：
+            # 本分支 _request_body_consumed 恒为 0，remaining＝整个声明长度，
+            # 对攻击者声明的超大 Content-Length（实际不发数据）盲排会阻塞
+            # worker 线程至 socket 超时。超限时置 close_connection=True 跳过
+            # 排空（drain 对该标记 no-op），连接关闭后残留作废；仅对合理
+            # 大小的残留排空。
+            try:
+                _declared = int(self.headers.get("Content-Length", "0") or "0")
+            except ValueError:
+                _declared = 0
+            from core.dashboard import server as _server_mod
+
+            if _declared > getattr(_server_mod, "MAX_POST_BODY", 256 * 1024):
+                self.close_connection = True
             # 快速拒绝前 MUST 排空请求体（code-review item 265e22d75797）：HTTP/1.1
             # keep-alive 下未读的 body 字节会被当作下一请求的请求行解析——正是
             # POST/DELETE 分支下方小心规避的 BUG-01 失步类。

@@ -21,6 +21,7 @@ hosting_state）供 bin/fenix_session.py（CLI）与 core/dashboard/data.py
 import hashlib
 import os
 import re
+import shlex
 import signal
 import subprocess
 import time
@@ -370,6 +371,10 @@ def start_daemon(root: str | None = None) -> dict:
         pass
 
     try:
+        # shell-quote 路径插值（code-review item 6333feb03e0c）：tmux 会把命令串
+        # 交给 shell 执行，裸拼路径含空格时被拆词致启动失败、含 ;/$/反引号等
+        # 元字符时构成命令注入面（路径来源含 CLI 入参与调用方传参）。
+        proot_q = shlex.quote(str(proot))
         subprocess.run(
             [
                 "tmux",
@@ -377,7 +382,7 @@ def start_daemon(root: str | None = None) -> dict:
                 "-d",
                 "-s",
                 session,
-                f"cd {proot} && python3 .fenix/bin/fenixd_supervisor.py --project-root {proot} >> .fenix/logs/supervisor.log 2>&1",
+                f"cd {proot_q} && python3 .fenix/bin/fenixd_supervisor.py --project-root {proot_q} >> .fenix/logs/supervisor.log 2>&1",
             ],
             capture_output=True,
             text=True,

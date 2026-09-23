@@ -242,6 +242,10 @@ export default function QualityTab({ project, active }: QualityTabProps) {
   // 触发流程含最长 20s 的结果轮询，不复用 actionPending——否则轮询期间
   // 其余动作按钮被连带禁用 20s。
   const [fixRunPending, setFixRunPending] = useState(false);
+  // 触发成功重启信号（code-review item 62f764043d88）：CodeFixProgressCard
+  // 随 Tab 常驻挂载、轮询停即死；触发成功递增本计数作为 restartKey 传入，
+  // 重启其轮询以接管新修复链的进度展示（触发成功不额外操作的既有契约不变）。
+  const [fixRunRestartTick, setFixRunRestartTick] = useState(0);
   const pollTimerRef = useRef<number | null>(null);
   // 自动修复 20s 轮询取消哨（code-review item 34247364a750）：卸载/切页签/
   // 切项目时由 SSE effect 清理置位（与 pollTimerRef 同点清理），轮询每轮与
@@ -438,6 +442,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
     fixRunPollAbortedRef.current = false; // 本轮请求开启新哨（上一轮取消状态作废）
     try {
       const res = await triggerCodeFixRun(project);
+      setFixRunRestartTick((t) => t + 1); // 重启进度卡片轮询（见 fixRunRestartTick 注释）
       const wantedAt = res.requested_at;
       const deadline = Date.now() + 20_000;
       let result: CodeFixRunResult | null = null;
@@ -864,6 +869,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
       <CodeFixProgressCard
         project={project}
         active={active}
+        restartKey={fixRunRestartTick}
         onSettled={() => void loadItems()}
       />
 

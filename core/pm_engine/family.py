@@ -154,8 +154,16 @@ class FamilyGovernor:
         """
         iw = self._pm._get_config("pm.family.max_depth")
         ns = self._pm._get_config("pm.family.max_width")
-        max_depth = int(iw if iw is not None else 3)
-        max_width = int(ns if ns is not None else 2)
+        # 非法配置值回退默认（对齐 engine._ready_stall_threshold_minutes 的
+        # 容错口径）：族谱门是 bug-found 主链路，配置写坏不得中断处置。
+        try:
+            max_depth = int(iw if iw is not None else 3)
+        except (TypeError, ValueError):
+            max_depth = 3
+        try:
+            max_width = int(ns if ns is not None else 2)
+        except (TypeError, ValueError):
+            max_width = 2
         depth = self._fix_prefix_depth(child_name)
         if depth > max_depth:
             return True

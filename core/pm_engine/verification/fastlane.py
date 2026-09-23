@@ -102,6 +102,15 @@ def has_dispute_signal(pipeline, spec_name: str) -> tuple:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError, UnicodeDecodeError):
             continue  # 不可读 fail-open（按无争议），留痕于 evidence
+        # 跨 spec 归属校验：共享文件残留的可能是其它 spec 实现轮的结果——
+        # spec 戳为非空字符串且与当前 spec 不符时不据此判定（既防误挡本
+        # spec，也防本 spec 争议被其它 spec 后写覆写后误放行），回落检查
+        # 下一候选。口径对齐 dashboard.data.artifacts._load_run_result：
+        # 缺 spec 戳的旧格式文件仍采信；spec 专属副本路径自带隔离，不校验。
+        if path == candidates[0] and isinstance(data, dict):
+            stamp = data.get("spec")
+            if isinstance(stamp, str) and stamp and stamp != spec_name:
+                continue
         hits = disputed_findings(data)
         if hits:
             types = sorted({str(h.get("type")) for h in hits})
