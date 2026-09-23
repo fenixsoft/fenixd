@@ -118,7 +118,6 @@ import uuid
 from dataclasses import dataclass, field
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from socket import socket
 from typing import Optional
 from urllib.request import Request, urlopen
 

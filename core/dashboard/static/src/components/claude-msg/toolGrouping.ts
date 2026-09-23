@@ -106,7 +106,13 @@ export function editFilePaths(messages: ChatMessage[]): string[] {
     const input = parseToolInput(message.toolInput);
     if (!input || typeof input !== 'object' || Array.isArray(input)) continue;
     const rec = input as Record<string, unknown>;
-    const p = typeof rec.file_path === 'string' ? rec.file_path : typeof rec.path === 'string' ? rec.path : '';
+    // file_path/path 回退链展开（项目清单禁嵌套三元，code-review item 4ac183111d64）
+    let p = '';
+    if (typeof rec.file_path === 'string') {
+      p = rec.file_path;
+    } else if (typeof rec.path === 'string') {
+      p = rec.path;
+    }
     if (p && !seen.has(p)) {
       seen.add(p);
       paths.push(p);

@@ -70,6 +70,14 @@ export default function SettingsPage() {
   const [config, setConfig] = useState<ConfigData | null>(null);
   const [projects, setProjects] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
+  // 最新 scope/project 镜像 ref（code-review item f51b1468ca4f）：保存后重载
+  // 完成时与发起保存时的值比对，用户已切换作用域/项目则丢弃过时重载结果。
+  const scopeRef = useRef(scope);
+  const projectRef = useRef(project);
+  useEffect(() => {
+    scopeRef.current = scope;
+    projectRef.current = project;
+  }, [scope, project]);
   // 加载失败显式态（code-review item eae893169197）：旧实现仅 console.error，
   // config 停在 null，除 prompts 外的页签统统渲染空白面板，用户无从判断原因。
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -134,20 +142,33 @@ export default function SettingsPage() {
   };
 
   // 处理保存操作（返回是否成功：系统页签保存成功后还会连带提交 todo.md）
+  // 保存与重载分离（code-review item f51b1468ca4f）：重载移出保存 try——
+  // 瞬态重载失败不得把已成功的保存误报为「保存失败」，只给非致命刷新提示；
+  // 重载完成时经 scopeRef/projectRef 比对币值，await 期间用户切换作用域/
+  // 项目则丢弃旧作用域的迟到响应（不覆盖新作用域 config）。
   const handleSave = async (values: Partial<ConfigData>): Promise<boolean> => {
+    const scopeAtStart = scope;
+    const projectAtStart = project;
     try {
       await saveConfig(project, values);
-      message.success('保存成功');
-      // 重新加载配置
-      const configData = await getConfig(project);
-      setConfig(configData);
-      return true;
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       message.error(`保存失败：${errorMessage}`);
       console.error('Failed to save config:', error);
       return false;
     }
+    message.success('保存成功');
+    // 重新加载配置（失败不影响保存结论）
+    try {
+      const configData = await getConfig(project);
+      if (scopeRef.current === scopeAtStart && projectRef.current === projectAtStart) {
+        setConfig(configData);
+      }
+    } catch (e) {
+      console.error('Failed to reload config after save:', e);
+      message.warning('已保存，但刷新配置失败，请切换作用域或刷新页面查看最新值');
+    }
+    return true;
   };
 
   // 自进化页签唯一保存入口：两张卡片各自校验并收集本节配置，合并后一次提交
