@@ -2365,7 +2365,7 @@ class FenixDaemon:
                     "fenixd",
                     f"code-review 手动审查完成：run_id={result.run_id}, "
                     f"inserted={result.inserted}, updated={result.updated}, "
-                    f"resolved={result.resolved}"
+                    f"resolved={result.resolved}, shards={result.shards}"
                     + (f", error={result.error}" if result.error else ""),
                 )
             except Exception as e:

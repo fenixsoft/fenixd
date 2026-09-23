@@ -88,6 +88,10 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
       // add-code-review-scope-config：审查范围（admin.code_review.scope），
       // 配置缺失回显 window（后端 get_code_review_config 缺省同源）
       code_review_scope: config.code_review?.scope ?? 'window',
+      // add-code-review-sharded-out 3.3：停滞告警阈值（admin.code_review.
+      // stall_alert_minutes），配置缺失回显 15（后端 get_code_review_config
+      // 缺省同源）
+      code_review_stall_alert_minutes: config.code_review?.stall_alert_minutes ?? 15,
       // add-test-regression-tab：周期性全量回归开关（admin.regression.enabled）
       // 缺省 false；分面只读展示 + 手动触发，配置归设置页「质量」页签
       regression_enabled: config.regression?.enabled === true,
@@ -217,6 +221,9 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
         code_review: {
           enabled: values.code_review_enabled === true,
           scope: values.code_review_scope,
+          // add-code-review-sharded-out 3.3：停滞告警阈值（表单回填后恒有值，
+          // 正整数由表单校验把关，后端 write_config 权威兜底）
+          stall_alert_minutes: values.code_review_stall_alert_minutes,
         },
         // add-test-regression-tab：周期性全量回归开关（admin.regression.enabled，
         // 缺省 false；与 code_review 同周期：admin.self_review.run_at 时点）
@@ -480,6 +487,34 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
             项目页「全库审查」按钮同语义，审查全仓受控源码文件，同样受
             admin.code_review.max_files 上限约束（超限截断）；两档共用同一套
             调度守卫（同自然日防重 / run_at / 开关）。
+          </Text>
+
+          {/* add-code-review-sharded-out 3.3：停滞告警阈值输入（分钟粒度、
+              正整数校验，保存并入既有 admin.code_review 受管段写路径）。
+              与 code_review_fix_batch_size 同形态：整宽 + addonAfter 单位。 */}
+          <Form.Item
+            name="code_review_stall_alert_minutes"
+            label={
+              <>
+                停滞告警阈值
+                <span className="label-note">（admin.code_review.stall_alert_minutes）</span>
+              </>
+            }
+            rules={[POSITIVE_INT_RULE]}
+            style={{ marginTop: 24 }}
+          >
+            <InputNumber
+              data-testid="code-review-stall-alert-minutes"
+              min={1}
+              precision={0}
+              addonAfter="分钟"
+              style={{ width: '100%' }}
+            />
+          </Form.Item>
+          <Text type="secondary">
+            审查 run 进行中，若主产物与分片聚合进度（done）持续为零且已运行
+            超过本阈值（分钟），框架落一条人工告警提示「疑似子代理等待收工
+            模式」（单 run 至多一条）。缺省 15；非法值回退 15。
           </Text>
 
           {/* 自动修复代码问题（add-code-review-auto-fix，task 9.2）：2026-09-22

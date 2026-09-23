@@ -175,7 +175,15 @@ class TestDashboardWriteChainScope(unittest.TestCase):
         from core.dashboard.data import read_config
 
         echoed = read_config(self.tmpdir)
-        self.assertEqual(echoed["code_review"], {"enabled": False, "max_files": 500, "scope": "window"})
+        self.assertEqual(
+            echoed["code_review"],
+            {
+                "enabled": False,
+                "max_files": 500,
+                "scope": "window",
+                "stall_alert_minutes": 15,
+            },
+        )
 
 
 # ── 2. 周期触发两档实参断言 ─────────────────────────────────────────
@@ -275,8 +283,12 @@ class TestCheckpointGuardsBothScopes(unittest.TestCase):
                 h.dispose()
 
     def test_already_ran_today_both_scopes(self):
-        # 同自然日防重：预写今日状态 → 跳过（不派发、不覆盖状态）
-        today = "2026-09-23"
+        # 同自然日防重：预写今日状态 → 跳过（不派发、不覆盖状态）。
+        # today 必须动态取（与 local_today_str() 同源），硬编码日期跨日即腐坏
+        #（实测 2026-09-23 写死后 09-24 起恒假失败）
+        from core.self_review import local_today_str
+
+        today = local_today_str()
         for cr in ({"enabled": True}, {"enabled": True, "scope": "full"}):
             h = _MonitorHarness(cr)
             try:

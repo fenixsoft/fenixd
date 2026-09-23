@@ -1485,6 +1485,9 @@ class ConfigLoader:
           回退规则：值恰为字符串 "full" 才生效为 full；其余一切（键缺失、
           "window"、非法字面量、非字符串类型）一律回退 "window"——周期
           巡检路径 MUST NOT 因配置脏值中断，且缺省即历史行为（向后兼容）。
+        - stall_alert_minutes: 15（add-code-review-sharded-out：事中零进度
+          停滞告警阈值，分钟；消费方 core.code_review.check_progress_stall。
+          非法值（非正整数/类型错误/bool）回退缺省）
         """
         admin = config.get("admin") if isinstance(config, dict) else None
         cr = admin.get("code_review") if isinstance(admin, dict) else None
@@ -1508,10 +1511,20 @@ class ConfigLoader:
         enabled = cr.get("enabled", False)
         if not isinstance(enabled, bool):
             enabled = False
+        # 停滞告警阈值（分钟，正整数，缺省 15）：bool 是 int 子类显式排除
+        #（与 max_files 同款守卫）；非法回退缺省。
+        stall_alert_minutes = cr.get("stall_alert_minutes", 15)
+        if (
+            not isinstance(stall_alert_minutes, int)
+            or isinstance(stall_alert_minutes, bool)
+            or stall_alert_minutes <= 0
+        ):
+            stall_alert_minutes = 15
         return {
             "enabled": enabled,
             "max_files": int(max_files),
             "scope": scope,
+            "stall_alert_minutes": int(stall_alert_minutes),
         }
 
     @classmethod
