@@ -1134,6 +1134,45 @@ class FenixDaemon:
             )
             return True
 
+    def _codefix_selfheal_block(self) -> bool:
+        """code-fix 批在飞自愈阻断判定（09-23 批5/6 烧毁事故热修）。
+
+        supervisor 优雅重启会 SIGKILL 排水中的批 worker：run result 已落盘
+        success 而回归/合回/核销未跑的批，其 agent 产出随 worktree 孤儿清扫
+        整批作废（09-23 批 5/6 连烧实证：两次重启各毁一批）。两条判定任一
+        命中即阻断：
+
+        - ``fix-progress.json`` ``running=true``（链在飞，覆盖 fixing/
+          regressing/merging 全程）；
+        - agent_runner 在飞注册表含 ``code-fix-`` 前缀 run（兜底进度文件
+          异常窗口）。
+
+        判定异常按阻断处理（宁紧勿松，同 ocr-lane 纪律）。
+        """
+        try:
+            from core.code_fix import read_progress
+
+            if read_progress(PROJECT_ROOT).get("running") is True:
+                return True
+        except Exception as e:  # noqa: BLE001 — 判定异常按阻断处理
+            self.logger.warning(
+                "fenixd",
+                f"code-fix 进度读取异常（按在飞阻断处理，不触发自愈重启）: {e}",
+            )
+            return True
+        try:
+            runner = getattr(self, "agent_runner", None)
+            running = getattr(runner, "_running_agents", None) or {}
+            if any(str(rid).startswith("code-fix-") for rid in running):
+                return True
+        except Exception as e:  # noqa: BLE001 — 判定异常按阻断处理
+            self.logger.warning(
+                "fenixd",
+                f"code-fix 在飞注册表读取异常（按在飞阻断处理）: {e}",
+            )
+            return True
+        return False
+
     # 重启历史保留窗口（evo-stale-selfheal-restart-cooldown）：超过该时长的条目
     # 在 tick 入口清理，避免文件无界增长（只影响统计，不影响自愈正确性）。
     _RESTART_HISTORY_KEEP_SECONDS = 24 * 3600
@@ -1504,6 +1543,12 @@ class FenixDaemon:
                 # 挂入阻断原因体系——车道跑着不自愈（重启会 SIGTERM 杀掉在飞
                 # 车道 run），空闲计时一并清零，车道收尾后重新累计。
                 reason = "ocr-lane"
+            elif self._codefix_selfheal_block():
+                # 09-23 批5/6 烧毁事故：code-fix 批在飞期间自愈重启会把回归
+                # 进行中/收尾中的批 worker 连带杀掉（supervisor 排水 SIGKILL），
+                # agent 已产出的批结果随 worktree 孤儿清扫整批作废——镜像
+                # ocr-lane 模式挂入阻断体系，空闲计时一并清零。
+                reason = "code-fix"
 
         if reason is not None:
             # 阻断 → 清零空闲计时；边沿日志明示原因
@@ -1526,6 +1571,12 @@ class FenixDaemon:
                         "fenixd",
                         "impl-ocr 车道在飞，自愈跳过（不杀在飞车道 run），"
                         "空闲计时清零，待车道收尾后重新累计",
+                    )
+                elif reason == "code-fix":
+                    self.logger.info(
+                        "fenixd",
+                        "code-fix 批在飞，自愈跳过（不杀批 worker/回归），"
+                        "空闲计时清零，待批收尾后重新累计",
                     )
                 else:  # in-flight
                     self.logger.info(

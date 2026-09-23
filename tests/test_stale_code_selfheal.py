@@ -292,6 +292,35 @@ class TestIdleSelfhealTrigger(unittest.TestCase):
         warns = " ".join(str(c) for c in self.d.logger.warning.call_args_list)
         assert "ocr 车道在飞判定异常" in warns
 
+    # ── 09-23 code-fix 批在飞维度（批5/6 烧毁事故热修）─────────────────
+
+    def test_codefix_inflight_blocks_selfheal(self):
+        """code-fix 批在飞（progress.running=true）→ 阻断自愈不写 restart_request。
+
+        supervisor 优雅重启会 SIGKILL 排水中的批 worker：回归进行中/合回
+        核销前的批被杀，agent 已落盘的 result（success）随 worktree 孤儿
+        清扫整批作废（09-23 批5/6 双烧实证）。
+        """
+        with mock.patch("core.code_fix.read_progress",
+                        return_value={"running": True}):
+            self._tick()  # 阻断清零，不开始计时
+            assert self.d._stale_idle_since is None
+            self.d._stale_idle_since = time.time() - 300  # 远超阈值
+            self._tick()
+        assert not self.req.exists()
+        infos = " ".join(str(c) for c in self.d.logger.info.call_args_list)
+        assert "code-fix 批在飞" in infos and "自愈跳过" in infos
+
+    def test_codefix_finish_resumes_idle_accumulation(self):
+        """批收尾（running=false）后恢复空闲累计，重新满阈值照常触发。"""
+        with mock.patch("core.code_fix.read_progress",
+                        return_value={"running": False}):
+            self._tick()
+            assert self.d._stale_idle_since is not None  # 非阻断，正常计时
+            self.d._stale_idle_since = time.time() - 130
+            self._tick()
+            assert self.req.exists()
+
 
 def _panel_pair(section: dict) -> dict:
     """stale_code_selfheal 节中**面板受管**的两键。
