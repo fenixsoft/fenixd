@@ -431,3 +431,179 @@ class TestFixtureVisibility:
             assert "fixture-proj" in names
         finally:
             srv.stop()
+
+
+# ═══════════════════════════════════════════════════════════════════
+# alert-noise-governance 5：召唤通道 fixture 抑制（消费端 ②）
+# ═══════════════════════════════════════════════════════════════════
+
+import time  # noqa: E402
+
+from core.admin_monitor import (  # noqa: E402
+    AdminMonitor,
+    _error_fingerprint,
+    _is_fixture_project,
+)
+from core.admin_store import SIGNAL  # noqa: E402
+from core.agent_runner.runner import AdminDisposition  # noqa: E402
+
+
+class RecordingRunner:
+    """记录型 runner：消费 run_administrator 并返回最小合法处置。"""
+
+    def __init__(self):
+        self.calls = []
+
+    def run_administrator(self, signal):
+        self.calls.append(signal)
+        return AdminDisposition(
+            run_id=f"admin-test-{len(self.calls)}",
+            spec=signal.get("spec"),
+            success=True,
+            problem=signal.get("description", ""),
+            actions_taken="测试处置",
+            result="resolved",
+            summary="诊断结论：测试处置；处置时间线：测试处置；结果：已解决。",
+        )
+
+
+class RecordingMonitorLogger:
+    def __init__(self):
+        self.infos = []
+
+    def debug(self, *a, **k):
+        pass
+
+    def info(self, component, message, **k):
+        self.infos.append(str(message))
+
+    def warning(self, *a, **k):
+        pass
+
+    def error(self, *a, **k):
+        pass
+
+
+class FakeStates:
+    def read_all(self):
+        return {}
+
+    def read_one(self, name):
+        return None
+
+
+def _make_fixture_monitor(proot, fixture_true, monkeypatch):
+    """构造 AdminMonitor（记录型 runner/logger），并按参打 fixture 标记桩。"""
+    monkeypatch.setattr("core.admin_monitor._is_fixture_project",
+                        lambda root: fixture_true)
+    runner = RecordingRunner()
+    logger = RecordingMonitorLogger()
+    mon = AdminMonitor(
+        {}, FakeStates(), proot, logger,
+        store=AdminStore(proot, logger), agent_runner=runner,
+    )
+    return mon, runner, logger
+
+
+def _daemon_error_signal(fp):
+    return {
+        "signal_type": "daemon_errors",
+        "spec": None,
+        "severity": "critical",
+        "description": f"fenixd 日志同错误（指纹 {fp[:8]}）在 10 分钟窗口内复现 2 次",
+        "evidence": "同指纹 ERROR 复现 2 次",
+        "recommended_action": "检查根因并重启 daemon",
+        "_fp": fp,
+    }
+
+
+class TestFixtureInvocationSuppression:
+    """tasks.md 5.1/5.2/6.4：fixture 项目达升级条件不召唤，人工不受限。"""
+
+    def test_helper_reads_registry_fixture_true(self, tmp_path, monkeypatch):
+        """_is_fixture_project 经 Registry 权威源读取 fixture:true 条目。"""
+        cfg = tmp_path / "dashboard.yaml"
+        proot = tmp_path / "proj"
+        proot.mkdir()
+        cfg.write_text(
+            yaml.safe_dump({
+                "projects": [{"path": str(proot), "fixture": True}],
+                "scan_dirs": [str(tmp_path / "scan-empty")],
+            }),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("core.dashboard.registry.DEFAULT_CONFIG", cfg)
+        assert _is_fixture_project(proot) is True
+        assert _is_fixture_project(tmp_path / "other") is False
+
+    def test_helper_failopen_on_missing_config(self, tmp_path, monkeypatch):
+        """fail-open：配置不存在 / 损坏 / 项目不在册 → 按非夹具。"""
+        monkeypatch.setattr("core.dashboard.registry.DEFAULT_CONFIG",
+                            tmp_path / "no-such.yaml")
+        assert _is_fixture_project(tmp_path) is False
+        bad = tmp_path / "bad.yaml"
+        bad.write_text("projects: [::::not-yaml", encoding="utf-8")
+        monkeypatch.setattr("core.dashboard.registry.DEFAULT_CONFIG", bad)
+        assert _is_fixture_project(tmp_path) is False
+
+    def test_fixture_project_no_admin_global_run(self, tmp_path, monkeypatch):
+        """fixture 项目 daemon_errors 达升级条件：不建 admin-global run，INFO 留痕。"""
+        proot = tmp_path / "proj"
+        (proot / ".fenix").mkdir(parents=True)
+        mon, runner, logger = _make_fixture_monitor(proot, True, monkeypatch)
+        fp = _error_fingerprint("pm_engine", "some fixture gate error (attempt 1)")
+
+        mon._handle_signal(_daemon_error_signal(fp))
+
+        assert runner.calls == [], "夹具项目不得自动召唤 Administrator"
+        assert any("抑制自动召唤" in m and fp[:8] in m for m in logger.infos), logger.infos
+
+    def test_suppression_keeps_alert_records_visible(self, tmp_path, monkeypatch):
+        """5.2：抑制只阻断召唤——信号沉淀入库（escalated=False），既有记录不动。"""
+        proot = tmp_path / "proj"
+        (proot / ".fenix").mkdir(parents=True)
+        mon, runner, logger = _make_fixture_monitor(proot, True, monkeypatch)
+        seed = AdminStore(proot, logger).append({
+            "kind": ESCALATION,
+            "signal_type": "spec_content_missing",
+            "spec": "c-x",
+            "severity": "major",
+            "description": "seed alert",
+            "handled": False,
+        })
+        fp = _error_fingerprint("pm_engine", "noise (attempt 1)")
+
+        mon._handle_signal(_daemon_error_signal(fp))
+
+        recs = AdminStore(proot, logger).read_all()
+        # 既有告警原样保留（不删除/不改写）
+        seeded = [r for r in recs if r.get("id") == seed["id"]][0]
+        assert seeded["description"] == "seed alert"
+        assert not seeded.get("handled")
+        # 本次信号仍沉淀入库（看板可见），但未虚报已唤起
+        sig_recs = [r for r in recs if r.get("kind") == SIGNAL
+                    and r.get("signal_type") == "daemon_errors"]
+        assert len(sig_recs) == 1
+        assert not sig_recs[0].get("escalated")
+
+    def test_manual_invocation_unrestricted(self, tmp_path, monkeypatch):
+        """人工显式触发不受限：抑制判定不在 _invoke_administrator 本体。"""
+        proot = tmp_path / "proj"
+        (proot / ".fenix").mkdir(parents=True)
+        mon, runner, _ = _make_fixture_monitor(proot, True, monkeypatch)
+        fp = _error_fingerprint("pm_engine", "manual noise (attempt 1)")
+
+        mon._invoke_administrator(_daemon_error_signal(fp), None)
+
+        assert len(runner.calls) == 1, "人工显式触发必须照常执行"
+
+    def test_non_fixture_project_invokes_normally(self, tmp_path, monkeypatch):
+        """非 fixture 项目照常召唤（fail-open 语义回归）。"""
+        proot = tmp_path / "proj"
+        (proot / ".fenix").mkdir(parents=True)
+        mon, runner, _ = _make_fixture_monitor(proot, False, monkeypatch)
+        fp = _error_fingerprint("pm_engine", "real failure (attempt 1)")
+
+        mon._handle_signal(_daemon_error_signal(fp))
+
+        assert len(runner.calls) == 1

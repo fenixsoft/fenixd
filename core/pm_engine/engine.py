@@ -722,6 +722,24 @@ class PMEngine:
             # 退避期内静默跳过（不写 STATE，避免「写 error → 触发 spec_ready 事件」
             # 的自触发热循环）；退避到期后由排定的定时器 / 周期扫描重试。
             spec = self.state_machine.read_one(spec_name) or {}
+            # frozen 复核（alert-noise-governance 2.2）：冻结 spec 不进派发——
+            # daemon 重启后 _diff_specs 空快照会把 frozen=True 的 ready spec
+            # 整批回放 spec_ready，缺本守卫即重放「派发→闸门拦截→冻结」并每
+            # 轮产一条闸门 ERROR（2026-09-22 实证 9 轮重放 18 条 ERROR）。
+            # 位于闸门内容校验（dispatch._process_queue 内）之前，冻结 spec 不
+            # 再重放拦截流程；复用 _frozen_state 助手保持 legacy 文本契约兼容
+            # （recovery.py in-place redispatch 同款先例）。命中 INFO 留痕、
+            # 零 STATE 写入（防「写 error → 触发 spec_ready」自触发热循环）。
+            # 人工 kick 冻结 spec 走同一入口，冻结 spec 的人工重派本就该先解
+            # 冻（「补内容后人工 unfreeze_spec」契约），本留痕保证操作者可见
+            # 跳过原因。
+            if self._frozen_state(spec):
+                self.logger.info(
+                    "pm_engine",
+                    f"Skipping dispatch for '{spec_name}': frozen spec "
+                    f"(awaiting manual unfreeze, frozen-replay guard)",
+                )
+                return
             if self._dispatch_backoffed(spec):
                 self.logger.debug(
                     "pm_engine",

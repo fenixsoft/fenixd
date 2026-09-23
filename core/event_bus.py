@@ -449,7 +449,33 @@ class EventBus:
         存活判定（有存活 agent 子进程 / 未超时活跃 worktree 锁）由
         ``_ready_has_live_child`` 给出；存活则跳过并记「skip: live child present」，
         不重置状态、不清字段；否则重新派发前清 error、保留 implementer_run。
+
+        frozen 复核（alert-noise-governance 2.1）：frozen=True 的条目在读到后、
+        清 error 前直接跳过（INFO 留痕、零 STATE 写入）——外部回置把冻结 spec
+        的 status 打回 ready 时，恢复链不得清 error/重派（见方法体内注释）。
         """
+        # frozen 复核（alert-noise-governance 2.1，frozen-replay-escalation-guard
+        # 登记链）：外部 STATE 回置可能只改 status 不动 frozen 字段（「部分回
+        # 置」腿），冻结 spec 被打回 ready 后若无此守卫，本恢复路径每 60s 清
+        # error 并重派，同日重放「就绪→派发→闸门拦截→冻结」循环（2026-09-22
+        # 实证：9 轮重放、18 条闸门 ERROR）。命中即 INFO 跳过（含 spec 名与
+        # 原因）；早退路径零 STATE 写入（本函数仅在 error 非空时写 STATE）。
+        # 复用 pm_engine._frozen_state 保持 legacy 文本契约兼容（recovery.py
+        # in-place redispatch 同款先例）；判定异常 fail-open 不阻塞既有恢复。
+        try:
+            # 仅认真实 True（is True）：pm_engine 为 MagicMock 替身时返回值是
+            # Mock 对象（truthy），直接 bool() 会把全部 ready 误判为冻结
+            frozen = self.pm_engine._frozen_state(entry) is True
+        except Exception:
+            frozen = False
+        if frozen:
+            self.logger.info(
+                "event_bus",
+                f"Recovery: skip '{name}' — frozen spec awaiting manual "
+                f"unfreeze (frozen-replay guard, zero STATE write)",
+            )
+            return
+
         # start_after 定时拾取门未到期的 spec（scheduled-spec-pickup）：不是孤儿
         # ——daemon 每轮 dispatch 已按 start_after_pending 正确 skip，recovery 再
         # 重触发只会生产噪音事件（实证 2026-09-11 add-main-tree-deps-provision 每
@@ -523,8 +549,10 @@ class EventBus:
         记日志后继续走既有恢复路径。
 
         **核对结论（2026-09-17，以代码为准）——精触发未绕过任何闸门**：
-        恢复侧既有门 = ``start_after_pending``（本文件 ``_recover_ready`` 内）与
-        存活子进程（``_ready_has_live_child``）；派发侧既有门（``_on_spec_ready``，
+        恢复侧既有门 = ``start_after_pending``（本文件 ``_recover_ready`` 内）、
+        存活子进程（``_ready_has_live_child``）与 frozen 复核（alert-noise-
+        governance 2.1：frozen=True 跳过恢复、零 STATE 写入——有意等待态，
+        冻结 spec 的唯一出路是补内容后人工 unfreeze_spec）；派发侧既有门（``_on_spec_ready``，
         ``core/pm_engine/engine.py:316-425``）= 关闭中 / 10 秒冷却 / 单飞 /
         ``has_active_worktree`` / ``_dispatch_backoffed`` / ``start_after`` / 依赖，
         精触发经 ``_on_spec_ready → _enqueue → _process_queue`` 全链路生效。

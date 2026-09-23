@@ -1512,3 +1512,82 @@ class TestSummaryGitCommits:
         summary = make_scheduler(proot).collect_daily_summary(datetime(2026, 9, 4))
         assert "## 5. 近 3 日 git 提交" in summary
         assert "（git log 读取失败）" in summary
+
+# ═══════════════════════════════════════════════════════════════════
+# alert-noise-governance 4：日审读侧过滤（消费端 ①）
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestAdminSummaryFixtureFilter:
+    """tasks.md 4.1/4.2/6.5：fixture 告警不进未处理计数、带标注单列；
+    无标记/读取失败 fail-open 到现状。"""
+
+    def _scheduler(self, proot):
+        from core.self_review import SelfReviewScheduler
+
+        return SelfReviewScheduler(
+            {}, proot, FakeLogger(), FakeSM(), agent_runner=None,
+            store=AdminStore(proot, FakeLogger()),
+        )
+
+    def _seed_unhandled(self, proot, n=2, spec="fixture-spec"):
+        store = AdminStore(proot, FakeLogger())
+        for i in range(n):
+            store.append({
+                "kind": ESCALATION,
+                "signal_type": "spec_delivered_no_content",
+                "spec": f"{spec}-{i}",
+                "severity": "major",
+                "description": f"夹具噪音告警 {i}",
+                "handled": False,
+            })
+
+    def test_fixture_alerts_excluded_from_unhandled_count(self, tmp_path, monkeypatch):
+        proot = tmp_path / "proj"
+        (proot / ".fenix").mkdir(parents=True)
+        self._seed_unhandled(proot)
+        monkeypatch.setattr("core.self_review._is_fixture_project",
+                            lambda root: True)
+        text = "\n".join(self._scheduler(proot)._collect_admin_summary(
+            datetime(2000, 1, 1)))
+
+        assert "未处理 0 条计入" in text, text
+        assert "[fixture]" in text, "夹具告警须带 fixture 标注单独呈现"
+        assert "fixture-spec-0" in text
+        # 告警记录本身只读不动
+        recs = AdminStore(proot, FakeLogger()).read_all()
+        assert len([r for r in recs if r.get("kind") == ESCALATION]) == 2
+
+    def test_non_fixture_summary_structure_unchanged(self, tmp_path, monkeypatch):
+        """非夹具项目计数口径与摘要结构不变（现状回归）。"""
+        proot = tmp_path / "proj"
+        (proot / ".fenix").mkdir(parents=True)
+        self._seed_unhandled(proot)
+        monkeypatch.setattr("core.self_review._is_fixture_project",
+                            lambda root: False)
+        lines = self._scheduler(proot)._collect_admin_summary(
+            datetime(2000, 1, 1))
+        text = "\n".join(lines)
+
+        assert "- 升级告警: 2 条（未处理 2 条）" in text, text
+        assert "[fixture]" not in text
+
+    def test_marker_read_failure_fails_open(self, tmp_path, monkeypatch):
+        """标记读取失败 fail-open：按非夹具走既有路径（4.2）。"""
+        proot = tmp_path / "proj"
+        (proot / ".fenix").mkdir(parents=True)
+        self._seed_unhandled(proot)
+
+        class _BoomRegistry:
+            def __init__(self, config_path=None):
+                pass
+
+            def discover(self):
+                raise RuntimeError("registry unavailable")
+
+        monkeypatch.setattr("core.dashboard.registry.Registry", _BoomRegistry)
+        lines = self._scheduler(proot)._collect_admin_summary(
+            datetime(2000, 1, 1))
+        text = "\n".join(lines)
+        assert "- 升级告警: 2 条（未处理 2 条）" in text, text
+        assert "[fixture]" not in text
