@@ -163,6 +163,15 @@ export default function CodeFixProgressCard(
     }
   }
 
+  // 进度条显示口径（用户 2026-09-23）：链级 done 只在合回核销后增长，修复中
+  // 恒 0%，与「本批已处置 x/y」实时明细割裂——修复中把本批实时处置数并入
+  // （封顶 total 防溢出）；合回收尾时 item_done 让位为 null，口径无缝切回
+  // done/total，不双计。
+  const liveDone = Math.min(
+    total > 0 ? total : Number.MAX_SAFE_INTEGER,
+    done + (typeof itemDone === 'number' ? itemDone : 0),
+  );
+
   // 次级文案段：已处置条数已由 ProgressBarTile 头部「已完成 x / y」承载，这里
   // 保留当前文件/条级进度/终止原因/读取失败提示（段间「 · 」连接）。条级进度
   // 并入本行（用户 2026-09-23 要求不换行，接在前段后同排显示）。
@@ -186,7 +195,7 @@ export default function CodeFixProgressCard(
             exception + 纯红 strokeColor——antd 的 strokeColor 会压过 status
             配色，渐变缺省下须显式给红才保得住失败视觉信号。 */}
         <ProgressBarTile
-          done={done}
+          done={liveDone}
           total={total}
           status={stopped ? 'exception' : 'active'}
           strokeColor={stopped ? '#ff4d4f' : undefined}
