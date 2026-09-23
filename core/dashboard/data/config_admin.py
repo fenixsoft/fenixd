@@ -178,8 +178,14 @@ def _echo_agents_str_key(agents_src, key: str) -> str:
 _DEFAULT_SELF_REVIEW = {"enabled": False, "run_at": "02:00", "read_todo": False}
 # add-code-review-agent-and-quality-tab：admin.code_review 缺省（与
 # ConfigLoader.get_code_review_config 一致：enabled 缺省 false，max_files 缺省 500，
-# scope 缺省 window——add-code-review-scope-config）
-_DEFAULT_CODE_REVIEW = {"enabled": False, "max_files": 500, "scope": "window"}
+# scope 缺省 window——add-code-review-scope-config；stall_alert_minutes 缺省 15
+# ——add-code-review-sharded-out 停滞告警阈值）
+_DEFAULT_CODE_REVIEW = {
+    "enabled": False,
+    "max_files": 500,
+    "scope": "window",
+    "stall_alert_minutes": 15,
+}
 # add-code-review-auto-fix：admin.code_review_fix 缺省（与
 # ConfigLoader.get_code_review_fix_config 一致：enabled 缺省 false，
 # batch_size 缺省 20）
@@ -1080,6 +1086,11 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
         # 此处只应用合法值——对齐 max_files 同款合并语义）
         if patch["code_review"].get("scope") in ("window", "full"):
             cr["scope"] = patch["code_review"]["scope"]
+        # add-code-review-sharded-out 3.2：停滞告警阈值随受管段放行（正整数才
+        # 合并，bool 是 int 子类显式排除——对齐 max_files 同款合并语义）
+        sam = patch["code_review"].get("stall_alert_minutes")
+        if isinstance(sam, int) and not isinstance(sam, bool) and sam > 0:
+            cr["stall_alert_minutes"] = sam
         merged["admin"]["code_review"] = cr
     # add-code-review-auto-fix：admin.code_review_fix 两键（enabled 严格 bool、
     # batch_size 正整数；非法值由 write_config 前置校验拒绝，此处只应用合法值
@@ -1290,6 +1301,15 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
                 return fail(
                     f"admin.code_review.scope must be 'window' or 'full': "
                     f"{cr_patch['scope']!r}"
+                )
+        # add-code-review-sharded-out 3.2：停滞告警阈值前置校验（正整数，非法
+        # 直接拒绝不落盘——对齐 max_files 同款；bool 是 int 子类显式排除）
+        if "stall_alert_minutes" in cr_patch and cr_patch["stall_alert_minutes"] is not None:
+            sam = cr_patch["stall_alert_minutes"]
+            if not isinstance(sam, int) or isinstance(sam, bool) or sam <= 0:
+                return fail(
+                    f"admin.code_review.stall_alert_minutes must be a positive "
+                    f"integer: {sam!r}"
                 )
 
     # add-code-review-auto-fix：前端提交的 code_review_fix patch 后端校验

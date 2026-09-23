@@ -896,6 +896,12 @@ class AdminMonitor:
             self._run_code_review_checkpoint()
         except Exception as e:
             self.logger.error("admin_monitor", f"Code-review checkpoint failed: {e}")
+        # add-code-review-sharded-out 3.1：code-review 事中零进度停滞告警
+        # （复用巡检节拍，不新增线程/定时器；任何异常只记日志不阻断巡检）。
+        try:
+            self._check_code_review_stall()
+        except Exception as e:
+            self.logger.error("admin_monitor", f"Code-review stall check failed: {e}")
         # add-test-regression-tab：回归检查点（独立于 code-review/self_review 的
         # 防重状态文件；守卫链 = enabled → run_at 时点 → 同自然日防重 → 单飞 →
         # 有 regression 段）。放 code_review 之后：与自省时点同频，但不依赖
@@ -1051,7 +1057,7 @@ class AdminMonitor:
                     "admin_monitor",
                     f"code-review 周期审查完成：run_id={result.run_id}, "
                     f"inserted={result.inserted}, updated={result.updated}, "
-                    f"resolved={result.resolved}"
+                    f"resolved={result.resolved}, shards={result.shards}"
                     + (f", error={result.error}" if result.error else ""),
                 )
             except Exception as e:
@@ -1072,6 +1078,69 @@ class AdminMonitor:
                 self._code_review_in_flight = False
             self.logger.error("admin_monitor", f"code-review 周期审查派发失败: {e}")
             return {"triggered": True, "ok": False, "reason": f"exception: {e}", "date": local_today_str()}
+
+    def _check_code_review_stall(self) -> None:
+        """code-review 事中零进度停滞告警（add-code-review-sharded-out 3.1/D4）。
+
+        检测逻辑在 ``core.code_review.check_progress_stall``（复用
+        ``read_progress`` 聚合口径 + manifest ``requested_at`` 算已运行时长；
+        run 终态 running=false 短路）。本方法只负责落告警：经 AdminStore
+        ``append_if_absent``（单次排他锁内查重+追加，对齐 UI 信号写入同款
+        防 check-then-act 竞态）以 ``code-review-stall-<run_id>`` 为去重键——
+        单 run 至多一条。kind=ESCALATION（人工告警，未处理时 Dashboard 横幅
+        展示），文案含 run_id / 已运行分钟 / 聚合 done=0 事实与「疑似子代理
+        等待收工模式」归因提示，供人工直接判断是否取消该 run。
+        """
+        from core.code_review import check_progress_stall
+
+        hit = check_progress_stall(self.project_root, datetime.now())
+        if hit is None:
+            return
+        run_id = str(hit.get("run_id") or "")
+        minutes = int(hit.get("minutes") or 0)
+        if not run_id:
+            return
+        dedup_key = f"code-review-stall-{run_id}"
+
+        def _inflight(rec: dict) -> bool:
+            return (
+                rec.get("kind") == ESCALATION
+                and rec.get("signal_type") == "code_review_stall"
+                and rec.get("dedup_key") == dedup_key
+            )
+
+        rec = self.store.append_if_absent(
+            {
+                "kind": ESCALATION,
+                "signal_type": "code_review_stall",
+                "dedup_key": dedup_key,
+                "spec": None,
+                "severity": "major",
+                "description": (
+                    f"code-review 审查零进度：run {run_id} 已运行 {minutes} 分钟，"
+                    f"主产物与分片聚合 done=0（零文件落盘），疑似「async 子代理"
+                    f"等待收工模式」——非交互模式下 turn 结束即进程退出，"
+                    f"异步批次结果永不回收"
+                ),
+                "evidence": (
+                    f"check_progress_stall: run_id={run_id}, minutes={minutes}, "
+                    f"done=0（聚合主产物与分片）"
+                ),
+                "action_taken": f"AdminMonitor 周期节拍检测（去重键 {dedup_key}，单 run 至多一条）",
+                "recommended_action": (
+                    "人工判断是否取消该 run：可在项目页「代码审查」分面对照 "
+                    "manifest 与已落盘分片；取消后重派前建议复核 agents/code-review.md "
+                    "的分片直写纪律是否生效"
+                ),
+            },
+            _inflight,
+        )
+        if rec is not None:
+            self.logger.info(
+                "admin_monitor",
+                f"code-review 停滞告警已落：run_id={run_id}, minutes={minutes}"
+                f"（去重键 {dedup_key}）",
+            )
 
     def _run_regression_checkpoint(self) -> dict:
         """周期性全量回归调度检查点（add-test-regression-tab）。

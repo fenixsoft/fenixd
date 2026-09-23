@@ -1205,6 +1205,8 @@ export interface CodeReviewConfig {
   max_files?: number;
   /** 审查范围（add-code-review-scope-config）：window（缺省）| full，非法值回退 window */
   scope?: 'window' | 'full';
+  /** 停滞告警阈值（分钟，正整数，缺省 15；add-code-review-sharded-out） */
+  stall_alert_minutes?: number;
 }
 
 /** 自动修复代码问题（admin.code_review_fix；add-code-review-auto-fix） */

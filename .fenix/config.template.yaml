@@ -394,6 +394,12 @@ admin:
   #   #   非法值（含缺失/非字符串）一律回退 window，巡检不因脏配置中断；
   #   #   full 档同样受上方 max_files 上限约束（超限截断）。
   #   scope: window
+  #   # 事中零进度停滞告警阈值（分钟，正整数，缺省 15；add-code-review-sharded-out）：
+  #   # run 处于 running 且主产物与分片聚合 done==0 持续超过本阈值时，经 AdminStore
+  #   # 落一条人工告警（含 run_id / 已运行分钟 / 聚合 done=0 事实与「疑似子代理等待
+  #   # 收工模式」归因提示；单 run 至多一条，去重键 code-review-stall-<run_id>）。
+  #   # 缺失/非法/非正整数一律回退 15。
+  #   stall_alert_minutes: 15
 
   # ---- 自动修复代码问题（add-code-review-auto-fix，可选）----
   # 设置页「质量」页签「周期性代码审查」下方提供该开关（读/写 GET/POST
