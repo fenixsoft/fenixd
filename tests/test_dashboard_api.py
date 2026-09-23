@@ -21,41 +21,11 @@ from core.dashboard.server import find_free_port
 
 
 # ── server.py ─────────────────────────────────────────────────────────
+# 注：静态服务能力（GET / 服务 index.html、umi.*.js 资产命中）不在此单测——
+# 用例曾硬依赖 gitignored 构建产物 core/dashboard/static/dist/，裸 worktree
+# （code-fix 批回归）必假失败，每批白烧一轮重试（2026-09-23 第 3~9 批实证）。
+# 该语义由验证链 serve 实例冒烟覆盖（prepare 构建 dist → serve 起真实实例）。
 class TestServerAPI:
-    def test_index_served(self, server_fx):
-        # 根路由直接服务 dashboard 首页（v3 SPA，自 static/ 上移后 dist/ 不再有 v3 层级）
-        import http.client
-        _, srv = server_fx
-        conn = http.client.HTTPConnection("127.0.0.1", srv.port, timeout=10)
-        try:
-            conn.request("GET", "/")
-            resp = conn.getresponse()
-            body = resp.read()
-            assert resp.status == 200
-            assert resp.getheader("Content-Type") == "text/html"
-            assert b"<!DOCTYPE html>" in body
-        finally:
-            conn.close()
-
-    def test_static_root_fallback_to_dist(self, server_fx):
-        # v3 SPA 挂载在 / 时，相对资源（./umi.js）以根路径请求，
-        # 静态服务需回退到 dist/ 命中
-        import http.client
-        _, srv = server_fx
-        dist = (Path(__file__).resolve().parents[1]
-                / "core" / "dashboard" / "static" / "dist")
-        js_name = sorted(p.name for p in dist.glob("umi.*.js"))[0]
-        conn = http.client.HTTPConnection("127.0.0.1", srv.port, timeout=10)
-        try:
-            conn.request("GET", f"/{js_name}")
-            resp = conn.getresponse()
-            body = resp.read()
-            assert resp.status == 200
-            assert "javascript" in (resp.getheader("Content-Type") or "")
-            assert len(body) > 0
-        finally:
-            conn.close()
-
     def test_api_projects(self, server_fx):
         proot, srv = server_fx
         status, data = srv.get("/api/projects")
