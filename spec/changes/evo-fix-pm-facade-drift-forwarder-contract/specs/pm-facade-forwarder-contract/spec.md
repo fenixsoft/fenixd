@@ -18,7 +18,7 @@ core/pm_engine/engine.py 的 _FORWARDER_REGISTRY MUST 登记 "_preclassify_drift
 
 ### Requirement: 门面调用点覆盖性契约硬门
 
-新增契约测试 MUST 以 AST 扫描 core/ 下全部 self._pm.<name> 字面调用点，断言每个 name 可经 PMEngine 解析——解析域为「注册表键 ∪ 门面类显式定义的属性与方法」，dunder 与测试/注释除外；任一调用点不可解析即测试失败，失败信息 MUST 含缺失名字与调用文件:行号。反向 MUST 断言注册表每条目的 (sub_attr, meth) 可在门面上解析（惰性 property + getattr），无悬空条目。豁免机制 MUST 显式存在：静态式转发不入表的名字（core/pm_engine/pipeline.py 注释清单）与门面显式定义 MUST NOT 被误报。
+新增契约测试 MUST 以 AST 扫描 self._pm.<name> 字面调用点（按目录分桶：core/pm_engine/** 归 PMEngine 门，core/agent_runner/** 归 AgentRunner 门），PMEngine 门的每个 name MUST 可经 PMEngine 解析——解析域为「注册表键 ∪ 门面类显式定义的属性与方法」，dunder 与测试/注释除外；任一调用点不可解析即测试失败，失败信息 MUST 含缺失名字与调用文件:行号。反向 MUST 断言注册表每条目的目标可在其门面上解析（PMEngine 二元组条目按 (sub_attr, meth) 经惰性 property + getattr 解析；其余门面按各自条目形态适配），无悬空条目。豁免机制 MUST 显式存在：静态式转发不入表的名字（core/pm_engine/pipeline.py 注释清单）与门面显式定义 MUST NOT 被误报。
 
 #### Scenario: 新增漏注册调用点被硬门拦截
 
@@ -37,7 +37,7 @@ core/pm_engine/engine.py 的 _FORWARDER_REGISTRY MUST 登记 "_preclassify_drift
 
 ### Requirement: 同构注册表同门检查
 
-AgentRunner（core/agent_runner/runner.py）与 VerificationPipeline（core/pm_engine/pipeline.py）的同构注册表 MUST 纳入同类检查（调用点前缀与解析域按各自门面适配）；适配 MUST 以「不制造误报」为界，无法机械化验证的面 MUST 书面说明而非强行断言。
+AgentRunner（core/agent_runner/runner.py）与 VerificationPipeline（core/pm_engine/verification/pipeline.py）的同构注册表 MUST 纳入同类检查（调用点按目录分桶归各自门面；三表条目形态不同——PMEngine 二元组、AgentRunner 二元组与模块函数并存、VerificationPipeline 模块函数单值——反向断言 MUST 按形态适配）；适配 MUST 以「不制造误报」为界，无法机械化验证的面 MUST 书面说明而非强行断言。
 
 #### Scenario: 三张注册表同规则守护
 
