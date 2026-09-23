@@ -1189,7 +1189,6 @@ class ConfigLoader:
         return scope
 
     @classmethod
-    @classmethod
     def get_run_drain_max_seconds(cls, config: Dict[str, Any]) -> float:
         """restart 排水窗口生效值（秒）：agents.run_drain_max_seconds，缺省 60。
 

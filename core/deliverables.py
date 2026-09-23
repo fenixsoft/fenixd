@@ -1192,6 +1192,9 @@ def replace_declared_path(spec_dir, element: str, actual_path: str) -> dict:
         if remove_end < len(lines) and re.match(r"^\s+kind\s*:", lines[remove_end]):
             remove_end += 1
         del lines[elem_idx:remove_end]
+        # 声明段缩短了 remove_end - elem_idx 行，右端同步收缩：after 仍须是
+        # 纯声明段新文（Returns 契约），不得吞进下一节的标题行
+        end -= remove_end - elem_idx
     else:
         m = _path_line_re(element).match(lines[elem_idx])
         lines[elem_idx] = f"{m.group(1)}{actual_path}{m.group(2)}"
@@ -1941,6 +1944,9 @@ def remove_declared_entry(spec_dir, element: str) -> dict:
     if remove_end < len(lines) and re.match(r"^\s+kind\s*:", lines[remove_end]):
         remove_end += 1
     del lines[elem_idx:remove_end]
+    # 声明段缩短了 remove_end - elem_idx 行，右端同步收缩：after 仍须是
+    # 纯声明段新文（Returns 契约），不得吞进下一节的标题行
+    end -= remove_end - elem_idx
     after = "\n".join(lines[start:end])
 
     tasks.write_text("\n".join(lines) + "\n", encoding="utf-8")

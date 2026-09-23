@@ -10,7 +10,6 @@ import re
 import subprocess
 import time
 from pathlib import Path
-from pathlib import Path
 from typing import Dict, Optional, Tuple
 
 from core.state_machine import (
@@ -280,8 +279,8 @@ class SpecReviewManager:
             # 评审 run 因 spec 冻结被终止（frozen_terminated=True）：写
             # _frozen_hold 标记、保持 reviewing、不重派、不递增 _review_attempts、
             # 不触发熔断。MUST NOT 走 _classify_run_failure 的 content/infra
-            # 分支（_INFRA_FINGERPRINTS 含裸 "503"，评审 run 的 503 重试会被
-            # 误判 infra 而递增计数/熔断）。
+            # 分支（_INFRA_FINGERPRINTS 含 "429"/"rate limit" 等指纹，评审 run
+            # 的限流/配额类失败重试会被误判 infra 而递增计数/熔断）。
             # 判定用 `is True` 严格等值（修复验证轮 BUG）：MagicMock 等替身
             # 在属性访问时自动生成 truthy 子对象，`if getattr(...)` 裸布尔会把
             # 非冻结的替身结果误判为冻结终止、跳过重试递增——生产结果

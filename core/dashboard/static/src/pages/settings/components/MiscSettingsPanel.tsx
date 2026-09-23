@@ -77,7 +77,7 @@ export default function MiscSettingsPanel({ config, onSave, project, onConfigSyn
               // 注意：不能用 InputNumber 的 min 属性代替——min 会在 blur 时把 -5
               // 钳制回 0，用户永远看不到"非法输入被拦截"的表单错误提示。
               {
-                type: 'number',
+                type: 'integer',
                 min: 0,
                 message: '阈值必须为非负整数（0 = 禁用）',
               },

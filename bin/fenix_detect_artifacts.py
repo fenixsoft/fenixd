@@ -43,6 +43,7 @@
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -127,9 +128,14 @@ def detect_build_artifacts(project_root: Path) -> dict:
                     and name.endswith(".zip")
                 ) or (
                     name.endswith(".tar.gz")
-                    and any(
-                        tag in name
-                        for tag in ("release", "build", "dist", "v")
+                    and (
+                        any(
+                            tag in name
+                            for tag in ("release", "build", "dist")
+                        )
+                        # "v" 须带版本语义（如 v1.2.3 / project-v2.0.tar.gz）：
+                        # 裸字母 v 子串会误命中 level-data、novel 等任意含 v 的文件名
+                        or re.search(r"v\d", name)
                     )
                 ):
                     paths_found.add(name)  # 具体文件名（如 release-1.0.zip），非通配

@@ -122,8 +122,8 @@ class H2ProjectRoutesMixin:
 
 
     def _run_project_lifecycle_locked(self, action: str, project: dict, path: str):
-        from core.dashboard import server as _server_mod  # noqa: E402 — D3 缝隙命名空间延迟解析
         """_api_project_lifecycle 的锁内实现（调用方已持有项目生命周期锁）。"""
+        from core.dashboard import server as _server_mod  # noqa: E402 — D3 缝隙命名空间延迟解析
         try:
             if action == "start":
                 result = _server_mod.start_daemon(project["path"])

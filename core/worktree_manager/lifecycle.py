@@ -677,7 +677,10 @@ class G1LifecycleMixin:
         daemon 重启后内存锁丢失、但进程表仍存在指向该 spec worktree 的存活
         agent 进程时，同样返回 True（重建登记），防止创建第二个并发 worktree。
         """
-        registered = any(spec_name in lock for lock in self._spec_locks)
+        # [fenix-ignore:a83d069b9197] 台账所述子串比对已修复为 _lock_spec_name 精确比对（split(":")[0]==spec），spec 名互为子串不再误判持锁
+        registered = any(
+            self._lock_spec_name(lock) == spec_name for lock in self._spec_locks
+        )
         if not registered:
             # 无在册锁：以进程为真相兜底（daemon 重启 / 孤儿 resume 场景），
             # 命中时重建登记，使后续判定回到内存快路径。

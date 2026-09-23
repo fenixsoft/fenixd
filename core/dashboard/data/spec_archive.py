@@ -24,7 +24,9 @@ from .admin_actions import SPEC_DELETE_STOP_WAIT_TOTAL_SECONDS  # noqa: F401
 def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
     """软删除 SPEC：STATE.md 移除条目 + spec/changes/<name>/ 移入 archive。
 
-    两步任一失败则尽量回滚以保持两端数据一致，由调用方依据返回码处理：
+    两步任一失败则尽量回滚以保持两端数据一致（第 1 步移动目录失败时 STATE.md
+    尚未改动、天然一致；第 2 步剔除 STATE 失败时尽力把已归档目录移回原位），
+    由调用方依据返回码处理：
     - STATE.md 不含该 spec → {found: False}（幂等，不发任何文件操作）
     - 运行中保护：扫描 ``.fenix/runs/*.jsonl`` 顶层（活跃目录），用末行
       非终态判定在跑（终态口径 = ``RUN_TERMINAL_EVENT_TYPES`` 并集，含
@@ -38,6 +40,9 @@ def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
         目录）；全部终止 → 继续正常删除。
     - 正常：remove_spec 原子剔除条目；目录若存在则 shutil.move 到
       spec/archive/<name>-<Unix秒>/；目录缺失仅清状态（幂等）。
+    - STATE 剔除失败（OSError）：尽力把已归档目录移回 ``spec/changes/<name>``
+      并返回含 ``error`` 的失败 dict（不裸抛异常）；回滚亦失败时
+      ``archived``/``archive_path`` 保留滞留位置并写入 ``error``。
     - 归档同名冲突（极小概率）：在名字追加毫秒后缀重试，直至成功。
 
     Returns:
@@ -174,8 +179,35 @@ def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
         archived = True
         archive_path = str(dest)
 
-    # 2. 再原子剔除 STATE.md 条目
-    sm.remove_spec(spec)
+    # 2. 再原子剔除 STATE.md 条目。remove_spec 契约（core/state_machine.py
+    # remove_spec docstring）：删除与目录归档是两次独立系统操作，一致性由
+    # 调用方负责——此处剔除失败时目录已移入 archive，MUST 尽力移回原位，
+    # 否则 spec 永久卡在「STATE 有条目 + 活跃目录不存在」的不一致态
+    # （archive_spec 报「活跃目录已不存在」、auto_archive_check 不再纳入，
+    # 只能手工修复），并以返回码而非裸异常告知调用方。
+    try:
+        sm.remove_spec(spec)
+    except OSError as e:
+        rollback_err = None
+        if archived:
+            try:
+                shutil.move(archive_path, str(spec_dir))
+                archived = False
+                archive_path = None
+            except OSError as re_:
+                rollback_err = str(re_)
+        error = f"移除 STATE.md 条目失败: {e}"
+        if rollback_err is not None:
+            error += f"；归档目录回滚失败（滞留于 {archive_path}）: {rollback_err}"
+        return {
+            "found": True,
+            "running": False,
+            "archived": archived,
+            "archive_path": archive_path,
+            "error": error,
+            "pending": None,
+            "stopped": initial_running_count if initial_running_count else None,
+        }
     result = {
         "found": True,
         "running": False,
