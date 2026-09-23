@@ -1132,19 +1132,46 @@ def _accumulate_code_review_tokens(runner, run_id: str, usage_info: dict) -> Non
 
 
 def _unique_regression_run_id(runner) -> str:
-    """生成不冲突的 ``regression-<epoch>`` run_id（task 3.1）。
+    """生成并**原子申领**不冲突的 ``regression-<epoch>`` run_id（task 3.1）。
 
     秒级时间戳在「手动触发 + 同秒周期触发」下可能撞名（对齐
     _unique_code_review_run_id 的退避形态）。信号文件/日志按 run 实例留痕。
+
+    申领即创建（对齐 _unique_code_review_run_id / item e61828a54fda）：
+    以 ``O_CREAT|O_EXCL`` 抢占 ``run-<candidate>.json``（原子），输者退避
+    下一候选；占位内容为合法空 JSON ``{}``（无读者按 run 文件聚合，占位
+    不破坏任何消费方）。
     """
     base = f"regression-{int(time.time())}"
     candidate = base
     n = 1
+    reg_dir = runner.project_root / ".fenix" / "regression"
     while True:
-        if not (runner.project_root / ".fenix" / "regression" / f"run-{candidate}.json").exists():
+        if (reg_dir / f"run-{candidate}.json").exists():
+            n += 1
+            candidate = f"{base}-{n}"
+            continue
+        try:
+            reg_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            # 目录建不出（权限等）：退回探测语义，落盘失败由回归执行路径统一报错
             return candidate
-        n += 1
-        candidate = f"{base}-{n}"
+        try:
+            fd = os.open(
+                reg_dir / f"run-{candidate}.json",
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                0o644,
+            )
+        except FileExistsError:
+            # 已被并发触发申领 → 退避下一候选（申领即裁决，无再撞窗口）
+            n += 1
+            candidate = f"{base}-{n}"
+            continue
+        except OSError:
+            return candidate
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write("{}\n")
+        return candidate
 
 
 def run_regression(runner, spec, reason: str = "manual", project_root=None, lock_root=None) -> RegressionResult:

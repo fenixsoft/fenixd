@@ -348,5 +348,3 @@ class H6AlertRoutesMixin:
                 )
         self._json({"ok": True, "cleared": cleared})
 
-    # ── 项目管理端点（启停 daemon / 软删除） ──────────────
-

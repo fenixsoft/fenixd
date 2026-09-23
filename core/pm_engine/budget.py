@@ -9,7 +9,6 @@ from core.state_machine import (
     BUDGET_EXEMPT_ALERTED_FIELD,
     BUDGET_EXEMPT_RUNS_FIELD,
     INFRA_FAILURE_COUNT_FIELD,
-    INFRA_REFUNDED_RUN_IDS_FIELD,
     VERIFY_INFRA_ROUNDS_FIELD,
 )
 from core.agent_runner.run_files import run_spec_part, strip_run_id_suffixes
@@ -223,29 +222,20 @@ class ImplBudget:
         try:
             entry0 = self._pm.state_machine.read_one(spec_name) or {}
             anchor = refund_key or str(entry0.get("implementer_run") or "")
-            refunded_raw = entry0.get(INFRA_REFUNDED_RUN_IDS_FIELD) or "[]"
-            try:
-                refunded: list = json.loads(refunded_raw) if isinstance(refunded_raw, str) else []
-            except (json.JSONDecodeError, TypeError, ValueError):
-                refunded = []
-            if anchor and anchor in refunded:
+            # 「查锚点 + 退款 + 记锚点」收敛为单把文件锁下的原子读改写
+            # （item 40f7a931dc4c）：旧三步分持多把锁，同一 run 的并发 infra
+            # 判定都读不到锚点、各自退款一次。
+            refunded_flag, used = self._pm.state_machine.refund_impl_budget_once(
+                spec_name, anchor
+            )
+            if not refunded_flag:
                 # 同一实现 run 已退款——幂等跳过
                 self._pm.logger.info(
                     "pm_engine",
                     f"infra 预算退款幂等跳过 '{spec_name}' run={anchor}" f"（该实现 run 已退款）",
                 )
                 return True
-            used = self._pm.state_machine.bump_impl_budget(spec_name, -1)
             count = self._pm.state_machine.bump_infra_failure_count(spec_name)
-            if anchor:
-                refunded.append(anchor)
-                try:
-                    self._pm.state_machine.update_spec(
-                        spec_name,
-                        {INFRA_REFUNDED_RUN_IDS_FIELD: json.dumps(refunded, ensure_ascii=False)},
-                    )
-                except Exception:
-                    pass
             self._pm.logger.warning(
                 "pm_engine",
                 f"预算豁免（infra 失败）: '{spec_name}' used 回退至 "
@@ -320,6 +310,19 @@ class ImplBudget:
         completed = self._count_normal_completed_impl_runs(spec_name)
         if used == completed:
             return
+        # 下调方向先排除在飞 run（item 425736ecfd76）：对账时刻同 spec 恰有
+        # 新 run 已派发（启动计数已 +1）而产物尚未落盘时，completed 比 used
+        # 少 1 是对账窗口假象，自动下调会把该 run 的计数永久吞掉（run 收工
+        # 不再补 +1，预算少计）——保守不改数。
+        if completed < used and self._impl_run_unmaterialized(spec_name):
+            self._pm.logger.warning(
+                "pm_engine",
+                f"预算计数对账偏差（在飞实现 run）: '{spec_name}' used={used} vs "
+                f"runs 目录正常收工 run 数={completed}"
+                f"（implementer_run 产物尚未可见，疑似启动计数已加、产物未落盘，"
+                f"不自动改数）",
+            )
+            return
         if self._budget_reconcile_has_exemption(spec_name):
             self._pm.logger.warning(
                 "pm_engine",
@@ -343,6 +346,27 @@ class ImplBudget:
             f"预算对账自动校正: '{spec_name}' used={used} → {completed}"
             f"（runs 正常收工 run 数，无豁免因素；后续预算闸门按校正值生效）",
         )
+
+    def _impl_run_unmaterialized(self, spec_name: str) -> bool:
+        """最近派发的实现 run 产物在 runs 目录不可见（item 425736ecfd76）。
+
+        STATE ``implementer_run`` 指向的产物既不在顶层 runs/ 也不在 archive/
+        （按 run_id 前缀匹配，含 attempt/瞬态重试后缀）→ 视为「已派发未落盘」
+        的在飞 run。产物已归档/可见时返回 False（归档场景由
+        _budget_reconcile_has_exemption 兜底），无锚点返回 False。
+        """
+        entry = self._pm.state_machine.read_one(spec_name) or {}
+        current_run = str(entry.get("implementer_run") or "")
+        if not current_run:
+            return False
+        runs_dir = self._pm.project_root / ".fenix" / "runs"
+        for base in (runs_dir, runs_dir / "archive"):
+            try:
+                if base.is_dir() and any(base.glob(f"{current_run}*.jsonl")):
+                    return False
+            except OSError:
+                return False
+        return True
 
     def _budget_reconcile_has_exemption(self, spec_name: str) -> bool:
         """对账校正的豁免因素判定（lifecycle-hygiene 4.3 / design D5 + R2）。

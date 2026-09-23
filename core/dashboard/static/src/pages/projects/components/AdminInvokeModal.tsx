@@ -189,7 +189,6 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
       }
       open={open}
       onCancel={(e) => {
-        console.log('[admin-modal-close]', e?.type, e?.target?.className || '');
         onClose(e);
       }}
       footer={null}

@@ -9,6 +9,7 @@ Handles atomic reads/writes of STATE.md with file locking.
 """
 
 import fcntl
+import json
 import os
 import re
 import subprocess
@@ -282,6 +283,29 @@ SCENARIO_REPAIR_EXHAUSTED_FIELD = "_scenario_repair_exhausted_rounds"
 # ── STATE.md Parser ─────────────────────────────────────────────────
 
 
+def _escape_state_value(val) -> str:
+    """字段值单行化：换行转义为字面量 ``\\n``（反斜杠先转义保证可往返）。
+
+    STATE.md 是行式格式，值内裸换行会让续行脱离条目结构（解析侧静默丢弃
+    或被误解析成伪造字段）。异常文本（git/subprocess 报错等）常含多行，
+    写入端统一消毒，解析端经 ``_unescape_state_value`` 逆变换往返。
+    """
+    s = str(val)
+    s = s.replace("\\", "\\\\")
+    s = s.replace("\r\n", "\\n").replace("\n", "\\n").replace("\r", "\\r")
+    return s
+
+
+_UNESCAPE_STATE_VALUE_RE = re.compile(r"\\\\|\\n|\\r")
+
+
+def _unescape_state_value(val: str) -> str:
+    """``_escape_state_value`` 的逆变换（单趟左到右扫描，正确处理 ``\\\\n``）。"""
+    return _UNESCAPE_STATE_VALUE_RE.sub(
+        lambda m: {"\\n": "\n", "\\r": "\r", "\\\\": "\\"}[m.group(0)], val
+    )
+
+
 class StateParser:
     """Parse and serialize STATE.md entries."""
 
@@ -338,7 +362,7 @@ class StateParser:
             kv_match = re.match(r"^-\s+([a-z_][a-z0-9_]*):\s*(.*)$", line)
             if kv_match and current_name:
                 key = kv_match.group(1)
-                value = kv_match.group(2).strip()
+                value = _unescape_state_value(kv_match.group(2).strip())
 
                 # Type coercion
                 if key in ("priority",):
@@ -455,14 +479,14 @@ class StateParser:
                 val = entry.get(key, "null")
                 if val is None:
                     val = "null"
-                lines.append(f"- {key}: {val}")
+                lines.append(f"- {key}: {_escape_state_value(val)}")
             # 追加内部状态字段（_ 前缀，如 _retry_count/_merge_fp/_merge_streak），
             # 使其跨 daemon 重启持久化（fix-fenix-token-waste：熔断计数依赖它）
             for key, val in entry.items():
                 if key.startswith("_") and key != "updated":
                     if val is None:
                         val = "null"
-                    lines.append(f"- {key}: {val}")
+                    lines.append(f"- {key}: {_escape_state_value(val)}")
             lines.append("")
 
         return "\n".join(lines)
@@ -728,6 +752,59 @@ class StateMachine:
         Returns: 递增/回退后的使用次数（跨重启持久化）。
         """
         return self._bump_counter(spec_name, IMPL_RUN_BUDGET_USED_FIELD, delta)
+
+    def refund_impl_budget_once(self, spec_name: str, anchor: str) -> tuple:
+        """infra 预算退款的锁内原子「查锚点 → 退款 → 记锚点」（item 40f7a931dc4c）。
+
+        旧路径 ``read_one`` 查锚 → ``bump_impl_budget(-1)`` → ``update_spec``
+        记锚三步分持多把锁：同一 run 的并发 infra 判定都读不到锚点、各自
+        退款一次（丢失更新形态）。本方法把三步收进单把 ``.STATE.md.lock``
+        临界区（与 _bump_counter 同范式）：锚点已登记 → 幂等跳过不退款；
+        未登记（含空锚点）→ 退款并追加锚点一次完成。
+
+        Returns: ``(refunded, used)``
+            refunded=False 表示该 run 已退款过（幂等跳过）；used 为退款后
+            （或幂等跳过时的当前）used 值。spec 缺失按旧 bump 路径容错：
+            记 warning 并返回 (True, 0)，不阻断调用方。
+        """
+        lock_path = self.state_path.parent / ".STATE.md.lock"
+        with open(lock_path, "w") as lock_f:
+            fcntl.flock(lock_f, fcntl.LOCK_EX)
+            try:
+                specs = self.read_all()
+                if spec_name not in specs:
+                    self.logger.warning(
+                        "state_machine",
+                        f"refund impl budget failed: SPEC not found: {spec_name}",
+                    )
+                    return True, 0
+                entry = specs[spec_name]
+                refunded_raw = entry.get(INFRA_REFUNDED_RUN_IDS_FIELD) or "[]"
+                try:
+                    refunded = (
+                        json.loads(refunded_raw) if isinstance(refunded_raw, str) else []
+                    )
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    refunded = []
+                if not isinstance(refunded, list):
+                    refunded = []
+                try:
+                    used = int(entry.get(IMPL_RUN_BUDGET_USED_FIELD, 0) or 0)
+                except (TypeError, ValueError):
+                    used = 0
+                if anchor and anchor in refunded:
+                    return False, used
+                entry[IMPL_RUN_BUDGET_USED_FIELD] = max(0, used - 1)
+                if anchor:
+                    refunded.append(anchor)
+                    entry[INFRA_REFUNDED_RUN_IDS_FIELD] = json.dumps(
+                        refunded, ensure_ascii=False
+                    )
+                entry["updated"] = datetime.now(timezone.utc).isoformat()
+                self._write_all_locked(specs)
+                return True, entry[IMPL_RUN_BUDGET_USED_FIELD]
+            finally:
+                fcntl.flock(lock_f, fcntl.LOCK_UN)
 
     def bump_task_gate_rejections(self, spec_name: str, delta: int = 1) -> int:
         """任务完成度类产物硬门拒绝计数原子增减（``_impl_gate_task_rejections``）。

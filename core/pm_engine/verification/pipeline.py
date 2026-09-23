@@ -278,7 +278,7 @@ class VerificationPipeline:
         "_verifier_error_is_infra": _verifier_error_is_infra,
         "enrich_failure_class": enrich_failure_class,
         "_record_infra_failure": _record_infra_failure,
-        "_detect_uniform_verify_failure": _detect_uniform_verify_failure.__func__,
+        "_detect_uniform_verify_failure": _detect_uniform_verify_failure,
         "_fail_history_path": _fail_history_path,
         "_read_fail_history": _read_fail_history,
         "_append_fail_history": _append_fail_history,

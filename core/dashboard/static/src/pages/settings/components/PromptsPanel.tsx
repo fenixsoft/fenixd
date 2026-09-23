@@ -175,10 +175,21 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
       // 把旧项目内容盖回新项目视图——与新项目的 activeAgent/草稿形成跨项目
       // 串数据。仅当面板仍归属发起保存的项目时才回填。
       if (loadedForRef.current === project) {
-        setData(d);
-        // 仅当用户仍停在同一 agent 时才回填草稿（避免覆盖刚切到的 agent）
-        if (targetAgent === activeAgent) {
-          setExtraDraft(projectExtraOf(d, targetAgent));
+        // HTTP-200 错误载荷检查（code-review item 441adfad7a94）：与初始加载
+        // 路径同款——refetch 恰逢后端读提示词出错时返回 {error}，回填会把
+        // 错误载荷当正常数据 setData（agents 缺失渲染空只读视图），且
+        // projectExtraOf 返回空串静默清空用户已保存的草稿（下次保存把空串
+        // 写进 .fenix/agents/<agent>.md）。检测到错误载荷仅提示刷新失败，
+        // 保留现有 data/extraDraft。
+        const errPayload = (d as { error?: string }).error;
+        if (errPayload) {
+          message.warning(`已保存，但刷新列表返回错误：${errPayload}`);
+        } else {
+          setData(d);
+          // 仅当用户仍停在同一 agent 时才回填草稿（避免覆盖刚切到的 agent）
+          if (targetAgent === activeAgent) {
+            setExtraDraft(projectExtraOf(d, targetAgent));
+          }
         }
       }
     } catch (e) {

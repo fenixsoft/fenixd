@@ -592,10 +592,11 @@ class VisualDiffer:
         b_arr = np.array(baseline)
         c_arr = np.array(current)
 
-        # 容忍10像素值的着色差异
-        diff_mask = np.abs(b_arr.astype(int) - c_arr.astype(int)) > 10
-        diff_pixels = int(np.sum(diff_mask))
-        total_pixels = int(b_arr.size)
+        # 容忍10像素值的着色差异（掩码归约到像素级：(H,W,3) 逐通道比较经
+        # any(axis=2) 收敛为 (H,W)，否则布尔索引赋值 [255,0,0] 无法广播）
+        diff_mask = (np.abs(b_arr.astype(int) - c_arr.astype(int)) > 10).any(axis=2)
+        diff_pixels = int(diff_mask.sum())
+        total_pixels = int(b_arr.shape[0] * b_arr.shape[1])
         diff_ratio = diff_pixels / total_pixels
 
         # 生成差异图

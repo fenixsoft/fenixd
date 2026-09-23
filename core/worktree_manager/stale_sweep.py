@@ -133,7 +133,15 @@ class G7StaleSweepMixin:
                 if data is None:
                     return None
                 if not isinstance(data, dict):
-                    return {}
+                    # 非 dict 形态（上游反序列化异常返回 list/str 等）属读取
+                    # 异常，与 None 同路保守保留——归一为空 dict 会被按
+                    # 「无引用」放行删分支，违背本函数的保守处理承诺。
+                    self.logger.warning(
+                        "worktree_manager",
+                        f"state_reader 返回非 dict（{type(data).__name__}），"
+                        f"按读取失败保守不清分支",
+                    )
+                    return None
                 return data
             except Exception as e:
                 self.logger.warning(

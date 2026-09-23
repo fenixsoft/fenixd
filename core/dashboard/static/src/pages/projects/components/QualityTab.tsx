@@ -462,8 +462,12 @@ export default function QualityTab({ project, active }: QualityTabProps) {
           message.success(result.message || '已投递一批自动修复，可在进度卡片查看进展');
         } else {
           // 拒绝原因（无待修条目/已有修复在跑/回归契约缺失等）由 daemon
-          // 结果文件的 message 如实回显，不让用户对着无反应的按钮猜
-          message.warning(result.message || `未能投递：${result.reason}`);
+          // 结果文件的 message 如实回显，不让用户对着无反应的按钮猜；
+          // message 与 reason 皆缺省时兜底为固定文案（勿渲染 undefined）
+          message.warning(
+            result.message ||
+              (result.reason ? `未能投递：${result.reason}` : '未能投递自动修复请求'),
+          );
         }
       } else {
         message.info('触发结果尚未就绪，请稍后在进度卡片或 daemon 日志确认');

@@ -450,6 +450,7 @@ def check_daemon():
         r = subprocess.run(
             ["python3", str(helper), "running", str(PROJECT_ROOT)],
             capture_output=True,
+            text=True,
             timeout=2,
         )
         return r.stdout.strip() == "YES"

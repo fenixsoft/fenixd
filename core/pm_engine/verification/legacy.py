@@ -1,4 +1,10 @@
-"""legacy.py — legacy verification fallback."""
+"""legacy.py — core.pm_engine.verification.legacy：legacy 验证回退（refactor-verification-module D2）。
+
+从 VerificationPipeline 摘出的降级方案入口 `_run_legacy_verification`：使用旧版
+单体 Verifier Agent 的三阶段验证回退。纯结构搬移，零行为变化。
+
+本模块 MUST NOT `import _legacy`（D2b 规则 1：门面依赖以显式 `pipeline` 参数注入）。
+"""
 
 import json
 import os
@@ -7,14 +13,6 @@ import subprocess
 import time
 from pathlib import Path
 from core.state_machine import ENV_BLOCK_ROUNDS_FIELD, VERIFY_INFRA_ROUNDS_FIELD
-
-"""core.pm_engine.verification.legacy — legacy 验证回退（refactor-verification-module D2）。
-
-从 VerificationPipeline 摘出的降级方案入口 `_run_legacy_verification`：使用旧版
-单体 Verifier Agent 的三阶段验证回退。纯结构搬移，零行为变化。
-
-本模块 MUST NOT `import _legacy`（D2b 规则 1：门面依赖以显式 `pipeline` 参数注入）。
-"""
 
 
 def _run_legacy_verification(pipeline, spec_name: str):
