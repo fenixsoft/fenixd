@@ -141,6 +141,9 @@ _AGENTS_SOURCE_KEYS = (
     "daily_run_limit",
     "token_budget_millions",
     "impl_run_budget",
+    # open-impl-budget-ceiling：实现尝试预算上限（1-1000；设置页 TokenBudgetPanel
+    # 提交该键，缺此分支会被 _deep_merge_managed 静默丢弃且回显缺失弹回缺省 100）
+    "impl_run_budget_max",
     "verify_redo_budget",
     # 同因重派熔断阈值（回显经归一化覆盖，非法回退缺省 3）
     "max_same_cause_redispatches",

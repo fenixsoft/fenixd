@@ -752,13 +752,20 @@ class G8QueryMixin:
 
             Looks for directories matching impl-<spec>-* in the base dir.
             Returns the path of the newest one (by mtime), or None if none found.
+
+            归属判定与 :meth:`_wt_name_matches_spec` 同口径：解析出完整 spec
+            名全等比较（分隔符边界锚定，禁止子串包含）——spec 名互为前缀时
+            （``fix-x`` vs ``fix-x-y``）裸 ``startswith`` 会误取他人 worktree。
             """
             if not self.base_dir.is_dir():
                 return None
             candidates = []
-            prefix = f"impl-{spec_name}-"
             for d in self.base_dir.iterdir():
-                if d.is_dir() and d.name.startswith(prefix):
+                if (
+                    d.is_dir()
+                    and d.name.startswith("impl-")
+                    and self._wt_name_matches_spec(d.name, spec_name)
+                ):
                     try:
                         candidates.append((d.stat().st_mtime, d))
                     except OSError:

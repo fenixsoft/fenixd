@@ -501,17 +501,24 @@ def reclassify_infra_rounds(
     )
     if already_applied:
         entry = state_machine.read_one(spec_name) or {}
+        try:
+            cur_rounds = int(entry.get("_verify_fail_rounds", 0) or 0)
+        except (TypeError, ValueError):
+            cur_rounds = 0
         return {
             "ok": True,
             "applied": 0,
-            "fail_rounds": int(entry.get("_verify_fail_rounds", 0) or 0),
+            "fail_rounds": cur_rounds,
             "status": entry.get("status", ""),
             "note": "already applied (idempotent)",
         }
 
     # ── 读当前值 ──
     entry = state_machine.read_one(spec_name) or {}
-    current = int(entry.get("_verify_fail_rounds", 0) or 0)
+    try:
+        current = int(entry.get("_verify_fail_rounds", 0) or 0)
+    except (TypeError, ValueError):
+        current = 0
     applied = min(n, current)
     new_fail_rounds = current - applied
 

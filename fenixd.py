@@ -3520,9 +3520,12 @@ class FenixDaemon:
             # （code-review item f9b054acb529）：那些 future 永不进入
             # _admin_run_worker/_execute_admin_disposition，因此不会写 pending 或
             # failed disposition 记录——而请求文件已被 _check_admin_invoke_requests
-            # 删除，旧日志却称其「由 pending disposition 标记可追溯」，与事实不符。
-            # 处置前先核算「已提交但未完成」的数量，对其补写 failed disposition
-            # 记录（与 _submit_admin_run 的拒绝路径一致），使被丢弃的处置可追溯。
+            # 删除。处置前先核算「已提交但未完成」的数量并以日志留痕。
+            # 口径说明（code-review item 931b7ac6aa1e）：submitted-completed-failed
+            # ＝排队（未开跑）＋在途（执行中）的混合，池统计只有三计数器无法拆分；
+            # wait=False 不等在途收尾，shutdown 后同一差值不变——故对同一数字只发
+            # 下面这一条按事实描述的日志，不再分别断言「全部未开跑被取消」与
+            # 「全部在途」这种互斥口径。
             try:
                 with self._admin_pool_lock:
                     _stats_before = dict(self._admin_pool_stats)
@@ -3534,27 +3537,15 @@ class FenixDaemon:
                 )
                 self._admin_executor.shutdown(wait=False, cancel_futures=True)
                 if _dropped:
-                    # 已提交但未开跑的处置不会写 pending disposition（pending 由
-                    # run_administrator 开头落，这些 future 从未进入该函数），
-                    # 故如实记「已取消且无 disposition 记录」，不再声称「由 pending
-                    # 标记可追溯」——人工可据本条 WARNING 的计数与请求文件已删除的
-                    # 事实反查（运维记录中该轮无对应条目即为被取消的那批）。
                     _safe_log(
                         "warning",
-                        f"Admin worker pool 关闭：{_dropped} 条已提交但未开跑的处置被取消"
-                        f"（未写入 disposition 记录，如需重放请核对运维记录中缺失的条目）",
+                        f"Admin worker pool 关闭：至多 {_dropped} 条已提交未完成的处置"
+                        f"（含排队与在途，池统计无法区分）：其中排队者已被取消、未写入"
+                        f" disposition 记录（如需重放请核对运维记录中缺失的条目）；"
+                        f"在途者由 pending disposition 标记可追溯",
                     )
             except Exception as e:
                 _safe_log("error", f"Admin worker pool shutdown failed: {e}")
-            with self._admin_pool_lock:
-                stats = dict(self._admin_pool_stats)
-            in_flight = max(0, stats["submitted"] - stats["completed"] - stats["failed"])
-            if in_flight:
-                _safe_log(
-                    "info",
-                    f"Admin worker pool shutdown: {in_flight} 处置在途，由 pending "
-                    f"disposition 标记可追溯",
-                )
         if self.event_bus:
             self.event_bus.stop()
 

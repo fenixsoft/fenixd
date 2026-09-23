@@ -1276,19 +1276,22 @@ class ProviderCircuit:
         """
         with self._unseal_lock:
             prior = self._unseal_wake_timer
-            timer = threading.Timer(max(0.5, float(delay)), self._on_unseal_wake)
+            # 闭包捕获自身 timer 引用：回调凭身份清登记，见 _on_unseal_wake。
+            timer = threading.Timer(
+                max(0.5, float(delay)), lambda: self._on_unseal_wake(timer)
+            )
             timer.daemon = True
             self._unseal_wake_timer = timer
         if prior is not None:
             prior.cancel()
         timer.start()
 
-    def _on_unseal_wake(self) -> None:
+    def _on_unseal_wake(self, timer: threading.Timer) -> None:
         """解封节奏定时器回调：唤醒派发闸门 + 按当前态续排下一锚点。"""
         with self._unseal_lock:
             # 仅当仍是当前登记定时器才清（item 62a1c4e3e71f）：已 fire 旧回调
-            # 与并发新排程竞态时，无条件清引用会抹掉新定时器（失联失控）。
-            if self._unseal_wake_timer is not None:
+            # 与并发新排程竞态时，按身份比较清引用，避免抹掉新定时器（失联失控）。
+            if self._unseal_wake_timer is timer:
                 self._unseal_wake_timer = None
         self._wake_dispatch_after_break()
         # 唤醒推进（到期迁移/准入推进）完成后再取当前时刻续排——用推进前的

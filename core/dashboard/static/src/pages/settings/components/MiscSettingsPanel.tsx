@@ -1,4 +1,4 @@
-import { Button, Card, Form, InputNumber, Typography } from 'antd';
+import { Button, Card, Form, InputNumber, Typography, message } from 'antd';
 import { useEffect, useRef } from 'react';
 import type { ConfigData } from '@/services/dashboard';
 import SyncFromUserButton from './SyncFromUserButton';
@@ -32,17 +32,27 @@ export default function MiscSettingsPanel({ config, onSave, project, onConfigSyn
   }, [config.archive, form]);
 
   const handleSave = async () => {
+    // 分离「表单校验」与「保存持久化」（code-review item 9125d4a7f7b4，比照
+    // AgentModelPanel 3086b7e96c4f）：旧实现两者混在同一 try/catch 且静默吞掉，
+    // onSave 拒绝（网络失败/500）时用户点击「保存」后无任何反馈。
+    let values;
     try {
-      const values = await form.validateFields();
+      values = await form.validateFields();
+    } catch {
+      // 校验失败：antd 已在表单内渲染 explain-error 提示，无需额外日志
+      // （避免触发验证的 no_console_error 断言）。
+      return;
+    }
+    try {
       await onSave({
         // add-spec-archive：自动归档阈值（0 = 禁用）
         archive: {
           auto_threshold: values.auto_threshold,
         },
       });
-    } catch {
-      // 校验失败：antd 已在表单内渲染 explain-error 提示，无需额外日志
-      // （避免触发验证的 no_console_error 断言）。
+    } catch (error) {
+      // 保存持久化失败：给用户显式反馈而非静默
+      message.error(`保存失败：${error instanceof Error ? error.message : String(error)}`);
     }
   };
 

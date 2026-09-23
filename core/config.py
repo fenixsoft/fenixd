@@ -1719,6 +1719,16 @@ class ConfigLoader:
             for key in SUPERVISION_DEFAULTS:
                 if key in sup and sup[key] is not None:
                     cfg[key] = sup[key]
+            # 数字键类型归一（code-review item a167cbc7bfe9）：手改配置的脏值
+            # （如 max_extensions: "two"）原样拷出后，supervision_floor /
+            # supervision_config_floor 的 int()/float() 转换会抛 ValueError，
+            # 经 _check_supervision_consistency → _validate 使 load()/热更新
+            # 直接失败（报错为 int 解析错误，难以定位）——与本文件「脏值回退
+            # 缺省、不中断加载」的 fail-open 哲学相悖。与 _normalize_transient_
+            # seconds 同款归一：bool 排除（bool 是 int 子类）、非法回退缺省。
+            # enabled 保留原样拷贝（真值判定不抛错，且布尔归一超出本条目范围）。
+            for key in ("extension_seconds", "max_extensions", "judge_window", "absolute_max_seconds"):
+                cfg[key] = cls._normalize_transient_seconds(sup, key, SUPERVISION_DEFAULTS[key])
         return cfg
 
     @classmethod

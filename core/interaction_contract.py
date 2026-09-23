@@ -37,31 +37,6 @@ INTERACTIVE_KEYWORDS = ("button", "btn", "card", "link", "href", "clickable")
 # 主题前缀（amis/cxd/antd 主题类名前缀，归一化时剥离）
 THEME_PREFIXES = ("dark-", "cxd-", "light-", "amis-", "ant-")
 
-# 无分隔符裸关键词（如 button / cards / href）认可的「元素定义语境」标记：
-# 命中其一才视为元素定义，避免把叙述性散文误报为候选。
-_CODE_CONTEXT_MARKERS = (
-    "`",
-    "class",
-    "classname",
-    "css",
-    "样式",
-    "类名",
-    "字段",
-    "组件",
-    "渲染",
-    "循环",
-    "模板",
-    "template",
-    "map(",
-    "foreach",
-    "each",
-    "卡片",
-    "按钮组",
-    "列表",
-)
-# 说明：首版实现中裸关键词直接视为候选（中文 SPEC 的英文 token 几乎均为
-# 组件/字段标识），此清单保留供后续版本收紧误报时使用。
-
 # cards 渲染循环模式（design D1：cards 循环）
 _CARDS_LOOP_RE = re.compile(
     r"(卡片|cards).{0,24}?(循环|渲染|map\(|forEach|each|列表|遍历)|"
@@ -197,8 +172,10 @@ def extract_candidates(text: str, source: str = "") -> List[InteractiveCandidate
     模式：
       1. 带分隔符且含交互关键词的 token（如 ``dark-Card--link``、``submit-btn``、
          ``button-group``）；
-      2. 无分隔符裸关键词 token（button/cards/href/link 等），仅当所在行有元素
-         定义语境标记（类名/字段/组件/循环/渲染…）；
+      2. 无分隔符裸关键词 token（button/cards/href/link 等），直接视为候选，
+         不做元素定义语境判定（首版曾要求所在行含语境标记如类名/字段/组件/
+         循环/渲染等，该门槛已被有意移除：中文 SPEC 中的英文 token 几乎均为
+         组件/字段标识，加门槛徒增漏报面）；
       3. cards 渲染循环（卡片/cards 与循环/渲染/map 同行）；
       4. href/link 字段（``"href":`` / ``link=``）。
 
