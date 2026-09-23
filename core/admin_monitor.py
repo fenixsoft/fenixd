@@ -1016,18 +1016,6 @@ class AdminMonitor:
                     f"（window_start={window_start.isoformat()}, kind={window_kind}）",
                 )
             return {"triggered": True, "ok": True, "reason": "no_files", "date": local_today_str()}
-            # manifest 为空：记录并跳过（不派发空 run——design Risk「空场景
-            # 白洗」），同日防重仍然写入（当日不重试，与自省零活动跳过同口径）。
-            # 复位单飞标志（上方锁内已置位）——否则本车道永久被「已运行」挡住。
-            with self._code_review_lock:
-                self._code_review_in_flight = False
-            save_code_review_state(self.project_root, local_today_str())
-            self.logger.info(
-                "admin_monitor",
-                "code-review: 窗口内无文件变更，跳过本次周期审查"
-                f"（window_start={window_start.isoformat()}, kind={window_kind}）",
-            )
-            return {"triggered": True, "ok": True, "reason": "no_files", "date": local_today_str()}
 
         # 上限截断
         max_files = cr_cfg.get("max_files", 500)

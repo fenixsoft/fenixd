@@ -16,6 +16,7 @@ fail-open 契约：任何缺失/损坏不抛异常、不产生 error 字段（�
 
 import json
 import subprocess
+import time
 from pathlib import Path
 
 # ── 契约常量（键名固化，禁止同义改写） ─────────────────────────────
@@ -282,6 +283,34 @@ _FULL_SUITE_PRODUCT_STATUS = {
 }
 
 
+# 仓库指纹短 TTL 缓存（code-review item f10216997ee3）：current_repo_fingerprint
+# 每次调用最多拉起 3 个 git 子进程（各 10s 超时），而 parse_quality_gates 在一次
+# /api/specs 刷新内对每个 spec 各合成一次门禁（spec_detail 每请求两次 + SSE 重
+# 推）——无缓存时热读路径每次请求拉起数十个 git 子进程。与 runs.py 的
+# _RUN_META_CACHE 同款模块级 memo：TTL 内同 project_root 复用一次采集，代价是
+# HEAD 恰在移动的边界场景下门禁可见性延迟至多一个 TTL（指纹新鲜度本就按
+# 「刷新窗口内一致」语义消费）。
+_FINGERPRINT_CACHE: dict = {}
+_FINGERPRINT_CACHE_TTL_SECONDS = 5.0
+_FINGERPRINT_CACHE_MAX = 64
+
+
+def _cached_repo_fingerprint(project_root):
+    """``current_repo_fingerprint`` 的短 TTL memo（见上方缓存说明）。"""
+    key = str(project_root)
+    now = time.monotonic()
+    hit = _FINGERPRINT_CACHE.get(key)
+    if hit is not None and now - hit[0] < _FINGERPRINT_CACHE_TTL_SECONDS:
+        return hit[1]
+    import core.regression as _reg
+
+    fp = _reg.current_repo_fingerprint(project_root)
+    if len(_FINGERPRINT_CACHE) >= _FINGERPRINT_CACHE_MAX:
+        _FINGERPRINT_CACHE.clear()
+    _FINGERPRINT_CACHE[key] = (now, fp)
+    return fp
+
+
 def _full_suite_product_status(project_root) -> tuple:
     """full-suite 门的框架侧产物源：``.fenix/regression/last-run.json``。
 
@@ -295,13 +324,14 @@ def _full_suite_product_status(project_root) -> tuple:
 
     data = _reg.read_result(project_root)
     status_raw = data.get("status") if isinstance(data, dict) else None
-    if status_raw not in ("passed", "failed", "timeout", "skipped", "running"):
-        # never_run / parse_error / 状态映射外 → 本源不可用
+    if status_raw not in _FULL_SUITE_PRODUCT_STATUS:
+        # never_run / parse_error / 状态映射外 → 本源不可用（成员判定直接
+        # 对映射做——白名单字面量与键集双写会漂移，code-review item 75e44244301c）
         return None, ""
     stamp = data.get("repo_fingerprint")
     if not isinstance(stamp, dict):
         return None, ""  # 存量快照无指纹字段 → 不可见（按 3.2 契约）
-    current = _reg.current_repo_fingerprint(project_root)
+    current = _cached_repo_fingerprint(project_root)
     if current is None:
         return None, ""  # 当前指纹采集失败 → 新鲜度不可验证 → 不可见
     if (stamp.get("branch"), stamp.get("merge_base"), stamp.get("head_commit")) != (

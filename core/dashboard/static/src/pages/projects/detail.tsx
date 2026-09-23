@@ -907,7 +907,7 @@ export default function SpecDetailPage() {
             // testing 停等注记（add-timeline-ocr-lane-visibility 任务 2.3）：最新
             // 「→ testing」节点在 ocr 门 running 时显示（后端仅对该节点下发 ocr_gate，
             // 其余状态 ocrJoinNote 返回 null 零渲染）；detail 为门禁合成同源辅助文案
-            const ocrNote = ocrJoinNote(String(item.ocr_gate?.status || ''));
+            const ocrNote = ocrJoinNote(item.ocr_gate?.status);
             return {
               color: isRollback ? '#ec835a' : 'gray',
               children: (

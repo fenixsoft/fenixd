@@ -1023,6 +1023,36 @@ class PMEngine:
             )
             self._quarantine_parallel_product(spec_name, "spec 已删除")
             return
+        if spec.get("status") in ("drafted", "blocked"):
+            # 回退收尾兜底（code-review item b4b98c69a4e1）：_stop_parallel_planning
+            # 的 cancel_run 与 run 真正登记/收尾之间存在竞窗（attempt 尚未注册时
+            # cancel 落 not_running、停止旗标未登记），run 会照常跑完——此处不得
+            # 写 completed：否则下次 ready 重入被 marker 挡住不重派，对旧版 spec
+            # 出的题被 testing 直接消费。按任务 1.2「回退即停」隔离半成品。
+            self._write_parallel_plan_marker(
+                spec_name,
+                {
+                    "status": "discarded",
+                    "run_id": getattr(result, "run_id", ""),
+                    "reason": f"spec 状态已回退 '{spec.get('status')}'",
+                },
+            )
+            self._quarantine_parallel_product(
+                spec_name, f"spec 状态已回退 '{spec.get('status')}'，并行出题产物隔离"
+            )
+            return
+        if (self._read_parallel_plan_marker(spec_name) or {}).get("status") == "discarded":
+            # 消费侧已接管翻牌（code-review item b4b98c69a4e1）：testing 等待
+            # 超时/收尾竞窗的 run-death 误判把 marker 翻成 discarded 并转串行
+            # 重出。此时不得以 completed 覆写接管方标记（否则本次/下次 testing
+            # 的消费判定错乱），也不得再隔离产物——串行重出即将覆写同路径，
+            # 盲隔离可能误删串行产物。并行产物由串行路径覆写，无需额外处置。
+            self.logger.info(
+                "pm_engine",
+                f"并行出题标记已被消费侧接管（discarded），放弃 completed 登记: "
+                f"{spec_name} run={getattr(result, 'run_id', '')}",
+            )
+            return
         if getattr(result, "success", False):
             self._write_parallel_plan_marker(
                 spec_name,

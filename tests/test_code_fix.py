@@ -2202,10 +2202,51 @@ class TestRetryBudget(unittest.TestCase):
             record_failed_batch(proot, ["c3"], "/tmp/wt-c", reason="r")
         released = release_retryable_failed_batches(proot)
         self.assertEqual(released, 2, "仅 fail_count<3 的两条被释放")
+        # 墓碑语义（code-review item 931df4af59cc）：释放打标不删除，fail_count
+        # 预算由墓碑保留；仅达上限记录保持「在档排除」态
         remaining = load_failed_batches(proot)
-        self.assertEqual(len(remaining), 1)
-        self.assertEqual(remaining[0]["fail_count"], FAIL_RETRY_MAX)
-        self.assertEqual(set(remaining[0]["item_ids"]), {"c3"})
+        self.assertEqual(len(remaining), 3)
+        tombstones = [r for r in remaining if r.get("released")]
+        self.assertEqual(
+            {tuple(sorted(r["item_ids"])) for r in tombstones}, {("c1",), ("c2",)}
+        )
+        self.assertTrue(all(r.get("released_at") for r in tombstones))
+        active = [r for r in remaining if not r.get("released")]
+        self.assertEqual(len(active), 1)
+        self.assertEqual(active[0]["fail_count"], FAIL_RETRY_MAX)
+        self.assertEqual(set(active[0]["item_ids"]), {"c3"})
+
+    def test_release_tombstone_keeps_budget_across_chains(self):
+        """跨链预算累计（code-review item 931df4af59cc 集成缺口）：
+        链末释放（打标墓碑）→ 条目重回可选池 → 同条目集再次失败复燃墓碑并
+        递增 fail_count——不再每链重新以 1 建档，达上限告警可达。"""
+        from core.code_fix import (FAIL_RETRY_MAX, _failed_item_ids,
+                                   load_failed_batches, record_failed_batch,
+                                   release_retryable_failed_batches)
+
+        proot = _make_project_root()
+        record_failed_batch(proot, ["a"], "/tmp/wt-1", reason="r")
+        self.assertEqual(_failed_item_ids(proot), {"a"}, "在档记录参与选批排除")
+        # 链末新链启动：预算内释放 → 条目重回可选池（不被排除），记录保留
+        self.assertEqual(release_retryable_failed_batches(proot), 1)
+        self.assertEqual(_failed_item_ids(proot), set(), "墓碑不参与选批排除")
+        recs = load_failed_batches(proot)
+        self.assertEqual(len(recs), 1, "释放打标不删除")
+        self.assertTrue(recs[0].get("released"))
+        self.assertEqual(recs[0]["fail_count"], 1, "预算由墓碑保留")
+        # 新链同条目集再次失败：复燃墓碑并续增（不再重新建档）
+        record_failed_batch(proot, ["a"], "/tmp/wt-2", reason="r")
+        recs = load_failed_batches(proot)
+        self.assertEqual(len(recs), 1)
+        self.assertEqual(recs[0]["fail_count"], 2)
+        self.assertFalse(recs[0].get("released"), "复燃清标回到在档排除态")
+        self.assertEqual(_failed_item_ids(proot), {"a"})
+        # 递增至 FAIL_RETRY_MAX 的那次发一次性告警（真实编排路径可达）
+        for _ in range(FAIL_RETRY_MAX - 2):
+            record_failed_batch(proot, ["a"], "/tmp/wt-3", reason="r")
+        self.assertEqual(len(self._signals(proot, "code_fix_retry_budget_exhausted")), 1)
+        # 幂等：已释放墓碑不重刷、达上限记录不重复释放
+        self.assertEqual(release_retryable_failed_batches(proot), 0)
 
     def test_max_alert_exactly_once_then_never_again(self):
         from core.code_fix import (FAIL_RETRY_MAX, record_failed_batch,
@@ -2685,9 +2726,14 @@ class TestWipGateDeferred(unittest.TestCase):
         items = read_items(proot)
         self.assertEqual(items["a"]["status"], "open")
         self.assertEqual(items["b"]["status"], "resolved", "链继续后续批")
-        wt_a = failed[0]["worktree"]
-        self.assertFalse(Path(wt_a).exists(), "现场即弃：worktree 目录被清理")
-        self.assertTrue(any(w == wt_a and s is False for w, s in wm.cleanup_calls))
+        # worktree 路径不再入档（code-review item a0e268c1f1c1：现场即弃后
+        # 落盘路径写入几秒即失效且无读者，记录恒为 null，追溯以 branch/tip_sha
+        # 为准）；现场证据改从 cleanup 调用核对
+        self.assertIsNone(failed[0]["worktree"])
+        self.assertTrue(
+            any(s is False and not Path(w).exists() for w, s in wm.cleanup_calls),
+            "现场即弃：worktree 目录被清理",
+        )
         prog = read_progress(proot)
         self.assertEqual(prog["phase"], "blocked")
         self.assertEqual(prog["reason"], "failed_batch_retained",

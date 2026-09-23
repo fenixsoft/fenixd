@@ -185,6 +185,54 @@ class TestParallelPlanLane(_EngineCase):
         self.assertEqual(marker.get("status"), "discarded")
         self.assertTrue((self.vp / "test_scenarios.json.parallel-discarded").exists())
 
+    def test_lane_discards_product_when_spec_reverted_midrun(self):
+        # 回退竞窗收尾兜底（code-review item b4b98c69a4e1）：_stop_parallel_planning
+        # 的 cancel_run 落在 attempt 登记前时 not_running（旗标未登记），run 照常
+        # 跑完——收尾不得写 completed（否则下次 ready 重入被 marker 挡住不重派、
+        # 对旧版 spec 出的题被 testing 直接消费），按任务 1.2 隔离半成品。
+        self._to_ready()
+        self.engine.state_machine.read_one = MagicMock(
+            side_effect=[
+                {"status": "ready", "priority": 5},  # 派发前重查：状态合法
+                {"status": "drafted", "priority": 5},  # run 收尾重查：已回退
+            ]
+        )
+
+        def _run_writes_product(spec_name, mode):
+            (self.vp / "test_scenarios.json").write_text("[{}]", encoding="utf-8")
+            return SimpleNamespace(success=True, run_id="r1", error=None)
+
+        self.engine.agent_runner.run_planner = MagicMock(side_effect=_run_writes_product)
+        self.engine._run_parallel_plan_lane("my-spec")
+        marker = self.engine._read_parallel_plan_marker("my-spec")
+        self.assertEqual(marker.get("status"), "discarded", "回退态 MUST NOT 写 completed")
+        self.assertIn("drafted", marker.get("reason", ""))
+        self.assertFalse((self.vp / "test_scenarios.json").exists())
+        self.assertTrue((self.vp / "test_scenarios.json.parallel-discarded").exists())
+
+    def test_lane_defers_to_consumer_takeover_discarded_marker(self):
+        # 消费侧接管竞窗（code-review item b4b98c69a4e1）：run 在飞期间 marker
+        # 被翻成 discarded（testing 等待超时 / 收尾竞窗 run-death 误判转串行）
+        # ——收尾不得以 completed 覆写接管方标记（否则 testing 消费判定错乱），
+        # 也不得隔离产物（串行重出即将覆写同路径，盲隔离误删串行产物）。
+        self._to_ready()
+
+        def _flip_marker_midrun(spec_name, mode):
+            self.engine._write_parallel_plan_marker(
+                "my-spec", {"status": "discarded", "reason": "wait_timeout"}
+            )
+            (self.vp / "test_scenarios.json").write_text("[{}]", encoding="utf-8")
+            return SimpleNamespace(success=True, run_id="r1", error=None)
+
+        self.engine.agent_runner.run_planner = MagicMock(side_effect=_flip_marker_midrun)
+        self.engine._run_parallel_plan_lane("my-spec")
+        marker = self.engine._read_parallel_plan_marker("my-spec")
+        self.assertEqual(marker.get("status"), "discarded", "MUST NOT 覆写接管方标记")
+        self.assertEqual(marker.get("reason"), "wait_timeout", "接管方标记原样保留")
+        self.assertTrue(
+            (self.vp / "test_scenarios.json").exists(), "产物留给串行路径覆写，MUST NOT 隔离"
+        )
+
     def test_stop_parallel_planning_cancels_and_dequeues(self):
         self._to_ready()
         self.dispatcher._enqueue("my-spec", "planner-plan")

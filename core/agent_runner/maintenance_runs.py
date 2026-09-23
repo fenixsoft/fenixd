@@ -1700,7 +1700,8 @@ IMPL_OCR_HEARTBEAT_JOIN_TIMEOUT_SECONDS = 5.0
 
 
 def _start_impl_ocr_heartbeat(project_root: Path, run_id: str, spec_name: str,
-                              from_commit: str, head_commit: str) -> tuple:
+                              from_commit: str, head_commit: str
+                              ) -> tuple[threading.Event, threading.Thread]:
     """启动车道运行中心跳线程，返回 ``(stop_event, thread)``。
 
     审查子进程运行期间按 ``IMPL_OCR_HEARTBEAT_INTERVAL_SECONDS`` 间隔经既有
@@ -1712,8 +1713,10 @@ def _start_impl_ocr_heartbeat(project_root: Path, run_id: str, spec_name: str,
     仍被正常上报（不加任何 ``_ocr_join_wait`` 有意等待豁免，不遮蔽自愈链）。
 
     调用方收尾 MUST 先 ``stop_event.set()`` + ``thread.join(有上限)`` 停跳、
-    再写终态事件（``result``/``error`` 末行后置不变量，D2 顺序）。心跳写失败
-    静默（``_write_impl_ocr_run_events`` 既有语义，观测通道不阻断车道）。
+    再写终态事件（``result``/``error`` 末行后置不变量，D2 顺序；该不变量是
+    尽力而为语义——join 超时后仍可能落下迟到的 progress 行，见
+    ``_stop_impl_ocr_heartbeat``）。心跳写失败静默
+    （``_write_impl_ocr_run_events`` 既有语义，观测通道不阻断车道）。
     daemon=True + try/finally 全覆盖兜底：任何路径漏 set 停跳位也不阻塞进程
     退出（线程泄漏风险的最后防线，见 SPEC Risks）。
     """
@@ -1746,13 +1749,20 @@ def _start_impl_ocr_heartbeat(project_root: Path, run_id: str, spec_name: str,
     return stop_event, thread
 
 
-def _stop_impl_ocr_heartbeat(stop_event, thread) -> None:
+def _stop_impl_ocr_heartbeat(stop_event: threading.Event | None,
+                             thread: threading.Thread | None) -> None:
     """停跳（D2 顺序约束）：置位 + 有上限 join，先于终态事件写入。
 
     幂等（Event.set 可重入、join 已死线程立即返回），供子进程收尾 finally
-    与车道整体 finally 双重调用（意外异常路径同样停跳）。返回后心跳线程
-    不再追加任何 ``progress`` 行，主线程独占写——终态事件得以保持文件末行，
-    归档/worktree 清理也不会被迟到的心跳复活旧文件。
+    与车道整体 finally 双重调用（意外异常路径同样停跳）。正常路径返回后
+    心跳线程不再追加任何 ``progress`` 行，主线程独占写——终态事件保持文件
+    末行，归档/worktree 清理也不会被迟到的心跳复活旧文件。
+
+    残余竞窗（尽力而为语义，code-review item 60aa2441f347）：若心跳线程恰
+    阻塞在 ``_write_impl_ocr_run_events`` 内超过 join 上限，join 超时返回后
+    仍可能落下一条迟到的 progress 行。影响有界：``append_run_line`` 的
+    O_APPEND 原子追加保证短行不交错，终态行仍是完整行（只是其后多一行
+    progress）；终态末行不变量在该路径下按尽力而为理解。
     """
     if stop_event is not None:
         stop_event.set()
