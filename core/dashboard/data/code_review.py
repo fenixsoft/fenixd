@@ -84,8 +84,9 @@ def read_code_review_fix_progress(project_root) -> dict:
 
     data = _fix_read_progress(project_root)
     out = dict(data)
-    for key in ("item_done", "current_item", "batch_total"):
-        out[key] = data.get(key)
+    # item_done/current_item/batch_total 无需补键：read_progress 白名单合并
+    # 保证 FIX_PROGRESS_DEFAULT 全键在场，_synthesize_item_progress 又无条件
+    # 重算前两者——dict(data) 拷贝的值即最终值（code-review item 3193447da0ae）。
     out.pop("worktree", None)
     out.pop("run_id", None)
     return out

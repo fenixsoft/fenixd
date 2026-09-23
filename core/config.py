@@ -269,6 +269,20 @@ class ConfigLoader:
         return int(val)
 
     @classmethod
+    def _normalize_transient_positive_seconds(cls, config, key: str, default: int) -> int:
+        """正数版瞬断秒/次数字段归一（code-review item d4a017ecdaf1）。
+
+        与 ``_normalize_transient_seconds`` 同口径，差异仅在 0 的去向：运行时
+        消费侧（``provider_circuit._unseal_cfg`` 的 ``_positive_number``）把
+        显式 0 归一回缺省——0 对 cap/stable 无意义（hold 无上限 / 衰减窗永不
+        衰减），非合法配置。本快照必须同样钳制，否则设置页展示 0、运行时却按
+        缺省生效（展示与生效脱节，事故调参误导）。仅 base/stagger/probe_window
+        三个键保留 0 = 禁用语义（走既有非负归一）。
+        """
+        val = cls._normalize_transient_seconds(config, key, default)
+        return default if val <= 0 else val
+
+    @classmethod
     def get_transient_config(cls, config: Dict[str, Any]) -> Dict[str, Any]:
         """返回规范化后的瞬断治理配置（五键 + 缺省填充，供 Settings UI / 消费方）。
 
@@ -303,13 +317,16 @@ class ConfigLoader:
                 cls.TRANSIENT_BREAK_COOLDOWN_DEFAULT,
             ),
             # 解封渐进恢复五键（evo-fix-transient-break-unseal-backoff 1.4）：
-            # 展示与生效同源单点归一（与既有五键同模式）。
+            # 展示与生效同源单点归一（与既有五键同模式）。cap/stable 两键运行时
+            # 按正数钳制（0 → 缺省，_unseal_cfg._positive_number），快照同口径
+            # （code-review item d4a017ecdaf1：0 非合法值，仅 base/stagger/
+            # probe_window 保留 0 = 禁用语义）。
             "transient_unseal_backoff_base_seconds": cls._normalize_transient_seconds(
                 config,
                 "agents.transient_unseal_backoff_base_seconds",
                 cls.TRANSIENT_UNSEAL_BACKOFF_BASE_DEFAULT,
             ),
-            "transient_unseal_backoff_max_seconds": cls._normalize_transient_seconds(
+            "transient_unseal_backoff_max_seconds": cls._normalize_transient_positive_seconds(
                 config,
                 "agents.transient_unseal_backoff_max_seconds",
                 cls.TRANSIENT_UNSEAL_BACKOFF_MAX_DEFAULT,
@@ -319,7 +336,7 @@ class ConfigLoader:
                 "agents.transient_unseal_probe_window_seconds",
                 cls.TRANSIENT_UNSEAL_PROBE_WINDOW_DEFAULT,
             ),
-            "transient_unseal_stable_window_seconds": cls._normalize_transient_seconds(
+            "transient_unseal_stable_window_seconds": cls._normalize_transient_positive_seconds(
                 config,
                 "agents.transient_unseal_stable_window_seconds",
                 cls.TRANSIENT_UNSEAL_STABLE_WINDOW_DEFAULT,

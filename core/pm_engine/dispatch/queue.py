@@ -758,6 +758,8 @@ class QQQueueMixin:
                     )
                     with self._queue_lock:
                         # 收敛拦截：移除条目（不重新入队）、释放槽位
+                        # 准入已消费即零 run 启动，MUST 退还（item d2e6133109ff）。
+                        self._pm._transient_unseal_recredit()
                         self._rollback_dispatch_slot(base_prio)
                     continue
 
@@ -771,6 +773,8 @@ class QQQueueMixin:
                 if carrier:
                     # 回滚：把已 pop 的 entry 放回队列
                     with self._queue_lock:
+                        # 准入已消费即零 run 启动，MUST 退还（item d2e6133109ff）。
+                        self._pm._transient_unseal_recredit()
                         self._rollback_dispatch_slot(base_prio, entry_to_dispatch)
                     self._pm.logger.info(
                         "pm_engine",
@@ -790,6 +794,10 @@ class QQQueueMixin:
                 # 点只对 implementer 可达，不会误减评审的 _active_reviews。
                 if self._pm._check_impl_budget_exhausted(spec_name):
                     with self._queue_lock:
+                        # 准入已在本拍 pop 前消费（code-review item
+                        # d2e6133109ff）：条目回滚即零 run 启动，MUST 退还
+                        # （探针名额/错峰节拍），否则空烧至观察窗空过/硬过期。
+                        self._pm._transient_unseal_recredit()
                         self._rollback_dispatch_slot(base_prio, entry_to_dispatch)
                     continue
                 # add-spec-content-integrity-gate：派发前内容完整性闸门。
@@ -797,6 +805,10 @@ class QQQueueMixin:
                 # 不烧预算；与预算闸门同层并列，复用回滚范式。
                 if self._pm._check_spec_content_missing(spec_name):
                     with self._queue_lock:
+                        # 准入已在本拍 pop 前消费（code-review item
+                        # d2e6133109ff）：条目回滚即零 run 启动，MUST 退还
+                        # （探针名额/错峰节拍），否则空烧至观察窗空过/硬过期。
+                        self._pm._transient_unseal_recredit()
                         self._rollback_dispatch_slot(base_prio, entry_to_dispatch)
                     continue
                 # 修复重派时状态已是 implementing（同态转换非法），跳过 transition
@@ -813,12 +825,20 @@ class QQQueueMixin:
                 # 失败打回重派时状态已是 implementing，跳过同态转换。
                 if self._pm._check_impl_budget_exhausted(spec_name):
                     with self._queue_lock:
+                        # 准入已在本拍 pop 前消费（code-review item
+                        # d2e6133109ff）：条目回滚即零 run 启动，MUST 退还
+                        # （探针名额/错峰节拍），否则空烧至观察窗空过/硬过期。
+                        self._pm._transient_unseal_recredit()
                         self._rollback_dispatch_slot(base_prio, entry_to_dispatch)
                     continue
                 # add-spec-content-integrity-gate：内容完整性闸门（fast-track 分支，
                 # 与 implementer 同层并列；空 spec 冻结派发，不烧预算）。
                 if self._pm._check_spec_content_missing(spec_name):
                     with self._queue_lock:
+                        # 准入已在本拍 pop 前消费（code-review item
+                        # d2e6133109ff）：条目回滚即零 run 启动，MUST 退还
+                        # （探针名额/错峰节拍），否则空烧至观察窗空过/硬过期。
+                        self._pm._transient_unseal_recredit()
                         self._rollback_dispatch_slot(base_prio, entry_to_dispatch)
                     continue
                 cur_status = (self._pm.state_machine.read_one(spec_name) or {}).get("status")
@@ -2399,10 +2419,12 @@ class QQQueueMixin:
         ``_ocr_lane_inflight`` 私有字典。
         """
         try:
-            with self._ocr_lane_lock:
-                if spec_name is None:
+            if spec_name is None:
+                with self._ocr_lane_lock:
                     return bool(self._ocr_lane_inflight)
-                return bool(self._ocr_lane_inflight.get(spec_name))
+            # 单 spec 分支委托 _ocr_lane_running（同锁同语义，code-review item
+            # de22e0ca08c4）——锁不可重入，MUST NOT 持锁内再调（会死锁）。
+            return self._ocr_lane_running(spec_name)
         except Exception:  # noqa: BLE001 — 判定异常按 busy 处理（宁紧勿松）
             return True
 

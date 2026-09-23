@@ -1581,8 +1581,9 @@ export interface CodeReviewFixProgress {
 /** add-code-fix-item-level-progress：最近一条处置结果摘要（title/line 由台账回查补全，降级时缺省） */
 export interface CodeReviewFixProgressCurrentItem {
   item_id: string;
-  status: string;
-  file: string;
+  /** status/file 由后端从 agent 产物行拷贝（仅校验 item_id），可合法为 null（D4 降级语义） */
+  status: string | null;
+  file: string | null;
   title?: string;
   line?: number;
 }
