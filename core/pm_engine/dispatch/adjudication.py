@@ -830,6 +830,10 @@ class VAdjudicationMixin:
 
     # ── 孤儿声明机械预分类（deliverable-dispute-orphan-preclassify）────────
 
+    # impl_result 形参在本方法不读取（code-review item e848316b8300）：与
+    # _preclassify_missing（用它经 _effective_declaration 提供分支上下文）和
+    # _preclassify_drift 保持三预分类器统一签名——调度器 queue.py 以同一形态
+    # 调用、测试夹具按位置传参，保留哑参数避免十余处调用点联动改动。
     def _preclassify_orphan(
         self, spec_name: str, result, impl_result, disputed: list, missing: list
     ) -> dict:
@@ -1077,6 +1081,9 @@ class VAdjudicationMixin:
 
     # ── 漂移笔误机械对齐（evo-deliverable-declaration-drift-align D1/D2）────────
 
+    # impl_result 形参在本方法不读取（code-review item e848316b8300）：与
+    # _preclassify_orphan 同理，为三预分类器统一签名保留的哑参数（调度器与
+    # 测试夹具按位置传参，见上方 _preclassify_orphan 注释）。
     def _preclassify_drift(
         self, spec_name: str, result, impl_result, disputed: list, missing: list
     ) -> dict:

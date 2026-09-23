@@ -764,6 +764,12 @@ def run_regression(
         use_shell = isinstance(spec.cmd, str)
         # stdout 落进度日志；打开失败回退 DEVNULL（进度退化为耗时估算，
         # 执行本身不受影响）。Popen 成功 dup2 到子进程后父进程侧即可关闭。
+        # stderr 并入 stdout（code-review item e1f50794bdfd）：旧实现
+        # stderr=PIPE 且全程无人排空（等 wait 而非 communicate），杂谈命令
+        # 写满约 64KB 内核管道缓冲后阻塞写入直到硬超时——本可完成的 run 被
+        # 报成 status: timeout（常伴 XML 缺失）。STDOUT 随 stdout 落同一进度
+        # 日志（无管道可填满，诊断信息仍在 .log 里可查）；stdout 回退 DEVNULL
+        # 时一并丢弃，不引入新泄漏面。
         try:
             log_abs.parent.mkdir(parents=True, exist_ok=True)
             log_fh = log_abs.open("wb")
@@ -775,7 +781,7 @@ def run_regression(
                 shell=use_shell,
                 cwd=str(project_root),
                 stdout=log_fh if log_fh is not None else subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
                 start_new_session=True,
             )
         except OSError as e:

@@ -161,9 +161,10 @@ class ProviderCircuit:
         #   "count": int,           # 窗口内 4xx 次数
         #   "open_since": float,     # 进入 open 的时间戳
         #   "cooldown_until": float, # 冷却到期时间戳
-        #   "half_open": bool,       # 冷却到期后首个派发作为探针
         #   "switch_cooldown_until": float,  # add-provider-failover 切换类错误冷却到期
         # }}
+        # （half_open 字段已删除，code-review item dff73c446d83：只写不读的死
+        # 状态——探针结果实际由 runner 半开判据驱动 _record_provider_probe 承载）
         self.provider_circuits: Dict[str, dict] = {}
 
         # add-provider-failover（design D5 / spec failover-dispatch 4.2）：per-provider
@@ -360,7 +361,6 @@ class ProviderCircuit:
                 "count": 0,
                 "open_since": 0.0,
                 "cooldown_until": 0.0,
-                "half_open": False,
                 "switch_cooldown_until": 0.0,  # 切换类错误冷却到期时间戳（add-provider-failover）
             }
             self.provider_circuits[provider_name] = st
@@ -369,7 +369,11 @@ class ProviderCircuit:
     def is_circuit_open(self, provider_name: str, now: float | None = None) -> bool:
         """判断某 provider 当前是否处于熔断拦截态（open 且冷却未到期）。
 
-        半开态（冷却到期、首个探针未发）仍视为 open（拦截并由首个派发当探针）。
+        冷却到期即放行（无单探针门控）：冷却到期后的每次派发都等价于探针——
+        成功收工时 ``_record_provider_probe(success=True)`` 闭合（runner 收尾）、
+        仍 4xx 时由 runner 的半开判据调 ``_record_provider_probe(success=False)``
+        重新冷却（不计入窗口计数）。与本文件其余熔断字段的实现一致
+        （code-review item dff73c446d83：旧 docstring 声称的「半开门控」并不存在）。
         """
         if not provider_name:
             return False
@@ -1207,7 +1211,6 @@ class ProviderCircuit:
             # 进入熔断（或重新进入冷却）。半开探针仍 4xx → 重新冷却，记录 open_since。
             st["open_since"] = now
             st["cooldown_until"] = now + cooldown
-            st["half_open"] = False
             self._pm.logger.error(
                 "agent_runner",
                 f"Provider circuit OPEN for '{provider_name}' "
@@ -1247,10 +1250,8 @@ class ProviderCircuit:
             st["count"] = 0
             st["cooldown_until"] = 0.0
             st["open_since"] = 0.0
-            st["half_open"] = False
         else:
             st["cooldown_until"] = now + cooldown
-            st["half_open"] = False
             self._pm.logger.warning(
                 "agent_runner",
                 f"Provider circuit re-cooled for '{provider_name}' — probe still failing, "

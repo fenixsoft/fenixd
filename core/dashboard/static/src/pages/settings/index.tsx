@@ -26,21 +26,25 @@ import type { SelfEvolutionSectionHandle } from './components/selfEvolutionSecti
 
 const { Text } = Typography;
 
+// 菜单标签统一从 PAGE_LABELS 派生（code-review item d996f0d0aac5）：旧实现
+// 标签字面在 BASE_MENU_ITEMS 与下方项目级 menuItems.push 各写一份，本文件
+// 从不读取 PAGE_LABELS——标签编辑会在菜单与 SyncFromUserButton 等消费方
+// 之间漂移。现标签单点取自共享模块，本数组只声明页签顺序与键。
 const BASE_MENU_ITEMS = [
-  { key: 'llm', label: '模型' },
-  { key: 'agents', label: '模型分配' },
-  { key: 'prompts', label: '提示词' },
-  { key: 'parallel', label: '并行' },
-  { key: 'token', label: '预算' },
-  { key: 'verify', label: '验证' },
+  { key: 'llm', label: PAGE_LABELS.llm },
+  { key: 'agents', label: PAGE_LABELS.agents },
+  { key: 'prompts', label: PAGE_LABELS.prompts },
+  { key: 'parallel', label: PAGE_LABELS.parallel },
+  { key: 'token', label: PAGE_LABELS.token },
+  { key: 'verify', label: PAGE_LABELS.verify },
   // add-quality-tab：收尾代码质量审查自「验证」页迁出为独立页签（键路径不变）
-  { key: 'quality', label: '质量' },
-  { key: 'approval', label: '审批' },
-  { key: 'misc', label: '归档' },
-  { key: 'system', label: '系统' },
+  { key: 'quality', label: PAGE_LABELS.quality },
+  { key: 'approval', label: PAGE_LABELS.approval },
+  { key: 'misc', label: PAGE_LABELS.misc },
+  { key: 'system', label: PAGE_LABELS.system },
   // add-framework-self-evolution：页签「自愈」改名「自进化」（内部 key 同步改名，
   // 默认选中态与其它页签不受影响）
-  { key: 'self-evolution', label: '自进化' },
+  { key: 'self-evolution', label: PAGE_LABELS['self-evolution'] },
 ];
 
   // 作用域 Select 的值编码：'user' 或 'project:<name>'
@@ -185,9 +189,10 @@ export default function SettingsPage() {
   // Hook 为项目级设置置于菜单最末。项目简介页签固定名「项目」，不随项目名变长
   const menuItems = [...BASE_MENU_ITEMS];
   if (scope === 'project' && project) {
-    menuItems.push({ key: 'self-review', label: '自省' });
-    menuItems.push({ key: 'project-profile', label: '项目' });
-    menuItems.push({ key: 'hook', label: 'Hook' });
+    // 标签同样取自 PAGE_LABELS 单源（code-review item d996f0d0aac5）
+    menuItems.push({ key: 'self-review', label: PAGE_LABELS['self-review'] });
+    menuItems.push({ key: 'project-profile', label: PAGE_LABELS['project-profile'] });
+    menuItems.push({ key: 'hook', label: PAGE_LABELS.hook });
   }
 
   return (

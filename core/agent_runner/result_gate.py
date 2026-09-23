@@ -911,7 +911,8 @@ def _check_impl_result_artifact(
         return None
 
     # status ∈ {success, partial} → 以 worktree 内 tasks.md 为对象的判据
-    tasks_path = wt_path / "spec" / "changes" / spec_name / "tasks.md"
+    # （tasks.md 路径单点在 parse_tasks_md 与各失败消息构造处，不再另设
+    # 未使用绑定——code-review item df136b3985e7）
     all_ids, checked_ids = parse_tasks_md(wt_path, spec_name)
 
     # 诚实退出申报（2026-09-16 改进②）：顶层 unattainable 数组 → 机械豁免清单。

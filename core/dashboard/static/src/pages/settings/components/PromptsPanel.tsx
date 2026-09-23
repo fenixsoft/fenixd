@@ -1,5 +1,5 @@
 import { Button, Input, Select, Typography, message } from 'antd';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Markdown from 'react-markdown';
 import remarkBreaks from 'remark-breaks';
 import remarkGfm from 'remark-gfm';
@@ -49,7 +49,26 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
 
   const isProjectScope = Boolean(project);
 
+  // 面板当前内容归属的项目（code-review item f0be525a11f2 / f2830281595d）：
+  // handleSave 闭包里的 project 与 refetch 都是保存发起时的快照；用户在请求
+  // 在飞期间切换项目（或拒绝了切换确认、面板仍显示旧项目内容）时，以
+  // loadedFor 与当前 project 对账决定 setData/保存是否生效——旧项目内容
+  // 不再盖回新项目视图、也不会被写进新项目。
+  const loadedForRef = useRef<string | undefined>(undefined);
+
   useEffect(() => {
+    // 项目切换丢弃确认（code-review item f2830281595d）：与 handleAgentChange
+    // 同语义——切换 agent 前询问，切换 project 却静默覆盖草稿。此处读到的
+    // data/extraDraft 仍是旧项目的渲染快照（effect 跑在 project 已变、state
+    // 未变的渲染之后）。拒绝则保留当前内容、不加载新项目；此时 loadedFor
+    // 与当前 project 不一致，handleSave 的对账会拦住跨项目错写。
+    if (
+      data &&
+      extraDraft !== projectExtraOf(data, activeAgent) &&
+      !window.confirm('当前项目的修改尚未保存，切换将丢弃，确定继续？')
+    ) {
+      return;
+    }
     let cancelled = false;
     const load = async () => {
       setLoading(true);
@@ -65,9 +84,11 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
             message.warning(`提示词加载返回错误：${errPayload}`);
             setData(null);
             setExtraDraft('');
+            loadedForRef.current = undefined;
             return;
           }
           setData(d);
+          loadedForRef.current = project;
           // 切换项目时同步把 activeAgent 复位为 implementer（code-review item
           // 67694883ca76）：旧实现只重置草稿（恒取 implementer 的 extra）而不重置
           // 选择器，用户若先切到 verifier 再切项目，textarea 装的是 implementer
@@ -86,6 +107,7 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
           // （跨项目错写）。复位后保存亦被 handleSave 的 data 判空阻断。
           setData(null);
           setExtraDraft('');
+          loadedForRef.current = undefined;
         }
       } finally {
         if (!cancelled) setLoading(false);
@@ -93,6 +115,7 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
     };
     load();
     return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project]);
 
   // 切换 agent 时把项目附加草稿重置为服务端现值；若当前草稿有未保存改动，
@@ -120,6 +143,14 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
     // data 判空（code-review item 96880454231c）：加载失败/尚未成功加载时
     // extraDraft 不代表服务端现值，保存可能把过时/空内容写进当前项目。
     if (!project || !data) return;
+    // 目标一致性对账（code-review item f0be525a11f2 / f2830281595d）：面板
+    // 内容不属当前 project（保存/加载在飞期间切换了项目，或用户拒绝了切换
+    // 确认、面板仍显示旧项目内容）时 extraDraft 是旧项目内容——保存会跨项目
+    // 错写，拦截并提示。
+    if (loadedForRef.current !== project) {
+      message.warning('面板内容与当前项目不一致，请等待重新加载完成后再保存');
+      return;
+    }
     // 固化本次保存的目标 agent（code-review item 9bb2f4e7caaa）：旧实现
     // 保存后 refetch 时仍读闭包里的 activeAgent，若请求在飞期间用户切换了
     // agent，会把**旧 agent** 的值写回 extraDraft 而 UI 显示新 agent。
@@ -139,10 +170,16 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
     // 9bb2f4e7caaa 第 1 点）：独立 try/catch，仅提示刷新失败。
     try {
       const d = await getPrompts(project);
-      setData(d);
-      // 仅当用户仍停在同一 agent 时才回填草稿（避免覆盖刚切到的 agent）
-      if (targetAgent === activeAgent) {
-        setExtraDraft(projectExtraOf(d, targetAgent));
+      // refetch 归属对账（code-review item f0be525a11f2）：请求在飞期间项目
+      // 已切换且新项目已重新加载（loadedFor 已前移）时，无条件 setData(d) 会
+      // 把旧项目内容盖回新项目视图——与新项目的 activeAgent/草稿形成跨项目
+      // 串数据。仅当面板仍归属发起保存的项目时才回填。
+      if (loadedForRef.current === project) {
+        setData(d);
+        // 仅当用户仍停在同一 agent 时才回填草稿（避免覆盖刚切到的 agent）
+        if (targetAgent === activeAgent) {
+          setExtraDraft(projectExtraOf(d, targetAgent));
+        }
       }
     } catch (e) {
       message.warning(`已保存，但刷新列表失败：${e instanceof Error ? e.message : String(e)}`);

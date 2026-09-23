@@ -95,15 +95,47 @@ function progressText(progress: number) {
 // code-review item c3df4a612450：排序键与单元格渲染同源——gen 推导与渲染体
 // 完全一致（verify 且执行未开始、有落盘出题数时按出题进度），统一走
 // renderPercent，消除「生成阶段按用户不可见的 verify 0/0 指标排序」错位。
-function progressSortPct(record: SpecSummary): number {
+// code-review item e1f8a359480d：阶段感知推导收敛为单点 phaseProgressOf，
+// 桌面「任务进度」列、移动端卡片与排序键三方共用——旧实现移动端卡片恒用
+// task_done/task_total，verify/generation/gates 阶段与桌面显示不一致
+// （verify 阶段在移动端看似已完成）。
+type PhaseProgress = {
+  percent: number;
+  /** 计数文案：gates 门禁 / verify（含出题前缀）/ impl 任务，与 percent 同源 */
+  counter: string;
+  isVerify: boolean;
+  isGates: boolean;
+  gen: { done: number; total: number } | null;
+};
+
+function phaseProgressOf(record: SpecSummary): PhaseProgress {
+  // 阶段感知（add-task-progress-verify-phase）：仅 testing（progress_phase
+  // = "verify"）切验证进度，implementing 收尾 / ocr 车道在飞（progress_phase
+  // = "gates"，判定单点在后端）切门禁完成度，其余维持 impl 任务完成度。
+  const isVerify = record.progress_phase === 'verify';
+  const isGates = record.progress_phase === 'gates';
+  // verification-phase-progress：执行未开始（verify_total=0）而后端已统计到
+  // 出题落盘数时，进度条展示场景生成进度——出题是验证链主要耗时，不能让
+  // 进度条在生成阶段长期停在 0/0。
   const gen =
-    record.progress_phase === 'verify' &&
-    record.verify_total === 0 &&
-    record.generation &&
-    record.generation.total > 0
+    isVerify && record.verify_total === 0 && record.generation && record.generation.total > 0
       ? record.generation
       : null;
-  return renderPercent(record, gen);
+  let counter: string;
+  if (isGates) {
+    counter = `${record.gates_done ?? 0}/${record.gates_total ?? 0}`;
+  } else if (isVerify) {
+    counter = gen
+      ? `出题 ${gen.done}/${gen.total}`
+      : `${record.verify_done}/${record.verify_total}`;
+  } else {
+    counter = `${record.task_done}/${record.task_total}`;
+  }
+  return { percent: renderPercent(record, gen), counter, isVerify, isGates, gen };
+}
+
+function progressSortPct(record: SpecSummary): number {
+  return phaseProgressOf(record).percent;
 }
 
 function fmtDuration(sec?: number | null) {
@@ -490,7 +522,10 @@ function SpecCardList({ data, project, loading, onDocView, onMenu, menuItems, on
       renderItem={({ record, level }) => {
         const m = statusMeta(record.status || '');
         const created = record.created ? dayjs(record.created) : null;
-        const progress = pct(record.task_done, record.task_total);
+        // 阶段感知进度（code-review item e1f8a359480d）：与桌面「任务进度」列
+        // 共用同一推导，两侧口径一致
+        const prog = phaseProgressOf(record);
+        const progress = prog.percent;
         return (
           <List.Item style={{ paddingLeft: level > 0 ? 16 * level : undefined }}>
             <div style={{ width: '100%', minWidth: 0 }}>
@@ -532,9 +567,7 @@ function SpecCardList({ data, project, loading, onDocView, onMenu, menuItems, on
                   trailColor={TRACK_LIGHT}
                 />
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, lineHeight: '18px' }}>
-                  <Typography.Text type="secondary">
-                    {record.task_done}/{record.task_total}
-                  </Typography.Text>
+                  <Typography.Text type="secondary">{prog.counter}</Typography.Text>
                   <Typography.Text type="secondary">{progressText(progress)}</Typography.Text>
                 </div>
               </div>
@@ -1086,20 +1119,9 @@ export default function SpecListPage() {
       // （含 generation 分支），与单元格显示值一致。
       sorter: (a: SpecSummary, b: SpecSummary) => progressSortPct(a) - progressSortPct(b),
       render: (_: unknown, record: SpecSummary) => {
-        // 阶段感知（add-task-progress-verify-phase）：仅 testing（progress_phase
-        // = "verify"）切绿色验证进度，其余状态维持 impl 蓝色路径零回归。
-        const isVerify = record.progress_phase === 'verify';
-        // add-quality-gates-visibility：implementing 收尾 / ocr 车道在飞
-        // （progress_phase = "gates"，判定单点在后端）切门禁橙，展示门禁完成度
-        const isGates = record.progress_phase === 'gates';
-        // verification-phase-progress：执行未开始（verify_total=0）而后端已统计到
-        // 出题落盘数时，进度条展示场景生成进度——出题是验证链主要耗时，不能让
-        // 进度条在生成阶段长期停在 0/0。青色区分生成与执行两段。
-        const gen =
-          isVerify && record.verify_total === 0 && record.generation && record.generation.total > 0
-            ? record.generation
-            : null;
-        const p = renderPercent(record, gen);
+        // 阶段感知推导单点在 phaseProgressOf（code-review item e1f8a359480d）：
+        // 与移动端卡片、排序键共用，本列不再各自内联 gen/计数分支。
+        const { percent: p, counter, isVerify, isGates, gen } = phaseProgressOf(record);
         // run 层实时线索（fix-implementer-task-progress D3）：tasks.md 快照落后于
         // run 实际推进（subject 无编号 / agent 未勾 tasks.md）时叠加 run 完成度，
         // 任一数据源失效都不再呈现静止的 0/N；快照已覆盖时不重复打扰。
@@ -1126,22 +1148,13 @@ export default function SpecListPage() {
               trailColor={trailColorFor(!!gen, isVerify, isGates)}
             />
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, lineHeight: '18px' }}>
-              {isGates ? (
-                // add-quality-gates-visibility：gates 阶段展示门禁完成度计数，
-                // run 层线索（run_progress/存活心跳）不渲染——门禁完成度由
-                // 落盘文件与后端合成驱动，run 任务汇报与门禁无对应关系
-                <Typography.Text type="secondary" data-testid="task-progress-cell">
-                  {record.gates_done ?? 0}/{record.gates_total ?? 0}
-                </Typography.Text>
-              ) : isVerify ? (
-                <Typography.Text type="secondary" data-testid="task-progress-cell">
-                  {gen ? `出题 ${gen.done}/${gen.total}` : `${record.verify_done}/${record.verify_total}`}
-                </Typography.Text>
-              ) : (
-                <Typography.Text type="secondary" data-testid="task-progress-cell">
-                  {record.task_done}/{record.task_total}
-                </Typography.Text>
-              )}
+              {/* add-quality-gates-visibility：gates 阶段计数=门禁完成度，
+                  run 层线索（run_progress/存活心跳）不渲染——门禁完成度由
+                  落盘文件与后端合成驱动，run 任务汇报与门禁无对应关系。
+                  计数文案统一来自 phaseProgressOf 的 counter（阶段已分流）。 */}
+              <Typography.Text type="secondary" data-testid="task-progress-cell">
+                {counter}
+              </Typography.Text>
               <Typography.Text type="secondary">{p}%</Typography.Text>
             </div>
             {!isVerify && !isGates && (runAhead || runCurrent || runActive) ? (

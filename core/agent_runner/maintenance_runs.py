@@ -566,15 +566,37 @@ def _append_token_run(tokens_json: Path, entry: dict) -> None:
         pass
 
 
+def _safe_int(value) -> int:
+    """防御性整数转换（code-review item dc8f109b8b60）：非法值回落 0。
+
+    token 记账是观测增强，写失败须静默降级、不阻断维护 run 主流程；agent/网关
+    JSON 里解析出的非数值（带引号的 ``"12.5"``、``true``、嵌套结构等）此前让
+    裸 ``int()`` 抛 ValueError/TypeError 穿透三个归账调用点——agent 工作已完成
+    之后在收尾记账处崩溃，与「静默降级」契约相悖。
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        pass
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _token_usage_fields(usage_info: dict) -> dict:
-    """把 usage_info 归整为归账记录的 token 字段（input 含三类 cache）。"""
+    """把 usage_info 归整为归账记录的 token 字段（input 含三类 cache）。
+
+    字段值经 ``_safe_int`` 防御转换（code-review item dc8f109b8b60）：非数值
+    回落 0，不让畸形 usage 打挂维护 run 收尾。
+    """
     if not isinstance(usage_info, dict):
         usage_info = {}
     return {
-        "input_tokens": int(usage_info.get("input_tokens", 0) or 0)
-        + int(usage_info.get("cache_creation_input_tokens", 0) or 0)
-        + int(usage_info.get("cache_read_input_tokens", 0) or 0),
-        "output_tokens": int(usage_info.get("output_tokens", 0) or 0),
+        "input_tokens": _safe_int(usage_info.get("input_tokens", 0) or 0)
+        + _safe_int(usage_info.get("cache_creation_input_tokens", 0) or 0)
+        + _safe_int(usage_info.get("cache_read_input_tokens", 0) or 0),
+        "output_tokens": _safe_int(usage_info.get("output_tokens", 0) or 0),
         "cost_usd": usage_info.get("cost_usd"),
     }
 
@@ -1002,22 +1024,50 @@ def run_code_review(
 
 
 def _unique_code_review_run_id(runner) -> str:
-    """生成不冲突的 ``code-review-<epoch>`` run_id（task 3.7）。
+    """生成并**原子申领**不冲突的 ``code-review-<epoch>`` run_id（task 3.7）。
 
     秒级时间戳在「手动触发 + 同秒周期触发」下可能撞名（manifest/out 文件
     会被互相覆盖）。目标文件已存在时追加 ``-<n>`` 退避（n 从 1 起递增）。
+
+    申领即创建（code-review item e61828a54fda）：旧实现只探测 manifest/out
+    是否存在后返回候选，探测-然后-行动窗口内两个同秒触发会同时通过探测、
+    随后各自 write_text manifest 并驱动 agent 写同一 out 文件——恰好是该辅助
+    声称要防的碰撞。现以 ``O_CREAT|O_EXCL`` 抢占 ``manifest-<candidate>.json``
+    本身（原子），输者退避下一候选；占位内容为合法空 JSON ``{}``（
+    read_progress 等读者对未完成 manifest 按 ``{}`` 兜底，不会解析失败），
+    随后 run_code_review 的 write_text 以完整 manifest 原地覆盖。
     """
     base = f"code-review-{int(time.time())}"
     candidate = base
     n = 1
     cr_dir = runner.project_root / ".fenix" / "code-review"
     while True:
-        if not (cr_dir / f"manifest-{candidate}.json").exists() and not (
-            cr_dir / f"out-{candidate}.jsonl"
-        ).exists():
+        if (cr_dir / f"out-{candidate}.jsonl").exists():
+            n += 1
+            candidate = f"{base}-{n}"
+            continue
+        try:
+            cr_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            # 目录建不出（权限等）：退回既有语义——返回候选，落盘失败由
+            # run_code_review 的 manifest 落盘路径统一报错
             return candidate
-        n += 1
-        candidate = f"{base}-{n}"
+        try:
+            fd = os.open(
+                cr_dir / f"manifest-{candidate}.json",
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                0o644,
+            )
+        except FileExistsError:
+            # 已被并发触发申领 → 退避下一候选（申领即裁决，无再撞窗口）
+            n += 1
+            candidate = f"{base}-{n}"
+            continue
+        except OSError:
+            return candidate
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write("{}\n")
+        return candidate
 
 
 def _read_code_review_out(runner, opath: Path) -> list:

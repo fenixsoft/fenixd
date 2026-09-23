@@ -355,6 +355,17 @@ export default function VerifyPanel({ config, onSave, project, onConfigSynced }:
                     );
                   })}
                 </ul>
+              ) : config.worktree?.has_build_artifacts === true ? (
+                // true + 空路径 = 三态表的「标志与路径不一致」未决态
+                //（is_artifact_config_unresolved：判定恒假、按无产物处理）。
+                // 旧实现此组合静默渲染「有派生物」、无路径亦无说明（code-review
+                // item def8b9836b7e，下方 !==true 守卫把未决提示一并抑制）——
+                // 显式说明矛盾态与其保守侧生效语义。
+                <Text type="warning" style={{ display: 'block', marginTop: 12 }}>
+                  已声明「有派生物」但豁免路径列表为空（标志与路径不一致，按未裁决处理）：
+                  产物判定恒假、merge-back 全部按源码改动对待。请切到项目级作用域补全
+                  路径，或把声明改为「无派生物」。
+                </Text>
               ) : (
                 config.worktree?.has_build_artifacts !== false &&
                 config.worktree?.has_build_artifacts !== true && (

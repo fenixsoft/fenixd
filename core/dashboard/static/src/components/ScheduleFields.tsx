@@ -85,6 +85,14 @@ function disablePastTimeSlot(picked: Dayjs | null) {
   };
 }
 
+/** initial → 三档初值（code-review item e8f0300f275f：具名 helper 替代链式
+ * 三元——双重否定的 manual→manual / truthy→scheduled / falsy→immediate 映射
+ * 一眼可读，且与 describeStartAfter 的分档语义同源可对读）。 */
+function initialModeOf(initial: string | null): 'immediate' | 'scheduled' | 'manual' {
+  if (initial === START_AFTER_MANUAL) return 'manual';
+  return initial ? 'scheduled' : 'immediate';
+}
+
 /**
  * 「执行时间」三档选择（立即 / 指定时间 / 手工激活）。
  *
@@ -102,8 +110,7 @@ export default function ScheduleFields({
   /** 首行说明文案（缺省为「将为该条目创建 SPEC 并进入流水线。执行时间：」）。 */
   hint?: string;
 }) {
-  const [mode, setMode] = useState<'immediate' | 'scheduled' | 'manual'>(
-    initial === START_AFTER_MANUAL ? 'manual' : initial ? 'scheduled' : 'immediate');
+  const [mode, setMode] = useState<'immediate' | 'scheduled' | 'manual'>(initialModeOf(initial));
   // 配置为「立即」时改选「指定时间」的预填值：1 小时后（用户自己改）
   const [when, setWhen] = useState<Dayjs>(
     initial && initial !== START_AFTER_MANUAL

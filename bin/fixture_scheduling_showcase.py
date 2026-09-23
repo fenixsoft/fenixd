@@ -66,7 +66,13 @@ def _spec_names_from_baseline() -> list:
 
 SPEC_NAMES = _spec_names_from_baseline()
 # 同步性自检：解析为零说明 BASELINE_STATE 头格式漂移，构建期即失败而非静默。
-assert SPEC_NAMES, "BASELINE_STATE 未解析出任何 spec 头（格式漂移？）"
+# 显式运行时检查而非 assert（code-review item f0e74249f9ce）：assert 在
+# python -O 下被剥离，守卫静默消失（SPEC_NAMES 变 []，reset_fixture 不建任何
+# spec/changes/* 目录仍打印 OK——正是注释要防的失败形态）。
+if not SPEC_NAMES:
+    raise RuntimeError(
+        "BASELINE_STATE 未解析出任何 spec 头（格式漂移？）——检查 '### <name>' 行格式"
+    )
 
 
 def _git(*args):
