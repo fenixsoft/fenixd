@@ -244,6 +244,83 @@ class TestCodeFixAgentRegistration(unittest.TestCase):
         self.assertTrue(filled.startswith(first.replace("{spec_name}", "demo")))
 
 
+class TestCodeFixParallelPrompt(unittest.TestCase):
+    """并行处置段提示词回归（add-codefix-batch-parallel task 3.1）。
+
+    只做内容断言（agents/code-fix.md 每次派发现读、合回即生效）——
+    MUST NOT 真跑 agent（本文件头铁律）。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from core.agent_runner.prompt_builder import AGENT_PROMPT_DIR, AGENT_PROMPT_FILES
+
+        cls.template = (AGENT_PROMPT_DIR / AGENT_PROMPT_FILES["code-fix"]).read_text(
+            encoding="utf-8")
+
+    def test_parallel_section_key_constraints_present(self):
+        t = self.template
+        # 触发条件：组数 ≥2 且总条目 >2 才并行（D7 单组/小批退化为串行）
+        self.assertIn("组数 ≥2", t)
+        self.assertIn("总条目 >2", t)
+        # 并发上限 3（固定常量写进提示词，不设配置键——design D3）
+        self.assertIn("≤3", t)
+        # 波次语义：完成一组（落盘后）即补派下一组
+        self.assertIn("补派", t)
+        # 单写者（D4）：{out_path} 唯一写者是 orchestrator，逐组立即落盘、禁攒批
+        self.assertIn("唯一写者", t)
+        self.assertIn("MUST NOT 攒到全部组完成才写", t)
+        # 组 prompt 修复契约下发：fenix-ignore 标记规则逐字下发、out 行格式
+        self.assertIn("逐字下发", t)
+        # 子代理边界：禁自行写 out_path / 自行验证 / 自行提交（D6）
+        self.assertIn("MUST NOT 自行写 `{out_path}`", t)
+        self.assertIn("MUST NOT 自行验证", t)
+        self.assertIn("MUST NOT 自行提交", t)
+        # 失败兜底三级（D5）：亲自重做 → skipped 语义 → 非法行重试一次不写非法行
+        self.assertIn("亲自串行重做", t)
+        self.assertIn("重试一次", t)
+        self.assertIn("MUST NOT 把非法行写入", t)
+        # 单组兜底不阻塞其他组的落盘与补派
+        self.assertIn("MUST NOT 阻塞其他组", t)
+        # 验证/提交契约不变：全部组落盘后恰一次验证、单次提交
+        self.assertIn("MUST NOT 逐组验证", t)
+        self.assertIn("MUST NOT 多次提交", t)
+
+    def test_serial_path_wording_preserved(self):
+        """串行路径（退化批）行为描述保留：逐组 append 落盘规则不被并行段覆盖。"""
+        t = self.template
+        self.assertIn("串行路径", t)
+        self.assertIn("append", t)
+        self.assertIn("MUST NOT 每条单独一次写入", t)
+
+    def test_placeholders_intact(self):
+        """新增段不得破坏占位符完整性：{items}/{out_path}/{worktree} 均在场。"""
+        for token in ("{items}", "{out_path}", "{worktree}"):
+            self.assertIn(token, self.template)
+
+    def test_built_prompt_keeps_parallel_section_and_fills_placeholders(self):
+        """多组批 detail 构建：并行段在场、三个占位符全部被填充无残留。"""
+        proot = _make_project_root()
+        runner = _make_runner(proot)
+        # 6 条 × 3 文件 = 3 组（满足并行触发条件的批形态）
+        detail = {
+            "items": [
+                {"item_id": f"item-{i}", "file": f"core/m{i % 3}.py", "line": 1,
+                 "severity": "major", "category": "correctness",
+                 "title": f"t{i}", "description": f"d{i}", "suggestion": f"s{i}"}
+                for i in range(1, 7)
+            ],
+            "out_path": str(proot / ".fenix" / "code-review" / "fix-out-par.jsonl"),
+            "worktree": str(proot),
+        }
+        prompt = runner._build_prompt("runner", "code-fix", detail)
+        self.assertIn("并行处置", prompt)
+        self.assertIn("≤3", prompt)
+        for token in ("{items}", "{out_path}", "{worktree}"):
+            self.assertNotIn(token, prompt)
+        self.assertIn("item-6", prompt)
+
+
 if __name__ == "__main__":
     unittest.main()
 
