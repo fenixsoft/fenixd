@@ -379,13 +379,17 @@ class QQQueueMixin:
         if self._pm.shutting_down:
             self._pm.logger.debug("pm_engine", "Shutting down — dispatch paused")
             return
-        # fix-provider-transient-backoff D4：全局瞬断熔断冻结期间暂停一切新派发。
-        # 与 instant_fail_cooled 同构：冷却到期自动恢复；在飞 run 不受影响。
-        # 队列里已有条目被本闸门挡下时以 INFO 留痕（2026-09-22 事故：解冻后的
-        # spec_ready 已入队，但熔断闸门只在 debug 级留痕、生产日志全库 0 条
-        # DEBUG——「ready 却 4 分钟不派发」在日志里完全不可见）。熔断积压条目
-        # 的最终放出由到期唤醒兜底（ProviderCircuit._wake_dispatch_after_break）。
-        if self._pm._global_transient_break_active():
+        # fix-provider-transient-backoff D4 + evo-fix-transient-break-unseal-backoff
+        # 1.2：首道闸按 冻结 > post-unseal hold > 探针观察窗 > 错峰放行 态序扩展
+        # 消费（短路顺序即优先级；冻结期重触发则 hold 作废重计——gate 查询先查
+        # 冻结即天然满足）。与 instant_fail_cooled 同构：各态到期自动恢复；在飞
+        # run 不受影响。队列里已有条目被闸门挡下时以 INFO 留痕（2026-09-22 事故：
+        # 解冻后的 spec_ready 已入队，但熔断闸门只在 debug 级留痕、生产日志全库
+        # 0 条 DEBUG——「ready 却 4 分钟不派发」在日志里完全不可见）。积压条目的
+        # 最终放出由解封节奏定时器链主动唤醒兜底（ProviderCircuit._schedule_
+        # unseal_wake → _process_queue 首道闸查询即推进态机）。
+        gate = self._pm._transient_unseal_gate()
+        if gate == "frozen":
             with self._queue_lock:
                 held = len(self._run_queue)
             if held:
@@ -399,6 +403,25 @@ class QQQueueMixin:
                     "pm_engine",
                     "Global transient break active — dispatch paused "
                     "(fix-provider-transient-backoff D4)",
+                )
+            return
+        if gate in ("hold", "observe", "release-wait"):
+            with self._queue_lock:
+                held = len(self._run_queue)
+            if gate == "release-wait" and not held:
+                # 错峰积压已放完：退出错峰态，后续派发恢复常态节奏
+                self._pm._transient_unseal_note_drained()
+            elif held:
+                self._pm.logger.info(
+                    "pm_engine",
+                    f"Transient unseal {gate} active — {held} queued dispatch(es) "
+                    f"held (evo-fix-transient-break-unseal-backoff)",
+                )
+            else:
+                self._pm.logger.debug(
+                    "pm_engine",
+                    f"Transient unseal {gate} active — dispatch paused "
+                    f"(evo-fix-transient-break-unseal-backoff)",
                 )
             return
         # 并发缺省值 2→5（add-pipeline-throughput-governance D1）：全历史耗时
@@ -452,6 +475,9 @@ class QQQueueMixin:
                     if not (has_review or has_parallel_plan):
                         return
                 if not self._run_queue:
+                    # 队列已空：若错峰放行态仍在（积压已放完），通知退出错峰态
+                    # （evo-fix-transient-break-unseal-backoff 1.2；非错峰态零操作）
+                    self._pm._transient_unseal_note_drained()
                     return
 
                 # 找队列中所有状态合法条目的最高 effective 档位
@@ -651,6 +677,12 @@ class QQQueueMixin:
                     # 目标档位无就绪条目（可能有但状态不合法），本轮不派发
                     return
 
+                # evo-fix-transient-break-unseal-backoff 1.2：解封节奏单条准入
+                # （探针观察窗仅首条=探针准入；错峰放行按 stagger 节拍每拍一条）。
+                # 锁内、pop 前消费——准入失败即整轮返回，绝不在同一拍连环 pop
+                # （MUST NOT 同拍全量放出）。fail-open：engine 门面异常放行。
+                if not self._pm._transient_unseal_admit():
+                    return
                 entry_to_dispatch = self._run_queue.pop(dispatch_idx)
                 # 先解包条目（agent_type 供下游分流，priority 供 finally 释放）。
                 # 必须在锁内完成——解锁后 _run_queue 可被其他线程修改，

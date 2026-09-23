@@ -3657,6 +3657,45 @@ class PMEngine:
         except Exception:
             return False
 
+    def _transient_unseal_gate(self) -> str:
+        """解封节奏闸态（evo-fix-transient-break-unseal-backoff 1.2）：首道闸态序单点。
+
+        态序 冻结 > post-unseal hold > 探针观察窗 > 错峰放行（短路顺序即优先级，
+        见 ProviderCircuit.transient_unseal_gate）。runner 不可用或判定异常时
+        fail-open 返回 "open"（节奏机制故障不放大为调度故障，与
+        _global_transient_break_active 同构）。
+        """
+        runner = getattr(self, "agent_runner", None)
+        gate = getattr(runner, "transient_unseal_gate", None)
+        if not callable(gate):
+            return "open"
+        try:
+            return str(gate()) or "open"
+        except Exception:
+            return "open"
+
+    def _transient_unseal_admit(self) -> bool:
+        """解封节奏单条派发准入（探针单条 / 错峰节拍）。fail-open 放行。"""
+        runner = getattr(self, "agent_runner", None)
+        admit = getattr(runner, "admit_unseal_dispatch", None)
+        if not callable(admit):
+            return True
+        try:
+            return admit() is not False
+        except Exception:
+            return True
+
+    def _transient_unseal_note_drained(self) -> None:
+        """错峰积压放完回调（队列空时退出错峰态）。异常静默，不阻断派发。"""
+        runner = getattr(self, "agent_runner", None)
+        note = getattr(runner, "note_unseal_release_drained", None)
+        if not callable(note):
+            return
+        try:
+            note()
+        except Exception:
+            pass
+
     def _effective_run_timeout(self, agent_type: str | None = None) -> float:
         """agent run 生效超时（per-agent-timeout-override 3.2）：override → 全局回退。
 
