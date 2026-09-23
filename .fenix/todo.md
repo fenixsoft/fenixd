@@ -25,25 +25,8 @@
   - 调查评估：在处置 add-freeze-stop-inflight-agents（冻结在飞 agent，状态 pushed）验收时暴露。已核实：02:38–04:25 的完整生命周期取自 fenixd.log——02:38:39 实现成功进入阶段 2 验证，02:40:42 judge 重跑达 6/5 上限冻结 blocked，02:57:53 blocked_stuck（critical）信号 8211d734bd0f 与配套 disposition 落账，03:34 重跑 22 场景验证，03:56:17 Planner 判定并打回第 1 轮，04:22:23 人工取消，04:24:52 人工裁定 spec_done → auto-approve → pushed（main + 分支均推送成功）。根因归属：验证裁决把「陈旧产物/跨轮缓存」造成的假失败判成 product-bug（同点日志尚有「跨轮缓存归因打标 … cached_from_previous_round」与「验证报告闸门：报告属上一轮残留（本轮裁决已变更），已重新合成覆盖」），属裁决层假阳性，由人工裁定推翻——一次性误判，非 SPEC 设计缺口。与存量工作关系：spec/archive/2026-09-19-evo-judge-rerun-stability 建立的正是这条重跑/缓存机制，本处是该机制的残余面；spec/changes 活跃区无同题 SPEC。残余缺口：judge 重跑上限触顶前没有「疑似陈旧产物」的自动降级或回读校验，代价全部由人工兜底。结论：单次误判且人工兜底有效，但「陈旧产物假失败 → 空转整轮」的敞口仍在。
   - 建议：在 judge 重跑上限触顶前增加「陈旧产物嫌疑」前置判据：同场景连续两轮结论翻转且带 cached_from_previous_round 标时，先做一次产物新鲜度回读校验（或直接降级为 inconclusive 转人工），不要直接判 product-bug 打回实现轮。
 
-### 失误
-- **漂移通道漏注册门面转发，AttributeError 两次打断派发**
-  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：接受 · 删除：否
-  - 影响：13:30:44 与 15:13:17 两次把 add-code-review-auto-fix（代码审查自动修复）的派发整轮异常打断（implementing 回滚 ready、「implementer never started」），并消耗 2 次死亡 run 预算豁免；更关键的是 evo-deliverable-declaration-drift-align（状态 pushed）的漂移对齐通道在生产调用路径上完全不可达——任何交付物争议都会崩在这一行，而不是走漂移对齐。
-  - 证据：两条 ERROR「Agent run exception: 'PMEngine' object has no attribute '_preclassify_drift'」（13:30:44 与 15:13:17）+ 紧随的「Rolled back 'add-code-review-auto-fix' implementing → ready (implementer never started)」与「预算豁免（死亡 run）… _budget_exempt_runs=2」；调用点 core/pm_engine/dispatch/queue.py:1150 写的是 `self._pm._preclassify_drift(...)`，而转发注册表 core/pm_engine/engine.py `_FORWARDER_REGISTRY`（264-265 行含 `_preclassify_orphan`）无 `_preclassify_drift` 项，`PMEngine.__getattr__`（engine.py:321-335）对未注册名直接 raise AttributeError。
-  - 调查评估：在处置 add-code-review-auto-fix 的派发时暴露。已核实：grep 全仓 `_preclassify_drift` 仅两处命中（queue.py:1150 调用、adjudication.py:709 定义于 VAdjudicationMixin），engine.py 注册表零命中；用 `git log -S` 定位引入者为 8c8da14a（evo-deliverable-declaration-drift-align「漂移笔误机械对齐与派发前同源草案收敛检查」）；该 SPEC 在 .fenix/STATE.md 中状态为 pushed。根因归属：新增门面方法时漏登记转发表——实现层失误；暴露的却是系统性缺口（无任何测试断言「生产调用点的门面名可解析」）：tests/test_deliverable_drift_align.py（792 行）直接对真实 Dispatcher 实例调 `_preclassify_drift` 全绿，唯一的契约测试 tests/test_facade_delegation_contract.py 只校验「原转发方法名全集」逐名可解析（facade-inventory.md 为权威清单），新名不在清单内。与存量工作关系：refactor-facade-delegation（spec/changes 活跃区）确立了转发表契约，但覆盖性是清单驱动的，对新方法天然失明——互补而非重复。结论：一次性漏登记 + 清单驱动契约的盲区，两者都要闭合（后者见「可改进」条目）。
-  - 建议：在核心转发注册表补 `"_preclassify_drift": ("_dispatcher", "_preclassify_drift")` 并加回归测试；配套把「调用点 ↔ 注册表」覆盖性硬门做成契约测试（见下方可改进条目），使同类漏登记在 CI 阶段显性失败而非在生产派发路径上抛异常。
-
-### 可改进
-- **门面转发缺调用点覆盖性硬门，新方法漏登记无测试可拦**
-  - 自进化：问题成立 / 建议部分合理 / ✓ 值得立项 · 处理：接受 · 删除：否
-  - 影响：复发敞口：漏登记一次就让整条通道在生产调用路径上抛 AttributeError——本轮实测两次打断派发、消耗 2 次死亡 run 预算豁免，而 792 行漂移单测 + 758 行门面契约测试全绿也无法发现。
-  - 证据：tests/test_facade_delegation_contract.py 的覆盖性硬门按「原转发方法名全集」逐名断言（文件头注释明示 facade-inventory.md 为权威清单，第 40 行），新方法天然不在清单；唯一调用点 core/pm_engine/dispatch/queue.py:1150 与注册表 core/pm_engine/engine.py:264-265 的差集无任何断言——grep 全仓 `_FORWARDER_REGISTRY` 仅 engine.py 与 refactor-facade-delegation/verification-report.md 命中，tests/ 零命中。
-  - 调查评估：在处置 add-code-review-auto-fix 派发崩溃（AttributeError '_preclassify_drift'）时暴露。已核实：grep 确认 tests/ 下无任何引用 `_FORWARDER_REGISTRY` 的测试；spec/changes/refactor-facade-delegation/facade-inventory.md 是权威清单但属静态人工清单，不随新调用点自动更新。根因归属：契约由「清单枚举」定义而非「调用点反推」，任何新增门面方法都绕过门禁——系统性缺口。与存量工作关系：refactor-facade-delegation 仍在 spec/changes 活跃区，本缺口是它的自然延伸（补一个覆盖维度），不与之重复。结论：「未参与该时段工作的 agent」可据此直接起草：门禁 = AST 扫描调用点 vs 注册表键集合做双向差集。
-  - 建议：新增契约测试：AST 扫描全仓 `self._pm.<name>` 等门面调用点，断言每个被调的私有门面名都能在对应 `_FORWARDER_REGISTRY` 解析（并反向断言注册表无死项）；失败信息直接给出缺登记的名字与调用文件:行号。可作为 refactor-facade-delegation 的补充任务，或独立 evo SPEC。
-
 ### 人工运维（SPEC 激活后执行，对应 spec 的 docs/help 文档）
 - **add-impl-selfcheck-model-probe 合入后**：同步修改运行时 `.fenix/config.yaml`——各 agent 类型模型链摘除 `maomaoai + deepseek-v4.1-flash` 条目（近 48h 实测 12 次 unrecognized_model 秒死 run；详见 spec 交付的 docs/help/model-chain-ops.md）。改完 `fenixd` 30s 热更新自动生效。
-
 
 ## 2026-09-23
 
@@ -55,13 +38,6 @@
   - 调查评估：在处置 add-code-review-auto-fix 与 fix-relocation-writeback-layer 两 SPEC 的实现轮派发时暴露。已核实：三个 run 的起止时间由 run id epoch 与 SIGTERM/延迟日志交叉吻合；12:44:38Z 落了一条 self-evolution 升级告警（admin_alerts 内 handled=true），40 分钟后继任分析 run evo-1790081383 于 13:24:37Z 落地成功，确认该 evo 周期作废后由下一周期补救、两实现轮最终也各自完成（auto-fix 07:21Z pushed、relocation-writeback b59d46c7 05:14Z 合回）。根因：restart_request（supervisor 优雅重启协议的信号文件）触发的规划性重启，在旧代码上直接 SIGTERM 全部在飞 agent、无排水等待——正是 add-pipeline-throughput-governance D3（agents.run_drain_max_seconds 排水，缺省 60s + checkpoint 旗标广播）针对的缺陷面；该 SPEC 于窗口内 15:07Z 合入（9b9cdf7f），其后 17:46:36Z 的重启（陈旧自愈，即 daemon 检测磁盘代码较新后趁连续空闲自动重启的 selfheal，且新冷却机制在场）未再杀任何 run。结论：三例杀 run 全部发生在排水机制上线前，主缺口已由在飞 SPEC 闭合；残余是排水对 evo 分析车道与 execvp 改名孙进程的覆盖尚无实测回归钉住。
   - 建议：为 restart 排水补一条回归测试：构造在飞 evo 分析 run + implementer run 时 touch .fenix/restart_request，断言 run_drain_max_seconds（缺省 60s）内两 run 不被 SIGTERM、超时才有序终止，且进程表按 cwd/cmdline 能把 execvp 后改名形态（node/ocr 等）计入排水集合。
 
-- **code-fix 第 3 批合回撞同功能热修冲突，车道锁死 68 分钟**
-  - 自进化：问题成立 / 建议部分合理 / ✓ 值得立项 · 处理：拒绝 · 删除：否
-  - 影响：code-fix 车道（自动修复代码审查台账条目的深夜无人值守车道）第 3 批合回与主树热修在 core/code_fix.py 同功能冲突交人工后，车道从 16:38Z 起锁死：16:44/16:57/17:14/17:44 四次派发被「Worktree already active」秒拒，直到 17:46:36Z daemon 重启清内存锁，停摆约 68 分钟、当夜剩余 open 条目全部停等；分支侧对 manual_authorized（手动授权旗标，随 fix-progress.json 持久化、授权整条修复链跑完）的平行实现被「取主树版」整体作废。
-  - 证据：fenixd.log 16:38:02Z ERROR「code-fix 第 3 批合回冲突，交人工」；四条 WARNING「Worktree already active for code-review-fix:code-fix」（16:44:46 / 16:57:58 / 17:14:46 / 17:44:46Z）；人工合并提交 9c289ae7（16:50Z）message 自述「解决与主树热修 733d4fdc 的 core/code_fix.py 同功能实现冲突（取主树版）」；git diff c272c209..9c289ae7 显示被弃的分支侧含整段「手动授权链（2026-09-22 事故修复）」实现，与主树热修 733d4fdc（16:06Z，core/code_fix.py 65 行）同功能异措辞。
-  - 调查评估：在处置 code-review-fix 车道第 3 批合回时暴露。已核实：时间线为热修 733d4fdc 落主树（16:06Z）→ 批次分支最后提交 c272c209（16:33Z）→ 合回冲突（16:38Z）→ 人工取主树版合并（16:50Z）→ 车道锁死至 17:46Z 重启；add-code-fix-batch-failure-selfheal 的 proposal 引用的正是本事故（16:44/16:57 两次 14ms 拒绝）。根因两层：①「合回主树中」冻结事故被双路并行修复——人工热修直落主树、车道按台账条目独立实现同一修复，互不知情，合回必冲突；②失败批路径「保留 worktree 待人工」且不释放进程内 spec 锁（worktree_manager.create 裸内存判断、refresh_locks 仅 daemon 启动时执行一次），单批失败即全车道死锁。与存量工作关系：②已由 add-code-fix-batch-failure-selfheal（17:24Z 立项，STATE ready 待派发）覆盖——失败批现场即弃+锁释放+fail_count 重试预算；①「人工热修与车道并行实现同一条目」的对账缺口不在该 SPEC 范围。另注：热修 733d4fdc 把 core 代码修塞在「[fenix] spec: add-impl-selfcheck-model-probe」提交里，提交信息与内容不符，本次回溯归因即受阻。
-  - 建议：①人工/管理侧热修触碰 code-review 台账相关文件后，同步把对应台账条目标记 resolved（或写入豁免清单），code-fix 选批前对账主树同函数实现，避免重复实现；②热修提交与 spec 提交分离，或在 message 注明附带热修内容，保持归因可查。
-
 ### 失误
 - **fast-track 结果文件缺 verification 段，154 轮 run 收尾作废重跑**
   - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：拒绝 · 删除：否
@@ -71,23 +47,51 @@
   - 建议：fast-track 硬校验拒绝时先走「定向补全」：复用 worktree 只派一个小 run 按 schema 补写/修复结果文件，校验通过即收口，连续 2 次补全失败再降级整轮重跑；并在实现侧收尾检查单中加「写完结果文件后自读回校验 verification 段存在」。
 
 ### 可改进
-- **（持续）_preclassify_drift 未注册转发表，漂移通道生产不可达**
-  - 自进化：问题成立 / 建议部分合理 / ✓ 值得立项 · 处理：接受 · 删除：否
-  - 影响：复发敞口：任何交付物争议一旦命中漂移分支，派发即抛 AttributeError 整轮回滚（上次实测两次打断派发、消耗 2 次死亡 run 预算豁免）；一行注册至今未落，漂移对齐通道持续不可达已超 24 小时。
-  - 证据：core/pm_engine/engine.py 的 _FORWARDER_REGISTRY（门面转发注册表）仍只有 "_preclassify_orphan"（265 行）而无 _preclassify_drift；唯一生产调用点 core/pm_engine/dispatch/queue.py:1267 裸调 self._pm._preclassify_drift(...) 且无 try/except；tests/ 下引用 _FORWARDER_REGISTRY 的仅 test_code_fix.py:1335 单名断言，调用点覆盖性契约测试仍不存在。
-  - 调查评估：承接 2026-09-22#失误#1 与 #可改进#1（同根因的「补注册」与「加门禁」两层，合并重述）。本轮复核：注册与调用点差集原样未动，STATE 中 add-code-review-auto-fix 的 _last_dispatch_error 字段仍存着该 AttributeError 原文；窗口内未复现仅因无交付物争议命中该分支（该 SPEC 已由人工裁决收口，不再走争议路径），并非缺陷已修。结论：修复成本一行注册+一个 AST 契约测试，是当前性价比最高的待办；不落地则敞口永续，且 792 行漂移单测全绿也拦不住它在生产路径崩。
-  - 建议：补注册 "_preclassify_drift": ("_dispatcher", "_preclassify_drift") 并加回归；同时落覆盖性硬门契约测试——AST 扫描全仓 self._pm.<name> 门面调用点与注册表键做双向差集（反向断言无死项），失败输出缺登记名字与调用文件:行号；可并入 refactor-facade-delegation 或独立 evo SPEC。
-
-- **provider 瞬断两次全局熔断，解封即原样重派无退避**
-  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：接受 · 删除：否
-  - 影响：已发生+复发敞口：两场瞬断风暴（02:04:24Z、02:20:59Z）各冻结全部新 run 派发 600 秒，10 次派发尝试失败作废、全局派发停摆约 20 分钟，波及 add-code-review-auto-fix 与 fix-relocation-writeback-layer 两 SPEC 的实现轮；若不加退避，provider 每次抖动都会以「5 连败→冻结→解封→立即重蹈」的方式收敛。
-  - 证据：两条 ERROR「Global transient break TRIGGERED …(5 failures within 600s window)」（transient break，provider 瞬断全局熔断），失败清单 10 条全部 provider=inferaiapi.com（auto-fix ×4、relocation-writeback ×6，01:54:45–02:20:59Z）；02:14:30Z 第一次解封后 100 秒即再吃失败、16 分钟后第二场触发；配套 escalation transient_break_storm ×2（admin_alerts 内均 handled=true）。
-  - 调查评估：在处置两 SPEC 实现轮派发时暴露，且 10 次失败的 run 正是三次重启杀 run 后的重派批次（run id 1790040109/1790039698 系列），两类事故互为放大。已核实：失败清单的 run_id/provider/时间戳取自熔断日志全文；熔断动作本身是 fix-provider-transient-backoff D4 按设计保护（避免了更烧预算的连败），属保护成本而非机制失效。根因归属：provider 侧瞬时不可用为外部因素，车道侧缺口是「解封后无渐进退避、立即原样重派同一 provider」且两 SPEC 挤在同一重试窗口。与存量工作关系：add-impl-selfcheck-model-probe（本轮 pushed）已做拒模型识别与链上 failover，但针对 unrecognized_model 秒死，不覆盖可识别瞬断的重试节奏——窗口内 unrecognized_model=0（前 48h 为 12 次）旁证该 SPEC 已生效。结论：残余缺口是瞬断场景的重试节奏治理，清晰度足以直接起草。
-  - 建议：为 transient break 增加解封后渐进退避：同一错误指纹解封后首次重派前先等 60s×已解封次数（封顶 10 分钟），或解封后先以单并发探针 run 验 provider 可用再恢复并发；解封时按优先级错峰放行排队 SPEC，避免同批并发重撞。
-
 - **orphaned_state 探针误报 3 连发，每例烧一轮 admin 处置**
   - 自进化：问题成立 / 建议部分合理 / ✓ 值得立项 · 处理：拒绝 · 删除：否
   - 影响：已发生+复发敞口：窗口内 3 个 SPEC 在 testing 阶段被 orphaned_state（无活动 run 的孤儿态探测）误报 major 告警——12:13Z add-code-fix-manual-trigger、16:09Z add-pipeline-throughput-governance、17:05Z add-impl-selfcheck-model-probe——每例都触发一轮只读诊断 admin run 落处置记录（admin_alerts 中 orphaned_state disposition 共 6 条）；单次代价是一整个 admin LLM run 的 token 与时延，外加 major 告警进人工横幅的噪声。
   - 证据：admin_alerts.json 窗口内 orphaned_state signal/escalation 3 条 + disposition 6 条；17:05Z 处置记录自述「ocr join 停等 + 探针盲区/版本代差复合假孤儿，等车道硬超时自愈后 spec 自动 pushed」，并以 py-spy 取证到存活 ocr 子进程 PID 1833155/1833166（16:35:42Z 起）——探测器判「无活动 run / 无存活子进程」与进程表事实相反。
   - 调查评估：在处置 add-impl-selfcheck-model-probe 的验证停等时暴露（另两例同型）。已核实：三例均为误报、均以「等车道自愈」收口，未造成状态破坏，代价集中在诊断与告警消耗。根因：探测器的存活子进程枚举覆盖不了 execvp 后改名的形态（ocr 子进程现形为 node/ocr，不在探针子进程树内），叠加 daemon 版本代差（新加的心跳/超时字段在旧代码进程上不生效）；fix-ocr-lane-orphaned-state-misfire（14:35Z 合入，074084bb）修的是「嵌套 fingerprint 产物误判未绑定指纹/门在飞检测补全」变体，而 16:09Z 与 17:05Z 两例发生在其合入之后，属未被该 SPEC 覆盖的残余变体。结论：探测判据与代差兼容是系统性缺口，不修则每轮 ocr 长验证停等都会再烧一轮处置。
   - 建议：orphaned_state 存活判据扩展为进程表按项目 worktree 的 cwd/cmdline 匹配后代进程（覆盖 execvp 改名形态），并把「车道停等注记在场」作为显式豁免判据；探测前先比对心跳字段版本与 daemon 进程 lstart，版本代差期降级为 INFO 不升级告警。
+
+
+## 2026-09-24
+
+### 浪费
+- **审查车道三连败零产出，约65分钟审查全废**
+  - 影响：仓库手动审查（对全仓 137 文件的代码审查车道）三连败零产出：三次 run 合计约 65 分钟、955 轮对话全部作废，台账改动为 inserted=0/updated=0/resolved=0，其中两次留有成本记录合计 $39.44（$21.54 与 $17.90），第三次以 Max turns 报错终止未留成本记录；用户被迫手动止损取消并当场立项根治，补救 SPEC 自身又消耗了出题 124 轮、实现 169 轮与一轮 admin 处置。
+  - 证据：run code-review-1790154247（仓库审查 run，507 轮）09:04:07Z 起 09:33:02Z 止，终态 error「Max turns (1200) reached — turn extension budget exhausted (2/2)」，此前 09:23:19Z 有「Turn limit extended (1/2): step=200, new_cap=1000, evidence=tool_result traffic in last 60s」；run code-review-1790178542 与 code-review-1790180307 分别 258 轮/19.6 分钟、190 轮/16.8 分钟，均被「产物硬门拦截: manifest=137 — 审查产物缺失（repo-code-review-gate，审查结果 jsonl 逐文件落行的硬校验门）」拦下；16:36:52Z 用户取消记录 reason=「18分钟零落盘，async子代理模式机制性失效，止损并立项根治」（source=dashboard）。
+  - 调查评估：在处置仓库手动审查车道（code-review 手动审查）的第三连败时暴露。已核实：三份 run 产物均在 .fenix/runs/archive/，前两次 exit 0 但 out-code-review-*.jsonl 不存在（产物硬门按设计拦下、避免零产出假成功），第三次把轮次上限两次扩到 1200 仍烧尽——扩轮凭据只是「近 60 秒有工具流量」，流量不等于进展。根因：审查 agent 采用异步子代理（async subagent）模式后把全部落盘推迟到收尾，子代理结果从未逐文件追加进结果 jsonl，属车道纪律缺陷而非 provider 故障。与存量工作关系：add-code-review-sharded-out（分片直写改造）正是当窗 16:47Z 立项、17:51Z 合回主树的根治 SPEC（分片直写聚合 15b18192、禁 async 等待收工契约 0e9d62d5、落盘纪律 85a2d281、事中零进度停滞告警 b7249e0d），但该 SPEC 窗口末仍处 testing 待验证；另 e1f1a57f（10:40Z）解除车道轮次上限（max_turns=None）并把 run_timeout 提至 604800 秒，连带触发 timeout_supervision.absolute_max_seconds 自动对齐（10:40:47Z 自愈持久化为 612000 秒）——止损今后完全依赖新落盘纪律与停滞告警。结论：根因已立项并在飞，损失为已发生的 conversion 成本；残余敞口是 SPEC 未过验证前车道再跑仍可能重演，且停滞告警只报不杀。
+  - 建议：尽快走完 add-code-review-sharded-out 的验证收口再恢复手动审查车道；给 check_progress_stall（事中零进度停滞告警）补一个升级出口——同一 run 连续 2 次停滞告警即自动取消并记账，避免再次出现 507 轮烧到底。
+
+- **code-fix两批合回撞主树未提交改动整批弃置**
+  - 影响：code-fix 车道（自动修复审查台账条目的深夜车道）第 21、22 两批合回被整批弃置：约 2 小时车道产出作废、约 40 条台账修复（每批约 20 条）待重做，车道到 04:02:56Z 才恢复合回成功，中间约 2 小时用于止损与 defer 修复立项；第 21 批此前还多烧了一轮完整回归（01:25:12Z 首次回归未通过重试）。
+  - 证据：01:38:25Z 与 02:09:04Z 各一条 ERROR「Merge-back blocked by WIP overlap precheck (policy=escalate)：2 main-tree tracked file(s) with uncommitted changes overlap branch …（QualityTab.tsx 等主树未提交改动与批次分支改动重叠）」+ 紧随的「code-fix 第 21/22 批合回冲突，现场即弃（branch/tip_sha 入档案）」；重叠脏文件与用户 UI 会话的未提交 WIP 同源（97730703「UI 会话 WIP 收尾提交」直到 02:52Z 才落主树，且当前 git status 中 QualityTab.tsx 仍为未提交态）。
+  - 调查评估：在处置 code-review-fix 车道第 21/22 批合回时暴露。已核实：主树两个 dashboard 前端文件的未提交改动长时间滞留，与批次分支的修复路径重叠，escalate 政策当时只有「现场即弃」一档，已完成并通过回归的整批工作被丢弃。根因：人工/UI 会话与自动化车道共享主树工作区且互不知情（与 2026-09-23#浪费#2 的「已提交热修撞车道」同族，这次是「未提交 WIP」变体）。与存量工作关系：fix-codefix-wipgate-defer（合回 WIP 阻断分类 defer 路径与延迟合回台账）正是本事件 03:36Z 立项、04:26Z 合回 pushed 的针对性修复，其后第 1–9 批共 9 次合回零冲突，主缺口已闭合。结论：一次性环境冲突叠加上述政策缺口，修复已在飞落地；残余是 defer 的消费时机问题（见改进条「WIP阻断的延迟合回无周期消费者」）。
+  - 建议：code-fix 选批前增加预检：主树 dirty 文件集合与候选批目标文件有重叠时整批推迟到 WIP 清理后再选，把冲突消在实现之前；人工侧 UI 会话触碰台账相关文件后及时提交或 stash，保持主树干净。
+
+### 失误
+- **日报聚合误判成功run为预算耗尽失败**
+  - 影响：今日日报把一个完全成功的实现 run（exit 0、分支 ffe278ea 已合回主树、spec 已 pushed）误计为失败样本（marker=预算耗尽），失败数虚增（报 2 实为 1）；复发敞口：任何实现了预算治理类功能的 run，其收工摘要几乎必然复述「预算耗尽」一词（本次实拍原句「预算耗尽发一次性 warning」），每个相关 SPEC 都会再误报一次。
+  - 证据：run impl-fix-codefix-wipgate-defer-1790135672-a2（fix-codefix-wipgate-defer 的实现 run，100 轮、$5.69）产物末行为 {"is_error":"False","subtype":"success","result":"收工自检 PASS（exit 0）…"}，但 1382 字符的成功摘要里含「预算耗尽发一次性 warning」；core/self_review.py:277 对 result 全文做 _business_fail_marker 子串匹配，而 _BUSINESS_FAIL_PATTERNS（self_review.py:204 起）含裸词「预算耗尽」。
+  - 调查评估：在核对今日数据摘要的失败样本时暴露（本条为只读复核，未跑任何修复）。已核实：_classify_run 对 type=result 的终态不区分 is_error 一律做全文子串匹配，护栏 _signal_evidence 更是对全部事件行逐行扫描同一批词，功能词汇与失败声明词同形即误判。根因：分类器把「agent 自述摘要里的功能术语」当成「失败声明」，缺少终态成功前提或语句形态约束，属系统性误判而非一次性手误。与存量工作关系：evo-self-review-runs-archive-stats（归档）建立的是这套 run 统计的覆盖面，未覆盖匹配语义；spec/changes 活跃区无同题 SPEC。结论：修复成本极低且当天已产生错误输出，值得尽快立项。
+  - 建议：对 type=result 且 is_error=False/subtype=success 的终态跳过 marker 降级（或仅在摘要前 100 字符内匹配「预算耗尽，…」等失败声明形态）；_signal_evidence 限定只在 error 终态行内匹配；补一条「成功摘要含功能词不降级」的回归用例。
+
+### 可改进
+- **并行派发同秒撞名，worktree创建连败四次**
+  - 影响：已发生 4 次+复发敞口：ready 态并行派发实现与出题落在同一秒时两者生成同名分支，后到者 worktree 创建必败，窗口内 4 次派发尝试失败（每次烧掉 1 次实现尝试配额、约 5 秒重派延迟，并多拉起一个 worktree 与 dev-server）；并行出题已是就绪态默认路径，撞名概率随派发并发上升。
+  - 证据：四组同签名日志：01:00:25Z（fix-fasttrack-implemented-deadstate-1790125225）、03:54:32Z（fix-codefix-wipgate-defer-1790135672）、11:30:00Z（add-codefix-batch-parallel-1790163000）、17:00:26Z（add-code-review-sharded-out-1790182826），每组均为两条间隔不足 100ms 的「Creating worktree: 同一路径同一分支」+ 一条「fatal: a branch named … already exists」+ 紧随的「Running implementer (attempt 2/3)」换新纪元后缀成功（如 …-1790135672 失败后 …-1790135677 成功）。
+  - 调查评估：在处置上述四个 SPEC 的派发失败时暴露。已核实：worktree/分支名模板为 <prefix>-<spec>-<int(time.time())>，并行出题（planner-plan 与实现并行生成验证场景的机制）与实现派发同秒触发时必然同名，先到者建分支、后到者 worktree add -b 即败；无重名捕获重试、无 per-spec 命名串行化，当前靠 attempt 重试自愈。根因：命名未掺入 attempt 级唯一量，属系统性竞态而非偶发外部故障。与存量工作关系：evo-spec-concurrency-flight-guard（活跃区）管的是同 spec 重复派发的飞行守卫，不覆盖命名冲突维度。结论：修复成本一行级（重名即换名重试或复用既有分支），性价比高。
+  - 建议：worktree 创建捕获「already exists」后就地换名重试（epoch+1 或加 attempt 后缀），或分支名掺入 run attempt uuid；亦可先探测同名分支无 worktree 挂载时直接复用；补一条「并行出题+实现同秒派发不撞名」回归测试。
+
+- **WIP阻断的延迟合回无周期消费者，解锁靠人工**
+  - 影响：已发生+复发敞口：add-code-review-sharded-out 合回被 WIP 重叠闸门（合回前预检主树未提交改动与分支改动是否重叠的保护闸）阻断后，spec 卡在 implementing+error 约 18 分钟（17:33:48Z→17:51:29Z），烧掉一条 major 信号与一轮 admin 处置 run（admin-add-code-review-sharded-out-1790185077，48 轮、约 17 分钟）才解锁；每次主树 WIP 与分支重叠都重演同代价。
+  - 证据：17:33:48Z 信号 mergeback_wip_overlap（SPEC 合回被主树 WIP 重叠闸门阻塞、策略=block、主树零污染）；17:54:49Z 处置记录（result=resolved）诊断原文：「queue.py wip_gate_blocked 分支 early-return 不排 merge-only 重试定时器，_merge_retry_pending 无周期消费者，恢复期 re-merge（_repair_awaiting_remerge）仅 daemon boot 消费——须人工」；core/admin_monitor.py 对 _repair_awaiting_remerge 载体的豁免注释同样写明「该通路是时间点事件……有待后续 SPEC 补」。
+  - 调查评估：在处置 add-code-review-sharded-out 的合回阻断时暴露（Administrator 只读诊断后人工完成合并）。已核实：fix-codefix-wipgate-defer（pushed）落了 defer 分类与延迟合回台账，但 defer 载体的唯一消费者是 daemon 启动恢复期——正常运行态下 WIP 清理后无人重试合并，orphaned_state 探测（无活动 run 的孤儿态探测）对这类有意等待载体只能豁免报错、不能驱动收敛。根因：闸门与台账齐备、缺一个「WIP 清了就自动合回」的周期消费者，属设计接缝缺口。与存量工作关系：evo-merge-back-wip-overlap-gate（归档）建闸门、fix-codefix-wipgate-defer（pushed）建 defer 路径，本条是两者的补全而非重复。结论：清晰度足以直接起草，且能消掉一类高频 admin 召唤。
+  - 建议：给 _merge_retry_pending 加周期消费者（主循环或 admin 巡检每 N 分钟复查重叠文件是否已干净，干净即自动 merge-only 重试并设重试上限），在 orphaned_state 探测前先触发该检查，使自动合回成为默认路径、admin 只处理真冲突。
+
+- **stale_code陈旧代码告警同因一日13连发**
+  - 影响：噪音类：窗口内 stale_code（daemon 进程持旧代码、待空闲自愈重启的检测）升级告警 13 连发（19:46:40Z 至 17:51:03Z，约每 40–100 分钟一条），全部 warning 级、同文同因、自动处置；无直接损失，但持续占据告警横幅，稀释真实 major 信号的注意力。
+  - 证据：.fenix/admin_alerts.json 窗口内 13 条 kind=escalation、signal=stale_code、handled=true、描述逐字相同（「daemon 进程持旧代码，自愈将在连续空闲后触发重启」）；当日 code-fix 批次约每 40 分钟落一次主树提交，daemon 长期处于「刚变陈旧又找不到空闲重启」的循环，每轮巡检重复成条。
+  - 调查评估：在核对窗口告警分布时暴露（13 条升级告警全部为该信号）。已核实：evo-alert-noise-governance（09-23 pushed）给 daemon_errors 落了指纹级重启冷却与孪生指纹合并，但 stale_code 不在其治理面内，同因重复升级无冷却。根因：告警生命周期按「每次检测即成条」运行，未对「同因未变化、处置动作不变（继续等空闲）」的去重场景收敛。与存量工作关系：是 evo-alert-noise-governance 的自然延伸（同一治理思路补一个信号面），非重复立项。结论：小体量高确定性，可并入下一次告警治理或作为独立小 SPEC。
+  - 建议：对 stale_code 增加同因冷却：持旧期间同一 daemon 生命周期只升级告警一次，或 60 分钟窗口内去重、仅当「已找到空闲并排期重启」状态变化时再报；历史条目折叠进一条聚合记录供回查。
