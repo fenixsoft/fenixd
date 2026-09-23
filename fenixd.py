@@ -1748,10 +1748,13 @@ class FenixDaemon:
             self.logger.warning("fenixd", "admin_invoke 请求缺少 spec，忽略")
             return
 
-        # 反查底层 signal_type（fix-manual-invoke-signal-type-passthrough 1.1）：
-        # 手动唤起通道把信号压平为 manual-intervention，处置收尾自动复位判定门
-        # （admin_monitor 对 DISPOSITION_AUTO_RESET_SIGNAL_TYPES 的前置检查）因此
-        # 对人工唤起通道永不命中。此处基于 admin_store.read_all()（created 倒序）
+        # 底层 signal_type 透传（fix-manual-invoke-signal-type-passthrough 1.1 +
+        # fix-escalation-autoinvoke-passthrough）：手动唤起通道把信号压平为
+        # manual-intervention，处置收尾自动复位判定门（admin_monitor 对
+        # DISPOSITION_AUTO_RESET_SIGNAL_TYPES 的前置检查）因此对人工唤起通道
+        # 永不命中。取值两源：① 请求文件 payload 直传（自动呼叫路径，其升级
+        # 记录降噪即被标 handled、反查不可见）；② 反查兜底——基于
+        # admin_store.read_all()（created 倒序）
         # 过滤该 spec 最近一条未处置（非 handled）SIGNAL/ESCALATION 记录，取其
         # signal_type 以独立字段透传；查不到为 None（字段可选，缺省 None）。
         # MUST 只透传复位门可消费的类型（code-review item db8c9b226fe4）：
@@ -1762,24 +1765,34 @@ class FenixDaemon:
         # 后复位门仍不命中。跳过这类记录继续向前反查，取最近一条命中
         # DISPOSITION_AUTO_RESET_SIGNAL_TYPES 的记录。
         underlying_signal_type = None
-        try:
-            for rec in self.admin_store.read_all():
-                if rec.get("kind") not in (SIGNAL, ESCALATION):
-                    continue
-                if rec.get("handled"):
-                    continue
-                if rec.get("spec") != spec:
-                    continue
-                if rec.get("signal_type") not in DISPOSITION_AUTO_RESET_SIGNAL_TYPES:
-                    continue
-                underlying_signal_type = rec.get("signal_type")
-                break
-        except Exception as e:  # noqa: BLE001 — 反查失败不阻塞唤起，退化为不透传
-            self.logger.warning(
-                "fenixd",
-                f"admin_invoke 反查底层 signal_type 失败（spec={spec}）: {e}",
-            )
-            underlying_signal_type = None
+        # 直传优先（fix-escalation-autoinvoke-passthrough）：env 阻塞等自动
+        # 呼叫路径在请求文件 payload 里自带底层 signal_type——该路径的升级
+        # 记录多为 warning 级降噪（_send_human_escalation_alert 落库即标
+        # handled），下方基于未处置记录的反查对此不可见。直传值仍按复位
+        # 集合白名单过滤（MUST 只透传复位门可消费的类型），不在集合内视为
+        # 未提供，回退反查。
+        payload_type = str(payload.get("underlying_signal_type") or "").strip()
+        if payload_type in DISPOSITION_AUTO_RESET_SIGNAL_TYPES:
+            underlying_signal_type = payload_type
+        if underlying_signal_type is None:
+            try:
+                for rec in self.admin_store.read_all():
+                    if rec.get("kind") not in (SIGNAL, ESCALATION):
+                        continue
+                    if rec.get("handled"):
+                        continue
+                    if rec.get("spec") != spec:
+                        continue
+                    if rec.get("signal_type") not in DISPOSITION_AUTO_RESET_SIGNAL_TYPES:
+                        continue
+                    underlying_signal_type = rec.get("signal_type")
+                    break
+            except Exception as e:  # noqa: BLE001 — 反查失败不阻塞唤起，退化为不透传
+                self.logger.warning(
+                    "fenixd",
+                    f"admin_invoke 反查底层 signal_type 失败（spec={spec}）: {e}",
+                )
+                underlying_signal_type = None
 
         signal = {
             "signal_type": "manual-intervention",

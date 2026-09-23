@@ -227,6 +227,62 @@ class TestDaemonPassthrough:
 
         assert runner.calls[0]["underlying_signal_type"] is None
 
+    def test_payload_carried_type_rescues_handled_escalation(
+        self, tmp_path, monkeypatch
+    ):
+        """fix-escalation-autoinvoke-passthrough 回归：env 阻塞自动呼叫路径的
+        升级记录 severity=warning 落库即按降噪分级标 handled（反查不可见），
+        请求文件 payload 直传底层类型 → 透传生效，处置 resolved 后复位门命中。"""
+        proot = tmp_path / "proj"
+        (proot / ".fenix").mkdir(parents=True, exist_ok=True)
+        store = AdminStore(proot, _FakeLogger())
+        rec = store.append({
+            "kind": ESCALATION,
+            "signal_type": "verify_env_blocked",
+            "spec": "myspec",
+            "handled": False,
+        })
+        store.mark_handled(rec["id"])  # 模拟 warning 级降噪：写库即标 handled
+        runner = _FakeRunner()
+        daemon = _make_daemon(proot, runner, store)
+
+        req = proot / ".fenix" / "admin_invoke_request.json"
+        req.write_text(json.dumps({
+            "spec": "myspec",
+            "source": "manual",
+            "underlying_signal_type": "verify_env_blocked",
+        }), encoding="utf-8")
+        monkeypatch.setattr(fenixd, "PROJECT_ROOT", proot)
+        daemon._check_admin_invoke_requests()
+
+        assert not req.exists()
+        assert len(runner.calls) == 1
+        sig = runner.calls[0]
+        assert sig["signal_type"] == "manual-intervention"
+        assert sig["underlying_signal_type"] == "verify_env_blocked"
+
+    def test_payload_value_outside_reset_set_falls_back_to_lookup(
+        self, tmp_path, monkeypatch
+    ):
+        """payload 直传值不在复位集合 → 视为未提供回退反查（MUST 只透传
+        复位门可消费的类型，与 store 反查同白名单）。"""
+        proot = tmp_path / "proj"
+        (proot / ".fenix").mkdir(parents=True, exist_ok=True)
+        store = AdminStore(proot, _FakeLogger())
+        runner = _FakeRunner()
+        daemon = _make_daemon(proot, runner, store)
+
+        req = proot / ".fenix" / "admin_invoke_request.json"
+        req.write_text(json.dumps({
+            "spec": "myspec",
+            "source": "manual",
+            "underlying_signal_type": "warning_stale_triage",
+        }), encoding="utf-8")
+        monkeypatch.setattr(fenixd, "PROJECT_ROOT", proot)
+        daemon._check_admin_invoke_requests()
+
+        assert runner.calls[0]["underlying_signal_type"] is None
+
     def test_manual_intervention_leftover_skipped_latest_real_type_wins(
         self, tmp_path, monkeypatch
     ):
@@ -467,6 +523,52 @@ class TestResetGateEndToEnd:
         assert len(seeded) == 1
         assert seeded[0]["signal_type"] == "verify_env_blocked"
         assert not seeded[0]["handled"]
+
+
+# ═════════════════════════════════════════════════════════════════════
+# 写入端直传（fix-escalation-autoinvoke-passthrough）
+# ═════════════════════════════════════════════════════════════════════
+
+
+class TestRequestInvokePayload:
+
+    def test_underlying_type_written_into_payload(self, tmp_path, monkeypatch):
+        """underlying_signal_type 非空 → 随 payload 原子写入请求文件。"""
+        from core.signals import request_admin_invoke
+
+        monkeypatch.setattr(
+            "core.dashboard.data.state.parse_state",
+            lambda proot: {"myspec": {"status": "blocked"}},
+        )
+        result = request_admin_invoke(
+            tmp_path, "myspec", underlying_signal_type="verify_env_blocked"
+        )
+        assert result["ok"] is True
+        payload = json.loads(
+            (tmp_path / ".fenix" / "admin_invoke_request.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert payload["underlying_signal_type"] == "verify_env_blocked"
+        assert payload["spec"] == "myspec"
+
+    def test_underlying_type_absent_key_omitted(self, tmp_path, monkeypatch):
+        """不传 underlying_signal_type（dashboard 纯人工唤起）→ payload 无该键。"""
+        from core.signals import request_admin_invoke
+
+        monkeypatch.setattr(
+            "core.dashboard.data.state.parse_state",
+            lambda proot: {"myspec": {"status": "blocked"}},
+        )
+        result = request_admin_invoke(tmp_path, "myspec", prompt="看看")
+        assert result["ok"] is True
+        payload = json.loads(
+            (tmp_path / ".fenix" / "admin_invoke_request.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert "underlying_signal_type" not in payload
+        assert payload["prompt"] == "看看"
 
 
 if __name__ == "__main__":

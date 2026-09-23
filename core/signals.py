@@ -39,7 +39,12 @@ SCHEDULING_KICK_DIR = ".fenix/scheduling_kick"
 _KEBAB_RE = re.compile(r"^[a-z][a-z0-9]*(-[a-z0-9]+)*$")
 
 
-def request_admin_invoke(project_root, spec: str, prompt: str | None = None) -> dict:
+def request_admin_invoke(
+    project_root,
+    spec: str,
+    prompt: str | None = None,
+    underlying_signal_type: str | None = None,
+) -> dict:
     """写入手动唤起 Administrator 的文件信号（.fenix/admin_invoke_request.json）。
 
     校验 spec 须存在于项目 STATE.md，且当前不存在未消费的请求文件，否则返回
@@ -48,6 +53,12 @@ def request_admin_invoke(project_root, spec: str, prompt: str | None = None) -> 
 
     prompt：用户在 Dashboard 处置弹窗输入的提示词，非空时写入请求文件，
     daemon 拾取后作为本次处置的任务描述（替代默认文案）传给 Administrator。
+
+    underlying_signal_type：底层信号类型直传（fix-escalation-autoinvoke-
+    passthrough），非空时写入请求文件，daemon 拾取后随信号透传给处置收尾
+    自动复位判定门。自动呼叫路径（如 env 阻塞）的升级记录多为 warning 级
+    降噪（写库即标 handled），消费侧基于 store 的未处置记录反查对此不可见，
+    须由呼叫方自带类型；dashboard 纯人工唤起不传、仍走反查。
 
     文件信号模式与 restart_request 同构：server 进程不直接起 agent（绕过
     state_machine 与 token 预算），由 daemon 主循环下一轮扫描拾取并唤起。
@@ -88,6 +99,8 @@ def request_admin_invoke(project_root, spec: str, prompt: str | None = None) -> 
     payload = {"spec": spec, "source": "manual", "created": created}
     if prompt and prompt.strip():
         payload["prompt"] = prompt.strip()
+    if underlying_signal_type and str(underlying_signal_type).strip():
+        payload["underlying_signal_type"] = str(underlying_signal_type).strip()
     req_path.parent.mkdir(parents=True, exist_ok=True)
     # TOCTOU 修复（code-review item 546945dbaffb）：上方 exists() 检查与写入
     # 之间存在并发窗口——两个并发请求可能都通过检查，随后各自 os.replace 覆盖

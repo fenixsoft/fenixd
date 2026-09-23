@@ -61,8 +61,10 @@ def disposition_signal_hits_auto_reset(signal) -> bool:
     `signal_type` 或 `underlying_signal_type` 任一命中
     DISPOSITION_AUTO_RESET_SIGNAL_TYPES 即触发：手动唤起通道顶层恒为
     manual-intervention（store 记录/节流锚点/活动区展示语义），底层类型经
-    underlying_signal_type 透传（fenixd._check_admin_invoke_requests 反查写入），
-    复位门须同时感知两个字段；自动检测通道仅携带 signal_type，行为不变。
+    underlying_signal_type 透传（fenixd._check_admin_invoke_requests 写入：
+    请求文件 payload 直传优先——env 阻塞自动呼叫路径的升级记录 warning 级
+    降噪即被标 handled、反查不可见——store 未处置记录反查兜底），复位门须
+    同时感知两个字段；自动检测通道仅携带 signal_type，行为不变。
     """
     if not isinstance(signal, dict):
         return False

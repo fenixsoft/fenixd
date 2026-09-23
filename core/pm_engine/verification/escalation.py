@@ -265,6 +265,10 @@ def _escalate_env_blocked(
             )
         # 自动呼叫 Administrator：与 Dashboard 手动 invoke 同一信号通道
         # （.fenix/admin_invoke_request.json，daemon 主循环拾取派发）。
+        # underlying_signal_type 直传（fix-escalation-autoinvoke-passthrough）：
+        # 本路径升级记录 severity=warning（frozen 时 critical）在
+        # _send_human_escalation_alert 落库即按降噪分级标 handled，消费侧
+        # 基于未处置记录的反查对此不可见——复位透传必须由呼叫方自带。
         # fix-deferred-findings CYC-1：中性模块（不再反向 import dashboard.data）
         try:
             from core.signals import request_admin_invoke
@@ -281,6 +285,7 @@ def _escalate_env_blocked(
                     "产品代码，不要手动 reset spec 状态。处置完成后，框架将自动"
                     "判定复位路径并触发重验证。"
                 ),
+                underlying_signal_type="verify_env_blocked",
             )
             if isinstance(inv, dict) and inv.get("conflict"):
                 pipeline._context.logger.info(
