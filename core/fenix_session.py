@@ -92,10 +92,11 @@ def _procs_matching(match) -> list:
     路径、agent 的 prompt 文本皆可触发）。token 化后判据可以要求「该 token
     就是被执行的脚本」。
     """
-    try:
-        pids = os.listdir("/proc")
-    except OSError:
-        return []
+    # /proc 不可用（非 Linux 平台等）时抛 OSError 交调用方兜底——本函数 docstring
+    # 即约定「调用方负责兜底整体异常」：is_running 的 except 路径据此回退 tmux
+    # 判定，supervisor_running / _fenix_pids_under 各自降级（code-review
+    # b7858abfd42b：此处吞成 [] 会让 tmux 回退不可达，无 /proc 环境恒判未运行）。
+    pids = os.listdir("/proc")
     hits = []
     for pid in pids:
         if not pid.isdigit():
@@ -461,6 +462,7 @@ def stop_daemon(root: str | None = None) -> dict:
         return {"ok": True, "error": None, "session": session, "was_running": False}
 
     # 入口快照停止目标（并发安全：超时兜底只杀快照 pid，不重扫）
+    # [fenix-ignore:aea5d1c9400d] supervisor 拉起前后各有 stop 标记检查点（循环顶/监视循环/daemon 退出后）且监视循环见 stop 即主动 SIGTERM 当前 daemon，快照到写 stop 仅隔微秒级语句、spawn 不可能整体落入窗口，收口又以快照（含 supervisor pid）全退为前提，重生 daemon 无法在 stop 后存活；改为「写标记后等待再快照」反而会把并发 start 的新进程扫进快照被兜底误杀，重新引入 BUG-01「绝不重扫误杀」契约所禁止的行为。
     target_pids = _fenix_pids_under(proot)
 
     # ① 写 stop（supervisor 主循环开头与 daemon 退出后都会检查）

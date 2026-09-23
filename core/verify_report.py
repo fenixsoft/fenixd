@@ -725,30 +725,55 @@ def ensure_verification_report(project_root, spec_name, logger=None) -> dict:
     返回 {"ok": False, "error": <文案>} 表示 MUST 阻止状态推进（fail-closed）。
 
     action=resynthesized：既有报告属上一轮残留（``_report_is_superseded``），
-    已用本轮结构化数据重新合成覆盖。
+    已用本轮结构化数据重新合成覆盖。既有报告在场但不可读（OSError/
+    UnicodeDecodeError）时同样走重新合成——不可读文件不得以 present 放行。
     """
     out_path = Path(project_root) / "spec" / "changes" / spec_name / "verification-report.md"
+    unreadable = False
     if out_path.exists():
         try:
             existing = out_path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
+            # 报告在场但读不出（权限/编码损坏）：空串解析不出任何结论会被
+            # _report_is_superseded 判「非残留」而 fail-open，故改走重新合成，
+            # 合成失败再 fail-closed 告警。
             existing = ""
-        if not _report_is_superseded(project_root, spec_name, existing):
+            unreadable = True
+        if not unreadable and not _report_is_superseded(project_root, spec_name, existing):
             # Agent 已写报告且与本轮裁决一致：原样保留，不覆盖、不改 mtime
             return {"ok": True, "action": "present"}
         result = synthesize_verification_report(project_root, spec_name)
         if result.get("ok"):
             if logger is not None:
-                logger.warning(
-                    "verify_report",
-                    f"验证报告闸门：'{spec_name}' 报告属上一轮残留"
-                    f"（本轮裁决已变更），已重新合成覆盖",
-                )
+                if unreadable:
+                    logger.warning(
+                        "verify_report",
+                        f"验证报告闸门：'{spec_name}' 既有报告不可读"
+                        f"（权限/编码损坏），已重新合成覆盖",
+                    )
+                else:
+                    logger.warning(
+                        "verify_report",
+                        f"验证报告闸门：'{spec_name}' 报告属上一轮残留"
+                        f"（本轮裁决已变更），已重新合成覆盖",
+                    )
             return {"ok": True, "action": "resynthesized"}
-        return {
-            "ok": False,
-            "error": result.get("error") or "验证报告缺失且无法合成",
-        }
+        error = result.get("error") or "验证报告缺失且无法合成"
+        if unreadable:
+            # 与缺失路径同一 fail-closed 承诺：阻断推进并发升级告警
+            _append_alert(
+                project_root,
+                spec_name,
+                SIGNAL_MISSING,
+                "major",
+                (
+                    f"'{spec_name}' 验证报告在场但不可读且无法合成——"
+                    "验证裁决放行被阻断，等待人工裁决"
+                ),
+                error,
+                logger=logger,
+            )
+        return {"ok": False, "error": error}
 
     result = synthesize_verification_report(project_root, spec_name)
     if result.get("ok"):

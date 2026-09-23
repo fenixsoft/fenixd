@@ -22,22 +22,6 @@ from core.state_machine import INFRA_FAILURE_COUNT_FIELD, VERIFY_INFRA_ROUNDS_FI
 # 回拨审计留痕信号类型（幂等键前缀，admin_store DISPOSITION 按 reclassify_key 去重）
 RECLASSIFY_SIGNAL_TYPE = "infra_reclassify"
 
-# infra 降级触发 error 文本标记（enrich_failure_class 判定）
-_INFRA_DEGRADE_MARKERS = (
-    "git merge conflict",
-    "cannot stat",
-    "No such file or directory",
-    "ENOENT",
-    "ModuleNotFoundError",
-    "ImportError",
-    "PermissionError",
-    "ConnectionRefusedError",
-    "ConnectionResetError",
-    "BrokenPipeError",
-    "timeout",
-    "timed out",
-)
-
 # per-spec fail_history.json 文件名
 _FAIL_HISTORY_FILENAME = "fail_history.json"
 
@@ -62,6 +46,8 @@ def _verifier_error_is_infra(pipeline, error_text: str) -> bool:
 
 # ── evo-infra-failure-budget-exempt R1：统一失败归因接口 ───────────
 
+# infra 降级触发 error 文本标记（enrich_failure_class 判定）。R1 有意收窄为
+# worktree / merge conflict / tree dirty 六项——仅命中本清单才判 infra。
 _INFRA_DEGRADE_MARKERS = (
     "worktree",
     "git worktree add",

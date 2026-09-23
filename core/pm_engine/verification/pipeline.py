@@ -784,11 +784,12 @@ class VerificationPipeline:
         return verifier_result, verifier_status
 
     # ── B9: bug-found 应用（编排骨架，等价搬移）────────────────────────
-    # D1 B9 段落：5 道守卫 → transition → spawn 抑制守卫 → infra 归因。
+    # D1 B9 段落：5 道守卫 → infra 归因（前置到 transition 之前）→ transition
+    # → spawn 抑制守卫。
     # 旧锚点 verifier_status=='bug-found' 分支体，此处提取为独立方法（D4）。
     def _apply_bug_found(self, spec_name: str, judge_result, report,
                          _repair_depth: int) -> None:
-        """处理 verifier_status=='bug-found' 分支：归因门禁 → transition → spawn 抑制 → infra 归因。
+        """处理 verifier_status=='bug-found' 分支：归因门禁 → infra 归因（前置）→ transition → spawn 抑制。
 
         等价搬移自 _run_three_stage_verification 的 bug-found 分支体，保持控制流逐条等价。
         内部多个 return 为提前退出主函数语义；调用者 MUST 在 return 之后显式 return。
@@ -839,6 +840,34 @@ class VerificationPipeline:
         # 历史 verified 防降级）。
         if self._verified_gate_refuses(spec_name, "bug-found"):
             return
+        # ── 统一失败归因入口（evo-infra-failure-budget-exempt R1/R3）──
+        # MUST 在 bug-found transition 之前（code-review item b7f63a96e628，
+        # 与 legacy 路径 12bd5b177792 同构）：enrich_failure_class 比上游
+        # 早期 infra 判定点（仅 provider circuit open / chain exhausted /
+        # 网关切换类错误）多匹配 worktree/merge conflict/tree dirty 标记，
+        # judge error 含这些文本时判 infra——若先流转 bug-found 再归因，
+        # infra 分支「不流转 bug-found、不派生 fix」即失效（spec 停在
+        # bug-found 却不派生 fix）。三态分类后，product/unknown 照常流转
+        # bug-found（unknown 按 product 保守处置，照常累计
+        # _verify_fail_rounds）；infra 拦截：按 infra 记账（预算退款 +
+        # _verify_infra_rounds + _infra_failure_count + 台账），不流转
+        # bug-found、不派生 fix，由 full_scan recovery 兜底重排。
+        failure_class = self.enrich_failure_class(
+            spec_name,
+            error_text=getattr(judge_result, "error", "") or "",
+        )
+        if failure_class == "infra":
+            self._context.logger.warning(
+                "pm_engine",
+                f"归因入口判 infra：'{spec_name}' 按 infra 记账，"
+                f"不流转 bug-found、不派生 fix",
+            )
+            self._record_infra_failure(
+                spec_name,
+                "infra at attribution entry (judge)",
+                run_id=getattr(judge_result, "run_id", "") or "",
+            )
+            return
         # fix-observability-gaps 2.2：planner-judge 判定 bug-found（自动来源）
         self._context.state_machine.transition(
             spec_name, "bug-found",
@@ -882,32 +911,9 @@ class VerificationPipeline:
                     },
                 )
                 return
-        # ── 统一失败归因入口（evo-infra-failure-budget-exempt R1/R3）──
-        # 归因入口处调用 enrich_failure_class：三态分类后，product/unknown
-        # 照常流转 bug-found（unknown 按 product 保守处置，照常累计
-        # _verify_fail_rounds）；infra 兜底拦截（既有 infra 判定点已早退，
-        # 此处为防御性兜底——如误入则按 infra 记账、不派生 fix）。
-        failure_class = self.enrich_failure_class(
-            spec_name,
-            error_text=getattr(judge_result, "error", "") or "",
-        )
-        if failure_class == "infra":
-            # 防御性兜底：归因入口误判 infra（不应发生，既有 infra 判定点
-            # 已早退）——按 infra 记账（预算退款 + _verify_infra_rounds +
-            # _infra_failure_count + 台账），不流转 bug-found、不派生 fix。
-            self._context.logger.warning(
-                "pm_engine",
-                f"归因入口兜底：'{spec_name}' 判定 infra（误入 bug-found "
-                f"分支），按 infra 记账处理不派生 fix",
-            )
-            self._record_infra_failure(
-                spec_name,
-                "infra at attribution entry (fallback)",
-                run_id=getattr(judge_result, "run_id", "") or "",
-            )
-            return
-        # 到达 bug-found 归因（全部门禁已过、非 infra）＝ product 类——
-        # unknown 按 product 保守处置，台账 failure_class 记 product。
+        # 到达 bug-found 归因（全部门禁已过、归因已前置到 transition 之前
+        # 且非 infra）＝ product 类——unknown 按 product 保守处置，台账
+        # failure_class 记 product。
         # ── bug-found 小缺陷 fastlane（add-pipeline-throughput-governance 4.1/4.2）──
         # 三条件全满足（失败场景数=1 + judge 影响面≤3 文件 + 无争议）→ code-fix
         # 轻量修复 + 子集重验，不派生 fix SPEC；任一不满足 / 承接失败 / 判定异常

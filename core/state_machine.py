@@ -900,32 +900,64 @@ class StateMachine:
         各持陈旧快照互相覆盖——任一已提交写入的字段改动 MUST NOT 丢失。
         冻结剥离判定同样在锁内基于**最新**条目进行（锁外快照会把「刚被冻结」
         误判为「未冻结」而漏剥离自动 status 写）。
+
+        单条目应用逻辑提取为 ``_apply_updates_entry``（锁内 mutate 复用体），
+        留痕日志提取为 ``_log_update_applied``——原子转换路径
+        （``_transition_atomic``）共用同一份写语义，避免冻结剥离/取消保持
+        解锁规则出现第二份实现。
         """
         applied: dict = {}
 
         def _mutate(specs):
-            if spec_name not in specs:
-                return False, False
-            entry = specs[spec_name]
-            local = dict(updates)
-            # 人工冻结保护（fix-restart-dual-dispatch S4）：frozen spec 的自动
-            # status 改写一律剥离——dispatch Retry/恢复路径实测会把人工冻结覆盖
-            # 回 ready。更新自带 frozen 键视为冻结/解冻操作本身，原样放行。
-            if entry.get(FROZEN_FIELD) and FROZEN_FIELD not in local and "status" in local:
-                applied["_stripped"] = local.pop("status")
-            # 取消保持解锁（fix-cancel-holdstate-recovery D4）：显式携带 status 的
-            # 更新（admin 处置复位、面板重派、unfreeze 等复位路径）即人工裁决，
-            # 顺带清除取消保持标记；仅 error 等隐式 updates 不清。
-            if "status" in local:
-                local["_cancelled_hold"] = False
-            specs[spec_name].update(local)
-            specs[spec_name]["updated"] = datetime.now(timezone.utc).isoformat()
-            applied.update(local)
-            return True, True
+            found = self._apply_updates_entry(specs, spec_name, updates, applied)
+            return found, found
 
         if not self._mutate_locked(_mutate):
             self.logger.warning("state_machine", f"SPEC not found: {spec_name}")
             return False
+        self._log_update_applied(spec_name, applied)
+        return True
+
+    def _apply_updates_entry(self, specs: Dict[str, dict], spec_name: str,
+                             updates: dict, applied: dict) -> bool:
+        """update_spec 的锁内单条目应用逻辑（原子转换路径复用同一份写语义）。
+
+        语义（自 update_spec._mutate 原样提取，MUST NOT 在别处重写第二份）：
+        - spec 不存在 → False；
+        - 人工冻结保护（fix-restart-dual-dispatch S4）：frozen spec 的自动
+          status 改写一律剥离——dispatch Retry/恢复路径实测会把人工冻结覆盖
+          回 ready。更新自带 frozen 键视为冻结/解冻操作本身，原样放行；
+        - 取消保持解锁（fix-cancel-holdstate-recovery D4）：显式携带 status 的
+          更新（admin 处置复位、面板重派、unfreeze 等复位路径）即人工裁决，
+          顺带清除取消保持标记；仅 error 等隐式 updates 不清；
+        - 条目 ``updated`` 时间戳随每次成功应用刷新。
+
+        ``applied`` 收集本次实际生效的字段（含 ``_stripped`` 剥离留痕），
+        供 ``_log_update_applied`` 在锁外输出留痕日志。
+
+        Returns: True 表示条目存在且已应用（调用方据其决定是否落盘）。
+        """
+        if spec_name not in specs:
+            return False
+        entry = specs[spec_name]
+        local = dict(updates)
+        if entry.get(FROZEN_FIELD) and FROZEN_FIELD not in local and "status" in local:
+            applied["_stripped"] = local.pop("status")
+        if "status" in local:
+            local["_cancelled_hold"] = False
+        specs[spec_name].update(local)
+        specs[spec_name]["updated"] = datetime.now(timezone.utc).isoformat()
+        applied.update(local)
+        return True
+
+    def _log_update_applied(self, spec_name: str, applied: dict) -> None:
+        """update_spec / 原子转换路径共用的锁外留痕日志（「写入必留痕」）。
+
+        MUST 在原子写成功后调用：锁内日志会让持锁窗口包含 I/O，故留痕在
+        落盘之后输出（update_spec 既有约定）。含 frozen 剥离 warning 与
+        「Updated SPEC」info（含 spec 名与本次所改字段键，``updated`` /
+        ``_stripped`` 内部键不入日志）。
+        """
         if "_stripped" in applied:
             self.logger.warning(
                 "state_machine",
@@ -933,8 +965,6 @@ class StateMachine:
                 f"'{applied['_stripped']}' stripped — manual freeze intact, "
                 f"unfreeze via unfreeze_spec() to resume",
             )
-        # 「写入必留痕」（含 spec 名与本次所改字段键）MUST 在原子写成功后输出：
-        # 锁内日志会让持锁窗口包含 I/O，故把留痕移到落盘之后。
         self.logger.info(
             "state_machine",
             f"Updated SPEC '{spec_name}'",
@@ -944,7 +974,6 @@ class StateMachine:
                 }
             },
         )
-        return True
 
     def freeze_spec(self, spec_name: str, reason: str = "") -> bool:
         """人工冻结 spec（fix-restart-dual-dispatch S4 的统一入口）。
@@ -1293,6 +1322,55 @@ class StateMachine:
 
     # ── State Transitions ──────────────────────────────────────────
 
+    def _transition_atomic(self, spec_name: str, new_status: str,
+                           table: Dict[str, List[str]], outcome: dict) -> bool:
+        """transition / transition_gate 共用的锁内原子转换路径。
+
+        校验与落盘收进同一把 ``.STATE.md.lock`` 的 flock：mutate 回调内基于
+        **最新** entry 重查 old_status、重跑幂等短路与 ``table`` 判定
+        （``VALID_TRANSITIONS`` / ``GATE_TRANSITIONS`` 由调用方传入——门禁
+        规则单点定义于模块常量，此处只做查表，不复制第二份规则），校验失败
+        不改动 entry、不落盘。旧实现锁外 ``read_one`` 快照校验 + ``update_spec``
+        锁内盲写三段非原子：并发写者（daemon 多 worker 线程 + dashboard 独立
+        进程）在快照与落盘之间先行推进状态后，本路径仍按陈旧 old_status 通过
+        校验并覆盖写（如 verified→testing 无门禁回退），该丢失转换窗口由此消除
+        （与 ``_mutate_locked`` 修复的丢失更新窗口同型）。
+
+        ``outcome`` 把锁内判定结果带出给调用方锁外记日志（持锁窗口不含 I/O，
+        同 ``_log_update_applied`` 的既有约定）：
+        - ``missing``：spec 不存在；
+        - ``old_status``：锁内读到的当前状态（供日志文案）；
+        - ``idempotent``：old==new 幂等短路（返回 True 且不落盘）；
+        - ``invalid``：``table`` 判定拒绝（返回 False 且不落盘）；
+        - ``applied``：成功应用后的字段快照（供 ``_log_update_applied`` 留痕）。
+
+        Returns: True 表示幂等短路或成功落盘；False 表示不存在或非法转换。
+        """
+        def _mutate(specs):
+            entry = specs.get(spec_name)
+            if entry is None:
+                outcome["missing"] = True
+                return False, False
+            old_status = entry.get("status", SpecStatus.DRAFTED)
+            outcome["old_status"] = old_status
+            # 幂等自迁移短路（fix-daemon-lifecycle-races D4）：锁内基于最新
+            # 状态判定，并发写者先行推进后此处看到的是推进后的真实状态。
+            if new_status == old_status:
+                outcome["idempotent"] = True
+                return True, False
+            if new_status not in table.get(old_status, []):
+                outcome["invalid"] = True
+                return False, False
+            applied: dict = {}
+            applied_ok = self._apply_updates_entry(
+                specs, spec_name, {"status": new_status}, applied
+            )
+            if applied_ok:
+                outcome["applied"] = applied
+            return applied_ok, applied_ok
+
+        return self._mutate_locked(_mutate)
+
     def transition(self, spec_name: str, new_status: str,
                    *, trigger_run_id: str | None = None,
                    agent_type: str | None = None,
@@ -1306,13 +1384,18 @@ class StateMachine:
         幂等短路、非非法拒绝）携带 context；幂等短路（old==new）不改变状态，
         按 spec「每次状态转换 MUST 携带结构化 context」口径不视为状态转换，
         不补 context（2.1a 显式排除，见日志行）。
+
+        原子性：幂等短路 / VALID_TRANSITIONS 校验与落盘收进同一把文件锁、
+        基于锁内最新 entry 判定（``_transition_atomic``），并发下不再有
+        「按陈旧快照校验通过后覆盖写」的无门禁回退窗口。
         """
-        spec = self.read_one(spec_name)
-        if not spec:
+        outcome: dict = {}
+        result = self._transition_atomic(spec_name, new_status, VALID_TRANSITIONS, outcome)
+        if outcome.get("missing"):
             self.logger.warning("state_machine", f"Cannot transition nonexistent SPEC: {spec_name}")
             return False
 
-        old_status = spec.get("status", SpecStatus.DRAFTED)
+        old_status = outcome.get("old_status")
 
         # 幂等自迁移短路（fix-daemon-lifecycle-races D4）：new_status == old_status
         # 视为幂等自迁移，INFO 降级直接返回 True，不进入 VALID_TRANSITIONS 拒绝
@@ -1321,8 +1404,8 @@ class StateMachine:
         # 依赖返回 False 阻断重复副作用的调用点须改为前置状态判断或接受幂等覆盖：
         # 全库核查见 engine.py:332（done→done 时 total_duration 重算覆盖为同值，
         # 幂等无害）与 dispatch.py:480-503（已有 cur_status != "implementing"
-        # 前置判断的同型防护）。
-        if new_status == old_status:
+        # 前置判断的同型防护）。判定在锁内基于最新状态完成，此处只负责留痕。
+        if outcome.get("idempotent"):
             self.logger.info(
                 "state_machine",
                 f"Idempotent transition: {spec_name} {old_status} → {new_status} "
@@ -1330,27 +1413,29 @@ class StateMachine:
             )
             return True
 
-        # Validate transition
-        if new_status not in VALID_TRANSITIONS.get(old_status, []):
+        # Validate transition（判定已在锁内完成，此处留痕）
+        if outcome.get("invalid"):
             self.logger.error(
                 "state_machine",
                 f"Invalid transition: {spec_name} {old_status} → {new_status}",
             )
             return False
 
-        self.logger.info(
-            "state_machine",
-            f"Transition: {spec_name} {old_status} → {new_status}",
-            # fix-observability-gaps 2.1：结构化 context（trigger_run_id /
-            # agent_type / channel），供 dashboard 时间轴读侧优先消费；
-            # 断路器在 update_spec 成功后返回 True，日志先行
-            {
-                "trigger_run_id": trigger_run_id,
-                "agent_type": agent_type,
-                "channel": channel,
-            },
-        )
-        return self.update_spec(spec_name, {"status": new_status})
+        if result:
+            self.logger.info(
+                "state_machine",
+                f"Transition: {spec_name} {old_status} → {new_status}",
+                # fix-observability-gaps 2.1：结构化 context（trigger_run_id /
+                # agent_type / channel），供 dashboard 时间轴读侧优先消费；
+                # 断路器在落盘成功后返回 True，日志先行
+                {
+                    "trigger_run_id": trigger_run_id,
+                    "agent_type": agent_type,
+                    "channel": channel,
+                },
+            )
+            self._log_update_applied(spec_name, outcome.get("applied", {}))
+        return result
 
     def is_valid_transition(self, from_status: str, to_status: str) -> bool:
         """Check if a transition is legal."""
@@ -1371,19 +1456,26 @@ class StateMachine:
         trigger_run_id / agent_type / channel，日志前缀 `Gate transition: `
         同样携带结构化 context（该前缀不被时间轴正则命中，context 是
         时间轴重建该路径的唯一通道，必须带）。
+
+        原子性：幂等短路 / GATE_TRANSITIONS 校验与落盘收进同一把文件锁、
+        基于锁内最新 entry 判定（``_transition_atomic``，与 transition()
+        共用同一原子机制，仅查表不同），并发下不再有「按陈旧快照校验通过
+        后覆盖写」的窗口。
         """
-        spec = self.read_one(spec_name)
-        if not spec:
+        outcome: dict = {}
+        result = self._transition_atomic(spec_name, new_status, GATE_TRANSITIONS, outcome)
+        if outcome.get("missing"):
             self.logger.warning(
                 "state_machine", f"Cannot gate-transition nonexistent SPEC: {spec_name}"
             )
             return False
 
-        old_status = spec.get("status", SpecStatus.DRAFTED)
+        old_status = outcome.get("old_status")
 
         # 幂等自迁移短路（fix-daemon-lifecycle-races D4）：同 transition() 语义，
         # old==new 视为幂等，INFO 直接返回 True，不进 GATE_TRANSITIONS 拒绝分支。
-        if new_status == old_status:
+        # 判定在锁内基于最新状态完成，此处只负责留痕。
+        if outcome.get("idempotent"):
             self.logger.info(
                 "state_machine",
                 f"Idempotent gate transition: {spec_name} {old_status} → {new_status} "
@@ -1391,23 +1483,25 @@ class StateMachine:
             )
             return True
 
-        if new_status not in GATE_TRANSITIONS.get(old_status, []):
+        if outcome.get("invalid"):
             self.logger.error(
                 "state_machine",
                 f"Invalid gate transition: {spec_name} {old_status} → {new_status}",
             )
             return False
 
-        self.logger.info(
-            "state_machine",
-            f"Gate transition: {spec_name} {old_status} → {new_status}",
-            {
-                "trigger_run_id": trigger_run_id,
-                "agent_type": agent_type,
-                "channel": channel,
-            },
-        )
-        return self.update_spec(spec_name, {"status": new_status})
+        if result:
+            self.logger.info(
+                "state_machine",
+                f"Gate transition: {spec_name} {old_status} → {new_status}",
+                {
+                    "trigger_run_id": trigger_run_id,
+                    "agent_type": agent_type,
+                    "channel": channel,
+                },
+            )
+            self._log_update_applied(spec_name, outcome.get("applied", {}))
+        return result
 
     # ── Query ──────────────────────────────────────────────────────
 

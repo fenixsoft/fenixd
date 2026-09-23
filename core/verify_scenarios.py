@@ -521,7 +521,7 @@ def diff_planner_output(
     if new_entries and not result.extended:
         # 合法追加：合并写回（design D2：新增范围允许追加；此处按修复轮判断）。
         # 若修复轮且未声明新增交付，则拦截超发，本批新增被丢弃（仅保留既有集）。
-        if repair and not result.extended:
+        if repair:
             overcount = len(new_entries)
             new_entries = []
             result.change_lines.append(

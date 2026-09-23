@@ -1359,7 +1359,21 @@ class VAdjudicationMixin:
         for p in missing_paths:
             entry = by_path.get(p)
             # 仅声明段条目可判陈日；正则回退路径（无 kind 概念）不命中
-            if not entry or not is_stale_declaration(entry, self._pm.project_root):
+            if entry is None:
+                remaining.append(p)
+                continue
+            try:
+                stale = is_stale_declaration(entry, self._pm.project_root)
+            except Exception as exc:
+                # 单条判定异常 fail-safe 回退：保留 remaining 走既有流程（3.5，
+                # 不阻塞整条收工链），对齐 _preclassify_drift 同位写法
+                remaining.append(p)
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"陈日信号判定异常 '{spec_name}'（{p} 保留既有流程）: {exc}",
+                )
+                continue
+            if not stale:
                 # missing_paths 已在上方归一为字符串，此处 `p if not isinstance(...)
                 # else p` 两分支恒等（code-review item 0a8b4d70dc57），简化为直接追加。
                 remaining.append(p)

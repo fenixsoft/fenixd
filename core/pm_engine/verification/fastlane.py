@@ -247,7 +247,7 @@ def merge_subset_report(prev_report, subset_report) -> dict:
             entry = copy.deepcopy(sc)
             entry["source"] = "carried-over: fastlane subset reverify（沿用上一轮通过结论）"
             carried.append(entry)
-    merged["scenarios"] = list(subset_report.get("scenarios") or []) + carried
+    merged["scenarios"] = list((subset_report or {}).get("scenarios") or []) + carried
     # summary 重算（全部场景判定齐备）
     passed = failed = errors = 0
     for sc in merged["scenarios"]:
@@ -520,23 +520,29 @@ def dispatch_minor_defect_fastlane(pipeline, spec_name: str, decision: dict) -> 
 
     # ② 子集重验（失败场景 ∪ 前置链 ∪ 下游）
     subset_ids = [str(s) for s in decision.get("subset_ids") or [failed_id] if s]
+    # 上一轮全量报告 MUST 在子集重验执行前读取：引擎经 _execute_stage2 会把
+    # 仅含子集场景的报告覆写规范路径 report.json（engine._save_report），收敛
+    # 时才读会把刚覆写的子集报告误当「上一轮」，carried-over 逻辑永无输入。
+    from core.verdict_check import load_report, save_report
+
+    prev_report = load_report(ctx.project_root, spec_name)
     reverify = subset_reverify(pipeline, spec_name, subset_ids)
     if not reverify.get("ok"):
         return _bump_fail_streak(f"fastlane 子集重验未收敛: {reverify.get('reason')}")
 
-    # ③ 收敛：合并报告（未实跑场景沿用上一轮通过结论并标注来源）后走既有
-    #    verified 收口（_apply_verified 与整轮同一门禁链，修复 diff 不豁免门禁）。
+    # ③ 收敛：合并报告（未实跑场景沿用上一轮通过结论并标注来源）后先落盘
+    #    全量报告（引擎只写子集报告，不回写则 report.json 丢失全部未重验场景
+    #    判定）再走既有 verified 收口（_apply_verified 与整轮同一门禁链，修复
+    #    diff 不豁免门禁）；落盘失败抛穿由调用点回落整轮，不以残缺报告收敛。
     from types import SimpleNamespace
 
-    from core.verdict_check import load_report
-
-    prev_report = load_report(ctx.project_root, spec_name)
     merged = merge_subset_report(prev_report, reverify.get("report"))
     merged["fastlane"] = {
         "subset_ids": subset_ids,
         "fix_run_id": run_id,
         "note": "fastlane 子集重验收敛：实跑子集见 scenarios 其余沿用上一轮通过结论",
     }
+    save_report(ctx.project_root, spec_name, merged)
     sm.update_spec(spec_name, {FASTLANE_STREAK_FIELD: 0})
     pipeline._apply_verified(
         spec_name, SimpleNamespace(run_id=run_id), merged

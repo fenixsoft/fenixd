@@ -52,6 +52,7 @@ class Session:
     lock: threading.Lock = field(default_factory=threading.Lock)
     last_activity: float = field(default_factory=time.time)
     stderr_tail: deque = field(default_factory=lambda: deque(maxlen=200))
+    terminating: bool = False  # _terminate 已认领，防并发双终态
 
 
 class SessionManager:
@@ -244,6 +245,14 @@ class SessionManager:
 
     def _terminate(self, session: Session, reason: str) -> None:
         """关 stdin → 等宽限 → kill → 广播 session_ended → 移除。"""
+        # 幂等守卫（与 _stdout_reader 的 still_registered 同式）：并发 stop/idle/
+        # shutdown 或会话已被替换/移除时，只允许一个线程走完整终止流程，
+        # 避免同会话广播两条 session_ended 终态事件。短临界区，锁内不做等待/广播。
+        with self._lock:
+            if session.terminating or self._sessions.get(session.project) is not session:
+                return  # 已被其他路径认领或移除
+            session.terminating = True
+
         sid = session.session_id
         pid = session.proc.pid
 
