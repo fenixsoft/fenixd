@@ -28,19 +28,21 @@
 在批 worker 收尾合回失败分支首行加 `wip_blocked = bool(getattr(merge_info, "wip_gate_blocked", False))` 分派。不解析 `error` 字符串（脆弱）；`getattr` 缺省 False 保证对旧类型对象容错。
 
 ### D2 defer 台账独立于失败档案
-新文件 `.fenix/code-review/fix-deferred.json`（原子写 + `.lock` 惯例同 fix-failed.json）。**不复用 fix-failed.json**：两者生命周期相反（失败档案烧预算、期待重跑；defer 队列零预算、期待原地合回），混写会让释放逻辑误伤 defer 条目。字段：`worktree`、`branch`、`tip_sha`、`item_ids`、`defer_count`、`first_deferred_at`（UTC ISO8601）、`last_overlap`（文件清单，供告警复用）。
+新文件 `.fenix/code-review/fix-deferred.json`（原子写走既有 `_atomic_write` 惯例——`record_failed_batch` 即是，fix-failed.json 并无 `.lock` 文件）。**不复用 fix-failed.json**：两者生命周期相反（失败档案烧预算、期待重跑；defer 队列零预算、期待原地合回），混写会让释放逻辑误伤 defer 条目。字段：`worktree`、`branch`、`tip_sha`、`item_ids`、`fixed_ids`（批产物行 `status=="fixed"` 的核销集合——defer 时批 worker 现场在 scope 内记入；缺它则重试方无从区分 fixed 与 skipped，全批核销会把 skipped 白洗成 resolved）、`defer_count`、`first_deferred_at`（UTC ISO8601）、`last_overlap`（文件清单，供告警复用）。同条目集幂等复用条目（对齐 `record_failed_batch` 去重口径）。
 
-### D3 保留 worktree 的锁语义
-defer 时跳过 `_safe_cleanup`，worktree 留在磁盘（分支已含全部提交）。单飞链下无并发认领风险；跨链/跨重启由 D5 再认领覆盖。`wip_gate_blocked` 失败本身不污染 worktree 状态（merge 未发起，主树零污染——mergeback.py 升级出口保证）。
+### D3 保留 worktree 但 MUST 释放 spec 锁
+defer 收尾不删现场：worktree 目录与分支留在磁盘，且保留 `_active_worktrees` 在册（sweeper 扫孤儿跳过在册目录）。但 **MUST 显式释放 `code-review-fix:code-fix` spec 锁**：`wm.create()` 对同键命中即返回 None（lifecycle.py create 锁检），批 worker 对 create None 走 halt（链终止、不再 resubmit）——只跳过 cleanup 而不放锁，defer 后下一批建树必败，整条车道在主树脏期间死锁，比现状更糟。放锁经 lifecycle.py 新增最小公开原语（`_spec_locks.discard` + `_lock_since.pop`，不动目录/分支/活动集；proposal Impact 已相应放宽）。由此重试收尾语义不变：成功 → `wm.cleanup(success=True)`（仍在活动集，正常删目录保分支）；降级 → `cleanup(success=False)` 走既有 implementer 遗产分支（目录/分支留存，sweeper 宽限兜底回收）。放锁后同键可并存第二个 worktree，无并发风险：重试点①在 checkpoint 守卫段内，批在飞时 checkpoint 恒 `already_running` 早退，重试不会与在飞批的建树/合回交叠。跨链/跨重启由 D5 再认领覆盖。`wip_gate_blocked` 失败本身不污染 worktree 状态（merge 未发起，主树零污染——mergeback.py 升级出口保证）。
 
 ### D4 重试时机挂在既有链节拍上，不新增线程
-两个重试点全部复用既有节拍：① `_resubmit → checkpoint` 内、选批之前（`_process_deferred_merges()`）；② `count_open_items==0` 收敛早退之前。重试即直接 `wm.merge_back(wt)`（内部预检重跑，过了就合），成功走与正常批一致的 `mark_resolved` + cleanup + 进度累加。每次「实际尝试过 merge_back」且仍被阻断时 `defer_count += 1`（纯等待不递增）。不新增定时器/线程，规避调度复杂度与重启孤儿。
+两个重试点全部复用既有节拍：① `_resubmit → checkpoint` 内、选批之前（`_process_deferred_merges()`）；② `count_open_items==0` 收敛早退之前（均在 `with self._lock:` 段内）。重试即直接 `wm.merge_back(wt)`（内部预检重跑，过了就合），结果四分派：成功 → `mark_resolved` 核销台账条目 `fixed_ids` 中仍 `open` 的子集（先以 `read_items` 过滤——defer 窗口内人工置终态的条目跳过；`mark_resolved` 对命中 id 无条件置 resolved，无内建终态保护）+ cleanup + 移出台账 + 进度累加；仍 `wip_gate_blocked` → 台账保留、`defer_count += 1`；失败且非 `wip_gate_blocked`（主树 WIP 已被提交后内容真冲突经预演闸、或其他 git 失败）→ 按真冲突同语义降级：`record_failed_batch(reason="merge_back_conflict")` + cleanup + 移出台账；抛异常 → try/except 记 warning 继续（同 `_safe_cleanup` 哲学：锁泄漏比异常更糟）。每次「实际尝试过 merge_back」才推进上述状态（纯等待不递增）。不新增定时器/线程，规避调度复杂度与重启孤儿。
+
+配套约束：defer 条目的 `item_ids` MUST 并入选批排除集（checkpoint 调 `select_batch` 时 `exclude_ids=chain_skipped ∪ 台账 item_ids 并集`，签名已支持）。defer 条目在合回成功前始终是 `open` 状态（批 worker 在合回成功后才核销，期间无 open→fixed 台账写点），而 `select_batch` 排除口径仅失败档案 ∪ chain_skipped——不排除则下一边界 earliest-first 立即重选同批、重跑 agent，defer 核心收益归零，二次 defer 还会重复入账。
 
 ### D5 再认领 = 台账核对磁盘，不做 worktree 状态机重建
 新链启动（selfheal 已有的「链身份判定前移到选批之前」位置，`release_retryable_failed_batches` 旁）扫台账：`worktree` 目录存在且 `tip_sha` 可在分支解析 → 保留；否则移出台账 + warning（条目未核销，天然仍在 open 池，无需回写）。不做分支重挂/worktree create 认领（keep_for_reuse 机制复杂度高，收益仅覆盖「daemon 重启 + worktree 被清」双重罕见场景）。
 
 ### D6 预算双门 90min / 6 次，告警一次性
-时间门兜住「链停摆很久后才恢复」的陈旧 defer；次数门兜住「主树反复变脏」的抖动。降级走 `record_failed_batch(reason="wip_gate_blocked_expired")` 进既有预算体系（`FAIL_RETRY_MAX=3` 之后是既有 blocked 出口），worktree 清理，台账移除。告警复用 admin_alerts 文件信号通道；一次性语义按条目集指纹（同 fix-failed「递增至上限那次发一次性 warning」先例）。首次 defer 的 info 提示用 `last_overlap` 渲染文件清单。
+时间门兜住「链停摆很久后才恢复」的陈旧 defer；次数门兜住「主树反复变脏」的抖动。降级走 `record_failed_batch(reason="wip_gate_blocked_expired")` 进既有预算体系（`FAIL_RETRY_MAX=3` 之后是既有 blocked 出口），worktree 走既有失败收尾（`cleanup(success=False)` 遗产分支，目录由 sweeper 宽限兜底回收），台账移除。告警复用 admin_alerts 文件信号通道；一次性语义按条目集指纹（同 fix-failed「递增至上限那次发一次性 warning」先例）。首次 defer 的 info 提示用 `last_overlap` 渲染文件清单。
 
 ### D7 文案与 reason 常量
 - defer 进行：reason=`wip_gate_blocked`，current=「第 N 批合回待重试（主树未提交改动：<files>）— 已保留，主树清理后自动合回」
@@ -56,7 +58,9 @@ defer 时跳过 `_safe_cleanup`，worktree 留在磁盘（分支已含全部提�
 | 主树长期脏 → 每 defer 批 90min 后连环降级烧档案 | 首次 defer 即告警提示人工；降级后进既有 FAIL_RETRY_MAX 体系自然 blocked，不会无限烧 |
 | 重试点 merge_back 抛异常打断链节拍 | 包裹 try/except 记 warning 继续（同 `_safe_cleanup` 哲学：锁泄漏比异常更糟） |
 | 台账与磁盘真相漂移（手删 worktree 等） | D5 再认领核对磁盘，不可解析即回收；条目天然可重选批 |
-| 批条目在 defer 期间被人工改状态（如置 ignored） | 合回成功核销时 `mark_resolved` 仅对仍非终态条目生效（既有核销原语行为），天然幂等 |
+| 批条目在 defer 期间被人工改状态（如置 ignored） | 重试核销前以 `read_items` 过滤仅仍 `open` 条目（`mark_resolved` 对命中 id 无条件置 resolved、无终态保护，不能依赖其幂等） |
+| defer 只跳过 cleanup → `code-review-fix:code-fix` 锁滞留，下一批 create() 恒 None、车道 halt 死锁 | D3：defer 显式放锁（lifecycle.py 最小原语），目录与活动集保留，重试收尾语义不变 |
+| defer 条目仍是 open，被下一边界重选重跑 agent | D4 配套约束：台账 item_ids 并入选批排除集（select_batch exclude_ids 并集） |
 
 ## Migration / 兼容
 
