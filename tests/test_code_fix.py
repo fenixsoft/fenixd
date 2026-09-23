@@ -566,6 +566,11 @@ class _FakeWM:
         import types as _t
         return _t.SimpleNamespace(success=True, error="")
 
+    def release_spec_lock(self, spec_name, agent_type="implementer"):
+        """模拟真实 release_spec_lock（defer 放锁）：仅摘锁，不动目录/活动集。"""
+        self._active.clear()
+        return True
+
     def cleanup(self, wt_path, success=True):
         self.cleanup_calls.append((str(wt_path), success))
         self._active.discard(str(wt_path))
@@ -2278,3 +2283,395 @@ class TestChainSkippedLifecycle(unittest.TestCase):
         # 本链口径：排除 chain_skipped 后无可选条目
         self.assertEqual(select_batch(proot, 10, exclude_ids=["a", "b"]), [])
         self.assertEqual(read_items(proot)["a"]["status"], "open")
+
+
+# ── fix-codefix-wipgate-defer：wip_gate_blocked 分类 / defer 台账 / 预算 ──
+
+
+class _CapturingLogger:
+    """记录 (level, tag, msg) 的假 logger（_FakeLogger 的可断言版）。"""
+
+    def __init__(self):
+        self.records = []
+
+    def __getattr__(self, name):
+        def _log(tag, msg):
+            self.records.append((name, tag, msg))
+        return _log
+
+
+def _wip_blocked_info(overlap):
+    """wip_gate_blocked=True 的 MergeConflictInfo 替身（mergeback.py 升级出口形态）。"""
+    import types as _t
+    return _t.SimpleNamespace(
+        success=False,
+        error="Merge-back blocked by WIP overlap precheck (policy=escalate)",
+        wip_overlap=list(overlap),
+        wip_gate_blocked=True,
+    )
+
+
+class TestWipGateDeferred(unittest.TestCase):
+    """wip_gate_blocked 分类、defer 台账/重试/预算/再认领（fix-codefix-wipgate-defer）。"""
+
+    def _orch(self, proot, runner, batch_size=1, logger=None, executor=None):
+        from core.code_fix import CodeFixOrchestrator
+
+        return CodeFixOrchestrator(
+            runner, proot,
+            config={"admin": {"code_review_fix": {"enabled": True,
+                                                  "batch_size": batch_size}}},
+            logger=logger, executor=executor)
+
+    def _signals(self, proot, signal_type):
+        from core.admin_store import AdminStore
+
+        store = AdminStore(proot, logger=None)
+        return [r for r in store.read_all()
+                if r.get("signal_type") == signal_type]
+
+    def _arm_blocked_merge(self, wm, overlap, blocked_calls):
+        """伪 merge_back：前 blocked_calls 次返回 wip_gate_blocked=True，此后放行。"""
+        real_merge = wm.merge_back
+        state = {"n": 0}
+
+        def flaky(wt_path):
+            state["n"] += 1
+            wm.merge_calls.append(str(wt_path))
+            if state["n"] <= blocked_calls:
+                return _wip_blocked_info(overlap)
+            return real_merge(wt_path)
+
+        wm.merge_back = flaky
+
+    # -- 5.1 分类 + 1.2 台账八字段 + 1.3 首次 info 告警 --------------------
+
+    def test_blocked_merge_defers_preserves_scene_and_budget(self):
+        """wip_gate_blocked=True → defer：不入档案、不 cleanup、现场保留、放锁。"""
+        from core.code_fix import (load_deferred_batches, load_failed_batches,
+                                   read_progress)
+
+        proot = _make_project_root()
+        _write_items(proot, {"a": _item("a")})
+        _write_verify_yaml(proot)
+        runner = _FakeRunner(proot)
+        runner.worktree_manager = _FakeWM("git", enforce_lock=True)
+        wm = runner.worktree_manager
+        self._arm_blocked_merge(wm, ["src/a.py"], blocked_calls=99)  # 恒阻断
+        executor = _CapturingExecutor()
+        orch = self._orch(proot, runner, executor=executor)
+        self.assertTrue(orch.checkpoint()["triggered"])
+        executor.run_one()  # 批 a worker：defer 收尾（checkpoint 作业留队列不跑）
+
+        # True 分支：不写 fix-failed、不烧 fail_count、不 cleanup
+        self.assertEqual(load_failed_batches(proot), [],
+                         "wip_gate_blocked MUST NOT 写失败档案")
+        self.assertEqual(wm.cleanup_calls, [], "defer MUST NOT 清理现场")
+        # 台账八字段齐全（1.2）
+        entries = load_deferred_batches(proot)
+        self.assertEqual(len(entries), 1)
+        e = entries[0]
+        for k in ("worktree", "branch", "tip_sha", "item_ids", "fixed_ids",
+                  "defer_count", "first_deferred_at", "last_overlap"):
+            self.assertIn(k, e, f"台账条目缺字段 {k}")
+        self.assertEqual(e["item_ids"], ["a"])
+        self.assertEqual(e["fixed_ids"], ["a"], "fixed_ids 为批产物行 fixed 核销集合")
+        self.assertEqual(e["defer_count"], 1, "首记 defer_count=1（批收尾那次被阻断的实际尝试）")
+        self.assertEqual(e["last_overlap"], ["src/a.py"])
+        self.assertRegex(e["first_deferred_at"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+        # 现场保留：worktree 目录在、分支 tip 等于记录的 tip_sha
+        self.assertTrue(Path(e["worktree"]).exists(), "worktree 目录保留")
+        self.assertTrue(e["branch"] and e["tip_sha"])
+        # spec 锁已释放（1.1：随后同键 create 可成功的前提）
+        self.assertEqual(wm._active, set(), "defer MUST 释放 code-review-fix:code-fix spec 锁")
+        # 进度文案可区分（D7 / spec：reason=wip_gate_blocked + 主树未提交改动）
+        prog = read_progress(proot)
+        self.assertEqual(prog["reason"], "wip_gate_blocked")
+        self.assertIn("主树未提交改动", prog["current"])
+        self.assertIn("src/a.py", prog["current"])
+        # 首次 defer 即发 info 告警（1.3）：含交集清单与处置话术
+        alerts = self._signals(proot, "code_fix_wip_gate_deferred")
+        self.assertEqual(len(alerts), 1)
+        self.assertEqual(alerts[0]["severity"], "info")
+        self.assertIn("src/a.py", alerts[0]["evidence"])
+        self.assertIn("git add/commit", alerts[0]["recommended_action"])
+        self.assertIn("git stash push", alerts[0]["recommended_action"])
+
+    # -- 5.2 端到端 + 5.6 选批排除 -----------------------------------------
+
+    def test_defer_e2e_retry_success_after_main_tree_clean(self):
+        """首合回被阻断→台账完整、锁释放、下一批正常建树；主树净后自动合回核销。"""
+        from core.code_fix import load_deferred_batches, read_progress
+        from core.code_review import read_items
+
+        proot = _make_project_root()
+        _write_items(proot, {
+            "a": _item("a", first_seen_at="2026-01-01T00:00:00Z"),
+            "b": _item("b", first_seen_at="2026-02-01T00:00:00Z"),
+        })
+        _write_verify_yaml(proot)
+        runner = _FakeRunner(proot)
+        runner.worktree_manager = _FakeWM("git", enforce_lock=True)
+        wm = runner.worktree_manager
+        # 调用 1=批 a 合回（阻断）、2=链边界重试 a（仍阻断）、3=批 b 合回（净）、
+        # 4=链边界重试 a（主树已净 → 成功）
+        self._arm_blocked_merge(wm, ["src/a.py"], blocked_calls=2)
+        executor = _CapturingExecutor()
+        orch = self._orch(proot, runner, executor=executor)
+        orch.checkpoint()          # 投批 a
+        executor.run_one()         # 批 a worker → defer
+        e0 = load_deferred_batches(proot)[0]
+        first_ts = e0["first_deferred_at"]
+        wt_a = Path(e0["worktree"])
+        executor.run_one()         # checkpoint：重试 a（阻断，defer_count+1）→ 选批 b（排除生效）→ 投批 b
+        e1 = load_deferred_batches(proot)[0]
+        self.assertEqual(e1["defer_count"], 2, "链边界重试仍被阻断 → defer_count+1（2.3）")
+        self.assertEqual(e1["first_deferred_at"], first_ts, "first_deferred_at 不因重试改变")
+        self.assertEqual(len(executor.jobs), 1, "批 b 已投递")
+        self.assertEqual(executor.jobs[0][1][0]["item_ids"], ["b"],
+                         "defer 条目不重选（排除并集生效），下一批是 b 而非重跑 a")
+        executor.run_one()         # 批 b worker：合回核销 b
+        self.assertEqual(len(runner.fix_calls), 2, "批 b 已执行（锁释放后建树成功）")
+        self.assertEqual(read_items(proot)["b"]["status"], "resolved")
+        executor.run_one()         # checkpoint：重试 a（主树净 → 成功）→ 收敛 idle
+        self.assertEqual(executor.jobs, [])
+        items = read_items(proot)
+        self.assertEqual(items["a"]["status"], "resolved", "延迟批合回成功后核销")
+        self.assertEqual(load_deferred_batches(proot), [], "台账清空")
+        self.assertFalse(wt_a.exists(), "重试成功后 worktree 目录被清理")
+        self.assertTrue(any(w == str(wt_a) and s is True
+                            for w, s in wm.cleanup_calls),
+                        "重试收尾走 cleanup(success=True)")
+        prog = read_progress(proot)
+        self.assertEqual(prog["done"], 2, "进度 done 累加（批 b 1 + 延迟批核销 1）")
+        self.assertIn("延迟批合回成功", prog["current"])
+        self.assertIn("核销 1 条", prog["current"])
+
+    def test_retry_success_skips_manually_ignored_items(self):
+        """defer 窗口内被人工置 ignored 的条目：重试成功不核销覆写、不计 done。"""
+        from core.code_fix import load_deferred_batches, read_progress
+        from core.code_review import mark_ignored, read_items
+
+        proot = _make_project_root()
+        _write_items(proot, {"a": _item("a")})
+        _write_verify_yaml(proot)
+        runner = _FakeRunner(proot)
+        self._arm_blocked_merge(runner.worktree_manager, ["src/a.py"], blocked_calls=1)
+        executor = _CapturingExecutor()
+        orch = self._orch(proot, runner, executor=executor)
+        orch.checkpoint()
+        executor.run_one()  # 批 a worker → defer（merge 调用 1）
+        mark_ignored(proot, ["a"], reasons={"a": "false_positive"})  # 人工置终态
+        executor.run_one()  # checkpoint：重试成功（调用 2）→ 过滤后无可核销
+        items = read_items(proot)
+        self.assertEqual(items["a"]["status"], "ignored",
+                         "mark_resolved 无终态保护 → 核销方 MUST 过滤，不得覆写 ignored")
+        self.assertEqual(load_deferred_batches(proot), [])
+        prog = read_progress(proot)
+        self.assertEqual(prog["done"], 0, "人工终态条目不计 done")
+        self.assertIn("核销 0 条", prog["current"])
+
+    # -- 5.3 预算双门 + 3.2 一次性告警 --------------------------------------
+
+    def test_budget_time_gate_downgrades_without_attempt(self):
+        """first_deferred_at 超 90 分钟 → 降级入档案，且不再尝试 merge_back。"""
+        from core.code_fix import (_save_deferred_batches, load_deferred_batches,
+                                   load_failed_batches, _worktree_head)
+
+        proot = _make_project_root()
+        _write_items(proot, {"a": _item("a")})
+        _write_verify_yaml(proot)
+        runner = _FakeRunner(proot)
+        wm = runner.worktree_manager
+        self._arm_blocked_merge(wm, ["src/a.py"], blocked_calls=99)
+        executor = _CapturingExecutor()
+        orch = self._orch(proot, runner, executor=executor)
+        orch.checkpoint()
+        executor.run_one()  # defer
+        e = load_deferred_batches(proot)[0]
+        e["first_deferred_at"] = "2020-01-01T00:00:00Z"  # 注入过期时间
+        _save_deferred_batches(proot, [e])
+        n_merge = len(wm.merge_calls)
+        executor.run_one()  # checkpoint：时间门降级
+        self.assertEqual(len(wm.merge_calls), n_merge,
+                         "预算已耗尽 MUST NOT 再尝试 merge_back（先到为准）")
+        failed = load_failed_batches(proot)
+        self.assertEqual(len(failed), 1)
+        self.assertEqual(failed[0]["reason"], "wip_gate_blocked_expired")
+        self.assertEqual(failed[0]["fail_count"], 1, "正常烧 fail_count 预算")
+        self.assertEqual(set(failed[0]["item_ids"]), {"a"})
+        self.assertTrue(failed[0]["branch"] and failed[0]["tip_sha"])
+        self.assertEqual(load_deferred_batches(proot), [], "台账移除")
+        self.assertTrue(any(w == e["worktree"] and s is False
+                            for w, s in wm.cleanup_calls),
+                        "走失败收尾（success=False 遗产分支）")
+        alerts = self._signals(proot, "code_fix_wip_gate_defer_expired")
+        self.assertEqual(len(alerts), 1)
+        self.assertIn("src/a.py", alerts[0]["evidence"], "告警含交集文件清单")
+        self.assertIn("git stash push", alerts[0]["recommended_action"])
+        # 同条目集（item_ids 指纹）二次降级不再发告警（3.2）。预置 fail_count=2
+        # 使二次降级后达 FAIL_RETRY_MAX，档案不被新链自动释放（预算内记录会被
+        # 新链 release_retryable_failed_batches 释放——既有语义），可断言终态。
+        import json as _json
+
+        from core.code_fix import _atomic_write, _failed_path
+
+        recs = load_failed_batches(proot)
+        recs[0]["fail_count"] = 2
+        _atomic_write(_failed_path(proot), _json.dumps(recs, ensure_ascii=False, indent=2))
+        wt2 = _make_git_repo()
+        e2 = dict(e, worktree=str(wt2), tip_sha=_worktree_head(wt2),
+                  first_deferred_at="2020-01-01T00:00:00Z")
+        _save_deferred_batches(proot, [e2])
+        orch.checkpoint()  # 重试点（降级路径不自驱动，直调 checkpoint 触发下一拍）
+        failed = load_failed_batches(proot)
+        self.assertEqual([f["fail_count"] for f in failed], [3],
+                         "二次降级复用同条目集记录递增（达上限不被新链释放）")
+        self.assertEqual(load_deferred_batches(proot), [])
+        self.assertEqual(len(self._signals(proot, "code_fix_wip_gate_defer_expired")),
+                         1, "同指纹二次降级 MUST NOT 重复告警")
+
+    def test_budget_count_gate_downgrades_after_blocked_retry(self):
+        """defer_count 打满 → 次数门降级（降级前确有实际 merge_back 尝试）。"""
+        from core.code_fix import (_save_deferred_batches, load_deferred_batches,
+                                   load_failed_batches)
+
+        proot = _make_project_root()
+        _write_items(proot, {"a": _item("a")})
+        _write_verify_yaml(proot)
+        runner = _FakeRunner(proot)
+        wm = runner.worktree_manager
+        self._arm_blocked_merge(wm, ["src/a.py"], blocked_calls=99)
+        executor = _CapturingExecutor()
+        orch = self._orch(proot, runner, executor=executor)
+        orch.checkpoint()
+        executor.run_one()  # defer（defer_count=1）
+        e = load_deferred_batches(proot)[0]
+        e["defer_count"] = 5  # 打满前夜：本次重试仍阻断即达 6
+        _save_deferred_batches(proot, [e])
+        n_merge = len(wm.merge_calls)
+        executor.run_one()  # checkpoint：重试（阻断）→ defer_count=6 → 降级
+        self.assertEqual(len(wm.merge_calls), n_merge + 1,
+                         "次数门在本次实际尝试仍被阻断后判定")
+        failed = load_failed_batches(proot)
+        self.assertEqual(failed[0]["reason"], "wip_gate_blocked_expired")
+        self.assertEqual(load_deferred_batches(proot), [])
+
+    # -- 5.4 再认领 ---------------------------------------------------------
+
+    def test_reclaim_keeps_alive_drops_lost(self):
+        """新链再认领：存活条目字段原样保留（不重置），丢失条目移出。"""
+        from core.code_fix import (_save_deferred_batches, load_deferred_batches,
+                                   reclaim_deferred_batches, _worktree_head)
+
+        proot = _make_project_root()
+        wt = _make_git_repo()
+        alive = {"worktree": str(wt), "branch": "fenix/x-1",
+                 "tip_sha": _worktree_head(wt), "item_ids": ["a"],
+                 "fixed_ids": ["a"], "defer_count": 3,
+                 "first_deferred_at": "2026-09-23T01:00:00Z",
+                 "last_overlap": ["f.py"]}
+        lost = dict(alive, worktree=str(Path(_mkdtemp("cfix-gone")) / "missing"),
+                    item_ids=["b"], fixed_ids=["b"])
+        _save_deferred_batches(proot, [alive, lost])
+        dropped = reclaim_deferred_batches(proot)
+        self.assertEqual(dropped, 1)
+        self.assertEqual(load_deferred_batches(proot), [alive],
+                         "存活条目字段不变保留；丢失条目移出")
+
+    def test_new_chain_logs_warning_for_lost_entries(self):
+        """新链启动扫台账：丢失条目清出台账并记 warning（条目保持 open 可重选）。"""
+        from core.code_fix import (_save_deferred_batches, load_deferred_batches,
+                                   read_progress)
+
+        proot = _make_project_root()
+        _write_items(proot, {"c": _item("c")})
+        _write_verify_yaml(proot)
+        lost = {"worktree": str(Path(_mkdtemp("cfix-gone2")) / "nope"),
+                "branch": "fenix/y-2", "tip_sha": "deadbeef",
+                "item_ids": ["z"], "fixed_ids": ["z"], "defer_count": 1,
+                "first_deferred_at": "2026-09-23T01:00:00Z",
+                "last_overlap": []}
+        _save_deferred_batches(proot, [lost])
+        runner = _FakeRunner(proot)
+        logger = _CapturingLogger()
+        orch = self._orch(proot, runner, logger=logger)
+        orch.checkpoint()  # 新链：重试点丢弃条目 + 新链再认领扫描
+        warnings = [m for lvl, _tag, m in logger.records
+                    if lvl == "warning" and "丢失" in m]
+        self.assertTrue(warnings, "丢失条目 MUST 记 warning")
+        self.assertEqual(load_deferred_batches(proot), [])
+        self.assertEqual(read_progress(proot)["chain_skipped"], [],
+                         "条目未核销天然在 open 池，不进链内跳过集")
+
+    # -- 5.5 回归锁定：真冲突路径逐字不变 -----------------------------------
+
+    def test_true_conflict_path_unchanged(self):
+        """wip_gate_blocked=False 的合回失败维持既有「现场即弃」语义。"""
+        import types as _t
+
+        from core.code_fix import (load_deferred_batches, load_failed_batches,
+                                   read_progress)
+        from core.code_review import read_items
+
+        proot = _make_project_root()
+        _write_items(proot, {
+            "a": _item("a", first_seen_at="2026-01-01T00:00:00Z"),
+            "b": _item("b", first_seen_at="2026-02-01T00:00:00Z"),
+        })
+        _write_verify_yaml(proot)
+        runner = _FakeRunner(proot)
+        wm = runner.worktree_manager
+        real_merge = wm.merge_back
+
+        def conflict_once(wt_path):
+            if not wm.merge_calls:  # 批 a 真冲突（无 wip_gate_blocked 属性）
+                wm.merge_calls.append(str(wt_path))
+                return _t.SimpleNamespace(success=False, error="conflict")
+            return real_merge(wt_path)
+
+        wm.merge_back = conflict_once
+        orch = self._orch(proot, runner)
+        orch.checkpoint()  # 同步模式：批 a 冲突 → consumed → 自驱动批 b
+        failed = load_failed_batches(proot)
+        self.assertEqual(len(failed), 1)
+        self.assertEqual(failed[0]["reason"], "merge_back_conflict")
+        self.assertEqual(failed[0]["fail_count"], 1)
+        self.assertEqual(set(failed[0]["item_ids"]), {"a"})
+        self.assertTrue(failed[0]["branch"] and failed[0]["tip_sha"])
+        self.assertEqual(load_deferred_batches(proot), [],
+                         "真冲突 MUST NOT 进 defer 台账")
+        items = read_items(proot)
+        self.assertEqual(items["a"]["status"], "open")
+        self.assertEqual(items["b"]["status"], "resolved", "链继续后续批")
+        wt_a = failed[0]["worktree"]
+        self.assertFalse(Path(wt_a).exists(), "现场即弃：worktree 目录被清理")
+        self.assertTrue(any(w == wt_a and s is False for w, s in wm.cleanup_calls))
+        prog = read_progress(proot)
+        self.assertEqual(prog["phase"], "blocked")
+        self.assertEqual(prog["reason"], "failed_batch_retained",
+                         "链收敛出口语义不变（「合回冲突」文案为批收尾瞬态）")
+
+    # -- D3 放锁原语（真实 WorktreeManager）---------------------------------
+
+    def test_release_spec_lock_allows_same_key_create(self):
+        """release_spec_lock 只摘锁：目录/活动集保留，同键 create 可再成功。"""
+        from core.worktree_manager import WorktreeManager
+
+        repo = _make_git_repo()
+        base = Path(_mkdtemp("cfix-wm-"))
+        wm = WorktreeManager(base, repo, _FakeLogger())
+        wt = wm.create(spec_name="code-review-fix", agent_type="code-fix")
+        self.assertIsNotNone(wt)
+        self.assertTrue(wm.has_active_lock("code-review-fix", "code-fix"))
+        self.assertTrue(wm.release_spec_lock("code-review-fix", "code-fix"))
+        self.assertFalse(wm.has_active_lock("code-review-fix", "code-fix"))
+        self.assertFalse(wm.release_spec_lock("code-review-fix", "code-fix"),
+                         "重复放锁幂等（无锁返回 False）")
+        self.assertIn(str(wt), wm._active_worktrees, "defer 现场：活动集保留")
+        self.assertTrue(Path(wt).exists(), "defer 现场：目录保留")
+        import time as _time
+
+        _time.sleep(1.1)  # 分支名含秒级时间戳（create 端硬编码），隔秒防同名撞分支
+        wt2 = wm.create(spec_name="code-review-fix", agent_type="code-fix")
+        self.assertIsNotNone(wt2, "放锁后同键 create 可成功（下一批建树不再被拒）")

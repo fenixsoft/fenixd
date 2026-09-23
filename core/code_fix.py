@@ -29,6 +29,7 @@ agent run 在独立 worktree 内修复并提交；框架在该 worktree 上跑�
   `chain_skipped`（链内跳过，新链启动重置），不烧跨轮重试预算。
 """
 
+import calendar
 import json
 import os
 import subprocess
@@ -46,11 +47,21 @@ FIX_PROGRESS_REL = ".fenix/code-review/fix-progress.json"
 # 失败批档案（确定性失败：两次回归均失败/合回冲突；带 fail_count 自动重试
 # 预算，新链启动自动释放预算内记录——add-code-fix-batch-failure-selfheal D3）
 FIX_FAILED_REL = ".fenix/code-review/fix-failed.json"
+# 延迟合回台账（fix-codefix-wipgate-defer D2）：wip_gate_blocked 批的现场
+# 保留记录。独立文件、独立生命周期——失败档案烧预算期待重跑，defer 队列零
+# 预算期待原地合回，混写会让释放逻辑误伤 defer 条目。
+DEFERRED_REL = ".fenix/code-review/fix-deferred.json"
 
 # 失败档案自动重试预算上限（selfheal D3）：同条目集 fail_count 递增至本值的
 # 那次入档发一次性 warning 告警并登记 todo 待人工项，此后不再自动重试。
 # 模块常量、不新增配置键（预算语义无需按项目调节）。
 FAIL_RETRY_MAX = 3
+
+# 延迟批预算双门（fix-codefix-wipgate-defer D6，先到为准）：first_deferred_at
+# 起超过 90 分钟，或链边界重试仍被阻断使 defer_count 递增达 6。时间门兜住
+# 「链停摆很久后才恢复」的陈旧 defer；次数门兜住「主树反复变脏」的抖动。
+DEFER_BUDGET_SECONDS = 90 * 60
+DEFER_RETRY_MAX = 6
 
 # LLM 拒绝出口（2026-09-23）：产物行 skipped 且显式标注这些 skip_reason 的
 # 条目置台账终态 ignored（mark_ignored），不再跨链重修。其余 skipped（无标注
@@ -359,6 +370,183 @@ def release_failed_batch(project_root, item_ids) -> int:
         json.dumps(kept, ensure_ascii=False, indent=2),
     )
     return released
+
+
+# ── 延迟合回台账（fix-codefix-wipgate-defer 1.2/D2）──────────────────
+# 与失败档案对齐的惯例：同目录、_atomic_write 原子写、同条目集幂等复用、
+# 读侧对缺失/损坏 fail-open（无 .lock 文件，勿发明锁文件）。
+
+
+def _deferred_path(project_root) -> Path:
+    return Path(project_root) / DEFERRED_REL
+
+
+def load_deferred_batches(project_root) -> list:
+    """读取延迟合回台账；文件不存在/损坏视为空集（不阻塞车道）。"""
+    try:
+        raw = _deferred_path(project_root).read_text(encoding="utf-8")
+        data = json.loads(raw)
+    except (OSError, ValueError):
+        return []
+    if isinstance(data, list):
+        return [rec for rec in data if isinstance(rec, dict)]
+    return []
+
+
+def _save_deferred_batches(project_root, entries: list) -> None:
+    _atomic_write(
+        _deferred_path(project_root),
+        json.dumps(entries, ensure_ascii=False, indent=2),
+    )
+
+
+def record_deferred_batch(
+    project_root, item_ids, fixed_ids, worktree,
+    branch="", tip_sha="", last_overlap=None,
+) -> dict:
+    """把被主树 WIP 挡住合回的批记入 fix-deferred.json（原子写；幂等复用）。
+
+    零预算语义（D2）：不入失败档案、不烧 ``fail_count``。条目八字段：
+    ``worktree``/``branch``/``tip_sha``/``item_ids``/``fixed_ids``/
+    ``defer_count``/``first_deferred_at``（UTC ISO8601）/``last_overlap``。
+    ``fixed_ids`` 是批产物行 ``status=="fixed"`` 的核销集合——缺它则重试方
+    无从区分 fixed 与 skipped，全批核销会把 skipped 白洗成 resolved。
+
+    首记 ``defer_count=1``（批收尾那次被阻断的 merge_back 即一次实际尝试）；
+    链边界重试仍被阻断时由重试方递增（2.3：仅实际尝试才 +1）。同条目集
+    幂等复用条目：刷新现场字段、保留 ``first_deferred_at``/``defer_count``
+    （预算时间门不因复写漂移）。返回写盘后的条目。
+    """
+    entries = load_deferred_batches(project_root)
+    key = {str(i) for i in item_ids}
+    target = None
+    for rec in entries:
+        if {str(i) for i in rec.get("item_ids") or []} == key:
+            target = rec
+            break
+    if target is None:
+        target = {
+            "item_ids": [str(i) for i in item_ids],
+            "defer_count": 1,
+            "first_deferred_at": time.strftime(
+                "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
+            ),
+        }
+        entries.append(target)
+    target["worktree"] = str(worktree)
+    target["branch"] = branch
+    target["tip_sha"] = tip_sha
+    target["fixed_ids"] = [str(i) for i in fixed_ids]
+    target["last_overlap"] = [str(f) for f in (last_overlap or [])]
+    _save_deferred_batches(project_root, entries)
+    return target
+
+
+def _patch_deferred_entry(project_root, item_ids, **fields) -> None:
+    """按条目集定位并原位更新台账字段（defer_count 递增等），原子写。"""
+    entries = load_deferred_batches(project_root)
+    key = {str(i) for i in item_ids}
+    hit = False
+    for rec in entries:
+        if {str(i) for i in rec.get("item_ids") or []} == key:
+            rec.update(fields)
+            hit = True
+    if hit:
+        _save_deferred_batches(project_root, entries)
+
+
+def _remove_deferred_batch(project_root, item_ids) -> None:
+    """从台账移除命中的条目（按 item_ids 集合整条匹配；无命中静默返回）。"""
+    entries = load_deferred_batches(project_root)
+    key = {str(i) for i in item_ids}
+    kept = [
+        rec
+        for rec in entries
+        if {str(i) for i in rec.get("item_ids") or []} != key
+    ]
+    if len(kept) != len(entries):
+        _save_deferred_batches(project_root, kept)
+
+
+def _deferred_item_ids(project_root) -> set:
+    """台账全部 item_id 并集（select_batch 排除源之一，D4 配套约束）。
+
+    defer 条目在合回成功前始终是 open 状态且不在失败档案——不并入排除集则
+    下一边界 earliest-first 立即重选同批、重跑 agent，defer 核心收益归零。
+    """
+    ids: set = set()
+    for rec in load_deferred_batches(project_root):
+        for iid in rec.get("item_ids") or []:
+            if isinstance(iid, str):
+                ids.add(iid)
+    return ids
+
+
+def _deferred_entry_alive(entry) -> bool:
+    """台账条目的磁盘真相（D5 再认领判据）：worktree 目录在且记录的 tip_sha
+    仍可经该 worktree HEAD 解析（分支被删/目录被清/漂移均判死）。"""
+    wt = Path(str(entry.get("worktree") or ""))
+    tip_sha = str(entry.get("tip_sha") or "")
+    if not tip_sha or not wt.name or not wt.exists():
+        return False
+    return _worktree_head(wt) == tip_sha
+
+
+def reclaim_deferred_batches(project_root) -> int:
+    """新链启动再认领（D5/4.1）：台账核对磁盘，死条目移出，返回移除条数。
+
+    存活（worktree 目录在且 tip_sha 可解析）→ 原样保留（``defer_count``/
+    ``first_deferred_at`` 不重置，链边界重试照常覆盖）；丢失 → 清出台账 +
+    由调用方记 warning（条目未核销，天然仍在 open 池，无需回写）。
+    """
+    entries = load_deferred_batches(project_root)
+    kept = [rec for rec in entries if _deferred_entry_alive(rec)]
+    dropped = len(entries) - len(kept)
+    if dropped:
+        _save_deferred_batches(project_root, kept)
+    return dropped
+
+
+def _defer_time_budget_exhausted(entry) -> bool:
+    """时间门：first_deferred_at 距今超 DEFER_BUDGET_SECONDS（解析失败按未超时）。
+
+    超时判定只看 ``first_deferred_at``，不受重试影响（2.3）。
+    """
+    ts = str(entry.get("first_deferred_at") or "")
+    if not ts:
+        return False
+    try:
+        start = calendar.timegm(time.strptime(ts, "%Y-%m-%dT%H:%M:%SZ"))
+    except (ValueError, TypeError):
+        return False
+    return (time.time() - start) > DEFER_BUDGET_SECONDS
+
+
+def _has_expired_archive(project_root, item_ids) -> bool:
+    """失败档案是否已有同条目集的 wip_gate_blocked_expired 记录（3.2 告警去重指纹）。
+
+    MUST 在 ``record_failed_batch`` 之前调用——入档后同集合记录即在场，
+    先查后记才能区分「首次降级」与「同指纹二次降级」。
+    """
+    key = {str(i) for i in item_ids}
+    for rec in load_failed_batches(project_root):
+        if (
+            rec.get("reason") == "wip_gate_blocked_expired"
+            and {str(i) for i in rec.get("item_ids") or []} == key
+        ):
+            return True
+    return False
+
+
+def _fmt_overlap(overlap) -> str:
+    """交集文件清单 → 人类可读片段（进度文案/告警正文复用，超长截断）。"""
+    files = [str(f) for f in (overlap or []) if str(f)]
+    if not files:
+        return "（交集清单缺失）"
+    shown = ", ".join(files[:8])
+    if len(files) > 8:
+        shown += f" 等 {len(files)} 个文件"
+    return shown
 
 
 def _append_todo_entry(project_root, item_ids, reason="", branch="", tip_sha="") -> None:
@@ -674,6 +862,77 @@ def _write_retry_exhausted_alert(project_root, item_ids, reason, branch, tip_sha
     )
 
 
+def _write_defer_info_alert(project_root, item_ids, overlap, branch="") -> None:
+    """首次进入 defer 路径的 info 提示（fix-codefix-wipgate-defer 1.3）。
+
+    正文含 last_overlap 交集文件清单；处置话术复用 mergeback.py 升级出口
+    （「提交（git add/commit）或 stash（git stash push）主树这些改动」）。
+    """
+    from core.admin_store import AdminStore, SIGNAL
+
+    store = AdminStore(project_root, logger=None)
+    store.append(
+        {
+            "kind": SIGNAL,
+            "signal_type": "code_fix_wip_gate_deferred",
+            "spec": None,
+            "severity": "info",
+            "description": (
+                "code-fix 批合回被主树未提交改动挡住（WIP overlap 预检阻断），"
+                "批已保留（worktree 与分支未动、不烧失败预算），主树清理后链"
+                "边界自动合回核销"
+            ),
+            "evidence": (
+                f"项目名={Path(project_root).name}; branch={branch or 'unknown'}; "
+                f"item_ids={', '.join(str(i) for i in item_ids)}; "
+                f"重叠文件: {_fmt_overlap(overlap)}"
+            ),
+            "source": "code-fix-lane",
+            "recommended_action": (
+                "提交（git add/commit）或 stash（git stash push）主树这些改动后，"
+                "无需人工重派——链边界（选批前/收敛出口）自动重试合回"
+            ),
+        }
+    )
+
+
+def _write_defer_expired_alert(
+    project_root, item_ids, overlap, branch="", tip_sha=""
+) -> None:
+    """延迟批预算耗尽降级的一次性 warning 告警（D6/3.2）。
+
+    一次性语义按条目集指纹（调用方以 ``_has_expired_archive`` 先查后记——
+    同 fix-failed「递增至上限那次发一次性 warning」先例）。
+    """
+    from core.admin_store import AdminStore, SIGNAL
+
+    store = AdminStore(project_root, logger=None)
+    store.append(
+        {
+            "kind": SIGNAL,
+            "signal_type": "code_fix_wip_gate_defer_expired",
+            "spec": None,
+            "severity": "warning",
+            "description": (
+                f"code-fix 延迟批合回超预算（90 分钟或 {DEFER_RETRY_MAX} 次重试"
+                "仍被主树未提交改动挡住），已降级入失败档案，待人工处置主树"
+            ),
+            "evidence": (
+                f"项目名={Path(project_root).name}; branch={branch or 'unknown'}; "
+                f"tip_sha={tip_sha or 'unknown'}; "
+                f"item_ids={', '.join(str(i) for i in item_ids)}; "
+                f"重叠文件: {_fmt_overlap(overlap)}"
+            ),
+            "source": "code-fix-lane",
+            "recommended_action": (
+                "提交（git add/commit）或 stash（git stash push）主树这些改动；"
+                "该批修复提交可按 branch/tip_sha 经 git reflog 追溯，人工排查后"
+                "调用 core.code_fix.release_failed_batch 解除该批条目的跳过"
+            ),
+        }
+    )
+
+
 # ── 编排器（5.3-5.8）──────────────────────────────────────────────────
 
 
@@ -806,16 +1065,28 @@ class CodeFixOrchestrator:
                 return {"triggered": False, "reason": "already_running"}
 
             root = self.project_root
+            # 延迟批链边界重试（fix-codefix-wipgate-defer D4/2.2）：单一调用点
+            # 挂在既有节拍上，同时覆盖两个重试时机——「count_open_items==0 收敛
+            # 早退之前」与「选批之前」（两判定都在其后，重试结果即时反映进 open
+            # 计数与可选池）；台账空时零开销早退。位置在 already_running 守卫
+            # 之后：批在飞时上方恒 already_running 早退，重试不与在飞批的建树/
+            # 合回交叠；本调用仍在既有 ``self._lock`` 段内（不重入 checkpoint，
+            # 无死锁面）。返回（本轮核销条数, 结果文案）：核销数并入下方链身份
+            # 的 done（防 dispatch 写进度用陈旧 done 覆写），文案供两个收敛
+            # 早退出口透传（D7）。
+            deferred_done, deferred_msg = self._process_deferred_merges()
             total_open = count_open_items(root)
             if total_open == 0:
                 # 链收尾（无 open 条目）：进度落 running=false（若曾有链）；
-                # 链上状态（授权旗标/链内跳过集）随链终止一并清除。
+                # 链上状态（授权旗标/链内跳过集）随链终止一并清除。本轮刚有
+                # 延迟批核销时 current 携带其结果文案（spec：进度显示「延迟批
+                # 合回成功（核销 N 条）」），无延迟批时保持空串原语义。
                 if _progress_path(root).exists():
                     write_progress(
                         root,
                         running=False,
                         phase="idle",
-                        current="",
+                        current=deferred_msg,
                         reason="",
                         worktree=None,
                         run_id=None,
@@ -834,7 +1105,9 @@ class CodeFixOrchestrator:
             if prev.get("running") and prev.get("activation_id"):
                 activation_id = prev["activation_id"]
                 total = prev.get("total") or total_open
-                done = prev.get("done") or 0
+                # 本轮链边界重试刚核销的延迟批条目并入 done（prev 读点在重试
+                # 之前，陈旧 done 若直传 dispatch 写点会覆掉重试的累加）。
+                done = (prev.get("done") or 0) + deferred_done
                 batch_no = prev.get("batch_no") or 0
                 chain_skipped = list(prev.get("chain_skipped") or [])
             else:
@@ -852,8 +1125,24 @@ class CodeFixOrchestrator:
                         f"code-fix 新链启动：释放 {released} 条预算内失败档案"
                         "（下轮自动重试）",
                     )
+                # 换链/重启再认领（fix-codefix-wipgate-defer D5/4.1）：台账核对
+                # 磁盘——worktree 目录仍在且 tip_sha 可解析的条目原样保留
+                # （defer_count/first_deferred_at 不重置，链边界重试照常覆盖）；
+                # 丢失条目清出台账（条目未核销，天然仍在 open 池，无需回写）。
+                dropped = reclaim_deferred_batches(root)
+                if dropped:
+                    self._log(
+                        "warning",
+                        f"code-fix 新链启动：{dropped} 条延迟批 worktree 已丢失，"
+                        "清出台账（条目保持 open，可被重新选批）",
+                    )
+            # 选批排除并集（D4 配套约束）：失败档案 ∪ chain_skipped ∪ 延迟台账
+            # item_ids——defer 条目在合回成功前始终是 open 且不在失败档案，不
+            # 排除则下一边界 earliest-first 立即重选同批、重跑 agent。
             batch = select_batch(
-                root, cfg.get("batch_size", 20), exclude_ids=chain_skipped
+                root,
+                cfg.get("batch_size", 20),
+                exclude_ids=set(chain_skipped) | _deferred_item_ids(root),
             )
             if not batch:
                 # open 条目全被排除（失败档案 ∪ chain_skipped）→ consumed 链的
@@ -869,18 +1158,30 @@ class CodeFixOrchestrator:
                         int(rec.get("fail_count") or 1) >= FAIL_RETRY_MAX
                         for rec in load_failed_batches(root)
                     )
-                    if maxed:
+                    if deferred_msg:
+                        # 延迟批仍在场（本轮重试刚尝试过、仍被阻断）：收敛文案
+                        # 以 defer 语义为主（D7），reason 同步 wip_gate_blocked
+                        # 供前端透传；跳过/达上限信息保留后半句。
+                        current = deferred_msg + (
+                            "；含已达自动重试上限条目，需人工排查"
+                            if maxed
+                            else "；其余跳过条目下轮自动重试"
+                        )
+                        reason = "wip_gate_blocked"
+                    elif maxed:
                         current = (
                             "open 条目均已跳过（含已达自动重试上限的条目，需人工排查）；"
                             "其余条目下轮自动重试"
                         )
+                        reason = "failed_batch_retained"
                     else:
                         current = "open 条目均已跳过（链内跳过/预算内失败），下轮自动重试"
+                        reason = "failed_batch_retained"
                     write_progress(
                         root,
                         running=False,
                         phase="blocked",
-                        reason="failed_batch_retained",
+                        reason=reason,
                         current=current,
                         worktree=None,
                         run_id=None,
@@ -1049,6 +1350,218 @@ class CodeFixOrchestrator:
             batch_total=None,
             **fields,
         )
+
+    # -- 延迟合回（fix-codefix-wipgate-defer D4/D6）-------------------------
+
+    def _process_deferred_merges(self):
+        """链边界重试延迟批合回：遍历台账逐条对保留 worktree 重跑 merge_back。
+
+        不重跑 agent（产物已提交在分支上，只差合回）；不新增线程/定时器，
+        挂在既有链节拍上（调用点见 checkpoint：选批之前 ∪ 收敛早退之前）。
+        逐条 try/except 兜底（同 ``_safe_cleanup`` 哲学：单条异常记 warning
+        后继续下一条，不炸链节拍）。
+
+        Returns: ``(deferred_done, deferred_msg)``——本轮累计核销条数（供调用
+        方并入链 done）与末条结果文案（供收敛早退出口透传，D7）；台账空时
+        ``(0, "")``（零开销早退）。
+        """
+        root = self.project_root
+        entries = load_deferred_batches(root)
+        if not entries:
+            return 0, ""
+        wm = getattr(self._agent_runner, "worktree_manager", None)
+        if wm is None:
+            return 0, ""
+        done_hits = 0
+        last_msg = ""
+        for entry in entries:
+            try:
+                hit, msg = self._retry_one_deferred(wm, entry)
+            except Exception as e:  # noqa: BLE001 — 单条重试异常不炸链节拍
+                self._log(
+                    "warning",
+                    f"code-fix 延迟批重试异常（branch="
+                    f"{entry.get('branch')}）: {e}",
+                )
+                continue
+            done_hits += hit
+            if msg:
+                last_msg = msg
+        return done_hits, last_msg
+
+    def _retry_one_deferred(self, wm, entry) -> tuple:
+        """单条延迟批重试，结果四分派（D4/2.1）。返回 ``(核销数, 结果文案)``。"""
+        root = self.project_root
+        item_ids = [str(i) for i in entry.get("item_ids") or []]
+        fixed_ids = [str(i) for i in entry.get("fixed_ids") or []]
+        wt = Path(str(entry.get("worktree") or ""))
+        branch = str(entry.get("branch") or "")
+        tip_sha = str(entry.get("tip_sha") or "")
+        overlap = list(entry.get("last_overlap") or [])
+
+        # 磁盘真相对账：worktree 已丢失（手删/sweeper 回收）→ 条目回收 +
+        # warning；条目未核销天然仍在 open 池，无需回写（D5 同款判据）。
+        if not _deferred_entry_alive(entry):
+            _remove_deferred_batch(root, item_ids)
+            self._log(
+                "warning",
+                f"code-fix 延迟批 worktree 已丢失，条目移出台账"
+                f"（条目保持 open，可被重新选批）: {wt}",
+            )
+            return 0, ""
+
+        # 预算时间门（D6/3.1，先到为准）：超时即降级，不再尝试 merge_back。
+        if _defer_time_budget_exhausted(entry):
+            self._downgrade_deferred(wm, entry, item_ids, wt, branch, tip_sha, overlap)
+            return 0, f"延迟批合回超预算已入失败档案（branch={branch}）"
+
+        merge_info = wm.merge_back(wt)
+        if getattr(merge_info, "success", False):
+            # 成功 → 核销 fixed_ids 中仍 open 的子集。defer 窗口内被人工置
+            # 终态的条目跳过：mark_resolved 对命中 id 无条件置 resolved、无
+            # 终态保护，核销方 MUST 先以 read_items 过滤（不能依赖其幂等）。
+            hit = 0
+            if fixed_ids:
+                try:
+                    items = read_items(root)
+                except Exception:  # noqa: BLE001 — 台账读失败按空集（不核销）
+                    items = {}
+                still_open = [
+                    i for i in fixed_ids
+                    if (items.get(i) or {}).get("status") == "open"
+                ]
+                if still_open:
+                    hit = mark_resolved(root, still_open)
+            _safe_cleanup(wm, wt, success=True, logger=self._logger)
+            _remove_deferred_batch(root, item_ids)
+            prog = read_progress(root)
+            write_progress(
+                root,
+                done=(prog.get("done") or 0) + hit,
+                reason="",
+                current=f"延迟批合回成功（核销 {hit} 条）",
+            )
+            self._log(
+                "info",
+                f"code-fix 延迟批合回成功：核销 {hit}/{len(item_ids)} 条"
+                f"（branch={branch}）",
+            )
+            return hit, f"延迟批合回成功（核销 {hit} 条）"
+
+        if bool(getattr(merge_info, "wip_gate_blocked", False)):
+            # 仍被阻断：本次确有实际 merge_back 尝试 → defer_count +1（2.3）；
+            # first_deferred_at 不动（超时判定只看它）；达次数门降级，否则
+            # 台账原样保留等下一边界。
+            defer_count = int(entry.get("defer_count") or 0) + 1
+            _patch_deferred_entry(root, item_ids, defer_count=defer_count)
+            if defer_count >= DEFER_RETRY_MAX:
+                self._downgrade_deferred(
+                    wm, entry, item_ids, wt, branch, tip_sha, overlap
+                )
+                return 0, f"延迟批合回超预算已入失败档案（branch={branch}）"
+            msg = (
+                f"延迟批合回待重试（主树未提交改动：{_fmt_overlap(overlap)}）"
+                "— 已保留，主树清理后自动合回"
+            )
+            write_progress(root, phase="merging", reason="wip_gate_blocked", current=msg)
+            return 0, msg
+
+        # 失败且非 wip_gate_blocked（主树 WIP 已被提交后的内容真冲突经预演
+        # 闸、或其他 git 失败）→ 按真冲突同语义降级入失败档案（烧预算），
+        # worktree 走既有失败收尾，台账移除。
+        record_failed_batch(
+            root, item_ids, wt,
+            reason="merge_back_conflict", branch=branch, tip_sha=tip_sha,
+        )
+        _safe_cleanup(wm, wt, success=False, logger=self._logger)
+        _remove_deferred_batch(root, item_ids)
+        self._log(
+            "error",
+            f"code-fix 延迟批合回落真冲突，已入失败档案"
+            f"（branch={branch}, tip_sha={tip_sha}）",
+        )
+        return 0, ""
+
+    def _downgrade_deferred(
+        self, wm, entry, item_ids, wt: Path, branch, tip_sha, overlap
+    ) -> None:
+        """预算双门耗尽降级（D6/3.1）：入失败档案 + 遗产收尾 + 台账移除。
+
+        ``record_failed_batch(reason="wip_gate_blocked_expired")`` 走既有预算
+        体系（FAIL_RETRY_MAX 之后是既有 blocked 出口）；``cleanup(success=False)``
+        走 implementer 遗产分支，目录由 sweeper 宽限兜底回收。告警一次性按
+        条目集指纹（3.2：先查后记，见 ``_has_expired_archive``）。
+        """
+        root = self.project_root
+        first_expire = not _has_expired_archive(root, item_ids)
+        record_failed_batch(
+            root, item_ids, wt,
+            reason="wip_gate_blocked_expired", branch=branch, tip_sha=tip_sha,
+        )
+        _safe_cleanup(wm, wt, success=False, logger=self._logger)
+        _remove_deferred_batch(root, item_ids)
+        if first_expire:
+            _write_defer_expired_alert(root, item_ids, overlap, branch, tip_sha)
+        write_progress(
+            root,
+            reason="wip_gate_blocked_expired",
+            current=f"延迟批合回超预算已入失败档案（branch={branch}）",
+        )
+        self._log(
+            "warning",
+            f"code-fix 延迟批合回超预算（90 分钟或 {DEFER_RETRY_MAX} 次重试），"
+            f"降级入失败档案: branch={branch}",
+        )
+
+    def _defer_merge_back(
+        self, wm, wt: Path, ctx: dict, merge_info, fixed_ids: list, pending_ids: list
+    ) -> str:
+        """批收尾 wip_gate_blocked 收尾（defer 路径，D1/D3）：保留现场 + 记
+        台账 + 放锁 + 首次 info 告警。返回 "consumed"（链继续后续批）。
+
+        保留：worktree 目录/分支/``_active_worktrees`` 在册（sweeper 扫孤儿
+        跳过在册目录；重试收尾 ``wm.cleanup`` 语义不变）。放锁 MUST：``create()``
+        对同键命中即返回 None、批 worker 对 None 走 halt 终止链——不放锁则
+        defer 后下一批建树必败，整条车道在主树脏期间死锁（比现状更糟）。
+        """
+        root = self.project_root
+        batch_no = ctx["batch_no"]
+        overlap = list(getattr(merge_info, "wip_overlap", []) or [])
+        tip_sha = _worktree_head(wt)
+        branch = _worktree_branch(wt)
+        # 台账先落（磁盘真相源），随后放锁/告警/进度。
+        record_deferred_batch(
+            root, pending_ids, fixed_ids, wt,
+            branch=branch, tip_sha=tip_sha, last_overlap=overlap,
+        )
+        try:
+            wm.release_spec_lock("code-review-fix", "code-fix")
+        except Exception as e:  # noqa: BLE001 — 放锁失败不影响 defer 记账，
+            # 但车道可能死锁，必须留痕供排查。
+            self._log("warning", f"code-fix defer 放锁异常（车道可能死锁）: {e}")
+        # 首次 defer 即发 info 提示（1.3）：含交集文件清单与人工处置话术。
+        _write_defer_info_alert(root, pending_ids, overlap, branch=branch)
+        write_progress(
+            root,
+            phase="merging",
+            reason="wip_gate_blocked",
+            current=(
+                f"第 {batch_no} 批合回待重试（主树未提交改动："
+                f"{_fmt_overlap(overlap)}）— 已保留，主树清理后自动合回"
+            ),
+            # 批上下文三键清除：agent run 已结束，保留现场由台账承载（防读
+            # 侧按陈旧 run_id 合成条级进度，D2 同款防陈旧索引）。
+            worktree=None,
+            run_id=None,
+            batch_total=None,
+        )
+        self._log(
+            "warning",
+            f"code-fix 第 {batch_no} 批合回被主树未提交改动挡住"
+            f"（重叠 {_fmt_overlap(overlap)}），批保留待自动合回"
+            f"（不烧失败预算）: branch={branch}",
+        )
+        return "consumed"
 
     def _run_batch(self, ctx: dict) -> None:
         batch_no = ctx["batch_no"]
@@ -1290,6 +1803,16 @@ class CodeFixOrchestrator:
         )
         merge_info = wm.merge_back(wt)
         if not getattr(merge_info, "success", False):
+            # 合回失败分类（fix-codefix-wipgate-defer D1）：先读
+            # wip_gate_blocked 标志分派（不解析 error 字符串——脆弱；getattr
+            # 缺省 False 对旧类型对象容错）。True=主树 WIP overlap 预检阻断，
+            # 可等待自愈的暂态，走 defer 路径零预算；False=真冲突，既有
+            # 「现场即弃」语义逐字保留。
+            if bool(getattr(merge_info, "wip_gate_blocked", False)):
+                return self._defer_merge_back(
+                    wm, wt, ctx, merge_info,
+                    fixed_ids=fixed_ids, pending_ids=pending_ids,
+                )
             # 合回冲突 → 现场即弃（selfheal D2）：cleanup 前把 branch/tip_sha
             # 写入失败档案（fail_count 预算），随后清理 worktree 释放锁——
             # 不再保留现场待人工（原语义锁死车道至 daemon 重启）。consumed：
