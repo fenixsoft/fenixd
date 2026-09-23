@@ -144,12 +144,13 @@ export default function CodeFixProgressCard(
   const stopped = terminal || readFailed;
 
   // 条级进度文案（add-code-fix-item-level-progress 5.1）：仅 fixing 阶段渲染。
-  // item_done 为 null 表示「明细尚未产生/不可得」（D4：与「已处置 0 条」是
-  // 两件事——null 渲染可读提示，绝不显示 0/N 这类可被误读为卡死的计数）。
+  // item_done 为 null（明细尚未产生/不可得）时**整段不渲染**（用户 2026-09-23
+  // 要求：不留「尚未产生」占位，等有明细再显示；D4 的 null 与 0 区分语义
+  // 保留——只是从「渲染可读提示」改为「静默不渲染」）。
   const itemDone = progress.item_done;
   const batchTotal = progress.batch_total;
   const currentItem = progress.current_item;
-  let itemProgressText: string;
+  let itemProgressText = '';
   if (itemDone != null) {
     itemProgressText =
       batchTotal != null
@@ -160,8 +161,6 @@ export default function CodeFixProgressCard(
       const titlePart = currentItem.title ? ` ${currentItem.title}` : '';
       itemProgressText += ` · 刚完成：${statusLabel}：${currentItem.file}${titlePart}`;
     }
-  } else {
-    itemProgressText = '批内明细尚未产生（agent 处置中）';
   }
 
   // 次级文案段：已处置条数已由 ProgressBarTile 头部「已完成 x / y」承载，这里
@@ -169,7 +168,7 @@ export default function CodeFixProgressCard(
   // 并入本行（用户 2026-09-23 要求不换行，接在前段后同排显示）。
   const sub: string[] = [];
   if (current) sub.push(current);
-  if (phase === 'fixing') sub.push(itemProgressText);
+  if (phase === 'fixing' && itemProgressText) sub.push(itemProgressText);
   if (stopped && reason) sub.push(`原因：${reason}`);
   if (stopped && !reason && readFailed) sub.push('进度读取失败，已停止轮询');
 
