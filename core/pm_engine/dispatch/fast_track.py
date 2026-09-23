@@ -865,7 +865,7 @@ class FFastTrackMixin:
         )
         self._pm._on_spec_verified(spec_name)
 
-    def _resume_fast_track_after_restart(self, spec_name: str) -> None:
+    def _resume_fast_track_after_restart(self, spec_name: str, already_testing: bool = False) -> None:
         """重启恢复重入：implemented 死态 → testing → 收尾段（Cap 1 / D2）。
 
         fast-track spec 卡 ``implemented`` 死态（daemon 重启恢复形态：重启把
@@ -880,17 +880,23 @@ class FFastTrackMixin:
           ``_on_impl_ocr_lane_finished`` 既有唤醒路径接手（回调前置
           status==testing，重入后恰好满足，闭环）。
 
+        ``already_testing=True``（code-review item 3766612aca27 搁浅态）：spec
+        已在 ``testing``（首次收尾段在 testing 转移之后抛异常搁浅，VALID_TRANSITIONS
+        不允许 testing→implemented 回滚重走），跳过转移、仅重跑收尾段——engine
+        侧恢复判据①的 testing 形态据此重入。
+
         **不读** fast-track 共享结果文件（早已在首次收尾时消费清理）：验证
         结论以 per-spec impl-result 快照（merge 成功时点已落盘）+ tasks 勾选
         为准（verified→done 门禁 ``_task_completion_blocker`` 读快照）。
         """
         entry = self._pm.state_machine.read_one(spec_name) or {}
         implementer_run = entry.get("implementer_run") or None
-        self._pm.state_machine.transition(
-            spec_name, "testing",
-            trigger_run_id=implementer_run,
-            agent_type="fast-track", channel="auto",
-        )
+        if not already_testing:
+            self._pm.state_machine.transition(
+                spec_name, "testing",
+                trigger_run_id=implementer_run,
+                agent_type="fast-track", channel="auto",
+            )
         from types import SimpleNamespace
 
         self._fast_track_finalize_after_testing(

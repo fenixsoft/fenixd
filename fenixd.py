@@ -1084,20 +1084,13 @@ class FenixDaemon:
                 )
                 return False
             # ⑤ fix-fasttrack-implemented-deadstate 2.2：在飞 impl-ocr 车道维度
-            # （公开方法 ocr_lane_busy() 无参口径，与②同构；getattr 链容错 +
-            # 仅采纳真 bool，瘦门面/替身返回非 bool 不误判为非空闲——
-            # _review_lane_busy 读侧同纪律）。车道线程不进 _active_runs /
+            # （code-review item e557560d61c0：守卫链委托
+            # _ocr_lane_selfheal_block 单点维护——getattr 链容错/仅采纳真 bool/
+            # 异常按阻断=非空闲，三段语义与本维度原实现逐一等价，含非 callable
+            # 替身落到「不阻断=空闲」的形态）。车道线程不进 _active_runs /
             # _running_agents（裸后台线程跑维护型 run），缺本维度时车道在飞
             # 即被判空闲，120s 后自愈 SIGTERM 杀掉在飞车道 run（2026-09-23 事故）。
-            try:
-                busy_fn = getattr(self.pm_engine, "ocr_lane_busy", None)
-                if callable(busy_fn) and busy_fn() is True:
-                    return False
-            except Exception as e:  # noqa: BLE001 — 判定异常按非空闲处理（宁紧勿松）
-                self.logger.warning(
-                    "fenixd",
-                    f"ocr 车道在飞判定异常（按非空闲处理，不触发自愈重启）: {e}",
-                )
+            if self._ocr_lane_selfheal_block():
                 return False
         if getattr(getattr(self, "agent_runner", None), "_running_agents", None) or {}:
             return False  # 有在飞 agent run（含评审 run）→ 非空闲

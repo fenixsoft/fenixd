@@ -222,6 +222,12 @@ def _is_fixture_project(project_root) -> bool:
         return False
     return False
 
+
+# fixture 判定实例级备忘的 TTL 秒（code-review item 9427d41c85ef）：夹具标记
+# 实践中静态（dashboard.yaml 项目条目），TTL 内同项目根复用首次解析结果；
+# 配置改动最多延迟一个 TTL 生效（巡检周期分钟级，可接受）。
+_FIXTURE_PROJECT_MEMO_TTL = 300.0
+
 # ── dispatch_stalled 前提复核（陈旧快照守卫，2026-09-17 事故）────────────
 # dispatch_stalled 是**快照式**信号：pm_engine 在巡检瞬间把「ready 滞留」这一
 # 事实写进 store，AdminMonitor 在后续巡检里逐条摄取兑现。二者之间存在最长一个
@@ -767,6 +773,11 @@ class AdminMonitor:
         # store 既有 daemon_errors 记录的 description 内嵌指纹前缀）。
         self._started_at = time.time()
         self._daemon_fp_escalated_at = {}
+        # code-review item 9427d41c85ef：fixture 判定实例级 TTL 备忘。
+        # _fixture_invocation_suppressed 每条信号都走一次 _is_fixture_project
+        # （Registry.discover = YAML 读 + 扫描根目录级遍历）；夹具标记实践中
+        # 静态，TTL 300s 内同项目只做一次真实解析（条目 (monotonic, bool)）。
+        self._fixture_project_memo: dict = {}
 
     # ── 配置读取 ────────────────────────────────────────────────
 
@@ -1755,7 +1766,13 @@ class AdminMonitor:
             ts_ok = sorted(t for t in in_window if t is not None)
             if len(ts_ok) >= 2 and (ts_ok[-1] - ts_ok[-2]) > max_gap:
                 continue
-            known, source = self._daemon_fp_known(fp)
+            # 已知指纹对账仅服务冷却窗分支（known 只被 known and
+            # in_restart_window 消费）——冷却窗关闭后（长驻 daemon 的常态）
+            # 不再为每个达阈指纹做全 store 扫描（code-review item e681493f4102）。
+            if not in_restart_window:
+                known, source = False, ""
+            else:
+                known, source = self._daemon_fp_known(fp)
             if known and in_restart_window:
                 # 冷却命中（3.1）：重启后首扫窗口内的已知指纹不计满、不召唤，
                 # INFO 留痕冷却决策；窗后复现照常升级（3.3，冷却仅约束首扫窗口）
@@ -1976,7 +1993,25 @@ class AdminMonitor:
         """
         # getattr 兜底：半初始化实例（如测试用 __new__ 绕过 __init__）无该
         # 属性时按非 fixture 处理（fail-open，与 _is_fixture_project 同语义）。
-        if not _is_fixture_project(getattr(self, "project_root", None)):
+        # 判定结果经实例级 TTL 备忘复用（code-review item 9427d41c85ef）：
+        # _is_fixture_project 每次 = Registry() 构造 + discover()（YAML 读 +
+        # 目录扫描），且对非夹具项目也恒执行并返回 False——巡检周期内每条
+        # 信号都重付一次文件 I/O，_retry_due_dispatch_failures 对被抑制记录
+        # 不增 retry_count，同一 pending 记录会无限期逐周期重触。夹具标记
+        # 实践中静态，TTL 300s 足以覆盖巡检粒度且配置改动最多延迟一个 TTL 生效。
+        root = getattr(self, "project_root", None)
+        memo = getattr(self, "_fixture_project_memo", None)
+        if memo is None:
+            memo = self._fixture_project_memo = {}
+        key = str(Path(root).resolve()) if root else ""
+        hit = memo.get(key)
+        now_mono = time.monotonic()
+        if hit is not None and now_mono - hit[0] < _FIXTURE_PROJECT_MEMO_TTL:
+            is_fixture = hit[1]
+        else:
+            is_fixture = _is_fixture_project(root)
+            memo[key] = (now_mono, is_fixture)
+        if not is_fixture:
             return False
         fp = signal.get("_fp")
         self.logger.info(

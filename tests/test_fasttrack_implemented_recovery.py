@@ -308,11 +308,27 @@ class TestOnSpecImplementedRecovery(_RecoveryEngineBase):
         assert entry["status"] == "verified"
         self.engine._on_spec_verified.assert_called_once_with("ft-spec")
 
-    def test_negative_status_not_implemented(self):
-        # 条件①不成立：收尾流中途（testing）重发事件维持短路
+    def test_stranded_testing_reenters_finalize_only(self):
+        # 条件① testing 搁浅形态（code-review item 3766612aca27）：收尾段在
+        # testing 转移之后抛异常搁浅（无车道、无 pending 停等标记、run 已死）
+        # 时重发事件重入收尾——already_testing=True（VALID_TRANSITIONS 不允许
+        # testing→implemented 回滚重走，只能直接重跑收尾段）。
         self._write_spec_mode("ft-spec")
         self._seed_entry("ft-spec", status="testing",
                          implementer_run="impl-ft-spec-1", mtime_age=600)
+        self.engine._on_spec_implemented("ft-spec")
+        self.resume.assert_called_once_with("ft-spec", already_testing=True)
+        self.engine._enqueue.assert_not_called()  # 孤儿 planner 防线不变
+
+    def test_negative_testing_with_pending_waker(self):
+        # 条件① testing 形态负例：pending 停等标记在场（_ocr_join_wait）=
+        # 车道完成回调唤醒路径在场，不经恢复入口重入（防双驱动）。
+        self._write_spec_mode("ft-spec")
+        self._seed_entry("ft-spec", status="testing",
+                         implementer_run="impl-ft-spec-1", mtime_age=600)
+        self.sm.update_spec(
+            "ft-spec", {"_ocr_join_wait": 1, "_ocr_join_agent": "fast-track"}
+        )
         self.engine._on_spec_implemented("ft-spec")
         self.resume.assert_not_called()
         self.engine._enqueue.assert_not_called()

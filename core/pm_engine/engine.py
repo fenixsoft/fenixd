@@ -1386,8 +1386,14 @@ class PMEngine:
         恢复三条件同时成立才放行恢复重入，任一不成立维持既有短路（孤儿
         planner 防线不变，debug 留痕）：
 
-        ① ``status == "implemented"`` 且 ``implementer_run`` 非空（收尾流已过
-           merge 点）；
+        ① 双形态（code-review item 3766612aca27 扩展）：
+           - implemented 死态（原形态）：``status == "implemented"`` 且
+             ``implementer_run`` 非空（收尾流已过 merge 点）；
+           - testing 搁浅态：``status == "testing"`` 且 ``implementer_run``
+             非空且无 pending 停等标记（``_ocr_join_wait``）——首次收尾段在
+             testing 转移之后抛异常（如 ``_ocr_current_fingerprint``）搁浅，
+             无车道无标记无唤醒者，且 VALID_TRANSITIONS 不允许
+             testing→implemented 回滚重走，只能直接重跑收尾段。
         ② 实现者 run 转录 mtime 超 ``ORPHANED_RUN_GRACE_SECONDS`` 宽限窗
            （``_implementer_run_transcript_expired``）→ run 已死；
         ③ ``ocr_lane_busy(spec_name)`` 为假（公开方法带参判定，不直读
@@ -1400,7 +1406,18 @@ class PMEngine:
         """
         entry = self.state_machine.read_one(spec_name) or {}
         implementer_run = entry.get("implementer_run")
-        cond_status = entry.get("status") == "implemented" and bool(implementer_run)
+        status = entry.get("status")
+        # testing 搁浅态：无 pending 停等标记是必要条件——有标记说明车道完成
+        # 回调（_on_impl_ocr_lane_finished）唤醒路径在场，不经本恢复入口。
+        form_stranded_testing = (
+            status == "testing"
+            and bool(implementer_run)
+            and not entry.get("_ocr_join_wait")
+        )
+        cond_status = (
+            (status == "implemented" and bool(implementer_run))
+            or form_stranded_testing
+        )
         cond_dead = self._implementer_run_transcript_expired(implementer_run)
         try:
             cond_no_lane = not self.ocr_lane_busy(spec_name)
@@ -1416,12 +1433,24 @@ class PMEngine:
             return False
         self.logger.info(
             "pm_engine",
-            f"fast-track 恢复重入 '{spec_name}'：implemented 死态（run 转录超宽限"
-            f"={cond_dead}，无在飞车道={cond_no_lane}）→ 重入收尾推进 "
-            "(implemented → testing → ocr join 门禁 → verified)",
+            f"fast-track 恢复重入 '{spec_name}'："
+            + (
+                "testing 搁浅态（无车道无停等标记，"
+                if form_stranded_testing
+                else "implemented 死态（"
+            )
+            + f"run 转录超宽限={cond_dead}，无在飞车道={cond_no_lane}）→ 重入"
+            "收尾推进 (testing → ocr join 门禁 → verified)",
         )
         try:
-            self._dispatcher._resume_fast_track_after_restart(spec_name)
+            if form_stranded_testing:
+                # testing 搁浅态：已过 implemented→testing 转移点（VALID_TRANSITIONS
+                # 不允许回滚重走），跳过转移、仅重跑收尾段。
+                self._dispatcher._resume_fast_track_after_restart(
+                    spec_name, already_testing=True
+                )
+            else:
+                self._dispatcher._resume_fast_track_after_restart(spec_name)
         except Exception as e:  # noqa: BLE001 — 重入失败不崩溃，事件周期重发兜底
             self.logger.warning(
                 "pm_engine",
@@ -3811,6 +3840,19 @@ class PMEngine:
             return admit() is not False
         except Exception:
             return True
+
+    def _transient_unseal_recredit(self) -> None:
+        """解封节奏准入退还（pop 后闸门回滚条目、零 run 启动时，code-review
+        item d2e6133109ff）。runner 不可用或异常静默——退还失败不放大为调度
+        故障（对齐 _transient_unseal_admit 的 fail-open 策略）。"""
+        runner = getattr(self, "agent_runner", None)
+        recredit = getattr(runner, "recredit_unseal_dispatch", None)
+        if not callable(recredit):
+            return
+        try:
+            recredit()
+        except Exception:
+            pass
 
     def _transient_unseal_note_drained(self) -> None:
         """错峰积压放完回调（队列空时退出错峰态）。异常静默，不阻断派发。"""

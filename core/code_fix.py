@@ -1646,17 +1646,22 @@ class CodeFixOrchestrator:
         # 同口径去重）并经 run_code_fix 既有 run_id 形参传入（缺省在其内部
         # 生成、run 返回前编排器无从得知），保证 run 在飞期间进度文件已可
         # 解析（读侧定位 out 文件实时合成条级进度）。
-        run_id = _preset_run_id(runner)
-        write_progress(
-            root,
-            phase="fixing",
-            current=f"第 {batch_no} 批修复中（{len(items)}/{total} 条）",
-            worktree=str(wt),
-            run_id=run_id,
-            batch_total=len(items),
-        )
-        created_sha = _worktree_head(wt)
+        # 三条前置语句（code-review item cc79d58138f1）：_preset_run_id /
+        # write_progress（_atomic_write 盘写）/ _worktree_head 均可能抛异常
+        # （OSError/ImportError 等），MUST 位于 try 内——否则异常绕过
+        # _safe_cleanup，create() 已登记的 code-review-fix:code-fix spec 锁
+        # 永久滞留（后续 create() 恒 None，车道死锁）。
         try:
+            run_id = _preset_run_id(runner)
+            write_progress(
+                root,
+                phase="fixing",
+                current=f"第 {batch_no} 批修复中（{len(items)}/{total} 条）",
+                worktree=str(wt),
+                run_id=run_id,
+                batch_total=len(items),
+            )
+            created_sha = _worktree_head(wt)
             return self._run_batch_created(wm, wt, created_sha, ctx, run_id=run_id)
         except Exception:
             # 未预期异常兜底（ocr 收尾审查）：create() 已登记 code-review-fix:code-fix
