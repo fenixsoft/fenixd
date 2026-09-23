@@ -53,6 +53,82 @@ def out_path(project_root, run_id: str) -> Path:
     return code_review_dir(project_root) / f"out-{run_id}.jsonl"
 
 
+def shard_paths(project_root, run_id: str) -> List[Path]:
+    """某次 review run 的全部分片产物（``out-<run_id>-b<N>.jsonl``，N 数值升序）。
+
+    分片发现唯一入口（add-code-review-sharded-out D1）：进度读侧、收尾
+    ingest、产物硬门三消费侧 MUST 全部经本函数取分片集合，禁止任何一侧
+    自写 glob——三处口径漂移是本仓高频事故模式。非 ``-b<正整数>`` 后缀的
+    同形文件（如 ``-babc`` / 目录）MUST NOT 被消费。
+    """
+    d = code_review_dir(project_root)
+    prefix = f"out-{run_id}-b"
+    found: List[Tuple[int, Path]] = []
+    try:
+        for p in d.iterdir():
+            name = p.name
+            if not name.startswith(prefix) or not name.endswith(".jsonl"):
+                continue
+            n_str = name[len(prefix) : -len(".jsonl")]
+            if not re.fullmatch(r"[0-9]+", n_str):
+                continue
+            n = int(n_str)
+            if n < 1 or not p.is_file():
+                continue
+            found.append((n, p))
+    except OSError:
+        return []
+    found.sort(key=lambda t: t[0])
+    return [p for _, p in found]
+
+
+def read_review_out_rows(project_root, run_id: str, on_error=None) -> List[dict]:
+    """聚合读取某次 review run 的全部产物行（add-code-review-sharded-out D2）。
+
+    迭代顺序：分片（``shard_paths`` N 升序）→ 主产物 ``out-<run_id>.jsonl``。
+    逐行 json.loads，空行/不可解析行/非 dict 行过滤；同 ``file`` 多行保留
+    **先见者**（分片是原始产出，主产物是汇总兜底——提示词已约束主 agent
+    不重写分片批次，去重是机械兜底）。三消费侧（read_progress / 收尾
+    ingest / 产物硬门）MUST 统一经本函数取行，禁止自写读取口径。
+
+    ``on_error(source, exc)``：某来源（分片或主产物）读取发生 OSError 时
+    回调注明并跳过该来源——单分片失败不中断整轮；不传则静默跳过。文件
+    缺失（如分片直写模式下主产物尚未创建）是常态而非错误，不回调。各
+    消费侧更严的有效性判据（如 ingest/硬门要求 ``findings`` 为列表）由
+    消费侧在返回行上自行过滤。
+    """
+    rows: List[dict] = []
+    seen_files: set = set()
+    for src in [*shard_paths(project_root, run_id), out_path(project_root, run_id)]:
+        if not src.is_file():
+            continue
+        try:
+            text = src.read_text(encoding="utf-8", errors="replace")
+        except OSError as e:
+            if on_error is not None:
+                try:
+                    on_error(src, e)
+                except Exception:  # noqa: BLE001 — 回调异常不影响读取主流程
+                    pass
+            continue
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(rec, dict):
+                continue
+            file_ = str(rec.get("file") or "")
+            if not file_ or file_ in seen_files:
+                continue
+            seen_files.add(file_)
+            rows.append(rec)
+    return rows
+
+
 def _atomic_write(path: Path, content: str) -> None:
     """tempfile + fsync + os.replace 原子替换（StateMachine._write_all_locked 同式）。
 
@@ -663,9 +739,12 @@ def read_progress(project_root) -> dict:
     """读取当前 code-review 运行进度。
 
     Returns: ``{running, review_id, review_kind, total, done, current}``
-    - ``done`` = 对应 run 的 out jsonl 行数；
+    - ``done`` = 主产物 + 全部分片（out-<run_id>-b<N>.jsonl）按 ``file`` 去重
+      后的有效行数（add-code-review-sharded-out：分片直写模式下进度聚合；
+      空/不可解析行不计，同 file 多行只计一次——``done==total`` 语义严格成立）；
     - ``total`` = 派发时落盘的 manifest-<review_id>.json 长度；
-    - ``current`` = 最后一行落盘的文件名；
+    - ``current`` = 最后落盘来源（mtime 最晚者，主产物或分片）末行的
+      ``file``（被审文件路径，非分片文件名）；
     - ``running`` 判定：取最新一个 run（按 review_id 内嵌 epoch 排序），
       仅当该 run 的 ``.fenix/runs/<review_id>.jsonl`` 末行非终态（无
       result/error/interrupted/cancelled 终态行）且产物 mtime 未超既有
@@ -688,23 +767,37 @@ def read_progress(project_root) -> dict:
     files = mdata.get("files") if isinstance(mdata.get("files"), list) else []
     total = len(files)
     review_kind = mdata.get("review_kind")
-    # 读 out jsonl（done/current）
-    opath = out_path(project_root, run_id)
-    done = 0
+    # 读产物（done/current：聚合分片 + 主产物；主产物缺失时进度不归零——
+    # 只要有分片行，done 即分片去重行数）
+    done = len(read_review_out_rows(project_root, run_id))
     current = None
-    if opath.is_file():
+    sources = [
+        p
+        for p in [*shard_paths(project_root, run_id), out_path(project_root, run_id)]
+        if p.is_file()
+    ]
+    if sources:
         try:
-            lines = opath.read_text(encoding="utf-8", errors="replace").splitlines()
+            # mtime 最晚者；平局（文件系统粒度粗）取规范序后者——
+            # （mtime, index）元组比较，index 大者（主产物）胜出
+            latest = max(
+                enumerate(sources),
+                key=lambda t: (t[1].stat().st_mtime, t[0]),
+            )[1]
+            lines = [
+                l
+                for l in latest.read_text(encoding="utf-8", errors="replace").splitlines()
+                if l.strip()
+            ]
+            if lines:
+                try:
+                    last = json.loads(lines[-1])
+                    if isinstance(last, dict):
+                        current = last.get("file") or last.get("title") or None
+                except (json.JSONDecodeError, IndexError):
+                    current = None
         except OSError:
-            lines = []
-        done = len([l for l in lines if l.strip()])
-        if lines:
-            try:
-                last = json.loads(lines[-1])
-                if isinstance(last, dict):
-                    current = last.get("file") or last.get("title") or None
-            except (json.JSONDecodeError, IndexError):
-                current = None
+            current = None
     # running 判定（终态 + stale 阈值，对齐 runs.py 口径）
     running = False
     run_file = Path(project_root) / ".fenix" / "runs" / f"{run_id}.jsonl"
@@ -732,6 +825,57 @@ def read_progress(project_root) -> dict:
         "done": done,
         "current": current,
     }
+
+
+def _stall_alert_minutes(project_root) -> int:
+    """停滞告警阈值（分钟）：``admin.code_review.stall_alert_minutes``，缺省 15。
+
+    经 ``ConfigLoader.get_code_review_config`` 归一（与 enabled/max_files/scope
+    同一单源）；配置缺失/解析失败/值非法（非正整数，含 bool）回退 15——
+    巡检路径 MUST NOT 因配置脏值中断（add-code-review-sharded-out 1.3）。
+    """
+    default = 15
+    try:
+        from core.config import ConfigLoader
+
+        cfg = ConfigLoader.resolve_config(project_root)
+        value = ConfigLoader.get_code_review_config(cfg).get(
+            "stall_alert_minutes", default
+        )
+    except Exception:  # noqa: BLE001 — 配置层任何异常回退缺省，不中断巡检
+        return default
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        return default
+    return value
+
+
+def check_progress_stall(project_root, now: Optional[datetime] = None) -> Optional[dict]:
+    """事中零进度停滞检测（add-code-review-sharded-out 1.3/D4）。
+
+    最新 run 聚合口径 ``running=true`` 且 ``done==0`` 且运行时长（自 manifest
+    ``requested_at`` 起算）超过 ``_stall_alert_minutes`` 阈值时返回
+    ``{"run_id", "minutes"}``，否则 None。由 admin_monitor 周期节拍调用并
+    负责落告警（本函数只判不写）；run 终态（``running=false``）短路不再触发。
+
+    ``now`` 参数供测试注入时钟；生产路径缺省取当前本地时间。
+    """
+    progress = read_progress(project_root)
+    if not progress.get("running"):
+        return None
+    if progress.get("done") != 0:
+        return None
+    run_id = progress.get("review_id")
+    if not run_id:
+        return None
+    mdata = _read_json_file(manifest_path(project_root, run_id))
+    started = _iso_to_local_dt(mdata.get("requested_at"))
+    if started is None:
+        return None
+    now_dt = now if now is not None else datetime.now()
+    minutes = int((now_dt - started).total_seconds() // 60)
+    if minutes < _stall_alert_minutes(project_root):
+        return None
+    return {"run_id": str(run_id), "minutes": minutes}
 
 
 def _terminal_status_map() -> dict:

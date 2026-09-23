@@ -344,6 +344,7 @@ class CodeReviewResult:
         resolved: int = 0,
         error: str = "",
         output: str = "",
+        shards: int = 0,
     ):
         self.run_id = run_id
         self.success = success
@@ -352,6 +353,10 @@ class CodeReviewResult:
         self.resolved = resolved
         self.error = error
         self.output = output
+        # 本 run 被消费的分片数（add-code-review-sharded-out 2.3：完成日志
+        # 补 shards=N 便于取证——分片直写模式下「零台账增长」归因时先看
+        # 是零分片还是分片零行）
+        self.shards = shards
 
 
 class RegressionResult:
@@ -810,10 +815,11 @@ def _check_quality_gates_soft(runner, spec_name: str, wt_path: Path | None) -> N
     return None
 
 
-def _check_repo_code_review_artifact(manifest: list, out_path: Path) -> str | None:
-    """周期性代码审查 run 的产物硬门（2026-09-19 原地修复）。
+def _check_repo_code_review_artifact(manifest: list, project_root, run_id: str) -> str | None:
+    """周期性代码审查 run 的产物硬门（2026-09-19 原地修复；聚合口径
+    add-code-review-sharded-out 2.2/D5）。
 
-    事故取证（触发本次修复的实证）：`run_code_review` 此前**全链无任何产物门**
+    事故取证（触发首次修复的实证）：`run_code_review` 此前**全链无任何产物门**
     ——run 退出码 0（转录 `subtype: success`）但 agent 从未写过
     ``out-<run_id>.jsonl``（只写了自己切批的 ``batch_N.json``，声明要起 10 个
     并行子代理后末轮直接收工），``_read_code_review_out`` 对缺失文件返回空列表，
@@ -823,14 +829,17 @@ def _check_repo_code_review_artifact(manifest: list, out_path: Path) -> str | No
     ``_check_agent_result_artifact``、implementer 有 ``_check_impl_result_artifact``
     ——本车道是唯一完全无门的。
 
-    判据（fail-closed：无审查产物 ≠ 无问题）：
+    判据（fail-closed：无审查产物 ≠ 无问题；分片直写模式下为聚合口径）：
     - ``manifest`` 为空 → 返回 None（调用方已前置跳过，此处不重复判定，
       避免「空 manifest」被误伤）；
-    - ``out_path`` 不存在，或存在但**零有效行** → 返回失败原因。
+    - 主产物 ``out-<run_id>.jsonl`` 与全部分片 ``out-<run_id>-b<N>.jsonl``
+      （``code_review.shard_paths`` 发现）**合计零有效行**（或全部缺失）→
+      返回失败原因（点名 run_id）；任一来源存在至少一行有效结果行即通过
+      存在性校验（manifest 覆盖率校验口径不变）。
 
     「有效行」与 ``_read_code_review_out`` 同口径：非空、可解析为 dict、
     且 ``findings`` 为列表——「该文件审完了」的登记形态。刻意不复用
-    ``read_progress`` 的 ``done``（按裸行数计，含畸形行，服务进度条实时性）：
+    ``read_progress`` 的 ``done``（聚合去重行数，服务进度条实时性）：
     进度展示与门禁判定目的不同，门禁必须防「写满垃圾行骗过门」。
 
     注：``unavailable`` 降级语义（ocr 缺失/网关不可达）**不适用于本车道**——
@@ -839,32 +848,35 @@ def _check_repo_code_review_artifact(manifest: list, out_path: Path) -> str | No
     """
     if not manifest:
         return None
-    rel = out_path.name
-    if not out_path.is_file():
-        return (
-            f"审查产物缺失（repo-code-review-gate）：manifest {len(manifest)} 个文件"
-            f"但 {rel} 不存在——run 退出码为 0 不等于审查完成，agent MUST 逐文件"
-            f"追加结果行"
-        )
+    from core.code_review import out_path as cr_out_path, shard_paths
+
+    main = cr_out_path(project_root, run_id)
+    shards = shard_paths(project_root, run_id)
+    sources = [*shards, main]
     valids = 0
-    try:
-        text = out_path.read_text(encoding="utf-8", errors="replace")
-    except OSError as e:
-        return f"审查产物无法读取（repo-code-review-gate）: {rel} ({e})"
-    for line in text.splitlines():
-        line = line.strip()
-        if not line:
+    for src in sources:
+        if not src.is_file():
             continue
         try:
-            rec = json.loads(line)
-        except json.JSONDecodeError:
+            text = src.read_text(encoding="utf-8", errors="replace")
+        except OSError:
             continue
-        if isinstance(rec, dict) and isinstance(rec.get("findings"), list):
-            valids += 1
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(rec, dict) and isinstance(rec.get("findings"), list):
+                valids += 1
     if valids <= 0:
         return (
-            f"审查产物为空（repo-code-review-gate）：manifest {len(manifest)} 个文件"
-            f"但 {rel} 无任何有效结果行——run 退出码为 0 不等于审查完成"
+            f"审查产物为零有效行（repo-code-review-gate）：run {run_id} manifest "
+            f"{len(manifest)} 个文件，主产物 {main.name} 与 {len(shards)} 个分片"
+            f"合计无任何有效结果行——run 退出码为 0 不等于审查完成，agent MUST "
+            f"逐文件落结果行（主产物或分片均可）"
         )
     return None
 

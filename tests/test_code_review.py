@@ -716,7 +716,15 @@ class TestGetCodeReviewConfig(unittest.TestCase):
         from core.config import ConfigLoader
 
         cfg = ConfigLoader.get_code_review_config({})
-        self.assertEqual(cfg, {"enabled": False, "max_files": 500, "scope": "window"})
+        self.assertEqual(
+            cfg,
+            {
+                "enabled": False,
+                "max_files": 500,
+                "scope": "window",
+                "stall_alert_minutes": 15,
+            },
+        )
 
     def test_invalid_max_files_fallback(self):
         from core.config import ConfigLoader
@@ -725,13 +733,32 @@ class TestGetCodeReviewConfig(unittest.TestCase):
             cfg = ConfigLoader.get_code_review_config({"admin": {"code_review": {"max_files": bad}}})
             self.assertEqual(cfg["max_files"], 500, f"bad={bad!r}")
 
+    def test_invalid_stall_alert_minutes_fallback(self):
+        # add-code-review-sharded-out：停滞告警阈值非法回退 15（bool 是 int
+        # 子类，与 max_files 同款显式排除）
+        from core.config import ConfigLoader
+
+        for bad in (0, -5, "x", 1.5, True):
+            cfg = ConfigLoader.get_code_review_config(
+                {"admin": {"code_review": {"stall_alert_minutes": bad}}}
+            )
+            self.assertEqual(cfg["stall_alert_minutes"], 15, f"bad={bad!r}")
+
     def test_explicit_values(self):
         from core.config import ConfigLoader
 
         cfg = ConfigLoader.get_code_review_config(
-            {"admin": {"code_review": {"enabled": True, "max_files": 100}}}
+            {"admin": {"code_review": {"enabled": True, "max_files": 100, "stall_alert_minutes": 30}}}
         )
-        self.assertEqual(cfg, {"enabled": True, "max_files": 100, "scope": "window"})
+        self.assertEqual(
+            cfg,
+            {
+                "enabled": True,
+                "max_files": 100,
+                "scope": "window",
+                "stall_alert_minutes": 30,
+            },
+        )
 
 
 class TestCheckpointDisabledZeroAction(unittest.TestCase):
@@ -833,10 +860,27 @@ class TestDashboardConfigRoundtrip(unittest.TestCase):
     def test_write_echo_roundtrip(self):
         from core.dashboard.data import read_config, write_config
 
-        result = write_config(self.tmpdir, {"code_review": {"enabled": True, "max_files": 200}})
+        result = write_config(
+            self.tmpdir,
+            {
+                "code_review": {
+                    "enabled": True,
+                    "max_files": 200,
+                    "stall_alert_minutes": 30,
+                }
+            },
+        )
         self.assertTrue(result["ok"], result)
         echoed = read_config(self.tmpdir)
-        self.assertEqual(echoed["code_review"], {"enabled": True, "max_files": 200, "scope": "window"})
+        self.assertEqual(
+            echoed["code_review"],
+            {
+                "enabled": True,
+                "max_files": 200,
+                "scope": "window",
+                "stall_alert_minutes": 30,
+            },
+        )
         # 与 self_review 同形态：code_review 不在受管 admin 键集内
         self.assertNotIn("code_review", echoed["admin"])
         self.assertEqual(echoed["sources"].get("admin.code_review"), "project")
@@ -850,12 +894,27 @@ class TestDashboardConfigRoundtrip(unittest.TestCase):
         self.assertFalse(r2["ok"])
         r3 = write_config(self.tmpdir, {"code_review": {"max_files": -3}})
         self.assertFalse(r3["ok"])
+        # add-code-review-sharded-out：停滞告警阈值非法直接拒绝
+        r4 = write_config(self.tmpdir, {"code_review": {"stall_alert_minutes": 0}})
+        self.assertFalse(r4["ok"])
+        r5 = write_config(self.tmpdir, {"code_review": {"stall_alert_minutes": -5}})
+        self.assertFalse(r5["ok"])
+        r6 = write_config(self.tmpdir, {"code_review": {"stall_alert_minutes": "abc"}})
+        self.assertFalse(r6["ok"])
 
     def test_default_echo_no_admin_section(self):
         from core.dashboard.data import read_config
 
         echoed = read_config(self.tmpdir)
-        self.assertEqual(echoed["code_review"], {"enabled": False, "max_files": 500, "scope": "window"})
+        self.assertEqual(
+            echoed["code_review"],
+            {
+                "enabled": False,
+                "max_files": 500,
+                "scope": "window",
+                "stall_alert_minutes": 15,
+            },
+        )
         self.assertEqual(echoed["sources"].get("admin.code_review"), "user")
 
 
@@ -1064,43 +1123,60 @@ class TestManifestScope(unittest.TestCase):
 
 
 class TestRepoCodeReviewArtifactGate(unittest.TestCase):
-    """code-review 产物硬门（2026-09-19 原地修复）。
+    """code-review 产物硬门（2026-09-19 原地修复；聚合口径
+    add-code-review-sharded-out 2.2）。
 
     事故背景：`run_code_review` 此前全链无任何产物门——run exit 0 但 agent
     从未写 out-<run_id>.jsonl，`_read_code_review_out` 对缺失文件返回空列表，
-    落账 inserted=0 后仍 success=True：空跑被当成功。
+    落账 inserted=0 后仍 success=True：空跑被当成功。分片直写模式下升级为
+    聚合口径：主产物与分片合计 ≥1 有效行即放行，合计零有效行判失败。
     """
 
     def setUp(self):
-        self.dir = Path(_mkdtemp("cr-gate-"))
-        self.out = self.dir / "out-code-review-1.jsonl"
+        self.proot = Path(_mkdtemp("cr-gate-"))
+        self.crdir = self.proot / ".fenix" / "code-review"
+        self.crdir.mkdir(parents=True)
+        self.run_id = "code-review-1"
+        self.out = self.crdir / f"out-{self.run_id}.jsonl"
+
+    def tearDown(self):
+        import shutil
+
+        shutil.rmtree(str(self.proot), ignore_errors=True)
 
     def _gate(self, manifest):
         from core.agent_runner.result_gate import _check_repo_code_review_artifact
 
-        return _check_repo_code_review_artifact(manifest, self.out)
+        return _check_repo_code_review_artifact(manifest, self.proot, self.run_id)
+
+    def _shard(self, n, rows):
+        p = self.crdir / f"out-{self.run_id}-b{n}.jsonl"
+        p.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+        return p
 
     def test_empty_manifest_passes(self):
         # 空 manifest 调用方已前置跳过，此处不重复判定（避免误伤）
         self.assertIsNone(self._gate([]))
 
-    def test_missing_file_fails(self):
+    def test_all_sources_missing_fails(self):
         err = self._gate(["core/a.py"])
         self.assertIsNotNone(err)
-        self.assertIn("产物缺失", err)
+        self.assertIn("零有效行", err)
+        self.assertIn(self.run_id, err)  # error 点名 run_id
+        self.assertIn("分片", err)  # 聚合口径描述
 
-    def test_empty_file_fails(self):
+    def test_empty_main_file_fails(self):
         self.out.write_text("")
         err = self._gate(["core/a.py"])
         self.assertIsNotNone(err)
-        self.assertIn("产物为空", err)
+        self.assertIn("零有效行", err)
 
     def test_garbage_lines_fail(self):
         # 防「写满垃圾行骗过门禁」：有效行判据不是裸行数
         self.out.write_text("not json\n\n{}\n")
         err = self._gate(["core/a.py"])
         self.assertIsNotNone(err)
-        self.assertIn("产物为空", err)
+        self.assertIn("零有效行", err)
 
     def test_no_findings_list_fails(self):
         # findings 非列表的行不算「该文件审完了」的登记形态
@@ -1123,6 +1199,371 @@ class TestRepoCodeReviewArtifactGate(unittest.TestCase):
         )
         self.assertIsNone(self._gate(["core/a.py", "core/b.py"]))
 
+    def test_shard_only_passes(self):
+        # 仅分片有行（主产物缺失）→ 放行（add-code-review-sharded-out 场景）
+        self._shard(1, [{"file": "core/a.py", "findings": []}])
+        self._shard(2, [{"file": "core/b.py", "findings": []}])
+        self.assertIsNone(self._gate(["core/a.py", "core/b.py"]))
+
+    def test_shard_garbage_only_fails(self):
+        # 分片存在但全垃圾行 → 合计仍零有效行，判失败
+        (self.crdir / f"out-{self.run_id}-b1.jsonl").write_text(
+            "not json\n\n", encoding="utf-8"
+        )
+        err = self._gate(["core/a.py"])
+        self.assertIsNotNone(err)
+        self.assertIn("零有效行", err)
+
+    def test_shard_and_main_mixed_pass(self):
+        self._shard(1, [{"file": "core/a.py", "findings": []}])
+        self.out.write_text(json.dumps({"file": "core/b.py", "findings": []}) + "\n")
+        self.assertIsNone(self._gate(["core/a.py", "core/b.py"]))
+
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ── add-code-review-sharded-out：分片发现 / 聚合读取 / 停滞检测 ──────
+
+
+class TestShardPaths(unittest.TestCase):
+    """shard_paths：glob out-<run_id>-b*.jsonl 按 N 数值升序；非正整数 N、
+    目录、他 run 分片 MUST NOT 被消费（add-code-review-sharded-out 1.1/D1）。"""
+
+    def setUp(self):
+        self.proot = Path(_mkdtemp("cr-shard-"))
+        self.crdir = self.proot / ".fenix" / "code-review"
+        self.crdir.mkdir(parents=True)
+        self.run_id = "code-review-1790182831"
+
+    def tearDown(self):
+        import shutil
+
+        shutil.rmtree(str(self.proot), ignore_errors=True)
+
+    def _write(self, name):
+        p = self.crdir / name
+        p.write_text("", encoding="utf-8")
+        return p
+
+    def test_numeric_ascending_not_lexicographic(self):
+        # 故意乱序创建：字典序 b10 < b2，数值升序应为 b1 < b2 < b10
+        self._write(f"out-{self.run_id}-b10.jsonl")
+        self._write(f"out-{self.run_id}-b2.jsonl")
+        self._write(f"out-{self.run_id}-b1.jsonl")
+        from core.code_review import shard_paths
+
+        names = [p.name for p in shard_paths(self.proot, self.run_id)]
+        self.assertEqual(
+            names,
+            [
+                f"out-{self.run_id}-b1.jsonl",
+                f"out-{self.run_id}-b2.jsonl",
+                f"out-{self.run_id}-b10.jsonl",
+            ],
+        )
+
+    def test_ignores_non_numeric_and_non_positive_and_dirs(self):
+        self._write(f"out-{self.run_id}-babc.jsonl")
+        self._write(f"out-{self.run_id}-b0.jsonl")
+        self._write(f"out-{self.run_id}.jsonl")
+        self._write(f"out-{self.run_id}-b1.txt")
+        (self.crdir / f"out-{self.run_id}-b3.jsonl").mkdir()
+        from core.code_review import shard_paths
+
+        self.assertEqual([p.name for p in shard_paths(self.proot, self.run_id)], [])
+
+    def test_other_run_shards_not_matched(self):
+        self._write("out-code-review-999-b1.jsonl")
+        from core.code_review import shard_paths
+
+        self.assertEqual(shard_paths(self.proot, self.run_id), [])
+
+    def test_missing_dir_returns_empty(self):
+        from core.code_review import shard_paths
+
+        self.assertEqual(shard_paths(self.proot / "nope", "code-review-1"), [])
+
+
+class TestReadReviewOutRows(unittest.TestCase):
+    """聚合读取（add-code-review-sharded-out 1.1/D2）：迭代顺序分片 N 升序
+    →主产物、空行/坏行过滤、按 file 去重保留先见行、主产物缺失分片兜底。"""
+
+    def setUp(self):
+        self.proot = Path(_mkdtemp("cr-rows-"))
+        self.crdir = self.proot / ".fenix" / "code-review"
+        self.crdir.mkdir(parents=True)
+        self.run_id = "code-review-1"
+
+    def tearDown(self):
+        import shutil
+
+        shutil.rmtree(str(self.proot), ignore_errors=True)
+
+    def _shard(self, n, rows):
+        (self.crdir / f"out-{self.run_id}-b{n}.jsonl").write_text(
+            "".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8"
+        )
+
+    def _main(self, rows):
+        (self.crdir / f"out-{self.run_id}.jsonl").write_text(
+            "".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8"
+        )
+
+    def test_order_shards_then_main_and_dedup_first_seen(self):
+        self._main([{"file": "a.py"}, {"file": "d.py"}])
+        self._shard(2, [{"file": "c.py"}])
+        self._shard(1, [{"file": "b.py"}, {"file": "a.py"}])  # a.py 与主产物重复
+        from core.code_review import read_review_out_rows
+
+        rows = read_review_out_rows(self.proot, self.run_id)
+        self.assertEqual([r["file"] for r in rows], ["b.py", "a.py", "c.py", "d.py"])
+
+    def test_filters_blank_and_bad_lines(self):
+        (self.crdir / f"out-{self.run_id}-b1.jsonl").write_text(
+            "\nnot json\n[1,2]\n{\"no_file\": 1}\n" + json.dumps({"file": "a.py"}) + "\n",
+            encoding="utf-8",
+        )
+        from core.code_review import read_review_out_rows
+
+        rows = read_review_out_rows(self.proot, self.run_id)
+        self.assertEqual([r["file"] for r in rows], ["a.py"])
+
+    def test_main_missing_shard_fallback(self):
+        self._shard(1, [{"file": "a.py"}])
+        self._shard(2, [{"file": "b.py"}])
+        from core.code_review import read_review_out_rows
+
+        rows = read_review_out_rows(self.proot, self.run_id)
+        self.assertEqual([r["file"] for r in rows], ["a.py", "b.py"])
+
+    def test_all_missing_returns_empty(self):
+        from core.code_review import read_review_out_rows
+
+        self.assertEqual(read_review_out_rows(self.proot, self.run_id), [])
+
+
+class TestReadProgressAggregated(unittest.TestCase):
+    """read_progress 聚合口径（add-code-review-sharded-out 1.2）：
+    分片 17+9 → done=26 running=true；主产物缺失不归零；重复行不虚增；
+    响应字段形状与旧版一致。"""
+
+    def _mk(self, run_id, total, main_rows, shard_rows_by_n):
+        proot = Path(_mkdtemp("cr-prog-agg-"))
+        cr = proot / ".fenix" / "code-review"
+        cr.mkdir(parents=True)
+        (cr / f"manifest-{run_id}.json").write_text(
+            json.dumps(
+                {
+                    "files": [f"core/f{i}.py" for i in range(total)],
+                    "review_kind": "manual_full",
+                }
+            ),
+            encoding="utf-8",
+        )
+        if main_rows is not None:
+            (cr / f"out-{run_id}.jsonl").write_text(
+                "".join(json.dumps(r) + "\n" for r in main_rows), encoding="utf-8"
+            )
+        for n, rows in shard_rows_by_n.items():
+            (cr / f"out-{run_id}-b{n}.jsonl").write_text(
+                "".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8"
+            )
+        runs = proot / ".fenix" / "runs"
+        runs.mkdir(parents=True)
+        (runs / f"{run_id}.jsonl").write_text(
+            json.dumps({"type": "system", "message": "start"}) + "\n", encoding="utf-8"
+        )
+        return proot
+
+    def tearDown(self):
+        import shutil
+
+        shutil.rmtree(str(self._proot), ignore_errors=True)
+
+    def test_shards_aggregate_and_running(self):
+        run_id = "code-review-1790182831"
+        shard1 = [{"file": f"core/f{i}.py"} for i in range(17)]
+        shard2 = [{"file": f"core/f{i}.py"} for i in range(17, 26)]
+        self._proot = self._mk(run_id, 40, None, {1: shard1, 2: shard2})
+        from core.code_review import read_progress
+
+        p = read_progress(self._proot)
+        self.assertTrue(p["running"])
+        self.assertEqual(p["review_id"], run_id)
+        self.assertEqual(p["total"], 40)
+        self.assertEqual(p["done"], 26)
+        # current 取 mtime 最晚来源（b2）末行的被审文件
+        self.assertEqual(p["current"], "core/f25.py")
+        # 响应字段形状与旧版一致
+        self.assertEqual(
+            set(p.keys()),
+            {"running", "review_id", "review_kind", "total", "done", "current"},
+        )
+
+    def test_main_missing_done_not_zeroed(self):
+        shard1 = [{"file": f"core/f{i}.py"} for i in range(26)]
+        self._proot = self._mk("code-review-1790182832", 40, None, {1: shard1})
+        from core.code_review import read_progress
+
+        p = read_progress(self._proot)
+        self.assertEqual(p["done"], 26)
+
+    def test_duplicate_files_counted_once_shard_first(self):
+        # 分片 b1 落 a.py；主产物重复写 a.py + 新增 b.py → done=2 不是 3
+        self._proot = self._mk(
+            "code-review-1790182833",
+            5,
+            [{"file": "a.py"}, {"file": "b.py"}],
+            {1: [{"file": "a.py"}]},
+        )
+        from core.code_review import read_progress
+
+        p = read_progress(self._proot)
+        self.assertEqual(p["done"], 2)
+
+
+class TestIngestAggregated(unittest.TestCase):
+    """收尾 ingest 聚合读侧（add-code-review-sharded-out 2.1）：分片行落账、
+    同 file 去重保留分片先见行。"""
+
+    def setUp(self):
+        self.proot = Path(_mkdtemp("cr-ingest-"))
+        self.crdir = self.proot / ".fenix" / "code-review"
+        self.crdir.mkdir(parents=True)
+        self.run_id = "code-review-1"
+
+    def tearDown(self):
+        import shutil
+
+        shutil.rmtree(str(self.proot), ignore_errors=True)
+
+    @staticmethod
+    def _runner():
+        class _R:
+            logger = None
+
+        return _R()
+
+    def test_findings_from_shards_only(self):
+        (self.crdir / f"out-{self.run_id}-b1.jsonl").write_text(
+            json.dumps(
+                {"file": "a.py", "findings": [{"title": "t1", "category": "c"}]}
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        from core.agent_runner.maintenance_runs import _read_code_review_out
+
+        out = _read_code_review_out(self._runner(), self.proot, self.run_id)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["file"], "a.py")
+        self.assertEqual(out[0]["title"], "t1")
+
+    def test_dedup_shard_first(self):
+        # 同 file 分片与主产物都有行 → 只保留分片（先见）的 findings
+        (self.crdir / f"out-{self.run_id}-b1.jsonl").write_text(
+            json.dumps({"file": "a.py", "findings": [{"title": "from-shard"}]}) + "\n",
+            encoding="utf-8",
+        )
+        (self.crdir / f"out-{self.run_id}.jsonl").write_text(
+            json.dumps({"file": "a.py", "findings": [{"title": "from-main"}]}) + "\n",
+            encoding="utf-8",
+        )
+        from core.agent_runner.maintenance_runs import _read_code_review_out
+
+        out = _read_code_review_out(self._runner(), self.proot, self.run_id)
+        self.assertEqual([f["title"] for f in out], ["from-shard"])
+
+
+class TestCheckProgressStall(unittest.TestCase):
+    """事中零进度停滞检测（add-code-review-sharded-out 1.3/D4）。"""
+
+    def _mk(self, run_id, requested_min_ago, done=0, run_terminal=None,
+            stall_alert_minutes=None):
+        from datetime import datetime, timedelta, timezone
+
+        proot = Path(_mkdtemp("cr-stall-"))
+        cr = proot / ".fenix" / "code-review"
+        cr.mkdir(parents=True)
+        requested_at = datetime.now(timezone.utc) - timedelta(minutes=requested_min_ago)
+        (cr / f"manifest-{run_id}.json").write_text(
+            json.dumps(
+                {
+                    "files": [f"core/f{i}.py" for i in range(30)],
+                    "review_kind": "manual_full",
+                    "requested_at": requested_at.isoformat(),
+                }
+            ),
+            encoding="utf-8",
+        )
+        if done:
+            (cr / f"out-{run_id}.jsonl").write_text(
+                "".join(
+                    json.dumps({"file": f"core/f{i}.py"}) + "\n" for i in range(done)
+                ),
+                encoding="utf-8",
+            )
+        runs = proot / ".fenix" / "runs"
+        runs.mkdir(parents=True)
+        (runs / f"{run_id}.jsonl").write_text(
+            json.dumps({"type": run_terminal or "system", "message": "start"}) + "\n",
+            encoding="utf-8",
+        )
+        if stall_alert_minutes is not None:
+            (proot / ".fenix" / "config.yaml").write_text(
+                "project:\n  name: t\n  type: cli\n"
+                "admin:\n  code_review:\n"
+                f"    stall_alert_minutes: {stall_alert_minutes}\n",
+                encoding="utf-8",
+            )
+        return proot
+
+    def tearDown(self):
+        import shutil
+
+        shutil.rmtree(str(self._proot), ignore_errors=True)
+
+    def test_zero_progress_over_threshold_returns_hit(self):
+        from core.code_review import check_progress_stall
+
+        self._proot = self._mk("code-review-1790182831", 16)
+        hit = check_progress_stall(self._proot)
+        self.assertIsNotNone(hit)
+        self.assertEqual(hit["run_id"], "code-review-1790182831")
+        self.assertGreaterEqual(hit["minutes"], 15)
+
+    def test_normal_progress_returns_none(self):
+        from core.code_review import check_progress_stall
+
+        self._proot = self._mk("code-review-1790182832", 16, done=30)
+        self.assertIsNone(check_progress_stall(self._proot))
+
+    def test_terminal_run_short_circuit(self):
+        # run 终态 → running=false 短路，超时也不再触发
+        from core.code_review import check_progress_stall
+
+        self._proot = self._mk("code-review-1790182833", 60, run_terminal="result")
+        self.assertIsNone(check_progress_stall(self._proot))
+
+    def test_under_threshold_returns_none(self):
+        from core.code_review import check_progress_stall
+
+        self._proot = self._mk("code-review-1790182834", 5)
+        self.assertIsNone(check_progress_stall(self._proot))
+
+    def test_illegal_threshold_falls_back_default(self):
+        # stall_alert_minutes=-5（非法）→ 回退 15：16 分钟零进度仍触发
+        from core.code_review import check_progress_stall
+
+        self._proot = self._mk("code-review-1790182835", 16, stall_alert_minutes=-5)
+        hit = check_progress_stall(self._proot)
+        self.assertIsNotNone(hit)
+
+    def test_explicit_threshold_respected(self):
+        # stall_alert_minutes=30 → 16 分钟零进度不触发
+        from core.code_review import check_progress_stall
+
+        self._proot = self._mk("code-review-1790182836", 16, stall_alert_minutes=30)
+        self.assertIsNone(check_progress_stall(self._proot))

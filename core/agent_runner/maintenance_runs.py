@@ -948,7 +948,7 @@ def run_code_review(
     # SpecReviewManager.dispatch_review 有 _check_agent_result_artifact 硬门。
     # 判据与归因文案见 core/agent_runner/result_gate.py 的同名门函数。
     if run_ok:
-        gate_err = _check_repo_code_review_artifact(manifest, opath)
+        gate_err = _check_repo_code_review_artifact(manifest, runner.project_root, run_id)
         if gate_err is not None:
             run_ok = False
             error = gate_err
@@ -959,11 +959,16 @@ def run_code_review(
                     f"产物硬门拦截: run={run_id} manifest={len(manifest)} — {gate_err}",
                 )
 
-    # 读取增量产物并落账（产物缺失/解析失败 → success=False 带原因）
+    # 读取增量产物并落账（聚合口径：分片 + 主产物，add-code-review-sharded-out
+    # 2.1；产物全缺失/解析失败 → success=False 带原因）
     inserted = updated = resolved = 0
+    shards = 0
     if run_ok:
         try:
-            findings = runner._read_code_review_out(opath)
+            from core.code_review import shard_paths as _cr_shard_paths
+
+            shards = len(_cr_shard_paths(runner.project_root, run_id))
+            findings = runner._read_code_review_out(runner.project_root, run_id)
         except OSError as e:
             run_ok = False
             error = f"读取审查产物失败: {e}"
@@ -1051,6 +1056,7 @@ def run_code_review(
         resolved=resolved,
         error=error,
         output=output,
+        shards=shards,
     )
 
 
@@ -1103,29 +1109,36 @@ def _unique_code_review_run_id(runner) -> str:
         return candidate
 
 
-def _read_code_review_out(runner, opath: Path) -> list:
-    """读取审查增量产物 ``out-<run_id>.jsonl``。
+def _read_code_review_out(runner, project_root, run_id: str) -> list:
+    """读取审查增量产物（聚合口径：分片 + 主产物，add-code-review-sharded-out 2.1）。
 
-    每行为一个文件的审查结果 JSON（file/findings[]）。非 dict 行忽略；
-    损坏行跳过；文件缺失返回空列表（run 失败路径已由 success=False 兜底）。
+    迭代顺序与去重统一经 ``code_review.read_review_out_rows``：分片
+    （``shard_paths`` N 升序）→ 主产物 ``out-<run_id>.jsonl``，按 ``file``
+    去重保留先见行；空行/不可解析行/非 dict 行过滤。单分片读取失败跳过
+    该分片（经 logger WARNING 注明，不中断整轮——收尾 ingest 不得因单个
+    分片损坏丢掉其余分片数据）；文件缺失返回空列表（run 失败路径已由
+    success=False 兜底）。
+
+    每行为一个文件的审查结果 JSON（file/findings[]），展开为逐 finding 的
+    归一 dict（file 取文件行 + finding 层可覆盖）。
 
     ``runner`` 首参为门面注册表契约（self 首参模块函数）预留：本函数体
-    不读 runner 状态，但经 ``runner._read_code_review_out(...)`` 转发时
+    只读 project_root/run_id，但经 ``runner._read_code_review_out(...)`` 转发时
     partial 会注入 runner 首参（code-review item 0c9577c146d9）。
     """
+    from core.code_review import read_review_out_rows
+
+    _log = getattr(runner, "logger", None)
+
+    def _on_error(src: Path, exc: Exception) -> None:
+        if _log is not None:
+            _log.warning(
+                "code-review",
+                f"分片读取失败跳过（run {run_id}）: {src.name} ({exc})",
+            )
+
     out: list = []
-    if not opath.is_file():
-        return out
-    for lineno, line in enumerate(opath.read_text(encoding="utf-8", errors="replace").splitlines(), start=1):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            rec = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(rec, dict):
-            continue
+    for rec in read_review_out_rows(project_root, run_id, on_error=_on_error):
         file_ = str(rec.get("file") or "")
         findings = rec.get("findings")
         if not isinstance(findings, list):
