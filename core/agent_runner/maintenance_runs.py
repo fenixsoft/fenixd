@@ -1513,6 +1513,18 @@ def _read_ocr_exclude_patterns(project_root) -> list:
     ]
 
 
+# ocr 审查背景注入（09-23 忽略标记方案）：代码中 `[fenix-ignore:<item_id>]`
+# 注释 = 先前审查已裁决「误报/不值得修」的位置。经 ocr --background 通道告知
+# 审查 LLM 该约定（ocr 提示词属外部工具不可改）；无标记时本段对审查无作用。
+# 写侧（code-fix agent 打标记）见 agents/code-fix.md「忽略标记」节。
+OCR_IGNORE_MARKER_BACKGROUND = (
+    "忽略标记约定：代码中形如 `[fenix-ignore:<item_id>] <理由>` 的注释表示该"
+    "问题已被先前审查裁决为「误报/不值得修」并说明了理由。你复核某处代码时，"
+    "若拟上报的问题与就近标记注释的理由一致，MUST NOT 再上报该问题；仅当代码"
+    "演进已使标记理由失效（前提不再成立）时才正常上报。"
+)
+
+
 def _normalize_impl_ocr_findings(comments) -> list:
     """ocr 原始报告 comments → 车道产物 findings（宽松解析，design D7）。
 
@@ -1927,6 +1939,9 @@ def run_impl_ocr(
             exclude_patterns = _read_ocr_exclude_patterns(runner.project_root)
             if exclude_patterns:
                 cmd += ["--exclude", ",".join(exclude_patterns)]
+            # 忽略标记约定（09-23）：常驻注入，告知审查 LLM [fenix-ignore:*]
+            # 注释的语义——先前裁决过的位置不再重报。
+            cmd += ["--background", OCR_IGNORE_MARKER_BACKGROUND]
             # ── 运行中心跳（fix-ocr-lane-orphaned-state-misfire 1.1）：子进程
             # 运行期唯一启跳（elapsed 自子进程启动起计）；返回/超时先停跳再
             # 走分类收尾，终态事件保持末行后置（1.2 顺序约束）。──

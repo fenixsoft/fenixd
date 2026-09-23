@@ -308,6 +308,15 @@ class TestRunImplOcrLane:
             "core/dashboard/static/*.yml,**/.playwright-cli/**"
         )
 
+    def test_ignore_marker_background_always_injected(self, tmp_path):
+        """忽略标记约定常驻经 ocr --background 注入（09-23，不依赖排除文件）。"""
+        repo = _init_repo_with_fake_ocr(tmp_path)
+        _run_lane(repo)
+        raw_argv = _artifact_path(repo).with_name("code-review-raw.json.argv.json")
+        argv = json.loads(raw_argv.read_text(encoding="utf-8"))
+        assert "--background" in argv
+        assert "[fenix-ignore:" in argv[argv.index("--background") + 1]
+
     def test_exclude_file_comment_only_zero_injection(self, tmp_path):
         """排除文件缺失/只有注释 → 命令零注入（无 --exclude，逐字节同现状）。"""
         repo = _init_repo_with_fake_ocr(tmp_path)
