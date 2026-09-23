@@ -286,7 +286,11 @@ def record_project_event(
     try:
         logs_dir.mkdir(parents=True, exist_ok=True)
         entry = {
-            "timestamp": datetime.now(timezone.utc).isoformat() + "Z",
+            # 全库时间戳统一 ``...Z`` 后缀（code-review item 7dc23d5ac2a6）：
+            # isoformat() 自带 +00:00，再拼 "Z" 是非法 ISO-8601（+00:00Z），
+            # 与 daemon（core/logger.py 的 .replace 同款写法）混排同秒内字典序
+            # 错序、前端 Invalid Date。
+            "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "level": level,
             "component": component,
             "message": message,

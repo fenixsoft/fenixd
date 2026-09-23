@@ -181,7 +181,7 @@ class PromptBuilder:
     def _fill_placeholders(
         self, template: str, agent_type: str, spec_name: str, detail: dict | None
     ) -> str:
-        """占位符填充：逐键 str.replace（正文含大量 {} JSON 示例，禁用 str.format）。
+        """占位符填充：单趟多模式替换（正文含大量 {} JSON 示例，禁用 str.format）。
 
         progress_path 语义按 agent 现行为保持：verifier 写
         verify-progress/<spec>.json；fast-track 写 verify-progress/<spec>/<spec>.json。
@@ -244,15 +244,22 @@ class PromptBuilder:
                 "{description}": _str_field(sig.get("description")),
                 "{evidence}": _str_field(sig.get("evidence")),
                 "{recommendation}": _str_field(sig.get("recommended_action")),
-                "{disp_path}": str(
-                    sig.get("disposition_path") or (root / ".fenix" / "admin_disposition.json")
-                ),
+                # 旧全局路径 .fenix/admin_disposition.json 已废弃不再读写
+                # （maintenance_runs.py），无 disposition_path 时留空——兜底指向
+                # 废弃位置会把管理员导向永不被告知读取的写入点。
+                "{disp_path}": _str_field(sig.get("disposition_path")),
                 "{dash_script}": f"{root}/.fenix/bin/fenix_dashboard.py",
             }
         )
-        out = template
-        for key, val in values.items():
-            out = out.replace(key, val)
+        # 一次性多模式替换（code-review item 7975ab14dbe7）：逐键 str.replace 会把
+        # 上一轮结果作为下一键的替换对象——注入值（信号 evidence 常嵌入 run 产物
+        # 路径与提示词片段）本身含 {result_path} 等占位符字面量时被后续键二次
+        # 替换、污染注入内容。re.sub 单趟扫描永不重扫替换文本，杜绝二次替换。
+        if values:
+            _values_re = re.compile("|".join(re.escape(k) for k in values))
+            out = _values_re.sub(lambda m: values[m.group(0)], template)
+        else:
+            out = template
         # 廉价后置检查（add-code-review-auto-fix）：存在未解析占位符记 warning，
         # 不阻断派发（fail-open），但让模板漂移导致的注入静默丢失在日志可见。
         leftover = sorted(set(_PLACEHOLDER_RE.findall(out)) - set(values))

@@ -470,8 +470,15 @@ def _scenario_has_substantive_evidence(scenario: dict) -> bool:
 
     实质性证据 = 非空截图列表 / 有算法标签 / 有 first_failed_step /
     有 failed_assertions / 有 first_frame_ok 结构化字段。
+
+    evidence 形状防御（code-review item 803f6a23f662）：judge 产出非 dict
+    （非空字符串等 truthy 形态）时按空 evidence 处理、保守降级 speculative
+    路径，MUST NOT 抛 AttributeError——异常会被 escalation 门禁的
+    「异常不阻断」分支吞掉，本应被抑制的 speculative 打回信号就此放行。
     """
-    evidence = scenario.get("evidence") or {}
+    evidence = scenario.get("evidence")
+    if not isinstance(evidence, dict):
+        evidence = {}
     screenshots = evidence.get("screenshots") or scenario.get("screenshots") or []
     if isinstance(screenshots, list) and any(isinstance(s, str) and s.strip() for s in screenshots):
         return True
@@ -564,8 +571,13 @@ def compute_attribution_level(scenario: dict) -> str:
         return ATTRIBUTION_LEVEL_EVIDENCE_BACKED
 
     # 有真实截图 + 有失败断言归因 → evidence-backed（视觉断言有截图佐证）
+    # evidence 非 dict 按空处理（code-review item 803f6a23f662，与
+    # _scenario_has_substantive_evidence 同款防御：非 dict 真值 .get 抛
+    # AttributeError 会被门禁「异常不阻断」吞掉而旁路归因分级）。
     screenshots = scenario.get("screenshots") or []
-    evidence = scenario.get("evidence") or {}
+    evidence = scenario.get("evidence")
+    if not isinstance(evidence, dict):
+        evidence = {}
     ev_screenshots = evidence.get("screenshots") or []
     has_real_screenshots = (
         isinstance(screenshots, list) and any(isinstance(s, str) and s.strip() for s in screenshots)

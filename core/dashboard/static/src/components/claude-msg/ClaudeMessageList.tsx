@@ -88,7 +88,6 @@ function ClaudeMessageList({ messages, showThinking = false }: ClaudeMessageList
                 <ToolGroupContainer
                   key={`tool-group-${getMessageKey(first)}`}
                   group={item}
-                  prevMessage={null}
                   getMessageKey={getMessageKey}
                   showThinking={showThinking}
                 />

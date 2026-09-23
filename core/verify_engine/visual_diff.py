@@ -59,6 +59,10 @@ class VisualDiffer:
 
     # 污染基线告警阈值（连续 ≥3 轮 diff_detected 且 DOM 全过）
     SUSPICIOUS_STREAK_THRESHOLD = 3
+    # 侧车 ssims 滑动窗口上限（阈值 ×2）：长期 diff_detected（恰是本机制要
+    # 侦测的污染场景）下逐轮 append 无上界，侧车 JSON 随时间无界增长——
+    # 只保留最近窗口条目，告警证据可读性不受影响。
+    SSIMS_WINDOW_LIMIT = SUSPICIOUS_STREAK_THRESHOLD * 2
 
     def __init__(
         self, spec_name: str, project_root: Path, config: Optional[dict] = None, logger=None
@@ -425,9 +429,13 @@ class VisualDiffer:
                     entry = {"count": 0, "suspicious": False, "ssims": []}
                 entry["count"] = int(entry.get("count", 0)) + 1
                 ssim = result.get("ssim")
-                entry.setdefault("ssims", []).append(
+                ssim_list = entry.setdefault("ssims", [])
+                ssim_list.append(
                     round(float(ssim), 4) if isinstance(ssim, (int, float)) else None
                 )
+                # 滑动窗口截断（code-review item 76391cfd1e3c）：持续
+                # diff_detected 下 ssims 逐轮追加无上界，防侧车文件无界增长
+                del ssim_list[: max(0, len(ssim_list) - self.SSIMS_WINDOW_LIMIT)]
                 newly_suspicious = entry[
                     "count"
                 ] >= self.SUSPICIOUS_STREAK_THRESHOLD and not entry.get("suspicious")

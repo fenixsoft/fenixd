@@ -1814,28 +1814,19 @@ class FenixDaemon:
         """主循环每轮扫描 run 取消的文件信号并消费（不投 worker 池）。
 
         dashboard 写入 .fenix/cancel_run_request.json（含 run_id/reason/source/
-        created）；本方法在主循环（1s 粒度）中检测其存在：读取→删除→校验
+        created）；本方法在主循环（1s 粒度）中检测其存在：原子消费→校验
         run_id 非空→调 agent_runner.cancel_run(run_id, reason, by=source)。
         与 _check_admin_invoke_requests 同构：损坏 JSON 删除防卡死；删除失败
         下轮再试。
+
+        消费走 _consume_request_file 原子模式（code-review item
+        69fdd0ab526e）：先 rename 占位再读，消灭「先读后删」窗口内 dashboard
+        重写新请求被 unlink 一并误删而从未被处理的丢请求形态（与 admin_invoke /
+        approve_push / code_review / regression 四条已迁移车道同口径）。
         """
         req_path = PROJECT_ROOT / ".fenix" / "cancel_run_request.json"
-        if not req_path.exists():
-            return
-        try:
-            with req_path.open("r", encoding="utf-8") as f:
-                payload = json.load(f)
-        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
-            # 损坏的信号文件：删除避免每轮报错卡死
-            try:
-                req_path.unlink()
-            except OSError:
-                pass
-            return
-        # 先读后删：删除失败（被并发消费）则本次跳过，下一轮再试
-        try:
-            req_path.unlink()
-        except OSError:
+        payload = self._consume_request_file(req_path)
+        if payload is None:
             return
 
         run_id = payload.get("run_id")
@@ -2124,7 +2115,7 @@ class FenixDaemon:
 
         dashboard 的 /api/spec-delete 在检测到在跑 agent 时原子写入
         .fenix/spec_delete_request.json（含 spec/source/created/stopping）；
-        本方法在主循环（1s 粒度）中检测其存在：读取→删除→枚举该 spec 在跑
+        本方法在主循环（1s 粒度）中检测其存在：原子消费→枚举该 spec 在跑
         run→逐个 cancel_run 停止→有界等待终态→调 soft_delete_spec 完成删除。
         与 _check_cancel_requests / _check_approve_push_requests 同构：
         损坏 JSON 删除防卡死；删除失败（先读后删被并发消费）下轮再试。
@@ -2137,24 +2128,15 @@ class FenixDaemon:
         软删除以注入停止回调调 ``soft_delete_spec(stop_callback=...)`` 完成
         ——回调内已对全部在跑 run 发 cancel_run；等待融入 soft_delete_spec
         的既有有界窗口，删除内部完成「全部终止 → 移目录 → 剔 STATE」。
+
+        消费走 _consume_request_file 原子模式（code-review item
+        69fdd0ab526e）：先 rename 占位再读，消灭「先读后删」窗口内 dashboard
+        重写新请求被 unlink 一并误删而从未被处理的丢请求形态（与 admin_invoke /
+        approve_push / code_review / regression 四条已迁移车道同口径）。
         """
         req_path = PROJECT_ROOT / ".fenix" / "spec_delete_request.json"
-        if not req_path.exists():
-            return
-        try:
-            with req_path.open("r", encoding="utf-8") as f:
-                payload = json.load(f)
-        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
-            # 损坏的信号文件：删除避免每轮报错卡死
-            try:
-                req_path.unlink()
-            except OSError:
-                pass
-            return
-        # 先读后删：删除失败（被并发消费）则本次跳过，下一轮再试
-        try:
-            req_path.unlink()
-        except OSError:
+        payload = self._consume_request_file(req_path)
+        if payload is None:
             return
 
         spec = payload.get("spec")
@@ -2588,7 +2570,7 @@ class FenixDaemon:
 
         dashboard 的 POST /api/code-review/fix-run 原子写入
         ``.fenix/code_fix_request.json``（含 source、created）；本方法在主循环
-        （1s 粒度）中检测其存在：读取 → 删除 → 经
+        （1s 粒度）中检测其存在：原子消费 → 经
         ``getattr(agent_runner, "_code_fix_orchestrator", None)`` 取编排器 →
         以 ``override_enabled=True``（手动即临时授权：绕过 enabled 总开关，
         单飞/无 open 条目/失败保留/回归契约 fail-closed 守卫原样）调
@@ -2596,27 +2578,18 @@ class FenixDaemon:
         ``.fenix/code_fix_request_result.json``（``{request_created, triggered,
         reason, message, finished_at}``，``request_created`` 回链信号 created）。
 
-        对齐 _check_code_review_requests：信号先读后删（读/删失败跳过本轮，
-        损坏 JSON 删除防卡死，异常不复活信号）；编排器未装配不静默（落
+        对齐 _check_code_review_requests：编排器未装配不静默（落
         orchestrator_missing 结果）；checkpoint 抛异常落 dispatch_exception
         结果而非静默丢信号。
+
+        消费走 _consume_request_file 原子模式（code-review item
+        69fdd0ab526e）：先 rename 占位再读，消灭「先读后删」窗口内 dashboard
+        重写新请求被 unlink 一并误删而从未被处理的丢请求形态（与 admin_invoke /
+        approve_push / code_review / regression 四条已迁移车道同口径）。
         """
         req_path = PROJECT_ROOT / ".fenix" / "code_fix_request.json"
-        if not req_path.exists():
-            return
-        try:
-            with req_path.open("r", encoding="utf-8") as f:
-                payload = json.load(f)
-        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
-            try:
-                req_path.unlink()
-            except OSError:
-                pass
-            return
-        # 先读后删：删除失败（被并发消费）则本次跳过，下一轮再试
-        try:
-            req_path.unlink()
-        except OSError:
+        payload = self._consume_request_file(req_path)
+        if payload is None:
             return
 
         request_created = str(payload.get("created") or "")

@@ -1869,7 +1869,20 @@ class CodeFixOrchestrator:
                 reason="merge_back_conflict",
             )
             return "consumed"
-        hit = mark_resolved(root, fixed_ids)
+        # 核销前过滤（code-review item 65f65b784f2a，与 defer 路径同口径）：
+        # mark_resolved 对命中 id 无条件置 resolved、无终态保护，核销方 MUST
+        # 先以 read_items 过滤——选批到合回之间被并发置 in_spec/ignored 的条目
+        # 跳过（不丢 spec_name 归属），agent 产物带出的批外 id 不核销不计进度。
+        try:
+            ledger = read_items(root)
+        except Exception:  # noqa: BLE001 — 台账读失败按空集（不核销）
+            ledger = {}
+        batch_set = set(item_ids)
+        still_open = [
+            i for i in fixed_ids
+            if i in batch_set and (ledger.get(i) or {}).get("status") == "open"
+        ]
+        hit = mark_resolved(root, still_open) if still_open else 0
         _safe_cleanup(wm, wt, success=True, logger=self._logger)
         new_done = done + hit
         write_progress(

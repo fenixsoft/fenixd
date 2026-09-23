@@ -1,6 +1,6 @@
 import { Button, Input, Modal, Typography, message } from 'antd';
 import { useState } from 'react';
-import { cancelRun } from '@/services/dashboard';
+import { ApiError, cancelRun } from '@/services/dashboard';
 
 const { Text } = Typography;
 
@@ -29,7 +29,11 @@ export default function RunCancelModal({ project, runId, onClose, onAccepted }: 
       onClose();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes('409') || msg.includes('已有')) {
+      // 业务拒绝按稳定错误码分支（code-review item 813aa61cb08f，与
+      // QualityTab/RegressionTab 先例同口径）：旧实现对后端文案与状态码做
+      // 子串匹配，措辞一改即静默落入通用错误分支；错误码由后端 _coded_error
+      // 下发、ApiError.code 承载。
+      if (err instanceof ApiError && err.code === 'cancel_run_request_pending') {
         message.info('已有进行中的取消请求，请等待受理');
       } else {
         message.error(`取消失败：${msg}`);

@@ -160,24 +160,6 @@ def get_active_agents():
         return []
 
 
-def get_worktrees():
-    """获取活跃的 git worktree"""
-    try:
-        r = subprocess.run(
-            ["git", "worktree", "list"], capture_output=True, text=True, timeout=3, cwd=PROJECT_ROOT
-        )
-        trees = []
-        for line in r.stdout.strip().split("\n"):
-            parts = line.split()
-            if len(parts) >= 1:
-                path = parts[0]
-                branch = parts[2].strip("[]") if len(parts) >= 3 else ""
-                trees.append({"path": path, "branch": branch})
-        return trees
-    except:
-        return []
-
-
 def get_verify_progress():
     """获取验证进度（复用共享解析，损坏条目跳过）"""
     if not PROGRESS_DIR.exists():

@@ -534,7 +534,15 @@ def read_progress(project_root) -> Dict[str, Any]:
         meta = json.loads(
             _running_marker_path(project_root).read_text(encoding="utf-8")
         )
-        started = datetime.datetime.fromisoformat(meta.get("started_at", ""))
+        # 畸形 marker 防御（code-review item 63b7d232dd9e，与 is_regression_running
+        # 同款）：合法 JSON 非对象（null/[]/字符串）没有 .get，AttributeError 不在
+        # 捕获元组——而本函数 docstring 明确读侧 MUST NOT 抛异常；朴素时间戳
+        # （无偏移）按本地时区归一，与 is_regression_running 口径一致。
+        if not isinstance(meta, dict):
+            return info
+        started = datetime.datetime.fromisoformat(str(meta.get("started_at", "")))
+        if started.tzinfo is None:
+            started = started.astimezone()
         info["elapsed_seconds"] = round(
             max(
                 0.0,

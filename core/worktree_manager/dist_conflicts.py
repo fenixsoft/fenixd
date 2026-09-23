@@ -100,7 +100,10 @@ class G5DistConflictsMixin:
                         timeout=30,
                     )
             # 收口：分支侧干净 add 的产物（非冲突新增）不复活——staged 产物中
-            # HEAD 没有的一律移除（含旧路径双胞胎、对方重命名后的旧 hash chunk）
+            # HEAD 没有的一律移除（含旧路径双胞胎、对方重命名后的旧 hash chunk）。
+            # 全量 staged 新增后按配置判定器过滤（code-review item
+            # 6d8414eb218c）：不带 DASHBOARD_STATIC_ROOT 路径限定——配置在静态
+            # 根之外（如根级 dist/）的产物同属「一律移除」语义，与判定器口径一致。
             staged = subprocess.run(
                 [
                     "git",
@@ -110,8 +113,6 @@ class G5DistConflictsMixin:
                     "--cached",
                     "--name-only",
                     "--diff-filter=A",
-                    "--",
-                    DASHBOARD_STATIC_ROOT,
                 ],
                 capture_output=True,
                 text=True,
@@ -120,8 +121,10 @@ class G5DistConflictsMixin:
             if staged.returncode == 0:
                 strays = [
                     line
-                    for line in staged.stdout.splitlines()
-                    if self._artifacts.is_artifact(line) and line not in head_artifacts
+                    for line in self._artifacts.paths_in(
+                        [p for p in staged.stdout.splitlines() if p]
+                    )
+                    if line not in head_artifacts
                 ]
                 for p in strays:
                     subprocess.run(
