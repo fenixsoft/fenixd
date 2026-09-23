@@ -892,7 +892,11 @@ def run_code_review(
             run_id,
             model_override,
             env_overrides,
-            max_turns=runner._get_config("agents.max_turns", 300),
+            # 轮次不设限（用户 2026-09-23）：全库审查 manifest 大（240 文件级）、
+            # 子代理编排轮次消耗快，800+扩展(2×25%)=1200 实测不够用且死前
+            # inserted=0（09-23 manual_full 事故）。_run_claude 对 None 跳过
+            # 强制块（`if max_turns and ...`），失控兜底由超时+liveness 承担。
+            max_turns=None,
             spec_name="code-review",
             agent_type="code-review",
         )
@@ -1391,7 +1395,10 @@ def run_code_fix(
             run_id,
             model_override,
             env_overrides,
-            max_turns=runner._get_config("agents.max_turns", 300),
+            # 轮次不设限（用户 2026-09-23）：批内条目数大时 800+扩展不够用，
+            # 撞上限=整批作废。_run_claude 对 None 跳过强制块；失控兜底由
+            # 超时覆盖（timeout_overrides）+ liveness 承担。
+            max_turns=None,
             spec_name="code-review-fix",
             agent_type="code-fix",
         )
