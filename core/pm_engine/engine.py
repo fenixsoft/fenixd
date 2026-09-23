@@ -263,6 +263,7 @@ class PMEngine:
         "_disputed_deliverables": ("_verification", "_disputed_deliverables"),
         "_adjudicate_deliverable_missing": ("_dispatcher", "_adjudicate_deliverable_missing"),
         "_preclassify_orphan": ("_dispatcher", "_preclassify_orphan"),
+        "_preclassify_drift": ("_dispatcher", "_preclassify_drift"),
         "_detect_uniform_verify_failure": ("_verification", "_detect_uniform_verify_failure"),
         "_run_legacy_verification": ("_verification", "_run_legacy_verification"),
         "_verify_verdict_evidence": ("_verification", "_verify_verdict_evidence"),
