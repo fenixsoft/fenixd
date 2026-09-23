@@ -728,21 +728,26 @@ class ProviderCircuit:
                 and fingerprint in self._transient_probe_fps
             ):
                 self._transient_probe_failed.add(fingerprint)
-        events = self._transient_break_events.setdefault(fingerprint, [])
-        if window is not None and window > 0:
-            events = [t for t in events if now - t.at <= window]
-        # 墙钟时刻与单调 now 一并固化：告警上下文展示用 at_wall（真实时钟），
-        # 滑窗用 at（单调，防时钟回拨）。code-review item cbaa42ed2281。
-        events.append(
-            TransientAttempt(
-                spec=spec or "",
-                run_id=run_id or "",
-                provider=provider or "",
-                at=now,
-                at_wall=time.time(),
+            # 记账本体同锁保护（code-review item 0e23519cd2d1）：setdefault/
+            # 滑窗过滤/append/回写 MUST 与探针标记段同一临界区——记账来自并发
+            # run-worker 线程，锁外「读-过滤-回写」会以本线程的过滤版本覆盖
+            # 并发线程刚追加的事件（瞬断计数少记、全局熔断触发被延迟）。
+            # _unseal_lock 为 RLock，可重入，不影响既有嵌套持锁路径。
+            events = self._transient_break_events.setdefault(fingerprint, [])
+            if window is not None and window > 0:
+                events = [t for t in events if now - t.at <= window]
+            # 墙钟时刻与单调 now 一并固化：告警上下文展示用 at_wall（真实时钟），
+            # 滑窗用 at（单调，防时钟回拨）。code-review item cbaa42ed2281。
+            events.append(
+                TransientAttempt(
+                    spec=spec or "",
+                    run_id=run_id or "",
+                    provider=provider or "",
+                    at=now,
+                    at_wall=time.time(),
+                )
             )
-        )
-        self._transient_break_events[fingerprint] = events
+            self._transient_break_events[fingerprint] = events
 
     @staticmethod
     def _build_attempt_summary(events: list, limit: int = TRANSIENT_BREAK_ATTEMPT_LIST_LIMIT):

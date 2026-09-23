@@ -6,8 +6,8 @@ import type { OverviewTotals, TokenUsageItem } from '@/services/dashboard';
 
 /**
  * 统计卡行（复刻 ant-design-pro analysis 页 IntroduceRow 各卡布局）。
- * 4 卡：SPEC总数(总销售额) / 任务进度(运营活动效果) / 活跃Agent(归一化单行堆叠条) /
- *       Token消耗(访问量·面积图)。
+ * 4 卡（与 JSX 渲染顺序一致）：SPEC总数(总销售额) / 任务进度(运营活动效果) /
+ *       Token消耗(卡3·访问量·面积图) / 活跃Agent(卡4·归一化单行堆叠条)。
  * 头部 title 为 ant-card-head-title 默认黑粗样式；正文内保留浅灰自绘眉题；
  * 文字一律文本色，语义色只用于状态值。
  */
@@ -155,7 +155,7 @@ function NormalizedBar({
   );
 }
 
-/** 卡3：活跃 Agent — 大数字 + 行内图例 + 归一化单行堆叠条（normalized stacked bar） */
+/** 卡4：活跃 Agent — 大数字 + 行内图例 + 归一化单行堆叠条（normalized stacked bar） */
 function ActiveAgentTile({ totals }: { totals: OverviewTotals }) {
   const byType = totals.active_runs_by_type || {};
   const total = totals.active_runs ?? 0;
@@ -221,7 +221,7 @@ function ActiveAgentTile({ totals }: { totals: OverviewTotals }) {
   );
 }
 
-/** 卡4：Token 消耗 — 复刻 analysis 访问量卡（大数字合计 + 平滑面积图展示近 20 个 spec） */
+/** 卡3：Token 消耗 — 复刻 analysis 访问量卡（大数字合计 + 平滑面积图展示近 20 个 spec） */
 function TokenTile({ recent }: { recent: TokenUsageItem[] }) {
   const sum = recent.reduce((s, r) => s + r.tokens, 0);
   // recent 为 updated 倒序（最新在前）；面积图 x 轴从旧到新 → 反转，最新在最右

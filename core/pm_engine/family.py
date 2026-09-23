@@ -765,9 +765,11 @@ class FamilyGovernor:
             # 向前找到段落分隔
             while start > 0 and text[start - 1] == "\n":
                 start -= 1
-            # 向后找到下一个段落标题或文件末尾
+            # 向后找到下一个二级标题或文件末尾。MUST NOT 排除「验」字（item
+            # 255393413ec3）：本段内部不含二级标题，「## 验收标准」等以「验」
+            # 开头的后续标题也是合法段界——排除会把整段误并入替换区间删掉。
             after = text[m.end() :]
-            next_heading = re.search(r"\n## [^验]", after)
+            next_heading = re.search(r"\n## ", after)
             if next_heading:
                 end = m.end() + next_heading.start() + 1  # 包含 \n
             else:

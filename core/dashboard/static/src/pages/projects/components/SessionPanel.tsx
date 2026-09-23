@@ -157,11 +157,14 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
       setTruncated(Boolean(data.truncated));
       setError('');
     } else {
-      // 会话未启动：空态，等待「开始会话」
+      // 会话未启动：空态，等待「开始会话」。清 error（item 232d40e20d0c）：
+      // 成功获取快照即代表当前真实状态——此前瞬态故障（如重连前 afterHello
+      // 失败）落下的「加载失败」不清除会永久遮住空态入口。
       sessionIdRef.current = null;
       setStarted(false);
       syncEvents([]);
       setTruncated(false);
+      setError('');
     }
   };
 

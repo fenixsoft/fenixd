@@ -1,5 +1,5 @@
 import { Button, Card, Form, InputNumber, Typography } from 'antd';
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import type { ConfigData } from '@/services/dashboard';
 import SyncFromUserButton from './SyncFromUserButton';
 import { SETTINGS_ACTIONS_ROW_STYLE } from '../styles';
@@ -18,10 +18,17 @@ interface MiscSettingsPanelProps {
 export default function MiscSettingsPanel({ config, onSave, project, onConfigSynced }: MiscSettingsPanelProps) {
   const [form] = Form.useForm();
 
+  // 回填门控（code-review item 0a2bd3f20fcd，比照 AgentModelPanel 9f98edec21fa）：
+  // 无条件 setFieldsValue 会在其它面板保存触发父组件 setConfig 时，用外部
+  // config 覆盖本面板用户正在编辑、尚未保存的阈值。改为序列化比较，只在
+  // 内容真变化时回填。
+  const lastBackfillRef = useRef('');
   useEffect(() => {
-    form.setFieldsValue({
-      auto_threshold: config.archive?.auto_threshold ?? 50,
-    });
+    const next = { auto_threshold: config.archive?.auto_threshold ?? 50 };
+    const key = JSON.stringify(next);
+    if (key === lastBackfillRef.current) return;
+    lastBackfillRef.current = key;
+    form.setFieldsValue(next);
   }, [config.archive, form]);
 
   const handleSave = async () => {

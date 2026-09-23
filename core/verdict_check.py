@@ -234,7 +234,10 @@ def whitewash_violations(scenarios: list, verdict: str) -> List[str]:
         if not isinstance(sc, dict):
             continue
         sid = str(sc.get("scenario_id") or "?")
-        if sc.get("status") == "pass":
+        # 双词表对齐（item 229075ac0732）：与本模块其余函数同口径——"passed"
+        # 亦为通过态（下游 verdict_evidence/pipeline 均按双词表防御），否则
+        # 全过报告会被误判 0 通过而错误阻断合法 verified 裁决。
+        if sc.get("status") in ("pass", "passed"):
             passed += 1
         else:
             has_failed = True

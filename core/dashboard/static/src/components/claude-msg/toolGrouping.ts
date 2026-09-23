@@ -162,6 +162,26 @@ export function taskStatusDotClass(status?: string): string {
   return status === 'completed' ? 'bg-green-400' : 'bg-amber-400';
 }
 
+// 工具图标映射（唯一权威口径，code-review item 00df5be42e62）：ToolCard 卡片
+// 与 ToolGroupContainer 组头共用，防两处复制粘贴双写漂移（同一工具在卡片与
+// 组头显示不同图标）。未命中回落工具名首字母大写。
+const TOOL_ICONS: Record<string, string> = {
+  Bash: '$',
+  Read: '📄',
+  Write: '✏️',
+  Edit: '✏️',
+  Grep: '🔍',
+  Glob: '🔍',
+  WebFetch: '🌐',
+  WebSearch: '🌐',
+  TodoWrite: '☑️',
+  Task: '🤖',
+};
+
+export function toolIcon(toolName: string): string {
+  return TOOL_ICONS[toolName] || toolName.slice(0, 1).toUpperCase();
+}
+
 // 同组判定：同类（read/bash/edit）连续即可成组；类外工具沿用同名连续
 function sameGrouping(firstToolName: string, firstClass: ToolClass | null, candidate: ChatMessage & { toolName: string }): boolean {
   if (firstClass != null) {

@@ -4,7 +4,7 @@
 import { useMemo, useState } from 'react';
 
 import type { ChatMessage } from './types';
-import { formatElapsedSeconds, parseToolInput, taskStatusDotClass, toolCardPreview } from './toolGrouping';
+import { formatElapsedSeconds, parseToolInput, taskStatusDotClass, toolCardPreview, toolIcon } from './toolGrouping';
 
 function prettyJson(value: unknown): string {
   if (typeof value === 'string') return value;
@@ -14,19 +14,6 @@ function prettyJson(value: unknown): string {
     return String(value);
   }
 }
-
-const TOOL_ICONS: Record<string, string> = {
-  Bash: '$',
-  Read: '📄',
-  Write: '✏️',
-  Edit: '✏️',
-  Grep: '🔍',
-  Glob: '🔍',
-  WebFetch: '🌐',
-  WebSearch: '🌐',
-  TodoWrite: '☑️',
-  Task: '🤖',
-};
 
 export default function ToolCard({ message }: { message: ChatMessage }) {
   const [expanded, setExpanded] = useState(false);
@@ -53,7 +40,7 @@ export default function ToolCard({ message }: { message: ChatMessage }) {
         aria-expanded={expanded}
       >
         <span className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded bg-background/80 text-xs font-medium">
-          {TOOL_ICONS[toolName] || toolName.slice(0, 1).toUpperCase()}
+          {toolIcon(toolName)}
         </span>
         <span className="min-w-0 flex-shrink-0 text-xs font-medium text-foreground">{toolName}</span>
         {preview && (

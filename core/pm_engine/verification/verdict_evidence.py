@@ -634,6 +634,11 @@ def _handle_attr_dedup_rejection(
     )
 
     # 3) 派发重合成 judge（复用 judge 通道；异常立即早退，禁止复读旧 report）
+    # 轮内记账（code-review item 15dff451de8b，judge_gate.py 调用点规则）：此
+    # 路径直接 run_planner 不经 gate，与 verdict-retry 路径同口径记账——查重
+    # 反复拒绝时轮内/全局重裁决计数必须增长，否则绕过轮内 2 次与
+    # judge_rerun_count 上限治理（仅剩 _RESYNTHESIS_MAX_ATTEMPTS 独立兜底）。
+    pipeline._judge_charge_verdict_retry(spec_name, violations_entries)
     try:
         re_judge = pipeline._pm.agent_runner.run_planner(spec_name, "judge")
     except Exception as e:

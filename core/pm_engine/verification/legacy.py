@@ -349,6 +349,28 @@ def _run_legacy_verification(pipeline, spec_name: str):
             # 读它会错误判为「非 verified」而漏拦）。
             if pipeline._verified_gate_refuses(spec_name, "bug-found"):
                 return
+            # ── 统一失败归因入口（legacy 同门，evo-infra-failure-budget-exempt R1/R3）──
+            # MUST 在 bug-found transition 之前（code-review item 12bd5b177792）：
+            # enrich_failure_class 比上游早期 infra 门多匹配 worktree/merge
+            # conflict/tree dirty 标记，verifier error 含这些文本时判 infra——
+            # 若先流转 bug-found 再归因，infra 分支「不流转 bug-found」即失效
+            # （spec 停在 bug-found 却不派生 fix，状态回退只能靠 recovery 兜底）。
+            failure_class = pipeline.enrich_failure_class(
+                spec_name,
+                error_text=getattr(result, "error", "") or "",
+            )
+            if failure_class == "infra":
+                pipeline._context.logger.warning(
+                    "pm_engine",
+                    f"归因入口判 infra（legacy）：'{spec_name}' 按 infra 记账，"
+                    f"不流转 bug-found、不派生 fix",
+                )
+                pipeline._record_infra_failure(
+                    spec_name,
+                    "infra at attribution entry (legacy)",
+                    run_id=getattr(result, "run_id", "") or "",
+                )
+                return
             pipeline._context.state_machine.transition(
                 spec_name, "bug-found",
                 trigger_run_id=result.run_id, agent_type="tester", channel="auto",
@@ -386,26 +408,8 @@ def _run_legacy_verification(pipeline, spec_name: str):
                         },
                     )
                     return
-            # ── 统一失败归因入口（legacy 同门，evo-infra-failure-budget-exempt R1/R3）──
-            failure_class = pipeline.enrich_failure_class(
-                spec_name,
-                error_text=getattr(result, "error", "") or "",
-            )
-            if failure_class == "infra":
-                # 防御性兜底：归因入口误判 infra（既有 infra 判定点已早退）——
-                # 按 infra 记账，不流转 bug-found、不派生 fix。
-                pipeline._context.logger.warning(
-                    "pm_engine",
-                    f"归因入口兜底（legacy）：'{spec_name}' 判定 infra，"
-                    f"按 infra 记账处理不派生 fix",
-                )
-                pipeline._record_infra_failure(
-                    spec_name,
-                    "infra at attribution entry (legacy fallback)",
-                    run_id=getattr(result, "run_id", "") or "",
-                )
-                return
-            # 到达 bug-found 归因（全部门禁已过、非 infra）＝ product 类——
+            # 到达 bug-found 归因（全部门禁已过、非 infra，归因已前置到
+            # transition 之前）＝ product 类——
             # unknown 按 product 保守处置，台账 failure_class 记 product。
             pipeline._context.on_spec_bug_found(
                 spec_name,

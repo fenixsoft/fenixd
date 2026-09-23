@@ -16,7 +16,7 @@ import {
   Button, Form, Input, InputNumber, List, Modal, Popconfirm, Select, Space, Switch, Table, Tag, Tooltip, Typography,
 } from 'antd';
 import dayjs from 'dayjs';
-import { useState, useMemo } from 'react';
+import { useCallback, useState, useMemo } from 'react';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { HOOK_ACTION_LABELS } from '@/services/dashboard';
 import type { HookAction, HookAuditRecord, HookConfig } from '@/services/dashboard';
@@ -123,31 +123,43 @@ export default function HookManager({
     setModalOpen(true);
   };
 
-  const handleEdit = (idx: number) => {
-    setEditIdx(idx);
-    const h = hooks[idx];
-    form.setFieldsValue({
-      events: h.events,
-      action: h.action,
-      enabled: h.enabled !== false,
-      url: h.url || '',
-      command: h.command || '',
-      message: h.message || '',
-      timeout_seconds: h.timeout_seconds,
-      target: h.target || '',
-    });
-    setModalOpen(true);
-  };
+  // 事件处理 useCallback 化（code-review item 0383473dd260）：columns 的
+  // useMemo 闭包捕获这三个函数——不固定引用并列入依赖时，父组件更新 onSave
+  // 引用而 hooks 未变会导致表格按钮持有旧 onSave 闭包（写入过期 props）。
+  const handleEdit = useCallback(
+    (idx: number) => {
+      setEditIdx(idx);
+      const h = hooks[idx];
+      form.setFieldsValue({
+        events: h.events,
+        action: h.action,
+        enabled: h.enabled !== false,
+        url: h.url || '',
+        command: h.command || '',
+        message: h.message || '',
+        timeout_seconds: h.timeout_seconds,
+        target: h.target || '',
+      });
+      setModalOpen(true);
+    },
+    [hooks, form],
+  );
 
-  const handleDelete = (idx: number) => {
-    const next = hooks.filter((_, i) => i !== idx);
-    onSave(next);
-  };
+  const handleDelete = useCallback(
+    (idx: number) => {
+      const next = hooks.filter((_, i) => i !== idx);
+      onSave(next);
+    },
+    [hooks, onSave],
+  );
 
-  const handleToggle = (idx: number, checked: boolean) => {
-    const next = hooks.map((h, i) => (i === idx ? { ...h, enabled: checked } : h));
-    onSave(next);
-  };
+  const handleToggle = useCallback(
+    (idx: number, checked: boolean) => {
+      const next = hooks.map((h, i) => (i === idx ? { ...h, enabled: checked } : h));
+      onSave(next);
+    },
+    [hooks, onSave],
+  );
 
   const handleSubmit = () => {
     form.validateFields().then((values) => {
@@ -245,7 +257,8 @@ export default function HookManager({
       },
     ];
     return cols;
-  }, [hooks, form]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps — handlers 已 useCallback 化并列入依赖（item 0383473dd260）
+  }, [hooks, form, handleToggle, handleEdit, handleDelete]);
 
   // ── 生效合并表格列（仅 spec 详情页）────────────────────────────
 

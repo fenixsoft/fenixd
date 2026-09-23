@@ -1926,7 +1926,7 @@ class PromptBuilder:
             "\n\n## 优先复核清单（warning 收敛升级，add-verdict-evidence-taxonomy）\n"
             f"- 以下场景连续 2 轮验证均为 warning，被标记为「优先复核」：{ids}\n"
             "- 你必须优先重新执行这些场景，甄别其根因究竟是真实产品缺陷（应改判 "
-            "classificatio=product-bug 并 failed）还是确属 flaky/env（可维持 warning）。\n"
+            "classification=product-bug 并 failed）还是确属 flaky/env（可维持 warning）。\n"
             "- 切勿继续无限悬置为 warning；若确为产品缺陷，必须在本次裁决中如实分类并 failed。\n"
         )
 

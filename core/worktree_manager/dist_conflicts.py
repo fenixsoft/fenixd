@@ -357,7 +357,14 @@ class G5DistConflictsMixin:
             )
 
     def _artifact_paths(self, rev: str) -> set:
-        """列出 <rev> 中 static 根下全部构建产物路径（按目录层次容错判定）。"""
+        """列出 <rev> 中全部构建产物路径（按目录层次容错判定，全树枚举）。
+
+        全树枚举（code-review item 044c4c78d747）：产物路径由项目配置驱动，
+        可声明在 DASHBOARD_STATIC_ROOT 之外（如根级 dist/）；若只在 static 根
+        内枚举，冲突对齐分支会把这些路径误判为「HEAD 已删」而遭 git rm——
+        错误删除随 merge 提交固化，且 ``_rebuild_dist_after_merge`` 的
+        src_touched 判定同样限静态根、不会触发重建兜底。
+        """
         ls = subprocess.run(
             [
                 "git",
@@ -367,7 +374,6 @@ class G5DistConflictsMixin:
                 "-r",
                 "--name-only",
                 rev,
-                DASHBOARD_STATIC_ROOT,
             ],
             capture_output=True,
             text=True,
@@ -376,7 +382,7 @@ class G5DistConflictsMixin:
         if ls.returncode != 0:
             return set()
         # 产物判定走实例判定器（evo-merge-back-wip-artifact-scope D3），与其余
-        # 调用点同一口径。查询范围仍限 DASHBOARD_STATIC_ROOT（既有语义）。
+        # 调用点同一口径。
         return {
             line
             for line in ls.stdout.splitlines()

@@ -201,11 +201,19 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
       }
       const values: FormValues = await form.validateFields();
       const providers = toProviders(values);
-      await onSave({ llm: { providers } });
-    } catch (error) {
+      // 分离「表单校验」与「保存持久化」（code-review item 25f889b81633，
+      // 比照 AgentModelPanel 3086b7e96c4f）：onSave 拒绝（网络/500）此前被
+      // 当作校验失败只落 console.error，用户点击保存毫无反应。持久化失败
+      // 给显式 message.error 反馈。
+      try {
+        await onSave({ llm: { providers } });
+      } catch (error) {
+        message.error(`保存失败：${error instanceof Error ? error.message : String(error)}`);
+      }
+    } catch {
       // 校验失败：展开全部折叠区，让藏在折叠区的错误（如价格行必填）可见
+      // （antd 已在表单内渲染提示；不落 console，避免触发 no_console_error 断言）
       expandAllSections();
-      console.error('Validation failed:', error);
     }
   };
 
