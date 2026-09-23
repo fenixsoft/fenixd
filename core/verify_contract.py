@@ -923,17 +923,20 @@ def _probe_ports_responding(ports) -> set:
     """并发探测一组端口，返回响应端口集合（legacy_pre 存量快照用）。
 
     与生产路径 pm_engine/verification/serving.py 的同名辅助同口径：同
-    ThreadPoolExecutor max_workers=16、同每端口 HTTP 探测 timeout=1.0
-    （探针复用本模块 CommandVerifyServer._probe）。不跨模块 import 复用：
-    serving.py 已模块级反向 import 本模块，互引会成环，且 verify_contract
-    不应依赖 pipeline 层（code-review item 92f6d9a36937）。
+    ThreadPoolExecutor max_workers=16、同每端口 HTTP 探测 timeout=1.0，
+    端口先构造 ``http://127.0.0.1:{port}/`` 再探（_probe 收 url 不收端口，
+    裸传 int 会被 Request 拒绝、恒判不响应，legacy_pre 恒空集失效）。
+    不跨模块 import 复用：serving.py 已模块级反向 import 本模块，互引会
+    成环，且 verify_contract 不应依赖 pipeline 层（code-review item
+    92f6d9a36937）。
     """
     from concurrent.futures import ThreadPoolExecutor
 
+    def _probe_port(port) -> bool:
+        return CommandVerifyServer._probe(f"http://127.0.0.1:{port}/")
+
     with ThreadPoolExecutor(max_workers=16) as pool:
-        return {
-            p for p, ok in zip(ports, pool.map(CommandVerifyServer._probe, ports)) if ok
-        }
+        return {p for p, ok in zip(ports, pool.map(_probe_port, ports)) if ok}
 
 
 def provision_worktree_node_modules(
