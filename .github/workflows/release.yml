@@ -13,7 +13,28 @@ permissions:
   contents: write
 
 jobs:
+  # 单测守护（code-review item d2264576cec6）：static 单测经 node 原生
+  # type-stripping 直载 .ts，需 Node ≥22.18（20.x 直接加载失败）——
+  # release 打包前先跑 npm test，回归不过不出包。
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: core/dashboard/static/package-lock.json
+
+      - name: Run dashboard unit tests
+        working-directory: core/dashboard/static
+        run: |
+          npm ci --no-audit --no-fund
+          npm test
+
   release:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

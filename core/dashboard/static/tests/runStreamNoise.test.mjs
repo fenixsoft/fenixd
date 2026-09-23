@@ -1,5 +1,9 @@
 // runEventsToChatMessages 事件分类表逐行锚定（add-run-record-readability 1.5）。
-// 零依赖，node 原生 type-stripping 加载 .ts 源。
+// 零依赖，node 原生 type-stripping 直载 .ts 源——需 Node ≥22.18（23.6+ 同样
+// 默认开启；22.6–22.17 须显式 --experimental-strip-types；20.x 无此能力会以
+// ERR_UNKNOWN_FILE_EXTENSION 失败）。下限同记于 package.json engines.node，
+// CI 测试步骤（release.yml test job，node 22）按此守护
+//（code-review item d2264576cec6）。
 // 运行：cd core/dashboard/static && node --test tests/runStreamNoise.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

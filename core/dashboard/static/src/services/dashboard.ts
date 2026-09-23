@@ -305,6 +305,9 @@ export interface AlertChoice {
   desc?: string;
   /** 映射的后端动词标识（前端仅展示，不据此分派） */
   action?: string;
+  /** 不可逆/越权语义标记（abandon/skip_review_gate）：前端据它决定执行前
+   * 二次确认（code-review item 19f72b875e8f）；历史告警快照可能缺该字段 */
+  destructive?: boolean;
 }
 
 export interface AlertsData {

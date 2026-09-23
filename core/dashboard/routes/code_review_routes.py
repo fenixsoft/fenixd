@@ -37,6 +37,16 @@ CODE_FIX_REQUEST_RESULT = ".fenix/code_fix_request_result.json"
 class H11CodeReviewRoutesMixin:
     """H11 code-review（design D1 表 C H11）。"""
 
+    def _coded_error(self, status: int, msg: str, code: str) -> None:
+        """带稳定机器可读 ``code`` 的错误响应。
+
+        code-review item fbdb437a22a0：前端控制流按业务错误码分支，不依赖
+        中文消息子串（措辞改动不再静默落入通用错误分支）。先例：H12
+        regression mixin 同名 helper（item 934af264345f），错误码经
+        ApiError.code 承载。
+        """
+        self._json({"error": msg, "code": code}, status)
+
     def _api_code_review_items(self, query):
         """GET /api/code-review/items?project=<name>[&status=open,in_spec]
 
@@ -86,6 +96,7 @@ class H11CodeReviewRoutesMixin:
 
         - 项目不存在 → 404
         - 已有审查在跑（progress.running）→ 409「已有审查在进行中」
+          （code=code_review_running）
         - 消费方守卫：daemon 未受 supervisor 托管（hosting_state ==
           "unmanaged"）→ 409 明确拒绝（对齐 request_spec_approve_push——
           信号无人消费会永久滞留并在 daemon 下次启动时被消费成一次用户并未
@@ -109,7 +120,7 @@ class H11CodeReviewRoutesMixin:
         # 已取消/已停机的 run 必须判 running=false，否则 409 恒真锁死后续触发）
         progress = dashboard_data.read_code_review_progress(str(proot))
         if progress.get("running"):
-            self._error(409, "已有审查在进行中")
+            self._coded_error(409, "已有审查在进行中", "code_review_running")
             return
 
         # 消费方守卫（hosting_state 判据，先例 request_spec_approve_push）
@@ -196,7 +207,8 @@ class H11CodeReviewRoutesMixin:
         try:
             os.link(str(tmp_path), str(req_path))
         except FileExistsError:
-            self._error(409, "已有未消费的审查触发请求（请稍后重试）")
+            self._coded_error(409, "已有未消费的审查触发请求（请稍后重试）",
+                              "code_review_request_pending")
             return
         except OSError:
             self._error(500, "审查触发信号写入失败")
@@ -273,7 +285,8 @@ class H11CodeReviewRoutesMixin:
         try:
             fd = os.open(str(req_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
         except FileExistsError:
-            self._error(409, "已有未消费的修复触发请求（请稍后重试）")
+            self._coded_error(409, "已有未消费的修复触发请求（请稍后重试）",
+                              "fix_run_request_pending")
             return
         except OSError:
             self._error(500, "修复触发信号写入失败")

@@ -142,14 +142,14 @@ function isGroupableToolMessage(message: ChatMessage): message is ChatMessage & 
   return Boolean(message.isToolUse && message.toolName && !message.isSubagentContainer);
 }
 
-// Messages that render nothing (e.g. reasoning hidden when showThinking is off,
-// or entries muted by the run-stream noise filter) shouldn't split an
-// otherwise-continuous run of same-class tools.
+// Messages that render nothing (e.g. reasoning hidden when showThinking is off)
+// shouldn't split an otherwise-continuous run of same-class tools.
 function rendersNothing(message: ChatMessage, showThinking: boolean): boolean {
-  // 兜底强制渲染的 thinking（thinkingForced）真实可见，须照常打断同类连续分组
-  if (message.isThinking && !showThinking && message.thinkingForced !== true) return true;
-  // 防御：被静默的消息（runEventsToChatMessages 已不产出条目，此处兜底）
-  return message.rendersNothing === true;
+  // 兜底强制渲染的 thinking（thinkingForced）真实可见，须照常打断同类连续分组。
+  // （静默事件在 runEventsToChatMessages 即不产出条目，本函数不再保留
+  // rendersNothing 防御标记分支——全仓无赋值点的死标记只会误导读者，
+  // code-review item fcd96aabd6d9）
+  return Boolean(message.isThinking && !showThinking && message.thinkingForced !== true);
 }
 
 // 同组判定：同类（read/bash/edit）连续即可成组；类外工具沿用同名连续

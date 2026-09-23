@@ -208,8 +208,15 @@ export default function AlertBanner({ refreshTick }: { refreshTick: number }) {
               const adjudicable = Array.isArray(a.choices) && a.choices.length > 0;
               const selChoiceId = alertChoiceSels[a.id] || '';
               const selChoice = (a.choices || []).find((c) => c.id === selChoiceId);
-              /* 撤销丢弃 / 跳过评审门：不可逆或越权语义，执行前二次确认（5.3） */
-              const needsConfirm = selChoiceId === 'abandon' || selChoiceId === 'skip_review_gate';
+              /* 不可逆/越权裁决（撤销丢弃 / 跳过评审门）执行前二次确认（5.3）。
+                 确认门由注册表的 destructive 标志驱动（code-review item
+                 19f72b875e8f：业务 id 由后端单源拥有，前端硬编码会在 id 改名
+                 时静默丢失二次确认）；历史告警快照（D2 不回写）缺该字段时，
+                 按已知不可逆 id 回退保底。 */
+              const needsConfirm =
+                selChoice?.destructive === true ||
+                (selChoice?.destructive === undefined &&
+                  (selChoiceId === 'abandon' || selChoiceId === 'skip_review_gate'));
               const resolving = resolvingAlerts.has(a.id);
               const resolveMsg = alertResolveMsgs[a.id];
               const execBtn = (

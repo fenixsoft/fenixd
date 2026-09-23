@@ -140,7 +140,8 @@ class H6AlertRoutesMixin:
 
         body ``{project, alert_id, choice_id, note?}``。按序：
         (1) 校验告警存在且未 handled，按 alert ``signal_type`` 从注册表校验
-        ``choice_id`` 合法（记录内 choices 优先，缺失回退注册表）；(2) 执行
+        ``choice_id`` 合法（记录内 choices 优先，缺失回退注册表；不可裁决
+        信号合法集为空 → 直接 400，不放行执行器的注册表级反查）；(2) 执行
         choice 映射动作（``execute_adjudication_choice`` 共享执行器）；(3)
         标记告警 handled（ESCALATION 走 ``mark_handled``，SIGNAL 走
         ``mark_signal_handled``）并落 DISPOSITION 处置留痕（choice_id/note/
@@ -171,10 +172,7 @@ class H6AlertRoutesMixin:
         proot = Path(project["path"])
 
         from core.admin_store import AdminStore, DISPOSITION, SIGNAL
-        from core.dashboard.data.adjudication_choices import (
-            choices_for,
-            is_adjudicable,
-        )
+        from core.dashboard.data.adjudication_choices import choices_for
 
         store = AdminStore(proot, logger)
         alert = next((r for r in store.read_all() if r.get("id") == alert_id), None)
@@ -187,10 +185,22 @@ class H6AlertRoutesMixin:
 
         signal_type = str(alert.get("signal_type") or "")
         spec = str(alert.get("spec") or "")
-        # choice 合法性：记录内 choices 优先（发射点快照），缺失回退注册表
+        # choice 合法性：记录内 choices 优先（发射点快照），缺失回退注册表。
+        # 合法集为空（不可裁决信号：桶 0/自愈类、signal_type 缺失——
+        # choices_for() 返回空元组且记录无快照）→ 直接 400 拒绝（code-review
+        # item 14b854aeccf9）：此前的空集直通会让 execute_adjudication_choice
+        # 的注册表级反查接受任意已注册 choice_id（含 abandon/force_advance/
+        # skip_review_gate 等破坏性动词）执行到本告警 spec 上，与端点契约相悖。
         record_choices = alert.get("choices") or choices_for(signal_type)
         valid_ids = [c.get("id") for c in record_choices if isinstance(c, dict)]
-        if is_adjudicable(signal_type) and choice_id not in valid_ids:
+        if not valid_ids:
+            self._error(
+                400,
+                f"该告警不可人工裁决（signal_type={signal_type or '缺失'}，无合法 "
+                "choice 集）：知情/自愈类信号请用「标记已处理」完成处置",
+            )
+            return
+        if choice_id not in valid_ids:
             legal = "、".join(
                 f"{c.get('id')}({c.get('label')})"
                 for c in record_choices

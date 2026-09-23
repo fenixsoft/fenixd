@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "description": "Fenix Dashboard v3 — 基于 Ant Design Pro",
+  "engines": {
+    "node": ">=22.18"
+  },
   "scripts": {
     "dev": "max dev",
     "build": "max build",
