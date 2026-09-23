@@ -4,7 +4,7 @@
 迁移；门面经 property 委托保持 `runner._v2_servers` 等路径可用。
 """
 
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Tuple, Any
 from pathlib import Path
 from core.v2_dev_server import (
     V2DevServerError,
@@ -35,7 +35,7 @@ class V2ServerManager:
         行为与 daemon 正常 __init__ 路径一致）。
         """
         if not hasattr(self, "_v2_servers") or self._v2_servers is None:
-            self._v2_servers: Dict[str, tuple] = {}
+            self._v2_servers: Dict[str, Tuple] = {}
         if not hasattr(self, "_v2_used_ports") or self._v2_used_ports is None:
             self._v2_used_ports: set = set()
         if not hasattr(self, "_v2_run_seq"):

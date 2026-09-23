@@ -28,7 +28,7 @@ _KEBAB_RE = re.compile(r"^[a-z][a-z0-9]*(-[a-z0-9]+)*$")
 # ── Schema 加载 ────────────────────────────────────────────────────
 
 
-def load_schema(schema_name: str = DEFAULT_SCHEMA) -> Dict[str, Any]:
+def load_schema() -> Dict[str, Any]:
     """读取 vendored `schema.yaml` 并返回解析后的 dict。"""
     schema_path = SCHEMA_DIR / "schema.yaml"
     if not schema_path.exists():
@@ -40,7 +40,7 @@ def load_schema(schema_name: str = DEFAULT_SCHEMA) -> Dict[str, Any]:
     return schema
 
 
-def _load_template(schema_name: str, template_path: str) -> str:
+def _load_template(template_path: str) -> str:
     """读取 schema 的模板文件内容。"""
     template_file = SCHEMA_DIR / "templates" / template_path
     if not template_file.exists():
@@ -256,7 +256,7 @@ def instructions(project_root: Path, artifact_id: str, name: str) -> Dict[str, A
     if not artifact:
         raise ValueError(f"Artifact '{artifact_id}' not found in schema '{schema_name}'")
 
-    template = _load_template(schema_name, artifact["template"])
+    template = _load_template(artifact["template"])
     completed = _detect_completed(change_dir, schema)
 
     dependencies = []

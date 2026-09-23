@@ -216,8 +216,10 @@ def parse_verify_progress(project_root, spec_name) -> dict:
 
     进度文件缺失时回退 fast-track 裁决结果文件（fix-verify-progress-fasttrack）：
     调 parse_run_result_scenarios 取 verification.scenarios 合成进度——total=场景数、
-    done=含 status 条目数、current=终态文案「验证完成: N通过, M失败, K错误」
-    （对齐 verify_engine 终态格式），并标记 source: "run-result" 区分来源
+    done=含 status 条目数、current 在 done == total 时为终态文案
+    「验证完成: N通过, M失败, K错误」（对齐 verify_engine 终态格式），
+    done < total（存在无 status 场景，运行中/中断）时为进行中文案
+    「验证中: D/T」，并标记 source: "run-result" 区分来源
     （进度文件路径返回 source: "file"）。两者皆缺维持 exists: False 空态语义。
     """
     pf = Path(project_root) / ".fenix" / "verify-progress" / f"{spec_name}.json"
@@ -256,10 +258,17 @@ def parse_verify_progress(project_root, spec_name) -> dict:
         elif status == "error":
             errors += 1
         # warning/exempt 豁免类不入三桶（与裁决链豁免语义一致）
+    # done < total 说明有场景尚无 status（运行中/中断），不得输出终态文案
+    # 误标完成；仅 done == total 对齐 verify_engine 终态格式。
+    total = len(scenarios)
+    if done == total:
+        current = f"验证完成: {passed}通过, {failed}失败, {errors}错误"
+    else:
+        current = f"验证中: {done}/{total}"
     return {
         "exists": True,
-        "total": len(scenarios),
+        "total": total,
         "done": done,
-        "current": f"验证完成: {passed}通过, {failed}失败, {errors}错误",
+        "current": current,
         "source": "run-result",
     }

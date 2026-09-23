@@ -245,12 +245,25 @@ def load_verify_contract(project_root: Path, logger=None) -> Optional[VerifyCont
     if not isinstance(data, dict):
         return None
 
+    # prepare 步骤逐条解析（code-review item e892642d75db）：畸形条目（dict 缺
+    # run／键名笔误／run 为空，或字符串与合法映射之外的其它形态）此前被静默
+    # 丢弃——构建步骤悄悄缺失＝dist 不重建，验证测到陈旧产物，与本模块
+    # 「prepare 失败要大声失败」哲学相悖。记 warning（含条目序号与原文）而非
+    # 整份契约作废：其余合法步骤与 serve/ready 不受牵连（对齐 deps_mode/
+    # regression「告警＋忽略该片段」惯例）。
     prepare = []
-    for step in data.get("prepare") or []:
+    for i, step in enumerate(data.get("prepare") or [], 1):
         if isinstance(step, str):
             prepare.append(PrepareStep(run=step))
         elif isinstance(step, dict) and step.get("run"):
             prepare.append(PrepareStep(run=step["run"], cwd=str(step.get("cwd") or "")))
+        elif logger:
+            logger.warning(
+                "verify_contract",
+                f"verify.yaml prepare 第 {i} 步非法（须为字符串或含非空 run 的"
+                f"映射，已忽略该步——构建步骤悄悄缺失会验证陈旧产物）: "
+                f"{repr(step)[:200]}",
+            )
     serve = None
     serve_data = data.get("serve")
     if isinstance(serve_data, dict) and serve_data.get("kind") in ("static", "command"):

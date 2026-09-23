@@ -1098,7 +1098,8 @@ class TestVerifyProgressFastTrackFallback(unittest.TestCase):
         self.assertTrue(out["exists"])
         self.assertEqual(out["total"], 8)
         self.assertEqual(out["done"], 7)
-        self.assertEqual(out["current"], "验证完成: 2通过, 2失败, 1错误")
+        # done < total（存在无 status 场景）不得输出「验证完成」终态，须为进行中文案
+        self.assertEqual(out["current"], "验证中: 7/8")
         self.assertEqual(out["source"], "run-result")
 
     def test_progress_file_preferred_no_fallback(self):

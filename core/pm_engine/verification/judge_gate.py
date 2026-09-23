@@ -364,13 +364,15 @@ def _judge_rerun_count(pipeline, spec_name: str, delta: int = 0) -> int:
     （hard cap 触发后 judge 侧计数器冻结，与 _verify_fail_rounds 一并冻结）。
     """
     entry = pipeline._context.state_machine.read_one(spec_name) or {}
-    if delta and entry.get("_judge_cap_frozen"):
-        return int(entry.get("_judge_rerun_count", 0) or 0)
+    frozen = delta and entry.get("_judge_cap_frozen")
     count = 0
     try:
         count = int(entry.get("_judge_rerun_count", 0) or 0)
     except (TypeError, ValueError):
         count = 0
+    if frozen:
+        # 冻结早退：复用上方受保护转换（脏值按 0 兜底），不再递增
+        return count
     if delta:
         count = max(0, count + delta)
         pipeline._context.state_machine.update_spec(spec_name, {"_judge_rerun_count": count})

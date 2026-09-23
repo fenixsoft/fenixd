@@ -591,8 +591,7 @@ class StateMachine:
         raw = StateParser.parse(self.state_path)
         return self._normalize_entries(raw)
 
-    @staticmethod
-    def _normalize_entries(raw: Dict[str, dict]) -> Dict[str, dict]:
+    def _normalize_entries(self, raw: Dict[str, dict]) -> Dict[str, dict]:
         """过滤非 dict 条目，保证返回值的每个条目都是 dict。
 
         不修改合法条目的任何字段，仅把非法条目（字符串/列表/None 等）
@@ -603,9 +602,9 @@ class StateMachine:
             if isinstance(entry, dict):
                 normalized[name] = entry
                 continue
-            # 非法条目：不得进入返回值，记 warning（用全局静默日志器兜底，
-            # 避免 logger 为 None 时崩溃——见 _NullLogger）。
-            _NullLogger().warning(
+            # 非法条目：不得进入返回值，记 warning（self.logger 由 __init__
+            # 兜底保证非 None，logger=None 的脚本场景自然静默）。
+            self.logger.warning(
                 "state_machine",
                 f"跳过非法条目 '{name}'：期望 dict，实际为 "
                 f"{type(entry).__name__}，已忽略以防扫描崩溃",

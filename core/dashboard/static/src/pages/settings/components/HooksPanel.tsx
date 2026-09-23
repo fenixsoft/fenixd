@@ -8,7 +8,7 @@
  * 项目级作用域下展示本页签（见 settings/index.tsx），故 project 必传。
  */
 
-import { Typography, message } from 'antd';
+import { App, Typography } from 'antd';
 import { useEffect, useState } from 'react';
 import HookManager from '@/components/HookManager';
 import { getHookAudit } from '@/services/dashboard';
@@ -25,6 +25,7 @@ interface HooksPanelProps {
 }
 
 export default function HooksPanel({ config, onSave, project }: HooksPanelProps) {
+  const { message } = App.useApp();
   const [audit, setAudit] = useState<HookAuditRecord[]>([]);
   const [auditLoading, setAuditLoading] = useState(false);
   const [saving, setSaving] = useState(false);
