@@ -35,7 +35,7 @@
 
 ## 3. 事中停滞告警接线（admin_monitor / 配置 / 设置页）
 
-- [ ] 3.1 `core/admin_monitor.py` 周期节拍内调用 `check_progress_stall`：命中则经 AdminAlertStore 写人工告警，文案含 run_id、已运行分钟数、聚合 done=0 事实与「疑似子代理等待收工模式」归因提示；去重键 `code-review-stall-<run_id>`（单 run 至多一条）
+- [ ] 3.1 `core/admin_monitor.py` 周期节拍内调用 `check_progress_stall`：命中则经 `core/admin_store.py` 的 `AdminStore`（`append_if_absent` 缺席去重）写人工告警，文案含 run_id、已运行分钟数、聚合 done=0 事实与「疑似子代理等待收工模式」归因提示；去重键 `code-review-stall-<run_id>`（单 run 至多一条）
 - [ ] 3.2 `.fenix/config.template.yaml` 的 `admin.code_review` 注释段新增 `stall_alert_minutes` 说明（缺省 15、语义、非法回退）；`core/dashboard/data/config_admin.py` 键白名单同步放行该子键
 - [ ] 3.3 settings 分面 `QualityPanel.tsx` 新增 `stall_alert_minutes` 数字输入（分钟粒度、正整数校验、保存走既有 config 写路径），并完成前端构建产物重建（`npm run build`）
 

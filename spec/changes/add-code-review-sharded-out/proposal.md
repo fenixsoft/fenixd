@@ -29,4 +29,4 @@ code-review 车道连续两晚空跑（code-review-1790178542 烧 $21.54、code-
 - `core/agent_runner/result_gate.py`（`_check_repo_code_review_artifact` 聚合口径）
 - `agents/code-review.md`（落盘契约与禁等待收工条款）
 - `tests/test_code_review.py`（聚合读侧与硬门口径回归）
-- 不改变台账条目结构（`items.jsonl` schema 不动）；不改 dashboard 前端（`progress` 响应字段形状不变，仅取值口径变化）。
+- 不改变台账条目结构（`items.jsonl` schema 不动）；不改 QualityTab 的 progress 展示组件（`progress` 响应字段形状不变，仅取值口径变化）；dashboard 侧唯一新增改动是 settings 分面 QualityPanel 补 `stall_alert_minutes` 配置输入（见 design D4）。

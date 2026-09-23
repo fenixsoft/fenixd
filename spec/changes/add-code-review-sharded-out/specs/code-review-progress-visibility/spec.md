@@ -4,20 +4,26 @@
 
 ### Requirement: 进度读侧聚合分片
 
-code-review 运行进度的读取（`read_progress`）SHALL 聚合「主产物 + 全部分片」计算进度：`done` MUST 为主产物与全部 `out-<run_id>-b<N>.jsonl` 分片有效行数之和；`current` MUST 取最后落盘来源（按文件 mtime 最晚者末行）的文件名；`total` 口径不变（manifest 长度）。响应字段形状 MUST NOT 变化（`running`/`review_id`/`review_kind`/`total`/`done`/`current`）。
+code-review 运行进度的读取（`read_progress`）SHALL 聚合「主产物 + 全部分片」计算进度：`done` MUST 为「主产物 + 全部 `out-<run_id>-b<N>.jsonl` 分片」合并后按 `file` 去重的有效行数（同 `file` 多行只计一次、先落盘来源优先——与台账读侧去重同口径，保证 `done==total` 语义严格成立）；`current` MUST 取最后落盘来源（按文件 mtime 最晚者）末行的 `file` 字段（被审文件路径，非分片文件名）；`total` 口径不变（manifest 长度）。响应字段形状 MUST NOT 变化（`running`/`review_id`/`review_kind`/`total`/`done`/`current`）。
 
 - 分片发现 MUST 基于目录 glob `out-<run_id>-b*.jsonl`，主产物缺失时进度 MUST NOT 归零（只要有分片行）。
 - 无效行（空行、不可解析行）MUST NOT 计入 `done`，且 MUST NOT 使读取失败。
+- 同 `file` 在分片与主产物重复出现时，`done` MUST 只计一次（先落盘来源优先），MUST NOT 因重复行虚增进度。
 
 #### Scenario: 分片进度实时可见
 
-- **WHEN** run `running`，主产物不存在，分片 `b1` 有 17 行、`b2` 有 9 行有效行
+- **WHEN** run `running`，主产物不存在，分片 `b1` 有 17 行、`b2` 有 9 行有效行（两分片覆盖文件集不相交）
 - **THEN** `read_progress` MUST 返回 `done=26`、`total=manifest 长度`、`running=true`
 
 #### Scenario: 主产物缺失不归零
 
 - **WHEN** 主产物被清理或从未创建，但分片合计 26 行
 - **THEN** `read_progress` MUST 返回 `done=26`，MUST NOT 回退为 0
+
+#### Scenario: 重复行按 file 去重计数
+
+- **WHEN** 分片 `b1` 已落文件 `a.py` 的结果行，主 agent 又把同一 `a.py` 写入主产物
+- **THEN** `read_progress` 的 `done` MUST 只计 `a.py` 一次（分片先落盘者优先），MUST NOT 计为 2
 
 ### Requirement: 事中零进度停滞告警
 

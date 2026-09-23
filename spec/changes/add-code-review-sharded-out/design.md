@@ -49,7 +49,7 @@ code-review 车道的产物契约是「单一 `out-<run_id>.jsonl`、agent 自�
 
 ### D4: 停滞告警 —— admin_monitor 周期节拍检测
 
-检测函数 `check_progress_stall(project_root, now) -> dict | None` 放 `core/code_review.py`（复用 `read_progress` 聚合口径 + manifest `requested_at` 算已运行时长），由 `core/admin_monitor.py` 既有周期节拍调用。触发条件：`running=true` 且聚合 `done==0` 且运行时长超 `admin.code_review.stall_alert_minutes`（缺省 15，非法值回退缺省）。告警经 AdminAlertStore 写入，去重键 `code-review-stall-<run_id>`（单 run 至多一条）；run 终态后不再触发（`running=false` 短路）。
+检测函数 `check_progress_stall(project_root, now) -> dict | None` 放 `core/code_review.py`（复用 `read_progress` 聚合口径 + manifest `requested_at` 算已运行时长），由 `core/admin_monitor.py` 既有周期节拍调用。触发条件：`running=true` 且聚合 `done==0` 且运行时长超 `admin.code_review.stall_alert_minutes`（缺省 15，非法值回退缺省）。告警经既有 `core/admin_store.py` 的 `AdminStore` 写入（`append_if_absent` 缺席去重原语；评审注：仓库中不存在 `AdminAlertStore`，本条按实际类名与 API 修正），去重键 `code-review-stall-<run_id>`（单 run 至多一条）；run 终态后不再触发（`running=false` 短路）。
 
 拒绝的替代：dashboard 读侧触发（依赖前端轮询，分面未打开即失效）；独立定时器（复用 admin_monitor 节拍即可，少一个线程）。
 
