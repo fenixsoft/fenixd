@@ -452,6 +452,11 @@ class AgentRunner:
         "_record_provider_probe": ("_provider_circuit", "_record_provider_probe"),
         "record_transient_break": ("_provider_circuit", "record_transient_error"),
         "is_global_transient_break_active": ("_provider_circuit", "is_global_transient_break"),
+        # evo-fix-transient-break-unseal-backoff 1.2：解封节奏闸态/单条准入/
+        # 错峰积压放完回调（engine 门面经同名方法消费，fail-open 口径见彼处）。
+        "transient_unseal_gate": ("_provider_circuit", "transient_unseal_gate"),
+        "admit_unseal_dispatch": ("_provider_circuit", "admit_unseal_dispatch"),
+        "note_unseal_release_drained": ("_provider_circuit", "note_release_drained"),
         "is_signal_kill_cooldown": ("_provider_circuit", "is_signal_kill_cooldown"),
         "signal_kill_cooldown_until": ("_provider_circuit", "signal_kill_cooldown_until"),
         "_signal_kill_counts": ("_provider_circuit", "signal_kill_counts"),

@@ -778,16 +778,24 @@ class TestGlobalTransientBreak:
             "unrecognized model claude-sonnet-5", now=1200) is True
 
     def test_break_expires_and_resets(self):
-        """冷却到期 → 熔断解除，窗口指纹计数清零重新起算。"""
+        """冷却到期 → 熔断解除进入 post-unseal hold，窗口指纹计数清零重新起算。
+
+        （evo-fix-transient-break-unseal-backoff 2.2 修订：清零语义保留；「到期
+        即全量放行」改为 hold+探针渐进恢复——hold 期内闸门整队持有，计数清零
+        语义不变：解封后再触发需重新累计 3 次。）
+        """
         pc, pm = self._make_circuit()
         pc.record_transient_error("unrecognized model deepseek-v4", now=1000)
         pc.record_transient_error("unrecognized model deepseek-v4", now=1100)
         assert pc.record_transient_error("unrecognized model deepseek-v4", now=1200) is True
         # 冷却中仍冻结
         assert pc.is_global_transient_break(now=1700) is True
-        # 冷却到期（缺省 600s）→ 解除
+        # 冷却到期（缺省 600s）→ 解除冻结，进入 post-unseal hold（非全量放行）
         assert pc.is_global_transient_break(now=1801) is False
-        # 计数清零：再触发需重新累计 3 次
+        assert pc.is_post_unseal_hold(now=1801) is True
+        assert pc.transient_unseal_gate(now=1801) == "hold"
+        assert pc._transient_hold_until == pytest.approx(1801 + 60)
+        # 计数清零：再触发需重新累计 3 次（清零语义保留）
         assert pc.record_transient_error("unrecognized model deepseek-v4", now=1900) is False
 
     def test_threshold_config_respected(self):
@@ -856,21 +864,35 @@ class TestGlobalTransientBreak:
             "unrecognized model deepseek-v4", now=1200) is True
 
     def test_expiry_wakes_dispatch_queue_once(self):
-        """冷却到期查询 → 唤醒 `_process_queue` 恰一次（幂等，不重复唤醒）。"""
+        """冷却到期查询 → 唤醒 `_process_queue` 恰一次（幂等，不重复唤醒）。
+
+        （evo-fix-transient-break-unseal-backoff 2.2 修订：到期唤醒语义保留，
+        但唤醒不再等于全量放行——解封后先进入 post-unseal hold，闸门仍整队
+        持有；hold 期满才放单条探针。）
+        """
         pc, pm, calls = self._make_circuit_with_engine()
         self._trigger(pc)
         # 冻结中查询不唤醒（`_process_queue` 本就该被闸门挡住）
         assert pc.is_global_transient_break(now=1700) is True
         assert calls == []
-        # 冷却到期（缺省 600s）→ 解除并唤醒一次
+        # 冷却到期（缺省 600s）→ 解除并唤醒一次（唤醒 ≠ 放行：随即进入 hold）
         assert pc.is_global_transient_break(now=1801) is False
         assert calls == [True]
+        assert pc.transient_unseal_gate(now=1801) == "hold"
         # 已解除后再查询不再重复唤醒（熔断态已清零，早退分支）
         assert pc.is_global_transient_break(now=1900) is False
         assert calls == [True]
+        # hold 期满 → 探针观察窗（单条探针准入，非全量放行）
+        assert pc.transient_unseal_gate(now=1862) == "probe"
+        assert pc.admit_unseal_dispatch(now=1862) is True
+        assert pc.admit_unseal_dispatch(now=1862.5) is False
 
     def test_expiry_wake_failure_does_not_block_resume(self):
-        """唤醒异常 MUST NOT 阻断「熔断到期 → 恢复派发」闸门语义（fail-open）。"""
+        """唤醒异常 MUST NOT 阻断「熔断到期 → 恢复派发」闸门语义（fail-open）。
+
+        （evo-fix-transient-break-unseal-backoff 2.2 修订：fail-open 覆盖解封
+        全链——唤醒异常不阻断解封→hold→探针观察窗的闸门推进。）
+        """
         class _BoomEngine:
             def _process_queue(self):
                 raise RuntimeError("boom")
@@ -879,8 +901,12 @@ class TestGlobalTransientBreak:
         pm._pm_engine_ref = _BoomEngine()
         self._trigger(pc)
         assert pc.is_global_transient_break(now=1801) is False
-        # 熔断态确已清零（恢复派发不被异常吞掉）
+        # 熔断态确已清零，解封→hold 推进不被唤醒异常吞掉
+        assert pc.transient_unseal_gate(now=1801) == "hold"
         assert pc.is_global_transient_break(now=1900) is False
+        # hold 期满 → 探针观察窗照常推进
+        assert pc.transient_unseal_gate(now=1862) == "probe"
+        assert pc.admit_unseal_dispatch(now=1862) is True
 
     def test_expiry_without_engine_ref_is_noop(self):
         """无 PMEngine 回引（测试/CLI 场景）时零操作、不抛异常。"""

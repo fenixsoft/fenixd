@@ -8,6 +8,7 @@
 
 import json
 import re
+import threading
 import time
 from core.agent_runner.run_files import append_run_line
 from datetime import datetime, timezone
@@ -86,6 +87,20 @@ TRANSIENT_BREAK_ALERT_THROTTLE_MINUTES = 15  # major 告警节流（分钟）
 # 的 attempt 聚合清单有界上限——冻结期内事件持续累积，清单 MUST 有界，避免
 # description/evidence 与 admin_alerts.json 无界增长；截断时追加 truncated=<被略去条数>。
 TRANSIENT_BREAK_ATTEMPT_LIST_LIMIT = 20
+
+# ── 解封渐进恢复（evo-fix-transient-break-unseal-backoff D2/D5）────────────
+# 2026-09-22 两场瞬断风暴实证缺口：熔断到期分支清零后立即 _wake_dispatch_after_break
+# 一次性放出全部积压——per-spec 600 秒重派延迟在冻结期内已耗完，积压在解封瞬间
+# 天然同批并发重撞同一 provider（解封后 35.9 秒再吃失败、16 分 34 秒第二场）。
+# 修复：解封后先进入 post-unseal hold（基数×解封次数、封顶），hold 期满只放一条
+# 最高优先级派发作探针，观察窗内无同指纹新记账才按队列优先级错峰放行其余积压。
+# 缺省值即 design D5 保守档（可配 agents.transient_unseal_*，core/config.py 规范化）；
+# backoff_base=0 语义为禁用（回到既有到期即全量放行）。
+TRANSIENT_UNSEAL_BACKOFF_BASE_SECONDS = 60  # post-unseal hold 基数秒
+TRANSIENT_UNSEAL_BACKOFF_MAX_SECONDS = 600  # hold 封顶秒
+TRANSIENT_UNSEAL_PROBE_WINDOW_SECONDS = 120  # 探针观察窗秒
+TRANSIENT_UNSEAL_STABLE_WINDOW_SECONDS = 1800  # 解封次数稳定衰减窗秒（30 分钟）
+TRANSIENT_UNSEAL_RELEASE_STAGGER_SECONDS = 30  # 错峰放行节拍秒
 
 # ── 信号死法冷却（evo-sigterm-source-tracking-cooldown）────────────────
 # CLI 子进程以信号死法结束（Exit 143 / 负信号 -9/-15 等）且非 daemon 关停、
@@ -183,6 +198,30 @@ class ProviderCircuit:
         #   _transient_break_until: 全局冻结到期单调秒（0 = 未冻结）
         self._transient_break_events: Dict[str, list] = {}
         self._transient_break_until: float = 0.0
+
+        # evo-fix-transient-break-unseal-backoff：解封渐进恢复态（进程内存、
+        # 不落盘，与熔断态同构——daemon 重启清零可接受，重启本身拉开了重试间隔）。
+        #   _transient_unseal_counts: {指纹: 解封次数}（每次到期解封 +1、探针失败
+        #     额外 +1 加速升级，design D2）
+        #   _transient_unseal_hot_at: {指纹: 最近计数累加时刻单调秒}（稳定衰减窗锚点）
+        #   _transient_hold_until: post-unseal hold 到期单调秒（0 = 无）
+        #   _transient_probe_until: 探针观察窗到期单调秒（0 = 无）
+        #   _transient_probe_fps: 观察窗内待判指纹集合（本次解封涉及指纹）
+        #   _transient_probe_dispatched: 探针单条准入是否已消费
+        #   _transient_probe_failed: 观察窗内同指纹新记账集合（探针判败依据，D4）
+        #   _transient_release_next_at: 错峰放行下次准入单调秒（0 = 非错峰态）
+        #   _transient_release_until: 错峰放行硬过期单调秒（防长驻拖慢常态吞吐）
+        #   _unseal_wake_timer: 解封节奏唤醒定时器（单飞行，threading.Timer）
+        self._transient_unseal_counts: Dict[str, int] = {}
+        self._transient_unseal_hot_at: Dict[str, float] = {}
+        self._transient_hold_until: float = 0.0
+        self._transient_probe_until: float = 0.0
+        self._transient_probe_fps: set = set()
+        self._transient_probe_dispatched: bool = False
+        self._transient_probe_failed: set = set()
+        self._transient_release_next_at: float = 0.0
+        self._transient_release_until: float = 0.0
+        self._unseal_wake_timer: Optional[threading.Timer] = None
 
         # evo-sigterm-source-tracking-cooldown：信号死法（143/-9）冷却态（spec 维度）。
         # 进程内存、不落盘（daemon 重启清零，重启即视为恢复）：
@@ -612,6 +651,20 @@ class ProviderCircuit:
                 or 0
             )
             self._transient_break_until = now + (cooldown or TRANSIENT_BREAK_COOLDOWN_SECONDS)
+            # 重新熔断 → 解封中间态全部作废（design D3：hold/观察窗期间在飞 run
+            # 失败再次触发熔断时按冻结语义重计，闸门先查冻结即天然满足；此处
+            # 显式清残留，防解封后陈旧 hold/probe/错峰态误拦）。
+            self._transient_hold_until = 0.0
+            self._transient_probe_until = 0.0
+            self._transient_probe_dispatched = False
+            self._transient_probe_failed = set()
+            self._transient_probe_fps = set()
+            self._transient_release_next_at = 0.0
+            self._transient_release_until = 0.0
+            # 冻结到期唤醒排程（evo-fix-transient-break-unseal-backoff：MUST NOT
+            # 依赖外部触发点——惰性到期无人查询即停摆的既有缺口在冻结层同样存在，
+            # 定时器链在到期时主动唤醒派发闸门）。
+            self._schedule_unseal_wake(cooldown or TRANSIENT_BREAK_COOLDOWN_SECONDS)
             # 触发时构建窗口内 attempt 聚合清单（design D2，对指纹归一化免疫）：
             # ERROR 日志与升级信号上下文并列注入，可定位风暴来源 provider/run。
             attempt_summary, truncated = self._build_attempt_summary(events)
@@ -647,7 +700,16 @@ class ProviderCircuit:
         D2 聚合对混合元素类型报错/取值失败。window 非 None 时先滑出窗口外旧
         事件（按 ``at`` 时间戳剔除，行为不变；早退分支不剔除——与既有语义
         一致）。元信息缺省 None → 空串占位并正常记账，MUST NOT 阻断熔断记账。
+
+        兼任探针判败记账（evo-fix-transient-break-unseal-backoff D4）：探针
+        观察窗内同指纹新记账即探针失败标记——「探针是否通过」不引入新探测
+        调用，天然复用本滑窗 funnel。
         """
+        if (
+            self._transient_probe_until > now
+            and fingerprint in self._transient_probe_fps
+        ):
+            self._transient_probe_failed.add(fingerprint)
         events = self._transient_break_events.setdefault(fingerprint, [])
         if window is not None and window > 0:
             events = [t for t in events if now - t.at <= window]
@@ -714,17 +776,47 @@ class ProviderCircuit:
             summary, truncated = self._build_attempt_summary(
                 [ev for evs in self._transient_break_events.values() for ev in evs]
             )
+            # 解封次数记忆 + post-unseal hold（evo-fix-transient-break-unseal-
+            # backoff 1.1/D2）：到期解封该指纹次数 +1（稳定窗衰减后），hold =
+            # 基数×解封后次数（多指纹取最大）、封顶；hold 期满只放单条探针。
+            involved = {
+                fp for fp, evs in self._transient_break_events.items() if evs
+            }
+            hold = self._apply_unseal_counts_and_hold(involved, now)
+            self._transient_hold_until = (now + hold) if hold > 0 else 0.0
             self._transient_break_until = 0.0
             self._transient_break_events.clear()
-            self._pm.logger.warning(
-                "agent_runner",
-                "Global transient break expired — dispatch resumed, "
-                "fingerprint window reset",
-            )
+            # 解封瞬间不再全量放行：错峰/探针残留一并清零（新 hold 全新起算）。
+            self._transient_release_next_at = 0.0
+            self._transient_release_until = 0.0
+            self._transient_probe_until = 0.0
+            self._transient_probe_dispatched = False
+            self._transient_probe_failed = set()
+            # 探针观察窗待判指纹 = 本次解封涉及指纹（hold 期满后同指纹新记账
+            # 即探针判败依据，D4）；禁用态（hold=0）下集合不参与任何判定。
+            self._transient_probe_fps = set(involved)
+            if hold > 0:
+                self._pm.logger.warning(
+                    "agent_runner",
+                    f"Global transient break expired — dispatch resume gated by "
+                    f"post-unseal hold {int(hold)}s then single-probe release "
+                    f"(unseal counts={self._unseal_counts_snapshot(now, involved)}), "
+                    f"fingerprint window reset (evo-fix-transient-break-unseal-backoff)",
+                )
+            else:
+                self._pm.logger.warning(
+                    "agent_runner",
+                    "Global transient break expired — dispatch resumed, "
+                    "fingerprint window reset",
+                )
             # 熔断自然过期主动唤醒派发（见 _wake_dispatch_after_break 文档）。
             self._wake_dispatch_after_break()
             # 熔断自然过期自动核销（紧邻 WARNING 之后；异常静默不阻断闸门语义）
             self._auto_resolve_transient_storm(summary, truncated)
+            # hold 期满唤醒排程（evo-fix-transient-break-unseal-backoff：hold
+            # MUST NOT 依赖外部触发点才被发现——定时器到期主动唤醒派发闸门）。
+            if hold > 0:
+                self._schedule_unseal_wake(hold)
             return False
         return True
 
@@ -758,6 +850,360 @@ class ProviderCircuit:
                 "agent_runner",
                 f"熔断到期唤醒派发失败（不阻断恢复）: {e}",
             )
+
+    # ── 解封渐进恢复态机（evo-fix-transient-break-unseal-backoff 1.1/1.2/1.3）──
+    # 态序（design D3，短路顺序即优先级）：冻结 > post-unseal hold > 探针观察窗
+    # > 错峰放行 > open。惰性自清 + threading.Timer 定时器链双驱动——到期推进
+    # MUST NOT 依赖外部触发点（fix-provider-transient-backoff 之前「惰性到期
+    # 无人查询即停摆，最坏约 4 分钟」的缺口在 hold/观察窗层同样致命）。
+
+    @staticmethod
+    def _nonneg_number(value, default) -> float:
+        """把配置值容错归一为非负数（0 保留 = 禁用语义；负数/非法 → default）。
+
+        与 _positive_number 同口径，差异仅在 0 的去向：解封节奏的 base/stagger
+        以 0 表达「禁用」（回到到期即全量放行 / 错峰不节拍），必须保留 0 而非
+        回缺省（_positive_number 把 0 归一为缺省会复活禁用的开关）。
+        """
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            return float(default)
+        if v != v or v in (float("inf"), float("-inf")):  # NaN / inf 兜底
+            return float(default)
+        if v < 0:
+            return float(default)
+        return v
+
+    def _unseal_cfg(self) -> dict:
+        """解封节奏五键配置读取（agents.transient_unseal_*，数值容错钳制）。
+
+        base/stagger 非负钳制（0 = 禁用语义保留）；cap/stable 正数钳制（0/负数
+        无意义回缺省，与 _positive_number 既有口径一致）。每次读取即取当前
+        配置——配置热更新即时生效（spec Scenario: 配置键生效）。
+        """
+        return {
+            "base": self._nonneg_number(
+                self._pm._get_config(
+                    "agents.transient_unseal_backoff_base_seconds",
+                    TRANSIENT_UNSEAL_BACKOFF_BASE_SECONDS,
+                ),
+                TRANSIENT_UNSEAL_BACKOFF_BASE_SECONDS,
+            ),
+            "cap": self._positive_number(
+                self._pm._get_config(
+                    "agents.transient_unseal_backoff_max_seconds",
+                    TRANSIENT_UNSEAL_BACKOFF_MAX_SECONDS,
+                ),
+                TRANSIENT_UNSEAL_BACKOFF_MAX_SECONDS,
+            ),
+            "probe_window": self._nonneg_number(
+                self._pm._get_config(
+                    "agents.transient_unseal_probe_window_seconds",
+                    TRANSIENT_UNSEAL_PROBE_WINDOW_SECONDS,
+                ),
+                TRANSIENT_UNSEAL_PROBE_WINDOW_SECONDS,
+            ),
+            "stable": self._positive_number(
+                self._pm._get_config(
+                    "agents.transient_unseal_stable_window_seconds",
+                    TRANSIENT_UNSEAL_STABLE_WINDOW_SECONDS,
+                ),
+                TRANSIENT_UNSEAL_STABLE_WINDOW_SECONDS,
+            ),
+            "stagger": self._nonneg_number(
+                self._pm._get_config(
+                    "agents.transient_unseal_release_stagger_seconds",
+                    TRANSIENT_UNSEAL_RELEASE_STAGGER_SECONDS,
+                ),
+                TRANSIENT_UNSEAL_RELEASE_STAGGER_SECONDS,
+            ),
+        }
+
+    def _effective_unseal_count(self, fingerprint: str, now: float) -> int:
+        """指纹当前生效解封次数（稳定衰减窗后按整窗数衰减，design D2）。
+
+        计数只在累加时保温（hot_at）；距上次累加每满一个稳定窗衰减一次——
+        减一而非直接清零（既防长期抖动升级又防一次性事故永久惩罚）。衰减在
+        读取时惰性结算，不落盘、不回写。
+        """
+        count = int(self._transient_unseal_counts.get(fingerprint, 0) or 0)
+        if count <= 0:
+            return 0
+        hot = float(self._transient_unseal_hot_at.get(fingerprint, 0.0) or 0.0)
+        stable = self._unseal_cfg()["stable"]
+        if stable > 0 and hot > 0 and now > hot:
+            elapsed = now - hot
+            if elapsed >= stable:
+                count = max(0, count - int(elapsed // stable))
+        return count
+
+    def transient_unseal_count(self, fingerprint: str, now: float | None = None) -> int:
+        """指纹当前解封次数（测试/观测辅助）。"""
+        now = self._pm._now() if now is None else now
+        return self._effective_unseal_count(fingerprint, now)
+
+    def _bump_unseal_count(self, fingerprint: str, now: float) -> None:
+        """指纹解封次数 +1 并保温（到期解封与探针失败两条累加路径共用）。"""
+        count = self._effective_unseal_count(fingerprint, now) + 1
+        self._transient_unseal_counts[fingerprint] = count
+        self._transient_unseal_hot_at[fingerprint] = now
+
+    def _unseal_counts_snapshot(self, now: float, fingerprints: set) -> str:
+        """解封日志用的次数快照（involved 指纹 → 衰减后当前次数）。"""
+        if not fingerprints:
+            return "-"
+        return ",".join(
+            f"{fp[:24]}={self._effective_unseal_count(fp, now)}"
+            for fp in sorted(fingerprints)
+        )
+
+    def _apply_unseal_counts_and_hold(self, involved: set, now: float) -> float:
+        """到期解封：involved 指纹次数 +1，返回 post-unseal hold 秒数（1.1）。
+
+        hold = 基数 × 解封后的当前次数（首场解封 hold=基数而非 0，design D2），
+        多指纹并存取各指纹次数最大值（熔断/解封是全局单值，取最大避免按计数 0
+        放空 hold）、封顶 cap。base<=0（禁用）返回 0——既有「到期即全量放行」
+        语义，不记忆不 hold。
+        """
+        cfg = self._unseal_cfg()
+        base = cfg["base"]
+        if base <= 0:
+            return 0.0
+        max_count = 0
+        for fp in involved:
+            self._bump_unseal_count(fp, now)
+            max_count = max(max_count, int(self._transient_unseal_counts.get(fp, 0)))
+        if max_count <= 0:
+            max_count = 1  # 防御：无 involved（理论不达）→ 基数水平
+        return float(min(base * max_count, cfg["cap"]))
+
+    def is_post_unseal_hold(self, now: float | None = None) -> bool:
+        """post-unseal hold 判定 + 到期推进（hold → 探针观察，1.1）。
+
+        到期推进在本查询内联完成：进入探针观察窗（首条派发=探针待准入）并
+        排程观察窗到期唤醒。hold 期内返回 True（派发闸门整队持有）。
+        """
+        if self._transient_hold_until <= 0:
+            return False
+        now = self._pm._now() if now is None else now
+        if now >= self._transient_hold_until:
+            self._transient_hold_until = 0.0
+            self._enter_probe_observation(now)
+            return False
+        return True
+
+    def _enter_probe_observation(self, now: float) -> None:
+        """hold 期满 → 探针观察窗（1.1）：先只放最高优先级单条派发作探针。"""
+        probe_window = self._unseal_cfg()["probe_window"]
+        self._transient_probe_until = now + probe_window
+        self._transient_probe_dispatched = False
+        self._transient_probe_failed = set()
+        if probe_window <= 0:
+            # 观察窗禁用：hold 期满直达错峰放行（探针语义退化为错峰首条）
+            self._finish_probe(now, passed=True)
+            return
+        self._pm.logger.info(
+            "agent_runner",
+            f"Post-unseal hold expired — probe observation window "
+            f"{int(probe_window)}s entered, next dispatch admitted as single "
+            f"probe (evo-fix-transient-break-unseal-backoff)",
+        )
+        self._schedule_unseal_wake(probe_window)
+
+    def is_probe_observation(self, now: float | None = None) -> bool:
+        """探针观察窗判定 + 到期推进（探针判定：败=重熔断，过=错峰放行，1.3）。"""
+        if self._transient_probe_until <= 0:
+            return False
+        now = self._pm._now() if now is None else now
+        if now >= self._transient_probe_until:
+            self._finish_probe(now, passed=not self._transient_probe_failed)
+            return False
+        return True
+
+    def _finish_probe(self, now: float, passed: bool) -> None:
+        """观察窗期满探针判定（1.3/D4）。
+
+        通过（观察窗内无同指纹新记账）→ 错峰放行态；失败 → 按现行规则重新
+        熔断（cooldown 与触发路径同配置源）+ 该指纹解封次数额外 +1（加速升级，
+        下一场 hold 相应加长，design D2）。告警链路照常：本路径不新增告警
+        种类，阈值再达时既有 transient_break_storm 告警/核销链路自行运转。
+        """
+        cfg = self._unseal_cfg()
+        self._transient_probe_until = 0.0
+        self._transient_probe_dispatched = False
+        if passed:
+            stagger = cfg["stagger"]
+            # 错峰放行：下次准入即刻、其后按 stagger 节拍单条放行；硬过期
+            # 下限 600s（观察窗 10 倍），防积压长期未清时错峰态长驻拖慢常态吞吐。
+            horizon = max(cfg["probe_window"] * 10.0, 600.0)
+            self._transient_release_next_at = now
+            self._transient_release_until = now + horizon
+            self._pm.logger.info(
+                "agent_runner",
+                f"Probe passed — staggered release of held backlog at "
+                f"{int(stagger)}s intervals (horizon {int(horizon)}s) "
+                f"(evo-fix-transient-break-unseal-backoff)",
+            )
+            if stagger > 0:
+                self._schedule_unseal_wake(max(0.5, stagger))
+            return
+        failed = sorted(self._transient_probe_failed)
+        for fp in failed:
+            self._bump_unseal_count(fp, now)
+        self._transient_probe_failed = set()
+        self._transient_probe_fps = set()
+        self._transient_release_next_at = 0.0
+        self._transient_release_until = 0.0
+        cooldown = self._positive_number(
+            self._pm._get_config(
+                "agents.transient_break_cooldown_seconds",
+                TRANSIENT_BREAK_COOLDOWN_SECONDS,
+            ),
+            TRANSIENT_BREAK_COOLDOWN_SECONDS,
+        )
+        self._transient_break_until = now + cooldown
+        self._pm.logger.error(
+            "agent_runner",
+            f"Probe FAILED — same-fingerprint transient failure during "
+            f"observation window (fingerprints={failed}); re-freezing all new "
+            f"dispatch for {int(cooldown)}s, unseal count +1 (next hold "
+            f"escalates) (evo-fix-transient-break-unseal-backoff)",
+        )
+        self._schedule_unseal_wake(cooldown)
+
+    def transient_unseal_gate(self, now: float | None = None) -> str:
+        """解封节奏闸态单点查询（queue 首道闸消费，1.2）。
+
+        返回当前闸态（短路顺序即优先级，design D3）：
+        ``"frozen"``       全局熔断冻结期（含到期推进——解封+hold 设置在此发生）
+        ``"hold"``         post-unseal hold（整队持有；含到期推进→探针观察）
+        ``"probe"``        观察窗内探针待放行（仅单条准入，见 admit_unseal_dispatch）
+        ``"observe"``      探针已放行、观察窗未期满（整队持有）
+        ``"release"``      错峰放行且当拍准入开放（单条节拍准入）
+        ``"release-wait"`` 错峰放行且当拍未到节拍（整队持有）
+        ``"open"``         无解封节奏约束
+        """
+        now = self._pm._now() if now is None else now
+        if self.is_global_transient_break(now=now):
+            return "frozen"
+        if self.is_post_unseal_hold(now=now):
+            return "hold"
+        if self.is_probe_observation(now=now):
+            return "observe" if self._transient_probe_dispatched else "probe"
+        # 观察窗到期推进可能产生重熔断（探针判败，_finish_probe 内联置冻结）
+        # ——重查冻结保持短路序（幂等：已解封时该查询早退 False，零副作用）。
+        if self.is_global_transient_break(now=now):
+            return "frozen"
+        if self._transient_release_next_at > 0:
+            if now >= self._transient_release_until:
+                self._exit_release(now)
+                return "open"
+            return (
+                "release"
+                if now >= self._transient_release_next_at
+                else "release-wait"
+            )
+        return "open"
+
+    def admit_unseal_dispatch(self, now: float | None = None) -> bool:
+        """解封节奏单条派发准入（queue pop 前消费，1.2；调用方持 _queue_lock）。
+
+        探针观察窗：仅首条派发准入（探针——扫描序天然取最高优先级条目），
+        其余持有；错峰放行：按 stagger 节拍每次准入一条（错峰，MUST NOT 同拍
+        全量放出）；其余态放行。消费即推进下一节拍并续排到期唤醒。
+        """
+        now = self._pm._now() if now is None else now
+        if self._transient_hold_until > now:
+            return False  # 防御：hold 态不得经 admit 旁路放行
+        if self._transient_probe_until > now:
+            if self._transient_probe_dispatched:
+                return False
+            self._transient_probe_dispatched = True
+            self._pm.logger.info(
+                "agent_runner",
+                "Probe dispatch admitted (single highest-priority entry) — "
+                "backlog held until observation window passes "
+                "(evo-fix-transient-break-unseal-backoff)",
+            )
+            return True
+        if self._transient_release_next_at > 0:
+            if now >= self._transient_release_until:
+                self._exit_release(now)
+                return True
+            if now >= self._transient_release_next_at:
+                stagger = self._unseal_cfg()["stagger"]
+                self._transient_release_next_at = now + stagger
+                if stagger > 0:
+                    self._schedule_unseal_wake(max(0.5, stagger))
+                return True
+            return False
+        return True
+
+    def _exit_release(self, now: float) -> None:
+        """退出错峰放行态（积压放完/硬过期），恢复常态派发节奏。"""
+        self._transient_release_next_at = 0.0
+        self._transient_release_until = 0.0
+        self._pm.logger.info(
+            "agent_runner",
+            "Staggered release finished — dispatch back to normal cadence "
+            "(evo-fix-transient-break-unseal-backoff)",
+        )
+
+    def note_release_drained(self) -> None:
+        """积压放完回调（queue 读侧：release-wait 且队列空）——退出错峰态。"""
+        if self._transient_release_next_at > 0:
+            self._exit_release(self._pm._now())
+
+    def _schedule_unseal_wake(self, delay: float) -> None:
+        """解封节奏唤醒定时器（单飞行；复用 queue._schedule_backoff_retry 先例）。
+
+        hold/观察窗/错峰到期 MUST 主动唤醒派发通道（design D3）：回调
+        ``_on_unseal_wake`` 经 PMEngine 门面触发一次 ``_process_queue``（其
+        首道闸查询即完成态机推进与准入），并按当前态续排下一锚点形成自驱链。
+        单飞行：新排程先 cancel 旧定时器（已 fire 的 cancel 为无操作）。
+        daemon=True 随进程消亡；无 PMEngine 回引（测试/CLI）时唤醒零操作，
+        排程无害。
+        """
+        prior = self._unseal_wake_timer
+        timer = threading.Timer(max(0.5, float(delay)), self._on_unseal_wake)
+        timer.daemon = True
+        self._unseal_wake_timer = timer
+        if prior is not None:
+            prior.cancel()
+        timer.start()
+
+    def _on_unseal_wake(self) -> None:
+        """解封节奏定时器回调：唤醒派发闸门 + 按当前态续排下一锚点。"""
+        self._unseal_wake_timer = None
+        self._wake_dispatch_after_break()
+        # 唤醒推进（到期迁移/准入推进）完成后再取当前时刻续排——用推进前的
+        # 旧时刻会把刚过期的锚点再排一遍（多一次空唤醒）。
+        try:
+            now = self._pm._now()
+        except Exception:
+            now = time.monotonic()
+        delay = self._next_unseal_wake_delay(now)
+        if delay is not None:
+            self._schedule_unseal_wake(delay)
+
+    def _next_unseal_wake_delay(self, now: float) -> Optional[float]:
+        """当前态距下一到期锚点的秒数（无中间态返回 None，链条终止）。
+
+        锚点统一 +0.05s 裕量：定时器按墙钟计时、闸门按单调 ``_now`` 判定，
+        裕量保证回调里查询时边界已过（避免「差半拍→空唤醒→再排 0.5s」抖动）。
+        """
+        if self._transient_break_until > now:
+            return self._transient_break_until - now + 0.05
+        if self._transient_hold_until > now:
+            return self._transient_hold_until - now + 0.05
+        if self._transient_probe_until > now:
+            return self._transient_probe_until - now + 0.05
+        if self._transient_release_next_at > 0:
+            if now >= self._transient_release_until:
+                return None
+            return max(0.5, self._transient_release_next_at - now + 0.05)
+        return None
 
     def _alert_transient_break(
         self,

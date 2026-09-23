@@ -171,6 +171,16 @@ class ConfigLoader:
     TRANSIENT_BREAK_WINDOW_DEFAULT = 600  # 熔断窗口秒
     TRANSIENT_BREAK_COOLDOWN_DEFAULT = 600  # 熔断冷却秒
 
+    # ── 解封渐进恢复（evo-fix-transient-break-unseal-backoff 1.4 / design D5）──
+    # agents.transient_unseal_* 五键缺省值：缺省启用、数值保守（design D5）。
+    # backoff_base=0 语义为「解封节奏禁用」（回到既有到期即全量放行行为），
+    # 规范化显式保留 0（_normalize_transient_seconds 接受整值 0）。
+    TRANSIENT_UNSEAL_BACKOFF_BASE_DEFAULT = 60  # post-unseal hold 基数秒
+    TRANSIENT_UNSEAL_BACKOFF_MAX_DEFAULT = 600  # hold 封顶秒
+    TRANSIENT_UNSEAL_PROBE_WINDOW_DEFAULT = 120  # 探针观察窗秒
+    TRANSIENT_UNSEAL_STABLE_WINDOW_DEFAULT = 1800  # 解封次数稳定衰减窗秒（30 分钟）
+    TRANSIENT_UNSEAL_RELEASE_STAGGER_DEFAULT = 30  # 错峰放行节拍秒
+
     # ── 同因重派熔断（fix-redispatch-loop-governance D3/D5）──
     # agents.max_same_cause_redispatches：同一 spec 连续同因重派计数阈值，
     # 达阈值冻结转人工（替代既有「清零 _retry_count 后照样重派」的空转）。
@@ -291,6 +301,33 @@ class ConfigLoader:
                 config,
                 "agents.transient_break_cooldown_seconds",
                 cls.TRANSIENT_BREAK_COOLDOWN_DEFAULT,
+            ),
+            # 解封渐进恢复五键（evo-fix-transient-break-unseal-backoff 1.4）：
+            # 展示与生效同源单点归一（与既有五键同模式）。
+            "transient_unseal_backoff_base_seconds": cls._normalize_transient_seconds(
+                config,
+                "agents.transient_unseal_backoff_base_seconds",
+                cls.TRANSIENT_UNSEAL_BACKOFF_BASE_DEFAULT,
+            ),
+            "transient_unseal_backoff_max_seconds": cls._normalize_transient_seconds(
+                config,
+                "agents.transient_unseal_backoff_max_seconds",
+                cls.TRANSIENT_UNSEAL_BACKOFF_MAX_DEFAULT,
+            ),
+            "transient_unseal_probe_window_seconds": cls._normalize_transient_seconds(
+                config,
+                "agents.transient_unseal_probe_window_seconds",
+                cls.TRANSIENT_UNSEAL_PROBE_WINDOW_DEFAULT,
+            ),
+            "transient_unseal_stable_window_seconds": cls._normalize_transient_seconds(
+                config,
+                "agents.transient_unseal_stable_window_seconds",
+                cls.TRANSIENT_UNSEAL_STABLE_WINDOW_DEFAULT,
+            ),
+            "transient_unseal_release_stagger_seconds": cls._normalize_transient_seconds(
+                config,
+                "agents.transient_unseal_release_stagger_seconds",
+                cls.TRANSIENT_UNSEAL_RELEASE_STAGGER_DEFAULT,
             ),
         }
 
