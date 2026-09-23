@@ -89,6 +89,27 @@ def request_admin_invoke(project_root, spec: str, prompt: str | None = None) -> 
     if prompt and prompt.strip():
         payload["prompt"] = prompt.strip()
     req_path.parent.mkdir(parents=True, exist_ok=True)
+    # TOCTOU 修复（code-review item 546945dbaffb）：上方 exists() 检查与写入
+    # 之间存在并发窗口——两个并发请求可能都通过检查，随后各自 os.replace 覆盖
+    # 同一路径，后写者覆盖前写者（先返回 ok 的请求被静默丢弃、永不执行）。
+    # 以 O_CREAT|O_EXCL 占位创建做原子「检查+占位」：占位失败即 conflict；
+    # 内容随后经 tempfile+os.replace 原子换入。空占位窗口对消费侧
+    # （fenixd._consume_request_file 先 rename 后读私有副本）无害：最坏
+    # rename 走空占位、下一轮（1s 粒度）拾取换入的完整内容，请求不丢。
+    try:
+        placeholder_fd = os.open(
+            req_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644
+        )
+        os.close(placeholder_fd)
+    except FileExistsError:
+        return {
+            "ok": False,
+            "found": True,
+            "conflict": True,
+            "file": str(req_path),
+            "created": None,
+            "error": "已有进行中的 Admin 处置",
+        }
     fd, tmp_path = tempfile.mkstemp(
         dir=str(req_path.parent), prefix=".admin_invoke_request.", suffix=".tmp"
     )
@@ -101,6 +122,12 @@ def request_admin_invoke(project_root, spec: str, prompt: str | None = None) -> 
     except Exception:
         try:
             os.unlink(tmp_path)
+        except OSError:
+            pass
+        # 写失败时尽力清掉自己占的位（仅当仍是空占位，避免误删他人请求）
+        try:
+            if req_path.stat().st_size == 0:
+                req_path.unlink()
         except OSError:
             pass
         raise

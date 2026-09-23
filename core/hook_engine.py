@@ -38,6 +38,7 @@ import subprocess
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -79,6 +80,11 @@ VALID_EVENTS = tuple(SpecStatus.ALL) + (HOOK_EVENT_ALL_DONE,)
 # 超时缺省（D4：shell 缺省 60，webhook 缺省 10）
 DEFAULT_SHELL_TIMEOUT_SECONDS = 60
 DEFAULT_WEBHOOK_TIMEOUT_SECONDS = 10
+
+# webhook url scheme 白名单：urlopen 支持 file://ftp:// 等 scheme，放行会把
+# 本地/内网资源读入审计记录（响应体截 2KB 落 hook_audit.jsonl）——仅允许
+# http/https，校验（validate_hook_entry）与执行侧（_action_webhook）双检。
+WEBHOOK_ALLOWED_SCHEMES = ("http", "https")
 
 # dashboard 重启探测（D4：保持 8787 端口；探测超时则失败告警）
 DEFAULT_DASHBOARD_PORT = 8787
@@ -183,6 +189,12 @@ def validate_hook_entry(entry: Any) -> Optional[str]:
         url = entry.get("url")
         if not isinstance(url, str) or not url.strip():
             return "webhook 动作必须提供非空 url"
+        scheme = urllib.parse.urlparse(url.strip()).scheme.lower()
+        if scheme not in WEBHOOK_ALLOWED_SCHEMES:
+            return (
+                f"webhook url scheme 非法: {scheme or '(缺失)'}"
+                f"（仅允许 {list(WEBHOOK_ALLOWED_SCHEMES)}，禁 file:// 等本地/内网协议）"
+            )
     if action == "shell":
         command = entry.get("command")
         if not isinstance(command, str) or not command.strip():
@@ -849,6 +861,13 @@ class HookEngine:
             "project": self.project_name,
         }
         timeout = _num(cfg.get("timeout_seconds"), DEFAULT_WEBHOOK_TIMEOUT_SECONDS)
+        # 执行侧复检 scheme（校验只把守配置写入路径，直改 config.yaml 可绕过）
+        scheme = urllib.parse.urlparse(url).scheme.lower()
+        if scheme not in WEBHOOK_ALLOWED_SCHEMES:
+            return STATUS_FAILURE, (
+                f"webhook url scheme 非法: {scheme or '(缺失)'}"
+                f"（仅允许 {list(WEBHOOK_ALLOWED_SCHEMES)}）"
+            )
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         req = urllib.request.Request(
             url,

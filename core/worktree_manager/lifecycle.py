@@ -525,11 +525,21 @@ class G1LifecycleMixin:
             self.logger.error("worktree_manager", f"Cleanup error: {e}")
         finally:
             # Release the spec lock
-            # Find and remove the matching lock key
+            # 键解析（code-review item 62e4613d6390）：用该 worktree 的分支反推
+            # spec 后按 `k.split(":")[0] == spec` 精确匹配释放（与 keep_for_reuse
+            # / legacy_registry 对齐）。旧子串包含匹配在 spec 名互为子串
+            # （fix-auth 与 fix-auth2）时会把他 spec 的锁一并释放——在飞 run
+            # 失去锁保护后派发器可对同一 spec 派第二个并行 run（双派发事故形态）。
+            # 分支表缺失（daemon 重启重建表）时回落 worktree 目录名解析；两路
+            # 皆不可解析则不释放（宁可靠 refresh_locks 的陈锁清扫兜底，不误放
+            # 他人锁）。
+            wt_spec = self._spec_from_branch(
+                self._wt_branches.get(wt_str) or ""
+            ) or self._spec_from_worktree_name(wt_path.name)
             to_remove = [
                 k
                 for k in self._spec_locks
-                if wt_str.endswith(k.split(":")[0]) or k.split(":")[0] in wt_str
+                if wt_spec is not None and k.split(":")[0] == wt_spec
             ]
             for k in to_remove:
                 self._spec_locks.discard(k)

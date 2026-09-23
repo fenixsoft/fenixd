@@ -207,8 +207,15 @@ def _apply_scenario_freeze(pipeline, spec_name: str) -> dict:
                     ),
                     encoding="utf-8",
                 )
-            except OSError:
-                pass
+            except OSError as e:
+                # 3.6：写失败不得零痕迹——备份是后续无理由缺场景补齐的唯一
+                # 恢复源，写失败后下轮补齐将因 backup_map 为空把场景判
+                # 「定义不可恢复」剔除（静默缩小回归面），ERROR 留痕可归因。
+                pipeline._context.logger.error(
+                    "pm_engine",
+                    f"全量场景备份写回失败 '{spec_name}'（_scenarios_full.json "
+                    f"未更新，缺场景补齐将失去恢复源）: {e}",
+                )
     pipeline._context.logger.info(
         "pm_engine",
         f"场景集冻结 '{spec_name}'（第 {current_round} 轮）：稳定集 "

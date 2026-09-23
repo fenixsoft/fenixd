@@ -500,6 +500,20 @@ def _run_legacy_verification(pipeline, spec_name: str):
         # verifier agent 进程失败的降级同样不得覆盖已 verified 结论。
         if pipeline._verified_gate_refuses(spec_name, "bug-found"):
             return
+        # ── 在飞 verify 结果状态判据（fix-daemon-lifecycle-races D6）──
+        # 进程失败分支与上两个分支（bug-found/verified）同款复核：入口
+        # testing 判据之后 run_verifier 期间状态已漂移（拨回 implemented/
+        # 并发接管）→ DEBUG 丢弃陈旧失败结果，不 transition bug-found、
+        # 不覆盖 error/tester_run。
+        _cur = (pipeline._context.state_machine.read_one(spec_name) or {}).get("status", "")
+        if _cur != "testing":
+            pipeline._context.logger.debug(
+                "pm_engine",
+                f"Stale/foreign verify result discarded for '{spec_name}' "
+                f"(run {result.run_id}, current state '{_cur}', result "
+                f"process-failure) — spec no longer in testing, result dropped",
+            )
+            return
         pipeline._context.state_machine.transition(
             spec_name, "bug-found",
             trigger_run_id=result.run_id, agent_type="tester", channel="auto",

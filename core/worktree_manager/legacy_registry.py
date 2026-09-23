@@ -22,8 +22,11 @@ class G2LegacyRegistryMixin:
     def register_legacy(self, spec_name: str, worktree_path, branch: str) -> None:
         """登记某 spec 的死亡 run 遗产（worktree 路径 + 分支）。
 
-        覆盖式更新（D5）：同一 spec 再次死亡时仅保留最新一份，旧遗产直接回收
-        （避免遗产链膨胀）。daemon 重启后内存态丢失，遗产按孤儿清扫兜底回收。
+        覆盖式更新（D5）：同一 spec 再次死亡时仅保留最新一份登记（避免遗产链
+        膨胀）。本方法**只覆盖内存登记、不做物理回收**——旧遗产的 worktree 目录
+        与分支交由既有清扫路径兜底回收（``_reclaim_expired_legacy`` 宽限期回收 /
+        ``consume_legacy`` 收编回收 / 孤儿清扫），被覆盖的登记随之出册、不再受
+        清扫豁免。daemon 重启后内存态丢失，遗产按孤儿清扫兜底回收。
 
         支持两种模式（守卫拒绝重派接入，add-project-description 事故治理）：
         - worktree 模式：worktree_path 非空 —— 死亡 run 的未提交半成品目录保留；
@@ -39,7 +42,7 @@ class G2LegacyRegistryMixin:
         if not spec_name or not branch:
             return
         wt_str = str(worktree_path) if worktree_path else ""
-        # 覆盖式更新前先把旧遗产回收（D5：仅留最新一份）
+        # 覆盖式更新（D5：仅留最新一份登记；旧遗产物理回收交由清扫器）
         if spec_name in self._legacy:
             old = self._legacy[spec_name]
             self.logger.info(

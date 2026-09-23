@@ -9,6 +9,7 @@ spec_summary 的预算三字段与 worktree 检查。「需要关注」分诊由
 用法: python3 fenix_process.py <spec-name>
 """
 
+import os
 import re
 import sys
 from datetime import datetime, timezone
@@ -203,25 +204,53 @@ def _render_timeline(timeline):
     return lines
 
 
+def _wt_dir_matches_spec(wt_name: str, spec_name: str) -> bool:
+    """worktree 目录名精确对应 spec（``{impl,verify,repair}-<spec>-<ts>``）。
+
+    解析命名得完整 spec 名再精确比较（分隔符边界锚定，禁止子串包含——
+    spec 名互为前缀如 auth 与 auth2 不误命中），与 worktree_manager
+    ``_wt_name_matches_spec`` 同口径；非本框架命名返回 False。
+    """
+    if not wt_name or not spec_name:
+        return False
+    for prefix in ("impl", "verify", "repair"):
+        if wt_name.startswith(f"{prefix}-"):
+            rest = wt_name[len(prefix) + 1 :]
+            parts = rest.rsplit("-", 1)
+            if len(parts) == 2 and parts[0] and parts[1].isdigit():
+                return parts[0] == spec_name
+            return False
+    return False
+
+
 def _check_worktree(proot, spec_name):
     """活跃 worktree 与最近修改文件（保留原脚本行为）。"""
     wt_root = proot / ".claude" / "worktrees"
     if not wt_root.exists():
         return None
     for wt in wt_root.iterdir():
-        if wt.is_dir() and spec_name in wt.name:
+        if wt.is_dir() and _wt_dir_matches_spec(wt.name, spec_name):
             recent = []
             try:
-                for f in sorted(
-                    wt.rglob("*"),
-                    key=lambda x: x.stat().st_mtime if x.exists() else 0,
-                    reverse=True,
-                ):
-                    if f.is_file() and ".git/" not in str(f) and "node_modules" not in str(f):
-                        if f.suffix in (".tsx", ".ts", ".css", ".html", ".json", ".py", ".md"):
-                            recent.append((str(f.relative_to(wt)), f.stat().st_mtime))
-                    if len(recent) >= 10:
-                        break
+                # os.walk 现场剪枝（code-review item 50836a87ed56）：rglob 先
+                # 物化全树并对每个条目（含 .git/node_modules 全部文件）stat，
+                # 依赖重的仓库报告卡顿；剪枝后仅对候选扩展名文件 stat。
+                candidates = []
+                for dirpath, dirnames, filenames in os.walk(wt):
+                    dirnames[:] = [
+                        d for d in dirnames if d not in (".git", "node_modules")
+                    ]
+                    for fn in filenames:
+                        if Path(fn).suffix in (
+                            ".tsx", ".ts", ".css", ".html", ".json", ".py", ".md",
+                        ):
+                            p = Path(dirpath) / fn
+                            try:
+                                candidates.append((p.stat().st_mtime, p))
+                            except OSError:
+                                continue
+                candidates.sort(key=lambda x: x[0], reverse=True)
+                recent = [(str(p.relative_to(wt)), mt) for mt, p in candidates[:10]]
             except OSError:
                 pass
             return {"path": str(wt), "files": recent}

@@ -567,7 +567,11 @@ class StateMachine:
         # logger 允许为 None（脚本场景）：兜底为静默日志器，保证 add_spec/transition 等
         # 方法内无条件 self.logger.* 调用不崩溃
         self.logger = logger if logger is not None else _NullLogger()
-        self._lockfile = Path(str(state_path) + ".lock")
+        # 跨进程写锁单源（code-review item 59f2136ef670）：全部加锁点统一引用
+        # 本属性。旧实现误指向 STATE.md.lock（从未被使用），真实加锁文件是
+        # .STATE.md.lock——两套路径并存会诱导后续维护者据 _lockfile 协调而锁形
+        # 同虚设。
+        self._lockfile = self.state_path.parent / ".STATE.md.lock"
         # 状态文件与 .STATE.md.lock 均在 state_path.parent 下打开；状态文件迁入
         # .fenix/ 后父目录不再恒存在（项目根），构造时确保之（新项目首写路径）
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -622,7 +626,7 @@ class StateMachine:
         # Serialize the final rename via flock on a dedicated lock file.
         # 注意：调用方若已持有该锁（如 _bump_counter），必须走 _write_all_locked，
         # 否则同进程二次 flock 会自阻塞死锁。
-        lock_path = self.state_path.parent / ".STATE.md.lock"
+        lock_path = self._lockfile
         with open(lock_path, "w") as lock_f:
             fcntl.flock(lock_f, fcntl.LOCK_EX)
             try:
@@ -684,7 +688,7 @@ class StateMachine:
 
         Returns: ``mutate`` 返回的 ``result``（类型由调用方约定）。
         """
-        lock_path = self.state_path.parent / ".STATE.md.lock"
+        lock_path = self._lockfile
         with open(lock_path, "w") as lock_f:
             fcntl.flock(lock_f, fcntl.LOCK_EX)
             try:
@@ -708,7 +712,7 @@ class StateMachine:
 
         Returns: 最终生效值；spec 不存在时记 warning 并返回 0。
         """
-        lock_path = self.state_path.parent / ".STATE.md.lock"
+        lock_path = self._lockfile
         verify = 0
         for attempt in (1, 2):
             with open(lock_path, "w") as lock_f:
@@ -767,7 +771,7 @@ class StateMachine:
             （或幂等跳过时的当前）used 值。spec 缺失按旧 bump 路径容错：
             记 warning 并返回 (True, 0)，不阻断调用方。
         """
-        lock_path = self.state_path.parent / ".STATE.md.lock"
+        lock_path = self._lockfile
         with open(lock_path, "w") as lock_f:
             fcntl.flock(lock_f, fcntl.LOCK_EX)
             try:
@@ -826,7 +830,7 @@ class StateMachine:
 
         Returns: 归零前的计数值（0 = 本就干净；spec 不存在记 warning 返回 0）。
         """
-        lock_path = self.state_path.parent / ".STATE.md.lock"
+        lock_path = self._lockfile
         with open(lock_path, "w") as lock_f:
             fcntl.flock(lock_f, fcntl.LOCK_EX)
             try:

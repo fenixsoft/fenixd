@@ -138,16 +138,25 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
     })),
   };
 
-  // 监听 config 变化，更新表单值
+  // 监听 config 变化，更新表单值。回填门控（code-review item 5d6582ba9951，
+  // 同 AgentModelPanel item 9f98edec21fa / ApprovalModePanel item a8786c075c4f）：
+  // 无条件 setFieldsValue 会用外部 config 覆盖用户正在编辑、尚未保存的内容
+  // （保存后重载/其它面板保存/同步用户级设置触发的刷新）。对回填产物做
+  // 序列化比较，只在内容真正变化时回填。
+  const lastProvidersBackfillRef = useRef('');
   useEffect(() => {
-    form.setFieldsValue({
+    const next = {
       providers: (config.llm.providers || []).map((p) => ({
         ...p,
         envEntries: toEnvEntries(p.env),
         billingEnabled: p.billing?.enabled ?? false,
         prices: pricesForProvider(p.billing?.prices),
       })),
-    });
+    };
+    const key = JSON.stringify(next);
+    if (key === lastProvidersBackfillRef.current) return;
+    lastProvidersBackfillRef.current = key;
+    form.setFieldsValue(next);
   }, [config.llm.providers, form]);
 
   // 校验/拦截失败时展开全部折叠区——错误行（价格必填、重复 model）可能藏在
