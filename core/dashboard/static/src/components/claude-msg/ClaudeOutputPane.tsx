@@ -16,7 +16,9 @@ interface ClaudeOutputPaneProps {
   runId: string;
   project: string;
   tail?: number;
-  /** 事件数变化回调（供外层在标题处显示"共 N 条事件"） */
+  /** 事件数变化回调（供外层在标题处显示"共 N 条事件"）。上报流事件总数
+   * （与面板头部「共 M 条事件」同源），首拉返回前退化为已加载条数——
+   * 「加载更早事件」只增大已加载窗口、不改变总数，外层标题不随分页漂移 */
   onEventsCount?: (count: number) => void;
   /** run 终态回调：done / error / missing（供外层恢复输入与按钮状态） */
   onRunStatus?: (status: string) => void;
@@ -284,10 +286,13 @@ export default function ClaudeOutputPane({
   }, [runId, project, tail]);
 
   // 事件数变化通知外层（必须在条件 return 之前调用 hook，否则 loading 翻转时
-  // hook 数量变化触发 "Rendered more hooks" 崩溃）
+  // hook 数量变化触发 "Rendered more hooks" 崩溃）。上报流事件总数（与头部
+  // 「共 M 条」同源）：分页只增大已加载窗口，上报 events.length 会让外层
+  // 「共 N 条事件」在「加载更早事件」后与头部计数相左（code-review item
+  // 9ba6bf8be09c）。首拉返回前两者同为 0，totalEvents 兜底 events.length
   useEffect(() => {
-    onEventsCount?.(events.length);
-  }, [events, onEventsCount]);
+    onEventsCount?.(totalEvents || events.length);
+  }, [totalEvents, events, onEventsCount]);
 
   const messages = useMemo(
     () => runEventsToChatMessages(events, thinkingVisible),

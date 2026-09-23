@@ -309,9 +309,13 @@ def current_repo_fingerprint(project_root) -> Dict[str, Any] | None:
     root = str(project_root)
 
     def _git(*args: str) -> subprocess.CompletedProcess:
+        # errors="replace"（code-review item 330c2eb6fdeb）：text=True 严格解码，
+        # git 输出含非 UTF-8 字节（如 locale 不符时的分支名）会抛
+        # UnicodeDecodeError 逃出下方兜底、违背本函数 fail-open 契约——有损
+        # 替换解码即可（指纹只做等值比较，不消费字节语义）。
         return subprocess.run(
             ["git", "-C", root, *args],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, errors="replace", timeout=10,
         )
 
     try:
@@ -325,7 +329,9 @@ def current_repo_fingerprint(project_root) -> Dict[str, Any] | None:
             "branch": branch.stdout.strip() if branch.returncode == 0 else "",
             "merge_base": merge_base.stdout.strip() if merge_base.returncode == 0 else "",
         }
-    except (OSError, subprocess.TimeoutExpired):
+    except (OSError, subprocess.SubprocessError, ValueError):
+        # SubprocessError 覆盖 TimeoutExpired 及其余子进程异常；ValueError 兜
+        # 解码残面（与 errors="replace" 双保险）。一律 fail-open 返回 None。
         return None
 
 

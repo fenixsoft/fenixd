@@ -103,13 +103,18 @@ class QQQueueMixin:
         """并行 planner-plan 豁免上限判定（在飞 ≥1 即达上限）。"""
         return len(self._active_parallel_plans) >= self._PARALLEL_PLAN_INFLIGHT_CAP
 
-    def _parallel_plan_entry_ready(self, spec: dict, sname: str) -> bool:
+    def _parallel_plan_entry_ready(self, spec: dict) -> bool:
         """并行出题条目候选可派发判定（对齐 _review_entry_ready 单一落点范式）。
 
         供 ``_process_queue`` 的 best_valid_prio 扫描与 dispatch_idx 扫描两处
         共用：状态合法（_PARALLEL_PLAN_DISPATCHABLE_STATUS）且豁免上限未满。
         状态非法（打回 drafted / 冻结 blocked / spec 已删除）→ False（条目
         滞留队列不再派发，半成品产物由消费侧校验兜底，任务 1.2）。
+
+        签名不含 ``sname``（与 ``_review_entry_ready`` 的唯一差异）：本判定
+        无需按 spec 查在飞评审——豁免上限是全局集合计数，spec 名仅调用方
+        扫描上下文自持（code-review item fe5e723fcfb3：形参不落即删，不留
+        未读参数）。
         """
         if (spec or {}).get("status") not in self._PARALLEL_PLAN_DISPATCHABLE_STATUS:
             return False
@@ -468,7 +473,7 @@ class QQQueueMixin:
                         e[2] == "planner-plan"
                         and (e[1], e[2]) not in suppressed
                         and self._parallel_plan_entry_ready(
-                            self._pm.state_machine.read_one(e[1]) or {}, e[1]
+                            self._pm.state_machine.read_one(e[1]) or {}
                         )
                         for e in self._run_queue
                     )
@@ -499,7 +504,7 @@ class QQQueueMixin:
                     if atype == "planner-plan":
                         # 并行出题条目候选判定（2.1）：状态合法且豁免上限未满；
                         # 命中不了则跳过（条目保留队列待重判，与评审条目同语义）。
-                        if not self._parallel_plan_entry_ready(spec, sname):
+                        if not self._parallel_plan_entry_ready(spec):
                             continue
                     elif atype == "spec-review":
                         # 评审条目候选判定（1.2/1.3）：状态必须 reviewing 且无
@@ -610,7 +615,7 @@ class QQQueueMixin:
                     status = spec.get("status")
                     if atype == "planner-plan":
                         # 并行出题条目候选判定：与 best_valid_prio 扫描同口径
-                        if not self._parallel_plan_entry_ready(spec, sname):
+                        if not self._parallel_plan_entry_ready(spec):
                             continue
                     elif atype == "spec-review":
                         # 评审条目候选判定（1.4）：与 best_valid_prio 扫描同口径

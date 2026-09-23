@@ -156,7 +156,10 @@ export default function CodeFixProgressCard(
       batchTotal != null
         ? `本批已处置 ${itemDone}/${batchTotal} 条`
         : `本批已处置 ${itemDone} 条`;
-    if (currentItem) {
+    // status/file 由后端从 agent 产物行拷贝（仅校验 item_id），可合法为空——
+    // 模板字面量会把 null/undefined 串成 "null"（渲染出「刚完成：null：null」）。
+    // 任一缺失即跳过刚完成段，已处置计数行不受影响（code-review item 0ee611edb94e）
+    if (currentItem?.status && currentItem.file) {
       const statusLabel = ITEM_STATUS_LABELS[currentItem.status] ?? currentItem.status;
       const titlePart = currentItem.title ? ` ${currentItem.title}` : '';
       itemProgressText += ` · 刚完成：${statusLabel}：${currentItem.file}${titlePart}`;

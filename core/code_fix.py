@@ -24,7 +24,8 @@ agent run 在独立 worktree 内修复并提交；框架在该 worktree 上跑�
   均失败/合回冲突）现场即弃：branch/tip_sha 入 `.fenix/code-review/
   fix-failed.json` 失败档案（记录带 `fail_count` 自动重试预算）后清理
   worktree 释放锁；新链启动自动释放 `fail_count < FAIL_RETRY_MAX` 的记录
-  （下轮自动重试），达上限永久跳过并一次性告警 + todo.md 登记待人工。
+  （打标墓碑不删除，fail_count 跨链续增，下轮自动重试），达上限永久跳过
+  并一次性告警 + todo.md 登记待人工。
   瞬态失败（agent run 失败/重试 run 失败/零有效修复）只进进度快照
   `chain_skipped`（链内跳过，新链启动重置），不烧跨轮重试预算。
 """
@@ -142,6 +143,10 @@ def read_progress(project_root) -> dict:
     （见 ``_synthesize_item_progress``）；其余场景两键为 null。
     """
     out = dict(FIX_PROGRESS_DEFAULT)
+    # 可变缺省字段显式拷贝（code-review item d8f3e5cef688）：chain_skipped 是
+    # list，浅拷贝会让所有缺省态调用方共享同一对象——未来任何一处就地 append
+    # 都会污染进程级缺省态，使链内跳过集跨链/跨项目泄漏。每次读返回新列表。
+    out["chain_skipped"] = list(FIX_PROGRESS_DEFAULT["chain_skipped"])
     try:
         raw = _progress_path(project_root).read_text(encoding="utf-8")
         data = json.loads(raw)
@@ -269,9 +274,16 @@ def load_failed_batches(project_root) -> list:
 
 
 def _failed_item_ids(project_root) -> set:
-    """失败保留集合中的全部 item_id 并集（select_batch 的排除源）。"""
+    """失败保留集合中**在档**记录的全部 item_id 并集（select_batch 排除源）。
+
+    已释放的墓碑记录（``released=true``，见 ``release_retryable_failed_batches``）
+    不参与排除——释放即条目重回可选池（下轮自动重试）；``fail_count`` 预算由
+    墓碑保留，供同条目集跨链再次失败时递增（达上限永久跳过的判据）。
+    """
     ids: set = set()
     for rec in load_failed_batches(project_root):
+        if rec.get("released"):
+            continue
         for iid in rec.get("item_ids") or []:
             if isinstance(iid, str):
                 ids.add(iid)
@@ -287,12 +299,16 @@ def record_failed_batch(
     ``fail_count``——首记 1；同条目集（item_id 集合相同）再次入档时复用既有
     记录递增并刷新 ``reason``/``branch``/``tip_sha``/``failed_at``（不追加
     重复记录）。新链启动经 ``release_retryable_failed_batches`` 自动释放
-    ``fail_count < FAIL_RETRY_MAX`` 的记录（下轮自动重试，无需人工）；
-    ``fail_count`` 递增至 ``FAIL_RETRY_MAX`` 的那次入档发一条一次性 warning
-    告警并在 todo.md 登记待人工项，此后永久跳过、不再重试/告警。
+    ``fail_count < FAIL_RETRY_MAX`` 的记录（打标墓碑、预算保留，下轮自动
+    重试）；同条目集此后再次失败即复燃墓碑并续增——``fail_count`` 递增至
+    ``FAIL_RETRY_MAX`` 的那次入档发一条一次性 warning 告警并在 todo.md 登记
+    待人工项，此后永久跳过、不再重试/告警。
 
     ``reason``/``branch``/``tip_sha`` 为可选关键字参数（缺省空串，兼容既有
     调用点）；``branch``/``tip_sha`` 是现场即弃后修复提交的 git 追溯线索。
+    ``worktree`` 形参仅为兼容既有调用点保留，MUST NOT 落盘（现场即弃后该
+    路径写入几秒即失效且无读者，追溯以 branch/tip_sha 为准，code-review
+    item a0e268c1f1c1），记录中恒为 null。
     """
     records = load_failed_batches(project_root)
     key = {str(i) for i in item_ids}
@@ -304,10 +320,16 @@ def record_failed_batch(
             break
     if target is not None:
         target["fail_count"] = int(target.get("fail_count") or 0) + 1
+        # 墓碑复燃（code-review item 931df4af59cc）：预算内释放只打标不删除，
+        # 同条目集再次入档即清标回到在档排除态、fail_count 跨链续增——否则
+        # 墓碑留存会让本递增分支不可达，每链都重新以 fail_count=1 建档，
+        # 达上限告警/todo/永久跳过永不发生（确定性失败批无限重试）。
+        target.pop("released", None)
+        target.pop("released_at", None)
     else:
         target = {"item_ids": list(item_ids), "fail_count": 1}
         records.append(target)
-    target["worktree"] = str(worktree)
+    target["worktree"] = None
     target["reason"] = reason
     target["branch"] = branch
     target["tip_sha"] = tip_sha
@@ -329,18 +351,29 @@ def release_retryable_failed_batches(project_root) -> int:
     新链启动时调用（等效原人工 ``release_failed_batch`` 的预算内自动化）：
     预算内条目回到可选池实现下轮自动重试；``fail_count >= FAIL_RETRY_MAX``
     的记录保持跳过（达上限永久跳过）。返回释放的记录条数（供日志/进度文案）。
+
+    释放是**打标墓碑**而非删除（code-review item 931df4af59cc）：置
+    ``released=true`` + ``released_at``，``fail_count`` 原样保留。删除式释放
+    会让预算永不累积——同链内 select_batch 排除在档条目、递增分支无从触发；
+    链末释放又把记录整体删掉，下次失败重新以 1 建档，``fail_count`` 恒为 1，
+    达上限的一次性告警/todo 登记/永久跳过全部不可达（确定性失败批每链无限
+    重试，每轮烧一次 agent run + 两次全量回归）。墓碑不参与选批排除
+    （``_failed_item_ids`` 跳过 released 记录）；同条目集再次入档时
+    ``record_failed_batch`` 清标复燃并递增。幂等：已释放记录跳过不重刷时间戳。
     """
     records = load_failed_batches(project_root)
-    kept = [
-        rec
-        for rec in records
-        if int(rec.get("fail_count") or 1) >= FAIL_RETRY_MAX
-    ]
-    released = len(records) - len(kept)
+    released = 0
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    for rec in records:
+        if rec.get("released") or int(rec.get("fail_count") or 1) >= FAIL_RETRY_MAX:
+            continue
+        rec["released"] = True
+        rec["released_at"] = now
+        released += 1
     if released:
         _atomic_write(
             _failed_path(project_root),
-            json.dumps(kept, ensure_ascii=False, indent=2),
+            json.dumps(records, ensure_ascii=False, indent=2),
         )
     return released
 
