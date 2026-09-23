@@ -2555,15 +2555,23 @@ class PMEngine:
             candidates = [rest]
             if " -> " in rest:
                 candidates = [p.strip() for p in rest.split(" -> ")]
-            for path in candidates:
+            # R/C rename 行（code-review item e0d1dc8780aa）：已 staged 的归档移动
+            # 呈现为 `R  spec/changes/... -> spec/archive/...`，此前只认 D/??/A/M，
+            # 两侧候选均不满足导致残留漏判——old 侧视同删除、new 侧视同新增
+            renamed = xy.startswith(("R", "C")) and len(candidates) == 2
+            for idx, path in enumerate(candidates):
                 # 归档产物横跨两处：删除侧 spec/changes/<spec>/、新增侧 spec/archive/...
                 # （archive 已平级化到 spec/ 下，不再嵌套于 changes/）
                 in_changes = path.startswith("spec/changes/")
                 in_archive = path.startswith("spec/archive/")
                 if not (in_changes or in_archive):
                     continue
-                deleted = "D" in xy
-                added = xy.startswith("??") or ("A" in xy or "M" in xy)
+                deleted = "D" in xy or (renamed and idx == 0)
+                added = (
+                    xy.startswith("??")
+                    or ("A" in xy or "M" in xy)
+                    or (renamed and idx == 1)
+                )
                 if deleted or (in_archive and added):
                     found = True
                     names.append(self._archive_residue_spec(path))

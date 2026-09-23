@@ -1383,14 +1383,18 @@ def _lint_draft(draft_dir_: Path, project_root) -> List[str]:
 
 
 def _git_commit(project_root, draft_copy: Path, spec_name: str) -> Tuple[bool, str]:
-    """仅 add 目标 spec 目录后提交（MUST NOT ``git add -A`` / ``git add .``）。
+    """仅提交目标 spec 目录（MUST NOT ``git add -A`` / ``git add .``）。
+
+    add 与 commit 均以同一 pathspec 限定（--only 语义，与
+    archive_commit.commit_archive_move 同式），不吞索引中无关 staged 内容。
 
     Returns: ``(ok, error)``；ok=False 时调用方负责清理未跟踪副本。
     """
     git = ["git", "-C", str(project_root)]
+    spec_path = f"spec/changes/{spec_name}"
     try:
         add = subprocess.run(
-            git + ["add", "--", f"spec/changes/{spec_name}"],
+            git + ["add", "--", spec_path],
             capture_output=True,
             text=True,
             timeout=60,
@@ -1401,7 +1405,7 @@ def _git_commit(project_root, draft_copy: Path, spec_name: str) -> Tuple[bool, s
         return False, f"git add 失败: {add.stderr.strip()[:300]}"
     try:
         commit = subprocess.run(
-            git + ["commit", "-m", f"[fenix] spec: {spec_name}"],
+            git + ["commit", "-m", f"[fenix] spec: {spec_name}", "--", spec_path],
             capture_output=True,
             text=True,
             timeout=60,

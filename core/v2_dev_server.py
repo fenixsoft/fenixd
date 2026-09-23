@@ -373,7 +373,7 @@ def _worktree_has_live_referencing_process(wt_root: Path, exclude_pid: int) -> b
     )
 
 
-def _dev_server_orphan_pids() -> list:
+def _dev_server_orphan_pids(logger=None) -> list:
     """识别孤儿 dev-server PID：worktree 已消失，或无任何存活进程归属。
 
     背景（admin 处置 v2-alerts-activities）：孤儿 dev-server 的 argv 残留已删除
@@ -391,9 +391,21 @@ def _dev_server_orphan_pids() -> list:
             continue
         wt_root = _dev_server_worktree_root(tokens)
         if wt_root is None:
-            # 不携带 worktree 路径（异常形态）：仅当无存活引用进程才清
-            if not _worktree_has_live_referencing_process(Path("nonexistent"), pid):
-                out.append(pid)
+            # 不携带 worktree 路径（如 start() 主树静态根回退形态）：argv 无归属
+            # 可探测，按虚构路径反查 pgrep 恒落空（恒判孤儿、误杀在服 run）。
+            # 归属 attempt 的 claude 进程经 --add-dir 引用 worktree 路径，无法从
+            # argv 反推，故无安全探测面——保守跳过清扫并 WARNING 留痕，交由运维
+            # 判别处置（该形态罕见，且 dev-server 仍有 ppid 绑定自灭兜底）。
+            static_root = next(
+                (t for t in tokens if "/core/dashboard/static" in t), "")
+            if logger:
+                logger.warning(
+                    "v2_dev_server",
+                    f"orphan sweep skipped for pid={pid}: argv carries no "
+                    f"worktree path (static_root={static_root or 'unknown'}) "
+                    f"— 未清扫的存量 dev-server（主树静态根回退形态），"
+                    f"确认无活跃 run 后可手动 kill",
+                )
             continue
         if wt_root.is_dir() and _worktree_has_live_referencing_process(wt_root, pid):
             continue  # 归属存活 attempt，保留
@@ -409,10 +421,12 @@ def cleanup_orphans(logger=None) -> int:
     或进程表中无该 worktree 的存活归属进程（attempt 已死而 server 残留）→
     孤儿，回收；归属存活 attempt → 保留（daemon 重启可能先于子进程结束）。
     防止残留进程被 worktree_manager 的 pgrep 存活探测误判为持锁 attempt。
+    argv 不携带 worktree 路径（主树静态根回退形态）→ 无归属可探测，保守
+    跳过并 WARNING 留痕（误杀在服 run 比漏清罕见残留代价更高）。
 
     Returns: 被终止的进程数。
     """
-    pids = sorted(set(_dev_server_orphan_pids()))
+    pids = sorted(set(_dev_server_orphan_pids(logger=logger)))
     if not pids:
         return 0
     killed = _kill_pids(pids)

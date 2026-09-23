@@ -2085,7 +2085,12 @@ class VAdjudicationMixin:
             for ed in executed_verdicts
             if ed.get("verdict") == "typo"
         } | set(deferred_typo_elements)
-        for recur_path in sorted(set(remaining_paths) & typo_touched):
+        # 同轮只取一条（sorted 首条）参与计数（code-review f6a837457bb8）：
+        # _writeback_recur_streak 是单值字段且「换路径清零」，同轮多条复发
+        # 路径逐条 bump 会互相清零（每轮 streak 恒为 1）致熔断永不触发；
+        # 每轮只计首条，单路径行为不变，多路径同轮持续复发由持续在场的一
+        # 条累计到上限触发。
+        for recur_path in sorted(set(remaining_paths) & typo_touched)[:1]:
             if not self._writeback_recur_bump(spec_name, recur_path):
                 continue
             try:

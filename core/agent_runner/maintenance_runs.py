@@ -1070,7 +1070,9 @@ def _unique_code_review_run_id(runner) -> str:
     """
     base = f"code-review-{int(time.time())}"
     candidate = base
-    n = 1
+    # n=0 起始、冲突分支先自增再拼候选 → 首个退避候选为 base-1（与
+    # docstring「n 从 1 起递增」及 _unique_code_fix_run_id 同口径对齐）
+    n = 0
     cr_dir = runner.project_root / ".fenix" / "code-review"
     while True:
         if (cr_dir / f"out-{candidate}.jsonl").exists():

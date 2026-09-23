@@ -330,8 +330,14 @@ class Registry:
             for p in data.get("projects", []):
                 if not isinstance(p, dict):
                     continue
+                raw = p.get("path", "")
+                # 类型守卫（code-review item ed1b8c91b255）：非字符串 path（畸形
+                # YAML 的 path: 123）会让 Path(...) 抛 TypeError 穿透——与 discover
+                # 同式守卫，畸形条目跳过，保住「返回 (bool, message)、不抛异常」契约。
+                if not isinstance(raw, str) or not raw.strip():
+                    continue
                 try:
-                    existing = str(Path(p.get("path", "")).expanduser().resolve())
+                    existing = str(Path(raw).expanduser().resolve())
                 except (OSError, RuntimeError):
                     continue
                 if existing == key:
@@ -370,8 +376,13 @@ class Registry:
             for p in data.get("projects", []):
                 if not isinstance(p, dict):
                     continue
+                raw = p.get("path", "")
+                # 类型守卫（code-review item ed1b8c91b255）：非字符串 path 会让
+                # Path(...) 抛 TypeError 穿透（与 discover 同式），畸形条目跳过。
+                if not isinstance(raw, str) or not raw.strip():
+                    continue
                 try:
-                    existing = str(Path(p.get("path", "")).expanduser().resolve())
+                    existing = str(Path(raw).expanduser().resolve())
                 except (OSError, RuntimeError):
                     continue
                 if existing == key:
@@ -400,8 +411,14 @@ class Registry:
                 if not isinstance(p, dict):
                     remaining.append(p)
                     continue
+                raw = p.get("path", "")
+                # 类型守卫（code-review item ed1b8c91b255）：非字符串 path 会让
+                # Path(...) 抛 TypeError 穿透（与 discover 同式）；畸形条目原样保留。
+                if not isinstance(raw, str) or not raw.strip():
+                    remaining.append(p)
+                    continue
                 try:
-                    existing = str(Path(p.get("path", "")).expanduser().resolve())
+                    existing = str(Path(raw).expanduser().resolve())
                 except (OSError, RuntimeError):
                     remaining.append(p)
                     continue

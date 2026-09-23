@@ -84,7 +84,9 @@ def parse_fast_track_verification(result: dict) -> Optional[dict]:
     scenarios = verification.get(SCENARIOS_KEY)
     if not isinstance(scenarios, list) or not scenarios:
         return None
-    if not all(_scenario_ok(sc) for sc in scenarios if isinstance(sc, dict)):
+    # 非 dict 条目交由 _scenario_ok 的 isinstance 防御判 False（fail-closed，
+    # 与 docstring「场景条目结构不完整（任一条）返回 None」语义一致）
+    if not all(_scenario_ok(sc) for sc in scenarios):
         return None
 
     verdict = verification.get(VERDICT_KEY)

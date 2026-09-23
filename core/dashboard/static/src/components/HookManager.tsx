@@ -235,6 +235,7 @@ export default function HookManager({
         render: (_: unknown, __: HookConfig, idx: number) => (
           <Switch
             size="small"
+            disabled={readOnly}
             checked={hooks[idx].enabled !== false}
             onChange={(checked) => handleToggle(idx, checked)}
           />
@@ -244,21 +245,24 @@ export default function HookManager({
         title: '操作',
         key: 'actions',
         width: '7.6%',
+        // 终态只读（与移动端口径一致）：隐藏编辑/删除，仅留禁用的启停 Switch
         render: (_: unknown, __: HookConfig, idx: number) => (
-          <Space size={4}>
-            <Tooltip title="编辑">
-              <Button type="link" size="small" icon={<EditOutlined />} onClick={() => handleEdit(idx)} />
-            </Tooltip>
-            <Popconfirm title="确定删除？" onConfirm={() => handleDelete(idx)} okText="删除" cancelText="取消">
-              <Button type="link" size="small" danger icon={<DeleteOutlined />} />
-            </Popconfirm>
-          </Space>
+          readOnly ? null : (
+            <Space size={4}>
+              <Tooltip title="编辑">
+                <Button type="link" size="small" icon={<EditOutlined />} onClick={() => handleEdit(idx)} />
+              </Tooltip>
+              <Popconfirm title="确定删除？" onConfirm={() => handleDelete(idx)} okText="删除" cancelText="取消">
+                <Button type="link" size="small" danger icon={<DeleteOutlined />} />
+              </Popconfirm>
+            </Space>
+          )
         ),
       },
     ];
     return cols;
     // eslint-disable-next-line react-hooks/exhaustive-deps — handlers 已 useCallback 化并列入依赖（item 0383473dd260）
-  }, [hooks, form, handleToggle, handleEdit, handleDelete]);
+  }, [hooks, form, handleToggle, handleEdit, handleDelete, readOnly]);
 
   // ── 生效合并表格列（仅 spec 详情页）────────────────────────────
 

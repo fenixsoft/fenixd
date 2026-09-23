@@ -13,9 +13,9 @@
 
 探测信息源（按优先级）：
     1. package.json 的 scripts.build / scripts.dist / scripts.release
-       + 根级/子级 dist/、build/、out/ 目录存在性
+       + 根级 dist/、build/、out/ 目录存在性（仅项目根级，不递归子级）
     2. pyproject.toml 的 [build-system]（poetry setuptools 等 → 检查 dist/）
-    3. 项目目录结构：根级 dist/、build/、target/、out/ 目录、release-*.zip 等命名的产物文件（写入具体文件名）
+    3. 项目目录结构：根级 dist/、build/、out/ 目录、release-*.zip 等命名的产物文件（写入具体文件名）
     4. Fenix 框架项目（core/dashboard/static/dist/ 存在时自动包含）
 
 输出（JSON）：

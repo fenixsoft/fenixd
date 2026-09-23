@@ -347,7 +347,7 @@ class G4MergebackMixin:
         # 成功后恢复；pop 冲突保留条目 + 去向可见。
         self.logger.warning(
             "worktree_manager",
-            f"WIP overlap gate (policy=auto, default): {len(overlap)} main-tree "
+            f"WIP overlap gate (policy=auto, explicit): {len(overlap)} main-tree "
             f"tracked file(s) overlapped with branch '{branch}' changes — will be "
             f"stashed with gate prefix and restored after merge: {overlap}",
         )

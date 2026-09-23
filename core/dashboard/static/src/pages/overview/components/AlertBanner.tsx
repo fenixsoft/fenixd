@@ -127,6 +127,9 @@ export default function AlertBanner({ refreshTick }: { refreshTick: number }) {
       await markAlertHandled(a.project, a.id);
       message.success('已标记处理');
     } catch (err) {
+      // 失败即回滚乐观遮蔽：后端列表仍含该 id，收敛逻辑（上）不会清 optimistic，
+      // 不回滚会让未处理告警被永久隐藏（违背上方「绝不永久遮蔽」）
+      setOptimistic((prev) => prev.filter((id) => id !== a.id));
       message.error(`标记失败：${err instanceof Error ? err.message : String(err)}`);
     }
     void load();
