@@ -1,12 +1,12 @@
 // 连续同类工具调用合并折叠 —— 迁移自 claudecodeui ToolGroupContainer.tsx（精简版）：
-// 去 getToolConfig 依赖，图标/标签取自 ToolCard 的映射逻辑。
+// 去 getToolConfig 依赖，图标/标签取自 toolGrouping 的单点映射（与 ToolCard 共源）。
 // add-run-record-readability 2.1：同类连续组渲染语义化组标题；编辑组收起态按
 // 首现顺序去重展示文件路径。
 import { useMemo, useState } from 'react';
 
 import type { ChatMessage } from './types';
 import type { ToolClass, ToolGroupItem } from './toolGrouping';
-import { editFilePaths, toolCardPreview } from './toolGrouping';
+import { editFilePaths, toolCardPreview, toolIcon } from './toolGrouping';
 import MessageItem from './MessageItem';
 import ToolCard from './ToolCard';
 
@@ -14,19 +14,6 @@ const CLASS_ICONS: Record<ToolClass, string> = {
   read: '📄',
   bash: '$',
   edit: '✏️',
-};
-
-const TOOL_ICONS: Record<string, string> = {
-  Bash: '$',
-  Read: '📄',
-  Write: '✏️',
-  Edit: '✏️',
-  Grep: '🔍',
-  Glob: '🔍',
-  WebFetch: '🌐',
-  WebSearch: '🌐',
-  TodoWrite: '☑️',
-  Task: '🤖',
 };
 
 interface ToolGroupContainerProps {
@@ -47,7 +34,7 @@ export default function ToolGroupContainer({
   const label = group.groupTitle || group.toolName;
   const icon = group.groupKind
     ? CLASS_ICONS[group.groupKind]
-    : TOOL_ICONS[group.toolName] || group.toolName.slice(0, 1).toUpperCase();
+    : toolIcon(group.toolName);
 
   const preview = useMemo(() => {
     // 编辑组收起态：按首现顺序去重展示文件路径（design D2）

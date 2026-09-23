@@ -316,7 +316,10 @@ class PRepairLaneMixin:
             # ── 人工取消 hold-state（add-run-cancel D4，repair worker）──
             # repair run 被取消：spec 保持原状（implementing），只写 error，
             # 不动 _retry_count/_merge_fp/_merge_streak、不入队重派。
-            if getattr(r, "cancelled", False):
+            # 判定用 `is True`（code-review item 10bac9026b6a，与上方
+            # frozen_terminated 同款防护）：MagicMock 替身自动生成 truthy
+            # 属性，裸布尔会把测试替身误判为人工取消而落入 hold-state。
+            if getattr(r, "cancelled", False) is True:
                 r_err = getattr(r, "error", None) or repair_error or ""
                 cancelled_err = f"run 被人工取消：{r_err}" if r_err else "run 被人工取消"
                 self._pm.logger.warning(

@@ -395,8 +395,8 @@ class ConfigLoader:
         解析或校验失败时抛异常且不触碰 config（保留旧值，运行中配置不被坏文件清空）。
         """
         fresh = cls.resolve_config(project_root)
-        # 注意：resolve_config 内部（config.py:123）已对 fresh 完成同一份 _validate，
-        # 此处不重复校验（improve-hot-reload-robustness D9 死代码清理）。
+        # 注意：resolve_config 内部已对 fresh 完成同一份 _validate（方法名引用，
+        # 避免行号漂移），此处不重复校验（improve-hot-reload-robustness D9 死代码清理）。
         #
         # 原地更新顺序（code-review item 0c1e1d2b4341）：旧实现 `clear()` → `update()`
         # 存在一个「dict 为空」的窗口，而后台读线程（admin worker / 自进化 worker /

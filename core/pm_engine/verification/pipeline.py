@@ -1042,11 +1042,19 @@ class VerificationPipeline:
         from core.verify_engine.scenarios import (
             CONTRACT_VERSION_FIELD,
             CURRENT_CONTRACT_VERSION,
+            TestScenario,
             frozen_contract_version,
             load_scenarios,
             migrate_frozen_contract,
+            migrate_scenario_schema,
             prepare_scenarios_for_write,
+            validate_scenario_dicts,
         )
+
+        # 写回失败标记（code-review item 10c5c089ee92）：契约迁移写回失败时，
+        # 步骤 4 改以内存迁移结果走验收——盘上此刻仍是未迁移旧场景集，读盘
+        # 会把迁移本要修正的旧端口/URL 原样跑完整轮。
+        write_back_failed = False
 
         # ── 场景冻结复用（scenario-reuse-on-reenter，2026-09-04）──
         # 冻结集一经生成即跨轮一致的量尺：重入验证（打回/修复轮/重试）直接
@@ -1165,6 +1173,7 @@ class VerificationPipeline:
             # 写回冻结文件（数组形态 + 条目盖 schema_version/contract_version
             # 戳）；写回失败 ERROR 留痕并照常以内存迁移结果继续（不退回
             # corrupt，下次加载再迁一次即幂等，D4 写回原子性）。
+            write_back = None
             try:
                 write_back = prepare_scenarios_for_write(result["migrated"])
                 path.write_text(
@@ -1172,6 +1181,9 @@ class VerificationPipeline:
                     encoding="utf-8",
                 )
             except Exception as e:  # noqa: BLE001 — D4：写回失败不改变本轮内存结果
+                # prepare 已产出内存结果、仅写盘失败 → 以内存结果验收；
+                # prepare 自身失败（无内存结果）→ 保持读盘旧集（唯一可行来源）。
+                write_back_failed = write_back is not None
                 self._context.logger.error(
                     "pm_engine",
                     f"冻结契约迁移写回失败 '{spec_name}'（以内存迁移结果继续，"
@@ -1188,8 +1200,21 @@ class VerificationPipeline:
             )
 
         # ── 步骤 4：以最终场景集走既有验收（读盘 = 写回后的文件）──
+        # 写回失败（item 10c5c089ee92）改以内存迁移结果收尾：与 load_scenarios
+        # 同源管线（schema 迁移 + 读端校验 + 反序列化），校验失败同样走下方
+        # ValueError corrupt → env_blocked 通道，不另设旁路。
         try:
-            frozen = load_scenarios(path)
+            if write_back_failed:
+                raw_mem = migrate_scenario_schema(write_back)
+                mem_errors = validate_scenario_dicts(raw_mem)
+                if mem_errors:
+                    raise ValueError(
+                        f"场景文件包含 {len(mem_errors)} 个错误:\n"
+                        + "\n".join(f"  - {e}" for e in mem_errors)
+                    )
+                frozen = [TestScenario.from_dict(item) for item in raw_mem]
+            else:
+                frozen = load_scenarios(path)
         except ValueError as e:
             # 迁移后仍失败（合成 navigate 可能仍不满足其他规则）→ 既有
             # corrupt → env_blocked；迁移过的集附第③条回退指引（D4 风险：

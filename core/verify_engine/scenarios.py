@@ -302,7 +302,9 @@ def _migrate_contract_to_v2(scenarios: list, base_url: str = ""):
             "value": url,
             "description": "契约 v2 自动补齐（navigate 绝对 URL）",
         }
-        new_steps = [nav_step] + (steps if isinstance(steps, list) else [])
+        # steps 必为 list（上方 not isinstance(steps, list) 已透传 continue），
+        # 无需再防御。
+        new_steps = [nav_step] + steps
         migrated.append({**item, "steps": new_steps, CONTRACT_VERSION_FIELD: 2})
     return migrated, pending
 

@@ -118,7 +118,20 @@ class RRollbackMixin:
                     "pm_engine",
                     f"Rolled back '{spec_name}' testing → implemented (verifier never started): {exc}",
                 )
-                self._enqueue(spec_name, "verifier")
+                # 入队独立守卫（code-review item 01bfb767effe，与 implementer 分支
+                # 同款）：_enqueue 若裸露在大 try 内，队列写入抛错（锁/IO）会跳到
+                # 外层 except 记误导性「State rollback failed」（尽管上方 update_spec
+                # 已把 spec 复位 implemented）且重派条目静默丢失。单独守卫：失败
+                # 如实记 ERROR，不覆盖状态复位成果（full_scan recovery 兜底）。
+                try:
+                    self._enqueue(spec_name, "verifier")
+                except Exception as enqueue_exc:  # noqa: BLE001 —— 入队失败不吞回滚成果
+                    self._pm.logger.error(
+                        "pm_engine",
+                        f"Redispatch enqueue failed for '{spec_name}' "
+                        f"(state rolled back to implemented, pending full_scan "
+                        f"recovery): {type(enqueue_exc).__name__}: {enqueue_exc}",
+                    )
             elif agent_type == "spec-review" and status == "reviewing":
                 # 评审 worker 异常回滚（fix-spec-review-blocking-dispatch 1.8
                 # 双保险）：四步链之外异常（构造失败/快照路径异常）时 spec 可能

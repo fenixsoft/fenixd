@@ -152,7 +152,11 @@ class SessionManager:
     def get(self, project_name: str) -> Session | None:
         """获取存活会话（进程已退出则清理并返回 None）。"""
         with self._lock:
-            return self._sessions.get(project_name)
+            session = self._sessions.get(project_name)
+            if session is not None and session.proc.poll() is not None:
+                self._remove_session_nolock(project_name)
+                return None
+            return session
 
     def send(self, session_id: str, text: str) -> None:
         """向会话发送用户文本（一轮）。
