@@ -1669,37 +1669,17 @@ def _exec_raise_budget(project_root, spec: str) -> dict:
 
 
 def _exec_declare_no_artifacts(project_root, spec: str, note: str = "") -> dict:
-    """declare_no_artifacts：原子写 worktree.has_build_artifacts=false 结案。"""
-    import yaml as _yaml
+    """declare_no_artifacts：原子写 worktree.has_build_artifacts=false 结案。
+
+    写路径复用 write_config 受管通道（受管合并、mkstemp 唯一临时文件、
+    文件头与错误口径统一），与 _exec_raise_budget 同范式。
+    """
+    from .config_admin import write_config
 
     proot = Path(project_root)
-    config_path = proot / ".fenix" / "config.yaml"
-    raw = {}
-    if config_path.is_file():
-        try:
-            loaded = _yaml.safe_load(config_path.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict):
-                raw = loaded
-        except (_yaml.YAMLError, OSError) as e:
-            return {"ok": False, "steps": [], "error": f"读取现有配置失败: {e}"}
-    wt = raw.get("worktree")
-    if not isinstance(wt, dict):
-        wt = {}
-    wt["has_build_artifacts"] = False
-    raw["worktree"] = wt
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = config_path.with_suffix(config_path.suffix + ".tmp")
-    try:
-        tmp_path.write_text(
-            _yaml.safe_dump(raw, allow_unicode=True, sort_keys=False), encoding="utf-8"
-        )
-        os.replace(tmp_path, config_path)
-    except OSError as e:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        return {"ok": False, "steps": [], "error": f"写配置失败: {e}"}
+    r = write_config(proot, {"worktree": {"has_build_artifacts": False}}, scope="project")
+    if not r.get("ok"):
+        return {"ok": False, "steps": [], "error": f"写配置失败: {r.get('error')}"}
     steps = ["worktree.has_build_artifacts=false 已写入 .fenix/config.yaml"
              "（原子写，声明本项目无构建产物，结案）"]
     if note:

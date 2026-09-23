@@ -122,7 +122,7 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
             <InputNumber min={1} max={1000} step={1} style={{ width: '100%' }} addonAfter="次" />
           </Form.Item>
           <Text type="secondary">
-            默认 4。每 SPEC 跨修复周期的实现 run 启动次数上限（含首次实现与每轮修复重派）。达到上限即冻结该 SPEC 并交人工裁决，需人工调大预算或推进状态。合法范围 1 至「实现尝试预算上限」（下方可配，缺省 100，硬天花板 1000）。
+            默认 6。每 SPEC 跨修复周期的实现 run 启动次数上限（含首次实现与每轮修复重派）。达到上限即冻结该 SPEC 并交人工裁决，需人工调大预算或推进状态。合法范围 1 至「实现尝试预算上限」（下方可配，缺省 100，硬天花板 1000）。
           </Text>
 
           <Form.Item

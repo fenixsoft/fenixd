@@ -53,7 +53,16 @@ def cmd_promote(args):
         # 依 promote_drafted 的分流结论执行转移（add-spec-review-gate 3.4）：
         # 命中跳过白名单 → ready；否则 → reviewing 待方案评审。与 _on_spec_drafted
         # 收尾语义一致，MUST NOT 硬编码 ready（否则 CLI 通道绕过评审门禁）。
-        next_status = result.get("next_status", "ready")
+        # 缺失分流结论 = 契约破坏，显式报错退出而非静默回退 ready——回退恰好
+        # 复现本注释要防的绕过路径（code-review item 4103a14bb72e）。
+        next_status = result.get("next_status")
+        if not next_status:
+            print(
+                "✗ 晋升失败：promote_drafted 返回缺少 next_status 分流结论（契约破坏），"
+                "MUST NOT 回退 ready 绕过评审门禁，请人工核查",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         # fix-observability-gaps 2.2：CLI 人工晋升来源（channel=manual）
         sm.transition(
             args.spec, next_status,

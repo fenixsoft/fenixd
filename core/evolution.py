@@ -1553,6 +1553,12 @@ def resolve_accepted_spec_dir(project_root, spec_name: str) -> Optional[Path]:
     archive_root = proot / "spec" / "archive"
     if not archive_root.is_dir():
         return None
+    # 目录名与 spec_name 全等的候选优先：合法 spec 名本身允许数字结尾，
+    # 归档名剥数字后缀可能把独立 spec（如 ``evo-foo`` 与 ``evo-foo-2`` 并存）
+    # 误判命中，sorted 兜底会解析到错误目录。
+    exact = archive_root / spec_name
+    if exact.is_dir():
+        return exact
     hits: List[Path] = []
     try:
         for child in archive_root.iterdir():
@@ -1565,7 +1571,7 @@ def resolve_accepted_spec_dir(project_root, spec_name: str) -> Optional[Path]:
         return None
     if not hits:
         return None
-    # 全等命中多个取 sorted()[-1]（目录名字典序）
+    # 归一化命中多个取 sorted()[-1]（目录名字典序）
     return sorted(hits)[-1]
 
 

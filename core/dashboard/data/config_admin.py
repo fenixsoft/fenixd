@@ -16,6 +16,8 @@ from pathlib import Path
 
 import yaml
 
+from core.pm_engine.budget import DEFAULT_IMPL_RUN_BUDGET
+
 # ── 配置读写（受管键：llm / agents.* / gates.approve_mode / runs / verify.*） ──
 
 # Dashboard 管理的配置键子集：写回时只更新这些键，其它键原样保留
@@ -388,7 +390,9 @@ def read_config(scope_root, scope: str = "project") -> dict:
             "max_turns": 400,
             "daily_run_limit": 50,
             "token_budget_millions": 50,
-            "impl_run_budget": 4,
+            # 回显缺省与运行时单源（code-review item 3ee9a4e0d218）：取
+            # DEFAULT_IMPL_RUN_BUDGET，勿再手写字面量（曾与运行时 6 漂移为 4）
+            "impl_run_budget": DEFAULT_IMPL_RUN_BUDGET,
             "verify_redo_budget": 3,
             "max_same_cause_redispatches": 3,
             # fix-agent-lane-efficiency D1：子代理模型覆盖（缺省空串 = 用 provider model）
@@ -674,7 +678,9 @@ def read_effective_config(project_root) -> dict:
             "max_turns": 400,
             "daily_run_limit": 50,
             "token_budget_millions": 50,
-            "impl_run_budget": 4,
+            # 回显缺省与运行时单源（code-review item 3ee9a4e0d218）：取
+            # DEFAULT_IMPL_RUN_BUDGET，勿再手写字面量（曾与运行时 6 漂移为 4）
+            "impl_run_budget": DEFAULT_IMPL_RUN_BUDGET,
             "verify_redo_budget": 3,
             "max_same_cause_redispatches": 3,
             # fix-agent-lane-efficiency D1：子代理模型覆盖（缺省空串 = 用 provider model）

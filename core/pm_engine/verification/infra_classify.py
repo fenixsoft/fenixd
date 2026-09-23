@@ -183,7 +183,6 @@ def _record_infra_failure(pipeline, spec_name: str, reason: str, run_id: str = "
         )
 
 
-@staticmethod
 def _detect_uniform_verify_failure(pipeline, spec_name: str, report: dict) -> bool:
     """全场景同因失败哨：pass=0 且全部失败场景错误签名一致 → 疑环境/场景问题。
 

@@ -312,10 +312,11 @@ def _kill_pids(pids: list) -> int:
     killed = 0
     for pid in pids:
         try:
-            subprocess.run(["kill", "-TERM", str(pid)], timeout=5)
-            killed += 1
+            res = subprocess.run(["kill", "-TERM", str(pid)], timeout=5)
         except (subprocess.SubprocessError, OSError):
             continue
+        if res.returncode == 0:
+            killed += 1
     return killed
 
 

@@ -209,6 +209,10 @@ class H7EvolutionRoutesMixin:
         """POST /api/evolution/clear-todo — 清空**所有项目**的 .fenix/todo.md。
 
         全局动作，不接受 project 参数（逐个清理所有 discover 到且存在的项目）。
+        与 alerts/clear 同口径跳过 fixture 项目（code-review item cb7a35748089 /
+        item 402b8696e70a）：夹具的 todo.md 属夹具状态，只应经 --reset 复位，
+        全局清理 MUST NOT 静默改写。经 self.server.projects() 遍历（TTL 缓存
+        与发现异常兜底），不直连 registry.discover()。
         清空范围仅限 todo.md：MUST NOT 触碰 items.jsonl / 草稿 / 水位，故下方
         条目列表不受影响。不代提交 git（各项目 todo.md 的提交由每日自省负责）。
 
@@ -221,8 +225,10 @@ class H7EvolutionRoutesMixin:
         cleared: list = []
         skipped: list = []
         failed: list = []
-        for proj in self.server.registry.discover() or []:
-            if not isinstance(proj, dict) or not proj.get("exists"):
+        for proj in self.server.projects() or []:
+            if proj.get("fixture"):
+                continue  # fixture-project-governance：夹具 todo 只经 --reset 复位
+            if not proj.get("exists"):
                 continue
             name = proj.get("name") or proj.get("path") or "?"
             path = proj.get("path")

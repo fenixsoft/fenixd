@@ -162,6 +162,24 @@ class G2LegacyRegistryMixin:
         rec = self._legacy.get(spec_name)
         if rec is not None:
             rec["reuse"] = True
+        if rec is None:
+            # 登记未生效（_wt_branches 与 _guess_branch_from_worktree 双兜底皆空，
+            # register_legacy 对空分支直接 return）：本应受清扫豁免与 reuse 认领
+            # 保护的现场会变成无登记孤儿、可被孤儿清扫回收。留痕并保留活动集
+            # 成员身份使豁免仍生效；锁照常释放（run 已终结，扣锁会阻塞重派），
+            # 仅降级说明 reuse 认领不可用（code-review item 431f12115971）。
+            self.logger.warning(
+                "worktree_manager",
+                f"keep_for_reuse 登记未生效: spec '{spec_name}' 双兜底均未解析到分支"
+                f"（wt={wt_path}），保留活动集成员身份防孤儿清扫，reuse 认领本轮不可用"
+                + (f"，agent_type '{agent_type}'" if agent_type else ""),
+            )
+            self._active_reuse.pop(spec_name, None)
+            self._proc_scan_cache.pop(spec_name, None)
+            for k in [k for k in self._spec_locks if k.split(":")[0] == spec_name]:
+                self._spec_locks.discard(k)
+                self._lock_since.pop(k, None)
+            return
         self._active_worktrees.discard(wt_str)
         self._wt_branches.pop(wt_str, None)
         self._active_reuse.pop(spec_name, None)
