@@ -6,13 +6,15 @@
 - 5.2 执行车道比对（full 违规；fast-track 对 test_scenarios.json 合法、
   report.json 仍违规；mode 缺失保守 full；读取异常保守 full）
 - 5.3 归属表断言（六条核心产物 + 目录级；验证链不含 implementer）
-- 5.4 零误拦回归（动态扫描 spec/changes/ + spec/archive/ 下全部 tasks.md）
+- 5.4 零误拦回归（扫描 HEAD 已提交态 spec/changes/ + spec/archive/ 下全部
+  tasks.md——读 HEAD 不读工作区，规避 daemon 实时写 spec 的瞬态竞态）
 - 5.5 fail-open（lint 自身故障返回空违规清单）
 """
 
 from __future__ import annotations
 
 import glob
+import subprocess
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
@@ -282,12 +284,46 @@ class TestOwnershipTable:
 # 5.4 零误拦回归
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _collect_tasks_files() -> list[Path]:
-    """动态扫描 spec/changes/ 与 spec/archive/ 下全部 tasks.md。"""
-    patterns = ["spec/changes/*/tasks.md", "spec/archive/*/tasks.md"]
-    result = []
-    for pat in patterns:
-        result.extend(Path(p) for p in sorted(glob.glob(pat)))
+def _collect_tasks_files() -> list[tuple[str, str]]:
+    """收集 HEAD 已提交态（spec/changes + spec/archive）全部 tasks.md → (路径, 文本)。
+
+    读 HEAD 而非工作区：本仓库由 fenix daemon 实时写 spec 文件（planner
+    起草、任务勾选、归档迁移、merge-back 的 stash 窗口），工作区存在合法的
+    未提交中间态——半成品 tasks.md 的可解析性判定必然失败，存量零误拦回归
+    被瞬态污染（2026-09-23 全量回归假失败）。spec 目录由 hook 即建即提交，
+    HEAD 态即存量全集；回归语料口径 = 版本库已提交内容（确定性、零竞态）。
+    """
+    ls = subprocess.run(
+        ["git", "ls-tree", "-r", "--name-only", "HEAD",
+         "spec/changes", "spec/archive"],
+        capture_output=True, timeout=30,
+    )
+    ls.check_returncode()
+    paths = sorted(
+        ln.decode("utf-8") for ln in ls.stdout.splitlines()
+        if ln.decode("utf-8").endswith("tasks.md")
+    )
+    if not paths:
+        return []
+    # 单进程批量取 blob（避免逐文件 git show 的 260 次进程 spawn）
+    batch_in = "".join(f"HEAD:{p}\n" for p in paths).encode("utf-8")
+    batch = subprocess.run(
+        ["git", "cat-file", "--batch"],
+        input=batch_in, capture_output=True, timeout=60,
+    )
+    batch.check_returncode()
+    result: list[tuple[str, str]] = []
+    pos = 0
+    data = batch.stdout
+    for p in paths:
+        # 每条记录形如 b"<sha> blob <size>\n<content>\n"
+        header_end = data.index(b"\n", pos)
+        size = int(data[pos:header_end].rsplit(b" ", 1)[1])
+        content_start = header_end + 1
+        result.append(
+            (p, data[content_start:content_start + size].decode("utf-8"))
+        )
+        pos = content_start + size + 1  # 跳过记录尾分隔空行
     return result
 
 
@@ -314,9 +350,8 @@ class TestZeroFalsePositive:
         tasks_files = _collect_tasks_files()
         assert len(tasks_files) > 0, "未发现任何 tasks.md 文件（回归基线不可为空）"
 
-        violations_by_file: list[tuple[Path, list[str]]] = []
-        for tf in tasks_files:
-            text = tf.read_text(encoding="utf-8")
+        violations_by_file: list[tuple[str, list[str]]] = []
+        for tf, text in tasks_files:
             violations = lint_tasks_text(text, lane="full")
             if violations:
                 violations_by_file.append((tf, violations))

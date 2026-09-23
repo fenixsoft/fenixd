@@ -89,10 +89,17 @@ def _spawn_polling(tmp_path, monkeypatch, *, frozen: bool = True,
 
     sm = MagicMock()
 
+    # frozen 命中经「布防」门控：注册观察到位后才对轮询环暴露 frozen 态。
+    # 直接 frozen=True 时，轮询环首圈即命中并在 60ms 内走完
+    # terminate→注销→raise 全序列，下方「等注册」轮询（50ms 步长）大概率
+    # 错过注册窗口（_running_agents 在 finally 段注销）→ 假失败。布防后
+    # 注册窗口 ≥1 个轮询周期（1s），既可观察又保持 frozen 优先级语义。
+    frozen_gate = {"armed": False}
+
     def fake_read_one(name):
         if state_read_error:
             raise RuntimeError("STATE 读取失败")
-        if not frozen:
+        if not frozen or not frozen_gate["armed"]:
             return {}
         return {"status": "blocked", "frozen": True}
 
@@ -102,6 +109,13 @@ def _spawn_polling(tmp_path, monkeypatch, *, frozen: bool = True,
     orig_popen = runner_module.subprocess.Popen
 
     def fake_popen(cmd, **kw):
+        # 只劫持 agent 主进程 spawn（claude CLI）。subprocess.Popen 是模块级
+        # 全局——无差别替换会把 _run_claude 链路里其它 subprocess.run（如
+        # 冻结命中路径上 _wip_checkpoint_on_forced_kill → _worktree_path_valid
+        # 的 git 探测，timeout=10）也换成 sleep(30) 假进程，烧满超时
+        # （2026-09-23 取证：冻结用例被拖到 10.0s）。非 agent 调用透传。
+        if not (isinstance(cmd, list) and cmd and cmd[0] == "claude"):
+            return orig_popen(cmd, **kw)
         kw.pop("text", None)
         kw.pop("bufsize", None)
         kw.pop("env", None)
@@ -135,6 +149,7 @@ def _spawn_polling(tmp_path, monkeypatch, *, frozen: bool = True,
     while time.time() < deadline and "impl-x-123-a1" not in runner._running_agents:
         time.sleep(0.05)
     assert "impl-x-123-a1" in runner._running_agents
+    frozen_gate["armed"] = True  # 注册已观察 → 下一轮询周期命中 frozen
 
     if cancel_requested:
         runner.cancel_run("impl-x-123", reason="先取消", by="admin")
