@@ -9,7 +9,7 @@ items 的 accept/reject 端点同构），本模块不承载写逻辑。
 import json
 from pathlib import Path
 
-from core.code_review import read_items, read_progress
+from core.code_review import normalize_severity, read_items, read_progress
 
 _SEVERITY_ORDER = {"critical": 0, "major": 1, "minor": 2, "info": 3}
 
@@ -48,6 +48,12 @@ def read_code_review_items(project_root, statuses=None):
     items = read_items(project_root)
     wanted = {"open"} if statuses is None else set(statuses)
     rows = [rec for rec in items.values() if rec.get("status") in wanted]
+    # severity 读侧归一（2026-09-23）：写侧 normalize_severity 只能治愈新写入/
+    # upsert 刷新的条目，台账存量漂移行（ocr 透传的 high/medium/low）在本处
+    # 统一映射，使排序与前端过滤/色系按四档生效——零数据迁移，漂移行随下次
+    # 被审查 upsert 在盘上自然刷新。rec 为本函数私有加载产物，就地改写安全。
+    for rec in rows:
+        rec["severity"] = normalize_severity(rec.get("severity"))
     rows.sort(
         key=lambda r: (
             _SEVERITY_ORDER.get(str(r.get("severity")), 9),

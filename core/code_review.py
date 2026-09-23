@@ -198,6 +198,33 @@ def fingerprint(file: str, category: str, title: str) -> str:
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
 
 
+# severity 归一映射（2026-09-23 根治漂移）：契约四档 critical|major|minor|info
+# （agents/code-review.md「严重度定义」），但第一步 ocr scan 产出自带
+# high/medium/low 值域，经 agent「原样透传」落台账（归一责任在 agent、写侧
+# 此前无校验，实测漂移 80/543 条）。口径与 dashboard/data/artifacts.py 的
+# verify-bugs 归一一致：high/medium→major、low→minor。severity 不参与
+# fingerprint，归一不影响条目去重。
+_SEVERITY_NORMALIZE = {
+    "critical": "critical",
+    "high": "major",
+    "major": "major",
+    "medium": "major",
+    "minor": "minor",
+    "low": "minor",
+    "info": "info",
+}
+
+
+def normalize_severity(value) -> str:
+    """severity 归一：漂移值域 high/medium/low 映射回契约四档。
+
+    空/缺失回 info（与原 ``or "info"`` 缺省同语义）；表内命中归一；未知值
+    原样透传（fail-open，同 artifacts.py 先例——读侧/前端有兜底排序与色系）。
+    """
+    raw = str(value or "info")
+    return _SEVERITY_NORMALIZE.get(raw, raw)
+
+
 def _item_id(project: str, file: str, fp: str) -> str:
     """条目稳定 id：``sha1(project|file|fingerprint)[:12]``。
 
@@ -295,7 +322,7 @@ def upsert_findings(
             base = {
                 "file": file_,
                 "line": _coerce_line(finding.get("line")),
-                "severity": str(finding.get("severity") or "info"),
+                "severity": normalize_severity(finding.get("severity")),
                 "category": category,
                 "title": title,
                 "description": str(finding.get("description") or ""),
@@ -1108,6 +1135,59 @@ def mark_resolved(project_root, item_ids: List[str]) -> int:
                 continue
             rec["status"] = "resolved"
             rec["resolution"] = "code-fix-auto"
+            hit += 1
+        content = "".join(
+            json.dumps(current[k], ensure_ascii=False) + "\n" for k in sorted(current)
+        )
+        _atomic_write(path, content)
+
+    _with_lock(path, _do)
+    return hit
+
+
+def mark_ignored(
+    project_root, item_ids: List[str], reasons: Optional[Dict[str, str]] = None,
+    by: str = "code-fix-agent",
+) -> int:
+    """code-fix 车道 ignored 置入（LLM 拒绝出口，2026-09-23）。
+
+    与 ``set_item_status``（**人工**流转，仅 open/ignored）的分工：本函数是
+    **框架内部写路径**（形态对齐 ``mark_resolved``：读-改-写走 ``_with_lock``
+    + ``_atomic_write``，只动命中条目），由 code-fix 批 worker 在解析产物行
+    时调用——agent 对条目显式标注 ``skip_reason ∈ {false_positive,
+    not_worth_fixing}``（判误报/不值得修）时，把该条目置终态 ``ignored``，
+    不再跨链重修。约束：仅 ``status == "open"`` 的条目可置（``in_spec`` 已
+    立项的 MUST NOT 被车道降级；``resolved`` 是合回专属，同 ``mark_resolved``
+    的分工契约）；记录 ``ignored_by`` / ``ignored_reason`` / ``ignored_at``
+    供人工回溯与后续误判重开。
+
+    参数:
+        project_root: 项目根（主树——台账在主树）。
+        item_ids: 产物行 ``status == "skipped"`` 且 skip_reason 属可忽略
+            集合的条目 id 列表。缺失的 item_id 静默跳过（并发演进下属正常态）。
+        reasons: ``item_id → skip_reason`` 映射（记入 ``ignored_reason``，
+            缺失记空串——标注缺失不影响置入，可忽略性由调用方按产物行过滤）。
+        by: 记入 ``ignored_by`` 的来源标注。
+
+    返回:
+        命中并置为 ignored 的条目数。
+    """
+    path = items_path(project_root)
+    hit = 0
+    now = _now_iso()
+    reason_map = reasons or {}
+
+    def _do() -> None:
+        nonlocal hit
+        current = _read_items_unlocked(path)
+        for iid in dict.fromkeys(item_ids):  # 去重：重复 id 只命中一次
+            rec = current.get(iid)
+            if rec is None or rec.get("status") != "open":
+                continue
+            rec["status"] = "ignored"
+            rec["ignored_by"] = by
+            rec["ignored_reason"] = reason_map.get(iid, "")
+            rec["ignored_at"] = now
             hit += 1
         content = "".join(
             json.dumps(current[k], ensure_ascii=False) + "\n" for k in sorted(current)

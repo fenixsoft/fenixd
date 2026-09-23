@@ -55,6 +55,7 @@ NOT 等到全部处置完才一次性写出）。追加方式：以 append 模�
 {
   "item_id": "与清单中 item_id 一致",
   "status": "fixed 或 skipped",
+  "skip_reason": "skipped 时的拒绝原因（见下），fixed 时省略",
   "file": "修复的文件相对路径"
 }
 ```
@@ -63,6 +64,20 @@ NOT 等到全部处置完才一次性写出）。追加方式：以 append 模�
 - `status: "skipped"`：该条无法修复 / 你判断为误报 / 修复风险过大 /
   需要人工介入。**无法修复的条目 MUST 显式写 `status: "skipped"` 而
   不是静默跳过**——不落行会被框架判为「产物缺失」而整批失败。
+- `skip_reason`（skipped 时 MUST 给出，框架按它决定条目去向）：
+  - `false_positive`：**问题不成立**——你核实后确认是误报（前提/现象/
+    影响与实际代码不符）。框架将把该条目置 `ignored` 终态（记
+    `ignored_by/ignored_reason`），此后不再重修。判定 MUST 基于你对
+    目标文件实际代码的阅读核实，而非仅凭 description 字面。
+  - `not_worth_fixing`：问题成立但**不值得修**——纯风格/影响极小/
+    修复反而引入更大风险。同样置 `ignored` 终态。
+  - `unfixable`：问题成立且值得修，但当前无法安全修复（如需大规模
+    重构、缺依赖上下文）。条目保持 open，后续轮次可能重试。
+  - `needs_human`：需要人工裁决（如涉及业务语义取舍）。条目保持 open。
+  - **判定纪律**：`false_positive` / `not_worth_fixing` 是硬出口——
+    置了就不回头（人工可在台账重开）。宁可标 `unfixable` 也 MUST NOT
+    为省事把值得修的问题标成误报；核实成本高于修复成本的简单问题
+    不属于「不值得修」。
 - 追加行的 `item_id` MUST 与清单一致（框架按 `item_id` 精确核销；
   写错 id 的条目不会被置 `resolved`）。
 

@@ -336,6 +336,75 @@ class TestMarkResolved(unittest.TestCase):
         self.assertTrue(all(r["status"] == "resolved" for r in items.values()))
 
 
+class TestMarkIgnored(unittest.TestCase):
+    """LLM 拒绝出口（2026-09-23）：code-fix 车道把误报/不值得修条目置 ignored。"""
+
+    def test_marks_open_only_and_records_reason(self):
+        from core.code_review import mark_ignored, read_items
+
+        proot = _make_project_root()
+        _write_items(proot, {
+            "a": _item("a"),
+            "b": _item("b", status="in_spec"),   # 已立项：MUST NOT 被车道降级
+            "c": _item("c", status="resolved"),  # 已核销：MUST NOT 被覆盖
+            "d": _item("d"),
+        })
+        hit = mark_ignored(
+            proot, ["a", "b", "c", "missing-id"],
+            reasons={"a": "false_positive", "b": "not_worth_fixing"},
+        )
+        self.assertEqual(hit, 1)
+        items = read_items(proot)
+        self.assertEqual(items["a"]["status"], "ignored")
+        self.assertEqual(items["a"]["ignored_by"], "code-fix-agent")
+        self.assertEqual(items["a"]["ignored_reason"], "false_positive")
+        self.assertIn("ignored_at", items["a"])
+        self.assertEqual(items["b"]["status"], "in_spec")   # 未误伤
+        self.assertEqual(items["c"]["status"], "resolved")  # 未误伤
+        self.assertEqual(items["d"]["status"], "open")      # 未命中不误伤
+
+    def test_reason_missing_records_empty(self):
+        from core.code_review import mark_ignored, read_items
+
+        proot = _make_project_root()
+        _write_items(proot, {"a": _item("a")})
+        self.assertEqual(mark_ignored(proot, ["a", "a"]), 1)  # 重复 id 只命中一次
+        self.assertEqual(read_items(proot)["a"]["ignored_reason"], "")
+
+
+class TestSplitFixRows(unittest.TestCase):
+    """批收尾产物行分区（LLM 拒绝出口）：fixed 与可忽略 skipped 的划分口径。"""
+
+    def test_partitions_fixed_and_ignorable_skipped(self):
+        from core.code_fix import _split_fix_rows
+
+        rows = [
+            {"item_id": "a", "status": "fixed", "file": "x.py"},
+            {"item_id": "b", "status": "skipped", "skip_reason": "false_positive", "file": "x.py"},
+            {"item_id": "c", "status": "skipped", "skip_reason": "not_worth_fixing", "file": "x.py"},
+            {"item_id": "d", "status": "skipped", "skip_reason": "unfixable", "file": "x.py"},
+            {"item_id": "e", "status": "skipped", "file": "x.py"},  # 无标注：缺省保守不降级
+            {"item_id": "f", "status": "skipped", "skip_reason": "needs_human", "file": "x.py"},
+        ]
+        fixed_ids, skip_reasons = _split_fix_rows(rows)
+        self.assertEqual(fixed_ids, ["a"])
+        self.assertEqual(skip_reasons, {"b": "false_positive", "c": "not_worth_fixing"})
+
+    def test_retry_fixed_wins_over_earlier_skip(self):
+        # 并集口径：首轮 skipped 判误报、重试轮 fixed → 以 fixed 为准，不降级
+        from core.code_fix import _split_fix_rows
+
+        rows = [
+            {"item_id": "a", "status": "skipped", "skip_reason": "false_positive", "file": "x.py"},
+            {"item_id": "a", "status": "fixed", "file": "x.py"},
+            {"item_id": "b", "status": "skipped", "skip_reason": "unfixable", "file": "x.py"},
+            {"item_id": "b", "status": "skipped", "skip_reason": "false_positive", "file": "x.py"},
+        ]
+        fixed_ids, skip_reasons = _split_fix_rows(rows)
+        self.assertEqual(fixed_ids, ["a"])
+        self.assertEqual(skip_reasons, {"b": "false_positive"})  # 后行覆盖：重试轮判定更新
+
+
 # ── 5.1/5.2/5.9 编排核心：进度、选批、守卫矩阵 ────────────────────────
 
 

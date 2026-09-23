@@ -128,6 +128,71 @@ class TestUpsertDedup(unittest.TestCase):
         self.assertEqual(rec["review_id"], "code-review-3")
 
 
+class TestNormalizeSeverity(unittest.TestCase):
+    def test_drift_values_map_to_contract(self):
+        # ocr scan 透传的漂移值域 high/medium/low → 契约四档（口径同
+        # dashboard/data/artifacts.py 的 verify-bugs 归一）
+        from core.code_review import normalize_severity
+
+        self.assertEqual(normalize_severity("high"), "major")
+        self.assertEqual(normalize_severity("medium"), "major")
+        self.assertEqual(normalize_severity("low"), "minor")
+
+    def test_contract_values_and_fallbacks(self):
+        # 四档原样；空/缺失回 info（原 `or "info"` 缺省语义）；未知值透传
+        # （fail-open，读侧/前端有兜底排序与色系）
+        from core.code_review import normalize_severity
+
+        for v in ("critical", "major", "minor", "info"):
+            self.assertEqual(normalize_severity(v), v)
+        self.assertEqual(normalize_severity(""), "info")
+        self.assertEqual(normalize_severity(None), "info")
+        self.assertEqual(normalize_severity("weird"), "weird")
+
+
+class TestUpsertAndReadSeverityNormalize(unittest.TestCase):
+    def setUp(self):
+        self.repo = _make_repo()
+
+    def tearDown(self):
+        import shutil
+
+        shutil.rmtree(str(self.repo.parent), ignore_errors=True)
+
+    def test_upsert_normalizes_drift_severity(self):
+        # 写侧：漂移 severity 落台账即归一（新写入路径）
+        from core.code_review import read_items, upsert_findings
+
+        findings = [{
+            "file": "core/a.py", "category": "style", "title": "漂移条目",
+            "severity": "high", "description": "d", "suggestion": "s", "evidence": "e",
+        }]
+        upsert_findings(self.repo, findings, "code-review-n", "scheduled")
+        rec = next(iter(read_items(self.repo).values()))
+        self.assertEqual(rec["severity"], "major")
+
+    def test_read_side_normalizes_legacy_rows(self):
+        # 读侧：盘上存量漂移行（写侧归一前落盘的）在 API 读出时归一——
+        # 零数据迁移，消费端（排序/过滤/色系）按四档生效
+        import json as _json
+
+        from core.code_review import items_path
+        from core.dashboard.data.code_review import read_code_review_items
+
+        legacy = {
+            "item_id": "legacy-1", "status": "open", "severity": "medium",
+            "file": "core/b.py", "line": 1, "category": "style",
+            "title": "存量漂移行", "fingerprint": "fp-legacy-1",
+        }
+        path = items_path(self.repo)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(_json.dumps(legacy) + "\n")
+        rows = read_code_review_items(self.repo)
+        row = next(r for r in rows if r["item_id"] == "legacy-1")
+        self.assertEqual(row["severity"], "major")
+
+
 class TestSnapshotResolution(unittest.TestCase):
     def setUp(self):
         self.repo = _make_repo()

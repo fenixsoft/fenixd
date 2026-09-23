@@ -37,7 +37,7 @@ import time
 import uuid
 from pathlib import Path
 
-from core.code_review import mark_resolved, read_items
+from core.code_review import mark_ignored, mark_resolved, read_items
 from core.config import ConfigLoader
 from core.verify_contract import load_verify_contract
 
@@ -51,6 +51,12 @@ FIX_FAILED_REL = ".fenix/code-review/fix-failed.json"
 # 那次入档发一次性 warning 告警并登记 todo 待人工项，此后不再自动重试。
 # 模块常量、不新增配置键（预算语义无需按项目调节）。
 FAIL_RETRY_MAX = 3
+
+# LLM 拒绝出口（2026-09-23）：产物行 skipped 且显式标注这些 skip_reason 的
+# 条目置台账终态 ignored（mark_ignored），不再跨链重修。其余 skipped（无标注
+# 缺省 / unfixable / needs_human）维持既有语义（open + 链内跳过，跨链可重试）
+# ——缺省保守：必须显式声明「误报/不值得修」才走硬出口，防 LLM 轻率清账。
+IGNORE_ELIGIBLE_SKIP_REASONS = {"false_positive", "not_worth_fixing"}
 
 # 进度缺省态（读侧缺文件/损坏时返回，MUST NOT 抛异常）
 FIX_PROGRESS_DEFAULT = {
@@ -458,6 +464,33 @@ def read_fix_out(worktree, run_id: str) -> list:
         if isinstance(rec, dict) and rec.get("item_id"):
             rows.append(rec)
     return rows
+
+
+def _split_fix_rows(rows: list) -> tuple:
+    """批收尾产物行分区（纯函数，LLM 拒绝出口 2026-09-23）。
+
+    返回 ``(fixed_ids, skip_reasons)``：
+
+    - ``fixed_ids``：``status == "fixed"`` 的条目 id（保序去重）——合回后
+      经 ``mark_resolved`` 核销；
+    - ``skip_reasons``：``item_id → skip_reason``，仅收录 ``status ==
+      "skipped"`` 且 skip_reason ∈ ``IGNORE_ELIGIBLE_SKIP_REASONS``（判误报/
+      不值得修，批收尾经 ``mark_ignored`` 置终态）。同条目多行时**后行覆盖
+      前行**（并集口径下重试轮的判定更新生效）；但最终态为 fixed 的条目
+      MUST NOT 出现在 skip_reasons——「首轮 skipped 判误报、重试轮 fixed」
+      以 fixed 为准（不降级）。
+    """
+    fixed_ids = [r.get("item_id") for r in rows if r.get("status") == "fixed"]
+    fixed_ids = list(dict.fromkeys(fixed_ids))
+    fixed_set = set(fixed_ids)
+    skip_reasons = {
+        r.get("item_id"): r.get("skip_reason")
+        for r in rows
+        if r.get("status") == "skipped"
+        and r.get("skip_reason") in IGNORE_ELIGIBLE_SKIP_REASONS
+        and r.get("item_id") not in fixed_set
+    }
+    return fixed_ids, skip_reasons
 
 
 def _worktree_commit_count(worktree, created_sha: str) -> int:
@@ -1209,25 +1242,43 @@ class CodeFixOrchestrator:
             # 同一 worktree、随同一次合回进主树，故核销按**并集**口径；只读首次
             # run 会漏掉「重试才修复」的条目（已合回却仍留 open，被反复重派）。
             rows.extend(read_fix_out(wt, retry_run_id))
-        fixed_ids = [
-            r.get("item_id") for r in rows if r.get("status") == "fixed"
-        ]
-        fixed_ids = list(dict.fromkeys(fixed_ids))
+        # LLM 拒绝出口（2026-09-23）：skipped 且显式标注可忽略原因的条目在
+        # 批收尾即置 ignored 终态（不等合回——ignored 与代码变更无关），从
+        # 本批后续的失败档案/chain_skipped 集合中排除（已终态，MUST NOT 随批
+        # 作废被重试重做）。分区口径见 _split_fix_rows。
+        fixed_ids, skip_reasons = _split_fix_rows(rows)
+        ignore_ids = list(dict.fromkeys(skip_reasons))
+        ignored = mark_ignored(root, ignore_ids, reasons=skip_reasons) if ignore_ids else 0
+        ignore_set = set(ignore_ids)
+        pending_ids = [iid for iid in item_ids if iid not in ignore_set]
         commits = _worktree_commit_count(wt, created_sha) if created_sha else 0
         if not fixed_ids or commits <= 0:
+            if not pending_ids:
+                # 全批 skipped 均为可忽略原因：条目已尽置 ignored（终态）、
+                # 无代码改动可合回——批按完成收尾（非失败，不烧重试预算）。
+                _safe_cleanup(wm, wt, success=True, logger=self._logger)
+                self._consumed_progress(
+                    current=(
+                        f"第 {batch_no} 批完成（误报/不值得修 {ignored} 条已忽略，"
+                        f"无需合回）— 继续后续批次"
+                    ),
+                    reason="",
+                )
+                return "consumed"
             # 零有效修复拒合回（selfheal：链内跳过而非终止链）——零产物批按
             # halt 终止链，因选批 earliest-first 会永久堵在队列头，违背「单批
-            # 失败不堵塞车道」目标；条目入 chain_skipped 随下一链重试。
+            # 失败不堵塞车道」目标；条目入 chain_skipped 随下一链重试（已置
+            # ignored 的条目除外——已终态不重试）。
             self._log(
                 "warning",
                 f"code-fix 第 {batch_no} 批零有效修复（fixed={len(fixed_ids)}, "
-                f"commits={commits}），拒合回",
+                f"commits={commits}, ignored={ignored}），拒合回",
             )
             _safe_cleanup(wm, wt, success=False, logger=self._logger)
             self._consumed_progress(
                 current=f"第 {batch_no} 批失败已跳过（无有效修复）— 继续后续批次",
                 reason="no_effective_fix",
-                chain_skip_ids=item_ids,
+                chain_skip_ids=pending_ids,
             )
             return "consumed"
 
@@ -1246,8 +1297,9 @@ class CodeFixOrchestrator:
             self._log("error", f"code-fix 第 {batch_no} 批合回冲突，现场即弃（branch/tip_sha 入档案）")
             tip_sha = _worktree_head(wt)
             branch = _worktree_branch(wt)
+            # 失败档案只收未终态条目（已置 ignored 的不随批作废重试）
             record_failed_batch(
-                root, item_ids, wt,
+                root, pending_ids, wt,
                 reason="merge_back_conflict", branch=branch, tip_sha=tip_sha,
             )
             _safe_cleanup(wm, wt, success=False, logger=self._logger)
@@ -1273,7 +1325,8 @@ class CodeFixOrchestrator:
         )
         self._log(
             "info",
-            f"code-fix 第 {batch_no} 批合回成功：resolved {hit}/{len(items)} 条",
+            f"code-fix 第 {batch_no} 批合回成功：resolved {hit}/{len(items)} 条"
+            + (f"（另 ignored {ignored} 条）" if ignored else ""),
         )
         return "success"
 
