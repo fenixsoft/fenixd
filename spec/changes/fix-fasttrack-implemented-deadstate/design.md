@@ -46,7 +46,8 @@
 2. 实现者 run 流转录文件 mtime 超过宽限窗（复用 orphaned_state 探针的
    `ORPHANED_RUN_GRACE_SECONDS` 常量语义，取证：车道/实现者 run 心跳持续刷新转录
    mtime，活着则 mtime 新鲜）→ run 已死；
-3. dispatcher `_ocr_lane_inflight` 无本 spec 在飞车道 → 收尾重入不与车道竞态。
+3. `ocr_lane_busy(spec_name)` 为假（经 D3 公开方法**带参**判定「无本 spec 在飞
+   车道」，不跨层直读 `_ocr_lane_inflight` 私有字典）→ 收尾重入不与车道竞态。
 
 正常收尾流不受影响：连跳在同一 run 上下文毫秒级完成，事件重发周期 30 分钟，窗口
 天然错开；三条件把「事件先到、run 还活着」的竞态挡在门外。
@@ -65,13 +66,20 @@
 - 重入路径**不读** fast-track 结果文件（早已消费）：验证结论以 tasks 勾选 + 已 merge
   事实为准；verified→done 门禁 `_task_completion_blocker` 读 per-spec impl-result
   快照（merge 成功时点已落盘）。
+- 既有 defer 唤醒重入（`_resume_verified_after_ocr` → `_fast_track_advance_to_verified`
+  整方法重入）开头会重跑洗白门禁，但该门禁对无场景数据 fail-open
+  （`verification/escalation.py::_env_whitewash_gate`：report 与结果文件场景皆空时
+  直接放行，注释「无场景数据不拦」）——已清理的结果文件不会卡死重入，此为重入
+  路径无需结果文件的机制前提。
 
 ### D3 在飞豁免：`ocr_lane_busy()` 第五维（Cap 2）
 
 照 `_review_lane_busy` 先例（`fenixd.py:1042 _is_idle` 维度②完全同构）：
 
-- pm_engine（或其 dispatcher）新增公开方法 `ocr_lane_busy() -> bool`：读
-  `_ocr_lane_inflight` 任一为真即 busy；异常按 busy 处理（宁紧勿松，与
+- pm_engine（或其 dispatcher）新增公开方法
+  `ocr_lane_busy(spec_name: str | None = None) -> bool`：**带参**时按该 spec 判
+  `_ocr_lane_inflight.get(spec_name)`（供 D1 条件③恢复判据用），**无参**时任一
+  在飞即 busy（供 `_is_idle` 第五维用）；异常按 busy 处理（宁紧勿松，与
   `_is_idle` 既有异常策略一致）。
 - `_is_idle()` 增加第五维：`self.pm_engine.ocr_lane_busy()` 为真 → 非空闲。
 - **不采用**登记 `agent_runner._running_agents` 的方案：该注册表值为 Popen，车道是
@@ -92,6 +100,7 @@
 | 恢复重入时代码/清零点漂移 | D2 强制抽取复用，禁止复制粘贴 |
 | 车道线程泄漏导致自愈永久抑制 | `_ocr_lane_inflight` 在线程 finally 中清理（既有）；车道有硬超时，不会无限占用；stale 告警持续可见 |
 | 自触发循环加剧（重启后又 stale） | 既有 self_triggered 窗口 + 冷却机制不动，Cap 2 只是减少无谓重启诱因 |
+| 恢复重入 defer 停等撞既有 stuck-testing auto-recover | 既有交互面：正常流 defer 停等同样暴露（超阈值会被回滚 implemented + 入队 verifier，engine.py stuck 分支）；车道硬超时使停等有界；Cap 1 不改变停等语义（Non-Goals），回归用例观察即可 |
 
 ## 验证要点（供 specs/tasks 展开取证锚点）
 
