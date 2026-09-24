@@ -1241,15 +1241,24 @@ class LivenessSupervisor:
             except Exception as e:  # pragma: no cover - 防御性
                 self._pm.logger.warning("agent_runner", f"SIGTERM failed for agent {name}: {e}")
 
-        # 第二步：同步写入 interrupted 标记。running 快照只含未完成 agent（完成的已
-        # finalize 并移除），不会误标已完成 run。对每个被终止 agent 都写标记——无论其
-        # 是否已在 SIGTERM 后快速退出（design D2：标记由 daemon 侧同步写入，不依赖
-        # agent 优雅退出，保证"已知中断"证据完整）。读线程以 append 模式单行写入，
-        # O_APPEND 原子追加不破坏 JSONL 结构。
+        # 第二步：同步写入 interrupted 标记。running 快照到写入之间 run 线程可能已
+        # 并发收尾（SIGTERM 令 claude 快速退出 → run 线程 finally 段 join 后先 pop
+        # 注册表、再落 result 终态），故写入前双重复核，已明确终结的 run 跳过标记
+        # （docstring 承诺"不影响已 finalize 的完成 run"）；下游按末行口径判定
+        # （_file_tail_is_terminal/classify_run），对已落终态的文件追加 interrupted
+        # 会覆盖成功/失败语义。两重复核各堵半边竞态窗口：① 注册表成员复核兜住
+        # pop 已做、result 未落盘的收尾段；② 末行终态复核兜住 error 终态已落盘但
+        # run 线程仍在 join、尚未 pop 的窗口。仍存活的 agent 照常写标记（design
+        # D2：标记由 daemon 侧同步写入，不依赖 agent 优雅退出）。读线程以 append
+        # 模式单行写入，O_APPEND 原子追加不破坏 JSONL 结构。
         runs_dir = self._pm.project_root / ".fenix" / "runs"
-        for name, proc in running:
+        for name, _proc in running:
+            if name not in self._pm._running_agents:
+                continue
             run_file = runs_dir / f"{name}.jsonl"
             try:
+                if _file_tail_is_terminal(run_file):
+                    continue
                 append_run_line(
                     run_file,
                     {

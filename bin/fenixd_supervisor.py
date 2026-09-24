@@ -378,6 +378,21 @@ def start_daemon():
         return None
 
 
+# ── supervisor 自身停机信号（code-review 09d6ed559666）────────────────────
+# supervisor 被外部 SIGTERM/SIGINT（系统管理器 stop / 人为 kill）时若直接消亡，
+# daemon 会成为孤儿，随后重启 supervisor 又无条件拉起新 daemon → 双 daemon 并发
+# 写 .fenix。处理器仅置位停机标记（信号上下文里不做等待/IO），SIGTERM 转发与
+# 等待退出由主循环按既有 stop/restart 同款路径完成；SIGKILL 无法捕获，不在
+# 本机制的覆盖范围。
+_shutdown_requested = False
+
+
+def _request_shutdown(signum, frame):
+    """SIGTERM/SIGINT 处理器：置位停机标记，收尾（转发+等待）由主循环完成。"""
+    global _shutdown_requested
+    _shutdown_requested = True
+
+
 def main():
     # 启动守卫（fix-supervisor-hosting-chain D1）：解析出的项目根下必须存在
     # .fenix/（目录或软链），缺失时打印含解析来源与解析结果的可读错误并以
@@ -399,6 +414,11 @@ def main():
     # daemon 启动一致性自检将读取该文件，缺失/不一致 → WARNING 提示重启 supervisor。
     _write_supervisor_runtime()
 
+    # 停机信号注册（code-review 09d6ed559666）：SIGTERM/SIGINT → 转发给 daemon
+    # 并等待退出后再退出，防孤儿 daemon / 重启后双 daemon。
+    signal.signal(signal.SIGTERM, _request_shutdown)
+    signal.signal(signal.SIGINT, _request_shutdown)
+
     # 连续启动失败计数（add-stale-code-selfheal D4）：仅「意外退出」累计，
     # 优雅重启（restart_request）/ 显式停止不计；存活 ≥ 60s 清零。
     fail_count = 0
@@ -406,6 +426,12 @@ def main():
     while True:
         if STOP_FLAG.exists():
             log("stop flag present — supervisor exiting")
+            break
+
+        # supervisor 自身被请求停机（code-review 09d6ed559666）：尚未监视 daemon
+        # （启动期/退避期）就收到 SIGTERM/SIGINT → 直接退出，不再拉起新 daemon。
+        if _shutdown_requested:
+            log("shutdown signal received — supervisor exiting")
             break
 
         # 熔断判定：存在属于当前 supervisor 进程的熔断标记 → 不再拉起。
@@ -474,6 +500,34 @@ def main():
                             "(uninterruptible sleep?) — leave reaping to outer wait"
                         )
                 break
+            if _shutdown_requested:
+                # supervisor 自身收到 SIGTERM/SIGINT（code-review 09d6ed559666）：
+                # 按既有停止路径转发 SIGTERM 给 daemon 并等待退出后随同退出，
+                # 避免孤儿 daemon / 重启 supervisor 后双 daemon。
+                log("shutdown signal received — SIGTERM daemon for supervisor exit")
+                restart = False
+                sigkill_wait = _sigkill_wait_seconds()
+                try:
+                    proc.send_signal(signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                try:
+                    proc.wait(timeout=sigkill_wait)
+                except subprocess.TimeoutExpired:
+                    log(f"daemon did not exit within {sigkill_wait}s after SIGTERM — SIGKILL")
+                    try:
+                        proc.kill()
+                    except ProcessLookupError:
+                        pass
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        # 与 stop/restart 分支同款兜底：不可中断睡眠时收尸交给外层 wait
+                        log(
+                            "daemon still alive 5s after SIGKILL "
+                            "(uninterruptible sleep?) — leave reaping to outer wait"
+                        )
+                break
             if RESTART_REQUEST.exists():
                 log("restart_request detected — SIGTERM daemon for restart")
                 restart = True
@@ -521,6 +575,12 @@ def main():
 
         if STOP_FLAG.exists():
             log("stop flag present — supervisor exiting")
+            break
+
+        # supervisor 自身停机信号（code-review 09d6ed559666）：daemon 已随同
+        # 退出 → 不再自动拉起，直接退出（此路径属优雅停机，不计熔断）。
+        if _shutdown_requested:
+            log("shutdown signal received — supervisor exiting")
             break
 
         # 启动失败熔断：仅意外退出（非优雅重启）计入；存活 < 60s 累加，≥ 60s 清零。

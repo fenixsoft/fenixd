@@ -1275,6 +1275,17 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
     if "agents" in config_patch and not isinstance(config_patch["agents"], dict):
         return fail(f"agents must be an object: {config_patch['agents']!r}")
 
+    # 非 dict 的 agents.models patch 直接拒绝（同上款「must be an object」口径：
+    # 非 dict models 会被 _deep_merge_managed 原样拷入 merged——truthy 非 dict
+    # 在末尾 _model_patch.items() 抛 AttributeError 成 500，falsy 非 dict 则
+    # 绕过全部校验被静默落盘，违反 D7「非法值直接拒绝」契约）
+    if (
+        isinstance(config_patch.get("agents"), dict)
+        and "models" in config_patch["agents"]
+        and not isinstance(config_patch["agents"]["models"], dict)
+    ):
+        return fail(f"agents.models must be an object: {config_patch['agents']['models']!r}")
+
     # improve-failover-model-mapping-ui D4/D5：编辑器行列表序列化为 canonical 形态
     # （str/list|对象）供校验；role-level model 空值不写入（避免空串覆盖已有缺省）
     if isinstance(config_patch.get("agents"), dict) and isinstance(

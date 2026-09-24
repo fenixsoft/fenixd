@@ -359,7 +359,21 @@ class H6AlertRoutesMixin:
             if not p.get("exists"):
                 continue
             proot = Path(p["path"])
-            cleared += dashboard_data.mark_all_alerts_handled(proot)
+            # 与 _api_alert_handled / alert-resolve 同一 per-alert 锁口径
+            # （code-review item 05bbe3368891）：mark_all_alerts_handled 内部
+            # 只走 store 级锁，可在 resolve 持锁通过 409 快照检查、正执行映射
+            # 动作的窗口内把告警插入标记 handled，令 resolve 仍把 abandon/
+            # force_advance 等动作执行完（不变量见 _api_alert_handled 处注释）。
+            # 先取未处理告警 id，逐个持 _adjudication_lock 后再标记：本路径先
+            # 抢到锁则 resolve 后读快照命中 409 不执行动作；resolve 先完成则
+            # mark 幂等返回 False 不计数。
+            for alert in dashboard_data.get_unhandled_alerts(proot):
+                alert_id = str(alert.get("id") or "")
+                if not alert_id:
+                    continue
+                with _adjudication_lock(alert_id):
+                    if dashboard_data.mark_alert_handled(proot, alert_id):
+                        cleared += 1
             try:
                 self.server.sse_hub.broadcast(
                     {

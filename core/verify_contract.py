@@ -1104,6 +1104,7 @@ def ensure_main_tree_deps(
                 text=True,
                 timeout=900,
             )
+            cmd = "npm ci --prefer-offline"
             if r.returncode != 0:
                 r = subprocess.run(
                     ["npm", "install", "--prefer-offline", "--no-audit", "--no-fund"],
@@ -1112,12 +1113,13 @@ def ensure_main_tree_deps(
                     text=True,
                     timeout=900,
                 )
+                cmd = "npm install --prefer-offline"
             if r.returncode == 0:
                 done.append(str(sub))
                 if logger:
                     logger.info(
                         "verify_contract",
-                        f"主树依赖预装完成（{sub}，deps_mode={mode}）: " "npm ci --prefer-offline",
+                        f"主树依赖预装完成（{sub}，deps_mode={mode}）: {cmd}",
                     )
             elif logger:
                 logger.warning(
