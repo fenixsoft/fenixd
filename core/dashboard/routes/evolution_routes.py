@@ -12,10 +12,13 @@ patch 该命名空间属性）——本模块调用点 MUST 经 `core.dashboard.
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 from core.dashboard import data as dashboard_data
 from core.dashboard.registry import Registry
+
+logger = logging.getLogger("fenixd.dashboard.evolution_routes")
 
 
 class H7EvolutionRoutesMixin:
@@ -140,8 +143,12 @@ class H7EvolutionRoutesMixin:
                 decided_by="manual",
                 start_after=start_after,
             )
-        except Exception as e:  # noqa: BLE001 —— 端点不因内部异常 500 崩溃
-            self._error(500, f"接受失败: {e}")
+        except Exception:  # noqa: BLE001 —— 端点不因内部异常 500 崩溃
+            # 不外泄裸异常文本（code-review item 1f7996c07aa7）：裸 `{e}` 会把
+            # 内部路径/存储细节透给 HTTP 客户端，与 code_review_routes 已确立
+            # 的泛化文案策略同款——细节降级经服务端日志留痕。
+            logger.exception("接受建议项异常（item_id=%s）", item_id)
+            self._error(500, "接受失败（详见服务端日志）")
             return
         if result.get("status") is None and result.get("error"):
             self._error(404, result["error"])
@@ -166,8 +173,11 @@ class H7EvolutionRoutesMixin:
 
         try:
             result = reject_item(item_id, _server_mod.FRAMEWORK_ROOT)
-        except Exception as e:  # noqa: BLE001
-            self._error(500, f"拒绝失败: {e}")
+        except Exception:  # noqa: BLE001
+            # 不外泄裸异常文本（code-review item 1f7996c07aa7），同 accept 端点：
+            # 泛化文案 + 服务端 logger.exception 留痕。
+            logger.exception("拒绝建议项异常（item_id=%s）", item_id)
+            self._error(500, "拒绝失败（详见服务端日志）")
             return
         if result.get("status") is None and result.get("error"):
             self._error(404, result["error"])
@@ -194,8 +204,11 @@ class H7EvolutionRoutesMixin:
 
         try:
             result = delete_item(item_id, _server_mod.FRAMEWORK_ROOT)
-        except Exception as e:  # noqa: BLE001
-            self._error(500, f"删除失败: {e}")
+        except Exception:  # noqa: BLE001
+            # 不外泄裸异常文本（code-review item 1f7996c07aa7），同 accept 端点：
+            # 泛化文案 + 服务端 logger.exception 留痕。
+            logger.exception("删除建议项异常（item_id=%s）", item_id)
+            self._error(500, "删除失败（详见服务端日志）")
             return
         if result.get("status") is None and result.get("error"):
             self._error(404, result["error"])

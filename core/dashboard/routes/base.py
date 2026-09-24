@@ -22,7 +22,10 @@ from __future__ import annotations
 
 import gzip
 import json
+import logging
 import urllib.parse
+
+logger = logging.getLogger(__name__)
 
 
 # ── H1 路由分派链（design D1 表 C H1，task 4.5）──────────────────────
@@ -570,13 +573,18 @@ class H0BaseMixin:
                 self._serve_static(path.lstrip("/"))
         except BrokenPipeError:
             pass
-        except Exception as e:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
+            # 不外泄裸异常文本（code-review item 1a2a0bd78662）：`{e}` 会把
+            # 内部路径/存储细节透给 HTTP 客户端，与 code_review_routes 既有
+            # 泛化文案策略同款——对外固定文案，详情经 logger.exception
+            # （含 traceback）留服务端日志。
+            logger.exception("Internal Server Error")
             # 仅在响应尚未开始时才补写 500（code-review item 9de3d3095e85）：
             # handler 已开始写响应（body 中途 BrokenPipe/OSError）时再写第二个
             # 响应会在 keep-alive 连接上发出第二条状态行/体、污染下一次交换。
             if not getattr(self, "_response_started", False):
                 try:
-                    self._error(500, f"Internal Server Error: {e}")
+                    self._error(500, "Internal Server Error")
                 except Exception:
                     pass
 

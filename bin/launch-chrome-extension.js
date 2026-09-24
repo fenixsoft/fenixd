@@ -31,7 +31,7 @@ import { chromium } from 'playwright';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -581,8 +581,10 @@ export function detectTier2Trigger(specDir, projectRoot) {
   if (fs.existsSync(srcDir)) {
     try {
       // 使用 grep 搜索 fetch( 调用（排除注释和 node_modules）
-      const result = execSync(
-        `grep -rl "fetch\\s*(" ${srcDir} --include="*.ts" --include="*.tsx" --include="*.js" --include="*.jsx" 2>/dev/null || true`,
+      // 数组形式绕开 shell，避免含空格/元字符的路径被拆词或注入
+      const result = execFileSync(
+        'grep',
+        ['-rl', 'fetch\\s*(', srcDir, '--include=*.ts', '--include=*.tsx', '--include=*.js', '--include=*.jsx'],
         { encoding: 'utf-8', timeout: 5000 }
       ).trim();
       if (result) {

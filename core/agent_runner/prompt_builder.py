@@ -1384,9 +1384,11 @@ class PromptBuilder:
         prompt += self._noninteractive_contract_section()
         return prompt
 
-    def _build_self_review_prompt(self, date_str: str, detail: dict) -> str:
+    def _build_self_review_prompt(self, token: str, detail: dict) -> str:
         """构建每日自省 prompt（add-daily-self-review design D2/D3）。
 
+        首参 token 即统一入口 _build_prompt 的 spec_name 槽位（按位置传入）；
+        self-review 车道无 spec 维度，复用该槽位传入自省归属日期字符串。
         加载 agents/self-review.md（文件化体系，缺失 fail-fast），以
         str.replace 填充占位符（不用 str.format——正文含大量 {} JSON 示例）：
         - {review_date}: 自省归属执行日
@@ -1400,7 +1402,7 @@ class PromptBuilder:
         """
         template = self._load_agent_template("self-review")
         prompt = template
-        prompt = prompt.replace("{review_date}", date_str)
+        prompt = prompt.replace("{review_date}", token)
         prompt = prompt.replace("{daily_summary}", (detail.get("daily_summary") or "（无数据）"))
         prompt = prompt.replace(
             "{todo_md_content}",
@@ -1469,9 +1471,11 @@ class PromptBuilder:
         prompt += self._noninteractive_contract_section()
         return prompt
 
-    def _build_code_review_prompt(self, run_id: str, detail: dict) -> str:
+    def _build_code_review_prompt(self, token: str, detail: dict) -> str:
         """构建 code-review（周期/手动代码审查）run 的 prompt。
 
+        首参 token 即统一入口 _build_prompt 的 spec_name 槽位（按位置传入）；
+        code-review 车道无 spec 维度，复用该槽位传入 run 标识（run_id）。
         加载 agents/code-review.md（文件化体系，缺失 fail-fast），以 str.replace
         填充占位符（不用 str.format——正文含大量 {} JSON 示例）：
         - {run_id}: run 标识（分片名 out-{run_id}-b<N>.jsonl 的注入源，2026-09-24
@@ -1491,13 +1495,13 @@ class PromptBuilder:
         # {run_id} 分片名注入（2026-09-24 事故根治）：分片名 out-{run_id}-b<N>.jsonl
         # 由框架填具体值，提示词不再让 agent 从 {out_path} 推导——LLM 做字符串
         # 推导曾把 run_id 截成纯 epoch，6 个分片读侧全盲。
-        prompt = prompt.replace("{run_id}", str(run_id))
+        prompt = prompt.replace("{run_id}", str(token))
         prompt = prompt.replace("{manifest}", manifest_txt)
         prompt = prompt.replace("{total_files}", str(total))
         prompt = prompt.replace("{review_window}", str(window))
         out_path = detail.get("out_path")
         if not out_path:
-            out_path = self._pm.project_root / ".fenix" / "code-review" / f"out-{run_id}.jsonl"
+            out_path = self._pm.project_root / ".fenix" / "code-review" / f"out-{token}.jsonl"
         prompt = prompt.replace("{out_path}", str(out_path))
         # 非交互契约段（fix-agent-noninteractive-contract D2）：独立构建路径
         # 不走统一收尾处注入，就地追加（return 之前）。

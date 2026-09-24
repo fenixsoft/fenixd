@@ -195,18 +195,34 @@ def main():
     if result.ready_error:
         print(f"  错误: {result.ready_error}")
 
-    # 可选 regression 段自证（独立一行，不计入退出码）
-    reg_ok, reg_note = selfcheck_regression(project_root)
-    if reg_ok is not None:
-        print()
-        print(f"[regression] {'✓ 通过' if reg_ok else '✗ 自证失败'}")
-        if reg_note:
-            print(f"  {reg_note}")
-        if reg_ok is False:
-            print(
-                "  提示: regression 段可选——自证失败时 Administrator 应省略该段"
-                "（不得臆造无效命令，否则周期回归将每天以 parse_error 空转）"
-            )
+    # 可选 regression 段自证（独立一行，不计入退出码）。
+    # 契约已失败（valid=False 或 prepare/serve/ready 任一失败）时跳过：带
+    # regression 段时自证最长可跑满 timeout_seconds（缺省 1800s），在注定失败
+    # 的契约上只会拖延失败反馈——长耗时自证留给全通过场景（code-review
+    # item 2d16961e4ada）。退出码判定不受影响，仍按既有失败路径退出。
+    contract_failed = (
+        not result.valid
+        or not result.prepare_ok
+        or not result.serve_ok
+        or not result.ready_ok
+    )
+    if contract_failed:
+        _contract = load_verify_contract(project_root)
+        if _contract is not None and _contract.regression is not None:
+            print()
+            print("[regression] 跳过自证（因契约已失败跳过回归自证）")
+    else:
+        reg_ok, reg_note = selfcheck_regression(project_root)
+        if reg_ok is not None:
+            print()
+            print(f"[regression] {'✓ 通过' if reg_ok else '✗ 自证失败'}")
+            if reg_note:
+                print(f"  {reg_note}")
+            if reg_ok is False:
+                print(
+                    "  提示: regression 段可选——自证失败时 Administrator 应省略该段"
+                    "（不得臆造无效命令，否则周期回归将每天以 parse_error 空转）"
+                )
 
     # 输出 valid 判定
     print()

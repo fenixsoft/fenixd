@@ -1614,328 +1614,353 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
     if isinstance(merged.get("llm"), dict) and "billing" in merged["llm"]:
         merged["llm"].pop("billing", None)
 
-    # 3. 校验受管字段（llm / agents.models / agents.max_concurrent / gates.approve_mode）
-    #    不做完整 ConfigLoader 校验，避免缺少 project/schedule 等必填键时无法写入。
-    try:
-        llm = merged.get("llm") or {}
-        if llm:
-            ConfigLoader._validate_llm(llm)
-        # improve-provider-billing-config task 2.1：per-provider billing 校验
-        # （enabled 布尔、prices model 非空、单价非负、行 model 不重复，非法拒绝并列出）
-        if isinstance(llm, dict):
-            _providers = llm.get("providers")
-            if _providers is not None:
-                if not isinstance(_providers, list):
-                    raise ValueError("llm.providers must be a list")
-                ConfigLoader._validate_provider_billing(_providers)
-        agents = merged.get("agents") or {}
-        if "models" in agents and agents["models"]:
-            ConfigLoader._validate_agent_models(agents["models"], llm)
-            # improve-failover-model-mapping-ui D5：UI 保存要求 provider 名存在于 llm.providers
-            model_patch = (
-                config_patch.get("agents", {}).get("models", {})
-                if config_patch.get("agents")
-                else {}
-            )
-            if model_patch:
-                provider_names = set()
-                provs = (llm or {}).get("providers") or []
-                for p in provs:
-                    if isinstance(p, dict) and p.get("name"):
-                        provider_names.add(p["name"])
-                for role, entry in model_patch.items():
-                    if not isinstance(entry, dict):
-                        continue
-                    provider_val = entry.get("provider")
-                    bad = []
-                    if isinstance(provider_val, str):
-                        if provider_val and provider_val not in provider_names:
-                            bad.append(provider_val)
-                    elif isinstance(provider_val, list):
-                        for el in provider_val:
-                            n = el.get("provider") if isinstance(el, dict) else el
-                            if isinstance(n, str) and n and n not in provider_names:
-                                bad.append(n)
-                    if bad:
-                        raise ValueError(
-                            f"agents.models.{role}.provider 引用了不存在的 provider: "
-                            + ", ".join(sorted(set(bad)))
-                        )
-        if "max_concurrent" in agents:
-            mc = agents["max_concurrent"]
-            if not isinstance(mc, int) or mc <= 0:
-                raise ValueError(f"agents.max_concurrent must be a positive integer: {mc}")
-        if "run_timeout_seconds" in agents:
-            rt = agents["run_timeout_seconds"]
-            if not isinstance(rt, int) or rt <= 0:
-                raise ValueError(f"agents.run_timeout_seconds must be a positive integer: {rt}")
-        if "max_turns" in agents:
-            mt = agents["max_turns"]
-            if not isinstance(mt, int) or mt <= 0:
-                raise ValueError(f"agents.max_turns must be a positive integer: {mt}")
-        if "daily_run_limit" in agents:
-            drl = agents["daily_run_limit"]
-            if not isinstance(drl, int) or drl < 0:
-                raise ValueError(f"agents.daily_run_limit must be a non-negative integer: {drl}")
-        if "impl_run_budget" in agents:
-            irb = agents["impl_run_budget"]
-            # open-impl-budget-ceiling：上限由 agents.impl_run_budget_max 决定
-            # （缺省 100，硬天花板 1000），不再硬编码 10。
-            from core.pm_engine.budget import resolve_impl_run_budget_max
+    # 24cea7818140：存量视图基线（不含本次 patch 的 raw），供校验失败归因用
+    _baseline_view = copy.deepcopy(raw)
+    if isinstance(_baseline_view.get("llm"), dict) and "billing" in _baseline_view["llm"]:
+        _baseline_view["llm"].pop("billing", None)
 
-            budget_max = resolve_impl_run_budget_max(agents.get("impl_run_budget_max"))
-            if not isinstance(irb, int) or irb < 1 or irb > budget_max:
-                raise ValueError(
-                    f"agents.impl_run_budget must be an integer in [1, {budget_max}]: {irb}"
-                )
-        if "impl_run_budget_max" in agents:
-            ibm = agents["impl_run_budget_max"]
-            from core.pm_engine.budget import (
-                resolve_impl_run_budget_max,
-                IMPL_RUN_BUDGET_MAX_CEILING,
-            )
+    def _validate_merged_view(merged, model_patch):
+        # 折叠原内联校验段（入参名 merged 遮蔽外层同名变量，校验逻辑零改动）
+        # 3. 校验受管字段（llm / agents.models / agents.max_concurrent / gates.approve_mode）
+        #    不做完整 ConfigLoader 校验，避免缺少 project/schedule 等必填键时无法写入。
+        try:
+            llm = merged.get("llm") or {}
+            if llm:
+                ConfigLoader._validate_llm(llm)
+            # improve-provider-billing-config task 2.1：per-provider billing 校验
+            # （enabled 布尔、prices model 非空、单价非负、行 model 不重复，非法拒绝并列出）
+            if isinstance(llm, dict):
+                _providers = llm.get("providers")
+                if _providers is not None:
+                    if not isinstance(_providers, list):
+                        raise ValueError("llm.providers must be a list")
+                    ConfigLoader._validate_provider_billing(_providers)
+            agents = merged.get("agents") or {}
+            if "models" in agents and agents["models"]:
+                ConfigLoader._validate_agent_models(agents["models"], llm)
+                # improve-failover-model-mapping-ui D5：UI 保存要求 provider 名存在于 llm.providers
+                # （model_patch 为入参：merged 校验传本次 patch 提取值；存量基线
+                # 复跑传 {}，跳过仅由本次提交引发的检查，避免误归因为存量）
+                if model_patch:
+                    provider_names = set()
+                    provs = (llm or {}).get("providers") or []
+                    for p in provs:
+                        if isinstance(p, dict) and p.get("name"):
+                            provider_names.add(p["name"])
+                    for role, entry in model_patch.items():
+                        if not isinstance(entry, dict):
+                            continue
+                        provider_val = entry.get("provider")
+                        bad = []
+                        if isinstance(provider_val, str):
+                            if provider_val and provider_val not in provider_names:
+                                bad.append(provider_val)
+                        elif isinstance(provider_val, list):
+                            for el in provider_val:
+                                n = el.get("provider") if isinstance(el, dict) else el
+                                if isinstance(n, str) and n and n not in provider_names:
+                                    bad.append(n)
+                        if bad:
+                            raise ValueError(
+                                f"agents.models.{role}.provider 引用了不存在的 provider: "
+                                + ", ".join(sorted(set(bad)))
+                            )
+            if "max_concurrent" in agents:
+                mc = agents["max_concurrent"]
+                if not isinstance(mc, int) or mc <= 0:
+                    raise ValueError(f"agents.max_concurrent must be a positive integer: {mc}")
+            if "run_timeout_seconds" in agents:
+                rt = agents["run_timeout_seconds"]
+                if not isinstance(rt, int) or rt <= 0:
+                    raise ValueError(f"agents.run_timeout_seconds must be a positive integer: {rt}")
+            if "max_turns" in agents:
+                mt = agents["max_turns"]
+                if not isinstance(mt, int) or mt <= 0:
+                    raise ValueError(f"agents.max_turns must be a positive integer: {mt}")
+            if "daily_run_limit" in agents:
+                drl = agents["daily_run_limit"]
+                if not isinstance(drl, int) or drl < 0:
+                    raise ValueError(f"agents.daily_run_limit must be a non-negative integer: {drl}")
+            if "impl_run_budget" in agents:
+                irb = agents["impl_run_budget"]
+                # open-impl-budget-ceiling：上限由 agents.impl_run_budget_max 决定
+                # （缺省 100，硬天花板 1000），不再硬编码 10。
+                from core.pm_engine.budget import resolve_impl_run_budget_max
 
-            if (
-                not isinstance(ibm, int)
-                or isinstance(ibm, bool)
-                or ibm < 1
-                or ibm > IMPL_RUN_BUDGET_MAX_CEILING
-            ):
-                raise ValueError(
-                    f"agents.impl_run_budget_max must be an integer in "
-                    f"[1, {IMPL_RUN_BUDGET_MAX_CEILING}]: {ibm}"
-                )
-        if "verify_redo_budget" in agents:
-            vrb = agents["verify_redo_budget"]
-            if not isinstance(vrb, int) or vrb < 1 or vrb > 10:
-                raise ValueError(f"agents.verify_redo_budget must be an integer in [1, 10]: {vrb}")
-        # fix-agent-lane-efficiency D1：子代理模型覆盖键校验。
-        # 类型：仅接受 str 或 None（None 视为未配置）；空串合法（= 使用 provider
-        # model）。非 str 类型（int/bool/list）拒绝，防止用户误填导致类型混淆。
-        _sro = agents.get("subagent_model_override")
-        if _sro is not None and not isinstance(_sro, str):
-            raise ValueError(
-                f"agents.subagent_model_override must be a string "
-                f"(model name or empty): {_sro!r}"
-            )
-        if "scale_precheck" in agents and agents["scale_precheck"] is not None:
-            # 规模预检（agents.scale_precheck）：enabled 必须布尔；两阈值正整数
-            # 且 higher < full（倒挂或相等即拒绝——否则档位语义不自洽）。
-            from core.fast_track_result import (
-                SCALE_PRECHECK_ENABLED_KEY,
-                SCALE_PRECHECK_FULL_KEY,
-                SCALE_PRECHECK_HIGHER_KEY,
-                SCALE_PRECHECK_THRESHOLD_MAX,
-                SCALE_PRECHECK_THRESHOLD_MIN,
-            )
-
-            _sp = agents["scale_precheck"]
-            if not isinstance(_sp, dict):
-                raise ValueError(f"agents.scale_precheck must be a mapping: {_sp!r}")
-            if SCALE_PRECHECK_ENABLED_KEY in _sp and not isinstance(
-                _sp[SCALE_PRECHECK_ENABLED_KEY], bool
-            ):
-                raise ValueError(
-                    "agents.scale_precheck.enabled must be a boolean: "
-                    f"{_sp[SCALE_PRECHECK_ENABLED_KEY]!r}"
+                budget_max = resolve_impl_run_budget_max(agents.get("impl_run_budget_max"))
+                if not isinstance(irb, int) or irb < 1 or irb > budget_max:
+                    raise ValueError(
+                        f"agents.impl_run_budget must be an integer in [1, {budget_max}]: {irb}"
+                    )
+            if "impl_run_budget_max" in agents:
+                ibm = agents["impl_run_budget_max"]
+                from core.pm_engine.budget import (
+                    resolve_impl_run_budget_max,
+                    IMPL_RUN_BUDGET_MAX_CEILING,
                 )
 
-            def _sp_threshold(key: str):
-                if key not in _sp or _sp[key] is None:
-                    return None
-                _v = _sp[key]
                 if (
-                    isinstance(_v, bool)
-                    or not isinstance(_v, int)
-                    or _v < SCALE_PRECHECK_THRESHOLD_MIN
-                    or _v > SCALE_PRECHECK_THRESHOLD_MAX
+                    not isinstance(ibm, int)
+                    or isinstance(ibm, bool)
+                    or ibm < 1
+                    or ibm > IMPL_RUN_BUDGET_MAX_CEILING
                 ):
                     raise ValueError(
-                        f"agents.scale_precheck.{key} must be an integer in "
-                        f"[{SCALE_PRECHECK_THRESHOLD_MIN}, {SCALE_PRECHECK_THRESHOLD_MAX}]: {_v!r}"
+                        f"agents.impl_run_budget_max must be an integer in "
+                        f"[1, {IMPL_RUN_BUDGET_MAX_CEILING}]: {ibm}"
                     )
-                return _v
+            if "verify_redo_budget" in agents:
+                vrb = agents["verify_redo_budget"]
+                if not isinstance(vrb, int) or vrb < 1 or vrb > 10:
+                    raise ValueError(f"agents.verify_redo_budget must be an integer in [1, 10]: {vrb}")
+            # fix-agent-lane-efficiency D1：子代理模型覆盖键校验。
+            # 类型：仅接受 str 或 None（None 视为未配置）；空串合法（= 使用 provider
+            # model）。非 str 类型（int/bool/list）拒绝，防止用户误填导致类型混淆。
+            _sro = agents.get("subagent_model_override")
+            if _sro is not None and not isinstance(_sro, str):
+                raise ValueError(
+                    f"agents.subagent_model_override must be a string "
+                    f"(model name or empty): {_sro!r}"
+                )
+            if "scale_precheck" in agents and agents["scale_precheck"] is not None:
+                # 规模预检（agents.scale_precheck）：enabled 必须布尔；两阈值正整数
+                # 且 higher < full（倒挂或相等即拒绝——否则档位语义不自洽）。
+                from core.fast_track_result import (
+                    SCALE_PRECHECK_ENABLED_KEY,
+                    SCALE_PRECHECK_FULL_KEY,
+                    SCALE_PRECHECK_HIGHER_KEY,
+                    SCALE_PRECHECK_THRESHOLD_MAX,
+                    SCALE_PRECHECK_THRESHOLD_MIN,
+                )
 
-            _sp_higher = _sp_threshold(SCALE_PRECHECK_HIGHER_KEY)
-            _sp_full = _sp_threshold(SCALE_PRECHECK_FULL_KEY)
-            if _sp_higher is not None and _sp_full is not None and _sp_higher >= _sp_full:
-                raise ValueError(
-                    "agents.scale_precheck requires higher_threshold < full_threshold: "
-                    f"{_sp_higher} >= {_sp_full}"
-                )
-        # fix-provider-transient-backoff D6：瞬断治理四数值键非负整数校验（非法拒绝 400）
-        for _tk in (
-            "transient_redispatch_delay_seconds",
-            "transient_break_threshold",
-            "transient_break_window_seconds",
-            "transient_break_cooldown_seconds",
-        ):
-            if _tk in agents and agents[_tk] is not None:
-                _tv = agents[_tk]
-                if isinstance(_tv, bool) or not isinstance(_tv, (int, float)) or _tv < 0:
-                    raise ValueError(f"agents.{_tk} must be a non-negative integer: {_tv!r}")
-        if (
-            "transient_backoff_schedule" in agents
-            and agents["transient_backoff_schedule"] is not None
-        ):
-            _ts = agents["transient_backoff_schedule"]
-            if not isinstance(_ts, str):
-                raise ValueError(
-                    "agents.transient_backoff_schedule must be a comma-separated "
-                    f"seconds string: {_ts!r}"
-                )
-            # 逗号秒序列校验：任一元素非正整数即拒绝（空串=关闭原地退避，允许）
-            if _ts.strip():
-                for _part in _ts.split(","):
-                    _p = _part.strip()
-                    if not _p:
-                        continue
-                    try:
-                        _iv = int(_p)
-                    except (TypeError, ValueError):
-                        raise ValueError(
-                            f"agents.transient_backoff_schedule 元素非正整数: {_part!r}"
-                        )
-                    if _iv <= 0:
-                        raise ValueError(
-                            f"agents.transient_backoff_schedule 元素非正整数: {_part!r}"
-                        )
-        # supervision-timeout-config-consistency：timeout_supervision 段校验
-        # （自动对齐 + 直连写回共用；数值键非负，enabled 布尔，非法拒绝 400）
-        if "timeout_supervision" in agents and agents["timeout_supervision"] is not None:
-            _ts_sup = agents["timeout_supervision"]
-            if not isinstance(_ts_sup, dict):
-                raise ValueError(f"agents.timeout_supervision must be a mapping: {_ts_sup!r}")
-            for _tsk in ("extension_seconds", "max_extensions", "absolute_max_seconds", "judge_window"):
-                _tsv = _ts_sup.get(_tsk)
-                if _tsv is not None and (
-                    isinstance(_tsv, bool) or not isinstance(_tsv, (int, float)) or _tsv < 0
+                _sp = agents["scale_precheck"]
+                if not isinstance(_sp, dict):
+                    raise ValueError(f"agents.scale_precheck must be a mapping: {_sp!r}")
+                if SCALE_PRECHECK_ENABLED_KEY in _sp and not isinstance(
+                    _sp[SCALE_PRECHECK_ENABLED_KEY], bool
                 ):
                     raise ValueError(
-                        f"agents.timeout_supervision.{_tsk} must be a non-negative "
-                        f"number: {_tsv!r}"
+                        "agents.scale_precheck.enabled must be a boolean: "
+                        f"{_sp[SCALE_PRECHECK_ENABLED_KEY]!r}"
                     )
+
+                def _sp_threshold(key: str):
+                    if key not in _sp or _sp[key] is None:
+                        return None
+                    _v = _sp[key]
+                    if (
+                        isinstance(_v, bool)
+                        or not isinstance(_v, int)
+                        or _v < SCALE_PRECHECK_THRESHOLD_MIN
+                        or _v > SCALE_PRECHECK_THRESHOLD_MAX
+                    ):
+                        raise ValueError(
+                            f"agents.scale_precheck.{key} must be an integer in "
+                            f"[{SCALE_PRECHECK_THRESHOLD_MIN}, {SCALE_PRECHECK_THRESHOLD_MAX}]: {_v!r}"
+                        )
+                    return _v
+
+                _sp_higher = _sp_threshold(SCALE_PRECHECK_HIGHER_KEY)
+                _sp_full = _sp_threshold(SCALE_PRECHECK_FULL_KEY)
+                if _sp_higher is not None and _sp_full is not None and _sp_higher >= _sp_full:
+                    raise ValueError(
+                        "agents.scale_precheck requires higher_threshold < full_threshold: "
+                        f"{_sp_higher} >= {_sp_full}"
+                    )
+            # fix-provider-transient-backoff D6：瞬断治理四数值键非负整数校验（非法拒绝 400）
+            for _tk in (
+                "transient_redispatch_delay_seconds",
+                "transient_break_threshold",
+                "transient_break_window_seconds",
+                "transient_break_cooldown_seconds",
+            ):
+                if _tk in agents and agents[_tk] is not None:
+                    _tv = agents[_tk]
+                    if isinstance(_tv, bool) or not isinstance(_tv, (int, float)) or _tv < 0:
+                        raise ValueError(f"agents.{_tk} must be a non-negative integer: {_tv!r}")
             if (
-                "enabled" in _ts_sup
-                and _ts_sup["enabled"] is not None
-                and not isinstance(_ts_sup["enabled"], bool)
+                "transient_backoff_schedule" in agents
+                and agents["transient_backoff_schedule"] is not None
+            ):
+                _ts = agents["transient_backoff_schedule"]
+                if not isinstance(_ts, str):
+                    raise ValueError(
+                        "agents.transient_backoff_schedule must be a comma-separated "
+                        f"seconds string: {_ts!r}"
+                    )
+                # 逗号秒序列校验：任一元素非正整数即拒绝（空串=关闭原地退避，允许）
+                if _ts.strip():
+                    for _part in _ts.split(","):
+                        _p = _part.strip()
+                        if not _p:
+                            continue
+                        try:
+                            _iv = int(_p)
+                        except (TypeError, ValueError):
+                            raise ValueError(
+                                f"agents.transient_backoff_schedule 元素非正整数: {_part!r}"
+                            )
+                        if _iv <= 0:
+                            raise ValueError(
+                                f"agents.transient_backoff_schedule 元素非正整数: {_part!r}"
+                            )
+            # supervision-timeout-config-consistency：timeout_supervision 段校验
+            # （自动对齐 + 直连写回共用；数值键非负，enabled 布尔，非法拒绝 400）
+            if "timeout_supervision" in agents and agents["timeout_supervision"] is not None:
+                _ts_sup = agents["timeout_supervision"]
+                if not isinstance(_ts_sup, dict):
+                    raise ValueError(f"agents.timeout_supervision must be a mapping: {_ts_sup!r}")
+                for _tsk in ("extension_seconds", "max_extensions", "absolute_max_seconds", "judge_window"):
+                    _tsv = _ts_sup.get(_tsk)
+                    if _tsv is not None and (
+                        isinstance(_tsv, bool) or not isinstance(_tsv, (int, float)) or _tsv < 0
+                    ):
+                        raise ValueError(
+                            f"agents.timeout_supervision.{_tsk} must be a non-negative "
+                            f"number: {_tsv!r}"
+                        )
+                if (
+                    "enabled" in _ts_sup
+                    and _ts_sup["enabled"] is not None
+                    and not isinstance(_ts_sup["enabled"], bool)
+                ):
+                    raise ValueError(
+                        f"agents.timeout_supervision.enabled must be a boolean: "
+                        f"{_ts_sup['enabled']!r}"
+                    )
+            gates = merged.get("gates") or {}
+            if "approve_mode" in gates and gates["approve_mode"] is not None:
+                mode = gates["approve_mode"]
+                if mode not in ConfigLoader.VALID_APPROVE_MODES:
+                    raise ValueError(
+                        f"gates.approve_mode must be one of {ConfigLoader.VALID_APPROVE_MODES}: {mode}"
+                    )
+            verify_m = merged.get("verify") or {}
+            if "static_scope" in verify_m and verify_m["static_scope"] is not None:
+                if verify_m["static_scope"] not in ("main", "worktree"):
+                    raise ValueError(
+                        f"verify.static_scope must be one of ['main', 'worktree']: "
+                        f"{verify_m['static_scope']}"
+                    )
+            if "deps_mode" in verify_m and verify_m["deps_mode"] is not None:
+                if verify_m["deps_mode"] not in ("prefer-offline", "hardlink"):
+                    raise ValueError(
+                        f"verify.deps_mode must be one of ['prefer-offline', 'hardlink']: "
+                        f"{verify_m['deps_mode']}"
+                    )
+            # add-spec-archive D5：archive.auto_threshold 必须为非负整数（0=禁用）
+            archive_m = merged.get("archive") or {}
+            if "auto_threshold" in archive_m and archive_m["auto_threshold"] is not None:
+                at = archive_m["auto_threshold"]
+                if not isinstance(at, int) or isinstance(at, bool) or at < 0:
+                    raise ValueError(
+                        f"archive.auto_threshold must be a non-negative integer (0=disabled): {at}"
+                    )
+            # add-daily-self-review：admin.self_review 三键（后端校验，非法输入拒绝 400）
+            admin_m = merged.get("admin") or {}
+            if isinstance(admin_m, dict) and isinstance(admin_m.get("self_review"), dict):
+                sr = admin_m["self_review"]
+                for field in ("enabled", "read_todo"):
+                    if field in sr and sr[field] is not None and not isinstance(sr[field], bool):
+                        raise ValueError(f"admin.self_review.{field} must be a boolean: {sr[field]}")
+                if "run_at" in sr and sr["run_at"] is not None:
+                    from core.config import ConfigLoader as _CL
+
+                    if not _CL.is_valid_hhmm(sr["run_at"]):
+                        raise ValueError(
+                            f"admin.self_review.run_at must be HH:MM (00:00-23:59): {sr['run_at']}"
+                        )
+            # add-settings-system-tab：admin.* 六键（merged 视图校验；写路径前置校验
+            # 已拒绝非法 patch，此处兜底防绕过前置校验的直连调用）
+            if (
+                "enabled" in admin_m
+                and admin_m["enabled"] is not None
+                and not isinstance(admin_m["enabled"], bool)
+            ):
+                raise ValueError(f"admin.enabled must be a boolean: {admin_m['enabled']!r}")
+            if (
+                "bug_repair_mode" in admin_m
+                and admin_m["bug_repair_mode"] is not None
+                and admin_m["bug_repair_mode"] not in ("inplace", "derive")
             ):
                 raise ValueError(
-                    f"agents.timeout_supervision.enabled must be a boolean: "
-                    f"{_ts_sup['enabled']!r}"
+                    f"admin.bug_repair_mode 非法：{admin_m['bug_repair_mode']!r}"
+                    f"（保存被拒绝，请修正后重试）"
                 )
-        gates = merged.get("gates") or {}
-        if "approve_mode" in gates and gates["approve_mode"] is not None:
-            mode = gates["approve_mode"]
-            if mode not in ConfigLoader.VALID_APPROVE_MODES:
-                raise ValueError(
-                    f"gates.approve_mode must be one of {ConfigLoader.VALID_APPROVE_MODES}: {mode}"
-                )
-        verify_m = merged.get("verify") or {}
-        if "static_scope" in verify_m and verify_m["static_scope"] is not None:
-            if verify_m["static_scope"] not in ("main", "worktree"):
-                raise ValueError(
-                    f"verify.static_scope must be one of ['main', 'worktree']: "
-                    f"{verify_m['static_scope']}"
-                )
-        if "deps_mode" in verify_m and verify_m["deps_mode"] is not None:
-            if verify_m["deps_mode"] not in ("prefer-offline", "hardlink"):
-                raise ValueError(
-                    f"verify.deps_mode must be one of ['prefer-offline', 'hardlink']: "
-                    f"{verify_m['deps_mode']}"
-                )
-        # add-spec-archive D5：archive.auto_threshold 必须为非负整数（0=禁用）
-        archive_m = merged.get("archive") or {}
-        if "auto_threshold" in archive_m and archive_m["auto_threshold"] is not None:
-            at = archive_m["auto_threshold"]
-            if not isinstance(at, int) or isinstance(at, bool) or at < 0:
-                raise ValueError(
-                    f"archive.auto_threshold must be a non-negative integer (0=disabled): {at}"
-                )
-        # add-daily-self-review：admin.self_review 三键（后端校验，非法输入拒绝 400）
-        admin_m = merged.get("admin") or {}
-        if isinstance(admin_m, dict) and isinstance(admin_m.get("self_review"), dict):
-            sr = admin_m["self_review"]
-            for field in ("enabled", "read_todo"):
-                if field in sr and sr[field] is not None and not isinstance(sr[field], bool):
-                    raise ValueError(f"admin.self_review.{field} must be a boolean: {sr[field]}")
-            if "run_at" in sr and sr["run_at"] is not None:
-                from core.config import ConfigLoader as _CL
+            for _k, _rule in (
+                (
+                    "interval_minutes",
+                    lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0,
+                ),
+                (
+                    "escalation_cooldown_minutes",
+                    lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0,
+                ),
+                (
+                    "merge_breaker_threshold",
+                    lambda v: isinstance(v, int) and not isinstance(v, bool) and v >= 1,
+                ),
+                (
+                    "shutdown_drain_seconds",
+                    lambda v: isinstance(v, int) and not isinstance(v, bool) and v >= 0,
+                ),
+                (
+                    "stuck_silence_minutes",
+                    lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0,
+                ),
+            ):
+                if _k in admin_m and admin_m[_k] is not None and not _rule(admin_m[_k]):
+                    raise ValueError(f"admin.{_k} 非法：{admin_m[_k]!r}（保存被拒绝，请修正后重试）")
+            # add-spec-hooks D7：merged 视图 hooks 校验（兜底防绕过前置校验的直连调用；
+            # 校验规则同前置，但作用于合并后视图，含项目级手工写入的非受管 hooks 段）
+            from core.hook_engine import validate_hooks_config as _validate_hooks
 
-                if not _CL.is_valid_hhmm(sr["run_at"]):
+            if isinstance(merged.get("hooks"), dict):
+                _err = _validate_hooks(merged)
+                if _err:
+                    raise ValueError(f"hooks 配置非法：{_err}")
+            # add-stale-code-selfheal：merged 视图校验（兜底防绕过前置校验的直连调用，
+            # 与 hooks 同模式）
+            scs_m = merged.get("stale_code_selfheal")
+            if isinstance(scs_m, dict):
+                if (
+                    "enabled" in scs_m
+                    and scs_m["enabled"] is not None
+                    and not isinstance(scs_m["enabled"], bool)
+                ):
                     raise ValueError(
-                        f"admin.self_review.run_at must be HH:MM (00:00-23:59): {sr['run_at']}"
+                        f"stale_code_selfheal.enabled must be a boolean: {scs_m['enabled']!r}"
                     )
-        # add-settings-system-tab：admin.* 六键（merged 视图校验；写路径前置校验
-        # 已拒绝非法 patch，此处兜底防绕过前置校验的直连调用）
-        if (
-            "enabled" in admin_m
-            and admin_m["enabled"] is not None
-            and not isinstance(admin_m["enabled"], bool)
-        ):
-            raise ValueError(f"admin.enabled must be a boolean: {admin_m['enabled']!r}")
-        if (
-            "bug_repair_mode" in admin_m
-            and admin_m["bug_repair_mode"] is not None
-            and admin_m["bug_repair_mode"] not in ("inplace", "derive")
-        ):
-            raise ValueError(
-                f"admin.bug_repair_mode 非法：{admin_m['bug_repair_mode']!r}"
-                f"（保存被拒绝，请修正后重试）"
+                if "idle_confirm_seconds" in scs_m and scs_m["idle_confirm_seconds"] is not None:
+                    _sv = scs_m["idle_confirm_seconds"]
+                    if isinstance(_sv, bool) or not isinstance(_sv, (int, float)) or _sv <= 0:
+                        raise ValueError(
+                            f"stale_code_selfheal.idle_confirm_seconds must be a positive "
+                            f"integer: {_sv!r}"
+                        )
+        except ValueError as e:
+            return fail(str(e))
+
+    _model_patch = (
+        config_patch.get("agents", {}).get("models", {})
+        if config_patch.get("agents")
+        else {}
+    )
+    _err = _validate_merged_view(merged, _model_patch)
+    if _err is not None:
+        # 24cea7818140：失败归因——同一校验在存量视图（不含本次 patch）上复跑，
+        # 报错一致 ⇒ 失败由 config.yaml 存量非法值引发（与本次提交无关），文案
+        # 标注定位指引；保存仍被拒绝（判定结果不变），仅错误文案可定位。
+        try:
+            _err_base = _validate_merged_view(_baseline_view, {})
+        except Exception:
+            _err_base = None
+        if _err_base is not None and _err_base["error"] == _err["error"]:
+            return fail(
+                "存量配置值非法（与本次提交无关），请先修正 config.yaml 中对应键后重试："
+                + _err["error"]
             )
-        for _k, _rule in (
-            (
-                "interval_minutes",
-                lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0,
-            ),
-            (
-                "escalation_cooldown_minutes",
-                lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0,
-            ),
-            (
-                "merge_breaker_threshold",
-                lambda v: isinstance(v, int) and not isinstance(v, bool) and v >= 1,
-            ),
-            (
-                "shutdown_drain_seconds",
-                lambda v: isinstance(v, int) and not isinstance(v, bool) and v >= 0,
-            ),
-            (
-                "stuck_silence_minutes",
-                lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0,
-            ),
-        ):
-            if _k in admin_m and admin_m[_k] is not None and not _rule(admin_m[_k]):
-                raise ValueError(f"admin.{_k} 非法：{admin_m[_k]!r}（保存被拒绝，请修正后重试）")
-        # add-spec-hooks D7：merged 视图 hooks 校验（兜底防绕过前置校验的直连调用；
-        # 校验规则同前置，但作用于合并后视图，含项目级手工写入的非受管 hooks 段）
-        from core.hook_engine import validate_hooks_config as _validate_hooks
-
-        if isinstance(merged.get("hooks"), dict):
-            _err = _validate_hooks(merged)
-            if _err:
-                raise ValueError(f"hooks 配置非法：{_err}")
-        # add-stale-code-selfheal：merged 视图校验（兜底防绕过前置校验的直连调用，
-        # 与 hooks 同模式）
-        scs_m = merged.get("stale_code_selfheal")
-        if isinstance(scs_m, dict):
-            if (
-                "enabled" in scs_m
-                and scs_m["enabled"] is not None
-                and not isinstance(scs_m["enabled"], bool)
-            ):
-                raise ValueError(
-                    f"stale_code_selfheal.enabled must be a boolean: {scs_m['enabled']!r}"
-                )
-            if "idle_confirm_seconds" in scs_m and scs_m["idle_confirm_seconds"] is not None:
-                _sv = scs_m["idle_confirm_seconds"]
-                if isinstance(_sv, bool) or not isinstance(_sv, (int, float)) or _sv <= 0:
-                    raise ValueError(
-                        f"stale_code_selfheal.idle_confirm_seconds must be a positive "
-                        f"integer: {_sv!r}"
-                    )
-    except ValueError as e:
-        return fail(str(e))
+        return _err
 
     # 4. 原子写回（临时文件 + rename）
     config_dir.mkdir(parents=True, exist_ok=True)

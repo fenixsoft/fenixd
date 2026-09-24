@@ -30,6 +30,7 @@ STATUS_ICONS = {
     "implemented": "🧪",
     "testing": "🔍",
     "verified": "✅",
+    "reviewing": "⚖️",
     "bug-found": "🐛",
     "blocked": "🧊",
     "done": "🎯",
@@ -60,6 +61,7 @@ NEXT_STEPS = {
     "implemented": "等待调度 verifier agent 进行验证",
     "testing": "verifier agent 正在执行验证测试",
     "verified": "验证通过，等待标记 done",
+    "reviewing": "等待方案评审 run",
     "bug-found": "等待修复（admin 自动创建 fix SPEC，或人工处置）",
     "blocked": "已冻结/阻塞 — 确认冻结原因或 /fenix-dashboard 解冻",
     "done": "等待推送 — 运行 /fenix-approve",
@@ -372,8 +374,9 @@ def render_report(project_root, spec_name: str) -> str:
             f"tokens: 输入 {_fmt_tokens(token_usage.get('tokens_in'))}"
             f" / 输出 {_fmt_tokens(token_usage.get('tokens_out'))}"
         )
-        if token_usage.get("cost_available"):
-            lines.append(f"累计成本: ${token_usage.get('cost_usd'):.2f}")
+        cost_usd = token_usage.get("cost_usd")
+        if token_usage.get("cost_available") and isinstance(cost_usd, (int, float)):
+            lines.append(f"累计成本: ${cost_usd:.2f}")
         elif cost_summary:
             total_cost = cost_summary.get("total_cost_usd")
             if total_cost is not None:

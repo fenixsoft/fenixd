@@ -539,6 +539,13 @@ export default function QualityTab({ project, active }: QualityTabProps) {
   // 初始值闪一下从「立即」跳到「定时」）
   const handleGenerate = async () => {
     if (selectedKeys.length === 0 || generating || generateModalOpenRef.current) return;
+    // 与 handleIgnoreAll 同一过滤口径（code-review item 1b5c5415dd5e）：幽灵
+    // 选中清理只保证条目可见、不保证 status==='open'，非 open（in_spec/
+    // resolved/ignored）条目不能进入修复 SPEC 流程，提交前先剔除。
+    const openKeys = items
+      .filter((it) => selectedKeys.includes(it.item_id) && it.status === 'open')
+      .map((it) => String(it.item_id));
+    if (openKeys.length === 0) return;
     generateModalOpenRef.current = true;
     let initial: string | null;
     try {
@@ -548,7 +555,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
       generateModalOpenRef.current = false;
       return;
     }
-    const count = selectedKeys.length;
+    const count = openKeys.length;
     const holder: AcceptSchedule = { startAfter: initial };
     modal.confirm({
       title: '生成修复 SPEC',
@@ -572,11 +579,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
         }
         setGenerating(true);
         try {
-          const result = await generateFixSpec(
-            project,
-            selectedKeys.map(String),
-            holder.startAfter,
-          );
+          const result = await generateFixSpec(project, openKeys, holder.startAfter);
           if (result.ok) {
             message.success(
               `已生成修复 SPEC：${result.spec_name}${describeStartAfter(holder.startAfter)}`,

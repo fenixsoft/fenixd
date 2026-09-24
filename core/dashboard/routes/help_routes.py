@@ -8,10 +8,7 @@ D5 约定：各组方法采用 mixin 模式，DashboardHandler 继承各组 mixi
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
-
-from core.dashboard.registry import Registry
 
 
 class H8HelpRoutesMixin:

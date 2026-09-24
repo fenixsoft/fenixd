@@ -9,7 +9,8 @@ I/O 涨至 44-60GB（fix-root-init-import-shadow 事故）。框架能否给出�
 - 以硬超时运行全量套件，启用 faulthandler（``-p faulthandler
   -o faulthandler_timeout=<N>``，pytest 9 起 CLI 参数 ``--faulthandler-timeout``
   已移除、改为 ini 配置项），挂起时打印各线程栈；
-- 超时/挂起时中止子进程并输出**挂起测试标识**（faulthandler 栈顶用例）；
+- 超时/挂起时中止子进程**组**（SIGTERM 优雅窗口后 SIGKILL 兜底，孙进程一并
+  中止）并输出**挂起测试标识**（faulthandler 栈顶用例）；
 - 正常结束返回 pytest 完整输出与退出码；
 - ``--baseline <ref>``：在基线 ref 的临时 worktree 跑同一套件，输出两侧失败集合
   差异并给出「存量 / 本次引入」归类（混合情形判为存在本次引入回归）；
@@ -28,6 +29,7 @@ import argparse
 import fcntl
 import os
 import re
+import signal
 import subprocess
 import sys
 import tempfile
@@ -98,22 +100,28 @@ def _with_basetemp(cmd: list, project_root, unique: bool = False) -> list:
 # 可经 FENIX_SUITE_PORT_BASE 环境变量覆盖（显式指定基址）；FENIX_VERIFY_PORT
 # 语义不变（下发给 pytest 子进程，供测试读取）。
 
+# 端口段宽度（pid 派生偏移空间）：也是 FENIX_SUITE_PORT_BASE 上界校验余量，
+# 保证「基址 + 段宽 ≤ 65535」不越界（单一来源，勿在别处硬编码段宽）。
+SUITE_PORT_SEGMENT_WIDTH = 1000
+
 
 def suite_port_base() -> int:
     """返回当前套件进程使用的端口段基址（31000-31999）。
 
     优先元 ``FENIX_SUITE_PORT_BASE``（显式覆盖），否则按 pid 派生：
-    ``31000 + (pid % 1000)``——并发进程 pid 不同则段不同，互不重叠。
+    ``31000 + (pid % 1000)``——pid 不同则段不同只是**概率性**不重叠
+    （约 1/1000 概率同段）；需要强不重叠保证时用 FENIX_SUITE_PORT_BASE
+    显式覆盖。环境变量上界校验含段宽余量（基址+段宽 ≤ 65535）。
     """
     env_base = os.environ.get("FENIX_SUITE_PORT_BASE")
     if env_base:
         try:
             val = int(env_base)
-            if 1 <= val <= 65534:
+            if 1 <= val <= 65535 - SUITE_PORT_SEGMENT_WIDTH:
                 return val
         except (TypeError, ValueError):
             pass
-    return 31000 + (os.getpid() % 1000)
+    return 31000 + (os.getpid() % SUITE_PORT_SEGMENT_WIDTH)
 
 
 def _suite_env() -> dict:
@@ -160,8 +168,12 @@ def extract_hanging_test(stderr: str) -> "str | None":
 
 
 def run_command(cmd, timeout, cwd, env=None) -> tuple:
-    """运行命令并在超时时中止（SIGKILL 兜底）；返回 (rc, stdout, stderr, timed_out)。
+    """运行命令并在超时时中止（进程组 SIGTERM→SIGKILL 兜底）；返回 (rc, stdout, stderr, timed_out)。
 
+    子进程以独立进程组启动（``start_new_session=True``）：超时先对整组发
+    SIGTERM 给短暂优雅窗口，未退出再 SIGKILL 整组——pytest 拉起的孙进程
+    （v2 dev server、daemon 集成类测试等）一并中止，不留孤儿继续占端口/内存。
+    进程已退出（ProcessLookupError）等 killpg 失败静默吞掉。
     超时 kill 后仍收集已产出的输出（faulthandler 栈对挂起定位是关键证据）。
     """
     proc = subprocess.Popen(
@@ -171,12 +183,23 @@ def run_command(cmd, timeout, cwd, env=None) -> tuple:
         text=True,
         cwd=str(cwd),
         env=env,
+        start_new_session=True,
     )
     try:
         out, err = proc.communicate(timeout=timeout)
         return proc.returncode, out, err, False
     except subprocess.TimeoutExpired:
-        proc.kill()
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        except OSError:
+            pass  # 进程已退出，无需再中止
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except OSError:
+                pass  # 进程组已不存在
         try:
             out, err = proc.communicate(timeout=10)
         except subprocess.TimeoutExpired:

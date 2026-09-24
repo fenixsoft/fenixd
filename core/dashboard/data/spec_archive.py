@@ -231,11 +231,17 @@ def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
 def is_spec_archived(project_root, spec_name: str) -> bool:
     """归档判定：STATE.md 有条目且活跃目录 `spec/changes/<name>/` 不存在。
 
-    D1：归档的**唯一事实来源**是活跃目录存在性——不检测 archive/ 下具体路径
+    D1：归档可见性以活跃目录存在性为准——不检测 archive/ 下具体路径
     形态（删除路径命名 `<name>-<Unix秒>` 不同、手动移动命名不可控），也不写
     STATE.md 标志。三条归档路径（界面 API / CLI skill / 手动 mv）产出相同可见性。
+    STATE.md 无该条目（从未创建/已软删除/名字拼错）返回 False 而非 True——
+    合取校验防未注册名误判已归档（fix 3505adf6b20e）。
     """
-    return not (Path(project_root) / "spec" / "changes" / spec_name).is_dir()
+    # 先查目录：未归档 spec 短路返回 False，不额外读 STATE.md（性能敏感路径，
+    # /api/specs 对全部 spec 逐个调用）；目录缺席再合取 STATE 条目校验
+    return not (Path(project_root) / "spec" / "changes" / spec_name).is_dir() and (
+        spec_name in parse_state(project_root)
+    )
 
 
 def archive_spec(project_root, spec_name: str) -> dict:
