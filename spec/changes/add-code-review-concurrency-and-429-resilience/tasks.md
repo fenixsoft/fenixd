@@ -21,6 +21,8 @@
   kind: modify
 - path: core/agent_runner/runner.py
   kind: modify
+- path: core/admin_monitor.py
+  kind: modify
 - path: core/pm_engine/verification/infra_classify.py
   kind: modify
 - path: tests/test_code_review.py
@@ -49,7 +51,7 @@
 ## 3. Dashboard 设置界面与配置链路
 
 - [ ] 3.1 `core/dashboard/data/config_admin.py` 的 verify 白名单与默认值聚合新增 `verify.repo_code_review_concurrency`（与 `impl_code_review_concurrency` 同款读写与来源标注）
-- [ ] 3.2 `core/dashboard/static/src/pages/settings/components/QualityPanel.tsx` 新增「全仓审查并发」数字输入项，与既有「SPEC 审查并发」（impl 键）并列、分别保存，校验正整数
+- [ ] 3.2 `core/dashboard/static/src/pages/settings/components/QualityPanel.tsx` 新增「全仓审查并发」数字输入项；既有 impl 键输入项现标签为「审查并发」（QualityPanel.tsx:369），同批更名为「SPEC 审查并发」（design D6 目标态），两键并列展示、分别保存，校验正整数
 - [ ] 3.3 `core/dashboard/static/src/services/dashboard.ts` 同步配置类型定义与读写接口字段
 - [ ] 3.4 `core/dashboard/static/` 下 `npm run build` 构建通过（dist 为运行时产物，不入库，构建成功即验证）
 
@@ -57,14 +59,15 @@
 
 - [ ] 4.1 `core/agent_runner/provider_circuit.py` 新增常量 `PROVIDER_RATELIMIT_COOLDOWN_SECONDS = 300` 与分类逻辑：错误文本命中 HTTP 429 / `[1302]` / `rate_limit` 任一签名判为限流错误（以 2026-09-24 真实错误文本 `API Error: Request rejected (429) · [1302][您的账户已达到速率限制，请您控制请求频率]` 作 fixture）；429 MUST NOT 计入 `PROVIDER_CIRCUIT_4XX` 计数
 - [ ] 4.2 `classify_switch_error` 将限流错误纳入切换类错误（更新 docstring 分类清单），命中时 provider 进入限流冷却（复用 switch 冷却通道与候选跳过语义，冷却时长用 4.1 常量）
-- [ ] 4.3 `core/pm_engine/verification/infra_classify.py` 中切换类错误描述同步（unrecognized_model/5xx/网络/429 限流）
+- [ ] 4.3 `core/pm_engine/verification/infra_classify.py` 中切换类错误描述同步（unrecognized_model/5xx/网络/429 限流）；注意该文件 `_verifier_error_is_infra`（infra_classify.py:29）复用 classify_switch_error 通道——429 进入切换类后，验证失败的 infra 归因随之覆盖 429（「验证没能发生」语义，属预期外溢），补一条断言用例固化
 - [ ] 4.4 `tests/test_provider_circuit.py` 新增用例：429 文本命中分类 / 429 不增 4xx 计数 / 冷却期内候选被链选择跳过 / 冷却到期探针复位
 
 ## 5. 429 打死 run 的自动重派
 
 - [ ] 5.1 `core/agent_runner/runner.py` 的 attempt 失败分类消费点：终态归因为 429 限流且重派未超上限（常量 1）时，登记 `ratelimit_redispatch` 意图（provider 冷却到期后自动重派；重派计一次 attempt，受既有预算/escalation 守卫；run jsonl 标注重派缘由）
 - [ ] 5.2 code-review 车道重派复用原 manifest（`run_code_review` 侧幂等保障既有：聚合读侧按 file 去重 + 提示词不重审纪律），运行记录可见重派缘由字段
-- [ ] 5.3 `tests/test_provider_failover.py` 新增用例：429 终态触发重派登记 / 重派超上限走既有失败收场不再重派 / 非 429 失败不触发重派 / run jsonl 含重派标注
+- [ ] 5.3 `core/admin_monitor.py` 的 `_worker`（`run_code_review` 唯一生产调用方，core/admin_monitor.py:1052）作为重派意图消费侧：观测到终态结果携带 `ratelimit_redispatch` 意图（含最早冷却到期时刻）时，经延迟投递（`threading.Timer` 或等价机制）在冷却到期后以原 manifest/参数重调 `run_code_review` 一次；受 `_code_review_in_flight` 单飞标志防并发、重派上限常量 1 守卫，MUST NOT 无限重派
+- [ ] 5.4 `tests/test_provider_failover.py` 新增用例：429 终态触发重派登记 / 冷却到期后消费侧真正重调一次 `run_code_review`（原 manifest） / 重派超上限走既有失败收场不再重派 / 非 429 失败不触发重派 / run jsonl 含重派标注
 
 ## 6. 回归与验证
 

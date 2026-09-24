@@ -5,7 +5,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: 切换类错误驱动链前进
-`classify_switch_error()` SHALL 将 `unrecognized_model` 文本、HTTP 5xx、连接类异常、**429 限流错误**（HTTP 429 / 错误码 `[1302]` / error type `rate_limit`）分类为切换类错误；attempt 以切换类错误失败时，同 run 后续 attempt MUST 自动使用链上下一未冷却候选，并继续携带 `--resume <session_id>` 续跑原会话。429 命中时该 provider SHALL 进入限流冷却（复用 switch 冷却机制，默认 300s，可配），冷却期内链选择跳过该候选；429 MUST NOT 计入 `PROVIDER_CIRCUIT_4XX` 熔断计数（限流是暂时性配额压力，与配额/鉴权故障的 30min 熔断语义不同，双重计数会放大冷却）。配额/鉴权类 4xx 维持既有 provider-fault-fuse 熔断语义，不纳入链前进。
+`classify_switch_error()` SHALL 将 `unrecognized_model` 文本、HTTP 5xx、连接类异常、**429 限流错误**（HTTP 429 / 错误码 `[1302]` / error type `rate_limit`）分类为切换类错误；attempt 以切换类错误失败时，同 run 后续 attempt MUST 自动使用链上下一未冷却候选，并继续携带 `--resume <session_id>` 续跑原会话。429 命中时该 provider SHALL 进入限流冷却（复用 switch 冷却机制，默认 300s——独立常量 `PROVIDER_RATELIMIT_COOLDOWN_SECONDS`，本期不做配置键、调参改常量，与 design D3 一致），冷却期内链选择跳过该候选；429 MUST NOT 计入 `PROVIDER_CIRCUIT_4XX` 熔断计数（限流是暂时性配额压力，与配额/鉴权故障的 30min 熔断语义不同，双重计数会放大冷却）。配额/鉴权类 4xx 维持既有 provider-fault-fuse 熔断语义，不纳入链前进。
 
 #### Scenario: unrecognized_model 触发切换
 - **WHEN** attempt 返回 rc!=0 且 stderr 含 `[claude-code:unrecognized_model] {"model":"deepseek-v4-flash"}`

@@ -21,7 +21,7 @@
 
 ## Impact
 
-- **代码**：`core/config.py`（新读取器）、`core/agent_runner/maintenance_runs.py` + `core/agent_runner/prompt_builder.py` + `agents/code-review.md`（并发注入）、`core/agent_runner/provider_circuit.py`（429 分类/冷却）、provider 链选择与 run 失败分类消费点（429 → 重派路径）
+- **代码**：`core/config.py`（新读取器）、`core/agent_runner/maintenance_runs.py` + `core/agent_runner/prompt_builder.py` + `agents/code-review.md`（并发注入）、`core/agent_runner/provider_circuit.py`（429 分类/冷却）、provider 链选择与 run 失败分类消费点（429 → 重派路径）、`core/admin_monitor.py`（重派意图消费/冷却到期延迟重投递，`run_code_review` 唯一生产调用方）
 - **Dashboard**：`core/dashboard/data/config_admin.py`、`core/dashboard/static/src/pages/settings/components/QualityPanel.tsx`、`core/dashboard/static/src/services/dashboard.ts`
 - **配置**：`.fenix/config.template.yaml`（tracked，示例值同步）
 - **测试**：`tests/test_code_review.py`、`tests/test_provider_circuit.py`、`tests/test_provider_failover.py`
