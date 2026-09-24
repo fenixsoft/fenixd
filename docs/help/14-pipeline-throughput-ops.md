@@ -41,7 +41,22 @@ agents:
 
 **现状缺省**：60 秒（代码缺省，`core/config.py` 的 `get_run_drain_max_seconds`）。专管 daemon restart（`.fenix/restart_request` 触发）时等待在飞 run 收尾的时长上限；常规停机仍走 `admin.shutdown_drain_seconds`（缺省 1800）语义不变。
 
-**协调规则**：`agents.run_drain_max_seconds` MUST ≤ `admin.shutdown_drain_seconds`——supervisor 的 SIGKILL 等待 = `shutdown_drain_seconds + 120s` 余量，满足不等式即保证排水窗口不会被强杀截断。两者均显式配置且违反时配置加载直接报错；只显式调大 run_drain 时读取面按 `min(run_drain, shutdown)` 夹紧。`shutdown_drain_seconds=0`（快速停机）时 restart 联动为不排水。
+**联动规则（shutdown_drain_seconds × run_drain_max_seconds）**：该键与 `admin.shutdown_drain_seconds` 联动，语义按关停类型分叉（planned-restart-drain）：
+
+- **规划性重启**（`.fenix/restart_request` 在场，supervisor 消费重启请求）：**豁免** `shutdown_drain_seconds=0` 的快速停机联动——即使 shutdown 为 0，restart 也按 `min(run_drain_max_seconds 原值, supervisor SIGKILL 等待 − 10s 终止收口余量)` 排水。shutdown≤0 时 supervisor SIGKILL 等待回退 60s，故 shutdown=0 部署的实际生效窗口为 `min(run_drain, 50)` 秒（缺省 60 → 50s）；shutdown>0 时 SIGKILL 等待 = shutdown+120s，上界不束紧、按 run_drain 原值生效。
+- **非规划性关停**（kill / crash / 手动 stop，无 restart_request）：保持现行快速停机语义——`min(run_drain, shutdown)` 夹紧，`shutdown_drain_seconds=0` 即不排水立即 terminate。
+- `shutdown_drain_seconds>0` 的部署两类行为均与历史一致（run_drain ≤ shutdown 的可加载配置下逐字节不变）。
+
+**协调规则**：`agents.run_drain_max_seconds` MUST ≤ `admin.shutdown_drain_seconds`（shutdown>0 时）——supervisor 的 SIGKILL 等待 = `shutdown_drain_seconds + 120s` 余量，满足不等式即保证排水窗口不会被强杀截断。两者均显式配置且违反时配置加载直接报错；只显式调大 run_drain 的旁路脏配置在非规划性读取面按 `min(run_drain, shutdown)` 夹紧兜底。
+
+**过渡期运维指引（shutdown_drain_seconds: 0 的存量部署）**：合入 planned-restart-drain 前的版本，shutdown=0 会把 restart 排水清零、直接 SIGTERM 在飞 run（每次规划性重启作废全部在飞工作）。若暂不能升级，人工把 `.fenix/config.yaml` 的 `admin.shutdown_drain_seconds` 调为正值即可先行恢复排水：
+
+```yaml
+admin:
+  shutdown_drain_seconds: 60   # 0=快速停机联动；调正值恢复 restart 排水
+```
+
+改完约 30 秒热更新生效，无需重启 daemon；调正值同时让 supervisor 在下次重启时按 `shutdown+120s` 上报 SIGKILL 等待（旧 supervisor 进程需随 daemon 重启一次才生效）。
 
 **人工调整**（编辑 `.fenix/config.yaml`）：
 
@@ -50,9 +65,9 @@ agents:
   run_drain_max_seconds: 600   # 给长排水留裕量（如知道在飞 run 接近收尾）
 ```
 
-**restart 时发生什么**：daemon 收到 restart_request → 停止新派发 → 向每个在飞 run 广播一次 checkpoint 信号（写 `.fenix/runs/<run_id>.checkpoint.json` 旗标，促使实现侧尽快落盘进度声明收尾；不识别该信号的 run 不受影响）→ 等待至多 `run_drain_max_seconds` → 超窗的 run 按既有路径强杀并保全分支续做。
+**restart 时发生什么**：daemon 收到 restart_request → 停止新派发 → 向每个在飞 run 广播一次 checkpoint 信号（写 `.fenix/runs/<run_id>.checkpoint.json` 旗标，促使实现侧尽快落盘进度声明收尾；不识别该信号的 run 不受影响）→ 等待至多 `run_drain_max_seconds` 生效窗口 → 超窗的 run 按既有路径强杀并保全分支续做。排水集合除在飞 run 外还覆盖登记的车道进程（如实现收尾的 ocr 审查车道）：窗口内等其自然收尾，超窗对其实施 SIGTERM+短宽限+SIGKILL 有序终止并落车道终态（unavailable），其产物与 serving worktree 不再被当无主回收。
 
-**排查**：排水起止与广播清单见 daemon 日志 `Drain: planned restart ...` / `Drain finished after ...` 两行；广播旗标写入失败逐 run 记 WARNING（不影响排水）。
+**排查**：排水起止与广播清单见 daemon 日志 `Drain: planned restart ...`（含在飞 run 与车道名清单）/ `Drain finished after ...` 两行；广播旗标写入失败逐 run 记 WARNING（不影响排水）。规划性重启但排水窗口为 0（`agents.run_drain_max_seconds` 显式禁用）时打 WARNING `Drain: planned restart but drain window is 0s ...`——此时在飞工作将不经排水直接终止，属配置误置，按上节把 run_drain 调回正值即可。
 
 ## 相关文档
 

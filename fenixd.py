@@ -3186,27 +3186,45 @@ class FenixDaemon:
             return 1800
         return value
 
-    def _run_drain_max_seconds(self) -> float:
+    def _run_drain_max_seconds(self, planned: bool = False) -> float:
         """restart 排水窗口上限（agents.run_drain_max_seconds，缺省 60）。
 
         add-pipeline-throughput-governance D3：专管 restart_request 触发的在飞
         run 排水等待；常规停机语义不变。单源经
-        ``ConfigLoader.get_run_drain_max_seconds``（含 MUST ≤
-        admin.shutdown_drain_seconds 的 min 夹紧——supervisor SIGKILL 等待 =
-        shutdown + 120s 余量，不会先于本排水窗口强杀）。缺省组合下重启到新
+        ``ConfigLoader.get_run_drain_max_seconds``。缺省组合下重启到新
         daemon 就绪无 1800s 级空等。
+
+        planned-restart-drain D1：``planned=True``（restart_request 在场）时豁免
+        shutdown=0 夹紧，改受 supervisor SIGKILL 等待−收口余量上界约束——
+        shutdown_drain_seconds: 0 的快速停机联动仅作用于非规划性关停。
         """
-        return ConfigLoader.get_run_drain_max_seconds(self.config)
+        return ConfigLoader.get_run_drain_max_seconds(self.config, planned=planned)
+
+    def _drain_set_inventory(self) -> tuple:
+        """排水集合清单（在飞 run 与车道名二元组）——planned-restart-drain C。
+
+        车道登记 API 为本 SPEC 新增，旧测试替身/第三方 runner 可能缺该方法，
+        按空集容错（车道清单缺报不阻塞排水流程）。
+        """
+        if not self.agent_runner:
+            return [], []
+        running = self.agent_runner.running_run_ids()
+        lanes_getter = getattr(self.agent_runner, "running_lane_ids", None)
+        lanes = list(lanes_getter()) if callable(lanes_getter) else []
+        return running, lanes
 
     def _drain_log_waiting(self) -> list:
-        """排水开始日志 + 等待的 run 清单（interrupt-recovery-preserve 4.3）。"""
-        if not self.agent_runner:
-            return []
-        running = self.agent_runner.running_run_ids()
-        if running:
+        """排水开始日志 + 等待的 run 清单（interrupt-recovery-preserve 4.3）。
+
+        planned-restart-drain C：排水集合清单扩展为「在飞 run + 车道名」双段
+        留痕；返回值仍为 run 清单（checkpoint 广播数对比的既有契约不变）。
+        """
+        running, lanes = self._drain_set_inventory()
+        if running or lanes:
             self.logger.info(
                 "fenixd",
-                f"Drain: waiting for running agents to finish: {running}",
+                f"Drain: waiting for running agents to finish: runs={running}, "
+                f"lanes={lanes}",
             )
         else:
             self.logger.info("fenixd", "Drain: no running agents to wait for")
@@ -3762,10 +3780,11 @@ class FenixDaemon:
         # 无保全）。
         planned_restart = (PROJECT_ROOT / ".fenix" / "restart_request").exists()
         # add-pipeline-throughput-governance D3：restart 排水窗口改由
-        # agents.run_drain_max_seconds（缺省 60，MUST ≤ shutdown_drain_seconds）
-        # 单源提供——治「排水窗口本身过长」（缺省 1800s 而在飞 run 多数不会
-        # 窗内自行收尾，重启白等半小时）；常规停机语义不受影响。
-        drain_seconds = self._run_drain_max_seconds()
+        # agents.run_drain_max_seconds（缺省 60）单源提供——治「排水窗口本身
+        # 过长」（缺省 1800s 而在飞 run 多数不会窗内自行收尾，重启白等半小时）。
+        # planned-restart-drain D1：规划性重启豁免 shutdown=0 快速停机夹紧，
+        # 窗口单源按 planned 分叉取值；常规停机语义不受影响。
+        drain_seconds = self._run_drain_max_seconds(planned=planned_restart)
         preserved_wts: list = []
         if planned_restart and drain_seconds > 0 and self.agent_runner:
             wait_list = self._drain_log_waiting()
@@ -3773,10 +3792,11 @@ class FenixDaemon:
             # checkpoint 信号（写 run 控制旗标即返回，不阻塞排水等待，不产生
             # 新增失败终态）。广播清单计入排水日志留痕。
             checkpointed = self.agent_runner.broadcast_restart_checkpoint()
+            _, drain_lanes = self._drain_set_inventory()
             _safe_log(
                 "info",
                 f"Drain: planned restart, drain window {drain_seconds}s, "
-                f"waiting runs: {wait_list}, "
+                f"waiting runs: {wait_list}, lanes: {drain_lanes}, "
                 f"checkpoint broadcast: {len(checkpointed)}/{len(wait_list)}",
             )
             start_ts = time.time()
@@ -3801,6 +3821,18 @@ class FenixDaemon:
             )
             preserved_wts.extend(spec_preserved)
         else:
+            if planned_restart and drain_seconds <= 0:
+                # planned-restart-drain C：规划性重启但排水窗口为 0（agents.
+                # run_drain_max_seconds 显式禁用/夹紧为 0）——在飞工作将不经
+                # 排水直接 terminate，WARNING 留痕窗口取值与排水集合清单。
+                inv_runs, inv_lanes = self._drain_set_inventory()
+                _safe_log(
+                    "warning",
+                    f"Drain: planned restart but drain window is 0s "
+                    f"(agents.run_drain_max_seconds disabled) — in-flight work "
+                    f"will be terminated without drain; drain set: "
+                    f"runs={inv_runs}, lanes={inv_lanes}",
+                )
             _safe_log(
                 "debug",
                 f"Shutdown mode: planned={planned_restart}, "
@@ -3814,6 +3846,26 @@ class FenixDaemon:
             # 不传 timeout 以沿用 AGENT_TERMINATE_GRACE_SECONDS，确保总关停 ≪ supervisor 60s。
             # 排水到期残留 run 在此收口（sidecar 保全已先行落盘）。
             self.agent_runner.wait_for_running_agents()
+            # planned-restart-drain B/D3：登记车道进程（ocr 等）有序终止收口——
+            # SIGTERM → 短宽限 → SIGKILL，并等车道线程落终态（bounded），
+            # 车道产物/serving worktree 不再被当无主回收。登记 API 为本 SPEC
+            # 新增：未提供该 API 的 runner 实现（旧测试替身/第三方）按无车道
+            # 处理，行为不变。
+            _terminate_lanes = getattr(
+                self.agent_runner, "terminate_lane_processes", None
+            )
+            if callable(_terminate_lanes):
+                try:
+                    lanes_done = _terminate_lanes()
+                    if lanes_done:
+                        _safe_log(
+                            "info",
+                            f"Lane processes terminated on shutdown: {lanes_done}",
+                        )
+                except Exception as e:
+                    _safe_log(
+                        "error", f"Lane process termination on shutdown failed: {e}"
+                    )
             # add-impl-wip-checkpoint（锚点 A / D2）：所有在飞 agent 进程已死、
             # worktree 静默可证明，在 cleanup_orphans 之前对保全集 worktree 逐个
             # WIP 提交——中断时刻分支必有可恢复提交（ahead ≥ 1），下一 daemon

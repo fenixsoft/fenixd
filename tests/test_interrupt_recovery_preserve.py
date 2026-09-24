@@ -105,9 +105,11 @@ class FakeProc:
 class FakeRunner:
     def __init__(self, running: dict | None = None):
         self._running_agents = dict(running or {})
+        self._lane_processes = {}
         self.terminate_calls = 0
         self.drain_calls = []
         self.checkpoint_broadcasts = []
+        self.lane_terminate_calls = []
 
     def broadcast_restart_checkpoint(self, reason="planned restart"):
         """对齐 runner 真实契约：向在飞 run 广播 checkpoint 旗标（写即返回）。"""
@@ -118,12 +120,34 @@ class FakeRunner:
     def running_run_ids(self):
         return [rid for rid, p in self._running_agents.items() if p.poll() is None]
 
+    # ── 车道登记 API（planned-restart-drain 2.1 契约镜像） ──────────────
+
+    def register_lane_process(self, key, proc, done_event=None):
+        self._lane_processes[key] = (proc, done_event)
+
+    def unregister_lane_process(self, key):
+        self._lane_processes.pop(key, None)
+
+    def running_lane_ids(self):
+        return [
+            k for k, (p, _e) in self._lane_processes.items() if p.poll() is None
+        ]
+
+    def terminate_lane_processes(self, grace: float = 10):
+        done = []
+        for k, (p, _e) in list(self._lane_processes.items()):
+            if p.poll() is None:
+                p.terminate()
+                done.append(k)
+        self.lane_terminate_calls.append(done)
+        return done
+
     def drain_wait(self, timeout: float):
         self.drain_calls.append(timeout)
         deadline = time.time() + max(0.0, timeout)
         while time.time() < deadline:
             remaining = self.running_run_ids()
-            if not remaining:
+            if not remaining and not self.running_lane_ids():
                 return []
             time.sleep(0.02)
         return self.running_run_ids()
@@ -163,7 +187,7 @@ class FakeSM:
 
 def make_daemon(monkeypatch, tmp_path, *, restart_request, drain_seconds,
                 running: dict, sm_entries: dict, wt_by_branch: dict | None = None,
-                spec_to_wt: dict | None = None):
+                spec_to_wt: dict | None = None, run_drain_seconds=None):
     """构造最小 FenixDaemon 并 patch 关键路径，返回 (daemon, fake_runner, fake_wm)。"""
     fake_root = tmp_path / "proj"
     fake_root.mkdir(parents=True, exist_ok=True)
@@ -178,10 +202,13 @@ def make_daemon(monkeypatch, tmp_path, *, restart_request, drain_seconds,
     daemon = fenixd.FenixDaemon()
     # restart 排水窗口单源 agents.run_drain_max_seconds（pipeline-throughput
     # 3.1），常规停机仍走 admin.shutdown_drain_seconds；夹紧规则下两值一致时
-    # 窗口=传入值，语义与既有断言兼容
+    # 窗口=传入值，语义与既有断言兼容。run_drain_seconds 显式给出时与
+    # shutdown_drain_seconds 解耦（planned-restart-drain 3.2：规划性豁免分支
+    # 需要两值独立取型）。
     daemon.config = {
         "admin": {"shutdown_drain_seconds": drain_seconds},
-        "agents": {"run_drain_max_seconds": drain_seconds},
+        "agents": {"run_drain_max_seconds":
+                   drain_seconds if run_drain_seconds is None else run_drain_seconds},
     }
     daemon.logger = FakeLogger()
     daemon.state_machine = FakeSM(sm_entries)
@@ -571,14 +598,31 @@ class TestShutdownDrain:
         assert runner.terminate_calls == 1
 
     def test_drain_zero_fast_path(self, monkeypatch, tmp_path):
-        """drain=0 显式回退现行快速停机：restart_request 在册也不排水。"""
+        """drain=0 快速停机语义收窄（planned-restart-drain 3.2）：仅非规划性
+        关停走 fast path；规划性重启豁免 shutdown=0 夹紧，排水窗口取
+        agents.run_drain_max_seconds 原值受 supervisor SIGKILL 等待上界约束
+        （shutdown=0 → SIGKILL 等待回退 60s，减收口余量 10s → 上界 50s）。"""
+        # 非规划性关停（无 restart_request）+ shutdown=0 → fast path 保留
         daemon, runner, wm = make_daemon(
-            monkeypatch, tmp_path, restart_request=True, drain_seconds=0,
+            monkeypatch, tmp_path, restart_request=False, drain_seconds=0,
             running={"impl-demo-111-a1": FakeProc()}, sm_entries={},
         )
         with pytest.raises(SystemExit):
             daemon.shutdown()
-        assert runner.drain_calls == [], "drain=0 保持现行快速停机"
+        assert runner.drain_calls == [], "非规划性 drain=0 保持现行快速停机"
+        assert runner.terminate_calls == 1
+
+        # 规划性重启 + shutdown=0 + run_drain=60 → 豁免夹紧，窗口 = min(60, 50)
+        daemon, runner, wm = make_daemon(
+            monkeypatch, tmp_path, restart_request=True, drain_seconds=0,
+            run_drain_seconds=60,
+            running={"impl-demo-111-a1": FakeProc()}, sm_entries={},
+        )
+        with pytest.raises(SystemExit):
+            daemon.shutdown()
+        assert runner.drain_calls == [50.0], (
+            "规划性重启不受 shutdown=0 夹紧（窗口=run_drain 原值受 supervisor 上界）"
+        )
         assert runner.terminate_calls == 1
 
     def test_preserve_sidecar_before_terminate(self, monkeypatch, tmp_path):

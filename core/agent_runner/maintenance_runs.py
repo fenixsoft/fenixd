@@ -2118,6 +2118,7 @@ def run_impl_ocr(
 
     wt = None
     heartbeat = None  # (stop_event, thread)；审查子进程运行期非 None
+    lane_done = None  # threading.Event；登记进排水集合后由本线程收尾时 set
     try:
         # ── provider 注入（任务 3.2）：复用 implementer 分配 + 同源 _write_run_ocr_config ──
         env_overrides: Dict[str, str] = {"FENIX_OCR_BIN": DEFAULT_OCR_BIN}
@@ -2208,25 +2209,50 @@ def run_impl_ocr(
             heartbeat = _start_impl_ocr_heartbeat(
                 runner.project_root, run_id, spec_name, from_commit, head_commit
             )
+            # planned-restart-drain B：审查子进程 Popen 化 + 在飞登记进排水
+            # 集合——按 Popen 句柄跟踪（wrapper execvp 改名不受影响，同 PID），
+            # 规划性重启排水等待本车道完成或超窗有序终止，不再被当无主回收。
+            # lane_done 由本线程在全函数收尾（产物+终态事件落盘）后 set，供
+            # shutdown 收口 bounded 等待车道落终态，daemon 不至先于终态退出。
+            # 登记 API 为 planned-restart-drain 2.1 新增：旧测试替身/第三方
+            # runner 缺该方法时按未登记处理（行为同现状）。
+            lane_done = threading.Event()
+            proc = subprocess.Popen(
+                cmd,
+                cwd=str(wt),
+                env={**os.environ, **env_overrides},
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            _register_lane = getattr(runner, "register_lane_process", None)
+            if callable(_register_lane):
+                _register_lane(run_id, proc, lane_done)
             try:
-                proc = subprocess.run(
-                    cmd,
-                    cwd=str(wt),
-                    env={**os.environ, **env_overrides},
-                    capture_output=True,
-                    text=True,
-                    timeout=ConfigLoader.get_impl_code_review_lane_timeout_sec(
-                        runner.config
-                    ),
-                )
-                timed_out = False
-            except subprocess.TimeoutExpired:
-                proc = None
-                timed_out = True
+                try:
+                    _proc_out, _proc_err = proc.communicate(
+                        timeout=ConfigLoader.get_impl_code_review_lane_timeout_sec(
+                            runner.config
+                        )
+                    )
+                    timed_out = False
+                except subprocess.TimeoutExpired:
+                    # 车道硬超时：对齐 subprocess.run 语义（kill+reap 后不再
+                    # 使用 stdout/stderr，reason 走硬超时文案）
+                    proc.kill()
+                    try:
+                        proc.communicate(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        pass
+                    proc = None
+                    timed_out = True
             finally:
                 # 完成/非零退出/硬超时/意外异常四路同收口：停跳后本线程独占
                 # 写（幂等，车道整体 finally 二次调用无害）。
                 _stop_impl_ocr_heartbeat(*heartbeat)
+                _unregister_lane = getattr(runner, "unregister_lane_process", None)
+                if callable(_unregister_lane):
+                    _unregister_lane(run_id)
 
             if timed_out:
                 lane_timeout = ConfigLoader.get_impl_code_review_lane_timeout_sec(
@@ -2236,10 +2262,18 @@ def run_impl_ocr(
                     f"车道硬超时（>{lane_timeout}s，verify."
                     f"impl_code_review_lane_timeout_sec）"
                 )
+            elif proc.returncode < 0:
+                # planned-restart-drain D3：负返回码 = 被信号终止（重启排水超窗
+                # SIGTERM / SIGKILL 收口）——落 unavailable 终态并写明信号语义，
+                # 重启后归档与无主回收逻辑不再误判。
+                artifact["reason"] = (
+                    f"车道进程被信号终止（signal={-proc.returncode}，"
+                    f"重启排水超窗/关停收口）"
+                )
             elif proc.returncode != 0:
                 artifact["reason"] = (
                     f"ocr 非零退出（rc={proc.returncode}）: "
-                    f"{(proc.stderr or proc.stdout or '').strip()[-400:]}"
+                    f"{(_proc_err or _proc_out or '').strip()[-400:]}"
                 )
             else:
                 raw = None
@@ -2309,4 +2343,8 @@ def run_impl_ocr(
             f"impl-ocr 车道完成（run {run_id}）: status={artifact['status']} "
             f"findings={len(artifact['findings'])}",
         )
+    # planned-restart-drain B：产物+终态事件均已落盘，通知 shutdown 收口本车道
+    # 终态就绪（terminate_lane_processes 据此 bounded 等待，不再盲等）。
+    if lane_done is not None:
+        lane_done.set()
     return artifact
