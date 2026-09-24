@@ -10,11 +10,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  GATES_STROKE,
   gateChecked,
   gateCounted,
   gateDetailText,
-  gateStrikeThrough,
   gateSuffix,
   gateTextColor,
   normalizeGateItems,
@@ -22,6 +20,7 @@ import {
   shouldRenderGatesCard,
 } from '../src/pages/projects/qualityGates.ts';
 import {
+  GATES_STROKE,
   GATES_TRAIL,
   phasePct,
   renderPercent,
@@ -42,11 +41,9 @@ test('passed 与 skipped 计入完成度，其余三态不计入', () => {
   assert.equal(gateCounted(gi('unknown')), false);
 });
 
-test('勾选视觉与计数同口径：skipped 勾选（已了结）但不加删除线', () => {
+test('勾选视觉与计数同口径：skipped 勾选（已了结）', () => {
   assert.equal(gateChecked(gi('skipped')), true);
-  assert.equal(gateStrikeThrough(gi('skipped')), false);
   assert.equal(gateChecked(gi('passed')), true);
-  assert.equal(gateStrikeThrough(gi('passed')), true);
   assert.equal(gateChecked(gi('pending')), false);
 });
 
@@ -145,7 +142,7 @@ test('ocr 在飞：合成 running → 「进行中」标识，不计入完成度
   assert.equal(gateChecked(item), false);
 });
 
-test('ocr completed：合成 passed → 勾选+删除线，发现/处置计数透传为辅助文案', () => {
+test('ocr completed：合成 passed → 勾选，发现/处置计数透传为辅助文案', () => {
   const item = {
     id: 'code-review',
     desc: 'ocr 代码审查与处置',
@@ -153,7 +150,6 @@ test('ocr completed：合成 passed → 勾选+删除线，发现/处置计数�
     detail: '审查完成：发现 2 条、处置 2 条',
   };
   assert.equal(gateChecked(item), true);
-  assert.equal(gateStrikeThrough(item), true);
   assert.equal(gateDetailText(item), '审查完成：发现 2 条、处置 2 条');
 });
 
@@ -167,7 +163,6 @@ test('ocr unavailable：合成 skipped → 勾选+「不适用」，计入完成
   assert.equal(gateChecked(item), true);
   assert.equal(gateSuffix(item), '（不适用）');
   assert.equal(gateCounted(item), true);
-  assert.equal(gateStrikeThrough(item), false);
 });
 
 // ── 5.2：gates 阶段渲染映射 ──────────────────────────────────────────

@@ -4,7 +4,7 @@
 
 - core/self_review.py:204-213 _business_fail_marker：对传入文本做 _BUSINESS_FAIL_PATTERNS（:91-99）裸子串匹配，命中即返回词；唯一调用点 :277（_classify_run 的 type=result 分支），:278-279 命中即 return ("failed", "marker=<词>")。
 - 词表含「预算耗尽」（:95）、「预算已耗尽」（:96）等功能治理词汇，与 runner 层预算文案同形。
-- 既有 pinned 夹具的声明全部位于文本开头且不超过 30 字符（test_self_review_run_semantics.py:35/54/73、test_self_review_result_based_classification.py:213/222/274）。
+- 既有 marker 夹具的声明全部位于文本开头且不超过 30 字符（test_self_review_run_semantics.py:35/54/73、test_self_review_result_based_classification.py:213/222/274；评审补查：test_self_review_archive_stats.py:68/100/144/220/232/242/257 亦全为开头 0 字符夹具——其余聚合消费方 test_self_review_window_snapshot.py 与 test_daily_self_review.py 不含 marker 夹具），前缀窗口下保持全绿。
 - 已知两次误判样本的命中位置均在文本中段：302/711（自省 run 自身）与 692/1382（本次实拍）。
 
 ## 设计

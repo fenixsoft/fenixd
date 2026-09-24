@@ -4,17 +4,14 @@
 // 映射判断抽到此纯函数模块（零 import，node 与 Vite 双端可直接加载），
 // detail.tsx 只做 JSX 套用；qualityGates.test.mjs 直接对本模块断言。
 //
-// 六态渲染语义（spec 任务 4.2 固化）：
-//   passed   勾选 + 删除线
+// 六态渲染语义（spec 任务 4.2 固化；2026-09-24 删除线视觉退役——已勾选黑色、
+// 未勾选灰色）：
+//   passed   勾选
 //   failed   红色文字 + detail 归因辅助文案
 //   running  「进行中」标识
 //   pending  灰色
-//   skipped  勾选 +「不适用」标识（勾选样式与 passed 区分：不加删除线）
+//   skipped  勾选 +「不适用」标识
 //   unknown  「无记录」灰色
-
-// 门禁橙（spec 任务 4.2 指定色）：详情页进度条描边（与列表页 progressPhase.ts
-// 的 GATES_STROKE 同值——两模块零 import 自包含，node 加载要求，勿合并）
-export const GATES_STROKE = '#fa8c16';
 
 export type GateItem = {
   id: string;
@@ -46,14 +43,9 @@ export function gateCounted(item: GateItem): boolean {
 }
 
 // 勾选框视觉：passed 与 skipped 都勾（skipped 勾选表示该门已了结而非通过，
-// 以「不适用」后缀 + 无删除线区分）
+// 以「不适用」后缀区分）
 export function gateChecked(item: GateItem): boolean {
   return gateCounted(item);
-}
-
-// 删除线：仅 passed——「不适用」不是「已完成」
-export function gateStrikeThrough(item: GateItem): boolean {
-  return item.status === 'passed';
 }
 
 // 文字颜色：failed 红、pending/unknown 灰、其余默认

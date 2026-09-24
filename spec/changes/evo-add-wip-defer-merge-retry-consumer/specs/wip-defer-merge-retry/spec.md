@@ -16,7 +16,7 @@ daemon 运行期 SHALL 周期复查带等待标志的 spec：主树重叠文件�
 
 ### Requirement: 先于孤儿探测生效
 
-周期消费者 SHALL 先于 orphaned_state 探测触发（节拍短于其缺省 15 分钟阈值），使「WIP 清了自动合回」成为默认路径、admin 仅处理真冲突与超限降级。
+周期消费者 SHALL 先于 orphaned_state 探测触发（节拍短于其缺省 15 分钟阈值），使「WIP 清了自动合回」成为默认路径、admin 仅处理真冲突与超限降级。等待期内（未超窗口/轮数上限）orphaned_state 探测 SHALL 豁免带等待标志的条目；超限降级后豁免 SHALL 自动失效（孤儿探测恢复兜底）。
 
 #### Scenario: WIP 清理后自动合回
 

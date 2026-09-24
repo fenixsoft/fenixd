@@ -28,10 +28,8 @@ import { fmtInputTokens, fmtMillions } from '@/utils/tokens';
 // add-quality-gates-visibility：六态渲染语义映射抽到纯函数模块（node:test 可
 // 加载 .ts），本文件只做 JSX 套用
 import {
-  GATES_STROKE,
   gateChecked,
   gateDetailText,
-  gateStrikeThrough,
   gateSuffix,
   gateTextColor,
   normalizeGateItems,
@@ -1801,8 +1799,7 @@ export default function SpecDetailPage() {
                     <Checkbox checked={task.done} disabled style={{ marginRight: 8 }} />
                     <Typography.Text
                       style={{
-                        textDecoration: task.done ? 'line-through' : 'none',
-                        color: task.done ? '#999' : 'inherit',
+                        color: task.done ? undefined : '#999',
                       }}
                     >
                       <code style={{ marginRight: 6 }}>{task.id}</code>
@@ -1836,7 +1833,6 @@ export default function SpecDetailPage() {
               <ProgressBarTile
                 done={detail.quality_gates.done}
                 total={detail.quality_gates.total}
-                strokeColor={GATES_STROKE}
               />
               {detail.quality_gates.current ? (
                 <Typography.Text type="secondary" style={{ display: 'block', marginBottom: 8 }}>
@@ -1852,7 +1848,6 @@ export default function SpecDetailPage() {
                   <Checkbox checked={gateChecked(item)} disabled style={{ marginRight: 8 }} />
                   <Typography.Text
                     style={{
-                      textDecoration: gateStrikeThrough(item) ? 'line-through' : 'none',
                       color: gateTextColor(item),
                     }}
                   >

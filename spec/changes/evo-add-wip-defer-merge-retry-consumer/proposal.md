@@ -16,7 +16,8 @@ spec 实现车道合回被 WIP 重叠闸门阻断时（core/pm_engine/dispatch/q
 
 - 修改 core/pm_engine/dispatch/rollback.py：阻断点落结构化载体
 - 修改 core/pm_engine/dispatch/queue.py：_retry_merge_back_only 状态守卫、周期复查与重试实现
-- 修改 core/state_machine.py：新标志布尔往返登记与清账
+- 修改 core/state_machine.py：新标志布尔往返登记与清账（含 boot 恢复两个复位写点）
+- 修改 core/admin_monitor.py：orphaned_state 探测对带标志未超限条目的豁免（对齐 _repair_awaiting_remerge 先例）
 - 修改 fenixd.py：主循环周期计时器
 - 新增 tests/test_wip_defer_merge_retry.py：消费者回归
 

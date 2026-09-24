@@ -4,7 +4,7 @@
 
 ### Requirement: 重名换名重试
 
-worktree add -b 失败且 stderr 含 already exists 时，系统 SHALL 在同一 create 调用内以单调递增时间戳同时重建分支名与 worktree 路径并重试（有界 2-3 次）；分支名末段 SHALL 保持纯数字时间戳，解析契约不变。
+worktree add -b 失败且 stderr 含 already exists 时，系统 SHALL 在同一 create 调用内以单调递增时间戳同时重建分支名与 worktree 路径并重试（换名重试至多 2 次，总计至多 3 次创建尝试）；分支名末段 SHALL 保持纯数字时间戳，解析契约不变。
 
 ### Requirement: 失败语义保持
 
@@ -21,7 +21,7 @@ worktree add -b 失败且 stderr 含 already exists 时，系统 SHALL 在同一
 
 #### Scenario: 重试耗尽回退现状
 
-- WHEN 换名重试 2-3 次仍失败（非重名原因或持续冲突）
+- WHEN 非重名原因失败（不重试），或换名重试至多 2 次后仍重名冲突
 - THEN 释放创建锁、返回 None，runner 层 attempt 循环按现状兜底
 
 #### Scenario: 分支名解析契约不变

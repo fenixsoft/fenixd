@@ -4,12 +4,12 @@
 
 ### Requirement: 规划性重启不受快速停机夹紧
 
-restart_request 在场（规划性重启）时，排水窗口 MUST 取 agents.run_drain_max_seconds 原值；admin.shutdown_drain_seconds: 0 的快速停机联动（core/config.py get_run_drain_max_seconds 的 min 夹紧）MUST 仅作用于非规划性关停。shutdown_drain_seconds>0 的部署行为 MUST 逐字节不变。
+restart_request 在场（规划性重启）时，排水窗口 MUST 取 agents.run_drain_max_seconds 原值与 supervisor SIGKILL 等待减终止收口安全余量二者的较小值（豁免 shutdown=0 夹紧，不豁免 supervisor 协调上界，见 bin/fenixd_supervisor.py `_sigkill_wait_seconds`：shutdown≤0 时 SIGKILL 等待回退 60s）；admin.shutdown_drain_seconds: 0 的快速停机联动（core/config.py get_run_drain_max_seconds 的 min 夹紧）MUST 仅作用于非规划性关停。shutdown_drain_seconds>0 的部署行为 MUST 逐字节不变。
 
 #### Scenario: 规划性重启排水生效
 
 - **WHEN** .fenix/restart_request 在场、admin.shutdown_drain_seconds 为 0、agents.run_drain_max_seconds 为 60、存在在飞 run
-- **THEN** shutdown 路径先 drain_wait 最多 60 秒而非立即 SIGTERM；窗口内自然完成的 run MUST NOT 被终止
+- **THEN** shutdown 路径先 drain_wait 一个正值窗口（≤ run_drain_max_seconds 原值 60 秒，且低于 supervisor SIGKILL 等待 60 秒减收口余量）而非立即 SIGTERM；窗口内自然完成的 run MUST NOT 被终止
 
 #### Scenario: 非规划性关停快速停机语义保留
 

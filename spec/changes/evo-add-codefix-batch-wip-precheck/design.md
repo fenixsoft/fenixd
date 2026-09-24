@@ -11,8 +11,8 @@
 ## 设计
 
 1. 预检插入点：select_batch 之后、契约守卫之前。取 _list_dirty_tracked_files 与 {rec.get("file") for rec in batch} 求交；台账条目 file 为仓库相对路径（items.jsonl 实证），可直接比对。
-2. 产物豁免：交集先经 mergeback 同款 artifacts 判别过滤，dist 类产物路径不计入命中。
-3. 推迟出口：命中即 write_progress(running=False, phase="blocked", reason="wip_overlap_at_select", current=交集文件文案) 并返回未触发；reason 纳入既有分流体系供前端透传，WIP 永不清理时落入既有 defer/预算降级语义而非无限重查。
+2. 产物豁免：交集先经 mergeback 同款 artifacts 判别过滤，dist 类产物路径不计入命中。同口径 = 同配置源构造 ArtifactPathMatcher（先例 core/worktree_manager/lifecycle.py:127：normalize_artifact_patterns(build_artifact_paths) + has_build_artifacts 三态注入），MUST NOT 硬编码 dist 前缀、MUST NOT 无参默认构造——空 patterns 判定恒假，会把已裁决产物配置项目的 dist 脏文件全算命中，触发风险段自述的「预检拦、merge-time 放行」倒退。
+3. 推迟出口：命中即 write_progress(running=False, phase="blocked", reason="wip_overlap_at_select", current=交集文件文案) 并返回未触发；reason 纳入既有分流体系供前端透传（前端无 reason 硬编码映射，新 reason 直接透传，无需前端改动），WIP 永不清理时落入既有 defer/预算降级语义而非无限重查。该写点为新增出口，MUST 无条件写进度——MUST NOT 照抄既有「选批为空」出口的 live 链条件（core/code_fix.py:1186），否则无链状态下 WIP 冲突不可观测，违反「推迟可观测」Requirement。
 4. 人工侧约定（非代码）：UI 会话触碰台账相关文件后及时提交或 stash——写入 proposal 非目标与 docs，不设框架强制。
 
 ## 风险与边界

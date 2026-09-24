@@ -15,4 +15,4 @@
 ## 2. 测试
 
 - [ ] 2.1 tests/test_self_review_result_based_classification.py：新增回归——result 终态 is_error=False 且 subtype=success、「预算耗尽」仅出现在摘要中段（实拍句「预算耗尽发一次性 warning」形态）时计 succeeded 且不入失败样本
-- [ ] 2.2 tests/test_self_review_result_based_classification.py：与既有「开头声明形态仍判 failed」用例成对锁边界，并确认既有全部 marker 夹具与 test_signal_fallback_when_no_marker 兜底语义在窗口收敛后保持通过
+- [ ] 2.2 tests/test_self_review_result_based_classification.py：与既有「开头声明形态仍判 failed」用例成对锁边界，并确认既有全部 marker 夹具（test_self_review_run_semantics.py、test_self_review_result_based_classification.py、test_self_review_archive_stats.py）与 test_signal_fallback_when_no_marker 兜底语义在窗口收敛后保持通过

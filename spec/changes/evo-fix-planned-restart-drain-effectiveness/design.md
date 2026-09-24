@@ -25,7 +25,7 @@
 
 ## 设计决策
 
-- **D1｜夹紧豁免按 planned_restart 分叉而非改缺省值**：在 get_run_drain_max_seconds 增加 planned 参数（或在 fenixd.py shutdown 处先行判定），planned restart 取原值、非规划性关停保持 min 夹紧——fast-shutdown 的原始意图（避免无人值守时在飞必等满窗口）不受损，D3 的意图（规划性重启排水）恢复。选在配置读取层分叉保证单源。
+- **D1｜夹紧豁免按 planned_restart 分叉而非改缺省值**：在 get_run_drain_max_seconds 增加 planned 参数（或在 fenixd.py shutdown 处先行判定），planned restart 取原值、非规划性关停保持 min 夹紧——fast-shutdown 的原始意图（避免无人值守时在飞必等满窗口）不受损，D3 的意图（规划性重启排水）恢复。选在配置读取层分叉保证单源。豁免仅解除 shutdown_drain_seconds 的快速停机联动夹紧，**不解除 supervisor 协调上界**：规划性窗口 MUST 取 min(run_drain_max_seconds 原值, supervisor SIGKILL 等待 − 终止收口安全余量)。理由：shutdown_drain_seconds≤0 时 supervisor SIGKILL 等待回退 60s（bin/fenixd_supervisor.py:58 DEFAULT_SIGKILL_WAIT_SECONDS、:214-224 drain≤0 分支），恰等于缺省 run_drain 60s——若窗口取满 60s，drain_wait 到期与 SIGKILL 同刻落地，超窗有序终止（SIGTERM+宽限）与 sidecar 保全收口会被强杀截断，「超窗有序终止并留终态」机制上不可达。取余量后 shutdown=0 部署实际生效窗口 60s−余量（余量实现自定，建议 ≥10s 且不小于单 run terminate 宽限），「不被 shutdown=0 清零」的豁免意图不受损；shutdown>0 部署 SIGKILL 等待 = shutdown+120s，可加载配置（run_drain ≤ shutdown）下该上界不束紧、行为不变。
 - **D2｜车道登记制而非进程表扫描**：与 orphaned_state 探针的 pgrep 盲区不同源——排水集合天然是「我们派生的进程」，Popen 句柄足以跟踪 execvp 改名；只要把 run_impl_ocr 的子进程注册进 runner 登记表即可。登记 API 泛化为 register/unregister，后续其它 maintenance 车道可复用。
 - **D3｜超窗有序终止**：ocr 子进程超窗时先 SIGTERM 再等待短宽限后 SIGKILL（对齐 liveness.py wait_for_running_agents 语义），并写车道终态（unavailable/interrupted），使重启后归档与无主回收逻辑不再误判。
 - **D4｜测试语义迁移**：test_drain_zero_fast_path 修订为 fast path 仅非规划性关停；新增端到端回归以假 evo/impl run + 假 ocr 车道（快速可终止的替身进程）驱动真实 shutdown 路径，避免测试挂真实 LLM。

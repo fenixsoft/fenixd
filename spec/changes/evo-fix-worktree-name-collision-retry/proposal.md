@@ -8,7 +8,7 @@
 
 在 lifecycle.create 的 worktree add -b 失败分支捕获 already exists 后就地换名重试：
 
-1. stderr 含 already exists 时，取 timestamp = max(int(time.time()), 原值 + 1) 重建分支名与 worktree 路径（路径与分支同名双换——事故现场胜者已占用原路径），重发 git worktree add -b，有界重试 2-3 次。
+1. stderr 含 already exists 时，取 timestamp = max(int(time.time()), 原值 + 1) 重建分支名与 worktree 路径（路径与分支同名双换——事故现场胜者已占用原路径），重发 git worktree add -b，换名重试至多 2 次（总计至多 3 次创建尝试）。
 2. 分支名末段保持纯数字时间戳，queries 层全部解析契约不变。
 3. 重试全程持有原锁并落一条含新旧分支名的 WARNING；重试耗尽仍失败则沿用现状语义（discard 锁、返回 None），runner 层 attempt 兜底不变。
 

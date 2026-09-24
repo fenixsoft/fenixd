@@ -224,8 +224,8 @@ export default function SpecDocModal({ project, spec, open, onClose, initialDoc 
           { key: 'proposal', label: '需求背景' },
           { key: 'design', label: '详细设计' },
           { key: 'tasks', label: '任务清单' },
-          { key: 'verification', label: '验证报告' },
           { key: 'scenarios', label: '测试场景清单' },
+          { key: 'verification', label: '验证报告' },
         ]}
       />
       <div style={{ flex: 1, minHeight: 0 }}>{renderContent()}</div>
