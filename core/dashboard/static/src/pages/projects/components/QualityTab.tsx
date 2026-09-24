@@ -914,6 +914,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
           />
           <Select
             placeholder="状态"
+            allowClear
             style={{ width: 190 }}
             value={statusFilter}
             onChange={setStatusFilter}

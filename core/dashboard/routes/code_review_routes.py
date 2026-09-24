@@ -1,8 +1,9 @@
 """code_review_routes.py — code-review（周期性代码审查）routes（add-code-review-agent-and-quality-tab）。
 
-承载 5 个端点：
+承载 9 个端点：
 - GET  /api/code-review/items      （query project、可选 status）→ 台账列表
 - GET  /api/code-review/progress   （query project）→ 运行进度
+- GET  /api/code-review/fix-progress（query project）→ 自动修复进度（add-code-review-auto-fix）
 - POST /api/code-review/run        （body {project, scope}）→ 写手动触发信号
 - POST /api/code-review/fix-run    （query project）→ 写手动「立即自动修复」信号（add-code-fix-manual-trigger）
 - GET  /api/code-review/fix-run-result（query project）→ 只读手动触发判定结果（add-code-fix-manual-trigger）

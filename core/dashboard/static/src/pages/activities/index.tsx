@@ -378,8 +378,13 @@ export default function ActivitiesPage() {
     try {
       const [d, alerts] = await Promise.all([getAdminActivities(), getAlerts()]);
       setData(d);
-      if (!alerts.error) setAlertsData(alerts);
-      setError('');
+      if (!alerts.error) {
+        setAlertsData(alerts);
+        setError('');
+      } else {
+        // fix df39d8bbc138: 告警加载失败必须提示，不能静默——否则首载失败显示误导性空态
+        setError(alerts.error);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -424,6 +429,8 @@ export default function ActivitiesPage() {
         message.success('已标记处理');
       } catch (err) {
         message.error(`标记失败：${err instanceof Error ? err.message : String(err)}`);
+        // fix df39d8bbc138: 标记失败立即撤销乐观遮蔽，防止 id 滞留 optimistic 永久隐藏告警
+        setOptimistic((prev) => prev.filter((id) => id !== a.id));
       }
       void load();
     },
@@ -443,8 +450,9 @@ export default function ActivitiesPage() {
     return flattened.sort((x, y) => {
       if (x.handled === false && y.handled !== false) return -1;
       if (x.handled !== false && y.handled === false) return 1;
-      const xt = x.created ? dayjs(x.created).valueOf() : 0;
-      const yt = y.created ? dayjs(y.created).valueOf() : 0;
+      // fix f6adbe97c806: created 存在但非法时 valueOf() 返回 NaN，须归一为 0 再比较
+      const xt = x.created && dayjs(x.created).isValid() ? dayjs(x.created).valueOf() : 0;
+      const yt = y.created && dayjs(y.created).isValid() ? dayjs(y.created).valueOf() : 0;
       return yt - xt;
     });
   }, [projects]);

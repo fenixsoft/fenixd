@@ -69,6 +69,10 @@ class V2ServerManager:
             )
             self._v2_servers[str(wt_path)] = (port, proc)
         except V2DevServerError as e:
+            # 启动失败：移除（可能残留的）陈旧条目，保证 _v2_inject_env 拿不到死
+            # 端口条目、返回空 dict，测试按承诺回退 PLAYWRIGHT/缺省 8787，
+            # 而非向 agent 注入失效端口的 V2_BASE_URL 造成假失败。
+            self._v2_servers.pop(str(wt_path), None)
             self._pm.logger.warning(
                 "agent_runner",
                 f"V2 dev-server launch failed for {wt_path} (tests fall back to " f"8787): {e}",

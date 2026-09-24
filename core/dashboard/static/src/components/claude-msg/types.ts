@@ -8,8 +8,10 @@ export interface ToolResult {
   [key: string]: unknown;
 }
 
+export type ChatMessageType = 'user' | 'assistant' | 'system' | 'error' | 'tool';
+
 export interface ChatMessage {
-  type: string;
+  type: ChatMessageType;
   content?: string;
   displayText?: string;
   timestamp: string | number | Date;

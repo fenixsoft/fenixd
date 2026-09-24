@@ -319,6 +319,12 @@ export default function ClaudeOutputPane({
 
   const canLoadOlder = totalEvents > 0 && events.length < totalEvents;
 
+  // 参数缺失防御（code-review item ff5beae43de6）：runId/project 为空时首拉
+  // effect 直接 return、loading 初值 true 无人复位，组件会永久停在「加载运行
+  // 记录」Spin。守卫须放在全部 hook 之后（条件 return 前置会破坏 hook 顺序），
+  // 直接不渲染，不误入「等待输出」空态。
+  if (!runId || !project) return null;
+
   if (loading) {
     return (
       <div className="flex h-full items-center justify-center">

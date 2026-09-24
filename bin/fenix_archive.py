@@ -98,7 +98,9 @@ def main():
         for key in ("runs_archived", "runs_archive_warning", "committed", "commit_warning"):
             if key in result:
                 payload[key] = result[key]
-    except ValueError as e:
+    except (ValueError, OSError) as e:
+        # OSError：shutil.move 因权限/只读盘等失败，或 is_dir() 检查与移动之间
+        # 目录被并发移走的竞态——与 ValueError 同走统一 JSON 错误载荷。
         payload = {"ok": False, "from": None, "to": None, "error": str(e)}
 
     print(json.dumps(payload, ensure_ascii=False, indent=2))

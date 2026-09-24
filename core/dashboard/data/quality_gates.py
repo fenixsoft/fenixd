@@ -210,6 +210,34 @@ def _lane_fingerprint_ok(product: dict, expected) -> bool:
     return True
 
 
+# ocr 车道指纹短 TTL 缓存（code-review item f3efcd5eff76）：current_lane_fingerprint
+# 每次调用 1 次 rev-parse + 至多 2 次 merge-base 子进程（各 15s 超时），而
+# _load_lane_product 在 parse_quality_gates 内对每个 spec 各调一次——与下方
+# full-suite 指纹（_FINGERPRINT_CACHE，共用其 TTL/容量常量）同型热路径，同款
+# 模块级 memo：TTL 内 head 移动的门禁可见性延迟至多一个 TTL（同一既有假设）。
+# 公共 current_lane_fingerprint 本身保持无缓存：测试与外部直接调用依赖
+# 「merge 后重取即新值」语义（mergeback 用例同参重取断言）。
+_LANE_FINGERPRINT_CACHE: dict = {}
+
+
+def _cached_lane_fingerprint(project_root, entry):
+    """``current_lane_fingerprint`` 的短 TTL memo，键 (project_root, branch)。"""
+    branch = str((entry or {}).get("branch") or "").strip()
+    if not branch:
+        # 空 branch 原函数短路返回 None（不拉子进程），透传不占缓存
+        return current_lane_fingerprint(project_root, entry)
+    key = (str(project_root), branch)
+    now = time.monotonic()
+    hit = _LANE_FINGERPRINT_CACHE.get(key)
+    if hit is not None and now - hit[0] < _FINGERPRINT_CACHE_TTL_SECONDS:
+        return hit[1]
+    fp = current_lane_fingerprint(project_root, entry)
+    if len(_LANE_FINGERPRINT_CACHE) >= _FINGERPRINT_CACHE_MAX:
+        _LANE_FINGERPRINT_CACHE.clear()
+    _LANE_FINGERPRINT_CACHE[key] = (now, fp)
+    return fp
+
+
 def _load_lane_product(project_root, spec_name, spec_status: str, entry: dict):
     """读 ocr 车道产物（worktree 优先、主树兜底 + 指纹校验）。
 
@@ -220,7 +248,7 @@ def _load_lane_product(project_root, spec_name, spec_status: str, entry: dict):
     )
     if not exists or not isinstance(data, dict):
         return None
-    if not _lane_fingerprint_ok(data, current_lane_fingerprint(project_root, entry)):
+    if not _lane_fingerprint_ok(data, _cached_lane_fingerprint(project_root, entry)):
         return None
     return data
 
