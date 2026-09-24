@@ -7,7 +7,7 @@
 // 布局差异（横幅把执行按钮放 List actions 列、详情页与控件同行为内联行）留在
 // 各自 surface，不做强行统一的视觉变更。
 import { App, Button, Popconfirm } from 'antd';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
 import type { AlertChoice, AlertItem } from '@/services/dashboard';
 import { resolveAlert } from '@/services/dashboard';
@@ -41,6 +41,10 @@ export function useAlertAdjudication(): AlertAdjudication {
   const [alertChoiceSels, setAlertChoiceSels] = useState<Record<string, string>>({});
   const [alertNotes, setAlertNotes] = useState<Record<string, string>>({});
   const [resolvingAlerts, setResolvingAlerts] = useState<Set<string>>(new Set());
+  // 同步防重（code-review item 529fb89487dc）：resolvingAlerts 是本次渲染的
+  // state 快照，双击间隔小于一帧时两次调用都读到旧值、各自发出不可逆裁决请求；
+  // ref 在请求发出前同步置位、finally 清除，拦住同帧二次点击，state 仅驱动 loading 视图。
+  const resolvingIdsRef = useRef<Set<string>>(new Set());
   const [alertResolveMsgs, setAlertResolveMsgs] = useState<Record<string, AlertResolveMsg>>({});
 
   // 人工裁决一次选择完成处置闭环（动作执行 + 状态推进 + handled + 处置留痕）。
@@ -53,7 +57,8 @@ export function useAlertAdjudication(): AlertAdjudication {
     choiceId: string,
     opts?: { onResolved?: () => void },
   ) => {
-    if (resolvingAlerts.has(a.id)) return;
+    if (resolvingIdsRef.current.has(a.id)) return;
+    resolvingIdsRef.current.add(a.id);
     setResolvingAlerts((s) => new Set(s).add(a.id));
     setAlertResolveMsgs((m) => {
       const n = { ...m };
@@ -84,6 +89,7 @@ export function useAlertAdjudication(): AlertAdjudication {
       }));
       message.error('裁决执行失败，告警保持未处理，可调整后重试');
     } finally {
+      resolvingIdsRef.current.delete(a.id);
       setResolvingAlerts((s) => {
         const n = new Set(s);
         n.delete(a.id);

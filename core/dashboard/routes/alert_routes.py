@@ -155,9 +155,16 @@ class H6AlertRoutesMixin:
         if not alert_id:
             self._error(400, "missing alert id")
             return
-        if not dashboard_data.mark_alert_handled(Path(project["path"]), alert_id):
-            self._error(404, "alert not found or already handled")
-            return
+        # 与 alert-resolve 共用同一把 per-alert 锁（code-review item 459f38a3f141）：
+        # mark 若不持锁，可在 resolve 持锁通过 409 快照检查、正执行映射动作的窗口
+        # 内插入把告警标记 handled，令 resolve 仍把动作执行完——「已 handled 告警
+        # 不执行动作」的不变量被破坏。收敛到同锁后两个方向均串行化：本路径先抢到
+        # 锁则 resolve 后读快照命中 409；resolve 先完成则本路径 mark 幂等返回
+        # False（404 如实上报）。mark_alert_handled 内部只走 store 级锁，无重入。
+        with _adjudication_lock(alert_id):
+            if not dashboard_data.mark_alert_handled(Path(project["path"]), alert_id):
+                self._error(404, "alert not found or already handled")
+                return
         try:
             self.server.sse_hub.broadcast(
                 {

@@ -43,7 +43,7 @@ def _resolve_project_root() -> tuple:
     env_root = os.environ.get("FENIX_PROJECT_ROOT")
     if env_root:
         return Path(env_root).expanduser().resolve(), "环境变量 FENIX_PROJECT_ROOT"
-    return Path.cwd(), "当前工作目录（cwd）"
+    return Path.cwd().expanduser().resolve(), "当前工作目录（cwd）"
 
 
 PROJECT_ROOT, PROJECT_ROOT_SOURCE = _resolve_project_root()

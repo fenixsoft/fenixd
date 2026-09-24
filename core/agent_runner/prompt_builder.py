@@ -75,6 +75,23 @@ def _str_field(value) -> str:
         return str(value)
 
 
+def _single_pass_replace(template: str, values: dict[str, str]) -> str:
+    """单趟多模式占位符填充：dict→compiled alternation，一次 re.sub 扫完。
+
+    逐键 str.replace 是缺陷模式（code-review item 7975ab14dbe7）：会把上一键
+    的替换结果作为下一键的替换对象——先注入的值（来自用户数据或 LLM 产物，
+    常嵌入 {result_path}/{out_path} 等占位符字面量）被后续键二次替换、污染
+    注入内容。re.sub 单趟扫描永不重扫替换文本，杜绝二次替换；不用
+    str.format——prompt 正文含大量 {} JSON 示例。统一填充入口：主路径
+    _fill_placeholders 与四条独立构建路径共用同一实现，防多份漂移。
+    """
+    if not values:
+        return template
+    return re.compile("|".join(re.escape(k) for k in values)).sub(
+        lambda m: values[m.group(0)], template
+    )
+
+
 def planner_result_path(project_root, spec_name: str, agent_type: str) -> Path:
     """planner 阶段产物结果文件路径（add-judge-artifact-gate D1，注入/校验同源）。
 
@@ -255,11 +272,7 @@ class PromptBuilder:
         # 上一轮结果作为下一键的替换对象——注入值（信号 evidence 常嵌入 run 产物
         # 路径与提示词片段）本身含 {result_path} 等占位符字面量时被后续键二次
         # 替换、污染注入内容。re.sub 单趟扫描永不重扫替换文本，杜绝二次替换。
-        if values:
-            _values_re = re.compile("|".join(re.escape(k) for k in values))
-            out = _values_re.sub(lambda m: values[m.group(0)], template)
-        else:
-            out = template
+        out = _single_pass_replace(template, values)
         # 廉价后置检查（add-code-review-auto-fix）：存在未解析占位符记 warning，
         # 不阻断派发（fail-open），但让模板漂移导致的注入静默丢失在日志可见。
         leftover = sorted(set(_PLACEHOLDER_RE.findall(out)) - set(values))
@@ -1389,8 +1402,9 @@ class PromptBuilder:
 
         首参 token 即统一入口 _build_prompt 的 spec_name 槽位（按位置传入）；
         self-review 车道无 spec 维度，复用该槽位传入自省归属日期字符串。
-        加载 agents/self-review.md（文件化体系，缺失 fail-fast），以
-        str.replace 填充占位符（不用 str.format——正文含大量 {} JSON 示例）：
+        加载 agents/self-review.md（文件化体系，缺失 fail-fast），经
+        _single_pass_replace 单趟填充占位符（不用 str.format——正文含大量
+        {} JSON 示例）：
         - {review_date}: 自省归属执行日
         - {daily_summary}: 框架聚合的近 24 小时数据摘要（五源：STATE 终态 /
           runs 统计 / admin 告警与处置 / 日志 ERROR / 近 3 日 git 提交）
@@ -1401,22 +1415,25 @@ class PromptBuilder:
         - {out_path}: 回顾 JSON 写入路径（.fenix/self_review_out-<run_id>.json）
         """
         template = self._load_agent_template("self-review")
-        prompt = template
-        prompt = prompt.replace("{review_date}", token)
-        prompt = prompt.replace("{daily_summary}", (detail.get("daily_summary") or "（无数据）"))
-        prompt = prompt.replace(
-            "{todo_md_content}",
-            (detail.get("todo_md") or "（read_todo 关闭或 todo.md 不存在，不注入）"),
-        )
-        prompt = prompt.replace(
-            "{todo_entries}", (detail.get("todo_entries") or "（近3日窗口内无既有条目）")
-        )
-        prompt = prompt.replace(
-            "{out_path}",
-            str(
-                detail.get("out_path")
-                or (self._pm.project_root / ".fenix" / "self_review_out.json")
-            ),
+        # 单趟填充（code-review item 7975ab14dbe7 同款语义）：daily_summary/
+        # todo_md 等注入值来自用户数据/LLM 产物，可能本身含占位符字面量，
+        # 逐键 str.replace 会被后续键二次替换污染。
+        prompt = _single_pass_replace(
+            template,
+            {
+                "{review_date}": token,
+                "{daily_summary}": (detail.get("daily_summary") or "（无数据）"),
+                "{todo_md_content}": (
+                    detail.get("todo_md") or "（read_todo 关闭或 todo.md 不存在，不注入）"
+                ),
+                "{todo_entries}": (
+                    detail.get("todo_entries") or "（近3日窗口内无既有条目）"
+                ),
+                "{out_path}": str(
+                    detail.get("out_path")
+                    or (self._pm.project_root / ".fenix" / "self_review_out.json")
+                ),
+            },
         )
         # 非交互契约段（fix-agent-noninteractive-contract D2）：独立构建路径
         # 不走统一收尾处注入，就地追加（return 之前）。
@@ -1426,8 +1443,9 @@ class PromptBuilder:
     def _build_evolution_prompt(self, spec_name: str, detail: dict) -> str:
         """构建框架自进化分析 run 的 prompt（add-framework-self-evolution D6）。
 
-        加载 agents/evolution.md（文件化体系，缺失 fail-fast），以 str.replace
-        填充占位符（不用 str.format——正文含大量 {} JSON 示例）：
+        加载 agents/evolution.md（文件化体系，缺失 fail-fast），经
+        _single_pass_replace 单趟填充占位符（不用 str.format——正文含大量
+        {} JSON 示例）：
         - {todo_sections}: 就绪项目清单，每项目含项目名、项目根与 todo.md 全文
         - {pending_entries}: 待分析条目清单（含 id、日期节、小节、标题）
         - {out_path}: 契约产物路径（.fenix/evolution/out-<run_id>.json）
@@ -1462,10 +1480,18 @@ class PromptBuilder:
         out_path = detail.get("out_path")
         if not out_path:
             out_path = self._pm.project_root / ".fenix" / "evolution" / "out.json"
-        prompt = prompt.replace("{todo_sections}", todo_sections)
-        prompt = prompt.replace("{pending_entries}", entries_txt)
-        prompt = prompt.replace("{out_path}", str(out_path))
-        prompt = prompt.replace("{project_root}", str(self._pm.project_root))
+        # 单趟填充（code-review item 7975ab14dbe7 同款语义）：todo.md 全文/
+        # 条目清单来自用户数据，可能本身含占位符字面量，逐键 str.replace
+        # 会被后续键二次替换污染。
+        prompt = _single_pass_replace(
+            template,
+            {
+                "{todo_sections}": todo_sections,
+                "{pending_entries}": entries_txt,
+                "{out_path}": str(out_path),
+                "{project_root}": str(self._pm.project_root),
+            },
+        )
         # 非交互契约段（fix-agent-noninteractive-contract D2）：独立构建路径
         # 不走统一收尾处注入，就地追加（return 之前）。
         prompt += self._noninteractive_contract_section()
@@ -1476,8 +1502,9 @@ class PromptBuilder:
 
         首参 token 即统一入口 _build_prompt 的 spec_name 槽位（按位置传入）；
         code-review 车道无 spec 维度，复用该槽位传入 run 标识（run_id）。
-        加载 agents/code-review.md（文件化体系，缺失 fail-fast），以 str.replace
-        填充占位符（不用 str.format——正文含大量 {} JSON 示例）：
+        加载 agents/code-review.md（文件化体系，缺失 fail-fast），经
+        _single_pass_replace 单趟填充占位符（不用 str.format——正文含大量
+        {} JSON 示例）：
         - {run_id}: run 标识（分片名 out-{run_id}-b<N>.jsonl 的注入源，2026-09-24
           事故根治：禁止 agent 自行推导分片名）
         - {manifest}: 待审文件清单（框架侧先行算出，进度 total 权威来源）
@@ -1490,18 +1517,10 @@ class PromptBuilder:
           双通道共用同键（add-code-review-concurrency-and-429-resilience）
         """
         template = self._load_agent_template("code-review")
-        prompt = template
         files: list = detail.get("manifest") or []
         total = len(files)
         manifest_txt = "\n".join(f"- {f}" for f in files) or "（manifest 为空——本 run 不应派发，见调用方）"
         window = detail.get("review_window") or "（全仓）"
-        # {run_id} 分片名注入（2026-09-24 事故根治）：分片名 out-{run_id}-b<N>.jsonl
-        # 由框架填具体值，提示词不再让 agent 从 {out_path} 推导——LLM 做字符串
-        # 推导曾把 run_id 截成纯 epoch，6 个分片读侧全盲。
-        prompt = prompt.replace("{run_id}", str(token))
-        prompt = prompt.replace("{manifest}", manifest_txt)
-        prompt = prompt.replace("{total_files}", str(total))
-        prompt = prompt.replace("{review_window}", str(window))
         # 全仓审查并发注入（add-code-review-concurrency-and-429-resilience）：
         # detail 缺失/脏值时回退读取器缺省 4，与 get_repo_code_review_concurrency
         # 单点缺省一致。
@@ -1516,11 +1535,26 @@ class PromptBuilder:
             repo_concurrency = ConfigLoader.get_repo_code_review_concurrency(
                 getattr(self._pm, "config", {}) or {}
             )
-        prompt = prompt.replace("{repo_concurrency}", str(repo_concurrency))
         out_path = detail.get("out_path")
         if not out_path:
             out_path = self._pm.project_root / ".fenix" / "code-review" / f"out-{token}.jsonl"
-        prompt = prompt.replace("{out_path}", str(out_path))
+        # 单趟填充（code-review item 7975ab14dbe7 同款语义）：manifest 文件清单
+        # 来自仓库实际路径，可能本身含占位符字面量，逐键 str.replace 会被后续键
+        # 二次替换污染。
+        # {run_id} 分片名注入（2026-09-24 事故根治）：分片名 out-{run_id}-b<N>.jsonl
+        # 由框架填具体值，提示词不再让 agent 从 {out_path} 推导——LLM 做字符串
+        # 推导曾把 run_id 截成纯 epoch，6 个分片读侧全盲。
+        prompt = _single_pass_replace(
+            template,
+            {
+                "{run_id}": str(token),
+                "{manifest}": manifest_txt,
+                "{total_files}": str(total),
+                "{review_window}": str(window),
+                "{repo_concurrency}": str(repo_concurrency),
+                "{out_path}": str(out_path),
+            },
+        )
         # 未解析占位符残留告警（add-code-review-auto-fix 同款防护）：本路径
         # 独立于 _fill_placeholders，模板漂移导致的注入静默丢失同样要日志可见。
         leftover = sorted(set(_PLACEHOLDER_RE.findall(prompt)))
@@ -1539,8 +1573,9 @@ class PromptBuilder:
     def _build_code_fix_prompt(self, run_id: str, detail: dict) -> str:
         """构建 code-fix（自动修复车道）run 的 prompt。
 
-        加载 agents/code-fix.md（文件化体系，缺失 fail-fast），以 str.replace
-        填充占位符（不用 str.format——正文含大量 {} JSON 示例）：
+        加载 agents/code-fix.md（文件化体系，缺失 fail-fast），经
+        _single_pass_replace 单趟填充占位符（不用 str.format——正文含大量
+        {} JSON 示例）：
         - {items}: 本批条目 JSON（按 ``_CODE_FIX_ITEM_FIELDS`` 白名单序列化——
           台账原始行的框架字段（project/review_id/review_kind/reviewed_at/
           spec/status/spec_name/fingerprint 等）不注入 prompt，缺省值字段
@@ -1550,21 +1585,28 @@ class PromptBuilder:
         - {worktree}: 本批 worktree 根路径（agent 工作目录）
         """
         template = self._load_agent_template("code-fix")
-        prompt = template
         items: list = detail.get("items") or []
         slim_items = [
             {k: it[k] for k in _CODE_FIX_ITEM_FIELDS if it.get(k) is not None}
             for it in items if isinstance(it, dict)
         ]
         items_txt = json.dumps(slim_items, ensure_ascii=False, indent=2) or "[]"
-        prompt = prompt.replace("{items}", items_txt)
         out_path = detail.get("out_path")
         if not out_path:
             wt = detail.get("worktree") or self._pm.project_root
             out_path = Path(wt) / ".fenix" / "code-review" / f"fix-out-{run_id}.jsonl"
-        prompt = prompt.replace("{out_path}", str(out_path))
         worktree = detail.get("worktree") or self._pm.project_root
-        prompt = prompt.replace("{worktree}", str(worktree))
+        # 单趟填充（code-review item 7975ab14dbe7 同款语义）：条目 JSON 来自
+        # LLM 审查产物，description/evidence 可能含占位符字面量，逐键
+        # str.replace 会被后续键二次替换污染。
+        prompt = _single_pass_replace(
+            template,
+            {
+                "{items}": items_txt,
+                "{out_path}": str(out_path),
+                "{worktree}": str(worktree),
+            },
+        )
         # 回归失败重试轮注入（task 5.6）：上一轮全量回归的失败用例摘要——
         # 令 agent 优先修复其上轮修复引入的回归，再继续处置清单剩余条目。
         failure_summary = detail.get("failure_summary")

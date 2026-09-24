@@ -30,6 +30,9 @@ from core.fenix_session import is_running, resolve_root, session_name  # noqa: E
 
 def main() -> int:
     args = sys.argv[1:]
+    if len(args) > 2:
+        print(__doc__, file=sys.stderr)
+        return 2
     cmd = args[0] if args else "name"
     root = args[1] if len(args) > 1 else None
 

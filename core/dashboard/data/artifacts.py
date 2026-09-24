@@ -28,6 +28,10 @@ def parse_report(project_root, spec_name) -> dict:
         data = json.loads(rp.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             return {"exists": True, "error": "corrupt"}
+        # 哨兵键不可被 report.json 自带同名字段覆盖：error 哨兵被 parse_bugs/
+        # parse_filtered_failures/timeline/spec_detail 当 corrupt 判据消费
+        data.pop("exists", None)
+        data.pop("error", None)
         return {"exists": True, **data}
     except (json.JSONDecodeError, OSError, TypeError):
         return {"exists": True, "error": "corrupt"}

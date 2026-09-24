@@ -381,25 +381,20 @@ def _managed_admin_keys(config: dict) -> dict:
             out[key] = val
     return out
 
-def read_config(scope_root, scope: str = "project") -> dict:
-    """读取指定作用域文件的受管配置段。
+def _default_echo_view(scope: str) -> dict:
+    """read_config / read_effective_config 共用的缺省回显视图（单源）。
 
-    scope="project"：读 <scope_root>/.fenix/config.yaml（现状）；
-    scope="user"：读 ~/.fenix/config.yaml（scope_root 忽略）。
-
-    返回: {"llm": {...}, "agents": {"models": {...}, "max_concurrent": int},
-            "gates": {"approve_mode": ...}, "scope": "user"|"project",
-            "raw_exists": bool, "sources": {...}, "error": str|null}
-    容错：文件不存在返回空结构 + raw_exists=False；解析失败返回 error。
+    两函数的缺省 result 块曾整块手工镜像，已两次实际漂移（impl_run_budget
+    手写字面量 2→4；self_evolution.spec_run_at 单侧缺失，导致
+    read_effective_config 的 resolve_config 异常早退路径返回形状少键）。
+    抽此单源杜绝再漂移：以含 spec_run_at 的超集为基准；scope 原样落
+    result["scope"]，raw_exists 恒缺省 False（read_effective_config 按项目
+    文件存在性自行覆写）。
     """
-    import core.dashboard.data as _facade
     # 缺省回显块经读取器取缺省（单一天然来源，见 verify 块注释）
     from core.config import ConfigLoader as _CLICRT
 
-    config_path = (
-        _facade.USER_CONFIG_PATH if scope == "user" else Path(scope_root) / ".fenix" / "config.yaml"
-    )
-    result = {
+    return {
         "llm": {},
         "agents": {
             "models": {},
@@ -455,7 +450,8 @@ def read_config(scope_root, scope: str = "project") -> dict:
         # add-stale-code-selfheal：陈旧自愈配置节（enabled 缺省 true / idle_confirm_seconds 缺省 120）
         "stale_code_selfheal": {"enabled": True, "idle_confirm_seconds": 120},
         # add-framework-self-evolution：self_evolution 三键（缺省 auto_accept=false /
-        # max_items_per_run=20 / spec_run_at=null 立即执行）
+        # max_items_per_run=20 / spec_run_at=null 立即执行；code-review item
+        # 42b017717b1e：两读路径统一含 spec_run_at，早退路径形状不缺键）
         "self_evolution": {"auto_accept": False, "max_items_per_run": 20, "spec_run_at": None},
         # evo-merge-back-wip-artifact-scope / fix-artifact-paths-hardcoded-default：
         # worktree 产物键缺省（空列表=未配置；has_build_artifacts 缺省 None=未裁决）
@@ -465,6 +461,27 @@ def read_config(scope_root, scope: str = "project") -> dict:
         "sources": _managed_key_sources({}),
         "error": None,
     }
+
+def read_config(scope_root, scope: str = "project") -> dict:
+    """读取指定作用域文件的受管配置段。
+
+    scope="project"：读 <scope_root>/.fenix/config.yaml（现状）；
+    scope="user"：读 ~/.fenix/config.yaml（scope_root 忽略）。
+
+    返回: {"llm": {...}, "agents": {"models": {...}, "max_concurrent": int},
+            "gates": {"approve_mode": ...}, "scope": "user"|"project",
+            "raw_exists": bool, "sources": {...}, "error": str|null}
+    容错：文件不存在返回空结构 + raw_exists=False；解析失败返回 error。
+    """
+    import core.dashboard.data as _facade
+
+    config_path = (
+        _facade.USER_CONFIG_PATH if scope == "user" else Path(scope_root) / ".fenix" / "config.yaml"
+    )
+    # 缺省回显块单源（code-review item 42b017717b1e）：与 read_effective_config
+    # 共用 _default_echo_view，杜绝手工镜像漂移（self_evolution.spec_run_at
+    # 曾单侧漂移）
+    result = _default_echo_view(scope)
     if scope == "user":
         result["sources"] = {k: "user" for k in _SOURCE_KEYS}
     if not config_path.exists():
@@ -689,79 +706,18 @@ def read_effective_config(project_root) -> dict:
     proj_path = proot / ".fenix" / "config.yaml"
 
     import core.dashboard.data as _facade
-    # 缺省回显块经读取器取缺省（单一天然来源，见 verify 块注释）
-    from core.config import ConfigLoader as _CLICRT
 
     cache_key = (_config_file_sig(_facade.USER_CONFIG_PATH), _config_file_sig(proj_path))
     cached = _EFFECTIVE_CONFIG_CACHE.get(cache_key)
     if cached is not None:
         return copy.deepcopy(cached)
 
-    result = {
-        "llm": {},
-        "agents": {
-            "models": {},
-            "max_concurrent": 2,
-            "run_timeout_seconds": 9000,
-            "max_turns": 400,
-            "daily_run_limit": 50,
-            "token_budget_millions": 50,
-            # 回显缺省与运行时单源（code-review item 3ee9a4e0d218）：取
-            # DEFAULT_IMPL_RUN_BUDGET，勿再手写字面量（曾与运行时 6 漂移为 4）
-            "impl_run_budget": DEFAULT_IMPL_RUN_BUDGET,
-            "verify_redo_budget": 3,
-            "max_same_cause_redispatches": 3,
-            # fix-agent-lane-efficiency D1：子代理模型覆盖（缺省空串 = 用 provider model）
-            "subagent_model_override": "",
-        },
-        "gates": {"approve_mode": "manual", "promote_mode": "auto", "spec_review_mode": "auto", "start_after_scope": "dispatch"},
-        "runs": {"keep": 50},
-        "verify": {"static_scope": "main", "deps_mode": "hardlink", "serving_reclaim": {"enabled": True},
-                   # add-impl-code-review-tuning：三运行参数恒回显缺省（与
-                   # impl_code_review「缺省不回显」语义相反，spec「缺省回显」
-                   # Scenario）。缺省值经 ConfigLoader 读取器取（传空配置即回
-                   # 缺省）——单一来源，杜绝手工字面量镜像漂移（ocr 审查
-                   # finding#2；保存时会把回显值显式落盘，镜像停在旧值会压过
-                   # 新缺省，本次 2→4 已实际踩中）
-                   "impl_code_review_timeout_sec": _CLICRT.get_impl_code_review_timeout_sec({}),
-                   "impl_code_review_concurrency": _CLICRT.get_impl_code_review_concurrency({}),
-                   # add-code-review-concurrency-and-429-resilience：全仓审查并发
-                   # 缺省恒回显（与三运行参数「缺省回显」同款语义）
-                   "repo_code_review_concurrency": _CLICRT.get_repo_code_review_concurrency({}),
-                   "impl_code_review_effort": _CLICRT.get_impl_code_review_effort({}),
-                   # add-impl-ocr-parallel-lane：join 双档模式恒回显缺省（gate——
-                   # 与上方三运行参数「缺省回显」同款语义）
-                   "impl_code_review_mode": _CLICRT.get_impl_code_review_mode({}),
-                   # ocr 审查 finding#1：车道级硬超时同样纳入缺省回显（2400）
-                   "impl_code_review_lane_timeout_sec": _CLICRT.get_impl_code_review_lane_timeout_sec({}),
-                   # fix-agent-lane-efficiency D3：上下文经济性告警阈值（0=关闭）
-                   "context_cost_per_turn_threshold": 200000},
-        # add-spec-archive D5：自动归档阈值（0 = 禁用，默认 50）
-        "archive": {"auto_threshold": 50},
-        # add-daily-self-review：admin.self_review 三键（缺省 false/false/02:00）
-        "self_review": dict(_DEFAULT_SELF_REVIEW),
-        # add-code-review-agent-and-quality-tab：admin.code_review 两键（缺省 false/500）
-        "code_review": dict(_DEFAULT_CODE_REVIEW),
-        # add-code-review-auto-fix：admin.code_review_fix 两键（缺省 false/20）
-        "code_review_fix": dict(_DEFAULT_CODE_REVIEW_FIX),
-        # add-test-regression-tab：admin.regression 键（缺省 false，周期全量回归开关）
-        "regression": dict(_DEFAULT_REGRESSION),
-        # add-settings-system-tab：admin.* 受管键（5 键 + 缺省填充）
-        "admin": dict(_ADMIN_DEFAULTS, merge_breaker_threshold=2),
-        # add-spec-hooks：两级 hook 订阅配置（缺省空订阅，零行为）
-        "hooks": {"global": [], "specs": {}},
-        # add-stale-code-selfheal：陈旧自愈配置节（enabled 缺省 true / idle_confirm_seconds 缺省 120）
-        "stale_code_selfheal": {"enabled": True, "idle_confirm_seconds": 120},
-        # add-framework-self-evolution：self_evolution 用户级生效值（项目级只读透出）
-        "self_evolution": {"auto_accept": False, "max_items_per_run": 20},
-        # evo-merge-back-wip-artifact-scope / fix-artifact-paths-hardcoded-default：
-        # worktree 产物键缺省（空列表=未配置；has_build_artifacts 缺省 None=未裁决）
-        "worktree": {"build_artifact_paths": [], "has_build_artifacts": None},
-        "scope": "project",
-        "raw_exists": proj_path.exists(),
-        "sources": _managed_key_sources({}),
-        "error": None,
-    }
+    # 缺省回显块单源（code-review item 42b017717b1e）：与 read_config 共用
+    # _default_echo_view——含 self_evolution.spec_run_at 超集，resolve_config
+    # 异常早退路径的返回形状与正常路径/项目级读路径一致；raw_exists 按项目
+    # 文件存在性覆写（本函数语义）。
+    result = _default_echo_view("project")
+    result["raw_exists"] = proj_path.exists()
 
     # 项目级文件显式定义 → sources 标注；解析失败记录 error 不阻断合并视图
     if proj_path.exists():

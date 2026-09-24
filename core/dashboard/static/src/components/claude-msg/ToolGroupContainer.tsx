@@ -53,10 +53,10 @@ export default function ToolGroupContainer({
     const previewText = visiblePreviews.join(', ');
 
     if (!previewText) {
-      return extraCount > 0 ? `+${extraCount} more` : '';
+      return extraCount > 0 ? `+${extraCount} 条` : '';
     }
 
-    return extraCount > 0 ? `${previewText}, +${extraCount} more` : previewText;
+    return extraCount > 0 ? `${previewText}, +${extraCount} 条` : previewText;
   }, [group.messages, group.groupKind]);
 
   return (

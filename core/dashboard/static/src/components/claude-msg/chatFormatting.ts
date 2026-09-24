@@ -1,4 +1,5 @@
 // 迁移自 claudecodeui src/components/chat/utils/chatFormatting.ts（取渲染所需子集）
+// 注：normalizeInlineCodeFences / formatUsageLimitText 中的 try/catch 与恒真判断无实际触发路径（replace 配合法正则不抛、parseInt 入参已被 \d{10,13} 限定），保留系为对齐上游 diff。
 
 // thinking 折叠头文案（add-run-record-readability 3.1）：「已思考 N 秒 · <预览>」。
 // 时长缺失/非正数回退「已思考数秒」（含下一事件缺失、时间戳缺失、负值差场景）；

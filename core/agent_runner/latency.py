@@ -31,7 +31,8 @@ def _default_ts_parser(entry: dict):
     """默认 timestamp 解析器（D4 修订版：latency.py 自带等价实现）。
 
     与 runner.py `AgentRunner._parse_event_timestamp` 行为逐字段一致：
-    - 数值 timestamp（int/float）→ float 直通；
+    - 数值 timestamp（非布尔 int/float；bool 是 int 子类，显式排除以免
+      True/False 直通成 epoch 1.0/0.0 秒样本）→ float 直通；
     - ISO 字符串 → ``datetime.fromisoformat(str(raw).replace("Z", "+00:00"))``
       的 epoch 秒；
     - 缺失/解析异常 → None。
@@ -39,7 +40,7 @@ def _default_ts_parser(entry: dict):
     raw = entry.get("timestamp")
     if raw is None:
         return None
-    if isinstance(raw, (int, float)):
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
         return float(raw)
     try:
         return datetime.fromisoformat(str(raw).replace("Z", "+00:00")).timestamp()

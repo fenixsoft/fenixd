@@ -117,7 +117,12 @@ def main() -> int:
 
     if results:
         if args.sort == "p90":
-            results.sort(key=lambda r: r[1].get("p90") or -1, reverse=True)
+            # 显式区分 p90=None（无样本）与 p90=0.0（全零样本）：`or -1` 会把
+            # 0.0 误判 falsy 与无样本并列排尾，违背「按 p90 降序」的严格序
+            results.sort(
+                key=lambda r: (r[1].get("p90") is not None, r[1].get("p90") or 0),
+                reverse=True,
+            )
         else:
             results.sort(key=lambda r: r[0])
         print(f"== 共 {len(results)} 条转录（按 {args.sort} 排序）==\n")
