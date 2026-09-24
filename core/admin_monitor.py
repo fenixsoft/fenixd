@@ -868,7 +868,13 @@ class AdminMonitor:
         # 该摄取在门控之前完成：_detect_family_explosion 内部直接唤起 Administrator
         # 并把源记录标记 escalated，返回仅供审计/测试（不再经 _handle_signal 节流，
         # 否则 pm_engine 刚写入的 SIGNAL 记录会被 latest_signal 误判为「已唤起」）。
-        family_signals = self._detect_family_explosion()
+        # code-review item eccaad574376：摄取段逐段 try 兜底（与本函数后半段
+        # 各检查点的既有容错口径一致）——任何异常只记日志不阻断巡检。
+        family_signals = []
+        try:
+            family_signals = self._detect_family_explosion()
+        except Exception as e:
+            self.logger.error("admin_monitor", f"Family-explosion intake failed: {e}")
 
         if not self.has_in_progress_specs():
             # 假就绪盲区修复（improve-run-lifecycle-governance D6）：无 in-progress
@@ -880,20 +886,44 @@ class AdminMonitor:
                 "No in-progress SPECs — continuing non-running-state scans",
             )
 
-        specs = self.state_machine.read_all()
+        # code-review item eccaad574376：状态读取与规则链检测逐段 try 兜底，
+        # 异常按空表降级（任何异常只记日志不阻断巡检）。
+        try:
+            specs = self.state_machine.read_all()
+        except Exception as e:
+            self.logger.error("admin_monitor", f"State read failed: {e}")
+            specs = {}
         now = time.time()
-        regular = self._detect(specs, now)
+        regular = []
+        try:
+            regular = self._detect(specs, now)
+        except Exception as e:
+            self.logger.error("admin_monitor", f"Signal detection failed: {e}")
 
         for signal in regular:
-            self._handle_signal(signal)
+            try:
+                self._handle_signal(signal)
+            except Exception as e:
+                self.logger.error("admin_monitor", f"Signal handling failed: {e}")
 
         # fix-admin-self-heal：孤儿处置与重启失败的兜底升级（非 per-spec 信号）
-        self._recover_orphaned_dispositions()
-        self._detect_restart_failure(now)
+        # （code-review item eccaad574376：逐段 try 兜底，任何异常只记日志不阻断巡检）
+        try:
+            self._recover_orphaned_dispositions()
+        except Exception as e:
+            self.logger.error("admin_monitor", f"Orphaned-disposition recovery failed: {e}")
+        try:
+            self._detect_restart_failure(now)
+        except Exception as e:
+            self.logger.error("admin_monitor", f"Restart-failure detection failed: {e}")
 
         # admin-signal-consolidation D2：blocked 悬置 ≥2h 强制升级真人
         # （突破节流、受未处理告警约束；不重新唤起 Administrator）
-        self._force_escalate_stalled(specs, now)
+        # （code-review item eccaad574376：逐段 try 兜底，任何异常只记日志不阻断巡检）
+        try:
+            self._force_escalate_stalled(specs, now)
+        except Exception as e:
+            self.logger.error("admin_monitor", f"Stalled-signal escalation failed: {e}")
 
         # admin-dispatch-failure-escalation D2：派发失败升级记录到期重试巡检
         # （挂在既有巡检循环，不新增线程/定时器；任何异常只记日志不阻断巡检）
@@ -1712,7 +1742,18 @@ class AdminMonitor:
             changes = rec.get("changes") if isinstance(rec, dict) else None
             if not changes:
                 continue
-            in_window = [c for c in changes if c[0] >= cutoff]
+            # code-review item f67ba8199742：历史文件被手工编辑或旧版本格式
+            # 残留时元素可能为标量/dict，直接取 c[0]/c[1] 会 TypeError 并中断
+            # 当轮全部信号检测——形状不合法（非二元 list/tuple 或时间戳非
+            # 数值）的条目跳过。
+            in_window = [
+                c
+                for c in changes
+                if isinstance(c, (list, tuple))
+                and len(c) == 2
+                and isinstance(c[0], (int, float))
+                and c[0] >= cutoff
+            ]
             if len(in_window) < 2:
                 continue
             transitions = len(in_window) - 1

@@ -140,7 +140,8 @@ class CliAssertionRunner:
         try:
             expected = int(expected)
         except (TypeError, ValueError):
-            expected = 0
+            # expected 非法（如 "zero"/null）显式走断言异常通道，不回退 0 掩盖场景编写错误
+            raise ValueError(f"expected 非法，须为整数: {expected!r}")
         actual = step.get("exit_code")
         return {
             "type": "exit_code",

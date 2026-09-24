@@ -2583,8 +2583,11 @@ class PMEngine:
         """
         try:
             result = subprocess.run(
-                # -uall：未跟踪目录不折叠，逐文件列出，归档新增 spec 名才能解析
-                ["git", "status", "--porcelain", "-uall"],
+                # -uall：未跟踪目录不折叠，逐文件列出，归档新增 spec 名才能解析；
+                # core.quotePath=false（code-review item e8342559acd3）：默认对含
+                # 非 ASCII/特殊字符路径按 C 风格加引号转义，下方 startswith
+                # spec/changes/、spec/archive/ 判定会失配致归档残留漏判
+                ["git", "-c", "core.quotePath=false", "status", "--porcelain", "-uall"],
                 cwd=str(self.project_root),
                 capture_output=True,
                 text=True,

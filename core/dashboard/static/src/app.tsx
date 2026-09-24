@@ -1,4 +1,4 @@
-import { App as AntdApp, Breadcrumb, Space } from 'antd';
+import { App as AntdApp, Breadcrumb, Space, theme } from 'antd';
 import {
   DashboardOutlined,
   HistoryOutlined,
@@ -87,24 +87,29 @@ function HeaderCrumb() {
   return <Breadcrumb items={crumbItems(pathname)} style={{ marginInlineEnd: 0 }} className="global-header-crumb" />;
 }
 
+// 顶栏标题：logo + Fenix 粗体 + Harness 细体灰字。
+// 灰字走 antd token colorTextTertiary（浅色主题默认即 rgba(0,0,0,0.45)），适配未来暗色主题。
+// useToken 须在组件内调用，故单独成组件（同 HeaderCrumb 模式）。
+function HeaderTitle() {
+  const { token } = theme.useToken();
+  return (
+    <Space size={8} align="center">
+      <img src={logoUrl} alt="logo" style={{ width: 22, height: 22, display: 'block' }} />
+      <span style={{ fontSize: 16, fontWeight: 700, letterSpacing: 0.3 }}>
+        Fenix
+        <span style={{ fontWeight: 400, marginLeft: 6, color: token.colorTextTertiary }}>Harness</span>
+      </span>
+    </Space>
+  );
+}
+
 // ProLayout 支持的 api https://procomponents.ant.design/components/layout
 export const layout: RunTimeLayoutConfig = ({ initialState }) => {
   return {
     ...defaultSettings,
-    // 左上角标题对齐 v1 brand：logo + Fenix 粗体 + Harness 细体灰字。
-    // headerTitleRender 会整体覆盖 ProLayout 默认「logo+title」组合，故 logo 图需在此显式渲染。
+    // 左上角标题对齐 v1 brand；headerTitleRender 会整体覆盖 ProLayout 默认「logo+title」组合。
     // 不把节点放进 title——umi 插件会用 title 拼 document.title，节点会变成 "[object Object]"。
-    headerTitleRender: () => (
-      <Space size={8} align="center">
-        <img src={logoUrl} alt="logo" style={{ width: 22, height: 22, display: 'block' }} />
-        <span style={{ fontSize: 16, fontWeight: 700, letterSpacing: 0.3 }}>
-          Fenix 
-          <span style={{ fontWeight: 400, marginLeft: 6, color: 'rgba(0, 0, 0, 0.45)' }}>
-            Harness
-          </span>
-        </span>
-      </Space>
-    ),
+    headerTitleRender: () => <HeaderTitle />,
     logo: logoUrl,
     menuItemRender: (item, dom) =>
       item.path ? <Link to={item.path}>{dom}</Link> : dom,

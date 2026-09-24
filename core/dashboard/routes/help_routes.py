@@ -9,6 +9,7 @@ D5 约定：各组方法采用 mixin 模式，DashboardHandler 继承各组 mixi
 from __future__ import annotations
 
 import errno
+import re
 from pathlib import Path
 
 
@@ -19,12 +20,15 @@ class H8HelpRoutesMixin:
     def _help_doc_title(content: str) -> str:
         """从 Markdown 原文解析首个一级标题（# 行）作为文档标题。
 
-        无一级标题时回退为去后缀文件名，保证清单端点始终有可展示标题。
+        兼容「#标题」「#\t标题」等无空格 ATX 变体（code-review fcff933f40ad）；
+        ## 及更深层级不视为一级标题。无一级标题时回退为去后缀文件名，
+        保证清单端点始终有可展示标题。
         """
         for line in content.splitlines():
-            stripped = line.strip()
-            if stripped.startswith("# "):
-                return stripped[2:].strip() or ""
+            # code-review fcff933f40ad：#(?!#) 排除 ## 及更深层级，\s* 兼容无空格写法
+            m = re.match(r"#(?!#)\s*(.+)", line.strip())
+            if m:
+                return m.group(1).strip()
         return ""
 
 

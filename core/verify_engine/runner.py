@@ -128,6 +128,9 @@ def determine_scenario_status(
     - 仅第4层断言失败 → "warning"
     - 视觉差异超阈值 → "warning"
     - 全部通过 → "pass"
+
+    失败断言的 layer 缺失或越 1-4 界（上游畸形结果，如未知断言类型
+    回退 layer=0）时按 fail 兜底，保守判失败，避免静默放行为 pass。
     """
     if any(not s.get("success", True) for s in step_results):
         return "fail"
@@ -142,6 +145,9 @@ def determine_scenario_status(
             has_layer_1_3_fail = True
         elif layer == 4:
             has_layer_4_fail = True
+        else:
+            # 层缺失/越界（含未知类型回退的 layer=0）→ 保守按 fail 兜底。
+            has_layer_1_3_fail = True
 
     if has_layer_1_3_fail:
         return "fail"

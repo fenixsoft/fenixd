@@ -118,11 +118,28 @@ def _update_log_block_index(log_path: Path, size: int, idx: dict) -> dict:
     return {"size": size, "offsets": offsets}
 
 
+def _is_valid_log_index(data: object) -> bool:
+    """校验落盘索引结构：offsets 非空、元素为非负 int 且单调不减。
+
+    仅查容器类型会放行「结构合法的损坏索引」（手工改动/部分写入恰逢 size 一致），
+    错位偏移使读窗错位、事件静默丢失且不触发重建自愈；不满足按损坏处理，
+    由调用方走重建分支（code-review item fc3f9b53c8e4）。
+    """
+    if not isinstance(data, dict) or not isinstance(data.get("size"), int):
+        return False
+    offsets = data.get("offsets")
+    if not isinstance(offsets, list) or not offsets:
+        return False
+    if any(not isinstance(o, int) or isinstance(o, bool) or o < 0 for o in offsets):
+        return False
+    return all(a <= b for a, b in zip(offsets, offsets[1:]))
+
+
 def _load_log_index(proot: Path, log_path: Path) -> dict:
     """读取/重建日志块偏移索引，返回 {"size", "offsets"}。
 
-    缺失或日志文件 size 不匹配（轮转/截断）→ 重建一次（≤1 次全量扫描）并继续；
-    匹配则热更新（追加场景 0 次重建）。
+    缺失、结构损坏（offsets 元素/单调性不合法）或日志文件 size 不匹配（轮转/
+    截断）→ 重建一次（≤1 次全量扫描）并继续；匹配则热更新（追加场景 0 次重建）。
     """
     try:
         size = log_path.stat().st_size
@@ -133,11 +150,7 @@ def _load_log_index(proot: Path, log_path: Path) -> dict:
     try:
         if idx_path.exists():
             data = json.loads(idx_path.read_text(encoding="utf-8"))
-            if (
-                isinstance(data, dict)
-                and isinstance(data.get("offsets"), list)
-                and isinstance(data.get("size"), int)
-            ):
+            if _is_valid_log_index(data):
                 idx = data
     except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         idx = None

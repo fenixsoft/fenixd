@@ -11,6 +11,13 @@ from pathlib import Path
 # 草稿文档白名单（doc 参数；spec → specs/<capability>/spec.md）
 EVOLUTION_DOC_WHITELIST = ("proposal", "design", "tasks", "spec")
 
+# spec 之外三项 doc → 文件名映射（草稿路径与 SPEC 回退路径共用，单点维护）
+EVOLUTION_DOC_FILES = {
+    "proposal": "proposal.md",
+    "design": "design.md",
+    "tasks": "tasks.md",
+}
+
 
 def read_evolution_items(project_root, project_filter=None) -> list:
     """读 ``.fenix/evolution/items.jsonl`` 生成摘要列表（6.4）。
@@ -130,19 +137,21 @@ def read_evolution_draft(project_root, item_id_, doc) -> dict:
             return {"found": False}
         return {"found": True, "content": content}
 
+    def _record_capability(rec: dict) -> str:
+        """提取条目记录的 spec.capability（非 dict 或缺失时返回空串）。"""
+        spec = rec.get("spec") if isinstance(rec.get("spec"), dict) else None
+        return (spec.get("capability") or "") if spec else ""
+
     # 1. 草稿目录优先（既有行为）
     d = _safe_draft_dir(project_root, item_id_)
     if d is not None and d.is_dir():
         if doc == "spec":
-            capability = ""
-            spec = rec.get("spec") if isinstance(rec.get("spec"), dict) else None
-            if spec:
-                capability = spec.get("capability") or ""
+            capability = _record_capability(rec)
             # capability 为空时令 rel 落空（跳过草稿读取、走 SPEC 回退），与
             # SPEC 回退路径的空值处理对齐，避免构造出 specs//spec.md 双斜杠路径
             rel = f"specs/{capability}/spec.md" if capability else None
         else:
-            rel = {"proposal": "proposal.md", "design": "design.md", "tasks": "tasks.md"}[doc]
+            rel = EVOLUTION_DOC_FILES[doc]
         if rel is not None:
             result = _read_target(d / rel, d)
             if result.get("found") or result.get("invalid_doc"):
@@ -155,10 +164,7 @@ def read_evolution_draft(project_root, item_id_, doc) -> dict:
             if doc == "spec":
                 # capability 取条目记录 spec.capability；缺失或目录不存在时
                 # 回退到唯一的能力子目录
-                capability = ""
-                spec = rec.get("spec") if isinstance(rec.get("spec"), dict) else None
-                if spec:
-                    capability = spec.get("capability") or ""
+                capability = _record_capability(rec)
                 if capability:
                     sub = spec_dir / "specs" / capability
                     if sub.is_dir():
@@ -184,7 +190,7 @@ def read_evolution_draft(project_root, item_id_, doc) -> dict:
                         # 注定读不到的 rel 路径
                         return {"found": False}
             else:
-                rel = {"proposal": "proposal.md", "design": "design.md", "tasks": "tasks.md"}[doc]
+                rel = EVOLUTION_DOC_FILES[doc]
             result = _read_target(spec_dir / rel, spec_dir)
             if result.get("found") or result.get("invalid_doc"):
                 return result
