@@ -850,7 +850,7 @@ class G4MergebackMixin:
                 has_semantic_conflict=has_semantic_conflict,
             )
 
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as e:
             # 超时收口（code-review item 80e2f0795662，与既有失败路径对齐）：
             # merge 子进程被杀后索引/工作区可能停在半合并（unmerged）态——不
             # abort 会让后续 restore_after_merge 的 stash pop 失败或告警失真；
@@ -867,7 +867,14 @@ class G4MergebackMixin:
                 pass
             if backup is not None:
                 self._restore_backup(backup)
-            return MergeConflictInfo(False, "git merge timed out after 120s")
+            # 错误文案反映真正超时的命令与时限（code-review item 50597755297c）：
+            # try 块内 merge-base/rev-parse/备份采集等子命令各带 timeout=30，只有
+            # merge 本体是 120——硬编码 "git merge ... 120s" 会把前置阶段超时误
+            # 归因给 merge 步骤，误导排障方向。
+            cmd = e.cmd if isinstance(e.cmd, str) else " ".join(e.cmd or ["git"])
+            return MergeConflictInfo(
+                False, f"git command timed out after {e.timeout}s: {cmd}"
+            )
         except Exception as e:
             return MergeConflictInfo(False, str(e))
 

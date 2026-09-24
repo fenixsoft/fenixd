@@ -107,8 +107,8 @@ def _sum_verify_chain_tokens(project_root, spec_name):
 def _load_run_result(project_root, spec_name):
     """读取裁决 .fenix-run-result.json（verify-progress 优先，主树 .fenix/ 回退）。
 
-    项目根为共享文件：携带的 spec 与当前 spec 不符时视为其它 spec 的残留忽略
-    （与 pm_engine._read_planner_result 同语义）。
+    项目根为共享文件：仅采信 spec 戳**显式等于**当前 spec 的内容；无戳/缺戳
+    视为不可归属（可能为其它 spec 残留或异常写入）一律忽略。
     """
     primary = (
         Path(project_root) / ".fenix" / "verify-progress" / spec_name / ".fenix-run-result.json"
@@ -124,8 +124,10 @@ def _load_run_result(project_root, spec_name):
         if not isinstance(data, dict):
             continue
         if stamped_expected:
+            # 无 spec 戳的共享文件不可归属本 spec（异常写入/其它 spec 残留），
+            # 只有显式戳匹配才采信
             stamped = data.get("spec")
-            if isinstance(stamped, str) and stamped and stamped != spec_name:
+            if not (isinstance(stamped, str) and stamped == spec_name):
                 continue
         if data.get("status") or data.get("bugs"):
             return data
@@ -173,7 +175,11 @@ def _persist_degrade_annotation(project_root, spec_name, annotation) -> None:
                 data = loaded
         data["degrade_annotation"] = annotation
         report_path.parent.mkdir(parents=True, exist_ok=True)
-        report_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        # tmp+replace 原子写（与 write_verdict_stability 同款）：进程中途崩溃
+        # 不会留下截断的 report.json
+        tmp = report_path.with_name(report_path.name + ".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(report_path)
     except (OSError, TypeError, ValueError):
         pass
 
@@ -768,6 +774,21 @@ def ensure_verification_report(project_root, spec_name, logger=None) -> dict:
                 "major",
                 (
                     f"'{spec_name}' 验证报告在场但不可读且无法合成——"
+                    "验证裁决放行被阻断，等待人工裁决"
+                ),
+                error,
+                logger=logger,
+            )
+        else:
+            # 残留报告重合成失败同样 fail-closed：与缺失/不可读路径告警对齐，
+            # 人工可见性一致（不阻断则只会放行上一轮陈旧结论）
+            _append_alert(
+                project_root,
+                spec_name,
+                SIGNAL_MISSING,
+                "major",
+                (
+                    f"'{spec_name}' 验证报告属上一轮残留且重新合成失败——"
                     "验证裁决放行被阻断，等待人工裁决"
                 ),
                 error,

@@ -15,6 +15,27 @@ from core.worktree_manager import (  # noqa: E402
 )
 
 
+def _collect_unmerged_paths(status_text: str) -> list:
+    """从 ``git status --porcelain`` 输出采集 unmerged 冲突路径（唯一采集口径）。
+
+    porcelain 状态码过滤（含 U 的双字符码与 AA/DD/AU/UA/DU/UD）+ rename
+    ``old -> new`` 双胞胎拆分（两侧路径都计入）。``_resolve_build_artifact_conflicts``
+    的产物自愈判定与 ``_collect_conflict_paths`` 的失败分类共用本函数，
+    口径变更只动这一处，避免自愈判定与冲突分类漂移。
+    """
+    paths: list = []
+    for line in status_text.splitlines():
+        st = line[:2]
+        if not ("U" in st or st in ("AA", "DD", "AU", "UA", "DU", "UD")):
+            continue
+        path = line[3:].strip()
+        if " -> " in path:
+            paths.extend(p.strip() for p in path.split(" -> "))
+        else:
+            paths.append(path)
+    return [p for p in paths if p]
+
+
 class G5DistConflictsMixin:
     """G5 构建产物冲突/dist 重建（design D1 表 A G5）。"""
 
@@ -51,20 +72,7 @@ class G5DistConflictsMixin:
             if res.returncode != 0:
                 return False
 
-            def _collect_unmerged(status_text: str) -> list:
-                paths: list = []
-                for line in status_text.splitlines():
-                    st = line[:2]
-                    if not ("U" in st or st in ("AA", "DD", "AU", "UA", "DU", "UD")):
-                        continue
-                    path = line[3:].strip()
-                    if " -> " in path:
-                        paths.extend(p.strip() for p in path.split(" -> "))
-                    else:
-                        paths.append(path)
-                return [p for p in paths if p]
-
-            conflict_paths = _collect_unmerged(res.stdout)
+            conflict_paths = _collect_unmerged_paths(res.stdout)
             if not conflict_paths:
                 return False
             # 产物判定走实例判定器（evo-merge-back-wip-artifact-scope D3）：
@@ -140,7 +148,7 @@ class G5DistConflictsMixin:
                 text=True,
                 timeout=30,
             )
-            remaining = _collect_unmerged(res2.stdout) if res2.returncode == 0 else []
+            remaining = _collect_unmerged_paths(res2.stdout) if res2.returncode == 0 else []
             if remaining:
                 self.logger.warning(
                     "worktree_manager",
@@ -246,6 +254,15 @@ class G5DistConflictsMixin:
                 text=True,
                 timeout=600,
             )
+            if r.returncode != 0:
+                # 回退构建失败时保留输出尾部现场（截断口径与 commit 失败取
+                # stderr[:200] 的既有做法一致），编译错误多在末尾，便于从日志
+                # 直接定位而不必人工重跑。
+                detail = ((r.stderr or "") + "\n" + (r.stdout or "")).strip()[-200:]
+                self.logger.warning(
+                    "worktree_manager",
+                    f"dist rebuild fallback build failed: {detail}",
+                )
             return r.returncode == 0
         except (subprocess.SubprocessError, OSError) as e:
             self.logger.warning(
@@ -467,17 +484,7 @@ class G5DistConflictsMixin:
             return []
         if res.returncode != 0:
             return []
-        conflict_paths: list = []
-        for line in res.stdout.splitlines():
-            st = line[:2]
-            if not ("U" in st or st in ("AA", "DD", "AU", "UA", "DU", "UD")):
-                continue
-            path = line[3:].strip()
-            if " -> " in path:
-                conflict_paths.extend(p.strip() for p in path.split(" -> "))
-            else:
-                conflict_paths.append(path)
-        return [p for p in conflict_paths if p]
+        return _collect_unmerged_paths(res.stdout)
 
     def _heal_unmerged_files(self, conflict_files: list) -> None:
         """对 UU 文件执行自愈：丢弃 stash 版本、保留 merge 结果、清空 index。

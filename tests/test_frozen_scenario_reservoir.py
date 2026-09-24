@@ -136,7 +136,8 @@ class TestLoadScenarioSetPurification:
     """load_scenario_set 加载净化（D4：剔除无 kind 条目，不改文件）。"""
 
     def test_purges_no_kind_entries(self, tmp_path: Path):
-        """scenarios.json 中 7 条仅有 id/description 无 kind 的条目被剔除。"""
+        """缺/非法 kind 条目兜底归类 web 保留在集，不再剔除（b25b28a4ed8a：
+        剔除会把存量无 kind 冻结集清成空集写回；仅非对象条目仍剔除）。"""
         spec = "test-purge"
         vp = tmp_path / ".fenix" / "verify-progress" / spec
         vp.mkdir(parents=True)
@@ -144,8 +145,8 @@ class TestLoadScenarioSetPurification:
             "spec": spec,
             "round": 1,
             "scenarios": [
-                {"id": "no-kind-1", "description": "孤儿1", "added_in_round": 1},
-                {"id": "no-kind-2", "description": "孤儿2", "added_in_round": 1},
+                {"id": "no-kind-1", "description": "兜底1", "added_in_round": 1},
+                {"id": "no-kind-2", "description": "兜底2", "added_in_round": 1},
                 {"id": "web-ok", "description": "正常web", "added_in_round": 1, "kind": "web"},
                 {"id": "cli-ok", "description": "正常cli", "added_in_round": 1, "kind": "cli"},
             ],
@@ -153,8 +154,12 @@ class TestLoadScenarioSetPurification:
         (vp / "scenarios.json").write_text(json.dumps(raw, ensure_ascii=False, indent=2))
         result = load_scenario_set(tmp_path, spec)
         assert result is not None
-        assert result.ids == {"web-ok", "cli-ok"}
-        assert len(result.scenarios) == 2
+        assert result.ids == {"no-kind-1", "no-kind-2", "web-ok", "cli-ok"}
+        assert len(result.scenarios) == 4
+        by_id = {e.id: e for e in result.scenarios}
+        assert by_id["no-kind-1"].kind == "web"
+        assert by_id["no-kind-2"].kind == "web"
+        assert by_id["cli-ok"].kind == "cli"
 
     def test_purification_does_not_modify_file(self, tmp_path: Path):
         """净化只影响内存集合，不改写 scenarios.json。"""

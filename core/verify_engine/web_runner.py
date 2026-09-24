@@ -124,17 +124,17 @@ class WebRunner(VerifyRunner):
                 "screenshot_labels": {},
             }
         context = await self.browser.new_context(viewport=getattr(scenario, "viewport", None))
-        page = await context.new_page()
-        # 扩展项目：确保页面已加载应用内容（不依赖场景的 navigate 步骤）
-        # 非扩展项目由场景自身的 navigate 步骤负责
-        if self.browser.is_extension_project:
-            nav_ok = await self.browser.navigate_to_app(page)
-            if not nav_ok:
-                self.logger.warning(
-                    "verify_engine",
-                    f"场景'{scenario.id}': navigate_to_app 失败，页面可能为空白",
-                )
         try:
+            page = await context.new_page()
+            # 扩展项目：确保页面已加载应用内容（不依赖场景的 navigate 步骤）
+            # 非扩展项目由场景自身的 navigate 步骤负责
+            if self.browser.is_extension_project:
+                nav_ok = await self.browser.navigate_to_app(page)
+                if not nav_ok:
+                    self.logger.warning(
+                        "verify_engine",
+                        f"场景'{scenario.id}': navigate_to_app 失败，页面可能为空白",
+                    )
             return await self._execute_scenario(scenario, page, context)
         finally:
             await context.close()
@@ -237,8 +237,11 @@ class WebRunner(VerifyRunner):
                     screenshots.append(path)
                     if labels:
                         screenshot_labels.setdefault(path, {}).update(labels)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    self.logger.warning(
+                        "verify_engine",
+                        f"场景'{scenario.id}': 关键步骤截图取证失败: {repr(exc)[:200]}",
+                    )
 
         # ── 运行断言（步骤失败 → 断言未进行，跳过）──
         assertion_defs = [a.to_dict() for a in scenario.assertions]
@@ -266,8 +269,11 @@ class WebRunner(VerifyRunner):
                     screenshots.append(path)
                     if labels:
                         screenshot_labels.setdefault(path, {}).update(labels)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    self.logger.warning(
+                        "verify_engine",
+                        f"场景'{scenario.id}': 断言失败取证截图失败: {repr(exc)[:200]}",
+                    )
 
         # ── 视觉对比 ──
         visual_results: list[dict] = []

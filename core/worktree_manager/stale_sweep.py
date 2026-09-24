@@ -49,8 +49,11 @@ class G7StaleSweepMixin:
                     f"registered as recovery legacy (grace period)",
                 )
                 continue
+            spec = self._spec_from_worktree_name(wt_dir.name)
+            # 守卫与 spec 解析解耦（a3005d21763e）：活进程在场时无条件跳过清理，
+            # 不依赖目录名能解析出 spec——repair- 等未识别前缀同样不得强删
+            # （宁可不清理，不可误删在用的 worktree）。
             if self._worktree_has_live_process(wt_dir.name):
-                spec = self._spec_from_worktree_name(wt_dir.name)
                 if spec:
                     self._register_spec_locks(spec)
                     self.logger.warning(
@@ -58,7 +61,21 @@ class G7StaleSweepMixin:
                         f"Skip stale worktree cleanup for '{wt_dir.name}' — "
                         f"live process present, lock rebuilt for '{spec}'",
                     )
-                    continue
+                else:
+                    self.logger.warning(
+                        "worktree_manager",
+                        f"Skip stale worktree cleanup for '{wt_dir.name}' — "
+                        f"live process present, spec unparseable, conservative keep",
+                    )
+                continue
+            if not spec:
+                # spec 解析失败（repair- 等非 impl-/verify- 命名）保守跳过清理
+                self.logger.warning(
+                    "worktree_manager",
+                    f"Skip stale worktree cleanup for '{wt_dir.name}' — "
+                    f"unrecognized worktree naming, conservative keep",
+                )
+                continue
             self.logger.info("worktree_manager", f"Cleaning up stale worktree: {wt_dir}")
             # 无 agent 存活才走到这里：一并清掉残留测试子进程（dev-server 孤儿），
             # 避免删目录后留下 cwd 失效的永生进程
@@ -117,11 +134,19 @@ class G7StaleSweepMixin:
                         )
             except Exception as e:
                 self.logger.warning("worktree_manager", f"Stale worktree cleanup failed: {e}")
-        subprocess.run(
-            ["git", "-C", str(self.project_root), "worktree", "prune"],
-            capture_output=True,
-            timeout=10,
-        )
+        # 收尾 prune 同样不得抛穿（297556cff10d）：与循环体一致降级 WARNING，
+        # 不阻塞 daemon 启动清扫。
+        try:
+            subprocess.run(
+                ["git", "-C", str(self.project_root), "worktree", "prune"],
+                capture_output=True,
+                timeout=10,
+            )
+        except (subprocess.TimeoutExpired, OSError) as e:
+            self.logger.warning(
+                "worktree_manager",
+                f"Final worktree prune failed (non-blocking): {e}",
+            )
 
     def _read_state_entries(self) -> Optional[dict]:
         """读取 STATE 全部 spec 条目（fix-recovery-branch-anchor D6）。

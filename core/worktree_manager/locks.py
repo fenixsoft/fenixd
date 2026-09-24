@@ -95,8 +95,10 @@ class G3LockMixin:
             匹配串锚定 worktree 目录字面量（<prefix>-<spec>-<ts>），不匹配裸 spec 名，
             防止把无关进程当成持锁者；命中后还须经 ``_is_claude_process`` 确认程序为
             claude——测试子进程（dev-server 等）的 cmdline 同样含路径，agent 退出后
-            成为永生孤儿，按路径匹配会把锁永久骗走。pgrep 不可用/超时时返回 False
-            （调用方以 run 流新鲜度做二次确认）。
+            成为永生孤儿，按路径匹配会把锁永久骗走。命中后再经
+            ``_pid_in_project_worktrees`` 核对归属本项目（``worktrees/`` 字面匹配是
+            全机性的，同机多项目同名 spec 会互相骗锁）。pgrep 不可用/超时时返回
+            False（调用方以 run 流新鲜度做二次确认）。
             """
             for prefix in ("impl", "verify"):
                 pattern = f"worktrees/{prefix}-{spec_name}-"
@@ -110,9 +112,37 @@ class G3LockMixin:
                 except (subprocess.SubprocessError, OSError):
                     return False
                 if res.returncode == 0 and res.stdout.strip():
-                    if any(_is_claude_process(p) for p in res.stdout.split()):
+                    if any(
+                        _is_claude_process(p) and self._pid_in_project_worktrees(p)
+                        for p in res.stdout.split()
+                    ):
                         return True
             return False
+
+    def _pid_in_project_worktrees(self, pid_str: str) -> bool:
+            """核对命中进程归属本项目 worktrees（跨项目 slug 撞名防误判）。
+
+            双重归属信号，任一命中即认：cmdline 含本项目 worktrees 基目录前缀，
+            或 cwd 经 realpath 归一后位于基目录之下（argv 缺路径的进程形态）。
+            realpath 归一消解符号链接/挂载拼写差异，避免把自家 agent 误判为
+            他家进程（自误杀 → 活锁被放行 → 双派发）。两信号皆不可得（/proc
+            不可读等）按不归属处理，失败方向与既有扫描异常一致（保守无进程，
+            调用方以 run 流新鲜度做二次确认）。
+            """
+            base_text = str(self.base_dir)
+            base_real = os.path.realpath(base_text)
+            try:
+                with open(f"/proc/{pid_str}/cmdline", "rb") as f:
+                    argv_text = f.read().replace(b"\0", b" ").decode("utf-8", "replace")
+            except OSError:
+                argv_text = ""
+            if base_text in argv_text or base_real in argv_text:
+                return True
+            try:
+                cwd_real = os.path.realpath(os.readlink(f"/proc/{pid_str}/cwd"))
+            except OSError:
+                return False
+            return cwd_real == base_real or cwd_real.startswith(base_real + os.sep)
 
     def _latest_stream_mtime(self, spec_name: str) -> Optional[float]:
             """该 spec 全部 run 流文件（.fenix/runs/{impl,verify}-<spec>-*.jsonl）的最新 mtime。
@@ -146,6 +176,8 @@ class G3LockMixin:
             与 _pgrep_spec_process 不同：这里按完整 worktree 目录名匹配，不经过
             缓存（启动时一次性调用，结果必须实时）；命中后同样以 claude 进程
             为锚——仅剩 dev-server 孤儿的 worktree 应被判定为无主并进入清理。
+            目录名匹配同为全机性字面匹配（同名 worktree 可属不同项目根），命中
+            后经 ``_pid_in_project_worktrees`` 核对归属本项目再判存活。
             """
             pattern = f"worktrees/{wt_name}"
             try:
@@ -157,7 +189,10 @@ class G3LockMixin:
                 )
             except (subprocess.SubprocessError, OSError):
                 return False
-            return res.returncode == 0 and any(_is_claude_process(p) for p in res.stdout.split())
+            return res.returncode == 0 and any(
+                _is_claude_process(p) and self._pid_in_project_worktrees(p)
+                for p in res.stdout.split()
+            )
 
     def _kill_worktree_strays(self, wt_name: str) -> list:
             """杀掉 cmdline 或 cwd 引用该 worktree 的非 agent 残留进程，返回被杀 PID。
