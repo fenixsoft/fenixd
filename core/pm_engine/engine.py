@@ -2015,6 +2015,11 @@ class PMEngine:
             if not unchecked:
                 self.logger.debug("pm_engine", f"任务回写跳过（无未完成项）：{spec_name}")
                 return
+            # [fenix-ignore:7970cdb07339] 前缀勾选在 tasks.md 存在遗留未勾任务时确有勾错对象风险，
+            # 但「1:5 弱校验 + 前缀 max(flat_done)+1」语义被 tests/test_task_progress_protocol.py
+            # 锁定（27 未勾/6 创建须放行勾前 4），subject 无编号的 run 产物没有可靠
+            # 信号区分遗留任务，按条目建议收紧即破坏锁定行为（上轮已实测回归）——
+            # 维持原设计，勾错风险由 1:5 弱校验兜底
             if len(unchecked) > created_count * 5:
                 self.logger.debug(
                     "pm_engine",

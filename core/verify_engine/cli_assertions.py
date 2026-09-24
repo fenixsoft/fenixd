@@ -29,6 +29,11 @@ class CliAssertionRunner:
     返回统一格式 dict: {type, layer, pass, ...}。
     """
 
+    # 依赖命名 run 结果的断言类型单源：这些类型在派发前先经 _resolve_step
+    # 取 step 再调 handler（签名 (step, assertion)），其余类型直接以
+    # (assertion,) 调用。新增依赖命名结果的 _assert_<type> 时 MUST 同步登记。
+    STEP_ASSERTIONS = frozenset({"exit_code", "output_match", "json_output"})
+
     def __init__(self, project_root=None, scenario_root=None):
         # 文件类断言解析根：worktree 轮用 scenario_root（步骤写入隔离树），
         # 无 worktree 轮用 project_root（既有行为）。
@@ -58,7 +63,7 @@ class CliAssertionRunner:
                     }
                 )
                 continue
-            if a_type in ("exit_code", "output_match", "json_output"):
+            if a_type in self.STEP_ASSERTIONS:
                 step = self._resolve_step(named_results, assertion)
                 if step is None:
                     ref = assertion.get("step") or "_latest"

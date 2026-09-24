@@ -1355,6 +1355,13 @@ _SHELL_METACHARS = ("&&", "||", "|", ";", ">", "<", "$(", "`")
 # 内联代码 / REPL 形态：无文件入口，跳过预检（防把代码片段当路径误杀）
 _INLINE_CODE_FLAGS = frozenset({"-e", "--eval", "-p", "--print", "-i", "--interactive"})
 
+# 入口候选的脚本扩展名白名单：带独立取值的 flag（如 node -r ts-node/register）
+# 其取值同样以非 flag 形态出现，机械上无法与入口区分；仅当候选以脚本扩展名
+# 结尾才判为入口，否则跳过预检（零误杀优先，漏检交给既有探活兜底）。
+_SCRIPT_ENTRY_SUFFIXES = frozenset(
+    {".js", ".mjs", ".cjs", ".ts", ".mts", ".cts", ".tsx"}
+)
+
 
 def resolve_entry_path(cmd: str, cwd: Path) -> Optional[Path]:
     """从 serve.cmd 机械解析脚本入口路径；无法解析返回 None（跳过预检）。
@@ -1369,6 +1376,8 @@ def resolve_entry_path(cmd: str, cwd: Path) -> Optional[Path]:
     >>> resolve_entry_path("node dist/server.js", Path("/prj"))
     PosixPath('/prj/dist/server.js')
     >>> resolve_entry_path("npm run build && node x.js", Path("/prj")) is None
+    True
+    >>> resolve_entry_path("node -r ts-node/register dist/server.js", Path("/prj")) is None
     True
     """
     if not cmd or not isinstance(cmd, str):
@@ -1397,6 +1406,10 @@ def resolve_entry_path(cmd: str, cwd: Path) -> Optional[Path]:
     for arg in rest:
         if arg.startswith("-"):
             continue
+        # flag 的独立取值参数（node -r ts-node/register 等）不是入口：
+        # 非脚本扩展名结尾的候选无法机械判定为入口 → 跳过预检（零误杀）
+        if Path(arg).suffix.lower() not in _SCRIPT_ENTRY_SUFFIXES:
+            return None
         return (Path(cwd) / arg).resolve()
     return None  # 只有 flag 没有入口（如 node --version）
 

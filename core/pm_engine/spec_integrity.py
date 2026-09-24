@@ -198,6 +198,7 @@ class SpecIntegrityGate:
                 / spec_name
                 / _DELIVERED_REPORT_FILENAME
             ).is_file()
+        # [fenix-ignore:73c76dafba33] 非死代码：is_file 仅吞 ENOENT/ENOTDIR/EBADF/ELOOP，EACCES/EIO 等其余 OSError 仍向外抛出，本分支可达
         except OSError:
             return False  # 探测异常按「无凭据」走既有冻结路径（保守分类）
 

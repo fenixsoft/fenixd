@@ -400,7 +400,20 @@ def auto_archive_check(project_root, config: dict, logger=None) -> dict:
     archived_count = 0
     skipped_count = 0
     for name, _entry in candidates[:to_archive]:
-        result = archive_spec(proot, name)
+        # archive_spec 内部仅捕获 OSError；其余异常（runs 归档/自动提交等环节
+        # 抛出的非 OSError）会一路上抛打断整轮循环，违背上方「单条失败跳过并
+        # 记日志，不中断循环」承诺（code-review item 7b8b81ef3a8e）。兜底转成
+        # 既有 error dict 形态走统一 skip 日志路径。
+        try:
+            result = archive_spec(proot, name)
+        except Exception as e:
+            result = {
+                "ok": False,
+                "found": True,
+                "from": None,
+                "to": None,
+                "error": f"归档异常: {e}",
+            }
         if result.get("ok"):
             archived_count += 1
             msg = f"自动归档: {name} → {result['to']}"

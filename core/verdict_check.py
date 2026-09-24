@@ -944,12 +944,23 @@ def _batch_attribution_dedup_common(report: dict, scenario_level: bool) -> dict:
     scenario_level=False → 沿袭整批判定（仅返回 violations，拒绝由调用方
     按整批语义处置）；scenario_level=True → 追加 requeue_ids / accept_ids
     场景级粒度（调用方按设计 D2 驱动子集回炉）。
+
+    退化输入（report 非 dict / scenarios 非列表）的早退分支同样保持与
+    docstring 承诺一致的返回形状（场景级补齐空 requeue_ids / accept_ids /
+    counts），避免调用方按下标访问时 KeyError。
     """
+    extra: dict = {}
+    if scenario_level:
+        extra = {
+            "requeue_ids": [],
+            "accept_ids": [],
+            "counts": {"total": 0, "requeue": 0, "accept": 0},
+        }
     if not isinstance(report, dict):
-        return {"ok": True, "violations": []}
+        return {"ok": True, "violations": [], **extra}
     scenarios = report.get("scenarios")
     if not isinstance(scenarios, list):
-        return {"ok": True, "violations": []}
+        return {"ok": True, "violations": [], **extra}
 
     groups: dict[str, dict] = {}
     for sc in scenarios:
