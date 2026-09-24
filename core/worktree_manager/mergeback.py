@@ -571,20 +571,42 @@ class G4MergebackMixin:
     def _merge_tree_supported(self) -> bool:
         """``git merge-tree --write-tree`` 可用性一次性探测（进程内缓存）。
 
-        以空参试探：git ≥ 2.38 支持该选项（输出 usage）；旧版把未知选项报为
-        ``unknown option``。探测结果类级缓存（多实例共享、进程一生只探一次），
-        不支持时记一次性 WARNING（不刷屏），预演闸永久跳过。
+        以 ``HEAD HEAD`` 自合并试探（merge-tree 只读、不触索引与工作区）：git
+        ≥ 2.38 接受 ``--write-tree`` 时退出码 0 且 stdout 首行为 tree oid；旧
+        版不认识该选项，任何 locale 下都非 0 且无 oid 形态输出。按「退出码 +
+        oid 形态」判定而非比对 ``unknown option`` 英文错误串——parse-options
+        的报错文案可翻译，本地化 git（如 zh_CN 装了 translation）下旧版报错不
+        含该串，按串判定会误判为支持并被类级缓存固化进程一生。探测结果类级缓
+        存（多实例共享、进程一生只探一次），不支持时记一次性 WARNING（不刷屏），
+        预演闸永久跳过。
         """
         from core.worktree_manager import WorktreeManager  # lazy import to avoid cycle
         if not WorktreeManager._rehearsal_probe_done:
             try:
                 res = subprocess.run(
-                    ["git", "-C", str(self.project_root), "merge-tree", "--write-tree"],
+                    [
+                        "git",
+                        "-C",
+                        str(self.project_root),
+                        "merge-tree",
+                        "--write-tree",
+                        "HEAD",
+                        "HEAD",
+                    ],
                     capture_output=True,
                     text=True,
                     timeout=30,
                 )
-                WorktreeManager._rehearsal_supported = "unknown option" not in res.stderr
+                # 支持的实证：退出码 0 且 stdout 首行为 40/64 位 hex tree oid
+                # （--write-tree 的成功输出形态）；旧版/本地化报错文案均落不进
+                # 该形态，跨 locale 稳定。
+                oid_lines = res.stdout.strip().splitlines()
+                tree_oid = oid_lines[0] if oid_lines else ""
+                WorktreeManager._rehearsal_supported = (
+                    res.returncode == 0
+                    and len(tree_oid) in (40, 64)
+                    and all(c in "0123456789abcdef" for c in tree_oid)
+                )
             except (subprocess.SubprocessError, OSError):
                 WorktreeManager._rehearsal_supported = False
             WorktreeManager._rehearsal_probe_done = True

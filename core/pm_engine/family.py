@@ -631,11 +631,24 @@ class FamilyGovernor:
             elif self._family_waiver_set(spec_name):
                 self._consume_family_waiver(spec_name)
 
-        self._ensure_fix_spec_files(fix_spec_name, spec_name)
-
         existing_fix = self._pm.state_machine.read_one(fix_spec_name)
+        guard_status = (existing_fix or {}).get("status", "")
+        # 模板写入守卫（与下方幂等守卫对齐）：仅当 fix SPEC 不存在或状态属
+        # 待重置集时写入模板文件；implementing/implemented 等在途状态的
+        # tasks.md 已含勾选进度与修复结论、proposal.md 可能经人工细化，
+        # 重写空白模板会丢失这些内容。
+        if existing_fix is None or guard_status not in (
+            "implementing",
+            "testing",
+            "implemented",
+            "verified",
+            "done",
+            "pushed",
+            "blocked",
+        ):
+            self._ensure_fix_spec_files(fix_spec_name, spec_name)
+
         if existing_fix:
-            guard_status = existing_fix.get("status", "")
             if guard_status in (
                 "implementing",
                 "testing",

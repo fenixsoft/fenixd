@@ -496,6 +496,13 @@ class G6StashGuardMixin:
         if "CONFLICT" in output:
             conflict_files = self._list_unmerged_files()
             if conflict_files:
+                # 自愈语义是统一回退 HEAD 版本：下列文件上的 stash/冲突态改动
+                # 全部丢弃（并非「保留 merge 结果」），此处明示丢弃面。
+                self.logger.warning(
+                    "worktree_manager",
+                    "Autostash pop conflict self-heal discards local changes "
+                    f"on: {', '.join(conflict_files)}",
+                )
                 self._heal_unmerged_files(conflict_files)
             if self._list_unmerged_files():
                 # 自愈未完成（checkout 超时等）：条目保留交人工，绝不 drop

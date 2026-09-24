@@ -551,11 +551,11 @@ class H3SpecRoutesMixin:
             self._error(404, result.get("error") or f"spec not found: {spec}")
             return
         if not result.get("ok"):
-            # 已归档或目标冲突 → 409，非终态拒绝也走这里（调用方可识别具体 error）
+            # 已归档或目标冲突 → 409，非终态拒绝也走这里（按数据层结构化标志分流，
+            # 不依赖 error 展示文案）
             code = (
                 409
-                if "已存在" in (result.get("error") or "")
-                or "已归档" in (result.get("error") or "")
+                if result.get("conflict") or result.get("archived_already")
                 else 403
             )
             self._error(code, result.get("error") or "归档失败")

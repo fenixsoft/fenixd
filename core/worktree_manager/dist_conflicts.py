@@ -331,6 +331,21 @@ class G5DistConflictsMixin:
             )
             if not staged.stdout.strip():
                 return  # 重建结果与提交版一致，无需 amend
+            # merge 提交已在 upstream 上（已被外部推送）时，amend 会改写已发布
+            # 历史——跳过 amend，unstage 后仅保留工作区重建。
+            if self._head_on_upstream():
+                subprocess.run(
+                    ["git", "-C", str(self.project_root), "reset", "-q"],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                self.logger.warning(
+                    "worktree_manager",
+                    "merge commit already on upstream — dist rebuild kept in "
+                    "working tree only, amend skipped",
+                )
+                return
             amend = subprocess.run(
                 ["git", "-C", str(self.project_root), "commit", "--amend", "--no-edit"],
                 capture_output=True,
@@ -373,6 +388,50 @@ class G5DistConflictsMixin:
                 "worktree_manager",
                 f"dist rebuild after merge failed unexpectedly: {e}",
             )
+
+    def _head_on_upstream(self) -> bool:
+        """HEAD 是否已被推送到 upstream（远程跟踪分支已包含 HEAD）。
+
+        code-review item 302b781b7c51：amend 会改写刚产生的合并提交，若该提交
+        已被外部（人工/其它实例）推送，amend 即改写已发布历史。判定口径：
+        ``@{u}`` 存在且 HEAD 为其祖先（``merge-base --is-ancestor``，覆盖
+        upstream 等于或领先 HEAD 两种已推送形态）。无 upstream 或探针失败时
+        返回 False——保守维持原 amend 行为，不让探针故障阻断重建。
+        """
+        try:
+            upstream = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(self.project_root),
+                    "rev-parse",
+                    "--verify",
+                    "--quiet",
+                    "@{u}",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if upstream.returncode != 0 or not upstream.stdout.strip():
+                return False
+            ancestor = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(self.project_root),
+                    "merge-base",
+                    "--is-ancestor",
+                    "HEAD",
+                    "@{u}",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            return ancestor.returncode == 0
+        except (subprocess.SubprocessError, OSError):
+            return False
 
     def _artifact_paths(self, rev: str) -> set:
         """列出 <rev> 中全部构建产物路径（按目录层次容错判定，全树枚举）。
@@ -485,12 +544,14 @@ class G5DistConflictsMixin:
         return _collect_unmerged_paths(res.stdout)
 
     def _heal_unmerged_files(self, conflict_files: list) -> None:
-        """对 UU 文件执行自愈：丢弃 stash 版本、保留 merge 结果、清空 index。
+        """对 UU 文件执行自愈：丢弃 stash/冲突合并态，统一回退 HEAD 版本。
 
         每个 UU 文件处于 unmerged 状态，普通 ``git checkout HEAD -- <file>`` 会报
-        "path is unmerged"，因此用 ``-f`` 强制从 HEAD 还原（清空 stage 1/2/3、工作区
-        覆盖为已 merge 的实现）。随后 ``git reset`` 兜底清空 index 中任何残留的 staged
-        冲突条目，使主树回到干净可写状态。
+        "path is unmerged"，因此用 ``-f`` 强制从 HEAD 还原——stash 应用内容与
+        冲突合并态一并丢弃，工作区与 index 统一回到 HEAD 侧版本（不存在被
+        「保留」的 merge 结果，丢弃面即 conflict_files 上的全部本地改动，调用点
+        告警须明示）。随后 ``git reset`` 兜底清空 index 中任何残留的 staged 冲突
+        条目，使主树回到干净可写状态。
         """
         for f in conflict_files:
             try:

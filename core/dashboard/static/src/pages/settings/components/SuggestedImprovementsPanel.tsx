@@ -311,6 +311,7 @@ const SuggestedImprovementsPanel = forwardRef<
     spec_run_at: se?.spec_run_at ?? DEFAULT_SPEC_RUN_AT,
   }), [se?.auto_accept, se?.max_items_per_run, se?.spec_run_at]);
 
+  // [fenix-ignore:37123e376118] 回填产物是三个原始值 deps 的 useMemo 派生，config 刷新只换 self_evolution 对象身份时 deps 不变、不触发 setFieldsValue，与 LlmProviderPanel 的「内容变化才回填」门控语义等价（那边回填载荷含对象/数组才需 stringify 比较）。
   useEffect(() => {
     form.setFieldsValue(initialValues);
   }, [initialValues, form]);

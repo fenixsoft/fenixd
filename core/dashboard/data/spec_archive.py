@@ -248,9 +248,12 @@ def archive_spec(project_root, spec_name: str) -> dict:
         {"ok": bool, "found": bool, "from": str|null, "to": str|null, "error": str|null}
         - spec 不在 STATE.md → {"ok": False, "found": False, ...}
         - 非终态 → {"ok": False, "found": True, "error": "仅终态..."}
-        - 活跃目录缺失（已归档）→ {"ok": False, "found": True, "error": "已归档"}
-        - 目标已存在 → {"ok": False, "found": True, "error": "目标已存在"（不覆盖）}
+        - 活跃目录缺失（已归档）→ {"ok": False, "found": True, "archived_already": True}
+        - 目标已存在 → {"ok": False, "found": True, "conflict": True}（不覆盖）
         - 成功 → {"ok": True, "found": True, "from": 原路径, "to": 目标路径}
+
+        结构化标志（archived_already/conflict）供 HTTP 层按标志选状态码，
+        与 error 展示文案无耦合。
     """
     proot = Path(project_root)
     specs = parse_state(proot)
@@ -279,6 +282,7 @@ def archive_spec(project_root, spec_name: str) -> dict:
             "found": True,
             "from": None,
             "to": None,
+            "archived_already": True,
             "error": f"Spec '{spec_name}' 活跃目录已不存在（可能已归档）",
         }
 
@@ -291,6 +295,7 @@ def archive_spec(project_root, spec_name: str) -> dict:
             "found": True,
             "from": str(change_dir),
             "to": str(target),
+            "conflict": True,
             "error": f"归档目标已存在: {target} — 请改名或改日再归档，原目录不会被覆盖",
         }
 

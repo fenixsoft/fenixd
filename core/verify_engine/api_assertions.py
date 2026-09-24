@@ -223,10 +223,13 @@ class ApiAssertionRunner:
         if mode == "exact":
             passed = actual == expected
         elif mode == "contains":
-            passed = expected in str(actual or "")
+            # 以 is not None 判空：or 会把 0/False 等 falsy 合法值折叠为 ""
+            passed = expected in str(actual if actual is not None else "")
         elif mode == "regex":
             try:
-                passed = bool(re.search(str(expected), str(actual or "")))
+                passed = bool(
+                    re.search(str(expected), str(actual if actual is not None else ""))
+                )
             except re.error:
                 passed = False
         return {

@@ -15,22 +15,36 @@ logger = logging.getLogger("fenixd.dashboard.session_routes")
 class H_SessionRoutesMixin:
     """H_SessionRoutesMixin：会话 REST 端点。"""
 
+    def _session_context(self, query):
+        """统一「项目校验 + SessionManager 判空」样板。
+
+        校验失败时已写好错误响应并返回 None；成功返回 (project, sm)。
+        「无会话」分支语义各端点不同（JSON null / 404 / 幂等 ok），由端点
+        自行处理；sm.get 带死会话清理副作用，故不在此统一取 session。
+        """
+        project = self._project_from_query(query)
+        if project is None or not project.get("exists"):
+            self._error(404, "project not found")
+            return None
+
+        from core.dashboard.session_manager import SessionManager
+        sm: SessionManager = self.server.session_manager
+        if sm is None:
+            self._error(500, "session manager not initialized")
+            return None
+
+        return project, sm
+
     def _api_session_start(self, query):
         """POST /api/session/start?project=<name> → 创建（或复用存活）会话。
 
         这是唯一允许启动会话进程的端点。
         返回 {"session": {"id": sid, "started_at": ...}}
         """
-        project = self._project_from_query(query)
-        if project is None or not project.get("exists"):
-            self._error(404, "project not found")
+        context = self._session_context(query)
+        if context is None:
             return
-
-        from core.dashboard.session_manager import SessionManager
-        sm: SessionManager = self.server.session_manager
-        if sm is None:
-            self._error(500, "session manager not initialized")
-            return
+        project, sm = context
 
         try:
             session = sm.start(project["name"], project["path"])
@@ -51,16 +65,10 @@ class H_SessionRoutesMixin:
         无会话时返回 {"session": null, "events": [], "truncated": false}
         MUST NOT 借回读端点启动进程。
         """
-        project = self._project_from_query(query)
-        if project is None or not project.get("exists"):
-            self._error(404, "project not found")
+        context = self._session_context(query)
+        if context is None:
             return
-
-        from core.dashboard.session_manager import SessionManager
-        sm: SessionManager = self.server.session_manager
-        if sm is None:
-            self._error(500, "session manager not initialized")
-            return
+        project, sm = context
 
         session = sm.get(project["name"])
         if session is None:
@@ -84,16 +92,10 @@ class H_SessionRoutesMixin:
 
         空/空白 → 400；项目或会话缺失 → 404；成功 → {"ok": true}
         """
-        project = self._project_from_query(query)
-        if project is None or not project.get("exists"):
-            self._error(404, "project not found")
+        context = self._session_context(query)
+        if context is None:
             return
-
-        from core.dashboard.session_manager import SessionManager
-        sm: SessionManager = self.server.session_manager
-        if sm is None:
-            self._error(500, "session manager not initialized")
-            return
+        project, sm = context
 
         session = sm.get(project["name"])
         if session is None:
@@ -125,16 +127,10 @@ class H_SessionRoutesMixin:
 
         无会话时亦 200。
         """
-        project = self._project_from_query(query)
-        if project is None or not project.get("exists"):
-            self._error(404, "project not found")
+        context = self._session_context(query)
+        if context is None:
             return
-
-        from core.dashboard.session_manager import SessionManager
-        sm: SessionManager = self.server.session_manager
-        if sm is None:
-            self._error(500, "session manager not initialized")
-            return
+        project, sm = context
 
         session = sm.get(project["name"])
         if session is None:
@@ -160,16 +156,10 @@ class H_SessionRoutesMixin:
         """POST/DELETE /api/session/watch?project=<name>&cid=<cid>。
 
         hub.watch(cid, sid) 或 hub.unwatch(cid, sid)。"""
-        project = self._project_from_query(query)
-        if project is None or not project.get("exists"):
-            self._error(404, "project not found")
+        context = self._session_context(query)
+        if context is None:
             return
-
-        from core.dashboard.session_manager import SessionManager
-        sm: SessionManager = self.server.session_manager
-        if sm is None:
-            self._error(500, "session manager not initialized")
-            return
+        project, sm = context
 
         session = sm.get(project["name"])
         if session is None:

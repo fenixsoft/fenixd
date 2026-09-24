@@ -108,7 +108,6 @@ class TestIncrementalWatcher:
         w.scan_once()
         hub.events.clear()
         # 基线建立后清空，再手动触发日志追加
-        w._states["proj-a"] = dash_data.parse_state(proot)
         w._last_summaries["proj-a"] = {
             s["name"]: s for s in w.summary_index.get(proot)
         }

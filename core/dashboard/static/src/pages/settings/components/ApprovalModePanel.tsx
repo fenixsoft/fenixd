@@ -112,6 +112,15 @@ export default function ApprovalModePanel({ config, onSave, project, onConfigSyn
           layout="vertical"
         >
           {/* 草稿晋升模式（add-draft-promotion-gate D5，值语义对齐 approve_mode） */}
+          {/* 说明文字必须置于 Form.Item 外（code-review item 36cb4a8a8641）：antd v6
+              的 Form.Item 仅在 children 为单个合法元素时注入 value/onChange，说明
+              文字与 Radio.Group 并列会让四组单选与表单脱钩，validateFields 拿到的
+              是回填旧值，保存静默丢弃用户修改。 */}
+          <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
+            控制草稿 SPEC 如何进入调度。manual 停留在草稿态由人工确认放行（/fenix-ready、
+            项目页按钮或 CLI）；auto 注册后立即自动晋升 ready 并进入调度，未经人工审阅。
+            缺省 auto。
+          </Text>
           <Form.Item
             name="promote_mode"
             label={
@@ -121,11 +130,6 @@ export default function ApprovalModePanel({ config, onSave, project, onConfigSyn
             }
             rules={[{ required: true, message: '请选择草稿晋升模式' }]}
           >
-            <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
-              控制草稿 SPEC 如何进入调度。manual 停留在草稿态由人工确认放行（/fenix-ready、
-              项目页按钮或 CLI）；auto 注册后立即自动晋升 ready 并进入调度，未经人工审阅。
-              缺省 auto。
-            </Text>
             <Radio.Group>
               <div style={RADIO_OPTION_ROW_SPACED_STYLE}>
                 <Radio value="manual">
@@ -150,6 +154,11 @@ export default function ApprovalModePanel({ config, onSave, project, onConfigSyn
             </Radio.Group>
           </Form.Item>
           {/* SPEC 方案评审（add-spec-review-gate D2/D3/D11，置于草稿晋升相邻位置） */}
+          <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
+            控制 drafted → ready 之间是否过方案评审门禁。auto 默认全量评审，
+            仅 fast-track、能力目录 ≤ 1、交付物声明 ≤ 3 且非 evo- 前缀时跳过；
+            never 完全关闭门禁，作为逃生门跳过评审直接调度。缺省 auto。
+          </Text>
           <Form.Item
             name="spec_review_mode"
             label={
@@ -159,11 +168,6 @@ export default function ApprovalModePanel({ config, onSave, project, onConfigSyn
             }
             rules={[{ required: true, message: '请选择 SPEC 方案评审模式' }]}
           >
-            <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
-              控制 drafted → ready 之间是否过方案评审门禁。auto 默认全量评审，
-              仅 fast-track、能力目录 ≤ 1、交付物声明 ≤ 3 且非 evo- 前缀时跳过；
-              never 完全关闭门禁，作为逃生门跳过评审直接调度。缺省 auto。
-            </Text>
             <Radio.Group>
               <div style={RADIO_OPTION_ROW_SPACED_STYLE}>
                 <Radio value="auto">
@@ -189,6 +193,11 @@ export default function ApprovalModePanel({ config, onSave, project, onConfigSyn
             </Radio.Group>
           </Form.Item>
           {/* 定时拾取覆盖范围（add-start-after-scope-config，置于方案评审与推送审批之间） */}
+          <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
+            定时拾取（start_after）的覆盖范围。dispatch 只把实现派发挂起到点，
+            晋升与方案评审照常走；full 同时按住晋升与评审，SPEC 停在草稿态，
+            到期/激活才一并放行。缺省 dispatch。
+          </Text>
           <Form.Item
             name="start_after_scope"
             label={
@@ -198,11 +207,6 @@ export default function ApprovalModePanel({ config, onSave, project, onConfigSyn
             }
             rules={[{ required: true, message: '请选择定时拾取覆盖范围' }]}
           >
-            <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
-              定时拾取（start_after）的覆盖范围。dispatch 只把实现派发挂起到点，
-              晋升与方案评审照常走；full 同时按住晋升与评审，SPEC 停在草稿态，
-              到期/激活才一并放行。缺省 dispatch。
-            </Text>
             <Radio.Group>
               <div style={RADIO_OPTION_ROW_SPACED_STYLE}>
                 <Radio value="dispatch">
@@ -226,6 +230,11 @@ export default function ApprovalModePanel({ config, onSave, project, onConfigSyn
               </div>
             </Radio.Group>
           </Form.Item>
+          <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
+            控制 done 态 SPEC 向远端推送的行为。manual 停留在 done 等待 /fenix-approve
+            人工推送；auto 由 daemon 自动执行 git push 到远端，会对外发布代码，
+            请谨慎使用。缺省 manual。
+          </Text>
           <Form.Item
             name="approve_mode"
             label={
@@ -235,11 +244,6 @@ export default function ApprovalModePanel({ config, onSave, project, onConfigSyn
             }
             rules={[{ required: true, message: '请选择推送审批模式' }]}
           >
-            <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
-              控制 done 态 SPEC 向远端推送的行为。manual 停留在 done 等待 /fenix-approve
-              人工推送；auto 由 daemon 自动执行 git push 到远端，会对外发布代码，
-              请谨慎使用。缺省 manual。
-            </Text>
             <Radio.Group>
               <div style={RADIO_OPTION_ROW_SPACED_STYLE}>
                 <Radio value="manual">

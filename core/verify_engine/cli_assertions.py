@@ -289,7 +289,7 @@ class CliAssertionRunner:
             passed = str(expected) in str(actual)
         elif mode == "regex":
             try:
-                passed = bool(re.search(str(expected), str(actual or "")))
+                passed = bool(re.search(str(expected), str(actual)))
             except re.error:
                 passed = False
         if negate:
