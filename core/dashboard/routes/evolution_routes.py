@@ -246,9 +246,11 @@ class H7EvolutionRoutesMixin:
                 continue
             try:
                 result = clear_todo(path)
-            except Exception as e:  # noqa: BLE001 —— 单项目异常计入 failed，不中断其余项目
+            except Exception:  # noqa: BLE001 —— 单项目异常计入 failed，不中断其余项目
+                # 不外泄裸异常文本（code-review item 1f7996c07aa7），同 accept 端点：
+                # 泛化文案 + 服务端 logger.exception 留痕（逐条细节见日志）。
                 logger.exception("清空 todo.md 异常（project=%s）", name)
-                failed.append({"project": name, "error": str(e)})
+                failed.append({"project": name, "error": "清空失败（详见服务端日志）"})
                 continue
             if result.get("error"):
                 failed.append({"project": name, "error": result["error"]})

@@ -64,6 +64,8 @@ def _ocr_version(ocr_bin: str) -> str | None:
         r = subprocess.run(
             [ocr_bin, "--version"],
             capture_output=True,
+            # 非交互：不继承 daemon 的 stdin，避免探测进程等待输入
+            stdin=subprocess.DEVNULL,
             # 显式 UTF-8：text=True 缺省按 locale 解码，LC_ALL=C 启动的 daemon
             # 遇 UTF-8 输出会抛 UnicodeDecodeError（不被下方 OSError/SubprocessError
             # 捕获）。errors=replace 保证坏字节不再中断探测（code-review item
@@ -125,6 +127,9 @@ def _install_ocr_locked(timeout: int) -> dict:
         r = subprocess.run(
             ["npm", "install", "-g", OCR_NPM_PACKAGE],
             capture_output=True,
+            # 非交互：npm 首次运行可能弹交互确认，读 DEVNULL 使其走非交互
+            # 分支/立即失败，不挂起到超时、不消费 daemon 终端输入
+            stdin=subprocess.DEVNULL,
             # 同 _ocr_version：显式 UTF-8 + replace，免 locale 依赖解码
             # （code-review item fb2757a60715）。
             text=True,

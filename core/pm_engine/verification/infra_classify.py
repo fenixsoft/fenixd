@@ -528,20 +528,12 @@ def reclassify_infra_rounds(
     else:
         target_status = None
 
-    # ── 原子写入 ──
-    updates = {"_verify_fail_rounds": new_fail_rounds}
-    if target_status is not None:
-        # unfreeze_spec 清零相关计数器 + 恢复 status
-        state_machine.unfreeze_spec(spec_name, status=target_status)
-    state_machine.update_spec(spec_name, updates)
-    if logger is not None:
-        logger.warning(
-            "pm_engine",
-            f"infra 回拨: '{spec_name}' _verify_fail_rounds {current}→{new_fail_rounds}"
-            f"（减回 {applied} 轮，audit={audit_reason[:120]}）",
-        )
-
     # ── 审计留痕（admin_store DISPOSITION，幂等由 reclassify_key 去重）──
+    # 先落幂等键再扣减：append 失败（如 OSError）时状态尚未被改动，调用方
+    # 重试会重新走完整流程且只扣一次；若先扣减后写审计，append 失败时幂等
+    # 键未落盘，重试会二次扣减（超出 admin 声明的 n 轮上限）。反向窗口
+    # （append 成功后扣减失败）由 already_applied 幂等短路兜底——fail_rounds
+    # 保持偏高（预算偏紧，不放大重试预算）。
     store.append(
         {
             "kind": DISPOSITION,
@@ -560,6 +552,19 @@ def reclassify_infra_rounds(
             "reclassify_key": reclassify_key,
         }
     )
+
+    # ── 原子写入 ──
+    updates = {"_verify_fail_rounds": new_fail_rounds}
+    if target_status is not None:
+        # unfreeze_spec 清零相关计数器 + 恢复 status
+        state_machine.unfreeze_spec(spec_name, status=target_status)
+    state_machine.update_spec(spec_name, updates)
+    if logger is not None:
+        logger.warning(
+            "pm_engine",
+            f"infra 回拨: '{spec_name}' _verify_fail_rounds {current}→{new_fail_rounds}"
+            f"（减回 {applied} 轮，audit={audit_reason[:120]}）",
+        )
 
     return {
         "ok": True,

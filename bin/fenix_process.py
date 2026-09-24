@@ -232,7 +232,10 @@ def _wt_dir_matches_spec(wt_name: str, spec_name: str) -> bool:
 def _check_worktree(proot, spec_name):
     """活跃 worktree 与最近修改文件（保留原脚本行为）。"""
     wt_root = proot / ".claude" / "worktrees"
-    if not wt_root.exists():
+    # is_dir 而非 exists（code-review item a077e9aad426）：路径若为普通文件
+    # （异常环境残留），exists() 为真但 iterdir() 抛 NotADirectoryError 令整份
+    # 报告崩溃；is_dir 一并覆盖，与不存在同口径返回 None 降级。
+    if not wt_root.is_dir():
         return None
     for wt in wt_root.iterdir():
         if wt.is_dir() and _wt_dir_matches_spec(wt.name, spec_name):

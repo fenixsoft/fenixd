@@ -596,9 +596,12 @@ class FFastTrackMixin:
                 final_error = f"Merge-back failed (fp={fp}): {merge_error}"
                 if streak >= breaker_threshold:
                     # fix-observability-gaps 2.2：repair/fast-track merge 熔断 blocked
+                    # （code-review item 9e02c14cb283）本车道 blocked 归因
+                    # agent_type="fast-track"（与下方成功转移一致），避免审计/
+                    # 告警误归 implementer 车道；agent_type 为自由字符串无枚举约束。
                     self._pm.state_machine.transition(
                         spec_name, "blocked",
-                        trigger_run_id=None, agent_type="implementer", channel="auto",
+                        trigger_run_id=None, agent_type="fast-track", channel="auto",
                     )
                     self._pm.state_machine.update_spec(
                         spec_name,
