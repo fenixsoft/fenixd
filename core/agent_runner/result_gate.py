@@ -965,9 +965,12 @@ def _check_impl_result_artifact(
 
     # add-impl-ocr-parallel-lane（任务 2.2）：实现者产物硬门不再校验
     # code_review/dispositions 段——收尾 ocr 由框架侧异步车道承载，裁决点
-    # 移至 testing 出口 join（queue._evaluate_ocr_join）。实现者不带
-    # code_review 段即可正常过门；``_check_impl_code_review_artifact``
-    # 本体保留供 join 侧复用。
+    # 移至 testing 出口 join（core/pm_engine/dispatch/queue.py 的
+    # ``Dispatcher._ocr_join_gate``，其自持 _read_ocr_artifact + 指纹校验
+    # 的完整判定，不经本函数）。实现者不带 code_review 段即可正常过门；
+    # ``_check_impl_code_review_artifact`` 现已无生产调用点（join 侧不
+    # 复用它），仅 runner.py 门面注册桩与测试引用保留——勿视为仍在
+    # 收尾链路生效。
 
     # add-quality-gates-visibility（任务 3.2）：quality-gates.json 宽松对账——
     # 独立于上方判定：存在则仅机械合法性检查、违规仅 WARNING 放行；缺失零拦截。

@@ -165,11 +165,14 @@ def read_evolution_draft(project_root, item_id_, doc) -> dict:
                 else:
                     rel = None
                 if rel is None:
-                    caps = (
-                        sorted(p.name for p in (spec_dir / "specs").iterdir() if p.is_dir())
-                        if (spec_dir / "specs").is_dir()
-                        else []
-                    )
+                    try:
+                        caps = (
+                            sorted(p.name for p in (spec_dir / "specs").iterdir() if p.is_dir())
+                            if (spec_dir / "specs").is_dir()
+                            else []
+                        )
+                    except OSError:
+                        caps = []  # 目录扫描期 IO/权限错误降级为空态，与 _read_target 一致
                     if len(caps) == 1:
                         rel = f"specs/{caps[0]}/spec.md"
                     else:

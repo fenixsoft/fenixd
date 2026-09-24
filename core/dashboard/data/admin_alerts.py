@@ -39,10 +39,23 @@ def get_resolved_alerts(project_root, limit: int = 50) -> list:
 
 
 def mark_alert_handled(project_root, alert_id: str) -> bool:
-    """标记某条升级告警为已处理。返回是否找到并更新。"""
-    from core.admin_store import AdminStore
+    """标记某条告警为已处理。返回是否找到并更新。
 
-    return AdminStore(project_root).mark_handled(alert_id)
+    按 kind 分派（code-review item 08f4820799eb）：ESCALATION 走
+    ``mark_handled``（既有人工告警闭环锚点），SIGNAL 走
+    ``mark_signal_handled``——alert-resolve 对不可裁决信号的 400 文案指引
+    「标记已处理」（POST /api/alerts/<id>/handled），旧实现仅匹配
+    ESCALATION，对 SIGNAL 记录恒 False → 404，形成处置死胡同。
+    """
+    from core.admin_store import AdminStore, SIGNAL
+
+    store = AdminStore(project_root)
+    alert = next((r for r in store.read_all() if r.get("id") == alert_id), None)
+    if alert is None:
+        return False
+    if alert.get("kind") == SIGNAL:
+        return store.mark_signal_handled(alert_id)
+    return store.mark_handled(alert_id)
 
 
 def mark_all_alerts_handled(project_root) -> int:

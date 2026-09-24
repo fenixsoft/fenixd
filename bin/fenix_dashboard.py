@@ -44,8 +44,6 @@ from core.dashboard import data as dash_data  # noqa: E402
 from core.dashboard.registry import Registry, DEFAULT_PORT  # noqa: E402
 from core.dashboard.server import serve, STATIC_DIR  # noqa: E402
 
-STATE_PATH = PROJECT_ROOT / ".fenix" / "STATE.md"
-LOGS_DIR = PROJECT_ROOT / ".fenix" / "logs"
 PROGRESS_DIR = PROJECT_ROOT / ".fenix" / "verify-progress"
 
 # ANSI 颜色
@@ -160,7 +158,9 @@ def get_active_agents():
         # ps 不可用等环境问题：告警一行便于排查，但不中断仪表盘刷新
         print(f"{DIM}get_active_agents: ps 不可用: {e}{RESET}", file=sys.stderr)
         return []
-    except Exception:
+    except Exception as e:
+        # 兜底告警（含 ps 挂起超时等）：避免进程检测整体失效时只显示 0 无从排查
+        print(f"{DIM}get_active_agents: 探测失败: {type(e).__name__}: {e}{RESET}", file=sys.stderr)
         return []
 
 
@@ -440,7 +440,8 @@ def check_daemon():
             timeout=2,
         )
         return r.stdout.strip() == "YES"
-    except Exception:
+    except Exception as e:
+        print(f"{DIM}check_daemon: 探测失败: {type(e).__name__}: {e}{RESET}", file=sys.stderr)
         return False
 
 

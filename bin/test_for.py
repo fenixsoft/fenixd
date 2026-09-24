@@ -19,6 +19,12 @@ from pathlib import Path
 from typing import Set, Dict, List, Optional
 import subprocess
 
+# 有界运行约定（对齐 bin/run_full_suite.py 的 fix-run-hang-amplification）：
+# faulthandler_timeout 让挂起用例先打印各线程栈（定位挂点），子进程硬超时兜底
+# 中止——存量死循环挂起可超 1 小时，裸跑会让开发者终端被无限期挂住。
+FAULTHANDLER_TIMEOUT_SECONDS = 300
+SUBPROCESS_TIMEOUT_SECONDS = 3600
+
 
 def normalize_module_path(file_path: str) -> str:
     """Convert file path to Python module path."""
@@ -151,7 +157,12 @@ def apply_explicit_mappings(target_files: List[str], explicit_map: Dict[str, str
 
 
 def run_tests(test_files: List[str], dry_run: bool = False) -> bool:
-    """Run the specified test files."""
+    """Run the specified test files.
+
+    Bounded run: pytest runs with ``-o faulthandler_timeout`` (dumps thread
+    stacks on hangs) and a subprocess hard timeout; on timeout a hint points
+    to ``bin/run_full_suite.py`` for hanging-test triage.
+    """
     if not test_files:
         print("No tests affected. Consider running full test suite.")
         return True
@@ -162,11 +173,30 @@ def run_tests(test_files: List[str], dry_run: bool = False) -> bool:
             print(f"  {test_file}")
         return True
 
-    # Run pytest with selected test files
-    cmd = [sys.executable, "-m", "pytest", "-v"] + test_files
+    # Run pytest with selected test files (bounded, 同 run_full_suite 约定)
+    cmd = [
+        sys.executable,
+        "-m",
+        "pytest",
+        "-v",
+        "-o",
+        f"faulthandler_timeout={FAULTHANDLER_TIMEOUT_SECONDS}",
+    ] + test_files
     print(f"Running: {' '.join(cmd)}")
 
-    result = subprocess.run(cmd, cwd=Path(__file__).resolve().parent.parent)
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=Path(__file__).resolve().parent.parent,
+            timeout=SUBPROCESS_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        print(
+            f"[test_for] 测试运行超过 {SUBPROCESS_TIMEOUT_SECONDS}s，已中止"
+            f"（faulthandler {FAULTHANDLER_TIMEOUT_SECONDS}s 起打印的挂起栈见上方输出）；"
+            f"挂起定位请改用: python3 bin/run_full_suite.py"
+        )
+        return False
     return result.returncode == 0
 
 

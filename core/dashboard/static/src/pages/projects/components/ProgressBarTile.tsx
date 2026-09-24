@@ -16,7 +16,7 @@ export default function ProgressBarTile(
     status?: 'normal' | 'exception' | 'active' | 'success';
   },
 ) {
-  const p = total > 0 ? Math.round((done / total) * 100) : 0;
+  const p = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
   return (
     <>
       <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', margin: '4px 0 10px', flexWrap: 'wrap' }}>

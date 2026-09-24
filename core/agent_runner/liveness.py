@@ -1216,7 +1216,8 @@ class LivenessSupervisor:
                 remaining = deadline - time.time()
                 if remaining <= 0:
                     break
-                alive = [n for n, p in self._pm._running_agents.items() if p.poll() is None]
+                # run 线程收尾会并发 pop（runner.py），先取快照避免迭代中 dict 变化
+                alive = [n for n, p in list(self._pm._running_agents.items()) if p.poll() is None]
                 if not alive:
                     break
                 time.sleep(min(0.2, remaining))

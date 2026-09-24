@@ -15,12 +15,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
 from core.dashboard import data as dashboard_data
+
+logger = logging.getLogger("fenixd.dashboard.code_review_routes")
 
 # 手动触发信号文件（daemon 主循环经 fenixd._check_code_review_requests 消费）。
 # 与 admin_invoke_request / cancel_run_request / approve_push_request 同属
@@ -131,12 +134,9 @@ class H11CodeReviewRoutesMixin:
         except Exception as exc:
             # 判定异常按未运行兜底，宁拒勿假放行；降级可观测（item 0d1ba0c6efc0）
             state = "stopped"
-            _log = getattr(self, "logger", None)
-            if _log is not None:
-                _log.warning(
-                    "code_review_routes",
-                    f"hosting_state 判定异常，按 stopped 兜底（宁拒勿假放行）: {exc!r}",
-                )
+            logger.warning(
+                "hosting_state 判定异常，按 stopped 兜底（宁拒勿假放行）: %r", exc
+            )
         if state == "unmanaged":
             self._error(
                 409,
@@ -253,12 +253,9 @@ class H11CodeReviewRoutesMixin:
         except Exception as exc:
             # 判定异常按未运行兜底，宁拒勿假放行；降级可观测（item 0d1ba0c6efc0）
             state = "stopped"
-            _log = getattr(self, "logger", None)
-            if _log is not None:
-                _log.warning(
-                    "code_review_routes",
-                    f"hosting_state 判定异常，按 stopped 兜底（宁拒勿假放行）: {exc!r}",
-                )
+            logger.warning(
+                "hosting_state 判定异常，按 stopped 兜底（宁拒勿假放行）: %r", exc
+            )
         if state == "unmanaged":
             self._error(
                 409,
@@ -417,12 +414,9 @@ class H11CodeReviewRoutesMixin:
             # 内部路径/细节透给 HTTP 客户端，与 _api_code_review_generate_spec
             # 已声明的泛化文案策略同款（本文件同款 logger 兜底模式）——
             # 细节降级经服务端日志留痕，客户端收通用消息。
-            _log = getattr(self, "logger", None)
-            if _log is not None:
-                _log.warning(
-                    "code_review_routes",
-                    f"状态流转异常（item_id={item_id}）: {type(e).__name__}: {e}",
-                )
+            logger.warning(
+                "状态流转异常（item_id=%s）: %s: %s", item_id, type(e).__name__, e
+            )
             self._error(500, "状态流转失败（详见服务端日志）")
             return
         if not result.get("ok"):

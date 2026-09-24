@@ -128,7 +128,8 @@ def scan_server_routes(root: Path) -> list:
             route = m.group(1)
             if not route.startswith("/"):
                 continue
-            entries.append((route, _rel_line(f, root, i), "GET"))
+            # 中性值：本级不做方法归属（与 docstring 一致），渲染时省略方法标签
+            entries.append((route, _rel_line(f, root, i), "TEXT"))
     return entries
 
 
@@ -287,9 +288,13 @@ def main() -> int:
     if warning_buf:
         out.append("\n" + "".join(warning_buf))
     out.append("\n## API 路由\n")
-    api_entries = [e for e in deduped if e[2] in ("GET", "POST", "DELETE")]
+    api_entries = [
+        e for e in deduped if e[2] in ("GET", "POST", "DELETE", "TEXT")
+    ]
     for route, src, method in api_entries:
-        out.append(f"- `{route}` [{method}] ({src})\n")
+        # 仅显式归属方法（表驱动级）才带 [METHOD] 标签；fallback 级中性值省略
+        label = f" [{method}]" if method in ("GET", "POST", "DELETE") else ""
+        out.append(f"- `{route}`{label} ({src})\n")
     out.append("\n## SPA 页面\n")
     for route, src, _ in [e for e in deduped if e[2] == "SPA"]:
         out.append(f"- `{route}` ({src})\n")
