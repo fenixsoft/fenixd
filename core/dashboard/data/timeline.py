@@ -184,7 +184,7 @@ def _ocr_lane_summary(project_root, run_id: str) -> str:
     return ""
 
 
-_DAEMON_LOG_RE = re.compile(r"fenixd\.log(?:\.(\d+))?")
+_DAEMON_LOG_RE = re.compile(r"fenixd.*\.log(?:\.(\d+))?")
 
 
 def _rotated_log_files(logs_dir: Path) -> list:
@@ -197,7 +197,9 @@ def _rotated_log_files(logs_dir: Path) -> list:
     轮转点之间的 Transition/打回日志全部留在备份里不被读取，时间轴开段静默
     缺失。故按正则枚举全部轮转产物并按 旧→新 排序——跨文件拼接窗口保持时间
     单调，且「开始验证」行靠遍历序取最后一轮（verify_start_ts），旧→新遍历下
-    最后赋值恰为时间最新。非轮转命名（fenixd.log.lock 等伴随文件）不命中
+    最后赋值恰为时间最新。正则同时保留原 glob 的日期命名全集
+    （fenixdYYYY-MM-DD.log 等非轮转历史产物，与基底同序位、按文件名排序），
+    不使历史日志脱离枚举；非日志命名（fenixd.log.lock 等伴随文件）不命中
     正则，跳过。
     """
     out: list[tuple[int, str, Path]] = []
