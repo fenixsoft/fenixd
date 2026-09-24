@@ -767,7 +767,14 @@ _QG_FORM_DRIFT_SIGNAL_TYPE = "quality-gates-form-drift"
 
 
 def _alert_quality_gates_form_drift(
-    runner, spec_name: str, rel: str, violation_class: str, description: str
+    runner,
+    spec_name: str,
+    rel: str,
+    violation_class: str,
+    description: str,
+    *,
+    location: str,
+    gate_id: str | None = None,
 ) -> None:
     """quality-gates.json 形态违规写人工告警（宽松对账可见性增强、不加强度）。
 
@@ -783,7 +790,21 @@ def _alert_quality_gates_form_drift(
     - ``violation_class`` 机器可读类别（missing-gates / bad-json /
       out-of-contract-gate-id / out-of-enum-status 四值，与四类违规一一对应）
       ——signal_type 单值固定，is_inflight 按 (spec, signal_type,
-      violation_class) 判在途，否则一类未处理会抑制其余三类。
+      violation_class) 判在途，否则一类未处理会抑制其余三类；
+    - ``location`` 漂移副本标记（worktree / main-tree）——``rel`` 对两处候选
+      位置是同一常量串，仅凭 file/evidence 无法定位实际漂移的是哪个副本；
+    - ``gate_id`` 仅按 gate 的类别（out-of-contract-gate-id /
+      out-of-enum-status）携带违规 gate-id；文件级类别（missing-gates /
+      bad-json）无 gate 维度，缺省不写。
+
+    在途身份 = (spec, signal_type, violation_class, location, gate_id)：除按
+    类别防跨类抑制外，再按副本与 gate 实例区分——否则一处告警未处理期间，
+    另一副本/另一 gate-id 的同类漂移会被 append_if_absent 静默去重，只留
+    daemon 日志（code-review item 26cf034dbb6f）。残留限制：同一身份在未
+    处理期间仍只保留首见一条，后续复现不刷新已存记录的 description/evidence
+    （append_if_absent 语义，首见为准），身份内逐次漂移仅 daemon 日志留痕；
+    修复前落盘的存量记录（无 location/gate_id 字段）不计入在途，升级后同类
+    漂移会再落一条新告警。
 
     写入整体 try/except fail-open（仅记日志），不影响 run 收尾主流程。
     """
@@ -791,22 +812,31 @@ def _alert_quality_gates_form_drift(
         from core.admin_store import SIGNAL, AdminStore
 
         store = AdminStore(getattr(runner, "project_root", None), runner.logger)
+        entry = {
+            "kind": SIGNAL,
+            "signal_type": _QG_FORM_DRIFT_SIGNAL_TYPE,
+            "spec": spec_name,
+            "severity": "info",
+            "description": description,
+            "file": rel,
+            "location": location,
+            "violation_class": violation_class,
+            "evidence": (
+                f"file={rel}; location={location}; violation_class={violation_class}"
+                + (f"; gate_id={gate_id}" if gate_id else "")
+            ),
+        }
+        if gate_id is not None:
+            entry["gate_id"] = gate_id
         store.append_if_absent(
-            {
-                "kind": SIGNAL,
-                "signal_type": _QG_FORM_DRIFT_SIGNAL_TYPE,
-                "spec": spec_name,
-                "severity": "info",
-                "description": description,
-                "file": rel,
-                "violation_class": violation_class,
-                "evidence": f"file={rel}; violation_class={violation_class}",
-            },
+            entry,
             is_inflight=lambda r: (
                 r.get("kind") == SIGNAL
                 and r.get("signal_type") == _QG_FORM_DRIFT_SIGNAL_TYPE
                 and r.get("spec") == spec_name
                 and r.get("violation_class") == violation_class
+                and r.get("location") == location
+                and r.get("gate_id") == gate_id
                 and not r.get("handled")
             ),
         )
@@ -826,28 +856,37 @@ def _check_quality_gates_soft(runner, spec_name: str, wt_path: Path | None) -> N
       写 admin_alerts 人工告警（fix-quality-gates-flat-form-and-explainability
       3.1，可见性增强不加强度：signal_type=quality-gates-form-drift、
       severity=info、kind=SIGNAL、不注册 choices，未处理期间按
-      (spec, signal_type, violation_class) 去重）。
+      (spec, signal_type, violation_class, location, gate_id) 去重——副本与
+      gate 实例各自成条，见 _alert_quality_gates_form_drift）。
 
-    双位置候选与读侧一致（worktree 优先、主树兜底），两处各自独立检查。
-    常量经懒导入取自 dashboard 读侧单点（模块加载期反向 import 会成环，D4
-    先例；调用点在 run 收尾，无循环风险）。键名以 quality_gates.py 固化契约为
-    唯一真源，禁止在本处另写同义词表。
+    双位置候选与读侧一致（worktree 优先、主树兜底），两处各自独立检查，并以
+    location 标记（worktree / main-tree）随告警落库——``rel`` 对两处是同一
+    常量串，无标记则告警无法区分实际漂移副本。常量经懒导入取自 dashboard
+    读侧单点（模块加载期反向 import 会成环，D4 先例；调用点在 run 收尾，
+    无循环风险）。键名以 quality_gates.py 固化契约为唯一真源，禁止在本处
+    另写同义词表。
     """
     from core.dashboard.data.quality_gates import GATE_STATUSES, RUN_GATE_IDS
 
     rel = f".fenix/verify-progress/{spec_name}/quality-gates.json"
-    candidates = []
+    candidates: list[tuple[Path, str]] = []
     if wt_path is not None:
         candidates.append(
-            Path(wt_path) / ".fenix" / "verify-progress" / spec_name / "quality-gates.json"
+            (
+                Path(wt_path) / ".fenix" / "verify-progress" / spec_name / "quality-gates.json",
+                "worktree",
+            )
         )
     root = getattr(runner, "project_root", None)
     if isinstance(root, (str, Path)):
         candidates.append(
-            Path(root) / ".fenix" / "verify-progress" / spec_name / "quality-gates.json"
+            (
+                Path(root) / ".fenix" / "verify-progress" / spec_name / "quality-gates.json",
+                "main-tree",
+            )
         )
     seen: set = set()
-    for path in candidates:
+    for path, location in candidates:
         resolved = path.resolve()
         if resolved in seen:
             continue
@@ -866,6 +905,7 @@ def _check_quality_gates_soft(runner, spec_name: str, wt_path: Path | None) -> N
             _alert_quality_gates_form_drift(
                 runner, spec_name, rel, "bad-json",
                 f"quality-gates.json 无法解析（宽松对账，仅告警放行）: {rel} ({e})",
+                location=location,
             )
             continue
         gates = data.get("gates") if isinstance(data, dict) else None
@@ -876,6 +916,7 @@ def _check_quality_gates_soft(runner, spec_name: str, wt_path: Path | None) -> N
             _alert_quality_gates_form_drift(
                 runner, spec_name, rel, "missing-gates",
                 f"quality-gates.json 顶层缺 gates 对象（宽松对账，仅告警放行）: {rel}",
+                location=location,
             )
             continue
         for gid, entry in gates.items():
@@ -888,6 +929,7 @@ def _check_quality_gates_soft(runner, spec_name: str, wt_path: Path | None) -> N
                     runner, spec_name, rel, "out-of-contract-gate-id",
                     f"quality-gates.json 出现契约外 gate-id='{gid}'（宽松对账，仅"
                     f"告警放行；合法集 {list(RUN_GATE_IDS)}）: {rel}",
+                    location=location, gate_id=gid,
                 )
             if not isinstance(entry, dict) or entry.get("status") not in GATE_STATUSES:
                 bad = entry.get("status") if isinstance(entry, dict) else "<非对象>"
@@ -899,6 +941,7 @@ def _check_quality_gates_soft(runner, spec_name: str, wt_path: Path | None) -> N
                     runner, spec_name, rel, "out-of-enum-status",
                     f"quality-gates.json gate-id='{gid}' status='{bad}' 不在枚举"
                     f"（宽松对账，仅告警放行；合法值 {list(GATE_STATUSES)}）: {rel}",
+                    location=location, gate_id=gid,
                 )
     return None
 
