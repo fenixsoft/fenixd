@@ -4297,7 +4297,9 @@ class AgentRunner:
                 )
             # ── fix-agent-lane-efficiency D3：上下文经济性指标落盘 ──
             # 纯读侧统计（assistant 事件的 message.usage 累计），写入 transcript
-            # 的 run_metrics 行（终态行之后追加，不改既有行顺序）+ 日志；超阈值
+            # 的 run_metrics 行（终态行之前追加：result/cancelled/frozen-terminated
+            # 终态行在本块之后才落盘，保证文件末行恒为终态——classify_run 读末行
+            # 判状态；MUST NOT 把本块调到终态行之后）+ 日志；超阈值
             # 打 WARNING（不阻断 run、不触发独立人工告警）。最小样本门槛：turns
             # < 5 或 usage 缺失/零轮空跑只落指标不打告警（零轮空跑噪声抑制）。
             try:
@@ -4306,7 +4308,7 @@ class AgentRunner:
                 _cr = context_metrics["total_cache_read_tokens"]
                 _peak = context_metrics["context_peak_tokens"]
                 _per_turn = (_inp // _turns) if _turns > 0 else 0
-                # 指标行落盘（终态行之后，type 为 run_metrics）
+                # 指标行落盘（先于终态行，type 为 run_metrics）
                 append_run_line(run_file, {
                     "type": "run_metrics",
                     "run_id": run_id,
@@ -4374,8 +4376,9 @@ class AgentRunner:
                 self._cancel_clear(base_run_id)
             # add-freeze-stop-inflight-agents D1：frozen-terminated 终态行与
             # cancelled 行同位置（finally 内、join 之后、result 行后）——保证
-            # 为文件末行级终态（run_metrics 行在终态行之后追加是既有常态、
-            # 不属于终态事件，不影响 classify_run 的末行判定）。
+            # 为文件末行级终态（run_metrics 行在终态行之前追加是既有常态、
+            # 不属于终态事件，不影响 classify_run 的末行判定；MUST NOT 把
+            # run_metrics 调到终态行之后，否则文件末行不再是终态）。
             if frozen_error is not None:
                 append_run_line(run_file, {
                     "type": "frozen-terminated",

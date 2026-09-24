@@ -549,11 +549,13 @@ def get_run_events(project_root, run_id: str, tail: int = 300, offset_from_end: 
     }
 
 
-def read_run_events_between(project_root, run_id: str, start_offset: int) -> list:
+def read_run_events_between(project_root, run_id: str, start_offset: int) -> "list | None":
     """读取运行产物从 start_offset 字节到 EOF 的事件（增量推送用）。
 
     O_APPEND 只增写：按上次记录的字节偏移读取新增部分，避免整文件重读。
     跨扫描边界被截断的半个 JSON 行会降级为 stderr 条目（_parse_run_lines 容错）。
+    读失败（文件被并发归档/移除等 OSError）返回 None 以区别于「无新增」的 []，
+    调用侧（watcher 增量推送）据此保留旧基线，下一轮重读同一区间。
     """
     run_file = Path(project_root) / ".fenix" / "runs" / f"{run_id}.jsonl"
     try:
@@ -561,7 +563,7 @@ def read_run_events_between(project_root, run_id: str, start_offset: int) -> lis
             f.seek(start_offset)
             raw = f.read()
     except OSError:
-        return []
+        return None
     text = raw.decode("utf-8", errors="replace")
     return _parse_run_lines(text.splitlines())
 

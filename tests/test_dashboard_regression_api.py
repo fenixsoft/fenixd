@@ -342,7 +342,7 @@ class TestRegressionAutodraftAPI:
     """POST /api/regression/autodraft：同步 AI 生成 regression 段。
 
     同步语义（headless claude 在 HTTP 线程内起草，返回即终态）：claude 以
-    monkeypatch subprocess.run 模拟——绝不真跑；「落位」用 on_run 回调在
+    monkeypatch subprocess.Popen 模拟——绝不真跑；「落位」用 on_run 回调在
     fake claude 被调时写 verify.yaml 模拟，权威判定走 load_verify_contract。
     """
 
@@ -351,25 +351,37 @@ class TestRegressionAutodraftAPI:
     MARKER_FAILED = "FENIX_REGRESSION_DRAFT_RESULT: failed"
 
     def _fake_claude(self, monkeypatch, stdout="", returncode=0, on_run=None, raise_exc=None):
-        """patch subprocess.run 为 fake claude：不真跑，返回可控行为。
+        """patch subprocess.Popen 为 fake claude：不真跑，返回可控行为。
 
         on_run(cmd, cwd)：fake 被调时的副作用钩子（模拟 claude 落位产物）；
-        raise_exc：模拟 TimeoutExpired 等异常。
+        raise_exc：模拟 TimeoutExpired 等异常（communicate 时抛出）。
+        seam 随 item 594515e3b345（超时进程组清场）从 subprocess.run 迁到
+        subprocess.Popen：端点改用 Popen + communicate(timeout)。
         """
         import subprocess as _sp
 
         seen = {}
 
-        def fake_run(cmd, **kwargs):
-            seen["cmd"] = cmd
-            seen["cwd"] = kwargs.get("cwd")
-            if on_run is not None:
-                on_run(cmd, kwargs.get("cwd"))
-            if raise_exc is not None:
-                raise raise_exc
-            return _sp.CompletedProcess(cmd, returncode, stdout, "")
+        class _FakeProc:
+            # 不存在的 pid：超时路径 getpgid/killpg 落 ProcessLookupError → kill() 兜底
+            pid = 999_999_999
 
-        monkeypatch.setattr(_sp, "run", fake_run)
+            def __init__(self, cmd, **kwargs):
+                seen["cmd"] = cmd
+                seen["cwd"] = kwargs.get("cwd")
+                self.returncode = returncode
+                if on_run is not None:
+                    on_run(cmd, kwargs.get("cwd"))
+
+            def communicate(self, timeout=None):
+                if raise_exc is not None:
+                    raise raise_exc
+                return stdout, ""
+
+            def kill(self):
+                pass
+
+        monkeypatch.setattr(_sp, "Popen", _FakeProc)
         return seen
 
     def _signals(self, proot: Path):

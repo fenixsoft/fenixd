@@ -456,6 +456,8 @@ class TestDispatchCooldownWindow(unittest.TestCase):
         eng = PMEngine.__new__(PMEngine)  # 跳过 __init__，只装配冷却路径所需属性
         eng.shutting_down = False
         eng._pending_dispatches = set()
+        # __new__ 绕过 __init__：补单飞守卫锁（_on_spec_ready 的「检查+登记」原子化依赖）
+        eng._dispatch_guard_lock = threading.Lock()
         eng._last_dispatch_at = {} if last_dispatch_at is None else last_dispatch_at
         eng.logger = MagicMock()
         return eng

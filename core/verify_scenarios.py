@@ -285,8 +285,6 @@ def save_scenario_set(project_root, scenario_set: ScenarioSet) -> Path:
     非 ScenarioEntry 条目按校验失败剔除留痕（2eaebbf39624：原 ``dict(e)``
     伪兜底转换出的裸 dict 无 ``to_dict``、写回阶段必崩，契约外类型不转换）。
     """
-    import logging
-
     clean_entries: list[ScenarioEntry] = []
     rejected: list[str] = []
     for e in scenario_set.scenarios:

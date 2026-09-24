@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import threading
 from datetime import datetime, timezone
@@ -379,21 +380,43 @@ class H12RegressionRoutesMixin:
             full_contract = contract is None
             prompt = _autodraft_prompt(proot, project["name"], full_contract)
             try:
-                proc = subprocess.run(
+                proc = subprocess.Popen(
                     ["claude", "-p", prompt, "--permission-mode", "bypassPermissions"],
                     cwd=str(proot),
-                    timeout=AUTODRAFT_TIMEOUT_SECONDS,
-                    shell=False,
-                    capture_output=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
                     text=True,
+                    # 独立会话组（对齐 verify_engine/cli_runner 惯例）：超时可
+                    # killpg 整组清场，杜绝只杀直接子进程留下的孤儿孙进程
+                    start_new_session=True,
                 )
+                stdout, stderr = proc.communicate(timeout=AUTODRAFT_TIMEOUT_SECONDS)
             except subprocess.TimeoutExpired:
+                # 只杀直接子进程 claude 不够：它派生的 bash/写文件孙进程会沦为
+                # 孤儿继续存活，而本路径返回后 finally 释放单飞锁，用户重试的
+                # 新起草进程将与孤儿并发写 verify.yaml / git index（正是单飞
+                # 锁要防的踩踏），孤儿稍后自行落位还会造成「已报失败但
+                # regression 段事后出现」。start_new_session 使 claude 为组长，
+                # killpg 整组终止后锁释放时已无在途写者。
+                try:
+                    pgid = os.getpgid(proc.pid)
+                    os.killpg(pgid, signal.SIGKILL)
+                except (ProcessLookupError, OSError):
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                try:
+                    proc.communicate()  # 回收已杀进程、排干管道
+                except Exception:
+                    pass
                 _log = getattr(self, "logger", None)
                 if _log is not None:
                     _log.warning(
                         "regression_routes",
                         f"AI 生成 regression 段超时（>{AUTODRAFT_TIMEOUT_SECONDS}s，"
-                        f"project={project['name']}，full_contract={full_contract}）",
+                        f"project={project['name']}，full_contract={full_contract}）；"
+                        f"已终止整个进程组，无在途孤儿起草进程",
                     )
                 self._json({"ok": False, "error": "生成超时（AI 起草未在预算时间内完成）"})
                 return
@@ -416,7 +439,7 @@ class H12RegressionRoutesMixin:
                     _log.warning(
                         "regression_routes",
                         f"claude CLI 非零退出码（project={project['name']}）: "
-                        f"{proc.returncode}；stderr 尾部: {(proc.stderr or '')[-400:]}",
+                        f"{proc.returncode}；stderr 尾部: {(stderr or '')[-400:]}",
                     )
                 self._json({"ok": False, "error": "调用 claude CLI 失败"})
                 return
@@ -424,7 +447,7 @@ class H12RegressionRoutesMixin:
             # marker 解析：取 stdout 尾部最后一个 marker 行（claude 可能用代码块
             # 包裹输出，剥反引号后前缀匹配）
             marker = ""
-            stdout_tail = (proc.stdout or "")[-2000:]
+            stdout_tail = (stdout or "")[-2000:]
             for line in stdout_tail.splitlines():
                 s = line.strip().strip("`").strip()
                 if s.startswith("FENIX_REGRESSION_DRAFT_RESULT:"):

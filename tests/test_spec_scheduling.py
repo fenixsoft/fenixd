@@ -334,6 +334,8 @@ class TestStartAfterDispatchGate(unittest.TestCase):
         pm.logger = _SilentLogger()
         pm.shutting_down = False
         pm._pending_dispatches = set()
+        # __new__ 绕过 __init__：补单飞守卫锁（_on_spec_ready 的「检查+登记」原子化依赖）
+        pm._dispatch_guard_lock = threading.Lock()
         # __new__ 绕过 __init__：补派发冷却登记（engine.py 派发冷却窗口依赖）
         pm._last_dispatch_at = {}
         pm._dispatch_backoffed = lambda spec: False
@@ -1025,6 +1027,7 @@ class TestManualActivation(unittest.TestCase):
         pm.logger = _SilentLogger()
         pm.shutting_down = False
         pm._pending_dispatches = set()
+        pm._dispatch_guard_lock = threading.Lock()  # __new__ 绕过 __init__：补单飞守卫锁
         pm._last_dispatch_at = {}
         pm._dispatch_backoffed = lambda spec: False
         pm._dependencies_satisfied = lambda n: True

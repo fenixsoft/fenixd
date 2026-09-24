@@ -744,8 +744,12 @@ class G1LifecycleMixin:
         agent 进程时，同样返回 True（重建登记），防止创建第二个并发 worktree。
         """
         # [fenix-ignore:a83d069b9197] 台账所述子串比对已修复为 _lock_spec_name 精确比对（split(":")[0]==spec），spec 名互为子串不再误判持锁
+        # sorted() 快照先遍历（同 refresh_locks）：并发 create/cleanup 增删 _spec_locks 时，
+        # 无锁直接迭代会抛 "Set changed size during iteration"；不整方法持 _spec_lock_th
+        # 是因下方 _release_spec_locks 会再次取同一非重入锁。
         registered = any(
-            self._lock_spec_name(lock) == spec_name for lock in self._spec_locks
+            self._lock_spec_name(lock) == spec_name
+            for lock in sorted(self._spec_locks)
         )
         if not registered:
             # 无在册锁：以进程为真相兜底（daemon 重启 / 孤儿 resume 场景），

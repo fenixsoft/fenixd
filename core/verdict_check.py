@@ -482,7 +482,12 @@ def _scenario_has_substantive_evidence(scenario: dict) -> bool:
     screenshots = evidence.get("screenshots") or scenario.get("screenshots") or []
     if isinstance(screenshots, list) and any(isinstance(s, str) and s.strip() for s in screenshots):
         return True
+    # screenshot_labels 非 dict 按空处理（与 compute_attribution_level 的
+    # item 6151f22ae34d 防御同口径：非 dict 真值在此被当「有算法标签」
+    # 会把纯推测归因抬升为 evidence-backed，旁路 speculative 抑制门）。
     labels = scenario.get("screenshot_labels") or {}
+    if not isinstance(labels, dict):
+        labels = {}
     if labels:
         return True
     for key in ("first_failed_step", "first_frame_ok"):

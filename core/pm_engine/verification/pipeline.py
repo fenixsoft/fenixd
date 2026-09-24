@@ -1436,8 +1436,6 @@ class VerificationPipeline:
     # 其余场景采信缓存判定（合成报告时标注 cached_source）。
     def _fix_diff_files(self, head_at_write: str):
         """head_at_write..HEAD 的修复 diff 文件集；无法计算返回 None（fail-closed）。"""
-        import subprocess
-
         try:
             out = subprocess.run(
                 ["git", "diff", "--name-only", f"{head_at_write}..HEAD"],

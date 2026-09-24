@@ -426,7 +426,15 @@ class H11CodeReviewRoutesMixin:
         result_path = proot / CODE_FIX_REQUEST_RESULT
         try:
             with result_path.open("r", encoding="utf-8") as f:
-                prev_created = str(json.load(f).get("request_created") or "")
+                data = json.load(f)
+            # item 532fa1df1b2d：合法非 object JSON（[]/null 等）无 .get，先判
+            # 类型，非 dict 按上一轮残留处置（维持预删语义），勿让 AttributeError
+            # 穿透端点。
+            prev_created = (
+                str(data.get("request_created") or "")
+                if isinstance(data, dict)
+                else ""
+            )
             prev_dt = _parse_iso_utc(prev_created)
             created_dt = _parse_iso_utc(created)
             stale = created_dt is None or prev_dt is None or prev_dt < created_dt

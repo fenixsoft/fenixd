@@ -1947,13 +1947,11 @@ export async function getHelpDoc(name: string): Promise<HelpDocItem> {
 // ── 项目级自由会话（dashboard-live-session） ───────────────────────────────
 
 // 会话事件是 claude CLI stream-json 原始事件（与 RunEvent 同构），扩展
-// 会话侧字段（uuid 去重键 / session_id 归属 / subtype 过滤 / line 兜底行）。
+// 会话侧字段（uuid 去重键 / session_id 归属）。
 // 继承 RunEvent 使 runEventsToChatMessages(events) 可直接接收 SessionEvent[]。
 export interface SessionEvent extends RunEvent {
   uuid?: string;
   session_id?: string;
-  subtype?: string;
-  line?: string;
   isReplay?: boolean;
   message?: unknown;
 }

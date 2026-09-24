@@ -207,7 +207,10 @@ def _load_shutdown_drain_seconds() -> int:
         # PyYAML 缺失时按契约回退 0（= 现行快速停机），仅告警不中断看门狗
         log("PyYAML 未安装，无法解析 admin.shutdown_drain_seconds，回退 0 (non-blocking)")
         return 0
-    except Exception:
+    except Exception as e:
+        # 其余解析/读取异常（YAML 损坏、非法值、权限等）同样按契约回退 0，
+        # 但须留观测痕迹——否则排水窗口被无声截断且 supervisor.log 零线索
+        log(f"解析 {cfg_path} 的 admin.shutdown_drain_seconds 失败，回退 0 (non-blocking): {e}")
         return 0
 
 
