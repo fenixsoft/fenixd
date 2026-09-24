@@ -388,6 +388,11 @@ class StateParser:
                     # 顺延标记——False 不转会被误判为恒顺延（_defer_merge_back
                     # 读回字符串 "False" 为 truthy）。
                     "_merge_retry_pending",
+                    # evo-add-wip-defer-merge-retry-consumer 1.2：WIP 重叠闸门
+                    # 阻断的延迟合回等待标志——False 不转会 STATE.md 往返后
+                    # 读回字符串 "False" 为 truthy，周期消费者会把已清账条目
+                    # 误判为仍带标志（同 _merge_retry_pending 先例）。
+                    "_wip_gate_deferred",
                 ):
                     # 布尔字段显式转换：字符串 "False" 也是 truthy，不转会把
                     # 解冻后的 spec 永久误判为冻结（fix-restart-dual-dispatch S4）；
@@ -1732,6 +1737,10 @@ class StateMachine:
                         # 一并清除待 re-merge 标记（fix-recovery-branch-anchor 3.4）：
                         # 清空重建路径不得残留标记，避免污染下一轮
                         "_repair_awaiting_remerge": False,
+                        # WIP 等待标志复位（evo-add-wip-defer-merge-retry-consumer
+                        # 1.2）：清空重建走全新派发，不得残留标志，避免周期消费者
+                        # 在无分支锚点的全新条目上空转重试。
+                        "_wip_gate_deferred": False,
                         "_retry_count": 0,
                         "_merge_fp": None,
                         "_merge_streak": 0,
@@ -1998,6 +2007,11 @@ class StateMachine:
                 # dispatch 层据此识别「恢复续做」路径：在保留分支的 worktree 内
                 # resume（claude --resume + 继承注记），而非从零新建分支。
                 "_recovery_resume": True,
+                # WIP 等待标志复位（evo-add-wip-defer-merge-retry-consumer 1.2，
+                # 三条清除写点之一）：保留续做落 ready 后恢复 run 在飞期间，
+                # 陈旧标志会让周期消费者把半成品分支过早 merge 进主树、并与
+                # 在飞 run 收尾竞态——boot 复位 MUST 清标志。
+                "_wip_gate_deferred": False,
                 "_retry_count": 0,
                 "_merge_fp": None,
                 "_merge_streak": 0,
