@@ -2586,8 +2586,11 @@ class PMEngine:
         - **archive 下新增/修改**：`spec/archive/<spec>-<ts>/...` 的
           未跟踪（??）/A/M 状态行（rename 检测 R 的行任一侧命中同样计入）。
 
-        返回 ``(has_residue: bool, spec_names: list[str])``。判定失败时按
-        「无残留」处理（fail-open：不因检测异常阻塞 push 主流程）。
+        返回三元组 ``(found: bool, spec_names: list[str], residue_paths:
+        list[str])``——spec_names 用于 commit message 标签；residue_paths 是
+        去重后的残留文件相对路径清单，调用方 _archive_auto_commit 据此收窄
+        git add 范围。判定失败时按「无残留」处理（fail-open：不因检测异常
+        阻塞 push 主流程）。
         """
         try:
             result = subprocess.run(

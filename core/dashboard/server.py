@@ -239,7 +239,10 @@ def _find_dashboard_occupant(port: int) -> dict | None:
                         return {"pid": pid, "cmdline": cmdline, "starttime": _proc_starttime(pid)}
             except OSError:
                 continue
-    except Exception:
+    except Exception as e:
+        # 探测失败≠无占用者（code-review item 532de62ce081）：兜底仍返回 None
+        # 保持行为不变，但写一行 stderr 留痕，与「端口确实空闲」区分，便于排查。
+        sys.stderr.write(f"dashboard 端口占用者探测异常（按无占用者处理）: {e}\n")
         return None
     return None
 

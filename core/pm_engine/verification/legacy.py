@@ -420,6 +420,26 @@ def _run_legacy_verification(pipeline, spec_name: str):
                     run_id=getattr(result, "run_id", "") or "",
                 )
                 return
+            # ── 守卫二：spawn 抑制（fix-repair-lane-dedup / design 守卫二）──
+            # 被验对象为 fix spec 且自身 ready/implementing（重实现在飞）时
+            # 修复由在飞重实现承载。MUST 在 bug-found transition 之前：命中即
+            # 不流转、直接 return（若先流转再抑制，spec 已迁入 bug-found，
+            # 状态与「由在飞重实现承载」语义不一致）。
+            if pipeline._context.is_fix_spec(spec_name):
+                cur = (pipeline._context.state_machine.read_one(spec_name) or {}).get("status", "")
+                if cur in ("ready", "implementing"):
+                    pipeline._context.logger.info(
+                        "pm_engine",
+                        f"守卫二：'{spec_name}' 为 fix spec 且自身 {cur}"
+                        f"（重实现在飞）——跳过派生子 fix（legacy 路径）",
+                    )
+                    pipeline._context.state_machine.update_spec(
+                        spec_name,
+                        {
+                            "error": "修复由在飞重实现承载，跳过派生子 fix",
+                        },
+                    )
+                    return
             pipeline._context.state_machine.transition(
                 spec_name, "bug-found",
                 trigger_run_id=result.run_id, agent_type="tester", channel="auto",
@@ -441,22 +461,6 @@ def _run_legacy_verification(pipeline, spec_name: str):
                 "pm_engine",
                 f"Verifier (legacy) found bugs in '{spec_name}'",
             )
-            # ── 守卫二：spawn 抑制（fix-repair-lane-dedup / design 守卫二）──
-            if pipeline._context.is_fix_spec(spec_name):
-                cur = (pipeline._context.state_machine.read_one(spec_name) or {}).get("status", "")
-                if cur in ("ready", "implementing"):
-                    pipeline._context.logger.info(
-                        "pm_engine",
-                        f"守卫二：'{spec_name}' 为 fix spec 且自身 {cur}"
-                        f"（重实现在飞）——跳过派生子 fix（legacy 路径）",
-                    )
-                    pipeline._context.state_machine.update_spec(
-                        spec_name,
-                        {
-                            "error": "修复由在飞重实现承载，跳过派生子 fix",
-                        },
-                    )
-                    return
             # 到达 bug-found 归因（全部门禁已过、非 infra，归因已前置到
             # transition 之前）＝ product 类——
             # unknown 按 product 保守处置，台账 failure_class 记 product。

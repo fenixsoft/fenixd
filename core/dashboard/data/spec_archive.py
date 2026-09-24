@@ -149,7 +149,7 @@ def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
 
             ms = _dt.datetime.now().strftime("%f")
             dest = archive_root / f"{base_name}-{ms}"
-            # 极端极端情况仍冲突，再用递增序号兜底
+            # 极端情况仍冲突，再用递增序号兜底
             n = 1
             while dest.exists():
                 dest = archive_root / f"{base_name}-{ms}-{n}"

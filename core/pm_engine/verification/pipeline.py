@@ -576,6 +576,17 @@ class VerificationPipeline:
             # ── 重试成功但产物不可读（design D1）──
             # fail-closed：无法确定性校验合规即不推进，阻断交人工；信号沿用
             # 裁决结果不可读通道，不发 verdict_evidence_invalid（非违规判定）。
+            # 写 blocked 前二次核对（code-review item 5d28c6b0fe51）：judge 重试
+            # 为长耗时操作，窗口内 spec 可能已被人工复位/冻结接管——非 testing
+            # 时 DEBUG 丢弃，不覆盖较新状态（同入口 _apply_status 判据口径）。
+            _apply_status = (self._context.state_machine.read_one(spec_name) or {}).get("status", "")
+            if _apply_status != "testing":
+                self._context.logger.debug(
+                    "pm_engine",
+                    f"裁决重试产物不可读但 spec 已非 testing（当前 "
+                    f"'{_apply_status}'）'{spec_name}' — 丢弃，不阻断",
+                )
+                return
             self._context.logger.error(
                 "pm_engine",
                 f"裁决重试 judge 成功但 report.json 不可读 '{spec_name}' — "
@@ -630,6 +641,17 @@ class VerificationPipeline:
                 if isinstance(v, dict)
             ],
         )
+        # 写 blocked 前二次核对（code-review item 5d28c6b0fe51）：judge 重试为
+        # 长耗时操作，窗口内 spec 可能已被人工复位/冻结接管——非 testing 时
+        # DEBUG 丢弃，不覆盖较新状态（同入口 _apply_status 判据口径）。
+        _apply_status = (self._context.state_machine.read_one(spec_name) or {}).get("status", "")
+        if _apply_status != "testing":
+            self._context.logger.debug(
+                "pm_engine",
+                f"裁决证据二次违规但 spec 已非 testing（当前 "
+                f"'{_apply_status}'）'{spec_name}' — 丢弃，不阻断",
+            )
+            return
         self._context.logger.error(
             "pm_engine",
             f"裁决证据分类二次校验仍失败 '{spec_name}' — 阻断推进为 blocked-env"
@@ -745,6 +767,18 @@ class VerificationPipeline:
                 )
                 return None
             if not verifier_result.ok:
+                # 写 blocked 前二次核对（code-review item 5d28c6b0fe51）：重派
+                # judge 常态 15-50 分钟，窗口内 spec 可能已被人工复位/冻结接管
+                # （frozen 门被此重派路径有意绕过）——非 testing 时 DEBUG 丢弃，
+                # 不覆盖较新状态（同上方 _apply_status 判据口径）。
+                _apply_status = (self._context.state_machine.read_one(spec_name) or {}).get("status", "")
+                if _apply_status != "testing":
+                    self._context.logger.debug(
+                        "pm_engine",
+                        f"裁决二次仍不可读但 spec 已非 testing（当前 "
+                        f"'{_apply_status}'）'{spec_name}' — 丢弃，不阻断",
+                    )
+                    return None
                 self._context.logger.error(
                     "pm_engine",
                     f"裁决结果二次仍不可读 '{spec_name}' — 阻断为 blocked"

@@ -173,9 +173,13 @@ def _collect_signals(proot, entries, active, daemon, approve_mode, promote_mode,
                 try:
                     updated = entry.get("updated")
                     if updated:
-                        anchor = datetime.fromisoformat(
-                            str(updated).replace("Z", "+00:00")
-                        ).timestamp()
+                        dt = datetime.fromisoformat(str(updated).replace("Z", "+00:00"))
+                        if dt.tzinfo is None:
+                            # 历史手写 STATE 可能无时区后缀；与 _local_ts 的
+                            # 「日志层全 UTC 写入」口径对齐，naive 显式补 UTC，
+                            # 否则 .timestamp() 按本地时区解读致停滞分钟虚高/为负。
+                            dt = dt.replace(tzinfo=timezone.utc)
+                        anchor = dt.timestamp()
                         age_min = (now_ts - anchor) / 60
                         if age_min > VERIFY_STALL_MINUTES:
                             signals.append(

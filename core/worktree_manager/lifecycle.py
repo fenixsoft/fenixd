@@ -650,7 +650,12 @@ class G1LifecycleMixin:
             return ""
 
     def cleanup_orphans(self, protected: set | None = None):
-        """Clean up any remaining worktree directories on shutdown.
+        """Clean up worktree directories registered in this process on shutdown.
+
+        仅清理本轮在册（``_active_worktrees``）的 worktree 目录。daemon 重启后
+        在册集为空，上一进程遗留的孤儿目录不在本方法覆盖范围，由陈锁清扫
+        ``cleanup_stale_worktrees``（stale_sweep.py，daemon 启动路径调用，删除
+        所有不在活动集合的目录）兜底回收，两法互补。
 
         Args:
             protected: 保护集（路径字符串集合）——被保全引用覆盖的 worktree
@@ -663,6 +668,9 @@ class G1LifecycleMixin:
         目录的路径 MUST 在目录被物理删除前对该 worktree 执行
         ``_snapshot_dirty_worktree`` 留档——清理不留快照是最需要取证场景（排水
         强杀）里保全链系统性失效的另一半。快照失败降级 WARNING，不阻塞删除。
+
+        收尾的 ``_active_worktrees.clear()`` 会连同 protected 跳过项的在册登记
+        一并抹掉：shutdown 后登记随进程终结，无实害，语义上留意即可。
         """
         protected = {str(p) for p in (protected or set())}
         if not self.base_dir.exists():

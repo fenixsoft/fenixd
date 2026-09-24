@@ -57,6 +57,15 @@ def archive_change(project_root: Path, name: str) -> dict:
 
     target.parent.mkdir(parents=True, exist_ok=True)
     moved = Path(shutil.move(str(change_dir), str(target)))
+    if moved != target:
+        # TOCTOU：exists 检查与 move 之间 target 若被并发创建为目录，
+        # shutil.move 会把 change 目录嵌套移入 target 内部（target/<name>）
+        # 造成归档层级漂移。移回原位并报错（不覆盖既有目录）；不用 os.rename
+        # 替代是因为归档可能跨设备（rename 会 EXDEV 失败）。
+        shutil.move(str(moved), str(change_dir))
+        raise ValueError(
+            f"Archive target already exists: {target} — 请改名或改日再归档，原目录不会被覆盖"
+        )
     result = {"from": str(change_dir), "to": str(moved)}
 
     # remove-auto-run-cleanup：run 产物归档的唯一入口 = SPEC 归档。

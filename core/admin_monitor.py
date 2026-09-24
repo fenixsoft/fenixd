@@ -1747,7 +1747,9 @@ class AdminMonitor:
             复发不产信号）；result=escalated 不静默（人工处置是唯一出路）。
         """
         signals = []
-        threshold_minutes = self.admin_cfg["stuck_threshold_minutes"]
+        # 容错读取与 _cfg_float 风格统一（同 _detect_orphaned_state）：值由
+        # get_admin_config 预归一，此处防直读脏配置时巡检中断。
+        threshold_minutes = self._cfg_float("stuck_threshold_minutes", 0)
         grace_minutes = max(STUCK_GRACE_MINUTES, self.interval_minutes * 2)
         silence_minutes = self._cfg_float("stuck_silence_minutes", 120)
         runs_dir = self.project_root / ".fenix" / "runs"
@@ -1833,7 +1835,7 @@ class AdminMonitor:
     def _detect_merge_streak(self, specs: dict) -> list:
         """_merge_streak 已达熔断阈值仍滞留（merge-back 反复失败）。"""
         signals = []
-        threshold = int(self.admin_cfg["merge_breaker_threshold"])
+        threshold = int(self._cfg_float("merge_breaker_threshold", 2))
         for name, entry in specs.items():
             try:
                 streak = int(entry.get("_merge_streak", 0) or 0)

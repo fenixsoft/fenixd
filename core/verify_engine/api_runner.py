@@ -17,6 +17,7 @@ api_runner.py — ApiRunner：httpx 驱动的 API 场景执行（spec verify-run
 httpx 依赖：setup 时检查（缺失=验证环境错误，引擎不判 bug-found）。
 """
 
+import asyncio
 import json
 import re
 import time
@@ -384,7 +385,8 @@ class ApiRunner(VerifyRunner):
         """
         if not self.base_url:
             return {"healthy": True, "detail": "api 无实例形态，跳过探针"}
-        healthy = probe_http_health(self.base_url, timeout=2.0)
+        # 线程池执行：probe_http_health 为同步阻塞探测（最坏 3×2s），避免卡死事件循环
+        healthy = await asyncio.to_thread(probe_http_health, self.base_url, timeout=2.0)
         return {
             "healthy": healthy,
             "detail": f"契约就绪探针 {self.base_url}: " f"{'连通' if healthy else '失联'}",

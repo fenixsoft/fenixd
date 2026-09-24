@@ -653,19 +653,28 @@ class SelfReviewScheduler:
         时不重复追加。占位写入失败仅记 WARNING，不影响跳过语义。
         """
         todo = self.project_root / ".fenix" / "todo.md"
-        try:
-            existing = ""
-            if todo.is_file():
-                existing = todo.read_text(encoding="utf-8", errors="replace")
-            if not re.search(rf"(?m)^## {re.escape(today)}\s*$", existing):
-                block = f"## {today}\n\n- 自上次自省以来无 SPEC 活动，跳过自省。\n"
-                if existing.strip():
-                    todo.write_text(existing.rstrip("\n") + "\n\n" + block, encoding="utf-8")
-                else:
-                    todo.parent.mkdir(parents=True, exist_ok=True)
-                    todo.write_text(block, encoding="utf-8")
-        except OSError as e:
-            self.logger.warning("self_review", f"{today}: 零活动占位写入 todo.md 失败: {e}")
+
+        # 读-改-写整段置于 todo.md 同一把 flock 内（同 _append_todo 的加锁
+        # 契约）：core.evolution.write_todo_marker 是 todo.md 的第二个写入者，
+        # 裸读裸写会用陈旧副本覆盖并发落下的更新。
+        from core.evolution import _with_lock  # noqa: PLC0415 —— 共用同一把锁
+
+        def _do() -> None:
+            try:
+                existing = ""
+                if todo.is_file():
+                    existing = todo.read_text(encoding="utf-8", errors="replace")
+                if not re.search(rf"(?m)^## {re.escape(today)}\s*$", existing):
+                    block = f"## {today}\n\n- 自上次自省以来无 SPEC 活动，跳过自省。\n"
+                    if existing.strip():
+                        todo.write_text(existing.rstrip("\n") + "\n\n" + block, encoding="utf-8")
+                    else:
+                        todo.parent.mkdir(parents=True, exist_ok=True)
+                        todo.write_text(block, encoding="utf-8")
+            except OSError as e:
+                self.logger.warning("self_review", f"{today}: 零活动占位写入 todo.md 失败: {e}")
+
+        _with_lock(todo, _do)
         self._commit_todo(today)
         self._save_state(today)
         self.logger.info(
@@ -943,95 +952,105 @@ class SelfReviewScheduler:
                 targets[item["id"]] = str(item.get("reason") or "")
         if not targets:
             return []
-        try:
-            text = todo.read_text(encoding="utf-8", errors="replace")
-        except OSError as e:
-            self.logger.warning("self_review", f"闭环移除读取 todo.md 失败: {e}")
-            return []
-        match_key = {
-            (e["date"], e["section"], e["text"]): eid for eid, e in by_id.items() if eid in targets
-        }
-        target_dates = {by_id[eid]["date"] for eid in targets}
-        preamble, blocks = parse_todo_blocks(text)
-        matched_ids: set = set()
-        new_blocks: List[Tuple[str, List[str]]] = []
-        for date, body in blocks:
-            if date not in target_dates:
-                new_blocks.append((date, body))  # 未涉及 → 逐字保留
-                continue
-            sections: List[Dict[str, Any]] = []
-            cur: Optional[Dict[str, Any]] = None
-            head: List[str] = []
-            tail: List[str] = []
-            pending: Optional[List[str]] = None  # 未决 bullet 块（原文行，含续行）
-            skip_block = False  # 上一 bullet 块被移除 → 其缩进续行一并吞掉
-            for line in body:
-                is_new_bullet = line.startswith("- ")
-                is_cont = line[:1] in (" ", "\t")
-                if skip_block:
-                    if is_cont:
-                        continue  # 已删块的续行随块消失
-                    skip_block = False
-                if pending is not None:
-                    if is_cont:
-                        pending.append(line)  # 多行条目的 证据/建议 续行随块
+        # 读-匹配-重写整段置于 todo.md 同一把 flock 内（同 _append_todo 的
+        # 加锁契约）：core.evolution.write_todo_marker 是 todo.md 的第二个
+        # 写入者，先读后写不加锁会用陈旧副本覆盖并发落下的更新。
+        from core.evolution import _with_lock  # noqa: PLC0415 —— 共用同一把锁
+
+        def _do() -> List[Dict[str, str]]:
+            try:
+                text = todo.read_text(encoding="utf-8", errors="replace")
+            except OSError as e:
+                self.logger.warning("self_review", f"闭环移除读取 todo.md 失败: {e}")
+                return []
+            match_key = {
+                (e["date"], e["section"], e["text"]): eid
+                for eid, e in by_id.items()
+                if eid in targets
+            }
+            target_dates = {by_id[eid]["date"] for eid in targets}
+            preamble, blocks = parse_todo_blocks(text)
+            matched_ids: set = set()
+            new_blocks: List[Tuple[str, List[str]]] = []
+            for date, body in blocks:
+                if date not in target_dates:
+                    new_blocks.append((date, body))  # 未涉及 → 逐字保留
+                    continue
+                sections: List[Dict[str, Any]] = []
+                cur: Optional[Dict[str, Any]] = None
+                head: List[str] = []
+                tail: List[str] = []
+                pending: Optional[List[str]] = None  # 未决 bullet 块（原文行，含续行）
+                skip_block = False  # 上一 bullet 块被移除 → 其缩进续行一并吞掉
+                for line in body:
+                    is_new_bullet = line.startswith("- ")
+                    is_cont = line[:1] in (" ", "\t")
+                    if skip_block:
+                        if is_cont:
+                            continue  # 已删块的续行随块消失
+                        skip_block = False
+                    if pending is not None:
+                        if is_cont:
+                            pending.append(line)  # 多行条目的 证据/建议 续行随块
+                            continue
+                        cur["bullets"].append(pending)  # 非续行 → 块落盘
+                        pending = None
+                    m = _TODO_SECTION_RE.match(line)
+                    if m:
+                        cur = {"title": m.group(1), "bullets": []}
+                        sections.append(cur)
                         continue
-                    cur["bullets"].append(pending)  # 非续行 → 块落盘
-                    pending = None
-                m = _TODO_SECTION_RE.match(line)
-                if m:
-                    cur = {"title": m.group(1), "bullets": []}
-                    sections.append(cur)
-                    continue
-                if cur is None:
-                    head.append(line)  # 日期节标题下的游离内容（备注等）保留
-                    continue
-                if is_new_bullet:
-                    item = line[2:].strip()
-                    eid = match_key.get((date, cur["title"], item))
-                    if eid and eid not in matched_ids:
-                        matched_ids.add(eid)
-                        skip_block = True  # 命中快照 → 整块移除
+                    if cur is None:
+                        head.append(line)  # 日期节标题下的游离内容（备注等）保留
                         continue
-                    pending = [line]
-                    continue
-                if line.strip():
-                    tail.append(line)
-                # 空行不落 tail：重组按 2026-09-08 格式（条目间空行）结构化补
-            if pending is not None and cur is not None:
-                cur["bullets"].append(pending)
-            kept = [s for s in sections if s["bullets"]]
-            if not kept and not any(l.strip() for l in head + tail):
-                continue  # 小节全空且无游离内容 → 日期节整体剔除
-            out: List[str] = []
-            out.extend(head)
-            for s in kept:
-                out.append(f"### {s['title']}")
-                for blk in s["bullets"]:
-                    out.extend(blk)  # 保留块逐字回写（含续行）
-                    out.append("")  # 条目间空行（2026-09-08 格式）
-            out.extend(tail)
-            new_blocks.append((date, out))
-        skipped = [eid for eid in sorted(targets) if eid not in matched_ids]
-        if skipped:
-            self.logger.warning(
-                "self_review",
-                f"闭环移除跳过 {len(skipped)} 条（快照不匹配或日期节已不存在）: "
-                + ", ".join(skipped),
-            )
-        if not matched_ids:
-            return []  # 无实际移除 → 文件不动
-        parts: List[str] = []
-        if any(l.strip() for l in preamble):
-            parts.append("\n".join(preamble).strip("\n"))
-        for date, body in new_blocks:
-            parts.append(f"## {date}\n\n" + "\n".join(body).strip("\n"))
-        try:
-            todo.write_text("\n\n".join(parts) + "\n", encoding="utf-8")
-        except OSError as e:
-            self.logger.warning("self_review", f"闭环移除写回 todo.md 失败: {e}")
-            return []
-        return [{"id": eid, "reason": targets[eid]} for eid in sorted(matched_ids)]
+                    if is_new_bullet:
+                        item = line[2:].strip()
+                        eid = match_key.get((date, cur["title"], item))
+                        if eid and eid not in matched_ids:
+                            matched_ids.add(eid)
+                            skip_block = True  # 命中快照 → 整块移除
+                            continue
+                        pending = [line]
+                        continue
+                    if line.strip():
+                        tail.append(line)
+                    # 空行不落 tail：重组按 2026-09-08 格式（条目间空行）结构化补
+                if pending is not None and cur is not None:
+                    cur["bullets"].append(pending)
+                kept = [s for s in sections if s["bullets"]]
+                if not kept and not any(l.strip() for l in head + tail):
+                    continue  # 小节全空且无游离内容 → 日期节整体剔除
+                out: List[str] = []
+                out.extend(head)
+                for s in kept:
+                    out.append(f"### {s['title']}")
+                    for blk in s["bullets"]:
+                        out.extend(blk)  # 保留块逐字回写（含续行）
+                        out.append("")  # 条目间空行（2026-09-08 格式）
+                out.extend(tail)
+                new_blocks.append((date, out))
+            skipped = [eid for eid in sorted(targets) if eid not in matched_ids]
+            if skipped:
+                self.logger.warning(
+                    "self_review",
+                    f"闭环移除跳过 {len(skipped)} 条（快照不匹配或日期节已不存在）: "
+                    + ", ".join(skipped),
+                )
+            if not matched_ids:
+                return []  # 无实际移除 → 文件不动
+            parts: List[str] = []
+            if any(l.strip() for l in preamble):
+                parts.append("\n".join(preamble).strip("\n"))
+            for date, body in new_blocks:
+                parts.append(f"## {date}\n\n" + "\n".join(body).strip("\n"))
+            try:
+                todo.write_text("\n\n".join(parts) + "\n", encoding="utf-8")
+            except OSError as e:
+                self.logger.warning("self_review", f"闭环移除写回 todo.md 失败: {e}")
+                return []
+            return [{"id": eid, "reason": targets[eid]} for eid in sorted(matched_ids)]
+
+        return _with_lock(todo, _do)
 
     def _apply_todo_update(self, today: str, result, entries: List[Dict[str, str]]) -> Path:
         """闭环移除 + 结构化追加（同一次执行，同一 commit 内留痕）。"""

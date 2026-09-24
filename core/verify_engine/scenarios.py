@@ -285,7 +285,7 @@ def _migrate_contract_to_v2(scenarios: list, base_url: str = ""):
         if not isinstance(steps, list):
             migrated.append(item)
             continue
-        has_navigate = isinstance(steps, list) and any(
+        has_navigate = any(
             isinstance(s, dict) and s.get("action") == "navigate" for s in steps
         )
         if has_navigate:
