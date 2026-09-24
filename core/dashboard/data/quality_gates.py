@@ -53,6 +53,15 @@ GATE_DESCS = {
 # 措辞超出词表，按实际文案扩充并同步测试注入样本）
 DELIVERABLE_BLOCKED_KEYWORDS = ("交付物", "deliverable", "dispute", "格式复检")
 
+# pending/unknown 兜底归因文案（fix-quality-gates-flat-form-and-explainability
+# 2.1，契约源 spec/changes/fix-quality-gates-flat-form-and-explainability/
+# specs/quality-gates-explainability/spec.md）：六道门合成后对 status 为
+# pending/unknown 且 detail 为空串的门项填充固定归因文案，UI 不再出现无解释的
+# 未勾选项。已有非空 detail 原样保留（不覆盖），status 与 done 计数不变；
+# 文案经既有前端 detail 透传链（gateDetailText）渲染，前端零改动。
+PENDING_FALLBACK_DETAIL = "该门未了结（run 在飞或自查结果未落盘）"
+UNKNOWN_FALLBACK_DETAIL = "门禁记录缺失或损坏"
+
 # STATE 状态进入该集合 → 框架守卫 2 项（result-artifact-gate / deliverable-guard）
 # 合成 passed（run 已过产物硬门进入 implemented 及之后状态）
 _FRAMEWORK_PASSED_STATUSES = ("implemented", "testing", "verified", "done", "pushed")
@@ -472,6 +481,38 @@ def _deliverable_guard_status(entry: dict) -> tuple:
     return ("unknown", "")
 
 
+def _adopt_flat_form(file_data: dict) -> dict:
+    """平铺形态容错判定（fix-quality-gates-flat-form-and-explainability 1.1，
+    契约源 specs/quality-gates-form-tolerance/spec.md）。
+
+    落盘契约的合法形态仍是嵌套 ``{"gates": {...}}``；历史事故中实现者把门
+    条目直接平铺在顶层（漏了包裹层），读侧取 ``gates`` 落空后把已通过的门
+    全部判 pending（结论丢失）。本函数仅在 ``gates`` 键缺失或非 dict 时由
+    parse_quality_gates 调用，判定规则：
+
+    - 候选门集 = 顶层所有「值为 dict 且 ``status`` ∈ GATE_STATUSES」的键
+      （字符串型元数据键如 ``updated_at`` 非 dict，天然忽略）；
+    - 候选门集非空，且顶层不存在「值为 dict 但 status 枚举外或缺 status」
+      的键 → 采信，候选门集即 file_gates；
+    - 存在任一枚举外 dict 值，或候选集为空 → 返回空 dict 不采信（宁可维持
+      既有 pending/unknown 语义，不误读半个文件）。
+
+    采信产物直接作为 file_gates 进入既有下游（契约外 gate-id 忽略、
+    ``_run_gate_status`` 单门判定、full-suite 双源优先级），与嵌套路径
+    逐字节一致。平铺为读侧兼容而非合法写法——写侧偏离契约的事实由
+    result_gate 宽松对账告警（quality-gates-form-drift）让人工可见，
+    落盘契约文本不变。
+    """
+    candidates = {}
+    for key, value in file_data.items():
+        if not isinstance(value, dict):
+            continue  # 字符串型元数据键（updated_at 等）忽略
+        if value.get("status") not in GATE_STATUSES:
+            return {}  # status 枚举外或缺 status 的 dict 值 → 整体不采信
+        candidates[key] = value
+    return candidates
+
+
 def _gates_current(items: list) -> str:
     """当前进展文案：running 优先，其次 failed 归因；全了结为空串。"""
     for it in items:
@@ -507,7 +548,15 @@ def parse_quality_gates(project_root, spec_name: str, entry=None, runs=None) -> 
     if parsed:
         gates_raw = file_data.get("gates")
         if isinstance(gates_raw, dict):
+            # 嵌套形态（唯一合法写法，含空 gates dict）——平铺判定不参与，
+            # 读侧行为与本变更前逐字节一致。
             file_gates = gates_raw
+        else:
+            # 平铺形态容错（fix-quality-gates-flat-form-and-explainability
+            # 1.1）：gates 键缺失或非 dict 时尝试按顶层平铺采信；不采信时
+            # 仍为空 dict，维持既有 pending/unknown 语义。损坏文件
+            # （file_data=None）走不到此分支，unknown 语义不变。
+            file_gates = _adopt_flat_form(file_data)
     if runs is None:
         import core.dashboard.data as _facade
 
@@ -536,6 +585,14 @@ def parse_quality_gates(project_root, spec_name: str, entry=None, runs=None) -> 
             status, detail = _deliverable_guard_status(entry)
         items.append({"id": gid, "desc": GATE_DESCS[gid], "status": status, "detail": detail})
     done = sum(1 for it in items if it["status"] in ("passed", "skipped"))
+    # pending/unknown 兜底归因文案（2.1）：组装后的单点后处理，只填空不覆盖
+    # ——六道门来源不同（落盘/ocr 车道/框架守卫），收口在此保证语义一目了然，
+    # 新增门来源时自动获得兜底；status 与 done 计数不变。
+    for it in items:
+        if it["status"] == "pending" and not it["detail"]:
+            it["detail"] = PENDING_FALLBACK_DETAIL
+        elif it["status"] == "unknown" and not it["detail"]:
+            it["detail"] = UNKNOWN_FALLBACK_DETAIL
     return {
         "exists": exists,
         "done": done,

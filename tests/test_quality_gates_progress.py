@@ -8,6 +8,17 @@
 - 框架 3 项合成（result-artifact-gate 按 run 终态、deliverable-guard 按 STATE、
   code-review 按 ocr 车道产物三态 + 指纹校验）；
 - worktree 优先读取策略（implementing 时 worktree 内文件优先、主树兜底）。
+
+fix-quality-gates-flat-form-and-explainability 扩展覆盖：
+- 读侧平铺形态容错（specs/quality-gates-form-tolerance：六分支，TestFlatFormTolerance）；
+- pending/unknown 兜底归因文案（specs/quality-gates-explainability，
+  TestFallbackAttributionDetail）；
+- 宽松对账形态违规告警在 tests/test_quality_gates_soft_alert.py 单独成文。
+
+自查结论（fix-quality-gates-flat-form-and-explainability 4.1）：本 SPEC 未触碰
+前端，src/ 下 qualityGates 相关模块零改动（core/dashboard/static/ 与
+qualityGates.test.mjs 既有断言零变化，detail 文案由读侧填充后经既有
+gateDetailText 透传链渲染）。
 """
 
 import json
@@ -187,6 +198,176 @@ class TestFaultTolerance(QualityGatesTestBase):
         self._write_gates({"full-suite": "passed"})
         out = parse_quality_gates(self.root, self.SPEC, {"status": "implementing"})
         assert self._item(out, "full-suite")["status"] == "unknown"
+
+
+class TestFlatFormTolerance(QualityGatesTestBase):
+    """fix-quality-gates-flat-form-and-explainability 1.2：平铺形态容错六分支。
+
+    契约源 specs/quality-gates-form-tolerance/spec.md：落盘契约的合法形态仍是
+    嵌套 ``{"gates": {...}}``，平铺为读侧兼容采信（非合法写法）。
+    """
+
+    def _write_flat(self, data) -> None:
+        _write_json(self._gates_path(), data)
+
+    def test_nested_form_zero_regression_including_empty_gates_dict(self):
+        # 嵌套形态（含空 gates dict）零回归：平铺判定不参与——顶层平铺键在
+        # gates dict 在场时被忽略（最强判别：若误走平铺采信，passed 会被采信）
+        _write_json(self._gates_path(), {
+            "gates": {},
+            "frontend-build": {"status": "passed"},
+            "updated_at": "2026-09-24T00:00:00Z",
+        })
+        out = parse_quality_gates(self.root, self.SPEC, {"status": "implementing"})
+        assert out["exists"] is True
+        assert self._item(out, "frontend-build")["status"] == "pending"
+
+    def test_pure_flat_form_adopted_with_string_metadata(self):
+        self._write_flat({
+            "full-suite": {"status": "passed", "passed": 128, "failed": 0},
+            "frontend-build": {"status": "skipped", "reason": "无前端改动"},
+            "interaction-contract": {"status": "passed"},
+            "updated_at": "2026-09-24T00:00:00Z",
+        })
+        out = parse_quality_gates(self.root, self.SPEC, {"status": "implementing"})
+        assert self._item(out, "full-suite")["status"] == "passed"
+        assert "128" in self._item(out, "full-suite")["detail"]  # 计数透传与嵌套一致
+        assert self._item(out, "frontend-build")["status"] == "skipped"
+        assert self._item(out, "frontend-build")["detail"] == "无前端改动"
+        assert self._item(out, "interaction-contract")["status"] == "passed"
+        assert out["done"] == 3  # 2 passed + 1 skipped
+
+    def test_flat_out_of_contract_gate_id_ignored(self):
+        self._write_flat({
+            "code-review": {"status": "passed"},  # 契约外键：ocr 门归框架侧合成
+            "my-gate": {"status": "passed"},
+            "interaction-contract": {"status": "passed"},
+        })
+        out = parse_quality_gates(self.root, self.SPEC, {"status": "implementing"})
+        # 误写键被忽略：code-review 门仍按 ocr 车道产物合成（无产物 → pending）
+        assert self._item(out, "code-review")["status"] == "pending"
+        assert self._item(out, "interaction-contract")["status"] == "passed"
+        assert out["done"] == 1
+
+    def test_flat_out_of_enum_status_not_adopted(self):
+        # 任一 dict 值 status 枚举外 → 整体不采信（宁可 pending 不误读半个文件）
+        self._write_flat({
+            "frontend-build": {"status": "passed"},
+            "full-suite": {"status": "ok"},
+        })
+        out = parse_quality_gates(self.root, self.SPEC, {"status": "implementing"})
+        assert self._item(out, "frontend-build")["status"] == "pending"
+        assert self._item(out, "full-suite")["status"] == "pending"
+
+    def test_flat_missing_status_not_adopted(self):
+        # dict 值缺 status 同样整体不采信
+        self._write_flat({
+            "frontend-build": {"status": "passed"},
+            "interaction-contract": {},
+        })
+        out = parse_quality_gates(self.root, self.SPEC, {"status": "implementing"})
+        assert self._item(out, "frontend-build")["status"] == "pending"
+        assert self._item(out, "interaction-contract")["status"] == "pending"
+
+    def test_empty_top_level_dict_not_adopted(self):
+        self._write_flat({})
+        out = parse_quality_gates(self.root, self.SPEC, {"status": "implementing"})
+        assert out["exists"] is True
+        assert self._item(out, "full-suite")["status"] == "pending"
+
+    def test_metadata_only_top_level_not_adopted(self):
+        # 只有字符串型元数据键 → 候选门集为空，不采信
+        self._write_flat({"updated_at": "2026-09-24T00:00:00Z"})
+        out = parse_quality_gates(self.root, self.SPEC, {"status": "implementing"})
+        assert self._item(out, "full-suite")["status"] == "pending"
+
+    def test_corrupt_file_keeps_unknown_semantics(self):
+        # 损坏文件（非法 JSON）→ unknown 语义不变，平铺判定不参与
+        p = self._gates_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("{not-json", encoding="utf-8")
+        out = parse_quality_gates(self.root, self.SPEC, {"status": "implementing"})
+        assert out["exists"] is True
+        for gid in ("full-suite", "frontend-build", "interaction-contract"):
+            assert self._item(out, gid)["status"] == "unknown"
+
+
+class TestFallbackAttributionDetail(QualityGatesTestBase):
+    """fix-quality-gates-flat-form-and-explainability 2.2：pending/unknown 兜底归因。"""
+
+    def test_pending_empty_detail_filled(self):
+        self._write_gates({"full-suite": {"status": "passed", "passed": 10, "failed": 0}})
+        out = parse_quality_gates(self.root, self.SPEC, {"status": "implementing"})
+        # 未写入键（渐进落盘中间态）→ pending 空 detail → 兜底文案，status 不变
+        for gid in ("frontend-build", "interaction-contract"):
+            it = self._item(out, gid)
+            assert it["status"] == "pending"
+            assert it["detail"] == "该门未了结（run 在飞或自查结果未落盘）"
+        # ocr 车道产物不可见 → pending 空 detail → 兜底文案
+        assert self._item(out, "code-review")["detail"] == \
+            "该门未了结（run 在飞或自查结果未落盘）"
+
+    def test_unknown_empty_detail_filled(self):
+        out = parse_quality_gates(self.root, self.SPEC, {"status": "drafted"})
+        # 文件缺失 → run 3 项 unknown → 兜底文案
+        for gid in ("full-suite", "frontend-build", "interaction-contract"):
+            it = self._item(out, gid)
+            assert it["status"] == "unknown"
+            assert it["detail"] == "门禁记录缺失或损坏"
+        # 框架 2 项（drafted 且无 runs）→ unknown → 兜底文案
+        for gid in ("result-artifact-gate", "deliverable-guard"):
+            it = self._item(out, gid)
+            assert it["status"] == "unknown"
+            assert it["detail"] == "门禁记录缺失或损坏"
+
+    def test_implementing_existing_attribution_preserved(self):
+        # implementing 分支「实现 run 在飞，收尾门禁未了结」零覆盖
+        runs_dir = self.root / ".fenix" / "runs"
+        runs_dir.mkdir(parents=True, exist_ok=True)
+        (runs_dir / f"impl-{self.SPEC}-1758000000.jsonl").write_text(
+            json.dumps({"type": "provider_marker", "model": "m", "provider": "p"}) + "\n",
+            encoding="utf-8")
+        out = parse_quality_gates(self.root, self.SPEC, {"status": "implementing"})
+        for gid in ("result-artifact-gate", "deliverable-guard"):
+            assert self._item(out, gid)["detail"] == "实现 run 在飞，收尾门禁未了结"
+
+    def test_skipped_reason_and_passed_counts_preserved(self):
+        self._write_gates({
+            "frontend-build": {"status": "skipped", "reason": "无前端改动"},
+            "full-suite": {"status": "passed", "passed": 7, "failed": 1},
+        })
+        out = parse_quality_gates(self.root, self.SPEC, {"status": "implementing"})
+        assert self._item(out, "frontend-build")["detail"] == "无前端改动"
+        detail = self._item(out, "full-suite")["detail"]
+        assert "通过 7" in detail and "失败 1" in detail
+
+    def test_terminal_exempt_text_preserved(self):
+        # full-suite 终态豁免文案保留（skipped 不在兜底范围）
+        out = parse_quality_gates(self.root, self.SPEC, {"status": "verified"})
+        it = self._item(out, "full-suite")
+        assert it["status"] == "skipped"
+        assert it["detail"] == "SPEC 已终态，全量回归跟踪移交主树"
+
+    def test_gate_blocked_failed_reason_preserved(self):
+        # failed 归因原文零覆盖
+        runs_dir = self.root / ".fenix" / "runs"
+        runs_dir.mkdir(parents=True, exist_ok=True)
+        reason = "exit 0 但交付物声明对账缺件（deliverable-gate）: core/x.py"
+        (runs_dir / f"impl-{self.SPEC}-1758000000.jsonl").write_text(
+            json.dumps({"type": "provider_marker", "model": "m", "provider": "p"}) + "\n"
+            + json.dumps({"type": "gate-blocked", "spec": self.SPEC,
+                          "reason": "artifact_gate", "error": reason}) + "\n",
+            encoding="utf-8")
+        out = parse_quality_gates(self.root, self.SPEC, {"status": "implementing"})
+        assert self._item(out, "result-artifact-gate")["detail"] == reason
+
+    def test_done_unchanged_by_fallback(self):
+        # done 口径不变：兜底只改 detail，不改任何门的 status
+        self._write_gates({"full-suite": {"status": "passed", "passed": 1, "failed": 0}})
+        out = parse_quality_gates(self.root, self.SPEC, {"status": "implementing"})
+        assert out["done"] == 1
+        assert all(it["status"] in ("passed", "pending") for it in out["items"])
+        assert self._item(out, "full-suite")["status"] == "passed"
 
 
 class TestFrameworkSynthesis(QualityGatesTestBase):
