@@ -136,27 +136,36 @@ class TokenAccountant:
             return
         ratio = tokens_in / budget_tokens
 
-        try:
-            entry = self._pm.state_machine.read_one(spec_name) or {}
-        except Exception:
-            entry = {}
-        if not isinstance(entry, dict):
-            entry = {}
-        warn_flag = bool(entry.get("_token_warn_80", False))
-        alert_flag = bool(entry.get("_token_alert_100", False))
+        # code-review item d005329ef9d3：「查标志-发告警-置位」跨 read_one/
+        # update_spec 两次 state_machine 调用，锁外执行时同 spec 并发收工
+        # （impl-ocr 并行车道等）双方都读到 flag=False，各自发一条 80%/100%
+        # 告警并各写一次 STATE——docstring 承诺的「幂等不重复」在并发窗口内
+        # 不成立。复用 _spec_accumulate_lock 把三步并成临界区（threading.Lock
+        # 不可重入：调用点 _accumulate_token_usage 须在锁外调本方法，本方法
+        # 内不得再经持锁路径被调用）。config 读取与 ratio 计算不涉共享标志，
+        # 留在锁外保持临界区最小。
+        with _spec_accumulate_lock(spec_name):
+            try:
+                entry = self._pm.state_machine.read_one(spec_name) or {}
+            except Exception:
+                entry = {}
+            if not isinstance(entry, dict):
+                entry = {}
+            warn_flag = bool(entry.get("_token_warn_80", False))
+            alert_flag = bool(entry.get("_token_alert_100", False))
 
-        if ratio >= 1.0 and not alert_flag:
-            self._send_token_alert(spec_name, tokens_in, budget, "warning", "预算 100% 警告")
-            try:
-                self._pm.state_machine.update_spec(spec_name, {"_token_alert_100": True})
-            except Exception:
-                pass
-        elif ratio >= 0.8 and not warn_flag:
-            self._send_token_alert(spec_name, tokens_in, budget, "warning", "预算 80% 提醒告警")
-            try:
-                self._pm.state_machine.update_spec(spec_name, {"_token_warn_80": True})
-            except Exception:
-                pass
+            if ratio >= 1.0 and not alert_flag:
+                self._send_token_alert(spec_name, tokens_in, budget, "warning", "预算 100% 警告")
+                try:
+                    self._pm.state_machine.update_spec(spec_name, {"_token_alert_100": True})
+                except Exception:
+                    pass
+            elif ratio >= 0.8 and not warn_flag:
+                self._send_token_alert(spec_name, tokens_in, budget, "warning", "预算 80% 提醒告警")
+                try:
+                    self._pm.state_machine.update_spec(spec_name, {"_token_warn_80": True})
+                except Exception:
+                    pass
 
     def _send_token_alert(
         self, spec_name: str, tokens_in: int, budget: float, severity: str, title: str

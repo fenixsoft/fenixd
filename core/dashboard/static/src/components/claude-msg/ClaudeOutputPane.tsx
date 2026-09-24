@@ -124,7 +124,6 @@ export default function ClaudeOutputPane({
   // 不再以「已思考数秒」噪声行打断工具聚合）；无正文兜底见 runEvents
   const [thinkingVisible, setThinkingVisible] = useState(false);
   const eventSourceRef = useRef<EventSource | null>(null);
-  const cidRef = useRef<string>(`claude-output-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`);
   const isMountedRef = useRef(true);
   // 响应币值守卫（code-review item 5dbf7b6044bf）：detail.tsx / AdminRunModal.tsx
   // 等无 key 调用点在 runId 切换时复用本组件实例（不卸载），仅 isMountedRef
@@ -231,7 +230,6 @@ export default function ClaudeOutputPane({
       // 服务端在 hello 中分配连接 cid —— watch 注册必须用它，否则 _conns.get(cid)
       // 匹配不到连接、订阅静默失效（自造 cid 是无效的）
       if (msg.type === 'hello' && msg.cid) {
-        cidRef.current = msg.cid;
         void (async () => {
           try {
             await registerRunWatch(runId, project, msg.cid!);

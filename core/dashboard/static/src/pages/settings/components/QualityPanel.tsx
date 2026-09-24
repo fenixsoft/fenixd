@@ -36,6 +36,17 @@ const IMPL_REVIEW_DEFAULTS = {
 // ConfigLoader.get_repo_code_review_concurrency 缺省同源；模板示例值=缺省值）
 const REPO_REVIEW_DEFAULT_CONCURRENCY = 4;
 
+// code-review item 71bf8e4d539a：周期审查/自动修复四项缺省单源——回填与
+// help 文案统一引用本常量。回填值会被 handleSave 原样持久化，散落字面量在
+// 后端缺省调整时会走本文件头注释的老路：用户开一次设置页再保存即把旧缺省
+// 固化进配置（漂移后果比纯展示更重）。
+const QUALITY_DEFAULTS = {
+  scope: 'window',
+  stallAlertMinutes: 15,
+  fixBatchSize: 20,
+  mode: 'gate',
+} as const;
+
 const EFFORT_OPTIONS = ['low', 'medium', 'high'] as const;
 
 const EFFORT_RULE = {
@@ -92,23 +103,24 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
       impl_code_review_effort: config.verify?.impl_code_review_effort ?? IMPL_REVIEW_DEFAULTS.effort,
       // add-impl-ocr-parallel-lane：join 双档模式回填缺省 gate（后端恒回显，
       // 前端回填与之一致）
-      impl_code_review_mode: config.verify?.impl_code_review_mode ?? 'gate',
+      impl_code_review_mode: config.verify?.impl_code_review_mode ?? QUALITY_DEFAULTS.mode,
       // 周期性代码审查（2026-09-19 从项目页「代码审查」分面迁来）：
       // 开关是项目级配置（admin.code_review.enabled），归设置页而非项目页
       code_review_enabled: config.code_review?.enabled === true,
       // add-code-review-scope-config：审查范围（admin.code_review.scope），
       // 配置缺失回显 window（后端 get_code_review_config 缺省同源）
-      code_review_scope: config.code_review?.scope ?? 'window',
+      code_review_scope: config.code_review?.scope ?? QUALITY_DEFAULTS.scope,
       // add-code-review-sharded-out 3.3：停滞告警阈值（admin.code_review.
       // stall_alert_minutes），配置缺失回显 15（后端 get_code_review_config
       // 缺省同源）
-      code_review_stall_alert_minutes: config.code_review?.stall_alert_minutes ?? 15,
+      code_review_stall_alert_minutes:
+        config.code_review?.stall_alert_minutes ?? QUALITY_DEFAULTS.stallAlertMinutes,
       // add-test-regression-tab：周期性全量回归开关（admin.regression.enabled）
       // 缺省 false；分面只读展示 + 手动触发，配置归设置页「质量」页签
       regression_enabled: config.regression?.enabled === true,
       // add-code-review-auto-fix：自动修复开关 + 批大小（回填缺省 false/20）
       code_review_fix_enabled: config.code_review_fix?.enabled === true,
-      code_review_fix_batch_size: config.code_review_fix?.batch_size ?? 20,
+      code_review_fix_batch_size: config.code_review_fix?.batch_size ?? QUALITY_DEFAULTS.fixBatchSize,
     });
   }, [config.verify, config.code_review, config.code_review_fix, config.regression, form]);
 
@@ -497,7 +509,7 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
             </Select>
           </Form.Item>
           <Text type="secondary">
-            默认 gate。实现分支合并后异步 ocr 车道的发现如何参与验证收口：gate
+            默认 {QUALITY_DEFAULTS.mode}。实现分支合并后异步 ocr 车道的发现如何参与验证收口：gate
             档发现非 rejected findings 时把 spec 打回修复轮（最多 1 轮，超限全部
             转 code-review 台账后放行）；advisory 档 findings 只写台账、永不打回。
           </Text>
@@ -543,7 +555,7 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
             </Select>
           </Form.Item>
           <Text type="secondary">
-            默认当期审查（window）：只审自省窗口内变更的文件。全库审查（full）与
+            默认当期审查（{QUALITY_DEFAULTS.scope}）：只审自省窗口内变更的文件。全库审查（full）与
             项目页「全库审查」按钮同语义，审查全仓受控源码文件，同样受
             admin.code_review.max_files 上限约束（超限截断）；两档共用同一套
             调度守卫（同自然日防重 / run_at / 开关）。
@@ -574,7 +586,8 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
           <Text type="secondary">
             审查 run 进行中，若主产物与分片聚合进度（done）持续为零且已运行
             超过本阈值（分钟），框架落一条人工告警提示「疑似子代理等待收工
-            模式」（单 run 至多一条）。缺省 15；非法值回退 15。
+            模式」（单 run 至多一条）。缺省 {QUALITY_DEFAULTS.stallAlertMinutes}；非法值回退{' '}
+            {QUALITY_DEFAULTS.stallAlertMinutes}。
           </Text>
 
           {/* 自动修复代码问题（add-code-review-auto-fix，task 9.2）：2026-09-22
@@ -591,7 +604,8 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
             </span>
           </div>
           <Text type="secondary">
-            开启后把审查台账 open 条目按批（每批 batch_size 条，缺省 20）派
+            开启后把审查台账 open 条目按批（每批 batch_size 条，缺省{' '}
+            {QUALITY_DEFAULTS.fixBatchSize}）派
             code-fix agent 在独立 worktree 内修复并提交，每批必过全量回归
             （verify.yaml regression 段）才合回主树并把条目置 resolved；回归
             未通过自动重试一次，仍失败则保留现场待人工。无有效 regression 段时

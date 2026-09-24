@@ -372,12 +372,21 @@ class H11CodeReviewRoutesMixin:
         payload = {"source": "dashboard", "created": created}
         req_path = proot / CODE_FIX_REQUEST
         req_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # 先填内容、再原子挂到轮询路径（对齐 _api_code_review_run 的三步模式，
+        # 同族竞态 code-review item 502bc934c4c6）：旧实现 O_CREAT|O_EXCL 直接
+        # 创建轮询路径、之后才 json.dump——daemon 1s 主循环 tick 落在创建与填充
+        # 之间的空窗，消费端 _consume_request_file rename 占位后 json.load 解析
+        # 空/半写文件失败静默返回 None，用户触发无痕丢失。三步：
+        #   1. 写同目录唯一临时文件（同目录保证 link 原子性），完整 JSON + fsync；
+        #   2. os.link(2) 原子挂到轮询路径——目标已存在抛 FileExistsError，
+        #      保留独占创建语义（并发第二 POST 或上一信号未消费 → 409）；
+        #   3. 消费者要么看不到文件、要么看到完整 JSON，空窗不复存在。
+        tmp_path = (
+            req_path.parent / f".{req_path.name}.{os.getpid()}.{uuid4().hex}.tmp"
+        )
         try:
-            fd = os.open(str(req_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-        except FileExistsError:
-            self._coded_error(409, "已有未消费的修复触发请求（请稍后重试）",
-                              "fix_run_request_pending")
-            return
+            fd = os.open(str(tmp_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
         except OSError:
             self._error(500, "修复触发信号写入失败")
             return
@@ -399,13 +408,28 @@ class H11CodeReviewRoutesMixin:
                     except OSError:
                         pass
         except Exception:
-            # 写中途失败：清掉半写文件，避免残留被 daemon 误消费
+            # 写中途失败：清掉临时文件（轮询路径尚未创建，无半写残留可误消费）
             try:
-                os.unlink(str(req_path))
+                os.unlink(str(tmp_path))
             except OSError:
                 pass
             self._error(500, "修复触发信号写入失败")
             return
+        try:
+            os.link(str(tmp_path), str(req_path))
+        except FileExistsError:
+            self._coded_error(409, "已有未消费的修复触发请求（请稍后重试）",
+                              "fix_run_request_pending")
+            return
+        except OSError:
+            self._error(500, "修复触发信号写入失败")
+            return
+        finally:
+            # 链接成功/失败临时文件均无存在必要（成功后内容已由 link 名可见）
+            try:
+                os.unlink(str(tmp_path))
+            except OSError:
+                pass
         # 预删旧结果文件（残留判定 MUST NOT 被前端当本次反馈；删除失败不阻塞
         # 受理）。code-review item ac4182077d1f：仅在信号文件 O_EXCL 独占创建
         # 且完整写入成功（即受理路径）之后删除——预删若位于受理判定之前，

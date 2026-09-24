@@ -676,6 +676,14 @@ export default function QualityTab({ project, active }: QualityTabProps) {
   // 弹窗打开期间门不释放，与「弹窗开着」一致）。
   const generateModalOpenRef = useRef(false);
 
+  // 勾选中 status==='open' 的条目数（code-review item 7530070b52fe）：「生成
+  // 修复 SPEC」按钮标签计数与弹窗内 count（剔除非 open 后的 openKeys.length）
+  // 统一用本口径——原标签用原始勾选数，勾选混有 in_spec/resolved/ignored 条目
+  // 时两处计数互相矛盾。
+  const openSelectedCount = items.filter(
+    (it) => selectedKeys.includes(it.item_id) && it.status === 'open',
+  ).length;
+
   // 打开弹窗前把配置里的默认执行时刻算好（异步；算完再弹，避免弹窗内
   // 初始值闪一下从「立即」跳到「定时」）
   const handleGenerate = async () => {
@@ -686,7 +694,13 @@ export default function QualityTab({ project, active }: QualityTabProps) {
     const openKeys = items
       .filter((it) => selectedKeys.includes(it.item_id) && it.status === 'open')
       .map((it) => String(it.item_id));
-    if (openKeys.length === 0) return;
+    if (openKeys.length === 0) {
+      // 与 handleIgnoreAll 同款反馈（code-review item 7530070b52fe）：按钮
+      // disabled 只看勾选数、勾选全是非 open 条目时仍可点，静默 return 会让
+      // 用户对着无反应的按钮猜
+      message.warning('选中条目中没有可生成修复 SPEC 的 open 问题');
+      return;
+    }
     generateModalOpenRef.current = true;
     let initial: string | null;
     try {
@@ -936,7 +950,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
             loading={generating}
             onClick={() => void handleGenerate()}
           >
-            生成修复 SPEC{selectedKeys.length > 0 ? `（${selectedKeys.length}）` : ''}
+            生成修复 SPEC{openSelectedCount > 0 ? `（${openSelectedCount}）` : ''}
           </Button>
           {/* 「全部忽略」：红底白字（type="primary" danger，用户 2026-09-20 要求），
               未勾选任何条目时禁用（selectedKeys 为空即无目标）；批量请求进行中
