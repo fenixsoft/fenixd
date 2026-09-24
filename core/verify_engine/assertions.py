@@ -387,7 +387,7 @@ class AssertionRunner:
     # 第3层：内容正确性（确定性，0误判）
     # ═══════════════════════════════════════════════════════════════
 
-    async def _text_matches(self, actual: str, expected: str, mode: str) -> bool:
+    def _text_matches(self, actual: str, expected: str, mode: str) -> bool:
         """按 mode 判断文本是否匹配。"""
         if mode == "exact":
             return actual.strip() == expected.strip()
@@ -429,7 +429,7 @@ class AssertionRunner:
                 else:
                     actual = (await self._locator(page, selector).text_content()) or ""
 
-                passed = await self._text_matches(actual, expected, mode)
+                passed = self._text_matches(actual, expected, mode)
                 if passed:
                     break
             except Exception as e:

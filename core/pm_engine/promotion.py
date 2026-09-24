@@ -203,7 +203,16 @@ def should_skip_review(project_root: Path, spec_name: str, config: dict, logger)
     # 2. 能力目录数 ≤ 1
     specs_dir = spec_dir / "specs"
     if specs_dir.is_dir():
-        cap_dirs = [d for d in specs_dir.iterdir() if d.is_dir()]
+        try:
+            cap_dirs = [d for d in specs_dir.iterdir() if d.is_dir()]
+        except OSError:
+            # is_dir 判定后目录被并发删除（归档/清理）：保守不跳过评审，
+            # 不让异常沿 promote_drafted 传播中断晋升链
+            logger.warning(
+                "pm_engine",
+                f"specs 目录枚举竞态（被并发删除？）'{spec_name}'（保守不跳过评审）",
+            )
+            return False
         if len(cap_dirs) > 1:
             return False
     else:

@@ -151,7 +151,17 @@ class VerifyEngine:
         # 验收失败不启动任何 Runner、不执行任何场景，返回带 env_error 的
         # 空报告，由 pm_engine 退回 plan 阶段重新生成（上限与反馈机制在调用方）。
         acceptance_errors: list[str] = []
+        seen_ids: set[str] = set()
         for s in normalized:
+            # 跨场景 id 查重：validate 仅单场景校验不查重，重复 id 会被
+            # _execute_parallel 的 completed_ids 过滤静默剔除（后到者不执行、
+            # 不进报告），导致场景漏验证，故在此打回 plan。
+            if s.id in seen_ids:
+                acceptance_errors.append(
+                    f"场景'{s.id}' id 重复（场景集内 id 必须唯一）"
+                )
+            else:
+                seen_ids.add(s.id)
             if s.kind not in VALID_KINDS:
                 acceptance_errors.extend(s.validate())
                 continue

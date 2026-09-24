@@ -132,6 +132,10 @@ class G6StashGuardMixin:
           可写状态，``conflict_files`` 为 UU 冲突文件清单（stash 条目保留，
           stash 版内容已按态 1/2/3 落回工作区或恢复 commit，见
           ``_triage_stash_pop_conflicts``）。
+        - ``(False, [file, ...])``：三态自愈后复查 ``git ls-files -u`` 仍有 UU
+          残留（如态 2 checkout --theirs 失败的态 3 分支只登记 disposition、
+          未消解 unmerged 条目）——主树仍半合并，交人工处置（与
+          ``reclaim_stale_autostash`` 的复查口径一致）。
         - ``(False, [])``：pop 失败且非冲突类（如其它 git 错误），stash 保留；调用方按
           旧版 False 语义处理（主树可能仍半合并，需人工处置）。
 
@@ -236,6 +240,19 @@ class G6StashGuardMixin:
                 f"{len(conflict_files)} file(s): {conflict_files} recovered "
                 f"(stash preserved, recover via: {recover_cmds})",
             )
+            # 复查残留（对齐 reclaim_stale_autostash 口径）：态 2 checkout
+            # --theirs 失败的态 3 分支只登记 disposition、未消解 unmerged
+            # 条目——半合并 UU 残留会让后续 git 写操作持续失败，仍有残留时
+            # 按 False 返回交人工，不再谎报「主树回到可写状态」。
+            residual = self._list_unmerged_files()
+            if residual:
+                self.logger.error(
+                    "worktree_manager",
+                    f"Stash pop conflict triage incomplete (mode={mode}); "
+                    f"unmerged files remain, stash entry preserved "
+                    f"(recover via: {recover_cmds})",
+                )
+                return False, conflict_files
         else:
             # 输出含 CONFLICT 但已无 UU 条目（罕见：冲突已自行消解）——照常处理
             self.logger.warning(

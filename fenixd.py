@@ -842,8 +842,14 @@ class FenixDaemon:
                 # add-framework-self-evolution 5.1：自进化检查点（节拍复用
                 # admin.interval_minutes，缺省 5 分钟；异常记 ERROR 不中断主循环，
                 # 就绪即入队、无在途立即启动分析 run）。
+                # 口径与 _admin_monitor_loop 一致（float + 0.5 下限）：int 截断会
+                # 把 0.5 这类小数分钟变成 0 再被 or 5 静默兜回缺省 5 分钟。
                 evo_interval = (
-                    int(ConfigLoader.get(self.config, "admin.interval_minutes", 5) or 5) * 60
+                    max(
+                        float(ConfigLoader.get(self.config, "admin.interval_minutes", 5) or 5),
+                        0.5,
+                    )
+                    * 60
                 )
                 if time.time() - evolution_check_ts >= evo_interval:
                     evolution_check_ts = time.time()

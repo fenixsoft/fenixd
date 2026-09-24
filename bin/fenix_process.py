@@ -354,8 +354,12 @@ def render_report(project_root, spec_name: str) -> str:
 
     # ── 预算 ──
     if summary:
-        effective = int(summary.get("budget_effective") or 0)
-        used = int(summary.get("budget_used") or 0)
+        try:
+            effective = int(summary.get("budget_effective") or 0)
+            used = int(summary.get("budget_used") or 0)
+        except (TypeError, ValueError):
+            # 预算字段被人工直写成非数字时不中断报告，取中性缺省 0
+            effective = used = 0
         override = summary.get("budget_override")
         if effective:
             tag = f"（override {override}）" if override else ""

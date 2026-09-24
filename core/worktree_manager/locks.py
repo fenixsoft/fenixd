@@ -212,6 +212,9 @@ class G3LockMixin:
             """
             me = os.getpid()
             token = f"worktrees/{wt_name}"
+            # token 的 realpath 归一形态（与 _pid_in_project_worktrees 的
+            # base_real 同范式），供 cwd 归一后按目录边界精确归属
+            token_real = os.path.realpath(os.path.join(str(self.base_dir), wt_name))
             candidates: list = []
             try:
                 for pid_str in os.listdir("/proc"):
@@ -227,12 +230,19 @@ class G3LockMixin:
                         argv_text = " ".join(a.decode("utf-8", "replace") for a in argv if a)
                     except OSError:
                         argv_text = ""
-                    # cwd readlink 归属匹配（覆盖 argv 无路径的 Bash 包装进程）
+                    # cwd readlink 归属匹配（覆盖 argv 无路径的 Bash 包装进程）；
+                    # 与 _pid_in_project_worktrees 一致先 realpath 归一，消解
+                    # 符号链接/挂载拼写差异，避免同一物理 cwd 归属核对能命中、
+                    # 清扫却漏杀
                     try:
-                        cwd = os.readlink(f"/proc/{pid_str}/cwd")
+                        cwd_real = os.path.realpath(os.readlink(f"/proc/{pid_str}/cwd"))
                     except OSError:
-                        cwd = ""
-                    if token in argv_text or token in cwd:
+                        cwd_real = ""
+                    if (
+                        token in argv_text
+                        or cwd_real == token_real
+                        or cwd_real.startswith(token_real + os.sep)
+                    ):
                         candidates.append(pid)
             except OSError:
                 return []
