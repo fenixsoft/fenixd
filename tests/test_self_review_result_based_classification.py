@@ -10,6 +10,11 @@
 - 2.5 夹具「result 终态 + 信号词仅出现在终态邻近 3 行之外」→ 断言 succeeded 且
   不入失败样本；夹具「无 result 终态（running/dropped）+ 信号词」→ 断言 category
   桶位不变、stats["failed"] 不因该 run 增加
+- evo-fix-self-review-marker-match-window 2.1/2.2：marker 匹配窗口收敛——
+  失败声明仅认 result 文本开头声明区（前 _MARKER_DECLARATION_WINDOW 字符），
+  摘要中段功能词复述（实拍「预算耗尽发一次性 warning」形态）不降级；开头
+  声明形态仍判 failed，窗口边界成对锁定；信号护栏仍扫终态邻近事件行、
+  result 终态正文不再作信号源
 
 判定口径（result-based classification）：succeeded 以 _classify_run 的 result
 分支判定结果为准——result 文本未命中 _business_fail_marker 且终态邻近 3 行未命中
@@ -23,7 +28,10 @@ from datetime import datetime
 import pytest
 
 from core.self_review import (
+    _MARKER_DECLARATION_WINDOW,
+    _business_fail_marker,
     _classify_run,
+    _read_run_tail,
     _scan_run_signals,
     collect_failed_run_samples,
     collect_runs_stats,
@@ -284,3 +292,126 @@ class TestBucketUnchangedNoFalseIncrease:
         samples = collect_failed_run_samples(root, datetime(2000, 1, 1, 0, 0))
         assert [s["run_id"] for s in samples] == ["impl-real-fail"]
         assert samples[0]["detail"].startswith("marker=")
+
+
+class TestMarkerWindowConvergence:
+    """窗口收敛（evo-fix-self-review-marker-match-window 2.1/2.2）。
+
+    实拍（2026-09-24 日报）：完全成功的 run 被误计 failed（marker=预算耗尽）
+    ——成功摘要中段的功能词复述「预算耗尽发一次性 warning」（第 692/1382 字符）
+    被全文裸词匹配当成失败声明。失败声明仅认 result 文本开头声明区。
+    """
+
+    @staticmethod
+    def _result_with_budget_word_at(offset: int) -> str:
+        """构造「预算耗尽」首现于 offset 的 result 文本（成功摘要叙事形态）。"""
+        return (
+            "前情摘要。" * (offset // 5)
+            + "预算耗尽发一次性 warning 属调度器一次性提示，不影响交付，"
+            "全部任务已完成并提交。"
+        )
+
+    def test_midsummary_word_succeeded_and_not_in_samples(self, tmp_path):
+        """2.1：中段功能词复述（is_error=False/subtype=success）→ succeeded 且不入失败样本。
+
+        marker 声明在窗口外不命中；终态邻近事件行干净、result 正文不再作
+        信号源——两条路径都不再降级，统计与失败样本随之自然修正。
+        """
+        root = tmp_path / "proj"
+        root.mkdir()
+        run_id = "impl-midtext-marker-success"
+        result_text = self._result_with_budget_word_at(300)
+        assert result_text.index("预算耗尽") >= _MARKER_DECLARATION_WINDOW
+
+        _make_run(root, run_id, [
+            _line(type="system", subtype="task_started", description="evo-fix 实施"),
+            _line(type="system", subtype="tool_call", tool="Bash", argument="git push"),
+            _line(type="result", result=result_text, is_error=False,
+                  subtype="success", num_turns=9),
+        ])
+
+        # marker 路径：命中词位于声明窗口外，不再返回命中
+        assert _business_fail_marker(result_text) is None
+
+        p = root / ".fenix" / "runs" / f"{run_id}.jsonl"
+        category, detail = _classify_run(run_id, _read_run_tail(p, 3))
+        assert category == "succeeded"
+        assert detail == ""
+
+        stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0))
+        assert stats["succeeded"] == 1
+        assert stats["failed"] == 0
+
+        samples = collect_failed_run_samples(root, datetime(2000, 1, 1, 0, 0))
+        assert samples == []
+
+    def test_signal_guardrail_keeps_event_lines_skips_result_prose(self):
+        """护栏语义保持：终态邻近事件行仍是信号源，result 终态正文不再是。
+
+        信号词在 assistant 事件行 → 仍经 _signal_evidence 兜底判 failed
+        （test_signal_fallback_when_no_marker 锁定的兜底通道不收窄）；信号词
+        仅出现在 result 正文中段 → 不构成结构性事件信号，不二次降级（实拍
+        误判的第二源：_BUSINESS_FAIL_SIGNALS 与词表同形，marker 收窄后仍会
+        经 signal 路径翻转）。
+        """
+        category, detail = _classify_run("impl-sig-event-line", [
+            {"type": "system", "subtype": "task_started"},
+            {"type": "assistant", "message": "budget-exhausted terminated"},
+            {"type": "result", "result": "进程退出", "num_turns": 1},
+        ])
+        assert category == "failed"
+        assert detail.startswith("signal=")
+
+        prose = "前情摘要。" * 24 + "中途 impl_budget_exhausted 提示一次，不影响交付，全部任务已完成。"
+        assert prose.index("impl_budget_exhausted") >= _MARKER_DECLARATION_WINDOW
+        category, detail = _classify_run("impl-sig-result-prose", [
+            {"type": "system", "subtype": "task_started"},
+            {"type": "result", "result": prose, "is_error": False,
+             "subtype": "success", "num_turns": 1},
+        ])
+        assert category == "succeeded"
+        assert detail == ""
+
+    @pytest.mark.parametrize("offset, expect_failed", [
+        (0, True),     # 开头声明：假成功抓取语义保持（evo-add-self-review-run-semantics）
+        (95, True),    # 声明起于窗口内（95..99 全落在前 100 字符）→ failed
+        (100, False),  # 声明起于窗口边界之外 → 中段复述，不降级
+        (300, False),  # 实拍量级（中段）
+    ])
+    def test_declaration_window_boundary(self, offset, expect_failed):
+        """2.2 成对锁边界：窗口内声明仍判 failed(marker=...)，窗口外复述不降级。"""
+        text = self._result_with_budget_word_at(offset)
+        assert text.index("预算耗尽") == offset
+        category, detail = _classify_run(
+            f"impl-marker-window-{offset}",
+            [{"type": "result", "result": text, "is_error": False,
+              "subtype": "success", "num_turns": 3}],
+        )
+        if expect_failed:
+            assert category == "failed"
+            assert detail == "marker=预算耗尽"
+        else:
+            assert category == "succeeded"
+            assert detail == ""
+
+    def test_head_declaration_failed_pair(self, tmp_path):
+        """2.2 成对：与 2.1 中段成功形态镜像的开头声明形态仍判 failed 且入样本。
+
+        subtype=success 不豁免 marker 判定（非目标：不跳过成功终态的 marker
+        判定，02d6cf1c 的假成功抓取语义不推翻）。
+        """
+        root = tmp_path / "proj"
+        root.mkdir()
+        run_id = "impl-head-decl-failed"
+        _make_run(root, run_id, [
+            _line(type="result", result="预算已耗尽，无法继续实现",
+                  is_error=False, subtype="success", num_turns=1),
+        ])
+
+        stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0))
+        assert stats["failed"] == 1
+        assert stats["succeeded"] == 0
+
+        samples = collect_failed_run_samples(root, datetime(2000, 1, 1, 0, 0))
+        assert [s["run_id"] for s in samples] == [run_id]
+        assert samples[0]["detail"] == "marker=预算已耗尽"
