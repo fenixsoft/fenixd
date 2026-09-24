@@ -121,26 +121,80 @@ class TestWorktreeLockIdempotency(unittest.TestCase):
         self.assertIn("Worktree already active", " ".join(self.logger.warnings))
 
     def test_failed_create_releases_own_lock(self):
-        """git 层失败（分支已存在）：返回 None、释放自己的锁、重试可用。"""
-        # 冻结时间戳，预建同名分支制造 fatal
+        """git 层失败（分支已存在）：换名重试耗尽后返回 None、释放自己的锁、重试可用。
+
+        （evo-fix-worktree-name-collision-retry 改写：冻结时间戳 + 预建同名分支
+        正是换名重试的目标场景——首次 create 会就地换名成功返回非 None，须预建
+        T/T+1/T+2 三个同名分支耗尽 3 次创建尝试，才落回「失败释放锁」断言。）
+        """
         frozen_ts = 1700000000
         import subprocess
-        subprocess.run(
-            ["git", "-C", str(self.repo), "branch",
-             f"fenix/spec-z-{frozen_ts}"],
-            check=True, capture_output=True,
-        )
+        for ts in (frozen_ts, frozen_ts + 1, frozen_ts + 2):
+            subprocess.run(
+                ["git", "-C", str(self.repo), "branch",
+                 f"fenix/spec-z-{ts}"],
+                check=True, capture_output=True,
+            )
         with patch("core.worktree_manager.time.time", return_value=frozen_ts):
             result = self.wm.create("spec-z", "implementer")
 
         self.assertIsNone(result)
         self.assertFalse(self.wm.has_active_lock("spec-z", "implementer"),
                          "失败方必须释放自己 acquire 的锁，否则重试永远被拦")
+        # 换名可观测：恰好 2 次换名重试 WARNING，含新旧分支名
+        collision = [w for w in self.logger.warnings
+                     if "already exists, retrying with" in w]
+        self.assertEqual(len(collision), 2,
+                         f"应恰好 2 次换名重试 WARNING: {self.logger.warnings}")
+        self.assertIn(f"fenix/spec-z-{frozen_ts}", collision[0])
+        self.assertIn(f"fenix/spec-z-{frozen_ts + 1}", collision[1])
+        self.assertIn(f"fenix/spec-z-{frozen_ts + 2}", collision[1])
 
-        # 释放后立即重试（新时间戳）应成功——单发场景的瞬时故障恢复语义保留
+        # 释放后立即重试（退出时间冻结、真实新时间戳）应成功——恢复语义保留
         result2 = self.wm.create("spec-z", "implementer")
         self.assertIsNotNone(result2)
         self.assertTrue(self.wm.has_active_lock("spec-z", "implementer"))
+        # 恢复成功走真实新时间戳：末段纯数字且严格大于预建分支（解析契约不变）
+        branch2 = self.wm._wt_branches[str(result2)]
+        tail = branch2.rsplit("-", 1)[1]
+        self.assertTrue(tail.isdigit(), f"分支名末段须纯数字: {branch2}")
+        self.assertGreater(int(tail), frozen_ts + 2)
+
+    def test_cross_lane_same_second_collision_renames_inplace(self):
+        """跨 agent_type 同秒 create 撞名：后到者单次调用内换名自愈。
+
+        S2 锁按 spec:agent_type 分键，planner-plan 与 implementer 互不拦截；
+        冻结时间戳使两车道生成同名分支与路径，后到者 add -b 报 already exists
+        后就地换名（时间戳单调 +1）重试成功——返回非 None，无需调用方
+        sleep(5) 换 attempt 重试（runner 层 attempt 配额不消耗）。
+        """
+        frozen_ts = 1700000000
+        with patch("core.worktree_manager.time.time", return_value=frozen_ts):
+            first = self.wm.create("spec-c", "planner-plan")
+            self.assertIsNotNone(first)
+            self.assertTrue(self.wm.has_active_lock("spec-c", "planner-plan"))
+
+            # 后到者：同秒同名撞车，换名重试自愈
+            second = self.wm.create("spec-c", "implementer")
+
+        self.assertIsNotNone(
+            second,
+            "后到者应在单次 create 内换名自愈，而非返回 None 交给 attempt 兜底")
+        # 两车道各得唯一分支；新分支末段纯数字且严格大于冻结值（解析契约不变）
+        branch1 = self.wm._wt_branches[str(first)]
+        branch2 = self.wm._wt_branches[str(second)]
+        self.assertEqual(branch1, f"fenix/spec-c-{frozen_ts}")
+        self.assertNotEqual(branch1, branch2)
+        tail = branch2.rsplit("-", 1)[1]
+        self.assertTrue(tail.isdigit(), f"分支名末段须纯数字: {branch2}")
+        self.assertGreater(int(tail), frozen_ts)
+        # 两车道锁各自在册、互不误删（创建锁无泄漏）
+        self.assertTrue(self.wm.has_active_lock("spec-c", "planner-plan"))
+        self.assertTrue(self.wm.has_active_lock("spec-c", "implementer"))
+        # 换名可观测：WARNING 含新旧分支名
+        warnings = " ".join(self.logger.warnings)
+        self.assertIn(f"fenix/spec-c-{frozen_ts}", warnings)
+        self.assertIn(branch2, warnings)
 
     def test_has_active_lock(self):
         self.assertFalse(self.wm.has_active_lock("spec-a", "implementer"))

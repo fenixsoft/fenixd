@@ -171,43 +171,78 @@ class G1LifecycleMixin:
             self._active_reuse.pop(spec_name, None)
 
         # Determine branch name — include timestamp to avoid collisions on re-verification
+        # （evo-fix-worktree-name-collision-retry：跨 agent_type 同秒 create 会按
+        # int(time.time()) 撞出同名分支与路径，后到者 add -b 报 already exists。
+        # 在单次 create 调用内以单调递增时间戳同步重建分支名与路径就地重试
+        # （换名至多 2 次、总计至多 3 次创建尝试），免去 runner 层 attempt
+        # sleep 5 秒 + 重拉供给链的兜底消耗；末段保持纯数字时间戳，queries 层
+        # rsplit+isdigit 解析契约不变。）
         timestamp = int(time.time())
         if agent_type == "verifier":
-            branch = f"fenix/verify-{spec_name}-{timestamp}"
             prefix = "verify"
         else:
-            branch = f"fenix/{spec_name}-{timestamp}"
             prefix = "impl"
 
-        # Ensure unique worktree directory
-        wt_name = f"{prefix}-{spec_name}-{timestamp}"
+        def _names(ts: int):
+            """按时间戳重建分支名与 worktree 目录名（撞名时同名双换）。"""
+            if agent_type == "verifier":
+                return f"fenix/verify-{spec_name}-{ts}", f"verify-{spec_name}-{ts}"
+            return f"fenix/{spec_name}-{ts}", f"impl-{spec_name}-{ts}"
+
+        branch, wt_name = _names(timestamp)
         wt_path = self.base_dir / wt_name
 
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
         try:
-            self.logger.info(
-                "worktree_manager",
-                f"Creating worktree: {wt_path} on branch {branch}",
-            )
+            create_attempt = 0
+            while True:
+                create_attempt += 1
+                self.logger.info(
+                    "worktree_manager",
+                    f"Creating worktree: {wt_path} on branch {branch}",
+                )
 
-            # Create worktree
-            result = subprocess.run(
-                [
-                    "git",
-                    "-C",
-                    str(self.project_root),
-                    "worktree",
-                    "add",
-                    "-b",
-                    branch,
-                    str(wt_path),
-                    "HEAD",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
+                # Create worktree
+                result = subprocess.run(
+                    [
+                        "git",
+                        "-C",
+                        str(self.project_root),
+                        "worktree",
+                        "add",
+                        "-b",
+                        branch,
+                        str(wt_path),
+                        "HEAD",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+
+                if result.returncode == 0:
+                    break
+
+                # 非重名失败不重试；换名重试至多 2 次（总计至多 3 次创建尝试），
+                # 耗尽仍失败沿用现状放弃路径（discard 锁、return None），
+                # runner 层 attempt 循环兜底不变。
+                if "already exists" not in (result.stderr or "") or create_attempt >= 3:
+                    break
+
+                # 换名重试：时间戳取 max(now, old+1) 保证新后缀严格大于旧值，
+                # 分支名与路径同步重建（事故现场胜者已占用原路径）；重试全程
+                # 持有创建锁（锁在入口获取、失败退出才释放），对调用方透明。
+                old_branch = branch
+                timestamp = max(int(time.time()), timestamp + 1)
+                branch, wt_name = _names(timestamp)
+                wt_path = self.base_dir / wt_name
+                self.logger.warning(
+                    "worktree_manager",
+                    f"Worktree name collision for '{spec_name}' "
+                    f"(attempt {create_attempt}/3): {old_branch} already "
+                    f"exists, retrying with {branch}",
+                )
 
             if result.returncode != 0:
                 self.logger.error(
