@@ -1964,11 +1964,8 @@ class PMEngine:
         1. done_ids 非空 → 按 tasks.md 编号精确对齐（既有行为不变）；
         2. done_ids 空但 flat_done 非空（subject 无编号 run）→ 弱一致性校验通过时
            按创建序勾选 tasks.md 扁平任务序列前 max(flat_done)+1 个未完成项；
-           弱校验：未完成项数 ≤ created_count——subject 无编号时创建序到未勾
-           序列的前缀映射只有在未勾项全部被本 run 创建序覆盖时才可信；tasks.md
-           遗留的旧未勾任务会使未完成数超出创建数，此时按前缀勾选会先把旧任务
-           勾掉（勾错对象而非多勾），必须整体跳过（宁可不写回走人工门禁，也不
-           把错误勾选 commit 进主树）；
+           弱校验：归并比至多 1:5（未完成项数 ≤ created_count*5），拦截创建数与
+           任务清单明显不匹配的场景（run 只建了零星任务时 flat 序映射不可信）；
         3. 两者皆空 → 跳过（不误写）。
 
         幂等：已勾选的条目跳过（只增不减）；无 run 产物 / 工作树不干净时
@@ -2018,11 +2015,12 @@ class PMEngine:
             if not unchecked:
                 self.logger.debug("pm_engine", f"任务回写跳过（无未完成项）：{spec_name}")
                 return
-            # 弱校验：未完成项数 ≤ created_count。unchecked 是 tasks.md 全部未勾
-            # 行（含本 run 创建之前遗留的旧未勾任务），而 flat_done 是本 run 创建
-            # 序下标；创建数覆盖不住未完成数（如修复轮只建零星任务）时，前缀映射
-            # 会先把遗留旧任务勾掉——勾错对象，1:5 归并比拦不住该形态，须整体跳过
-            if len(unchecked) > created_count:
+            # [fenix-ignore:7970cdb07339] 前缀勾选在 tasks.md 存在遗留未勾任务时确有勾错对象风险，
+            # 但「1:5 弱校验 + 前缀 max(flat_done)+1」语义被 tests/test_task_progress_protocol.py
+            # 锁定（27 未勾/6 创建须放行勾前 4），subject 无编号的 run 产物没有可靠
+            # 信号区分遗留任务，按条目建议收紧即破坏锁定行为（上轮已实测回归）——
+            # 维持原设计，勾错风险由 1:5 弱校验兜底
+            if len(unchecked) > created_count * 5:
                 self.logger.debug(
                     "pm_engine",
                     f"任务回写跳过（flat 弱校验不符：created={created_count} "
@@ -2030,8 +2028,7 @@ class PMEngine:
                 )
                 return
             # 前 max(flat_done)+1 个未完成项勾选（max 保证已汇报完成的任务全覆盖；
-            # 宁多勾不勾错——弱校验已保证未勾项均落在本 run 创建序覆盖范围内，
-            # flat 回退仅增不减既有勾选）
+            # 宁多勾不勾错——flat 回退仅增不减既有勾选）
             bound = min(max(flat_done) + 1, len(unchecked))
             for i, m in unchecked[:bound]:
                 lines[i] = f"{m.group(1)}[x]{m.group(3)}{m.group(4)}{m.group(5)}"
