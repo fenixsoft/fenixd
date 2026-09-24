@@ -102,10 +102,11 @@ class H_SessionRoutesMixin:
             self._error(404, "session not found; POST /api/session/start first")
             return
 
-        try:
-            body = self._read_json_body()
-        except Exception:
-            return
+        # 读 body 的 socket 层异常（断连/超时）不在此吞掉（code-review item
+        # 50e309b27c09）：_read_json_body 对常规错误已自行写响应并返回 None，
+        # 能逃逸的只剩 OSError，交由 _handle_inner 统一兜底（BrokenPipe 静默、
+        # 其余 logger.exception + 未开始响应时补 500）优于静默无响应。
+        body = self._read_json_body()
         if body is None:
             return  # _read_json_body 已写错误响应
 

@@ -215,7 +215,10 @@ class FFastTrackMixin:
         # 被取消的 fast-track run 结果 cancelled=True：只写 error、不翻 status、
         # 不动 _retry_count/_merge_fp/_merge_streak、不入队重派；worktree
         # 保留语义不变（_keep_fast_track_worktree 幂等，runner 已在取消路径保留）。
-        if getattr(result, "cancelled", False):
+        # 判定与上方 frozen_terminated 同用 `is True`（MagicMock 替身自动生成
+        # truthy cancelled 属性，裸真值会把正常 run 误入取消分支；生产结果
+        # cancelled 为显式 bool，runner.py 取消路径写 True）。
+        if getattr(result, "cancelled", False) is True:
             ft_err = getattr(result, "error", None) or ""
             cancelled_err = f"run 被人工取消：{ft_err}" if ft_err else "run 被人工取消"
             self._pm.logger.warning(

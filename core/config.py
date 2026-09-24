@@ -2055,7 +2055,10 @@ class ConfigLoader:
         overrides = cls.normalize_timeout_overrides(config)
         if agent_type and agent_type in overrides:
             return float(overrides[agent_type])
-        agents = config.get("agents") or {}
+        # 段入口经 _segment_or_empty 归一（code-review item 3a51f7bf0267）：
+        # `or {}` 对真值非 dict（如 agents: [1]）不回落，下方 .get 抛
+        # AttributeError，与 effective_stuck_threshold_seconds 同口径降级。
+        agents = cls._segment_or_empty(config, "agents")
         rt = agents.get("run_timeout_seconds")
         if isinstance(rt, (int, float)) and not isinstance(rt, bool) and rt > 0:
             return float(rt)

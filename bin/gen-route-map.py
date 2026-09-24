@@ -35,8 +35,12 @@ def _rel_line(path: Path, root: Path, lineno: int) -> str:
     return f"{rel}:{lineno}"
 
 
-def scan_server_routes(root: Path) -> list:
+def scan_server_routes(root: Path) -> tuple:
     """扫描 API 路由，产出 (route, source, method) 条目。
+
+    返回 (entries, skipped)：skipped 为表驱动条目行中未匹配条目正则的
+    行数（如 pattern 字面量含转义双引号等 "([^"]+)" 覆盖不了的形态），
+    供调用方在 stdout 末尾提示，防地图静默缺条目。
 
     路由已迁入 `core/dashboard/routes/` 子包（refactor-giant-classes D4），
     分两级扫描（design D4 三条 MUST ① 同文件集合）：
@@ -56,6 +60,7 @@ def scan_server_routes(root: Path) -> list:
     条目数不减少。
     """
     entries: list = []
+    skipped = 0
     # ── 1) 表驱动路由表（主源，方法显式归属） ────────────────────────────
     routes_base = root / "core" / "dashboard" / "routes" / "base.py"
     if routes_base.is_file():
@@ -80,6 +85,9 @@ def scan_server_routes(root: Path) -> list:
                 continue
             rm = re.search(r'\(\s*"(exact|regex|suffix)",\s*"([^"]+)"', line)
             if not rm:
+                # 条目行未被条目正则收录（如 pattern 字面量含转义双引号 \" 等
+                # "([^"]+)" 匹配不了的形态）：累计计数上报，防地图静默缺条目
+                skipped += 1
                 continue
             pattern = rm.group(2)
             if pattern.startswith("^/"):
@@ -112,7 +120,7 @@ def scan_server_routes(root: Path) -> list:
                 continue
             # 中性值：本级不做方法归属（与 docstring 一致），渲染时省略方法标签
             entries.append((route, _rel_line(f, root, i), "TEXT"))
-    return entries
+    return entries, skipped
 
 
 def scan_spa_routes(root: Path) -> list:
@@ -249,7 +257,8 @@ def main() -> int:
         return 1
 
     entries: list = []
-    entries.extend(scan_server_routes(root))
+    server_entries, table_skipped = scan_server_routes(root)
+    entries.extend(server_entries)
     entries.extend(scan_spa_routes(root))
     entries.extend(scan_testids(root))
     # 去重（同 route 多出处取首个），保持 server → SPA → testid 顺序
@@ -285,6 +294,12 @@ def main() -> int:
     for route, src, _ in [e for e in deduped if e[2] == "testid"]:
         out.append(f"- `{route}` ({src})\n")
     out.append("\n> 已知入口索引、非穷尽清单；spec 涉及但地图未覆盖的入口仍须自行源码取证。\n")
+    if table_skipped:
+        out.append(
+            f"\n> ⚠️ 表驱动条目解析跳过 {table_skipped} 行"
+            f"（pattern 字面量含转义双引号等未支持形态时条目正则失配）"
+            f"——地图可能缺条目，请人工核对 core/dashboard/routes/base.py\n"
+        )
     sys.stdout.write("".join(out))
     return 0
 

@@ -33,8 +33,18 @@ const SafeLink: Components['a'] = ({ href, children, ...props }) => {
     return <span>{children}</span>;
   }
 
+  // 页内锚点：直接渲染锚点链接（无外部协议风险，不新开窗口）
+  if (href.startsWith('#')) {
+    return (
+      <a href={href} {...props}>
+        {children}
+      </a>
+    );
+  }
+
   try {
-    const url = new URL(href);
+    // 相对路径（如 ./design.md）基于当前页面解析，解析结果仍须过协议白名单
+    const url = new URL(href, window.location.href);
     if (ALLOWED_PROTOCOLS.has(url.protocol)) {
       return (
         <a href={href} target="_blank" rel="noopener noreferrer" {...props}>

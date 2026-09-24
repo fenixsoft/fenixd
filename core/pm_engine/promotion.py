@@ -43,10 +43,13 @@ def promote_drafted(
         from core.deliverables import soften_unsatisfiable_declarations
 
         spec_dir = project_root / "spec" / "changes" / spec_name
+        # tasks_path 绑定在分支外（spec_dir 拼接无需目录存在）：软化分支的
+        # after 快照同样引用它，若仅在 is_dir() 块内绑定，目录缺失时会抛
+        # UnboundLocalError 并被外层 except 吞成「软化编排异常」，归因失真
+        tasks_path = spec_dir / "tasks.md"
         # 快照声明段（before）：供审计 diff
         before_text = ""
         if spec_dir.is_dir():
-            tasks_path = spec_dir / "tasks.md"
             if tasks_path.exists():
                 try:
                     before_text = tasks_path.read_text(encoding="utf-8")
@@ -207,23 +210,16 @@ def should_skip_review(project_root: Path, spec_name: str, config: dict, logger)
         # 没有 specs 目录，视为 0 个能力目录，满足条件
         pass
 
-    # 3. Deliverables 声明段条目数 ≤ 3
-    tasks_path = spec_dir / "tasks.md"
-    if not tasks_path.exists():
-        return False
-    try:
-        content = tasks_path.read_text(encoding="utf-8")
-    except Exception:
-        return False
-    # 简单解析 Deliverables 段：寻找 ```yaml 代码块
-    import re
+    # 3. Deliverables 声明段条目数 ≤ 3（复用 core.deliverables 权威解析：
+    #    声明段定位/条目计数单点在 extract_declared_entries，勿维护第二份
+    #    围栏解析——按全文首个 yaml 围栏计数会与 `## Deliverables` 段定位
+    #    口径漂移：前部其他围栏恰含 ≤3 条 `- path:` 而真实声明段 >3 条时，
+    #    会误判满足本条件跳过评审）
+    from core.deliverables import extract_declared_entries
 
-    m = re.search(r"```yaml\n(.*?)\n```", content, re.DOTALL)
-    if not m:
+    entries = extract_declared_entries(spec_dir)
+    if not entries:
         return False
-    yaml_block = m.group(1)
-    # 统计以 - path: 开头的行数
-    entries = [line for line in yaml_block.splitlines() if line.strip().startswith("- path:")]
     if len(entries) > 3:
         return False
 

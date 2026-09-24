@@ -1146,6 +1146,27 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
         ):
             if ak in patch["admin"] and patch["admin"][ak] is not None:
                 merged["admin"][ak] = patch["admin"][ak]
+        # code-review item 46a887dedf6a：「同步用户级设置」把 quality 页白名单里
+        # 的 admin.code_review 段以 {"admin": {"code_review": {...}}} 形态的 patch
+        # 送入本分支——不在此显式合并子段，该值会被上面的标量白名单静默丢弃
+        # （与下方 code_review_fix 同款坑）。逐键守卫与顶层 code_review 分支一致。
+        cr_sync = patch["admin"].get("code_review")
+        if isinstance(cr_sync, dict):
+            existing_cr = merged["admin"].get("code_review")
+            if not isinstance(existing_cr, dict):
+                existing_cr = {}
+            merged_cr = dict(existing_cr)
+            if isinstance(cr_sync.get("enabled"), bool):
+                merged_cr["enabled"] = cr_sync["enabled"]
+            _mf = cr_sync.get("max_files")
+            if isinstance(_mf, int) and not isinstance(_mf, bool) and _mf > 0:
+                merged_cr["max_files"] = _mf
+            if cr_sync.get("scope") in ("window", "full"):
+                merged_cr["scope"] = cr_sync["scope"]
+            _sam = cr_sync.get("stall_alert_minutes")
+            if isinstance(_sam, int) and not isinstance(_sam, bool) and _sam > 0:
+                merged_cr["stall_alert_minutes"] = _sam
+            merged["admin"]["code_review"] = merged_cr
         # add-code-review-auto-fix：「同步用户级设置」按 _SYNC_PAGE_KEYS 构造
         # {"admin": {"code_review_fix": {...}}} 形态的 patch 进入本分支（顶层
         # code_review_fix 键只有设置页保存路径走）——不在此显式合并子段，该值
@@ -2039,7 +2060,10 @@ _SYNC_PAGE_KEYS = {
             "impl_code_review_lane_timeout_sec",
         ],
         # add-code-review-auto-fix：admin.code_review_fix 段随质量页签同步
-        "admin": ["code_review_fix"],
+        # code-review item 46a887dedf6a：admin.code_review 段（QualityPanel onSave
+        # 顶层提交的 code_review）同样随质量页签同步——缺此键时「同步用户级设置」
+        # 不落 admin.code_review、「清空」也删不掉，与 code_review_fix 不对称。
+        "admin": ["code_review", "code_review_fix"],
     },
     "approval": {
         "gates": ["promote_mode", "approve_mode", "spec_review_mode", "start_after_scope"]
