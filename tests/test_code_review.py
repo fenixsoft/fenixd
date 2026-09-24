@@ -1567,3 +1567,199 @@ class TestCheckProgressStall(unittest.TestCase):
 
         self._proot = self._mk("code-review-1790182836", 16, stall_alert_minutes=30)
         self.assertIsNone(check_progress_stall(self._proot))
+
+
+class TestCodeReviewPromptShardInjection(unittest.TestCase):
+    """分片路径框架注入（2026-09-24 429 事故连带发现）。
+
+    事故：提示词让主 agent「从 {out_path} 文件名推导 <run_id>」，agent 截成
+    纯 epoch（`out-1790204913-b1.jsonl`，丢 `code-review-` 段），6 个分片对
+    读侧（进度/ingest/硬门）全盲，173 条发现仅 20 条可消费。根治：分片名
+    由框架经 `{run_id}` 占位符注入具体值，提示词删除一切推导指令。
+    """
+
+    RUN_ID = "code-review-1790204913"
+
+    def _build(self):
+        from core.agent_runner.prompt_builder import PromptBuilder
+
+        pm = type("P", (), {"project_root": Path(_mkdtemp("cr-prompt-"))})()
+        return PromptBuilder(pm), pm.project_root
+
+    def test_template_has_injected_placeholder_no_derivation(self):
+        from core.agent_runner.prompt_builder import AGENT_PROMPT_DIR
+
+        text = (AGENT_PROMPT_DIR / "code-review.md").read_text(encoding="utf-8")
+        self.assertIn("{run_id}", text)
+        self.assertNotIn("out-<run_id>", text)
+        # 推导指令必须删除（LLM 做字符串推导不可靠）
+        self.assertNotIn("去掉 `out-` 前缀", text)
+
+    def test_filled_prompt_has_concrete_shard_path(self):
+        import shutil
+
+        builder, proot = self._build()
+        try:
+            prompt = builder._build_code_review_prompt(
+                self.RUN_ID,
+                {
+                    "manifest": ["core/a.py"],
+                    "review_window": "（全仓）",
+                    "out_path": str(proot / ".fenix" / "code-review" / f"out-{self.RUN_ID}.jsonl"),
+                },
+            )
+        finally:
+            shutil.rmtree(str(proot), ignore_errors=True)
+        self.assertIn(f"out-{self.RUN_ID}-b<N>.jsonl", prompt)  # run_id 已注入，批次号 N 仍由 agent 自选
+        self.assertNotIn("{run_id}", prompt)
+        self.assertNotIn("<run_id>", prompt)
+        self.assertIn(f"out-{self.RUN_ID}.jsonl", prompt)  # 主产物路径不受影响
+
+
+class TestShardPathsNearMissWarning(unittest.TestCase):
+    """shard_paths 错名分片探测：同素材缺前缀文件存在时 WARNING 点名，
+    不改变消费行为（读侧口径保持 fail-显式，2026-09-24 事故防线二）。"""
+
+    def setUp(self):
+        self.proot = Path(_mkdtemp("cr-stray-"))
+        self.crdir = self.proot / ".fenix" / "code-review"
+        self.crdir.mkdir(parents=True)
+
+    def tearDown(self):
+        import shutil
+
+        shutil.rmtree(str(self.proot), ignore_errors=True)
+
+    def test_stray_epoch_named_shard_warns(self):
+        from core.code_review import shard_paths
+
+        # 错名分片（agent 截断 run_id 前缀段的事故形态）
+        stray = self.crdir / "out-1790204913-b1.jsonl"
+        stray.write_text(json.dumps({"file": "core/a.py", "findings": []}) + "\n", encoding="utf-8")
+        with self.assertLogs("fenixd.code_review", level="WARNING") as captured:
+            self.assertEqual(shard_paths(self.proot, "code-review-1790204913"), [])
+        joined = "\n".join(captured.output)
+        self.assertIn("1790204913", joined)
+        self.assertIn("错名", joined)
+
+    def test_canonical_shards_no_warning(self):
+        from core.code_review import shard_paths
+
+        p = self.crdir / "out-code-review-1790204914-b1.jsonl"
+        p.write_text(json.dumps({"file": "core/a.py", "findings": []}) + "\n", encoding="utf-8")
+        self.assertEqual(
+            shard_paths(self.proot, "code-review-1790204914"),
+            [p],
+        )
+
+
+class TestRunCodeReviewErrorSalvage(unittest.TestCase):
+    """error 收场抢救（2026-09-24 429 事故）。
+
+    run 中途死亡（网关 429/超时/强杀）≠ 零产出：分片直写模式下死前已落盘的
+    分片与主产物行是真实审查结论，run_ok 门曾把整条消费链跳过（173 条发现
+    滞留分片零落账，$23.68 白烧）。抢救语义：仅 upsert 入台账；manual_full
+    MUST NOT 快照核销（部分覆盖下会把未审文件存量条目误置 resolved）；
+    MUST NOT 触发 code-fix 检查点。
+    """
+
+    def setUp(self):
+        self.proot = Path(_mkdtemp("cr-salvage-"))
+        self.crdir = self.proot / ".fenix" / "code-review"
+        self.crdir.mkdir(parents=True)
+        self.run_id = "code-review-1790204915"
+
+    def tearDown(self):
+        import shutil
+
+        shutil.rmtree(str(self.proot), ignore_errors=True)
+
+    def _shard(self, n, rows):
+        p = self.crdir / f"out-{self.run_id}-b{n}.jsonl"
+        p.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+
+    def _fake_runner(self):
+        from core.agent_runner import maintenance_runs as mr
+
+        runner = type("R", (), {})()
+        runner.project_root = self.proot
+        runner.logger = None
+        runner._unique_code_review_run_id = lambda: self.run_id
+        runner._build_prompt = lambda *a, **k: "PROMPT"
+        runner._get_agent_model_assignment = lambda name: None
+        runner._get_admin_model = lambda: "test-model"
+        runner._extract_usage_info = lambda x: {}
+        runner._accumulate_code_review_tokens = lambda run_id, usage: None
+        runner._read_code_review_out = lambda project_root, rid: mr._read_code_review_out(
+            runner, project_root, rid
+        )
+
+        def _boom(*a, **k):
+            raise RuntimeError(
+                "API Error: Request rejected (429) · [1302][您的账户已达到速率限制]"
+            )
+
+        runner._run_claude = _boom
+        return runner
+
+    def _run(self, review_kind="manual_window"):
+        from core.agent_runner import maintenance_runs as mr
+
+        return mr.run_code_review(self._fake_runner(), ["core/a.py", "core/b.py"], review_kind)
+
+    def test_error_run_salvages_preexisting_findings(self):
+        self._shard(1, [{"file": "core/a.py", "findings": [
+            {"line": 3, "severity": "major", "category": "correctness",
+             "title": "抢救测试发现一。", "description": "d", "suggestion": "s",
+             "evidence": "core/a.py:3"},
+        ]}])
+        (self.crdir / f"out-{self.run_id}.jsonl").write_text(
+            json.dumps({"file": "core/b.py", "findings": []}) + "\n", encoding="utf-8"
+        )
+        result = self._run()
+        self.assertFalse(result.success)
+        self.assertIn("429", result.error)
+        self.assertEqual(result.inserted, 1)
+        self.assertEqual(result.updated, 0)
+        items = [
+            json.loads(x)
+            for x in (self.crdir / "items.jsonl").read_text(encoding="utf-8").splitlines()
+            if x.strip()
+        ]
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["file"], "core/a.py")
+        self.assertEqual(items[0]["status"], "open")
+
+    def test_salvage_manual_full_skips_snapshot_resolution(self):
+        from core.code_review import upsert_findings
+
+        # 存量 open 条目：未被本轮（部分覆盖）观测的文件，抢救后 MUST 保持 open
+        upsert_findings(
+            self.proot,
+            [{"file": "core/unreviewed.py", "category": "maintainability",
+              "title": "存量未被本轮观测。", "severity": "minor", "description": "d",
+              "suggestion": "s", "evidence": "e"}],
+            review_id="code-review-1790204914",
+            review_kind="manual_full",
+        )
+        self._shard(1, [{"file": "core/a.py", "findings": [
+            {"line": 1, "severity": "minor", "category": "maintainability",
+             "title": "本轮观测的新发现。", "description": "d", "suggestion": "s",
+             "evidence": "e"},
+        ]}])
+        result = self._run("manual_full")
+        self.assertFalse(result.success)
+        self.assertEqual(result.resolved, 0)
+        from core.code_review import read_items
+
+        items = read_items(self.proot)
+        seeded = [r for r in items.values() if r.get("file") == "core/unreviewed.py"]
+        self.assertEqual(len(seeded), 1)
+        self.assertEqual(seeded[0]["status"], "open")
+
+    def test_salvage_without_artifacts_is_noop(self):
+        result = self._run()
+        self.assertFalse(result.success)
+        self.assertEqual(result.inserted, 0)
+        self.assertNotIn("抢救", result.error)
+        self.assertFalse((self.crdir / "items.jsonl").exists())

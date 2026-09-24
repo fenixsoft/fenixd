@@ -80,6 +80,25 @@ def shard_paths(project_root, run_id: str) -> List[Path]:
         _logger.warning("code_review: 分片目录 %s 列举失败（按无分片处理）: %s", d, e)
         return []
     found.sort(key=lambda t: t[0])
+    # 错名分片探测（2026-09-24 事故防线）：agent 曾把分片名截成
+    # ``out-<epoch>-b<N>.jsonl``（缺 ``code-review-`` 段），三消费侧全盲。
+    # run_id 去掉已知前缀后的同素材错名文件存在时 WARNING 点名——只告警
+    # 不消费（读侧口径 fail-显式不 fail-静默，也不放宽 glob 兜错名）。
+    rest = run_id[len("code-review-"):] if run_id.startswith("code-review-") else ""
+    if rest:
+        try:
+            stray = d / f"out-{rest}-b1.jsonl"
+            if stray.is_file():
+                _logger.warning(
+                    "code_review: 疑似错名分片 %s（run %s 的分片名应为 "
+                    "out-%s-b<N>.jsonl）——该文件不参与聚合消费，请核对"
+                    "落盘方使用的 run_id 是否被截断",
+                    stray.name,
+                    run_id,
+                    run_id,
+                )
+        except OSError:
+            pass
     return [p for _, p in found]
 
 

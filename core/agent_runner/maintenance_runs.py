@@ -1031,6 +1031,44 @@ def run_code_review(
                         _log = getattr(runner, "logger", None)
                         if _log is not None:
                             _log.warning("code-review", f"全仓快照核销失败（run {run_id}）")
+    else:
+        # ── error 收场抢救（2026-09-24 429 事故）────────────────────────────
+        # run 中途死亡（网关 429 / 超时 / 强杀）≠ 零产出：分片直写模式下死前
+        # 已落盘的分片与主产物行是真实审查结论，run_ok 门曾把整条消费链跳过
+        # （173 条发现滞留分片零落账）。此处仅抢救数据：聚合读 → upsert。
+        # 两条红线：MUST NOT 触发 manual_full 全仓快照核销（部分覆盖下会把
+        # 未审文件的存量条目误置 resolved，与空集核销白洗同族）；MUST NOT
+        # 触发 code-fix 检查点（残跑产物不激活修复链，与下方 run_ok 门一致）。
+        try:
+            from core.code_review import shard_paths as _cr_shard_paths
+
+            shards = len(_cr_shard_paths(runner.project_root, run_id))
+            findings = runner._read_code_review_out(runner.project_root, run_id)
+            if findings:
+                stats = upsert_findings(
+                    runner.project_root,
+                    findings,
+                    review_id=run_id,
+                    review_kind=review_kind,
+                )
+                inserted = stats.get("inserted", 0)
+                updated = stats.get("updated", 0)
+                if inserted or updated:
+                    error = (
+                        f"{error}；error 收场抢救落账 inserted={inserted} "
+                        f"updated={updated}（部分覆盖，未做全仓快照核销）"
+                    )
+                    _log = getattr(runner, "logger", None)
+                    if _log is not None:
+                        _log.warning(
+                            "code-review",
+                            f"error 收场抢救落账: run={run_id} shards={shards} "
+                            f"inserted={inserted} updated={updated}",
+                        )
+        except Exception as e:  # noqa: BLE001 — 抢救失败不改变 run 原失败判定
+            _log = getattr(runner, "logger", None)
+            if _log is not None:
+                _log.warning("code-review", f"error 收场抢救失败（run {run_id}）: {e}")
 
     # ── 自动修复激活（task 7.1 / design D4 路径一）────────────────────────
     # 成功落账且本轮 inserted > 0（产生了新 open 条目）→ 触发一次编排检查点。

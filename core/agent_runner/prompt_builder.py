@@ -1474,6 +1474,8 @@ class PromptBuilder:
 
         加载 agents/code-review.md（文件化体系，缺失 fail-fast），以 str.replace
         填充占位符（不用 str.format——正文含大量 {} JSON 示例）：
+        - {run_id}: run 标识（分片名 out-{run_id}-b<N>.jsonl 的注入源，2026-09-24
+          事故根治：禁止 agent 自行推导分片名）
         - {manifest}: 待审文件清单（框架侧先行算出，进度 total 权威来源）
         - {total_files}: manifest 长度（agent 据此核对是否覆盖完全）
         - {review_window}: 审查窗口描述（scheduled/manual_window 为
@@ -1486,6 +1488,10 @@ class PromptBuilder:
         total = len(files)
         manifest_txt = "\n".join(f"- {f}" for f in files) or "（manifest 为空——本 run 不应派发，见调用方）"
         window = detail.get("review_window") or "（全仓）"
+        # {run_id} 分片名注入（2026-09-24 事故根治）：分片名 out-{run_id}-b<N>.jsonl
+        # 由框架填具体值，提示词不再让 agent 从 {out_path} 推导——LLM 做字符串
+        # 推导曾把 run_id 截成纯 epoch，6 个分片读侧全盲。
+        prompt = prompt.replace("{run_id}", str(run_id))
         prompt = prompt.replace("{manifest}", manifest_txt)
         prompt = prompt.replace("{total_files}", str(total))
         prompt = prompt.replace("{review_window}", str(window))
