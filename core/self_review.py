@@ -32,8 +32,10 @@ spec/changes 条目、注册 STATE.md 条目或派发任何 agent——产出仅
 
 import ast
 import json
+import os
 import re
 import subprocess
+import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -57,6 +59,34 @@ _TODO_SECTION_RE = re.compile(r"^### (.+?)\s*$")
 
 # 空小节占位（_append_todo 写入）；收集闭环判定条目时排除。
 _EMPTY_MARKER = "（当日无）"
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    """原子写文本文件（mkstemp + fsync + rename，同 state_machine.write_all）。
+
+    todo.md / 状态文件均为整文件回写，裸 write_text 截断重写在进程中途被
+    kill 时会留下截断文件（丢既有全部条目 / 增量窗口锚点）；临时文件落在
+    目标同目录（保证同一文件系统），rename 原子替换。并发保护仍由调用方
+    的 flock 负责，本函数不加锁。
+    """
+    fd, tmp_str = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=str(path.parent),
+    )
+    tmp_path = Path(tmp_str)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.rename(str(tmp_path), str(path))
+    finally:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
 
 
 def _is_fixture_project(project_root) -> bool:
@@ -667,10 +697,10 @@ class SelfReviewScheduler:
                 if not re.search(rf"(?m)^## {re.escape(today)}\s*$", existing):
                     block = f"## {today}\n\n- 自上次自省以来无 SPEC 活动，跳过自省。\n"
                     if existing.strip():
-                        todo.write_text(existing.rstrip("\n") + "\n\n" + block, encoding="utf-8")
+                        _atomic_write_text(todo, existing.rstrip("\n") + "\n\n" + block)
                     else:
                         todo.parent.mkdir(parents=True, exist_ok=True)
-                        todo.write_text(block, encoding="utf-8")
+                        _atomic_write_text(todo, block)
             except OSError as e:
                 self.logger.warning("self_review", f"{today}: 零活动占位写入 todo.md 失败: {e}")
 
@@ -1044,7 +1074,7 @@ class SelfReviewScheduler:
             for date, body in new_blocks:
                 parts.append(f"## {date}\n\n" + "\n".join(body).strip("\n"))
             try:
-                todo.write_text("\n\n".join(parts) + "\n", encoding="utf-8")
+                _atomic_write_text(todo, "\n\n".join(parts) + "\n")
             except OSError as e:
                 self.logger.warning("self_review", f"闭环移除写回 todo.md 失败: {e}")
                 return []
@@ -1140,7 +1170,7 @@ class SelfReviewScheduler:
             else:
                 body = content
             todo.parent.mkdir(parents=True, exist_ok=True)
-            todo.write_text(existing + body, encoding="utf-8")
+            _atomic_write_text(todo, existing + body)
 
         _with_lock(todo, _do)
         return todo
@@ -1233,7 +1263,8 @@ class SelfReviewScheduler:
         path = self._state_path()
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(
+            _atomic_write_text(
+                path,
                 json.dumps(
                     {
                         "last_run_date": date_str,
@@ -1243,7 +1274,6 @@ class SelfReviewScheduler:
                     ensure_ascii=False,
                     indent=2,
                 ),
-                encoding="utf-8",
             )
         except OSError as e:
             self.logger.error("self_review", f"状态文件写入失败: {e}")

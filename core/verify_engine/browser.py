@@ -176,10 +176,18 @@ class BrowserManager:
 
         dist_dir = self._project_root / "dist"
         handler = _make_handler(str(dist_dir))
-        self._dev_server_port = _find_free_port()
+        # 直接 bind 0 端口，由内核在同一次绑定中分配并占住空闲端口，
+        # 消除「先 _find_free_port() 探测、后真正绑定」两步之间端口被
+        # 其他进程抢占的 TOCTOU 窗口（此前 EADDRINUSE 会以未捕获
+        # OSError 打断 start()，无日志也无降级）。实际端口在绑定成功后
+        # 从 server 取回，_dev_server_port/_base_url 与监听 socket 恒一致。
+        try:
+            self._dev_server = _ThreadedHTTPServer(("127.0.0.1", 0), handler)
+        except OSError as e:
+            self._log("error", f"启动本地 HTTP 服务器失败: {type(e).__name__}: {e}")
+            raise
+        self._dev_server_port = self._dev_server.server_address[1]
         self._base_url = f"http://127.0.0.1:{self._dev_server_port}"
-
-        self._dev_server = _ThreadedHTTPServer(("127.0.0.1", self._dev_server_port), handler)
 
         thread = threading.Thread(target=self._dev_server.serve_forever, daemon=True)
         thread.start()

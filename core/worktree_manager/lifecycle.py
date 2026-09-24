@@ -454,7 +454,11 @@ class G1LifecycleMixin:
 
         Args:
             wt_path: Path to the worktree to clean up
-            success: If True, retain the branch; if False, delete branch too
+            success: If True, retain the branch. If False, an implementer
+                branch is NOT deleted: it is registered as legacy via
+                register_legacy, keeping the worktree and branch for
+                successor runs to consume; only non-implementer (e.g.
+                verifier) failures delete the branch too (`branch -D`)
         """
         wt_str = str(wt_path)
         if wt_str not in self._active_worktrees:

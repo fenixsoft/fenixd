@@ -1661,6 +1661,12 @@ class AgentRunner:
         提交，零提交型 run 的现场（builtin a1 84min 未提交产物）得以保全，
         后续 attempt resume 或降级重建均可从该提交恢复。
 
+        第三种调用形态（add-freeze-stop-inflight-agents D1，锚点
+        freeze-hold）：frozen 预终止——``proc.terminate()`` 之前调用，此刻
+        子进程仍存活、无法证明不再写盘。冻结即停、不再有下一 attempt 的
+        退避窗口保全机会，故有意接受竞态代价：git add/commit 可能纳入半写
+        文件、也可能撞 index.lock 使保全失败（仅 WARNING，不阻断冻结终止）。
+
         无 worktree 载体或路径失效时跳过（与锚点 A/B 同语义，幂等）。
         失败由 helper 内部 WARNING 降级（git 超时/失败不阻断收口流程）。
         """
@@ -2429,8 +2435,11 @@ class AgentRunner:
                         if st.chain_cursor + 1 < len(chain):
                             st.chain_cursor += 1
                     # fix-provider-transient-backoff（D2）：implementer 失败后从产物尾部
-                    # 提取 session_id 供续跑——全 agent_type 均提取（attempt 间 worktree
-                    # 保留扩展到全部 agent_type，session 随同现场保留）。
+                    # 提取 session_id 供续跑（attempt 间 worktree 保留扩展到全部
+                    # agent_type，session 随同现场保留）。repair 有意排除：载体由调度层
+                    # 三态解析（原地或换壳）、失败交还调度层重新解析，worktree 生命周期
+                    # 与续跑决策均在调度层——旧 session 绑定旧载体的会话现场，对换壳
+                    # 后的新载体不可复用。
                     if error and agent_type != "repair":
                         run_file = self.project_root / ".fenix" / "runs" / f"{sub_run_id}.jsonl"
                         sid = self._extract_session_id(run_file)

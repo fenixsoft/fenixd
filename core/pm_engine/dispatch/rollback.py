@@ -88,7 +88,9 @@ class RRollbackMixin:
             return default
         if v != v or v in (float("inf"), float("-inf")) or v <= 0:
             return default
-        return int(v)
+        # 亚秒正值下限保护（code-review item 77be0cfcbe43）：int 截断会把
+        # 0<v<1 压成 0，退避窗立即过期、防振荡静默失效，故至少保留 1 秒。
+        return max(1, int(v))
 
     def _rollback_failed_dispatch(self, spec_name: str, agent_type: str, exc: Exception):
         """派发/执行异常时回滚滞留中间态的 spec 到可重试态（fix: 伪 bug 卡死）。

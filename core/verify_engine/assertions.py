@@ -115,10 +115,21 @@ class AssertionRunner:
         伪失败（expected=1/actual=2），被 judge 记为产品 bug 或伪失败，
         反复派生 fix 子 SPEC（fix-fix-improve-failover-model-mapping-ui 两轮
         验证同因翻车）。``count`` 优先，``expected`` 兼容，缺省 1。
+
+        带最长 3s 的收敛等待：异步渲染场景下首次读取可能早于列表数据落地，
+        比照 element_not_exist 轮询重读到数量一致，超时仍不等才按最后读取
+        值判 fail。
         """
         selector = a["selector"]
         expected = int(a.get("count", a.get("expected", 1)))
-        actual = await page.locator(selector).count()
+        locator = page.locator(selector)
+        actual = await locator.count()
+        if actual != expected:
+            for _ in range(10):
+                await page.wait_for_timeout(300)
+                actual = await locator.count()
+                if actual == expected:
+                    break
         return {
             "type": "element_count",
             "layer": 1,

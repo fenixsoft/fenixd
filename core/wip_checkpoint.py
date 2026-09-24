@@ -132,13 +132,18 @@ def commit_wip_checkpoint(
 def _collapse_message(project_root, commits, logger, timeout=WIP_TIMEOUT_SECONDS):
     """塌缩单提交的提交消息：取自塌缩前最终提交。
 
-    - 分支上有非 WIP 最终提交 → 使用其完整消息（Spec 3.2「消息取自最终提交」）
+    - 分支上有非 WIP 最终提交 → 使用其完整消息（Spec 3.2「消息取自最终提交」）；
+      ``commits`` 以 tip 在前（git log 新→旧），取列表中第一个（即最新）非 WIP
+      提交，覆盖最终提交被 WIP 夹在中间的交错形态（[wip, final, wip]）
     - 分支最新提交也是 WIP（仅 WIP 无最终提交）→ 以前缀改写生成非 WIP 消息
       （``fenix(wip):`` → ``[fenix]``），保证主树合并历史无 wip 前缀残留
 
     Returns: (message, ok)。ok=False 表示消息获取失败（调用方按失败降级）。
     """
-    final_hash, final_subject = commits[0]
+    final_hash, final_subject = next(
+        ((h, s) for h, s in commits if not s.startswith(WIP_COMMIT_PREFIX)),
+        commits[0],
+    )
     if final_subject.startswith(WIP_COMMIT_PREFIX):
         # 仅 WIP 无最终提交：以最新 WIP 的完整消息改写前缀生成塌缩消息。
         body = subprocess.run(
