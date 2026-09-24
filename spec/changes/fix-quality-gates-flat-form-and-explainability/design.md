@@ -38,12 +38,32 @@ add-quality-gates-visibility 建立了六道质量门禁的落盘/读侧合成�
    「只填空、不覆盖」的语义一目了然，且新增门来源时自动获得兜底。文案常量与既有
    `GATE_DESCS` 同区放置并注释契约来源。
 
-3. **告警经 `AdminStore.append_if_absent` 写入**（core/admin_store.py:252，自带
-   is_inflight 去重判据，天然满足「未处理期间不重复刷屏」）。`_check_quality_gates_soft`
+3. **告警经 `AdminStore.append_if_absent` 写入**（core/admin_store.py 的
+   `append_if_absent(entry, is_inflight)`：is_inflight 在途谓词由调用方提供、
+   单锁内查重+追加，满足「未处理期间不重复刷屏」）。`_check_quality_gates_soft`
    内已有 AdminStore 使用先例（result_gate.py:1473）可直接参照。signal_type 取
    `quality-gates-form-drift`，severity `info`，不注册 choices（落入不可裁决信号桶，
    人工确认处理即可，对齐 alert_routes 既有分派语义）。告警 entry 携带 spec 名、
    文件相对路径、违规描述。写入整体 try/except fail-open（仅记日志）。
+
+   entry 字段两点固化约定（spec-review 评审修补，防消费面踩空）：
+
+   - **`kind` 必须显式写 `SIGNAL`**：`_normalize_entry` 无 kind 默认值，而
+     admin_alerts 消费面按 kind 分派——`unhandled()` / `mark_handled` 只认
+     ESCALATION、`mark_signal_handled` 只认 SIGNAL，漏写 kind 的告警两个闭环
+     端点都不匹配（处置 404 死胡同）。kind=SIGNAL 时面板可见性成立（activities
+     未处理列表读 `read_all()` 不分 kind，前端 visible 过滤器只剔乐观移除），
+     闭环走 `mark_alert_handled` → `mark_signal_handled`。
+   - **携带机器可读类别字段 `violation_class`**（`missing-gates` / `bad-json` /
+     `out-of-contract-gate-id` / `out-of-enum-status` 四值，与四类违规一一对应）：
+     signal_type 单值固定，is_inflight 谓词按 `(spec, signal_type, violation_class)`
+     判在途——否则四类违规无法按类别判重，一类未处理会抑制其余三类（比 spec
+     「按 (spec, 文件, 违规类别) 不刷屏」的粒度更粗）。
+
+   signal_type 不在 `STORED_SIGNAL_TYPES`（admin_monitor.py:384 封闭白名单）内，
+   monitor 摄取循环跳过；`unhandled_for` 既有调用方均按具体 signal_type 精确匹配、
+   与新值无碰撞——新告警不触发任何自动唤起/派发，「只加可见性不加强度」在
+   消费面成立。
 
 4. **平铺形态也发告警**（spec 已固化）：读侧容错是兜底而非豁免，写侧偏离契约的事实
    仍要让人工可见，否则平铺会成为「静默容忍的坏写法」。

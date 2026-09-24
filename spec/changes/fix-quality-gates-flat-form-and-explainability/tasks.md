@@ -23,8 +23,8 @@
 
 ## 3 宽松对账告警接人工告警面（quality-gates-soft-gate-alerts）
 
-- [ ] 3.1 core/agent_runner/result_gate.py 的 _check_quality_gates_soft 对四类违规（顶层缺 gates、JSON 无法解析、契约外 gate-id、status 枚举外）在保留既有 WARNING 的同时经 AdminStore.append_if_absent 写 admin_alerts：signal_type=quality-gates-form-drift、severity=info、entry 含 spec 名/文件相对路径/违规描述、不注册 choices（不可裁决桶）；写入整体 try/except fail-open 仅记日志；既有「MUST NOT 打回/零失败终态」路径逐字节不变；参照同文件 result_gate.py:1473 的 AdminStore 使用先例
-- [ ] 3.2 新增 tests/test_quality_gates_soft_alert.py：四类违规各产生一条告警且字段齐全、append_if_absent 去重（同 spec 同类别未处理期间不重复）、写入异常 fail-open 不影响收尾、软边界零回归（对账后无任何失败终态信号）
+- [ ] 3.1 core/agent_runner/result_gate.py 的 _check_quality_gates_soft 对四类违规（顶层缺 gates、JSON 无法解析、契约外 gate-id、status 枚举外）在保留既有 WARNING 的同时经 AdminStore.append_if_absent 写 admin_alerts：signal_type=quality-gates-form-drift、severity=info、kind=SIGNAL（显式写——_normalize_entry 无 kind 默认，闭环走 mark_alert_handled → mark_signal_handled）、entry 含 spec 名/文件相对路径/违规描述/机器可读 violation_class（missing-gates|bad-json|out-of-contract-gate-id|out-of-enum-status，is_inflight 谓词按 (spec, signal_type, violation_class) 判在途）、不注册 choices（不可裁决桶）；写入整体 try/except fail-open 仅记日志；既有「MUST NOT 打回/零失败终态」路径逐字节不变；参照同文件 result_gate.py:1473 的 AdminStore 使用先例
+- [ ] 3.2 新增 tests/test_quality_gates_soft_alert.py：四类违规各产生一条告警且字段齐全（含 kind=SIGNAL 与 violation_class）、append_if_absent 去重（同 spec 同类别未处理期间不重复、异类别不互相抑制）、写入异常 fail-open 不影响收尾、软边界零回归（对账后无任何失败终态信号）
 
 ## 4 验证
 
