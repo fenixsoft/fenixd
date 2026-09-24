@@ -42,7 +42,14 @@ def main() -> None:
         # 在 exec 前把 HOME 指向 run 级目录（ocr 只读
         # $HOME/.opencodereview/config.json 一个硬编码路径）。
         os.environ["HOME"] = ocr_home
-    os.execvp(ocr_bin, argv)
+    try:
+        os.execvp(ocr_bin, argv)
+    except OSError as e:
+        # PATH 搜索也找不到（如 FENIX_OCR_BIN 配错路径）：输出一行错误而非裸
+        # traceback，退出码 127 对齐 shell 的 command not found。exec 成功不返回，
+        # 走到这里必然是失败路径。
+        print(f"ocr wrapper: cannot exec {ocr_bin}: {e}", file=sys.stderr)
+        sys.exit(127)
 
 
 if __name__ == "__main__":

@@ -149,7 +149,7 @@ def get_active_agents():
             for part in parts:
                 if "impl-" in part or "verify-" in part or "test-" in part:
                     spec = part.split("impl-")[-1].split("verify-")[-1].split("test-")[-1]
-                    spec = spec.split("-178")[0]  # 去掉 run id
+                    spec = re.sub(r"-1\d{9}$", "", spec)  # 去掉尾部 run id（纪元秒，10 位）
                     break
             agents.append(
                 {"pid": pid, "cpu": cpu, "mem": mem, "role": role, "spec": spec, "cmd": cmd[:200]}

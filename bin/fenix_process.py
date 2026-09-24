@@ -280,10 +280,20 @@ def render_report(project_root, spec_name: str) -> str:
         summary = data.spec_summary(proot, spec_name, entry)
     except Exception:
         summary = {}
-    detail = data.spec_detail(proot, spec_name, entry)
+    # code-review item 76bb34e3d31f：spec_detail 组装链更长（runs/timeline/
+    # verify_progress 等），任一子解析抛异常会让整份报告不可用；与 summary
+    # 同口径降级为空详情（下游全部 .get() or 默认，空 dict 可安全兜底）。
+    detail_err = None
+    try:
+        detail = data.spec_detail(proot, spec_name, entry)
+    except Exception as exc:
+        detail = {}
+        detail_err = exc
     mode = (summary or {}).get("mode") or detail.get("mode") or "full"
 
     lines.append(f"{icon} {spec_name}  P{entry.get('priority', '?')}  {status}  [{mode}]")
+    if detail_err is not None:
+        lines.append(f"  ⚠ 详情组装失败: {detail_err}")
     head_notes = []
     if entry.get("depends_on"):
         head_notes.append(f"依赖: {entry['depends_on']}")

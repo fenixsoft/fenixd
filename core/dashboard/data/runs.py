@@ -638,13 +638,18 @@ def _run_tail_insights(
         chunk = 262144
         floor = max(0, size - tail_bytes - marker_scan_cap)
         pos = size - tail_bytes
-        with run_file.open("rb") as f:
-            while pos > floor and not llm:
-                start = max(floor, pos - chunk)
-                f.seek(start)
-                raw = f.read(pos - start).decode("utf-8", errors="replace")
-                _, llm, _, _ = parse_chunk(raw, skip_first=start > 0)
-                pos = start
+        try:
+            with run_file.open("rb") as f:
+                while pos > floor and not llm:
+                    start = max(floor, pos - chunk)
+                    f.seek(start)
+                    raw = f.read(pos - start).decode("utf-8", errors="replace")
+                    _, llm, _, _ = parse_chunk(raw, skip_first=start > 0)
+                    pos = start
+        except OSError:
+            # 回扫期间文件可能被保留清理/归档动作并发移除：降级返回已得的
+            # summary/usage/reason（llm 留空），与首段尾窗读取防护口径一致
+            pass
     return {"summary": summary, "llm": llm, "usage": usage, "reason": reason}
 
 

@@ -8,12 +8,10 @@ D5 约定：各组方法采用 mixin 模式，DashboardHandler 继承各组 mixi
 
 from __future__ import annotations
 
-import json
 import logging
 import urllib.parse
 from pathlib import Path
 
-from core.dashboard.registry import Registry
 from core.dashboard import data as dashboard_data
 
 logger = logging.getLogger("fenixd.dashboard.project_routes")

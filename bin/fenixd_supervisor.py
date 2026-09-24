@@ -333,13 +333,31 @@ def _write_supervisor_runtime() -> None:
 
 
 def start_daemon():
-    """启动 daemon 子进程（经 .fenix/fenixd.py 软链，保持其 FENIX_DIR 解析正确）。"""
-    DAEMON_STARTED.write_text(_now_iso() + "\n", encoding="utf-8")
-    return subprocess.Popen(
-        [sys.executable, ".fenix/fenixd.py"],
-        cwd=str(PROJECT_ROOT),
-        env=os.environ.copy(),
-    )
+    """启动 daemon 子进程（经 .fenix/fenixd.py 软链，保持其 FENIX_DIR 解析正确）。
+
+    写 daemon_started 标记与 Popen 均包 OSError 保护：.fenix 只读/磁盘满等
+    异常不再炸穿 main 循环致看门狗无痕退出（daemon 此后永无人拉起）。标记
+    写失败仅记日志继续拉起；Popen 失败则删除刚写的伪时间戳（避免 admin/monitor
+    误判重启已生效）并返回 None，由调用方按启动失败计数。
+    """
+    try:
+        DAEMON_STARTED.write_text(_now_iso() + "\n", encoding="utf-8")
+    except OSError as e:
+        log(f"daemon_started marker write failed (non-blocking): {e}")
+    try:
+        return subprocess.Popen(
+            [sys.executable, ".fenix/fenixd.py"],
+            cwd=str(PROJECT_ROOT),
+            env=os.environ.copy(),
+        )
+    except OSError as e:
+        log(f"daemon spawn failed: {e}")
+        try:
+            if DAEMON_STARTED.exists():
+                DAEMON_STARTED.unlink()
+        except OSError:
+            pass
+        return None
 
 
 def main():
@@ -383,6 +401,23 @@ def main():
             break
 
         proc = start_daemon()
+        if proc is None:
+            # Popen 失败（daemon 未启动）：按一次启动失败计入既有熔断计数
+            # （存活 0s < 窗口 → +1），达阈值走与意外退出相同的熔断路径；
+            # 未达阈值退避后重试，防止无间隔热循环。
+            fail_count = _compute_startup_outcome(0.0, fail_count)
+            if fail_count >= SUPERVISOR_STARTUP_FAIL_THRESHOLD:
+                log(
+                    f"CRITICAL: daemon 连续 {fail_count} 次 Popen 失败——"
+                    f"停止自动拉起。修复启动失败根因后删除 .fenix/supervisor_fused "
+                    f"或重启 supervisor 恢复。"
+                )
+                _write_fuse_marker(fail_count)
+                _write_fuse_alert()
+                break
+            time.sleep(3)
+            log("restarting daemon...")
+            continue
         started_ts = time.time()
         log(f"daemon started (pid {proc.pid})")
 

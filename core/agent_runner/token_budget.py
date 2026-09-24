@@ -6,6 +6,25 @@
 
 from datetime import datetime, timezone
 import json
+import threading
+
+# code-review item 7f6062e65ecb：_accumulate_token_usage 的「read_one 读旧值 →
+# 内存相加 → update_spec 写回」跨两次 state_machine 调用，state_machine 的锁
+# 只护单次调用（update_spec 单次原子、read_one 无锁），同 spec 并发收工时后写
+# 者会用陈旧 prev_* 覆盖先写者的累计。per-spec 进程内锁把该读改写对串行化；
+# 锁表本身用全局锁保护（锁只覆盖同进程线程，跨进程字段级覆盖由 update_spec
+# 自身 flock 兜底单次写原子）。
+_ACCUM_LOCKS_GUARD = threading.Lock()
+_ACCUM_LOCKS = {}  # spec_name -> threading.Lock
+
+
+def _spec_accumulate_lock(spec_name: str) -> threading.Lock:
+    with _ACCUM_LOCKS_GUARD:
+        lock = _ACCUM_LOCKS.get(spec_name)
+        if lock is None:
+            lock = threading.Lock()
+            _ACCUM_LOCKS[spec_name] = lock
+        return lock
 
 
 class TokenAccountant:
@@ -54,42 +73,47 @@ class TokenAccountant:
         tokens_out = int(usage_info.get("output_tokens", 0) or 0)
         cost = usage_info.get("cost_usd")
 
-        try:
-            entry = self._pm.state_machine.read_one(spec_name) or {}
-        except Exception:
-            return
-        if not isinstance(entry, dict):
-            return
-        prev_in = int(entry.get("_tokens_in", 0) or 0)
-        prev_out = int(entry.get("_tokens_out", 0) or 0)
-        new_in = prev_in + tokens_in
-        new_out = prev_out + tokens_out
-        # 缓存分项累计（spec 详情「缓存命中/命中率」展示）：字段缺失（历史 spec）从 0 起步
-        prev_cache_read = int(entry.get("_cache_read_tokens", 0) or 0)
-        prev_cache_creation = int(entry.get("_cache_creation_tokens", 0) or 0)
-        updates = {
-            "_tokens_in": new_in,
-            "_tokens_out": new_out,
-            "_cache_read_tokens": prev_cache_read
-            + int(usage_info.get("cache_read_input_tokens", 0) or 0),
-            "_cache_creation_tokens": prev_cache_creation
-            + int(usage_info.get("cache_creation_input_tokens", 0) or 0),
-        }
-        # 成本：仅网关真实回传时累计；网关不回传则不写 _cost_usd（保持缺失语义）
-        if cost is not None:
+        # code-review item 7f6062e65ecb：同 spec 并发收工（impl-ocr 并行车道等
+        # 同 spec 多 run 在飞，或 dashboard 线程同时 update_spec 同条目）时，
+        # 跨两次调用的读改写不串行会导致后写者拿陈旧 prev_* 覆盖先写者的累计。
+        # per-spec 锁内完成「读 → 相加 → 写回」整体。
+        with _spec_accumulate_lock(spec_name):
             try:
-                prev_cost = float(entry.get("_cost_usd", 0) or 0)
-                updates["_cost_usd"] = prev_cost + float(cost)
-            except (TypeError, ValueError):
-                pass
-        try:
-            self._pm.state_machine.update_spec(spec_name, updates)
-        except Exception as e:
-            self._pm.logger.warning(
-                "agent_runner",
-                f"token 累计写 STATE 失败 '{spec_name}': {e}",
-            )
-            return
+                entry = self._pm.state_machine.read_one(spec_name) or {}
+            except Exception:
+                return
+            if not isinstance(entry, dict):
+                return
+            prev_in = int(entry.get("_tokens_in", 0) or 0)
+            prev_out = int(entry.get("_tokens_out", 0) or 0)
+            new_in = prev_in + tokens_in
+            new_out = prev_out + tokens_out
+            # 缓存分项累计（spec 详情「缓存命中/命中率」展示）：字段缺失（历史 spec）从 0 起步
+            prev_cache_read = int(entry.get("_cache_read_tokens", 0) or 0)
+            prev_cache_creation = int(entry.get("_cache_creation_tokens", 0) or 0)
+            updates = {
+                "_tokens_in": new_in,
+                "_tokens_out": new_out,
+                "_cache_read_tokens": prev_cache_read
+                + int(usage_info.get("cache_read_input_tokens", 0) or 0),
+                "_cache_creation_tokens": prev_cache_creation
+                + int(usage_info.get("cache_creation_input_tokens", 0) or 0),
+            }
+            # 成本：仅网关真实回传时累计；网关不回传则不写 _cost_usd（保持缺失语义）
+            if cost is not None:
+                try:
+                    prev_cost = float(entry.get("_cost_usd", 0) or 0)
+                    updates["_cost_usd"] = prev_cost + float(cost)
+                except (TypeError, ValueError):
+                    pass
+            try:
+                self._pm.state_machine.update_spec(spec_name, updates)
+            except Exception as e:
+                self._pm.logger.warning(
+                    "agent_runner",
+                    f"token 累计写 STATE 失败 '{spec_name}': {e}",
+                )
+                return
         # 预算阈值检查（D4）：80% / 100% 均为警告级，不自动冻结
         self._check_token_budget(spec_name, new_in)
 

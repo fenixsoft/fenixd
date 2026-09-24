@@ -46,6 +46,14 @@ class H6AlertRoutesMixin:
         ?project=<name> → 该项目全部告警/处置记录 + 摘要；
         缺省 → 跨项目聚合所有未处理升级告警（供顶部横幅），并附已解决
         告警（resolved，add-alert-auto-resolve D5 视图分组用）。
+
+        错误契约为**有意 200**：?project 指向不存在/未就绪项目时返回
+        ``{"error": "project not found"}`` 字典（HTTP 仍 200）——适配函数
+        ``_get_alerts`` 是 ``_json(返回值)`` 包裹式，此处若改 ``self._error``
+        直写会叠加第二响应（keep-alive 污染，同 base.py _get_prompts 注记），
+        且 200+error 形态已被 test_api_alerts_unknown_project 钉住。与写路径
+        （_api_alert_handled/_api_alert_resolve 的 _error(4xx) 直写）约定不同，
+        本读路径调用方按 body.error 判错（前端 AlertBanner 即 ``if (!d.error)``）。
         """
         project_name = query.get("project", [None])[0]
         if project_name:
@@ -98,6 +106,11 @@ class H6AlertRoutesMixin:
         ?project=<name> → 该项目全部处置活动（未处理升级关联置顶）；
         带 ?spec=<name> → 仅返回该 SPEC 相关记录（add-admin-invoke-dialog，
         服务端过滤）；缺省 → 跨项目聚合，按项目分组返回。
+
+        错误契约同 _api_alerts（**有意 200**）：?project 不存在/未就绪时返回
+        ``{"error": "project not found"}`` 字典——适配函数
+        ``_get_admin_activities`` 为 _json 包裹式，不能改 self._error 直写
+        （会双重写响应），调用方按 body.error 判错。
         """
         project_name = query.get("project", [None])[0]
         spec_name = query.get("spec", [None])[0]
