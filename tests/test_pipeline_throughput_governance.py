@@ -240,6 +240,47 @@ class TestGracefulRestartDrain:
             {"admin": {"shutdown_drain_seconds": 0}}
         ) == 0.0
 
+
+class TestPlannedRestartDrainExemption:
+    """规划性重启豁免 shutdown=0 夹紧（planned-restart-drain 3.2）。
+
+    planned=True：豁免 admin.shutdown_drain_seconds 快速停机联动，窗口取
+    min(run_drain 原值, supervisor SIGKILL 等待 − 终止收口安全余量 10s)；
+    shutdown≤0 时 SIGKILL 等待回退 60s（bin/fenixd_supervisor.py
+    _sigkill_wait_seconds），上界 = 50s。
+    """
+
+    def test_planned_exempt_from_shutdown_zero_clamp(self):
+        """planned 在场：shutdown=0 不再清零，窗口 = run_drain 原值受上界 50s。"""
+        config = {"agents": {"run_drain_max_seconds": 60},
+                  "admin": {"shutdown_drain_seconds": 0}}
+        assert ConfigLoader.get_run_drain_max_seconds(config, planned=True) == 50.0
+
+    def test_planned_window_capped_by_supervisor_sigkill_wait(self):
+        """planned：窗口仍受 supervisor SIGKILL 等待上界约束（60−10=50）。"""
+        config = {"agents": {"run_drain_max_seconds": 600},
+                  "admin": {"shutdown_drain_seconds": 0}}
+        assert ConfigLoader.get_run_drain_max_seconds(config, planned=True) == 50.0
+
+    def test_planned_shutdown_positive_upper_bound_not_binding(self):
+        """planned：shutdown>0 时 SIGKILL 等待 = shutdown+120，上界不束紧。"""
+        config = {"agents": {"run_drain_max_seconds": 600},
+                  "admin": {"shutdown_drain_seconds": 1800}}
+        assert ConfigLoader.get_run_drain_max_seconds(config, planned=True) == 600.0
+
+    def test_planned_zero_run_drain_stays_zero(self):
+        """planned：run_drain 显式 0（车道禁用排水）仍为 0，WARNING 留痕路径。"""
+        config = {"agents": {"run_drain_max_seconds": 0},
+                  "admin": {"shutdown_drain_seconds": 0}}
+        assert ConfigLoader.get_run_drain_max_seconds(config, planned=True) == 0.0
+
+    def test_non_planned_clamp_unchanged(self):
+        """非规划性关停现行 min 夹紧逐字节不变（含 shutdown=0 联动清零）。"""
+        config = {"agents": {"run_drain_max_seconds": 60},
+                  "admin": {"shutdown_drain_seconds": 0}}
+        assert ConfigLoader.get_run_drain_max_seconds(config) == 0.0
+        assert ConfigLoader.get_run_drain_max_seconds(config, planned=False) == 0.0
+
     def test_validate_rejects_both_explicit_violation(self):
         """两者均显式且 run_drain > shutdown → 配置加载拒绝。"""
         with pytest.raises(ValueError, match="run_drain_max_seconds"):
