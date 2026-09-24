@@ -42,7 +42,9 @@ from pathlib import Path
 
 from . import data as dashboard_data
 
-logger = logging.getLogger(__name__)
+# 可传播到 fenixd 已挂载 handler 的结构化日志器（同 registry.py：收敛旁路裸
+# getLogger(__name__)，保证 WARNING 落盘）
+logger = logging.getLogger("fenixd.dashboard.watcher")
 
 SCAN_INTERVAL = 1.0  # 数据源文件轮询周期（秒）
 REFRESH_HEARTBEAT = 2.0  # 周期性刷新心跳（秒）：daemon 状态/新项目发现不产生文件变更，需周期推送
