@@ -35,6 +35,12 @@ schedule:
 
 # ---- Agent Configuration ----
 agents:
+  # per-agent 环境变量注入（agents.agent_env.<agent-type>: {ENV: value}）：
+  # 仅作用于对应 agent-type 的 spawn 进程（含其 Task 子代理），不波及其他车道。
+  # 例：agents.agent_env.code-fix.MAX_THINKING_TOKENS: '1024' 压缩 thinking 预算。
+  # agent_env:
+  #   code-fix:
+  #     MAX_THINKING_TOKENS: '1024'
   # 并行度：同时运行的 Agent 进程数上限。
   # 调度采用严格优先级并行：高优先级（priority 数值小）先执行；
   # 同一优先级内的任务可并行至该上限；不同优先级不并行

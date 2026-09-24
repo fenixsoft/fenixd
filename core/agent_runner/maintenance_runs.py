@@ -1495,6 +1495,20 @@ def run_code_fix(
     else:
         model_override = runner._get_admin_model()
 
+    # add-agent-env-overrides（2026-09-24 MAX_THINKING_TOKENS 实验）：配置键
+    # ``agents.agent_env.code-fix`` 的 per-agent 环境变量注入——本函数只 spawn
+    # code-fix run（env 随进程继承给其 Task 子代理），天然不波及其他车道。
+    # 背景：glm-5.3-flash thinking 生成是回合耗时大头（09-24 批实测 117/357
+    # 消息带 thinking、均 1614 字符、工具执行≈0）。实验定案后若保留须补
+    # Dashboard 设置项（fenix-new-config-needs-dashboard-ui）。
+    agent_env = ((runner.config.get("agents") or {}).get("agent_env") or {}).get("code-fix") or {}
+    for _k, _v in agent_env.items():
+        env_overrides[str(_k)] = str(_v)
+    if agent_env:
+        _log = getattr(runner, "logger", None)
+        if _log is not None:
+            _log.info("code-fix", f"agent_env 注入: {sorted(agent_env)}")
+
     try:
         output, _turns, _session_id, _usage_info = runner._run_claude(
             prompt,
