@@ -180,6 +180,21 @@ export default function CodeFixProgressCard(
     }
   }
 
+  // 准备段文案（add-code-fix-startup-stage-visibility D4）：item_done=null 且
+  // startup_stage 非空时在原「本批已处置」行位置渲染阶段短语 + 已等待时长
+  // （waited_minutes 取不到 birth time 时只显示短语）；startup_stage 为 null
+  // 时维持 2026-09-23 口径整段不渲染（不显示误导性 0 计数）。item_done 有值
+  // 时准备段完全不进入（条级计数优先，spec「处置开始后收敛」）。
+  const startupStage = progress.startup_stage;
+  const showStartupStage = itemDone == null && startupStage != null;
+  let startupStageText = '';
+  if (showStartupStage && startupStage) {
+    startupStageText =
+      startupStage.waited_minutes != null
+        ? `${startupStage.stage}（已等待 ${startupStage.waited_minutes} 分钟）`
+        : startupStage.stage;
+  }
+
   // 进度条显示口径（用户 2026-09-23）：链级 done 只在合回核销后增长，修复中
   // 恒 0%，与「本批已处置 x/y」实时明细割裂——修复中把本批实时处置数并入
   // （封顶 total 防溢出）；合回收尾时 item_done 让位为 null，口径无缝切回
@@ -194,6 +209,7 @@ export default function CodeFixProgressCard(
   // 并入本行（用户 2026-09-23 要求不换行，接在前段后同排显示）。
   const sub: string[] = [];
   if (current) sub.push(current);
+  if (startupStageText) sub.push(startupStageText);
   if (phase === 'fixing' && itemProgressText) sub.push(itemProgressText);
   if (stopped && reason) sub.push(`原因：${reason}`);
   if (stopped && !reason && readFailed) sub.push('进度读取失败，已停止轮询');
@@ -221,7 +237,13 @@ export default function CodeFixProgressCard(
           <Typography.Text
             type="secondary"
             style={{ fontSize: 12 }}
-            data-testid={phase === 'fixing' ? 'code-fix-item-progress' : undefined}
+            data-testid={
+              showStartupStage
+                ? 'code-fix-startup-stage'
+                : phase === 'fixing'
+                  ? 'code-fix-item-progress'
+                  : undefined
+            }
           >
             {sub.join(' · ')}
           </Typography.Text>
