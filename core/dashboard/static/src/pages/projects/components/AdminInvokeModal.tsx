@@ -1,6 +1,6 @@
 import { AutoComplete, Button, Modal, Spin, Typography, message } from 'antd';
 import { useEffect, useRef, useState } from 'react';
-import { getAdminActivities, invokeSpecAdmin } from '@/services/dashboard';
+import { ApiError, getAdminActivities, invokeSpecAdmin } from '@/services/dashboard';
 import { ClaudeOutputPane } from '@/components/claude-msg';
 import { MaximizeTitle, useMaximizeModal } from '@/components/useMaximizeModal';
 
@@ -159,7 +159,12 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
       setInvoked(true);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes('409') || msg.includes('已有')) {
+      // 已有处置进行中优先按结构化字段判定（code-review item bfc474d8431a）：
+      // services 层对非 2xx 恒抛带 HTTP 状态码的 ApiError，按 err.status===409
+      // 分支不再依赖错误文案措辞；文本子串匹配降级为非 ApiError 的兜底。
+      const isConflict = (err instanceof ApiError && err.status === 409)
+        || msg.includes('409') || msg.includes('已有');
+      if (isConflict) {
         // 已有处置进行中：直接进入输出视图定位该 run
         message.info('已有进行中的 Admin 处置，正在定位其输出');
         acceptAnyRunRef.current = true;

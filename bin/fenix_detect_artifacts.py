@@ -107,8 +107,11 @@ def detect_build_artifacts(project_root: Path) -> dict:
         try:
             content = pyproject.read_text(encoding="utf-8")
             if "[build-system]" in content or "[tool.poetry]" in content:
-                # Python 项目的常见产物目录
-                for d in ["dist", "build", "_build", "site-packages"]:
+                # Python 项目的常见产物目录。site-packages/ 不列为候选：根级出现
+                # site-packages/ 多为手工摆放的第三方包或 venv 残留而非构建产物，
+                # 而下游 ArtifactPathMatcher 会把命中路径当产物走 merge 自愈/重建
+                # 通道，误列会把语义改动产物化
+                for d in ["dist", "build", "_build"]:
                     candidate = project_root / d
                     if candidate.is_dir() and any(candidate.iterdir()):
                         if d == "dist":

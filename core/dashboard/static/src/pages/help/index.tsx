@@ -74,7 +74,7 @@ async function renderMermaid(code: string, container: HTMLDivElement) {
     container.innerHTML = svg;
   } catch (err) {
     // 渲染失败回退显示原始代码（D3 规定：不白屏）
-    container.innerHTML = `<pre style="background:#f5f5f5;padding:12px;border-radius:4px;overflow:auto"><code>${code.replace(/</g, '&lt;')}</code></pre>`;
+    container.innerHTML = `<pre style="background:#f5f5f5;padding:12px;border-radius:4px;overflow:auto"><code>${code.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</code></pre>`;
   }
 }
 

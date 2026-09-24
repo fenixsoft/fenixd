@@ -448,6 +448,7 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
             autoSize={{ minRows: 1, maxRows: 5 }}
             disabled={ended || sending}
             onPressEnter={(e) => {
+              if (e.nativeEvent.isComposing) return;
               if (!e.shiftKey) {
                 e.preventDefault();
                 void handleSend();

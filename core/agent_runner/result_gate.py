@@ -719,7 +719,10 @@ def _check_impl_code_review_artifact(
             try:
                 raw = path.read_text(encoding="utf-8")
                 cr_data = json.loads(raw)
-            except (OSError, json.JSONDecodeError) as e:
+            # UnicodeDecodeError 与主树候选 _check_artifact_json_file 的防御口径
+            # 对齐（该函数显式捕之）：非 UTF-8 字节同样归因为「无法解析」而非
+            # 从硬门逸出（fail-closed 契约）。
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
                 if first_err is None:
                     first_err = (
                         f"exit 0 但收尾审查报告无法解析（impl-code-review-gate）: "

@@ -11,7 +11,7 @@
  *
  * 选项:
  *   --dist-path <path>    扩展目录路径 (默认: ./dist)
- *   --timeout <ms>        总超时时间 (默认: 60000)
+ *   --timeout <ms>        采集+UI 测试段总超时，超时后提前收卷并标注 timedOut (默认: 60000)
  *   --debug               保留 Chromium profile 用于调试
  *   --headless            无头模式 (默认: 有头)
  *   --output <path>       输出 JSON 文件路径 (默认: stdout)
@@ -23,6 +23,7 @@
  *     "networkLog": [...],
  *     "anomalies": [...],
  *     "duration": <ms>,
+ *     "timedOut": true/false,
  *     "error": "<message if success=false>"
  *   }
  */
@@ -270,33 +271,51 @@ async function launchChromeExtension(distPath, opts = {}) {
       setupNetworkLogging(page, networkLog);
     });
 
-    // 等待扩展加载 — 扩展接管 newtab 后会自动打开一个新标签页
-    // 给扩展一些时间加载
-    await new Promise(resolve => setTimeout(resolve, 3000));
+    // ========================================================================
+    // 网络采集 + UI 测试 — 受 --timeout 总预算约束，超时后提前收卷已有 networkLog
+    // ========================================================================
 
-    // 获取或创建页面
-    const pages = browserContext.pages();
-    if (pages.length > 0) {
-      extensionPage = pages[0];
-    } else {
-      extensionPage = await browserContext.newPage();
-    }
+    let timedOut = false;
+    const collectAndTest = async () => {
+      // 等待扩展加载 — 扩展接管 newtab 后会自动打开一个新标签页
+      // 给扩展一些时间加载
+      await new Promise(resolve => setTimeout(resolve, 3000));
 
-    // 打开新标签页 — 应该由扩展接管
-    const newtabPage = await browserContext.newPage();
-    // 等待页面加载
-    await newtabPage.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {
-      // 超时不算致命错误
+      // 获取或创建页面
+      const pages = browserContext.pages();
+      if (pages.length > 0) {
+        extensionPage = pages[0];
+      } else {
+        extensionPage = await browserContext.newPage();
+      }
+
+      // 打开新标签页 — 应该由扩展接管
+      const newtabPage = await browserContext.newPage();
+      // 等待页面加载
+      await newtabPage.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {
+        // 超时不算致命错误
+      });
+
+      // 等待一段时间让页面完成初始网络请求
+      await new Promise(resolve => setTimeout(resolve, 5000));
+
+      // ======================================================================
+      // UI 交互测试
+      // ======================================================================
+
+      return runUITests(browserContext, newtabPage);
+    };
+
+    // 用剩余预算作总超时；超时后用已采集到的 networkLog 提前收卷
+    const remaining = Math.max(0, timeout - (Date.now() - startTime));
+    let timeoutTimer;
+    const timeoutPromise = new Promise(resolve => {
+      timeoutTimer = setTimeout(() => { timedOut = true; resolve(null); }, remaining);
     });
 
-    // 等待一段时间让页面完成初始网络请求
-    await new Promise(resolve => setTimeout(resolve, 5000));
-
-    // ========================================================================
-    // UI 交互测试
-    // ========================================================================
-
-    const uiResults = await runUITests(browserContext, newtabPage);
+    const raced = await Promise.race([collectAndTest(), timeoutPromise]);
+    clearTimeout(timeoutTimer);
+    const uiResults = raced === null ? [] : raced;
 
     // ========================================================================
     // 收集结果
@@ -317,6 +336,7 @@ async function launchChromeExtension(distPath, opts = {}) {
       networkLog,
       anomalies,
       uiTests: uiResults,
+      timedOut,
       duration: endTime - startTime,
       summary: buildSummary(anomalies, uiResults),
     };

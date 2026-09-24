@@ -215,7 +215,8 @@ def run_suite(
 
     summary keys:
         elapsed_seconds, timed_out, returncode, hanging_test, exit_code,
-        stdout, stderr（截断保留）。
+        failed_tests（自未截断原始输出提取的失败集合）,
+        stdout, stderr（截断保留，仅作展示/落盘摘要）。
 
     Args:
         cmd_override: 测试注入——替代 pytest 命令（如固定输出的假命令）。
@@ -230,6 +231,11 @@ def run_suite(
     rc, out, err, timed_out = run_command(cmd, timeout, cwd=project_root, env=env or _suite_env())
     elapsed = round(time.time() - started, 1)
     hanging = extract_hanging_test(err) if timed_out else None
+    # 失败集合须在截断**前**从完整原始输出提取（code-review item c00c0572529d）：
+    # pytest 的 FAILED 摘要集中在输出末段，失败条目多时最早的 FAILED 行会被
+    # 下方截尾丢掉，基于截断文本提取会让 cur ⊆ base 误判「存量」而漏报本次引入。
+    # stdout/stderr 键仍按截断保留（展示用途），完整失败集合经 failed_tests 键给出。
+    failed_tests = collect_failed_tests(err, out)
     # 超时约定退出码 124（与 timeout(1) 惯例一致），正常按 pytest 实际退出码。
     exit_code = 124 if timed_out else (rc if rc is not None else 1)
     summary = {
@@ -238,6 +244,7 @@ def run_suite(
         "returncode": rc,
         "hanging_test": hanging,
         "exit_code": exit_code,
+        "failed_tests": failed_tests,
         "stdout": (out or "")[-2000:],
         "stderr": (err or "")[-3000:],
     }
@@ -389,7 +396,8 @@ def run_baseline_comparison(project_root, ref, timeout, basetemp_unique=False) -
                 wt, timeout=min(BASELINE_TIMEOUT_SECONDS, timeout * 2),
                 basetemp_unique=basetemp_unique,
             )
-            failed = collect_failed_tests(baseline.get("stderr", ""), baseline.get("stdout", ""))
+            # failed_tests 由 run_suite 在截断前自完整原始输出提取（c00c0572529d）。
+            failed = baseline.get("failed_tests", [])
             # 基线运行自身结论（code-review item d0945089bcd0）：旧实现传
             # classify_outcome([], failed)——空当前失败集在 classify_baseline
             # 短路返回「pass（全绿）」，基线套件自身有失败也被报告为全绿，
@@ -478,7 +486,8 @@ def main(argv=None) -> int:
 
     if args.baseline:
         # base 已在上方锁作用域内执行（见 with lock 块内注释）
-        current_failed = collect_failed_tests(current.get("stderr", ""), current.get("stdout", ""))
+        # failed_tests 由 run_suite 在截断前自完整原始输出提取（c00c0572529d）。
+        current_failed = current.get("failed_tests", [])
         if current.get("timed_out"):
             classification = "current-hang"
             result["classification"] = "当前套件挂起（无完整失败集合对比）"

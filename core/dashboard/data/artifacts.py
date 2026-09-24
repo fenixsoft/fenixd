@@ -90,9 +90,12 @@ def parse_run_result_scenarios(project_root, spec_name) -> list:
             if not isinstance(sc, dict):
                 continue
             norm = dict(sc)
+            shots = sc.get("screenshots")
+            if not isinstance(shots, list):
+                shots = []
             norm["screenshots"] = [
                 os.path.basename(s)
-                for s in sc.get("screenshots", [])
+                for s in shots
                 if isinstance(s, str) and s.strip()
             ]
             out.append(norm)
@@ -344,7 +347,8 @@ def parse_verdict(project_root, spec_name) -> dict:
     # 兜底：全文搜索计数（处理 "通过：0 | 失败：0 | 错误：10" 行内连写）
     if any(v is None for v in summary.values()):
         for pat, field in [
-            ("通过", "passed"),
+            # 否定环视排除「未通过」「不通过」前缀，避免兜底把失败计数误计为 passed
+            (r"(?<![未不])通过", "passed"),
             ("失败", "failed"),
             ("错误", "errors"),
             (r"产品\s*Bug", "product_bugs"),
@@ -466,9 +470,12 @@ def parse_bugs(project_root, spec_name) -> list:
         ]
         # 截图路径归一化为文件名：report.json 存的是服务器本地绝对路径，
         # 前端需拼 /screenshots/<project>/<spec>/<file>，只取 basename
+        shots = sc.get("screenshots")
+        if not isinstance(shots, list):
+            shots = []
         screenshots = [
             os.path.basename(s)
-            for s in sc.get("screenshots", [])
+            for s in shots
             if isinstance(s, str) and s.strip()
         ]
         # 裁决分类与证据（add-verdict-evidence-taxonomy 3.1）：从场景条目摘取；
@@ -549,9 +556,12 @@ def parse_filtered_failures(project_root, spec_name) -> list:
                         if isinstance(actual, str) and actual.strip():
                             evidence_summary = actual
         # 截图路径归一化为文件名（与 parse_bugs 同一口径，前端拼 /screenshots/ 路由）
+        shots = sc.get("screenshots")
+        if not isinstance(shots, list):
+            shots = []
         screenshots = [
             os.path.basename(s)
-            for s in sc.get("screenshots", [])
+            for s in shots
             if isinstance(s, str) and s.strip()
         ]
         out.append(

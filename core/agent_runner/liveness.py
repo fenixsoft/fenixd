@@ -776,8 +776,36 @@ class LivenessSupervisor:
         per-agent-timeout-override 3.3：judge 子进程超时经
         ``agents.timeout_overrides.supervision-judge`` 配置（缺省回退 120s 常量），
         该值不参与 absolute_max 派生。
+
+        code-review dc28989fcfa8：能走到本判定即 judge_window 内有实质事件
+        （零事件守卫先行放行），故区分「judge 通道故障」与「确认停滞」——
+        首判为 stagnant 且 evidence 以 ``liveness judge unavailable`` 开头
+        （超时/非零退出/输出不可解析/异常）时，以减半超时短重试一次，重试
+        仍故障才按原 fail-closed 语义返回 stagnant；judge 正常给出的 stagnant
+        verdict 属「确认停滞」，不重试。返回值结构与 evidence 格式不变。
         """
         timeout = self._supervision_judge_timeout()
+        verdict = self._judge_liveness_once(snapshot, spec_name, run_id, timeout)
+        evidence = str(verdict.get("evidence") or "")
+        if verdict.get("verdict") != "stagnant" or not evidence.startswith(
+            "liveness judge unavailable"
+        ):
+            return verdict
+        # judge 通道故障 ≠ 确认停滞：短重试一次（超时减半，≥15s 下限）再 fail-closed
+        self._pm.logger.warning(
+            "agent_runner",
+            f"Liveness judge unavailable for {spec_name or 'unknown'} ({run_id}), "
+            f"retrying once with {max(15.0, timeout / 2.0):.0f}s timeout: "
+            f"{evidence[:160]}",
+        )
+        return self._judge_liveness_once(
+            snapshot, spec_name, run_id, max(15.0, timeout / 2.0)
+        )
+
+    def _judge_liveness_once(
+        self, snapshot: dict, spec_name: str | None, run_id: str, timeout: float
+    ) -> dict:
+        """单次 judge 调用（_judge_liveness 的尝试单元，自身不重试）。"""
         prompt = (
             "你是长时运行 agent 的活性监督判定器。根据以下 run 流统计快照，判断该"
             " agent 是在真实推进任务，还是已陷入停滞（空转、卡死、重复循环、无输出）。\n\n"

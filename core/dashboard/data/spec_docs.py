@@ -38,7 +38,11 @@ def resolve_spec_dir(project_root, spec) -> Path | None:
     if not archive_root.is_dir():
         return None
     pattern = re.compile(r"^\d{4}-\d{2}-\d{2}-" + re.escape(spec) + r"(-\d+)*$")
-    matches = [d for d in archive_root.iterdir() if d.is_dir() and pattern.match(d.name)]
+    try:
+        matches = [d for d in archive_root.iterdir() if d.is_dir() and pattern.match(d.name)]
+    except OSError:
+        # 遍历失败（IO/权限等）等价无归档命中，与 _read_spec_scenarios 兜底口径一致
+        matches = []
     if not matches:
         return None
     return sorted(matches)[-1]
