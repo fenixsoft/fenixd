@@ -409,6 +409,11 @@ def _all_green_fast_path(pipeline, spec_name: str, report: dict, fail_count: int
     payload = {
         "spec": spec_name,
         "status": "verified",
+        # fix-verify-late-result-terminal-clobber D3：补来源戳——读侧
+        # _verifier_result_is_stale/_read_verdict 对 role 缺失一律判不采信，
+        # 快道产物缺 role 戳会使同 SPEC 在飞 LLM verifier 完成时必然被拒
+        # （2026-09-24 事故误判土壤）。mechanical: true 保留机械来源可辨识。
+        "role": "verifier",
         "bugs": [],
         "summary": text,
         "mechanical": True,
