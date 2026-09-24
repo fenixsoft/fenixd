@@ -177,6 +177,15 @@ class CliRunner(VerifyRunner):
                     start_new_session=True,
                 )
         except FileNotFoundError as e:
+            # 空 cwd 回退链根目录（scenario_root/project_root）不做存在性校验，
+            # 其缺失同样抛 FileNotFoundError，先区分文案避免误导向「二进制不存在」
+            if not cwd.is_dir():
+                return {
+                    "success": False,
+                    "action": "run",
+                    "error_level": "error",
+                    "error": f"cwd 目录不存在: {cwd}",
+                }
             return {
                 "success": False,
                 "action": "run",

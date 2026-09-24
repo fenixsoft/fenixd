@@ -796,8 +796,13 @@ class EventBus:
 
     def _update_known_state(self):
         """Update internal snapshot of known SPEC states（持 _state_lock 串行化）。"""
-        specs = self.state_machine.read_all()
+        # 读快照必须在临界区内取得（0d392c7aaec3）：「锁外 read_all → 锁内整体
+        # 重写」存在窗口，窗口内另一线程经 _diff_specs 刚写入的快照会被本线程
+        # 用旧快照整体覆盖（更新丢失），违背文件头 :46-53 声明的读-改-写原子
+        # 不变式。read_all 为纯盘读解析、不持其他锁，锁内调用无死锁风险
+        # （RLock 亦允许既有持锁调用方重入）。
         with self._state_lock:
+            specs = self.state_machine.read_all()
             self._known_specs = {
                 name: entry.get("status", "drafted") for name, entry in specs.items()
             }

@@ -7,6 +7,8 @@
 
 export const TRACK_LIGHT = '#e6f4ff'; // antd blue-1，与 #1677ff 同 ramp
 export const TRACK_GREEN = 'rgb(225, 236, 215)'; // 淡绿底轨（用户指定色），verify 阶段空条可辨
+// 淡青底轨（antd cyan-1，与出题青 #13c2c2 同 ramp）：verify 出题态空条可辨
+export const TRACK_CYAN = '#e6fffb';
 // 门禁橙（spec 任务 5.1 指定色）：gates 阶段进度条描边
 export const GATES_STROKE = '#fa8c16';
 // 淡橙底轨（antd orange-1，与 #fa8c16 同 ramp）：gates 阶段空条可辨
@@ -61,9 +63,9 @@ export function strokeColorFor(gen: boolean, isVerify: boolean, isGates = false)
   return isVerify ? '#52c41a' : '#1677ff';
 }
 
-// 底轨随阶段同 ramp：gates 淡橙、verify 淡绿、impl 淡蓝，0/0 空条读得出阶段
+// 底轨随阶段同 ramp：gates 淡橙、verify 淡绿、impl 淡蓝、出题淡青，0/0 空条读得出阶段
 export function trailColorFor(gen: boolean, isVerify: boolean, isGates = false): string {
   if (isGates) return GATES_TRAIL;
   if (!isVerify) return TRACK_LIGHT;
-  return gen ? TRACK_LIGHT : TRACK_GREEN;
+  return gen ? TRACK_CYAN : TRACK_GREEN;
 }

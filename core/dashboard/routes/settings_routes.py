@@ -244,8 +244,7 @@ class H5SettingsRoutesMixin:
         # handler，产出不透明的 "Internal Server Error: ..."，与同文件
         # todo.md / verify.yaml 写者（均 try/except OSError → 可读 500）不一致。
         try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(content, encoding="utf-8")
+            _atomic_write_text(target, content)
         except OSError as e:
             self._error(500, f"提示词写入失败: {e}")
             return

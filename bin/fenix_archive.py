@@ -8,6 +8,7 @@ fenix_archive.py — 将已完成的 change 归档到 spec/archive/YYYY-MM-DD-<n
 
 import argparse
 import json
+import re
 import shutil
 import sys
 from datetime import date
@@ -24,6 +25,10 @@ PROJECT_ROOT_FALLBACK = not (PROJECT_ROOT / "spec").is_dir()
 if PROJECT_ROOT_FALLBACK:
     PROJECT_ROOT = FRAMEWORK_ROOT
 
+# change 名称安全白名单：仅字母/数字/点/下划线/连字符（不含路径分隔符），
+# 防止 name 携带 `../` 或绝对路径成分越出 spec/changes/ 目录。
+_SAFE_NAME_RE = re.compile(r"[A-Za-z0-9._-]+")
+
 
 def archive_change(project_root: Path, name: str) -> dict:
     """将 `spec/changes/<name>/` 移动到 `spec/archive/YYYY-MM-DD-<name>`。
@@ -32,8 +37,14 @@ def archive_change(project_root: Path, name: str) -> dict:
         dict: {"from": 原路径, "to": 目标路径}
 
     Raises:
-        ValueError: change 不存在，或目标归档路径已存在（不覆盖）。
+        ValueError: name 含非法字符，或 change 不存在，或目标归档路径已存在（不覆盖）。
     """
+    if not _SAFE_NAME_RE.fullmatch(name) or name in (".", ".."):
+        raise ValueError(
+            f"Illegal change name: {name} — 名称仅允许字母、数字、点、下划线、连字符，"
+            "且不能为 '.' 或 '..'"
+        )
+
     change_dir = project_root / "spec" / "changes" / name
     if not change_dir.is_dir():
         raise ValueError(f"Change '{name}' not found at {change_dir}")

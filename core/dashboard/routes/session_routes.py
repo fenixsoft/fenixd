@@ -6,7 +6,10 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
+
+logger = logging.getLogger("fenixd.dashboard.session_routes")
 
 
 class H_SessionRoutesMixin:
@@ -140,8 +143,16 @@ class H_SessionRoutesMixin:
 
         try:
             sm.stop(session.session_id, "user")
-        except Exception:
-            pass  # stop 幂等，异常不影响返回
+        except Exception as e:
+            # 失败留痕（code-review item 0b15e1177b43）：忽略优先语义下不改变
+            # 幂等返回契约，但会话可能实际未终止，须可追查——静默吞掉会让
+            # 前端 ok:true 掩盖真实故障。
+            logger.warning(
+                "会话终止失败（session=%s）: %s: %s",
+                session.session_id,
+                type(e).__name__,
+                e,
+            )
 
         self._json({"ok": True})
 

@@ -225,22 +225,27 @@ def ownership_violations_for_task_line(line: str, lane: str) -> List[str]:
             return violations
 
         # ---- 步骤 1b：``.fenix/verify-progress/<spec>/`` 目录级引用 ----
-        vp_dir = _VP_DIR_REF_RE.search(line)
-        if vp_dir:
+        # 遍历全部目录级引用（单行可能引用多个 spec 目录），同字面量只判一次
+        seen_dirs: Set[str] = set()
+        for vp_dir in _VP_DIR_REF_RE.finditer(line):
             literal = vp_dir.group(0)
-            if not _line_points_to_code(line, literal):
-                if (
-                    _line_has_production_verb(line, vp_dir.end())
-                    and lane not in VERIFY_PROGRESS_DIR_OWNERS
-                ):
-                    violations.append(
-                        _violet_message(
-                            task_id,
-                            literal,
-                            VERIFY_PROGRESS_DIR_OWNERS,
-                            is_dir=True,
-                        )
+            if literal in seen_dirs:
+                continue  # 同路径只报一次
+            seen_dirs.add(literal)
+            if _line_points_to_code(line, literal):
+                continue  # 步骤 2：含代码文件 → 放行
+            if (
+                _line_has_production_verb(line, vp_dir.end())
+                and lane not in VERIFY_PROGRESS_DIR_OWNERS
+            ):
+                violations.append(
+                    _violet_message(
+                        task_id,
+                        literal,
+                        VERIFY_PROGRESS_DIR_OWNERS,
+                        is_dir=True,
                     )
+                )
 
     except Exception as exc:  # pragma: no cover - 防御分支
         try:

@@ -63,9 +63,12 @@ def disputed_findings(result) -> list:
     """结果 dict findings 中 dispute/adjudication 类条目（保序）。
 
     先例 ``branch_guard._disputed_deliverables``：findings 由 LLM/agent 产出，
-    元素非 dict 时忽略（不抛穿）。type 字段子串匹配 dispute/adjudication
+    元素非 dict 时忽略（不抛穿）；顶层非 dict（如旧格式落盘的裸 findings
+    数组）同样按无条目处理。type 字段子串匹配 dispute/adjudication
     （覆盖 deliverable-dispute / pending-interaction-adjudication 等变体）。
     """
+    if not isinstance(result, dict):
+        return []
     out: list = []
     for f in (result or {}).get("findings") or []:
         if not isinstance(f, dict):
