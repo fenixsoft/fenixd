@@ -23,10 +23,10 @@
 
 ## 2. verified 收敛点回收在飞 verify 车道
 
-- [ ] 2.1 `core/pm_engine/engine.py` `_on_spec_verified`：新增 verify 车道收尾——`_remove_queued_entry(spec_name, "verifier")` 摘除在队条目 + `cancel_run(f"verify-{spec_name}", reason=..., by="verify-lane")` 请求取消在飞 run，照搬 `_stop_parallel_plan` 范式
+- [ ] 2.1 `core/pm_engine/engine.py` `_on_spec_verified`：在 `transition(spec_name, "done")` 成功之后（与 `_evict_spec_serving` 终局驱逐同位置、同 try/except 范式）新增 verify 车道收尾——`_remove_queued_entry(spec_name, "verifier")` 摘除在队条目 + 对归属复核通过（`run_spec_part(aid) == spec_name`）的活跃 verify run 按**完整 run 级 id（含 epoch，如 `verify-<spec>-<epoch>`）**逐个 `cancel_run(..., reason=..., by="verify-lane")`。MUST NOT 传裸 `verify-<spec>`（登记键与轮询环消费键不收敛，取消静默失效），MUST NOT 照搬 `_stop_parallel_planning` 的裸键写法；D7 逃生门回退 testing 与 blocker 保持 verified 路径不执行收尾
 - [ ] 2.2 收尾整体 try/except 兜底：异常记 WARNING（含 spec 与异常摘要），不向 verified 主流程（done → push 链）传播
-- [ ] 2.3 收尾判断正确性：仅当 runner/dispatcher 可用时执行收尾（stub context 兼容），不越权取消其它 spec 或其它 agent_type 的 run
-- [ ] 2.4 新增 `tests/test_verify_lane_terminal_reclaim.py`：在飞 verifier run 登记后 SPEC 达成 verified → `cancel_requested` 到达属主轮询环；在队 verifier 条目被摘除；runner 异常时 verified 流转不受影响；其它 spec 的 run 不被波及
+- [ ] 2.3 收尾判断正确性：仅当 runner/dispatcher 可用时执行收尾（stub context 兼容）；归属复核 `run_spec_part(aid) == spec_name` 通过才取消，不越权取消同根后代 spec（如 `fix-a` 与 `fix-a-b` 并行时 `verify-fix-a-b-<epoch>` 不得被 `verify-fix-a` 的收尾波及）或其它 agent_type 的 run
+- [ ] 2.4 新增 `tests/test_verify_lane_terminal_reclaim.py`：在飞 verifier run（完整 epoch run id）登记后 SPEC 推进 done → cancel 后轮询环视角 `_cancel_is_requested(<在飞 run id>)` 为真（断言登记键与消费键收敛，MUST NOT 只断言 `cancel_run` 返回值）；在队 verifier 条目被摘除；runner 异常时 verified → done 流转不受影响；同根后代 spec 的在飞 run 不被波及；验证进度不完整走 D7 逃生门回退 testing 时不触发收尾（在飞 run 存活、无残留取消旗标）
 
 ## 3. 机械快道裁决来源戳
 
