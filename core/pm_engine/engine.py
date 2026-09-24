@@ -374,6 +374,12 @@ class PMEngine:
         # 派发单飞守卫（fix-startup-double-dispatch）：跟踪正在派发中的 spec，
         # 防止启动扫描与事件回放对同一 spec 的重复派发
         self._pending_dispatches: set = set()
+        # 单飞/防重入守卫互斥锁（code-review 5ecd0d3047d1）：_pending_dispatches 与
+        # _handling_events 的「检查 + 登记」两步须在本锁内一次完成——EventBus 监听
+        # 线程、full_scan 扫描线程、退避定时器与主循环可并发进入，裸 set 的
+        # check-then-act 分离存在双派发竞态窗口（对齐 approve_push 的 _push_lock
+        # 实例锁先例）。锁内仅做 set 操作、不外呼，不可重入无死锁风险。
+        self._dispatch_guard_lock = threading.Lock()
         # 派发冷却登记（双派发穿透原地修 2026-09-06）：spec -> 上次成功派发时刻。
         # 单飞键只覆盖「同时在飞」——dispatch 流程 <50ms 返回后标记即释放，而锁要等
         # run 线程执行 create() 才可见：full_scan 与 STATE 监听/spec_ready 双通道在
@@ -408,15 +414,20 @@ class PMEngine:
         Handle an internal event from the EventBus.
         This is the main scheduling entry point.
         """
-        # 防重入：同一 (event, spec) 正在处理中则跳过，打破 event bus 二次派发回路
+        # 防重入：同一 (event, spec) 正在处理中则跳过，打破 event bus 二次派发回路。
+        # 检查与登记在同一把实例级互斥锁内原子完成（code-review 5ecd0d3047d1），
+        # 消除并发 check-then-act 竞态窗口；锁内仅做 set 操作，不外呼。
         event_key = (event_kind, spec_name)
-        if event_key in self._handling_events:
+        with self._dispatch_guard_lock:
+            already_handling = event_key in self._handling_events
+            if not already_handling:
+                self._handling_events.add(event_key)
+        if already_handling:
             self.logger.debug(
                 "pm_engine",
                 f"Skipping duplicate event: {event_kind} for '{spec_name}'",
             )
             return
-        self._handling_events.add(event_key)
 
         try:
             self.logger.info(
@@ -680,18 +691,22 @@ class PMEngine:
             )
             return
 
-        # 派发单飞守卫（fix-startup-double-dispatch）：原子检查是否已在派发中
+        # 派发单飞守卫（fix-startup-double-dispatch）：原子检查并登记是否已在派发中
         # 同一 spec 的并发 spec_ready 处理只放行一个；单飞标记须在 worktree 锁
-        # 创建之前占位，封死启动窗口
-        if spec_name in self._pending_dispatches:
+        # 创建之前占位，封死启动窗口。检查与登记在同一把实例级互斥锁内完成
+        # （code-review 5ecd0d3047d1），消除多线程并发触发时的 check-then-act
+        # 竞态窗口；锁内仅做 set 操作，不外呼。
+        with self._dispatch_guard_lock:
+            already_pending = spec_name in self._pending_dispatches
+            if not already_pending:
+                # 标记为正在派发（在任何异步操作之前）
+                self._pending_dispatches.add(spec_name)
+        if already_pending:
             self.logger.debug(
                 "pm_engine",
                 f"Skipping duplicate dispatch for '{spec_name}': already pending",
             )
             return
-
-        # 标记为正在派发（在任何异步操作之前）
-        self._pending_dispatches.add(spec_name)
 
         try:
             # 防双派发：该 spec 已有活动 implementer worktree 时跳过。

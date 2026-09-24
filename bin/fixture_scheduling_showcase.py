@@ -358,7 +358,16 @@ def show_status() -> int:
         return 0
     try:
         r = _git("status", "--porcelain")
-        print(f"dirty:\n{r.stdout or '  (clean)'}")
+        if r.returncode != 0:
+            # code-review item 5faf5f8980e0：git status 本身失败（非 git 仓库、
+            # .git 损坏、dubious ownership 等）时 stdout 为空，不能把不可判定
+            # 状态误报为 (clean)——与下方 git unavailable 的降级口径一致。
+            print(
+                "dirty:    unknown "
+                f"(git status failed: {(r.stderr or '').strip()[:200]})"
+            )
+        else:
+            print(f"dirty:\n{r.stdout or '  (clean)'}")
     except OSError as e:
         # 只读诊断路径降级而非裸崩（code-review item bed211cd560c）：git 二进制
         # 缺失/不可执行时 subprocess.run 抛 FileNotFoundError，--status 此前在

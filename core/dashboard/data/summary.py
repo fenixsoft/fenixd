@@ -449,7 +449,9 @@ def _judge_stat_or_none(value):
         return None
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError：非有限浮点（int(float('inf'))）。STATE.md 为 YAML 方言，
+        # 字段被写成 .inf 时解析为 float inf，与 code_review._line_key 同口径。
         return None
 
 
@@ -839,7 +841,8 @@ def _int_or_zero(value):
     """
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError：非有限浮点（int(float('inf'))），同 _judge_stat_or_none 口径。
         return 0
 
 

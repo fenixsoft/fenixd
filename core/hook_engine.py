@@ -277,6 +277,7 @@ def _read_audit_tail_lines(path: Path, min_lines: int) -> List[str]:
             parts = (f.read(read_size) + remainder).split(b"\n")
             # 块首（非文件头）可能切断一行：保留半行，其余均为完整行
             remainder = parts.pop(0) if pos > 0 else b""
+            # [fenix-ignore:5c8668b8ae79] decode 已带 errors="replace"，且 read_hook_audit 的 except 已含 UnicodeDecodeError，条目描述的无容错 decode 与 OSError-only 捕获在当前代码中不存在
             lines.extend(p.decode("utf-8", errors="replace") for p in reversed(parts))
     lines.reverse()
     return lines

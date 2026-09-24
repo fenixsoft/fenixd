@@ -704,6 +704,11 @@ async function main() {
   // 处理特殊命令
   if (process.argv.includes('--detect')) {
     const specDir = process.argv[process.argv.indexOf('--detect') + 1];
+    // --detect 为末位参数时缺第二参数，specDir 为 undefined 会让 path.join 抛 TypeError 落入兜底 catch
+    if (specDir === undefined) {
+      console.error('错误: --detect 缺少取值\n用法: node launch-chrome-extension.js --detect <spec-dir>');
+      process.exit(1);
+    }
     const projectRoot = opts.distPath ? path.dirname(path.resolve(opts.distPath)) : process.cwd();
     const result = detectTier2Trigger(specDir, projectRoot);
     console.log(JSON.stringify(result, null, 2));

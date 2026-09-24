@@ -427,7 +427,7 @@ _API_DELETE_ROUTES = [
 
 
 def _route_match(kind, pattern, path):
-    """路由匹配：exact/regex/suffix 返回 Match 对象或 None。"""
+    """路由匹配：exact/regex 返回 Match 对象，suffix 返回 True（简单匹配标识），无匹配返回 None。"""
     if kind == "exact":
         return _re.fullmatch(_re.escape(pattern), path)
     elif kind == "regex":
@@ -515,6 +515,12 @@ class H0BaseMixin:
                 _declared = int(self.headers.get("Content-Length", "0") or "0")
             except ValueError:
                 _declared = 0
+                # Content-Length 不可解析时 _drain_remaining_request_body 里同一处
+                # int() 同样失败得 remaining=0 而跳过排空，客户端已发出的 body 字节
+                # 会残留 keep-alive 连接被下一请求当请求行（BUG-01 同类失步）。
+                # 比照 _read_json_body（code-review item 8beb499acc56）置
+                # close_connection=True，让残留字节随连接关闭作废。
+                self.close_connection = True
             from core.dashboard import server as _server_mod
 
             if _declared > getattr(_server_mod, "MAX_POST_BODY", 256 * 1024):

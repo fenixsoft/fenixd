@@ -29,8 +29,8 @@ def _log_index_path(proot: Path, log_name: str = "fenixd.log") -> Path:
     return proot / ".fenix" / "logs" / ".idx" / f"{log_name}.offsets.json"
 
 
-def _build_log_block_index(log_path: Path, size: int) -> dict:
-    """全量扫描日志一次，构建 {size, offsets}。
+def _build_log_block_index(log_path: Path, size: int) -> "dict | None":
+    """全量扫描日志一次，构建 {size, offsets}；构建失败返回 None。
 
     offsets[i] = 第 i 个 64KB 块内首行字节偏移；读取窗口定位到块 i 后从该偏移
     起读即可获得完整行（落在块边界中间的行被包含进下一块起点）。
@@ -51,7 +51,12 @@ def _build_log_block_index(log_path: Path, size: int) -> dict:
                 else:
                     offsets.append(boundary + nl + 1)
     except OSError:
-        return {"size": size, "offsets": [0]}
+        # 不可返回 {size: size, offsets: [0]} 的不一致索引：一旦被 _load_log_index
+        # 落盘复用，size 持平的后续查询在 _read_log_tail_window 被钳位到块 0 退化成
+        # 全文件读；文件继续增长时 _update_log_block_index 从 [0] 起追加新块，列表
+        # 位置与块号错位，钳位起点跳到靠后块、1MB 尾窗静默缩窄。返回 None 让调用方
+        # 本次以退化索引全量读兜底但不落盘，下次调用重新全量重建。
+        return None
     # 末块采样可能落进文件最后一行且换行恰为文件末字节 → offsets[-1] == size（越
     # 界，非行首）。不可钳到 size-1：那指向行尾 \n 本身而非行首，_first_ts 只读到
     # 空行必解析失败，二分探测退化为 _read(0) 全文件读取。改为弹出末条：尾部区域
@@ -82,6 +87,9 @@ def _update_log_block_index(log_path: Path, size: int, idx: dict) -> dict:
     old_size = idx.get("size", 0)
     if size < old_size:
         fresh = _build_log_block_index(log_path, size)
+        if fresh is None:
+            # 构建失败保留旧索引：size 已大于实际文件，下次调用仍会走整体重建
+            return idx
         _LOG_INDEX_REBUILDS["count"] += 1
         return fresh
     if size <= old_size:
@@ -158,6 +166,10 @@ def _load_log_index(proot: Path, log_path: Path) -> dict:
         # 索引缺失 / 损坏 / 日志被截断（size 缩小）→ 重建一次
         _LOG_INDEX_REBUILDS["count"] += 1
         idx = _build_log_block_index(log_path, size)
+        if idx is None:
+            # 构建失败：本次以单块退化索引全量读兜底，但不落盘持久化，
+            # 让下次调用重新全量重建（避免不一致索引被长期复用）
+            return {"size": size, "offsets": [0]}
         _write_log_index(proot, idx, log_path.name)
         return idx
     # size 相等 → 直接返回；size 增长（append-only）→ 热更新补扫，不重建

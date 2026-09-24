@@ -96,13 +96,9 @@ class FFastTrackMixin:
         降级路径在 dispatch 入口的续做判定**之前** return，若此处清锚点/消费
         标记，随后的 implementer 派发将丢失可续做的保留分支。
         """
-        try:
-            self._rewrite_fast_track_to_full(spec_name)
-        except Exception as e:
-            self._pm.logger.warning(
-                "pm_engine",
-                f"fast-track 规模降级 .spec.yaml 改写失败 '{spec_name}'（非阻塞）: {e}",
-            )
+        # _rewrite_fast_track_to_full 内部已自吞改写异常（仅记 WARNING，非阻塞，
+        # 改写失败时下轮派发仍按 fast-track 原档重试），此处无需再包 try/except。
+        self._rewrite_fast_track_to_full(spec_name)
         # （fix-fasttrack-recovery-resume D4）本 update_spec 只写 status/error——
         # **不得**在此清空 branch/implementer_run，也**不得**消费 _recovery_resume：
         # 降级后走 implementer 车道，保留的锚点与标记须原样交给其派发入口消费。
