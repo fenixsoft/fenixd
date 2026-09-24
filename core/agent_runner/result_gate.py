@@ -357,6 +357,12 @@ class CodeReviewResult:
         # 补 shards=N 便于取证——分片直写模式下「零台账增长」归因时先看
         # 是零分片还是分片零行）
         self.shards = shards
+        # 429 限流重派意图（add-code-review-concurrency-and-429-resilience D4）：
+        # 终态归因为 429 限流时由 runner._ratelimit_redispatch_on_terminal 登记
+        # （dict：reason/provider/run_id/cooldown_until/cooldown_until_epoch/
+        # max_redispatches），随结果信封上交消费侧（admin_monitor._worker）
+        # 冷却到期后延迟重投递；非 429 失败/成功路径恒 None（消费侧零感知）。
+        self.ratelimit_redispatch = None
 
 
 class RegressionResult:

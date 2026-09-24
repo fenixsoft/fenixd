@@ -64,10 +64,10 @@
 
 ## 5. 429 打死 run 的自动重派
 
-- [ ] 5.1 `core/agent_runner/runner.py` 的 attempt 失败分类消费点：终态归因为 429 限流且重派未超上限（常量 1）时，登记 `ratelimit_redispatch` 意图（provider 冷却到期后自动重派；重派计一次 attempt，受既有预算/escalation 守卫；run jsonl 标注重派缘由）
-- [ ] 5.2 code-review 车道重派复用原 manifest（`run_code_review` 侧幂等保障既有：聚合读侧按 file 去重 + 提示词不重审纪律），运行记录可见重派缘由字段
-- [ ] 5.3 `core/admin_monitor.py` 的 `_worker`（`run_code_review` 唯一生产调用方，core/admin_monitor.py:1052）作为重派意图消费侧：观测到终态结果携带 `ratelimit_redispatch` 意图（含最早冷却到期时刻）时，经延迟投递（`threading.Timer` 或等价机制）在冷却到期后以原 manifest/参数重调 `run_code_review` 一次；受 `_code_review_in_flight` 单飞标志防并发、重派上限常量 1 守卫，MUST NOT 无限重派
-- [ ] 5.4 `tests/test_provider_failover.py` 新增用例：429 终态触发重派登记 / 冷却到期后消费侧真正重调一次 `run_code_review`（原 manifest） / 重派超上限走既有失败收场不再重派 / 非 429 失败不触发重派 / run jsonl 含重派标注
+- [x] 5.1 `core/agent_runner/runner.py` 的 attempt 失败分类消费点：终态归因为 429 限流且重派未超上限（常量 1）时，登记 `ratelimit_redispatch` 意图（provider 冷却到期后自动重派；重派计一次 attempt，受既有预算/escalation 守卫；run jsonl 标注重派缘由）
+- [x] 5.2 code-review 车道重派复用原 manifest（`run_code_review` 侧幂等保障既有：聚合读侧按 file 去重 + 提示词不重审纪律），运行记录可见重派缘由字段
+- [x] 5.3 `core/admin_monitor.py` 的 `_worker`（`run_code_review` 唯一生产调用方，core/admin_monitor.py:1052）作为重派意图消费侧：观测到终态结果携带 `ratelimit_redispatch` 意图（含最早冷却到期时刻）时，经延迟投递（`threading.Timer` 或等价机制）在冷却到期后以原 manifest/参数重调 `run_code_review` 一次；受 `_code_review_in_flight` 单飞标志防并发、重派上限常量 1 守卫，MUST NOT 无限重派
+- [x] 5.4 `tests/test_provider_failover.py` 新增用例：429 终态触发重派登记 / 冷却到期后消费侧真正重调一次 `run_code_review`（原 manifest） / 重派超上限走既有失败收场不再重派 / 非 429 失败不触发重派 / run jsonl 含重派标注
 
 ## 6. 回归与验证
 
