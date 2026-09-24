@@ -95,6 +95,8 @@ class H7EvolutionRoutesMixin:
         """POST /api/evolution/accept — body {item_id, start_after?} → 执行接受路径。
 
         成功返回 200 + {ok, status, spec_name}；缺参 400；未知条目 404。
+        状态不允许/提交失败也返回 200 + 错误体（成败由 ok 字段表达，
+        前端据此刷新回真实状态）。
         人工「同意」= accept_item(decided_by="manual")（自动接受是 daemon
         检查点经 3.7 的另一条路径，二者共用同一实现，design D6）。
 
@@ -143,10 +145,6 @@ class H7EvolutionRoutesMixin:
             return
         if result.get("status") is None and result.get("error"):
             self._error(404, result["error"])
-            return
-        if not result.get("ok"):
-            # 状态不允许 / 提交失败：200 + 错误信息（前端刷新回真实状态）
-            self._json(result)
             return
         self._json(result)
 

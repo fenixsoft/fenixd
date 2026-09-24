@@ -9,11 +9,14 @@ D5 约定：各组方法采用 mixin 模式，DashboardHandler 继承各组 mixi
 from __future__ import annotations
 
 import json
+import logging
 import urllib.parse
 from pathlib import Path
 
 from core.dashboard.registry import Registry
 from core.dashboard import data as dashboard_data
+
+logger = logging.getLogger("fenixd.dashboard.project_routes")
 
 
 class H2ProjectRoutesMixin:
@@ -272,6 +275,12 @@ class H2ProjectRoutesMixin:
         - subprocess.run(["claude", "-p", prompt], cwd=项目根, timeout=120, shell=False)
         - 成功经 write_config 落盘返回 {ok, description}
         - 非零退出/超时/空输出返回 {error} 且不改 config
+
+        错误契约（code-review item 1063825b9910）：本端点两种错误约定并存
+        为有意设计——project 校验失败走 _error(400/404) 状态码；执行失败
+        （超时/CLI 失败/写配置失败）走 HTTP 200 + {error} 字典。前端
+        regenerateProjectDescription 统一按 result.ok/.error 分支（4xx 会被
+        request 层抛异常、反而破坏现约），故执行失败不改用 _error。
         """
         project = self._project_from_query(query)
         if project is None:
@@ -335,12 +344,26 @@ class H2ProjectRoutesMixin:
             self._json({"error": "生成超时"})
             return
         except Exception as e:
-            self._json({"error": f"调用 claude CLI 失败: {str(e)}"})
+            # 不外泄裸异常文本（code-review item 0936be83135a）：str(e) 可能
+            # 携带内部路径/命令细节，与 code_review_routes 的泛化文案策略同款
+            # ——细节降级经服务端日志留痕，客户端收通用消息。
+            logger.warning(
+                "调用 claude CLI 异常（project=%s）: %s: %s",
+                project["name"],
+                type(e).__name__,
+                e,
+            )
+            self._json({"error": "调用 claude CLI 失败"})
             return
 
         # 检查返回结果
         if result.returncode != 0:
-            self._json({"error": f"claude CLI 返回非零退出码: {result.returncode}"})
+            logger.warning(
+                "claude CLI 非零退出码（project=%s）: %s",
+                project["name"],
+                result.returncode,
+            )
+            self._json({"error": "调用 claude CLI 失败"})
             return
 
         description = result.stdout.strip()

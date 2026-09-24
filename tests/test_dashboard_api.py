@@ -943,7 +943,9 @@ class TestProjectDescribeAPI:
 
     @pytest.mark.parametrize("mock_kind,expected_frag", [
         ("timeout", "超时"),
-        ("nonzero", "非零退出码"),
+        # 泛化文案（code-review item 0936be83135a）：非零退出码不再回传 CLI 细节，
+        # 与裸异常路径共用「调用 claude CLI 失败」
+        ("nonzero", "调用 claude CLI 失败"),
         ("empty", "为空"),
     ])
     def test_describe_error_returns_error_and_keeps_config(self, server_fx, monkeypatch, mock_kind, expected_frag):

@@ -439,17 +439,25 @@ def reclassify_infra_rounds(
         return {"ok": False, "found": True, "error": "audit_reason 必填（审计留痕要求）"}
     sm = StateMachine(Path(project_root) / ".fenix" / "STATE.md", project_state_logger(project_root))
     try:
+        n_val = int(n)
+    except (TypeError, ValueError) as e:
+        return {"ok": False, "found": True, "error": f"invalid n: {e}"}
+    try:
         result = _recl(
             project_root,
             sm,
             None,
             spec_name,
-            int(n),
+            n_val,
             str(audit_reason),
             actor=actor,
         )
     except (TypeError, ValueError) as e:
-        return {"ok": False, "found": True, "error": f"invalid n: {e}"}
+        return {
+            "ok": False,
+            "found": True,
+            "error": f"reclassify_infra_rounds 内部失败（非 n 参数问题）: {e}",
+        }
     return {
         "ok": result.get("ok", False),
         "found": True,

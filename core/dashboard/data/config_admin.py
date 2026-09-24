@@ -908,12 +908,25 @@ def read_effective_config(project_root) -> dict:
 def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
     """把 patch 中的受管键合并到 raw_config，返回新 dict（不修改原对象）。
 
-    合并规则（白名单化）：
-    - llm: 整体替换（patch 中存在即替换，不存在则保留原 llm）
-    - agents.models: 整体替换（只动 models，其它 agents 子键保留）
-    - agents.max_concurrent: 替换（仅 patch 中提供且为正整数时）
-    - gates.approve_mode: 只替换 approve_mode 子键
-    - gates.promote_mode: 只替换 promote_mode 子键
+    合并总则（白名单制）：只有函数体内显式写出合并分支的键才会被应用，
+    未列出合并分支的键一律静默丢弃（不透传、不报错）。受管键集的权威
+    来源是 _SOURCE_KEYS（受管键总清单，来源标注 + read 回显共用；agents
+    数值标量键经 _AGENTS_MERGE_KEYS 与本函数共享同一名单）与
+    _SYNC_PAGE_KEYS（「同步用户级设置」的页签级白名单），本 docstring
+    不逐键罗列以免再次滞后于函数体。
+
+    新增受管键必须同步三处，缺一即「界面可填、保存被静默吞掉」：
+    1. read 回显（read_config / read_effective_config 白名单提取）
+    2. merge 分支（在本函数内补显式分支）
+    3. write 校验（write_config 前置合法性校验）
+    函数体内多处「缺合并分支会被静默丢弃」的事故注释均源于漏掉第 2 处。
+
+    分支形态举例（完整分支以函数体为准）：
+    - llm / hooks: 整体替换（patch 中存在即替换，不存在则保留原段）
+    - agents.models: 整体替换（只动 models，其它 agents 子键走各自分支）
+    - agents.max_concurrent 等数值标量键: patch 提供即透传（合法性由
+      write_config 前置校验把关）
+    - gates.approve_mode / gates.promote_mode: 只替换对应子键
     """
     import copy
 

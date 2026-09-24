@@ -3558,9 +3558,30 @@ class AgentRunner:
           只认 role=verifier 的共享文件。
         - JSON 无法解析时维持原始字节拷回（不注入，避免破坏字节）。
         - OSError 静默（与既有行为一致）；目录不存在零动作。
+        - 主树共享文件是跨 agent 共享单例，多 run 并发收工时拷回交错会写坏
+          JSON，故写盘走 temp 文件 + os.replace 原子替换（同
+          _ensure_agent_config_dir 的 _write_atomic 手法）。
         """
         wt_result = wt_path / ".fenix-run-result.json"
         root_result = self.project_root / ".fenix" / ".fenix-run-result.json"
+
+        def _write_atomic(dest: Path, data: str) -> None:
+            fd, tmp_name = tempfile.mkstemp(
+                prefix=".fenix-run-result.", suffix=".tmp",
+                dir=str(dest.parent),
+            )
+            tmp_path = Path(tmp_name)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(data)
+                os.replace(tmp_path, dest)
+            finally:
+                if tmp_path.exists():
+                    try:
+                        tmp_path.unlink()
+                    except OSError:
+                        pass
+
         if wt_result.exists():
             try:
                 raw = wt_result.read_text(encoding="utf-8")
@@ -3571,16 +3592,16 @@ class AgentRunner:
                         if isinstance(payload, dict):
                             payload["role"] = role
                             payload["spec"] = spec_name
-                            root_result.write_text(
+                            _write_atomic(
+                                root_result,
                                 json.dumps(
                                     payload, ensure_ascii=False, indent=2),
-                                encoding="utf-8",
                             )
                             raw = None  # 已注入写盘，跳过原始拷回
                     except (json.JSONDecodeError, ValueError):
                         pass  # 非法 JSON：fall through 原始字节拷回
                 if raw is not None:
-                    root_result.write_text(raw, encoding="utf-8")
+                    _write_atomic(root_result, raw)
             except OSError:
                 pass
 

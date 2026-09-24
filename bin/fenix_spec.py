@@ -54,23 +54,30 @@ def main():
 
     args = parser.parse_args()
     project_root = Path(args.project).expanduser().resolve() if args.project else PROJECT_ROOT
+    # 直接以框架 bin/ 路径调用时 PROJECT_ROOT 三级上溯会指到仓库父目录（其下无 spec/），
+    # 各命令报错路径随之误导排查：此场景下给错误信息附加推断根与 --project 指引。
+    root_hint = (
+        ""
+        if args.project or (project_root / "spec").exists()
+        else f"（默认项目根推断为 {project_root}，其下不存在 spec/ —— 请用 --project 显式指定项目根目录）"
+    )
 
     if args.command == "new":
         try:
             path = new_change(project_root, args.name)
             _emit({"ok": True, "path": str(path), "error": None})
         except ValueError as e:
-            _emit({"ok": False, "path": None, "error": str(e)}, ok=False)
+            _emit({"ok": False, "path": None, "error": str(e) + root_hint}, ok=False)
     elif args.command == "status":
         try:
             _emit(status(project_root, args.change))
         except ValueError as e:
-            _emit({"error": str(e)}, ok=False)
+            _emit({"error": str(e) + root_hint}, ok=False)
     elif args.command == "instructions":
         try:
             _emit(instructions(project_root, args.artifact, args.change))
         except ValueError as e:
-            _emit({"error": str(e)}, ok=False)
+            _emit({"error": str(e) + root_hint}, ok=False)
 
 
 if __name__ == "__main__":

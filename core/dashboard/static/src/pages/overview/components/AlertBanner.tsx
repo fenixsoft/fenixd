@@ -160,6 +160,9 @@ export default function AlertBanner({ refreshTick }: { refreshTick: number }) {
           <Space wrap size={8}>
             <span style={{ fontWeight: 600 }}>需人工介入</span>
             <span>{count} 条未处理</span>
+            {
+              // [fenix-ignore:056de6cf9b67] 窄屏（<768px）已由 global.less 的 screen-xs/sm 规则以 max-width:100% !important + 多行换行接管该省略文本（选择器命中 .ant-alert-title .ant-typography-ellipsis 已核实），内联 560px 仅桌面端生效，375px 级视口不会横向溢出
+            }
             <Typography.Text ellipsis style={{ maxWidth: 560 }}>
               {latest.project ? `[${latest.project}] ` : ''}
               {latest.description || latest.action_taken || ''}

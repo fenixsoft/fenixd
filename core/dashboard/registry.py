@@ -270,7 +270,17 @@ class Registry:
         if not scan_dirs:
             scan_dirs = [str(Path.home())]
         for sd in scan_dirs:
-            base = Path(sd).expanduser()
+            # 类型守卫（code-review item 03bc59736158）：与上方 projects 条目
+            # 同式——load() 只校验 scan_dirs 是 list 不校验元素类型，非字符串/
+            # 空白条目（手改 YAML 的 scan_dirs: [123]）让 Path(...) 抛 TypeError
+            # 穿透 discover，崩掉整个发现层；一律跳过并告警。
+            if not isinstance(sd, str) or not sd.strip():
+                logger.warning("扫描根条目缺失/为空/非字符串，跳过: %r", sd)
+                continue
+            try:
+                base = Path(sd).expanduser()
+            except (OSError, RuntimeError, TypeError, ValueError):
+                continue
             try:
                 if not base.is_dir():
                     continue

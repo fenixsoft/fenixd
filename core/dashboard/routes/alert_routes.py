@@ -126,7 +126,12 @@ class H6AlertRoutesMixin:
 
 
     def _api_alert_handled(self, alert_id: str, query) -> dict:
-        """标记某条升级告警为已处理；成功后广播让前端横幅刷新。"""
+        """标记某条告警为已处理；成功后广播让前端横幅刷新。
+
+        kind 分派在 ``mark_alert_handled``（ESCALATION→mark_handled，
+        SIGNAL→mark_signal_handled）：不可裁决 SIGNAL 记录（alert-resolve
+        400 文案指引本路径，code-review item 08f4820799eb）亦可经此闭环。
+        """
         project = self._project_from_query(query)
         if project is None:
             self._error(400, "unknown project")

@@ -33,6 +33,12 @@ DISPOSITION = "disposition"
 # 裁掉最旧历史不影响语义。
 MAX_RECORDS = 150
 
+# dispute 裁决审计（DisputeAuditStore）记录数上限：单条含 verdicts 全文与
+# diff，体积远大于告警记录，故上限取同类量级但放宽到 500 条；超限裁掉最旧
+# 历史（judge 裁决为低频事件，豁免匹配只关心在册凭据的存在性，裁剪后仍
+# 保留足够近期的可回滚凭据）。
+MAX_AUDIT_RECORDS = 500
+
 # 降噪分级（2026-09-01 用户决策）：只有 critical/major 默认进人工待处理
 # 队列；warning/minor 写入即自动标记已处理（仍留历史记录，不弹横幅）。
 HUMAN_SEVERITIES = ("critical", "major")
@@ -704,8 +710,43 @@ class DisputeAuditStore:
                     with self.audit_path.open("a", encoding="utf-8") as f:
                         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
                         f.flush()
+                    self._trim_unlocked()
                 finally:
                     fcntl.flock(lf, fcntl.LOCK_UN)
+
+    def _trim_unlocked(self) -> None:
+        """写回前裁剪到最近 MAX_AUDIT_RECORDS 条（调用方须已持有排他锁）。
+
+        jsonl 是追加写，无法像 AdminStore 在内存数组里删头，超限时整文件
+        读入、保留末尾 N 行（含刚追加的最新一条），经临时文件 + rename
+        原子替换，中途崩溃不丢既有审计。裁剪幂等：未超限不做任何写动作。
+        """
+        try:
+            lines = self.audit_path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return
+        lines = [ln for ln in lines if ln.strip()]
+        if len(lines) <= MAX_AUDIT_RECORDS:
+            return
+        fd, tmp_str = tempfile.mkstemp(
+            prefix=".dispute_audits.",
+            suffix=".tmp",
+            dir=str(self.audit_path.parent),
+        )
+        tmp_path = Path(tmp_str)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                for ln in lines[-MAX_AUDIT_RECORDS:]:
+                    f.write(ln + "\n")
+                f.flush()
+                os.fsync(f.fileno())
+            os.rename(str(tmp_path), str(self.audit_path))
+        finally:
+            if tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
 
     def read_all(self) -> list:
         """读取全部审计记录（最新的在前）。损坏/缺失返回空列表。"""
