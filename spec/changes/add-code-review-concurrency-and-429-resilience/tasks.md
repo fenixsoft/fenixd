@@ -71,5 +71,5 @@
 
 ## 6. 回归与验证
 
-- [ ] 6.1 全量相关单测通过：`pytest tests/test_code_review.py tests/test_provider_circuit.py tests/test_provider_failover.py tests/test_impl_code_review_tuning.py tests/test_impl_code_review_gate.py tests/test_code_review_scope_config.py`（禁读构建产物，basetemp 遵守 conftest 约定）
-- [ ] 6.2 Dashboard 冒烟：构建产物起服务后设置页可见「全仓审查并发」输入项，修改保存后 config 落盘且「SPEC 审查并发」值不变（验证按 verify.yaml 场景执行，BASE_URL 用运行实例地址）
+- [x] 6.1 全量相关单测通过：`pytest tests/test_code_review.py tests/test_provider_circuit.py tests/test_provider_failover.py tests/test_impl_code_review_tuning.py tests/test_impl_code_review_gate.py tests/test_code_review_scope_config.py`（禁读构建产物，basetemp 遵守 conftest 约定）
+- [x] 6.2 Dashboard 冒烟：构建产物起服务后设置页可见「全仓审查并发」输入项，修改保存后 config 落盘且「SPEC 审查并发」值不变（验证按 verify.yaml 场景执行，BASE_URL 用运行实例地址）
