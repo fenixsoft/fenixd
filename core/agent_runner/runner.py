@@ -840,7 +840,7 @@ class AgentRunner:
         # 持槽等待期间不派发 attempt——run 尚未创建，先写保活事件到预生成
         # run 文件（防 recovery watch 在长等待中把「已派发但未启动」误判为
         # 无进度/stuck；design D2 备选方案，见 _planner_throttle_acquire）。
-        acquired = self._planner_throttle_acquire(spec_name, run_id)
+        acquired = self._planner_throttle_acquire(spec_name, run_id, sem)
         if not acquired:
             return AgentRunResult(
                 run_id, spec_name, f"planner-{mode}",
@@ -1076,10 +1076,16 @@ class AgentRunner:
                 )
             return _PLANNER_SEMAPHORE
 
-    def _planner_throttle_acquire(self, spec_name: str, run_id: str) -> bool:
+    def _planner_throttle_acquire(self, spec_name: str, run_id: str,
+                                  sem: threading.BoundedSemaphore) -> bool:
         """持槽等待信号量（可观测 + 等待期保活，design D2 备选方案）。
 
-        - 排队可观测：等待开始时打 INFO 日志（spec 名 + 当前占用者数量），
+        - ``sem`` 必须传入调用方经 _planner_throttle_semaphore() 取得的同一
+          实例——acquire 与调用方 finally 的 release 须落在同一对象。若在此
+          处无锁重读模块全局，热更新重建信号量的窗口内会 acquire 到新对象、
+          release 落到旧对象（旧对象无对应 acquire 时抛 ValueError 且新对象
+          槽位泄漏）；
+        - 排队可观测：等待开始时打 INFO 日志（spec 名 + 并发上限），
           时间轴可审计；
         - 等待期保活：run 尚未启动（_execute_agent 内才创建 attempt run），
           以带超时的 acquire 轮询获取，等待期间按心跳周期向预生成 run 文件
@@ -1089,13 +1095,10 @@ class AgentRunner:
         - 取消（RunCancelledError）在等待期不可达（无子进程可终止），因此
           仅释放义务由调用方 finally 承担。
         """
-        sem = _PLANNER_SEMAPHORE
-        if sem is None:
-            return True
         self.logger.info(
             "agent_runner",
             f"planner 节流排队中: spec={spec_name} run={run_id} "
-            f"当前占用 {sem._value}/{_PLANNER_SEMAPHORE_LIMIT}（持槽等待）",
+            f"并发上限 {_PLANNER_SEMAPHORE_LIMIT}（持槽等待）",
         )
         # 预生成 run 文件：等待期保活事件写入目标（避免无文件可写）
         runs_dir = self.project_root / ".fenix" / "runs"

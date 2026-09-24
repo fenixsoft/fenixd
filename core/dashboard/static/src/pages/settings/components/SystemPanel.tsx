@@ -1,4 +1,4 @@
-import { Button, Card, Form, InputNumber, Modal, Select, Space, Switch, Typography, message } from 'antd';
+import { Button, Card, Form, Input, InputNumber, Modal, Select, Space, Switch, Typography, message } from 'antd';
 import { useEffect } from 'react';
 import { restartProjectDaemon } from '@/services/dashboard';
 import SyncFromUserButton from './SyncFromUserButton';
@@ -345,10 +345,11 @@ export default function SystemPanel({ config, onSave, project, onConfigSynced }:
                   rules={rule}
                   data-testid={`system-field-${key}`}
                 >
-                  <InputNumber
+                  {/* 逗号分隔序列须用文本框：InputNumber 的默认 parser 会剥离逗号，
+                      "30,60,120" 会被静默并成 "3060120" 恰好骗过单段校验 */}
+                  <Input
                     data-testid={`system-control-${key}`}
                     style={{ width: '100%' }}
-                    stringMode
                     placeholder="30,60,120"
                     addonAfter={unit}
                   />

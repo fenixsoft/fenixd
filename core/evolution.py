@@ -1435,39 +1435,65 @@ def reject_item(item_id_: str, project_root) -> dict:
     仅 ``pending`` / ``draft_failed`` / ``accept_failed`` 可拒绝；
     ``accepted`` / ``auto_accepted`` / ``rejected`` 返回错误且不改动任何
     文件。删除前经 ``_safe_draft_dir`` 校验路径（符号链接解析后越界拒绝）。
+
+    「状态校验 → 删草稿目录 → 写回」整体持 items.jsonl 同一把 flock 构成
+    compare-and-set（与 ``accept_item`` 同范式，code-review item
+    7d60d7df0370）：拒绝与 daemon 自动接受并发时，后到者在锁内重读必见
+    先到者写回的最终状态、按幂等语义报错返回现状，不再以锁外读取的旧
+    记录无条件覆盖——避免出现台账 ``rejected`` 而 STATE 仍挂 drafted SPEC
+    且目录已提交的两存储矛盾。
     """
     now = datetime.now(timezone.utc).isoformat()
-    items = read_items(project_root)
-    rec = items.get(item_id_)
-    if rec is None:
-        return {"ok": False, "status": None, "error": f"条目不存在: {item_id_}"}
-    status = rec.get("status")
-    if status not in ("pending", "draft_failed", "accept_failed"):
-        return {
-            "ok": False,
-            "status": status,
-            "error": f"状态 {status} 不可拒绝（已决定条目不可拒绝）",
-        }
+    path = items_path(project_root)
 
-    target = _safe_draft_dir(project_root, item_id_)
-    if target is None:
-        return {"ok": False, "status": status, "error": "草稿目录路径非法或越界，拒绝删除"}
-    if target.is_dir():
-        try:
-            # 符号链接解析后的越界判定：链接目标不在基目录内 → 拒绝删除
-            resolved = target.resolve()
-            base = (evolution_dir(project_root) / "drafts").resolve()
-            if not resolved.is_relative_to(base):
-                return {"ok": False, "status": status, "error": "草稿目录符号链接越界，拒绝删除"}
-            shutil.rmtree(target)
-        except OSError as e:
-            return {"ok": False, "status": status, "error": f"草稿删除失败: {e}"}
+    def _do() -> dict:
+        items = _read_items_unlocked(path)
+        rec = items.get(item_id_)
+        if rec is None:
+            return {"ok": False, "status": None, "error": f"条目不存在: {item_id_}"}
+        status = rec.get("status")
+        if status not in ("pending", "draft_failed", "accept_failed"):
+            # 并发自动接受/拒绝先到并已写回最终状态：锁内重读即见，报错
+            # 返回现状（幂等），MUST NOT 用锁外旧记录覆盖
+            return {
+                "ok": False,
+                "status": status,
+                "error": f"状态 {status} 不可拒绝（已决定条目不可拒绝）",
+            }
 
-    rec["status"] = "rejected"
-    rec["decided_at"] = now
-    upsert_item(project_root, rec)
-    write_todo_marker(rec, disposition="拒绝")
-    return {"ok": True, "status": "rejected", "error": None}
+        target = _safe_draft_dir(project_root, item_id_)
+        if target is None:
+            return {"ok": False, "status": status, "error": "草稿目录路径非法或越界，拒绝删除"}
+        if target.is_dir():
+            try:
+                # 符号链接解析后的越界判定：链接目标不在基目录内 → 拒绝删除
+                resolved = target.resolve()
+                base = (evolution_dir(project_root) / "drafts").resolve()
+                if not resolved.is_relative_to(base):
+                    return {
+                        "ok": False,
+                        "status": status,
+                        "error": "草稿目录符号链接越界，拒绝删除",
+                    }
+                shutil.rmtree(target)
+            except OSError as e:
+                return {"ok": False, "status": status, "error": f"草稿删除失败: {e}"}
+
+        rec["status"] = "rejected"
+        rec["decided_at"] = now
+        # 锁内单条写回：与 accept_item._persist 同型（读-改-写 + 原子替换），
+        # MUST NOT 再走 upsert_item/read_items——同进程对同一把
+        # ``.items.jsonl.lock`` 二次 flock 会自阻塞（见 _with_lock）。
+        current = _read_items_unlocked(path)
+        current[rec["id"]] = rec
+        _atomic_write(
+            path,
+            "".join(json.dumps(current[k], ensure_ascii=False) + "\n" for k in sorted(current)),
+        )
+        write_todo_marker(rec, disposition="拒绝")
+        return {"ok": True, "status": "rejected", "error": None}
+
+    return _with_lock(path, _do)
 
 
 def delete_item(item_id_: str, project_root) -> dict:

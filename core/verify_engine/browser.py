@@ -405,7 +405,10 @@ class BrowserManager:
         try:
             await page.goto(
                 url,
-                wait_until="networkidle",
+                # domcontentloaded 与 execute_action navigate 分支一致；networkidle
+                # 因页面常驻连接（SSE 长连）永不满足（见模块 docstring），加载
+                # 稳定性由紧随其后的 _wait_stable（首帧非空文本 + CLS）承担
+                wait_until="domcontentloaded",
                 timeout=15000,
             )
             await self._wait_stable(page)

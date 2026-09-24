@@ -737,13 +737,19 @@ def ensure_verification_report(project_root, spec_name, logger=None) -> dict:
 
     action=resynthesized：既有报告属上一轮残留（``_report_is_superseded``），
     已用本轮结构化数据重新合成覆盖。既有报告在场但不可读（OSError/
-    UnicodeDecodeError）时同样走重新合成——不可读文件不得以 present 放行。
+    UnicodeDecodeError）或可读但为空白（0 字节/纯空白，如 agent 写报告
+    截断后崩溃）时同样走重新合成——残缺报告不得以 present 放行。
     """
     out_path = Path(project_root) / "spec" / "changes" / spec_name / "verification-report.md"
     unreadable = False
     if out_path.exists():
         try:
             existing = out_path.read_text(encoding="utf-8")
+            if not existing.strip():
+                # 报告在场但为空白（0 字节/纯空白，如 agent 写报告工具截断后
+                # 崩溃）：空串解析不出任何结论会被 _report_is_superseded 判
+                # 「非残留」而 fail-open，与不可读同款改走重新合成兜底。
+                unreadable = True
         except (OSError, UnicodeDecodeError):
             # 报告在场但读不出（权限/编码损坏）：空串解析不出任何结论会被
             # _report_is_superseded 判「非残留」而 fail-open，故改走重新合成，
@@ -759,8 +765,8 @@ def ensure_verification_report(project_root, spec_name, logger=None) -> dict:
                 if unreadable:
                     logger.warning(
                         "verify_report",
-                        f"验证报告闸门：'{spec_name}' 既有报告不可读"
-                        f"（权限/编码损坏），已重新合成覆盖",
+                        f"验证报告闸门：'{spec_name}' 既有报告不可读或为空白"
+                        f"（权限/编码损坏/截断），已重新合成覆盖",
                     )
                 else:
                     logger.warning(
@@ -778,7 +784,7 @@ def ensure_verification_report(project_root, spec_name, logger=None) -> dict:
                 SIGNAL_MISSING,
                 "major",
                 (
-                    f"'{spec_name}' 验证报告在场但不可读且无法合成——"
+                    f"'{spec_name}' 验证报告在场但不可读或为空白且无法合成——"
                     "验证裁决放行被阻断，等待人工裁决"
                 ),
                 error,

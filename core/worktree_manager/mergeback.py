@@ -913,12 +913,27 @@ class G4MergebackMixin:
                     f"semantic={has_semantic_conflict} — collecting for repair decision",
                 )
             # Abort the merge so main tree is left clean for retry
-            subprocess.run(
+            abort = subprocess.run(
                 ["git", "-C", str(self.project_root), "merge", "--abort"],
                 capture_output=True,
                 text=True,
                 timeout=30,
             )
+            # abort 自身失败可见性（code-review item 7480e064baab）：abort 非 0
+            # （索引锁残留、非常规冲突态）时主树仍带 unmerged 条目，后续
+            # restore_after_merge 的 stash pop 会随之失败——warning 记录并把
+            # 「主树可能仍处冲突态」写进 error 文案，让下游告警能区分归因。
+            if abort.returncode != 0:
+                abort_err = abort.stderr.strip() or f"exit code {abort.returncode}"
+                self.logger.warning(
+                    "worktree_manager",
+                    f"merge --abort failed for branch '{branch}': {abort_err} — "
+                    f"main tree may still be in a conflicted state",
+                )
+                error = (
+                    f"{error}; merge --abort failed ({abort_err}): "
+                    f"main tree may still be in a conflicted state"
+                )
             # 恢复被移开的 untracked 文件（不丢数据，供下一轮重试）
             self._restore_backup(backup)
             return MergeConflictInfo(
@@ -935,15 +950,28 @@ class G4MergebackMixin:
             # abort 会让后续 restore_after_merge 的 stash pop 失败或告警失真；
             # 已移开的 untracked 备份也不归还，会在 .fenix/merge-backup 下无限
             # 期残留。abort 幂等（无合并进行时静默失败），自身异常不再外抛。
+            abort_err = ""
             try:
-                subprocess.run(
+                abort = subprocess.run(
                     ["git", "-C", str(self.project_root), "merge", "--abort"],
                     capture_output=True,
                     text=True,
                     timeout=30,
                 )
+                if abort.returncode != 0:
+                    abort_err = (
+                        abort.stderr.strip() or f"exit code {abort.returncode}"
+                    )
             except Exception:  # noqa: BLE001 — abort 失败不掩盖原始超时错误
-                pass
+                abort_err = "merge --abort itself raised"
+            if abort_err:
+                # abort 失败可见性（code-review item 7480e064baab）：主树可能
+                # 仍处半合并态，记录并追加进 error 文案让下游告警能区分归因。
+                self.logger.warning(
+                    "worktree_manager",
+                    f"merge --abort failed after merge timeout: {abort_err} — "
+                    f"main tree may still be in a conflicted state",
+                )
             if backup is not None:
                 self._restore_backup(backup)
             # 错误文案反映真正超时的命令与时限（code-review item 50597755297c）：
@@ -951,9 +979,13 @@ class G4MergebackMixin:
             # merge 本体是 120——硬编码 "git merge ... 120s" 会把前置阶段超时误
             # 归因给 merge 步骤，误导排障方向。
             cmd = e.cmd if isinstance(e.cmd, str) else " ".join(e.cmd or ["git"])
-            return MergeConflictInfo(
-                False, f"git command timed out after {e.timeout}s: {cmd}"
-            )
+            timeout_error = f"git command timed out after {e.timeout}s: {cmd}"
+            if abort_err:
+                timeout_error += (
+                    f"; merge --abort failed ({abort_err}): "
+                    f"main tree may still be in a conflicted state"
+                )
+            return MergeConflictInfo(False, timeout_error)
         except Exception as e:
             return MergeConflictInfo(False, str(e))
 

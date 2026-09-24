@@ -200,6 +200,7 @@ class VerifyEngine:
 
         # ── lazy setup：仅对场景集中实际出现的 kind 执行 ──
         kinds = {s.kind for s in normalized}
+        setup_done: list[str] = []
         for kind in kinds:
             runner = self._runner_for(kind)
             try:
@@ -207,12 +208,21 @@ class VerifyEngine:
             except Exception as e:
                 # Runner setup 失败（如 ApiRunner 依赖缺失）＝验证环境错误，
                 # 不判 bug-found（design D2：lazy setup 与资源纪律）。
+                # 此处早退绕过了执行路径的 finally teardown，已完成 setup 的
+                # Runner（如已启动浏览器的 WebRunner）须先 best-effort 释放，
+                # 否则常驻 daemon 内每轮此类失败都泄漏一个浏览器实例。
+                for done_kind in setup_done:
+                    try:
+                        await self._runners[done_kind].teardown()
+                    except Exception as te:
+                        self.logger.warning("verify_engine", f"Runner '{done_kind}' teardown 异常: {te}")
                 msg = f"验证环境错误: {kind} Runner 初始化失败: {e}"
                 self.logger.error("verify_engine", msg)
                 report = self._build_report([])
                 report["env_error"] = msg
                 self._save_report(report)
                 return report
+            setup_done.append(kind)
 
         # 执行起点进度（fix-verify-progress-granularity）：此前首个写点在批次
         # 完成，出题结束到首批 gather 完成之间进度文件不存在，进度条恒 0。

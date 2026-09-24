@@ -88,11 +88,12 @@ class FileWatcher:
 
         self._running = False
         self._thread = None
-        self._top_sigs = {}  # project -> {kind: sig}（state/vp/admin）
-        self._spec_dirs = {}  # project -> {spec_name: 目录签名}
-        self._last_summaries = {}  # project -> {spec_name: summary dict}（增量 diff 基线）
-        self._run_base = {}  # (project, run_id) -> {"size": int, "status": str}
-        self._log_sigs = {}  # project -> {log_path: (mtime_ns, size)}
+        # 项目级缓存统一以项目路径（proot.as_posix()）为键，见 _prune_stale_caches
+        self._top_sigs = {}  # project path -> {kind: sig}（state/vp/admin）
+        self._spec_dirs = {}  # project path -> {spec_name: 目录签名}
+        self._last_summaries = {}  # project path -> {spec_name: summary dict}（增量 diff 基线）
+        self._run_base = {}  # (project path, run_id) -> {"size": int, "status": str}
+        self._log_sigs = {}  # project path -> {log_path: (mtime_ns, size)}
 
     # ── 生命周期 ─────────────────────────────────────────────
 
@@ -143,16 +144,33 @@ class FileWatcher:
     # ── 主扫描 ───────────────────────────────────────────────
 
     def scan_once(self):
-        for proj in self.projects_fn():
+        projects = self.projects_fn()
+        for proj in projects:
             if not proj.get("exists"):
                 continue
             try:
                 self._scan_project(proj["name"], Path(proj["path"]))
             except Exception:
                 continue
+        # 项目集变化后剔除消失项目的缓存（长驻进程防无界累积）
+        self._prune_stale_caches(projects)
+
+    def _prune_stale_caches(self, projects: list):
+        """projects_fn 返回集变化后，剔除已消失项目的全部缓存条目。
+
+        全部项目级缓存统一以项目路径为键：项目从 registry 删除或更名（路径
+        变化）后旧键不再残留，同目录更名也不会导致基线失效重建。仍在 registry
+        但 exists=False 的项目保留缓存，路径恢复后基线继续有效。
+        """
+        live = {Path(p["path"]).as_posix() for p in projects if p.get("path")}
+        for cache in (self._top_sigs, self._spec_dirs, self._last_summaries, self._log_sigs):
+            for k in [k for k in cache if k not in live]:
+                del cache[k]
+        for k in [k for k in self._run_base if k[0] not in live]:
+            del self._run_base[k]
 
     def _scan_project(self, name: str, proot: Path):
-        top_sigs = self._top_sigs.setdefault(name, {})
+        top_sigs = self._top_sigs.setdefault(proot.as_posix(), {})
         admin_changed = False
 
         # ── 第一级：顶层数据源签名（O(少数) stat） ──
@@ -320,7 +338,7 @@ class FileWatcher:
         except Exception:
             summaries = [dashboard_data.spec_summary(proot, s, e) for s, e in cur.items()]
         new_map = {s.get("name"): s for s in summaries}
-        prev_map = self._last_summaries.get(name, {})
+        prev_map = self._last_summaries.get(proot.as_posix(), {})
 
         specs_out = []
         details = {}
@@ -345,7 +363,7 @@ class FileWatcher:
         for spec in sorted(deleted):
             specs_out.append({"spec": spec, "summary": None})
 
-        self._last_summaries[name] = new_map
+        self._last_summaries[proot.as_posix()] = new_map
         self.hub.broadcast(
             {
                 "project": name,

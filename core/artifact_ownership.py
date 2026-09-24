@@ -129,9 +129,10 @@ _VP_DIR_REF_RE = re.compile(
     r"\.fenix/verify-progress/[^/\s]+/(?=[\s，,。、；;）)）】`]|$)"
 )
 
-# 代码扩展名出现（遮蔽后扫描）
+# 代码扩展名出现（遮蔽后扫描）——由 _CODE_EXTENSIONS 动态拼接（同
+# _VP_ARTIFACT_RE 做法），保持扩展名清单单一真相源
 _CODE_EXT_RE = re.compile(
-    r"\.(?:py|ts|tsx|js|jsx|sh|yaml|yml)\b"
+    r"\.(?:" + "|".join(re.escape(ext[1:]) for ext in _CODE_EXTENSIONS) + r")\b"
 )
 
 # 产出动词匹配（步骤 3）：单字动词以否定回顾排除改写/读取语义前缀

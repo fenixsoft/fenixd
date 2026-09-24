@@ -50,15 +50,21 @@ from core.verify_contract import (
 from core.regression import parse_junit_xml
 
 
-def selfcheck_regression(project_root: Path) -> tuple:
+def selfcheck_regression(project_root: Path, contract=None) -> tuple:
     """可选 regression 段自证：按 cmd 跑一次确认 output 产出可解析 JUnit XML。
+
+    contract 可传入已加载的契约对象（code-review item 708cdd624733：同一 CLI
+    生命周期内只读一次 verify.yaml，消除两次读取之间文件被改写导致校验与
+    自证使用不同版本契约的 TOCTOU 窗口）；缺省 None 时内部自行加载，保持
+    既有调用形态兼容。
 
     返回 (ok, note)：ok 为 True/False/None（None=无 regression 段，跳过）。
     执行有硬超时（spec.timeout_seconds，对齐执行车道 D8 进程组中止），
     但失败/超时不改变退出码——三段自证语义不变（design: 回归可跑 1800s，
     不得把既有自证门拖成小时级）。
     """
-    contract = load_verify_contract(project_root)
+    if contract is None:
+        contract = load_verify_contract(project_root)
     if contract is None or contract.regression is None:
         return None, None
     spec = contract.regression
@@ -206,13 +212,16 @@ def main():
         or not result.serve_ok
         or not result.ready_ok
     )
+    # 契约只加载一次（code-review item 708cdd624733）：跳过自证分支的判定与
+    # regression 自证共用同一份契约对象，消除两次读取之间 verify.yaml 被改写
+    # 导致「校验结论与自证所用契约不是同一版本」的 TOCTOU 窗口。
+    contract = load_verify_contract(project_root)
     if contract_failed:
-        _contract = load_verify_contract(project_root)
-        if _contract is not None and _contract.regression is not None:
+        if contract is not None and contract.regression is not None:
             print()
             print("[regression] 跳过自证（因契约已失败跳过回归自证）")
     else:
-        reg_ok, reg_note = selfcheck_regression(project_root)
+        reg_ok, reg_note = selfcheck_regression(project_root, contract=contract)
         if reg_ok is not None:
             print()
             print(f"[regression] {'✓ 通过' if reg_ok else '✗ 自证失败'}")

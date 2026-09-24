@@ -827,12 +827,27 @@ def _retention_log(logger, level: str, msg: str) -> None:
         print(f"[fenixd] {msg}", file=sys.stderr)
 
 
+def _retention_files_differ(a: Path, b: Path) -> bool:
+    """轻量判等：size 或 mtime 不同即视为分歧；探测失败保守返回 True。
+
+    对齐 archive_spec_runs 的 _files_differ（code-review item ca47fc88588f），
+    不做逐字节比对（产物可能较大，此处只需发现明显分歧）。
+    """
+    try:
+        sa, sb = a.stat(), b.stat()
+    except OSError:
+        return True
+    return sa.st_size != sb.st_size or int(sa.st_mtime) != int(sb.st_mtime)
+
+
 def runs_retention_check(project_root, config: dict | None = None, logger=None) -> dict:
     """daemon 周期 runs 保留清理（fix-dashboard-read-path-performance D4）。
 
     两步（各自独立失败互不阻断，异常记日志不抛）：
     1. 终态（done/error/interrupted/cancelled/superseded/gate-blocked，及 stale
        断尾）run 从活跃 runs/ 移入 archive/——活跃目录有界性由「终态即移出」保证。
+       同 run_id 归档副本已存在时删除顶层副本（轻量判等后仍以归档为准，分歧记
+       WARNING），删除不计入 moved、单独记日志。
     2. 归档目录按 ``runs.keep`` 上限清理：超过上限时按 mtime 升序（最旧优先）
        删除直至 ≤ 上限；逐条记日志（文件名可追溯）、每周期删除量有批次上限
        （_RETENTION_DELETE_PER_CYCLE_MAX），不静默大批量删除（5.1a）。
@@ -860,11 +875,13 @@ def runs_retention_check(project_root, config: dict | None = None, logger=None) 
             "error": None,
         }
 
-    # 1. 终态 run 移入归档
+    # 1. 终态 run 移入归档（同 run_id 归档副本已存在时改为删除顶层副本——
+    #    判等后仍以归档为准，不计入 moved）
     moved = 0
     try:
+        actions = 0  # 每周期动作量上限计数（移入 + 去重删除），与返回值 moved 解耦
         for p in runs_dir.glob("*.jsonl"):
-            if moved >= _RETENTION_MOVE_PER_CYCLE_MAX:
+            if actions >= _RETENTION_MOVE_PER_CYCLE_MAX:
                 break
             if not _is_run_archivable(p):
                 continue
@@ -873,11 +890,28 @@ def runs_retention_check(project_root, config: dict | None = None, logger=None) 
                 archive_dir.mkdir(parents=True, exist_ok=True)
                 dest = archive_dir / p.name
                 if dest.exists():
-                    p.unlink()  # 同 run_id 归档副本已存在：删顶层副本（内容同源）
+                    # 去重删除前做轻量判等（code-review item 750bb741c8fd）：旧实现
+                    # 无条件 unlink 且不留日志、仍计入 moved（误报「移入归档」），
+                    # 仅在「归档副本与顶层副本同源」假设下安全。顶层副本因本函数
+                    # retention 移档后又按原路径追加终态行（如 daemon 重启
+                    # interrupted 补写）与归档副本分歧时，较新产物会被静默销毁、
+                    # 排障无迹。对齐 archive_spec_runs（item ca47fc88588f）：分歧记
+                    # WARNING 再删；删除路径单独记日志使清理动作可审计。
+                    if _retention_files_differ(p, dest):
+                        _retention_log(
+                            logger,
+                            "warning",
+                            f"runs 保留: 顶层副本与归档副本内容分歧，仍按归档为准删除顶层 {p.name}",
+                        )
+                    _retention_log(
+                        logger, "info", f"runs 保留: 删除活跃同名副本（归档已存在） {p.name}"
+                    )
+                    p.unlink()
                 else:
                     p.replace(dest)
-                moved += 1
-                _retention_log(logger, "info", f"runs 保留: 终态 run 移入归档 {p.name}")
+                    moved += 1
+                    _retention_log(logger, "info", f"runs 保留: 终态 run 移入归档 {p.name}")
+                actions += 1
             except OSError as e:
                 _retention_log(logger, "warning", f"runs 保留: 移入归档失败 {p.name}: {e}")
     except OSError as e:

@@ -81,7 +81,10 @@ class H9SseRoutesMixin:
             return False
         try:
             data = self.connection.recv(1, socket.MSG_PEEK)
-        except (BlockingIOError, OSError, ValueError):
+        except BlockingIOError:
+            # 暂无数据可读 ≠ EOF：select 就绪与数据到达间的竞态，本次不判定断开
+            return False
+        except (OSError, ValueError):
             return True
         return data == b""
 
@@ -94,7 +97,9 @@ class H9SseRoutesMixin:
         if event is None:
             frame = b": ping\n\n"
         else:
-            data = json.dumps(event, ensure_ascii=False)
+            # default=str：事件含不可序列化对象（如 datetime）时降级为字符串，
+            # 避免 TypeError 穿出外层仅捕获连接类异常的 try 导致异常外泄
+            data = json.dumps(event, ensure_ascii=False, default=str)
             frame = ("data: %s\n\n" % data).encode("utf-8")
         chunk = b"%X\r\n" % len(frame) + frame + b"\r\n"
         self.wfile.write(chunk)
