@@ -132,8 +132,22 @@ def _read_spec_scenarios(specs_dir: Path) -> dict:
     return {"found": True, "content": "\n\n---\n\n".join(parts)}
 
 
+def _validated_spec_name(spec) -> str | None:
+    """spec 名 kebab-case 白名单校验（与 get_spec_doc/resolve_spec_dir 同口径）。
+
+    合法返回原名；非法（非字符串/含 ``..``、路径分隔符等穿越片段）返回 None，
+    供 count 系列 fail-open 以 0 计（纯展示信号，不阻断摘要）。
+    """
+    if not isinstance(spec, str) or not _SPEC_NAME_RE.match(spec):
+        return None
+    return spec
+
+
 def count_scenarios(project_root, spec_name) -> int:
     """统计 SPEC 各 spec.md 中 Scenario 数量。"""
+    spec_name = _validated_spec_name(spec_name)
+    if spec_name is None:
+        return 0
     specs_dir = Path(project_root) / "spec" / "changes" / spec_name / "specs"
     if not specs_dir.is_dir():
         return 0
@@ -160,6 +174,9 @@ def count_generated_scenarios(project_root, spec_name) -> int:
     若按条数计则骨架落盘瞬间出题条 0→N/N 一次跳；数带肉场景使出题条
     随每 1/3 重写真实爬升。
     """
+    spec_name = _validated_spec_name(spec_name)
+    if spec_name is None:
+        return 0
     pf = Path(project_root) / ".fenix" / "verify-progress" / spec_name / "test_scenarios.json"
     if not pf.exists():
         return 0
@@ -193,6 +210,9 @@ def count_planned_scenarios(project_root, spec_name) -> int:
     绑定关系（实测 243/267 个 spec 出现 done>total，如 20/11）；且非「多形态
     验收」类 spec 的 spec.md 根本不含 `#### Scenario:` 块（分母为 0）。
     """
+    spec_name = _validated_spec_name(spec_name)
+    if spec_name is None:
+        return 0
     pf = Path(project_root) / ".fenix" / "verify-progress" / spec_name / "test_scenarios.json"
     if not pf.exists():
         return 0
