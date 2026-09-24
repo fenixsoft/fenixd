@@ -38,7 +38,7 @@ daemon 消费 code-review 手动触发信号（`.fenix/code_review_request.json`
 
 ### Requirement: 触发端点受理窗口守卫
 
-`POST /api/code-review/run` SHALL 在既有 running 守卫与信号独占创建之前增加受理窗口守卫：当回链结果 `status=started` 且 `progress.running=false`（run 尚未开始）且结果 `finished_at` 距今不超过 900 秒（新鲜度窗口）时，SHALL 返回 409 与稳定错误码 `code_review_ack_pending`，MUST NOT 覆盖既有 `code_review_running`（409）与信号独占创建（409）语义。既有守卫的判定口径 MUST NOT 改变。
+`POST /api/code-review/run` SHALL 在既有 running 守卫与信号独占创建之前增加受理窗口守卫：当回链结果 `status=started` 且 `progress.running=false`（run 尚未开始）且结果 `finished_at` 距今不超过 900 秒（新鲜度窗口）且 `progress.review_id` 内嵌 epoch 不大于 `finished_at`（受理后尚无新 run 启动过——run 结束后结果文件仍停留 `started`，须凭此区分「排队中」与「已跑完」）时，SHALL 返回 409 与稳定错误码 `code_review_ack_pending`，MUST NOT 覆盖既有 `code_review_running`（409）与信号独占创建（409）语义。既有守卫的判定口径 MUST NOT 改变。
 
 #### Scenario: 窗口内重复触发被显式拒绝
 - **WHEN** daemon 已受理上一触发（结果 started）但 run 尚未开始（progress.running=false）且结果未超新鲜度窗口，用户再次 POST
@@ -52,9 +52,13 @@ daemon 消费 code-review 手动触发信号（`.fenix/code_review_request.json`
 - **WHEN** 上一轮审查已结束（progress.running=false）且回链结果 finished_at 距今超过 900 秒
 - **THEN** 窗口守卫放行，新信号正常写入（若 daemon 侧仍在执行旧链则由单飞拒绝并落 dropped 结果）
 
+#### Scenario: run 结束后窗口内重触发不误拒
+- **WHEN** 上一轮审查已结束（progress.running=false），结果文件仍为 `started` 且 `finished_at` 距今不足 900 秒，但最新 `review_id` 内嵌 epoch 大于 `finished_at`（受理的 run 已启动并结束过）
+- **THEN** 窗口守卫放行，新信号正常写入（若恰有审查在跑则由既有 `code_review_running` 守卫或 daemon 单飞落结果给出显式拒绝）
+
 ### Requirement: 前端受理等待与分派反馈
 
-质量页签（QualityTab）触发审查后 SHALL 进入受理等待态：POST 返回 200 后不弹出「已受理」类终态文案，改为轮询 `GET /api/code-review/run-result`（1 秒间隔，上限 120 秒），仅当结果 `requested_at` 与本次触发返回的 `requested_at` 一致时才视为本次结果，陈旧残留结果 MUST NOT 被当作本次反馈。按结果分派：`started` → 以 2 秒间隔轮询 progress 直到 `running=true`（上限 60 秒）让既有进度卡片接管，`running=true` 前 SHALL NOT 弹「已受理」以外无信息量的中间提示；`dropped` → 警告回显 `message`；`failed` → 错误回显 `message`；任一段超时 → 给出「请稍后在进度卡片或 daemon 日志确认」类兜底提示。受理等待期间两个审查触发按钮 SHALL 保持禁用（独立门控态，不影响取消与自动修复按钮）；组件卸载/切页签/切项目 SHALL 立即停止轮询且不再弹提示。
+质量页签（QualityTab）触发审查后 SHALL 进入受理等待态：POST 返回 200 后不弹出「已受理」类终态文案，改为轮询 `GET /api/code-review/run-result`（1 秒间隔，上限 120 秒），仅当结果 `requested_at` 与本次触发返回的 `requested_at` 一致时才视为本次结果，陈旧残留结果 MUST NOT 被当作本次反馈。按结果分派：`started` → 以 2 秒间隔轮询 progress 直到 `running=true`（上限 60 秒）让既有进度卡片接管，`running=true` 前 SHALL NOT 弹出无信息量的中间提示（含既有「已受理」终态文案——POST 200 只代表信号已写，不构成启动确认）；`dropped` → 警告回显 `message`；`failed` → 错误回显 `message`；任一段超时 → 给出「请稍后在进度卡片或 daemon 日志确认」类兜底提示。受理等待期间两个审查触发按钮 SHALL 保持禁用（独立门控态，不影响取消与自动修复按钮）；组件卸载/切页签/切项目 SHALL 立即停止轮询且不再弹提示。
 
 #### Scenario: started 后卡片接管
 - **WHEN** 轮询读到本次 `status=started` 且随后 progress.running=true

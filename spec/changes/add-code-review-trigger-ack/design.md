@@ -32,6 +32,7 @@
 
 - 键名对齐 code-fix 先例风格但用本车道语义：`requested_at`（code-fix 用 `request_created`，因两车道信号 payload 键名不同——code-review 信号 payload 本就写 `requested_at`）
 - 单文件覆盖写，不清理；消费端每次消费新信号即覆盖旧结果
+- `finished_at` 语义统一为「本条结果写入时刻」（对 `started` 即受理时刻，对 `dropped`/`failed` 即拒绝/失败时刻）——daemon 不在 run 结束时回写结果，结果文件不承载 run 终态；run 是否已启动过由窗口守卫以 review_id epoch 判定（见 D3）
 
 ### D2. 三态语义与落盘点位（`fenixd.py:_check_code_review_requests`）
 
@@ -53,10 +54,12 @@
 若 结果文件存在 且 status == "started"
    且 progress.running == false          （run 尚未开始）
    且 finished_at 距今 ≤ ACK_WINDOW_SECONDS（900s，新鲜度）
+   且 progress.review_id 内嵌 epoch ≤ finished_at（受理后尚无新 run 启动过）
 → 409「审查已受理，正在启动（文件收集/排队中），请稍候」code=code_review_ack_pending
 ```
 
 - 新鲜度必要：run 结束后结果文件仍是 started 且 running=false，不判新鲜会永久锁死触发
+- epoch 判据必要（评审修补）：daemon 不在 run 结束时回写结果（worker 在 run 完成后无任何结果文件写入，fenixd.py:2373-2386），`started + running=false` 有二义——「排队收集中」与「已跑完」形态相同；仅凭新鲜度，run 结束后窗口内（900s − run 时长，可逾 10 分钟）的合法重触发会被假 409「正在启动」拒绝，而今日行为是立即放行，属本 change 引入的回归。run_id 形如 `code-review-<epoch>[-<n>]`（`core/code_review.py:728` `_latest_review_run` 同款解析），受理的 run 一旦启动即产生 epoch > finished_at 的 review_id → 放行。误放行终点仍是既有 running 守卫或 daemon 单飞的显式拒绝并落结果，有反馈不留静默（与下条 fail-open 论证同款）
 - 超窗口放行后链路自洽：新信号被 daemon 消费 → 单飞拒绝 → 落 `dropped/already_running` → 前端明确反馈，不留静默
 - 守卫读结果与 running 判定之间存在竞态（两读之间 run 恰好开始）→ 放行的第二发被 daemon 单飞拒绝并落结果，fail-open 到「有反馈的拒绝」，可接受
 - 信号文件 O_EXCL 409 与本守卫并存：前者覆盖「信号未消费」，本守卫覆盖「信号已消费、run 未开始」的空隙

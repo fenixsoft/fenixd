@@ -7,6 +7,8 @@
   kind: modify
 - path: core/dashboard/routes/code_review_routes.py
   kind: modify
+- path: core/dashboard/routes/base.py
+  kind: modify
 - path: fenixd.py
   kind: modify
 - path: core/dashboard/static/src/services/dashboard.ts
@@ -27,8 +29,8 @@
 ## 2. 后端读侧与路由
 
 - [ ] 2.1 `core/dashboard/data/code_review.py` 新增 `read_code_review_request_result(project_root)` 封装（复用 1.1 读函数，缺省态形态对齐 `read_code_fix_request_result`）
-- [ ] 2.2 `code_review_routes.py` 新增 `GET /api/code-review/run-result?project=<name>`：返回回链内容，缺失/损坏返回缺省态 200 不 500，项目不存在 404（形态对齐 `_api_code_review_fix_run_result`）
-- [ ] 2.3 `_api_code_review_run` 在既有 running 守卫后新增受理窗口守卫：结果 `status=started` 且 `progress.running=false` 且 `finished_at` 距今 ≤900s → 409 稳定错误码 `code_review_ack_pending`（经 `_coded_error` 下发）；既有 `code_review_running` 409 与信号 O_EXCL 409 语义不变
+- [ ] 2.2 `code_review_routes.py` 新增 `GET /api/code-review/run-result?project=<name>`：返回回链内容，缺失/损坏返回缺省态 200 不 500，项目不存在 404（形态对齐 `_api_code_review_fix_run_result`）；路由需同步注册进 `core/dashboard/routes/base.py`（exact 路由表 + dispatch wrapper，对齐 fix-run-result 的表项与 wrapper 形态）
+- [ ] 2.3 `_api_code_review_run` 在既有 running 守卫后新增受理窗口守卫：结果 `status=started` 且 `progress.running=false` 且 `finished_at` 距今 ≤900s 且 `progress.review_id` 内嵌 epoch ≤ `finished_at`（run 已启动过即放行，见 design D3）→ 409 稳定错误码 `code_review_ack_pending`（经 `_coded_error` 下发）；既有 `code_review_running` 409 与信号 O_EXCL 409 语义不变
 
 ## 3. 前端受理等待态
 
@@ -40,5 +42,5 @@
 ## 4. 测试与验证
 
 - [ ] 4.1 `tests/test_code_review.py` 新增回链写侧单测：三态落盘（started/dropped/failed）、payload 键与原子性（tmp+replace）、单飞拒绝/守卫拒绝分支均落结果且单飞旗标顺序不变
-- [ ] 4.2 同文件新增读侧与窗口守卫单测：缺省态（缺失/损坏不 500）、窗口守卫三分支（started+未 running+新鲜 → 409 `code_review_ack_pending`；running=true → 既有 `code_review_running`；陈旧结果超 900s → 放行）
+- [ ] 4.2 同文件新增读侧与窗口守卫单测：缺省态（缺失/损坏不 500）、窗口守卫四分支（started+未 running+新鲜+无更新 run → 409 `code_review_ack_pending`；running=true → 既有 `code_review_running`；陈旧结果超 900s → 放行；run 已结束但 review_id epoch > finished_at → 放行）
 - [ ] 4.3 前端构建验证：`core/dashboard/static` 下 `npm run build` 零错误（ackPending 门控、两段轮询、哨兵清理不破坏既有 TypeScript 契约）
