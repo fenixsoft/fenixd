@@ -1342,7 +1342,7 @@ export async function acceptEvolutionItem(
   // start_after：新 SPEC 的定时拾取时刻（UTC ISO）。null/缺省 = 立项后立即执行。
   // 「立即」必须显式传 null（而非省略），才能与「未指定」区分——设置页的
   // spec_run_at 可能配着定时，用户却在弹窗里选了立即。
-  return request('/api/evolution/accept', {
+  return request<{ ok: boolean; status?: string; spec_name?: string; error?: string }>('/api/evolution/accept', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ item_id: itemId, start_after: startAfter ?? null }),
@@ -1352,7 +1352,7 @@ export async function acceptEvolutionItem(
 export async function rejectEvolutionItem(
   itemId: string,
 ): Promise<{ ok: boolean; status?: string; error?: string }> {
-  return request('/api/evolution/reject', {
+  return request<{ ok: boolean; status?: string; error?: string }>('/api/evolution/reject', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ item_id: itemId }),
@@ -1364,7 +1364,7 @@ export async function deleteEvolutionItem(
 ): Promise<{ ok: boolean; status?: string; error?: string }> {
   // 硬删：条目移出 items.jsonl 且不写墓碑，todo.md 中同名记录可能在下一轮
   // 分析 run 重新入库（UI 确认弹窗须明示）。
-  return request('/api/evolution/delete', {
+  return request<{ ok: boolean; status?: string; error?: string }>('/api/evolution/delete', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ item_id: itemId }),
@@ -1379,7 +1379,12 @@ export async function clearAllEvolutionTodo(): Promise<{
 }> {
   // 全局动作：清空所有项目的 .fenix/todo.md（不传项目参数）。
   // 仅清 todo.md 上游文件，不触碰 items.jsonl，故条目列表不受影响。
-  return request('/api/evolution/clear-todo', {
+  return request<{
+    ok: boolean;
+    cleared: string[];
+    skipped: { project: string; reason: string }[];
+    failed: { project: string; error: string }[];
+  }>('/api/evolution/clear-todo', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({}),
@@ -1550,22 +1555,34 @@ export interface CodeReviewProgress {
 
 /** add-code-review-agent-and-quality-tab：读取问题台账（默认仅 open，可逗号选状态）。
  *  2026-09-24：severity/page/pageSize 可选下发——表格分页 server-side，返回
- *  过滤后 total；不传 page/pageSize 时后端回退全量（旧消费者兼容）。 */
+ *  过滤后 total；不传 page/pageSize 时后端回退全量（旧消费者兼容）。
+ *  sortBy/sortOrder 可选下发——两列排序同样 server-side（与过滤/分页同层）：
+ *  分页形态下客户端 sorter 只重排当页 10 行，排序语义失真。后端白名单外值
+ *  回退默认排序（severity 升序）。 */
 export async function getCodeReviewItems(
   project: string,
-  opts?: { statuses?: string[]; severity?: string; page?: number; pageSize?: number },
+  opts?: {
+    statuses?: string[];
+    severity?: string;
+    page?: number;
+    pageSize?: number;
+    sortBy?: 'severity' | 'status';
+    sortOrder?: 'asc' | 'desc';
+  },
 ): Promise<{ items: CodeReviewItem[]; total?: number }> {
   const statusQ =
     opts?.statuses && opts.statuses.length
       ? `&status=${encodeURIComponent(opts.statuses.join(','))}`
       : '';
   const severityQ = opts?.severity ? `&severity=${encodeURIComponent(opts.severity)}` : '';
+  const sortQ =
+    opts?.sortBy ? `&sort_by=${opts.sortBy}&sort_order=${opts.sortOrder || 'asc'}` : '';
   const pageQ =
     opts?.page && opts?.pageSize
       ? `&page=${opts.page}&page_size=${opts.pageSize}`
       : '';
   return request<{ items: CodeReviewItem[]; total?: number }>(
-    `/api/code-review/items?project=${encodeURIComponent(project)}${statusQ}${severityQ}${pageQ}`,
+    `/api/code-review/items?project=${encodeURIComponent(project)}${statusQ}${severityQ}${sortQ}${pageQ}`,
   );
 }
 
@@ -1762,7 +1779,7 @@ export async function saveProjectPrompt(
   content: string,
 ): Promise<{ ok: boolean; agent_type: string; path: string }> {
   const q = `?project=${encodeURIComponent(project)}`;
-  return request(`/api/prompts${q}`, {
+  return request<{ ok: boolean; agent_type: string; path: string }>(`/api/prompts${q}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ agent_type: agentType, content }),
@@ -1789,7 +1806,7 @@ export async function saveTodo(
   content: string,
 ): Promise<{ ok: boolean; project: string; path: string }> {
   const q = `?project=${encodeURIComponent(project)}`;
-  return request(`/api/todo${q}`, {
+  return request<{ ok: boolean; project: string; path: string }>(`/api/todo${q}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ content }),
@@ -1816,7 +1833,7 @@ export async function saveVerifyYaml(
   content: string,
 ): Promise<{ ok: boolean; project: string; path: string }> {
   const q = `?project=${encodeURIComponent(project)}`;
-  return request(`/api/verify-yaml${q}`, {
+  return request<{ ok: boolean; project: string; path: string }>(`/api/verify-yaml${q}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ content }),
@@ -1860,7 +1877,12 @@ export async function autodraftVerifyYaml(
   overwrite: boolean,
 ): Promise<{ ok: boolean; project: string; status: 'dispatched' | 'skipped'; message: string }> {
   const q = `?project=${encodeURIComponent(project)}`;
-  return request(`/api/verify-yaml-autodraft${q}`, {
+  return request<{
+    ok: boolean;
+    project: string;
+    status: 'dispatched' | 'skipped';
+    message: string;
+  }>(`/api/verify-yaml-autodraft${q}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ overwrite }),
@@ -2110,7 +2132,10 @@ export async function autodraftRegression(
   | { ok: false; error: string }
 > {
   const q = `?project=${encodeURIComponent(project)}`;
-  return request(
+  return request<
+    | { ok: true; project: string; status: 'success' | 'skipped' | 'no_test_system'; message: string }
+    | { ok: false; error: string }
+  >(
     `/api/regression/autodraft${q}`,
     {
       method: 'POST',

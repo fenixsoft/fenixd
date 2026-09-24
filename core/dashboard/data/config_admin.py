@@ -1238,6 +1238,12 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
         except (yaml.YAMLError, OSError) as e:
             return fail(f"读取现有配置失败: {e}")
 
+    # 非 dict 的 agents patch 直接拒绝（对齐 self_evolution 同款「must be an
+    # object」；非 dict 在下方守卫与 _deep_merge_managed 中均被跳过，若放行到
+    # 末尾 _model_patch 提取会对 str/list 调 .get 抛 AttributeError 成 500）
+    if "agents" in config_patch and not isinstance(config_patch["agents"], dict):
+        return fail(f"agents must be an object: {config_patch['agents']!r}")
+
     # improve-failover-model-mapping-ui D4/D5：编辑器行列表序列化为 canonical 形态
     # （str/list|对象）供校验；role-level model 空值不写入（避免空串覆盖已有缺省）
     if isinstance(config_patch.get("agents"), dict) and isinstance(

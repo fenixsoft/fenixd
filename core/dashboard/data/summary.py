@@ -503,6 +503,10 @@ _ENTRY_SIG_KEYS = (
     "_impl_run_budget_used",
     "_verify_infra_rounds",
     "_infra_failure_count",
+    # add-verify-lane-throughput 3.3：judge 治理观测字段（spec_summary 读侧），
+    # fast-track 命中不产生签名集内任何文件变化，须靠字段指纹失效缓存
+    "_judge_fasttrack_hits",
+    "_judge_real_dispatches",
 )
 
 

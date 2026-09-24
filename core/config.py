@@ -443,6 +443,30 @@ class ConfigLoader:
         return config
 
     @classmethod
+    def _segment_or_empty(cls, config: Dict[str, Any], key: str) -> Dict[str, Any]:
+        """段归一助手：读 ``config[key]`` 段，真值非 dict 时 ERROR 告警并按空段降级
+        （code-review item 06352a414cf4）。
+
+        手改 YAML 可使整段为列表/标量（``agents: [1]`` / ``admin: 3``）：宽松
+        校验路径此前对其全数放行，运行期读者对列表/标量调 .get 抛 AttributeError，
+        使 admin_monitor stuck 巡检 / pm_engine.check_blockers / 模型链解析逐周期
+        崩溃。_validate 段入口与热路径读者统一经本助手取段：非 dict 记 ERROR 并
+        按空段降级，对齐 _validate_agent_models（improve-hot-reload-robustness D2）
+        与 self_evolution / _supervision_segment 的既有哲学——段级类型损坏按段
+        跳过，其余配置照常校验/生效，不中断加载与热更新。
+        """
+        seg = config.get(key) if isinstance(config, dict) else None
+        if isinstance(seg, dict):
+            return seg
+        if seg is not None:
+            _logger.error(
+                "config.%s 整段非 dict（%s），该段已忽略、按空段降级；其余配置照常生效",
+                key,
+                type(seg).__name__,
+            )
+        return {}
+
+    @classmethod
     def _validate(cls, config: Dict[str, Any], require_project: bool = True):
         """Validate configuration structure and values.
 
@@ -468,7 +492,10 @@ class ConfigLoader:
 
         # Validate agents — max_concurrent / max_retries / max_turns 均为可选，
         # 缺失时由各消费方使用默认值；仅当显式提供时才校验必须为正整数。
-        agents = config.get("agents") or {}
+        # 段入口经 _segment_or_empty 归一（code-review item 06352a414cf4）：
+        # 真值非 dict 段不再全数放行（列表对 in 是恒 False 的成员测试、标量
+        # 直接 TypeError），而是 ERROR 告警 + 按空段降级。
+        agents = cls._segment_or_empty(config, "agents")
         for field in ["max_concurrent", "max_retries", "max_turns"]:
             if field in agents:
                 val = agents[field]
@@ -490,7 +517,7 @@ class ConfigLoader:
                 raise ValueError(
                     f"agents.run_drain_max_seconds must be a non-negative number: {rdm!r}"
                 )
-            _sd = (config.get("admin") or {}).get("shutdown_drain_seconds")
+            _sd = cls._segment_or_empty(config, "admin").get("shutdown_drain_seconds")
             if (
                 isinstance(_sd, (int, float))
                 and not isinstance(_sd, bool)
@@ -544,7 +571,7 @@ class ConfigLoader:
         # Validate agents.models (optional — absence means no assignments)。
         # models 显式提供（非 None）即进校验：非 dict 段由 _validate_agent_models
         # 内部按"忽略该段 + 告警"降级（improve-hot-reload-robustness D2）。
-        agents = config.get("agents") or {}
+        agents = cls._segment_or_empty(config, "agents")
         if "models" in agents and agents["models"] is not None:
             cls._validate_agent_models(agents["models"], llm)
 
@@ -587,8 +614,9 @@ class ConfigLoader:
         # 可达下限（supervision_config_floor），详见 _check_supervision_consistency。
         cls._check_supervision_consistency(config)
 
-        # Validate admin.* (optional — 缺省使用默认值，见 get_admin_config)
-        admin = config.get("admin") or {}
+        # Validate admin.* (optional — 缺省使用默认值，见 get_admin_config)；
+        # 段入口同样经 _segment_or_empty 归一（code-review item 06352a414cf4）。
+        admin = cls._segment_or_empty(config, "admin")
         if "enabled" in admin and not isinstance(admin["enabled"], bool):
             raise ValueError(f"admin.enabled must be a boolean: {admin['enabled']}")
         for field in (
@@ -995,7 +1023,7 @@ class ConfigLoader:
         自身的 model 字段（三者皆空则该元素被跳过）。角色级 `model` 不再强制非空，语义
         为全链缺省。
         """
-        agents = config.get("agents") or {}
+        agents = cls._segment_or_empty(config, "agents")
         models = agents.get("models") or {}
         assignment = models.get(agent_type)
         if not isinstance(assignment, dict):
@@ -1240,7 +1268,7 @@ class ConfigLoader:
         - stuck_silence_minutes: 120（stuck 处置后静默期：result=resolved/
           partially-resolved 处置后同 (spec, signal_type) 在窗口内不产信号）
         """
-        admin = config.get("admin") or {}
+        admin = cls._segment_or_empty(config, "admin")
         # D2：stuck 阈值单源派生，旧键不再作为生效输入（告警在助手内节流）。
         stuck_seconds = cls.effective_stuck_threshold_seconds(config)
         breaker = cls.get(config, "admin.merge_breaker_threshold", None)
@@ -1651,7 +1679,7 @@ class ConfigLoader:
         不再各自读取旧键。
         """
         cls._maybe_warn_deprecated_stuck_keys(config)
-        agents = config.get("agents") or {}
+        agents = cls._segment_or_empty(config, "agents")
         rt = agents.get("run_timeout_seconds")
         # bool 排除与 effective_run_timeout_seconds 同口径（code-review item
         # d5c6b590a12b）：bool 是 int 子类，agents.run_timeout_seconds: true
@@ -1680,7 +1708,11 @@ class ConfigLoader:
         if _DEPRECATED_STUCK_WARNED:
             return
         schedule = config.get("schedule") or {}
-        admin = config.get("admin") or {}
+        # admin 段真值非 dict 时按空段降级（code-review item 06352a414cf4）：
+        # 下方 in 成员测试对标量会 TypeError，使 effective_stuck_threshold_seconds
+        # 在其自身的 agents 段读取之前就崩溃。
+        admin = config.get("admin")
+        admin = admin if isinstance(admin, dict) else {}
         if "stuck_threshold_minutes" in schedule or "stuck_threshold_minutes" in admin:
             _logger.warning(
                 "检测到已弃用的 stuck_threshold_minutes 配置键（schedule/admin）：stuck 阈值"
@@ -1945,7 +1977,7 @@ class ConfigLoader:
 
         Returns: 规范化后的覆盖表 {agent_type: seconds}。缺省/非 dict/空 → {}。
         """
-        agents = config.get("agents") or {}
+        agents = cls._segment_or_empty(config, "agents")
         raw = agents.get("timeout_overrides")
         if not isinstance(raw, dict) or not raw:
             return {}

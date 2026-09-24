@@ -64,28 +64,12 @@ interface QualityTabProps {
   active: boolean;
 }
 
-// 严重度排序权重（code-review item 2cde5d51a359）：spec 要求表格 MUST 支持按
-// 严重度/状态过滤**与排序**，但严重度/状态列此前均无 sorter。
-// high/medium/low 三档是 ocr scan 产出经 agent「原样透传」落台账的漂移值
-// （提示词 agents/code-review.md 契约四档 critical|major|minor|info，归一责任
-// 在 agent，实测 fenixd 台账漂移 80/543 条）。权重/色系按 artifacts.py
-// severity_map 的归一口径对齐：high/medium→major 档，low→minor 档。
-const SEVERITY_ORDER: Record<string, number> = {
-  critical: 0,
-  high: 1,
-  major: 1,
-  medium: 1,
-  minor: 2,
-  low: 2,
-  info: 3,
-};
-const STATUS_ORDER: Record<string, number> = {
-  open: 0,
-  in_spec: 1,
-  resolved: 2,
-  ignored: 3,
-};
-
+// 严重度色系：high/medium/low 三档是 ocr scan 产出经 agent「原样透传」落台账
+// 的漂移值（提示词 agents/code-review.md 契约四档 critical|major|minor|info，
+// 归一责任在 agent，实测 fenixd 台账漂移 80/543 条），色系按后端读侧归一口径
+// 对齐（high/medium→major 档 orange，low→minor 档 gold）。
+// 排序权重表不在此维护：两列排序已下沉 server-side（2026-09-24 台账分页配套，
+// 权重/白名单见 dashboard/data/code_review.py read_code_review_items）。
 const SEVERITY_COLOR: Record<string, string> = {
   critical: 'red',
   high: 'orange',
@@ -258,6 +242,12 @@ export default function QualityTab({ project, active }: QualityTabProps) {
   // 新后端（daemon 重启后）起 server-side 生效。
   const [itemsPage, setItemsPage] = useState(1);
   const [itemsTotal, setItemsTotal] = useState<number | undefined>(undefined);
+  // 排序 server-side（2026-09-24 台账分页配套）：severity/status 两列排序的
+  // 字段/方向经 loadItems 下发后端，全量排序后再切片——客户端 sorter 在分页
+  // 形态下只重排当页 10 行，排序语义失真。sortField 为 undefined 即取消排序，
+  // 回退后端默认排序（severity 升序）；排序变化与过滤同约定回第 1 页。
+  const [sortField, setSortField] = useState<'severity' | 'status' | undefined>();
+  const [sortOrder, setSortOrder] = useState<'ascend' | 'descend' | undefined>();
   const [fixRunning, setFixRunning] = useState(false);
   const handleFixRunningChange = useCallback((r: boolean) => setFixRunning(r), []);
   const [generating, setGenerating] = useState(false);
@@ -313,11 +303,13 @@ export default function QualityTab({ project, active }: QualityTabProps) {
       // 仅首屏置 loading（code-review item 103bd502bd1e）：后台刷新不置，避免
       // 表格在 SSE/心跳驱动下反复闪烁。
       if (firstLoad) setLoading(true);
-      // 过滤+分页 server-side（2026-09-24）：status/severity/page 下发，返回
-      // 当页行 + 过滤后总数。
+      // 过滤+排序+分页 server-side（2026-09-24）：status/severity/sort/page
+      // 下发，返回当页行 + 过滤后总数。
       const data = await getCodeReviewItems(project, {
         statuses: statusFilter ? [statusFilter] : undefined,
         severity: severityFilter,
+        sortBy: sortField,
+        sortOrder: sortField ? (sortOrder === 'descend' ? 'desc' : 'asc') : undefined,
         page: itemsPage,
         pageSize: ITEMS_PAGE_SIZE,
       });
@@ -340,7 +332,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
     } finally {
       if (firstLoad && seq === loadSeqRef.current) setLoading(false);
     }
-  }, [active, project, statusFilter, severityFilter, itemsPage, message]);
+  }, [active, project, statusFilter, severityFilter, itemsPage, sortField, sortOrder, message]);
 
   // loadItems 的 ref 视图（code-review item 2723381276fb）：轮询 interval 这类
   // 长生命周期闭包经此读取最新 loader——statusFilter 变化会重建 loadItems，
@@ -807,9 +799,13 @@ export default function QualityTab({ project, active }: QualityTabProps) {
       dataIndex: 'severity',
       key: 'severity',
       width: 90,
-      // critical > major > minor > info（code-review item 2cde5d51a359）
-      sorter: (a: CodeReviewItem, b: CodeReviewItem) =>
-        (SEVERITY_ORDER[a.severity] ?? 9) - (SEVERITY_ORDER[b.severity] ?? 9),
+      // critical > major > minor > info（code-review item 2cde5d51a359）。
+      // 排序 server-side（2026-09-24 台账分页配套）：sorter: true 只保留列头
+      // 排序交互（antd 不再本地重排 dataSource），字段/方向经受控 sortOrder
+      // + Table onChange 写入 state 后由 loadItems 下发后端——客户端 sorter
+      // 在分页形态下只重排当页 10 行，排序语义失真。
+      sorter: true,
+      sortOrder: sortField === 'severity' ? sortOrder : undefined,
       render: (sev: string) => <Tag color={SEVERITY_COLOR[sev] || 'default'}>{sev}</Tag>,
     },
     {
@@ -822,8 +818,10 @@ export default function QualityTab({ project, active }: QualityTabProps) {
       dataIndex: 'status',
       key: 'status',
       width: 100,
-      sorter: (a: CodeReviewItem, b: CodeReviewItem) =>
-        (STATUS_ORDER[a.status] ?? 9) - (STATUS_ORDER[b.status] ?? 9),
+      // 排序 server-side（open → in_spec → resolved → ignored 次序即后端
+      // STATUS_ORDER 白名单），受控方式同上方严重度列
+      sorter: true,
+      sortOrder: sortField === 'status' ? sortOrder : undefined,
       render: (status: string) => (
         <Tag color={STATUS_COLOR[status] || 'default'}>{STATUS_TEXT[status] || status}</Tag>
       ),
@@ -861,7 +859,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
               setItemsPage(1); // 过滤条件变化回第 1 页（server-side 过滤配套）
             }}
             // 三档漂移值 high/medium/low 插在对应严重度档位之间（排序同
-            // SEVERITY_ORDER 口径），台账存量漂移条目即可过滤
+            // 后端读侧归一的档位次序），台账存量漂移条目即可过滤
             options={[
               { value: 'critical', label: 'critical' },
               { value: 'high', label: 'high' },
@@ -1008,6 +1006,26 @@ export default function QualityTab({ project, active }: QualityTabProps) {
           showSizeChanger: false,
           hideOnSinglePage: true,
           onChange: (p) => setItemsPage(p),
+        }}
+        onChange={(_pg, _filters, sorter, extra) => {
+          // 排序变化（server-side 配套）：字段/方向写入受控态并回第 1 页，
+          // loadItems 依赖 sortField/sortOrder 重建后重查。翻页/过滤走
+          // action==='paginate'/'filter'——翻页仍由 pagination.onChange 接管，
+          // 此处直接放行；第三击取消排序（order 为空）即回后端默认排序。
+          if (extra.action !== 'sort') return;
+          const s = Array.isArray(sorter) ? sorter[0] : sorter;
+          if (
+            s &&
+            (s.columnKey === 'severity' || s.columnKey === 'status') &&
+            (s.order === 'ascend' || s.order === 'descend')
+          ) {
+            setSortField(s.columnKey);
+            setSortOrder(s.order);
+          } else {
+            setSortField(undefined);
+            setSortOrder(undefined);
+          }
+          setItemsPage(1); // 排序条件变化回第 1 页（与过滤变化同约定）
         }}
         locale={{ emptyText: '暂无未处理问题' }}
       />

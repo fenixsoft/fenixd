@@ -14,7 +14,6 @@ const AUTO_CLOSE_DELAY = 1000;
 export interface ReasoningProps extends React.HTMLAttributes<HTMLDivElement> {
   isStreaming?: boolean;
   defaultOpen?: boolean;
-  duration?: number;
   /** 静态回放：估算时长（秒）；缺失/非正回退「已思考数秒」 */
   staticDuration?: number | null;
   /** 静态回放：thinking 首个非空行内容预览 */

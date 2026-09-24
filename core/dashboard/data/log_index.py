@@ -256,7 +256,10 @@ def get_recent_events(project_root, minutes=10, limit=30) -> list:
     if not logs_dir.is_dir():
         return []
     log_files = sorted(logs_dir.glob("fenixd*.log"), reverse=True)
-    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
+    # cutoff 归一为 ...Z 形态再与日志时间戳（统一 ...Z 落盘）做字典序比较
+    cutoff = _norm_utc_iso(
+        (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
+    )
     events = []
     for lf in log_files[:2]:
         try:

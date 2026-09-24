@@ -14,7 +14,6 @@ from core.archive_commit import commit_archive_move
 
 # state 组（叶子组已搬移，直接导入无环）
 from .state import parse_state
-from core.agent_runner.run_files import run_spec_part
 
 # 删除先停后删的等待总上限（add-freeze-stop-inflight-agents 5.3：admin_actions
 # 与 spec_archive 共用同一常量；顶层导入使测试可 patch 覆盖窗口时长）
@@ -51,10 +50,7 @@ def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
         {"found", "running", "archived": bool, "archive_path": str|null,
          "error": str|null, "pending": list|null, "stopped": int|null}
     """
-    from core.agent_runner.liveness import (
-        AGENT_TERMINATE_GRACE_SECONDS,
-        RUN_TERMINAL_EVENT_TYPES,
-    )
+    from core.agent_runner.liveness import AGENT_TERMINATE_GRACE_SECONDS
     # SPEC_DELETE_STOP_WAIT_TOTAL_SECONDS 已在模块顶层导入（测试可 patch 覆盖）
     from .admin_actions import running_run_ids_for_spec
     proot = Path(project_root)
@@ -98,42 +94,23 @@ def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
                 "pending": running_ids,
                 "stopped": 0,
             }
-        # 有界等待：每 AGENT_TERMINATE_GRACE_SECONDS 轮询一次，总上限
+        # 有界等待：每 AGENT_TERMINATE_GRACE_SECONDS 轮询一次，总上限。
+        # 在跑判定每轮复用 running_run_ids_for_spec（code-review item
+        # 4b5e9fa50b3a：与初始判定单源同口径，不内联重写末行终态判定；
+        # OSError 容错也由该助手内部承担）
         deadline = time.time() + SPEC_DELETE_STOP_WAIT_TOTAL_SECONDS
-        import json
-        runs_dir = proot / ".fenix" / "runs"
         while time.time() < deadline:
-            still_running: list = []
-            if runs_dir.is_dir():
-                try:
-                    for p in runs_dir.glob("*.jsonl"):
-                        if run_spec_part(p.stem) != spec:
-                            continue
-                        last_type = None
-                        try:
-                            with p.open("r", encoding="utf-8", errors="replace") as f:
-                                for line in f:
-                                    line = line.strip()
-                                    if not line:
-                                        continue
-                                    try:
-                                        entry = json.loads(line)
-                                    except (json.JSONDecodeError, ValueError):
-                                        continue
-                                    if isinstance(entry, dict) and entry.get("type"):
-                                        last_type = entry.get("type")
-                        except OSError:
-                            last_type = None
-                        if last_type not in RUN_TERMINAL_EVENT_TYPES:
-                            still_running.append(p.stem)
-                except OSError:
-                    pass
+            still_running: list = running_run_ids_for_spec(proot, spec)
             if not still_running:
                 running_ids = []
                 break
             running_ids = still_running
-            time.sleep(min(AGENT_TERMINATE_GRACE_SECONDS,
-                           deadline - time.time()))
+            # sleep 前钳制 remaining（code-review item 02f76ca4add6）：上一轮
+            # 扫描 runs 目录可能耗时越过 deadline，time.sleep(负值) 抛
+            # ValueError 会破坏本函数「以返回 dict 报错、不裸抛异常」契约
+            remaining = deadline - time.time()
+            if remaining > 0:
+                time.sleep(min(AGENT_TERMINATE_GRACE_SECONDS, remaining))
         if running_ids:
             # 超时仍有 run 未终止 → 返回失败，不改 STATE/目录
             return {

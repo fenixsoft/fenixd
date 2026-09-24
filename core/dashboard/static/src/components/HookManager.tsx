@@ -117,6 +117,14 @@ export default function HookManager({
 
   const editingAction = Form.useWatch('action', form);
 
+  // 保存窗口并发门控（code-review item 00869eda38f3）：启停/删除/编辑新增都从
+  // hooks prop 同步算 next 再交 onSave 异步落盘，saving 期间父组件尚未回写
+  // hooks prop，此窗口内再操作会基于旧列表计算、后落盘者整体覆盖丢失前一笔
+  // （快速停用两行/连删两行）。落盘期间禁用全部变更入口——两个调用方的
+  // saving 均贯穿保存全程（HTTP 往返 + config 回写同批完成），门控无隙
+  // （对齐 QualityTab ignorePending 门控模式）。
+  const opLocked = readOnly || !!saving;
+
   const handleAdd = () => {
     setEditIdx(null);
     form.resetFields();
@@ -245,7 +253,7 @@ export default function HookManager({
         render: (_: unknown, __: HookConfig, idx: number) => (
           <Switch
             size="small"
-            disabled={readOnly}
+            disabled={opLocked}
             checked={hooks[idx].enabled !== false}
             onChange={(checked) => handleToggle(idx, checked)}
           />
@@ -260,10 +268,10 @@ export default function HookManager({
           readOnly ? null : (
             <Space size={4}>
               <Tooltip title="编辑">
-                <Button type="link" size="small" icon={<EditOutlined />} onClick={() => handleEdit(idx)} />
+                <Button type="link" size="small" icon={<EditOutlined />} disabled={opLocked} onClick={() => handleEdit(idx)} />
               </Tooltip>
               <Popconfirm title="确定删除？" onConfirm={() => handleDelete(idx)} okText="删除" cancelText="取消">
-                <Button type="link" size="small" danger icon={<DeleteOutlined />} />
+                <Button type="link" size="small" danger icon={<DeleteOutlined />} disabled={opLocked} />
               </Popconfirm>
             </Space>
           )
@@ -272,7 +280,7 @@ export default function HookManager({
     ];
     return cols;
     // eslint-disable-next-line react-hooks/exhaustive-deps — handlers 已 useCallback 化并列入依赖（item 0383473dd260）
-  }, [hooks, form, handleToggle, handleEdit, handleDelete, readOnly]);
+  }, [hooks, form, handleToggle, handleEdit, handleDelete, readOnly, opLocked]);
 
   // ── 生效合并表格列（仅 spec 详情页）────────────────────────────
 
@@ -391,7 +399,7 @@ export default function HookManager({
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
         <Title level={5} style={{ marginTop: 0 }}>Hook 列表</Title>
         {!readOnly && (
-          <Button type="primary" onClick={handleAdd}>
+          <Button type="primary" onClick={handleAdd} disabled={opLocked}>
             新增 Hook
           </Button>
         )}
@@ -418,7 +426,7 @@ export default function HookManager({
                     </Space>
                     <Switch
                       size="small"
-                      disabled={readOnly}
+                      disabled={opLocked}
                       checked={item.enabled !== false}
                       onChange={(checked) => handleToggle(realIdx, checked)}
                     />
@@ -433,11 +441,11 @@ export default function HookManager({
                   )}
                   {!readOnly && (
                     <Space style={{ marginTop: 8 }}>
-                      <Button type="link" size="small" icon={<EditOutlined />} onClick={() => handleEdit(realIdx)}>
+                      <Button type="link" size="small" icon={<EditOutlined />} disabled={opLocked} onClick={() => handleEdit(realIdx)}>
                         编辑
                       </Button>
                       <Popconfirm title="确定删除？" onConfirm={() => handleDelete(realIdx)} okText="删除" cancelText="取消">
-                        <Button type="link" size="small" danger icon={<DeleteOutlined />}>
+                        <Button type="link" size="small" danger icon={<DeleteOutlined />} disabled={opLocked}>
                           删除
                         </Button>
                       </Popconfirm>

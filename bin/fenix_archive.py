@@ -60,7 +60,7 @@ def archive_change(project_root: Path, name: str) -> dict:
         from core.agent_runner.run_files import archive_spec_runs
 
         result["runs_archived"] = archive_spec_runs(project_root / ".fenix" / "runs", name)
-    except (OSError, ImportError) as e:
+    except Exception as e:  # fail-open：move 已成功，任意异常只降级为告警不改变整体结果
         result["runs_archive_warning"] = str(e)
 
     # 归档自动提交：移动成功立即入库（fail-open，见 core/archive_commit.py）
@@ -71,7 +71,7 @@ def archive_change(project_root: Path, name: str) -> dict:
         result["committed"] = cr["committed"]
         if cr.get("warning"):
             result["commit_warning"] = cr["warning"]
-    except (OSError, ImportError) as e:
+    except Exception as e:  # fail-open：move 已成功，提交失败只降级为告警
         result["committed"] = False
         result["commit_warning"] = str(e)
     return result

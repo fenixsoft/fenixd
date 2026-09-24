@@ -232,8 +232,29 @@ def main():
 
     if run_all:
         print("Running all tests...")
-        cmd = [sys.executable, "-m", "pytest", "-v", str(tests_dir)]
-        result = subprocess.run(cmd, cwd=project_root)
+        # 有界运行同 run_tests（同款常量）：faulthandler 先打印挂起栈，硬超时兜底中止
+        cmd = [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-v",
+            "-o",
+            f"faulthandler_timeout={FAULTHANDLER_TIMEOUT_SECONDS}",
+            str(tests_dir),
+        ]
+        try:
+            result = subprocess.run(
+                cmd,
+                cwd=project_root,
+                timeout=SUBPROCESS_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired:
+            print(
+                f"[test_for] 测试运行超过 {SUBPROCESS_TIMEOUT_SECONDS}s，已中止"
+                f"（faulthandler {FAULTHANDLER_TIMEOUT_SECONDS}s 起打印的挂起栈见上方输出）；"
+                f"挂起定位请改用: python3 bin/run_full_suite.py"
+            )
+            sys.exit(1)
         sys.exit(result.returncode)
 
     if not target_files:

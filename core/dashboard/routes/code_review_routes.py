@@ -92,12 +92,17 @@ class H11CodeReviewRoutesMixin:
     def _api_code_review_items(self, query):
         """GET /api/code-review/items?project=<name>[&status=open,in_spec]
         [&severity=major][&page=1&page_size=10]
+        [&sort_by=severity|status][&sort_order=asc|desc]
 
-        返回 ``{items: [...], total: N}``（按 severity 排序，默认仅 open）。
-        ``total`` 为过滤后总数（分页配套，2026-09-24 用户要求：台账 resolved
-        上千行不再一次全量拉取，表格分页改 server-side）。``page``/``page_size``
-        均传才切片，缺省返回全量（向后兼容旧消费者）；非法值整组回退全量。
-        severity 可选单值过滤（前端严重度下拉同样下沉 server-side）。
+        返回 ``{items: [...], total: N}``（默认 severity 升序，可选按
+        severity/status 排序，默认仅 open）。``total`` 为过滤后总数（分页配
+        套，2026-09-24 用户要求：台账 resolved 上千行不再一次全量拉取，表格
+        分页改 server-side）。``page``/``page_size`` 均传才切片，缺省返回全量
+        （向后兼容旧消费者）；非法值整组回退全量。severity 可选单值过滤（前端
+        严重度下拉同样下沉 server-side）。sort_by/sort_order 与过滤/分页同层
+        下发（2026-09-24）：前端两列排序 server-side 化配套，分页形态下客户端
+        排序只重排当页 10 行；白名单外值回退默认排序（白名单映射见
+        read_code_review_items）。
         缺项目 → 404。
         """
         project = self._project_from_query(query)
@@ -109,7 +114,14 @@ class H11CodeReviewRoutesMixin:
         if raw:
             statuses = [s.strip() for s in raw.split(",") if s.strip()]
         severity = (query.get("severity", [None])[0] or "").strip() or None
-        items = dashboard_data.read_code_review_items(str(project["path"]), statuses=statuses)
+        sort_by = (query.get("sort_by", [None])[0] or "").strip() or None
+        sort_order = (query.get("sort_order", [None])[0] or "").strip() or None
+        items = dashboard_data.read_code_review_items(
+            str(project["path"]),
+            statuses=statuses,
+            sort_by=sort_by,
+            sort_order=sort_order,
+        )
         if severity:
             items = [it for it in items if it.get("severity") == severity]
         total = len(items)
