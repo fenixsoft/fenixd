@@ -273,6 +273,15 @@ class ProviderCircuit:
         # 冷却只作用于该 spec 的重派（跳过派发、不耗预算、不起进程），MUST NOT
         # 写 record_transient_error / _transient_break_until 全局瞬断熔断。
         self._signal_kill: Dict[str, dict] = {}
+        # code-review item e31564a633e9：信号死法记账互斥锁。record_signal_kill 的
+        # setdefault + count 读改写 + cooldown_until 置位是无锁读改写，同 spec 多个
+        # run-worker 并发以信号死法收尾时交错会丢自增（两个 count=1 同写 2），达
+        # SIGNAL_KILL_COOLDOWN_AFTER 阈值的冷却触发被推迟——与 _provider_circuit_lock
+        # （item 8f5a6e6e02bf）/_unseal_lock（item 0e23519cd2d1）所护「并发记账丢
+        # 事件」同族，_signal_kill 此前是漏网状态。照先例专用锁隔离：与既有两锁
+        # 状态不同族；临界区内只建键/累加/置位与读配置、打日志，与其他锁无嵌套、
+        # 无锁序耦合（告警的 AdminStore 文件 IO 留锁外）。
+        self._signal_kill_lock = threading.Lock()
 
     @staticmethod
     def parse_api_error_status(error_text: str) -> Optional[int]:
@@ -1630,30 +1639,35 @@ class ProviderCircuit:
         if not spec_name:
             return False
         now = self._pm._now() if now is None else now
-        st = self._signal_kill.setdefault(
-            spec_name, {"count": 0, "cooldown_until": 0.0})
-        st["count"] = int(st.get("count", 0)) + 1
-        if st.get("cooldown_until", 0.0) > now:
-            # 已在冷却期内：仅累加计数，不重复触发/告警（冷却到期由查询侧恢复）。
-            return True
-        after = self._signal_kill_cooldown_after()
-        if st["count"] < after:
-            self._pm.logger.warning(
+        # 记账加锁（code-review item e31564a633e9）：setdefault + count 读改写 +
+        # cooldown_until 置位收进 _signal_kill_lock，防同 spec 并发收尾交错丢自增；
+        # 临界区内只记账与读配置、打日志，告警（AdminStore 文件 IO）留锁外。
+        with self._signal_kill_lock:
+            st = self._signal_kill.setdefault(
+                spec_name, {"count": 0, "cooldown_until": 0.0})
+            st["count"] = int(st.get("count", 0)) + 1
+            if st.get("cooldown_until", 0.0) > now:
+                # 已在冷却期内：仅累加计数，不重复触发/告警（冷却到期由查询侧恢复）。
+                return True
+            after = self._signal_kill_cooldown_after()
+            if st["count"] < after:
+                self._pm.logger.warning(
+                    "agent_runner",
+                    f"'{spec_name}' 信号死法 {st['count']}/{after} "
+                    f"（evo-sigterm-source-tracking-cooldown 计数）",
+                )
+                return False
+            # 达阈值：进入该 spec 冷却
+            cooldown_seconds = self._signal_kill_cooldown_seconds()
+            st["cooldown_until"] = now + cooldown_seconds
+            self._pm.logger.error(
                 "agent_runner",
-                f"'{spec_name}' 信号死法 {st['count']}/{after} "
-                f"（evo-sigterm-source-tracking-cooldown 计数）",
+                f"'{spec_name}' 连续 {st['count']} 次信号死法（阈值 {after}）— "
+                f"进入 {cooldown_seconds}s 冷却，期间该 spec 重派被跳过；"
+                f"冷却到期自动恢复（evo-sigterm-source-tracking-cooldown）",
             )
-            return False
-        # 达阈值：进入该 spec 冷却
-        cooldown_seconds = self._signal_kill_cooldown_seconds()
-        st["cooldown_until"] = now + cooldown_seconds
-        self._pm.logger.error(
-            "agent_runner",
-            f"'{spec_name}' 连续 {st['count']} 次信号死法（阈值 {after}）— "
-            f"进入 {cooldown_seconds}s 冷却，期间该 spec 重派被跳过；"
-            f"冷却到期自动恢复（evo-sigterm-source-tracking-cooldown）",
-        )
-        self._alert_signal_kill_storm(spec_name, st["count"], cooldown_seconds)
+            count = st["count"]
+        self._alert_signal_kill_storm(spec_name, count, cooldown_seconds)
         return True
 
     def is_signal_kill_cooldown(self, spec_name: str,

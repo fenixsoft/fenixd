@@ -244,7 +244,12 @@ class H7EvolutionRoutesMixin:
             if not path:
                 skipped.append({"project": name, "reason": "项目路径缺失"})
                 continue
-            result = clear_todo(path)
+            try:
+                result = clear_todo(path)
+            except Exception as e:  # noqa: BLE001 —— 单项目异常计入 failed，不中断其余项目
+                logger.exception("清空 todo.md 异常（project=%s）", name)
+                failed.append({"project": name, "error": str(e)})
+                continue
             if result.get("error"):
                 failed.append({"project": name, "error": result["error"]})
             elif not result.get("existed"):

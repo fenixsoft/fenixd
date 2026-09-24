@@ -144,7 +144,7 @@ class G3LockMixin:
                 return False
             return cwd_real == base_real or cwd_real.startswith(base_real + os.sep)
 
-    def _latest_stream_mtime(self, spec_name: str) -> Optional[float]:
+    def _latest_stream_mtime(self, spec_name: str) -> float | None:
             """该 spec 全部 run 流文件（.fenix/runs/{impl,verify}-<spec>-*.jsonl）的最新 mtime。
 
             无任何流文件返回 None。
@@ -152,7 +152,7 @@ class G3LockMixin:
             runs_dir = self.project_root / ".fenix" / "runs"
             if not runs_dir.is_dir():
                 return None
-            newest: Optional[float] = None
+            newest: float | None = None
             try:
                 for prefix in ("impl", "verify"):
                     for p in runs_dir.glob(f"{prefix}-{spec_name}-*.jsonl"):
