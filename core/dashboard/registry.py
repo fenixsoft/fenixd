@@ -136,6 +136,7 @@ class Registry:
         if not isinstance(data, dict):
             return defaults
         out = {
+            # [fenix-ignore:664c907a50c4] 唯一消费方 bin/fenix_dashboard.py run_serve 已有 int() + TypeError/ValueError 兜底回退 DEFAULT_PORT，非法 port 不会拖到启动报错
             "port": data.get("port") or DEFAULT_PORT,
             "projects": data.get("projects") or [],
             "scan_dirs": data.get("scan_dirs") or [],

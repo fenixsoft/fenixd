@@ -695,11 +695,15 @@ async function main() {
   process.exit(result.success ? 0 : 1);
 }
 
-// 直接运行时执行 main
-const isMainModule = process.argv[1] && (
-  process.argv[1].endsWith('launch-chrome-extension.js') ||
-  process.argv[1].includes('launch-chrome-extension')
-);
+// 直接运行时执行 main（realpath 对比，兼容经改名软链调用）
+let isMainModule = false;
+if (process.argv[1]) {
+  try {
+    isMainModule = fs.realpathSync(process.argv[1]) === fs.realpathSync(__filename);
+  } catch {
+    isMainModule = false;
+  }
+}
 
 if (isMainModule) {
   main().catch(err => {

@@ -154,7 +154,7 @@ def save_attribution(
       "timestamp": str,       # ISO 格式时间戳（可选）
     }
 
-    写失败抛出 OSError（由调用方处理）。
+    写失败时清理临时文件后原样抛出（OSError 或 JSON 序列化异常，由调用方处理）。
     """
     path = _attribution_path(project_root, spec_name)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -170,8 +170,9 @@ def save_attribution(
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
             f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp_path, path)
-    except OSError:
+    except Exception:
         try:
             os.unlink(tmp_path)
         except OSError:

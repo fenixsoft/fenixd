@@ -44,7 +44,7 @@ def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
     - STATE 剔除失败（OSError）：尽力把已归档目录移回 ``spec/changes/<name>``
       并返回含 ``error`` 的失败 dict（不裸抛异常）；回滚亦失败时
       ``archived``/``archive_path`` 保留滞留位置并写入 ``error``。
-    - 归档同名冲突（极小概率）：在名字追加毫秒后缀重试，直至成功。
+    - 归档同名冲突（极小概率）：在名字追加微秒后缀重试，直至成功。
 
     Returns:
         {"found", "running", "archived": bool, "archive_path": str|null,
@@ -143,7 +143,7 @@ def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
         ts = int(time.time())
         base_name = f"{spec}-{ts}"
         dest = archive_root / base_name
-        # 同名冲突：追加毫秒后缀重试，避免 shutil.move 覆盖丢失数据
+        # 同名冲突：追加微秒后缀重试，避免 shutil.move 覆盖丢失数据
         if dest.exists():
             import datetime as _dt
 

@@ -347,6 +347,12 @@ class ApiRunner(VerifyRunner):
                 "error_type": "connection_failed",
                 "error": f"连接失败（实例失联或不可达，环境候选）: {e}",
             }
+        except httpx.ReadTimeout:
+            # 窗口内服务端完全不发数据（无心跳/注释行）时，aiter_lines 阻塞至
+            # read 超时；read = max(10, duration+10) 恒大于窗口 duration，超时
+            # 触发时截止时刻必然已过：按窗口正常结束处理，保留已收集事件返回
+            # 成功（0 事件交由断言判定），不误判「SSE 收集异常」。
+            pass
         except Exception as e:
             return {
                 "success": False,

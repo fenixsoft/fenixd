@@ -20,9 +20,13 @@ LOG_INDEX_TAIL_WINDOW = 1 * 1024 * 1024
 _LOG_INDEX_REBUILDS = {"count": 0}
 
 
-def _log_index_path(proot: Path) -> Path:
-    """日志块偏移索引路径：.fenix/logs/.idx/fenixd.log.offsets.json。"""
-    return proot / ".fenix" / "logs" / ".idx" / "fenixd.log.offsets.json"
+def _log_index_path(proot: Path, log_name: str = "fenixd.log") -> Path:
+    """日志块偏移索引路径：.fenix/logs/.idx/<log_name>.offsets.json。
+
+    按日志文件名派生（get_recent_events 会命中多个 fenixd*.log），
+    避免多文件共用同一份索引导致 size/offsets 互相覆盖串用。
+    """
+    return proot / ".fenix" / "logs" / ".idx" / f"{log_name}.offsets.json"
 
 
 def _build_log_block_index(log_path: Path, size: int) -> dict:
@@ -54,9 +58,9 @@ def _build_log_block_index(log_path: Path, size: int) -> dict:
     return {"size": size, "offsets": offsets}
 
 
-def _write_log_index(proot: Path, idx: dict):
+def _write_log_index(proot: Path, idx: dict, log_name: str = "fenixd.log"):
     """索引落盘（.idx/ + 原子 rename），失败静默（查询不阻断）。"""
-    idx_path = _log_index_path(proot)
+    idx_path = _log_index_path(proot, log_name)
     try:
         idx_path.parent.mkdir(parents=True, exist_ok=True)
         tmp = idx_path.with_suffix(".tmp")
@@ -117,7 +121,7 @@ def _load_log_index(proot: Path, log_path: Path) -> dict:
         size = log_path.stat().st_size
     except OSError:
         return {"size": 0, "offsets": [0]}
-    idx_path = _log_index_path(proot)
+    idx_path = _log_index_path(proot, log_path.name)
     idx = None
     try:
         if idx_path.exists():
@@ -134,12 +138,12 @@ def _load_log_index(proot: Path, log_path: Path) -> dict:
         # 索引缺失 / 损坏 / 日志被截断（size 缩小）→ 重建一次
         _LOG_INDEX_REBUILDS["count"] += 1
         idx = _build_log_block_index(log_path, size)
-        _write_log_index(proot, idx)
+        _write_log_index(proot, idx, log_path.name)
         return idx
     # size 相等 → 直接返回；size 增长（append-only）→ 热更新补扫，不重建
     fresh = _update_log_block_index(log_path, size, idx)
     if fresh.get("size") != idx.get("size") or fresh is not idx:
-        _write_log_index(proot, fresh)
+        _write_log_index(proot, fresh, log_path.name)
     return fresh
 
 

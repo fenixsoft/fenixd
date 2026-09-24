@@ -11,7 +11,8 @@
 2. 该引用处未指向任何代码文件——遮蔽命中产物后，行内无代码扩展名
    （``.py``/``.ts``/``.tsx``/``.js``/``.jsx``/``.sh``/``.yaml``/``.yml``）
    或代码路径特征（``core/``/``agents/``/``tests/``/``bin/``/``skills/``/``docs/``）；
-3. 引用前出现产出动词（写/落盘/持久化/保存/落位/序列化/追加），且
+3. 引用前出现产出动词（写/落盘/持久化/保存/落位/序列化/追加；单字
+   「写」不含「改写/编写/誊写/抄写/读写」等改写/读取语义），且
    执行车道 ∉ 该产物归属车道集合。
 
 放行形态（MUST NOT 判违规）：
@@ -101,6 +102,10 @@ _PRODUCTION_VERBS: tuple = (
     "追加",
 )
 
+# 单字产出动词的前缀否定字：「改写/编写/誊写/抄写/读写」为改写既有
+# 内容或读取语义，非产出动词（零误拦取向，design D1）
+_SINGLE_CHAR_VERB_NEGATION_PREFIXES: str = "改编誊抄读"
+
 # ============================================================================
 # 正则
 # ============================================================================
@@ -127,6 +132,16 @@ _VP_DIR_REF_RE = re.compile(
 # 代码扩展名出现（遮蔽后扫描）
 _CODE_EXT_RE = re.compile(
     r"\.(?:py|ts|tsx|js|jsx|sh|yaml|yml)\b"
+)
+
+# 产出动词匹配（步骤 3）：单字动词以否定回顾排除改写/读取语义前缀
+_PRODUCTION_VERB_RE = re.compile(
+    "|".join(
+        f"(?<![{_SINGLE_CHAR_VERB_NEGATION_PREFIXES}]){re.escape(verb)}"
+        if len(verb) == 1
+        else re.escape(verb)
+        for verb in _PRODUCTION_VERBS
+    )
 )
 
 
@@ -167,6 +182,10 @@ def _line_points_to_code(line: str, mask_literal: str = "") -> bool:
 def _line_has_production_verb(line: str, ref_end: int) -> bool:
     """判定产物引用之前是否出现产出动词（步骤 3）。
 
+    单字动词「写」要求其前一个字符不在
+    ``_SINGLE_CHAR_VERB_NEGATION_PREFIXES`` 中——「改写/编写/誊写/抄写/
+    读写」为改写既有内容或读取语义，不计产出动词。
+
     Args:
         line: 任务行原文。
         ref_end: 产物引用匹配的结束位置（字符索引）。
@@ -175,7 +194,7 @@ def _line_has_production_verb(line: str, ref_end: int) -> bool:
         True 表示在引用之前出现产出动词。
     """
     prefix = line[:ref_end]
-    return any(verb in prefix for verb in _PRODUCTION_VERBS)
+    return _PRODUCTION_VERB_RE.search(prefix) is not None
 
 
 # ============================================================================

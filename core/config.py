@@ -1030,6 +1030,8 @@ class ConfigLoader:
         """
         agents = cls._segment_or_empty(config, "agents")
         models = agents.get("models") or {}
+        if not isinstance(models, dict):
+            return None
         assignment = models.get(agent_type)
         if not isinstance(assignment, dict):
             return None

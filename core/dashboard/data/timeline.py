@@ -252,6 +252,10 @@ def get_spec_timeline(
                 # log_entry：行级局部名——MUST NOT 遮蔽函数参 entry（STATE 条目，
                 # 注记块同参透传判据；遮蔽会让「不透传 entry」的调用点误附 ocr_gate）
                 msg = log_entry.get("message", "")
+                # message 为非字符串（数字/数组等异常 JSON 行）时 pat.search
+                # 会抛 TypeError，跳过，避免令整个时间轴接口失败
+                if not isinstance(msg, str):
+                    continue
                 ts = log_entry.get("timestamp", "")
                 ctx = log_entry.get("context") or {}
                 if not isinstance(ctx, dict):
