@@ -1583,6 +1583,18 @@ export interface CodeReviewFixProgress {
   current_item: CodeReviewFixProgressCurrentItem | null;
   /** 本批条目数（批上下文缺失时 null，条级文案分母） */
   batch_total: number | null;
+  /**
+   * add-code-fix-startup-stage-visibility：准备期启动阶段（读侧实时合成，
+   * 批处于 fixing/retrying 且 out 零有效行时非空；不激活/不可知时 null）。
+   * item_done 为 null 时本字段驱动进度卡准备段渲染。
+   */
+  startup_stage: CodeReviewFixProgressStartupStage | null;
+}
+
+/** add-code-fix-startup-stage-visibility：启动阶段（waited_minutes 取不到 birth time 时为 null） */
+export interface CodeReviewFixProgressStartupStage {
+  stage: string;
+  waited_minutes: number | null;
 }
 
 /** add-code-fix-item-level-progress：最近一条处置结果摘要（title/line 由台账回查补全，降级时缺省） */
