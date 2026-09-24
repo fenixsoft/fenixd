@@ -75,12 +75,18 @@ def build_import_graph(tests_dir: str) -> Dict[str, Set[str]]:
     """Build import graph for all test files."""
     graph = {}
 
-    for py_file in Path(tests_dir).glob("*.py"):
+    # 与 pytest 收集口径对齐：rglob 递归覆盖嵌套测试目录（如 tests/v2/），
+    # 且只收 test_*.py / *_test.py 命名的文件——conftest/helpers 等非测试模块
+    # 不再混入图（pytest 选中它们只会空跑），非测试命名的 .py 也不误入。
+    for py_file in sorted(Path(tests_dir).rglob("*.py")):
         if py_file.name.startswith("_"):
+            continue
+        if not (py_file.name.startswith("test_") or py_file.name.endswith("_test.py")):
             continue
 
         imports = extract_imports_from_file(str(py_file))
-        module_path = f"tests.{py_file.stem}"
+        rel_module = ".".join(py_file.relative_to(Path(tests_dir)).with_suffix("").parts)
+        module_path = f"tests.{rel_module}"
         graph[module_path] = imports
 
     return graph

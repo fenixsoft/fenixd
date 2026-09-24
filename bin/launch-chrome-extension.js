@@ -539,17 +539,22 @@ async function runUITests(context, page) {
 // ============================================================================
 
 function buildSummary(anomalies, uiTests = []) {
-  const codeAnomalies = anomalies.filter(a => a.severity !== 'external-service');
+  // codeDefects 与 success 判定同口径：只计 high/critical（即 hasCriticalAnomalies 的判定范围）
+  const codeAnomalies = anomalies.filter(a => a.severity === 'high' || a.severity === 'critical');
+  // warning 级问题（如 missing-header）单列，不混入 codeDefects
+  const warningAnomalies = anomalies.filter(a => a.severity === 'warning');
   const serviceAnomalies = anomalies.filter(a => a.severity === 'external-service');
   const uiFailures = uiTests.filter(t => t.status === 'fail' || t.status === 'error');
 
   return {
     totalAnomalies: anomalies.length,
     codeDefects: codeAnomalies.length,
+    warnings: warningAnomalies.length,
     externalServiceIssues: serviceAnomalies.length,
     uiTestFailures: uiFailures.length,
     uiTestTotal: uiTests.length,
-    needsAttention: codeAnomalies.length > 0 || uiFailures.length > 0,
+    // needsAttention 保持原口径：所有非 external-service 异常或 UI 失败都提示关注
+    needsAttention: anomalies.some(a => a.severity !== 'external-service') || uiFailures.length > 0,
   };
 }
 

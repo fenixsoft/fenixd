@@ -267,7 +267,7 @@ class LivenessSupervisor:
         # updated 起点——否则刚被续期的长任务下一轮就被误判 stuck。
         # 无显式回收：get_extension_baseline 按流文件新鲜度自清理（run 结束后
         # 流停止增长即失效）。
-        self._extension_baselines: Dict[str, dict] = {}
+        self._extension_baselines: dict[str, dict] = {}
 
         # 运行期清扫已验证终态缓存（add-runtime-run-sweeper 1.4）：文件 stem 集合。
         # 确认含终态事件或已被本清扫器补写的文件入缓存，后续轮次不再打开读取；

@@ -40,6 +40,8 @@ def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
         目录）；全部终止 → 继续正常删除。
     - 正常：remove_spec 原子剔除条目；目录若存在则 shutil.move 到
       spec/archive/<name>-<Unix秒>/；目录缺失仅清状态（幂等）。
+    - 目录移动失败（OSError）：返回含 ``error``（``归档移动失败: ...``）的
+      失败 dict（不裸抛异常）；STATE.md 尚未改动、目录留在原位。
     - STATE 剔除失败（OSError）：尽力把已归档目录移回 ``spec/changes/<name>``
       并返回含 ``error`` 的失败 dict（不裸抛异常）；回滚亦失败时
       ``archived``/``archive_path`` 保留滞留位置并写入 ``error``。
@@ -175,7 +177,20 @@ def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
             while dest.exists():
                 dest = archive_root / f"{base_name}-{ms}-{n}"
                 n += 1
-        shutil.move(str(spec_dir), str(dest))
+        try:
+            shutil.move(str(spec_dir), str(dest))
+        except OSError as e:
+            # 比照 archive_spec（同文件）以返回码告知调用方，不裸抛 OSError：
+            # STATE.md 尚未改动、目录留在原位，两端天然一致
+            return {
+                "found": True,
+                "running": False,
+                "archived": False,
+                "archive_path": None,
+                "error": f"归档移动失败: {e}",
+                "pending": None,
+                "stopped": initial_running_count if initial_running_count else None,
+            }
         archived = True
         archive_path = str(dest)
 

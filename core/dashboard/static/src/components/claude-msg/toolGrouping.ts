@@ -19,7 +19,12 @@ export function parseToolInput(toolInput: unknown): unknown {
   }
 }
 
+// 摘要递归深度上限：parseToolInput 直传的非 JSON.parse 产物对象可能深嵌套甚至
+// 循环引用，超限截断为省略号，防栈溢出与超长摘要（code-review item bf8f9ef81bf8）。
+const SUMMARIZE_MAX_DEPTH = 5;
+
 function summarize(value: unknown, depth = 0): string {
+  if (depth > SUMMARIZE_MAX_DEPTH) return '…';
   if (value == null) return '';
   if (typeof value === 'string') return value;
   if (typeof value === 'number' || typeof value === 'boolean') return String(value);

@@ -165,5 +165,5 @@ def format_latency_summary(run_id: str, stats: dict) -> str:
     return (
         f"run {run_id}: {stats['rounds']} rounds, "
         f"median {med:.1f}s, p90 {p90:.1f}s, max {mx:.1f}s, "
-        f"stalls>60s={stalls} ({ratio:.0f}%)"
+        f"stalls>{LATENCY_STALL_SECONDS:.0f}s={stalls} ({ratio:.0f}%)"
     )

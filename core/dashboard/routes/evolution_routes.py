@@ -11,12 +11,10 @@ patch 该命名空间属性）——本模块调用点 MUST 经 `core.dashboard.
 
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 
 from core.dashboard import data as dashboard_data
-from core.dashboard.registry import Registry
 
 logger = logging.getLogger("fenixd.dashboard.evolution_routes")
 

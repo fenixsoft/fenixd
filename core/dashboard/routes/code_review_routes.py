@@ -297,8 +297,8 @@ class H11CodeReviewRoutesMixin:
           daemon 未受 supervisor 托管（unmanaged）→ 409 明确拒绝（信号无人
           消费会永久滞留并在 daemon 下次启动时被消费成一次用户并未请求的
           修复）；stopped → 400「daemon 未运行」。
-        - 受理前预删旧结果文件：防止上一轮残留判定被前端误当本次反馈
-          （与 request_created 回链双重防御）。
+        - 受理后预删旧结果文件（仅信号 O_EXCL 独占创建且写入成功后，拒绝
+          路径保留上一轮判定）：防止上一轮残留判定被前端误当本次反馈。
         - 受理 → 200 + {ok, requested_at}；O_CREAT|O_EXCL 独占创建，
           FileExistsError → 409（并发第二次 POST 或上一信号尚未被消费）。
         """
@@ -329,13 +329,6 @@ class H11CodeReviewRoutesMixin:
         if state != "managed":
             self._error(400, "daemon 未运行，请先启动 daemon")
             return
-
-        # 预删旧结果文件（残留判定 MUST NOT 被前端当本次反馈；删除失败不阻塞受理）
-        result_path = proot / CODE_FIX_REQUEST_RESULT
-        try:
-            result_path.unlink()
-        except OSError:
-            pass
 
         # 原子创建信号文件（O_CREAT|O_EXCL 独占创建，对齐 _api_code_review_run）
         created = datetime.now(timezone.utc).isoformat()
@@ -376,6 +369,16 @@ class H11CodeReviewRoutesMixin:
                 pass
             self._error(500, "修复触发信号写入失败")
             return
+        # 预删旧结果文件（残留判定 MUST NOT 被前端当本次反馈；删除失败不阻塞
+        # 受理）。code-review item ac4182077d1f：仅在信号文件 O_EXCL 独占创建
+        # 且完整写入成功（即受理路径）之后删除——预删若位于受理判定之前，
+        # 409（信号槽被占）/500 拒绝路径会把上一轮判定一并删掉，前端轮询
+        # fix-run-result 变成缺省空态，用户看到的上次反馈凭空消失。
+        result_path = proot / CODE_FIX_REQUEST_RESULT
+        try:
+            result_path.unlink()
+        except OSError:
+            pass
         self._json({"ok": True, "requested_at": created})
 
     def _api_code_review_fix_run_result(self, query):
