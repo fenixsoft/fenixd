@@ -1637,12 +1637,12 @@ class TestCodeReviewPromptShardInjection(unittest.TestCase):
 
 
 class TestRepoConcurrencyPromptInjection(unittest.TestCase):
-    """全仓审查并发双通道注入（add-code-review-concurrency-and-429-resilience）。
+    """全仓审查并发注入（add-code-review-concurrency-and-429-resilience）。
 
-    一个键（verify.repo_code_review_concurrency）同时约束两处并发源：
-    ① 提示词侧子代理并行扇出上限条款（波内并行、波次滚动推进）；
-    ② ocr scan 命令的 --concurrency 参数。2026-09-24 429 事故成因之一即
-    两处并发均不受控。
+    键（verify.repo_code_review_concurrency）约束提示词侧子代理并行扇出
+    上限条款（波内并行、波次滚动推进）。2026-09-24 429 事故成因之一即
+    并发不受控；ocr scan 并发源已随该步骤移除（2026-09-24 用户决策：
+    scan 网络僵死致 run 自旋 2h20m，LLM 逐文件审查已稳定覆盖）。
     """
 
     RUN_ID = "code-review-1790210000"
@@ -1666,7 +1666,7 @@ class TestRepoConcurrencyPromptInjection(unittest.TestCase):
         finally:
             shutil.rmtree(str(proot), ignore_errors=True)
         self.assertIn("MUST ≤ `4`", prompt)  # 波内扇出上限条款
-        self.assertIn("--concurrency 4", prompt)  # scan 命令同键
+        self.assertNotIn("--concurrency", prompt)  # ocr scan 步骤已移除（2026-09-24）
 
     def test_config_value_two_rendered(self):
         # 配置值为 2 → 渲染 2（run_code_review 经 detail 传 repo_concurrency）
@@ -1686,7 +1686,7 @@ class TestRepoConcurrencyPromptInjection(unittest.TestCase):
         finally:
             shutil.rmtree(str(proot), ignore_errors=True)
         self.assertIn("MUST ≤ `2`", prompt)
-        self.assertIn("--concurrency 2", prompt)
+        self.assertNotIn("--concurrency", prompt)  # ocr scan 步骤已移除（2026-09-24）
 
     def test_pm_config_fallback_used_when_detail_missing(self):
         # detail 未携带时回退 pm.config 读取器（run_code_review 正常都传；
