@@ -683,6 +683,10 @@ class TestStaleVerdictGuard(unittest.TestCase):
         self.engine._enqueue = MagicMock()
         self.engine._on_spec_bug_found = MagicMock()
         self.engine._on_spec_verified = MagicMock()
+        # legacy 结果应用路径调 pipeline._record_infra_failure（非门面），
+        # 须挂在 _verification 上（门面转发解析回同一 mock）。
+        self.engine._verification._record_infra_failure = MagicMock()
+        self.engine._record_infra_failure = self.engine._verification._record_infra_failure
         # 隔离与 D6 正交的各闸门
         self.engine._verification._read_verify_report = MagicMock(return_value={})
         self.engine._verification._handle_env_blocked_inconclusive = MagicMock(return_value=False)
@@ -780,6 +784,213 @@ class TestStaleVerdictGuard(unittest.TestCase):
         self.assertEqual(entry["status"], "implemented")
         self.engine._on_spec_bug_found.assert_not_called()
         self.engine._enqueue.assert_not_called()
+
+    # ── fix-verify-late-result-terminal-clobber 1.5：非 testing 状态下
+    #    迟到 stale/foreign 结果一律丢弃（三个缺口分支的终态复核）────────
+
+    def _flip_spec_then_return(self, name, status):
+        """run_verifier side_effect：调用期间把 spec 翻到 status 后返回成功结果。
+
+        模拟「入口时 testing、在飞 run 长达数十分钟期间状态合法流转至
+        终态/其它状态」的迟到结果场景（2026-09-24 事故形态）。
+        """
+        from types import SimpleNamespace
+
+        def _side(*a, **k):
+            self.sm.update_spec(name, {"status": status})
+            return SimpleNamespace(
+                success=True, error=None,
+                run_id=f"verify-{name}-{int(time.time())}-a1",
+            )
+
+        return _side
+
+    def _reset_guard_mocks(self):
+        self.engine._record_infra_failure.reset_mock()
+        self.engine._enqueue.reset_mock()
+        self.engine._on_spec_bug_found.reset_mock()
+        self.engine._on_spec_verified.reset_mock()
+        self.logger.debug.reset_mock()
+        self.logger.warning.reset_mock()
+
+    def _assert_late_result_fully_dropped(self, name, status):
+        """迟到结果零影响：状态字段不变、无 infra 记账、无重派、DEBUG 含当前状态。"""
+        entry = self.sm.read_one(name)
+        self.assertEqual(entry["status"], status, "迟到结果不得覆写当前状态")
+        self.assertNotIn(
+            "stale/foreign verifier result replayed",
+            entry.get("error") or "",
+            "re-dispatch error 文案不得被写入",
+        )
+        self.engine._record_infra_failure.assert_not_called()
+        self.engine._enqueue.assert_not_called()
+        self.engine._on_spec_bug_found.assert_not_called()
+        self.engine._on_spec_verified.assert_not_called()
+        debug_texts = " ".join(str(c) for c in self.logger.debug.call_args_list)
+        self.assertIn("discarded", debug_texts)
+        self.assertIn(f"current state '{status}'", debug_texts,
+                      "DEBUG 日志须记录当前状态")
+
+    def test_late_stale_result_discarded_in_terminal_states(self):
+        """成功路径 stale 守卫分支：pushed/done/implemented 下迟到 stale 结果零影响。"""
+        for target in ("pushed", "done", "implemented"):
+            with self.subTest(target=target):
+                name = f"late-stale-{target}"
+                self.sm.add_spec(name, {"priority": 5})
+                _push_spec_to(self.sm, name, "testing")
+                self._write_result(name, "verified")
+                self.engine._verification._verifier_result_is_stale = MagicMock(
+                    return_value=True)
+                self.engine.agent_runner.run_verifier.side_effect = (
+                    self._flip_spec_then_return(name, target))
+                self._reset_guard_mocks()
+                self.engine._run_legacy_verification(name)
+                self._assert_late_result_fully_dropped(name, target)
+
+    def test_late_foreign_role_result_discarded_before_gate(self):
+        """foreign-role/foreign-stamp 分支：非 testing 丢弃，且复核先于放行门禁。"""
+        for target in ("pushed", "done", "implemented"):
+            with self.subTest(target=target):
+                name = f"late-foreign-{target}"
+                self.sm.add_spec(name, {"priority": 5})
+                _push_spec_to(self.sm, name, "testing")
+                # 共享 fallback 文件缺 role → _read_verdict 判 foreign-role
+                self.result_path.write_text(
+                    json.dumps({"spec": name, "status": "success"}))
+                gate = MagicMock(return_value=False)
+                self.engine._verification._verified_gate_refuses = gate
+                self.engine.agent_runner.run_verifier.side_effect = (
+                    self._flip_spec_then_return(name, target))
+                self._reset_guard_mocks()
+                self.engine._run_legacy_verification(name)
+                self._assert_late_result_fully_dropped(name, target)
+                gate.assert_not_called(
+                ), "D6 复核须先于 _verified_gate_refuses（终态 SPEC 不再消耗门禁判定）"
+
+    def test_late_unknown_status_stale_result_discarded(self):
+        """unknown-status+stale 分支：非 testing 丢弃，不覆写不记账不重派。"""
+        for target in ("pushed", "done", "implemented"):
+            with self.subTest(target=target):
+                name = f"late-unknown-{target}"
+                self.sm.add_spec(name, {"priority": 5})
+                _push_spec_to(self.sm, name, "testing")
+                # role=verifier 但 status 白名单外（implementer 残留形态）
+                self._write_result(name, "success")
+                self.engine._verification._verifier_result_is_stale = MagicMock(
+                    return_value=True)
+                self.engine.agent_runner.run_verifier.side_effect = (
+                    self._flip_spec_then_return(name, target))
+                self._reset_guard_mocks()
+                self.engine._run_legacy_verification(name)
+                self._assert_late_result_fully_dropped(name, target)
+
+    def test_testing_state_stale_behavior_unchanged(self):
+        """testing 状态下 stale 分支既有行为逐项不变（纯增防御回归锚）。"""
+        name = "testing-stale-spec"
+        self.sm.add_spec(name, {"priority": 5})
+        _push_spec_to(self.sm, name, "testing")
+        self._write_result(name, "verified")
+        self.engine._verification._verifier_result_is_stale = MagicMock(
+            return_value=True)
+        self.engine.agent_runner.run_verifier.side_effect = (
+            self._flip_spec_then_return(name, "testing"))
+        self.engine._run_legacy_verification(name)
+        entry = self.sm.read_one(name)
+        self.assertEqual(entry["status"], "implemented",
+                         "testing 内 stale 结果仍走既有回退重派语义")
+        self.assertEqual(entry["tester_run"], None)
+        self.assertEqual(
+            entry["error"],
+            "stale/foreign verifier result replayed — re-dispatching fresh verify",
+            "error 文案逐字不变")
+        self.engine._record_infra_failure.assert_called_once()
+
+
+# ── (5b) 机械快道裁决来源戳（fix-verify-late-result-terminal-clobber D3）──
+class TestMechanicalFastPathRoleStamp(unittest.TestCase):
+    """快道产物补 role=verifier 后：读侧归属校验放行、新鲜文件不误判、跨 spec 仍拒。"""
+
+    def setUp(self):
+        from core.pm_engine import PMEngine
+        self.tmpdir = tempfile.mkdtemp()
+        (Path(self.tmpdir) / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.logger = MagicMock()
+        self.sm = StateMachine(Path(self.tmpdir) / ".fenix" / "STATE.md", self.logger)
+        self.engine = PMEngine(self.sm, MagicMock(), {}, Path(self.tmpdir), self.logger)
+        self.pipe = self.engine._verification
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _fast_path(self, spec):
+        from core.pm_engine.verification.judge_gate import _all_green_fast_path
+        report = {"summary": {"passed": 3, "total": 3, "warnings": 0, "failed": 0}}
+        return _all_green_fast_path(self.pipe, spec, report, 0)
+
+    def _primary(self, spec):
+        from core.pm_engine.verification.report_gate import (
+            _verify_progress_result_paths,
+        )
+        primary, _ = _verify_progress_result_paths(self.pipe, spec)
+        return primary
+
+    def test_fast_path_payload_carries_verifier_role(self):
+        """快道 payload 含 role=verifier，mechanical/spec/status 既有字段保留。"""
+        ret = self._fast_path("stamp-spec")
+        self.assertIsNotNone(ret, "全绿快道应出裁决")
+        data = json.loads(self._primary("stamp-spec").read_text(encoding="utf-8"))
+        self.assertEqual(data["role"], "verifier")
+        self.assertTrue(data["mechanical"])
+        self.assertEqual(data["status"], "verified")
+        self.assertEqual(data["spec"], "stamp-spec")
+        self.assertEqual(data["bugs"], [])
+
+    def test_fast_path_verdict_reads_ok_with_role(self):
+        """快道产物经 _read_verifier_result/_read_verdict 读取：role 校验通过。"""
+        from core.pm_engine.verification.report_gate import (
+            _read_verdict,
+            _read_verifier_result,
+        )
+        self._fast_path("stamp-spec")
+        primary = self._primary("stamp-spec")
+        direct = _read_verifier_result(self.pipe, primary)
+        self.assertTrue(direct.ok)
+        self.assertEqual(direct.status, "verified")
+        verdict = _read_verdict(self.pipe, "stamp-spec")
+        self.assertTrue(verdict.ok)
+        self.assertEqual(verdict.status, "verified")
+
+    def test_fresh_fast_path_not_judged_stale(self):
+        """同 spec 新鲜快道文件：在飞 verifier 的 stale 校验不误判。"""
+        from types import SimpleNamespace
+        from core.pm_engine.verification.report_gate import _verifier_result_is_stale
+        self._fast_path("stamp-spec")
+        run = SimpleNamespace(
+            run_id=f"verify-stamp-spec-{int(time.time())}-a1")
+        self.assertFalse(
+            _verifier_result_is_stale(self.pipe, run, self._primary("stamp-spec"),
+                                      "stamp-spec"))
+
+    def test_cross_spec_stamp_still_rejected(self):
+        """跨 spec 戳（spec 不符）仍判不采信：stale 判 True、共享回退判 foreign-stamp。"""
+        from types import SimpleNamespace
+        from core.pm_engine.verification.report_gate import (
+            _read_verdict,
+            _verifier_result_is_stale,
+        )
+        self._fast_path("stamp-spec")
+        run = SimpleNamespace(
+            run_id=f"verify-other-spec-{int(time.time())}-a1")
+        self.assertTrue(
+            _verifier_result_is_stale(self.pipe, run, self._primary("stamp-spec"),
+                                      "other-spec"),
+            "spec 戳不符必须不采信")
+        # 共享 fallback 形态：role=verifier 但 spec 戳不符 → foreign-stamp
+        shared = Path(self.tmpdir) / ".fenix" / ".fenix-run-result.json"
+        shared.write_text(self._primary("stamp-spec").read_text(encoding="utf-8"))
+        verdict = _read_verdict(self.pipe, "other-spec")
+        self.assertFalse(verdict.ok)
+        self.assertEqual(verdict.reason, "foreign-stamp")
 
 
 # ── (6) supervisor 自报与 daemon 排水一致性自检 ────────────────────────

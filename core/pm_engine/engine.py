@@ -24,7 +24,7 @@ from core.dashboard.data import (
     parse_run_task_done,
     record_project_event,
 )
-from core.agent_runner.run_files import run_spec_part
+from core.agent_runner.run_files import infer_run_agent_type, run_spec_part, strip_run_id_suffixes
 from core.run_task_track import parse_tasks_md, parse_unattainable as _parse_unattainable
 from core.pm_engine.family import FamilyGovernor
 from core.pm_engine.budget import ImplBudget
@@ -1112,6 +1112,61 @@ class PMEngine:
                 f"并行出题停止失败 '{spec_name}'（消费侧校验兜底）: {e}",
             )
 
+    def _reclaim_verify_lane(self, spec_name: str) -> None:
+        """verified 终态收敛点回收在飞 verify 车道（fix-verify-late-result-terminal-clobber D2）。
+
+        两段（照搬 ``_stop_parallel_planning`` 范式）：①摘除在队 verifier 条目；
+        ②对归属本 spec 的活跃 verify run 逐个 ``cancel_run`` 终止（车道对自己
+        派发的 run 做生命周期收尾属该原语的本职用法）。
+
+        取消键 MUST 为**完整 run 级 id（含 epoch，如 ``verify-<spec>-<epoch>``）**，
+        MUST NOT 传裸 ``verify-<spec>``：cancel_run 的旗标登记键经
+        ``_normalize_run_id`` 归一（只剥 ``-a<n>``/``-r<n>`` 后缀，不剥 epoch），
+        消费点（attempt 循环/轮询环）以带 epoch 的 run 级 id 归一后做精确集合
+        判定——裸键登记后与消费键不收敛，取消**静默失效**且返回值仍显
+        ``cancel_requested``（``_stop_parallel_planning`` 的裸键先例即此，本车道
+        MUST NOT 照搬）。归属复核以 ``run_spec_part(aid) == spec_name`` 为准
+        （登记侧 startswith 裸前缀匹配会误中同根后代 spec 的 run，如
+        ``verify-fix-a-b-<epoch>`` 命中 ``verify-fix-a`` 前缀；family.py 同款
+        「精确前缀归属守卫」教训），且仅取消 verifier 车道 run，不波及其它
+        agent_type。旗标按含 epoch 的完整键登记，天然不波及门禁回退后重派的
+        新 epoch verify run 与人工重验 run。
+
+        调用方（_on_spec_verified）整体 try/except 兜底：取消失败由结果应用侧
+        D6 复核兜底丢弃迟到结果（防御纵深），不影响 done → push 主链。
+        """
+        removed = False
+        dispatcher = getattr(self, "_dispatcher", None)
+        if dispatcher is not None:
+            removed = dispatcher._remove_queued_entry(spec_name, "verifier")
+        cancelled: list[str] = []
+        runner = getattr(self, "agent_runner", None)
+        if runner is not None:
+            # list(...) 快照迭代（对齐 cancel_run/轮询环的快照口径）
+            for aid in list(getattr(runner, "_running_agents", {}).keys()):
+                agent_type, _ = infer_run_agent_type(aid)
+                if agent_type != "verifier":
+                    continue
+                if run_spec_part(aid) != spec_name:
+                    continue
+                # 完整 run 级 id：剥 attempt/瞬态重试后缀，保留 epoch
+                run_level_id = strip_run_id_suffixes(aid)
+                if run_level_id in cancelled:
+                    continue
+                ret = runner.cancel_run(
+                    run_level_id,
+                    reason="spec verified — reclaim in-flight verify lane",
+                    by="verify-lane",
+                )
+                if ret.get("status") == "cancel_requested":
+                    cancelled.append(run_level_id)
+        if removed or cancelled:
+            self.logger.info(
+                "pm_engine",
+                f"verify 车道已回收（verified 终态收敛）: {spec_name} "
+                f"(queued_removed={removed}, cancelled={cancelled})",
+            )
+
     def _merge_ready_fallback(
         self, spec_name: str, run_id: str | None, agent_type: str, branch: str | None
     ) -> bool:
@@ -1532,6 +1587,20 @@ class PMEngine:
                     self.logger.warning(
                         "pm_engine",
                         f"spec 终局 serving 驱逐失败 '{spec_name}'（非阻塞）: {e}",
+                    )
+                # fix-verify-late-result-terminal-clobber D2：verify 车道终局
+                # 回收（摘在队 verifier 条目 + 按完整 run 级 id 取消在飞 run）。
+                # 仅 done 落定后执行——D7 逃生门（回退 testing 断点续跑）与
+                # 「blocker 保持 verified」路径在本方法前段提前 return，不会
+                # 拆掉门禁要求续跑的在飞车道。整体 try/except 兜底：取消失败
+                # 由结果应用侧 D6 复核兜底丢弃迟到结果（防御纵深），不影响
+                # done → push 主链。
+                try:
+                    self._reclaim_verify_lane(spec_name)
+                except Exception as e:
+                    self.logger.warning(
+                        "pm_engine",
+                        f"verify 车道终局回收失败 '{spec_name}'（非阻塞）: {e}",
                     )
                 # add-done-duration-persist（D1/D2）：done 落定时刻把总耗时快照进
                 # STATE.md，使耗时不再依赖易失的 run 产物（run 产物只增不减，
