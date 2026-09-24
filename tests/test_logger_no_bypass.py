@@ -136,7 +136,10 @@ class TestWarningReachesFenixdLog:
                     "spec": spec,
                     "scenarios": [
                         {"id": "sc-ok", "kind": "web"},
-                        {"id": "sc-orphan"},  # 缺 kind → 净化剔除 WARNING
+                        # 缺 kind → 兜底归类 web 保留在集 WARNING（b25b28a4ed8a，
+                        # 不再剔除；告警仍 MUST 落 fenixd.log）
+                        {"id": "sc-orphan"},
+                        "junk-entry",  # 非对象孤儿条目 → 净化剔除 WARNING
                     ],
                 }),
                 encoding="utf-8",
@@ -148,4 +151,6 @@ class TestWarningReachesFenixdLog:
             logger.close()
         text = (log_dir / "fenixd.log").read_text(encoding="utf-8")
         assert "持久化集加载净化剔除" in text, "净化剔除 WARNING 必须落入 fenixd.log"
-        assert "sc-orphan" in text, "剔除 id 清单出现在日志"
+        assert "持久化集加载净化：" in text, "缺 kind 兜底归类 WARNING 必须落入 fenixd.log"
+        assert "sc-orphan" in text, "兜底归类 id 清单出现在日志"
+        assert "非对象" in text, "剔除条目清单出现在日志"
