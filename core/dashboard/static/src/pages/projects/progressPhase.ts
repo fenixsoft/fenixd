@@ -27,7 +27,8 @@ export type PhaseRecord = {
 };
 
 export function pct(done: number, total: number): number {
-  return total > 0 ? Math.round((done / total) * 100) : 0;
+  // 统一钳制 0-100：后端计数漂移（done > total）时不让排序键与进度条超出
+  return total > 0 ? Math.max(0, Math.min(100, Math.round((done / total) * 100))) : 0;
 }
 
 // gates 阶段用门禁完成度（done 含 skipped——后端 done 同口径），verify 阶段
@@ -49,7 +50,7 @@ export function renderPercent(
 ): number {
   if (record.progress_phase === 'gates') return phasePct(record);
   if (record.progress_phase === 'verify') {
-    return gen ? Math.min(100, pct(gen.done, gen.total)) : pct(record.verify_done, record.verify_total);
+    return gen ? pct(gen.done, gen.total) : pct(record.verify_done, record.verify_total);
   }
   return pct(record.task_done, record.task_total);
 }

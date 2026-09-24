@@ -8,13 +8,14 @@ latency.py — run 级 API 延迟统计纯函数（refactor-agent-runner-module 
 处理时序。
 
 本模块 MUST NOT `import runner`（D4）：`_default_ts_parser` 自带等价实现
-（数值 timestamp 直通；ISO 字符串按
-``datetime.fromisoformat(str(raw).replace("Z", "+00:00")).timestamp()`` 解析；
-缺失/异常返回 None——与 runner.py `AgentRunner._parse_event_timestamp` 现行为
-逐字段一致，由契约测试锁定）；runner.py 保留同名模块级函数并一行委托。
+（数值 timestamp 直通；ISO 字符串仅剥离结尾一个 "Z" 后按
+``datetime.fromisoformat(...).timestamp()`` 解析，naive（无时区）值显式按
+UTC 取 epoch；缺失/异常返回 None——与 runner.py
+`AgentRunner._parse_event_timestamp` 现行为逐字段一致，由契约测试锁定）；
+runner.py 保留同名模块级函数并一行委托。
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 # 长尾阈值：样本 > 该值（秒）计为一次 stall（run-latency-observability D1）。
 # 随消费者同迁本模块（D4 / D2b 规则 3）：latency_stats 读取本模块常量，避免
@@ -33,8 +34,8 @@ def _default_ts_parser(entry: dict):
     与 runner.py `AgentRunner._parse_event_timestamp` 行为逐字段一致：
     - 数值 timestamp（非布尔 int/float；bool 是 int 子类，显式排除以免
       True/False 直通成 epoch 1.0/0.0 秒样本）→ float 直通；
-    - ISO 字符串 → ``datetime.fromisoformat(str(raw).replace("Z", "+00:00"))``
-      的 epoch 秒；
+    - ISO 字符串 → 仅剥离结尾一个 "Z" 后 ``datetime.fromisoformat(...)``
+      的 epoch 秒（naive 无时区值显式按 UTC，避免按进程本地时区解释）；
     - 缺失/解析异常 → None。
     """
     raw = entry.get("timestamp")
@@ -43,7 +44,16 @@ def _default_ts_parser(entry: dict):
     if isinstance(raw, (int, float)) and not isinstance(raw, bool):
         return float(raw)
     try:
-        return datetime.fromisoformat(str(raw).replace("Z", "+00:00")).timestamp()
+        text = str(raw)
+        # 仅剥离结尾一个 "Z"（ISO 8601 UTC 标记；replace 全量替换会误伤
+        # 串中其他 "Z" 字符）；naive（无时区）值显式按 UTC 取 epoch，
+        # 避免 .timestamp() 按进程本地时区解释、TZ 环境不同算出整体偏移。
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
     except (ValueError, TypeError):
         return None
 

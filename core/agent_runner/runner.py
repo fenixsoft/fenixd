@@ -2224,6 +2224,29 @@ class AgentRunner:
                         wt_path=wt_path, is_resumed_worktree=reuse_worktree)
                     if gate_err:
                         raise AgentArtifactGateError(gate_err)
+                    # add-impl-terminal-nocommit-gate（D2）：终态零提交门——
+                    # 判定 MUST 落在 while 循环 try 体内（成功 break 之前、
+                    # 拷回与产物硬门之后），抛出的 AgentArtifactGateError 才能
+                    # 被本层 except AgentArtifactGateError 接住，经
+                    # _handle_artifact_gate_retry 的 [terminal-no-commit] 分支
+                    # 走锚点 B WIP 提交 + 原地退避 + 同 worktree resume 续做。
+                    # 此前判定误置于 _finalize_success（break 之后的 return
+                    # 调用、except 作用域之外），异常会裸抛穿调度层、重试通道
+                    # 不可达。wt_dirty 取证口径与 _finalize_success 相同
+                    # （git status --porcelain，失败按空列表 fail-open）。
+                    if agent_type == "implementer":
+                        _nc_st = subprocess.run(
+                            ["git", "-C", str(wt_path), "status", "--porcelain"],
+                            capture_output=True, text=True, timeout=30,
+                        )
+                        _nc_dirty = (
+                            [l for l in _nc_st.stdout.splitlines() if l.strip()]
+                            if _nc_st.returncode == 0 else [])
+                        self._check_terminal_no_commit_gate(
+                            spec_name=spec_name, agent_type=agent_type,
+                            wt_path=wt_path,
+                            branch=self.worktree_manager.get_branch_name(wt_path),
+                            wt_dirty=_nc_dirty, sub_run_id=sub_run_id)
                     success = True
                     error = None
                     break  # 原地重试子循环：成功退出 while
@@ -3193,7 +3216,9 @@ class AgentRunner:
         return None
 
     # ── R7: 成功终态（等价搬移，D1 R7 表）─────────────────────────────
-    # 半开探针闭合 / wt_dirty 取证 / 终态零提交门 / worktree 分型 / token 入账。
+    # 半开探针闭合 / wt_dirty 取证 / worktree 分型 / token 入账。
+    # 终态零提交门不在此处（except 作用域之外不可达重试通道），已上移至
+    # _execute_agent_inner 的 while 循环 try 体内。
     # 纯终态收割：无跨边界 continue/break（attempt 循环直接 return），可提取。
     def _finalize_success(self, spec_name: str, agent_type: str, run_id: str,
                           attempt_run_id: str, attempt: int, start_time: float,
@@ -3202,8 +3227,8 @@ class AgentRunner:
                           branch, handed_off: set) -> AgentRunResult:
         """成功终态收割（等价搬移，D1 R7）。
 
-        半开探针闭合 → wt_dirty 取证 → 终态零提交门 → worktree 分型清理 →
-        token 入账 → 结构化指标 → 返回 success 结果。
+        半开探针闭合 → wt_dirty 取证 → worktree 分型清理 → token 入账 →
+        结构化指标 → 返回 success 结果。
         """
         # 半开探针闭合（fix-stashpop-deadlock）：若该 provider 此前已进入熔断但
         # 冷却已到期（半开），此派发成功即视为网关恢复，闭合熔断（design D4）。
@@ -3234,20 +3259,12 @@ class AgentRunner:
             )
             if _st.returncode == 0:
                 wt_dirty = [l for l in _st.stdout.splitlines() if l.strip()]
-        # add-impl-terminal-nocommit-gate（D2）：终态零提交门——wt_dirty
-        # 取证之后、fast-track/repair 分流之前判定。implementer 正常终态
-        # （exit 0 + 合法结果文件）但分支相对 main 零新提交且 worktree 有
-        # 未提交产物时，拦截为可恢复错误（复用 AgentArtifactGateError 既有
-        # 通道：锚点 B WIP 提交 + 原地退避 + 同 worktree --resume 续做），
-        # 替代「成功判定 → cleanup 硬删 → 交付物守卫打回整轮重做」的零提交
-        # 死法（2026-09-10 双 SPEC 首轮全丢事故根因补位）。rev-list 失败
-        # fail-open 不拦——门自身故障绝不打断正常收口。
-        if agent_type == "implementer":
-            self._check_terminal_no_commit_gate(
-                spec_name=spec_name, agent_type=agent_type,
-                wt_path=wt_path,
-                branch=self.worktree_manager.get_branch_name(wt_path),
-                wt_dirty=wt_dirty, sub_run_id=sub_run_id)
+        # add-impl-terminal-nocommit-gate（D2）：终态零提交门已上移至
+        # _execute_agent_inner 的 while 循环 try 体内（成功 break 之前、拷回
+        # 与产物硬门之后）——本方法由 break 之后的 return 调用，位于
+        # except AgentArtifactGateError 作用域之外，在此抛错会裸抛穿调度层、
+        # [terminal-no-commit] 重试通道不可达。此处 wt_dirty 取证保留，供
+        # worktree 分型处置与 worktree_dirty 结果上报。
         # add-merge-back-repair-lane：repair 与 fast-track 同语义，
         # 成功不清理 worktree——冲突解决成果仍在分支上，交给 dispatch
         # 层的 re-merge-back 决定终态；多轮 repair 需原地复用现场。
@@ -4499,7 +4516,16 @@ class AgentRunner:
         if isinstance(raw, (int, float)):
             return float(raw)
         try:
-            return datetime.fromisoformat(str(raw).replace("Z", "+00:00")).timestamp()
+            text = str(raw)
+            # 仅剥离结尾一个 "Z"（ISO 8601 UTC 标记；replace 全量替换会误伤
+            # 串中其他 "Z" 字符）；naive（无时区）值显式按 UTC 取 epoch，
+            # 避免 .timestamp() 按进程本地时区解释、TZ 环境不同算出整体偏移。
+            if text.endswith("Z"):
+                text = text[:-1] + "+00:00"
+            dt = datetime.fromisoformat(text)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.timestamp()
         except (ValueError, TypeError):
             return None
 

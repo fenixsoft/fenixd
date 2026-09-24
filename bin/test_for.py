@@ -231,7 +231,6 @@ def main():
     tests_dir = project_root / "tests"
 
     if run_all:
-        print("Running all tests...")
         # 有界运行同 run_tests（同款常量）：faulthandler 先打印挂起栈，硬超时兜底中止
         cmd = [
             sys.executable,
@@ -242,6 +241,12 @@ def main():
             f"faulthandler_timeout={FAULTHANDLER_TIMEOUT_SECONDS}",
             str(tests_dir),
         ]
+        if dry_run:
+            # --dry-run 与 --all 组合：对齐 run_tests 的 dry-run 语义，
+            # 仅列出将执行的完整命令，不实际起 pytest（避免 3600s 硬超时内的真实副作用）
+            print(f"Dry-run: {' '.join(cmd)}")
+            sys.exit(0)
+        print("Running all tests...")
         try:
             result = subprocess.run(
                 cmd,

@@ -189,7 +189,10 @@ class SessionManager:
                     json.dumps(payload, ensure_ascii=False) + "\n"
                 )
                 session.proc.stdin.flush()
-            except (BrokenPipeError, OSError) as exc:
+            # ValueError 归入同一语义（code-review item e3ad6cee4723）：
+            # _terminate 关 stdin 后的宽限窗内进程仍存活，两道 poll 检查均可
+            # 通过，写已关闭文件抛 ValueError 而非 BrokenPipeError/OSError。
+            except (BrokenPipeError, OSError, ValueError) as exc:
                 raise SessionNotRunningError(f"stdin write failed: {exc}") from exc
             session.last_activity = time.time()
 

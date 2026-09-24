@@ -175,8 +175,8 @@ _GLOBAL_BUDGET_CACHE_MAX = 64
 def _resolve_global_impl_run_budget(project_root) -> int:
     """读取全局 agents.impl_run_budget 有效值，fallback DEFAULT_IMPL_RUN_BUDGET。
 
-    结果按项目级 config.yaml 签名键缓存（config 变化自动失效），与闸门口径一致：
-    ConfigLoader.get 读合并配置 → 按有效上限夹紧 → fallback DEFAULT。
+    结果按（用户级 + 项目级）config.yaml 签名键缓存（config 变化自动失效），
+    与闸门口径一致：ConfigLoader.get 读合并配置 → 按有效上限夹紧 → fallback DEFAULT。
     """
     from core.pm_engine.budget import (
         clamp_impl_run_budget,
@@ -191,7 +191,14 @@ def _resolve_global_impl_run_budget(project_root) -> int:
     proot = Path(project_root)
     cfg_path = proot / ".fenix" / "config.yaml"
     sig = _facade._config_file_sig(cfg_path)
-    cache_key = (str(proot.resolve()), sig)
+    # fcdd13be884c：resolve_config 是用户级 + 项目级深合并，cache_key 须并入
+    # 用户级 config.yaml 签名，否则用户只改用户级 agents.impl_run_budget(_max)
+    # 时缓存不失效、持续吐旧值。文件缺失时 _config_file_sig 恒返回 None，稳定。
+    cache_key = (
+        str(proot.resolve()),
+        _facade._config_file_sig(_facade.USER_CONFIG_PATH),
+        sig,
+    )
     cached = _GLOBAL_BUDGET_CACHE.get(cache_key)
     if cached is not None:
         return cached
@@ -209,7 +216,8 @@ def _resolve_global_impl_run_budget(project_root) -> int:
 
 # ── per-spec 预算上限缓存（fix-dashboard-read-path-performance D1）───────────
 # _impl_budget_max 每 spec_summary 调用都 resolve_config（O(YAML) × N spec，
-# 实测冷重建 5.6s/220 spec），以项目 config.yaml 签名键缓存一次解析结果。
+# 实测冷重建 5.6s/220 spec），以（用户级 + 项目级）config.yaml 签名键缓存一次
+# 解析结果。
 # 与 _GLOBAL_BUDGET_CACHE/_EFFECTIVE_CONFIG_CACHE 同模式；.fenix/config.yaml
 # 已入 _spec_dep_sigs，config 变化会触发摘要重算并自然刷新本缓存。
 _IMPL_BUDGET_MAX_CACHE: dict = {}
@@ -221,15 +229,22 @@ def _impl_budget_max(project_root) -> int:
 
     供 spec_summary 夹紧 override 与 API 校验共用（与闸门 ImplBudget._impl_budget_max
     同源：同一 resolve_impl_run_budget_max 纯函数 + 同一配置键）。
-    结果按项目 config.yaml 签名缓存（配置变化自动失效），避免每 spec 重复
-    resolve_config（fix-dashboard-read-path-performance：读路径冷重建最大单项成本）。
+    结果按（用户级 + 项目级）config.yaml 签名缓存（配置变化自动失效），避免每
+    spec 重复 resolve_config（fix-dashboard-read-path-performance：读路径冷重建
+    最大单项成本）。
     """
     import core.dashboard.data as _facade
 
     proot = Path(project_root)
     cfg_path = proot / ".fenix" / "config.yaml"
     sig = _facade._config_file_sig(cfg_path)
-    cache_key = (str(proot.resolve()), sig)
+    # fcdd13be884c：同 _resolve_global_impl_run_budget，cache_key 并入用户级
+    # config.yaml 签名（resolve_config 深合并两级；文件缺失时签名恒为 None）。
+    cache_key = (
+        str(proot.resolve()),
+        _facade._config_file_sig(_facade.USER_CONFIG_PATH),
+        sig,
+    )
     cached = _IMPL_BUDGET_MAX_CACHE.get(cache_key)
     if cached is not None:
         return cached
@@ -406,8 +421,8 @@ def spec_summary(project_root, spec_name: str, entry: dict, runs_files: list | N
         # _verify_infra_rounds 为本轮验证周期 infra 轮次（纯观测，不参与
         # MAX_VERIFY_FAIL_ROUNDS 冻结；验证 PASS 归零）；_infra_failure_count
         # 为生命周期累计观测值（不归零，同 _budget_exempt_runs 范式）。
-        "verify_infra_rounds": int(entry.get("_verify_infra_rounds", 0) or 0) if entry else 0,
-        "infra_failure_count": int(entry.get("_infra_failure_count", 0) or 0) if entry else 0,
+        "verify_infra_rounds": _int_or_zero(entry.get("_verify_infra_rounds")) if entry else 0,
+        "infra_failure_count": _int_or_zero(entry.get("_infra_failure_count")) if entry else 0,
         # add-verify-lane-throughput 3.3：judge 治理读侧观测（design 决策 5）——
         # fast-track 复用命中与真实派发的生命周期累计，fast-track 命中率 =
         # hits / (hits + dispatches) 由消费方计算；历史 spec 无记录 → None
@@ -547,10 +562,6 @@ def _spec_dep_sigs(proot: Path, spec_name: str, entry: dict, runs_sigs: dict) ->
             sigs[str(p)] = sig
 
     add(changes / "tasks.md")
-    if entry and entry.get("status") == "implementing":
-        wt = _facade.find_implementer_worktree(proot, spec_name)
-        if wt is not None:
-            add(wt / "spec" / "changes" / spec_name / "tasks.md")
     add(changes / ".spec.yaml")
     add(changes / "verification-report.md")
     specs_dir = changes / "specs"
@@ -568,6 +579,8 @@ def _spec_dep_sigs(proot: Path, spec_name: str, entry: dict, runs_sigs: dict) ->
     # （渐进落盘期间列表 gates 阶段须实时刷新）
     add(vp_dir / "quality-gates.json")
     add(vp_dir / "code-review.json")
+    # implementing 态 worktree 产物统一在此登记（含 worktree tasks.md，
+    # 对应上方项目级 tasks.md；勿再另起重复 implementing 分支）
     if entry and entry.get("status") == "implementing":
         wt = _facade.find_implementer_worktree(proot, spec_name)
         if wt is not None:
@@ -577,6 +590,7 @@ def _spec_dep_sigs(proot: Path, spec_name: str, entry: dict, runs_sigs: dict) ->
     # add-spec-status-modal-budget D3：budget_effective 依赖全局 config
     # （agents.impl_run_budget 覆盖优先解析的兜底来源），项目级与用户级
     # config.yaml 变化须触发摘要失效（宁多勿漏原则）。
+    add(_facade.USER_CONFIG_PATH)
     add(proot / ".fenix" / "config.yaml")
     for p, sig in (runs_sigs.get(spec_name) or {}).items():
         sigs[p] = sig
@@ -809,9 +823,9 @@ def spec_detail(project_root, spec_name: str, entry: dict) -> dict:
         # infra_failure_count 生命周期累计（不归零）；fail_rounds product 轮次。
         # dashboard 据此渲染「infra vs product」失败构成。
         "failure_composition": {
-            "verify_infra_rounds": int(entry.get(VERIFY_INFRA_ROUNDS_FIELD, 0) or 0),
-            "infra_failure_count": int(entry.get(INFRA_FAILURE_COUNT_FIELD, 0) or 0),
-            "verify_fail_rounds": int(entry.get("_verify_fail_rounds", 0) or 0),
+            "verify_infra_rounds": _int_or_zero(entry.get(VERIFY_INFRA_ROUNDS_FIELD)),
+            "infra_failure_count": _int_or_zero(entry.get(INFRA_FAILURE_COUNT_FIELD)),
+            "verify_fail_rounds": _int_or_zero(entry.get("_verify_fail_rounds")),
         },
     }
 

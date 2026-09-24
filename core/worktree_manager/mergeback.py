@@ -1,8 +1,7 @@
 """mergeback.py — G4 merge-back 主链（refactor-giant-classes D1/D5）。
 
 原为 WorktreeManager 的 12 个方法（含 208 行 `_merge_back_from_branch_locked`），
-原样搬移为 mixin（方法体零改动）。含 2 个 lazy import：
-- `collapse_wip_commits`（from core.wip_checkpoint，防循环）
+原样搬移为 mixin（方法体零改动）。含 1 个 lazy import：
 - `WorktreeManager`（引用类级属性 `_rehearsal_*`，方法体内延迟导入防循环）
 
 D3 patch 缝隙：`MergeConflictInfo` 从 types 模块导入（包命名空间 re-export）。
@@ -1054,7 +1053,23 @@ class G4MergebackMixin:
         if not rels:
             return None
 
-        backup = self.project_root / ".fenix" / "merge-backup" / str(int(time.time()))
+        backup_root = self.project_root / ".fenix" / "merge-backup"
+        base_name = str(int(time.time()))
+        backup = backup_root / base_name
+        # 同名冲突处理（code-review item e27367b20119）：_main_tree_lock 只串
+        # 行化本进程，跨进程（dashboard 手工 merge-back 与 daemon）撞同一秒时
+        # 目录同名静默复用，shutil.move 到已存在 dst 会覆盖抹掉既有备份内容
+        # ——目标已存在时追加微秒后缀，极端情况仍冲突再用递增序号兜底
+        # （对齐 spec_archive.soft_delete_spec 的同名冲突处理）。
+        if backup.exists():
+            import datetime as _dt
+
+            ms = _dt.datetime.now().strftime("%f")
+            backup = backup_root / f"{base_name}-{ms}"
+            n = 1
+            while backup.exists():
+                backup = backup_root / f"{base_name}-{ms}-{n}"
+                n += 1
         for rel in rels:
             src = self.project_root / rel
             dst = backup / rel

@@ -87,14 +87,30 @@ def _classify_impl(
     with Image.open(str(path)) as src:
         img = src.convert("RGB")
     width, height = img.size
-    pixels = np.array(img, dtype=np.float64)  # shape: (H, W, 3), range [0, 255]
+    raw = np.asarray(img, dtype=np.uint8)  # shape: (H, W, 3), range [0, 255]
 
-    # 像素标准差（全局，跨 RGB 通道）
-    pixel_std = float(np.std(pixels) / 255.0)
+    # 像素标准差（全局，跨 RGB 通道）。
+    # 不再把全图无条件展开为 float64（4K 视口约 199MB 瞬时峰值，此前的
+    # 采样保护只覆盖主色统计路径）：保留 uint8 原始数组，分块以 float64
+    # 累加、两遍算法（先均值后方差）计算，数值语义与 np.std(ddof=0)
+    # 一致（仅求和顺序存在 float64 尾数量级差异），中间块恒为 chunk_size
+    flat_vals = raw.reshape(-1)
+    chunk_size = 1_000_000
+    total = 0.0
+    for start in range(0, flat_vals.size, chunk_size):
+        block = flat_vals[start:start + chunk_size].astype(np.float64)
+        total += float(block.sum())
+    mean = total / flat_vals.size
+    sq_total = 0.0
+    for start in range(0, flat_vals.size, chunk_size):
+        block = flat_vals[start:start + chunk_size].astype(np.float64)
+        block -= mean
+        sq_total += float(np.dot(block, block))
+    pixel_std = float((sq_total / flat_vals.size) ** 0.5 / 255.0)
 
     # 主色占比：统计最常见像素值（RGB 三元组）的出现比例
     # 将每个像素展平为单个 "颜色 token"，统计频次
-    flat = pixels.reshape(-1, 3).astype(np.uint8)
+    flat = raw.reshape(-1, 3)
     # 用 numpy unique 按行统计；为避免 OOM 对超大图采样
     max_samples = 500_000
     if flat.shape[0] > max_samples:
