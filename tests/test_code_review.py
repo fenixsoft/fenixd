@@ -1892,6 +1892,14 @@ class _BoomExecutor:
         raise RuntimeError("pool closed")
 
 
+class _InlineExecutor:
+    """submit 内联同步执行 worker——复现真实线程池「worker 与主线程并发收尾、
+    可领跑」的时序面（_RecExecutor 不执行任务，覆盖不到该时序）。"""
+
+    def submit(self, fn, *args, **kwargs):
+        fn(*args, **kwargs)
+
+
 class _FakeMonitor:
     def __init__(self, in_flight=False):
         self._code_review_in_flight = in_flight
@@ -2096,6 +2104,30 @@ class TestCodeReviewTriggerConsume(unittest.TestCase):
         self.assertEqual(res["requested_at"], self._REQ_AT)
         self.assertFalse(daemon.admin_monitor._code_review_in_flight,
                          "submit 异常分支的既有复位逻辑不变")
+
+    def test_started_receipt_before_submit_never_overwrites_fast_failed(self):
+        """BUG-01 回归（验证场景 cli-consume-branches-inprocess 分支 f/g）：
+        worker 池投递主路径 MUST 先落 started 受理回执再 submit——worker 快速
+        失败（manifest 为空）后写盘的 failed 三态是最终态，MUST NOT 被主线程
+        随后回写的 started 覆盖（否则前端把失败误显示为「正在启动」）。内联
+        executor 使 worker 在 submit 调用内同步跑完，精确复现该时序。"""
+        from unittest.mock import patch
+
+        proot = self._mk_proot()
+        daemon = self._make_daemon(proot, _InlineExecutor())
+        self._write_signal(proot)
+        ctx_root, _ = self._root_ctx(proot)
+        with patch("core.code_review.collect_manifest", lambda *a, **k: []), \
+                patch("core.code_review.compute_window", lambda *a, **k: (None, None)), \
+                ctx_root:
+            self._consume(proot, daemon)
+
+        res = self._read_result(proot)
+        self.assertEqual(res["status"], "failed",
+                         "worker 快速失败的 failed MUST 是最终落盘态")
+        self.assertEqual(res["reason"], "manifest_empty")
+        self.assertEqual(res["requested_at"], self._REQ_AT)
+        self.assertFalse(daemon.admin_monitor._code_review_in_flight)
 
 
 def _cw_safe():

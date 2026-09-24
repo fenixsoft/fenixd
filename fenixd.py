@@ -2477,10 +2477,16 @@ class FenixDaemon:
 
         try:
             if self._admin_executor is not None:
-                self._admin_executor.submit(_worker_with_flag)
                 # 投递成功即受理（add-code-review-trigger-ack 1.4）：落 started，
-                # 前端凭 requested_at 回链从「等结果」进入「等启动」段
+                # 前端凭 requested_at 回链从「等结果」进入「等启动」段。
+                # 受理回执 MUST 先于 submit 落盘（验证打回 BUG-01）：线程池
+                # worker 可领跑收尾——快速失败分支（manifest 为空/收集异常）
+                # 若先落盘 failed、随后主线程才回写 started，failed 三态会被
+                # 受理回执覆盖，前端把失败误显示为「正在启动」。对齐无池兜底
+                # 路径「先受理后执行」的既有顺序；submit 抛异常由 except 分支
+                # 补落 failed/submit_error（后写覆盖，终态仍正确）。
                 self._write_code_review_request_result(requested_at, "started", None)
+                self._admin_executor.submit(_worker_with_flag)
             else:
                 # 无池兜底（同步执行）：受理先于执行落盘；run 终态不回写结果
                 # 文件（design D1），执行完毕后结果仍停留 started
