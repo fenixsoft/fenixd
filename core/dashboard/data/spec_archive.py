@@ -385,11 +385,14 @@ def auto_archive_check(project_root, config: dict, logger=None) -> dict:
             "total_terminal_unarchived": total,
         }
 
-    # 按 updated 升序（最久完成的先归档）；缺 updated 归队尾（空串最小）。
+    # 按 updated 升序（最久完成的先归档）；缺 updated 归队尾——哨兵取
+    # "9999-12-31"（updated 为 ISO 8601 字符串，字典序必小于该哨兵；空串最小
+    # 会排到队头、抢在最久完成的 spec 之前被归档，code-review item
+    # 411679cf624d）。
     # 纯 return 无异常面，try/except 属不可达死代码（code-review item
-    # 81f539cc3de8）；updated 经 `or ""` 归一为字符串，排序比较安全。
+    # 81f539cc3de8）；updated 经哨兵归一为字符串，排序比较安全。
     def _sort_key(item):
-        return item[1].get("updated") or ""
+        return item[1].get("updated") or "9999-12-31"
 
     candidates.sort(key=_sort_key)
 

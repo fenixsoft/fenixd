@@ -61,8 +61,20 @@ class G5DistConflictsMixin:
         Returns: True 表示自愈完成且 merge 已提交。
         """
         try:
+            # -c core.quotePath=false（code-review item 4b0f8e543e15）：非 ASCII
+            # 路径保持原样输出，否则 porcelain 的 C 转义引号形会让下方
+            # checkout/git rm 因路径失配而静默失效。与 _collect_conflict_paths
+            # 的采集点同口径。
             res = subprocess.run(
-                ["git", "-C", str(self.project_root), "status", "--porcelain"],
+                [
+                    "git",
+                    "-C",
+                    str(self.project_root),
+                    "-c",
+                    "core.quotePath=false",
+                    "status",
+                    "--porcelain",
+                ],
                 capture_output=True,
                 text=True,
                 timeout=30,
@@ -83,14 +95,22 @@ class G5DistConflictsMixin:
             head_artifacts = self._artifact_paths("HEAD")
             for p in artifact_paths:
                 if p in head_artifacts:
-                    subprocess.run(
+                    co = subprocess.run(
                         ["git", "-C", str(self.project_root), "checkout", "HEAD", "--", p],
                         capture_output=True,
                         text=True,
                         timeout=60,
                     )
+                    if co.returncode != 0:
+                        # 非阻塞记录（remaining 复查仍兜底降级语义冲突），
+                        # 避免 checkout 失败被静默吞掉（item 4b0f8e543e15）
+                        self.logger.warning(
+                            "worktree_manager",
+                            f"checkout HEAD -- {p} failed during artifact "
+                            f"self-heal: {(co.stderr or '').strip()[:200]}",
+                        )
                 else:
-                    subprocess.run(
+                    rm = subprocess.run(
                         [
                             "git",
                             "-C",
@@ -105,6 +125,12 @@ class G5DistConflictsMixin:
                         text=True,
                         timeout=30,
                     )
+                    if rm.returncode != 0:
+                        self.logger.warning(
+                            "worktree_manager",
+                            f"git rm -- {p} failed during artifact "
+                            f"self-heal: {(rm.stderr or '').strip()[:200]}",
+                        )
             # 收口：分支侧干净 add 的产物（非冲突新增）不复活——staged 产物中
             # HEAD 没有的一律移除（含旧路径双胞胎、对方重命名后的旧 hash chunk）。
             # 全量 staged 新增后按配置判定器过滤（code-review item
@@ -141,7 +167,15 @@ class G5DistConflictsMixin:
                     )
             # 剩余冲突：非产物路径仍冲突 → 语义冲突，交回调用方（不 abort）
             res2 = subprocess.run(
-                ["git", "-C", str(self.project_root), "status", "--porcelain"],
+                [
+                    "git",
+                    "-C",
+                    str(self.project_root),
+                    "-c",
+                    "core.quotePath=false",
+                    "status",
+                    "--porcelain",
+                ],
                 capture_output=True,
                 text=True,
                 timeout=30,
@@ -531,8 +565,18 @@ class G5DistConflictsMixin:
         冲突分类与实际自愈判定一致。非冲突态/命令失败返回空列表。
         """
         try:
+            # -c core.quotePath=false：与 _resolve_build_artifact_conflicts 的
+            # 采集点同口径（item 4b0f8e543e15），非 ASCII 路径不做 C 转义
             res = subprocess.run(
-                ["git", "-C", str(self.project_root), "status", "--porcelain"],
+                [
+                    "git",
+                    "-C",
+                    str(self.project_root),
+                    "-c",
+                    "core.quotePath=false",
+                    "status",
+                    "--porcelain",
+                ],
                 capture_output=True,
                 text=True,
                 timeout=30,

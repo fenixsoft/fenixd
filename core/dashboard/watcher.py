@@ -378,7 +378,7 @@ class FileWatcher:
         key = (proot.as_posix(), run_id)
         prev = self._run_base.get(key)
 
-        if prev is None or prev["size"] is None:
+        if prev is None:
             # 首次见到：仅建立基线（含状态），不推送（弹窗初始已通过 REST 拉到尾部）
             self._run_base[key] = {"size": size, "status": self._classify(run_file)}
             return
@@ -402,21 +402,24 @@ class FileWatcher:
                 )
             return
 
-        # 正常增长：读取新增字节
-        new_events = dashboard_data.read_run_events_between(proot, run_id, prev_size)
+        # 正常增长：基线对所有活跃 run 持续维护（status 转换广播不依赖订阅，
+        # 且未订阅 run 也需跟踪 size，保证订阅后首轮增量起点正确）
         status = self._classify(run_file)
         self._run_base[key] = {"size": size, "status": status}
 
-        if new_events and self.hub.is_watched(run_id):
-            self.hub.broadcast(
-                {
-                    "project": name,
-                    "type": "run_events",
-                    "run_id": run_id,
-                    "status": status,
-                    "events": new_events,
-                }
-            )
+        if self.hub.is_watched(run_id):
+            # 仅被订阅的 run 才读取新增字节并解析事件
+            new_events = dashboard_data.read_run_events_between(proot, run_id, prev_size)
+            if new_events:
+                self.hub.broadcast(
+                    {
+                        "project": name,
+                        "type": "run_events",
+                        "run_id": run_id,
+                        "status": status,
+                        "events": new_events,
+                    }
+                )
         if status != prev["status"]:
             # 状态转换（running→done/error）：run 元数据/时间轴需刷新
             self.hub.broadcast(

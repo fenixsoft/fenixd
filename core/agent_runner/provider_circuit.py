@@ -1687,17 +1687,34 @@ class ProviderCircuit:
         if until <= 0:
             return False
         now = self._pm._now() if now is None else now
-        if now >= until:
-            # 冷却到期自动恢复：清零计数，写恢复告警（节流抑制重复）。
-            self._pm.logger.warning(
-                "agent_runner",
-                f"'{spec_name}' 信号死法冷却到期 — 自动恢复派发，计数清零"
-                f"（evo-sigterm-source-tracking-cooldown）",
-            )
-            self._alert_signal_kill_recovered(spec_name)
+        if now < until:
+            return True
+        # 冷却到期自动恢复（code-review item 42a62f2fc5e4）：到期推进与
+        # record_signal_kill 的记账同持 _signal_kill_lock——锁内二读
+        # cooldown_until 确认仍过期才 pop。无锁读到「已到期」后、pop 前，
+        # 并发收尾的 run-worker 可能以信号死法达阈值在锁内写入新
+        # cooldown_until，不二读直接 pop 会把刚建立的冷却整条抹掉（该 spec
+        # 立即可重派）。临界区内只查表/弹条目，恢复告警的 AdminStore 文件 IO
+        # 照既有纪律（record_signal_kill → _alert_signal_kill_storm）留锁外。
+        with self._signal_kill_lock:
+            st = self._signal_kill.get(spec_name)
+            if st is None:
+                return False
+            until = st.get("cooldown_until") or 0.0
+            if until <= 0:
+                return False
+            if now < until:
+                # 二读发现冷却仍在（含被并发 record_signal_kill 重建）：不 pop。
+                return True
             self._signal_kill.pop(spec_name, None)
-            return False
-        return True
+        # 冷却到期自动恢复：清零计数，写恢复告警（节流抑制重复）。
+        self._pm.logger.warning(
+            "agent_runner",
+            f"'{spec_name}' 信号死法冷却到期 — 自动恢复派发，计数清零"
+            f"（evo-sigterm-source-tracking-cooldown）",
+        )
+        self._alert_signal_kill_recovered(spec_name)
+        return False
 
     def signal_kill_cooldown_until(self, spec_name: str) -> float:
         """该 spec 信号死法冷却到期单调秒（未冷却/无条目返回 0；派发恢复排程用）。"""

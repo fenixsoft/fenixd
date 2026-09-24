@@ -18,6 +18,9 @@ export default function ProgressBarTile(
   },
 ) {
   const p = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
+  // done 超过 total 时文本同样钳到 total / total：与上方百分比钳制口径一致，
+  // 避免进度条满格 100% 却显示「12 / 10」的矛盾信号（上游重复计数/统计滞后）。
+  const shownDone = Math.min(done, total);
   return (
     <>
       <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', margin: '4px 0 10px', flexWrap: 'wrap' }}>
@@ -25,7 +28,7 @@ export default function ProgressBarTile(
         <span>
           <Typography.Text type="secondary">已完成 </Typography.Text>
           <Typography.Text strong>
-            {done} / {total}
+            {shownDone} / {total}
           </Typography.Text>
         </span>
       </div>

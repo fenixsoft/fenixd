@@ -88,13 +88,16 @@ def latency_samples_from_events(entries, parser=None) -> list:
     承载，兼容顶层 ``tool_result`` 事件）的 timestamp，遇到下一个
     ``assistant`` 事件时两者之差 = 一次 API 往返样本；随后清空待配对的
     tool_result（一个样本只配对一次）。timestamp 缺失的事件不参与（跳过），
-    样本列表可空。
+    样本列表可空。差值 < 0（timestamp 非单调：转录乱序、时钟回拨等）视为
+    无效测量，跳过不入样本（待配对 tool_result 仍清空，维持「一个样本只
+    配对一次」），以免负样本污染下游 median/p90/max/stall_ratio 口径。
 
     Args:
         entries: 事件 dict 序列（list / 生成器）。
         parser: timestamp 解析函数（缺省 = 本模块 _default_ts_parser）。
 
-    Returns: float 秒样本列表（含 >60s 长尾；顺序为事件到达序）。
+    Returns: float 非负秒样本列表（含 >60s 长尾；顺序为事件到达序；
+    timestamp 乱序产生的负差值已剔除）。
     """
     if parser is None:
         parser = _default_ts_parser
@@ -111,7 +114,12 @@ def latency_samples_from_events(entries, parser=None) -> list:
         elif etype == "assistant":
             ts = parser(e)
             if ts is not None and last_tool_result_ts is not None:
-                samples.append(ts - last_tool_result_ts)
+                delta = ts - last_tool_result_ts
+                # 负差值 = timestamp 非单调（转录乱序/时钟回拨），非真实
+                # API 往返，跳过不入样本；待配对 tool_result 仍清空，
+                # 维持「一个样本只配对一次」。
+                if delta >= 0:
+                    samples.append(delta)
                 last_tool_result_ts = None
     return samples
 
@@ -119,20 +127,27 @@ def latency_samples_from_events(entries, parser=None) -> list:
 def latency_stats(samples) -> dict:
     """把 API 往返样本压缩为直方图摘要（空样本安全返回全 0 键）。
 
+    口径：负样本（timestamp 非单调的无效测量，见
+    ``latency_samples_from_events``）先剔除再统计——rounds/stalls/
+    stall_ratio 均基于同一非负有效样本集，stall_ratio 分母 = 有效样本数，
+    语义自洽（在线旁路 runner._run_claude 内联采样亦经本函数收口）。
+
     Returns: {"rounds": int, "median": float|None, "p90": float|None,
               "max": float|None, "stalls": int, "stall_ratio": float}
-        rounds 为样本数（=有 timestamps 的 API 往返轮数）；stalls 为
-        >60s 长尾样本数；stall_ratio = stalls/rounds（0 样本为 0）。
+        rounds 为有效（非负）样本数（=有 timestamps 的 API 往返轮数）；
+        stalls 为 >60s 长尾样本数；stall_ratio = stalls/rounds（0 样本为 0）。
     """
-    n = len(samples)
+    # 兜底剔除负样本：直接喂入的裸样本（如在线旁路内联采样）也去无效测量。
+    valid = [s for s in samples if s >= 0]
+    n = len(valid)
     base = {"rounds": n, "median": None, "p90": None, "max": None, "stalls": 0, "stall_ratio": 0.0}
     if n == 0:
         return base
-    ordered = sorted(samples)
+    ordered = sorted(valid)
     base["median"] = _percentile(ordered, 0.5)
     base["p90"] = _percentile(ordered, 0.9)
     base["max"] = ordered[-1]
-    base["stalls"] = sum(1 for s in samples if s > LATENCY_STALL_SECONDS)
+    base["stalls"] = sum(1 for s in valid if s > LATENCY_STALL_SECONDS)
     base["stall_ratio"] = base["stalls"] / n
     return base
 

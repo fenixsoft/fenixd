@@ -365,7 +365,7 @@ class HookEngine:
             hook_id = cfg.get("id") if isinstance(cfg, dict) else None
             th = threading.Thread(
                 target=self._execute_one,
-                args=(hook_id, scope, spec, from_status, to_status, entry or {}),
+                args=(hook_id, scope, spec, from_status, to_status, entry or {}, cfg),
                 name=f"hook-{hook_id or 'anon'}-{spec}",
                 daemon=True,
             )
@@ -416,6 +416,7 @@ class HookEngine:
                     None,
                     HOOK_EVENT_ALL_DONE,
                     {"trigger_spec": trigger_spec},
+                    cfg,
                 ),
                 name=f"hook-{hook_id or 'anon'}-all-done",
                 daemon=True,
@@ -450,15 +451,22 @@ class HookEngine:
         from_status: Optional[str],
         to_status: str,
         entry: dict,
+        matched_cfg: Optional[dict] = None,
     ) -> None:
         """单条 hook 的执行线程：实时重读配置、enabled 判 skip、执行、审计。
 
         单 hook 异常互不影响（线程级 try 全包裹，失败走 failure 审计+告警）。
+        无 id 的手写 hook（validate_hook_entry 允许缺省 id 的受支持形态）无法
+        按 id 重查实时配置，按投递时命中的原始配置 matched_cfg 执行并照常写
+        审计；带 id 条目在投递与执行间隙被删除仍静默跳过（不写审计）。
         """
         try:
             cfg = self._find_live_hook(hook_id, scope, spec)
             if cfg is None:
-                return
+                if not hook_id and isinstance(matched_cfg, dict):
+                    cfg = matched_cfg
+                else:
+                    return
             if not cfg.get("enabled", True):
                 self._audit(
                     spec,

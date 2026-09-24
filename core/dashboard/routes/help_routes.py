@@ -8,6 +8,7 @@ D5 约定：各组方法采用 mixin 模式，DashboardHandler 继承各组 mixi
 
 from __future__ import annotations
 
+import errno
 from pathlib import Path
 
 
@@ -68,6 +69,7 @@ class H8HelpRoutesMixin:
         - 名字不匹配白名单（[A-Za-z0-9._-]+\.md）→ 400（防穿越，不泄露信息）
         - 解析后 real path 不在 docs/help/ 内 → 400
         - 目录缺失 / 文件不存在 → 404
+        - 存在但读取失败（权限/IO）→ 500，不与「不存在」混淆
         """
         from core.dashboard import server as _server_mod  # noqa: E402 — D3
         name = query.get("name", [None])[0] or ""
@@ -85,8 +87,15 @@ class H8HelpRoutesMixin:
             return
         try:
             content = target.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            self._error(404, "help doc not found")
+        except OSError as exc:
+            # code-review 4c1dd43dbfbd：is_file() 已通过后的 OSError 多为
+            # 权限/IO 故障，与「不存在」同报 404 会让排查失焦（对齐
+            # settings_routes._api_prompts_get 读失败转可读 500 的惯例）；
+            # 仅 ENOENT/ENOTDIR（检查与读取之间被删的竞态）仍按 404。
+            if exc.errno in (errno.ENOENT, errno.ENOTDIR):
+                self._error(404, "help doc not found")
+            else:
+                self._error(500, f"help doc read failed: {exc}")
             return
         self._json(
             {

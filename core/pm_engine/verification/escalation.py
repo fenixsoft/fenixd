@@ -373,12 +373,18 @@ def _update_warning_streaks(pipeline, spec_name: str) -> list:
         return []
 
     triage_candidates = []
+    # 本轮场景 id 集 / pass 集合（供 triage_recheck.json 剪枝，见函数尾部）
+    current_ids = set()
+    passed_ids = set()
     for sc in scenarios:
         if not isinstance(sc, dict):
             continue
         sid = sc.get("scenario_id") or sc.get("id")
         if not sid:
             continue
+        current_ids.add(sid)
+        if sc.get("status") == "pass":
+            passed_ids.add(sid)
         status = sc.get("status")
         classification = sc.get("classification")
         # 仅 flaky/env 的 warning 计入连续悬置；product-bug/test-defect 已强制
@@ -411,6 +417,44 @@ def _update_warning_streaks(pipeline, spec_name: str) -> list:
             "pm_engine",
             f"warning_streaks 写回失败 '{spec_name}': {e}",
         )
+
+    # 优先复核清单剪枝：triage_recheck.json 只在 _warning_stale_triage_alert
+    # 追加、无清除逻辑，已收敛（本轮 pass）或已不在当前场景集（随重排出题
+    # 被替换）的 id 会永久滞留并被 planner prompt 每轮反复注入过期情报。
+    # 此处按本轮 report 场景状态剪枝；report 不可得（上方提前 return）或
+    # 文件缺失/损坏时不动作——损坏文件由 alert 写入路径的坏文件容错自愈。
+    recheck_path = (
+        pipeline._context.project_root
+        / ".fenix"
+        / "verify-progress"
+        / spec_name
+        / "triage_recheck.json"
+    )
+    if recheck_path.exists():
+        try:
+            data = json.loads(recheck_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            data = None
+        if isinstance(data, list) and data:
+            pruned = [
+                sid
+                for sid in data
+                if not (
+                    isinstance(sid, str)
+                    and (sid not in current_ids or sid in passed_ids)
+                )
+            ]
+            if len(pruned) != len(data):  # 无变化不写盘（避免每轮无谓写）
+                try:
+                    recheck_path.write_text(
+                        json.dumps(pruned, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+                except OSError as e:
+                    pipeline._context.logger.warning(
+                        "pm_engine",
+                        f"triage_recheck 剪枝写盘失败 '{spec_name}': {e}",
+                    )
     return triage_candidates
 
 

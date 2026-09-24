@@ -48,6 +48,7 @@ class H4RunRoutesMixin:
             content_length = int(self.headers.get("Content-Length", "0") or 0)
         except ValueError:
             content_length = 0
+        # [fenix-ignore:4e54263f454d] 此处不读 body 不会毒化 keep-alive：未消费 body 由 _handle_inner finally 的 _drain_remaining_request_body 统一排空（BUG-01/265e22d75797），同 regression_routes 6e9597e51e90 先例
         if content_length > 0 and (reason is None or not reason):
             body = self._read_json_body()
             if isinstance(body, dict):

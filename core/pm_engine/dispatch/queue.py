@@ -2865,9 +2865,21 @@ class QQQueueMixin:
             self._ocr_join_clear_pending(spec_name)
             self._ocr_clear_findings_directive(spec_name)
             return "pass"
-        self._pm.state_machine.update_spec(
-            spec_name, self._ocr_join_pending_fields(origin)
-        )
+        # pending 落盘包 try/except（与 _ocr_join_clear_pending 同款惯例）：
+        # 写失败不得打断 _ocr_join_gate 的 pass/defer/reject 返回契约；且此路
+        # 径 MUST NOT 返回 defer——pending 缺席时唤醒回调幂等空转，spec 会
+        # 永久停等 testing，故 fail-open 放行（对齐上方车道缺席降级语义）。
+        try:
+            self._pm.state_machine.update_spec(
+                spec_name, self._ocr_join_pending_fields(origin)
+            )
+        except Exception as e:  # noqa: BLE001
+            self._pm.logger.warning(
+                "pm_engine",
+                f"ocr join pending 标记写入失败 '{spec_name}'（fail-open 放行）: "
+                f"{type(e).__name__}: {e}",
+            )
+            return "pass"
         self._pm.logger.info(
             "pm_engine",
             f"ocr join 停等 '{spec_name}'（{reason}）——spec 停留 testing，"
