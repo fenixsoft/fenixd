@@ -42,7 +42,7 @@ export default [
   {
     path: '/help',
     name: '帮助',
-    icon: 'QuestionCircleOutlined',
+    icon: 'question',
     component: './help',
   },
   {

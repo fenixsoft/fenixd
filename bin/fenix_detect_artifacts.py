@@ -197,7 +197,8 @@ def _read_existing_config(project_root: Path) -> dict | None:
                     except (ValueError, SyntaxError):
                         result["build_artifact_paths"] = None
                 else:
-                    result["build_artifact_paths"] = None  # 未在本行定义
+                    # 块式列表不在本行，无法简单解析；仅凭 has_build_artifacts 在册即视为已裁决
+                    result["build_artifact_paths"] = None
     return result if result else None
 
 

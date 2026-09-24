@@ -494,7 +494,10 @@ def read_config(scope_root, scope: str = "project") -> dict:
             # 回显视图（str/list/对象统一为对象数组 + resolved model）
             from core.config import ConfigLoader as _CL
 
-            llm_providers = raw.get("llm", {}).get("providers") or []
+            llm_raw = raw.get("llm")
+            llm_providers = (
+                (llm_raw.get("providers") or []) if isinstance(llm_raw, dict) else []
+            )
             agents_result["models"] = _CL.normalize_agent_models(
                 agents_raw["models"], llm_providers
             )
@@ -791,9 +794,10 @@ def read_effective_config(project_root) -> dict:
             # 回显视图（str/list/对象统一为对象数组 + resolved model）
             from core.config import ConfigLoader as _CL
 
-            llm_eff = effective.get("llm") or {}
+            llm_eff = effective.get("llm")
             result["agents"]["models"] = _CL.normalize_agent_models(
-                agents_eff["models"], (llm_eff.get("providers") or [])
+                agents_eff["models"],
+                (llm_eff.get("providers") or []) if isinstance(llm_eff, dict) else [],
             )
         result["agents"].update(_echo_agents_int_keys(agents_eff))
         # 同因重派熔断阈值有效值回显（经 ConfigLoader 单点归一化，非法回退缺省 3）

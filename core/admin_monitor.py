@@ -1147,12 +1147,29 @@ class AdminMonitor:
             )
             timer.daemon = True
             self._code_review_redispatch_timer = timer
-        self.logger.info(
-            "admin_monitor",
-            f"code-review 429 重派已排程：原 run {run_id}，{int(delay)}s 后"
-            f"（provider 限流冷却到期）以原 manifest 重派一次",
-        )
-        timer.start()
+        try:
+            self.logger.info(
+                "admin_monitor",
+                f"code-review 429 重派已排程：原 run {run_id}，{int(delay)}s 后"
+                f"（provider 限流冷却到期）以原 manifest 重派一次",
+            )
+            timer.start()
+        except Exception as e:
+            # code-review item 7e5fbd614cdd：投递失败回滚，对齐下方
+            # _consume_ratelimit_redispatch 的 submit 失败回滚口径——配额占用与
+            # 句柄登记已在锁内完成，start 失败若不回滚，句柄唯一清零点（冷却回调）
+            # 永不触发 → 幽灵 Timer 句柄 + 配额已消耗，本生命周期唯一一次重派
+            # 机会被永久占用（后续意图只会命中误导性的「已达上限」跳过日志）。
+            with self._code_review_lock:
+                self._code_review_ratelimit_redispatches -= 1
+                if self._code_review_redispatch_timer is timer:
+                    self._code_review_redispatch_timer = None
+            timer.cancel()
+            self.logger.error(
+                "admin_monitor",
+                f"code-review 429 重派排程失败: {e}（原 run {run_id}，"
+                f"已回滚重派配额与 Timer 句柄）",
+            )
 
     def _consume_ratelimit_redispatch(self, manifest, review_kind, window_start,
                                       scope, original_run_id: str) -> None:
@@ -3006,6 +3023,37 @@ class AdminMonitor:
                 f"信号死法冷却中，跳过 Administrator 唤起 '{_sig_spec}'"
                 f"（evo-sigterm-source-tracking-cooldown）",
             )
+            # code-review item f954cc8875：自动巡检路径唤起前 _handle_signal 已落
+            # escalated=True 的 signal 记录（冷却锚点），本路径实际未派发——不补
+            # 痕则 store 永久留存「已唤起」假象，审计/看板失真。对齐 fixture 抑制
+            # 路径 escalated=False 的「不虚报已唤起」约定；merge_signal 对
+            # escalated 单调升级（False→True 绝不回退）无法回写降级，故补写
+            # 说明性处置记录。result="skipped" 不命中任何 result 消费分支，且
+            # DISPOSITION 不参与 unhandled_for 节流——不阻断冷却到期后的自然恢复。
+            # 人工通道（signal_rec=None）无该虚报锚点，不补痕。
+            if signal_rec is not None:
+                try:
+                    self.store.append(
+                        {
+                            "kind": DISPOSITION,
+                            "signal_type": signal.get("signal_type"),
+                            "spec": signal.get("spec"),
+                            "severity": signal.get("severity"),
+                            "description": signal.get("description"),
+                            "action_taken": (
+                                "信号死法冷却中，跳过 Administrator 唤起"
+                                "（evo-sigterm-source-tracking-cooldown）——"
+                                "实际未派发，冷却到期由恢复定时器/检测循环自然恢复"
+                            ),
+                            "result": "skipped",
+                        }
+                    )
+                except Exception as e:
+                    self.logger.error(
+                        "admin_monitor",
+                        f"Failed to persist cooldown-skip disposition for "
+                        f"'{signal.get('spec') or 'daemon'}': {e}",
+                    )
             return
 
         try:

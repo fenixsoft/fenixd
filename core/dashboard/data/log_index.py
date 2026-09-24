@@ -173,6 +173,8 @@ def _iter_tail_log_entries(proot: Path, lf: Path, cutoff: str = "") -> list:
             entry = json.loads(line)
         except json.JSONDecodeError:
             continue
+        if not isinstance(entry, dict):
+            continue
         if cutoff and entry.get("timestamp", "") < cutoff:
             continue
         out.append(entry)
