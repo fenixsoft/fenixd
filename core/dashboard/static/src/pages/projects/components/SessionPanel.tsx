@@ -88,6 +88,11 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
   const [events, setEvents] = useState<SessionEvent[]>([]);
   const [loading, setLoading] = useState(false);
   const [sending, setSending] = useState(false);
+  // 停止请求在途防重（code-review item 4c0da5acbb6f）：ended 要等 stopSession
+  // 响应返回才置位，网络往返窗口内连点会并发发出多次 stop 请求（首次成功
+  // 移除会话后后续请求命中服务端无会话判定而报错）。在途期间禁用按钮，
+  // finally 复位——失败也复位，保留重试能力。
+  const [stopping, setStopping] = useState(false);
   const [text, setText] = useState('');
   const [ended, setEnded] = useState(false);
   const [started, setStarted] = useState(false); // 会话是否已启动（session: null 时空态）
@@ -297,6 +302,7 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
       sessionIdRef.current = null;
       setEnded(false);
       setSending(false);
+      setStopping(false);
       setText('');
     }
     // 卸载守卫（code-review item e71b2c2de7cf）：组件在 active===true 且已注册
@@ -374,6 +380,8 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
   };
 
   const handleStop = async () => {
+    if (stopping || ended) return;
+    setStopping(true);
     try {
       await stopSession(project);
       setEnded(true);
@@ -382,6 +390,8 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
       watchRegisteredRef.current = false;
     } catch (e) {
       message.error(`停止失败：${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setStopping(false);
     }
   };
 
@@ -467,7 +477,8 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
           <Button
             danger
             icon={<StopOutlined />}
-            disabled={ended}
+            disabled={ended || stopping}
+            loading={stopping}
             onClick={() => void handleStop()}
           >
             停止会话

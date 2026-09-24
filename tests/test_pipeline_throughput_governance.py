@@ -383,11 +383,18 @@ def _make_pipeline(tmp_path: Path, failed_ids: list, state: dict | None = None):
     logger = FakeLogger()
     state = state if state is not None else {}
 
+    def _bump_counters(spec, deltas):
+        # 对齐 StateMachine.bump_counters 契约：各字段下限 0，返回最终生效值
+        for field, delta in deltas.items():
+            state[field] = max(0, state.get(field, 0) + delta)
+        return {field: state[field] for field in deltas}
+
     ctx = SimpleNamespace(
         project_root=tmp_path,
         state_machine=SimpleNamespace(
             read_one=lambda spec: dict(state),
             update_spec=lambda spec, fields: state.update(fields),
+            bump_counters=_bump_counters,
         ),
         logger=logger,
         agent_runner=SimpleNamespace(

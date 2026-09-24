@@ -90,7 +90,9 @@ def _load_gates(proot):
         return "manual", "auto"
 
 
-def _collect_signals(proot, entries, active, daemon, approve_mode, promote_mode, alerts=None):
+def _collect_signals(
+    proot, entries, active, daemon, approve_mode, promote_mode, alerts=None, summaries=None
+):
     """信号汇总：供 LLM 分诊的问题素材（已知等待单列，不算问题）。"""
     signals = []  # (level, text)
     waits = []  # 已知等待（有意暂停，非问题）
@@ -132,11 +134,18 @@ def _collect_signals(proot, entries, active, daemon, approve_mode, promote_mode,
         # 冻结的 error 是冻结标记本身，不算故障
         if err and not frozen:
             signals.append(("warn", f"{name}（{st}）：{str(err)[:100]}"))
-        # 尝试预算（与预算闸门同源字段，spec_summary 单点解析）
-        try:
-            s = data.spec_summary(proot, name, entry)
-        except Exception:
-            s = None
+        # 尝试预算（与预算闸门同源字段，spec_summary 单点解析）。summaries 由
+        # 调用方（render_report）取一次传入复用——与 alerts 的快照共享同一模式：
+        # 同一批活跃 SPEC 的明细行与信号汇总共用同一份 summary（内部多文件
+        # IO），避免 IO 翻倍、也避免两次扫描间隙数据变化使两处口径不一致；
+        # 直调方未传时现场取。
+        if summaries is None:
+            try:
+                s = data.spec_summary(proot, name, entry)
+            except Exception:
+                s = None
+        else:
+            s = summaries.get(name)
         if s:
             used = int(s.get("budget_used") or 0)
             effective = int(s.get("budget_effective") or 0)
@@ -285,6 +294,7 @@ def render_report(project_root) -> str:
     lines.append(f"-- 活跃 SPEC（{len(active)}）--")
     if not active:
         lines.append("  （无活跃 SPEC）")
+    summaries = {}  # 取一次快照：明细行渲染与 _collect_signals 共用（见其 summaries 注释）
     for name, entry in sorted(active.items(), key=_active_sort_key):
         st = entry.get("status", "?")
         icon = STATUS_ICONS.get(st, "❓")
@@ -293,6 +303,7 @@ def render_report(project_root) -> str:
             s = data.spec_summary(proot, name, entry)
         except Exception:
             s = None
+        summaries[name] = s
         seg = [f"{icon} {name}", f"P{pri}", st]
         if s:
             seg.append(f"[{s.get('mode') or 'full'}]")
@@ -335,7 +346,9 @@ def render_report(project_root) -> str:
     lines.append(f"-- 终态（已折叠）-- 🎯 done {done_cnt} ｜ 🚀 pushed {pushed_cnt}")
 
     # ── 信号汇总（供 LLM 分诊） ──
-    signals = _collect_signals(proot, entries, active, daemon, approve_mode, promote_mode, alerts)
+    signals = _collect_signals(
+        proot, entries, active, daemon, approve_mode, promote_mode, alerts, summaries
+    )
     lines.append("")
     lines.append("-- 信号汇总（供分诊；🔴/⚠️=问题，ℹ️=提示，已知等待不算问题）--")
     if signals:

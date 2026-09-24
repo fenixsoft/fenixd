@@ -761,22 +761,33 @@ class DisputeAuditStore:
                     pass
 
     def read_all(self) -> list:
-        """读取全部审计记录（最新的在前）。损坏/缺失返回空列表。"""
+        """读取全部审计记录（最新的在前）。损坏/缺失返回空列表。
+
+        与 append 一致在 _thread_lock + flock 排他锁内读取：单条记录
+        （verdicts 全文 + diff）可能超出单次 write 原子性，无锁并发读会
+        观察到半行 JSON 而被下方 JSONDecodeError 静默跳过。
+        """
         if not self.audit_path.exists():
             return []
         out: list = []
         try:
-            with self.audit_path.open(encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
+            with self._thread_lock:
+                with self._lockfile.open("w", encoding="utf-8") as lf:
+                    fcntl.flock(lf, fcntl.LOCK_EX)
                     try:
-                        d = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if isinstance(d, dict):
-                        out.append(d)
+                        with self.audit_path.open(encoding="utf-8") as f:
+                            for line in f:
+                                line = line.strip()
+                                if not line:
+                                    continue
+                                try:
+                                    d = json.loads(line)
+                                except json.JSONDecodeError:
+                                    continue
+                                if isinstance(d, dict):
+                                    out.append(d)
+                    finally:
+                        fcntl.flock(lf, fcntl.LOCK_UN)
         except OSError:
             return []
         out.sort(key=lambda e: e.get("created", ""), reverse=True)

@@ -1169,15 +1169,21 @@ class LivenessSupervisor:
         # 路径与零增长区间），并写入被监督 run 的 jsonl 供审计。
         zero_output = self._zero_output_assessment(run_file, snapshot, window, now)
         if zero_output:
-            append_run_line(
-                run_file,
-                {
-                    "type": "liveness_shortcut",
-                    "kind": "zero_output_heuristic",
-                    "evidence": zero_output,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                },
-            )
+            try:
+                append_run_line(
+                    run_file,
+                    {
+                        "type": "liveness_shortcut",
+                        "kind": "zero_output_heuristic",
+                        "evidence": zero_output,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    },
+                )
+            except OSError as e:  # pragma: no cover - 留痕失败不得中断 kill 决策收口
+                self._pm.logger.warning(
+                    "agent_runner",
+                    f"Failed to append zero_output_heuristic marker to {run_file}: {e}",
+                )
             self._pm.logger.warning(
                 "agent_runner",
                 f"Liveness shortcut (heuristic zero-output) for {spec_name or 'unknown'} "

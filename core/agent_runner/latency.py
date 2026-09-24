@@ -82,7 +82,8 @@ def _entry_is_tool_result(entry: dict) -> bool:
     if entry.get("type") == "tool_result":
         return True
     if entry.get("type") == "user":
-        content = entry.get("message", {}).get("content")
+        message = entry.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
         return isinstance(content, list) and any(
             isinstance(b, dict) and b.get("type") == "tool_result" for b in content
         )
