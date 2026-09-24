@@ -102,6 +102,17 @@ SUPERVISOR_RUNTIME_DRIFT_SECONDS = 24 * 3600
 # 120s），以免延迟在飞识别——2s 远小于 120s 确认窗口，不会造成误触发。
 STALE_SELFHEAL_REVIEW_ANCHOR_CACHE_SECONDS = 2.0
 
+# stale_code 告警跨重启窗口去重阈值（stale-code-alert-window-dedup 1.1，模块
+# 常量不入 config，对齐 admin_monitor 的 DAEMON_ERROR_RESTART_COOLDOWN_MINUTES
+# 风格，规避「新增配置项必须带 Dashboard UI」约束）。告警写入侧虽已是假→真
+# 边沿触发（单 daemon 生命周期一条），但高频提交下 daemon 生命周期本身快速
+# 轮换——每次重启新进程都会再次「首次变陈旧」成条。admin_alerts.json 落盘
+# 持久，窗口判定直接复用存储（latest_signal），去重状态天然跨重启存活、零
+# 新增状态文件。60 分钟与自愈重启节奏（实测窗口内约 1-2 小时一次）同量级，
+# 超 60 分钟的新陈旧周期照常成条，真·新周期不被吞。
+# 治理参数后续可由告警治理 SPEC 统一参数化。
+STALE_ALERT_DEDUP_MINUTES = 60
+
 # 单飞 fallback 锁的惰性创建守卫（code-review item d51f639c500c）：旧实现
 # 「检查→为 None→new Lock→写回」非原子，两线程可各建一把锁并同时通过
 # check-then-set——创建本身必须互斥。
@@ -985,6 +996,10 @@ class FenixDaemon:
             ——陈旧成为 dashboard 可见的持续状态。该告警为 warning 级（2026-09-13
             用户降噪决策）：写入即自动标记已处理，不进人工告警横幅/待处理队列，
             仅保留历史记录；状态边沿触发写入，单个陈旧周期内不重复堆积。
+            写入前另经 latest_signal 做 STALE_ALERT_DEDUP_MINUTES 窗口去重
+            （stale-code-alert-window-dedup）：60 分钟内已有同信号记录则跳过
+            写入降级为日志，覆盖高频提交下 daemon 快速轮换重启的跨生命周期
+            重复；超窗新周期照常成条。
           - 真→假：记录状态解除（重启后新进程 baseline 刷新，或磁盘代码回退），
             不产生新告警；既有历史告警可经既有处置流程关闭。
         """
@@ -1009,36 +1024,53 @@ class FenixDaemon:
             )
             try:
                 if self.admin_store is not None:
-                    # 降噪（2026-09-13 用户决策）：陈旧是可自愈收敛的持续状态，
-                    # 降为 warning 级——写入即自动标记已处理，不进人工告警横幅/
-                    # 待处理队列（复用 token_budget 同款处置），仅留历史记录。
-                    # 状态边沿（假→真）触发写入，单个陈旧周期内不会重复堆积，
-                    # 故不再依赖「未处置告警去重」。
-                    rec = self.admin_store.append(
-                        {
-                            "kind": ESCALATION,
-                            "signal_type": "stale_code",
-                            "spec": None,
-                            "severity": "warning",
-                            "description": (
-                                "daemon 进程持旧代码，自愈将在连续空闲后触发重启"
-                                "（stale_code_selfheal 配置启用时）"
-                            ),
-                            "evidence": (
-                                "fenixd 30s 检测点：fenixd.py/core/**/*.py mtime "
-                                "超进程启动 baseline"
-                            ),
-                            "action_taken": "fenixd 陈旧检测命中，标记为警告（等待空闲自愈）",
-                            "recommended_action": (
-                                "无需人工干预：连续空闲达到 "
-                                "stale_code_selfheal.idle_confirm_seconds 后自适应重启；"
-                                "如需立即生效可 touch .fenix/restart_request 或手动重启 "
-                                "daemon；关闭自愈见 stale_code_selfheal.enabled"
-                            ),
-                        }
+                    # 跨生命周期窗口去重（stale-code-alert-window-dedup 1.1）：
+                    # 边沿触发只覆盖单 daemon 生命周期，高频提交下生命周期快速
+                    # 轮换——每次重启新进程都再次「首次变陈旧」重复成条。写入
+                    # 前查持久化存储：60 分钟窗口内已有同信号记录则跳过写入
+                    # （降级为日志），去重状态复用 admin_alerts.json 天然跨重启
+                    # 存活。超窗新周期照常成条，真·新陈旧周期不被吞。
+                    recent = self.admin_store.latest_signal(
+                        None, "stale_code", STALE_ALERT_DEDUP_MINUTES
                     )
-                    if not severity_needs_human(rec.get("severity")):
-                        self.admin_store.mark_handled(rec["id"])
+                    if recent is not None:
+                        self.logger.info(
+                            "fenixd",
+                            f"stale_code 告警窗口去重命中："
+                            f"{STALE_ALERT_DEDUP_MINUTES} 分钟内已有同信号记录"
+                            f"（created {recent.get('created')}），跳过写入仅留日志",
+                        )
+                    else:
+                        # 降噪（2026-09-13 用户决策）：陈旧是可自愈收敛的持续状态，
+                        # 降为 warning 级——写入即自动标记已处理，不进人工告警横幅/
+                        # 待处理队列（复用 token_budget 同款处置），仅留历史记录。
+                        # 状态边沿（假→真）触发写入，单个陈旧周期内不会重复堆积，
+                        # 故不再依赖「未处置告警去重」。
+                        rec = self.admin_store.append(
+                            {
+                                "kind": ESCALATION,
+                                "signal_type": "stale_code",
+                                "spec": None,
+                                "severity": "warning",
+                                "description": (
+                                    "daemon 进程持旧代码，自愈将在连续空闲后触发重启"
+                                    "（stale_code_selfheal 配置启用时）"
+                                ),
+                                "evidence": (
+                                    "fenixd 30s 检测点：fenixd.py/core/**/*.py mtime "
+                                    "超进程启动 baseline"
+                                ),
+                                "action_taken": "fenixd 陈旧检测命中，标记为警告（等待空闲自愈）",
+                                "recommended_action": (
+                                    "无需人工干预：连续空闲达到 "
+                                    "stale_code_selfheal.idle_confirm_seconds 后自适应重启；"
+                                    "如需立即生效可 touch .fenix/restart_request 或手动重启 "
+                                    "daemon；关闭自愈见 stale_code_selfheal.enabled"
+                                ),
+                            }
+                        )
+                        if not severity_needs_human(rec.get("severity")):
+                            self.admin_store.mark_handled(rec["id"])
             except Exception as e:
                 self.logger.warning("fenixd", f"stale_code 告警写入失败（non-blocking）: {e}")
         else:

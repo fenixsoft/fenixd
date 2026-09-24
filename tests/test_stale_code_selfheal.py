@@ -20,6 +20,7 @@ import tempfile
 import threading
 import time
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -141,6 +142,89 @@ class TestStaleStatePersistence(unittest.TestCase):
         assert len(self.parts.stale_alerts()) == 1
         infos = " ".join(str(c) for c in self.d.logger.info.call_args_list)
         assert "陈旧状态解除" in infos
+
+
+# ── stale-code-alert-window-dedup 2.1：告警跨重启窗口去重 ──────────
+
+class TestStaleAlertWindowDedup(unittest.TestCase):
+    """60 分钟窗口去重：写入前查 latest_signal，同窗命中跳过写入降级为日志。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        proot = Path(self.tmpdir)
+        self.parts = _DaemonParts(proot)
+        self.d = self.parts.daemon
+        self.codefile = proot / "core_sample.py"
+        self.codefile.write_text("# v1\n", encoding="utf-8")
+        self.d._code_files = [self.codefile]
+        self.d._code_baseline_ns = self.codefile.stat().st_mtime_ns
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _touch_future(self):
+        """磁盘代码更新：mtime 拨到未来 60s（严格大于 baseline）。"""
+        later = time.time_ns() + 60_000_000_000
+        os.utime(self.codefile, ns=(later, later))
+
+    def _simulate_restart(self):
+        """模拟 daemon 重启后新进程：_code_stale 从假开始，再次检测命中。"""
+        self.d._code_stale = False
+
+    def _backdate_first_alert(self, minutes_ago: int):
+        """把已落盘的 stale_code 记录 created 拨回 minutes_ago 分钟前。"""
+        path = self.parts.proot / ".fenix" / "admin_alerts.json"
+        recs = json.loads(path.read_text(encoding="utf-8"))
+        old = datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)
+        recs[0]["created"] = old.isoformat()
+        path.write_text(json.dumps(recs), encoding="utf-8")
+
+    def test_within_window_no_duplicate_entry(self):
+        """窗口内重启（新进程再次「首次变陈旧」）：不新增条目，降级为日志。"""
+        self._touch_future()
+        self.d._update_stale_code_state()
+        assert len(self.parts.stale_alerts()) == 1
+        # 模拟重启：新进程边沿重新假→真，但存储 60 分钟内已有同信号记录
+        self._simulate_restart()
+        self._update_and_assert_deduped(expected=1)
+
+    def _update_and_assert_deduped(self, expected: int):
+        self.d._update_stale_code_state()
+        assert self.d._code_stale is True
+        assert len(self.parts.stale_alerts()) == expected, (
+            "窗口内命中去重不应新增同文条目")
+        infos = " ".join(str(c) for c in self.d.logger.info.call_args_list)
+        assert "窗口去重" in infos and "跳过写入" in infos
+
+    def test_beyond_window_new_cycle_writes_new_entry(self):
+        """超窗新周期：距上次告警超过 60 分钟再次进入陈旧态照常成条。"""
+        self._touch_future()
+        self.d._update_stale_code_state()
+        assert len(self.parts.stale_alerts()) == 1
+        self._backdate_first_alert(minutes_ago=61)
+        self._simulate_restart()
+        self.d._update_stale_code_state()
+        assert self.d._code_stale is True
+        alerts = self.parts.stale_alerts()
+        assert len(alerts) == 2, "超窗新周期应照常写入新告警"
+        # 新条目写入即 mark_handled 语义不变（warning 级不进人工队列）
+        assert alerts[1].get("handled") is True
+        # 超窗路径不走去重分支
+        infos = " ".join(str(c) for c in self.d.logger.info.call_args_list)
+        assert "窗口去重命中" not in infos
+        assert "跳过写入" not in infos
+
+    def test_empty_storage_first_report_unchanged(self):
+        """空存储首报：无任何 stale_code 记录时照常写入（首报不受去重影响）。"""
+        alerts_path = self.parts.proot / ".fenix" / "admin_alerts.json"
+        assert not alerts_path.exists(), "前置：存储为空（尚无落盘文件）"
+        self._touch_future()
+        self.d._update_stale_code_state()
+        alerts = self.parts.stale_alerts()
+        assert len(alerts) == 1
+        assert alerts[0].get("handled") is True
+        infos = " ".join(str(c) for c in self.d.logger.info.call_args_list)
+        assert "跳过写入" not in infos
 
 
 # ── 2.4 空闲判定与自愈触发 ─────────────────────────────────────────
