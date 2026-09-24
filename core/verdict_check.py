@@ -561,7 +561,12 @@ def compute_attribution_level(scenario: dict) -> str:
     if classification in (None, "pass"):
         return ATTRIBUTION_LEVEL_EVIDENCE_BACKED  # pass 场景不需要归因
 
+    # screenshot_labels 非 dict 按空处理（code-review item 6151f22ae34d，与
+    # evidence 同款防御：非 dict 真值 .get 抛 AttributeError 会被门禁
+    # 「异常不阻断」吞掉而旁路归因分级）。
     labels = scenario.get("screenshot_labels") or {}
+    if not isinstance(labels, dict):
+        labels = {}
     has_blank = labels.get("blank_screenshot", False)
     has_low_contrast = labels.get("low_contrast", False)
     has_labels = bool(labels)
@@ -1048,7 +1053,11 @@ def tag_cached_attributions(report: dict, cache: dict, spec_name: str = "") -> l
             sc["cached_source_round"] = cached_round
         # 纯缓存归因（无本轮新增 evidence-backed 证据）→ 按 speculative 口径
         level = sc.get("attribution_level") or ATTRIBUTION_LEVEL_EVIDENCE_BACKED
+        # screenshot_labels 非 dict 按空处理（code-review item 6151f22ae34d，
+        # 与 compute_attribution_level 同款防御，防 AttributeError 被门禁吞掉）。
         labels = sc.get("screenshot_labels") or {}
+        if not isinstance(labels, dict):
+            labels = {}
         evidence = sc.get("evidence") or {}
         ev_screenshots = evidence.get("screenshots") or []
         has_real_screenshots = isinstance(ev_screenshots, list) and any(

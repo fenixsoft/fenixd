@@ -4,7 +4,7 @@
 - GET  /api/code-review/items      （query project、可选 status）→ 台账列表
 - GET  /api/code-review/progress   （query project）→ 运行进度
 - GET  /api/code-review/fix-progress（query project）→ 自动修复进度（add-code-review-auto-fix）
-- POST /api/code-review/run        （body {project, scope}）→ 写手动触发信号
+- POST /api/code-review/run        （query ?project=<name> + body {scope}）→ 写手动触发信号
 - POST /api/code-review/fix-run    （query project）→ 写手动「立即自动修复」信号（add-code-fix-manual-trigger）
 - GET  /api/code-review/fix-run-result（query project）→ 只读手动触发判定结果（add-code-fix-manual-trigger）
 - GET  /api/code-review/run-result （query project）→ 只读审查触发受理判定结果（add-code-review-trigger-ack）
@@ -247,7 +247,7 @@ class H11CodeReviewRoutesMixin:
         self._json(dashboard_data.read_code_review_fix_progress(str(project["path"])))
 
     def _api_code_review_run(self, query):
-        """POST /api/code-review/run — body {project, scope: "full"|"window"}
+        """POST /api/code-review/run — query ?project=<name> + body {scope: "full"|"window"}
 
         写 ``.fenix/code_review_request.json`` 文件信号 → daemon 主循环消费
         （不直接同步跑审查）。

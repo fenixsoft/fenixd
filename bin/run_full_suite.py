@@ -190,14 +190,14 @@ def run_command(cmd, timeout, cwd, env=None) -> tuple:
         return proc.returncode, out, err, False
     except subprocess.TimeoutExpired:
         try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            os.killpg(proc.pid, signal.SIGTERM)  # start_new_session=True ⇒ pgid==pid
         except OSError:
             pass  # 进程已退出，无需再中止
         try:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                os.killpg(proc.pid, signal.SIGKILL)  # start_new_session=True ⇒ pgid==pid
             except OSError:
                 pass  # 进程组已不存在
         try:

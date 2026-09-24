@@ -2364,6 +2364,33 @@ class AdminMonitor:
                 f"— fix-recovery-path-blockers D2b",
                 {"signal": signal},
             )
+            # code-review item 64cd854cebbb：上行 merge_signal 已落 escalated=True
+            # 的冷却锚点，本路径实际未派发——不补痕则 store 永久留存「已唤起」
+            # 假象，审计/看板失真。比照信号死法冷却路径补写说明性处置记录；
+            # result="skipped" 不命中任何 result 消费分支，DISPOSITION 不参与
+            # unhandled_for 节流——不阻断在飞处置完成后的自然重评。
+            try:
+                self.store.append(
+                    {
+                        "kind": DISPOSITION,
+                        "signal_type": signal_type,
+                        "spec": spec,
+                        "severity": signal.get("severity"),
+                        "description": signal.get("description"),
+                        "action_taken": (
+                            "已有在飞 admin run，跳过重复唤起"
+                            "（fix-recovery-path-blockers D2b 互斥守卫）——"
+                            "实际未派发，在飞处置完成后由检测循环自然重评"
+                        ),
+                        "result": "skipped",
+                    }
+                )
+            except Exception as e:
+                self.logger.error(
+                    "admin_monitor",
+                    f"Failed to persist mutex-skip disposition for "
+                    f"'{spec or 'daemon'}': {e}",
+                )
             return
         self.logger.warning(
             "admin_monitor",

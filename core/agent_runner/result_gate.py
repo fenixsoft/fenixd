@@ -1228,6 +1228,8 @@ def salvage_result_from_transcript(
                     d = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                if not isinstance(d, dict):
+                    continue
                 if d.get("type") != "assistant":
                     continue
                 for c in (d.get("message") or {}).get("content") or []:

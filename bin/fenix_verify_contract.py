@@ -179,7 +179,7 @@ def main():
         if result.serve_port:
             print(f", port={result.serve_port}", end="")
         print("）", end="")
-    elif not result.serve_kind:
+    else:
         print("（无 serve 段——纯 cli 场景集合法）", end="")
     print()
     if result.serve_error:
@@ -189,7 +189,7 @@ def main():
     print(f"[ready]   {'✓ 通过' if result.ready_ok else '✗ 失败'}", end="")
     if result.ready_url:
         print(f"（url={result.ready_url}, expect={result.ready_expect}）", end="")
-    elif not result.ready_url:
+    else:
         print("（无 ready 探针——纯 cli 场景集合法）", end="")
     print()
     if result.ready_error:

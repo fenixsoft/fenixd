@@ -1530,7 +1530,9 @@ export interface CodeReviewItem {
   spec: string;
   file: string;
   line: number;
-  severity: 'critical' | 'major' | 'minor' | 'info';
+  // 含漂移值 high/medium/low（ocr scan 原样透传落台账，实测 80/543 条），
+  // 与 QualityTab SEVERITY_COLOR/过滤下拉的读侧归一口径注释对齐
+  severity: 'critical' | 'high' | 'major' | 'medium' | 'minor' | 'low' | 'info';
   category: string;
   title: string;
   description: string;

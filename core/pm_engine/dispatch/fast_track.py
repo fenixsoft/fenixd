@@ -667,6 +667,9 @@ class FFastTrackMixin:
                 "_retry_count": 0,
                 "_merge_fp": None,
                 "_merge_streak": 0,
+                # 与 full 车道零变更成功收口同款清零（queue.py 确认型 no-op
+                # 分支）：非连续的零变更不应累计进「连续 3 次」哨。
+                "_zero_change_attempts": 0,
                 **self._pm._clear_dispatch_conflict(spec_name),
             },
         )

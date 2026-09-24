@@ -2732,7 +2732,15 @@ class PMEngine:
         backoff_seconds = [300, 900]  # 默认指数退避：5 分钟、15 分钟
         cfg_backoff = self._get_config("pm.push.retry_backoff_seconds")
         if isinstance(cfg_backoff, list) and len(cfg_backoff) >= 2:
-            backoff_seconds = cfg_backoff
+            # 元素类型防御（code-review item 6d4cfd57f4f4，与上方 max_retries
+            # 同款）：逐元素 int() 转换，任一非法整体回退默认值——否则非数字
+            # delay 在下方 now_ts + delay 处抛 TypeError 从 _push_lock 内穿透
+            # approve_push 炸到 _on_spec_done 调用方。int() 保持整数格式
+            # （reporting.py 按 next_retry_at=(\d+) 正则解析）。
+            try:
+                backoff_seconds = [int(x) for x in cfg_backoff]
+            except (TypeError, ValueError):
+                backoff_seconds = [300, 900]
 
         attempts = self._get_push_retry_count(spec) + 1
         error_base = f"git push failed ({ref}): {error_msg}"
@@ -3248,6 +3256,11 @@ class PMEngine:
         warnings = []
 
         for name, entry in all_specs.items():
+            # 与 backfill_push_residuals 同款防御（code-review item
+            # 60a0039e3313）：STATE 解析异常产出的非 dict 条目直接跳过，
+            # 不让 entry.get 抛 AttributeError 中断整轮 blocker 扫描。
+            if not isinstance(entry, dict):
+                continue
             status = entry.get("status", "drafted")
 
             # Terminal states — skip

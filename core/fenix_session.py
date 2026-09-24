@@ -373,6 +373,10 @@ def start_daemon(root: str | None = None) -> dict:
         pass
 
     try:
+        # supervisor 日志重定向指向 .fenix/logs/supervisor.log，shell 会因目录
+        # 不存在而重定向失败（全新项目首次拉起即触发），先确保目录存在，
+        # 与其余日志写点的 mkdir 惯例对齐（code-review item 5fb92e285e94）。
+        (proot / ".fenix" / "logs").mkdir(parents=True, exist_ok=True)
         # shell-quote 路径插值（code-review item 6333feb03e0c）：tmux 会把命令串
         # 交给 shell 执行，裸拼路径含空格时被拆词致启动失败、含 ;/$/反引号等
         # 元字符时构成命令注入面（路径来源含 CLI 入参与调用方传参）。
