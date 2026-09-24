@@ -149,7 +149,9 @@ def _collapse_message(project_root, commits, logger, timeout=WIP_TIMEOUT_SECONDS
         )
         if body.returncode == 0 and body.stdout.strip():
             return body.stdout.replace(WIP_COMMIT_PREFIX, "[fenix]", 1), True
-        return final_subject.replace(WIP_COMMIT_PREFIX, "[fenix]", 1), True
+        # git log 失败/正文为空：消息获取失败，返回占位 subject 并置 ok=False，
+        # 由调用方按失败降级（放弃本次塌缩）。
+        return final_subject.replace(WIP_COMMIT_PREFIX, "[fenix]", 1), False
     body = subprocess.run(
         ["git", "-C", str(project_root), "log", "-1", "--format=%B", final_hash],
         capture_output=True,
@@ -158,7 +160,9 @@ def _collapse_message(project_root, commits, logger, timeout=WIP_TIMEOUT_SECONDS
     )
     if body.returncode == 0 and body.stdout.strip():
         return body.stdout, True
-    return final_subject, True
+    # git log 失败/正文为空：消息获取失败，返回占位 subject 并置 ok=False，
+    # 由调用方按失败降级（放弃本次塌缩）。
+    return final_subject, False
 
 
 def collapse_wip_commits(

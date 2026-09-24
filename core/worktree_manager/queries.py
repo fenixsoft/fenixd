@@ -13,6 +13,7 @@ import subprocess
 import time
 
 from pathlib import Path
+from typing import Optional
 
 from core.worktree_manager import (  # noqa: E402
     WT_AVAILABLE,
@@ -26,12 +27,12 @@ class G8QueryMixin:
 
     @staticmethod
     def _spec_from_worktree_name(wt_name: str) -> Optional[str]:
-            """worktree 目录名（``{impl,verify}-<spec>-<ts>``）→ spec 名。
+            """worktree 目录名（``{impl,verify,repair}-<spec>-<ts>``）→ spec 名。
 
             spec 名自身可含连字符，因此取前缀之后、末段时间戳之前的部分；
             段数不足（非本框架产物）返回 None。
             """
-            for prefix in ("impl", "verify"):
+            for prefix in ("impl", "verify", "repair"):
                 if wt_name.startswith(f"{prefix}-"):
                     rest = wt_name[len(prefix) + 1 :]
                     parts = rest.rsplit("-", 1)

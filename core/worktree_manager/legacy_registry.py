@@ -91,37 +91,9 @@ class G2LegacyRegistryMixin:
             "worktree_manager",
             f"Consumed legacy for '{spec_name}' (successor merged): {rec.get('path')}",
         )
-        try:
-            from pathlib import Path as _Path
-
-            path = rec.get("path", "")
-            branch = rec.get("branch", "")
-            if path:
-                wt = _Path(path)
-                res = subprocess.run(
-                    ["git", "-C", str(self.project_root), "worktree", "remove", str(wt), "--force"],
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                )
-                if res.returncode != 0 and wt.exists():
-                    shutil.rmtree(str(wt), ignore_errors=True)
-            if branch and branch != "HEAD":
-                subprocess.run(
-                    ["git", "-C", str(self.project_root), "branch", "-D", branch],
-                    capture_output=True,
-                    timeout=10,
-                )
-            subprocess.run(
-                ["git", "-C", str(self.project_root), "worktree", "prune"],
-                capture_output=True,
-                timeout=10,
-            )
-        except Exception as e:
-            self.logger.warning(
-                "worktree_manager",
-                f"Legacy consume physical reclaim failed for '{spec_name}': {e}",
-            )
+        self._physically_reclaim_legacy(
+            spec_name, rec, failure_label="consume physical reclaim",
+        )
         return rec
 
     def has_legacy(self, spec_name: str) -> bool:
@@ -351,44 +323,53 @@ class G2LegacyRegistryMixin:
                 f"Legacy grace period expired for '{spec}' — sweeper reclaiming "
                 f"worktree={path} branch={branch}",
             )
-            try:
-                from pathlib import Path as _Path
-
-                wt = _Path(path)
-                if path:
-                    res = subprocess.run(
-                        [
-                            "git",
-                            "-C",
-                            str(self.project_root),
-                            "worktree",
-                            "remove",
-                            str(wt),
-                            "--force",
-                        ],
-                        capture_output=True,
-                        text=True,
-                        timeout=30,
-                    )
-                    if res.returncode != 0:
-                        shutil.rmtree(str(wt), ignore_errors=True)
-                if branch and branch != "HEAD":
-                    subprocess.run(
-                        ["git", "-C", str(self.project_root), "branch", "-D", branch],
-                        capture_output=True,
-                        timeout=10,
-                    )
-            except Exception as e:
-                self.logger.warning(
-                    "worktree_manager",
-                    f"Legacy sweeper reclaim failed for '{spec}': {e}",
-                )
+            self._physically_reclaim_legacy(
+                spec, rec, failure_label="sweeper reclaim",
+            )
             reclaimed.append(spec)
-        if reclaimed:
+        return reclaimed
+
+    def _physically_reclaim_legacy(
+        self, spec_name: str, rec: dict, *, failure_label: str,
+    ) -> None:
+        """对单条已出册遗产执行物理回收序列（consume / sweeper 共用单一实现）。
+
+        完整销毁序列：git worktree remove --force → 失败且目录仍在时 rmtree
+        兜底 → branch -D（跳过 HEAD）→ worktree prune。rmtree 兜底统一采用
+        较保守的 wt.exists() 判定，避免对已消失目录无条件 rmtree。
+
+        任何一步失败仅记 WARNING、不向上抛（``failure_label`` 供两个入口区分
+        失败日志文案），调用方只负责选取回收时机与事前审计日志，返回值语义
+        不受影响。prune 随每条记录执行（幂等），统一取代原先 consume 单次 /
+        sweeper 循环收尾单次的两种落点。
+        """
+        try:
+            path = rec.get("path", "")
+            branch = rec.get("branch", "")
+            if path:
+                wt = Path(path)
+                res = subprocess.run(
+                    ["git", "-C", str(self.project_root), "worktree", "remove", str(wt), "--force"],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                if res.returncode != 0 and wt.exists():
+                    shutil.rmtree(str(wt), ignore_errors=True)
+            if branch and branch != "HEAD":
+                subprocess.run(
+                    ["git", "-C", str(self.project_root), "branch", "-D", branch],
+                    capture_output=True,
+                    timeout=10,
+                )
             subprocess.run(
                 ["git", "-C", str(self.project_root), "worktree", "prune"],
                 capture_output=True,
                 timeout=10,
             )
-        return reclaimed
+        except Exception as e:
+            self.logger.warning(
+                "worktree_manager",
+                f"Legacy {failure_label} failed for '{spec_name}': {e}",
+            )
 

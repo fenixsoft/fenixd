@@ -53,6 +53,10 @@ _NEW_DELIVERY_RE = re.compile(
     re.MULTILINE,
 )
 
+# 修复语境短语（bcb05f957b2d）：动词后紧跟「对 … 的修复」＝对既有场景的
+# 修复而非新增交付声明；限定同条款内（不含句读/换行）防跨句误排除。
+_REPAIR_PHRASE_RE = re.compile(r"对[^，。；\n]{0,60}的修复")
+
 
 # ── 数据结构 ────────────────────────────────────────────────────────
 
@@ -93,8 +97,8 @@ class ScenarioEntry:
         if self.covers:
             d["covers"] = list(self.covers)
         # fix-frozen-scenario-orphan-reservoir D1/D4：kind 恒定写入——写端 schema
-        # 门保证每条目均有合法 kind，文件层面「缺 kind」即孤儿信号（加载净化
-        # 以其为剔除判据），存量文件在首轮重写后自然归一。
+        # 门保证每条目均有合法 kind；加载侧对存量缺 kind 条目兜底归类 web
+        # 保留在集（b25b28a4ed8a：剔除会把不再整档重写的存量冻结集清成空集）。
         d["kind"] = self.kind
         return d
 
@@ -167,11 +171,13 @@ def scenarios_path_for(project_root, spec_name: str) -> Path:
 def load_scenario_set(project_root, spec_name: str) -> Optional[ScenarioSet]:
     """读取持久化场景集；文件缺失/损坏返回 None（不抛出）。
 
-    加载净化（fix-frozen-scenario-orphan-reservoir D4）：读入时剔除 raw dict
-    缺 ``kind`` 键值的孤儿条目（无 kind 无法路由到任何 Runner，储库复活
-    通道），WARNING 留痕剔除 id 清单。**只影响内存集合**，不改写
-    scenarios.json 文件（读操作不带写副作用；文件层面储库清除由写端门与
-    D7 清理负责）。
+    加载净化（fix-frozen-scenario-orphan-reservoir D4，code-review
+    b25b28a4ed8a 修正）：非对象条目剔除；缺/非法 ``kind`` 的条目**兜底归类
+    web 保留在集中，不再剔除**——剔除会让先于 kind 字段落盘、不再整档重写
+    的存量冻结集加载成空集，diff 把 planner 重出场景全按新增处理、修复轮
+    被超发拦截后以空集写回（冻结场景集被静默清零）。兜底只影响内存集合，
+    不改写 scenarios.json 文件；planner 产出携带合法 kind 时仍由 diff 侧
+    刷新为正确值。
     """
     path = scenarios_path_for(project_root, spec_name)
     if not path.exists():
@@ -186,19 +192,32 @@ def load_scenario_set(project_root, spec_name: str) -> Optional[ScenarioSet]:
     if isinstance(raw_entries, list):
         kept: list = []
         rejected: list[str] = []
+        backfilled: list[str] = []
         for item in raw_entries:
-            if not isinstance(item, dict) or item.get("kind") is None:
-                rid = item.get("id") if isinstance(item, dict) else f"[{len(kept)}]非对象"
-                rejected.append(str(rid or "?"))
+            if not isinstance(item, dict):
+                rejected.append(f"[{len(kept)}]非对象")
                 continue
+            if item.get("kind") not in ("web", "cli", "api"):
+                # b25b28a4ed8a：缺/非法 kind 兜底归类 web 保留在集（不再剔除，
+                # 防存量无 kind 冻结集被清成空集后写回）；不写回文件。
+                backfilled.append(str(item.get("id") or "?"))
+                item = {**item, "kind": "web"}
             kept.append(item)
+        if backfilled:
+            _logger.warning(
+                "持久化集加载净化：%d 条缺/非法 kind 条目兜底归类 web 保留在集"
+                "（scenarios.json 文件不改写，diff 侧合法 kind 仍可刷新）: %s",
+                len(backfilled),
+                "、".join(backfilled),
+            )
         if rejected:
             _logger.warning(
-                "持久化集加载净化剔除 %d 条缺 kind 孤儿条目"
+                "持久化集加载净化剔除 %d 条非对象孤儿条目"
                 "（scenarios.json 文件不改写，仅内存集合净化）: %s",
                 len(rejected),
                 "、".join(rejected),
             )
+        if backfilled or rejected:
             data = {**data, "scenarios": kept}
     try:
         return ScenarioSet.from_dict(data)
@@ -316,17 +335,32 @@ def read_verify_fix_section(project_root, spec_name: str) -> Optional[str]:
     return text[m.start() : end]
 
 
-def declares_new_delivery(fix_section: Optional[str]) -> bool:
+def declares_new_delivery(fix_section: Optional[str], notes: Optional[list] = None) -> bool:
     """修复段是否声明了「新增交付范围」。
 
     仅当修复段存在且含「新增/追加/增加 … 交付/范围/功能/能力…」时才允许追加。
-    纯修复（无新增范围）返回 False，planner 不得扩容。
+    纯修复（无新增范围）返回 False，planner 不得扩容。动词后紧跟
+    「对 … 的修复」短语的命中按修复语境排除、不计入新增交付声明
+    （bcb05f957b2d：如「追加对场景 X 的修复」），排除时向 ``notes``
+    （若提供）追加留痕行供审计。
     """
     if not fix_section:
         return False
-    # 无「修复」语境排除逻辑：命中（新增|追加|增加）…（交付|范围|…）即判为
-    # 声明新范围；纯修复文本（如「追加对场景 X 的修复」）也会命中
-    return bool(_NEW_DELIVERY_RE.search(fix_section))
+    for m in _NEW_DELIVERY_RE.finditer(fix_section):
+        if _REPAIR_PHRASE_RE.match(fix_section, m.end(1)):
+            if notes is not None:
+                line_start = fix_section.rfind("\n", 0, m.start()) + 1
+                line_end = fix_section.find("\n", m.end())
+                if line_end == -1:
+                    line_end = len(fix_section)
+                excerpt = fix_section[line_start:line_end].strip()[:60]
+                notes.append(
+                    f"- 「{excerpt}」命中新增交付词形但属修复语境"
+                    f"（对…的修复），该处不计入新增交付声明"
+                )
+            continue
+        return True
+    return False
 
 
 # ── 修复轮判定（design D1）─────────────────────────────────────────
@@ -409,6 +443,15 @@ def _kind_of(scenario: dict) -> str:
     return str(kind)
 
 
+def _legal_kind_of(scenario: dict) -> Optional[str]:
+    """场景对象的 kind，仅当为合法值（web/cli/api）时返回；缺失/非法返回
+    None（17250417a111：供既有条目保留冻结原值，不缺省改写 web）。"""
+    kind = scenario.get("kind") if isinstance(scenario, dict) else None
+    if kind not in ("web", "cli", "api"):
+        return None
+    return str(kind)
+
+
 def _display_declarations_of(planner_scenarios: list) -> list:
     """planner 产出中登记的纯展示声明（D2：declared-display 登记进元数据）。"""
     from core.interaction_contract import collect_display_declarations
@@ -435,7 +478,7 @@ def diff_planner_output(
     result = DiffResult()
     persisted = load_scenario_set(project_root, spec_name)
     fix_section = read_verify_fix_section(project_root, spec_name)
-    result.extended = declares_new_delivery(fix_section)
+    result.extended = declares_new_delivery(fix_section, notes=result.change_lines)
     repair = is_repair_round(project_root, spec_name, state)
 
     # ── 首轮 / 无持久化集：直接采用 planner 产出，全量写回 ──
@@ -479,13 +522,27 @@ def diff_planner_output(
         planner_by_id[sid] = s
 
     # 交互契约元数据（D2）：既有条目的 covers 以 planner 本轮产出为准刷新
-    # （场景重排后映射可能变化），新增条目直接携带。kind 同样以本轮产出为准
-    # 刷新（multi-kind-report-compat：补齐/合并携带 kind，正确 Runner 执行）。
+    # （场景重排后映射可能变化），新增条目直接携带。kind 仅在 planner 产出
+    # 携带合法 kind（web/cli/api）时才刷新；缺失/非法保留冻结文件原值
+    # （17250417a111：避免 planner 漏给 kind 时 cli/api 冻结条目被无声改写
+    # 为 web、下一轮路由到错误 Runner）。仅冻结原值为 cli/api（保留与缺省
+    # web 刷新会产生真实分叉、有误路由风险）时记 change_lines 留痕供审计；
+    # 原值 web/缺省场景保留即无操作，静默不计变更。
+    kept_kind_ids: list[str] = []
     for e in persisted.scenarios:
         s = planner_by_id.get(e.id)
         if s is not None:
             e.covers = _covers_of(s)
-            e.kind = _kind_of(s)
+            legal = _legal_kind_of(s)
+            if legal is not None:
+                e.kind = legal
+            elif e.kind in ("cli", "api"):
+                kept_kind_ids.append(e.id)
+    if kept_kind_ids:
+        result.change_lines.append(
+            f"- {len(kept_kind_ids)} 个既有条目的 kind 保留冻结文件原值"
+            f"（planner 产出缺合法 kind）：{'、'.join(kept_kind_ids)}"
+        )
 
     # ── 删减检测：持久化集有、planner 没有 ──
     missing = [e for e in persisted.scenarios if e.id not in planner_ids]

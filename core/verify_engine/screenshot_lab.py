@@ -25,7 +25,8 @@ BLANK_DOMINANT_COLOR_PCT = 0.99
 
 # 低对比度阈值（对齐 skimage exposure.is_low_contrast 的 int8 口径）
 # skimage 默认 low_contrast_limit=0.4（对应直方图累积范围占比）
-# 此处用像素值范围 / std 近似：std 在 BLANK_STD_THRESHOLD 之上但 < 0.08 视为低对比度
+# 此处用像素值范围 / std 近似：std < 0.08 且未命中纯色判定即视为低对比度
+# （std 低于 BLANK_STD_THRESHOLD 但主色占比未过线的画面同样归入此标签）
 LOW_CONTRAST_STD_UPPER = 0.08
 
 logger = logging.getLogger("fenixd.verify_engine.screenshot_lab")
@@ -42,7 +43,9 @@ def classify_screenshot(
 
     标签规则：
       - blank_screenshot: std < blank_std_threshold 且主色占比 > blank_dominant_pct
-      - low_contrast: std >= blank_std_threshold 但 < low_contrast_upper
+      - low_contrast: std < low_contrast_upper 且未命中 blank_screenshot
+        （边界：std 已低于 blank_std_threshold 但主色占比未过 blank_dominant_pct
+        的画面，如 ~98% 单色图，同样归入 low_contrast）
       - 无标签: 正常截图（消费方以「缺标签」为正常态，向后兼容）
 
     Args:
@@ -119,6 +122,7 @@ def _classify_impl(
     if pixel_std < blank_std_threshold and dominant_color_pct > blank_dominant_pct:
         labels["blank_screenshot"] = True
     elif pixel_std < low_contrast_upper:
+        # 未命中纯色判定（含 std 低于纯色阈值但主色占比未过线）且 std 低于低对比上限
         labels["low_contrast"] = True
     # else: 无标签（正常截图）
 

@@ -317,7 +317,15 @@ class VisualDiffer:
         return data
 
     def _save_baseline_streaks(self, streaks: dict) -> None:
-        """原子写回连续异常计数侧车（temp + rename，与 warning_streaks 同型）。"""
+        """原子写回连续异常计数侧车（temp + rename，与 warning_streaks 同型）。
+
+        并发语义（code-review item c046b5c543e6）：读-改-写三段非原子，
+        两进程并发验证同一 spec 时为后写覆盖，最多丢对方一轮累计——仅把
+        suspicious 告警推迟一轮、不产生误报；每轮 _update_baseline_streaks
+        都重新 load 盘上最新态，下一轮即追平。故有意不加锁/不合并：
+        count 存在清零分支（pass/DOM 失败），max 类合并会在「并发一真
+        pass 一 diff」交错下复活已清零的计数，风险大于收益。
+        """
         path = self._streaks_path()
         try:
             path.parent.mkdir(parents=True, exist_ok=True)

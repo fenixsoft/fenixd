@@ -92,9 +92,12 @@ class TestPgrepAnchoring:
             proc.wait()
 
     def test_claude_process_holds_lock(self, tmp_path):
-        """argv0 为 claude 的进程即使内容是伪装脚本也照常命中（锚定语义不误杀）。"""
+        """argv0 为 claude 的进程即使内容是伪装脚本也照常命中（锚定语义不误杀）。
+        token 须含本项目 worktrees 基目录前缀——裸 worktrees/ 字面匹配是全机性的，
+        项目根归属核对后不认他项目同名 spec 的进程（c37d5ed32240）。"""
         spec = f"pgrepclaude{os.getpid()}"
-        token = f"worktrees/impl-{spec}-1"
+        base = tmp_path / ".claude" / "worktrees"
+        token = f"{base}/impl-{spec}-1"
         proc = spawn_proc(token, "claude")
         try:
             assert wait_token_in_pgrep(token), "测试进程应能被 pgrep 扫到"
