@@ -1132,6 +1132,25 @@ def _write_defer_expired_alert(
     )
 
 
+def _main_tree_dirty_files(project_root) -> list:
+    """主树脏 tracked 文件清单（evo-add-codefix-batch-wip-precheck 1.1）。
+
+    复用 ``G6StashGuardMixin._list_dirty_tracked_files`` 的提取口径（porcelain
+    脏判定 / rename 两侧计入 / untracked 不计 / 命令失败返回空表按「无重叠」
+    处理，不阻塞选批）。函数级 import 规避装载环（worktree_manager 包装载
+    较重且与车道装配顺序无耦合，``_preset_run_id`` 同纪律）。
+    """
+    from core.worktree_manager.stash_guard import G6StashGuardMixin
+
+    class _Probe(G6StashGuardMixin):
+        """仅承载 project_root 的探针壳（完整 WorktreeManager 装配是死重）。"""
+
+        def __init__(self, project_root):
+            self.project_root = Path(project_root)
+
+    return _Probe(project_root)._list_dirty_tracked_files()
+
+
 # ── 编排器（5.3-5.8）──────────────────────────────────────────────────
 
 
@@ -1164,10 +1183,13 @@ class CodeFixOrchestrator:
         except Exception:  # noqa: BLE001 — 日志失败不影响编排
             pass
 
-    def _get_config(self) -> dict:
-        """解析 admin.code_review_fix 生效值（config 可为 dict / callable / None）。
+    def _get_root_config(self) -> dict:
+        """解析**根形态** config（dict / callable / None→runner 运行时配置）。
 
-        None 时从 agent_runner 的运行时配置读取（daemon 装配形态）。
+        `_get_config` 与选批前 WIP 预检（``worktree.build_artifact_paths`` /
+        ``worktree.has_build_artifacts``，evo-add-codefix-batch-wip-precheck
+        1.1）共用的单一解析点：产物豁免口径与开关读取 MUST 同源，否则 daemon
+        装配形态（config=None）下豁免静默退化。
         """
         raw = self._config
         if callable(raw):
@@ -1183,15 +1205,18 @@ class CodeFixOrchestrator:
             runner = self._agent_runner
             root = getattr(runner, "config", None)
             if isinstance(root, dict):
-                raw = root
-            else:
-                # 退化：runner 无根 config 属性（测试替身）时，把子段回包成根形态
-                try:
-                    seg = runner._get_config("admin.code_review_fix", {})
-                except Exception:  # noqa: BLE001 — 测试 fake runner 可能无此方法
-                    seg = {}
-                raw = {"admin": {"code_review_fix": seg}} if isinstance(seg, dict) else {}
-        return ConfigLoader.get_code_review_fix_config(raw or {})
+                return root
+            # 退化：runner 无根 config 属性（测试替身）时，把子段回包成根形态
+            try:
+                seg = runner._get_config("admin.code_review_fix", {})
+            except Exception:  # noqa: BLE001 — 测试 fake runner 可能无此方法
+                seg = {}
+            return {"admin": {"code_review_fix": seg}} if isinstance(seg, dict) else {}
+        return raw or {}
+
+    def _get_config(self) -> dict:
+        """解析 admin.code_review_fix 生效值（根形态 → 段读取器）。"""
+        return ConfigLoader.get_code_review_fix_config(self._get_root_config())
 
     def _code_fix_running(self) -> bool:
         """在途判据：编排器单飞标记或 runner 侧存在 code-fix- 前缀 run。"""
@@ -1199,6 +1224,45 @@ class CodeFixOrchestrator:
             return True
         running = getattr(self._agent_runner, "_running_agents", None) or {}
         return any(str(rid).startswith("code-fix-") for rid in running)
+
+    def _wip_overlap_at_select(self, batch) -> list:
+        """选批前 WIP 重叠预检（evo-add-codefix-batch-wip-precheck 1.1）。
+
+        主树脏 tracked 文件 × 候选批条目 file（台账条目为仓库相对路径，
+        items.jsonl 实证）求交；交集经产物判别过滤——ArtifactPathMatcher 以
+        与 WorktreeManager 同配置源构造（normalize_artifact_patterns(
+        build_artifact_paths) + has_build_artifacts 三态，先例
+        core/worktree_manager/lifecycle.py:127）。dist 类产物路径不计入命中：
+        merge-time 闸门（_wip_overlap_gate D3b）豁免纯产物重叠，预检若不同
+        口径即「预检拦、merge-time 放行」倒退；MUST NOT 硬编码 dist 前缀、
+        MUST NOT 无参默认构造——空 patterns 判定恒假是「未裁决」保守侧（此
+        时 merge-time 闸门同样按语义重叠处置），与 merge-time 同语义不算豁免。
+
+        Returns: 语义（非产物）重叠文件排序列表；无重叠为空列表。
+        """
+        candidates = {rec.get("file") for rec in batch if rec.get("file")}
+        if not candidates:
+            return []
+        dirty = _main_tree_dirty_files(self.project_root)
+        if not dirty:
+            return []
+        overlap = sorted(candidates & set(dirty))
+        if not overlap:
+            return []
+        from core.worktree_manager.artifact_paths import (
+            ArtifactPathMatcher,
+            normalize_artifact_patterns,
+        )
+
+        root_cfg = self._get_root_config()
+        return ArtifactPathMatcher(
+            normalize_artifact_patterns(
+                ConfigLoader.get(root_cfg, "worktree.build_artifact_paths", None)
+            ),
+            has_build_artifacts=ConfigLoader.get(
+                root_cfg, "worktree.has_build_artifacts", None
+            ),
+        ).non_artifacts_in(overlap)
 
     # -- 检查点（单一入口）--------------------------------------------------
 
@@ -1394,6 +1458,43 @@ class CodeFixOrchestrator:
                         chain_skipped=chain_skipped,
                     )
                 return {"triggered": False, "reason": "no_open_items"}
+
+            # 选批前 WIP 重叠预检（evo-add-codefix-batch-wip-precheck 1.1）：
+            # select_batch 之后、契约守卫与批投递之前——主树脏 tracked 文件
+            # 与候选批条目 file 重叠时整批推迟，把冲突消在 agent run 与回归
+            # 之前（merge-time 闸门只兜 agent 实际改动超出台账 file 的残余）。
+            wip_overlap = self._wip_overlap_at_select(batch)
+            if wip_overlap:
+                # 推迟出口（1.2/1.3）：不置单飞、不投递批 worker、不耗实现
+                # 预算，台账条目保持 open，下轮节拍自然重查；不投递即无自驱动
+                # 再投递，重查只随外部节拍发生（无空转面）。进度写点无条件写
+                # （MUST NOT 照抄「选批为空」出口的 live 链条件——无链状态下
+                # WIP 冲突不可观测，违反「推迟可观测」Requirement），字段形态
+                # 纳入既有 blocked 分流文案体系（reason 前端直接透传，无需
+                # 前端改动）。
+                current = (
+                    "选批预检：主树未提交改动与候选批重叠，整批推迟"
+                    f"（提交或 stash 主树这些改动后自动恢复）："
+                    f"{_fmt_overlap(wip_overlap)}"
+                )
+                self._log(
+                    "info",
+                    "code-fix 选批预检命中 WIP 重叠，整批推迟："
+                    f"{_fmt_overlap(wip_overlap)}",
+                )
+                write_progress(
+                    root,
+                    running=False,
+                    phase="blocked",
+                    reason="wip_overlap_at_select",
+                    current=current,
+                    worktree=None,
+                    run_id=None,
+                    batch_total=None,
+                    manual_authorized=False,
+                    chain_skipped=chain_skipped,
+                )
+                return {"triggered": False, "reason": "wip_overlap_at_select"}
             batch_no += 1
 
             # 回归契约守卫（D5 fail-closed）：契约缺失/缺段 → 发信号、不派批
