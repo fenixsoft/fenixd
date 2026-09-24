@@ -10,7 +10,7 @@
 ## 1. marker 匹配窗口收敛
 
 - [x] 1.1 core/self_review.py：_business_fail_marker 把 _BUSINESS_FAIL_PATTERNS 匹配限定在 result 文本前 100 字符窗口内（引入模块级常量），词表、返回值形态与 _classify_run 结构不变
-- [x] 1.2 core/self_review.py：确认 _signal_evidence 终态邻近 3 行护栏与 _scan_run_signals 只补 detail 的语义均不变（不做仅 error 终态行收窄）
+- [x] 1.2 core/self_review.py：_signal_evidence 函数本体与 _scan_run_signals 只补 detail 语义均不变；护栏调用点收窄为 lines[:-1]（排除 result 终态正文，09-24 实拍误判第二源 companion 修复——_BUSINESS_FAIL_SIGNALS 与 marker 词表共享「预算耗尽」词形），事件行兜底通道保持（test_signal_fallback_when_no_marker 通过）。（任务文本修订 2026-09-24 code-review，与实现对齐）
 
 ## 2. 测试
 

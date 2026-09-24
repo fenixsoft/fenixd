@@ -294,6 +294,10 @@ def _classify_run(run_id: str, lines: list) -> tuple:
         # 终态正文的失败声明归 marker 声明窗口管辖，正文中段的功能词复述
         # （如成功摘要里的「预算耗尽发一次性 warning」）不是结构性事件信号，
         # 不构成 marker 未命中后的二次降级依据（2026-09-24 实拍误判第二源）。
+        # 接受项边界：结构性信号词仅出现在 result 终态行（正文落在 100 字符
+        # marker 窗口之外、或位于该行非 result 字段）时已无检测路径——原先
+        # lines 全量信号扫描可捕获，此 fail-open 敞口为接受项，留待后续 SPEC
+        # 再收敛。
         signal = _signal_evidence(lines[:-1])
         if signal is not None:
             return "failed", signal
