@@ -22,6 +22,9 @@ import { useIsMobile } from '@/hooks/useIsMobile';
 // 告警裁决交互共享 hook + 执行按钮（与 overview AlertBanner 同源，
 // code-review item f86171cc149d）
 import { AlertAdjudicationExec, useAlertAdjudication } from '@/hooks/useAlertAdjudication';
+// 告警严重度标签/配色走告警展示单源（code-review item a6db9e33af09：本地副本
+// 缺 warning 键与单源漂移，warning 告警在本页误渲染灰色标签）
+import { SEV_COLOR, SEV_LABEL } from '@/components/alert-shared';
 import { fmtEvidence } from '@/utils/evidence';
 import { fetchProposalWhy } from '@/utils/proposalWhy';
 import { fmtInputTokens, fmtMillions } from '@/utils/tokens';
@@ -244,10 +247,6 @@ function VerdictPanel({ verdict }: { verdict: NonNullable<SpecDetail['verdict']>
     </div>
   );
 }
-
-// 告警严重度标签/配色（与 overview AlertBanner 同语义）
-const SEV_LABEL: Record<string, string> = { critical: '严重', major: '较高', warning: '警告', minor: '一般' };
-const SEV_COLOR: Record<string, string> = { critical: 'red', major: 'orange', minor: 'blue' };
 
 // Agent 中文名（与设置页 Agent 模型角色中文名对应；implementer 沿用「开发」）。
 // agent_type 为泛型 'agent' 或缺失时，按 run_id 前缀（RUN_ID_PREFIX_LABEL）判别。
@@ -641,7 +640,10 @@ export default function SpecDetailPage() {
         // 时间轴取自日志，节流重拉兜底（与 list.tsx 同策略）
         throttledLoad();
       }
-      if (msg.type === 'run_meta' || msg.type === 'refresh') {
+      // run_meta 负载带 project（watcher 仅在状态转换时广播）：只响应本项目，
+      // 多项目宿主上其他项目的 run 转换不再触发本页重拉（code-review item
+      // 844dd6f5108b）；refresh 是全局心跳/兜底信号，负载无 project，不过滤
+      if ((msg.type === 'run_meta' && msg.project === name) || msg.type === 'refresh') {
         throttledLoad();
       }
     };

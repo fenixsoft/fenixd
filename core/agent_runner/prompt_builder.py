@@ -1544,25 +1544,26 @@ class PromptBuilder:
         # {run_id} 分片名注入（2026-09-24 事故根治）：分片名 out-{run_id}-b<N>.jsonl
         # 由框架填具体值，提示词不再让 agent 从 {out_path} 推导——LLM 做字符串
         # 推导曾把 run_id 截成纯 epoch，6 个分片读侧全盲。
-        prompt = _single_pass_replace(
-            template,
-            {
-                "{run_id}": str(token),
-                "{manifest}": manifest_txt,
-                "{total_files}": str(total),
-                "{review_window}": str(window),
-                "{repo_concurrency}": str(repo_concurrency),
-                "{out_path}": str(out_path),
-            },
-        )
+        values = {
+            "{run_id}": str(token),
+            "{manifest}": manifest_txt,
+            "{total_files}": str(total),
+            "{review_window}": str(window),
+            "{repo_concurrency}": str(repo_concurrency),
+            "{out_path}": str(out_path),
+        }
+        prompt = _single_pass_replace(template, values)
         # 未解析占位符残留告警（add-code-review-auto-fix 同款防护）：本路径
         # 独立于 _fill_placeholders，模板漂移导致的注入静默丢失同样要日志可见。
-        leftover = sorted(set(_PLACEHOLDER_RE.findall(prompt)))
+        # 与 _fill_placeholders 同口径扣除已知占位符键——正文含合法 {snake_case}
+        # 字面量时不误报；日志参数用 token（本函数无 run_id 名，误引用曾致
+        # NameError 使派发失败）。
+        leftover = sorted(set(_PLACEHOLDER_RE.findall(prompt)) - set(values))
         if leftover:
             _logger.warning(
                 "提示词占位符未解析（模板漂移，注入内容可能静默丢失）: "
                 "agent=code-review run_id=%s leftover=%s",
-                run_id,
+                str(token),
                 leftover,
             )
         # 非交互契约段（fix-agent-noninteractive-contract D2）：独立构建路径

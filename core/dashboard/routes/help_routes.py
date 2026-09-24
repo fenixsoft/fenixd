@@ -22,7 +22,7 @@ class H8HelpRoutesMixin:
         """
         for line in content.splitlines():
             stripped = line.strip()
-            if stripped.startswith("# ") and not stripped.startswith("## "):
+            if stripped.startswith("# "):
                 return stripped[2:].strip() or ""
         return ""
 

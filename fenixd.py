@@ -236,6 +236,11 @@ class FenixDaemon:
         self._admin_executor = None
         self._admin_pool_lock = threading.Lock()
         self._admin_pool_stats = {"submitted": 0, "completed": 0, "failed": 0}
+        # SPEC 删除后台投递单飞（code-review item dc0563435ba5）：删除（先停
+        # 后删，含最长 60s 有界等待）整体投递 _admin_executor 后台执行，主循环
+        # 只做信号消费；在飞期间新请求留在盘上下轮再消费——不重复投递、不丢
+        # 请求。派发即置位、worker finally 复位（对齐 _evolution_in_flight）。
+        self._spec_delete_in_flight = False
         self.pm_engine = None
         self.hook_engine = None
         # 框架自进化检查点（add-framework-self-evolution D3 单飞）：
@@ -675,9 +680,12 @@ class FenixDaemon:
                     self.logger.error("fenixd", f"approve_push pickup failed: {e}")
                 # add-freeze-stop-inflight-agents 5.2：SPEC 删除信号（异步受理）
                 # dashboard 写入 .fenix/spec_delete_request.json（含 spec/source/
-                # created/stopping），主循环下一轮消费：枚举该 spec 在跑 run
+                # created/stopping），主循环下一轮消费（仅信号拾取与后台投递，
+                # code-review item dc0563435ba5：最长 60s 的先停后删有界等待
+                # 不得内联阻塞主循环其它信号车道）：枚举该 spec 在跑 run
                 # → cancel_run 逐个停止 → 有界等待终态 → soft_delete_spec 完成
-                # 删除。信号文件先读后删，损坏 JSON 删除防卡死。
+                # 删除，全程在 _admin_executor worker 执行。信号文件先读后删，
+                # 损坏 JSON 删除防卡死。
                 try:
                     self._check_spec_delete_requests()
                 except Exception as e:
@@ -2128,10 +2136,14 @@ class FenixDaemon:
 
         dashboard 的 /api/spec-delete 在检测到在跑 agent 时原子写入
         .fenix/spec_delete_request.json（含 spec/source/created/stopping）；
-        本方法在主循环（1s 粒度）中检测其存在：原子消费→枚举该 spec 在跑
-        run→逐个 cancel_run 停止→有界等待终态→调 soft_delete_spec 完成删除。
-        与 _check_cancel_requests / _check_approve_push_requests 同构：
-        损坏 JSON 删除防卡死；删除失败（先读后删被并发消费）下轮再试。
+        本方法在主循环（1s 粒度）中检测其存在：原子消费→**投递后台**执行
+        枚举该 spec 在跑 run→逐个 cancel_run 停止→有界等待终态→调
+        soft_delete_spec 完成删除（code-review item dc0563435ba5：最长
+        SPEC_DELETE_STOP_WAIT_TOTAL_SECONDS=60s 的有界等待不得在主循环线程
+        内联执行，整体投 _admin_executor——对齐 _submit_admin_run 的
+        submitted 计数与 RuntimeError 回滚；admin.workers=0 回退同步保留
+        逃生门）。与 _check_cancel_requests / _check_approve_push_requests
+        同构：损坏 JSON 删除防卡死；删除失败（先读后删被并发消费）下轮再试。
 
         有界等待（task 5.3）：复用 running_run_ids 轮询 + drain_wait 形态，
         总超时上限 SPEC_DELETE_STOP_WAIT_TOTAL_SECONDS；超时记 WARNING、
@@ -2146,7 +2158,16 @@ class FenixDaemon:
         69fdd0ab526e）：先 rename 占位再读，消灭「先读后删」窗口内 dashboard
         重写新请求被 unlink 一并误删而从未被处理的丢请求形态（与 admin_invoke /
         approve_push / code_review / regression 四条已迁移车道同口径）。
+
+        去重（item dc0563435ba5）：在飞判定在消费信号**之前**——删除在飞期间
+        新请求留在盘上，worker 收尾（finally 复位 _spec_delete_in_flight）后
+        下一轮再消费，既不重复投递也不丢请求。
         """
+        if self._spec_delete_in_flight:
+            # 删除在飞（最长 60s 有界等待）：静默让路不消费——主循环 1s 一轮，
+            # 在飞期间每轮都会走到这里；请求文件留在盘上，worker 收尾后下一轮
+            # 再消费（去重门，item dc0563435ba5）
+            return
         req_path = PROJECT_ROOT / ".fenix" / "spec_delete_request.json"
         payload = self._consume_request_file(req_path)
         if payload is None:
@@ -2166,33 +2187,73 @@ class FenixDaemon:
             SPEC_DELETE_STOP_WAIT_TOTAL_SECONDS,
             running_run_ids_for_spec,
         )
-        try:
-            # 停止回调：对该 spec 全部在跑 run 逐个 cancel_run（只设旗标，
-            # 微秒级——终止由各 run 属主线程在轮询环内执行）
-            def _stop_running(run_ids):
-                for rid in run_ids:
-                    try:
-                        self.agent_runner.cancel_run(
-                            rid, reason="spec 删除（先停后删）", by="admin")
-                    except Exception as e:
-                        self.logger.warning(
-                            "fenixd",
-                            f"spec_delete 停止 run {rid} 失败: {e}",
-                        )
 
-            result = self._soft_delete_with_bounded_wait(
-                spec, _stop_running, SPEC_DELETE_STOP_WAIT_TOTAL_SECONDS)
-            if result is not None and result.get("ok") is False:
-                self.logger.warning(
+        # 停止回调：对该 spec 全部在跑 run 逐个 cancel_run（只设旗标，
+        # 微秒级——终止由各 run 属主线程在轮询环内执行）
+        def _stop_running(run_ids):
+            for rid in run_ids:
+                try:
+                    self.agent_runner.cancel_run(
+                        rid, reason="spec 删除（先停后删）", by="admin")
+                except Exception as e:
+                    self.logger.warning(
+                        "fenixd",
+                        f"spec_delete 停止 run {rid} 失败: {e}",
+                    )
+
+        if self._admin_executor is None:
+            # admin.workers=0 同步回退（逃生门，对齐 _submit_admin_run）：保持
+            # 既有主循环内执行语义；同步完成无重叠窗口，不置去重旗标、不计池
+            # 统计（_is_idle 对 executor=None 本就视为空闲）。
+            try:
+                result = self._soft_delete_with_bounded_wait(
+                    spec, _stop_running, SPEC_DELETE_STOP_WAIT_TOTAL_SECONDS)
+                if result is not None and result.get("ok") is False:
+                    self.logger.warning(
+                        "fenixd",
+                        f"spec_delete 停止/删除未完成 spec='{spec}'："
+                        f"{result.get('error') or result}（不重写信号，用户可重试）",
+                    )
+            except Exception as e:
+                self.logger.error(
                     "fenixd",
-                    f"spec_delete 停止/删除未完成 spec='{spec}'："
-                    f"{result.get('error') or result}（不重写信号，用户可重试）",
+                    f"spec_delete 消费异常 spec='{spec}'（不重写信号）: {e}",
                 )
-        except Exception as e:
+            return
+
+        # 派发即置位、worker finally 复位（对齐 _evolution_in_flight）：主循环
+        # 是唯一置位者，check-then-set 无并发写者。submit 前先递增 submitted
+        # （对齐 _submit_admin_run / code-review item 5786fd76ad49：worker 可
+        # 领跑收尾先递增 completed/failed，在飞推导转负），被拒回滚——删除的
+        # 60s 有界等待 MUST 计入 _is_idle 的池在途维度，避免删除等待期间被
+        # stale-code 自愈误判空闲。
+        self._spec_delete_in_flight = True
+        with self._admin_pool_lock:
+            stats = dict(self._admin_pool_stats)
+            stats["submitted"] += 1
+            self._admin_pool_stats = stats
+        try:
+            self._admin_executor.submit(
+                self._spec_delete_worker,
+                spec, _stop_running, SPEC_DELETE_STOP_WAIT_TOTAL_SECONDS)
+        except RuntimeError as e:
+            with self._admin_pool_lock:
+                stats = dict(self._admin_pool_stats)
+                stats["submitted"] -= 1
+                self._admin_pool_stats = stats
+            self._spec_delete_in_flight = False
             self.logger.error(
                 "fenixd",
-                f"spec_delete 消费异常 spec='{spec}'（不重写信号）: {e}",
+                f"spec_delete 投递被拒绝 spec='{spec}': {e}"
+                "（不重写信号，用户可重试）",
             )
+            return
+        queued = stats["submitted"] - stats["completed"] - stats["failed"]
+        self.logger.info(
+            "fenixd",
+            f"spec_delete 已投递后台（spec='{spec}'，"
+            f"已提交 {stats['submitted']}，排队中 {queued}）",
+        )
 
     def _soft_delete_with_bounded_wait(self, spec, stop_callback, total_timeout: float):
         """先停后删的有界等待实现（add-freeze-stop-inflight-agents 5.3）。
@@ -2236,6 +2297,42 @@ class FenixDaemon:
         # 全部终止 → 软删除（stop_callback 已由 signal 消费方在停止阶段执行，
         # 此处不再传——避免二次 stop；直接调用保持既有删除语义）
         return soft_delete_spec(proot, spec)
+
+    def _spec_delete_worker(self, spec, stop_callback, total_timeout: float):
+        """spec_delete 后台 worker 体（code-review item dc0563435ba5）。
+
+        在 _admin_executor 线程内执行「先停后删」全程：最长
+        SPEC_DELETE_STOP_WAIT_TOTAL_SECONDS 的终态轮询不再占用主循环，
+        admin_invoke / cancel_run / scheduling_kick / approve_push /
+        code_review / regression 等信号车道与周期检查不受阻塞。对齐
+        _admin_run_worker 的 catch-all 纪律——单次删除异常不得带病退出线程；
+        去重旗标 MUST 在 finally 复位（漏复位会让后续 spec_delete 请求被
+        去重门永久吞掉）；completed/failed 收口保证 submitted ≥
+        completed + failed（_is_idle 池在途推导不失真）。
+        """
+        ok = False
+        try:
+            result = self._soft_delete_with_bounded_wait(
+                spec, stop_callback, total_timeout)
+            if result is not None and result.get("ok") is False:
+                self.logger.warning(
+                    "fenixd",
+                    f"spec_delete 停止/删除未完成 spec='{spec}'："
+                    f"{result.get('error') or result}（不重写信号，用户可重试）",
+                )
+            else:
+                ok = True
+        except Exception as e:  # noqa: BLE001 — worker 兜底，防线程带病退出
+            self.logger.error(
+                "fenixd",
+                f"spec_delete 消费异常 spec='{spec}'（不重写信号）: {e}",
+            )
+        finally:
+            self._spec_delete_in_flight = False
+            with self._admin_pool_lock:
+                self._admin_pool_stats["completed" if ok else "failed"] += 1
+        if ok:
+            self.logger.info("fenixd", f"spec_delete 删除完成（spec='{spec}'）")
 
     # ── 手动触发 code-review 文件信号消费（add-code-review-agent-and-quality-tab D1）──
 

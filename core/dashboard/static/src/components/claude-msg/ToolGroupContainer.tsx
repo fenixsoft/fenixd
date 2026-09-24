@@ -49,7 +49,9 @@ export default function ToolGroupContainer({
       .map((m) => toolCardPreview(m))
       .filter(Boolean);
 
-    const extraCount = group.messages.length - visiblePreviews.length;
+    // 「+N 条」按未展示的消息条数计，与预览是否为空的展示口径解耦
+    const extraCount =
+      group.messages.length - Math.min(group.messages.length, 2);
     const previewText = visiblePreviews.join(', ');
 
     if (!previewText) {

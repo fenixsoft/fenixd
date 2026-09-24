@@ -1271,7 +1271,17 @@ def generate_fix_spec(
     # 落地：复制到 spec/changes → git add+commit → add_spec
     dest = Path(project_root) / "spec" / "changes" / name
     if dest.exists():
-        shutil.rmtree(dest, ignore_errors=True)
+        # 判重（_spec_name_conflicted）正确时本分支不可达；触达即并发生成
+        # 竞态。安全方向是失败而非删除覆盖——rmtree 会毁掉另一侧已提交并
+        # 注册的 SPEC，STATE 里留下磁盘目录已消失的 drafted 条目。
+        shutil.rmtree(draft_root, ignore_errors=True)
+        return {
+            "ok": False,
+            "spec_name": None,
+            "skipped": skipped,
+            "error": f"目标目录已存在（spec/changes/{name}），疑似并发生成",
+            "start_after": normalized_sa,
+        }
     try:
         shutil.copytree(draft_root, dest)
     except OSError as e:

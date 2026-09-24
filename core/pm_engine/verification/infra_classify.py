@@ -213,6 +213,10 @@ def _detect_uniform_verify_failure(pipeline, spec_name: str, report: dict) -> bo
     if len(sigs) != 1:
         return False
     signature = next(iter(sigs))
+    if not signature:
+        # 全部失败场景均无可提取错误文本：空签名只是「无因可查」，
+        # 不证明全场景同因，按报告不完整处理，走常规升级通道。
+        return False
     spec = pipeline._context.state_machine.read_one(spec_name) or {}
     try:
         attempts = int(spec.get("_uniform_fail_attempts", 0) or 0) + 1

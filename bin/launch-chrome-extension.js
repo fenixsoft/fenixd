@@ -291,6 +291,14 @@ async function launchChromeExtension(distPath, opts = {}) {
 
       // 打开新标签页 — 应该由扩展接管
       const newtabPage = await browserContext.newPage();
+      // console 错误监听必须在页面加载前挂载（同 networkLog 的时序约束），
+      // 否则页面初始化窗口内的控制台错误会漏采致假通过；测试 5 只读取累计结果
+      const consoleErrors = [];
+      newtabPage.on('console', msg => {
+        if (msg.type() === 'error') {
+          consoleErrors.push(msg.text());
+        }
+      });
       // 等待页面加载
       await newtabPage.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {
         // 超时不算致命错误
@@ -303,7 +311,7 @@ async function launchChromeExtension(distPath, opts = {}) {
       // UI 交互测试
       // ======================================================================
 
-      return runUITests(browserContext, newtabPage);
+      return runUITests(browserContext, newtabPage, consoleErrors);
     };
 
     // 用剩余预算作总超时；超时后用已采集到的 networkLog 提前收卷
@@ -456,7 +464,7 @@ async function getExtensionId(distPath, context) {
 // UI 交互测试
 // ============================================================================
 
-async function runUITests(context, page) {
+async function runUITests(context, page, consoleErrors = []) {
   const results = [];
 
   try {
@@ -526,16 +534,8 @@ async function runUITests(context, page) {
       results.push({ test: 'localStorage', status: 'error', detail: e.message });
     }
 
-    // 测试 5: Console 错误检查
+    // 测试 5: Console 错误检查 — consoleErrors 自页面创建起累计（含加载期），此处只读取
     try {
-      const consoleErrors = [];
-      page.on('console', msg => {
-        if (msg.type() === 'error') {
-          consoleErrors.push(msg.text());
-        }
-      });
-      // 等待一段时间收集错误
-      await new Promise(resolve => setTimeout(resolve, 2000));
       results.push({
         test: 'Console 错误',
         status: consoleErrors.length === 0 ? 'pass' : 'fail',

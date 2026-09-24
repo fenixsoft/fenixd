@@ -47,6 +47,12 @@ import re
 import sys
 from pathlib import Path
 
+# 框架根（定位 core/），仿 bin/fenix_cli.py：标准调用 `python3 bin/fenix_detect_artifacts.py`
+# 时 sys.path[0] 是 bin/，cwd 不入 path，不加此项则 write_config_if_unresolved 里
+# validate_build_artifact_paths 的 import 恒 ImportError 被静默跳过，写入前校验沦为死代码
+FRAMEWORK_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(FRAMEWORK_ROOT))
+
 
 def detect_build_artifacts(project_root: Path) -> dict:
     """纯本地探测项目构建产物路径（无网络、无子进程）。

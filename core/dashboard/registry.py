@@ -350,7 +350,7 @@ class Registry:
                     continue
                 try:
                     existing = str(Path(raw).expanduser().resolve())
-                except (OSError, RuntimeError):
+                except (OSError, RuntimeError, ValueError):
                     continue
                 if existing == key:
                     return False, f"项目已在监控列表: {key}"
@@ -397,7 +397,7 @@ class Registry:
                     continue
                 try:
                     existing = str(Path(raw).expanduser().resolve())
-                except (OSError, RuntimeError):
+                except (OSError, RuntimeError, ValueError):
                     continue
                 if existing == key:
                     p["fixture"] = bool(fixture)
@@ -435,7 +435,7 @@ class Registry:
                     continue
                 try:
                     existing = str(Path(raw).expanduser().resolve())
-                except (OSError, RuntimeError):
+                except (OSError, RuntimeError, ValueError):
                     remaining.append(p)
                     continue
                 if existing == key:

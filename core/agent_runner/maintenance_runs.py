@@ -1356,7 +1356,9 @@ def _unique_regression_run_id(runner) -> str:
     """
     base = f"regression-{int(time.time())}"
     candidate = base
-    n = 1
+    # n=0 起始、冲突分支先自增再拼候选 → 首个退避候选为 base-1
+    # （对齐 _unique_code_review_run_id / _unique_code_fix_run_id 同族口径）
+    n = 0
     reg_dir = runner.project_root / ".fenix" / "regression"
     while True:
         if (reg_dir / f"run-{candidate}.json").exists():
@@ -1920,8 +1922,10 @@ def _accumulate_impl_ocr_tokens(runner, run_id: str, summary) -> None:
             "agent_type": "impl-ocr",
             "date": run_id,
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "input_tokens": int(summary.get("input_tokens", 0) or 0),
-            "output_tokens": int(summary.get("output_tokens", 0) or 0),
+            # 经 _safe_int 防御转换（对齐 _token_usage_fields / item
+            # dc8f109b8b60）：ocr summary 畸形值回落 0，保住整条记账记录
+            "input_tokens": _safe_int(summary.get("input_tokens", 0) or 0),
+            "output_tokens": _safe_int(summary.get("output_tokens", 0) or 0),
             "cost_usd": summary.get("cost_usd"),
         }
         _append_token_run(tokens_json, entry)

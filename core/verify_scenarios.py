@@ -237,6 +237,7 @@ def _atomic_write(path: Path, data: dict) -> None:
             json.dump(data, f, ensure_ascii=False, indent=2)
             f.flush()
             f.truncate()
+            os.fsync(f.fileno())
         Path(tmp_name).replace(path)
     finally:
         try:
