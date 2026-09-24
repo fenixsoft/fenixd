@@ -154,12 +154,22 @@ _AGENTS_SOURCE_KEYS = (
 # 合并写回键（数值标量透传；与来源键同集合）
 _AGENTS_MERGE_KEYS = _AGENTS_SOURCE_KEYS
 
+def _is_int_not_bool(v) -> bool:
+    """数值标量校验助手：仅接受真 int。
+
+    Python 中 bool 是 int 子类，isinstance(True, int) 为 True——不排除的话
+    PATCH {"agents": {"max_concurrent": true}} 之类布尔值会通过校验落盘、
+    回显时也被当 int 显示。与 impl_run_budget_max / merge_breaker_threshold
+    等键的 isinstance(x, bool) 显式排除同款防护。
+    """
+    return isinstance(v, int) and not isinstance(v, bool)
+
 def _echo_agents_int_keys(agents_src) -> dict:
-    """回显 agents 数值标量键（仅 int 值回显，缺省/非法由缺省 dict 兜底）。"""
+    """回显 agents 数值标量键（仅真 int 值回显，缺省/非法由缺省 dict 兜底）。"""
     out = {}
     if isinstance(agents_src, dict):
         for k in _AGENTS_SOURCE_KEYS:
-            if isinstance(agents_src.get(k), int):
+            if _is_int_not_bool(agents_src.get(k)):
                 out[k] = agents_src[k]
     return out
 
@@ -1670,19 +1680,19 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
                             )
             if "max_concurrent" in agents:
                 mc = agents["max_concurrent"]
-                if not isinstance(mc, int) or mc <= 0:
+                if not _is_int_not_bool(mc) or mc <= 0:
                     raise ValueError(f"agents.max_concurrent must be a positive integer: {mc}")
             if "run_timeout_seconds" in agents:
                 rt = agents["run_timeout_seconds"]
-                if not isinstance(rt, int) or rt <= 0:
+                if not _is_int_not_bool(rt) or rt <= 0:
                     raise ValueError(f"agents.run_timeout_seconds must be a positive integer: {rt}")
             if "max_turns" in agents:
                 mt = agents["max_turns"]
-                if not isinstance(mt, int) or mt <= 0:
+                if not _is_int_not_bool(mt) or mt <= 0:
                     raise ValueError(f"agents.max_turns must be a positive integer: {mt}")
             if "daily_run_limit" in agents:
                 drl = agents["daily_run_limit"]
-                if not isinstance(drl, int) or drl < 0:
+                if not _is_int_not_bool(drl) or drl < 0:
                     raise ValueError(f"agents.daily_run_limit must be a non-negative integer: {drl}")
             if "impl_run_budget" in agents:
                 irb = agents["impl_run_budget"]
@@ -1691,7 +1701,7 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
                 from core.pm_engine.budget import resolve_impl_run_budget_max
 
                 budget_max = resolve_impl_run_budget_max(agents.get("impl_run_budget_max"))
-                if not isinstance(irb, int) or irb < 1 or irb > budget_max:
+                if not _is_int_not_bool(irb) or irb < 1 or irb > budget_max:
                     raise ValueError(
                         f"agents.impl_run_budget must be an integer in [1, {budget_max}]: {irb}"
                     )
@@ -1714,7 +1724,7 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
                     )
             if "verify_redo_budget" in agents:
                 vrb = agents["verify_redo_budget"]
-                if not isinstance(vrb, int) or vrb < 1 or vrb > 10:
+                if not _is_int_not_bool(vrb) or vrb < 1 or vrb > 10:
                     raise ValueError(f"agents.verify_redo_budget must be an integer in [1, 10]: {vrb}")
             # fix-agent-lane-efficiency D1：子代理模型覆盖键校验。
             # 类型：仅接受 str 或 None（None 视为未配置）；空串合法（= 使用 provider

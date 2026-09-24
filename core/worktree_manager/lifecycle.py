@@ -464,6 +464,10 @@ class G1LifecycleMixin:
         # 判定依据分支名前缀：implementer 分支 `fenix/<spec>-<ts>`，verifier 分支
         # `fenix/verify-<spec>-<ts>`。
         branch = self._wt_branches.get(wt_str)
+        # 入口快照（code-review item 3413cfc5b6e3）：try 内两路收尾（遗产/常规）
+        # 都已先 pop 分支表，finally 再 get(wt_str) 常规路径恒为 None，故 finally
+        # 的键解析须用此处捕获的入口值。
+        wt_branch_at_entry = branch
         is_implementer = bool(branch) and not branch.startswith("fenix/verify-")
 
         try:
@@ -568,22 +572,27 @@ class G1LifecycleMixin:
             # 分支表缺失（daemon 重启重建表）时回落 worktree 目录名解析；两路
             # 皆不可解析则不释放（宁可靠 refresh_locks 的陈锁清扫兜底，不误放
             # 他人锁）。
-            wt_spec = self._spec_from_branch(
-                self._wt_branches.get(wt_str) or ""
-            ) or self._spec_from_worktree_name(wt_path.name)
-            to_remove = [
-                k
-                for k in self._spec_locks
-                if wt_spec is not None and k.split(":")[0] == wt_spec
-            ]
-            for k in to_remove:
-                self._spec_locks.discard(k)
-                self._lock_since.pop(k, None)
-            # 进程扫描缓存随之失效（下一次判定须重新扫描，防读到陈旧「存活」结果）
-            for k in to_remove:
-                self._proc_scan_cache.pop(self._lock_spec_name(k), None)
-                # worktree 继承：认领痕迹随之清除（防止后续 prompt 误注入继承说明）
-                self._active_reuse.pop(self._lock_spec_name(k), None)
+            # 加锁口径与 create / release_spec_lock 对齐（code-review item
+            # 318f41dcf125）：to_remove 计算与摘除全程持 _spec_lock_th——无锁
+            # 窗口内另一线程对同一 spec 发起新 create 后，本段 discard 会误删
+            # 新锁，重开双派发窗口。锁内解析用 wt_branch_at_entry 入口快照。
+            with self._spec_lock_th:
+                wt_spec = self._spec_from_branch(wt_branch_at_entry or "") or (
+                    self._spec_from_worktree_name(wt_path.name)
+                )
+                to_remove = [
+                    k
+                    for k in self._spec_locks
+                    if wt_spec is not None and k.split(":")[0] == wt_spec
+                ]
+                for k in to_remove:
+                    self._spec_locks.discard(k)
+                    self._lock_since.pop(k, None)
+                # 进程扫描缓存随之失效（下一次判定须重新扫描，防读到陈旧「存活」结果）
+                for k in to_remove:
+                    self._proc_scan_cache.pop(self._lock_spec_name(k), None)
+                    # worktree 继承：认领痕迹随之清除（防止后续 prompt 误注入继承说明）
+                    self._active_reuse.pop(self._lock_spec_name(k), None)
 
     def _snapshot_dirty_worktree(self, wt_path: Path, branch: str | None = None) -> str:
         """cleanup rmtree fallback 前对 dirty worktree 做 stash create 快照留档。

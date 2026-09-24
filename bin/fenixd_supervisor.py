@@ -224,7 +224,15 @@ def _sigkill_wait_seconds() -> int:
     return drain + DRAIN_MARGIN_SECONDS
 
 
-def _stdout_points_to_log_file() -> bool:
+# stdout→LOG_FILE 重定向探测结果缓存：(LOG_FILE 路径, 结论)。该前提（启动命令
+# 把 stdout 重定向到 supervisor.log）在进程生命周期内不变，log() 高频路径按
+# LOG_FILE 路径惰性缓存探测结果、只探测一次，免去每行日志的 fstat/stat 开销；
+# 键含路径，测试 monkeypatch LOG_FILE 后缓存随路径变化自然失效（code-review
+# 35745315e198）。
+_stdout_redirect_cache = None
+
+
+def _probe_stdout_points_to_log_file() -> bool:
     """stdout 是否已被重定向到 LOG_FILE（同一文件）。
 
     实际启动命令把 stdout 与 stderr 都重定向到同一文件
@@ -247,6 +255,18 @@ def _stdout_points_to_log_file() -> bool:
         return (out_stat.st_dev, out_stat.st_ino) == (log_stat.st_dev, log_stat.st_ino)
     except (OSError, ValueError, AttributeError):
         return False
+
+
+def _stdout_points_to_log_file() -> bool:
+    """stdout 是否已被重定向到 LOG_FILE（探测结果按 LOG_FILE 路径惰性缓存）。"""
+    global _stdout_redirect_cache
+    cache_key = str(LOG_FILE)
+    cached = _stdout_redirect_cache
+    if cached is not None and cached[0] == cache_key:
+        return cached[1]
+    result = _probe_stdout_points_to_log_file()
+    _stdout_redirect_cache = (cache_key, result)
+    return result
 
 
 def log(msg: str):
@@ -302,8 +322,6 @@ def _write_supervisor_runtime() -> None:
     script_hash = _script_hash()
     if script_hash:
         data["script_hash"] = script_hash
-    import json
-
     FENIX_DIR.mkdir(parents=True, exist_ok=True)
     target = _supervisor_runtime_file()
     try:

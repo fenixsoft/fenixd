@@ -43,6 +43,22 @@ IN_FLIGHT_IMPL_STATES = ("implementing", "implemented", "testing")
 # 写入边界校验：SPEC 目录相对路径前缀
 SPEC_CHANGES_PREFIX = "spec/changes/"
 
+
+def _parse_porcelain_path(line: str) -> Optional[str]:
+    """从 `git status --porcelain` 输出行提取文件路径。
+
+    porcelain 固定格式为「两状态符 + 空格 + 原文路径」，路径从 line[3:] 起
+    原样截取（可含空格）；不能按空白 split 取 parts[1]——含空格的路径会被
+    截断失真（code-review item 27ad5869fb3f）。重命名/拷贝条目（R/C 状态）
+    形如「XY orig -> new」，按箭头分段取新路径。行过短（无路径）返回 None。
+    """
+    if len(line) < 4:
+        return None
+    path = line[3:]
+    if " -> " in path:
+        path = path.split(" -> ", 1)[1]
+    return path or None
+
 # ── infra 失败指纹（evo-run-failure-classification-circuitbreaker D1）──────
 # 评审 API 批量失败（403 网关拒绝 / 402 余额不足 / 429 限流 / quota/budget 耗尽 /
 # rate limit / provider 侧熔断信号 / CLI 进程级崩溃）同属 infra——链路级问题，
@@ -598,7 +614,8 @@ class SpecReviewManager:
         # 记录工作区脏文件的内容哈希
         try:
             result = subprocess.run(
-                ["git", "-C", str(self.project_root), "status", "--porcelain"],
+                ["git", "-C", str(self.project_root), "-c", "core.quotePath=false",
+                 "status", "--porcelain"],
                 capture_output=True,
                 text=True,
                 timeout=10,
@@ -606,21 +623,20 @@ class SpecReviewManager:
             if result.returncode == 0:
                 for line in result.stdout.splitlines():
                     if line.startswith("??") or line.startswith(" M") or line.startswith("M "):
-                        # 简化处理：取文件路径（去掉状态前缀）
-                        parts = line.split()
-                        if len(parts) >= 2:
-                            path = parts[1]
-                            # 忽略 SPEC 目录内的文件（已经单独记录）
-                            if path.startswith(SPEC_CHANGES_PREFIX):
-                                continue
-                            full = self.project_root / path
-                            if full.is_file():
-                                try:
-                                    content = full.read_bytes()
-                                    h = hashlib.md5(content).hexdigest()
-                                    snapshot["dirty_files"][path] = h
-                                except OSError:
-                                    pass
+                        path = _parse_porcelain_path(line)
+                        if path is None:
+                            continue
+                        # 忽略 SPEC 目录内的文件（已经单独记录）
+                        if path.startswith(SPEC_CHANGES_PREFIX):
+                            continue
+                        full = self.project_root / path
+                        if full.is_file():
+                            try:
+                                content = full.read_bytes()
+                                h = hashlib.md5(content).hexdigest()
+                                snapshot["dirty_files"][path] = h
+                            except OSError:
+                                pass
         except (subprocess.SubprocessError, OSError):
             pass
         return snapshot
@@ -683,7 +699,8 @@ class SpecReviewManager:
         added_untracked = []
         try:
             result = subprocess.run(
-                ["git", "-C", str(self.project_root), "status", "--porcelain"],
+                ["git", "-C", str(self.project_root), "-c", "core.quotePath=false",
+                 "status", "--porcelain"],
                 capture_output=True,
                 text=True,
                 timeout=10,
@@ -691,13 +708,13 @@ class SpecReviewManager:
             if result.returncode == 0:
                 for line in result.stdout.splitlines():
                     if line.startswith("??"):
-                        parts = line.split()
-                        if len(parts) >= 2:
-                            path = parts[1]
-                            if not path.startswith(SPEC_CHANGES_PREFIX):
-                                # 检查是否在快照中已存在
-                                if path not in snapshot.get("dirty_files", {}):
-                                    added_untracked.append(path)
+                        path = _parse_porcelain_path(line)
+                        if path is None:
+                            continue
+                        if not path.startswith(SPEC_CHANGES_PREFIX):
+                            # 检查是否在快照中已存在
+                            if path not in snapshot.get("dirty_files", {}):
+                                added_untracked.append(path)
         except (subprocess.SubprocessError, OSError):
             pass
         if added_untracked:

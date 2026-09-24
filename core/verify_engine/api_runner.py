@@ -179,7 +179,29 @@ class ApiRunner(VerifyRunner):
         }
         body = step.get("body", "")
         body_type = str(step.get("body_type") or "").lower()
-        timeout = float(step.get("timeout") or 30.0)
+        try:
+            timeout = float(step.get("timeout") or 30.0)
+        except (TypeError, ValueError) as e:
+            # 非法 timeout（非数字字符串/结构化值）归一为本步骤结构化失败，
+            # 而非 ValueError 穿出令整个场景 run 异常中断。
+            return {
+                "success": False,
+                "action": "http_request",
+                "method": method,
+                "url": url,
+                "error": f"timeout 须为数字（秒）: {step.get('timeout')!r} ({e})",
+            }
+        if body and not isinstance(body, str):
+            # 结构化 body（dict/list）进 json.loads 会抛 TypeError（仅捕获
+            # JSONDecodeError），未捕获即整个场景 run 异常收场——入口归一为
+            # 本步骤结构化失败。
+            return {
+                "success": False,
+                "action": "http_request",
+                "method": method,
+                "url": url,
+                "error": f"body 须为字符串（结构化对象请写成 JSON 文本）: {type(body).__name__}",
+            }
 
         content = None
         json_body = None

@@ -140,7 +140,7 @@ class H5SettingsRoutesMixin:
         config = dashboard_data.read_effective_config(project["path"])
         config["project"] = project["name"]
         config["saved"] = True
-        config[cleared_field] = result[cleared_field]
+        config[cleared_field] = result.get(cleared_field)
         self._json(config)
 
 

@@ -2866,6 +2866,8 @@ class PMEngine:
         """
         cleaned = []
         kept = []
+        # 与 _resolve_push_branch 同口径：兜底分支名前缀走配置而非硬编码
+        prefix = self._get_config("worktree.implement_branch_prefix", "fenix")
         all_specs = self.state_machine.read_all() or {}
         for name, entry in all_specs.items():
             if not isinstance(entry, dict):
@@ -2877,7 +2879,7 @@ class PMEngine:
                 continue
 
             # D2/D4: 优先用 spec 自身分支的远端 SHA 验证内容已在远端
-            branch = entry.get("branch") or f"fenix/{name}"
+            branch = entry.get("branch") or f"{prefix}/{name}"
             verified = False
             verify_note = ""
             remote_branch = self._remote_branch_sha(f"refs/heads/{branch}")

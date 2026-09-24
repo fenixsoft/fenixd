@@ -90,7 +90,6 @@ class FileWatcher:
         self._thread = None
         self._top_sigs = {}  # project -> {kind: sig}（state/vp/admin）
         self._spec_dirs = {}  # project -> {spec_name: 目录签名}
-        self._states = {}  # project -> parse_state() 快照（用于 STATE.md diff）
         self._last_summaries = {}  # project -> {spec_name: summary dict}（增量 diff 基线）
         self._run_base = {}  # (project, run_id) -> {"size": int, "status": str}
         self._log_sigs = {}  # project -> {log_path: (mtime_ns, size)}
@@ -314,7 +313,6 @@ class FileWatcher:
         """
         removed = removed or set()
         cur = dashboard_data.parse_state(proot)
-        self._states[name] = cur
 
         state_sig = _file_sig(proot / ".fenix" / "STATE.md")
         try:
