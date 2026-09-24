@@ -98,6 +98,14 @@ _BUSINESS_FAIL_PATTERNS = (
     "零产出",
 )
 
+# 失败声明匹配窗口（字符数）：_business_fail_marker 仅在 result 文本前缀窗口内
+# 做子串匹配。失败声明固定位于收工摘要开头（「SPEC 内容缺失，…」「预算已耗尽，
+# …」），中段的功能词复述（成功摘要叙事里的「预算耗尽发一次性 warning」，实拍
+# 位于第 692/1382 字符）不构成失败声明——全文裸词匹配会把完全成功的 run 误降级
+# （2026-09-24 日报实拍，同族根因第二次显形）。窗口取 100：容纳「收工自检未
+# 通过：」类前缀+声明的组合形态，同时把已知全部误判样本排除在外。
+_MARKER_DECLARATION_WINDOW = 100
+
 # 结构性信号词汇（事件行命中即视为失败信号凭据，result 未命中标记时兜底）。
 _BUSINESS_FAIL_SIGNALS = (
     "budget-exhausted",
@@ -205,10 +213,14 @@ def _business_fail_marker(text: str) -> Optional[str]:
     """result 文本是否命中业务失败标记：返回命中短语；未命中返回 None。
 
     归一化短语清单见 ``_BUSINESS_FAIL_PATTERNS``（D1 固化）。只做子串
-    匹配、不做 NLP 语义理解——清单覆盖实证 run 的失败声明形态。
+    匹配、不做 NLP 语义理解——清单覆盖实证 run 的失败声明形态。匹配窗口
+    收敛到开头 ``_MARKER_DECLARATION_WINDOW`` 字符的失败声明区：假成功
+    抓取语义保持（开头即声明失败仍判 failed），摘要中段的功能词复述
+    （成功摘要的叙事性提及）不降级。
     """
+    head = text[:_MARKER_DECLARATION_WINDOW]
     for pat in _BUSINESS_FAIL_PATTERNS:
-        if pat in text:
+        if pat in head:
             return pat
     return None
 
@@ -273,11 +285,16 @@ def _classify_run(run_id: str, lines: list) -> tuple:
     t = last.get("type")
     if t == "result":
         # 业务失败语义（D1 双源交叉）：result 文本命中标记 → failed；未命中
-        # 但有结构性失败信号（预算耗尽/spec 缺失）→ failed（护栏）；否则 succeeded。
+        # 但终态邻近事件行有结构性失败信号（预算耗尽/spec 缺失）→ failed
+        # （护栏）；否则 succeeded。
         marker = _business_fail_marker(str(last.get("result") or ""))
         if marker is not None:
             return "failed", f"marker={marker}"
-        signal = _signal_evidence(lines)
+        # 信号护栏只读终态邻近的事件行（lines[:-1] 排除 result 终态自身）：
+        # 终态正文的失败声明归 marker 声明窗口管辖，正文中段的功能词复述
+        # （如成功摘要里的「预算耗尽发一次性 warning」）不是结构性事件信号，
+        # 不构成 marker 未命中后的二次降级依据（2026-09-24 实拍误判第二源）。
+        signal = _signal_evidence(lines[:-1])
         if signal is not None:
             return "failed", signal
         return "succeeded", ""
@@ -354,8 +371,9 @@ def collect_runs_stats(project_root, window_start: datetime) -> Dict[str, int]:
             continue
         category, _detail = _classify_run(run_id, _read_run_tail(p, 3))
         # 判定口径（result-based classification）：succeeded 以 _classify_run 的
-        # result 分支判定结果为准——result 文本未命中 _business_fail_marker 且终态
-        # 邻近 3 行未命中 _signal_evidence 即计为 succeeded，不引入成功语义文本
+        # result 分支判定结果为准——result 文本未命中 _business_fail_marker 且
+        # 终态邻近事件行（尾 3 行中排除 result 终态正文）未命中 _signal_evidence
+        # 即计为 succeeded，不引入成功语义文本
         # 白名单（朴素文本如「已退出」同样计为 succeeded）。接受项边界：信号词
         # 位于终态邻近 3 行之外时不再翻转分类（原先由全文件扫描捕获）；实证上
         # 盲派空 spec run 的失败凭据是 result 文本命中 marker（marker 路径保留），
