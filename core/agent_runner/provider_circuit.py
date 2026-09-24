@@ -211,6 +211,15 @@ class ProviderCircuit:
         self._daily_provider_attempts: Dict[str, int] = {}
         self._daily_provider_warned: Dict[str, bool] = {}
         self._daily_reset_date = datetime.now(timezone.utc).date()
+        # code-review item 8f5a6e6e02bf：provider 记账互斥锁。并发 run-worker 收尾
+        # 会同时调 _record_provider_4xx / _record_provider_probe /
+        # _record_daily_provider_attempt——4xx 滑窗是「读-过滤-整体回写」、daily
+        # 计数是读改写，无锁交错会互相覆盖丢事件（熔断推迟/计数少记），与
+        # _unseal_lock 护瞬断记账（code-review item 0e23519cd2d1）同款竞态。
+        # _unseal_lock 语义限定解封状态机字段，此处状态不同族 → 专用锁隔离；
+        # 三个记账方法互不调用、临界区内只读配置与打日志，与其他锁无嵌套、
+        # 无锁序耦合。
+        self._provider_circuit_lock = threading.Lock()
 
         # fix-provider-transient-backoff（D4 / transient-dispatch-gating）：全局
         # 瞬断错误指纹熔断态。进程内存、不落盘（与 4xx 熔断/switch 冷却同构，
@@ -615,39 +624,43 @@ class ProviderCircuit:
         """
         if not provider_name:
             return
-        today = datetime.now(timezone.utc).date()
-        if today != self._daily_reset_date:
-            self._daily_provider_attempts = {}
-            self._daily_provider_warned = {}
-            self._daily_reset_date = today
-        count = self._daily_provider_attempts.get(provider_name, 0) + 1
-        self._daily_provider_attempts[provider_name] = count
-        raw_warn = self._pm._get_config(
-            "pm.failover.daily_attempts_warn", PROVIDER_DAILY_ATTEMPTS_WARN
-        )
-        # 防御转换（code-review item c945454d3b4d）：非数字配置（如 "50"）原样
-        # 参与 count > warn 比较会在 attempt 记账时抛 TypeError 打断记账。数字
-        # 字符串/浮点转 int；bool（int 子类）按畸形回默认；0/None 保留「禁用
-        # 告警」语义，负值无意义同禁用——不走 _positive_number（其把 0 归一
-        # 为默认值，会复活显式关闭的告警）。
-        warn: int | None = None
-        if raw_warn is not None and type(raw_warn) is not bool:
-            try:
-                warn = int(raw_warn)
-            except (TypeError, ValueError):
-                warn = PROVIDER_DAILY_ATTEMPTS_WARN
-        if (
-            warn is not None
-            and warn > 0
-            and count > warn
-            and not self._daily_provider_warned.get(provider_name, False)
-        ):
-            self._daily_provider_warned[provider_name] = True
-            self._pm.logger.warning(
-                "agent_runner",
-                f"Provider '{provider_name}' daily attempts ({count}) exceeded "
-                f"pm.failover.daily_attempts_warn ({warn}) — check for silent cost",
+        # 计数读改写加锁（code-review item 8f5a6e6e02bf）：跨天重置判定与计数/
+        # 告警标记的读改写同属无锁读改写家族（并发 attempt 交错会丢计数、
+        # 重复或吞掉当日单次告警），与 4xx 记账同一把锁收口（仅影响告警计数）。
+        with self._provider_circuit_lock:
+            today = datetime.now(timezone.utc).date()
+            if today != self._daily_reset_date:
+                self._daily_provider_attempts = {}
+                self._daily_provider_warned = {}
+                self._daily_reset_date = today
+            count = self._daily_provider_attempts.get(provider_name, 0) + 1
+            self._daily_provider_attempts[provider_name] = count
+            raw_warn = self._pm._get_config(
+                "pm.failover.daily_attempts_warn", PROVIDER_DAILY_ATTEMPTS_WARN
             )
+            # 防御转换（code-review item c945454d3b4d）：非数字配置（如 "50"）原样
+            # 参与 count > warn 比较会在 attempt 记账时抛 TypeError 打断记账。数字
+            # 字符串/浮点转 int；bool（int 子类）按畸形回默认；0/None 保留「禁用
+            # 告警」语义，负值无意义同禁用——不走 _positive_number（其把 0 归一
+            # 为默认值，会复活显式关闭的告警）。
+            warn: int | None = None
+            if raw_warn is not None and type(raw_warn) is not bool:
+                try:
+                    warn = int(raw_warn)
+                except (TypeError, ValueError):
+                    warn = PROVIDER_DAILY_ATTEMPTS_WARN
+            if (
+                warn is not None
+                and warn > 0
+                and count > warn
+                and not self._daily_provider_warned.get(provider_name, False)
+            ):
+                self._daily_provider_warned[provider_name] = True
+                self._pm.logger.warning(
+                    "agent_runner",
+                    f"Provider '{provider_name}' daily attempts ({count}) exceeded "
+                    f"pm.failover.daily_attempts_warn ({warn}) — check for silent cost",
+                )
 
     # ── 全局瞬断错误指纹熔断（fix-provider-transient-backoff D4 / transcendent-dispatch-gating）──
     # 全局维度的瞬断错误指纹计数：错误文本归一化（剥离 model 名/时间戳等可变字段）
@@ -1829,7 +1842,6 @@ class ProviderCircuit:
         if not provider_name:
             return
         now = self._pm._now() if now is None else now
-        st = self._circuit_state(provider_name)
         # 数值容错（code-review item 12595e41e08f）：window/threshold/cooldown 直接
         # 取配置并参与 `now - t <= window` / `>= threshold` / `now + cooldown`——若
         # 用户写入非数值（字符串）会在此抛 TypeError 打挂 provider 失败路径；0/负数
@@ -1854,22 +1866,29 @@ class ProviderCircuit:
             PROVIDER_CIRCUIT_COOLDOWN_SECONDS,
         )
 
-        # 滑出滚动窗口外的旧事件
-        st["events"] = [t for t in st["events"] if now - t <= window]
-        st["events"].append(now)
-        st["count"] = len(st["events"])
-        st["code"] = code
+        # 记账本体加锁（code-review item 8f5a6e6e02bf）：并发 run-worker 同时记账
+        # 同一 provider 时，锁外「读-过滤-整体回写」会以本线程的过滤版本覆盖并发
+        # 线程刚 append 的事件（4xx 少记、达阈值的熔断被推迟）。与
+        # _append_transient_event 的 _unseal_lock 临界区同款（item 0e23519cd2d1）；
+        # 状态 dict 的惰性创建一并收进临界区（并发首建会互相覆盖丢事件）。
+        with self._provider_circuit_lock:
+            st = self._circuit_state(provider_name)
+            # 滑出滚动窗口外的旧事件
+            st["events"] = [t for t in st["events"] if now - t <= window]
+            st["events"].append(now)
+            st["count"] = len(st["events"])
+            st["code"] = code
 
-        if st["count"] >= threshold:
-            # 进入熔断（或重新进入冷却）。半开探针仍 4xx → 重新冷却，记录 open_since。
-            st["open_since"] = now
-            st["cooldown_until"] = now + cooldown
-            self._pm.logger.error(
-                "agent_runner",
-                f"Provider circuit OPEN for '{provider_name}' "
-                f"(HTTP {code} x{st['count']} within {int(window)}s), "
-                f"cooldown {int(cooldown)}s — suppress dispatch until probe recovers",
-            )
+            if st["count"] >= threshold:
+                # 进入熔断（或重新进入冷却）。半开探针仍 4xx → 重新冷却，记录 open_since。
+                st["open_since"] = now
+                st["cooldown_until"] = now + cooldown
+                self._pm.logger.error(
+                    "agent_runner",
+                    f"Provider circuit OPEN for '{provider_name}' "
+                    f"(HTTP {code} x{st['count']} within {int(window)}s), "
+                    f"cooldown {int(cooldown)}s — suppress dispatch until probe recovers",
+                )
 
     def _record_provider_probe(
         self, provider_name: str, success: bool, now: float | None = None
@@ -1893,20 +1912,23 @@ class ProviderCircuit:
             ),
             PROVIDER_CIRCUIT_COOLDOWN_SECONDS,
         )
-        if success:
-            self._pm.logger.info(
-                "agent_runner",
-                f"Provider circuit CLOSED for '{provider_name}' — probe recovered",
-            )
-            # 回到 closed：清空窗口计数与冷却，但保留 code 信息供诊断
-            st["events"] = []
-            st["count"] = 0
-            st["cooldown_until"] = 0.0
-            st["open_since"] = 0.0
-        else:
-            st["cooldown_until"] = now + cooldown
-            self._pm.logger.warning(
-                "agent_runner",
-                f"Provider circuit re-cooled for '{provider_name}' — probe still failing, "
-                f"cooldown {int(cooldown)}s",
-            )
+        # 状态回写加锁（code-review item 8f5a6e6e02bf）：与 _record_provider_4xx 的
+        # 记账临界区互斥，防探针闭合清空 events 与并发 4xx append 交错互相覆盖。
+        with self._provider_circuit_lock:
+            if success:
+                self._pm.logger.info(
+                    "agent_runner",
+                    f"Provider circuit CLOSED for '{provider_name}' — probe recovered",
+                )
+                # 回到 closed：清空窗口计数与冷却，但保留 code 信息供诊断
+                st["events"] = []
+                st["count"] = 0
+                st["cooldown_until"] = 0.0
+                st["open_since"] = 0.0
+            else:
+                st["cooldown_until"] = now + cooldown
+                self._pm.logger.warning(
+                    "agent_runner",
+                    f"Provider circuit re-cooled for '{provider_name}' — probe still failing, "
+                    f"cooldown {int(cooldown)}s",
+                )

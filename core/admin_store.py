@@ -652,8 +652,8 @@ class AdminStore:
 
         admin-dispatch-failure-escalation D2：重试不追加新记录，只 bump
         既有记录的 retry_count，达到上限后 _retry_due_dispatch_failures
-        不再选中该记录。返回是否找到并更新（id 不匹配或非 escalation 时
-        返回 False）。
+        不再选中该记录。返回是否实际递增（id 不匹配、非 escalation 或
+        已达上限时返回 False）；未发生递增不写回，避免无变更刷新 mtime。
         """
 
         def mutate(records):
@@ -668,11 +668,13 @@ class AdminStore:
                     cur = int(rec.get("retry_count") or 0)
                 except (TypeError, ValueError):
                     cur = 0
+                if cur >= max_retries:
+                    continue  # 已达上限：不改动，避免无变更写回
                 rec["retry_count"] = min(cur + 1, max_retries)
                 changed = True
             return changed
 
-        return self._mutate(mutate)
+        return self._mutate(mutate, skip_unchanged=True)
 
 
 class DisputeAuditStore:
@@ -696,7 +698,7 @@ class DisputeAuditStore:
         self._logger = logger
 
     def append(self, entry: dict) -> None:
-        """追加一条审计记录（排他锁内 append + flush）。入口字段就地补齐。"""
+        """追加一条审计记录（排他锁内 append + flush + fsync）。入口字段就地补齐。"""
         rec = {"kind": "dispute-audit", "created": _utcnow_iso()}
         rec.update(entry or {})
         try:
@@ -710,6 +712,9 @@ class DisputeAuditStore:
                     with self.audit_path.open("a", encoding="utf-8") as f:
                         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
                         f.flush()
+                        # 与 AdminStore._write_unlocked 对齐：落盘后才返回，
+                        # 崩溃时最近一条审计记录不因页缓存未刷而丢失
+                        os.fsync(f.fileno())
                     self._trim_unlocked()
                 finally:
                     fcntl.flock(lf, fcntl.LOCK_UN)

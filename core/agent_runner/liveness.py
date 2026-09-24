@@ -276,8 +276,9 @@ class LivenessSupervisor:
         self._terminal_verified: set[str] = set()
 
         # 后台调用输出文件跨采样追踪（fix-run-hang-amplification 1.5）：
-        # {task_id: {"last_size": int|None, "last_change": float|None,
-        #            "started_at": float|None, "output_file": str|None}}。
+        # {task_id: {"last_size": int, "last_change": float}}。
+        # started_at/output_file 不入本表，权威存放处是 _liveness_snapshot
+        # 的 background_calls。
         # deadline 多次到点时对同一后台调用的输出文件做增长判定——
         # 「可观测零产出」短路需要两个采样点间 size 零增长而非单点猜测。
         self._output_tracking: dict = {}

@@ -59,30 +59,12 @@ def scan_server_routes(root: Path) -> list:
     # ── 1) 表驱动路由表（主源，方法显式归属） ────────────────────────────
     routes_base = root / "core" / "dashboard" / "routes" / "base.py"
     if routes_base.is_file():
-        text = routes_base.read_text(encoding="utf-8")
-        table_entries = []
-        for table_name, method in (
-            ("_API_GET_ROUTES", "GET"),
-            ("_API_POST_ROUTES", "POST"),
-            ("_API_DELETE_ROUTES", "DELETE"),
-        ):
-            for line_idx, line in enumerate(
-                routes_base.read_text(encoding="utf-8").splitlines(), start=1
-            ):
-                m = re.search(
-                    r'\(\s*"(exact|regex|suffix)",\s*"([^"]+)"', line
-                )
-                if not m:
-                    continue
-                # 需要确定该行属于哪张表（以 "_API_GET_ROUTES = [" 等为界）
-                pass
         # 简化：按表边界切分文本后逐表匹配
+        base_lines = routes_base.read_text(encoding="utf-8").splitlines()
         marker = re.compile(r"_API_(GET|POST|DELETE)_ROUTES = \[")
         current_table = None
         table_start_line = 0
-        for line_idx, line in enumerate(
-            routes_base.read_text(encoding="utf-8").splitlines(), start=1
-        ):
+        for line_idx, line in enumerate(base_lines, start=1):
             m = marker.search(line)
             if m:
                 current_table = m.group(1)
@@ -149,11 +131,9 @@ def scan_spa_routes(root: Path) -> list:
         if not m:
             continue
         route = m.group(1)
-        if route.startswith("/") and "/" not in route[1:]:
-            # 一级菜单路由（/overview /projects /settings /activities /help）
-            entries.append((route, _rel_line(app, root, i), "SPA"))
-        elif route.startswith("/") and len(route) > 1:
-            # 动态/嵌套菜单路由（/projects/<name>）
+        # 一级菜单路由（/overview /projects /settings /activities /help）与
+        # 动态/嵌套菜单路由（/projects/<name>）处理一致：以 / 开头且长度 >1 即收录
+        if route.startswith("/") and len(route) > 1:
             entries.append((route, _rel_line(app, root, i), "SPA"))
     return entries
 

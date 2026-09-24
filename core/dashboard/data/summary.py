@@ -806,6 +806,18 @@ def spec_detail(project_root, spec_name: str, entry: dict) -> dict:
     }
 
 
+def _int_or_zero(value):
+    """STATE 数值字段容错读（与 _judge_stat_or_none 同风格，补齐同文件防护）。
+
+    合法整数（含数字串）→ int；缺失/None/非法文本 → 0。STATE.md 持久字段
+    为字符串，被手工改坏为非数值文本时直转抛 ValueError 会沿摘要接口穿透 500。
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _token_usage_view(entry: dict) -> dict:
     """把 STATE 内部 token 字段规整为治理区展示结构（add-cost-observability D2）。
 
@@ -819,17 +831,16 @@ def _token_usage_view(entry: dict) -> dict:
         }
     STATE 持久累计 _tokens_in/_tokens_out/_cost_usd 及缓存分项 _cache_read_tokens/
     _cache_creation_tokens（分项 cache 入 input）；分项为 None 表示该 spec 未记录过
-    分项数据（历史条目），前端不显示缓存括号。
+    分项数据（历史条目或字段非法），前端不显示缓存括号。
     """
     if not isinstance(entry, dict):
         entry = {}
-    tokens_in = int(entry.get("_tokens_in", 0) or 0)
-    tokens_out = int(entry.get("_tokens_out", 0) or 0)
-    # 分项字段：缺失（历史 spec）保持 None，存在则规整为 int（STATE 读出为字符串）
-    cache_read = entry.get("_cache_read_tokens")
-    cache_creation = entry.get("_cache_creation_tokens")
-    cache_read_val = int(cache_read) if cache_read is not None else None
-    cache_creation_val = int(cache_creation) if cache_creation is not None else None
+    tokens_in = _int_or_zero(entry.get("_tokens_in"))
+    tokens_out = _int_or_zero(entry.get("_tokens_out"))
+    # 分项字段：缺失（历史 spec）或非法文本均按 None（未记录）处理（STATE 读出为
+    # 字符串），复用 _judge_stat_or_none 的 fail-open 口径——前端不显示缓存括号
+    cache_read_val = _judge_stat_or_none(entry.get("_cache_read_tokens"))
+    cache_creation_val = _judge_stat_or_none(entry.get("_cache_creation_tokens"))
     cost = entry.get("_cost_usd")
     if cost is None:
         cost_val = None
@@ -883,7 +894,7 @@ def _token_recent_entries(entries: dict, project_name: str) -> list:
     """
     out = []
     for name, entry in entries.items():
-        tokens = int(entry.get("_tokens_in", 0) or 0) + int(entry.get("_tokens_out", 0) or 0)
+        tokens = _int_or_zero(entry.get("_tokens_in")) + _int_or_zero(entry.get("_tokens_out"))
         if tokens <= 0:
             continue
         out.append(

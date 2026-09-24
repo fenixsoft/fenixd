@@ -539,7 +539,7 @@ export default function HookManager({
               <div style={{ width: '100%', minWidth: 0 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                   <Text type="secondary" style={{ fontSize: 12 }}>
-                    {(() => { try { return dayjs(item.ts).format('YYYY-MM-DD HH:mm:ss'); } catch { return item.ts; } })()}
+                    {(() => { const d = dayjs(item.ts); return d.isValid() ? d.format('YYYY-MM-DD HH:mm:ss') : item.ts; })()}
                   </Text>
                   <Tag color={AUDIT_STATUS_COLORS[item.status] || 'default'}>
                     {AUDIT_STATUS_LABELS[item.status] || item.status}
@@ -577,11 +577,9 @@ export default function HookManager({
               key: 'ts',
               width: '12%',
               render: (ts: string) => {
-                try {
-                  return dayjs(ts).format('YYYY-MM-DD HH:mm:ss');
-                } catch {
-                  return ts;
-                }
+                // dayjs 解析失败不抛异常而是返回 Invalid Date，须显式判 isValid
+                const d = dayjs(ts);
+                return d.isValid() ? d.format('YYYY-MM-DD HH:mm:ss') : ts;
               },
             },
             { title: 'SPEC', dataIndex: 'spec', key: 'spec', width: '18%' },

@@ -17,6 +17,12 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).absolute().parent.parent.parent
 # 框架根（.resolve() 跟随 .fenix 软链接，定位真实安装位置）：core/ 所在目录
 FRAMEWORK_ROOT = Path(__file__).resolve().parent.parent
+# 直接以 bin/ 路径调用时上面的三级上溯会落到仓库外目录：校验 spec/ 缺失则
+# 回退到框架根（自举仓库下与项目根重合，同为 .resolve() 口径），
+# 此时 main() 会向 stderr 提示实际使用的根。
+PROJECT_ROOT_FALLBACK = not (PROJECT_ROOT / "spec").is_dir()
+if PROJECT_ROOT_FALLBACK:
+    PROJECT_ROOT = FRAMEWORK_ROOT
 
 
 def archive_change(project_root: Path, name: str) -> dict:
@@ -82,6 +88,9 @@ def main():
     args = parser.parse_args()
 
     project_root = Path(args.project).expanduser().resolve() if args.project else PROJECT_ROOT
+    if args.project is None and PROJECT_ROOT_FALLBACK:
+        # 提示走 stderr，避免破坏下游对 stdout JSON 的解析
+        print(f"fenix_archive: 项目根回退到框架根: {project_root}", file=sys.stderr)
 
     try:
         result = archive_change(project_root, args.name)

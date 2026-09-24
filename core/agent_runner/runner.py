@@ -3767,7 +3767,11 @@ class AgentRunner:
             resume_session_id: 非 None 时以 `--resume <id>` 续跑该 session。
             max_turns: 单次运行轮次上限；达到即 kill（None 表示不限制）。
 
-        Returns: (output, turns_used, session_id)
+        Returns: (output, turns_used, session_id, usage_info)。usage_info 为终态
+            result 事件提取的 usage/成本（add-cost-observability D1，经
+            _extract_usage_info）；强杀等无 result 终态事件的路径四数值键全 0 且置
+            unobserved=True（观测兜底而非确认为零，语义见 _extract_usage_info）。
+            失败/异常路径直接抛 RuntimeError，不返回。
         """
         # per-agent-timeout-override 3.2：run 生效超时按 agent_type 覆盖值查询
         #（override → 全局 run_timeout_seconds → 3600 回退）。

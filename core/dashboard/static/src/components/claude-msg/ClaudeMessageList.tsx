@@ -93,6 +93,9 @@ function ClaudeMessageList({ messages, showThinking = false }: ClaudeMessageList
                 />
               );
             }
+            // 顶层有意不做相邻同角色合并：prevMessage 恒为 null，MessageItem 的
+            // isGrouped（grouped class / 头像与头部抑制）在此永不生效，
+            // 仅由 ToolGroupContainer 展开组内时传入真实 prevMessage 驱动。
             return (
               <MessageItem key={getMessageKey(item)} message={item} prevMessage={null} showThinking={showThinking} />
             );

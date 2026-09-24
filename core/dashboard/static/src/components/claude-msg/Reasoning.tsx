@@ -3,6 +3,8 @@
 // 保留 streaming 时自动展开、结束后自动收起 + "思考了 N 秒" 文案。
 // add-run-record-readability 3.1：静态回放折叠头显示「已思考 N 秒 · <首行预览>」，
 // 时长由相邻 assistant 事件 timestamp 差估算（runEventsToChatMessages 产出）。
+// 注：当前 fenixd 集成仅静态回放（唯一调用方 MessageItem 传 defaultOpen=false、不传 isStreaming），
+// isStreaming 自动开合/时长计时分支实际不可达，按迁移语义保留。
 import * as React from 'react';
 
 import { formatThinkingLabel } from './chatFormatting';
@@ -104,5 +106,3 @@ export const Reasoning: React.FC<ReasoningProps> = ({
     </div>
   );
 };
-
-export const ReasoningContent: React.FC<{ children: React.ReactNode }> = ({ children }) => <>{children}</>;
