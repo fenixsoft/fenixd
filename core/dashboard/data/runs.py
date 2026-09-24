@@ -345,7 +345,16 @@ def get_runs(project_root, spec_name: str | None = None, include_archive: bool =
             (archived if p.parent.name == "archive" else live).append(p)
         seen = {p.stem for p in live}
         files = live + [p for p in archived if p.stem not in seen]
-        files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+
+        def _mtime_desc_key(p):
+            # 单文件 stat 失败（并发归档/删除等 OSError 子类）只回退 mtime 0
+            # （排到末尾，随后由逐条 stat 的 except OSError 跳过），不放大为整表清空。
+            try:
+                return p.stat().st_mtime
+            except OSError:
+                return 0.0
+
+        files.sort(key=_mtime_desc_key, reverse=True)
     except OSError:
         return []
     now = time.time()

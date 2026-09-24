@@ -1,9 +1,9 @@
-import { Alert, App, Button, Card, Collapse, Input, List, Select, Space, Tag, Typography } from 'antd';
-import dayjs from 'dayjs';
+import { Alert, App, Button, Card, Collapse, Input, List, Select, Space, Typography } from 'antd';
 import { useCallback, useEffect, useState } from 'react';
 import type { AlertItem, AlertsData } from '@/services/dashboard';
 import { clearAllAlerts, getAlerts, markAlertHandled } from '@/services/dashboard';
-import { fmtEvidence } from '@/utils/evidence';
+// 告警标题/明细展示单源（code-review item 5478d16d70c7，SEV 常量与 fmtDate 同源收敛）
+import { AlertLines, AlertTitle } from '@/components/alert-shared';
 // 裁决交互收敛共享 hook（code-review item f86171cc149d）：状态四元组、结果
 // 文案、destructive 二次确认门与 SPEC 详情页同源，本组件只注入刷新回调
 import { AlertAdjudicationExec, useAlertAdjudication } from '@/hooks/useAlertAdjudication';
@@ -16,65 +16,11 @@ import { AlertAdjudicationExec, useAlertAdjudication } from '@/hooks/useAlertAdj
  * （Select + note + 执行，与 SPEC 详情页同一 alert-resolve 闭环端点），
  * abandon / skip_review_gate 执行前二次确认；无 choices 保持「标记已处理」。
  */
-const SEV_LABEL: Record<string, string> = { critical: '严重', major: '较高', warning: '警告', minor: '一般' };
-const SEV_COLOR: Record<string, string> = { critical: 'red', major: 'orange', minor: 'blue' };
+// 横幅仅剩排序用途的 SEV 权重（标签/配色/标题/明细已收敛到 components/alert-shared）
 const SEV_RANK: Record<string, number> = { critical: 3, major: 2, minor: 1 };
 
 function sevRank(sev?: string) {
   return SEV_RANK[sev || ''] || 0;
-}
-
-function fmtDate(iso?: string) {
-  if (!iso) return '';
-  const d = dayjs(iso);
-  return d.isValid() ? d.format('MM-DD HH:mm:ss') : String(iso);
-}
-
-function AlertLines({ item }: { item: AlertItem }) {
-  // pre-wrap 保留字段内的 \n / \t 格式（JSON 存储层未丢失，HTML 默认会折叠成空格）
-  const evidenceText = fmtEvidence(item.evidence);
-  return (
-    <div style={{ fontSize: 12, whiteSpace: 'pre-wrap' }}>
-      <div>{item.spec ? `📌 ${item.spec} ` : ''}{item.description}</div>
-      {evidenceText ? (
-        <Typography.Text type="secondary">证据：{evidenceText}</Typography.Text>
-      ) : null}
-      {item.action_taken ? (
-        <div>
-          <Typography.Text type="secondary">处置：{item.action_taken}</Typography.Text>
-        </div>
-      ) : null}
-      {item.recommended_action ? (
-        <div>
-          <Typography.Text type="secondary">建议：{item.recommended_action}</Typography.Text>
-        </div>
-      ) : null}
-      {item.resolve_note ? (
-        <div>
-          <Typography.Text type="secondary">解决依据：{item.resolve_note}</Typography.Text>
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function AlertTitle({ item, resolved }: { item: AlertItem; resolved?: boolean }) {
-  return (
-    <Space wrap size={6}>
-      <Tag color={SEV_COLOR[item.severity || ''] || 'default'} style={{ marginInlineEnd: 0 }}>
-        {SEV_LABEL[item.severity || ''] || item.severity || '未知'}
-      </Tag>
-      {resolved ? (
-        <Tag style={{ marginInlineEnd: 0 }} color={item.handled_by === 'auto-resolve' ? 'cyan' : 'geekblue'}>
-          {item.handled_by === 'auto-resolve' ? '🤖 自动解决' : '👤 人工处理'}
-        </Tag>
-      ) : null}
-      {item.project ? <Tag style={{ marginInlineEnd: 0 }}>{item.project}</Tag> : null}
-      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-        {fmtDate(resolved ? item.handled_at || item.created : item.created)}
-      </Typography.Text>
-    </Space>
-  );
 }
 
 export default function AlertBanner({ refreshTick }: { refreshTick: number }) {
@@ -206,10 +152,10 @@ export default function AlertBanner({ refreshTick }: { refreshTick: number }) {
                   ].filter(Boolean)}
                 >
                   <List.Item.Meta
-                    title={<AlertTitle item={a} />}
+                    title={<AlertTitle item={a} variant="banner" />}
                     description={
                       <>
-                        <AlertLines item={a} />
+                        <AlertLines item={a} variant="banner" />
                         {adjudicable && (
                           /* 裁决控件常驻；wrap 布局适配窄屏（screen-xs 自查）。
                              静态样式落样式表类（code-review item d893e16d11de），
@@ -271,8 +217,8 @@ export default function AlertBanner({ refreshTick }: { refreshTick: number }) {
                     renderItem={(a) => (
                       <List.Item>
                         <List.Item.Meta
-                          title={<AlertTitle item={a} resolved />}
-                          description={<AlertLines item={a} />}
+                          title={<AlertTitle item={a} resolved variant="banner" />}
+                          description={<AlertLines item={a} variant="banner" />}
                         />
                       </List.Item>
                     )}

@@ -13,9 +13,9 @@
 
 探测信息源（按优先级）：
     1. package.json 的 scripts.build / scripts.dist / scripts.release
-       + 根级 dist/、build/、out/ 目录存在性（仅项目根级，不递归子级）
     2. pyproject.toml 的 [build-system]（poetry setuptools 等 → 检查 dist/）
-    3. 项目目录结构：根级 dist/、build/、out/ 目录、release-*.zip 等命名的产物文件（写入具体文件名）
+    3. 项目目录结构：根级 dist/、build/、out/ 目录（独立信息源，仅项目根级，
+       不递归子级；Python 项目不列 build/）、release-*.zip 等命名的产物文件（写入具体文件名）
     4. Fenix 框架项目（core/dashboard/static/dist/ 存在时自动包含）
 
 输出（JSON）：
@@ -75,7 +75,7 @@ def detect_build_artifacts(project_root: Path) -> dict:
         except OSError:
             pass  # dist 目录不可读（权限/挂载异常）时跳过该信息源，不阻塞探测
 
-    # ── 2. package.json scripts + dist/build 目录 ────────────────────────────
+    # ── 2. package.json scripts ──────────────────────────────────────────────
     pkg_json = project_root / "package.json"
     if pkg_json.is_file():
         try:
@@ -92,12 +92,6 @@ def detect_build_artifacts(project_root: Path) -> dict:
                 sources.append(
                     "package.json scripts: " + ", ".join(build_script_keys)
                 )
-            # 根级 dist/ build/ out/ 检测
-            for d in ["dist", "build", "out"]:
-                candidate = project_root / d
-                if candidate.is_dir() and any(candidate.iterdir()):
-                    paths_found.add(f"{d}/")
-                    sources.append(f"{d}/ 目录存在且非空")
         except (json.JSONDecodeError, OSError):
             pass  # 损坏的 package.json 不阻塞
 
@@ -124,7 +118,25 @@ def detect_build_artifacts(project_root: Path) -> dict:
         except OSError:
             pass
 
-    # ── 4. 根级产物文件（release-*.zip 等命名 → 写入具体文件名）──────────────
+    # ── 4. 根级 dist/ build/ out/ 目录（独立信息源，不依赖 package.json 存在）──
+    # 无 package.json/pyproject.toml 的项目（Go/Rust 等）同样探测根级构建目录；
+    # build/ 目录名太通用（易误报任意同名目录），Python 项目（pyproject.toml
+    # 在册）不作产物候选，与 pyproject 分支的排除语义一致
+    has_pyproject = pyproject.is_file()
+    try:
+        for d in ["dist", "build", "out"]:
+            if d == "build" and has_pyproject:
+                continue
+            candidate = project_root / d
+            if candidate.is_dir() and any(candidate.iterdir()):
+                if f"{d}/" in paths_found:
+                    continue  # dist/ 已由 pyproject 分支归因，不重复记源
+                paths_found.add(f"{d}/")
+                sources.append(f"{d}/ 目录存在且非空")
+    except OSError:
+        pass  # 目录不可读（权限/挂载异常）时跳过该信息源，不阻塞探测
+
+    # ── 5. 根级产物文件（release-*.zip 等命名 → 写入具体文件名）──────────────
     try:
         for f in project_root.iterdir():
             if f.is_file():

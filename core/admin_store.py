@@ -112,7 +112,8 @@ class AdminStore:
         True——损坏语义不变，写回同样被拒（fail-closed：宁可告警暂时写不进，
         不可静默清掉全部历史），需人工介入修复。
         """
-        dest = path.with_name(f"{path.name}.corrupt-{int(time.time())}")
+        # 纳秒级时间戳：秒级后缀下同秒二次留底会被 rename 静默覆盖、丢失取证
+        dest = path.with_name(f"{path.name}.corrupt-{time.time_ns()}")
         try:
             if path.exists():
                 path.rename(dest)

@@ -17,11 +17,15 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-# .absolute()（不跟随软链接）：脚本经项目内 .fenix/bin/ 软链调用时，
-# __file__ = <项目根>/.fenix/bin/fenix_status.py，三级 parent 即项目根。
-# core 包以 PROJECT_ROOT/.fenix 为根导入——不依赖 CWD，防跨项目误锚。
-PROJECT_ROOT = Path(__file__).absolute().parent.parent.parent
-sys.path.insert(0, str(PROJECT_ROOT / ".fenix"))
+# .absolute()（不跟随软链接）：兼容两种调用（与 fenix_dashboard.py 同一判定）——
+# 经项目内 .fenix/bin/ 软链调用 → _FENIX_DIR = <项目根>/.fenix，PROJECT_ROOT = 项目根；
+# 直接以框架 bin/ 调用   → _FENIX_DIR = 仓库根，PROJECT_ROOT = 仓库根。
+# core 包随 _FENIX_DIR 导入——不依赖 CWD，防跨项目误锚。
+_THIS_DIR = Path(__file__).absolute().parent
+_FENIX_DIR = _THIS_DIR.parent
+PROJECT_ROOT = _FENIX_DIR.parent if _FENIX_DIR.name == ".fenix" else _FENIX_DIR
+if str(_FENIX_DIR) not in sys.path:
+    sys.path.insert(0, str(_FENIX_DIR))
 
 from core.dashboard import data  # noqa: E402
 

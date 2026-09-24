@@ -8,7 +8,6 @@ import {
   List,
   Pagination,
   Radio,
-  Space,
   Spin,
   Tag,
   Timeline,
@@ -30,7 +29,9 @@ import type {
   ProjectActivities,
 } from '@/services/dashboard';
 import { useIsMobile } from '@/hooks/useIsMobile';
-import { fmtEvidence } from '@/utils/evidence';
+// 告警标题/明细/SEV 常量与 fmtDate 收敛单源（code-review item 5478d16d70c7；
+// variant="page" 保留本页既有布局：spec 蓝标签、明细字段分行、完整年月日）
+import { AlertLines, AlertTitle, fmtDate } from '@/components/alert-shared';
 
 const REFRESH_THROTTLE_MS = 500;
 
@@ -66,16 +67,7 @@ const SIGNAL_LABEL: Record<string, string> = {
   verify_uniform_failure: '全场景同因失败',
 };
 
-const SEV_LABEL: Record<string, string> = { critical: '严重', major: '较高', warning: '警告', minor: '一般' };
-const SEV_COLOR: Record<string, string> = { critical: 'red', major: 'orange', warning: 'gold', minor: 'blue' };
-
 const PRE_WRAP: React.CSSProperties = { whiteSpace: 'pre-wrap' };
-
-function fmtDate(v?: string) {
-  if (!v) return '—';
-  const d = dayjs(v);
-  return d.isValid() ? d.format('YYYY-MM-DD HH:mm:ss') : v;
-}
 
 function resultPill(result?: string) {
   if (!result) return null;
@@ -233,60 +225,6 @@ function ActivityTimeline({
   );
 }
 
-function AlertTitle({ item, resolved }: { item: AlertItem; resolved?: boolean }) {
-  return (
-    <Space wrap size={6}>
-      <Tag color={SEV_COLOR[item.severity || ''] || 'default'} style={{ marginInlineEnd: 0 }}>
-        {SEV_LABEL[item.severity || ''] || item.severity || '未知'}
-      </Tag>
-      {resolved ? (
-        <Tag
-          style={{ marginInlineEnd: 0 }}
-          color={item.handled_by === 'auto-resolve' ? 'cyan' : 'geekblue'}
-        >
-          {item.handled_by === 'auto-resolve' ? '🤖 自动解决' : '👤 人工处理'}
-        </Tag>
-      ) : null}
-      {item.project ? <Tag>{item.project}</Tag> : null}
-      {item.spec ? <Tag color="blue">{item.spec}</Tag> : null}
-      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-        {fmtDate(resolved ? item.handled_at || item.created : item.created)}
-      </Typography.Text>
-    </Space>
-  );
-}
-
-function AlertLines({ item }: { item: AlertItem }) {
-  const evidenceText = fmtEvidence(item.evidence);
-  return (
-    <div style={{ fontSize: 12, ...PRE_WRAP }}>
-      {item.description ? <div>{item.description}</div> : null}
-      {evidenceText ? (
-        <div>
-          <Typography.Text type="secondary">证据：{evidenceText}</Typography.Text>
-        </div>
-      ) : null}
-      {item.action_taken ? (
-        <div>
-          <Typography.Text type="secondary">处置：</Typography.Text>
-          {item.action_taken}
-        </div>
-      ) : null}
-      {item.recommended_action ? (
-        <div>
-          <Typography.Text type="secondary">建议：</Typography.Text>
-          {item.recommended_action}
-        </div>
-      ) : null}
-      {item.resolve_note ? (
-        <div>
-          <Typography.Text type="secondary">解决依据：{item.resolve_note}</Typography.Text>
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
 type ViewMode = 'auto' | 'alert';
 
 interface ViewingRun {
@@ -327,7 +265,7 @@ function AlertPanel({
               </Button>,
             ]}
           >
-            <List.Item.Meta title={<AlertTitle item={a} />} description={<AlertLines item={a} />} />
+            <List.Item.Meta title={<AlertTitle item={a} variant="page" />} description={<AlertLines item={a} variant="page" />} />
           </List.Item>
         )}
       />
@@ -346,8 +284,8 @@ function AlertPanel({
                   renderItem={(a) => (
                     <List.Item>
                       <List.Item.Meta
-                        title={<AlertTitle item={a} resolved />}
-                        description={<AlertLines item={a} />}
+                        title={<AlertTitle item={a} resolved variant="page" />}
+                        description={<AlertLines item={a} variant="page" />}
                       />
                     </List.Item>
                   )}

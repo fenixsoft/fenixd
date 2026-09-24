@@ -31,8 +31,7 @@ import {
   unregisterSessionWatch,
 } from '@/services/dashboard';
 import type { SessionEvent } from '@/services/dashboard';
-import { runEventsToChatMessages } from '@/components/claude-msg/runEvents';
-import ClaudeMessageList from '@/components/claude-msg/ClaudeMessageList';
+import { ClaudeMessageList, runEventsToChatMessages } from '@/components/claude-msg';
 
 interface SessionPanelProps {
   project: string;

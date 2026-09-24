@@ -18,6 +18,7 @@
 // 时点在前端本地计时——回归可跑 1800s，跨刷新后本地态丢失会让分面回落到
 // 「上次结果」。运行中轮询快照（2s），running 回落即刷新结果。
 import { useCallback, useEffect, useRef, useState } from 'react';
+import dayjs from 'dayjs';
 import { App, Button, Card, Descriptions, Progress, Space, Table, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import {
@@ -46,16 +47,14 @@ function fmtDuration(sec?: number | null) {
   return `${Math.floor(m / 60)}时${m % 60}分${rest ? `${rest}秒` : ''}`;
 }
 
-/** 执行时间显示（本地时区；快照为 UTC ISO）。 */
+/** 执行时间显示（本地时区；快照为 UTC ISO；dayjs 统一格式——code-review
+ * item 409fad9381a1：toLocaleString 输出随浏览器 locale 变化，与仓库其他
+ * 页面（activities 等）的 YYYY-MM-DD HH:mm:ss 口径不齐；dayjs 解析失败
+ * 返回 Invalid Date 而非抛异常，isValid 显式判后回退原文）。 */
 function fmtExecTime(iso?: string) {
   if (!iso) return '—';
-  try {
-    const d = new Date(iso);
-    if (Number.isNaN(d.getTime())) return iso;
-    return d.toLocaleString();
-  } catch {
-    return iso;
-  }
+  const d = dayjs(iso);
+  return d.isValid() ? d.format('YYYY-MM-DD HH:mm:ss') : iso;
 }
 
 // ── 分类 Tag：失败 / 错误 / 超时 / 长耗时（spec 三态渲染表列的「分类」）──

@@ -623,7 +623,13 @@ class SummaryIndex:
 
             # STATE.md 签名变化 → 重新解析快照（新增/删除 spec 只有 parse_state
             # 才能发现；idx 保留，仅增量重算签名变化的 spec——见下方循环）。
-            state_changed = state_sig is not None and self._state_sigs.get(key) != state_sig
+            # STATE.md 整体消失（sig None）但索引曾记录过该 key 签名 → 同样视为
+            # 变化：parse_state 的空结果刷新快照、已删 spec 经下方清理剔除，否则
+            # 陈旧摘要持续吐出直至重启；初始化窗口（key 从未入 _state_sigs，该表
+            # 仅在 sig 非 None 时记录）sig 为 None 不算变更，维持既有行为。
+            state_changed = (
+                state_sig is not None and self._state_sigs.get(key) != state_sig
+            ) or (state_sig is None and key in self._state_sigs)
             if specs is None:
                 if not state_changed:
                     specs = self._state_snapshot.get(key)
