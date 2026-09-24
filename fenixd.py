@@ -2969,11 +2969,14 @@ class FenixDaemon:
 
             # 汇总全部就绪项目的待分析条目（带 project），max_items_per_run 截断
             pending: list = []
+            # known_ids 在本检查点周期内不变（循环体只读不写 items.jsonl），
+            # 循环外单次读取，避免每个就绪项目重复解析全量 items.jsonl
+            known = known_ids(PROJECT_ROOT)
             for proj in ready:
                 entries = parse_todo_entries(proj.get("todo_md") or "")
                 for entry in entries:
                     entry["project"] = proj.get("name") or proj.get("path")
-                batch = select_pending_entries(entries, known_ids(PROJECT_ROOT), 10**6)
+                batch = select_pending_entries(entries, known, 10**6)
                 pending.extend(batch)
             se_cfg = ConfigLoader.get_self_evolution_config(self.config)
             limit = int(se_cfg["max_items_per_run"])

@@ -1406,7 +1406,14 @@ class TestManualAuthorizationChain(unittest.TestCase):
         self.assertFalse(read_progress(proot).get("manual_authorized", True))
 
     def test_disabled_mid_chain_lands_terminal_progress(self):
-        """事故缺陷面二：live 链撞 disabled 守卫 MUST 落终态进度（不静默冻结）。"""
+        """事故缺陷面二：live 链撞 disabled 守卫 MUST 有进度落笔（不静默冻结）。
+
+        code-review item 1421fde483a3 细化契约：批在飞时 disabled 不得直接写
+        blocked 终态——批 worker 不感知开关，照常回归、合回并再写 merging 进
+        度，抢先写终态会与「已终止」语义矛盾且随即被覆盖。故在飞窗口仅合并写
+        reason=disabled 的提示性 current（保留 running=true 与批上下文），终态
+        改写留给批收尾（_run_batch finally 清退 _in_flight）后的下一次 checkpoint。
+        """
         from core.code_fix import CodeFixOrchestrator, read_progress
 
         class _CapturingExecutor:
@@ -1430,9 +1437,20 @@ class TestManualAuthorizationChain(unittest.TestCase):
         cfg["admin"]["code_review_fix"]["enabled"] = False
         res = orch.checkpoint()
         self.assertEqual(res, {"triggered": False, "reason": "disabled"})
+        # 批在飞窗口：仅提示性落笔，running 与批上下文保留（不静默冻结）
+        prog = read_progress(proot)
+        self.assertTrue(prog["running"],
+                        "批在飞时 disabled MUST NOT 抹成终态（批 worker 仍在飞）")
+        self.assertEqual(prog["reason"], "disabled")
+        self.assertIn("收尾后终止", prog["current"])
+        self.assertEqual(len(executor.jobs), 1, "disabled 后 MUST NOT 再投递")
+        # 模拟批 worker 收尾（_run_batch finally 清退在飞标记）
+        orch._in_flight = False
+        res = orch.checkpoint()
+        self.assertEqual(res, {"triggered": False, "reason": "disabled"})
         prog = read_progress(proot)
         self.assertFalse(prog["running"],
-                         "live 链撞 disabled MUST 落终态，不得冻结在 running=true")
+                         "批收尾后撞 disabled MUST 落终态，不得冻结在 running=true")
         self.assertEqual(prog["phase"], "blocked")
         self.assertEqual(prog["reason"], "disabled")
         self.assertEqual(len(executor.jobs), 1, "disabled 后 MUST NOT 再投递")

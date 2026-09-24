@@ -12,7 +12,9 @@
 """
 
 import os
+import socket
 import time
+from contextlib import contextmanager
 
 
 def is_claude_process(pid_str: str) -> bool:
@@ -41,7 +43,7 @@ def find_free_port() -> int:
         return s.getsockname()[1]
 
 
-def _bind_retry(host: str = "127.0.0.1", retries: int = 3) -> "socket":
+def _bind_retry(host: str = "127.0.0.1", retries: int = 3) -> socket.socket:
     """尝试 bind 0 端口（OS 分配），绑定失败时重试（消除 TOCTOU）。"""
     from socket import socket as _socket
 
@@ -55,9 +57,6 @@ def _bind_retry(host: str = "127.0.0.1", retries: int = 3) -> "socket":
             last_err = e
             time.sleep(0.05)
     raise last_err  # type: ignore[misc]
-
-
-from contextlib import contextmanager
 
 
 @contextmanager

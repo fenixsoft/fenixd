@@ -1311,18 +1311,33 @@ class CodeFixOrchestrator:
                 # 中途关闭）必须落终态进度——静默早退会让前端永久停在陈旧的
                 # 「进行中」快照上（2026-09-22「合回主树中」冻结事故缺陷面）。
                 if prev_chain.get("running"):
-                    write_progress(
-                        self.project_root,
-                        running=False,
-                        phase="blocked",
-                        reason="disabled",
-                        current="自动修复总开关已关闭，链终止（可重新触发）",
-                        worktree=None,
-                        run_id=None,
-                        batch_total=None,
-                        manual_authorized=False,
-                        chain_skipped=[],
-                    )
+                    if self._code_fix_running():
+                        # 批在飞（code-review item 1421fde483a3）：不落终态——
+                        # 此处写 blocked 会把在飞批刚置的 running=true 快照连同
+                        # 批上下文（worktree/run_id）一并抹成「已终止」，而批
+                        # worker 不感知开关，照常回归、合回主树再写 merging
+                        # 进度，终止语义与真实在飞状态互相矛盾。改为仅追加
+                        # reason=disabled 的提示性 current（合并写保留 running
+                        # 与批上下文），终态改写留给批收尾后的下一次 checkpoint
+                        # （自驱动 _resubmit 或下一轮 full scan）。
+                        write_progress(
+                            self.project_root,
+                            reason="disabled",
+                            current="自动修复总开关已关闭，本批收尾后终止链（不再投递后续批次）",
+                        )
+                    else:
+                        write_progress(
+                            self.project_root,
+                            running=False,
+                            phase="blocked",
+                            reason="disabled",
+                            current="自动修复总开关已关闭，链终止（可重新触发）",
+                            worktree=None,
+                            run_id=None,
+                            batch_total=None,
+                            manual_authorized=False,
+                            chain_skipped=[],
+                        )
                 return {"triggered": False, "reason": "disabled"}
             if self._code_fix_running():
                 return {"triggered": False, "reason": "already_running"}

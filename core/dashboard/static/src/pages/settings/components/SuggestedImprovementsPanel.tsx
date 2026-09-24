@@ -873,19 +873,22 @@ const SuggestedImprovementsPanel = forwardRef<
 
   // ── 表格列（7.3）──────────────────────────────────────────────────
 
+  // 文本列 sorter 空值回退：后端 read_evolution_items 用 rec.get() 取值，
+  // 键缺失时为 null（matchesFilter 对 date_section 缺值同样短路豁免）
   const columns = [
     {
       title: '项目', dataIndex: 'project', key: 'project', width: 100, ellipsis: true,
-      sorter: (a: EvolutionItem, b: EvolutionItem) => a.project.localeCompare(b.project),
+      sorter: (a: EvolutionItem, b: EvolutionItem) => (a.project || '').localeCompare(b.project || ''),
     },
     {
       title: '日期', dataIndex: 'date_section', key: 'date_section', width: 110,
       // date_section 为 'YYYY-MM-DD'，字典序即时间序
-      sorter: (a: EvolutionItem, b: EvolutionItem) => a.date_section.localeCompare(b.date_section),
+      sorter: (a: EvolutionItem, b: EvolutionItem) =>
+        (a.date_section || '').localeCompare(b.date_section || ''),
     },
     {
       title: '类别', dataIndex: 'section', key: 'section', width: 90,
-      sorter: (a: EvolutionItem, b: EvolutionItem) => a.section.localeCompare(b.section),
+      sorter: (a: EvolutionItem, b: EvolutionItem) => (a.section || '').localeCompare(b.section || ''),
       // 参照 SPEC 列表页「模式」列：Tag 渲染 + marginInlineEnd:0 收紧列宽
       render: (s: string) => (
         <Tag color={SECTION_TAG_COLORS[s]} style={{ marginInlineEnd: 0 }}>{s}</Tag>
@@ -894,7 +897,7 @@ const SuggestedImprovementsPanel = forwardRef<
     {
       title: '问题', dataIndex: 'title', key: 'title', ellipsis: true,
       // 问题列不设 width：它吃掉剩余宽度，设了 sorter 后表头才有空间放排序箭头
-      sorter: (a: EvolutionItem, b: EvolutionItem) => a.title.localeCompare(b.title),
+      sorter: (a: EvolutionItem, b: EvolutionItem) => (a.title || '').localeCompare(b.title || ''),
       // 问题标题即「查看」入口（等价操作列的 更多 → 查看）：读条目的第一动作就是
       // 点标题，不必先展开下拉。可点击样式沿用 SPEC 列表页名称列（蓝字 + pointer）
       render: (t: string, r: EvolutionItem) => (

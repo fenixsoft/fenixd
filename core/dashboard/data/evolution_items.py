@@ -176,7 +176,10 @@ def read_evolution_draft(project_root, item_id_, doc) -> dict:
                     if len(caps) == 1:
                         rel = f"specs/{caps[0]}/spec.md"
                     else:
-                        rel = f"specs/{capability}/spec.md" if capability else ""
+                        # <capability> 子目录不存在已由上方 is_dir 判定，无第三种
+                        # 解析来源，直接落空态（与函数底部返回同形），不再构造
+                        # 注定读不到的 rel 路径
+                        return {"found": False}
             else:
                 rel = {"proposal": "proposal.md", "design": "design.md", "tasks": "tasks.md"}[doc]
             result = _read_target(spec_dir / rel, spec_dir)

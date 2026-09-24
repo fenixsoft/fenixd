@@ -384,6 +384,16 @@ class LivenessSupervisor:
         """pgrep 匹配 cmdline 含该 spec worktree 目录字面量的进程。
 
         pgrep 不可用（缺失/超时/OSError）时返回 False，由流新鲜度回退判定。
+
+        pgrep 命中后须逐 PID 复核归属：子串 pattern ``worktrees/{prefix}-<spec>-``
+        在 spec 名互为前缀时会命中他 spec 的 worktree（``fix-auth`` 的 pattern
+        可匹配 ``impl-fix-auth-2-<ts>`` 目录路径），不复核则他 spec 的进程持续
+        把本 spec 判存活，auto-recovery 与孤儿 ready 恢复被挡。复核口径与
+        ``_stream_recent`` 的 ``run_spec_part`` 全等守卫（范式源自 recovery.py）
+        一致：从 ``/proc/<pid>/cmdline`` 提取 ``worktrees/`` 目录段，按
+        ``run_spec_part`` 同款解析出 spec 段做全等比较，仅全等命中才判存活。
+        ``/proc`` 读不到（进程刚退出/权限不足）的 PID 按命中保守处理——误判
+        False 会把活进程的 spec 重置状态，比误判 True（多挡一轮恢复）更重。
         """
         for prefix in ("impl", "verify"):
             pattern = f"worktrees/{prefix}-{spec_name}-"
@@ -396,8 +406,23 @@ class LivenessSupervisor:
                 )
             except (subprocess.SubprocessError, OSError):
                 return False
-            if res.returncode == 0 and res.stdout.strip():
-                return True
+            if res.returncode != 0 or not res.stdout.strip():
+                continue
+            for pid_str in res.stdout.split():
+                try:
+                    with open(f"/proc/{pid_str}/cmdline", "rb") as f:
+                        argv = f.read().split(b"\0")
+                except OSError:
+                    # 进程刚退出/权限不足：无法排除归属，保守判存活
+                    return True
+                for arg in argv:
+                    text = arg.decode("utf-8", "replace")
+                    idx = text.find("worktrees/")
+                    if idx < 0:
+                        continue
+                    dirname = text[idx + len("worktrees/") :].split("/", 1)[0]
+                    if run_spec_part(dirname) == spec_name:
+                        return True
         return False
 
     def _stream_recent(self, spec_name: str, seconds: int) -> bool:

@@ -972,6 +972,7 @@ class QQQueueMixin:
                 # 为普通全新派发。标记一次性消费：派发后清空，防后续 full_scan
                 # 反复尝试续做。清锚点 MUST 在续做判定**之后**、仅 resume_wt
                 # is None 时执行（续做命中时旧锚点正是本轮要使用的保留分支）。
+                # [fenix-ignore:25c99379be14] 重复已由「MUST 同步」注释钉住、recovery 形参差异为 fast-track D6 有意设计；清锚点半段两处分支数量（单条件合并一次更新 vs 三段独立条件更新）、异常路径（try/except 吞异常 vs 不捕获向上传播）与字段集（implementer 独有 task-gate 计数清零）均不同，lane 参数无法在行为逐条等价前提下确定性表达，提取风险大于收益。
                 wm = self._pm.agent_runner.worktree_manager
                 resume_wt = None
                 dispatch_entry = self._pm.state_machine.read_one(spec_name) or {}
