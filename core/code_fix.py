@@ -666,11 +666,18 @@ def _deferred_item_ids(project_root) -> set:
 
 def _deferred_entry_alive(entry) -> bool:
     """台账条目的磁盘真相（D5 再认领判据）：worktree 目录在且记录的 tip_sha
-    仍可经该 worktree HEAD 解析（分支被删/目录被清/漂移均判死）。"""
+    仍可经该 worktree HEAD 解析（分支被删/目录被清/漂移均判死）。
+
+    空 tip_sha（登记时 ``_worktree_head`` 瞬时失败所致）不直接判死：现场
+    补解析 HEAD，能解析即视为存活（merge_back 不依赖记账的 tip_sha），
+    否则带修复提交的存活 worktree 会被误判死移出台账且无人清理。
+    """
     wt = Path(str(entry.get("worktree") or ""))
     tip_sha = str(entry.get("tip_sha") or "")
-    if not tip_sha or not wt.name or not wt.exists():
+    if not wt.name or not wt.exists():
         return False
+    if not tip_sha:
+        return bool(_worktree_head(wt))
     return _worktree_head(wt) == tip_sha
 
 
@@ -1378,7 +1385,10 @@ class CodeFixOrchestrator:
             # 前移到选批之前（selfheal）：新链启动先释放预算内失败档案并重置
             # chain_skipped——放在选批之后会让「上一链全跳过收敛」后的下一
             # checkpoint 恒走选批为空早退，新链分支不可达（车道锁死）。
-            # （复用守卫段已读的 prev_chain——中间无其他进度写者）
+            # （复用守卫段已读的 prev_chain——读取后中间可能经
+            # _process_deferred_merges 写入 done/current/phase/reason，仅 done
+            # 已按 deferred_done 补偿，其余被依赖字段重试路径不触碰，新增对
+            # prev 其他字段的依赖须复核）
             prev = prev_chain
             if prev.get("running") and prev.get("activation_id"):
                 activation_id = prev["activation_id"]
@@ -1721,7 +1731,12 @@ class CodeFixOrchestrator:
 
         # 磁盘真相对账：worktree 已丢失（手删/sweeper 回收）→ 条目回收 +
         # warning；条目未核销天然仍在 open 池，无需回写（D5 同款判据）。
+        # 判死移出台账的同时回收仍在 _active_worktrees 在册的 worktree
+        # （sweeper 扫孤儿跳过在册目录）：不清理则带修复提交的目录成孤儿，
+        # 永无人合回也永无人回收；目录已不在磁盘时跳过（只省噪音日志）。
         if not _deferred_entry_alive(entry):
+            if wt.name and wt.exists():
+                _safe_cleanup(wm, wt, success=False, logger=self._logger)
             _remove_deferred_batch(root, item_ids)
             self._log(
                 "warning",

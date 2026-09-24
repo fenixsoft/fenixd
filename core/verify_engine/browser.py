@@ -329,16 +329,34 @@ class BrowserManager:
         self._started = True
 
     async def stop(self):
-        """停止浏览器并释放资源。"""
-        if self._browser:
-            await self._browser.close()
-            self._browser = None
-        if self._playwright:
-            await self._playwright.stop()
-            self._playwright = None
-        self._started = False
+        """停止浏览器并释放资源。
 
-        self._stop_dev_server()
+        三步释放（browser.close / playwright.stop / 停本地 HTTP 服务器）
+        用 try/finally 串联且各步独立容错：任一步失败（如浏览器进程已
+        崩溃导致 close 抛 PlaywrightError）不阻断后续释放，避免残留
+        playwright driver 进程与本地 HTTP 服务器线程直到进程退出。
+        """
+        try:
+            if self._browser:
+                try:
+                    await self._browser.close()
+                except Exception as e:
+                    self._log("warning", f"browser.close 失败: {type(e).__name__}: {e}")
+                finally:
+                    self._browser = None
+            if self._playwright:
+                try:
+                    await self._playwright.stop()
+                except Exception as e:
+                    self._log("warning", f"playwright.stop 失败: {type(e).__name__}: {e}")
+                finally:
+                    self._playwright = None
+        finally:
+            self._started = False
+            try:
+                self._stop_dev_server()
+            except Exception as e:
+                self._log("warning", f"停止本地 HTTP 服务器失败: {type(e).__name__}: {e}")
 
     async def new_context(self, viewport: Optional[dict] = None) -> "BrowserContext":
         """创建隔离的浏览器上下文。

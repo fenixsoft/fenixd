@@ -3611,6 +3611,11 @@ class PMEngine:
         if not all_specs:
             return "📋 尚无 SPEC"
 
+        # 与 check_blockers 同款防御（code-review item 0796da56864e）：
+        # STATE 解析异常产出的非 dict 条目直接过滤，不让 e.get 抛
+        # AttributeError 使 /fenix-status 健康摘要整体不可用。
+        all_specs = {k: v for k, v in all_specs.items() if isinstance(v, dict)}
+
         total = len(all_specs)
         done = sum(1 for e in all_specs.values() if e.get("status") in ("done", "pushed"))
         active = sum(

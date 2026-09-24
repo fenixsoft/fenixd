@@ -571,6 +571,6 @@ def _run_legacy_verification(pipeline, spec_name: str):
             spec_name,
             {
                 "tester_run": result.run_id,
-                "error": f"Verifier agent failed: {result.error}",
+                "error": f"Verifier agent failed: {result.error or ''}",
             },
         )

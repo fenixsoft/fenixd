@@ -497,13 +497,40 @@ class G6StashGuardMixin:
             timeout=30,
         )
         sha_before = rev.stdout.strip() if rev.returncode == 0 else ""
+        # pop 前以 sha_before 复核栈顶：与 drop 侧「sha 仍在栈顶」防插队核对同
+        # 口径；其间若有新条目插到栈顶（人工 stash push 等）则放弃本轮，绝不弹
+        # 非目标条目。
+        guard = subprocess.run(
+            ["git", "-C", str(self.project_root), "rev-parse", "--verify", "stash@{0}"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if guard.returncode != 0 or guard.stdout.strip() != sha_before:
+            self.logger.error(
+                "worktree_manager",
+                f"Stale autostash reclaim aborted: stash top moved "
+                f"(expected {sha_before or 'n/a'}), skip this round to avoid "
+                f"mis-pop",
+            )
+            return False
         pop = subprocess.run(
-            ["git", "-C", str(self.project_root), "stash", "pop"],
+            ["git", "-C", str(self.project_root), "stash", "pop", "stash@{0}"],
             capture_output=True,
             text=True,
             timeout=30,
         )
         if pop.returncode == 0:
+            # pop 输出含「Dropped refs/stash@{0} (<sha>)」：核对被弹条目确为
+            # sha_before，不一致说明复核后仍发生并发插队造成误弹，记 ERROR
+            # 供人工按 sha 排查。
+            if sha_before and sha_before not in (pop.stdout or ""):
+                self.logger.error(
+                    "worktree_manager",
+                    f"Stale autostash reclaim mis-popped a concurrent entry "
+                    f"(expected {sha_before}); inspect main tree and stash "
+                    f"reflog",
+                )
             self.logger.warning(
                 "worktree_manager",
                 f"Stale autostash reclaimed onto clean main tree: {top}",

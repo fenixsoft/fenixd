@@ -354,6 +354,8 @@ def auto_archive_check(project_root, config: dict, logger=None) -> dict:
     Returns:
         {"archived": int, "skipped": int, "target_count": int,
          "threshold": int, "total_terminal_unarchived": int}
+        target_count 为本轮拟归档数 = max(total_terminal_unarchived -
+        threshold, 0)（code-review item 1c9a574c5356：统一三处返回口径）。
     """
     from core.config import ConfigLoader
 
@@ -428,8 +430,6 @@ def auto_archive_check(project_root, config: dict, logger=None) -> dict:
                 except Exception:
                     pass
             else:
-                import sys
-
                 print(f"[fenixd] {msg}", file=sys.stderr)
         else:
             skipped_count += 1
@@ -440,14 +440,12 @@ def auto_archive_check(project_root, config: dict, logger=None) -> dict:
                 except Exception:
                     pass
             else:
-                import sys
-
                 print(f"[fenixd] {msg}", file=sys.stderr)
 
     return {
         "archived": archived_count,
         "skipped": skipped_count,
-        "target_count": threshold,
+        "target_count": to_archive,
         "threshold": threshold,
         "total_terminal_unarchived": total,
     }

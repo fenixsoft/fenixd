@@ -2080,11 +2080,18 @@ class VerificationPipeline:
                         "status"
                     ) != "testing":
                         return False
-                    # run 已死（daemon 重启丢队列/attempt 收尾未写标记）→ 停等
+                    # run 已死（daemon 重启丢队列/attempt 收尾未写标记）→ 停等。
+                    # 停等前重读一次标记：run 写出 completed 标记与从
+                    # _running_agents 移除之间存在竞窗，沿用上一轮轮询读到的
+                    # 陈旧 dispatched 会走超时分支，对刚完成的有效产物执行
+                    # stop+quarantine 并触发一次不必要的串行重出。重读后按最新
+                    # 状态分流：completed 落下方产物消费分支，仅确仍 dispatched
+                    # 才取消并隔离。
                     runners = getattr(self._pm.agent_runner, "_running_agents", None) or {}
                     if not any(
                         isinstance(aid, str) and aid.startswith(prefix) for aid in runners
                     ):
+                        marker = lane.read_marker(spec_name) or {}
                         break
                     marker = lane.read_marker(spec_name) or {}
                     status = marker.get("status")

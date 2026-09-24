@@ -673,9 +673,11 @@ class FamilyGovernor:
                     "status": "ready",
                     "error": f"Re-triggered from bug found in {spec_name}",
                 }
-                if existing_fix.get("implementer_run") is None:
+                # 对齐 escalation.py / dispatch/rollback.py 的重置语义：status
+                # 复位 ready 时剥除上一轮遗留的 run 锚点，防新轮误挂旧 run。
+                if existing_fix.get("implementer_run") is not None:
                     reset_fields["implementer_run"] = None
-                if existing_fix.get("tester_run") is None:
+                if existing_fix.get("tester_run") is not None:
                     reset_fields["tester_run"] = None
                 self._pm.state_machine.update_spec(fix_spec_name, reset_fields)
                 self._pm._on_spec_ready(fix_spec_name)

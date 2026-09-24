@@ -191,7 +191,7 @@ def self_check(root: Path, parsed_count: int, warning_buf: list) -> None:
         grep_targets.append(str(server_py))
     try:
         res = subprocess_mod.run(
-            ["grep", "-oEh", r'"/api/[^"]+"'] + grep_targets,
+            ["grep", "-roEh", r'"/api/[^"]+"'] + grep_targets,
             capture_output=True,
             text=True,
             timeout=30,

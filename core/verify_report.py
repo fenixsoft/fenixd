@@ -373,7 +373,7 @@ def _render_bugs_section(bugs, scenario_evidence=None) -> list:
             lines.append(f"- 根因：{root_cause}")
         # 优先引用 report.json 的场景结构化证据（引用而非重复渲染）
         referenced = False
-        for sid in scenario_ids or []:
+        for sid in scenario_ids if isinstance(scenario_ids, list) else []:
             ev = scenario_evidence.get(sid)
             if isinstance(ev, dict):
                 lines.append(f"- 证据（场景 {sid} 结构化证据，引用）：")

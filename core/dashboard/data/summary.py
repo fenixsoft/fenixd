@@ -587,6 +587,7 @@ def _spec_dep_sigs(proot: Path, spec_name: str, entry: dict, runs_sigs: dict) ->
             add(wt / "spec" / "changes" / spec_name / "tasks.md")
             add(wt / ".fenix" / "verify-progress" / spec_name / "quality-gates.json")
             add(wt / ".fenix" / "verify-progress" / spec_name / "code-review.json")
+    # [fenix-ignore:01fa63282f46] 与 fcdd13be884c 重复：缓存键与 _spec_dep_sigs 均已并入用户级 config.yaml 签名，问题已修不成立
     # add-spec-status-modal-budget D3：budget_effective 依赖全局 config
     # （agents.impl_run_budget 覆盖优先解析的兜底来源），项目级与用户级
     # config.yaml 变化须触发摘要失效（宁多勿漏原则）。

@@ -1063,7 +1063,6 @@ def _slugify(text: str) -> str:
     if not isinstance(text, str):
         text = str(text)
     s = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
-    s = re.sub(r"-{2,}", "-", s)
     if not s:
         s = "fix"
     return s

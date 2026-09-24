@@ -241,7 +241,9 @@ def ownership_violations_for_task_line(line: str, lane: str) -> List[str]:
                     _violet_message(task_id, literal, owners)
                 )
         if core_hits:
-            # 已命中核心产物路径引用，不再重复判目录级（同路径只报一次）
+            # 有意取舍：命中任一核心产物后整行提前返回，连步骤 1b 的目录级
+            # 引用（含同一路径之外的其他 spec 目录）一并保守漏报，以维持
+            # 本函数「零误拦」取向；并非仅做同路径去重。
             return violations
 
         # ---- 步骤 1b：``.fenix/verify-progress/<spec>/`` 目录级引用 ----
