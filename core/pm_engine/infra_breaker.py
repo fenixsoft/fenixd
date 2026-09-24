@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -52,6 +53,10 @@ class InfraCircuitBreaker:
         self._config = config or {}
         # 内存缓存：{link: {"count": int, "until": float, "state": str}}
         self._cache: dict = {}
+        # 实例级锁：串行化 _cache 读改写与 _save_state（参照 engine._push_lock
+        # 模式）。派发路径（engine.condition）与评审 worker（record_failure/
+        # record_success）跨线程并发触碰同一实例，无锁会丢计数或重复落恢复事件。
+        self._lock = threading.Lock()
         self._load_state()
 
     # ── 日志（兼容 fenixd Logger 双参与标准 logging 单参）──────────────
@@ -136,7 +141,11 @@ class InfraCircuitBreaker:
             self._cache.clear()
 
     def _save_state(self):
-        """持久化熔断状态到文件。写失败仅记日志（不阻塞）。"""
+        """持久化熔断状态到文件。写失败仅记日志（不阻塞）。
+
+        须持 ``self._lock`` 调用（锁不可重入，本方法不再自行取锁）；
+        仅 ``__init__`` 阶段的 ``_load_state`` 不经锁（对象尚未共享）。
+        """
         data = {}
         for link, st in self._cache.items():
             data[link] = {
@@ -189,16 +198,17 @@ class InfraCircuitBreaker:
         翻转 closed 并持久化；count 保留（恢复后首个失败将因 count 达标立即
         重新熔断——半开探测语义；首个成功经 record_success 清零）。
         """
-        self._ensure_link(link)
-        st = self._cache[link]
-        now = now or time.time()
-        if st["state"] == "broken":
-            if now >= st["until"]:
-                st["state"] = "closed"
-                self._save_state()
-                return "recovered"
-            return "broken"
-        return "closed"
+        with self._lock:
+            self._ensure_link(link)
+            st = self._cache[link]
+            now = now or time.time()
+            if st["state"] == "broken":
+                if now >= st["until"]:
+                    st["state"] = "closed"
+                    self._save_state()
+                    return "recovered"
+                return "broken"
+            return "closed"
 
     def is_open(self, link: str, now: float | None = None) -> bool:
         """链路是否处于熔断窗口（不派发）。冷却到期自动恢复。"""
@@ -206,17 +216,19 @@ class InfraCircuitBreaker:
 
     def cooldown_remaining(self, link: str, now: float | None = None) -> int:
         """熔断剩余秒数；已恢复返回 0。"""
-        self._ensure_link(link)
-        st = self._cache[link]
-        now = now or time.time()
-        if st["state"] == "broken" and now < st["until"]:
-            return int(st["until"] - now)
-        return 0
+        with self._lock:
+            self._ensure_link(link)
+            st = self._cache[link]
+            now = now or time.time()
+            if st["state"] == "broken" and now < st["until"]:
+                return int(st["until"] - now)
+            return 0
 
     def get_state(self, link: str) -> dict:
         """返回链接的完整状态副本（供告警 evidence）。"""
-        self._ensure_link(link)
-        return dict(self._cache[link])
+        with self._lock:
+            self._ensure_link(link)
+            return dict(self._cache[link])
 
     # ── 写入 ────────────────────────────────────────────────────────
 
@@ -227,39 +239,42 @@ class InfraCircuitBreaker:
         - 已处于熔断（半开探测失败）→ 重置冷却窗口（窗口滑动）
         - 仅首次触发熔断返回 True（告警恰好落一条）
         """
-        self._ensure_link(link)
-        st = self._cache[link]
-        now = now or time.time()
-        triggered = False
+        with self._lock:
+            self._ensure_link(link)
+            st = self._cache[link]
+            now = now or time.time()
+            triggered = False
 
-        st["count"] += 1
+            st["count"] += 1
 
-        if st["state"] == "broken" and now < st["until"]:
-            # 已熔断（半开探测失败）→ 重置冷却窗口（不触发额外告警）
-            st["until"] = now + self.cooldown_minutes * 60
-        elif st["count"] >= self.threshold:
-            # 未熔断且达到阈值 → 触发熔断
-            st["state"] = "broken"
-            st["until"] = now + self.cooldown_minutes * 60
-            triggered = True
+            if st["state"] == "broken" and now < st["until"]:
+                # 已熔断（半开探测失败）→ 重置冷却窗口（不触发额外告警）
+                st["until"] = now + self.cooldown_minutes * 60
+            elif st["count"] >= self.threshold:
+                # 未熔断且达到阈值 → 触发熔断
+                st["state"] = "broken"
+                st["until"] = now + self.cooldown_minutes * 60
+                triggered = True
 
-        self._save_state()
-        return triggered
+            self._save_state()
+            return triggered
 
     def record_success(self, link: str):
         """成功 run：清零计数，重置为正常状态。
 
         落实「连续 ≥3 次」语义：熔断前/恢复后任意成功均清零。
         """
-        self._ensure_link(link)
-        st = self._cache[link]
-        st["count"] = 0
-        st["until"] = 0.0
-        st["state"] = "closed"
-        self._save_state()
+        with self._lock:
+            self._ensure_link(link)
+            st = self._cache[link]
+            st["count"] = 0
+            st["until"] = 0.0
+            st["state"] = "closed"
+            self._save_state()
 
     def reset(self, link: str):
         """复位熔断器（fail-open 路径或管理员干预）。"""
-        self._ensure_link(link)
-        self._cache[link] = {"count": 0, "until": 0.0, "state": "closed"}
-        self._save_state()
+        with self._lock:
+            self._ensure_link(link)
+            self._cache[link] = {"count": 0, "until": 0.0, "state": "closed"}
+            self._save_state()

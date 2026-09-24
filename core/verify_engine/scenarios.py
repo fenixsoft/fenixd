@@ -477,6 +477,7 @@ ASSERTIONS_REQUIRING_SELECTOR = VALID_ASSERTIONS - {
 }
 
 # 需要target选择器的操作（web 语义；mock_api 的 target 为 URL 模式，seed 为 localStorage 键）
+# wait 刻意不在此列：无 target 的 wait 是合法变体（browser.py 以 value 作为暂停毫秒数）
 ACTIONS_REQUIRING_TARGET = {
     "click",
     "type",
@@ -484,6 +485,7 @@ ACTIONS_REQUIRING_TARGET = {
     "select",
     "scroll",
     "drag",
+    "hover",
     "contextmenu",
     "seed",
     "mock_api",

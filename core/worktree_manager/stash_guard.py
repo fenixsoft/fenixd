@@ -596,6 +596,37 @@ class G6StashGuardMixin:
         )
         return False
 
+    def _reset_index_paths(self, paths: list) -> None:
+        """把指定路径的索引态还原到 HEAD（自愈中止时回滚 rm --cached 残留）。
+
+        ``git reset -- <paths>`` 只重置索引、不动工作区：撤销
+        ``git rm -f --cached`` 留下的 staged 删除，使各中止分支返回前主树
+        索引回到执行自愈前的状态（放弃自愈时不残留任何改动，交人工时
+        主树状态未被污染）。只重置本次自愈已移出的路径，不触碰 index 中的
+        外来 staged 条目（子集守卫本就不动它们）。尽力而为：回滚失败仅记
+        warning，不掩盖调用方的原始失败原因。
+        """
+        if not paths:
+            return
+        try:
+            reset = subprocess.run(
+                ["git", "-C", str(self.project_root), "reset", "--", *paths],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if reset.returncode != 0:
+                self.logger.warning(
+                    "worktree_manager",
+                    f"Self-heal index rollback failed: "
+                    f"{(reset.stderr or reset.stdout).strip()}",
+                )
+        except (subprocess.TimeoutExpired, OSError) as e:
+            self.logger.warning(
+                "worktree_manager",
+                f"Self-heal index rollback failed: {e}",
+            )
+
     def _untrack_ignored_local_changes(self, paths: list) -> bool:
         """把 merge 需写路径上「被 ignore 的 tracked 本地修改」移出索引并提交。
 
@@ -614,6 +645,7 @@ class G6StashGuardMixin:
         """
         if not paths:
             return False
+        healed: list = []  # 已执行 rm --cached 的路径（各中止分支按此回滚索引态）
         try:
             for path in paths:
                 chk = subprocess.run(
@@ -651,9 +683,12 @@ class G6StashGuardMixin:
                         f"Self-heal (untrack): git rm --cached failed for "
                         f"'{path}': {(rm.stderr or rm.stdout).strip()}",
                     )
+                    self._reset_index_paths(healed)
                     return False
+                healed.append(path)
             # 路径作用域守卫：裸 commit 会把 index 里其它 staged 条目连带入库，
-            # 校验暂存集不含本次 rm --cached 路径之外的外来条目，有则放弃自愈。
+            # 校验暂存集不含本次 rm --cached 路径之外的外来条目，有则放弃自愈
+            # （先回滚本次已 rm 的索引态再返回，不残留 staged 删除）。
             # 只做子集校验、不强求自愈路径必须出现在暂存集（其入暂存已由上方
             # rm --cached 的返回码保证），避免对暂存态探测过严而误杀正常自愈。
             # （不能用 commit --only/-- <paths> 限定：路径已被 rm --cached 移出
@@ -679,6 +714,7 @@ class G6StashGuardMixin:
                     f"Self-heal (untrack) aborted: index has staged entries "
                     f"beyond healed paths: {sorted(staged_set - set(paths))}",
                 )
+                self._reset_index_paths(healed)
                 return False
             commit = subprocess.run(
                 [
@@ -699,6 +735,7 @@ class G6StashGuardMixin:
                     f"Self-heal (untrack): commit failed: "
                     f"{(commit.stderr or commit.stdout).strip()}",
                 )
+                self._reset_index_paths(healed)
                 return False
             self.logger.info(
                 "worktree_manager",
@@ -707,6 +744,7 @@ class G6StashGuardMixin:
             )
             return True
         except (subprocess.TimeoutExpired, OSError):
+            self._reset_index_paths(healed)
             return False
 
     def _discard_identical_local_changes(self, paths: list, branch: str) -> bool:
@@ -798,6 +836,7 @@ class G6StashGuardMixin:
         对本次 merge 新增（--diff-filter=A）且被 ignore 的路径补一次移出
         （工作区副本保留），无此类路径时零开销跳过。
         """
+        victims: list = []  # 已执行 rm --cached 的路径（各中止分支按此回滚索引态）
         try:
             diff = subprocess.run(
                 [
@@ -815,7 +854,6 @@ class G6StashGuardMixin:
             )
             if diff.returncode != 0 or not diff.stdout.strip():
                 return
-            victims = []
             for rel in [ln.strip() for ln in diff.stdout.splitlines() if ln.strip()]:
                 ls = subprocess.run(
                     ["git", "-C", str(self.project_root), "ls-files", "--error-unmatch", "--", rel],
@@ -853,7 +891,8 @@ class G6StashGuardMixin:
                 )
             # 路径作用域守卫（同 _untrack_ignored_local_changes）：裸 commit 会把
             # index 里其它 staged 条目连带入库，校验暂存集不含本次移出路径之外的
-            # 外来条目。只做子集校验、不强求移出路径必须出现在暂存集（其入暂存
+            # 外来条目，不过则回滚本次已移出的索引态再返回（不残留 staged 删除）。
+            # 只做子集校验、不强求移出路径必须出现在暂存集（其入暂存
             # 已由上方 rm --cached 的返回码保证）。
             # （不能用 commit --only/-- <paths> 限定：路径已被 rm --cached 移出
             # index，pathspec 解析必 fatal rc=128。）
@@ -878,6 +917,7 @@ class G6StashGuardMixin:
                     f"Purge skipped: index has staged entries beyond purged "
                     f"paths: {sorted(staged_set - set(victims))}",
                 )
+                self._reset_index_paths(victims)
                 return
             commit = subprocess.run(
                 [
@@ -902,7 +942,9 @@ class G6StashGuardMixin:
                     "worktree_manager",
                     f"Purge commit failed: {(commit.stderr or commit.stdout).strip()}",
                 )
+                self._reset_index_paths(victims)
         except (subprocess.TimeoutExpired, OSError) as e:
+            self._reset_index_paths(victims)
             self.logger.warning("worktree_manager", f"Purge ignored brought-in failed: {e}")
 
     def _resolve_ignored_modify_delete_conflicts(self) -> bool:

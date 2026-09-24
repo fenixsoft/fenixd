@@ -218,7 +218,7 @@ def _first_run_event_ts(path: Path) -> "str | None":
 
 # ── run 元数据 memo（fix-dashboard-read-path-performance D3） ──────────────
 # run 元数据（status_raw/started/duration_seconds/file_size）按
-# (path, mtime_ns, size) 缓存：append-only 产物未变即零读，跳过 _first_run_event_ts
+# (path, mtime_ns, size, project_root) 缓存：append-only 产物未变即零读，跳过 _first_run_event_ts
 # （扫描头 200 行 + json.loads）与尾读。读路径把 O(总量) 降为 O(变更量)。
 # 与 _RUN_TASK_CACHE/_GLOBAL_BUDGET_CACHE 同模式（GIL 保护下的最优竞态：并发
 # 双算无害）。缓存存 status_raw——stale 判定依赖当前时刻，每次按 now 重算。
@@ -230,7 +230,7 @@ def _run_meta_cached(p: Path, stat, now: float,
                      project_root: Path | None = None) -> dict:
     """计算/复用单条 run 元数据（status/started/duration_seconds/file_size）。
 
-    命中（path, mtime_ns, size 全同）即返回缓存；未命中完整计算并写入缓存。
+    命中（path, mtime_ns, size, project_root 全同）即返回缓存；未命中完整计算并写入缓存。
     耗时/开始时刻/状态推导逻辑与既有 get_runs 逐字等价（见各步注释），
     仅挪入本函数以便整体 memo。
 
@@ -241,7 +241,12 @@ def _run_meta_cached(p: Path, stat, now: float,
     未触发）回退 mtime 推算。project_root 省略（仅取 status 的调用方如
     _is_run_archivable）跳过指标查找，行为与现状一致。
     """
-    key = (str(p), stat.st_mtime_ns, stat.st_size)
+    # 缓存键须含 project_root 维度（None 归一化为 ""）：duration_seconds 是否
+    # 优先读结构化指标取决于调用是否传 project_root，若不纳入键，同一产物
+    # 先被 _is_run_archivable（不传）缓存 mtime 推算耗时后，get_runs（传入）
+    # 会命中同键复用错误值（终态产物 mtime/size 不再变化，先到者长期固定）。
+    key = (str(p), stat.st_mtime_ns, stat.st_size,
+           str(project_root) if project_root is not None else "")
     cached = _RUN_META_CACHE.get(key)
     if cached is not None:
         status = cached["status_raw"]
@@ -803,7 +808,7 @@ def _resolve_runs_keep(proot: Path, config: dict | None = None) -> int:
 def _is_run_archivable(p: Path) -> bool:
     """判定 run 产物是否可归档（终态或 stale 断尾；running/empty 且停更未超时 → False）。
 
-    状态判定复用 get_runs 的 memo（(path, mtime_ns, size)，含 stale 动态判定），
+    状态判定复用 get_runs 的 memo（(path, mtime_ns, size, project_root)，含 stale 动态判定），
     周期清理不重复读文件。
     """
     try:

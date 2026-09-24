@@ -30,6 +30,7 @@ FENIX_OCR_BIN 指定（缺省 "ocr"，经 PATH 搜索）。
   退出，由实现者按 status: "unavailable" + 非空 reason 降级。
 """
 
+import errno
 import os
 import sys
 
@@ -45,10 +46,13 @@ def main() -> None:
     try:
         os.execvp(ocr_bin, argv)
     except OSError as e:
-        # PATH 搜索也找不到（如 FENIX_OCR_BIN 配错路径）：输出一行错误而非裸
-        # traceback，退出码 127 对齐 shell 的 command not found。exec 成功不返回，
-        # 走到这里必然是失败路径。
+        # 输出一行错误而非裸 traceback。退出码对齐 shell 语义：126 = 找到但
+        # 无法执行（权限/格式类，如 EACCES/EPERM/EISDIR/ENOEXEC），127 =
+        # command not found（其余，如 PATH 搜索落空、FENIX_OCR_BIN 配错路径）。
+        # exec 成功不返回，走到这里必然是失败路径。
         print(f"ocr wrapper: cannot exec {ocr_bin}: {e}", file=sys.stderr)
+        if e.errno in (errno.EACCES, errno.EPERM, errno.EISDIR, errno.ENOEXEC):
+            sys.exit(126)
         sys.exit(127)
 
 

@@ -579,16 +579,20 @@ class AssertionRunner:
         用于捕获真实云端下载/上传时的密钥错误——这类「数据加解密/签名
         正确性」问题无法通过纯 UI 断言覆盖，需要真实触发网络请求后检查
         错误提示。
+
+        口径说明（code-review item 4a34b869d479）：关键词子串命中本质是
+        启发式，曾含「Access Key」「Secret Key」「AccessKey」「SecretKey」
+        等泛化词，云凭证表单字段标签、密钥管理页、帮助文档等合法展示这些
+        文案的页面会被误判为认证错误，与模块头第1-3层「0误判」承诺冲突。
+        现收窄为高置信错误形态（完整错误码/错误句式）。层归属按词表映射
+        仍为第3层（scenarios.py WEB_ASSERTION_LAYERS），收窄后的残余
+        启发式风险按第4层口径由 judge 结合上下文复核。
         """
         keywords = [
             "签名验证失败",
             "认证失败",
             "SignatureDoesNotMatch",
             "InvalidAccessKeyId",
-            "Access Key",
-            "Secret Key",
-            "AccessKey",
-            "SecretKey",
             "InvalidAccessKey",
         ]
         try:

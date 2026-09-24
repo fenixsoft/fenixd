@@ -5213,12 +5213,23 @@ class AgentRunner:
                     "reason": reason,
                     "created": datetime.now(timezone.utc).isoformat(),
                 }
-                fd, tmp = tempfile.mkstemp(
+                fd, tmp_name = tempfile.mkstemp(
                     dir=str(runs_dir), prefix=f".{rid}.checkpoint.", suffix=".tmp"
                 )
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    json.dump(payload, f, ensure_ascii=False, indent=2)
-                os.replace(tmp, flag)
+                # code-review item 3db27e866e4d：对齐 _write_atomic 手法——
+                # json.dump / os.replace 抛错时 finally 兜底 unlink 临时文件，
+                # 避免 .fenix/runs 留 .tmp 尸体随逐 run best-effort 重试持续累积。
+                tmp_path = Path(tmp_name)
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as f:
+                        json.dump(payload, f, ensure_ascii=False, indent=2)
+                    os.replace(tmp_path, flag)
+                finally:
+                    if tmp_path.exists():
+                        try:
+                            tmp_path.unlink()
+                        except OSError:
+                            pass
                 dispatched.append(rid)
                 self.logger.info(
                     "agent_runner",

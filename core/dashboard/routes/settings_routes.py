@@ -63,13 +63,21 @@ class H5SettingsRoutesMixin:
         响应：未知项目 _error(404)，成功路径自写 _json（与 _api_prompts_get /
         _api_todo_get 同款，避免适配器再包 _json 在 keep-alive 下双重写响应）。
         """
-        project = self._project_from_query(query)
+        # 判参口径对齐同文件 POST 端点（code-review item 40ec5f6b6c5e，先例
+        # b9e7765dc1de）：_project_from_query 把「无 project 查询参数」与
+        # 「project 名不在 registry（笔误/项目已删/registry TTL 缓存过期）」
+        # 折叠成 None——直接以 None 判用户级分支会把 ?project=<笔误名> 折进
+        # 用户级配置 200 返回，前端项目设置页误当该项目生效配置渲染。先看
+        # 参数是否在场：缺席才回退用户级配置；在场但解析不到项目一律 404
+        # （资源不存在语义，响应形态同下方既有 _error）。
+        project_param = query.get("project", [None])[0]
+        project = self._project_from_query(query) if project_param else None
+        if project_param and (project is None or not project.get("exists")):
+            self._error(404, "project not found")
+            return
         if project is None:
             # 无项目 → 用户级配置（scope=user，不再返回 unknown project）
             self._json(dashboard_data.read_config(None, scope="user"))
-            return
-        if not project.get("exists"):
-            self._error(404, "project not found")
             return
         config = dashboard_data.read_effective_config(project["path"])
         config["project"] = project["name"]

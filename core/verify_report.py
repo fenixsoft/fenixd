@@ -389,6 +389,20 @@ def _render_bugs_section(bugs, scenario_evidence=None) -> list:
     return lines
 
 
+def _md_cell(v, max_len=None) -> str:
+    """Markdown 表格单元格统一转义口径：竖线转义（可选超长截断）。
+
+    场景结果表与断言级豁免清单共用：status/classification 等列源自裁决
+    自由文本，含竖线时会撑破 Markdown 表格列，故所有插值列同口径转义。
+    max_len 仅承载豁免清单证据列的既有截断行为（>160 截为 157+"..."），
+    其余列不引入新截断。
+    """
+    text = str(v).replace("|", "\\|")
+    if max_len is not None and len(text) > max_len:
+        text = text[: max_len - 3] + "..."
+    return text
+
+
 def _render_assertion_exempt_section(report) -> list:
     """「断言级豁免清单」小节（add-interaction-contract-and-per-assert-triage 2.3）。
 
@@ -421,13 +435,13 @@ def _render_assertion_exempt_section(report) -> list:
     lines.append("| 场景 | 断言 | 归类 | 豁免理由 | 证据 |")
     lines.append("| --- | --- | --- | --- | --- |")
     for r in rows:
-        assertion = r["assertion"].replace("|", "\\|")
-        evidence = r["evidence"].replace("|", "\\|")
-        if len(evidence) > 160:
-            evidence = evidence[:157] + "..."
-        reason = r["reason"].replace("|", "\\|")
+        assertion = _md_cell(r["assertion"])
+        evidence = _md_cell(r["evidence"], max_len=160)
+        reason = _md_cell(r["reason"])
+        scenario_id = _md_cell(r["scenario_id"])
+        classification = _md_cell(r["classification"])
         lines.append(
-            f"| {r['scenario_id']} | {assertion} | {r['classification']} "
+            f"| {scenario_id} | {assertion} | {classification} "
             f"| {reason} | {evidence} |"
         )
     lines.append("")
@@ -444,13 +458,13 @@ def _render_scenarios_table(report) -> list:
     for sc in scenarios:
         if not isinstance(sc, dict):
             continue
-        sid = str(sc.get("scenario_id") or sc.get("id") or "-")
-        desc = str(sc.get("description") or "-").replace("|", "\\|")
-        status = str(sc.get("status") or "-")
+        sid = _md_cell(sc.get("scenario_id") or sc.get("id") or "-")
+        desc = _md_cell(sc.get("description") or "-")
+        status = _md_cell(sc.get("status") or "-")
         # 采纳处强制重写的场景标注「已修正」(add-verdict-evidence-taxonomy D3)
         if sc.get("status_corrected"):
             status += "（已修正）"
-        classification = str(sc.get("classification") or "-")
+        classification = _md_cell(sc.get("classification") or "-")
         lines.append(
             f"| {sid} | {desc} | {status} | {_failed_assertion_count(sc)} | {classification} |"
         )

@@ -684,10 +684,17 @@ class ConfigLoader:
         # enabled/read_todo 须为布尔（非布尔直接拒绝）；run_at 须合法 HH:MM、
         # 非法值打 ERROR 并回退缺省（不阻塞加载，硬语义由 get_self_review_config
         # 的生效值兜底）。enabled 缺省 false（纯增量零行为变化）。
+        # 整段非 dict（列表/标量）与 self_evolution / stale_code_selfheal 同口径
+        # （code-review item 48753a3159b2）：只记 ERROR 按空段降级，不中断加载与
+        # 热更新——读取器 get_self_review_config 对非 dict 段本就按空段兜底。
         sr = admin.get("self_review") if isinstance(admin, dict) else None
-        if sr is not None:
-            if not isinstance(sr, dict):
-                raise ValueError("admin.self_review must be an object")
+        if sr is not None and not isinstance(sr, dict):
+            _logger.error(
+                "admin.self_review 段非法（应为对象）：%r，按空段降级"
+                "（enabled 缺省 false）；其余配置照常生效",
+                type(sr).__name__,
+            )
+        elif isinstance(sr, dict):
             for field in ("enabled", "read_todo"):
                 if field in sr and sr[field] is not None and not isinstance(sr[field], bool):
                     raise ValueError(f"admin.self_review.{field} must be a boolean: {sr[field]}")

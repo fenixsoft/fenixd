@@ -52,6 +52,15 @@ def main():
     p_ins.add_argument("artifact", help="artifact id（proposal / specs / design / tasks）")
     p_ins.add_argument("--change", required=True, help="change 名称")
 
+    # --project 同时挂在各子 parser 上，使其置于子命令之前或之后均可；
+    # 子 parser 侧用 SUPPRESS 默认值，避免未传参时以 None 覆盖顶层已解析值。
+    for _sub in (p_new, p_status, p_ins):
+        _sub.add_argument(
+            "--project",
+            default=argparse.SUPPRESS,
+            help="项目根目录（等价于顶层 --project，子命令前后位置均可）",
+        )
+
     args = parser.parse_args()
     project_root = Path(args.project).expanduser().resolve() if args.project else PROJECT_ROOT
     # 直接以框架 bin/ 路径调用时 PROJECT_ROOT 三级上溯会指到仓库父目录（其下无 spec/），

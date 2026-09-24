@@ -21,6 +21,12 @@ SSE_HEARTBEAT_SECONDS = 25
 # poll_interval 缺省值（秒）。生产者真值在 core.dashboard.server 命名空间
 # （D3 缝隙，测试 monkeypatch 该属性），此处仅作 getattr 兜底，须与真值一致。
 SSE_POLL_INTERVAL_DEFAULT = 1.0
+# SSE 连接 socket 写超时（秒）。停滞客户端（连接在但停止读）会把 TCP 发送缓冲
+# 写满，使 _sse_send 的 write/flush 无限期阻塞，占死一个连接槽位与一个处理线程；
+# 对 connection 设超时后写停滞以 socket.timeout（OSError 子类）浮出，由
+# _handle_sse 既有 except 捕获、finally unregister 释放槽位。取值须明显大于
+# 心跳节拍（SSE_HEARTBEAT_SECONDS），健康但缓慢的客户端不致被误断。
+SSE_WRITE_TIMEOUT_SECONDS = 30.0
 
 
 class H9SseRoutesMixin:
@@ -35,6 +41,8 @@ class H9SseRoutesMixin:
         客户端收到后应退化为轮询（dashboard-connection-limit D6）。
         为及时释放连接槽位（释放后恢复可测），除写心跳外每个队列超时
         （≤1s）做一次客户端 socket 可读探测：客户端 FIN → 立即 unregister。
+        连接建立前对 socket 设写超时（SSE_WRITE_TIMEOUT_SECONDS）：连接仍在但
+        停止读的客户端不受 FIN 探测影响，须靠写超时突破 write 阻塞后退出释放。
         """
         from core.dashboard import server as _server_mod  # noqa: E402 — D3 缝隙
 
@@ -42,6 +50,10 @@ class H9SseRoutesMixin:
         if conn is None:
             self._error(503, "too many SSE connections")
             return
+        # 停滞客户端防占位：无超时则发送缓冲写满后 _sse_send 永久阻塞，
+        # 占死连接槽位与处理线程；写超时经 socket.timeout（OSError 子类）
+        # 由下方 except 捕获，finally unregister 释放槽位。
+        self.connection.settimeout(SSE_WRITE_TIMEOUT_SECONDS)
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
@@ -72,7 +84,13 @@ class H9SseRoutesMixin:
                 if event is None:  # 关闭信号
                     break
                 self._sse_send(event)
-        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
+        except (
+            BrokenPipeError,
+            ConnectionResetError,
+            ConnectionAbortedError,
+            socket.timeout,  # 写超时（OSError 子类，显式列出以文档化停滞退出路径）
+            OSError,
+        ):
             pass
         finally:
             self.server.sse_hub.unregister(conn)

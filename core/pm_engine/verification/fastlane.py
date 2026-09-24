@@ -452,21 +452,15 @@ def dispatch_minor_defect_fastlane(pipeline, spec_name: str, decision: dict) -> 
     sm = ctx.state_machine
 
     def _bump_fail_streak(reason: str) -> dict:
-        entry = sm.read_one(spec_name) or {}
-        try:
-            streak = int(entry.get(FASTLANE_STREAK_FIELD, 0) or 0)
-        except (TypeError, ValueError):
-            streak = 0
-        streak += 1
-        try:
-            rounds = int(entry.get("_verify_fail_rounds", 0) or 0)
-        except (TypeError, ValueError):
-            rounds = 0
-        # fastlane 修复失败计入既有验证轮预算（与整轮失败同账）
-        sm.update_spec(
-            spec_name,
-            {FASTLANE_STREAK_FIELD: streak, "_verify_fail_rounds": rounds + 1},
-        )
+        # 锁内原子递增（_bump_counter 同范式的多字段原语）：锁外快照读改写
+        # 会与其它对同字段的写者（验证失败记账、admin infra 回拨）互相覆盖
+        # 丢增量。
+        final = sm.bump_counters(spec_name, {
+            FASTLANE_STREAK_FIELD: 1,
+            # fastlane 修复失败计入既有验证轮预算（与整轮失败同账）
+            "_verify_fail_rounds": 1,
+        })
+        streak = final.get(FASTLANE_STREAK_FIELD, 0)
         outcome = {
             "dispatched": False,
             "converged": False,

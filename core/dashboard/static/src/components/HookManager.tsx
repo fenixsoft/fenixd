@@ -214,8 +214,13 @@ export default function HookManager({
         message.error(`保存失败：${e instanceof Error ? e.message : e}`);
       }
     })
-    .catch(() => {
-      // 校验不通过时 validateFields 会 reject，静默吞掉避免 unhandled rejection（错误已由表单字段提示）
+    .catch((e) => {
+      // 校验不通过时 validateFields 会 reject（带 errorFields 属性，错误已由表单字段提示），
+      // 静默吞掉避免 unhandled rejection；其余为 .then 回调内的运行时异常（如弹窗打开期间
+      // hooks prop 收缩致 editIdx 越界），不能同路静默——补日志并给出保存失败提示（口径对齐 handleDelete/handleToggle）
+      if (e && typeof e === 'object' && 'errorFields' in e) return;
+      console.error('[HookManager] 保存 hook 失败', e);
+      message.error(`保存失败：${e instanceof Error ? e.message : e}`);
     });
   };
 

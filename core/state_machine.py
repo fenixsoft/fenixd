@@ -752,6 +752,60 @@ class StateMachine:
         # 重试后仍不匹配：返回磁盘实际值（以落盘为准），由调用方审计
         return verify
 
+    def bump_counters(self, spec_name: str, deltas: Dict[str, int]) -> Dict[str, int]:
+        """多字段计数器锁内原子读改写（``_bump_counter`` 的多字段版）。
+
+        同一临界区内同时递增多个计数器字段——分次单字段 bump 会在两次加锁
+        之间暴露窗口（他写者夹在中间写入，读者看到半新态）；fastlane 失败
+        记账须同点同时递增 ``_fastlane_fail_streak`` 与 ``_verify_fail_rounds``
+        （与整轮失败同账），走本原语保持计数路径单一范式。
+        与 ``_bump_counter`` 同范式：锁内 读→改→写→回读校验，不匹配重试一次；
+        各字段结果下限 0（负 delta 不会把计数打成负数）。
+
+        Returns: ``{field: 最终生效值}``；spec 不存在时记 warning 并返回全 0。
+        """
+        lock_path = self._lockfile
+        verify: Dict[str, int] = {field: 0 for field in deltas}
+        for attempt in (1, 2):
+            new_values: Dict[str, int] = {}
+            with open(lock_path, "w") as lock_f:
+                fcntl.flock(lock_f, fcntl.LOCK_EX)
+                try:
+                    specs = self.read_all()
+                    if spec_name not in specs:
+                        self.logger.warning(
+                            "state_machine",
+                            f"bump {sorted(deltas)} failed: SPEC not found: {spec_name}",
+                        )
+                        return {field: 0 for field in deltas}
+                    entry = specs[spec_name]
+                    for field, delta in deltas.items():
+                        try:
+                            current = int(entry.get(field, 0) or 0)
+                        except (TypeError, ValueError):
+                            current = 0
+                        new_values[field] = max(0, current + delta)
+                        entry[field] = new_values[field]
+                    entry["updated"] = datetime.now(timezone.utc).isoformat()
+                    self._write_all_locked(specs)
+                    # 回读校验：确认增量真正落盘（防并发写覆盖丢增量）
+                    verify = {
+                        field: int((self.read_all().get(spec_name) or {}).get(field, 0) or 0)
+                        for field in deltas
+                    }
+                finally:
+                    fcntl.flock(lock_f, fcntl.LOCK_UN)
+            if verify == new_values:
+                return new_values
+            self.logger.warning(
+                "state_machine",
+                f"bump {sorted(deltas)} verify mismatch for '{spec_name}' "
+                f"(attempt {attempt}): wrote {new_values}, read back {verify} — "
+                f"并发写覆盖，已重试",
+            )
+        # 重试后仍不匹配：返回磁盘实际值（以落盘为准），由调用方审计
+        return verify
+
     def bump_impl_budget(self, spec_name: str, delta: int) -> int:
         """实现尝试预算计数原子增减（``_impl_run_budget_used``）。
 

@@ -2169,9 +2169,9 @@ class AdminMonitor:
             + f"；升级条件：同指纹 ≥{DAEMON_ERROR_THRESHOLD} 次且最近两次间隔"
             f" ≤{DAEMON_ERROR_RECURRENCE_MAX_GAP_MINUTES} 分钟",
         )
-        # 合并信号的 status_hash 判据 = 全部指纹的稳定拼接（同集合同 hash，
-        # 沉淀合并语义与单指纹一致）
-        sig["_fp"] = "|".join(fp for fp, *_ in escalating)
+        # 合并信号的 status_hash 判据 = 全部指纹排序后的稳定拼接（与日志
+        # 首现顺序无关：同集合同 hash，沉淀合并语义与单指纹一致）
+        sig["_fp"] = "|".join(sorted(fp for fp, *_ in escalating))
         return sig
 
     @staticmethod
