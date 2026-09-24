@@ -1609,6 +1609,30 @@ export function triggerCodeReview(project: string, scope: 'full' | 'window') {
   );
 }
 
+/** add-code-review-trigger-ack：审查触发受理判定结果（GET
+ *  /api/code-review/run-result 透传 .fenix/code_review_request_result.json）
+ *
+ * wire 契约：缺省态（文件缺失/损坏）后端返回**全 null 字段对象**
+ * （requested_at/status/reason/message/finished_at 均为 null，运行时真值为
+ * null 而非字段缺席）。前端以 ``requested_at`` 真值且与本次触发返回的
+ * ``requested_at`` 一致回链判定是否本次结果；``status`` 三值：
+ * started（已投递执行）/ dropped（被守卫拒绝）/ failed（已受理但前置失败）。
+ */
+export interface CodeReviewRunResult {
+  requested_at?: string | null;
+  status?: 'started' | 'dropped' | 'failed' | null;
+  reason?: string | null;
+  message?: string | null;
+  finished_at?: string | null;
+}
+
+/** add-code-review-trigger-ack：读取审查触发受理判定结果（无副作用，缺失返回缺省态） */
+export async function getCodeReviewRunResult(project: string): Promise<CodeReviewRunResult> {
+  return request<CodeReviewRunResult>(
+    `/api/code-review/run-result?project=${encodeURIComponent(project)}`,
+  );
+}
+
 /** 手动「自动修复」触发判定结果（add-code-fix-manual-trigger；
  *  GET /api/code-review/fix-run-result 透传 .fenix/code_fix_request_result.json）
  *

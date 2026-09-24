@@ -25,7 +25,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -720,6 +720,80 @@ def collect_manifest(project_root, scope: str, window_start: Optional[datetime] 
         if _is_source_file(f):
             out.append(f)
     return out
+
+
+# ── 手动触发判定结果回链（add-code-review-trigger-ack 1.1） ──────────
+
+# daemon 消费端写回的判定结果文件，与 code_review_request.json 同族：
+# dashboard 原子写信号 → daemon 主循环消费 → 判定结果原子写回，
+# GET /api/code-review/run-result 只读透传（对齐 code-fix 结果回链先例）。
+CODE_REVIEW_REQUEST_RESULT = ".fenix/code_review_request_result.json"
+
+# 缺省态（文件缺失/损坏/非 dict）：全键在场且值为 null——读侧 MUST NOT 抛
+# 异常，前端以 requested_at 真值判定「是否已有结果」。
+_REQUEST_RESULT_DEFAULT = {
+    "requested_at": None,
+    "status": None,
+    "reason": None,
+    "message": None,
+    "finished_at": None,
+}
+
+
+def write_request_result(project_root, requested_at, status, reason=None,
+                         message=None, logger=None) -> bool:
+    """原子写回手动触发判定结果（同目录 tmp + ``os.replace``，design D1）。
+
+    单文件覆盖写、不清理——消费端每消费一条新信号即覆盖旧结果，``requested_at``
+    回链保证前端只认本次触发。``finished_at`` 统一为「本条结果写入时刻」（对
+    started 即受理时刻；daemon 不在 run 结束时回写，run 终态由 run 文件承载）。
+
+    写失败（OSError）仅经 logger 记日志并返回 False——结果文件写不进属基础
+    设施异常，无更好的用户反馈通道，MUST NOT 让调用方控制流因此中断。
+    """
+    payload = {
+        "requested_at": requested_at,
+        "status": status,
+        "reason": reason,
+        "message": message,
+        "finished_at": datetime.now(timezone.utc).isoformat(),
+    }
+    result_path = Path(project_root) / CODE_REVIEW_REQUEST_RESULT
+    tmp_path = result_path.with_name(result_path.name + ".tmp")
+    try:
+        result_path.parent.mkdir(parents=True, exist_ok=True)
+        with tmp_path.open("w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(str(tmp_path), str(result_path))
+        return True
+    except OSError as e:
+        if logger is not None:
+            logger.error("code_review", f"code_review 手动触发结果写入失败: {e}")
+        return False
+    finally:
+        # replace 成功后 tmp 已不存在；失败路径清掉残留，防 .fenix 堆积零字节 tmp
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
+
+
+def read_request_result(project_root) -> dict:
+    """读手动触发判定结果（缺省态兜底，MUST NOT 抛异常）。
+
+    文件缺失 / JSON 损坏 / 顶层非 dict → 返回缺省态（全 null 形态）；
+    合法 dict 原样返回（消费端写什么读什么，不做白名单裁剪——与
+    ``core/dashboard/data`` 的 code-fix 结果读封装同口径）。
+    """
+    path = Path(project_root) / CODE_REVIEW_REQUEST_RESULT
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+        return dict(_REQUEST_RESULT_DEFAULT)
+    return data if isinstance(data, dict) else dict(_REQUEST_RESULT_DEFAULT)
 
 
 # ── 进度读取（真实进度，D4） ───────────────────────────────────────

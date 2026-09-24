@@ -1763,3 +1763,550 @@ class TestRunCodeReviewErrorSalvage(unittest.TestCase):
         self.assertEqual(result.inserted, 0)
         self.assertNotIn("抢救", result.error)
         self.assertFalse((self.crdir / "items.jsonl").exists())
+
+
+# ── add-code-review-trigger-ack：回链写侧 / 读侧 / 窗口守卫 ────────────
+
+
+class TestRequestResultWriteRead(unittest.TestCase):
+    """回链结果写工具与读函数（task 1.1 / 4.1 payload 键与原子性 / 4.2 读侧）。"""
+
+    _RESULT_REL = Path(".fenix") / "code_review_request_result.json"
+
+    def test_write_started_keys_and_roundtrip(self):
+        from core.code_review import read_request_result, write_request_result
+
+        proot = Path(_mkdtemp("cr-req-"))
+        try:
+            ok = write_request_result(
+                proot, "2026-09-24T00:00:00+00:00", "started", None, "审查已受理")
+            self.assertTrue(ok)
+            raw = json.loads((proot / self._RESULT_REL).read_text(encoding="utf-8"))
+            # payload 键齐全：requested_at 回链 + status + reason + message +
+            # finished_at（UTC ISO8601 写入时刻）
+            self.assertEqual(
+                set(raw.keys()),
+                {"requested_at", "status", "reason", "message", "finished_at"},
+            )
+            self.assertEqual(raw["requested_at"], "2026-09-24T00:00:00+00:00")
+            self.assertEqual(raw["status"], "started")
+            self.assertIsNone(raw["reason"])
+            self.assertTrue(raw["finished_at"])
+            # 读侧原样透传
+            self.assertEqual(read_request_result(proot), raw)
+        finally:
+            import shutil
+            shutil.rmtree(str(proot), ignore_errors=True)
+
+    def test_write_is_same_dir_tmp_plus_replace(self):
+        """原子性（tmp + os.replace）：tmp 在同目录、经 replace 原子挂到目标。"""
+        from unittest.mock import patch
+
+        from core.code_review import write_request_result
+
+        proot = Path(_mkdtemp("cr-req2-"))
+        target = proot / self._RESULT_REL
+        try:
+            seen = []
+
+            real_replace = os.replace
+
+            def _spy_replace(src, dst, *a, **kw):
+                seen.append((str(src), str(dst)))
+                return real_replace(src, dst, *a, **kw)
+
+            with patch("os.replace", side_effect=_spy_replace):
+                self.assertTrue(write_request_result(proot, "r0", "dropped", "already_running"))
+            self.assertEqual(len(seen), 1)
+            src, dst = seen[0]
+            self.assertEqual(Path(src).parent, target.parent, "tmp MUST 与目标同目录")
+            self.assertTrue(src.endswith("code_review_request_result.json.tmp"))
+            self.assertEqual(Path(dst), target)
+            self.assertFalse(list(target.parent.glob("*.tmp")), "replace 后无 tmp 残留")
+        finally:
+            import shutil
+            shutil.rmtree(str(proot), ignore_errors=True)
+
+    def test_write_failure_leaves_old_content_intact(self):
+        """replace 失败（OSError）不半写：旧内容原样、无 tmp 残留、返回 False。"""
+        from unittest.mock import patch
+
+        from core.code_review import write_request_result
+
+        proot = Path(_mkdtemp("cr-req3-"))
+        target = proot / self._RESULT_REL
+        target.parent.mkdir(parents=True, exist_ok=True)
+        old = {"requested_at": "old", "status": "started", "reason": None,
+               "message": "旧", "finished_at": "old"}
+        target.write_text(json.dumps(old, ensure_ascii=False), encoding="utf-8")
+        try:
+            with patch("os.replace", side_effect=OSError("disk full")):
+                self.assertFalse(write_request_result(proot, "new", "started"))
+            self.assertEqual(json.loads(target.read_text(encoding="utf-8")), old)
+            self.assertFalse(list(target.parent.glob("*.tmp")))
+        finally:
+            import shutil
+            shutil.rmtree(str(proot), ignore_errors=True)
+
+    def test_read_defaults_not_raise(self):
+        """缺省态（task 4.2 读侧）：缺失/损坏/非 dict → 全 null 缺省态，不抛异常。"""
+        from core.code_review import read_request_result
+
+        default = {
+            "requested_at": None, "status": None, "reason": None,
+            "message": None, "finished_at": None,
+        }
+        proot = Path(_mkdtemp("cr-req4-"))
+        try:
+            # 缺失
+            self.assertEqual(read_request_result(proot), default)
+            # JSON 损坏
+            (proot / self._RESULT_REL).parent.mkdir(parents=True, exist_ok=True)
+            (proot / self._RESULT_REL).write_text("{broken", encoding="utf-8")
+            self.assertEqual(read_request_result(proot), default)
+            # 顶层非 dict
+            (proot / self._RESULT_REL).write_text("[1,2]", encoding="utf-8")
+            self.assertEqual(read_request_result(proot), default)
+        finally:
+            import shutil
+            shutil.rmtree(str(proot), ignore_errors=True)
+
+
+class _FakeDaemonLogger:
+    def __getattr__(self, name):
+        return lambda *a, **k: None
+
+
+class _RecExecutor:
+    """记录 submit 的假线程池（不执行任务——worker 由测试显式驱动）。"""
+
+    def __init__(self):
+        self.jobs = []
+
+    def submit(self, fn, *args, **kwargs):
+        self.jobs.append((fn, args, kwargs))
+
+
+class _BoomExecutor:
+    def submit(self, fn, *args, **kwargs):
+        raise RuntimeError("pool closed")
+
+
+class _FakeMonitor:
+    def __init__(self, in_flight=False):
+        self._code_review_in_flight = in_flight
+
+
+class _FakeRunner:
+    def __init__(self):
+        self._running_agents = {}
+
+
+class TestCodeReviewTriggerConsume(unittest.TestCase):
+    """daemon 消费端三态落盘（task 4.1）：started/dropped/failed、单飞旗标
+    置位/复位顺序不变、守卫拒绝与 payload 非法不静默。"""
+
+    _REQ_AT = "2026-09-24T08:00:00+00:00"
+
+    def _mk_proot(self) -> Path:
+        proot = Path(_mkdtemp("cr-consume-"))
+        (proot / ".fenix").mkdir(parents=True, exist_ok=True)
+        return proot
+
+    def _make_daemon(self, proot, executor):
+        import fenixd
+
+        daemon = fenixd.FenixDaemon.__new__(fenixd.FenixDaemon)
+        daemon.running = True
+        daemon.agent_runner = _FakeRunner()
+        daemon.admin_monitor = _FakeMonitor()
+        daemon._admin_executor = executor
+        daemon.config = {}
+        daemon.logger = _FakeDaemonLogger()
+        return daemon
+
+    def _write_signal(self, proot, requested_at=None, raw=None):
+        req = proot / ".fenix" / "code_review_request.json"
+        req.write_text(
+            raw if raw is not None else json.dumps(
+                {"scope": "window", "source": "dashboard",
+                 "requested_at": requested_at or self._REQ_AT}),
+            encoding="utf-8")
+        return req
+
+    def _root_ctx(self, proot, hosting="managed"):
+        """PROJECT_ROOT/hosting_state patch 上下文：消费与 worker 驱动必须在
+        同一上下文内执行——worker 闭包在调用时读取 fenixd.PROJECT_ROOT 全局，
+        上下文退出后驱动会把结果文件写到真实仓库根。"""
+        import fenixd
+        from unittest.mock import patch
+
+        return patch.object(fenixd, "PROJECT_ROOT", proot), \
+            patch("core.fenix_session.hosting_state", lambda p: hosting)
+
+    def _consume(self, proot, daemon, hosting="managed"):
+        ctx_root, ctx_host = self._root_ctx(proot, hosting)
+        with ctx_root, ctx_host:
+            daemon._check_code_review_requests()
+
+    def _read_result(self, proot):
+        path = proot / ".fenix" / "code_review_request_result.json"
+        if not path.exists():
+            return {}
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def test_started_after_submit_and_flag_order(self):
+        """投递成功 → started 结果（requested_at 回链）且旗标置位；worker 跑完
+        复位旗标（置位/复位顺序与现状一致，落盘不改控制流）。"""
+        proot = self._mk_proot()
+        executor = _RecExecutor()
+        daemon = self._make_daemon(proot, executor)
+        self._write_signal(proot)
+        self._consume(proot, daemon)
+
+        res = self._read_result(proot)
+        self.assertEqual(res["status"], "started")
+        self.assertEqual(res["requested_at"], self._REQ_AT, "结果 MUST 回链信号 requested_at")
+        self.assertIsNone(res["reason"])
+        self.assertTrue(res["message"])
+        self.assertTrue(res["finished_at"])
+        self.assertFalse((proot / ".fenix" / "code_review_request.json").exists(),
+                         "信号消费后删除")
+        self.assertTrue(daemon.admin_monitor._code_review_in_flight,
+                        "投递成功后单飞旗标处于置位态（与现状一致）")
+        # 驱动 worker 跑完 → 旗标复位（置位/复位顺序与现状一致）；worker 内
+        # manifest_empty 分支落盘覆盖 started。必须在 PROJECT_ROOT patch 上下文
+        # 内驱动（闭包按调用时全局取根）；manifest 收集打桩为零——临时目录
+        # 位于本仓库 .history/tmp 内，git 会上溯到真实仓库使收集结果不确定
+        from unittest.mock import patch
+
+        ctx_root, _ = self._root_ctx(proot)
+        with patch("core.code_review.collect_manifest", lambda *a, **k: []), \
+                patch("core.code_review.compute_window", lambda *a, **k: (None, None)), \
+                ctx_root:
+            executor.jobs[0][0]()
+        self.assertFalse(daemon.admin_monitor._code_review_in_flight,
+                         "worker 结束后旗标复位（与现状一致）")
+        # worker 的 manifest_empty 落盘发生在 started 之后（覆盖写属预期：
+        # 消费窗口内后到的判定覆盖前一条）
+        self.assertEqual(self._read_result(proot)["status"], "failed")
+
+    def test_worker_manifest_empty_failed(self):
+        """manifest 为空 → worker 落 failed/manifest_empty，不静默跳过。"""
+        from unittest.mock import patch
+
+        from core.code_review import compute_window as _cw
+
+        proot = self._mk_proot()
+        executor = _RecExecutor()
+        daemon = self._make_daemon(proot, executor)
+        self._write_signal(proot)
+        ctx_root, _ = self._root_ctx(proot)
+        with patch("core.code_review.collect_manifest", lambda *a, **k: []), \
+                patch("core.code_review.compute_window", lambda *a, **k: (None, None)), \
+                ctx_root:
+            self._consume(proot, daemon)
+            executor.jobs[0][0]()
+
+        res = self._read_result(proot)
+        self.assertEqual(res["status"], "failed")
+        self.assertEqual(res["reason"], "manifest_empty")
+        self.assertEqual(res["requested_at"], self._REQ_AT)
+        self.assertFalse(daemon.admin_monitor._code_review_in_flight)
+
+    def test_worker_manifest_error_failed(self):
+        """collect_manifest 抛异常 → worker 落 failed/manifest_error。"""
+        from unittest.mock import patch
+
+        def _boom(*a, **k):
+            raise RuntimeError("git failed")
+
+        proot = self._mk_proot()
+        executor = _RecExecutor()
+        daemon = self._make_daemon(proot, executor)
+        self._write_signal(proot)
+        ctx_root, _ = self._root_ctx(proot)
+        with patch("core.code_review.collect_manifest", _boom), \
+                patch("core.code_review.compute_window",
+                      lambda *a, **k: (_cw_safe(), None)), \
+                ctx_root:
+            self._consume(proot, daemon)
+            executor.jobs[0][0]()
+
+        res = self._read_result(proot)
+        self.assertEqual(res["status"], "failed")
+        self.assertEqual(res["reason"], "manifest_error")
+        self.assertFalse(daemon.admin_monitor._code_review_in_flight)
+
+    def test_already_running_dropped_flag_untouched(self):
+        """单飞在跑 → dropped/already_running，旗标保持置位（顺序不变）。"""
+        proot = self._mk_proot()
+        executor = _RecExecutor()
+        daemon = self._make_daemon(proot, executor)
+        daemon.admin_monitor._code_review_in_flight = True
+        self._write_signal(proot)
+        self._consume(proot, daemon)
+
+        res = self._read_result(proot)
+        self.assertEqual(res["status"], "dropped")
+        self.assertEqual(res["reason"], "already_running")
+        self.assertEqual(res["requested_at"], self._REQ_AT)
+        self.assertIn("在跑", res["message"])
+        self.assertTrue(daemon.admin_monitor._code_review_in_flight)
+        self.assertEqual(executor.jobs, [], "单飞拒绝 MUST NOT 投递")
+
+    def test_hosting_guard_dropped_distinct_reasons(self):
+        """守卫拒绝（stopped/unmanaged）→ dropped，reason 区分两种状态。"""
+        for hosting, reason in (("stopped", "daemon_not_running"),
+                                ("unmanaged", "daemon_unmanaged")):
+            proot = self._mk_proot()
+            daemon = self._make_daemon(proot, _RecExecutor())
+            self._write_signal(proot)
+            self._consume(proot, daemon, hosting=hosting)
+            res = self._read_result(proot)
+            self.assertEqual(res["status"], "dropped", hosting)
+            self.assertEqual(res["reason"], reason)
+            self.assertEqual(res["requested_at"], self._REQ_AT)
+            self.assertTrue(res["message"])
+
+    def test_invalid_payload_dropped(self):
+        """信号在场但 payload 损坏 → dropped/invalid_payload（不再静默）。"""
+        proot = self._mk_proot()
+        daemon = self._make_daemon(proot, _RecExecutor())
+        self._write_signal(proot, raw="{not-json")
+        self._consume(proot, daemon)
+
+        res = self._read_result(proot)
+        self.assertEqual(res["status"], "dropped")
+        self.assertEqual(res["reason"], "invalid_payload")
+        self.assertFalse(
+            (proot / ".fenix" / "code_review_request.json").exists(),
+            "损坏信号已被消费删除")
+
+    def test_submit_error_failed_and_flag_reset(self):
+        """投递异常 → failed/submit_error 且单飞旗标复位逻辑保持。"""
+        proot = self._mk_proot()
+        daemon = self._make_daemon(proot, _BoomExecutor())
+        self._write_signal(proot)
+        self._consume(proot, daemon)
+
+        res = self._read_result(proot)
+        self.assertEqual(res["status"], "failed")
+        self.assertEqual(res["reason"], "submit_error")
+        self.assertEqual(res["requested_at"], self._REQ_AT)
+        self.assertFalse(daemon.admin_monitor._code_review_in_flight,
+                         "submit 异常分支的既有复位逻辑不变")
+
+
+def _cw_safe():
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc)
+
+
+class _FakeCodeReviewRoute:
+    """H11CodeReviewRoutesMixin 最小宿主（窗口守卫/端点直呼测试，task 4.2）。"""
+
+    def __init__(self, proot, body=None, exists=True):
+        self._proot = str(proot)
+        self._body = body if body is not None else {"scope": "window"}
+        self._exists = exists
+        self.response = None
+
+    def _project_from_query(self, query):
+        if not self._exists:
+            return None
+        return {"name": "proj-a", "path": self._proot, "exists": True}
+
+    def _read_json_body(self):
+        return self._body
+
+    def _json(self, obj, status=200):
+        self.response = (status, obj)
+
+    def _error(self, status, msg):
+        self.response = (status, {"error": msg})
+
+    def _coded_error(self, status, msg, code):
+        self.response = (status, {"error": msg, "code": code})
+
+
+def _mk_progress_project(running=False, run_id="code-review-1758211200"):
+    """构造带 review run 产物的项目根：running=True → 非 terminal 新鲜 run；
+    running=False → 仅 manifest（running=false 但 review_id 在场）。"""
+    import time as _time
+
+    from core.code_review import code_review_dir, out_path
+
+    proot = Path(_mkdtemp("cr-guard-"))
+    cr = code_review_dir(proot)
+    cr.mkdir(parents=True)
+    (cr / f"manifest-{run_id}.json").write_text(
+        json.dumps({"files": [f"core/f{i}.py" for i in range(3)],
+                    "review_kind": "manual_full"}),
+        encoding="utf-8")
+    if running:
+        with open(out_path(proot, run_id), "w", encoding="utf-8") as f:
+            f.write(json.dumps({"file": "core/f0.py", "category": "c", "title": "t"}) + "\n")
+        runs = proot / ".fenix" / "runs"
+        runs.mkdir(parents=True)
+        run_file = runs / f"{run_id}.jsonl"
+        run_file.write_text(
+            json.dumps({"type": "system", "message": "start"}) + "\n", encoding="utf-8")
+        _time.sleep(0.01)  # mtime 新鲜（避开 stale 阈值边界）
+    return proot
+
+
+def _put_result(proot, payload):
+    path = Path(proot) / ".fenix" / "code_review_request_result.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+
+class TestCodeReviewRunResultAPI(unittest.TestCase):
+    """GET run-result 端点与 POST run 受理窗口守卫（task 4.2）。"""
+
+    def _route(self, proot, exists=True):
+        from core.dashboard.routes.code_review_routes import H11CodeReviewRoutesMixin
+
+        cls = type(
+            "_FakeRoute", (H11CodeReviewRoutesMixin,),
+            {name: getattr(_FakeCodeReviewRoute, name)
+             for name in ("__init__", "_project_from_query", "_read_json_body",
+                          "_json", "_error", "_coded_error")},
+        )
+        return cls(proot, exists=exists)
+
+    def _post_run(self, proot, hosting="managed"):
+        from unittest.mock import patch
+
+        h = self._route(proot)
+        with patch("core.fenix_session.hosting_state", lambda p: hosting):
+            h._api_code_review_run({})
+        return h.response
+
+    def _cleanup(self, proot):
+        import shutil
+        shutil.rmtree(str(proot), ignore_errors=True)
+
+    # ── GET run-result ────────────────────────────────────────────
+
+    def test_run_result_default_when_missing(self):
+        from core.code_review import read_request_result
+
+        proot = Path(_mkdtemp("cr-api-"))
+        try:
+            h = self._route(proot)
+            h._api_code_review_run_result({})
+            status, body = h.response
+            self.assertEqual(status, 200)
+            self.assertEqual(body, read_request_result(proot))
+            self.assertIsNone(body["requested_at"])
+            self.assertIsNone(body["status"])
+        finally:
+            self._cleanup(proot)
+
+    def test_run_result_passthrough_and_corrupt_and_404(self):
+        from core.code_review import write_request_result
+
+        proot = Path(_mkdtemp("cr-api2-"))
+        try:
+            write_request_result(proot, "2026-09-24T00:00:00+00:00", "dropped",
+                                 "already_running", "已有审查在跑")
+            h = self._route(proot)
+            h._api_code_review_run_result({})
+            status, body = h.response
+            self.assertEqual(status, 200)
+            self.assertEqual(body["status"], "dropped")
+            self.assertEqual(body["reason"], "already_running")
+
+            # 损坏 → 缺省态 200 不 500
+            (proot / ".fenix" / "code_review_request_result.json").write_text(
+                "{broken", encoding="utf-8")
+            h = self._route(proot)
+            h._api_code_review_run_result({})
+            status, body = h.response
+            self.assertEqual(status, 200)
+            self.assertIsNone(body["status"])
+
+            # 项目不存在 → 404
+            h = self._route(proot, exists=False)
+            h._api_code_review_run_result({})
+            self.assertEqual(h.response[0], 404)
+        finally:
+            self._cleanup(proot)
+
+    # ── POST run 受理窗口守卫（design D3 四分支） ──────────────────
+
+    def test_ack_window_409_when_started_pending(self):
+        """started + 未 running + 新鲜 + 无更新 run → 409 code_review_ack_pending，
+        信号文件不被写入。"""
+        proot = _mk_progress_project(running=False)
+        try:
+            _put_result(proot, {"requested_at": "r0", "status": "started",
+                                "reason": None, "message": "启动中",
+                                "finished_at": _iso_now()})
+            status, body = self._post_run(proot)
+            self.assertEqual(status, 409)
+            self.assertEqual(body.get("code"), "code_review_ack_pending")
+            self.assertFalse(
+                (proot / ".fenix" / "code_review_request.json").exists(),
+                "守卫拒绝 MUST NOT 写信号")
+        finally:
+            self._cleanup(proot)
+
+    def test_running_guard_wins_with_existing_code(self):
+        """running=true → 既有 code_review_running 409 先命中（语义不变）。"""
+        proot = _mk_progress_project(running=True)
+        try:
+            _put_result(proot, {"requested_at": "r0", "status": "started",
+                                "reason": None, "message": "启动中",
+                                "finished_at": _iso_now()})
+            status, body = self._post_run(proot)
+            self.assertEqual(status, 409)
+            self.assertEqual(body.get("code"), "code_review_running")
+        finally:
+            self._cleanup(proot)
+
+    def test_stale_result_passes_through(self):
+        """陈旧结果（finished_at 距今 > 900s）→ 守卫放行，信号正常写入。"""
+        from datetime import timedelta
+
+        proot = _mk_progress_project(running=False)
+        try:
+            _put_result(proot, {"requested_at": "r0", "status": "started",
+                                "reason": None, "message": "启动中",
+                                "finished_at": _iso_now(timedelta(seconds=-1000))})
+            status, body = self._post_run(proot)
+            self.assertEqual(status, 200)
+            self.assertTrue(body.get("ok"))
+            self.assertTrue(
+                (proot / ".fenix" / "code_review_request.json").exists())
+        finally:
+            self._cleanup(proot)
+
+    def test_newer_run_epoch_passes_through(self):
+        """run 已结束但 review_id epoch > finished_at（受理的 run 已跑完）→
+        守卫放行，不误判「排队中」假 409。"""
+        from datetime import timedelta
+
+        # epoch 4102444800 = 2100-01-01，远晚于 finished_at（now-1s）
+        proot = _mk_progress_project(running=False, run_id="code-review-4102444800")
+        try:
+            _put_result(proot, {"requested_at": "r0", "status": "started",
+                                "reason": None, "message": "启动中",
+                                "finished_at": _iso_now(timedelta(seconds=-1))})
+            status, body = self._post_run(proot)
+            self.assertEqual(status, 200)
+            self.assertTrue(body.get("ok"))
+            self.assertTrue(
+                (proot / ".fenix" / "code_review_request.json").exists())
+        finally:
+            self._cleanup(proot)
+
+
+def _iso_now(offset=None):
+    from datetime import datetime, timedelta, timezone
+
+    delta = offset if offset is not None else timedelta(0)
+    return (datetime.now(timezone.utc) + delta).isoformat()
