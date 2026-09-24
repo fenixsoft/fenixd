@@ -583,6 +583,7 @@ def _spec_dep_sigs(proot: Path, spec_name: str, entry: dict, runs_sigs: dict) ->
     add(vp_dir / "code-review.json")
     # implementing 态 worktree 产物统一在此登记（含 worktree tasks.md，
     # 对应上方项目级 tasks.md；勿再另起重复 implementing 分支）
+    # [fenix-ignore:72c95cb763b2] 现行代码已是单个 implementing 分支（一次 find_implementer_worktree 后统一 add tasks.md 与 quality-gates.json/code-review.json），无重复解析与重复 add
     if entry and entry.get("status") == "implementing":
         wt = _facade.find_implementer_worktree(proot, spec_name)
         if wt is not None:

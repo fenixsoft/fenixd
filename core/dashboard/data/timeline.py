@@ -184,18 +184,51 @@ def _ocr_lane_summary(project_root, run_id: str) -> str:
     return ""
 
 
+_DAEMON_LOG_RE = re.compile(r"fenixd\.log(?:\.(\d+))?")
+
+
+def _rotated_log_files(logs_dir: Path) -> list:
+    """按时间序（旧→新）枚举 daemon 日志文件（含轮转备份）。
+
+    core/logger.py 用 FlockRotatingFileHandler（maxBytes=10MB、backupCount=5）
+    轮转，产物命名 fenixd.log（最新）、fenixd.log.1（次新）… fenixd.log.N
+    （最旧）——序号越大越旧。原 glob "fenixd*.log" 要求以 .log 结尾，轮转备份
+    fenixd.log.1/.2 不命中：created 锚点早于最近一次轮转时刻的 spec，其创建至
+    轮转点之间的 Transition/打回日志全部留在备份里不被读取，时间轴开段静默
+    缺失。故按正则枚举全部轮转产物并按 旧→新 排序——跨文件拼接窗口保持时间
+    单调，且「开始验证」行靠遍历序取最后一轮（verify_start_ts），旧→新遍历下
+    最后赋值恰为时间最新。非轮转命名（fenixd.log.lock 等伴随文件）不命中
+    正则，跳过。
+    """
+    out: list[tuple[int, str, Path]] = []
+    for lf in logs_dir.iterdir():
+        m = _DAEMON_LOG_RE.fullmatch(lf.name)
+        if m is None:
+            continue
+        # 基底序 0（最新）；备份序号 N 越大越旧 → 取 -N 使升序即 旧→新
+        seq = -int(m.group(1)) if m.group(1) else 0
+        out.append((seq, lf.name, lf))
+    out.sort(key=lambda t: (t[0], t[1]))
+    return [t[2] for t in out]
+
+
 def get_spec_timeline(
     project_root, spec_name: str, created: str = "", entry: "dict | None" = None
 ) -> list:
     """构建 SPEC 生命周期时间轴（按时间排序）。
 
     数据源：
-    - 事件日志（fenixd*.log）中的 `Transition: <spec> from → to` → 状态节点
+    - 事件日志（fenixd.log 及轮转备份 fenixd.log.N）中的
+      `Transition: <spec> from → to` → 状态节点
     - `.fenix/runs/` 运行产物 → 运行节点（可点击展开 LLM 对话）
 
-    日志读取窗口按 created 锚定（_read_log_window_from）：从 spec 创建时间读到
-    文件尾，长周期 spec 的早期事件不再被尾部 1MB 尾窗静默截断；created 缺失
-    （存量/归档条目）退化为全文件读取。
+    日志读取窗口按 created 锚定（_read_log_window_from）且覆盖轮转备份
+    （_rotated_log_files 按 旧→新 逐文件拼接，序号越大越旧）：长周期 spec 的
+    早期事件不再被尾部 1MB 尾窗或轮转边界静默截断；created 缺失（存量/归档
+    条目）退化为全文件读取。单文件内时间戳单调，锚定在各文件内部同样成立；
+    锚点早于某备份首行时该备份全文件读取（早期事件可回看所必需，量受
+    backupCount 上界约束，仅低频 REST 详情页触达），锚点晚于备份全部内容时
+    只读其尾块，冗余行由 spec 名过滤兜底。
 
     每条:
     - 状态: {time, kind:"state", from, to, reason}  （回退节点带 reason）
@@ -216,7 +249,9 @@ def get_spec_timeline(
 
     if logs_dir.is_dir():
         try:
-            log_files = sorted(logs_dir.glob("fenixd*.log"), reverse=True)
+            # 旧→新 枚举（含轮转备份 fenixd.log.N，_rotated_log_files 内注释
+            # 说明 glob "fenixd*.log" 漏掉轮转产物导致开段缺失的根因）
+            log_files = _rotated_log_files(logs_dir)
         except OSError:
             log_files = []
         # 状态转移正则只依赖循环不变的 spec_name，提到文件循环外只编译一次

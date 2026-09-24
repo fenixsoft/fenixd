@@ -130,11 +130,20 @@ class G7StaleSweepMixin:
                             f"worktree 目录已清理，分支留待恢复/后继 run 收编",
                         )
                     else:
-                        subprocess.run(
+                        del_res = subprocess.run(
                             ["git", "-C", str(self.project_root), "branch", "-D", branch],
                             capture_output=True,
+                            text=True,
                             timeout=10,
                         )
+                        if del_res.returncode != 0:
+                            # 与同函数其它失败分支同款降级口径：删除失败不阻塞
+                            # 清扫，但必须留 WARNING 线索，避免孤儿分支静默残留。
+                            self.logger.warning(
+                                "worktree_manager",
+                                f"Stale branch delete failed (non-blocking): "
+                                f"'{branch}' — {del_res.stderr.strip()}",
+                            )
             except Exception as e:
                 self.logger.warning("worktree_manager", f"Stale worktree cleanup failed: {e}")
         # 收尾 prune 同样不得抛穿（297556cff10d）：与循环体一致降级 WARNING，

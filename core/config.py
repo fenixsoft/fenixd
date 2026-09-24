@@ -124,7 +124,9 @@ class ConfigLoader:
     # Known agent types for model assignment（fast-track 与 implementer 同为派发角色，
     # 未纳入时 agents.models 配置它会被 _validate_agent_models 拒绝，fast-track 派发
     # 恒走默认网关——任务进度契约在其会话中成为死信的根因之一。dispute-judge 同样：
-    # 未纳入时无法分配专属模型，只能随网关当前 provider 漂移，且网关欠费时秒挂）
+    # 未纳入时无法分配专属模型，只能随网关当前 provider 漂移，且网关欠费时秒挂。
+    # 注意：向本列表新增角色会同步放开 agents.timeout_overrides 同名键
+    # （TIMEOUT_OVERRIDE_AGENT_TYPES 由本列表派生，见下方白名单注释）
     KNOWN_AGENT_TYPES = [
         "implementer",
         "fast-track",
@@ -148,8 +150,9 @@ class ConfigLoader:
 
     # ── run_timeout 按 agent_type 覆盖（per-agent-timeout-override）──────
     # agents.timeout_overrides.<agent_type> 覆盖全局 run_timeout_seconds。
-    # 白名单键 = 全部七类 agent run（含 fast-track/repair，design D3 的
-    # KNOWN_AGENT_TYPES 仅指 agents.models 角色集）+ supervision-judge。
+    # 白名单键 = KNOWN_AGENT_TYPES 全集 + repair + supervision-judge，随
+    # agents.models 角色集动态扩大（向 KNOWN_AGENT_TYPES 新增角色即同步放开
+    # 同名 timeout_overrides 键）；design D3 初版的「七类」表述已过时。
     TIMEOUT_OVERRIDE_AGENT_TYPES = frozenset(KNOWN_AGENT_TYPES) | {"fast-track", "repair"}
     # supervision-judge 是内部轻量判定子进程（非长 run），不参与 absolute_max 派生，
     # 允许低于 agent run 的 300s 下限（spec per-agent-timeout-override 3.3 场景 240s 生效）。
@@ -2013,7 +2016,8 @@ class ConfigLoader:
         """校验并规范化 ``agents.timeout_overrides``（逐键：非法键值忽略 + ERROR）。
 
         per-agent-timeout-override（design D3 / spec 3.1）：
-        - 键 ∈ TIMEOUT_OVERRIDE_KEYS（全部七类 agent run + supervision-judge）；
+        - 键 ∈ TIMEOUT_OVERRIDE_KEYS（KNOWN_AGENT_TYPES 全集 + repair +
+          supervision-judge，随 agents.models 角色集动态扩大）；
         - agent run 键值须为 ≥300 整数（低于下限会截断正常长 run）；
           supervision-judge 键值须为 ≥1 整数（内部轻量判定，不受 300 下限约束）；
         - 非法键值**整条忽略**（该键回退全局默认）并打 ERROR，其余合法键正常生效；
@@ -2065,9 +2069,10 @@ class ConfigLoader:
         否则回退 ``agents.run_timeout_seconds`` 全局默认；全局缺失/非正数回退
         RUN_TIMEOUT_FALLBACK_SECONDS（9000）。
 
-        覆盖 MUST 适用于全部七类 agent run：implementer、verifier、planner-plan、
-        planner-judge、fast-track、repair、administrator（后两者经 _execute_agent
-        与 _run_claude 统一路径生效）。
+        覆盖 MUST 适用于 TIMEOUT_OVERRIDE_AGENT_TYPES 全部键（KNOWN_AGENT_TYPES
+        全集 + repair，含 implementer、verifier、planner-plan、planner-judge、
+        fast-track、repair、administrator、self-review、spec-review、dispute-judge、
+        code-review、code-fix；经 _execute_agent 与 _run_claude 统一路径生效）。
 
         注意：supervision-judge 键不在此处生效（那是 liveness judge 子进程超时，
         经 ``judge_timeout_seconds`` 读取，不参与 absolute_max 派生）。

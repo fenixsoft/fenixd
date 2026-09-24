@@ -65,8 +65,9 @@ export function strokeColorFor(gen: boolean, isVerify: boolean, isGates = false)
 }
 
 // 底轨随阶段同 ramp：gates 淡橙、verify 淡绿、impl 淡蓝、出题淡青，0/0 空条读得出阶段
+// （守卫优先级与 strokeColorFor 注释一致：出题青 > 门禁橙 > verify 绿 > impl 蓝）
 export function trailColorFor(gen: boolean, isVerify: boolean, isGates = false): string {
+  if (gen) return TRACK_CYAN;
   if (isGates) return GATES_TRAIL;
-  if (!isVerify) return TRACK_LIGHT;
-  return gen ? TRACK_CYAN : TRACK_GREEN;
+  return isVerify ? TRACK_GREEN : TRACK_LIGHT;
 }

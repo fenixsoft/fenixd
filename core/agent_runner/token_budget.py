@@ -83,7 +83,13 @@ class TokenAccountant:
         with _spec_accumulate_lock(spec_name):
             try:
                 entry = self._pm.state_machine.read_one(spec_name) or {}
-            except Exception:
+            except Exception as e:
+                # code-review item 67824f1f7c03：读失败会永久漏计本轮 usage，与
+                # 下方写失败 warning 留痕口径对齐（行为不变：仍跳过本轮累计）
+                self._pm.logger.warning(
+                    "agent_runner",
+                    f"token 累计读 STATE 失败 '{spec_name}'，跳过本轮累计: {e}",
+                )
                 return
             if not isinstance(entry, dict):
                 return

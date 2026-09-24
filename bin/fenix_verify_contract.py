@@ -53,10 +53,11 @@ from core.regression import parse_junit_xml
 def selfcheck_regression(project_root: Path, contract=None) -> tuple:
     """可选 regression 段自证：按 cmd 跑一次确认 output 产出可解析 JUnit XML。
 
-    contract 可传入已加载的契约对象（code-review item 708cdd624733：同一 CLI
-    生命周期内只读一次 verify.yaml，消除两次读取之间文件被改写导致校验与
-    自证使用不同版本契约的 TOCTOU 窗口）；缺省 None 时内部自行加载，保持
-    既有调用形态兼容。
+    contract 可传入已加载的契约对象（code-review item 708cdd624733 /
+    73047bb4e140）：CLI main() 传入 validate_contract 随 ValidateResult 返回的
+    同一契约对象，三段判定与本次自证使用同一版本 verify.yaml，消除两次读取
+    之间文件被改写的 TOCTOU 窗口；缺省 None 时内部自行加载，保持既有调用
+    形态兼容。
 
     返回 (ok, note)：ok 为 True/False/None（None=无 regression 段，跳过）。
     执行有硬超时（spec.timeout_seconds，对齐执行车道 D8 进程组中止），
@@ -219,10 +220,12 @@ def main():
         or not result.serve_ok
         or not result.ready_ok
     )
-    # 契约只加载一次（code-review item 708cdd624733）：跳过自证分支的判定与
-    # regression 自证共用同一份契约对象，消除两次读取之间 verify.yaml 被改写
-    # 导致「校验结论与自证所用契约不是同一版本」的 TOCTOU 窗口。
-    contract = load_verify_contract(project_root)
+    # 契约只加载一次（code-review item 708cdd624733 / 73047bb4e140）：三段校验、
+    # 跳过自证分支的判定与 regression 自证全程复用 validate_contract 随
+    # ValidateResult 返回的同一份契约对象——verify.yaml 整个生命周期只由
+    # validate_contract 内部加载一次，消除两次读取之间文件被改写导致「校验
+    # 结论与自证所用契约不是同一版本」的 TOCTOU 窗口。
+    contract = result.contract
     if contract_failed:
         if contract is not None and contract.regression is not None:
             print()

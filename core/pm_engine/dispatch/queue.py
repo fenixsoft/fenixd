@@ -247,9 +247,16 @@ class QQQueueMixin:
         iw = a.get("initial_wait_minutes")
         sw = a.get("step_down_minutes")
         fl = a.get("floor_levels")
-        initial_wait = max(0.0, float(iw if iw is not None else 30)) * 60.0
-        step_down = max(0.0, float(sw if sw is not None else 15)) * 60.0
-        floor_levels = max(0, int(fl if fl is not None else 4))
+        try:
+            initial_wait = max(0.0, float(iw if iw is not None else 30)) * 60.0
+            step_down = max(0.0, float(sw if sw is not None else 15)) * 60.0
+            floor_levels = max(0, int(fl if fl is not None else 4))
+        except (TypeError, ValueError):
+            # 畸形配置（如非数值字符串）只降级回缺省值，不炸派发循环
+            #（口径对齐 _merge_retry_* 读取器）。
+            initial_wait = 30 * 60.0
+            step_down = 15 * 60.0
+            floor_levels = 4
         elapsed = max(0.0, now - (enqueued_at or now))
         if step_down <= 0 or elapsed < initial_wait:
             return 0

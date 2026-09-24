@@ -771,8 +771,12 @@ class H3SpecRoutesMixin:
         # 写 spec_delete_request.json 信号立即返回受理（不阻塞等待终止）。
         running_ids = dashboard_data.running_run_ids_for_spec(proot, spec)
         if running_ids:
-            req = dashboard_data.request_spec_delete(
-                proot, spec, stopping=len(running_ids))
+            try:
+                req = dashboard_data.request_spec_delete(
+                    proot, spec, stopping=len(running_ids))
+            except Exception as e:  # noqa: BLE001 兜底：信号写入异常不崩溃进程
+                self._error(500, f"delete spec failed: {e}")
+                return
             if req.get("unmanaged"):
                 self._error(409, req.get("error") or "daemon 未托管")
                 return

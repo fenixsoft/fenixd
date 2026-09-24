@@ -2605,6 +2605,22 @@ class AdminMonitor:
             if signal is None:
                 continue
             signal["_dispatch_retry_id"] = rec.get("id")
+            # fix-recovery-path-blockers D2b 在飞互斥：本路径直接调
+            # _invoke_administrator，绕过了 _handle_signal 的「已有在飞 admin
+            # run 即跳过」守卫——到期重派若撞上该信号已有在飞 admin run（另
+            # 一信号类型或人工通道），会与其并行写同一批 STATE/test_scenarios.json。
+            # 守卫口径与 _recover_orphaned_dispositions 重派守卫对齐（同款
+            # _has_active_admin_run_for 按信号类型判定；本路径无既有 run 可
+            # 排除，不传 exclude_run_id）。为真 → 跳过本轮重试，不 bump
+            # retry_count（互斥非派发失败，下轮到期仍会重评）。
+            if spec and self._has_active_admin_run_for(spec, signal.get("signal_type")):
+                self.logger.info(
+                    "admin_monitor",
+                    f"Skipping dispatch retry for '{spec}' (signal "
+                    f"{signal.get('signal_type')}): active admin run already in "
+                    f"flight (escalation {rec.get('id')})",
+                )
+                continue
             # fixture 项目抑制（alert-noise-governance 5.1）：到期重派同属
             # 自动召唤，跳过（升级记录保留不删除，5.2）；不 bump retry_count
             # ——抑制非派发失败，下轮巡检到期仍会重评（窗内维持阻断）。
