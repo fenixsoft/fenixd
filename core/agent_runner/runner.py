@@ -5026,6 +5026,100 @@ class AgentRunner:
             if proc.poll() is None
         ]
 
+    # ── 车道级在飞登记（planned-restart-drain B/D2）───────────────────────
+    # 非 agent_runner 派生的车道进程（run_impl_ocr 的 ocr 子进程等）不在
+    # _running_agents 注册表——排水集合对其是盲区，重启即丢工作且载体被当
+    # 无主回收。登记制（design D2）：车道以 Popen 句柄自觉注册，execvp 改名
+    # 天然覆盖（同 PID）；刻意独立于 _running_agents——车道键不是 run_id，
+    # 混入会令 checkpoint 广播 / interrupted 标记 / run 保全误作用在车道上。
+
+    def _lane_registry(self) -> dict:
+        """车道登记表（key → (Popen, done_event|None)），惰性建态。
+
+        惰性初始化对齐 _cancel_requested 先例：测试以 ``AgentRunner.__new__``
+        绕过 ``__init__`` 的实例同样安全。
+        """
+        reg = self.__dict__.get("_lane_processes")
+        if reg is None:
+            reg = {}
+            self.__dict__["_lane_processes"] = reg
+        return reg
+
+    def register_lane_process(self, key: str, proc, done_event=None) -> None:
+        """车道进程在飞登记：进入排水集合，规划性重启排水等待其收尾。
+
+        Args:
+            key: 车道实例键（如 ocr 车道 run_id）；同键重复登记以后者覆盖。
+            proc: ``subprocess.Popen`` 句柄（存活判定 poll() is None）。
+            done_event: 可选 ``threading.Event``，车道线程落终态后 set——
+                shutdown 收口据此 bounded 等待车道收尾，避免进程先于终态退出。
+        """
+        self._lane_registry()[key] = (proc, done_event)
+        self.logger.info(
+            "agent_runner",
+            f"lane process registered: {key} (pid={getattr(proc, 'pid', '?')})",
+        )
+
+    def unregister_lane_process(self, key: str) -> None:
+        """车道进程注销（收尾/异常路径均须调用；幂等）。"""
+        self._lane_registry().pop(key, None)
+
+    def running_lane_ids(self) -> list:
+        """当前在飞车道键列表（poll() 为 None = 存活）——排水集合车道段。"""
+        return [
+            key for key, (proc, _ev) in list(self._lane_registry().items())
+            if proc.poll() is None
+        ]
+
+    def terminate_lane_processes(
+        self, grace: float = AGENT_TERMINATE_GRACE_SECONDS
+    ) -> list:
+        """登记车道进程的有序终止收口：SIGTERM → grace 宽限 → SIGKILL。
+
+        planned-restart-drain D3：对齐 liveness.wait_for_running_agents 语义——
+        先 SIGTERM 让车道子进程收尾，grace 秒内未退出者 SIGKILL 兜底；随后对
+        提供 done_event 的车道 bounded 等待其线程落终态（产物/终态事件/worktree
+        清理），避免 daemon 进程先于车道终态退出。返回被终止的车道键列表；
+        登记表为空时零开销返回空。
+        """
+        reg = self._lane_registry()
+        terminated: list = []
+        for key, (proc, _ev) in list(reg.items()):
+            try:
+                if proc.poll() is not None:
+                    continue
+                proc.terminate()  # SIGTERM
+                try:
+                    proc.wait(timeout=max(grace, 0.0))
+                except subprocess.TimeoutExpired:
+                    self.logger.warning(
+                        "agent_runner",
+                        f"lane process did not exit within {grace}s, SIGKILL: {key}",
+                    )
+                    try:
+                        proc.kill()
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        pass
+                    except ProcessLookupError:
+                        pass
+                terminated.append(key)
+            except ProcessLookupError:
+                pass  # 已退出（竞态）
+            except Exception as e:  # noqa: BLE001 — 单车道失败不阻塞其余收口
+                self.logger.warning(
+                    "agent_runner", f"lane process terminate failed: {key}: {e}"
+                )
+        # 车道线程落终态 bounded 等待（SIGTERM 后 communicate 返回 → 车道线程
+        # finally 写产物/终态事件并 set done_event）
+        for key, (_proc, ev) in list(reg.items()):
+            if ev is not None:
+                try:
+                    ev.wait(timeout=max(grace, 0.0))
+                except Exception:  # noqa: BLE001
+                    pass
+        return terminated
+
     def broadcast_restart_checkpoint(self, reason: str = "planned restart") -> list:
         """restart 排水前向每个在飞 run 广播一次 checkpoint 信号（写即返回）。
 
@@ -5081,19 +5175,24 @@ class AgentRunner:
         收工（run 自身 timeout 兜底），到期仍残留的 run_id 列表原样返回，由
         shutdown 流程据侧车保全后走现行 terminate 收口。
 
+        planned-restart-drain B：排水集合扩展覆盖登记车道进程
+        （running_lane_ids）——run 与车道全部安静才提前返回；返回值契约不变
+        （仅 run_id，车道不进 run 保全/terminate 链），车道超窗残留由
+        ``terminate_lane_processes`` 在 shutdown 收口有序终止。
+
         Args:
-            timeout: 排水窗口秒数（admin.shutdown_drain_seconds，缺省 1800）。
+            timeout: 排水窗口秒数（agents.run_drain_max_seconds 生效值）。
 
         Returns: 窗口到期仍未终态的在跑 run_id 列表（空 = 全部自然收工）。
         """
         waited = 0.0
         deadline = time.time() + max(0.0, timeout)
         remaining = self.running_run_ids()
-        if not remaining:
+        if not remaining and not self.running_lane_ids():
             return []
         while time.time() < deadline:
             remaining = self.running_run_ids()
-            if not remaining:
+            if not remaining and not self.running_lane_ids():
                 return []
             time.sleep(0.5)
         return self.running_run_ids()
