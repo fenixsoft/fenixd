@@ -1377,7 +1377,10 @@ def mark_resolved(project_root, item_ids: List[str]) -> int:
     ``_mark_in_spec``（读-改-写走 ``_with_lock`` + ``_atomic_write``，只动
     命中条目）。约束（design 契约要点）：``resolved`` 只能由**合回成功**
     驱动——调用方（code-fix 批 worker）MUST 在 merge-back 成功后才调本函数，
-    回归未通过或未合回时 MUST NOT 置 resolved。
+    回归未通过或未合回时 MUST NOT 置 resolved。状态守卫与 ``mark_ignored``
+    对齐：仅 ``status == "open"`` 的条目可置——``in_spec``（已立项）、
+    ``ignored``（人工误报终态）、``resolved``（已核销）一律跳过不覆写，
+    批重放/并发窗口不冲掉人工意图、不虚增进度。
 
     参数:
         project_root: 项目根（主树——台账在主树）。
@@ -1385,8 +1388,8 @@ def mark_resolved(project_root, item_ids: List[str]) -> int:
             缺失的 item_id 静默跳过（不报错——台账并发演进下属正常态）。
 
     返回:
-        命中并置为 resolved 的条目数（供进度 ``done`` 累计，MUST 以本值为准
-        而非批条数——skipped 与未命中不计入）。
+        命中并置为 resolved 的条目数（仅 open→resolved 真实迁移才计数；供
+        进度 ``done`` 累计，MUST 以本值为准而非批条数——skipped 与未命中不计入）。
     """
     path = items_path(project_root)
     hit = 0
@@ -1396,7 +1399,7 @@ def mark_resolved(project_root, item_ids: List[str]) -> int:
         current = _read_items_unlocked(path)
         for iid in dict.fromkeys(item_ids):  # 去重：重复 id 只命中一次
             rec = current.get(iid)
-            if rec is None:
+            if rec is None or rec.get("status") != "open":  # 同 mark_ignored 守卫
                 continue
             rec["status"] = "resolved"
             rec["resolution"] = "code-fix-auto"

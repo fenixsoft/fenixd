@@ -454,6 +454,17 @@ const SuggestedImprovementsPanel = forwardRef<
     setSelectedRowKeys([]);
   }, [filterStatus, filterProject, filterDateRange]);
 
+  // items 刷新后修剪选中键（code-review item 2c1de18c3a8c）：单条动作（查看
+  // 弹窗底部 / 操作列菜单）成功后只 loadItems 不清选中，被删条目的 id 会残留在
+  // selectedRowKeys 里——标题行「已选 N 条」按 length 统计会把已不存在的行也
+  // 计入，与表格实际勾选数不一致。无键消失时原样返回原数组，不触发多余重渲染。
+  useEffect(() => {
+    setSelectedRowKeys((keys) => {
+      const kept = keys.filter((k) => items.some((i) => i.id === k));
+      return kept.length === keys.length ? keys : kept;
+    });
+  }, [items]);
+
   /** 执行一条 accept/reject/delete，异常收敛为失败结果（单条菜单与批量共用）。
 
    * ``startAfter`` 仅在 action='accept' 时有意义：新 SPEC 的定时拾取时刻

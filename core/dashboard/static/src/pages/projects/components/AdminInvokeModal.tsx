@@ -168,9 +168,14 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
       const isConflict = (err instanceof ApiError && err.status === 409)
         || msg.includes('409') || msg.includes('已有');
       if (isConflict) {
-        // 已有处置进行中：直接进入输出视图定位该 run
+        // 已有处置进行中：与成功路径同样复位输出定位状态。若 runId 仍指向已终态的
+        // 旧 run，轮询 effect 的守卫会因 runId 非空直接退出，界面停留在旧输出上；
+        // 清空后由轮询 effect 借 acceptAnyRunRef 重新定位到进行中的 run
         message.info('已有进行中的 Admin 处置，正在定位其输出');
         acceptAnyRunRef.current = true;
+        setRunId(null);
+        setEventCount(0);
+        setRunDone(false);
         setInvoked(true);
       } else {
         message.error(`发起失败：${msg}`);

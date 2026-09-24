@@ -200,6 +200,13 @@ def _run_legacy_verification(pipeline, spec_name: str):
                             f"result dropped",
                         )
                         return
+                    # ── verified 一次性放行门（judge-rerun-stability R2）──
+                    # 与 foreign-role/foreign-stamp 块同门：已 verified 且
+                    # 场景集未变时，陈旧/异归属残留不得把 verified 打回
+                    # implemented 触发整轮重验（裁决仍以 verdict_stability
+                    # .json 为准）。
+                    if pipeline._verified_gate_refuses(spec_name, "implemented"):
+                        return
                     pipeline._context.state_machine.update_spec(
                         spec_name,
                         {
@@ -325,6 +332,13 @@ def _run_legacy_verification(pipeline, spec_name: str):
                     f"(run {result.run_id}, current state '{_cur}', result "
                     f"stale) — spec no longer in testing, result dropped",
                 )
+                return
+            # ── verified 一次性放行门（judge-rerun-stability R2）──
+            # 与 foreign-role/foreign-stamp 块同门：已 verified 且场景集
+            # 未变时，陈旧/异 spec 判定重放不得把 verified 打回
+            # implemented 触发整轮重验（裁决仍以 verdict_stability.json
+            # 为准）。
+            if pipeline._verified_gate_refuses(spec_name, "implemented"):
                 return
             pipeline._context.state_machine.update_spec(
                 spec_name,

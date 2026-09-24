@@ -727,21 +727,40 @@ def run_prepare_steps(contract: VerifyContract, project_root: Path) -> Optional[
         cmd = step.run if isinstance(step.run, list) else str(step.run)
         use_shell = not isinstance(step.run, list)
         try:
-            r = subprocess.run(
+            # start_new_session+killpg 收整组进程（与 CommandVerifyServer.stop
+            # 同一纪律）：subprocess.run 超时只 kill 直接子进程，npm/pnpm 派生
+            # 的 node 构建孙进程会继续后台写 dist，与后续验证 serve/prepare
+            # 并发污染被测产物目录（code-review item 2fa170366d6b）。
+            p = subprocess.Popen(
                 cmd,
                 shell=use_shell,
                 cwd=str(cwd),
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=PREPARE_STEP_TIMEOUT,
+                start_new_session=True,
             )
-        except subprocess.TimeoutExpired:
-            return f"第 {i} 步超时（>{PREPARE_STEP_TIMEOUT}s）: {cmd}"
         except OSError as e:
             return f"第 {i} 步启动失败: {e}"
-        if r.returncode != 0:
-            tail = (r.stderr or r.stdout or "").strip()[-300:]
-            return f"第 {i} 步退出码 {r.returncode}: {cmd}\n{tail}"
+        try:
+            out, err = p.communicate(timeout=PREPARE_STEP_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            # 先 SIGTERM 整组留优雅退出机会，wait(5) 未退再 SIGKILL（同 stop 纪律）
+            try:
+                os.killpg(os.getpgid(p.pid), signal.SIGTERM)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+            try:
+                p.wait(timeout=5)
+            except Exception:
+                try:
+                    os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+                except Exception:
+                    pass
+            return f"第 {i} 步超时（>{PREPARE_STEP_TIMEOUT}s）: {cmd}"
+        if p.returncode != 0:
+            tail = (err or out or "").strip()[-300:]
+            return f"第 {i} 步退出码 {p.returncode}: {cmd}\n{tail}"
     return None
 
 

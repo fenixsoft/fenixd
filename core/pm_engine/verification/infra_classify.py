@@ -332,6 +332,7 @@ def _append_fail_history(
                 os.unlink(tmp_path)
             except OSError:
                 pass
+            raise
     except OSError as e:
         pipeline._context.logger.warning(
             "pm_engine",

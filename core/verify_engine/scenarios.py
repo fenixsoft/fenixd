@@ -1059,34 +1059,33 @@ def _validate_web(scenario: TestScenario) -> list[str]:
     return errors
 
 
-def _validate_cli(scenario: TestScenario) -> list[str]:
-    """cli 词表校验：仅 run 步骤 + CLI 断言必填字段。
+def _validate_typed(scenario: TestScenario, kind: str) -> list[str]:
+    """cli/api 共用的 typed 词表校验（code-review item 2d3c0e0c4387：
+    原 _validate_cli/_validate_api 逐行副本合并为按 kind 参数化的单一实现）。
 
-    run 步骤必填 command（字符串=shell/列表=argv）；cwd 相对验证树根、
-    env 值支持 {env:VAR} 插值、stdin/timeout/as 可选。断言必填字段见
-    spec multi-kind-scenario-model「CLI 词表与执行语义」；必填字段规则
-    单源表 ASSERTION_REQUIRED_FIELDS / ACTION_REQUIRED_FIELDS（1.2 改读
-    单源，行为零变化）。
+    步骤循环：未知操作报错（附 kind 词表速查），已知操作查单源表
+    ACTION_REQUIRED_FIELDS 的 (kind, action) 键补必填字段错误；断言循环
+    同构，查 ASSERTION_REQUIRED_FIELDS。
     """
     errors: list[str] = []
 
     for i, step in enumerate(scenario.steps):
-        if step.action not in CLI_ACTIONS:
+        if step.action not in KIND_ACTIONS.get(kind, set()):
             errors.append(
                 f"场景'{scenario.id}'步骤{i}: 未知操作 '{step.action}'，"
-                f"支持: {_supported_actions('cli')}"
+                f"支持: {_supported_actions(kind)}"
             )
             continue
-        specs = ACTION_REQUIRED_FIELDS.get(("cli", step.action), ())
+        specs = ACTION_REQUIRED_FIELDS.get((kind, step.action), ())
         _append_required_field_errors(
             errors, scenario.id, f"步骤{i}", specs, lambda key, s=step: _step_lookup_value(s, key)
         )
 
     for i, a in enumerate(scenario.assertions):
-        if a.type not in CLI_ASSERTIONS:
+        if a.type not in KIND_ASSERTIONS.get(kind, set()):
             errors.append(
                 f"场景'{scenario.id}'断言{i}: 未知类型 '{a.type}'，"
-                f"支持: {_supported_assertions('cli')}"
+                f"支持: {_supported_assertions(kind)}"
             )
             continue
         specs = ASSERTION_REQUIRED_FIELDS.get(a.type, ())
@@ -1098,6 +1097,18 @@ def _validate_cli(scenario: TestScenario) -> list[str]:
             lambda key, a=a: _assert_lookup_value(a, key),
         )
     return errors
+
+
+def _validate_cli(scenario: TestScenario) -> list[str]:
+    """cli 词表校验：仅 run 步骤 + CLI 断言必填字段。
+
+    run 步骤必填 command（字符串=shell/列表=argv）；cwd 相对验证树根、
+    env 值支持 {env:VAR} 插值、stdin/timeout/as 可选。断言必填字段见
+    spec multi-kind-scenario-model「CLI 词表与执行语义」；必填字段规则
+    单源表 ASSERTION_REQUIRED_FIELDS / ACTION_REQUIRED_FIELDS（1.2 改读
+    单源，行为零变化）。
+    """
+    return _validate_typed(scenario, "cli")
 
 
 def _validate_api(scenario: TestScenario) -> list[str]:
@@ -1108,36 +1119,7 @@ def _validate_api(scenario: TestScenario) -> list[str]:
     规则单源表 ASSERTION_REQUIRED_FIELDS / ACTION_REQUIRED_FIELDS
     （1.2 改读单源，行为零变化）。
     """
-    errors: list[str] = []
-
-    for i, step in enumerate(scenario.steps):
-        if step.action not in API_ACTIONS:
-            errors.append(
-                f"场景'{scenario.id}'步骤{i}: 未知操作 '{step.action}'，"
-                f"支持: {_supported_actions('api')}"
-            )
-            continue
-        specs = ACTION_REQUIRED_FIELDS.get(("api", step.action), ())
-        _append_required_field_errors(
-            errors, scenario.id, f"步骤{i}", specs, lambda key, s=step: _step_lookup_value(s, key)
-        )
-
-    for i, a in enumerate(scenario.assertions):
-        if a.type not in API_ASSERTIONS:
-            errors.append(
-                f"场景'{scenario.id}'断言{i}: 未知类型 '{a.type}'，"
-                f"支持: {_supported_assertions('api')}"
-            )
-            continue
-        specs = ASSERTION_REQUIRED_FIELDS.get(a.type, ())
-        _append_required_field_errors(
-            errors,
-            scenario.id,
-            f"断言{i}: {a.type} 需要",
-            specs,
-            lambda key, a=a: _assert_lookup_value(a, key),
-        )
-    return errors
+    return _validate_typed(scenario, "api")
 
 
 def validate_scenario(scenario: TestScenario) -> list[str]:

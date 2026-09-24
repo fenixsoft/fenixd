@@ -1729,12 +1729,15 @@ class FenixDaemon:
         启动首轮立即执行（add-alert-auto-resolve D4）：首轮扫描对存量
         handled=False 告警执行一次回填闭环判定，其后按间隔轮询。
         """
-        interval = max(float(self.admin_monitor.interval_minutes), 0.5)
         while self.running:
             try:
                 self.admin_monitor.run_once()
             except Exception as e:
                 self.logger.error("admin_monitor", f"Admin monitor check failed: {e}")
+            # 每轮重读间隔（对齐主循环自进化检查点的读法）：_maybe_reload_config
+            # 热更新会原地刷新 admin_cfg 快照，interval_minutes 属性随之热生效。
+            # float + 0.5 下限防 int 截断（0.5 类小数分钟变 0 再被 or 5 兜回缺省）。
+            interval = max(float(self.admin_monitor.interval_minutes), 0.5)
             time.sleep(interval * 60)
             if not self.running:
                 break

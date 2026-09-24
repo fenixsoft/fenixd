@@ -86,6 +86,11 @@ _SUPERVISION_RUNTIME_FLOOR_WARNED = False
 # 未消费的残留记录会被下一次 _validate 覆盖，恒反映最新校验的配置。
 _SUPERVISION_LAST_ALIGNED = None
 
+# stuck 阈值回退 WARNING 的进程级一次性去重标记（code-review item 1f15450c16d9）：
+# run_timeout_seconds 缺失/≤0 时 effective_stuck_threshold_seconds 会被 admin
+# 巡检与派发周期反复调用，仿 _DEPRECATED_STUCK_WARNED「首次告警、后续静默」。
+_RUN_TIMEOUT_FALLBACK_WARNED = False
+
 # ── improve-hot-reload-robustness D3：未知 agent 类型键降级告警去重 ──
 # 同一未知键每进程生命周期只报一次（30s 热重载重试风暴下，不去重则告警与
 # ERROR 同步刷屏）。keys 以键名字符串为准，不随进程内白名单变化失效。
@@ -1707,6 +1712,7 @@ class ConfigLoader:
         pm_engine.check_blockers 与 admin_monitor 的 stuck 检测 MUST 调用本助手，
         不再各自读取旧键。
         """
+        global _RUN_TIMEOUT_FALLBACK_WARNED
         cls._maybe_warn_deprecated_stuck_keys(config)
         agents = cls._segment_or_empty(config, "agents")
         rt = agents.get("run_timeout_seconds")
@@ -1716,12 +1722,14 @@ class ConfigLoader:
         # auto-recovery 阈值比其派生源 run 超时（9000s 回退）早约 15 倍触发，
         # 打破单源派生保证。
         if not isinstance(rt, (int, float)) or isinstance(rt, bool) or rt <= 0:
-            _logger.warning(
-                "agents.run_timeout_seconds 缺失或 ≤0，stuck 阈值按 %ss 回退生效"
-                "（=9000 默认超时 + %ss 宽限）；建议显式配置 run_timeout_seconds",
-                STUCK_FALLBACK_SECONDS,
-                STUCK_GRACE_SECONDS,
-            )
+            if not _RUN_TIMEOUT_FALLBACK_WARNED:
+                _logger.warning(
+                    "agents.run_timeout_seconds 缺失或 ≤0，stuck 阈值按 %ss 回退生效"
+                    "（=9000 默认超时 + %ss 宽限）；建议显式配置 run_timeout_seconds",
+                    STUCK_FALLBACK_SECONDS,
+                    STUCK_GRACE_SECONDS,
+                )
+                _RUN_TIMEOUT_FALLBACK_WARNED = True
             return float(STUCK_FALLBACK_SECONDS)
         return float(rt) + STUCK_GRACE_SECONDS
 
@@ -2087,15 +2095,17 @@ class ConfigLoader:
 
     @classmethod
     def reset_stuck_threshold_state(cls) -> None:
-        """重置弃用/兜底/未知键告警的生命周期去重标记（供测试与 daemon 重启隔离）。
+        """重置弃用/兜底/回退/未知键告警的生命周期去重标记（供测试与 daemon 重启隔离）。
 
         正常 daemon 生命周期内只打一次；单测需多次验证「首次告警 / 二次静默」时显式重置。
         """
         global _DEPRECATED_STUCK_WARNED, _SUPERVISION_BOUNDS_WARNED, _SUPERVISION_LAST_ALIGNED
         global _SUPERVISION_RUNTIME_FLOOR_WARNED
+        global _RUN_TIMEOUT_FALLBACK_WARNED
         _DEPRECATED_STUCK_WARNED = False
         _SUPERVISION_BOUNDS_WARNED = False
         _SUPERVISION_RUNTIME_FLOOR_WARNED = False
+        _RUN_TIMEOUT_FALLBACK_WARNED = False
         _SUPERVISION_LAST_ALIGNED = None
         _UNKNOWN_AGENT_MODEL_KEYS_WARNED.clear()
 
