@@ -1330,7 +1330,9 @@ class CodeFixOrchestrator:
                 # open 条目全被排除（失败档案 ∪ chain_skipped）→ consumed 链的
                 # 正常收敛出口（selfheal D5），MUST NOT 误报为故障；进度刷新为
                 # 终态防前端停在陈旧的「修复中」快照，文案按排除来源区分：
-                # 链内跳过/预算内档案=下轮自动重试，仅达上限档案保留人工指引。
+                # 链内跳过/预算内档案=下轮自动重试，仅达上限档案保留人工指引
+                # （reason 亦区分：failed_batch_retained=自愈等待 vs
+                # failed_batch_maxed=需人工，供前端分级渲染）。
                 prev_snapshot = read_progress(root)
                 if prev_snapshot.get("running") or prev_snapshot.get("phase") in (
                     "failed",
@@ -1355,7 +1357,10 @@ class CodeFixOrchestrator:
                             "open 条目均已跳过（含已达自动重试上限的条目，需人工排查）；"
                             "其余条目下轮自动重试"
                         )
-                        reason = "failed_batch_retained"
+                        # 含达上限条目=需人工，与纯自愈等待（failed_batch_retained）
+                        # reason 区分：前端按 reason 渲染中性等待态 vs 红色需人工态
+                        # （reason 漂移时前端按需人工回退，宁严勿松）。
+                        reason = "failed_batch_maxed"
                     else:
                         current = "open 条目均已跳过（链内跳过/预算内失败），下轮自动重试"
                         reason = "failed_batch_retained"
