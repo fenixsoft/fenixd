@@ -254,7 +254,14 @@ class Registry:
             if key in seen:
                 continue
             seen.add(key)
-            name = p.get("name") or (rp.name or key)
+            # 类型守卫（code-review item a5535e261c2c）：与上方 path、下方
+            # scan_dirs 同式——name 非字符串（手改/畸形 YAML 的 name: 123、
+            # name: [a]）会绕过 falsy 回退把 int/list 原样放进监控列表，
+            # 破坏下游按字符串处理 name 的契约；非字符串/空白一律回退
+            # rp.name or key。
+            name = p.get("name")
+            if not isinstance(name, str) or not name.strip():
+                name = rp.name or key
             projects.append(
                 {
                     "name": name,

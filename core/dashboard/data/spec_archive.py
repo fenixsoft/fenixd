@@ -112,6 +112,11 @@ def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
             if remaining > 0:
                 time.sleep(min(AGENT_TERMINATE_GRACE_SECONDS, remaining))
         if running_ids:
+            # 循环是「检查→sleep」结构，deadline 到期退出时 running_ids 还是
+            # 上一轮快照（code-review item ad478fc32a9f）：run 可能在最后一
+            # 次 sleep 期间全部终止，退出后复查一次，仍非空才判超时
+            running_ids = running_run_ids_for_spec(proot, spec)
+        if running_ids:
             # 超时仍有 run 未终止 → 返回失败，不改 STATE/目录
             return {
                 "found": True,

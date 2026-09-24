@@ -258,6 +258,8 @@ export default function HelpPage() {
         if (!cancelled) {
           setDocData(null);
           setError(err instanceof Error ? err.message : '文档加载失败');
+          // 加载失败时丢弃暂存的跨文档锚点，避免残留锚点在后续无关文档上误触发滚动
+          pendingAnchorRef.current = null;
         }
       } finally {
         if (!cancelled) setDocLoading(false);

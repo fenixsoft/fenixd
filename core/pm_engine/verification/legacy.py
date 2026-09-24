@@ -6,12 +6,6 @@
 本模块 MUST NOT `import _legacy`（D2b 规则 1：门面依赖以显式 `pipeline` 参数注入）。
 """
 
-import json
-import os
-import re
-import subprocess
-import time
-from pathlib import Path
 from core.state_machine import ENV_BLOCK_ROUNDS_FIELD, VERIFY_INFRA_ROUNDS_FIELD
 
 

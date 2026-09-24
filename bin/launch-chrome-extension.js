@@ -71,6 +71,17 @@ function parseArgs() {
     }
   }
 
+  // 校验参数取值：--timeout 缺值/非数字会得 NaN 使总超时失效；带值选项缺值时静默得 undefined
+  const usage = '用法: node launch-chrome-extension.js [--dist-path <path>] [--timeout <ms>] [--debug] [--headless] [--output <path>]';
+  let invalidReason = null;
+  if (!Number.isFinite(opts.timeout)) invalidReason = '--timeout 需要数字参数（毫秒）';
+  if (opts.distPath === undefined) invalidReason = '--dist-path 缺少取值';
+  if (opts.output === undefined) invalidReason = '--output 缺少取值';
+  if (invalidReason) {
+    console.error(`错误: ${invalidReason}\n${usage}`);
+    process.exit(1);
+  }
+
   return opts;
 }
 
@@ -360,7 +371,8 @@ async function launchChromeExtension(distPath, opts = {}) {
 
     const result = {
       success: !hasCriticalAnomalies,
-      extensionLoaded: true,
+      // 超时收卷且一条 UI 测试都未跑时，扩展加载未经任何验证，置 null 表示不确定而非乐观通过
+      extensionLoaded: timedOut && uiResults.length === 0 ? null : true,
       extensionId: await getExtensionId(absoluteDist, browserContext),
       manifestPath,
       userDataDir: debug ? userDataDir : null,
@@ -421,14 +433,11 @@ function setupNetworkLogging(page, networkLog) {
 
   page.on('response', (res) => {
     if (isExternalUrl(res.url())) {
-      // 找到对应的 request 条目关联 method
-      const reqEntry = networkLog.find(
-        e => e.type === 'request' && e.url === res.url()
-      );
       networkLog.push({
         type: 'response',
         url: res.url(),
-        method: reqEntry?.method || 'GET',
+        // 直接从 response 关联的 request 对象取 method：同 URL 并发时按 url 扫描会取错条目，且长采集下为 O(n^2)
+        method: res.request().method() || 'GET',
         status: res.status(),
         statusText: res.statusText(),
         headers: res.headers(),

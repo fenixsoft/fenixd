@@ -2501,6 +2501,7 @@ class AdminMonitor:
             ):
                 continue
             created = rec.get("created")
+            # [fenix-ignore:a39572533269] store 侧 created 恒由 _utcnow_iso() 统一生成（UTC +00:00、微秒精度，无写入方显式传值），同偏移下该格式族字典序与时间序一致，不存在混用格式
             if created and (earliest is None or created < earliest):
                 earliest = created
         return earliest

@@ -362,7 +362,8 @@ class H11CodeReviewRoutesMixin:
           消费会永久滞留并在 daemon 下次启动时被消费成一次用户并未请求的
           修复）；stopped → 400「daemon 未运行」。
         - 受理后预删旧结果文件（仅信号 O_EXCL 独占创建且写入成功后，拒绝
-          路径保留上一轮判定）：防止上一轮残留判定被前端误当本次反馈。
+          路径保留上一轮判定）：防止上一轮残留判定被前端误当本次反馈；删前
+          校验 request_created，不误删消费端已写回的本次判定。
         - 受理 → 200 + {ok, requested_at}；O_CREAT|O_EXCL 独占创建，
           FileExistsError → 409（并发第二次 POST 或上一信号尚未被消费）。
         """
@@ -416,11 +417,26 @@ class H11CodeReviewRoutesMixin:
         # 且完整写入成功（即受理路径）之后删除——预删若位于受理判定之前，
         # 409（信号槽被占）/500 拒绝路径会把上一轮判定一并删掉，前端轮询
         # fix-run-result 变成缺省空态，用户看到的上次反馈凭空消失。
+        # item a4500c7dfb06：删前校验 request_created——daemon 1s tick 可能恰
+        # 在 link 与 unlink 的间隙把本信号消费掉并原子写回本次判定
+        # （request_created == created，回链自信号 created），无条件 unlink
+        # 会把这份本次触发的结果误删。仅当结果文件确属上一轮（request_created
+        # 早于 created）才删；文件缺失/损坏/不可解析时不可能属于本次，按上一
+        # 残留处置（维持预删语义）。
         result_path = proot / CODE_FIX_REQUEST_RESULT
         try:
-            result_path.unlink()
-        except OSError:
-            pass
+            with result_path.open("r", encoding="utf-8") as f:
+                prev_created = str(json.load(f).get("request_created") or "")
+            prev_dt = _parse_iso_utc(prev_created)
+            created_dt = _parse_iso_utc(created)
+            stale = created_dt is None or prev_dt is None or prev_dt < created_dt
+        except (OSError, ValueError):
+            stale = True
+        if stale:
+            try:
+                result_path.unlink()
+            except OSError:
+                pass
         self._json({"ok": True, "requested_at": created})
 
     def _api_code_review_fix_run_result(self, query):

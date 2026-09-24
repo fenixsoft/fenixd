@@ -850,7 +850,11 @@ class H3SpecRoutesMixin:
         if content_length > 0:
             body = self._read_json_body()
             if isinstance(body, dict):
-                prompt = (body.get("prompt") or "").strip() or None
+                raw = body.get("prompt")
+                if raw is not None and not isinstance(raw, str):
+                    self._error(400, "prompt must be a string")
+                    return
+                prompt = (raw or "").strip() or None
         proot = Path(project["path"])
         try:
             result = dashboard_data.request_admin_invoke(proot, spec, prompt)

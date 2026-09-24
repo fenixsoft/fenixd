@@ -15,6 +15,20 @@ interface DocCacheEntry {
   content?: string;
 }
 
+// 文档缓存条目上限：超出后按最旧淘汰，避免长会话跨 spec 浏览时大文本（验证报告/tasks 等）持续累积
+const MAX_CACHE_ENTRIES = 50;
+
+// 写入缓存并淘汰超限旧条目；先删后写以刷新该键的新近度（Map 迭代按插入序）
+const setCacheEntry = (cache: Map<string, DocCacheEntry>, key: string, entry: DocCacheEntry) => {
+  cache.delete(key);
+  cache.set(key, entry);
+  while (cache.size > MAX_CACHE_ENTRIES) {
+    const oldest = cache.keys().next().value;
+    if (oldest === undefined || oldest === key) break;
+    cache.delete(oldest);
+  }
+};
+
 interface SpecDocModalProps {
   project: string;
   spec: string | null;
@@ -137,21 +151,21 @@ export default function SpecDocModal({ project, spec, open, onClose, initialDoc 
 
     if (!revalidate) {
       // 设置 loading 状态
-      cacheRef.current.set(key, { status: 'loading' });
+      setCacheEntry(cacheRef.current, key, { status: 'loading' });
       setCacheVersion((v) => v + 1);
     }
 
     try {
       const d = await getSpecDoc(project, spec, activeTab);
       if (d.found) {
-        cacheRef.current.set(key, { status: 'done', content: d.content || '' });
+        setCacheEntry(cacheRef.current, key, { status: 'done', content: d.content || '' });
       } else {
-        cacheRef.current.set(key, { status: 'empty' });
+        setCacheEntry(cacheRef.current, key, { status: 'empty' });
       }
     } catch {
       // revalidate 失败时保留旧内容，避免清空已展示文档
       if (!revalidate) {
-        cacheRef.current.set(key, { status: 'error' });
+        setCacheEntry(cacheRef.current, key, { status: 'error' });
       }
     } finally {
       setCacheVersion((v) => v + 1);

@@ -3601,9 +3601,20 @@ class PMEngine:
         lines.append("")
 
         # Append to project log
+        # （b21d8f2d8247）报告可丢，恢复链路不可断：.fenix 不可写/磁盘满时写
+        # PROJECT_LOG 失败不得向 check_blockers 传播中断本轮全部 auto-recovery
+        # （与 _signal_push_failed 的异常包裹同口径），降级 WARNING。
         log_path = self.project_root / ".fenix" / "PROJECT_LOG.md"
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write("\n".join(lines))
+        try:
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write("\n".join(lines))
+        except OSError as e:
+            self.logger.warning(
+                "pm_engine",
+                f"Blocker report write to PROJECT_LOG.md failed "
+                f"(auto-recovery loop unaffected): {e}",
+            )
+            return
 
         self.logger.info("pm_engine", "Blocker report written to PROJECT_LOG.md")
 

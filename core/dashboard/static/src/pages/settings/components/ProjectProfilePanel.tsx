@@ -100,19 +100,26 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
   // loading 渲染生效存在 React 调度间隙（实证 100ms 内双击穿透），useRef 写读同帧
   // 原子、无渲染依赖，在途期间重复触发直接 return 不发网络请求。
   const autodraftInFlight = useRef(false);
+  // 过期响应守卫：每次发起加载自增序号，响应回来时序号已不是最新（期间切换了
+  // 项目或发起了新加载）则丢弃——防止慢响应乱序把旧项目的契约内容写进当前
+  // 项目草稿，进而被「保存 verify.yaml」以当前项目名写盘造成跨项目覆盖。
+  const yamlLoadSeq = useRef(0);
 
   const loadVerifyYaml = async (silent = false) => {
+    const seq = ++yamlLoadSeq.current;
     if (!project) return;
     if (!silent) setYamlLoading(true);
     try {
       const d = await getVerifyYaml(project);
+      if (seq !== yamlLoadSeq.current) return; // 过期响应：丢弃，不回写草稿
       setYamlDraft(d.content);
       setYamlExists(d.exists);
     } catch (e) {
+      if (seq !== yamlLoadSeq.current) return; // 过期请求的失败也不打扰当前项目
       console.error('Failed to load verify.yaml:', e);
       message.error(`加载 verify.yaml 失败：${e instanceof Error ? e.message : e}`);
     } finally {
-      if (!silent) setYamlLoading(false);
+      if (!silent && seq === yamlLoadSeq.current) setYamlLoading(false);
     }
   };
 
