@@ -63,6 +63,9 @@ class TestDashboardConfigIO(unittest.TestCase):
                           "serving_reclaim": {"enabled": True},
                           "impl_code_review_timeout_sec": 600,
                           "impl_code_review_concurrency": 4,
+                          # add-code-review-concurrency-and-429-resilience：
+                          # 全仓审查并发缺省恒回显（与三运行参数同款语义）
+                          "repo_code_review_concurrency": 4,
                           "impl_code_review_effort": "low",
                           "impl_code_review_mode": "gate",
                           "impl_code_review_lane_timeout_sec": 2400,
@@ -79,6 +82,9 @@ class TestDashboardConfigIO(unittest.TestCase):
                           "serving_reclaim": {"enabled": True},
                           "impl_code_review_timeout_sec": 600,
                           "impl_code_review_concurrency": 4,
+                          # add-code-review-concurrency-and-429-resilience：
+                          # 全仓审查并发缺省恒回显（与三运行参数同款语义）
+                          "repo_code_review_concurrency": 4,
                           "impl_code_review_effort": "low",
                           "impl_code_review_mode": "gate",
                           "impl_code_review_lane_timeout_sec": 2400,

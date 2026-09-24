@@ -277,6 +277,10 @@ export default function QualityTab({ project, active }: QualityTabProps) {
   // actionPending——后者语义是「HTTP 请求进行中」，会连带禁用取消与自动
   // 修复按钮。
   const [ackPending, setAckPending] = useState(false);
+  // 忽略操作独立 pending 门控（code-review item 717b2251caaa）：行级忽略与
+  // 批量「全部忽略」共用该门控——请求进行中禁用/呈 loading 入口按钮并防连点，
+  // 避免 Promise.allSettled 期间对同一批 item_id 重复发请求、叠加多条 toast。
+  const [ignorePending, setIgnorePending] = useState(false);
   // 请求序号守卫（code-review item 103bd502bd1e）：loadItems 会被 SSE 回调、
   // 30s 心跳、轮询结束兜底与 filter 变化并发触发，较慢的早期响应会覆盖较新数据。
   const loadSeqRef = useRef(0);
@@ -725,12 +729,16 @@ export default function QualityTab({ project, active }: QualityTabProps) {
 
   // ── 行操作（5.10）：忽略 / 清除归属 ─────────────────────────────
   const handleIgnore = async (item: CodeReviewItem) => {
+    if (ignorePending) return; // pending 门控防连点（code-review item 717b2251caaa）
+    setIgnorePending(true);
     try {
       await setCodeReviewItemStatus(project, item.item_id, 'ignored');
       message.success('已忽略该问题');
       void loadItems();
     } catch (e) {
       message.error(`忽略失败: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setIgnorePending(false);
     }
   };
 
@@ -740,23 +748,29 @@ export default function QualityTab({ project, active }: QualityTabProps) {
   // 用 Promise.allSettled 并发跑完整批，不因单条失败中断其余；结束后统一
   // 提示成功/失败计数并刷新列表（不做逐条 toast，避免刷屏）。
   const handleIgnoreAll = async () => {
+    if (ignorePending) return; // pending 门控防连点（code-review item 717b2251caaa）
     const targets = items.filter((it) => selectedKeys.includes(it.item_id) && it.status === 'open');
     if (targets.length === 0) {
       message.warning('选中条目中没有可忽略的 open 问题');
       return;
     }
-    const results = await Promise.allSettled(
-      targets.map((it) => setCodeReviewItemStatus(project, it.item_id, 'ignored')),
-    );
-    const failed = results.filter((r) => r.status === 'rejected').length;
-    const ok = targets.length - failed;
-    if (failed === 0) {
-      message.success(`已忽略 ${ok} 条问题`);
-    } else {
-      message.warning(`已忽略 ${ok} 条，${failed} 条失败`);
+    setIgnorePending(true);
+    try {
+      const results = await Promise.allSettled(
+        targets.map((it) => setCodeReviewItemStatus(project, it.item_id, 'ignored')),
+      );
+      const failed = results.filter((r) => r.status === 'rejected').length;
+      const ok = targets.length - failed;
+      if (failed === 0) {
+        message.success(`已忽略 ${ok} 条问题`);
+      } else {
+        message.warning(`已忽略 ${ok} 条，${failed} 条失败`);
+      }
+      setSelectedKeys([]);
+      void loadItems();
+    } finally {
+      setIgnorePending(false);
     }
-    setSelectedKeys([]);
-    void loadItems();
   };
 
   const handleClearAttribution = async (item: CodeReviewItem) => {
@@ -813,7 +827,13 @@ export default function QualityTab({ project, active }: QualityTabProps) {
     }
     if (rec.status === 'open') {
       return (
-        <Button size="small" type="link" danger onClick={() => void handleIgnore(rec)}>
+        <Button
+          size="small"
+          type="link"
+          danger
+          disabled={ignorePending}
+          onClick={() => void handleIgnore(rec)}
+        >
           忽略
         </Button>
       );
@@ -955,11 +975,13 @@ export default function QualityTab({ project, active }: QualityTabProps) {
             生成修复 SPEC{selectedKeys.length > 0 ? `（${selectedKeys.length}）` : ''}
           </Button>
           {/* 「全部忽略」：红底白字（type="primary" danger，用户 2026-09-20 要求），
-              未勾选任何条目时禁用（selectedKeys 为空即无目标） */}
+              未勾选任何条目时禁用（selectedKeys 为空即无目标）；批量请求进行中
+              呈 loading 态防连点（code-review item 717b2251caaa） */}
           <Button
             type="primary"
             danger
             disabled={selectedKeys.length === 0}
+            loading={ignorePending}
             onClick={() => void handleIgnoreAll()}
           >
             全部忽略{selectedKeys.length > 0 ? `（${selectedKeys.length}）` : ''}

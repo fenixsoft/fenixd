@@ -6,9 +6,9 @@ import { memo, useMemo } from 'react';
 
 import type { ChatMessage } from './types';
 import { formatUsageLimitText } from './chatFormatting';
-// 隐藏判定与任务状态点配色与 toolGrouping 同源单点（code-review item
-// 2faec963d2ea / 1dd4d551b484）：渲染与分组共用同一谓词，防双写漂移
-import { isThinkingHidden, taskStatusDotClass } from './toolGrouping';
+// 隐藏判定与 toolGrouping 同源单点（code-review item 2faec963d2ea /
+// 1dd4d551b484）：渲染与分组共用同一谓词，防双写漂移
+import { isThinkingHidden } from './toolGrouping';
 import { Markdown } from './Markdown';
 import { Reasoning } from './Reasoning';
 import ClaudeLogo from './ClaudeLogo';
@@ -84,15 +84,6 @@ const MessageItem = memo(({ message, prevMessage, showThinking = false }: Messag
             </div>
           )}
         </div>
-      ) : message.isTaskNotification ? (
-        <div className="w-full">
-          <div className="flex items-center gap-2 py-0.5">
-            <span
-              className={`inline-block h-1.5 w-1.5 flex-shrink-0 rounded-full ${taskStatusDotClass(message.taskStatus)}`}
-            />
-            <span className="text-xs text-muted-foreground">{message.content}</span>
-          </div>
-        </div>
       ) : (
         <div className="w-full">
           {!isGrouped && (
@@ -161,12 +152,6 @@ const MessageItem = memo(({ message, prevMessage, showThinking = false }: Messag
               </div>
             ) : (
               <div dir="auto" className="text-sm text-gray-700">
-                {showThinking && message.reasoning && (
-                  <Reasoning className="mb-3" defaultOpen={false}>
-                    <div className="whitespace-pre-wrap">{message.reasoning}</div>
-                  </Reasoning>
-                )}
-
                 {(() => {
                   const content = formattedMessageContent;
                   // Detect if content is pure JSON (starts with { or [)

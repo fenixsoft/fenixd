@@ -98,7 +98,7 @@ function checkRequiredHeaders(url, headers) {
 
   // hq.sinajs.cn 需要 Referer 头
   if (url.includes('hq.sinajs.cn') || url.includes('sina.com.cn')) {
-    if (!headerKeys.includes('referer') && !headerKeys.includes('Referer')) {
+    if (!headerKeys.includes('referer')) {
       missing.push({
         header: 'Referer',
         severity: 'warning',
@@ -255,6 +255,21 @@ async function launchChromeExtension(distPath, opts = {}) {
       timeout: 30000, // 30s 启动超时
     });
 
+    // ========================================================================
+    // 网络日志收集
+    // ========================================================================
+
+    // 在所有已有页面上设置监听 — 必须在任何等待/开页之前挂载，
+    // 否则扩展初始加载窗口内的请求（最关键的外部 API 调用）会漏采
+    for (const page of browserContext.pages()) {
+      setupNetworkLogging(page, networkLog);
+    }
+
+    // 新页面自动添加监听
+    browserContext.on('page', (page) => {
+      setupNetworkLogging(page, networkLog);
+    });
+
     // 等待扩展加载 — 扩展接管 newtab 后会自动打开一个新标签页
     // 给扩展一些时间加载
     await new Promise(resolve => setTimeout(resolve, 3000));
@@ -272,20 +287,6 @@ async function launchChromeExtension(distPath, opts = {}) {
     // 等待页面加载
     await newtabPage.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {
       // 超时不算致命错误
-    });
-
-    // ========================================================================
-    // 网络日志收集
-    // ========================================================================
-
-    // 在所有已有页面上设置监听
-    for (const page of browserContext.pages()) {
-      setupNetworkLogging(page, networkLog);
-    }
-
-    // 新页面自动添加监听
-    browserContext.on('page', (page) => {
-      setupNetworkLogging(page, networkLog);
     });
 
     // 等待一段时间让页面完成初始网络请求

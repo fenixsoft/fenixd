@@ -11,6 +11,7 @@ Usage:
     python3 bin/test_for.py --all                     # Run all tests
 """
 
+import argparse
 import ast
 import os
 import sys
@@ -206,18 +207,18 @@ def main():
         print(__doc__)
         sys.exit(1)
 
-    # Parse arguments
-    dry_run = False
-    run_all = False
-    target_files = []
+    # Parse arguments（argparse：未知 -- 开头参数报错退出 2，不再被误当目标文件）
+    parser = argparse.ArgumentParser(description="Incremental test selection tool for Fenix.")
+    parser.add_argument("files", nargs="*", help="target source files to analyze")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="list affected tests without running them"
+    )
+    parser.add_argument("--all", action="store_true", help="run all tests")
+    args = parser.parse_args()
 
-    for arg in sys.argv[1:]:
-        if arg == "--dry-run":
-            dry_run = True
-        elif arg == "--all":
-            run_all = True
-        else:
-            target_files.append(arg)
+    dry_run = args.dry_run
+    run_all = args.all
+    target_files = list(args.files)
 
     # Get project root
     project_root = Path(__file__).resolve().parent.parent
@@ -236,6 +237,14 @@ def main():
     # Build import graph
     print("Analyzing import chains...")
     import_graph = build_import_graph(str(tests_dir))
+    if not import_graph:
+        # 空图（tests/ 缺失或无测试文件）时提示可能分析失效，
+        # 避免与「真无受影响测试」混淆后以 exit 0 静默收场。
+        print(
+            f"Warning: import graph is empty (no test files indexed from {tests_dir}); "
+            "analysis may be broken.",
+            file=sys.stderr,
+        )
 
     # Find affected tests
     affected_tests = set()

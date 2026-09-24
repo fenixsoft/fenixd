@@ -2,21 +2,21 @@ import { Tag } from 'antd';
 import type { ReactNode } from 'react';
 
 // v1 风格状态徽标：透明底 + 彩色文字 + 45% 透明度同色描边
-const TONE_HEX: Record<string, string | null> = {
+const TONE_HEX = {
   muted: null,
   info: '#1677ff',
   warning: '#faad14',
   critical: '#ff4d4f',
   good: '#52c41a',
   aqua: '#13c2c2',
-};
+} as const;
 
 export function OutlinedTag({
   tone,
   children,
   filled,
 }: {
-  tone: string;
+  tone: keyof typeof TONE_HEX;
   children: ReactNode;
   filled?: boolean;
 }) {

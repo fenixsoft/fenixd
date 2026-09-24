@@ -20,7 +20,8 @@ interface ClaudeOutputPaneProps {
    * （与面板头部「共 M 条事件」同源），首拉返回前退化为已加载条数——
    * 「加载更早事件」只增大已加载窗口、不改变总数，外层标题不随分页漂移 */
   onEventsCount?: (count: number) => void;
-  /** run 终态回调：done / error / missing（供外层恢复输入与按钮状态） */
+  /** run 终态回调：done / error / interrupted / cancelled / missing
+   * （供外层恢复输入与按钮状态） */
   onRunStatus?: (status: string) => void;
 }
 
@@ -87,6 +88,22 @@ function appendWithoutOverlap(newer: RunEvent[], loaded: RunEvent[]): RunEvent[]
   }
   return newer;
 }
+
+// 增量分支终态事件 → status 映射（code-review item 6ec9d7211411）：与
+// runEvents.ts 的终态事件集合对齐（error/interrupted/cancelled 终态渲染 +
+// session_ended 会话终态）。原先只认 result/error——run 中途被取消/daemon
+// 停机补写 interrupted/cancelled 而无 result/error 时，EventSource 不断链就
+// 不重连、收不到 hello 重同步的真实 status，外层（AdminInvokeModal 的
+// handleRunStatus 依赖 interrupted/cancelled 解除「处置进行中」锁定）按钮
+// 永久禁用。session_ended（会话进程退出/被杀）对在飞 run 等价中断，映射为
+// 外层已识别的 interrupted，不扩 onRunStatus 的既有字符串回调契约。
+const TERMINAL_EVENT_STATUS: Record<string, string> = {
+  result: 'done',
+  error: 'error',
+  interrupted: 'interrupted',
+  cancelled: 'cancelled',
+  session_ended: 'interrupted',
+};
 
 export default function ClaudeOutputPane({
   runId,
@@ -270,8 +287,8 @@ export default function ClaudeOutputPane({
           // 事件」被错误禁用而更早历史仍在。reset/重同步路径整体重拉 total，
           // 不经本分支。
           setTotalEvents((prev) => prev + incoming.length);
-          const terminal = incoming.find((ev) => ev.type === 'result' || ev.type === 'error');
-          if (terminal) onRunStatus?.(terminal.type === 'result' ? 'done' : 'error');
+          const terminal = incoming.find((ev) => ev.type in TERMINAL_EVENT_STATUS);
+          if (terminal) onRunStatus?.(TERMINAL_EVENT_STATUS[terminal.type]);
         }
       }
     };

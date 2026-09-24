@@ -753,13 +753,6 @@ class AgentRunner:
             "base_run_id": base_id,
         }
 
-        # 秒挂退避熔断（cli-retry-backoff）：spec 维度连续秒挂计数与冷却态。
-        # 进程内存、不落盘：{spec_name: {"count": int, "cooldown_until": float}}
-        # count = 连续秒挂次数（未重置），cooldown_until = 冷却到期单调秒。
-        # daemon 重启重建即清零（冷却不跨重启，重启即视为恢复）。惰性清理：
-        # 冷却到期由 is_instant_fail_cooldown 恢复并清除；无条目即无冷却。
-        self._instant_fail: Dict[str, dict] = {}
-
 
     # ── V2 per-run 隔离测试服务（add-worktree-test-server）─────────────────────
 

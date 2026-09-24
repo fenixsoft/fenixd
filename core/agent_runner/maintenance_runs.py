@@ -380,6 +380,32 @@ def _read_admin_disposition(disp_path: Path) -> dict:
 # ── 每日自省 run（add-daily-self-review spec，design D2） ──────────
 
 
+def _unique_self_review_run_id(runner, date_str: str) -> str:
+    """生成不冲突的 ``review-<date>`` run_id（code-review item 61ab4fea1b86）。
+
+    固定 ``review-<date>`` 在同日重跑（手动补跑 + 周期触发）下撞名：新旧
+    两轮共用 runs/review-<date>.jsonl 事件流与台账归属。对齐
+    _unique_admin_run_id 的探测退避形态：候选的 run 事件流或在飞 out 文件
+    任一已存在，即追加 ``-<n>`` 退避（n 从 1 起递增）。探测退避而非
+    O_CREAT|O_EXCL 申领：out 文件由 agent 按 prompt 注入的路径写入且 run
+    结束即清理（_delete_self_review_out），事件流由 _run_claude 追加落盘，
+    抢先落申领占位文件会污染 jsonl 事件流并改变 out 文件生命周期。
+    """
+    base = f"review-{date_str}"
+    candidate = base
+    n = 0
+    runs_dir = runner.project_root / ".fenix" / "runs"
+    while True:
+        if (
+            (runs_dir / f"{candidate}.jsonl").exists()
+            or (runner.project_root / ".fenix" / f"self_review_out-{candidate}.json").exists()
+        ):
+            n += 1
+            candidate = f"{base}-{n}"
+            continue
+        return candidate
+
+
 def run_self_review(
     runner,
     date_str: str,
@@ -391,7 +417,8 @@ def run_self_review(
 
     与 implementer/verifier 不同：自省是运维角色，直接在 main 树
     （project_root）操作，不创建 worktree。特性：
-    - run_id 前缀 ``review-<date>``：独立前缀，不占 spec 维度预算、
+    - run_id 前缀 ``review-<date>``（同日重跑追加 ``-<n>`` 退避防撞名，
+      见 _unique_self_review_run_id）：独立前缀，不占 spec 维度预算、
       不计入每日 agent run 计数（不走 _execute_agent）；
     - token 归账到 cost-observability 独立类目
       （.fenix/cost/self_review_tokens.json，design D2 二选一），不写
@@ -416,7 +443,7 @@ def run_self_review(
         todo_entries: read_todo=true 时 ID 标注的近 3 日条目清单
             （闭环判定对象）；None 注入占位提示。
     """
-    run_id = f"review-{date_str}"
+    run_id = _unique_self_review_run_id(runner, date_str)
     out_path = runner.project_root / ".fenix" / f"self_review_out-{run_id}.json"
     prompt = runner._build_prompt(
         date_str,

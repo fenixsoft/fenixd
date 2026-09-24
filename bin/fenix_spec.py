@@ -72,12 +72,12 @@ def main():
         try:
             _emit(status(project_root, args.change))
         except ValueError as e:
-            _emit({"error": str(e) + root_hint}, ok=False)
+            _emit({"ok": False, "error": str(e) + root_hint}, ok=False)
     elif args.command == "instructions":
         try:
             _emit(instructions(project_root, args.artifact, args.change))
         except ValueError as e:
-            _emit({"error": str(e) + root_hint}, ok=False)
+            _emit({"ok": False, "error": str(e) + root_hint}, ok=False)
 
 
 if __name__ == "__main__":

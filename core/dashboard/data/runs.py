@@ -79,6 +79,11 @@ def _load_run_metric_index(project_root: Path) -> dict:
                     entry = json.loads(line)
                 except (json.JSONDecodeError, ValueError):
                     continue
+                # 6fd55ebbc869: 合法 JSON 非 object 行（裸数字/字符串/数组/null）
+                # 在此跳过，否则 entry.get 抛 AttributeError 穿透外层 OSError-only
+                # except，致运行列表接口 500（与 classify_run 防护口径一致）
+                if not isinstance(entry, dict):
+                    continue
                 ctx = entry.get("context") or {}
                 if not isinstance(ctx, dict) or ctx.get("metric_type") != "run_metrics":
                     continue
