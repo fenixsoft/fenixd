@@ -322,7 +322,10 @@ def render_active_specs(specs):
             # 显示验证进度
             verify = get_verify_progress()
             for v in verify:
-                if v["spec"] == name or name in v["spec"]:
+                # v["spec"] 是进度文件 stem，恒为精确 SPEC 名（engine.py 写点
+                # f"{spec_name}.json"），用精确匹配——子串包含会让同名前缀
+                # SPEC 串显别人的验证进度
+                if v["spec"] == name:
                     v_pct = int(v["done"] / v["total"] * 100) if v["total"] > 0 else 0
                     lines.append(
                         f"     {DIM}🔍 验证: {bar(v_pct, 10, 'thin')} {v['done']}/{v['total']} {v['current'][:40]}{RESET}"

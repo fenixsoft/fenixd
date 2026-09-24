@@ -553,7 +553,6 @@ class ProviderCircuit:
         if not provider_name:
             return
         now = self._pm._now() if now is None else now
-        st = self._circuit_state(provider_name)
         # 数值钳制（code-review item 7729e93d1efe，与 _record_provider_4xx 同口径）：
         # 非数值配置会让 now + cooldown 抛 TypeError，0/负数静默禁用冷却。
         if cooldown_seconds is not None:
@@ -565,7 +564,14 @@ class ProviderCircuit:
                 ),
                 PROVIDER_SWITCH_COOLDOWN_SECONDS,
             )
-        st["switch_cooldown_until"] = now + cooldown
+        # 记账加锁（code-review item 02a9dfd319fc）：_circuit_state 的惰性建键与
+        # switch_cooldown_until 写入须与 _record_provider_4xx / _record_provider_probe
+        # 的记账临界区互斥（item 8f5a6e6e02bf 同款）——锁外惰性建键在并发首建时会以
+        # 本线程的新 dict 回写覆盖锁内刚 append 的 4xx 事件（熔断被推迟），冷却标记
+        # 同理可被建键竞态抹掉致链选择不跳过。临界区内只建键与写字段，无嵌套锁。
+        with self._provider_circuit_lock:
+            st = self._circuit_state(provider_name)
+            st["switch_cooldown_until"] = now + cooldown
         self._pm.logger.info(
             "agent_runner",
             f"Provider switch-cooldown for '{provider_name}' "

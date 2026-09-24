@@ -686,7 +686,12 @@ def synthesize_verification_report(project_root, spec_name, now=None) -> dict:
     out_path = Path(project_root) / "spec" / "changes" / spec_name / "verification-report.md"
     try:
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(content, encoding="utf-8")
+        # tmp+replace 原子写（与 _persist_degrade_annotation 同款）：进程中途崩溃
+        # 不会留下截断的 md——截断残留的指纹仍等于本轮指纹，会被闸门以
+        # present 放行，违背「放行时报告必然完整在盘」的本职
+        tmp = out_path.with_name(out_path.name + ".tmp")
+        tmp.write_text(content, encoding="utf-8")
+        tmp.replace(out_path)
     except OSError as e:
         return {"ok": False, "error": f"验证报告写入失败: {e}"}
     return {"ok": True, "path": str(out_path)}

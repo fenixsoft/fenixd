@@ -17,6 +17,12 @@ from core.code_review import (
 )
 
 _SEVERITY_ORDER = {"critical": 0, "major": 1, "minor": 2, "info": 3}
+_STATUS_ORDER = {"open": 0, "in_spec": 1, "resolved": 2, "ignored": 3}
+# 排序字段/方向白名单（2026-09-24 台账 server-side 分页配套，quality 页两列
+# 排序下沉后端）：外部 query 输入只能落到这两张枚举表——MUST NOT 把 query 值
+# 直接当排序键消费。权重表即前端受控排序的档位次序。
+_SORT_FIELDS = {"severity": _SEVERITY_ORDER, "status": _STATUS_ORDER}
+_SORT_DIRECTIONS = {"asc": 1, "desc": -1}
 
 
 def _line_key(value) -> int:
@@ -43,12 +49,17 @@ def _line_key(value) -> int:
         return int(m.group(0)) if m else 1
 
 
-def read_code_review_items(project_root, statuses=None):
+def read_code_review_items(project_root, statuses=None, sort_by=None, sort_order=None):
     """读台账并按状态过滤（默认仅 open），按 severity 排序返回列表。
 
     statuses: None → 仅 ``open``（默认视图）；显式传入列表（含空列表）→ 严格
     按该集合过滤——空列表返回空结果而非回退 open（code-review item
     6eec934d7fc9：路由把 ``?status=,,`` 解析为 [] 时不应意外返回全部 open）。
+    sort_by/sort_order: server-side 排序（2026-09-24 台账分页配套）——
+    ``severity``|``status`` × ``asc``|``desc``；白名单外值回退默认排序
+    （severity 升序，即 sort_by/sort_order 均缺省的历史行为）。同键条目沿用
+    (file, line) 稳定次序，desc 只反转主键权重（次级键保持升序，未知值恒排
+    末尾）。
     """
     items = read_items(project_root)
     wanted = {"open"} if statuses is None else set(statuses)
@@ -59,9 +70,11 @@ def read_code_review_items(project_root, statuses=None):
     # 被审查 upsert 在盘上自然刷新。rec 为本函数私有加载产物，就地改写安全。
     for rec in rows:
         rec["severity"] = normalize_severity(rec.get("severity"))
+    field = sort_by if sort_by in _SORT_FIELDS else "severity"
+    sign = _SORT_DIRECTIONS.get(str(sort_order or "asc").lower(), 1)
     rows.sort(
         key=lambda r: (
-            _SEVERITY_ORDER.get(str(r.get("severity")), 9),
+            sign * _SORT_FIELDS[field].get(str(r.get(field)), 9),
             str(r.get("file") or ""),
             _line_key(r.get("line")),
         )

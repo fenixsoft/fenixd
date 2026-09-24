@@ -892,15 +892,18 @@ def read_progress(project_root) -> dict:
                     current = None
         except OSError:
             current = None
-    # running 判定（终态 + stale 阈值，对齐 runs.py 口径）
+    # running 判定（终态 + stale 阈值，对齐 runs.py 口径）。末行读取复用
+    # runs.py 的 64KB 尾窗 seek（_read_run_lines，fix-dashboard-read-path-
+    # performance D3 同款）：审查 run 存续期产物含全部编排事件与超长 result
+    # 行，可达数十 MB，而本函数被前端进度轮询与 admin_monitor 巡检反复调用，
+    # 整读流是 O(文件大小) 的热路径放大（code-review 529bc6a8edf2）。
     running = False
     run_file = Path(project_root) / ".fenix" / "runs" / f"{run_id}.jsonl"
     if run_file.is_file():
-        try:
-            last_line = run_file.read_text(encoding="utf-8", errors="replace").splitlines()[-1]
-            last_ev = json.loads(last_line)
-        except (OSError, IndexError, json.JSONDecodeError):
-            last_ev = None
+        # _read_run_lines 全程容错不抛错（OSError/空文件 → []，损坏行降级
+        # stderr 条目），「末行解析失败/空文件 → last_ev=None」容错口径不变
+        tail = _read_run_tail(run_file)
+        last_ev = tail[-1] if tail else None
         terminal = _terminal_status_map()
         if isinstance(last_ev, dict) and last_ev.get("type") in terminal:
             running = False
@@ -970,6 +973,17 @@ def check_progress_stall(project_root, now: Optional[datetime] = None) -> Option
     if minutes < _stall_alert_minutes(project_root):
         return None
     return {"run_id": str(run_id), "minutes": minutes}
+
+
+def _read_run_tail(run_file, max_lines: int = 1) -> list:
+    """run 产物末行事件（复用 runs.py:_read_run_lines 的 64KB 尾窗读取）。
+
+    延迟导入避免 core.dashboard 导入链（与 _terminal_status_map 同款）；
+    判 running 只需末行，max_lines=1 把尾窗解析成本压到最低。
+    """
+    from core.dashboard.data.runs import _read_run_lines
+
+    return _read_run_lines(run_file, max_lines=max_lines)
 
 
 def _terminal_status_map() -> dict:

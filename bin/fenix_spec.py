@@ -68,15 +68,21 @@ def main():
             _emit({"ok": True, "path": str(path), "error": None})
         except ValueError as e:
             _emit({"ok": False, "path": None, "error": str(e) + root_hint}, ok=False)
+        except OSError as e:
+            _emit({"ok": False, "path": None, "error": str(e) + root_hint}, ok=False)
     elif args.command == "status":
         try:
             _emit(status(project_root, args.change))
         except ValueError as e:
             _emit({"ok": False, "error": str(e) + root_hint}, ok=False)
+        except OSError as e:
+            _emit({"ok": False, "error": str(e) + root_hint}, ok=False)
     elif args.command == "instructions":
         try:
             _emit(instructions(project_root, args.artifact, args.change))
         except ValueError as e:
+            _emit({"ok": False, "error": str(e) + root_hint}, ok=False)
+        except OSError as e:
             _emit({"ok": False, "error": str(e) + root_hint}, ok=False)
 
 

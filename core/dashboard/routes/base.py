@@ -562,7 +562,13 @@ class H0BaseMixin:
                     finally:
                         self._drain_remaining_request_body()
                 else:
-                    self._handle_api(path, query)
+                    try:
+                        self._handle_api(path, query)
+                    finally:
+                        # GET/HEAD 携带 body（curl -X GET -d、部分 GraphQL/代理
+                        # 客户端）时同样排空残留字节，防 keep-alive 复用下残留体
+                        # 被下一请求当请求行（BUG-01 同类缺口）
+                        self._drain_remaining_request_body()
                 return
 
             if method != "GET" and method != "HEAD":
@@ -571,12 +577,17 @@ class H0BaseMixin:
                 self._error(405, "Method Not Allowed")
                 return
 
-            if path == "/" or path == "/index.html":
-                self._serve_static("dist/index.html")
-            elif path.startswith("/screenshots/"):
-                self._serve_screenshot(path)
-            else:
-                self._serve_static(path.lstrip("/"))
+            try:
+                if path == "/" or path == "/index.html":
+                    self._serve_static("dist/index.html")
+                elif path.startswith("/screenshots/"):
+                    self._serve_screenshot(path)
+                else:
+                    self._serve_static(path.lstrip("/"))
+            finally:
+                # GET/HEAD 静态派发同样在响应后排空残留 body（BUG-01 同类缺口，
+                # 常规 GET 无 body 时为 no-op 零开销）
+                self._drain_remaining_request_body()
         except BrokenPipeError:
             pass
         except Exception:  # noqa: BLE001

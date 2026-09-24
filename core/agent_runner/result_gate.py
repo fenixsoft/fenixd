@@ -623,7 +623,18 @@ def _validate_code_review_report(
             break
     if cr_dispositions is None:
         cr_dispositions = []
-    if not isinstance(cr_dispositions, list) or len(cr_dispositions) != len(findings):
+    if not isinstance(cr_dispositions, list):
+        # 异构载荷（如整型条数——findings_summary 别名本身就暗示可能是摘要
+        # 标量）MUST NOT 以未捕获 TypeError 崩溃硬门本身（_format_gap_list
+        # 对 code-review item 58ae4e08513b 的同类立场）：先定向归因非数组，
+        # 再 fail-closed 落结构化失败（与自检侧 _selfcheck_dispositions_
+        # violations 的非数组分支同文案口径）。
+        return (
+            f"exit 0 但结果文件 code_review.dispositions 非数组"
+            f"（逐条处置 MUST 为对象数组，每项含 disposition 键）"
+            f"（impl-code-review-gate）: {report_rel}"
+        )
+    if len(cr_dispositions) != len(findings):
         return (
             f"exit 0 但收尾审查 findings 条数({len(findings)})与结果文件"
             f" code_review.dispositions 条数({len(cr_dispositions)})不匹配"
