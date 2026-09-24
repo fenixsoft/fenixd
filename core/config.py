@@ -24,6 +24,11 @@ STUCK_GRACE_SECONDS = 600
 # D4：run_timeout_seconds 缺失或 ≤0 时的派生回退基准（9000+600=9600）。
 RUN_TIMEOUT_FALLBACK_SECONDS = 9000
 STUCK_FALLBACK_SECONDS = RUN_TIMEOUT_FALLBACK_SECONDS + STUCK_GRACE_SECONDS
+# planned-restart-drain D1：规划性重启排水窗口相对 supervisor SIGKILL 等待的
+# 终止收口安全余量（秒）——保证超窗有序终止（SIGTERM+宽限+SIGKILL）与 sidecar
+# 保全收口不被 supervisor 截断。取值 ≥10s 且不小于单 run terminate 宽限
+# （core/agent_runner/liveness.py AGENT_TERMINATE_GRACE_SECONDS）。
+PLANNED_DRAIN_TERMINATE_MARGIN_SECONDS = 10
 # D5：supervision 超时监督默认值（单源派生，supervision-timeout-config-consistency）。
 # 单次续期 extension_seconds、次数上限 max_extensions、总墙钟上限 absolute_max_seconds
 # （命中即无条件终止，封闭续期的成本风险）、活性判定窗口 judge_window（秒）。
@@ -1217,7 +1222,7 @@ class ConfigLoader:
         return scope
 
     @classmethod
-    def get_run_drain_max_seconds(cls, config: Dict[str, Any]) -> float:
+    def get_run_drain_max_seconds(cls, config: Dict[str, Any], planned: bool = False) -> float:
         """restart 排水窗口生效值（秒）：agents.run_drain_max_seconds，缺省 60。
 
         add-pipeline-throughput-governance D3：专管 daemon restart 流程等待在飞
@@ -1228,6 +1233,17 @@ class ConfigLoader:
         的组合；本门面对旁路脏配置与「缺省 60 遇较小显式 shutdown」的组合按
         min(raw, shutdown 生效值) 兜底夹紧（shutdown=0 快速停机时联动为 0，
         restart 不排水，与既有 drain=0 语义一致）。非法值一律回退缺省 60。
+
+        planned-restart-drain D1：``planned=True``（restart_request 在场，规划性
+        重启）时豁免 shutdown_drain_seconds 的快速停机联动夹紧——shutdown=0 的
+        部署不再把窗口清零，改受 supervisor 协调上界约束：
+        ``min(原值, supervisor SIGKILL 等待 − 终止收口安全余量)``。SIGKILL 等待
+        按 bin/fenixd_supervisor.py ``_sigkill_wait_seconds`` 同源建模：shutdown>0
+        时 = shutdown + 120s（DRAIN_MARGIN_SECONDS）；shutdown≤0 时回退缺省 60s
+        （DEFAULT_SIGKILL_WAIT_SECONDS）。余量取 10s（≥ 建议下限且 = 单 run
+        terminate 宽限 AGENT_TERMINATE_GRACE_SECONDS），保证超窗有序终止
+        （SIGTERM+宽限+SIGKILL）与 sidecar 收口不被 supervisor SIGKILL 截断。
+        shutdown>0 且 run_drain ≤ shutdown 的可加载配置下该上界不束紧、行为不变。
         """
         raw = cls.get(config, "agents.run_drain_max_seconds", None)
         if raw is None:
@@ -1248,6 +1264,14 @@ class ConfigLoader:
             shutdown = 1800.0
         if not (shutdown >= 0):
             shutdown = 1800.0
+        if planned:
+            # supervisor SIGKILL 等待（_sigkill_wait_seconds 同源建模）
+            if shutdown > 0:
+                sigkill_wait = shutdown + 120.0  # DRAIN_MARGIN_SECONDS
+            else:
+                sigkill_wait = 60.0  # DEFAULT_SIGKILL_WAIT_SECONDS 回退
+            cap = max(sigkill_wait - PLANNED_DRAIN_TERMINATE_MARGIN_SECONDS, 0.0)
+            return min(value, cap)
         return min(value, max(shutdown, 0.0))
 
     @classmethod
