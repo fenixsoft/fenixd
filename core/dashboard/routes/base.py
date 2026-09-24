@@ -25,7 +25,8 @@ import json
 import logging
 import urllib.parse
 
-logger = logging.getLogger(__name__)
+# fenixd. 层级字面量（tests/test_logger_no_bypass.py：core/ 禁 __name__ 旁路）
+logger = logging.getLogger("fenixd.dashboard.routes.base")
 
 
 # ── H1 路由分派链（design D1 表 C H1，task 4.5）──────────────────────
