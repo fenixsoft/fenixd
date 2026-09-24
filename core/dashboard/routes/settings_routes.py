@@ -54,16 +54,26 @@ def _atomic_write_text(target: Path, content: str) -> None:
 class H5SettingsRoutesMixin:
     """H5 settings/prompts/todo/verify-yaml。"""
 
-    def _api_config_get(self, query) -> dict:
+    def _api_config_get(self, query) -> None:
+        """GET /api/config — 配置读取（自含响应，code-review item 89d191770258）。
+
+        未知项目旧实现经适配器 _get_config 包 _json 回 200+{"error": ...}，
+        与同文件 POST 端点（_error 400/404）形态漂移；前端 request() 仅在
+        !res.ok 时抛 ApiError，200 错误载荷被当成功数据静默渲染。改为自含
+        响应：未知项目 _error(404)，成功路径自写 _json（与 _api_prompts_get /
+        _api_todo_get 同款，避免适配器再包 _json 在 keep-alive 下双重写响应）。
+        """
         project = self._project_from_query(query)
         if project is None:
             # 无项目 → 用户级配置（scope=user，不再返回 unknown project）
-            return dashboard_data.read_config(None, scope="user")
+            self._json(dashboard_data.read_config(None, scope="user"))
+            return
         if not project.get("exists"):
-            return {"error": "project not found"}
+            self._error(404, "project not found")
+            return
         config = dashboard_data.read_effective_config(project["path"])
         config["project"] = project["name"]
-        return config
+        self._json(config)
 
 
     def _api_config_post(self, query):
@@ -169,7 +179,9 @@ class H5SettingsRoutesMixin:
             self._json(out)
             return
         if not project.get("exists"):
-            self._json({"error": "project not found"})
+            # 未知项目 404 与同文件 POST 端点一致（code-review item
+            # 89d191770258）：200+{"error"} 载荷会被前端 request() 当成功数据
+            self._error(404, "project not found")
             return
         proot = Path(project["path"])
         try:

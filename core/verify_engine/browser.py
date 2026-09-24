@@ -225,9 +225,19 @@ class BrowserManager:
             return
 
         # 扫描主 JS 文件: index.html-{hash}.js
-        js_files = sorted(assets_dir.glob("index.html-*.js"))
+        # 文件名 hash 与构建时间无关，按 mtime 降序取最新，
+        # 避免 dist 残留多份历史 bundle 时字典序选中旧版本
+        js_files = sorted(
+            assets_dir.glob("index.html-*.js"),
+            key=lambda p: (p.stat().st_mtime, p.name),
+            reverse=True,
+        )
         # 扫描主 CSS 文件: index-{hash}.css
-        css_files = sorted(assets_dir.glob("index-*.css"))
+        css_files = sorted(
+            assets_dir.glob("index-*.css"),
+            key=lambda p: (p.stat().st_mtime, p.name),
+            reverse=True,
+        )
 
         if not js_files:
             self._log("warning", "未找到 index.html-*.js 文件，回退到 index.html")
@@ -240,6 +250,12 @@ class BrowserManager:
 
         js_path = js_files[0].name
         css_path = css_files[0].name
+        if len(js_files) > 1 or len(css_files) > 1:
+            self._log(
+                "warning",
+                f"dist/assets 存在多份候选 bundle（JS×{len(js_files)}, CSS×{len(css_files)}），"
+                f"已按修改时间取最新: JS={js_path}, CSS={css_path}，疑似历史构建残留",
+            )
 
         # 生成独立 HTML，参考根 index.html 结构
         html = f"""<!DOCTYPE html>

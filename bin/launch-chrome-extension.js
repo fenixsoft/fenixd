@@ -79,13 +79,36 @@ function parseArgs() {
 // ============================================================================
 
 /**
- * 判断 URL 是否为外部 URL（非 localhost / 非扩展内部资源）
+ * 判断主机名是否为本机/回环地址（localhost、127.x、[::1]、0.0.0.0、*.local 等）
+ * 按精确主机名匹配，而非对整条 URL 做子串匹配
+ */
+function isLocalHostname(hostname) {
+  // URL 的 hostname 对 IPv6 自带方括号；去掉首尾括号与结尾的 FQDN 点号后归一化比较
+  const host = String(hostname || '').toLowerCase().replace(/^\[/, '').replace(/\]$/, '').replace(/\.$/, '');
+  return (
+    host === 'localhost' ||
+    host.endsWith('.localhost') ||
+    host.startsWith('127.') ||
+    host === '::1' ||
+    host === '::' ||
+    host === '0.0.0.0' ||
+    host.endsWith('.local')
+  );
+}
+
+/**
+ * 判断 URL 是否为外部 URL（非本机/回环主机 / 非扩展内部资源）
+ * URL 解析失败时按外部处理，保持采集保守性
  */
 function isExternalUrl(url) {
   if (!url || typeof url !== 'string') return false;
   if (!url.startsWith('http')) return false;
-  if (url.includes('localhost') || url.includes('127.0.0.1')) return false;
   if (url.includes('chrome-extension://') || url.includes('devtools://')) return false;
+  try {
+    if (isLocalHostname(new URL(url).hostname)) return false;
+  } catch {
+    return true;
+  }
   return true;
 }
 

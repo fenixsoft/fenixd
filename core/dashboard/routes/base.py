@@ -80,7 +80,10 @@ def _get_admin_activities(s, p, q, m):
     s._json(s._api_admin_activities(q))
 
 def _get_config(s, p, q, m):
-    s._json(s._api_config_get(q))
+    # _api_config_get 是自含响应 handler（code-review item 89d191770258）：未知
+    # 项目自写 _error（404）、成功路径自写 _json——不得再包 _json 双重写响应
+    # （keep-alive 下残留第二响应 200+null 污染下一请求，同 _get_prompts 注记）
+    s._api_config_get(q)
 
 def _get_hooks_audit(s, p, q, m):
     s._json(s._api_hooks_audit(q))
@@ -612,6 +615,12 @@ class H0BaseMixin:
         try:
             content_length = int(self.headers.get("Content-Length", "0") or "0")
         except ValueError:
+            # 报文分帧已不可解析，且 _drain_remaining_request_body 里同一处
+            # int() 再次失败得 content_length=0 → remaining=0 跳过排空，客户端
+            # 若实际发了体字节会在 keep-alive 复用时被当下一个请求的请求行
+            # （BUG-01 同类失步）。比照 413 分支置 close_connection=True，让
+            # 残留字节随连接关闭作废（code-review item 8beb499acc56）。
+            self.close_connection = True
             self._error(400, "Invalid Content-Length")
             return None
         if content_length <= 0:

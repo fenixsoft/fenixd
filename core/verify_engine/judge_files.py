@@ -194,6 +194,7 @@ def mark_scenario_status(
     if status not in ATTRIBUTION_STATUSES:
         raise ValueError(f"Invalid status: {status}")
 
+    # [fenix-ignore:89c55e4dbac3] 当前仓库内无任何调用方，写侧唯一（verdict_evidence 经 save_attribution 整体落盘），不存在并发读改写路径。
     attr_data = load_attribution(project_root, spec_name)
     if attr_data is None:
         return False
@@ -248,7 +249,8 @@ def build_requeue_manifest(
     写失败静默降级（不影响既有流程）。
     """
     requeue_list = get_requeue_scenarios(project_root, spec_name)
-    requeue_ids = [sc["id"] for sc in requeue_list if isinstance(sc, dict)]
+    # 条目缺 id（judge 输出漂移/手工编辑）时跳过，避免 KeyError 中断清单构建。
+    requeue_ids = [sc.get("id") for sc in requeue_list if isinstance(sc, dict) and sc.get("id")]
 
     manifest = {
         "spec": spec_name,
@@ -301,6 +303,11 @@ def clear_requeue_manifest(project_root: Path, spec_name: str) -> None:
 def is_full_requeue(project_root: Path, spec_name: str) -> bool:
     """判断是否全量重复（100% requeue）。
 
+    写侧（verdict_evidence._handle_scenario_requeue）只落非 PASS 场景条目
+    （pass/passed 在落盘前已跳过），故对全部条目判 ``all`` 即「所有非 PASS
+    场景均为 requeue」，无需再按 PASS 过滤；accept 条目须参与判定（存在
+    accept 即非全量回炉）。
+
     Returns:
         True 表示所有非 PASS 场景均为 requeue 状态；无归因数据返回 False。
     """
@@ -309,12 +316,12 @@ def is_full_requeue(project_root: Path, spec_name: str) -> bool:
         return False
 
     scenarios = attr_data.get("scenarios") or []
-    non_pass = [sc for sc in scenarios if isinstance(sc, dict)]
+    entries = [sc for sc in scenarios if isinstance(sc, dict)]
 
-    if not non_pass:
+    if not entries:
         return False
 
-    return all(sc.get("status") == ATTRIBUTION_STATUS_REQUEUE for sc in non_pass)
+    return all(sc.get("status") == ATTRIBUTION_STATUS_REQUEUE for sc in entries)
 
 
 def migrate_legacy_attribution_file(project_root: Path, spec_name: str) -> bool:

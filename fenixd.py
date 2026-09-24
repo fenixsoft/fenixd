@@ -3849,7 +3849,15 @@ class FenixDaemon:
             # graceful-restart-drain：排水等待前向每个在飞 run 广播一次
             # checkpoint 信号（写 run 控制旗标即返回，不阻塞排水等待，不产生
             # 新增失败终态）。广播清单计入排水日志留痕。
-            checkpointed = self.agent_runner.broadcast_restart_checkpoint()
+            # 广播 API 与车道登记 API 同为本期新增：未提供该方法的 runner 实现
+            # （旧测试替身/第三方）按无 checkpoint 广播（0/0）容错继续排水，
+            # 不在 _shutdown_started 之后中断收口序列。
+            _broadcast_checkpoint = getattr(
+                self.agent_runner, "broadcast_restart_checkpoint", None
+            )
+            checkpointed = (
+                _broadcast_checkpoint() if callable(_broadcast_checkpoint) else []
+            )
             _, drain_lanes = self._drain_set_inventory()
             _safe_log(
                 "info",

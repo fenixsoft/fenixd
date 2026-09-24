@@ -638,6 +638,12 @@ def validate_attribution_levels(report: dict) -> dict:
     在 report 落盘/打回上下文组装前调用（与 validate_report 同入口位）。
     原地修改每个非 PASS 场景的 attribution_level 字段。
 
+    注：本函数无失败路径——只做归因级别的机械计算与原地写入，不产生
+    校验失败信号；``ok`` 恒为 True、``violations`` 恒为空列表，返回结构
+    仅为兼容既有调用签名（code-review item 90330728c61a）。真正的失败
+    判定由下游 should_suppress_bug_found / check_batch_attribution_dedup
+    等函数承担。
+
     Returns:
         {"ok": bool, "violations": [str, ...]}
     """
@@ -646,7 +652,7 @@ def validate_attribution_levels(report: dict) -> dict:
     scenarios = report.get("scenarios")
     if not isinstance(scenarios, list):
         return {"ok": True, "violations": []}
-    violations = []
+    violations = []  # 恒空：仅写入 attribution_level，无校验失败路径
     for sc in scenarios:
         if not isinstance(sc, dict):
             continue
