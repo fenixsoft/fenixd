@@ -2213,7 +2213,9 @@ def run_impl_ocr(
             # 集合——按 Popen 句柄跟踪（wrapper execvp 改名不受影响，同 PID），
             # 规划性重启排水等待本车道完成或超窗有序终止，不再被当无主回收。
             # lane_done 由本线程在全函数收尾（产物+终态事件落盘）后 set，供
-            # shutdown 收口 bounded 等待车道落终态，daemon 不至先于终态退出。
+            # shutdown 收口 bounded 等待车道落终态，daemon 不至先于终态退出；
+            # 排水登记随 set 一同在函数尾段 finally 注销（终态落盘前车道保持
+            # 对 running_lane_ids/排水收口可见）。
             # 登记 API 为 planned-restart-drain 2.1 新增：旧测试替身/第三方
             # runner 缺该方法时按未登记处理（行为同现状）。
             lane_done = threading.Event()
@@ -2248,11 +2250,11 @@ def run_impl_ocr(
                     timed_out = True
             finally:
                 # 完成/非零退出/硬超时/意外异常四路同收口：停跳后本线程独占
-                # 写（幂等，车道整体 finally 二次调用无害）。
+                # 写（幂等，车道整体 finally 二次调用无害）。排水登记不在此
+                # 注销——此刻终态（产物+事件）尚未落盘，提前注销会让 shutdown
+                # 落在持久化窗口内时不再等待车道收尾；注销随 lane_done.set()
+                # 一同延迟到函数尾段 finally。
                 _stop_impl_ocr_heartbeat(*heartbeat)
-                _unregister_lane = getattr(runner, "unregister_lane_process", None)
-                if callable(_unregister_lane):
-                    _unregister_lane(run_id)
 
             if timed_out:
                 lane_timeout = ConfigLoader.get_impl_code_review_lane_timeout_sec(
@@ -2311,40 +2313,54 @@ def run_impl_ocr(
         _remove_impl_ocr_worktree(runner.project_root, wt)
 
     # ── 产物原子落盘（unavailable/completed 两条路径都写，join 读侧以文件为准）──
+    # planned-restart-drain B：落盘→终态事件→收尾日志整段包 try/finally——
+    # 尾段任何退出路径（含收尾日志等调用抛错）都保证 set lane_done 并注销
+    # 排水登记：set 使 terminate_lane_processes 的 bounded 等待不盲等，注销
+    # 放在同一 finally 让登记与「终态已 durable」同生命周期（此前在
+    # communicate 返回即注销，持久化窗口内车道对排水收口不可见）。finally
+    # 只做收尾不吞异常，既有错误传播行为不变。
     try:
-        artifact_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = artifact_path.with_name(".code-review.json.tmp")
-        tmp.write_text(
-            json.dumps(artifact, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-        os.replace(tmp, artifact_path)
-    except OSError as e:
-        if log is not None:
-            log.warning("agent_runner", f"impl-ocr 产物落盘失败（run {run_id}）: {e}")
-
-    _write_impl_ocr_run_events(
-        runner.project_root,
-        run_id,
-        spec_name,
-        [
-            (
-                "result",
-                {
-                    "status": artifact["status"],
-                    "findings": len(artifact["findings"]),
-                    "reason": artifact["reason"],
-                },
+        try:
+            artifact_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = artifact_path.with_name(".code-review.json.tmp")
+            tmp.write_text(
+                json.dumps(artifact, ensure_ascii=False, indent=2), encoding="utf-8"
             )
-        ],
-    )
-    if log is not None:
-        log.info(
-            "agent_runner",
-            f"impl-ocr 车道完成（run {run_id}）: status={artifact['status']} "
-            f"findings={len(artifact['findings'])}",
+            os.replace(tmp, artifact_path)
+        except OSError as e:
+            if log is not None:
+                log.warning(
+                    "agent_runner", f"impl-ocr 产物落盘失败（run {run_id}）: {e}"
+                )
+
+        _write_impl_ocr_run_events(
+            runner.project_root,
+            run_id,
+            spec_name,
+            [
+                (
+                    "result",
+                    {
+                        "status": artifact["status"],
+                        "findings": len(artifact["findings"]),
+                        "reason": artifact["reason"],
+                    },
+                )
+            ],
         )
-    # planned-restart-drain B：产物+终态事件均已落盘，通知 shutdown 收口本车道
-    # 终态就绪（terminate_lane_processes 据此 bounded 等待，不再盲等）。
-    if lane_done is not None:
-        lane_done.set()
+        if log is not None:
+            log.info(
+                "agent_runner",
+                f"impl-ocr 车道完成（run {run_id}）: status={artifact['status']} "
+                f"findings={len(artifact['findings'])}",
+            )
+    finally:
+        # 产物+终态事件均已落盘（或尾段异常退出），通知 shutdown 收口本车道
+        # 终态就绪并注销登记（terminate_lane_processes 据此 bounded 等待，
+        # 不再盲等；注销幂等）。
+        if lane_done is not None:
+            lane_done.set()
+        _unregister_lane = getattr(runner, "unregister_lane_process", None)
+        if callable(_unregister_lane):
+            _unregister_lane(run_id)
     return artifact

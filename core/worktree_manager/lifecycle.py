@@ -186,8 +186,8 @@ class G1LifecycleMixin:
         def _names(ts: int):
             """按时间戳重建分支名与 worktree 目录名（撞名时同名双换）。"""
             if agent_type == "verifier":
-                return f"fenix/verify-{spec_name}-{ts}", f"verify-{spec_name}-{ts}"
-            return f"fenix/{spec_name}-{ts}", f"impl-{spec_name}-{ts}"
+                return f"fenix/{prefix}-{spec_name}-{ts}", f"{prefix}-{spec_name}-{ts}"
+            return f"fenix/{spec_name}-{ts}", f"{prefix}-{spec_name}-{ts}"
 
         branch, wt_name = _names(timestamp)
         wt_path = self.base_dir / wt_name

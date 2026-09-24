@@ -596,6 +596,12 @@ class AgentRunner:
         self._cancel_requested = set()
         self._cancel_meta = {}
         self._cancel_requested_lock = threading.Lock()
+        # 车道登记表（design D2）：__init__ 即建态——车道线程（queue
+        # _start_impl_ocr_lane 每 spec 一线程）并发首次 register 时不得走
+        # _lane_registry 的建态分支（两线程同见 None 会各建一个 dict、后一次
+        # __dict__ 赋值静默顶掉前者 → 先登记的车道从排水集合消失，重启即被
+        # 当无主回收）。单键 set/pop 原子，对齐 _running_agents 不加锁。
+        self._lane_processes: Dict[str, tuple] = {}
 
     # ── 取消旗标惰性 property（add-run-cancel）────────────────────
     # 测试普遍以 ``AgentRunner.__new__`` 绕过 ``__init__`` 构造，沿用
@@ -5034,10 +5040,11 @@ class AgentRunner:
     # 混入会令 checkpoint 广播 / interrupted 标记 / run 保全误作用在车道上。
 
     def _lane_registry(self) -> dict:
-        """车道登记表（key → (Popen, done_event|None)），惰性建态。
+        """车道登记表（key → (Popen, done_event|None)）。
 
-        惰性初始化对齐 _cancel_requested 先例：测试以 ``AgentRunner.__new__``
-        绕过 ``__init__`` 的实例同样安全。
+        生产路径 ``__init__`` 已建态，不会触达下方建态分支；惰性回退仅对齐
+        _cancel_requested 先例，让测试以 ``AgentRunner.__new__`` 绕过
+        ``__init__`` 的实例同样安全（该场景单线程，无并发建态竞态）。
         """
         reg = self.__dict__.get("_lane_processes")
         if reg is None:
@@ -5082,9 +5089,13 @@ class AgentRunner:
         清理），避免 daemon 进程先于车道终态退出。返回被终止的车道键列表；
         登记表为空时零开销返回空。
         """
-        reg = self._lane_registry()
+        # 方法入口一次快照、下方两循环共用同一份：车道线程在 communicate()
+        # 返回后即自行注销（常早于 SIGTERM 循环的 wait(grace) 返回），若
+        # done-event 循环重读活登记表，条目多已被弹出、ev.wait() 被静默跳过
+        # ——bounded 终态等待保证落空（planned-restart-drain D3）。
+        reg_items = list(self._lane_registry().items())
         terminated: list = []
-        for key, (proc, _ev) in list(reg.items()):
+        for key, (proc, _ev) in reg_items:
             try:
                 if proc.poll() is not None:
                     continue
@@ -5112,7 +5123,7 @@ class AgentRunner:
                 )
         # 车道线程落终态 bounded 等待（SIGTERM 后 communicate 返回 → 车道线程
         # finally 写产物/终态事件并 set done_event）
-        for key, (_proc, ev) in list(reg.items()):
+        for key, (_proc, ev) in reg_items:
             if ev is not None:
                 try:
                     ev.wait(timeout=max(grace, 0.0))
