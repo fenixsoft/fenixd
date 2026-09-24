@@ -216,11 +216,13 @@ export default function CodeFixProgressCard(
   // 时维持 2026-09-23 口径整段不渲染（不显示误导性 0 计数）。item_done 有值
   // 时准备段完全不进入（条级计数优先，spec「处置开始后收敛」）。
   const startupStage = progress.startup_stage;
-  const showStartupStage = itemDone == null && startupStage != null;
+  // 宽松等值（== null）被审查规则禁止：两字段类型均为 `T | null`，用显式
+  // 严格比较表达同一判定；waited_minutes 是数值再用 typeof 收窄。
+  const showStartupStage = itemDone === null && startupStage !== null;
   let startupStageText = '';
   if (showStartupStage && startupStage) {
     startupStageText =
-      startupStage.waited_minutes != null
+      typeof startupStage.waited_minutes === 'number'
         ? `${startupStage.stage}（已等待 ${startupStage.waited_minutes} 分钟）`
         : startupStage.stage;
   }
@@ -243,6 +245,15 @@ export default function CodeFixProgressCard(
   if (phase === 'fixing' && itemProgressText) sub.push(itemProgressText);
   if (alarm && reason) sub.push(`原因：${reason}`);
   if (alarm && !reason && readFailed) sub.push('进度读取失败，已停止轮询');
+
+  // 次级文案段的 testid（嵌套三元被审查规则禁止，抽为 if/else 局部计算）：
+  // 准备段 → startup-stage；fixing 阶段条级进度 → item-progress；其余不挂。
+  let subTestId: string | undefined;
+  if (showStartupStage) {
+    subTestId = 'code-fix-startup-stage';
+  } else if (phase === 'fixing') {
+    subTestId = 'code-fix-item-progress';
+  }
 
   return (
     <Card
@@ -269,13 +280,7 @@ export default function CodeFixProgressCard(
           <Typography.Text
             type="secondary"
             style={{ fontSize: 12 }}
-            data-testid={
-              showStartupStage
-                ? 'code-fix-startup-stage'
-                : phase === 'fixing'
-                  ? 'code-fix-item-progress'
-                  : undefined
-            }
+            data-testid={subTestId}
           >
             {sub.join(' · ')}
           </Typography.Text>
