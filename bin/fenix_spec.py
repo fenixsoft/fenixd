@@ -62,28 +62,24 @@ def main():
         else f"（默认项目根推断为 {project_root}，其下不存在 spec/ —— 请用 --project 显式指定项目根目录）"
     )
 
+    def _run(payload_fn, error_base):
+        # 三个命令分支共用：调用抛 ValueError/OSError 时统一转 {ok: False, error: ...} 输出
+        try:
+            _emit(payload_fn())
+        except ValueError as e:
+            _emit({**error_base, "error": str(e) + root_hint}, ok=False)
+        except OSError as e:
+            _emit({**error_base, "error": str(e) + root_hint}, ok=False)
+
     if args.command == "new":
-        try:
-            path = new_change(project_root, args.name)
-            _emit({"ok": True, "path": str(path), "error": None})
-        except ValueError as e:
-            _emit({"ok": False, "path": None, "error": str(e) + root_hint}, ok=False)
-        except OSError as e:
-            _emit({"ok": False, "path": None, "error": str(e) + root_hint}, ok=False)
+        _run(
+            lambda: {"ok": True, "path": str(new_change(project_root, args.name)), "error": None},
+            {"ok": False, "path": None},
+        )
     elif args.command == "status":
-        try:
-            _emit(status(project_root, args.change))
-        except ValueError as e:
-            _emit({"ok": False, "error": str(e) + root_hint}, ok=False)
-        except OSError as e:
-            _emit({"ok": False, "error": str(e) + root_hint}, ok=False)
+        _run(lambda: status(project_root, args.change), {"ok": False})
     elif args.command == "instructions":
-        try:
-            _emit(instructions(project_root, args.artifact, args.change))
-        except ValueError as e:
-            _emit({"ok": False, "error": str(e) + root_hint}, ok=False)
-        except OSError as e:
-            _emit({"ok": False, "error": str(e) + root_hint}, ok=False)
+        _run(lambda: instructions(project_root, args.artifact, args.change), {"ok": False})
 
 
 if __name__ == "__main__":

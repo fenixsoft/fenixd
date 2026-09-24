@@ -30,6 +30,9 @@ _SCENARIO_REPAIR_MAX_ROUNDS = 3
 # event_bus._recover_testing 周期扫描拾取，最坏延迟 = 一个 poll_interval）。
 # MUST NOT 误引 `check_scheduling_deadlines`——它只覆盖 drafted/ready 拾取，
 # testing 态不在其覆盖范围。
+# 注：env 阻塞 inconclusive 升级路径写 `_dispatch_backoff_until` 的退避窗
+# （本文件 4 处）复用同一时长——共用「30 分钟 / poll_interval 对齐」语义，
+# 调参在此一处生效。
 _SCENARIO_REPAIR_REVERIFY_DELAY_SECONDS = 1800
 
 
@@ -106,7 +109,10 @@ def _handle_env_blocked_inconclusive(pipeline, spec_name: str, report: dict) -> 
                     f"人工处置后需清 _inconclusive_attempts 才能恢复自动重验"
                 ),
                 "_inconclusive_attempts": attempts,
-                "_dispatch_backoff_until": int(datetime.now(timezone.utc).timestamp()) + 1800,
+                "_dispatch_backoff_until": (
+                    int(datetime.now(timezone.utc).timestamp())
+                    + _SCENARIO_REPAIR_REVERIFY_DELAY_SECONDS
+                ),
             },
         )
         return True
@@ -154,7 +160,10 @@ def _handle_env_blocked_inconclusive(pipeline, spec_name: str, report: dict) -> 
                 f"请人工检查 mock/SSE 推送环境；不产生 bug-found 信号"
             ),
             "_inconclusive_attempts": attempts,
-            "_dispatch_backoff_until": int(datetime.now(timezone.utc).timestamp()) + 1800,
+            "_dispatch_backoff_until": (
+                int(datetime.now(timezone.utc).timestamp())
+                + _SCENARIO_REPAIR_REVERIFY_DELAY_SECONDS
+            ),
         },
     )
     return True
@@ -395,6 +404,13 @@ def _update_warning_streaks(pipeline, spec_name: str) -> list:
                 triage_candidates.append(sid)
         else:
             streaks[sid] = 0
+
+    # 陈旧 id 剪枝：不在本轮场景集中的 id（planner 重排出题被替换）连同
+    # 残留计数一并移除——否则残留 streak 会让新集复用旧 id 时立即凑满
+    # 升级阈值（== 2）误发 triage 升级，侧车文件也会无界增长
+    # （与下方 triage_recheck.json 的剪枝同法）。
+    for stale_id in set(streaks) - current_ids:
+        del streaks[stale_id]
 
     # 写回侧车
     try:
@@ -966,7 +982,10 @@ def _handle_judge_env_declared(pipeline, spec_name: str) -> bool:
                     f"人工处置后需清 _inconclusive_attempts 才能恢复自动重验"
                 ),
                 "_inconclusive_attempts": attempts,
-                "_dispatch_backoff_until": int(datetime.now(timezone.utc).timestamp()) + 1800,
+                "_dispatch_backoff_until": (
+                    int(datetime.now(timezone.utc).timestamp())
+                    + _SCENARIO_REPAIR_REVERIFY_DELAY_SECONDS
+                ),
             },
         )
         return True
@@ -1001,7 +1020,10 @@ def _handle_judge_env_declared(pipeline, spec_name: str) -> bool:
                 f"（judge 自述），请人工检查验证场景/环境；不派生 fix"
             ),
             "_inconclusive_attempts": attempts,
-            "_dispatch_backoff_until": int(datetime.now(timezone.utc).timestamp()) + 1800,
+            "_dispatch_backoff_until": (
+                int(datetime.now(timezone.utc).timestamp())
+                + _SCENARIO_REPAIR_REVERIFY_DELAY_SECONDS
+            ),
         },
     )
     return True

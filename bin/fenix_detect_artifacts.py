@@ -86,7 +86,11 @@ def detect_build_artifacts(project_root: Path) -> dict:
     if pkg_json.is_file():
         try:
             pkg = json.loads(pkg_json.read_text(encoding="utf-8"))
-            scripts = pkg.get("scripts", {})
+            # "scripts" 键存在但为 null 时 get 的默认值不生效，须归一为 dict；
+            # 非 dict（数字/字符串等）同样防住，避免迭代抛 TypeError 违反 MUST NOT 抛异常约定
+            scripts = pkg.get("scripts") or {}
+            if not isinstance(scripts, dict):
+                scripts = {}
             has_build_script = any(
                 key in ("build", "dist", "release", "bundle")
                 for key in scripts

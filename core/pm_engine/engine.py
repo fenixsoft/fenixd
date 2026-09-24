@@ -2861,8 +2861,10 @@ class PMEngine:
         用 D2 的 SHA 比对验证内容已在远端后清 error；验证不到的保留并列日志。
         供手动调用 + tests 覆盖。
 
-        验证口径（design D4）：优先比对 spec 自身分支在远端的 SHA（内容确定已在
-        远端即清痕）；若分支已不可查，则回退比对 main（main 承载内容亦视为已推送）。
+        验证口径（design D4）：本地分支仍在时，优先将 spec 自身分支的远端 SHA
+        与本地 SHA 做相等比对（内容确定已在远端即清痕）；本地分支已被 merge-back
+        清理后无从比对，降级为远端引用存在性检查；仍验证不到时回退比对 main
+        （main 承载内容亦视为已推送）。
 
         Returns:
             {"cleaned": [spec_name, ...], "kept": [{"spec": name, "error": msg}, ...]}
@@ -2881,14 +2883,22 @@ class PMEngine:
             if not error.startswith("git push failed"):
                 continue
 
-            # D2/D4: 优先用 spec 自身分支的远端 SHA 验证内容已在远端
+            # D2/D4: 优先用 spec 自身分支的 SHA 比对验证内容已在远端。
+            # 本地分支仍在时做真实 SHA 相等比对——远端同名引用若停在上次
+            # 推送失败残留的旧 SHA，不得误清（code-review item 30039c4e9a5d）；
+            # 本地分支已被 merge-back 清理后无从比对，降级为存在性检查。
             branch = entry.get("branch") or f"{prefix}/{name}"
             verified = False
             verify_note = ""
+            local_branch = self._local_branch_sha(branch)
             remote_branch = self._remote_branch_sha(f"refs/heads/{branch}")
-            if remote_branch:
+            if local_branch:
+                if remote_branch and remote_branch == local_branch:
+                    verified = True
+                    verify_note = f"branch SHA match {remote_branch[:12]}"
+            elif remote_branch:
                 verified = True
-                verify_note = f"branch SHA {remote_branch[:12]}"
+                verify_note = f"branch on remote {remote_branch[:12]}"
             else:
                 # 回退：main 在远端即视为内容已推送
                 remote_main = self._remote_branch_sha("refs/heads/main")

@@ -282,21 +282,24 @@ def save_scenario_set(project_root, scenario_set: ScenarioSet) -> Path:
     写端 schema 门（fix-frozen-scenario-orphan-reservoir D1/D2）：写回前对
     ScenarioEntry 列表做结构校验，非法条目（如缺 kind 的孤儿）剔除并留痕，
     合法部分照常落盘——不整批拒绝（避免单条坏数据放大成整轮验证无法进行）。
+    非 ScenarioEntry 条目按校验失败剔除留痕（2eaebbf39624：原 ``dict(e)``
+    伪兜底转换出的裸 dict 无 ``to_dict``、写回阶段必崩，契约外类型不转换）。
     """
     import logging
 
     clean_entries: list[ScenarioEntry] = []
     rejected: list[str] = []
     for e in scenario_set.scenarios:
-        if isinstance(e, ScenarioEntry):
-            d = {
-                "id": e.id,
-                "kind": e.kind,
-                "description": e.description,
-                "added_in_round": e.added_in_round,
-            }
-        else:
-            d = dict(e)
+        if not isinstance(e, ScenarioEntry):
+            eid = e.get("id") if isinstance(e, dict) else getattr(e, "id", None)
+            rejected.append(f"{eid or '?'}（期望 ScenarioEntry，实际为 {type(e).__name__}）")
+            continue
+        d = {
+            "id": e.id,
+            "kind": e.kind,
+            "description": e.description,
+            "added_in_round": e.added_in_round,
+        }
         errs = validate_scenario_entries([d])
         if errs:
             rejected.append(f"{d.get('id') or '?'}（{'；'.join(errs)}）")

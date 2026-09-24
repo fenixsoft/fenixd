@@ -140,6 +140,15 @@ def load_test_map(tests_dir: str) -> Dict[str, str]:
         if not data or "explicit" not in data:
             return {}
 
+        # explicit 空段（yaml 解析为 None）或误写为列表时回退空映射，
+        # 避免 apply_explicit_mappings 对其调 .items() 抛 AttributeError 崩溃。
+        if not isinstance(data["explicit"], dict):
+            print(
+                "Warning: test_map.yaml 'explicit' is not a mapping; ignoring explicit mappings.",
+                file=sys.stderr,
+            )
+            return {}
+
         return data["explicit"]
     except Exception as e:
         print(f"Warning: Could not load test_map.yaml: {e}", file=sys.stderr)

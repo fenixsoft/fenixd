@@ -37,7 +37,9 @@ def locate_app_base_url(candidates: list) -> str:
             if not isinstance(step, dict) or step.get("action") != "navigate":
                 continue
             detail = f"{step.get('detail') or ''} {step.get('error') or ''}"
-            m = re.search(r"(https?://[^\s'\");]+)", detail)
+            # 排除集含全角标点：中文文案 URL 直接衔接全角标点时不得并入 netloc，
+            # 否则 urlsplit 后 base_url 带尾巴、探针误判环境失联。
+            m = re.search(r"(https?://[^\s'\");，。、；：？！）】》」』]+)", detail)
             if m:
                 url = m.group(1).rstrip("/")
                 parts = urlsplit(url)

@@ -5,7 +5,7 @@
 """
 
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 
 def promote_drafted(
@@ -14,7 +14,7 @@ def promote_drafted(
     *,
     state_machine,
     logger,
-    config: dict = None,
+    config: Optional[dict] = None,
 ) -> dict:
     """共享晋升函数：软化 + lint + 判定。
 

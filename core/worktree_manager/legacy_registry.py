@@ -265,6 +265,10 @@ class G2LegacyRegistryMixin:
 
         幂等：register_legacy 为覆盖式更新，已注册遗产不重复写。若该 spec 已在册
         遗产则跳过（不覆盖已有更早注册的遗产——更早注册的宽限期更短，应由其决定）。
+
+        例外：分支三级兜底（get_branch_name/_wt_branches/_guess_branch_from_worktree）
+        皆空时 register_legacy 对空 branch 直接早退不入册——该孤儿目录不获清扫豁免、
+        将被 cleanup_stale_worktrees 正常回收，此时仅记 WARNING 留痕。
         """
         if self.has_legacy(spec_name):
             return
@@ -276,6 +280,16 @@ class G2LegacyRegistryMixin:
         branch = self.get_branch_name(wt) or self._wt_branches.get(str(wt))
         if not branch:
             branch = self._guess_branch_from_worktree(wt)
+        if not branch:
+            # 三级兜底皆空：register_legacy 对空 branch 直接 return 不入册，孤儿
+            # worktree 未获清扫豁免。留痕说明放弃注册（对齐 keep_for_reuse 同型
+            # 处理，code-review item 26cdfa042cf8）。
+            self.logger.warning(
+                "worktree_manager",
+                f"Stale-lock legacy registration skipped for '{spec_name}': branch "
+                f"unresolvable (wt={wt}) — no sweep exemption, orphan directory is "
+                f"subject to cleanup_stale_worktrees reclaim",
+            )
         self.register_legacy(spec_name, wt, branch or "")
 
     def _guess_branch_from_worktree(self, wt_path) -> str:
@@ -337,16 +351,17 @@ class G2LegacyRegistryMixin:
         兜底 → branch -D（跳过 HEAD）→ worktree prune。rmtree 兜底统一采用
         较保守的 wt.exists() 判定，避免对已消失目录无条件 rmtree。
 
-        任何一步失败仅记 WARNING、不向上抛（``failure_label`` 供两个入口区分
-        失败日志文案），调用方只负责选取回收时机与事前审计日志，返回值语义
-        不受影响。prune 随每条记录执行（幂等），统一取代原先 consume 单次 /
-        sweeper 循环收尾单次的两种落点。
+        三步彼此隔离容错（code-review item 2e481b11b82f）：任一步失败仅记
+        WARNING、不向上抛，且不阻断后续步骤——调用方（consume / sweeper）已
+        先行出册、无重试入口，单 try 短路会让死亡分支与目录长期残留
+        （``failure_label`` 供两个入口区分失败日志文案）。prune 随每条记录执行
+        （幂等），统一取代原先 consume 单次 / sweeper 循环收尾单次的两种落点。
         """
-        try:
-            path = rec.get("path", "")
-            branch = rec.get("branch", "")
-            if path:
-                wt = Path(path)
+        path = rec.get("path", "")
+        branch = rec.get("branch", "")
+        if path:
+            wt = Path(path)
+            try:
                 res = subprocess.run(
                     ["git", "-C", str(self.project_root), "worktree", "remove", str(wt), "--force"],
                     capture_output=True,
@@ -355,12 +370,26 @@ class G2LegacyRegistryMixin:
                 )
                 if res.returncode != 0 and wt.exists():
                     shutil.rmtree(str(wt), ignore_errors=True)
-            if branch and branch != "HEAD":
+            except Exception as e:
+                self.logger.warning(
+                    "worktree_manager",
+                    f"Legacy {failure_label} worktree-remove failed for "
+                    f"'{spec_name}': {e}",
+                )
+        if branch and branch != "HEAD":
+            try:
                 subprocess.run(
                     ["git", "-C", str(self.project_root), "branch", "-D", branch],
                     capture_output=True,
                     timeout=10,
                 )
+            except Exception as e:
+                self.logger.warning(
+                    "worktree_manager",
+                    f"Legacy {failure_label} branch-delete failed for "
+                    f"'{spec_name}': {e}",
+                )
+        try:
             subprocess.run(
                 ["git", "-C", str(self.project_root), "worktree", "prune"],
                 capture_output=True,
@@ -369,6 +398,6 @@ class G2LegacyRegistryMixin:
         except Exception as e:
             self.logger.warning(
                 "worktree_manager",
-                f"Legacy {failure_label} failed for '{spec_name}': {e}",
+                f"Legacy {failure_label} prune failed for '{spec_name}': {e}",
             )
 
