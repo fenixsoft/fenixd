@@ -1023,8 +1023,6 @@ class PromptBuilder:
         子串系两字段同源（均取自 final_error，dispatch.py:1319-1333/1538-1603），
         不计为重复渲染（字段级判据，D3）。
         """
-        import json as _json
-
         diag_raw = ""
         try:
             entry = self._pm.state_machine.read_one(spec_name) or {}
@@ -1034,7 +1032,7 @@ class PromptBuilder:
         if not isinstance(diag_raw, str) or not diag_raw.strip():
             return ""
         try:
-            diag = _json.loads(diag_raw)
+            diag = json.loads(diag_raw)
         except (ValueError, TypeError):
             # 解析失败：降级为原文截断呈现（2.2），MUST NOT 抛错——重派轮仍
             # 携带上轮死因文本（哪怕结构损坏），不静默丢弃。
@@ -1431,7 +1429,10 @@ class PromptBuilder:
                 ),
                 "{out_path}": str(
                     detail.get("out_path")
-                    or (self._pm.project_root / ".fenix" / "self_review_out.json")
+                    # 兜底带归属日期标识（与读侧 self_review_out-<run_id>.json
+                    # 同形态，core/self_review.py REVIEW_OUT_PREFIX），避免缺
+                    # out_path 时落入无 run_id 固定路径被多 run 互覆。
+                    or (self._pm.project_root / ".fenix" / f"self_review_out-{token}.json")
                 ),
             },
         )

@@ -170,12 +170,17 @@ class RRollbackMixin:
                 # update_spec(→ready)/_last_dispatch_error/_enqueue **永远执行不到**
                 # ——spec 卡在 implementing 且无队列条目，正是本方法要修复的故障。
                 # 故必须独立 try/except，让豁免失败不能中止回滚。
+                # exempt_applied 标记（code-review item 6d56aa5de387）：审计日志
+                # 无条件落盘，须携带豁免是否实际生效，否则记账失败（状态文件
+                # 锁/IO 异常）时对账会把未生效的豁免当作已豁免。
+                exempt_applied = False
                 try:
                     self._pm._exempt_dead_run_budget(
                         spec_name,
                         f"dispatch exception: {str(exc)[:80]}",
                         run_reason=str(exc) if exc else None,
                     )
+                    exempt_applied = True
                 except Exception as exempt_exc:  # noqa: BLE001 —— 记账失败不阻塞回滚
                     self._pm.logger.warning(
                         "pm_engine",
@@ -185,7 +190,8 @@ class RRollbackMixin:
                 self._pm.logger.info(
                     "pm_engine",
                     f"budget_exempt_audit: spec={spec_name}, "
-                    f"dispatch_exception, exc={str(exc)[:120]}, "
+                    f"dispatch_exception, exempt_applied={exempt_applied}, "
+                    f"exc={str(exc)[:120]}, "
                     f"run_reason={str(exc)[:80] if exc else ''}",
                 )
                 # fix-run-hang-amplification 2.5：update_spec 增量更新——此处只清

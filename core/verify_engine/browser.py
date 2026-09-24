@@ -891,8 +891,6 @@ class BrowserManager:
             return False
 
         # CLS 稳定
-
-        # CLS 稳定
         try:
             await page.evaluate("""() => {
                 return new Promise((resolve) => {
@@ -915,7 +913,7 @@ class BrowserManager:
                         }
                     });
                     observer.observe({type: 'layout-shift', buffered: true});
-                    // 500ms内无布局偏移事件也认为稳定
+                    // 最多等 500ms 即视为稳定（不要求零偏移）
                     setTimeout(() => {
                         observer.disconnect();
                         resolve(true);

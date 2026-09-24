@@ -14,7 +14,7 @@ import re
 import tempfile
 from pathlib import Path
 
-from core.admin_store import AdminStore, DISPOSITION
+from core.admin_store import AdminStore, DISPOSITION, SIGNAL
 from core.pm_engine.verification.branch_guard import resolve_env_blocked_reset_path
 from core.agent_runner.prompt_builder import planner_result_status_whitelist
 from core.state_machine import INFRA_FAILURE_COUNT_FIELD, VERIFY_INFRA_ROUNDS_FIELD
@@ -139,8 +139,12 @@ def _record_infra_failure(pipeline, spec_name: str, reason: str, run_id: str = "
         # 对账豁免（_budget_reconcile_has_exemption）同侧维护。
         try:
             pipeline._context.exempt_infra_run_budget(spec_name, reason, refund_key=refund_key)
-        except Exception:
-            pass  # 预算侧车异常不阻断下游记账
+        except Exception as e:
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"infra 预算退款失败（不阻断下游记账）'{spec_name}': "
+                f"refund_key={refund_key}: {e}",
+            )
 
         # ── _verify_infra_rounds 轮次记账（纯观测，不参与冻结判定）──
         rounds = pipeline._context.state_machine.bump_verify_infra_rounds(spec_name, +1)
@@ -226,8 +230,6 @@ def _detect_uniform_verify_failure(pipeline, spec_name: str, report: dict) -> bo
         f'全场景同因失败（{fail_total}/{total}，签名一致: "{signature[:60]}"）'
         f"——疑似环境或场景问题，已呼叫 admin 介入判断（第 {attempts} 次）"
     )
-    from core.admin_store import AdminStore, SIGNAL
-
     store = AdminStore(pipeline._context.project_root, pipeline._context.logger)
     try:
         store.append(
@@ -479,13 +481,9 @@ def reclassify_infra_rounds(
         return {"ok": False, "reason": "n must be > 0", "fail_rounds": 0, "applied": 0}
 
     # ── 幂等：按 reclassify_key 去重 ──
-    import hashlib as _hash
-
     reclassify_key = _hash.sha256(
         f"{spec_name}|{n}|{audit_reason}".encode("utf-8", "replace")
     ).hexdigest()[:16]
-
-    from core.admin_store import AdminStore, DISPOSITION
 
     store = AdminStore(project_root, logger)
     try:

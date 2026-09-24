@@ -987,7 +987,8 @@ const SuggestedImprovementsPanel = forwardRef<
       okButtonProps: { danger: true },
       cancelText: '取消',
       onOk: async () => {
-        setClearingTodo(true);
+        // unmount 守卫：与 setBatchRunning/loadItems/loadView 的 mountedRef 口径一致。
+        if (mountedRef.current) setClearingTodo(true);
         try {
           const result = await clearAllEvolutionTodo();
           const parts = [`已清空 ${result.cleared.length} 个项目`];
@@ -1004,7 +1005,8 @@ const SuggestedImprovementsPanel = forwardRef<
         } catch (e) {
           message.error(errText(e, '清理失败'));
         } finally {
-          setClearingTodo(false);
+          // 清空全项目 todo.md 较慢，await 返回时面板可能已卸载
+          if (mountedRef.current) setClearingTodo(false);
         }
       },
     });

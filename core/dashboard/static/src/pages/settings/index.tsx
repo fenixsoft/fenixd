@@ -95,6 +95,13 @@ export default function SettingsPage() {
         setProjects(data.projects.map((p) => p.name));
       } catch (e) {
         console.error('Failed to load projects:', e);
+        // 项目列表失败非阻断提示（code-review item 6776b8ee2ba9）：projects 停在
+        // 空数组，作用域下拉只剩「用户级」，项目级页签与回归质量配置全部不可达，
+        // 仅 console.error 会让用户误以为尚未注册任何项目。比照保存后刷新失败的
+        // message.warning 口径提示，不与配置加载失败的 loadError 横幅混为一谈。
+        message.warning(
+          `项目列表加载失败，项目级作用域暂不可用：${e instanceof Error ? e.message : String(e)}`,
+        );
       }
     };
     loadProjects();

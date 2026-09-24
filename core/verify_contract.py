@@ -421,6 +421,12 @@ class ValidateResult:
     serve_port: Optional[int] = None
     ready_url: str = ""
     ready_expect: int = 200
+    # 本次校验实际加载的契约对象（code-review item 73047bb4e140）：随结果一并
+    # 返回，调用方（fenix_verify_contract.py CLI）全程复用同一份契约做跳过
+    # 判定与 regression 自证，消除两次读取之间 verify.yaml 被改写导致「三段
+    # 判定结论与自证所用契约不是同一版本」的 TOCTOU 窗口。契约缺失/解析失败
+    # 的早退路径为 None。
+    contract: Optional[VerifyContract] = None
 
 
 def validate_contract(project_root: Path, logger=None) -> ValidateResult:
@@ -444,7 +450,8 @@ def validate_contract(project_root: Path, logger=None) -> ValidateResult:
         logger: 日志记录器（可选）
 
     Returns:
-        ValidateResult：逐段结果与 valid 判定
+        ValidateResult：逐段结果与 valid 判定（含已加载的契约对象 contract，
+        供调用方复用同一版本契约，见字段注释）
     """
     project_root = Path(project_root)
     contract_path = project_root / ".fenix" / CONTRACT_FILENAME
@@ -686,6 +693,7 @@ def validate_contract(project_root: Path, logger=None) -> ValidateResult:
         serve_port=serve_port,
         ready_url=ready_url,
         ready_expect=ready_expect,
+        contract=contract,
     )
 
 

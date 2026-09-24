@@ -339,10 +339,22 @@ export default function QualityTab({ project, active }: QualityTabProps) {
   // interval 回调直呼创建时捕获的旧闭包会用旧过滤条件的结果覆盖正确过滤的列表。
   const loadItemsRef = useRef(loadItems);
 
+  // 进度请求序号守卫（code-review item 665b617e8d6e）：与 loadItems 的
+  // loadSeqRef 同款防护——loadProgress 会被数据加载 effect、SSE 帧、30s 心跳
+  // 并发触发，切项目/切页签后旧项目的在飞响应晚到，无守卫时会把新项目
+  // progress 覆盖回旧值（最多等 30s 心跳才自愈），且 running=true 时会在
+  // SSE 清理之后重建闭包捕获旧 project 的 2s 轮询（占据 pollTimerRef 还会
+  // 让新项目因「已有轮询」拿不到自己的轮询）。除每次调用自增外，SSE effect
+  // 清理处也自增（卸载/active 翻转/project 切换），使切换前所有在飞响应
+  // 一律过期——含切到非激活态（effect 早退不调用本函数）的窗口。
+  const progressSeqRef = useRef(0);
+
   const loadProgress = useCallback(async () => {
     if (!active || !project) return;
+    const seq = ++progressSeqRef.current;
     try {
       const p = await getCodeReviewProgress(project);
+      if (seq !== progressSeqRef.current) return; // 过期响应丢弃（陈旧覆盖/旧轮询重建防护）
       setProgress(p);
       if (p.running) {
         // 运行中：轮询进度（2s），结束兜底刷新表格
@@ -436,6 +448,11 @@ export default function QualityTab({ project, active }: QualityTabProps) {
       disposed = true;
       es.close();
       window.clearInterval(heartbeat);
+      // 清理即作废所有在飞进度响应（code-review item 665b617e8d6e）：与下方
+      // pollTimerRef 清理同点（卸载/active 翻转/project 切换都走这里）——否则
+      // 旧项目 running=true 的晚到响应会在本轮清理之后，经过期闭包重建捕获
+      // 旧 project 的 2s 轮询。
+      progressSeqRef.current += 1;
       if (pollTimerRef.current !== null) {
         window.clearInterval(pollTimerRef.current);
         pollTimerRef.current = null;

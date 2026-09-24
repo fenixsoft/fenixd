@@ -35,6 +35,12 @@ _SCENARIO_REPAIR_MAX_ROUNDS = 3
 # 调参在此一处生效。
 _SCENARIO_REPAIR_REVERIFY_DELAY_SECONDS = 1800
 
+# 重验定时器排程互斥锁：判重（check）与占位（act）须同锁原子完成——并发
+# 进入排程路径时先占位成功者才建定时器，杜绝同 spec 双 Timer（仿 backoff.py
+# `_schedule_instant_fail_recovery` 的锁内排程模式）。模块级锁：`_reverify_timers`
+# 集合 per-pipeline lazy 挂载，锁若随集合 lazy 创建则锁自身初始化仍有竞态。
+_REVERIFY_TIMERS_LOCK = threading.Lock()
+
 
 def _handle_env_blocked_inconclusive(pipeline, spec_name: str, report: dict) -> bool:
     """环境性失联门禁：全批 blocked-env → inconclusive → 保持 testing 重派新 attempt。
@@ -1281,38 +1287,13 @@ def _schedule_scenario_repair_reverify(pipeline, spec_name: str) -> None:
                   enqueue/logger/pm_engine）。
         spec_name: 预算耗尽的 spec 名。
     """
-    # 幂等判重：同 spec 已排程重验定时器则直接返回（不排第二个）
-    timers = getattr(pipeline, "_reverify_timers", None)
-    if timers is None:
-        timers = set()
-        pipeline._reverify_timers = timers
-    if spec_name in timers:
-        pipeline._context.logger.debug(
-            "pm_engine",
-            f"重验日程已存在，幂等跳过 '{spec_name}'（fix-recovery-path-blockers D3）",
-        )
-        return
-    # 写 _dispatch_backoff_until：退避窗内 spec_is_undriven 条件③ 为真，
-    # 探测器静默；到期后由定时器（主）+ 周期扫描（兜底）触发重验。
-    deadline_epoch = int(time.time()) + _SCENARIO_REPAIR_REVERIFY_DELAY_SECONDS
-    try:
-        pipeline._context.state_machine.update_spec(
-            spec_name,
-            {
-                "_dispatch_backoff_until": deadline_epoch,
-            },
-        )
-    except Exception as e:
-        pipeline._context.logger.warning(
-            "pm_engine",
-            f"重验日程写 _dispatch_backoff_until 失败 '{spec_name}'"
-            f"（不阻断排程）: {type(e).__name__}: {e}",
-        )
-
     def _on_reverify_due(name: str = spec_name) -> None:
         """定时器到期回调：入队 verifier + 触发派发（幂等，多定时器并发安全）。"""
-        # 清掉判重标记：允许未来再次进入排程路径（若再次耗尽走升级通道）
-        timers.discard(name)
+        # 清掉判重标记：允许未来再次进入排程路径（若再次耗尽走升级通道）。
+        # 与排程路径同锁互斥——防回调 discard 与并发排程的判重/add 交错
+        # 复活 check-then-act 竞态（锁内仅 set.discard，无 IO、无重入）。
+        with _REVERIFY_TIMERS_LOCK:
+            timers.discard(name)
         pipeline._context.logger.info(
             "pm_engine",
             f"重验日程到期，入队 verifier '{name}'（fix-recovery-path-blockers D3）",
@@ -1338,10 +1319,43 @@ def _schedule_scenario_repair_reverify(pipeline, spec_name: str) -> None:
                     f"{type(e).__name__}: {e}",
                 )
 
-    timer = threading.Timer(_SCENARIO_REPAIR_REVERIFY_DELAY_SECONDS, _on_reverify_due)
-    timer.daemon = True
-    timers.add(spec_name)
-    timer.start()
+    # 幂等判重 + 占位（check-then-act 原子）：锁内一次性完成「判重 → 建定时器
+    # → add 占位 → start」，先占位成功者才排程，杜绝并发同 spec 双 Timer
+    # （仿 backoff.py `_schedule_instant_fail_recovery` 的锁内排程模式）。
+    # 临界区仅内存操作 + Timer 创建/启动（轻量无 IO），无重入路径。
+    with _REVERIFY_TIMERS_LOCK:
+        timers = getattr(pipeline, "_reverify_timers", None)
+        if timers is None:
+            timers = set()
+            pipeline._reverify_timers = timers
+        if spec_name in timers:
+            pipeline._context.logger.debug(
+                "pm_engine",
+                f"重验日程已存在，幂等跳过 '{spec_name}'（fix-recovery-path-blockers D3）",
+            )
+            return
+        timer = threading.Timer(_SCENARIO_REPAIR_REVERIFY_DELAY_SECONDS, _on_reverify_due)
+        timer.daemon = True
+        timers.add(spec_name)
+        timer.start()
+    # 写 _dispatch_backoff_until：退避窗内 spec_is_undriven 条件③ 为真，
+    # 探测器静默；到期后由定时器（主）+ 周期扫描（兜底）触发重验。
+    # （锁外执行——状态机写盘属耗时 IO，MUST NOT 入临界区；写失败不阻断
+    # 排程，此时定时器已占位启动、兜底语义不受影响。）
+    deadline_epoch = int(time.time()) + _SCENARIO_REPAIR_REVERIFY_DELAY_SECONDS
+    try:
+        pipeline._context.state_machine.update_spec(
+            spec_name,
+            {
+                "_dispatch_backoff_until": deadline_epoch,
+            },
+        )
+    except Exception as e:
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"重验日程写 _dispatch_backoff_until 失败 '{spec_name}'"
+            f"（不阻断排程）: {type(e).__name__}: {e}",
+        )
     pipeline._context.logger.info(
         "pm_engine",
         f"'{spec_name}' 场景原地修复预算耗尽，已排程重验"
