@@ -82,7 +82,9 @@ from core.agent_runner.provider_circuit import (
     PROVIDER_CIRCUIT_THRESHOLD,
     PROVIDER_CIRCUIT_WINDOW_SECONDS,
     PROVIDER_DAILY_ATTEMPTS_WARN,
+    PROVIDER_RATELIMIT_COOLDOWN_SECONDS,
     PROVIDER_SWITCH_COOLDOWN_SECONDS,
+    RATELIMIT_REDISPATCH_MAX,
     ProviderCircuit,
     annotate_model_chain_unavailable,
 )
@@ -441,6 +443,9 @@ class AgentRunner:
         "_circuit_state": ("_provider_circuit", "_circuit_state"),
         "is_circuit_open": ("_provider_circuit", "is_circuit_open"),
         "is_switch_cooldown": ("_provider_circuit", "is_switch_cooldown"),
+        # add-code-review-concurrency-and-429-resilience：限流冷却到期时刻查询
+        # （ratelimit_redispatch 意图登记消费）
+        "switch_cooldown_until": ("_provider_circuit", "switch_cooldown_until"),
         "_record_switch_cooldown": ("_provider_circuit", "_record_switch_cooldown"),
         # add-impl-selfcheck-model-probe（2.1）：拒模型识别告警经组件单点，
         # 门面转发保持与其它 provider 记账原语同机制。
@@ -552,6 +557,8 @@ class AgentRunner:
     _read_init_tools = staticmethod(_read_init_tools)
     parse_api_error_status = staticmethod(ProviderCircuit.parse_api_error_status)
     classify_switch_error = staticmethod(ProviderCircuit.classify_switch_error)
+    # add-code-review-concurrency-and-429-resilience：429 限流分类与切换类同源转发
+    classify_ratelimit_error = staticmethod(ProviderCircuit.classify_ratelimit_error)
     classify_unrecognized_model_error = staticmethod(
         ProviderCircuit.classify_unrecognized_model_error)
     classify_transient_error = staticmethod(ProviderCircuit.classify_transient_error)
@@ -2345,7 +2352,16 @@ class AgentRunner:
                                 error = annotate_model_chain_unavailable(
                                     error, provider_name, model, st.chain_reject_hits)
                                 st.chain_rejected_exhausted = True
-                        self._record_switch_cooldown(provider_name)
+                        # add-code-review-concurrency-and-429-resilience（D3）：
+                        # 429 限流冷却走同一通道但用独立常量时长（非
+                        # switch_cooldown_seconds 配置），便于限流调参。
+                        if self.classify_ratelimit_error(error):
+                            self._record_switch_cooldown(
+                                provider_name,
+                                cooldown_seconds=PROVIDER_RATELIMIT_COOLDOWN_SECONDS,
+                            )
+                        else:
+                            self._record_switch_cooldown(provider_name)
                         # 仅当链上还有后续候选才前进指针；否则保持当前（全链耗尽将
                         # 在下一 attempt 的 _select_chain_candidate 中判定为 chain_exhausted）。
                         if st.chain_cursor + 1 < len(chain):
@@ -2593,6 +2609,14 @@ class AgentRunner:
         # 与链尾归因标注在调用方 attempt 循环（该作用域有 model / run_id）。
         if error and self.classify_unrecognized_model_error(error):
             return error, False, True
+        # add-code-review-concurrency-and-429-resilience（D3）：429 限流是暂时性
+        # 配额压力——非瞬态（不进原地退避重试：冷却期内原地重试同一账号只会
+        # 继续撞 429，纯烧预算）、may_switch=True（调用方沿链前进 + 限流冷却，
+        # 复用 switch 冷却通道）。判定 MUST 先于 4xx 解析与瞬断通道——429 形态
+        # 常伴随「exit 1 + 无 result + 诊断行」（瞬断通道 2 会把它误判瞬断进
+        # 原地重试）；且 429 不在 PROVIDER_CIRCUIT_4XX 内，天然不进熔断计数。
+        if error and self.classify_ratelimit_error(error):
+            return error, False, True
         code = self.parse_api_error_status(error)
         if code is not None and code in PROVIDER_CIRCUIT_4XX:
             # 4xx 熔断计数（fix-stashpop-deadlock：provider-fault-fuse）。
@@ -2648,6 +2672,103 @@ class AgentRunner:
                     f"global transient break 记账失败（不阻断）: {_break_err}",
                 )
         return error, is_transient, True  # may_switch：else 分支（provider 在位且 code 非 4xx）
+
+    # ── 429 限流终态归因与重派意图登记（add-code-review-concurrency-and-429-resilience D4）──
+    def _ratelimit_redispatch_on_terminal(self, run_id: str, error: str,
+                                          provider_name: str | None = None,
+                                          spec_name: str = "") -> dict | None:
+        """run 终态归因为 429 限流时登记 ``ratelimit_redispatch`` 意图（design D4）。
+
+        分工（design D4）：runner 只负责终态归因与意图登记——
+        ① provider 进限流冷却（复用 switch 冷却通道与候选跳过语义，独立常量
+        PROVIDER_RATELIMIT_COOLDOWN_SECONDS）：同 run/其它派发的链选择在冷却期
+        跳过该候选（不启动 claude、不烧 429）；
+        ② run jsonl 标注重派缘由（type=ratelimit_redispatch，含最早冷却到期
+        时刻，spec failover-dispatch delta「运行记录 SHALL 标注重派缘由」）。
+
+        意图 dict 经结果信封（CodeReviewResult.ratelimit_redispatch）上交消费
+        侧（run_code_review 唯一生产调用方 admin_monitor._worker），由其在冷却
+        到期后延迟重投递；重派上限（RATELIMIT_REDISPATCH_MAX=1）与单飞守卫由
+        消费侧执行（run 已终态死亡，进程内无人续跑）。本函数对同一 run_id 只
+        登记一次（jsonl 幂等：已有标注即不再登记；重派后的 run 是新 run_id，
+        由消费侧上限守卫兜底，不会无限重派）。
+
+        返回意图 dict（reason/provider/cooldown_until/cooldown_until_epoch）；
+        非 429 / 空错误 / 已登记 → None。
+
+        Args:
+            run_id: 终态失败的 run 标识（jsonl 标注落点）。
+            error: 终态错误文本（降噪后；分类判定同源 classify_ratelimit_error）。
+            provider_name: 本次 run 实际使用的 provider（限流冷却落点；未知时
+                跳过冷却记账、意图冷却到期时刻回退常量时长推算）。
+            spec_name: 归属 spec（code-review 车道传 "code-review"）。
+        """
+        if not error or not self.classify_ratelimit_error(error):
+            return None
+        from core.agent_runner.provider_circuit import PROVIDER_RATELIMIT_COOLDOWN_SECONDS as _RL_CD
+
+        run_file = self.project_root / ".fenix" / "runs" / f"{run_id}.jsonl"
+        # 幂等：同 run 已登记过即不再登记（重派后的 run 是新 run_id，消费侧
+        # 上限守卫兜底——这里防的是同 run 重复登记刷屏）。
+        try:
+            if run_file.exists():
+                for line in run_file.read_text(encoding="utf-8").splitlines():
+                    if '"type": "ratelimit_redispatch"' in line:
+                        return None
+        except OSError:
+            pass
+        now = time.time()
+        cooldown_until = 0.0
+        if provider_name:
+            try:
+                cooldown_until = self.switch_cooldown_until(provider_name)
+            except Exception:  # noqa: BLE001 — 冷却查询失败回退常量推算
+                cooldown_until = 0.0
+        if cooldown_until <= now:
+            cooldown_until = now + _RL_CD
+        # ① provider 进限流冷却（复用 switch 冷却通道与候选跳过语义；时长用
+        # 独立常量——spec 限流冷却通道，design D3）。
+        if provider_name:
+            try:
+                self._record_switch_cooldown(
+                    provider_name, cooldown_seconds=_RL_CD)
+            except Exception:  # noqa: BLE001 — 冷却记账失败不阻断意图登记
+                pass
+        # ② run jsonl 标注重派缘由（冷却到期时刻双格式：iso 供人读、epoch 供
+        # 消费侧算延迟；写失败仅丢留痕，不阻断意图上交）。
+        try:
+            append_run_line(
+                run_file,
+                {
+                    "type": "ratelimit_redispatch",
+                    "run_id": run_id,
+                    "spec": spec_name,
+                    "provider": provider_name,
+                    "reason": "429 ratelimit",
+                    "cooldown_until": datetime.fromtimestamp(
+                        cooldown_until, tz=timezone.utc).isoformat(),
+                    "cooldown_until_epoch": cooldown_until,
+                    "max_redispatches": RATELIMIT_REDISPATCH_MAX,
+                },
+            )
+        except OSError:
+            pass
+        self.logger.info(
+            "agent_runner",
+            f"Ratelimit redispatch intent registered (add-code-review-"
+            f"concurrency-and-429-resilience) — run={run_id} spec={spec_name!r} "
+            f"provider={provider_name!r} cooldown_until="
+            f"{datetime.fromtimestamp(cooldown_until, tz=timezone.utc).isoformat()}",
+        )
+        return {
+            "reason": "429 ratelimit",
+            "provider": provider_name,
+            "run_id": run_id,
+            "cooldown_until": datetime.fromtimestamp(
+                cooldown_until, tz=timezone.utc).isoformat(),
+            "cooldown_until_epoch": cooldown_until,
+            "max_redispatches": RATELIMIT_REDISPATCH_MAX,
+        }
 
     # ── R6 子步 2: 瞬断原地退避重试（等价搬移，D1 R6 表，Task 5.1）──────
     # 仅处理「is_transient 且原地预算未耗尽」时的瞬断重试段：写 transient_retry

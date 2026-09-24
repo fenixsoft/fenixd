@@ -57,10 +57,10 @@
 
 ## 4. 429 限流分类与 provider 冷却
 
-- [ ] 4.1 `core/agent_runner/provider_circuit.py` 新增常量 `PROVIDER_RATELIMIT_COOLDOWN_SECONDS = 300` 与分类逻辑：错误文本命中 HTTP 429 / `[1302]` / `rate_limit` 任一签名判为限流错误（以 2026-09-24 真实错误文本 `API Error: Request rejected (429) · [1302][您的账户已达到速率限制，请您控制请求频率]` 作 fixture）；429 MUST NOT 计入 `PROVIDER_CIRCUIT_4XX` 计数
-- [ ] 4.2 `classify_switch_error` 将限流错误纳入切换类错误（更新 docstring 分类清单），命中时 provider 进入限流冷却（复用 switch 冷却通道与候选跳过语义，冷却时长用 4.1 常量）
-- [ ] 4.3 `core/pm_engine/verification/infra_classify.py` 中切换类错误描述同步（unrecognized_model/5xx/网络/429 限流）；注意该文件 `_verifier_error_is_infra`（infra_classify.py:29）复用 classify_switch_error 通道——429 进入切换类后，验证失败的 infra 归因随之覆盖 429（「验证没能发生」语义，属预期外溢），补一条断言用例固化
-- [ ] 4.4 `tests/test_provider_circuit.py` 新增用例：429 文本命中分类 / 429 不增 4xx 计数 / 冷却期内候选被链选择跳过 / 冷却到期探针复位
+- [x] 4.1 `core/agent_runner/provider_circuit.py` 新增常量 `PROVIDER_RATELIMIT_COOLDOWN_SECONDS = 300` 与分类逻辑：错误文本命中 HTTP 429 / `[1302]` / `rate_limit` 任一签名判为限流错误（以 2026-09-24 真实错误文本 `API Error: Request rejected (429) · [1302][您的账户已达到速率限制，请您控制请求频率]` 作 fixture）；429 MUST NOT 计入 `PROVIDER_CIRCUIT_4XX` 计数
+- [x] 4.2 `classify_switch_error` 将限流错误纳入切换类错误（更新 docstring 分类清单），命中时 provider 进入限流冷却（复用 switch 冷却通道与候选跳过语义，冷却时长用 4.1 常量）
+- [x] 4.3 `core/pm_engine/verification/infra_classify.py` 中切换类错误描述同步（unrecognized_model/5xx/网络/429 限流）；注意该文件 `_verifier_error_is_infra`（infra_classify.py:29）复用 classify_switch_error 通道——429 进入切换类后，验证失败的 infra 归因随之覆盖 429（「验证没能发生」语义，属预期外溢），补一条断言用例固化
+- [x] 4.4 `tests/test_provider_circuit.py` 新增用例：429 文本命中分类 / 429 不增 4xx 计数 / 冷却期内候选被链选择跳过 / 冷却到期探针复位
 
 ## 5. 429 打死 run 的自动重派
 
