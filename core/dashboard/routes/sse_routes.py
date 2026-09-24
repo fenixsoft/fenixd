@@ -15,6 +15,13 @@ import queue
 import socket
 import time
 
+# SSE 心跳周期（秒）。心跳只在 queue 超时分支触发，实际节奏粒度由 poll_interval
+# 决定，因此 poll_interval 必须 ≤ SSE_HEARTBEAT_SECONDS，否则心跳会迟到。
+SSE_HEARTBEAT_SECONDS = 25
+# poll_interval 缺省值（秒）。生产者真值在 core.dashboard.server 命名空间
+# （D3 缝隙，测试 monkeypatch 该属性），此处仅作 getattr 兜底，须与真值一致。
+SSE_POLL_INTERVAL_DEFAULT = 1.0
+
 
 class H9SseRoutesMixin:
     """H9 SSE（design D1 表 C H9）。"""
@@ -44,7 +51,9 @@ class H9SseRoutesMixin:
         try:
             self._sse_send({"type": "hello", "cid": conn.id})
             last_heartbeat = time.monotonic()
-            poll_interval = getattr(_server_mod, "SSE_CLIENT_POLL_INTERVAL", 1.0)
+            poll_interval = getattr(
+                _server_mod, "SSE_CLIENT_POLL_INTERVAL", SSE_POLL_INTERVAL_DEFAULT
+            )
             while True:
                 try:
                     event = conn.queue.get(timeout=poll_interval)
@@ -52,8 +61,11 @@ class H9SseRoutesMixin:
                     # 客户端断开探测：可读且 recv 返回 b""（EOF/FIN）即已断开
                     if self._sse_client_gone():
                         break
-                    # 25s 心跳保活
-                    if time.monotonic() - last_heartbeat >= 25:
+                    # 心跳保活（粒度受 poll_interval 约束，见模块头注释）
+                    if (
+                        time.monotonic() - last_heartbeat
+                        >= SSE_HEARTBEAT_SECONDS
+                    ):
                         self._sse_send(None)
                         last_heartbeat = time.monotonic()
                     continue

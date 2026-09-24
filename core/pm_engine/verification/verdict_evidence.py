@@ -533,6 +533,14 @@ def _escalate_dedup_resynthesis(
         f"（含 {_RESYNTHESIS_MAX_ATTEMPTS} 轮轻量重合成仍同文），"
         f"已 blocked 等待人工裁决（违规摘要: {summary}）"
     )
+    # 升级即清除重合成指令（计数已随 error/告警留痕）：人工按
+    # recommended_action 修正归因解除 blocked 后，若新一轮 judge 全新产物
+    # 再次被查重拒绝（与本轮无关的新原因），必须从 0 重新走满
+    # _RESYNTHESIS_MAX_ATTEMPTS 轮轻量重合成预算——残留 attempts 会让
+    # 首轮拒绝即再升级，重合成自愈通道对此 spec 永久失效（预算跨人工
+    # 接管周期「永久累计」而非「连续 2 轮」）；同时避免 stale 指令被
+    # judge prompt 注入段误读。合规采纳路径的清除语义不变。
+    pipeline._clear_resynthesis_directive(spec_name)
     pipeline._context.state_machine.update_spec(
         spec_name,
         {

@@ -693,7 +693,7 @@ class G1LifecycleMixin:
                 # 留快照引用，消灭「先删后查」取证盲区；失败仅 WARNING 不阻塞。
                 self._snapshot_dirty_worktree(wt_dir, self._wt_branches.get(str(wt_dir)))
                 try:
-                    subprocess.run(
+                    result = subprocess.run(
                         [
                             "git",
                             "-C",
@@ -704,8 +704,19 @@ class G1LifecycleMixin:
                             "--force",
                         ],
                         capture_output=True,
+                        text=True,
                         timeout=30,
                     )
+                    # 返回非零（worktree locked / 权限 / 子模块残留）不抛异常：
+                    # 参照 cleanup() 对 returncode != 0 做 rmtree 兜底，否则目录
+                    # 静默滞留（末尾统一 worktree prune，此处不重复）。
+                    if result.returncode != 0:
+                        self.logger.warning(
+                            "worktree_manager",
+                            f"Orphan worktree remove warning: {result.stderr}",
+                        )
+                        if wt_dir.exists():
+                            shutil.rmtree(str(wt_dir), ignore_errors=True)
                 except Exception:
                     shutil.rmtree(str(wt_dir), ignore_errors=True)
 

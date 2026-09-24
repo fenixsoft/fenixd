@@ -281,6 +281,7 @@ def render_active_specs(specs):
         return f"  {GRAY}无活跃 SPEC — 所有任务已完成{RESET}"
 
     lines = []
+    verify = None  # 同轮惰性缓存：多个 testing SPEC 共享一次进度目录扫描
     for name, entry in active[:4]:  # 最多显示 4 个
         status = entry.get("status", "?")
         icon = STATUS_ICONS.get(status, "❓")
@@ -319,8 +320,10 @@ def render_active_specs(specs):
         if current_task:
             lines.append(f"     {DIM}⏳ {current_task}{RESET}")
         elif status == "testing":
-            # 显示验证进度
-            verify = get_verify_progress()
+            # 显示验证进度（每轮惰性加载一次并复用——get_verify_progress
+            # 每次全目录 glob+解析，循环内逐 SPEC 重复调用会放大刷新 IO）
+            if verify is None:
+                verify = get_verify_progress()
             for v in verify:
                 # v["spec"] 是进度文件 stem，恒为精确 SPEC 名（engine.py 写点
                 # f"{spec_name}.json"），用精确匹配——子串包含会让同名前缀
@@ -395,8 +398,13 @@ def render_event_feed(specs):
     return "\n".join(lines)
 
 
-def render_stats_panel(specs):
-    """渲染右侧统计面板（简化版）"""
+def render_stats_panel(specs, scenario_counts=None):
+    """渲染右侧统计面板（简化版）
+
+    scenario_counts 可传调用方单轮预计算的 {spec: 场景数} 复用，避免对
+    全部 SPEC（含 done/pushed）逐个 rglob 重扫 spec.md；缺省时保持原
+    按需逐个统计行为。
+    """
     total = len(specs)
     by_status = {}
     for e in specs.values():
@@ -421,8 +429,10 @@ def render_stats_panel(specs):
             icon = STATUS_ICONS.get(st, "  ")
             lines.append(f"    {icon} {st:14s}: {count}")
 
-    # 场景统计
-    total_scenarios = sum(dash_data.count_scenarios(PROJECT_ROOT, n) for n in specs)
+    # 场景统计（传入预计算结果时不再逐 SPEC 重扫）
+    if scenario_counts is None:
+        scenario_counts = {n: dash_data.count_scenarios(PROJECT_ROOT, n) for n in specs}
+    total_scenarios = sum(scenario_counts.get(n, 0) for n in specs)
     if total_scenarios > 0:
         lines.append(f"    📋 场景总数: {total_scenarios}")
 

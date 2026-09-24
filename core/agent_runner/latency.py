@@ -87,7 +87,10 @@ def latency_samples_from_events(entries, parser=None) -> list:
     stream-json 转录以 ``user`` 事件包裹 ``tool_result`` content block
     承载，兼容顶层 ``tool_result`` 事件）的 timestamp，遇到下一个
     ``assistant`` 事件时两者之差 = 一次 API 往返样本；随后清空待配对的
-    tool_result（一个样本只配对一次）。timestamp 缺失的事件不参与（跳过），
+    tool_result（一个样本只配对一次）。timestamp 缺失的事件不参与（跳过）：
+    ``tool_result`` 缺 timestamp 时清空待配对点、丢弃该轮样本（不沿用更早
+    的 tool_result 跨轮配对，以免样本区间被拉长而虚高）；``assistant`` 缺
+    timestamp 时不产样本，待配对的 tool_result 保留给下一个 assistant。
     样本列表可空。差值 < 0（timestamp 非单调：转录乱序、时钟回拨等）视为
     无效测量，跳过不入样本（待配对 tool_result 仍清空，维持「一个样本只
     配对一次」），以免负样本污染下游 median/p90/max/stall_ratio 口径。
@@ -111,6 +114,11 @@ def latency_samples_from_events(entries, parser=None) -> list:
             ts = parser(e)
             if ts is not None:
                 last_tool_result_ts = ts
+            else:
+                # tool_result 缺 timestamp：本轮无法测量，清空待配对点、
+                # 丢弃该轮样本（沿用更早的 tool_result 会跨轮错配、样本虚高；
+                # 与下方负差值同取「无效测量不入样本」口径）。
+                last_tool_result_ts = None
         elif etype == "assistant":
             ts = parser(e)
             if ts is not None and last_tool_result_ts is not None:

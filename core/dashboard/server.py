@@ -91,7 +91,14 @@ from .http_server import DashboardHTTPServer  # noqa: F401 — D1 门面 re-expo
 
 
 def find_free_port(start: int, max_attempts: int = 50) -> int:
-    """从 start 开始向上探测第一个空闲端口。"""
+    """从 start 开始向上探测第一个空闲端口。
+
+    注意（TOCTOU，code-review cf56f85b4659）：bind 成功即关闭 socket 并返回
+    端口号，从探测到调用方真正监听之间存在端口被其他进程抢占的窗口；本函数
+    不做重试，调用方需自行处理随后的绑定失败（serve() 对占用走接管/退出语义，
+    且不再自动上探）。需要消除该竞态窗口的新调用方请改用
+    core.proc_utils.find_bound_socket（持有已绑定 socket 直到正式启动）。
+    """
     for port in range(start, start + max_attempts):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)

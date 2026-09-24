@@ -138,12 +138,15 @@ def read_evolution_draft(project_root, item_id_, doc) -> dict:
             spec = rec.get("spec") if isinstance(rec.get("spec"), dict) else None
             if spec:
                 capability = spec.get("capability") or ""
-            rel = f"specs/{capability}/spec.md"
+            # capability 为空时令 rel 落空（跳过草稿读取、走 SPEC 回退），与
+            # SPEC 回退路径的空值处理对齐，避免构造出 specs//spec.md 双斜杠路径
+            rel = f"specs/{capability}/spec.md" if capability else None
         else:
             rel = {"proposal": "proposal.md", "design": "design.md", "tasks": "tasks.md"}[doc]
-        result = _read_target(d / rel, d)
-        if result.get("found") or result.get("invalid_doc"):
-            return result
+        if rel is not None:
+            result = _read_target(d / rel, d)
+            if result.get("found") or result.get("invalid_doc"):
+                return result
 
     # 2. SPEC 位置回退：草稿缺失但条目记录含 spec_name
     if rec.get("spec_name"):

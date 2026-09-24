@@ -417,6 +417,9 @@ class H5SettingsRoutesMixin:
         契约有效且无 overwrite 响应 skipped（附「契约已有效」文案）不写信号；
         写前在途去重（D2）：同项目同 signal_type 未消费信号已存在则不重复写，
         响应仍 dispatched 且 message 注明已有在途请求。
+        contract is None 时 evidence 附「契约状态=」成因（code-review item
+        d190fab69dc9）：缺失 vs 解析失败（含异常摘要）vs 内容无效，合并写
+        verify_contract_missing 的语义不变，仅补充证据信息。
         """
         body = self._read_json_body()
         if body is None:
@@ -446,6 +449,27 @@ class H5SettingsRoutesMixin:
         evidence_detail = f"项目名={project['name']}"
         if overwrite:
             evidence_detail += "; 覆盖确认=是"
+        if contract is None:
+            # 成因区分（code-review item d190fab69dc9）：load_verify_contract 有意
+            # 把「文件缺失」与「文件存在但无效」合并返回 None，此处不改合并语义
+            # （signal_type 仍为 verify_contract_missing），仅在 evidence 里附
+            # 「契约状态=」让用户/Administrator 免于自行打开文件复查。三态：
+            # 文件缺失 / 解析失败（含异常摘要，OSError 一并归入）/
+            # 内容无效（YAML 可解析但契约校验未通过，如顶层非映射、ready 段非法）。
+            # 摘要 MUST 剔除 ";" 与换行——下游按 ";" 分段解析 evidence 的
+            # 「项目名=」字段（admin_monitor 摄取 / code_fix._evidence_project /
+            # 本端点 _is_inflight 均然），污染分隔符会破坏项目名提取与在途判重。
+            cpath = proot / ".fenix" / "verify.yaml"
+            if not cpath.is_file():
+                contract_status = "文件缺失"
+            else:
+                try:
+                    yaml.safe_load(cpath.read_text(encoding="utf-8"))
+                    contract_status = "内容无效（YAML 可解析但契约校验未通过）"
+                except Exception as e:
+                    brief = " ".join(str(e).split()).replace(";", "，")[:160]
+                    contract_status = f"解析失败: {brief}"
+            evidence_detail += f"; 契约状态={contract_status}"
         # 在途去重（D2）：同项目同 signal_type 未消费信号已存在 → 不重复写。
         # 异类型互不抑制（missing 在途不挡 redraft——契约被修正后确认覆盖是新意图）；
         # 已被巡检拾取（escalated）或已 handled 的历史信号不抑制（用户可再次请求）。

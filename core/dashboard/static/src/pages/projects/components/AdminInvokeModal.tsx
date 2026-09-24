@@ -140,6 +140,9 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
   };
 
   const handleSend = async () => {
+    // sending 在途守卫：回车经 setTimeout 延后触发且按住会连发，首个请求在途
+    // （invoked 尚未置位）时后续回车会重复 POST，且第二次 409 会被误判冲突
+    if (sending) return;
     const text = promptRef.current.trim();
     if (!text) {
       message.warning('请输入给 Admin 的提示词');

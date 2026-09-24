@@ -272,7 +272,8 @@ async function launchChromeExtension(distPath, opts = {}) {
     };
   }
 
-  const userDataDir = `/tmp/fenix-ext-profile-${Date.now()}`;
+  // mkdtemp 生成含随机后缀的临时 profile 目录，避免 Date.now() 可预测命名在共享主机上的符号链接占位风险
+  const userDataDir = fs.mkdtempSync('/tmp/fenix-ext-profile-');
   let browserContext = null;
   let extensionPage = null;
 
@@ -283,6 +284,7 @@ async function launchChromeExtension(distPath, opts = {}) {
       args: [
         `--disable-extensions-except=${absoluteDist}`,
         `--load-extension=${absoluteDist}`,
+        // 验证机常以 root/容器身份运行，Chromium 在 root 下无法启用内核沙箱，故保留 --no-sandbox（仅加载本地 dist 扩展，验证场景风险可控）
         '--no-sandbox',
         '--disable-gpu',
         '--disable-dev-shm-usage',

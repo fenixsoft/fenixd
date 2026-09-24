@@ -52,9 +52,12 @@ def _build_log_block_index(log_path: Path, size: int) -> dict:
                     offsets.append(boundary + nl + 1)
     except OSError:
         return {"size": size, "offsets": [0]}
-    # 保证末尾（不足一块的尾部 / 恰好整块）也有条目指向尾部起始行
-    if offsets and offsets[-1] >= size:
-        offsets[-1] = max(0, size - 1)
+    # 末块采样可能落进文件最后一行且换行恰为文件末字节 → offsets[-1] == size（越
+    # 界，非行首）。不可钳到 size-1：那指向行尾 \n 本身而非行首，_first_ts 只读到
+    # 空行必解析失败，二分探测退化为 _read(0) 全文件读取。改为弹出末条：尾部区域
+    # 由前一偏移读至 EOF 自然覆盖（末行起点本就不在末块采样范围内）。
+    if len(offsets) > 1 and offsets[-1] >= size:
+        offsets.pop()
     return {"size": size, "offsets": offsets}
 
 
@@ -108,6 +111,10 @@ def _update_log_block_index(log_path: Path, size: int, idx: dict) -> dict:
                     offsets.append(boundary + nl + 1)
     except OSError:
         return idx
+    # 同 _build_log_block_index：末条采样可能越过 EOF（boundary+nl+1 == size，非
+    # 行首），弹出保住「块首行偏移」不变量，否则 _first_ts 探测必失败回退全文件读取。
+    if len(offsets) > 1 and offsets[-1] >= size:
+        offsets.pop()
     return {"size": size, "offsets": offsets}
 
 

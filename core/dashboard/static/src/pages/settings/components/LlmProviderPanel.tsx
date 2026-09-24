@@ -202,6 +202,11 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
       const dupRows = dupCheck?.providers || [];
       for (let i = 0; i < dupRows.length; i++) {
         const p = dupRows[i] as ProviderRowValues;
+        // 计费开关关闭的卡片跳过重复校验：此时价格 Form.List 已被条件卸载，
+        // store 里 preserve 的隐藏行既不参与保存（validateFields 只含已注册
+        // 字段，toProviders 落空 prices），用户也无界面路径查看/删除——若据此
+        // 拦截保存，用户只能先打开开关才能修复。口径与实际保存保持一致。
+        if (!p?.billingEnabled) continue;
         const cardPrices = (Array.isArray(p?.prices) ? p.prices : [])
           .filter((r) => !isBlankPriceRow(r));
         const seen = new Set<string>();
