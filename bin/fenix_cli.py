@@ -64,10 +64,18 @@ def cmd_promote(args):
             )
             sys.exit(1)
         # fix-observability-gaps 2.2：CLI 人工晋升来源（channel=manual）
-        sm.transition(
+        # transition 返回 False（spec 缺失或并发下状态已变，promote_drafted
+        # 校验与 transition 落盘之间存在 TOCTOU）时如实报错退出，MUST NOT
+        # 无条件宣称晋升成功误导人工操作者。
+        if not sm.transition(
             args.spec, next_status,
             trigger_run_id=None, agent_type=None, channel="manual",
-        )
+        ):
+            print(
+                "✗ 状态转移被拒（可能已被并发转移），请核查 STATE.md 当前状态",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         if next_status == "reviewing":
             print(f"✓ SPEC「{args.spec}」已晋升 reviewing（待方案评审），等待评审 run")
         else:

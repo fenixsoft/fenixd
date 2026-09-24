@@ -3937,6 +3937,10 @@ class AdminMonitor:
         # 量级评估（2026-09-17 实测）：24h 内自动调度 ready↔implementing
         # 切换约 100-300 条（日均 10-20 spec，每 spec 每日 2-5 次自动转换），
         # 内存占用可接受（每条 ≤200B → 300 条 ≈60KB）；不加条数上限。
+        # code-review b7cd3526214a：spec 暂离活跃集（testing/bug-found 等）
+        # 不再立即删除整条历史——冻结 last_status/changes 保留至下方
+        # 24 小时过期窗自然淘汰，跨第三态的切换序列仍可累计触发 flapping；
+        # 条目量受 24h 窗约束，不会无界膨胀。
         HISTORY_RETENTION_SECONDS = 24 * 60 * 60  # 24 小时
         cutoff = now - HISTORY_RETENTION_SECONDS
         changed = False
@@ -3953,11 +3957,29 @@ class AdminMonitor:
                 changed = True
             elif not rec:
                 changed = True
+            elif not isinstance(rec, dict) or rec.get("inactive_since") is not None:
+                # 暂离归来：重写记录时丢弃过期计时戳（一次性写盘）
+                changed = True
             history[name] = {"last_status": status, "changes": changes}
-        # 清理不在进行中的 spec 的历史（避免文件无限膨胀）
+        # 清理暂离/退场 spec 的历史（避免文件无限膨胀）：不立即删除，改为
+        # 冻结保留至 24 小时过期窗自然淘汰——inactive_since 自首次观察到
+        # 暂离起算（惰性打点，一次性写盘），写盘只发生在打点/归来清戳/
+        # 到期删除等边界时刻，非每轮落盘。
         active = {n for n, e in specs.items() if e.get("status") in ("ready", "implementing")}
         for name in list(history.keys()):
-            if name not in active:
+            if name in active:
+                continue
+            rec = history.get(name)
+            if not isinstance(rec, dict):
+                del history[name]
+                changed = True
+                continue
+            inactive_since = rec.get("inactive_since")
+            if not isinstance(inactive_since, (int, float)):
+                rec["inactive_since"] = now
+                changed = True
+                continue
+            if now - inactive_since >= HISTORY_RETENTION_SECONDS:
                 del history[name]
                 changed = True
         if changed:

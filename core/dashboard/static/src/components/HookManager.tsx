@@ -13,7 +13,7 @@
 
 import { DeleteOutlined, EditOutlined } from '@ant-design/icons';
 import {
-  Button, Form, Input, InputNumber, List, Modal, Popconfirm, Select, Space, Switch, Table, Tag, Tooltip, Typography,
+  App, Button, Form, Input, InputNumber, List, Modal, Popconfirm, Select, Space, Switch, Table, Tag, Tooltip, Typography,
 } from 'antd';
 import dayjs from 'dayjs';
 import { useCallback, useState, useMemo } from 'react';
@@ -112,6 +112,7 @@ export default function HookManager({
   const [editIdx, setEditIdx] = useState<number | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [form] = Form.useForm();
+  const { message } = App.useApp();
   const isMobile = useIsMobile();
 
   const editingAction = Form.useWatch('action', form);
@@ -162,7 +163,7 @@ export default function HookManager({
   );
 
   const handleSubmit = () => {
-    form.validateFields().then((values) => {
+    form.validateFields().then(async (values) => {
       const entry: HookConfig = {
         id: editIdx !== null ? hooks[editIdx].id : shortId(),
         enabled: values.enabled !== false,
@@ -180,8 +181,14 @@ export default function HookManager({
       } else {
         next = [...hooks, entry];
       }
-      onSave(next);
-      setModalOpen(false);
+      // 等 onSave 完成再关 Modal（code-review item aae592c70283）：destroyOnClose
+      // + preserve=false 下提前关闭会销毁表单丢用户编辑内容；失败保持打开可重试
+      try {
+        await onSave(next);
+        setModalOpen(false);
+      } catch (e) {
+        message.error(`保存失败：${e instanceof Error ? e.message : e}`);
+      }
     })
     .catch(() => {
       // 校验不通过时 validateFields 会 reject，静默吞掉避免 unhandled rejection（错误已由表单字段提示）
@@ -393,11 +400,13 @@ export default function HookManager({
         <Text type="secondary">暂无 Hook 订阅</Text>
       ) : isMobile ? (
         <List
-          dataSource={hooks.map((h, i) => ({ ...h, key: h.id || i }))}
+          // 直接携带原始下标 idx（code-review item b1b8c06516be）：按 id 反查在
+          // 无 id/重复 id 的 hook 上会永远命中第一条，误操作错误条目
+          dataSource={hooks.map((h, i) => ({ ...h, key: h.id || i, idx: i }))}
           pagination={false}
           size="small"
-          renderItem={(item: HookConfig & { key: string | number }) => {
-            const realIdx = hooks.findIndex((h) => h.id === item.id);
+          renderItem={(item: HookConfig & { key: string | number; idx: number }) => {
+            const realIdx = item.idx;
             return (
               <List.Item>
                 <div style={{ width: '100%', minWidth: 0 }}>

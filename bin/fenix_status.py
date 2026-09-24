@@ -39,7 +39,7 @@ STATUS_ICONS = {
     "pushed": "🚀",
 }
 SEV_MARK = {"red": "🔴", "warn": "⚠️", "info": "ℹ️"}
-VERIFY_STALL_MINUTES = 30  # 验证进度文件 mtime 停滞阈值（事故校准口径，勿改用 STATE updated）
+VERIFY_STALL_MINUTES = 30  # 验证停滞阈值：进度文件 mtime 停滞 / 缺失超时共用（事故校准口径；mtime 口径勿改用 STATE updated）
 
 
 def _local_ts(iso_str, fmt="%m-%d %H:%M"):
@@ -86,7 +86,7 @@ def _load_gates(proot):
         return "manual", "auto"
 
 
-def _collect_signals(proot, entries, active, daemon, approve_mode, promote_mode):
+def _collect_signals(proot, entries, active, daemon, approve_mode, promote_mode, alerts=None):
     """信号汇总：供 LLM 分诊的问题素材（已知等待单列，不算问题）。"""
     signals = []  # (level, text)
     waits = []  # 已知等待（有意暂停，非问题）
@@ -95,11 +95,14 @@ def _collect_signals(proot, entries, active, daemon, approve_mode, promote_mode)
     if daemon != "running":
         signals.append(("red", "守护进程已停止 — 运行 /fenix-setup 启动"))
 
-    # 未处理升级告警（已处理的不外显）
-    try:
-        alerts = data.alerts_summary(proot)
-    except Exception:
-        alerts = {}
+    # 未处理升级告警（已处理的不外显）。alerts 由调用方（render_report）取一次
+    # 传入复用——同一份报告顶部告警行与信号汇总共用同一快照，避免重复 IO，
+    # 两处数字也不因扫描间隙的告警变化而互相矛盾；直调方未传时现场取。
+    if alerts is None:
+        try:
+            alerts = data.alerts_summary(proot)
+        except Exception:
+            alerts = {}
     if alerts.get("unhandled_count"):
         sev = alerts.get("max_severity") or "minor"
         level = "red" if sev == "critical" else ("warn" if sev == "major" else "info")
@@ -154,6 +157,30 @@ def _collect_signals(proot, entries, active, daemon, approve_mode, promote_mode)
                             ("warn", f"{name}：验证停滞 {int(age_min)} 分钟（进度文件未更新）")
                         )
                 except OSError:
+                    pass
+            else:
+                # 进度文件缺失（verifier 进入 testing 后从未写出：启动即崩、
+                # 写入路径异常等）时 mtime 口径失效，停滞检测不得因此完全
+                # 沉默——补独立信号。时长锚点用 STATE updated（进入 testing
+                # 前后的最近一次状态变更），仅作「进入 testing 已多久」的
+                # 锚点，不替代上方已校准的 mtime 停滞口径；daemon 侧
+                # orphaned_state/stuck 只扫「无活动 run + 无存活子进程」，
+                # verifier 存活但不写进度时两边都沉默，故此处必须补位。
+                try:
+                    updated = entry.get("updated")
+                    if updated:
+                        anchor = datetime.fromisoformat(
+                            str(updated).replace("Z", "+00:00")
+                        ).timestamp()
+                        age_min = (now_ts - anchor) / 60
+                        if age_min > VERIFY_STALL_MINUTES:
+                            signals.append(
+                                (
+                                    "warn",
+                                    f"{name}：testing 但无进度文件 {int(age_min)} 分钟（verifier 未写出验证进度）",
+                                )
+                            )
+                except (TypeError, ValueError):
                     pass
         # bug-found 且无活跃 fix 子 SPEC（fix 自身豁免）
         if st == "bug-found" and not name.startswith("fix-") and name not in active_fix_parents:
@@ -228,6 +255,7 @@ def render_report(project_root) -> str:
             else "无"
         )
     except Exception:
+        alerts = {}
         alert_line = "无"
     lines.append(f"告警: {alert_line}")
     run_desc = "，".join(f"{t} {n}" for t, n in by_type.items()) if by_type else "无"
@@ -299,7 +327,7 @@ def render_report(project_root) -> str:
     lines.append(f"-- 终态（已折叠）-- 🎯 done {done_cnt} ｜ 🚀 pushed {pushed_cnt}")
 
     # ── 信号汇总（供 LLM 分诊） ──
-    signals = _collect_signals(proot, entries, active, daemon, approve_mode, promote_mode)
+    signals = _collect_signals(proot, entries, active, daemon, approve_mode, promote_mode, alerts)
     lines.append("")
     lines.append("-- 信号汇总（供分诊；🔴/⚠️=问题，ℹ️=提示，已知等待不算问题）--")
     if signals:

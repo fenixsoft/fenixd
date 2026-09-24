@@ -262,13 +262,26 @@ def run_suite(
 
 
 def collect_failed_tests(stderr: str, stdout: str = "") -> list:
-    """从 pytest 摘要输出收集失败测试标识（FAILED <nodeid> - <reason>）。"""
+    """从 pytest 摘要输出收集失败/错误测试标识（FAILED/ERROR <nodeid> - <reason>）。
+
+    ERROR 条目（收集错误、fixture 实例化错误）同样计入失败集合，加
+    ``ERROR: `` 前缀与 FAILED 区分（code-review item a362849b59a6）：
+    仅当前侧有新增 ERROR 时若不入集，classify_baseline 会把非零退出的
+    套件误判为「pass（全绿）」。
+    """
     failed = []
     text = (stdout or "") + "\n" + (stderr or "")
     for line in text.splitlines():
-        m = re.match(r"FAILED\s+(\S+)", line.strip())
+        s = line.strip()
+        m = re.match(r"FAILED\s+(\S+)", s)
         if m:
             failed.append(m.group(1))
+            continue
+        # 收集错误摘要形如 ``ERROR collecting tests/x.py``（捕获路径而非字面
+        # collecting），fixture/实例化错误形如 ``ERROR <nodeid> - <reason>``。
+        m = re.match(r"ERROR\s+(?:collecting\s+)?(\S+)", s)
+        if m:
+            failed.append(f"ERROR: {m.group(1)}")
     return sorted(set(failed))
 
 

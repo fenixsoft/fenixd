@@ -116,15 +116,20 @@ export default function SpecDocModal({ project, spec, open, onClose, initialDoc 
     if (!spec) return;
     const key = `${spec}:${activeTab}`;
 
-    // 检查缓存，loading/done 不重新加载
+    // 检查缓存：loading 表示该 key 已有在途请求，不重复加载
     const cached = cacheRef.current.get(key);
-    if (cached && (cached.status === 'loading' || cached.status === 'done')) {
+    if (cached && cached.status === 'loading') {
       return;
     }
 
-    // 设置 loading 状态
-    cacheRef.current.set(key, { status: 'loading' });
-    setCacheVersion((v) => v + 1);
+    // done 缓存仅作首屏占位：文档（验证报告/任务清单等）可能已渐进更新，后台 revalidate 后替换展示
+    const revalidate = cached?.status === 'done';
+
+    if (!revalidate) {
+      // 设置 loading 状态
+      cacheRef.current.set(key, { status: 'loading' });
+      setCacheVersion((v) => v + 1);
+    }
 
     try {
       const d = await getSpecDoc(project, spec, activeTab);
@@ -134,7 +139,10 @@ export default function SpecDocModal({ project, spec, open, onClose, initialDoc 
         cacheRef.current.set(key, { status: 'empty' });
       }
     } catch {
-      cacheRef.current.set(key, { status: 'error' });
+      // revalidate 失败时保留旧内容，避免清空已展示文档
+      if (!revalidate) {
+        cacheRef.current.set(key, { status: 'error' });
+      }
     } finally {
       setCacheVersion((v) => v + 1);
     }

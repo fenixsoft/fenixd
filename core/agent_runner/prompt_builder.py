@@ -2412,8 +2412,10 @@ class PromptBuilder:
         if not isinstance(data, dict):
             return ""
         counts = data.get("counts") or {}
+        if not isinstance(counts, dict):
+            counts = {}
         failed_ids = data.get("failed_ids") or []
-        if not failed_ids:
+        if not isinstance(failed_ids, list) or not failed_ids:
             return ""
         id_line = "、".join(str(s) for s in failed_ids)
         counts_txt = (

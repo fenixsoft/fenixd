@@ -101,11 +101,11 @@ function TaskProgressTile({ totals }: { totals: OverviewTotals }) {
   );
 }
 
-// 活跃 Agent 类型展示分类（与 core/agent_runner/run_files.py RUN_ID_AGENT_PREFIXES 对齐：
-// fast-track/impl-ocr 归实现家族，code-review 归评审，code-fix/repair 归修复；
+// 活跃 Agent 类型展示分类（按 core/agent_runner/run_files.py RUN_ID_AGENT_PREFIXES 值域归族：
+// impl-ocr 归实现（fast-track 车道复用 impl- 前缀），code-review 归评审，code-fix/repair 归修复；
 // planner 家族合并为「规划」；administrator 为运维；未知类型归「其它」）
 const AGENT_CATS: [keys: string[], label: string][] = [
-  [['implementer', 'fast-track', 'impl-ocr'], '实现'],
+  [['implementer', 'impl-ocr'], '实现'],
   [['planner', 'planner-plan'], '规划'],
   [['planner-judge', 'spec-review', 'dispute-judge', 'code-review'], '评审'],
   [['verifier'], '验证'],

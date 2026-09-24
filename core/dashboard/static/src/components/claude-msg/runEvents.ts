@@ -261,7 +261,10 @@ export function runEventsToChatMessages(events: RunEvent[], showThinking: boolea
 
   for (const ev of events) {
     if (!ev) continue;
-    const timestamp = ev.timestamp || Date.now();
+    // 缺时间戳事件（框架 stderr/error 行、透传缺失 timestamp 的 CLI 事件）用
+    // 固定哨兵 0：Date.now() 使每次重转换产出不同值 → getIntrinsicMessageKey
+    // 回退键漂移，SSE 轮询下 React 反复卸载重挂对应消息；0 保证键稳定
+    const timestamp = ev.timestamp || 0;
 
     // 旧形态：thinking_tokens 流式片段
     if (ev.type === 'system' && ev.subtype === 'thinking_tokens') {
@@ -530,7 +533,8 @@ export function runEventsToChatMessages(events: RunEvent[], showThinking: boolea
     msg.thinkingPreview = thinkingPreviewText(String(msg.content || ''));
     if (assistantTimes.length < 2) continue;
     const t = parseTimestampMs(msg.timestamp);
-    if (t === null) continue;
+    // 哨兵 0（缺时间戳）会与下一个 assistant 事件产生 epoch 起的荒谬差值 → 跳过估算
+    if (t === null || t <= 0) continue;
     const next = assistantTimes.find((x) => x > t);
     if (next === undefined) continue;
     const seconds = Math.round((next - t) / 1000);

@@ -8,6 +8,12 @@ import { useCallback, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { useIsMobile } from '@/hooks/useIsMobile';
 
+// 最大化态共享几何（供 RunRecordModal 等「打开即最大化」弹窗复用，避免与 hook 内双写漂移）
+export const MAXIMIZED_WIDTH = '100vw';
+export const MAXIMIZED_MODAL_STYLE: CSSProperties = { top: 0, maxWidth: '100vw', paddingBottom: 0 };
+// 80px = 标题栏 + 留白；带 footer 的弹窗再扣掉操作区，否则整窗超出视口
+export const maximizedBodyHeight = (footerHeight = 0): string => `calc(100vh - ${80 + footerHeight}px)`;
+
 interface UseMaximizeModalOptions {
   // 还原态尺寸
   defaultWidth: string | number;
@@ -34,13 +40,12 @@ export function useMaximizeModal({
 
   const modalProps = maximized || isMobile
     ? {
-        width: '100vw' as string | number,
+        width: MAXIMIZED_WIDTH as string | number,
         centered: false,
-        style: { top: 0, maxWidth: '100vw', paddingBottom: 0 } as CSSProperties | undefined,
+        style: MAXIMIZED_MODAL_STYLE as CSSProperties | undefined,
         styles: {
           body: {
-            // 80px = 标题栏 + 留白；带 footer 的弹窗再扣掉操作区，否则整窗超出视口
-            height: `calc(100vh - ${80 + footerHeight}px)`,
+            height: maximizedBodyHeight(footerHeight),
             ...extraBodyStyle,
           },
         },
