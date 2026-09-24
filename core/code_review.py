@@ -1296,6 +1296,10 @@ def generate_fix_spec(
 
     ok, err = _git_commit(project_root, dest, name)
     if not ok:
+        # add 已写入索引而 commit 失败（hook 拒绝 / index.lock 竞争 / 缺
+        # identity 等）时，先撤回 pathspec 暂存项再删工作树副本，避免留下
+        # 「暂存新文件 + 工作树已删」的脏索引状态。
+        _git(project_root, ["reset", "-q", "--", f"spec/changes/{name}"])
         shutil.rmtree(dest, ignore_errors=True)
         shutil.rmtree(draft_root, ignore_errors=True)
         return {

@@ -13,11 +13,11 @@ import { fmtEvidence } from '@/utils/evidence';
  */
 export type AlertSurfaceVariant = 'banner' | 'page';
 
-/** 严重度 → 中文标签 */
-export const SEV_LABEL: Record<string, string> = { critical: '严重', major: '较高', warning: '警告', minor: '一般' };
+/** 严重度 → 中文标签（info 供后端 info 级信号，如 code_fix_wip_gate_deferred） */
+export const SEV_LABEL: Record<string, string> = { critical: '严重', major: '较高', warning: '警告', minor: '一般', info: '提示' };
 
-/** 严重度 → antd Tag 配色（取两份历史实现的超集，补齐横幅侧缺失的 warning 键） */
-export const SEV_COLOR: Record<string, string> = { critical: 'red', major: 'orange', warning: 'gold', minor: 'blue' };
+/** 严重度 → antd Tag 配色（取两份历史实现的超集，补齐横幅侧缺失的 warning 键；info 用 default 灰最弱档） */
+export const SEV_COLOR: Record<string, string> = { critical: 'red', major: 'orange', warning: 'gold', minor: 'blue', info: 'default' };
 
 /**
  * 时间格式化。空值统一占位 '—'（此前漂移：横幅 ''、activities '—'）；

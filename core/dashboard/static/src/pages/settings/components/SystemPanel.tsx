@@ -226,9 +226,18 @@ export default function SystemPanel({ config, onSave, project, onConfigSynced }:
   }, [config.admin, config.agents, form]);
 
   const handleSave = async () => {
+    // 分离「表单校验」与「保存持久化」（code-review item 834f22222a24）：与
+    // AgentModelPanel.handleSave 对齐——两段混在同一静默 catch 会把校验失败
+    // 与持久化失败混为一谈，且丢弃 onSave 的 Promise<boolean> 结果。
+    let values;
     try {
-      const values = await form.validateFields();
-      await onSave({
+      values = await form.validateFields();
+    } catch {
+      // 校验失败：antd 已在表单内渲染 explain-error 提示，不落 console
+      return;
+    }
+    try {
+      const ok = await onSave({
         admin: {
           enabled: values.enabled,
           interval_minutes: values.interval_minutes,
@@ -249,9 +258,12 @@ export default function SystemPanel({ config, onSave, project, onConfigSynced }:
           transient_break_cooldown_seconds: values.transient_break_cooldown_seconds,
         },
       });
-    } catch {
-      // 校验失败：antd 已在表单内渲染 explain-error 提示
-      return;
+      // ok=false 时父级 handleSave 已 message.error 具体原因，此处不重复 toast
+      if (!ok) return;
+    } catch (error) {
+      // 持久化异常兜底：父级当前自带失败 toast，此 catch 保证其反馈路径调整
+      // （onSave 不再自带 toast）时也不退化为无声失败
+      message.error(`保存失败：${error instanceof Error ? error.message : String(error)}`);
     }
   };
 

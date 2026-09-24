@@ -30,7 +30,7 @@ def commit_archive_move(project_root, spec_name: str, archive_dir) -> dict:
 
     Returns:
         {"committed": bool, "commit": str|null, "warning": str|null}
-        - committed=True：提交成功，commit 为 HEAD 全量 hash；
+        - committed=True：提交成功，commit 为本次提交的全量 hash；
         - committed=False：warning 说明原因（非 git 仓库 / git 失败 / 无可提交内容）。
     """
     proot = Path(project_root)
@@ -89,8 +89,11 @@ def commit_archive_move(project_root, spec_name: str, archive_dir) -> dict:
         )
         if commit.returncode != 0:
             return _fail(f"git commit 失败: {commit.stderr.strip() or f'exit {commit.returncode}'}")
+        # 取哈希不用 rev-parse HEAD：commit 成功到读取 HEAD 之间有窗口，
+        # daemon/dashboard 并发操作同一仓库时会记到别人的提交；本次提交恒触碰
+        # paths，用 pathspec 限定的 log -1 锚定本次提交本身。
         rev = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
+            ["git", "log", "-1", "--format=%H", "--"] + paths,
             cwd=str(proot),
             capture_output=True,
             text=True,

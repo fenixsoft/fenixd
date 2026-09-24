@@ -141,10 +141,11 @@ class SpecIntegrityGate:
             # 与事实相反（c-sched-set 实证：实现已合并、验证 25/25 通过仍被
             # 冻结挂 major 告警，gate-delivered-spec-exemption 登记链）。
             # **终态豁免不等于放行派发**：本分支只免「冻结 + 告警」处置，不
-            # 新增任何派发放行语义——「已交付未落盘」目录的派发拦截由下方分
-            # 类分支与 spec_has_content 判据承担（返回 True）；终态 spec 出现
-            # 在派发队列本身属异常，由派发层状态机语义管辖（非法 transition
-            # 被拒），不由本闸门越权代管。
+            # 新增任何派发放行语义——非终态「已交付未落盘」目录的派发拦截由
+            # 下方分类分支与 spec_has_content 判据承担（返回 True）；终态 spec
+            # 无论有无 verification-report.md 均在本分支短路、到不了下方分类
+            # 分支（该分类分支仅服务非终态），出现在派发队列本身属异常，由
+            # 派发层状态机语义管辖（非法 transition 被拒），不由本闸门越权代管。
             self._pm.logger.debug(
                 "pm_engine",
                 f"内容完整性闸门终态豁免：'{spec_name}' status={status}，"

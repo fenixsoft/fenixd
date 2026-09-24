@@ -112,9 +112,14 @@ class Logger:
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         self._handler = None
+        # 实例自身级别：级别判定只读本实例状态。多项目同进程下全局 "fenixd"
+        # 日志器被各项目实例先后 setLevel，其级别是 last-wins 的共享状态。
+        self._level = getattr(logging, level.upper(), logging.INFO)
 
+        # 全局 "fenixd" 根日志器仅承载 fenixd.* 裸 getLogger 的传播记录；
+        # 本实例的结构化写入不经它分发（见 _log）。
         self._python_logger = logging.getLogger("fenixd")
-        self._python_logger.setLevel(getattr(logging, level.upper(), logging.INFO))
+        self._python_logger.setLevel(self._level)
         # Close previous handlers before clearing
         for h in list(self._python_logger.handlers):
             h.close()
@@ -133,11 +138,11 @@ class Logger:
 
     def _log(self, level: int, component: str, message: str, context: dict = None):
         """Thread-safe log entry."""
-        # 级别判定（fix-robustness-edge-cases 3.3）：此前直接
-        # ``self._python_logger.handle(record)`` 绕开 ``isEnabledFor``，使
-        # ``logging.level``（缺省 INFO）失效、DEBUG 恒落盘；先判级再构造
-        # record——level=DEBUG 且日志器级别高于 DEBUG 时直接跳过。
-        if not self._python_logger.isEnabledFor(level):
+        # 级别判定（fix-robustness-edge-cases 3.3）：先判级再构造 record，
+        # level 低于日志器级别时直接跳过。判本实例的 self._level 而非全局
+        # logger 的 isEnabledFor——多项目同进程下各 Logger 依次构造并重绑
+        # 全局 "fenixd" 日志器，其级别是 last-wins 的，读它会串级别。
+        if level < self._level:
             return
         with self._lock:
             record = logging.LogRecord(
@@ -151,10 +156,14 @@ class Logger:
             )
             record.component = component
             record.context = context
-            self._python_logger.handle(record)
+            # 直接经本实例 handler 落盘（handler.handle 自带锁与陈旧轮转
+            # 处理）：全局 "fenixd" 日志器是单例，多项目同进程下
+            # project_state_logger 各建 Logger 后其 handler 是最后构造项目
+            # 的，经 self._python_logger.handle(record) 分发会把记录写进
+            # 别的项目的 fenixd.log。
+            self._handler.handle(record)
             # Flush to disk for testability and crash safety
-            if self._handler:
-                self._handler.flush()
+            self._handler.flush()
 
     def close(self):
         """Close the log handler, flushing any buffered data."""

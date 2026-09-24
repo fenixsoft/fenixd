@@ -20,6 +20,7 @@ import re
 from pathlib import Path
 
 from .api_assertions import evaluate_json_path
+from .scenarios import CLI_ASSERTION_LAYERS
 
 
 class CliAssertionRunner:
@@ -99,7 +100,8 @@ class CliAssertionRunner:
                 results.append(
                     {
                         "type": a_type,
-                        "layer": 1,
+                        # 按词表映射归层（file_content 属第 3 层），未登记类型回退 0
+                        "layer": CLI_ASSERTION_LAYERS.get(a_type, 0),
                         "pass": False,
                         "error": f"断言执行异常: {e}",
                     }

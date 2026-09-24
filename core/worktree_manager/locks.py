@@ -179,9 +179,12 @@ class G3LockMixin:
             缓存（启动时一次性调用，结果必须实时）；命中后同样以 claude 进程
             为锚——仅剩 dev-server 孤儿的 worktree 应被判定为无主并进入清理。
             目录名匹配同为全机性字面匹配（同名 worktree 可属不同项目根），命中
-            后经 ``_pid_in_project_worktrees`` 核对归属本项目再判存活。
+            后经 ``_pid_in_project_worktrees`` 核对归属本项目再判存活。pattern
+            以路径续接/空白/引号/行尾锚定尾部（与 _pgrep_spec_process 的锚定
+            纪律一致）：防止 wt_name 是另一 worktree 目录名严格前缀时 pgrep
+            子串过配（同基目录下归属核对无法二次区分）。
             """
-            pattern = f"worktrees/{wt_name}"
+            pattern = f"worktrees/{wt_name}([/[:space:]\"']|$)"
             try:
                 res = subprocess.run(
                     ["pgrep", "-f", pattern],

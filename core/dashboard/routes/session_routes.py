@@ -110,7 +110,7 @@ class H_SessionRoutesMixin:
         if body is None:
             return  # _read_json_body 已写错误响应
 
-        text = (body.get("text") or "").strip() if isinstance(body, dict) else ""
+        text = (body.get("text") or "").strip()
         if not text:
             self._error(400, "text is required and must not be blank")
             return
