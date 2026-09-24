@@ -1021,7 +1021,10 @@ class G4MergebackMixin:
                 text=True,
                 timeout=30,
             )
-        except subprocess.TimeoutExpired:
+        except (subprocess.TimeoutExpired, OSError):
+            # OSError 与 TimeoutExpired 同待降级（code-review item af581068b80d）：
+            # 备份探测不可用（git 二进制缺失等）不该上抛到调用方大 try 被当成
+            # 整次 merge-back 失败，与文件内其余 git 探测调用容错口径统一。
             return None
         if added.returncode != 0:
             return None

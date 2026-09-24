@@ -68,7 +68,7 @@ def normalize_artifact_patterns(raw: Any) -> List[Tuple[str, str]]:
             if not item:
                 continue
 
-            if item.startswith("/") or ".." in item:
+            if item.startswith("/") or ".." in item.split("/"):
                 logger.warning("build_artifact_paths: 绝对路径或含 .. 项丢弃: %r", item)
                 continue
 

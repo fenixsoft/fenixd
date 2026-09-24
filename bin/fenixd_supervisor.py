@@ -463,7 +463,16 @@ def main():
                         proc.kill()
                     except ProcessLookupError:
                         pass
-                    proc.wait(timeout=5)
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        # SIGKILL 后仍可能因不可中断睡眠（D 状态）收尸超时，
+                        # 捕获以免异常炸穿 supervisor 主循环；进程最终退出时
+                        # 由监视循环外的 proc.wait() 收尸。
+                        log(
+                            "daemon still alive 5s after SIGKILL "
+                            "(uninterruptible sleep?) — leave reaping to outer wait"
+                        )
                 break
             if RESTART_REQUEST.exists():
                 log("restart_request detected — SIGTERM daemon for restart")
@@ -481,7 +490,16 @@ def main():
                         proc.kill()
                     except ProcessLookupError:
                         pass
-                    proc.wait(timeout=5)
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        # SIGKILL 后仍可能因不可中断睡眠（D 状态）收尸超时，
+                        # 捕获以免异常炸穿 supervisor 主循环；进程最终退出时
+                        # 由监视循环外的 proc.wait() 收尸。
+                        log(
+                            "daemon still alive 5s after SIGKILL "
+                            "(uninterruptible sleep?) — leave reaping to outer wait"
+                        )
                 break
             time.sleep(2)
 

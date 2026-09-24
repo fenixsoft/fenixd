@@ -176,8 +176,9 @@ def self_check(root: Path, parsed_count: int, warning_buf: list) -> None:
 
     启发式口径（宽松上界）：
       - server.py 中唯一 `/api/...` 字符串字面量数（`"/api/xxx"`，去重）；
-      - static src 下 `*.tsx` 中唯一 `data-testid="..."` 数（与扫描器同文件集）；
-      - app.tsx 中唯一 `path: '/xxx'` 菜单路由数。
+      - static src 下 `*.tsx` 中唯一 `data-testid="..."` 数（与扫描器同文件集，
+        单双引号均计，与扫描器口径一致）；
+      - app.tsx 中唯一 `path: '/xxx'` 菜单路由数（单双引号均计，与扫描器口径一致）。
     解析条目数远低于启发式说明解析模式漏配——地图缺条目时 planner 依赖
     措辞兜底，但框架应有感知。
     """
@@ -206,7 +207,7 @@ def self_check(root: Path, parsed_count: int, warning_buf: list) -> None:
                 "grep",
                 "-roEh",
                 "--include=*.tsx",
-                r'data-testid="[^"]+"',
+                "data-testid=[\"'][^\"']+[\"']",
                 str(root / "core" / "dashboard" / "static" / "src"),
             ],
             capture_output=True,
@@ -221,7 +222,7 @@ def self_check(root: Path, parsed_count: int, warning_buf: list) -> None:
             [
                 "grep",
                 "-oEh",
-                r"path: *'/[^']*'",
+                "path: *[\"']/[^\"']*[\"']",
                 str(root / "core" / "dashboard" / "static" / "src" / "app.tsx"),
             ],
             capture_output=True,

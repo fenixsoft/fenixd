@@ -13,6 +13,8 @@ infra_breaker.py — 链路级 infra 熔断器（evo-run-failure-classification-
 
 import json
 import logging
+import os
+import tempfile
 import time
 from pathlib import Path
 from typing import Optional
@@ -144,10 +146,27 @@ class InfraCircuitBreaker:
             }
         try:
             self._state_path.parent.mkdir(parents=True, exist_ok=True)
-            self._state_path.write_text(
-                json.dumps(data, ensure_ascii=False, indent=2),
-                encoding="utf-8",
+            # 原子替换（code-review item b5580085c3bb：write_text 覆盖写中途
+            # 崩溃会留下截断 JSON，下次 _load_state 解析失败 fail-open 复位，
+            # 恰在 infra 持续故障时把熔断保护拆掉）：对齐 tokens.json 写法，
+            # 同目录 mkstemp + fsync + os.replace。
+            fd, tmp_str = tempfile.mkstemp(
+                prefix=f".{self._state_path.name}.",
+                suffix=".tmp",
+                dir=str(self._state_path.parent),
             )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(json.dumps(data, ensure_ascii=False, indent=2))
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp_str, str(self._state_path))
+            finally:
+                if os.path.exists(tmp_str):
+                    try:
+                        os.unlink(tmp_str)
+                    except OSError:
+                        pass
         except OSError as e:
             self._log("warning", "infra_breaker", f"熔断状态保存失败: {e}")
 

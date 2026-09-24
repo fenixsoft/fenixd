@@ -127,7 +127,9 @@ def suite_port_base() -> int:
 def _suite_env() -> dict:
     """子进程环境：注入端口段约定（不破坏既有 FENIX_VERIFY_PORT）。"""
     env = dict(os.environ)
-    env.setdefault("FENIX_SUITE_PORT_BASE", str(suite_port_base()))
+    # 回写校验后的值（非 setdefault）：父环境残留非法值时，子进程须与父层
+    # suite_port_base() 的回退派生结果一致，而非透传被判非法的原始值。
+    env["FENIX_SUITE_PORT_BASE"] = str(suite_port_base())
     return env
 
 

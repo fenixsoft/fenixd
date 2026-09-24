@@ -60,8 +60,13 @@ const AUDIT_STATUS_LABELS: Record<string, string> = {
   skipped: '跳过',
 };
 
+// 碰撞防护（code-review item b5e257b67e9e）：纯 Math.random 6 字符无唯一性
+// 保证，id 碰撞后果是 React key 告警与渲染复用异常；改用「时间戳 + 会话内
+// 单调计数器」保证确定唯一。不用 crypto.randomUUID——非安全上下文（http
+// 访问 dashboard）下不可用，会直接抛错。
+let shortIdSeq = 0;
 function shortId(): string {
-  return 'h-' + Math.random().toString(36).slice(2, 8);
+  return `h-${Date.now().toString(36)}-${(shortIdSeq += 1).toString(36)}`;
 }
 
 function paramSummary(h: HookConfig): string {
