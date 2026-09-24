@@ -1,5 +1,5 @@
 import { Button, Card, Form, InputNumber, Switch, Typography } from 'antd';
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import type { ConfigData } from '@/services/dashboard';
 import SyncFromUserButton from './SyncFromUserButton';
 import { SETTINGS_ACTIONS_ROW_STYLE } from '../styles';
@@ -33,14 +33,23 @@ export default function ParallelSettingsPanel({ config, onSave, project, onConfi
     planner_max_concurrent: throttleValue,
   };
 
+  // 回填门控（code-review item b97e73ffcda4，比照 MiscSettingsPanel 0a2bd3f20fcd /
+  // AgentModelPanel 9f98edec21fa）：无条件 setFieldsValue 会在保存往返、同步按钮
+  // onConfigSynced 触发父组件 setConfig 时，用外部 config 覆盖本面板用户正在编辑、
+  // 尚未保存的输入。改为序列化比较，只在内容真变化时回填。
+  const lastBackfillRef = useRef('');
   useEffect(() => {
-    form.setFieldsValue({
+    const next = {
       max_concurrent: config.agents.max_concurrent ?? 2,
       max_turns: config.agents.max_turns ?? 400,
       run_timeout_seconds: config.agents.run_timeout_seconds ?? 9000,
       planner_throttle: throttleEnabled,
       planner_max_concurrent: throttleValue,
-    });
+    };
+    const key = JSON.stringify(next);
+    if (key === lastBackfillRef.current) return;
+    lastBackfillRef.current = key;
+    form.setFieldsValue(next);
   }, [config.agents, config.verify, form, throttleEnabled, throttleValue]);
 
   const handleSave = async () => {
@@ -59,8 +68,9 @@ export default function ParallelSettingsPanel({ config, onSave, project, onConfi
             : 0,
         },
       });
-    } catch (error) {
-      console.error('Validation failed:', error);
+    } catch {
+      // 校验失败：antd 已在表单内渲染行内错误提示，无需额外日志（避免触发
+      // 验证场景的 no_console_error 断言，比照 MiscSettingsPanel 口径）。
     }
   };
 

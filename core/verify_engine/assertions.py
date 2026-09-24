@@ -356,6 +356,17 @@ class AssertionRunner:
                 "error": f"元素 '{selector}' 不存在",
             }
 
+        if compare_selector and not await self._element_exists(page, compare_selector):
+            return {
+                "type": "z_index_order",
+                "layer": 2,
+                "selector": selector,
+                "compare_selector": compare_selector,
+                "operator": op,
+                "pass": False,
+                "error": f"对比元素 '{compare_selector}' 不存在",
+            }
+
         z1_result = await self._safe_evaluate(
             page, selector, "el => parseInt(getComputedStyle(el).zIndex) || 0"
         )

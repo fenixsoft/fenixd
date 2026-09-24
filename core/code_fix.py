@@ -1789,10 +1789,22 @@ class CodeFixOrchestrator:
         # 失败且非 wip_gate_blocked（主树 WIP 已被提交后的内容真冲突经预演
         # 闸、或其他 git 失败）→ 按真冲突同语义降级入失败档案（烧预算），
         # worktree 走既有失败收尾，台账移除。
-        record_failed_batch(
-            root, item_ids, wt,
-            reason="merge_back_conflict", branch=branch, tip_sha=tip_sha,
-        )
+        # 失败档案只收未终态条目（code-review item c94a1770a477，与主路径
+        # pending_ids / 65f65b784f2a 核销前过滤同口径）：defer 窗口内被人工
+        # 置终态的条目不随批入档。
+        try:
+            ledger = read_items(root)
+        except Exception:  # noqa: BLE001 — 台账读失败按空集（不入档）
+            ledger = {}
+        open_ids = [
+            i for i in item_ids
+            if (ledger.get(i) or {}).get("status") == "open"
+        ]
+        if open_ids:
+            record_failed_batch(
+                root, open_ids, wt,
+                reason="merge_back_conflict", branch=branch, tip_sha=tip_sha,
+            )
         _safe_cleanup(wm, wt, success=False, logger=self._logger)
         _remove_deferred_batch(root, item_ids)
         self._log(
@@ -1813,15 +1825,27 @@ class CodeFixOrchestrator:
         条目集指纹（3.2：先查后记，见 ``_has_expired_archive``）。
         """
         root = self.project_root
-        first_expire = not _has_expired_archive(root, item_ids)
-        record_failed_batch(
-            root, item_ids, wt,
-            reason="wip_gate_blocked_expired", branch=branch, tip_sha=tip_sha,
-        )
+        # 失败档案只收未终态条目（code-review item c94a1770a477，与主路径
+        # pending_ids / 65f65b784f2a 核销前过滤同口径）：defer 窗口内被人工
+        # 置终态的条目不随批入档、不进一次性告警名录。
+        try:
+            ledger = read_items(root)
+        except Exception:  # noqa: BLE001 — 台账读失败按空集（不入档）
+            ledger = {}
+        open_ids = [
+            i for i in item_ids
+            if (ledger.get(i) or {}).get("status") == "open"
+        ]
+        first_expire = bool(open_ids) and not _has_expired_archive(root, open_ids)
+        if open_ids:
+            record_failed_batch(
+                root, open_ids, wt,
+                reason="wip_gate_blocked_expired", branch=branch, tip_sha=tip_sha,
+            )
         _safe_cleanup(wm, wt, success=False, logger=self._logger)
         _remove_deferred_batch(root, item_ids)
         if first_expire:
-            _write_defer_expired_alert(root, item_ids, overlap, branch, tip_sha)
+            _write_defer_expired_alert(root, open_ids, overlap, branch, tip_sha)
         write_progress(
             root,
             reason="wip_gate_blocked_expired",

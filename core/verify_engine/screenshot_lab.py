@@ -84,7 +84,8 @@ def _classify_impl(
     import numpy as np
     from PIL import Image
 
-    img = Image.open(str(path)).convert("RGB")
+    with Image.open(str(path)) as src:
+        img = src.convert("RGB")
     width, height = img.size
     pixels = np.array(img, dtype=np.float64)  # shape: (H, W, 3), range [0, 255]
 

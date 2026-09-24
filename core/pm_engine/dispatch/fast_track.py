@@ -588,9 +588,10 @@ class FFastTrackMixin:
                 # _budget_exempt_alert_threshold 同款）：字符串配置裸用于比较抛
                 # TypeError 中断 merge 失败处置，非法值回退缺省。
                 try:
-                    breaker_threshold = int(
-                        self._pm._get_config("agents.merge_breaker_threshold", 2) or 2
-                    )
+                    # None 判空而非 or 兜底（code-review item c54ffbef69c5）：合法
+                    # 配置 0（每次 merge 失败立即熔断）不被 or 吞成缺省 2。
+                    cfg_threshold = self._pm._get_config("agents.merge_breaker_threshold", 2)
+                    breaker_threshold = 2 if cfg_threshold is None else int(cfg_threshold)
                 except (TypeError, ValueError):
                     breaker_threshold = 2
                 final_error = f"Merge-back failed (fp={fp}): {merge_error}"
@@ -1096,7 +1097,10 @@ class FFastTrackMixin:
         # 配置侧 int() 归一（code-review item 74317ab4a77a）：字符串配置裸用于
         # `retries >= max_r` 比较抛 TypeError 中断失败重派，非法值回退缺省。
         try:
-            max_r = int(self._pm._get_config("agents.max_retries", 3) or 3)
+            # None 判空而非 or 兜底（code-review item c54ffbef69c5）：合法配置
+            # 0（不自动重试）不被 or 吞成缺省 3。
+            cfg_max_r = self._pm._get_config("agents.max_retries", 3)
+            max_r = 3 if cfg_max_r is None else int(cfg_max_r)
         except (TypeError, ValueError):
             max_r = 3
         # fix-redispatch-loop-governance 3.4（fast-track 车道对等）：retries 达

@@ -66,8 +66,9 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
           },
         },
       });
-    } catch (error) {
-      console.error('Validation failed:', error);
+    } catch {
+      // 校验/保存失败：antd 已在表单内渲染行内错误提示，不再打印 console.error
+      // （与 MiscSettingsPanel 静默口径对齐，避免触发验证的 no_console_error 断言）。
     }
   };
 

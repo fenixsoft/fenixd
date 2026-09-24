@@ -676,10 +676,10 @@ export default function QualityTab({ project, active }: QualityTabProps) {
   // 弹窗打开期间门不释放，与「弹窗开着」一致）。
   const generateModalOpenRef = useRef(false);
 
-  // 勾选中 status==='open' 的条目数（code-review item 7530070b52fe）：「生成
-  // 修复 SPEC」按钮标签计数与弹窗内 count（剔除非 open 后的 openKeys.length）
-  // 统一用本口径——原标签用原始勾选数，勾选混有 in_spec/resolved/ignored 条目
-  // 时两处计数互相矛盾。
+  // 勾选中 status==='open' 的条目数（code-review item 7530070b52fe +
+  // b6fe254b5962）：「生成修复 SPEC」「全部忽略」按钮标签计数与弹窗内 count
+  // （剔除非 open 后的 openKeys.length）、工具栏「已选 N 条」统一用本口径——
+  // 原始勾选数混有 in_spec/resolved/ignored 条目时与实际处理数互相矛盾。
   const openSelectedCount = items.filter(
     (it) => selectedKeys.includes(it.item_id) && it.status === 'open',
   ).length;
@@ -903,7 +903,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
             ]}
           />
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            已选 {selectedKeys.length} 条
+            已选 {openSelectedCount} 条
           </Typography.Text>
         </Space>
         <Space wrap>
@@ -962,7 +962,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
             loading={ignorePending}
             onClick={() => void handleIgnoreAll()}
           >
-            全部忽略{selectedKeys.length > 0 ? `（${selectedKeys.length}）` : ''}
+            全部忽略{openSelectedCount > 0 ? `（${openSelectedCount}）` : ''}
           </Button>
         </Space>
       </div>

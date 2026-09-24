@@ -2305,10 +2305,6 @@ class PMEngine:
         "而非产品",
     )
 
-    # ── 裁决证据分类校验 / 采纳（add-verdict-evidence-taxonomy D1-D5）──
-
-    # ── Queue Management ───────────────────────────────────────────
-
     # ── 派发队列老化（dispatch-queue-aging / design D3）─────────
 
     @staticmethod
@@ -2346,8 +2342,6 @@ class PMEngine:
         norm = "".join(text.split())
         return hashlib.sha1(norm.encode("utf-8", "replace")).hexdigest()[:12]
 
-    # ── Verification Pipeline ─────────────────────────────────────
-
     # ── 环境性失联门禁（verify-environment-sanity-gate）───────────
 
     def _run_verification_pipeline(self, spec_name: str):
@@ -2383,16 +2377,6 @@ class PMEngine:
                 # 与产品 bug 无关：不得 transition bug-found（那会派生伪 fix 级联，
                 # 本事故烧 token 的直接原因）。回 implemented + 退避重试。
                 self._rollback_failed_dispatch(spec_name, "verifier", e2)
-
-    # ── 应用可达性自愈（最终用户验证必选）────────────────────────
-
-    # ── 场景集冻结（add-verify-scenario-freeze）────────────────────────
-
-    # ── 交互契约覆盖（add-interaction-contract-and-per-assert-triage 1.3）──
-
-    # ── Reporting ──────────────────────────────────────────────────
-
-    # ── Push Gate ──────────────────────────────────────────────────
 
     # ── Push backoff helpers (design D3) ───────────────────────────
 

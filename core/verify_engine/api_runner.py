@@ -325,7 +325,12 @@ class ApiRunner(VerifyRunner):
                         break
                     line = (line or "").rstrip("\r")
                     if line.startswith("data:"):
-                        event["data"] += line[5:].strip() + "\n"
+                        # SSE 规范：只剥除冒号后的单个前导空格，保留载荷
+                        # 内部与尾部空白，避免多行 data 保真度受损。
+                        v = line[5:]
+                        if v.startswith(" "):
+                            v = v[1:]
+                        event["data"] += v + "\n"
                     elif line.startswith("event:"):
                         event["event"] = line[6:].strip()
                     elif line == "":

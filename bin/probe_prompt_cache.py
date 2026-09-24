@@ -72,7 +72,9 @@ def _post_once(provider: dict, body: dict) -> tuple:
     第一元素是**完整响应体**的 JSON 解析结果（dict；usage 是其中的子字典，
     由调用方 ``parsed.get("usage")`` 自取），非 usage 载荷本身（code-review
     item b74eff2a140a：旧 docstring 称返回 usage_dict 与实现不符）。响应体
-    非法 JSON 时回退 ({"raw": 前500字符}, raw)。
+    非法 JSON 时上抛 JSONDecodeError（code-review item c744bef56b6d：旧实现
+    回退伪 dict，使解析失败轮被当成全零 usage 成功轮、裁决违背 probe() 的
+    unknown 契约；上抛后由调用方 except 分支归入失败轮）。
 
     使用 stdlib urllib，避免依赖 requests；超时 120s。
     """
@@ -95,10 +97,9 @@ def _post_once(provider: dict, body: dict) -> tuple:
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     with urllib.request.urlopen(req, timeout=120) as resp:
         raw = resp.read().decode("utf-8", errors="replace")
-    try:
-        return json.loads(raw), raw
-    except json.JSONDecodeError:
-        return {"raw": raw[:500]}, raw
+    # 解析异常一并上抛（code-review item c744bef56b6d）：JSONDecodeError 由
+    # probe() 的 except 分支按既有网络/HTTP 异常同款归入失败轮，裁决落 unknown。
+    return json.loads(raw), raw
 
 
 def probe(provider_name: str, config_path: Path) -> dict:
