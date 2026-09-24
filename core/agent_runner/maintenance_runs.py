@@ -829,6 +829,7 @@ def run_code_review(
     review_kind: str,
     window_start: datetime | None = None,
     scope: str = "window",
+    redispatch_of: str | None = None,
 ) -> CodeReviewResult:
     """唤起代码审查 run（code-review agent，design D1/D4）。
 
@@ -847,7 +848,13 @@ def run_code_review(
     - 模型解析链：agents.models.code-review 分配优先 → 回退
       agents.models.self-review → 回退 agents.models.administrator →
       再回退 _get_admin_model → 默认网关。
-    - 超时走 agents.run_timeout_seconds 全局默认（_run_claude 内生效）。
+    - 超时走 agents.run_timeout_seconds 全局默认（_run_claude 内生效）；
+    - 429 打死 run 的自动重派（add-code-review-concurrency-and-429-resilience
+      D4）：终态归因为 429 限流时经 ``_ratelimit_redispatch_on_terminal``
+      登记 ``ratelimit_redispatch`` 意图（provider 限流冷却 + run jsonl 标注），
+      意图随结果信封上交消费侧（admin_monitor._worker）延迟重投递；重派时
+      消费侧以原 manifest 复调本函数（``redispatch_of`` 标注原 run），
+      幂等保障既有：聚合读侧按 file 去重 + 提示词「不重审」纪律。
 
     Args:
         runner: AgentRunner 实例（门面依赖注入，D2b 规则 1）。
@@ -856,6 +863,8 @@ def run_code_review(
         window_start: 审查窗口起点（scheduled/manual_window 注入；
             manual_full 为 None=全仓）。
         scope: full / window（写进 manifest 供审计）。
+        redispatch_of: 非 None 表示本 run 是 429 限流重派（值为原 run_id），
+            manifest JSON 与 run jsonl 均标注重派缘由（取证可见）。
     """
     run_id = runner._unique_code_review_run_id()
     mpath = runner.project_root / ".fenix" / "code-review" / f"manifest-{run_id}.json"
@@ -869,6 +878,9 @@ def run_code_review(
                     "scope": scope,
                     "review_kind": review_kind,
                     "window_start": window_start.isoformat() if window_start else None,
+                    # 429 限流重派标注（add-code-review-concurrency-and-429-
+                    # resilience D4）：非 None 时本 run 是原 run 的重派，取证可见
+                    "redispatch_of": redispatch_of,
                     "files": [str(f) for f in manifest],
                     "requested_at": datetime.now(timezone.utc).isoformat(),
                 },
@@ -880,9 +892,33 @@ def run_code_review(
     except OSError as e:
         return CodeReviewResult(run_id=run_id, success=False, error=f"manifest 落盘失败: {e}")
 
+    # 重派缘由运行留痕（task 5.2「运行记录可见重派缘由字段」）：重派 run 启动
+    # 即向自身 jsonl 标注 redispatch_of（写失败仅丢留痕不阻断）。
+    if redispatch_of:
+        try:
+            from core.agent_runner.run_files import append_run_line as _arl
+
+            _arl(
+                runner.project_root / ".fenix" / "runs" / f"{run_id}.jsonl",
+                {
+                    "type": "ratelimit_redispatch",
+                    "run_id": run_id,
+                    "spec": "code-review",
+                    "redispatch_of": redispatch_of,
+                    "reason": "429 ratelimit",
+                },
+            )
+        except OSError:
+            pass
+
     review_window = (
         f"[{window_start.isoformat()}, now]" if window_start else "（全仓，manual_full）"
     )
+    # 全仓审查并发（add-code-review-concurrency-and-429-resilience）：双通道
+    # 注入①提示词侧子代理扇出上限（{repo_concurrency}），②scan 命令
+    # --concurrency 由提示词模板同键承载。
+    from core.config import ConfigLoader as _CLRepoConc
+
     prompt = runner._build_prompt(
         run_id,
         "code-review",
@@ -890,6 +926,9 @@ def run_code_review(
             "manifest": [str(f) for f in manifest],
             "review_window": review_window,
             "out_path": str(opath),
+            "repo_concurrency": _CLRepoConc.get_repo_code_review_concurrency(
+                getattr(runner, "config", {}) or {}
+            ),
         },
     )
 
@@ -901,8 +940,10 @@ def run_code_review(
         or runner._get_agent_model_assignment("self-review")
         or runner._get_agent_model_assignment("administrator")
     )
+    provider_name = None
     if assignment:
         provider, model_override = assignment[0]
+        provider_name = provider.get("name")
         env_overrides["ANTHROPIC_BASE_URL"] = provider["baseurl"]
         env_overrides["ANTHROPIC_API_KEY"] = provider["apikey"]
         env_overrides["ANTHROPIC_MODEL"] = model_override
@@ -912,6 +953,7 @@ def run_code_review(
     else:
         model_override = runner._get_admin_model()
 
+    claude_error = ""  # CLI 原始错误文本（429 终态归因以它为准，见 catch 处）
     try:
         output, turns, _session_id, usage_info = runner._run_claude(
             prompt,
@@ -934,6 +976,10 @@ def run_code_review(
         run_ok = False
         error = str(e)
         usage_info = runner._extract_usage_info(None)
+        # 429 终态归因原文本单独留存（后续产物硬门/抢救可能改写 error 文案，
+        # 限流分类 MUST 以 CLI 原始错误为准，add-code-review-concurrency-and-
+        # 429-resilience D4）
+        claude_error = str(e)
 
     # token 归账到独立类目（不写 STATE，与自省同一约束）。经门面调用
     # （对齐 run_administrator/run_self_review 的 runner.<method> 形态）：
@@ -1086,7 +1132,29 @@ def run_code_review(
                         "code-review", f"code-fix 检查点触发失败（已忽略）: {e}"
                     )
 
-    return CodeReviewResult(
+    # ── 429 打死 run 的自动重派：runner 侧终态归因与意图登记（D4，task 5.1）──
+    # 仅以 CLI 原始错误分类（产物硬门/抢救文案不参与）；意图经结果信封上交
+    # 消费侧（admin_monitor._worker），冷却到期后延迟重投递。
+    ratelimit_intent = None
+    if not run_ok and claude_error:
+        _ratelimit = getattr(runner, "_ratelimit_redispatch_on_terminal", None)
+        if _ratelimit is not None:
+            try:
+                ratelimit_intent = _ratelimit(
+                    run_id=run_id,
+                    error=claude_error,
+                    provider_name=provider_name,
+                    spec_name="code-review",
+                )
+            except Exception as e:  # noqa: BLE001 — 意图登记失败不改变失败终态
+                _log = getattr(runner, "logger", None)
+                if _log is not None:
+                    _log.warning(
+                        "code-review",
+                        f"ratelimit_redispatch 意图登记失败（run {run_id}）: {e}",
+                    )
+
+    result = CodeReviewResult(
         run_id=run_id,
         success=run_ok,
         inserted=inserted,
@@ -1096,6 +1164,10 @@ def run_code_review(
         output=output,
         shards=shards,
     )
+    # 意图随结果信封上交（result_gate.CodeReviewResult.ratelimit_redispatch，
+    # 缺省 None——非 429 失败路径恒为 None，消费侧零感知）
+    result.ratelimit_redispatch = ratelimit_intent
+    return result
 
 
 def _unique_code_review_run_id(runner) -> str:

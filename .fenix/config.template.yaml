@@ -313,6 +313,14 @@ verify:
   # 会压过读取器缺省）。实测 8 路并发同时打同一 provider 网关会放大首字节
   # 延迟；4 以吞吐换稳定。
   impl_code_review_concurrency: 4
+  # 全仓审查并发（add-code-review-concurrency-and-429-resilience）：控制
+  # 全仓审查 run（manual_full / manual_window / scheduled）的并行审查度，
+  # 一个键同时注入两处——提示词侧子代理并行扇出上限（波内并行、波次滚动
+  # 推进）与 ocr scan --concurrency（ocr 内置缺省 8，2026-09-24 429 事故的
+  # 并发来源之一）。正整数，缺省 4；模板示例值必须等于缺省值（否则模板
+  # 派生配置恒为显式旧值，缺省调整失效）。SPEC/implement 任务内审查由
+  # 上方 impl_code_review_concurrency 控制，语义不变。
+  repo_code_review_concurrency: 4
   # 收尾审查 ocr 审查力度（--effort，add-impl-code-review-tuning）：
   # 合法值 low | medium | high，缺省 low（ocr 内置缺省 medium）。low 更快更省
   # 但 recall 偏低（ocr precision 优先的刻意取舍），可随时上调。经提示词命令

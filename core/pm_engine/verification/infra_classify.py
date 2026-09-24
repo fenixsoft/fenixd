@@ -30,7 +30,10 @@ def _verifier_error_is_infra(pipeline, error_text: str) -> bool:
     """verifier 失败是否属基础设施类（不得流转 bug-found）。
 
     覆盖：provider 熔断抑制、failover 链耗尽（chain exhausted）、
-    classify_switch_error 可识别的切换类错误（unrecognized_model/5xx/网络）。
+    classify_switch_error 可识别的切换类错误（unrecognized_model/5xx/网络/
+    429 限流——add-code-review-concurrency-and-429-resilience 将限流纳入
+    切换类后，验证失败的 infra 归因随之覆盖 429，「验证没能发生」语义，
+    属预期外溢，断言用例固化于 tests/test_provider_circuit.py）。
     此类失败说明「验证没能发生」，不是「验证发现了缺陷」。
     """
     if not error_text:

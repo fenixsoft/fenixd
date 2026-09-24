@@ -762,6 +762,13 @@ class AdminMonitor:
         # 用锁把判定+置位压成临界区（fix-ocr finding low）。
         self._code_review_in_flight = False
         self._code_review_lock = threading.Lock()
+        # 429 限流重派（add-code-review-concurrency-and-429-resilience D4）：
+        # _code_review_ratelimit_redispatches：本生命周期内已执行的重派次数
+        # （上限 RATELIMIT_REDISPATCH_MAX=1，防限流期重派风暴——重派仍 429 按
+        # 既有失败路径收场升级人工）；_code_review_redispatch_timer：冷却到期
+        # 延迟重投递的 threading.Timer（同时存在至多一个，防重复排队）。
+        self._code_review_ratelimit_redispatches = 0
+        self._code_review_redispatch_timer: threading.Timer | None = None
         # add-test-regression-tab：regression 在途标记（对齐 _code_review_in_flight
         # 形态）：投递即置位、worker 收尾复位。锁定：检查点（admin 巡检线程）与
         # 手动信号消费（fenixd 主循环线程）双线程读-改-写，GIL 不保证原子，
@@ -1047,7 +1054,10 @@ class AdminMonitor:
         # 投递后台 worker（对齐 _evolution_worker 形态）
         review_kind = "scheduled"
 
+        ratelimit_intent: dict | None = None
+
         def _worker():
+            nonlocal ratelimit_intent
             try:
                 result = self.agent_runner.run_code_review(
                     manifest,
@@ -1062,11 +1072,24 @@ class AdminMonitor:
                     f"resolved={result.resolved}, shards={result.shards}"
                     + (f", error={result.error}" if result.error else ""),
                 )
+                # 429 打死 run 的自动重派消费侧（add-code-review-concurrency-
+                # and-429-resilience D4，task 5.3）：终态结果携带
+                # ratelimit_redispatch 意图（含最早冷却到期时刻）→ 收场复位
+                # 单飞后经 threading.Timer 延迟重投递（冷却期内 MUST NOT 重派）。
+                ratelimit_intent = getattr(result, "ratelimit_redispatch", None)
             except Exception as e:
                 self.logger.error("admin_monitor", f"code-review 周期审查异常: {e}")
             finally:
                 with self._code_review_lock:
                     self._code_review_in_flight = False
+            if ratelimit_intent:
+                self._schedule_ratelimit_redispatch(
+                    manifest=manifest,
+                    review_kind=review_kind,
+                    window_start=window_start if review_scope == "window" else None,
+                    scope=review_scope,
+                    intent=ratelimit_intent,
+                )
 
         try:
             if self._code_review_executor is not None:
@@ -1080,6 +1103,107 @@ class AdminMonitor:
                 self._code_review_in_flight = False
             self.logger.error("admin_monitor", f"code-review 周期审查派发失败: {e}")
             return {"triggered": True, "ok": False, "reason": f"exception: {e}", "date": local_today_str()}
+
+    # ── 429 限流重派消费侧（add-code-review-concurrency-and-429-resilience D4，task 5.3）──
+    def _schedule_ratelimit_redispatch(self, manifest, review_kind, window_start,
+                                       scope, intent: dict) -> None:
+        """登记 429 重派意图并经延迟投递在冷却到期后重调 ``run_code_review`` 一次。
+
+        ``run_code_review`` 唯一生产调用方（本文件 ``_run_code_review_checkpoint``
+        的 ``_worker``）观测到终态结果携带 ``ratelimit_redispatch`` 意图（含最早
+        冷却到期时刻）时进入本方法。守卫：
+        - 重派上限常量 ``RATELIMIT_REDISPATCH_MAX = 1``：本 monitor 生命周期内
+          已重派过即不再重派（重派仍 429 按既有失败路径收场，MUST NOT 无限重派）；
+        - 至多一个待发 Timer（重复意图不重复排队）；
+        - 冷却到期前 MUST NOT 重派：延迟 = max(0, cooldown_until_epoch − now)。
+        重派以**原 manifest/参数**复调（幂等保障既有：聚合读侧按 file 去重 +
+        提示词「不重审」纪律），并携带 ``redispatch_of`` 供运行记录标注重派缘由。
+        """
+        from core.agent_runner.provider_circuit import RATELIMIT_REDISPATCH_MAX
+
+        run_id = str(intent.get("run_id") or "")
+        with self._code_review_lock:
+            if self._code_review_ratelimit_redispatches >= RATELIMIT_REDISPATCH_MAX:
+                self.logger.warning(
+                    "admin_monitor",
+                    f"code-review 429 重派跳过：已达上限 {RATELIMIT_REDISPATCH_MAX}"
+                    f"（原 run {run_id}，按既有失败路径收场）",
+                )
+                return
+            if self._code_review_redispatch_timer is not None:
+                self.logger.info(
+                    "admin_monitor",
+                    f"code-review 429 重派跳过：已有待发重派 Timer（原 run {run_id}）",
+                )
+                return
+            # 登记即占额（防并发意图重复消耗/重复排队）；消费侧若因单飞放弃
+            # 不退额——防风暴优先。
+            self._code_review_ratelimit_redispatches += 1
+            delay = max(0.0, float(intent.get("cooldown_until_epoch") or 0.0) - time.time())
+            timer = threading.Timer(
+                delay,
+                self._consume_ratelimit_redispatch,
+                args=(manifest, review_kind, window_start, scope, run_id),
+            )
+            timer.daemon = True
+            self._code_review_redispatch_timer = timer
+        self.logger.info(
+            "admin_monitor",
+            f"code-review 429 重派已排程：原 run {run_id}，{int(delay)}s 后"
+            f"（provider 限流冷却到期）以原 manifest 重派一次",
+        )
+        timer.start()
+
+    def _consume_ratelimit_redispatch(self, manifest, review_kind, window_start,
+                                      scope, original_run_id: str) -> None:
+        """冷却到期回调：以原 manifest/参数重调 ``run_code_review`` 一次（task 5.3）。
+
+        单飞守卫：车道忙（新周期/手动 run 在跑）时放弃本次重派（原 run 的
+        分片产物仍被 error 收场抢救落账，不因放弃而丢失）。
+        """
+        # Timer 已触发：先摘句柄（允许后续新意图再排程——上限计数仍守卫）
+        with self._code_review_lock:
+            self._code_review_redispatch_timer = None
+            if self._code_review_in_flight:
+                self.logger.warning(
+                    "admin_monitor",
+                    f"code-review 429 重派放弃：车道单飞中有在途 run"
+                    f"（原 run {original_run_id}）",
+                )
+                return
+            self._code_review_in_flight = True
+
+        def _worker():
+            try:
+                result = self.agent_runner.run_code_review(
+                    manifest,
+                    review_kind=review_kind,
+                    window_start=window_start,
+                    scope=scope,
+                    redispatch_of=original_run_id or None,
+                )
+                self.logger.info(
+                    "admin_monitor",
+                    f"code-review 429 重派完成：redispatch_of={original_run_id}, "
+                    f"run_id={result.run_id}, inserted={result.inserted}, "
+                    f"updated={result.updated}, shards={result.shards}"
+                    + (f", error={result.error}" if result.error else ""),
+                )
+            except Exception as e:
+                self.logger.error("admin_monitor", f"code-review 429 重派异常: {e}")
+            finally:
+                with self._code_review_lock:
+                    self._code_review_in_flight = False
+
+        try:
+            if self._code_review_executor is not None:
+                self._code_review_executor.submit(_worker)
+            else:
+                _worker()
+        except Exception as e:
+            with self._code_review_lock:
+                self._code_review_in_flight = False
+            self.logger.error("admin_monitor", f"code-review 429 重派投递失败: {e}")
 
     def _check_code_review_stall(self) -> None:
         """code-review 事中零进度停滞告警（add-code-review-sharded-out 3.1/D4）。

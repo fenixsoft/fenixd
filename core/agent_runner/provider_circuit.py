@@ -45,6 +45,29 @@ SWITCH_ERROR_TEXT_PATTERNS = (
     r"unrecognized model",
     r"model.*not.*found",
 )
+# ── 429 限流分类与限流冷却（add-code-review-concurrency-and-429-resilience D3）──
+# 2026-09-24 事故：bigmodel 网关 429（`API Error: Request rejected (429) ·
+# [1302][您的账户已达到速率限制...]`）不在任何容错分类里，CLI 内部重试耗尽后
+# 整 run terminal_reason=api_error 终态失败。本组常量把 429 限流纳入切换类
+# 错误（驱动链前进），命中时 provider 进「限流冷却」——复用 switch 冷却通道
+# （同字段 switch_cooldown_until / 同候选跳过语义）但用独立常量时长（便于
+# 调参，本期不落配置键）；MUST NOT 计入 PROVIDER_CIRCUIT_4XX（限流是暂时性
+# 配额压力，与配额/鉴权故障的 30min 熔断语义不同，双重计数会放大冷却）。
+# 签名保守三选（任一命中即分类，design D3/风险节：签名集收敛于显式限流形态，
+# 不做宽泛子串匹配——fixture 文本并不含全部三种签名，按「全匹配」则 fixture
+# 自身无法分类）：
+RATELIMIT_ERROR_TEXT_PATTERNS = (
+    r"HTTP\s*429",     # HTTP 429 显式形态
+    r"\[1302\]",       # bigmodel 网关限流错误码（2026-09-24 实测 fixture 命中）
+    r"rate_limit",     # error type / SDK 文本形态（rate_limit_error 等）
+)
+# 限流冷却时长（秒）：与 switch 冷却同量级（300s），独立常量便于调参。
+# 本期不落配置键（spec failover-dispatch delta：调参改常量）。
+PROVIDER_RATELIMIT_COOLDOWN_SECONDS = 300
+# 429 打死 run 的自动重派上限（design D4）：同一链条 429 终态后冷却到期自动
+# 重派至多 1 次，重派仍 429 按既有失败路径收场升级人工，MUST NOT 无限重派
+# （限流期重派风暴防线：上限 1 + provider 冷却期内不派发 + 既有预算守卫）。
+RATELIMIT_REDISPATCH_MAX = 1
 # ── 拒模型快速 failover（add-impl-selfcheck-model-probe 2.1）───────────────
 # unrecognized_model 是 provider **明确返回**的确定性模型失败（非瞬态网关故障）：
 # 同一 (provider, model) 再试必然再拒。既有 add-provider-failover 已把它纳入
@@ -282,9 +305,15 @@ class ProviderCircuit:
     def classify_switch_error(error_text: str) -> bool:
         """判断错误文本是否属于「切换类错误」（add-provider-failover：design D2）。
 
-        切换类错误驱动 failover 链前进：unrecognized_model 文本 / HTTP 5xx / 连接类异常。
+        切换类错误驱动 failover 链前进：unrecognized_model 文本 / HTTP 5xx /
+        连接类异常 / **429 限流错误**（add-code-review-concurrency-and-429-
+        resilience D3：HTTP 429 / 错误码 ``[1302]`` / ``rate_limit`` 任一签名，
+        见 classify_ratelimit_error；命中时 provider 进限流冷却——复用 switch
+        冷却通道与候选跳过语义，时长用 PROVIDER_RATELIMIT_COOLDOWN_SECONDS，
+        由调用方区分记账）。
         以下情形**不**返回 True（维持既有 4xx 熔断语义、不纳入链前进）：
-        - HTTP 4xx（配额/鉴权，parsed code ∈ PROVIDER_CIRCUIT_4XX）——走 provider-fault-fuse
+        - HTTP 4xx（配额/鉴权，parsed code ∈ PROVIDER_CIRCUIT_4XX；429 不在该
+          元组内，由上方限流签名先行接住）——走 provider-fault-fuse
         - 空文本 / 解析不到 code 且不匹配任何切换文本
 
         返回 True 表示该 attempt 失败应以「链前进 + switch 短冷却」处理。
@@ -305,6 +334,12 @@ class ProviderCircuit:
         for pat in SWITCH_ERROR_TEXT_PATTERNS:
             if re.search(pat, text, re.IGNORECASE):
                 return True
+        # 1.5) 429 限流（add-code-review-concurrency-and-429-resilience D3）：
+        #    判定同样先于 4xx code 解析——429 形态上可被 parse_api_error_status
+        #    解析为 (429)，虽不在 PROVIDER_CIRCUIT_4XX 内不会被「4xx 不切换」
+        #    提前拦截，但显式前置使分类意图可读、且不受未来 4xx 元组扩充误伤。
+        if ProviderCircuit.classify_ratelimit_error(text):
+            return True
         # 2) HTTP 5xx（5xx 属瞬态网关故障，驱动切换；5xx 的 code 解析不出也算失败但会被
         #    下方连接/文本兜底覆盖）。先排除明确 4xx（解析出的 4xx 不触发切换）。
         code = ProviderCircuit.parse_api_error_status(text)
@@ -318,6 +353,35 @@ class ProviderCircuit:
             if re.search(pat, text, re.IGNORECASE):
                 return True
         return False
+
+    @staticmethod
+    def classify_ratelimit_error(error_text: str) -> bool:
+        """判断错误文本是否属于「429 限流错误」（add-code-review-concurrency-and-429-resilience D3）。
+
+        签名保守三选**任一**命中即分类（design D3/风险节：不做宽泛子串匹配）：
+        - HTTP 429 文本形态（``HTTP 429``；``(429)`` 括号形态经
+          parse_api_error_status 解析 code==429 兜底——2026-09-24 实测
+          bigmodel 文本 ``API Error: Request rejected (429) · [1302][...]``
+          即靠 ``[1302]`` 签名与 code==429 兜底双路命中）
+        - bigmodel 网关限流错误码 ``[1302]``
+        - ``rate_limit`` 文本（error type / SDK 形态）
+
+        判定为纯函数（无副作用）；provider 冷却/重派登记由调用方执行。
+        429 MUST NOT 计入 PROVIDER_CIRCUIT_4XX（该判定独立于 4xx 计数通道，
+        调用方 _record_4xx_or_transient 先于 4xx 分支消费本判定）。
+
+        Args:
+            error_text: claude CLI 打到 stderr / 被 runner 转成 str 的错误文本。
+        """
+        if not error_text:
+            return False
+        text = error_text
+        for pat in RATELIMIT_ERROR_TEXT_PATTERNS:
+            if re.search(pat, text, re.IGNORECASE):
+                return True
+        # 括号/前缀形态兜底：parse_api_error_status 解析出 429 亦判限流
+        # （「Request rejected (429)」「status code 429」等网关包装形态）。
+        return ProviderCircuit.parse_api_error_status(text) == 429
 
     @staticmethod
     def classify_unrecognized_model_error(error_text: str) -> bool:
@@ -447,10 +511,33 @@ class ProviderCircuit:
         now = self._pm._now() if now is None else now
         return st.get("switch_cooldown_until", 0.0) > now
 
-    def _record_switch_cooldown(self, provider_name: str, now: float | None = None) -> None:
+    def switch_cooldown_until(self, provider_name: str) -> float:
+        """返回某 provider 当前 switch/限流冷却的到期时刻（epoch 秒）。
+
+        add-code-review-concurrency-and-429-resilience：``ratelimit_redispatch``
+        重派意图须携带「最早冷却到期时刻」，消费侧据此延迟重投递（冷却期内
+        MUST NOT 重派）。未在冷却中（无记录/已到期）返回 0.0。
+        """
+        if not provider_name:
+            return 0.0
+        st = self.provider_circuits.get(provider_name)
+        if st is None:
+            return 0.0
+        until = float(st.get("switch_cooldown_until", 0.0) or 0.0)
+        if until <= self._pm._now():
+            # 到期探针只做逻辑复位（不清 state 键）：此处按语义归零，
+            # 保证消费侧 delay = max(0, until - now) 不拿到过期时间戳。
+            return 0.0
+        return until
+
+    def _record_switch_cooldown(self, provider_name: str, now: float | None = None,
+                                cooldown_seconds: float | None = None) -> None:
         """记录一次切换类错误：把该 provider 推进到 switch 短冷却（design D2/D3）。
 
         默认 300s（PROVIDER_SWITCH_COOLDOWN_SECONDS），可配 pm.failover.switch_cooldown_seconds。
+        ``cooldown_seconds`` 显式传入时优先使用（429 限流冷却通道：独立常量
+        PROVIDER_RATELIMIT_COOLDOWN_SECONDS，add-code-review-concurrency-and-
+        429-resilience D3——复用本通道与候选跳过语义，仅时长分账便于调参）。
         与 4xx 熔断计数完全独立：仅设置 switch_cooldown_until，不动 4xx 的 events/count/
         cooldown_until。冷却到期后链选择自动复位优先。
         """
@@ -460,12 +547,15 @@ class ProviderCircuit:
         st = self._circuit_state(provider_name)
         # 数值钳制（code-review item 7729e93d1efe，与 _record_provider_4xx 同口径）：
         # 非数值配置会让 now + cooldown 抛 TypeError，0/负数静默禁用冷却。
-        cooldown = self._positive_number(
-            self._pm._get_config(
-                "pm.failover.switch_cooldown_seconds", PROVIDER_SWITCH_COOLDOWN_SECONDS
-            ),
-            PROVIDER_SWITCH_COOLDOWN_SECONDS,
-        )
+        if cooldown_seconds is not None:
+            cooldown = self._positive_number(cooldown_seconds, PROVIDER_SWITCH_COOLDOWN_SECONDS)
+        else:
+            cooldown = self._positive_number(
+                self._pm._get_config(
+                    "pm.failover.switch_cooldown_seconds", PROVIDER_SWITCH_COOLDOWN_SECONDS
+                ),
+                PROVIDER_SWITCH_COOLDOWN_SECONDS,
+            )
         st["switch_cooldown_until"] = now + cooldown
         self._pm.logger.info(
             "agent_runner",

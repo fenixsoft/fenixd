@@ -96,6 +96,9 @@ _SOURCE_KEYS = [
     # 缺省 600/2/low，与 ConfigLoader 三读取器缺省同源）
     "verify.impl_code_review_timeout_sec",
     "verify.impl_code_review_concurrency",
+    # add-code-review-concurrency-and-429-resilience：全仓审查并发
+    # （manual_full/manual_window/scheduled 的子代理扇出 + ocr scan --concurrency）
+    "verify.repo_code_review_concurrency",
     "verify.impl_code_review_effort",
     # add-impl-ocr-parallel-lane：join 裁决双档模式（gate/advisory）
     "verify.impl_code_review_mode",
@@ -259,6 +262,12 @@ def _managed_key_sources(raw: dict) -> dict:
                 not isinstance(verify_src.get("impl_code_review_concurrency"), bool):
             if verify_src["impl_code_review_concurrency"] > 0:
                 sources["verify.impl_code_review_concurrency"] = "project"
+        # add-code-review-concurrency-and-429-resilience：全仓审查并发同款
+        # 来源标注（正整数才标注 project，缺省/非法不标）
+        if isinstance(verify_src.get("repo_code_review_concurrency"), int) and \
+                not isinstance(verify_src.get("repo_code_review_concurrency"), bool):
+            if verify_src["repo_code_review_concurrency"] > 0:
+                sources["verify.repo_code_review_concurrency"] = "project"
         if verify_src.get("impl_code_review_effort") in ("low", "medium", "high"):
             sources["verify.impl_code_review_effort"] = "project"
         # add-impl-ocr-parallel-lane：mode 枚举合法值才标注 project（缺省/非法不标）
@@ -418,6 +427,9 @@ def read_config(scope_root, scope: str = "project") -> dict:
                    # 新缺省，本次 2→4 已实际踩中）
                    "impl_code_review_timeout_sec": _CLICRT.get_impl_code_review_timeout_sec({}),
                    "impl_code_review_concurrency": _CLICRT.get_impl_code_review_concurrency({}),
+                   # add-code-review-concurrency-and-429-resilience：全仓审查并发
+                   # 缺省恒回显（与三运行参数「缺省回显」同款语义）
+                   "repo_code_review_concurrency": _CLICRT.get_repo_code_review_concurrency({}),
                    "impl_code_review_effort": _CLICRT.get_impl_code_review_effort({}),
                    # add-impl-ocr-parallel-lane：join 双档模式恒回显缺省（gate——
                    # 与上方三运行参数「缺省回显」同款语义）
@@ -566,6 +578,10 @@ def read_config(scope_root, scope: str = "project") -> dict:
         result["verify"]["impl_code_review_concurrency"] = (
             _CLICRT.get_impl_code_review_concurrency(raw)
         )
+        # add-code-review-concurrency-and-429-resilience：全仓审查并发生效值回显
+        result["verify"]["repo_code_review_concurrency"] = (
+            _CLICRT.get_repo_code_review_concurrency(raw)
+        )
         result["verify"]["impl_code_review_effort"] = (
             _CLICRT.get_impl_code_review_effort(raw)
         )
@@ -706,6 +722,9 @@ def read_effective_config(project_root) -> dict:
                    # 新缺省，本次 2→4 已实际踩中）
                    "impl_code_review_timeout_sec": _CLICRT.get_impl_code_review_timeout_sec({}),
                    "impl_code_review_concurrency": _CLICRT.get_impl_code_review_concurrency({}),
+                   # add-code-review-concurrency-and-429-resilience：全仓审查并发
+                   # 缺省恒回显（与三运行参数「缺省回显」同款语义）
+                   "repo_code_review_concurrency": _CLICRT.get_repo_code_review_concurrency({}),
                    "impl_code_review_effort": _CLICRT.get_impl_code_review_effort({}),
                    # add-impl-ocr-parallel-lane：join 双档模式恒回显缺省（gate——
                    # 与上方三运行参数「缺省回显」同款语义）
@@ -841,6 +860,10 @@ def read_effective_config(project_root) -> dict:
         )
         result["verify"]["impl_code_review_concurrency"] = (
             ConfigLoader.get_impl_code_review_concurrency(effective)
+        )
+        # add-code-review-concurrency-and-429-resilience：全仓审查并发生效值回显
+        result["verify"]["repo_code_review_concurrency"] = (
+            ConfigLoader.get_repo_code_review_concurrency(effective)
         )
         result["verify"]["impl_code_review_effort"] = (
             ConfigLoader.get_impl_code_review_effort(effective)
@@ -1033,6 +1056,12 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
         _icc = patch["verify"].get("impl_code_review_concurrency")
         if isinstance(_icc, int) and not isinstance(_icc, bool) and _icc > 0:
             merged["verify"]["impl_code_review_concurrency"] = _icc
+        # add-code-review-concurrency-and-429-resilience：全仓审查并发合并
+        # （正整数才合并，缺失不填充、非法值由前置校验拒绝；同款「界面可填、
+        # 保存不静默丢弃」对称——漏 merge 分支即保存被吞）
+        _rcc = patch["verify"].get("repo_code_review_concurrency")
+        if isinstance(_rcc, int) and not isinstance(_rcc, bool) and _rcc > 0:
+            merged["verify"]["repo_code_review_concurrency"] = _rcc
         _ice = patch["verify"].get("impl_code_review_effort")
         if _ice in ("low", "medium", "high"):
             merged["verify"]["impl_code_review_effort"] = _ice
@@ -1421,6 +1450,17 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
             if isinstance(_icc, bool) or not isinstance(_icc, int) or _icc <= 0:
                 return fail(
                     f"verify.impl_code_review_concurrency must be a positive integer: {_icc!r}"
+                )
+        # add-code-review-concurrency-and-429-resilience：全仓审查并发前置校验
+        # （正整数，bool 不算——与 impl 键同款）
+        if (
+            "repo_code_review_concurrency" in v_patch
+            and v_patch["repo_code_review_concurrency"] is not None
+        ):
+            _rcc = v_patch["repo_code_review_concurrency"]
+            if isinstance(_rcc, bool) or not isinstance(_rcc, int) or _rcc <= 0:
+                return fail(
+                    f"verify.repo_code_review_concurrency must be a positive integer: {_rcc!r}"
                 )
         if (
             "impl_code_review_effort" in v_patch
@@ -2015,6 +2055,9 @@ _SYNC_PAGE_KEYS = {
             "impl_code_review",
             "impl_code_review_timeout_sec",
             "impl_code_review_concurrency",
+            # add-code-review-concurrency-and-429-resilience：全仓审查并发随
+            # 质量页签同步（缺此步时「同步用户级设置」按钮会静默漏同步该键）
+            "repo_code_review_concurrency",
             "impl_code_review_effort",
             # add-impl-ocr-parallel-lane：join 双档模式随质量页签同步（缺此步时
             # 「同步用户级设置」按钮会静默漏同步该键——功能对用户不可见）

@@ -275,3 +275,86 @@ class TestCircuitVisibility:
     def test_unassigned_provider_never_circuits(self, tmp_path):
         runner = make_runner(tmp_path)  # 无 config → 无 assignment
         assert runner.is_circuit_open(None) is False
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 429 限流分类与冷却（add-code-review-concurrency-and-429-resilience D3）
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestRatelimitClassification:
+    """429 限流签名分类 / 不计 4xx / 限流冷却通道。"""
+
+    # 2026-09-24 真实错误文本 fixture（bigmodel 网关 429，spec delta Scenario）
+    REAL_429_FIXTURE = (
+        "API Error: Request rejected (429) · [1302]"
+        "[您的账户已达到速率限制，请您控制请求频率]"
+    )
+
+    def test_real_fixture_hits_classification(self):
+        """真实 429 文本命中限流分类，且纳入切换类（驱动链前进）。"""
+        assert AgentRunner.classify_ratelimit_error(self.REAL_429_FIXTURE) is True
+        assert AgentRunner.classify_switch_error(self.REAL_429_FIXTURE) is True
+
+    def test_signature_forms(self):
+        """三签名任一命中即分类（HTTP 429 / [1302] / rate_limit）+ 兜底 (429)。"""
+        assert AgentRunner.classify_ratelimit_error("HTTP 429 Too Many Requests") is True
+        assert AgentRunner.classify_ratelimit_error("gateway [1302] throttled") is True
+        assert AgentRunner.classify_ratelimit_error("rate_limit_error: quota exceeded") is True
+        assert AgentRunner.classify_ratelimit_error("Request rejected (429)") is True  # code 兜底
+        # 非限流文本不误判
+        assert AgentRunner.classify_ratelimit_error("HTTP 500 Internal Server Error") is False
+        assert AgentRunner.classify_ratelimit_error("HTTP 404 not found") is False
+        assert AgentRunner.classify_ratelimit_error("connection refused") is False
+        assert AgentRunner.classify_ratelimit_error("") is False
+
+    def test_429_not_counted_as_4xx(self, tmp_path, monkeypatch):
+        """429 不计入 PROVIDER_CIRCUIT_4XX 熔断计数（限流走冷却通道，非熔断面）。"""
+        runner = make_runner(tmp_path)
+        p = "volc"
+        now = 1000.0
+        monkeypatch.setattr(runner, "_now", lambda: now)
+        error, is_transient, may_switch = runner._record_4xx_or_transient(
+            self.REAL_429_FIXTURE, p, "implementer", [], 1, False,
+        )
+        # 非瞬态（不进原地退避重试——冷却期内原地重试只会继续撞 429）、可切链
+        assert is_transient is False
+        assert may_switch is True
+        # 零 4xx 计数（provider_circuits 无计数条目或 count 恒 0）
+        st = runner._provider_circuit.provider_circuits.get(p)
+        assert st is None or (st["count"] == 0 and not st["events"])
+        assert not runner.is_circuit_open(p, now=now)
+
+    def test_switch_error_includes_429_in_infra_attribution(self):
+        """429 进入切换类后，verifier 失败的 infra 归因随之覆盖（task 4.3 固化）。
+
+        「验证没能发生」语义：429 打死的 verifier 失败不得流转 bug-found。
+        """
+        from core.pm_engine.verification.infra_classify import _verifier_error_is_infra
+
+        pipeline = type("P", (), {})()
+        pipeline._pm = type("PM", (), {})()
+        pipeline._pm.agent_runner = AgentRunner
+        assert (
+            _verifier_error_is_infra(pipeline, self.REAL_429_FIXTURE) is True
+        )
+
+    def test_switch_cooldown_from_attempt_uses_ratelimit_duration(self, tmp_path, monkeypatch):
+        """attempt 循环 429 失败：链前进 + 冷却时长用限流常量（非 switch 配置）。"""
+        from core.agent_runner import PROVIDER_RATELIMIT_COOLDOWN_SECONDS
+
+        runner = make_runner(tmp_path, provider_config())
+        now = 1000.0
+        monkeypatch.setattr(runner, "_now", lambda: now)
+        runner._provider_circuit._record_switch_cooldown(
+            "volc", now=now, cooldown_seconds=PROVIDER_RATELIMIT_COOLDOWN_SECONDS,
+        )
+        st = runner._provider_circuit.provider_circuits["volc"]
+        assert st["switch_cooldown_until"] == pytest.approx(
+            now + PROVIDER_RATELIMIT_COOLDOWN_SECONDS)
+        # 冷却期内链选择跳过该候选
+        assert runner._provider_circuit.is_switch_cooldown("volc", now=now + 1)
+        # 冷却到期探针复位：自动复位、可再次选中
+        later = now + PROVIDER_RATELIMIT_COOLDOWN_SECONDS + 1
+        monkeypatch.setattr(runner, "_now", lambda: later)
+        assert not runner._provider_circuit.is_switch_cooldown("volc", now=later)
+        assert runner.switch_cooldown_until("volc") == 0.0

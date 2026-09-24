@@ -1485,6 +1485,9 @@ class PromptBuilder:
         - {review_window}: 审查窗口描述（scheduled/manual_window 为
           [window_start, now]，manual_full 为全仓）
         - {out_path}: 逐文件增量落盘路径（.fenix/code-review/out-<run_id>.jsonl）
+        - {repo_concurrency}: 全仓审查并发（verify.repo_code_review_concurrency，
+          缺省 4）——子代理并行扇出上限（波内并行）与 ``ocr scan --concurrency``
+          双通道共用同键（add-code-review-concurrency-and-429-resilience）
         """
         template = self._load_agent_template("code-review")
         prompt = template
@@ -1499,10 +1502,35 @@ class PromptBuilder:
         prompt = prompt.replace("{manifest}", manifest_txt)
         prompt = prompt.replace("{total_files}", str(total))
         prompt = prompt.replace("{review_window}", str(window))
+        # 全仓审查并发注入（add-code-review-concurrency-and-429-resilience）：
+        # detail 缺失/脏值时回退读取器缺省 4，与 get_repo_code_review_concurrency
+        # 单点缺省一致。
+        from core.config import ConfigLoader
+
+        repo_concurrency = detail.get("repo_concurrency")
+        if (
+            not isinstance(repo_concurrency, int)
+            or isinstance(repo_concurrency, bool)
+            or repo_concurrency <= 0
+        ):
+            repo_concurrency = ConfigLoader.get_repo_code_review_concurrency(
+                getattr(self._pm, "config", {}) or {}
+            )
+        prompt = prompt.replace("{repo_concurrency}", str(repo_concurrency))
         out_path = detail.get("out_path")
         if not out_path:
             out_path = self._pm.project_root / ".fenix" / "code-review" / f"out-{token}.jsonl"
         prompt = prompt.replace("{out_path}", str(out_path))
+        # 未解析占位符残留告警（add-code-review-auto-fix 同款防护）：本路径
+        # 独立于 _fill_placeholders，模板漂移导致的注入静默丢失同样要日志可见。
+        leftover = sorted(set(_PLACEHOLDER_RE.findall(prompt)))
+        if leftover:
+            _logger.warning(
+                "提示词占位符未解析（模板漂移，注入内容可能静默丢失）: "
+                "agent=code-review run_id=%s leftover=%s",
+                run_id,
+                leftover,
+            )
         # 非交互契约段（fix-agent-noninteractive-contract D2）：独立构建路径
         # 不走统一收尾处注入，就地追加（return 之前）。
         prompt += self._noninteractive_contract_section()

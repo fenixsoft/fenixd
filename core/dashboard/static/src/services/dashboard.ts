@@ -1178,6 +1178,11 @@ export interface VerifyConfig {
    *  add-impl-ocr-parallel-lane 由 2 上调；正整数；经提示词命令示例
    *  --concurrency <n> 承载，实现者须照抄命令示例） */
   impl_code_review_concurrency?: number;
+  /** 全仓审查并发（add-code-review-concurrency-and-429-resilience，缺省 4，
+   *  正整数）：控制全仓审查 run（manual_full/manual_window/scheduled）的
+   *  并行审查度——提示词侧子代理扇出上限 + ocr scan --concurrency 双通道
+   *  同键注入 */
+  repo_code_review_concurrency?: number;
   /** 收尾审查 ocr 力度预设（add-impl-code-review-tuning，缺省 'low'；经提示词
    *  命令示例 --effort <v> 承载，实现者须照抄命令示例） */
   impl_code_review_effort?: 'low' | 'medium' | 'high';

@@ -27,7 +27,8 @@
 
 ```
 python3 bin/ocr_review.py scan --path "<manifest 逗号分隔清单>" \
-    --format json --output /tmp/ocr-scan.json --audience agent
+    --format json --output /tmp/ocr-scan.json --audience agent \
+    --concurrency {repo_concurrency}
 ```
 
 - MUST 用仓库内包装器 `bin/ocr_review.py`，MUST NOT 直接调 `ocr`，provider 配置由 run 级注入承载（环境变量 `FENIX_OCR_HOME`，其下 `.opencodereview/config.json` 由框架写入，复用分配给本 run 的 provider，与成本记账同源）。
@@ -64,6 +65,7 @@ python3 bin/ocr_review.py scan --path "<manifest 逗号分隔清单>" \
 **分批/并行审查的落盘纪律（分片直写，add-code-review-sharded-out）**：manifest 大时你可以分批、可派子代理并行审查。落盘义务是「**谁审谁写、审完即写**」——每个并行子代理 MUST 把自己批次的结论行**直写**到自己的分片产物 `.fenix/code-review/out-{run_id}-b<N>.jsonl`（分片名由框架经本提示词注入 `{run_id}` 具体值，MUST NOT 自行推导或截断——2026-09-24 事故：主 agent 把 run_id 截成纯 epoch，落盘 `out-<epoch>-b<N>.jsonl` 缺 `code-review-` 段，6 个分片对进度/ingest/硬门三消费侧全盲，173 条发现仅 20 条可消费；`N` 为该子代理的批次序号，正整数），主 agent 汇总兜底仍写主产物 `{out_path}`。框架的进度读侧、收尾 ingest 与产物硬门都按「主产物 + 全部分片」聚合消费：
 
 - **子代理分片直写义务**：派发子代理的 prompt MUST 包含——① 该批的分片直写路径 `out-{run_id}-b<N>.jsonl`（位于 `.fenix/code-review/` 目录下）；② 逐文件一行的 JSON 行结构（与「输出契约」完全一致，`findings` 为列表，空 findings 行也 MUST 落）；③「审完立即落分片并 flush」的要求。子代理的临时产物（如 /tmp 下的分批文件）只是中转，MUST NOT 替代分片落盘义务。
+- **并行扇出上限（add-code-review-concurrency-and-429-resilience，违反 = run 判失败）**：同时「在飞」的审查子代理数 MUST ≤ `{repo_concurrency}`（波内并行上限——每波至多 `{repo_concurrency}` 个子代理并发跑，某批审完落盘后再滚入下一波，波次滚动推进；这是**波内规模上限**，不是全 run 总数上限）。`ocr scan` 的 `--concurrency {repo_concurrency}` 与本条同源同值，MUST 保留不得删除或改值——两处并发源同时打同一 provider 账号，任一处超限都会放大 429 限流（2026-09-24 事故：子代理 6+5 两波 + ocr scan 内置缺省 8 路并发，43 分钟打死整 run）。
 - **不重审、不重写**：MUST NOT 亲自重复审查已派发给子代理的文件；某批分片已落盘后 MUST NOT 再重写该批的行（重复文件行由读侧按 `file` 去重、以先落盘者为准，重写纯属浪费且可能引入漂移）。
 - 主 agent 自行审完的批次（未派发部分）结论行写入主产物 `{out_path}`；每批审完 MUST **立即**追加写入，MUST NOT 等全部批次完成才一次性写出——中途不落行会让进度卡在 0%。等待异步子代理返回期间你亲自审查的文件同样适用——等待期不是落盘豁免期，MUST NOT「等子代理齐了再一起写」。
 - 追加节奏与批次粒度一致即可，不必逐文件一次一行。

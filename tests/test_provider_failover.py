@@ -558,3 +558,215 @@ class TestDailyAttemptWarn:
         warns = [m for lvl, m in runner.logger.records if lvl == "warning"
                  and "daily attempts" in m]
         assert warns == []
+
+
+class TestRatelimitRedispatch:
+    """429 打死 run 的自动重派（add-code-review-concurrency-and-429-resilience，task 5.4）。
+
+    覆盖：429 终态登记重派意图（provider 限流冷却 + run jsonl 标注）/ 同 run
+    幂等不重复登记 / 非 429 失败不触发 / 消费侧冷却到期以原 manifest 重调
+    run_code_review 一次 / 重派超上限走既有失败收场不再重派 / 重派 run 自身
+    manifest 与 jsonl 均标注重派缘由。
+    """
+
+    REAL_429 = (
+        "API Error: Request rejected (429) · "
+        "[1302][您的账户已达到速率限制，请您控制请求频率]"
+    )
+
+    # ── 登记侧（runner._ratelimit_redispatch_on_terminal） ──────────────
+
+    @staticmethod
+    def _mk_run(tmp_path, run_id="run-a"):
+        rdir = tmp_path / ".fenix" / "runs"
+        rdir.mkdir(parents=True, exist_ok=True)
+        f = rdir / f"{run_id}.jsonl"
+        f.write_text(json.dumps({"type": "run_start", "run_id": run_id}) + "\n",
+                     encoding="utf-8")
+        return f
+
+    def test_terminal_429_registers_intent_with_jsonl_marker(self, tmp_path):
+        from core.agent_runner.provider_circuit import (
+            PROVIDER_RATELIMIT_COOLDOWN_SECONDS,
+            RATELIMIT_REDISPATCH_MAX,
+        )
+
+        runner = make_runner(tmp_path, chain_config("inferaiapi.com"))
+        run_file = self._mk_run(tmp_path)
+        intent = runner._ratelimit_redispatch_on_terminal(
+            run_id="run-a", error=self.REAL_429,
+            provider_name="inferaiapi.com", spec_name="code-review")
+        assert intent is not None
+        assert intent["reason"] == "429 ratelimit"
+        assert intent["provider"] == "inferaiapi.com"
+        assert intent["run_id"] == "run-a"
+        assert RATELIMIT_REDISPATCH_MAX == 1
+        assert intent["max_redispatches"] == RATELIMIT_REDISPATCH_MAX
+        # 冷却到期时刻须在未来（消费侧据此延迟投递）
+        assert intent["cooldown_until_epoch"] > time.time()
+        # ① provider 进限流冷却（复用 switch 冷却通道与候选跳过语义）
+        assert runner._provider_circuit.is_switch_cooldown("inferaiapi.com")
+        st_until = runner._provider_circuit.provider_circuits[
+            "inferaiapi.com"]["switch_cooldown_until"]
+        assert st_until > 0
+        assert (st_until - runner._provider_circuit._pm._now()) == pytest.approx(
+            PROVIDER_RATELIMIT_COOLDOWN_SECONDS, abs=5.0)
+        # ② run jsonl 标注重派缘由
+        rows = [json.loads(l) for l in run_file.read_text(encoding="utf-8").splitlines()]
+        markers = [r for r in rows if r.get("type") == "ratelimit_redispatch"]
+        assert len(markers) == 1
+        assert markers[0]["run_id"] == "run-a"
+        assert markers[0]["spec"] == "code-review"
+        assert markers[0]["cooldown_until_epoch"] == pytest.approx(
+            intent["cooldown_until_epoch"])
+
+    def test_duplicate_intent_same_run_is_idempotent(self, tmp_path):
+        runner = make_runner(tmp_path, chain_config("inferaiapi.com"))
+        run_file = self._mk_run(tmp_path)
+        first = runner._ratelimit_redispatch_on_terminal(
+            run_id="run-a", error=self.REAL_429,
+            provider_name="inferaiapi.com", spec_name="code-review")
+        assert first is not None
+        second = runner._ratelimit_redispatch_on_terminal(
+            run_id="run-a", error=self.REAL_429,
+            provider_name="inferaiapi.com", spec_name="code-review")
+        assert second is None  # 已登记 → 不重复登记
+        rows = [json.loads(l) for l in run_file.read_text(encoding="utf-8").splitlines()]
+        assert sum(1 for r in rows if r.get("type") == "ratelimit_redispatch") == 1
+
+    def test_non_ratelimit_error_returns_none(self, tmp_path):
+        runner = make_runner(tmp_path, chain_config("inferaiapi.com"))
+        run_file = self._mk_run(tmp_path, "run-c")
+        intent = runner._ratelimit_redispatch_on_terminal(
+            run_id="run-c", error="API Error: 500 internal server error",
+            provider_name="inferaiapi.com", spec_name="code-review")
+        assert intent is None
+        assert runner._ratelimit_redispatch_on_terminal(
+            run_id="run-c", error="", provider_name="inferaiapi.com") is None
+        rows = [json.loads(l) for l in run_file.read_text(encoding="utf-8").splitlines()]
+        assert not any(r.get("type") == "ratelimit_redispatch" for r in rows)
+
+    # ── 消费侧（admin_monitor._schedule/_consume_ratelimit_redispatch） ──
+
+    @staticmethod
+    def _mk_monitor():
+        import threading
+
+        from core.admin_monitor import AdminMonitor
+
+        mon = AdminMonitor.__new__(AdminMonitor)
+        mon.logger = FakeLogger()
+        mon._code_review_lock = threading.Lock()
+        mon._code_review_in_flight = False
+        mon._code_review_executor = None
+        mon._code_review_ratelimit_redispatches = 0
+        mon._code_review_redispatch_timer = None
+        return mon
+
+    @staticmethod
+    def _intent(run_id="run-a", epoch=None):
+        return {
+            "reason": "429 ratelimit",
+            "provider": "inferaiapi.com",
+            "run_id": run_id,
+            "cooldown_until": "2026-09-24T00:00:00+00:00",
+            "cooldown_until_epoch": epoch if epoch is not None else time.time() - 1,
+            "max_redispatches": 1,
+        }
+
+    def test_consume_redispatches_once_with_original_manifest(self):
+        mon = self._mk_monitor()
+        calls = []
+
+        def fake_run(manifest, review_kind=None, window_start=None, scope=None,
+                     redispatch_of=None):
+            calls.append({
+                "manifest": list(manifest),
+                "review_kind": review_kind,
+                "window_start": window_start,
+                "scope": scope,
+                "redispatch_of": redispatch_of,
+            })
+            return MagicMock(run_id="run-b", inserted=0, updated=0,
+                             resolved=0, shards=1, error="")
+
+        mon.agent_runner = MagicMock()
+        mon.agent_runner.run_code_review.side_effect = fake_run
+        # 冷却到期时刻在近未来：先证「冷却期内 MUST NOT 重派」，再等 Timer
+        # 到期触发（delay=0 会与测试抢跑——消费侧触发即摘句柄）
+        mon._schedule_ratelimit_redispatch(
+            manifest=["core/a.py", "core/b.py"], review_kind="manual_full",
+            window_start=None, scope="full",
+            intent=self._intent(epoch=time.time() + 0.3))
+        timer = mon._code_review_redispatch_timer
+        assert timer is not None
+        assert calls == []  # 冷却期内未重派
+        timer.join(timeout=5)
+        assert not timer.is_alive()
+        # 登记即占额 + 消费后单飞复位
+        assert mon._code_review_ratelimit_redispatches == 1
+        assert mon._code_review_in_flight is False
+        # 重调一次、且仅一次：原 manifest / 原 review_kind / 原 scope + redispatch_of
+        assert len(calls) == 1
+        assert calls[0]["redispatch_of"] == "run-a"
+        assert calls[0]["manifest"] == ["core/a.py", "core/b.py"]
+        assert calls[0]["review_kind"] == "manual_full"
+        assert calls[0]["scope"] == "full"
+
+    def test_redispatch_beyond_max_takes_existing_failure_path(self):
+        from core.agent_runner.provider_circuit import RATELIMIT_REDISPATCH_MAX
+
+        mon = self._mk_monitor()
+        calls = []
+        mon.agent_runner = MagicMock()
+        mon.agent_runner.run_code_review.side_effect = \
+            lambda *a, **k: calls.append(a)
+        # 本 monitor 生命周期内已重派过 → 达上限，按既有失败路径收场
+        mon._code_review_ratelimit_redispatches = RATELIMIT_REDISPATCH_MAX
+        mon._schedule_ratelimit_redispatch(
+            manifest=["core/a.py"], review_kind="manual_full",
+            window_start=None, scope="full", intent=self._intent())
+        assert mon._code_review_redispatch_timer is None  # 未排程
+        assert calls == []  # run_code_review 未被再调
+        assert mon.logger.has("已达上限")
+
+    # ── 重派 run 自身的缘由标注（run_code_review(redispatch_of=...)） ────
+
+    def test_redispatch_run_marks_manifest_and_jsonl(self, tmp_path):
+        from core.agent_runner import maintenance_runs as mr
+
+        run_id = "code-review-1790217000"
+        runner = type("R", (), {})()
+        runner.project_root = tmp_path
+        runner.config = {}
+        runner.logger = None
+        runner._unique_code_review_run_id = lambda: run_id
+        runner._build_prompt = lambda *a, **k: "PROMPT"
+        runner._get_agent_model_assignment = lambda name: None
+        runner._get_admin_model = lambda: "test-model"
+        runner._extract_usage_info = lambda x: {}
+        runner._accumulate_code_review_tokens = lambda rid, usage: None
+        runner._read_code_review_out = lambda project_root, rid: mr._read_code_review_out(
+            runner, project_root, rid)
+
+        def _boom(*a, **k):
+            raise RuntimeError(self.REAL_429)
+
+        runner._run_claude = _boom
+        # runs 目录生产恒存在（append_run_line 不建目录），tmp 里自建
+        (tmp_path / ".fenix" / "runs").mkdir(parents=True)
+        result = mr.run_code_review(
+            runner, ["core/a.py"], "manual_full", redispatch_of="run-a")
+        assert result.success is False
+        assert result.ratelimit_redispatch is None  # 桩 runner 无登记方法 → 意图缺位
+        # manifest JSON 标注重派缘由
+        manifest = json.loads(
+            (tmp_path / ".fenix" / "code-review" / f"manifest-{run_id}.json")
+            .read_text(encoding="utf-8"))
+        assert manifest["redispatch_of"] == "run-a"
+        # run jsonl 启动即标注重派缘由
+        rf = tmp_path / ".fenix" / "runs" / f"{run_id}.jsonl"
+        rows = [json.loads(l) for l in rf.read_text(encoding="utf-8").splitlines()]
+        assert any(
+            r.get("type") == "ratelimit_redispatch" and r.get("redispatch_of") == "run-a"
+            for r in rows)
