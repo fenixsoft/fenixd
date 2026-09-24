@@ -37,16 +37,16 @@
 
 ## 1. 全仓审查并发配置键
 
-- [ ] 1.1 `core/config.py` 新增 `ConfigLoader.get_repo_code_review_concurrency`：读 `verify.repo_code_review_concurrency`，仅接受正整数 `int`（`bool` 不算），缺失/verify 节缺失/str/float/≤0 回退缺省 4；docstring 注明 MUST NOT 进 `resolve_config` 缺省填充列表（与 `get_impl_code_review_concurrency` 同款单点缺省约束）
-- [ ] 1.2 `.fenix/config.template.yaml` 在 `verify:` 节 `impl_code_review_concurrency` 旁新增 `repo_code_review_concurrency: 4` 示例，注释注明语义（全仓审查并发：子代理扇出上限 + ocr scan --concurrency，缺省 4）
-- [ ] 1.3 `tests/test_code_review.py` 的 `TestGetCodeReviewConfig` 新增用例：合法值生效 / str"8" 回退 / 0 回退 / true(bool) 回退 / float 回退 / 缺省 4（对照 impl 版既有用例风格）
+- [x] 1.1 `core/config.py` 新增 `ConfigLoader.get_repo_code_review_concurrency`：读 `verify.repo_code_review_concurrency`，仅接受正整数 `int`（`bool` 不算），缺失/verify 节缺失/str/float/≤0 回退缺省 4；docstring 注明 MUST NOT 进 `resolve_config` 缺省填充列表（与 `get_impl_code_review_concurrency` 同款单点缺省约束）
+- [x] 1.2 `.fenix/config.template.yaml` 在 `verify:` 节 `impl_code_review_concurrency` 旁新增 `repo_code_review_concurrency: 4` 示例，注释注明语义（全仓审查并发：子代理扇出上限 + ocr scan --concurrency，缺省 4）
+- [x] 1.3 `tests/test_code_review.py` 的 `TestGetCodeReviewConfig` 新增用例：合法值生效 / str"8" 回退 / 0 回退 / true(bool) 回退 / float 回退 / 缺省 4（对照 impl 版既有用例风格）
 
 ## 2. 并发双通道注入（提示词扇出上限 + ocr scan 参数）
 
-- [ ] 2.1 `core/agent_runner/maintenance_runs.py` 的 `run_code_review` 读取 `get_repo_code_review_concurrency` 并经 detail 传入 `_build_code_review_prompt`（键名 `repo_concurrency`）
-- [ ] 2.2 `core/agent_runner/prompt_builder.py` 的 `_build_code_review_prompt` 注入 `{repo_concurrency}` 占位符（含未解析占位符残留告警同款防护），docstring 增补该键
-- [ ] 2.3 `agents/code-review.md`「分批/并行审查的落盘纪律」段新增硬条款：同时「在飞」的审查子代理数 MUST ≤ `{repo_concurrency}`（波内并行上限、波次滚动推进，违反=run 判失败），`ocr scan` 命令示例加 `--concurrency {repo_concurrency}`
-- [ ] 2.4 `tests/test_code_review.py` 新增用例：配置值为 4 时渲染提示词含「4」上限条款与 `--concurrency 4`；值为 2 时渲染 2；`{repo_concurrency}` 残留为零
+- [x] 2.1 `core/agent_runner/maintenance_runs.py` 的 `run_code_review` 读取 `get_repo_code_review_concurrency` 并经 detail 传入 `_build_code_review_prompt`（键名 `repo_concurrency`）
+- [x] 2.2 `core/agent_runner/prompt_builder.py` 的 `_build_code_review_prompt` 注入 `{repo_concurrency}` 占位符（含未解析占位符残留告警同款防护），docstring 增补该键
+- [x] 2.3 `agents/code-review.md`「分批/并行审查的落盘纪律」段新增硬条款：同时「在飞」的审查子代理数 MUST ≤ `{repo_concurrency}`（波内并行上限、波次滚动推进，违反=run 判失败），`ocr scan` 命令示例加 `--concurrency {repo_concurrency}`
+- [x] 2.4 `tests/test_code_review.py` 新增用例：配置值为 4 时渲染提示词含「4」上限条款与 `--concurrency 4`；值为 2 时渲染 2；`{repo_concurrency}` 残留为零
 
 ## 3. Dashboard 设置界面与配置链路
 

@@ -760,6 +760,26 @@ class TestGetCodeReviewConfig(unittest.TestCase):
             },
         )
 
+    def test_repo_concurrency_valid_value(self):
+        # add-code-review-concurrency-and-429-resilience：合法正整数透传
+        from core.config import ConfigLoader
+
+        assert ConfigLoader.get_repo_code_review_concurrency(
+            {"verify": {"repo_code_review_concurrency": 6}}
+        ) == 6
+
+    def test_repo_concurrency_defaults_and_fallbacks(self):
+        # 缺省 4；str/bool/float/≤0/缺失 verify 节一律回退 4（与
+        # get_impl_code_review_concurrency 同款 fail-open 判据）
+        from core.config import ConfigLoader
+
+        assert ConfigLoader.get_repo_code_review_concurrency({}) == 4
+        assert ConfigLoader.get_repo_code_review_concurrency({"verify": {}}) == 4
+        for bad in ("8", 0, -2, True, False, 4.0, 1.5, None):
+            assert ConfigLoader.get_repo_code_review_concurrency(
+                {"verify": {"repo_code_review_concurrency": bad}}
+            ) == 4, f"bad={bad!r}"
+
 
 class TestCheckpointDisabledZeroAction(unittest.TestCase):
     def _make_monitor(self, cfg, repo, runner):
@@ -1614,6 +1634,88 @@ class TestCodeReviewPromptShardInjection(unittest.TestCase):
         self.assertNotIn("{run_id}", prompt)
         self.assertNotIn("<run_id>", prompt)
         self.assertIn(f"out-{self.RUN_ID}.jsonl", prompt)  # 主产物路径不受影响
+
+
+class TestRepoConcurrencyPromptInjection(unittest.TestCase):
+    """全仓审查并发双通道注入（add-code-review-concurrency-and-429-resilience）。
+
+    一个键（verify.repo_code_review_concurrency）同时约束两处并发源：
+    ① 提示词侧子代理并行扇出上限条款（波内并行、波次滚动推进）；
+    ② ocr scan 命令的 --concurrency 参数。2026-09-24 429 事故成因之一即
+    两处并发均不受控。
+    """
+
+    RUN_ID = "code-review-1790210000"
+
+    def _build(self, config=None):
+        from core.agent_runner.prompt_builder import PromptBuilder
+
+        pm = type("P", (), {"project_root": Path(_mkdtemp("cr-conc-")), "config": config or {}})()
+        return PromptBuilder(pm), pm.project_root
+
+    def test_default_four_injected(self):
+        # 缺省 4：上限条款与 --concurrency 4 均渲染
+        import shutil
+
+        builder, proot = self._build()
+        try:
+            prompt = builder._build_code_review_prompt(
+                self.RUN_ID,
+                {"manifest": ["core/a.py"], "review_window": "（全仓）", "out_path": "/tmp/x.jsonl"},
+            )
+        finally:
+            shutil.rmtree(str(proot), ignore_errors=True)
+        self.assertIn("MUST ≤ `4`", prompt)  # 波内扇出上限条款
+        self.assertIn("--concurrency 4", prompt)  # scan 命令同键
+
+    def test_config_value_two_rendered(self):
+        # 配置值为 2 → 渲染 2（run_code_review 经 detail 传 repo_concurrency）
+        import shutil
+
+        builder, proot = self._build()
+        try:
+            prompt = builder._build_code_review_prompt(
+                self.RUN_ID,
+                {
+                    "manifest": ["core/a.py"],
+                    "review_window": "（全仓）",
+                    "out_path": "/tmp/x.jsonl",
+                    "repo_concurrency": 2,
+                },
+            )
+        finally:
+            shutil.rmtree(str(proot), ignore_errors=True)
+        self.assertIn("MUST ≤ `2`", prompt)
+        self.assertIn("--concurrency 2", prompt)
+
+    def test_pm_config_fallback_used_when_detail_missing(self):
+        # detail 未携带时回退 pm.config 读取器（run_code_review 正常都传；
+        # 兜底路径走 get_repo_code_review_concurrency 缺省）
+        import shutil
+
+        builder, proot = self._build({"verify": {"repo_code_review_concurrency": 7}})
+        try:
+            prompt = builder._build_code_review_prompt(
+                self.RUN_ID,
+                {"manifest": ["core/a.py"], "review_window": "（全仓）", "out_path": "/tmp/x.jsonl"},
+            )
+        finally:
+            shutil.rmtree(str(proot), ignore_errors=True)
+        self.assertIn("MUST ≤ `7`", prompt)
+
+    def test_no_placeholder_residue(self):
+        # {repo_concurrency} 残留为零（未解析占位符防护）
+        import shutil
+
+        builder, proot = self._build()
+        try:
+            prompt = builder._build_code_review_prompt(
+                self.RUN_ID,
+                {"manifest": ["core/a.py"], "review_window": "（全仓）", "out_path": "/tmp/x.jsonl"},
+            )
+        finally:
+            shutil.rmtree(str(proot), ignore_errors=True)
+        self.assertNotIn("{repo_concurrency}", prompt)
 
 
 class TestShardPathsNearMissWarning(unittest.TestCase):

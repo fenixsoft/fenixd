@@ -2124,6 +2124,32 @@ class ConfigLoader:
         return 4
 
     @classmethod
+    def get_repo_code_review_concurrency(cls, config: Dict[str, Any]) -> int:
+        """读取 ``verify.repo_code_review_concurrency``（add-code-review-concurrency-and-429-resilience）。
+
+        全仓审查（``review_kind`` 为 ``manual_full`` / ``manual_window`` /
+        ``scheduled``）的并行审查度，一个键同时注入两处：提示词侧子代理
+        并行扇出上限（波内并行、波次滚动推进）与 ``ocr scan --concurrency <n>``
+        （ocr 不传参时内部缺省 8，是 2026-09-24 429 事故的并发来源之一）。
+        缺省 4；语义与 ``get_impl_code_review_concurrency`` 同——仅接受**正整数
+        int**（``bool`` 不算 int），其余（缺失 / verify 节缺失或非 dict / str /
+        float / ≤0）一律回退缺省（fail-open，脏值不中断派发）。
+
+        注意：该键 MUST NOT 进入 ``resolve_config`` 的缺省填充列表——缺省只由
+        本读取器单点提供（与 ``get_impl_code_review_concurrency`` 同款单点缺省
+        约束，避免 defaults 与读取器缺省双源漂移）。
+        """
+        verify = config.get("verify")
+        if not isinstance(verify, dict):
+            return 4
+        val = verify.get("repo_code_review_concurrency")
+        if isinstance(val, bool):
+            return 4
+        if isinstance(val, int) and val > 0:
+            return val
+        return 4
+
+    @classmethod
     def get_impl_code_review_effort(cls, config: Dict[str, Any]) -> str:
         """读取 ``verify.impl_code_review_effort``（add-impl-code-review-tuning）。
 

@@ -883,6 +883,11 @@ def run_code_review(
     review_window = (
         f"[{window_start.isoformat()}, now]" if window_start else "（全仓，manual_full）"
     )
+    # 全仓审查并发（add-code-review-concurrency-and-429-resilience）：双通道
+    # 注入①提示词侧子代理扇出上限（{repo_concurrency}），②scan 命令
+    # --concurrency 由提示词模板同键承载。
+    from core.config import ConfigLoader as _CLRepoConc
+
     prompt = runner._build_prompt(
         run_id,
         "code-review",
@@ -890,6 +895,9 @@ def run_code_review(
             "manifest": [str(f) for f in manifest],
             "review_window": review_window,
             "out_path": str(opath),
+            "repo_concurrency": _CLRepoConc.get_repo_code_review_concurrency(
+                getattr(runner, "config", {}) or {}
+            ),
         },
     )
 
