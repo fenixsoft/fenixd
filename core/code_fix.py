@@ -97,6 +97,12 @@ FIX_PROGRESS_DEFAULT = {
     # 写持久化成误导性数字）。null 三态语义见 _synthesize_item_progress。
     "item_done": None,
     "current_item": None,
+    # 启动阶段合成字段（add-code-fix-startup-stage-visibility D1，读侧实时
+    # 派生）：批处于 fixing/retrying 且 out 零有效行时，读 run 转录末行事件
+    # 类型推断 agent 启动阶段。同一剥离纪律（write_progress 不落盘）——合
+    # 成快照经合并写持久化会在批收尾后残留陈旧阶段文案。null 三态语义见
+    # _synthesize_startup_stage。
+    "startup_stage": None,
     # 链内跳过集（add-code-fix-batch-selfheal）：本链因瞬态失败（agent run
     # 失败/重试 run 失败/零有效修复）被跳过的条目 id。select_batch 排除口径
     # = 失败档案并集 ∪ 本字段；新链启动（activation_id 更替）时重置为空。
@@ -141,6 +147,10 @@ def read_progress(project_root) -> dict:
     条级进度（add-code-fix-item-level-progress）：``running=true`` 且批上下
     文在场时，经 ``read_fix_out`` 实时合成 ``item_done``/``current_item``
     （见 ``_synthesize_item_progress``）；其余场景两键为 null。
+
+    启动阶段（add-code-fix-startup-stage-visibility）：在条级合成之后、
+    复用其已读出的 out 行集合激活域互补合成 ``startup_stage``（out 有行时
+    短路 null，不重复 IO）。
     """
     out = dict(FIX_PROGRESS_DEFAULT)
     # 可变缺省字段显式拷贝（code-review item d8f3e5cef688）：chain_skipped 是
@@ -151,13 +161,15 @@ def read_progress(project_root) -> dict:
         raw = _progress_path(project_root).read_text(encoding="utf-8")
         data = json.loads(raw)
     except (OSError, ValueError):
-        _synthesize_item_progress(project_root, out)
+        rows = _synthesize_item_progress(project_root, out)
+        _synthesize_startup_stage(project_root, out, rows)
         return out
     if isinstance(data, dict):
         for k in FIX_PROGRESS_DEFAULT:
             if k in data:
                 out[k] = data[k]
-    _synthesize_item_progress(project_root, out)
+    rows = _synthesize_item_progress(project_root, out)
+    _synthesize_startup_stage(project_root, out, rows)
     return out
 
 
@@ -172,6 +184,9 @@ def write_progress(project_root, **fields) -> dict:
     # 被合并写持久化成误导性数字（add-code-fix-item-level-progress D1）。
     current.pop("item_done", None)
     current.pop("current_item", None)
+    # 启动阶段同纪律（add-code-fix-startup-stage-visibility D1）：批收尾后
+    # 进度文件若残留陈旧阶段文案，前端会在非准备期误渲染。
+    current.pop("startup_stage", None)
     current.update(fields)
     _atomic_write(
         _progress_path(project_root),
@@ -218,21 +233,25 @@ def _synthesize_item_progress(project_root, progress: dict) -> None:
     零有效行、`read_fix_out` 任何异常 → `item_done`/`current_item` 均置
     null（MUST NOT 500、MUST NOT 回退 0/空对象等可被误读的值）。函数无条
     件先置 null 再尝试计算，保证每次 read_progress 输出都携带两键。
+
+    返回本次读出的有效行集合（可能为空）：``read_progress`` 把它转交
+    ``_synthesize_startup_stage`` 复用激活域判定（out 有行时后者短路
+    null），不重复 IO。
     """
     progress["item_done"] = None
     progress["current_item"] = None
     if progress.get("running") is not True:
-        return
+        return []
     worktree = progress.get("worktree")
     run_id = progress.get("run_id")
     if not worktree or not run_id:
-        return
+        return []
     try:
         rows = read_fix_out(worktree, run_id)
     except Exception:  # noqa: BLE001 — 读产物任何异常都兜底为明细不可得
-        return
+        return []
     if not rows:
-        return
+        return []
     # item_done：有效行按 item_id 去重（同条目重复追加只计一次，取末次）
     latest: dict = {}
     for row in rows:
@@ -256,6 +275,136 @@ def _synthesize_item_progress(project_root, progress: dict) -> None:
         if rec.get("line") is not None:
             current["line"] = rec.get("line")
     progress["current_item"] = current
+    return rows
+
+
+# ── 启动阶段推断（add-code-fix-startup-stage-visibility）──────────────
+
+# 转录尾部截读窗口（字节）：流转录可达 MB 级（实测 p90 行 7KB、max 150KB），
+# MUST NOT 全量 read_text；取 64KB 是「末行完整在场」与 IO 有界性的折衷——
+# 4KB 窗口会把约 16% 的 assistant 行截断成不可解析片段（fail-open null、
+# 准备段空白，恰好违背本特性目的），64KB 下截断率 <0.1%，残余退化接受。
+_TRANSCRIPT_TAIL_BYTES = 64 * 1024
+
+# 初始化类 system 子类型（D2 词表，实测校准 2026-09-24：system 子类型不止
+# 初始化类，还含子代理/后台任务遥测，按 type 整类归「会话初始化中」会在
+# 启动窗口误标，故按 subtype 拆分）。
+_STARTUP_INIT_SUBTYPES = {"init", "hook_started", "hook_response"}
+
+
+def _last_transcript_line(path: Path) -> str:
+    """尾部截读转录末行（只读末 ``_TRANSCRIPT_TAIL_BYTES`` 字节）。
+
+    末行超出窗口时只能拿到截断片段——解析失败由调用方按「读不到就 null」
+    容错（D3），MUST NOT 为补全末行扩大到全量读。
+    """
+    size = path.stat().st_size
+    if size <= 0:
+        return ""
+    with path.open("rb") as fh:
+        fh.seek(max(0, size - _TRANSCRIPT_TAIL_BYTES), os.SEEK_SET)
+        chunk = fh.read(_TRANSCRIPT_TAIL_BYTES).decode("utf-8", errors="replace")
+    stripped = chunk.rstrip("\n")
+    if not stripped:
+        return ""
+    idx = stripped.rfind("\n")
+    return (stripped[idx + 1:] if idx >= 0 else stripped).strip()
+
+
+def _map_startup_stage(last_line: str) -> str:
+    """末行事件 → 阶段短语（D2 映射表）；不可解析返回空串（调用方置 null）。"""
+    try:
+        event = json.loads(last_line)
+    except ValueError:
+        return ""
+    if not isinstance(event, dict):
+        return ""
+    etype = event.get("type")
+    if etype == "system":
+        if str(event.get("subtype") or "") in _STARTUP_INIT_SUBTYPES:
+            return "会话初始化中"
+        return "agent 启动处理中"
+    if etype == "assistant":
+        blocks = (event.get("message") or {}).get("content") or []
+        if isinstance(blocks, dict):  # 非 list 形态防御（归一为单元素表）
+            blocks = [blocks]
+        tool_name = ""
+        has_text = False
+        for block in blocks:
+            if not isinstance(block, dict):
+                continue
+            btype = block.get("type")
+            if btype == "tool_use":
+                # 同事件同时含 text/thinking 与 tool_use 时以动作计（正在做事
+                # 比仍在分析对用户更有信息量）
+                tool_name = str(block.get("name") or "")
+                break
+            if btype in ("text", "thinking"):
+                has_text = True
+        if tool_name:
+            return f"正在执行 {tool_name}"
+        if has_text:
+            return "模型分析分组中"
+    # user / stderr / result / 未知形态 → 统一「处理中」（D2 末行兜底行）
+    return "agent 启动处理中"
+
+
+def _transcript_waited_minutes(path: Path):
+    """已等待分钟数 = 当前时间 − 转录文件 birth time；取不到 birth 返回 None。
+
+    转录为懒创建（首条流事件经 append_run_line 才建文件），birth = 首事件
+    到达时刻、非 spawn 时刻，waited 轻度低估（D2 接受）。部分文件系统 stat
+    无 birth（Linux ext4 无 st_birthtime）→ None，前端只显示阶段短语。
+    """
+    st = os.stat(path)
+    birth = getattr(st, "st_birthtime", None)
+    if not isinstance(birth, (int, float)) or birth <= 0:
+        return None
+    return max(0, int((time.time() - birth) // 60))
+
+
+def _synthesize_startup_stage(project_root, progress: dict, out_rows) -> None:
+    """启动阶段实时合成（add-code-fix-startup-stage-visibility D1-D3）。
+
+    激活条件（与 ``_synthesize_item_progress`` 激活域互补）：``running=true``
+    且 ``phase ∈ {fixing, retrying}`` 且 ``out_rows`` 零有效行——out 有行即
+    首条处置已落盘，条级计数接管，本字段短路 null（spec「处置开始后收敛」）。
+
+    字段形态：``null | {"stage": str, "waited_minutes": int|null}``（恒带
+    键）；文件缺失 → 「等待 agent 进程启动」（waited null）；末行不可解析
+    → null（MUST NOT 伪造阶段文案）。
+
+    容错硬要求（D3 fail-open）：文件缺失 / 读取异常 / 末行非 JSON / 无
+    type 键 → 置 null，任何分支不得抛异常中断 ``read_progress``（读侧
+    MUST NOT 500 既有口径）。函数无条件先置 null 再计算。
+    """
+    progress["startup_stage"] = None
+    if progress.get("running") is not True:
+        return
+    if progress.get("phase") not in ("fixing", "retrying"):
+        return
+    if out_rows:
+        return
+    run_id = progress.get("run_id")
+    if not run_id:
+        return
+    try:
+        path = Path(project_root) / ".fenix" / "runs" / f"{run_id}.jsonl"
+        if not path.is_file():
+            progress["startup_stage"] = {
+                "stage": "等待 agent 进程启动",
+                "waited_minutes": None,
+            }
+            return
+        stage = _map_startup_stage(_last_transcript_line(path))
+        if not stage:
+            return
+        progress["startup_stage"] = {
+            "stage": stage,
+            "waited_minutes": _transcript_waited_minutes(path),
+        }
+    except Exception:  # noqa: BLE001 — 启动阶段推断是尽力而为语义，不炸主流程
+        progress["startup_stage"] = None
 
 
 # ── 失败批保留集合（5.7 / D6）──────────────────────────────────────────
