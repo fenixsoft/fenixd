@@ -277,7 +277,7 @@ def _read_audit_tail_lines(path: Path, min_lines: int) -> List[str]:
             parts = (f.read(read_size) + remainder).split(b"\n")
             # 块首（非文件头）可能切断一行：保留半行，其余均为完整行
             remainder = parts.pop(0) if pos > 0 else b""
-            lines.extend(p.decode("utf-8") for p in reversed(parts))
+            lines.extend(p.decode("utf-8", errors="replace") for p in reversed(parts))
     lines.reverse()
     return lines
 
@@ -297,7 +297,7 @@ def read_hook_audit(project_root, spec: Optional[str] = None, limit: int = 20) -
         if limit and limit > 0:
             raw_lines = _read_audit_tail_lines(path, limit * AUDIT_TAIL_OVERSAMPLE)
         else:
-            raw_lines = path.read_text(encoding="utf-8").splitlines()
+            raw_lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
         for line in raw_lines:
             line = line.strip()
             if not line:
@@ -308,7 +308,7 @@ def read_hook_audit(project_root, spec: Optional[str] = None, limit: int = 20) -
                 continue
             if isinstance(d, dict) and (spec is None or d.get("spec") == spec):
                 out.append(d)
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return []
     out.sort(key=lambda e: e.get("ts", ""), reverse=True)
     if limit and limit > 0:

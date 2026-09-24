@@ -1,5 +1,5 @@
 import { Button, Card, Form, InputNumber, Switch, Typography } from 'antd';
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import type { ConfigData } from '@/services/dashboard';
 import SyncFromUserButton from './SyncFromUserButton';
 import { SETTINGS_ACTIONS_ROW_STYLE } from '../styles';
@@ -34,8 +34,13 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
     scale_precheck_full: sp.full_threshold ?? 45,
   };
 
+  // 回填门控（code-review item cbec8303669f，比照 MiscSettingsPanel 0a2bd3f20fcd /
+  // AgentModelPanel 9f98edec21fa）：无条件 setFieldsValue 会在保存往返或「同步用户级
+  // 设置」刷新 config 时，用外部值覆盖用户在保存请求在飞期间继续输入、尚未保存的
+  // 内容。改为序列化比较，只在内容真变化时回填。
+  const lastBackfillRef = useRef('');
   useEffect(() => {
-    form.setFieldsValue({
+    const next = {
       token_budget_millions: config.agents.token_budget_millions ?? 50,
       daily_run_limit: config.agents.daily_run_limit ?? 50,
       impl_run_budget: config.agents.impl_run_budget ?? 6,
@@ -45,7 +50,11 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
       scale_precheck_enabled: config.agents.scale_precheck?.enabled ?? true,
       scale_precheck_higher: config.agents.scale_precheck?.higher_threshold ?? 30,
       scale_precheck_full: config.agents.scale_precheck?.full_threshold ?? 45,
-    });
+    };
+    const key = JSON.stringify(next);
+    if (key === lastBackfillRef.current) return;
+    lastBackfillRef.current = key;
+    form.setFieldsValue(next);
   }, [config.agents, form]);
 
   const handleSave = async () => {

@@ -38,7 +38,10 @@ class G7StaleSweepMixin:
             return
         # 在册遗产 worktree 名集合（宽限期内豁免）；实时监控避免与 _reclaim 竞争。
         legacy_names = {rec.get("worktree_name") for rec in self._legacy.values()}
-        for wt_dir in self.base_dir.iterdir():
+        # 迭代前物化列表（sorted）：循环体内会删除 base_dir 的子目录
+        # （git worktree remove / shutil.rmtree），边扫边删的目录遍历行为未定义，
+        # 物化后删除不再作用于正在扫描的目录流。
+        for wt_dir in sorted(self.base_dir.iterdir()):
             if not wt_dir.is_dir() or str(wt_dir) in self._active_worktrees:
                 continue
             # 遗产豁免（add-recovery-legacy-check D2）：宽限期内不得清，留给后继 run 收编

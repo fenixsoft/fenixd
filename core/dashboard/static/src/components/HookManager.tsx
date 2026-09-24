@@ -303,7 +303,9 @@ export default function HookManager({
   // 生效合并表格列（仅 spec 详情页）。
   // 列宽口径：事件列实测 732px 收缩为 1/4（183）；腾出的宽度连同动作列
   // 原有宽度由动作列与参数列等宽平分（各 360），固定列总宽守恒。
-  const effectiveColumns = [
+  // 与主表格 columns 同口径 memo 化（item de988bb5e41f）：列定义仅依赖模块级
+  // 常量（EVENT_LABELS/HOOK_ACTION_LABELS/paramSummary），依赖数组为空即可
+  const effectiveColumns = useMemo(() => [
     {
       title: '来源',
       dataIndex: 'source',
@@ -355,7 +357,7 @@ export default function HookManager({
         </Tag>
       ),
     },
-  ];
+  ], []);
 
   return (
     <div>

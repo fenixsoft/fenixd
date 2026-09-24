@@ -238,33 +238,51 @@ def _check_worktree(proot, spec_name):
     # 报告崩溃；is_dir 一并覆盖，与不存在同口径返回 None 降级。
     if not wt_root.is_dir():
         return None
-    for wt in wt_root.iterdir():
-        if wt.is_dir() and _wt_dir_matches_spec(wt.name, spec_name):
-            recent = []
-            try:
-                # os.walk 现场剪枝（code-review item 50836a87ed56）：rglob 先
-                # 物化全树并对每个条目（含 .git/node_modules 全部文件）stat，
-                # 依赖重的仓库报告卡顿；剪枝后仅对候选扩展名文件 stat。
-                candidates = []
-                for dirpath, dirnames, filenames in os.walk(wt):
-                    dirnames[:] = [
-                        d for d in dirnames if d not in (".git", "node_modules")
-                    ]
-                    for fn in filenames:
-                        if Path(fn).suffix in (
-                            ".tsx", ".ts", ".css", ".html", ".json", ".py", ".md",
-                        ):
-                            p = Path(dirpath) / fn
-                            try:
-                                candidates.append((p.stat().st_mtime, p))
-                            except OSError:
-                                continue
-                candidates.sort(key=lambda x: x[0], reverse=True)
-                recent = [(str(p.relative_to(wt)), mt) for mt, p in candidates[:10]]
-            except OSError:
-                pass
-            return {"path": str(wt), "files": recent}
-    return None
+    matches = [
+        wt
+        for wt in wt_root.iterdir()
+        if wt.is_dir() and _wt_dir_matches_spec(wt.name, spec_name)
+    ]
+    if not matches:
+        return None
+
+    def _mtime(p):
+        try:
+            return p.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    # 多匹配确定性选择（code-review item cbb7096a760e）：iterdir 顺序依文件
+    # 系统而定，impl-<spec>-ts 与 verify-<spec>-ts 等多个 worktree 并存是合法
+    # 状态，命中首个即返回会让同一 spec 的报告在两次执行间漂移；改为全量
+    # 收集后按目录 mtime 新者优先、目录名字典序兜底——与 worktree_manager
+    # find_implementer_worktree 的「最新优先」口径一致。
+    matches.sort(key=lambda wt: (-_mtime(wt), wt.name))
+    wt = matches[0]
+    recent = []
+    try:
+        # os.walk 现场剪枝（code-review item 50836a87ed56）：rglob 先
+        # 物化全树并对每个条目（含 .git/node_modules 全部文件）stat，
+        # 依赖重的仓库报告卡顿；剪枝后仅对候选扩展名文件 stat。
+        candidates = []
+        for dirpath, dirnames, filenames in os.walk(wt):
+            dirnames[:] = [
+                d for d in dirnames if d not in (".git", "node_modules")
+            ]
+            for fn in filenames:
+                if Path(fn).suffix in (
+                    ".tsx", ".ts", ".css", ".html", ".json", ".py", ".md",
+                ):
+                    p = Path(dirpath) / fn
+                    try:
+                        candidates.append((p.stat().st_mtime, p))
+                    except OSError:
+                        continue
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        recent = [(str(p.relative_to(wt)), mt) for mt, p in candidates[:10]]
+    except OSError:
+        pass
+    return {"path": str(wt), "files": recent}
 
 
 def render_report(project_root, spec_name: str) -> str:

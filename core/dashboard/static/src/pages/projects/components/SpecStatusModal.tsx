@@ -124,8 +124,8 @@ export default function SpecStatusModal({
       content: (
         <div style={{ whiteSpace: 'pre-wrap' }}>
           {`确认归档 SPEC「${summary.name}」？\n\n`}
-          将 `spec/changes/{summary.name}/` 移入归档目录
-          （archive/YYYY-MM-DD-{summary.name}/），STATE.md 条目保留。
+          将 <Typography.Text code>spec/changes/{summary.name}/</Typography.Text> 移入归档目录
+          （<Typography.Text code>archive/YYYY-MM-DD-{summary.name}/</Typography.Text>），STATE.md 条目保留。
           {'\n'}归档后可随时在列表「已归档」视图查看。
         </div>
       ),

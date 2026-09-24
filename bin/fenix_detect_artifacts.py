@@ -227,6 +227,9 @@ def write_config_if_unresolved(project_root: Path, detection: dict) -> dict:
     跳过（MUST NOT 覆盖人工设置）。YAML 缺失时退化到最小文本追加（保留其余行），
     不抛异常——写入失败返回 {"wrote": False, "reason": <原因>}。
 
+    注意：有 PyYAML 时走 yaml.dump 全量重写，config.yaml 原有注释与排版会全部
+    丢失（PyYAML 不保留注释）；仅无 yaml 的退化文本路径逐行保留原文件。
+
     Returns: {"wrote": bool, "reason": str}
     """
     cfg_path = project_root / ".fenix" / "config.yaml"
@@ -264,9 +267,11 @@ def write_config_if_unresolved(project_root: Path, detection: dict) -> dict:
         worktree["has_build_artifacts"] = bool(detection["has_build_artifacts"])
         worktree["build_artifact_paths"] = list(detection["build_artifact_paths"])
         config["worktree"] = worktree
+        # yaml.dump 全量重写：PyYAML 不保留注释，原文件注释/排版在此全部丢失
+        # （保留注释需保守文本插入，风险更高，此处如实告知而非伪装成无损合并）
         with open(cfg_path, "w", encoding="utf-8") as f:
             yaml.dump(config, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
-        return {"wrote": True, "reason": "探测结果已写入（YAML 合并）"}
+        return {"wrote": True, "reason": "探测结果已写入（YAML 全量重写，原注释丢失）"}
     except ImportError:
         pass  # 无 yaml → 退化最小文本追加
 
