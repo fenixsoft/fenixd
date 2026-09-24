@@ -29,20 +29,35 @@
 `running=true 且 phase ∈ {fixing, retrying} 且 out 零有效行`时激活——
 与 `_synthesize_item_progress` 的激活域互补（out 有行时本函数短路为
 null）。接入点在 `read_progress` 内、`_synthesize_item_progress` 之后，
-复用其已读出的 out 行集合，不重复 IO。
+复用其已读出的 out 行集合，不重复 IO。合成字段生命周期对齐
+item_done/current_item 先例（core/code_fix.py:95-97、170-174）：
+`startup_stage` 进 `FIX_PROGRESS_DEFAULT`（缺省 null），合成函数无条件先
+置 null 再计算，`write_progress` 剥离该键不落盘（防合成快照经合并写持久
+化成陈旧状态污染进度文件）。
 
 ### D2 阶段映射表（末行事件类型 → 短语）
 
 | 末行形态 | 阶段短语 |
 |---|---|
 | 转录文件不存在 | 等待 agent 进程启动 |
-| `system`（hook_started / hook_response / init 等初始化事件） | 会话初始化中 |
+| `system` `init` / `hook_started` / `hook_response`（初始化事件） | 会话初始化中 |
+| `system` 其余子类型（`task_started` / `task_progress` / `background_tasks_changed` 等 mid-run 遥测） | agent 启动处理中 |
 | `assistant` thinking / text | 模型分析分组中 |
 | `assistant` tool_use | 正在执行 <工具名> |
 | 其他（user / stderr / 未知） | agent 启动处理中 |
 
-时长口径：`now - 转录文件 birth time`（编排 spawn 后即创建，birth 即
-spawn 时刻；stat 取不到 birth 时退化为不带时长）。文件不存在时无时长。
+（词表经实测校准 2026-09-24：`.fenix/runs/code-fix-1790225011.jsonl` 中
+`system` 子类型不止初始化类，还含子代理/后台任务遥测——按 type 整类归
+「会话初始化中」会在启动窗口误标，故拆分。`thinking_tokens` 遥测已被
+runner 事件循环过滤、不落盘，无需处理。）
+
+时长口径：`now - 转录文件 birth time`。转录文件为**懒创建**：`_run_claude`
+事件循环收到首条流事件（实测首行为 `system/hook_started`）才经
+`append_run_line` open("a") 建文件；spawn 前无 touch（`touch` 仅 planner
+节流路径先例，code-fix 车道无）——故 birth = 首事件到达时刻、非 spawn
+时刻；spawn→首事件窗口由「文件不存在」分支覆盖（「等待 agent 进程启动」、
+无时长），waited_minutes 自首事件起算、轻度低估（接受）。stat 取不到
+birth 时 `waited_minutes` 置 null（不省键，对齐 D4 形态）。
 
 ### D3 fail-open 容错（硬要求）
 

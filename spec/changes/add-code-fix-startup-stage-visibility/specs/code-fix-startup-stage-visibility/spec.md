@@ -13,16 +13,17 @@ code-fix 批处于 `fixing` 或 `retrying` 阶段且 out 产物（`fix-out-<run_
 - **WHEN** 批 `running=true`、`phase ∈ {fixing, retrying}`、out 零有效行，
   且 `.fenix/runs/<run_id>.jsonl` 存在
 - **THEN** `startup_stage` 为非空对象，含阶段短语与自转录文件创建时刻起的
-  已等待分钟数
+  已等待分钟数（转录无法提供 birth time 时 `waited_minutes` 为 null）
 - **AND** 阶段短语按末行事件类型映射：会话初始化事件（hook/init 类）→
-  会话初始化；assistant 文本/thinking → 模型分析分组；assistant 工具调用 →
+  会话初始化；system 遥测子类型（task_* / background_* 等）→ agent 启动处理中；
+  assistant 文本/thinking → 模型分析分组；assistant 工具调用 →
   正在执行该工具
 
 #### Scenario: run 转录文件缺失
 
 - **WHEN** 上述条件成立但转录文件不存在（进程尚未创建文件）
 - **THEN** `startup_stage` 仍为非空对象，阶段短语为「等待 agent 进程启动」，
-  已等待时长缺省不显示
+  `waited_minutes` 为 null（前端不显示时长）
 
 ### Requirement: 处置开始后收敛
 
