@@ -102,6 +102,14 @@ const STATUS_TEXT: Record<string, string> = {
   ignored: 'ignored',
 };
 
+// review_kind 英文枚举 → 中文文案（枚举值与 core/code_review.py 的
+// review_kind 契约对齐；未收录值回退英文原样，与 STATUS_TEXT 同风格）
+const REVIEW_KIND_TEXT: Record<string, string> = {
+  scheduled: '周期审查',
+  manual_full: '全库审查',
+  manual_window: '当期审查',
+};
+
 const STATUS_COLOR: Record<string, string> = {
   open: 'blue',
   in_spec: 'purple',
@@ -847,7 +855,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
           <Space direction="vertical" style={{ width: '100%' }} size={4}>
             <Space style={{ justifyContent: 'space-between', width: '100%' }}>
               <Typography.Text strong>
-                审查进行中（{progress.review_kind || 'code-review'}）
+                审查进行中（{REVIEW_KIND_TEXT[progress.review_kind || ''] || progress.review_kind || 'code-review'}）
               </Typography.Text>
               <Button size="small" loading={actionPending} onClick={() => void handleCancel()}>
                 取消
