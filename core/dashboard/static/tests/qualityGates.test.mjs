@@ -244,7 +244,7 @@ test('配色零回归：impl 蓝、verify 绿、出题青优先', () => {
   assert.equal(strokeColorFor(true, false), '#13c2c2');
   assert.equal(trailColorFor(false, false), '#e6f4ff');
   assert.equal(trailColorFor(false, true), 'rgb(225, 236, 215)');
-  assert.equal(trailColorFor(true, true), '#e6f4ff');
+  assert.equal(trailColorFor(true, true), '#e6fffb'); // 出题态淡青底轨（antd cyan-1）
 });
 
 test('pct 边界：total=0 → 0%，四舍五入', () => {

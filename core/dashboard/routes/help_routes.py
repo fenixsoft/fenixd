@@ -40,7 +40,7 @@ class H8HelpRoutesMixin:
         if not help_dir.is_dir():
             return {"docs": []}
         try:
-            files = sorted(
+            files = list(
                 p for p in help_dir.iterdir() if p.is_file() and _server_mod.HELP_DOC_NAME_RE.match(p.name)
             )
         except OSError:

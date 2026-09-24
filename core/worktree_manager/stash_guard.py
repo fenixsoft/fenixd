@@ -579,6 +579,34 @@ class G6StashGuardMixin:
                         f"'{path}': {(rm.stderr or rm.stdout).strip()}",
                     )
                     return False
+            # 路径作用域守卫：裸 commit 会把 index 里其它 staged 条目连带入库，
+            # 校验暂存集不含本次 rm --cached 路径之外的外来条目，有则放弃自愈。
+            # 只做子集校验、不强求自愈路径必须出现在暂存集（其入暂存已由上方
+            # rm --cached 的返回码保证），避免对暂存态探测过严而误杀正常自愈。
+            # （不能用 commit --only/-- <paths> 限定：路径已被 rm --cached 移出
+            # index，pathspec 解析必 fatal rc=128，会永远打断本自愈。）
+            staged = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(self.project_root),
+                    "diff",
+                    "--cached",
+                    "--name-only",
+                    "HEAD",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            staged_set = set(staged.stdout.splitlines())
+            if staged.returncode != 0 or not staged_set <= set(paths):
+                self.logger.warning(
+                    "worktree_manager",
+                    f"Self-heal (untrack) aborted: index has staged entries "
+                    f"beyond healed paths: {sorted(staged_set - set(paths))}",
+                )
+                return False
             commit = subprocess.run(
                 [
                     "git",
@@ -750,6 +778,34 @@ class G6StashGuardMixin:
                     text=True,
                     timeout=30,
                 )
+            # 路径作用域守卫（同 _untrack_ignored_local_changes）：裸 commit 会把
+            # index 里其它 staged 条目连带入库，校验暂存集不含本次移出路径之外的
+            # 外来条目。只做子集校验、不强求移出路径必须出现在暂存集（其入暂存
+            # 已由上方 rm --cached 的返回码保证）。
+            # （不能用 commit --only/-- <paths> 限定：路径已被 rm --cached 移出
+            # index，pathspec 解析必 fatal rc=128。）
+            staged = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(self.project_root),
+                    "diff",
+                    "--cached",
+                    "--name-only",
+                    "HEAD",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            staged_set = set(staged.stdout.splitlines())
+            if staged.returncode != 0 or not staged_set <= set(victims):
+                self.logger.warning(
+                    "worktree_manager",
+                    f"Purge skipped: index has staged entries beyond purged "
+                    f"paths: {sorted(staged_set - set(victims))}",
+                )
+                return
             commit = subprocess.run(
                 [
                     "git",

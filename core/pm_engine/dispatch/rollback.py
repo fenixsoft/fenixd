@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import shlex
 import time
 from datetime import datetime, timezone
 
@@ -298,7 +299,7 @@ class RRollbackMixin:
                     else "stash 条目已被自动 drop"
                 )
             recover_cmds = (
-                "; ".join(f"git show {sha}:{f}" for f in conflict_files)
+                "; ".join(f"git show {sha}:{shlex.quote(f)}" for f in conflict_files)
                 if sha
                 else "git stash show / git stash list 人工核对"
             )

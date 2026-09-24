@@ -606,11 +606,11 @@ export function detectTier2Trigger(specDir, projectRoot) {
   const srcDir = path.join(projectRoot, 'src');
   if (fs.existsSync(srcDir)) {
     try {
-      // 使用 grep 搜索 fetch( 调用（排除注释和 node_modules）
+      // 使用 grep 搜索 fetch( 调用（排除 node_modules 目录；代码注释行不排除，接受该误报口径）
       // 数组形式绕开 shell，避免含空格/元字符的路径被拆词或注入
       const result = execFileSync(
         'grep',
-        ['-rl', 'fetch\\s*(', srcDir, '--include=*.ts', '--include=*.tsx', '--include=*.js', '--include=*.jsx'],
+        ['-rl', 'fetch\\s*(', srcDir, '--include=*.ts', '--include=*.tsx', '--include=*.js', '--include=*.jsx', '--exclude-dir=node_modules'],
         { encoding: 'utf-8', timeout: 5000 }
       ).trim();
       if (result) {

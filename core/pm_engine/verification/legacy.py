@@ -172,6 +172,14 @@ def _run_legacy_verification(pipeline, spec_name: str):
                         ),
                     },
                 )
+                # evo-infra-failure-budget-exempt R2：与 unknown-status stale /
+                # 主 stale 护栏同结局路径对齐，「读错文件」属 infra，同挂预算
+                # 退款与记账（否则本路径白耗实现预算且无 infra 记账可观测）。
+                pipeline._record_infra_failure(
+                    spec_name,
+                    "stale/foreign verifier result replayed",
+                    run_id=getattr(result, "run_id", "") or "",
+                )
                 pipeline._context.logger.warning(
                     "pm_engine",
                     f"Stale/foreign verifier result for '{spec_name}'"

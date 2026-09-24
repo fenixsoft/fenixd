@@ -34,8 +34,8 @@ def _find_free_port() -> int:
         return s.getsockname()[1]
 
 
-class _SingleThreadHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
-    """单线程 HTTP 服务器，用于提供静态文件服务。"""
+class _ThreadedHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
+    """多线程 HTTP 服务器（ThreadingMixIn，每个请求在独立线程中处理），用于提供静态文件服务。"""
 
     daemon_threads = True
     allow_reuse_address = True
@@ -179,7 +179,7 @@ class BrowserManager:
         self._dev_server_port = _find_free_port()
         self._base_url = f"http://127.0.0.1:{self._dev_server_port}"
 
-        self._dev_server = _SingleThreadHTTPServer(("127.0.0.1", self._dev_server_port), handler)
+        self._dev_server = _ThreadedHTTPServer(("127.0.0.1", self._dev_server_port), handler)
 
         thread = threading.Thread(target=self._dev_server.serve_forever, daemon=True)
         thread.start()

@@ -10,7 +10,9 @@ re-export）或模块顶部导入均可——mock.patch("core.worktree_manager.s
 
 from __future__ import annotations
 
+import glob
 import os
+import re
 import signal
 import subprocess
 import time
@@ -101,7 +103,7 @@ class G3LockMixin:
             False（调用方以 run 流新鲜度做二次确认）。
             """
             for prefix in ("impl", "verify"):
-                pattern = f"worktrees/{prefix}-{spec_name}-"
+                pattern = f"worktrees/{prefix}-{re.escape(spec_name)}-"
                 try:
                     res = subprocess.run(
                         ["pgrep", "-f", pattern],
@@ -155,7 +157,7 @@ class G3LockMixin:
             newest: float | None = None
             try:
                 for prefix in ("impl", "verify"):
-                    for p in runs_dir.glob(f"{prefix}-{spec_name}-*.jsonl"):
+                    for p in runs_dir.glob(f"{prefix}-{glob.escape(spec_name)}-*.jsonl"):
                         # 精确归属守卫（范式见 recovery.py）：spec 名互为前缀时
                         # glob 命中不得直接认定——fix-x 不得被 fix-x-y 的流判为残留
                         if run_spec_part(p.stem) != spec_name:

@@ -240,11 +240,10 @@ class G2LegacyRegistryMixin:
         # 目录存在 + git worktree 注册有效 + 分支可解析。判定口径与 repair
         # 换壳（resolve_repair_site）、recovery 保留一致，任何链路不自行拼装。
         valid = False
-        if wt is not None:
-            try:
-                valid = self.is_available(wt, branch) == WT_AVAILABLE
-            except Exception:
-                valid = False
+        try:
+            valid = self.is_available(wt, branch) == WT_AVAILABLE
+        except Exception:
+            valid = False
         if not valid:
             self._legacy.pop(spec_name, None)
             self.logger.info(

@@ -2439,7 +2439,7 @@ class QQQueueMixin:
         供实现 run 失败分支与 merge-only 重试点复用同一判定基准。rehearsed /
         wip_gate_blocked / 可重试形态均已在调用方早退，本方法只处理真失败。
         """
-        spec_entry = self._pm.state_machine.read_one(spec_name)
+        spec_entry = self._pm.state_machine.read_one(spec_name) or {}
         max_r = self._pm._get_config("agents.max_retries", 3)
         fp = self._pm._merge_fingerprint(merge_error)
         prev_fp = spec_entry.get("_merge_fp")

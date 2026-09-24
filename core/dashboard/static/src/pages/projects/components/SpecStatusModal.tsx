@@ -601,7 +601,7 @@ export default function SpecStatusModal({
                 <div style={{ margin: '4px 0 8px' }}>
                   <Space size={4}>
                     <Typography.Text type="secondary">模式：</Typography.Text>
-                    <Tag color={freezeMode === 'scheduled' ? 'blue' : 'default'}>
+                    <Tag color={summary.frozen_until ? 'blue' : 'default'}>
                       {summary.frozen_until ? '定时解冻' : '永久冻结（人工解冻）'}
                     </Tag>
                   </Space>
