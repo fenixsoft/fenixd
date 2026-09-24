@@ -108,6 +108,11 @@ def install_ocr(timeout: int = _INSTALL_TIMEOUT) -> dict:
         - 并发调用：非阻塞获取全局安装锁，已被占用时返回 error="安装进行中"
           （code-review item ea103a53f670）
     """
+    # 下界防御（code-review item fe2c2b2c005e）：timeout<=0 直接透传
+    # subprocess.run 行为依赖 CPython 内部实现（0 立即超时、负值可能抛未被
+    # 捕获成可读错误 dict 的 ValueError），公开 API 入口钳制回默认值。
+    if timeout <= 0:
+        timeout = _INSTALL_TIMEOUT
     if not _INSTALL_LOCK.acquire(blocking=False):
         return {
             "ok": False,
