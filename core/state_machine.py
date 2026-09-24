@@ -934,6 +934,10 @@ class StateMachine:
         - 取消保持解锁（fix-cancel-holdstate-recovery D4）：显式携带 status 的
           更新（admin 处置复位、面板重派、unfreeze 等复位路径）即人工裁决，
           顺带清除取消保持标记；仅 error 等隐式 updates 不清；
+        - implementing→ready WIP 标志清除（code-fix 6a2031777cc3）：状态由
+          implementing 落 ready 时顺带清 ``_wip_gate_deferred``——admin 处置
+          复位与人工 ready 重派不得携带陈旧等待标志进入下一轮派发（显式
+          携带该标志的更新视为知情写，原样放行）；
         - 条目 ``updated`` 时间戳随每次成功应用刷新。
 
         ``applied`` 收集本次实际生效的字段（含 ``_stripped`` 剥离留痕），
@@ -949,6 +953,21 @@ class StateMachine:
             applied["_stripped"] = local.pop("status")
         if "status" in local:
             local["_cancelled_hold"] = False
+            # implementing→ready 中央清除（code-fix 6a2031777cc3）：admin 处置
+            # 复位（orphaned_state 降级过期）与人工 ready 重派都经本单点落
+            # ready——稳态下不再经过 boot 复位写点，陈旧 _wip_gate_deferred
+            # 会随重派带进下一轮 implementing，周期消费者会在在飞实现 run
+            # 收尾前 merge-only 合回半成品分支（正是 boot 复位写点要防的
+            # 竞态），故随迁移顺带清标志（内存写，失败不存在、不阻断迁移）。
+            if (
+                local["status"] == SpecStatus.READY
+                and entry.get("status") == SpecStatus.IMPLEMENTING
+                and "_wip_gate_deferred" not in local
+            ):
+                # _merge_retry_count/_merge_retry_first_at 与非 wip 的
+                # spec_dir_inflight 顺延链共用一套计数（混账已知、接受），
+                # 此时刻无法区分归属，只清 wip 标志本身。
+                local["_wip_gate_deferred"] = False
         specs[spec_name].update(local)
         specs[spec_name]["updated"] = datetime.now(timezone.utc).isoformat()
         applied.update(local)
@@ -2008,9 +2027,13 @@ class StateMachine:
                 # resume（claude --resume + 继承注记），而非从零新建分支。
                 "_recovery_resume": True,
                 # WIP 等待标志复位（evo-add-wip-defer-merge-retry-consumer 1.2，
-                # 三条清除写点之一）：保留续做落 ready 后恢复 run 在飞期间，
-                # 陈旧标志会让周期消费者把半成品分支过早 merge 进主树、并与
-                # 在飞 run 收尾竞态——boot 复位 MUST 清标志。
+                # 清除写点之一）：保留续做落 ready 后恢复 run 在飞期间，陈旧
+                # 标志会让周期消费者把半成品分支过早 merge 进主树、并与在飞
+                # run 收尾竞态。不变式「implementing + _wip_gate_deferred ⇒
+                # 无在飞实现 run」由 boot 复位写点 + implementing→ready 中央
+                # 清除（_apply_updates_entry 单点，封住 admin 处置复位/人工
+                # ready 重派的稳态绕行）+ 消费者扫描兜底清理共同保证——boot
+                # 复位 MUST 清标志。
                 "_wip_gate_deferred": False,
                 "_retry_count": 0,
                 "_merge_fp": None,
