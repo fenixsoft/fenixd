@@ -26,7 +26,9 @@ export async function getInitialState(): Promise<{ projects: string[] }> {
   try {
     const d = await getOverview();
     return { projects: (d.projects || []).map((p) => p.name) };
-  } catch {
+  } catch (e) {
+    // 降级返回空列表，但记录失败原因，便于区分「确实没有项目」与「接口故障」
+    console.warn('Failed to load projects:', e);
     return { projects: [] };
   }
 }

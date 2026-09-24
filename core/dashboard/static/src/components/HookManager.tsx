@@ -182,6 +182,9 @@ export default function HookManager({
       }
       onSave(next);
       setModalOpen(false);
+    })
+    .catch(() => {
+      // 校验不通过时 validateFields 会 reject，静默吞掉避免 unhandled rejection（错误已由表单字段提示）
     });
   };
 

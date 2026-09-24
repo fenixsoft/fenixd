@@ -322,7 +322,14 @@ def _full_suite_product_status(project_root) -> tuple:
     """
     import core.regression as _reg
 
-    data = _reg.read_result(project_root)
+    # read_result 只捕 JSONDecodeError/OSError（regression.py:366），快照含
+    # 无效 UTF-8 时 read_text 抛 UnicodeDecodeError 穿透（regression.py
+    # :312-315 同源实证）——在此原地降级返回 (None, "")，兑现本模块
+    # fail-open 契约（code-review item 55b059d3c256），走既有逐级回落。
+    try:
+        data = _reg.read_result(project_root)
+    except Exception:
+        return None, ""
     status_raw = data.get("status") if isinstance(data, dict) else None
     if status_raw not in _FULL_SUITE_PRODUCT_STATUS:
         # never_run / parse_error / 状态映射外 → 本源不可用（成员判定直接

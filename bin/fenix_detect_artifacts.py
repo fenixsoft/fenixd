@@ -68,9 +68,12 @@ def detect_build_artifacts(project_root: Path) -> dict:
     fenix_dist = project_root / "core" / "dashboard" / "static" / "dist"
     if fenix_dist.is_dir():
         # 检查是否有构建产物特征（index.html / hash JS 文件）
-        if any(fenix_dist.iterdir()):
-            paths_found.add("core/dashboard/static/")
-            sources.append("core/dashboard/static/dist/ 存在且非空")
+        try:
+            if any(fenix_dist.iterdir()):
+                paths_found.add("core/dashboard/static/")
+                sources.append("core/dashboard/static/dist/ 存在且非空")
+        except OSError:
+            pass  # dist 目录不可读（权限/挂载异常）时跳过该信息源，不阻塞探测
 
     # ── 2. package.json scripts + dist/build 目录 ────────────────────────────
     pkg_json = project_root / "package.json"

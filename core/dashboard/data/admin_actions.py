@@ -1434,17 +1434,19 @@ def reset_verification(project_root, spec: str, note: str = "", signal_type: str
     steps: list = []
     # 2. 删该 spec 自己的场景/进度文件（路径按 spec 名精确构造，无 glob）
     vp_dir = proot / ".fenix" / "verify-progress" / spec
+    deleted_any = False
     for fname in _VERIFY_PROGRESS_RUNTIME_FILES:
         fpath = vp_dir / fname
         if fpath.is_file():
             try:
                 fpath.unlink()
+                deleted_any = True
                 steps.append(f"已删除 {fpath.relative_to(proot)}")
             except OSError as e:
                 return {"ok": False, "found": True, "steps": steps,
                         "target_status": None,
                         "error": f"删除验证进度文件失败 {fname}: {e}"}
-    if not any(s.startswith("已删除") for s in steps):
+    if not deleted_any:
         steps.append("无场景/进度文件可删（verify-progress 目录不存在或已清）")
 
     # 3+4a. 清计数 + 剥冻结 + 清 error（自带 frozen 键走 update_spec 显式豁免，

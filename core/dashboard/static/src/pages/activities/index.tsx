@@ -67,7 +67,7 @@ const SIGNAL_LABEL: Record<string, string> = {
 };
 
 const SEV_LABEL: Record<string, string> = { critical: '严重', major: '较高', warning: '警告', minor: '一般' };
-const SEV_COLOR: Record<string, string> = { critical: 'red', major: 'orange', minor: 'blue' };
+const SEV_COLOR: Record<string, string> = { critical: 'red', major: 'orange', warning: 'gold', minor: 'blue' };
 
 const PRE_WRAP: React.CSSProperties = { whiteSpace: 'pre-wrap' };
 

@@ -13,7 +13,6 @@ export interface ChatMessage {
   content?: string;
   displayText?: string;
   timestamp: string | number | Date;
-  reasoning?: string;
   isThinking?: boolean;
   isStreaming?: boolean;
   isToolUse?: boolean;

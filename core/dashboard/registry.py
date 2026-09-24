@@ -329,7 +329,9 @@ class Registry:
         """
         try:
             rp = Path(path).expanduser().resolve()
-        except (OSError, RuntimeError):
+        # 769245a1c0c2：捕获清单对齐 _norm（空字节入参抛 ValueError、
+        # 非字符串入参抛 TypeError），守住「返回 (bool, message)、不抛异常」契约。
+        except (OSError, RuntimeError, TypeError, ValueError):
             return False, f"无效路径: {path}"
         key = str(rp)
 
@@ -377,7 +379,9 @@ class Registry:
         """
         try:
             rp = Path(path).expanduser().resolve()
-        except (OSError, RuntimeError):
+        # 769245a1c0c2：捕获清单对齐 _norm（空字节入参抛 ValueError、
+        # 非字符串入参抛 TypeError），守住「返回 (bool, message)、不抛异常」契约。
+        except (OSError, RuntimeError, TypeError, ValueError):
             return False, f"无效路径: {path}"
         key = str(rp)
 
@@ -409,7 +413,9 @@ class Registry:
         """
         try:
             rp = Path(path).expanduser().resolve()
-        except (OSError, RuntimeError):
+        # 769245a1c0c2：捕获清单对齐 _norm（空字节入参抛 ValueError、
+        # 非字符串入参抛 TypeError），守住「返回 (bool, message)、不抛异常」契约。
+        except (OSError, RuntimeError, TypeError, ValueError):
             return False, f"无效路径: {path}"
         key = str(rp)
 
