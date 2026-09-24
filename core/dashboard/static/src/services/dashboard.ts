@@ -1548,14 +1548,24 @@ export interface CodeReviewProgress {
   current: string | null;
 }
 
-/** add-code-review-agent-and-quality-tab：读取问题台账（默认仅 open，可逗号选状态） */
+/** add-code-review-agent-and-quality-tab：读取问题台账（默认仅 open，可逗号选状态）。
+ *  2026-09-24：severity/page/pageSize 可选下发——表格分页 server-side，返回
+ *  过滤后 total；不传 page/pageSize 时后端回退全量（旧消费者兼容）。 */
 export async function getCodeReviewItems(
   project: string,
-  statuses?: string[],
-): Promise<{ items: CodeReviewItem[] }> {
-  const statusQ = statuses && statuses.length ? `&status=${encodeURIComponent(statuses.join(','))}` : '';
-  return request<{ items: CodeReviewItem[] }>(
-    `/api/code-review/items?project=${encodeURIComponent(project)}${statusQ}`,
+  opts?: { statuses?: string[]; severity?: string; page?: number; pageSize?: number },
+): Promise<{ items: CodeReviewItem[]; total?: number }> {
+  const statusQ =
+    opts?.statuses && opts.statuses.length
+      ? `&status=${encodeURIComponent(opts.statuses.join(','))}`
+      : '';
+  const severityQ = opts?.severity ? `&severity=${encodeURIComponent(opts.severity)}` : '';
+  const pageQ =
+    opts?.page && opts?.pageSize
+      ? `&page=${opts.page}&page_size=${opts.pageSize}`
+      : '';
+  return request<{ items: CodeReviewItem[]; total?: number }>(
+    `/api/code-review/items?project=${encodeURIComponent(project)}${statusQ}${severityQ}${pageQ}`,
   );
 }
 
@@ -2078,15 +2088,31 @@ export async function getRegressionConfig(project: string): Promise<RegressionCo
   return request<RegressionConfigStatus>(`/api/regression/config${q}`);
 }
 
-/** 触发 AI 补写 regression 段（POST /api/regression/autodraft）。
- *  dispatched = 已写信号（巡检分钟级消费）；skipped = 段已配置，无需补写。 */
+/** regression 段 AI 同步生成的 per-call 超时（毫秒）。后端在 HTTP 线程内同步
+ *  跑 headless claude 起草 + 自证（自证会按 cmd 真跑一次全量回归），预算
+ *  AUTODRAFT_TIMEOUT_SECONDS=900s，客户端给足 900s + 30s 余量——参照
+ *  OCR_INSTALL_TIMEOUT_MS 先例，让用户等到服务端真实结论而非 30s 假失败。 */
+export const REGRESSION_AUTODRAFT_TIMEOUT_MS = 930000;
+
+/** 同步 AI 生成 regression 段（POST /api/regression/autodraft）。
+ *  success = 已落位 verify.yaml；skipped = 段已配置，无需生成；
+ *  no_test_system = 项目无可用测试体系，未臆造命令。
+ *  执行失败（超时/CLI 失败/自证未落位）= HTTP 200 + {ok: false, error}
+ *  （describe 同款错误契约，细节走服务端日志）。 */
 export async function autodraftRegression(
   project: string,
-): Promise<{ ok: boolean; project: string; status: 'dispatched' | 'skipped'; message: string }> {
+): Promise<
+  | { ok: true; project: string; status: 'success' | 'skipped' | 'no_test_system'; message: string }
+  | { ok: false; error: string }
+> {
   const q = `?project=${encodeURIComponent(project)}`;
-  return request(`/api/regression/autodraft${q}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({}),
-  });
+  return request(
+    `/api/regression/autodraft${q}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    },
+    { timeoutMs: REGRESSION_AUTODRAFT_TIMEOUT_MS },
+  );
 }

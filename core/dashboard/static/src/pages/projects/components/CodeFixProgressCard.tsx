@@ -33,6 +33,14 @@ const POLL_INTERVAL_MS = 2000;
 // 改名 phase 的漂移由运行时 `PHASE_LABELS[phase] || phase` 兜底展示。
 const STOP_PHASES: ReadonlySet<CodeReviewFixProgress['phase']> =
   new Set(['blocked', 'failed']);
+// 自愈等待类 reason（后端语义：链收敛的正常等待，下一审查轮到来自动重试/
+// 边界重试）——渲染为中性等待态而非红色故障。红 exception 只留给真正需
+// 人工的终止态（failed_batch_maxed / 契约缺失等）。未知 reason 按需人工
+// 样式回退（宁严勿松，reason 漂移不静默）。
+const SELFHEAL_WAIT_REASONS: ReadonlySet<string> = new Set([
+  'failed_batch_retained',
+  'wip_gate_blocked',
+]);
 // 连续读取失败上限：达到即停轮询（无退避的 2s 空转无意义）
 const MAX_CONSECUTIVE_ERRORS = 3;
 // 阶段中文名（模块作用域：不随每次渲染重建）。键与后端 FIX_PHASES 同源。
@@ -65,10 +73,13 @@ interface CodeFixProgressCardProps {
    * 否则触发成功后进度卡片永不渲染（QualityTab 依赖本组件自动接管展示）。
    */
   restartKey?: number;
+  /** 修复链运行态回调（2026-09-24 用户要求：修复进行中灰掉「自动修复」按钮
+   *  ——运行态只有本组件的轮询知道，经此上抛给 QualityTab 做按钮门控） */
+  onRunningChange?: (running: boolean) => void;
 }
 
 export default function CodeFixProgressCard(
-  { project, active, onSettled, restartKey }: CodeFixProgressCardProps,
+  { project, active, onSettled, restartKey, onRunningChange }: CodeFixProgressCardProps,
 ) {
   const [progress, setProgress] = useState<CodeReviewFixProgress | null>(null);
   // 连续读取失败停轮询后的展示标记：此时最后一帧可能仍是 running=true，
@@ -81,6 +92,17 @@ export default function CodeFixProgressCard(
   useEffect(() => {
     onSettledRef.current = onSettled;
   }, [onSettled]);
+  // onRunningChange 经 ref 传递（同 onSettled 纪律）：回调身份变化不重置轮询。
+  const onRunningChangeRef = useRef(onRunningChange);
+  useEffect(() => {
+    onRunningChangeRef.current = onRunningChange;
+  }, [onRunningChange]);
+  // 运行态变化上抛（2026-09-24「自动修复」按钮门控）：readFailed 停轮询视为
+  // 非运行——停轮询后进度本就不再可信，按钮解禁回到用户可控。
+  const fixRunning = !readFailed && Boolean(progress?.running);
+  useEffect(() => {
+    onRunningChangeRef.current?.(fixRunning);
+  }, [fixRunning]);
 
   useEffect(() => {
     // active 门控（对齐 QualityTab/SessionPanel 的「未选中零请求」约定）：项目页
@@ -156,6 +178,14 @@ export default function CodeFixProgressCard(
   // 终止渲染判定（非纯别名）：phase 终态，或连续读取失败停轮询——后者下最后一帧
   // 可能 running=true，以 exception 呈现而非无限 active（ocr 收尾审查）。
   const stopped = terminal || readFailed;
+  // 自愈等待态判定：readFailed 时一律不走自愈样式（读取失败须以 exception
+  // 呈现停轮询事实，见上）。
+  const selfhealWait =
+    !readFailed &&
+    phase === 'blocked' &&
+    reason != null &&
+    SELFHEAL_WAIT_REASONS.has(reason);
+  const alarm = stopped && !selfhealWait;
 
   // 条级进度文案（add-code-fix-item-level-progress 5.1）：仅 fixing 阶段渲染。
   // item_done 为 null（明细尚未产生/不可得）时**整段不渲染**（用户 2026-09-23
@@ -211,8 +241,8 @@ export default function CodeFixProgressCard(
   if (current) sub.push(current);
   if (startupStageText) sub.push(startupStageText);
   if (phase === 'fixing' && itemProgressText) sub.push(itemProgressText);
-  if (stopped && reason) sub.push(`原因：${reason}`);
-  if (stopped && !reason && readFailed) sub.push('进度读取失败，已停止轮询');
+  if (alarm && reason) sub.push(`原因：${reason}`);
+  if (alarm && !reason && readFailed) sub.push('进度读取失败，已停止轮询');
 
   return (
     <Card
@@ -222,16 +252,18 @@ export default function CodeFixProgressCard(
     >
       <Space direction="vertical" style={{ width: '100%' }} size={4}>
         <Typography.Text strong>
-          自动修复代码问题（第 {progress.batch_no} 批 · {PHASE_LABELS[phase] || phase}）
+          自动修复代码问题（第 {progress.batch_no} 批 ·{' '}
+        {selfhealWait ? '等待下一轮' : PHASE_LABELS[phase] || phase})
         </Typography.Text>
-        {/* spec 详情页同款进度条控件（ProgressBarTile）；终止态/读取失败传
-            exception + 纯红 strokeColor——antd 的 strokeColor 会压过 status
-            配色，渐变缺省下须显式给红才保得住失败视觉信号。 */}
+        {/* spec 详情页同款进度条控件（ProgressBarTile）；需人工终止态/读取
+            失败传 exception + 纯红 strokeColor——antd 的 strokeColor 会压过
+            status 配色，渐变缺省下须显式给红才保得住失败视觉信号。自愈等待
+            态走中性 normal（等待是设计内行为，不渲染成故障）。 */}
         <ProgressBarTile
           done={liveDone}
           total={total}
-          status={stopped ? 'exception' : 'active'}
-          strokeColor={stopped ? '#ff4d4f' : undefined}
+          status={alarm ? 'exception' : selfhealWait ? 'normal' : 'active'}
+          strokeColor={alarm ? '#ff4d4f' : undefined}
         />
         {sub.length > 0 && (
           <Typography.Text

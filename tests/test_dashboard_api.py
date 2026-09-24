@@ -2073,3 +2073,96 @@ class TestRunTailWindow:
         assert data["total_events"] == 3
         assert data["events"][-1]["type"] == "assistant"
         assert data["events"][-1]["type"] != "result"
+
+
+class TestCodeReviewItemsPagination:
+    """GET /api/code-review/items 分页 + severity 过滤（2026-09-24 用户要求：
+    台账 resolved 上千行不再一次全量拉取，表格分页下沉 server-side）。
+
+    契约：page+page_size 均传且合法才切片；响应恒含 total=过滤后总数；
+    非法/缺省参数回退全量（旧消费者兼容，items 形状不变）。
+    """
+
+    def _server_for(self, proot, tmp_path):
+        cfg = tmp_path / "dashboard.yaml"
+        reg = Registry(config_path=cfg)
+        reg.save({"port": 8787, "projects": [{"name": "proj-a", "path": str(proot)}],
+                  "scan_dirs": [str(tmp_path / "scan-empty")]})
+        return _TestServer(reg, Path(__file__).resolve().parents[1] / "core" / "dashboard" / "static")
+
+    def _seed(self, proot, majors=25, minors=5, resolved=3):
+        from core.code_review import upsert_findings
+        findings = []
+        for i in range(majors):
+            findings.append({"file": f"m{i}.py", "line": i + 1, "severity": "major",
+                             "category": "bug", "title": f"major-{i}",
+                             "description": "d", "suggestion": "s", "evidence": "e"})
+        for i in range(minors):
+            findings.append({"file": f"n{i}.py", "line": 1, "severity": "minor",
+                             "category": "bug", "title": f"minor-{i}",
+                             "description": "d", "suggestion": "s", "evidence": "e"})
+        upsert_findings(proot, findings, "code-review-test", "manual_full")
+        if resolved:
+            # 置几条 resolved，验证状态过滤与 total 口径（total=过滤后总数）
+            from core.code_review import read_items, set_item_status
+            items = read_items(proot)
+            for fp, rec in list(items.items())[:resolved]:
+                set_item_status(proot, rec["item_id"], "resolved")
+
+    def test_pagination_slice_and_total(self, tmp_path):
+        proot = make_project(tmp_path, name="proj-a", otherspec=False)
+        self._seed(proot)
+        srv = self._server_for(proot, tmp_path)
+        try:
+            status, body = srv.get("/api/code-review/items?project=proj-a&page=2&page_size=10")
+            assert status == 200
+            assert body["total"] == 30  # 25 major + 5 minor（默认仅 open）
+            assert body["page"] == 2 and body["page_size"] == 10
+            assert len(body["items"]) == 10
+            # 末页余量
+            status, body = srv.get("/api/code-review/items?project=proj-a&page=3&page_size=10")
+            assert len(body["items"]) == 10
+            status, body = srv.get("/api/code-review/items?project=proj-a&page=4&page_size=10")
+            assert len(body["items"]) == 0 and body["total"] == 30
+        finally:
+            srv.stop()
+
+    def test_severity_filter_with_pagination(self, tmp_path):
+        proot = make_project(tmp_path, name="proj-a", otherspec=False)
+        self._seed(proot)
+        srv = self._server_for(proot, tmp_path)
+        try:
+            status, body = srv.get(
+                "/api/code-review/items?project=proj-a&severity=minor&page=1&page_size=10"
+            )
+            assert status == 200
+            assert body["total"] == 5
+            assert all(it["severity"] == "minor" for it in body["items"])
+        finally:
+            srv.stop()
+
+    def test_backward_compat_no_params_returns_all(self, tmp_path):
+        proot = make_project(tmp_path, name="proj-a", otherspec=False)
+        self._seed(proot)
+        srv = self._server_for(proot, tmp_path)
+        try:
+            status, body = srv.get("/api/code-review/items?project=proj-a")
+            assert status == 200
+            assert body["total"] == 30
+            assert len(body["items"]) == 30  # 旧契约：全量
+        finally:
+            srv.stop()
+
+    def test_invalid_params_fall_back_to_full(self, tmp_path):
+        proot = make_project(tmp_path, name="proj-a", otherspec=False)
+        self._seed(proot)
+        srv = self._server_for(proot, tmp_path)
+        try:
+            status, body = srv.get(
+                "/api/code-review/items?project=proj-a&page=abc&page_size=-3"
+            )
+            assert status == 200
+            assert body["page"] is None and body["page_size"] is None
+            assert len(body["items"]) == 30
+        finally:
+            srv.stop()

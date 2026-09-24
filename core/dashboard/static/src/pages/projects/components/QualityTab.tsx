@@ -10,8 +10,8 @@
 //   「生成修复 SPEC」MUST 先弹确认框（含执行时间三档，2026-09-20 用户要求）；
 //   时刻选择器与设置页「同意立项」共用 ScheduleFields（单一实现点）
 // - 运行中真实进度条（done/total 百分比）+ 当前文件 + 取消按钮
-// - 行操作：逐条「忽略」（open → ignored）、「清除归属」（in_spec → open）；
-//   批量「全部忽略」= 把表格勾选的条目复制行操作的忽略语义（2026-09-20 用户要求）
+// - 表格无操作列（2026-09-24 用户要求：逐条「忽略/清除归属」入口随列下线）；
+//   批量「全部忽略」= 把表格勾选的条目置 ignored（2026-09-20 用户要求）
 //
 // 配置归属（2026-09-19 用户决策）：本分面**只读触发与展示**，不再承载
 // admin.code_review.enabled 开关——配置项归设置页「质量」页签统一管理
@@ -19,13 +19,12 @@
 //
 // active 门控（对齐 SessionPanel）：仅在选中本分面时拉取数据与订阅 SSE，
 // 未选中零请求（project-page-tabs 按需加载语义）。
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   App,
   Button,
   Card,
   Popover,
-  Progress,
   Select,
   Space,
   Table,
@@ -52,6 +51,7 @@ import {
 } from '../../../services/dashboard';
 import type { CodeFixRunResult, CodeReviewItem, CodeReviewProgress, CodeReviewRunResult } from '../../../services/dashboard';
 import CodeFixProgressCard from './CodeFixProgressCard';
+import ProgressBarTile from './ProgressBarTile';
 import ScheduleFields, {
   describeStartAfter,
   isStartAfterValid,
@@ -110,6 +110,10 @@ const REVIEW_KIND_TEXT: Record<string, string> = {
   manual_full: '全库审查',
   manual_window: '当期审查',
 };
+
+// 条目表格 server-side 分页页大小（2026-09-24 用户要求：台账 resolved 上千行
+// 不再一次全量拉取，过滤/分页下沉后端；与既有分页 UI 的 pageSize:10 一致）
+const ITEMS_PAGE_SIZE = 10;
 
 const STATUS_COLOR: Record<string, string> = {
   open: 'blue',
@@ -247,6 +251,15 @@ export default function QualityTab({ project, active }: QualityTabProps) {
   const [severityFilter, setSeverityFilter] = useState<string | undefined>();
   const [statusFilter, setStatusFilter] = useState<string | undefined>('open');
   const [progress, setProgress] = useState<CodeReviewProgress | null>(null);
+  // 条目表格 server-side 分页态（2026-09-24）：页码/过滤后总数；fixRunning
+  // 来自 CodeFixProgressCard 的运行态上抛，供「自动修复」按钮门控。
+  // total 为 undefined（后端未升级，返回无 total 的旧契约）时传给 antd 回退
+  // 「按 dataSource 长度」的本地分页口径——旧后端下退化为一次性加载+本地翻页，
+  // 新后端（daemon 重启后）起 server-side 生效。
+  const [itemsPage, setItemsPage] = useState(1);
+  const [itemsTotal, setItemsTotal] = useState<number | undefined>(undefined);
+  const [fixRunning, setFixRunning] = useState(false);
+  const handleFixRunningChange = useCallback((r: boolean) => setFixRunning(r), []);
   const [generating, setGenerating] = useState(false);
   // 触发/取消请求进行中的 pending 门控（code-review item 133cba8a5748）：旧实现
   // 仅依据 progress 快照 disable 按钮、且 handleTrigger 只乐观写 runningRef 不
@@ -300,10 +313,24 @@ export default function QualityTab({ project, active }: QualityTabProps) {
       // 仅首屏置 loading（code-review item 103bd502bd1e）：后台刷新不置，避免
       // 表格在 SSE/心跳驱动下反复闪烁。
       if (firstLoad) setLoading(true);
-      const statuses = statusFilter ? [statusFilter] : undefined;
-      const data = await getCodeReviewItems(project, statuses);
+      // 过滤+分页 server-side（2026-09-24）：status/severity/page 下发，返回
+      // 当页行 + 过滤后总数。
+      const data = await getCodeReviewItems(project, {
+        statuses: statusFilter ? [statusFilter] : undefined,
+        severity: severityFilter,
+        page: itemsPage,
+        pageSize: ITEMS_PAGE_SIZE,
+      });
       if (seq !== loadSeqRef.current) return; // 过期响应丢弃（陈旧覆盖防护）
       setItems(data.items || []);
+      setItemsTotal(typeof data.total === 'number' ? data.total : undefined);
+      // 越界页收敛（仅 server-side total 可判定）：浏览中条目被核销/过滤致总
+      // 页数缩水时收回末页，避免停在空页误读为无数据（setItemsPage 触发本
+      // loader 重跑，seq 守卫防乱序）。
+      if (typeof data.total === 'number') {
+        const lastPage = Math.max(1, Math.ceil(data.total / ITEMS_PAGE_SIZE));
+        if (itemsPage > lastPage) setItemsPage(lastPage);
+      }
       loadedOnceRef.current = true;
     } catch (e) {
       if (seq !== loadSeqRef.current) return;
@@ -313,7 +340,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
     } finally {
       if (firstLoad && seq === loadSeqRef.current) setLoading(false);
     }
-  }, [active, project, statusFilter, message]);
+  }, [active, project, statusFilter, severityFilter, itemsPage, message]);
 
   // loadItems 的 ref 视图（code-review item 2723381276fb）：轮询 interval 这类
   // 长生命周期闭包经此读取最新 loader——statusFilter 变化会重建 loadItems，
@@ -727,21 +754,6 @@ export default function QualityTab({ project, active }: QualityTabProps) {
     });
   };
 
-  // ── 行操作（5.10）：忽略 / 清除归属 ─────────────────────────────
-  const handleIgnore = async (item: CodeReviewItem) => {
-    if (ignorePending) return; // pending 门控防连点（code-review item 717b2251caaa）
-    setIgnorePending(true);
-    try {
-      await setCodeReviewItemStatus(project, item.item_id, 'ignored');
-      message.success('已忽略该问题');
-      void loadItems();
-    } catch (e) {
-      message.error(`忽略失败: ${e instanceof Error ? e.message : String(e)}`);
-    } finally {
-      setIgnorePending(false);
-    }
-  };
-
   // ── 批量「全部忽略」（2026-09-20 用户要求）：把勾选条目全部置 ignored ──
   // 选中可能混入非 open 条目（in_spec/resolved），逐条忽略会让后端的
   // 「仅 open/ignored 可人工置入」约束报错；这里只对 open 条目发请求。
@@ -773,41 +785,14 @@ export default function QualityTab({ project, active }: QualityTabProps) {
     }
   };
 
-  const handleClearAttribution = async (item: CodeReviewItem) => {
-    modal.confirm({
-      title: '清除归属',
-      content: `把「${item.title}」重置回 open 并清空所属修复 SPEC？`,
-      okText: '清除',
-      cancelText: '取消',
-      onOk: async () => {
-        try {
-          await setCodeReviewItemStatus(project, item.item_id, 'open');
-          message.success('已清除归属，条目回到默认列表');
-          void loadItems();
-        } catch (e) {
-          message.error(`清除失败: ${e instanceof Error ? e.message : String(e)}`);
-        }
-      },
-    });
-  };
-
-  // 过滤后的实际渲染行（useMemo 稳定身份，供表格与幽灵选中清理共用同一谓词）
-  const filteredItems = useMemo(
-    () =>
-      items.filter(
-        (it) =>
-          (!severityFilter || it.severity === severityFilter) &&
-          (!statusFilter || it.status === statusFilter),
-      ),
-    [items, severityFilter, statusFilter],
-  );
+  // 实际渲染行：status/severity 过滤已下沉 server-side（2026-09-24 分页配套，
+  // 台账上千行不再全量拉取），本地不再二次过滤——渲染行即当页行；幽灵选中
+  // 清理随之与当页行求交（翻页/过滤收窄即清掉不可见旧选中，语义与原先一致）。
+  const filteredItems = items;
 
   // 选中项与**实际渲染行**求交（code-review item 01f6207c6b11 + a4922e615ddf）：
-  // 忽略/清除归属/后端流转为 resolved/in_spec、或严重度/状态过滤收窄后，旧
-  // 选中 key 会残留为「幽灵选中」，使「已选 N 条」计数错误、并把不可见/
-  // 已失效 item_id 提交给后端。旧实现只与服务端全量 items 求交且 deps 不含
-  // 过滤器——severityFilter 收窄后现在不可见的键仍留在 selectedKeys 被提交；
-  // 改为与 filteredItems 求交并把过滤值纳入依赖。
+  // 后端流转为 resolved/in_spec、或过滤/翻页后，旧选中 key 会残留为「幽灵选中」，
+  // 使「已选 N 条」计数错误、并把不可见 item_id 提交给后端。
   useEffect(() => {
     setSelectedKeys((prev) => {
       const visible = new Set(filteredItems.map((it) => String(it.item_id)));
@@ -815,31 +800,6 @@ export default function QualityTab({ project, active }: QualityTabProps) {
       return next.length === prev.length ? prev : next;
     });
   }, [filteredItems]);
-
-  // 行操作渲染（code-review item ca92db5ea623 抽三元）：把原嵌套三元改为早返回。
-  const renderOps = (rec: CodeReviewItem) => {
-    if (rec.status === 'in_spec') {
-      return (
-        <Button size="small" type="link" onClick={() => void handleClearAttribution(rec)}>
-          清除归属
-        </Button>
-      );
-    }
-    if (rec.status === 'open') {
-      return (
-        <Button
-          size="small"
-          type="link"
-          danger
-          disabled={ignorePending}
-          onClick={() => void handleIgnore(rec)}
-        >
-          忽略
-        </Button>
-      );
-    }
-    return null;
-  };
 
   const columns: ColumnsType<CodeReviewItem> = [
     {
@@ -868,17 +828,14 @@ export default function QualityTab({ project, active }: QualityTabProps) {
         <Tag color={STATUS_COLOR[status] || 'default'}>{STATUS_TEXT[status] || status}</Tag>
       ),
     },
-    {
-      title: '操作',
-      key: 'ops',
-      width: 130,
-      // 嵌套三元抽出为具名函数（code-review item ca92db5ea623）
-      render: (_: unknown, rec: CodeReviewItem) => renderOps(rec),
-    },
+    // 操作列已按用户 2026-09-24 要求整体移除（逐条「忽略/清除归属」入口随列
+    // 下线；批量「全部忽略」入口保留在工具栏），对应 renderOps/handleIgnore/
+    // handleClearAttribution 一并删除。
   ];
 
-  const progressPercent =
-    progress && progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0;
+  // 旧 progressPercent 已删：进度条换 ProgressBarTile 后由 done/total 直驱
+  // （2026-09-24 用户要求：与「自动修复代码问题」卡片同控件同观感），无百分
+  // 比散置消费点。
 
   return (
     <Card variant="borderless">
@@ -899,7 +856,10 @@ export default function QualityTab({ project, active }: QualityTabProps) {
             allowClear
             style={{ width: 110 }}
             value={severityFilter}
-            onChange={setSeverityFilter}
+            onChange={(v) => {
+              setSeverityFilter(v);
+              setItemsPage(1); // 过滤条件变化回第 1 页（server-side 过滤配套）
+            }}
             // 三档漂移值 high/medium/low 插在对应严重度档位之间（排序同
             // SEVERITY_ORDER 口径），台账存量漂移条目即可过滤
             options={[
@@ -917,7 +877,10 @@ export default function QualityTab({ project, active }: QualityTabProps) {
             allowClear
             style={{ width: 190 }}
             value={statusFilter}
-            onChange={setStatusFilter}
+            onChange={(v) => {
+              setStatusFilter(v);
+              setItemsPage(1); // 过滤条件变化回第 1 页（server-side 过滤配套）
+            }}
             // 状态中文解释（用户 2026-09-23 要求）：仅下拉选项文案，表格
             // Tag 仍走 STATUS_TEXT 英文短标签
             options={[
@@ -958,10 +921,12 @@ export default function QualityTab({ project, active }: QualityTabProps) {
           </Button>
           {/* 「自动修复」（add-code-fix-manual-trigger）：手动触发即临时授权
               （开关关闭也修这一批），蓝底白字与相邻触发按钮一致；触发流程
-              （含结果轮询）进行中呈 loading 态并防连点 */}
+              （含结果轮询）进行中呈 loading 态并防连点。修复链在飞（fixRunning，
+              CodeFixProgressCard 上抛）时同样禁用——与审查按钮在审查进行中
+              禁用的语义对齐（2026-09-24 用户要求） */}
           <Button
             type="primary"
-            disabled={actionPending}
+            disabled={actionPending || fixRunning}
             loading={fixRunPending}
             onClick={() => void handleTriggerFixRun()}
           >
@@ -1001,9 +966,11 @@ export default function QualityTab({ project, active }: QualityTabProps) {
                 取消
               </Button>
             </Space>
-            <Progress percent={progressPercent} status="active" />
+            {/* 与「自动修复代码问题」卡片同控件（ProgressBarTile，2026-09-24
+                用户要求观感一致）：大百分比 + 已完成 x/y + 渐变条 */}
+            <ProgressBarTile done={progress.done} total={progress.total} status="active" />
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              {progress.done}/{progress.total} 文件
+              共 {progress.total} 个文件
               {progress.current ? ` · 当前：${progress.current}` : ''}
             </Typography.Text>
           </Space>
@@ -1019,6 +986,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
         active={active}
         restartKey={fixRunRestartTick}
         onSettled={() => void loadItems()}
+        onRunningChange={handleFixRunningChange}
       />
 
       <Table<CodeReviewItem>
@@ -1031,7 +999,16 @@ export default function QualityTab({ project, active }: QualityTabProps) {
           selectedRowKeys: selectedKeys,
           onChange: (keys) => setSelectedKeys(keys),
         }}
-        pagination={{ pageSize: 10, showSizeChanger: false, hideOnSinglePage: true }}
+        pagination={{
+          // server-side 分页（2026-09-24）：current/total 受控，翻页触发
+          // loadItems 重取当页（itemsPage 在 loader deps 中）
+          current: itemsPage,
+          pageSize: ITEMS_PAGE_SIZE,
+          total: itemsTotal,
+          showSizeChanger: false,
+          hideOnSinglePage: true,
+          onChange: (p) => setItemsPage(p),
+        }}
         locale={{ emptyText: '暂无未处理问题' }}
       />
     </Card>

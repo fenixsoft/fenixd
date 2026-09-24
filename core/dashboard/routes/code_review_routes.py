@@ -91,8 +91,14 @@ class H11CodeReviewRoutesMixin:
 
     def _api_code_review_items(self, query):
         """GET /api/code-review/items?project=<name>[&status=open,in_spec]
+        [&severity=major][&page=1&page_size=10]
 
-        返回 ``{items: [...]}``（按 severity 排序，默认仅 open）。缺项目 → 404。
+        返回 ``{items: [...], total: N}``（按 severity 排序，默认仅 open）。
+        ``total`` 为过滤后总数（分页配套，2026-09-24 用户要求：台账 resolved
+        上千行不再一次全量拉取，表格分页改 server-side）。``page``/``page_size``
+        均传才切片，缺省返回全量（向后兼容旧消费者）；非法值整组回退全量。
+        severity 可选单值过滤（前端严重度下拉同样下沉 server-side）。
+        缺项目 → 404。
         """
         project = self._project_from_query(query)
         if project is None or not project.get("exists"):
@@ -102,8 +108,26 @@ class H11CodeReviewRoutesMixin:
         raw = query.get("status", [None])[0]
         if raw:
             statuses = [s.strip() for s in raw.split(",") if s.strip()]
+        severity = (query.get("severity", [None])[0] or "").strip() or None
         items = dashboard_data.read_code_review_items(str(project["path"]), statuses=statuses)
-        self._json({"items": items})
+        if severity:
+            items = [it for it in items if it.get("severity") == severity]
+        total = len(items)
+
+        def _page_int(name):
+            raw = query.get(name, [None])[0]
+            try:
+                return int(raw)
+            except (TypeError, ValueError):
+                return None
+
+        page, page_size = _page_int("page"), _page_int("page_size")
+        if page is not None and page_size is not None and page >= 1 and 1 <= page_size <= 500:
+            start = (page - 1) * page_size
+            items = items[start : start + page_size]
+        else:
+            page = page_size = None
+        self._json({"items": items, "total": total, "page": page, "page_size": page_size})
 
     def _api_code_review_progress(self, query):
         """GET /api/code-review/progress?project=<name>
