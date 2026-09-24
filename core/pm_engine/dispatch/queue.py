@@ -2089,7 +2089,7 @@ class QQQueueMixin:
         finally:
             self._pm._process_queue()
 
-    def _retry_merge_back_only(self, spec_name: str) -> None:
+    def _retry_merge_back_only(self, spec_name: str) -> bool:
         """merge-only 重试体（D2/task 2.4/2.6）：重试合并而非重派实现。
 
         预算耗尽 MUST NOT 被本通道绕过（task 2.6）：先经 ``_check_impl_budget_exhausted``
@@ -2098,6 +2098,11 @@ class QQQueueMixin:
         未派生新实现 run（D3）：**不递增** 实现尝试预算，也**不需要** ``bump_impl_budget(-1)``
         事后回退（无计数可退；``_reconcile_impl_budget`` 以 runs 实际计数对账，
         本条路径不产生新 run 产物，不构成偏差）。
+
+        Returns: True = 真正执行了 merge-only 合回（走到 ``_finalize_merge_success``
+        收口）；False = 本次未执行合并（状态守卫跳过/无分支锚点/预算闸门/合并失败
+        各通道）——调用方据此闸门告警闭环：守卫 2.1a 跳过时条目可能是人工已推进
+        implemented，不得把人工动作记成「自动合回成功」。
         """
         wm = self._pm.agent_runner.worktree_manager
         entry = self._pm.state_machine.read_one(spec_name) or {}
@@ -2130,7 +2135,7 @@ class QQQueueMixin:
                 f"{entry.get('status') or '无'} 非 implementing"
                 f"（条目已被人工/admin 推进，不重复合并），顺延/等待记账已清账",
             )
-            return
+            return False
         branch = entry.get("branch")
         if not branch:
             self._pm.logger.error(
@@ -2138,7 +2143,7 @@ class QQQueueMixin:
                 f"merge 重试 '{spec_name}' 无分支锚点 — 无法仅重试合并，"
                 f"保持 implementing 等待人工处置（既有告警/巡检可见）",
             )
-            return
+            return False
         # 预算闸门（D2/task 2.6）：同派发前闸门，阻塞则不再尝试（闸门自身置 blocked+告警）
         if self._pm._check_impl_budget_exhausted(spec_name):
             self._pm.logger.warning(
@@ -2146,7 +2151,7 @@ class QQQueueMixin:
                 f"merge 重试 '{spec_name}' 触发实现预算闸门 — 已 blocked/告警，"
                 f"不再重试合并（D2 不绕过 impl_budget_exhausted）",
             )
-            return
+            return False
         try:
             merge_info = wm.merge_back_from_branch(branch)
             merge_ok, merge_error = merge_info
@@ -2155,7 +2160,7 @@ class QQQueueMixin:
                 "pm_engine",
                 f"merge 重试异常 '{spec_name}'（branch '{branch}'）: {e}",
             )
-            return
+            return False
         if merge_ok:
             # 合并成功：清顺延记账（_finalize_merge_success 内收口）并推进 implemented
             self._finalize_merge_success(
@@ -2165,7 +2170,7 @@ class QQQueueMixin:
                 merge_info,
                 list(getattr(wm, "last_stash_pop_conflicts", []) or []),
             )
-            return
+            return True
         # ── WIP 等待标志在场且失败仍为 wip 阻断形态
         # （evo-add-wip-defer-merge-retry-consumer 2.1b）── 交回等待记账
         # （计数 +1、超限降级），MUST NOT 落入既有可重试分类/指纹熔断：主路径
@@ -2180,7 +2185,7 @@ class QQQueueMixin:
             self._record_wip_defer_retry_failure(
                 spec_name, merge_info, merge_error, branch
             )
-            return
+            return False
         # 带标志条目落**非 wip** 失败（真内容冲突等）：等待到此结束——先清
         # 标志再走既有失败路径。MUST 先清：既有路径会把条目降级 ready/重派
         # 新实现 run，陈旧标志会让周期消费者在恢复 run 在飞期间触发
@@ -2198,10 +2203,11 @@ class QQQueueMixin:
                 )
         # 再次顺延（有界，自首轮起算）或真失败（fail-open 回既有通道）
         if self._handle_retryable_mergeback_failure(spec_name, merge_info, merge_error, branch):
-            return
+            return False
         self._handle_merge_back_real_failure(
             spec_name, merge_info, merge_error, branch
         )
+        return False
 
     # ── WIP 延迟合回周期消费者（evo-add-wip-defer-merge-retry-consumer 2.1）──
 
@@ -2218,9 +2224,11 @@ class QQQueueMixin:
     def _recheck_wip_deferred_merges(self) -> None:
         """周期复查带 WIP 等待标志的 spec（主循环 120 秒节拍调用，2.1/2.2）。
 
-        严格筛选（两层守卫的第二层）：仅认 ``status=implementing`` 且
-        ``_wip_gate_deferred`` 为真的条目——人工/admin 已推进或标志已清账的
-        条目不进入重试。逐条 merge-only 重试：重叠文件已干净（人工已提交/
+        筛选（两层守卫的第二层）：只对 ``_wip_gate_deferred`` 为真的条目动作；
+        ``status=implementing`` 才进入重试，非 implementing 的带标志条目
+        （人工/admin 已推进或复位）不重试，但清掉陈旧标志（复位写点不经
+        side-car 字段，否则标志存活到重派的新 run、在飞期间误触发合并）。
+        逐条 merge-only 重试：重叠文件已干净（人工已提交/
         stash 主树 WIP）即成功走 ``_finalize_merge_success``（implemented
         推进 + 标志清账）并显式闭环 ``mergeback_wip_overlap`` 告警；失败仍为
         wip 阻断则计数 +1（``_retry_merge_back_only`` 内 2.1b 分支），超限
@@ -2241,9 +2249,40 @@ class QQQueueMixin:
             )
             return
         for name, entry in specs.items():
-            if (entry.get("status") or "") != "implementing":
-                continue
             if not entry.get("_wip_gate_deferred"):
+                continue
+            if (entry.get("status") or "") != "implementing":
+                # 安全不变式兜底：标志生命周期不变式是「implementing+带标志 ⇒
+                # 无在飞实现 run」，但手动/panel 重派与 admin 处置复位经
+                # update_spec/transition 写 ready 不触达 side-car 字段（boot
+                # 复位写点正因如此才需要显式清）。运行期见到非 implementing 的
+                # 带标志条目即陈旧标志，同守卫 2.1a 的受保护、非阻塞更新清账
+                # 后跳过——否则标志存活进重派的新 run（ready→implementing
+                # 写点不清标志），下一拍 implementing+带标志即触发 merge-only
+                # 重试，把半成品分支过早合入主树、与在飞 run 收尾竞态。
+                # 无标志的 spec_dir_inflight _merge_retry_pending 链路已在
+                # 上方筛掉，不经此清账。
+                try:
+                    self._pm.state_machine.update_spec(
+                        name,
+                        {
+                            "_merge_retry_pending": False,
+                            "_merge_retry_count": 0,
+                            "_merge_retry_first_at": None,
+                            "_wip_gate_deferred": False,
+                        },
+                    )
+                except Exception as e:
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"WIP 等待标志陈旧清账失败 '{name}'（非阻塞）: {e}",
+                    )
+                self._pm.logger.info(
+                    "pm_engine",
+                    f"WIP 等待复查 '{name}' 跳过：status="
+                    f"{entry.get('status') or '无'} 非 implementing"
+                    f"（人工/admin 已推进，不重复合并），陈旧标志已清账",
+                )
                 continue
             try:
                 self._recheck_one_wip_deferred(name, entry)
@@ -2277,11 +2316,17 @@ class QQQueueMixin:
             f"首阻 {int(first_f)}）",
         )
         before_status = entry.get("status")
-        self._retry_merge_back_only(spec_name)
+        merged = self._retry_merge_back_only(spec_name)
         after = self._pm.state_machine.read_one(spec_name) or {}
-        if before_status == "implementing" and (after.get("status") or "") == "implemented":
+        if (
+            merged
+            and before_status == "implementing"
+            and (after.get("status") or "") == "implemented"
+        ):
             # 自动合回成功：显式闭环 mergeback_wip_overlap 告警
-            # （stuck-signal-hygiene 处置记录范式，result=resolved）。
+            # （stuck-signal-hygiene 处置记录范式，result=resolved）。以
+            # merged 为闸：守卫 2.1a 跳过（人工已推进 implemented）时本次
+            # 并未合回，不得把人工动作记成「自动合回，无需人工处置」。
             self._resolve_wip_overlap_alert(spec_name)
 
     def _report_wip_defer_stuck_once(

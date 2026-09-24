@@ -17,6 +17,8 @@ from __future__ import annotations
 import time
 from datetime import datetime, timezone
 
+from core.pm_engine.dispatch.queue import WIP_DEFER_WINDOW_MINUTES, WIP_DEFER_MAX_ROUNDS
+
 
 class RRollbackMixin:
     """R 失败回滚/诊断上报（design D1 表 B R 组）。"""
@@ -593,8 +595,8 @@ class RRollbackMixin:
                 {
                     "retry_count": retry_count,
                     "first_blocked_at": first_at,
-                    "window_minutes": 90,
-                    "max_rounds": 6,
+                    "window_minutes": int(WIP_DEFER_WINDOW_MINUTES),
+                    "max_rounds": WIP_DEFER_MAX_ROUNDS,
                 }
             )
             store = AdminStore(self._pm.project_root, self._pm.logger)
