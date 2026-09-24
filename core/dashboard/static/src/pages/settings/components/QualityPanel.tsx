@@ -32,6 +32,10 @@ const IMPL_REVIEW_DEFAULTS = {
   effort: 'low',
 } as const;
 
+// add-code-review-concurrency-and-429-resilience：全仓审查并发缺省（与
+// ConfigLoader.get_repo_code_review_concurrency 缺省同源；模板示例值=缺省值）
+const REPO_REVIEW_DEFAULT_CONCURRENCY = 4;
+
 const EFFORT_OPTIONS = ['low', 'medium', 'high'] as const;
 
 const EFFORT_RULE = {
@@ -78,6 +82,10 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
       // add-impl-ocr-parallel-lane（任务 1.2）：后端缺省 2→4，回填与之一致
       impl_code_review_concurrency:
         config.verify?.impl_code_review_concurrency ?? IMPL_REVIEW_DEFAULTS.concurrency,
+      // add-code-review-concurrency-and-429-resilience：全仓审查并发回填缺省 4
+      // （后端 read_config / read_effective_config 恒回显，前端回填与之一致）
+      repo_code_review_concurrency:
+        config.verify?.repo_code_review_concurrency ?? REPO_REVIEW_DEFAULT_CONCURRENCY,
       impl_code_review_effort: config.verify?.impl_code_review_effort ?? IMPL_REVIEW_DEFAULTS.effort,
       // add-impl-ocr-parallel-lane：join 双档模式回填缺省 gate（后端恒回显，
       // 前端回填与之一致）
@@ -209,6 +217,9 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
           // 正整数/枚举由表单校验先行把关，后端 write_config 再权威兜底）
           impl_code_review_timeout_sec: values.impl_code_review_timeout_sec,
           impl_code_review_concurrency: values.impl_code_review_concurrency,
+          // add-code-review-concurrency-and-429-resilience：全仓审查并发序列化
+          // （与 impl 键并列、分别保存，后端 write_config 权威兜底正整数）
+          repo_code_review_concurrency: values.repo_code_review_concurrency,
           impl_code_review_effort: values.impl_code_review_effort,
           // add-impl-ocr-parallel-lane：join 双档模式序列化（表单回填后恒有值，
           // 白名单枚举由表单校验先行把关，后端 write_config 再权威兜底）
@@ -366,7 +377,7 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
             name="impl_code_review_concurrency"
             label={
               <>
-                审查并发<span className="label-note">（verify.impl_code_review_concurrency）</span>
+                SPEC 审查并发<span className="label-note">（verify.impl_code_review_concurrency）</span>
               </>
             }
             rules={[POSITIVE_INT_RULE]}
@@ -380,10 +391,38 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
             />
           </Form.Item>
           <Text type="secondary">
-            默认 {IMPL_REVIEW_DEFAULTS.concurrency}。ocr 并发子任务上限（--concurrency）：实测 8 路并发同时打同一
-            provider 网关会把首字节延迟放大到撞穿超时线；add-impl-ocr-parallel-lane
-            由 2 上调至 4（审查转异步车道后不再卡实现者收工，吞吐优先）。
+            默认 {IMPL_REVIEW_DEFAULTS.concurrency}。SPEC/implement 任务内收尾审查的 ocr 并发子任务上限
+            （--concurrency）：实测 8 路并发同时打同一 provider 网关会把首字节延迟放大到撞穿超时线；
+            add-impl-ocr-parallel-lane 由 2 上调至 4（审查转异步车道后不再卡实现者收工，吞吐优先）。
             经提示词命令示例承载，实现者须照抄命令串才生效。
+          </Text>
+
+          {/* add-code-review-concurrency-and-429-resilience：全仓审查并发——
+              一个键同时约束全仓审查 run（manual_full/manual_window/scheduled）
+              的两处并发源：① 提示词侧审查子代理并行扇出上限（波内并行、波次
+              滚动推进）；② ocr scan --concurrency（ocr 内置缺省 8，2026-09-24
+              429 限流事故的并发来源之一）。与 SPEC 审查并发并列展示、分别保存。 */}
+          <Form.Item
+            name="repo_code_review_concurrency"
+            label={
+              <>
+                全仓审查并发<span className="label-note">（verify.repo_code_review_concurrency）</span>
+              </>
+            }
+            rules={[POSITIVE_INT_RULE]}
+            style={{ marginTop: 24 }}
+          >
+            <InputNumber
+              min={1}
+              style={{ width: '100%' }}
+              addonAfter="个"
+              data-testid="repo-code-review-concurrency"
+            />
+          </Form.Item>
+          <Text type="secondary">
+            默认 {REPO_REVIEW_DEFAULT_CONCURRENCY}。全仓审查（周期执行 + 手动全仓/窗口按钮）的并行审查度：
+            同时在飞的审查子代理数上限与 ocr scan --concurrency 同键注入。两处并发源
+            同时打同一 provider 账号，超限会放大 429 限流（2026-09-24 事故成因之一）。
           </Text>
 
           <Form.Item

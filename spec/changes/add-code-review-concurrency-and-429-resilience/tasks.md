@@ -50,10 +50,10 @@
 
 ## 3. Dashboard 设置界面与配置链路
 
-- [ ] 3.1 `core/dashboard/data/config_admin.py` 的 verify 白名单与默认值聚合新增 `verify.repo_code_review_concurrency`（与 `impl_code_review_concurrency` 同款读写与来源标注）
-- [ ] 3.2 `core/dashboard/static/src/pages/settings/components/QualityPanel.tsx` 新增「全仓审查并发」数字输入项；既有 impl 键输入项现标签为「审查并发」（QualityPanel.tsx:369），同批更名为「SPEC 审查并发」（design D6 目标态），两键并列展示、分别保存，校验正整数
-- [ ] 3.3 `core/dashboard/static/src/services/dashboard.ts` 同步配置类型定义与读写接口字段
-- [ ] 3.4 `core/dashboard/static/` 下 `npm run build` 构建通过（dist 为运行时产物，不入库，构建成功即验证）
+- [x] 3.1 `core/dashboard/data/config_admin.py` 的 verify 白名单与默认值聚合新增 `verify.repo_code_review_concurrency`（与 `impl_code_review_concurrency` 同款读写与来源标注）
+- [x] 3.2 `core/dashboard/static/src/pages/settings/components/QualityPanel.tsx` 新增「全仓审查并发」数字输入项；既有 impl 键输入项现标签为「审查并发」（QualityPanel.tsx:369），同批更名为「SPEC 审查并发」（design D6 目标态），两键并列展示、分别保存，校验正整数
+- [x] 3.3 `core/dashboard/static/src/services/dashboard.ts` 同步配置类型定义与读写接口字段
+- [x] 3.4 `core/dashboard/static/` 下 `npm run build` 构建通过（dist 为运行时产物，不入库，构建成功即验证）
 
 ## 4. 429 限流分类与 provider 冷却
 
