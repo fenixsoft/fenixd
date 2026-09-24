@@ -559,8 +559,9 @@ class TestValidateContractCLI(unittest.TestCase):
 class TestVerifyRegressionMissingSignal(unittest.TestCase):
     """verify_regression_missing 信号注册 + admin_monitor 摄取唤起 Administrator。
 
-    场景：契约有效但缺 regression 段，用户在设置页「质量」页签点「使用 AI 生成」
-    → 写本信号 → 巡检按 evidence 项目名解析唤起 Administrator，仅补 regression 段。
+    场景：契约有效但缺 regression 段（信号现由 code_fix 验证撞墙/周期检查点等
+    非 UI 生产者写入——设置页「质量」页签的「AI 自动生成」已改同步起草，不再
+    写信号）→ 巡检按 evidence 项目名解析唤起 Administrator，仅补 regression 段。
     """
 
     def setUp(self):

@@ -16,15 +16,42 @@ interface ProjectProfilePanelProps {
   config: ConfigData;
   onSave: (values: Partial<ConfigData>) => Promise<void>;
   project?: string;
+  /** 聚焦信号（时间戳）：质量页签「手工编辑」跳转过来时 >0，滚动定位到
+   *  verify.yaml 卡片并聚焦编辑框；常规切页签传 0 不触发 */
+  focusVerifySignal?: number;
 }
 
-export default function ProjectProfilePanel({ config, onSave, project }: ProjectProfilePanelProps) {
+export default function ProjectProfilePanel({ config, onSave, project, focusVerifySignal }: ProjectProfilePanelProps) {
   const [description, setDescription] = useState(config.description || '');
   const [loading, setLoading] = useState(false);
+  // 「手工编辑」跳转定位：ref 指向本实例渲染的卡片/编辑框（不用
+  // querySelector——设置页切作用域曾出现双 DOM 实例并存，选择器会命中隐藏实例）
+  const verifySectionRef = useRef<HTMLDivElement>(null);
+  const yamlTextareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     setDescription(config.description || '');
   }, [config.description]);
+
+  // 聚焦信号到达：滚到 verify.yaml 卡片并把光标送入编辑框（延迟等待页签
+  // 切换后本面板真正挂载渲染完成）
+  useEffect(() => {
+    if (!focusVerifySignal) return;
+    verifySectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    const t = setTimeout(() => {
+      const el = yamlTextareaRef.current;
+      if (el) {
+        el.focus();
+        const len = el.value.length;
+        try {
+          el.setSelectionRange(len, len);
+        } catch {
+          /* setSelectionRange 对特定 type 可能抛错，聚焦已达成即可 */
+        }
+      }
+    }, 300);
+    return () => clearTimeout(t);
+  }, [focusVerifySignal]);
 
   const handleSave = async () => {
     try {
@@ -167,7 +194,7 @@ export default function ProjectProfilePanel({ config, onSave, project }: Project
         />
         <div style={{ display: 'flex', justifyContent: 'space-between' }}>
           <Button onClick={handleRegenerate} loading={loading}>
-            AI 重新生成
+            AI 自动生成
           </Button>
           <Button type="primary" onClick={handleSave}>
             保存
@@ -177,6 +204,7 @@ export default function ProjectProfilePanel({ config, onSave, project }: Project
 
       {/* verify.yaml 为项目级文件：验证契约查看与编辑 */}
       {project ? (
+        <div ref={verifySectionRef}>
         <Card style={{ marginTop: 16 }} data-testid="verify-yaml-section">
           <h3 style={{ marginTop: 0 }}>验证契约（verify.yaml）</h3>
           <Text type="secondary">
@@ -195,6 +223,7 @@ export default function ProjectProfilePanel({ config, onSave, project }: Project
             />
           )}
           <TextArea
+            ref={yamlTextareaRef}
             data-testid="verify-yaml-textarea"
             value={yamlDraft}
             onChange={(e) => setYamlDraft(e.target.value)}
@@ -272,6 +301,7 @@ export default function ProjectProfilePanel({ config, onSave, project }: Project
             </Button>
           </div>
         </Card>
+        </div>
       ) : (
         <Card style={{ marginTop: 16 }}>
           <Text type="secondary">

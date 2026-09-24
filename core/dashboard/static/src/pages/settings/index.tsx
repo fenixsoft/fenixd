@@ -84,6 +84,8 @@ export default function SettingsPage() {
   // 自进化页签：两张配置卡片各自暴露的收集句柄，供页签底部唯一「保存」按钮触发
   const staleSelfhealRef = useRef<SelfEvolutionSectionHandle>(null);
   const suggestionsRef = useRef<SelfEvolutionSectionHandle>(null);
+  // 质量页签「手工编辑」→「项目简介」页签聚焦信号（时间戳；0=无待处理信号）
+  const [verifyFocusSignal, setVerifyFocusSignal] = useState(0);
 
   // 加载项目列表
   useEffect(() => {
@@ -368,6 +370,12 @@ export default function SettingsPage() {
                     onSave={handleSave}
                     project={scope === 'project' ? project : undefined}
                     onConfigSynced={scope === 'project' ? setConfig : undefined}
+                    onManualEdit={() => {
+                      // 「手工编辑」：跳「项目简介」页签并聚焦 verify.yaml 编辑框。
+                      // 回归卡片仅项目作用域渲染，此处 activeKey 必为合法项目级页签
+                      setActiveKey('project-profile');
+                      setVerifyFocusSignal(Date.now());
+                    }}
                   />
                 )}
                 {activeKey === 'hook' && project && (
@@ -412,7 +420,12 @@ export default function SettingsPage() {
                   </>
                 )}
                 {activeKey === 'project-profile' && (
-                  <ProjectProfilePanel config={config} onSave={handleSave} project={project} />
+                  <ProjectProfilePanel
+                    config={config}
+                    onSave={handleSave}
+                    project={project}
+                    focusVerifySignal={verifyFocusSignal}
+                  />
                 )}
               </>
             )}

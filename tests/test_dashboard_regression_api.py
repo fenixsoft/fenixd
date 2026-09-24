@@ -307,6 +307,27 @@ class TestRegressionConfigAPI:
         finally:
             srv.stop()
 
+    def test_autodraft_in_flight_flag(self, tmp_path):
+        """autodraft_in_flight 反映同步生成单飞锁状态：空闲 false、锁被持 true。"""
+        from core.dashboard.routes import regression_routes
+
+        proot = make_project(tmp_path)
+        srv = _server(tmp_path, proot)
+        try:
+            status, body = srv.get("/api/regression/config?project=proj-a")
+            assert status == 200
+            assert body["autodraft_in_flight"] is False
+            lock = regression_routes._autodraft_lock(proot)
+            assert lock.acquire(blocking=False)
+            try:
+                status, body = srv.get("/api/regression/config?project=proj-a")
+                assert status == 200
+                assert body["autodraft_in_flight"] is True
+            finally:
+                lock.release()
+        finally:
+            srv.stop()
+
     def test_unknown_project_404(self, tmp_path):
         proot = make_project(tmp_path)
         srv = _server(tmp_path, proot)
@@ -318,7 +339,38 @@ class TestRegressionConfigAPI:
 
 
 class TestRegressionAutodraftAPI:
-    """POST /api/regression/autodraft：AI 补 regression 段（按契约状态分流写信号）。"""
+    """POST /api/regression/autodraft：同步 AI 生成 regression 段。
+
+    同步语义（headless claude 在 HTTP 线程内起草，返回即终态）：claude 以
+    monkeypatch subprocess.run 模拟——绝不真跑；「落位」用 on_run 回调在
+    fake claude 被调时写 verify.yaml 模拟，权威判定走 load_verify_contract。
+    """
+
+    MARKER_DRAFTED = "FENIX_REGRESSION_DRAFT_RESULT: drafted"
+    MARKER_NO_TEST = "FENIX_REGRESSION_DRAFT_RESULT: no_test_system"
+    MARKER_FAILED = "FENIX_REGRESSION_DRAFT_RESULT: failed"
+
+    def _fake_claude(self, monkeypatch, stdout="", returncode=0, on_run=None, raise_exc=None):
+        """patch subprocess.run 为 fake claude：不真跑，返回可控行为。
+
+        on_run(cmd, cwd)：fake 被调时的副作用钩子（模拟 claude 落位产物）；
+        raise_exc：模拟 TimeoutExpired 等异常。
+        """
+        import subprocess as _sp
+
+        seen = {}
+
+        def fake_run(cmd, **kwargs):
+            seen["cmd"] = cmd
+            seen["cwd"] = kwargs.get("cwd")
+            if on_run is not None:
+                on_run(cmd, kwargs.get("cwd"))
+            if raise_exc is not None:
+                raise raise_exc
+            return _sp.CompletedProcess(cmd, returncode, stdout, "")
+
+        monkeypatch.setattr(_sp, "run", fake_run)
+        return seen
 
     def _signals(self, proot: Path):
         p = proot / ".fenix" / "admin_alerts.json"
@@ -326,39 +378,146 @@ class TestRegressionAutodraftAPI:
             return []
         return json.loads(p.read_text(encoding="utf-8"))
 
-    def test_missing_contract_writes_contract_missing(self, tmp_path):
-        """契约整个缺失 → 走 verify_contract_missing（起草整契约含 regression 段）。"""
+    def test_missing_contract_sync_draft_success(self, tmp_path, monkeypatch):
+        """契约整个缺失 → 起草完整契约；claude 落位含 regression 段 → success。"""
         proot = make_project(tmp_path)
+        self._fake_claude(
+            monkeypatch,
+            stdout=self.MARKER_DRAFTED,
+            on_run=lambda cmd, cwd: _write_verify_yaml(proot, REGRESSION_VALID),
+        )
         srv = _server(tmp_path, proot)
         try:
             status, body = srv.post_json("/api/regression/autodraft?project=proj-a", {})
             assert status == 200
-            assert body["status"] == "dispatched"
-            sigs = self._signals(proot)
-            assert any(r.get("signal_type") == "verify_contract_missing" for r in sigs)
-            assert not any(r.get("signal_type") == "verify_regression_missing" for r in sigs)
+            assert body["ok"] is True
+            assert body["status"] == "success"
+            # 权威判定：verify.yaml 真的含有效 regression 段
+            from core.verify_contract import load_verify_contract
+
+            assert load_verify_contract(proot).regression is not None
+            # 同步化后 UI 不再写 AdminStore 信号
+            assert self._signals(proot) == []
         finally:
             srv.stop()
 
-    def test_valid_contract_without_regression_writes_regression_missing(self, tmp_path):
-        """契约有效但缺 regression 段 → 走 verify_regression_missing（仅补段）。"""
+    def test_claude_invocation_shape(self, tmp_path, monkeypatch):
+        """headless 形态：claude -p <prompt> --permission-mode bypassPermissions，
+        cwd=项目根（权限形态缺失时起草 agent 无法写文件/跑自证）。"""
+        proot = make_project(tmp_path)
+        seen = self._fake_claude(
+            monkeypatch,
+            stdout=self.MARKER_NO_TEST,
+        )
+        srv = _server(tmp_path, proot)
+        try:
+            srv.post_json("/api/regression/autodraft?project=proj-a", {})
+            assert seen["cmd"][0] == "claude"
+            assert "-p" in seen["cmd"]
+            assert "bypassPermissions" in seen["cmd"]
+            assert Path(seen["cwd"]) == proot
+        finally:
+            srv.stop()
+
+    def test_valid_contract_section_only_success(self, tmp_path, monkeypatch):
+        """契约有效但缺段 → 仅补段；claude 并入 regression 段 → success。"""
         proot = make_project(tmp_path)
         _write_verify_yaml(proot)
+        self._fake_claude(
+            monkeypatch,
+            stdout=self.MARKER_DRAFTED,
+            on_run=lambda cmd, cwd: _write_verify_yaml(proot, REGRESSION_VALID),
+        )
         srv = _server(tmp_path, proot)
         try:
             status, body = srv.post_json("/api/regression/autodraft?project=proj-a", {})
             assert status == 200
-            assert body["status"] == "dispatched"
-            sigs = self._signals(proot)
-            assert any(r.get("signal_type") == "verify_regression_missing" for r in sigs)
-            # 证据携带项目名供无 spec 形态解析
-            rec = [r for r in sigs if r.get("signal_type") == "verify_regression_missing"][0]
-            assert "项目名=proj-a" in (rec.get("evidence") or "")
+            assert body["status"] == "success"
         finally:
             srv.stop()
 
-    def test_has_regression_skipped_without_signal(self, tmp_path):
-        """已有有效 regression 段 → skipped，且不写任何信号。"""
+    def test_no_test_system(self, tmp_path, monkeypatch):
+        """claude 判定无测试体系（marker 带反引号包裹，模拟代码块输出）且
+        未落段 → no_test_system，非失败。"""
+        proot = make_project(tmp_path)
+        _write_verify_yaml(proot)
+        self._fake_claude(
+            monkeypatch,
+            stdout=f"探测了 package.json 与 pyproject.toml，无测试体系。\n`{self.MARKER_NO_TEST}`",
+        )
+        srv = _server(tmp_path, proot)
+        try:
+            status, body = srv.post_json("/api/regression/autodraft?project=proj-a", {})
+            assert status == 200
+            assert body["ok"] is True
+            assert body["status"] == "no_test_system"
+            from core.verify_contract import load_verify_contract
+
+            assert load_verify_contract(proot).regression is None
+        finally:
+            srv.stop()
+
+    def test_draft_failed_marker(self, tmp_path, monkeypatch):
+        """marker=failed 且段未落位 → ok False + 泛化 error。"""
+        proot = make_project(tmp_path)
+        _write_verify_yaml(proot)
+        self._fake_claude(monkeypatch, stdout=self.MARKER_FAILED)
+        srv = _server(tmp_path, proot)
+        try:
+            status, body = srv.post_json("/api/regression/autodraft?project=proj-a", {})
+            assert status == 200
+            assert body["ok"] is False
+            assert "未通过自证" in body["error"]
+        finally:
+            srv.stop()
+
+    def test_cli_nonzero_exit(self, tmp_path, monkeypatch):
+        """claude 非零退出 → ok False + 通用文案（细节不外泄）。"""
+        proot = make_project(tmp_path)
+        self._fake_claude(monkeypatch, returncode=1)
+        srv = _server(tmp_path, proot)
+        try:
+            status, body = srv.post_json("/api/regression/autodraft?project=proj-a", {})
+            assert status == 200
+            assert body["ok"] is False
+            assert body["error"] == "调用 claude CLI 失败"
+        finally:
+            srv.stop()
+
+    def test_timeout(self, tmp_path, monkeypatch):
+        """claude 超预算 → ok False + 生成超时。"""
+        import subprocess as _sp
+
+        proot = make_project(tmp_path)
+        self._fake_claude(monkeypatch, raise_exc=_sp.TimeoutExpired(cmd="claude", timeout=900))
+        srv = _server(tmp_path, proot)
+        try:
+            status, body = srv.post_json("/api/regression/autodraft?project=proj-a", {})
+            assert status == 200
+            assert body["ok"] is False
+            assert "生成超时" in body["error"]
+        finally:
+            srv.stop()
+
+    def test_single_flight_409(self, tmp_path):
+        """同项目在途（锁被持）→ 第二个请求 409，不起第二个 claude。"""
+        from core.dashboard.routes import regression_routes
+
+        proot = make_project(tmp_path)
+        _write_verify_yaml(proot)
+        lock = regression_routes._autodraft_lock(proot)
+        assert lock.acquire(blocking=False)
+        srv = _server(tmp_path, proot)
+        try:
+            status, body = srv.post_json("/api/regression/autodraft?project=proj-a", {})
+            assert status == 409
+            assert "正在进行中" in body["error"]
+        finally:
+            lock.release()
+            srv.stop()
+
+    def test_has_regression_skipped_without_generation(self, tmp_path):
+        """已有有效 regression 段 → skipped，且不起 claude、不写任何信号。"""
         proot = make_project(tmp_path)
         _write_verify_yaml(proot, REGRESSION_VALID)
         srv = _server(tmp_path, proot)
@@ -367,27 +526,6 @@ class TestRegressionAutodraftAPI:
             assert status == 200
             assert body["status"] == "skipped"
             assert self._signals(proot) == []
-        finally:
-            srv.stop()
-
-    def test_inflight_dedup(self, tmp_path):
-        """同项目同类型第二次请求 → 不重复写信号，仍 dispatched 附在途文案。"""
-        proot = make_project(tmp_path)
-        _write_verify_yaml(proot)
-        srv = _server(tmp_path, proot)
-        try:
-            s1, b1 = srv.post_json("/api/regression/autodraft?project=proj-a", {})
-            s2, b2 = srv.post_json("/api/regression/autodraft?project=proj-a", {})
-            assert s1 == s2 == 200
-            assert b1["status"] == "dispatched"
-            assert b2["status"] == "dispatched"
-            assert "在途" in b2["message"]
-            sigs = [
-                r
-                for r in self._signals(proot)
-                if r.get("signal_type") == "verify_regression_missing"
-            ]
-            assert len(sigs) == 1
         finally:
             srv.stop()
 

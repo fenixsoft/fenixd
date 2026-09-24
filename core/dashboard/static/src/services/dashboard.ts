@@ -2080,6 +2080,10 @@ export interface RegressionConfigStatus {
   contract_valid: boolean;
   /** 有效 regression 段字段；无段 / 整段无效 → null */
   regression: RegressionSpecView | null;
+  /** 同步 AI 生成是否在途（后端单飞锁 locked()）。质量页签组件条件渲染
+   *  （切页签即卸载、本地 loading state 丢失），重挂载重拉本端点据此恢复
+   *  按钮 loading 态并防重复触发。 */
+  autodraft_in_flight: boolean;
 }
 
 /** 读取项目 verify.yaml 的 regression 段配置状态（设置页「质量」页签）。 */

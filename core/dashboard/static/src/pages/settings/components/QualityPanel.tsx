@@ -52,9 +52,12 @@ interface QualityPanelProps {
   project?: string;
   /** 同步成功后回填配置（父组件 setConfig 驱动表单刷新） */
   onConfigSynced?: (config: ConfigData) => void;
+  /** 「手工编辑」：跳到「项目简介」页签的 verify.yaml 编辑框（父组件负责
+   *  切页签与聚焦信号；未传则不显示该按钮） */
+  onManualEdit?: () => void;
 }
 
-export default function QualityPanel({ config, onSave, project, onConfigSynced }: QualityPanelProps) {
+export default function QualityPanel({ config, onSave, project, onConfigSynced, onManualEdit }: QualityPanelProps) {
   const [form] = Form.useForm();
   // 环境门只拦「开启」不拦「关闭」（code-review item 1bcde4921884）：ocr 未
   // 就绪时若把开关一律禁用，已配 verify.impl_code_review:true 的项目从此无法
@@ -179,17 +182,35 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
     }
   };
 
-  // 「使用 AI 生成」：请求 Administrator 补写 regression 段（写信号，巡检分钟级消费）
+  // 「AI 自动生成」：同步生成 regression 段（后端 HTTP 线程内 headless claude
+  // 起草 + 自证 + 落位 verify.yaml，返回即终态；约数分钟，按钮 loading 覆盖全程）
   const handleRegressionAutodraft = async () => {
     if (!project || regressionDraftInFlight.current) return;
+    // 在途态（后端单飞锁，经 config 端点带回）：切页签卸载重建后本地 loading
+    // 丢失的场景由它恢复；此时直接提示，不发无效请求（后端 409 兜底仍在）
+    if (regressionCfg?.autodraft_in_flight) {
+      message.info('AI 生成正在进行中，请稍候（切换页签不影响后台生成）');
+      return;
+    }
     regressionDraftInFlight.current = true;
     setRegressionDrafting(true);
     try {
       const res = await autodraftRegression(project);
-      if (res.status === 'skipped') {
-        message.info(res.message || 'regression 段已配置，无需补写');
+      if (res.ok) {
+        if (res.status === 'success') {
+          message.success(res.message || '已生成 regression 段并写入 verify.yaml');
+        } else {
+          message.info(res.message || 'regression 段已配置，无需生成');
+        }
+        // 终态后重拉配置状态：success 时卡片从「缺失提示」切到已配置展示；
+        // no_test_system 时幂等重拉（结果不变，无害）
+        getRegressionConfig(project)
+          .then((d) => setRegressionCfg(d))
+          .catch(() => {
+            /* 重拉失败不打断成功结论：下次进入页面 effect 会重拉 */
+          });
       } else {
-        message.success(res.message || '已提交 AI 补写 regression 段请求');
+        message.error(res.error || 'AI 生成失败');
       }
     } catch (err) {
       message.error(`AI 生成失败：${err instanceof Error ? err.message : String(err)}`);
@@ -679,24 +700,32 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced }
                     type="info"
                     showIcon
                     message="项目尚无 verify.yaml，未配置 regression 段"
-                    description="开启周期性全量回归不会实际执行。点「使用 AI 生成」将引导 Administrator 起草验证契约（有测试体系时一并生成 regression 段）。"
+                    description="开启周期性全量回归不会实际执行。点「AI 自动生成」将同步探测测试体系并起草验证契约（有测试体系时一并生成 regression 段），约数分钟；也可点「手工编辑」自行维护。"
                   />
                 ) : (
                   <Alert
                     type="warning"
                     showIcon
                     message="未配置 regression 段"
-                    description=".fenix/verify.yaml 存在但没有有效的 regression 段，开启周期性全量回归不会实际执行。点「使用 AI 生成」由 Administrator 探测测试体系后补写（不改动契约其它内容）。"
+                    description=".fenix/verify.yaml 存在但没有有效的 regression 段，开启周期性全量回归不会实际执行。点「AI 自动生成」同步探测测试体系后补写（不改动契约其它内容），约数分钟；也可点「手工编辑」自行维护。"
                   />
                 )}
                 <div style={{ marginTop: 12 }}>
+                  {/* loading 双源：本地 drafting（本组件生命周期内）+ 后端单飞锁
+                      在途态（切页签卸载重建后本地 state 丢失，重挂载拉 config 恢复）。
+                      可选链：config 未加载完（null）时按钮先于数据渲染 */}
                   <Button
                     onClick={handleRegressionAutodraft}
-                    loading={regressionDrafting}
+                    loading={regressionDrafting || regressionCfg?.autodraft_in_flight === true}
                     data-testid="regression-autodraft-btn"
                   >
-                    使用 AI 生成
+                    AI 自动生成
                   </Button>
+                  {onManualEdit && (
+                    <Button style={{ marginLeft: 8 }} onClick={onManualEdit} data-testid="regression-manual-edit-btn">
+                      手工编辑
+                    </Button>
+                  )}
                 </div>
               </div>
             )}
