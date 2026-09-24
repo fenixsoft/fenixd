@@ -756,13 +756,74 @@ def _check_impl_code_review_artifact(
     )
 
 
+# quality-gates.json 形态违规告警的 signal_type（fix-quality-gates-flat-form-
+# and-explainability 3.1，契约源 specs/quality-gates-soft-gate-alerts/spec.md）。
+# 不在 admin_monitor.STORED_SIGNAL_TYPES 封闭白名单内 → monitor 摄取循环跳过，
+# 不触发任何自动唤起/派发——「只加可见性不加强度」在消费面成立。
+_QG_FORM_DRIFT_SIGNAL_TYPE = "quality-gates-form-drift"
+
+
+def _alert_quality_gates_form_drift(
+    runner, spec_name: str, rel: str, violation_class: str, description: str
+) -> None:
+    """quality-gates.json 形态违规写人工告警（宽松对账可见性增强、不加强度）。
+
+    与既有 WARNING 同语义、新增 admin_alerts 落面：dashboard 告警面板可见，
+    脱离「只有 daemon 日志」的盲区。软约束边界不变——告警 MUST NOT 产生任何
+    失败终态/打回/预算消耗/派发阻塞；不注册 choices（落不可裁决信号桶，人工
+    确认处理即可）。
+
+    entry 字段固化约定（design Decision 3，防消费面踩空）：
+    - ``kind`` 显式写 SIGNAL——``_normalize_entry`` 无 kind 默认值，而消费面
+      按 kind 分派（``mark_alert_handled`` → ``mark_signal_handled`` 只认
+      SIGNAL），漏写则两个闭环端点都不匹配（处置 404 死胡同）；
+    - ``violation_class`` 机器可读类别（missing-gates / bad-json /
+      out-of-contract-gate-id / out-of-enum-status 四值，与四类违规一一对应）
+      ——signal_type 单值固定，is_inflight 按 (spec, signal_type,
+      violation_class) 判在途，否则一类未处理会抑制其余三类。
+
+    写入整体 try/except fail-open（仅记日志），不影响 run 收尾主流程。
+    """
+    try:
+        from core.admin_store import SIGNAL, AdminStore
+
+        store = AdminStore(getattr(runner, "project_root", None), runner.logger)
+        store.append_if_absent(
+            {
+                "kind": SIGNAL,
+                "signal_type": _QG_FORM_DRIFT_SIGNAL_TYPE,
+                "spec": spec_name,
+                "severity": "info",
+                "description": description,
+                "file": rel,
+                "violation_class": violation_class,
+                "evidence": f"file={rel}; violation_class={violation_class}",
+            },
+            is_inflight=lambda r: (
+                r.get("kind") == SIGNAL
+                and r.get("signal_type") == _QG_FORM_DRIFT_SIGNAL_TYPE
+                and r.get("spec") == spec_name
+                and r.get("violation_class") == violation_class
+                and not r.get("handled")
+            ),
+        )
+    except Exception as e:  # noqa: BLE001 —— fail-open：告警通道故障不阻断收尾
+        _soft_gate_logger.warning(
+            "quality-gates 形态违规告警写入失败（fail-open，不影响收尾）: %s", e
+        )
+
+
 def _check_quality_gates_soft(runner, spec_name: str, wt_path: Path | None) -> None:
     """quality-gates.json 宽松对账（add-quality-gates-visibility，任务 3.2）。
 
     落盘是 prompt 软约束，本检查 MUST NOT 产生任何失败终态/打回/预算消耗：
     - 文件缺失 → 零拦截、零告警（历史 spec 与偶尔漏写的 run 零打回）；
     - 文件存在 → 仅做机械合法性检查（JSON 可解析、status 在枚举内、gate-id 在
-      全集内），违规仅记 WARNING 日志并放行。
+      全集内），违规记 WARNING 日志并放行，同时经 _alert_quality_gates_form_drift
+      写 admin_alerts 人工告警（fix-quality-gates-flat-form-and-explainability
+      3.1，可见性增强不加强度：signal_type=quality-gates-form-drift、
+      severity=info、kind=SIGNAL、不注册 choices，未处理期间按
+      (spec, signal_type, violation_class) 去重）。
 
     双位置候选与读侧一致（worktree 优先、主树兜底），两处各自独立检查。
     常量经懒导入取自 dashboard 读侧单点（模块加载期反向 import 会成环，D4
@@ -799,11 +860,19 @@ def _check_quality_gates_soft(runner, spec_name: str, wt_path: Path | None) -> N
             _soft_gate_logger.warning(
                 "quality-gates.json 无法解析（宽松对账，仅告警放行）: %s (%s)", rel, e
             )
+            _alert_quality_gates_form_drift(
+                runner, spec_name, rel, "bad-json",
+                f"quality-gates.json 无法解析（宽松对账，仅告警放行）: {rel} ({e})",
+            )
             continue
         gates = data.get("gates") if isinstance(data, dict) else None
         if not isinstance(gates, dict):
             _soft_gate_logger.warning(
                 "quality-gates.json 顶层缺 gates 对象（宽松对账，仅告警放行）: %s", rel
+            )
+            _alert_quality_gates_form_drift(
+                runner, spec_name, rel, "missing-gates",
+                f"quality-gates.json 顶层缺 gates 对象（宽松对账，仅告警放行）: {rel}",
             )
             continue
         for gid, entry in gates.items():
@@ -812,11 +881,21 @@ def _check_quality_gates_soft(runner, spec_name: str, wt_path: Path | None) -> N
                     "quality-gates.json 出现契约外 gate-id='%s'（宽松对账，仅告警"
                     "放行；合法集 %s）: %s", gid, list(RUN_GATE_IDS), rel,
                 )
+                _alert_quality_gates_form_drift(
+                    runner, spec_name, rel, "out-of-contract-gate-id",
+                    f"quality-gates.json 出现契约外 gate-id='{gid}'（宽松对账，仅"
+                    f"告警放行；合法集 {list(RUN_GATE_IDS)}）: {rel}",
+                )
             if not isinstance(entry, dict) or entry.get("status") not in GATE_STATUSES:
                 bad = entry.get("status") if isinstance(entry, dict) else "<非对象>"
                 _soft_gate_logger.warning(
                     "quality-gates.json gate-id='%s' status='%s' 不在枚举（宽松对账，"
                     "仅告警放行；合法值 %s）: %s", gid, bad, list(GATE_STATUSES), rel,
+                )
+                _alert_quality_gates_form_drift(
+                    runner, spec_name, rel, "out-of-enum-status",
+                    f"quality-gates.json gate-id='{gid}' status='{bad}' 不在枚举"
+                    f"（宽松对账，仅告警放行；合法值 {list(GATE_STATUSES)}）: {rel}",
                 )
     return None
 
