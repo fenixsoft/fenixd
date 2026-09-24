@@ -79,6 +79,15 @@ def _git(*args):
     return subprocess.run(["git", "-C", str(ROOT), *args], capture_output=True, text=True)
 
 
+def _baseline_committed() -> bool:
+    """夹具是否已有基线提交：判定用 HEAD 实际存在（code-review item
+    0a5e888166c2）而非 .git 目录存在——上次运行可能已 init 而
+    _commit_baseline 失败（故意不留 HEAD），只看 .git 会误报基线就绪。
+    reset 判定与 --status 展示共用此口径（code-review item 2c7279bbc271）。
+    """
+    return _git("rev-parse", "--verify", "--quiet", "HEAD").returncode == 0
+
+
 def _ensure_registered() -> None:
     """登记到全局注册表（带夹具标记）；失败仅告警（~ auto-scan 仍可发现该项目）。
 
@@ -306,10 +315,9 @@ def _reset_fixture_body() -> int:
     # 夹具 daemon 的 worktree 管理需要 git；丢历史后此处首次 init（含基线提交，
     # 给 worktree add 一个 HEAD 可依）。已存在则不动历史，避免每轮 reset 产生
     # 提交churn——STATE.md 的复位靠上面的无条件写回，不再依赖 git。
-    # 判定用 HEAD 实际存在（code-review item 0a5e888166c2）而非 .git 目录存在：
-    # 上次运行可能已 init 而 _commit_baseline 失败（故意不留 HEAD），只看 .git
-    # 会跳过基线提交、打印「fixture reset」返回 0——静默留下无 HEAD 夹具。
-    if _git("rev-parse", "--verify", "--quiet", "HEAD").returncode != 0:
+    # 判定用 HEAD 实际存在而非 .git 目录存在（同 _baseline_committed）：
+    # 只看 .git 会跳过基线提交、打印「fixture reset」返回 0——静默留下无 HEAD 夹具。
+    if not _baseline_committed():
         init = _git("init", "-q")
         if init.returncode != 0:
             print(
@@ -320,7 +328,7 @@ def _reset_fixture_body() -> int:
         if not _commit_baseline():
             # 并发 reset 竞态：败者的 commit 因 nothing to commit 非零——
             # 此时 HEAD 已由胜者建好，本方视为成功而非 FAIL。
-            if _git("rev-parse", "--verify", "--quiet", "HEAD").returncode == 0:
+            if _baseline_committed():
                 print("fixture baseline already committed by concurrent reset")
             else:
                 return 1
@@ -335,7 +343,12 @@ def _reset_fixture_body() -> int:
 
 def show_status() -> int:
     print(f"root: {ROOT} exists={ROOT.exists()}")
-    print(f"git:  baseline={((ROOT / '.git').exists())}")
+    # 与 reset 同口径：判定 HEAD 实际存在（_baseline_committed）而非 .git 目录存在
+    try:
+        print(f"git:  baseline={_baseline_committed()}")
+    except OSError as e:
+        # git 二进制缺失/不可执行时降级而非裸崩（同下方 dirty 探针处置）
+        print(f"git:  baseline unknown (git unavailable: {e})")
     if not ROOT.exists():
         return 0
     try:

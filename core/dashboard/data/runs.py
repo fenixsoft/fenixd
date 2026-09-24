@@ -385,6 +385,22 @@ def get_runs(project_root, spec_name: str | None = None, include_archive: bool =
 _READ_RUN_TAIL_WINDOW = 64 * 1024
 
 
+def _parse_line_event(line: str) -> dict:
+    """单行 JSONL 容错解析为事件 dict（三处解析器共用的统一口径）。
+
+    损坏行与「json.loads 成功但非 dict」的行（int/str/list 等）均降级为
+    stderr 条目，保证下游 events 恒为 dict 列表（code-review 28b98abd04a6：
+    尾窗路径原先只捕 JSONDecodeError，非 dict 行会原样吐给前端 events 窗口）。
+    """
+    try:
+        entry = json.loads(line)
+    except json.JSONDecodeError:
+        entry = {"type": "stderr", "line": line}
+    if not isinstance(entry, dict):
+        entry = {"type": "stderr", "line": str(entry)}
+    return entry
+
+
 def _parse_tail_lines(lines: list, max_lines: int) -> list:
     """把文本行序列容错解析为事件，保留末 max_lines 条（空行跳过）。"""
     tail = deque(maxlen=max_lines)
@@ -392,10 +408,7 @@ def _parse_tail_lines(lines: list, max_lines: int) -> list:
         line = line.strip()
         if not line:
             continue
-        try:
-            tail.append(json.loads(line))
-        except json.JSONDecodeError:
-            tail.append({"type": "stderr", "line": line})
+        tail.append(_parse_line_event(line))
     return list(tail)
 
 
@@ -408,10 +421,7 @@ def _read_run_lines_full(path: Path, max_lines: int) -> list:
                 line = raw.decode("utf-8", errors="replace").strip()
                 if not line:
                     continue
-                try:
-                    tail.append(json.loads(line))
-                except json.JSONDecodeError:
-                    tail.append({"type": "stderr", "line": line})
+                tail.append(_parse_line_event(line))
     except OSError:
         pass
     return list(tail)
@@ -450,19 +460,13 @@ def _read_run_lines(path: Path, max_lines: int = 3) -> list:
 
 
 def _parse_run_lines(lines) -> list:
-    """逐行解析 JSONL 行序列为事件（容错：损坏行降级为 stderr 条目）。"""
+    """逐行解析 JSONL 行序列为事件（容错：损坏行/非 dict 行降级为 stderr 条目）。"""
     events = []
     for line in lines:
         line = line.strip()
         if not line:
             continue
-        try:
-            entry = json.loads(line)
-        except json.JSONDecodeError:
-            entry = {"type": "stderr", "line": line}
-        if not isinstance(entry, dict):
-            entry = {"type": "stderr", "line": str(entry)}
-        events.append(entry)
+        events.append(_parse_line_event(line))
     return events
 
 

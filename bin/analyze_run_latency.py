@@ -14,7 +14,8 @@ latency_stats / format_latency_summary，见 design D3「复用公共解析函�
 - 支持 glob 批量扫描（shell 展开或脚本内 glob）；
 - 按 p90 降序输出（长尾最重的 run 排前）；
 - 损坏/空文件跳过并报告（不中断批量扫描）；
-- 无 timestamp 的旧转录样本为空 → 摘要标注 0 rounds（跳过不报错）。
+- 无 timestamp 的旧转录样本为空 → 摘要标注 0 rounds（跳过不报错）；
+- 退出码：0 表示扫描完成（含部分文件被跳过）；全部输入损坏/为空导致无任何有效结果 → 1。
 """
 
 import argparse
@@ -127,6 +128,11 @@ def main() -> int:
         print("\n== 跳过（损坏/空） ==")
         for f, err in skipped:
             print(f"- {f}: {err}")
+
+    if not results and skipped:
+        # 全部输入均损坏/为空：给批量/CI 调用方一个失败信号（部分跳过仍按成功处理）
+        print("[analyze_run_latency] 所有输入文件均损坏/为空，无有效分析结果", file=sys.stderr)
+        return 1
 
     return 0
 

@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import tempfile
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -56,6 +57,56 @@ CANCEL_RUN_REQUEST = ".fenix/cancel_run_request.json"
 # 丢 kick 会让 deferred start_after 滞留无迹，丢标记复位会让预算告警被
 # token_budget 幂等门永久静默。统一 WARNING 留痕 + 步骤后缀如实回显。
 logger = logging.getLogger("fenixd.dashboard.admin_actions")
+
+
+def _atomic_write_request(req_path: Path, payload: dict, tmp_prefix: str) -> tuple:
+    """原子写请求信号文件并回读校验写入归属（code-review item 2e9c8ab94e5d）。
+
+    调用方先 ``req_path.exists()`` 判冲突、再 mkstemp+os.replace 写入，两步
+    之间无锁；dashboard HTTP 服务多线程下，并发双请求可同时通过存在性
+    检查，后写者 os.replace 静默覆盖先写者且两侧均返回 ok，先写请求丢失
+    无迹。本辅助给 payload 附加唯一 ``write_id``（uuid4 hex；created 为
+    isoformat 微秒级但同进程双请求理论上仍可能重复，不用作归属判据），
+    replace 后立即回读文件比对：write_id ≠ 本次值即被并发后写者覆盖。
+
+    消费方（fenixd ``_consume_request_file`` 及各 ``_check_*``）按宽松
+    ``payload.get`` 解析，新增字段无害。单请求路径行为完全不变：回读即
+    本次值（或回读失败无法证伪归属时按本次胜出，不因回读抖动引入假冲突）。
+
+    Args:
+        req_path: 信号文件目标路径
+        payload: 待写入的 JSON payload（原地追加 write_id）
+        tmp_prefix: 临时文件前缀（保持各调用点既有命名）
+
+    Returns:
+        (won, created) — won=True 本次写入胜出；created 为回读到的文件
+        当前 created（胜出时即本次值，败给并发后写者时为对方值，供冲突
+        返回对齐既有「读既有 created」语义）。
+    """
+    req_path.parent.mkdir(parents=True, exist_ok=True)
+    payload["write_id"] = uuid.uuid4().hex
+    fd, tmp_path = tempfile.mkstemp(dir=str(req_path.parent), prefix=tmp_prefix, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, req_path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+    try:
+        current = json.loads(req_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        # 回读失败（如信号已被 daemon 瞬时消费 / 瞬时 IO 错误）：无法证伪
+        # 归属，按本次写入胜出处理
+        return True, payload["created"]
+    if not (isinstance(current, dict) and current.get("write_id") == payload["write_id"]):
+        return False, current.get("created") if isinstance(current, dict) else None
+    return True, payload["created"]
 
 
 def request_run_cancel(project_root, run_id: str, reason: str = "") -> dict:
@@ -109,22 +160,20 @@ def request_run_cancel(project_root, run_id: str, reason: str = "") -> dict:
         "source": "dashboard",
         "created": created,
     }
-    req_path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(
-        dir=str(req_path.parent), prefix=".cancel_run_request.", suffix=".tmp"
+    won, current_created = _atomic_write_request(
+        req_path, payload, tmp_prefix=".cancel_run_request."
     )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_path, req_path)
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    if not won:
+        # 并发后写者覆盖了本次信号（TOCTOU 回读校验，item 2e9c8ab94e5d）：
+        # 先写请求将丢失无迹，按既有冲突语义返回
+        return {
+            "ok": False,
+            "conflict": True,
+            "missing_run_id": False,
+            "file": str(req_path),
+            "created": current_created,
+            "error": "已有进行中的取消请求",
+        }
     return {
         "ok": True,
         "conflict": False,
@@ -292,22 +341,21 @@ def request_spec_delete(project_root, spec: str, stopping: int = 0) -> dict:
         "created": created,
         "stopping": int(stopping or 0),
     }
-    req_path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(
-        dir=str(req_path.parent), prefix=".spec_delete_request.", suffix=".tmp"
+    won, current_created = _atomic_write_request(
+        req_path, payload, tmp_prefix=".spec_delete_request."
     )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_path, req_path)
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    if not won:
+        # 并发后写者覆盖了本次信号（TOCTOU 回读校验，item 2e9c8ab94e5d）：
+        # 先写请求将丢失无迹，按既有冲突语义返回
+        return {
+            "ok": False,
+            "conflict": True,
+            "unmanaged": False,
+            "daemon_down": False,
+            "file": str(req_path),
+            "created": current_created,
+            "error": "已有进行中的删除请求",
+        }
     return {
         "ok": True,
         "conflict": False,
@@ -1178,22 +1226,23 @@ def request_spec_approve_push(project_root, spec: str) -> dict:
 
     created = datetime.now(timezone.utc).isoformat()
     payload = {"spec": spec, "source": "dashboard", "created": created}
-    req_path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(
-        dir=str(req_path.parent), prefix=".approve_push_request.", suffix=".tmp"
+    won, current_created = _atomic_write_request(
+        req_path, payload, tmp_prefix=".approve_push_request."
     )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_path, req_path)
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    if not won:
+        # 并发后写者覆盖了本次信号（TOCTOU 回读校验，item 2e9c8ab94e5d）：
+        # 先写请求将丢失无迹，按既有冲突语义返回
+        return {
+            "ok": False,
+            "found": True,
+            "terminal": False,
+            "daemon_down": False,
+            "unmanaged": False,
+            "conflict": True,
+            "file": str(req_path),
+            "created": current_created,
+            "error": "已有进行中的审批推送请求",
+        }
     return {
         "ok": True,
         "found": True,

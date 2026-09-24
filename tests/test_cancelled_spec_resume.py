@@ -359,5 +359,34 @@ class ParseStateCancelledHoldNormalizationTest(unittest.TestCase):
             self.assertNotIn("_cancelled_hold", specs["s-missing"])
 
 
+class ParseStateDigitKeyParsingTest(unittest.TestCase):
+    """parse_state 字段键正则覆盖带数字下划线键（如 _token_warn_80）。
+
+    仓内 STATE 条目确有带数字的键（admin_actions 复位
+    `_token_warn_80`/`_token_alert_100`），键正则不含数字即被静默丢弃。
+    """
+
+    def test_digit_suffix_key_is_parsed(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            (repo / ".fenix").mkdir(parents=True, exist_ok=True)
+            (repo / ".fenix" / "STATE.md").write_text(
+                "# State\n\n"
+                "### s1\n"
+                "- status: implementing\n"
+                "- _token_warn_80: True\n"
+                "- _token_alert_100: False\n",
+                encoding="utf-8",
+            )
+            specs = parse_state(repo)
+            # 断言点是键能被解析到（不静默丢弃）；parse_state 对 _ 前缀键
+            # 保留原始字符串，勿用其断言真值
+            self.assertIn("_token_warn_80", specs["s1"])
+            self.assertIn("_token_alert_100", specs["s1"])
+            self.assertEqual(specs["s1"]["_token_warn_80"], "True")
+            self.assertEqual(specs["s1"]["_token_alert_100"], "False")
+
+
 if __name__ == "__main__":
     unittest.main()

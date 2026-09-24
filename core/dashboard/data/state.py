@@ -42,7 +42,10 @@ def parse_state(project_root) -> dict:
                 current_name = m.group(1).strip()
                 current_entry = {}
                 continue
-            m = re.match(r"^-\s+([a-z_]+):\s*(.*)$", line)
+            # 键名允许小写字母/下划线/数字（与 core/state_machine.py 同口径），
+            # 支持 _token_warn_80 等带数字的内部字段；原有键名均不含数字，
+            # 放宽不影响既有解析。
+            m = re.match(r"^-\s+([a-z_][a-z0-9_]*):\s*(.*)$", line)
             if m and current_name:
                 key = m.group(1)
                 val = m.group(2).strip()

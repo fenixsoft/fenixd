@@ -69,6 +69,7 @@ STATUS_ICONS = {
     "implemented": "🧪",
     "testing": "🔍",
     "verified": "✅",
+    "reviewing": "⚖️",
     "bug-found": "🐛",
     "done": "🎯",
     "pushed": "🚀",
@@ -199,7 +200,7 @@ def header_line(text):
     return f"\n{BOLD}{BLUE}══ {text} {RESET}{DIM}{'─' * pad}{RESET}\n"
 
 
-def render_overview(specs, daemon_ok):
+def render_overview(specs, daemon_ok, agents=None):
     """渲染整体概览"""
     total = len(specs)
     status_counts = {}
@@ -227,7 +228,8 @@ def render_overview(specs, daemon_ok):
     d_icon = f"{GREEN}🟢 运行中{RESET}" if daemon_ok else f"{RED}🔴 已停止{RESET}"
 
     # 活跃 agent 数
-    agents = get_active_agents()
+    if agents is None:
+        agents = get_active_agents()
     agent_count = len(agents)
 
     lines = [
@@ -463,8 +465,11 @@ def run_tui(interval=3):
             pad = max(0, w - len(title) - 4)
             print(f"\n{BOLD}{BG_BLUE}{WHITE}{title}{RESET}{DIM}{'─' * pad}{RESET}")
 
+            # 每轮只扫一次 ps，概览与状态栏共用
+            agents = get_active_agents()
+
             # 1. 概览
-            print(render_overview(specs, daemon_ok))
+            print(render_overview(specs, daemon_ok, agents))
 
             # 2. 活跃 SPEC
             print(header_line("活跃 SPEC"))
@@ -483,7 +488,6 @@ def run_tui(interval=3):
             )
             pending_push = done  # done status means pending push
 
-            agents = get_active_agents()
             w = shutil.get_terminal_size((120, 40)).columns
             footer = f" SPECs: {total} | 🚀 已推送: {pushed} | 🎯 待推送: {pending_push} | 🔨 活跃: {active} | 🤖 Agent进程: {len(agents)} "
             pad = max(0, w - len(footer) - 2)
