@@ -1251,15 +1251,34 @@ def load_scenarios(filepath) -> list[TestScenario]:
 def save_scenarios(scenarios: list[TestScenario], filepath) -> None:
     """将场景列表序列化为JSON文件。
 
+    原子写（对齐 settings_routes._atomic_write_text 惯例）：同目录临时
+    文件 + ``os.replace``，进程写入中途被杀不会在目标路径留下截断的
+    场景 JSON。
+
     Args:
         scenarios: TestScenario 列表
         filepath: 目标文件路径
     """
     import json
+    import os
+    import tempfile
     from pathlib import Path
 
     path = Path(filepath)
     path.parent.mkdir(parents=True, exist_ok=True)
     data = [s.to_dict() for s in scenarios]
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(path.parent), prefix=f".{path.name}-", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, str(path))
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise

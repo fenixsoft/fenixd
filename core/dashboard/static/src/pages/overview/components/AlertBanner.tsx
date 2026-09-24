@@ -88,7 +88,10 @@ export default function AlertBanner({ refreshTick }: { refreshTick: number }) {
   const handleClearAll = async () => {
     try {
       await clearAllAlerts();
-      setOptimistic([]);
+      // 不整组清空 optimistic：若另有 handleOne 的 markAlertHandled 在途，
+      // 其 id 已入遮蔽、尚未获后端确认，整组清空会让它提前露出并以
+      // 「未处理」闪现。复用上方收敛 effect 的口径——保留遮蔽，待下方
+      // load 拉到后端已无该告警的数据后由收敛 effect 统一移除（绝不永久遮蔽）。
       message.success('已清理所有事件');
     } catch (err) {
       message.error(`清理失败：${err instanceof Error ? err.message : String(err)}`);

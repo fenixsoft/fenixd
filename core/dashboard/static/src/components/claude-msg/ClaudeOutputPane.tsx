@@ -105,6 +105,10 @@ const TERMINAL_EVENT_STATUS: Record<string, string> = {
   session_ended: 'interrupted',
 };
 
+// REST 拉取返回的 run status 终态集合（与 props onRunStatus 契约注释对齐）：
+// 空态分支据其区分「已终态但零事件」与「等待输出」（code-review item 97dcdc581245）
+const TERMINAL_RUN_STATUSES = new Set(['done', 'error', 'interrupted', 'cancelled', 'missing']);
+
 export default function ClaudeOutputPane({
   runId,
   project,
@@ -114,6 +118,9 @@ export default function ClaudeOutputPane({
 }: ClaudeOutputPaneProps) {
   const [events, setEvents] = useState<RunEvent[]>([]);
   const [totalEvents, setTotalEvents] = useState(0);
+  // 最近一次 run status（与 onRunStatus 上报同源记录）：空态分支据其区分
+  // 「已终态但零事件」与「等待输出」（code-review item 97dcdc581245）
+  const [runStatus, setRunStatus] = useState('');
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState('');
@@ -139,9 +146,21 @@ export default function ClaudeOutputPane({
     };
   }, []);
 
+  // status 上报统一入口：向本组件同步记录一份，供空态分支判断 run 是否已终态
+  const reportStatus = useCallback(
+    (status: string) => {
+      setRunStatus(status);
+      onRunStatus?.(status);
+    },
+    [onRunStatus],
+  );
+
   useEffect(() => {
     activeRunIdRef.current = runId;
     activeProjectRef.current = project;
+    // 无 key 复用实例切换 run 时清掉上一 run 的 status（与 activeRunIdRef
+    // 币值守卫同源，code-review item 97dcdc581245）
+    setRunStatus('');
   }, [runId, project]);
 
   // 拉取尾部事件
@@ -158,7 +177,7 @@ export default function ClaudeOutputPane({
           setEvents(data.events || []);
           setTotalEvents(data.total_events || 0);
           setError('');
-          onRunStatus?.(data.status || '');
+          reportStatus(data.status || '');
         }
       } catch (e) {
         if (isMountedRef.current && activeRunIdRef.current === reqRunId && activeProjectRef.current === reqProject) {
@@ -185,7 +204,7 @@ export default function ClaudeOutputPane({
       const data = await getRunTail(reqRunId, reqProject, tail, events.length);
       if (isMountedRef.current && activeRunIdRef.current === reqRunId && activeProjectRef.current === reqProject) {
         setTotalEvents(data.total_events || 0);
-        onRunStatus?.(data.status || '');
+        reportStatus(data.status || '');
         const older = prependWithoutOverlap(data.events || [], events);
         if (older.length > 0) {
           setEvents((prev) => [...older, ...prev]);
@@ -246,7 +265,7 @@ export default function ClaudeOutputPane({
             const data = await getRunTail(runId, project, tail);
             if (isMountedRef.current && activeRunIdRef.current === runId && activeProjectRef.current === project) {
               setTotalEvents(data.total_events || 0);
-              onRunStatus?.(data.status || '');
+              reportStatus(data.status || '');
               const newerEvents = data.events || [];
               setEvents((prev) => {
                 const newer = appendWithoutOverlap(newerEvents, prev);
@@ -269,7 +288,7 @@ export default function ClaudeOutputPane({
               if (isMountedRef.current && activeRunIdRef.current === runId && activeProjectRef.current === project) {
                 setEvents(data.events || []);
                 setTotalEvents(data.total_events || 0);
-                onRunStatus?.(data.status || '');
+                reportStatus(data.status || '');
               }
             } catch (e) {
               console.error('Failed to reload tail:', e);
@@ -286,7 +305,7 @@ export default function ClaudeOutputPane({
           // 不经本分支。
           setTotalEvents((prev) => prev + incoming.length);
           const terminal = incoming.find((ev) => ev.type in TERMINAL_EVENT_STATUS);
-          if (terminal) onRunStatus?.(TERMINAL_EVENT_STATUS[terminal.type]);
+          if (terminal) reportStatus(TERMINAL_EVENT_STATUS[terminal.type]);
         }
       }
     };
@@ -342,13 +361,16 @@ export default function ClaudeOutputPane({
     );
   }
 
-  // run 定位成功但 agent 尚未产出事件：明确提示 loading，避免误以为功能未生效
+  // run 定位成功但尚未产出事件：未终态时明确提示 loading；已终态（done/error/
+  // interrupted/cancelled/missing，含事件产物被轮转/清理的零事件历史 run）
+  // 改静态提示，不再永久停在「等待输出」转圈（code-review item 97dcdc581245）
   if (events.length === 0) {
+    const isTerminalStatus = TERMINAL_RUN_STATUSES.has(runStatus);
     return (
       <div className="flex h-full flex-col items-center justify-center">
-        <Spin size="small" />
-        <Typography.Text type="secondary" style={{ marginTop: 12 }}>
-          Administrator 已唤起，等待输出…
+        {!isTerminalStatus && <Spin size="small" />}
+        <Typography.Text type="secondary" style={{ marginTop: isTerminalStatus ? 0 : 12 }}>
+          {isTerminalStatus ? '该 run 无事件记录' : 'Administrator 已唤起，等待输出…'}
         </Typography.Text>
       </div>
     );

@@ -1320,12 +1320,22 @@ class AgentRunner:
             return cfg_dir
 
         def _write_atomic() -> None:
-            tmp = cfg_dir / ".settings.tmp"
-            tmp.write_text(
-                json.dumps(settings, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-            os.replace(tmp, marker)
+            # code-review item a340597064c9：mkstemp 生成唯一临时文件（固定
+            # .settings.tmp 在并发首建/重写时交错截断写坏 settings.json），
+            # 与 _copyback_run_result 的 _write_atomic 同款手法。
+            fd, tmp_name = tempfile.mkstemp(
+                prefix=".settings.", suffix=".tmp", dir=str(cfg_dir))
+            tmp_path = Path(tmp_name)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(json.dumps(settings, ensure_ascii=False, indent=2))
+                os.replace(tmp_path, marker)
+            finally:
+                if tmp_path.exists():
+                    try:
+                        tmp_path.unlink()
+                    except OSError:
+                        pass
 
         if marker.is_file():
             try:
@@ -1417,13 +1427,22 @@ class AgentRunner:
                     }
                 },
             }
-            # 原子替换（并发 run 写同一路径时安全）
-            tmp = ocr_cfg_dir / ".config.json.tmp"
-            tmp.write_text(
-                json.dumps(config_data, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-            os.replace(tmp, config_path)
+            # 原子替换（code-review item a340597064c9：mkstemp 唯一临时名——
+            # 固定 .config.json.tmp 并发写同一路径时交错截断写坏 config.json，
+            # 与 _copyback_run_result 的 _write_atomic 同款手法）
+            fd, tmp_name = tempfile.mkstemp(
+                prefix=".config.json.", suffix=".tmp", dir=str(ocr_cfg_dir))
+            tmp_path = Path(tmp_name)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(json.dumps(config_data, ensure_ascii=False, indent=2))
+                os.replace(tmp_path, config_path)
+            finally:
+                if tmp_path.exists():
+                    try:
+                        tmp_path.unlink()
+                    except OSError:
+                        pass
             return home_dir
         except (OSError, json.JSONDecodeError) as e:
             logging.warning(
@@ -1703,14 +1722,21 @@ class AgentRunner:
 
         ``_turn_branch_state`` 按 run_id（每次 run 唯一）记忆分支提交基线，
         仅 ``_turn_limit_action`` 在 run 存续期消费；run 终态后不摘除会在
-        长跑 daemon 内随 run 数无界累积（实例级泄漏）。success / exhausted
-        两类收尾（cancelled / shutdown / frozen 分型经 exhausted）统一在
-        此摘除；摘除失败不阻断收口。
+        长跑 daemon 内随 run 数无界累积（实例级泄漏）。
+
+        code-review item 9dc9195cbd73：摘除由 ``_execute_agent`` 的终态
+        finally 统一调用（任意终态路径都经此外口，替代原先仅 success /
+        exhausted 两收口的遗漏）；且 ``_turn_limit_action`` 经 ``_run_claude``
+        以 attempt/sub-run 派生 id（``<run_id>-a<n>[-r<m>]``）记键，摘除须
+        连带本 run 派生的全部子键。摘除失败不阻断收口。
         """
         state = getattr(self, "_turn_branch_state", None)
         if state:
             try:
-                state.pop(run_id, None)
+                prefix = f"{run_id}-"
+                for key in [k for k in state
+                            if k == run_id or k.startswith(prefix)]:
+                    state.pop(key, None)
             except Exception:  # noqa: BLE001 — 清理失败绝不影响 run 收尾
                 pass
 
@@ -1926,6 +1952,10 @@ class AgentRunner:
                 used_wts=used_wts, handed_off=handed_off,
             )
         finally:
+            # 轮次分支基线按 run 摘除（code-review item b9f426346304 /
+            # 9dc9195cbd73）：统一在 run 终态外口摘除，覆盖 success/exhausted
+            # 两收口之外的全部早退终态 return（frozen/取消/熔断/链耗尽/让位）。
+            self._turn_branch_state_forget(run_id)
             try:
                 self._v2_harvest_used_worktrees(used_wts, handed_off)
             except Exception as e:
@@ -3175,8 +3205,6 @@ class AgentRunner:
         半开探针闭合 → wt_dirty 取证 → 终态零提交门 → worktree 分型清理 →
         token 入账 → 结构化指标 → 返回 success 结果。
         """
-        # 轮次分支基线按 run 摘除（code-review item b9f426346304）
-        self._turn_branch_state_forget(run_id)
         # 半开探针闭合（fix-stashpop-deadlock）：若该 provider 此前已进入熔断但
         # 冷却已到期（半开），此派发成功即视为网关恢复，闭合熔断（design D4）。
         if provider_name:
@@ -3568,8 +3596,6 @@ class AgentRunner:
         # cancelled_flag 为 True 时（RunCancelledError 已 break 到此处）
         # 返回 cancelled=True 结果；否则走既有终态失败返回。
         self._cancel_clear(run_id)
-        # 轮次分支基线按 run 摘除（code-review item b9f426346304）
-        self._turn_branch_state_forget(run_id)
         if cancelled_flag:
             # fix-observability-gaps 1.1：取消收尾写结构化指标
             # （run_id 记基础 run_id，读侧按 base 匹配）

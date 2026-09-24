@@ -70,16 +70,24 @@ class TestStartupScanAsync(unittest.TestCase):
 
         验证：用阻塞桩替换 _run_full_scan_body，确认 start_initial_scan
         立即返回且后台线程确实启动（_initial_scan_thread.is_alive）。
+
+        竞态消解（上一轮全量回归偶发失败根因）：原桩只 set 事件就同步跑完
+        扫描主体，微小 tmpdir + MagicMock 下整轮扫描毫秒级完成——后台线程若
+        在主线程断言 is_alive() 前被调度并跑完，断言即假失败。改为「入桩确认
+        + 事件放行」：stub_entered 证明线程已启动并进入扫描主体，release 桩
+        保证断言时线程必然仍存活。
         """
         bus = self._bus()
         # 存量 spec
         self.sm.add_spec("s1", {"status": "ready"})
         bus.start()
-        scan_completed = threading.Event()
+        stub_entered = threading.Event()
+        release = threading.Event()
 
         def slow_scan():
-            scan_completed.set()
-            # 模拟扫描耗时（不真 sleep 以保持测试快，只标记完成）
+            stub_entered.set()
+            # 阻塞桩：等主线程完成「立即返回 + 线程存活」断言后放行
+            release.wait(timeout=5)
             bus._run_full_scan_body_original()
 
         # 保存原方法，替换为带信号的版本
@@ -90,11 +98,15 @@ class TestStartupScanAsync(unittest.TestCase):
             bus.start_initial_scan()
             # start_initial_scan 立即返回（不阻塞调用方）
             self.assertIsNotNone(bus._initial_scan_thread)
+            # 后台线程确实启动并已进入扫描主体（而非同步执行——同步路径下
+            # start_initial_scan 会被 release.wait 卡住，线程句柄为 None）
+            self.assertTrue(stub_entered.wait(timeout=5),
+                            "后台扫描线程应已进入扫描主体")
             self.assertTrue(bus._initial_scan_thread.is_alive(),
                             "后台扫描线程应在运行中")
-            # 等后台线程完成（最多 5s）
-            scan_completed.wait(timeout=5)
         finally:
+            # 放行后台线程再收口，避免 stop() 等待阻塞桩超时
+            release.set()
             bus.stop()
 
     def test_known_specs_snapshot_prevents_false_new_events(self):

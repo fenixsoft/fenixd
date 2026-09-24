@@ -473,9 +473,17 @@ class AssertionRunner:
             except Exception:
                 passed = False
         else:
-            # 在整个页面中查找文本
-            content = await page.content()
-            passed = text in content
+            # 在整个页面中查找文本。
+            # 优先按可见文本匹配（get_by_text 不计入 <script>/<style> 内容，
+            # HTML 注释与属性值也天然不参与），避免 React/umi 等把数据内嵌
+            # 在 <script> 里的产物页命中脚本字符串造成假通过；
+            # 无 get_by_text 的环境（stub 页面等）降级回 page.content()
+            # 原始 HTML 子串匹配——该保底路径存在 script/注释误判可能。
+            try:
+                passed = await page.get_by_text(text).count() > 0
+            except Exception:
+                content = await page.content()
+                passed = text in content
 
         return {
             "type": "text_contains",

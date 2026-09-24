@@ -22,6 +22,7 @@ dayjs.locale('zh-cn');
 /**
  * 全局初始数据：拉取项目列表供侧边栏「项目」二级菜单使用
  */
+// [fenix-ignore:a16233978ed2] 界面内无创建/接入项目入口（注册经页面外 /fenix-dashboard 完成），且概览页已在加载/30s 心跳时用 setInitialState 校准菜单项目全集，访问概览即同步，无需整页刷新。
 export async function getInitialState(): Promise<{ projects: string[] }> {
   try {
     const d = await getOverview();

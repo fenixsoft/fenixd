@@ -251,6 +251,7 @@ class G1LifecycleMixin:
                 )
                 with self._spec_lock_th:
                     self._spec_locks.discard(lock_key)
+                    self._lock_since.pop(lock_key, None)
                 return None
 
             self._active_worktrees.add(str(wt_path))
@@ -290,11 +291,13 @@ class G1LifecycleMixin:
             self.logger.error("worktree_manager", "Worktree creation timed out")
             with self._spec_lock_th:
                 self._spec_locks.discard(lock_key)
+                self._lock_since.pop(lock_key, None)
             return None
         except Exception as e:
             self.logger.error("worktree_manager", f"Worktree creation error: {e}")
             with self._spec_lock_th:
                 self._spec_locks.discard(lock_key)
+                self._lock_since.pop(lock_key, None)
             return None
 
     def has_active_lock(self, spec_name: str, agent_type: str = "implementer") -> bool:

@@ -67,13 +67,25 @@ class InfraCircuitBreaker:
 
     @property
     def threshold(self) -> int:
-        """连续 infra 失败触发熔断的阈值（admin.run_infra_breaker.threshold）。"""
-        return int(self._get_config("threshold", 3))
+        """连续 infra 失败触发熔断的阈值（admin.run_infra_breaker.threshold）。
+
+        非数值脏值回退缺省（宽容语义，不在派发判定路径上抛）。
+        """
+        try:
+            return int(self._get_config("threshold", 3))
+        except (TypeError, ValueError):
+            return 3
 
     @property
     def cooldown_minutes(self) -> float:
-        """熔断冷却时长（分钟，admin.run_infra_breaker.cooldown_minutes）。"""
-        return float(self._get_config("cooldown_minutes", 30))
+        """熔断冷却时长（分钟，admin.run_infra_breaker.cooldown_minutes）。
+
+        非数值脏值回退缺省（宽容语义，不在派发判定路径上抛）。
+        """
+        try:
+            return float(self._get_config("cooldown_minutes", 30))
+        except (TypeError, ValueError):
+            return 30.0
 
     def _get_config(self, key: str, default):
         """取 admin.run_infra_breaker 段配置值（key 为段内字段名）。

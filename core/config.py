@@ -1511,7 +1511,10 @@ class ConfigLoader:
         run_at 经 ``_validated_run_at`` 兜底：非法值（类型错误/格式错误/越界
         时分）打 ERROR 并按 "02:00" 回退生效，保证调度判定永远拿到合法 HH:MM。
         """
-        admin = config.get("admin") or {}
+        # 段入口经 _segment_or_empty 归一（code-review item 997a8452a39f）：
+        # 与 get_admin_config 及同族 admin.* 读取器对齐——真值非 dict 段 ERROR
+        # 降级，非 dict config 本身也不再抛 AttributeError。
+        admin = cls._segment_or_empty(config, "admin")
         sr = admin.get("self_review") if isinstance(admin, dict) else None
         if not isinstance(sr, dict):
             sr = {}

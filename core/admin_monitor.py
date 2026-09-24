@@ -1539,7 +1539,6 @@ class AdminMonitor:
                         break
             if not spec:
                 continue
-            stype = rec.get("signal_type")
             # 终态守卫（fix-family-explosion-loop 2026-08-28）：信号指向的 spec 若已
             # 终态（done/pushed），困境实质已消失——族谱成员均已合并推送、无派生口子
             # 可开，唤起 Administrator 只会得到「已收敛」的重复处置（实证：同一天
@@ -1584,23 +1583,19 @@ class AdminMonitor:
                     {"mark_escalated": bool(marked), "record_id": rec.get("id")},
                 )
                 continue
+            # code-review 9e031d3e7c7f：缺 description 的兜底文案不再用三元链
+            # 硬编码——三元链仅覆盖 family_explosion/dispatch_stalled/
+            # inconclusive_loop，其余存储型信号（mergeback_wip_overlap/
+            # stash_pop_conflict/verify_uniform_failure 等）会误落
+            # 「AI 起草验证契约请求（UI 手动触发）」文案，与信号语义完全不符。
+            # 改按 SIGNAL_RECOMMENDATION 表推导；表外类型（如
+            # mergeback_spec_dir_inflight_stuck）用中性兜底。
             signal = self._make_signal(
                 stype,
                 spec,
                 rec.get("description")
-                or (
-                    "fix 族谱越界派生被拦截"
-                    if stype == "family_explosion"
-                    else (
-                        "spec 长期滞留 ready 且派发未成立（处置方向见 evidence）"
-                        if stype == "dispatch_stalled"
-                        else (
-                            "连续多轮验证全部为环境性失联（blocked-env）"
-                            if stype == "inconclusive_loop"
-                            else "AI 起草验证契约请求（UI 手动触发）"
-                        )
-                    )
-                ),
+                or SIGNAL_RECOMMENDATION.get(stype)
+                or f"存储信号 {stype}（记录缺 description，处置方向见 evidence）",
                 rec.get("evidence") or "拦截详情见 pm_engine 日志",
             )
             signals.append(signal)
@@ -2663,8 +2658,9 @@ class AdminMonitor:
         ★ 误报边界（2026-09-18 取证）：本判据「created 超过 grace 且无最终记录」
         推定 run 已死，但 admin 处置本身的耗时不受任何时限约束——`run_administrator`
         以 `agents.max_turns`（缺省 300，实测可跑 152 轮 / 63 分钟）驱动，稳定超过
-        grace（`admin.escalation_cooldown_minutes`，缺省 15 分钟）。于是**任何**跑满
-        15 分钟的 admin 处置，无论存活与否都会在此被升级，措辞却断言「疑似 daemon
+        grace（`admin.escalation_cooldown_minutes`，缺省 60 分钟——config 默认，
+        core/config.py get_admin_config）。于是**任何**跑满 60 分钟的 admin
+        处置，无论存活与否都会在此被升级，措辞却断言「疑似 daemon
         重启/崩溃连带杀死 admin」——与本轮三次误报（09-17T17:55、09-18T00:19 两例
         + 09-18T08:19 一例）的实况（亚秒级认知负荷，从未真被杀）完全相反。
         真正的判死证据是可用而未用的：daemon 在被动关闭时**同步**向 `.fenix/runs/
@@ -4053,7 +4049,7 @@ class AdminMonitor:
                     pass
 
     def _update_history(self, specs: dict, now: float):
-        """把当前快照与上次记录对比，状态变化则追加变更事件；裁剪过期条目。"""
+        """把当前快照与上次记录对比，状态变化则追加变更事件；每轮统一裁剪过期条目。"""
         history = self._load_history()
         # fix-observability-gaps 4.1：保留窗由 1 小时提升至 24 小时
         # （跨日状态反复不可复盘事故根因）。
@@ -4080,13 +4076,20 @@ class AdminMonitor:
             changes = rec.get("changes") if isinstance(rec, dict) else []
             if last_status is not None and last_status != status:
                 changes.append([now, status])
-                changes = [c for c in changes if c[0] >= cutoff]
                 changed = True
             elif not rec:
                 changed = True
             elif not isinstance(rec, dict) or rec.get("inactive_since") is not None:
                 # 暂离归来：重写记录时丢弃过期计时戳（一次性写盘）
                 changed = True
+            # code-review 9063aad172d4：裁剪不再只挂在追加分支——每轮对读到的
+            # changes 统一按 cutoff 过滤后再回写，spec 长期停留同一状态时旧条目
+            # 同样被 24h 窗淘汰。过滤为空转（未删任何条目）时 changed 不置位，
+            # 不产生额外写盘，维持「写盘只发生在边界时刻」的口径。
+            pruned = [c for c in changes if c[0] >= cutoff]
+            if len(pruned) != len(changes):
+                changed = True
+            changes = pruned
             history[name] = {"last_status": status, "changes": changes}
         # 清理暂离/退场 spec 的历史（避免文件无限膨胀）：不立即删除，改为
         # 冻结保留至 24 小时过期窗自然淘汰——inactive_since 自首次观察到

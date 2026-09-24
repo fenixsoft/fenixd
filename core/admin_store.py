@@ -502,11 +502,17 @@ class AdminStore:
                 created = datetime.fromisoformat((rec.get("created") or "").replace("Z", "+00:00"))
             except (ValueError, TypeError):
                 continue
+            if created.tzinfo is None:
+                # 朴素时间戳（人工修补/外部工具写入）按 UTC 归一：避免与带时区
+                # 记录混存时比较抛 TypeError，且 .timestamp() 不再误按本地时区。
+                created = created.replace(tzinfo=timezone.utc)
             anchor = created
             last_seen_str = rec.get("last_seen")
             if last_seen_str:
                 try:
                     last_seen = datetime.fromisoformat(str(last_seen_str).replace("Z", "+00:00"))
+                    if last_seen.tzinfo is None:
+                        last_seen = last_seen.replace(tzinfo=timezone.utc)
                     anchor = max(created, last_seen)  # 防御：异常数据下取更大者
                 except (ValueError, TypeError):
                     pass  # last_seen 不可解析时回退 created

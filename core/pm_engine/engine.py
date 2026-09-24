@@ -3474,11 +3474,11 @@ class PMEngine:
                         f"(reason={b.get('reason')})",
                     )
                     continue
-                self.logger.info(
-                    "pm_engine",
-                    f"Auto-recovering stuck SPEC: {spec_name} (was {stuck_status})",
-                )
                 if stuck_status == "implementing":
+                    self.logger.info(
+                        "pm_engine",
+                        f"Auto-recovering stuck SPEC: {spec_name} (was {stuck_status})",
+                    )
                     # 实现卡住且可能从未运行（implementer_run=null）：不得伪标 implemented
                     # 直接推给 verifier——「无实现即验证」会产出伪 bug 并派生 fix 级联
                     # （本事故 5 代 fix 链的肇因）。回 ready 重新排队实现器。
@@ -3527,6 +3527,10 @@ class PMEngine:
                         spec_name, f"auto-recovered from stuck {stuck_status}"
                     )
                 elif stuck_status == "testing":
+                    self.logger.info(
+                        "pm_engine",
+                        f"Auto-recovering stuck SPEC: {spec_name} (was {stuck_status})",
+                    )
                     # 验证卡住：实现已完成，回 implemented 重新派发 verifier
                     self.state_machine.update_spec(
                         spec_name,
@@ -3540,9 +3544,15 @@ class PMEngine:
                     self.register_recovery_watch(
                         spec_name, f"auto-recovered from stuck {stuck_status}"
                     )
-                # verified：full_scan 已周期性重触发 spec_verified 走放行门禁
-                # 幂等重试；此处不得回滚到 implemented —— 否则每轮全量重跑
-                # verifier，形成验证烧钱循环。仅上报，等门禁条件满足。
+                elif stuck_status == "verified":
+                    # verified：full_scan 已周期性重触发 spec_verified 走放行门禁
+                    # 幂等重试；此处不得回滚到 implemented —— 否则每轮全量重跑
+                    # verifier，形成验证烧钱循环。仅上报，等门禁条件满足。
+                    self.logger.info(
+                        "pm_engine",
+                        f"verified 卡死仅上报不恢复：'{spec_name}' "
+                        f"({b['elapsed_minutes']} min) — 等 spec_verified 门禁重触发放行",
+                    )
 
         return {"blockers": blockers, "warnings": warnings, "checked_at": now.isoformat()}
 
