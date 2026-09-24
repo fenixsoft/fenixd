@@ -9,7 +9,12 @@ items 的 accept/reject 端点同构），本模块不承载写逻辑。
 import json
 from pathlib import Path
 
-from core.code_review import normalize_severity, read_items, read_progress
+from core.code_review import (
+    normalize_severity,
+    read_items,
+    read_progress,
+    read_request_result,
+)
 
 _SEVERITY_ORDER = {"critical": 0, "major": 1, "minor": 2, "info": 3}
 
@@ -90,6 +95,20 @@ def read_code_review_fix_progress(project_root) -> dict:
     out.pop("worktree", None)
     out.pop("run_id", None)
     return out
+
+
+def read_code_review_request_result(project_root) -> dict:
+    """读手动触发 code-review 的受理判定结果（add-code-review-trigger-ack 2.1）。
+
+    只读透传 daemon 消费端写回的 ``.fenix/code_review_request_result.json``
+    （``{requested_at, status, reason, message, finished_at}``，``status``
+    为 started/dropped/failed 三值）。文件缺失/损坏/非 dict → 缺省态全
+    null 形态（``core.code_review.read_request_result`` 兜底，读侧 MUST
+    NOT 500，形态对齐 read_code_fix_request_result 的只读透传口径）。
+    前端以 ``requested_at`` 与本次触发返回的 ``requested_at`` 一致回链判定
+    是否本次结果，陈旧残留 MUST NOT 被当作本次反馈。
+    """
+    return read_request_result(project_root)
 
 
 def read_code_fix_request_result(project_root) -> dict:

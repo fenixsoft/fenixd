@@ -2263,6 +2263,38 @@ class FenixDaemon:
                     setattr(self, fallback_attr, lock)
         return lock
 
+    # 手动触发判定结果的中文文案（add-code-review-trigger-ack 1.2/1.4，
+    # 对齐 CODE_FIX_RESULT_MESSAGES 先例）：reason slug → 面向用户的 message
+    CODE_REVIEW_RESULT_MESSAGES = {
+        "started": "审查已受理，正在启动（文件收集/排队中），请稍候",
+        "already_running": "已有审查在跑，请等当前审查完成后再试",
+        "daemon_not_running": "daemon 未运行，审查信号无人消费已丢弃，请先启动 daemon",
+        "daemon_unmanaged": "daemon 未受 supervisor 托管，审查信号无人消费已丢弃",
+        "invalid_payload": "审查触发信号内容非法，本次触发已丢弃",
+        "manifest_empty": "没有可审查的文件（manifest 为空），本次审查未执行",
+        "manifest_error": "审查文件清单收集失败，本次审查未执行（详见 daemon 日志）",
+        "submit_error": "审查任务投递失败，本次审查未执行（详见 daemon 日志）",
+    }
+
+    def _write_code_review_request_result(self, requested_at, status, reason,
+                                          message=None):
+        """原子写回 code-review 手动触发判定结果（add-code-review-trigger-ack 1.2）。
+
+        薄封装：写侧原子性集中在 core.code_review.write_request_result
+        （同目录 tmp + os.replace），本方法只补 PROJECT_ROOT 与 logger 传参。
+        无论判定结果如何都落盘（dropped/failed 不再静默丢信号）；写失败由
+        写工具记日志，不影响本消费流程控制流。
+        """
+        from core.code_review import write_request_result
+
+        if message is None:
+            message = self.CODE_REVIEW_RESULT_MESSAGES.get(
+                reason, f"审查触发判定：{reason or '未知'}")
+        write_request_result(
+            PROJECT_ROOT, requested_at, status, reason, message,
+            logger=self.logger,
+        )
+
     def _check_code_review_requests(self):
         """主循环每轮扫描 code-review 手动触发文件信号并投递后台执行。
 
@@ -2270,6 +2302,13 @@ class FenixDaemon:
         .fenix/code_review_request.json（含 scope: "full"|"window"、
         requested_at）；本方法在主循环（1s 粒度）中检测其存在：读取→删除→
         校验 hosting_state → 构造 run 参数 → 投递后台 worker 池。
+
+        判定结果回链（add-code-review-trigger-ack 1.2-1.4）：所有丢弃/失败
+        分支——payload 非法、hosting_state 守卫拒绝、单飞已在跑、manifest
+        收集异常/为空、投递异常——MUST 全部原子写回
+        .fenix/code_review_request_result.json（{requested_at, status,
+        reason, message, finished_at}），不再只记日志静默丢信号；投递成功落
+        started（requested_at 回链供前端只认本次触发）。
 
         消费方守卫（task 4.4/设计 D1）：daemon 未运行或 hosting_state ==
         unmanaged 时信号无人消费，会永久滞留并在 daemon 下次启动时被消费成
@@ -2286,9 +2325,27 @@ class FenixDaemon:
         from core.fenix_session import hosting_state
 
         req_path = PROJECT_ROOT / ".fenix" / "code_review_request.json"
+        # 「信号在场但 payload 非法」探测（add-code-review-trigger-ack 1.2）：
+        # _consume_request_file 对「无信号」与「损坏/非 dict payload」都返回
+        # None（前者是每轮稀疏常态），以消费前的存在性探测区分二者——文件在场
+        # 却读不出合法 payload → 落 invalid_payload 结果，不再静默丢信号。
+        # 探测与消费之间信号只会被本主循环线程取走（单消费者），无并发误判面。
+        signal_was_present = req_path.exists()
         payload = self._consume_request_file(req_path)
         if payload is None:
+            if signal_was_present:
+                self.logger.warning(
+                    "fenixd",
+                    "code_review 触发信号 payload 非法/损坏，信号已消费并落 "
+                    "invalid_payload 结果",
+                )
+                self._write_code_review_request_result(
+                    None, "dropped", "invalid_payload")
             return
+
+        # requested_at 提前提取（回链用）：守卫拒绝/单飞拒绝/投递成功/失败的
+        # 落盘都需回链信号 requested_at，前端据此只认本次触发的结果
+        requested_at = payload.get("requested_at", "")
 
         scope = str(payload.get("scope") or "window")
         if scope not in ("full", "window"):
@@ -2307,6 +2364,11 @@ class FenixDaemon:
                 "与 approve_push 同判据），用户可能看到端点已返回拒绝但信号仍被"
                 "写入的窗口态",
             )
+            # 守卫拒绝落 dropped 结果（add-code-review-trigger-ack 1.2）：
+            # reason 区分 daemon_not_running / daemon_unmanaged
+            self._write_code_review_request_result(
+                requested_at, "dropped",
+                "daemon_not_running" if hs == "stopped" else "daemon_unmanaged")
             return
 
         # 单飞：已有 code-review run 在跑
@@ -2341,9 +2403,13 @@ class FenixDaemon:
 
         if _in_flight_check_and_set():
             self.logger.info("fenixd", "code_review 手动触发被忽略：已有审查在跑")
+            # 单飞拒绝落 dropped 结果（add-code-review-trigger-ack 1.3）：
+            # 不再只记 info 静默丢信号；旗标置位发生在 _in_flight_check_and_set
+            # 锁内，落盘不改变既有置位/复位顺序
+            self._write_code_review_request_result(
+                requested_at, "dropped", "already_running")
             return
 
-        requested_at = payload.get("requested_at", "")
         self.logger.info(
             "fenixd",
             f"消费 code-review 手动触发信号：scope={scope}, requested_at={requested_at}",
@@ -2354,14 +2420,22 @@ class FenixDaemon:
             from core.config import ConfigLoader
 
             try:
-                if scope == "full":
-                    manifest = collect_manifest(PROJECT_ROOT, "full", None)
-                    review_kind = "manual_full"
-                    window_start = None
-                else:
-                    window_start, _ = compute_window(PROJECT_ROOT)
-                    manifest = collect_manifest(PROJECT_ROOT, "window", window_start)
-                    review_kind = "manual_window"
+                try:
+                    if scope == "full":
+                        manifest = collect_manifest(PROJECT_ROOT, "full", None)
+                        review_kind = "manual_full"
+                        window_start = None
+                    else:
+                        window_start, _ = compute_window(PROJECT_ROOT)
+                        manifest = collect_manifest(PROJECT_ROOT, "window", window_start)
+                        review_kind = "manual_window"
+                except Exception as e:
+                    # manifest 收集失败落 failed（add-code-review-trigger-ack
+                    # 1.4，design D2）：不再只记 error 静默丢信号
+                    self.logger.error("fenixd", f"code_review manifest 收集异常: {e}")
+                    self._write_code_review_request_result(
+                        requested_at, "failed", "manifest_error")
+                    return
                 # 上限截断
                 cr_cfg = ConfigLoader.get_code_review_config(self.config)
                 max_files = cr_cfg.get("max_files", 500)
@@ -2369,6 +2443,8 @@ class FenixDaemon:
                     manifest = manifest[:max_files]
                 if not manifest:
                     self.logger.info("fenixd", f"code_review 手动触发：manifest 为空（scope={scope}），跳过")
+                    self._write_code_review_request_result(
+                        requested_at, "failed", "manifest_empty")
                     return
                 result = self.agent_runner.run_code_review(
                     manifest, review_kind=review_kind,
@@ -2382,6 +2458,8 @@ class FenixDaemon:
                     + (f", error={result.error}" if result.error else ""),
                 )
             except Exception as e:
+                # 兜底（manifest 失败已在上方分支落盘；run_code_review 执行
+                # 异常不回写结果——design D1：结果文件不承载 run 终态）
                 self.logger.error("fenixd", f"code_review 手动审查异常: {e}")
 
         def _worker_with_flag():
@@ -2400,7 +2478,13 @@ class FenixDaemon:
         try:
             if self._admin_executor is not None:
                 self._admin_executor.submit(_worker_with_flag)
+                # 投递成功即受理（add-code-review-trigger-ack 1.4）：落 started，
+                # 前端凭 requested_at 回链从「等结果」进入「等启动」段
+                self._write_code_review_request_result(requested_at, "started", None)
             else:
+                # 无池兜底（同步执行）：受理先于执行落盘；run 终态不回写结果
+                # 文件（design D1），执行完毕后结果仍停留 started
+                self._write_code_review_request_result(requested_at, "started", None)
                 _worker_with_flag()
         except Exception as e:
             if self.admin_monitor is not None:
@@ -2409,6 +2493,10 @@ class FenixDaemon:
                 ):
                     self.admin_monitor._code_review_in_flight = False
             self.logger.error("fenixd", f"code_review 手动审查投递失败: {e}")
+            # 投递失败落 failed（add-code-review-trigger-ack 1.4）：不再只记
+            # error 静默丢信号；上方单飞复位逻辑保持不变（落盘不改控制流）
+            self._write_code_review_request_result(
+                requested_at, "failed", "submit_error")
 
     def _check_regression_requests(self):
         """主循环每轮扫描 regression 手动触发文件信号并投递后台执行。

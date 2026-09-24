@@ -43,13 +43,14 @@ import {
   getCodeFixRunResult,
   getCodeReviewItems,
   getCodeReviewProgress,
+  getCodeReviewRunResult,
   getConfig,
   setCodeReviewItemStatus,
   STREAM_URL,
   triggerCodeFixRun,
   triggerCodeReview,
 } from '../../../services/dashboard';
-import type { CodeFixRunResult, CodeReviewItem, CodeReviewProgress } from '../../../services/dashboard';
+import type { CodeFixRunResult, CodeReviewItem, CodeReviewProgress, CodeReviewRunResult } from '../../../services/dashboard';
 import CodeFixProgressCard from './CodeFixProgressCard';
 import ScheduleFields, {
   describeStartAfter,
@@ -136,6 +137,12 @@ const POPOVER_WIDTH_RATIO = 0.8;
 const PROGRESS_POLL_INTERVAL_MS = 2000;
 // 心跳兜底刷新间隔（SSE 不可达时保底新鲜度，见下方 effect 注释）
 const HEARTBEAT_REFRESH_INTERVAL_MS = 30000;
+// 触发后「等结果」轮询预算（add-code-review-trigger-ack 3.3）：1s 间隔轮询
+// run-result，超过即兜底提示并解禁（含 daemon 旧码未落结果文件的场景）
+const ACK_RESULT_POLL_BUDGET_MS = 120_000;
+// started 后「等启动」轮询预算（add-code-review-trigger-ack 3.4）：2s 间隔
+// 轮询 progress 等 running=true，超过即「启动较慢」提示并解禁（30s 心跳兜底）
+const ACK_START_POLL_BUDGET_MS = 60_000;
 
 function ProblemCell({ rec }: { rec: CodeReviewItem }) {
   const [open, setOpen] = useState(false);
@@ -260,6 +267,16 @@ export default function QualityTab({ project, active }: QualityTabProps) {
   // 出消息前检查——不再对用户已离开的页面继续 1s 轮询 20s、也不向已卸载
   // 组件弹成功/失败 toast。
   const fixRunPollAbortedRef = useRef(false);
+  // 审查触发受理等待轮询取消哨（add-code-review-trigger-ack 3.2）：复用
+  // fixRunPollAbortedRef 模式——卸载/切页签/切项目时由 SSE effect 清理置位
+  // （同点清理），两段等待轮询每轮与出消息前检查——不向已离开的页面继续
+  // 轮询，也不向已卸载组件弹提示。
+  const ackPollAbortedRef = useRef(false);
+  // 受理等待独立门控态（add-code-review-trigger-ack 3.2）：触发后的两段等待
+  // （等结果 120s + 等启动 60s）只禁用两个审查触发按钮，不并入
+  // actionPending——后者语义是「HTTP 请求进行中」，会连带禁用取消与自动
+  // 修复按钮。
+  const [ackPending, setAckPending] = useState(false);
   // 请求序号守卫（code-review item 103bd502bd1e）：loadItems 会被 SSE 回调、
   // 30s 心跳、轮询结束兜底与 filter 变化并发触发，较慢的早期响应会覆盖较新数据。
   const loadSeqRef = useRef(0);
@@ -400,8 +417,10 @@ export default function QualityTab({ project, active }: QualityTabProps) {
         window.clearInterval(pollTimerRef.current);
         pollTimerRef.current = null;
       }
-      // 卸载/active 翻转/project 切换都会走本清理：连带置位自动修复轮询取消哨
+      // 卸载/active 翻转/project 切换都会走本清理：连带置位自动修复轮询
+      // 取消哨与审查触发受理等待取消哨（add-code-review-trigger-ack 3.2）
       fixRunPollAbortedRef.current = true;
+      ackPollAbortedRef.current = true;
     };
   }, [active, project]);
 
@@ -412,16 +431,27 @@ export default function QualityTab({ project, active }: QualityTabProps) {
       pollTimerRef.current = null;
     }
     if (!active) fixRunPollAbortedRef.current = true;
+    if (!active) ackPollAbortedRef.current = true;
   }, [active]);
 
-  // ── 手动触发按钮（5.4） ────────────────────────────────────────
+  // ── 手动触发按钮（5.4 + add-code-review-trigger-ack 3.2-3.4） ────
+  // 触发改两段等待（design D5）：POST 200 只代表信号已写、不构成启动确认，
+  // 不再弹「已受理」假承诺 toast。置独立 ackPending 门控（不复用
+  // actionPending——其语义是「HTTP 请求进行中」，连带禁用取消/自动修复按钮）
+  // 后：第 1 段 1s 间隔轮询 run-result（上限 120s）等 daemon 判定结果，仅认
+  // requested_at 回链本次的记录；读到 started 进第 2 段 2s 间隔轮询 progress
+  // 等 running=true（上限 60s）交由既有进度卡片接管。dropped/failed/两段
+  // 超时各自明确反馈；任一段结束（含超时/失败）复位 ackPending；卸载/切
+  // 页签/切项目置位哨兵立即停止轮询且不弹提示。
   const handleTrigger = async (scope: 'full' | 'window') => {
     const label = scope === 'full' ? '全库审查' : '当期审查';
-    if (actionPending) return; // pending 门控（code-review item 133cba8a5748）
+    if (actionPending || ackPending) return; // pending 门控（code-review item 133cba8a5748）
     setActionPending(true);
+    ackPollAbortedRef.current = false; // 本轮请求开启新哨（上一轮取消状态作废）
+    let wantedAt: string | undefined;
     try {
-      await triggerCodeReview(project, scope);
-      message.success(`${label} 已受理，daemon 将开始执行`);
+      const res = await triggerCodeReview(project, scope);
+      wantedAt = res.requested_at;
       void loadProgress();
       void loadItems();
     } catch (e) {
@@ -431,11 +461,91 @@ export default function QualityTab({ project, active }: QualityTabProps) {
       // 后端 _coded_error 下发、ApiError.code 承载（同 RegressionTab 先例）
       if (e instanceof ApiError && e.code === 'code_review_running') {
         message.warning('已有审查在进行中');
+      } else if (e instanceof ApiError && e.code === 'code_review_ack_pending') {
+        // 受理窗口守卫（add-code-review-trigger-ack 2.3）：上一触发已被
+        // daemon 受理但 run 尚未开始，窗口内重复触发被显式拒绝
+        message.warning(errMsg);
       } else {
         message.error(`${label}失败: ${errMsg}`);
       }
     } finally {
       setActionPending(false);
+    }
+    if (!wantedAt) return; // 触发未受理（catch 分支已反馈），不进入受理等待态
+
+    setAckPending(true);
+    try {
+      // 第 1 段：等结果（1s 间隔，上限 120s）
+      const deadline = Date.now() + ACK_RESULT_POLL_BUDGET_MS;
+      let result: CodeReviewRunResult | null = null;
+      while (Date.now() < deadline) {
+        if (ackPollAbortedRef.current) return; // 卸载/切走后停止轮询与提示
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        if (ackPollAbortedRef.current) return;
+        try {
+          const snap = await getCodeReviewRunResult(project);
+          // 仅认 requested_at 回链本次的记录（上一轮残留 MUST NOT 弹提示）
+          if (snap.requested_at && snap.requested_at === wantedAt) {
+            result = snap;
+            break;
+          }
+        } catch {
+          // 单轮读取失败不终止轮询（daemon 消费稍后补结果文件）
+        }
+      }
+      if (ackPollAbortedRef.current) return;
+      if (!result) {
+        // 120s 未读到本次结果（含 daemon 旧码在飞、结果文件不产生），兜底
+        // 提示并解禁，不挂死在等待态
+        message.info(`未收到「${label}」启动确认，请稍后在进度卡片或 daemon 日志确认`);
+        return;
+      }
+      if (result.status === 'dropped') {
+        // 拒绝原因由 daemon 结果文件的 message 如实回显，不让用户对着无反应
+        // 的按钮猜；message 与 reason 皆缺省时兜底固定文案（勿渲染 undefined）
+        message.warning(
+          result.message ||
+            (result.reason ? `审查触发被拒绝：${result.reason}` : '审查触发被拒绝'),
+        );
+        return;
+      }
+      if (result.status === 'failed') {
+        message.error(
+          result.message ||
+            (result.reason ? `审查启动失败：${result.reason}` : '审查启动失败'),
+        );
+        return;
+      }
+      // status=started → 第 2 段：等启动（2s 间隔轮询 progress，上限 60s），
+      // running=true 前不弹无信息量的中间提示
+      const runDeadline = Date.now() + ACK_START_POLL_BUDGET_MS;
+      let started = false;
+      while (Date.now() < runDeadline) {
+        if (ackPollAbortedRef.current) return;
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        if (ackPollAbortedRef.current) return;
+        try {
+          const p = await getCodeReviewProgress(project);
+          setProgress(p);
+          if (p.running) {
+            started = true;
+            break;
+          }
+        } catch {
+          // 单轮读取失败继续（下轮重试）
+        }
+      }
+      if (ackPollAbortedRef.current) return;
+      if (started) {
+        // running=true：既有「审查进行中」卡片与 2s 进度轮询自动接管
+        // （loadProgress 见 running 起轮询，经 ref 取最新闭包，同 loadItemsRef）
+        void loadProgressRef.current();
+      } else {
+        // run 仍可能稍后开始（既有 30s 心跳兜底刷新进度），明确提示并解禁
+        message.info('审查已受理但启动较慢，请稍后在进度卡片或 daemon 日志确认');
+      }
+    } finally {
+      setAckPending(false);
     }
   };
 
@@ -805,18 +915,22 @@ export default function QualityTab({ project, active }: QualityTabProps) {
               覆盖此前 2026-09-20 的「默认样式一致」约定）；
               「生成修复 SPEC」保持 primary（主操作按钮）；
               「全部忽略」为 primary + danger（红底白字，用户 2026-09-20 要求） */}
+          {/* 两个审查触发按钮在受理等待态（ackPending）也禁用并呈 loading
+              （add-code-review-trigger-ack 3.2）：等待期（最长 120s+60s）内
+              重复点击被挡住，且触发后立即可见「正在等待启动」的反馈——
+              ackPending 只作用于这两个按钮，取消/自动修复按钮不受影响 */}
           <Button
             type="primary"
-            disabled={progress?.running || actionPending}
-            loading={actionPending}
+            disabled={progress?.running || actionPending || ackPending}
+            loading={actionPending || ackPending}
             onClick={() => void handleTrigger('full')}
           >
             全库审查
           </Button>
           <Button
             type="primary"
-            disabled={progress?.running || actionPending}
-            loading={actionPending}
+            disabled={progress?.running || actionPending || ackPending}
+            loading={actionPending || ackPending}
             onClick={() => void handleTrigger('window')}
           >
             当期审查

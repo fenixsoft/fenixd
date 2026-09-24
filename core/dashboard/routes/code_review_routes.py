@@ -6,6 +6,7 @@
 - POST /api/code-review/run        （body {project, scope}）→ 写手动触发信号
 - POST /api/code-review/fix-run    （query project）→ 写手动「立即自动修复」信号（add-code-fix-manual-trigger）
 - GET  /api/code-review/fix-run-result（query project）→ 只读手动触发判定结果（add-code-fix-manual-trigger）
+- GET  /api/code-review/run-result （query project）→ 只读审查触发受理判定结果（add-code-review-trigger-ack）
 - POST /api/code-review/generate-spec（body {project, item_ids, start_after?}）→ 生成修复 SPEC
 - POST /api/code-review/items/status（body {project, item_id, status}）→ 人工状态流转
 
@@ -17,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -35,6 +37,42 @@ CODE_REVIEW_REQUEST = ".fenix/code_review_request.json"
 # 消费端原子写回，GET fix-run-result 只读透传。
 CODE_FIX_REQUEST = ".fenix/code_fix_request.json"
 CODE_FIX_REQUEST_RESULT = ".fenix/code_fix_request_result.json"
+
+# 受理窗口新鲜度阈值（add-code-review-trigger-ack 2.3 / design D3）：回链
+# 结果 finished_at 距今超过该秒数即视为陈旧，窗口守卫放行——run 结束后结果
+# 文件仍停留 started，不判新鲜会把「已跑完」永久误判为「排队中」锁死触发。
+CODE_REVIEW_ACK_WINDOW_SECONDS = 900
+
+
+def _parse_iso_utc(value):
+    """容错解析 ISO8601 时刻为 aware UTC datetime；非法/空返回 None。
+
+    兼容尾缀 ``Z`` 与无时区的 naive 值（后者按 UTC 解释——全链约定 UTC，
+    design D6）。解析失败返回 None（调用方 fail-open 放行，链路终点是
+    daemon 侧落结果文件的显式反馈，无静默路径）。
+    """
+    if not isinstance(value, str) or not value.strip():
+        return None
+    raw = value.strip()
+    if raw.endswith(("Z", "z")):
+        raw = raw[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _review_id_epoch(review_id):
+    """从 review_id（``code-review-<epoch>[-<n>]``）提取内嵌 epoch；无则 None。
+
+    与 core.code_review._latest_review_run 同款解析（epoch 后可跟多个退避
+    ``-<n>`` 段，取首个 9~10 位数字段）。
+    """
+    m = re.search(r"(\d{9,10})(?:-\d+)*$", str(review_id or ""))
+    return int(m.group(1)) if m else None
 
 
 class H11CodeReviewRoutesMixin:
@@ -147,6 +185,31 @@ class H11CodeReviewRoutesMixin:
         if state != "managed":
             self._error(400, "daemon 未运行，请先启动 daemon")
             return
+
+        # 受理窗口守卫（add-code-review-trigger-ack 2.3，design D3）：信号已被
+        # 上一触发消费（O_EXCL 守卫覆盖不到的空隙）、daemon 已受理（结果
+        # started）但 run 尚未开始（progress.running=false，复用上方 running
+        # 守卫的同一 progress 快照）且结果新鲜（finished_at 距今 ≤ 900s）且
+        # 受理后尚无新 run 启动过（review_id 内嵌 epoch ≤ finished_at——run
+        # 结束后结果文件仍停留 started，仅凭新鲜度会把窗口内合法重触发误判为
+        # 「排队中」假 409）→ 409 稳定错误码，消灭窗口内第二次 POST 假受理
+        # （今日会被 daemon 单飞静默丢弃）。守卫读结果与 run 实际启动之间存在
+        # 竞态 → fail-open 到 daemon 单飞的显式拒绝并落结果（有反馈不留静默）。
+        ack_result = dashboard_data.read_code_review_request_result(str(proot))
+        if (str(ack_result.get("status") or "") == "started"
+                and not progress.get("running")):
+            finished_at = _parse_iso_utc(ack_result.get("finished_at"))
+            if (finished_at is not None
+                    and (datetime.now(timezone.utc) - finished_at).total_seconds()
+                    <= CODE_REVIEW_ACK_WINDOW_SECONDS):
+                epoch = _review_id_epoch(progress.get("review_id"))
+                if epoch is None or epoch <= finished_at.timestamp():
+                    self._coded_error(
+                        409,
+                        "审查已受理，正在启动（文件收集/排队中），请稍候",
+                        "code_review_ack_pending",
+                    )
+                    return
 
         # 原子创建信号文件（O_CREAT|O_EXCL 独占创建，code-review item d3c1d2ef4a88）：
         # ThreadingHTTPServer 最多 64 并发线程，旧实现的 `exists()` 检查与随后的
@@ -328,6 +391,21 @@ class H11CodeReviewRoutesMixin:
             self._error(404, "project not found")
             return
         self._json(dashboard_data.read_code_fix_request_result(str(project["path"])))
+
+    def _api_code_review_run_result(self, query):
+        """GET /api/code-review/run-result?project=<name>
+        （add-code-review-trigger-ack 2.2）
+
+        手动触发审查的受理判定结果只读透传：返回 daemon 消费端写回的
+        ``.fenix/code_review_request_result.json`` 内容（``{requested_at,
+        status, reason, message, finished_at}``）。文件缺失/损坏 → 缺省态
+        全 null 形态（MUST NOT 500，形态对齐 _api_code_review_fix_run_result）。
+        """
+        project = self._project_from_query(query)
+        if project is None or not project.get("exists"):
+            self._error(404, "project not found")
+            return
+        self._json(dashboard_data.read_code_review_request_result(str(project["path"])))
 
     def _api_code_review_generate_spec(self, query):
         """POST /api/code-review/generate-spec — body {project, item_ids: [...]}
