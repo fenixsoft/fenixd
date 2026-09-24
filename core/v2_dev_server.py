@@ -187,7 +187,10 @@ def start(
         raise V2DevServerError(f"failed to spawn dev-server: {e}")
 
     # 等待端口就绪（dev-server.mjs 监听后即写 "listening"；不读 stdout 时用探测）。
-    if not _wait_ready(port, timeout=5.0, logger=logger):
+    # 连通成功后仍须确认本进程存活：allocate_port 的 bind 探测与 node 实际 bind
+    # 之间存在窗口，端口可能被他方进程抢注——node bind 失败已退出而 connect 握手
+    # 到的是他方 listener，误判就绪会把验证流量打到异码服务上。
+    if not _wait_ready(port, timeout=5.0, logger=logger) or proc.poll() is not None:
         # 启动但端口未就绪：视为失败，回收子进程，按端口冲突重试语义上抛。
         _log("error", f"dev-server on port {port} not ready in 5s, killing")
         _kill(proc)

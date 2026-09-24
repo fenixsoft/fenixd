@@ -98,8 +98,9 @@ def _fmt_dur(seconds) -> str:
         return f"{s}s"
     if s < 3600:
         return f"{s // 60}m"
+    # 时长格式全段不补零（与分钟/天级分支同一口径，如 2h5m、1d5h）
     if s < 86400:
-        return f"{s // 3600}h{(s % 3600) // 60:02d}m"
+        return f"{s // 3600}h{(s % 3600) // 60}m"
     return f"{s // 86400}d{(s % 86400) // 3600}h"
 
 

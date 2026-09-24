@@ -175,7 +175,7 @@ class DashboardHandler(H0BaseMixin, H2ProjectRoutesMixin, H3SpecRoutesMixin, H4R
 
     protocol_version = "HTTP/1.1"
 
-    # ── 基础 ─────────────────────────────────────────────────
+    # 方法实现见各 mixin（routes/ 下 H0~H12）
 
 def _find_dashboard_occupant(port: int) -> dict | None:
     """定位占用目标端口的进程（仅 Linux）。
@@ -248,8 +248,19 @@ def _find_dashboard_occupant(port: int) -> dict | None:
 
 
 def _is_dashboard_serve_cmd(cmdline: str) -> bool:
-    """cmdline 是否为 fenix_dashboard.py --serve 实例。"""
-    return "fenix_dashboard.py" in cmdline and "--serve" in cmdline
+    """cmdline 是否为 fenix_dashboard.py --serve 实例。
+
+    按 argv 精确匹配（code-review item c36c3fc10722）：子串匹配下 --serve 是
+    --server/--servable 等参数的前缀，且文件路径出现在任意进程参数里（如
+    编辑器/打包脚本引用 fenix_dashboard.py）也会命中，serve() 接管路径会据
+    此对无关 PID 发 SIGTERM。_find_dashboard_occupant 返回的 cmdline 由
+    /proc/<pid>/cmdline 以 NUL→空格还原，故按空白切分回 argv 逐项比对：
+    argv[0] 的 basename 恰为 fenix_dashboard.py，且存在一项严格等于 --serve。
+    """
+    argv = cmdline.split()
+    if not argv or os.path.basename(argv[0]) != "fenix_dashboard.py":
+        return False
+    return "--serve" in argv
 
 
 def _proc_starttime(pid: int) -> int | None:

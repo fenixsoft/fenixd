@@ -270,20 +270,68 @@ def collect_failed_tests(stderr: str, stdout: str = "") -> list:
     ``ERROR: `` 前缀与 FAILED 区分（code-review item a362849b59a6）：
     仅当前侧有新增 ERROR 时若不入集，classify_baseline 会把非零退出的
     套件误判为「pass（全绿）」。
+
+    提取只认 ``short test summary info`` 区段（code-review item c18d45e87cd3）：
+    全文逐行匹配会把失败用例 captured stdout 回显、被测代码打印的
+    ``FAILED to ...``、日志 ``ERROR xxx`` 等同前缀行误收进失败集合——一条仅
+    出现在当前侧的幻影条目即可把存量失败误判为 introduced（exit 1）。某侧
+    输出缺该区段时（pytest 异常中断等）降级为窄匹配：仅收 FAILED/ERROR 后
+    token 含 tests/ 路径特征的行，兼顾幻影抑制与崩溃输出下的失败可见性。
     """
+
+    def _is_test_path(token: str) -> bool:
+        norm = token.replace("\\", "/")
+        return norm.startswith("tests/") or "/tests/" in norm
+
+    def _narrow_match(lines) -> list:
+        """无摘要区段侧的降级提取：token 须含 tests/ 路径特征才入集。"""
+        entries = []
+        for line in lines:
+            s = line.strip()
+            m = re.match(r"FAILED\s+(\S+)", s)
+            if m and _is_test_path(m.group(1)):
+                entries.append(m.group(1))
+                continue
+            m = re.match(r"ERROR\s+(?:collecting\s+)?(\S+)", s)
+            if m and _is_test_path(m.group(1)):
+                entries.append(f"ERROR: {m.group(1)}")
+        return entries
+
+    def _extract_section(lines):
+        """进入 short summary 区段后提取，返回 (是否找到区段, 条目列表)。
+
+        区段在下一行 ``==...==`` 装饰分隔线（含最终统计行/下一区段头）处结束。
+        """
+        entries = []
+        in_summary = False
+        for line in lines:
+            s = line.strip()
+            if not in_summary:
+                if "short test summary info" in s:
+                    in_summary = True
+                continue
+            if re.match(r"=+.*=+$", s):
+                break
+            m = re.match(r"FAILED\s+(\S+)", s)
+            if m:
+                entries.append(m.group(1))
+                continue
+            # 收集错误摘要形如 ``ERROR collecting tests/x.py``（捕获路径而非字面
+            # collecting），fixture/实例化错误形如 ``ERROR <nodeid> - <reason>``。
+            m = re.match(r"ERROR\s+(?:collecting\s+)?(\S+)", s)
+            if m:
+                entries.append(f"ERROR: {m.group(1)}")
+        return in_summary, entries
+
     failed = []
-    text = (stdout or "") + "\n" + (stderr or "")
-    for line in text.splitlines():
-        s = line.strip()
-        m = re.match(r"FAILED\s+(\S+)", s)
-        if m:
-            failed.append(m.group(1))
-            continue
-        # 收集错误摘要形如 ``ERROR collecting tests/x.py``（捕获路径而非字面
-        # collecting），fixture/实例化错误形如 ``ERROR <nodeid> - <reason>``。
-        m = re.match(r"ERROR\s+(?:collecting\s+)?(\S+)", s)
-        if m:
-            failed.append(f"ERROR: {m.group(1)}")
+    for stream in (stdout or "", stderr or ""):
+        lines = stream.splitlines()
+        in_summary, entries = _extract_section(lines)
+        if in_summary:
+            failed.extend(entries)
+        else:
+            # 该侧无摘要区段（pytest 异常中断/截断）→ 窄匹配降级，见 docstring。
+            failed.extend(_narrow_match(lines))
     return sorted(set(failed))
 
 

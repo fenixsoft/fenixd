@@ -129,6 +129,13 @@ def selfcheck_regression(project_root: Path, contract=None) -> tuple:
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 os.killpg(pgid, signal.SIGKILL)
+                # SIGKILL 后也须回收（code-review item c50faac102e7）：
+                # 否则子进程在 CLI 退出前保持 zombie，收尾与 SIGTERM
+                # 分支不对称
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pass
         except (OSError, ProcessLookupError):
             pass
         return False, f"回归命令超时（>{spec.timeout_seconds}s），未能确认产出 JUnit XML"

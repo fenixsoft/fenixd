@@ -535,6 +535,19 @@ def dispatch_minor_defect_fastlane(pipeline, spec_name: str, decision: dict) -> 
     prev_report = load_report(ctx.project_root, spec_name)
     reverify = subset_reverify(pipeline, spec_name, subset_ids)
     if not reverify.get("ok"):
+        # 回落整轮前回写上一轮全量报告：子集重验经 _execute_stage2 已把仅含
+        # 子集场景的报告覆写规范 report.json，不回写则时间轴与报告消费方读到
+        # 失真的 total/passed/failed 直到下一次全量验证（与成功路径 merged
+        # 落盘对称）。prev_report 为 None（本就无报告/不可读）按无报告语义
+        # 跳过写盘；回写失败不阻断回落记账（整轮验证随后会重写报告）。
+        if prev_report is not None:
+            try:
+                save_report(ctx.project_root, spec_name, prev_report)
+            except OSError as e:
+                ctx.logger.warning(
+                    "pm_engine",
+                    f"fastlane 失败回落回写上一轮报告失败 '{spec_name}': {e!r}",
+                )
         return _bump_fail_streak(f"fastlane 子集重验未收敛: {reverify.get('reason')}")
 
     # ③ 收敛：合并报告（未实跑场景沿用上一轮通过结论并标注来源）后先落盘

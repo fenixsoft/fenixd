@@ -159,20 +159,31 @@ export default function HookManager({
     [hooks, form],
   );
 
+  // 删除/启停与 handleSubmit 同款错误口径（code-review item c31395922dc3）：
+  // 同步调用丢弃 Promise 时保存失败无任何反馈且可能 unhandled rejection；
+  // 组件内无本地乐观更新（hooks 由父组件回写），失败仅补错误提示即可
   const handleDelete = useCallback(
-    (idx: number) => {
+    async (idx: number) => {
       const next = hooks.filter((_, i) => i !== idx);
-      onSave(next);
+      try {
+        await onSave(next);
+      } catch (e) {
+        message.error(`保存失败：${e instanceof Error ? e.message : e}`);
+      }
     },
-    [hooks, onSave],
+    [hooks, onSave, message],
   );
 
   const handleToggle = useCallback(
-    (idx: number, checked: boolean) => {
+    async (idx: number, checked: boolean) => {
       const next = hooks.map((h, i) => (i === idx ? { ...h, enabled: checked } : h));
-      onSave(next);
+      try {
+        await onSave(next);
+      } catch (e) {
+        message.error(`保存失败：${e instanceof Error ? e.message : e}`);
+      }
     },
-    [hooks, onSave],
+    [hooks, onSave, message],
   );
 
   const handleSubmit = () => {

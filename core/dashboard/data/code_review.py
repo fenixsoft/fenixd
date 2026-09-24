@@ -58,8 +58,8 @@ def read_code_review_items(project_root, statuses=None, sort_by=None, sort_order
     sort_by/sort_order: server-side 排序（2026-09-24 台账分页配套）——
     ``severity``|``status`` × ``asc``|``desc``；白名单外值回退默认排序
     （severity 升序，即 sort_by/sort_order 均缺省的历史行为）。同键条目沿用
-    (file, line) 稳定次序，desc 只反转主键权重（次级键保持升序，未知值恒排
-    末尾）。
+    (file, line) 稳定次序，desc 反转主键权重（次级键保持升序，未知档位在
+    asc/desc 两向恒排末尾）。
     """
     items = read_items(project_root)
     wanted = {"open"} if statuses is None else set(statuses)
@@ -74,7 +74,11 @@ def read_code_review_items(project_root, statuses=None, sort_by=None, sort_order
     sign = _SORT_DIRECTIONS.get(str(sort_order or "asc").lower(), 1)
     rows.sort(
         key=lambda r: (
-            sign * _SORT_FIELDS[field].get(str(r.get(field)), 9),
+            # 未知档位缺省权重按 sign 翻转（sign*9）：有效键恒为 sign*(sign*9)=9，
+            # 大于任一方向下全部已知档位的有效权重（asc 最大 3 / desc 最大 0），
+            # 使「未知档位恒排末尾」在 asc/desc 两向都成立（code-review item
+            # c3e99570788b）；已知档位查表命中，权重不受影响。
+            sign * _SORT_FIELDS[field].get(str(r.get(field)), sign * 9),
             str(r.get("file") or ""),
             _line_key(r.get("line")),
         )
