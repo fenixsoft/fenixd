@@ -467,7 +467,7 @@ export default function HookManager({
         onCancel={() => setModalOpen(false)}
         okText={saving ? '保存中...' : '保存'}
         confirmLoading={saving}
-        destroyOnClose
+        destroyOnHidden
         width={520}
       >
         <Form form={form} layout="vertical" preserve={false}>

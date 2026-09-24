@@ -5,7 +5,10 @@
 """
 
 from datetime import datetime, timezone
+import fcntl
 import json
+import os
+import tempfile
 import threading
 
 # code-review item 7f6062e65ecb：_accumulate_token_usage 的「read_one 读旧值 →
@@ -239,29 +242,60 @@ class TokenAccountant:
         )
         try:
             tokens_json.parent.mkdir(parents=True, exist_ok=True)
-            data = {}
-            if tokens_json.is_file():
+            # code-review item c01047460508：read_text → 内存 append → write_text
+            # 整文件覆盖，既非原子（写中途崩溃留下半个 JSON，下次读取 JSONDecodeError
+            # 回退 {} 后首写即清空既有全部历史）也无文件锁（并发两个 run 收工互相
+            # 覆盖丢记录）。对齐同目录 maintenance_runs._append_token_run（item
+            # d1836827425e 同病同方）：``.tokens.json.lock`` 做 fcntl.flock 互斥 +
+            # tempfile + fsync + os.replace 原子落盘；读侧 JSONDecodeError 回退 {}
+            # 语义不变（原子写后不再产生半文件）。
+            lock_path = tokens_json.parent / f".{tokens_json.name}.lock"
+            with open(lock_path, "w") as lock_f:
+                fcntl.flock(lock_f, fcntl.LOCK_EX)
                 try:
-                    loaded = json.loads(tokens_json.read_text(encoding="utf-8"))
-                except (OSError, json.JSONDecodeError):
-                    loaded = {}
-                if isinstance(loaded, dict):
-                    data = loaded
-            runs = data.get("runs")
-            if not isinstance(runs, list):
-                runs = []
-            runs.append(
-                {
-                    "agent_type": agent_type,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "input_tokens": int(usage_info.get("input_tokens", 0) or 0)
-                    + int(usage_info.get("cache_creation_input_tokens", 0) or 0)
-                    + int(usage_info.get("cache_read_input_tokens", 0) or 0),
-                    "output_tokens": int(usage_info.get("output_tokens", 0) or 0),
-                    "cost_usd": usage_info.get("cost_usd"),
-                }
-            )
-            data["runs"] = runs
-            tokens_json.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+                    data = {}
+                    if tokens_json.is_file():
+                        try:
+                            loaded = json.loads(tokens_json.read_text(encoding="utf-8"))
+                        except (OSError, json.JSONDecodeError):
+                            loaded = {}
+                        if isinstance(loaded, dict):
+                            data = loaded
+                    runs = data.get("runs")
+                    if not isinstance(runs, list):
+                        runs = []
+                    runs.append(
+                        {
+                            "agent_type": agent_type,
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "input_tokens": int(usage_info.get("input_tokens", 0) or 0)
+                            + int(usage_info.get("cache_creation_input_tokens", 0) or 0)
+                            + int(usage_info.get("cache_read_input_tokens", 0) or 0),
+                            "output_tokens": int(usage_info.get("output_tokens", 0) or 0),
+                            "cost_usd": usage_info.get("cost_usd"),
+                        }
+                    )
+                    data["runs"] = runs
+                    content = json.dumps(data, ensure_ascii=False, indent=2)
+                    # 原子替换：同目录进程唯一临时名 + fsync + os.replace
+                    fd, tmp_str = tempfile.mkstemp(
+                        prefix=f".{tokens_json.name}.",
+                        suffix=".tmp",
+                        dir=str(tokens_json.parent),
+                    )
+                    try:
+                        with os.fdopen(fd, "w", encoding="utf-8") as f:
+                            f.write(content)
+                            f.flush()
+                            os.fsync(f.fileno())
+                        os.replace(tmp_str, str(tokens_json))
+                    finally:
+                        if os.path.exists(tmp_str):
+                            try:
+                                os.unlink(tmp_str)
+                            except OSError:
+                                pass
+                finally:
+                    fcntl.flock(lock_f, fcntl.LOCK_UN)
         except (OSError, json.JSONDecodeError):
             pass

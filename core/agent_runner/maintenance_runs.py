@@ -677,6 +677,34 @@ def _accumulate_self_review_tokens(runner, date_str: str, usage_info: dict) -> N
 # ── 框架自进化 run（add-framework-self-evolution spec，design D2） ──
 
 
+def _unique_evolution_run_id(runner) -> str:
+    """生成不冲突的 ``evo-<epoch>`` run_id（code-review item c52b09b4d42d）。
+
+    秒级时间戳在「手动触发 + 定时触发同秒到达（或快速连续两次调用）」下
+    撞名：runs/evo-<run_id>.jsonl 事件流与 out-<run_id>.json 契约产物会互相
+    覆盖。对齐 _unique_self_review_run_id 的探测退避形态：候选的 run 事件流
+    或在飞 out 文件任一已存在，即追加 ``-<n>`` 退避（n 从 1 起递增）。探测
+    退避而非 O_CREAT|O_EXCL 申领：out 文件由 agent 按 prompt 注入的路径写入
+    且 run 结束即清理（_delete_evolution_out），抢先落申领占位文件会改变该
+    文件生命周期并可能被 read_contract 误读为合法契约。
+    """
+    base = f"evo-{int(time.time())}"
+    candidate = base
+    n = 0
+    runs_dir = runner.project_root / ".fenix" / "runs"
+    while True:
+        if (
+            (runs_dir / f"{candidate}.jsonl").exists()
+            or (
+                runner.project_root / ".fenix" / "evolution" / f"out-{candidate}.json"
+            ).exists()
+        ):
+            n += 1
+            candidate = f"{base}-{n}"
+            continue
+        return candidate
+
+
 def run_evolution(
     runner, ready_projects: list, pending_entries: list | None = None
 ) -> EvolutionResult:
@@ -685,7 +713,8 @@ def run_evolution(
     与 implementer/verifier 不同：自进化是运维角色，直接在 main 树
     （project_root）操作，**不创建 worktree**（与 run_self_review 同形态）。
     特性：
-    - run_id 前缀 ``evo-<epoch>``：独立前缀，不占 spec 维度预算、
+    - run_id 前缀 ``evo-<epoch>``（同秒重入追加 ``-<n>`` 退避防撞名，见
+      _unique_evolution_run_id）：独立前缀，不占 spec 维度预算、
       不计入每日 agent run 计数（不走 _execute_agent）；
     - token 归账沿用 _accumulate_self_review_tokens 的既有类目（cost
       独立类目，不写 STATE）；
@@ -708,7 +737,7 @@ def run_evolution(
             的返回，同一 run 拿到多份 todo.md）。
         pending_entries: 待分析条目（含 id），None 由调用方传入。
     """
-    run_id = f"evo-{int(time.time())}"
+    run_id = _unique_evolution_run_id(runner)
     out_path = runner.project_root / ".fenix" / "evolution" / f"out-{run_id}.json"
     prompt = runner._build_prompt(
         run_id,

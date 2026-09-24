@@ -827,9 +827,6 @@ def read_effective_config(project_root) -> dict:
             if "gates" not in result:
                 result["gates"] = {}
             result["gates"]["promote_mode"] = val
-    elif "gates" not in result:
-        # 缺失时填默认值 auto（对齐 ConfigLoader.get_promote_mode）
-        result["gates"] = {"promote_mode": "auto"}
     elif "promote_mode" not in result.get("gates", {}):
         result["gates"]["promote_mode"] = "auto"
     # add-spec-review-gate：方案评审模式回显（经 get_spec_review_mode 生效值，

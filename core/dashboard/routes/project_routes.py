@@ -242,8 +242,15 @@ class H2ProjectRoutesMixin:
         # 2) 停止显式注册项 + 写入忽略列表（忽略优先：即便再次显式注册也被忽略）
         try:
             self.server.registry.remove_project(project["path"])
-        except Exception:
-            pass
+        except Exception as e:
+            # 移除失败留痕（code-review item de01de91d3a7）：忽略优先语义下
+            # 不阻断删除，但项目可能残留于显式注册列表，须可追查。
+            logger.warning(
+                "移除显式注册项失败（path=%s）: %s: %s",
+                project["path"],
+                type(e).__name__,
+                e,
+            )
         try:
             add_result = self.server.registry.add_ignored(project["path"])
             if not add_result[0]:

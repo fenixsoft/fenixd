@@ -49,8 +49,17 @@ export function rootContainer(container: ReactNode) {
  * 祖先节点可点击、当前节点纯文本（与原各页面 header.extra 面包屑行为一致）。
  * 用独立组件持有 useLocation，避免闭包拿到过期 location。
  */
+// 解码 URL 段；非法编码（如裸 '%'）会抛 URIError，回退用原始段值渲染避免整页崩溃。
+function safeDecode(seg: string) {
+  try {
+    return decodeURIComponent(seg);
+  } catch {
+    return seg;
+  }
+}
+
 function crumbItems(pathname: string) {
-  const seg = pathname.split('/').filter(Boolean).map(decodeURIComponent);
+  const seg = pathname.split('/').filter(Boolean).map(safeDecode);
   const home = { title: '概览', href: '#/overview' };
   if (seg[0] === 'projects') {
     if (seg[2]) {
@@ -81,7 +90,7 @@ function HeaderCrumb() {
 export const layout: RunTimeLayoutConfig = ({ initialState }) => {
   return {
     ...defaultSettings,
-    // 左上角标题对齐 v1 brand：logo + Fenix 粗体 + Dashboard 细体灰字（style.css .brand/.brand-sub）。
+    // 左上角标题对齐 v1 brand：logo + Fenix 粗体 + Harness 细体灰字。
     // headerTitleRender 会整体覆盖 ProLayout 默认「logo+title」组合，故 logo 图需在此显式渲染。
     // 不把节点放进 title——umi 插件会用 title 拼 document.title，节点会变成 "[object Object]"。
     headerTitleRender: () => (
