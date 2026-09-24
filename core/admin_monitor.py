@@ -45,6 +45,10 @@ from core.pm_engine.verification import (
     resolve_env_blocked_reset_path,
 )
 
+# evo-add-wip-defer-merge-retry-consumer 2.3：WIP 等待豁免的上限口径与周期
+# 消费者（queue.py）共用同一常量——超限即「降级人工 + 豁免自动失效」单源。
+from core.pm_engine.dispatch.queue import WIP_DEFER_WINDOW_MINUTES, WIP_DEFER_MAX_ROUNDS
+
 # frozen-scenario-schema-migration D3：处置后自动复位集合。
 # blocked_stuck 与 env 阻塞族同语义加入自动复位：admin 处置成功
 # （result=resolved/partially-resolved）且根因已修复 → 复用
@@ -293,6 +297,11 @@ SIGNAL_SEVERITY = {
     # 单 spec merge-back）。由上述 STORED_SIGNAL_TYPES 收录，admin_monitor
     # 摄取唤起 Administrator。
     "mergeback_spec_dir_inflight_stuck": "major",
+    # evo-add-wip-defer-merge-retry-consumer 2.1：WIP 延迟合回等待超限降级——
+    # 周期消费者停止自动 merge-only 重试后的人工处置出口（窗口 90 分钟/轮数
+    # 6 次任一超限）。major：与 WIP 重叠阻塞同级（阻塞单 spec merge-back，
+    # 非 critical）。
+    "mergeback_wip_defer_stuck": "major",
     # fix-verify-uniform-failure-consumer：全场景同因失败（pass=0 且失败签名
     # 一致）——既可能是验证环境/夹具问题，也可能是场景本身缺陷；admin 需判类
     # 后走对应处置路径，不直接判 bug-found（同因哨有意不派生 fix）。
@@ -351,6 +360,9 @@ SIGNAL_RECOMMENDATION = {
     # evo-merge-back-wip-overlap-gate D1：阻塞策略下主树 WIP 与分支改动重叠导致
     # merge-back 中止的核对指引——重叠 ≠ 冲突，主树零污染，处置后重新放行即可。
     "mergeback_wip_overlap": "merge-back 被 WIP 重叠闸门阻塞（策略=block，主树零污染，未 stash/merge/pop）：提交（git add/commit）或 stash（git stash push）主树与分支重叠的未提交改动后，重新放行该 spec（ready 重派）继续 merge-back；改动找回用 git stash list 与逐文件 git show <sha>:<file>",
+    # evo-add-wip-defer-merge-retry-consumer 2.1：等待超限降级处置指引——周期
+    # 消费者已停止自动重试，人工是唯一出路（勿复位 ready 后干等：自动通道已关）。
+    "mergeback_wip_defer_stuck": "WIP 延迟合回等待超限（窗口/轮数上限已到，自动重试已停止）：人工核对主树与分支改动路径重叠的未提交改动归属后，提交（git add/commit）或 stash（git stash push）主树重叠改动，再把该 spec 复位 ready 重新放行 merge-back；或人工完成该分支向主树的合并",
     # add-blocked-reverify-lane D2：env 阻塞处置建议同步复位收敛措辞——
     # 处置范围限于环境修复，result 写入后框架自动判定复位路径（实现分支已合并→
     # 直通道 testing 重验，否则→ready），无需手动 reset spec 状态。
@@ -399,6 +411,10 @@ STORED_SIGNAL_TYPES = (
     # 只扫 implementing/testing、event_bus recover_orphan_ready 只扫 ready）
     # 无法单独兜底其可见性，本信号是本 SPEC 自有的告警出口（D1a 点名）。
     "mergeback_spec_dir_inflight_stuck",
+    # evo-add-wip-defer-merge-retry-consumer 2.1：WIP 等待超限降级告警由
+    # pm_engine 周期消费者直发——未收录则记录落 store 后无人摄取、
+    # Administrator 不唤起，超限 spec 的「人工处置出口」落空。
+    "mergeback_wip_defer_stuck",
     "verify_contract_redraft",
     # add-test-regression-tab 增强：UI 手动请求「仅补 regression 段」——未收录则
     # 记录落 store 后无人摄取（信号石沉大海）。证据含「项目名=」供无 spec 形态解析。
@@ -1899,6 +1915,40 @@ class AdminMonitor:
                     f"由 daemon 重启恢复消费）",
                 )
                 continue
+            # WIP 延迟合回等待载体的豁免（evo-add-wip-defer-merge-retry-consumer
+            # 2.3，与上方 _repair_awaiting_remerge 同型）：implementing +
+            # _wip_gate_deferred=True 是周期消费者的**有意等待态**——唯一消费者
+            # 是 daemon 主循环的 merge-only 自动重试（120 秒节拍，远短于本探测
+            # 的 15 分钟缺省阈值，「WIP 清了自动合回」是默认路径）。等待期内
+            # （未超限：计数 < WIP_DEFER_MAX_ROUNDS 且窗口
+            # < WIP_DEFER_WINDOW_MINUTES，与 queue.py 同一常量口径）豁免：若不
+            # 豁免，15 分钟后 orphaned_state major 照发召唤 Administrator，与
+            # 「admin 仅处理真冲突与超限降级」的目标矛盾，且其处置复位
+            # implementing→ready 会与周期消费者的状态守卫相撞。超限降级后
+            # 豁免**自动失效**：标志保留、本探测恢复兜底，与
+            # mergeback_wip_defer_stuck 降级告警汇合指向人工。
+            if entry.get("_wip_gate_deferred"):
+                try:
+                    _wip_count = int(entry.get("_merge_retry_count", 0) or 0)
+                except (TypeError, ValueError):
+                    _wip_count = 0
+                _wip_first = entry.get("_merge_retry_first_at")
+                try:
+                    _wip_first_f = float(_wip_first) if _wip_first else now
+                except (TypeError, ValueError):
+                    _wip_first_f = now
+                _wip_over = (
+                    (now - _wip_first_f) / 60.0 >= WIP_DEFER_WINDOW_MINUTES
+                    or _wip_count >= WIP_DEFER_MAX_ROUNDS
+                )
+                if not _wip_over:
+                    self.logger.debug(
+                        "admin_monitor",
+                        f"跳过 orphaned_state 探测：'{name}' 为 WIP 延迟合回等待"
+                        f"载体（_wip_gate_deferred=True，{_wip_count} 轮，"
+                        f"周期消费者自动 merge-only 重试中；超限后本豁免自动失效）",
+                    )
+                    continue
             updated_str = entry.get("updated") or entry.get("created") or ""
             try:
                 updated = datetime.fromisoformat(updated_str.replace("Z", "+00:00"))

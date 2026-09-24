@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
 
 
@@ -376,9 +377,34 @@ class RRollbackMixin:
             f"重叠改动后，重新放行该 spec（ready 重派）即可继续 merge-back。"
         )
         try:
+            # 结构化等待载体（evo-add-wip-defer-merge-retry-consumer 1.1）：
+            # error 文本不再作为唯一现场标志——同次 update_spec 增写
+            # _wip_gate_deferred=True + 复用 _merge_retry_count/_merge_retry_first_at
+            # 记账（与 spec_dir_inflight 顺延共用一套计数，混账已知、接受——
+            # 见设计「风险与边界」）。首阻时刻沿用既有值（同一 spec 先后经历
+            # 两种阻断时窗口不重置），缺省取当前时刻。消费者（queue.py 周期
+            # 复查）据此自动 merge-only 重试；标志的生命周期不变式：
+            # implementing+_wip_gate_deferred ⇒ 无在飞实现 run（触发阻断的
+            # run 已在结果处理期收尾，新 run 只能自 ready 派发而 boot 两个
+            # 复位写点已清标志）。
+            entry = self._pm.state_machine.read_one(spec_name) or {}
+            try:
+                prev_count = int(entry.get("_merge_retry_count", 0) or 0)
+            except (TypeError, ValueError):
+                prev_count = 0
+            prev_first = entry.get("_merge_retry_first_at")
+            try:
+                first_f = float(prev_first) if prev_first else None
+            except (TypeError, ValueError):
+                first_f = None
             self._pm.state_machine.update_spec(
                 spec_name,
-                {"error": f"mergeback wip overlap blocked (policy=block): files={overlap}"},
+                {
+                    "error": f"mergeback wip overlap blocked (policy=block): files={overlap}",
+                    "_wip_gate_deferred": True,
+                    "_merge_retry_count": prev_count,
+                    "_merge_retry_first_at": int(first_f) if first_f else int(time.time()),
+                },
             )
         except Exception as e:
             self._pm.logger.warning(
@@ -517,4 +543,82 @@ class RRollbackMixin:
             self._pm.logger.warning(
                 "pm_engine",
                 f"mergeback_spec_dir_inflight_stuck 告警写入失败 '{spec_name}'（非阻塞）: {e}",
+            )
+
+    def _report_mergeback_wip_defer_stuck(
+        self, spec_name: str, retry_count: int, first_at: int,
+    ) -> None:
+        """WIP 等待超限降级告警（evo-add-wip-defer-merge-retry-consumer 2.1）。
+
+        周期消费者在等待超窗口（90 分钟，对齐 code-fix defer 范式）或重试超
+        轮数（6 次）时调用（``_report_mergeback_spec_dir_inflight_stuck`` 同型
+        语义）：停止自动 merge-only 重试、降级为人工处置告警。现场标志
+        （``_wip_gate_deferred``）保留供人工与取证——orphaned_state 探测的
+        豁免随之自动失效（同一上限常量口径，admin_monitor 2.3），孤儿探测
+        恢复兜底。任何异常不阻塞调用方主流程。
+        """
+        description = (
+            f"SPEC '{spec_name}' WIP 延迟合回等待超限：自首阻（{first_at}）起已等 "
+            f"{retry_count} 轮仍未解除（窗口/轮数上限已到），已停止自动 "
+            f"merge-only 重试，转人工处置。分支保留（已成功实现、仅剩合并，"
+            f"主树零污染）。处置指引：确认主树与分支改动路径重叠的未提交改动"
+            f"归属后，提交（git add/commit）或 stash（git stash push）主树重叠"
+            f"改动，再把该 spec 复位 ready 重新放行 merge-back；或人工完成合并。"
+        )
+        try:
+            self._pm.state_machine.update_spec(
+                spec_name,
+                {
+                    "error": (
+                        f"mergeback wip defer stuck after {retry_count} "
+                        f"rounds since {first_at} — manual handling required"
+                    ),
+                },
+            )
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"mergeback wip defer stuck 状态上报失败 '{spec_name}'（非阻塞）: {e}",
+            )
+        self._pm.logger.error(
+            "pm_engine",
+            f"'{spec_name}' WIP 延迟合回等待超限 —— 已停止自动重试，"
+            f"等待人工处置主树重叠改动（分支与产物保留）",
+        )
+        try:
+            from core.agent_runner.prompt_builder import _str_field
+            from core.admin_store import AdminStore, SIGNAL
+
+            evidence = _str_field(
+                {
+                    "retry_count": retry_count,
+                    "first_blocked_at": first_at,
+                    "window_minutes": 90,
+                    "max_rounds": 6,
+                }
+            )
+            store = AdminStore(self._pm.project_root, self._pm.logger)
+            store.append(
+                {
+                    "kind": SIGNAL,
+                    "signal_type": "mergeback_wip_defer_stuck",
+                    "spec": spec_name,
+                    "severity": "major",
+                    "description": description,
+                    "evidence": evidence,
+                    "recommended_action": (
+                        "人工核对主树与分支重叠的未提交改动归属后提交/stash，"
+                        "再把该 spec 复位 ready 重新放行 merge-back；"
+                        "或人工完成该分支向主树的合并"
+                    ),
+                }
+            )
+            self._pm.logger.info(
+                "pm_engine",
+                f"mergeback_wip_defer_stuck 告警已写入 admin store: '{spec_name}'",
+            )
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"mergeback_wip_defer_stuck 告警写入失败 '{spec_name}'（非阻塞）: {e}",
             )

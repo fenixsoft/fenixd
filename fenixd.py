@@ -631,6 +631,11 @@ class FenixDaemon:
         # 不新建线程/Timer）。恢复延迟从「最坏一个扫描周期（30 分钟）」降到
         # 「最坏一个精触发周期（60 秒）」；full_scan 周期扫描仍为兜底。
         orphan_ready_check_ts = time.time()
+        # evo-add-wip-defer-merge-retry-consumer 2.2：WIP 延迟合回周期复查独立
+        # 计时（120 秒节拍，常量先行不新增配置面，对齐 orphan_ready_check_ts
+        # 挂载方式——同步调用、try/except 记日志不中断主循环）。节拍远短于
+        # orphaned_state 探测的 15 分钟缺省阈值，自动合回先于孤儿探测生效。
+        wip_defer_check_ts = time.time()
         # add-framework-self-evolution 5.1：自进化检查点独立计时（节拍复用
         # admin.interval_minutes，缺省 5 分钟）。
         evolution_check_ts = time.time()
@@ -775,6 +780,18 @@ class FenixDaemon:
                         self.event_bus.recover_orphan_ready()
                     except Exception as e:
                         self.logger.error("fenixd", f"Orphan ready recovery check failed: {e}")
+                # WIP 延迟合回周期复查（evo-add-wip-defer-merge-retry-consumer
+                # 2.2）：每 120s 复查带 _wip_gate_deferred 标志的 implementing
+                # 条目——主树重叠文件已干净即 merge-only 自动合回（implemented
+                # 推进 + 标志清账 + 告警闭环），超限降级人工。同步调用 +
+                # 异常捕获记日志不中断主循环；先于 orphaned_state 探测（15 分钟
+                # 阈值）生效，使自动合回成为默认路径。
+                if time.time() - wip_defer_check_ts >= 120:
+                    wip_defer_check_ts = time.time()
+                    try:
+                        self.pm_engine._dispatcher._recheck_wip_deferred_merges()  # noqa: SLF001 — 周期消费者挂 Dispatcher（deliverable 声明面约束）
+                    except Exception as e:
+                        self.logger.error("fenixd", f"WIP defer merge recheck failed: {e}")
                 # verify-process-lifecycle（D4 周期清扫）：孤儿泄漏可见窗口
                 # ≤ 一个周期（600s）。覆盖 dev-server 与 servers.json 登记实例；
                 # 首轮启动清扫已处理存量，此后周期性兜底。

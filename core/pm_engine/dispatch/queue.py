@@ -30,6 +30,16 @@ from core.state_machine import (
 )
 from core.agent_runner.provider_circuit import MODEL_CHAIN_UNAVAILABLE_MARKER
 
+# ── WIP 延迟合回预算（evo-add-wip-defer-merge-retry-consumer 2.1/2.3）────────
+# 等待窗口（分钟，自首阻时刻起算）与自动 merge-only 重试轮数上限，对齐
+# code-fix defer D6 范式（90 分钟/6 次）。模块常量、**不新增配置键**（规避
+# dashboard UI 联动义务，MAX_REPAIR_ROUNDS_PER_FAILURE 先例）。超任一上限即
+# 停止自动重试、降级人工处置告警；orphaned_state 探测的豁免判据
+# （admin_monitor 2.3）从本模块导入同一常量，保证「豁免失效」与「停止重试」
+# 单一口径。
+WIP_DEFER_WINDOW_MINUTES = 90.0
+WIP_DEFER_MAX_ROUNDS = 6
+
 
 class QQQueueMixin:
     """Q 队列核心/worker（design D1 表 B Q 组）。"""
@@ -2091,6 +2101,36 @@ class QQQueueMixin:
         """
         wm = self._pm.agent_runner.worktree_manager
         entry = self._pm.state_machine.read_one(spec_name) or {}
+        # ── 状态守卫（evo-add-wip-defer-merge-retry-consumer 2.1a，两层守卫
+        # 的第一层）── status 非 implementing 即跳过并清账后返回：人工/admin
+        # 已把条目推进（如 orphaned_state 处置复位 ready、验证链推进
+        # testing/implemented）后，迟到的 merge-only 重试不得再动它（重复合并
+        # /非法状态转移）。守卫只看 status、不看 _wip_gate_deferred：既有
+        # spec_dir_inflight 顺延定时器链的条目仅带 _merge_retry_pending 不带
+        # 新标志，既有测试亦不带标志直调，MUST 继续可用。
+        if (entry.get("status") or "") != "implementing":
+            try:
+                self._pm.state_machine.update_spec(
+                    spec_name,
+                    {
+                        "_merge_retry_pending": False,
+                        "_merge_retry_count": 0,
+                        "_merge_retry_first_at": None,
+                        "_wip_gate_deferred": False,
+                    },
+                )
+            except Exception as e:
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"merge 重试跳过清账失败 '{spec_name}'（非阻塞）: {e}",
+                )
+            self._pm.logger.info(
+                "pm_engine",
+                f"merge 重试 '{spec_name}' 跳过：status="
+                f"{entry.get('status') or '无'} 非 implementing"
+                f"（条目已被人工/admin 推进，不重复合并），顺延/等待记账已清账",
+            )
+            return
         branch = entry.get("branch")
         if not branch:
             self._pm.logger.error(
@@ -2126,12 +2166,224 @@ class QQQueueMixin:
                 list(getattr(wm, "last_stash_pop_conflicts", []) or []),
             )
             return
+        # ── WIP 等待标志在场且失败仍为 wip 阻断形态
+        # （evo-add-wip-defer-merge-retry-consumer 2.1b）── 交回等待记账
+        # （计数 +1、超限降级），MUST NOT 落入既有可重试分类/指纹熔断：主路径
+        # 对 wip_gate_blocked 有同型旁路先例（wip 阻断是「前置拦截」而非
+        # 「merge 失败」，熔断会把「等待人工清 WIP」误记成 merge 连败而冻结
+        # spec）。真内容冲突（非 wip 形态）不在此列——按设计走既有失败路径，
+        # 不尝试自动解决内容冲突。
+        if (
+            entry.get("_wip_gate_deferred")
+            and getattr(merge_info, "wip_gate_blocked", False)
+        ):
+            self._record_wip_defer_retry_failure(
+                spec_name, merge_info, merge_error, branch
+            )
+            return
+        # 带标志条目落**非 wip** 失败（真内容冲突等）：等待到此结束——先清
+        # 标志再走既有失败路径。MUST 先清：既有路径会把条目降级 ready/重派
+        # 新实现 run，陈旧标志会让周期消费者在恢复 run 在飞期间触发
+        # merge-only 重试（把半成品分支过早合入主树，与在飞 run 收尾竞态——
+        # 与 boot 复位写点同一不变式）。
+        if entry.get("_wip_gate_deferred"):
+            try:
+                self._pm.state_machine.update_spec(
+                    spec_name, {"_wip_gate_deferred": False},
+                )
+            except Exception as e:
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"WIP 等待标志清除失败 '{spec_name}'（非阻塞）: {e}",
+                )
         # 再次顺延（有界，自首轮起算）或真失败（fail-open 回既有通道）
         if self._handle_retryable_mergeback_failure(spec_name, merge_info, merge_error, branch):
             return
         self._handle_merge_back_real_failure(
             spec_name, merge_info, merge_error, branch
         )
+
+    # ── WIP 延迟合回周期消费者（evo-add-wip-defer-merge-retry-consumer 2.1）──
+
+    @staticmethod
+    def _wip_defer_over_limit(count: int, first_f: float, now: float) -> bool:
+        """WIP 等待是否超限：窗口（自首阻起算 ≥90 分钟）或轮数（≥6 次）任一命中。
+
+        admin_monitor 豁免判据（2.3）用同一常量的反向谓词（计数<6 且窗口
+        <90 分钟），两处 MUST 保持同一口径——超限即「降级人工 + 豁免自动失效」。
+        """
+        window_exceeded = (now - first_f) / 60.0 >= WIP_DEFER_WINDOW_MINUTES
+        return window_exceeded or count >= WIP_DEFER_MAX_ROUNDS
+
+    def _recheck_wip_deferred_merges(self) -> None:
+        """周期复查带 WIP 等待标志的 spec（主循环 120 秒节拍调用，2.1/2.2）。
+
+        严格筛选（两层守卫的第二层）：仅认 ``status=implementing`` 且
+        ``_wip_gate_deferred`` 为真的条目——人工/admin 已推进或标志已清账的
+        条目不进入重试。逐条 merge-only 重试：重叠文件已干净（人工已提交/
+        stash 主树 WIP）即成功走 ``_finalize_merge_success``（implemented
+        推进 + 标志清账）并显式闭环 ``mergeback_wip_overlap`` 告警；失败仍为
+        wip 阻断则计数 +1（``_retry_merge_back_only`` 内 2.1b 分支），超限
+        降级人工处置告警并停止自动重试。
+
+        主树串行化说明：merge-only 体对主树的全部触达（预演闸/WIP 闸/
+        stash→merge→pop）都在 ``merge_back_from_branch`` 的 ``_main_tree_lock``
+        内（mergeback.py:73），与本方法调用方（daemon 主循环单线程）共同保证
+        逐条顺序执行——与人工 merge 并发时由锁串行，人工先行则状态守卫跳过。
+
+        任何异常都不中断扫描（其余条目继续）。
+        """
+        try:
+            specs = self._pm.state_machine.read_all() or {}
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine", f"WIP 等待复查扫描失败（本轮跳过，非阻塞）: {e}",
+            )
+            return
+        for name, entry in specs.items():
+            if (entry.get("status") or "") != "implementing":
+                continue
+            if not entry.get("_wip_gate_deferred"):
+                continue
+            try:
+                self._recheck_one_wip_deferred(name, entry)
+            except Exception as e:
+                self._pm.logger.warning(
+                    "pm_engine", f"WIP 等待复查异常 '{name}'（非阻塞）: {e}",
+                )
+
+    def _recheck_one_wip_deferred(self, spec_name: str, entry: dict) -> None:
+        """单条带标志条目的周期复查（2.1）：超限先降级，未超限才重试。"""
+        now = time.time()
+        try:
+            count = int(entry.get("_merge_retry_count", 0) or 0)
+        except (TypeError, ValueError):
+            count = 0
+        first_at = entry.get("_merge_retry_first_at")
+        try:
+            first_f = float(first_at) if first_at else now
+        except (TypeError, ValueError):
+            first_f = now
+        # 超限（窗口 ≥90 分钟或轮数 ≥6）：停止自动重试，降级人工处置告警
+        # （现场标志保留供人工与取证；orphaned_state 豁免随之自动失效）。
+        if self._wip_defer_over_limit(count, first_f, now):
+            self._report_wip_defer_stuck_once(
+                spec_name, count, int(first_f),
+            )
+            return
+        self._pm.logger.info(
+            "pm_engine",
+            f"WIP 等待复查 '{spec_name}'（第 {count + 1} 次自动 merge-only 重试，"
+            f"首阻 {int(first_f)}）",
+        )
+        before_status = entry.get("status")
+        self._retry_merge_back_only(spec_name)
+        after = self._pm.state_machine.read_one(spec_name) or {}
+        if before_status == "implementing" and (after.get("status") or "") == "implemented":
+            # 自动合回成功：显式闭环 mergeback_wip_overlap 告警
+            # （stuck-signal-hygiene 处置记录范式，result=resolved）。
+            self._resolve_wip_overlap_alert(spec_name)
+
+    def _report_wip_defer_stuck_once(
+        self, spec_name: str, count: int, first_at: int,
+    ) -> None:
+        """超限降级告警（daemon 生命周期内每条目至多一次，防周期节拍刷屏）。"""
+        notified = getattr(self, "_wip_defer_degrade_notified", None)
+        if notified is None:
+            notified = set()
+            self._wip_defer_degrade_notified = notified
+        if spec_name in notified:
+            return
+        notified.add(spec_name)
+        self._report_mergeback_wip_defer_stuck(spec_name, count, first_at)
+
+    def _record_wip_defer_retry_failure(
+        self, spec_name: str, merge_info, merge_error: str, branch: str,
+    ) -> None:
+        """WIP 等待条目重试仍被阻断：计数 +1（首阻时刻沿用），超限降级。"""
+        entry = self._pm.state_machine.read_one(spec_name) or {}
+        now = time.time()
+        try:
+            count = int(entry.get("_merge_retry_count", 0) or 0)
+        except (TypeError, ValueError):
+            count = 0
+        first_at = entry.get("_merge_retry_first_at")
+        try:
+            first_f = float(first_at) if first_at else now
+        except (TypeError, ValueError):
+            first_f = now
+        count += 1
+        overlap = list(getattr(merge_info, "wip_overlap", []) or [])
+        try:
+            self._pm.state_machine.update_spec(
+                spec_name,
+                {
+                    # 标志保持 True（仍在等待），error 叠加最新轮次供取证
+                    "_wip_gate_deferred": True,
+                    "_merge_retry_count": count,
+                    "_merge_retry_first_at": int(first_f),
+                    "error": (
+                        f"mergeback wip overlap deferred "
+                        f"(retry {count}/{WIP_DEFER_MAX_ROUNDS}, "
+                        f"first_blocked={int(first_f)}): files={overlap} "
+                        f"{str(merge_error)[:160]}"
+                    ),
+                },
+            )
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"WIP 等待记账写入失败 '{spec_name}'（非阻塞）: {e}",
+            )
+        self._pm.logger.info(
+            "pm_engine",
+            f"WIP 等待重试仍被阻断 '{spec_name}'（{count}/{WIP_DEFER_MAX_ROUNDS} 轮，"
+            f"首阻 {int(first_f)}）—— 主树 WIP 未清理，继续等待",
+        )
+        if self._wip_defer_over_limit(count, first_f, now):
+            self._report_wip_defer_stuck_once(spec_name, count, int(first_f))
+
+    def _resolve_wip_overlap_alert(self, spec_name: str) -> None:
+        """显式闭环 mergeback_wip_overlap 告警（2.1）。
+
+        沿用 stuck-signal-hygiene 处置记录范式：AdminStore 写 kind=disposition、
+        ``result=resolved`` 处置记录（infra_classify.py 审计留痕先例）——自动
+        合回成功即闭环，Administrator 不再被该信号召唤。任何异常不阻塞收口。
+        """
+        try:
+            from core.admin_store import AdminStore, DISPOSITION
+
+            store = AdminStore(self._pm.project_root, self._pm.logger)
+            store.append(
+                {
+                    "kind": DISPOSITION,
+                    "signal_type": "mergeback_wip_overlap",
+                    "spec": spec_name,
+                    "severity": "major",
+                    "description": (
+                        f"SPEC '{spec_name}' 主树 WIP 重叠已解除：周期消费者 "
+                        f"merge-only 重试成功，spec 推进 implemented，"
+                        f"mergeback_wip_overlap 告警闭环（自动合回，无需人工处置）"
+                    ),
+                    "action_taken": (
+                        "等待期内主树重叠改动已被清理（提交/stash），"
+                        "自动 merge-only 重试成功并走 _finalize_merge_success 收口"
+                    ),
+                    "result": "resolved",
+                    "recommended_action": "",
+                    "summary": f"wip defer auto-merge resolved: {spec_name}",
+                    "admin_run_id": f"wip-defer-consumer:{spec_name}",
+                }
+            )
+            self._pm.logger.info(
+                "pm_engine",
+                f"mergeback_wip_overlap 告警已闭环（result=resolved）: '{spec_name}'",
+            )
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"mergeback_wip_overlap 告警闭环失败 '{spec_name}'（非阻塞）: {e}",
+            )
 
     def _handle_merge_back_real_failure(
         self, spec_name: str, merge_info, merge_error: str, branch: str
@@ -2278,6 +2530,9 @@ class QQQueueMixin:
                 "_merge_retry_pending": False,
                 "_merge_retry_count": 0,
                 "_merge_retry_first_at": None,
+                # WIP 等待标志清账（evo-add-wip-defer-merge-retry-consumer
+                # 1.2）：merge 成功即解除等待态（三条清除写点之一）。
+                "_wip_gate_deferred": False,
             },
         )
         # pop 冲突自愈后：被丢弃的 stash 改动文件清单写入 error 字段，
