@@ -84,23 +84,32 @@ class G6StashGuardMixin:
         dirty_tracked = bool(self._list_dirty_tracked_files())
         if not dirty_tracked:
             return False
-        stash = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(self.project_root),
-                "stash",
-                "push",
-                "-m",
-                prefix or AUTOSTASH_MSG_PREFIX,
-                "--",
-                ".",
-                ":(exclude)spec/changes",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
+        try:
+            stash = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(self.project_root),
+                    "stash",
+                    "push",
+                    "-m",
+                    prefix or AUTOSTASH_MSG_PREFIX,
+                    "--",
+                    ".",
+                    ":(exclude)spec/changes",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except (subprocess.TimeoutExpired, OSError) as e:
+            # git 超时/不可用：按「未 stash」降级（与 returncode!=0 同路径），
+            # guard 以 stashed=False 跳过 finally 的 restore，不让异常穿出
+            self.logger.warning(
+                "worktree_manager",
+                f"Autostash failed (proceed with dirty tree): {e}",
+            )
+            return False
         if stash.returncode != 0:
             self.logger.warning(
                 "worktree_manager",
@@ -145,21 +154,34 @@ class G6StashGuardMixin:
         # pop 前钉住栈顶 sha（fix-mergeback-stashpop-silent-loss D2）：guard 锁内
         # LIFO，此时栈顶即刚 push 的条目；drop 前以「sha 仍为栈顶」防并发插队。
         pinned_sha = ""
-        rev = subprocess.run(
-            ["git", "-C", str(self.project_root), "rev-parse", "--verify", "stash@{0}"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        if rev.returncode == 0:
+        try:
+            rev = subprocess.run(
+                ["git", "-C", str(self.project_root), "rev-parse", "--verify", "stash@{0}"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            # git 超时/不可用：钉不住 sha，按空 sha 继续（后续 pop 自行降级）
+            rev = None
+        if rev is not None and rev.returncode == 0:
             pinned_sha = rev.stdout.strip()
 
-        result = subprocess.run(
-            ["git", "-C", str(self.project_root), "stash", "pop"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(self.project_root), "stash", "pop"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except (subprocess.TimeoutExpired, OSError) as e:
+            # 本方法常在 guard 的 finally 中执行，绝不能外抛（会吞掉业务原始
+            # 异常并中断清理链）——按旧版非冲突失败语义降级，stash 条目保留
+            self.logger.warning(
+                "worktree_manager",
+                f"Stash pop failed (non-conflict, stash preserved): {e}",
+            )
+            return False, []
         if result.returncode == 0:
             self.logger.info("worktree_manager", "Stash popped after merge")
             return True, []

@@ -40,7 +40,7 @@ class G5DistConflictsMixin:
     """G5 构建产物冲突/dist 重建（design D1 表 A G5）。"""
 
 
-    def _resolve_build_artifact_conflicts(self, branch: str) -> bool:
+    def _resolve_build_artifact_conflicts(self) -> bool:
         """merge 冲突自愈：产物冲突无条件对齐 HEAD，语义冲突只看非产物路径。
 
         dist 冲突根治 A（2026-09-04 task-track 混合冲突连坐治理）。仅分支模式
@@ -60,8 +60,6 @@ class G5DistConflictsMixin:
 
         Returns: True 表示自愈完成且 merge 已提交。
         """
-        if not branch:
-            return False
         try:
             res = subprocess.run(
                 ["git", "-C", str(self.project_root), "status", "--porcelain"],

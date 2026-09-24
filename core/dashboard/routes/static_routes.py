@@ -134,11 +134,13 @@ class H10StaticRoutesMixin:
         if len(body) < self._GZIP_MIN:
             return None
         payload = gzip.compress(body, 5)
-        if key is not None:
+        # 条目数清空以「本次确要插入」为前提（code-review item 1dfa37965c96）：
+        # 超过单文件上限不入缓时不得触碰既有缓存，否则持续访问超大 hashed
+        # bundle 会反复清空其他条目，令小文件缓存形同虚设。
+        if key is not None and len(body) <= self._GZIP_PAYLOAD_CACHE_MAX_BYTES:
             if len(self._gzip_payload_cache) >= self._GZIP_PAYLOAD_CACHE_MAX_ENTRIES:
                 self._gzip_payload_cache.clear()
-            if len(body) <= self._GZIP_PAYLOAD_CACHE_MAX_BYTES:
-                self._gzip_payload_cache[key] = payload
+            self._gzip_payload_cache[key] = payload
         return payload
 
     def _send_file(self, path: Path, ctype: str, cache: str = "no-cache"):

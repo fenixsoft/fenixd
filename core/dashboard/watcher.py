@@ -35,11 +35,14 @@ daemon 侧 event_bus.py 的 checksum 轮询一致。
   spec 树才是 10000 规模下 stat 的大头。
 """
 
+import logging
 import threading
 import time
 from pathlib import Path
 
 from . import data as dashboard_data
+
+logger = logging.getLogger(__name__)
 
 SCAN_INTERVAL = 1.0  # 数据源文件轮询周期（秒）
 REFRESH_HEARTBEAT = 2.0  # 周期性刷新心跳（秒）：daemon 状态/新项目发现不产生文件变更，需周期推送
@@ -106,11 +109,18 @@ class FileWatcher:
 
     def _loop(self):
         tick = 0
+        last_scan_warn = 0.0  # scan_once 持续失败告警节流（monotonic 秒）
+        last_hb_warn = 0.0  # 心跳广播失败告警节流（monotonic 秒）
         while self._running:
             try:
                 self.scan_once()
-            except Exception:
-                pass  # 监听绝不崩溃：单轮失败下轮重试
+            except Exception as e:  # 监听绝不崩溃：单轮失败下轮重试
+                now = time.monotonic()
+                if now - last_scan_warn >= 300:  # 低频节流：持续失败约 5 分钟记一条
+                    last_scan_warn = now
+                    logger.warning(
+                        "dashboard watcher scan_once 失败: %s: %s", type(e).__name__, e
+                    )
             # 周期性心跳：daemon 健康状态 / 新项目发现等变化不产生数据源文件变更，
             # scan_once 感知不到，需周期广播 refresh 让前端在心跳周期内反映
             tick += 1
@@ -118,8 +128,15 @@ class FileWatcher:
                 tick = 0
                 try:
                     self.hub.broadcast({"type": "refresh"})
-                except Exception:
-                    pass
+                except Exception as e:
+                    now = time.monotonic()
+                    if now - last_hb_warn >= 300:
+                        last_hb_warn = now
+                        logger.warning(
+                            "dashboard watcher 心跳广播失败: %s: %s",
+                            type(e).__name__,
+                            e,
+                        )
             time.sleep(self.interval)
 
     # ── 主扫描 ───────────────────────────────────────────────

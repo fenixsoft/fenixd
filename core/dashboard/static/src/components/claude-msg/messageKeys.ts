@@ -34,6 +34,7 @@ export const getIntrinsicMessageKey = (message: ChatMessage): string | null => {
     return null;
   }
 
+  // [fenix-ignore:13bb53979ae9] content 在本仓库类型即 string|undefined（types.ts），唯一生产方 runEventsToChatMessages 已把块数组规范化为逐条字符串消息，数组形态到不了本函数，空串仅对应无正文的 tool 等消息
   const contentPreview = typeof message.content === 'string' ? message.content.slice(0, 48) : '';
   const toolName = typeof message.toolName === 'string' ? message.toolName : '';
   // [fenix-ignore:0209ad3f1986] 撞键边界一句话：仅当七个身份字段全缺失且同毫秒同型同前 48 字符前缀才可能撞键，上游 claudecodeui 原样迁移；本仓库唯一调用方 ClaudeMessageList 的 messageKeyMap 已按出现序号 __n 消歧，裸用本函数仍可能撞键

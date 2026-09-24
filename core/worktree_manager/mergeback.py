@@ -22,6 +22,43 @@ from core.worktree_manager.types import MergeConflictInfo
 from core.worktree_manager import WIP_GATE_STASH_PREFIX  # noqa: E402
 
 
+def _unquote_git_path(p: str) -> str:
+    """反转义 git 文本输出中 core.quotePath 的 C 风格带引号路径。
+
+    `git diff --name-only` 等文本输出对含非 ASCII/特殊字符的路径默认输出带
+    引号八进制转义形（如 "docs/\\346\\226\\207.txt"）。不反转义则 `Path.exists()`
+    恒 False（untracked 备份移开失效）、路径集合交集比对失真。带引号行按 C
+    规则解码：反斜杠 + 3 位八进制数字还原为一个字节，反斜杠 + 引号/反斜杠
+    还原字面字符，字节流按 UTF-8 解码（失败退回 latin-1）；无引号行原样返回
+    （对 ASCII 路径幂等零开销）。
+    """
+    if len(p) < 2 or not p.startswith('"') or not p.endswith('"'):
+        return p
+    body = p[1:-1]
+    raw = bytearray()
+    i = 0
+    n = len(body)
+    while i < n:
+        c = body[i]
+        if c == "\\" and i + 1 < n:
+            nxt = body[i + 1]
+            if nxt in ('"', "\\"):
+                raw += nxt.encode("ascii")
+                i += 2
+                continue
+            octal = body[i + 1 : i + 4]
+            if len(octal) == 3 and all(d in "01234567" for d in octal):
+                raw.append(int(octal, 8))
+                i += 4
+                continue
+        raw += c.encode("utf-8")
+        i += 1
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw.decode("latin-1")
+
+
 class G4MergebackMixin:
     """G4 merge-back 主链（design D1 表 A G4）。"""
 
@@ -380,15 +417,27 @@ class G4MergebackMixin:
             if branch:
                 evidence += f"; branch={branch}"
             store = AdminStore(self.project_root, self.logger)
+
+            def _evidence_project(ev: str) -> str:
+                # 取 `项目名=` 到下一个 `;` 之间的值（settings_routes 同款解析）
+                for seg in (ev or "").split(";"):
+                    seg = seg.strip()
+                    if seg.startswith("项目名="):
+                        return seg[len("项目名="):].strip()
+                return ""
+
             # 在途去重（照搬 settings_routes._api_verify_yaml_autodraft_post 的
-            # inflight 判定范式：kind==SIGNAL 且未 handled 且 evidence 含项目名）
+            # inflight 判定范式：kind==SIGNAL 且未 handled 且 evidence 项目名
+            # 全等）。项目名 MUST 按字段解析后全等比较，不得裸子串包含：同机
+            # 项目名互为前缀（fenix 与 fenixd）时 `项目名=fenix` 会命中
+            # `项目名=fenixd; …` 而误判在途、漏写起草信号。
             inflight = [
                 r
                 for r in store.read_all()
                 if r.get("kind") == SIGNAL
                 and r.get("signal_type") == "build_artifact_paths_missing"
                 and not r.get("handled")
-                and f"项目名={project_name}" in (r.get("evidence") or "")
+                and _evidence_project(r.get("evidence")) == project_name
             ]
             if inflight:
                 return
@@ -463,7 +512,11 @@ class G4MergebackMixin:
         Returns: 排序后的重叠文件路径列表（无重叠为空列表）。
         """
         try:
-            dirty = self._list_dirty_tracked_files()
+            # 与下方 branch_files 同口径反转义 quotePath 转义形（dirty 来自
+            # stash_guard 的按行解析）：任一侧残留带引号转义形时裸交集会漏判
+            dirty = [
+                _unquote_git_path(p) for p in self._list_dirty_tracked_files()
+            ]
             if not dirty:
                 return []
             mb = subprocess.run(
@@ -490,7 +543,11 @@ class G4MergebackMixin:
             )
             if diff.returncode != 0:
                 return []
-            branch_files = {ln.strip() for ln in diff.stdout.splitlines() if ln.strip()}
+            branch_files = {
+                _unquote_git_path(ln.strip())
+                for ln in diff.stdout.splitlines()
+                if ln.strip()
+            }
             overlap = sorted(set(dirty) & branch_files)
             # 闸门作用域（evo-merge-back-wip-overlap-gate D2）：排除 spec/changes/**
             # ——见上方 docstring，纳入闸门会分别导致「收纳无效」与「几乎每次
@@ -780,7 +837,7 @@ class G4MergebackMixin:
             # 而 ignored 自愈会先 rm --cached 改变冲突态、校验失败时 abort 整个
             # merge——若它先行，产物 DU 场景轮不到本自愈（add-dashboard-
             # incremental-data 目录重命名事故根因之二）。
-            if self._resolve_build_artifact_conflicts(branch):
+            if self._resolve_build_artifact_conflicts():
                 self._drop_backup(backup)
                 # dist 冲突根治 B：自愈 merge 同样从合并后 src 重建收口
                 self._rebuild_dist_after_merge()
@@ -914,7 +971,11 @@ class G4MergebackMixin:
             return None
         if added.returncode != 0:
             return None
-        added_paths = [ln.strip() for ln in added.stdout.splitlines() if ln.strip()]
+        added_paths = [
+            _unquote_git_path(ln.strip())
+            for ln in added.stdout.splitlines()
+            if ln.strip()
+        ]
         if not added_paths:
             return None
 
@@ -1001,6 +1062,7 @@ class G4MergebackMixin:
         """merge 失败后把备份文件移回原位，并移除空备份目录（不丢数据，供下一轮重试）。"""
         if backup is None or not backup.is_dir():
             return
+        failed: list = []
         for p in backup.rglob("*"):
             if not p.is_file():
                 continue
@@ -1010,8 +1072,18 @@ class G4MergebackMixin:
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(p), str(dst))
             except OSError:
+                failed.append(str(rel))
                 continue
-        # 移回后清空并移除备份目录（含残留空父目录）
+        if failed:
+            # 单条移回失败时该文件的唯一副本仍在备份里——保留目录交人工裁决
+            # （对齐 _drop_backup 的保守语义），不得 rmtree 一并销毁。
+            self.logger.warning(
+                "worktree_manager",
+                f"merge-back 失败回移备份：{len(failed)} 个文件移回原位失败，"
+                f"保留备份目录不删除：backup='{backup}'，未移回路径={failed}",
+            )
+            return
+        # 全部移回成功才清空并移除备份目录（含残留空父目录）
         try:
             shutil.rmtree(str(backup))
             parent = backup.parent

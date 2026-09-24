@@ -85,8 +85,14 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
   // 渲染生效存在调度间隙，useRef 写读同帧原子）
   const regressionDraftInFlight = useRef(false);
 
+  // 回填门控（code-review item 241f4f2d452a，同 LlmProviderPanel item 5d6582ba9951 /
+  // AgentModelPanel item 9f98edec21fa / ApprovalModePanel item a8786c075c4f）：无条件
+  // setFieldsValue 会用外部 config 覆盖用户正在编辑、尚未保存的内容——保存后重载/
+  // 其它页签保存/同步用户级设置触发的父级 setConfig 都会重置本表单。对回填产物做
+  // 序列化比较，只在内容真正变化时回填。
+  const lastBackfillRef = useRef('');
   useEffect(() => {
-    form.setFieldsValue({
+    const next = {
       impl_code_review: config.verify?.impl_code_review === true,
       // add-impl-code-review-tuning：三运行参数回填缺省（IMPL_REVIEW_DEFAULTS
       // 单源——后端 read_config / read_effective_config 恒回显缺省，前端回填
@@ -121,7 +127,11 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
       // add-code-review-auto-fix：自动修复开关 + 批大小（回填缺省 false/20）
       code_review_fix_enabled: config.code_review_fix?.enabled === true,
       code_review_fix_batch_size: config.code_review_fix?.batch_size ?? QUALITY_DEFAULTS.fixBatchSize,
-    });
+    };
+    const key = JSON.stringify(next);
+    if (key === lastBackfillRef.current) return;
+    lastBackfillRef.current = key;
+    form.setFieldsValue(next);
   }, [config.verify, config.code_review, config.code_review_fix, config.regression, form]);
 
   useEffect(() => {

@@ -18,6 +18,7 @@ export function formatThinkingLabel(
 
 export function normalizeInlineCodeFences(text: string) {
   if (!text || typeof text !== 'string') return text;
+  // [fenix-ignore:17ccbc5089fe] 本处 try/catch 与 formatUsageLimitText 的恒真判断均为对齐上游 claudecodeui diff 的有意保留（见文件头注释），无可触发路径
   try {
     return text.replace(/```[ \t]*([^\n\r]+?)[ \t]*```/g, '`$1`');
   } catch {

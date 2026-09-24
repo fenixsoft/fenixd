@@ -206,7 +206,18 @@ class ApiAssertionRunner:
         path = a.get("path")
         expected = a.get("expected")
         payload = resp.get("json")
-        actual = evaluate_json_path(payload, path) if payload is not None else None
+        if payload is None:
+            # fail-closed：无 JSON 载荷时不得以 actual=None 与 expected=None 蒙混判 pass
+            return {
+                "type": "json_path",
+                "layer": 3,
+                "path": path,
+                "expected": expected,
+                "actual": None,
+                "pass": False,
+                "error": "响应体非合法 JSON（或 JSON 根为 null），无 JSON 载荷可求值",
+            }
+        actual = evaluate_json_path(payload, path)
         mode = a.get("mode", "exact")
         passed = False
         if mode == "exact":

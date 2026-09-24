@@ -537,9 +537,17 @@ def parse_todo_entries(text: str) -> List[dict]:
             # 无法归类（可能在条目块外）→ 跳过
             continue
 
-        # 处理标记行：整条标记为已处理（flush 时丢弃）
+        # 处理标记行：仅在其紧跟条目标题行（该条目尚未收集任何字段）时才
+        # 生效——整条标记为已处理（flush 时丢弃）；孤立标记行（其标题行已被
+        # 手工删除/改写后残留）只告警并跳过自身，不连坐当前条目
         if _TODO_MARKER_RE.match(line):
-            current_entry["_processed"] = True
+            if not current_fields:
+                current_entry["_processed"] = True
+            else:
+                _logger.warning(
+                    "evolution: todo.md 孤立处理标记行（未紧跟条目标题行），已忽略: %s",
+                    stripped,
+                )
             continue
 
         # 四字段嵌套行：  - 影响：…
@@ -644,12 +652,24 @@ def apply_marker_to_lines(lines: List[str], item: dict, marker: str):
 
 
 def strip_processed_entries(text: str) -> str:
-    """剥离带处理标记的条目整块（标题 + 其缩进行），供分析 run 的输入使用。"""
+    """剥离带处理标记的条目整块（标题 + 其缩进行），供分析 run 的输入使用。
+
+    处理标记行仅在其紧跟条目标题行（标题行的下一行，其间空白行忽略）时才
+    生效：此时整块视为已处理并剥离。孤立标记行（其标题行已被手工删除/改写
+    后残留）不连坐所在块，仅剔除标记行本身并记 WARNING。
+    """
     out: List[str] = []
     block: List[str] = []
 
     def _flush() -> None:
-        if block and not any(_TODO_MARKER_RE.match(l) for l in block):
+        # 块首标题行（block[0]）之后的第一个非空白行是否为处理标记行
+        marked = False
+        for l in block[1:]:
+            if not l.strip():
+                continue
+            marked = bool(_TODO_MARKER_RE.match(l))
+            break
+        if not marked:
             out.extend(block)
         block.clear()
 
@@ -660,6 +680,17 @@ def strip_processed_entries(text: str) -> str:
                 block.append(line)
             else:
                 out.append(line)
+            continue
+        if _TODO_MARKER_RE.match(line):
+            # 标记行仅紧跟标题行（其间只夹空白行）才生效；孤立标记行不连坐
+            # 所在块，仅剔除标记行本身
+            if block and all(not l.strip() for l in block[1:]):
+                block.append(line)
+            else:
+                _logger.warning(
+                    "evolution: todo.md 孤立处理标记行（未紧跟条目标题行），已剔除: %s",
+                    line.strip(),
+                )
             continue
         if block:
             block.append(line)
