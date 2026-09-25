@@ -255,6 +255,10 @@ def parse_verify_progress(project_root, spec_name) -> dict:
     「验证中: D/T」，并标记 source: "run-result" 区分来源
     （进度文件路径返回 source: "file"）。两者皆缺维持 exists: False 空态语义。
     """
+    # 与写路径（write_scheduling_kick）同口径：spec 名过 kebab-case 白名单才拼
+    # 文件路径，不合法语义等同「文件不存在」，返回空态（防路径穿越读任意 json）。
+    if validate_scheduling_kick_spec(spec_name) is not None:
+        return {"exists": False, "total": 0, "done": 0, "current": ""}
     pf = Path(project_root) / ".fenix" / "verify-progress" / f"{spec_name}.json"
     if pf.exists():
         try:

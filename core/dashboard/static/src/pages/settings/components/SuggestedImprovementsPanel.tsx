@@ -706,7 +706,9 @@ const SuggestedImprovementsPanel = forwardRef<
       onOk: async () => {
         setBatchRunning(true);
         let succeeded = 0;
-        const failures: { title: string; error: string }[] = [];
+        // 携带 item.id 作 key（code-review item 4d4f1e78b97b）：不同项目条目的
+        // title 可能相同，以 title 作 React key 会冲突导致明细错位
+        const failures: { id: string; title: string; error: string }[] = [];
         try {
           // 串行：后端写 items.jsonl 用文件锁、接受路径还逐条 git commit
           for (const item of runnable) {
@@ -714,7 +716,7 @@ const SuggestedImprovementsPanel = forwardRef<
             if (result.ok) {
               succeeded += 1;
             } else {
-              failures.push({ title: item.title, error: result.error || '失败' });
+              failures.push({ id: item.id, title: item.title, error: result.error || '失败' });
             }
           }
         } finally {
@@ -738,7 +740,7 @@ const SuggestedImprovementsPanel = forwardRef<
             content: (
               <ul style={{ paddingLeft: 18, marginBottom: 0 }}>
                 {failures.map((f) => (
-                  <li key={f.title}>
+                  <li key={f.id}>
                     <Text>{f.title}</Text>
                     <Text type="secondary"> — {f.error}</Text>
                   </li>

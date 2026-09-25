@@ -309,6 +309,8 @@ export default function ActivitiesPage() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const lastRefreshRef = useRef(0);
+  // fix 4ffc804c77cd: 节流尾沿补拉定时器句柄（useRef 保存防闭包失效，卸载时统一清理）
+  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -340,13 +342,30 @@ export default function ActivitiesPage() {
         return;
       }
       if (msg.type !== 'alerts' && msg.type !== 'refresh') return;
+      // fix 4ffc804c77cd: 节流改尾沿触发——窗口内事件不再直接丢弃，改为排一次
+      // 尾沿补拉（pending 已排程则合并），避免静默期尾部变更滞留到下个事件才上屏
+      if (refreshTimerRef.current !== null) return;
       const now = Date.now();
-      if (now - lastRefreshRef.current < REFRESH_THROTTLE_MS) return;
+      const elapsed = now - lastRefreshRef.current;
+      if (elapsed < REFRESH_THROTTLE_MS) {
+        refreshTimerRef.current = setTimeout(() => {
+          refreshTimerRef.current = null;
+          lastRefreshRef.current = Date.now();
+          void load();
+        }, REFRESH_THROTTLE_MS - elapsed);
+        return;
+      }
       lastRefreshRef.current = now;
       void load();
     };
-    // 卸载必须关闭，防 EventSource 连接泄漏
-    return () => es.close();
+    // 卸载必须关闭，防 EventSource 连接泄漏；并同步清理尾沿补拉定时器
+    return () => {
+      es.close();
+      if (refreshTimerRef.current !== null) {
+        clearTimeout(refreshTimerRef.current);
+        refreshTimerRef.current = null;
+      }
+    };
   }, [load]);
 
   // 乐观移除：后端确认已消失才真正清除，绝不永久遮蔽

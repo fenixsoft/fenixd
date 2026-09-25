@@ -1992,7 +1992,11 @@ class AdminMonitor:
             ]
             if len(in_window) < 2:
                 continue
-            transitions = len(in_window) - 1
+            # code-review 4fb31d5c2719：changes 条目本身即一次切换事件
+            # （_update_history 仅在状态变化时追加，首见建档不追加），
+            # 切换次数直接按窗口内条目数计；原 len-1 为差一错误，
+            # 实际需 4 次切换才达阈值 3，比宣称灵敏度低一档。
+            transitions = len(in_window)
             if transitions >= FLAPPING_THRESHOLD:
                 seq = " → ".join(c[1] for c in in_window[-FLAPPING_THRESHOLD:])
                 signals.append(

@@ -35,6 +35,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from core.dashboard import data as dashboard_data
+# 三步原子独占写与 code-review 族信号同构（写同目录唯一临时文件+fsync →
+# os.link 原子挂到轮询路径 → finally 清临时文件），共用同一实现避免同族
+# 竞态修复漂移（先例 item 422ae03395de）。
+from core.dashboard.routes.code_review_routes import (
+    _SignalWriteError,
+    _write_signal_exclusive,
+)
 
 # 手动触发信号文件（daemon 主循环经 fenixd._check_regression_requests 消费）。
 # 与 code_review_request / approve_push_request 同属「dashboard 原子写 →
@@ -269,9 +276,14 @@ class H12RegressionRoutesMixin:
             self._error(400, "daemon 未运行，请先启动 daemon")
             return
 
-        # 原子创建信号文件（O_CREAT|O_EXCL 独占创建，对齐 code-review）：
-        # ThreadingHTTPServer 并发线程下非原子 exists 检查会互相覆盖信号，
-        # 独占创建成功即胜出；FileExistsError → 409（已有未消费请求）。
+        # 原子独占创建信号文件（三步独占写，item 4140f1f86f3f）：旧实现
+        # O_CREAT|O_EXCL 直接创建轮询路径、之后才 json.dump——daemon 1s
+        # 主循环 tick 落在创建与填充之间的空窗时，消费端 _consume_request_file
+        # 把空/半写文件 rename 走、解析失败按已消费返回 None，用户触发静默
+        # 丢失而本侧仍回 ok:true。改为写完整临时文件后 os.link 原子挂到
+        # 轮询路径：轮询路径要么不存在、要么已是完整 JSON，空窗不复存在；
+        # 独占创建语义保留（目标已存在抛 FileExistsError → 409，并发第二
+        # POST 或上一信号尚未被消费）。
         created = datetime.now(timezone.utc).isoformat()
         # 键名与消费者契约一致（fenixd._check_regression_requests 读
         # requested_at；item 117af27b759a：写 created 使 daemon 恒记空时间戳）
@@ -296,45 +308,12 @@ class H12RegressionRoutesMixin:
             self._error(500, "回归触发信号写入失败")
             return
         try:
-            fd = os.open(str(req_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-        except FileExistsError:
-            self._error(409, "已有未消费的回归触发请求（请稍后重试）")
-            return
-        except OSError:
-            self._error(500, "回归触发信号写入失败")
-            return
-        f = None
-        try:
-            # fdopen 失败路径显式关 fd（code-review item 655c860e2e6e）：旧
-            # `with os.fdopen(...)` 形态下 fdopen() 自身抛错时裸 fd 未被包装
-            # 也无人关闭（with 的 close 只在 fdopen 成功后才生效）——请求线程
-            # 描述符泄漏。改为显式接管：f 为 None（fdopen 未成功）时兜底
-            # os.close；成功后统一经 finally close（等价 with 语义）。
-            f = os.fdopen(fd, "w", encoding="utf-8")
-            json.dump(payload, f, ensure_ascii=False, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-        except Exception as exc:
-            if f is None:
-                try:
-                    os.close(fd)
-                except OSError:
-                    pass
-            # 写中途失败：清掉半写文件，避免残留被 daemon 误消费（半写文件
-            # 存活会让后续每个 POST 都 409 直到 daemon 消费）。清理失败必须
-            # 留痕并携带底层异常——静默吞掉会让 500 无从诊断。
-            try:
-                os.unlink(str(req_path))
-            except OSError as un_err:
-                _log = getattr(self, "logger", None)
-                if _log is not None:
-                    _log.warning(
-                        "regression_routes",
-                        f"回归触发信号半写文件清理失败 {req_path}: {un_err!r}"
-                        f"（原写入异常: {exc!r}）；残留文件将使后续触发持续 409",
-                    )
-            # 不外泄裸异常文本（code-review item 2dd97866d0d5，对齐 autodraft
-            # 策略）：异常细节降级经服务端日志留痕，客户端收固定文案。
+            written = _write_signal_exclusive(req_path, payload)
+        except _SignalWriteError as exc:
+            # 临时文件写中途失败时轮询路径尚未创建，无半写残留可误消费、
+            # 无需清理（临时文件已由辅助函数 finally 清掉）；不外泄裸异常
+            # 文本（code-review item 2dd97866d0d5，对齐 autodraft 策略）：
+            # 异常细节降级经服务端日志留痕，客户端收固定文案。
             _log = getattr(self, "logger", None)
             if _log is not None:
                 _log.warning(
@@ -344,9 +323,9 @@ class H12RegressionRoutesMixin:
                 )
             self._error(500, "回归触发信号写入失败")
             return
-        finally:
-            if f is not None:
-                f.close()
+        if written is None:
+            self._error(409, "已有未消费的回归触发请求（请稍后重试）")
+            return
         self._json({"ok": True, "requested_at": created})
 
     def _api_regression_fix(self, query):
@@ -364,8 +343,8 @@ class H12RegressionRoutesMixin:
           （parse_error 快照无 failures 键，不落 no_issues 以免误导）
         - 快照可读但无异常（failures 与 long_tests 均空且 status 非 timeout）
           → 400 ``regression_no_issues``
-        - 受理 → 200 + {ok, requested_at}；O_CREAT|O_EXCL 独占创建，
-          FileExistsError → 409（并发第二次 POST 或上一信号尚未被消费）
+        - 受理 → 200 + {ok, requested_at}；三步原子独占写（独占创建语义
+          保留，目标已存在 → 409：并发第二次 POST 或上一信号尚未被消费）
         """
         project = self._project_from_query(query)
         if project is None or not project.get("exists"):
@@ -403,8 +382,10 @@ class H12RegressionRoutesMixin:
             )
             return
 
-        # 原子创建信号文件（O_CREAT|O_EXCL 独占创建，对齐 _api_regression_run）：
-        # 独占创建成功即胜出；FileExistsError → 409（已有未消费请求）。
+        # 原子独占创建信号文件（三步独占写，对齐 _api_regression_run，同族
+        # item 4140f1f86f3f）：先写完整临时文件再 os.link 原子挂到轮询路径，
+        # 消费端不会再读到「已创建未填充」的空/半写文件；独占创建语义保留，
+        # 目标已存在（并发第二 POST 或上一信号尚未被消费）→ 409。
         created = datetime.now(timezone.utc).isoformat()
         payload = {"source": "regression_fix", "created": created}
         req_path = proot / REGRESSION_FIX_REQUEST
@@ -423,41 +404,12 @@ class H12RegressionRoutesMixin:
             self._error(500, "回归修复触发信号写入失败")
             return
         try:
-            fd = os.open(str(req_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-        except FileExistsError:
-            self._error(409, "已有未消费的回归修复触发请求（请稍后重试）")
-            return
-        except OSError:
-            self._error(500, "回归修复触发信号写入失败")
-            return
-        f = None
-        try:
-            # 显式接管 fd（对齐 _api_regression_run：fdopen 失败路径兜底关 fd）
-            f = os.fdopen(fd, "w", encoding="utf-8")
-            json.dump(payload, f, ensure_ascii=False, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-        except Exception as exc:
-            if f is None:
-                try:
-                    os.close(fd)
-                except OSError:
-                    pass
-            # 写中途失败：清掉半写文件，避免残留被 daemon 误消费（清理失败
-            # 留痕并携带底层异常，形态对齐 _api_regression_run——残留文件会
-            # 让后续每个 POST 都 409 直到 daemon 消费）。
-            try:
-                os.unlink(str(req_path))
-            except OSError as un_err:
-                _log = getattr(self, "logger", None)
-                if _log is not None:
-                    _log.warning(
-                        "regression_routes",
-                        f"回归修复触发信号半写文件清理失败 {req_path}: {un_err!r}"
-                        f"（原写入异常: {exc!r}）；残留文件将使后续触发持续 409",
-                    )
-            # 不外泄裸异常文本（code-review item 2dd97866d0d5，对齐 autodraft
-            # 策略）：异常细节降级经服务端日志留痕，客户端收固定文案。
+            written = _write_signal_exclusive(req_path, payload)
+        except _SignalWriteError as exc:
+            # 临时文件写中途失败时轮询路径尚未创建，无半写残留可误消费、
+            # 无需清理（形态对齐 _api_regression_run）；不外泄裸异常文本
+            # （code-review item 2dd97866d0d5，对齐 autodraft 策略）：异常
+            # 细节降级经服务端日志留痕，客户端收固定文案。
             _log = getattr(self, "logger", None)
             if _log is not None:
                 _log.warning(
@@ -467,9 +419,9 @@ class H12RegressionRoutesMixin:
                 )
             self._error(500, "回归修复触发信号写入失败")
             return
-        finally:
-            if f is not None:
-                f.close()
+        if written is None:
+            self._error(409, "已有未消费的回归修复触发请求（请稍后重试）")
+            return
         self._json({"ok": True, "requested_at": created})
 
     def _api_regression_fix_result(self, query):

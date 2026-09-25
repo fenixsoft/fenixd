@@ -1594,6 +1594,33 @@ class AgentRunner:
         except (OSError, subprocess.TimeoutExpired):
             return False
 
+    def _is_main_worktree(self, wt_path: Path) -> bool:
+        """判断 wt_path 是否为主工作树（而非 git 链接 worktree）。
+
+        两重判据，任一命中即主树：
+        - 解析后等于 project_root（dispute-judge / spec-review / 维护型等
+          无 worktree 车道直接以主树为 cwd）；
+        - ``git rev-parse --git-common-dir`` 与 ``--git-dir`` 指向同一路径
+          （链接 worktree 的 git-dir 是 ``<common>/worktrees/<name>`` 子目录，
+          仅主工作树二者同源）。
+        任何异常（权限/超时）按"非主树"处置——返回 False 交由既有失效/
+        降级路径兜底，不改变调用方行为。
+        """
+        try:
+            if wt_path.resolve() == self.project_root.resolve():
+                return True
+            proc = subprocess.run(
+                ["git", "-C", str(wt_path),
+                 "rev-parse", "--git-common-dir", "--git-dir"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if proc.returncode != 0:
+                return False
+            lines = [ln.strip() for ln in proc.stdout.splitlines() if ln.strip()]
+            return len(lines) == 2 and lines[0] == lines[1]
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+
     def _check_terminal_no_commit_gate(self, spec_name: str, agent_type: str,
                                        wt_path, branch, wt_dirty: list,
                                        sub_run_id: str) -> None:
@@ -1773,6 +1800,10 @@ class AgentRunner:
         文件、也可能撞 index.lock 使保全失败（仅 WARNING，不阻断冻结终止）。
 
         无 worktree 载体或路径失效时跳过（与锚点 A/B 同语义，幂等）。
+        主工作树同样跳过（fix-main-tree-wip-checkpoint）：dispute-judge /
+        spec-review / 维护型等无 worktree 车道的 cwd 就是 project_root，
+        而 _worktree_path_valid 对主树恒 True——对主树 WIP 提交会把无关
+        脏状态卷进主分支历史，故 WIP 保全只对拥有专属 worktree 的车道执行。
         失败由 helper 内部 WARNING 降级（git 超时/失败不阻断收口流程）。
         """
         if wt_path is None:
@@ -1782,6 +1813,13 @@ class AgentRunner:
                 "agent_runner",
                 f"WIP checkpoint ({anchor}) skip: worktree "
                 f"{wt_path} not a valid git worktree for '{spec_name}'",
+            )
+            return
+        if self._is_main_worktree(wt_path):
+            self.logger.debug(
+                "agent_runner",
+                f"WIP checkpoint ({anchor}) skip: {wt_path} is the main "
+                f"worktree (no dedicated worktree lane) for '{spec_name}'",
             )
             return
         try:

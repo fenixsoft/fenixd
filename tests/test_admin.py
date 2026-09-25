@@ -605,13 +605,14 @@ class TestAdminMonitorDetection:
         proot, mon = make_monitor(tmp_path, {
             "spec-a": {"status": "implementing", "updated": utcnow_iso()},
         }, config={"admin": {"escalation_cooldown_minutes": 15}})
-        # 预写历史：10 分钟窗口内 4 次 ready↔implementing 变更（3 次切换）
+        # 预写历史：10 分钟窗口内恰好 3 条变更——changes 条目即切换事件
+        # （4fb31d5c2719），3 次切换即达 FLAPPING_THRESHOLD=3，应触发
         hist = proot / ".fenix" / "admin_state_history.json"
         hist.parent.mkdir(parents=True, exist_ok=True)
         base = time.time()
         changes = [
-            [base - 500, "ready"], [base - 400, "implementing"],
-            [base - 300, "ready"], [base - 200, "implementing"],
+            [base - 500, "implementing"], [base - 400, "ready"],
+            [base - 300, "implementing"],
         ]
         hist.write_text(json.dumps(
             {"spec-a": {"last_status": "implementing", "changes": changes}}), encoding="utf-8")

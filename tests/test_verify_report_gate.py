@@ -425,7 +425,8 @@ class TestFastTrackScenarioSourcing(_GateTestBase):
                 # 场景表留空（无表头行），其余章节照常
                 self.assertNotIn("## 场景结果", content)
                 self.assertIn("## 结论：✅ 通过（verified）", content)
-                self.assertIn("| 通过 | 0 |", content)
+                # 无 summary 结构化计数 → 不可得字段渲染 N/A（缺数据≠0 通过）
+                self.assertIn("| 通过 | N/A |", content)
 
 
 class TestVerdictConclusionPreservesParagraphs(_GateTestBase):

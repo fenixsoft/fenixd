@@ -60,6 +60,8 @@ def commit_wip_checkpoint(
             ["git", "-C", path, "status", "--porcelain"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
         )
         if st.returncode != 0:
@@ -76,6 +78,8 @@ def commit_wip_checkpoint(
             ["git", "-C", path, "add", "-A"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
         )
         if add.returncode != 0:
@@ -91,6 +95,8 @@ def commit_wip_checkpoint(
             ["git", "-C", path, "commit", "-m", message],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
         )
         if cm.returncode != 0:
@@ -117,7 +123,8 @@ def commit_wip_checkpoint(
             f"after {timeout}s in '{path}' — skip (non-blocking)",
         )
         return False
-    except OSError as e:
+    except (OSError, ValueError) as e:
+        # UnicodeDecodeError 属 ValueError 族：解码失败同样按失败降级，不外溢。
         logger.warning(
             "wip_checkpoint",
             f"WIP checkpoint (anchor '{anchor}', spec '{spec}') failed in "
@@ -150,6 +157,8 @@ def _collapse_message(project_root, commits, logger, timeout=WIP_TIMEOUT_SECONDS
             ["git", "-C", str(project_root), "log", "-1", "--format=%B", final_hash],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
         )
         if body.returncode == 0 and body.stdout.strip():
@@ -161,6 +170,8 @@ def _collapse_message(project_root, commits, logger, timeout=WIP_TIMEOUT_SECONDS
         ["git", "-C", str(project_root), "log", "-1", "--format=%B", final_hash],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=timeout,
     )
     if body.returncode == 0 and body.stdout.strip():
@@ -197,6 +208,8 @@ def collapse_wip_commits(
             ["git", "-C", str(project_root), "merge-base", "HEAD", branch],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
         )
         if mb.returncode != 0 or not mb.stdout.strip():
@@ -206,6 +219,8 @@ def collapse_wip_commits(
             ["git", "-C", str(project_root), "log", "--format=%H\t%s", f"{mb_sha}..{branch}"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
         )
         if log.returncode != 0 or not log.stdout.strip():
@@ -224,6 +239,8 @@ def collapse_wip_commits(
             ["git", "-C", str(project_root), "rev-parse", f"{branch}^{{tree}}"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
         )
         if tree.returncode != 0 or not tree.stdout.strip():
@@ -239,6 +256,8 @@ def collapse_wip_commits(
             ["git", "-C", str(project_root), "rev-parse", f"refs/heads/{branch}"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
         )
         if tip.returncode != 0 or not tip.stdout.strip():
@@ -265,6 +284,8 @@ def collapse_wip_commits(
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
         )
         if ct.returncode != 0 or not ct.stdout.strip():
@@ -287,6 +308,8 @@ def collapse_wip_commits(
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
         )
         if upd.returncode != 0:
@@ -312,7 +335,8 @@ def collapse_wip_commits(
             f"merge-back continues on uncollapsed branch (non-blocking)",
         )
         return False
-    except OSError as e:
+    except (OSError, ValueError) as e:
+        # UnicodeDecodeError 属 ValueError 族：解码失败同样按失败降级，不外溢。
         logger.warning(
             "wip_checkpoint",
             f"WIP collapse for branch '{branch}' failed: {e} — merge-back "

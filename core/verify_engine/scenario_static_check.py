@@ -353,14 +353,14 @@ def scan_scenarios(
                     findings.extend(rule["match"](sc, serving))
                 except Exception as e:  # noqa: BLE001 — fail-open 设计
                     logger.warning(
-                        "scenario_static_check",
-                        f"规则 {rule['rule_id']} 扫描场景 {sc.get('id', '?')} 异常"
-                        f"（fail-open，跳过该场景）: {type(e).__name__}: {e}",
+                        f"scenario_static_check: 规则 {rule['rule_id']} 扫描场景 "
+                        f"{sc.get('id', '?')} 异常（fail-open，跳过该场景）: "
+                        f"{type(e).__name__}: {e}",
                     )
     except Exception as e:  # noqa: BLE001 — fail-open 设计
         logger.warning(
-            "scenario_static_check",
-            f"静态扫描整体异常（fail-open，返回空 findings）: " f"{type(e).__name__}: {e}",
+            f"scenario_static_check: 静态扫描整体异常（fail-open，返回空 findings）: "
+            f"{type(e).__name__}: {e}",
         )
         return []
     return findings
@@ -387,9 +387,8 @@ def write_findings(project_root: Path, spec_name: str, findings: Sequence[Static
         )
     except Exception as e:  # noqa: BLE001 — fail-open 设计
         logger.warning(
-            "scenario_static_check",
-            f"静态扫描 findings 落盘失败 '{spec_name}'（写失败仅 WARNING，不阻断）: "
-            f"{type(e).__name__}: {e}",
+            f"scenario_static_check: 静态扫描 findings 落盘失败 '{spec_name}'"
+            f"（写失败仅 WARNING，不阻断）: {type(e).__name__}: {e}",
         )
 
 
@@ -529,8 +528,8 @@ def scan_contract(project_root: Path) -> list[dict]:
             )
     except Exception as e:  # noqa: BLE001 — fail-open 设计
         logger.warning(
-            "scenario_static_check",
-            f"契约静态检查异常（fail-open，返回空 findings）: " f"{type(e).__name__}: {e}",
+            f"scenario_static_check: 契约静态检查异常（fail-open，返回空 findings）: "
+            f"{type(e).__name__}: {e}",
         )
         return []
     return findings
@@ -553,7 +552,6 @@ def write_contract_findings(project_root: Path, spec_name: str, findings: Sequen
         )
     except Exception as e:  # noqa: BLE001 — fail-open 设计
         logger.warning(
-            "scenario_static_check",
-            f"契约检查 findings 落盘失败 '{spec_name}'（写失败仅 WARNING，"
-            f"不阻断）: {type(e).__name__}: {e}",
+            f"scenario_static_check: 契约检查 findings 落盘失败 '{spec_name}'"
+            f"（写失败仅 WARNING，不阻断）: {type(e).__name__}: {e}",
         )

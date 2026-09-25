@@ -1488,6 +1488,14 @@ class StateMachine:
                 # transition/transition_gate 返回 False，调用方不再把假成功
                 # 当真转换继续推进（_stripped WARNING 之外的可编程判别通道）。
                 outcome["stripped"] = applied["_stripped"]
+                # 零写入（code-review 45dc313473ef）：本路径 updates 仅含 status，
+                # 剥离后唯一「生效」副作用只剩 _apply_updates_entry 的 updated
+                # 时间戳刷新——返回 (True, True) 会为这次语义上的未转换做一次
+                # 全量落盘（EventBus 校验和变化 → 空 diff 噪声），与 docstring
+                # 「冻结剥离不落盘」口径不符。改返回 (False, False)：状态未变
+                # 不落盘。transition/transition_gate 在 stripped 分支先行返回
+                # False、不消费 applied 快照，调用方语义不变。
+                return False, False
             if applied_ok:
                 outcome["applied"] = applied
             return applied_ok, applied_ok

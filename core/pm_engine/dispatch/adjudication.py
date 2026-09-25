@@ -16,6 +16,7 @@ import hashlib
 import json
 import time
 from pathlib import Path
+from typing import Callable
 
 
 class VAdjudicationMixin:
@@ -2270,6 +2271,82 @@ class VAdjudicationMixin:
         self._redispatch_for_missing(spec_name, result, remaining, agent_type=agent_type)
         return {"action": "handled"}
 
+    def _redispatch_with_retry(
+        self,
+        spec_name: str,
+        error_builder: Callable[[int, int], tuple[str, str]],
+        log_builder: Callable[[int], str],
+        *,
+        agent_type: str = "implementer",
+        branch: str | None = None,
+        legacy_warn_prefix: str = "遗产登记失败",
+    ) -> None:
+        """打回重派样板：交付物守卫缺件 / tasks.md relint 处置共用（code-review
+        item 462dd0549885）。
+
+        两处置路径原本各持一份同构流水线，计数与封顶逻辑双写易漂移，现收口
+        单点维护：读 spec entry → ``_retry_count`` int 强转递增（异常回退 0）→
+        ``agents.max_retries`` 封顶 → 组装 ready/blocked updates（封顶时置
+        ``tester_run=None`` 并换 blocked 文案）→ update_spec → error 日志 →
+        未封顶时按车道 ``_enqueue_front`` 前置入队。分支遗产登记（fail-open，
+        异常捕获降级 WARNING 不阻断处置）在状态写回与入队**之前**执行
+        （D3 顺序语义）。
+
+        Args:
+            error_builder: ``(retries, max_r) -> (未封顶 error, 封顶 error)``，
+                由调用点闭合各自的违规明细文案。
+            log_builder: ``retries -> 日志文案``（logger.error，pm_engine 通道）。
+            agent_type: 重派车道透传给 ``_enqueue_front``（code-review item
+                9ea41826c63f：由调用方声明以选择 fast-track/implementer 车道）。
+            branch: 非空时重派前登记仅分支遗产（``register_legacy`` 仅分支模式
+                + ``mark_legacy_reusable`` 打 reuse 标记，使下轮 create 可认领
+                同一分支）；空则静默跳过登记。``register_legacy`` 只写
+                worktree_manager 内存注册表、不触碰 spec 状态，故 read_one
+                先后无观测差异。
+            legacy_warn_prefix: 登记失败 WARNING 文案前缀（调用点各自保留原文案，
+                如 ``缺件打回遗产登记失败`` / ``relint 遗产登记失败``）。
+        """
+        spec_entry = self._pm.state_machine.read_one(spec_name) or {}
+        _wm = self._pm.agent_runner.worktree_manager
+        if branch and hasattr(_wm, "register_legacy"):
+            try:
+                _wm.register_legacy(spec_name, None, branch)
+                # fixed-relint-redispatch-legacy 一致性：打 reuse 标记使仅分支遗产
+                # 可被下轮 create 经 _take_reusable_worktree 认领同一分支（两打回
+                # 路径同语义；register_legacy 自身不置 reuse，keep_for_reuse 同源标记）。
+                if hasattr(_wm, "mark_legacy_reusable"):
+                    _wm.mark_legacy_reusable(spec_name)
+            except Exception as e:
+                # 登记异常捕获降级 WARNING 不阻断处置：登记失败不应中断
+                # 打回的状态写回与重派。
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"{legacy_warn_prefix}（非阻塞）'{spec_name}': {e}",
+                )
+        try:
+            prev_retries = int(spec_entry.get("_retry_count", 0) or 0)
+        except (TypeError, ValueError):
+            prev_retries = 0
+        retries = prev_retries + 1
+        try:
+            max_r = int(self._pm._get_config("agents.max_retries", 3) or 3)
+        except Exception:
+            max_r = 3
+        err_ready, err_blocked = error_builder(retries, max_r)
+        updates: dict = {
+            "status": "ready",
+            "error": err_ready,
+            "_retry_count": retries,
+        }
+        if retries >= max_r:
+            updates["status"] = "blocked"
+            updates["tester_run"] = None
+            updates["error"] = err_blocked
+        self._pm.state_machine.update_spec(spec_name, updates)
+        self._pm.logger.error("pm_engine", log_builder(retries))
+        if updates["status"] != "blocked":
+            self._enqueue_front(spec_name, agent_type)
+
     def _redispatch_for_missing(
         self,
         spec_name: str,
@@ -2290,34 +2367,10 @@ class VAdjudicationMixin:
             missing_list: 守卫返回的差异条目列表（``list[dict]``，每项含
                 ``path``/``kind``/``violation``）。
             agent_type: 重派车道（"implementer" 或 "fast-track"）。
+
+        计数/封顶/登记样板由 ``_redispatch_with_retry`` 统一承载（与
+        ``_redispatch_tasks_relint`` 共用，防双写漂移）。
         """
-        _wm = self._pm.agent_runner.worktree_manager
-        _branch = getattr(result, "branch", None)
-        if _branch and hasattr(_wm, "register_legacy"):
-            # 登记异常捕获降级 WARNING 不阻断处置（与 _redispatch_tasks_relint
-            # 同款防护）：登记失败不应中断缺件打回的状态写回与重派。
-            try:
-                _wm.register_legacy(spec_name, None, _branch)
-                # fixed-relint-redispatch-legacy 一致性：打 reuse 标记使仅分支遗产可被
-                # 下轮 create 经 _take_reusable_worktree 认领同一分支（与 relint 打回
-                # 路径同语义；register_legacy 自身不置 reuse，keep_for_reuse 同源标记）。
-                if hasattr(_wm, "mark_legacy_reusable"):
-                    _wm.mark_legacy_reusable(spec_name)
-            except Exception as e:
-                self._pm.logger.warning(
-                    "pm_engine",
-                    f"缺件打回遗产登记失败（非阻塞）'{spec_name}': {e}",
-                )
-        spec_entry = self._pm.state_machine.read_one(spec_name) or {}
-        try:
-            prev_retries = int(spec_entry.get("_retry_count", 0) or 0)
-        except (TypeError, ValueError):
-            prev_retries = 0
-        retries = prev_retries + 1
-        try:
-            max_r = int(self._pm._get_config("agents.max_retries", 3) or 3)
-        except Exception:
-            max_r = 3
         # 按 kind 分化话术：undeleted 用「未删除」语义、missing 保持「缺件」语义
         missing_q = "、".join(
             (
@@ -2327,34 +2380,22 @@ class VAdjudicationMixin:
             )
             for m in missing_list
         )
-        err_note = (
-            f"交付物守卫：违规 [{missing_q}] — 不合并不推进，" f"重派实现补齐（第 {retries} 次）"
-        )
-        updates: dict = {
-            "status": "ready",
-            "error": err_note,
-            "_retry_count": retries,
-        }
-        if retries >= max_r:
-            updates["status"] = "blocked"
-            updates["tester_run"] = None
-            updates["error"] = (
+        self._redispatch_with_retry(
+            spec_name,
+            lambda retries, max_r: (
+                f"交付物守卫：违规 [{missing_q}] — 不合并不推进，"
+                f"重派实现补齐（第 {retries} 次）",
                 f"交付物守卫连续 {max_r} 次缺件 [{missing_q}] — 已 blocked，"
-                f"需人工检查任务书声明与实际落地差异"
-            )
-        self._pm.state_machine.update_spec(spec_name, updates)
-        self._pm.logger.error(
-            "pm_engine",
-            f"交付物守卫触发 '{spec_name}'（缺件 {missing_q}）— "
-            f"run={getattr(result, 'run_id', '') or ''}",
+                f"需人工检查任务书声明与实际落地差异",
+            ),
+            lambda retries: (
+                f"交付物守卫触发 '{spec_name}'（缺件 {missing_q}）— "
+                f"run={getattr(result, 'run_id', '') or ''}"
+            ),
+            agent_type=agent_type,
+            branch=getattr(result, "branch", None),
+            legacy_warn_prefix="缺件打回遗产登记失败",
         )
-        if updates["status"] != "blocked":
-            # 车道透传（code-review item 9ea41826c63f）：agent_type 由调用方
-            # 声明并用于选择重派车道（fast_track.py 以 agent_type="fast-track"
-            # 转发至此），此前被忽略、无条件入队 implementer——fast-track 失败
-            # 被重派进完整 implementer 车道，与 docstring「full 重派 implementer，
-            # fast-track 重派 fast-track」的契约相悖。
-            self._enqueue_front(spec_name, agent_type)
 
     # ── tasks.md 收口复检门禁处置（add-tasksmd-relint-gate）─────────────────
     # 读取与判定逻辑在 VerificationPipeline._tasks_md_relint_from_branch /
@@ -2396,56 +2437,23 @@ class VAdjudicationMixin:
         同轮命中以后登记者为准——含路径的 worktree 模式更保守，故 fast-track
         调用点 MUST NOT 传 branch，以免覆盖现场。
         """
-        spec_entry = self._pm.state_machine.read_one(spec_name) or {}
-        # ── 重派前登记分支遗产（fix-relint-redispatch-legacy D1/D2）───────────
-        # 在状态写回（update_spec）与 _enqueue_front **之前**注册（与交付物守卫
-        # _redispatch_for_missing 同序），使 _legacy 在下一轮 create 时已在册。
-        # 条件与守卫同型（fail-open）：branch 为空静默跳过；登记自身异常捕获
-        # 降级 WARNING（处置链路不得因登记失败中断）。
-        _wm = self._pm.agent_runner.worktree_manager
-        if branch and hasattr(_wm, "register_legacy"):
-            try:
-                _wm.register_legacy(spec_name, None, branch)
-                if hasattr(_wm, "mark_legacy_reusable"):
-                    _wm.mark_legacy_reusable(spec_name)
-            except Exception as e:
-                self._pm.logger.warning(
-                    "pm_engine",
-                    f"relint 遗产登记失败（非阻塞）'{spec_name}': {e}",
-                )
-        try:
-            prev_retries = int(spec_entry.get("_retry_count", 0) or 0)
-        except (TypeError, ValueError):
-            prev_retries = 0
-        retries = prev_retries + 1
-        try:
-            max_r = int(self._pm._get_config("agents.max_retries", 3) or 3)
-        except Exception:
-            max_r = 3
         detail = "；".join(relint)
-        err_note = (
-            f"tasks.md 收口复检违规 — 不合并不推进，重派修正（第 {retries} 次）："
-            f"{detail}。修正处方：任务行行首必须为 `- [ ]` / `- [x]`；"
-            f"若现为 `^- [x]` 即 sed 转义损伤，请改回 `- [` 并恢复 checkbox"
-        )
-        updates: dict = {
-            "status": "ready",
-            "error": err_note,
-            "_retry_count": retries,
-        }
-        if retries >= max_r:
-            updates["status"] = "blocked"
-            updates["tester_run"] = None
-            updates["error"] = (
+        self._redispatch_with_retry(
+            spec_name,
+            lambda retries, max_r: (
+                f"tasks.md 收口复检违规 — 不合并不推进，重派修正（第 {retries} 次）："
+                f"{detail}。修正处方：任务行行首必须为 `- [ ]` / `- [x]`；"
+                f"若现为 `^- [x]` 即 sed 转义损伤，请改回 `- [` 并恢复 checkbox",
                 f"tasks.md 收口复检连续 {max_r} 次违规 — 已 blocked，"
-                f"需人工修复 tasks.md（行首 `- [ ]`/`- [x]`）"
-            )
-        self._pm.state_machine.update_spec(spec_name, updates)
-        self._pm.logger.error(
-            "pm_engine",
-            f"tasks.md relint 触发 '{spec_name}'（第 {retries} 次）— " f"run={run_id or 'n/a'}",
+                f"需人工修复 tasks.md（行首 `- [ ]`/`- [x]`）",
+            ),
+            lambda retries: (
+                f"tasks.md relint 触发 '{spec_name}'（第 {retries} 次）— "
+                f"run={run_id or 'n/a'}"
+            ),
+            agent_type=agent_type,
+            branch=branch,
+            legacy_warn_prefix="relint 遗产登记失败",
         )
-        if updates["status"] != "blocked":
-            self._enqueue_front(spec_name, agent_type)
 
     # ── fast-track 单 run 全包 worker（add-fast-track-mode D1/D4/D5/D6）──

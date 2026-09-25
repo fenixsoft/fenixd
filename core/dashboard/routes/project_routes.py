@@ -226,6 +226,13 @@ class H2ProjectRoutesMixin:
 
             hosting = _hosting_state(project["path"])
         except Exception:
+            # 探测异常降级 stopped 并继续执行，与 restart 分支（异常→unmanaged
+            # 拒绝）的口径有意不同：restart 只写信号交给既有 daemon 消费，误放行
+            # 会信号静默滞留却谎报成功；install-hosting 不依赖信号消费方，直接
+            # stop_daemon+start_daemon 真实执行安装，成败由启停函数自报，探测
+            # 异常时放行不会假成功。本接口还是 restart 错误文案指定的修复入口，
+            # fail-closed 会让探测坏掉时修复路径恰好不可用。代价：瞬时异常叠加
+            # 实际 managed 时多做一次停/起（短暂中断，终态仍 managed）。
             hosting = "stopped"
         if hosting == "managed":
             return {"ok": True, "error": None, "already": True, "hosting": "managed"}

@@ -286,7 +286,9 @@ class AssertionRunner:
                     if (ratio > threshold) {
                         results.push({
                             sibling_tag: sib.tagName,
-                            sibling_class: sib.className?.split(' ')[0] || '',
+                            // SVG 的 className 是 SVGAnimatedString（无 split），
+                            // 可选链挡不住类型不符，须先 toString 再 split
+                            sibling_class: sib.className?.toString?.().split(' ')[0] || '',
                             overlap_ratio: Math.round(ratio * 100) / 100,
                             sibling_z_index: getComputedStyle(sib).zIndex,
                         });
@@ -473,14 +475,23 @@ class AssertionRunner:
 
         while True:
             try:
+                # 单次读取限时 interval_ms：元素永不渲染时这些 API 会按
+                # Playwright 默认 30 秒超时阻塞，先于下方 deadline 检查
+                # 突破预算，故显式压到单轮间隔内，交由轮询兜底。
+                # 注意不能像 attribute_match 那样进轮询前先查存在性快速
+                # 失败——本方法的等待重试正是为异步渲染设计的。
                 # input/textarea 元素使用 value 属性
                 tag = await self._locator(page, selector).evaluate(
-                    "el => el.tagName?.toLowerCase()"
+                    "el => el.tagName?.toLowerCase()", timeout=interval_ms
                 )
                 if tag in ("input", "textarea", "select"):
-                    actual = (await self._locator(page, selector).input_value()) or ""
+                    actual = (
+                        await self._locator(page, selector).input_value(timeout=interval_ms)
+                    ) or ""
                 else:
-                    actual = (await self._locator(page, selector).text_content()) or ""
+                    actual = (
+                        await self._locator(page, selector).text_content(timeout=interval_ms)
+                    ) or ""
 
                 passed = self._text_matches(actual, expected, mode)
                 if passed:
