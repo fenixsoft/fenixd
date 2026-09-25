@@ -164,7 +164,7 @@ def start(
         str(port),
         V2_DEV_SERVER_MARKER,
     ]
-    env = dict(__import__("os").environ)
+    env = dict(os.environ)
     env["NODE_OPTIONS"] = (env.get("NODE_OPTIONS", "") + f" --max-old-space-size=256").strip()
 
     def _log(level, msg):
