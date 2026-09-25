@@ -297,7 +297,7 @@ class VerificationPipeline:
         "_ensure_serving_worktree": _ensure_serving_worktree,
         "_serve_static_in_main": _serve_static_in_main,
         "_serve_static_in_worktree": _serve_static_in_worktree,
-        "_serve_command_in_worktree": _serve_command_in_worktree.__func__,
+        "_serve_command_in_worktree": _serve_command_in_worktree,
         "_serve_command_in_main": _serve_command_in_main,
         "_finalize_static": _finalize_static,
         "_remove_serving_worktree": _remove_serving_worktree,

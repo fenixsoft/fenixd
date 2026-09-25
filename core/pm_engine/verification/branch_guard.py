@@ -61,8 +61,6 @@ def _branch_merged_into_tree(branch: str, project_root) -> bool:
     宁可回退 ready 全量重实现，不可错误直达 testing 造成验证前置缺失。
     """
     try:
-        from pathlib import Path
-
         root = Path(project_root)
         result = subprocess.run(
             ["git", "merge-base", "--is-ancestor", str(branch), "HEAD"],
@@ -94,13 +92,11 @@ def _branch_commit_count(pipeline, result) -> Optional[int]:
     共用。``result.branch`` 为空或 rev-list 失败/超时返回 None
     （调用方各自按 conservative fail-open 处置，不吞风险）。
     """
-    import subprocess as _sp
-
     branch = getattr(result, "branch", None)
     if not branch:
         return None
     try:
-        r = _sp.run(
+        r = subprocess.run(
             ["git", "rev-list", "--count", f"main..{branch}"],
             capture_output=True,
             text=True,
@@ -110,7 +106,7 @@ def _branch_commit_count(pipeline, result) -> Optional[int]:
         if r.returncode != 0:
             return None
         return int(r.stdout.strip() or "0")
-    except (OSError, ValueError, _sp.TimeoutExpired):
+    except (OSError, ValueError, subprocess.TimeoutExpired):
         return None
 
 

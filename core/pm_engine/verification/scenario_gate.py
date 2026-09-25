@@ -485,8 +485,12 @@ def _render_scenario_change_section_to_report(pipeline, spec_name: str) -> None:
         return
     # add-verify-report-gate 要求不覆盖 mtime 语义仅针对「Agent 已写」文件；
     # 此处为框架追加小节，直接写回（Agent 漏写场景变更时由框架补）。
+    # tmp+replace 原子写（与 verify_report.py 同款）：裸写中途崩溃会留下截断
+    # 报告，截断残留仍携带本轮轮次指纹，会被报告闸门以 present 放行。
     try:
-        report_path.write_text(content.rstrip("\n") + "\n" + section + "\n", encoding="utf-8")
+        tmp = report_path.with_name(report_path.name + ".tmp")
+        tmp.write_text(content.rstrip("\n") + "\n" + section + "\n", encoding="utf-8")
+        tmp.replace(report_path)
     except OSError as e:
         pipeline._context.logger.warning("pm_engine", f"场景集变更小节写回失败 '{spec_name}': {e}")
 
