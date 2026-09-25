@@ -265,7 +265,7 @@ class G4MergebackMixin:
             f"spec 目录在飞编辑：{rel}/ 有 {len(dirty)} 个未提交改动"
             f"（{dirty[0]}{'…' if len(dirty) > 1 else ''}）"
             f" — merge-back 顺延等待提交动作解除"
-            f"（提交或 git commit -a 'spec: {spec}' 后重试）",
+            f"（提交或 git commit -am \"spec: {spec}\" 后重试）",
             spec_dir_inflight=True,
         )
 
