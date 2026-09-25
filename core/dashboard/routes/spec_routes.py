@@ -875,6 +875,11 @@ class H3SpecRoutesMixin:
             content_length = 0
         if content_length > 0:
             body = self._read_json_body()
+            if body is None:
+                # _read_json_body 失败路径已自行 _error(400/413)，必须终止，
+                # 否则继续执行会向同一 keep-alive 连接写第二个响应（与
+                # _api_spec_priority 等端点的使用惯例对齐）
+                return
             if isinstance(body, dict):
                 raw = body.get("prompt")
                 if raw is not None and not isinstance(raw, str):
