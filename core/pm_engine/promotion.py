@@ -25,7 +25,10 @@ def promote_drafted(
         logger: 日志实例（需有 info/warning/error 方法）
 
     Returns:
-        {"ok": True, "violations": []} — 可晋升（调用方 transition + 派发）
+        {"ok": True, "violations": [], "next_status": "ready"|"reviewing"} — 可晋升
+        （调用方须按 next_status 决定 transition 目标再派发；取值由评审门禁判定：
+        should_skip_review 判定跳过评审（gates.spec_review_mode / fast-track）→ "ready"，
+        否则 → "reviewing"；config 为 None 时不做评审判定，恒 "ready"）
         {"ok": False, "violations": [...]} — lint 违规，STATE error 已写入
         {"ok": False, "reason": "..."} — 拒绝（不存在 / 非 drafted / 其它原因）
     """
