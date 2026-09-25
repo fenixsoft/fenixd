@@ -131,8 +131,11 @@ def determine_scenario_status(
 
     失败断言的 layer 缺失或越 1-4 界（上游畸形结果，如未知断言类型
     回退 layer=0）时按 fail 兜底，保守判失败，避免静默放行为 pass。
+    步骤结果缺 ``success`` 键（上游畸形结果）同理按 fail 兜底，取向一致。
     """
-    if any(not s.get("success", True) for s in step_results):
+    # 正常路径不受影响：各 Runner 步骤执行器（browser/api/cli）的所有
+    # 返回点均显式写布尔 ``success``；缺键只剩上游畸形一种来源。
+    if any(not s.get("success", False) for s in step_results):
         return "fail"
 
     has_layer_1_3_fail = False

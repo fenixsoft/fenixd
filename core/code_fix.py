@@ -3015,11 +3015,24 @@ class CodeFixOrchestrator:
             self._log("error", f"code-fix 第 {batch_no} 批合回冲突，现场即弃（branch/tip_sha 入档案）")
             tip_sha = _worktree_head(wt)
             branch = _worktree_branch(wt)
-            # 失败档案只收未终态条目（已置 ignored 的不随批作废重试）
-            record_failed_batch(
-                root, pending_ids, wt,
-                reason="merge_back_conflict", branch=branch, tip_sha=tip_sha,
-            )
+            # 失败档案只收未终态条目（code-review item c94a1770a477，与
+            # _downgrade_deferred / 定向重试耗尽 / 主路径核销前过滤同口径）：
+            # 选批到合回之间被并发置 in_spec/resolved 的条目不随批入档——
+            # fail_count 预算与达上限一次性告警的名录须与真实失败条目一致；
+            # 子集为空则跳过入档（ignored 已在 pending_ids 构造处排除）。
+            try:
+                ledger = read_items(root)
+            except Exception:  # noqa: BLE001 — 台账读失败按空集（不入档）
+                ledger = {}
+            open_ids = [
+                i for i in pending_ids
+                if (ledger.get(i) or {}).get("status") == "open"
+            ]
+            if open_ids:
+                record_failed_batch(
+                    root, open_ids, wt,
+                    reason="merge_back_conflict", branch=branch, tip_sha=tip_sha,
+                )
             _safe_cleanup(wm, wt, success=False, logger=self._logger)
             self._consumed_progress(
                 current=f"第 {batch_no} 批失败已跳过（合回冲突）— 继续后续批次",

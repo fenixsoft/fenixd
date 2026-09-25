@@ -485,6 +485,10 @@ class G1LifecycleMixin:
         # 都已先 pop 分支表，finally 再 get(wt_str) 常规路径恒为 None，故 finally
         # 的键解析须用此处捕获的入口值。
         wt_branch_at_entry = branch
+        # 入口时刻快照（code-review item 1d1b4be9de25）：finally 摘锁以
+        # _lock_since 晚于该时刻即跳过为界，收尾期间并发的同 spec 新锁
+        # （另一 agent_type）不被误删
+        cleanup_entry_ts = time.time()
         is_implementer = bool(branch) and not branch.startswith("fenix/verify-")
 
         try:
@@ -590,9 +594,17 @@ class G1LifecycleMixin:
             # 皆不可解析则不释放（宁可靠 refresh_locks 的陈锁清扫兜底，不误放
             # 他人锁）。
             # 加锁口径与 create / release_spec_lock 对齐（code-review item
-            # 318f41dcf125）：to_remove 计算与摘除全程持 _spec_lock_th——无锁
-            # 窗口内另一线程对同一 spec 发起新 create 后，本段 discard 会误删
-            # 新锁，重开双派发窗口。锁内解析用 wt_branch_at_entry 入口快照。
+            # 318f41dcf125）：to_remove 计算与摘除全程持 _spec_lock_th，计算
+            # 与摘除原子化（并发 create/cleanup 增删不撕裂迭代）。但持锁只
+            # 封得住计算中途插入的子窗口——封不住进入临界区之前已完成的
+            # 并发新 create（code-review item 1d1b4be9de25：收尾期间派发器
+            # 对同一 spec 换 agent_type 发起新 create，如 verifier 收尾时
+            # implementer 重派，键不同故加锁成功）。故摘除另以 _lock_since
+            # 晚于入口时刻（cleanup_entry_ts）即跳过为界：晚于者认定并发
+            # 新锁不误删（同键新锁不可能存在——本锁仍持有时 create 同键
+            # 命中即返回 None），否则新 run 在 create 到子进程可被进程表
+            # 扫到之间的构建窗口内失去锁保护，重开双派发事故（2026-09-03）
+            # 窗口。
             with self._spec_lock_th:
                 wt_spec = self._spec_from_branch(wt_branch_at_entry or "") or (
                     self._spec_from_worktree_name(wt_path.name)
@@ -600,7 +612,9 @@ class G1LifecycleMixin:
                 to_remove = [
                     k
                     for k in self._spec_locks
-                    if wt_spec is not None and k.split(":")[0] == wt_spec
+                    if wt_spec is not None
+                    and k.split(":")[0] == wt_spec
+                    and self._lock_since.get(k, 0.0) <= cleanup_entry_ts
                 ]
                 for k in to_remove:
                     self._spec_locks.discard(k)

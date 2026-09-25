@@ -16,8 +16,6 @@ from pathlib import Path
 
 from core.admin_store import AdminStore, DISPOSITION, SIGNAL
 from core.pm_engine.verification.branch_guard import resolve_env_blocked_reset_path
-from core.agent_runner.prompt_builder import planner_result_status_whitelist
-from core.state_machine import INFRA_FAILURE_COUNT_FIELD, VERIFY_INFRA_ROUNDS_FIELD
 
 # 回拨审计留痕信号类型（幂等键前缀，admin_store DISPOSITION 按 reclassify_key 去重）
 RECLASSIFY_SIGNAL_TYPE = "infra_reclassify"

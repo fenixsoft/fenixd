@@ -66,6 +66,35 @@ class H2ProjectRoutesMixin:
         return project
 
 
+    def _project_or_user_scope(self, query):
+        """config 端点共用项目解析（code-review item 1291b3b1f3f1）：三处
+        config 端点（_api_config_get / _api_config_post /
+        _api_config_sync_from_user）各自内联的「缺参回退用户级、在场但解析
+        不到项目 404」判定收敛为行为单源，防端点间漂移。
+
+        判参口径（code-review item 40ec5f6b6c5e，先例 b9e7765dc1de）：
+        _project_from_query 把「无 project 查询参数」与「project 名不在
+        registry（笔误/项目已删/registry TTL 缓存过期）」折叠成 None——直接
+        以 None 判用户级分支会把 ?project=<笔误名> 折进用户级配置。故先看
+        参数是否在场：缺席才回退用户级；在场但 project 为 None 或
+        not exists → _error(404, "project not found")（资源不存在语义）。
+
+        返回 (project, project_param)，调用方判定：
+        - ``project_param and project is None``：404 已由本助手发送，调用方
+          直接 return 终止处理；
+        - ``project is None``（缺参）：用户级作用域；
+        - 其余：project 为有效项目 dict（exists 已核验）。
+        （与 _project_query_or_error 的区别：后者缺参即 400，二态返回；
+        config 端点缺参是合法用户级作用域，须三态，故独立成助手。）
+        """
+        project_param = query.get("project", [None])[0]
+        project = self._project_from_query(query) if project_param else None
+        if project_param and (project is None or not project.get("exists")):
+            self._error(404, "project not found")
+            return None, project_param
+        return project, project_param
+
+
     def _resolve_project_or_400(self, path: str, prefix: str, require_exists: bool = True):
         """从 /api/projects/<name>[/start|/stop|/restart|/install-hosting] 或
         /api/projects/<name> 解析项目名。

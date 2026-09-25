@@ -84,7 +84,10 @@ def scan_server_routes(root: Path) -> tuple:
                 continue
             if not line.strip().startswith("("):
                 continue
-            rm = re.search(r'\(\s*"(exact|regex|suffix)",\s*"([^"]+)"', line)
+            # r? 前缀兼容（code-review item 1fd7cf361e88）：base.py 参数化路由
+            # 条目多为 raw-string 写法（r"^/api/..."），条目正则须同时兼容
+            # 普通串与 raw-string 两种形态，否则全部 regex 条目落入 skipped。
+            rm = re.search(r'\(\s*"(exact|regex|suffix)",\s*r?"([^"]+)"', line)
             if not rm:
                 # 条目行未被条目正则收录（如 pattern 字面量含转义双引号 \" 等
                 # "([^"]+)" 匹配不了的形态）：累计计数上报，防地图静默缺条目
@@ -304,7 +307,7 @@ def main() -> int:
     if table_skipped:
         out.append(
             f"\n> ⚠️ 表驱动条目解析跳过 {table_skipped} 行"
-            f"（pattern 字面量含转义双引号等未支持形态时条目正则失配）"
+            f"（pattern 字面量为条目正则不支持的写法形态，如含转义双引号）"
             f"——地图可能缺条目，请人工核对 core/dashboard/routes/base.py\n"
         )
     sys.stdout.write("".join(out))

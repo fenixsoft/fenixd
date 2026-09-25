@@ -764,7 +764,7 @@ class FFastTrackMixin:
         到本方法时必为 success。
 
         叠加判据以 worktree 内 tasks.md 为对象（runner 硬门同款）。worktree 不可得
-        或结果文件已随收口清理 → fail-open（记录 warning 不误拦——runner 产物硬门
+        或结果文件已随收口清理 → fail-open（记录 debug 日志不误拦——runner 产物硬门
         已在本轮 run 结束时于源头校验过同一判据，此处是 merge 前双保险兜底）。
 
         Returns:
@@ -800,6 +800,15 @@ class FFastTrackMixin:
                     "pm_engine",
                     f"fast-track 完成度判据跳过（worktree 不可得，runner 硬门已"
                     f"源头校验）'{spec_name}'",
+                )
+            else:
+                # wt_path 在但结果文件已随收口清理：同为 fail-open 降级，降级
+                # MUST 留痕（code-review item 13e3cefdcfc8）——与上方 worktree
+                # 不可得分支同款 debug 级，双保险兜底被跳过时有迹可查。
+                self._pm.logger.debug(
+                    "pm_engine",
+                    f"fast-track 完成度判据跳过（结果文件已随收口清理，"
+                    f"runner 硬门已源头校验）'{spec_name}'",
                 )
         except Exception as e:
             self._pm.logger.warning(

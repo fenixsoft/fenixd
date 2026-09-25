@@ -14,7 +14,9 @@ const { Text } = Typography;
 
 interface ProjectProfilePanelProps {
   config: ConfigData;
-  onSave: (values: Partial<ConfigData>) => Promise<void>;
+  /** 父级 handleSave 契约：保存失败时 toast 错误后返回 false（不抛异常），
+   *  true 才算落盘成功——调用方必须按返回值分支，不得当作必然成功。 */
+  onSave: (values: Partial<ConfigData>) => Promise<boolean>;
   project?: string;
   /** 聚焦信号（时间戳）：质量页签「手工编辑」跳转过来时 >0，滚动定位到
    *  verify.yaml 卡片并聚焦编辑框；常规切页签传 0 不触发 */
@@ -55,8 +57,12 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
 
   const handleSave = async () => {
     try {
-      await onSave({ description });
-      message.success('保存成功');
+      // 父级保存失败时返回 false（错误 toast 已由父级呈现），仅明确成功才
+      // 提示「保存成功」，避免失败时错误与成功两条提示自相矛盾。
+      const ok = await onSave({ description });
+      if (ok) {
+        message.success('保存成功');
+      }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       message.error(`保存失败：${errorMessage}`);
@@ -74,10 +80,17 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
     try {
       const result = await regenerateProjectDescription(project);
       if (result.ok) {
-        setDescription(result.description);
-        message.success('简介重新生成成功');
-        // 刷新配置以确保一致性
-        await onSave({ description: result.description });
+        // 先落盘再改本地状态：保存失败（父级返回 false，已由父级 toast）时
+        // 不得 setDescription，否则本地简介与服务器漂移且用户无从察觉。
+        const saved = await onSave({ description: result.description });
+        if (saved) {
+          setDescription(result.description);
+          // 生成成功与保存落盘是两个独立结果，分开提示
+          message.success('简介重新生成成功');
+          message.success('已保存到项目配置');
+        } else {
+          message.warning('简介已生成，但保存到项目配置失败，请重试或手动保存');
+        }
       } else {
         message.error(result.error || '重新生成失败');
       }

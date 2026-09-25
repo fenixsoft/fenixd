@@ -727,6 +727,10 @@ def run_regression(
     - 硬超时 spec.timeout_seconds 中止整个进程组（D8）；
     - 非零退出但 XML 可解析时以解析结果为准（status: failed）；
     - XML 不可解析 → status: parse_error（附非空 reason）；
+    - 命令启动失败（Popen OSError，argv 形态可执行文件缺失等）→ status 同为
+      parse_error，附 ``launch_error: True`` 结构化判别（「未起跑」≠「跑完产
+      不出 XML」，code-review item 1cc2d91268e4）；不新增状态枚举，消费侧对
+      parse_error 的保守回落语义不变。
     - 主机级锁互斥（D7）；拿不到锁即放弃并记日志。
 
     lock_root（add-code-review-auto-fix D10）：主机级锁锚定根。缺省 None
@@ -810,6 +814,10 @@ def run_regression(
             elapsed = round(time.monotonic() - started_mono, 2)
             return {
                 "status": "parse_error",
+                # 启动失败子语义（code-review item 1cc2d91268e4）：与「跑完产
+                # 不出 XML」同归 parse_error（不新增状态枚举，read_progress /
+                # 质量门的保守回落语义不变）；本字段供消费侧结构化判别「未起跑」。
+                "launch_error": True,
                 "cmd": cmd_display,
                 "output": output_rel,
                 "started_at": started_at,

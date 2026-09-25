@@ -1,36 +1,19 @@
 /* composer.css — claude-composer 组件配套样式（add-session-composer 2.4）。
  * 迁移自 claudecodeui index.css 的 chat-input-* / chat-composer-* 相关段。
  * 深浅色：dashboard 全站强制亮色（D2），原 token 直接给亮色值，dark 段不迁。
- * tailwind 语义色（border/popover/…）依赖 HSL 变量——composer 挂载点是
- * .claude-msg-pane 的兄弟节点而非后代（SessionPanel 渲染结构），变量不能
- * 从面板继承；2026-09-25 实证 bg-primary 等在此静默解析失败（发送按钮
- * 透明）。故 .fenix-composer 与 .fenix-composer-portal 都显式注入同组
- * 亮色值，不依赖 global.less 的作用域。 */
+ * tailwind 语义色（border/popover/…）依赖 HSL 变量——composer 本体挂载点
+ * 和 portal 弹层都是 .claude-msg-pane 的兄弟节点而非后代（SessionPanel 渲染
+ * 结构），变量不能从面板继承；2026-09-25 实证 bg-primary 等在此静默解析
+ * 失败（发送按钮透明）。故 .fenix-composer 与 .fenix-composer-portal 各自
+ * 都必须显式注入同组亮色值（各自有值即可，不依赖 global.less 继承）；
+ * CSS 变量不继承只要求两处各有值、不要求两处重复书写，故以选择器分组
+ * 共用同一份声明（下方单一来源），调色只改这一处，值与 global.less 的
+ * .claude-msg-pane 保持一致。 */
 
-/* ── composer 本体的 HSL 语义变量（与 .claude-msg-pane 同值，亮色） ── */
-.fenix-composer {
-  --background: 44 22% 96%;
-  --foreground: 36 25% 4%;
-  --card: 0 0% 100%;
-  --card-foreground: 36 25% 4%;
-  --popover: 0 0% 100%;
-  --popover-foreground: 36 25% 4%;
-  --primary: 221.2 83.2% 53.3%;
-  --primary-foreground: 210 40% 98%;
-  --secondary: 44 15% 91%;
-  --secondary-foreground: 36 15% 18%;
-  --muted: 44 15% 91%;
-  --muted-foreground: 40 5% 44%;
-  --accent: 44 15% 91%;
-  --accent-foreground: 36 15% 18%;
-  --destructive: 0 84.2% 60.2%;
-  --destructive-foreground: 210 40% 98%;
-  --border: 44 14% 87%;
-  --input: 44 14% 87%;
-  --ring: 221.2 83.2% 53.3%;
-}
-
-/* ── portal 弹层的 HSL 语义变量（与 .claude-msg-pane 同值，亮色） ── */
+/* ── composer 本体与 portal 弹层的 HSL 语义变量（两选择器均不在
+ *    .claude-msg-pane 后代位置、无法继承，各自需显式赋值；分组共用
+ *    一份值，与 .claude-msg-pane 同值，亮色） ── */
+.fenix-composer,
 .fenix-composer-portal {
   --background: 44 22% 96%;
   --foreground: 36 25% 4%;

@@ -10,6 +10,7 @@
 """
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -355,3 +356,23 @@ class TestRepoCoverageRegression:
         assert any('`/api/spec-freeze`' in l for l in api_lines), (
             "表驱动路由 /api/spec-freeze 未收录——POST 表扫描失败？"
         )
+
+    def test_regex_table_entries_captured_with_raw_string(self):
+        """routes/base.py 表驱动 regex 条目（含 raw-string 形态）被收录。
+
+        code-review item 1fd7cf361e88：条目正则此前不兼容 r"..." 前缀，
+        全部 regex 条目落入 skipped、地图只余 exact 条目。
+        """
+        base = self.REPO_ROOT / "core" / "dashboard" / "routes" / "base.py"
+        patterns = re.findall(
+            r'\(\s*"regex",\s*r?"([^"]+)"', base.read_text(encoding="utf-8")
+        )
+        assert patterns, "routes/base.py 无 regex 条目（用例前提失效）"
+        out = self._run()
+        # 生成器展示口径：regex pattern 取 ^/ 前缀、去 ^ 截 $（如
+        # r"^/api/specs/([^/]+)$" → `/api/specs/([^/]+)`）
+        missing = [
+            p for p in patterns
+            if f"`{p.lstrip('^').split('$')[0]}`" not in out
+        ]
+        assert not missing, f"regex 表驱动条目未被收录: {missing}"

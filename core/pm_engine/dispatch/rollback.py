@@ -248,6 +248,72 @@ class RRollbackMixin:
         except Exception as e2:
             self._pm.logger.error("pm_engine", f"State rollback failed for '{spec_name}': {e2}")
 
+    def _emit_mergeback_alert(
+        self,
+        spec_name: str,
+        signal_type: str,
+        state_updates,
+        state_fail_note: str,
+        error_note: str,
+        description: str,
+        evidence_obj,
+        recommended_action: str,
+    ) -> None:
+        """merge-back/stash 上报统一骨架（code-review item 2f7cef6b18a6）。
+
+        四个上报站点（``_report_stash_pop_conflict`` /
+        ``_report_mergeback_wip_overlap`` /
+        ``_report_mergeback_spec_dir_inflight_stuck`` /
+        ``_report_mergeback_wip_defer_stuck``）原各自复制粘贴的「状态写入 +
+        ERROR 日志 + admin_store 告警」三段脚手架收敛于此，行为零变化：
+        差异化文案（signal_type/description/recommended_action/两段日志文本）
+        与 evidence 字典由站点逐字传入。
+
+        - 状态写入：update_spec 落站点给定的字段集（state_updates 亦可为
+          零参 callable——需读状态做记账的站点把构造收进同一兜底，保证
+          「构造失败与写入失败同路 WARNING 不阻塞」）；失败仅记 WARNING
+          （state_fail_note + 异常）。
+        - logger.error 按 error_note 留痕（无论状态写入成败）。
+        - admin 告警直发：evidence 一律先经 ``_str_field``（实现在
+          core/agent_runner/prompt_builder.py）序列化为 str 再入 record
+          （dict 穿透 ``str.replace`` 会致 Administrator 唤起失败，
+          fix-alert-evidence-render-crash 先例）后经 ``AdminStore.append``
+          发 major 告警；任何异常仅记 WARNING（非阻塞），不阻断
+          merge-back 主流程。
+        """
+        try:
+            updates = state_updates() if callable(state_updates) else state_updates
+            self._pm.state_machine.update_spec(spec_name, updates)
+        except Exception as e:
+            self._pm.logger.warning("pm_engine", f"{state_fail_note}: {e}")
+        self._pm.logger.error("pm_engine", error_note)
+        try:
+            from core.agent_runner.prompt_builder import _str_field
+            from core.admin_store import AdminStore, SIGNAL
+
+            evidence = _str_field(evidence_obj)
+            store = AdminStore(self._pm.project_root, self._pm.logger)
+            store.append(
+                {
+                    "kind": SIGNAL,
+                    "signal_type": signal_type,
+                    "spec": spec_name,
+                    "severity": "major",
+                    "description": description,
+                    "evidence": evidence,
+                    "recommended_action": recommended_action,
+                }
+            )
+            self._pm.logger.info(
+                "pm_engine",
+                f"{signal_type} 告警已写入 admin store: '{spec_name}'",
+            )
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"{signal_type} 告警写入失败 '{spec_name}'（非阻塞）: {e}",
+            )
+
     def _report_stash_pop_conflict(
         self, spec_name: str, conflict_files: list, merge_info=None
     ) -> None:
@@ -266,98 +332,69 @@ class RRollbackMixin:
         if not conflict_files:
             return
         msg = f"stash pop conflict: files={conflict_files}"
+        # 条目去向从 worktree_manager 读（dispatch 层不持锁，读实例属性足够——
+        # guard 段已结束、无并发写者）。kept 缺键时按 **True** 保守默认
+        # （code-review item f09a5bfeb402）：旧实现 `fate.get("kept")` 缺键
+        # 回 None（falsy）会误报「已被自动 drop」并写 stash_kept=False，
+        # 编造数据丢失声明；缺键与读取失败同属「无法确证 drop」，一律按保留。
         try:
-            self._pm.state_machine.update_spec(spec_name, {"error": msg})
-        except Exception as e:
-            self._pm.logger.warning(
-                "pm_engine",
-                f"stash pop conflict 上报失败 '{spec_name}'（非阻塞）: {e}",
+            fate = dict(self._pm.agent_runner.worktree_manager.last_stash_entry_fate)
+        except Exception:
+            fate = {"kept": True, "sha": ""}
+        sha = fate.get("sha", "") or ""
+        short_sha = sha[:12] if sha else ""
+        if fate.get("kept", True):
+            fate_desc = (
+                f"stash 条目保留在栈中（栈顶 sha {short_sha}，" f"git stash list 可见）"
+                if short_sha
+                else "stash 条目保留在栈中"
             )
-        self._pm.logger.error(
-            "pm_engine",
-            f"'{spec_name}' {msg} —— stash 保留，可用 git stash show 找回被丢弃改动",
+        else:
+            fate_desc = (
+                f"stash 版已被合并结果完全取代，条目已自动 drop"
+                f"（commit {short_sha}，gc 前可按 sha 找回）"
+                if short_sha
+                else "stash 条目已被自动 drop"
+            )
+        recover_cmds = (
+            "; ".join(f"git show {sha}:{shlex.quote(f)}" for f in conflict_files)
+            if sha
+            else "git stash show / git stash list 人工核对"
+        )
+        overlap = list(getattr(merge_info, "wip_overlap", []) or [])
+        overlap_desc = (
+            f"；merge-back 前 WIP 重叠预检命中 {len(overlap)} 文件"
+            f"（可能与本次丢弃相关）：{overlap}"
+            if overlap
+            else ""
+        )
+        description = (
+            f"SPEC '{spec_name}' merge-back stash pop 冲突已自愈："
+            f"{len(conflict_files)} 个文件的未提交改动被丢弃 "
+            f"({', '.join(conflict_files)})。{fate_desc}{overlap_desc}。"
+            f"逐文件找回：{recover_cmds}"
         )
         # admin 告警直发（fix-mergeback-stashpop-silent-loss D1）：低频事件、
         # 无风暴风险，不加节流。任何异常都不阻塞 merge-back 主流程。
-        try:
-            from core.agent_runner.prompt_builder import _str_field
-            from core.admin_store import AdminStore, SIGNAL
-
-            # 条目去向从 worktree_manager 读（dispatch 层不持锁，读实例属性足够——
-            # guard 段已结束、无并发写者）。kept 缺键时按 **True** 保守默认
-            # （code-review item f09a5bfeb402）：旧实现 `fate.get("kept")` 缺键
-            # 回 None（falsy）会误报「已被自动 drop」并写 stash_kept=False，
-            # 编造数据丢失声明；缺键与读取失败同属「无法确证 drop」，一律按保留。
-            try:
-                fate = dict(self._pm.agent_runner.worktree_manager.last_stash_entry_fate)
-            except Exception:
-                fate = {"kept": True, "sha": ""}
-            sha = fate.get("sha", "") or ""
-            short_sha = sha[:12] if sha else ""
-            if fate.get("kept", True):
-                fate_desc = (
-                    f"stash 条目保留在栈中（栈顶 sha {short_sha}，" f"git stash list 可见）"
-                    if short_sha
-                    else "stash 条目保留在栈中"
-                )
-            else:
-                fate_desc = (
-                    f"stash 版已被合并结果完全取代，条目已自动 drop"
-                    f"（commit {short_sha}，gc 前可按 sha 找回）"
-                    if short_sha
-                    else "stash 条目已被自动 drop"
-                )
-            recover_cmds = (
-                "; ".join(f"git show {sha}:{shlex.quote(f)}" for f in conflict_files)
-                if sha
-                else "git stash show / git stash list 人工核对"
-            )
-            overlap = list(getattr(merge_info, "wip_overlap", []) or [])
-            overlap_desc = (
-                f"；merge-back 前 WIP 重叠预检命中 {len(overlap)} 文件"
-                f"（可能与本次丢弃相关）：{overlap}"
-                if overlap
-                else ""
-            )
-            description = (
-                f"SPEC '{spec_name}' merge-back stash pop 冲突已自愈："
-                f"{len(conflict_files)} 个文件的未提交改动被丢弃 "
-                f"({', '.join(conflict_files)})。{fate_desc}{overlap_desc}。"
-                f"逐文件找回：{recover_cmds}"
-            )
-            evidence = _str_field(
-                {
-                    "conflict_files": list(conflict_files),
-                    "stash_kept": bool(fate.get("kept", True)),
-                    "stash_sha": sha,
-                    "wip_overlap": overlap,
-                }
-            )
-            store = AdminStore(self._pm.project_root, self._pm.logger)
-            store.append(
-                {
-                    "kind": SIGNAL,
-                    "signal_type": "stash_pop_conflict",
-                    "spec": spec_name,
-                    "severity": "major",
-                    "description": description,
-                    "evidence": evidence,
-                    "recommended_action": (
-                        "git stash list 查条目去向；按逐文件 git show <sha>:<file> 命令"
-                        "核对内容，仍需要的改动手动落回工作区；确认零独有内容后 "
-                        "git stash drop 清理"
-                    ),
-                }
-            )
-            self._pm.logger.info(
-                "pm_engine",
-                f"stash_pop_conflict 告警已写入 admin store: '{spec_name}'",
-            )
-        except Exception as e:
-            self._pm.logger.warning(
-                "pm_engine",
-                f"stash_pop_conflict 告警写入失败 '{spec_name}'（非阻塞）: {e}",
-            )
+        self._emit_mergeback_alert(
+            spec_name,
+            "stash_pop_conflict",
+            {"error": msg},
+            f"stash pop conflict 上报失败 '{spec_name}'（非阻塞）",
+            f"'{spec_name}' {msg} —— stash 保留，可用 git stash show 找回被丢弃改动",
+            description,
+            {
+                "conflict_files": list(conflict_files),
+                "stash_kept": bool(fate.get("kept", True)),
+                "stash_sha": sha,
+                "wip_overlap": overlap,
+            },
+            (
+                "git stash list 查条目去向；按逐文件 git show <sha>:<file> 命令"
+                "核对内容，仍需要的改动手动落回工作区；确认零独有内容后 "
+                "git stash drop 清理"
+            ),
+        )
 
     def _report_mergeback_wip_overlap(
         self, spec_name: str, merge_info, branch: str, merge_error: str
@@ -391,7 +428,8 @@ class RRollbackMixin:
             f"处置指引：提交（git add/commit）或 stash（git stash push）主树这些"
             f"重叠改动后，重新放行该 spec（ready 重派）即可继续 merge-back。"
         )
-        try:
+
+        def _wip_overlap_updates() -> dict:
             # 结构化等待载体（evo-add-wip-defer-merge-retry-consumer 1.1）：
             # error 文本不再作为唯一现场标志——同次 update_spec 增写
             # _wip_gate_deferred=True + 复用 _merge_retry_count/_merge_retry_first_at
@@ -401,7 +439,8 @@ class RRollbackMixin:
             # 复查）据此自动 merge-only 重试；标志的生命周期不变式：
             # implementing+_wip_gate_deferred ⇒ 无在飞实现 run（触发阻断的
             # run 已在结果处理期收尾，新 run 只能自 ready 派发而 boot 两个
-            # 复位写点已清标志）。
+            # 复位写点已清标志）。以 callable 传入助手：记账读取与 update_spec
+            # 同路兜底（构造失败与写入失败同WARNING，不阻塞后续留痕与告警）。
             entry = self._pm.state_machine.read_one(spec_name) or {}
             try:
                 prev_count = int(entry.get("_merge_retry_count", 0) or 0)
@@ -412,63 +451,36 @@ class RRollbackMixin:
                 first_f = float(prev_first) if prev_first else None
             except (TypeError, ValueError):
                 first_f = None
-            self._pm.state_machine.update_spec(
-                spec_name,
-                {
-                    "error": f"mergeback wip overlap blocked (policy=block): files={overlap}",
-                    "_wip_gate_deferred": True,
-                    "_merge_retry_count": prev_count,
-                    "_merge_retry_first_at": int(first_f) if first_f else int(time.time()),
-                },
-            )
-        except Exception as e:
-            self._pm.logger.warning(
-                "pm_engine",
-                f"mergeback wip overlap 状态上报失败 '{spec_name}'（非阻塞）: {e}",
-            )
-        self._pm.logger.error(
-            "pm_engine",
-            f"'{spec_name}' mergeback wip overlap blocked —— 主树零污染，"
-            f"等待人工提交/stash 重叠改动后重新放行",
-        )
-        try:
-            from core.agent_runner.prompt_builder import _str_field
-            from core.admin_store import AdminStore, SIGNAL
+            return {
+                "error": f"mergeback wip overlap blocked (policy=block): files={overlap}",
+                "_wip_gate_deferred": True,
+                "_merge_retry_count": prev_count,
+                "_merge_retry_first_at": int(first_f) if first_f else int(time.time()),
+            }
 
-            evidence = _str_field(
-                {
-                    "overlap_files": overlap,
-                    "policy": "block",
-                    "branch": branch,
-                    "merge_error": str(merge_error),
-                }
-            )
-            store = AdminStore(self._pm.project_root, self._pm.logger)
-            store.append(
-                {
-                    "kind": SIGNAL,
-                    "signal_type": "mergeback_wip_overlap",
-                    "spec": spec_name,
-                    "severity": "major",
-                    "description": description,
-                    "evidence": evidence,
-                    "recommended_action": (
-                        "提交或 stash 主树与分支重叠的未提交改动"
-                        "（git add/commit 或 git stash push）后重新放行该 spec"
-                        "（ready 重派）继续 merge-back；被收纳/保留的改动可用 "
-                        "git stash list 与逐文件 git show <sha>:<file> 找回核对"
-                    ),
-                }
-            )
-            self._pm.logger.info(
-                "pm_engine",
-                f"mergeback_wip_overlap 告警已写入 admin store: '{spec_name}'",
-            )
-        except Exception as e:
-            self._pm.logger.warning(
-                "pm_engine",
-                f"mergeback_wip_overlap 告警写入失败 '{spec_name}'（非阻塞）: {e}",
-            )
+        self._emit_mergeback_alert(
+            spec_name,
+            "mergeback_wip_overlap",
+            _wip_overlap_updates,
+            f"mergeback wip overlap 状态上报失败 '{spec_name}'（非阻塞）",
+            (
+                f"'{spec_name}' mergeback wip overlap blocked —— 主树零污染，"
+                f"等待人工提交/stash 重叠改动后重新放行"
+            ),
+            description,
+            {
+                "overlap_files": overlap,
+                "policy": "block",
+                "branch": branch,
+                "merge_error": str(merge_error),
+            },
+            (
+                "提交或 stash 主树与分支重叠的未提交改动"
+                "（git add/commit 或 git stash push）后重新放行该 spec"
+                "（ready 重派）继续 merge-back；被收纳/保留的改动可用 "
+                "git stash list 与逐文件 git show <sha>:<file> 找回核对"
+            ),
+        )
 
     def _report_mergeback_spec_dir_inflight_stuck(
         self, spec_name: str, merge_info, branch: str, merge_error: str,
@@ -502,63 +514,33 @@ class RRollbackMixin:
             f"含 spec 迭代修补），再把该 spec 复位 ready 重新放行 merge-back；"
             f"或等待 daemon 恢复通道（recovery）下一轮再试。"
         )
-        try:
-            self._pm.state_machine.update_spec(
-                spec_name,
-                {
-                    "error": (
-                        f"mergeback spec_dir_inflight stuck after {retry_count} "
-                        f"rounds since {first_at}: {str(merge_error)[:120]}"
-                    ),
-                },
-            )
-        except Exception as e:
-            self._pm.logger.warning(
-                "pm_engine",
-                f"mergeback spec_dir_inflight_stuck 状态上报失败 '{spec_name}'（非阻塞）: {e}",
-            )
-        self._pm.logger.error(
-            "pm_engine",
-            f"'{spec_name}' merge-back 顺延超限（spec 目录在飞编辑）—— 已停止自动"
-            f"重试，等待人工提交 spec 目录后重新放行（分支与产物保留）",
+        self._emit_mergeback_alert(
+            spec_name,
+            "mergeback_spec_dir_inflight_stuck",
+            {
+                "error": (
+                    f"mergeback spec_dir_inflight stuck after {retry_count} "
+                    f"rounds since {first_at}: {str(merge_error)[:120]}"
+                ),
+            },
+            f"mergeback spec_dir_inflight_stuck 状态上报失败 '{spec_name}'（非阻塞）",
+            (
+                f"'{spec_name}' merge-back 顺延超限（spec 目录在飞编辑）—— 已停止自动"
+                f"重试，等待人工提交 spec 目录后重新放行（分支与产物保留）"
+            ),
+            description,
+            {
+                "retry_count": retry_count,
+                "first_at": first_at,
+                "branch": branch,
+                "merge_error": str(merge_error),
+            },
+            (
+                "提交主树 spec/changes/ 目录的未提交改动"
+                "（git add/commit，含 spec 迭代修补）后重新放行该 spec"
+                "（ready 重派）继续 merge-back；分支与已成功实现保留"
+            ),
         )
-        try:
-            from core.agent_runner.prompt_builder import _str_field
-            from core.admin_store import AdminStore, SIGNAL
-
-            evidence = _str_field(
-                {
-                    "retry_count": retry_count,
-                    "first_at": first_at,
-                    "branch": branch,
-                    "merge_error": str(merge_error),
-                }
-            )
-            store = AdminStore(self._pm.project_root, self._pm.logger)
-            store.append(
-                {
-                    "kind": SIGNAL,
-                    "signal_type": "mergeback_spec_dir_inflight_stuck",
-                    "spec": spec_name,
-                    "severity": "major",
-                    "description": description,
-                    "evidence": evidence,
-                    "recommended_action": (
-                        "提交主树 spec/changes/ 目录的未提交改动"
-                        "（git add/commit，含 spec 迭代修补）后重新放行该 spec"
-                        "（ready 重派）继续 merge-back；分支与已成功实现保留"
-                    ),
-                }
-            )
-            self._pm.logger.info(
-                "pm_engine",
-                f"mergeback_spec_dir_inflight_stuck 告警已写入 admin store: '{spec_name}'",
-            )
-        except Exception as e:
-            self._pm.logger.warning(
-                "pm_engine",
-                f"mergeback_spec_dir_inflight_stuck 告警写入失败 '{spec_name}'（非阻塞）: {e}",
-            )
 
     def _report_mergeback_wip_defer_stuck(
         self, spec_name: str, retry_count: int, first_at: int,
@@ -580,60 +562,30 @@ class RRollbackMixin:
             f"归属后，提交（git add/commit）或 stash（git stash push）主树重叠"
             f"改动，再把该 spec 复位 ready 重新放行 merge-back；或人工完成合并。"
         )
-        try:
-            self._pm.state_machine.update_spec(
-                spec_name,
-                {
-                    "error": (
-                        f"mergeback wip defer stuck after {retry_count} "
-                        f"rounds since {first_at} — manual handling required"
-                    ),
-                },
-            )
-        except Exception as e:
-            self._pm.logger.warning(
-                "pm_engine",
-                f"mergeback wip defer stuck 状态上报失败 '{spec_name}'（非阻塞）: {e}",
-            )
-        self._pm.logger.error(
-            "pm_engine",
-            f"'{spec_name}' WIP 延迟合回等待超限 —— 已停止自动重试，"
-            f"等待人工处置主树重叠改动（分支与产物保留）",
+        self._emit_mergeback_alert(
+            spec_name,
+            "mergeback_wip_defer_stuck",
+            {
+                "error": (
+                    f"mergeback wip defer stuck after {retry_count} "
+                    f"rounds since {first_at} — manual handling required"
+                ),
+            },
+            f"mergeback wip defer stuck 状态上报失败 '{spec_name}'（非阻塞）",
+            (
+                f"'{spec_name}' WIP 延迟合回等待超限 —— 已停止自动重试，"
+                f"等待人工处置主树重叠改动（分支与产物保留）"
+            ),
+            description,
+            {
+                "retry_count": retry_count,
+                "first_blocked_at": first_at,
+                "window_minutes": int(WIP_DEFER_WINDOW_MINUTES),
+                "max_rounds": WIP_DEFER_MAX_ROUNDS,
+            },
+            (
+                "人工核对主树与分支重叠的未提交改动归属后提交/stash，"
+                "再把该 spec 复位 ready 重新放行 merge-back；"
+                "或人工完成该分支向主树的合并"
+            ),
         )
-        try:
-            from core.agent_runner.prompt_builder import _str_field
-            from core.admin_store import AdminStore, SIGNAL
-
-            evidence = _str_field(
-                {
-                    "retry_count": retry_count,
-                    "first_blocked_at": first_at,
-                    "window_minutes": int(WIP_DEFER_WINDOW_MINUTES),
-                    "max_rounds": WIP_DEFER_MAX_ROUNDS,
-                }
-            )
-            store = AdminStore(self._pm.project_root, self._pm.logger)
-            store.append(
-                {
-                    "kind": SIGNAL,
-                    "signal_type": "mergeback_wip_defer_stuck",
-                    "spec": spec_name,
-                    "severity": "major",
-                    "description": description,
-                    "evidence": evidence,
-                    "recommended_action": (
-                        "人工核对主树与分支重叠的未提交改动归属后提交/stash，"
-                        "再把该 spec 复位 ready 重新放行 merge-back；"
-                        "或人工完成该分支向主树的合并"
-                    ),
-                }
-            )
-            self._pm.logger.info(
-                "pm_engine",
-                f"mergeback_wip_defer_stuck 告警已写入 admin store: '{spec_name}'",
-            )
-        except Exception as e:
-            self._pm.logger.warning(
-                "pm_engine",
-                f"mergeback_wip_defer_stuck 告警写入失败 '{spec_name}'（非阻塞）: {e}",
-            )

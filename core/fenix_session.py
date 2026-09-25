@@ -48,7 +48,11 @@ def session_name(root: str | None = None) -> str:
     """
     proot = resolve_root(root)
     digest = hashlib.md5(str(proot).encode()).hexdigest()[:6]
-    base = re.sub(r"[^A-Za-z0-9_.-]+", "-", proot.name).strip("-.") or "project"
+    # 点号一并折叠为连字符（code-review item 12e5e201a1c3）：tmux 对会话名会
+    # 静默把 `.` 替换为 `_`，且 has-session/kill-session 解析带点号目标时把点号
+    # 当窗格分隔符而查找失败——派生名与 tmux 实际会话名必须同口径，否则
+    # start_daemon 启动复核、is_running 的 tmux 回退与 stop_daemon 兜底全部误判。
+    base = re.sub(r"[^A-Za-z0-9-]+", "-", proot.name).strip("-") or "project"
     return f"fenixd-{base}-{digest}"
 
 

@@ -151,7 +151,12 @@ export function useComposerState({
       throw error instanceof Error ? error : new Error(String(error));
     }
 
-    // 成功：清空输入 + 草稿 + 菜单态 + 高度
+    // 成功：清空输入 + 草稿 + 菜单态 + 高度。清空是有意无条件的（与上方
+    // 失败路径的「仅当输入仍等于发送前快照才还原」刻意不对称）：发送在途
+    // 窗口用户新增的编辑会随清空一并丢弃（草稿随之 clearDraft，localStorage
+    // 找不回）——这是防重发的取舍：若像失败路径那样条件清空，在途新增会与
+    // 已发送文本一起留在输入框，再按发送即重发重复内容。改动本处前先读
+    // 失败路径注释，两条路径的策略必须成对评估。
     setInput('');
     inputValueRef.current = '';
     slash.resetCommandMenuState();

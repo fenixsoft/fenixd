@@ -217,7 +217,7 @@ class G3LockMixin:
         纪律一致）：防止 wt_name 是另一 worktree 目录名严格前缀时 pgrep
         子串过配（同基目录下归属核对无法二次区分）。
         """
-        pattern = f"worktrees/{wt_name}([/[:space:]\"']|$)"
+        pattern = f"worktrees/{re.escape(wt_name)}([/[:space:]\"']|$)"
         try:
             res = subprocess.run(
                 ["pgrep", "-f", pattern],
