@@ -1144,6 +1144,52 @@ def _worktree_branch(worktree) -> str:
         return ""
 
 
+def _worktree_porcelain(worktree) -> str:
+    """worktree 未提交改动原文（``git status --porcelain``；异常返回空串）。
+
+    salvage 三元组的第三元判据（add-codefix-commit-first-contract D2）：
+    排在产物行与提交数之后——porcelain 只在怀疑搁浅时执行。porcelain 不含
+    gitignored 文件，worktree 内运行时产物（``.fenix/`` 等，经 .gitignore
+    不入库）不会被卷入。
+    """
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(worktree), "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        return out.stdout
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def _salvage_commit(worktree, message: str) -> bool:
+    """把 worktree 未提交改动自动提交到批分支（编排 salvage 兜底，2.1）。
+
+    ``git add -A``（worktree 内本就只有批分支工作区；gitignored 噪音经
+    add 语义天然排除）；任一步失败返回 False，由调用方回落既有拒合回语义。
+    """
+    try:
+        add = subprocess.run(
+            ["git", "-C", str(worktree), "add", "-A"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if add.returncode != 0:
+            return False
+        commit = subprocess.run(
+            ["git", "-C", str(worktree), "commit", "-m", message],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        return commit.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 # ── 回归契约缺失信号（5.5 / D5，分流口径对齐 regression_routes 既有区分）──
 
 
@@ -2162,6 +2208,40 @@ class CodeFixOrchestrator:
         )
         return "consumed"
 
+    def _salvage_stranded_batch(self, wt, batch_no: int, run_id: str) -> bool:
+        """搁浅批 salvage 兜底（add-codefix-commit-first-contract 2.1）。
+
+        调用前提（三元组前两元已由调用方判定）：产物行存在 ``fixed``、分支
+        相对建树点零提交。此处只补第三元：``git status --porcelain`` 非空 →
+        把未提交改动自动提交到批分支（D3 message 约定：可追溯、与 agent 正常
+        commit 显式区分），warning 日志 + 进度 current 留痕，返回 True——调用方
+        重算提交数后继续既有合回裁决路径。porcelain 为空（真零改动，声明与
+        事实不符）或提交失败返回 False，维持既有 ``no_effective_fix`` 拒合回
+        语义，MUST NOT 空提交凑数（D4）。
+        """
+        if not _worktree_porcelain(wt).strip():
+            return False
+        message = f"orchestrator-salvage: batch {batch_no} run {run_id}"
+        if not _salvage_commit(wt, message):
+            self._log(
+                "warning",
+                f"code-fix 第 {batch_no} 批 salvage 兜底提交失败，按零有效修复拒合回处理",
+            )
+            return False
+        self._log(
+            "warning",
+            f"code-fix 第 {batch_no} 批检测到搁浅（产物声明 fixed 但分支零提交、"
+            f"worktree 有未提交改动），已 salvage 兜底提交：{message}",
+        )
+        write_progress(
+            self.project_root,
+            current=(
+                f"第 {batch_no} 批搁浅兜底：分支零提交但工作区有未提交改动，"
+                f"编排已 salvage 提交（{message}）"
+            ),
+        )
+        return True
+
     def _run_batch(self, ctx: dict) -> None:
         batch_no = ctx["batch_no"]
         outcome = "halt"
@@ -2369,6 +2449,13 @@ class CodeFixOrchestrator:
         ignore_set = set(ignore_ids)
         pending_ids = [iid for iid in item_ids if iid not in ignore_set]
         commits = _worktree_commit_count(wt, created_sha) if created_sha else 0
+        if fixed_ids and commits <= 0 and self._salvage_stranded_batch(
+            wt, batch_no=batch_no, run_id=retry_run_id or result.run_id
+        ):
+            # salvage 提交成功 → 分支已有提交，重算提交数后走既有合回裁决路径。
+            # 回归已在上方针对 worktree 工作区（含这些未提交改动）执行过，
+            # salvage 不改变回归门语义（不改回归门：spec Non-Goal）。
+            commits = _worktree_commit_count(wt, created_sha) if created_sha else 1
         if not fixed_ids or commits <= 0:
             if not pending_ids:
                 # 全批 skipped 均为可忽略原因：条目已尽置 ignored（终态）、
