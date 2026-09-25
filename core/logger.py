@@ -148,6 +148,13 @@ class Logger:
         # 全局 "fenixd" 日志器，其级别是 last-wins 的，读它会串级别。
         if level < self._level:
             return
+        # close() 后 _handler 被置 None：daemon 关停序列里（atexit 钩子、异常
+        # 兜底、后台线程收尾）close 之后仍可能有日志调用，这里降级为无害
+        # no-op，避免 AttributeError 掩盖原始错误甚至打断关停路径。先取局部
+        # 变量再判空，容忍判空与使用之间被 close() 并发置 None。
+        handler = self._handler
+        if handler is None:
+            return
         with self._lock:
             record = logging.LogRecord(
                 name="fenixd",
@@ -165,9 +172,9 @@ class Logger:
             # project_state_logger 各建 Logger 后其 handler 是最后构造项目
             # 的，经 self._python_logger.handle(record) 分发会把记录写进
             # 别的项目的 fenixd.log。
-            self._handler.handle(record)
+            handler.handle(record)
             # Flush to disk for testability and crash safety
-            self._handler.flush()
+            handler.flush()
 
     def close(self):
         """Close the log handler, flushing any buffered data."""
