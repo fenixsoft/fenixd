@@ -108,7 +108,7 @@ def _run_legacy_verification(pipeline, spec_name: str):
             f"(保持原状): {frozen_err}",
         )
         return
-    if getattr(result, "cancelled", False):
+    if getattr(result, "cancelled", False) is True:
         # ── 人工取消 hold-state（add-run-cancel D4，legacy verifier）──
         # verifier run 被取消：spec 保持 testing 原状，只写 error，
         # 不流转 bug-found、不入队重派。
