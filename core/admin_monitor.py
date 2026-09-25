@@ -1692,7 +1692,7 @@ class AdminMonitor:
     def _detect(self, specs: dict, now: float) -> list:
         """运行全部检测规则，返回信号列表。"""
         signals = []
-        signals.extend(self._detect_repeated_failures(specs, now))
+        signals.extend(self._detect_repeated_failures(now))
         signals.extend(self._detect_flapping(specs, now))
         signals.extend(self._detect_stuck(specs, now))
         signals.extend(self._detect_merge_streak(specs))
@@ -1900,8 +1900,11 @@ class AdminMonitor:
             "recommended_action": SIGNAL_RECOMMENDATION.get(signal_type, ""),
         }
 
-    def _detect_repeated_failures(self, specs: dict, now: float) -> list:
-        """窗口内同 spec 失败 run ≥ 阈值。"""
+    def _detect_repeated_failures(self, now: float) -> list:
+        """窗口内同 spec 失败 run ≥ 阈值。
+
+        只扫描 .fenix/runs 统计失败 run，不依赖当轮状态表（specs）。
+        """
         signals = []
         window = REPEAT_FAILURE_WINDOW_MINUTES * 60
         cutoff = now - window
