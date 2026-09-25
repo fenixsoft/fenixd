@@ -1283,14 +1283,15 @@ def save_report(project_root, spec_name, report: dict) -> None:
     path = Path(project_root) / ".fenix" / "verify-progress" / spec_name / "report.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), prefix=".report.", suffix=".json.tmp")
+    import os
+
     try:
         with open(fd, "w", encoding="utf-8") as f:
             json.dump(report, f, ensure_ascii=False, indent=2)
             f.flush()
-        import os
-
         os.replace(tmp_path, path)
-    except OSError:
+    except (OSError, TypeError, ValueError):
+        # json.dump 对不可序列化对象抛 TypeError/ValueError，同样须清理半成品
         try:
             os.unlink(tmp_path)
         except OSError:
