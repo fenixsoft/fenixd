@@ -29,13 +29,37 @@ def _log_index_path(proot: Path, log_name: str = "fenixd.log") -> Path:
     return proot / ".fenix" / "logs" / ".idx" / f"{log_name}.offsets.json"
 
 
+def _next_line_start(f, start: int, size: int) -> int:
+    """从 start 起按 64KB 分段向后读，返回首个换行之后的下一行首偏移。
+
+    供块边界采样落进超长行（单行 > 64KB 采样窗）时定位真实行首；
+    EOF 仍无换行（超长行直达文件尾）返回 -1。
+    """
+    pos = start
+    while pos < size:
+        f.seek(pos)
+        chunk = f.read(LOG_INDEX_BLOCK)
+        if not chunk:
+            break
+        nl = chunk.find(b"\n")
+        if nl != -1:
+            return pos + nl + 1
+        pos += LOG_INDEX_BLOCK
+    return -1
+
+
 def _build_log_block_index(log_path: Path, size: int) -> "dict | None":
     """全量扫描日志一次，构建 {size, offsets}；构建失败返回 None。
 
     offsets[i] = 第 i 个 64KB 块内首行字节偏移；读取窗口定位到块 i 后从该偏移
-    起读即可获得完整行（落在块边界中间的行被包含进下一块起点）。
+    起读即可获得完整行（落在块边界中间的行被包含进下一块起点）。单行超过
+    64KB 采样窗（超长行跨块）时，该行覆盖的各块统一指向行后的下一行首，
+    不把行中偏移当行首入索引。
     """
     offsets = [0]
+    # 超长行续读缓存：boundary 落进已定位的超长行时直接复用其下一行首，避免
+    # 每边界重复向前扫描（最坏 O(块数×行长)）；-1 表示当前不在超长行内。
+    pending_start = -1
     try:
         with log_path.open("rb") as f:
             nblocks = size // LOG_INDEX_BLOCK
@@ -43,11 +67,26 @@ def _build_log_block_index(log_path: Path, size: int) -> "dict | None":
                 boundary = i * LOG_INDEX_BLOCK
                 if boundary >= size:
                     break
+                if pending_start != -1 and boundary < pending_start:
+                    offsets.append(pending_start)
+                    continue
+                pending_start = -1
                 f.seek(boundary)
                 chunk = f.read(LOG_INDEX_BLOCK)
                 nl = chunk.find(b"\n")
                 if nl == -1:
-                    offsets.append(boundary)
+                    # 采样窗内无换行 → 单行超过 64KB（如整段错误转储），boundary
+                    # 落在大行中间。不可把行中偏移当行首入索引（违背「块内首行
+                    # 偏移」不变量：读窗首行为残缺 JSON 被静默丢弃、_first_ts 探
+                    # 测失败退化全文件读），续读取真实行首；EOF 仍无换行（超长
+                    # 行直达文件尾、无后续行首）→ 沿用前一偏移，读窗自行首覆盖
+                    # 至 EOF。
+                    next_start = _next_line_start(f, boundary + LOG_INDEX_BLOCK, size)
+                    if next_start != -1:
+                        pending_start = next_start
+                        offsets.append(next_start)
+                    else:
+                        offsets.append(offsets[-1])
                 else:
                     offsets.append(boundary + nl + 1)
     except OSError:
@@ -60,8 +99,9 @@ def _build_log_block_index(log_path: Path, size: int) -> "dict | None":
     # 末块采样可能落进文件最后一行且换行恰为文件末字节 → offsets[-1] == size（越
     # 界，非行首）。不可钳到 size-1：那指向行尾 \n 本身而非行首，_first_ts 只读到
     # 空行必解析失败，二分探测退化为 _read(0) 全文件读取。改为弹出末条：尾部区域
-    # 由前一偏移读至 EOF 自然覆盖（末行起点本就不在末块采样范围内）。
-    if len(offsets) > 1 and offsets[-1] >= size:
+    # 由前一偏移读至 EOF 自然覆盖（末行起点本就不在末块采样范围内）。while 而
+    # 非 if：超长行续读复用可在换行为文件末字节时落多条 == size 的尾随项。
+    while len(offsets) > 1 and offsets[-1] >= size:
         offsets.pop()
     return {"size": size, "offsets": offsets}
 
@@ -96,6 +136,7 @@ def _update_log_block_index(log_path: Path, size: int, idx: dict) -> dict:
         return idx
     offsets = list(idx.get("offsets", [0]))
     old_blocks = old_size // LOG_INDEX_BLOCK
+    pending_start = -1  # 同 _build_log_block_index 的超长行续读缓存
     try:
         with log_path.open("rb") as f:
             nblocks = size // LOG_INDEX_BLOCK
@@ -105,6 +146,10 @@ def _update_log_block_index(log_path: Path, size: int, idx: dict) -> dict:
                     break
                 if boundary < old_size:
                     continue  # 旧块已覆盖
+                if pending_start != -1 and boundary < pending_start:
+                    offsets.append(pending_start)
+                    continue
+                pending_start = -1
                 # 新增首块起点恰为旧 size（JSONL 行边界）：直接指到 boundary，
                 # 避免 seek-forward 把新增首行整行跳过。
                 if boundary == old_size:
@@ -114,14 +159,23 @@ def _update_log_block_index(log_path: Path, size: int, idx: dict) -> dict:
                 chunk = f.read(LOG_INDEX_BLOCK)
                 nl = chunk.find(b"\n")
                 if nl == -1:
-                    offsets.append(boundary)
+                    # 同 _build_log_block_index：超长行（单行 > 64KB 采样窗）跨块
+                    # 时续读取真实行首，不把行中偏移当行首入索引；EOF 仍无换行
+                    # → 沿用前一偏移。
+                    next_start = _next_line_start(f, boundary + LOG_INDEX_BLOCK, size)
+                    if next_start != -1:
+                        pending_start = next_start
+                        offsets.append(next_start)
+                    else:
+                        offsets.append(offsets[-1])
                 else:
                     offsets.append(boundary + nl + 1)
     except OSError:
         return idx
     # 同 _build_log_block_index：末条采样可能越过 EOF（boundary+nl+1 == size，非
     # 行首），弹出保住「块首行偏移」不变量，否则 _first_ts 探测必失败回退全文件读取。
-    if len(offsets) > 1 and offsets[-1] >= size:
+    # while 而非 if：超长行续读复用可在换行为文件末字节时落多条 == size 的尾随项。
+    while len(offsets) > 1 and offsets[-1] >= size:
         offsets.pop()
     return {"size": size, "offsets": offsets}
 
