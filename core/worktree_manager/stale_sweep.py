@@ -238,7 +238,7 @@ class G7StaleSweepMixin:
             # 地 git branch -D（legacy_registry），宽限期仅 LEGACY_GRACE_SECONDS
             # = 120s——若不扩展，冻结终止后在解冻前重启 daemon（cleanup_stale
             # _worktrees 在 fenixd 启动路径）就可能删该分支，使「解冻后续做」
-            # 降级为从零重派。entry.get(branch) 已在上方分支命中；此处按 status
+            # 降级为从零重派。entry.get("branch") 已在上方分支命中；此处按 status
             # 为 blocked 且 frozen+_frozen_hold 命中时直接判受保护。
             if status == "blocked" and entry.get("frozen") and entry.get("_frozen_hold"):
                 if entry.get("branch") == branch:
