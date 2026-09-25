@@ -437,7 +437,9 @@ def run_baseline_comparison(project_root, ref, timeout, basetemp_unique=False) -
     with tempfile.TemporaryDirectory(prefix="fenix-baseline-") as tmp:
         wt = Path(tmp) / "baseline_wt"
         add = subprocess.run(
-            ["git", "worktree", "add", "--detach", str(wt), ref],
+            # ref 来自 --baseline 自由输入：-- 须置于 ref 之前，使其落入纯
+            # 位置参数区，防止以 - 开头的值（如 --force）被 git 当作自身选项。
+            ["git", "worktree", "add", "--detach", str(wt), "--", ref],
             cwd=str(project_root),
             capture_output=True,
             text=True,

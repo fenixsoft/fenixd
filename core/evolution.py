@@ -1468,15 +1468,9 @@ def reject_item(item_id_: str, project_root) -> dict:
             return {"ok": False, "status": status, "error": "草稿目录路径非法或越界，拒绝删除"}
         if target.is_dir():
             try:
-                # 符号链接解析后的越界判定：链接目标不在基目录内 → 拒绝删除
-                resolved = target.resolve()
-                base = (evolution_dir(project_root) / "drafts").resolve()
-                if not resolved.is_relative_to(base):
-                    return {
-                        "ok": False,
-                        "status": status,
-                        "error": "草稿目录符号链接越界，拒绝删除",
-                    }
+                # 越界/符号链接校验已由 _safe_draft_dir 完成（resolve +
+                # is_relative_to，两次 resolve 间无文件系统变更），不再重复
+                # 判定（code-review item 1c78b6735e1c）
                 shutil.rmtree(target)
             except OSError as e:
                 return {"ok": False, "status": status, "error": f"草稿删除失败: {e}"}
@@ -1531,13 +1525,8 @@ def delete_item(item_id_: str, project_root) -> dict:
             return
         if target.is_dir():
             try:
-                resolved = target.resolve()
-                base = (evolution_dir(project_root) / "drafts").resolve()
-                if not resolved.is_relative_to(base):
-                    outcome.update(
-                        {"ok": False, "status": status, "error": "草稿目录符号链接越界，拒绝删除"}
-                    )
-                    return
+                # 越界/符号链接校验已由 _safe_draft_dir 完成，不再重复判定
+                # （code-review item 1c78b6735e1c）
                 shutil.rmtree(target)
             except OSError as e:
                 outcome.update({"ok": False, "status": status, "error": f"草稿删除失败: {e}"})

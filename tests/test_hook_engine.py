@@ -217,7 +217,12 @@ class TestSevenActions(unittest.TestCase):
         self.assertIn("无变更", detail)
 
     def test_commit_success_with_change(self):
-        (self.proot / "new.txt").write_text("change")
+        # fix-hook-commit-pathsweep：缺省仅提交收口产物路径（spec/ 等），
+        # 工作区无关根目录文件不再被卷入
+        spec_dir = self.proot / "spec" / "changes" / "s1"
+        spec_dir.mkdir(parents=True)
+        (spec_dir / "spec.md").write_text("change")
+        (self.proot / "new.txt").write_text("unrelated")
         eng = self._eng()
         status, detail = eng._action_commit({"events": ["done"], "action": "commit"}, "s1", "done")
         self.assertEqual(status, STATUS_SUCCESS)
@@ -227,7 +232,9 @@ class TestSevenActions(unittest.TestCase):
         self.assertIn("[fenix] hook: s1 done", res.stdout)
 
     def test_commit_custom_message(self):
-        (self.proot / "x.txt").write_text("y")
+        spec_dir = self.proot / "spec" / "changes" / "add-x"
+        spec_dir.mkdir(parents=True)
+        (spec_dir / "spec.md").write_text("y")
         eng = self._eng()
         cfg = {"events": ["done"], "action": "commit", "message": "feat({spec}): {event}"}
         status, _ = eng._action_commit(cfg, "add-x", "done")

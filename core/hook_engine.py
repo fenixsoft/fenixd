@@ -93,6 +93,12 @@ DEFAULT_DASHBOARD_SESSION = "fenix-dashboard"
 DASHBOARD_PROBE_ATTEMPTS = 20
 DASHBOARD_PROBE_INTERVAL = 0.5
 
+# commit/commit-push 缺省提交范围（fix-hook-commit-pathsweep）：路径限定到
+# 收口产物，杜绝状态 hook 自动提交/推送卷入工作区无关或敏感改动（对齐
+# evolution._git_commit / archive_commit 的「MUST NOT git add -A」惯例）。
+# 需要更大范围时在 hook 配置显式提供 paths 字段（如 paths: ["."]）。
+DEFAULT_COMMIT_PATHS = ("spec", ".fenix/STATE.md")
+
 # 审计 detail 截断（D6：≤2KB）
 DETAIL_LIMIT = 2048
 
@@ -178,7 +184,9 @@ def validate_hook_entry(entry: Any) -> Optional[str]:
       后者仅全局作用域生效）；
     - action ∈ 七枚举；
     - action=webhook 必须 url 非空字符串；
-    - action=shell 必须 command 非空字符串。
+    - action=shell 必须 command 非空字符串；
+    - action=commit/commit-push 可选 paths：非空字符串数组（git pathspec，
+      缺省仅 DEFAULT_COMMIT_PATHS 收口产物）。
 
     Returns: 非法时返回错误描述（含字段路径），合法返回 None。
     """
@@ -207,6 +215,14 @@ def validate_hook_entry(entry: Any) -> Optional[str]:
         command = entry.get("command")
         if not isinstance(command, str) or not command.strip():
             return "shell 动作必须提供非空 command"
+    if action in ("commit", "commit-push") and entry.get("paths") is not None:
+        paths = entry.get("paths")
+        if (
+            not isinstance(paths, list)
+            or not paths
+            or not all(isinstance(p, str) and p.strip() for p in paths)
+        ):
+            return "commit/commit-push 的 paths 必须为非空字符串数组（git pathspec，如 [\"spec\"]）"
     return None
 
 
@@ -784,23 +800,56 @@ class HookEngine:
                         h for h in lst if not (isinstance(h, dict) and h.get("id") in hook_ids)
                     ]
 
+    def _resolve_commit_paths(self, cfg: dict) -> List[str]:
+        """解析 commit/commit-push 的 add/commit pathspec（缺省仅收口产物）。
+
+        hook 配置 paths 字段为非空字符串列表时原样采用（用户显式扩大范围）；
+        否则用 DEFAULT_COMMIT_PATHS 过滤——仅保留磁盘存在或已有跟踪文件的
+        路径，规避「pathspec matches nothing」令整条 git add fatal（同
+        archive_commit 的处理）。
+        """
+        configured = cfg.get("paths")
+        if isinstance(configured, list) and configured and all(
+            isinstance(p, str) and p.strip() for p in configured
+        ):
+            return [p.strip() for p in configured]
+        paths: List[str] = []
+        for p in DEFAULT_COMMIT_PATHS:
+            if (self.project_root / p).exists():
+                paths.append(p)
+                continue
+            try:
+                tracked = _run_git(["ls-files", "--", p], self.project_root)
+            except (subprocess.SubprocessError, OSError):
+                continue
+            if tracked.stdout.strip():
+                paths.append(p)
+        return paths
+
     def _action_commit(self, cfg: dict, spec: str, event: str) -> Tuple[str, str]:
-        """git add -A + git commit -m <模板渲染>；无变更 → noop 成功。"""
+        """路径限定提交（缺省仅收口产物，paths 字段可显式扩大）；无变更 → noop。
+
+        add 与 commit 均以同一 pathspec 限定，确保索引中残留的其他暂存内容
+        不会被裹挟进本条提交（对齐 evolution._git_commit 惯例）。
+        """
         message = render_message_template(cfg.get("message") or "", spec, event)
+        paths = self._resolve_commit_paths(cfg)
+        if not paths:
+            return STATUS_NOOP, "无变更（无可提交的收口产物路径；需更大范围请配置 paths）"
         try:
-            add = _run_git(["add", "-A"], self.project_root)
+            add = _run_git(["add", "-A", "--"] + paths, self.project_root)
         except (subprocess.SubprocessError, OSError) as e:
             return STATUS_FAILURE, f"git add 执行失败: {e}"
         if add.returncode != 0:
-            return STATUS_FAILURE, f"git add -A 失败: {_tail_combined(add.stdout, add.stderr)}"
+            return STATUS_FAILURE, f"git add 失败: {_tail_combined(add.stdout, add.stderr)}"
         try:
-            quiet = _run_git(["diff", "--cached", "--quiet"], self.project_root)
+            quiet = _run_git(["diff", "--cached", "--quiet", "--"] + paths, self.project_root)
         except (subprocess.SubprocessError, OSError) as e:
             return STATUS_FAILURE, f"git diff 执行失败: {e}"
         if quiet.returncode == 0:
             return STATUS_NOOP, "无变更（nothing to commit）"
         try:
-            res = _run_git(["commit", "-m", message], self.project_root)
+            res = _run_git(["commit", "-m", message, "--"] + paths, self.project_root)
         except (subprocess.SubprocessError, OSError) as e:
             return STATUS_FAILURE, f"git commit 执行失败: {e}"
         if res.returncode != 0:

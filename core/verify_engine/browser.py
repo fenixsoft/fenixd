@@ -541,13 +541,13 @@ class BrowserManager:
                         f"navigate 目标 {value} 为 chrome-extension:// URL"
                         "（验证浏览器未加载扩展），已回退到本地 HTTP 服务器",
                     )
-                    target = "verify.html" if self._use_verify_html else "index.html"
-                    actual_url = f"{self._base_url}/{target}"
+                    entry_html = "verify.html" if self._use_verify_html else "index.html"
+                    actual_url = f"{self._base_url}/{entry_html}"
                 elif self._is_extension_project and (
                     value == "about:blank" or value == "" or value.startswith("about:")
                 ):
-                    target = "verify.html" if self._use_verify_html else "index.html"
-                    actual_url = f"{self._base_url}/{target}"
+                    entry_html = "verify.html" if self._use_verify_html else "index.html"
+                    actual_url = f"{self._base_url}/{entry_html}"
 
                 await page.goto(actual_url, wait_until="domcontentloaded", timeout=15000)
                 first_frame_ok = await self._wait_stable(page)

@@ -206,12 +206,32 @@ class G8QueryMixin:
                     )
                 except (subprocess.TimeoutExpired, OSError):
                     pass
-                result = subprocess.run(
-                    ["git", "-C", str(self.project_root), "worktree", "add", str(wt_path), branch],
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                )
+                # evo-fix-worktree-name-collision-retry（与 lifecycle.create 同步）：
+                # 同秒 int(time.time()) 对同一 spec+前缀撞出同名路径（repair 换壳
+                # 与遗产认领并发）时 add 报 already exists，按单调递增时间戳就地
+                # 换名重试（分支固定 checkout 不换；换名至多 2 次、总计至多 3 次
+                # 创建尝试）。非重名失败不重试，沿用现状放弃路径（return None）。
+                create_attempt = 0
+                while True:
+                    create_attempt += 1
+                    result = subprocess.run(
+                        ["git", "-C", str(self.project_root), "worktree", "add", str(wt_path), branch],
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                    )
+                    if "already exists" not in (result.stderr or "") or create_attempt >= 3:
+                        break
+                    old_path = wt_path
+                    timestamp = max(int(time.time()), timestamp + 1)
+                    wt_name = f"{prefix}-{spec_name}-{timestamp}"
+                    wt_path = self.base_dir / wt_name
+                    self.logger.warning(
+                        "worktree_manager",
+                        f"Worktree name collision for '{spec_name}' "
+                        f"(attempt {create_attempt}/3): {old_path} already "
+                        f"exists, retrying with {wt_path}",
+                    )
                 if result.returncode != 0:
                     self.logger.error(
                         "worktree_manager",

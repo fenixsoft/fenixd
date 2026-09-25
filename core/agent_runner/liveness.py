@@ -1247,27 +1247,35 @@ class LivenessSupervisor:
         # 注册表、再落 result 终态），故写入前双重复核，已明确终结的 run 跳过标记
         # （docstring 承诺"不影响已 finalize 的完成 run"）；下游按末行口径判定
         # （_file_tail_is_terminal/classify_run），对已落终态的文件追加 interrupted
-        # 会覆盖成功/失败语义。两重复核各堵半边竞态窗口：① 注册表成员复核兜住
-        # pop 已做、result 未落盘的收尾段；② 末行终态复核兜住 error 终态已落盘但
-        # run 线程仍在 join、尚未 pop 的窗口。仍存活的 agent 照常写标记（design
-        # D2：标记由 daemon 侧同步写入，不依赖 agent 优雅退出）。读线程以 append
-        # 模式单行写入，O_APPEND 原子追加不破坏 JSONL 结构。
+        # 会覆盖成功/失败语义。两重复核兜住的窗口：① 注册表成员复核兜住 pop 已做、
+        # result 未落盘的收尾段；② 末行终态复核兜住 error 终态已落盘但 run 线程仍
+        # 在 join、尚未 pop 的窗口。code-review item 183ded7b526a：两条顺序复核与
+        # 追加之间存在第三类交错——复核通过后、追加前 run 线程仍可完成「pop 注册表
+        # + 落 result」，daemon 追加的 interrupted 成为文件末行，成功 run 被判成
+        # interrupted。故成员复核、末行复核、追加三步整体持 _run_finalize_lock，
+        # 与 run 线程收尾的注册表 pop（runner.py finally 段）互斥：pop 只能发生在
+        # 本临界区之前（复核必不通过 → 跳过标记）或之后（result 严格后于 pop 落盘，
+        # 必排在标记之后 → 末行仍是 result），任意交错下 docstring 承诺都成立。
+        # 仍存活的 agent 照常写标记（design D2：标记由 daemon 侧同步写入，不依赖
+        # agent 优雅退出）。读线程以 append 模式单行写入，O_APPEND 原子追加不破坏
+        # JSONL 结构。
         runs_dir = self._pm.project_root / ".fenix" / "runs"
         for name, _proc in running:
-            if name not in self._pm._running_agents:
-                continue
             run_file = runs_dir / f"{name}.jsonl"
             try:
-                if _file_tail_is_terminal(run_file):
-                    continue
-                append_run_line(
-                    run_file,
-                    {
-                        "type": "interrupted",
-                        "reason": "daemon shutdown",
-                        "by": "agent_runner",
-                    },
-                )
+                with self._pm._run_finalize_lock:
+                    if name not in self._pm._running_agents:
+                        continue
+                    if _file_tail_is_terminal(run_file):
+                        continue
+                    append_run_line(
+                        run_file,
+                        {
+                            "type": "interrupted",
+                            "reason": "daemon shutdown",
+                            "by": "agent_runner",
+                        },
+                    )
             except Exception as e:  # pragma: no cover - run 文件写入失败不影响退出
                 self._pm.logger.warning(
                     "agent_runner", f"Failed to write interrupted marker for {name}: {e}"

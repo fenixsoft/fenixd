@@ -184,6 +184,9 @@ def _logged_run_duration(project_root: Path, run_file_stem: str,
     index = _load_run_metric_index(project_root)
     metric = index.get(base)
     if not metric:
+        # 主索引未命中回退轮转日志 .fenixd.log.1（跨轮转旧 run），与 load_run_metric 双源同口径
+        metric = _load_rotated_run_metric_index(project_root).get(base)
+    if not metric:
         return None
     d = metric.get("duration_seconds")
     if d is None:

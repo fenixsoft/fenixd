@@ -485,12 +485,12 @@ def resolve_snapshot(project_root, observed_fingerprints: set, now: Optional[str
             rec["resolved_at"] = now
             rec["last_seen_at"] = now
             changed = True
+            resolved_count += 1
         if changed:
             content = "".join(
                 json.dumps(current[k], ensure_ascii=False) + "\n" for k in sorted(current)
             )
             _atomic_write(path, content)
-        resolved_count = sum(1 for r in current.values() if r.get("resolved_at") == now)
 
     _with_lock(path, _do_locked)
     return resolved_count

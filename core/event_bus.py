@@ -752,7 +752,9 @@ class EventBus:
                 interval = float(
                     self.config.get("schedule", {}).get("poll_interval_minutes", interval_minutes)
                 )
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, AttributeError):
+                # AttributeError：schedule 键存在但值为 null（YAML 空值）时首个
+                # .get 返回 None，对其再 .get 即抛——不捕获会冲出循环杀死线程。
                 interval = interval_minutes
             time.sleep(max(interval, 0.5) * 60)
             if self._running:

@@ -52,6 +52,11 @@ def load_events(run_file: Path) -> list:
             raise ValueError(f"第 {lineno} 行非 JSON（可能损坏）: {e}") from e
         if isinstance(entry, dict):
             events.append(entry)
+    if not events:
+        # 空文件（含仅空行/无 dict 行）无任何有效事件：按 docstring 契约与损坏
+        # 文件同走 ValueError，使其落入 skipped 通道，保住「全部输入为空 → 1」
+        # 的退出码约定（否则会以 0 rounds 有效结果混入 results 令契约失效）
+        raise ValueError("空文件：无有效事件")
     return events
 
 

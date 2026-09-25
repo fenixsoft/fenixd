@@ -1116,10 +1116,11 @@ def tag_cached_attributions(report: dict, cache: dict, spec_name: str = "") -> l
 def _scenario_evidence_ok(sc: dict) -> bool:
     """逐场景证据存在性：非 PASS 场景 MUST 带 classification 与 evidence。
 
-    与 fast_track_result 的 SCENARIO_STATUSES 对齐：status ∈
-    {pass, fail, error, warning, exempt}；非 PASS 集合 {fail, error, warning}
-    复用本模块 NON_PASS_STATUSES 判定。exempt 场景单独走豁免合法性检查
-    （_exempt_classification_ok），不在此要求 evidence（豁免＝不必提交证据）。
+    与 fast_track_result 的 SCENARIO_STATUSES 对齐，并按本模块双词表口径
+    补齐 passed/failed（见 _FAST_TRACK_SCENARIO_STATUSES）；非 PASS 集合
+    {fail, failed, error, warning} 复用本模块 NON_PASS_STATUSES 判定。
+    exempt 场景单独走豁免合法性检查（_exempt_classification_ok），不在此
+    要求 evidence（豁免＝不必提交证据）。
     """
     if not isinstance(sc, dict):
         return False
@@ -1134,8 +1135,13 @@ def _scenario_evidence_ok(sc: dict) -> bool:
 
 
 # 单点定义承诺（fast_track_result docstring）：复用 core.fast_track_result.SCENARIO_STATUSES，
-# 避免与解析器两处词表漂移
-_FAST_TRACK_SCENARIO_STATUSES = SCENARIO_STATUSES
+# 避免与解析器两处词表漂移。在此之上补齐 pass/passed 与 fail/failed 双词表
+# （item 244fa0af2fba）：本模块 whitewash_violations / validate_attribution_levels
+# 与 NON_PASS_STATUSES 均按双词表防御，agent 写出 "passed"/"failed" 时
+# 不得被判为非法状态（否则全过报告会被误报「证据缺失」）。
+_FAST_TRACK_SCENARIO_STATUSES = tuple(
+    dict.fromkeys(SCENARIO_STATUSES + ("passed", "failed"))
+)
 
 # 豁免合法性：exempt 场景的分类 MUST 为非 product-bug（豁免逃逸检查，D6）
 _EXEMPT_ALLOWED_CLASSES = ("test-defect", "flaky", "env")
@@ -1183,7 +1189,12 @@ def validate_fast_track_result(result: dict, designed_ids: Optional[list] = None
             violations.append(f"场景 #{idx + 1} 非对象")
             continue
         sid = sc.get("scenario_id") or f"#{idx + 1}"
-        if not _scenario_evidence_ok(sc):
+        if sc.get("status") not in _FAST_TRACK_SCENARIO_STATUSES:
+            violations.append(
+                f"场景 {sid} status 非法: {sc.get('status')!r}"
+                f"（合法取值: {'、'.join(_FAST_TRACK_SCENARIO_STATUSES)}）"
+            )
+        elif not _scenario_evidence_ok(sc):
             violations.append(
                 f"场景 {sid} 证据缺失：非 PASS 场景 MUST 带合法 classification 与 evidence"
             )
