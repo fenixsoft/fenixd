@@ -127,6 +127,13 @@ def _get_evolution_draft(s, p, q, m):
 def _get_session(s, p, q, m):
     s._api_session_get(q)
 
+# add-session-composer 1.2/1.3：会话补全数据源只读端点
+def _get_session_files(s, p, q, m):
+    s._api_session_files(q)
+
+def _get_session_commands(s, p, q, m):
+    s._api_session_commands(q)
+
 def _get_quality_ocr_status(s, p, q, m):
     s._json(s._api_quality_ocr_status_get(q))
 
@@ -349,6 +356,9 @@ _API_GET_ROUTES = [
     ("exact", "/api/evolution/analysis", _get_evolution_analysis),
     ("exact", "/api/evolution/draft",  _get_evolution_draft),
     ("exact", "/api/session",         _get_session),
+    # add-session-composer 1.2/1.3：会话补全数据源（exact，排在本组末尾不动 watch regex 先例）
+    ("exact", "/api/session/files",    _get_session_files),
+    ("exact", "/api/session/commands", _get_session_commands),
     # 质量页签：open-code-review 安装状态（GET，无副作用）
     ("exact", "/api/quality/ocr-status", _get_quality_ocr_status),
     # code-review（add-code-review-agent-and-quality-tab）：台账与进度（GET，无副作用）

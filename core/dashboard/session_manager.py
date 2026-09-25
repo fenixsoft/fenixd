@@ -53,6 +53,11 @@ class Session:
     last_activity: float = field(default_factory=time.time)
     stderr_tail: deque = field(default_factory=lambda: deque(maxlen=200))
     terminating: bool = False  # _terminate 已认领，防并发双终态
+    # add-session-composer 1.1：stdout init 事件缓存的补全数据源（commands 端点
+    # 读取）。随 Session 生命周期存亡：进程退出会话被移除即缓存消亡；会话重建
+    # 后由新 init 事件覆盖。读线程写、HTTP 线程读，单次赋值原子。
+    slash_commands: list[str] = field(default_factory=list)
+    skills: list[str] = field(default_factory=list)
 
 
 class SessionManager:
@@ -357,6 +362,17 @@ class SessionManager:
                 ev_type = ev.get("type", "")
                 ev_subtype = ev.get("subtype", "")
                 if ev_type == "system" and isinstance(ev_subtype, str) and ev_subtype.startswith("hook_"):
+                    continue
+
+                # add-session-composer 1.1：捕获 init 事件的 slash_commands/skills
+                # 覆盖写入 Session 缓存（commands 端点数据源），init 本身不进缓冲
+                # 不广播——有意行为变化：前端 claude-msg/runEvents.ts 的
+                # SILENT_KINDS 已含 init（零渲染依赖），SSE 消费端无可见回归。
+                if ev_type == "system" and ev_subtype == "init":
+                    session.slash_commands = [
+                        str(c) for c in (ev.get("slash_commands") or [])
+                    ]
+                    session.skills = [str(c) for c in (ev.get("skills") or [])]
                     continue
 
                 # 补 ts 字段

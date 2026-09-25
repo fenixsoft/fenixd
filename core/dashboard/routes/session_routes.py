@@ -7,9 +7,14 @@ from __future__ import annotations
 
 import json
 import logging
+import subprocess
 from pathlib import Path
 
 logger = logging.getLogger("fenixd.dashboard.session_routes")
+
+# ── add-session-composer 1.2：files 端点模块常量（不新增受管配置键） ──────
+SESSION_FILES_LIMIT = 5000           # 返回条数上限，超出截断
+GIT_LS_FILES_TIMEOUT_SECONDS = 10    # git ls-files 子进程超时保护
 
 
 class H_SessionRoutesMixin:
@@ -164,6 +169,76 @@ class H_SessionRoutesMixin:
             )
 
         self._json({"ok": True})
+
+    # ── add-session-composer 1.2/1.3：补全数据源只读端点 ─────────────────
+
+    def _list_project_files(self, project_path) -> list[str]:
+        """D6：以注册路径为 cwd 跑 git ls-files 子进程，返回相对路径列表。
+
+        一次拿 tracked + 未忽略 untracked（--exclude-standard 遵循 .gitignore）。
+        非 git 仓库（returncode!=0）/子进程超时/git 不可执行（OSError）→ 空数组
+        （200 语义，不 500，前端补全降级为无候选）；超上限截断。
+        """
+        try:
+            completed = subprocess.run(
+                ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
+                cwd=str(project_path),
+                capture_output=True,
+                text=True,
+                timeout=GIT_LS_FILES_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired:
+            logger.warning(
+                "git ls-files 超时（cwd=%s），返回空列表", project_path
+            )
+            return []
+        except OSError as exc:
+            logger.warning(
+                "git ls-files 无法执行（cwd=%s）: %s: %s",
+                project_path,
+                type(exc).__name__,
+                exc,
+            )
+            return []
+        if completed.returncode != 0:
+            # 非 git 仓库（exit 128 "not a git repository"）等：200 + 空数组
+            return []
+        return [
+            ln for ln in completed.stdout.splitlines() if ln
+        ][:SESSION_FILES_LIMIT]
+
+    def _api_session_files(self, query):
+        """GET /api/session/files?project=<name> → 项目文件相对路径数组（只读）。
+
+        供 @ 提及补全。project 校验复用 _session_context（缺参/未注册 404，
+        与既有 _session_context 样板对未注册项目的口径一致）。
+        """
+        context = self._session_context(query)
+        if context is None:
+            return
+        project, _sm = context
+        self._json(self._list_project_files(project["path"]))
+
+    def _api_session_commands(self, query):
+        """GET /api/session/commands?project=<name> → init 缓存命令/skill（只读）。
+
+        D7：数据源是 SessionManager 从会话 stdout init 事件缓存的数组，
+        MUST NOT 自扫 skills 目录；无在飞会话或 init 未到返回两个空数组（200）。
+        """
+        context = self._session_context(query)
+        if context is None:
+            return
+        project, sm = context
+
+        session = sm.get(project["name"])
+        if session is None:
+            self._json({"slash_commands": [], "skills": []})
+            return
+
+        self._json({
+            "slash_commands": list(session.slash_commands),
+            "skills": list(session.skills),
+        })
 
     def _api_session_watch(self, query, watch):
         """POST/DELETE /api/session/watch?project=<name>&cid=<cid>。

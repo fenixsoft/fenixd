@@ -2002,6 +2002,40 @@ export async function unregisterSessionWatch(project: string, cid: string): Prom
   await request(`/api/session/watch${q}`, { method: 'DELETE' });
 }
 
+// ── 会话补全数据源（add-session-composer 3.1） ───────────────────────────
+// 两个封装均「错误吞掉返回空数组」：补全是输入辅助能力，端点失败/非 git/
+// 无会话一律降级为无候选，MUST NOT 打断输入。
+
+/** 项目文件相对路径列表（@ 提及候选；git ls-files，上限 5000）。 */
+export async function fetchSessionFiles(project: string): Promise<string[]> {
+  const q = `?project=${encodeURIComponent(project)}`;
+  try {
+    const data = await request<string[]>(`/api/session/files${q}`);
+    return Array.isArray(data) ? data : [];
+  } catch {
+    return [];
+  }
+}
+
+export interface SessionCommands {
+  slash_commands: string[];
+  skills: string[];
+}
+
+/** 斜杠命令/skill 列表（/ 补全候选；取自会话 init 事件缓存）。 */
+export async function fetchSessionCommands(project: string): Promise<SessionCommands> {
+  const q = `?project=${encodeURIComponent(project)}`;
+  try {
+    const data = await request<Partial<SessionCommands>>(`/api/session/commands${q}`);
+    return {
+      slash_commands: Array.isArray(data?.slash_commands) ? data.slash_commands : [],
+      skills: Array.isArray(data?.skills) ? data.skills : [],
+    };
+  } catch {
+    return { slash_commands: [], skills: [] };
+  }
+}
+
 // ── 全量回归（add-test-regression-tab）────────────────────────────────
 
 /** 单个失败/错误用例（JUnit XML 的 failure/error 子元素）。kind 区分
