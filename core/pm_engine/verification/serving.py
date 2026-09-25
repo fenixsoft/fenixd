@@ -76,7 +76,11 @@ def _ensure_serving_worktree(pipeline, spec_name: str, contract, mode: str):
                 "pm_engine",
                 f"停止旧 serving 实例 '{spec_name}' 失败（不影响重建）: {e}",
             )
-        pipeline._remove_serving_worktree(old["wt_path"])
+        # command-主树条目（_serve_command_in_main）只有 server/mode 两键：
+        # 无 wt_path 时跳过 worktree 清理（对齐 _evict_spec_serving 防御形态）
+        old_wt = old.get("wt_path")
+        if old_wt:
+            pipeline._remove_serving_worktree(old_wt)
     wt = serve_root / f"{spec_name}-{int(time.time())}"
     r = subprocess.run(
         [
