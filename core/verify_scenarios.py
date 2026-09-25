@@ -67,6 +67,16 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _int_or(value, default: int) -> int:
+    """字段级 int 兜底（code-review 062e920431bc）：非数字值（int 抛
+    ValueError/TypeError）回退 ``default``，防单条坏数值字段把整个冻结集
+    加载降级为 None、被 diff 按「无持久化集」全量替换。"""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 class ScenarioEntry:
     """持久化集中的单个场景记录。
 
@@ -108,7 +118,7 @@ class ScenarioEntry:
         return cls(
             id=d.get("id", ""),
             description=d.get("description", ""),
-            added_in_round=int(d.get("added_in_round", 1) or 1),
+            added_in_round=_int_or(d.get("added_in_round", 1) or 1, 1),
             covers=covers if isinstance(covers, list) else None,
             kind=d.get("kind", "web"),
         )
@@ -154,7 +164,7 @@ class ScenarioSet:
         declared = d.get("display_declarations")
         return cls(
             spec=d.get("spec", ""),
-            round_=int(d.get("round", 1) or 1),
+            round_=_int_or(d.get("round", 1) or 1, 1),
             scenarios=[ScenarioEntry.from_dict(s) for s in d.get("scenarios", [])],
             display_declarations=declared if isinstance(declared, list) else None,
         )
@@ -222,8 +232,8 @@ def load_scenario_set(project_root, spec_name: str) -> Optional[ScenarioSet]:
     try:
         return ScenarioSet.from_dict(data)
     except (ValueError, TypeError, AttributeError):
-        # 数值字段非整型（int(...) 抛 ValueError/TypeError）或 scenarios 为
-        # 非列表标量（对字符调 .get 抛 AttributeError）等损坏形态：
+        # 数值字段已字段级兜底（_int_or，非数字回退 1，不再到此处）；残剩
+        # 损坏形态如 scenarios 为非列表标量（对字符调 .get 抛 AttributeError）：
         # 按「损坏返回 None」契约降级，不向调用方上抛中断验证流程
         return None
 
