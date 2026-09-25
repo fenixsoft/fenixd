@@ -265,14 +265,19 @@ def match_hooks(config: dict, spec: str, event_type: str) -> List[Tuple[dict, st
     """
     hooks = hook_config(config)
     matched: List[Tuple[dict, str]] = []
+    # events 类型守卫：仅列表型 events 参与匹配。手写坏配置（如 events: done）
+    # 若退化为字符串子串包含，"ne"/"on" 等无关事件也会命中，制造与配置意图
+    # 无关的 failure 审计噪音（非法配置要到执行阶段 validate_hook_entry 才拦截）。
     for h in hooks.get("global") or []:
-        if isinstance(h, dict) and event_type in (h.get("events") or []):
+        evs = h.get("events") if isinstance(h, dict) else None
+        if isinstance(evs, list) and event_type in evs:
             matched.append((h, "global"))
     if event_type == HOOK_EVENT_ALL_DONE:
         return matched
     spec_hooks = hooks.get("specs") or {}
     for h in spec_hooks.get(spec) or []:
-        if isinstance(h, dict) and event_type in (h.get("events") or []):
+        evs = h.get("events") if isinstance(h, dict) else None
+        if isinstance(evs, list) and event_type in evs:
             matched.append((h, "spec"))
     return matched
 
