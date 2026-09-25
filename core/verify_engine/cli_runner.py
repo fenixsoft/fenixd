@@ -160,7 +160,16 @@ class CliRunner(VerifyRunner):
             }
         env = self._build_env(step_dict.get("env") or {})
         stdin = str(step_dict.get("stdin") or "")
-        timeout = float(step_dict.get("timeout") or 0) or DEFAULT_RUN_TIMEOUT
+        try:
+            timeout = float(step_dict.get("timeout") or 0) or DEFAULT_RUN_TIMEOUT
+        except (TypeError, ValueError) as e:
+            # 非法 timeout（非数字字符串/结构化值）归一为本步骤结构化失败，
+            # 而非 ValueError 穿出令整个场景 run 异常中断（与 api_runner 同规）。
+            return {
+                "success": False,
+                "action": "run",
+                "error": f"timeout 须为数字（秒）: {step_dict.get('timeout')!r} ({e})",
+            }
         name = str(step_dict.get("as") or "")
 
         try:
