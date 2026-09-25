@@ -445,7 +445,11 @@ class G1LifecycleMixin:
                 return False
             self.logger.info("worktree_manager", f"Committed SPEC '{spec_name}' into main tree")
             return True
-        except subprocess.TimeoutExpired:
+        except (subprocess.TimeoutExpired, OSError) as e:
+            self.logger.warning(
+                "worktree_manager",
+                f"SPEC commit aborted for '{spec_name}': {e}",
+            )
             return False
 
     # [fenix-ignore:880e75c5874f] 条目过时：docstring 现行文案已写明 implementer 失败走 register_legacy 遗产保留不删分支，仅非实现者失败路径才 branch -D

@@ -30,6 +30,8 @@ import re
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Set
 
+from core.fast_track_result import SCENARIO_STATUSES
+
 # 四分类取值（design D1）
 VERDICT_CLASSES = ("product-bug", "test-defect", "flaky", "env")
 
@@ -1131,7 +1133,9 @@ def _scenario_evidence_ok(sc: dict) -> bool:
     return True
 
 
-_FAST_TRACK_SCENARIO_STATUSES = ("pass", "fail", "error", "warning", "exempt")
+# 单点定义承诺（fast_track_result docstring）：复用 core.fast_track_result.SCENARIO_STATUSES，
+# 避免与解析器两处词表漂移
+_FAST_TRACK_SCENARIO_STATUSES = SCENARIO_STATUSES
 
 # 豁免合法性：exempt 场景的分类 MUST 为非 product-bug（豁免逃逸检查，D6）
 _EXEMPT_ALLOWED_CLASSES = ("test-defect", "flaky", "env")

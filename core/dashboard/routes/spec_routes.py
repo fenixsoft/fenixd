@@ -58,7 +58,7 @@ class H3SpecRoutesMixin:
         spec = query.get("spec", [None])[0]
         project = self._project_from_query(query)
         if project is None:
-            self._error(400, "unknown project")
+            self._error(404, "unknown project")
             return
         if not project.get("exists"):
             self._error(404, "project not found")

@@ -94,7 +94,6 @@ def _verify_verdict_evidence(pipeline, spec_name: str, retry_judge: bool = False
             dedup = check_batch_attribution_dedup_scenario(report)
             if not dedup["ok"]:
                 for v in dedup["violations"]:
-                    sids = v.get("scenario_ids") or []
                     pipeline._context.logger.error(
                         "pm_engine",
                         f"批量归因查重拒绝采纳 '{spec_name}': {v.get('reason')}",

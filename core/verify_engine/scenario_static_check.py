@@ -214,7 +214,12 @@ def _rule_stale_navigate_port(scenario: dict, serving_port: str | None) -> list[
             continue
         if step.get("action") != "navigate":
             continue
-        url = step.get("value") or step.get("url") or step.get("target") or ""
+        url_field = (
+            "value" if step.get("value")
+            else "url" if step.get("url")
+            else "target"
+        )
+        url = step.get(url_field) or ""
         if not isinstance(url, str) or not url:
             continue
         for port in _matching_ports(url):
@@ -224,7 +229,7 @@ def _rule_stale_navigate_port(scenario: dict, serving_port: str | None) -> list[
                 StaticFinding(
                     scenario_id=sid,
                     rule_id="stale_navigate_port",
-                    location=f"steps[{i}].value",
+                    location=f"steps[{i}].{url_field}",
                     message=(
                         f"navigate URL 字面端口 {port} ≠ 本轮 serving 端口 "
                         f"{serving_port or '未知'}。web 执行以契约 base_url 为准、"

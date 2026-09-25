@@ -141,7 +141,7 @@ def _extract_gap_tasks(error: str) -> list:
     if not error:
         return []
     ids = []
-    for part in re.split(r"[、,，;；:：\n]+", error[len(TASK_GAP_ERROR_PREFIX) :]):
+    for part in re.split(r"[、,，;；:：\s]+", error[len(TASK_GAP_ERROR_PREFIX) :]):
         part = part.strip()
         # 容错：文案里的 id 可能带尾部标点（如 "1.2b。"），剥离后判定
         part = part.rstrip("。.；;")

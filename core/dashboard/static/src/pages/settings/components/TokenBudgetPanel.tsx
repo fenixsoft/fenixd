@@ -100,7 +100,7 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
             <InputNumber min={0} max={1000} step={1} style={{ width: '100%' }} addonAfter="百万" />
           </Form.Item>
           <Text type="secondary">
-            默认 50（百万 input token）。保存后约 30 秒内热加载生效；设为 0 表示关闭预算检查。单 SPEC 累计 input token 达到 80% 发提醒级告警、达到 100% 发升级级告警，不自动冻结，由人工决定是否处置。
+            默认 50（百万 input token）。保存后约 30 秒内热加载生效；设为 0 表示关闭预算检查。单 SPEC 累计 input token 达到 80% 与 100% 均发警告级告警（100% 档标题为「预算 100% 警告」），不自动冻结，由人工决定是否处置。
           </Text>
 
           <Form.Item

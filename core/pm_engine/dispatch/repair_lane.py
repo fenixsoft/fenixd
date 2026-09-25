@@ -669,13 +669,13 @@ class PRepairLaneMixin:
                 f"fallback 清理 repair worktree 失败 '{spec_name}'（非阻塞）: {e}",
             )
         # 失败链收尾：归零轮次，回退 fallback
-        try:
-            prev_retries = int(
-                (self._pm.state_machine.read_one(spec_name) or {}).get("_retry_count", 0) or 0
-            )
-        except (TypeError, ValueError):
-            prev_retries = 0
-        retries = prev_retries + 1
+        # _retry_count 走锁内原子递增（bump_counters 返回写后值）：原先
+        # 「read_one 读 → 算 +1 → 并进 update_spec 写回」读与写分处两段，
+        # 两个并发 fallback（重复派发的 repair worker 同时收尾）会各持相同
+        # 旧值写回同一 retries，丢一次递增、max_retries 熔断晚一轮触发。
+        retries = self._pm.state_machine.bump_counters(spec_name, {"_retry_count": 1}).get(
+            "_retry_count", 0
+        )
         base_error = merge_error or "merge-back failed"
         if repair_error:
             full_error = (
@@ -701,7 +701,8 @@ class PRepairLaneMixin:
             # branch/implementer_run（二者保持原值，不新增清锚点），也**不消费**
             # _recovery_resume（恢复标记在 dispatch 入口一次性消费，此处不触碰）。
             "_repair_awaiting_remerge": False,
-            "_retry_count": retries,
+            # _retry_count 已由上方 bump_counters 原子递增并落盘，此处不再
+            # 并入 update_spec（避免并发 fallback 间互相覆盖丢增量）。
         }
         if retries >= max_r:
             updates["status"] = "blocked"

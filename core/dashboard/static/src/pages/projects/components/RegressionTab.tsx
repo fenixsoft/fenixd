@@ -470,7 +470,7 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
                   disabled={awaitingStart}
                   onClick={() => void handleTrigger()}
                 >
-                  {awaitingStart ? '等待启动…' : '立即执行全量回归'}
+                  {triggerBtnLabel(false, awaitingStart)}
                 </Button>
               </div>
             </>

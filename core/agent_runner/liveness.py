@@ -1081,8 +1081,12 @@ class LivenessSupervisor:
                         f"fast-track higher tier: max_extensions "
                         f"increased to {max_extensions} for '{spec_name}'",
                     )
-            except Exception:
-                pass
+            except Exception as e:
+                self._pm.logger.warning(
+                    "agent_runner",
+                    f"fast-track scale tier precheck failed for '{spec_name}' "
+                    f"— keeping default max_extensions={max_extensions}: {e}",
+                )
         extension_seconds = max(1.0, float(sup["extension_seconds"]))
         # absolute_max 是总墙钟上限；配置偏小时抬到派生下限，否则续期预算会被总上限
         # 截断（语义矛盾）。下限由单一派生函数给出（supervision-timeout-config-consistency）：

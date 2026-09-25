@@ -2598,7 +2598,17 @@ class CodeFixOrchestrator:
             # 但车道可能死锁，必须留痕供排查。
             self._log("warning", f"code-fix defer 放锁异常（车道可能死锁）: {e}")
         # 首次 defer 即发 info 提示（1.3）：含交集文件清单与人工处置话术。
-        _write_defer_info_alert(root, pending_ids, overlap, branch=branch)
+        # 告警写盘失败不得沿批 worker 兜底路径炸掉 defer 保留现场——台账刚
+        # 登记保留、锁已放，异常上穿会触发 _safe_cleanup(success=False) 物理清
+        # 掉刚保留的 worktree（条目变死条目，下轮 reclaim 重选重跑白丢一批）。
+        try:
+            _write_defer_info_alert(root, pending_ids, overlap, branch=branch)
+        except Exception as e:  # noqa: BLE001 — 告警写盘失败不影响 defer 保留，
+            # 只留痕供排查（后续轮询/升级路径仍可再发告警）。
+            self._log(
+                "warning",
+                f"code-fix defer info 告警写盘异常（保留现场不受影响）: {e}",
+            )
         # 占用者协调（add-mergeback-wip-active-coordination 1.1/2.1/2.2）：
         # 首次被挡即识别留痕 + 持有者订阅/无主宽限计时（识别与订阅挂在 defer
         # 消费路径上，design D5）；识别摘要并入进度 current。

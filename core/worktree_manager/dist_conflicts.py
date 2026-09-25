@@ -57,12 +57,22 @@ def run_dist_build(
     Args:
         project_root: 主树项目根。
         static_root: 静态根（回退构建 cwd 与日志文案），缺省 dashboard 静态根。
-        logger: 结构化 logger（warning 口径与提取前逐字一致）。
+        logger: 结构化 logger（warning 口径与提取前逐字一致）；传 None 时
+            入口静默兜底（_NullLogger），按缺省签名调用不会 AttributeError。
         error_detail: 可选失败现场收集器（list）：失败时追加尾部日志文案
             （prepare 失败原因 / fallback 构建 stderr+stdout 尾 200 字符），
             供 serving 探针把构建失败尾部日志写入 run 错误现场；不传时
             行为与提取前逐字节一致。
     """
+    # logger=None 兜底（code-review item 0f9cdf3a8cec）：按缺省签名（只传
+    # project_root）调用时，契约缺失回退 / prepare 失败 / 回退构建失败 /
+    # 构建调用异常四条路径无条件 logger.warning 会 AttributeError。对齐
+    # lifecycle.py 与 state_machine.py:502 的 _NullLogger 先例（延迟导入
+    # 避免循环依赖；warning 为 *args 形参，与两参结构化调用签名兼容）。
+    if logger is None:
+        from core.state_machine import _NullLogger
+        logger = _NullLogger()
+
     from core.verify_contract import (
         ensure_main_tree_deps,
         load_verify_contract,

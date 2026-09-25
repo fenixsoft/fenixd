@@ -545,37 +545,9 @@ class PMEngine:
         else:
             self.logger.error("pm_engine", f"未知 next_status: {next_status}")
 
-    def _lint_deliverable_declarations(self, spec_name: str) -> list:
-        """Deliverables 声明形态 lint（晋升前拦截，fail-open）。"""
-        from core.deliverables import lint_declared
-
-        spec_dir = self.project_root / "spec" / "changes" / spec_name
-        if not spec_dir.is_dir():
-            return []
-        try:
-            return lint_declared(spec_dir, self.project_root)
-        except Exception as e:
-            self.logger.warning(
-                "pm_engine",
-                f"Deliverables lint 异常 '{spec_name}'（非阻塞放行）: {e}",
-            )
-            return []
-
-    def _lint_tasks_parseable(self, spec_name: str) -> list:
-        """tasks.md 可解析性 lint（晋升前拦截，fail-open，task-track D2）。"""
-        from core.deliverables import lint_tasks_parseable
-
-        spec_dir = self.project_root / "spec" / "changes" / spec_name
-        if not spec_dir.is_dir():
-            return []
-        try:
-            return lint_tasks_parseable(spec_dir, self.project_root)
-        except Exception as e:
-            self.logger.warning(
-                "pm_engine",
-                f"tasks.md 可解析性 lint 异常 '{spec_name}'（非阻塞放行）: {e}",
-            )
-            return []
+    # 晋升 lint（deliverables 声明形态 / tasks.md 可解析性）唯一实现在
+    # core/pm_engine/promotion.py 的模块级 _lint_deliverable_declarations /
+    # _lint_tasks_parseable，由 promote_drafted 调用；此处不再保留副本。
 
     def _on_spec_reviewing(self, spec_name: str):
         """处理 spec_reviewing 事件：评审条目入队（异步、不阻塞调用方线程）。

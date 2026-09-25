@@ -880,7 +880,10 @@ def read_progress(project_root) -> dict:
                 try:
                     last = json.loads(lines[-1])
                     if isinstance(last, dict):
-                        current = last.get("file") or last.get("title") or None
+                        # 缺 file（坏行）时置 None，不回退 title——current 语义
+                        # 是被审文件路径（对齐 docstring），title 回退会让前端
+                        # 把问题标题当文件路径展示（15818a18ec23）
+                        current = last.get("file") or None
                 except (json.JSONDecodeError, IndexError):
                     current = None
         except OSError:

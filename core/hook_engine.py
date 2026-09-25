@@ -174,7 +174,8 @@ def validate_hook_entry(entry: Any) -> Optional[str]:
 
     规则：
     - 必须为 dict；
-    - events 非空列表，取值 ∈ 全部状态枚举（SpecStatus.ALL）；
+    - events 非空列表，取值 ∈ VALID_EVENTS（SpecStatus.ALL + 伪事件 all-done，
+      后者仅全局作用域生效）；
     - action ∈ 七枚举；
     - action=webhook 必须 url 非空字符串；
     - action=shell 必须 command 非空字符串。
