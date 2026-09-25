@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import logging
 import os
@@ -76,6 +77,14 @@ def _review_id_epoch(review_id):
     return int(m.group(1)) if m else None
 
 
+# os.link(2) 在部分文件系统上根本不可用（网络挂载/容器卷/Windows 非 NT
+# 挂载等），报错即这组 errno——此时降级为 O_CREAT|O_EXCL 直接独占创建
+# 轮询路径（见 _write_signal_exclusive 回退分支，item 85f9732c331b）。
+_LINK_UNSUPPORTED_ERRNOS = frozenset(
+    {errno.EPERM, errno.EOPNOTSUPP, errno.ENOSYS, errno.EINVAL}
+)
+
+
 class _SignalWriteError(Exception):
     """信号文件独占写失败（FileExistsError 之外的失败，调用方映射 500）。"""
 
@@ -99,6 +108,11 @@ def _write_signal_exclusive(req_path, payload):
         2. os.link(2) 原子挂到轮询路径——目标已存在抛 FileExistsError，保留
            独占创建语义（并发第二 POST 或上一信号尚未被消费）；
         3. 消费者要么看不到文件、要么看到完整 JSON，空窗不复存在。
+      link 不支持的文件系统回退（errno 属 _LINK_UNSUPPORTED_ERRNOS，item
+      85f9732c331b）：降级为 O_CREAT|O_EXCL 直接独占创建轮询路径、之后灌
+      入完整内容——独占创建语义保留（目标已存在仍 FileExistsError → None），
+      代价是创建与填充之间重现半写空窗，仅限该受限回退路径，正常文件系统
+      仍走三步无空窗。
 
     返回：成功 → 信号轮询路径字符串；目标已存在（独占写失败）→ None。
     异常：其余失败（os.open/写内容/os.link 的 OSError）抛 _SignalWriteError。
@@ -146,7 +160,44 @@ def _write_signal_exclusive(req_path, payload):
         # 由调用方映射各自的 409；finally 照常清临时文件
         return None
     except OSError as exc:
-        raise _SignalWriteError(str(exc)) from exc
+        if exc.errno not in _LINK_UNSUPPORTED_ERRNOS:
+            raise _SignalWriteError(str(exc)) from exc
+        # link 在该文件系统上根本不可用（item 85f9732c331b）：降级为
+        # O_CREAT|O_EXCL 直接独占创建轮询路径再灌完整内容。独占创建语义
+        # 保留（目标已存在仍 FileExistsError → None → 调用方 409）；代价
+        # 是创建与填充之间重现半写空窗，仅限此受限回退路径可接受。
+        try:
+            fd = os.open(
+                str(req_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644
+            )
+        except FileExistsError:
+            return None
+        except OSError as oexc:
+            raise _SignalWriteError(str(oexc)) from oexc
+        f = None
+        try:
+            f = os.fdopen(fd, "w", encoding="utf-8")
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        except Exception as wexc:
+            # 回退路径写中途失败：轮询路径上的半写文件若残留，daemon 重启
+            # 时会被误消费成一次用户并未请求的触发——best effort 清掉后
+            # 照常上报（fd 尚在 finally 关闭，unlink 打开中的文件合法）
+            try:
+                os.unlink(str(req_path))
+            except OSError:
+                pass
+            raise _SignalWriteError(str(wexc)) from wexc
+        finally:
+            # fdopen 失败路径显式关 fd（同上方 71d502440d3b 先例）
+            if f is not None:
+                f.close()
+            else:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
     finally:
         # 链接成功/失败临时文件均无存在必要（成功后内容已由 link 名可见）
         try:
