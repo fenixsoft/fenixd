@@ -768,7 +768,7 @@ class TestStep:
         headers: 请求头（值支持 {env:VAR} 插值）
         body: 请求体
         body_type: 请求体类型（json/text）
-        duration: sse_connect 收集窗口秒数
+        duration: sse_connect 收集窗口秒数（最多收集 100 个事件，触顶即截断）
     """
 
     action: str
