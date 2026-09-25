@@ -58,6 +58,9 @@ export function useSlashCommands({
   const historyRef = useRef<Record<string, number>>({});
   const sortedCommands = useMemo(
     () => {
+      // 渲染期读盘（localStorage）+ 写 historyRef 是受控幂等副作用：同 key 重复
+      // 渲染读到同一份历史，排序结果稳定；移入 useEffect 会改变首帧 sortedCommands
+      // 排序并多一次重排渲染，故有意保留在 memo 内，勿误改为 effect。
       historyRef.current = readCommandHistory(historyProjectKey);
       return sortCommandsByUsage(commands, historyRef.current);
     },
