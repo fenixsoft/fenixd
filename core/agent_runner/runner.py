@@ -163,6 +163,31 @@ CANCELLED_BY_ADMIN_ERROR_PREFIX = "cancelled by admin"
 # 其它失败分支）按温和处置识别为「人工接管让位」而非网关故障。
 RETRY_YIELDED_ERROR_PREFIX = "[retry-yielded]"
 
+# ── run 停滞预算复合判停（evo-add-run-stop-loss 2.1，缺省关闭）────────
+# 判停阈值常量（120s 级单次往返为 stall 样本；占比与无进展窗经
+# agents.run_stall_budget_* 配置，见 core/config.py 单点归一化）。
+RUN_STALL_ROUND_SECONDS = 120.0        # 单次往返 ≥120s 计入 stall 样本
+RUN_STALL_RATIO_MIN_SAMPLES = 2        # 占比判据最小完成样本数（防单样本退化）
+RUN_STALL_RATIO_TRIGGER = 0.5          # stall 占比门槛（达到一半）
+# 判停终态 error 前缀（对齐 [retry-yielded] 的「前缀即语义标签」约定）；
+# 终态日志与 run jsonl 据此机械识别「判停止损」而非网关故障。
+RUN_STALL_BUDGET_ERROR_PREFIX = "[run-stall-budget]"
+
+
+class RunStallBudgetExceededError(Exception):
+    """run 触发停滞预算复合判停时抛出（evo-add-run-stop-loss 2.1）。
+
+    与 RunCancelledError / FrozenTerminatedError 并列的独立终止通道：
+    不重试、不计秒挂、不触发 provider 切换、不触发 in-place retry 重派——
+    命中即终止整个重试链（否则止损被自动重派放大）。携带 criterion
+    （命中判据名：consecutive_slow_rounds / stall_ratio_no_progress）。
+    """
+
+    def __init__(self, criterion: str = "", detail: str = ""):
+        self.criterion = criterion
+        self.detail = detail
+        super().__init__(f"run stall budget exceeded ({criterion}): {detail}")
+
 # ── add-timeline-gate-failure-display：门禁归因落 run jsonl 的截断上限 ────
 # 门禁归因文案（含 [artifact-structural]/[task-gate] 标签、gate 名与目标路径）
 # 落进 run jsonl 前必须先截断：append_run_line 的单行原子性只在行数据不超过
@@ -399,6 +424,9 @@ class _AttemptState:
     # （与 cancelled_flag 并列、互不读写——dispatch 据此写 _frozen_hold
     # 而非 _cancelled_hold）。
     frozen_terminated_flag: bool = False
+    # evo-add-run-stop-loss 2.1：本轮 run 是否因停滞预算判停被终止
+    # （与 frozen_terminated_flag 并列：不重试、终止整个重试链）
+    stall_budget_flag: bool = False
     # shutdown-interrupted 守卫（2026-09-09 事故）
     shutdown_interrupted: bool = False
     # run 终态指标落盘需 usage_info（早夭分支引用前初始化，unobserved 语义）
@@ -655,6 +683,25 @@ class AgentRunner:
         self.__dict__["_cancel_requested_lock_state"] = value
 
     @property
+    def _stall_budget_states(self) -> dict:
+        """run 停滞预算判停状态表（evo-add-run-stop-loss 2.1）。
+
+        惰性 property（测试 ``__new__`` 绕过 ``__init__``，对齐
+        _cancel_requested 模式）：键为归一化 base_run_id（含 epoch），值结构见
+        _stall_budget_state_for。统计随 run 生命周期累积、不随 attempt 重置；
+        终态外口经 _stall_budget_forget 摘除。
+        """
+        inst = self.__dict__.get("_stall_budget_states_state")
+        if inst is None:
+            inst = {}
+            self.__dict__["_stall_budget_states_state"] = inst
+        return inst
+
+    @_stall_budget_states.setter
+    def _stall_budget_states(self, value):
+        self.__dict__["_stall_budget_states_state"] = value
+
+    @property
     def _run_finalize_lock(self) -> threading.Lock:
         """run 收尾互斥锁（code-review item 183ded7b526a）：注册表 pop 与停机
         interrupted 标记写入的互斥点。liveness.wait_for_running_agents 停机写
@@ -728,8 +775,10 @@ class AgentRunner:
         Returns:
             {"status": "cancel_requested", "attempts": [...], "base_run_id": str}
             — 命中活跃 attempt；
-            {"status": "not_running", "base_run_id": str}
-            — 未命中。
+            {"status": "not_running", "base_run_id": str, "flag_registered": bool}
+            — 未命中（evo-add-run-stop-loss 1.1 起仍按 base_id 登记取消旗标，
+            flag_registered=True；旗标键含 epoch，仅本 run 的复活/重派 attempt
+            会被启动守卫拦截，无跨 run 泄漏）。
         """
         base_id = self._normalize_run_id(run_id)
 
@@ -742,11 +791,28 @@ class AgentRunner:
         ]
 
         if not matched_attempts:
-            self.logger.info(
+            # evo-add-run-stop-loss 1.1（A）：attempt 间隙取消。2026-09-25
+            # planner-plan 事故：取消恰好落在 attempt 退出与下一 attempt（或
+            # in-place retry -r<n>）重派之间的间隙，原 not_running 分支不登记
+            # 旗标直接返回，重派的 attempt 复活再跑 36 分钟（run 级成本全部
+            # 沉没）。现按 base_id 登记旗标（复用 add-run-cancel 的归一化、
+            # 幂等集合与 reason/by 元数据），随后复活/重派的 attempt 在启动
+            # 守卫（_attempt_top_guards）与 in-place retry 让位复查处命中即
+            # 有序终止；在飞 attempt（若有）照常走轮询环取消，行为不变。
+            with self._cancel_requested_lock:
+                self._cancel_requested.add(base_id)
+                self._cancel_meta[base_id] = {"reason": reason, "by": by}
+            self.logger.warning(
                 "agent_runner",
-                f"cancel_run: run '{base_id}' 无活跃 attempt，返回 not_running",
+                f"cancel_run: run '{base_id}' 无活跃 attempt，已登记取消旗标"
+                f"（attempt 间隙取消，复活/重派 attempt 将被启动守卫拦截；"
+                f"reason={reason!r}, by={by}）",
             )
-            return {"status": "not_running", "base_run_id": base_id}
+            return {
+                "status": "not_running",
+                "base_run_id": base_id,
+                "flag_registered": True,
+            }
 
         # 登记旗标（幂等——同一 base_id 多次调用不重复计数）
         with self._cancel_requested_lock:
@@ -2002,6 +2068,15 @@ class AgentRunner:
             # 9dc9195cbd73）：统一在 run 终态外口摘除，覆盖 success/exhausted
             # 两收口之外的全部早退终态 return（frozen/取消/熔断/链耗尽/让位）。
             self._turn_branch_state_forget(run_id)
+            # evo-add-run-stop-loss 1.1：取消旗标随 run 终态外口幂等清理——
+            # 覆盖「not_running 间隙登记后 run 未再复活即自然收尾」的路径
+            # （旗标键含 epoch，不清理也不跨 run 误伤，摘除仅为生命周期
+            # 卫生）；与 success/exhausted/守卫/轮询环四处既有清理互为幂等。
+            self._cancel_clear(run_id)
+            # evo-add-run-stop-loss 2.1：判停统计随 run 终态外口摘除（键含
+            # epoch 不清理也不跨 run 误伤，摘除仅为生命周期卫生；建态时另有
+            # 24h 过期淘汰兜底非派发链路的直调泄漏）。
+            self._stall_budget_forget(run_id)
             # per-run 终态回调触发（add-mergeback-wip-active-coordination D2）：
             # 终态收口处（成功/失败/取消/冻结/熔断等任意终态都经本 finally）
             # 消费回调表——持有者 run 收尾即唤醒 defer 批合回事件驱动重试。
@@ -2059,6 +2134,7 @@ class AgentRunner:
             cancel_reason="",
             shutdown_interrupted=False,
             frozen_terminated_flag=False,
+            stall_budget_flag=False,
         )
         # 别名：原变量名 → st 字段（保留，函数体暂不改为 st.xxx）
         wt_path = st.wt_path
@@ -2076,6 +2152,7 @@ class AgentRunner:
         cancel_reason = st.cancel_reason
         shutdown_interrupted = st.shutdown_interrupted
         frozen_terminated_flag = st.frozen_terminated_flag
+        stall_budget_flag = st.stall_budget_flag
 
         for attempt in range(1, max_retries + 1):
             attempt_run_id = f"{run_id}-a{attempt}"
@@ -2338,6 +2415,25 @@ class AgentRunner:
                     )
                     usage_info = self._extract_usage_info(None)
                     break  # 原地重试子循环：冻结退出 while
+                except RunStallBudgetExceededError as e:
+                    # evo-add-run-stop-loss 2.1：停滞判停专用捕获——不重试、
+                    # 不计秒挂、不触发 provider 链切换，与取消/冻结并列的独立
+                    # 终止通道。stall_budget_flag 使 no-retry 条件立即收场
+                    #（终止整个重试链：止损被瞬态重试/in-place retry 重派
+                    # 放大即失去意义），run 以 [run-stall-budget] 前缀失败终态。
+                    output = ""
+                    turns = 0
+                    success = False
+                    stall_budget_flag = True
+                    error = (RUN_STALL_BUDGET_ERROR_PREFIX
+                             + f" 命中判据 {e.criterion}: {e.detail}")
+                    self.logger.info(
+                        "agent_runner",
+                        f"{agent_type} for '{spec_name}' run 停滞判停止损"
+                        f"（attempt {attempt}）：{error}",
+                    )
+                    usage_info = self._extract_usage_info(None)
+                    break  # 原地重试子循环：判停止损退出 while
                 except AgentArtifactGateError as e:
                     # add-judge-artifact-gate D1：exit 0 但产物缺失/为空/非法 JSON
                     # → 按瞬态失败走既有原地退避重试（见 _handle_artifact_gate_retry）。
@@ -2538,6 +2634,7 @@ class AgentRunner:
                     error=error, cancelled_flag=cancelled_flag,
                     shutdown_interrupted=shutdown_interrupted,
                     frozen_terminated_flag=frozen_terminated_flag,
+                    stall_budget_flag=stall_budget_flag,
                     st=st, handed_off=handed_off,
                 )
                 wt_path = st.wt_path
@@ -2991,6 +3088,36 @@ class AgentRunner:
                     f"重试让位（fix-verdict-dedup-resynthesis D4）"),
                 provider_used=provider_name, model_used=model,
             ), False
+        # evo-add-run-stop-loss 1.2（B）：planner-plan 增查并行出题标记——
+        # 消费侧已把标记翻成 discarded（产物隔离/转串行收尾伴生写入）时，
+        # 重派只会与已转道的串行出题竞跑；在途（dispatched）或无标记
+        # （未注入/读取失败）不命中，重试照常。
+        if self._parallel_plan_marker_discarded(spec_name, agent_type):
+            self.logger.warning(
+                "agent_runner",
+                f"Provider-transient retry for '{spec_name}' "
+                f"({agent_type}) yields: 并行出题标记已 discarded"
+                f"（产物已隔离/转串行），放弃重派"
+                f"（evo-add-run-stop-loss 1.2）",
+            )
+            self._log_run_metrics(
+                run_id=run_id, spec_name=spec_name,
+                agent_type=agent_type,
+                duration_seconds=time.time() - start_time,
+                turns=turns, usage_info=usage_info,
+                terminal="failure", provider=provider_name,
+                model=model,
+            )
+            return transient_retries, AgentRunResult(
+                attempt_run_id, spec_name, agent_type,
+                success=False,
+                duration_seconds=time.time() - start_time,
+                error=(
+                    f"{RETRY_YIELDED_ERROR_PREFIX} 并行出题标记已 discarded"
+                    f"（产物已隔离/转串行出题），"
+                    f"重试让位（evo-add-run-stop-loss 1.2）"),
+                provider_used=provider_name, model_used=model,
+            ), False
         return transient_retries, None, True
 
     def _append_gate_blocked(self, *, sub_run_id: str, spec_name: str,
@@ -3189,6 +3316,36 @@ class AgentRunner:
                     f"{RETRY_YIELDED_ERROR_PREFIX} spec 已被接管"
                     f"（status 迁出预期态或 frozen/hold），"
                     f"重试让位（fix-verdict-dedup-resynthesis D4）"),
+                provider_used=provider_name, model_used=model,
+            ), False, False
+        # evo-add-run-stop-loss 1.2（B）：planner-plan 增查并行出题标记——
+        # discarded（产物隔离/转串行收尾伴生写入）即放弃重派：本次事故的
+        # 复活正是产物硬门通道（exit 0 但 test_scenarios.json 缺失被拦）。
+        # 在途（dispatched）或无标记（未注入/读取失败）不命中，重试照常。
+        if self._parallel_plan_marker_discarded(spec_name, agent_type):
+            self.logger.warning(
+                "agent_runner",
+                f"Artifact-gate retry for '{spec_name}' "
+                f"({agent_type}) yields: 并行出题标记已 discarded"
+                f"（产物已隔离/转串行），放弃重派"
+                f"（evo-add-run-stop-loss 1.2）",
+            )
+            self._log_run_metrics(
+                run_id=run_id, spec_name=spec_name,
+                agent_type=agent_type,
+                duration_seconds=time.time() - start_time,
+                turns=turns, usage_info=usage_info,
+                terminal="failure", provider=provider_name,
+                model=model,
+            )
+            return error, transient_retries, AgentRunResult(
+                attempt_run_id, spec_name, agent_type,
+                success=False,
+                duration_seconds=time.time() - start_time,
+                error=(
+                    f"{RETRY_YIELDED_ERROR_PREFIX} 并行出题标记已 discarded"
+                    f"（产物已隔离/转串行出题），"
+                    f"重试让位（evo-add-run-stop-loss 1.2）"),
                 provider_used=provider_name, model_used=model,
             ), False, False
         return error, transient_retries, None, True, False
@@ -3464,12 +3621,13 @@ class AgentRunner:
                                error, cancelled_flag: bool,
                                shutdown_interrupted: bool,
                                frozen_terminated_flag: bool = False,
+                               stall_budget_flag: bool = False,
                                st: _AttemptState = None, handed_off: set = None) -> bool:
         """失败终态分型（等价搬移，D1 R8）：重试等待 or 终态 keep。
 
-        返回 True 表示 should_break（cancelled_flag or shutdown_interrupted 触发的
-        终态——attempt 循环 MUST break）；返回 False 表示已 sleep(10) 等待重试，
-        调用者继续下一轮 attempt。
+        返回 True 表示 should_break（cancelled_flag or shutdown_interrupted or
+        stall_budget_flag 触发的终态——attempt 循环 MUST break）；返回 False
+        表示已 sleep(10) 等待重试，调用者继续下一轮 attempt。
         方法内通过 st 回写 st.kept_wt_path / st.wt_path，调用者 MUST 同步
         局部变量 kept_wt_path / wt_path。
         """
@@ -3495,7 +3653,8 @@ class AgentRunner:
         #（implementer 亦保留：既有 else 分支的 cleanup(success=False) 会删除
         # implementer 的 worktree 目录，使 WIP 保全与解冻后续做双双落空）。
         if attempt < max_retries and not cancelled_flag \
-                and not shutdown_interrupted and not frozen_terminated_flag:
+                and not shutdown_interrupted and not frozen_terminated_flag \
+                and not stall_budget_flag:
             time.sleep(10)  # Wait before retry
             # fix-provider-transient-backoff（D3）：attempt 间 worktree
             # 保留扩展到全部 agent_type——非 implementer 族复用前仍过
@@ -3560,7 +3719,11 @@ class AgentRunner:
         else:
             self.worktree_manager.cleanup(st.wt_path, success=False)
         st.wt_path = None
-        return cancelled_flag or shutdown_interrupted or frozen_terminated_flag
+        # evo-add-run-stop-loss 2.1：停滞判停与取消/停机/冻结同列 should_break
+        #（终止整个重试链）；worktree 走下方默认 else cleanup 分支——非冻结的
+        # 保留现场语义不适用（判停 run 的现场由 WIP 保全锚点在强杀前收走）。
+        return (cancelled_flag or shutdown_interrupted
+                or frozen_terminated_flag or stall_budget_flag)
 
     # ── R2: 候选链解析与选择（等价搬移，D1 R2 表）─────────────────────
     # 模型分配 → 指针推进 → 全链耗尽/4xx 熔断拦截 → 记当日 attempt。
@@ -4014,6 +4177,15 @@ class AgentRunner:
         stdout_lines: list = []
         stderr_lines: list = []
 
+        # ── evo-add-run-stop-loss 2.1：base_run_id 前移 ─────────────────
+        # 归一化键（含 epoch）在子线程启动前就绪：读线程的停滞预算采样旁挂
+        # 与轮询环判停共用（原赋值点在 t_out.start() 之后，读线程先启动即
+        # 存在 UnboundLocalError 竞态，故整体前移到线程定义之前）。
+        base_run_id = self._normalize_run_id(run_id)
+        # 停滞预算配置一次读取（run 内静态；缺省关闭 → None，轮询环零开销
+        # 短路）。关闭态同样不建态、不采样（record_sample 首次调用才建）。
+        stall_cfg = self._stall_budget_config()
+
         # ── run 级 API 延迟统计（add-planner-efficiency：run-latency-observability）──
         # 纯读侧采集：`tool_result → 下一个 assistant` 间隔样本（API 往返等待）。
         # sample_state 被 _read_stream 子线程 append，主线程在 join 后读取，
@@ -4122,9 +4294,15 @@ class AgentRunner:
                         elif entry.get("type") == "assistant":
                             if (e_ts is not None
                                     and latency_state["last_tool_result_ts"] is not None):
-                                latency_state["samples"].append(
+                                _sb_sample = (
                                     e_ts - latency_state["last_tool_result_ts"])
+                                latency_state["samples"].append(_sb_sample)
                                 latency_state["last_tool_result_ts"] = None
+                                # evo-add-run-stop-loss 2.1：停滞预算样本旁挂
+                                # 采集（run 级累积、不随 attempt 重置；reader
+                                # 单写者，内部异常仅 WARNING 不阻断读流）。
+                                self._stall_budget_record_sample(
+                                    base_run_id, _sb_sample)
                     append_run_line(run_file, entry)
             except Exception as e:
                 # 读取线程异常不应导致主流程崩溃；半成品产物仍可被 Dashboard 读取。
@@ -4160,12 +4338,16 @@ class AgentRunner:
         current_turn_cap = max_turns
         # add-run-cancel D1/D3：轮询环每轮检查取消旗标，命中则
         # terminate→grace→kill→写 cancelled 终态行→抛 RunCancelledError
-        base_run_id = self._normalize_run_id(run_id)
+        #（base_run_id 已前移到读线程启动前，见上）
         cancel_error: RunCancelledError | None = None
         # add-freeze-stop-inflight-agents D1：冻结终止独立异常（与取消并列、
         # 不复用取消语义）。轮询环命中 spec frozen 时置位，finally 段并列
         # cancel_error 落 frozen-terminated 终态行后抛出。
         frozen_error: FrozenTerminatedError | None = None
+        # evo-add-run-stop-loss 2.1：停滞判停独立异常（与取消/冻结并列）。
+        # 轮询环复合判据命中时置位，finally 段并列落 stall-budget-terminated
+        # 终态行后抛出；attempt 循环侧据此置 stall_budget_flag 终止整个重试链。
+        stall_error: RunStallBudgetExceededError | None = None
         # add-planner-efficiency（run-latency-observability）：run 末延迟摘要文本。
         # 在 finally（读线程 join 后）计算并打日志；失败/取消路径把摘要拼入
         # error 上下文（卡死 vs 慢可判）。
@@ -4242,6 +4424,56 @@ class AgentRunner:
                     returncode = -15  # SIGTERM 对应语义
                     cancel_error = RunCancelledError(reason=reason, by=by)
                     break
+
+                # ── run 停滞预算复合判停（evo-add-run-stop-loss 2.1）─────
+                # 缺省关闭（stall_cfg=None 零开销短路）。启用后每轮评估：
+                # 判据一连续 N 次 ≥120s 往返（reader 旁挂采样累积）/ 判据二
+                # stall 占比 ≥1/2 且超过 M 分钟无产物（run 转录）mtime 进展。
+                # 统计 run 级累积（键=base_run_id，不随 attempt 重置）；命中
+                # 强杀在飞 attempt 并置独立异常——终止整个重试链（不再触发
+                # 瞬态重试或 in-place retry 重派），不新增 admin 告警。
+                if stall_cfg is not None:
+                    _sb = self._stall_budget_state_for(base_run_id)
+                    try:
+                        _sb_mtime = os.path.getmtime(run_file)
+                    except OSError:
+                        _sb_mtime = None
+                    if _sb_mtime is not None and _sb_mtime > _sb["last_mtime"]:
+                        # 产物进展（转录文件增长）：推进无进展窗锚点
+                        _sb["last_mtime"] = _sb_mtime
+                        _sb["last_progress_ts"] = time.time()
+                    _sb_criterion = self._stall_budget_hit_criterion(
+                        _sb, stall_cfg, now=time.time())
+                    if _sb_criterion:
+                        _sb_stats = (
+                            f"samples_total={_sb['samples_total']}, "
+                            f"stalls_total={_sb['stalls_total']}, "
+                            f"consecutive_stalls={_sb['consecutive_stalls']}, "
+                            f"no_progress_seconds="
+                            f"{int(time.time() - _sb['last_progress_ts'])}")
+                        self.logger.warning(
+                            "agent_runner",
+                            f"run '{base_run_id}' 命中停滞预算判据 "
+                            f"{_sb_criterion}，强杀在飞 attempt {run_id}"
+                            f"并终止重试链（{_sb_stats}）",
+                            {
+                                "run_id": run_id,
+                                "event": "run_stall_budget_hit",
+                                "criterion": _sb_criterion,
+                            },
+                        )
+                        # 强杀收口前的 WIP 保全（对齐超时/turn-limit 锚点）：
+                        # 失败降级不阻断判停收口。
+                        self._wip_checkpoint_on_forced_kill(spec_name, cwd)
+                        proc.kill()
+                        try:
+                            proc.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            pass
+                        returncode = -9  # SIGKILL 对应语义
+                        stall_error = RunStallBudgetExceededError(
+                            criterion=_sb_criterion, detail=_sb_stats)
+                        break
 
                 remaining = deadline - time.time()
                 # ── extension 末位窗口自动保全（add-fast-track-scale-precheck D3）──
@@ -4472,6 +4704,17 @@ class AgentRunner:
                     "by": frozen_error.by,
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 })
+            # evo-add-run-stop-loss 2.1：stall-budget-terminated 终态行与
+            # cancelled / frozen-terminated 同位置（join 后、result 行后），
+            # 保证为文件末行级终态；命中判据与统计快照入行可审计（判停
+            # 不新增 admin 告警，run 转录即唯一落点）。
+            if stall_error is not None:
+                append_run_line(run_file, {
+                    "type": "stall-budget-terminated",
+                    "criterion": stall_error.criterion,
+                    "detail": stall_error.detail,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                })
             # 产物文件可能因崩溃等遗留为"活动但不再增长"，清理时按时间淘汰即可
 
         if cancel_error is not None:
@@ -4483,6 +4726,13 @@ class AgentRunner:
             # 并列的收口语义），dispatch 侧据此写 _frozen_hold 而非
             # _cancelled_hold。
             raise frozen_error
+
+        if stall_error is not None:
+            # evo-add-run-stop-loss 2.1：停滞判停独立异常通道——不重试、不计
+            # 秒挂、不触发 provider 切换、不触发 in-place retry 重派（与
+            # RunCancelledError / FrozenTerminatedError 并列的收口语义），
+            # attempt 循环侧据此置 stall_budget_flag 终止整个重试链。
+            raise stall_error
 
         if timeout_error is not None:
             # 锚点 C（add-turn-limit-anchor-c D1）：超时强杀收口前的 WIP 保全。
@@ -4668,6 +4918,41 @@ class AgentRunner:
         except Exception:
             return False
 
+    # ── 并行出题标记让位判据（evo-add-run-stop-loss 1.2）──────────────────
+
+    def _parallel_plan_marker_discarded(self, spec_name: str,
+                                        agent_type: str) -> bool:
+        """in-place retry 重派前的让位判据（B）：planner-plan 增查并行出题标记。
+
+        标记由 pm_engine 并行出题车道全程落盘（.fenix/verify-progress/<spec>/
+        parallel_plan.json，实际枚举 dispatched/failed/discarded/completed）；
+        消费侧的产物隔离（_quarantine_parallel_product → .parallel-discarded）
+        与转串行收尾伴生写入 discarded——单值即覆盖「已隔离」与「已转串行」
+        两类终态。命中即放弃重派：重派只会与已转道的串行出题竞跑（2026-09-25
+        planner-plan 事故 -r1 复活 36 分钟形态）。
+
+        仅 planner-plan 参与；读取回调由装配侧注入（_parallel_plan_marker_reader，
+        PMEngine.__init__ 沿 result_gate 注入约定回引字段先例），本类 MUST NOT
+        依赖 pm_engine 模块。未注入（缺省 None）/ 读取异常 / 标记缺失一律按
+        无标记处理（fail-open，不阻断正常重试）。
+        """
+        if agent_type != "planner-plan":
+            return False
+        reader = getattr(self, "_parallel_plan_marker_reader", None)
+        if reader is None:
+            return False
+        try:
+            marker = reader(spec_name) or {}
+        except Exception as e:  # noqa: BLE001 — 读取失败按无标记处理
+            self.logger.warning(
+                "agent_runner",
+                f"并行出题标记读取失败（按无标记处理，不阻断重试）"
+                f"'{spec_name}': {e}",
+            )
+            return False
+        return (marker if isinstance(marker, dict) else {}).get("status") \
+            == "discarded"
+
     def _should_give_up_before_retry(self, spec_name: str, agent_type: str,
                                      check_lock: bool = True) -> bool:
         """attempt 重试前的放弃判定（fix-restart-dual-dispatch S3/S4）。
@@ -4734,6 +5019,115 @@ class AgentRunner:
         except Exception:
             return False
         return False
+
+    # ── run 停滞预算复合判停（evo-add-run-stop-loss 2.1，缺省关闭）──────
+    # 判停统计与评估：reader 线程旁挂采样（单写者）+ 轮询环 mtime 进展
+    # 跟踪（单写者）+ 纯函数判据评估。状态键为归一化 base_run_id（含
+    # epoch），随 run 生命周期累积、不随 attempt 重置；终态外口幂等摘除。
+
+    def _stall_budget_config(self):
+        """读取停滞预算配置；缺省关闭（或读取失败）返回 None。
+
+        单点经 ConfigLoader.get_run_stall_budget_config（2.2 归一化，消费与
+        展示同源）；读取异常 fail-open 为关闭——配置读失败不构成杀 run 的
+        理由（与 _spec_is_frozen fail-open 同惯例）。
+        """
+        try:
+            from core.config import ConfigLoader as _CLSbCfg
+            cfg = _CLSbCfg.get_run_stall_budget_config(self.config)
+        except Exception:
+            return None
+        if not cfg or not cfg.get("enabled"):
+            return None
+        return cfg
+
+    def _stall_budget_state_for(self, base_run_id: str) -> dict:
+        """取/建 run 级判停状态（键=归一化 base_run_id，含 epoch）。
+
+        建态时顺带淘汰 created_ts 超 24h 的陈旧条目：兜底非派发链路
+        （_run_claude 被直调、不经 _execute_agent 终态外口 forget）的状态
+        泄漏（对齐 _cancel_requested 无需清理的键含 epoch 语义 + 卫生性
+        淘汰）。
+        """
+        states = self._stall_budget_states
+        key = self._normalize_run_id(base_run_id)
+        st = states.get(key)
+        if st is None:
+            now = time.time()
+            for k in [k for k, v in states.items()
+                      if now - float(v.get("created_ts") or now) > 86400.0]:
+                states.pop(k, None)
+            st = {
+                "created_ts": now,
+                # reader 线程单写者维护的往返样本计数
+                "samples_total": 0,
+                "stalls_total": 0,
+                "consecutive_stalls": 0,
+                # 轮询环单写者维护的产物（run 转录）mtime 进展锚点
+                "last_mtime": 0.0,
+                "last_progress_ts": now,
+            }
+            states[key] = st
+        return st
+
+    def _stall_budget_forget(self, run_id: str) -> None:
+        """run 终态外口摘除判停状态（_execute_agent finally 幂等清理）。"""
+        try:
+            self._stall_budget_states.pop(self._normalize_run_id(run_id), None)
+        except Exception:
+            pass
+
+    def _stall_budget_record_sample(self, base_run_id: str,
+                                    sample_seconds) -> None:
+        """reader 线程单写者：累积 run 级 stall 样本计数（纯读侧旁路）。
+
+        ≥RUN_STALL_ROUND_SECONDS 的往返计入 stalls_total 并推进连续计数；
+        健康往返清零连续计数（判据一的「连续」语义）。MUST NOT 影响读线程
+        事件处理时序——内部异常仅 WARNING 不上抛。
+        """
+        try:
+            st = self._stall_budget_state_for(base_run_id)
+            st["samples_total"] += 1
+            if (sample_seconds is not None
+                    and float(sample_seconds) >= RUN_STALL_ROUND_SECONDS):
+                st["stalls_total"] += 1
+                st["consecutive_stalls"] += 1
+            else:
+                st["consecutive_stalls"] = 0
+        except Exception as e:
+            self.logger.warning(
+                "agent_runner",
+                f"stall budget sample record failed（不阻断）: {e}",
+                {"run_id": base_run_id, "event": "run_stall_budget_sample_error"},
+            )
+
+    @staticmethod
+    def _stall_budget_hit_criterion(st: dict, cfg: dict,
+                                    now: float = None) -> str:
+        """纯函数评估复合判停判据（evo-add-run-stop-loss 2.1）。
+
+        - 判据一 consecutive_slow_rounds：run 内连续 ≥stalls 次达到
+          RUN_STALL_ROUND_SECONDS 的 API 往返；
+        - 判据二 stall_ratio_no_progress：完成样本 ≥RUN_STALL_RATIO_MIN_SAMPLES
+          且 stall 占比 ≥RUN_STALL_RATIO_TRIGGER，且超过 window_seconds 无产物
+          mtime 进展（mtime 锚点由轮询环调用侧更新，本函数只读）。
+
+        命中返回判据名，未命中返回空串。now 参数供测试注入时钟。
+        """
+        if now is None:
+            now = time.time()
+        stalls = max(1, int(cfg.get("stalls") or 1))
+        window_seconds = float(cfg.get("window_seconds") or 600.0)
+        if int(st.get("consecutive_stalls") or 0) >= stalls:
+            return "consecutive_slow_rounds"
+        total = int(st.get("samples_total") or 0)
+        if (total >= RUN_STALL_RATIO_MIN_SAMPLES
+                and total > 0
+                and (int(st.get("stalls_total") or 0) / total)
+                >= RUN_STALL_RATIO_TRIGGER
+                and now - float(st.get("last_progress_ts") or now) > window_seconds):
+            return "stall_ratio_no_progress"
+        return ""
 
     # ── 秒挂退避熔断（cli-retry-backoff）─────────────────────────────
     # 同一 spec 的连接 CLI run 在「进程存活时长」低于阈值即死亡（如 Exit 143 秒挂）
