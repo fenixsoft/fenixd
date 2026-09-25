@@ -97,7 +97,12 @@ function toProviders(values: FormValues): LlmProvider[] {
     (envEntries || []).forEach((e) => {
       const k = (e?.key || '').trim();
       const v = (e?.value || '').trim();
-      if (k && v) env[k] = v;
+      // 保留空值条目（code-review item 2606c79ffa80）：键有值空是合法语义
+      //（部分工具区分「未设置」与「空串」，如清空代理变量），旧条件 `k && v`
+      // 会把它静默吞掉，保存成功但回读丢失；后端 env 仅要求值为 str
+      //（core/config.py），空串合法。重复键已由 handleSave 保存前拦截，
+      // 此处不存在静默覆盖。
+      if (k) env[k] = v;
     });
     if (Object.keys(env).length > 0) rest.env = env;
     // improve-provider-billing-config（task 3.4）：价格行写入 providers[i].billing
@@ -202,6 +207,24 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
       const dupRows = dupCheck?.providers || [];
       for (let i = 0; i < dupRows.length; i++) {
         const p = dupRows[i] as ProviderRowValues;
+        // 自定义环境变量重复键拦截（code-review item 2606c79ffa80）：多条同键
+        // 条目经对象字面量赋值后仅最后一行生效，界面所见两行与实际落盘一行
+        // 不一致——保存前显式拦截（口径同下方重复 model 拦截；后端 env 只做
+        // str 类型校验不查重，此为前端专属防线）。所有卡片均校验：环境变量
+        // 不随计费开关卸载，与价格行口径不同。
+        const seenEnvKeys = new Set<string>();
+        for (const e of Array.isArray(p?.envEntries) ? p.envEntries : []) {
+          const k = (e?.key || '').trim();
+          if (!k) continue;
+          if (seenEnvKeys.has(k)) {
+            message.error(
+              `环境变量键重复：Provider「${p?.name || i + 1}」内存在重复的 ${k}，请合并或删除重复行后重试`
+            );
+            expandAllSections(); // 重复行可能在折叠区内，展开让用户可见可改
+            return;
+          }
+          seenEnvKeys.add(k);
+        }
         // 计费开关关闭的卡片跳过重复校验：此时价格 Form.List 已被条件卸载，
         // store 里 preserve 的隐藏行既不参与保存（validateFields 只含已注册
         // 字段，toProviders 落空 prices），用户也无界面路径查看/删除——若据此

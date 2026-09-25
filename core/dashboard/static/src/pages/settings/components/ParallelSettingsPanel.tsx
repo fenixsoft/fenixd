@@ -1,4 +1,4 @@
-import { Button, Card, Form, InputNumber, Switch, Typography } from 'antd';
+import { Button, Card, Form, InputNumber, Switch, Typography, message } from 'antd';
 import { useEffect, useRef } from 'react';
 import type { ConfigData } from '@/services/dashboard';
 import SyncFromUserButton from './SyncFromUserButton';
@@ -53,8 +53,19 @@ export default function ParallelSettingsPanel({ config, onSave, project, onConfi
   }, [config.agents, config.verify, form, throttleEnabled, throttleValue]);
 
   const handleSave = async () => {
+    // 分离「表单校验」与「保存持久化」（code-review item 3243afb1df4e，比照
+    // MiscSettingsPanel 9125d4a7f7b4 / AgentModelPanel 3086b7e96c4f）：旧实现
+    // 两者混在同一 try/catch 且静默吞掉，onSave 拒绝（网络失败/500）时用户
+    // 点击「保存」后无任何反馈，与同族已修复面板口径漂移。
+    let values;
     try {
-      const values = await form.validateFields();
+      values = await form.validateFields();
+    } catch {
+      // 校验失败：antd 已在表单内渲染行内错误提示，无需额外日志（避免触发
+      // 验证场景的 no_console_error 断言，比照 MiscSettingsPanel 口径）。
+      return;
+    }
+    try {
       await onSave({
         agents: {
           max_concurrent: values.max_concurrent,
@@ -68,9 +79,9 @@ export default function ParallelSettingsPanel({ config, onSave, project, onConfi
             : 0,
         },
       });
-    } catch {
-      // 校验失败：antd 已在表单内渲染行内错误提示，无需额外日志（避免触发
-      // 验证场景的 no_console_error 断言，比照 MiscSettingsPanel 口径）。
+    } catch (error) {
+      // 保存持久化失败：给用户显式反馈而非静默
+      message.error(`保存失败：${error instanceof Error ? error.message : String(error)}`);
     }
   };
 
