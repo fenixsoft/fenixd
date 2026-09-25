@@ -24,6 +24,14 @@ def find_implementer_worktree(project_root, spec_name):
     candidates = []
     for d in wt_dir.iterdir():
         if d.is_dir() and d.name.startswith(prefix):
+            # 归属精确化（与 worktree_manager.queries.find_implementer_worktree
+            # 同口径）：前缀后的余段 MUST 为纯数字时间戳（创建端恒为
+            # int(time.time())）。spec 名互为前缀（如 login vs login-page）时，
+            # 他 spec 的 impl-login-page-<ts> 裸 startswith 会误入选并按 mtime
+            # 参与排序，恰好含同名 spec 目录时读错 tasks.md——非纯数字余段
+            # 直接排除。
+            if not d.name[len(prefix):].isdigit():
+                continue
             try:
                 candidates.append((d.stat().st_mtime, d))
             except OSError:
