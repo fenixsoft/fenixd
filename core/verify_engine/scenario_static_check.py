@@ -451,7 +451,8 @@ def scan_contract(project_root: Path) -> list[dict]:
     2. ``serve_entry_vs_start_mismatch``（info）：serve.cmd 入口 ≠ package.json
        start script 入口（差异可能是合法设计，仅提示不拦截）；
     3. ``serve_entry_no_port_injection``（info）：cmd 无 {port} 且无
-       $FENIX_VERIFY_PORT（与 load 侧 warning 同判据，补落盘让 admin 可见）。
+       FENIX_VERIFY_PORT 引用（$VAR/${VAR} 形态均计；较 load 侧 warning 略宽
+       以容 shell 花括号引用，补落盘让 admin 可见）。
 
     Returns:
         findings 列表（每条 {rule_id, severity, message, evidence}）；
@@ -508,8 +509,9 @@ def scan_contract(project_root: Path) -> list[dict]:
                     ),
                 )
             )
-        # ③ 端口注入缺失（与 load 侧 warning 同判据，落盘让 admin 可见）
-        if "{port}" not in cmd and "$FENIX_VERIFY_PORT" not in cmd:
+        # ③ 端口注入缺失（FENIX_VERIFY_PORT 裸名命中即计——$VAR/${VAR} 形态均
+        # 覆盖；较 load 侧 warning 略宽，落盘让 admin 可见）
+        if "{port}" not in cmd and "FENIX_VERIFY_PORT" not in cmd:
             findings.append(
                 dict(
                     rule_id="serve_entry_no_port_injection",
@@ -520,8 +522,8 @@ def scan_contract(project_root: Path) -> list[dict]:
                         "独占语义下 = 杀占用者接管）。建议迁移：cmd 中的端口写作 {port}"
                     ),
                     evidence=(
-                        f"cmd={cmd!r}; 缺 '{{port}}' 与 '$FENIX_VERIFY_PORT' "
-                        f"（与 load 侧 warning 同判据）"
+                        f"cmd={cmd!r}; 缺 '{{port}}' 与 'FENIX_VERIFY_PORT' 引用"
+                        f"（$VAR/${{VAR}} 形态均计）"
                     ),
                 )
             )
