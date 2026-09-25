@@ -201,8 +201,8 @@ _DEFAULT_CODE_REVIEW = {
 }
 # add-code-review-auto-fix：admin.code_review_fix 缺省（与
 # ConfigLoader.get_code_review_fix_config 一致：enabled 缺省 false，
-# batch_size 缺省 20）
-_DEFAULT_CODE_REVIEW_FIX = {"enabled": False, "batch_size": 20}
+# batch_size 缺省 20；targeted_retry_max 缺省 3，add-codefix-targeted-retry）
+_DEFAULT_CODE_REVIEW_FIX = {"enabled": False, "batch_size": 20, "targeted_retry_max": 3}
 # add-test-regression-tab：admin.regression 缺省（与 ConfigLoader.get_regression_config
 # 一致：enabled 缺省 false——周期全量回归开关缺省关闭零动作）
 _DEFAULT_REGRESSION = {"enabled": False}
@@ -1125,6 +1125,9 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
         bs = patch["code_review_fix"].get("batch_size")
         if isinstance(bs, int) and not isinstance(bs, bool) and bs > 0:
             crf["batch_size"] = bs
+        trm = patch["code_review_fix"].get("targeted_retry_max")
+        if isinstance(trm, int) and not isinstance(trm, bool) and 1 <= trm <= 5:
+            crf["targeted_retry_max"] = trm
         merged["admin"]["code_review_fix"] = crf
     # add-test-regression-tab：admin.regression 键（enabled 严格 bool；非法值
     # 由 write_config 前置校验拒绝，此处只应用合法值——对齐 code_review 合并
@@ -1393,6 +1396,16 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
             if isinstance(bs, bool) or not isinstance(bs, int) or bs <= 0:
                 return fail(
                     f"admin.code_review_fix.batch_size must be a positive integer: {bs!r}"
+                )
+        if (
+            "targeted_retry_max" in crf_patch
+            and crf_patch["targeted_retry_max"] is not None
+        ):
+            trm = crf_patch["targeted_retry_max"]
+            if isinstance(trm, bool) or not isinstance(trm, int) or not 1 <= trm <= 5:
+                return fail(
+                    "admin.code_review_fix.targeted_retry_max must be an integer "
+                    f"in [1, 5]: {trm!r}"
                 )
 
     # add-test-regression-tab：前端提交的 regression patch 后端校验（enabled

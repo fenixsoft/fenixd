@@ -209,7 +209,8 @@ class _FakeRunner:
         return _t.SimpleNamespace(run_id=rid, success=True, fixed=fixed,
                                   skipped=skipped, error="", output="done")
 
-    def run_regression(self, spec, reason="manual", project_root=None, lock_root=None):
+    def run_regression(self, spec, reason="manual", project_root=None, lock_root=None,
+                       subset_nodeids=None):
         import types as _t
 
         status = self.regression_statuses[

@@ -199,6 +199,11 @@ def parse_junit_xml(path: Union[str, Path]) -> Dict[str, Any]:
                 "time": tc_time,
                 "kind": kind,
                 "message": msg,
+                # classname（add-codefix-targeted-retry 1.1）：失败用例 nodeid
+                # 重构的映射源——pytest junitxml 不产 file 属性，nodeid 以
+                # classname 主导重构（tests.test_x.TestFoo → tests/test_x.py
+                # ::TestFoo::<name>）。cases 侧本就携带，failures 侧补齐对齐。
+                "classname": tc_classname,
             })
         elif error_el is not None:
             kind = "error"
@@ -212,6 +217,7 @@ def parse_junit_xml(path: Union[str, Path]) -> Dict[str, Any]:
                 "time": tc_time,
                 "kind": kind,
                 "message": msg,
+                "classname": tc_classname,
             })
         elif skipped_el is not None:
             case_info["kind"] = "skipped"
