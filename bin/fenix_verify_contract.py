@@ -31,6 +31,7 @@
     fi
 """
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -153,11 +154,20 @@ def selfcheck_regression(project_root: Path, contract=None) -> tuple:
 
 
 def main():
-    # 解析参数：项目根目录（可选）
-    if len(sys.argv) > 1:
-        project_root = Path(sys.argv[1]).resolve()
-    else:
-        project_root = Path.cwd()
+    # 解析参数：项目根目录（可选）。改用 argparse（code-review item 06ca1a94ce95），
+    # 口径对齐 bin/fenix_detect_artifacts.py：-h/--help 由 argparse 自动打印用法
+    # 后 exit 0，不再把旗标误当项目路径走「目录不存在」报错路径。
+    parser = argparse.ArgumentParser(
+        description="验证契约校验 CLI（Administrator 自证入口）"
+    )
+    parser.add_argument(
+        "project_root",
+        nargs="?",
+        default=".",
+        help="项目根目录（默认：当前目录）",
+    )
+    args = parser.parse_args()
+    project_root = Path(args.project_root).resolve()
 
     # 检查项目根是否存在
     if not project_root.is_dir():
