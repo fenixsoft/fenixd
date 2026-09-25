@@ -2924,14 +2924,19 @@ class QQQueueMixin:
                 f"{type(e).__name__}: {e}",
             )
             return "pass"
-        # 落盘后锁内复核在飞（code-review item dd27b3a77576）：完成回调读
-        # pending 发生在锁内 pop（_run finally）之后、与本次复核串行于
-        # _ocr_lane_lock——若车道恰在「上方在飞判定」与「pending 落盘」之间
-        # 完成，其回调读到缺席标记即幂等空转，此后再无回调唤醒，spec 会带
-        # 停等标记永久停等（只能靠外部 stuck/orphan 巡检兜底）。复核不在飞
-        # 即按同款 fail-open 语义清标记放行；见在飞则回调必然晚于标记写入
-        # 读到（pop 未发生 ⇒ 读在写后），defer 停等安全。
-        if started is None and not self._ocr_lane_running(spec_name):
+        # 落盘后锁内复核在飞（code-review item dd27b3a77576；去 started 前置
+        # 覆盖自启车道，code-review item 19de3c05e9f2）：完成回调读 pending
+        # 发生在锁内 pop（_run finally）之后、与本次复核串行于 _ocr_lane_lock
+        # ——无论车道是幂等触发的既有车道（started is None）还是本调用刚
+        # 自启的车道（started="started"），只要它恰在「上方在飞判定」与
+        # 「pending 落盘」之间异常/极快完成，其回调就读到缺席标记幂等空转，
+        # 此后再无回调唤醒，spec 会带停等标记永久停等（只能靠外部
+        # stuck/orphan 巡检兜底）。故复核只看在飞、不以 started 为前置：
+        # 不在飞即按同款 fail-open 语义清标记放行——若回调已抢先完成
+        # verified 推进，后续 transition 为幂等短路/非法拒绝（状态机记日志
+        # 返回，不抛错），不会双推进；见在飞则回调必然晚于标记写入读到
+        # （pop 未发生 ⇒ 读在写后），defer 停等安全。
+        if not self._ocr_lane_running(spec_name):
             self._pm.logger.warning(
                 "pm_engine",
                 f"ocr join 停等放弃 '{spec_name}'（车道于停等落盘间隙完成，"
