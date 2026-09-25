@@ -197,22 +197,31 @@ def write_progress(project_root, **fields) -> dict:
     """合并式原子写进度（读-改-写：未传字段保留现值，缺省态兜底）。
 
     幂等安全：进度文件不存在时从缺省态起改。返回写盘后的完整进度。
+
+    读-改-写全程持 flock（``_with_lock``，对齐台账写；code-review item
+    b8f54457a0b1）：否则编排器 checkpoint 的 disabled 提示性写点（其
+    ``self._lock`` 不覆盖批 worker 线程的本函数调用）可与批 worker 写点
+    并发，各自基于旧快照整份覆写、后落盘者剥掉先落盘者刚写入的字段
+    （批上下文 worktree/run_id/batch_total 或 phase）。锁文件派生自进度
+    文件名，与台账 items.jsonl 锁互不相干；锁内 MUST NOT 再次加同一把锁。
     """
-    current = read_progress(project_root)
-    # 条级合成字段是读侧实时派生值，MUST NOT 落盘：合并基线来自
-    # read_progress（已含现算结果），剥离后交由后续读侧重算，避免陈旧快照
-    # 被合并写持久化成误导性数字（add-code-fix-item-level-progress D1）。
-    current.pop("item_done", None)
-    current.pop("current_item", None)
-    # 启动阶段同纪律（add-code-fix-startup-stage-visibility D1）：批收尾后
-    # 进度文件若残留陈旧阶段文案，前端会在非准备期误渲染。
-    current.pop("startup_stage", None)
-    current.update(fields)
-    _atomic_write(
-        _progress_path(project_root),
-        json.dumps(current, ensure_ascii=False, indent=2),
-    )
-    return current
+    path = _progress_path(project_root)
+
+    def _do() -> dict:
+        current = read_progress(project_root)
+        # 条级合成字段是读侧实时派生值，MUST NOT 落盘：合并基线来自
+        # read_progress（已含现算结果），剥离后交由后续读侧重算，避免陈旧快照
+        # 被合并写持久化成误导性数字（add-code-fix-item-level-progress D1）。
+        current.pop("item_done", None)
+        current.pop("current_item", None)
+        # 启动阶段同纪律（add-code-fix-startup-stage-visibility D1）：批收尾后
+        # 进度文件若残留陈旧阶段文案，前端会在非准备期误渲染。
+        current.pop("startup_stage", None)
+        current.update(fields)
+        _atomic_write(path, json.dumps(current, ensure_ascii=False, indent=2))
+        return current
+
+    return _with_lock(path, _do)
 
 
 def _preset_run_id(runner, exclude=()) -> str:
