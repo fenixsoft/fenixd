@@ -196,7 +196,13 @@ def test_restart_persist(spec_name: str):
         # 模拟重启：重建 SM + engine
         sm2 = StateMachine(proot / ".fenix" / "STATE.md", MagicMock())
         entry_before = sm2.read_one(spec_name) or {}
-        assert int(entry_before.get("_verify_fail_rounds", 0)) == 1, "counter must persist"
+        if int(entry_before.get("_verify_fail_rounds", 0)) != 1:
+            print(json.dumps({
+                "error": "counter must persist",
+                "case": "restart-persist",
+                "rounds": int(entry_before.get("_verify_fail_rounds", 0)),
+            }, ensure_ascii=False))
+            sys.exit(1)
 
         engine2 = PMEngine(sm2, MagicMock(), {}, proot, MagicMock())
         engine2._enqueue = MagicMock()
