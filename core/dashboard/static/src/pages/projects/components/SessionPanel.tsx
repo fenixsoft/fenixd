@@ -270,7 +270,8 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
               );
               const carried = eventsRef.current.filter((ev) => {
                 const uuid = ev ? (ev.uuid as string | undefined) : undefined;
-                return Boolean(uuid) && !snapshotUuids.has(uuid);
+                if (!uuid) return false;
+                return !snapshotUuids.has(uuid);
               });
               syncEvents(again.events || []);
               appendEvents(carried);
