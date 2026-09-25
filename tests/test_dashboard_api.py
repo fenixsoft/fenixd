@@ -85,7 +85,7 @@ class TestServerAPI:
         status, data = srv.get("/api/spec-doc?project=proj-a&spec=../../etc/passwd&doc=proposal")
         assert status == 404
         status, _ = srv.get("/api/spec-doc?project=ghost&spec=myspec&doc=proposal")
-        assert status == 400
+        assert status == 404
 
     def test_api_run(self, server_fx):
         _, srv = server_fx
@@ -1783,14 +1783,14 @@ class TestKeepAliveErrorPathHygiene:
             conn.request("GET", "/api/spec-doc")
             resp = conn.getresponse()
             data = resp.read()
-            assert resp.status == 400
+            assert resp.status == 404
             assert b"unknown project" in data
 
             # 同连接第二请求：不得读到上一请求的双重写残留（200+null）
             conn.request("GET", "/api/spec-doc?project=no-such-project-xyz&spec=x&doc=proposal")
             resp = conn.getresponse()
             data = resp.read()
-            assert resp.status == 400
+            assert resp.status == 404
             assert b"unknown project" in data
 
             # 连接仍健康：正常端点可用
@@ -1810,10 +1810,10 @@ class TestKeepAliveErrorPathHygiene:
         import http.client
         conn = http.client.HTTPConnection("127.0.0.1", srv.port, timeout=10)
         try:
-            # 错误路径（未注册项目 → 400）
+            # 错误路径（未注册项目 → 404）
             conn.request("GET", "/api/spec-doc?project=no-such-project-xyz&spec=x&doc=proposal")
             resp = conn.getresponse()
-            assert resp.status == 400
+            assert resp.status == 404
             resp.read()
             # 成功路径（同连接）
             conn.request("GET", "/api/spec-doc?project=proj-a&spec=myspec&doc=proposal")
