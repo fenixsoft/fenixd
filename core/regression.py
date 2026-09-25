@@ -405,8 +405,10 @@ def save_state(project_root, date_str: str) -> None:
     """
     path = _state_path(project_root)
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
+        # 原子写（_atomic_write 自带 mkdir），截断的 state.json 会让
+        # _read_json_file 回退 {} 使同自然日防重失效。
+        _atomic_write(
+            path,
             json.dumps(
                 {
                     "last_run_date": date_str,
@@ -415,7 +417,6 @@ def save_state(project_root, date_str: str) -> None:
                 ensure_ascii=False,
                 indent=2,
             ),
-            encoding="utf-8",
         )
     except OSError as e:
         _logger.warning("regression: state.json 写入失败: %s", e)
@@ -447,15 +448,16 @@ def mark_running(project_root, timeout_seconds: int = 1800) -> None:
     """写运行中标记（started_at + timeout，供新鲜度判定）。"""
     path = _running_marker_path(project_root)
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
+        # 原子写，截断的 marker 会被 is_regression_running 视为 stale
+        # 使 POST 409 守卫误放行第二个并发触发。
+        _atomic_write(
+            path,
             json.dumps(
                 {
                     "started_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                     "timeout_seconds": int(timeout_seconds),
                 }
             ),
-            encoding="utf-8",
         )
     except OSError:
         pass
