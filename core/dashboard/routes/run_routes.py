@@ -9,10 +9,13 @@ D5 约定：各组方法采用 mixin 模式，DashboardHandler 继承各组 mixi
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 from core.dashboard import data as dashboard_data
 from core.dashboard.registry import Registry
+
+logger = logging.getLogger("fenixd.dashboard.run_routes")
 
 
 class H4RunRoutesMixin:
@@ -60,7 +63,18 @@ class H4RunRoutesMixin:
         try:
             result = dashboard_data.request_run_cancel(proot, run_id, reason)
         except Exception as e:  # noqa: BLE001 兜底：写文件异常不崩溃进程
-            self._error(500, f"run cancel request failed: {e}")
+            # 不外泄裸异常文本（code-review item 61849e41918d）：底层原子写
+            # 可抛 OSError，str(e) 可能携带服务器内部路径/errno 细节，与
+            # project_routes 泛化文案策略同款——细节降级经服务端日志留痕，
+            # 客户端收固定文案。
+            logger.warning(
+                "写入 run 取消请求异常（project=%s run_id=%s）: %s: %s",
+                project["name"],
+                run_id,
+                type(e).__name__,
+                e,
+            )
+            self._error(500, "写入取消请求失败")
             return
         if result.get("missing_run_id"):
             self._error(400, "run_id required")
