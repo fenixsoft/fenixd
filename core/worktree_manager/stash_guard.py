@@ -302,8 +302,14 @@ class G6StashGuardMixin:
             if cat.returncode != 0:
                 return None
             blobs[key] = cat.stdout
-        # merge-file 需要文件路径输入，三方内容落临时文件
-        tmp_dir = Path(tempfile.mkdtemp(prefix="fenix-triage-"))
+        # merge-file 需要文件路径输入，三方内容落临时文件。mkdtemp 纳入包裹：
+        # 磁盘满/临时目录不可写等 OSError 同样按态 1 失败处置返回 None 进态 2
+        # ——本调用链位于 guard finally 中，绝不外抛（见 restore_after_merge
+        # 「绝不能外抛」注释）；独立 try 保证下方 finally 引用 tmp_dir 前已赋值。
+        try:
+            tmp_dir = Path(tempfile.mkdtemp(prefix="fenix-triage-"))
+        except OSError:
+            return None
         try:
             tmp_paths = {}
             for key, content in blobs.items():
