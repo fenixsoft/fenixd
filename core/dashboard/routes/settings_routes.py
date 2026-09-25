@@ -63,17 +63,11 @@ class H5SettingsRoutesMixin:
         响应：未知项目 _error(404)，成功路径自写 _json（与 _api_prompts_get /
         _api_todo_get 同款，避免适配器再包 _json 在 keep-alive 下双重写响应）。
         """
-        # 判参口径对齐同文件 POST 端点（code-review item 40ec5f6b6c5e，先例
-        # b9e7765dc1de）：_project_from_query 把「无 project 查询参数」与
-        # 「project 名不在 registry（笔误/项目已删/registry TTL 缓存过期）」
-        # 折叠成 None——直接以 None 判用户级分支会把 ?project=<笔误名> 折进
-        # 用户级配置 200 返回，前端项目设置页误当该项目生效配置渲染。先看
-        # 参数是否在场：缺席才回退用户级配置；在场但解析不到项目一律 404
-        # （资源不存在语义，响应形态同下方既有 _error）。
-        project_param = query.get("project", [None])[0]
-        project = self._project_from_query(query) if project_param else None
-        if project_param and (project is None or not project.get("exists")):
-            self._error(404, "project not found")
+        # 缺参回退用户级 / 在场但解析不到项目 404：判定单源共用助手
+        # _project_or_user_scope（code-review item 1291b3b1f3f1，判参口径
+        # 见该助手），404 已由助手发送时此处仅需终止处理。
+        project, project_param = self._project_or_user_scope(query)
+        if project_param and project is None:
             return
         if project is None:
             # 无项目 → 用户级配置（scope=user，不再返回 unknown project）
@@ -89,18 +83,13 @@ class H5SettingsRoutesMixin:
         if body is None:
             return
 
-        # 缺参 / 未知项目区分（code-review item b9e7765dc1de）：_project_from_query
-        # 把「无 project 查询参数」与「project 名不在 registry（笔误/项目已删/
-        # registry TTL 缓存过期）」折叠成 None——POST 两种情形都落入 None 分支，
-        # 会把项目级值静默并入用户级 ~/.fenix/config.yaml、覆盖用户全局配置。
-        # 先看参数是否在场：缺席才允许默认用户级；在场但解析失败一律 404 拒绝
-        # （资源不存在语义，与同文件 _api_config_get / _api_prompts_post 及共用
-        # 助手 _project_query_or_error 收敛，code-review item a538758669c5），
-        # 不写任何 scope。缺参不经过此分支（缺参=合法用户级写入，非错误）。
-        project_param = query.get("project", [None])[0]
-        project = self._project_from_query(query) if project_param else None
-        if project_param and (project is None or not project.get("exists")):
-            self._error(404, "project not found")
+        # 缺参 / 未知项目区分（code-review item b9e7765dc1de）：缺参=合法
+        # 用户级写入（不写任何 scope）；在场但解析失败一律 404 拒绝（资源
+        # 不存在语义）。判定单源共用助手 _project_or_user_scope
+        # （code-review item 1291b3b1f3f1），404 已由助手发送时此处仅需
+        # 终止处理；缺参不经过 404 分支，落入下方用户级分支。
+        project, project_param = self._project_or_user_scope(query)
+        if project_param and project is None:
             return
         if project is None:
             # 用户模式：写 ~/.fenix/config.yaml
@@ -136,15 +125,12 @@ class H5SettingsRoutesMixin:
         body = self._read_json_body()
         if body is None:
             return
-        # 缺参 / 未知项目区分（口径同上 _api_config_post）：_project_from_query
-        # 把「无 project 查询参数」与「project 名不在 registry」折叠成 None。
-        # 缺参 400（sync-from-user 必须挂到具体项目）；在场但解析不到 404
-        # （资源不存在语义，与同文件 _api_config_get / _api_prompts_post 及共用
-        # 助手 _project_query_or_error 收敛，code-review item a538758669c5）。
-        project_param = query.get("project", [None])[0]
-        project = self._project_from_query(query) if project_param else None
-        if project_param and (project is None or not project.get("exists")):
-            self._error(404, "project not found")
+        # 缺参 / 未知项目区分（口径同上 _api_config_post）：缺参 400
+        # （sync-from-user 必须挂到具体项目）；在场但解析不到 404。判定单源
+        # 共用助手 _project_or_user_scope（code-review item 1291b3b1f3f1），
+        # 404 已由助手发送时此处仅需终止处理。
+        project, project_param = self._project_or_user_scope(query)
+        if project_param and project is None:
             return
         if project is None:
             self._error(400, "缺少 project 参数（配置同步必须挂到具体项目）")

@@ -326,7 +326,9 @@ class ArchitectureManager:
         返回 (accepted, conflict, error)：
         - 受理 → (True, False, None)：写入 generating 态并起 daemon 守护线程；
         - 单飞冲突（在飞时再触发）→ (False, True, msg)→调用方回 409；
-        - 状态写盘失败 → (False, False, msg)→调用方回 500。
+        - 状态写盘失败 → (False, False, msg)→调用方回 500；
+        - 线程启动失败 → (False, False, msg)→调用方回 500（回写 failed 终态
+          并释放单飞锁，不留卡死 generating）。
         """
         lock = self._lock_for(proot)
         if not lock.acquire(blocking=False):
@@ -343,7 +345,32 @@ class ArchitectureManager:
             daemon=True,
             name=f"archify-gen-{project_name}",
         )
-        thread.start()
+        try:
+            thread.start()
+        except Exception as exc:  # noqa: BLE001 — 系统线程资源耗尽等 RuntimeError
+            # code-review item 1295fb028cb4：start() 抛异常若放任逃逸，单飞锁
+            # 不释放、status.json 恒卡 generating——同进程内 in_flight() 恒真，
+            # refresh 全 409，仅 daemon 重启才由读侧合成 failed，不可自愈。
+            # 终态写入 MUST 严格先于锁释放（status() 读侧契约：「锁未被持有」
+            # 即终态必已落盘），故先 _finish 再 release；随后按既有失败形态
+            # (False, False, msg) 交调用方回 500。
+            if logger is not None:
+                logger.warning(
+                    "architecture_routes",
+                    f"架构图生成线程启动失败（project={project_name}）: "
+                    f"{type(exc).__name__}: {exc!r}",
+                )
+            try:
+                self._finish(
+                    proot,
+                    started_at,
+                    time.monotonic(),
+                    "failed",
+                    error=f"后台生成线程启动失败（{type(exc).__name__}），请重试",
+                )
+            finally:
+                lock.release()
+            return False, False, "架构图生成线程启动失败，请重试"
         return True, False, None
 
     def _run_generation(
