@@ -755,29 +755,47 @@ class ProviderCircuit:
             )
             return False
         now = self._pm._now() if now is None else now
+        # 数值容错（item fe730ff5a36e，与 _record_provider_4xx/_unseal_cfg 既有
+        # 钳制口径统一）：此前三处直接 int(config)，非数值/浮点字符串会在本
+        # 记账失败路径抛 ValueError。window/threshold 走 _nonneg_number——显式
+        # 0 = 禁用是 config 层文档契约（_normalize_transient_seconds，item
+        # 5bfa7e1a80ca），必须保留；cooldown 走 _positive_number——0 归一回
+        # 缺省，与下方既有 `cooldown or 缺省` 消费语义一致。
         window = int(
-            self._pm._get_config(
-                "agents.transient_break_window_seconds", TRANSIENT_BREAK_WINDOW_SECONDS
+            self._nonneg_number(
+                self._pm._get_config(
+                    "agents.transient_break_window_seconds", TRANSIENT_BREAK_WINDOW_SECONDS
+                ),
+                TRANSIENT_BREAK_WINDOW_SECONDS,
             )
-            or 0
         )
         if window <= 0:
             return False
-        self._append_transient_event(
+        # 阈值判定消费记账助手锁内返回的快照（item f678576e5bd7）：此前锁外
+        # 直读 _transient_break_events[fingerprint]，与并发到期 clear()（
+        # is_global_transient_break 到期推进分支）竞态可抛 KeyError，len 快照
+        # 也可能与本次记账跨代脱节。下方触发分支的冻结置位保持 _unseal_lock
+        # 既有临界区边界不变。
+        events = self._append_transient_event(
             fingerprint, now, spec=spec, run_id=run_id, provider=provider, window=window
         )
-        events = self._transient_break_events[fingerprint]
         threshold = int(
-            self._pm._get_config("agents.transient_break_threshold", TRANSIENT_BREAK_THRESHOLD) or 0
+            self._nonneg_number(
+                self._pm._get_config("agents.transient_break_threshold", TRANSIENT_BREAK_THRESHOLD),
+                TRANSIENT_BREAK_THRESHOLD,
+            )
         )
         if threshold <= 0:
             return False
         if len(events) >= threshold:
             cooldown = int(
-                self._pm._get_config(
-                    "agents.transient_break_cooldown_seconds", TRANSIENT_BREAK_COOLDOWN_SECONDS
+                self._positive_number(
+                    self._pm._get_config(
+                        "agents.transient_break_cooldown_seconds",
+                        TRANSIENT_BREAK_COOLDOWN_SECONDS,
+                    ),
+                    TRANSIENT_BREAK_COOLDOWN_SECONDS,
                 )
-                or 0
             )
             # 解封中间态清零 MUST 与冻结置位原子（item 62a1c4e3e71f）：并发闸门
             # 查询不得观察到「已冻结但残留 hold/probe/错峰」的中间态。
@@ -824,8 +842,13 @@ class ProviderCircuit:
         run_id: str | None = None,
         provider: str | None = None,
         window: int | None = None,
-    ) -> None:
+    ) -> list:
         """统一经本助手写入一条瞬断事件（design D1：两处记账点 MUST 同构）。
+
+        返回锁内记账完成后的该指纹事件列表：调用方的阈值判定消费此返回值，
+        MUST NOT 锁外直读 ``_transient_break_events``（item f678576e5bd7——
+        与并发到期 ``clear()`` 竞态可抛 KeyError，且锁外 len 快照可能与本次
+        记账跨代脱节）。
 
         正常记账路径与已冻结早退路径都经本助手写入 TransientAttempt——任一处
         保留裸时间戳都会让滑窗剔除 ``now - t``（provider_circuit.py:420）与
@@ -866,6 +889,7 @@ class ProviderCircuit:
                 )
             )
             self._transient_break_events[fingerprint] = events
+            return events
 
     @staticmethod
     def _build_attempt_summary(events: list, limit: int = TRANSIENT_BREAK_ATTEMPT_LIST_LIMIT):

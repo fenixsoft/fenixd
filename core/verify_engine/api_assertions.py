@@ -52,33 +52,38 @@ def json_schema_available() -> bool:
 
 # ── JSONPath 求值（点路径子集）──────────────────────────────────
 
+# 求值失败哨兵：区分「路径不存在」与「求值结果为 null」。
+# 缺省求值仍返回 None（旧签名行为，供 cli_assertions 等调用方保持兼容）。
+_MISSING = object()
 
-def evaluate_json_path(data: Any, path: str) -> Any:
+
+def evaluate_json_path(data: Any, path: str, missing: Any = None) -> Any:
     """按点路径求值 JSON 子树。
 
     支持的路径形态：
       - ``data.id``（对象键）
       - ``items[0].name``（数组下标）
       - 混合：``a.b[1].c``
-    求值失败（键缺失/越界）返回 None——与「值相等或不等」语义无关，
-    断言结果通过 actual=None 与 expected 对比即可区分。
+    求值失败（键缺失/越界）返回 ``missing``（缺省 None——与「值相等或不等」
+    语义无关，断言结果通过 actual=None 与 expected 对比即可区分；
+    传入哨兵可区分「路径不存在」与「显式 null」）。
     """
     if not path:
         return data
     cur = data
     for token in re.split(r"\.", path):
         if cur is None:
-            return None
+            return missing
         while token:
             m = re.match(r"([^\[]+)|\[(\d+|'[^']*'|\"[^\"]*\")\]", token)
             if not m:
-                return None
+                return missing
             if m.group(1) is not None:
                 key = m.group(1)
                 if isinstance(cur, dict) and key in cur:
                     cur = cur[key]
                 else:
-                    return None
+                    return missing
                 token = token[len(key) :]
             else:
                 idx_s = m.group(2)
@@ -87,17 +92,17 @@ def evaluate_json_path(data: Any, path: str) -> Any:
                     if isinstance(cur, dict) and key in cur:
                         cur = cur[key]
                     else:
-                        return None
+                        return missing
                     token = token[len(m.group(0)) :]
                 else:
                     try:
                         idx = int(idx_s)
                     except ValueError:
-                        return None
+                        return missing
                     if isinstance(cur, list) and 0 <= idx < len(cur):
                         cur = cur[idx]
                     else:
-                        return None
+                        return missing
                     token = token[len(m.group(0)) :]
     return cur
 
@@ -225,11 +230,24 @@ class ApiAssertionRunner:
                 "pass": False,
                 "error": "响应体非合法 JSON（或 JSON 根为 null），无 JSON 载荷可求值",
             }
-        actual = evaluate_json_path(payload, path)
+        actual = evaluate_json_path(payload, path, missing=_MISSING)
         mode = a.get("mode", "exact")
+        path_missing = actual is _MISSING
+        if path_missing:
+            # 哨兵仅用于内部判定，不外泄到结果（actual 归一为 None）
+            actual = None
         passed = False
+        error = None
         if mode == "exact":
-            passed = actual == expected
+            if path_missing:
+                # 0 误判：expected=null 时「路径不存在」≠「显式 null」，fail-closed
+                passed = False
+                error = (
+                    f"路径 {path!r} 在 JSON 载荷中不存在（区别于显式 null），"
+                    f"无法与 expected 对比"
+                )
+            else:
+                passed = actual == expected
         elif mode == "contains":
             # 以 is not None 判空：or 会把 0/False 等 falsy 合法值折叠为 ""
             passed = expected in str(actual if actual is not None else "")
@@ -240,7 +258,7 @@ class ApiAssertionRunner:
                 )
             except re.error:
                 passed = False
-        return {
+        result = {
             "type": "json_path",
             "layer": 3,
             "path": path,
@@ -248,6 +266,9 @@ class ApiAssertionRunner:
             "actual": actual,
             "pass": passed,
         }
+        if error is not None:
+            result["error"] = error
+        return result
 
     async def _assert_response_header(self, resp, a: dict) -> dict:
         """断言响应头存在且匹配（header 名大小写不敏感）。"""

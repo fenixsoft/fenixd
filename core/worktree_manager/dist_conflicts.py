@@ -599,7 +599,7 @@ class G5DistConflictsMixin:
         """
         for f in conflict_files:
             try:
-                subprocess.run(
+                res = subprocess.run(
                     ["git", "-C", str(self.project_root), "checkout", "-f", "HEAD", "--", f],
                     capture_output=True,
                     text=True,
@@ -610,6 +610,16 @@ class G5DistConflictsMixin:
                     "worktree_manager",
                     f"checkout -f HEAD -- {f} timed out during self-heal",
                 )
+            else:
+                if res.returncode != 0:
+                    # 非阻塞记录（调用点 remaining 复查仍兜底），避免 checkout
+                    # 失败被静默吞掉（item f5c6d3e28733，口径对齐
+                    # _resolve_build_artifact_conflicts 的先例）
+                    self.logger.warning(
+                        "worktree_manager",
+                        f"checkout -f HEAD -- {f} failed during stash-pop "
+                        f"self-heal: {(res.stderr or '').strip()[:200]}",
+                    )
         # 清空 index 残留的 staged 冲突条目（mixed reset，不动工作区）
         try:
             subprocess.run(

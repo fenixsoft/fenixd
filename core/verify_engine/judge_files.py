@@ -91,45 +91,23 @@ def load_attribution(project_root: Path, spec_name: str) -> Optional[Dict[str, A
 def _migrate_legacy_attribution(legacy_data: Dict[str, Any]) -> Dict[str, Any]:
     """将旧格式整块归因转为新格式逐场景条目。
 
-    旧格式可能来自早期 judge 产物，无 scenarios 字段。迁移策略：
-    1. 如果存在 scenarios 列表（非标准字段），尝试解析
-    2. 否则，将整块归因作为单个场景条目（id = "legacy_0"）
+    旧格式来自早期 judge 产物，无 scenarios 列表字段（调用方 load_attribution
+    已对含 scenarios 列表的新格式提前返回，故此处只处理整块归因形态）：
+    将整块归因作为单个场景条目（id = "legacy_0"）。
     """
-    # 尝试从旧格式中提取场景信息
-    scenarios = []
-
-    # 方式1：旧格式可能有 scenarios 字段（非标准）
-    if "scenarios" in legacy_data and isinstance(legacy_data["scenarios"], list):
-        for i, sc in enumerate(legacy_data["scenarios"]):
-            if not isinstance(sc, dict):
-                continue
-            sid = str(sc.get("id") or sc.get("scenario_id") or f"legacy_{i}")
-            attribution = sc.get("attribution") or sc.get("classification") or ""
-            status = sc.get("status") or ATTRIBUTION_STATUS_ACCEPT
-            if status not in ATTRIBUTION_STATUSES:
-                status = ATTRIBUTION_STATUS_ACCEPT
-            scenarios.append(
-                {
-                    "id": sid,
-                    "attribution": attribution,
-                    "status": status,
-                    "timestamp": sc.get("timestamp") or "",
-                }
-            )
-    else:
-        # 方式2：整块归因作为单个条目
-        attribution = legacy_data.get("attribution") or ""
-        classification = legacy_data.get("classification") or ""
-        if not attribution and classification:
-            attribution = classification
-        scenarios.append(
-            {
-                "id": "legacy_0",
-                "attribution": attribution,
-                "status": ATTRIBUTION_STATUS_ACCEPT,
-                "timestamp": legacy_data.get("timestamp") or "",
-            }
-        )
+    # 整块归因作为单个条目
+    attribution = legacy_data.get("attribution") or ""
+    classification = legacy_data.get("classification") or ""
+    if not attribution and classification:
+        attribution = classification
+    scenarios = [
+        {
+            "id": "legacy_0",
+            "attribution": attribution,
+            "status": ATTRIBUTION_STATUS_ACCEPT,
+            "timestamp": legacy_data.get("timestamp") or "",
+        }
+    ]
 
     return {
         "format_version": "1.0",

@@ -94,9 +94,11 @@ class WebRunner(VerifyRunner):
         """启动浏览器（单例）。扩展项目自动起本地 HTTP 服务器并做健康检查。"""
         await self.browser.start(headless=self.headless)
         self._setup_health_ok = True
+        self._setup_health_reason = ""
         if self.browser.is_extension_project:
-            health_ok = await self._perform_health_check()
+            health_ok, health_reason = await self._perform_health_check()
             self._setup_health_ok = health_ok
+            self._setup_health_reason = health_reason
             if not health_ok:
                 self.logger.error(
                     "verify_engine",
@@ -110,14 +112,18 @@ class WebRunner(VerifyRunner):
 
     async def execute(self, scenario) -> dict:
         """执行单个 web 场景：context/page 隔离 + 步骤 + 断言 + 截图 + 视觉。"""
-        # 扩展项目健康检查失败 → 全部场景 error（不逐个白跑）
+        # 扩展项目健康检查失败 → 全部场景 error（不逐个白跑），
+        # error 携带健康检查的真实失败原因（区分成因），reason 缺失时
+        # 回落到原通用文案，避免文案缺失
         if not getattr(self, "_setup_health_ok", True):
+            reason = getattr(self, "_setup_health_reason", "") or ""
             return {
                 "scenario_id": scenario.id,
                 "kind": scenario.kind,
                 "description": scenario.description,
                 "status": "error",
-                "error": "应用页面加载失败：.fenix-dashboard 元素不存在，"
+                "error": reason
+                or "应用页面加载失败：.fenix-dashboard 元素不存在，"
                 "请确认 dist/ 构建产物完整",
                 "step_results": [],
                 "assertion_results": [],
@@ -141,14 +147,17 @@ class WebRunner(VerifyRunner):
         finally:
             await context.close()
 
-    async def _perform_health_check(self) -> bool:
+    async def _perform_health_check(self) -> tuple:
         """场景执行前健康检查：验证应用页面是否能成功加载。
 
         创建独立的 context/page，导航到应用并等待 .fenix-dashboard 出现。
         若预检失败，所有场景都会因同一原因失败，无需逐个执行。
 
         Returns:
-            True 表示应用页面加载成功（.fenix-dashboard 在 DOM 中可见）
+            (ok, reason) 二元组：ok 为 True 表示应用页面加载成功
+            （.fenix-dashboard 在 DOM 中可见，reason 为空串）；失败时
+            reason 携带区分成因的失败原因文案（导航失败/元素未出现/
+            检查异常），供场景 error 直接引用，避免一律归因 dist/。
         """
         try:
             context = await self.browser.new_context()
@@ -169,7 +178,11 @@ class WebRunner(VerifyRunner):
                         f"健康检查失败: navigate_to_app 返回 False "
                         f"(当前URL={current_url}, HTML长度={html_len})",
                     )
-                    return False
+                    return False, (
+                        f"应用页面加载失败：无法导航到应用页面 "
+                        f"(当前URL={current_url}, HTML长度={html_len})，"
+                        f"请确认本地 HTTP 服务已启动且可达"
+                    )
 
                 try:
                     await page.wait_for_selector(
@@ -178,7 +191,7 @@ class WebRunner(VerifyRunner):
                         timeout=10000,
                     )
                     self.logger.info("verify_engine", "健康检查通过: .fenix-dashboard 已出现")
-                    return True
+                    return True, ""
                 except Exception:
                     try:
                         current_url = page.url
@@ -193,7 +206,10 @@ class WebRunner(VerifyRunner):
                         f"健康检查失败: .fenix-dashboard 在 10 秒内未出现 "
                         f"(当前URL={current_url}, #root内容={root_html})",
                     )
-                    return False
+                    return False, (
+                        "应用页面加载失败：.fenix-dashboard 元素不存在，"
+                        "请确认 dist/ 构建产物完整"
+                    )
             finally:
                 await context.close()
         except Exception as e:
@@ -201,7 +217,7 @@ class WebRunner(VerifyRunner):
                 "verify_engine",
                 f"健康检查异常: {type(e).__name__}: {e}",
             )
-            return False
+            return False, f"健康检查异常: {type(e).__name__}: {e}"
 
     async def _execute_scenario(self, scenario, page, context) -> dict:
         """执行单个测试场景的所有步骤和断言（搬运自 engine._execute_scenario）。"""

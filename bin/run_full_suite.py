@@ -434,11 +434,9 @@ def run_baseline_comparison(project_root, ref, timeout, basetemp_unique=False) -
     Returns: {"ref", "baseline_failures", "baseline_rc",
               "baseline_timed_out", "classification", "hanging"}。
     """
-    import subprocess as sp
-
     with tempfile.TemporaryDirectory(prefix="fenix-baseline-") as tmp:
         wt = Path(tmp) / "baseline_wt"
-        add = sp.run(
+        add = subprocess.run(
             ["git", "worktree", "add", "--detach", str(wt), ref],
             cwd=str(project_root),
             capture_output=True,
@@ -482,7 +480,7 @@ def run_baseline_comparison(project_root, ref, timeout, basetemp_unique=False) -
                 "hanging": baseline.get("hanging_test"),
             }
         finally:
-            sp.run(
+            subprocess.run(
                 ["git", "worktree", "remove", "--force", str(wt)],
                 cwd=str(project_root),
                 capture_output=True,
