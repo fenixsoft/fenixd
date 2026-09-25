@@ -766,7 +766,12 @@ class G6StashGuardMixin:
                 text=True,
                 timeout=30,
             )
-            staged_set = set(staged.stdout.splitlines())
+            # 同款反转义（同 _purge_ignored_brought_in）：staged 名单要与 paths
+            # （真实路径）做子集校验，diff 输出对非 ASCII 路径默认为 C-quoted
+            # 转义形，不反转义会把该类路径误判为「暂存集越界」并放弃本次自愈。
+            staged_set = {
+                _unquote_git_path(ln) for ln in staged.stdout.splitlines()
+            }
             if staged.returncode != 0 or not staged_set <= set(paths):
                 self.logger.warning(
                     "worktree_manager",
