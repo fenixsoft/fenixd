@@ -136,6 +136,7 @@ const MessageItem = memo(({ message, prevMessage, showThinking = false }: Messag
             ) : message.isThinking ? (
               <Reasoning
                 defaultOpen={false}
+                className="group"
                 staticDuration={typeof message.thinkingSeconds === 'number' ? message.thinkingSeconds : undefined}
                 preview={typeof message.thinkingPreview === 'string' ? message.thinkingPreview : undefined}
               >
