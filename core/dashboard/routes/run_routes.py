@@ -53,7 +53,8 @@ class H4RunRoutesMixin:
             body = self._read_json_body()
             if isinstance(body, dict):
                 reason = (body.get("reason") or "").strip() or None
-        reason = (reason or "").strip() or "" if reason is not None else ""
+        # 归一为 strip 后字符串；None/空白一律落空串（下游按空串视为未提供）
+        reason = (reason or "").strip()
 
         proot = Path(project["path"])
         try:

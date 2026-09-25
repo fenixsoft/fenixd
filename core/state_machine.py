@@ -1428,9 +1428,13 @@ class StateMachine:
         - ``old_status``：锁内读到的当前状态（供日志文案）；
         - ``idempotent``：old==new 幂等短路（返回 True 且不落盘）；
         - ``invalid``：``table`` 判定拒绝（返回 False 且不落盘）；
-        - ``applied``：成功应用后的字段快照（供 ``_log_update_applied`` 留痕）。
+        - ``applied``：成功应用后的字段快照（供 ``_log_update_applied`` 留痕）；
+        - ``stripped``：frozen spec 的 status 写被剥离（code-review c809d1296efc，
+          值为被剥离的 status）——状态实际未变，transition/transition_gate
+          据此返回 False，调用方不再把假成功当真转换继续推进。
 
-        Returns: True 表示幂等短路或成功落盘；False 表示不存在或非法转换。
+        Returns: True 表示幂等短路或成功落盘；False 表示不存在、非法转换或
+        冻结剥离（status 未实际生效）。
         """
         def _mutate(specs):
             entry = specs.get(spec_name)
@@ -1451,6 +1455,14 @@ class StateMachine:
             applied_ok = self._apply_updates_entry(
                 specs, spec_name, {"status": new_status}, applied
             )
+            if "_stripped" in applied:
+                # 冻结剥离带出（code-review c809d1296efc）：_apply_updates_entry
+                # 对 frozen spec 剥离 status 后仍返回 True（update_spec 路径要
+                # 靠它落盘 error 等其余字段），但本路径 updates 仅含 status，
+                # 剥离即零字段生效——状态实际未变。outcome 带出 stripped 供
+                # transition/transition_gate 返回 False，调用方不再把假成功
+                # 当真转换继续推进（_stripped WARNING 之外的可编程判别通道）。
+                outcome["stripped"] = applied["_stripped"]
             if applied_ok:
                 outcome["applied"] = applied
             return applied_ok, applied_ok
@@ -1504,6 +1516,19 @@ class StateMachine:
             self.logger.error(
                 "state_machine",
                 f"Invalid transition: {spec_name} {old_status} → {new_status}",
+            )
+            return False
+
+        # 冻结剥离假成功消歧（code-review c809d1296efc）：frozen spec 的 status
+        # 写在锁内被剥离、状态实际未变，此前照常走 result=True 分支输出
+        # 「Transition」并返回 True，依赖返回值判断推进结果的自动链路会误以为
+        # 状态已到位。改为显式 warning + 返回 False——冻结期间自动链路失效
+        # 本就是冻结语义（唯一出路 unfreeze_spec），False 让调用方诚实感知。
+        if outcome.get("stripped") is not None:
+            self.logger.warning(
+                "state_machine",
+                f"Frozen SPEC '{spec_name}': transition {old_status} → {new_status} "
+                f"stripped — manual freeze intact, status unchanged",
             )
             return False
 
@@ -1573,6 +1598,16 @@ class StateMachine:
             self.logger.error(
                 "state_machine",
                 f"Invalid gate transition: {spec_name} {old_status} → {new_status}",
+            )
+            return False
+
+        # 冻结剥离假成功消歧（code-review c809d1296efc）：同 transition()——
+        # frozen spec 的 status 写被剥离、状态实际未变，返回 False 而非假成功。
+        if outcome.get("stripped") is not None:
+            self.logger.warning(
+                "state_machine",
+                f"Frozen SPEC '{spec_name}': gate transition {old_status} → {new_status} "
+                f"stripped — manual freeze intact, status unchanged",
             )
             return False
 

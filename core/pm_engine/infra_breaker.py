@@ -201,7 +201,8 @@ class InfraCircuitBreaker:
         with self._lock:
             self._ensure_link(link)
             st = self._cache[link]
-            now = now or time.time()
+            if now is None:
+                now = time.time()
             if st["state"] == "broken":
                 if now >= st["until"]:
                     st["state"] = "closed"
@@ -212,6 +213,8 @@ class InfraCircuitBreaker:
 
     def is_open(self, link: str, now: float | None = None) -> bool:
         """链路是否处于熔断窗口（不派发）。冷却到期自动恢复。"""
+        if now is None:
+            now = time.time()
         return self.condition(link, now) == "broken"
 
     def cooldown_remaining(self, link: str, now: float | None = None) -> int:
@@ -219,7 +222,8 @@ class InfraCircuitBreaker:
         with self._lock:
             self._ensure_link(link)
             st = self._cache[link]
-            now = now or time.time()
+            if now is None:
+                now = time.time()
             if st["state"] == "broken" and now < st["until"]:
                 return int(st["until"] - now)
             return 0
@@ -242,7 +246,8 @@ class InfraCircuitBreaker:
         with self._lock:
             self._ensure_link(link)
             st = self._cache[link]
-            now = now or time.time()
+            if now is None:
+                now = time.time()
             triggered = False
 
             st["count"] += 1

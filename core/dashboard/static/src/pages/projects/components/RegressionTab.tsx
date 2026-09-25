@@ -86,6 +86,15 @@ const RESULT_PAGE_SIZE = 10;
 const DEFAULT_LONG_TEST_THRESHOLD_SECONDS = 10;
 const OVERVIEW_CARD_BACKGROUND = '#fafafa';
 
+// ── 触发按钮文案（code-review item c543cbb4b22b）：parse_error 与主分枝
+// 各自复制的同一嵌套三元收敛为纯函数单源，增改状态只改这里；顺带消除
+// 嵌套三元（同 a22a55ff970a 的项目风格结论）。
+function triggerBtnLabel(running: boolean, awaitingStart: boolean): string {
+  if (running) return '回归进行中…';
+  if (awaitingStart) return '等待启动…';
+  return '立即执行全量回归';
+}
+
 // ── 运行中/等待启动进度视图 ──────────────────────────────────────────
 // 三态（对齐后端 read_progress 口径）：percent 确定值 → 确定进度条
 // （estimated 注明口径）；percent null（或等待 daemon 启动窗口）→
@@ -381,7 +390,7 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
               disabled={running || awaitingStart}
               onClick={() => void handleTrigger()}
             >
-              {running ? '回归进行中…' : awaitingStart ? '等待启动…' : '立即执行全量回归'}
+              {triggerBtnLabel(running, awaitingStart)}
             </Button>
           </div>
         </Space>
@@ -541,7 +550,7 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
               disabled={running || awaitingStart}
               onClick={() => void handleTrigger()}
             >
-              {running ? '回归进行中…' : awaitingStart ? '等待启动…' : '立即执行全量回归'}
+              {triggerBtnLabel(running, awaitingStart)}
             </Button>
           </div>
         </Space>

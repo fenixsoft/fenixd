@@ -22,6 +22,11 @@ from pathlib import Path
 from .api_assertions import evaluate_json_path
 from .scenarios import CLI_ASSERTION_LAYERS
 
+# 文件内容断言读取上限（MB 级）：场景断言 path 误指向构建产物/日志等大文件时，
+# 只读前 N 字节参与匹配，防全量读入撑爆验证进程内存（与 stdout 侧 64KB 证据
+# 截断纪律同旨，文件匹配留 MB 级余量）。
+_FILE_CONTENT_LIMIT = 8 * 1024 * 1024
+
 
 class CliAssertionRunner:
     """执行结构化 CLI 断言。
@@ -238,12 +243,28 @@ class CliAssertionRunner:
                 "pass": False,
                 "error": f"文件不存在: {path}",
             }
-        content = path.read_text(encoding="utf-8", errors="replace")
+        # 大文件防护：读取前先取 size。超限时 contains/regex 只读前 N 字节匹配
+        # （结果带 truncated 标记），exact 模式无法截断比对，直接判失败。
         expected = a.get("expected", "")
         mode = a.get("mode", "contains")
         negate = bool(a.get("negate", False))
+        size = path.stat().st_size
+        if mode == "exact" and size > _FILE_CONTENT_LIMIT:
+            return {
+                "type": "file_content",
+                "layer": 3,
+                "path": str(path),
+                "mode": mode,
+                "expected": expected,
+                "negate": negate,
+                "pass": False,
+                "error": f"文件过大（{size} 字节 > 上限 {_FILE_CONTENT_LIMIT}），exact 模式不做截断比对，判失败",
+            }
+        truncated = size > _FILE_CONTENT_LIMIT
+        with path.open("rb") as fh:
+            content = fh.read(_FILE_CONTENT_LIMIT).decode("utf-8", errors="replace")
         passed = self._match(content, expected, mode, negate)
-        return {
+        result = {
             "type": "file_content",
             "layer": 3,
             "path": str(path),
@@ -253,6 +274,9 @@ class CliAssertionRunner:
             "pass": passed,
             "actual_snippet": content[:200] if not passed else "",
         }
+        if truncated:
+            result["truncated"] = True
+        return result
 
     async def _assert_json_output(self, step, a: dict) -> dict:
         """断言命名结果 stdout 的 JSON 子树（step 指定解析哪个命名结果）。

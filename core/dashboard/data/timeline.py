@@ -438,7 +438,12 @@ def get_spec_timeline(
             # 合并，与 Transition 前向节点行为一致）——从结构上消除前向节点
             # 被 errors_at 就近覆写传染的通道；有同行 err 时 reason=err
             # （_precise_reason 保护不被覆写）。回退节点维持现状。
-            backward = _LIFECYCLE_ORDER.get(to, 9) < _LIFECYCLE_ORDER.get(frm, 9)
+            # frm 推演不出（"?"，窗口截断）时不做序比较：任何已知目标状态
+            # （0-7）都小于默认值 9，会把前向直写（如 update_spec 直达
+            # implemented/done）误渲染成「状态回退」——视为前向/未知处理
+            # （reason 同前向节点：同行 err 优先，无 err 置空可被折叠链
+            # 合并；起始状态未知不落「状态回退」兜底文案）。
+            backward = frm != "?" and _LIFECYCLE_ORDER.get(to, 9) < _LIFECYCLE_ORDER.get(frm, 9)
             if backward:
                 reason = err[:120] if err else _backtrack_reason(frm, to)
             else:

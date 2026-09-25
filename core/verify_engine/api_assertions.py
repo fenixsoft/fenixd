@@ -174,7 +174,15 @@ class ApiAssertionRunner:
     # ═══════════════════════════════════════════════════════════════
 
     async def _assert_status_code(self, resp, a: dict) -> dict:
-        """断言 HTTP 状态码等于期望值。"""
+        """断言 HTTP 状态码等于期望值（expected 允许 str/int 表示等价，如 "200"）。"""
+
+        def _numeric(value: Any) -> Any:
+            # 仅做 str/int 表示归一：可解析为整型则按数值比较，否则保持原值严格相等
+            try:
+                return int(str(value).strip())
+            except (TypeError, ValueError):
+                return value
+
         expected = a.get("expected")
         actual = resp.get("status")
         return {
@@ -182,7 +190,7 @@ class ApiAssertionRunner:
             "layer": 1,
             "expected": expected,
             "actual": actual,
-            "pass": actual == expected,
+            "pass": _numeric(actual) == _numeric(expected),
         }
 
     async def _assert_sse_event_count(self, resp, a: dict) -> dict:

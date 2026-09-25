@@ -1,12 +1,15 @@
 """fast_track.py — F fast-track 车道（refactor-giant-classes D1/D3/D5）。
 
-原为 Dispatcher 的 17 个方法（`core/pm_engine/dispatch/_legacy.py`），
-原样搬移为 mixin（方法体零改动）。F 组方法在 _legacy 中被 P 组（repair）
-物理分隔（段1：scale_precheck..reconcile_and_merge，段2：
+原为 Dispatcher 的 17 个方法，refactor-giant-classes 拆包时原样搬移为
+mixin（方法体零改动；当时的中转文件 core/pm_engine/dispatch/_legacy.py
+已随拆包完成移除）。F 组方法在原 Dispatcher 中被 P 组（repair）物理
+分隔（段1：scale_precheck..reconcile_and_merge，段2：
 hard_check_fast_track..deliverable_gate），两段合并在本模块中。
 
-跨组协作（_direct_rehearsed_to_repair / _dispatch_repair_lane 等）
-仍经宿主实例 `self.<method>` 协作（P 组仍在 _legacy.py Dispatcher 类上）。
+跨组协作（_direct_rehearsed_to_repair / _should_enter_repair /
+_dispatch_repair_lane 等 P 组方法，现位于 core/pm_engine/dispatch/
+repair_lane.py，与其余各组 mixin 同拼装于 Dispatcher）仍经宿主实例
+`self.<method>` 协作。
 
 D3 patch 缝隙：本组使用 `time` 模块，经模块顶部导入——测试
 patch time 模块对象属性全进程共享，重绑依旧生效。

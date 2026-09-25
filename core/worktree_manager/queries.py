@@ -70,8 +70,9 @@ class G8QueryMixin:
                 rel_path: 相对项目根的交付路径（如 ``core/foo.py``）
 
             Returns:
-                True 表示分支 HEAD 包含该路径（blob 文件，或非空 tree 目录）。
-                分支为空 / 不存在 / 路径不存在时返回 False。
+                True 表示分支 HEAD 包含该路径（blob 文件，或非空 tree 目录）；
+                symlink（mode 120000）不算落地。分支为空 / 不存在 / 路径不存在
+                时返回 False。
             """
             if not branch or not rel_path:
                 return False
@@ -85,20 +86,29 @@ class G8QueryMixin:
                 )
                 if result.returncode != 0:
                     return False
+                # 类型判定须读 tree 条目的 mode 而非 cat-file -t：symlink 与普通
+                # 文件的对象类型同为 blob（区别仅在 tree 里的 mode 120000），
+                # cat-file -t 无法区分。ls-tree -z 输出形如
+                # ``<mode> <type> <sha>\t<path>``，首 token 即 mode（文件实测
+                # 100644/100755、目录 040000、symlink 120000）；路径不存在时输出
+                # 为空（rc=0）→ 解析得空 mode → False。
                 kind = subprocess.run(
-                    ["git", "-C", str(self.project_root), "cat-file", "-t", f"{branch}:{rel_path}"],
+                    ["git", "-C", str(self.project_root), "ls-tree", "-z", branch, "--", rel_path],
                     capture_output=True,
                     text=True,
                     timeout=30,
                 )
                 if kind.returncode != 0:
                     return False
-                # blob（文件）= 落地交付物；tree（目录）同样算落地——git 不追踪空目录，
-                # path 为 tree 必然内含文件（如构建产物 dist/ 整目录声明）。
-                # 曾为 blob-only：目录声明成为不可满足契约 → 收工守卫确定性缺件 →
-                # 打回循环烧预算至 blocked（remove-auto-run-cleanup 死锁事故 2026-09-03）。
-                # symlink 等其余类型不算。
-                return kind.stdout.strip() in ("blob", "tree")
+                # 100644/100755（文件）= 落地交付物；040000（目录）同样算落地——
+                # git 不追踪空目录，path 为 tree 必然内含文件（如构建产物 dist/
+                # 整目录声明）。曾为 blob-only：目录声明成为不可满足契约 → 收工
+                # 守卫确定性缺件 → 打回循环烧预算至 blocked
+                # （remove-auto-run-cleanup 死锁事故 2026-09-03）。
+                # symlink（120000）与 gitlink（160000）等其余类型不算。
+                entry = kind.stdout.split("\0", 1)[0]
+                mode = entry.split(" ", 1)[0].strip()
+                return mode in ("100644", "100755", "040000")
             except subprocess.TimeoutExpired:
                 return False
             except Exception:
