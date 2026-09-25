@@ -4,7 +4,7 @@ browser.py — Playwright 浏览器管理器
 职责：
   - 浏览器生命周期管理（启动/复用/关闭）
   - 用户操作执行（click/type/scroll/select/wait/navigate）
-  - 数据采集（DOM快照、截图、console日志、网络错误）
+  - 数据采集（截图、console日志、网络错误）
   - 布局稳定性等待（CLS 稳定；networkidle 因页面常驻 SSE 永不满足，已移除）
   - 扩展项目支持：自动启动本地 HTTP 服务器提供 dist/ 目录
 
@@ -20,18 +20,10 @@ import asyncio
 import http.server
 import json
 import re
-import socket
 import socketserver
 import threading
 from pathlib import Path
 from typing import Optional
-
-
-def _find_free_port() -> int:
-    """查找一个可用的端口号。"""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("", 0))
-        return s.getsockname()[1]
 
 
 class _ThreadedHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
@@ -39,18 +31,6 @@ class _ThreadedHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
 
     daemon_threads = True
     allow_reuse_address = True
-
-
-class _StaticFileHandler(http.server.SimpleHTTPRequestHandler):
-    """静态文件处理器，从指定目录提供服务。"""
-
-    def __init__(self, *args, directory: str, **kwargs):
-        self.directory = directory
-        super().__init__(*args, directory=directory, **kwargs)
-
-    def log_message(self, format, *args):
-        """抑制 HTTP 日志输出。"""
-        pass
 
 
 def _make_handler(directory: str):
@@ -956,45 +936,6 @@ class BrowserManager:
 
         labels = classify_screenshot(str(path))
         return {"path": str(path), "labels": labels}
-
-    async def capture_dom_snapshot(self, page) -> dict:
-        """捕获结构化DOM快照（用于断言和调试）。
-
-        递归采集可见元素的 tag/id/classes/text/rect/attributes。
-        最大深度 10 层，防止无限递归。
-        """
-        return await page.evaluate("""() => {
-            function snapshot(el, depth) {
-                if (!el || depth > 10) return null;
-                const info = {
-                    tag: el.tagName ? el.tagName.toLowerCase() : null,
-                    id: el.id || null,
-                    classes: el.className
-                        ? (typeof el.className === 'string'
-                            ? el.className.split(' ').filter(c => c)
-                            : [])
-                        : [],
-                    text: (el.textContent || '').trim().substring(0, 200),
-                    visible: el.offsetParent !== null,
-                    rect: el.getBoundingClientRect(),
-                    attributes: {},
-                    children: []
-                };
-                // 关键属性
-                for (const attr of ['data-testid', 'href', 'type', 'placeholder',
-                                     'value', 'aria-label', 'role']) {
-                    const val = el.getAttribute(attr);
-                    if (val) info.attributes[attr] = val;
-                }
-                // 递归子元素
-                for (const child of el.children) {
-                    const s = snapshot(child, depth + 1);
-                    if (s) info.children.push(s);
-                }
-                return info;
-            }
-            return snapshot(document.body, 0);
-        }""")
 
     def get_console_errors(self, context) -> list[str]:
         """获取在 context 生命周期中收集的控制台错误。"""
