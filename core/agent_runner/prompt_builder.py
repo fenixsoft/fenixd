@@ -1418,17 +1418,20 @@ class PromptBuilder:
         # 单趟填充（code-review item 7975ab14dbe7 同款语义）：daily_summary/
         # todo_md 等注入值来自用户数据/LLM 产物，可能本身含占位符字面量，
         # 逐键 str.replace 会被后续键二次替换污染。
+        # 注入值统一经 _str_field 归一（与 _fill_placeholders 同口径，归一
+        # 不对称防回归）：结构化值序列化为 JSON 串，非字符串直达 re.sub 的
+        # 替换回调会抛 TypeError 中断整条 self-review run 的提示词构建；
+        # None/缺失归一为空串后仍落到原默认占位提示，正常字符串值原样通过。
         prompt = _single_pass_replace(
             template,
             {
                 "{review_date}": token,
-                "{daily_summary}": (detail.get("daily_summary") or "（无数据）"),
-                "{todo_md_content}": (
-                    detail.get("todo_md") or "（read_todo 关闭或 todo.md 不存在，不注入）"
-                ),
-                "{todo_entries}": (
-                    detail.get("todo_entries") or "（近3日窗口内无既有条目）"
-                ),
+                "{daily_summary}": _str_field(detail.get("daily_summary"))
+                or "（无数据）",
+                "{todo_md_content}": _str_field(detail.get("todo_md"))
+                or "（read_todo 关闭或 todo.md 不存在，不注入）",
+                "{todo_entries}": _str_field(detail.get("todo_entries"))
+                or "（近3日窗口内无既有条目）",
                 "{out_path}": str(
                     detail.get("out_path")
                     # 兜底带归属日期标识（与读侧 self_review_out-<run_id>.json
