@@ -567,7 +567,7 @@ def diff_planner_output(
     # ── 新增检测：planner 有、持久化集没有 ──
     # 默认保留全部既有，但排除有理由移除的场景（scenarios.json 同步移除）。
     removed_ids = {e.id for e, _ in reasoned}
-    added = [e for e in persisted.scenarios if e.id not in removed_ids]
+    kept_entries = [e for e in persisted.scenarios if e.id not in removed_ids]
     new_entries = []
     # 按 sid 排序遍历：set 迭代序随 PYTHONHASHSEED 跨进程抖动，违背模块 D3 确定性
     for sid in sorted(planner_ids):
@@ -598,7 +598,7 @@ def diff_planner_output(
                 f"（修复轮不扩容，按 D2 丢弃）"
             )
 
-    final_entries = added + new_entries
+    final_entries = kept_entries + new_entries
     result.scenario_set = ScenarioSet(
         spec_name,
         current_round,
@@ -614,7 +614,7 @@ def diff_planner_output(
             f"- 无理由缺失 {len(unreasoned)} 个场景，已以持久化集补齐："
             + "、".join(e.id for e in unreasoned)
         )
-        # 补齐：final_entries 已含全部既有（added），无需额外操作；
+        # 补齐：final_entries 已含全部既有（kept_entries），无需额外操作；
         # 但 ok=False 标记「本轮验证以持久化集补齐缺失场景后继续」。
     else:
         result.ok = True
