@@ -12,6 +12,7 @@ D3 patch 缝隙：本组使用 `time` 模块（`_adjudicate_deliverable_missing`
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from pathlib import Path
@@ -625,6 +626,24 @@ class VAdjudicationMixin:
             {"action": "fallback"} → 预分类不可用，回退既有 judge 流程
             （missing 不变）。
         """
+        try:
+            return self._preclassify_missing_impl(spec_name, result, missing)
+        except Exception as e:
+            # fail-open 契约落地（code-review item 779c3de79a5c）：impl 内
+            # _effective_declaration / classify_unsatisfiable 等文件与 git
+            # 读取不逐点包 try，入口统一兜底，异常不再穿透调用方，按本
+            # docstring 承诺回退既有 judge 流程（missing 不变）。
+            self._pm.logger.warning(
+                "pm_engine",
+                f"缺件预分类异常回退 judge '{spec_name}': "
+                f"{type(e).__name__}: {e}",
+            )
+            return {"action": "fallback"}
+
+    def _preclassify_missing_impl(
+        self, spec_name: str, result, missing: list
+    ) -> dict:
+        """_preclassify_missing 主体（fail-open 兜底在其入口，见上）。"""
         from core.deliverables import classify_unsatisfiable
 
         # 声明段条目经统一解析入口取（add-declaration-relocation-protocol D1：
@@ -871,6 +890,26 @@ class VAdjudicationMixin:
             {"action": "fallback"} → 判定/改写/提交任一环节异常，全量回退既有
             blocked 待人工路径（missing 不变，disputed 全量仍待人工）。
         """
+        try:
+            return self._preclassify_orphan_impl(
+                spec_name, result, impl_result, disputed, missing
+            )
+        except Exception as e:
+            # fail-open 契约落地（code-review item 779c3de79a5c）：同
+            # _preclassify_missing——impl 内 _effective_declaration 等文件与
+            # git 读取不逐点包 try，入口统一兜底，异常不再穿透调用方，按本
+            # docstring 承诺全量回退既有 blocked 待人工路径。
+            self._pm.logger.warning(
+                "pm_engine",
+                f"孤儿预分类异常回退 blocked '{spec_name}': "
+                f"{type(e).__name__}: {e}",
+            )
+            return {"action": "fallback"}
+
+    def _preclassify_orphan_impl(
+        self, spec_name: str, result, impl_result, disputed: list, missing: list
+    ) -> dict:
+        """_preclassify_orphan 主体（fail-open 兜底在其入口，见上）。"""
         from core.deliverables import is_orphan_declaration, remove_declared_entry
 
         # 声明段条目经统一解析入口取（add-declaration-relocation-protocol D1：
@@ -1106,6 +1145,26 @@ class VAdjudicationMixin:
             {"action": "fallback"} → 无可对齐条目 / 判定·改写·提交·守卫重跑任一
             环节异常，全量回退既有 blocked 待人工路径（missing 不变）。
         """
+        try:
+            return self._preclassify_drift_impl(
+                spec_name, result, impl_result, disputed, missing
+            )
+        except Exception as e:
+            # fail-open 契约落地（code-review item 779c3de79a5c）：同
+            # _preclassify_missing——impl 内 _effective_declaration 等文件与
+            # git 读取不逐点包 try，入口统一兜底，异常不再穿透调用方，按本
+            # docstring 承诺全量回退既有 blocked 待人工路径。
+            self._pm.logger.warning(
+                "pm_engine",
+                f"漂移预分类异常回退 blocked '{spec_name}': "
+                f"{type(e).__name__}: {e}",
+            )
+            return {"action": "fallback"}
+
+    def _preclassify_drift_impl(
+        self, spec_name: str, result, impl_result, disputed: list, missing: list
+    ) -> dict:
+        """_preclassify_drift 主体（fail-open 兜底在其入口，见上）。"""
         from core.deliverables import (
             _git_branch_merge_base,
             is_drift_candidate,
@@ -1266,8 +1325,9 @@ class VAdjudicationMixin:
     def _backup_to_history(self, spec_name: str, element: str, content: str) -> None:
         """删除前 .history 备份留痕（对齐 admin 处置 .history 备份惯例）。
 
-        备份目标：``<project_root>/.history/<spec_name>/<元素 basename>.<时间戳>
-        .orphan-preclassify.bak``（.history 已在 .gitignore 排除，不提交）。
+        备份目标：``<project_root>/.history/<spec_name>/<元素 basename>.<元素
+        路径哈希前 8 位>.<时间戳>.orphan-preclassify.bak``（.history 已在
+        .gitignore 排除，不提交）。
         备份内容为删除前的 tasks.md 全文快照（diff.before 同源）。备份失败仅
         WARNING，不阻塞删除本身（备份是附加留痕，fail-open）。
         """
@@ -1275,9 +1335,14 @@ class VAdjudicationMixin:
             backup_dir = self._pm.project_root / ".history" / spec_name
             backup_dir.mkdir(parents=True, exist_ok=True)
             ts = time.strftime("%Y%m%d%H%M%S")
+            # 同秒同名防覆盖（code-review item 6f9b558f5ca1）：ts 精度为秒，
+            # _preclassify_orphan 同一循环对不同孤儿条目连续备份，basename
+            # 相同（如不同目录下的同名文件）会互相覆盖、丢失先删条目的删除
+            # 前快照——并入元素完整路径哈希使各条目备份名互不相同。
+            elem_tag = hashlib.sha1(element.encode("utf-8")).hexdigest()[:8]
             backup_path = (
                 backup_dir
-                / f"{Path(element).name}.{ts}.orphan-preclassify.bak"
+                / f"{Path(element).name}.{elem_tag}.{ts}.orphan-preclassify.bak"
             )
             backup_path.write_text(content, encoding="utf-8")
         except Exception as e:

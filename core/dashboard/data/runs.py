@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 # run 产物 agent 类型推断（原 data.py 顶层导入，随 runs 组迁移）
-from core.agent_runner.run_files import infer_run_agent_type
+from core.agent_runner.run_files import infer_run_agent_type, run_spec_part
 
 # ── 结构化 run 指标日志索引（fix-observability-gaps 1.5 消费点）────────────
 # run 收尾在 fenixd.log 写一条 metric_type=run_metrics 的结构化指标（runner.py
@@ -409,12 +409,14 @@ def _run_meta_cached(p: Path, stat, now: float,
 def get_runs(project_root, spec_name: str | None = None, include_archive: bool = False, files: list | None = None) -> list:
     """列出项目的运行记录（.fenix/runs/*.jsonl）。
 
-    spec_name 省略时返回全部；否则仅返回 run_id 包含该 spec 的记录。
+    spec_name 省略时返回全部；否则仅返回归属该 spec 的记录
+    （run_spec_part 全等精确归属，code-review item 78dc8a67623f：子串包含在
+    spec 名互为前缀时会把前缀兄弟 spec 的 run 串入对方统计）。
     include_archive=True 时并入 runs/archive/ 的归档产物（同 run_id 以活跃
     副本优先），供时间轴/运行历史/耗时统计回看已归档的旧 run。
     files: 调用方预扫描的产物路径集（如 SummaryIndex._runs_by_spec_sigs 的
         分组结果）；提供时跳过目录 glob（D2：目录 glob 次数降为常数）。
-        与 glob 路径同样按 run_id 前缀过滤、同样以活跃副本优先去重。
+        与 glob 路径同样按 spec 精确归属过滤、同样以活跃副本优先去重。
     每条: {run_id, agent_type, spec, status, started, file_size, events}
     """
     runs_dir = Path(project_root) / ".fenix" / "runs"
@@ -457,7 +459,12 @@ def get_runs(project_root, spec_name: str | None = None, include_archive: bool =
     now = time.time()
     for p in files:
         run_id = p.stem
-        if spec_name and spec_name not in run_id:
+        # 精确归属守卫（code-review item 78dc8a67623f）：子串包含在 spec 名互为
+        # 前缀时（如 add-foo 与 add-foo-bar）互相串入对方 run；与读侧既有口径
+        # 一致（recovery.py 活性探针、budget.py 预算计数均用 run_files.
+        # run_spec_part 全等归属），本函数的消费点含 engine.py total_duration
+        # 快照求和，前缀兄弟 spec 的耗时不得计入。
+        if spec_name and run_spec_part(run_id) != spec_name:
             continue
         try:
             stat = p.stat()
