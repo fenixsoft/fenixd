@@ -276,6 +276,9 @@ class VisualDiffer:
             ]
 
         # 执行对比（首次）
+        # [fenix-ignore:7cf3ba96236e] 问题已由提交 9362f29b 修复：_compare_once
+        # 内层已有 (OSError, ValueError) 解码异常兜底，返回与 size_mismatch/
+        # skipped 同型的 status='error' 结构化结果，首次调用与重拍循环均覆盖。
         results = _compare_once()
         best = results[0]
 

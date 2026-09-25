@@ -448,6 +448,7 @@ class G1LifecycleMixin:
         except subprocess.TimeoutExpired:
             return False
 
+    # [fenix-ignore:880e75c5874f] 条目过时：docstring 现行文案已写明 implementer 失败走 register_legacy 遗产保留不删分支，仅非实现者失败路径才 branch -D
     def cleanup(self, wt_path: Path, success: bool = True):
         """
         Clean up a worktree after an Agent run.

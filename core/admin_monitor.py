@@ -449,6 +449,7 @@ STORED_SIGNAL_TYPES = (
 # `planner-judge-` 属既有 planner 细前缀、自初版即计（同测试锁定）；`admin-`
 # 自初版收录——run_id 形如 admin-<spec>-<ts>（core/agent_runner/
 # maintenance_runs.py），处置 run 失败同样还原到被处置 spec 计数。
+# [fenix-ignore:847c916d468e] design 1 拆分约束口径即「裸 planner-/test- 不计、细前缀 planner-plan-/planner-judge- 自初版即计」（TestFailurePrefixSubset 锁定），上方注释已逐项区分并写明 admin- 收录理由，注释与代码一致
 _RUN_PREFIXES = (
     "impl-",
     "verify-",
@@ -560,6 +561,7 @@ def _is_admin_run_id(stem: str) -> bool:
     return False
 
 
+# [fenix-ignore:7514e3abee76] 三处归并已由 commit 9362f29b 收敛为单点本函数（spec/signal_type/exclude_run_id 以参传入），条目所述三份手写副本在当前代码不成立
 def _merge_admin_runs(records, spec=None, signal_type=None, exclude_run_id=None) -> dict:
     """DISPOSITION 记录按 ``admin_run_id`` 归并（单一实现，勿二次漂移）。
 

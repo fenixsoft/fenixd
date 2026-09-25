@@ -123,6 +123,7 @@ class AssertionRunner:
         selector = a["selector"]
         expected = int(a.get("count", a.get("expected", 1)))
         locator = page.locator(selector)
+        # [fenix-ignore:87212a1756aa] 条目基于旧时点代码：此处已非瞬时一次性读数，不等时按 element_not_exist 同款 10 次×300ms 轮询收敛
         actual = await locator.count()
         if actual != expected:
             for _ in range(10):

@@ -1125,9 +1125,9 @@ class PMEngine:
                     if agent_type != "planner-plan":
                         continue
                     # 归属复核以 run_spec_part 全等为准（防 startswith 裸前缀
-                    # 误中同根后代 spec 的 run）；planner-plan run 剥前缀后
-                    # 为 plan-<spec>
-                    if run_spec_part(aid) != f"plan-{spec_name}":
+                    # 误中同根后代 spec 的 run）；planner-plan run id 形如
+                    # ``planner-plan-<spec>-<epoch>``，剥前缀与时间戳后即 <spec>
+                    if run_spec_part(aid) != spec_name:
                         continue
                     # 完整 run 级 id：剥 attempt/瞬态重试后缀，保留 epoch
                     run_level_id = strip_run_id_suffixes(aid)

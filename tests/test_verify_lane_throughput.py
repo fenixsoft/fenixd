@@ -236,6 +236,14 @@ class TestParallelPlanLane(_EngineCase):
     def test_stop_parallel_planning_cancels_and_dequeues(self):
         self._to_ready()
         self.dispatcher._enqueue("my-spec", "planner-plan")
+        # 在飞 run 以完整 run 级 id 登记（run_planner 构造形如
+        # planner-plan-<spec>-<epoch>，attempt 附加 -a<n> 后缀）。取消键 MUST
+        # 为带 epoch 的 run 级 id（code-review item 794e218ce816）：裸键与
+        # 消费点不收敛、取消静默失效。
+        self.engine.agent_runner._running_agents = {
+            "planner-plan-my-spec-1790291005-a1": MagicMock(),
+            "planner-plan-other-spec-1790291006": MagicMock(),
+        }
         self.engine.agent_runner.cancel_run = MagicMock(
             return_value={"status": "cancel_requested"}
         )
@@ -243,7 +251,7 @@ class TestParallelPlanLane(_EngineCase):
         self.engine.agent_runner.cancel_run.assert_called_once()
         self.assertEqual(
             self.engine.agent_runner.cancel_run.call_args.args[0],
-            "planner-plan-my-spec",
+            "planner-plan-my-spec-1790291005",
         )
         self.assertFalse(
             any(
