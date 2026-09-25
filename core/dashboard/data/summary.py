@@ -119,6 +119,15 @@ def project_summary(project_root, name: str, path: str) -> dict:
     effective_config = _facade.read_effective_config(proot)
     description = effective_config.get("description", "")
 
+    # STATE.md mtime 单次容错读：先 exists 再 stat 的两次系统调用之间存在
+    # TOCTOU 竞态（文件在间隙被删除——项目被移除/STATE.md 被迁移——则 stat
+    # 抛 FileNotFoundError 使整个摘要失败），且同路径 exists+stat 属重复 IO。
+    # 改为一次 stat + OSError 兜底；缺失时保持既有取值 0。
+    try:
+        state_st = (Path(path) / ".fenix" / "STATE.md").stat()
+    except OSError:
+        state_st = None
+
     # D8：daemon_health/hosting_state 经门面解析（tests patch 门面同名）
     return {
         "name": name,
@@ -133,11 +142,7 @@ def project_summary(project_root, name: str, path: str) -> dict:
         "active_runs": active,
         "active_runs_by_type": active_by_type,
         "scenario_count": sum(_facade.count_scenarios(proot, s) for s in specs),
-        "updated": (
-            (Path(path) / ".fenix" / "STATE.md").stat().st_mtime
-            if (Path(path) / ".fenix" / "STATE.md").exists()
-            else 0
-        ),
+        "updated": state_st.st_mtime if state_st else 0,
         "description": description,
     }
 
