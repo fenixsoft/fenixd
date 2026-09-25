@@ -541,20 +541,36 @@ class BrowserManager:
 
             # wait 操作可以没有 target（此时使用 value 作为暂停毫秒数）
             if action == "wait" and not target:
+                # 值解析与实际等待分开捕获（code-review 修）：float("abc")
+                # 抛 ValueError 若混入同一 except 会被误标成「wait 超时」，
+                # 把场景配置类错误伪装成时序类问题，干扰失败归因
                 try:
                     timeout_ms = float(value) if value else 1000
-                    await page.wait_for_timeout(timeout_ms)
+                except (TypeError, ValueError):
                     return {
-                        "success": True,
+                        "success": False,
                         "action": action,
-                        "detail": f"等待 {timeout_ms}ms",
+                        "error_type": "invalid_wait_value",
+                        "error": f"wait 值非法（应为毫秒数）: {value!r}",
                     }
+                try:
+                    await page.wait_for_timeout(timeout_ms)
                 except Exception as e:
                     return {
                         "success": False,
                         "action": action,
+                        "error_type": (
+                            "element_not_found_or_not_actionable"
+                            if "timeout" in str(e).lower()
+                            else "unknown"
+                        ),
                         "error": f"wait 超时: {e}",
                     }
+                return {
+                    "success": True,
+                    "action": action,
+                    "detail": f"等待 {timeout_ms}ms",
+                }
 
             # dialog 操作无需 CSS target：注册一次性对话框处理器，
             # 供后续 click 触发的 window.confirm 使用
