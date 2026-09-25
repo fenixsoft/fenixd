@@ -89,7 +89,8 @@ export function useFileMentions({
       return null;
     }
     const pattern = sortedFileMentions.map(escapeRegExp).join('|');
-    return new RegExp(`(${pattern})`, 'g');
+    // 边界前瞻：捕获片段后不得紧跟路径字符，防同前缀更长文件名（a.ts vs a.tsx）的前缀被误染。
+    return new RegExp(`(${pattern})(?![A-Za-z0-9._/-])`, 'g');
   }, [sortedFileMentions]);
 
   const fileMentionSet = useMemo(() => new Set(sortedFileMentions), [sortedFileMentions]);
