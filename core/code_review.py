@@ -1211,9 +1211,9 @@ def generate_fix_spec(
 
     # slug 推导（首个候选的 category 或短标题）
     first = candidates[0]
+    # _slugify 输出恒匹配 _KEBAB_RE（见其 docstring），单次推导即终值，
+    # 无需二次回退（item 23d18af486a2：回退分支不可达，已删）。
     slug = _slugify(str(first.get("category") or "") or str(first.get("title") or ""))
-    if not _KEBAB_RE.match(slug):
-        slug = _slugify(str(first.get("title") or ""))
     first_fp = str(first.get("fingerprint") or "")
     name = _resolve_fix_spec_name(project_root, state_machine, slug, first_fp)
     if name is None:
@@ -1480,6 +1480,17 @@ def _indent_block(text: str, prefix: str = "  ") -> List[str]:
     return [f"{prefix}{ln}" if ln.strip() else "" for ln in str(text).splitlines()]
 
 
+def _one_line(text: str) -> str:
+    """把标题类字段折叠为单行（连续空白含换行折叠为单空格、去首尾）。
+
+    title 来自 LLM 产出原样入库（upsert_findings 仅 str() 不折叠），含换行
+    时直接内插会把 `###`/`####` 标题行或 `- [ ] N.N` 任务行第二行起顶成裸
+    文本——不再匹配行首形态，任务在进度跟踪与归属校验里静默消失。与
+    _indent_block 同向防御（code-review item 1347190ca3c6）。
+    """
+    return re.sub(r"\s+", " ", str(text)).strip()
+
+
 def _problem_lines(it: dict, detail_prefix: str = "  ") -> List[str]:
     """单条问题的结构化详情块（严重度 / 位置 / 描述 / 建议 / 证据）。
 
@@ -1524,7 +1535,7 @@ def _proposal_md(name: str, items: List[dict]) -> str:
         "",
     ]
     for it in items:
-        lines.append(f"### [{it.get('severity')}] {it.get('title')}")
+        lines.append(f"### [{it.get('severity')}] {_one_line(it.get('title'))}")
         lines.append("")
         lines.append(f"- 类别：`{it.get('category')}`")
         lines.append(f"- 位置：`{it.get('file')}:{it.get('line')}`")
@@ -1557,7 +1568,7 @@ def _spec_md(capability: str, items: List[dict]) -> str:
         "",
     ]
     for it in items:
-        lines.append(f"#### `{it.get('file')}:{it.get('line')}` — {it.get('title')}")
+        lines.append(f"#### `{it.get('file')}:{it.get('line')}` — {_one_line(it.get('title'))}")
         lines.append("")
         lines.append(f"- 严重度：{it.get('severity')}")
         lines.append("")
@@ -1624,7 +1635,7 @@ def _tasks_md(name: str, items: List[dict]) -> str:
         # 完整内容一律以缩进子项挂在任务行下（缩进后不匹配 `^- \[`，也不
         # 参与归属校验）。
         lines.append(
-            f"- [ ] {idx}.{idx} {it.get('title')} — {it.get('file')}:{it.get('line')}"
+            f"- [ ] {idx}.{idx} {_one_line(it.get('title'))} — {it.get('file')}:{it.get('line')}"
         )
         lines.append("")
         lines.extend(_problem_lines(it))
