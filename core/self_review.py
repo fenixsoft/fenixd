@@ -271,6 +271,33 @@ def _signal_evidence(lines: list) -> Optional[str]:
     return None
 
 
+# 终态邻近窗口（行数）：run 产物收尾恒为尾三行 [assistant, run_metrics,
+# result] 结构（runner 收尾先落 run_metrics 指标行再落 result 终态行，其前
+# 是最后一条 assistant 事件）。窗口内的 assistant 行承载与 result 终态摘要
+# 同源的收工叙事（实测不逐字等于 result 全文），不再作信号证据源。
+_TERMINAL_ADJACENT_WINDOW = 3
+
+
+def _strip_terminal_echo_lines(lines: list) -> list:
+    """剥除终态邻近窗口（尾三行结构）中的 assistant 收工叙事回声行。
+
+    evo-fix-self-review-phantom-failed-samples 1.1：result 文本正是窗口内
+    assistant 消息的同源副本（收工叙事），正文失败词必然同时出现在回声行——
+    不剥除则 marker 声明窗口收窄（698a9a0d）被信号路径原路绕过（2026-09-25
+    两幻影误报实拍：impl/planner run 收工摘要正文提及「预算耗尽」即被判
+    failed，重启 daemon 亦不可消除）。排除按行结构识别（窗口内 type=assistant
+    即回声行）、不做逐字副本内容匹配；窗口外的 assistant 事件行（独立失败
+    证据）保留。
+    """
+    window_start = max(0, len(lines) - _TERMINAL_ADJACENT_WINDOW)
+    kept = list(lines[:window_start])
+    for line in lines[window_start:]:
+        if isinstance(line, dict) and line.get("type") == "assistant":
+            continue
+        kept.append(line)
+    return kept
+
+
 def _scan_run_signals(path: Path) -> Optional[str]:
     """全文件扫描 run 产物找结构性失败信号（预算耗尽/spec 缺失类）。
 
@@ -320,15 +347,20 @@ def _classify_run(run_id: str, lines: list) -> tuple:
         marker = _business_fail_marker(str(last.get("result") or ""))
         if marker is not None:
             return "failed", f"marker={marker}"
-        # 信号护栏只读终态邻近的事件行（lines[:-1] 排除 result 终态自身）：
-        # 终态正文的失败声明归 marker 声明窗口管辖，正文中段的功能词复述
-        # （如成功摘要里的「预算耗尽发一次性 warning」）不是结构性事件信号，
-        # 不构成 marker 未命中后的二次降级依据（2026-09-24 实拍误判第二源）。
-        # 接受项边界：结构性信号词仅出现在 result 终态行（正文落在 100 字符
-        # marker 窗口之外、或位于该行非 result 字段）时已无检测路径——原先
-        # lines 全量信号扫描可捕获，此 fail-open 敞口为接受项，留待后续 SPEC
-        # 再收敛。
-        signal = _signal_evidence(lines[:-1])
+        # 信号护栏只读终态邻近的事件行，并先剥除其中的 assistant 收工叙事
+        # 回声行（_strip_terminal_echo_lines，窗口含 result 终态行；剥除后
+        # 末行恒为 result 终态，[:-1] 再排除终态自身）：终态正文的失败声明
+        # 归 marker 声明窗口管辖，正文中段的功能词复述（如成功摘要里的
+        # 「预算耗尽发一次性 warning」）与回声行同现的失败词都不是结构性
+        # 事件信号，不构成 marker 未命中后的二次降级依据（2026-09-24/25
+        # 实拍误判两源）。接受项边界：结构性信号词仅出现在 result 终态行
+        # （正文落在 100 字符 marker 窗口之外、或位于该行非 result 字段）
+        # 或 assistant 回声行时已无检测路径——此类失败通常同时体现为
+        # subtype!=success / is_error=True 或声明区 marker 命中，信号路径
+        # 仅是兜底，此 fail-open 敞口为接受项（对 698a9a0d「兜底通道不收窄」
+        # 决策的有意推翻；聚合侧另有双源交叉守卫兜住漏网，见
+        # collect_failed_run_samples）。窗口外的独立事件行仍可检出。
+        signal = _signal_evidence(_strip_terminal_echo_lines(lines)[:-1])
         if signal is not None:
             return "failed", signal
         return "succeeded", ""
@@ -363,6 +395,70 @@ def _collect_run_files(runs_dir: Path) -> list:
         except OSError:
             pass
     return files
+
+
+def _run_terminal_success(project_root, run_id: str) -> Optional[bool]:
+    """查 daemon 侧 run_metrics 指标的 terminal 是否 success（双源交叉守卫读源）。
+
+    数据源 = .fenix/logs/fenixd.log 的 run_metrics 结构化指标行（daemon 收尾
+    写入，context 含 terminal；正常 result 收尾一律记 terminal="success"，与
+    result 文本内容无关），读侧复用 core.dashboard.data.runs 的 metric 索引
+    公共访问器（含 .fenixd.log.1 轮转回退与 attempt 后缀对齐）。延迟导入
+    对齐本模块风格（避免加载序副作用）。索引查不到该 run 终态（日志轮转出窗/
+    旧日志）返回 None——调用侧按「索引缺失维持现状」处理，宁可不拦不可误伤
+    真实失败样本。
+    """
+    try:
+        from core.dashboard.data.runs import load_run_metric  # noqa: PLC0415
+
+        metric = load_run_metric(project_root, run_id)
+    except Exception:
+        return None
+    if not isinstance(metric, dict):
+        return None
+    terminal = metric.get("terminal")
+    if terminal is None:
+        return None
+    return str(terminal).strip().lower() == "success"
+
+
+def _record_phantom_failure_alert(store, logger, run_id: str, detail: str) -> None:
+    """幻影失败告警（self_review_phantom_failure，warning、不自动 mark_handled）。
+
+    守卫触发即意味着分类器仍有意料外误报：warning + 不 mark_handled 保证
+    人工可见（聚合每日至多一轮，频度天然受控）。store 未注入时降级
+    logger.warning（守卫排除照常生效，仅少一条 admin 告警留痕）。
+    """
+    description = (
+        f"自省分类疑幻影失败：run {run_id} 经信号路径（{detail}）判 failed，"
+        "但 daemon 侧 run_metrics terminal=success（正常 result 收尾，与 "
+        "result 文本无关）——不计入失败统计，请人工核对分类器是否仍有漏网"
+    )
+    written = False
+    if store is not None:
+        try:
+            from .admin_store import ESCALATION  # noqa: PLC0415
+
+            store.append(
+                {
+                    "kind": ESCALATION,
+                    "signal_type": "self_review_phantom_failure",
+                    "spec": None,
+                    "severity": "warning",
+                    "description": description,
+                    "evidence": f"run_id={run_id} detail={detail} terminal=success",
+                    "recommended_action": (
+                        "核对 .fenix/runs 该 run 产物正文：若为成功 run 被正文"
+                        "失败词误降级，收口 _BUSINESS_FAIL_SIGNALS 词表或"
+                        "_strip_terminal_echo_lines 窗口"
+                    ),
+                }
+            )
+            written = True
+        except Exception:
+            written = False
+    if not written and logger is not None:
+        logger.warning("self_review", description)
 
 
 def collect_runs_stats(project_root, window_start: datetime) -> Dict[str, int]:
@@ -403,23 +499,32 @@ def collect_runs_stats(project_root, window_start: datetime) -> Dict[str, int]:
         ts = start_ts if start_ts is not None else int(stat.st_mtime)
         if not _in_window(datetime.fromtimestamp(ts), window_start, window_end):
             continue
-        category, _detail = _classify_run(run_id, _read_run_tail(p, 3))
+        category, detail = _classify_run(run_id, _read_run_tail(p, 3))
         # 判定口径（result-based classification）：succeeded 以 _classify_run 的
         # result 分支判定结果为准——result 文本未命中 _business_fail_marker 且
-        # 终态邻近事件行（尾 3 行中排除 result 终态正文）未命中 _signal_evidence
-        # 即计为 succeeded，不引入成功语义文本
+        # 终态邻近事件行（尾 3 行中排除 result 终态正文及其 assistant 回声行）
+        # 未命中 _signal_evidence 即计为 succeeded，不引入成功语义文本
         # 白名单（朴素文本如「已退出」同样计为 succeeded）。接受项边界：信号词
         # 位于终态邻近 3 行之外时不再翻转分类（原先由全文件扫描捕获）；实证上
         # 盲派空 spec run 的失败凭据是 result 文本命中 marker（marker 路径保留），
         # 不依赖全文件扫描。本函数无 detail 输出通道，MUST NOT 追加 _scan_run_signals
         # 改写 category——running/dropped/timeout/instant_hang 桶位保持不变。
+        # 双源交叉守卫（evo-fix-self-review-phantom-failed-samples 2.3）：仅对
+        # 信号路径命中（detail 前缀 signal=）的 failed 比对 daemon 侧 terminal。
+        # terminal=success（正常 result 收尾即记 success，与 result 文本无关）
+        # → 幻影失败，改计 succeeded（不计失败统计）。marker= 命中（假成功
+        # 抓取）与 error 终态失败照常计入；索引查不到该 run 终态时维持现状
+        # 计入，不因缺数据改判。
+        if category == "failed" and detail.startswith("signal="):
+            if _run_terminal_success(project_root, run_id) is True:
+                category = "succeeded"
         counts["total"] += 1
         counts[category] += 1
     return counts
 
 
 def collect_failed_run_samples(
-    project_root, window_start: datetime, limit: int = 10
+    project_root, window_start: datetime, limit: int = 10, store=None, logger=None
 ) -> List[Dict[str, str]]:
     """收集窗口内业务失败 run 样本（run_id + 失败依据摘要），用于可追溯输出。
 
@@ -428,6 +533,15 @@ def collect_failed_run_samples(
     窗口快照化（同 collect_runs_stats），按 run_id 内嵌时间戳判定归属。
     统计源与 collect_runs_stats 同一并集（当前目录 + 归档目录，同 run_id
     当前目录优先去重），保证计数与样本口径一致。
+
+    双源交叉守卫（evo-fix-self-review-phantom-failed-samples 2.2）：仅对信号
+    路径命中（detail 前缀 signal=）的样本查 daemon 侧 run_metrics 终态；
+    terminal=success 则不计入失败样本，改写一条 self_review_phantom_failure
+    告警（warning、不自动 mark_handled）。marker= 命中（D1 假成功抓取：
+    正常 result 收尾即记 terminal=success，与 result 文本内容无关）MUST NOT
+    纳入守卫，照常计入失败。store/logger 为可选注入（SelfReviewScheduler
+    经 collect_daily_summary 透传 self.store/self.logger）；store 未注入时
+    仍排除幻影但跳过告警、降级 logger.warning。
     """
     window_end = datetime.now()
     samples: List[Dict[str, str]] = []
@@ -461,6 +575,15 @@ def collect_failed_run_samples(
             if sig:
                 detail = sig
         if category == "failed" and detail:
+            # 双源交叉守卫：terminal=success 而信号路径判 failed → 幻影失败，
+            # 不计入失败样本、改写 phantom 告警（不自动 handled）；marker=
+            # 命中与 error 终态失败不在守卫之列；索引查不到该 run 终态时
+            # 维持现状计入，不因缺数据改判。
+            if detail.startswith("signal=") and (
+                _run_terminal_success(project_root, run_id) is True
+            ):
+                _record_phantom_failure_alert(store, logger, run_id, detail)
+                continue
             samples.append({"run_id": run_id, "detail": detail})
     # 按时间排序（最新 run 排前）；limit 截断
     samples.sort(key=lambda s: s["run_id"], reverse=True)
@@ -759,13 +882,17 @@ class SelfReviewScheduler:
         lines.append(f"- 超时: {stats['timeout']}")
         lines.append(f"- 丢弃/空: {stats['dropped']}")
         lines.append(f"- 在跑/无终态: {stats['running']}")
-        if stats["failed"]:
-            # 失败样本可追溯：run_id + 命中标记/信号摘要（spec 可追溯要求）
-            samples = collect_failed_run_samples(self.project_root, window_start)
-            if samples:
-                lines.append("- 失败样本:")
-                for s in samples:
-                    lines.append(f"  - {s['run_id']}: {s['detail']}")
+        # 失败样本可追溯：run_id + 命中标记/信号摘要（spec 可追溯要求）。
+        # 不以守卫后的 failed 计数为门：全部失败皆幻影时 stats["failed"]==0，
+        # 样本收集仍须执行以产出 self_review_phantom_failure 告警（无真实
+        # 失败时返回空列表，「失败样本」节不渲染，输出形态不变）。
+        samples = collect_failed_run_samples(
+            self.project_root, window_start, store=self.store, logger=self.logger
+        )
+        if samples:
+            lines.append("- 失败样本:")
+            for s in samples:
+                lines.append(f"  - {s['run_id']}: {s['detail']}")
         lines.append("")
 
         # 3. admin 告警与处置记录

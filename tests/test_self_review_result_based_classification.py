@@ -13,8 +13,12 @@
 - evo-fix-self-review-marker-match-window 2.1/2.2：marker 匹配窗口收敛——
   失败声明仅认 result 文本开头声明区（前 _MARKER_DECLARATION_WINDOW 字符），
   摘要中段功能词复述（实拍「预算耗尽发一次性 warning」形态）不降级；开头
-  声明形态仍判 failed，窗口边界成对锁定；信号护栏仍扫终态邻近事件行、
-  result 终态正文不再作信号源
+  声明形态仍判 failed，窗口边界成对锁定；result 终态正文不再作信号源
+- evo-fix-self-review-phantom-failed-samples 1.1/1.3：信号护栏排除终态邻近
+  窗口（尾三行 [assistant, run_metrics, result]）中的 assistant 收工叙事
+  回声行（result 正文正是其同源副本，失败词必然同现——2026-09-25 两幻影
+  误报实拍）；窗口外的独立事件行仍是信号证据通道（有意推翻 698a9a0d
+  「兜底通道不收窄」决策）
 
 判定口径（result-based classification）：succeeded 以 _classify_run 的 result
 分支判定结果为准——result 文本未命中 _business_fail_marker 且终态邻近 3 行未命中
@@ -345,18 +349,30 @@ class TestMarkerWindowConvergence:
         samples = collect_failed_run_samples(root, datetime(2000, 1, 1, 0, 0))
         assert samples == []
 
-    def test_signal_guardrail_keeps_event_lines_skips_result_prose(self):
-        """护栏语义保持：终态邻近事件行仍是信号源，result 终态正文不再是。
+    def test_signal_guardrail_skips_echo_line_keeps_independent_lines(self):
+        """护栏语义（evo-fix-self-review-phantom-failed-samples 1.1）：终态邻近
+        窗口内的 assistant 回声行不再是信号源，窗口外独立事件行仍是；
+        result 终态正文从来不是。
 
-        信号词在 assistant 事件行 → 仍经 _signal_evidence 兜底判 failed
-        （test_signal_fallback_when_no_marker 锁定的兜底通道不收窄）；信号词
-        仅出现在 result 正文中段 → 不构成结构性事件信号，不二次降级（实拍
-        误判的第二源：_BUSINESS_FAIL_SIGNALS 与词表同形，marker 收窄后仍会
-        经 signal 路径翻转）。
+        回声行排除：result 正文正是窗口内 assistant 消息的同源副本，失败词
+        必然同现——不排除则 marker 声明窗口收窄被信号路径原路绕过（2026-09-25
+        两幻影误报实拍；有意推翻 698a9a0d「兜底通道不收窄」决策）。信号词仅
+        出现在 result 正文中段同样不二次降级（实拍误判的第二源）。
         """
-        category, detail = _classify_run("impl-sig-event-line", [
+        # 回声行：终态邻近窗口内的 assistant 事件行不再作信号源
+        category, detail = _classify_run("impl-sig-echo-line", [
             {"type": "system", "subtype": "task_started"},
             {"type": "assistant", "message": "budget-exhausted terminated"},
+            {"type": "result", "result": "进程退出", "num_turns": 1},
+        ])
+        assert category == "succeeded"
+        assert detail == ""
+
+        # 独立事件行：窗口外（尾三行窗口之外）的 assistant 事件行仍是信号源
+        category, detail = _classify_run("impl-sig-independent-line", [
+            {"type": "assistant", "message": "budget-exhausted terminated"},
+            {"type": "system", "subtype": "step", "description": "step-1"},
+            {"type": "system", "subtype": "step", "description": "step-2"},
             {"type": "result", "result": "进程退出", "num_turns": 1},
         ])
         assert category == "failed"

@@ -3,10 +3,17 @@
 对应 tasks：
 - 3.1 盲派 result-run 判 failed；真实成功 result-run 判 succeeded；
   标记/信号双源兜底；样本输出含依据
+- evo-fix-self-review-phantom-failed-samples 1.1/1.3：信号护栏排除终态
+  邻近窗口（尾三行 [assistant, run_metrics, result]）中的 assistant 收工
+  叙事回声行——result 文本正是该行的同源副本，正文失败词必然同现，不排除
+  则 marker 声明窗口收窄被信号路径原路绕过（2026-09-25 两幻影误报实拍）；
+  窗口外的独立事件行仍是信号证据通道（有意推翻 698a9a0d「兜底通道不收窄」
+  决策）
 
 实证背景（scheduling-showcase）：12 个盲派 implementer run 因空 spec
 失败，但进程正常终止（result 事件）被计为 succeeded——终止态 ≠ 成功态。
-本测试锁定「result 文本命中业务失败标记 / 同 run 结构性失败信号 → failed」。
+本测试锁定「result 文本命中业务失败标记 / 独立事件行含结构性失败信号 →
+failed；终态邻近 assistant 回声行中的失败词不构成信号证据」。
 """
 
 import json
@@ -56,10 +63,26 @@ class TestClassifyResultBusinessSemantics:
         assert "预算" in detail
 
     def test_signal_fallback_when_no_marker(self):
-        """双源护栏：result 无标记但事件序列含 budget-exhausted 信号 → failed。"""
+        """双源护栏：result 无标记但终态邻近窗口外的独立事件行含信号 → failed。
+
+        同一信号词在终态邻近窗口内的 assistant 回声行不再构成失败证据
+        （evo-fix-self-review-phantom-failed-samples 1.1，兜底通道有意收窄）。
+        """
+        echo_lines = [
+            _line(type="system", subtype="task_started", description="start"),
+            _line(type="assistant", message="budget-exhausted terminated"),
+            _line(type="result", result="进程退出", num_turns=1),
+        ]
+        category, detail = _classify_run("impl-sig-echo", echo_lines)
+        assert category == "succeeded"
+        assert detail == ""
+
+        # 信号词在窗口外的独立 assistant 事件行（尾三行窗口 = 末 3 行）
         lines = [
             _line(type="system", subtype="task_started", description="start"),
             _line(type="assistant", message="budget-exhausted terminated"),
+            _line(type="system", subtype="step", description="step-1"),
+            _line(type="system", subtype="step", description="step-2"),
             _line(type="result", result="进程退出", num_turns=1),
         ]
         category, detail = _classify_run("impl-sig-1", lines)
@@ -119,12 +142,13 @@ class TestCollectStatsAndSamples:
         assert stats["total"] == 1
 
     def test_signal_fallback_counts_failed(self, tmp_path):
-        """信号兜底：result 无标记但文件中部含 spec_content_missing → failed。"""
+        """信号兜底：独立事件行（非 assistant 回声）含 spec_content_missing → failed。"""
         root = tmp_path / "proj"
         root.mkdir()
         self._make_run(root, "impl-sig-999", [
             _line(type="system", subtype="start"),
-            _line(type="assistant", message="spec_content_missing detected"),
+            _line(type="system", subtype="tool_call", tool="Bash",
+                  argument="deploy", output="spec_content_missing detected"),
             _line(type="result", result="已退出", num_turns=1),
         ])
         stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0))
@@ -132,18 +156,27 @@ class TestCollectStatsAndSamples:
         assert stats["succeeded"] == 0
 
     def test_samples_include_run_id_and_evidence(self, tmp_path):
-        """样本输出含 run_id + 命中依据（可追溯）。"""
+        """样本输出含 run_id + 命中依据（可追溯）。
+
+        impl-echo-994 夹具锁定 1.1 聚合口径：失败词仅在终态邻近 assistant
+        回声行 → 分类 succeeded，不入失败样本。
+        """
         root = tmp_path / "proj"
         root.mkdir()
         self._make_run(root, "impl-blank-998", [
             _line(type="result", result="SPEC 内容缺失，无法实现", num_turns=1),
         ])
         self._make_run(root, "impl-sig-997", [
-            _line(type="assistant", message="budget-exhausted terminated"),
+            _line(type="system", subtype="escalation",
+                  description="budget-exhausted terminated"),
             _line(type="result", result="已退出", num_turns=1),
         ])
         self._make_run(root, "impl-ok-996", [
             _line(type="result", result="任务完成，验证通过", num_turns=4),
+        ])
+        self._make_run(root, "impl-echo-994", [
+            _line(type="assistant", message="budget-exhausted terminated"),
+            _line(type="result", result="已退出", num_turns=1),
         ])
         samples = collect_failed_run_samples(root, datetime(2000, 1, 1, 0, 0))
         assert len(samples) == 2
@@ -153,6 +186,7 @@ class TestCollectStatsAndSamples:
         assert "impl-sig-997" in by_id
         assert by_id["impl-sig-997"].startswith("signal=")
         assert "impl-ok-996" not in by_id
+        assert "impl-echo-994" not in by_id
 
     def test_samples_sorted_and_limited(self, tmp_path):
         """样本按时间倒序并受 limit 截断。"""
@@ -169,14 +203,19 @@ class TestCollectStatsAndSamples:
         run_ids = [s["run_id"] for s in samples]
         assert run_ids == sorted(run_ids, reverse=True)
 
-    def test_sample_scan_finds_midfile_signal(self, tmp_path):
-        """全文件扫描兜底：信号在文件中部（尾部行不覆盖）仍能命中。"""
+    def test_sample_scan_finds_independent_event_line_signal(self, tmp_path):
+        """信号兜底：终态邻近窗口内独立（非 assistant 回声）事件行仍能命中。
+
+        同一信号词在窗口内 assistant 回声行 → 不构成信号证据（夹具同场
+        对照）；窗口内 system 事件行 → 信号路径仍命中计 failed。
+        """
         root = tmp_path / "proj"
         root.mkdir()
         self._make_run(root, "impl-sig-995", [
             _line(type="system", subtype="start"),
-            _line(type="assistant", message="impl_budget_exhausted alert raised"),
-            _line(type="system", subtype="task_started"),
+            _line(type="assistant", message="impl_budget_exhausted alert raised（收工叙事回声）"),
+            _line(type="system", subtype="escalation",
+                  description="impl_budget_exhausted alert raised"),
             _line(type="result", result="进程正常结束", num_turns=1),
         ])
         stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0))
