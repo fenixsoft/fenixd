@@ -11,6 +11,10 @@
   kind: new
 - path: core/dashboard/static/src/pages/projects/list.tsx
   kind: modify
+- path: core/dashboard/static/src/pages/projects/listFilters.ts
+  kind: modify
+- path: core/dashboard/static/tests/listFilters.test.mjs
+  kind: modify
 - path: tests/test_dashboard_architecture_api.py
   kind: new
 - path: docs/help/08-dashboard.md
@@ -46,8 +50,8 @@
       可提取时校验 ∈[8,16]，越界判 `failed` 并注明实际数量；无法提取记
       `component_count: null` 放行）；daemon 重启后 `status.json` 残留 `generating`
       且在飞线程/进程不在时，读侧合成 `failed`（生成被中断）
-- [ ] 1.6 `core/dashboard/server.py` 接线新 mixin（对齐 `H12RegressionRoutesMixin`
-      汇聚方式）
+- [ ] 1.6 `core/dashboard/server.py` 接线新 mixin `H13ArchitectureRoutesMixin`
+      （对齐 `H12RegressionRoutesMixin` 汇聚方式；H12 编号已被 Regression 占用）
 
 ## 2. 前端：项目架构页签
 
@@ -62,7 +66,12 @@
 - [ ] 2.3 `core/dashboard/static/src/pages/projects/list.tsx` 页签数组在
       `regression`（测试回归）之后、`session`（会话接入）之前插入
       `{key: 'architecture', label: '项目架构'}` 项，children 挂 ArchitectureTab
-      并按 `activeTab === 'architecture'` 门控（对齐 QualityTab/RegressionTab 注释范式）
+      并按 `activeTab === 'architecture'` 门控（对齐 QualityTab/RegressionTab 注释范式）；
+      同步扩展 `listFilters.ts` 的 `ListTab` 联合类型与 `LIST_TABS` 数组补
+      `'architecture'`（否则 TS 编译报错，且 URL `?tab=architecture` 会被
+      listFilters.ts 的 `LIST_TABS.includes` 校验打回 `dev`）；`static/tests/listFilters.test.mjs`
+      中 `assert.deepEqual([...LIST_TABS], …)` 精确断言（现第 22 行）须同步补
+      `'architecture'`，漏改则既有测试直接红
 - [ ] 2.4 `core/dashboard/static` 下 `npm ci`（如 node_modules 缺失）后 `npm run build`
       通过，构建产物无报错（dist 为运行时产物，不入库）
 

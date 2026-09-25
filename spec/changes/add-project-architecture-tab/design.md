@@ -3,8 +3,11 @@
 ## Context
 
 Dashboard 项目详情页已有 4 个页签（功能开发 / 代码审查 / 测试回归 / 会话接入），页签
-定义集中在 `core/dashboard/static/src/pages/projects/list.tsx` 的 `tabItems`（约 1390–1413
-行），每个非默认页签由 `components/<X>Tab.tsx` 承载并按 `active` prop 门控请求。
+以 `<Tabs items={[...]}>` 的内联数组定义在 `core/dashboard/static/src/pages/projects/list.tsx`
+（约 1274–1413 行；注意 `tabItems` 命名属 `detail.tsx` 的另一组件，勿混淆），
+每个非默认页签由 `components/<X>Tab.tsx` 承载并按 `active` prop 门控请求。页签 key
+的权威类型是 `listFilters.ts` 的 `ListTab` 联合类型与 `LIST_TABS` 数组（URL
+`?tab=` 选中态按 `LIST_TABS.includes` 校验）。
 后端路由走 mixin 形态（`core/dashboard/routes/*_routes.py`，handler 用
 `self._json` / `self._error`，在 `server.py` 汇聚）。
 
@@ -91,8 +94,8 @@ failed，记 `component_count: null` 并放行（形态校验尽力而为，产�
 
 ### D7. 路由与文件清单
 
-新 mixin `H12ArchitectureRoutesMixin`（`routes/architecture_routes.py`），`server.py`
-继承链追加。单测：`tests/test_dashboard_architecture_api.py`（fake Popen 按 `cmd[0]`
+新 mixin `H13ArchitectureRoutesMixin`（`routes/architecture_routes.py`），`server.py`
+继承链追加（H12 已被 `H12RegressionRoutesMixin` 占用，按序取 H13）。单测：`tests/test_dashboard_architecture_api.py`（fake Popen 按 `cmd[0]`
 分发 + 布防门控，对齐测试隔离双陷阱先例；覆盖单飞 409 / 超时杀 / 重启残留合成 /
 产物校验 / 安装失败路径）。前端逻辑薄（轮询 + 四态渲染），不设独立 .test.mjs，
 由后端单测 + 构建冒烟覆盖。
