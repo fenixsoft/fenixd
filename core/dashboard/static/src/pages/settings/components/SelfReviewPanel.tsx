@@ -111,17 +111,27 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
         return;
       }
       // 配置保存成功后连调 /api/todo 保存 todo.md（同一「保存」动作的两段提交；
-      // 配置失败不连带覆写 todo.md）。成功后回读磁盘，兼作原「重新加载」语义
+      // 配置失败不连带覆写 todo.md）。成功后回读磁盘，兼作原「重新加载」语义。
+      // 覆写与回读拆成独立错误分支：覆写成功而回读偶发失败（网络抖动）时
+      // 文件已落盘，不能误报「保存失败」误导用户重试或怀疑丢失编辑
       if (!project || !ok) return;
       try {
         await saveTodo(project, todoDraft);
+      } catch (e) {
+        const errorMessage = e instanceof Error ? e.message : String(e);
+        message.error(`todo.md 保存失败：${errorMessage}`);
+        console.error('Failed to save todo.md:', e);
+        return;
+      }
+      // 回读失败单独提示；保留编辑框现有草稿不回填（覆写内容即用户刚提交的草稿）
+      try {
         const d = await getTodo(project);
         setTodoDraft(d.content);
         setTodoExists(d.exists);
       } catch (e) {
         const errorMessage = e instanceof Error ? e.message : String(e);
-        message.error(`todo.md 保存失败：${errorMessage}`);
-        console.error('Failed to save todo.md:', e);
+        message.error(`todo.md 已保存，但回读最新内容失败：${errorMessage}`);
+        console.error('Failed to reload todo.md after save:', e);
       }
     } finally {
       setSaving(false);

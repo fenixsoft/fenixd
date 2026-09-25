@@ -98,13 +98,16 @@ def has_dispute_signal(pipeline, spec_name: str) -> tuple:
         Path(root) / ".fenix" / ".fenix-run-result.json",
         Path(root) / ".fenix" / "spec-review" / spec_name / ".fenix-run-result.json",
     ]
+    unreadable: list = []
     for path in candidates:
         if not path.exists():
             continue
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-            continue  # 不可读 fail-open（按无争议），留痕于 evidence
+            # 不可读 fail-open（按无争议），留痕于 evidence（不可读≠缺失）
+            unreadable.append(path)
+            continue
         # 跨 spec 归属校验：共享文件残留的可能是其它 spec 实现轮的结果——
         # spec 戳为非空字符串且与当前 spec 不符时不据此判定（既防误挡本
         # spec，也防本 spec 争议被其它 spec 后写覆写后误放行），回落检查
@@ -119,6 +122,12 @@ def has_dispute_signal(pipeline, spec_name: str) -> tuple:
             types = sorted({str(h.get("type")) for h in hits})
             return True, f"{path.name} findings 含争议条目: {types}"
         return False, f"{path.name} findings 无 dispute/adjudication 条目（fail-open 无争议）"
+    if unreadable:
+        # 存在但损坏/不可读：留痕区分于「缺失」，避免审计者朝文件缺失方向排障
+        return False, (
+            "结果文件不可读（按无争议 fail-open）: "
+            + ", ".join(str(p) for p in unreadable)
+        )
     return False, "结果文件缺失（信号机制缺失按无争议 fail-open）"
 
 

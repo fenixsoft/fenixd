@@ -14,6 +14,20 @@ import re
 # 模块常量，不进 config（避免触发「配置项必须带 Dashboard 界面」约束）。
 MAX_VERIFY_FAIL_ROUNDS = 3
 
+# fix SPEC 的「在途或终态」状态集：模板写入守卫与幂等重置守卫共用（防两处
+# 逐字重复后新增状态漏改导致行为分叉）。与 _resolve_fix_spec_name 的状态集
+# 包含关系：本集合 ⊇ 其终态集（done/verified/pushed）∪ 进行中集
+# （testing/implementing），另含 implemented/blocked——同样不重写模板、不重置。
+_FIX_SPEC_IN_FLIGHT_OR_TERMINAL = (
+    "implementing",
+    "testing",
+    "implemented",
+    "verified",
+    "done",
+    "pushed",
+    "blocked",
+)
+
 
 class FamilyGovernor:
     """fix 家族治理组件（门面 PMEngine 的组合组件）。"""
@@ -650,27 +664,14 @@ class FamilyGovernor:
         # 待重置集时写入模板文件；implementing/implemented 等在途状态的
         # tasks.md 已含勾选进度与修复结论、proposal.md 可能经人工细化，
         # 重写空白模板会丢失这些内容。
-        if existing_fix is None or guard_status not in (
-            "implementing",
-            "testing",
-            "implemented",
-            "verified",
-            "done",
-            "pushed",
-            "blocked",
+        if (
+            existing_fix is None
+            or guard_status not in _FIX_SPEC_IN_FLIGHT_OR_TERMINAL
         ):
             self._ensure_fix_spec_files(fix_spec_name, spec_name)
 
         if existing_fix:
-            if guard_status in (
-                "implementing",
-                "testing",
-                "implemented",
-                "verified",
-                "done",
-                "pushed",
-                "blocked",
-            ):
+            if guard_status in _FIX_SPEC_IN_FLIGHT_OR_TERMINAL:
                 self._pm.logger.info(
                     "pm_engine",
                     f"Fix SPEC '{fix_spec_name}' 处于 '{guard_status}' "

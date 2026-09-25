@@ -134,7 +134,7 @@ def test_derive_loop(spec_name: str):
         if not fix_entry:
             print(json.dumps({"fix_spawned": False, "reverified": False,
                               "error": "fix spec not created"}, ensure_ascii=False))
-            return
+            sys.exit(1)
 
         # 模拟子 fix 完成 → 闭环
         sm.update_spec(fix_name, {"status": "done"})
@@ -230,6 +230,13 @@ def test_hot_switch(spec_name: str):
 
         engine._family._do_spec_bug_found(spec_name)
         fix_spawned_first = sm.read_one(f"fix-{spec_name}") is not None
+        if not fix_spawned_first:
+            print(json.dumps({
+                "error": "fix spec not created in Phase 1",
+                "case": "hot-switch",
+                "fix_spawned_first": False,
+            }, ensure_ascii=False))
+            sys.exit(1)
 
         # Phase 2: 切换到 inplace（清空 config）
         engine.config = {}

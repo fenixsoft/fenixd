@@ -145,8 +145,11 @@ class CliAssertionRunner:
             if mode == "regex":
                 try:
                     m = bool(re.search(str(expected), text))
-                except re.error:
-                    m = False
+                except re.error as e:
+                    # 非法正则是场景编写缺陷，显式走断言异常通道（与
+                    # _assert_exit_code 对非法 expected 对齐），不令 m=False
+                    # 掩盖——negate 场景会静默假绿
+                    raise ValueError(f"非法正则表达式: {expected!r}（{e}）") from e
             else:  # contains（缺省）
                 m = str(expected) in text
         return (not m) if negate else m

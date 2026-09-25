@@ -2268,6 +2268,9 @@ class VerificationPipeline:
         # 可见（验收失败属环境/任务书问题，绝非产品缺陷，绝不流转 bug-found）。
         verify_dir = self._context.project_root / ".fenix" / "verify-progress" / spec_name
         replan_left = 2
+        # 记录初始预算：预算耗尽分支渲染已执行重排次数（彼时 replan_left 恒为 0，
+        # 直接插值会恒显示「0 次用尽」，与实际已重排次数不符）。
+        initial_replan_budget = replan_left
         replan_feedback = None
         # fix-replan-feedback-injection：上一轮验收错误原文——连续两轮一字不差说明
         # planner 未消费反馈（重跑即纯烧钱），升级为 ERROR 提示人工关注。
@@ -2495,8 +2498,9 @@ class VerificationPipeline:
                             "status": "implemented",
                             "tester_run": None,
                             "error": (
-                                f"场景写前预校验整批拒绝且重排预算耗尽（{replan_left} "
-                                f"次用尽）: {reject_detail[:280]}"
+                                f"场景写前预校验整批拒绝且重排预算耗尽"
+                                f"（已重排 {initial_replan_budget - replan_left} 次）: "
+                                f"{reject_detail[:280]}"
                             ),
                         },
                     )

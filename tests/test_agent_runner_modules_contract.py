@@ -82,6 +82,9 @@ class TestD6PatchGap:
             {"timestamp": "2026-09-16T10:00:00.123+08:00"},
             {"timestamp": 123.0},
             {"timestamp": 42},
+            # bool 是 int 子类：两侧解析器都必须显式排除（返回 None），
+            # 锁定 latency 与 runner 数值分支不在此漂移。
+            {"timestamp": True},
             {"timestamp": None},
             {"timestamp": "not-a-date"},
             {},

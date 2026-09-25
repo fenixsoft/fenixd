@@ -1458,7 +1458,6 @@ class PromptBuilder:
         - {project_root}: 框架主树（项目根）
         """
         template = self._load_agent_template("evolution")
-        prompt = template
         projects: list = detail.get("ready_projects") or []
         pending: list = detail.get("pending_entries") or []
 

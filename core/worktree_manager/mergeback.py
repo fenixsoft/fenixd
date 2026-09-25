@@ -1059,9 +1059,25 @@ class G4MergebackMixin:
             # merge——若它先行，产物 DU 场景轮不到本自愈（add-dashboard-
             # incremental-data 目录重命名事故根因之二）。
             if self._resolve_build_artifact_conflicts():
-                self._drop_backup(backup)
+                # 自愈返回 True 即 merge 已提交（code-review item 40eb004b263b）：
+                # 以下辅助步骤与主成功路径同口径，任何抛错仅 warning 降级——
+                # 不得落入文件末尾通用 except 被误报成合回冲突（否则调用方按
+                # 冲突清理 worktree，主树与台账状态从此分叉）。
+                try:
+                    self._drop_backup(backup)
+                except Exception as e:  # noqa: BLE001 — 清理失败不否定已落地的 merge
+                    self.logger.warning(
+                        "worktree_manager",
+                        f"merge-back 后备份清理意外失败（保留备份供人工裁决）：{e}",
+                    )
                 # dist 冲突根治 B：自愈 merge 同样从合并后 src 重建收口
-                self._rebuild_dist_after_merge()
+                try:
+                    self._rebuild_dist_after_merge()
+                except Exception as e:  # noqa: BLE001 — 重建失败不否定已落地的 merge
+                    self.logger.warning(
+                        "worktree_manager",
+                        f"merge-back 后 dist 重建意外失败（忽略继续）：{e}",
+                    )
                 self.logger.info(
                     "worktree_manager",
                     f"Merge conflict self-healed (build artifacts aligned to "
@@ -1078,9 +1094,24 @@ class G4MergebackMixin:
             # 场景：run-result 类草稿在移出版本控制前派生的旧分支上被改动，与主树的
             # 删除相撞——被忽略的草稿不是交付物，不应让 merge-back 死锁。
             if self._resolve_ignored_modify_delete_conflicts():
-                self._drop_backup(backup)
+                # 自愈返回 True 即 merge 已提交（code-review item 40eb004b263b）：
+                # 辅助步骤与主成功路径同口径，任何抛错仅 warning 降级——不得
+                # 落入文件末尾通用 except 被误报成合回冲突。
+                try:
+                    self._drop_backup(backup)
+                except Exception as e:  # noqa: BLE001 — 清理失败不否定已落地的 merge
+                    self.logger.warning(
+                        "worktree_manager",
+                        f"merge-back 后备份清理意外失败（保留备份供人工裁决）：{e}",
+                    )
                 # dist 冲突根治 B：该路径同样可能并入 static src 变更
-                self._rebuild_dist_after_merge()
+                try:
+                    self._rebuild_dist_after_merge()
+                except Exception as e:  # noqa: BLE001 — 重建失败不否定已落地的 merge
+                    self.logger.warning(
+                        "worktree_manager",
+                        f"merge-back 后 dist 重建意外失败（忽略继续）：{e}",
+                    )
                 self.logger.info(
                     "worktree_manager",
                     f"Merge conflict self-healed (modify/delete on ignored files) "

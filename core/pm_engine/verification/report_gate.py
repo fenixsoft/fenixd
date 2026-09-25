@@ -251,6 +251,59 @@ def _verify_progress_result_paths(pipeline, spec_name: str) -> tuple:
     return primary, fallback
 
 
+def _read_shared_result(
+    pipeline,
+    path: Path,
+    spec_name: str,
+    require_verifier_role: bool,
+) -> VerdictReadResult:
+    """主树共享回退文件的统一读取（fix-code-review DRY）。
+
+    收敛 `_read_planner_result` / `_read_verdict` 对同一共享回退路径重复的
+    「read_text → json.loads → spec 戳不符记 WARNING 返回 foreign-stamp →
+    委托 `_read_verifier_result`」骨架；role 校验差异以 require_verifier_role
+    布尔参数表达，后续护栏规则变更（如新增戳字段）只改本处。
+
+    两入口历史行为逐字保留（勿合并归一）：
+    - require_verifier_role=True（_read_verdict）：data 非对象直接返回
+      failure("parse", "<path>: 顶层非对象")（不记日志）；role≠verifier
+      记 WARNING 返回 foreign-role；foreign-stamp WARNING 用 shared 措辞。
+    - require_verifier_role=False（_read_planner_result）：无 role 校验，
+      非对象交由委托的 `_read_verifier_result` 按 fail-closed 归因 parse；
+      foreign-stamp WARNING 沿用 stale 措辞。
+    """
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        return VerdictReadResult.failure("parse", f"{path}: {e}")
+    if require_verifier_role:
+        # ── role/spec 戳双校验（evo-verifier-result-single-source R1）──
+        # 主树共享文件只认 role=verifier 的 legacy verifier 写入；role 缺失
+        # 视为旧格式遗留、role≠verifier 视为其它 agent 残留（如 implementer
+        # 的 status=success），一律不作为验证裁决。
+        if not isinstance(data, dict):
+            return VerdictReadResult.failure("parse", f"{path}: 顶层非对象")
+        role = data.get("role")
+        if role != "verifier":
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"Ignoring shared result file {path}: role={role!r} != "
+                f"'verifier'（implementer 残留/旧格式遗留，不作为验证裁决）",
+            )
+            return VerdictReadResult.failure("foreign-role", f"{path}: role={role!r}")
+        stamp_log_label = "shared result file"
+    else:
+        stamp_log_label = "stale result file"
+    stamped = data.get("spec") if isinstance(data, dict) else None
+    if isinstance(stamped, str) and stamped and stamped != spec_name:
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"Ignoring {stamp_log_label} {path}: " f"spec='{stamped}' != '{spec_name}'",
+        )
+        return VerdictReadResult.failure("foreign-stamp", f"{path}: spec='{stamped}'")
+    return _read_verifier_result(pipeline, path)
+
+
 def _read_planner_result(pipeline, spec_name: str) -> VerdictReadResult:
     """读取 Planner 写入的结果文件，返回结构化三态结果（fail-closed）。
 
@@ -274,17 +327,7 @@ def _read_planner_result(pipeline, spec_name: str) -> VerdictReadResult:
     # （与 _read_implementer_result 相同语义），避免误读其它 spec 的
     # implementer 残留状态。
     if fallback.exists():
-        try:
-            fb_data = json.loads(fallback.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError) as e:
-            return VerdictReadResult.failure("parse", f"{fallback}: {e}")
-        stamped = fb_data.get("spec") if isinstance(fb_data, dict) else None
-        if isinstance(stamped, str) and stamped and stamped != spec_name:
-            pipeline._context.logger.warning(
-                "pm_engine",
-                f"Ignoring stale result file {fallback}: " f"spec='{stamped}' != '{spec_name}'",
-            )
-            return VerdictReadResult.failure("foreign-stamp", f"{fallback}: spec='{stamped}'")
+        return _read_shared_result(pipeline, fallback, spec_name, require_verifier_role=False)
     return _read_verifier_result(pipeline, fallback)
 
 
@@ -316,30 +359,4 @@ def _read_verdict(pipeline, spec_name: str) -> VerdictReadResult:
 
     if not shared.exists():
         return VerdictReadResult.failure("missing", f"{shared}")
-    try:
-        data = json.loads(shared.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as e:
-        return VerdictReadResult.failure("parse", f"{shared}: {e}")
-    if not isinstance(data, dict):
-        return VerdictReadResult.failure("parse", f"{shared}: 顶层非对象")
-
-    # ── role/spec 戳双校验（本 SPEC 相对已落地 D5 的真实增量）──
-    # 主树共享文件只认 role=verifier 的 legacy verifier 写入；role 缺失
-    # 视为旧格式遗留、role≠verifier 视为其它 agent 残留（如 implementer
-    # 的 status=success），一律不作为验证裁决。
-    role = data.get("role")
-    if role != "verifier":
-        pipeline._context.logger.warning(
-            "pm_engine",
-            f"Ignoring shared result file {shared}: role={role!r} != "
-            f"'verifier'（implementer 残留/旧格式遗留，不作为验证裁决）",
-        )
-        return VerdictReadResult.failure("foreign-role", f"{shared}: role={role!r}")
-    stamped = data.get("spec")
-    if isinstance(stamped, str) and stamped and stamped != spec_name:
-        pipeline._context.logger.warning(
-            "pm_engine",
-            f"Ignoring shared result file {shared}: " f"spec='{stamped}' != '{spec_name}'",
-        )
-        return VerdictReadResult.failure("foreign-stamp", f"{shared}: spec='{stamped}'")
-    return _read_verifier_result(pipeline, shared)
+    return _read_shared_result(pipeline, shared, spec_name, require_verifier_role=True)

@@ -423,9 +423,11 @@ def render_report(project_root, spec_name: str) -> str:
         if token_usage.get("cost_available") and isinstance(cost_usd, (int, float)):
             lines.append(f"累计成本: ${cost_usd:.2f}")
         elif cost_summary:
-            total_cost = cost_summary.get("total_cost_usd")
+            total_cost = cost_summary.get("computed_usd")
             if total_cost is not None:
                 lines.append(f"时间轴计费成本: ${float(total_cost):.2f}")
+            else:
+                lines.append("成本: 不可用（计费开启但无可计价 run）")
         else:
             lines.append("成本: 不可用（网关未回传计费）")
 
