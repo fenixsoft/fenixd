@@ -545,6 +545,7 @@ def collect_failed_run_samples(
     """
     window_end = datetime.now()
     samples: List[Dict[str, str]] = []
+    ts_by_run: Dict[str, int] = {}
     runs_dir = Path(project_root) / ".fenix" / "runs"
     if not runs_dir.is_dir():
         return samples
@@ -585,8 +586,12 @@ def collect_failed_run_samples(
                 _record_phantom_failure_alert(store, logger, run_id, detail)
                 continue
             samples.append({"run_id": run_id, "detail": detail})
-    # 按时间排序（最新 run 排前）；limit 截断
-    samples.sort(key=lambda s: s["run_id"], reverse=True)
+            ts_by_run[run_id] = ts
+    # 按窗口归属时间戳排序（最新 run 排前；口径同 collect_runs_stats：
+    # run_id 内嵌时间戳优先，缺失回退文件 mtime），同 ts 以 run_id 字典序
+    # 决胜保证确定性——run_id 纯字典序在跨 agent 类型前缀时与时间序不一致；
+    # limit 截断
+    samples.sort(key=lambda s: (ts_by_run[s["run_id"]], s["run_id"]), reverse=True)
     return samples[:limit]
 
 

@@ -120,8 +120,6 @@ def project_summary(project_root, name: str, path: str) -> dict:
     description = effective_config.get("description", "")
 
     # D8：daemon_health/hosting_state 经门面解析（tests patch 门面同名）
-    import core.dashboard.data as _facade
-
     return {
         "name": name,
         "path": str(path),
@@ -677,8 +675,6 @@ class SummaryIndex:
                     out.append(cached["summary"])
                     continue
                 # D8：经门面延迟解析（tests 以 dash_data.spec_summary=... 替换）
-                import core.dashboard.data as _facade
-
                 # D2：复用本轮预扫描的 runs_sigs 分组结果，spec_summary 不再
                 # 自行 glob runs/archive 目录（目录 glob 次数为常数）。
                 spec_files = [Path(p) for p in (runs_sigs.get(spec_name) or {})]
@@ -751,8 +747,6 @@ def spec_detail(project_root, spec_name: str, entry: dict) -> dict:
     # 时间轴（含运行节点 cost_usd；计费开关关闭时 get_spec_timeline 不下发）；
     # created 锚定读取窗口：STATE 条目的 created 使早期事件不被日志尾窗截断
     # 跨组引用（timeline 组的 get_spec_timeline/_timeline_with_retry）经门面延迟解析（D4）
-    import core.dashboard.data as _facade
-
     timeline = _facade._timeline_with_retry(
         # entry 透传（add-timeline-ocr-lane-visibility 任务 1.2）：最新「→ testing」
         # 节点附 ocr 门状态，与下方 quality_gates Card 同参同源合成
@@ -1009,8 +1003,6 @@ def overview(registry_projects: list) -> dict:
             for at, n in (s.get("active_runs_by_type") or {}).items():
                 totals["active_runs_by_type"][at] = totals["active_runs_by_type"].get(at, 0) + n
             # D8：parse_state 经门面解析（tests patch 门面同名）
-            import core.dashboard.data as _facade
-
             entries = _facade.parse_state(p["path"])
             t_today, t_week = _updated_spec_counts(entries, today_start, week_start)
             totals["spec_updated_today"] += t_today

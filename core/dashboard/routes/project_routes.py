@@ -134,13 +134,15 @@ class H2ProjectRoutesMixin:
                 result = self._api_project_install_hosting(project)
             else:  # restart
                 # 消费方校验（D8 同源）：unmanaged = 进程在跑但无 supervisor，
-                # restart_request 无人消费；拒绝而非写信号后静默滞留
+                # restart_request 无人消费；拒绝而非写信号后静默滞留。
+                # 探测异常（导入失败等）同样不放行：降级 stopped 会绕过校验，
+                # 对实际 unmanaged 的 daemon 谎报成功——按 unmanaged 同样拒绝
                 try:
                     from core.fenix_session import hosting_state as _hosting_state
 
                     hosting = _hosting_state(project["path"])
                 except Exception:
-                    hosting = "stopped"
+                    hosting = "unmanaged"
                 if hosting == "unmanaged":
                     result = {
                         "ok": False,

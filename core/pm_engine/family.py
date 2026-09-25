@@ -800,7 +800,13 @@ class FamilyGovernor:
                 end = m.end() + next_heading.start() + 1  # 包含 \n
             else:
                 end = len(text)
-            new_text = text[:start] + section.strip() + "\n" + text[end:]
+            # 行首锚保持（item a25d95843de3）：start 已回退吃掉段前全部换行、
+            # section.strip() 又剥掉新段自带的前导换行，直接拼接会把「## 验证修复」
+            # 标题粘在上一行行尾，下一轮 ^## 验证修复 MULTILINE 失配走追加分支、
+            # 修复段重复堆积。此处补回段落分隔（与追加分支 \n\n 形态一致）；
+            # start==0（段落在文件头）时不补，避免文件首出现多余空行。
+            sep = "\n\n" if start > 0 else ""
+            new_text = text[:start] + sep + section.strip() + "\n" + text[end:]
         else:
             # 无现有段：追加到末尾
             new_text = text.rstrip("\n") + section

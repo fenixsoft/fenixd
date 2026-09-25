@@ -487,19 +487,17 @@ def parse_todo_entries(text: str) -> List[dict]:
         current_fields = {}
 
     for raw_line in text.splitlines():
-        line = raw_line.rstrip()
-        if not line.strip():
+        if not raw_line.strip():
             continue
-        line = raw_line
 
-        m = _TODO_DATE_RE.match(line)
+        m = _TODO_DATE_RE.match(raw_line)
         if m:
             _flush_entry()
             date_section = m.group(1)
             current_section = ""
             continue
 
-        m = _TODO_SECTION_RE.match(line)
+        m = _TODO_SECTION_RE.match(raw_line)
         if m:
             _flush_entry()
             section_name = m.group(1).strip()
@@ -517,7 +515,7 @@ def parse_todo_entries(text: str) -> List[dict]:
             continue
 
         # 条目标题行：- **<标题>**
-        m = _TODO_ENTRY_RE.match(line)
+        m = _TODO_ENTRY_RE.match(raw_line)
         if m:
             _flush_entry()
             current_entry = {
@@ -529,7 +527,7 @@ def parse_todo_entries(text: str) -> List[dict]:
             continue
 
         # 空小节占位：- （当日无）
-        stripped = line.strip()
+        stripped = raw_line.strip()
         if stripped.startswith("-") and _EMPTY_MARKER in stripped:
             continue
 
@@ -540,7 +538,7 @@ def parse_todo_entries(text: str) -> List[dict]:
         # 处理标记行：仅在其紧跟条目标题行（该条目尚未收集任何字段）时才
         # 生效——整条标记为已处理（flush 时丢弃）；孤立标记行（其标题行已被
         # 手工删除/改写后残留）只告警并跳过自身，不连坐当前条目
-        if _TODO_MARKER_RE.match(line):
+        if _TODO_MARKER_RE.match(raw_line):
             if not current_fields:
                 current_entry["_processed"] = True
             else:
@@ -551,7 +549,7 @@ def parse_todo_entries(text: str) -> List[dict]:
             continue
 
         # 四字段嵌套行：  - 影响：…
-        m = _FIELD_RE.match(line)
+        m = _FIELD_RE.match(raw_line)
         if m and m.group(1).strip() in {label for label, _k in _FIELD_LABELS}:
             label = m.group(1).strip()
             key = dict(_FIELD_LABELS).get(label)
@@ -563,7 +561,7 @@ def parse_todo_entries(text: str) -> List[dict]:
             continue
 
         # 其它带缩进行：当前字段续行（多行值场景），无字段则跳过
-        if line.startswith((" ", "\t")) and current_fields:
+        if raw_line.startswith((" ", "\t")) and current_fields:
             last_key = list(current_fields.keys())[-1]
             if stripped and not stripped.startswith("-"):
                 current_fields[last_key] += f"\n{stripped}"

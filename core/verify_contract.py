@@ -252,7 +252,21 @@ def load_verify_contract(project_root: Path, logger=None) -> Optional[VerifyCont
     # 整份契约作废：其余合法步骤与 serve/ready 不受牵连（对齐 deps_mode/
     # regression「告警＋忽略该片段」惯例）。
     prepare = []
-    for i, step in enumerate(data.get("prepare") or [], 1):
+    prepare_data = data.get("prepare")
+    # prepare 段整体形态守卫（code-review item 96b8f60efeea）：非列表（字符串/
+    # 映射/标量）会被按字符或键名迭代误建出多条构建步骤，不可迭代标量更使
+    # enumerate 直接抛 TypeError 从本函数冒出，违背「解析失败按无契约处理并
+    # 记 warning」约定——记 warning（含原文 repr）并按空 prepare 处理，对齐
+    # ready/regression 段「告警＋忽略该片段」惯例。
+    if prepare_data is not None and not isinstance(prepare_data, list):
+        if logger:
+            logger.warning(
+                "verify_contract",
+                f"verify.yaml prepare 段非法（须为步骤列表，按空 prepare 处理）: "
+                f"{prepare_data!r}",
+            )
+        prepare_data = []
+    for i, step in enumerate(prepare_data or [], 1):
         if isinstance(step, str):
             prepare.append(PrepareStep(run=step))
         elif isinstance(step, dict) and step.get("run"):
@@ -421,6 +435,12 @@ class ValidateResult:
     serve_port: Optional[int] = None
     ready_url: str = ""
     ready_expect: int = 200
+    # ready 探针是否实际执行（code-review item 944ef0f39f71）：prepare 失败/
+    # serve.root 缺失/serve 启动失败等路径下探针从未运行，而 ready_ok 保持
+    # 初始 True，CLI 按其打印「✓ 通过」会向用户谎报未执行的探针已通过。探针
+    # 实际运行过才置 True，未执行段由 CLI 显示「未探测」；退出码与总体失败
+    # 判定仍按 ready_ok，不受本标志影响。
+    ready_ran: bool = False
     # 本次校验实际加载的契约对象（code-review item 73047bb4e140）：随结果一并
     # 返回，调用方（fenix_verify_contract.py CLI）全程复用同一份契约做跳过
     # 判定与 regression 自证，消除两次读取之间 verify.yaml 被改写导致「三段
@@ -557,6 +577,8 @@ def validate_contract(project_root: Path, logger=None) -> ValidateResult:
     # 进程组，防孤儿服务。
     proc = None
     ready_ok = True
+    # 探针是否实际执行（供 CLI 区分「未探测」与「通过」，item 944ef0f39f71）
+    ready_ran = False
     ready_error = ""
     ready_url = ""
     ready_expect = contract.ready.expect
@@ -640,6 +662,7 @@ def validate_contract(project_root: Path, logger=None) -> ValidateResult:
             if base_url and serve_ok:
                 ready_url = contract.ready.url
                 ok, note = probe_ready(base_url, contract.ready)
+                ready_ran = True
                 ready_ok = ok
                 ready_error = note if not ok else ""
                 # ready 探针失败是运行时问题，不是契约格式问题——契约结构有效
@@ -693,6 +716,7 @@ def validate_contract(project_root: Path, logger=None) -> ValidateResult:
         serve_port=serve_port,
         ready_url=ready_url,
         ready_expect=ready_expect,
+        ready_ran=ready_ran,
         contract=contract,
     )
 

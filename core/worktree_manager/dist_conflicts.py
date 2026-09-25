@@ -541,7 +541,7 @@ class G5DistConflictsMixin:
                 text=True,
                 timeout=30,
             )
-        except subprocess.TimeoutExpired:
+        except (subprocess.SubprocessError, OSError):
             return []
         if ls.returncode != 0 or not ls.stdout.strip():
             return []
@@ -581,7 +581,7 @@ class G5DistConflictsMixin:
                 text=True,
                 timeout=30,
             )
-        except subprocess.TimeoutExpired:
+        except (subprocess.SubprocessError, OSError):
             return []
         if res.returncode != 0:
             return []
@@ -605,7 +605,7 @@ class G5DistConflictsMixin:
                     text=True,
                     timeout=30,
                 )
-            except subprocess.TimeoutExpired:
+            except (subprocess.SubprocessError, OSError):
                 self.logger.warning(
                     "worktree_manager",
                     f"checkout -f HEAD -- {f} timed out during self-heal",
@@ -618,7 +618,7 @@ class G5DistConflictsMixin:
                 text=True,
                 timeout=30,
             )
-        except subprocess.TimeoutExpired:
+        except (subprocess.SubprocessError, OSError):
             self.logger.warning(
                 "worktree_manager",
                 "git reset timed out during stash-pop self-heal",

@@ -338,11 +338,20 @@ class StateParser:
         current_name = None
         current_entry = {}
 
+        in_comment = False
         for line in content.split("\n"):
-            # Skip HTML comment blocks
-            if line.strip().startswith("<!--"):
+            # 跳过 HTML 注释块：块状态机跟踪，进入 <!-- 后跳过直到 --> 的
+            # 全部行（注释内的字段行不再被 kv 正则误并入前一条目）；同行
+            # 闭合的 <!-- xxx --> 只跳过本行；未闭合注释块（有 <!-- 无 -->）
+            # 到文件末尾均视为注释。普通字段值行恰以 --> 结尾（如
+            # note: a --> b）不再被整体丢弃。
+            if in_comment:
+                if "-->" in line:
+                    in_comment = False
                 continue
-            if line.strip().endswith("-->"):
+            if line.strip().startswith("<!--"):
+                if "-->" not in line:
+                    in_comment = True
                 continue
 
             # Match ### <spec-name>

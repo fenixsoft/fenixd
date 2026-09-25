@@ -22,6 +22,7 @@ planner 依赖 prompt 措辞兜底取证）。
 """
 
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -183,14 +184,13 @@ def self_check(root: Path, parsed_count: int, warning_buf: list) -> None:
     措辞兜底，但框架应有感知。
     """
     heuristic = 0
-    subprocess_mod = __import__("subprocess")
     # MUST ③：自检 grep 源与扫描源同文件集合（routes/ 子包 + server.py）。
     grep_targets = [str(root / "core" / "dashboard" / "routes")]
     server_py = root / "core" / "dashboard" / "server.py"
     if server_py.is_file():
         grep_targets.append(str(server_py))
     try:
-        res = subprocess_mod.run(
+        res = subprocess.run(
             ["grep", "-roEh", r'"/api/[^"]+"'] + grep_targets,
             capture_output=True,
             text=True,
@@ -202,7 +202,7 @@ def self_check(root: Path, parsed_count: int, warning_buf: list) -> None:
     try:
         # 与扫描器同文件集（仅 *.tsx）：宽 grep 全树会把 .ts/.json 等非扫描
         # 文件计入 heuristic，系统性抬高差值制造假覆盖告警。
-        res = subprocess_mod.run(
+        res = subprocess.run(
             [
                 "grep",
                 "-roEh",
@@ -218,7 +218,7 @@ def self_check(root: Path, parsed_count: int, warning_buf: list) -> None:
     except Exception:
         pass
     try:
-        res = subprocess_mod.run(
+        res = subprocess.run(
             [
                 "grep",
                 "-oEh",
