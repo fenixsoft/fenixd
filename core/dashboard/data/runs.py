@@ -738,6 +738,11 @@ def _run_tail_insights(
                 e = json.loads(line)
             except (json.JSONDecodeError, ValueError):
                 continue
+            # code-review ae465a29d3c6: 合法 JSON 非 object 行（裸数字/字符串/
+            # 数组/null）在此跳过，否则 e.get 抛 AttributeError 致时间轴接口
+            # 500（与 _parse_run_metric_stream / classify_run 防护口径一致）
+            if not isinstance(e, dict):
+                continue
             t = e.get("type")
             if t == "provider_marker":
                 m, p = e.get("model"), e.get("provider")
