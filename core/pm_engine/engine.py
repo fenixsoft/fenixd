@@ -4201,6 +4201,10 @@ class PMEngine:
             self.logger.warning("pm_engine", f"review_anchors 读取 STATE 失败: {e}")
             return anchors
         for name, entry in specs.items():
+            # 与 check_blockers / backfill_push_residuals 同款防御：STATE 坏条目
+            # （非 dict）跳过，不让 1s 粒度轮询的空闲判定持续抛 AttributeError。
+            if not isinstance(entry, dict):
+                continue
             run_id = entry.get("reviewer_run")
             if run_id:
                 anchors[name] = run_id

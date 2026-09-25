@@ -104,6 +104,10 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
   // 项目或发起了新加载）则丢弃——防止慢响应乱序把旧项目的契约内容写进当前
   // 项目草稿，进而被「保存 verify.yaml」以当前项目名写盘造成跨项目覆盖。
   const yamlLoadSeq = useRef(0);
+  // 草稿归属守卫：记录草稿内容对应的（项目, 加载序号），保存前比对——
+  // 首次加载未完成（草稿还是空串）或期间已切换项目（草稿仍是上一个项目的
+  // 内容）时拒绝保存，防止以当前项目名把旧契约/空串写盘覆盖既有契约。
+  const yamlDraftSourceRef = useRef<{ project: string; seq: number } | null>(null);
 
   const loadVerifyYaml = async (silent = false) => {
     const seq = ++yamlLoadSeq.current;
@@ -114,6 +118,7 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
       if (seq !== yamlLoadSeq.current) return; // 过期响应：丢弃，不回写草稿
       setYamlDraft(d.content);
       setYamlExists(d.exists);
+      yamlDraftSourceRef.current = { project, seq };
     } catch (e) {
       if (seq !== yamlLoadSeq.current) return; // 过期请求的失败也不打扰当前项目
       console.error('Failed to load verify.yaml:', e);
@@ -130,6 +135,13 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
 
   const handleYamlSave = async () => {
     if (!project) return;
+    // 过期草稿守卫：加载未完成或草稿仍属于上一个项目（切项目的加载往返
+    // 窗口内残留）时，以当前项目名写盘会覆盖既有契约——放弃保存并提示。
+    const src = yamlDraftSourceRef.current;
+    if (!src || src.project !== project || src.seq !== yamlLoadSeq.current) {
+      message.warning('verify.yaml 内容尚未加载完成（或已切换项目），请重新加载后再保存');
+      return;
+    }
     setYamlSaving(true);
     try {
       await saveVerifyYaml(project, yamlDraft);
@@ -301,6 +313,7 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
             <Button
               type="primary"
               loading={yamlSaving}
+              disabled={yamlLoading || !project}
               onClick={handleYamlSave}
               data-testid="verify-yaml-save"
             >

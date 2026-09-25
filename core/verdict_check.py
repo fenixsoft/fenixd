@@ -678,7 +678,12 @@ def enforce_blank_screenshot_direction(scenario: dict) -> Optional[str]:
     Returns:
         新的 classification（需要改写时）或 None（不需改写）。
     """
+    # screenshot_labels 非 dict 按空处理（code-review item acc304e9e5c4，与
+    # compute_attribution_level 同款防御：非 dict 真值 .get 抛 AttributeError
+    # 会被门禁「异常不阻断」吞掉而旁路白屏方向强制改写）。
     labels = scenario.get("screenshot_labels") or {}
+    if not isinstance(labels, dict):
+        labels = {}
     if not labels.get("blank_screenshot", False):
         return None
     classification = scenario.get("classification") or ""

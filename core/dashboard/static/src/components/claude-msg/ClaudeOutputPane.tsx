@@ -191,6 +191,10 @@ export default function ClaudeOutputPane({
     };
 
     void loadTail();
+    // reportStatus 刻意不入依赖（code-review item aa6c0683def4）：它随 [onRunStatus]
+    // 变化，而 AdminInvokeModal 以内联函数传 onRunStatus 且其 eventCount 高频
+    // setState，列入依赖会逐事件重拉尾部并闪 loading 遮罩
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runId, project, tail]);
 
   // 向前分页（design D5）：以 offset_from_end=当前已加载条数重拉并前置拼接，
@@ -318,6 +322,10 @@ export default function ClaudeOutputPane({
       eventSource.close();
       eventSourceRef.current = null;
     };
+    // reportStatus 刻意不入依赖（code-review item aa6c0683def4，理由同初载
+    // effect）：onRunStatus 引用不稳定时列入依赖会逐事件关闭重建 EventSource
+    // 并重注册 watch，代价更高
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runId, project, tail]);
 
   // 事件数变化通知外层（必须在条件 return 之前调用 hook，否则 loading 翻转时

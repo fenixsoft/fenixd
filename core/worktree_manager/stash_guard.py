@@ -14,6 +14,7 @@ from pathlib import Path
 from core.worktree_manager import (  # noqa: E402
     AUTOSTASH_MSG_PREFIX,
 )
+from core.worktree_manager.mergeback import _unquote_git_path  # noqa: E402
 
 
 class G6StashGuardMixin:
@@ -29,7 +30,12 @@ class G6StashGuardMixin:
         触发，2026-09-02 修）。untracked（'??'）不计入。命令失败返回空列表
         （调用方按「无重叠」处理，不阻塞流程）。
 
-        Returns: 排序后的脏 tracked 文件路径列表（rename 两侧都计入）。
+        路径反转义：porcelain 对含非 ASCII/特殊字符的路径默认输出 C-quoted
+        转义形（如 "core/\346\226\207.tsx"），逐段经 `_unquote_git_path`
+        （mergeback 同源反转义）还原为真实路径——消费方（mergeback WIP 闸门 /
+        code-fix 批 WIP 重叠预检）拿真实路径比对求交，带引号转义形会永不命中。
+
+        Returns: 排序后的脏 tracked 文件路径列表（rename 两侧都计入，已反转义）。
         """
         try:
             result = subprocess.run(
@@ -50,9 +56,12 @@ class G6StashGuardMixin:
                 continue
             path = line[3:].strip()
             if " -> " in path:
-                files.extend(p.strip() for p in path.split(" -> "))
+                # porcelain 对 rename 两侧各自 C-quote，按段逐个反转义
+                files.extend(
+                    _unquote_git_path(p.strip()) for p in path.split(" -> ")
+                )
             else:
-                files.append(path)
+                files.append(_unquote_git_path(path))
         return sorted(p for p in files if p)
 
     def ensure_clean_tree(self, prefix: str = None) -> bool:

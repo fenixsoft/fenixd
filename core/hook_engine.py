@@ -35,6 +35,7 @@ import json
 import os
 import shlex
 import subprocess
+import tempfile
 import threading
 import time
 import urllib.error
@@ -735,15 +736,30 @@ class HookEngine:
                             dirty = True
                 if not dirty:
                     continue
-                tmp = cfg_path.with_suffix(".yaml.tmp")
-                tmp.write_text(
-                    self._split_yaml_header(raw)
-                    + yaml.safe_dump(
-                        data, allow_unicode=True, default_flow_style=False, sort_keys=False
-                    ),
-                    encoding="utf-8",
+                # mkstemp(0600) + os.replace 原子写回（对齐 config_admin.write_config
+                # 模式），并把 tmp 权限收敛回原文件 mode——经 dashboard 保存过的
+                # config.yaml（含 llm providers apikey 等敏感字段）为 0600，
+                # 不能被 umask 缺省权限放宽成 0644。
+                mode = cfg_path.stat().st_mode & 0o7777
+                fd, tmp_name = tempfile.mkstemp(
+                    dir=str(cfg_path.parent), prefix=".config-", suffix=".yaml.tmp"
                 )
-                tmp.replace(cfg_path)
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as f:
+                        f.write(
+                            self._split_yaml_header(raw)
+                            + yaml.safe_dump(
+                                data, allow_unicode=True, default_flow_style=False, sort_keys=False
+                            )
+                        )
+                    os.chmod(tmp_name, mode)
+                    os.replace(tmp_name, cfg_path)
+                except Exception:
+                    try:
+                        os.unlink(tmp_name)
+                    except OSError:
+                        pass
+                    raise
                 changed += 1
             except (OSError, yaml.YAMLError) as e:
                 self._log_warning(f"hook 清扫读改 {cfg_path} 失败: {e}")

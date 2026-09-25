@@ -344,7 +344,7 @@ class AdminStore:
                         changed = True
             return changed
 
-        return self._mutate(mutate)
+        return self._mutate(mutate, skip_unchanged=True)
 
     def mark_signal_handled(self, alert_id: str) -> bool:
         """将某条 kind=SIGNAL 记录标记已处理（add-human-adjudication-choices 4.1）。
@@ -366,7 +366,7 @@ class AdminStore:
                         changed = True
             return changed
 
-        return self._mutate(mutate)
+        return self._mutate(mutate, skip_unchanged=True)
 
     def mark_escalated(self, alert_id: str) -> bool:
         """将某条信号标记为已唤起 Administrator（escalated=True）。
@@ -385,7 +385,7 @@ class AdminStore:
                         changed = True
             return changed
 
-        return self._mutate(mutate)
+        return self._mutate(mutate, skip_unchanged=True)
 
     def mark_all_handled(self) -> int:
         """将所有未处理升级告警标记为已处理。返回处理数量。"""
@@ -399,7 +399,7 @@ class AdminStore:
                     changed += 1
             return changed
 
-        return self._mutate(mutate)
+        return self._mutate(mutate, skip_unchanged=True)
 
     def auto_resolve(self, resolutions: list) -> int:
         """批量自动闭环升级告警（add-alert-auto-resolve D3/D6）。
