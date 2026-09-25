@@ -112,7 +112,7 @@ class TestHistoryRetentionWindow:
 
     def test_flapping_output_unchanged_after_window_raise(self, tmp_path):
         """24h 保留窗提升后，flapping 判定（10 分钟自有窗口）输出不变。"""
-        # 10 分钟内 4 次切换（3 次转换）→ 触发 flapping
+        # 10 分钟内 4 条变更（changes 条目即切换事件，≥阈值 3）→ 触发 flapping
         proot, mon, now = _make_monitor(tmp_path, {
             "spec-a": {"status": "implementing", "updated": ""},
         }, moves_ago_minutes=[8, 6, 4, 2])
