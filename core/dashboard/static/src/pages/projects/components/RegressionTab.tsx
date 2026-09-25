@@ -47,6 +47,7 @@ import type {
   RegressionProgress,
   RegressionResult,
 } from '../../../services/dashboard';
+import { useIsMobile } from '../../../hooks/useIsMobile';
 
 interface RegressionTabProps {
   project: string;
@@ -81,6 +82,13 @@ const KIND_COLOR: Record<string, string> = {
   timeout: 'purple',
   long: 'gold',
 };
+// 分类中文文案单源（桌面结果表「分类」列与移动端堆叠卡共用）
+const KIND_LABEL: Record<string, string> = {
+  failure: '失败',
+  error: '错误',
+  timeout: '超时',
+  long: '长耗时',
+};
 
 // ── 概览状态 Tag：颜色/文案查找表（code-review item a22a55ff970a：嵌套
 // 三元违反项目风格规则，改查找表单源；failed 与未知态缺省 = 红 / 存在失败）──
@@ -105,7 +113,7 @@ const FIX_POLL_INTERVAL_MS = 1000;
 const FIX_POLL_LIMIT_MS = 30_000;
 // 快照缺失时的展示回退，与后端 RegressionSpec.long_test_threshold_seconds
 // 缺省口径一致（改动须与 core/verify_contract.py 同步）
-const DEFAULT_LONG_TEST_THRESHOLD_SECONDS = 10;
+const DEFAULT_LONG_TEST_THRESHOLD_SECONDS = 8;
 const OVERVIEW_CARD_BACKGROUND = '#fafafa';
 
 // ── 触发按钮文案（code-review item c543cbb4b22b）：parse_error 与主分枝
@@ -217,6 +225,11 @@ function RunningProgressView({
 
 export default function RegressionTab({ project, active }: RegressionTabProps) {
   const { message } = App.useApp();
+  // <768 窄屏布局切换（hook 须在早退 return 之前调用）：异常用例表从
+  // 「用例名/文件:行/耗时/分类」四列表格切换为单列堆叠卡——用例名与
+  // 文件:行都是不可断行的长标识符，任何列宽微调都压不住表格 min-content
+  // 出界（2026-09-25 移动端越界实测：整表 913px / 视口 390px）。
+  const isMobile = useIsMobile();
   const [snapshot, setSnapshot] = useState<RegressionResult | null>(null);
   const [triggering, setTriggering] = useState(false);
   // 受理已提交、daemon 尚未 mark_running 的过渡态：点击受理到服务端 running
@@ -506,55 +519,77 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
     (snapshot?.long_tests?.length ?? 0) > 0 ||
     status === 'timeout';
 
-  const columns: ColumnsType<
-    { key: string; name: string; file: string; line: number; time: number; kind: string; message?: string }
-  > = [
-    {
-      title: '用例名',
-      dataIndex: 'name',
-      key: 'name',
-      ellipsis: true,
-    },
-    {
-      title: '文件:行',
-      key: 'loc',
-      // 用例名列过宽：文件:行固定占表宽 30%（配 tableLayout=fixed，用例名吃剩余）
-      width: '30%',
-      render: (_: unknown, rec) => {
-        if (!rec.file) return '—';
-        const loc = rec.line > 0 ? `${rec.file}:${rec.line}` : rec.file;
-        return (
-          <Typography.Text code style={{ fontSize: 12 }} ellipsis={{ tooltip: loc }}>
-            {loc}
-          </Typography.Text>
-        );
-      },
-    },
-    {
-      title: '耗时',
-      dataIndex: 'time',
-      key: 'time',
-      width: 100,
-      // 显式判空（code-review item 30024ba4279f）：项目 lint 禁止宽松相等
-      render: (t: number) =>
-        t !== null && t !== undefined ? `${t}s` : '—',
-    },
-    {
-      title: '分类',
-      dataIndex: 'kind',
-      key: 'kind',
-      width: 100,
-      render: (kind: string) => {
-        const labels: Record<string, string> = {
-          failure: '失败',
-          error: '错误',
-          timeout: '超时',
-          long: '长耗时',
-        };
-        return <Tag color={KIND_COLOR[kind] || 'default'}>{labels[kind] || kind}</Tag>;
-      },
-    },
-  ];
+  type CaseRow = { key: string; name: string; file: string; line: number; time: number; kind: string; message?: string };
+  const columns: ColumnsType<CaseRow> = isMobile
+    ? [
+        // <768 窄屏：单列堆叠卡——用例名（换行）、文件:行（换行）、分类 Tag +
+        // 耗时同行。表格布局机制（tableLayout=fixed + 100% 宽）不变，四列
+        // 内容的 min-content 出界问题随「改为堆叠」消除；分页/空态/行键
+        // 仍由同一张 Table 承载。
+        {
+          title: '异常用例',
+          key: 'case',
+          render: (_: unknown, rec) => (
+            <Space direction="vertical" size={4} style={{ width: '100%' }}>
+              <Typography.Text style={{ wordBreak: 'break-all' }}>{rec.name}</Typography.Text>
+              {rec.file ? (
+                <Typography.Text code type="secondary" style={{ fontSize: 12, wordBreak: 'break-all' }}>
+                  {rec.line > 0 ? `${rec.file}:${rec.line}` : rec.file}
+                </Typography.Text>
+              ) : null}
+              <Space size={8}>
+                <Tag color={KIND_COLOR[rec.kind] || 'default'} style={{ marginInlineEnd: 0 }}>
+                  {KIND_LABEL[rec.kind] || rec.kind}
+                </Tag>
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  {rec.time !== null && rec.time !== undefined ? `${rec.time}s` : '—'}
+                </Typography.Text>
+              </Space>
+            </Space>
+          ),
+        },
+      ]
+    : [
+        {
+          title: '用例名',
+          dataIndex: 'name',
+          key: 'name',
+          ellipsis: true,
+        },
+        {
+          title: '文件:行',
+          key: 'loc',
+          // 用例名列过宽：文件:行固定占表宽 30%（配 tableLayout=fixed，用例名吃剩余）
+          width: '30%',
+          render: (_: unknown, rec) => {
+            if (!rec.file) return '—';
+            const loc = rec.line > 0 ? `${rec.file}:${rec.line}` : rec.file;
+            return (
+              <Typography.Text code style={{ fontSize: 12 }} ellipsis={{ tooltip: loc }}>
+                {loc}
+              </Typography.Text>
+            );
+          },
+        },
+        {
+          title: '耗时',
+          dataIndex: 'time',
+          key: 'time',
+          width: 100,
+          // 显式判空（code-review item 30024ba4279f）：项目 lint 禁止宽松相等
+          render: (t: number) =>
+            t !== null && t !== undefined ? `${t}s` : '—',
+        },
+        {
+          title: '分类',
+          dataIndex: 'kind',
+          key: 'kind',
+          width: 100,
+          render: (kind: string) => (
+            <Tag color={KIND_COLOR[kind] || 'default'}>{KIND_LABEL[kind] || kind}</Tag>
+          ),
+        },
+      ];
 
   const rows = buildRows(snapshot!);
 

@@ -1,6 +1,6 @@
 """verify.yaml regression 段解析测试（test-regression-declaration 能力）。
 
-覆盖：有效段解析（含显式 timeout/threshold）、缺省阈值 10 / 缺省超时 1800、
+覆盖：有效段解析（含显式 timeout/threshold）、缺省阈值 8 / 缺省超时 1800、
 无 regression 段 → None、无效段（缺 cmd/output、format 非 junit）→ None +
 WARNING、非法数值回退缺省（task 1.3）。
 """
@@ -64,7 +64,7 @@ class TestRegressionContract(unittest.TestCase):
         self.assertEqual(c.regression.output, ".fenix/regression/junit.xml")
         self.assertEqual(c.regression.timeout_seconds, 1800)
         self.assertEqual(c.regression.format, "junit")
-        self.assertEqual(c.regression.long_test_threshold_seconds, 10)
+        self.assertEqual(c.regression.long_test_threshold_seconds, 8)
         # 既有字段不受影响（加法兼容）
         self.assertEqual(len(c.prepare), 1)
         self.assertEqual(c.serve.kind, "static")
@@ -167,10 +167,10 @@ regression:
     def test_invalid_numeric_values_fall_back(self):
         """非法数值（非正数/类型错误）回退缺省（task 1.3）。"""
         for bad_timeout, bad_threshold, exp_t, exp_th in [
-            (0, 0, 1800, 10),
-            (-5, -1, 1800, 10),
-            ("abc", "x", 1800, 10),
-            (True, False, 1800, 10),  # bool 是 int 子类，显式排除
+            (0, 0, 1800, 8),
+            (-5, -1, 1800, 8),
+            ("abc", "x", 1800, 8),
+            (True, False, 1800, 8),  # bool 是 int 子类，显式排除
         ]:
             with self.subTest(bad_timeout=bad_timeout, bad_threshold=bad_threshold):
                 _write(

@@ -25,7 +25,7 @@
 #                           只杀直接子进程会让 shell 派生的测试进程存活）。
 #   format                  可选，固定 junit，缺省 junit。结果格式；
 #                           本次仅支持 JUnit XML（声明其它值整段无效）。
-#   long_test_threshold_seconds  可选，正数，缺省 10。单用例耗时超过即
+#   long_test_threshold_seconds  可选，正数，缺省 8。单用例耗时超过即
 #                           计入「长耗时用例」表（含通过的用例）。
 #
 # # ── 全量回归示例（pytest 形态；被测项目按自身框架改写）──
@@ -34,7 +34,7 @@
 #   output: .fenix/regression/junit.xml
 #   timeout_seconds: 1800
 #   format: junit
-#   long_test_threshold_seconds: 10
+#   long_test_threshold_seconds: 8
 #
 # 【使用前必读】
 # 下方所有配置行均以 # 注释：保持注释 = 无契约，框架回退旧行为（config 的

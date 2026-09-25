@@ -660,7 +660,7 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
             与 code_review 同层同形态：开关归设置页，项目页「测试回归」分面只读
             展示 + 手动触发。开启前提 = 项目 .fenix/verify.yaml 有有效 regression 段
             （无段时周期检查点跳过、不派发空跑）；长耗时阈值归 verify.yaml 声明
-            （regression.long_test_threshold_seconds 缺省 10），本卡片只读说明其来源，
+            （regression.long_test_threshold_seconds 缺省 8），本卡片只读说明其来源，
             MUST NOT 另开第二个阈值写入路径（双写会让阈值来源分叉，design R4）——
             编辑入口复用既有 GET/POST /api/verify-yaml（项目设置「项目简介」面板）。 */}
         <Card style={{ marginTop: 12 }}>

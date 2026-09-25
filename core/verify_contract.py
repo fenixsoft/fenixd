@@ -200,7 +200,7 @@ class RegressionSpec:
     output: str  # 命令产出的 JUnit XML 路径（相对项目根）
     timeout_seconds: int = 1800  # 硬超时（秒）；超过则中止进程并按超时归类
     format: str = "junit"  # 结果格式；本次仅支持 JUnit XML
-    long_test_threshold_seconds: int = 10  # 单用例耗时超过即计入长耗时表（正数）
+    long_test_threshold_seconds: int = 8  # 单用例耗时超过即计入长耗时表（正数）
 
 
 @dataclass
@@ -389,7 +389,7 @@ def load_verify_contract(project_root: Path, logger=None) -> Optional[VerifyCont
                     ),
                     format="junit",
                     long_test_threshold_seconds=_positive_int_or_default(
-                        reg_data.get("long_test_threshold_seconds"), 10
+                        reg_data.get("long_test_threshold_seconds"), 8
                     ),
                 )
     return VerifyContract(

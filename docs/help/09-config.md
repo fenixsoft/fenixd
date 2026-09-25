@@ -354,7 +354,7 @@ regression:
   output: .fenix/regression/junit.xml   # 必填：命令产出的 JUnit XML 相对项目根路径
   timeout_seconds: 1800                 # 可选：硬超时（秒），正整数，缺省 1800；超过则中止并归为 timeout
   format: junit                         # 可选：结果格式，本次仅支持 junit 一值（缺省 junit）；其它值整段按无效处理
-  long_test_threshold_seconds: 10       # 可选：长耗时用例阈值（正数，缺省 10），单用例耗时超过即计入 long_tests
+  long_test_threshold_seconds: 8        # 可选：长耗时用例阈值（正数，缺省 8），单用例耗时超过即计入 long_tests
 ```
 
 - 缺 `cmd`/`output`、`format` 非 `junit` 或非法数值（非正数）时，`regression` 段视为无效/回退缺省：无效段按「未配置回归」处理（记 WARNING，不阻断 daemon 启动），分面显示引导态、周期检查点跳过、触发端点 400。**MUST NOT** 把其它 format 按 junit 去解析（必然产出无解释的 parse_error）。

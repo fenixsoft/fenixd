@@ -47,7 +47,7 @@ Fenix Web Dashboard（`http://localhost:8787`）是跨项目的可视化监控�
 点进项目卡片进入详情页，顶部 Tabs 分四个分面：「SPEC 开发」（默认，SPEC 列表与状态操作）/「代码审查」（code-review 问题台账 + 手动触发，见前文）/「测试回归」/「Claude Code 会话」。各分面 active 门控：仅在选中时拉取数据，未选中零请求。
 
 「测试回归」分面（`GET /api/regression/result`）按最近一次全量回归快照 `.fenix/regression/last-run.json` 渲染三态：
-- **全绿（passed）**：概览卡片展示测试路径（`cmd`）、用例总数、通过数、执行时间（本地时区）、总耗时；若存在长耗时用例（单用例耗时 > `verify.yaml` 的 `regression.long_test_threshold_seconds`，缺省 10s）仍在其下展示长耗时用例表；
+- **全绿（passed）**：概览卡片展示测试路径（`cmd`）、用例总数、通过数、执行时间（本地时区）、总耗时；若存在长耗时用例（单用例耗时 > `verify.yaml` 的 `regression.long_test_threshold_seconds`，缺省 8s）仍在其下展示长耗时用例表；
 - **存在失败/错误/超时/长耗时**：概览之下渲染结果表格，逐条列出异常用例（用例名 / 文件:行 / 耗时 / 分类——失败 / 错误 / 超时 / 长耗时），超时用例附中止原因；
 - **未执行（never_run）/ 结果不可解析（parse_error）**：展示引导态（「尚未执行过全量回归」/「结果不可解析 + 原因」），不报错、不显示空表。
 
@@ -67,7 +67,7 @@ Fenix Web Dashboard（`http://localhost:8787`）是跨项目的可视化监控�
 
 设置页承担配置管理职责：分项目读写受管配置键（llm / agents.models / gates.approve_mode）；查看与编辑 verify.yaml 验证契约；查看/调整 token 预算与消耗；以及管理提示词：查看通用层 agents/ 提示词、编辑项目级附加提示词。「Hook」面板管理当前项目的全局 hooks（对所有 SPEC 生效），表单结构同 SPEC 详情页的 Hook 页签，并展示跨 SPEC 的最近执行记录。
 
-「质量」页签（内部 key `quality`，位于「验证」之后）承载代码质量门与周期性审查/回归设置，三张卡片。第一张（既有）：单个开关「收尾代码质量审查」（`verify.impl_code_review`，键路径不变）。开启后实现者在全部 tasks.md 任务完成、提交之后、写结果文件之前调用 ocr（`bin/ocr_review.py`）审查本次改动；环境未安装 ocr 时自动按 unavailable 降级跳过。该开关原置于「验证」页签，独立成页后验证页不再承载它（避免双入口）。第二张（`admin.code_review.enabled`，2026-09-19 从项目页「代码审查」分面迁来）：开关「周期性代码审查」——配置项归设置页统一管理，项目页分面只保留结果展示与手动触发。开启后与每日自省同周期派发 code-review agent，审查产品代码质量，问题入台账供项目页「代码审查」分面消费。第三张（`admin.regression.enabled`，add-test-regression-tab）：开关「周期性全量回归」——开启后与每日自省同周期自动执行一次全量回归（需项目 `.fenix/verify.yaml` 配置 `regression` 段），结果落到 `.fenix/regression/last-run.json`，供项目页「测试回归」分面展示；同一自然日防重；与 implementer 收尾的全量套件互斥（主机级锁）。手动触发（项目页「立即执行全量回归」）不受本开关约束。长耗时用例阈值来自 `verify.yaml` 的 `regression.long_test_threshold_seconds`（缺省 10 秒），属项目测试体系声明，在项目页「验证」面板的 `verify.yaml` 编辑入口中调整，本卡片不提供第二个写入路径。
+「质量」页签（内部 key `quality`，位于「验证」之后）承载代码质量门与周期性审查/回归设置，三张卡片。第一张（既有）：单个开关「收尾代码质量审查」（`verify.impl_code_review`，键路径不变）。开启后实现者在全部 tasks.md 任务完成、提交之后、写结果文件之前调用 ocr（`bin/ocr_review.py`）审查本次改动；环境未安装 ocr 时自动按 unavailable 降级跳过。该开关原置于「验证」页签，独立成页后验证页不再承载它（避免双入口）。第二张（`admin.code_review.enabled`，2026-09-19 从项目页「代码审查」分面迁来）：开关「周期性代码审查」——配置项归设置页统一管理，项目页分面只保留结果展示与手动触发。开启后与每日自省同周期派发 code-review agent，审查产品代码质量，问题入台账供项目页「代码审查」分面消费。第三张（`admin.regression.enabled`，add-test-regression-tab）：开关「周期性全量回归」——开启后与每日自省同周期自动执行一次全量回归（需项目 `.fenix/verify.yaml` 配置 `regression` 段），结果落到 `.fenix/regression/last-run.json`，供项目页「测试回归」分面展示；同一自然日防重；与 implementer 收尾的全量套件互斥（主机级锁）。手动触发（项目页「立即执行全量回归」）不受本开关约束。长耗时用例阈值来自 `verify.yaml` 的 `regression.long_test_threshold_seconds`（缺省 8 秒），属项目测试体系声明，在项目页「验证」面板的 `verify.yaml` 编辑入口中调整，本卡片不提供第二个写入路径。
 
 开关下方另有三项运行参数设置（add-impl-code-review-tuning，键 `verify.impl_code_review_timeout_sec` / `verify.impl_code_review_concurrency` / `verify.impl_code_review_effort`，缺省 600 / 2 / `low`）：
 - **审查超时（秒）**：ocr LLM 单请求超时，写入 run 级 ocr provider 配置（`custom_providers.fenix-impl.timeout_sec`），**确定性生效**——不配置时 ocr 走其内置 300s 默认，实测 8 路并发 + 300s 会撞穿首字节等待导致大面积文件级 timeout。数字输入，须正整数，单位「秒」。

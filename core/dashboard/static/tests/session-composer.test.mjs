@@ -214,3 +214,29 @@ test('sortCommandsByUsage / frequentCommands：按频次降序、稳定排序、
   assert.equal(frequent[0].usageCount, 3);
   assert.deepEqual(frequentCommands(cmds, {}), []);
 });
+
+// ── 角标数字封顶（formatCommandCount）──────────────────────────────────────
+// 回归 2026-09-25：命令入口按钮角标 h-4 w-4 小圆标，79 命令 + 49 skill = 128
+// 三位数溢出图标外被裁切。封顶 99+，非法输入归 '0'。
+const { formatCommandCount, COMMAND_COUNT_BADGE_CAP } = await import(
+  '../src/components/claude-composer/composerLogic.ts'
+);
+
+test('formatCommandCount：常规数字原样返回字符串', () => {
+  assert.equal(formatCommandCount(0), '0');
+  assert.equal(formatCommandCount(7), '7');
+  assert.equal(formatCommandCount(49), '49');
+  assert.equal(formatCommandCount(99), '99');
+});
+
+test('formatCommandCount：超过 99 封顶为 99+（角标装不下三位数）', () => {
+  assert.equal(COMMAND_COUNT_BADGE_CAP, 99);
+  assert.equal(formatCommandCount(100), '99+');
+  assert.equal(formatCommandCount(128), '99+');
+});
+
+test('formatCommandCount：非法输入（NaN/负数/小数）不产生怪异展示', () => {
+  assert.equal(formatCommandCount(Number.NaN), '0');
+  assert.equal(formatCommandCount(-3), '0');
+  assert.equal(formatCommandCount(12.7), '12');
+});

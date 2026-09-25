@@ -80,7 +80,17 @@ const LOADING_ROW_STYLE: CSSProperties = {
   gap: 8,
   padding: '16px 2px',
 };
-const MESSAGE_AREA_STYLE: CSSProperties = { flex: 1, minHeight: 0, position: 'relative' };
+// display:flex 必须显式给出（2026-09-25 缺陷修复）：本容器默认 block，子级
+// ClaudeMessageList 的 flex-1 / min-h-0 / overflow-y-auto 在 block 容器里全部
+// 失效——列表涨到内容高度，向下溢出与输入区重叠、撑出页面级滚动条把输入区
+// 滚走（长会话 100% 复现）。flex 容器化后子级被约束在本区域内自行滚动。
+const MESSAGE_AREA_STYLE: CSSProperties = {
+  flex: 1,
+  minHeight: 0,
+  position: 'relative',
+  display: 'flex',
+  flexDirection: 'column',
+};
 const TRUNCATED_BAR_STYLE: CSSProperties = {
   position: 'absolute',
   top: 8,

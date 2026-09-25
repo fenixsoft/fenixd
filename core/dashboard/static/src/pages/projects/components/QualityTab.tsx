@@ -58,6 +58,7 @@ import ScheduleFields, {
   nextRunAtISO,
 } from '../../../components/ScheduleFields';
 import type { AcceptSchedule } from '../../../components/ScheduleFields';
+import { useIsMobile } from '../../../hooks/useIsMobile';
 
 interface QualityTabProps {
   project: string;
@@ -227,8 +228,44 @@ function ProblemCell({ rec }: { rec: CodeReviewItem }) {
   );
 }
 
+// 移动端（<768）堆叠卡形态的「问题」单元格：严重度/状态 Tag 行 → 标题
+// （换行）→ 文件:行（换行）→ 描述全文（换行）。与桌面版 ProblemCell 的
+// 差异：① 标题不再与文件:行挤同一行（nowrap 单行契约在 139px 列宽下
+// 只剩 6~8 字）；② 描述直接全文展示——桌面版全文走悬浮 1s 的 Popover，
+// 触屏设备没有 hover，该通道在移动端不可达。
+function ProblemCellMobile({ rec }: { rec: CodeReviewItem }) {
+  return (
+    <Space direction="vertical" size={4} style={{ width: '100%' }}>
+      <Space size={4} wrap>
+        <Tag color={SEVERITY_COLOR[rec.severity] || 'default'} style={{ marginInlineEnd: 0 }}>
+          {rec.severity}
+        </Tag>
+        <Tag color={STATUS_COLOR[rec.status] || 'default'} style={{ marginInlineEnd: 0 }}>
+          {STATUS_TEXT[rec.status] || rec.status}
+        </Tag>
+      </Space>
+      <Typography.Text style={{ fontWeight: 500, wordBreak: 'break-word' }}>
+        {rec.title}
+      </Typography.Text>
+      <Typography.Text code type="secondary" style={{ fontSize: 12, wordBreak: 'break-all' }}>
+        {rec.file}:{rec.line}
+      </Typography.Text>
+      <Typography.Paragraph
+        type="secondary"
+        style={{ fontSize: 12, marginBottom: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}
+      >
+        [{rec.category}] {rec.description}
+      </Typography.Paragraph>
+    </Space>
+  );
+}
+
 export default function QualityTab({ project, active }: QualityTabProps) {
   const { message, modal } = App.useApp();
+  // <768 窄屏布局切换：台账表从「严重度/问题/状态」三列切换为单列堆叠卡
+  // （390px 视口下「问题」列仅 139px，单行 nowrap 契约把标题压到 6~8 字；
+  // 触屏无 hover，悬浮 Popover 全文通道不可达——2026-09-25 移动端实测）。
+  const isMobile = useIsMobile();
   const [items, setItems] = useState<CodeReviewItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedKeys, setSelectedKeys] = useState<React.Key[]>([]);
@@ -824,43 +861,54 @@ export default function QualityTab({ project, active }: QualityTabProps) {
     });
   }, [filteredItems]);
 
-  const columns: ColumnsType<CodeReviewItem> = [
-    {
-      title: '严重度',
-      dataIndex: 'severity',
-      key: 'severity',
-      width: 90,
-      // critical > major > minor > info（code-review item 2cde5d51a359）。
-      // 排序 server-side（2026-09-24 台账分页配套）：sorter: true 只保留列头
-      // 排序交互（antd 不再本地重排 dataSource），字段/方向经受控 sortOrder
-      // + Table onChange 写入 state 后由 loadItems 下发后端——客户端 sorter
-      // 在分页形态下只重排当页 10 行，排序语义失真。
-      sorter: true,
-      sortOrder: sortField === 'severity' ? sortOrder : undefined,
-      render: (sev: string) => <Tag color={SEVERITY_COLOR[sev] || 'default'}>{sev}</Tag>,
-    },
-    {
-      title: '问题',
-      key: 'problem',
-      render: (_: unknown, rec: CodeReviewItem) => <ProblemCell rec={rec} />,
-    },
-    {
-      title: '状态',
-      dataIndex: 'status',
-      key: 'status',
-      width: 100,
-      // 排序 server-side（open → in_spec → resolved → ignored 次序即后端
-      // STATUS_ORDER 白名单），受控方式同上方严重度列
-      sorter: true,
-      sortOrder: sortField === 'status' ? sortOrder : undefined,
-      render: (status: string) => (
-        <Tag color={STATUS_COLOR[status] || 'default'}>{STATUS_TEXT[status] || status}</Tag>
-      ),
-    },
-    // 操作列已按用户 2026-09-24 要求整体移除（逐条「忽略/清除归属」入口随列
-    // 下线；批量「全部忽略」入口保留在工具栏），对应 renderOps/handleIgnore/
-    // handleClearAttribution 一并删除。
-  ];
+  const columns: ColumnsType<CodeReviewItem> = isMobile
+    ? [
+        // <768 窄屏：单列堆叠卡（勾选列由 rowSelection 自动保留，批量
+        // 「生成修复 SPEC / 全部忽略」不受影响）；列头排序（server-side
+        // 交互）在移动端不下发，过滤仍走工具栏两个下拉。
+        {
+          title: '问题',
+          key: 'problem',
+          render: (_: unknown, rec: CodeReviewItem) => <ProblemCellMobile rec={rec} />,
+        },
+      ]
+    : [
+        {
+          title: '严重度',
+          dataIndex: 'severity',
+          key: 'severity',
+          width: 90,
+          // critical > major > minor > info（code-review item 2cde5d51a359）。
+          // 排序 server-side（2026-09-24 台账分页配套）：sorter: true 只保留列头
+          // 排序交互（antd 不再本地重排 dataSource），字段/方向经受控 sortOrder
+          // + Table onChange 写入 state 后由 loadItems 下发后端——客户端 sorter
+          // 在分页形态下只重排当页 10 行，排序语义失真。
+          sorter: true,
+          sortOrder: sortField === 'severity' ? sortOrder : undefined,
+          render: (sev: string) => <Tag color={SEVERITY_COLOR[sev] || 'default'}>{sev}</Tag>,
+        },
+        {
+          title: '问题',
+          key: 'problem',
+          render: (_: unknown, rec: CodeReviewItem) => <ProblemCell rec={rec} />,
+        },
+        {
+          title: '状态',
+          dataIndex: 'status',
+          key: 'status',
+          width: 100,
+          // 排序 server-side（open → in_spec → resolved → ignored 次序即后端
+          // STATUS_ORDER 白名单），受控方式同上方严重度列
+          sorter: true,
+          sortOrder: sortField === 'status' ? sortOrder : undefined,
+          render: (status: string) => (
+            <Tag color={STATUS_COLOR[status] || 'default'}>{STATUS_TEXT[status] || status}</Tag>
+          ),
+        },
+        // 操作列已按用户 2026-09-24 要求整体移除（逐条「忽略/清除归属」入口随列
+        // 下线；批量「全部忽略」入口保留在工具栏），对应 renderOps/handleIgnore/
+        // handleClearAttribution 一并删除。
+      ];
 
   // 旧 progressPercent 已删：进度条换 ProgressBarTile 后由 done/total 直驱
   // （2026-09-24 用户要求：与「自动修复代码问题」卡片同控件同观感），无百分

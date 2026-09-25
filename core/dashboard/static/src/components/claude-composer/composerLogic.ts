@@ -233,3 +233,21 @@ export function createTrailingDebounce<Args extends unknown[]>(
     },
   };
 }
+
+// ── 命令角标数字封顶 ───────────────────────────────────────────────────────
+// 回归 2026-09-25：命令入口按钮角标是 h-4 w-4 小圆标，三位数（79 命令 +
+// 49 skill = 128）溢出图标外被裁切。超过上限显示「99+」。
+
+export const COMMAND_COUNT_BADGE_CAP = 99;
+
+/** 角标展示文本：>99 封顶「99+」；NaN/负数归 '0'；小数向下取整。 */
+export function formatCommandCount(count: number): string {
+  if (!Number.isFinite(count) || count <= 0) {
+    return '0';
+  }
+  const floored = Math.floor(count);
+  if (floored > COMMAND_COUNT_BADGE_CAP) {
+    return `${COMMAND_COUNT_BADGE_CAP}+`;
+  }
+  return String(floored);
+}

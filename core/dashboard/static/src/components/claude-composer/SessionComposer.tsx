@@ -5,16 +5,17 @@
 // VisualViewport 键盘高度经 --keyboard-height 变量消费（D4）。
 import { useEffect, useMemo, useRef } from 'react';
 import type { CSSProperties, FormEvent, ReactNode } from 'react';
-import { Button } from 'antd';
+import { App, Button, Tooltip } from 'antd';
 import {
   ClearOutlined,
-  LoadingOutlined,
   MessageOutlined,
+  SendOutlined,
   StopOutlined,
 } from '@ant-design/icons';
 
 import './composer.css';
 import { cn } from './cn';
+import { formatCommandCount } from './composerLogic';
 import { useVisualViewportHeight } from './useVisualViewportHeight';
 import { useComposerState } from './useComposerState';
 import CommandMenu from './CommandMenu';
@@ -24,8 +25,6 @@ import {
   PromptInputTextarea,
   PromptInputFooter,
   PromptInputTools,
-  PromptInputButton,
-  PromptInputSubmit,
 } from './PromptInput';
 
 // D8：中文常量替换 react-i18next 文案
@@ -71,6 +70,7 @@ export default function SessionComposer({
   skills,
   files,
 }: SessionComposerProps) {
+  const { message } = App.useApp();
   // files/slashCommands/skills 端点失败静默降级（SessionPanel 已吞错给空数组）。
   const composer = useComposerState({
     project,
@@ -186,7 +186,7 @@ export default function SessionComposer({
             <div
               ref={composer.inputHighlightRef}
               aria-hidden="true"
-              className="pointer-events-none absolute inset-0 overflow-hidden rounded-xl"
+              className="pointer-events-none absolute inset-0 overflow-hidden"
             >
               <div className="chat-input-placeholder chat-input-overlay block w-full whitespace-pre-wrap break-words px-4 py-2 text-sm leading-6 text-transparent">
                 {composer.renderInputWithMentions(composer.input)}
@@ -214,33 +214,44 @@ export default function SessionComposer({
           <PromptInputFooter>
             <PromptInputTools className="min-w-0">
               {renderTool(
-                <PromptInputButton
-                  tooltip="斜杠命令与 Skills"
-                  onClick={composer.handleToggleCommandMenu}
-                  disabled={disabled}
-                  className="relative"
-                  aria-label="显示全部命令"
-                >
-                  <MessageOutlined />
-                  {composer.slashCommandsCount > 0 && (
-                    <span className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-primary text-[10px] font-bold text-primary-foreground">
-                      {composer.slashCommandsCount}
-                    </span>
-                  )}
-                </PromptInputButton>,
+                <Tooltip title="斜杠命令与 Skills">
+                  {/* 三个按钮统一 antd 默认风格（2026-09-25 用户定调） */}
+                  <Button
+                    icon={<MessageOutlined />}
+                    onClick={() => {
+                      // 空候选点击给显式反馈（2026-09-25 缺陷修复）：init 事件
+                      // 要等会话首次交互后才产生（stream-json 实证），新会话
+                      // 首条消息前候选恒为空，静默不弹菜单会被当成按钮坏了。
+                      if (composer.slashCommandsCount === 0) {
+                        message.info('命令候选尚未就绪：会话完成首次交互后即可唤起');
+                        return;
+                      }
+                      composer.handleToggleCommandMenu();
+                    }}
+                    disabled={disabled}
+                    className="relative"
+                    aria-label="显示全部命令"
+                  >
+                    {composer.slashCommandsCount > 0 && (
+                      <span className="absolute -right-1.5 -top-1.5 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-primary px-1 text-[10px] font-bold leading-none text-primary-foreground">
+                        {formatCommandCount(composer.slashCommandsCount)}
+                      </span>
+                    )}
+                  </Button>
+                </Tooltip>,
               )}
 
               {hasInput &&
                 renderTool(
-                  <PromptInputButton
-                    tooltip="清空输入"
-                    onClick={composer.handleClearInput}
-                    disabled={disabled}
-                    className="hidden sm:flex"
-                    aria-label="清空输入"
-                  >
-                    <ClearOutlined />
-                  </PromptInputButton>,
+                  <Tooltip title="清空输入">
+                    <Button
+                      icon={<ClearOutlined />}
+                      onClick={composer.handleClearInput}
+                      disabled={disabled}
+                      className="hidden sm:inline-block"
+                      aria-label="清空输入"
+                    />
+                  </Tooltip>,
                 )}
             </PromptInputTools>
 
@@ -255,32 +266,34 @@ export default function SessionComposer({
               </div>
 
               {canStop && onStop && (
-                <Button
-                  danger
-                  size="small"
-                  icon={<StopOutlined />}
-                  loading={stopping}
-                  disabled={disabled || stopping}
-                  onClick={onStop}
-                >
-                  停止
-                </Button>
+                <Tooltip title="停止会话">
+                  {/* 三个按钮统一 antd 默认风格（2026-09-25 用户定调） */}
+                  <Button
+                    danger
+                    icon={<StopOutlined />}
+                    loading={stopping}
+                    disabled={disabled || stopping}
+                    onClick={onStop}
+                    aria-label="停止会话"
+                  />
+                </Tooltip>
               )}
 
-              <PromptInputSubmit
-                disabled={sendDisabled}
-                onClick={(event) => {
-                  event.preventDefault();
-                  void composer.handleSubmit().catch(() => {
-                    // 失败已还原草稿；错误提示由 SessionPanel 呈现
-                  });
-                }}
-                aria-label={disabled ? '会话已结束' : '发送'}
-                title={disabled ? '会话已结束' : '发送'}
-                className="h-9 w-9"
-              >
-                {sending ? <LoadingOutlined spin className="h-4 w-4" /> : undefined}
-              </PromptInputSubmit>
+              <Tooltip title={disabled ? '会话已结束' : '发送'}>
+                <Button
+                  icon={<SendOutlined />}
+                  loading={sending}
+                  disabled={sendDisabled}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    void composer.handleSubmit().catch(() => {
+                      // 失败已还原草稿；错误提示由 SessionPanel 呈现
+                    });
+                  }}
+                  aria-label={disabled ? '会话已结束' : '发送'}
+                  title={disabled ? '会话已结束' : '发送'}
+                />
+              </Tooltip>
             </div>
           </PromptInputFooter>
         </PromptInput>

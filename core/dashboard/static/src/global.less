@@ -148,15 +148,17 @@ body {
 #root .screen-xs .regression-overview-desc td.ant-descriptions-item {
   width: auto;
 }
-// xs 窄屏回退：fixed + 30% 会把用例名压没（100px×2 定宽列挤占），回退 auto
-// 布局与 220px 文件列提示（等价改版前行为）。tableLayout/列宽是内联样式，须
-// !important 覆盖。
-#root .screen-xs .regression-result-table .ant-table-content > table {
-  table-layout: auto !important;
+// <768 窄屏：「测试路径」命令从单行省略改为整段换行——auto 表格布局下
+// nowrap chip 的 min-content 是整条命令，会把概览行撑出视口（2026-09-25
+// 移动端越界实测：该行 453px / 视口 390px）。ID 作用域特异性压过 antd
+// ellipsis 单行类的 nowrap。
+#root :is(.screen-xs, .screen-sm) .regression-overview-desc .ant-descriptions-item-content code {
+  white-space: normal;
+  word-break: break-all;
 }
-#root .screen-xs .regression-result-table .ant-table-content colgroup col:nth-child(2) {
-  width: 220px !important;
-}
+// 结果表（.regression-result-table）的窄屏形态不再走 CSS 列宽回退：
+// <768 由 RegressionTab 内 useIsMobile 切换为单列堆叠卡（旧 xs 强制
+// auto 布局规则已删——它正是 min-content 出界的放大器）。
 
 // SPEC 详情下拉快速切换面板：行 hover 高亮提示可点击（表格行样式）
 .spec-quick-switch-panel .spec-quick-switch-row:hover {

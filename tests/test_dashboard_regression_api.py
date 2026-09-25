@@ -262,7 +262,7 @@ class TestRegressionConfigAPI:
             assert body["regression"]["output"] == ".fenix/regression/junit.xml"
             assert body["regression"]["format"] == "junit"
             assert body["regression"]["timeout_seconds"] == 1800
-            assert body["regression"]["long_test_threshold_seconds"] == 10
+            assert body["regression"]["long_test_threshold_seconds"] == 8
         finally:
             srv.stop()
 
