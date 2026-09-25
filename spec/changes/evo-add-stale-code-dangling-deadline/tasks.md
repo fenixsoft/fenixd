@@ -11,7 +11,7 @@
 
 ## 1. 配置键
 
-- [ ] 1.1 core/config.py：在 stale_code_selfheal 配置族新增 max_dangling_seconds 键（缺省 14400 秒，0 = 关闭升级），声明缺省常量并纳入 get_stale_code_selfheal_config（config.py:1396）返回结构，负值回退缺省
+- [ ] 1.1 core/config.py：在 stale_code_selfheal 配置族新增 max_dangling_seconds 键（缺省 14400 秒，0 = 关闭升级），声明缺省常量并纳入 get_stale_code_selfheal_config（config.py:1396）返回结构，负值回退缺省。注意：勿直接复用既有 `_stale_selfheal_positive_int` helper（config.py:1383）——其语义为「0/负数一律回退缺省（0 不等效关闭）」，与本键「0 = 关闭升级」语义冲突，须为本键新写校验（0 合法并返回 0；负值/非整数/bool 回退缺省 14400）
 
 ## 2. 悬空计量与超时重启
 

@@ -22,7 +22,7 @@ daemon SHALL 在 _code_stale 持续超过 stale_code_selfheal.max_dangling_secon
 #### Scenario: 悬空超时且系统繁忙
 
 - **WHEN** _code_stale 为真且 now - _code_stale_since > max_dangling_seconds，同时存在在飞 run（_is_idle 为假）
-- **THEN** 不等待空闲，写入 .fenix/restart_request 并按既有自愈路径记录 self_triggered
+- **THEN** 不等待空闲，写入 .fenix/restart_request，重启历史按既有自愈路径如实记录 self_triggered 标志（悬空超时触发时距上次重启必然已超过 self_triggered_window_seconds 自触发窗口，故该标志记否；超时分支不得强制置真）
 - **AND** 在飞 run 由 shutdown 的 planned_restart 排水路径宽限收尾或保全后断点续做
 
 #### Scenario: 悬空未超时不触发
