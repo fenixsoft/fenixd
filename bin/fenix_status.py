@@ -37,6 +37,7 @@ STATUS_ICONS = {
     "implemented": "🧪",
     "testing": "🔍",
     "verified": "✅",
+    "reviewing": "⚖️",
     "bug-found": "🐛",
     "blocked": "🧊",
     "done": "🎯",
