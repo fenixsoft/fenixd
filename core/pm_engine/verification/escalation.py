@@ -871,31 +871,41 @@ def _escalate_scenario_defect_reroute(
             f"改道前失败集 ⊆ 重跑失败集（无任一场景被修复），提前升级人工，"
             f"不再重派 judge",
         )
-        pipeline._context.escalation_notifier(
-            spec_name=spec_name,
-            signal_type="scenario_defect_reroute_stoploss",
-            severity="major",
-            description=(
-                f"'{spec_name}' 场景缺陷改道重入轮（深度 {_repair_depth}）重跑"
-                f"失败集与改道前同批：改道前 {len(prev_failed)} 个失败场景"
-                f"无一被修复（全部 test-defect/flaky、product-bug=0）— 判改道"
-                f"无效，提前止损升级人工裁决，不再消耗剩余改道预算。"
-            ),
-            evidence=(
-                f"spec={spec_name}; 留存轮次={_repair_depth - 1}; "
-                f"改道前 failed_ids={','.join(prev_failed)[:500]}; "
-                f"重跑 failed_ids={','.join(dist.get('failed_ids') or [])[:500]}; "
-                f"classification_distribution="
-                f"{json.dumps(dist.get('counts'), ensure_ascii=False)}"
-            ),
-            recommended_action=(
-                "检查失败场景文件（.fenix/verify-progress/"
-                f"{spec_name}/test_scenarios.json）与验证报告，人工裁决："
-                "① admin 场景修复通道修场景（schema 门内）；② 确认为真产品缺陷"
-                "则重置分类/直接打回 implementer；③ 场景集已过时则删除冻结集"
-                "批准重新出题。"
-            ),
-        )
+        # 升级通道自身失败不得抛穿裁决流程（与同文件其他升级路径对齐，
+        # code-review item 7e0509f14fdd）：改道门是恒返回 True/False 的
+        # 收口路径，notifier 抛异常会打断验证裁决。
+        try:
+            pipeline._context.escalation_notifier(
+                spec_name=spec_name,
+                signal_type="scenario_defect_reroute_stoploss",
+                severity="major",
+                description=(
+                    f"'{spec_name}' 场景缺陷改道重入轮（深度 {_repair_depth}）重跑"
+                    f"失败集与改道前同批：改道前 {len(prev_failed)} 个失败场景"
+                    f"无一被修复（全部 test-defect/flaky、product-bug=0）— 判改道"
+                    f"无效，提前止损升级人工裁决，不再消耗剩余改道预算。"
+                ),
+                evidence=(
+                    f"spec={spec_name}; 留存轮次={_repair_depth - 1}; "
+                    f"改道前 failed_ids={','.join(prev_failed)[:500]}; "
+                    f"重跑 failed_ids={','.join(dist.get('failed_ids') or [])[:500]}; "
+                    f"classification_distribution="
+                    f"{json.dumps(dist.get('counts'), ensure_ascii=False)}"
+                ),
+                recommended_action=(
+                    "检查失败场景文件（.fenix/verify-progress/"
+                    f"{spec_name}/test_scenarios.json）与验证报告，人工裁决："
+                    "① admin 场景修复通道修场景（schema 门内）；② 确认为真产品缺陷"
+                    "则重置分类/直接打回 implementer；③ 场景集已过时则删除冻结集"
+                    "批准重新出题。"
+                ),
+            )
+        except Exception as e:
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"改道止损升级告警失败 '{spec_name}'（非阻塞）: "
+                f"{type(e).__name__}: {e}",
+            )
         return True
 
     # 改道轮数按调用方传入的实际值描述（_repair_depth = 已执行改道次数）：
@@ -921,29 +931,38 @@ def _escalate_scenario_defect_reroute(
         f"{escalate_head} '{spec_name}'（实际改道 {_repair_depth} 轮）— "
         f"升级人工，不等打回 implementer 修场景",
     )
-    pipeline._context.escalation_notifier(
-        spec_name=spec_name,
-        signal_type="scenario_defect_reroute_exhausted",
-        severity="major",
-        description=(
-            f"'{spec_name}' 验证失败清单全部为场景缺陷（test-defect/flaky）"
-            f"且 product-bug=0，改道重派 judge {_repair_depth} "
-            f"轮后仍未原地修复完成——已停止重派，升级人工裁决。"
-        ),
-        evidence=(
-            f"spec={spec_name}; classification_distribution="
-            f"{json.dumps(dist.get('counts'), ensure_ascii=False)}; "
-            f"failed_ids={','.join(dist.get('failed_ids') or [])[:500]}; "
-            f"impl_run_budget 未消耗（改道路径不触碰实现预算）"
-        ),
-        recommended_action=(
-            "检查失败场景文件（.fenix/verify-progress/"
-            f"{spec_name}/test_scenarios.json）与验证报告，人工裁决："
-            "① admin 场景修复通道修场景（schema 门内）；② 确认为真产品缺陷"
-            "则重置分类/直接打回 implementer；③ 场景集已过时则删除冻结集批准"
-            "重新出题。"
-        ),
-    )
+    try:
+        pipeline._context.escalation_notifier(
+            spec_name=spec_name,
+            signal_type="scenario_defect_reroute_exhausted",
+            severity="major",
+            description=(
+                f"'{spec_name}' 验证失败清单全部为场景缺陷（test-defect/flaky）"
+                f"且 product-bug=0，改道重派 judge {_repair_depth} "
+                f"轮后仍未原地修复完成——已停止重派，升级人工裁决。"
+            ),
+            evidence=(
+                f"spec={spec_name}; classification_distribution="
+                f"{json.dumps(dist.get('counts'), ensure_ascii=False)}; "
+                f"failed_ids={','.join(dist.get('failed_ids') or [])[:500]}; "
+                f"impl_run_budget 未消耗（改道路径不触碰实现预算）"
+            ),
+            recommended_action=(
+                "检查失败场景文件（.fenix/verify-progress/"
+                f"{spec_name}/test_scenarios.json）与验证报告，人工裁决："
+                "① admin 场景修复通道修场景（schema 门内）；② 确认为真产品缺陷"
+                "则重置分类/直接打回 implementer；③ 场景集已过时则删除冻结集批准"
+                "重新出题。"
+            ),
+        )
+    except Exception as e:
+        # 升级通道自身失败不得抛穿裁决流程（与同文件其他升级路径对齐，
+        # code-review item 7e0509f14fdd）
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"改道预算耗尽升级告警失败 '{spec_name}'（非阻塞）: "
+            f"{type(e).__name__}: {e}",
+        )
     return True
 
 
