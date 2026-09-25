@@ -250,9 +250,24 @@ def classify_run(lines: list) -> str:
     return _RUN_TERMINAL_STATUS_MAP.get(last.get("type"), "running")
 
 
+# run_id 白名单（code-review item 325d0b089a9d）：run 产物 stem 由
+# `<spec/admin 前缀>-<epoch>(-a<n>/-r<n>)` 形态构成，字符集仅字母数字与
+# `. _ -`。显式排除路径分隔符——HTTP 查询参数 run_id 原样透传进本函数，
+# `run_id=../../foo` 形态可拼出 runs 目录之外的 .jsonl 读取路径。
+_RUN_ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
 def _resolve_run_file(project_root, run_id: str) -> Path:
-    """定位 run 产物：优先活跃目录，缺失时回读 archive/（add-run-archive）。"""
+    """定位 run 产物：优先活跃目录，缺失时回读 archive/（add-run-archive）。
+
+    run_id 先经白名单校验（code-review item 325d0b089a9d）：含路径分隔符或
+    其它越界字符一律视为不存在——返回 runs 目录内的固定哨兵路径（不会命中
+    任何产物文件），调用方既有的 ``exists()`` 缺失分支按「run 不存在」处理，
+    与 archive 回退双缺失时返回不存在路径的既有行为一致。
+    """
     proot = Path(project_root)
+    if not isinstance(run_id, str) or not _RUN_ID_RE.match(run_id):
+        return proot / ".fenix" / "runs" / ".invalid-run-id"
     live = proot / ".fenix" / "runs" / f"{run_id}.jsonl"
     if live.exists():
         return live

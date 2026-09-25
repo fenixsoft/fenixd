@@ -11,6 +11,7 @@ import os
 import re
 import shutil
 import tempfile
+import threading
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -1246,6 +1247,16 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
             merged["worktree"]["has_build_artifacts"] = None
     return merged
 
+# config 写路径进程内串行锁（code-review item 39d2fda48088）：write_config 的
+# 「读 raw → 合并受管键 → 原子替换」是读-改-写序列，os.replace 只保证单次写
+# 不损坏、不保证序列原子性——ThreadingHTTPServer 并发线程各自基于旧 raw 合并
+# 时，后落盘者会用不含对方改动的 merged 整体覆盖文件，先写方的受管键被静默
+# 回滚。user/project 两作用域共用一把锁（写路径低频，无需按路径分锁）；
+# 跨进程并发不在本锁覆盖范围（如需可叠加 flock），当前 dashboard HTTP 线程与
+# daemon 裁决回写（admin_actions）同进程。
+_CONFIG_WRITE_LOCK = threading.Lock()
+
+
 def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict:
     """把受管配置段写回作用域文件（原子写、保留非受管键）。
 
@@ -1259,6 +1270,15 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
 
     Returns: {"ok": bool, "error": str|null, "scope": "user"|"project", "path": str}
     """
+    # 读-改-写全程持锁（code-review item 39d2fda48088）：临界区含前置校验
+    # （校验只依赖 patch 不依赖 raw，在锁内仅略微拉长持锁时间，写路径低频
+    # 可接受），保证并发保存不互覆盖。
+    with _CONFIG_WRITE_LOCK:
+        return _write_config_locked(scope_root, config_patch, scope)
+
+
+def _write_config_locked(scope_root, config_patch: dict, scope: str = "project") -> dict:
+    """write_config 实现（MUST NOT 直接调用：调用方须已持 _CONFIG_WRITE_LOCK）。"""
     from core.config import ConfigLoader
 
     import core.dashboard.data as _facade
