@@ -24,7 +24,7 @@
 - **D1 仓级 `pytest.ini` 单源**（`timeout = 10`、`timeout_method = signal`），不改回归命令拼接。理由：任何 pytest 入口（回归/验证链/本地开发/worktree）一致生效，单点维护；替代方案（verify.yaml 命令追加 `--timeout`）只覆盖回归一个入口。
 - **D2 signal 方法而非 thread 方法**：signal（SIGALRM）只中断主线程，用例判失败后会话继续；thread 方法超时会 dump 栈后 `os._exit` 整个 pytest 进程，等于一次慢用例杀掉整场回归。本仓用例均为纯 Python 替身/IO，SIGALRM 可中断；xdist worker 若未来启用，其用例同样运行在 worker 进程主线程，signal 仍适用。
 - **D3 豁免清单 `tests/timeout-allowlist.yaml` + conftest 注入**：conftest 的 `pytest_collection_modifyitems` 按 nodeid 匹配清单条目，注入 `pytest.mark.timeout(N)`；`tests/test_timeout_gate.py` 内置 schema 校验用例（`reason` 非空、`timeout_seconds > 0`、YAML 可解析），违规即测试失败。理由：豁免是规则的安全阀，必须显式、留痕、可校验。
-- **D4 超时行为验证用 pytester 内联样例**（临时目录内生成 `sleep(15)` 用例断言 FAILED + 超时标识），不向常驻套件引入慢用例（否则门自身会拦它）。
+- **D4 超时行为验证用 pytester 内联样例**（临时目录内生成超阈值 `sleep` 用例断言 FAILED + 超时标识），不向常驻套件引入慢用例（否则门自身会拦它）。样例内层会话 MUST 显式压低阈值（如 `-o timeout=2` 配 `sleep(3)`），不得照搬全局 10s/15s 数字：外层验证用例自身受同一 10s 门约束，真等 15s/30s 会先被外层门判超时；且 pytester 临时目录落在仓内 basetemp（`.fenix/pytest-basetemp`，见 conftest `_isolated_basetemp_cleanup`），内层 pytest 会向上发现仓根 `pytest.ini` 继承 10s 门——显式 `-o` 覆盖是唯一可靠控制。
 
 ## Risks / Trade-offs
 
