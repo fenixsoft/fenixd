@@ -29,10 +29,18 @@
 - [ ] 1.3 更新 `tests/test_dashboard_architecture_api.py`：删除安装超时/安装失败文案
       两类用例，新增——vendored `SKILL.md` 缺失判 `failed` 且文案含「部署损坏」语义
       并未发起安装 / 提示词含 SKILL.md 原文特征与包根路径 / fake Popen 断言全程唯一
-      外部进程为 claude（无 npx）；fake Popen 按 `cmd[0]` 分发 + 布防门控先例不变
+      外部进程为 claude（无 npx）；fake Popen 按 `cmd[0]` 分发 + 布防门控先例不变；
+      同步清理只服务旧探测/安装机制的测试装置：`_arm_skill()`/`_disarm_skill()` 布防
+      与 fake Popen 的 npx 分支（`npx_returncode`/`npx_raise` 参数）随之移除/改写；
+      「vendored 缺件」用例经 monkeypatch `_vendored_skill_root()` 指向临时空目录构造，
+      MUST NOT 增删/改写真实 `vendor/archify/` 下任何文件
 - [ ] 1.4 跑通新用例与既有 `tests/test_dashboard_architecture_api.py` 家族及
       dashboard 路由测试家族（`tests/test_dashboard_*.py`）全绿，记录 pytest 退出码 0
 - [ ] 1.5 `docs/help/08-dashboard.md`「项目架构」分面改写：正文「挂 archify skill」
       改为 vendored 注入语义；失败排查段删除自动安装/120 秒/人工安装命令描述，改为
       「skill 随库分发无需安装、生成零网络依赖，报缺件属部署损坏对照 VENDORED.md 恢复」，
       保留 1800 秒超时与 daemon 重启中断说明
+- [ ] 1.6 核验 vendored 包在位（spec「上游许可声明随包保留」场景的验收锚点，只读）：
+      `vendor/archify/SKILL.md` 存在且非空，`LICENSE`、`THIRD_PARTY_NOTICES.md`、
+      `VENDORED.md` 在位，且 VENDORED.md 溯源表含上游仓库、快照 commit、MIT 许可与
+      剔除项（`test/`）；MUST NOT 改动包内容
