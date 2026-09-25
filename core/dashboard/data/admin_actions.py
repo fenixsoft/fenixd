@@ -18,6 +18,7 @@ from core.state_machine import (
     FREEZE_ERROR_PREFIX,
     parse_orig_status,
     START_AFTER_MANUAL,
+    BUDGET_MANUAL_RESET_BASELINE_FIELD,
 )
 
 # 跨组引用（D4：叶子→中枢，直接导入无环）
@@ -1682,6 +1683,21 @@ def _exec_continue_auto_fix(project_root, spec: str, note: str = "") -> dict:
     sm = _adjudication_sm(proot)
     updates = {"frozen": False, "error": None, "frozen_until": None}
     updates.update(_RETRY_COUNTER_RESETS)
+    # 人工重置基线（code-review item 043e9fdd3ac7）：只清零不写可被对账识别
+    # 的锚点时，对账组件 _reconcile_impl_budget 的不变量（used == runs 正常
+    # 收工 run 数）会在下一轮实现 run 收工对账时把 used 改写回历史 run 数——
+    # 人工重置在一个周期内被静默回滚，预算闸门随即再次冻结，本动作承诺的
+    # 「重新获得完整自动修复预算」不成立（预算耗尽的常见成因是多次正常收工
+    # 失败，此类 spec 无任何豁免标记、对账必然自动改数）。清零前取当前 used
+    # 作基线同批落盘，对账口径变为 max(0, run 数 − 基线)：历史 run 数不再
+    # 回滚清零，重置后新产生的 run 消耗照常累计，闸门再次耗尽仍生效
+    # （多次人工重置后基线与 completed 全量计数的口径错位，由对账组件
+    # _reconcile_impl_budget 的重锚自愈兜底，见 budget.py）。
+    try:
+        prev_used = int(entry.get("_impl_run_budget_used", 0) or 0)
+    except (TypeError, ValueError):
+        prev_used = 0
+    updates[BUDGET_MANUAL_RESET_BASELINE_FIELD] = max(0, prev_used)
     updates["_impl_run_budget_used"] = 0
     sm.update_spec(spec, updates)
     sm.transition(spec, "ready", channel="manual")

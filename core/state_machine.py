@@ -203,6 +203,13 @@ INTERRUPTED_STATES = {SpecStatus.IMPLEMENTING, SpecStatus.TESTING, SpecStatus.RE
 IMPL_RUN_BUDGET_USED_FIELD = "_impl_run_budget_used"
 BUDGET_EXEMPT_RUNS_FIELD = "_budget_exempt_runs"
 BUDGET_EXEMPT_ALERTED_FIELD = "_exempt_alerted"
+# - _budget_manual_reset_baseline：人工预算重置基线（continue_auto_fix 清零
+#   used 时同批写入的清零前 used 值）。对账组件 _reconcile_impl_budget 见该
+#   字段即把目标口径改为 max(0, 正常收工 run 数 − 基线)：历史 run 数不再冲掉
+#   人工清零（否则对账把 used 改写回历史 run 数，人工重置在一个周期内被静默
+#   回滚、预算闸门随即再冻结）；基线之后新产生的 run 消耗照常累计，闸门再次
+#   耗尽仍生效。缺失（无人工重置）时对账口径与历史完全一致。
+BUDGET_MANUAL_RESET_BASELINE_FIELD = "_budget_manual_reset_baseline"
 # ── per-spec 预算覆盖属性（add-spec-status-modal-budget D3）────────────
 # 人工管理属性：null/缺失 = 跟随全局 agents.impl_run_budget；正整数 = per-spec
 # 有效预算（上限由 agents.impl_run_budget_max 决定，open-impl-budget-ceiling）。
