@@ -3,7 +3,7 @@
 //  - 只保留「草稿」与「命令使用频次」两类键，均按 project 命名
 //    （draft_input_<project> / command_history_<project>），切项目互不串扰；
 //  - 排队消息（queued_message_*）与 Claude 设置键属 P2 裁剪项，不迁。
-// 超额（QuotaExceededError）时优先清理草稿/频次旧键后重试，与原实现同策略。
+// 超额（QuotaExceededError）时按前缀清空全部草稿/命令频次键（含其他项目草稿与当前写入键，无新旧筛选）后重试一次，与原实现同策略。
 
 const DRAFT_PREFIX = 'draft_input_';
 const COMMAND_HISTORY_PREFIX = 'command_history_';
