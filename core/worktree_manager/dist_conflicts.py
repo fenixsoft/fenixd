@@ -265,12 +265,20 @@ class G5DistConflictsMixin:
                     if line not in head_artifacts
                 ]
                 for p in strays:
-                    subprocess.run(
+                    rm = subprocess.run(
                         ["git", "-C", str(self.project_root), "rm", "-q", "-f", "--", p],
                         capture_output=True,
                         text=True,
                         timeout=30,
                     )
+                    if rm.returncode != 0:
+                        # 非阻塞记录（remaining 复查与 commit 兜底不变），
+                        # 避免 rm 失败致 stray 产物随 merge 提交复活且无告警
+                        self.logger.warning(
+                            "worktree_manager",
+                            f"git rm -- {p} failed during stray "
+                            f"artifact removal: {(rm.stderr or '').strip()[:200]}",
+                        )
             # 剩余冲突：非产物路径仍冲突 → 语义冲突，交回调用方（不 abort）
             res2 = subprocess.run(
                 [
