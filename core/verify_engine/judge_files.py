@@ -77,6 +77,10 @@ def load_attribution(project_root: Path, spec_name: str) -> Optional[Dict[str, A
     if not isinstance(data, dict):
         return None
 
+    # scenarios 键存在但类型不符 → 文件损坏，与文件缺失/JSON 解析失败同口径返回 None
+    if "scenarios" in data and not isinstance(data["scenarios"], list):
+        return None
+
     # 新格式：直接返回（已含 scenarios 字段）
     if "scenarios" in data and isinstance(data["scenarios"], list):
         # 确保格式版本字段存在
