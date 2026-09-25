@@ -3,6 +3,7 @@
 refactor-dashboard-data-module D3 分组：本模块承载 run 记录/事件/成本职责域。
 """
 
+import hashlib
 import json
 import os
 import re
@@ -19,15 +20,16 @@ from core.agent_runner.run_files import infer_run_agent_type, run_spec_part
 # _log_run_metrics），含 duration_seconds / cost_usd / terminal / provider。
 # 读侧 duration 推算优先消费该指标（替代「由 run 文件 mtime 推算耗时」，
 # spec「MUST NOT 仅依赖 mtime」）；无指标（旧日志/未触发）才回退 mtime。
-# 索引按 (log_path, size) 键增量维护：日志 append-only，size 增长只补扫新增块；
-# size 缩小（轮转）整体重建。进程内缓存，读侧高频重复调用零重扫。
+# 索引按 (log_path, size, 首块指纹) 键增量维护：日志 append-only，size 增长只补扫
+# 新增块；size 缩小（轮转）或首块指纹不符（轮转后新内容在下一次调用前快速回涨到
+# 不小于旧 size，仅凭 size 判不出轮转）整体重建。进程内缓存，读侧高频重复调用零重扫。
 _RUN_METRIC_INDEX: dict = {}
 # 容量上限（同 _RUN_META_CACHE 口径）：索引只增不清（除轮转整体重建），长驻
 # daemon 历史 run 数以万计时内存无界增长。超限按最旧淘汰——整体清空不可取：
 # 增量扫描起点停在旧 size，清空后旧段不会重扫，近期 run 指标会整批丢失直至
 # 下次轮转；按插入序（=日志出现序）裁掉最旧 run_id 即可。
 _RUN_METRIC_INDEX_MAX = 16384
-_RUN_METRIC_INDEX_KEY: tuple = None  # (str(log_path), size)
+_RUN_METRIC_INDEX_KEY: tuple = None  # (str(log_path), size, head_hash)
 
 
 def _strip_run_attempt_suffix(run_id: str) -> str:
@@ -76,12 +78,29 @@ def _parse_run_metric_stream(f) -> dict:
     return index
 
 
+def _log_head_fingerprint(log_path: Path, chunk: int = 512) -> str:
+    """日志首块内容指纹（md5 前 8 位）——轮转探测键成分。
+
+    仅凭 size 缩小判轮转有个盲区：轮转后新内容在下一次调用前回涨到不小于
+    旧 size（繁忙 daemon 有可能），增量 seek(旧 offset) 会落在新内容任意
+    字节处，起点附近指标行被静默漏采、索引混入旧文件残留。首块指纹不符
+    即视为轮转，整体重建。
+    """
+    try:
+        with log_path.open("rb") as f:
+            head = f.read(chunk)
+    except OSError:
+        return ""
+    return hashlib.md5(head).hexdigest()[:8]
+
+
 def _load_run_metric_index(project_root: Path) -> dict:
     """增量维护 run 指标索引 {base_run_id: metric_dict}（进程内缓存）。
 
     metric_dict 取日志行的 context（含 duration_seconds/cost_usd/terminal/
     provider 等），run_id 为 context.run_id（基础 run id）。日志轮转
-    （size 缩小）时整体重建，追加（size 增长）只补扫新增部分。索引超
+    （size 缩小，或首块指纹不符的轮转后快速回涨形态）时整体重建，追加
+    （size 增长且指纹不变）只补扫新增部分。索引超
     _RUN_METRIC_INDEX_MAX 按最旧淘汰（防长驻进程无界增长）。
     """
     global _RUN_METRIC_INDEX, _RUN_METRIC_INDEX_KEY
@@ -91,12 +110,14 @@ def _load_run_metric_index(project_root: Path) -> dict:
         size = log_path.stat().st_size
     except OSError:
         return {}
-    key = (str(log_path), size)
+    head_hash = _log_head_fingerprint(log_path)
+    key = (str(log_path), size, head_hash)
     if key == _RUN_METRIC_INDEX_KEY:
         return _RUN_METRIC_INDEX
-    # size 缩小（轮转）或首扫 → 清空重建
+    # size 缩小（轮转）、首块指纹不符（轮转后快速回涨超旧 size）或首扫 → 清空重建
     if _RUN_METRIC_INDEX_KEY is None or _RUN_METRIC_INDEX_KEY[0] != str(log_path) \
-            or size < _RUN_METRIC_INDEX_KEY[1]:
+            or size < _RUN_METRIC_INDEX_KEY[1] \
+            or head_hash != _RUN_METRIC_INDEX_KEY[2]:
         _RUN_METRIC_INDEX = {}
         start = 0
     else:
