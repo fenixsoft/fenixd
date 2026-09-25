@@ -598,6 +598,9 @@ class AgentRunner:
         self._cancel_requested = set()
         self._cancel_meta = {}
         self._cancel_requested_lock = threading.Lock()
+        # run 收尾互斥锁（code-review item 183ded7b526a）：注册表 pop 与停机
+        # interrupted 标记写入互斥（协议详见 _run_finalize_lock property 注释）。
+        self._run_finalize_lock = threading.Lock()
         # 车道登记表（design D2）：__init__ 即建态——车道线程（queue
         # _start_impl_ocr_lane 每 spec 一线程）并发首次 register 时不得走
         # _lane_registry 的建态分支（两线程同见 None 会各建一个 dict、后一次
@@ -650,6 +653,30 @@ class AgentRunner:
     @_cancel_requested_lock.setter
     def _cancel_requested_lock(self, value):
         self.__dict__["_cancel_requested_lock_state"] = value
+
+    @property
+    def _run_finalize_lock(self) -> threading.Lock:
+        """run 收尾互斥锁（code-review item 183ded7b526a）：注册表 pop 与停机
+        interrupted 标记写入的互斥点。liveness.wait_for_running_agents 停机写
+        标记持本锁完成「注册表成员复核 + 末行终态复核 + 追加」临界区，本类
+        _run_claude finally 段的注册表 pop 持本锁执行——run 线程的 result 等
+        终态落盘严格后于该 pop（同线程顺序），锁排他即保证 daemon 的复核-追加
+        临界区与「pop → 终态落盘」序列不交错：pop 先于临界区则复核必不通过
+        （跳过标记），后于临界区则 result 落在标记之后（末行仍是 result）。
+        堵住原先「两重复核通过后、追加前 run 线程完成 pop+落盘，interrupted
+        成为文件末行、成功 run 被下游末行口径判成 interrupted」的第三类窗口。
+        惰性 property（测试 __new__ 绕过 __init__，对齐 _cancel_requested_lock
+        模式）。
+        """
+        inst = self.__dict__.get("_run_finalize_lock_state")
+        if inst is None:
+            inst = threading.Lock()
+            self.__dict__["_run_finalize_lock_state"] = inst
+        return inst
+
+    @_run_finalize_lock.setter
+    def _run_finalize_lock(self, value):
+        self.__dict__["_run_finalize_lock_state"] = value
 
     # ── run_id 归一化助手（add-run-cancel D1/D3）──────────────────
 
@@ -4306,7 +4333,13 @@ class AgentRunner:
             # 等待读线程把残留行刷完，再决定终态，保证 error 终态行是文件最后一行
             t_out.join(timeout=5)
             t_err.join(timeout=5)
-            self._running_agents.pop(run_id, None)
+            # code-review item 183ded7b526a：pop 持 _run_finalize_lock，与
+            # wait_for_running_agents 停机写 interrupted 标记的「成员复核 +
+            # 末行复核 + 追加」临界区互斥（其后同线程的 result 等终态落盘
+            # 严格后序于本 pop，锁排他即保证标记不会插到 result 之后成为
+            # 文件末行、把成功 run 判成 interrupted）。
+            with self._run_finalize_lock:
+                self._running_agents.pop(run_id, None)
             # add-planner-efficiency（run-latency-observability）：run 末延迟摘要
             # 日志——统一覆盖成功/失败/取消全部退出路径（component=agent_runner，
             # 含 run_id）。纯读侧统计，不改变事件处理时序。
