@@ -73,6 +73,22 @@ class FamilyGovernor:
             f"- **代码**：按复核结论修复场景缺陷或真实产品缺陷\n"
             f"- **行为**：修复后，父 SPEC 验证报告中失败的场景应转为通过\n"
         )
+        # 收尾任务按仓库形态适配：`npm run build` 与 `scripts/package.sh` 是
+        # 早期浏览器扩展项目的收尾流程，对无 package.json 的项目（如纯 Python）
+        # 不可执行——仅前端形态写具体命令，其余项目改为中性表述（单测步保留）。
+        if (self._pm.project_root / "package.json").is_file():
+            closing_tasks = (
+                f"## 3. 验证与打包\n\n"
+                f"- [ ] 3.1 运行 `npm run build`（tsc + vite build）确认编译与构建通过\n"
+                f"- [ ] 3.2 运行框架单元测试（`python3 -m pytest .fenix/tests/ -v`）确认无回归\n"
+                f"- [ ] 3.3 执行 `bash scripts/package.sh` 生成最新扩展包\n"
+            )
+        else:
+            closing_tasks = (
+                f"## 3. 验证与构建\n\n"
+                f"- [ ] 3.1 按项目既有构建/打包流程执行收尾（如有）；无则跳过\n"
+                f"- [ ] 3.2 运行框架单元测试（`python3 -m pytest .fenix/tests/ -v`）确认无回归\n"
+            )
         tasks = (
             f"# Tasks: 修复 {parent_spec_name} 验证发现的缺陷\n\n"
             f"## 1. 复核失败场景有效性（先于一切修复）\n\n"
@@ -83,10 +99,7 @@ class FamilyGovernor:
             f"## 2. 修复真实产品缺陷（仅当复核确认为真 Bug）\n\n"
             f"- [ ] 2.1 按 `verification-report.md` 的「真实产品 Bug」定位根因并修复；"
             f"场景缺陷则直接修正场景文件\n\n"
-            f"## 3. 验证与打包\n\n"
-            f"- [ ] 3.1 运行 `npm run build`（tsc + vite build）确认编译与构建通过\n"
-            f"- [ ] 3.2 运行框架单元测试（`python3 -m pytest .fenix/tests/ -v`）确认无回归\n"
-            f"- [ ] 3.3 执行 `bash scripts/package.sh` 生成最新扩展包\n"
+            f"{closing_tasks}"
         )
 
         (spec_dir / "proposal.md").write_text(proposal, encoding="utf-8")
