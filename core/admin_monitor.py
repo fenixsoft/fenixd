@@ -400,7 +400,8 @@ STORED_SIGNAL_TYPES = (
     "stash_pop_conflict",
     # evo-merge-back-wip-overlap-gate D8：merge-back 前 WIP 重叠闸门阻塞
     # （mergeback_wip_overlap）由 pm_engine 在 merge 结果处理失败分支直发、
-    # 本监视器摄取唤起——未收录则摄取循环 :691 continue 跳过、记录落 store
+    # 本监视器摄取唤起——未收录则摄取循环（_detect_family_explosion）
+    # continue 跳过、记录落 store
     # 后无人摄取、Administrator 不唤起（即「显式告警」目标落空）。
     "mergeback_wip_overlap",
     # evo-merge-back-spec-dir-inflight-guard D1a/D2：spec 目录在飞编辑顺延
@@ -2591,7 +2592,7 @@ class AdminMonitor:
         重试派发一次（带 _dispatch_retry_id 标记）。
 
         MUST NOT 经 _handle_signal：节流（latest_signal/unhandled_for，
-        admin_monitor.py:890-896）命中刚写的升级记录把重试吞掉；重试直接
+        见 _throttled）命中刚写的升级记录把重试吞掉；重试直接
         走派发链本身，等价于把「冷却后重试一次原信号」落在派发时刻。frozen
         spec 跳过（同 _handle_signal 冻结语义，人工等待态不自动重试）。
         manual 派发记录不带 next_retry_at，天然不在扫描范围。
@@ -3928,7 +3929,7 @@ class AdminMonitor:
         ``_verify_fail_rounds = max(0, current - n)`` + 解冻 + 审计留痕
         （admin_store DISPOSITION 记录，幂等按 reclassify_key 去重）。
 
-        判定（对齐 ``_apply_family_waiver`` 文本识别范式，admin_monitor.py:1189）：
+        判定（对齐 ``_apply_family_waiver`` 文本识别范式）：
           - 结构字段 ``disp.infra_reclassify_rounds`` > 0 优先级最高；
           - 否则文本兜底：actions_taken / summary / recommended_action 含
             「回拨 N 轮」/「reclassify N rounds」等显式回拨语义，且不含否定短语。

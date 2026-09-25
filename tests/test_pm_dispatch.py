@@ -205,6 +205,40 @@ class TestPMEngineBugFoundIdempotent(unittest.TestCase):
         self.assertEqual(count_after_first, 1)
         self.assertEqual(count_after_second, 1)
 
+    def test_replace_keeps_section_heading_at_line_start(self):
+        """替换分支后「## 验证修复」标题仍处于行首（行首锚正则可命中）。
+
+        回归 item a25d95843de3：替换拼接曾把标题粘在上一行行尾，下一轮
+        ^## 验证修复 MULTILINE 失配走追加分支、修复段重复堆积。
+        """
+        import re
+
+        spec_dir = Path(self.tmpdir) / "spec" / "changes" / "my-spec"
+        spec_dir.mkdir(parents=True, exist_ok=True)
+        (spec_dir / "tasks.md").write_text(
+            "# Tasks\n- [x] 1.1 done\n", encoding="utf-8"
+        )
+
+        self.sm.add_spec("my-spec", {"priority": 1})
+        self.sm.transition("my-spec", "ready")
+        self.sm.transition("my-spec", "implementing")
+        self.sm.transition("my-spec", "implemented")
+        self.sm.transition("my-spec", "testing")
+        self.sm.transition("my-spec", "bug-found")
+
+        # 第一次注入后再次触发，走替换分支（原地打回第 2 轮）
+        self.engine._family._do_spec_bug_found("my-spec")
+        self.sm.update_spec("my-spec", {"status": "bug-found"})
+        self.engine._family._do_spec_bug_found("my-spec")
+
+        tasks_text = (spec_dir / "tasks.md").read_text(encoding="utf-8")
+        # 标题必须仍在行首，能被 ^## 验证修复 MULTILINE 命中
+        self.assertIsNotNone(
+            re.search(r"^## 验证修复\b.*$", tasks_text, re.MULTILINE)
+        )
+        # 段落不堆积
+        self.assertEqual(tasks_text.count("## 验证修复"), 1)
+
 
 class TestPMEngineSameStatusResetDispatch(unittest.TestCase):
     """bug-found 同态重置派发：implementing 重新派发后必须重新进入 testing 流程。"""

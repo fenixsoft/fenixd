@@ -339,6 +339,8 @@ def record_project_event(
         if context:
             entry["context"] = context
         with (logs_dir / "fenixd.log").open("a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            # default=str 兜底：context 含 Path/datetime 等不可序列化对象时
+            # 序列化为字符串而非抛 TypeError 穿透（写日志失败静默降级的承诺）
+            f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
     except (OSError, UnicodeDecodeError):
         pass

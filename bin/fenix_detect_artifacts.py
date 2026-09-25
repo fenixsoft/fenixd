@@ -208,7 +208,13 @@ def _read_existing_config(project_root: Path) -> dict | None:
             s = stripped
             if s.startswith("has_build_artifacts:"):
                 val = s.split(":", 1)[1].strip()
-                result["has_build_artifacts"] = val.lower() in ("true", "1", "yes")
+                # 三态契约（与 worktree_config_view 同口径）：空值/null 表示「未裁决」，
+                # MUST NOT 落键——write_config_if_unresolved 以键在册判「已显式配置」，
+                # 误落键会把未裁决项目静默排除在自动探测写入之外；仅显式布尔裁决落键
+                if val.lower() in ("true", "1", "yes"):
+                    result["has_build_artifacts"] = True
+                elif val.lower() in ("false", "0", "no", "off"):
+                    result["has_build_artifacts"] = False
             elif s.startswith("build_artifact_paths:"):
                 val = s.split(":", 1)[1].strip()
                 if val.startswith("["):
@@ -227,9 +233,9 @@ def _read_existing_config(project_root: Path) -> dict | None:
 def write_config_if_unresolved(project_root: Path, detection: dict) -> dict:
     """将探测结果写入 .fenix/config.yaml（幂等，不覆盖已显式配置的项目）。
 
-    仅 when worktree.has_build_artifacts 未显式存在（未裁决）才写入；已裁决项目
-    跳过（MUST NOT 覆盖人工设置）。YAML 缺失时退化到最小文本追加（保留其余行），
-    不抛异常——写入失败返回 {"wrote": False, "reason": <原因>}。
+    仅 when worktree.has_build_artifacts 未显式布尔裁决（未裁决；空值/null 亦视为
+    未裁决）才写入；已裁决项目跳过（MUST NOT 覆盖人工设置）。YAML 缺失时退化到
+    最小文本追加（保留其余行），不抛异常——写入失败返回 {"wrote": False, "reason": <原因>}。
 
     注意：有 PyYAML 时走 yaml.dump 全量重写，config.yaml 原有注释与排版会全部
     丢失（PyYAML 不保留注释）；仅无 yaml 的退化文本路径逐行保留原文件。
@@ -266,7 +272,8 @@ def write_config_if_unresolved(project_root: Path, detection: dict) -> dict:
         worktree = config.setdefault("worktree", {})
         if not isinstance(worktree, dict):
             worktree = {}
-        if "has_build_artifacts" in worktree:
+        # 仅显式布尔算已裁决（worktree_config_view 同口径）；null/非法值=未裁决，照常写入
+        if isinstance(worktree.get("has_build_artifacts"), bool):
             return {"wrote": False, "reason": "has_build_artifacts 已显式配置，跳过"}
         worktree["has_build_artifacts"] = bool(detection["has_build_artifacts"])
         worktree["build_artifact_paths"] = list(detection["build_artifact_paths"])

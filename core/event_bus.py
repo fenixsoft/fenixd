@@ -771,7 +771,18 @@ class EventBus:
                         f"Runtime dangling-run sweep failed (scan continues): "
                         f"{type(e).__name__}: {e}",
                     )
-                self.full_scan()
+                # 基线快照段（_update_known_state → read_all）无异常保护，STATE.md
+                # 并发撕裂/瞬时 I/O 故障抛 OSError 等会冲出循环杀死扫描线程，
+                # 30 分钟兜底全扫、悬空清扫与 code-fix checkpoint 全部失效——
+                # 对齐 _run_full_scan_body 读取阶段「不得静默中止」口径降级记 error。
+                try:
+                    self.full_scan()
+                except Exception as e:
+                    self.logger.error(
+                        "event_bus",
+                        f"Periodic full scan failed (scan continues): "
+                        f"{type(e).__name__}: {e}",
+                    )
 
     def _file_checksum(self) -> str:
         """Compute MD5 checksum of STATE.md.

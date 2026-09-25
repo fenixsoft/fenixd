@@ -199,8 +199,13 @@ def main():
     if result.serve_error:
         print(f"  错误: {result.serve_error}")
 
-    # 输出 ready 结果
-    print(f"[ready]   {'✓ 通过' if result.ready_ok else '✗ 失败'}", end="")
+    # 输出 ready 结果。探针未实际执行时（prepare 失败/serve 失败等路径下
+    # ready_ok 只是初始 True）显示「未探测」而非「通过」，不谎报探针结果
+    # （code-review item 944ef0f39f71；退出码判定不受影响，仍按 ready_ok）。
+    if result.ready_ran:
+        print(f"[ready]   {'✓ 通过' if result.ready_ok else '✗ 失败'}", end="")
+    else:
+        print("[ready]   未探测", end="")
     if result.ready_url:
         print(f"（url={result.ready_url}, expect={result.ready_expect}）", end="")
     else:

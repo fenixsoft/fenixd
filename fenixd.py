@@ -93,6 +93,10 @@ SUPERVISOR_KILL_MARGIN_SECONDS = 120
 # 崩溃自愈）间隔分钟级，健康 supervisor 场景漂移远小于该阈值；长驻 supervisor
 # 残留文件的漂移必然超限，恰是「文件残留自旧进程」的检出信号。
 SUPERVISOR_RUNTIME_DRIFT_SECONDS = 24 * 3600
+# 保全条目 ``ahead_commits`` 的统计口径（code-review item 89d3e927d59c）：基线
+# 分支与 subprocess 超时收敛为常量，两处保全路径共用一份口径，避免双处漂移。
+PRESERVE_AHEAD_BASE_BRANCH = "main"
+PRESERVE_AHEAD_COUNT_TIMEOUT_SECONDS = 15
 
 # 评审锚点候选的短 TTL 缓存（fix-state-atomicity-and-selfheal-restart D3/3.3）：
 # 空闲判定经主循环 1s 粒度轮询，每次 read_all 都要解析整份 STATE.md——实测真实
@@ -178,6 +182,31 @@ def _clear_preserve_sidecar() -> None:
         PRESERVE_SIDECAR.unlink(missing_ok=True)
     except OSError:
         pass
+
+
+def _ahead_commit_count(branch: str) -> int:
+    """统计 branch 相对基线分支的 ahead 提交数（recovery 保留判定同口径）。
+
+    ``_preserve_interrupted_runs`` 与 ``_preserve_implementing_specs`` 两处
+    保全条目共用（code-review item 89d3e927d59c）；非停机关键路径，超时/
+    失败/输出不可解析一律按 0 处理，不抛错。
+    """
+    try:
+        res = subprocess.run(
+            ["git", "-C", str(PROJECT_ROOT), "rev-list", "--count",
+             f"{PRESERVE_AHEAD_BASE_BRANCH}..{branch}"],
+            capture_output=True,
+            text=True,
+            timeout=PRESERVE_AHEAD_COUNT_TIMEOUT_SECONDS,
+        )
+        if res.returncode == 0:
+            try:
+                return int(res.stdout.strip() or "0")
+            except ValueError:
+                return 0
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+    return 0
 
 
 # ── 代码陈旧检测（improve-hot-reload-robustness D4 / add-stale-code-selfheal）─
@@ -3467,22 +3496,7 @@ class FenixDaemon:
                 worktree = str(wt) if wt else worktree
                 if wt:
                     seen_wt.add(str(wt))
-            ahead = 0
-            if branch:
-                try:
-                    res = subprocess.run(
-                        ["git", "-C", str(PROJECT_ROOT), "rev-list", "--count", f"main..{branch}"],
-                        capture_output=True,
-                        text=True,
-                        timeout=15,
-                    )
-                    if res.returncode == 0:
-                        try:
-                            ahead = int(res.stdout.strip() or "0")
-                        except ValueError:
-                            ahead = 0
-                except (subprocess.TimeoutExpired, OSError):
-                    ahead = 0
+            ahead = _ahead_commit_count(branch) if branch else 0
             entries.append(
                 {
                     "spec": spec,
@@ -3645,22 +3659,7 @@ class FenixDaemon:
                 wt = self.worktree_manager.find_worktree_path(branch)
                 if wt:
                     worktrees = [str(wt)]
-            ahead = 0
-            if branch:
-                try:
-                    res = subprocess.run(
-                        ["git", "-C", str(PROJECT_ROOT), "rev-list", "--count", f"main..{branch}"],
-                        capture_output=True,
-                        text=True,
-                        timeout=15,
-                    )
-                    if res.returncode == 0:
-                        try:
-                            ahead = int(res.stdout.strip() or "0")
-                        except ValueError:
-                            ahead = 0
-                except (subprocess.TimeoutExpired, OSError):
-                    ahead = 0
+            ahead = _ahead_commit_count(branch) if branch else 0
             worktree = worktrees[0] if worktrees else ""
             if worktree and worktree not in seen_wt:
                 seen_wt.add(worktree)

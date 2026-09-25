@@ -877,7 +877,21 @@ def _check_quality_gates_soft(runner, spec_name: str, wt_path: Path | None) -> N
     无循环风险）。键名以 quality_gates.py 固化契约为唯一真源，禁止在本处
     另写同义词表。
     """
-    from core.dashboard.data.quality_gates import GATE_STATUSES, RUN_GATE_IDS
+    try:
+        from core.dashboard.data.quality_gates import GATE_STATUSES, RUN_GATE_IDS
+    except Exception as e:  # noqa: BLE001
+        # 懒导入失败（循环导入/dashboard.data 包 __init__ 副作用等）不得击穿
+        # 本函数「MUST NOT 产生任何失败终态」的宽松对账契约（code-review
+        # item 9f167849d8a1）：记 WARNING 留痕后按未启用降级返回 None（直接
+        # 返回，下方 GATE_STATUSES/RUN_GATE_IDS 引用点不再触达，避免
+        # NameError），与 _check_impl_code_review_artifact 的开关读取降级
+        # 口径一致。
+        runner.logger.warning(
+            "agent_runner",
+            f"quality-gates 宽松对账常量导入失败（按未启用降级，留痕）: "
+            f"{type(e).__name__}: {e}",
+        )
+        return None
 
     rel = f".fenix/verify-progress/{spec_name}/quality-gates.json"
     candidates: list[tuple[Path, str]] = []

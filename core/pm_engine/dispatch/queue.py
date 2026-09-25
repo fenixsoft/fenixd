@@ -2484,7 +2484,6 @@ class QQQueueMixin:
         wip_gate_blocked / 可重试形态均已在调用方早退，本方法只处理真失败。
         """
         spec_entry = self._pm.state_machine.read_one(spec_name) or {}
-        max_r = self._pm._get_config("agents.max_retries", 3)
         fp = self._pm._merge_fingerprint(merge_error)
         prev_fp = spec_entry.get("_merge_fp")
         try:
@@ -2571,9 +2570,12 @@ class QQQueueMixin:
                     "_retry_count": retries,
                 },
             )
+            # 本分支重试不受 agents.max_retries 约束，仅由 _merge_streak
+            # 同指纹熔断兜底——日志只报 streak/阈值，避免误导。
             self._pm.logger.warning(
                 "pm_engine",
-                f"Retry {retries}/{max_r} for '{spec_name}' (merge-back failed)",
+                f"Merge-back retry for '{spec_name}' "
+                f"(streak {streak}/{breaker_threshold})",
             )
 
     def _finalize_merge_success(

@@ -1445,8 +1445,10 @@ class AgentRunner:
                         pass
             return home_dir
         except (OSError, json.JSONDecodeError) as e:
-            logging.warning(
-                "[impl-code-review-gate] _write_run_ocr_config 失败，跳过 ocr 注入: %s", e
+            self.logger.warning(
+                "agent_runner",
+                f"[impl-code-review-gate] _write_run_ocr_config 失败，跳过 ocr 注入: {e}",
+                {"provider": provider.get("name", "unknown"), "model": model},
             )
             return None
 
@@ -2176,8 +2178,10 @@ class AgentRunner:
                                 # 目录后避免 detached 拉起联网 update.js 的游离请求
                                 env_overrides["OCR_NO_UPDATE"] = "1"
                         except Exception as e:
-                            logging.warning(
-                                "[impl-code-review-gate] ocr 配置注入异常，跳过: %s", e
+                            self.logger.warning(
+                                "agent_runner",
+                                f"[impl-code-review-gate] ocr 配置注入异常，跳过: {e}",
+                                {"run_id": attempt_run_id},
                             )
                     else:
                         # 未分配 agent（含 Administrator）走默认网关（cc-switch），--model 用

@@ -503,9 +503,9 @@ def diff_planner_output(
             display_declarations=_display_declarations_of(planner_scenarios),
         )
         result.added = list(entries)
-        result.change_lines = [
-            f"- 首轮写入 {len(entries)} 个场景",
-        ]
+        # append 而非整体重赋值：保留 declares_new_delivery 已写入的
+        # 修复语境审计留痕行（与有持久化集分支行为一致）。
+        result.change_lines.append(f"- 首轮写入 {len(entries)} 个场景")
         return result
 
     persisted_ids = persisted.ids

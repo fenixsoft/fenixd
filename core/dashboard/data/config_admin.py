@@ -691,7 +691,8 @@ def read_config(scope_root, scope: str = "project") -> dict:
 
 
 # 配置解析签名缓存（dashboard-spec-summary-index D4）：read_effective_config
-# 按 (用户级, 项目级) config.yaml 签名 (mtime_ns, size) 缓存；写后自然失效。
+# 按 (项目根路径, 用户级签名, 项目级签名) 缓存，签名为 (mtime_ns, size)；
+# 写后自然失效。
 _EFFECTIVE_CONFIG_CACHE: dict = {}
 _EFFECTIVE_CONFIG_CACHE_MAX = 512
 
@@ -711,8 +712,9 @@ def read_effective_config(project_root) -> dict:
             "sources": {...}, "error": str|null, "description": str}
     sources[key] = "project" 当该键在项目级文件显式定义，否则 "user"（继承用户级或默认）。
 
-    配置解析缓存（D4）：以 (用户级 config.yaml, 项目级 config.yaml) 的
-    (mtime_ns, size) 为键缓存解析结果；命中直接返回深拷贝，不重读文件。
+    配置解析缓存（D4）：以 (项目根路径, 用户级 config.yaml 签名, 项目级
+    config.yaml 签名) 为键缓存解析结果（签名为 (mtime_ns, size)，路径维度
+    防不同项目同签名撞键）；命中直接返回深拷贝，不重读文件。
     """
     from core.config import ConfigLoader
 
@@ -721,7 +723,9 @@ def read_effective_config(project_root) -> dict:
 
     import core.dashboard.data as _facade
 
-    cache_key = (_config_file_sig(_facade.USER_CONFIG_PATH), _config_file_sig(proj_path))
+    # 键含项目根路径（code-review item 8f604abe8377）：仅签名会撞键——不同项目
+    # config.yaml 保留 mtime 复制后签名相同即互相串用缓存视图。
+    cache_key = (str(proot), _config_file_sig(_facade.USER_CONFIG_PATH), _config_file_sig(proj_path))
     cached = _EFFECTIVE_CONFIG_CACHE.get(cache_key)
     if cached is not None:
         return copy.deepcopy(cached)
