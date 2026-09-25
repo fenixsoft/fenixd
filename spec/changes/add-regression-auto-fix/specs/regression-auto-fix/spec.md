@@ -20,7 +20,7 @@
 - **THEN** 按钮进入 loading 态并禁用，重复点击不产生第二个信号
 
 ### Requirement: 触发与回链 API
-后端 SHALL 新增 `POST /api/regression/fix`（query project）：校验项目存在、最近一次回归快照存在且问题列表非空后，原子写信号文件 `.fenix/regression_fix_request.json`（含 `created` ISO 时间戳与 `source: "regression_fix"`）；校验失败 MUST 以稳定错误码拒绝（快照缺失/从未执行 → `regression_never_run`；快照无异常 → `regression_no_issues`），MUST NOT 写信号。SHALL 新增 `GET /api/regression/fix-result`（query project）：读 `.fenix/regression_fix_request_result.json` 原样返回（含 `request_created/triggered/reason/message/finished_at`）；结果文件缺失时返回 `{"status": "none"}` 形态而非 404 报错。
+后端 SHALL 新增 `POST /api/regression/fix`（query project）：校验项目存在、最近一次回归快照存在且问题列表非空后，原子写信号文件 `.fenix/regression_fix_request.json`（含 `created` ISO 时间戳与 `source: "regression_fix"`）；校验失败 MUST 以稳定错误码拒绝（快照缺失/从未执行/parse_error 损坏 → `regression_never_run`；快照可读但无异常 → `regression_no_issues`），MUST NOT 写信号。SHALL 新增 `GET /api/regression/fix-result`（query project）：读 `.fenix/regression_fix_request_result.json` 原样返回（含 `request_created/triggered/reason/message/finished_at`）；结果文件缺失时返回 `{"status": "none"}` 形态而非 404 报错。
 
 #### Scenario: 受理成功写信号
 - **WHEN** POST /api/regression/fix 且快照存在 2 个失败用例
@@ -70,7 +70,7 @@ daemon 主循环 SHALL 新增 `_check_regression_fix_requests`（1s 粒度，与
 - **THEN** 结果文件记录 `triggered: false`、reason=`dispatch_exception`，信号已消费不残留
 
 ### Requirement: 超时与去重及复发重开语义
-整体超时（快照 status === 'timeout'，无逐用例定位）SHALL 转换为单条台账条目：category `regression-timeout`、severity high、file 固定 `.fenix/verify.yaml`（回归硬超时声明落点，作为修复入口锚点）、title 固定「回归整体超时」、description 携带 reason 与输出摘要（截断至 500 字）。去重 SHALL 沿用 `upsert_findings` 的 fingerprint（file+category+title）语义：同用例重复出现仅刷新 last_seen_at/severity/description/suggestion，MUST NOT 覆盖 status/first_seen_at。重开语义：category 以 `regression-` 为前缀的台账条目，若在本次快照问题列表中仍出现（fingerprint 命中）但 status 已非 open，消费转换时 SHALL 重开为 open 并刷新 first_seen_at——保证复发问题可再次触发修复；非 `regression-` 前缀条目（code-review 来源）MUST NOT 被此规则触碰。
+整体超时（快照 status === 'timeout'，无逐用例定位）SHALL 转换为单条台账条目：category `regression-timeout`、severity high、file 固定 `.fenix/verify.yaml`（回归硬超时声明落点，作为修复入口锚点）、title 固定「回归整体超时」、description 携带 reason 与输出摘要（摘要由消费端预读快照 output 字段指向的日志文件尾部获得，读取失败置空；截断至 500 字）。去重 SHALL 沿用 `upsert_findings` 的 fingerprint（file+category+title）语义：同用例重复出现仅刷新 last_seen_at/severity/description/suggestion，MUST NOT 覆盖 status/first_seen_at。重开语义：category 以 `regression-` 为前缀的台账条目，若在本次快照问题列表中仍出现（fingerprint 命中）但 status 已非 open，消费转换时 SHALL 重开为 open 并刷新 first_seen_at——保证复发问题可再次触发修复；非 `regression-` 前缀条目（code-review 来源）MUST NOT 被此规则触碰。
 
 #### Scenario: 整体超时转换为单条目
 - **WHEN** 快照 status 为 timeout，reason 为「硬超时 1800s 中止」
