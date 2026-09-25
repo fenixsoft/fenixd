@@ -1528,10 +1528,15 @@ class PMEngine:
         # 防重入：使用独立 key，避免与 handle_event 的 ("spec_verified", spec_name)
         # 冲突（handle_event 在调用 handler 前已 add 该 key，若共用会导致本方法被跳过）
         event_key = ("_guard:verified", spec_name)
-        if event_key in self._handling_events:
+        # 检查 + 登记在实例锁内原子完成（同 handle_event，code-review item
+        # e92ccf866b55），消除并发 check-then-act 竞态
+        with self._dispatch_guard_lock:
+            already_handling = event_key in self._handling_events
+            if not already_handling:
+                self._handling_events.add(event_key)
+        if already_handling:
             self.logger.debug("pm_engine", f"Skipping duplicate verified for '{spec_name}'")
             return
-        self._handling_events.add(event_key)
         try:
             # verified→done 一致性门禁（add-task-progress-sync）：
             # run 声明 success 但存在「未勾选且不在 done_ids」的任务时，阻断自动推送，
@@ -1638,10 +1643,15 @@ class PMEngine:
         # 防重入：使用独立 key，避免与 handle_event 的 ("spec_bug_found", spec_name)
         # 冲突（handle_event 在调用 handler 前已 add 该 key，若共用会导致本方法被跳过）
         event_key = ("_guard:bug_found", spec_name)
-        if event_key in self._handling_events:
+        # 检查 + 登记在实例锁内原子完成（同 handle_event，code-review item
+        # e92ccf866b55），消除并发 check-then-act 竞态
+        with self._dispatch_guard_lock:
+            already_handling = event_key in self._handling_events
+            if not already_handling:
+                self._handling_events.add(event_key)
+        if already_handling:
             self.logger.debug("pm_engine", f"Skipping duplicate bug_found for '{spec_name}'")
             return
-        self._handling_events.add(event_key)
         try:
             self._do_spec_bug_found(spec_name, failure_class=failure_class, run_id=run_id)
         finally:
@@ -1665,13 +1675,18 @@ class PMEngine:
         log（✅ SPEC completed）不再产生；push 幂等由 approve_push 实例锁兜底。
         """
         event_key = ("_guard:done", spec_name)
-        if event_key in self._handling_events:
+        # 检查 + 登记在实例锁内原子完成（同 handle_event，code-review item
+        # e92ccf866b55），消除并发 check-then-act 竞态
+        with self._dispatch_guard_lock:
+            already_handling = event_key in self._handling_events
+            if not already_handling:
+                self._handling_events.add(event_key)
+        if already_handling:
             self.logger.debug(
                 "pm_engine",
                 f"Skipping duplicate spec_done for '{spec_name}'",
             )
             return
-        self._handling_events.add(event_key)
         try:
             spec = self.state_machine.read_one(spec_name) or {}
             status = spec.get("status", "")
@@ -2890,8 +2905,8 @@ class PMEngine:
 
         验证口径（design D4）：本地分支仍在时，优先将 spec 自身分支的远端 SHA
         与本地 SHA 做相等比对（内容确定已在远端即清痕）；本地分支已被 merge-back
-        清理后无从比对，降级为远端引用存在性检查；仍验证不到时回退比对 main
-        （main 承载内容亦视为已推送）。
+        清理后无从比对，降级为远端引用存在性检查；仍验证不到时回退比对本地
+        main 与远端 main 的 SHA（相等即清痕；取不到本地 main 保守保留残留）。
 
         Returns:
             {"cleaned": [spec_name, ...], "kept": [{"spec": name, "error": msg}, ...]}
@@ -2927,11 +2942,14 @@ class PMEngine:
                 verified = True
                 verify_note = f"branch on remote {remote_branch[:12]}"
             else:
-                # 回退：main 在远端即视为内容已推送
+                # 回退：本地 main 与远端 main SHA 相等（内容确定已在远端）才
+                # 清痕；取不到本地 main 时保守保留残留
+                # （code-review item d988f397ed1e）
+                local_main = self._local_branch_sha("main")
                 remote_main = self._remote_branch_sha("refs/heads/main")
-                if remote_main:
+                if local_main and remote_main and remote_main == local_main:
                     verified = True
-                    verify_note = f"main SHA {remote_main[:12]}"
+                    verify_note = f"main SHA match {remote_main[:12]}"
 
             if verified:
                 self.state_machine.update_spec(name, {"error": None})
@@ -3959,7 +3977,7 @@ class PMEngine:
             return 0.0
         try:
             return float(m(spec_name))
-        except (TypeError, ValueError):
+        except Exception:
             return 0.0
 
     def _global_transient_break_active(self) -> bool:
