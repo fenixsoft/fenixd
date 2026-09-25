@@ -147,6 +147,23 @@ class TestHostingState:
             assert fenix_session.supervisor_running("/any/root") is False
 
 
+class TestSessionNameNormalization:
+    """session_name 归一化口径（code-review item 12e5e201a1c3）。"""
+
+    def test_dot_in_dirname_folded_to_hyphen(self, tmp_path):
+        """目录名含内部点号 → 派生名不含点号。
+
+        tmux 对会话名静默把 `.` 替换为 `_`，且 has-session 解析带点号目标时
+        把点号当窗格分隔符而查找失败——派生名与 tmux 实际会话名必须同口径，
+        否则启动复核 / tmux 回退 / stop 兜底全部误判。
+        """
+        proot = tmp_path / "my.project"
+        proot.mkdir()
+        name = fenix_session.session_name(str(proot))
+        assert "." not in name
+        assert name.startswith("fenixd-my-project-")
+
+
 # ── 3.4 唯一托管启停路径 ──────────────────────────────────────────────
 
 def _fake_tmux_run(cmd, capture_output=False, text=False, timeout=None):
