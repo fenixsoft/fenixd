@@ -1130,7 +1130,13 @@ class QQQueueMixin:
                     # 上轮已降级放行后的再派发）从零开始，避免陈旧计数误降级。
                     # （TASK_GATE_REJECTIONS_FIELD 已模块顶部导入，删除此处的
                     # 冗余函数内 import——code-review item 3218887178b8/35c865a3a00f）
-                    if int(dispatch_entry.get(TASK_GATE_REJECTIONS_FIELD, 0) or 0) > 0:
+                    try:
+                        prev_gate_rejections = int(
+                            dispatch_entry.get(TASK_GATE_REJECTIONS_FIELD, 0) or 0
+                        )
+                    except (TypeError, ValueError):
+                        prev_gate_rejections = 0
+                    if prev_gate_rejections > 0:
                         self._pm.state_machine.update_spec(
                             spec_name, {TASK_GATE_REJECTIONS_FIELD: 0}
                         )
