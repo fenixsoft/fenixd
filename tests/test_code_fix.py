@@ -282,9 +282,14 @@ class TestCodeFixParallelPrompt(unittest.TestCase):
         self.assertIn("MUST NOT 把非法行写入", t)
         # 单组兜底不阻塞其他组的落盘与补派
         self.assertIn("MUST NOT 阻塞其他组", t)
-        # 验证/提交契约不变：全部组落盘后恰一次验证、单次提交
+        # 验证/提交契约（add-codefix-commit-first-contract：边修复边提交、
+        # 收尾一次验证、验证不阻塞 commit；旧「单次提交/MUST NOT 多次提交」
+        # 口径已废）
         self.assertIn("MUST NOT 逐组验证", t)
-        self.assertIn("MUST NOT 多次提交", t)
+        self.assertIn("逐条修复即 commit", t)
+        self.assertIn("验证不阻塞 commit", t)
+        self.assertIn("收尾工作区干净", t)
+        self.assertNotIn("MUST NOT 多次提交", t)
 
     def test_serial_path_wording_preserved(self):
         """串行路径（退化批）行为描述保留：逐组 append 落盘规则不被并行段覆盖。"""
