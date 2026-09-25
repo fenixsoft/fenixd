@@ -461,7 +461,14 @@ class VisualDiffer:
                 entry = streaks.get(scenario_id)
                 if not isinstance(entry, dict):
                     entry = {"count": 0, "suspicious": False, "ssims": []}
-                entry["count"] = int(entry.get("count", 0)) + 1
+                # 脏 count 容错（code-review item c106c112a806）：侧车仅校验
+                # 顶层 dict，条目内 count 可能为 null/非数值（历史写手/手改），
+                # 与 _settle_timeout_ms/_retake_max 同惯例回退 0，防脏值击穿对比
+                try:
+                    prev_count = int(entry.get("count", 0))
+                except (TypeError, ValueError):
+                    prev_count = 0
+                entry["count"] = prev_count + 1
                 ssim = result.get("ssim")
                 ssim_list = entry.setdefault("ssims", [])
                 ssim_list.append(
