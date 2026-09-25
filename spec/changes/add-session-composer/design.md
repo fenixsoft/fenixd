@@ -4,7 +4,7 @@
 
 - 会话接入页签(SessionPanel)输入区现状:antd `Input.TextArea` + 发送 + 停止同行排列(`SessionPanel.tsx:452-486`),全部内联 style 常量(`:50-84`),无移动端分支;`global.less` 的 `screen-xs` 作用域未覆盖会话面板;面板高度靠 `height: calc(100vh - 222px)` 显式填充(222 为桌面 chrome 实测常数,memory `fenixd-session-panel-viewport-height`)。
 - 参考实现 claudecodeui(`/root/claudecodeui`,`@cloudcli-ai/cloudcli` v1.37.2,siteboon/claudecodeui fork):React 18 + Vite + Tailwind。输入控件三层:`useChatComposerState.ts`(1317 行,逻辑核心)、`ChatComposer.tsx`(517 行,业务壳)、`shared/view/ui/PromptInput.tsx`(219 行,无样式原语);配套 `useSlashCommands.ts`(494)、`useFileMentions.tsx`(273)、`useComposerMenuAnchor.ts`(82)、`CommandMenu.tsx`(324)、`ComposerMenuPrimitives.tsx`(94)、`chatStorage.ts`。textarea 为普通 `<textarea>` + 绝对定位 overlay 着色 @提及,非 contentEditable。
-- fenixd dashboard 前端:UmiJS Max + antd 6 + React 19 + less;**tailwind 管道已存在**(`prebuild: tailwindcss -i ./tailwind.css -o ./src/components/claude-msg/tailwind.gen.css --minify`,输入为裸 `@tailwind` 指令,CLI 默认扫描全 `src`,新组件的 tailwind 类自动编译;消费方式参照 `claude-msg/index.ts` import `tailwind.gen.css`)。
+- fenixd dashboard 前端:UmiJS Max + antd 6 + React 19 + less;**tailwind 管道已存在**(`prebuild: tailwindcss -i ./tailwind.css -o ./src/components/claude-msg/tailwind.gen.css --minify`,输入为裸 `@tailwind` 指令,注意 `tailwind.config.js` content **显式限定** `./src/components/claude-msg/**/*.{ts,tsx}`——CLI 有 content 配置时不启用自动内容检测,新目录类名须扩 content 才会编译;消费方式参照 `claude-msg/index.ts` import `tailwind.gen.css`)。
 - 后端会话链路:`session_manager.py` 每项目至多一个 `claude -p --input-format stream-json --output-format stream-json --verbose --permission-mode bypassPermissions --replay-user-messages` 子进程,`send()` 向 stdin 写一行 user JSON;`_stdout_reader` 逐行 JSON 解析入 deque 并 SSE 广播;事件缓冲 4000 条、空闲回收 1800s。
 - 已实测验证(2026-09-25,写入 specs 依据):①stream-json 输入下 `@文件` 被 CLI 展开注入(单测式探针,模型答出仅文件名推不出的内容,input_tokens 24865);②`init` 事件含完整 `slash_commands`/`skills` 数组;③未知 `/命令` 透传给模型并友好降级。
 
@@ -36,7 +36,7 @@
 
 ### D2 样式:tailwind className 原样保留,不重写为 antd/less
 
-既有 tailwind 管道扫描全 `src`,新目录类名自动进 `tailwind.gen.css`;组件内 import 该 css(与 claude-msg 同模式)。需一并搬的自定义 CSS 段(claudecodeui `index.css` 中 `chat-input-*`/`chat-composer-*`/`chat-activity-*` 相关)落为新组件目录内独立 css 文件随组件 import。深浅色:dashboard 全站强制亮色,原 token(HSL 变量)直接给亮色值。
+`tailwind.config.js` content 数组须扩入 `./src/components/claude-composer/**/*.{ts,tsx}`(既有 content 仅含 claude-msg,不扩则新组件类名静默不进 `tailwind.gen.css`);组件内 import 该 css(与 claude-msg 同模式)。需一并搬的自定义 CSS 段(claudecodeui `index.css` 中 `chat-input-*`/`chat-composer-*`/`chat-activity-*` 相关)落为新组件目录内独立 css 文件随组件 import。深浅色:dashboard 全站强制亮色,原 token(HSL 变量)直接给亮色值。
 
 ### D3 发送通道:handleSubmit 单点适配到既有 REST
 
@@ -44,7 +44,7 @@
 
 ### D4 移动端键盘:VisualViewport + viewport meta 双轨
 
-- 新 hook `useVisualViewportHeight`(组件目录内):`window.visualViewport` resize 事件计算 `keyboardHeight = innerHeight - visualViewport.height - offsetTop`,写入面板容器 CSS 变量 `--keyboard-height`,输入区容器 `paddingBottom` 消费;只监听 `resize` 不监听 `scroll`(claudecodeui `AppContent.tsx:191-203` 同款,规避 iOS offsetTop 抖动)。
+- 新 hook `useVisualViewportHeight`(组件目录内):`window.visualViewport` resize 事件计算 `keyboardHeight = Math.max(0, window.innerHeight - visualViewport.height)`(不读 offsetTop——参考实现 AppContent 注释明确 scroll 会使 offsetTop 抖动),写入面板容器 CSS 变量 `--keyboard-height`,输入区容器 `paddingBottom` 消费;只监听 `resize` 不监听 `scroll`(claudecodeui `AppContent.tsx:191-203` 同款,规避 iOS offsetTop 抖动)。
 - `config.ts` 或静态 `index.html` 模板的 viewport meta 追加 `interactive-widget=resizes-content`(Android Chrome 键盘压缩布局视口)。
 - 移动端判定复用既有 `useIsMobile.ts`(同步 matchMedia,边界 767.98px)。
 
@@ -58,7 +58,7 @@
 
 ### D7 commands 端点:init 事件缓存,禁自扫目录
 
-`session_manager.py` 的 `_stdout_reader` 增加对 `type=system, subtype=init` 的捕获,取 `slash_commands`/`skills` 存 `Session` dataclass 新字段(如 `slash_commands: list[str]`、`skills: list[str]`,缺省空);init 事件本身维持既有系统事件口径不广播。进程重启后新 init 覆盖;Session 移除即缓存消亡。备选「后端扫 ~/.claude/skills + .claude/skills 目录」被否:插件/内建命令口径难以对齐,init 是 CLI 官方口径且零扫描成本。
+`session_manager.py` 的 `_stdout_reader` 增加对 `type=system, subtype=init` 的捕获,取 `slash_commands`/`skills` 存 `Session` dataclass 新字段(如 `slash_commands: list[str]`、`skills: list[str]`,缺省空);init 事件本身不再广播:既有 `_stdout_reader` 过滤仅丢弃 `system/hook_*`,init 当前会进事件缓冲并广播 SSE;本次改为捕获后丢弃,属**有意行为变化**——前端 `claude-msg/runEvents.ts` 的 SILENT_KINDS 已含 `init`(零渲染依赖),SSE 消费端无可见回归。进程重启后新 init 覆盖;Session 移除即缓存消亡。备选「后端扫 ~/.claude/skills + .claude/skills 目录」被否:插件/内建命令口径难以对齐,init 是 CLI 官方口径且零扫描成本。
 
 ### D8 i18n 与依赖:中文常量,零新第三方依赖
 

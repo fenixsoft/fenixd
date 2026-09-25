@@ -24,7 +24,7 @@
 
 - 实现 MUST 以项目 registry 注册路径为 cwd 执行 `git ls-files --cached --others --exclude-standard`(子进程调用,须带超时保护),返回扁平相对路径字符串数组。
 - 返回条数 MUST 上限 5000 条(超出截断)。
-- `project` 校验 MUST 复用既有 `_project_from_query`:非法/未注册项目返回 400。
+- `project` 校验 MUST 复用既有 `_project_from_query`:缺参/未注册项目返回 404(与既有 `_session_context` 样板口径一致)。
 - 合法项目但非 git 仓库(无 `.git`)时 MUST 返回 200 与空数组,MUST NOT 500。
 - 端点 MUST 为只读,MUST NOT 修改任何文件或会话状态。
 
@@ -38,10 +38,10 @@
 - **WHEN** 对一个合法注册但无 `.git` 的项目请求该端点
 - **THEN** 返回 200 与空数组
 
-#### Scenario: 非法项目返回 400
+#### Scenario: 未注册项目返回 404
 
 - **WHEN** `project` 参数不在 registry 中
-- **THEN** 返回 400
+- **THEN** 返回 404
 
 ### Requirement: 会话命令列表只读端点
 
@@ -63,7 +63,7 @@
 
 ### Requirement: 会话进程 init 事件缓存
 
-SessionManager SHALL 在 stdout 读线程解析 `type=system` 且 `subtype=init` 的事件,将其中的 `slash_commands` 与 `skills` 缓存到 Session 对象新字段;该缓存 MUST 随 Session 生命周期存亡(进程终止、会话被移除时缓存一并不可达),会话重启后 MUST 以新 init 事件内容覆盖。init 事件本身 MUST NOT 转发给 SSE 订阅者(维持既有 hook 噪音过滤口径,init 属系统事件)。
+SessionManager SHALL 在 stdout 读线程解析 `type=system` 且 `subtype=init` 的事件,将其中的 `slash_commands` 与 `skills` 缓存到 Session 对象新字段;该缓存 MUST 随 Session 生命周期存亡(进程终止、会话被移除时缓存一并不可达),会话重启后 MUST 以新 init 事件内容覆盖。init 事件本身 MUST NOT 转发给 SSE 订阅者(既有过滤仅覆盖 `system/hook_*`、init 当前会广播,本次捕获后丢弃属有意行为变化——前端 `claude-msg/runEvents.ts` SILENT_KINDS 已含 `init`,零渲染依赖)。
 
 #### Scenario: init 到达即缓存
 
