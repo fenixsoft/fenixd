@@ -47,10 +47,10 @@
 
 ## 1. 后端:init 事件缓存与两个只读端点
 
-- [ ] 1.1 `core/dashboard/session_manager.py`:`Session` dataclass 新增 `slash_commands: list[str]` 与 `skills: list[str]`(缺省空);`_stdout_reader` 捕获 `type=system` 且 `subtype=init` 事件,取其 `slash_commands`/`skills` 覆盖写入缓存;init 事件本身不转发 SSE(既有过滤仅丢弃 `system/hook_*`、init 当前会广播,本次捕获后丢弃属有意行为变化,前端 runEvents.ts SILENT_KINDS 已含 init、零渲染依赖);缓存随 Session 移除消亡、进程重启后新 init 覆盖
-- [ ] 1.2 `core/dashboard/routes/session_routes.py` + `base.py` 路由表:新增 `GET /api/session/files?project=`,project 校验复用 `_project_from_query`,校验失败返回 404(与既有 `_session_context` 样板对未注册项目的口径一致,非 400);以注册路径为 cwd 跑 `git ls-files --cached --others --exclude-standard`(子进程,timeout 10s),返回相对路径字符串数组,上限 5000 条截断;非 git 仓库返回 200 空数组;注意路由表登记顺序不得破坏既有 `watch` regex 前置先例
-- [ ] 1.3 同上模式新增 `GET /api/session/commands?project=`:读 SessionManager 该项目 Session 的 init 缓存,返回 `{"slash_commands": [...], "skills": [...]}`;无在飞会话或 init 未到返回两个空数组(200)
-- [ ] 1.4 `tests/test_dashboard_session.py` 新增用例:init 缓存写入/覆盖/随终止消亡、files 正常/非 git/非法 404/5000 截断、commands 有会话/无会话;假 Popen 注入模式与既有用例一致;全文件(含既有 23 例)通过
+- [x] 1.1 `core/dashboard/session_manager.py`:`Session` dataclass 新增 `slash_commands: list[str]` 与 `skills: list[str]`(缺省空);`_stdout_reader` 捕获 `type=system` 且 `subtype=init` 事件,取其 `slash_commands`/`skills` 覆盖写入缓存;init 事件本身不转发 SSE(既有过滤仅丢弃 `system/hook_*`、init 当前会广播,本次捕获后丢弃属有意行为变化,前端 runEvents.ts SILENT_KINDS 已含 init、零渲染依赖);缓存随 Session 移除消亡、进程重启后新 init 覆盖
+- [x] 1.2 `core/dashboard/routes/session_routes.py` + `base.py` 路由表:新增 `GET /api/session/files?project=`,project 校验复用 `_project_from_query`,校验失败返回 404(与既有 `_session_context` 样板对未注册项目的口径一致,非 400);以注册路径为 cwd 跑 `git ls-files --cached --others --exclude-standard`(子进程,timeout 10s),返回相对路径字符串数组,上限 5000 条截断;非 git 仓库返回 200 空数组;注意路由表登记顺序不得破坏既有 `watch` regex 前置先例
+- [x] 1.3 同上模式新增 `GET /api/session/commands?project=`:读 SessionManager 该项目 Session 的 init 缓存,返回 `{"slash_commands": [...], "skills": [...]}`;无在飞会话或 init 未到返回两个空数组(200)
+- [x] 1.4 `tests/test_dashboard_session.py` 新增用例:init 缓存写入/覆盖/随终止消亡、files 正常/非 git/非法 404/5000 截断、commands 有会话/无会话;假 Popen 注入模式与既有用例一致;全文件(含既有 23 例)通过
 
 ## 2. 前端:claude-composer 组件迁移落位
 

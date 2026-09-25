@@ -11,6 +11,7 @@ Tests for dashboard live session (add-dashboard-live-session).
 - 真实进程集成测试（无 claude CLI 时 skip）：两轮输入均产生 assistant 事件
 """
 import json
+import subprocess
 import sys
 import threading
 import time
@@ -320,27 +321,31 @@ class TestReaderThreads:
         assert "ts" in ev
 
     def test_hook_noise_filtered(self, manager_fx, monkeypatch):
-        """hook_ 前缀的 system 事件被丢弃（1.9），system/init 保留。"""
+        """hook_ 前缀的 system 事件被丢弃（1.9）；init 捕获入缓存不广播（add-session-composer 1.1）。"""
         mgr, hub, s, proc = self._mk(
             manager_fx,
             monkeypatch,
             stdout_lines=[
                 '{"type":"system","subtype":"hook_started","uuid":"h1"}',
                 '{"type":"system","subtype":"hook_response","uuid":"h2"}',
-                '{"type":"system","subtype":"init","uuid":"h3"}',
+                '{"type":"system","subtype":"init","uuid":"h3","slash_commands":["/c"],"skills":["s"]}',
                 '{"type":"assistant","message":{"content":[{"type":"text","text":"ok"}]}}',
             ],
             stdout_eof=True,
         )
         self._wait_reader(mgr, s)
         events = self._events_from_broadcasts(hub)
-        # hook_* 噪音被过滤，system/init 保留，assistant 保留
+        # hook_* 噪音被过滤；init 捕获后丢弃（有意行为变化，前端 SILENT_KINDS 已含 init）；
+        # assistant 保留
         subtypes = [ev.get("subtype", "") for ev in events if ev["type"] == "system"]
-        assert "init" in subtypes
+        assert "init" not in subtypes
         assert not any(
             sub.startswith("hook_") for sub in subtypes
         ), f"hook 噪音应被过滤: {subtypes}"
         assert any(ev["type"] == "assistant" for ev in events)
+        # init 内容进缓存
+        assert s.slash_commands == ["/c"]
+        assert s.skills == ["s"]
 
     def test_dirty_line_to_stderr_event(self, manager_fx, monkeypatch):
         """非 JSON 脏行转 stderr 兜底事件。"""
@@ -506,6 +511,225 @@ class TestSessionRoutes:
         status, data = srv.delete(f"/api/session/watch?project=proj-a&cid={conn.id}")
         assert status == 200
         assert s.session_id not in hub._conns[conn.id].watched_runs
+
+
+# ── 1.5 add-session-composer：init 缓存与 files/commands 端点 ───────────
+
+def _wait_until(predicate, timeout=5.0):
+    """轮询等待读线程异步写缓存的条件成立。"""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.02)
+    return predicate()
+
+
+class TestInitCache:
+    """add-session-composer 1.1：init 事件缓存写入/覆盖/随终止消亡。"""
+
+    def test_init_event_captured_and_not_broadcast(self, manager_fx, monkeypatch):
+        """init 事件 slash_commands/skills 覆盖写入缓存；init 本身不进缓冲不广播。"""
+        mgr, hub = manager_fx
+        proc = FakeProc(
+            stdout_lines=[
+                '{"type":"system","subtype":"init",'
+                '"slash_commands":["/cmd-a","/cmd-b"],"skills":["skill-x","skill-y"]}',
+                '{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}',
+            ],
+            stdout_eof=False,
+        )
+        monkeypatch.setattr(
+            "core.dashboard.session_manager.subprocess.Popen",
+            lambda *a, **kw: proc,
+        )
+        s = mgr.start("proj-a", "/tmp/proj-a")
+        try:
+            assert _wait_until(lambda: s.slash_commands)
+            assert s.slash_commands == ["/cmd-a", "/cmd-b"]
+            assert s.skills == ["skill-x", "skill-y"]
+            # init 不进事件缓冲、不广播；assistant 正常广播
+            assert not any(
+                ev.get("type") == "system" and ev.get("subtype") == "init"
+                for ev in s.events
+            )
+            for event, _rid in hub.broadcasts:
+                for ev in event.get("events", []):
+                    assert not (
+                        ev.get("type") == "system" and ev.get("subtype") == "init"
+                    ), "init 事件不应转发 SSE"
+            assert any(
+                ev.get("type") == "assistant"
+                for event, _rid in hub.broadcasts
+                for ev in event.get("events", [])
+            )
+        finally:
+            proc.stdout.close()  # 让读线程退出
+
+    def test_init_event_overrides_on_restart(self, manager_fx, monkeypatch):
+        """会话重启后新 init 覆盖旧缓存。"""
+        mgr, hub = manager_fx
+        procs = [
+            FakeProc(stdout_lines=[
+                '{"type":"system","subtype":"init",'
+                '"slash_commands":["/old"],"skills":["s-old"]}',
+            ], stdout_eof=False),
+            FakeProc(stdout_lines=[
+                '{"type":"system","subtype":"init",'
+                '"slash_commands":["/new","/new2"],"skills":["s-new"]}',
+            ], stdout_eof=False),
+        ]
+        state = {"i": 0}
+
+        def fake_popen(*a, **kw):
+            proc = procs[min(state["i"], 1)]
+            state["i"] += 1
+            return proc
+
+        monkeypatch.setattr(
+            "core.dashboard.session_manager.subprocess.Popen", fake_popen
+        )
+        s1 = mgr.start("proj-a", "/tmp/proj-a")
+        assert _wait_until(lambda: s1.slash_commands == ["/old"])
+        # 模拟进程退出：EOF → reader 移除会话
+        procs[0].stdout.close()
+        assert _wait_until(lambda: mgr.get("proj-a") is None)
+        s2 = mgr.start("proj-a", "/tmp/proj-a")
+        assert s2 is not s1
+        try:
+            assert _wait_until(lambda: s2.slash_commands == ["/new", "/new2"])
+            assert s2.skills == ["s-new"]
+        finally:
+            procs[1].stdout.close()
+
+    def test_init_without_arrays_defaults_empty(self, manager_fx, monkeypatch):
+        """init 事件缺 slash_commands/skills 字段时缓存为空列表（不炸）。"""
+        mgr, hub = manager_fx
+        proc = FakeProc(
+            stdout_lines=['{"type":"system","subtype":"init"}'],
+            stdout_eof=False,
+        )
+        monkeypatch.setattr(
+            "core.dashboard.session_manager.subprocess.Popen",
+            lambda *a, **kw: proc,
+        )
+        s = mgr.start("proj-a", "/tmp/proj-a")
+        try:
+            time.sleep(0.2)  # 给读线程消化 init 行的时间
+            assert s.slash_commands == []
+            assert s.skills == []
+        finally:
+            proc.stdout.close()
+
+
+class TestSessionCompletionRoutes:
+    """add-session-composer 1.2/1.3：files/commands 端点路由层。"""
+
+    def test_commands_unknown_project_404(self, session_server_fx):
+        proot, srv, mgr = session_server_fx
+        status, _ = srv.get("/api/session/commands?project=no-such")
+        assert status == 404
+
+    def test_commands_no_session_empty(self, session_server_fx):
+        """无在飞会话 → 200 两个空数组。"""
+        proot, srv, mgr = session_server_fx
+        status, data = srv.get("/api/session/commands?project=proj-a")
+        assert status == 200
+        assert data == {"slash_commands": [], "skills": []}
+
+    def test_commands_with_session_before_init_empty(self, session_server_fx):
+        """有会话但 init 未到 → 200 两个空数组（缺省缓存）。"""
+        proot, srv, mgr = session_server_fx
+        s = mgr.start("proj-a", str(proot))
+        status, data = srv.get("/api/session/commands?project=proj-a")
+        assert status == 200
+        assert data == {"slash_commands": [], "skills": []}
+
+    def test_commands_after_init(self, session_server_fx, monkeypatch):
+        """init 已缓存 → 返回与 init 一致的数组。"""
+        proot, srv, mgr = session_server_fx
+        proc = FakeProc(stdout_lines=[
+            '{"type":"system","subtype":"init",'
+            '"slash_commands":["/cmd-a"],"skills":["skill-1","skill-2"]}',
+        ], stdout_eof=False)
+        monkeypatch.setattr(
+            "core.dashboard.session_manager.subprocess.Popen",
+            lambda *a, **kw: proc,
+        )
+        s = mgr.start("proj-a", str(proot))
+        try:
+            assert _wait_until(
+                lambda: mgr.get("proj-a") is not None and mgr.get("proj-a").slash_commands
+            )
+            status, data = srv.get("/api/session/commands?project=proj-a")
+            assert status == 200
+            assert data["slash_commands"] == ["/cmd-a"]
+            assert data["skills"] == ["skill-1", "skill-2"]
+        finally:
+            proc.stdout.close()
+
+    def test_commands_cache_dies_with_session(self, session_server_fx, monkeypatch):
+        """会话终止移除后返回空数组，MUST NOT 返回陈旧缓存。"""
+        proot, srv, mgr = session_server_fx
+        proc = FakeProc(stdout_lines=[
+            '{"type":"system","subtype":"init","slash_commands":["/cmd"],"skills":["sk"]}',
+        ], stdout_eof=False)
+        monkeypatch.setattr(
+            "core.dashboard.session_manager.subprocess.Popen",
+            lambda *a, **kw: proc,
+        )
+        s = mgr.start("proj-a", str(proot))
+        assert _wait_until(lambda: s.slash_commands)
+        mgr.stop(s.session_id)
+        assert mgr.get("proj-a") is None
+        status, data = srv.get("/api/session/commands?project=proj-a")
+        assert status == 200
+        assert data == {"slash_commands": [], "skills": []}
+        proc.stdout.close()
+
+    def test_files_unknown_project_404(self, session_server_fx):
+        proot, srv, mgr = session_server_fx
+        status, _ = srv.get("/api/session/files?project=no-such")
+        assert status == 404
+
+    # 注：以下三个 files 用例不启动会话进程。session_server_fx 会把全局
+    # subprocess.Popen patch 成 FakeProc（FakeProc 无 __enter__，subprocess.run
+    # 内部 `with Popen(...)` 会炸），故先 undo 恢复真实 Popen，让端点的
+    # git ls-files 子进程走真实路径。
+    def test_files_non_git_returns_empty(self, session_server_fx, monkeypatch):
+        """合法注册但无 .git → 200 空数组（不 500）。"""
+        monkeypatch.undo()
+        proot, srv, mgr = session_server_fx
+        status, data = srv.get("/api/session/files?project=proj-a")
+        assert status == 200
+        assert data == []
+
+    def test_files_normal_git_repo(self, session_server_fx, monkeypatch):
+        """git 仓库 → 200 相对路径数组，含 untracked 文件。"""
+        monkeypatch.undo()
+        proot, srv, mgr = session_server_fx
+        subprocess.run(["git", "init", "-q"], cwd=proot, check=True, capture_output=True)
+        (proot / "a.txt").write_text("x", encoding="utf-8")
+        (proot / "sub").mkdir()
+        (proot / "sub" / "b.txt").write_text("y", encoding="utf-8")
+        status, data = srv.get("/api/session/files?project=proj-a")
+        assert status == 200
+        assert isinstance(data, list)
+        assert all(isinstance(p, str) for p in data)
+        assert "a.txt" in data
+        assert str((proot / "sub" / "b.txt").resolve()) not in data  # 相对路径
+        assert "sub/b.txt" in data
+
+    def test_files_truncated_at_5000(self, session_server_fx, monkeypatch):
+        """超 5000 条截断。"""
+        monkeypatch.undo()
+        proot, srv, mgr = session_server_fx
+        subprocess.run(["git", "init", "-q"], cwd=proot, check=True, capture_output=True)
+        for i in range(5010):
+            (proot / f"f{i:05d}.txt").write_text("", encoding="utf-8")
+        status, data = srv.get("/api/session/files?project=proj-a")
+        assert status == 200
+        assert len(data) == 5000
 
 
 # ── 1.4 真实进程集成测试（无 claude CLI 时 skip） ───────────────────────
