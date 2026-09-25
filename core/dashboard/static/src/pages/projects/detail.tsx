@@ -1,7 +1,7 @@
 import { PageContainer } from '@ant-design/pro-components';
 import { Alert, App, Badge, Button, Card, Checkbox, Collapse, Descriptions, Dropdown, Empty, Image, Input, Select, Space, Spin, Tabs, Tag, Timeline, Tooltip, Typography } from 'antd';
 import { CloseOutlined, DownOutlined, ExclamationCircleFilled, FullscreenOutlined, InfoCircleFilled } from '@ant-design/icons';
-import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useState } from 'react';
 import { history, useParams, useLocation } from '@umijs/max';
 import dayjs from 'dayjs';
 import Markdown from 'react-markdown';

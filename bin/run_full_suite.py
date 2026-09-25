@@ -555,7 +555,10 @@ def main(argv=None) -> int:
         # failed_tests 由 run_suite 在截断前自完整原始输出提取（c00c0572529d）。
         current_failed = current.get("failed_tests", [])
         if current.get("timed_out"):
-            classification = "current-hang"
+            # 机器可读键随 result 落盘（code-review item 06acf85563c3）：
+            # 与 run_baseline_comparison 的 baseline-hang/baseline-worktree-error
+            # 机器值同口径，脚本消费者不必解析中文展示文案。
+            result["classification_key"] = "current-hang"
             result["classification"] = "当前套件挂起（无完整失败集合对比）"
         else:
             # baseline 自身错误态显式处置（code-review item 33596cced7f6）：

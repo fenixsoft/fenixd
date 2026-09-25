@@ -7,6 +7,7 @@ dashboard-log-offset-index D5：尾部读取窗口 + 块偏移二分定位。
 import json
 import os
 import re
+import tempfile
 import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -111,9 +112,23 @@ def _write_log_index(proot: Path, idx: dict, log_name: str = "fenixd.log"):
     idx_path = _log_index_path(proot, log_name)
     try:
         idx_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = idx_path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(idx, ensure_ascii=False), encoding="utf-8")
-        os.replace(str(tmp), str(idx_path))
+        # 唯一临时名（mkstemp，同 config_admin 原子写回先例）：dashboard 为多线程
+        # HTTP 服务，并发查询同一日志会同时落盘索引；固定 .tmp 名下两路写入交错
+        # 会把半个 JSON 经 os.replace 换成正式索引，下次读取触发校验失败全量重建，
+        # 打破「追加热更新 0 次重建」热路径。
+        fd, tmp_name = tempfile.mkstemp(
+            dir=str(idx_path.parent), prefix=f".{log_name}.offsets.", suffix=".tmp"
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(json.dumps(idx, ensure_ascii=False))
+            os.replace(tmp_name, str(idx_path))
+        except Exception:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
     except OSError:
         pass
 

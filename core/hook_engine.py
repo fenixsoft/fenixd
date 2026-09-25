@@ -34,6 +34,7 @@ import fcntl
 import json
 import os
 import shlex
+import signal
 import subprocess
 import tempfile
 import threading
@@ -1024,7 +1025,7 @@ class HookEngine:
     def _action_shell(
         self, cfg: dict, spec: str, from_status: Optional[str], to_status: str, entry: dict
     ) -> Tuple[str, str]:
-        """bash -c <command>，注入事件环境变量，超时强杀。"""
+        """bash -c <command>，注入事件环境变量，超时按进程组强杀。"""
         command = (cfg.get("command") or "").strip()
         timeout = _num(cfg.get("timeout_seconds"), DEFAULT_SHELL_TIMEOUT_SECONDS)
         env = dict(os.environ)
@@ -1035,25 +1036,34 @@ class HookEngine:
         env["FENIX_HOOK_ERROR"] = str(entry.get("error") or "")
         env["FENIX_HOOK_PROJECT_ROOT"] = str(self.project_root)
         try:
-            res = subprocess.run(
+            # start_new_session：bash 为新进程组首，超时可 killpg 连孙进程一并回收
+            proc = subprocess.Popen(
                 ["bash", "-c", command],
                 cwd=str(self.project_root),
                 env=env,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=timeout,
+                start_new_session=True,
             )
-        except subprocess.TimeoutExpired as e:
-            detail = f"shell 超时（>{timeout:.0f}s）已强杀"
-            tail = _tail_combined(e.stdout or "", e.stderr or "")
-            return STATUS_FAILURE, f"{detail}{('：' + tail) if tail else ''}"
+            try:
+                out, err = proc.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    proc.kill()
+                out, err = proc.communicate()
+                detail = f"shell 超时（>{timeout:.0f}s）已按进程组强杀"
+                tail = _tail_combined(out or "", err or "")
+                return STATUS_FAILURE, f"{detail}{('：' + tail) if tail else ''}"
         except OSError as e:
             return STATUS_FAILURE, f"shell 执行失败: {e}"
-        if res.returncode != 0:
+        if proc.returncode != 0:
             return STATUS_FAILURE, (
-                f"退出码 {res.returncode}: {_tail_combined(res.stdout, res.stderr)}"
+                f"退出码 {proc.returncode}: {_tail_combined(out, err)}"
             )
-        tail = _tail_combined(res.stdout, res.stderr)
+        tail = _tail_combined(out, err)
         return STATUS_SUCCESS, tail or "退出码 0"
 
     # ── 审计与告警（D5/D6） ─────────────────────────────────────────

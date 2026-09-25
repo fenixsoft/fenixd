@@ -8,6 +8,7 @@ STATE.md（design D3 规则 3），本组件不持有实例状态。
 from core.state_machine import (
     BUDGET_EXEMPT_ALERTED_FIELD,
     BUDGET_EXEMPT_RUNS_FIELD,
+    BUDGET_MANUAL_RESET_BASELINE_FIELD,
     INFRA_FAILURE_COUNT_FIELD,
     VERIFY_INFRA_ROUNDS_FIELD,
 )
@@ -311,20 +312,40 @@ class ImplBudget:
         （含前后值），MUST NOT 保留静默漂移的旧值。
         有豁免因素（runs 产物被归档/保留上限、死亡 run 豁免发生过）时沿用既有
         WARN 不改数——自动改数会破坏豁免语义。
+
+        人工重置基线（item 043e9fdd3ac7）：STATE 带
+        ``_budget_manual_reset_baseline``（continue_auto_fix 清零 used 时同批
+        写入的清零前值）时，对账目标改为 ``max(0, 正常收工 run 数 − 基线)``——
+        历史 run 数不再冲掉人工清零（否则对账把 used 改写回历史 run 数，人工
+        重置在一个周期内被静默回滚）；基线之后新产生的 run 消耗照常累计，
+        预算闸门再次耗尽仍生效。多次人工重置后基线与 completed 绝对计数
+        脱钩的口径错位由纯漂移分支的「重锚」自愈（expected > used 时把基线
+        重锚为 completed − used，不改写 used）。豁免判定守卫（不改数分支）
+        保持在基线改写之前、优先级不变。无该字段时对账口径与历史完全一致。
         """
         used = self._impl_run_budget_used(spec_name)
         completed = self._count_normal_completed_impl_runs(spec_name)
-        if used == completed:
+        # 人工重置基线：有锚点时对账目标 = 基线之后的新增正常收工 run 数。
+        baseline = self._budget_manual_reset_baseline(spec_name)
+        if baseline is None:
+            expected = completed
+            target_basis = f"runs 目录正常收工 run 数={completed}"
+        else:
+            expected = max(0, completed - baseline)
+            target_basis = (
+                f"runs 正常收工 run 数 {completed} − 人工重置基线 {baseline}={expected}"
+            )
+        if used == expected:
             return
         # 下调方向先排除在飞 run（item 425736ecfd76）：对账时刻同 spec 恰有
         # 新 run 已派发（启动计数已 +1）而产物尚未落盘时，completed 比 used
         # 少 1 是对账窗口假象，自动下调会把该 run 的计数永久吞掉（run 收工
         # 不再补 +1，预算少计）——保守不改数。
-        if completed < used and self._impl_run_unmaterialized(spec_name):
+        if expected < used and self._impl_run_unmaterialized(spec_name):
             self._pm.logger.warning(
                 "pm_engine",
                 f"预算计数对账偏差（在飞实现 run）: '{spec_name}' used={used} vs "
-                f"runs 目录正常收工 run 数={completed}"
+                f"{target_basis}"
                 f"（implementer_run 产物尚未可见，疑似启动计数已加、产物未落盘，"
                 f"不自动改数）",
             )
@@ -333,25 +354,78 @@ class ImplBudget:
             self._pm.logger.warning(
                 "pm_engine",
                 f"预算计数对账偏差: '{spec_name}' used={used} vs "
-                f"runs 目录正常收工 run 数={completed}"
+                f"{target_basis}"
                 f"（存在豁免因素：runs 产物保留上限/归档 或 死亡 run 豁免，"
                 f"不自动改数，供人工核查）",
             )
             return
+        # 人工重置基线的口径自愈（item 043e9fdd3ac7）：基线写入的是清零前
+        # used（彼时的增量消耗），而 completed 是历史全量绝对计数；spec 经
+        # 第二次及以后 continue_auto_fix 重置后（彼时 used==增量 ≠ completed
+        # 全量），completed − 基线会把更早周期的历史 run 数幽灵式计回，
+        # expected 虚高于 used——若按它上调改写 used 会再次回滚人工重置。
+        # 「expected > used」即该口径错位的签名（正常收工的 run 必然 used 与
+        # completed 同涨，二者只会在基线错位/used 异常丢失时脱钩）：把基线
+        # 重锚为 completed − used（=重置时刻 completed 的快照），expected 随即
+        # 归位为重置后新增；used 保持不变，留 INFO 留痕。
+        if baseline is not None and expected > used:
+            reanchored = max(0, completed - used)
+            try:
+                self._pm.state_machine.update_spec(
+                    spec_name, {BUDGET_MANUAL_RESET_BASELINE_FIELD: reanchored}
+                )
+            except Exception as e:
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"预算重置基线重锚写回失败 '{spec_name}': {e}",
+                )
+                return
+            self._pm.logger.info(
+                "pm_engine",
+                f"预算重置基线重锚: '{spec_name}' baseline={baseline} → {reanchored}"
+                f"（人工重置后基线口径错位自愈，used={used} 保持不变，"
+                f"对账目标归位为重置后新增）",
+            )
+            return
         # 纯漂移（无豁免因素）：以 runs 实际计数为准改写 used（design D5）
         try:
-            self._pm.state_machine.update_spec(spec_name, {IMPL_RUN_BUDGET_USED_FIELD: completed})
+            self._pm.state_machine.update_spec(spec_name, {IMPL_RUN_BUDGET_USED_FIELD: expected})
         except Exception as e:
             self._pm.logger.warning(
                 "pm_engine",
                 f"预算对账校正写回失败 '{spec_name}': {e}",
             )
             return
-        self._pm.logger.info(
-            "pm_engine",
-            f"预算对账自动校正: '{spec_name}' used={used} → {completed}"
-            f"（runs 正常收工 run 数，无豁免因素；后续预算闸门按校正值生效）",
-        )
+        if baseline is None:
+            # 无人工基线：留痕文案与引入基线机制前逐字一致
+            self._pm.logger.info(
+                "pm_engine",
+                f"预算对账自动校正: '{spec_name}' used={used} → {expected}"
+                f"（runs 正常收工 run 数，无豁免因素；后续预算闸门按校正值生效）",
+            )
+        else:
+            self._pm.logger.info(
+                "pm_engine",
+                f"预算对账自动校正: '{spec_name}' used={used} → {expected}"
+                f"（{target_basis}，无豁免因素；后续预算闸门按校正值生效）",
+            )
+
+    def _budget_manual_reset_baseline(self, spec_name: str) -> int | None:
+        """人工预算重置基线（``_budget_manual_reset_baseline``，无锚点返回 None）。
+
+        continue_auto_fix 清零 used 时写入的清零前 used 值（item 043e9fdd3ac7）；
+        对账据此把目标口径改为 ``max(0, 正常收工 run 数 − 基线)``，使历史
+        run 数不再冲掉人工清零。字段缺失/空/非法 → None（对账沿用历史全量
+        口径，行为与引入前完全一致）。
+        """
+        entry = self._pm.state_machine.read_one(spec_name) or {}
+        raw = entry.get(BUDGET_MANUAL_RESET_BASELINE_FIELD)
+        if raw is None or raw == "":
+            return None
+        try:
+            return max(0, int(raw))
+        except (TypeError, ValueError):
+            return None
 
     def _impl_run_unmaterialized(self, spec_name: str) -> bool:
         """最近派发的实现 run 产物在 runs 目录不可见（item 425736ecfd76）。

@@ -29,6 +29,7 @@ from .env_gate import probe_http_health
 from .scenarios import validate_scenario
 
 _EVIDENCE_LIMIT = 64 * 1024  # 证据 64KB 截断上限
+_SSE_MAX_EVENTS = 100  # sse_connect 单窗口事件收集上限（触顶截断并在 detail 标注）
 
 
 def _truncate(text: str) -> tuple:
@@ -325,6 +326,7 @@ class ApiRunner(VerifyRunner):
                 "error": f"duration 须为数字（秒）: {step.get('duration')!r} ({e})",
             }
         events: list[dict] = []
+        truncated = False
 
         try:
             async with client.stream(
@@ -366,7 +368,8 @@ class ApiRunner(VerifyRunner):
                                 }
                             )
                         event = {"data": "", "event": ""}
-                        if len(events) >= 100:
+                        if len(events) >= _SSE_MAX_EVENTS:
+                            truncated = True
                             break
         except httpx.ConnectError as e:
             return {
@@ -401,7 +404,8 @@ class ApiRunner(VerifyRunner):
             "action": "sse_connect",
             "url": url,
             "events": len(events),
-            "detail": f"SSE 收集 {len(events)} 个事件（{duration}s 窗口）",
+            "detail": f"SSE 收集 {len(events)} 个事件（{duration}s 窗口）"
+            + (f"（达到收集上限 {_SSE_MAX_EVENTS}，后续事件已截断）" if truncated else ""),
         }
 
     def config_env(self) -> dict:

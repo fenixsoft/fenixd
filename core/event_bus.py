@@ -70,7 +70,11 @@ class EventBus:
         self.logger.info("event_bus", "File watcher started")
 
         # Start periodic full scan
-        poll_interval = self.config.get("schedule", {}).get("poll_interval_minutes", 30)
+        # ``or {}``：schedule 键存在但值为 null（YAML 空值）时首个 .get 返回
+        # None，对其再 .get 即抛 AttributeError 冲出 start() 使 daemon 启动
+        # 失败——与 _periodic_scan_loop 对同源读取的容错口径对齐，回退默认 30 分钟。
+        schedule = self.config.get("schedule") or {}
+        poll_interval = schedule.get("poll_interval_minutes", 30)
         self._scan_thread = threading.Thread(
             target=self._periodic_scan_loop,
             args=(poll_interval,),
