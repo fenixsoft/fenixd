@@ -48,6 +48,22 @@ def severity_needs_human(severity: str) -> bool:
     return (severity or "").lower() in HUMAN_SEVERITIES
 
 
+def evidence_project(evidence: str) -> str:
+    """从 evidence 串（``项目名=<name>; ...``）按字段解析项目名，全等比较用。
+
+    「项目名=」字段解析的唯一实现（原 mergeback.py / code_fix.py /
+    settings_routes 各持的 `_evidence_project` 副本已收敛至此）。evidence 的
+    生产点格式不一（dashboard 侧可能只有裸 ``项目名=<name>`` 无尾随分隔符），
+    不能靠带分隔符的子串匹配；项目名互为前缀时（``web`` 与 ``webapp``）
+    也不得互撞（code-review item 29958284895a）。
+    """
+    for seg in (evidence or "").split(";"):
+        seg = seg.strip()
+        if seg.startswith("项目名="):
+            return seg[len("项目名="):].strip()
+    return ""
+
+
 def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
