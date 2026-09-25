@@ -139,9 +139,15 @@ export function useComposerState({
       await onSend(currentInput);
     } catch (error) {
       // 失败还原草稿（spec：发送失败时输入内容还原为发送前状态）。
-      // 空文本判定前置 guard 后，previousInput 非空——直接还原。
-      setInput(previousInput);
-      inputValueRef.current = previousInput;
+      // 空文本判定前置 guard 后，previousInput 非空。但输入框在 sending
+      // 期间未禁用，用户可能在在途窗口继续编辑（input/草稿随之更新）：
+      // 仅当输入仍等于发送前快照时才整体还原，否则保留当前输入——此时
+      // 输入以发送文本为基底（成功才清空），整体还原会丢弃在途新增内容，
+      // 且经草稿持久化 effect 写回 localStorage 后无法找回。
+      if (inputValueRef.current === previousInput) {
+        setInput(previousInput);
+        inputValueRef.current = previousInput;
+      }
       throw error instanceof Error ? error : new Error(String(error));
     }
 
