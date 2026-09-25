@@ -350,12 +350,25 @@ class AssertionRunner:
         """断言元素的z-index层级关系。
 
         extra参数:
-            compare_selector: 对比元素选择器
+            compare_selector: 对比元素选择器（必填，缺失/为空时断言直接失败）
             operator: 比较操作符（> / < / ==），默认 ">"
         """
         selector = a["selector"]
         compare_selector = a.get("compare_selector", "")
         op = a.get("operator", ">")
+
+        if not compare_selector:
+            # 显式失败而非静默兜底：缺对比对象时 _safe_evaluate 会返回
+            # None 并按 z-index 0 处理，变成「自身 vs 0」却无任何提示。
+            return {
+                "type": "z_index_order",
+                "layer": 2,
+                "selector": selector,
+                "compare_selector": compare_selector,
+                "operator": op,
+                "pass": False,
+                "error": "缺少 compare_selector",
+            }
 
         if not await self._element_exists(page, selector):
             return {

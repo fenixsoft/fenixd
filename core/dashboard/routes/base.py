@@ -558,6 +558,13 @@ class H0BaseMixin:
                     self._drain_remaining_request_body()
                     self._error(405, "Method Not Allowed")
                     return
+                if method not in ("GET", "HEAD", "POST", "DELETE"):
+                    # 排空 body 后再回 405（code-review item aace0e7e91b6）：
+                    # 非 GET/HEAD/POST/DELETE 方法不落入 GET 表分派，与静态
+                    # 资源分支的 405 口径对齐。
+                    self._drain_remaining_request_body()
+                    self._error(405, "Method Not Allowed")
+                    return
                 if method == "POST":
                     try:
                         self._handle_api_post(path, query)

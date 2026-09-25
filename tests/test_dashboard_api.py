@@ -1592,7 +1592,7 @@ class TestSpecApprovePushAPI:
         monkeypatch.setattr(dash_data, "_is_running", lambda p: True)
         # fix-supervisor-hosting-chain D8：消费方判据升级为托管态（managed）——
         # 测试环境无真实 supervisor，patch 托管态以验证成功写入路径
-        monkeypatch.setattr("core.fenix_session.hosting_state", lambda p: "managed")
+        monkeypatch.setattr("core.dashboard.data.admin_actions._hosting_state", lambda p: "managed")
         srv = self._server_for(proot, tmp_path)
         try:
             status, body = srv.post("/api/spec-approve-push?project=proj-a&spec=done-spec")
@@ -1675,7 +1675,7 @@ class TestSpecApprovePushAPI:
         monkeypatch.setattr(dash_data, "_is_running", lambda p: True)
         # fix-supervisor-hosting-chain D8：消费方判据升级为托管态，成功路径须
         # 托管态为 managed（测试环境无真实 supervisor）
-        monkeypatch.setattr("core.fenix_session.hosting_state", lambda p: "managed")
+        monkeypatch.setattr("core.dashboard.data.admin_actions._hosting_state", lambda p: "managed")
         srv = self._server_for(proot, tmp_path)
         try:
             status1, body1 = srv.post("/api/spec-approve-push?project=proj-a&spec=done-spec")
@@ -1692,7 +1692,7 @@ class TestSpecApprovePushAPI:
         proot = self._make_done_project(tmp_path)
         monkeypatch.setattr(dash_data, "_is_running", lambda p: True)
         # fix-supervisor-hosting-chain D8：托管态 managed 才走成功写入路径
-        monkeypatch.setattr("core.fenix_session.hosting_state", lambda p: "managed")
+        monkeypatch.setattr("core.dashboard.data.admin_actions._hosting_state", lambda p: "managed")
         srv = self._server_for(proot, tmp_path)
         try:
             status, body = srv.post("/api/spec-approve-push?project=proj-a&spec=done-spec")
@@ -1720,7 +1720,7 @@ class TestSpecApprovePushAPI:
         proot = self._make_done_project(tmp_path)
         monkeypatch.setattr(dash_data, "_is_running", lambda p: True)
         # fix-supervisor-hosting-chain D8：托管态 managed 才走成功写入路径
-        monkeypatch.setattr("core.fenix_session.hosting_state", lambda p: "managed")
+        monkeypatch.setattr("core.dashboard.data.admin_actions._hosting_state", lambda p: "managed")
         srv = self._server_for(proot, tmp_path)
         try:
             status1, _ = srv.post("/api/spec-approve-push?project=proj-a&spec=done-spec")

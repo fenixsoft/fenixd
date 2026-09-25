@@ -110,6 +110,16 @@ function githubSlug(text: string): string {
     .replace(/\s+/g, '-');
 }
 
+// 重复标题 slug 去重计数（GitHub 规则：同名依次追加 -1、-2…）。
+// buildHelpComponents 每轮重建时重置；heading 内以 useRef 缓存首次分配结果，重渲染不重复递增。
+let slugCounts = new Map<string, number>();
+
+function allocHeadingId(base: string): string {
+  const n = slugCounts.get(base) ?? 0;
+  slugCounts.set(base, n + 1);
+  return n === 0 ? base : `${base}-${n}`;
+}
+
 /** 平滑滚动到文档内锚点；锚点不存在时静默。 */
 function scrollToAnchor(anchor: string) {
   try {
@@ -119,11 +129,14 @@ function scrollToAnchor(anchor: string) {
   }
 }
 
-/** heading 组件工厂：保留原字号样式，注入 GitHub slug id（锚点跳转目标）。 */
+/** heading 组件工厂：保留原字号样式，注入 GitHub slug id（重复标题按 -1/-2 去重，锚点跳转目标）。 */
 function headingComponent(Tag: 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6', style: CSSProperties) {
   return function Heading({ children }: any) {
+    // slug 仅分配一次并缓存于 ref：重渲染不重复递增计数，id 保持稳定
+    const idRef = useRef<string | null>(null);
+    if (idRef.current === null) idRef.current = allocHeadingId(githubSlug(nodeText(children)));
     return (
-      <Tag id={githubSlug(nodeText(children))} style={{ ...style, scrollMarginTop: 76 }}>
+      <Tag id={idRef.current} style={{ ...style, scrollMarginTop: 76 }}>
         {children}
       </Tag>
     );
@@ -134,6 +147,7 @@ function headingComponent(Tag: 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6', style: C
 
 function buildHelpComponents(onNavigate: (docName: string, anchor?: string) => void, docs: HelpDocMeta[]): Components {
   const docNames = new Set(docs.map((d) => d.name));
+  slugCounts = new Map(); // 新一轮文档渲染：重置同名标题去重计数
   return {
     ...markdownComponents,
     code({ className, children, ...props }: any) {
@@ -300,7 +314,8 @@ export default function HelpPage() {
     requestAnimationFrame(() => scrollToAnchor(anchor));
   }, [docData, docLoading]);
 
-  const helpComponents = useMemo(() => buildHelpComponents(onNavigate, docs), [onNavigate, docs]);
+  // 依赖 docData：文档内容轮次变化时重建 components（同步重置 slug 去重计数）
+  const helpComponents = useMemo(() => buildHelpComponents(onNavigate, docs), [onNavigate, docs, docData]);
 
   // 菜单项
   const menuItems = useMemo(() => docs.map((d) => ({

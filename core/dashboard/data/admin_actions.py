@@ -1166,8 +1166,7 @@ def request_spec_approve_push(project_root, spec: str) -> dict:
 
     # 消费方判据（D8）：托管态为准——unmanaged 拒绝（信号无人消费）、
     # stopped 维持既有 daemon_down 文案、managed 放行。
-    from core.fenix_session import hosting_state as _hosting_state
-
+    # _hosting_state 已在模块顶层导入（测试可 patch 该绑定）
     try:
         state = _hosting_state(proot)
     except Exception:

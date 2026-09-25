@@ -589,17 +589,24 @@ export default function SpecDetailPage() {
       setDetail(data);
     };
 
+    // SPEC 下拉快速切换时本 effect 重挂载，cancelled 丢弃被取代作用的迟到
+    // 响应，防止旧 SPEC 的详情经 getSpecDetail 写入新页面状态（同文件
+    // fetchProposalWhy/getSpecs effect 同模式）
+    let cancelled = false;
+
     const load = async (initial = false) => {
       try {
         if (initial) setLoading(true);
         const data = await getSpecDetail(name, spec);
+        if (cancelled) return;
         applyDetail(data);
         if (initial) setError('');
       } catch (e) {
         // 后台刷新失败静默保留旧视图，只有首次加载才呈现错误页
-        if (initial) setError(e instanceof Error ? e.message : String(e));
+        if (initial && !cancelled) setError(e instanceof Error ? e.message : String(e));
       } finally {
-        if (initial) setLoading(false);
+        // 迟到响应不提前熄灭新 SPEC 首载的 Spin
+        if (initial && !cancelled) setLoading(false);
       }
     };
 
@@ -647,7 +654,10 @@ export default function SpecDetailPage() {
         throttledLoad();
       }
     };
-    return () => es.close();
+    return () => {
+      cancelled = true;
+      es.close();
+    };
   }, [name, spec]);
 
   const { message } = App.useApp();

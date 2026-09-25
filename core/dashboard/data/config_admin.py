@@ -1583,6 +1583,12 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
                 f"gates.start_after_scope must be one of ['full', 'dispatch']: {g_patch['start_after_scope']!r}"
             )
 
+    # 非 dict 的 hooks patch 直接拒绝（对齐 agents 同款「must be an object」守卫：
+    # 非 dict 跳过下方 validate_hooks_config，且会被 _deep_merge_managed 原样整体
+    # 落盘，违反 D7「非法值直接拒绝 400 且不写入」契约）
+    if "hooks" in config_patch and not isinstance(config_patch["hooks"], dict):
+        return fail(f"hooks must be an object: {config_patch['hooks']!r}")
+
     # add-spec-hooks D7：hooks 段前置校验（非法值直接拒绝 400 且不写入——规则：
     # events 非空且合法、action 合法、webhook 必填 url、shell 必填 command）。
     if isinstance(config_patch.get("hooks"), dict):

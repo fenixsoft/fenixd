@@ -49,7 +49,11 @@ class H_SessionRoutesMixin:
         try:
             session = sm.start(project["name"], project["path"])
         except Exception as exc:
-            self._error(500, f"failed to start session: {exc}")
+            # 对外固定文案（code-review item a2fbd4f5d9dd）：{exc} 会把进程
+            # 命令行/内部路径等细节透给 HTTP 客户端，与 base.py _handle_inner
+            # 泛化文案策略同款——详情经 logger.exception 留服务端日志。
+            logger.exception("会话启动失败（project=%s）", project["name"])
+            self._error(500, "failed to start session")
             return
 
         self._json({
@@ -118,7 +122,15 @@ class H_SessionRoutesMixin:
         try:
             sm.send(session.session_id, text)
         except Exception as exc:
-            self._error(400, f"send failed: {exc}")
+            # 对外固定文案（code-review item a2fbd4f5d9dd，同 _api_session_stop
+            # 留痕写法）：不把 {exc} 透给 HTTP 客户端，详情留服务端日志。
+            logger.warning(
+                "会话发送失败（session=%s）: %s: %s",
+                session.session_id,
+                type(exc).__name__,
+                exc,
+            )
+            self._error(400, "send failed")
             return
 
         self._json({"ok": True})

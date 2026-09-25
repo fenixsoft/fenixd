@@ -889,7 +889,8 @@ def materialize_draft(item: dict, project_root) -> Tuple[Optional[Path], str]:
     )
     eid = str(eid or "")
     # 路径越界校验（code-review item 79a8a0a141f5，与 reject_item/delete_item
-    # 同款防护）：eid 来自 agent 产出 JSON（read_contract 不校验 id），可携带
+    # 同款防护）：eid 来自 agent 产出 JSON（read_contract 只校验 id 为字符串，
+    # 不校验内容），可携带
     # ``..`` 或路径分隔符——直接拼草稿路径可写出 drafts 基目录。越界拒绝落盘
     # （调用方置 draft_failed）。
     d = _safe_draft_dir(project_root, eid)
@@ -1788,7 +1789,11 @@ def read_contract(path) -> Dict[str, Any]:
     - JSON 可解析且为 dict；
     - 含 ``items`` 数组；
     - 每条含 ``project`` / ``date_section`` / ``title`` / ``verdict``(dict)
-      且 ``section`` ∈ {浪费, 失误, 可改进}。
+      且 ``section`` ∈ {浪费, 失误, 可改进}；
+    - ``id`` 若提供必须为字符串（缺失回落 ``item_id`` 复算）。非字符串真值
+      id 直达 ``upsert_item`` 会使 ``sorted()`` 混排 str/int 键抛 TypeError，
+      该条目每轮复现同一异常成永久阻塞（code-review item a29d89428f7f），
+      故在契约层整轮拒绝。
 
     解析成功后由调用方删除产物文件。返回 {"run_id", "degraded", "items"}。
     """
@@ -1814,6 +1819,12 @@ def read_contract(path) -> Dict[str, Any]:
             raise ContractError(f"items[{idx}] 缺 verdict 对象")
         if "worth_spec" not in verdict or not isinstance(verdict.get("worth_spec"), bool):
             raise ContractError(f"items[{idx}].verdict.worth_spec 非法")
+        # code-review item a29d89428f7f：缺失/空串回落 item_id 复算；非字符串
+        # 真值 id（如数字）会在 upsert_item 锁内 sorted() 混排 str/int 键抛
+        # TypeError，条目永久落不了库（调用方逐条跳过 → 每轮重试同一异常）。
+        raw_id = item.get("id")
+        if raw_id is not None and not isinstance(raw_id, str):
+            raise ContractError(f"items[{idx}].id 非字符串: {raw_id!r}")
     return {
         "run_id": data.get("run_id"),
         "degraded": data.get("degraded"),

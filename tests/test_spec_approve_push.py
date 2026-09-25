@@ -72,11 +72,12 @@ def _patch_hosting(monkeypatch, state):
 
     `request_spec_approve_push` 的放行条件已从「daemon 进程存活」（
     `dash_data._is_running`）升级为「受 supervisor 托管的活跃 daemon」
-    （`core.fenix_session.hosting_state(proot) == "managed"`）——测试环境的
-    临时项目没有任何 supervisor，不 patch 则恒判 stopped。函数内 import，
-    须 patch 模块属性本身（与 test_dashboard_api.py 同款处方）。
+    （`hosting_state(proot) == "managed"`）——测试环境的
+    临时项目没有任何 supervisor，不 patch 则恒判 stopped。函数使用模块顶层
+    可 patch 绑定，须 patch `admin_actions._hosting_state`（与
+    test_delete_stop_inflight_agents.py 同款处方）。
     """
-    monkeypatch.setattr("core.fenix_session.hosting_state",
+    monkeypatch.setattr("core.dashboard.data.admin_actions._hosting_state",
                         lambda root=None, _state=state: _state)
 
 

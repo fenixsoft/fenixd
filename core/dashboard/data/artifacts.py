@@ -61,79 +61,62 @@ def parse_run_result_scenarios(project_root, spec_name) -> list:
     fast-track spec 的 Dashboard「场景结果」页签恒空（数据在专属副本里并不缺）。
     返回场景 dict 列表（已归一化截图字段），不可得返回 []。
     """
-    candidates = [
-        Path(project_root) / ".fenix" / "verify-progress" / spec_name / ".fenix-run-result.json",
-        Path(project_root) / ".fenix" / ".fenix-run-result.json",
-    ]
-    for idx, path in enumerate(candidates):
-        if not path.exists():
+    # 候选读取（verify-progress 优先，项目根共享文件需 spec 匹配，损坏/非对象
+    # fail-closed）复用 _load_run_result 单点封装，避免两处读取口径漂移
+    data = _load_run_result(project_root, spec_name)
+    if data is None:
+        return []
+    scenarios = data.get("scenarios")
+    if not isinstance(scenarios, list) or not scenarios:
+        # fast-track 格式回退：场景嵌套在 verification.scenarios
+        ver = data.get("verification")
+        scenarios = ver.get("scenarios") if isinstance(ver, dict) else None
+    if not isinstance(scenarios, list) or not scenarios:
+        return []
+    out = []
+    for sc in scenarios:
+        if not isinstance(sc, dict):
             continue
+        norm = dict(sc)
+        shots = sc.get("screenshots")
+        if not isinstance(shots, list):
+            shots = []
+        norm["screenshots"] = [
+            os.path.basename(s)
+            for s in shots
+            if isinstance(s, str) and s.strip()
+        ]
+        out.append(norm)
+    # 场景结果缺 kind（契约补 kind 前的存量 run-result）时按 scenario_id
+    # 从出题定义 test_scenarios.json 映射补齐；定义同样缺 kind 的旧 spec
+    # 维持缺失（前端按缺省 web 渲染）。fail-open：读取异常不影响主数据。
+    if any(not sc.get("kind") for sc in out):
+        kind_by_id = {}
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError, TypeError):
-            continue
-        if not isinstance(data, dict):
-            continue
-        # 项目根为共享文件：携带的 spec 与当前 spec 不符时视为其它 spec 残留忽略
-        if (
-            idx == 1
-            and isinstance(data.get("spec"), str)
-            and data["spec"]
-            and data["spec"] != spec_name
-        ):
-            continue
-        scenarios = data.get("scenarios")
-        if not isinstance(scenarios, list) or not scenarios:
-            # fast-track 格式回退：场景嵌套在 verification.scenarios
-            ver = data.get("verification")
-            scenarios = ver.get("scenarios") if isinstance(ver, dict) else None
-        if not isinstance(scenarios, list) or not scenarios:
-            continue
-        out = []
-        for sc in scenarios:
-            if not isinstance(sc, dict):
-                continue
-            norm = dict(sc)
-            shots = sc.get("screenshots")
-            if not isinstance(shots, list):
-                shots = []
-            norm["screenshots"] = [
-                os.path.basename(s)
-                for s in shots
-                if isinstance(s, str) and s.strip()
-            ]
-            out.append(norm)
-        # 场景结果缺 kind（契约补 kind 前的存量 run-result）时按 scenario_id
-        # 从出题定义 test_scenarios.json 映射补齐；定义同样缺 kind 的旧 spec
-        # 维持缺失（前端按缺省 web 渲染）。fail-open：读取异常不影响主数据。
-        if any(not sc.get("kind") for sc in out):
+            ts_path = (
+                Path(project_root)
+                / ".fenix"
+                / "verify-progress"
+                / spec_name
+                / "test_scenarios.json"
+            )
+            ts_data = json.loads(ts_path.read_text(encoding="utf-8"))
+            ts_scenarios = ts_data.get("scenarios") if isinstance(ts_data, dict) else ts_data
+            if isinstance(ts_scenarios, list):
+                kind_by_id = {
+                    str(s.get("id") or s.get("scenario_id")): s.get("kind")
+                    for s in ts_scenarios
+                    if isinstance(s, dict) and s.get("kind")
+                }
+        except (json.JSONDecodeError, OSError, AttributeError):
             kind_by_id = {}
-            try:
-                ts_path = (
-                    Path(project_root)
-                    / ".fenix"
-                    / "verify-progress"
-                    / spec_name
-                    / "test_scenarios.json"
-                )
-                ts_data = json.loads(ts_path.read_text(encoding="utf-8"))
-                ts_scenarios = ts_data.get("scenarios") if isinstance(ts_data, dict) else ts_data
-                if isinstance(ts_scenarios, list):
-                    kind_by_id = {
-                        str(s.get("id") or s.get("scenario_id")): s.get("kind")
-                        for s in ts_scenarios
-                        if isinstance(s, dict) and s.get("kind")
-                    }
-            except (json.JSONDecodeError, OSError, AttributeError):
-                kind_by_id = {}
-            if kind_by_id:
-                for sc in out:
-                    if not sc.get("kind"):
-                        k = kind_by_id.get(str(sc.get("scenario_id")))
-                        if k:
-                            sc["kind"] = k
-        return out
-    return []
+        if kind_by_id:
+            for sc in out:
+                if not sc.get("kind"):
+                    k = kind_by_id.get(str(sc.get("scenario_id")))
+                    if k:
+                        sc["kind"] = k
+    return out
 
 
 def list_screenshots(project_root, spec_name) -> list:
@@ -145,12 +128,18 @@ def list_screenshots(project_root, spec_name) -> list:
     try:
         for p in sorted(ss_dir.iterdir()):
             if p.is_file() and p.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp", ".gif"):
+                # 单文件容错：并发写/清理间隙下单文件不可 stat 只跳过该文件，
+                # 不中断整表（原先整表落入外层 except 静默截断且无降级标记）
+                try:
+                    st = p.stat()
+                except OSError:
+                    continue
                 out.append(
                     {
                         "file": p.name,
-                        "size": p.stat().st_size,
+                        "size": st.st_size,
                         "mtime": datetime.fromtimestamp(
-                            p.stat().st_mtime, tz=timezone.utc
+                            st.st_mtime, tz=timezone.utc
                         ).isoformat(),
                     }
                 )

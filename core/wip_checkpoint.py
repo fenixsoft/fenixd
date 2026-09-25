@@ -180,8 +180,10 @@ def collapse_wip_commits(
     """把分支上的全部 ``fenix(wip):`` 前缀提交塌缩为单提交（merge-back 前）。
 
     ``git merge-base HEAD branch`` 为基点：以分支 tip 的 tree 经
-    ``git commit-tree`` 重建一个父为基点的单提交，``git update-ref`` 移动
-    分支引用。soft-reset 语义等效（工作区/索引不动，文件内容逐字节不变），
+    ``git commit-tree`` 重建一个父为基点的单提交，``git update-ref`` 带旧值
+    （最初读取的分支 tip commit sha）做 CAS 移动分支引用——窗口期分支被并发
+    写入新提交时 CAS 失败、放弃塌缩，不会把引用指回旧 tip tree 而丢掉新提交。
+    soft-reset 语义等效（工作区/索引不动，文件内容逐字节不变），
     且不依赖分支所在 worktree 是否存在（纯 ref 操作，无 checkout）。
 
     幂等：分支上无 ``fenix(wip):`` 前缀提交时零动作（常规成功路径逐字节
@@ -231,6 +233,21 @@ def collapse_wip_commits(
                 f"merge-back continues on uncollapsed branch (non-blocking)",
             )
             return False
+        # CAS 旧值：此刻的分支 tip commit sha（非 tree sha），供 update-ref
+        # 比较并交换——塌缩窗口内分支被写入新提交时 CAS 失败、放弃塌缩。
+        tip = subprocess.run(
+            ["git", "-C", str(project_root), "rev-parse", f"refs/heads/{branch}"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        if tip.returncode != 0 or not tip.stdout.strip():
+            logger.warning(
+                "wip_checkpoint",
+                f"WIP collapse for branch '{branch}' failed to resolve tip — "
+                f"merge-back continues on uncollapsed branch (non-blocking)",
+            )
+            return False
         message, ok = _collapse_message(project_root, commits, logger, timeout=timeout)
         if not ok:
             return False
@@ -266,6 +283,7 @@ def collapse_wip_commits(
                 "update-ref",
                 f"refs/heads/{branch}",
                 ct.stdout.strip(),
+                tip.stdout.strip(),
             ],
             capture_output=True,
             text=True,
@@ -274,7 +292,8 @@ def collapse_wip_commits(
         if upd.returncode != 0:
             logger.warning(
                 "wip_checkpoint",
-                f"WIP collapse for branch '{branch}' update-ref failed: "
+                f"WIP collapse for branch '{branch}' update-ref failed "
+                f"(tip moved concurrently or ref error): "
                 f"{upd.stderr.strip() or upd.stdout.strip()} — merge-back "
                 f"continues on uncollapsed branch (non-blocking)",
             )
