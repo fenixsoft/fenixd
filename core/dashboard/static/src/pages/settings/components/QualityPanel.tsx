@@ -49,6 +49,10 @@ const QUALITY_DEFAULTS = {
 
 const EFFORT_OPTIONS = ['low', 'medium', 'high'] as const;
 
+// 长耗时用例阈值缺省（与 core/verify_contract.py RegressionSpec 及项目页
+// RegressionTab 的同名常量同源）：帮助文案引用单源，避免数值再漂移
+const DEFAULT_LONG_TEST_THRESHOLD_SECONDS = 8;
+
 const EFFORT_RULE = {
   validator: (_: unknown, v: string | undefined | null) =>
     v && (EFFORT_OPTIONS as readonly string[]).includes(v)
@@ -683,7 +687,7 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
             </Text>
             <Text type="secondary" style={{ display: 'block', marginTop: 8 }}>
               长耗时用例阈值来自 verify.yaml 的 regression.long_test_threshold_seconds
-              （缺省 10 秒），属项目测试体系声明——请在「项目简介」面板的
+              （缺省 {DEFAULT_LONG_TEST_THRESHOLD_SECONDS} 秒），属项目测试体系声明——请在「项目简介」面板的
               verify.yaml 编辑入口中调整，本卡片不提供第二个写入路径。
             </Text>
 
