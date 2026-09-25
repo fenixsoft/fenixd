@@ -136,8 +136,6 @@ def _verifier_result_is_stale(pipeline, result, result_path: Path, spec_name: st
     - 文件 spec 戳与当前 spec 不符 → 其它 spec 的残留。
     role/spec 戳先行校验，不依赖 run_id 可解析（向后兼容）。
     """
-    import re
-
     if not result_path.exists():
         return True
     try:
