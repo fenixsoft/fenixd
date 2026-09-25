@@ -21,6 +21,72 @@ from core.verify_engine.judge_files import ATTRIBUTION_STATUS_ACCEPT, ATTRIBUTIO
 from typing import Optional
 
 
+def _run_attribution_gate(pipeline, spec_name: str, report: dict, lane_label: str):
+    """归因分级门（add-verdict-credibility-gate / design D2）——三处轮次共用助手。
+
+    首轮（``_verify_verdict_evidence``）/ 重试轮 / 重合成轮（``_handle_scenario_requeue``
+    回灌）在同一入口位执行（非旁路）：框架侧机械计算 attribution_level，白屏
+    方向约束强制改写分类；批量归因查重拒绝硬编码套用；跨轮缓存归因打新鲜度标
+    （design D3 / Task 3.1）。全部发生在报告落盘/打回上下文组装前。
+
+    ``lane_label`` 为轮次标签（首轮 ``" "`` / ``"（重试轮）"`` / ``"（重合成）"``），
+    仅用于日志前缀，保持各轮次既有文案不变。
+
+    Returns:
+        ``check_batch_attribution_dedup_scenario`` 的查重结果；分级自身异常时
+        返回 None（→ 调用方走既有「跳过分级照常采纳」语义）。查重拒绝收口
+        MUST 由调用方在本 try 之外执行（code-review ab428d7a4e07）——本函数
+        内部 except 只兜「分级计算自身」异常。
+    """
+    dedup = None
+    try:
+        from core.verdict_check import (
+            validate_attribution_levels,
+            enforce_blank_screenshot_direction,
+            check_batch_attribution_dedup_scenario,
+            load_verdict_cache,
+            tag_cached_attributions,
+        )
+
+        validate_attribution_levels(report)
+        # 白屏方向约束：blank_screenshot 标签强制 env 方向
+        for sc in report.get("scenarios") or []:
+            if not isinstance(sc, dict):
+                continue
+            new_cls = enforce_blank_screenshot_direction(sc)
+            if new_cls:
+                old_cls = sc.get("classification")
+                sc["classification"] = new_cls
+                sc["blank_direction_forced"] = True
+                pipeline._context.logger.info(
+                    "pm_engine",
+                    f"白屏方向约束{lane_label}'{spec_name}' 场景 "
+                    f"{sc.get('scenario_id')}: classification "
+                    f"'{old_cls}' → '{new_cls}'（blank_screenshot 标签强制 env 方向）",
+                )
+        # 批量归因查重：≥3 场景逐字相同 → 场景级判定（add-judge-
+        # incremental-attribution 2.1：命中重复的归因置 requeue 待回炉，
+        # 非重复置 accept 保留；MUST NOT 因子集重复废弃整轮归因）。
+        dedup = check_batch_attribution_dedup_scenario(report)
+        cache = load_verdict_cache(pipeline._context.project_root, spec_name)
+        tagged = tag_cached_attributions(report, cache, spec_name)
+        if tagged:
+            pipeline._context.logger.info(
+                "pm_engine",
+                f"跨轮缓存归因打标{lane_label}'{spec_name}': "
+                f"{len(tagged)} 个场景带 cached_from_previous_round 标",
+            )
+    except Exception as e:
+        # 归因分级自身异常不阻断既有裁决链（分级是附加治理，宁可缺失
+        # 也不让增强流程因治理代码崩溃——judge 正常裁决继续）
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"归因分级校验异常跳过{lane_label}'{spec_name}'"
+            f"（不阻断裁决）: {type(e).__name__}: {e}",
+        )
+    return dedup
+
+
 def _verify_verdict_evidence(pipeline, spec_name: str, retry_judge: bool = False) -> dict:
     """确定性校验裁决 report.json 的分类/证据合规，并按映射强制重写 status。
 
@@ -59,61 +125,11 @@ def _verify_verdict_evidence(pipeline, spec_name: str, retry_judge: bool = False
 
     result = validate_report(report)
     if result["ok"]:
-        # ── 归因分级门（add-verdict-credibility-gate / design D2）──
-        # 框架侧机械计算 attribution_level，白屏方向约束强制改写分类；
-        # 批量归因查重拒绝硬编码套用；缓存归因打新鲜度标。
-        # 全部发生在报告落盘/打回上下文组装前（本方法即统一入口）。
-        # dedup 先置 None：分级自身异常时拒绝门不判定（dedup is None →
-        # 走既有「跳过分级照常采纳」语义）；只有分级算出 dedup 且判拒绝
-        # 才进入 try 之外的拒绝收口（code-review ab428d7a4e07）。
-        dedup = None
-        try:
-            from core.verdict_check import (
-                validate_attribution_levels,
-                enforce_blank_screenshot_direction,
-                check_batch_attribution_dedup_scenario,
-                load_verdict_cache,
-                tag_cached_attributions,
-            )
-
-            validate_attribution_levels(report)
-            # 白屏方向约束：blank_screenshot 标签强制 env 方向
-            for sc in report.get("scenarios") or []:
-                if not isinstance(sc, dict):
-                    continue
-                new_cls = enforce_blank_screenshot_direction(sc)
-                if new_cls:
-                    old_cls = sc.get("classification")
-                    sc["classification"] = new_cls
-                    sc["blank_direction_forced"] = True
-                    pipeline._context.logger.info(
-                        "pm_engine",
-                        f"白屏方向约束 '{spec_name}' 场景 "
-                        f"{sc.get('scenario_id')}: classification "
-                        f"'{old_cls}' → '{new_cls}'（blank_screenshot 标签强制 env 方向）",
-                    )
-            # 批量归因查重：≥3 场景逐字相同 → 场景级判定（add-judge-
-            # incremental-attribution 2.1：命中重复的归因置 requeue 待回炉，
-            # 非重复置 accept 保留；MUST NOT 因子集重复废弃整轮归因）。
-            dedup = check_batch_attribution_dedup_scenario(report)
-            # 查重拒绝收口已移出本 try（见下方拒绝门，code-review
-            # ab428d7a4e07）——本 except 只兜「分级计算自身」异常。
-            # 跨轮缓存归因打标（design D3 / Task 3.1）
-            cache = load_verdict_cache(pipeline._context.project_root, spec_name)
-            tagged = tag_cached_attributions(report, cache, spec_name)
-            if tagged:
-                pipeline._context.logger.info(
-                    "pm_engine",
-                    f"跨轮缓存归因打标 '{spec_name}': "
-                    f"{len(tagged)} 个场景带 cached_from_previous_round 标",
-                )
-        except Exception as e:
-            # 归因分级自身异常不阻断既有裁决链（分级是附加治理，宁可缺失
-            # 也不让增强流程因治理代码崩溃——judge 正常裁决继续）
-            pipeline._context.logger.warning(
-                "pm_engine",
-                f"归因分级校验异常跳过 '{spec_name}'（不阻断裁决）: " f"{type(e).__name__}: {e}",
-            )
+        # ── 归因分级门（add-verdict-credibility-gate / design D2）：首轮/
+        # 重试轮/重合成轮三处统一走 _run_attribution_gate。dedup is None →
+        # 走既有「跳过分级照常采纳」语义；只有分级算出 dedup 且判拒绝才进入
+        # 下方拒绝收口（code-review ab428d7a4e07）。
+        dedup = _run_attribution_gate(pipeline, spec_name, report, " ")
         # ── 批量归因查重拒绝门（在分级 try 之外，code-review ab428d7a4e07）──
         # 拒绝处置路径自身抛异常（如 resynthesis_directive 计数字段损坏时
         # int() 抛 ValueError、升级路径 update_spec 抛错）MUST NOT 被上方
@@ -250,51 +266,9 @@ def _verify_verdict_evidence(pipeline, spec_name: str, retry_judge: bool = False
             }
         result2 = validate_report(report2)
         if result2["ok"]:
-            # ── 归因分级门（重试轮同样执行，design D2 统一入口）──
-            # dedup 先置 None：分级自身异常时拒绝门不判定（走既有「跳过
-            # 分级照常采纳」语义）；查重拒绝收口在 try 之外（同下）。
-            dedup = None
-            try:
-                from core.verdict_check import (
-                    validate_attribution_levels,
-                    enforce_blank_screenshot_direction,
-                    check_batch_attribution_dedup_scenario,
-                    load_verdict_cache,
-                    tag_cached_attributions,
-                )
-
-                validate_attribution_levels(report2)
-                for sc in report2.get("scenarios") or []:
-                    if not isinstance(sc, dict):
-                        continue
-                    new_cls = enforce_blank_screenshot_direction(sc)
-                    if new_cls:
-                        old_cls = sc.get("classification")
-                        sc["classification"] = new_cls
-                        sc["blank_direction_forced"] = True
-                        pipeline._context.logger.info(
-                            "pm_engine",
-                            f"白屏方向约束（重试轮）'{spec_name}' 场景 "
-                            f"{sc.get('scenario_id')}: classification "
-                            f"'{old_cls}' → '{new_cls}'（blank_screenshot 标签强制 env 方向）",
-                        )
-                dedup = check_batch_attribution_dedup_scenario(report2)
-                # 查重拒绝收口已移出本 try（见下方拒绝门）——本 except 只
-                # 兜「分级计算自身」异常。
-                cache = load_verdict_cache(pipeline._context.project_root, spec_name)
-                tagged = tag_cached_attributions(report2, cache, spec_name)
-                if tagged:
-                    pipeline._context.logger.info(
-                        "pm_engine",
-                        f"跨轮缓存归因打标（重试轮）'{spec_name}': "
-                        f"{len(tagged)} 个场景带 cached_from_previous_round 标",
-                    )
-            except Exception as e:
-                pipeline._context.logger.warning(
-                    "pm_engine",
-                    f"归因分级校验异常跳过（重试轮）'{spec_name}'"
-                    f"（不阻断裁决）: {type(e).__name__}: {e}",
-                )
+            # ── 归因分级门（重试轮同样执行，design D2 统一入口；dedup
+            # is None → 既有「跳过分级照常采纳」语义，拒绝收口在下方）──
+            dedup = _run_attribution_gate(pipeline, spec_name, report2, "（重试轮）")
             # ── 批量归因查重拒绝门（在分级 try 之外，code-review ab428d7a4e07）──
             # 拒绝处置路径自身异常 MUST NOT 被上方 except 吞掉后落入下方
             # cause=pass 采纳收口（查重拒绝的报告被静默采纳）；也不得裸外溢
@@ -766,51 +740,9 @@ def _handle_attr_dedup_rejection(
             "violations": result2["violations"],
             "dispatch_error": "",
         }
-    # 归因分级门 + 查重门（同一入口位，非旁路）
-    # dedup2 先置 None：分级自身异常时拒绝门不判定（走既有「跳过分级照常
-    # 采纳」语义）；查重拒绝收口在 try 之外（同下）。
-    dedup2 = None
-    try:
-        from core.verdict_check import (
-            validate_attribution_levels,
-            enforce_blank_screenshot_direction,
-            check_batch_attribution_dedup_scenario,
-            load_verdict_cache,
-            tag_cached_attributions,
-        )
-
-        validate_attribution_levels(report2)
-        for sc in report2.get("scenarios") or []:
-            if not isinstance(sc, dict):
-                continue
-            new_cls = enforce_blank_screenshot_direction(sc)
-            if new_cls:
-                old_cls = sc.get("classification")
-                sc["classification"] = new_cls
-                sc["blank_direction_forced"] = True
-                pipeline._context.logger.info(
-                    "pm_engine",
-                    f"白屏方向约束（重合成）'{spec_name}' 场景 "
-                    f"{sc.get('scenario_id')}: classification "
-                    f"'{old_cls}' → '{new_cls}'（blank_screenshot 标签强制 env 方向）",
-                )
-        dedup2 = check_batch_attribution_dedup_scenario(report2)
-        # 查重拒绝收口已移出本 try（见下方拒绝门）——本 except 只兜「分级
-        # 计算自身」异常。
-        cache = load_verdict_cache(pipeline._context.project_root, spec_name)
-        tagged = tag_cached_attributions(report2, cache, spec_name)
-        if tagged:
-            pipeline._context.logger.info(
-                "pm_engine",
-                f"跨轮缓存归因打标（重合成）'{spec_name}': "
-                f"{len(tagged)} 个场景带 cached_from_previous_round 标",
-            )
-    except Exception as e:
-        pipeline._context.logger.warning(
-            "pm_engine",
-            f"归因分级校验异常跳过（重合成）'{spec_name}'"
-            f"（不阻断裁决）: {type(e).__name__}: {e}",
-        )
+    # 归因分级门 + 查重门（同一入口位，非旁路；dedup2 is None → 既有
+    # 「跳过分级照常采纳」语义，拒绝收口在下方）。
+    dedup2 = _run_attribution_gate(pipeline, spec_name, report2, "（重合成）")
 
     # ── 批量归因查重拒绝门（在分级 try 之外，code-review ab428d7a4e07）──
     # 拒绝处置路径自身异常 MUST NOT 被上方 except 吞掉后落入下方清
