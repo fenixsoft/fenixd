@@ -43,6 +43,34 @@ def _strip_run_attempt_suffix(run_id: str) -> str:
     return stripped or run_id
 
 
+def _parse_run_metric_stream(f) -> dict:
+    """日志文件流 → {run_id: context_dict}（run_metrics 指标行提取）。
+
+    供主日志与轮转日志两处索引复用；解析口径与防护见 _load_run_metric_index。
+    """
+    index: dict = {}
+    for line in f:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        # 6fd55ebbc869: 合法 JSON 非 object 行（裸数字/字符串/数组/null）
+        # 在此跳过，否则 entry.get 抛 AttributeError 穿透外层 OSError-only
+        # except，致运行列表接口 500（与 classify_run 防护口径一致）
+        if not isinstance(entry, dict):
+            continue
+        ctx = entry.get("context") or {}
+        if not isinstance(ctx, dict) or ctx.get("metric_type") != "run_metrics":
+            continue
+        rid = ctx.get("run_id")
+        if rid:
+            index[rid] = ctx
+    return index
+
+
 def _load_run_metric_index(project_root: Path) -> dict:
     """增量维护 run 指标索引 {base_run_id: metric_dict}（进程内缓存）。
 
@@ -71,29 +99,64 @@ def _load_run_metric_index(project_root: Path) -> dict:
         with log_path.open("r", encoding="utf-8", errors="replace") as f:
             if start:
                 f.seek(start)
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entry = json.loads(line)
-                except (json.JSONDecodeError, ValueError):
-                    continue
-                # 6fd55ebbc869: 合法 JSON 非 object 行（裸数字/字符串/数组/null）
-                # 在此跳过，否则 entry.get 抛 AttributeError 穿透外层 OSError-only
-                # except，致运行列表接口 500（与 classify_run 防护口径一致）
-                if not isinstance(entry, dict):
-                    continue
-                ctx = entry.get("context") or {}
-                if not isinstance(ctx, dict) or ctx.get("metric_type") != "run_metrics":
-                    continue
-                rid = ctx.get("run_id")
-                if rid:
-                    _RUN_METRIC_INDEX[rid] = ctx
+            _RUN_METRIC_INDEX.update(_parse_run_metric_stream(f))
     except OSError:
         pass
     _RUN_METRIC_INDEX_KEY = key
     return _RUN_METRIC_INDEX
+
+
+_ROTATED_METRIC_INDEX: dict = {}
+_ROTATED_METRIC_INDEX_KEY: tuple = None  # (str(log_path), size)
+
+
+def _load_rotated_run_metric_index(project_root: Path) -> dict:
+    """轮转日志 .fenixd.log.1 的 run_metrics 索引（跨轮转旧 run 回退源）。
+
+    主日志索引只覆盖最近一次轮转之后的行，轮转前收尾的旧 run 终态只在
+    .fenixd.log.1（evo-fix-self-review-phantom-failed-samples 2.1）。轮转
+    日志写入后冻结、下次轮转被整体替换，按 (log_path, size) 键增量维护：
+    size 变化（含被新轮转替换）整体重建。
+    """
+    global _ROTATED_METRIC_INDEX, _ROTATED_METRIC_INDEX_KEY
+    log_path = Path(project_root) / ".fenix" / "logs" / "fenixd.log.1"
+    try:
+        size = log_path.stat().st_size
+    except OSError:
+        return {}
+    key = (str(log_path), size)
+    if key == _ROTATED_METRIC_INDEX_KEY:
+        return _ROTATED_METRIC_INDEX
+    index: dict = {}
+    try:
+        with log_path.open("r", encoding="utf-8", errors="replace") as f:
+            index = _parse_run_metric_stream(f)
+    except OSError:
+        pass
+    _ROTATED_METRIC_INDEX = index
+    _ROTATED_METRIC_INDEX_KEY = key
+    return index
+
+
+def load_run_metric(project_root, run_file_stem: str) -> "dict | None":
+    """公共访问器：按 run 产物 stem 查 run_metrics 指标 context（双源交叉守卫）。
+
+    供聚合侧（core/self_review.py 幻影失败守卫）复用：stem 先经
+    _strip_run_attempt_suffix 归一为基础 run_id（指标日志记基础 id，产物
+    按 attempt 分文件）；主日志索引未命中时回退轮转日志 .fenixd.log.1
+    （跨轮转旧 run）。两处均未命中返回 None——调用侧按「索引缺失维持现状」
+    处理，宁可不拦不可误伤真实失败样本。
+    """
+    if not project_root or not run_file_stem:
+        return None
+    base = _strip_run_attempt_suffix(str(run_file_stem))
+    if not base:
+        return None
+    root = Path(project_root)
+    metric = _load_run_metric_index(root).get(base)
+    if metric:
+        return metric
+    return _load_rotated_run_metric_index(root).get(base)
 
 
 def _logged_run_duration(project_root: Path, run_file_stem: str,
