@@ -3527,8 +3527,9 @@ class AdminMonitor:
         优先读记录顶层 original_signal 字段（结构化 dict，不被 store 归一）；
         回退解析 evidence（编程错误记录 evidence 为 JSON 串，内含
         original_signal）；字段缺失时从记录顶层补齐（description/
-        recommended_action）。原信号 signal_type 必须存在（否则判定
-        解析失败返回 None，跳过该条记录）。
+        recommended_action/evidence，store 读侧已把 evidence 归一为
+        字符串，与首次派发 _make_signal 形态一致）。原信号 signal_type
+        必须存在（否则判定解析失败返回 None，跳过该条记录）。
         """
         original = rec.get("original_signal")
         if isinstance(original, str):
@@ -3561,6 +3562,12 @@ class AdminMonitor:
         signal.setdefault("severity", rec.get("severity"))
         signal.setdefault("description", rec.get("description"))
         signal.setdefault("recommended_action", rec.get("recommended_action"))
+        # code-review b61e0c5a7387：补齐 evidence——升级记录两条分流路径落库
+        # 均保留 evidence（原始型存原信号 evidence 串；编程错误型存含异常
+        # 类型/消息/调用点的 JSON 串，store 读侧已归一为字符串），缺失时
+        # 重派 run 的 {evidence} 占位符被填成空串，Administrator 看不到
+        # 原始失败证据（排障主线索）。
+        signal.setdefault("evidence", rec.get("evidence"))
         if not signal.get("signal_type"):
             return None
         return signal

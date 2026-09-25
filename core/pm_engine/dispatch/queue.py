@@ -2003,6 +2003,36 @@ class QQQueueMixin:
             return True
         return False
 
+    @staticmethod
+    def _parse_defer_accounting(entry: dict, now: float) -> tuple[int, float]:
+        """顺延/WIP 等待共用记账字段的解析与缺省回填（单一落点）。
+
+        code-review item ba3eca240b83：``_merge_retry_count`` /
+        ``_merge_retry_first_at`` 是 spec_dir_inflight 顺延与 WIP 等待两条
+        通道共用、rollback.py 按同口径读写的共享记账，解析规则收敛到此处，
+        三处消费方（``_defer_merge_back`` / ``_recheck_one_wip_deferred`` /
+        ``_record_wip_defer_retry_failure``）不再各自复制。统一口径：
+        count 缺失/非法 → 0；first_at 缺失/非法 → now（首次阻塞时刻=本次，
+        与 rollback.py 写侧缺省回填 ``int(time.time())`` 同口径）。
+
+        Args:
+            entry: 状态条目（调用方自行 read_one，缺条目传 ``{}``）。
+            now: 调用方已取的当前时刻（沿用同一时间基准，保证窗口计算
+                与记账写入不因二次取时漂移）。
+
+        Returns: (count, first_f)——first_f 已保证为 float（缺省回填 now）。
+        """
+        try:
+            count = int(entry.get("_merge_retry_count", 0) or 0)
+        except (TypeError, ValueError):
+            count = 0
+        first_at = entry.get("_merge_retry_first_at")
+        try:
+            first_f = float(first_at) if first_at else now
+        except (TypeError, ValueError):
+            first_f = now
+        return count, first_f
+
     def _defer_merge_back(self, spec_name: str, merge_info, branch: str, merge_error: str) -> None:
         """可重试 merge-back 失败：顺延等待，仅重试合并（D1a/D2）。
 
@@ -2023,17 +2053,7 @@ class QQQueueMixin:
         now = time.time()
         grace_minutes = self._merge_retry_grace_minutes()
         max_rounds = self._merge_retry_max_rounds()
-        try:
-            count = int(entry.get("_merge_retry_count", 0) or 0)
-        except (TypeError, ValueError):
-            count = 0
-        first_at = entry.get("_merge_retry_first_at")
-        try:
-            first_f = float(first_at) if first_at else None
-        except (TypeError, ValueError):
-            first_f = None
-        if first_f is None:
-            first_f = now  # 自首次顺延起算窗口
+        count, first_f = self._parse_defer_accounting(entry, now)  # 首阻缺省=now，自首次顺延起算窗口
         count += 1
         try:
             self._pm.state_machine.update_spec(
@@ -2338,15 +2358,7 @@ class QQQueueMixin:
     def _recheck_one_wip_deferred(self, spec_name: str, entry: dict) -> None:
         """单条带标志条目的周期复查（2.1）：超限先降级，未超限才重试。"""
         now = time.time()
-        try:
-            count = int(entry.get("_merge_retry_count", 0) or 0)
-        except (TypeError, ValueError):
-            count = 0
-        first_at = entry.get("_merge_retry_first_at")
-        try:
-            first_f = float(first_at) if first_at else now
-        except (TypeError, ValueError):
-            first_f = now
+        count, first_f = self._parse_defer_accounting(entry, now)
         # 超限（窗口 ≥90 分钟或轮数 ≥6）：停止自动重试，降级人工处置告警
         # （现场标志保留供人工与取证；orphaned_state 豁免随之自动失效）。
         if self._wip_defer_over_limit(count, first_f, now):
@@ -2392,15 +2404,7 @@ class QQQueueMixin:
         """WIP 等待条目重试仍被阻断：计数 +1（首阻时刻沿用），超限降级。"""
         entry = self._pm.state_machine.read_one(spec_name) or {}
         now = time.time()
-        try:
-            count = int(entry.get("_merge_retry_count", 0) or 0)
-        except (TypeError, ValueError):
-            count = 0
-        first_at = entry.get("_merge_retry_first_at")
-        try:
-            first_f = float(first_at) if first_at else now
-        except (TypeError, ValueError):
-            first_f = now
+        count, first_f = self._parse_defer_accounting(entry, now)
         count += 1
         overlap = list(getattr(merge_info, "wip_overlap", []) or [])
         try:
@@ -2780,7 +2784,8 @@ class QQQueueMixin:
         在飞单飞去重（返回 None）；线程体跑 ``runner.run_impl_ocr``（维护型
         run 形态：不占 spec 预算、不走 _execute_agent），完成回调
         ``_on_impl_ocr_lane_finished`` 唤醒 join 重评。返回启动的标记串
-        （"started"）或 None（未启动：开关关/已在飞/分支不可得）。
+        （"started"）或 None（未启动：开关关/已在飞/分支不可得/线程创建
+        失败——失败时已在锁内回滚在飞登记）。
 
         Args:
             fingerprint: ``_ocr_current_fingerprint`` 产物（branch/merge_base/
@@ -2827,9 +2832,25 @@ class QQQueueMixin:
                         f"{type(e).__name__}: {e}",
                     )
 
-        threading.Thread(
-            target=_run, name=f"impl-ocr-lane-{spec_name}", daemon=True
-        ).start()
+        # code-review item b52d9c1760b6：在飞登记已在锁内写入，而摘除只在线程体
+        # finally——Thread 构造/start（锁外）失败（如 RuntimeError can't start
+        # new thread）时 finally 永不执行，登记即泄漏：_ocr_join_await_lane 据此
+        # 判「车道在飞」走 defer，完成回调却永不触发，spec 永久停等 testing。
+        # 故此处须捕获失败、锁内回滚登记后返回 None，让 join 的 fail-open 放行
+        # 分支生效（第二调用点 merge 收尾 fire-and-forget 同样受益）。
+        try:
+            threading.Thread(
+                target=_run, name=f"impl-ocr-lane-{spec_name}", daemon=True
+            ).start()
+        except Exception as e:  # noqa: BLE001 — 环境性启动失败按「未启动」处置
+            with self._ocr_lane_lock:
+                self._ocr_lane_inflight.pop(spec_name, None)
+            self._pm.logger.warning(
+                "pm_engine",
+                f"ocr 车道线程启动失败 '{spec_name}'（已回滚在飞登记，"
+                f"fail-open）: {type(e).__name__}: {e}",
+            )
+            return None
         # ocr 审查 finding#5 第二道防线：新车道启动即旧修复义务作废——打回轮
         # directive 在重派实现 prompt 构建时已被消费（注入先于 merge），此处
         # 清除防 pass 出口未覆盖的残留形态（冻结/人工接管的打回轮后再实现）。

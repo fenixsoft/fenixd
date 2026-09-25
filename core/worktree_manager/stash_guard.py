@@ -481,40 +481,70 @@ class G6StashGuardMixin:
 
         Returns: True 表示成功恢复了一个条目。
         """
-        status = subprocess.run(
-            ["git", "-C", str(self.project_root), "status", "--porcelain"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
+        try:
+            status = subprocess.run(
+                ["git", "-C", str(self.project_root), "status", "--porcelain"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except (subprocess.TimeoutExpired, OSError) as e:
+            # git 超时/不可用：本轮放弃回收（条目保留交下轮巡检），不让异常穿出
+            self.logger.warning(
+                "worktree_manager",
+                f"Stale autostash reclaim skipped (git unavailable): {e}",
+            )
+            return False
         if status.returncode != 0 or status.stdout.strip():
             return False
-        lst = subprocess.run(
-            ["git", "-C", str(self.project_root), "stash", "list", "-n", "1"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
+        try:
+            lst = subprocess.run(
+                ["git", "-C", str(self.project_root), "stash", "list", "-n", "1"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except (subprocess.TimeoutExpired, OSError) as e:
+            self.logger.warning(
+                "worktree_manager",
+                f"Stale autostash reclaim skipped (git unavailable): {e}",
+            )
+            return False
         # 格式：stash@{0}: On <branch>: fenix: pre-dispatch autostash
         top = lst.stdout.strip() if lst.returncode == 0 else ""
         if AUTOSTASH_MSG_PREFIX not in top:
             return False
-        rev = subprocess.run(
-            ["git", "-C", str(self.project_root), "rev-parse", "--verify", "stash@{0}"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
+        try:
+            rev = subprocess.run(
+                ["git", "-C", str(self.project_root), "rev-parse", "--verify", "stash@{0}"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except (subprocess.TimeoutExpired, OSError) as e:
+            self.logger.warning(
+                "worktree_manager",
+                f"Stale autostash reclaim skipped (git unavailable): {e}",
+            )
+            return False
         sha_before = rev.stdout.strip() if rev.returncode == 0 else ""
         # pop 前以 sha_before 复核栈顶：与 drop 侧「sha 仍在栈顶」防插队核对同
         # 口径；其间若有新条目插到栈顶（人工 stash push 等）则放弃本轮，绝不弹
         # 非目标条目。
-        guard = subprocess.run(
-            ["git", "-C", str(self.project_root), "rev-parse", "--verify", "stash@{0}"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
+        try:
+            guard = subprocess.run(
+                ["git", "-C", str(self.project_root), "rev-parse", "--verify", "stash@{0}"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except (subprocess.TimeoutExpired, OSError) as e:
+            # 防插队复核失败（超时/不可用）无法证明栈顶未动：放弃本轮绝不弹
+            self.logger.warning(
+                "worktree_manager",
+                f"Stale autostash reclaim skipped (git unavailable): {e}",
+            )
+            return False
         if guard.returncode != 0 or guard.stdout.strip() != sha_before:
             self.logger.error(
                 "worktree_manager",
@@ -523,12 +553,20 @@ class G6StashGuardMixin:
                 f"mis-pop",
             )
             return False
-        pop = subprocess.run(
-            ["git", "-C", str(self.project_root), "stash", "pop", "stash@{0}"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
+        try:
+            pop = subprocess.run(
+                ["git", "-C", str(self.project_root), "stash", "pop", "stash@{0}"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except (subprocess.TimeoutExpired, OSError) as e:
+            # git 超时/不可用：与非冲突失败同语义，stash 条目保留交下轮巡检
+            self.logger.warning(
+                "worktree_manager",
+                f"Stale autostash pop failed (entry preserved): {e}",
+            )
+            return False
         if pop.returncode == 0:
             # pop 输出含「Dropped refs/stash@{0} (<sha>)」：核对被弹条目确为
             # sha_before，不一致说明复核后仍发生并发插队造成误弹，记 ERROR
@@ -568,20 +606,32 @@ class G6StashGuardMixin:
                 return False
             drop_sha = ""
             if sha_before:
-                cur = subprocess.run(
-                    ["git", "-C", str(self.project_root), "rev-parse", "--verify", "stash@{0}"],
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                )
-                if cur.returncode == 0 and cur.stdout.strip() == sha_before:
-                    dropped = subprocess.run(
-                        ["git", "-C", str(self.project_root), "stash", "drop", "stash@{0}"],
+                try:
+                    cur = subprocess.run(
+                        ["git", "-C", str(self.project_root), "rev-parse", "--verify", "stash@{0}"],
                         capture_output=True,
                         text=True,
                         timeout=30,
                     )
-                    if dropped.returncode == 0:
+                except (subprocess.TimeoutExpired, OSError):
+                    # git 超时/不可用：核不了 sha，按「栈顶已动」降级（不 drop）
+                    cur = None
+                if (
+                    cur is not None
+                    and cur.returncode == 0
+                    and cur.stdout.strip() == sha_before
+                ):
+                    try:
+                        dropped = subprocess.run(
+                            ["git", "-C", str(self.project_root), "stash", "drop", "stash@{0}"],
+                            capture_output=True,
+                            text=True,
+                            timeout=30,
+                        )
+                    except (subprocess.TimeoutExpired, OSError):
+                        # git 超时/不可用：核不了 drop 结果，条目保留交下轮巡检
+                        dropped = None
+                    if dropped is not None and dropped.returncode == 0:
                         drop_sha = sha_before
             if drop_sha:
                 self.logger.warning(

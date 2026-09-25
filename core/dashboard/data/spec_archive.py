@@ -152,12 +152,12 @@ def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
         if dest.exists():
             import datetime as _dt
 
-            ms = _dt.datetime.now().strftime("%f")
-            dest = archive_root / f"{base_name}-{ms}"
+            micros = _dt.datetime.now().strftime("%f")
+            dest = archive_root / f"{base_name}-{micros}"
             # 极端情况仍冲突，再用递增序号兜底
             n = 1
             while dest.exists():
-                dest = archive_root / f"{base_name}-{ms}-{n}"
+                dest = archive_root / f"{base_name}-{micros}-{n}"
                 n += 1
         try:
             shutil.move(str(spec_dir), str(dest))

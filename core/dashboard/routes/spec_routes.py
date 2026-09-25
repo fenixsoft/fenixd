@@ -91,6 +91,8 @@ class H3SpecRoutesMixin:
         在线清除 SPEC 的 error 字段（置空并原子写回 STATE.md）。
         - project 不存在 → 404
         - spec 非法 / 不在项目 STATE.md → 404
+        - spec 处于冻结态 → 409「清除错误会连带解除冻结，请先解冻」
+          （item babdab6b010b：对齐 freeze-config 家族 409 拒绝语义）
         - 成功 → 200 + {ok: true}；其余字段不受影响
         - 写回异常 → 500
         """
@@ -113,6 +115,10 @@ class H3SpecRoutesMixin:
             return
         if not result.get("found"):
             self._error(404, f"spec not found: {spec}")
+            return
+        if not result.get("ok"):
+            # 冻结态拒绝（item babdab6b010b）：错误文案由数据层给出（提示先解冻）
+            self._error(409, result.get("error") or "SPEC 处于冻结态，请先解冻")
             return
         self._json({"ok": True, "project": project["name"], "spec": spec})
 

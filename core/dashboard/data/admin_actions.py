@@ -1263,22 +1263,39 @@ def clear_spec_error(project_root, spec: str) -> dict:
     rename 写回，与 daemon 并发写安全。不影响 status/priority 等其它字段；
     error 已为 null 时仍为成功（幂等）。
 
+    冻结态守卫（code-review item babdab6b010b）：is_spec_frozen 对存量 spec
+    保留「status=blocked 且 error 以冻结前缀开头」的文本回退判据，对这类
+    spec 无条件清 error 会把冻结原因一并抹掉——冻结状态静默消失并被正常
+    调度捞起。故冻结态一律拒绝（不抛异常），解冻须走 unfreeze_spec 官方
+    通道（对齐 configure_spec_freeze「冻结管理仅对冻结 spec 生效」的反向
+    守卫与 {ok: False, error: 原因} 拒绝形状）。
+
     Args:
         project_root: 项目根目录
         spec: SPEC 名称（须 kebab-case，且已在 STATE.md 注册）
 
     Returns:
-        {"found": bool}  — found=True 表示已清除（含本就为空），False 表示 spec 不存在
+        {"ok": True, "found": True}  — 已清除（含本就为空）
+        {"found": False}             — spec 不存在
+        {"ok": False, "found": True, "frozen": True, "error": 原因}
+                                     — 冻结态拒绝
     """
     proot = Path(project_root)
     specs = parse_state(proot)
     if spec not in specs:
         return {"found": False}
+    if is_spec_frozen(specs[spec]):
+        return {
+            "ok": False,
+            "found": True,
+            "frozen": True,
+            "error": "SPEC 处于冻结态，清除错误会连带解除冻结；请先经解冻（unfreeze）官方通道恢复",
+        }
     from core.state_machine import StateMachine, project_state_logger
 
     sm = StateMachine(proot / ".fenix" / "STATE.md", project_state_logger(proot))
     sm.update_spec(spec, {"error": None})
-    return {"found": True}
+    return {"ok": True, "found": True}
 
 
 def set_spec_priority(project_root, spec: str, priority) -> dict:

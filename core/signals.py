@@ -86,12 +86,22 @@ def request_admin_invoke(
 
     req_path = proot / ADMIN_INVOKE_REQUEST
     if req_path.exists():
+        # 读既有 created 供返回（对齐同族 request_run_cancel /
+        # request_spec_delete / request_spec_approve_push 冲突语义；
+        # 读失败保持 None，不抛异常）
+        existing_created = None
+        try:
+            existing = json.loads(req_path.read_text(encoding="utf-8"))
+            if isinstance(existing, dict):
+                existing_created = existing.get("created")
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            pass
         return {
             "ok": False,
             "found": True,
             "conflict": True,
             "file": str(req_path),
-            "created": None,
+            "created": existing_created,
             "error": "已有进行中的 Admin 处置",
         }
 
@@ -115,12 +125,21 @@ def request_admin_invoke(
         )
         os.close(placeholder_fd)
     except FileExistsError:
+        # 冲突时同样回读既有 created（对齐同族冲突语义）；并发空占位或
+        # 读失败保持 None，不抛异常
+        existing_created = None
+        try:
+            existing = json.loads(req_path.read_text(encoding="utf-8"))
+            if isinstance(existing, dict):
+                existing_created = existing.get("created")
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            pass
         return {
             "ok": False,
             "found": True,
             "conflict": True,
             "file": str(req_path),
-            "created": None,
+            "created": existing_created,
             "error": "已有进行中的 Admin 处置",
         }
     fd, tmp_path = tempfile.mkstemp(

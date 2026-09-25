@@ -222,14 +222,18 @@ def _run_start_ts(run_id: str) -> Optional[int]:
     return int(m.group(1)) if m else None
 
 
-def _read_run_tail(path: Path, max_lines: int = 3) -> list:
-    """读取 run 产物文件末尾若干行并逐行 JSON 解析（跳过噪声行）。"""
-    try:
-        raw = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except (OSError, UnicodeDecodeError):
-        return []
+# 尾读字节窗口（code-review item b8a62cb838a0）：_read_run_tail 只取末几行
+# 做分类，旧实现却整文件 read_text 把 MB 级转录全量读进内存，而 runs 统计
+# /失败样本聚合对窗口内每个 run 各调一次，峰值内存与磁盘读随转录总量线性
+# 放大。64KB 与 liveness._TAIL_READ_WINDOW / dashboard _READ_RUN_TAIL_WINDOW
+# 同量级，覆盖常规产物尾部（result 终态行 4KB+）。
+_RUN_TAIL_WINDOW_BYTES = 64 * 1024
+
+
+def _parse_run_tail_lines(raw_lines) -> list:
+    """逐行 JSON 解析 run 产物行（跳过噪声行），只保留 dict 事件。"""
     lines = []
-    for line in raw[-max_lines:]:
+    for line in raw_lines:
         try:
             parsed = json.loads(line)
         except json.JSONDecodeError:
@@ -237,6 +241,52 @@ def _read_run_tail(path: Path, max_lines: int = 3) -> list:
         if isinstance(parsed, dict):
             lines.append(parsed)
     return lines
+
+
+def _read_run_tail_full(path: Path, max_lines: int) -> list:
+    """全量流式读取产物末尾 max_lines 行（尾窗内完整行不足时的回退分支）。
+
+    逐行迭代只保留末 max_lines 行文本（内存与文件大小无关），解析口径与
+    主路径一致；文件不可读（OSError）返回 []。
+    """
+    tail: List[str] = []
+    try:
+        with path.open("rb") as f:
+            for raw_line in f:
+                tail.append(raw_line.decode("utf-8", errors="replace"))
+                if len(tail) > max_lines:
+                    del tail[0]
+    except OSError:
+        return []
+    return _parse_run_tail_lines(tail)
+
+
+def _read_run_tail(path: Path, max_lines: int = 3) -> list:
+    """读取 run 产物文件末尾若干行并逐行 JSON 解析（跳过噪声行）。
+
+    尾块读取（对齐 dashboard ``_read_run_lines`` 范式）：seek 到文件尾部
+    ``_RUN_TAIL_WINDOW_BYTES`` 字节窗口再按行切，不把整份转录读进内存。
+    窗口首片段是从字节窗口切入的上一行残段（起点恰压行尾时为空串），丢弃
+    不解析；丢弃后窗口内完整行不足 max_lines（末行超窗等）→ 回退
+    ``_read_run_tail_full``。返回内容与旧整文件 ``read_text().splitlines()
+    [-max_lines:]`` 一致：文件不足一个窗口时 start=0 全量读取、不丢弃首行；
+    起点压行尾时空串首片段丢弃不占位；位置切片先于解析（噪声行占位）。
+    """
+    try:
+        with path.open("rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            start = max(0, size - _RUN_TAIL_WINDOW_BYTES)
+            f.seek(start)
+            chunk = f.read()
+    except OSError:
+        return []
+    raw = chunk.decode("utf-8", errors="replace").splitlines()
+    if start > 0:
+        raw = raw[1:]  # 首片段是上一行的残段（或压行尾的空串），丢弃
+        if len(raw) < max_lines:
+            return _read_run_tail_full(path, max_lines)
+    return _parse_run_tail_lines(raw[-max_lines:])
 
 
 def _business_fail_marker(text: str) -> Optional[str]:

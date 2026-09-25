@@ -791,45 +791,49 @@ def run_evolution(
     degraded = None
     items_ingested = 0
     drafts = 0
-    if run_ok:
-        try:
-            from core.evolution import ContractError, read_contract, ingest_item
-
+    try:
+        if run_ok:
             try:
-                contract = read_contract(out_path)
-            except ContractError as e:
-                run_ok = False
-                error = str(e)
-                contract = None
-        except Exception as e:
-            # 落地异常不应穿透（检查点统一捕获）；整轮视为失败带原因
-            run_ok = False
-            error = f"分析落地异常: {e}"
-            contract = None
-        finally:
-            # 清理放外层 finally（code-review item f1ef92e5ca50）：``from
-            # core.evolution import`` 在外层 try 内执行，其失败被外层 except
-            # 捕获、从未进入内层 try/finally——旧清理位置盖不到 import 路径，
-            # out-<run_id>.json 残留 .fenix/evolution/ 累积垃圾（与 docstring
-            # 「run 结束读取并清理」不符）。finally 上移保证无论 import/
-            # 读写成败都清理本 run 的产物文件。
-            runner._delete_evolution_out(out_path)
-        if run_ok and contract:
-            degraded = contract.get("degraded")
-            for item in contract.get("items") or []:
+                from core.evolution import ContractError, read_contract, ingest_item
+
                 try:
-                    status = ingest_item(item, runner.project_root)
-                except Exception as e:
-                    # 单条落地失败不使整轮失败（幂等去重保证下轮重试）
-                    _log = getattr(runner, "logger", None)
-                    if _log is not None:
-                        _log.warning(
-                            "self-evolution", f"条目落地异常（跳过）: " f"{item.get('title')}: {e}"
-                        )
-                    continue
-                items_ingested += 1
-                if status == "pending":
-                    drafts += 1
+                    contract = read_contract(out_path)
+                except ContractError as e:
+                    run_ok = False
+                    error = str(e)
+                    contract = None
+            except Exception as e:
+                # 落地异常不应穿透（检查点统一捕获）；整轮视为失败带原因
+                run_ok = False
+                error = f"分析落地异常: {e}"
+                contract = None
+            if run_ok and contract:
+                degraded = contract.get("degraded")
+                for item in contract.get("items") or []:
+                    try:
+                        status = ingest_item(item, runner.project_root)
+                    except Exception as e:
+                        # 单条落地失败不使整轮失败（幂等去重保证下轮重试）
+                        _log = getattr(runner, "logger", None)
+                        if _log is not None:
+                            _log.warning(
+                                "self-evolution",
+                                f"条目落地异常（跳过）: " f"{item.get('title')}: {e}",
+                            )
+                        continue
+                    items_ingested += 1
+                    if status == "pending":
+                        drafts += 1
+    finally:
+        # 清理放与 ``if run_ok:`` 同级的外层 finally（code-review item
+        # b77dad6f5ea5；早前 f1ef92e5ca50 已把 finally 从内层读写 try 上移过
+        # 一次，但整块仍被 ``if run_ok:`` 门控）：_run_claude 失败（超时/
+        # 轮次上限强杀/非零退出）而 agent 已先行写出产物时 run_ok=False
+        # 使整块被跳过，out-<run_id>.json 永久残留 .fenix/evolution/ 累积
+        # 垃圾（与 docstring「run 结束读取并清理」不符）。上移到外层
+        # finally 保证无论 run/import/读写成败都清理本 run 的产物文件
+        # （_delete_evolution_out 缺失即跳过，run 失败且从未写出时幂等安全）。
+        runner._delete_evolution_out(out_path)
 
     return EvolutionResult(
         run_id=run_id,
