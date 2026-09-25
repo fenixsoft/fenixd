@@ -100,8 +100,13 @@ class PRepairLaneMixin:
 
     def _dispatch_repair_lane(
         self, spec_name: str, merge_info, branch: str, fp: str | None = None, streak: int = 0
-    ) -> None:
+    ) -> bool:
         """进入 repair 通道：三态解析载体 → 认领现场 → 派发 repair worker。
+
+        返回值（code-review item ec22643fa99a 锁移交标记）：True 表示已认领
+        现场并启动新一轮 repair worker（``{spec}:repair`` 锁已移交给新
+        worker）；False 表示未派发（冷却/超限/载体缺失等早退路径，均未重新
+        认领锁，上一轮 worker 可安全释放自己那轮的锁）。
 
         载体三态（design D3，以 git 事实为判定基准）：
         (a) 原 worktree 存在 → 原地进入（保留 node_modules/构建缓存）；
@@ -123,7 +128,7 @@ class PRepairLaneMixin:
                 f"秒挂冷却中，跳过 repair 派发 '{spec_name}'（冷却期后恢复调度）",
             )
             self._schedule_instant_fail_recovery(spec_name)
-            return
+            return False
         # evo-sigterm-source-tracking-cooldown：信号死法冷却期内不派发 repair。
         # 与秒挂冷却并存：两条通道各自排程恢复，取更晚的冷却截止生效。
         if self._pm._signal_kill_cooled(spec_name):
@@ -133,7 +138,7 @@ class PRepairLaneMixin:
                 f"（冷却期后恢复调度）",
             )
             self._schedule_signal_kill_recovery(spec_name)
-            return
+            return False
         try:
             repair_round = int(
                 (self._pm.state_machine.read_one(spec_name) or {}).get("_repair_round", 0) or 0
@@ -153,7 +158,7 @@ class PRepairLaneMixin:
                 branch,
                 getattr(merge_info, "error", "") or "",
             )
-            return
+            return False
         # 分支消亡 → fallback（三态 (c)）
         if not branch or not wm.branch_exists(branch):
             self._pm.logger.warning(
@@ -165,7 +170,7 @@ class PRepairLaneMixin:
                 None,
                 getattr(merge_info, "error", "") or "",
             )
-            return
+            return False
         # 三态解析：原地 / 换壳
         wt_path, resolved_branch = wm.resolve_repair_site(spec_name, branch)
         if wt_path is None:
@@ -178,7 +183,7 @@ class PRepairLaneMixin:
                 branch,
                 getattr(merge_info, "error", "") or "",
             )
-            return
+            return False
         # 认领现场（D4）：_legacy take 摘出 + _spec_locks 注册，防 sweeper 宽限期回收
         self._pm._claim_repair_site(spec_name, wt_path, resolved_branch)
         # 轮次递增（D5/D6）：repair 轮计入该 spec 的实现预算（token 记名下）；
@@ -219,6 +224,9 @@ class PRepairLaneMixin:
             name=f"fenix-repair-{spec_name}",
         )
         t.start()
+        # 锁已移交给新 worker（code-review item ec22643fa99a）：此后调用方的
+        # finally 不得再 discard 同名锁。
+        return True
 
     def _claim_repair_site(self, spec_name: str, wt_path, branch: str) -> None:
         """认领 repair 现场（add-merge-back-repair-lane D4）。
@@ -256,6 +264,10 @@ class PRepairLaneMixin:
         连续累计（repair 轮不清零）；blocked 后不再派发 repair。
         """
         wm = self._pm.agent_runner.worktree_manager
+        # 锁移交标记（code-review item ec22643fa99a）：True 表示 re-merge 失败后
+        # 已链式派发下一轮 repair、其锁由新轮 _claim_repair_site 重新认领——
+        # 本 worker 的 finally 只释放自己这轮的锁，不得摘掉新轮的锁。
+        lock_handed_off = False
         try:
             repair_ok = False
             repair_error = ""
@@ -457,7 +469,10 @@ class PRepairLaneMixin:
 
             # re-merge-back 再失败：与首次 merge 失败同路径处理（熔断计数连续累计），
             # repair 轮不清零 _merge_fp/_merge_streak（spec-merge-circuit-breaker）。
-            self._pm._handle_remerge_failure(spec_name, remerge_info, branch)
+            # 返回 True = 已续链派发下一轮 repair（锁已由新轮重新认领）。
+            lock_handed_off = bool(
+                self._pm._handle_remerge_failure(spec_name, remerge_info, branch)
+            )
 
         except Exception as e:
             self._pm.logger.error(
@@ -478,11 +493,16 @@ class PRepairLaneMixin:
                 merge_error=getattr(merge_info, "error", "") or "",
             )
         finally:
-            # 释放 repair 锁（_spec_locks 中 {spec}:repair 条目）
-            try:
-                wm._spec_locks.discard(f"{spec_name}:repair")
-            except Exception:
-                pass
+            # 释放 repair 锁（_spec_locks 中 {spec}:repair 条目）。
+            # 锁移交豁免（code-review item ec22643fa99a）：链式派发下一轮时
+            # _claim_repair_site 已为新轮重新注册同名锁，此处不得 discard——
+            # 否则新轮 repair 全程无锁，防重复派发与 sweeper 孤儿回收两项
+            # 保护同时失效。未续链（fallback/熔断/hold-state/异常）才释放。
+            if not lock_handed_off:
+                try:
+                    wm._spec_locks.discard(f"{spec_name}:repair")
+                except Exception:
+                    pass
             self._pm._process_queue()
 
     # ── repair git 事实复核（fix-repair-commit-enforcement D1/D2/D5）──────
@@ -557,12 +577,16 @@ class PRepairLaneMixin:
                 )
         return True, ""
 
-    def _handle_remerge_failure(self, spec_name: str, remerge_info, branch: str) -> None:
+    def _handle_remerge_failure(self, spec_name: str, remerge_info, branch: str) -> bool:
         """repair 后的 re-merge-back 失败：熔断 → repair 下一轮 → fallback。
 
         与首次 merge-back 失败同判定基准（fp/streak 连续累计，repair 不重置），
         轮次超过上限回退 fallback。不重复 testing/implemented 保护检查——
         repair 链内 spec 保持 implementing，无在飞 tester。
+
+        返回值（code-review item ec22643fa99a 锁移交标记）：True 表示已链式
+        派发下一轮 repair（``{spec}:repair`` 锁由新轮重新认领，worker 的
+        finally 不得释放）；False 表示未续链（熔断/顺延/fallback，锁可释放）。
         """
         merge_error = getattr(remerge_info, "error", "") or str(remerge_info)
         # ── WIP 重叠闸门阻塞旁路（evo-merge-back-wip-overlap-gate D3）──
@@ -572,7 +596,7 @@ class PRepairLaneMixin:
         # blocked、不进 repair 轮，spec 保持 in-flight，仅直发告警等待人工处置。
         if getattr(remerge_info, "wip_gate_blocked", False):
             self._report_mergeback_wip_overlap(spec_name, remerge_info, branch, merge_error)
-            return
+            return False
         # ── spec 目录在飞编辑顺延（evo-merge-back-spec-dir-inflight-guard D1/D1a）──
         # repair 后 re-merge-back 被卫检查顺延（spec_dir_inflight=True）：主树 spec
         # 目录有未提交改动。MUST NOT 消费 _repair_awaiting_remerge 标记——原样保留
@@ -586,7 +610,7 @@ class PRepairLaneMixin:
                 f"{merge_error} — spec 目录在飞编辑，保留 _repair_awaiting_remerge "
                 f"待下一轮再试（不消费标记、不重派）",
             )
-            return
+            return False
         spec_entry = self._pm.state_machine.read_one(spec_name) or {}
         fp = self._pm._merge_fingerprint(merge_error)
         prev_fp = spec_entry.get("_merge_fp")
@@ -621,18 +645,20 @@ class PRepairLaneMixin:
                 f"Circuit breaker tripped after repair for '{spec_name}' (fp={fp}) "
                 f"— spec blocked (repair 不绕过熔断)",
             )
-            return
+            return False
         if self._pm._should_enter_repair(spec_name, remerge_info, streak, breaker_threshold):
-            self._pm._dispatch_repair_lane(
+            # 锁移交（code-review item ec22643fa99a）：True = 下一轮 repair 已
+            # 派发并在 _claim_repair_site 重新认领同名锁，worker finally 跳过释放。
+            return bool(self._pm._dispatch_repair_lane(
                 spec_name,
                 remerge_info,
                 branch,
                 fp=fp,
                 streak=streak,
-            )
-            return
+            ))
         # 未触发熔断且不可 repair → fallback 全新重派
         self._fallback_after_repair(spec_name, branch, merge_error)
+        return False
 
     def _fallback_after_repair(
         self, spec_name: str, branch: str | None, repair_error: str, merge_error: str = ""
