@@ -570,7 +570,13 @@ class VAdjudicationMixin:
             不再自动重派）。
         """
         entry = self._pm.state_machine.read_one(spec_name) or {}
-        streak = int(entry.get("_writeback_recur_streak") or 0)
+        # STATE.md 行式存储读回值可能为任意字符串，裸 int() 遇非数字文本抛
+        # ValueError 会穿透裁决流程（code-review item 9a6271490cdd）：仿
+        # _redispatch_for_missing 的 _retry_count 读侧防护，异常回退 0。
+        try:
+            streak = int(entry.get("_writeback_recur_streak") or 0)
+        except (TypeError, ValueError):
+            streak = 0
         if entry.get("_writeback_recur_path") != path:
             streak = 0
         streak += 1
@@ -601,7 +607,12 @@ class VAdjudicationMixin:
             return
         # STATE.md 行式存储把 int/None 读回成 str（0→'0'、None→'null'），
         # 条件须按存储现实判（既有 _retry_count 读侧 int() 强转同惯例）。
-        if int(entry.get("_writeback_recur_streak") or 0) or (
+        # 非数字文本读回时强转回退 0，防异常穿透（code-review item 9a6271490cdd）。
+        try:
+            recur_streak = int(entry.get("_writeback_recur_streak") or 0)
+        except (TypeError, ValueError):
+            recur_streak = 0
+        if recur_streak or (
             entry.get("_writeback_recur_path") not in (None, "", "null")
         ):
             self._pm.state_machine.update_spec(
