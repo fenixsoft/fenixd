@@ -72,11 +72,18 @@ class H10StaticRoutesMixin:
         # target.is_relative_to(screenshots_dir) 对搬迁后目录内任意文件平凡
         # 通过。先校验 spec 不含「..」路径组件再拼接；file_part 的「..」仍由
         # 既有 resolve + is_relative_to 兜底（基础目录此后不可被搬迁）。
+        #
+        # 绝对路径形态（code-review item 4d4c8e4f2f4b，critical）：path 取自
+        # urlparse 不解码 %2F，split 后上方 unquote 可还原出绝对段（如
+        # /screenshots/<project>/%2Ftmp%2Ffoo/x.png → spec == '/tmp/foo'）；
+        # pathlib 拼接遇绝对段会整体丢弃前缀，同样把 screenshots_dir 搬迁到
+        # 约束目录之外，令包含检查平凡通过。与「..」搬迁同属攻击面，一并拒绝。
         spec_norm = spec.replace("\\", "/")
         if (
             not spec_norm
             or spec_norm in (".", "..")
             or ".." in spec_norm.split("/")
+            or spec_norm.startswith("/")
         ):
             self._error(403, "Forbidden")
             return

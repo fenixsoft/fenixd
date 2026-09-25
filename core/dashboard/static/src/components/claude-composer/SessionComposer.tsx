@@ -4,7 +4,7 @@
 // 语义映射到既有 stopSession（由 SessionPanel 注入 onStop）。输入区贴底全宽、
 // VisualViewport 键盘高度经 --keyboard-height 变量消费（D4）。
 import { useEffect, useMemo, useRef } from 'react';
-import type { CSSProperties, FormEvent, ReactNode } from 'react';
+import type { CSSProperties, FormEvent } from 'react';
 import { App, Button, Tooltip } from 'antd';
 import {
   ClearOutlined,
@@ -128,8 +128,6 @@ export default function SessionComposer({
     });
   };
 
-  const renderTool = (node: ReactNode) => node;
-
   return (
     <div
       className="fenix-composer chat-composer-shell relative flex-shrink-0 px-2 pt-0 sm:px-4 fenix-composer-shell-pb"
@@ -213,46 +211,43 @@ export default function SessionComposer({
 
           <PromptInputFooter>
             <PromptInputTools className="min-w-0">
-              {renderTool(
-                <Tooltip title="斜杠命令与 Skills">
-                  {/* 三个按钮统一 antd 默认风格（2026-09-25 用户定调） */}
-                  <Button
-                    icon={<MessageOutlined />}
-                    onClick={() => {
-                      // 空候选点击给显式反馈（2026-09-25 缺陷修复）：init 事件
-                      // 要等会话首次交互后才产生（stream-json 实证），新会话
-                      // 首条消息前候选恒为空，静默不弹菜单会被当成按钮坏了。
-                      if (composer.slashCommandsCount === 0) {
-                        message.info('命令候选尚未就绪：会话完成首次交互后即可唤起');
-                        return;
-                      }
-                      composer.handleToggleCommandMenu();
-                    }}
-                    disabled={disabled}
-                    className="relative"
-                    aria-label="显示全部命令"
-                  >
-                    {composer.slashCommandsCount > 0 && (
-                      <span className="absolute -right-1.5 -top-1.5 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-primary px-1 text-[10px] font-bold leading-none text-primary-foreground">
-                        {formatCommandCount(composer.slashCommandsCount)}
-                      </span>
-                    )}
-                  </Button>
-                </Tooltip>,
-              )}
+              <Tooltip title="斜杠命令与 Skills">
+                {/* 三个按钮统一 antd 默认风格（2026-09-25 用户定调） */}
+                <Button
+                  icon={<MessageOutlined />}
+                  onClick={() => {
+                    // 空候选点击给显式反馈（2026-09-25 缺陷修复）：init 事件
+                    // 要等会话首次交互后才产生（stream-json 实证），新会话
+                    // 首条消息前候选恒为空，静默不弹菜单会被当成按钮坏了。
+                    if (composer.slashCommandsCount === 0) {
+                      message.info('命令候选尚未就绪：会话完成首次交互后即可唤起');
+                      return;
+                    }
+                    composer.handleToggleCommandMenu();
+                  }}
+                  disabled={disabled}
+                  className="relative"
+                  aria-label="显示全部命令"
+                >
+                  {composer.slashCommandsCount > 0 && (
+                    <span className="absolute -right-1.5 -top-1.5 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-primary px-1 text-[10px] font-bold leading-none text-primary-foreground">
+                      {formatCommandCount(composer.slashCommandsCount)}
+                    </span>
+                  )}
+                </Button>
+              </Tooltip>
 
-              {hasInput &&
-                renderTool(
-                  <Tooltip title="清空输入">
-                    <Button
-                      icon={<ClearOutlined />}
-                      onClick={composer.handleClearInput}
-                      disabled={disabled}
-                      className="hidden sm:inline-block"
-                      aria-label="清空输入"
-                    />
-                  </Tooltip>,
-                )}
+              {hasInput && (
+                <Tooltip title="清空输入">
+                  <Button
+                    icon={<ClearOutlined />}
+                    onClick={composer.handleClearInput}
+                    disabled={disabled}
+                    className="hidden sm:inline-block"
+                    aria-label="清空输入"
+                  />
+                </Tooltip>
+              )}
             </PromptInputTools>
 
             <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">

@@ -6,6 +6,26 @@ import { SETTINGS_ACTIONS_ROW_STYLE } from '../styles';
 
 const { Text } = Typography;
 
+// 表单值的单一构建来源（code-review item 3f4e251a395c）：initialValues 与
+// 回填门控此前是两份逐字段重复的字面量，任一处增删字段或改默认值而其余
+// 未同步，会导致回填 key 误判（首次渲染丢初值或永不回填/频繁回填）。
+// 收敛为单个纯函数供两处共用。
+// add-planner-efficiency（planner-generation-throttle）：planner 生成节流。
+// 开关 = verify.planner_max_concurrent > 0；值为 0/缺省 = 不节流（默认关）。
+const buildFormValues = (cfg: ConfigData) => {
+  const throttleEnabled = (cfg.verify?.planner_max_concurrent ?? 0) > 0;
+  const throttleValue = throttleEnabled
+    ? (cfg.verify?.planner_max_concurrent ?? 1)
+    : 1;
+  return {
+    max_concurrent: cfg.agents.max_concurrent ?? 2,
+    max_turns: cfg.agents.max_turns ?? 400,
+    run_timeout_seconds: cfg.agents.run_timeout_seconds ?? 9000,
+    planner_throttle: throttleEnabled,
+    planner_max_concurrent: throttleValue,
+  };
+};
+
 interface ParallelSettingsPanelProps {
   config: ConfigData;
   onSave: (values: Partial<ConfigData>) => Promise<void>;
@@ -18,20 +38,7 @@ interface ParallelSettingsPanelProps {
 export default function ParallelSettingsPanel({ config, onSave, project, onConfigSynced }: ParallelSettingsPanelProps) {
   const [form] = Form.useForm();
 
-  // add-planner-efficiency（planner-generation-throttle）：planner 生成节流。
-  // 开关 = verify.planner_max_concurrent > 0；值为 0/缺省 = 不节流（默认关）。
-  const throttleEnabled = (config.verify?.planner_max_concurrent ?? 0) > 0;
-  const throttleValue = throttleEnabled
-    ? (config.verify?.planner_max_concurrent ?? 1)
-    : 1;
-
-  const initialValues = {
-    max_concurrent: config.agents.max_concurrent ?? 2,
-    max_turns: config.agents.max_turns ?? 400,
-    run_timeout_seconds: config.agents.run_timeout_seconds ?? 9000,
-    planner_throttle: throttleEnabled,
-    planner_max_concurrent: throttleValue,
-  };
+  const initialValues = buildFormValues(config);
 
   // 回填门控（code-review item b97e73ffcda4，比照 MiscSettingsPanel 0a2bd3f20fcd /
   // AgentModelPanel 9f98edec21fa）：无条件 setFieldsValue 会在保存往返、同步按钮
@@ -39,18 +46,12 @@ export default function ParallelSettingsPanel({ config, onSave, project, onConfi
   // 尚未保存的输入。改为序列化比较，只在内容真变化时回填。
   const lastBackfillRef = useRef('');
   useEffect(() => {
-    const next = {
-      max_concurrent: config.agents.max_concurrent ?? 2,
-      max_turns: config.agents.max_turns ?? 400,
-      run_timeout_seconds: config.agents.run_timeout_seconds ?? 9000,
-      planner_throttle: throttleEnabled,
-      planner_max_concurrent: throttleValue,
-    };
+    const next = buildFormValues(config);
     const key = JSON.stringify(next);
     if (key === lastBackfillRef.current) return;
     lastBackfillRef.current = key;
     form.setFieldsValue(next);
-  }, [config.agents, config.verify, form, throttleEnabled, throttleValue]);
+  }, [config, form]);
 
   const handleSave = async () => {
     // 分离「表单校验」与「保存持久化」（code-review item 3243afb1df4e，比照
