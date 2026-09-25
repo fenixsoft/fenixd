@@ -766,8 +766,8 @@ def snapshot_declaration_baseline(spec_name, run_id, project_root) -> "dict | No
             "deliverables",
             f"基线快照写入失败 '{spec_name}'（仅 WARNING 不阻塞派发）: {e}",
         )
-        # tmp 可能因 mkdir 本身失败而从未绑定（UnboundLocalError 会逃出本函数、
-        # 破坏「写入异常仅 WARNING 不阻塞派发」契约），故显式守 None。
+        # tmp 已在 try 前显式绑定为 None，此异常分支据此安全清理可能已创建的
+        # 临时文件（不存在未绑定风险）。
         try:
             if tmp is not None and tmp.exists():
                 tmp.unlink()

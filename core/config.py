@@ -1374,7 +1374,7 @@ class ConfigLoader:
             "self_review": cls.get_self_review_config(config),
             # evo-run-failure-classification-circuitbreaker D5：infra 熔断配置
             # 段（阈值/冷却分钟，缺省 3/30）
-            "run_infra_breaker": cls.get_run_infra_breaker_config(admin),
+            "run_infra_breaker": cls.get_run_infra_breaker_config(config),
         }
 
     # ── 陈旧自愈配置（add-stale-code-selfheal D5）──────────────────────
@@ -1596,7 +1596,10 @@ class ConfigLoader:
           停滞告警阈值，分钟；消费方 core.code_review.check_progress_stall。
           非法值（非正整数/类型错误/bool）回退缺省）
         """
-        admin = config.get("admin") if isinstance(config, dict) else None
+        # 段入口经 _segment_or_empty 归一（code-review item 4d46314da624）：
+        # 与 get_admin_config/get_self_review_config 对齐——admin 整段为列表/
+        # 标量时 ERROR 告警并按空段降级，不再静默吞掉故障配置。
+        admin = cls._segment_or_empty(config, "admin")
         cr = admin.get("code_review") if isinstance(admin, dict) else None
         if not isinstance(cr, dict):
             cr = {}
@@ -1648,7 +1651,10 @@ class ConfigLoader:
           回退 3——过大烧钱、0 会让「重试一次」的现状语义都保不住）
         段缺失或非 dict 时整体视为缺省，不抛异常。
         """
-        admin = config.get("admin") if isinstance(config, dict) else None
+        # 段入口经 _segment_or_empty 归一（code-review item 4d46314da624）：
+        # 与 get_admin_config/get_self_review_config 对齐——admin 整段为列表/
+        # 标量时 ERROR 告警并按空段降级，不再静默吞掉故障配置。
+        admin = cls._segment_or_empty(config, "admin")
         crf = admin.get("code_review_fix") if isinstance(admin, dict) else None
         if not isinstance(crf, dict):
             crf = {}
@@ -1684,7 +1690,10 @@ class ConfigLoader:
           admin.code_review.enabled 同形制——开关只管周期调度，手动
           触发不受约束）
         """
-        admin = config.get("admin") if isinstance(config, dict) else None
+        # 段入口经 _segment_or_empty 归一（code-review item 4d46314da624）：
+        # 与 get_admin_config/get_self_review_config 对齐——admin 整段为列表/
+        # 标量时 ERROR 告警并按空段降级，不再静默吞掉故障配置。
+        admin = cls._segment_or_empty(config, "admin")
         reg = admin.get("regression") if isinstance(admin, dict) else None
         if not isinstance(reg, dict):
             reg = {}
@@ -1699,7 +1708,7 @@ class ConfigLoader:
         }
 
     @classmethod
-    def get_run_infra_breaker_config(cls, admin: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    def get_run_infra_breaker_config(cls, config: Dict[str, Any] | None = None) -> Dict[str, Any]:
         """Return the ``admin.run_infra_breaker.*`` 段，缺失项填默认值（D5）。
 
         默认值：
@@ -1708,8 +1717,10 @@ class ConfigLoader:
 
         非法值（非正数/类型错误）回退缺省（config D5 读取宽容语义）。
         """
-        if not isinstance(admin, dict):
-            admin = {}
+        # 段入口经 _segment_or_empty 归一（code-review item 4d46314da624）：
+        # 非 dict admin 段 ERROR 告警并按空段降级，对齐同族 admin.* 读取器
+        # （config=None 缺省参时助手按空段处理，全缺省语义不变）。
+        admin = cls._segment_or_empty(config, "admin")
         ib = admin.get("run_infra_breaker")
         if not isinstance(ib, dict):
             ib = {}
