@@ -21,8 +21,8 @@
 ## 1. 取消旗标跨 attempt 生效与 retry 让位
 
 - [x] 1.1 core/agent_runner/runner.py：cancel_run 的 not_running 分支改为按 base_id 登记取消旗标（复用 _normalize_run_id 归一化、_cancel_requested 幂等集合与 reason/by 元数据）后再返回，返回值保留 not_running 语义并附旗标登记标记；使 in-place retry 复活的 attempt 在启动守卫（_attempt_top_guards）处命中旗标以 cancelled 有序收尾，活跃 attempt 取消行为与 run 收尾旗标清理不变
-- [ ] 1.2 core/agent_runner/runner.py：in-place retry 重派前的让位判据对 planner-plan 增查并行出题标记 status 为 discarded 即放弃重派并让 run 以 cancelled 或 failure 收尾（标记实际枚举 dispatched/failed/discarded/completed，无 quarantined 值；产物隔离与 discarded 写入伴生）；标记读取以注入回调承载（缺省视为无标记、行为不变），不引入对 pm_engine 的模块依赖
-- [ ] 1.3 core/pm_engine/engine.py：装配侧经 runner 既有注入约定把并行出题标记读取（_read_parallel_plan_marker）传入 runner，让让位判据在真实派发链路生效
+- [x] 1.2 core/agent_runner/runner.py：in-place retry 重派前的让位判据对 planner-plan 增查并行出题标记 status 为 discarded 即放弃重派并让 run 以 cancelled 或 failure 收尾（标记实际枚举 dispatched/failed/discarded/completed，无 quarantined 值；产物隔离与 discarded 写入伴生）；标记读取以注入回调承载（缺省视为无标记、行为不变），不引入对 pm_engine 的模块依赖
+- [x] 1.3 core/pm_engine/engine.py：装配侧经 runner 既有注入约定把并行出题标记读取（_read_parallel_plan_marker）传入 runner，让让位判据在真实派发链路生效
 
 ## 2. 停滞预算复合判停（缺省关闭）
 

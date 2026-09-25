@@ -359,6 +359,18 @@ class PMEngine:
         except Exception:
             pass
 
+        # evo-add-run-stop-loss 1.3（B 装配）：并行出题标记读取回调注入——
+        # runner 的 in-place retry 让位判据（_parallel_plan_marker_discarded）
+        # 经此回调读并行出题状态标记（_read_parallel_plan_marker），让让位
+        # 判据在真实派发链路生效；runner 不引入对 pm_engine 的模块依赖
+        # （沿 _pm_engine_ref 显式回引字段先例，测试以 MagicMock 替代
+        # agent_runner 时赋值无害）。
+        try:
+            agent_runner._parallel_plan_marker_reader = (
+                self._read_parallel_plan_marker)
+        except Exception:
+            pass
+
         self._handling_events = set()  # 防重入：正在处理的 (event_kind, spec_name)
         # 队列/并发状态与锁随 Dispatcher 组件同迁（design D3 规则 1，单锁语义不变）
 
@@ -1011,10 +1023,13 @@ class PMEngine:
             return
         if spec.get("status") in ("drafted", "blocked"):
             # 回退收尾兜底（code-review item b4b98c69a4e1）：_stop_parallel_planning
-            # 的 cancel_run 与 run 真正登记/收尾之间存在竞窗（attempt 尚未注册时
-            # cancel 落 not_running、停止旗标未登记），run 会照常跑完——此处不得
-            # 写 completed：否则下次 ready 重入被 marker 挡住不重派，对旧版 spec
-            # 出的题被 testing 直接消费。按任务 1.2「回退即停」隔离半成品。
+            # 的 cancel_run 与 run 真正登记/收尾之间存在竞窗。evo-add-run-stop-loss
+            # 1.1 后 not_running 分支也登记取消旗标（复活 attempt 被启动守卫拦截），
+            # 但旗标系进程内存态——daemon 重启即丢，且旗标只拦本 run 的复活/重派
+            # attempt，不拦车道收尾语义本身——此处仍不得写 completed：否则下次
+            # ready 重入被 marker 挡住不重派，对旧版 spec 出的题被 testing 直接
+            # 消费。按任务 1.2「回退即停」隔离半成品（discarded 标记同时是 runner
+            # 侧 in-place retry 让位判据的输入，evo-add-run-stop-loss 1.2）。
             self._write_parallel_plan_marker(
                 spec_name,
                 {

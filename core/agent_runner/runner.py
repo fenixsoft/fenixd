@@ -3015,6 +3015,36 @@ class AgentRunner:
                     f"重试让位（fix-verdict-dedup-resynthesis D4）"),
                 provider_used=provider_name, model_used=model,
             ), False
+        # evo-add-run-stop-loss 1.2（B）：planner-plan 增查并行出题标记——
+        # 消费侧已把标记翻成 discarded（产物隔离/转串行收尾伴生写入）时，
+        # 重派只会与已转道的串行出题竞跑；在途（dispatched）或无标记
+        # （未注入/读取失败）不命中，重试照常。
+        if self._parallel_plan_marker_discarded(spec_name, agent_type):
+            self.logger.warning(
+                "agent_runner",
+                f"Provider-transient retry for '{spec_name}' "
+                f"({agent_type}) yields: 并行出题标记已 discarded"
+                f"（产物已隔离/转串行），放弃重派"
+                f"（evo-add-run-stop-loss 1.2）",
+            )
+            self._log_run_metrics(
+                run_id=run_id, spec_name=spec_name,
+                agent_type=agent_type,
+                duration_seconds=time.time() - start_time,
+                turns=turns, usage_info=usage_info,
+                terminal="failure", provider=provider_name,
+                model=model,
+            )
+            return transient_retries, AgentRunResult(
+                attempt_run_id, spec_name, agent_type,
+                success=False,
+                duration_seconds=time.time() - start_time,
+                error=(
+                    f"{RETRY_YIELDED_ERROR_PREFIX} 并行出题标记已 discarded"
+                    f"（产物已隔离/转串行出题），"
+                    f"重试让位（evo-add-run-stop-loss 1.2）"),
+                provider_used=provider_name, model_used=model,
+            ), False
         return transient_retries, None, True
 
     def _append_gate_blocked(self, *, sub_run_id: str, spec_name: str,
@@ -3213,6 +3243,36 @@ class AgentRunner:
                     f"{RETRY_YIELDED_ERROR_PREFIX} spec 已被接管"
                     f"（status 迁出预期态或 frozen/hold），"
                     f"重试让位（fix-verdict-dedup-resynthesis D4）"),
+                provider_used=provider_name, model_used=model,
+            ), False, False
+        # evo-add-run-stop-loss 1.2（B）：planner-plan 增查并行出题标记——
+        # discarded（产物隔离/转串行收尾伴生写入）即放弃重派：本次事故的
+        # 复活正是产物硬门通道（exit 0 但 test_scenarios.json 缺失被拦）。
+        # 在途（dispatched）或无标记（未注入/读取失败）不命中，重试照常。
+        if self._parallel_plan_marker_discarded(spec_name, agent_type):
+            self.logger.warning(
+                "agent_runner",
+                f"Artifact-gate retry for '{spec_name}' "
+                f"({agent_type}) yields: 并行出题标记已 discarded"
+                f"（产物已隔离/转串行），放弃重派"
+                f"（evo-add-run-stop-loss 1.2）",
+            )
+            self._log_run_metrics(
+                run_id=run_id, spec_name=spec_name,
+                agent_type=agent_type,
+                duration_seconds=time.time() - start_time,
+                turns=turns, usage_info=usage_info,
+                terminal="failure", provider=provider_name,
+                model=model,
+            )
+            return error, transient_retries, AgentRunResult(
+                attempt_run_id, spec_name, agent_type,
+                success=False,
+                duration_seconds=time.time() - start_time,
+                error=(
+                    f"{RETRY_YIELDED_ERROR_PREFIX} 并行出题标记已 discarded"
+                    f"（产物已隔离/转串行出题），"
+                    f"重试让位（evo-add-run-stop-loss 1.2）"),
                 provider_used=provider_name, model_used=model,
             ), False, False
         return error, transient_retries, None, True, False
@@ -4691,6 +4751,41 @@ class AgentRunner:
             return bool(entry.get("frozen"))
         except Exception:
             return False
+
+    # ── 并行出题标记让位判据（evo-add-run-stop-loss 1.2）──────────────────
+
+    def _parallel_plan_marker_discarded(self, spec_name: str,
+                                        agent_type: str) -> bool:
+        """in-place retry 重派前的让位判据（B）：planner-plan 增查并行出题标记。
+
+        标记由 pm_engine 并行出题车道全程落盘（.fenix/verify-progress/<spec>/
+        parallel_plan.json，实际枚举 dispatched/failed/discarded/completed）；
+        消费侧的产物隔离（_quarantine_parallel_product → .parallel-discarded）
+        与转串行收尾伴生写入 discarded——单值即覆盖「已隔离」与「已转串行」
+        两类终态。命中即放弃重派：重派只会与已转道的串行出题竞跑（2026-09-25
+        planner-plan 事故 -r1 复活 36 分钟形态）。
+
+        仅 planner-plan 参与；读取回调由装配侧注入（_parallel_plan_marker_reader，
+        PMEngine.__init__ 沿 result_gate 注入约定回引字段先例），本类 MUST NOT
+        依赖 pm_engine 模块。未注入（缺省 None）/ 读取异常 / 标记缺失一律按
+        无标记处理（fail-open，不阻断正常重试）。
+        """
+        if agent_type != "planner-plan":
+            return False
+        reader = getattr(self, "_parallel_plan_marker_reader", None)
+        if reader is None:
+            return False
+        try:
+            marker = reader(spec_name) or {}
+        except Exception as e:  # noqa: BLE001 — 读取失败按无标记处理
+            self.logger.warning(
+                "agent_runner",
+                f"并行出题标记读取失败（按无标记处理，不阻断重试）"
+                f"'{spec_name}': {e}",
+            )
+            return False
+        return (marker if isinstance(marker, dict) else {}).get("status") \
+            == "discarded"
 
     def _should_give_up_before_retry(self, spec_name: str, agent_type: str,
                                      check_lock: bool = True) -> bool:
