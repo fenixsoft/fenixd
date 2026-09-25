@@ -728,8 +728,10 @@ class AgentRunner:
         Returns:
             {"status": "cancel_requested", "attempts": [...], "base_run_id": str}
             — 命中活跃 attempt；
-            {"status": "not_running", "base_run_id": str}
-            — 未命中。
+            {"status": "not_running", "base_run_id": str, "flag_registered": bool}
+            — 未命中（evo-add-run-stop-loss 1.1 起仍按 base_id 登记取消旗标，
+            flag_registered=True；旗标键含 epoch，仅本 run 的复活/重派 attempt
+            会被启动守卫拦截，无跨 run 泄漏）。
         """
         base_id = self._normalize_run_id(run_id)
 
@@ -742,11 +744,28 @@ class AgentRunner:
         ]
 
         if not matched_attempts:
-            self.logger.info(
+            # evo-add-run-stop-loss 1.1（A）：attempt 间隙取消。2026-09-25
+            # planner-plan 事故：取消恰好落在 attempt 退出与下一 attempt（或
+            # in-place retry -r<n>）重派之间的间隙，原 not_running 分支不登记
+            # 旗标直接返回，重派的 attempt 复活再跑 36 分钟（run 级成本全部
+            # 沉没）。现按 base_id 登记旗标（复用 add-run-cancel 的归一化、
+            # 幂等集合与 reason/by 元数据），随后复活/重派的 attempt 在启动
+            # 守卫（_attempt_top_guards）与 in-place retry 让位复查处命中即
+            # 有序终止；在飞 attempt（若有）照常走轮询环取消，行为不变。
+            with self._cancel_requested_lock:
+                self._cancel_requested.add(base_id)
+                self._cancel_meta[base_id] = {"reason": reason, "by": by}
+            self.logger.warning(
                 "agent_runner",
-                f"cancel_run: run '{base_id}' 无活跃 attempt，返回 not_running",
+                f"cancel_run: run '{base_id}' 无活跃 attempt，已登记取消旗标"
+                f"（attempt 间隙取消，复活/重派 attempt 将被启动守卫拦截；"
+                f"reason={reason!r}, by={by}）",
             )
-            return {"status": "not_running", "base_run_id": base_id}
+            return {
+                "status": "not_running",
+                "base_run_id": base_id,
+                "flag_registered": True,
+            }
 
         # 登记旗标（幂等——同一 base_id 多次调用不重复计数）
         with self._cancel_requested_lock:
@@ -2002,6 +2021,11 @@ class AgentRunner:
             # 9dc9195cbd73）：统一在 run 终态外口摘除，覆盖 success/exhausted
             # 两收口之外的全部早退终态 return（frozen/取消/熔断/链耗尽/让位）。
             self._turn_branch_state_forget(run_id)
+            # evo-add-run-stop-loss 1.1：取消旗标随 run 终态外口幂等清理——
+            # 覆盖「not_running 间隙登记后 run 未再复活即自然收尾」的路径
+            # （旗标键含 epoch，不清理也不跨 run 误伤，摘除仅为生命周期
+            # 卫生）；与 success/exhausted/守卫/轮询环四处既有清理互为幂等。
+            self._cancel_clear(run_id)
             # per-run 终态回调触发（add-mergeback-wip-active-coordination D2）：
             # 终态收口处（成功/失败/取消/冻结/熔断等任意终态都经本 finally）
             # 消费回调表——持有者 run 收尾即唤醒 defer 批合回事件驱动重试。

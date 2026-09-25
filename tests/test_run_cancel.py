@@ -114,8 +114,12 @@ class TestCancelRunPrimitive:
         runner = make_runner(proot)
         result = runner.cancel_run("impl-x-123", reason="x")
         assert result["status"] == "not_running"
+        # evo-add-run-stop-loss 1.1：not_running 分支仍按 base_id 登记旗标
+        #（attempt 间隙取消——复活/重派 attempt 由启动守卫拦截），返回值附
+        # flag_registered 标记；语义对调用方向后兼容（status 不变）。
+        assert result["flag_registered"] is True
         with runner._cancel_requested_lock:
-            assert "impl-x-123" not in runner._cancel_requested
+            assert "impl-x-123" in runner._cancel_requested
 
     @pytest.mark.parametrize("cancel_arg", ["impl-x-123", "impl-x-123-a2"])
     def test_cancel_run_id_base_normalization(self, tmp_path, cancel_arg):
