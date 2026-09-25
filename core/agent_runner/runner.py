@@ -4852,7 +4852,10 @@ class AgentRunner:
         raw = entry.get("timestamp")
         if raw is None:
             return None
-        if isinstance(raw, (int, float)):
+        # bool 是 int 子类，显式排除以免 True/False 直通成 epoch 1.0/0.0 秒
+        # 假样本（与 latency._default_ts_parser 逐字段一致，契约测试样本
+        # 已含 bool 用例锁定该等价性）。
+        if isinstance(raw, (int, float)) and not isinstance(raw, bool):
             return float(raw)
         try:
             text = str(raw)
