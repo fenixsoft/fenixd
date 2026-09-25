@@ -84,7 +84,9 @@ export const PromptInputTextarea = React.forwardRef<
     ref={ref}
     data-slot="prompt-input-textarea"
     className={cn(
-      'chat-input-placeholder block max-h-[40vh] w-full resize-none overflow-y-auto bg-transparent px-4 py-2 text-sm leading-6 text-foreground placeholder-muted-foreground/50 focus:outline-none sm:max-h-[300px]',
+      // 占位符样式单一来源在 composer.css 的 .chat-input-placeholder::placeholder
+      // （!important 对垒 tailwind utility），此处勿并排 tailwind placeholder-* 类。
+      'chat-input-placeholder block max-h-[40vh] w-full resize-none overflow-y-auto bg-transparent px-4 py-2 text-sm leading-6 text-foreground focus:outline-none sm:max-h-[300px]',
       className,
     )}
     {...props}
