@@ -115,7 +115,6 @@ function isLocalHostname(hostname) {
 function isExternalUrl(url) {
   if (!url || typeof url !== 'string') return false;
   if (!url.startsWith('http')) return false;
-  if (url.includes('chrome-extension://') || url.includes('devtools://')) return false;
   try {
     if (isLocalHostname(new URL(url).hostname)) return false;
   } catch {

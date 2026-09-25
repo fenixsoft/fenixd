@@ -5,6 +5,9 @@
 """
 
 from pathlib import Path
+# tool_result 事件识别单一真源（design D1：禁止在真源之外再次硬编码事件类型比较），
+# 本模块经类内 staticmethod 别名委托复用（与 runner.py 同型），不保留本地副本。
+from core.agent_runner.latency import _entry_is_tool_result
 from core.agent_runner.run_files import append_run_error, append_run_line, run_spec_part
 from datetime import datetime, timezone
 import json
@@ -752,22 +755,10 @@ class LivenessSupervisor:
         snapshot["last_output"] = snapshot["last_output"][:LIVENESS_SNIPPET_CHARS]
         return snapshot
 
-    @staticmethod
-    def _is_tool_result_event(entry: dict) -> bool:
-        """识别工具完成事件（对齐 runner.py _entry_is_tool_result 口径）。
-
-        真实 stream-json 转录以 user 事件包裹 tool_result content block 承载；
-        兼容顶层 tool_result 事件（存量合成测试）。
-        """
-        if entry.get("type") == "tool_result":
-            return True
-        if entry.get("type") == "user":
-            content = entry.get("message", {}).get("content")
-            if isinstance(content, list):
-                for b in content:
-                    if isinstance(b, dict) and b.get("type") == "tool_result":
-                        return True
-        return False
+    # tool_result 事件识别委托 latency.py _entry_is_tool_result 单一真源
+    # （design D1：不得在真源之外再次硬编码事件类型比较）；staticmethod 别名
+    # 保持 self._is_tool_result_event 调用点与原方法名不变。
+    _is_tool_result_event = staticmethod(_entry_is_tool_result)
 
     @staticmethod
     def _summarize_snapshot(snapshot: dict) -> str:

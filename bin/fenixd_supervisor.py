@@ -396,6 +396,39 @@ def _request_shutdown(signum, frame):
     _shutdown_requested = True
 
 
+def _terminate_daemon(proc, sigkill_wait: int) -> None:
+    """监视循环共用收尾：SIGTERM → wait(sigkill_wait) → 超时 SIGKILL → 5s 收尸。
+
+    stop / restart 分支（code-review f9f8e81b6fa5）此前各自内联这段逻辑且逐行
+    相同——本脚本的 sigkill 等待窗口出过「只改一处不改另一处」的漂移事故
+    （interrupt-recovery-preserve D2），收编为单一实现消除同型风险。分支只保留
+    各自的日志文案与 restart 标志；proc 由调用方保证非 None（start_daemon 失败
+    分支在进入监视循环前已 continue）。
+    """
+    try:
+        proc.send_signal(signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        proc.wait(timeout=sigkill_wait)
+    except subprocess.TimeoutExpired:
+        log(f"daemon did not exit within {sigkill_wait}s after SIGTERM — SIGKILL")
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            # SIGKILL 后仍可能因不可中断睡眠（D 状态）收尸超时，捕获以免异常
+            # 炸穿 supervisor 主循环；进程最终退出时由监视循环外的 proc.wait()
+            # 收尸。
+            log(
+                "daemon still alive 5s after SIGKILL "
+                "(uninterruptible sleep?) — leave reaping to outer wait"
+            )
+
+
 def main():
     # 启动守卫（fix-supervisor-hosting-chain D1）：解析出的项目根下必须存在
     # .fenix/（目录或软链），缺失时打印含解析来源与解析结果的可读错误并以
@@ -479,29 +512,7 @@ def main():
                 # 退出监视——收口不再依赖「daemon 自己先死」这一前提。
                 log("stop flag detected during watch — SIGTERM daemon for stop")
                 restart = False
-                sigkill_wait = _sigkill_wait_seconds()
-                try:
-                    proc.send_signal(signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
-                try:
-                    proc.wait(timeout=sigkill_wait)
-                except subprocess.TimeoutExpired:
-                    log(f"daemon did not exit within {sigkill_wait}s after " f"SIGTERM — SIGKILL")
-                    try:
-                        proc.kill()
-                    except ProcessLookupError:
-                        pass
-                    try:
-                        proc.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        # SIGKILL 后仍可能因不可中断睡眠（D 状态）收尸超时，
-                        # 捕获以免异常炸穿 supervisor 主循环；进程最终退出时
-                        # 由监视循环外的 proc.wait() 收尸。
-                        log(
-                            "daemon still alive 5s after SIGKILL "
-                            "(uninterruptible sleep?) — leave reaping to outer wait"
-                        )
+                _terminate_daemon(proc, _sigkill_wait_seconds())
                 break
             if _shutdown_requested:
                 # supervisor 自身收到 SIGTERM/SIGINT（code-review 09d6ed559666）：
@@ -534,29 +545,7 @@ def main():
             if RESTART_REQUEST.exists():
                 log("restart_request detected — SIGTERM daemon for restart")
                 restart = True
-                sigkill_wait = _sigkill_wait_seconds()
-                try:
-                    proc.send_signal(signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
-                try:
-                    proc.wait(timeout=sigkill_wait)
-                except subprocess.TimeoutExpired:
-                    log(f"daemon did not exit within {sigkill_wait}s after " f"SIGTERM — SIGKILL")
-                    try:
-                        proc.kill()
-                    except ProcessLookupError:
-                        pass
-                    try:
-                        proc.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        # SIGKILL 后仍可能因不可中断睡眠（D 状态）收尸超时，
-                        # 捕获以免异常炸穿 supervisor 主循环；进程最终退出时
-                        # 由监视循环外的 proc.wait() 收尸。
-                        log(
-                            "daemon still alive 5s after SIGKILL "
-                            "(uninterruptible sleep?) — leave reaping to outer wait"
-                        )
+                _terminate_daemon(proc, _sigkill_wait_seconds())
                 break
             time.sleep(2)
 

@@ -101,9 +101,23 @@ class G3LockMixin:
             ``_pid_in_project_worktrees`` 核对归属本项目（``worktrees/`` 字面匹配是
             全机性的，同机多项目同名 spec 会互相骗锁）。pgrep 不可用/超时时返回
             False（调用方以 run 流新鲜度做二次确认）。
+
+            尾部锚定（code-review ffad20907ac6）：pattern 在 ``-{spec}-`` 之后
+            要求时间戳段（``[[:digit:]]+``，create() 的 ts 恒为 int(time.time())
+            纯数字）并以路径续接/空白/引号/行尾收尾（与 _worktree_has_live_process
+            的锚定纪律一致）。裸 ``-{spec}-`` 尾随连字符在 spec 名互为前缀时过配
+            ——fix-x 的 pattern 会命中兄弟 spec fix-x-y 的
+            ``worktrees/impl-fix-x-y-<ts>``，其活进程持续把 fix-x 判存活、压制
+            孤儿锁清理/重派。锚定后该形态后续字符非数字不再命中，语义等价于
+            liveness._pgrep_live_attempt 命中后按 run_spec_part 全等归属的目录名
+            解析（``{prefix}-{spec}-<纯数字>`` 同一尾部形状）；收紧只少误报，
+            真实 agent cmdline 引用的目录名恒接时间戳，不引入漏报。
             """
             for prefix in ("impl", "verify"):
-                pattern = f"worktrees/{prefix}-{re.escape(spec_name)}-"
+                pattern = (
+                    f"worktrees/{prefix}-{re.escape(spec_name)}"
+                    f"-[[:digit:]]+([/[:space:]\"']|$)"
+                )
                 try:
                     res = subprocess.run(
                         ["pgrep", "-f", pattern],

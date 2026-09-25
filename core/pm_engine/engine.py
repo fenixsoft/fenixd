@@ -1710,7 +1710,17 @@ class PMEngine:
                 f"SPEC '{spec_name}' is done — awaiting push approval",
             )
 
-            self._append_project_log(f"✅ SPEC completed: **{spec_name}** — awaiting push approval")
+            # （b21d8f2d8247 同口径）报告可丢，主链不可断：PROJECT_LOG 不可写
+            # 不得中断 done 处理（含下方 _auto_approve 收口）
+            try:
+                self._append_project_log(
+                    f"✅ SPEC completed: **{spec_name}** — awaiting push approval"
+                )
+            except Exception as e:
+                self.logger.warning(
+                    "pm_engine",
+                    f"done 收口项目日志失败 '{spec_name}'（非阻断，done 处理继续）: {e}",
+                )
 
             # 自动审批：approve_mode=auto 且状态为 done 时触发
             # （若已 pushed 则 _auto_approve 内部幂等跳过，不重复推送）
@@ -2593,9 +2603,17 @@ class PMEngine:
                 trigger_run_id=None, agent_type=None, channel="auto",
             )
             self.state_machine.update_spec(spec_name, {"error": None})
-            self._append_project_log(
-                f"🚀 SPEC pushed: **{spec_name}** (main pushed, branch: {branch})"
-            )
+            # （b21d8f2d8247 同口径）报告可丢，主链不可断：pushed 已落定，
+            # PROJECT_LOG 不可写/磁盘满不得中断 push 收口并向外传播
+            try:
+                self._append_project_log(
+                    f"🚀 SPEC pushed: **{spec_name}** (main pushed, branch: {branch})"
+                )
+            except Exception as e:
+                self.logger.warning(
+                    "pm_engine",
+                    f"push 收口项目日志失败 '{spec_name}'（非阻断，pushed 已落定）: {e}",
+                )
             self.logger.info(
                 "pm_engine",
                 f"SPEC pushed: {spec_name} (main ok, branch={branch})",

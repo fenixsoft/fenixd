@@ -122,17 +122,33 @@ class CliAssertionRunner:
 
     # ── 匹配辅助 ──────────────────────────────────────────────
 
-    def _match(self, actual: str, expected: str, mode: str, negate: bool) -> bool:
-        text = actual or ""
+    def _match(self, actual, expected, mode: str, negate: bool, *, exact_strip: bool = True) -> bool:
+        """exact/contains/regex 匹配单一实现（output_match / file_content /
+        json_output 共用，防双实现漂移）。
+
+        exact_strip=True（缺省，文本断言）：exact 对两侧 .strip() 后比较——
+            terminal 输出/文件内容常带首尾空白（如尾换行），strip 更宽容。
+        exact_strip=False（json_output）：exact 直接结构相等比较——actual 是
+            JSON 子树，可为 int/bool/None/list/dict，字符串化会改变语义
+            （如 5.0 == 5 成立而 "5.0" != "5"），故不做 str() 也不 strip。
+        contains/regex：actual 为 str 时原样参与（既有调用方传入恒为 str，
+            与原 `actual or ""` 兜底等价），非 str（仅 json_output）先 str()
+            字符串化（与既有 json_output 行为一致）。
+        """
         if mode == "exact":
-            m = text.strip() == str(expected).strip()
-        elif mode == "regex":
-            try:
-                m = bool(re.search(str(expected), text))
-            except re.error:
-                m = False
-        else:  # contains（缺省）
-            m = str(expected) in text
+            if exact_strip:
+                m = (actual or "").strip() == str(expected).strip()
+            else:
+                m = actual == expected
+        else:
+            text = actual if isinstance(actual, str) else str(actual)
+            if mode == "regex":
+                try:
+                    m = bool(re.search(str(expected), text))
+                except re.error:
+                    m = False
+            else:  # contains（缺省）
+                m = str(expected) in text
         return (not m) if negate else m
 
     # ═══════════════════════════════════════════════════════════════
@@ -314,18 +330,9 @@ class CliAssertionRunner:
         actual = evaluate_json_path(data, path) if path else data
         mode = a.get("mode", "exact")
         negate = bool(a.get("negate", False))
-        passed = False
-        if mode == "exact":
-            passed = actual == expected
-        elif mode == "contains":
-            passed = str(expected) in str(actual)
-        elif mode == "regex":
-            try:
-                passed = bool(re.search(str(expected), str(actual)))
-            except re.error:
-                passed = False
-        if negate:
-            passed = not passed
+        # 匹配逻辑与 _match 共用单一实现；exact 走结构相等（JSON 值可非字符串，
+        # 不做 str()/strip），与文本断言的 strip 语义以 exact_strip 开关区分
+        passed = self._match(actual, expected, mode, negate, exact_strip=False)
         return {
             "type": "json_output",
             "layer": 3,

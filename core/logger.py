@@ -189,24 +189,56 @@ class Logger:
     def error(self, component: str, message: str, context: dict = None):
         self._log(logging.ERROR, component, message, context)
 
+    # 尾部窗口单次读取字节数：JSON 行通常远小于此，无级别过滤时一轮即可
+    # 凑够 lines 条；带过滤时按窗口向前扩直至文件头，峰值内存为单窗而非全文件
+    TAIL_WINDOW_BYTES = 64 * 1024
+
     def tail(self, lines: int = 20, level: str = None) -> list:
         """Return the last N log lines, optionally filtered by level."""
         log_file = self.log_dir / "fenixd.log"
         if not log_file.exists():
             return []
 
-        with open(log_file, "r", encoding="utf-8") as f:
-            all_lines = f.readlines()
-
-        # Read extra lines to account for level filtering
+        # 基于 seek 的尾部窗口读取（code-review ec3bd4861a4b）：原实现
+        # f.readlines() 把整个文件读进内存（handler maxBytes=10MB），且级别
+        # 过滤只在末尾 3N 行窗口内进行、会漏掉更早的匹配行。现从文件尾按
+        # 窗口向前扩展，直到凑够 lines 条匹配或到文件头；窗口两端对齐换行
+        # 边界并丢弃残行，避免把跨窗口截断的行当完整行解析。
+        wanted_level = level.upper() if level else None
         result = []
-        for line in all_lines[-(lines * 3) :]:
-            try:
-                entry = json.loads(line.strip())
-                if level and entry.get("level") != level.upper():
-                    continue
-                result.append(entry)
-            except json.JSONDecodeError:
-                continue
+        with open(log_file, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            file_size = f.tell()
+            window_end = file_size
+            while True:
+                window_start = max(0, window_end - self.TAIL_WINDOW_BYTES)
+                f.seek(window_start)
+                text = f.read(window_end - window_start).decode(
+                    "utf-8", errors="replace"
+                )
+                if window_start > 0:
+                    # 首段可能是上一窗口截断的残行，对齐到下一个换行
+                    newline = text.find("\n")
+                    text = text[newline + 1 :] if newline != -1 else ""
+                if window_end < file_size:
+                    # 末段残行属于下一轮窗口，这里丢弃
+                    newline = text.rfind("\n")
+                    text = text[: newline + 1] if newline != -1 else ""
+                window_entries = []
+                for line in text.splitlines():
+                    if not line.strip():
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if wanted_level and entry.get("level") != wanted_level:
+                        continue
+                    window_entries.append(entry)
+                # 各窗口从尾向头扫描，前插以保持与日志时间顺序一致
+                result = window_entries + result
+                if len(result) >= lines or window_start == 0:
+                    break
+                window_end = window_start
 
         return result[-lines:]

@@ -82,7 +82,7 @@ class H3SpecRoutesMixin:
             return
         self._json({**result, "project": project["name"], "spec": spec, "doc": doc})
 
-    # ── 帮助文档（add-dashboard-help-center D1/D2）─────────────────────
+    # ── SPEC 状态操作 ─────────────────────────────────────────────────
 
 
     def _api_spec_error_clear(self, query) -> dict:
@@ -192,7 +192,11 @@ class H3SpecRoutesMixin:
         if not spec:
             self._error(404, "spec required")
             return
-        result = dashboard_data.freeze_spec(Path(project["path"]), spec)
+        try:
+            result = dashboard_data.freeze_spec(Path(project["path"]), spec)
+        except Exception as e:  # noqa: BLE001 兜底：写回异常不崩溃进程
+            self._error(500, f"freeze spec failed: {e}")
+            return
         if not result.get("found"):
             self._error(404, result.get("error") or "spec not found")
             return
@@ -215,7 +219,11 @@ class H3SpecRoutesMixin:
         if not spec:
             self._error(404, "spec required")
             return
-        result = dashboard_data.unfreeze_spec(Path(project["path"]), spec)
+        try:
+            result = dashboard_data.unfreeze_spec(Path(project["path"]), spec)
+        except Exception as e:  # noqa: BLE001 兜底：写回异常不崩溃进程
+            self._error(500, f"unfreeze spec failed: {e}")
+            return
         if not result.get("found"):
             self._error(404, result.get("error") or "spec not found")
             return
