@@ -710,7 +710,7 @@ export default function SpecDetailPage() {
   const otherSpecs = specList.filter((s) => s.name !== spec);
 
   // 下拉快速切换面板（表格形式）：SPEC 名称（过长截断 + 悬停提示） + 状态标签（statusMeta 同列表页语义）。
-  // 面板宽度上限 300px 且移动端不超出视口（max-width: calc(100vw - 32px)），内容区限高滚动。
+  // 面板宽度上限 360px 且移动端不超出视口（max-width: calc(100vw - 32px)），内容区限高滚动。
   const renderSpecSwitch = () => (
     <div
       className="spec-quick-switch-panel"
