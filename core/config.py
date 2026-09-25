@@ -1346,19 +1346,33 @@ class ConfigLoader:
         if brm not in VALID_BUG_REPAIR_MODES:
             # 校验层已拦截非法值；运行期兜底（直读脏配置的旁路调用）回退缺省
             brm = "inplace"
+
+        # 类型校验 fail-open（code-review item 632b4bb62eb3）：与上方 breaker
+        # 同型，手改 config.yaml 的非数字值（"abc"/嵌套结构/显式 null）此前
+        # 让下方 float()/int() 抛 ValueError/TypeError 而非回退默认。仅兜转换
+        # 失败，各字段既有取值语义不变（stuck_silence/shutdown_drain 的显式 0
+        # 合法、drain 负数仍由 max(0, …) 夹 0），回退值与原缺省逐字一致。
+        def _num(value, default, conv):
+            try:
+                return conv(value)
+            except (TypeError, ValueError):
+                return default
+
         return {
             "enabled": bool(admin.get("enabled", True)),
-            "interval_minutes": float(admin.get("interval_minutes", 5)),
+            "interval_minutes": _num(admin.get("interval_minutes"), 5.0, float),
             "agent_model": admin.get("agent_model") or None,
-            "escalation_cooldown_minutes": float(admin.get("escalation_cooldown_minutes", 60)),
+            "escalation_cooldown_minutes": _num(
+                admin.get("escalation_cooldown_minutes"), 60.0, float
+            ),
             "stuck_threshold_minutes": stuck_seconds / 60.0,
             # add-control-plane-silent-failure-guards D5：孤儿状态（状态无驱动）
             # 探测阈值——缺省 15 分钟（= 3 个 interval_minutes(5) 巡检周期，
             # 与巡检周期整数倍对齐避免漏检），远短于 stuck（run_timeout+600s，
             # 当前约 160 分钟），使「状态无驱动」分钟级可发现。与 stuck 阈值
             # 互不影响（独立键，stuck 仍由 run_timeout 单源派生）。
-            "orphaned_state_threshold_minutes": float(
-                admin.get("orphaned_state_threshold_minutes", 15)
+            "orphaned_state_threshold_minutes": _num(
+                admin.get("orphaned_state_threshold_minutes"), 15.0, float
             ),
             "merge_breaker_threshold": int(breaker),
             # interrupt-recovery-preserve D1：规划性重启排水窗口（秒）；0 = 现行
@@ -1370,10 +1384,12 @@ class ConfigLoader:
             # 是尊重 0 的，口径不一致）。
             "shutdown_drain_seconds": max(
                 0,
-                int(
+                _num(
                     1800
                     if admin.get("shutdown_drain_seconds") is None
-                    else admin["shutdown_drain_seconds"]
+                    else admin["shutdown_drain_seconds"],
+                    1800,
+                    int,
                 ),
             ),
             # add-bug-repair-mode-config：bug-found 修复方式（未配置缺省 inplace）
@@ -1381,7 +1397,9 @@ class ConfigLoader:
             # stuck-signal-hygiene D3/D4：stuck 处置后静默期（分钟）——
             # (spec, signal_type) 最近一次 result∈{resolved, partially-resolved}
             # 处置后，窗口内不产生 stuck 信号（非负护栏，0=不静默）。
-            "stuck_silence_minutes": float(admin.get("stuck_silence_minutes", 120)),
+            "stuck_silence_minutes": _num(
+                admin.get("stuck_silence_minutes"), 120.0, float
+            ),
             # add-daily-self-review：自省配置段（enabled 缺省 false）
             "self_review": cls.get_self_review_config(config),
             # evo-run-failure-classification-circuitbreaker D5：infra 熔断配置
