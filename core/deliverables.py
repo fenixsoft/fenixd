@@ -994,8 +994,8 @@ def is_stale_declaration(entry, project_root) -> bool:
         project_root: 项目根（主树基准）。
 
     Returns:
-        命中陈旧信号返回 True；其余（new/delete/reference/缺字段/判定不可用）
-        返回 False。
+        命中陈旧信号返回 True；new/delete/reference/缺字段恒 False；仅 git 不可用
+        （超时/无法执行）时回退文件系统存在性判定。
     """
     if not isinstance(entry, dict):
         return False
@@ -1003,7 +1003,8 @@ def is_stale_declaration(entry, project_root) -> bool:
     kind = str(entry.get("kind") or "").strip().lower()
     if kind != "modify" or not path:
         return False
-    # 主树 HEAD 存在性：git cat-file -e HEAD:<path>；非仓库/异常回退文件系统存在
+    # 主树 HEAD 存在性：git cat-file -e HEAD:<path>；仅 git 不可用（超时/无法
+    # 执行）才回退文件系统存在性（item 0a451454809b）
     try:
         r = subprocess.run(
             ["git", "-C", str(project_root), "cat-file", "-e", f"HEAD:{path}"],
@@ -1015,9 +1016,10 @@ def is_stale_declaration(entry, project_root) -> bool:
         )
         if r.returncode == 0:
             return False  # 主树 HEAD 存在 → 非陈旧
+        return True  # git 成功执行且 HEAD 无该路径 → 确定性陈旧
     except (subprocess.TimeoutExpired, OSError):
         pass
-    # git 判定不可用：回退文件系统存在性（fail-safe）
+    # git 判定不可用（超时/无法执行）：回退文件系统存在性（fail-safe）
     try:
         return not (Path(project_root) / path).exists()
     except OSError:
