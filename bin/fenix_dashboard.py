@@ -40,6 +40,7 @@ PROJECT_ROOT = _FENIX_DIR.parent if _FENIX_DIR.name == ".fenix" else _FENIX_DIR
 if str(_FENIX_DIR) not in sys.path:
     sys.path.insert(0, str(_FENIX_DIR))
 
+from core.agent_runner.run_files import run_spec_part  # noqa: E402
 from core.dashboard import data as dash_data  # noqa: E402
 from core.dashboard.registry import Registry, DEFAULT_PORT  # noqa: E402
 from core.dashboard.server import serve, STATIC_DIR  # noqa: E402
@@ -144,12 +145,20 @@ def get_active_agents():
                 role = "🔍 verifier"
             elif "Tester" in cmd:
                 role = "🧪 tester"
-            # 提取 SPEC 名
+            # 提取 SPEC 名（code-review item b3eba3031ca5）：命中段交由仓库
+            # 单点解析器 run_spec_part 归一（RUN_ID_AGENT_PREFIXES startswith
+            # 前缀表 + 尾部 attempt/时间戳剥离，admin_monitor._spec_from_run_id
+            # 同款口径），不再链式 split("impl-")/... 逐个分隔词切分——spec 名
+            # 自身含 impl-/verify-/test- 时会被二次切分截断（如
+            # impl-add-test-foo-<ts> 误显示成 foo）。先取 basename：ps 命中段
+            # 多为绝对路径（worktree 目录名 {impl,verify,repair}-<spec>-<ts>
+            # 形态），前缀表只认 startswith。仍属启发式：未知前缀段原样透出
+            # （run_spec_part 泛型兜底），prompt 正文里碰巧含这些子串的词会
+            # 被当作命中段。
             spec = ""
             for part in parts:
                 if "impl-" in part or "verify-" in part or "test-" in part:
-                    spec = part.split("impl-")[-1].split("verify-")[-1].split("test-")[-1]
-                    spec = re.sub(r"-1\d{9}$", "", spec)  # 去掉尾部 run id（纪元秒，10 位）
+                    spec = run_spec_part(part.rsplit("/", 1)[-1])
                     break
             agents.append(
                 {"pid": pid, "cpu": cpu, "mem": mem, "role": role, "spec": spec, "cmd": cmd[:200]}
