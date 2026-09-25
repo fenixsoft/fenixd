@@ -264,7 +264,16 @@ class SpecReviewManager:
                     "dashboard/CLI 解冻——解冻恢复原状态 reviewing，daemon "
                     "自动重派评审；或直接撤销该 spec"
                 ),
-                alert_callback=self.pm_engine._send_human_escalation_alert,
+                # pm_engine None 守卫（code-review item a74a3c85dec1）：CLI 与
+                # Dashboard 均以 SpecReviewManager(proot, sm, None, None, {},
+                # logger) 构造（与 :480/:1182 先例同款），缺守卫会在冻结前取属性
+                # 抛 AttributeError，spec 停在 reviewing 既不冻结也不告警。
+                # freeze_for_human 对 None 回调按静默冻结处理（记 ERROR 审计）。
+                alert_callback=(
+                    self.pm_engine._send_human_escalation_alert
+                    if self.pm_engine is not None
+                    else None
+                ),
                 extra_updates={"reviewer_run": None, "_review_attempts": 0},
             )
             return False
@@ -1099,7 +1108,15 @@ class SpecReviewManager:
                     "排查后经 dashboard/CLI 解冻——解冻恢复原状态 reviewing，"
                     "daemon 自动重派评审；或直接撤销该 spec"
                 ),
-                alert_callback=self.pm_engine._send_human_escalation_alert,
+                # pm_engine None 守卫（code-review item a74a3c85dec1）：与本文件
+                # dispatch_review 耗尽分支及 :480/:1182 先例同款——CLI 形态
+                # pm_engine=None，缺守卫会在冻结前取属性抛 AttributeError。
+                # freeze_for_human 对 None 回调按静默冻结处理（记 ERROR 审计）。
+                alert_callback=(
+                    self.pm_engine._send_human_escalation_alert
+                    if self.pm_engine is not None
+                    else None
+                ),
                 extra_updates={"reviewer_run": None, "_review_attempts": 0},
             )
             self.logger.warning("spec_review", f"评审失败达上限: {spec_name}")
