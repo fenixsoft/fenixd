@@ -205,12 +205,15 @@ def _derive_status(run_result, report) -> str:
 
 
 def _summary_counts(report):
-    """提取 (passed, failed, errors, total)，不可得字段为 None。"""
+    """提取 (passed, failed, errors, total)；缺键/空值/不可转换的字段为 None。"""
     summary = (report or {}).get("summary") or {}
 
     def _num(key):
+        val = summary.get(key)
+        if val is None:
+            return None
         try:
-            return int(summary.get(key, 0) or 0)
+            return int(val)
         except (TypeError, ValueError):
             return None
 
