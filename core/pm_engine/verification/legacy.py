@@ -9,6 +9,64 @@
 from core.state_machine import ENV_BLOCK_ROUNDS_FIELD, VERIFY_INFRA_ROUNDS_FIELD
 
 
+def _redispatch_fresh_verify(pipeline, spec_name, result, reason, warn_reason=""):
+    """stale/foreign re-dispatch 处置的单点收敛（code-review 842cfc9b4447）。
+
+    foreign-role/foreign-stamp、unknown-status+stale、主 stale 护栏三条
+    路径共用同一结局：状态复核 → verified 一次性放行门 → 打回 implemented
+    重派 fresh verify → infra 记账 → warning 日志。状态判据与 error 文案
+    单点维护，防三处演进漏改其一造成行为漂移。
+
+    ``reason``：DEBUG 丢弃消息中的结果标签（foreign-role/
+    unknown-status+stale/stale）；``warn_reason``：warning 日志附带的
+    reason 注记，仅 foreign-role/foreign-stamp 传入（保持既有文案）。
+    """
+    # ── 在飞 verify 结果状态判据（fix-verify-late-result-terminal-clobber D1）──
+    # 结果应用前 spec 已非 testing（终态已收敛 / 并发新 attempt 已接管）
+    # → DEBUG 丢弃，不覆写状态、不重派、不记账 infra（终态 SPEC 记 infra
+    # 是噪音且附带预算豁免对终态无意义）。在飞 run 可长达数十分钟，入口
+    # 判据只保证「派发时是 testing」，不能替代应用时二次复核。
+    # 2026-09-24 事故实证：机械车道已把 SPEC 推到 pushed 终态，在飞 LLM
+    # verifier 42 分钟后完成，结果文件被判 stale 后仍直接覆写 implemented，
+    # 触发终态回退 + 冗余全量重验。
+    _cur = (pipeline._context.state_machine.read_one(spec_name) or {}).get("status", "")
+    if _cur != "testing":
+        pipeline._context.logger.debug(
+            "pm_engine",
+            f"Stale/foreign verify result discarded for '{spec_name}' "
+            f"(run {result.run_id}, current state '{_cur}', result "
+            f"{reason}) — spec no longer in testing, result dropped",
+        )
+        return
+    # ── verified 一次性放行门（judge-rerun-stability R2）──
+    # 已 verified 且场景集未变时，陈旧/异归属残留不得把 verified 打回
+    # implemented 触发整轮重验（裁决仍以 verdict_stability.json 为准）。
+    if pipeline._verified_gate_refuses(spec_name, "implemented"):
+        return
+    pipeline._context.state_machine.update_spec(
+        spec_name,
+        {
+            "status": "implemented",
+            "tester_run": None,
+            "error": "stale/foreign verifier result replayed — re-dispatching fresh verify",
+        },
+    )
+    # evo-infra-failure-budget-exempt R2：结果文件「读错文件」（陈旧/异
+    # spec 归属）属 infra，沿用既有 re-dispatch，同挂预算退款与记账
+    # （否则本路径白耗实现预算且无 infra 记账可观测）。
+    pipeline._record_infra_failure(
+        spec_name,
+        "stale/foreign verifier result replayed",
+        run_id=getattr(result, "run_id", "") or "",
+    )
+    warn_note = f"（reason={warn_reason}）— " if warn_reason else " — "
+    pipeline._context.logger.warning(
+        "pm_engine",
+        f"Stale/foreign verifier result for '{spec_name}'{warn_note}"
+        f"re-dispatching fresh verification",
+    )
+
+
 def _run_legacy_verification(pipeline, spec_name: str):
     """降级方案：使用旧版单体 Verifier Agent。"""
     # ── 在飞 verify 结果状态判据（fix-daemon-lifecycle-races D6）：入口状态
@@ -130,55 +188,18 @@ def _run_legacy_verification(pipeline, spec_name: str):
         # 陈旧/归属护栏（foreign-spec 残留 → re-dispatch）再决定 blocked。
         if not verifier_result.ok:
             if verifier_result.reason in ("foreign-role", "foreign-stamp"):
-                # ── 在飞 verify 结果状态判据（fix-verify-late-result-terminal-clobber D1）──
-                # 结果应用前 spec 已非 testing（终态已收敛 / 并发新 attempt
-                # 已接管）→ DEBUG 丢弃，不覆写状态、不重派、不消耗门禁判定
-                # （在飞 run 可长达数十分钟，入口判据只保证「派发时是
-                # testing」，不能替代应用时二次复核）。
-                _cur = (pipeline._context.state_machine.read_one(spec_name) or {}).get("status", "")
-                if _cur != "testing":
-                    pipeline._context.logger.debug(
-                        "pm_engine",
-                        f"Stale/foreign verify result discarded for '{spec_name}' "
-                        f"(run {result.run_id}, current state '{_cur}', result "
-                        f"{verifier_result.reason}) — spec no longer in testing, "
-                        f"result dropped",
-                    )
-                    return
                 # _read_verdict 已定性：主树共享文件 role≠verifier/缺 role
                 # （implementer 残留 status=success 等）或 spec 戳不符——
                 # 文件可读但归属不明，一律不采信为验证裁决，走 stale/foreign
                 # 护栏 re-dispatch 不 blocked（修复 _verifier_result_is_stale
                 # 的 run_id fail-open：run_id 不匹配 -\d{10,}-a\d+$ 时旧行为
                 # 不判陈旧，残留 status=success 仍落 blocked——add-web-ui
-                # 误判链实证）。已 verified 且场景集未变时放行门继续拒绝
-                # 覆盖（裁决仍以 verdict_stability.json 为准）。
-                if pipeline._verified_gate_refuses(spec_name, "implemented"):
-                    return
-                pipeline._context.state_machine.update_spec(
-                    spec_name,
-                    {
-                        "status": "implemented",
-                        "tester_run": None,
-                        "error": (
-                            "stale/foreign verifier result replayed"
-                            " — re-dispatching fresh verify"
-                        ),
-                    },
-                )
-                # evo-infra-failure-budget-exempt R2：与 unknown-status stale /
-                # 主 stale 护栏同结局路径对齐，「读错文件」属 infra，同挂预算
-                # 退款与记账（否则本路径白耗实现预算且无 infra 记账可观测）。
-                pipeline._record_infra_failure(
-                    spec_name,
-                    "stale/foreign verifier result replayed",
-                    run_id=getattr(result, "run_id", "") or "",
-                )
-                pipeline._context.logger.warning(
-                    "pm_engine",
-                    f"Stale/foreign verifier result for '{spec_name}'"
-                    f"（reason={verifier_result.reason}）— "
-                    f"re-dispatching fresh verification",
+                # 误判链实证）。
+                # 状态复核/verified 放行门/重派/infra 记账单点见
+                # _redispatch_fresh_verify（三处收敛）。
+                _redispatch_fresh_verify(
+                    pipeline, spec_name, result, verifier_result.reason,
+                    warn_reason=verifier_result.reason,
                 )
                 return
             if verifier_result.reason == "unknown-status":
@@ -186,50 +207,10 @@ def _run_legacy_verification(pipeline, spec_name: str):
                 # 或 implementer 残留——走既有陈旧/归属护栏（检测 spec stamp
                 # 不符 / mtime 陈旧），foreign → re-dispatch 不 blocked。
                 if pipeline._verifier_result_is_stale(result, run_result_path, spec_name):
-                    # ── 在飞 verify 结果状态判据（fix-verify-late-result-terminal-clobber D1）──
-                    # 同款复核：非 testing → DEBUG 丢弃，不覆写状态、不重派、
-                    # 不记账 infra（终态 SPEC 记 infra 是噪音且附带预算豁免
-                    # 对终态无意义）。
-                    _cur = (pipeline._context.state_machine.read_one(spec_name) or {}).get("status", "")
-                    if _cur != "testing":
-                        pipeline._context.logger.debug(
-                            "pm_engine",
-                            f"Stale/foreign verify result discarded for '{spec_name}' "
-                            f"(run {result.run_id}, current state '{_cur}', result "
-                            f"unknown-status+stale) — spec no longer in testing, "
-                            f"result dropped",
-                        )
-                        return
-                    # ── verified 一次性放行门（judge-rerun-stability R2）──
-                    # 与 foreign-role/foreign-stamp 块同门：已 verified 且
-                    # 场景集未变时，陈旧/异归属残留不得把 verified 打回
-                    # implemented 触发整轮重验（裁决仍以 verdict_stability
-                    # .json 为准）。
-                    if pipeline._verified_gate_refuses(spec_name, "implemented"):
-                        return
-                    pipeline._context.state_machine.update_spec(
-                        spec_name,
-                        {
-                            "status": "implemented",
-                            "tester_run": None,
-                            "error": (
-                                "stale/foreign verifier result replayed"
-                                " — re-dispatching fresh verify"
-                            ),
-                        },
-                    )
-                    # evo-infra-failure-budget-exempt R2：结果文件「读错文件」
-                    # （陈旧/异 spec 归属）属 infra，沿用既有 re-dispatch，
-                    # 同挂预算退款与记账。
-                    pipeline._record_infra_failure(
-                        spec_name,
-                        "stale/foreign verifier result replayed",
-                        run_id=getattr(result, "run_id", "") or "",
-                    )
-                    pipeline._context.logger.warning(
-                        "pm_engine",
-                        f"Stale/foreign verifier result for '{spec_name}' — "
-                        f"re-dispatching fresh verification",
+                    # stale 命中 → 复用单点 re-dispatch helper（状态复核/
+                    # verified 放行门/重派/infra 记账见 _redispatch_fresh_verify）。
+                    _redispatch_fresh_verify(
+                        pipeline, spec_name, result, "unknown-status+stale",
                     )
                     return
                 # 文件属当前 spec 且 mtime 新鲜，但 status 白名单外 → blocked
@@ -319,47 +300,10 @@ def _run_legacy_verification(pipeline, spec_name: str):
         # 陈旧或异 spec 的判定重放到当前轮次 = 假 bug-found / 假 verified
         # （2026-08-28 improve-failover-model-mapping-ui 09:41 旧判定 12:21 重放实证）。
         if pipeline._verifier_result_is_stale(result, run_result_path, spec_name):
-            # ── 在飞 verify 结果状态判据（fix-verify-late-result-terminal-clobber D1）──
-            # 同款复核：非 testing → DEBUG 丢弃，不覆写状态、不重派、
-            # 不记账 infra。2026-09-24 事故实证：机械车道已把 SPEC 推到
-            # pushed 终态，在飞 LLM verifier 42 分钟后完成，结果文件被判
-            # stale 后仍直接覆写 implemented，触发终态回退 + 冗余全量重验。
-            _cur = (pipeline._context.state_machine.read_one(spec_name) or {}).get("status", "")
-            if _cur != "testing":
-                pipeline._context.logger.debug(
-                    "pm_engine",
-                    f"Stale/foreign verify result discarded for '{spec_name}' "
-                    f"(run {result.run_id}, current state '{_cur}', result "
-                    f"stale) — spec no longer in testing, result dropped",
-                )
-                return
-            # ── verified 一次性放行门（judge-rerun-stability R2）──
-            # 与 foreign-role/foreign-stamp 块同门：已 verified 且场景集
-            # 未变时，陈旧/异 spec 判定重放不得把 verified 打回
-            # implemented 触发整轮重验（裁决仍以 verdict_stability.json
-            # 为准）。
-            if pipeline._verified_gate_refuses(spec_name, "implemented"):
-                return
-            pipeline._context.state_machine.update_spec(
-                spec_name,
-                {
-                    "status": "implemented",
-                    "tester_run": None,
-                    "error": "stale/foreign verifier result replayed — re-dispatching fresh verify",
-                },
-            )
-            # evo-infra-failure-budget-exempt R2：陈旧/异 spec 归属结果文件
-            # 属 infra（沿用既有 re-dispatch），同挂预算退款与记账。
-            pipeline._record_infra_failure(
-                spec_name,
-                "stale/foreign verifier result replayed",
-                run_id=getattr(result, "run_id", "") or "",
-            )
-            pipeline._context.logger.warning(
-                "pm_engine",
-                f"Stale/foreign verifier result for '{spec_name}' — "
-                f"re-dispatching fresh verification",
-            )
+            # 陈旧/异 spec 判定重放命中 → 复用单点 re-dispatch helper
+            # （状态复核/verified 放行门/重派/infra 记账见
+            # _redispatch_fresh_verify）。
+            _redispatch_fresh_verify(pipeline, spec_name, result, "stale")
             return
         if verifier_status == "bug-found":
             # 验证报告产物闸门（add-verify-report-gate，legacy 路径同闸门）
