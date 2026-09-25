@@ -1320,6 +1320,19 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
                 f"in [1, 100]: {_msc!r}"
             )
 
+    # code-review item 1b1ed55c771c：agents.token_budget_millions 前置校验
+    # （非负数 int/float，排除 bool——bool 是 int 子类；0=关闭是合法语义，
+    # 其余任意类型一律拒绝不落盘，同 D7「非法值直接拒绝」契约）
+    if isinstance(config_patch.get("agents"), dict):
+        _tbm = config_patch["agents"].get("token_budget_millions")
+        if _tbm is not None and (
+            isinstance(_tbm, bool) or not isinstance(_tbm, (int, float)) or _tbm < 0
+        ):
+            return fail(
+                f"agents.token_budget_millions must be a non-negative number "
+                f"(0=关闭): {_tbm!r}"
+            )
+
     # add-daily-self-review：前端提交的 self_review patch 后端校验（非法直接拒绝，
     # 不静默忽略——spec「非法输入（如 25:00）被前端与后端双重校验拒绝」）。
     if isinstance(config_patch.get("self_review"), dict):
@@ -1754,6 +1767,15 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
                 drl = agents["daily_run_limit"]
                 if not _is_int_not_bool(drl) or drl < 0:
                     raise ValueError(f"agents.daily_run_limit must be a non-negative integer: {drl}")
+            if "token_budget_millions" in agents:
+                tbm = agents["token_budget_millions"]
+                # code-review item 1b1ed55c771c：非负数（int/float，排除 bool），
+                # 0=关闭合法；与前置校验同规则，兜底防绕过前置直连写盘
+                if isinstance(tbm, bool) or not isinstance(tbm, (int, float)) or tbm < 0:
+                    raise ValueError(
+                        f"agents.token_budget_millions must be a non-negative number "
+                        f"(0=关闭): {tbm!r}"
+                    )
             if "impl_run_budget" in agents:
                 irb = agents["impl_run_budget"]
                 # open-impl-budget-ceiling：上限由 agents.impl_run_budget_max 决定
