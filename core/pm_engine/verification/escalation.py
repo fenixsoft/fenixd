@@ -1473,6 +1473,70 @@ def _handle_verdict_env_exemption_inconclusive(
     return True
 
 
+def _env_exempt_disposition_is_stale(
+    pipeline, store, spec_name: str, disposition: dict
+) -> bool:
+    """放行处置记录时效校验（code-review 9fb05143a336）。
+
+    ``latest_resolved_disposition`` 只按（spec, signal_type, result）取最近
+    一条 resolved 记录，无时效约束——早先 episode 的放行可被后续与新环境
+    问题无关的轮次无限复用。此处要求处置记录 created 晚于本 spec 最近一条
+    inconclusive_loop SIGNAL 的 created（admin 放行总是晚于其要解除的那轮
+    升级信号，故「不晚于最近信号」即陈旧放行）：
+
+      - 本 spec 无 inconclusive_loop SIGNAL 记录（未达升级阈值 / 写入静默
+        降级 / 存量记录被 MAX_RECORDS 清理）时取不到本轮信号时刻，无法证明
+        陈旧——按可放行近似处理（近似锚点，在此说明）：比「永久卡死合法
+        放行路径」风险更低；达升级阈值的轮次恒有信号，无限复用主通道已被
+        本校验关闭；
+      - 处置记录 created 不可解析时按陈旧处置（fail-closed 到重验，与握手
+        守卫「绝不 fail-open 到 verified」同 philosophy）。
+
+    Returns: True=陈旧放行（不得复用）；False=新鲜或无法证明陈旧。
+    """
+    from core.admin_store import SIGNAL
+
+    def _parse_ts(value):
+        try:
+            dt = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            return None
+        if dt.tzinfo is None:
+            # 朴素时间戳（人工修补/外部工具写入）按 UTC 归一（与 AdminStore 一致）
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+
+    try:
+        latest_signal_created = ""
+        for rec in store.read_all():
+            if rec.get("kind") != SIGNAL:
+                continue
+            if rec.get("signal_type") != "inconclusive_loop":
+                continue
+            if rec.get("spec") != spec_name:
+                continue
+            created = str(rec.get("created") or "")
+            if created > latest_signal_created:
+                latest_signal_created = created
+    except Exception as e:
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"豁免放行时效校验扫 inconclusive_loop SIGNAL 失败 '{spec_name}'"
+            f"（按陈旧放行处置）: {e}",
+        )
+        return True
+
+    if not latest_signal_created:
+        return False
+    disposition_dt = _parse_ts(disposition.get("created"))
+    if disposition_dt is None:
+        return True
+    signal_dt = _parse_ts(latest_signal_created)
+    if signal_dt is None:
+        return False
+    return disposition_dt <= signal_dt
+
+
 def _handle_env_exemption_handshake(
     pipeline, spec_name: str, report: dict | None = None
 ) -> bool:
@@ -1488,8 +1552,11 @@ def _handle_env_exemption_handshake(
          （回 implemented、tester_run 清空、``_inconclusive_attempts`` 加一、
          attempts≥2 并行度降档、重验排队；穷尽走既有 B7 SIGNAL 通道），
          返回 True（调用方 MUST NOT 再落 verified）；
-      2. 查得放行记录 → 报告保留处置回链后返回 False，放行走既有 verified
-         链（豁免清单作为依据合法生效）。
+      2. 查得放行记录且其 created 晚于本 spec 最近一条 inconclusive_loop
+         SIGNAL（时效校验，``_env_exempt_disposition_is_stale``，防早先
+         episode 的陈旧放行被后续轮次复用）→ 报告保留处置回链后返回 False，
+         放行走既有 verified 链（豁免清单作为依据合法生效）；陈旧放行按
+         ① 同路径处置。
 
     级二不命中（无豁免 / 全绿 / 含 product-bug / test-defect / flaky 断言）
     返回 False 零改动直通——洗白门禁（``_env_whitewash_gate``，覆盖场景级
@@ -1516,14 +1583,26 @@ def _handle_env_exemption_handshake(
         )
         disposition = None
 
-    if disposition is None:
-        pipeline._context.logger.warning(
-            "pm_engine",
-            f"env 豁免握手拦截 '{spec_name}'：本轮验证失败全部被裁决归类 env"
-            f"（env 断言 {verdict['env_entries']} 条、blocked-env 场景 "
-            f"{len(verdict['blocked_env_scenarios'])} 个），无 admin 放行处置"
-            f"记录 — 转 inconclusive 重验，不落 verified",
-        )
+    disposition_stale = disposition is not None and _env_exempt_disposition_is_stale(
+        pipeline, store, spec_name, disposition
+    )
+    if disposition is None or disposition_stale:
+        if disposition_stale:
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"env 豁免握手拦截 '{spec_name}'：查得的 admin 放行处置记录"
+                f"（{disposition.get('created') or '时间未知'}）不晚于本轮 "
+                f"inconclusive_loop 信号，属早先 episode 的陈旧放行，不复用 — "
+                f"转 inconclusive 重验，不落 verified",
+            )
+        else:
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"env 豁免握手拦截 '{spec_name}'：本轮验证失败全部被裁决归类 env"
+                f"（env 断言 {verdict['env_entries']} 条、blocked-env 场景 "
+                f"{len(verdict['blocked_env_scenarios'])} 个），无 admin 放行处置"
+                f"记录 — 转 inconclusive 重验，不落 verified",
+            )
         if report is None:
             report = load_report(pipeline._context.project_root, spec_name) or {}
         return _handle_verdict_env_exemption_inconclusive(
