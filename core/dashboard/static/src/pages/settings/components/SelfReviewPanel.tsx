@@ -1,6 +1,6 @@
 import { Alert, Button, Card, Form, Input, Switch, Tabs, TimePicker, Typography, message } from 'antd';
 import dayjs from 'dayjs';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Markdown from 'react-markdown';
 import remarkBreaks from 'remark-breaks';
 import remarkGfm from 'remark-gfm';
@@ -42,6 +42,8 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
   // 期间按钮可继续点击会发出重叠保存请求（并发写同一 config/todo 文件，
   // 结果取决于响应到达顺序）——saving 期间置 loading/disabled 并在入口短路。
   const [saving, setSaving] = useState(false);
+  // 上次回填的 self_review 序列化值（配合下方 effect 的回填门控）
+  const lastSelfReviewBackfillRef = useRef('');
 
   useEffect(() => {
     if (!project) return;
@@ -76,6 +78,14 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
   };
 
   useEffect(() => {
+    // 回填门控（code-review item a8786c075c4f，与 ApprovalModePanel 同形态）：
+    // config.self_review 引用变化但内容相同时（本面板或其它面板保存后父组件
+    // setConfig 重载）不无条件 setFieldsValue——否则会静默丢弃用户尚未保存的
+    // 开关/时间修改。「同步用户级设置」等显式操作带来的是真正内容变化，
+    // 序列化值不同，仍会回填覆盖。
+    const key = JSON.stringify(initialValues);
+    if (key === lastSelfReviewBackfillRef.current) return;
+    lastSelfReviewBackfillRef.current = key;
     form.setFieldsValue(initialValues);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [config.self_review, form]);
