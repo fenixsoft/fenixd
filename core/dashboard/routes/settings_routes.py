@@ -93,12 +93,14 @@ class H5SettingsRoutesMixin:
         # 把「无 project 查询参数」与「project 名不在 registry（笔误/项目已删/
         # registry TTL 缓存过期）」折叠成 None——POST 两种情形都落入 None 分支，
         # 会把项目级值静默并入用户级 ~/.fenix/config.yaml、覆盖用户全局配置。
-        # 先看参数是否在场：缺席才允许默认用户级；在场但解析失败一律 400 拒绝，
-        # 不写任何 scope。
+        # 先看参数是否在场：缺席才允许默认用户级；在场但解析失败一律 404 拒绝
+        # （资源不存在语义，与同文件 _api_config_get / _api_prompts_post 及共用
+        # 助手 _project_query_or_error 收敛，code-review item a538758669c5），
+        # 不写任何 scope。缺参不经过此分支（缺参=合法用户级写入，非错误）。
         project_param = query.get("project", [None])[0]
         project = self._project_from_query(query) if project_param else None
         if project_param and (project is None or not project.get("exists")):
-            self._error(400, "project not found")
+            self._error(404, "project not found")
             return
         if project is None:
             # 用户模式：写 ~/.fenix/config.yaml
@@ -134,9 +136,18 @@ class H5SettingsRoutesMixin:
         body = self._read_json_body()
         if body is None:
             return
-        project = self._project_from_query(query)
-        if project is None or not project.get("exists"):
-            self._error(400, "project not found")
+        # 缺参 / 未知项目区分（口径同上 _api_config_post）：_project_from_query
+        # 把「无 project 查询参数」与「project 名不在 registry」折叠成 None。
+        # 缺参 400（sync-from-user 必须挂到具体项目）；在场但解析不到 404
+        # （资源不存在语义，与同文件 _api_config_get / _api_prompts_post 及共用
+        # 助手 _project_query_or_error 收敛，code-review item a538758669c5）。
+        project_param = query.get("project", [None])[0]
+        project = self._project_from_query(query) if project_param else None
+        if project_param and (project is None or not project.get("exists")):
+            self._error(404, "project not found")
+            return
+        if project is None:
+            self._error(400, "缺少 project 参数（配置同步必须挂到具体项目）")
             return
         page = body.get("page")
         if not isinstance(page, str) or not page:
