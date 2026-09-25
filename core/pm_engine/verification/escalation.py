@@ -1262,6 +1262,278 @@ def _write_inconclusive_loop_signal(
         return False
 
 
+def _verdict_env_exemption_level2(
+    pipeline, spec_name: str, report: dict | None = None
+) -> dict:
+    """级二判定：judge 裁决后「失败全部为环境性」判据（design D4）。
+
+    判定输入为裁决产物字段（report.json，judge 增强后的断言级 triage），
+    不重算原始 summary，MUST NOT 用「豁免清单条数 == failed + blocked_env」
+    等式（豁免清单是断言级行，条数与场景数不对齐——add-session-composer
+    事故形态 7 条断言 ≠ 2 failed + 1 blocked_env）。
+
+    判据：全部非 pass/passed 场景的失败断言中——
+      - 无 product-bug / test-defect 条目（含之不命中，走既有 bug-found，
+        env 部分照常留豁免记录）；
+      - 且无 flaky / 未知归类条目（flaky 维持既有豁免放行不转重验；triage
+        与 classification 皆缺的失败场景按未知保守处理，不命中）；
+      - 且至少一条 env 归类——全绿轮无豁免对象，不命中（零改动直通）。
+    blocked_env 形态场景天然视为环境性（与级一判据同语义）。场景缺
+    assertion_triage 时回退场景级 classification。
+
+    Returns:
+        {"hit": bool, "env_entries": int, "blocked_env_scenarios": [sid],
+         "non_env": [{"scenario", "classification", "source"}]}
+    """
+    from core.verdict_check import load_report, triage_entries
+
+    if report is None:
+        report = load_report(pipeline._context.project_root, spec_name)
+    env_entries = 0
+    blocked_env_scenarios: list = []
+    non_env: list = []
+    for sc in (report or {}).get("scenarios") or []:
+        if not isinstance(sc, dict):
+            continue
+        status = sc.get("status")
+        if status in ("pass", "passed"):
+            continue
+        sid = str(sc.get("scenario_id") or sc.get("id") or "?")
+        if status == "blocked-env":
+            blocked_env_scenarios.append(sid)
+            env_entries += 1
+            continue
+        triage = triage_entries(sc)
+        if triage:
+            for t in triage:
+                cls = t.get("classification")
+                if cls == "env":
+                    env_entries += 1
+                else:
+                    non_env.append(
+                        {
+                            "scenario": sid,
+                            "classification": str(cls),
+                            "source": "assertion",
+                        }
+                    )
+            continue
+        cls = sc.get("classification")
+        if cls == "env":
+            env_entries += 1
+        else:
+            non_env.append(
+                {
+                    "scenario": sid,
+                    "classification": str(cls),
+                    "source": "scenario",
+                }
+            )
+    return {
+        "hit": bool(blocked_env_scenarios or env_entries) and not non_env,
+        "env_entries": env_entries,
+        "blocked_env_scenarios": blocked_env_scenarios,
+        "non_env": non_env,
+    }
+
+
+def _handle_verdict_env_exemption_inconclusive(
+    pipeline, spec_name: str, report: dict, verdict: dict
+) -> bool:
+    """级二命中后的 inconclusive 处置（与 _handle_env_blocked_inconclusive 同源）。
+
+    共享 ``_inconclusive_attempts`` 计数（两级同一计数器，避免双计数漂移——
+    阶段 2.6 命中即 return，单轮内两级互斥、无并发写者）、
+    ``verify_engine.inconclusive_max_attempts`` 上限、
+    ``inconclusive_escalate_attempts`` 升级阈值（B7 SIGNAL 通道）与
+    attempts≥2 并行度降档。恒返回 True（调用方不得再落 verified）。
+    """
+    summary = (report or {}).get("summary") or {}
+    blocked_env = int(summary.get("blocked_env", 0) or 0)
+    spec = pipeline._context.state_machine.read_one(spec_name) or {}
+    try:
+        attempts = int(spec.get("_inconclusive_attempts", 0) or 0) + 1
+    except (TypeError, ValueError):
+        attempts = 1
+    max_attempts = int(
+        pipeline._context.config_reader("verify_engine.inconclusive_max_attempts", 3) or 3
+    )
+    escalate_attempts = int(
+        pipeline._context.config_reader("verify_engine.inconclusive_escalate_attempts", 4) or 4
+    )
+    env_note = (
+        f"验证失败全部被裁决归类 env（env 断言 {verdict.get('env_entries', 0)} 条、"
+        f"blocked-env 场景 {len(verdict.get('blocked_env_scenarios') or [])} 个）"
+    )
+
+    # ── B7 升级通道（复用既有 SIGNAL 写入，add-verdict-credibility-gate D6）──
+    if attempts >= escalate_attempts:
+        pipeline._write_inconclusive_loop_signal(spec_name, attempts, blocked_env, report or {})
+        pipeline._context.logger.error(
+            "pm_engine",
+            f"'{spec_name}' 连续 {attempts} 轮验证失败均被裁决豁免为环境性，"
+            f"已达升级阈值 {escalate_attempts}，SIGNAL 已写 admin store，"
+            f"暂停自动重验等待人工处置（豁免清单不得作为 verified 依据）",
+        )
+        pipeline._context.state_machine.update_spec(
+            spec_name,
+            {
+                "status": "implemented",
+                "tester_run": None,
+                "error": (
+                    f"连续 {attempts} 轮验证失败均被裁决归类 env（豁免握手拦截），"
+                    f"无 admin 放行处置记录，已呼叫 Administrator 核查验证环境；"
+                    f"人工放行（处置落库）后豁免方可生效，或清 _inconclusive_attempts "
+                    f"恢复自动重验"
+                ),
+                "_inconclusive_attempts": attempts,
+                "_dispatch_backoff_until": (
+                    int(datetime.now(timezone.utc).timestamp())
+                    + _SCENARIO_REPAIR_REVERIFY_DELAY_SECONDS
+                ),
+            },
+        )
+        return True
+
+    if attempts < max_attempts:
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"'{spec_name}' 本轮{env_note}（豁免握手拦截，不直接放行），"
+            f"verdict=inconclusive，第 {attempts}/{max_attempts} 次重验",
+        )
+        updates = {
+            "status": "implemented",
+            "tester_run": None,
+            "error": (
+                f"环境性失联（裁决豁免握手）：{env_note}，"
+                f"第 {attempts}/{max_attempts} 次重验（inconclusive 不判 fail）"
+            ),
+            "_inconclusive_attempts": attempts,
+        }
+        # add-verify-parallel-backoff / design D1：与级一同款降档——attempts≥2
+        # 起按配置值逐轮减半向下取整、下限 1，下一轮 VerifyEngine 构造时读取。
+        if attempts >= 2:
+            base = int(pipeline._context.config_reader("verify_engine.max_parallel", 5) or 5)
+            updates["_verify_parallel_override"] = max(1, base >> (attempts - 1))
+        pipeline._context.state_machine.update_spec(spec_name, updates)
+        pipeline._context.enqueue(spec_name, "verifier")
+        return True
+
+    # 连续 ≥max_attempts 轮：停止自动重验，暴露错误等待人工（与级一同款收口）
+    pipeline._context.logger.error(
+        "pm_engine",
+        f"'{spec_name}' 连续 {attempts} 轮验证失败均被裁决豁免为环境性，"
+        f"暂停自动重验，等待 admin 处置或人工放行（豁免清单不得作为 "
+        f"verified 依据）",
+    )
+    pipeline._context.state_machine.update_spec(
+        spec_name,
+        {
+            "status": "implemented",
+            "tester_run": None,
+            "error": (
+                f"连续 {attempts} 轮验证失败均被裁决归类 env（豁免握手拦截），"
+                f"无 admin 放行处置记录，请人工核查验证环境或放行；"
+                f"不产生 bug-found 信号"
+            ),
+            "_inconclusive_attempts": attempts,
+            "_dispatch_backoff_until": (
+                int(datetime.now(timezone.utc).timestamp())
+                + _SCENARIO_REPAIR_REVERIFY_DELAY_SECONDS
+            ),
+        },
+    )
+    return True
+
+
+def _handle_env_exemption_handshake(
+    pipeline, spec_name: str, report: dict | None = None
+) -> bool:
+    """裁决 env 豁免握手（verdict-env-exemption-handshake，judge 采纳尾段）。
+
+    级二命中（裁决后失败全部为环境性，见 ``_verdict_env_exemption_level2``）
+    时 MUST NOT 直接落 verified——豁免不得自我批准：
+
+      1. AdminStore 无该 SPEC 放行处置记录（kind=DISPOSITION，经
+         ``latest_resolved_disposition`` 按 spec 查询；dashboard/CLI 人工
+         放行动作落库后同一锚点可查）→ 转与
+         ``_handle_env_blocked_inconclusive`` 同源的 inconclusive 处置
+         （回 implemented、tester_run 清空、``_inconclusive_attempts`` 加一、
+         attempts≥2 并行度降档、重验排队；穷尽走既有 B7 SIGNAL 通道），
+         返回 True（调用方 MUST NOT 再落 verified）；
+      2. 查得放行记录 → 报告保留处置回链后返回 False，放行走既有 verified
+         链（豁免清单作为依据合法生效）。
+
+    级二不命中（无豁免 / 全绿 / 含 product-bug / test-defect / flaky 断言）
+    返回 False 零改动直通——洗白门禁（``_env_whitewash_gate``，覆盖场景级
+    classification=env 形态）与既有 verified 流转不受影响；全绿机械快道
+    （0 失败 0 警告）无豁免对象，同样零改动直通。
+
+    守卫读 store 异常时按「无放行记录」处置（fail-closed 到重验，绝不
+    fail-open 到 verified）。
+    """
+    from core.admin_store import AdminStore
+    from core.verdict_check import load_report, save_report
+
+    verdict = _verdict_env_exemption_level2(pipeline, spec_name, report)
+    if not verdict["hit"]:
+        return False
+
+    store = AdminStore(pipeline._context.project_root, pipeline._context.logger)
+    try:
+        disposition = store.latest_resolved_disposition(spec_name, "inconclusive_loop")
+    except Exception as e:
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"豁免握手守卫读 AdminStore 失败 '{spec_name}'（按无放行记录处置）: {e}",
+        )
+        disposition = None
+
+    if disposition is None:
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"env 豁免握手拦截 '{spec_name}'：本轮验证失败全部被裁决归类 env"
+            f"（env 断言 {verdict['env_entries']} 条、blocked-env 场景 "
+            f"{len(verdict['blocked_env_scenarios'])} 个），无 admin 放行处置"
+            f"记录 — 转 inconclusive 重验，不落 verified",
+        )
+        if report is None:
+            report = load_report(pipeline._context.project_root, spec_name) or {}
+        return _handle_verdict_env_exemption_inconclusive(
+            pipeline, spec_name, report, verdict
+        )
+
+    # 放行记录存在：豁免合法生效 — 报告保留处置回链后放行走既有 verified 链
+    backlink = {
+        "anchor": "admin_disposition",
+        "signal_type": disposition.get("signal_type"),
+        "result": disposition.get("result"),
+        "created": disposition.get("created"),
+        "id": disposition.get("id"),
+        "action_taken": (disposition.get("action_taken") or "")[:300],
+        "note": "env 豁免经 admin 放行处置确认后生效（verdict-env-exemption-handshake）",
+    }
+    rep = report if isinstance(report, dict) else load_report(
+        pipeline._context.project_root, spec_name
+    )
+    if isinstance(rep, dict):
+        rep["admin_disposition_backlink"] = backlink
+        try:
+            save_report(pipeline._context.project_root, spec_name, rep)
+        except OSError as e:
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"豁免处置回链写回 report.json 失败 '{spec_name}'（不阻断放行）: {e}",
+            )
+    pipeline._context.logger.warning(
+        "pm_engine",
+        f"env 豁免握手放行 '{spec_name}'：查得 admin 放行处置记录"
+        f"（{disposition.get('created') or '时间未知'}），豁免清单作为 verified "
+        f"依据生效，报告已保留处置回链",
+    )
+    return False
+
+
 def _schedule_scenario_repair_reverify(pipeline, spec_name: str) -> None:
     """首次预算耗尽后排程一次确定性重验（fix-recovery-path-blockers D3）。
 

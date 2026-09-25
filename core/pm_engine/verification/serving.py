@@ -13,6 +13,7 @@ import re
 import subprocess
 import time
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 
 from core.proc_utils import find_free_port
@@ -499,6 +500,151 @@ def _current_instance_base_url(pipeline, spec_name: str) -> str:
     except Exception:
         pass
     return ""
+
+
+# ── serving dist 新鲜度探针（fix-verdict-env-exemption-admin-handshake 2.1/2.2）──
+# add-session-composer 2026-09-25 事故：verify prepare 的 build 在 serving
+# worktree 侧跑，刷不到主树常驻被测实例——merge-back 重建是唯一刷新点且
+# 失败仅 logger.error，主树 dist 陈旧无人现场重建，空态文案类断言整轮伪
+# env 失败被裁决豁免放行。探针把「产物新鲜」变成开跑前置条件，重建动作
+# 自 merge-back 单点扩散到 serving 层（design D3：构建契约与 merge-back
+# 同源，不在 serving 层硬编码 npm run build）。
+
+
+def _dist_probe_scenario_sid(sc) -> str:
+    """场景元素 → sid（TestScenario 对象 / dict 双形态归一，防御性兜底空串）。"""
+    if isinstance(sc, dict):
+        return str(sc.get("scenario_id") or sc.get("id") or "")
+    to_dict = getattr(sc, "to_dict", None)
+    if callable(to_dict):
+        try:
+            d = to_dict()
+            if isinstance(d, dict):
+                return str(d.get("scenario_id") or d.get("id") or "")
+        except Exception:  # noqa: BLE001
+            pass
+    return str(getattr(sc, "scenario_id", "") or getattr(sc, "id", "") or "")
+
+
+def _probe_dist_freshness(pipeline, spec_name: str) -> str:
+    """verify run 前 dist 新鲜度探针（serving-dist-freshness-probe）。
+
+    比对口径（design D3）：dashboard static src 树最新 mtime vs served dist
+    入口产物（``dist/index.html``）mtime——src 较新即判滞后。不做内容哈希
+    （全树哈希开销大且 vite 产物 hash 文件名会误报）。探针在验证场景开跑前
+    执行一次（每次 run 至多一次），场景间不重复。
+
+    直通形态（零动作零副作用，恒返回空串）：
+      - 被测实例为 worktree 自建形态（``_contract_static_servers`` 缓存条目
+        带 wt_path：prepare 已在本 worktree 构建，产物天然新鲜）；
+      - 无被测实例登记（纯 cli 轮 / serving 未建立）；
+      - dashboard static src 树不存在（被测项目非 dashboard 形态，探针无对象）；
+      - served dist 入口产物不存在（从未构建，交既有 prepare 流程兜底，
+        不在本探针制造新失败模式）；
+      - dist 新鲜（构建时间不早于 src 最新内容时间）。
+
+    Returns:
+        空串 = 探针通过（新鲜或直通），可以开跑场景；
+        非空 = 探针判滞后且自动重建失败的错误现场（构建失败尾部日志）——
+        调用方 MUST NOT 以陈旧 dist 静默开跑，按环境性失联语义处置。
+    """
+    from core.worktree_manager import DASHBOARD_STATIC_ROOT
+    from core.worktree_manager.dist_conflicts import run_dist_build
+
+    # ── 被测实例形态判定：worktree 自建形态直通 ──
+    # 缓存形态：worktree 条目为 dict 且带 wt_path；主树 static 共享实例
+    # （键 "main"）缓存的是 server 对象本身；主树 command 实例为 dict 无
+    # wt_path。取本轮实例与 _current_instance_base_url 同优先级（spec 优先，
+    # 回落 "main"）。
+    cache = pipeline.__dict__.get("_contract_static_servers", {})
+    entry = cache.get(spec_name)
+    if not isinstance(entry, dict):
+        entry = cache.get("main")
+    if isinstance(entry, dict) and entry.get("wt_path"):
+        return ""  # worktree 自建：本轮产物即 prepare 构建，探针天然新鲜
+
+    project_root = Path(pipeline._context.project_root)
+    src_root = project_root / DASHBOARD_STATIC_ROOT / "src"
+    if not src_root.is_dir():
+        return ""  # dashboard static src 不存在：非该形态，探针无对象
+    dist_entry = project_root / DASHBOARD_STATIC_ROOT / "dist" / "index.html"
+    if not dist_entry.exists():
+        return ""  # served dist 从未构建：交既有 prepare 流程兜底
+
+    src_latest = max(
+        p.stat().st_mtime for p in src_root.rglob("*") if p.is_file()
+    )
+    try:
+        dist_mtime = dist_entry.stat().st_mtime
+    except OSError:
+        return ""  # mtime 不可读：不制造新失败模式，直通
+    if dist_mtime >= src_latest:
+        return ""  # dist 新鲜：零动作直通（无重建、无额外副作用）
+
+    # ── 滞后：先自动重建再开跑（构建契约与 merge-back 同源）──
+    pipeline._context.logger.warning(
+        "pm_engine",
+        f"dist 新鲜度探针判滞后 '{spec_name}'（src 最新 mtime {src_latest:.0f} "
+        f"> dist/index.html mtime {dist_mtime:.0f}）— 自动重建 dist 后开跑",
+    )
+    error_detail: list = []
+    if run_dist_build(
+        project_root, DASHBOARD_STATIC_ROOT, pipeline._context.logger,
+        error_detail=error_detail,
+    ):
+        pipeline._context.logger.info(
+            "pm_engine",
+            f"dist 自动重建成功 '{spec_name}' — served dist 已含最新 src，开跑场景",
+        )
+        return ""
+    detail = (error_detail[-1] if error_detail else "").strip() or "构建失败（无尾部日志）"
+    err = f"dist 新鲜度探针判滞后且自动重建失败，拒绝以陈旧 dist 静默开跑：{detail}"
+    pipeline._context.logger.error("pm_engine", f"dist 重建失败 '{spec_name}': {err}")
+    return err
+
+
+def _dist_probe_block_report(pipeline, spec_name: str, scenarios, probe_err: str) -> dict:
+    """探针重建失败的环境性失联报告（重建失败 MUST NOT 静默开跑）。
+
+    合成全批 blocked-env 报告（每场景 ``env_probe_detail`` 携带构建失败
+    尾部日志，与引擎 env 门探针失联轮同形态），交既有阶段 2.6
+    ``_handle_env_blocked_inconclusive`` 处置——该轮按 blocked-env/inconclusive
+    路径回 implemented 重验（重验轮探针先行，重建成功即真实复跑），穷尽后
+    走既有 B7 升级通道呼叫 admin，供豁免握手与 admin 升级链消费。
+    """
+    from core.verdict_check import save_report
+
+    blocked = [
+        {
+            "scenario_id": sid or f"scenario-{i + 1}",
+            "status": "blocked-env",
+            "env_blocked": True,
+            "env_probe_detail": probe_err,
+        }
+        for i, sid in enumerate(_dist_probe_scenario_sid(sc) for sc in scenarios)
+    ]
+    report = {
+        "spec": spec_name,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "summary": {
+            "total": len(blocked),
+            "passed": 0,
+            "warnings": len(blocked),
+            "failed": 0,
+            "errors": 0,
+            "blocked_env": len(blocked),
+        },
+        "scenarios": blocked,
+        "dist_probe": {"stale": True, "error": probe_err},
+    }
+    try:
+        save_report(pipeline._context.project_root, spec_name, report)
+    except OSError as e:
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"dist 探针阻断报告写盘失败 '{spec_name}'（不影响本轮处置）: {e}",
+        )
+    return report
 
 
 def _ensure_app_reachable(pipeline, spec_name: str) -> tuple:
