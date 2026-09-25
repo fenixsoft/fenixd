@@ -973,6 +973,38 @@ class TestOrchestratorGuards(unittest.TestCase):
         self.assertEqual(prog["activation_id"], "see-above") if False else None
         self.assertTrue(prog["activation_id"], "链身份已持久化")
 
+    def test_chain_total_grows_on_midchain_new_items(self):
+        """链中途新审查新增 open 条目 → 分母随「done+open」活口径增长。
+
+        用户事故（2026-09-25）：D8 链身份把 total 定格在链起点快照，链在飞
+        期间新审查轮追加的问题会被本链继续处置，但分母不涨——done 追平定格
+        total 后前端钳 100% 恒满，新增条目的进度不可见。
+        """
+        from core.code_fix import CodeFixOrchestrator, read_progress, write_progress
+
+        proot = _make_project_root()
+        _write_items(proot, {
+            "a": _item("a", status="resolved", first_seen_at="2026-01-01T00:00:00Z"),
+            "b": _item("b", status="resolved", first_seen_at="2026-02-01T00:00:00Z"),
+            # c/d/e：链启动后新审查轮追加的 open 条目
+            "c": _item("c", first_seen_at="2026-03-01T00:00:00Z"),
+            "d": _item("d", first_seen_at="2026-04-01T00:00:00Z"),
+            "e": _item("e", first_seen_at="2026-05-01T00:00:00Z"),
+        })
+        _write_verify_yaml(proot)
+        # 链在飞快照：链起点 open 共 2 条且已核销（旧口径 total 定格为 2）
+        write_progress(proot, running=True, phase="fixing", total=2, done=2,
+                       batch_no=1, activation_id="act-mid")
+        cfg = {"admin": {"code_review_fix": {"enabled": True, "batch_size": 1}}}
+        runner = _FakeRunner(proot)
+        orch = CodeFixOrchestrator(runner, proot, config=cfg, logger=None)
+        orch.checkpoint()  # 同步跑完：c/d/e 三批全核销
+        prog = read_progress(proot)
+        self.assertEqual(prog["done"], 5)
+        # 旧口径：total 沿用定格的 2 → done(5) > total(2)，前端恒钳 100%
+        self.assertEqual(
+            prog["total"], 5, "链中途新增条目 MUST 推高分母（done+open 活口径）")
+
     def test_worktree_create_failed_no_dispatch(self):
         """create() 返回 None → 不派 run、不合回、进度 failed、条目保持 open。"""
         from core.code_fix import CodeFixOrchestrator, read_progress

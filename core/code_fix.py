@@ -1381,7 +1381,7 @@ class CodeFixOrchestrator:
                     )
                 return {"triggered": False, "reason": "no_open_items"}
 
-            # 进度链身份（D8）：同链沿用 total/activation_id，新链重算。判定
+            # 进度链身份（D8）：同链沿用 activation_id，新链重算。判定
             # 前移到选批之前（selfheal）：新链启动先释放预算内失败档案并重置
             # chain_skipped——放在选批之后会让「上一链全跳过收敛」后的下一
             # checkpoint 恒走选批为空早退，新链分支不可达（车道锁死）。
@@ -1392,10 +1392,17 @@ class CodeFixOrchestrator:
             prev = prev_chain
             if prev.get("running") and prev.get("activation_id"):
                 activation_id = prev["activation_id"]
-                total = prev.get("total") or total_open
                 # 本轮链边界重试刚核销的延迟批条目并入 done（prev 读点在重试
                 # 之前，陈旧 done 若直传 dispatch 写点会覆掉重试的累加）。
                 done = (prev.get("done") or 0) + deferred_done
+                # 分母活口径（2026-09-25 用户事故）：total 曾沿用链起点定格
+                # 快照——链在飞期间新审查轮追加的 open 条目会被本链继续处置
+                # （select_batch 全 open 池选取），但分母不涨，done 追平定格
+                # total 后前端恒 100%。改为 done+open：核销转移（done+1 且
+                # open-1）不变分母，新 arrivals 推高、外部核销缩小；
+                # deferred_done 已并入 done 且对应条目已离开 open 池
+                # （total_open 统计在合并之后），口径自洽不双计。
+                total = done + total_open
                 batch_no = prev.get("batch_no") or 0
                 chain_skipped = list(prev.get("chain_skipped") or [])
             else:

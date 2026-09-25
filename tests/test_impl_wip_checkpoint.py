@@ -158,7 +158,13 @@ def make_daemon(monkeypatch, tmp_path, *, restart_request, drain_seconds,
         lambda code=0: (_ for _ in ()).throw(SystemExit(code)))
 
     daemon = fenixd.FenixDaemon()
-    daemon.config = {"admin": {"shutdown_drain_seconds": drain_seconds}}
+    # pipeline-throughput D3 起 restart 排水窗口单源 agents.run_drain_max_seconds
+    # （缺省 60）——只配旧键 admin.shutdown_drain_seconds 会让替身 drain_wait
+    # 按缺省真自旋 60s（锚点 A 四用例每轮回归烧 4 分钟），两键同步取传入值。
+    daemon.config = {
+        "admin": {"shutdown_drain_seconds": drain_seconds},
+        "agents": {"run_drain_max_seconds": drain_seconds},
+    }
     daemon.logger = FakeLogger()
     daemon.state_machine = FakeSM(sm_entries)
     daemon.worktree_manager = wm or FakeWM()

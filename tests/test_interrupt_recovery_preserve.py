@@ -144,7 +144,9 @@ class FakeRunner:
 
     def drain_wait(self, timeout: float):
         self.drain_calls.append(timeout)
-        deadline = time.time() + max(0.0, timeout)
+        # 替身在飞 run 永不在窗内自然终态，全窗自旋只烧真时间不产生观感差异
+        # （断言只看 drain_calls 记录的窗口值）——真实自旋封顶 0.2s。
+        deadline = time.time() + min(max(0.0, timeout), 0.2)
         while time.time() < deadline:
             remaining = self.running_run_ids()
             if not remaining and not self.running_lane_ids():
@@ -1042,7 +1044,13 @@ class TestFirstRoundEndToEnd:
             lambda code=0: (_ for _ in ()).throw(SystemExit(code)))
 
         daemon = fenixd.FenixDaemon()
-        daemon.config = {"admin": {"shutdown_drain_seconds": 1}}
+        # 排水窗口单源 agents.run_drain_max_seconds（pipeline-throughput D3）：
+        # 只配 admin 旧键时窗口回退缺省 60s，替身 drain_wait 真自旋 60s。
+        # e2e 意图是「排水立即超时走保全路径」，窗口取亚秒值。
+        daemon.config = {
+            "admin": {"shutdown_drain_seconds": 1},
+            "agents": {"run_drain_max_seconds": 0.05},
+        }
         daemon.logger = FakeLogger()
         daemon.state_machine = FakeSM({"demo": {}})  # STATE branch 未写
         daemon.worktree_manager = wm

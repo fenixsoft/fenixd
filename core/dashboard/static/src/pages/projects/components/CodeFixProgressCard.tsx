@@ -19,6 +19,12 @@
 //   缺省态（total=0 / 从未激活）不回调，避免与 QualityTab mount 加载重复；
 // - total=0 或读取失败静默降级（不渲染、不阻断页签既有布局）；连续读取失败
 //   达上限后停轮询（4xx/5xx 常态下 2s 空转没有意义），且 MUST NOT 回调刷新。
+// - 切后台恢复（2026-09-25 用户事故）：移动端切后台会掐断在飞 fetch，连续
+//   3 次失败即触发上述停轮询+红条，而 effect 依赖不变 → 回前台后永不恢复
+//   （对照组 QualityTab 的审查进度靠 SSE 重连+30s 心跳自愈，本组件无冗余
+//   驱动）。补 visibilitychange 监听：回前台即重置 retryKey 重启轮询
+//   （effect 入口本就 setReadFailed(false) 并重置错误计数），顺带获得回前台
+//   立即补刷一帧（对齐 list.tsx/overview 的 visibilitychange 补刷模式）。
 import { useEffect, useRef, useState } from 'react';
 import { Card, Space, Typography } from 'antd';
 import ProgressBarTile from './ProgressBarTile';
@@ -82,6 +88,17 @@ export default function CodeFixProgressCard(
   { project, active, onSettled, restartKey, onRunningChange }: CodeFixProgressCardProps,
 ) {
   const [progress, setProgress] = useState<CodeReviewFixProgress | null>(null);
+  // 回前台重启信号（2026-09-25 切后台停轮询事故）：递增即重启主轮询 effect
+  // ——连续读取失败停轮询是「宁停不错」的终态，但移动端切后台掐 fetch 造成
+  // 的失败是环境性的，回前台必须可恢复（否则红条+冻结到手动刷新页面）。
+  const [retryKey, setRetryKey] = useState(0);
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') setRetryKey((k) => k + 1);
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, []);
   // 连续读取失败停轮询后的展示标记：此时最后一帧可能仍是 running=true，
   // MUST NOT 以 active 进度条无限展示陈旧「进行中」（ocr 收尾审查）。
   const [readFailed, setReadFailed] = useState(false);
@@ -161,8 +178,9 @@ export default function CodeFixProgressCard(
       if (timer !== null) clearTimeout(timer);
     };
     // restartKey 入依赖（code-review item 62f764043d88）：QualityTab 触发
-    // 成功后递增，重启已停的轮询接管新链展示。
-  }, [active, project, restartKey]);
+    // 成功后递增，重启已停的轮询接管新链展示。retryKey 同理：回前台递增，
+    // 恢复被切后台掐死的轮询（2026-09-25 事故）。
+  }, [active, project, restartKey, retryKey]);
 
   if (!progress) {
     return null;
