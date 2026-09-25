@@ -465,10 +465,21 @@ class SpecReviewManager:
                 # 语义重复）。
                 return True
             # 转 ready 并触发实现调度（fix-observability-gaps 2.2：自动来源标注）
-            self.state_machine.transition(
+            # transition 返回值校验：读态守卫（:445）与 transition 之间存在
+            # TOCTOU 窗口，并发写者可能已把 spec 推进到别的状态（或冻结剥离）
+            # 致非法转移返回 False。失败时保留 reviewer_run 锚点与重试计数
+            # （交由收口重试/审计），不继续清字段、不触发实现调度——与
+            # re_review 的 transition 校验同款。
+            success = self.state_machine.transition(
                 spec_name, "ready",
                 trigger_run_id=run_id, agent_type="spec-review", channel="auto",
             )
+            if not success:
+                self.logger.warning(
+                    "spec_review",
+                    f"评审通过但 transition 到 ready 失败，保留锚点待重试: {spec_name}",
+                )
+                return False
             self.state_machine.update_spec(
                 spec_name,
                 {
