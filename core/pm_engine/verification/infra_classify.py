@@ -195,9 +195,12 @@ def _detect_uniform_verify_failure(pipeline, spec_name: str, report: dict) -> bo
     fail_total = failed + errors
     if passed != 0 or fail_total < 3:
         return False
-    # 非 PASS 场景即纳入哨（fail/failed/error），纯 error 轮也要覆盖
+    # 仅失败态场景纳入哨（fail/failed/error，与 summary 的 failed+errors 同口径），
+    # warning/blocked-env 不混入；纯 error 轮也要覆盖
     failed_scns = [
-        s for s in (report.get("scenarios") or []) if s.get("status") not in ("pass", "passed")
+        s
+        for s in (report.get("scenarios") or [])
+        if s.get("status") in ("fail", "failed", "error")
     ]
     if len(failed_scns) < fail_total:
         return False  # 报告口径不一致，不哨

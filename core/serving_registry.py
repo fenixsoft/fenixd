@@ -117,6 +117,8 @@ class ServingRegistry:
                     "spec": spec,
                     "worktree": str(worktree) if worktree else "",
                     "registered_at": int(time.time()),
+                    # 进程身份快照（防 pid 复用误杀，见 _harvest_identity_ok）
+                    "start_ticks": _proc_start_ticks(pid),
                 }
             )
             return True
@@ -172,6 +174,70 @@ def pid_alive(pid: int) -> bool:
         return False
 
 
+def _proc_start_ticks(pid: int):
+    """/proc/<pid>/stat 的 starttime 字段（系统启动后的 tick 数），读不到返回 None。
+
+    pid + starttime 唯一确定一个进程实例：原进程退出后 pid 被系统复用时，
+    新进程的 starttime 必然不同——以此锚定登记项的收割目标（对 exec/argv
+    变化免疫，starttime 在 fork 时即固定）。
+    """
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as f:
+            data = f.read().decode("utf-8", "replace")
+    except OSError:
+        return None
+    # comm 字段可含空格与括号：从最后一个 ')' 之后起算（其后首项是字段 3
+    # state），starttime 为字段 22 → 相对 state 的第 20 项。
+    tail = data.rpartition(")")[2].split()
+    if len(tail) < 20:
+        return None
+    try:
+        return int(tail[19])
+    except ValueError:
+        return None
+
+
+def _harvest_identity_ok(entry: dict, pid: int) -> bool:
+    """收割前身份核对（防 pid 复用误杀，纪律同 worktree_manager/locks.py）。
+
+    pid_alive 命中只说明「该 pid 有主」；daemon 周期性清扫拉长了「原进程
+    已退出、pid 被复用给无关进程」的暴露窗口，此时对进程组 SIGTERM/SIGKILL
+    会误杀。双信号任一成立才允许收割：
+
+    1. starttime 精确锚定：register 时快照的 /proc starttime（entry 的
+       ``start_ticks``）与当前读数一致；
+    2. worktree 路径锚定：登记 worktree 非空且 /proc cmdline 或 cwd
+       （realpath 归一）引用该目录——覆盖无 starttime 快照的旧格式登记项
+       （cmdline/cwd 双通道同 locks.py 的 _pid_in_project_worktrees /
+       _kill_worktree_strays 归属核对范式）。
+
+    有快照却读不到当前读数（非 Linux 无 /proc 等）→ 不匹配（宁可少杀）。
+    两信号皆不可得（旧格式登记项且 worktree 为空、或非 Linux）→ 放行收割
+    保持既有行为：登记制收割是该形态（兜底 spawn 登记空 worktree）唯一的
+    孤儿清理通道，保守少杀等于永久放弃清算；新登记项一律带 starttime
+    快照，pid 复用主风险面已封。
+    """
+    recorded = entry.get("start_ticks")
+    if isinstance(recorded, int) and recorded > 0:
+        return _proc_start_ticks(pid) == recorded
+    wt_text = str(entry.get("worktree") or "")
+    if wt_text:
+        wt_real = os.path.realpath(wt_text)
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                argv_text = f.read().replace(b"\0", b" ").decode("utf-8", "replace")
+        except OSError:
+            argv_text = ""
+        if wt_text in argv_text or wt_real in argv_text:
+            return True
+        try:
+            cwd_real = os.path.realpath(os.readlink(f"/proc/{pid}/cwd"))
+        except OSError:
+            return False
+        return cwd_real == wt_real or cwd_real.startswith(wt_real + os.sep)
+    return True
+
+
 def kill_process_group(pid: int) -> bool:
     """进程组 SIGTERM → 短等待 → SIGKILL 兜底（同 CommandVerifyServer.stop 语义）。
 
@@ -224,9 +290,18 @@ def sweep(project_root, logger=None, is_spec_in_flight=None) -> int:
         if alive and in_flight:
             continue  # 属主 spec 在飞，保留
         if alive:
-            # 进程仍存活但属主 spec 不在飞：收割进程组再移除登记
-            kill_process_group(pid)
-            harvested += 1
+            # 进程仍存活但属主 spec 不在飞：核对身份后收割进程组再移除登记
+            # （pid 复用防误杀：身份不匹配只移除登记，不动无关进程组）
+            if _harvest_identity_ok(entry, pid):
+                kill_process_group(pid)
+                harvested += 1
+            elif logger:
+                logger.warning(
+                    "serving_registry",
+                    f"skip harvest pid={pid} (spec={spec or '-'}) identity "
+                    f"mismatch — pid likely reused; removed registry entry "
+                    f"without killing",
+                )
         reg.remove(pid, spec)
     if harvested and logger:
         logger.warning(

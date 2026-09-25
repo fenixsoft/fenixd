@@ -497,7 +497,7 @@ class StateParser:
             # 追加内部状态字段（_ 前缀，如 _retry_count/_merge_fp/_merge_streak），
             # 使其跨 daemon 重启持久化（fix-fenix-token-waste：熔断计数依赖它）
             for key, val in entry.items():
-                if key.startswith("_") and key != "updated":
+                if key.startswith("_"):
                     if val is None:
                         val = "null"
                     lines.append(f"- {key}: {_escape_state_value(val)}")
@@ -1070,7 +1070,7 @@ class StateMachine:
 
         add-freeze-stop-inflight-agents 2.2（保真锚点）：冻结时若该 spec 当前
         status 在 INTERRUPTED_STATES（implementing/testing/reviewing），把
-        branch / implementer_run / reviewer_run 现值一并写入同一次 update_spec
+        branch / implementer_run / reviewer_run 现值一并写入同一次锁内原子写
         ——MUST NOT 因冻结清空这些锚点，否则在飞 attempt 被冻结终止后（轮询环
         冻结检查）解冻续做判定（_frozen_hold + 保留分支）因锚点已失只能降级为
         从零重派。当前 freeze_spec 只写 {status, frozen, error}、本身不清锚点，
@@ -1083,12 +1083,28 @@ class StateMachine:
             FROZEN_FIELD: True,
             "error": error,
         }
-        entry = self.read_one(spec_name) or {}
-        if entry.get("status") in INTERRUPTED_STATES:
-            for _anchor in ("branch", "implementer_run", "reviewer_run"):
-                if entry.get(_anchor) is not None:
-                    updates[_anchor] = entry.get(_anchor)
-        return self.update_spec(spec_name, updates)
+        # 锚点快照在 .STATE.md.lock 锁内基于最新条目取值（code-fix
+        # d266d19c4860）：锁外 read_one 快照与落盘之间存在竞态窗口——其他写者
+        # （如恢复清空重建路径）若已把锚点清为 None，锁外旧值会在本写中复活，
+        # 解冻续做判定据此拿到陈旧锚点。收进 _mutate_locked 的锁内回调后与
+        # update_spec 的原子读改写范式对齐；单条目写语义（冻结剥离/取消保持/
+        # updated 刷新）复用 _apply_updates_entry，无第二份实现。
+        applied: dict = {}
+
+        def _mutate(specs):
+            entry = specs.get(spec_name) or {}
+            if entry.get("status") in INTERRUPTED_STATES:
+                for _anchor in ("branch", "implementer_run", "reviewer_run"):
+                    if entry.get(_anchor) is not None:
+                        updates[_anchor] = entry.get(_anchor)
+            found = self._apply_updates_entry(specs, spec_name, updates, applied)
+            return found, found
+
+        if not self._mutate_locked(_mutate):
+            self.logger.warning("state_machine", f"SPEC not found: {spec_name}")
+            return False
+        self._log_update_applied(spec_name, applied)
+        return True
 
     def freeze_for_human(
         self,

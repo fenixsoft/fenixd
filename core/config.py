@@ -547,10 +547,12 @@ class ConfigLoader:
                     f"window risks being killed mid-drain"
                 )
 
-        # fix-provider-transient-backoff（D6）：瞬断治理五键防御式校验。非法值不
-        # 拒绝加载——由 get_transient_config / 消费方回退缺省（Migration Plan 回滚
-        # 语义 = 配置键置空），仅对「值类型极端非法以致无法安全解析」打 ERROR。
-        # 写法对齐 loads 阶段只拦截明显损坏的类型（字符串数字歧义由规范化兜底）。
+        # fix-provider-transient-backoff（D6）：瞬断治理五键防御式校验。极端非法
+        # 值在 loads 阶段硬拒绝（raise ValueError；热更新校验失败即保留旧值）：
+        # 数值键为 bool / 非数值 / 负数，schedule 为非 str 非 list——并非「仅打
+        # ERROR 不拒绝加载」。数值合法域的宽松形态（整值浮点 30.0）与绕过本段
+        # 校验的运行时直读，才由 get_transient_config / _normalize_transient_seconds
+        # 归一或回退缺省（Migration Plan 回滚语义 = 配置键置空）作第二道防线。
         for field in (
             "transient_redispatch_delay_seconds",
             "transient_break_threshold",

@@ -206,8 +206,9 @@ class ApiRunner(VerifyRunner):
 
         content = None
         json_body = None
+        sniff_fallback_text = False
         if body:
-            if body_type == "json" or (not body_type and str(body).lstrip().startswith(("{", "["))):
+            if body_type == "json":
                 try:
                     json_body = json.loads(body)
                 except json.JSONDecodeError:
@@ -218,6 +219,17 @@ class ApiRunner(VerifyRunner):
                         "url": url,
                         "error": f"body 非合法 JSON: {body[:100]}",
                     }
+            elif not body_type and str(body).lstrip().startswith(("{", "[")):
+                # 未声明 body_type 时的首字符嗅探：解析失败不再判整步失败，
+                # 降级按 content 原文发送——body 以 {/[ 开头不代表一定是 JSON
+                # （如文本型载荷 `{a: 1}`、日志样张），作者本意可能就是发原文；
+                # 如需强制 JSON 语义应显式声明 body_type: json。嗅探成功与
+                # 显式声明的路径行为均不变。
+                try:
+                    json_body = json.loads(body)
+                except json.JSONDecodeError:
+                    content = body
+                    sniff_fallback_text = True
             else:
                 content = body
 
@@ -291,6 +303,7 @@ class ApiRunner(VerifyRunner):
             "status": resp.status_code,
             "latency_ms": latency_ms,
             "detail": f"{method} {url} → {resp.status_code}"
+            + ("（JSON 嗅探失败已按原文发送）" if sniff_fallback_text else "")
             + ("（响应体已截断 64KB）" if truncated else ""),
         }
 

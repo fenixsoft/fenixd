@@ -37,6 +37,12 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
   // 切换纯前端状态，两页签共享草稿无损
   const [todoView, setTodoView] = useState<'edit' | 'preview'>('preview');
 
+  // 保存重入守卫（code-review item c8b75672cecb，与 ApprovalModePanel
+  // item 589c1c98c5a4 同形态）：handleSave 是异步双段提交（配置 + todo.md），
+  // 期间按钮可继续点击会发出重叠保存请求（并发写同一 config/todo 文件，
+  // 结果取决于响应到达顺序）——saving 期间置 loading/disabled 并在入口短路。
+  const [saving, setSaving] = useState(false);
+
   useEffect(() => {
     if (!project) return;
     let cancelled = false;
@@ -75,32 +81,40 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
   }, [config.self_review, form]);
 
   const handleSave = async () => {
-    let ok = false;
-    try {
-      const values = await form.validateFields();
-      ok = await onSave({
-        self_review: {
-          enabled: values.enabled,
-          run_at: values.run_at.format('HH:mm'),
-          read_todo: values.read_todo,
-        },
-      });
-    } catch {
-      // 校验失败：antd 已在表单内渲染 explain-error 提示
+    if (saving) {
       return;
     }
-    // 配置保存成功后连调 /api/todo 保存 todo.md（同一「保存」动作的两段提交；
-    // 配置失败不连带覆写 todo.md）。成功后回读磁盘，兼作原「重新加载」语义
-    if (!project || !ok) return;
+    setSaving(true);
     try {
-      await saveTodo(project, todoDraft);
-      const d = await getTodo(project);
-      setTodoDraft(d.content);
-      setTodoExists(d.exists);
-    } catch (e) {
-      const errorMessage = e instanceof Error ? e.message : String(e);
-      message.error(`todo.md 保存失败：${errorMessage}`);
-      console.error('Failed to save todo.md:', e);
+      let ok = false;
+      try {
+        const values = await form.validateFields();
+        ok = await onSave({
+          self_review: {
+            enabled: values.enabled,
+            run_at: values.run_at.format('HH:mm'),
+            read_todo: values.read_todo,
+          },
+        });
+      } catch {
+        // 校验失败：antd 已在表单内渲染 explain-error 提示
+        return;
+      }
+      // 配置保存成功后连调 /api/todo 保存 todo.md（同一「保存」动作的两段提交；
+      // 配置失败不连带覆写 todo.md）。成功后回读磁盘，兼作原「重新加载」语义
+      if (!project || !ok) return;
+      try {
+        await saveTodo(project, todoDraft);
+        const d = await getTodo(project);
+        setTodoDraft(d.content);
+        setTodoExists(d.exists);
+      } catch (e) {
+        const errorMessage = e instanceof Error ? e.message : String(e);
+        message.error(`todo.md 保存失败：${errorMessage}`);
+        console.error('Failed to save todo.md:', e);
+      }
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -234,7 +248,7 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
         )}
       </Form>
       <div style={{ textAlign: 'right', marginTop: 24 }}>
-        <Button type="primary" onClick={handleSave} data-testid="self-review-save-btn">
+        <Button type="primary" onClick={handleSave} loading={saving} disabled={saving} data-testid="self-review-save-btn">
           保存
         </Button>
       </div>

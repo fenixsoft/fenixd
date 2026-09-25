@@ -2155,19 +2155,28 @@ class VerificationPipeline:
                         break
                     time.sleep(self._PARALLEL_PLAN_WAIT_POLL_SECONDS)
                 if marker.get("status") == "dispatched":
-                    # 超时（或 run 死亡未写标记）：取消在飞 run、隔离半成品、
-                    # 转串行重出（既有回落通道）。
-                    lane.stop(spec_name, "并行出题等待超时，取消后转串行重出")
-                    lane.quarantine(spec_name, "testing 等待并行出题超时，半成品隔离")
-                    lane.write_marker(
-                        spec_name, {"status": "discarded", "reason": "wait_timeout"}
-                    )
-                    self._context.logger.warning(
-                        "pm_engine",
-                        f"并行出题等待超时 '{spec_name}' — 已取消在飞 run 并隔离"
-                        f"半成品，转串行重出",
-                    )
-                    return True
+                    # 超时出口同样重读一次标记（与 run 死亡分支同款防护）：run
+                    # 可能在最后一次轮询读取与超时判定之间刚写出 completed 标记，
+                    # 按最新状态分流，仅确仍 dispatched 才取消并隔离，否则落下
+                    # 走产物消费/回落通道。
+                    marker = lane.read_marker(spec_name) or {}
+                    if marker.get("status") == "dispatched":
+                        # 超时（或 run 死亡未写标记）：取消在飞 run、隔离半成品、
+                        # 转串行重出（既有回落通道）。
+                        lane.stop(spec_name, "并行出题等待超时，取消后转串行重出")
+                        lane.quarantine(
+                            spec_name, "testing 等待并行出题超时，半成品隔离"
+                        )
+                        lane.write_marker(
+                            spec_name,
+                            {"status": "discarded", "reason": "wait_timeout"},
+                        )
+                        self._context.logger.warning(
+                            "pm_engine",
+                            f"并行出题等待超时 '{spec_name}' — 已取消在飞 run 并"
+                            f"隔离半成品，转串行重出",
+                        )
+                        return True
                 status = marker.get("status")
             if status == "completed":
                 # ── 产物就绪：过既有校验（可解析 + load_scenarios 验收）→ 短路 ──

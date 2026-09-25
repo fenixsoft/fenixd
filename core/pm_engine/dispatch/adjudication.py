@@ -1872,16 +1872,35 @@ class VAdjudicationMixin:
                     # 3.2/3.3 文本改写（relocate_declared_path）；已无该条目
                     # （实现方先行对齐）走 3.6 凭据登记。非陈日走既有 typo 修正。
                     if is_stale_declaration(entry, self._pm.project_root):
-                        # 改写前快照 tasks.md 全文（code-review item 9aab1d5262d0）：
-                        # 旧实现在 _relocate_or_register **之后**读取并同时赋给
-                        # before/after，导致 before == after、改写前内容不可考。
-                        # 先拍 before，改写后再读 after，审计 diff 才有意义。
-                        try:
-                            audit_before = Path(eff_spec_dir, "tasks.md").read_text(
-                                encoding="utf-8"
+                        # 凭据登记路径判别（code-review item ca3447e2d676）：与
+                        # _relocate_or_register 内判据同源（fix-relocation-
+                        # writeback-layer Task 2.3）——生效声明已无该条目、或
+                        # 声明来源为分支版本无落盘位置（source == "branch"，
+                        # spec_dir=None，eff_spec_dir 此时只是主树回退目录）时
+                        # 走 3.6 凭据登记，不改任何 tasks.md。此路径下文件级
+                        # before/after 恒相等，落 dispute 审计会呈现「声明已
+                        # 改写」假象——diff 改记凭据回执形态，不做文件快照。
+                        cred_only = not (
+                            any(
+                                isinstance(e, dict) and e.get("path") == m
+                                for e in eff_entries
                             )
-                        except (OSError, UnicodeDecodeError):
-                            audit_before = ""
+                            and effective_resolved.get("source")
+                            in ("worktree", "main")
+                            and bool(effective_resolved.get("spec_dir"))
+                        )
+                        if not cred_only:
+                            # 改写前快照 tasks.md 全文（code-review item
+                            # 9aab1d5262d0）：旧实现在 _relocate_or_register
+                            # **之后**读取并同时赋给 before/after，导致
+                            # before == after、改写前内容不可考。先拍 before，
+                            # 改写后再读 after，审计 diff 才有意义。
+                            try:
+                                audit_before = Path(
+                                    eff_spec_dir, "tasks.md"
+                                ).read_text(encoding="utf-8")
+                            except (OSError, UnicodeDecodeError):
+                                audit_before = ""
                         ok = self._relocate_or_register(
                             spec_name,
                             result,
@@ -1893,17 +1912,29 @@ class VAdjudicationMixin:
                         if not ok:
                             verdict_by_element[m] = {"verdict": "unclear"}
                             continue
-                        # 改写后文本（失败回退空串，diff 仍可反映「改写前非空」）
-                        try:
-                            after_text = Path(eff_spec_dir, "tasks.md").read_text(
-                                encoding="utf-8"
-                            )
-                        except (OSError, UnicodeDecodeError):
-                            after_text = ""
-                        diff_by_element[m] = {
-                            "before": audit_before,
-                            "after": after_text,
-                        }
+                        if cred_only:
+                            # 凭据登记回执（未发生 tasks.md 文本改写）：与
+                            # register_relocation_credential 落册记录同要素
+                            # （old_path/new_path/source），便于审计对账；
+                            # MUST NOT 记 before/after 恒等文件级 diff。
+                            diff_by_element[m] = {
+                                "type": "credential",
+                                "old_path": m,
+                                "new_path": actual_path,
+                                "source": "judge-actual-path",
+                            }
+                        else:
+                            # 改写后文本（失败回退空串，diff 仍可反映「改写前非空」）
+                            try:
+                                after_text = Path(
+                                    eff_spec_dir, "tasks.md"
+                                ).read_text(encoding="utf-8")
+                            except (OSError, UnicodeDecodeError):
+                                after_text = ""
+                            diff_by_element[m] = {
+                                "before": audit_before,
+                                "after": after_text,
+                            }
                         # Task 3.2：陈日重定位（文本改写路径）同样复检读取
                         # 一致性——改写落层与守卫读取基准错层时不判成功（D3
                         # 不变量同款：修正被执行 ⇔ 下一次守卫读取能看到修正）。
@@ -2079,8 +2110,20 @@ class VAdjudicationMixin:
                             verdict_data.get("verdicts") if verdict_data else executed_verdicts
                         ),
                         "executed_verdicts": executed_verdicts,
+                        # 凭据登记条目（type=credential，未发生 tasks.md 文本
+                        # 改写）原样透传回执要素——MUST NOT 投影成 before/after
+                        # （凭据路径无文本变化，恒等 diff 会呈现「声明已改写」
+                        # 假象，code-review item ca3447e2d676）；真实文本改写
+                        # 保持既有投影形状。
                         "diff": {
-                            k: {"before": d.get("before"), "after": d.get("after")}
+                            k: (
+                                dict(d)
+                                if d.get("type") == "credential"
+                                else {
+                                    "before": d.get("before"),
+                                    "after": d.get("after"),
+                                }
+                            )
                             for k, d in diff_by_element.items()
                         },
                     }

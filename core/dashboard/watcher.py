@@ -434,6 +434,7 @@ class FileWatcher:
         # 正常增长：基线对所有活跃 run 持续维护（status 转换广播不依赖订阅，
         # 且未订阅 run 也需跟踪 size，保证订阅后首轮增量起点正确）
         status = self._classify(run_file)
+        advanced = False
 
         if self.hub.is_watched(run_id):
             # 仅被订阅的 run 才读取新增字节并解析事件。先读增量、成功后才推进
@@ -442,9 +443,11 @@ class FileWatcher:
             # 重读同一区间，避免这段事件被永久跳过（item 522789f55ab8）。
             new_events = dashboard_data.read_run_events_between(proot, run_id, prev_size)
             if new_events is not None:
+                advanced = True
                 self._run_base[key] = {"size": size, "status": status}
         else:
             new_events = []
+            advanced = True
             self._run_base[key] = {"size": size, "status": status}
 
         if new_events:
@@ -457,8 +460,10 @@ class FileWatcher:
                     "events": new_events,
                 }
             )
-        if status != prev["status"]:
-            # 状态转换（running→done/error）：run 元数据/时间轴需刷新
+        if advanced and status != prev["status"]:
+            # 状态转换（running→done/error）：run 元数据/时间轴需刷新。
+            # 与基线推进绑定：读取失败窗口内保留旧基线，不重复广播同一转换，
+            # 待下轮重读成功、基线推进后补发一次。
             self.hub.broadcast(
                 {
                     "project": name,

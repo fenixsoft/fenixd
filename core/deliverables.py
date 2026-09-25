@@ -982,11 +982,11 @@ def check_declaration_shrinkage(
 
 
 def is_stale_declaration(entry, project_root) -> bool:
-    """陈日声明确定性信号（D4）：仅 ``kind == "modify"`` 且路径在主树 HEAD 不存在。
+    """陈旧声明确定性信号（D4）：仅 ``kind == "modify"`` 且路径在主树 HEAD 不存在。
 
     ``new`` 恒 False（基线期望本就是不存在，未落地 new 缺件走既有缺件处置与
     收缩防护，MUST NOT 被强制转入重定位通道）；``delete``/``reference`` 恒 False
-    （反判存在性 / 软校验不参与陈日判定）。零语义推断——只认「主树 HEAD 无该路径」
+    （反判存在性 / 软校验不参与陈旧判定）。零语义推断——只认「主树 HEAD 无该路径」
     这一确定性事实（参考 ``classify_unsatisfiable`` 的排除形态处理）。
 
     Args:
@@ -994,7 +994,7 @@ def is_stale_declaration(entry, project_root) -> bool:
         project_root: 项目根（主树基准）。
 
     Returns:
-        命中陈日信号返回 True；其余（new/delete/reference/缺字段/判定不可用）
+        命中陈旧信号返回 True；其余（new/delete/reference/缺字段/判定不可用）
         返回 False。
     """
     if not isinstance(entry, dict):
@@ -1014,14 +1014,14 @@ def is_stale_declaration(entry, project_root) -> bool:
             timeout=_GIT_READ_TIMEOUT_SECONDS,
         )
         if r.returncode == 0:
-            return False  # 主树 HEAD 存在 → 非陈日
+            return False  # 主树 HEAD 存在 → 非陈旧
     except (subprocess.TimeoutExpired, OSError):
         pass
     # git 判定不可用：回退文件系统存在性（fail-safe）
     try:
         return not (Path(project_root) / path).exists()
     except OSError:
-        # 判定不可用且无法证明缺失 → 视为存在（不误判陈日）
+        # 判定不可用且无法证明缺失 → 视为存在（不误判陈旧）
         return False
 
 
@@ -1075,7 +1075,7 @@ def register_relocation_credential(
 
     Args:
         spec_name: spec 名。
-        old_path: 陈日旧路径（基线登记路径）。
+        old_path: 陈旧旧路径（基线登记路径）。
         new_path: 替代路径（实现分支 HEAD 真实存在）。
         source: 来源标注（如 "relocated" / "judge-actual-path" / "mechanical-basename"）。
         run_id: 触发 run id。
@@ -1847,7 +1847,7 @@ def is_drift_candidate(entry, project_root, branch, merge_base=None) -> dict:
     与孤儿预分类并列且互斥（孤儿=零历史命中；漂移=历史命中+目标候选存在）。
     命中漂移特征须同时满足（任一不成立 → 非漂移，fail-open 回既有通道）：
     1. ``kind == modify`` 且主树 HEAD 无该路径（复用 ``is_stale_declaration``
-       陈日信号——new/delete/reference 形态无「曾作为文件存在过」的漂移语义）；
+       陈旧信号——new/delete/reference 形态无「曾作为文件存在过」的漂移语义）；
     2. 实现分支 HEAD 也无该路径（分支已落地 → 无缺件，无对齐必要）；
     3. git 历史对该路径有命中（``git log --all -- <path>`` 非空——曾作为文件
        存在过，缺失更可能是拆包/改名漂移，区别于零引用孤儿）。
@@ -1862,7 +1862,7 @@ def is_drift_candidate(entry, project_root, branch, merge_base=None) -> dict:
         merge_base: merge-base 提交（可选；缺省时按需计算一次供候选定位）。
 
     Returns:
-        ``{"drift": bool, "evidence": {...}}``。evidence 含陈日信号、分支 HEAD
+        ``{"drift": bool, "evidence": {...}}``。evidence 含陈旧信号、分支 HEAD
         存在性、git 历史命中摘要、候选定位线索（``candidates``/``merge_base``）。
     """
     path = str((entry or {}).get("path") or "").strip()
@@ -1870,7 +1870,7 @@ def is_drift_candidate(entry, project_root, branch, merge_base=None) -> dict:
     evidence: dict = {"path": path, "kind": kind}
     if not path or kind != "modify":
         return {"drift": False, "evidence": evidence}
-    # 条件 1：陈日信号（modify 且主树 HEAD 无该路径）
+    # 条件 1：陈旧信号（modify 且主树 HEAD 无该路径）
     if not is_stale_declaration(entry, project_root):
         return {"drift": False, "evidence": evidence}
     evidence["stale"] = True

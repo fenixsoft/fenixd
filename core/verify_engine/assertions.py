@@ -449,6 +449,23 @@ class AssertionRunner:
         timeout_ms = int(a.get("timeout", 3000))
         interval_ms = int(a.get("interval", 200))
 
+        # 非法正则是确定性错误：_text_matches 内 re.search 每轮重抛 re.error，
+        # 会被下方 except 当作「元素尚未渲染」的临时态空转至超时，故进轮询前预检。
+        if mode == "regex":
+            try:
+                re.compile(expected)
+            except re.error as e:
+                return {
+                    "type": "text_match",
+                    "layer": 3,
+                    "selector": selector,
+                    "expected": expected,
+                    "actual": "",
+                    "mode": mode,
+                    "pass": False,
+                    "error": f"非法正则: {e}",
+                }
+
         deadline = time.monotonic() + timeout_ms / 1000
         actual = ""
         passed = False

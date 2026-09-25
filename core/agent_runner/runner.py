@@ -4830,7 +4830,8 @@ class AgentRunner:
         if not spec_name or not error:
             return error
         # 框架自身终止排除（supervision 超时/轮次上限强杀，错误文本为
-        # `Timeout after …` / `Max turns …`，runner.py:2833/2874 收口）。
+        # `Timeout after …` / `Max turns …`，见 _run_claude 内
+        # timeout_error / turn_limit_error 赋值处收口）。
         # 真实超时/强杀路径异常不带 exit_code（timeout/turn_limit raise 无属性），
         # 错误文本排除对有无 exit_code 一视同仁——统一先行短路。
         if "Timeout after" in error or "Max turns" in error:

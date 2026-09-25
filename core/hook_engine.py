@@ -673,8 +673,9 @@ class HookEngine:
 
         项目级与用户级 config.yaml 分别读-改-写（不用合并视图回写，避免把
         用户级 hooks 复制进项目文件）；内存视图同步过滤，热更新从已清理
-        磁盘重收敛前保持一致。无标记 no-op；标记删除放最后——配置摘除成功
-        而删标记失败时，下次启动幂等重扫（ids 已不在，等价 noop）。
+        磁盘重收敛前保持一致。无标记 no-op；标记删除放最后且仅在配置摘除
+        全部成功时执行——摘除有文件失败则保留标记待下次启动幂等重扫，
+        删标记失败同理（ids 已不在，重扫等价 noop）。
         """
         path = self.project_root / ".fenix" / HOOK_RESTART_CLEANUP_FILENAME
         if not path.exists():
@@ -688,8 +689,15 @@ class HookEngine:
             self._log_warning(f"hook 清理标记损坏，跳过清扫: {e}")
             return
         if hook_ids:
-            changed = self._remove_hook_ids_from_config_files(hook_ids)
+            changed, failed = self._remove_hook_ids_from_config_files(hook_ids)
             self._remove_hook_ids_from_memory(hook_ids)
+            if failed:
+                self._log_warning(
+                    f"one-shot 重启 hook 清扫: 摘除 {sorted(hook_ids)} 时"
+                    f" {failed} 个配置文件读改失败（已改 {changed} 个），"
+                    f"保留清理标记待下次启动重试"
+                )
+                return
             self._log_warning(
                 f"one-shot 重启 hook 清扫: 已从配置摘除 {sorted(hook_ids)}"
                 f"（改动 {changed} 个配置文件）"
@@ -724,11 +732,17 @@ class HookEngine:
                 break
         return "".join(header)
 
-    def _remove_hook_ids_from_config_files(self, hook_ids: set) -> int:
-        """从两级 config.yaml 的 hooks 段按 id 摘除条目，返回实际改写文件数。"""
+    def _remove_hook_ids_from_config_files(self, hook_ids: set) -> Tuple[int, int]:
+        """从两级 config.yaml 的 hooks 段按 id 摘除条目。
+
+        返回 (changed, failed)：changed 为实际改写文件数；failed 为清扫
+        未完成的文件数（读/解析/写回失败——该文件是否残留待摘 id 无法
+        确认，调用方据此保留清理标记待下次启动重试）。
+        """
         import yaml
 
         changed = 0
+        failed = 0
         for cfg_path in self._hook_config_paths():
             try:
                 if not cfg_path.exists():
@@ -784,8 +798,9 @@ class HookEngine:
                     raise
                 changed += 1
             except (OSError, yaml.YAMLError) as e:
+                failed += 1
                 self._log_warning(f"hook 清扫读改 {cfg_path} 失败: {e}")
-        return changed
+        return changed, failed
 
     def _remove_hook_ids_from_memory(self, hook_ids: set) -> None:
         """内存合并视图同步过滤（热更新从已清理磁盘重收敛前保持一致）。"""
