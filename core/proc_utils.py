@@ -36,22 +36,18 @@ def is_claude_process(pid_str: str) -> bool:
 
 def find_free_port() -> int:
     """向系统申请一个临时空闲端口（探测即释放，向后兼容现有调用方）。"""
-    from socket import socket as _socket
-
-    with _socket() as s:
+    with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
 
 
 def _bind_retry(host: str = "127.0.0.1", retries: int = 3) -> socket.socket:
     """尝试 bind 0 端口（OS 分配），绑定失败时重试（消除 TOCTOU）。"""
-    from socket import socket as _socket
-
     last_err = None
     s = None
     for _ in range(max(1, retries)):
         try:
-            s = _socket()
+            s = socket.socket()
             s.bind((host, 0))
             return s
         except OSError as e:
@@ -83,8 +79,10 @@ def find_bound_socket(host: str = "127.0.0.1", retries: int = 3):
             run_server(port)
         # 退出时 socket 被释放
 
-    既有的 ``find_free_port()`` API 不变（返回 int，立即释放）；新调用方
-    （run_full_suite.py / 测试入口）改用本函数获取已绑定端口并传递给子进程。
+    既有的 ``find_free_port()`` API 不变（返回 int，立即释放）；当前仓库内
+    消费方为测试入口（tests/test_port_allocation.py），套件入口
+    （bin/run_full_suite.py）暂经 FENIX_SUITE_PORT_BASE 端口段约定分配，
+    尚未接入本函数。
     """
     s = _bind_retry(host, retries)
     try:
