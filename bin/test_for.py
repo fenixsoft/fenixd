@@ -27,15 +27,26 @@ FAULTHANDLER_TIMEOUT_SECONDS = 300
 SUBPROCESS_TIMEOUT_SECONDS = 3600
 
 
-def normalize_module_path(file_path: str) -> str:
-    """Convert file path to Python module path."""
+def normalize_module_path(file_path: str, project_root: Path) -> Optional[str]:
+    """Convert file path to Python module path (relative to project root).
+
+    先按 project_root 归一（resolve 会一并解析符号链接），归一失败（目标不在
+    项目内）返回 None 由调用方告警——否则绝对路径/无 core·tests 前缀的路径会
+    拼出永不匹配的模块名，静默零命中后以「No tests affected」exit 0 收场。
+    """
     # Remove .py extension
     path = Path(file_path)
     if path.suffix == ".py":
         path = path.with_suffix("")
 
+    # Normalize to a path under project_root (absolute or cwd-relative alike)
+    try:
+        rel = path.resolve().relative_to(project_root)
+    except ValueError:
+        return None
+
     # Convert to module path (replace / with .)
-    parts = list(path.parts)
+    parts = list(rel.parts)
 
     # Remove common prefixes
     if "core" in parts:
@@ -292,10 +303,26 @@ def main():
 
     for target_file in target_files:
         # Convert to module path
-        target_module = normalize_module_path(target_file)
+        target_module = normalize_module_path(target_file, project_root)
+        if target_module is None:
+            # 归一失败（目标不在 project_root 下）：模块名不可信，告警并跳过
+            # 导入链分析，不让单目标静默零命中后以「No tests affected」exit 0 收场。
+            print(
+                f"Warning: target {target_file!r} is not under project root "
+                f"{project_root}; skipping import-chain analysis for it.",
+                file=sys.stderr,
+            )
+            continue
 
         # Find tests through import analysis
         tests = find_affected_tests(target_module, import_graph)
+        if not tests:
+            # 单目标零命中：增量选测可能漏掉该文件，告警提示（不改变退出码）。
+            print(
+                f"Warning: no indexed test imports {target_module} "
+                f"(from {target_file!r}); incremental selection may have missed it.",
+                file=sys.stderr,
+            )
         affected_tests.update(tests)
 
     # Apply explicit mappings
