@@ -369,7 +369,8 @@ async function launchChromeExtension(distPath, opts = {}) {
     );
 
     const result = {
-      success: !hasCriticalAnomalies,
+      // 超时收卷且 UI 测试与 networkLog 均为零证据时，扩展未经任何验证，不判通过
+      success: !hasCriticalAnomalies && !(timedOut && uiResults.length === 0 && networkLog.length === 0),
       // 超时收卷且一条 UI 测试都未跑时，扩展加载未经任何验证，置 null 表示不确定而非乐观通过
       extensionLoaded: timedOut && uiResults.length === 0 ? null : true,
       extensionId: await getExtensionId(absoluteDist, browserContext),

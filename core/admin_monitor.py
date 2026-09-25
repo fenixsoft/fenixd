@@ -4358,7 +4358,18 @@ class AdminMonitor:
             # changes 统一按 cutoff 过滤后再回写，spec 长期停留同一状态时旧条目
             # 同样被 24h 窗淘汰。过滤为空转（未删任何条目）时 changed 不置位，
             # 不产生额外写盘，维持「写盘只发生在边界时刻」的口径。
-            pruned = [c for c in changes if c[0] >= cutoff]
+            # code-review e459e98bf6f8：与 _detect_flapping 读侧形状守卫
+            # （f67ba8199742）口径对齐——历史文件被手工编辑或旧版本残留出
+            # 畸形条目（非二元 list/tuple 或时间戳非数值）时直接淘汰，
+            # 避免 c[0] TypeError 沿 _detect_flapping 中断整轮信号检测。
+            pruned = [
+                c
+                for c in changes
+                if isinstance(c, (list, tuple))
+                and len(c) == 2
+                and isinstance(c[0], (int, float))
+                and c[0] >= cutoff
+            ]
             if len(pruned) != len(changes):
                 changed = True
             changes = pruned

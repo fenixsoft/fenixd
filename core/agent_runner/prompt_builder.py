@@ -1594,7 +1594,8 @@ class PromptBuilder:
             {k: it[k] for k in _CODE_FIX_ITEM_FIELDS if it.get(k) is not None}
             for it in items if isinstance(it, dict)
         ]
-        items_txt = json.dumps(slim_items, ensure_ascii=False, indent=2) or "[]"
+        # json.dumps 对空列表即返回 "[]"，无需兜底（code-review e6a36e939590）
+        items_txt = json.dumps(slim_items, ensure_ascii=False, indent=2)
         out_path = detail.get("out_path")
         if not out_path:
             wt = detail.get("worktree") or self._pm.project_root

@@ -174,6 +174,17 @@ class VerifyEngine:
                 )
                 continue
             acceptance_errors.extend(self._runner_for(s.kind).validate(s))
+        # 悬空依赖校验：须在 seen_ids 收集完整个场景集后进行——前向引用
+        # （被依赖场景定义在后）合法，不能在单遍循环里逐个判定。引用不
+        # 存在的 dep id 会让 _execute_parallel 的就绪判定永远不满足，落入
+        # 「ready 为空 → 全部并发」兜底，声明的先后顺序被静默丢弃。
+        for s in normalized:
+            for dep in s.depends_on:
+                if dep not in seen_ids:
+                    acceptance_errors.append(
+                        f"场景'{s.id}' depends_on 引用不存在的场景 id '{dep}'"
+                        f"（场景集内不存在该 id）"
+                    )
         if acceptance_errors:
             head = "; ".join(acceptance_errors[:5])
             more = f" 等 {len(acceptance_errors)} 项" if len(acceptance_errors) > 5 else ""
@@ -288,7 +299,8 @@ class VerifyEngine:
             ready = [s for s in remaining if all(dep in completed_ids for dep in s.depends_on)]
 
             if not ready:
-                # 可能循环依赖或所有场景无依赖，直接全部执行
+                # 悬空依赖已在验收门打回，走到这里只剩真实循环依赖，
+                # 直接全部执行兜底
                 ready = remaining
 
             batch_num += 1

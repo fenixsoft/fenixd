@@ -3,7 +3,6 @@
 //  - shadcn Button/Tooltip 换 antd Tooltip + 原生 button（tailwind 类保留）；
 //  - lucide 图标换 @ant-design/icons（SendOutlined / StopOutlined）；
 //  - PromptInputHeader（附件区）随附件链裁剪不迁。
-"use client";
 
 import * as React from 'react';
 import { Tooltip } from 'antd';

@@ -831,7 +831,9 @@ class StateMachine:
         记锚三步分持多把锁：同一 run 的并发 infra 判定都读不到锚点、各自
         退款一次（丢失更新形态）。本方法把三步收进单把 ``.STATE.md.lock``
         临界区（与 _bump_counter 同范式）：锚点已登记 → 幂等跳过不退款；
-        未登记（含空锚点）→ 退款并追加锚点一次完成。
+        未登记的非空锚点 → 退款并追加锚点一次完成。空锚点只退款、不登记，
+        幂等不保证——由调用方保证单轮单次（契约见
+        ``_exempt_infra_run_budget``：无锚点时仍退款）。
 
         Returns: ``(refunded, used)``
             refunded=False 表示该 run 已退款过（幂等跳过）；used 为退款后

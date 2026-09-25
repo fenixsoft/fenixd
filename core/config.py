@@ -6,6 +6,7 @@ Reads and validates config.yaml, providing typed access to all settings.
 
 import copy
 import logging
+import math
 import os
 import re
 import yaml
@@ -1415,10 +1416,18 @@ class ConfigLoader:
 
         bool 是 int 子类须显式排除（``True``/``False`` 不是合法的秒数/次数）；
         float 取整；``0`` / 负数 / 字符串 / None 一律回退缺省——与
-        ``idle_confirm_seconds`` 同款校验范式（``0`` 不等效关闭）。
+        ``idle_confirm_seconds`` 同款校验范式（``0`` 不等效关闭）。非有限
+        浮点（YAML ``.nan``/``.inf`` 字面量）同样回退缺省。
         """
         value = section.get(key, default)
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        # code-review d9e9a238696f：.nan/.inf 能穿透 isinstance 与 <=0 比较，
+        # int(nan)/int(inf) 抛 ValueError/OverflowError，违反「不抛异常」契约
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or (isinstance(value, float) and not math.isfinite(value))
+            or value <= 0
+        ):
             return default
         return int(value)
 
@@ -1436,6 +1445,9 @@ class ConfigLoader:
         """
         value = section.get(key, default)
         if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return default
+        # code-review d9e9a238696f：.nan/.inf 穿透 ==0 与 <0 比较，int() 时抛异常
+        if isinstance(value, float) and not math.isfinite(value):
             return default
         if value == 0:
             return 0
@@ -1469,7 +1481,14 @@ class ConfigLoader:
         if not isinstance(enabled, bool):
             enabled = cls.STALE_CODE_SELFHEAL_ENABLED_DEFAULT
         seconds = section.get("idle_confirm_seconds", cls.STALE_CODE_SELFHEAL_IDLE_SECONDS_DEFAULT)
-        if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or seconds <= 0:
+        # code-review d9e9a238696f：.nan 穿透 isinstance 与 <=0 比较，int(nan)
+        # 抛 ValueError（docstring 承诺不抛异常）——非有限浮点回退缺省
+        if (
+            isinstance(seconds, bool)
+            or not isinstance(seconds, (int, float))
+            or (isinstance(seconds, float) and not math.isfinite(seconds))
+            or seconds <= 0
+        ):
             seconds = cls.STALE_CODE_SELFHEAL_IDLE_SECONDS_DEFAULT
         seconds = int(seconds)
         if seconds > cls.STALE_CODE_SELFHEAL_MAX_SECONDS:
@@ -1783,7 +1802,8 @@ class ConfigLoader:
         """stuck 判定阈值单源派生自 run 超时（design D1/D2/D4）。
 
         effective_threshold = run_timeout_seconds + STUCK_GRACE_SECONDS（600s）。
-        run_timeout_seconds 缺失或非正数时回退 4200s 并打 WARNING（D4：
+        run_timeout_seconds 缺失、非正数或非有限浮点（.nan）时回退 4200s 并打
+        WARNING（D4：
         防有人把超时关掉导致恢复永不触发）。旧键
         schedule/admin.stuck_threshold_minutes 不论是否配置都不影响结果（D3 告警）。
 
@@ -1799,7 +1819,15 @@ class ConfigLoader:
         # 此前通过检查得 float(True)+600=601s 而非文档 9600s 回退，使 stuck/
         # auto-recovery 阈值比其派生源 run 超时（9000s 回退）早约 15 倍触发，
         # 打破单源派生保证。
-        if not isinstance(rt, (int, float)) or isinstance(rt, bool) or rt <= 0:
+        # code-review d9e9a238696f：YAML .nan 字面量穿透 isinstance 与 <=0 检查，
+        # 阈值得 nan+600，后续超时比较恒 False，stuck/恢复判定永不触发——
+        # 非有限浮点与缺失/非正数同口径回退
+        if (
+            not isinstance(rt, (int, float))
+            or isinstance(rt, bool)
+            or (isinstance(rt, float) and not math.isfinite(rt))
+            or rt <= 0
+        ):
             if not _RUN_TIMEOUT_FALLBACK_WARNED:
                 _logger.warning(
                     "agents.run_timeout_seconds 缺失或 ≤0，stuck 阈值按 %ss 回退生效"

@@ -655,6 +655,21 @@ class AssertionRunner:
         child_sel = a.get("child", "")
         relation = a.get("relation", "contains")  # contains | direct-child
 
+        if not parent_sel or not child_sel:
+            # 显式失败而非静默兜底：空选择器拼进 locator 会让 count() 抛错，
+            # 被 run() 包成「断言执行异常」无法定位场景缺参，与 z_index_order
+            # 的缺参口径（确定性失败）保持一致。
+            return {
+                "type": "dom_structure",
+                "layer": 3,
+                "parent": parent_sel,
+                "child": child_sel,
+                "relation": relation,
+                "count": 0,
+                "pass": False,
+                "error": "缺少 parent 字段" if not parent_sel else "缺少 child 字段",
+            }
+
         if relation == "contains":
             count = await page.locator(f"{parent_sel} {child_sel}").count()
             passed = count > 0

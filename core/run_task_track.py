@@ -281,40 +281,11 @@ def parse_run_task_done(run_file: Path) -> dict:
     if cached is not None:
         return cached
 
-    created_ordered: list = []  # 按创建序的 subject 提取 tasks.md id（无 id 记 None）
-    completed_idx: set = set()  # TaskUpdate completed 的 taskId - 1
-    last_update_status: dict = {}  # taskId-1 → 最近一次 TaskUpdate status
-    try:
-        with run_file.open("r", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entry = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(entry, dict) or entry.get("type") != "assistant":
-                    continue
-                for c in (entry.get("message") or {}).get("content") or []:
-                    if not isinstance(c, dict) or c.get("type") != "tool_use":
-                        continue
-                    if c.get("name") == "TaskCreate":
-                        m = _TASK_ID_RE.search(str((c.get("input") or {}).get("subject") or ""))
-                        created_ordered.append(m.group(1) if m else None)
-                    elif c.get("name") == "TaskUpdate":
-                        inp = c.get("input") or {}
-                        try:
-                            n = int(str(inp.get("taskId")))  # 兼容 str/int
-                        except (TypeError, ValueError):
-                            continue
-                        status = inp.get("status")
-                        if status:
-                            last_update_status[n - 1] = str(status)
-                        if status == "completed":
-                            completed_idx.add(n - 1)
-    except OSError:
-        return {"done_ids": set(), "created_count": 0, "flat_done": set(), "in_progress_ids": []}
+    # Task 事件解析循环收敛到 _scan_task_create_update 单点（含 last_update_status），
+    # 禁止在此再造第二套循环。其 OSError 容错返回空三元组 → 空结果继续（与原
+    # 「读失败返回空 dict」语义一致，仅多缓存一次空结果；键含 mtime/size，
+    # run 文件后续追加自然换键重解析）。
+    created_ordered, completed_idx, last_update_status = _scan_task_create_update(run_file)
 
     created_count = len(created_ordered)
     done_ids = set()
@@ -423,16 +394,23 @@ def _run_ended_abnormally(run_file: Path) -> bool:
     return False
 
 
-def _scan_task_create_update(run_file: Path) -> "tuple[list, set]":
-    """扫描单 run 产物的 TaskCreate/TaskUpdate 调用（parse_run_task_done 的原料）。
+def _scan_task_create_update(run_file: Path) -> "tuple[list, set, dict]":
+    """扫描单 run 产物的 TaskCreate/TaskUpdate 调用（解析循环单点实现）。
+
+    parse_run_task_done 与 parse_run_task_done_cumulative 均消费本扫描结果，
+    禁止再造第二套循环——两套解析一旦漂移（TaskUpdate 输入形态、status 取值
+    变化只改一侧），会产出矛盾结论（同模块 docstring 的正则收口理由）。
 
     Returns:
-        (created_ordered, completed_idx)：
+        (created_ordered, completed_idx, last_update_status)：
         - created_ordered: 按出现序的 tasks.md id（subject 无编号记 None）；
-        - completed_idx: TaskUpdate ``status=completed`` 的 ``taskId - 1`` 集合。
+        - completed_idx: TaskUpdate ``status=completed`` 的 ``taskId - 1`` 集合；
+        - last_update_status: ``taskId - 1`` → 最近一次 TaskUpdate status。
+    OSError → 空三元组（容错：任何损坏都不抛异常）。
     """
     created_ordered: list = []
     completed_idx: set = set()
+    last_update_status: dict = {}  # taskId-1 → 最近一次 TaskUpdate status
     try:
         with run_file.open("r", encoding="utf-8", errors="replace") as f:
             for line in f:
@@ -457,11 +435,14 @@ def _scan_task_create_update(run_file: Path) -> "tuple[list, set]":
                             n = int(str(inp.get("taskId")))  # 兼容 str/int
                         except (TypeError, ValueError):
                             continue
-                        if inp.get("status") == "completed":
+                        status = inp.get("status")
+                        if status:
+                            last_update_status[n - 1] = str(status)
+                        if status == "completed":
                             completed_idx.add(n - 1)
     except OSError:
-        return [], set()
-    return created_ordered, completed_idx
+        return [], set(), {}
+    return created_ordered, completed_idx, last_update_status
 
 
 def parse_run_task_done_cumulative(project_root, spec_name) -> dict:
@@ -530,7 +511,7 @@ def parse_run_task_done_cumulative(project_root, spec_name) -> dict:
     for _key, fam_files in families.items():
         created_ordered: list = []
         for p in fam_files:
-            creates, completed_idx = _scan_task_create_update(p)
+            creates, completed_idx, _last_status = _scan_task_create_update(p)
             created_ordered.extend(creates)  # 该 run 创建并入族内全局序
             for idx in completed_idx:  # taskId 即族内全局序下标
                 if 0 <= idx < len(created_ordered) and created_ordered[idx]:
