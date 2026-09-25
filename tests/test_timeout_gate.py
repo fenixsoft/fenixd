@@ -162,3 +162,84 @@ class TestAllowlistSchema:
         entries, error = load_timeout_allowlist(path)
         assert entries == []
         assert error is not None and "解析失败" in error
+
+
+# 内联同构 conftest（任务 2.4）：与 tests/conftest.py 的豁免注入钩子同构，
+# 清单路径指向样例项目内的 timeout-allowlist.yaml——真实 conftest 的清单
+# 路径指向仓库 tests/timeout-allowlist.yaml，pytester 临时项目命中不了。
+SAMPLE_CONFTEST = textwrap.dedent(
+    """\
+    from pathlib import Path
+
+    import pytest
+    import yaml
+
+    _ALLOWLIST = Path(__file__).resolve().parent / "timeout-allowlist.yaml"
+
+    def pytest_collection_modifyitems(config, items):
+        entries = []
+        if _ALLOWLIST.exists():
+            data = yaml.safe_load(_ALLOWLIST.read_text(encoding="utf-8")) or {}
+            entries = data.get("entries") or []
+        by_nodeid = {e["nodeid"]: e for e in entries}
+        for item in items:
+            entry = by_nodeid.get(item.nodeid)
+            if entry is not None:
+                item.add_marker(pytest.mark.timeout(entry["timeout_seconds"]))
+    """
+)
+
+
+class TestAllowlistInjection:
+    """任务 2.4：清单生效路径（内层默认阈值 1s，登记条目 2s，对照未登记条目）。"""
+
+    def test_registered_entry_uses_registered_threshold(self, pytester):
+        pytester.makefile(".ini", pytest=SAMPLE_INI)
+        pytester.makeconftest(SAMPLE_CONFTEST)
+        (pytester.path / "timeout-allowlist.yaml").write_text(
+            textwrap.dedent(
+                """\
+                entries:
+                  - nodeid: test_slow.py::test_registered_slow
+                    timeout_seconds: 2
+                    reason: 样例条目：验证登记阈值覆盖全局门
+                """
+            ),
+            encoding="utf-8",
+        )
+        pytester.makepyfile(
+            test_slow=textwrap.dedent(
+                """\
+                import time
+
+                def test_registered_slow():
+                    time.sleep(3)
+
+                def test_unregistered_slow():
+                    time.sleep(3)
+
+                def test_fast():
+                    assert True
+                """
+            )
+        )
+        # 内层默认阈值 1s：登记条目 2s（活过 1s 关口、2s 判超时）；
+        # 对照未登记条目 1s 即超时；fast 用例不受影响。
+        result = pytester.runpytest(
+            "-o", "timeout=1", "-o", "timeout_method=signal", "test_slow.py",
+        )
+        result.assert_outcomes(failed=2, passed=1)
+        # 登记条目：失败信息是 2s 关口（>1s 未杀 = 按登记阈值放行）
+        result.stdout.fnmatch_lines(
+            [
+                "* test_registered_slow _*",
+                f"*Timeout (>2*{TIMEOUT_MARKER}*",
+            ]
+        )
+        # 对照：未登记条目 1s 即超时
+        result.stdout.fnmatch_lines(
+            [
+                "* test_unregistered_slow _*",
+                f"*Timeout (>1*{TIMEOUT_MARKER}*",
+            ]
+        )
