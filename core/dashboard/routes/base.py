@@ -164,6 +164,17 @@ def _get_regression_config(s, p, q, m):
 def _get_regression_fix_result(s, p, q, m):
     s._api_regression_fix_result(q)
 
+# ── architecture（add-project-architecture-tab）──────────────────
+
+def _get_architecture_status(s, p, q, m):
+    s._api_architecture_status(q)
+
+# diagram 下发是自含响应 handler：ready 走 _send_file（自写 200），未生成
+# 自写 _json(404)——不得再包 _json 双重写响应（keep-alive 下残留第二响应
+# 200+null 污染下一请求，同 _get_config 注记）
+def _get_architecture_diagram(s, p, q, m):
+    s._api_architecture_diagram(q)
+
 
 # ── POST 路由适配函数 ─────────────────────────────────────────────────
 
@@ -284,6 +295,11 @@ def _post_regression_autodraft(s, p, q, m):
 def _post_regression_fix(s, p, q, m):
     s._api_regression_fix(q)
 
+# architecture：受理触发生成（add-project-architecture-tab，后台线程，
+# 不在 HTTP 线程内同步等待）
+def _post_architecture_refresh(s, p, q, m):
+    s._api_architecture_refresh(q)
+
 def _post_code_review_generate_spec(s, p, q, m):
     s._api_code_review_generate_spec(q)
 
@@ -376,6 +392,10 @@ _API_GET_ROUTES = [
     ("exact", "/api/regression/config", _get_regression_config),
     # regression 自动修复判定结果只读（add-regression-auto-fix，GET，无副作用）
     ("exact", "/api/regression/fix-result", _get_regression_fix_result),
+    # architecture（add-project-architecture-tab）：生成状态（GET，无副作用）
+    ("exact", "/api/architecture/status", _get_architecture_status),
+    # architecture：diagram.html 下发（自含响应 handler，未生成回 404 结构化错误）
+    ("exact", "/api/architecture/diagram", _get_architecture_diagram),
 ]
 
 _API_POST_ROUTES = [
@@ -429,6 +449,9 @@ _API_POST_ROUTES = [
     ("exact", "/api/regression/autodraft", _post_regression_autodraft),
     # regression 自动修复触发信号（add-regression-auto-fix，写文件信号，daemon 消费）
     ("exact", "/api/regression/fix", _post_regression_fix),
+    # architecture：受理触发生成（add-project-architecture-tab，后台线程，
+    # 不在 HTTP 线程内同步等待）
+    ("exact", "/api/architecture/refresh", _post_architecture_refresh),
     # session 路由（精确，排在裸 endswith 之前，防 /start /stop 误匹配）
     ("exact", "/api/session/start",      _post_session_start),
     ("exact", "/api/session/send",       _post_session_send),

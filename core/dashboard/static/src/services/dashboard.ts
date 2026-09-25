@@ -2219,3 +2219,44 @@ export async function autodraftRegression(
     { timeoutMs: REGRESSION_AUTODRAFT_TIMEOUT_MS },
   );
 }
+
+// ── add-project-architecture-tab：项目架构图（archify 按需生成）──────
+
+/** 项目架构图生成状态（GET /api/architecture/status，后端四态机）。 */
+export interface ArchitectureStatus {
+  project?: string;
+  state: 'none' | 'generating' | 'ready' | 'failed';
+  started_at?: string | null;
+  generated_at?: string | null;
+  error?: string | null;
+  duration_ms?: number | null;
+  component_count?: number | null;
+}
+
+/** 读取项目架构图生成状态（分面 active 门控；generating 期间 3s 轮询）。 */
+export async function getArchitectureStatus(
+  project: string,
+): Promise<ArchitectureStatus> {
+  const q = `?project=${encodeURIComponent(project)}`;
+  return request<ArchitectureStatus>(`/api/architecture/status${q}`);
+}
+
+/** 手动触发架构图生成（POST /api/architecture/refresh）。仅受理——生成在
+ *  后台线程进行；同项目在飞时后端回 409（ApiError.status 承载，前端按
+ *  状态码分支，不做中文消息子串匹配）。 */
+export function refreshArchitecture(project: string) {
+  return request<{ ok: boolean; state: string }>(
+    `/api/architecture/refresh?project=${encodeURIComponent(project)}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    },
+  );
+}
+
+/** 架构图产物下发端点 URL（iframe sandbox 加载；未生成时端点回 404
+ *  结构化错误，前端仅在 state==='ready' 时渲染 iframe）。 */
+export function architectureDiagramUrl(project: string): string {
+  return `/api/architecture/diagram?project=${encodeURIComponent(project)}`;
+}
