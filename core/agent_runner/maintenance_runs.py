@@ -1327,6 +1327,74 @@ def _read_code_review_out(runner, project_root, run_id: str) -> list:
     return out
 
 
+def agent_process_cpu_seconds(proc) -> float | None:
+    """run 子进程进程树的累计 CPU 时间（秒），不可解析返回 None。
+
+    decouple-codefix-review-lanes 看门狗判据 2（design D2）：网络僵死的 run
+    表现为「进程活着但 CPU 停止增长」（09-24 事故：2h20m 仅 49s CPU），单
+    mtime 判据会被这种形态欺骗，故看门狗以 mtime + CPU 双判据同时无进展
+    才判定停滞。读 /proc/<pid>/stat 的 utime+stime（含其后代进程树——审查
+    run 的 scan 子进程经 execvp 后以 node/ocr 形态挂在 CLI 子进程下，只看
+    顶层 pid 会漏掉真实负载）；任一环节不可解析（进程已退出 / 非 Linux /
+    权限不足）返回 None，调用方按 fail-open 不触发（看门狗宁可漏杀不可误杀，
+    且无进程句柄时 cancel_run 也无从终止）。
+
+    ``proc`` 为 subprocess.Popen 或等价句柄（只需 .pid 属性）；子进程遍历用
+    内核提供的 /proc/<pid>/task/<tid>/children（比全表扫 /proc 匹配 ppid 便宜
+    且无「孙进程在遍历间隙被收养」的误判面）。
+    """
+    pid = getattr(proc, "pid", None)
+    if not pid or pid <= 0:
+        return None
+    ticks = 0.0
+    read_any = False
+    seen: set[int] = set()
+    queue = [int(pid)]
+    try:
+        clk_tck = os.sysconf("SC_CLK_TCK")
+    except (ValueError, OSError, AttributeError):
+        clk_tck = 100.0
+    if not clk_tck:
+        clk_tck = 100.0
+    while queue:
+        cur = queue.pop()
+        if cur in seen:
+            continue
+        seen.add(cur)
+        try:
+            with open(f"/proc/{cur}/stat", "rb") as f:
+                stat = f.read()
+        except OSError:
+            continue
+        # stat 的 comm 字段可含空格/括号，以最后一个 ')' 切开取其后字段
+        rparen = stat.rfind(b")")
+        if rparen < 0:
+            continue
+        fields = stat[rparen + 2 :].split()
+        # fields[11]=utime fields[12]=stime（14th/15th 列，state 从 fields[0] 起）
+        if len(fields) < 13:
+            continue
+        try:
+            ticks += int(fields[11]) + int(fields[12])
+        except ValueError:
+            continue
+        read_any = True
+        # 逐线程 children 汇总（同 pid 多线程时 children 记录在各 task 下）
+        try:
+            for tid_dir in os.scandir(f"/proc/{cur}/task"):
+                try:
+                    with open(f"/proc/{cur}/task/{tid_dir.name}/children", "rb") as f:
+                        queue.extend(int(x) for x in f.read().split())
+                except (OSError, ValueError):
+                    continue
+        except OSError:
+            continue
+    if not read_any:
+        # 顶层 pid 就读不到（已退出/权限）→ 判据不可用，调用方 fail-open
+        return None
+    return ticks / clk_tck
+
+
 def _accumulate_code_review_tokens(runner, run_id: str, usage_info: dict) -> None:
     """code-review token 归账到 cost-observability 独立类目（task 3.6）。
 

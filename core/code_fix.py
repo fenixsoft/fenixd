@@ -12,6 +12,16 @@ agent run 在独立 worktree 内修复并提交；框架在该 worktree 上跑�
 两路汇入同一入口 `CodeFixOrchestrator.checkpoint()`，幂等守卫链保证
 同一时刻至多一个 code-fix run。
 
+调度解耦不变量（decouple-codefix-review-lanes Requirement 1）：批派发与
+链推进的判据集合**不含**「周期审查 run 在飞」——checkpoint 守卫链
+（enabled/单飞/无 open 条目/WIP 预检/回归契约）没有审查在飞否决或等待
+条件（09-24 取证定案，证据见
+`docs/help/codefix-review-lane-decoupling.md`）；与审查的真实资源冲突点
+（回归主机级套件锁）由既有锁自然串行。链自驱动推进语义对所有批收尾路径
+成立，含延迟批（defer）合回路径——批收尾 wip_gate_blocked 走
+`_defer_merge_back` 返回 `consumed` 照常 `_resubmit`；延迟台账合回成功在
+`checkpoint` 内联核销后同一次调用继续选批投递（等价 `success` 收尾推进）。
+
 契约要点（design「契约要点」节，实现者必读）：
 - **绝不空集合回**：批内零有效产物行或零有效修复（产物行全 skipped /
   worktree 分支相对建树点无提交）→ MUST NOT 合回、MUST NOT 置 resolved

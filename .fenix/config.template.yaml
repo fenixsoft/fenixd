@@ -415,6 +415,15 @@ admin:
   #   # 缺失/非法/非正整数一律回退 15。
   #   stall_alert_minutes: 15
 
+  # ---- 审查 run stall 看门狗（decouple-codefix-review-lanes 3.1）----
+  # 周期审查 run 无产出超阈值（分钟，正整数，缺省 30）时自动取消该 run 并走
+  # 既有急救落账路径（已完整落盘的产物抢救入账、告警留痕），释放其占用的车道
+  # 与锁。双判据同时无进展才计时：进度产物 mtime 与 run 子进程进程树 CPU 时间
+  # ——任一判据有进展即重置（单 mtime 判据会被「网络僵死但进程活着空转」欺骗，
+  # 09-24 事故 2h20m 仅 49s CPU 实证）。挂在 admin monitor 巡检节拍上，无新增
+  # 线程/定时器。缺失/非法/非正整数一律回退 30，巡检不因脏配置中断。
+  # review_stall_minutes: 30
+
   # ---- 自动修复代码问题（add-code-review-auto-fix，可选）----
   # 设置页「质量」页签「周期性代码审查」下方提供该开关（读/写 GET/POST
   # /api/config 的 admin.code_review_fix.*）。开启后把审查台账 open 条目按批
