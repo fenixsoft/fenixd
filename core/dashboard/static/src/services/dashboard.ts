@@ -2082,6 +2082,46 @@ export function triggerRegression(project: string) {
   );
 }
 
+/** add-regression-auto-fix：手动「自动修复回归问题」触发判定结果
+ *  （GET /api/regression/fix-result 透传 .fenix/regression_fix_request_result.json）
+ *
+ * wire 契约：结果文件缺失/损坏时后端返回 ``{"status": "none"}`` 缺省态
+ * （MUST NOT 404 报错）。前端以 ``request_created`` 真值且与本次触发返回的
+ * ``requested_at`` 一致回链判定是否本次结果，陈旧残留不当作本次反馈。
+ */
+export interface RegressionFixRunResult {
+  status?: string;
+  request_created?: string | null;
+  triggered?: boolean;
+  reason?: string;
+  message?: string;
+  finished_at?: string | null;
+}
+
+/** add-regression-auto-fix：手动触发回归问题自动修复
+ *  （写文件信号，daemon 消费）。受理返回 200 {ok, requested_at}；
+ *  400（regression_never_run / regression_no_issues，ApiError.code 承载稳定
+ *  错误码）/ 409（并发/残留未消费信号）抛错带后端文案。 */
+export function fixRegression(project: string) {
+  return request<{ ok: boolean; requested_at: string }>(
+    `/api/regression/fix?project=${encodeURIComponent(project)}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    },
+  );
+}
+
+/** add-regression-auto-fix：读取回归修复触发判定结果（无副作用，缺失返回缺省态） */
+export async function getRegressionFixResult(
+  project: string,
+): Promise<RegressionFixRunResult> {
+  return request<RegressionFixRunResult>(
+    `/api/regression/fix-result?project=${encodeURIComponent(project)}`,
+  );
+}
+
 /** 有效 regression 段的解析字段（GET /api/regression/config）。 */
 export interface RegressionSpecView {
   /** 执行命令：str（shell）或 list（argv）；cwd 为项目根 */

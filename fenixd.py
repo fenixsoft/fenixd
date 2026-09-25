@@ -777,6 +777,15 @@ class FenixDaemon:
                     self._check_code_fix_requests()
                 except Exception as e:
                     self.logger.error("fenixd", f"code_fix pickup failed: {e}")
+                # add-regression-auto-fix：手动「自动修复回归问题」文件信号
+                # 拾取（dashboard 写入 .fenix/regression_fix_request.json），
+                # 主循环下一轮消费（先读后删 + 读回归快照转换为台账条目 +
+                # 复发重开 + override_enabled=True 投递 + 判定结果原子写回），
+                # 与 _check_code_fix_requests 同构。
+                try:
+                    self._check_regression_fix_requests()
+                except Exception as e:
+                    self.logger.error("fenixd", f"regression_fix pickup failed: {e}")
                 # 配置热更新：每 30s 检查配置文件 mtime，变更则原地重载
                 if time.time() - config_check_ts >= 30:
                     config_check_ts = time.time()
@@ -3091,6 +3100,143 @@ class FenixDaemon:
         else:
             self.logger.info("fenixd", f"code-fix 手动触发被拒：reason={reason}")
         self._write_code_fix_request_result(result_path, request_created, triggered, reason)
+
+    # ── 手动「自动修复回归问题」信号消费（add-regression-auto-fix 3.1）──
+
+    # 判定 reason → 用户可见中文文案：在 code-fix 手动触发的文案表基础上
+    # 收敛 regression 车道特有 reason（dispatched 文案指向台账转入语义；
+    # snapshot_missing 为本车道新增兜底）。
+    REGRESSION_FIX_RESULT_MESSAGES = {
+        **CODE_FIX_RESULT_MESSAGES,
+        "dispatched": "已把回归问题转入修复台账并投递一批自动修复，可在质量页签进度卡片查看进展",
+        "snapshot_missing": "最近一次回归快照缺失或不可解析，无法定位回归问题（请先执行一次全量回归，或稍后重试）",
+    }
+
+    @staticmethod
+    def _read_regression_output_excerpt(proot, snapshot, limit: int = 500) -> str:
+        """预读快照 ``output`` 字段指向的产物文件尾部（3.1，供超时条目摘要）。
+
+        快照 ``output`` 为相对项目根的产物路径（junit XML；超时中止时是
+        部分产物）。读取失败/缺失/非文本一律安全兜底置空——摘要拿不到
+        MUST NOT 阻塞转换与投递。
+        """
+        try:
+            rel = str(snapshot.get("output") or "").strip()
+            if not rel:
+                return ""
+            path = Path(proot) / rel
+            if not path.is_file():
+                return ""
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return ""
+        return text[-limit:] if len(text) > limit else text
+
+    def _check_regression_fix_requests(self):
+        """主循环每轮扫描手动「自动修复回归问题」文件信号并消费（3.1）。
+
+        dashboard 的 POST /api/regression/fix 原子写入
+        ``.fenix/regression_fix_request.json``（含 source=regression_fix、
+        created）；本方法在主循环（1s 粒度）中检测其存在，与
+        ``_check_code_fix_requests`` 同构：
+
+        原子消费 → 读 PROJECT_ROOT 下 ``.fenix/regression/last-run.json``
+        （与编排器及既有 ``_check_regression_requests`` 同根；信号 query
+        project 仅作受理校验，不参与消费定位；缺失/损坏 → 落
+        snapshot_missing 结果不继续，design D5：消费端读快照以当下为准）
+        → 预读快照 output 字段指向的日志文件尾部 500 字（读取失败置空）
+        → ``convert_regression_snapshot_to_findings`` + ``upsert_findings``
+        （review_id=``regression-fix-<created>``，review_kind=``regression_fix``，
+        已核实 upsert_findings 对 review_kind 仅透传存储、无枚举校验）
+        + ``reopen_regression_items``（复发条目重开）→ 编排器
+        ``checkpoint(override_enabled=True)``（单飞/无 open 条目/失败保留/
+        回归契约 fail-closed 守卫原样）→ 无论结果原子写
+        ``.fenix/regression_fix_request_result.json``（``request_created``
+        回链信号 created）。
+
+        兜底不静默：编排器未装配落 orchestrator_missing（此时尚未入账）；
+        消费异常落 dispatch_exception（此时转换可能已入账——design D6：
+        checkpoint 拒绝/异常不回滚台账，在飞链下一批 select_batch 自然
+        吸收，回链如实返回 reason）。
+        """
+        from core.code_fix import (
+            convert_regression_snapshot_to_findings,
+            regression_findings_fingerprints,
+            reopen_regression_items,
+        )
+        from core.code_review import upsert_findings
+        from core.regression import read_result
+
+        req_path = PROJECT_ROOT / ".fenix" / "regression_fix_request.json"
+        payload = self._consume_request_file(req_path)
+        if payload is None:
+            return
+
+        request_created = str(payload.get("created") or "")
+        result_path = PROJECT_ROOT / ".fenix" / "regression_fix_request_result.json"
+        self.logger.info(
+            "fenixd", f"消费 regression-fix 手动触发信号：created={request_created}")
+
+        # 编排器未装配不静默（且 MUST NOT 先入账再落结果——入账前置检查）
+        orchestrator = getattr(self.agent_runner, "_code_fix_orchestrator", None)
+        if orchestrator is None:
+            self.logger.warning(
+                "fenixd", "code-fix 编排器未装配，regression-fix 信号落 orchestrator_missing 结果")
+            self._write_result_message(
+                result_path, request_created, False, "orchestrator_missing",
+                self.REGRESSION_FIX_RESULT_MESSAGES)
+            return
+
+        try:
+            snapshot = read_result(PROJECT_ROOT)
+            status = str(snapshot.get("status") or "") if isinstance(snapshot, dict) else ""
+            if status in ("", "never_run", "parse_error"):
+                self.logger.warning(
+                    "fenixd", f"regression-fix 快照缺失/损坏（status={status or 'unknown'}），"
+                    "落 snapshot_missing 结果")
+                self._write_result_message(
+                    result_path, request_created, False, "snapshot_missing",
+                    self.REGRESSION_FIX_RESULT_MESSAGES)
+                return
+            output_excerpt = self._read_regression_output_excerpt(PROJECT_ROOT, snapshot)
+            findings = convert_regression_snapshot_to_findings(
+                snapshot, output_excerpt=output_excerpt)
+            if findings:
+                upsert_findings(
+                    PROJECT_ROOT, findings,
+                    review_id=f"regression-fix-{request_created}",
+                    review_kind="regression_fix",
+                )
+                reopen_regression_items(
+                    PROJECT_ROOT, regression_findings_fingerprints(findings))
+            res = orchestrator.checkpoint(override_enabled=True)
+        except Exception as e:  # noqa: BLE001 — 消费端兜底：异常也 MUST 落结果不静默
+            self.logger.error("fenixd", f"regression-fix 手动触发消费异常: {e}")
+            self._write_result_message(
+                result_path, request_created, False, "dispatch_exception",
+                self.REGRESSION_FIX_RESULT_MESSAGES)
+            return
+
+        triggered = bool(res.get("triggered"))
+        reason = str(res.get("reason") or "")
+        if triggered:
+            self.logger.info(
+                "fenixd",
+                f"regression-fix 手动触发已转换入账并投递一批（request_created={request_created}）")
+        else:
+            # checkpoint 拒绝（如 already_running）如实回传 reason 且不回滚台账：
+            # 转换后的条目由在飞链下一批 select_batch 自然吸收（design D6）
+            self.logger.info("fenixd", f"regression-fix 手动触发被拒：reason={reason}")
+        self._write_result_message(
+            result_path, request_created, triggered, reason,
+            self.REGRESSION_FIX_RESULT_MESSAGES)
+
+    def _write_result_message(self, result_path, request_created, triggered,
+                              reason, messages):
+        """按车道文案表落触发判定结果文件（复用 _write_code_fix_request_result）。"""
+        message = messages.get(reason, f"回归修复触发判定：{reason or '未知'}")
+        self._write_code_fix_request_result(
+            result_path, request_created, triggered, reason, message=message)
 
     # ── 框架自进化检查点（add-framework-self-evolution 5.x） ────────
 

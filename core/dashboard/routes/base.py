@@ -153,6 +153,10 @@ def _get_regression_result(s, p, q, m):
 def _get_regression_config(s, p, q, m):
     s._api_regression_config(q)
 
+# 回归自动修复判定结果只读（add-regression-auto-fix，GET，无副作用）
+def _get_regression_fix_result(s, p, q, m):
+    s._api_regression_fix_result(q)
+
 
 # ── POST 路由适配函数 ─────────────────────────────────────────────────
 
@@ -269,6 +273,10 @@ def _post_regression_run(s, p, q, m):
 def _post_regression_autodraft(s, p, q, m):
     s._api_regression_autodraft_post(q)
 
+# 回归自动修复触发信号（add-regression-auto-fix，写文件信号，daemon 消费）
+def _post_regression_fix(s, p, q, m):
+    s._api_regression_fix(q)
+
 def _post_code_review_generate_spec(s, p, q, m):
     s._api_code_review_generate_spec(q)
 
@@ -356,6 +364,8 @@ _API_GET_ROUTES = [
     ("exact", "/api/regression/result", _get_regression_result),
     # regression：verify.yaml regression 段配置状态（GET，无副作用）
     ("exact", "/api/regression/config", _get_regression_config),
+    # regression 自动修复判定结果只读（add-regression-auto-fix，GET，无副作用）
+    ("exact", "/api/regression/fix-result", _get_regression_fix_result),
 ]
 
 _API_POST_ROUTES = [
@@ -407,6 +417,8 @@ _API_POST_ROUTES = [
     ("exact", "/api/regression/run", _post_regression_run),
     # regression：AI 补写 regression 段（写 AdminStore 信号，巡检唤起 Administrator）
     ("exact", "/api/regression/autodraft", _post_regression_autodraft),
+    # regression 自动修复触发信号（add-regression-auto-fix，写文件信号，daemon 消费）
+    ("exact", "/api/regression/fix", _post_regression_fix),
     # session 路由（精确，排在裸 endswith 之前，防 /start /stop 误匹配）
     ("exact", "/api/session/start",      _post_session_start),
     ("exact", "/api/session/send",       _post_session_send),

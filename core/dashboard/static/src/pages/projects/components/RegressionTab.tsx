@@ -12,6 +12,9 @@
 //      回归 / 结果不可解析 + 原因），MUST NOT 报错或显示空表。
 // - 「立即执行全量回归」按钮：POST /api/regression/run（手动触发不受周期开关
 //   约束；周期开关配置归设置页「质量」页签，本分面只读展示 + 手动触发）。
+// - 「自动修复回归问题」按钮（add-regression-auto-fix）：可用性由快照机械判定
+//   （有异常用例才可用），POST /api/regression/fix 写触发信号 → daemon 消费
+//   （回归快照→code-fix 台账条目→修复批），轮询 fix-result 回链反馈。
 //
 // 运行中判据（task 5.6）：以服务端快照的 `running` 字段为准（marker 新鲜度
 // 判定，见 core/regression.is_regression_running），MUST NOT 仅以 POST 受理
@@ -19,14 +22,28 @@
 // 「上次结果」。运行中轮询快照（2s），running 回落即刷新结果。
 import { useCallback, useEffect, useRef, useState } from 'react';
 import dayjs from 'dayjs';
-import { App, Button, Card, Descriptions, Progress, Space, Table, Tag, Typography } from 'antd';
+import {
+  App,
+  Button,
+  Card,
+  Descriptions,
+  Progress,
+  Space,
+  Table,
+  Tag,
+  Tooltip,
+  Typography,
+} from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import {
   ApiError,
+  fixRegression,
+  getRegressionFixResult,
   getRegressionResult,
   triggerRegression,
 } from '../../../services/dashboard';
 import type {
+  RegressionFixRunResult,
   RegressionProgress,
   RegressionResult,
 } from '../../../services/dashboard';
@@ -81,6 +98,11 @@ const STATUS_TAG_TEXT: Record<string, string> = {
 // 多处硬编码——收敛命名单源，调参只改这里。
 const POLL_INTERVAL_MS = 2000;
 const RESULT_PAGE_SIZE = 10;
+// ── 自动修复回链轮询（add-regression-auto-fix 4.2）：受理后 1s 间隔轮询
+// fix-result（request_created 回链守卫 + 命中即停），上限 30s——超限提示
+// daemon 未响应并恢复按钮（对齐 QualityTab getCodeFixRunResult 既有范式）。
+const FIX_POLL_INTERVAL_MS = 1000;
+const FIX_POLL_LIMIT_MS = 30_000;
 // 快照缺失时的展示回退，与后端 RegressionSpec.long_test_threshold_seconds
 // 缺省口径一致（改动须与 core/verify_contract.py 同步）
 const DEFAULT_LONG_TEST_THRESHOLD_SECONDS = 10;
@@ -202,6 +224,9 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
   // 按钮（及重复触发）同步禁用；running 置位或 120s 超时自动退出。
   const [awaitingStart, setAwaitingStart] = useState(false);
   const pollTimerRef = useRef<number | null>(null);
+  // 自动修复（add-regression-auto-fix）：触发在途 loading 态 + 回链轮询哨
+  const [fixPending, setFixPending] = useState(false);
+  const fixPollAbortedRef = useRef(false);
   // 请求序号守卫（对齐 QualityTab）：轮询与手动刷新并发时较慢的早期响应
   // 不得覆盖较新数据。
   const seqRef = useRef(0);
@@ -281,9 +306,13 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
 
   // 切离分面清理轮询
   useEffect(() => {
-    if (!active && pollTimerRef.current !== null) {
-      window.clearInterval(pollTimerRef.current);
-      pollTimerRef.current = null;
+    if (!active) {
+      if (pollTimerRef.current !== null) {
+        window.clearInterval(pollTimerRef.current);
+        pollTimerRef.current = null;
+      }
+      // 自动修复回链轮询同口径中止（handler 的 finally 复位 fixPending）
+      fixPollAbortedRef.current = true;
     }
   }, [active]);
 
@@ -293,6 +322,8 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
         window.clearInterval(pollTimerRef.current);
         pollTimerRef.current = null;
       }
+      // 自动修复回链轮询哨：卸载即中止（handleFix 轮询内逐步检查后退出）
+      fixPollAbortedRef.current = true;
     };
   }, []);
 
@@ -324,6 +355,69 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
       }
     } finally {
       setTriggering(false);
+    }
+  };
+
+  // ── 自动修复回归问题（add-regression-auto-fix 4.2）────────────────
+  // 可用性由快照机械判定（有异常用例才可点）；点击写文件信号，daemon
+  // 消费：读快照转换为 code-fix 台账条目并投递修复批。受理后 1s 间隔
+  // 轮询判定结果（上限 30s），仅认 request_created 回链本次 requested_at
+  // 的结果；触发成功指引「质量」页签既有 CodeFixProgressCard 看进展。
+  const handleFix = async () => {
+    if (fixPending) return; // loading 防重复：在途时重复点击不产生第二个信号
+    setFixPending(true);
+    fixPollAbortedRef.current = false; // 本轮请求开启新哨（上一轮取消状态作废）
+    try {
+      const res = await fixRegression(project);
+      const wantedAt = res.requested_at;
+      const deadline = Date.now() + FIX_POLL_LIMIT_MS;
+      let result: RegressionFixRunResult | null = null;
+      while (Date.now() < deadline) {
+        // 卸载/切走后停止轮询与提示（finally 复位 pending）
+        if (fixPollAbortedRef.current) return;
+        await new Promise((resolve) => setTimeout(resolve, FIX_POLL_INTERVAL_MS));
+        if (fixPollAbortedRef.current) return;
+        try {
+          const snap = await getRegressionFixResult(project);
+          if (snap.request_created && snap.request_created === wantedAt) {
+            result = snap;
+            break;
+          }
+        } catch {
+          // 单轮读取失败不终止轮询（daemon 消费稍后补结果文件）
+        }
+      }
+      if (fixPollAbortedRef.current) return;
+      if (result) {
+        if (result.triggered) {
+          message.success(
+            result.message || '已把回归问题转入修复台账，可在「质量」页签查看修复进展',
+          );
+        } else {
+          // 拒绝原因（已有修复在跑/无 open 条目/回归契约缺失等）由 daemon
+          // 结果文件的 message 如实回显；message 与 reason 皆缺省时兜底
+          message.warning(
+            result.message ||
+              (result.reason ? `未能投递：${result.reason}` : '未能投递自动修复请求'),
+          );
+        }
+      } else {
+        // 轮询超限：恢复按钮（finally）并提示 daemon 未响应
+        message.info('daemon 未响应，请确认 daemon 运行中');
+      }
+    } catch (e) {
+      // 业务拒绝按稳定错误码分支（对齐既有 triggerRegression 范式，
+      // code-review item 934af264345f：不做中文消息子串匹配）
+      if (e instanceof ApiError && e.code === 'regression_never_run') {
+        message.warning('最近一次回归快照缺失或不可解析，请先执行一次全量回归');
+      } else if (e instanceof ApiError && e.code === 'regression_no_issues') {
+        message.warning('最近一次回归无异常用例，无需修复');
+      } else {
+        const errMsg = e instanceof Error ? e.message : String(e);
+        message.error(`自动修复失败: ${errMsg}`);
+      }
+    } finally {
+      setFixPending(false);
     }
   };
 
@@ -403,6 +497,14 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
     status !== 'passed' ||
     (snapshot?.failures?.length ?? 0) > 0 ||
     (snapshot?.long_tests?.length ?? 0) > 0;
+
+  // 自动修复按钮可用性（add-regression-auto-fix，spec 机械判定口径）：
+  // 快照存在且问题列表非空（failures 非空 / long_tests 非空 / 整体超时）。
+  // 回归进行中/等待启动期间快照即将被覆盖，与触发按钮同口径禁用。
+  const fixAvailable =
+    (snapshot?.failures?.length ?? 0) > 0 ||
+    (snapshot?.long_tests?.length ?? 0) > 0 ||
+    status === 'timeout';
 
   const columns: ColumnsType<
     { key: string; name: string; file: string; line: number; time: number; kind: string; message?: string }
@@ -544,14 +646,30 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
           ) : null}
           {awaitingStart && !running ? <RunningProgressView waiting /> : null}
           <div style={{ marginTop: 4, textAlign: 'right' }}>
-            <Button
-              type="primary"
-              loading={triggering}
-              disabled={running || awaitingStart}
-              onClick={() => void handleTrigger()}
-            >
-              {triggerBtnLabel(running, awaitingStart)}
-            </Button>
+            <Space>
+              {/* 自动修复回归问题（add-regression-auto-fix）：可用性由快照机械
+                  判定；全绿禁用态悬停提示「无异常用例可修复」。disabled 按钮
+                  不触发悬停事件，按 antd 惯例外包一层 span 承载 Tooltip。 */}
+              <Tooltip title={fixAvailable ? undefined : '无异常用例可修复'}>
+                <span>
+                  <Button
+                    loading={fixPending}
+                    disabled={!fixAvailable || running || awaitingStart}
+                    onClick={() => void handleFix()}
+                  >
+                    自动修复回归问题
+                  </Button>
+                </span>
+              </Tooltip>
+              <Button
+                type="primary"
+                loading={triggering}
+                disabled={running || awaitingStart}
+                onClick={() => void handleTrigger()}
+              >
+                {triggerBtnLabel(running, awaitingStart)}
+              </Button>
+            </Space>
           </div>
         </Space>
       </Card>
