@@ -13,16 +13,13 @@ import type { CSSProperties } from 'react';
 import {
   App,
   Button,
-  Input,
   Spin,
   Typography,
 } from 'antd';
+import { MessageOutlined } from '@ant-design/icons';
 import {
-  MessageOutlined,
-  SendOutlined,
-  StopOutlined,
-} from '@ant-design/icons';
-import {
+  fetchSessionCommands,
+  fetchSessionFiles,
   getSession,
   sendSessionMessage,
   startSession,
@@ -32,6 +29,8 @@ import {
 } from '@/services/dashboard';
 import type { SessionEvent } from '@/services/dashboard';
 import { ClaudeMessageList, runEventsToChatMessages } from '@/components/claude-msg';
+import { SessionComposer } from '@/components/claude-composer';
+import { useIsMobile } from '@/hooks/useIsMobile';
 
 interface SessionPanelProps {
   project: string;
@@ -44,29 +43,42 @@ interface SessionPanelProps {
 // 内联分面的父链（ant-pro 布局 / antd Tabs 内部 holder）不被拉伸到视口高度，
 // 故 flex:1 撑不满——必须显式给出视口填充高度，否则回落到内容高度（旧的
 // minHeight 480 独占），输入区停在视口中部（本项目实测：1000px 视口停在 670）。
-// 顶部 190 = 布局顶栏 56 + 页头 72 + Tabs 导航 46 + Tabs 内容上边距 16；
+// 桌面：顶部 190 = 布局顶栏 56 + 页头 72 + Tabs 导航 46 + Tabs 内容上边距 16；
 // 底部 32 = 内容容器 padding-bottom。两者在 375~1920 宽 / 700~1440 高下实测恒定。
 // 超短视口（<542）由 minHeight 保底，退化为页面滚动。
+// 移动端（add-session-composer 3.2 / D5）：ProLayout 形态不同
+// （global.less 收紧 padding-inline 为 12，页头余量更小），222 常数不适用，
+// 独立常数 + dvh 组合（dvh 随浏览器工具栏收展，较 vh 贴地）；常数按 390×844
+// 实测校准（顶栏 56 + Tabs 46 + 上边距 16 + 底部 padding 12 + 余量 38）。
 const PANEL_LAYOUT_STYLE: CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
   height: 'calc(100vh - 222px)',
   minHeight: 320,
 };
-// 空态/错误分支的视口居中容器（loading 与 error/空态两种主轴方向）
-const FILL_CENTER_STYLE: CSSProperties = {
-  flex: 1,
+const PANEL_LAYOUT_STYLE_MOBILE: CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
-  alignItems: 'center',
-  justifyContent: 'center',
-  gap: 12,
+  // 390×844 实测（Task 4.1，playwright + stub claude serve 实例）：详情页
+  // 头部+分面页签在移动端占 222px，留 12px 底部呼吸 → 234。首版推定 168
+  // 实测偏小，页面出现 54px 纵向溢出（898 vs 844）。
+  height: 'calc(100dvh - 234px)',
+  minHeight: 320,
+};
+// 空态/错误分支的紧凑呈现容器（add-session-composer 3.2：弃用视口垂直+水平
+// 居中的悬空布局，改顶部左对齐紧凑排布）
+const COMPACT_NOTE_STYLE: CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  alignItems: 'flex-start',
+  gap: 8,
+  padding: '16px 2px',
 };
 const LOADING_ROW_STYLE: CSSProperties = {
-  flex: 1,
   display: 'flex',
   alignItems: 'center',
-  justifyContent: 'center',
+  gap: 8,
+  padding: '16px 2px',
 };
 const MESSAGE_AREA_STYLE: CSSProperties = { flex: 1, minHeight: 0, position: 'relative' };
 const TRUNCATED_BAR_STYLE: CSSProperties = {
@@ -76,15 +88,10 @@ const TRUNCATED_BAR_STYLE: CSSProperties = {
   right: 0,
   textAlign: 'center',
 };
-const INPUT_ROW_STYLE: CSSProperties = {
-  display: 'flex',
-  alignItems: 'flex-start',
-  gap: 8,
-  marginTop: 12,
-};
 
 export default function SessionPanel({ project, active }: SessionPanelProps) {
   const { message } = App.useApp();
+  const isMobile = useIsMobile();
   const [events, setEvents] = useState<SessionEvent[]>([]);
   const [loading, setLoading] = useState(false);
   const [sending, setSending] = useState(false);
@@ -93,11 +100,14 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
   // 移除会话后后续请求命中服务端无会话判定而报错）。在途期间禁用按钮，
   // finally 复位——失败也复位，保留重试能力。
   const [stopping, setStopping] = useState(false);
-  const [text, setText] = useState('');
   const [ended, setEnded] = useState(false);
   const [started, setStarted] = useState(false); // 会话是否已启动（session: null 时空态）
   const [truncated, setTruncated] = useState(false);
   const [error, setError] = useState('');
+  // 补全候选（add-session-composer 3.1/3.2）：端点封装已吞错降级为空数组
+  const [slashCommands, setSlashCommands] = useState<string[]>([]);
+  const [skills, setSkills] = useState<string[]>([]);
+  const [files, setFiles] = useState<string[]>([]);
   // 事件 uuid 去重集合：GET 全量重拉时清空重建，SSE 增量跳过已见项；
   // 无 uuid 的事件（stderr / session_ended 本地合成）不进集合
   const seenUuidsRef = useRef<Set<string>>(new Set());
@@ -298,12 +308,13 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
       // 注销后清空：active→false 转换路径下方清理函数已先行注销（标记已否），
       // cid 不清会在再次切离时被重复 DELETE（404）
       cidRef.current = null;
-      // 切离时清空本地状态，切回重新接回（events/started 由 loadAll 重置）
+      // 切离时清空本地状态，切回重新接回（events/started 由 loadAll 重置）；
+      // 输入草稿在 SessionComposer 内按 project 键持久化，切离不清（spec：
+      // 切页签草稿保留）
       sessionIdRef.current = null;
       setEnded(false);
       setSending(false);
       setStopping(false);
-      setText('');
     }
     // 卸载守卫（code-review item e71b2c2de7cf）：组件在 active===true 且已注册
     // watch 时被销毁，本 effect 主体不会「再跑」（React 卸载只执行清理函数，
@@ -356,24 +367,25 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
     }
   };
 
-  const handleSend = async () => {
+  // 发送（add-session-composer 3.2）：改由 SessionComposer 的发送单点回调，
+  // 文本参数化；失败 reject 让 composer 还原草稿（成功清空由 composer 处理）。
+  const handleSend = async (text: string) => {
     const t = text.trim();
     if (!t || sending || ended) return;
     if (!sessionIdRef.current) {
       message.error('会话尚未启动');
-      return;
+      throw new Error('会话尚未启动');
     }
     setSending(true);
-    setText('');
     try {
       await sendSessionMessage(project, t);
     } catch (e) {
       // 瞬态发送失败经 message.error 呈现（同 handleStop 口径），不落 error
       // state——error 分支会替换整块对话视图+输入区（转录被隐藏、无法就地
-      // 重试，code-review item b1609f78d29c）。并把已乐观清空的草稿还原，
-      // 避免失败后用户输入丢失。
+      // 重试，code-review item b1609f78d29c）。rethrow 让 composer 把输入
+      // 还原为发送前文本（失败不丢用户输入）。
       message.error(`发送失败：${e instanceof Error ? e.message : String(e)}`);
-      setText(t);
+      throw e instanceof Error ? e : new Error(String(e));
     } finally {
       setSending(false);
     }
@@ -395,6 +407,31 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
     }
   };
 
+  // 补全候选拉取（add-session-composer 3.1）：会话在飞时拉 commands/files。
+  // init 事件在进程启动后数百 ms 才到，首拉可能拿到空数组——3s 后补拉一次
+  // （幂等覆盖）；端点封装吞错，空数组即无候选，不打断输入。
+  useEffect(() => {
+    if (!active || !project || !started) return;
+    let disposed = false;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    const load = () => {
+      void fetchSessionCommands(project).then((c) => {
+        if (disposed) return;
+        setSlashCommands(c.slash_commands);
+        setSkills(c.skills);
+      });
+      void fetchSessionFiles(project).then((f) => {
+        if (!disposed) setFiles(f);
+      });
+    };
+    load();
+    retryTimer = setTimeout(load, 3000);
+    return () => {
+      disposed = true;
+      if (retryTimer) clearTimeout(retryTimer);
+    };
+  }, [active, project, started]);
+
   // 渲染分支抽具名 helper（code-review item d42f28cde496）：渲染体原为
   // loading→error→!started→默认会话视图的链式嵌套三元（项目规则禁止），
   // 分支语义不可读；改 if/else 早返回，样式引用模块级常量。
@@ -403,15 +440,13 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
       return (
         <div style={LOADING_ROW_STYLE}>
           <Spin size="small" />
-          <Typography.Text type="secondary" style={{ marginLeft: 8 }}>
-            加载会话...
-          </Typography.Text>
+          <Typography.Text type="secondary">加载会话...</Typography.Text>
         </div>
       );
     }
     if (error) {
       return (
-        <div style={FILL_CENTER_STYLE}>
+        <div style={COMPACT_NOTE_STYLE}>
           <Typography.Text type="danger">加载失败: {error}</Typography.Text>
           {/* 重试 = 清 error + 重跑加载路径（code-review item ca2aab0e3956：
               loadAll 经 reloadRef 从 effect 内暴露；旧实现只清 error，
@@ -429,7 +464,7 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
     }
     if (!started) {
       return (
-        <div style={FILL_CENTER_STYLE}>
+        <div style={COMPACT_NOTE_STYLE}>
           <Typography.Text type="secondary">尚未接入会话</Typography.Text>
           <Button type="primary" icon={<MessageOutlined />} onClick={() => void handleStart()}>
             开始会话
@@ -449,49 +484,23 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
             </div>
           ) : null}
         </div>
-        <div style={INPUT_ROW_STYLE}>
-          <Input.TextArea
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            placeholder={ended ? '会话已结束' : '输入消息…（Enter 发送，Shift+Enter 换行）'}
-            autoSize={{ minRows: 1, maxRows: 5 }}
-            disabled={ended || sending}
-            onPressEnter={(e) => {
-              if (e.nativeEvent.isComposing) return;
-              if (!e.shiftKey) {
-                e.preventDefault();
-                void handleSend();
-              }
-            }}
-            style={{ flex: 1 }}
-          />
-          <Button
-            type="primary"
-            icon={<SendOutlined />}
-            disabled={ended || sending || !text.trim()}
-            loading={sending}
-            onClick={() => void handleSend()}
-          >
-            发送
-          </Button>
-          <Button
-            danger
-            icon={<StopOutlined />}
-            disabled={ended || stopping}
-            loading={stopping}
-            onClick={() => void handleStop()}
-          >
-            停止会话
-          </Button>
-        </div>
-        {ended ? (
-          <Typography.Text type="secondary" style={{ display: 'block', marginTop: 8, fontSize: 12 }}>
-            会话已结束。切离本分面再切回可开始新会话。
-          </Typography.Text>
-        ) : null}
+        {/* 输入区由 session-composer 控件承载（dashboard-live-session delta：
+            发送/停止/终态禁用接既有逻辑；草稿持久化在控件内部按 project 键） */}
+        <SessionComposer
+          project={project}
+          sending={sending}
+          disabled={ended}
+          onSend={handleSend}
+          onStop={() => void handleStop()}
+          stopping={stopping}
+          canStop={started && !ended}
+          slashCommands={slashCommands}
+          skills={skills}
+          files={files}
+        />
       </>
     );
   };
 
-  return <div style={PANEL_LAYOUT_STYLE}>{renderBody()}</div>;
+  return <div style={isMobile ? PANEL_LAYOUT_STYLE_MOBILE : PANEL_LAYOUT_STYLE}>{renderBody()}</div>;
 }
