@@ -2773,6 +2773,11 @@ class CodeFixOrchestrator:
 
         # 第一次全量回归（执行根=worktree、锁根=主树，D10）
         attempt_run_ids: list[str] = []
+        # 首轮回归 passed 的快路径不进下方定向重试块，retry_run_id 须预初始
+        # 化为空串——批收尾 salvage 守卫按 ``retry_run_id or result.run_id``
+        # 取提交归属 run：快路径回落首轮（裸引用在快路径抛 UnboundLocalError，
+        # 批 worker 收尾整体中断，2026-09-25 验证打回实证）。
+        retry_run_id = ""
         write_progress(
             root,
             phase="regressing",
