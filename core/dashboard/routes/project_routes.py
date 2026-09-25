@@ -262,7 +262,12 @@ class H2ProjectRoutesMixin:
         if errors:
             self._json({"ok": False, "error": "；".join(errors)})
             return
-        # 成功：广播 refresh，概览不再返回该项目
+        # 成功：失效 projects() 缓存（settle 后首次 /api/overview 立即反映真值，
+        # 否则 TTL 内的旧缓存让已删项目「消失→重现→10s 后再消失」），再广播 refresh
+        try:
+            self.server.invalidate_projects_cache()
+        except Exception:
+            pass
         try:
             self.server.sse_hub.broadcast({"type": "refresh"})
         except Exception:

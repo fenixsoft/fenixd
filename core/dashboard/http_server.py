@@ -92,6 +92,15 @@ class DashboardHTTPServer(ThreadingHTTPServer):
                 self._cache_ts = now
         return self._projects_cache
 
+    def invalidate_projects_cache(self):
+        """使 projects() 的 TTL 缓存立即失效（下一次调用强制重新 discover）。
+
+        改变发现结果的写操作（删除项目等）完成后必须调用：缓存 TTL 内的
+        后续读请求否则会拿到变更前的旧项目集——已删项目在概览页
+        「消失→马上重现→约 10s（=TTL）后才再消失」。
+        """
+        self._cache_ts = 0.0
+
     def project_by_name(self, name: str):
         for p in self.projects():
             if p["name"] == name:

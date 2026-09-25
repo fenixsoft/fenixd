@@ -610,6 +610,34 @@ class TestProjectLifecycleAPI:
         finally:
             srv.stop()
 
+    def test_delete_invalidates_projects_cache(self, tmp_path, monkeypatch):
+        """删除成功必须立即失效 projects() 的 TTL 缓存。
+
+        回归背景：_projects_cache 带 10s TTL，删除写盘 ignored 后缓存不失效，
+        前端删除落定（settle）后的首次 GET /api/overview 撞上旧缓存——已删
+        项目在概览「消失→马上重现→约 10s 后才再消失」。失效后 settle 后的
+        首次拉取即反映服务端真值。
+        """
+        proot = make_project(tmp_path)
+        cfg = tmp_path / "dashboard.yaml"
+        reg = Registry(config_path=cfg)
+        reg.save({"port": 8787, "projects": [{"name": "proj-a", "path": str(proot)}],
+                  "scan_dirs": [str(tmp_path / "scan-empty")]})
+        srv = self._make_server(tmp_path, reg)
+        monkeypatch.setattr("core.dashboard.server.stop_daemon",
+                            lambda root: {"ok": True, "session": "s1", "was_running": True})
+        try:
+            names = {p["name"] for p in srv.httpd.projects()}
+            assert "proj-a" in names  # 预热缓存（此刻缓存含 proj-a，TTL 计时已开始）
+            status, body = srv.delete("/api/projects/proj-a")
+            assert status == 200 and body["ok"] is True
+            # 删除已写盘 ignored，缓存必须同步失效：即便 TTL 未到期，
+            # 下一次 projects() 也必须重新 discover，不得返回已删项目
+            names = {p["name"] for p in srv.httpd.projects()}
+            assert "proj-a" not in names
+        finally:
+            srv.stop()
+
     def test_lifecycle_tmux_error_returns_ok_false_not_500(self, tmp_path, monkeypatch):
         proot = make_project(tmp_path)
         cfg = tmp_path / "dashboard.yaml"
