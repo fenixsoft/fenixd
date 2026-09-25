@@ -296,7 +296,11 @@ def _apply_scenario_freeze(pipeline, spec_name: str) -> dict:
         try:
             # frozen-scenario-schema-migration 2.1：补齐写回同样恒定写入
             # schema_version（备份取回条目可能为旧 schema，先迁移再落盘）
-            scenarios_path.write_text(
+            # tmp+replace 原子写（与本文件 _render_scenario_change_section_to_report
+            # 同款）：裸写中途被 SIGKILL/断电会留下截断 JSON，下一轮
+            # _load_frozen_scenarios 会误判 corrupt，触发一轮人工裁决停摆。
+            tmp = scenarios_path.with_name(scenarios_path.name + ".tmp")
+            tmp.write_text(
                 json.dumps(
                     prepare_scenarios_for_write(write_valid),
                     ensure_ascii=False,
@@ -304,6 +308,7 @@ def _apply_scenario_freeze(pipeline, spec_name: str) -> dict:
                 ),
                 encoding="utf-8",
             )
+            tmp.replace(scenarios_path)
         except OSError as e:
             # 3.6：写回相关异常须 ERROR 留痕（外层 except 仅记 WARNING）
             pipeline._context.logger.error(
@@ -318,7 +323,11 @@ def _apply_scenario_freeze(pipeline, spec_name: str) -> dict:
         # 若只把写回挂补齐分支，非法条目仍留在 planner 写的文件、阶段2
         # 仍旧整轮失败。故在主路径写回过滤后合法子集，覆盖首轮/无缺失轮。
         try:
-            scenarios_path.write_text(
+            # tmp+replace 原子写（与本文件 _render_scenario_change_section_to_report
+            # 同款）：裸写中途被 SIGKILL/断电会留下截断 JSON，下一轮
+            # _load_frozen_scenarios 会误判 corrupt，触发一轮人工裁决停摆。
+            tmp = scenarios_path.with_name(scenarios_path.name + ".tmp")
+            tmp.write_text(
                 json.dumps(
                     prepare_scenarios_for_write(valid_planner),
                     ensure_ascii=False,
@@ -326,6 +335,7 @@ def _apply_scenario_freeze(pipeline, spec_name: str) -> dict:
                 ),
                 encoding="utf-8",
             )
+            tmp.replace(scenarios_path)
         except OSError as e:
             # 3.6：写回成为主路径，异常以 ERROR 留痕（不得只留 WARNING 旁证）
             pipeline._context.logger.error(
