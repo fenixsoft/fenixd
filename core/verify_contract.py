@@ -465,6 +465,12 @@ class ValidateResult:
     # 实际运行过才置 True，未执行段由 CLI 显示「未探测」；退出码与总体失败
     # 判定仍按 ready_ok，不受本标志影响。
     ready_ran: bool = False
+    # serve 实例是否实际启动（code-review item 3d9623096956）：prepare 失败
+    # 等路径下 serve 段整段跳过，而 serve_ok 保持初始 True，CLI 按其打印
+    # 「✓ 通过」会向用户谎报未启动的 serve 段已通过。serve 段实际执行过才
+    # 置 True，未执行段由 CLI 显示「未启动」；退出码与总体失败判定仍按
+    # serve_ok，不受本标志影响。
+    serve_ran: bool = False
     # 本次校验实际加载的契约对象（code-review item 73047bb4e140）：随结果一并
     # 返回，调用方（fenix_verify_contract.py CLI）全程复用同一份契约做跳过
     # 判定与 regression 自证，消除两次读取之间 verify.yaml 被改写导致「三段
@@ -547,6 +553,8 @@ def validate_contract(project_root: Path, logger=None) -> ValidateResult:
     valid = True
     serve_ok = True
     serve_error = ""
+    # serve 段是否实际执行（供 CLI 区分「未启动」与「通过」，item 3d9623096956）
+    serve_ran = False
     fail_kind = ""
     serve_kind = ""
     serve_port = None
@@ -608,6 +616,9 @@ def validate_contract(project_root: Path, logger=None) -> ValidateResult:
     ready_url = ""
     ready_expect = contract.ready.expect
     if contract.serve is not None and prepare_ok:
+        # serve 段实际执行过——prepare 失败时整段跳过，serve_ran 保持 False，
+        # CLI 据此显示「未启动」而非「✓ 通过」（item 3d9623096956）
+        serve_ran = True
         base_url = ""
         try:
             if contract.serve.kind == "static":
@@ -741,6 +752,7 @@ def validate_contract(project_root: Path, logger=None) -> ValidateResult:
         serve_port=serve_port,
         ready_url=ready_url,
         ready_expect=ready_expect,
+        serve_ran=serve_ran,
         ready_ran=ready_ran,
         contract=contract,
     )

@@ -196,8 +196,13 @@ def main():
     if result.prepare_error:
         print(f"  错误: {result.prepare_error}")
 
-    # 输出 serve 结果
-    print(f"[serve]   {'✓ 通过' if result.serve_ok else '✗ 失败'}", end="")
+    # 输出 serve 结果。serve 未实际启动时（prepare 失败等路径下 serve_ok 只是
+    # 初始 True）显示「未启动」而非「通过」，不谎报未执行的段已通过
+    # （code-review item 3d9623096956；退出码判定不受影响，仍按 serve_ok）。
+    if result.serve_ran:
+        print(f"[serve]   {'✓ 通过' if result.serve_ok else '✗ 失败'}", end="")
+    else:
+        print("[serve]   未启动", end="")
     if result.serve_kind:
         print(f"（kind={result.serve_kind}", end="")
         if result.serve_port:

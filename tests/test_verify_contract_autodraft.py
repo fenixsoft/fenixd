@@ -72,6 +72,7 @@ class TestValidateContract(unittest.TestCase):
         self.assertTrue(result.valid, f"valid should be True: {result.serve_error} {result.ready_error}")
         self.assertTrue(result.prepare_ok)
         self.assertTrue(result.serve_ok)
+        self.assertTrue(result.serve_ran)
         self.assertTrue(result.ready_ok)
         self.assertEqual(result.prepare_steps_run, 1)
         self.assertEqual(result.serve_kind, "static")
@@ -83,6 +84,8 @@ class TestValidateContract(unittest.TestCase):
         result = validate_contract(self.tmp)
         self.assertTrue(result.valid)  # 契约结构有效（YAML 正确 + serve 段合法）
         self.assertFalse(result.prepare_ok)
+        # prepare 失败跳过 serve 段 → serve 从未实际启动（item 3d9623096956）
+        self.assertFalse(result.serve_ran)
         self.assertIn("第 1 步", result.prepare_error)
 
     def test_serve_root_not_exist_still_valid(self):
@@ -538,6 +541,9 @@ class TestValidateContractCLI(unittest.TestCase):
         code, out, err = self._run_cli(str(self.tmp))
         self.assertEqual(code, 2)
         self.assertIn("失败", out)
+        # serve 段因 prepare 失败未启动，不得显示「✓ 通过」（item 3d9623096956）
+        self.assertIn("未启动", out)
+        self.assertNotIn("[serve]   ✓", out)
 
     def test_serve_failure_exit_3(self):
         """serve 失败 → exit 3。"""
