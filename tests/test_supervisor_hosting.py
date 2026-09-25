@@ -605,7 +605,8 @@ class TestDashboardHostingExposure:
     def test_approve_push_unmanaged_409_no_signal(self, three_projects_fx, monkeypatch):
         """事故回归：unmanaged 审批推送 → 409 且 approve_push_request.json 未创建。"""
         _pm, pu, _ps, srv = three_projects_fx
-        monkeypatch.setattr("core.fenix_session.hosting_state", lambda root=None: "unmanaged")
+        monkeypatch.setattr("core.dashboard.data.admin_actions._hosting_state",
+                            lambda root=None: "unmanaged")
         status, body = srv.post("/api/spec-approve-push?project=p-unmanaged&spec=otherspec")
         assert status == 409
         assert "未受 supervisor 托管" in body["error"]
@@ -614,7 +615,8 @@ class TestDashboardHostingExposure:
     def test_approve_push_managed_writes_signal(self, three_projects_fx, monkeypatch):
         """managed 审批推送 → 写入信号并返回成功。"""
         pm, _pu, _ps, srv = three_projects_fx
-        monkeypatch.setattr("core.fenix_session.hosting_state", lambda root=None: "managed")
+        monkeypatch.setattr("core.dashboard.data.admin_actions._hosting_state",
+                            lambda root=None: "managed")
         status, body = srv.post("/api/spec-approve-push?project=p-managed&spec=otherspec")
         assert status == 200
         assert body["ok"] is True
@@ -623,7 +625,8 @@ class TestDashboardHostingExposure:
     def test_approve_push_stopped_keeps_legacy_text(self, three_projects_fx, monkeypatch):
         """stopped 审批推送 → 409 且文案与既有 daemon_down 逐字一致。"""
         _pm, _pu, ps, srv = three_projects_fx
-        monkeypatch.setattr("core.fenix_session.hosting_state", lambda root=None: "stopped")
+        monkeypatch.setattr("core.dashboard.data.admin_actions._hosting_state",
+                            lambda root=None: "stopped")
         status, body = srv.post("/api/spec-approve-push?project=p-stopped&spec=otherspec")
         assert status == 409
         assert body["error"] == "daemon 未运行，请先启动 daemon"
