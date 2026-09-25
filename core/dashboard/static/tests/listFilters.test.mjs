@@ -12,14 +12,17 @@ import {
 
 const sp = (s) => new URLSearchParams(s);
 
-test('词表常量：状态 11 项、页签 4 项、类型 2 项', () => {
+test('词表常量：状态 11 项、页签 5 项、类型 2 项', () => {
   assert.equal(LIST_STATUSES.length, 11);
   assert.deepEqual(
     [...LIST_STATUSES],
     ['drafted', 'ready', 'reviewing', 'implementing', 'implemented', 'testing',
       'verified', 'bug-found', 'blocked', 'done', 'pushed'],
   );
-  assert.deepEqual([...LIST_TABS], ['dev', 'quality', 'regression', 'session']);
+  assert.deepEqual(
+    [...LIST_TABS],
+    ['dev', 'quality', 'regression', 'architecture', 'session'],
+  );
   assert.deepEqual([...LIST_TYPES], ['active', 'completed']);
 });
 

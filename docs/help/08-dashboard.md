@@ -44,7 +44,7 @@ Fenix Web Dashboard（`http://localhost:8787`）是跨项目的可视化监控�
 
 #### 项目详情页分面（/projects/:name）
 
-点进项目卡片进入详情页，顶部 Tabs 分四个分面：「SPEC 开发」（默认，SPEC 列表与状态操作）/「代码审查」（code-review 问题台账 + 手动触发，见前文）/「测试回归」/「Claude Code 会话」。各分面 active 门控：仅在选中时拉取数据，未选中零请求。
+点进项目卡片进入详情页，顶部 Tabs 分五个分面：「SPEC 开发」（默认，SPEC 列表与状态操作）/「代码审查」（code-review 问题台账 + 手动触发，见前文）/「测试回归」/「项目架构」/「Claude Code 会话」。各分面 active 门控：仅在选中时拉取数据，未选中零请求。
 
 「测试回归」分面（`GET /api/regression/result`）按最近一次全量回归快照 `.fenix/regression/last-run.json` 渲染三态：
 - **全绿（passed）**：概览卡片展示测试路径（`cmd`）、用例总数、通过数、执行时间（本地时区）、总耗时；若存在长耗时用例（单用例耗时 > `verify.yaml` 的 `regression.long_test_threshold_seconds`，缺省 10s）仍在其下展示长耗时用例表；
@@ -52,6 +52,10 @@ Fenix Web Dashboard（`http://localhost:8787`）是跨项目的可视化监控�
 - **未执行（never_run）/ 结果不可解析（parse_error）**：展示引导态（「尚未执行过全量回归」/「结果不可解析 + 原因」），不报错、不显示空表。
 
 分面不承载周期开关（归设置页「质量」页签），提供「立即执行全量回归」按钮（`POST /api/regression/run`，写 `.fenix/regression_request.json` 信号由 daemon 主循环消费，不在 HTTP 线程内同步跑——回归可运行 1800s）。运行中态以服务端快照的 `running` 字段为准（marker 新鲜度判定），跨刷新不丢失。
+
+「项目架构」分面承载按需生成的项目架构图。系统**不自动生成**：从未生成过时展示空态文案与「刷新架构图」按钮，点击后后端仅受理（`POST /api/architecture/refresh`），起后台线程 spawn 一次性 headless claude（挂 archify skill）阅读项目代码，产出自包含交互式 HTML 架构图，按项目存于 `.fenix/architecture/`（gitignored 运行时产物），经 `GET /api/architecture/diagram` 下发、前端以 `sandbox="allow-scripts"` 的 iframe 沙箱渲染（不带 allow-same-origin，产物脚本与主站隔离）。生成期间按钮置灰并以 3 秒间隔轮询状态（`GET /api/architecture/status`）；同一项目同时最多一个在飞生成（重复触发返回 409）。图的形态契约：只保留 8–16 个核心组件、突出且仅一条主要路径、标出外部依赖与信任边界、辅助信息进说明卡片不增加连线、节点与说明中文标注；产物按「退出码 → 文件存在且非空 → 自包含 HTML 特征 → 组件数 ∈ [8, 16]」机械判定，不采信 agent 自述（组件数无法提取时记空放行，可用性优先）。刷新即覆盖旧图，只保留最近一次。
+
+失败排查：本机未安装 archify skill 时，后端会在生成前自动执行 `npx skills add tt-a1i/archify -g`（限时 120 秒）；自动安装超时或失败时本次生成判 failed，错误信息原样携带该安装命令，可人工执行后重新点击重试。生成有 1800 秒硬超时，超时会整组击杀 claude 进程及其派生子进程并判 failed。**daemon 重启会中断在飞生成**：页签会把残留的「生成中」状态合成为失败（错误注明生成被中断），无需清理文件，直接重新点击「刷新架构图」即可。
 
 ### SPEC 详情页（/projects/:name/:spec）
 

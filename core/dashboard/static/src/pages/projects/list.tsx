@@ -50,6 +50,7 @@ import SpecStatusModal from './components/SpecStatusModal';
 import SessionPanel from './components/SessionPanel';
 import QualityTab from './components/QualityTab';
 import RegressionTab from './components/RegressionTab';
+import ArchitectureTab from './components/ArchitectureTab';
 // add-quality-gates-visibility：阶段→完成度/配色映射抽到纯函数模块（node:test
 // 可加载 .ts），list.tsx 原地 import 替换本地定义，调用点零改动
 import {
@@ -1402,6 +1403,15 @@ export default function SpecListPage() {
             // active 门控：仅在选中本分面时拉取 GET /api/regression/result，
             // 未选中零请求（对齐 QualityTab/SessionPanel 按需加载语义）
             children: <RegressionTab project={name} active={activeTab === 'regression'} />,
+          },
+          {
+            key: 'architecture',
+            label: '项目架构',
+            // add-project-architecture-tab：承载 archify 按需生成的项目架构图。
+            // ArchitectureTab active 门控：仅在选中本分面时拉取
+            // GET /api/architecture/status，未选中零请求（对齐
+            // QualityTab/RegressionTab 按需加载语义）；不自动触发生成
+            children: <ArchitectureTab project={name} active={activeTab === 'architecture'} />,
           },
           {
             key: 'session',

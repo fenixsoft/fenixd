@@ -1,11 +1,17 @@
 // add-spec-list-filter-stickiness D2/D3：功能开发列表过滤状态 ↔ URL 查询参数
 // 的白名单与缺省约定。纯函数形态（零依赖、无 JSX），便于纳入 node --test 纯函数单测。
 
-export type ListTab = 'dev' | 'quality' | 'regression' | 'session';
+export type ListTab = 'dev' | 'quality' | 'regression' | 'architecture' | 'session';
 export type ListTypeFilter = '' | 'active' | 'completed';
 
 // 页签合法值域（与项目页分面 Tabs 的 key 同序）
-export const LIST_TABS: readonly ListTab[] = ['dev', 'quality', 'regression', 'session'];
+export const LIST_TABS: readonly ListTab[] = [
+  'dev',
+  'quality',
+  'regression',
+  'architecture',
+  'session',
+];
 
 // 状态合法枚举（11 项）：与列表「全部状态」过滤下拉同源（list.tsx 的 Select
 // options 直接引用此常量），键序即 list.tsx 过滤下拉的既有展示序。
