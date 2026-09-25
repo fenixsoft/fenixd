@@ -1723,7 +1723,10 @@ def is_orphan_declaration(project_root, spec_name: str, entry: dict, spec_dir=No
         if tasks_file.exists():
             task_hits = _task_lines_mention(tasks_file.read_text(encoding="utf-8"), path)
     except (OSError, UnicodeDecodeError):
-        task_hits = []  # tasks.md 不可读 → 任务面未知，视同零出现（保守）
+        # tasks.md 不可读 → 任务面未知，与 git 故障同向 fail-open 判非孤儿：
+        # 未知态按「零出现」推进会误把本应回人工的条目判成孤儿，不保守。
+        evidence["skipped"] = "tasks-md-unreadable"
+        return {"orphan": False, "evidence": evidence}
     evidence["task_lines"] = task_hits
     if task_hits:
         return {"orphan": False, "evidence": evidence}

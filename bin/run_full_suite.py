@@ -454,7 +454,10 @@ def run_baseline_comparison(project_root, ref, timeout, basetemp_unique=False) -
             }
         try:
             # 基线 worktree 需要 .fenix 目录（配置模板）才能被 pytest 导入；
-            # 按真实运行结果归类（部分测试跳过时不影响失败集合）。
+            # 按真实运行结果归类。注意：.fenix 运行态文件（config.yaml 等，
+            # gitignore 排除不入库）不随 worktree 迁移，两侧环境不对称产生的
+            # 环境性失败会计入 baseline_failures——调用方的存量归类结论须带上
+            # 该限制声明（见 main 归类输出 baseline_env_note），不得静默采信。
             baseline = run_suite(
                 wt, timeout=min(BASELINE_TIMEOUT_SECONDS, timeout * 2),
                 basetemp_unique=basetemp_unique,
@@ -586,6 +589,14 @@ def main(argv=None) -> int:
                 # 按 spec：混合情形 MUST 判为存在本次引入回归（分类文案已体现）。
                 if cls_key in ("introduced", "mixed"):
                     result["verdict"] = "本次引入回归"
+                # 基线 worktree 的 .fenix 运行态（config.yaml 等，gitignore 排除
+                # 不入库）与主树不对等：环境性失败会计入 baseline_failures，
+                # 「cur ⊆ base → 存量」判定可把当前侧真实引入的回归误归为存量。
+                # 显式声明该限制，避免 verdict/人工判读静默采信不对称基线。
+                result["baseline_env_note"] = (
+                    "基线运行于临时 worktree，.fenix 运行态文件与主树不对等，"
+                    "环境性差异会污染两侧失败集合对比，存量归类可信度受限"
+                )
         print(f"\n[run_full_suite] 基线对比 ref={args.baseline} " f"→ {result['classification']}")
         if current_failed:
             print("[run_full_suite] 当前失败清单:")
@@ -595,6 +606,8 @@ def main(argv=None) -> int:
             print("[run_full_suite] 基线失败清单:")
             for f in base["baseline_failures"]:
                 print(f"  BASELINE_FAILED {f}")
+        if result.get("baseline_env_note"):
+            print(f"[run_full_suite] 注意: {result['baseline_env_note']}")
 
     if args.json:
         print(json_dumps(result))
