@@ -14,6 +14,7 @@ navigate 绝对 URL 硬要求随迁至 WebRunner.validate（经 scenarios.valida
 引擎不感知本模块内部细节。
 """
 
+import asyncio
 import re
 from urllib.parse import urlsplit
 
@@ -395,7 +396,8 @@ async def probe_web_environment(
     if not base and project_root:
         base = locate_app_base_url(candidates)
     if base:
-        healthy = probe_http_health(base, timeout=2.0)
+        # 线程池执行：probe_http_health 为同步阻塞探测（最坏 3×2s），避免卡死事件循环
+        healthy = await asyncio.to_thread(probe_http_health, base, timeout=2.0)
         detail = f"HTTP 探测 {base}: {'连通' if healthy else '失联'}"
     # 推流检查（扩展项目 / 浏览器可用时）
     if healthy and browser.is_extension_project:
