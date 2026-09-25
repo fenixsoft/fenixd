@@ -420,7 +420,36 @@ def subset_reverify(pipeline, spec_name: str, subset_ids: list) -> dict:
         return {"ok": False, "report": None, "reason": f"环境错误: {env_error}"}
     if not isinstance(report, dict):
         return {"ok": False, "report": None, "reason": "子集重验报告不可读"}
-    summary = report.get("summary") or {}
+    # 残缺报告守卫：summary 缺失或计数非法时 remaining 恒为 0，会把未经验证
+    # （甚至零场景实跑）的报告误判为通过后收敛 verified（绕开失败归因管道），
+    # 按重验失败回落整轮（与既有子集重验失败分支同构）。
+    summary = report.get("summary")
+    if not isinstance(summary, dict) or not all(
+        isinstance(summary.get(k), int) and not isinstance(summary.get(k), bool)
+        for k in ("passed", "failed", "errors")
+    ):
+        return {
+            "ok": False,
+            "report": None,
+            "reason": "子集重验报告缺 summary 或计数非法",
+        }
+    # 场景覆盖核对：引擎对子集文件每个场景（含异常路径）都产出一条结果，
+    # 报告实跑 id 集 MUST 覆盖写入子集文件的场景集且非空，否则按重验失败
+    # 回落整轮。
+    executed = {
+        str(sc.get("scenario_id") or sc.get("id") or "")
+        for sc in report.get("scenarios") or []
+        if isinstance(sc, dict)
+    }
+    run_ids = {
+        sid for sid, _deps, _raw in (_scenario_view(s) for s in subset) if sid
+    }
+    if not executed or not run_ids.issubset(executed):
+        return {
+            "ok": False,
+            "report": None,
+            "reason": "子集重验报告场景覆盖不全",
+        }
     remaining = int(summary.get("failed", 0) or 0) + int(summary.get("errors", 0) or 0)
     return {
         "ok": remaining == 0,

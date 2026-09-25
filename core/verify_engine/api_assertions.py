@@ -57,6 +57,32 @@ def json_schema_available() -> bool:
 _MISSING = object()
 
 
+def _split_path_tokens(path: str) -> list[str]:
+    """按点切分路径，引号段（``'...'`` / ``"..."``）内的点不切分。
+
+    分词正则支持引号键形态（``data['a.b']``），若直接 ``re.split(r"\\.", path)``
+    会把含点的引号键撕裂成两段静默求值失败，故逐字符感知引号后再切分。
+    """
+    parts: list[str] = []
+    buf: list[str] = []
+    quote: str | None = None
+    for ch in path:
+        if quote is not None:
+            buf.append(ch)
+            if ch == quote:
+                quote = None
+        elif ch in ("'", '"'):
+            quote = ch
+            buf.append(ch)
+        elif ch == ".":
+            parts.append("".join(buf))
+            buf = []
+        else:
+            buf.append(ch)
+    parts.append("".join(buf))
+    return parts
+
+
 def evaluate_json_path(data: Any, path: str, missing: Any = None) -> Any:
     """按点路径求值 JSON 子树。
 
@@ -64,6 +90,7 @@ def evaluate_json_path(data: Any, path: str, missing: Any = None) -> Any:
       - ``data.id``（对象键）
       - ``items[0].name``（数组下标）
       - 混合：``a.b[1].c``
+      - 引号键（含点的键名）：``data['a.b']``
     求值失败（键缺失/越界）返回 ``missing``（缺省 None——与「值相等或不等」
     语义无关，断言结果通过 actual=None 与 expected 对比即可区分；
     传入哨兵可区分「路径不存在」与「显式 null」）。
@@ -71,7 +98,7 @@ def evaluate_json_path(data: Any, path: str, missing: Any = None) -> Any:
     if not path:
         return data
     cur = data
-    for token in re.split(r"\.", path):
+    for token in _split_path_tokens(path):
         if cur is None:
             return missing
         while token:

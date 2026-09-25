@@ -138,6 +138,15 @@ export default function ClaudeOutputPane({
   // 不匹配即丢弃（防止上一 run 的事件前置/覆盖进新 run 列表）。
   const activeRunIdRef = useRef(runId);
   const activeProjectRef = useRef(project);
+  // 尾部快照落地序号守卫（code-review item e6c332a1dc8f）：初载 loadTail 与
+  // SSE hello 重同步两条 getRunTail 可并发在途，初载响应若晚于重同步落地，
+  // 整体替换写回会用更旧快照覆盖列表，丢掉重同步/run_events 增量已写入的
+  // 事件——此后连接稳定不再触发 hello 重同步、也无 reset，丢失不可自愈。
+  // 按派发序记账，只允许比「最新已落地快照」更新的响应写回（过期响应整包
+  // 丢弃，total/status 同源一并止损）；较新请求失败时不推进已落地序号，
+  // 初载响应仍可正常兜底。
+  const tailSnapSeqRef = useRef(0);
+  const tailSnapAppliedRef = useRef(0);
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -170,10 +179,15 @@ export default function ClaudeOutputPane({
     const reqRunId = runId;
     const reqProject = project;
     const loadTail = async () => {
+      const snapSeq = ++tailSnapSeqRef.current;
       try {
         setLoading(true);
         const data = await getRunTail(reqRunId, reqProject, tail);
+        // 过期快照（item e6c332a1dc8f）：更新的重同步快照已落地时整包丢弃，
+        // 防止整体替换回退列表
+        if (snapSeq <= tailSnapAppliedRef.current) return;
         if (isMountedRef.current && activeRunIdRef.current === reqRunId && activeProjectRef.current === reqProject) {
+          tailSnapAppliedRef.current = snapSeq;
           setEvents(data.events || []);
           setTotalEvents(data.total_events || 0);
           setError('');
@@ -253,6 +267,9 @@ export default function ClaudeOutputPane({
       // 服务端在 hello 中分配连接 cid —— watch 注册必须用它，否则 _conns.get(cid)
       // 匹配不到连接、订阅静默失效（自造 cid 是无效的）
       if (msg.type === 'hello' && msg.cid) {
+        // 派发即记账（item e6c332a1dc8f）：重同步快照与初载快照按同一序号
+        // 排序，晚落地的过期一方整包丢弃
+        const snapSeq = ++tailSnapSeqRef.current;
         void (async () => {
           try {
             await registerRunWatch(runId, project, msg.cid!);
@@ -267,7 +284,9 @@ export default function ClaudeOutputPane({
           // 尾部。币值守卫防旧 run 的迟到响应污染新 run（item 5dbf7b6044bf）。
           try {
             const data = await getRunTail(runId, project, tail);
+            if (snapSeq <= tailSnapAppliedRef.current) return; // 过期快照，丢弃
             if (isMountedRef.current && activeRunIdRef.current === runId && activeProjectRef.current === project) {
+              tailSnapAppliedRef.current = snapSeq;
               setTotalEvents(data.total_events || 0);
               reportStatus(data.status || '');
               const newerEvents = data.events || [];

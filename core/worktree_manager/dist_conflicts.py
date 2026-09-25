@@ -181,6 +181,17 @@ class G5DistConflictsMixin:
                 timeout=30,
             )
             remaining = _collect_unmerged_paths(res2.stdout) if res2.returncode == 0 else []
+            if res2.returncode != 0:
+                # 复查失败 = 无法确认剩余冲突：不静默吞掉分类证据，记 warning
+                # 后仍尝试 commit（若确有 unmerged 条目，git 会拒绝提交走向
+                # abort 路径，等价交回调用方）。
+                self.logger.warning(
+                    "worktree_manager",
+                    f"Build-artifact self-heal status recheck failed "
+                    f"(rc={res2.returncode}): "
+                    f"{(res2.stderr or '').strip()[:200]} — cannot confirm "
+                    f"remaining semantic conflicts, trying commit anyway",
+                )
             if remaining:
                 self.logger.warning(
                     "worktree_manager",

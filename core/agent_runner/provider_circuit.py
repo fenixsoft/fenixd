@@ -530,7 +530,8 @@ class ProviderCircuit:
         return st.get("switch_cooldown_until", 0.0) > now
 
     def switch_cooldown_until(self, provider_name: str) -> float:
-        """返回某 provider 当前 switch/限流冷却的到期时刻（epoch 秒）。
+        """返回某 provider 当前 switch/限流冷却的到期时刻（monotonic 单调秒，
+        与 ``self._pm._now()`` 同钟；调用方如需 epoch 截止须自行按单调差值换算）。
 
         add-code-review-concurrency-and-429-resilience：``ratelimit_redispatch``
         重派意图须携带「最早冷却到期时刻」，消费侧据此延迟重投递（冷却期内

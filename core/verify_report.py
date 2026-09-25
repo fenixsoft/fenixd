@@ -33,7 +33,8 @@ from pathlib import Path
 SIGNAL_MISSING = "verify_report_missing"
 
 # 升级告警写入节流（分钟）：同 spec 同类信号冷却期内不重复落库，
-# 防止多轮重验反复刷屏。与 admin.escalation_cooldown_minutes 同源。
+# 防止多轮重验反复刷屏。独立固定值，不读取配置——与
+# admin.escalation_cooldown_minutes（缺省 60 分钟）无关，两者数值也不同。
 _ALERT_COOLDOWN_MINUTES = 15
 
 # 合成报告携带的「合成源轮次指纹」标记：报告属哪一轮裁决的机器可读留痕。

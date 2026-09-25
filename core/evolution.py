@@ -1087,8 +1087,11 @@ def resolve_spec_name(name: str, item_id_: str, project_root, state_machine) -> 
 # ── 任务 3.5：接受路径 ─────────────────────────────────────────────
 
 
-def _git_commit(project_root, draft_copy: Path, spec_name: str) -> Tuple[bool, str]:
-    """仅 add 目标 spec 目录后提交（MUST NOT ``git add -A`` / ``git add .``）。
+def _git_commit(project_root, spec_name: str) -> Tuple[bool, str]:
+    """仅 add 目标 spec 目录后路径限定提交（MUST NOT ``git add -A`` / ``git add .``）。
+
+    commit 同样以 ``spec/changes/<name>`` 为 pathspec，确保索引中残留的
+    其他暂存内容不会被裹挟进本条提交。
 
     Returns: ``(ok, error)``；ok=False 时调用方负责清理未跟踪副本。
     """
@@ -1106,7 +1109,7 @@ def _git_commit(project_root, draft_copy: Path, spec_name: str) -> Tuple[bool, s
         return False, f"git add 失败: {add.stderr.strip()[:300]}"
     try:
         commit = subprocess.run(
-            git + ["commit", "-m", f"[fenix] spec: {spec_name}"],
+            git + ["commit", "-m", f"[fenix] spec: {spec_name}", "--", f"spec/changes/{spec_name}"],
             capture_output=True,
             text=True,
             timeout=60,
@@ -1331,7 +1334,7 @@ def accept_item(
                 "error": rec["draft_failed_reason"],
             }
 
-        ok, err = _git_commit(project_root, dest, name)
+        ok, err = _git_commit(project_root, name)
         if not ok:
             # 提交失败：删除副本（主树无未跟踪文件），保留暂存草稿可重试
             shutil.rmtree(dest, ignore_errors=True)

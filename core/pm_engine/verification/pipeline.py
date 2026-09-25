@@ -753,6 +753,21 @@ class VerificationPipeline:
                 if retry_judge.success:
                     verifier_result = self._read_verdict(spec_name)
                     verifier_status = verifier_result.status if verifier_result.ok else None
+                    # 重派成功且裁决可读同样须核对（code-review item
+                    # db9a50bcf07a）：重派 judge 常态 15-50 分钟，窗口内 spec
+                    # 可能已被人工复位（stale-result 防护拨回）或冻结接管后又
+                    # 重入 testing——stale 裁决直落 return 会交由下游
+                    # _apply_bug_found/_apply_verified 的 transition 覆写新一轮
+                    # 状态。与下方二次不可读分支 _apply_status 判据同口径：
+                    # 非 testing 时 DEBUG 丢弃本次结果，不交下游。
+                    _apply_status = (self._context.state_machine.read_one(spec_name) or {}).get("status", "")
+                    if _apply_status != "testing":
+                        self._context.logger.debug(
+                            "pm_engine",
+                            f"裁决重派后可读但 spec 已非 testing（当前 "
+                            f"'{_apply_status}'）'{spec_name}' — 丢弃，不阻断",
+                        )
+                        return None
             elif retry_status != "testing":
                 # 非 testing 丢弃（code-review item 3219564e2f22）：本节 docstring
                 # 明言「重试前复用入口状态判据（非 testing 丢弃，与 stale-result
