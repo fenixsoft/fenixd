@@ -89,12 +89,14 @@ export function matchSlashTrigger(textBeforeCursor: string): SlashTriggerMatch |
 export interface FileMentionMatch {
   /** `@` 在完整输入串中的位置。 */
   atIndex: number;
-  /** `@` 之后、光标之前的查询词（@ 后出现空格则不触发）。 */
+  /** `@` 之后、光标之前的查询词（@ 后出现空白则不触发）。 */
   query: string;
 }
 
 /**
- * @ 提及触发判定（spec：光标前最后一个 `@` 且其后无空格时触发）。
+ * @ 提及触发判定（spec：光标前最后一个 `@` 且其后无空白时触发；空白口径与
+ * matchSlashTrigger 的 `\S` 对齐，@ 后出现换行同样终止触发，避免跨行选中候选
+ * 时 replaceFileMention 丢弃换行后的后续文本）。
  * 输入为光标前文本；未命中返回 null。
  */
 export function matchFileMention(textBeforeCursor: string): FileMentionMatch | null {
@@ -103,7 +105,7 @@ export function matchFileMention(textBeforeCursor: string): FileMentionMatch | n
     return null;
   }
   const textAfterAt = textBeforeCursor.slice(lastAtIndex + 1);
-  if (textAfterAt.includes(' ')) {
+  if (/\s/.test(textAfterAt)) {
     return null;
   }
   return { atIndex: lastAtIndex, query: textAfterAt };
