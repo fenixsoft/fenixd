@@ -10,9 +10,10 @@ query string 解析，不消费请求体（对齐 regression_routes POST 契约�
 body 字节由派发层 _drain_remaining_request_body 排空）。
 
 生成机制（design D1/D3）：POST 只受理——起 daemon 守护线程跑一次性
-headless claude（archify skill 分析项目代码 → 自包含交互式 HTML），MUST NOT
-在 HTTP 线程内同步等待（全库分析可达 10–30 分钟，同步 HTTP 在浏览器休眠/
-代理超时下不可靠）。前端 generating 期间 3s 轮询 status。
+headless claude（vendored archify skill 指引原文注入提示词，分析项目代码
+→ 自包含交互式 HTML；零联网安装、零用户环境依赖），MUST NOT 在 HTTP
+线程内同步等待（全库分析可达 10–30 分钟，同步 HTTP 在浏览器休眠/代理
+超时下不可靠）。前端 generating 期间 3s 轮询 status。
 
 产物与状态存储（design D2）：项目根 ``.fenix/architecture/{diagram.html,
 status.json}``（gitignored 运行时产物）；status.json 每次状态迁移 tmp+rename
@@ -37,15 +38,6 @@ from pathlib import Path
 # 单次生成的硬超时（秒）。archify 全库分析 10–30 分钟量级，1800s 给足余量；
 # 超时以进程组方式击杀（design D3，防孙进程残留）。
 GEN_TIMEOUT_SECONDS = 1800
-
-# archify skill 自动安装限时（秒）。npx 首次拉包依赖外网可达性，超时判
-# 安装失败并给人工命令（design D4）。
-SKILL_INSTALL_TIMEOUT_SECONDS = 120
-
-# archify skill 安装命令（spec 契约文本：失败错误信息 MUST 原样携带，供
-# 用户复制人工执行）。
-ARCHIFY_INSTALL_CMD = ["npx", "skills", "add", "tt-a1i/archify", "-g"]
-ARCHIFY_INSTALL_CMD_TEXT = "npx skills add tt-a1i/archify -g"
 
 # 生成完成 marker 协议（autodraft marker 范式）：stdout 末行
 # ``ARCHIFY_DONE <组件数>``。
@@ -82,77 +74,54 @@ def _build_spawn_env() -> dict[str, str]:
     return env
 
 
-def _archify_skill_paths() -> list[Path]:
-    """archify SKILL.md 探测路径（design D4 顺序）。
+def _vendored_skill_root() -> Path:
+    """archify vendored 包根（design D2）：``<repo>/vendor/archify``。
 
-    settings env 可能覆盖 CLAUDE_CONFIG_DIR，两处都查：先
-    ``$CLAUDE_CONFIG_DIR/skills/archify/SKILL.md``，再
-    ``~/.claude/skills/archify/SKILL.md``。
+    以本文件位置锚定仓库根（routes → dashboard → core → 仓库根），脱离
+    daemon 进程 cwd 依赖（worktree 内跑单测同样成立）。skill 以 vendored
+    形式随库分发（VENDORED.md 溯源），生成链路零联网安装、零用户环境依赖。
     """
-    candidates: list[Path] = []
-    cfg_dir = os.environ.get("CLAUDE_CONFIG_DIR")
-    if cfg_dir:
-        candidates.append(Path(cfg_dir) / "skills" / "archify" / "SKILL.md")
-    candidates.append(Path.home() / ".claude" / "skills" / "archify" / "SKILL.md")
-    return candidates
+    return Path(__file__).resolve().parents[3] / "vendor" / "archify"
 
 
-def _skill_installed() -> bool:
-    return any(p.is_file() for p in _archify_skill_paths())
+def _skill_ready() -> bool:
+    """vendored 包完整性检查（design D3）：SKILL.md 存在且非空。
 
-
-def _ensure_archify_skill(logger=None) -> tuple[bool, str | None]:
-    """spawn 前保障 archify skill 可用（design D4）。
-
-    已安装 → (True, None)；缺失 → 后台线程内同步跑安装命令（限时）；
-    失败/超时 → (False, error)，error 原样携带安装命令文本供人工执行。
+    缺失/为空属部署损坏，由调用方判 failed（不触发任何安装动作）。
     """
-    if _skill_installed():
-        return True, None
+    skill_md = _vendored_skill_root() / "SKILL.md"
     try:
-        result = subprocess.run(
-            ARCHIFY_INSTALL_CMD,
-            capture_output=True,
-            text=True,
-            timeout=SKILL_INSTALL_TIMEOUT_SECONDS,
-        )
-    except subprocess.TimeoutExpired:
-        return (
-            False,
-            f"archify skill 自动安装超时（>{SKILL_INSTALL_TIMEOUT_SECONDS}s），"
-            f"请人工执行后重试: {ARCHIFY_INSTALL_CMD_TEXT}",
-        )
-    except Exception as exc:  # noqa: BLE001 — npx 不存在/网络栈异常等一律归安装失败
-        if logger is not None:
-            logger.warning(
-                "architecture_routes",
-                f"archify skill 自动安装执行异常: {type(exc).__name__}: {exc!r}",
-            )
-        return (
-            False,
-            f"archify skill 自动安装执行失败，请人工执行后重试: {ARCHIFY_INSTALL_CMD_TEXT}",
-        )
-    if result.returncode != 0 or not _skill_installed():
-        tail = (result.stderr or result.stdout or "")[-400:]
-        if logger is not None:
-            logger.warning(
-                "architecture_routes",
-                f"archify skill 自动安装失败（returncode={result.returncode}）: {tail}",
-            )
-        return (
-            False,
-            f"archify skill 自动安装失败，请人工执行后重试: {ARCHIFY_INSTALL_CMD_TEXT}",
-        )
-    return True, None
+        return skill_md.is_file() and skill_md.stat().st_size > 0
+    except OSError:
+        return False
+
+
+_SKILL_VENDORED_MISSING_ERROR = (
+    "archify skill 包缺件（vendor/archify/SKILL.md 缺失或为空），属部署损坏，"
+    "请对照 vendor/archify/VENDORED.md 恢复包后重试"
+)
 
 
 def _build_prompt(proot: Path, project_name: str) -> str:
-    """中文生成提示词（design D5）：五项形态约束 + 产物写盘绝对路径 +
-    ARCHIFY_DONE marker 协议。自包含，不依赖目标项目内有任何 fenixd 文件。"""
+    """中文生成提示词（design D4/D5）：vendored SKILL.md 指引原文注入 +
+    包根绝对路径 + 五项形态约束 + 产物写盘绝对路径 + ARCHIFY_DONE marker
+    协议。自包含，不依赖目标项目内有任何 fenixd 文件、不依赖用户环境已装
+    skill（指引原文直接注入，claude 读 vendored 伴生文件走绝对路径）。"""
     out = (proot / ARCHITECTURE_DIR / DIAGRAM_FILENAME).resolve()
-    return f"""请使用 archify skill 分析当前项目（{project_name}，项目根即当前工作目录）的代码，
+    skill_root = _vendored_skill_root()
+    skill_md = (skill_root / "SKILL.md").read_text(encoding="utf-8")
+    return f"""分析当前项目（{project_name}，项目根即当前工作目录）的代码，
 产出一张高层**运行时架构图**：核心组件有哪些、主链路怎么跑、依赖了哪些外部服务、
 信任边界在哪。
+
+【archify skill 指引（vendored 随库分发，无需安装，全程无网络依赖）】
+包根目录（绝对路径）：{skill_root}
+- 下方指引原文中出现的相对路径均相对该包根目录解析；
+- 指引中的校验步骤用 `node bin/archify.mjs validate …` 本地执行（无网络）。
+
+<archify-skill>
+{skill_md}
+</archify-skill>
 
 【产物要求】
 - 输出为单个自包含 HTML 文件（全部 CSS/JS 内联，不引用任何外部资源），写入绝对路径：
@@ -385,16 +354,18 @@ class ArchitectureManager:
         lock: threading.Lock,
         logger=None,
     ) -> None:
-        """生成线程体（design D3/D5）：skill 保障 → spawn → 超时治理 →
-        权威判定链 → 状态落盘。锁在线程结束时释放（finally）。"""
+        """生成线程体（design D3/D5）：vendored 包完整性检查 → spawn →
+        超时治理 → 权威判定链 → 状态落盘。锁在线程结束时释放（finally）。"""
         key = self._key(proot)
         t0 = time.monotonic()
         diagram_path = proot / ARCHITECTURE_DIR / DIAGRAM_FILENAME
         try:
-            # ── 1) archify skill 可用性（design D4）──────────────────
-            ok, skill_err = _ensure_archify_skill(logger)
-            if not ok:
-                self._finish(proot, started_at, t0, "failed", error=skill_err)
+            # ── 1) vendored archify 包完整性检查（design D3）─────────
+            if not _skill_ready():
+                self._finish(
+                    proot, started_at, t0, "failed",
+                    error=_SKILL_VENDORED_MISSING_ERROR,
+                )
                 return
 
             # ── 2) spawn headless claude（design D3）─────────────────

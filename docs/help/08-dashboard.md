@@ -53,9 +53,9 @@ Fenix Web Dashboard（`http://localhost:8787`）是跨项目的可视化监控�
 
 分面不承载周期开关（归设置页「质量」页签），提供「立即执行全量回归」按钮（`POST /api/regression/run`，写 `.fenix/regression_request.json` 信号由 daemon 主循环消费，不在 HTTP 线程内同步跑——回归可运行 1800s）。运行中态以服务端快照的 `running` 字段为准（marker 新鲜度判定），跨刷新不丢失。
 
-「项目架构」分面承载按需生成的项目架构图。系统**不自动生成**：从未生成过时展示空态文案与「刷新架构图」按钮，点击后后端仅受理（`POST /api/architecture/refresh`），起后台线程 spawn 一次性 headless claude（挂 archify skill）阅读项目代码，产出自包含交互式 HTML 架构图，按项目存于 `.fenix/architecture/`（gitignored 运行时产物），经 `GET /api/architecture/diagram` 下发、前端以 `sandbox="allow-scripts"` 的 iframe 沙箱渲染（不带 allow-same-origin，产物脚本与主站隔离）。生成期间按钮置灰并以 3 秒间隔轮询状态（`GET /api/architecture/status`）；同一项目同时最多一个在飞生成（重复触发返回 409）。图的形态契约：只保留 8–16 个核心组件、突出且仅一条主要路径、标出外部依赖与信任边界、辅助信息进说明卡片不增加连线、节点与说明中文标注；产物按「退出码 → 文件存在且非空 → 自包含 HTML 特征 → 组件数 ∈ [8, 16]」机械判定，不采信 agent 自述（组件数无法提取时记空放行，可用性优先）。刷新即覆盖旧图，只保留最近一次。
+「项目架构」分面承载按需生成的项目架构图。系统**不自动生成**：从未生成过时展示空态文案与「刷新架构图」按钮，点击后后端仅受理（`POST /api/architecture/refresh`），起后台线程 spawn 一次性 headless claude（archify skill 以 vendored 形式随库分发于 `vendor/archify/`，指引原文直接注入生成提示词，无需安装、零网络依赖）阅读项目代码，产出自包含交互式 HTML 架构图，按项目存于 `.fenix/architecture/`（gitignored 运行时产物），经 `GET /api/architecture/diagram` 下发、前端以 `sandbox="allow-scripts"` 的 iframe 沙箱渲染（不带 allow-same-origin，产物脚本与主站隔离）。生成期间按钮置灰并以 3 秒间隔轮询状态（`GET /api/architecture/status`）；同一项目同时最多一个在飞生成（重复触发返回 409）。图的形态契约：只保留 8–16 个核心组件、突出且仅一条主要路径、标出外部依赖与信任边界、辅助信息进说明卡片不增加连线、节点与说明中文标注；产物按「退出码 → 文件存在且非空 → 自包含 HTML 特征 → 组件数 ∈ [8, 16]」机械判定，不采信 agent 自述（组件数无法提取时记空放行，可用性优先）。刷新即覆盖旧图，只保留最近一次。
 
-失败排查：本机未安装 archify skill 时，后端会在生成前自动执行 `npx skills add tt-a1i/archify -g`（限时 120 秒）；自动安装超时或失败时本次生成判 failed，错误信息原样携带该安装命令，可人工执行后重新点击重试。生成有 1800 秒硬超时，超时会整组击杀 claude 进程及其派生子进程并判 failed。**daemon 重启会中断在飞生成**：页签会把残留的「生成中」状态合成为失败（错误注明生成被中断），无需清理文件，直接重新点击「刷新架构图」即可。
+失败排查：archify skill 随库分发于 `vendor/archify/`（溯源见 `VENDORED.md`），无需安装，生成零网络依赖；生成前会校验包完整性（`SKILL.md` 存在且非空），若报「包缺件，属部署损坏」的 failed 错误，说明部署目录缺件或损坏，对照 `vendor/archify/VENDORED.md` 恢复包后重新点击「刷新架构图」即可。生成有 1800 秒硬超时，超时会整组击杀 claude 进程及其派生子进程并判 failed。**daemon 重启会中断在飞生成**：页签会把残留的「生成中」状态合成为失败（错误注明生成被中断），无需清理文件，直接重新点击「刷新架构图」即可。
 
 ### SPEC 详情页（/projects/:name/:spec）
 
