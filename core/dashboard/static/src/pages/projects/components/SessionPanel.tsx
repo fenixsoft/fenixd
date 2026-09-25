@@ -121,6 +121,11 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
   // 事件 uuid 去重集合：GET 全量重拉时清空重建，SSE 增量跳过已见项；
   // 无 uuid 的事件（stderr / session_ended 本地合成）不进集合
   const seenUuidsRef = useRef<Set<string>>(new Set());
+  // 事件列表镜像 ref（code-review item 1371d6ca978a）：afterHello 第二次重拉
+  // 跑在 effect 闭包里，闭包捕获的 events state 是挂载时快照（stale closure）
+  // 读不到窗口内 SSE 增量——经本 ref 读取替换前的实时列表，供快照合并补回。
+  // events state 仅有 syncEvents / appendEvents 两个变更点，两处同步维护本 ref。
+  const eventsRef = useRef<SessionEvent[]>([]);
   const eventSourceRef = useRef<EventSource | null>(null);
   // cid 由服务端在 SSE hello 中分配（design D3：自造 cid 会静默失效）。初值必须为
   // null——分面未激活时无任何订阅可注销；若预置自造 cid，下方 [active] 清理
@@ -149,6 +154,7 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
         .map((ev) => (ev ? (ev.uuid as string | undefined) : undefined))
         .filter((u): u is string => Boolean(u)),
     );
+    eventsRef.current = next;
     setEvents(next);
   };
 
@@ -165,7 +171,8 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
       fresh.push(ev);
     }
     if (fresh.length > 0) {
-      setEvents((prev) => [...prev, ...fresh]);
+      eventsRef.current = [...eventsRef.current, ...fresh];
+      setEvents(eventsRef.current);
     }
   };
 
@@ -244,11 +251,29 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
             } catch (e) {
               console.error('Failed to register session watch:', e);
             }
-            // 注册后重拉一次（兜住注册前的窗口，design D6）
+            // 注册后重拉一次（兜住注册前的窗口，design D6）。
+            // 合并去重而非整表替换（code-review item 1371d6ca978a）：本 GET
+            // 发起后被服务端快照遗漏、却在快照应用前经 SSE append 的事件，
+            // 整表替换会把它从渲染列表抹掉、seenUuidsRef 按 snapshot 重建后
+            // 其 uuid 一并移除（SSE 每事件只推一次，下次重连/重拉前不再出现）。
+            // 以服务端快照为主序应用后，把「本地已有、快照缺失」的事件按原
+            // 顺序经 appendEvents 补回（uuid 并回去重集合）；无 uuid 事件
+            // （stderr / session_ended 合成）无法去重且快照含同类事件，维持
+            // 全量重拉丢弃的既有语义，不补回。
             const again = await getSession(project);
             if (disposed) return;
             if (again.session) {
+              const snapshotUuids = new Set(
+                (again.events || [])
+                  .map((ev) => (ev ? (ev.uuid as string | undefined) : undefined))
+                  .filter((u): u is string => Boolean(u)),
+              );
+              const carried = eventsRef.current.filter((ev) => {
+                const uuid = ev ? (ev.uuid as string | undefined) : undefined;
+                return Boolean(uuid) && !snapshotUuids.has(uuid);
+              });
               syncEvents(again.events || []);
+              appendEvents(carried);
               setTruncated(Boolean(again.truncated));
             }
           }
