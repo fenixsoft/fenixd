@@ -9,6 +9,37 @@
 from core.state_machine import ENV_BLOCK_ROUNDS_FIELD, VERIFY_INFRA_ROUNDS_FIELD
 
 
+def _discard_if_not_testing(pipeline, spec_name, result, label):
+    """在飞 verify 结果应用前状态复核的单一收敛点（code-review 05d216e0182d）。
+
+    _redispatch_fresh_verify 与 legacy 的 bug-found/verified/process-failure
+    三个应用分支共用同一判据：结果应用前 spec 已非 testing（终态已收敛 /
+    stale-result 防护拨回 implemented / 并发新 attempt 已接管）→ DEBUG 丢弃
+    并返回 True；仍在 testing → 返回 False 继续应用。状态判据与 DEBUG 文案
+    单点维护，防多处演进漏改其一造成行为漂移（与 _redispatch_fresh_verify
+    的收敛思路一致）。
+
+    前史（fix-verify-late-result-terminal-clobber D1 / fix-daemon-lifecycle-
+    races D6）：在飞 run 可长达数十分钟，入口判据只保证「派发时是 testing」，
+    不能替代应用时二次复核。2026-09-24 事故实证：机械车道已把 SPEC 推到
+    pushed 终态，在飞 LLM verifier 42 分钟后完成，结果文件被判 stale 后仍
+    直接覆写 implemented，触发终态回退 + 冗余全量重验。
+
+    ``label``：DEBUG 丢弃消息中的结果标签（foreign-role/unknown-status+stale/
+    stale/bug-found/verified/process-failure/plan-ready/scenario-repaired）。
+    """
+    _cur = (pipeline._context.state_machine.read_one(spec_name) or {}).get("status", "")
+    if _cur != "testing":
+        pipeline._context.logger.debug(
+            "pm_engine",
+            f"Stale/foreign verify result discarded for '{spec_name}' "
+            f"(run {result.run_id}, current state '{_cur}', result "
+            f"{label}) — spec no longer in testing, result dropped",
+        )
+        return True
+    return False
+
+
 def _redispatch_fresh_verify(pipeline, spec_name, result, reason, warn_reason=""):
     """stale/foreign re-dispatch 处置的单点收敛（code-review 842cfc9b4447）。
 
@@ -22,21 +53,10 @@ def _redispatch_fresh_verify(pipeline, spec_name, result, reason, warn_reason=""
     reason 注记，仅 foreign-role/foreign-stamp 传入（保持既有文案）。
     """
     # ── 在飞 verify 结果状态判据（fix-verify-late-result-terminal-clobber D1）──
-    # 结果应用前 spec 已非 testing（终态已收敛 / 并发新 attempt 已接管）
-    # → DEBUG 丢弃，不覆写状态、不重派、不记账 infra（终态 SPEC 记 infra
-    # 是噪音且附带预算豁免对终态无意义）。在飞 run 可长达数十分钟，入口
-    # 判据只保证「派发时是 testing」，不能替代应用时二次复核。
-    # 2026-09-24 事故实证：机械车道已把 SPEC 推到 pushed 终态，在飞 LLM
-    # verifier 42 分钟后完成，结果文件被判 stale 后仍直接覆写 implemented，
-    # 触发终态回退 + 冗余全量重验。
-    _cur = (pipeline._context.state_machine.read_one(spec_name) or {}).get("status", "")
-    if _cur != "testing":
-        pipeline._context.logger.debug(
-            "pm_engine",
-            f"Stale/foreign verify result discarded for '{spec_name}' "
-            f"(run {result.run_id}, current state '{_cur}', result "
-            f"{reason}) — spec no longer in testing, result dropped",
-        )
+    # 结果应用前 spec 已非 testing → DEBUG 丢弃，不覆写状态、不重派、不记账
+    # infra（终态 SPEC 记 infra 是噪音且附带预算豁免对终态无意义）。判据与
+    # 文案单点收敛于 _discard_if_not_testing（code-review 05d216e0182d）。
+    if _discard_if_not_testing(pipeline, spec_name, result, reason):
         return
     # ── verified 一次性放行门（judge-rerun-stability R2）──
     # 已 verified 且场景集未变时，陈旧/异归属残留不得把 verified 打回
@@ -330,14 +350,8 @@ def _run_legacy_verification(pipeline, spec_name: str):
             # 并发新 attempt 已接管 / 其它状态漂移）→ DEBUG 丢弃，不走失败迁移
             # 与 fallback 重派（拆除旧 reconcile：implemented→testing→bug-found
             # 回放 + 重复派发整轮 verifier）。正常路径 spec 恒为 testing。
-            _cur = (pipeline._context.state_machine.read_one(spec_name) or {}).get("status", "")
-            if _cur != "testing":
-                pipeline._context.logger.debug(
-                    "pm_engine",
-                    f"Stale/foreign verify result discarded for '{spec_name}' "
-                    f"(run {result.run_id}, current state '{_cur}', result "
-                    f"bug-found) — spec no longer in testing, result dropped",
-                )
+            # 判据与文案单点收敛于 _discard_if_not_testing（05d216e0182d）。
+            if _discard_if_not_testing(pipeline, spec_name, result, "bug-found"):
                 return
 
             # ── 归因分级门禁（legacy 路径同门禁，add-verdict-credibility-gate / D2）──
@@ -421,7 +435,10 @@ def _run_legacy_verification(pipeline, spec_name: str):
                 failure_class="product",
                 run_id=getattr(result, "run_id", "") or "",
             )
-        else:
+        elif verifier_status == "verified":
+            # code-review 06ca08e65666：仅 verified 裁决落入成功晋级分支；
+            # plan-ready/scenario-repaired 落入下方「验证未完成」分支，
+            # MUST NOT 按通过收口。
             # D6: legacy 路径同样前置进度核对：done>=total 才晋级
             vblocker = pipeline._check_verification_gate(spec_name)
             if vblocker:
@@ -461,15 +478,9 @@ def _run_legacy_verification(pipeline, spec_name: str):
             # 结果应用前 spec 已非 testing → DEBUG 丢弃，不走迁移与 fallback
             # 重派（拆除旧 reconcile：implemented→testing→verified 回放 +
             # 重派整轮 verifier）。02:13 事故即此路径：拨回 implemented 后在飞
-            # 旧 judge 完成，结果被丢弃而非回退重派。
-            _cur = (pipeline._context.state_machine.read_one(spec_name) or {}).get("status", "")
-            if _cur != "testing":
-                pipeline._context.logger.debug(
-                    "pm_engine",
-                    f"Stale/foreign verify result discarded for '{spec_name}' "
-                    f"(run {result.run_id}, current state '{_cur}', result "
-                    f"verified) — spec no longer in testing, result dropped",
-                )
+            # 旧 judge 完成，结果被丢弃而非回退重派。判据与文案单点收敛于
+            # _discard_if_not_testing（05d216e0182d）。
+            if _discard_if_not_testing(pipeline, spec_name, result, "verified"):
                 return
 
             pipeline._context.state_machine.transition(
@@ -502,6 +513,34 @@ def _run_legacy_verification(pipeline, spec_name: str):
             # fix-verdict-retry-misattribution D6）
             pipeline._clear_fail_history(spec_name)
             pipeline._context.on_spec_verified(spec_name)
+        else:
+            # code-review 06ca08e65666：plan-ready / scenario-repaired（及其它
+            # 非 verified 的合法裁决）＝验证未完成，不按通过收口。plan-ready＝
+            # 场景已（重）生成、执行阶段尚未真实跑过；scenario-repaired＝场景
+            # 刚被原地修复、修复场景尚未真实重跑通过——新车道对二者有专门的
+            # 重入通道（pipeline.py 改道重派 judge、escalation.py 原地修复
+            # 重入），legacy 降级车道无对应通道：与「验证未完成」阻断路径
+            # 同构，保持 testing 留 error、由 full_scan recovery 兜底重排
+            # 重验，MUST NOT 落入 verified 成功晋级分支（否则修复场景未
+            # 验证通过即假 verified 收口——done>=total 且通过数>0 时
+            # _check_verification_gate 与 _env_whitewash_gate 均拦不住）。
+            if _discard_if_not_testing(pipeline, spec_name, result, verifier_status):
+                return
+            pipeline._context.state_machine.update_spec(
+                spec_name,
+                {
+                    "tester_run": result.run_id,
+                    "error": (
+                        f"验证未完成 (legacy)：裁决 status={verifier_status}"
+                        f"（场景生成/场景修复裁决不按通过收口），保持 testing 待重验"
+                    ),
+                },
+            )
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"验证未完成 (legacy) '{spec_name}'：plan-ready/scenario-repaired "
+                f"裁决不按通过收口（status={verifier_status}），保持 testing 待重验",
+            )
     else:
         # ── verified 一次性放行门（judge-rerun-stability R2）──
         # verifier agent 进程失败的降级同样不得覆盖已 verified 结论。
@@ -511,15 +550,9 @@ def _run_legacy_verification(pipeline, spec_name: str):
         # 进程失败分支与上两个分支（bug-found/verified）同款复核：入口
         # testing 判据之后 run_verifier 期间状态已漂移（拨回 implemented/
         # 并发接管）→ DEBUG 丢弃陈旧失败结果，不 transition bug-found、
-        # 不覆盖 error/tester_run。
-        _cur = (pipeline._context.state_machine.read_one(spec_name) or {}).get("status", "")
-        if _cur != "testing":
-            pipeline._context.logger.debug(
-                "pm_engine",
-                f"Stale/foreign verify result discarded for '{spec_name}' "
-                f"(run {result.run_id}, current state '{_cur}', result "
-                f"process-failure) — spec no longer in testing, result dropped",
-            )
+        # 不覆盖 error/tester_run。判据与文案单点收敛于
+        # _discard_if_not_testing（05d216e0182d）。
+        if _discard_if_not_testing(pipeline, spec_name, result, "process-failure"):
             return
         pipeline._context.state_machine.transition(
             spec_name, "bug-found",
