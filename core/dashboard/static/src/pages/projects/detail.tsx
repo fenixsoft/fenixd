@@ -1104,7 +1104,8 @@ export default function SpecDetailPage() {
                       重试 {item.retry_count}{item.retry_max ? `/${item.retry_max}` : ''}
                     </Tag>
                   )}
-                  <Tag color={isFailed ? 'red' : st === 'stale' ? 'gray' : isRunning ? 'blue' : 'green'} style={{ marginInlineEnd: 0 }}>
+                  {/* 配色单一来源复用 dotColor（含 isAborted 橙色分支），与圆点语义一致 */}
+                  <Tag color={dotColor} style={{ marginInlineEnd: 0 }}>
                     {isGateBlocked ? '门禁拒绝' : st || '未知状态'}
                   </Tag>
                   {isFix && <Tag color="orange">🔧 {item.spec}</Tag>}

@@ -1777,6 +1777,12 @@ class SelfReviewScheduler:
                     existing = todo.read_text(encoding="utf-8", errors="replace")
                 except OSError:
                     existing = ""
+            # 与 _skip_review 同防护：当日节已存在（状态文件丢失重跑）不重复
+            # 追加，否则重复日期节使同小节条目 id（日期#小节#序号）撞车，
+            # 闭环移除按 id 匹配产生歧义。
+            if re.search(rf"(?m)^## {re.escape(date_str)}\s*$", existing):
+                self.logger.warning("self_review", f"{date_str}: todo.md 当日节已存在，跳过追加")
+                return
             if existing and existing.strip():
                 body = "\n\n" + content
             else:

@@ -780,7 +780,10 @@ def spec_detail(project_root, spec_name: str, entry: dict) -> dict:
         # add-cancelled-spec-resume-action 2.2：取消保持标记透传（与列表摘要
         # 同口径单点归一，零漂移；弹窗详情态渲染判据）
         "cancelled_hold": normalize_bool_flag(entry.get("_cancelled_hold")) if entry else False,
-        "depends_on": entry.get("depends_on"),
+        # add-spec-manual-activation D12：与列表摘要 spec_summary 同口径单点归一——
+        # STATE.md 对空依赖恒写 `depends_on: null`，透传会让详情态复现列表页
+        # 已修掉的「前置依赖」误标（见 _normalize_depends_on docstring）
+        "depends_on": _normalize_depends_on(entry.get("depends_on")),
         "tasks": _facade.parse_tasks(project_root, spec_name, spec_status),
         "tasks_note": _facade.tasks_note(project_root, spec_name, spec_status),
         "run_progress": _facade.run_task_progress(project_root, spec_name),

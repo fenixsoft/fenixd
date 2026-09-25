@@ -9,7 +9,8 @@ import re
 import time
 from pathlib import Path
 
-# 跨层引用（D4：叶子→中层/中枢，函数内延迟 import 避免循环）
+# 跨层引用（D4：叶子→中层/中枢；run_task_track 为仅依赖标准库的中性底层
+# 模块，顶层 import 不成环）
 from core.run_task_track import find_impl_run_file, parse_run_task_done
 # 该行导入同时即本模块对外的同名再导出，其余位置不重复 import。
 
@@ -43,8 +44,10 @@ def find_implementer_worktree(project_root, spec_name):
 # fix-impl-tasks-completion-gate D3：parse_run_task_done 与 find_impl_run_file
 # 的解析核心已下沉到中性模块 core/run_task_track.py（供 runner 产物硬门与
 # engine 门禁共用，避免 dashboard 消费层被 agent_runner 反向 import）；此处
-# 保留同名再导出，既有全部调用点（engine.py:961/1166、本模块 1406/1470 等）
-# 零改动仍可用。
+# 保留同名再导出：公开名经顶部 import 直接可用（引擎侧 pm_engine/engine.py
+# 的任务回写与缺口比对即消费 core.dashboard.data 门面再导出），下划线别名
+# _parse_run_task_done/_find_impl_run_file 供历史调用点（本模块 parse_tasks
+# 叠加路径、tests 旧引用）零改动仍可用。
 
 # 向后兼容别名：旧调用点（tests / 历史引用）仍可用下划线前缀名。
 _parse_run_task_done = parse_run_task_done

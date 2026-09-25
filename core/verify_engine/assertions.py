@@ -550,6 +550,18 @@ class AssertionRunner:
         selector = a["selector"]
         attr = a.get("attribute", "")
         expected = a.get("expected", "")
+        if not await self._element_exists(page, selector):
+            # 快速失败：比照 _assert_element_enabled 先查存在性，
+            # 避免元素缺失时 get_attribute 拖满 Playwright 默认 30 秒超时
+            return {
+                "type": "attribute_match",
+                "layer": 3,
+                "selector": selector,
+                "attribute": attr,
+                "expected": expected,
+                "pass": False,
+                "error": "元素不存在",
+            }
         actual = await self._locator(page, selector).get_attribute(attr)
         return {
             "type": "attribute_match",

@@ -418,6 +418,22 @@ async function launchChromeExtension(distPath, opts = {}) {
 // 网络日志设置
 // ============================================================================
 
+/**
+ * 脱敏请求/响应头：保留键名，敏感键（认证/Cookie/密钥类）的值替换为固定占位符
+ * networkLog 会随验证产物落盘（--output 文件或 stdout），不落盘密钥；
+ * 头检测（checkRequiredHeaders）只判断键名存在性，脱敏不影响
+ */
+function sanitizeHeaders(headers) {
+  if (!headers || typeof headers !== 'object') return headers;
+  const sanitized = {};
+  for (const [name, value] of Object.entries(headers)) {
+    sanitized[name] = /auth|cookie|token|key|secret/.test(name.toLowerCase())
+      ? '[REDACTED]'
+      : value;
+  }
+  return sanitized;
+}
+
 function setupNetworkLogging(page, networkLog) {
   page.on('request', (req) => {
     if (isExternalUrl(req.url())) {
@@ -425,7 +441,7 @@ function setupNetworkLogging(page, networkLog) {
         type: 'request',
         url: req.url(),
         method: req.method(),
-        headers: req.headers(),
+        headers: sanitizeHeaders(req.headers()),
         timestamp: Date.now(),
       });
     }
@@ -440,7 +456,7 @@ function setupNetworkLogging(page, networkLog) {
         method: res.request().method() || 'GET',
         status: res.status(),
         statusText: res.statusText(),
-        headers: res.headers(),
+        headers: sanitizeHeaders(res.headers()),
         timestamp: Date.now(),
       });
     }

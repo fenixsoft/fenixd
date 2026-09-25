@@ -18,6 +18,7 @@
  */
 
 import {
+  Alert,
   App,
   Button,
   DatePicker,
@@ -91,6 +92,8 @@ export default function SpecStatusModal({
   // 冻结管理状态
   const [freezeMode, setFreezeMode] = useState<'permanent' | 'scheduled'>('permanent');
   const [freezeUntil, setFreezeUntil] = useState<dayjs.Dayjs | null>(null);
+  // 晋升 lint 违规明细（null=无；非 null 时逐条内联渲染在晋升区块）
+  const [promoteViolations, setPromoteViolations] = useState<string[] | null>(null);
 
   const frozen = isFrozen(summary);
   const terminal = isTerminal(summary);
@@ -106,6 +109,7 @@ export default function SpecStatusModal({
   useEffect(() => {
     if (!open) return;
     setBudgetOverride(summary?.budget_override ?? null);
+    setPromoteViolations(null);
     // 初始化冻结管理状态
     if (summary?.frozen_until) {
       setFreezeMode('scheduled');
@@ -249,11 +253,16 @@ export default function SpecStatusModal({
             message.success(`SPEC「${spec}」已晋升 ready，等待调度`);
             onDone();
           } else {
-            // lint 违规：关闭弹窗并在页面展示违规明细（SPEC 停留 drafted）
-            const detail = result.violations?.join('；') || result.reason || result.error || '晋升失败';
-            message.error(`晋升失败：${detail}`);
-            onClose();
-            onDone();
+            // lint 违规：SPEC 停留 drafted（STATE 已写入错误明细）。不关闭弹窗，
+            // 违规明细逐条内联渲染在晋升区块（Alert 列表），用户可对照 STATE
+            // 中的错误定位声明问题后再手动关闭；后端未返回明细时回退展示
+            // reason/error。
+            setPromoteViolations(
+              result.violations?.length
+                ? result.violations
+                : [result.reason || result.error || '晋升失败（后端未返回违规明细）'],
+            );
+            message.error('晋升失败：存在 lint 违规，明细见晋升区块');
           }
         } catch (err) {
           message.error(`晋升失败：${err instanceof Error ? err.message : String(err)}`);
@@ -262,7 +271,7 @@ export default function SpecStatusModal({
         }
       },
     });
-  }, [project, spec, onDone, message, appModal, onClose]);
+  }, [project, spec, message, appModal]);
 
   // ── 审批推送（done，add-spec-approve-push-modal） ──────────
   // done 态的唯一闭环动作：确认后写 .fenix/approve_push_request.json 文件信号，
@@ -696,6 +705,26 @@ export default function SpecStatusModal({
             <Typography.Paragraph type="secondary" style={{ margin: '4px 0 8px' }}>
               将 SPEC 从 drafted 晋升为 ready。晋升将执行声明软化与 lint 检查；lint 违规时 SPEC 停留 drafted 并在 STATE 写入错误明细。
             </Typography.Paragraph>
+            {promoteViolations !== null && (
+              <Alert
+                type="error"
+                showIcon
+                style={{ marginBottom: 8 }}
+                message="晋升被 lint 拦截（SPEC 停留 drafted），违规明细："
+                description={
+                  <div style={{ maxHeight: 220, overflowY: 'auto' }}>
+                    {promoteViolations.map((v, i) => (
+                      <Typography.Paragraph
+                        key={i}
+                        style={{ margin: '0 0 4px', fontSize: 12, whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}
+                      >
+                        {`${i + 1}. ${v}`}
+                      </Typography.Paragraph>
+                    ))}
+                  </div>
+                }
+              />
+            )}
             <Button onClick={handlePromote} loading={loading}>
               晋升 ready
             </Button>
