@@ -909,7 +909,8 @@ export default function SpecListPage() {
               `已受理，正在停止 ${result.stopping} 个进行中的 agent`,
             );
           } else {
-            // 同步删除成功（无在跑 agent）——既有成功提示
+            // 同步删除成功（无在跑 agent，200 {ok: true}）——显式成功反馈
+            message.success(`SPEC「${record.name}」已删除`);
           }
           void load();
         } catch (err) {
