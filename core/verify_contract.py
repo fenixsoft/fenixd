@@ -222,6 +222,21 @@ def load_verify_contract(project_root: Path, logger=None) -> Optional[VerifyCont
     解析失败属配置错误而非「无契约」：记 warning 提醒修复（静默吞掉会让
     用户以为契约生效了）。
     """
+    return _load_verify_contract_with_raw(project_root, logger)[0]
+
+
+def _load_verify_contract_with_raw(
+    project_root: Path, logger=None
+) -> tuple[Optional[VerifyContract], Optional[dict]]:
+    """加载契约并同时返回原始 YAML dict：``(contract, raw_data)``。
+
+    raw_data 与 contract 出自同一次 read_text + yaml.safe_load（code-review
+    item f078ddc52b6b）：validate_contract 的 serve 段合法性判定需要原始
+    YAML（本函数会静默丢弃无效 kind），单次读取两用消除「两次读取之间
+    verify.yaml 被改写导致 serve 段判定与 contract 对象不是同一版本」的
+    TOCTOU 窗口。契约缺失/解析失败时两者均为 None。解析行为与既有
+    ``load_verify_contract`` 完全一致（后者即本函数的薄包装）。
+    """
     path = Path(project_root) / ".fenix" / CONTRACT_FILENAME
     if not path.is_file():
         # 旧布局守卫：.fenix 为实体目录而契约文件仍在项目根 = 契约静默失效
@@ -235,15 +250,15 @@ def load_verify_contract(project_root: Path, logger=None) -> Optional[VerifyCont
                     "实体目录，验证契约不会被加载。请迁移到 .fenix/"
                     f"{CONTRACT_FILENAME}（状态文件已统一迁入 .fenix/，见 932a078）",
                 )
-        return None
+        return None, None
     try:
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
     except Exception as e:
         if logger:
             logger.warning("verify_contract", f"验证契约解析失败（按无契约回退）: {e}")
-        return None
+        return None, None
     if not isinstance(data, dict):
-        return None
+        return None, None
 
     # prepare 步骤逐条解析（code-review item e892642d75db）：畸形条目（dict 缺
     # run／键名笔误／run 为空，或字符串与合法映射之外的其它形态）此前被静默
@@ -312,7 +327,7 @@ def load_verify_contract(project_root: Path, logger=None) -> Optional[VerifyCont
                 "verify_contract",
                 f"verify.yaml ready 段非法（须为映射，按无契约回退）: {ready_data!r}",
             )
-        return None
+        return None, None
     ready_data = ready_data or {}
     try:
         ready = ReadyProbe(
@@ -326,7 +341,7 @@ def load_verify_contract(project_root: Path, logger=None) -> Optional[VerifyCont
                 "verify_contract",
                 f"verify.yaml ready 段数值非法（按无契约回退）: {e}",
             )
-        return None
+        return None, None
     # 端口注入迁移告警（不阻断）：cmd 未引用注入端口时实例会与既有实例
     # 争抢固定端口（dashboard 端口独占语义下 = 杀掉占用者接管，2026-09-05
     # 验证实例顺带杀主树 dashboard 事故的根源），由未消费注入的兜底发现
@@ -407,7 +422,7 @@ def load_verify_contract(project_root: Path, logger=None) -> Optional[VerifyCont
         ready=ready,
         deps_mode=deps_mode,
         regression=regression,
-    )
+    ), data
 
 
 # valid=False 时的结构化失败原因枚举（code-review item fdb60ffde7a8）：CLI 按
@@ -485,9 +500,12 @@ def validate_contract(project_root: Path, logger=None) -> ValidateResult:
     project_root = Path(project_root)
     contract_path = project_root / ".fenix" / CONTRACT_FILENAME
 
-    # 1. 加载契约（YAML 解析）
+    # 1. 加载契约（YAML 解析）——单次读取同时取得契约对象与原始 YAML dict
+    # （code-review item f078ddc52b6b：第 2 步 serve 段合法性判定复用同一份
+    # raw_data，消除两次 read_text 之间 verify.yaml 被改写导致「serve 段判定
+    # 基于新版本而 contract 仍是旧版本」的残留 TOCTOU 窗口）
     try:
-        contract = load_verify_contract(project_root, logger)
+        contract, raw_data = _load_verify_contract_with_raw(project_root, logger)
     except Exception as e:
         return ValidateResult(
             valid=False,
@@ -533,30 +551,28 @@ def validate_contract(project_root: Path, logger=None) -> ValidateResult:
     serve_kind = ""
     serve_port = None
 
-    # 检查原始 YAML 中的 serve 段（load_verify_contract 会静默丢弃无效 kind）
-    try:
-        raw_data = yaml.safe_load(contract_path.read_text(encoding="utf-8"))
-        if isinstance(raw_data, dict):
-            raw_serve = raw_data.get("serve")
-            if isinstance(raw_serve, dict):
-                raw_kind = raw_serve.get("kind", "")
-                if raw_kind not in ("static", "command"):
-                    valid = False
-                    serve_ok = False
-                    fail_kind = FAIL_SERVE_INVALID
-                    serve_error = f"serve.kind 非法: {raw_kind}（应为 static 或 command）"
-                elif raw_kind == "static" and not raw_serve.get("root"):
-                    valid = False
-                    serve_ok = False
-                    fail_kind = FAIL_SERVE_INVALID
-                    serve_error = "serve.root 为空（kind=static 必填）"
-                elif raw_kind == "command" and not raw_serve.get("cmd"):
-                    valid = False
-                    serve_ok = False
-                    fail_kind = FAIL_SERVE_INVALID
-                    serve_error = "serve.cmd 为空（kind=command 必填）"
-    except Exception:
-        pass  # YAML 解析失败已在上方处理
+    # 检查原始 YAML 中的 serve 段（load_verify_contract 会静默丢弃无效 kind）；
+    # raw_data 与 contract 出自第 1 步同一次读取（item f078ddc52b6b），不再对
+    # contract_path 二次 read_text + safe_load
+    if isinstance(raw_data, dict):
+        raw_serve = raw_data.get("serve")
+        if isinstance(raw_serve, dict):
+            raw_kind = raw_serve.get("kind", "")
+            if raw_kind not in ("static", "command"):
+                valid = False
+                serve_ok = False
+                fail_kind = FAIL_SERVE_INVALID
+                serve_error = f"serve.kind 非法: {raw_kind}（应为 static 或 command）"
+            elif raw_kind == "static" and not raw_serve.get("root"):
+                valid = False
+                serve_ok = False
+                fail_kind = FAIL_SERVE_INVALID
+                serve_error = "serve.root 为空（kind=static 必填）"
+            elif raw_kind == "command" and not raw_serve.get("cmd"):
+                valid = False
+                serve_ok = False
+                fail_kind = FAIL_SERVE_INVALID
+                serve_error = "serve.cmd 为空（kind=command 必填）"
 
     # 从加载的契约中获取 serve 信息（用于输出）
     if contract.serve is not None:
@@ -1032,6 +1048,27 @@ def _probe_ports_responding(ports) -> set:
         return {p for p, ok in zip(ports, pool.map(_probe_port, ports)) if ok}
 
 
+def _cleanup_partial_node_modules(target: Path, logger=None) -> None:
+    """供给失败后 best-effort 清理残缺的 node_modules（code-review item
+    faa380dcc046）。
+
+    hardlink copytree 中途 OSError 与 npm ci/install 失败都可能留下部分创建
+    的 node_modules：供给入口的 ``exists()`` 短路下次会直接跳过，残缺依赖
+    永久留存，后续 ``npm run build`` 报 ``tsc: not found`` 类错误且难以定位
+    根因。清理失败只记 warning（不抛、不遮蔽原始失败日志）；目标不存在时
+    静默返回（多数失败路径本就未创建目录）。
+    """
+    if not target.exists():
+        return
+    try:
+        shutil.rmtree(target)
+    except OSError as e:
+        if logger:
+            logger.warning(
+                "verify_contract", f"残缺 node_modules 清理失败（{target}）: {e}"
+            )
+
+
 def provision_worktree_node_modules(
     worktree_root: Path,
     project_root: Path,
@@ -1088,6 +1125,9 @@ def provision_worktree_node_modules(
                             "verify_contract",
                             f"hardlink 供给失败（{sub}），降级 prefer-offline: {e}",
                         )
+                    # copytree 中途失败会残留残缺 node_modules（item
+                    # faa380dcc046）——降级前先清理，防 exists() 短路永久留存
+                    _cleanup_partial_node_modules(wt_dir / "node_modules", logger)
         if not provisioned:
             try:
                 r = subprocess.run(
@@ -1107,15 +1147,21 @@ def provision_worktree_node_modules(
                     )
                 if r.returncode == 0:
                     done.append(str(sub))
-                elif logger:
-                    logger.warning(
-                        "verify_contract",
-                        f"node_modules 供给失败（{sub}）: "
-                        f"{(r.stderr or r.stdout or '').strip()[-200:]}",
-                    )
+                else:
+                    if logger:
+                        logger.warning(
+                            "verify_contract",
+                            f"node_modules 供给失败（{sub}）: "
+                            f"{(r.stderr or r.stdout or '').strip()[-200:]}",
+                        )
+                    # npm ci/install 失败可能留下部分创建的 node_modules（item
+                    # faa380dcc046）——清理后下次供给才会重装而非被短路跳过
+                    _cleanup_partial_node_modules(wt_dir / "node_modules", logger)
             except (subprocess.SubprocessError, OSError) as e:
                 if logger:
                     logger.warning("verify_contract", f"node_modules 供给异常（{sub}）: {e}")
+                # 超时/异常中断同样可能残留半成品目录（item faa380dcc046）
+                _cleanup_partial_node_modules(wt_dir / "node_modules", logger)
     return done
 
 
@@ -1181,14 +1227,20 @@ def ensure_main_tree_deps(
                         "verify_contract",
                         f"主树依赖预装完成（{sub}，deps_mode={mode}）: {cmd}",
                     )
-            elif logger:
-                logger.warning(
-                    "verify_contract",
-                    f"主树依赖预装失败（{sub}）: " f"{(r.stderr or r.stdout or '').strip()[-200:]}",
-                )
+            else:
+                if logger:
+                    logger.warning(
+                        "verify_contract",
+                        f"主树依赖预装失败（{sub}）: " f"{(r.stderr or r.stdout or '').strip()[-200:]}",
+                    )
+                # npm 失败可能留下部分创建的 node_modules（item
+                # faa380dcc046）——清理后下次预装才会重装而非被短路跳过
+                _cleanup_partial_node_modules(target / "node_modules", logger)
         except (subprocess.SubprocessError, OSError) as e:
             if logger:
                 logger.warning("verify_contract", f"主树依赖预装异常（{sub}）: {e}")
+            # 超时/异常中断同样可能残留半成品目录（item faa380dcc046）
+            _cleanup_partial_node_modules(target / "node_modules", logger)
     return done
 
 
