@@ -1970,6 +1970,9 @@ class FenixDaemon:
         rename 到进程唯一临时名（原子占位：新写入者拿到的是全新路径、不会被误删），
         再读该私有副本并删除；读取/解析失败同样返回 None 并清理。
         """
+        # 「信号不存在」是各车道每秒轮询的绝对常态，先 exists() 判空避免稳态下每轮 mkstemp+unlink 的无谓churn（item 97fdc0ac0a2f）
+        if not req_path.exists():
+            return None
         tmp_path = None
         try:
             fd, tmp_str = tempfile.mkstemp(
