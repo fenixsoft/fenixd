@@ -63,8 +63,10 @@ def main():
 
     args = parser.parse_args()
     project_root = Path(args.project).expanduser().resolve() if args.project else PROJECT_ROOT
-    # 直接以框架 bin/ 路径调用时 PROJECT_ROOT 三级上溯会指到仓库父目录（其下无 spec/），
-    # 各命令报错路径随之误导排查：此场景下给错误信息附加推断根与 --project 指引。
+    # 直接以框架 bin/ 路径调用时 PROJECT_ROOT 三级上溯会指到仓库父目录（其下无 spec/）。
+    # new 是创建性命令，会在错误根下 mkdir 出错位脚手架（fenix_archive.py 对同场景
+    # 是检测 spec/ 缺失即回退框架根），故在 new 分支内前置拒绝而非仅附报错提示；
+    # 其余只读命令维持报错路径附加推断根与 --project 指引（root_hint）。
     root_hint = (
         ""
         if args.project or (project_root / "spec").exists()
@@ -81,6 +83,23 @@ def main():
             _emit({**error_base, "error": str(e) + root_hint}, ok=False)
 
     if args.command == "new":
+        # 与 fenix_archive.py 的 spec/ 缺失防线对齐：new 未经 .fenix 软链接且未显式
+        # 传 --project 时推断根可能指到仓库父目录，new_change 的 mkdir(parents=True)
+        # 会成功在错误根下创建 spec/changes/<name>，故此处直接拒绝执行。
+        if not args.project and not (project_root / "spec").exists():
+            _emit(
+                {
+                    "ok": False,
+                    "path": None,
+                    "error": (
+                        f"项目根推断为 {project_root}，其下不存在 spec/ —— "
+                        "疑似直接以框架 bin/ 路径调用，拒绝创建错位脚手架；"
+                        "请用 --project 显式指定项目根目录"
+                    ),
+                },
+                ok=False,
+            )
+            return
         _run(
             lambda: {"ok": True, "path": str(new_change(project_root, args.name)), "error": None},
             {"ok": False, "path": None},

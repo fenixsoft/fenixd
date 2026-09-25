@@ -540,8 +540,9 @@ def _scenario_has_failed_assertion_evidence(scenario: dict) -> bool:
     return False
 
 
-def _is_visual_classification(classification: str) -> bool:
-    """分类是否涉及视觉现象（visual/rendering 断言）。"""
+def _is_product_bug_classification(classification: str) -> bool:
+    """当前仅 product-bug 分类参与 pending-visual 判定（业务约束，
+    非泛化的「是否涉及视觉现象」判定：test-defect/flaky/env 等一律 False）。"""
     return classification in ("product-bug",)
 
 
@@ -633,7 +634,7 @@ def compute_attribution_level(scenario: dict) -> str:
     # 证据不解除视觉类场景的 pending-visual，视觉断言仍待截图佐证
     # （tests/test_verdict_credibility_gate.py s7 钉死该顺序；下游
     # should_suppress_bug_found 对两级别同待遇）。
-    if _is_visual_classification(classification):
+    if _is_product_bug_classification(classification):
         if _has_visual_assertions(scenario):
             return ATTRIBUTION_LEVEL_PENDING_VISUAL
 
@@ -1114,7 +1115,13 @@ def tag_cached_attributions(report: dict, cache: dict, spec_name: str = "") -> l
         labels = sc.get("screenshot_labels") or {}
         if not isinstance(labels, dict):
             labels = {}
-        evidence = sc.get("evidence") or {}
+        # evidence 非 dict 按空处理（与 _scenario_has_substantive_evidence /
+        # compute_attribution_level 的 item 803f6a23f662 防御同口径：非 dict
+        # 真值 .get 抛 AttributeError 会被门禁「异常不阻断」吞掉，跨轮缓存
+        # 打标与纯缓存归因降级 speculative 整段被跳过）。
+        evidence = sc.get("evidence")
+        if not isinstance(evidence, dict):
+            evidence = {}
         ev_screenshots = evidence.get("screenshots") or []
         has_real_screenshots = isinstance(ev_screenshots, list) and any(
             isinstance(s, str) and s.strip() for s in ev_screenshots

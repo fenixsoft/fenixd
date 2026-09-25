@@ -708,7 +708,22 @@ class AssertionRunner:
         """
         selector = a["selector"]
         axis = a.get("axis", "left")
-        tolerance = a.get("tolerance", 2)
+        if axis not in ("left", "top"):
+            # 确定性失败而非 KeyError：非法轴名直接给出可定位的提示，
+            # 避免被 run() 包装成无上下文的「断言执行异常」。
+            return {
+                "type": "alignment",
+                "layer": 4,
+                "selector": selector,
+                "axis": axis,
+                "pass": False,
+                "error": f"非法 axis: {axis!r}，仅支持 left/top",
+            }
+        try:
+            tolerance = float(a.get("tolerance", 2))
+        except (TypeError, ValueError):
+            # 非数值容差回退默认值，避免在比较处抛 TypeError。
+            tolerance = 2.0
 
         if not await self._element_exists(page, selector):
             return {

@@ -495,7 +495,10 @@ class ConfigLoader:
                     raise ValueError(f"Missing required config key: '{key}'")
 
         # Validate schedule
-        schedule = config.get("schedule") or {}
+        # 段入口经 _segment_or_empty 归一（code-review item c382e6a9ea84）：
+        # 真值非 dict 段（如 schedule: [1]）不再以 AttributeError 崩溃，而是
+        # ERROR 告警 + 按空段降级，对齐下方 agents/admin 段口径。
+        schedule = cls._segment_or_empty(config, "schedule")
         poll = schedule.get("poll_interval_minutes", 30)
         # 排除 bool（code-review item e9c679fb1bb3）：bool 是 int 子类，
         # YAML `poll_interval_minutes: true` 会通过 isinstance 校验并以 True 参与
@@ -576,8 +579,10 @@ class ConfigLoader:
             if ptype not in cls.VALID_PROJECT_TYPES:
                 raise ValueError(f"project.type must be one of {cls.VALID_PROJECT_TYPES}: {ptype}")
 
-        # Validate llm.providers (optional — absence means empty registry)
-        llm = config.get("llm") or {}
+        # Validate llm.providers (optional — absence means empty registry)；
+        # 段入口经 _segment_or_empty 归一（code-review item c382e6a9ea84），
+        # 真值非 dict 段（如 llm: 3）按空段降级，不进 _validate_llm 崩溃。
+        llm = cls._segment_or_empty(config, "llm")
         if llm:
             cls._validate_llm(llm)
 
@@ -588,8 +593,10 @@ class ConfigLoader:
         if "models" in agents and agents["models"] is not None:
             cls._validate_agent_models(agents["models"], llm)
 
-        # Validate gates.approve_mode (optional — defaults to manual)
-        gates = config.get("gates") or {}
+        # Validate gates.approve_mode (optional — defaults to manual)；
+        # 段入口经 _segment_or_empty 归一（code-review item c382e6a9ea84），
+        # 真值非 dict 段按空段降级，避免脏段以 AttributeError 崩溃校验路径。
+        gates = cls._segment_or_empty(config, "gates")
         if "approve_mode" in gates and gates["approve_mode"] is not None:
             mode = gates["approve_mode"]
             if mode not in cls.VALID_APPROVE_MODES:
@@ -708,7 +715,9 @@ class ConfigLoader:
         # 非负整数（0 = 禁用）；非法值记日志并按默认 50 兜底（宽松校验，
         # 不因坏一个值阻断整个配置热更新/加载）。用户级与项目级均可设置，
         # 项目级经深合并优先。
-        archive = config.get("archive") or {}
+        # 段入口经 _segment_or_empty 归一（code-review item c382e6a9ea84）：
+        # 真值非 dict 段按空段降级，不中断加载与热更新。
+        archive = cls._segment_or_empty(config, "archive")
         if "auto_threshold" in archive and archive["auto_threshold"] is not None:
             at = archive["auto_threshold"]
             if not isinstance(at, int) or isinstance(at, bool) or at < 0:

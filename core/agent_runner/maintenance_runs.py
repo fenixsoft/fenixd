@@ -1709,7 +1709,7 @@ def _check_code_fix_artifact(items, out_path: Path) -> str | None:
 
     判据（fail-closed）：
     - ``items`` 为空 → None（调用方前置跳过场景，不重复判定）；
-    - ``out_path`` 不存在，或存在但**零有效行** → 返回失败原因。
+    - ``out_path`` 不存在，或读取抛 OSError，或存在但**零有效行** → 返回失败原因。
 
     「有效行」与编排侧 ``read_fix_out`` 同口径：非空、可解析为 dict、含
     非空 ``item_id`` 且 ``status ∈ {fixed, skipped}``——「该条处置完了」的
@@ -1723,7 +1723,16 @@ def _check_code_fix_artifact(items, out_path: Path) -> str | None:
             f"（{out_path}）——run 正常退出但零产物，判失败（fail-closed）"
         )
     valid = 0
-    for line in out_path.read_text(encoding="utf-8", errors="replace").splitlines():
+    try:
+        text = out_path.read_text(encoding="utf-8", errors="replace")
+    except OSError as e:
+        # 判存与读取之间权限收紧等读取异常不得穿透 run_code_fix 的
+        # 「异常折算为失败信封」收尾，按硬门失败语义折算为失败原因（fail-closed）。
+        return (
+            f"code-fix 产物读取失败: 注入清单 {len(items)} 条但 {out_path} "
+            f"读取异常（{e}），判失败（fail-closed）"
+        )
+    for line in text.splitlines():
         line = line.strip()
         if not line:
             continue

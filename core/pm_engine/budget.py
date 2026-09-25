@@ -176,7 +176,7 @@ class ImplBudget:
 
         fix-run-hang-amplification D2：豁免仅适用于基础设施性死亡（daemon
         shutdown/interrupted、网关链路耗尽/provider circuit open）；监督超时/
-        被判停滞而杀（reason 含 "extension budget exhausted" 或 "stagnant"）
+        被判停滞而杀（不可豁免判据见 ``_is_exemptable_reason``）
         MUST NOT 豁免——它确实消耗了整份预算。
 
         Args:
@@ -256,7 +256,9 @@ class ImplBudget:
         """判定 run终态 reason 是否属于基础设施性死亡（可豁免）。
 
         不可豁免（监督超时/被判停滞而杀）：reason 含
-          "extension budget exhausted"（监督超时续期用尽）或 "stagnant"（被判停滞）。
+          "extension budget exhausted"（监督超时续期用尽）、"stagnant"（被判停滞）、
+          "absolute_max_seconds cap reached"（总墙钟上限，判定先于续期预算用尽）
+          或 "run timeout reached"（监督停用时的纯墙钟杀）。
         其他情况视为基础设施性死亡（进程消失/无结果/daemon shutdown/interrupted/
         网关链路耗尽/provider circuit open 等）。
         """
@@ -264,6 +266,10 @@ class ImplBudget:
         if "extension budget exhausted" in r:
             return False
         if "stagnant" in r:
+            return False
+        if "absolute_max_seconds cap reached" in r:
+            return False
+        if "run timeout reached" in r:
             return False
         return True
 
@@ -419,18 +425,29 @@ class ImplBudget:
         if not runs_dir.is_dir():
             return 0
         newest_attempt: dict = {}
-        for p in runs_dir.glob(f"impl-{spec_name}-*.jsonl"):
-            if run_spec_part(p.stem) != spec_name:
-                continue  # 精确归属守卫（fix-x vs fix-x-y 前缀误命中全部排除）
-            # 归并键剥除 attempt/瞬态重试后缀：-a1 与 -a1-r2 同属一个 run
-            base = strip_run_id_suffixes(p.stem)
-            try:
-                mtime = p.stat().st_mtime
-            except OSError:
-                continue
-            prev = newest_attempt.get(base)
-            if prev is None or mtime > prev[0]:
-                newest_attempt[base] = (mtime, p)
+        # glob 是惰性生成器，迭代期间的 OSError（权限/IO 抖动）会向上冒泡进
+        # 对账主流程（item ba82df251f21）——守卫写法与同文件
+        # _impl_run_unmaterialized / _budget_reconcile_has_exemption 对齐：
+        # 扫描失败按 0 计并记 WARNING，不阻断调用方主流程。
+        try:
+            for p in runs_dir.glob(f"impl-{spec_name}-*.jsonl"):
+                if run_spec_part(p.stem) != spec_name:
+                    continue  # 精确归属守卫（fix-x vs fix-x-y 前缀误命中全部排除）
+                # 归并键剥除 attempt/瞬态重试后缀：-a1 与 -a1-r2 同属一个 run
+                base = strip_run_id_suffixes(p.stem)
+                try:
+                    mtime = p.stat().st_mtime
+                except OSError:
+                    continue
+                prev = newest_attempt.get(base)
+                if prev is None or mtime > prev[0]:
+                    newest_attempt[base] = (mtime, p)
+        except OSError as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"runs 目录扫描失败 '{spec_name}'（按 0 计）: {e}",
+            )
+            return 0
         count = 0
         for _mtime, path in newest_attempt.values():
             if not self._run_file_died(path):

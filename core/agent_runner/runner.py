@@ -2167,8 +2167,7 @@ class AgentRunner:
             transient_budget = self._parse_transient_backoff_schedule(
                 self._get_config("agents.transient_backoff_schedule", "30,60,120"))
             resume_failures = 0  # 连续 resume 失败次数（≥2 后本次 attempt 改全新会话）
-            sub_run_id = (attempt_run_id if transient_retries == 0
-                          else f"{attempt_run_id}-r{transient_retries}")
+            sub_run_id = attempt_run_id
 
             while True:
                 if transient_retries > 0:

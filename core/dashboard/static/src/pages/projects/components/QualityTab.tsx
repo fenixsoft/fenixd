@@ -398,7 +398,13 @@ export default function QualityTab({ project, active }: QualityTabProps) {
         if (pollTimerRef.current !== null) return;
         pollTimerRef.current = window.setInterval(async () => {
           try {
+            // 过期守卫（code-review item bcdc14169759）：cleanup（卸载/切项目/
+            // 切页签）自增 progressSeqRef 并清 interval，但已发出的在飞轮询响应
+            // 仍会晚到——每轮请求前快照序号、响应到达后复核，过期即丢弃，防旧
+            // 项目进度覆盖新项目，也防旧 tick 的 !running 分支误清新项目的轮询。
+            const tickSeq = progressSeqRef.current;
             const p2 = await getCodeReviewProgress(project);
+            if (tickSeq !== progressSeqRef.current) return; // 过期响应丢弃（含 cleanup 后晚到）
             setProgress(p2);
             if (!p2.running) {
               if (pollTimerRef.current !== null) {
@@ -603,6 +609,11 @@ export default function QualityTab({ project, active }: QualityTabProps) {
         if (ackPollAbortedRef.current) return;
         try {
           const p = await getCodeReviewProgress(project);
+          // 过期守卫（code-review item bcdc14169759）：请求在飞期间发生卸载/
+          // 切项目/切页签时，cleanup 置位的取消哨拦不住已发出的本轮响应——
+          // 出消息前复核一次，防旧项目进度覆盖新项目（连带 Cancel 按钮拿到
+          // 跨项目 review_id）。
+          if (ackPollAbortedRef.current) return;
           setProgress(p);
           if (p.running) {
             started = true;
