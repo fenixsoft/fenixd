@@ -245,12 +245,32 @@ class G3LockMixin:
           不含 worktree 路径的进程（如 agent 经 Bash 起的 ``npm run dev``，
           argv 是 shell 而 cwd 在 worktree 内）；
         - SIGTERM 后短等待（宽限期），无响应进程补 SIGKILL 兜底，不残留。
+
+        cmdline 命中的跨项目归属核对（code-review 40cfa57f5f02）：
+        ``worktrees/<wt_name>`` 与 _pgrep_spec_process /
+        _worktree_has_live_process 的匹配串同属全机性字面匹配——同机他项目
+        可存在同名 worktree（跨项目 slug 撞名，见 _pid_in_project_worktrees），
+        其下 npm/pytest 等进程的 argv 以绝对路径引用自家 worktree 时同样命中
+        token，而 cwd 又不在本项目 worktree 内，若不做归属核对会被本清扫
+        SIGTERM/SIGKILL 误杀、拖垮对方项目的活跃 run。因此 cmdline 命中须
+        核对 argv 中该 token 的绝对路径前缀：worktrees/ 之前的前缀经 realpath
+        解析后落在本项目 base_dir 才认，解析到他处即否决；argv 只含裸相对
+        token（无绝对路径证据可判异）时维持命中即入候选的既有语义。cwd 分支
+        以 token_real 锚定本项目，本就精确，保持直入候选。
         """
         me = os.getpid()
         token = f"worktrees/{wt_name}"
         # token 的 realpath 归一形态（与 _pid_in_project_worktrees 的
         # base_real 同范式），供 cwd 归一后按目录边界精确归属
         token_real = os.path.realpath(os.path.join(str(self.base_dir), wt_name))
+        # 本项目基目录的 realpath 归一形态（与 token_real 同源），供 cmdline
+        # 命中的跨项目归属核对（见 docstring）
+        base_real = os.path.realpath(str(self.base_dir))
+        # argv 中「绝对路径 + token」命中提取式：捕获 worktrees/ 之前的绝对
+        # 前缀，尾部锚定纪律与 cmdline_hit 一致（路径续接/空白/引号/行尾）
+        foreign_pattern = re.compile(
+            r"(/[^\s\"']*)" + re.escape(token) + r"(?:[/\s\"']|$)"
+        )
         candidates: list = []
         try:
             for pid_str in os.listdir("/proc"):
@@ -280,8 +300,22 @@ class G3LockMixin:
                     cwd_real = os.path.realpath(os.readlink(f"/proc/{pid_str}/cwd"))
                 except OSError:
                     cwd_real = ""
+                # cmdline 命中的跨项目归属核对（code-review 40cfa57f5f02）：
+                # token 是全机性字面匹配，他项目同名 worktree 下进程的 argv
+                # 以绝对路径引用自家 worktree 时同样命中——worktrees/ 之前的
+                # 绝对前缀 realpath 解析不到本项目 base_dir 即否决，不入候选
+                # （失败方向保守：漏杀的残留可由下次清扫重试，误杀他项目
+                # 活跃进程不可逆）。argv 无绝对路径证据（裸相对 token，如
+                # 伪装 argv0 的测试进程形态）时无从判异，维持命中即入候选
+                # 的既有语义；cwd 分支以 token_real 精确锚定，保持直入候选。
+                foreign_hit = False
+                if cmdline_hit:
+                    for m in foreign_pattern.finditer(argv_text):
+                        if os.path.realpath(m.group(1)) != base_real:
+                            foreign_hit = True
+                            break
                 if (
-                    cmdline_hit
+                    (cmdline_hit and not foreign_hit)
                     or cwd_real == token_real
                     or cwd_real.startswith(token_real + os.sep)
                 ):
