@@ -45,8 +45,11 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
   });
 
   const inProgress = invoked && !runDone;
-  // 输出区是否已揭示：事件数达标即揭示（重连已有输出时尾部事件立即计入，几乎立即成立）
-  const revealed = eventCount >= REVEAL_EVENT_THRESHOLD;
+  // 输出区是否已揭示：事件数达标即揭示（重连已有输出时尾部事件立即计入，几乎立即
+  // 成立）；run 已到终态也强制揭示——秒败等极短 run 事件数可能永远达不到阈值，
+  // 否则等待层 Spin 会永久悬挂，遮挡已产出的失败输出（code-review item 9c95d9076c6b）。
+  // 零事件终态由 ClaudeOutputPane 空态分支给出「该 run 无事件记录」提示，不会露白
+  const revealed = runDone || eventCount >= REVEAL_EVENT_THRESHOLD;
 
   // 常用问题模板（spec 名替换 XX）
   const templates = [
