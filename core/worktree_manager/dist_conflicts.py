@@ -604,6 +604,7 @@ class G5DistConflictsMixin:
         冲突文件恒失败退到态 3。
         """
         try:
+            # [fenix-ignore:b229780a54d9] 本采集点已带 -c core.quotePath=false（与 _collect_conflict_paths 同口径），非 ASCII 路径原样返回，条目描述的转义失配不存在
             ls = subprocess.run(
                 [
                     "git",
