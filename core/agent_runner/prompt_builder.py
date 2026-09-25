@@ -1299,7 +1299,9 @@ class PromptBuilder:
                 data = json.loads(scenarios_path.read_text(encoding="utf-8"))
                 if isinstance(data, list):
                     designed_ids = [
-                        str(s.get("id")) for s in data if isinstance(s, dict) and s.get("id")
+                        str(s.get("id"))
+                        for s in data
+                        if isinstance(s, dict) and s.get("id") is not None
                     ]
         except Exception:
             designed_ids = []
