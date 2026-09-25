@@ -648,6 +648,39 @@ class FFastTrackMixin:
                     f"fast-track merge-back failed '{spec_name}': {final_error}",
                 )
                 return False
+        else:
+            # （code-review item 69fe26c88579）防御「success 蕴含 branch 非空」契约：
+            # 本方法仅在三处 success 前置的调用点进入，branch 为空即契约被破坏
+            # （runner 成功但 get_branch_name 未取到分支名，成功 run 的 branch
+            # 可为 None）——绝不能静默落入下方成功分支（成果未经合并即被伪推进
+            # implemented + branch=None + error=None，且现场被清理）。按既有
+            # merge 失败路径处置：保留 worktree + 记 error + ready 重派；
+            # 无真实 merge 失败可归因，不经 fingerprint/breaker/repair 记账。
+            contract_err = (
+                "fast-track merge skipped（success 但 branch 为空，违反"
+                "「success 蕴含 branch 非空」契约）：实现成果未经合并，"
+                "按 merge 失败重派"
+            )
+            self._keep_fast_track_worktree(spec_name, result)
+            spec_entry = self._pm.state_machine.read_one(spec_name) or {}
+            try:
+                retries = int(spec_entry.get("_retry_count", 0) or 0) + 1
+            except (TypeError, ValueError):
+                retries = 1
+            self._pm.state_machine.update_spec(
+                spec_name,
+                {
+                    "status": "ready",
+                    "error": contract_err,
+                    "_retry_count": retries,
+                },
+            )
+            self._enqueue_front(spec_name, "fast-track")
+            self._pm.logger.error(
+                "pm_engine",
+                f"fast-track merge-back failed '{spec_name}': {contract_err}",
+            )
+            return False
         # merge 成功：回收 runner 延迟保留的 fast-track worktree（worktree-reuse）
         self._release_fast_track_worktree(spec_name, result)
         # fix-observability-gaps 2.2：fast-track merge 成功 → implemented
