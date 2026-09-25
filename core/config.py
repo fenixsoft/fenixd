@@ -1393,6 +1393,10 @@ class ConfigLoader:
     STALE_CODE_SELFHEAL_COOLDOWN_DURATION_SECONDS_DEFAULT = 600
     STALE_CODE_SELFHEAL_SELF_TRIGGERED_WINDOW_SECONDS_DEFAULT = 300
     STALE_CODE_SELFHEAL_SELF_TRIGGERED_THRESHOLD_DEFAULT = 3
+    # evo-add-stale-code-dangling-deadline 1.1：陈旧悬空超时升级时限缺省
+    # （4 小时——白天 code-fix 高频节律下最多损失一个批次的排水重跑）。
+    # 0 = 关闭升级（只保留空闲自愈路径）；负值/非整数/bool 回退缺省。
+    STALE_CODE_SELFHEAL_MAX_DANGLING_SECONDS_DEFAULT = 14400
 
     @classmethod
     def _stale_selfheal_positive_int(cls, section: Dict[str, Any], key: str, default: int) -> int:
@@ -1408,6 +1412,27 @@ class ConfigLoader:
         return int(value)
 
     @classmethod
+    def _stale_selfheal_dangling_seconds(
+        cls, section: Dict[str, Any], key: str, default: int
+    ) -> int:
+        """取 ``section[key]`` 的非负秒数，非法/缺失回退 ``default``（不抛异常）。
+
+        evo-add-stale-code-dangling-deadline 1.1：MUST NOT 复用
+        ``_stale_selfheal_positive_int``——后者「0/负数一律回退缺省（0 不等效
+        关闭）」，与本键「0 = 关闭升级」语义冲突。本校验：``0``（含 0.0）合法
+        并原样返回 0（关闭升级）；负值 / 字符串 / None / bool（int 子类须显式
+        排除）回退缺省；float 取整（与既有 helper 同款截断范式）。
+        """
+        value = section.get(key, default)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return default
+        if value == 0:
+            return 0
+        if value < 0:
+            return default
+        return int(value)
+
+    @classmethod
     def get_stale_code_selfheal_config(cls, config: Dict[str, Any]) -> Dict[str, Any]:
         """Return the ``stale_code_selfheal`` 段，缺失/非法值回退缺省。
 
@@ -1419,6 +1444,9 @@ class ConfigLoader:
           1800 / 3 / 600 / 300 / 3（evo-stale-selfheal-restart-cooldown）。冷却
           无独立开关，整体关闭走 enabled: false；五键经 .fenix/config.yaml 配置
           + 30s 热更新生效，本 SPEC 不扩展 Dashboard 面板/写白名单
+        - max_dangling_seconds: 非负整数秒，缺省 14400（4 小时），0 = 关闭
+          升级；负值/非整数/bool 回退缺省（evo-add-stale-code-dangling-deadline
+          1.1，校验语义与正整数键不同，见 _stale_selfheal_dangling_seconds）
 
         节缺失、键缺失或值非法时不抛异常、不使 daemon 启动失败；读取走既有
         config 对象，30s 配置热更新自然生效（下一检测周期起采用新值）。
@@ -1468,6 +1496,13 @@ class ConfigLoader:
                 section,
                 "self_triggered_threshold",
                 cls.STALE_CODE_SELFHEAL_SELF_TRIGGERED_THRESHOLD_DEFAULT,
+            ),
+            # evo-add-stale-code-dangling-deadline 1.1：悬空超时升级时限
+            # （0 = 关闭升级，只保留既有空闲自愈路径）
+            "max_dangling_seconds": cls._stale_selfheal_dangling_seconds(
+                section,
+                "max_dangling_seconds",
+                cls.STALE_CODE_SELFHEAL_MAX_DANGLING_SECONDS_DEFAULT,
             ),
         }
 

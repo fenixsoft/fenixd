@@ -143,6 +143,46 @@ class TestStaleStatePersistence(unittest.TestCase):
         infos = " ".join(str(c) for c in self.d.logger.info.call_args_list)
         assert "陈旧状态解除" in infos
 
+    # ── evo-add-stale-code-dangling-deadline 2.1：悬空起点计量 ─────────
+
+    def test_stale_since_recorded_on_false_to_true_edge(self):
+        """假→真边沿记录 _code_stale_since（UTC、tz-aware），既有边沿告警不变。"""
+        self._touch_future()
+        self.d._update_stale_code_state()
+        assert self.d._code_stale is True
+        since = self.d._code_stale_since
+        assert since is not None
+        assert since.tzinfo is not None, "悬空起点应为带时区（UTC）的 datetime"
+        assert abs((datetime.now(timezone.utc) - since).total_seconds()) < 60
+
+    def test_stale_since_cleared_on_recover(self):
+        """基线恢复新鲜（真→假）→ _code_stale_since 清零；此后再陈旧的边沿
+        取检测时刻（非启动时刻）。"""
+        self._touch_future()
+        self.d._update_stale_code_state()
+        assert self.d._code_stale_since is not None
+        os.utime(self.codefile, ns=(
+            self.d._code_baseline_ns - 1, self.d._code_baseline_ns - 1))
+        self.d._update_stale_code_state()
+        assert self.d._code_stale is False
+        assert self.d._code_stale_since is None, "恢复新鲜后悬空起点应清零"
+        # 已见过新鲜检测，第二轮边沿取当前检测时刻
+        startup = datetime.now(timezone.utc) - timedelta(seconds=3600)
+        self.d._proc_started_utc = startup
+        self._touch_future()
+        self.d._update_stale_code_state()
+        assert self.d._code_stale_since is not None
+        assert self.d._code_stale_since > startup, "后续边沿应取检测时刻而非启动时刻"
+
+    def test_stale_since_takes_startup_time_when_stale_at_start(self):
+        """进程启动时基线即已陈旧（首检即超 baseline）：_code_stale_since 取
+        进程启动时刻（SPEC 场景 AND 子句）。"""
+        self.d._proc_started_utc = datetime.now(timezone.utc) - timedelta(seconds=100)
+        self._touch_future()
+        self.d._update_stale_code_state()
+        assert self.d._code_stale is True
+        assert self.d._code_stale_since == self.d._proc_started_utc
+
 
 # ── stale-code-alert-window-dedup 2.1：告警跨重启窗口去重 ──────────
 
@@ -406,6 +446,146 @@ class TestIdleSelfhealTrigger(unittest.TestCase):
             assert self.req.exists()
 
 
+# ── evo-add-stale-code-dangling-deadline：悬空超时升级 ──────────────
+
+class TestStaleDanglingTimeout(unittest.TestCase):
+    """悬空超时不等空闲强推规划性重启（2.2/2.3）+ 升级告警（3.1）。
+
+    夹具沿用 TestIdleSelfhealTrigger 形态：_code_stale 置真 + supervisor 托管
+    + PROJECT_ROOT 指向临时项目；悬空起点直接拨 _code_stale_since（UTC）。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        proot = Path(self.tmpdir)
+        self.parts = _DaemonParts(proot)
+        self.d = self.parts.daemon
+        self.d._code_stale = True
+        self.req = proot / ".fenix" / "restart_request"
+        self.history_path = proot / ".fenix" / "restart_history.jsonl"
+        self._mp_root = mock.patch.object(_fenixd_mod, "PROJECT_ROOT", proot)
+        self._mp_root.start()
+        self._sup = mock.patch.object(
+            fenix_session, "supervisor_running", return_value=True)
+        self._sup.start()
+
+    def tearDown(self):
+        self._sup.stop()
+        self._mp_root.stop()
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _set_dangling(self, seconds: float):
+        """拨悬空起点：已悬空 seconds 秒（UTC datetime，与生产写入同形）。"""
+        self.d._code_stale_since = (
+            datetime.now(timezone.utc) - timedelta(seconds=seconds))
+
+    def _tick(self):
+        self.d._maybe_stale_selfheal_tick()
+
+    def _write_history(self, entries):
+        """写 restart_history.jsonl：[(ts_iso, self_triggered), ...]。"""
+        self.history_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.history_path.open("w", encoding="utf-8") as f:
+            for ts_iso, self_triggered in entries:
+                f.write(json.dumps({
+                    "ts": ts_iso,
+                    "self_triggered": self_triggered,
+                    "self_triggered_streak": 1 if self_triggered else 0,
+                }, ensure_ascii=False) + "\n")
+
+    def _dangling_alerts(self):
+        path = self.parts.proot.joinpath(".fenix", "admin_alerts.json")
+        if not path.exists():
+            return []
+        return [r for r in json.loads(path.read_text(encoding="utf-8"))
+                if r.get("kind") == "escalation"
+                and r.get("signal_type") == "stale_code_dangling_timeout"]
+
+    def _history_tail(self):
+        lines = self.history_path.read_text(encoding="utf-8").strip().splitlines()
+        return json.loads(lines[-1])
+
+    def test_busy_dangling_timeout_writes_request_without_idle(self):
+        """忙时（在飞 run）悬空超时 → 不等空闲直接写 restart_request，
+        重启历史如实记录 self_triggered=False（超时分支不强制置真）。"""
+        self.d.pm_engine._active_runs = 1  # 非空闲（既有空闲路径在此清零计时）
+        self._set_dangling(14401)  # 超过缺省 14400s
+        self._tick()
+        assert self.req.exists(), "悬空超时后忙时也应写入 restart_request"
+        assert self.d._self_triggered_cycle is False, "超时分支不得置真自触发标志"
+        tail = self._history_tail()
+        assert tail["self_triggered"] is False
+        assert tail["self_triggered_streak"] == 0
+
+    def test_not_yet_timed_out_no_trigger(self):
+        """悬空未超时（≤ max_dangling_seconds）：忙时不触发，行为与现状一致。"""
+        self.d.pm_engine._active_runs = 1
+        self._set_dangling(3600)  # 1 小时 < 4 小时缺省
+        self._tick()
+        assert not self.req.exists()
+        assert self._dangling_alerts() == []
+
+    def test_zero_disables_upgrade(self):
+        """max_dangling_seconds=0：关闭升级，悬空再久也不走超时分支。"""
+        self.d.config = {"stale_code_selfheal": {"max_dangling_seconds": 0}}
+        self.d.pm_engine._active_runs = 1
+        self._set_dangling(10 ** 7)  # 远超任何非零时限
+        self._tick()
+        assert not self.req.exists()
+        assert self._dangling_alerts() == []
+
+    def test_timeout_alert_unhandled_and_deduped(self):
+        """升级告警保持未处理（进人工待处理视图）；60 分钟内重复触发去重
+        跳过写入仅留日志（不写即 handled 的 stale_code 语义不复用）。"""
+        self._set_dangling(14401)
+        self._tick()
+        alerts = self._dangling_alerts()
+        assert len(alerts) == 1
+        assert alerts[0]["severity"] == "warning"
+        assert alerts[0].get("handled") is False, "升级告警不得写入即 handled"
+        # 模拟「request 已被 supervisor 消费、进程尚未终止」窗口内的重复 tick：
+        # 复位防重复标志后再次进入超时分支 → 告警 60 分钟去重命中不重复成条
+        self.req.unlink()
+        self.d._dangling_timeout_fired = False
+        self._tick()
+        assert len(self._dangling_alerts()) == 1, "60 分钟窗口内不得重复写告警"
+        infos = " ".join(str(c) for c in self.d.logger.info.call_args_list)
+        assert "去重命中" in infos
+
+    def test_cooldown_gate_still_blocks(self):
+        """cooldown 闸门仍生效：窗口内重启数达阈值时悬空超时也不触发。"""
+        now_iso = datetime.now(timezone.utc).isoformat()
+        self._write_history([(now_iso, False)] * 3)  # cooldown_threshold=3
+        self._set_dangling(14401)
+        self._tick()
+        assert not self.req.exists(), "冷却窗口内悬空超时不得触发重启"
+
+    def test_self_triggered_gate_not_forced_true(self):
+        """self-triggered 闸门：距上次重启超窗的历史下触发，记录按既有语义
+        记否（streak 归零），超时分支不置真自触发标志。"""
+        old_iso = (datetime.now(timezone.utc) - timedelta(seconds=400)).isoformat()
+        self._write_history([(old_iso, True)])
+        self._set_dangling(14401)
+        self._tick()
+        assert self.req.exists()
+        tail = self._history_tail()
+        assert tail["self_triggered"] is False
+        assert tail["self_triggered_streak"] == 0
+
+    def test_repeat_tick_no_rewrite_after_fired(self):
+        """触发成功后置位防重复标志：supervisor 已消费 request（文件被删）
+        但进程尚未终止的窗口内，1s tick 不得重复 touch/重复告警。"""
+        self._set_dangling(14401)
+        self._tick()
+        assert self.req.exists()
+        alerts_before = len(self._dangling_alerts())
+        self.req.unlink()  # 模拟 supervisor 消费掉 request
+        self._tick()
+        self._tick()
+        assert not self.req.exists(), "防重复标志置位后不得重写 request"
+        assert len(self._dangling_alerts()) == alerts_before
+
+
 def _panel_pair(section: dict) -> dict:
     """stale_code_selfheal 节中**面板受管**的两键。
 
@@ -422,7 +602,8 @@ def _panel_pair(section: dict) -> dict:
 class TestStaleConfigDefaults(unittest.TestCase):
     def test_missing_section_defaults(self):
         """节缺失 → 缺省值生效：enabled: true / idle_confirm_seconds: 120
-        （冷却五键于 evo-stale-selfheal-restart-cooldown 1.1 加入，缺省一并生效）。"""
+        （冷却五键于 evo-stale-selfheal-restart-cooldown 1.1 加入，缺省一并生效；
+        max_dangling_seconds 于 evo-add-stale-code-dangling-deadline 1.1 加入）。"""
         cfg = ConfigLoader.get_stale_code_selfheal_config({})
         assert cfg == {
             "enabled": True,
@@ -432,6 +613,7 @@ class TestStaleConfigDefaults(unittest.TestCase):
             "cooldown_duration_seconds": 600,
             "self_triggered_window_seconds": 300,
             "self_triggered_threshold": 3,
+            "max_dangling_seconds": 14400,
         }
 
     def test_invalid_values_fallback_no_raise(self):
@@ -461,6 +643,24 @@ class TestStaleConfigDefaults(unittest.TestCase):
                 passthrough["cooldown_duration_seconds"],
                 passthrough["self_triggered_window_seconds"],
                 passthrough["self_triggered_threshold"]) == (1800, 3, 600, 300, 3)
+
+    def test_max_dangling_seconds_semantics(self):
+        """max_dangling_seconds 校验语义（evo-add-stale-code-dangling-deadline
+        1.1）：0 合法（关闭升级）；负值/非整数/bool 回退缺省；合法值透传。"""
+        # 0 = 关闭升级（合法值原样返回，不回退缺省——与正整数键语义相反）
+        zero = ConfigLoader.get_stale_code_selfheal_config(
+            {"stale_code_selfheal": {"max_dangling_seconds": 0}})
+        assert zero["max_dangling_seconds"] == 0
+        # 合法值透传（小数取整）
+        passthrough = ConfigLoader.get_stale_code_selfheal_config(
+            {"stale_code_selfheal": {"max_dangling_seconds": 90.7}})
+        assert passthrough["max_dangling_seconds"] == 90
+        # 负值 / bool / 字符串 / None → 回退缺省 14400
+        default = ConfigLoader.STALE_CODE_SELFHEAL_MAX_DANGLING_SECONDS_DEFAULT
+        for bad in (-5, True, False, "快", None, [3600]):
+            cfg = ConfigLoader.get_stale_code_selfheal_config(
+                {"stale_code_selfheal": {"max_dangling_seconds": bad}})
+            assert cfg["max_dangling_seconds"] == default, bad
 
     def test_api_config_roundtrip(self):
         """/api/config 读写该节往返一致；非法写拒绝且不落盘。"""
