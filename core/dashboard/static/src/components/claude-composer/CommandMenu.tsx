@@ -30,7 +30,7 @@ type CommandMenuProps = {
   selectedIndex?: number;
   onSelect?: (command: CommandMenuCommand, index: number, isHover: boolean) => void;
   onClose: () => void;
-  position?: { top: number; left: number; bottom?: number };
+  position?: { left: number; bottom?: number };
   isOpen?: boolean;
   frequentCommands?: CommandMenuCommand[];
 };
@@ -99,7 +99,6 @@ const getNamespaceAccentClass = (namespace: string) =>
   namespaceAccentClasses[namespace] || namespaceAccentClasses.other;
 
 const getMenuPosition = (position: {
-  top: number;
   left: number;
   bottom?: number;
 }): CSSProperties => {
@@ -150,7 +149,7 @@ export default function CommandMenu({
   selectedIndex = -1,
   onSelect,
   onClose,
-  position = { top: 0, left: 0 },
+  position = { left: 0 },
   isOpen = false,
   frequentCommands: frequent = [],
 }: CommandMenuProps) {

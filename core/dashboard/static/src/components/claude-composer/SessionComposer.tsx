@@ -88,11 +88,10 @@ export default function SessionComposer({
 
   const commandMenuPosition = useMemo(() => {
     if (!composer.showCommandMenu) {
-      return { top: 0, left: 16, bottom: 90 };
+      return { left: 16, bottom: 90 };
     }
     const textareaRect = composer.textareaRef.current?.getBoundingClientRect();
     return {
-      top: textareaRect ? Math.max(16, textareaRect.top - 316) : 0,
       left: textareaRect ? textareaRect.left : 16,
       bottom: textareaRect ? window.innerHeight - textareaRect.top + 8 : 90,
     };
