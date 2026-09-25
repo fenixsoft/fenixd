@@ -738,7 +738,9 @@ class TestConfigSyncFromUserAPI:
         finally:
             srv.stop()
 
-    def test_sync_unknown_project_returns_400(self, tmp_path):
+    def test_sync_unknown_project_returns_404(self, tmp_path):
+        """在场但解析不到项目 → 404（资源不存在语义；与 _api_config_get 及
+        共用助手 _project_query_or_error 收敛，code-review item a538758669c5）。"""
         cfg = tmp_path / "dashboard.yaml"
         reg = Registry(config_path=cfg)
         reg.save({"port": 8787, "projects": [], "scan_dirs": [str(tmp_path / "scan-empty")]})
@@ -746,7 +748,7 @@ class TestConfigSyncFromUserAPI:
         try:
             status, body = srv.post_json("/api/config/sync-from-user?project=ghost",
                           {"page": "approval"})
-            assert status == 400 and body["error"]
+            assert status == 404 and body["error"]
         finally:
             srv.stop()
 
@@ -845,7 +847,9 @@ class TestConfigClearPageKeysAPI:
         finally:
             srv.stop()
 
-    def test_clear_unknown_project_returns_400(self, tmp_path):
+    def test_clear_unknown_project_returns_404(self, tmp_path):
+        """在场但解析不到项目 → 404（资源不存在语义收敛，同
+        test_sync_unknown_project_returns_404，code-review item a538758669c5）。"""
         cfg = tmp_path / "dashboard.yaml"
         reg = Registry(config_path=cfg)
         reg.save({"port": 8787, "projects": [], "scan_dirs": [str(tmp_path / "scan-empty")]})
@@ -853,7 +857,7 @@ class TestConfigClearPageKeysAPI:
         try:
             status, body = srv.post_json("/api/config/sync-from-user?project=ghost",
                           {"page": "approval", "action": "clear"})
-            assert status == 400 and body["error"]
+            assert status == 404 and body["error"]
         finally:
             srv.stop()
 

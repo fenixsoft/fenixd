@@ -1742,6 +1742,17 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
                         raise ValueError("llm.providers must be a list")
                     ConfigLoader._validate_provider_billing(_providers)
             agents = merged.get("agents") or {}
+            # code-review item 9e99a31f08fd：存量 agents 段为非 dict 真值（手工
+            # 编辑 config.yaml 所致）且本次 patch 不含 agents 键时，
+            # _deep_merge_managed 原样保留该非法段，下方 agents.get(...) 对
+            # list/str 抛 AttributeError、truthy 标量在 `in` 成员测试抛 TypeError，
+            # 均逃出 except ValueError 致保存 500——此处守卫转 400 校验错误
+            # （patch 含 agents dict 时 _deep_merge_managed 已重置为 {}，本守卫
+            # 仅拦存量非法）
+            if not isinstance(agents, dict):
+                raise ValueError(
+                    f"agents must be a mapping (存量非法段请先修正 config.yaml): {agents!r}"
+                )
             if "models" in agents and agents["models"]:
                 ConfigLoader._validate_agent_models(agents["models"], llm)
                 # improve-failover-model-mapping-ui D5：UI 保存要求 provider 名存在于 llm.providers

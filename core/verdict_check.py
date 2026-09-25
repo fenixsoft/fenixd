@@ -222,7 +222,9 @@ def whitewash_violations(scenarios: list, verdict: str) -> List[str]:
     - 0 通过 + 有失败 → 不得 verified（无论失败分类为何——合成报告
       「0/15 通过（全部场景通过）」式的自相矛盾再也不能合法存在）；
     - 任一失败分类为 env → 不得 verified（env 问题须升级 admin 处置，
-      不得当作豁免理由放行——「遇到 env 就不测试了」被本检查封死）。
+      不得当作豁免理由放行——「遇到 env 就不测试了」被本检查封死）；
+    - 场景表存在非对象条目（损坏场景表）→ 不得 verified（fail-closed，
+      零有效场景的损坏报告不得静默放行）。
 
     仅约束 verdict=verified；bug-found 不受限。Returns: 违规说明列表（空=放行）。
     """
@@ -232,8 +234,13 @@ def whitewash_violations(scenarios: list, verdict: str) -> List[str]:
     passed = 0
     env_failed: List[str] = []
     has_failed = False
-    for sc in scenarios:
+    invalid_idx: List[str] = []
+    for idx, sc in enumerate(scenarios, 1):
         if not isinstance(sc, dict):
+            # 非 dict 条目属结构损坏：fail-closed 不静默跳过（与
+            # validate_fast_track_result「场景 #N 非对象」同口径），否则
+            # 全垃圾场景表会绕过本不变量在零有效场景上放行 verified
+            invalid_idx.append(f"#{idx}")
             continue
         sid = str(sc.get("scenario_id") or "?")
         # 双词表对齐（item 229075ac0732）：与本模块其余函数同口径——"passed"
@@ -246,6 +253,11 @@ def whitewash_violations(scenarios: list, verdict: str) -> List[str]:
             if sc.get("classification") == "env":
                 env_failed.append(sid)
     violations: List[str] = []
+    if invalid_idx:
+        violations.append(
+            f"{len(invalid_idx)}/{total} 场景条目非对象（损坏场景表）不得判 verified: "
+            + "、".join(invalid_idx[:8])
+        )
     if has_failed and passed == 0:
         violations.append(f"0/{total} 场景通过（全部失败）不得判 verified")
     if env_failed:
@@ -282,8 +294,17 @@ def validate_report(report: dict) -> dict:
 
     violations: List[dict] = []
     classified: List[str] = []
-    for sc in scenarios:
+    for idx, sc in enumerate(scenarios, 1):
         if not isinstance(sc, dict):
+            # 非 dict 条目属结构损坏：记 violation（fail-closed，不静默放行；
+            # 与 validate_fast_track_result「场景 #N 非对象」同口径）
+            violations.append(
+                {
+                    "scenario_id": f"#{idx}",
+                    "status": None,
+                    "reason": f"场景 #{idx} 非对象",
+                }
+            )
             continue
         status = sc.get("status")
         if not _is_non_pass(status):

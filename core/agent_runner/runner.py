@@ -3801,7 +3801,8 @@ class AgentRunner:
         - 主树共享文件是跨 agent 共享单例，拷回时按 agent_type 注入 role 与
           spec 戳（evo-verifier-result-single-source R2 写入隔离）——裁决读侧
           只认 role=verifier 的共享文件。
-        - JSON 无法解析时维持原始字节拷回（不注入，避免破坏字节）。
+        - JSON 无法解析或非 UTF-8 字节时维持原始字节拷回（不注入，避免破坏
+          字节；非 UTF-8 读取降级不外抛，拷回环节绝不改变 run 终态）。
         - OSError 静默（与既有行为一致）；目录不存在零动作。
         - 主树共享文件是跨 agent 共享单例，多 run 并发收工时拷回交错会写坏
           JSON，故写盘走 temp 文件 + os.replace 原子替换（同
@@ -3810,14 +3811,18 @@ class AgentRunner:
         wt_result = wt_path / ".fenix-run-result.json"
         root_result = self.project_root / ".fenix" / ".fenix-run-result.json"
 
-        def _write_atomic(dest: Path, data: str) -> None:
+        def _write_atomic(dest: Path, data: str | bytes) -> None:
             fd, tmp_name = tempfile.mkstemp(
                 prefix=".fenix-run-result.", suffix=".tmp",
                 dir=str(dest.parent),
             )
             tmp_path = Path(tmp_name)
             try:
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                # 二进制落盘（str 先按 utf-8 编码）：原始字节拷回路径不因文本
+                # 模式编解码抛 UnicodeEncodeError、不改变字节。
+                if isinstance(data, str):
+                    data = data.encode("utf-8")
+                with os.fdopen(fd, "wb") as f:
                     f.write(data)
                 os.replace(tmp_path, dest)
             finally:
@@ -3829,9 +3834,13 @@ class AgentRunner:
 
         if wt_result.exists():
             try:
-                raw = wt_result.read_text(encoding="utf-8")
+                raw_bytes = wt_result.read_bytes()
+                try:
+                    raw: str | None = raw_bytes.decode("utf-8")
+                except UnicodeDecodeError:
+                    raw = None  # 非 UTF-8 字节：跳过注入，降级原始字节拷回
                 role = AGENT_TYPE_TO_ROLE.get(agent_type)
-                if role is not None:
+                if role is not None and raw is not None:
                     try:
                         payload = json.loads(raw)
                         if isinstance(payload, dict):
@@ -3842,11 +3851,11 @@ class AgentRunner:
                                 json.dumps(
                                     payload, ensure_ascii=False, indent=2),
                             )
-                            raw = None  # 已注入写盘，跳过原始拷回
+                            raw_bytes = None  # 已注入写盘，跳过原始拷回
                     except (json.JSONDecodeError, ValueError):
                         pass  # 非法 JSON：fall through 原始字节拷回
-                if raw is not None:
-                    _write_atomic(root_result, raw)
+                if raw_bytes is not None:
+                    _write_atomic(root_result, raw_bytes)
             except OSError:
                 pass
 

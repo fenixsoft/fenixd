@@ -308,7 +308,18 @@ class RecoveryWatch:
         raised = []
         now = time.time()
         for spec_name, item in list(self._recovery_watch.items()):
-            if now < float(item.get("due") or 0):
+            # due 字段类型守卫（code-review item a4b93d0d0bd7）：recovery_watch.json
+            # 被手工编辑或部分损坏时（_load_recovery_watch 只过滤非 dict 条目，
+            # 不校验字段类型）due 可为非数值字符串，裸 float() 抛 ValueError
+            # 会中止整轮复查循环，本次到期观察项之后的条目全部漏看（升级信号
+            # 静默丢失）。回退 0.0（立即到期）而非跳过：与上方 ``or 0`` 的缺失
+            # 字段既有语义一致，且升级观察项宁可提前复查也不静默漏看——复查
+            # 路径本身会 pop/顺延/升级闭环该条，提前到期无重入风险。
+            try:
+                due = float(item.get("due") or 0)
+            except (TypeError, ValueError):
+                due = 0.0
+            if now < due:
                 continue
 
             # ── 升级前复查第 1 层：pop 之前的顺延判据（D1/D2 + 重试在途）──

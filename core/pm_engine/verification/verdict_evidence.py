@@ -63,6 +63,10 @@ def _verify_verdict_evidence(pipeline, spec_name: str, retry_judge: bool = False
         # 框架侧机械计算 attribution_level，白屏方向约束强制改写分类；
         # 批量归因查重拒绝硬编码套用；缓存归因打新鲜度标。
         # 全部发生在报告落盘/打回上下文组装前（本方法即统一入口）。
+        # dedup 先置 None：分级自身异常时拒绝门不判定（dedup is None →
+        # 走既有「跳过分级照常采纳」语义）；只有分级算出 dedup 且判拒绝
+        # 才进入 try 之外的拒绝收口（code-review ab428d7a4e07）。
+        dedup = None
         try:
             from core.verdict_check import (
                 validate_attribution_levels,
@@ -92,16 +96,8 @@ def _verify_verdict_evidence(pipeline, spec_name: str, retry_judge: bool = False
             # incremental-attribution 2.1：命中重复的归因置 requeue 待回炉，
             # 非重复置 accept 保留；MUST NOT 因子集重复废弃整轮归因）。
             dedup = check_batch_attribution_dedup_scenario(report)
-            if not dedup["ok"]:
-                for v in dedup["violations"]:
-                    pipeline._context.logger.error(
-                        "pm_engine",
-                        f"批量归因查重拒绝采纳 '{spec_name}': {v.get('reason')}",
-                    )
-                # 场景级回炉闭环：标记 requeue/accept 状态 + 回炉清单 →
-                # 派发重合成（仅重做 requeue 子集）→ 回灌校验（fix-verdict-
-                # dedup-resynthesis D1/D2；返回 cause=pass 已闭环采纳）
-                return pipeline._handle_scenario_requeue(spec_name, report, dedup)
+            # 查重拒绝收口已移出本 try（见下方拒绝门，code-review
+            # ab428d7a4e07）——本 except 只兜「分级计算自身」异常。
             # 跨轮缓存归因打标（design D3 / Task 3.1）
             cache = load_verdict_cache(pipeline._context.project_root, spec_name)
             tagged = tag_cached_attributions(report, cache, spec_name)
@@ -118,6 +114,37 @@ def _verify_verdict_evidence(pipeline, spec_name: str, retry_judge: bool = False
                 "pm_engine",
                 f"归因分级校验异常跳过 '{spec_name}'（不阻断裁决）: " f"{type(e).__name__}: {e}",
             )
+        # ── 批量归因查重拒绝门（在分级 try 之外，code-review ab428d7a4e07）──
+        # 拒绝处置路径自身抛异常（如 resynthesis_directive 计数字段损坏时
+        # int() 抛 ValueError、升级路径 update_spec 抛错）MUST NOT 被上方
+        # except 吞成 warning 后落入下方清违规+落缓存+cause=pass 采纳收口
+        # （否则查重拒绝的报告被静默采纳，归因门整条失效）；也不得裸外溢
+        # （engine 层 except Exception 会降级旧版 verifier，整体旁路查重
+        # 门）——单独 try 折算为 cause=batch_attribution_dedup 失败返回
+        # （宁可不推进也不带病采纳）。
+        if dedup is not None and not dedup["ok"]:
+            for v in dedup["violations"]:
+                pipeline._context.logger.error(
+                    "pm_engine",
+                    f"批量归因查重拒绝采纳 '{spec_name}': {v.get('reason')}",
+                )
+            # 场景级回炉闭环：标记 requeue/accept 状态 + 回炉清单 →
+            # 派发重合成（仅重做 requeue 子集）→ 回灌校验（fix-verdict-
+            # dedup-resynthesis D1/D2；返回 cause=pass 已闭环采纳）
+            try:
+                return pipeline._handle_scenario_requeue(spec_name, report, dedup)
+            except Exception as requeue_err:
+                pipeline._context.logger.error(
+                    "pm_engine",
+                    f"查重拒绝回炉处置异常 '{spec_name}'（按查重拒绝失败返回，"
+                    f"不采纳）: {type(requeue_err).__name__}: {requeue_err}",
+                )
+                return {
+                    "ok": False,
+                    "cause": "batch_attribution_dedup",
+                    "violations": dedup.get("violations") or [],
+                    "dispatch_error": f"{type(requeue_err).__name__}: {requeue_err}",
+                }
         # 合规：清掉历史驳回清单（若有）后强制重写 status 映射（D3）写回
         pipeline._clear_verdict_violations(spec_name)
         pipeline._clear_requeue_manifest(spec_name)
@@ -224,6 +251,9 @@ def _verify_verdict_evidence(pipeline, spec_name: str, retry_judge: bool = False
         result2 = validate_report(report2)
         if result2["ok"]:
             # ── 归因分级门（重试轮同样执行，design D2 统一入口）──
+            # dedup 先置 None：分级自身异常时拒绝门不判定（走既有「跳过
+            # 分级照常采纳」语义）；查重拒绝收口在 try 之外（同下）。
+            dedup = None
             try:
                 from core.verdict_check import (
                     validate_attribution_levels,
@@ -249,14 +279,8 @@ def _verify_verdict_evidence(pipeline, spec_name: str, retry_judge: bool = False
                             f"'{old_cls}' → '{new_cls}'（blank_screenshot 标签强制 env 方向）",
                         )
                 dedup = check_batch_attribution_dedup_scenario(report2)
-                if not dedup["ok"]:
-                    for v in dedup["violations"]:
-                        pipeline._context.logger.error(
-                            "pm_engine",
-                            f"批量归因查重拒绝采纳（重试轮）'{spec_name}': " f"{v.get('reason')}",
-                        )
-                    # 统一收口：场景级回炉闭环
-                    return pipeline._handle_scenario_requeue(spec_name, report2, dedup)
+                # 查重拒绝收口已移出本 try（见下方拒绝门）——本 except 只
+                # 兜「分级计算自身」异常。
                 cache = load_verdict_cache(pipeline._context.project_root, spec_name)
                 tagged = tag_cached_attributions(report2, cache, spec_name)
                 if tagged:
@@ -271,6 +295,33 @@ def _verify_verdict_evidence(pipeline, spec_name: str, retry_judge: bool = False
                     f"归因分级校验异常跳过（重试轮）'{spec_name}'"
                     f"（不阻断裁决）: {type(e).__name__}: {e}",
                 )
+            # ── 批量归因查重拒绝门（在分级 try 之外，code-review ab428d7a4e07）──
+            # 拒绝处置路径自身异常 MUST NOT 被上方 except 吞掉后落入下方
+            # cause=pass 采纳收口（查重拒绝的报告被静默采纳）；也不得裸外溢
+            # （engine 层会降级旧版 verifier 旁路查重门）——单独 try 折算为
+            # cause=batch_attribution_dedup 失败返回（宁可不推进不采纳）。
+            if dedup is not None and not dedup["ok"]:
+                for v in dedup["violations"]:
+                    pipeline._context.logger.error(
+                        "pm_engine",
+                        f"批量归因查重拒绝采纳（重试轮）'{spec_name}': " f"{v.get('reason')}",
+                    )
+                # 统一收口：场景级回炉闭环
+                try:
+                    return pipeline._handle_scenario_requeue(spec_name, report2, dedup)
+                except Exception as requeue_err:
+                    pipeline._context.logger.error(
+                        "pm_engine",
+                        f"查重拒绝回炉处置异常（重试轮）'{spec_name}'"
+                        f"（按查重拒绝失败返回，不采纳）: "
+                        f"{type(requeue_err).__name__}: {requeue_err}",
+                    )
+                    return {
+                        "ok": False,
+                        "cause": "batch_attribution_dedup",
+                        "violations": dedup.get("violations") or [],
+                        "dispatch_error": f"{type(requeue_err).__name__}: {requeue_err}",
+                    }
             pipeline._clear_verdict_violations(spec_name)
             pipeline._clear_requeue_manifest(spec_name)
             pipeline._persist_verdict_cache(spec_name, report2)
@@ -716,6 +767,9 @@ def _handle_attr_dedup_rejection(
             "dispatch_error": "",
         }
     # 归因分级门 + 查重门（同一入口位，非旁路）
+    # dedup2 先置 None：分级自身异常时拒绝门不判定（走既有「跳过分级照常
+    # 采纳」语义）；查重拒绝收口在 try 之外（同下）。
+    dedup2 = None
     try:
         from core.verdict_check import (
             validate_attribution_levels,
@@ -741,14 +795,8 @@ def _handle_attr_dedup_rejection(
                     f"'{old_cls}' → '{new_cls}'（blank_screenshot 标签强制 env 方向）",
                 )
         dedup2 = check_batch_attribution_dedup_scenario(report2)
-        if not dedup2["ok"]:
-            for v in dedup2["violations"]:
-                pipeline._context.logger.error(
-                    "pm_engine",
-                    f"批量归因查重拒绝采纳（重合成轮）'{spec_name}': " f"{v.get('reason')}",
-                )
-            # 重合成产物再拒 → 递归进入下一轮场景级回炉（或达上限升级）
-            return pipeline._handle_scenario_requeue(spec_name, report2, dedup2)
+        # 查重拒绝收口已移出本 try（见下方拒绝门）——本 except 只兜「分级
+        # 计算自身」异常。
         cache = load_verdict_cache(pipeline._context.project_root, spec_name)
         tagged = tag_cached_attributions(report2, cache, spec_name)
         if tagged:
@@ -763,6 +811,35 @@ def _handle_attr_dedup_rejection(
             f"归因分级校验异常跳过（重合成）'{spec_name}'"
             f"（不阻断裁决）: {type(e).__name__}: {e}",
         )
+
+    # ── 批量归因查重拒绝门（在分级 try 之外，code-review ab428d7a4e07）──
+    # 拒绝处置路径自身异常 MUST NOT 被上方 except 吞掉后落入下方清
+    # violations/directive + cause=pass 采纳收口（重合成仍被查重拒绝的
+    # 产物被静默采纳）；也不得裸外溢（engine 层会降级旧版 verifier 旁路
+    # 查重门）——单独 try 折算为 cause=batch_attribution_dedup 失败返回
+    # （宁可不推进不采纳）。
+    if dedup2 is not None and not dedup2["ok"]:
+        for v in dedup2["violations"]:
+            pipeline._context.logger.error(
+                "pm_engine",
+                f"批量归因查重拒绝采纳（重合成轮）'{spec_name}': " f"{v.get('reason')}",
+            )
+        # 重合成产物再拒 → 递归进入下一轮场景级回炉（或达上限升级）
+        try:
+            return pipeline._handle_scenario_requeue(spec_name, report2, dedup2)
+        except Exception as requeue_err:
+            pipeline._context.logger.error(
+                "pm_engine",
+                f"查重拒绝回炉处置异常（重合成轮）'{spec_name}'"
+                f"（按查重拒绝失败返回，不采纳）: "
+                f"{type(requeue_err).__name__}: {requeue_err}",
+            )
+            return {
+                "ok": False,
+                "cause": "batch_attribution_dedup",
+                "violations": dedup2.get("violations") or [],
+                "dispatch_error": f"{type(requeue_err).__name__}: {requeue_err}",
+            }
 
     # 5) 合规采纳：清 violations + 清 directive + 清回炉清单 + 状态映射
     #    重写 + 裁决缓存

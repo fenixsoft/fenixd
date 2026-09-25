@@ -25,8 +25,12 @@ def resolve_spec_dir(project_root, spec) -> Path | None:
     2. ``spec/changes/<spec>`` 为目录 → 返回活跃目录（活跃优先，既有行为不变）
     3. 否则遍历 ``spec/archive/``，目录名匹配日期前缀 + 可选冲突数字后缀
        （``^\\d{4}-\\d{2}-\\d{2}-{re.escape(spec)}(-\\d+)*$``；``re.escape``
-       防 spec 名含 ``-`` 引发歧义），命中多个取 ``sorted()[-1]``
-       （字典序最大 = 日期最新/后缀最大，与写入端冲突追加序一致）
+       防 spec 名含 ``-`` 引发歧义），命中多个时**全等目录名（剥日期前缀
+       后与 spec 全等）优先**（对齐 evolution.resolve_accepted_spec_dir：
+       合法 spec 名允许数字结尾，可选数字后缀会把独立 spec——如
+       ``evo-foo`` 与 ``evo-foo-2`` 并存——的归档目录一并命中，sorted 兜底
+       因后缀字典序更大而把后者误归属给前者）；同层内取 ``sorted()[-1]``
+       （字典序最大 = 日期最新/后缀最大）
     4. 无命中 → None
     """
     if not isinstance(spec, str) or not _SPEC_NAME_RE.match(spec):
@@ -38,6 +42,7 @@ def resolve_spec_dir(project_root, spec) -> Path | None:
     if not archive_root.is_dir():
         return None
     pattern = re.compile(r"^\d{4}-\d{2}-\d{2}-" + re.escape(spec) + r"(-\d+)*$")
+    exact_pattern = re.compile(r"^\d{4}-\d{2}-\d{2}-" + re.escape(spec) + r"$")
     try:
         matches = [d for d in archive_root.iterdir() if d.is_dir() and pattern.match(d.name)]
     except OSError:
@@ -45,7 +50,13 @@ def resolve_spec_dir(project_root, spec) -> Path | None:
         matches = []
     if not matches:
         return None
-    return sorted(matches)[-1]
+    # 全等目录名（剥日期前缀后与 spec 全等）优先（对齐
+    # evolution.resolve_accepted_spec_dir 口径）：合法 spec 名允许数字结尾，
+    # 可选数字后缀 (-\d+)* 会把独立 spec（如 evo-foo 与 evo-foo-2 并存）的
+    # 归档目录一并命中，sorted 兜底因后缀字典序更大而误归属到错误 spec；
+    # 无全等命中时才回退到含数字后缀的归一化候选层。
+    exact = [d for d in matches if exact_pattern.match(d.name)]
+    return sorted(exact or matches)[-1]
 
 
 class InvalidSpecName(ValueError):

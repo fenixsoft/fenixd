@@ -787,7 +787,11 @@ class H3SpecRoutesMixin:
         # ── 异步受理分支（add-freeze-stop-inflight-agents 5.1）──
         # 先取该 spec 的在跑 run：无在跑 → 既有同步软删除；有在跑 →
         # 写 spec_delete_request.json 信号立即返回受理（不阻塞等待终止）。
-        running_ids = dashboard_data.running_run_ids_for_spec(proot, spec)
+        try:
+            running_ids = dashboard_data.running_run_ids_for_spec(proot, spec)
+        except Exception as e:  # noqa: BLE001 兜底：在跑 run 读取异常不崩溃进程
+            self._error(500, f"delete spec failed: {e}")
+            return
         if running_ids:
             try:
                 req = dashboard_data.request_spec_delete(

@@ -283,10 +283,20 @@ function VerifyCell({ project, record }: { project: string; record: SpecSummary 
   const [open, setOpen] = useState(false);
   const [verdict, setVerdict] = useState<SpecDetail['verdict'] | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // 在飞 promise 守卫（code-review item a75e0d5abef0，与 SpecNameCell 同款）：
+  // 卸载只清防抖 timer，200ms 已过、fetchVerdict 在飞时 promise 仍会
+  // setVerdict/setOpen——对已消失行 setState 并试图打开 Popover。alive 标志
+  // 丢弃卸载后的回写；挂载时复位以兼容 StrictMode 模拟卸载-重挂载（ref 不随
+  // 重挂载重置）。
+  const aliveRef = useRef(true);
 
   // 卸载清理（code-review item 2d5f6ca39f91，与 SpecNameCell 同款）
-  useEffect(() => () => {
-    if (timerRef.current) clearTimeout(timerRef.current);
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => {
+      aliveRef.current = false;
+      if (timerRef.current) clearTimeout(timerRef.current);
+    };
   }, []);
 
   // fix-verify-progress-fasttrack：无任何验证数据（verify_total 为 0）时渲染纯文本
@@ -298,6 +308,7 @@ function VerifyCell({ project, record }: { project: string; record: SpecSummary 
   const onEnter = () => {
     timerRef.current = setTimeout(() => {
       void fetchVerdict(project, record.name).then((v) => {
+        if (!aliveRef.current) return;
         if (v && v.exists) {
           setVerdict(v);
           setOpen(true);

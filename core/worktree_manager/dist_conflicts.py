@@ -596,10 +596,24 @@ class G5DistConflictsMixin:
 
         ``git ls-files -u`` 对每个冲突文件输出 1~3 行（stage 1/2/3），行末为路径；
         去重后返回排序后的路径列表。命令失败返回空列表（不阻塞自愈）。
+
+        路径不转义：``-c core.quotePath=false``（与 ``_collect_conflict_paths``
+        的采集点同口径）让非 ASCII 路径按原样输出——路径原样传给
+        ``_triage_stash_pop_conflicts`` 拼 cat-file/checkout --theirs 的
+        pathspec，带引号 C 转义形会永不命中，态 1/态 2 自愈对非 ASCII
+        冲突文件恒失败退到态 3。
         """
         try:
             ls = subprocess.run(
-                ["git", "-C", str(self.project_root), "ls-files", "-u"],
+                [
+                    "git",
+                    "-C",
+                    str(self.project_root),
+                    "-c",
+                    "core.quotePath=false",
+                    "ls-files",
+                    "-u",
+                ],
                 capture_output=True,
                 text=True,
                 timeout=30,

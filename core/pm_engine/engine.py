@@ -1615,8 +1615,8 @@ class PMEngine:
                 # STATE.md，使耗时不再依赖易失的 run 产物（run 产物只增不减，
                 # 但快照保证耗时独立于产物回读路径）。
                 # 求和口径与 spec_summary 一致（duration_seconds 求和、含归档），
-                # 保证写入值 = 当时列表页显示值。仅在转换成功后写入，重复事件回放
-                # （done→done 非法转换返回 False）不会重复覆盖。
+                # 保证写入值 = 当时列表页显示值。done→done 幂等返回 True，重复事件
+                # 回放会重复求和覆盖，但求和口径不变结果相同（见上方 D4 注释）。
                 total_duration = sum(
                     int(r.get("duration_seconds") or 0)
                     for r in get_runs(self.project_root, spec_name, include_archive=True)

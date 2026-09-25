@@ -1787,13 +1787,16 @@ class TestArchivedSpecDocReadback(unittest.TestCase):
     def test_resolve_conflict_suffix_variant(self):
         from core.dashboard.data import resolve_spec_dir
         d1 = self._archived_layout(prefix="2026-09-02", content_marker="base")
-        # 冲突后缀变体：同日期追加 -{毫秒}；重建活跃目录后移入带后缀名。
-        # 字典序最大 = 后缀最大（"2026-09-02-demo-spec" < "...-987654321000"）
+        # 全等目录名优先（code-review item a4763c433fff，对齐
+        # evolution.resolve_accepted_spec_dir 口径）：日期前缀归档写入端从不
+        # 追加数字后缀（冲突报错不覆盖），「<date>-<spec>-<N>」只能归属名为
+        # <spec>-<N> 的独立 spec——同日期精确名与后缀变体并存时，spec 自身
+        # 的归档取全等目录（d1），后缀目录不得因字典序更大被误归属。
         self._active_layout()
         suffixed = self.archive_root / "2026-09-02-demo-spec-987654321000"
         shutil.move(str(self.spec_dir), str(suffixed))
-        self.assertEqual(resolve_spec_dir(self.tmpdir, self.SPEC), suffixed)
-        self.assertNotEqual(resolve_spec_dir(self.tmpdir, self.SPEC), d1)
+        self.assertEqual(resolve_spec_dir(self.tmpdir, self.SPEC), d1)
+        self.assertNotEqual(resolve_spec_dir(self.tmpdir, self.SPEC), suffixed)
 
     def test_resolve_soft_delete_variant_not_matched(self):
         """软删除命名（<name>-<Unix秒>，无日期前缀）不匹配——此类条目已从
