@@ -302,6 +302,13 @@ SIGNAL_SEVERITY = {
     # 6 次任一超限）。major：与 WIP 重叠阻塞同级（阻塞单 spec merge-back，
     # 非 critical）。
     "mergeback_wip_defer_stuck": "major",
+    # add-mergeback-wip-active-coordination 2.2/D4：无主陈旧 WIP 宽限耗尽升级
+    # ——defer 批占用者识别为零命中（在飞实现车道分支改动集零命中）、可配置
+    # 宽限（缺省 30 分钟）内无人认领。``mergeback_wip_overlap`` 同级 major：
+    # 升级是既有 WIP 重叠人工告警族的「无主限期」变体（在飞持有者场景由
+    # 事件驱动重试等待、不打扰人工，降噪）；批保持「保留待自动合回」语义，
+    # 升级不改变批的预算/台账状态。
+    "mergeback_wip_orphan_stuck": "major",
     # fix-verify-uniform-failure-consumer：全场景同因失败（pass=0 且失败签名
     # 一致）——既可能是验证环境/夹具问题，也可能是场景本身缺陷；admin 需判类
     # 后走对应处置路径，不直接判 bug-found（同因哨有意不派生 fix）。
@@ -363,6 +370,10 @@ SIGNAL_RECOMMENDATION = {
     # evo-add-wip-defer-merge-retry-consumer 2.1：等待超限降级处置指引——周期
     # 消费者已停止自动重试，人工是唯一出路（勿复位 ready 后干等：自动通道已关）。
     "mergeback_wip_defer_stuck": "WIP 延迟合回等待超限（窗口/轮数上限已到，自动重试已停止）：人工核对主树与分支改动路径重叠的未提交改动归属后，提交（git add/commit）或 stash（git stash push）主树重叠改动，再把该 spec 复位 ready 重新放行 merge-back；或人工完成该分支向主树的合并",
+    # add-mergeback-wip-active-coordination 2.2：无主陈旧 WIP 处置指引——批
+    # 语义适配（批无 spec 可重派，指引指向提交/stash 重叠文件；主树清完后
+    # 链边界自动合回，无需重派）。
+    "mergeback_wip_orphan_stuck": "无主陈旧 WIP 宽限耗尽（占用者识别为零命中，宽限内无人认领）：该批无 spec 可重派，人工核对重叠文件归属后，提交（git add/commit）或 stash（git stash push）主树这些改动，链边界（选批前/收敛出口）自动重试合回核销该批，无需人工重派；识别证据与盲区注记见 evidence（worktree 分支型在飞车道之外的主树直改形态会被按无主升级，升级仅为告警）",
     # add-blocked-reverify-lane D2：env 阻塞处置建议同步复位收敛措辞——
     # 处置范围限于环境修复，result 写入后框架自动判定复位路径（实现分支已合并→
     # 直通道 testing 重验，否则→ready），无需手动 reset spec 状态。
@@ -416,6 +427,10 @@ STORED_SIGNAL_TYPES = (
     # pm_engine 周期消费者直发——未收录则记录落 store 后无人摄取、
     # Administrator 不唤起，超限 spec 的「人工处置出口」落空。
     "mergeback_wip_defer_stuck",
+    # add-mergeback-wip-active-coordination 2.2：无主陈旧 WIP 宽限耗尽升级
+    # 告警由 code-fix defer 消费者直发——未收录则记录落 store 后无人摄取、
+    # Administrator 不唤起，「MUST NOT 无限期静默等待」的升级出口落空。
+    "mergeback_wip_orphan_stuck",
     "verify_contract_redraft",
     # add-test-regression-tab 增强：UI 手动请求「仅补 regression 段」——未收录则
     # 记录落 store 后无人摄取（信号石沉大海）。证据含「项目名=」供无 spec 形态解析。

@@ -2,7 +2,95 @@
 
 `MergeConflictInfo`：merge-back 返回值，兼容 `(bool, str)` 解包的结构化冲突分类。
 原样从 `core/worktree_manager.py` 搬移（design D7 不使用绝对行号锚定）。
+
+`WipOccupantInfo`：WIP overlap 占用者识别结果（add-mergeback-wip-active-coordination
+1.1/D1），随 defer 批进度/日志/台账留痕。
 """
+
+import time
+
+
+class WipOccupantInfo:
+    """WIP overlap 占用者识别结果（add-mergeback-wip-active-coordination 1.1/D1）。
+
+    D1 识别数据源纯机械：在飞实现车道 run 列表 × 各 run 分支相对主树 HEAD 的
+    改动文件集，与 overlap 文件集求交。命中 → ``holder=True``（``holders`` 列出
+    run/spec/分支/命中文件，可追溯）；零命中 → ``holder=False``（无主陈旧 WIP）。
+
+    已知盲区（D1，须随识别证据留痕）：本数据源只覆盖 **worktree 分支型**在飞
+    车道；持有者直接改主树不入分支的形态（admin/人工会话、主树内构建产物）
+    分支 diff 必零命中，一律按无主走宽限升级——升级仅为告警，误判影响有界。
+    ``describe()`` / ``to_dict()`` 产出的证据文本/结构均携带该注记。
+    """
+
+    BLIND_SPOT_NOTE = (
+        "识别数据源只覆盖 worktree 分支型在飞车道（implementer/code-fix run 的"
+        "分支 diff）；持有者直接改主树不入分支的形态（admin/人工会话、主树内"
+        "构建产物）分支 diff 必零命中，一律按无主走宽限升级"
+    )
+
+    __slots__ = ("holder", "holders", "overlap", "identified_at", "source")
+
+    def __init__(
+        self,
+        holder: bool,
+        holders: list | None = None,
+        overlap: list | None = None,
+        identified_at: str = "",
+        source: str = "worktree-branch-diff",
+    ):
+        self.holder = bool(holder)
+        # 命中明细：[{"run_ids": [...], "spec": str, "branch": str,
+        #             "worktree": str, "files": [命中文件,...]}]
+        self.holders = list(holders or [])
+        self.overlap = [str(p) for p in (overlap or [])]
+        self.identified_at = identified_at or time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
+        )
+        self.source = source
+
+    def holder_run_ids(self) -> list:
+        """全部命中车道的 run_id 并集（去重保序，供 per-run 终态监听注册）。"""
+        seen: list = []
+        for h in self.holders:
+            for rid in h.get("run_ids") or []:
+                rid = str(rid)
+                if rid and rid not in seen:
+                    seen.append(rid)
+        return seen
+
+    def describe(self) -> str:
+        """单行识别摘要（随 defer 批进度 current / 日志留痕）。"""
+        if self.holder:
+            parts = []
+            for h in self.holders:
+                parts.append(
+                    f"spec={h.get('spec') or '?'} branch={h.get('branch') or '?'}"
+                    f" run={','.join(h.get('run_ids') or []) or '?'}"
+                    f" 命中{len(h.get('files') or [])}文件"
+                )
+            return f"占用者=在飞车道（{'；'.join(parts)}）"
+        return (
+            f"占用者=无主陈旧 WIP（数据源={self.source}；{self.BLIND_SPOT_NOTE}）"
+        )
+
+    def to_dict(self) -> dict:
+        """结构化留痕形态（随 defer 台账 owner_* 字段落盘）。"""
+        return {
+            "holder": self.holder,
+            "holders": [dict(h) for h in self.holders],
+            "overlap": list(self.overlap),
+            "identified_at": self.identified_at,
+            "source": self.source,
+            "blind_spot_note": self.BLIND_SPOT_NOTE,
+        }
+
+    def __repr__(self) -> str:
+        return (
+            f"WipOccupantInfo(holder={self.holder}, holders={self.holders}, "
+            f"overlap={self.overlap}, identified_at={self.identified_at!r}, "
+            f"source={self.source!r})"
+        )
 
 
 class MergeConflictInfo:
