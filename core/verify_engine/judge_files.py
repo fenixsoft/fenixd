@@ -242,9 +242,16 @@ def build_requeue_manifest(
     }
 
     path = _requeue_manifest_path(project_root, spec_name)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
 
-    fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), prefix=".requeue.", suffix=".json.tmp")
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(path.parent), prefix=".requeue.", suffix=".json.tmp"
+        )
+    except OSError:
+        # 目录创建/临时文件创建失败与写入失败同样静默降级，不影响主流程
+        return manifest
+
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(manifest, f, ensure_ascii=False, indent=2)
