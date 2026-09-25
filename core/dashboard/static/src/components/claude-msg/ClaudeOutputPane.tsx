@@ -288,6 +288,10 @@ export default function ClaudeOutputPane({
             if (isMountedRef.current && activeRunIdRef.current === runId && activeProjectRef.current === project) {
               tailSnapAppliedRef.current = snapSeq;
               setTotalEvents(data.total_events || 0);
+              // 重拉成功即脱离错误态（code-review item ccb026b72fe7）：初载
+              // loadTail 失败已 setError 时，渲染被 error 短路，重同步数据虽
+              // 已写回仍显示「加载失败」，只能整页刷新
+              setError('');
               reportStatus(data.status || '');
               const newerEvents = data.events || [];
               setEvents((prev) => {
@@ -311,6 +315,8 @@ export default function ClaudeOutputPane({
               if (isMountedRef.current && activeRunIdRef.current === runId && activeProjectRef.current === project) {
                 setEvents(data.events || []);
                 setTotalEvents(data.total_events || 0);
+                // 重拉成功清错误态（code-review item ccb026b72fe7，同 hello 重同步）
+                setError('');
                 reportStatus(data.status || '');
               }
             } catch (e) {
