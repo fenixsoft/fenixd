@@ -78,6 +78,12 @@ const SEARCH_DEBOUNCE_MS = 300;
 // 未完成（非 done/pushed 终态）spec 行底色：浅蓝紫提示仍在进行中
 const ROW_INCOMPLETE_BG = 'rgb(250, 250, 255)';
 
+// add-spec-review-gate D8（code-review item 1b64add9823d）：评审 blocked 前缀
+// 清单——与后端 re_review 白名单（core/pm_engine/spec_review.py
+// SpecReviewManager.re_review）逐字同源；specMenuItems 菜单判据与
+// handleReReview 注释均以此为准，后端扩展前缀时仅需同步本清单。
+const SPEC_REVIEW_BLOCKED_PREFIXES = ['spec-review-rejected:', 'spec-review-incomplete:'];
+
 // 状态圆点配色（table-list 风格：色点 + 文字，不用标签）
 const TONE_DOT: Record<string, string> = {
   muted: '#bfbfbf',
@@ -566,12 +572,14 @@ function SpecCardList({ data, project, loading, onDocView, onMenu, menuItems, on
                 <Typography.Text type="secondary">耗时 {fmtDuration(record.total_duration)}</Typography.Text>
               </div>
               <div style={{ marginTop: 8 }}>
+                {/* 配色随阶段（code-review item 1ee2743543f4）：与桌面列同源
+                    strokeColorFor/trailColorFor，verify/gates 空条底轨可辨 */}
                 <Progress
                   percent={progress}
                   size="small"
                   showInfo={false}
-                  strokeColor="#1677ff"
-                  trailColor={TRACK_LIGHT}
+                  strokeColor={strokeColorFor(!!prog.gen, prog.isVerify, prog.isGates)}
+                  trailColor={trailColorFor(!!prog.gen, prog.isVerify, prog.isGates)}
                 />
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, lineHeight: '18px' }}>
                   <Typography.Text type="secondary">{prog.counter}</Typography.Text>
@@ -900,9 +908,10 @@ export default function SpecListPage() {
   };
 
   const handleReReview = (record: SpecSummary) => {
-    // add-spec-review-gate D8：重新评审入口——仅 error 前缀 spec-review-* 的
-    // blocked SPEC 显示本入口；后端仍会复核开放条件（非 blocked/冻结/前缀不
-    // 符任一拒绝），失败时展示后端返回的拒绝原因。
+    // add-spec-review-gate D8：重新评审入口——仅 error 前缀命中
+    // SPEC_REVIEW_BLOCKED_PREFIXES（与后端 re_review 白名单同源）的
+    // blocked SPEC 显示本入口；后端仍会复核开放条件（非 blocked/冻结/
+    // 前缀不符任一拒绝），失败时展示后端返回的拒绝原因。
     Modal.confirm({
       title: '重新评审 SPEC',
       content: (
@@ -1005,15 +1014,16 @@ export default function SpecListPage() {
     // 终态置灰仅作用于 priority/pickup-time（现状语义）；「修改状态」终态仍可点
     // （归档区块可用）。
     // add-spec-scheduling-controls：非终态 spec 可设置定时拾取（start_after）
+    // add-spec-review-gate D8（code-review item 1b64add9823d）：评审相关
+    // blocked（error 前缀命中 SPEC_REVIEW_BLOCKED_PREFIXES，与后端
+    // re_review 白名单同源）判据收敛单点，消除双前缀重复子句
     const reviewBlocked =
-      (record.status === 'blocked' &&
-        (record.error || '').startsWith('spec-review-rejected:')) ||
-      (record.status === 'blocked' &&
-        (record.error || '').startsWith('spec-review-incomplete:'));
+      record.status === 'blocked' &&
+      SPEC_REVIEW_BLOCKED_PREFIXES.some((p) => (record.error || '').startsWith(p));
     return [
       { key: 'status', label: '修改状态' },
-      // add-spec-review-gate D8：评审相关 blocked（error 前缀 spec-review-*）
-      // 增「重新评审」入口（非评审类 blocked 不显示）
+      // add-spec-review-gate D8：评审相关 blocked 增「重新评审」入口
+      //（非评审类 blocked 不显示）
       ...(reviewBlocked ? [{ key: 're-review', label: '重新评审' }] : []),
       { key: 'admin', label: '呼叫 Admin 介入' },
       { key: 'priority', label: '调整优先级', disabled: terminal },
