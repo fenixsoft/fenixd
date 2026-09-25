@@ -268,6 +268,17 @@ class FenixDaemon:
         self._code_stale = False
         self._stale_idle_since = None
         self._heal_block_reason = None
+        # 悬空起点（evo-add-stale-code-dangling-deadline 2.1）：_code_stale 假→真
+        # 边沿记录（UTC datetime，与 restart_history.jsonl 时间戳同源）；基线恢复
+        # 新鲜清零。启动即陈旧（baseline 计算后、首个检测点前代码已被改，或测试
+        # 基线替身）时取进程启动时刻。_stale_check_fresh_seen 记录「进程启动后
+        # 是否已见过新鲜检测」——首检即陈旧无法精确定位变更时刻（baseline 为启动
+        # 时 max mtime，磁盘此刻必不超 baseline），按 SPEC 取启动时刻下界。
+        # _dangling_timeout_fired 为本悬空周期的超时防重复写标志（2.3）。
+        self._code_stale_since = None
+        self._stale_check_fresh_seen = False
+        self._proc_started_utc = datetime.now(timezone.utc)
+        self._dangling_timeout_fired = False
         # 重启冷却锁存起点（evo-stale-selfheal-restart-cooldown）：None=不在冷却中；
         # 首次因滑动窗口计数进入冷却的那个 tick 时刻——锁存是「冷却持续
         # cooldown_duration_seconds」的落地点（窗口计数会因条目老化提前回落）。
@@ -1035,9 +1046,24 @@ class FenixDaemon:
         except Exception:  # noqa: BLE001 — 陈旧检测非关键路径，失败静默跳过
             return
         if changed == self._code_stale:
+            if not changed:
+                # evo-add-stale-code-dangling-deadline 2.1：进程启动后首个「新鲜」
+                # 检测确认 baseline 与磁盘一致——此后的假→真边沿才能精确取检测
+                # 时刻（变更就发生在上一周期之后），而非笼统的启动时刻。
+                self._stale_check_fresh_seen = True
             return
         self._code_stale = changed
         if changed:
+            # 悬空起点（evo-add-stale-code-dangling-deadline 2.1）：假→真边沿
+            # 记录 UTC 时刻。首检即陈旧（从未见过新鲜检测）说明启动前/启动窗口
+            # 内代码已被改（或测试基线替身），无法定位真实变更时刻，按 SPEC 取
+            # 进程启动时刻；其余边沿（上一周期仍新鲜）取当前检测时刻。
+            if not getattr(self, "_stale_check_fresh_seen", False):
+                self._code_stale_since = getattr(
+                    self, "_proc_started_utc", None
+                ) or datetime.now(timezone.utc)
+            else:
+                self._code_stale_since = datetime.now(timezone.utc)
             self.logger.warning(
                 "fenixd",
                 "检测到磁盘代码较进程启动时已更新（fenixd.py/core/**/*.py mtime 超 "
@@ -1097,6 +1123,11 @@ class FenixDaemon:
             except Exception as e:
                 self.logger.warning("fenixd", f"stale_code 告警写入失败（non-blocking）: {e}")
         else:
+            # evo-add-stale-code-dangling-deadline 2.1：基线恢复新鲜 → 悬空起点
+            # 清零、超时防重复写标志复位（下一悬空周期从零计量）。
+            self._code_stale_since = None
+            self._dangling_timeout_fired = False
+            self._stale_check_fresh_seen = True
             self.logger.info(
                 "fenixd",
                 "代码陈旧状态解除：磁盘代码与进程运行代码已一致（重启后新 baseline 或磁盘回退）",
@@ -1421,6 +1452,75 @@ class FenixDaemon:
         except Exception as e:  # noqa: BLE001 — 告警写入失败不阻断自愈
             self.logger.warning("fenixd", f"stale_selfheal_cooldown 告警写入失败（non-blocking）: {e}")
 
+    def _alert_dangling_timeout(self, dangling_seconds: float, max_dangling: int) -> None:
+        """悬空超时升级告警（evo-add-stale-code-dangling-deadline 3.1）。
+
+        新 signal_type=stale_code_dangling_timeout / severity=warning，MUST NOT
+        复用 stale_code 类型——该类型写入即自动 mark_handled
+        （_update_stale_code_state，2026-09-13 降噪决策），复用会被当已处置
+        吞掉，人工看不到忙时强推重启的升级事件。本告警也不写入即 handled：
+        悬空超时重启会排水中断在飞 run（有界重跑代价），属「需人工知悉」，
+        须进人工待处理视图（参照 stale_selfheal_cooldown 的写入模式）。
+
+        写入前经 latest_signal 做 STALE_ALERT_DEDUP_MINUTES（60 分钟）窗口去重：
+        同 stale-code-alert-window-dedup 的跨生命周期 rationale——超时重启加载
+        新代码后若再次悬空超时，是新升级事件照常成条；60 分钟内的重复命中
+        跳过写入降级为日志，去重状态复用 admin_alerts.json 天然跨重启存活。
+        """
+        self.logger.warning(
+            "fenixd",
+            f"陈旧悬空升级：持旧代码悬空 {dangling_seconds:.0f}s 超过时限 "
+            f"{int(max_dangling)}s，忙时强制规划性重启（需人工知悉：在飞 run "
+            "被排水中断，有界重跑）",
+        )
+        try:
+            admin_store = getattr(self, "admin_store", None)
+            if admin_store is not None:
+                recent = admin_store.latest_signal(
+                    None, "stale_code_dangling_timeout", STALE_ALERT_DEDUP_MINUTES
+                )
+                if recent is not None:
+                    self.logger.info(
+                        "fenixd",
+                        f"stale_code_dangling_timeout 告警窗口去重命中："
+                        f"{STALE_ALERT_DEDUP_MINUTES} 分钟内已有同信号记录"
+                        f"（created {recent.get('created')}），跳过写入仅留日志",
+                    )
+                    return
+                # 注意：不调用 mark_handled——升级事件须留在人工待处理视图
+                admin_store.append(
+                    {
+                        "kind": ESCALATION,
+                        "signal_type": "stale_code_dangling_timeout",
+                        "spec": None,
+                        "severity": "warning",
+                        "description": (
+                            "daemon 持旧代码悬空超过 max_dangling_seconds 时限，"
+                            "已不再等待空闲、直接触发规划性重启（在飞 run 经 "
+                            "planned_restart 排水宽限收尾或断点续做）"
+                        ),
+                        "evidence": (
+                            f"悬空 {dangling_seconds:.0f}s > 时限 {int(max_dangling)}s"
+                            "（stale_code_selfheal.max_dangling_seconds）；悬空起点见"
+                            " _code_stale_since（UTC）"
+                        ),
+                        "action_taken": (
+                            "touch .fenix/restart_request 强制规划性重启（cooldown/"
+                            "self-triggered 闸门仍生效）"
+                        ),
+                        "recommended_action": (
+                            "无需立即干预：重启使已合回修复生效、在飞 run 断点续做；"
+                            "若频繁出现，核查提交/合回节律与 max_dangling_seconds "
+                            "取值是否匹配，必要时调大时限或置 0 关闭升级（仅保留"
+                            "空闲自愈）"
+                        ),
+                    }
+                )
+        except Exception as e:  # noqa: BLE001 — 告警写入失败不阻断自愈重启
+            self.logger.warning(
+                "fenixd", f"stale_code_dangling_timeout 告警写入失败（non-blocking）: {e}"
+            )
+
     def _alert_selfheal_loop(self, streak: int, threshold: int, window: int) -> None:
         """自触发 streak 达阈值：stale_selfheal_loop 告警（critical，需人工判断）。"""
         try:
@@ -1561,6 +1661,9 @@ class FenixDaemon:
             self._stale_idle_since = None
             self._heal_block_reason = None
             self._self_triggered_cycle = False
+            # evo-add-stale-code-dangling-deadline 2.3：悬空周期收尾，超时防重复
+            # 写标志一并复位（下一悬空周期允许再次超时触发）。
+            self._dangling_timeout_fired = False
             return
 
         now = time.time()
@@ -1572,7 +1675,11 @@ class FenixDaemon:
         try:
             cfg = ConfigLoader.get_stale_code_selfheal_config(self.config)
         except Exception:  # noqa: BLE001 — 配置读取异常按缺省启用处理
-            cfg = {"enabled": True, "idle_confirm_seconds": 120}
+            cfg = {
+                "enabled": True,
+                "idle_confirm_seconds": 120,
+                "max_dangling_seconds": 14400,
+            }
         enabled, confirm_seconds = bool(cfg.get("enabled", True)), cfg.get(
             "idle_confirm_seconds", 120
         )
@@ -1684,6 +1791,64 @@ class FenixDaemon:
             return
         # 冷却已退出：清锁存起点，使下次进入重新按边沿告警
         self._cooldown_started_at = None
+
+        # ── 悬空超时分支（evo-add-stale-code-dangling-deadline 2.2/2.3）────
+        # _code_stale 持续超过 stale_code_selfheal.max_dangling_seconds（缺省
+        # 4h，0 = 关闭升级）时不再等待空闲：当前负载形态几乎不产生连续空闲
+        # 窗口，无限期悬空等于已合回修复被静默（2026-09-24 单日实测 2.1h
+        # 停摆）。本分支位于冷却/自触发闸门之后（冷却窗口/锁存期内到不了
+        # 这里，仍受闸门约束）、_is_idle 之前——忙时也直接写 restart_request，
+        # 在飞 run 由 supervisor planned_restart 排水兜底（60s 宽限 + checkpoint
+        # 保全 + 断点续做）。悬空超时触发时距上次自愈重启必然已超
+        # self_triggered_window_seconds（重启即刷新 baseline，_code_stale 归零
+        # 重新起算），故不触碰 _self_triggered_cycle（不强制置真），
+        # _record_selfheal_restart 按既有语义如实记录。
+        max_dangling = cfg.get("max_dangling_seconds", 14400)
+        stale_since = getattr(self, "_code_stale_since", None)
+        dangling_seconds = (
+            (now - stale_since.timestamp())
+            if stale_since is not None
+            else None
+        )
+        if (
+            max_dangling
+            and max_dangling > 0
+            and dangling_seconds is not None
+            and dangling_seconds > max_dangling
+        ):
+            if getattr(self, "_dangling_timeout_fired", False):
+                # 防重复写（2.3）：本悬空周期已成功触发过，1s tick 直接跳过。
+                # req 已在场的情形由上方 in-flight 阻断覆盖（req.exists() →
+                # reason="in-flight" 早退），本标志兜底 supervisor 秒级消费
+                # request 后、SIGTERM 到来前的窗口，避免重复 touch/重复告警。
+                return
+            self._stale_idle_since = None
+            wrote = False
+            try:
+                req.parent.mkdir(parents=True, exist_ok=True)
+                req.write_text(datetime.now(timezone.utc).isoformat() + "\n", encoding="utf-8")
+                wrote = True
+                self.logger.warning(
+                    "fenixd",
+                    f"陈旧悬空超时触发：daemon 持旧代码已 {dangling_seconds:.0f}s"
+                    f"（超过 stale_code_selfheal.max_dangling_seconds "
+                    f"{int(max_dangling)}s）且系统不再等待空闲，已 touch "
+                    ".fenix/restart_request，supervisor 将执行规划性重启"
+                    "（planned_restart 排水：在飞宽限收尾/checkpoint 保全/断点续做）",
+                )
+            except OSError as e:
+                self.logger.error("fenixd", f"restart_request 写入失败: {e}")
+            if wrote:
+                # 触发成功才置防重复标志 + 写升级告警 + 落历史；写失败仅记
+                # error 日志，标志未置位，下个 tick 自动重试。
+                self._dangling_timeout_fired = True
+                self._alert_dangling_timeout(dangling_seconds, max_dangling)
+                self._record_selfheal_restart(
+                    history=history,
+                    window=self_triggered_window,
+                    threshold=self_triggered_threshold,
+                )
+            return
 
         self._heal_block_reason = None
         if not self._is_idle():
