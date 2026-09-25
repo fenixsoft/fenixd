@@ -26,4 +26,4 @@
 - `core/worktree_manager/`（overlap 检测与延迟合回路径）
 - `core/code_fix.py`（defer 批合回消费者的唤醒来源）
 - `core/admin_monitor.py`（复用既有 `mergeback_wip_overlap` 信号，新增无主升级触发点）
-- 事件来源复用既有 run 终态事件总线与 `scheduling_kick` 通道（须规避单槽位 conflict 静默丢弃缺陷，见 design D3）
+- 事件来源为 run 终态（run 文件终态事件行 / runner 终态收口）；per-run 监听注册为本 SPEC 新增（现状无通用订阅 API，见 design D2）；`scheduling_kick` 不作为唯一唤醒（单槽位 conflict 静默丢弃缺陷，见 design D3）

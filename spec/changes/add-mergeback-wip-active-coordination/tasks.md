@@ -7,6 +7,8 @@
   kind: modify
 - path: core/code_fix.py
   kind: modify
+- path: core/agent_runner/runner.py
+  kind: modify
 - path: core/admin_monitor.py
   kind: modify
 - path: .fenix/config.template.yaml
@@ -21,8 +23,8 @@
 
 ## 2. 事件驱动重试与无主升级
 
-- [ ] 2.1 `core/code_fix.py` defer 批合回消费者：持有者为在飞 run 时注册其终态监听（注册时先查该 run 是否已终态，是则立即重试），终态到达秒级重试合回；固定轮询降级为兜底
-- [ ] 2.2 无主判定 + 宽限（`admin.mergeback_wip_orphan_grace_minutes`，缺省 30）耗尽 → `core/admin_monitor.py` 触发既有 `mergeback_wip_overlap` major 告警（附 overlap 文件清单与识别证据）；批保持「保留待自动合回」语义
+- [ ] 2.1 事件驱动重试：`core/agent_runner/runner.py` 终态收口处新增 per-run 终态回调表（实现/code-fix run 落终态即触发；现状无通用订阅 API，见 design D2）；`core/code_fix.py` defer 批合回消费者注册持有者 run_id 监听（注册时先查 run 文件终态行，已终态立即重试），终态到达秒级重试合回；事件重试 MUST 复用既有单一重试入口（`self._lock` + `already_running` 守卫，见 design D5），MUST NOT 旁路直调；固定轮询降级为兜底
+- [ ] 2.2 无主判定 + 宽限（`admin.mergeback_wip_orphan_grace_minutes`，缺省 30）耗尽 → 沿 `core/code_fix.py` 既有 defer 告警写入通道（`_write_defer_*_alert` 同族）升级 `mergeback_wip_overlap` 同级 major 人工告警（附 overlap 文件清单与识别证据，含 D1 已知盲区注记；处置指引按批语义适配——批无 spec 可重派，指引指向提交/stash 重叠文件；`core/admin_monitor.py` 仅在需登记分级/指引文案时修改）；批保持「保留待自动合回」语义
 - [ ] 2.3 `.fenix/config.template.yaml` 增 `admin.mergeback_wip_orphan_grace_minutes`（缺省 30，注释说明语义）
 
 ## 3. 验证
