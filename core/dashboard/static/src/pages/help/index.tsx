@@ -10,7 +10,7 @@
  */
 import { Empty, Menu, Skeleton, Alert, Drawer, Button, Card } from 'antd';
 import { MenuOutlined } from '@ant-design/icons';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { isValidElement, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -162,6 +162,15 @@ function buildHelpComponents(onNavigate: (docName: string, anchor?: string) => v
           {children}
         </code>
       );
+    },
+    // mermaid 代码块：code 覆盖返回的 MermaidBlock 根节点是 div，
+    // 留在 pre 内会形成 <pre><div> 非法嵌套（pre 仅允许 phrasing content），
+    // 这里直接返回图容器使其脱离 pre；其余代码块原样渲染 pre
+    pre({ children }: any) {
+      if (isValidElement(children) && children.type === MermaidBlock) {
+        return children;
+      }
+      return <pre>{children}</pre>;
     },
     // heading 注入 GitHub slug id（页内锚点跳转目标）；字号样式同 markdownComponents
     h1: headingComponent('h1', { fontSize: 18, fontWeight: 600 }),
