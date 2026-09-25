@@ -66,14 +66,32 @@ def make_worktree(tmp_path, name="impl-eco-1"):
 
 
 def spawn_token_proc(token: str, fake_argv0: str) -> subprocess.Popen:
-    """spawn 一个 20s 进程：cmdline 含 token，argv[0] 伪装为 fake_argv0。"""
+    """spawn 一个 20s 进程：cmdline 含 token，argv[0] 伪装为 fake_argv0。
+
+    execv 完成前子进程是 launcher python：cmdline 同样含 token，但 argv[0]
+    仍是 python3——wait_token_in_pgrep 在该 pre-execv 窗口即可命中 token，
+    豁免断言被竞态打穿（全量回归实测 is_claude=False 假失败）。故返回前
+    自旋等待 argv[0] 就位（execv 完成），替身身份未就位按夹具失败上报。
+    """
     launcher = ("import os, sys\n"
                 "os.execv(sys.argv[1], [sys.argv[2]] + sys.argv[3:])\n")
-    return subprocess.Popen(
+    proc = subprocess.Popen(
         [sys.executable, "-c", launcher, sys.executable, fake_argv0,
          "-c", "import time; time.sleep(20)", token],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
+    deadline = time.time() + 5.0
+    while time.time() < deadline:
+        try:
+            argv0 = Path(f"/proc/{proc.pid}/cmdline").read_bytes().split(b"\0", 1)[0]
+        except OSError:
+            argv0 = b""
+        if os.path.basename(argv0.decode("utf-8", "replace")) == fake_argv0:
+            return proc
+        time.sleep(0.01)
+    proc.kill()
+    proc.wait()
+    raise AssertionError(f"stub argv[0] never became {fake_argv0!r} (execv 未就位)")
 
 
 def wait_token_in_pgrep(token: str, timeout: float = 5.0) -> bool:
