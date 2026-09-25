@@ -152,49 +152,54 @@ class G1LifecycleMixin:
             self._spec_locks.add(lock_key)
             self._lock_since[lock_key] = time.time()
 
-        # worktree 继承（fast-track 打回重派 / fix-provider-transient-backoff D3：
-        # transient 终态保留的全 agent_type 遗产）：优先认领上一轮保留的复用遗产，
-        # 在同一目录同一分支上继续（继承已提交成果与未提交现场），不再从零新建。
-        if agent_type in ("fast-track", "implementer", "planner-plan", "planner-judge", "verifier"):
-            reuse = self._take_reusable_worktree(spec_name)
-            if reuse is not None:
-                wt_path, branch = reuse
-                self._active_worktrees.add(str(wt_path))
-                self._wt_branches[str(wt_path)] = branch
-                self.logger.info(
-                    "worktree_manager",
-                    f"Reusing inherited worktree for '{spec_name}': "
-                    f"{wt_path} (branch {branch})",
-                )
-                return wt_path
-            # 无可复用遗产 → 清除上一轮的认领痕迹（prompt 注入以实际为准）
-            self._active_reuse.pop(spec_name, None)
-
-        # Determine branch name — include timestamp to avoid collisions on re-verification
-        # （evo-fix-worktree-name-collision-retry：跨 agent_type 同秒 create 会按
-        # int(time.time()) 撞出同名分支与路径，后到者 add -b 报 already exists。
-        # 在单次 create 调用内以单调递增时间戳同步重建分支名与路径就地重试
-        # （换名至多 2 次、总计至多 3 次创建尝试），免去 runner 层 attempt
-        # sleep 5 秒 + 重拉供给链的兜底消耗；末段保持纯数字时间戳，queries 层
-        # rsplit+isdigit 解析契约不变。）
-        timestamp = int(time.time())
-        if agent_type == "verifier":
-            prefix = "verify"
-        else:
-            prefix = "impl"
-
-        def _names(ts: int):
-            """按时间戳重建分支名与 worktree 目录名（撞名时同名双换）。"""
-            if agent_type == "verifier":
-                return f"fenix/{prefix}-{spec_name}-{ts}", f"{prefix}-{spec_name}-{ts}"
-            return f"fenix/{spec_name}-{ts}", f"{prefix}-{spec_name}-{ts}"
-
-        branch, wt_name = _names(timestamp)
-        wt_path = self.base_dir / wt_name
-
-        self.base_dir.mkdir(parents=True, exist_ok=True)
-
+        # try 覆盖锁释放前的全部步骤（code-review item 545846c6e8cd）：reuse
+        # 认领段与 base_dir.mkdir 原先位于 try 之外，权限不足等 OSError 会让
+        # 异常携带着入口已持有的 spec 锁穿出 create()，陈锁清扫超时前该
+        # spec+agent_type 无法再派发。失败路径与下方既有 except 一致：
+        # discard 锁并 return None。
         try:
+            # worktree 继承（fast-track 打回重派 / fix-provider-transient-backoff D3：
+            # transient 终态保留的全 agent_type 遗产）：优先认领上一轮保留的复用遗产，
+            # 在同一目录同一分支上继续（继承已提交成果与未提交现场），不再从零新建。
+            if agent_type in ("fast-track", "implementer", "planner-plan", "planner-judge", "verifier"):
+                reuse = self._take_reusable_worktree(spec_name)
+                if reuse is not None:
+                    wt_path, branch = reuse
+                    self._active_worktrees.add(str(wt_path))
+                    self._wt_branches[str(wt_path)] = branch
+                    self.logger.info(
+                        "worktree_manager",
+                        f"Reusing inherited worktree for '{spec_name}': "
+                        f"{wt_path} (branch {branch})",
+                    )
+                    return wt_path
+                # 无可复用遗产 → 清除上一轮的认领痕迹（prompt 注入以实际为准）
+                self._active_reuse.pop(spec_name, None)
+
+            # Determine branch name — include timestamp to avoid collisions on re-verification
+            # （evo-fix-worktree-name-collision-retry：跨 agent_type 同秒 create 会按
+            # int(time.time()) 撞出同名分支与路径，后到者 add -b 报 already exists。
+            # 在单次 create 调用内以单调递增时间戳同步重建分支名与路径就地重试
+            # （换名至多 2 次、总计至多 3 次创建尝试），免去 runner 层 attempt
+            # sleep 5 秒 + 重拉供给链的兜底消耗；末段保持纯数字时间戳，queries 层
+            # rsplit+isdigit 解析契约不变。）
+            timestamp = int(time.time())
+            if agent_type == "verifier":
+                prefix = "verify"
+            else:
+                prefix = "impl"
+
+            def _names(ts: int):
+                """按时间戳重建分支名与 worktree 目录名（撞名时同名双换）。"""
+                if agent_type == "verifier":
+                    return f"fenix/{prefix}-{spec_name}-{ts}", f"{prefix}-{spec_name}-{ts}"
+                return f"fenix/{spec_name}-{ts}", f"{prefix}-{spec_name}-{ts}"
+
+            branch, wt_name = _names(timestamp)
+            wt_path = self.base_dir / wt_name
+
+            self.base_dir.mkdir(parents=True, exist_ok=True)
+
             create_attempt = 0
             while True:
                 create_attempt += 1

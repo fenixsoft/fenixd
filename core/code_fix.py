@@ -2903,14 +2903,28 @@ class CodeFixOrchestrator:
                 summary2 = _failure_summary(reg)
                 tip_sha = _worktree_head(wt)
                 branch = _worktree_branch(wt)
-                record_failed_batch(
-                    root, item_ids, wt,
-                    reason="regression_failed_twice", branch=branch, tip_sha=tip_sha,
-                    detail_ref=last_detail_ref,
-                )
-                write_regression_failed_alert(
-                    root, item_ids, wt, summary2, branch=branch, tip_sha=tip_sha
-                )
+                # 失败档案只收未终态条目（code-review item c94a1770a477，与
+                # _downgrade_deferred / 主路径核销前过滤同口径）：选批到重试
+                # 耗尽之间被人工置终态（resolved/in_spec/ignored）的条目不随
+                # 批入档、不进回归失败告警名录——fail_count 预算与达上限一次
+                # 性告警的名录须与真实失败条目一致；子集为空则跳过入档与告警。
+                try:
+                    ledger = read_items(root)
+                except Exception:  # noqa: BLE001 — 台账读失败按空集（不入档）
+                    ledger = {}
+                open_ids = [
+                    i for i in item_ids
+                    if (ledger.get(i) or {}).get("status") == "open"
+                ]
+                if open_ids:
+                    record_failed_batch(
+                        root, open_ids, wt,
+                        reason="regression_failed_twice", branch=branch, tip_sha=tip_sha,
+                        detail_ref=last_detail_ref,
+                    )
+                    write_regression_failed_alert(
+                        root, open_ids, wt, summary2, branch=branch, tip_sha=tip_sha
+                    )
                 _safe_cleanup(wm, wt, success=False, logger=self._logger)
                 self._consumed_progress(
                     current=(

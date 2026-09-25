@@ -532,11 +532,18 @@ class G5DistConflictsMixin:
         错误删除随 merge 提交固化，且 ``_rebuild_dist_after_merge`` 的
         src_touched 判定同样限静态根、不会触发重建兜底。
         """
+        # -c core.quotePath=false（code-review item 3de86817b197）：非 ASCII
+        # 产物路径保持原样输出，否则 HEAD 侧 C 转义引号形与 conflict_paths
+        # 的原样形态失配，真实存在的路径会误判「HEAD 已删」而遭 git rm。
+        # 与 _resolve_build_artifact_conflicts/_collect_conflict_paths 的
+        # 采集点同口径。
         ls = subprocess.run(
             [
                 "git",
                 "-C",
                 str(self.project_root),
+                "-c",
+                "core.quotePath=false",
                 "ls-tree",
                 "-r",
                 "--name-only",

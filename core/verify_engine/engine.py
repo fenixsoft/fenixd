@@ -216,6 +216,17 @@ class VerifyEngine:
                         await self._runners[done_kind].teardown()
                     except Exception as te:
                         self.logger.warning("verify_engine", f"Runner '{done_kind}' teardown 异常: {te}")
+                # 失败 Runner 自身也纳入 best-effort：_runner_for 已把它构造并
+                # memoize 进 self._runners，其 setup 可能已分配部分资源（如
+                # WebRunner 已 await async_playwright().start() 启动 driver 进程
+                # 后才在 chromium.launch 失败），不释放则常驻 daemon 内每轮
+                # setup 失败都泄漏一份直至进程退出。teardown 对半初始化实例
+                # 有空值守卫（BrowserManager.stop 逐步容错），残余异常由同款
+                # try/except 兜底为 warning。
+                try:
+                    await runner.teardown()
+                except Exception as te:
+                    self.logger.warning("verify_engine", f"Runner '{kind}' teardown 异常: {te}")
                 msg = f"验证环境错误: {kind} Runner 初始化失败: {e}"
                 self.logger.error("verify_engine", msg)
                 report = self._build_report([])

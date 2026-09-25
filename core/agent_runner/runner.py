@@ -733,10 +733,12 @@ class AgentRunner:
         """
         base_id = self._normalize_run_id(run_id)
 
-        # 按基础 run_id 前缀匹配所有活跃 attempt
+        # 按基础 run_id 匹配所有活跃 attempt；带 ``-`` 边界（同 _run_id_in_flight
+        # 口径）防 base id 前缀撞上其他更长 run_id 的 attempt（如 impl-x-100
+        # 不得命中 impl-x-1000-a1）而误报 cancel_requested。
         matched_attempts = [
             aid for aid in list(self._running_agents.keys())
-            if aid.startswith(base_id)
+            if aid == base_id or aid.startswith(base_id + "-")
         ]
 
         if not matched_attempts:

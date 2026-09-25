@@ -213,39 +213,47 @@ class Logger:
         # 边界并丢弃残行，避免把跨窗口截断的行当完整行解析。
         wanted_level = level.upper() if level else None
         result = []
-        with open(log_file, "rb") as f:
-            f.seek(0, os.SEEK_END)
-            file_size = f.tell()
-            window_end = file_size
-            while True:
-                window_start = max(0, window_end - self.TAIL_WINDOW_BYTES)
-                f.seek(window_start)
-                text = f.read(window_end - window_start).decode(
-                    "utf-8", errors="replace"
-                )
-                if window_start > 0:
-                    # 首段可能是上一窗口截断的残行，对齐到下一个换行
-                    newline = text.find("\n")
-                    text = text[newline + 1 :] if newline != -1 else ""
-                if window_end < file_size:
-                    # 末段残行属于下一轮窗口，这里丢弃
-                    newline = text.rfind("\n")
-                    text = text[: newline + 1] if newline != -1 else ""
-                window_entries = []
-                for line in text.splitlines():
-                    if not line.strip():
-                        continue
-                    try:
-                        entry = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if wanted_level and entry.get("level") != wanted_level:
-                        continue
-                    window_entries.append(entry)
-                # 各窗口从尾向头扫描，前插以保持与日志时间顺序一致
-                result = window_entries + result
-                if len(result) >= lines or window_start == 0:
-                    break
-                window_end = window_start
+        # exists() 与 open() 之间存在竞态窗口：FlockRotatingFileHandler 恰好
+        # 完成轮转（fenixd.log 被 rename 成 .1、新文件尚未重建）或多进程窗口
+        # 内文件被外部删除，open 抛 FileNotFoundError/OSError 直接冒泡会让
+        # dashboard 尾部日志 API 500。tail 是只读观测接口，与同文件其余路径
+        # 的 OSError 容错口径一致，失败降级为空集。
+        try:
+            with open(log_file, "rb") as f:
+                f.seek(0, os.SEEK_END)
+                file_size = f.tell()
+                window_end = file_size
+                while True:
+                    window_start = max(0, window_end - self.TAIL_WINDOW_BYTES)
+                    f.seek(window_start)
+                    text = f.read(window_end - window_start).decode(
+                        "utf-8", errors="replace"
+                    )
+                    if window_start > 0:
+                        # 首段可能是上一窗口截断的残行，对齐到下一个换行
+                        newline = text.find("\n")
+                        text = text[newline + 1 :] if newline != -1 else ""
+                    if window_end < file_size:
+                        # 末段残行属于下一轮窗口，这里丢弃
+                        newline = text.rfind("\n")
+                        text = text[: newline + 1] if newline != -1 else ""
+                    window_entries = []
+                    for line in text.splitlines():
+                        if not line.strip():
+                            continue
+                        try:
+                            entry = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if wanted_level and entry.get("level") != wanted_level:
+                            continue
+                        window_entries.append(entry)
+                    # 各窗口从尾向头扫描，前插以保持与日志时间顺序一致
+                    result = window_entries + result
+                    if len(result) >= lines or window_start == 0:
+                        break
+                    window_end = window_start
 
-        return result[-lines:]
+            return result[-lines:]
+        except OSError:
+            return []

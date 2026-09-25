@@ -1246,7 +1246,11 @@ def salvage_result_from_transcript(
                     continue
                 if d.get("type") != "assistant":
                     continue
-                for c in (d.get("message") or {}).get("content") or []:
+                # message 为非 dict 载荷（JSON 字符串/数字/列表等）时不调 .get，
+                # 防 AttributeError 逸出本函数「转录损坏不抛异常」的防御口径。
+                msg = d.get("message")
+                content = msg.get("content") if isinstance(msg, dict) else None
+                for c in content or []:
                     if isinstance(c, dict) and c.get("type") == "text":
                         last_text = c.get("text") or ""
     except (OSError, UnicodeDecodeError):

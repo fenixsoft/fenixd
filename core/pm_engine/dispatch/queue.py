@@ -379,6 +379,109 @@ class QQQueueMixin:
             )
             return False
 
+    def _queue_entry_ready(self, spec: dict, sname: str, atype: str) -> bool:
+        """队列条目状态守卫与闸门链候选判定**单一落点**。
+
+        供 ``_process_queue`` 的 best_valid_prio 扫描与 dispatch_idx 扫描两处
+        共用（对齐 ``_review_entry_ready`` / ``_parallel_plan_entry_ready`` /
+        ``_start_after_blocks_entry`` 的单一落点范式；code-review item
+        409a6ced70ce：两处约 80 行守卫链手工同步已发生日志漂移——秒挂冷却
+        命中第一处记 debug、第二处静默跳过，提取后统一日志口径）。判定顺序
+        与提取前两处扫描逐字一致，对合法条目的判定结果不变：
+
+        - 车道分流状态合法性：并行出题（``_parallel_plan_entry_ready``）、
+          评审（``_review_entry_ready``）、implementer/fast-track（ready/
+          implementing）、verifier（implemented/testing）；
+        - 派发退避（``_dispatch_backoffed``）；
+        - start_after 门控（``_start_after_blocks_entry``，debug 留痕）；
+        - 秒挂冷却（仅 implementer/fast-track/repair，debug 留痕并排程到期
+          恢复）/ 信号死法冷却（全部 agent 类型，同款）——两处扫描经本落点
+          统一记 debug（判定不变，仅日志口径统一）；
+        - 在飞评审校验（``_should_defer_for_reviewer``，仅实现车道，置于
+          退避/start_after/冷却之后避免无谓进程表判定）。
+
+        返回 False = 本轮不可派发（条目保留队列待重判）；调用方 MUST
+        ``continue``。
+        """
+        status = spec.get("status")
+        if atype == "planner-plan":
+            # 并行出题条目候选判定（2.1）：状态合法且豁免上限未满。
+            if not self._parallel_plan_entry_ready(spec):
+                return False
+        elif atype == "spec-review":
+            # 评审条目候选判定（1.2/1.3/1.4）：状态必须 reviewing 且无在飞评审。
+            if not self._review_entry_ready(spec, sname):
+                return False
+        elif atype == "implementer" and status not in ("ready", "implementing"):
+            # implementing 允许派发 = 原地打回的修复重派（热修 2026-08-29）：
+            # 打回处置 _enqueue 时状态为 implementing，旧条件 status != "ready"
+            # 导致修复条目被永久静默跳过、链路停摆。入队点均在 run 终止后
+            # （打回处理器/零变更重试）且 _enqueue 按 (spec,type) 去重，无双派。
+            return False
+        if atype == "fast-track" and status not in ("ready", "implementing"):
+            # fast-track：ready 正常派发；implementing 允许 = 失败打回后的修复重派
+            # （入队点均在 run 终止后，与 implementer 同语义，无双派）。
+            return False
+        if atype == "verifier" and status not in ("implemented", "testing"):
+            # testing 允许派发 = 重验车道出口（fix-robustness-edge-cases
+            # 孤儿信号根因）：无驱动 testing 的三条恢复车道
+            # （event_bus._recover_testing / admin_monitor 孤儿复位 /
+            # env 阻塞复位直通道）都按重验语义入队 verifier，而 spec
+            # 已在 testing——旧守卫 status != "implemented" 让条目永久
+            # 滞留队列（无日志、无派发），testing 只能等 stuck 阈值兜底。
+            # 派发处 transition(testing) 为幂等自迁移，语义不变。
+            return False
+        if self._pm._dispatch_backoffed(spec):
+            return False
+        # add-spec-scheduling-controls D2：start_after 未到期静默跳过
+        # （不写 error 不翻状态，对齐退避门控的防自触发设计）；到期后由
+        # 60s 定时唤起 / full_scan 兜底恢复调度。
+        # 分流落点见 _start_after_blocks_entry：实现车道无条件，
+        # spec-review 条目走 scope 感知谓词（dispatch 档放行）。
+        if self._start_after_blocks_entry(spec, sname, atype):
+            self._pm.logger.debug(
+                "pm_engine",
+                f"start_after 未到期，跳过 {atype} 派发 '{sname}'（定时拾取）",
+            )
+            return False
+        # cli-retry-backoff 2.2：秒挂冷却期内跳过 implementer/fast-track/
+        # repair 派发（不耗预算、不起进程），并排程到期自动恢复。
+        if atype in (
+            "implementer",
+            "fast-track",
+            "repair",
+        ) and self._pm._instant_fail_cooled(sname):
+            self._pm.logger.debug(
+                "pm_engine",
+                f"秒挂冷却中，跳过 {atype} 派发 '{sname}'",
+            )
+            self._schedule_instant_fail_recovery(sname, lock_held=True)
+            return False
+        # evo-sigterm-source-tracking-cooldown：信号死法冷却期内跳过
+        # 该 spec 的**全部** agent 类型重派（含 admin/impl 处置 run
+        # 路由；不耗预算、不起进程），并排程到期自动恢复。与秒挂冷却
+        # 并存：两条通道各自独立，取更晚的冷却截止生效。
+        if self._pm._signal_kill_cooled(sname):
+            self._pm.logger.debug(
+                "pm_engine",
+                f"信号死法冷却中，跳过 {atype} 派发 '{sname}'",
+            )
+            self._schedule_signal_kill_recovery(sname, lock_held=True)
+            return False
+        # 派发前在飞评审校验（evo-spec-concurrency-flight-guard D2）：
+        # 存在在飞 spec-review run 时跳过候选（条目保留队列、不 pop、
+        # 不消耗 attempt），待 review 收尾重判。本落点覆盖 family.py:585 /
+        # adjudication.py:1408 / queue.py:870 等绕过 `_on_spec_ready` 的
+        # 直入队列路径（与 engine 落点同口径）。陈旧锚点（run 已终态）判为
+        # 无在飞评审放行并记 WARNING（D0）。位置：置于退避/start_after/
+        # 冷却闸门之后、派发判定之前（D2 任务 2.4：避免在无谓路径上做
+        # 进程表判定）。
+        if atype in ("implementer", "fast-track") and self._should_defer_for_reviewer(
+            spec, sname
+        ):
+            return False
+        return True
+
     def _process_queue(self):
         """Process the run queue — relaxed-priority parallel scheduling.
 
@@ -517,84 +620,11 @@ class QQQueueMixin:
                     spec = self._pm.state_machine.read_one(sname)
                     if not spec:
                         continue
-                    status = spec.get("status")
-                    if atype == "planner-plan":
-                        # 并行出题条目候选判定（2.1）：状态合法且豁免上限未满；
-                        # 命中不了则跳过（条目保留队列待重判，与评审条目同语义）。
-                        if not self._parallel_plan_entry_ready(spec):
-                            continue
-                    elif atype == "spec-review":
-                        # 评审条目候选判定（1.2/1.3）：状态必须 reviewing 且无
-                        # 在飞评审；命中则跳过（条目保留队列待重判）。
-                        if not self._review_entry_ready(spec, sname):
-                            continue
-                    elif atype == "implementer" and status not in ("ready", "implementing"):
-                        # implementing 允许派发 = 原地打回的修复重派（热修 2026-08-29）：
-                        # 打回处置 _enqueue 时状态为 implementing，旧条件 status != "ready"
-                        # 导致修复条目被永久静默跳过、链路停摆。入队点均在 run 终止后
-                        # （打回处理器/零变更重试）且 _enqueue 按 (spec,type) 去重，无双派。
-                        continue
-                    if atype == "fast-track" and status not in ("ready", "implementing"):
-                        # fast-track：ready 正常派发；implementing 允许 = 失败打回后的修复重派
-                        # （入队点均在 run 终止后，与 implementer 同语义，无双派）。
-                        continue
-                    if atype == "verifier" and status not in ("implemented", "testing"):
-                        # testing 允许派发 = 重验车道出口（fix-robustness-edge-cases
-                        # 孤儿信号根因）：无驱动 testing 的三条恢复车道
-                        # （event_bus._recover_testing / admin_monitor 孤儿复位 /
-                        # env 阻塞复位直通道）都按重验语义入队 verifier，而 spec
-                        # 已在 testing——旧守卫 status != "implemented" 让条目永久
-                        # 滞留队列（无日志、无派发），testing 只能等 stuck 阈值兜底。
-                        # 派发处 transition(testing) 为幂等自迁移，语义不变。
-                        continue
-                    if self._pm._dispatch_backoffed(spec):
-                        continue
-                    # add-spec-scheduling-controls D2：start_after 未到期静默跳过
-                    # （不写 error 不翻状态，对齐退避门控的防自触发设计）；到期后由
-                    # 60s 定时唤起 / full_scan 兜底恢复调度。
-                    # 分流落点见 _start_after_blocks_entry：实现车道无条件，
-                    # spec-review 条目走 scope 感知谓词（dispatch 档放行）。
-                    if self._start_after_blocks_entry(spec, sname, atype):
-                        self._pm.logger.debug(
-                            "pm_engine",
-                            f"start_after 未到期，跳过 {atype} 派发 '{sname}'（定时拾取）",
-                        )
-                        continue
-                    # cli-retry-backoff 2.2：秒挂冷却期内跳过 implementer/fast-track/
-                    # repair 派发（不耗预算、不起进程），并排程到期自动恢复。
-                    if atype in (
-                        "implementer",
-                        "fast-track",
-                        "repair",
-                    ) and self._pm._instant_fail_cooled(sname):
-                        self._pm.logger.debug(
-                            "pm_engine",
-                            f"秒挂冷却中，跳过 {atype} 派发 '{sname}'",
-                        )
-                        self._schedule_instant_fail_recovery(sname, lock_held=True)
-                        continue
-                    # evo-sigterm-source-tracking-cooldown：信号死法冷却期内跳过
-                    # 该 spec 的**全部** agent 类型重派（含 admin/impl 处置 run
-                    # 路由；不耗预算、不起进程），并排程到期自动恢复。与秒挂冷却
-                    # 并存：两条通道各自独立，取更晚的冷却截止生效。
-                    if self._pm._signal_kill_cooled(sname):
-                        self._pm.logger.debug(
-                            "pm_engine",
-                            f"信号死法冷却中，跳过 {atype} 派发 '{sname}'",
-                        )
-                        self._schedule_signal_kill_recovery(sname, lock_held=True)
-                        continue
-                    # 派发前在飞评审校验（evo-spec-concurrency-flight-guard D2）：
-                    # 存在在飞 spec-review run 时跳过**候选筛选**（条目保留队列、
-                    # 不 pop、不消耗 attempt），待 review 收尾重判。本落点覆盖
-                    # family.py:585 / adjudication.py:1408 / queue.py:870 等绕过
-                    # `_on_spec_ready` 的直入队列路径（与 engine 落点同口径）。
-                    # 陈旧锚点（run 已终态）判为无在飞评审放行并记 WARNING（D0）。
-                    # 位置：置于退避/start_after/冷却闸门之后、派发判定之前
-                    # （D2 任务 2.4：避免在无谓路径上做进程表判定）。
-                    if atype in ("implementer", "fast-track") and (
-                        self._should_defer_for_reviewer(spec, sname)
-                    ):
+                    # 状态守卫与退避/start_after/双冷却/在飞评审闸门链：单一
+                    # 落点 _queue_entry_ready（对齐 _review_entry_ready 单一
+                    # 落点范式，code-review item 409a6ced70ce），两处扫描不再
+                    # 各自复制守卫链。
+                    if not self._queue_entry_ready(spec, sname, atype):
                         continue
                     if best_valid_prio is None or eff < best_valid_prio:
                         best_valid_prio = eff
@@ -629,68 +659,10 @@ class QQQueueMixin:
                     spec = self._pm.state_machine.read_one(sname)
                     if not spec:
                         continue
-                    status = spec.get("status")
-                    if atype == "planner-plan":
-                        # 并行出题条目候选判定：与 best_valid_prio 扫描同口径
-                        if not self._parallel_plan_entry_ready(spec):
-                            continue
-                    elif atype == "spec-review":
-                        # 评审条目候选判定（1.4）：与 best_valid_prio 扫描同口径
-                        if not self._review_entry_ready(spec, sname):
-                            continue
-                    elif atype == "implementer" and status not in ("ready", "implementing"):
-                        # implementing 允许派发 = 原地打回的修复重派（热修 2026-08-29）：
-                        # 打回处置 _enqueue 时状态为 implementing，旧条件 status != "ready"
-                        # 导致修复条目被永久静默跳过、链路停摆。入队点均在 run 终止后
-                        # （打回处理器/零变更重试）且 _enqueue 按 (spec,type) 去重，无双派。
-                        continue
-                    if atype == "fast-track" and status not in ("ready", "implementing"):
-                        # fast-track：ready 正常派发；implementing 允许 = 失败打回后的修复重派
-                        # （入队点均在 run 终止后，与 implementer 同语义，无双派）。
-                        continue
-                    if atype == "verifier" and status not in ("implemented", "testing"):
-                        # testing 允许派发 = 重验车道出口（fix-robustness-edge-cases
-                        # 孤儿信号根因）：无驱动 testing 的三条恢复车道
-                        # （event_bus._recover_testing / admin_monitor 孤儿复位 /
-                        # env 阻塞复位直通道）都按重验语义入队 verifier，而 spec
-                        # 已在 testing——旧守卫 status != "implemented" 让条目永久
-                        # 滞留队列（无日志、无派发），testing 只能等 stuck 阈值兜底。
-                        # 派发处 transition(testing) 为幂等自迁移，语义不变。
-                        continue
-                    if self._pm._dispatch_backoffed(spec):
-                        continue
-                    # add-spec-scheduling-controls D2：start_after 未到期静默跳过
-                    # （不写 error 不翻状态，对齐退避门控的防自触发设计）；到期后由
-                    # 60s 定时唤起 / full_scan 兜底恢复调度。
-                    # 分流落点见 _start_after_blocks_entry：实现车道无条件，
-                    # spec-review 条目走 scope 感知谓词（dispatch 档放行）。
-                    if self._start_after_blocks_entry(spec, sname, atype):
-                        self._pm.logger.debug(
-                            "pm_engine",
-                            f"start_after 未到期，跳过 {atype} 派发 '{sname}'（定时拾取）",
-                        )
-                        continue
-                    # cli-retry-backoff 2.2：秒挂冷却期内跳过派发（与 best_valid_prio
-                    # 扫描同判定，保证队列继续扫描后续条目不被冷却 spec 阻塞）。
-                    if atype in (
-                        "implementer",
-                        "fast-track",
-                        "repair",
-                    ) and self._pm._instant_fail_cooled(sname):
-                        self._schedule_instant_fail_recovery(sname, lock_held=True)
-                        continue
-                    # evo-sigterm-source-tracking-cooldown：信号死法冷却期内跳过
-                    # 该 spec 的全部 agent 类型重派（与 best_valid_prio 扫描同判定）。
-                    if self._pm._signal_kill_cooled(sname):
-                        self._schedule_signal_kill_recovery(sname, lock_held=True)
-                        continue
-                    # 派发前在飞评审校验（evo-spec-concurrency-flight-guard D2）：
-                    # 与 best_valid_prio 扫描同判定（同口径、同位置语义），命中
-                    # 则 continue——条目保留队列、不 pop、不消耗 attempt。陈旧
-                    # 锚点（run 已终态）判为无在飞评审放行并记 WARNING（D0）。
-                    if atype in ("implementer", "fast-track") and (
-                        self._should_defer_for_reviewer(spec, sname)
-                    ):
+                    # 状态守卫与闸门链：与 best_valid_prio 扫描同口径（同一
+                    # 单一落点 _queue_entry_ready，code-review item
+                    # 409a6ced70ce）。
+                    if not self._queue_entry_ready(spec, sname, atype):
                         continue
                     dispatch_idx = i
                     break

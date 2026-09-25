@@ -26,6 +26,7 @@ if str(_FENIX_DIR) not in sys.path:
     sys.path.insert(0, str(_FENIX_DIR))
 
 from core.dashboard import data  # noqa: E402
+from core.dashboard.data.summary import _normalize_depends_on  # noqa: E402
 
 STATUS_ICONS = {
     "drafted": "📝",
@@ -317,8 +318,12 @@ def render_report(project_root, spec_name: str) -> str:
     if detail_err is not None:
         lines.append(f"  ⚠ 详情组装失败: {detail_err}")
     head_notes = []
-    if entry.get("depends_on"):
-        head_notes.append(f"依赖: {entry['depends_on']}")
+    # 依赖列与 Dashboard 列表侧同一归一化单点对齐：STATE.md 序列化对空依赖
+    # 恒写 ``- depends_on: null``，解析回来是字面量字符串 "null"（真值），
+    # 裸真值判定会给无依赖 SPEC 渲染「依赖: null」的误导行。
+    deps = _normalize_depends_on(entry.get("depends_on"))
+    if deps:
+        head_notes.append(f"依赖: {deps}")
     if entry.get("branch"):
         head_notes.append(f"分支: {entry['branch']}")
     for label, key in (("创建", "created"), ("更新", "updated")):

@@ -852,8 +852,8 @@ class ProviderCircuit:
         记账跨代脱节）。
 
         正常记账路径与已冻结早退路径都经本助手写入 TransientAttempt——任一处
-        保留裸时间戳都会让滑窗剔除 ``now - t``（provider_circuit.py:420）与
-        D2 聚合对混合元素类型报错/取值失败。window 非 None 时先滑出窗口外旧
+        保留裸时间戳都会让滑窗剔除（``now - t.at``，同 _record_provider_4xx
+        的滑窗口径）与 D2 聚合对混合元素类型报错/取值失败。window 非 None 时先滑出窗口外旧
         事件（按 ``at`` 时间戳剔除，行为不变；早退分支不剔除——与既有语义
         一致）。元信息缺省 None → 空串占位并正常记账，MUST NOT 阻断熔断记账。
 

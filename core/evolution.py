@@ -375,6 +375,23 @@ def _parse_iso(value: str) -> Optional[datetime]:
 # ── 任务 2.4：就绪扫描 ──────────────────────────────────────────────
 
 
+def _path_access_error(p: Path) -> Optional[OSError]:
+    """区分「不存在」与「不可访问」的 stat 探测（code-review item 5512a028b1d1）。
+
+    ``Path.is_file()`` 把权限不足等 OSError 一并吞成 False，「确实不存在」
+    （正常不就绪）与「不可访问」（需留痕）无法区分。返回：``None`` = 不存在
+    （含父级非目录）或可正常 stat（后者由调用方用 ``is_file()`` 终判非常规
+    文件）；非 ``None`` = 访问被拒/IO 异常的原始 OSError（调用方留痕）。
+    """
+    try:
+        p.stat()
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    except OSError as e:
+        return e
+    return None
+
+
 def scan_ready_projects(registry_projects, project_root) -> List[dict]:
     """按 registry 项目逐判定就绪，返回就绪项目 [{name, path, todo_md}]。
 
@@ -386,8 +403,11 @@ def scan_ready_projects(registry_projects, project_root) -> List[dict]:
     - ``<proj>/.fenix/todo.md`` 不存在或去空白后为空 → 不就绪；
     - 其余 → 就绪。
 
-    registry 读取失败/项目路径不可访问 MUST 抛给调用方（检查点统一捕获），
-    不在本函数静默吞掉。就绪项目 MUST 携带 todo_md 全文（同轮一个 claude
+    registry 读取失败 MUST 抛给调用方（检查点统一捕获）。项目内文件「确实
+    不存在」按不就绪跳过；「不可访问」（权限/IO 等 OSError 且非不存在类）
+    MUST 记 WARNING 留痕后按不就绪跳过——不在本函数静默吞掉，也不因单项目
+    IO 异常中断整轮扫描（code-review item 5512a028b1d1 将原「不可访问 MUST
+    抛出」契约收窄为留痕）。就绪项目 MUST 携带 todo_md 全文（同轮一个 claude
     进程拿到多份 todo.md）。
     """
     watermarks = read_watermarks(project_root)
@@ -402,6 +422,17 @@ def scan_ready_projects(registry_projects, project_root) -> List[dict]:
         proot = Path(path)
 
         state_file = proot / ".fenix" / "self_review_state.json"
+        acc_err = _path_access_error(state_file)
+        if acc_err is not None:
+            # code-review item 5512a028b1d1：不可访问（权限/IO）MUST 留痕，
+            # 不静默吞成「不存在」；按不就绪跳过、不向调用方抛出——单项目
+            # IO 异常不中断整轮扫描。
+            _logger.warning(
+                "evolution: 项目 %s 的 self_review_state.json 不可访问，按不就绪跳过: %s",
+                name,
+                acc_err,
+            )
+            continue
         if not state_file.is_file():
             _logger.debug("evolution: 项目 %s 无 self_review_state.json，不就绪", name)
             continue
@@ -427,6 +458,12 @@ def scan_ready_projects(registry_projects, project_root) -> List[dict]:
                 continue
 
         todo = proot / ".fenix" / "todo.md"
+        acc_err = _path_access_error(todo)
+        if acc_err is not None:
+            _logger.warning(
+                "evolution: 项目 %s 的 todo.md 不可访问，按不就绪跳过: %s", name, acc_err
+            )
+            continue
         if not todo.is_file():
             _logger.debug("evolution: 项目 %s 无 todo.md，不就绪", name)
             continue
@@ -1217,6 +1254,9 @@ def accept_item(
     同一把 flock（compare-and-set，code-review item fba717748316）：daemon
     自动接受与 dashboard 人工同意并发时只有先到者通过 pending 校验并立项，
     后到者锁内重读即见最终状态、按幂等语义返回现状。失败分支：
+    - 目标名已存在且非本条目此前失败残留（冲突检查后窗口期被外部参与者
+      创建）→ 不删不动、保留暂存草稿、置 accept_failed + 告警，重试经
+      resolve_spec_name 换后缀名立项；
     - 提交失败 → 删除 spec/changes 副本（避免主树未跟踪文件）、保留暂存
       草稿、置 accept_failed + 告警；
     - 注册失败 → 清理已提交的 spec/changes 副本（git rm + 路径限定提交，
@@ -1306,7 +1346,32 @@ def accept_item(
             }
         dest = Path(project_root) / "spec" / "changes" / name
         if dest.exists():
-            # 同名目录已被他人/重试创建：清掉再复制，防残留污染
+            # code-review item 41d71f597331：resolve_spec_name 的冲突检查与本点
+            # 之间无锁覆盖 items.jsonl 之外的外部写入者（人工 fenix-new 立项等），
+            # MUST NOT 无条件 rmtree——窗口内他方新建的同名目录会被整体删除，再被
+            # 本条目草稿顶替，两个不同来源的逻辑 spec 混淆。仅当目录确为本条目
+            # 此前失败残留（rec 记录的 spec_name 即本名；草稿/副本内容不含 id，
+            # 记录级归属是唯一可靠信号）时才清理后按原名重试；其余一律置
+            # accept_failed + 告警，不删不动，重试经 resolve_spec_name 换后缀名。
+            if rec.get("spec_name") != name:
+                rec["status"] = "accept_failed"
+                rec["draft_failed_reason"] = (
+                    f"spec/changes/{name} 已存在且非本条目残留（名字被占用）"
+                )
+                _persist(rec)
+                _write_admin_warning(
+                    project_root,
+                    f"自进化条目 {item_id_} 接受失败：spec/changes/{name} 已存在且查非"
+                    "本条目此前残留（疑似冲突检查窗口期被外部立项占用），本条目未做"
+                    f"任何改动；重试将改用 -{str(item_id_)[:6]} 后缀名立项",
+                )
+                return {
+                    "ok": False,
+                    "status": "accept_failed",
+                    "spec_name": None,
+                    "error": rec["draft_failed_reason"],
+                }
+            # 本条目此前失败残留：清掉再复制（重试复用原名），防残留污染
             shutil.rmtree(dest, ignore_errors=True)
         try:
             if src.is_dir():
