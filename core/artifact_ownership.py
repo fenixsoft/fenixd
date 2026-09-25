@@ -238,7 +238,7 @@ def ownership_violations_for_task_line(line: str, lane: str) -> List[str]:
                 continue  # 步骤 2：含代码文件 → 写代码让框架产出 → 放行
             if _line_has_production_verb(line, match.end()) and lane not in owners:
                 violations.append(
-                    _violet_message(task_id, literal, owners)
+                    _violation_message(task_id, literal, owners)
                 )
         if core_hits:
             # 有意取舍：命中任一核心产物后整行提前返回，连步骤 1b 的目录级
@@ -261,7 +261,7 @@ def ownership_violations_for_task_line(line: str, lane: str) -> List[str]:
                 and lane not in VERIFY_PROGRESS_DIR_OWNERS
             ):
                 violations.append(
-                    _violet_message(
+                    _violation_message(
                         task_id,
                         literal,
                         VERIFY_PROGRESS_DIR_OWNERS,
@@ -291,7 +291,7 @@ def _match_artifact_key(literal: str):
     return None
 
 
-def _violet_message(task_id: str, literal: str, owners: Set[str], is_dir: bool = False) -> str:
+def _violation_message(task_id: str, literal: str, owners: Set[str], is_dir: bool = False) -> str:
     """构造违规消息：点名任务行 id + 命中产物路径 + 纠正处方。
 
     处方措辞与 ``skills/fenix-new`` §3.2.1 第 5 类一致：改写为
