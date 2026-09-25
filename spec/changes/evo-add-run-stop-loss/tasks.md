@@ -27,7 +27,7 @@
 ## 2. 停滞预算复合判停（缺省关闭）
 
 - [ ] 2.1 core/agent_runner/runner.py：在流式循环既有 latency 采样点（latency_state 逐轮累积处）旁挂运行中判停，判据为 run 内连续 N 次以上达到 120 秒的往返、或 stall 占比达到一半且超过 M 分钟无产物 mtime 进展，命中走既有 attempt 终止与清理路径并在终态日志记录命中判据；判停统计随 run 生命周期累积、不随 attempt 重置，命中后终止整个重试链、不再触发瞬态重试或 in-place retry 重派；不新增 admin 告警
-- [ ] 2.2 core/config.py：新增 agents.run_stall_budget_enabled、agents.run_stall_budget_stalls、agents.run_stall_budget_window_minutes 键规范化，缺省关闭、非法值回退缺省
+- [x] 2.2 core/config.py：新增 agents.run_stall_budget_enabled、agents.run_stall_budget_stalls、agents.run_stall_budget_window_minutes 键规范化，缺省关闭、非法值回退缺省
 
 ## 3. 测试
 

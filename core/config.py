@@ -221,6 +221,75 @@ class ConfigLoader:
             return cls.MAX_SAME_CAUSE_REDISPATCHES_DEFAULT
         return val
 
+    # ── run 停滞预算（evo-add-run-stop-loss 2.2，缺省关闭）────────────
+    # agents.run_stall_budget_* 三键：复合判停（连续 N 次达到 120s 的往返，
+    # 或 stall 占比达到一半且超过 M 分钟无产物 mtime 进展）的开关与阈值。
+    # 整个预算缺省关闭（design D3：绝对次数单一阈值会把慢 provider 下正常
+    # run 杀掉重跑，必须复合判据 + 灰度开启）；非法值回退缺省。
+    RUN_STALL_BUDGET_ENABLED_DEFAULT = False
+    RUN_STALL_BUDGET_STALLS_DEFAULT = 5        # 连续慢往返次数门槛 N（≥1）
+    RUN_STALL_BUDGET_WINDOW_MINUTES_DEFAULT = 10.0  # 无产物进展窗 M（分钟，>0）
+
+    @classmethod
+    def get_run_stall_budget_config(cls, config: Dict[str, Any]) -> Dict[str, Any]:
+        """读取并规范化 run 停滞预算三键（缺省关闭，非法值回退缺省）。
+
+        返回 ``{"enabled": bool, "stalls": int, "window_seconds": float}``：
+        - enabled：仅接受布尔；缺失/None/非法一律 False（缺省关闭）；
+        - stalls：正整数（bool 排除、整值浮点接受），非法回退缺省 N=5；
+        - window_minutes：正数（bool 排除），换算为 window_seconds 返回，
+          非法回退缺省 M=10 分钟。
+
+        单点归一化：runner 判停消费与设置展示同一函数，展示与生效不脱节
+        （与 get_max_same_cause_redispatches 同模式）。
+        """
+        try:
+            raw_enabled = cls.get(config, "agents.run_stall_budget_enabled", None)
+        except Exception:
+            raw_enabled = None
+        enabled = raw_enabled if isinstance(raw_enabled, bool) \
+            else cls.RUN_STALL_BUDGET_ENABLED_DEFAULT
+        if enabled:
+            stalls = cls._normalize_stall_budget_positive(
+                config, "agents.run_stall_budget_stalls",
+                cls.RUN_STALL_BUDGET_STALLS_DEFAULT, integer=True)
+            window_seconds = cls._normalize_stall_budget_positive(
+                config, "agents.run_stall_budget_window_minutes",
+                cls.RUN_STALL_BUDGET_WINDOW_MINUTES_DEFAULT, integer=False) * 60.0
+        else:
+            # 关闭态同样返回归一化阈值（读侧可展示生效形态；判停消费方
+            # 以 enabled=False 短路，不进判停）
+            stalls = cls._normalize_stall_budget_positive(
+                config, "agents.run_stall_budget_stalls",
+                cls.RUN_STALL_BUDGET_STALLS_DEFAULT, integer=True)
+            window_seconds = cls._normalize_stall_budget_positive(
+                config, "agents.run_stall_budget_window_minutes",
+                cls.RUN_STALL_BUDGET_WINDOW_MINUTES_DEFAULT, integer=False) * 60.0
+        return {"enabled": enabled, "stalls": stalls,
+                "window_seconds": window_seconds}
+
+    @classmethod
+    def _normalize_stall_budget_positive(cls, config: Dict[str, Any], key: str,
+                                         default, integer: bool):
+        """停滞预算数值键归一：正数（integer=True 时须整值），非法回退缺省。
+
+        bool 排除与 _normalize_transient_seconds 同口径（bool 是 int 子类，
+        ``true`` 会被 int() 截成 1 静默生效）。
+        """
+        try:
+            val = cls.get(config, key, None)
+        except Exception:
+            return default
+        if val is None or isinstance(val, bool) or not isinstance(val, (int, float)):
+            return default
+        if val <= 0:
+            return default
+        if integer:
+            if isinstance(val, float) and not val.is_integer():
+                return default
+            return int(val)
+        return float(val)
+
     @classmethod
     def normalize_transient_backoff_schedule(cls, raw) -> str:
         """规范 `agents.transient_backoff_schedule` 为合法逗号秒序列字符串。
