@@ -820,6 +820,11 @@ class AdminMonitor:
         # 延迟重投递的 threading.Timer（同时存在至多一个，防重复排队）。
         self._code_review_ratelimit_redispatches = 0
         self._code_review_redispatch_timer: threading.Timer | None = None
+        # decouple-codefix-review-lanes：审查 run stall 看门狗状态（run_id →
+        # {"mtime": 产物最新 mtime, "cpu": 进程树 CPU 秒, "since": 双判据开始
+        # 同时无进展的 monotonic 时间}）。任一判据有进展即整体重置（design D2
+        # 双判据 + 误杀防护）；run 离开在飞即清条目。
+        self._review_stall_state: dict = {}
         # add-test-regression-tab：regression 在途标记（对齐 _code_review_in_flight
         # 形态）：投递即置位、worker 收尾复位。锁定：检查点（admin 巡检线程）与
         # 手动信号消费（fenixd 主循环线程）双线程读-改-写，GIL 不保证原子，
@@ -992,6 +997,14 @@ class AdminMonitor:
             self._check_code_review_stall()
         except Exception as e:
             self.logger.error("admin_monitor", f"Code-review stall check failed: {e}")
+        # decouple-codefix-review-lanes 3.2：审查 run stall 看门狗（同挂载点
+        # 复用巡检节拍，不新增线程/定时器；任何异常只记日志不阻断巡检）。
+        try:
+            self._check_review_run_watchdog()
+        except Exception as e:
+            self.logger.error(
+                "admin_monitor", f"Review-run stall watchdog failed: {e}"
+            )
         # add-test-regression-tab：回归检查点（独立于 code-review/self_review 的
         # 防重状态文件；守卫链 = enabled → run_at 时点 → 同自然日防重 → 单飞 →
         # 有 regression 段）。放 code_review 之后：与自省时点同频，但不依赖
@@ -1365,6 +1378,167 @@ class AdminMonitor:
                 f"code-review 停滞告警已落：run_id={run_id}, minutes={minutes}"
                 f"（去重键 {dedup_key}）",
             )
+
+    def _review_stall_minutes(self) -> int:
+        """看门狗停滞阈值（分钟）：``admin.review_stall_minutes``，缺省 30。
+
+        缺失/非法/非正整数（含 bool）一律回退 30——巡检路径 MUST NOT 因配置
+        脏值中断（与 ``_stall_alert_minutes`` 同款容错口径）。
+        """
+        default = 30
+        raw = self._get_config("admin.review_stall_minutes", default)
+        if not isinstance(raw, int) or isinstance(raw, bool) or raw <= 0:
+            return default
+        return raw
+
+    def _check_review_run_watchdog(self) -> dict:
+        """审查 run stall 看门狗（decouple-codefix-review-lanes 3.1/3.2）。
+
+        在飞审查 run 的**双判据**同时无进展持续达 ``admin.review_stall_minutes``
+        （缺省 30）时自动收走：``runner.cancel_run``（既有 run 粒度取消原语，
+        属主轮询环完成 terminate→grace→kill→cancelled 终态）→ run 收尾即走既有
+        急救落账路径（``run_code_review`` error 收场抢救，本方法不新造落账路径）
+        → AdminStore 告警留痕（单 run 去重）。
+
+        双判据（design D2）：① 进度产物 mtime（主产物 + 全部分片最新 mtime）；
+        ② run 子进程进程树 CPU 时间。任一判据有进展即整体重置计时；CPU 判据
+        不可解析（进程句柄缺失/已退出）按 fail-open 不触发——宁可漏杀不可误杀，
+        且无进程句柄时 cancel_run 也无从终止。run 不在飞时短路并清理状态。
+
+        Returns: 判定结果 dict（供测试断言；巡检不消费返回值）。
+        """
+        from core.code_review import out_path, read_progress, shard_paths
+
+        progress = read_progress(self.project_root)
+        run_id = str(progress.get("review_id") or "")
+        if not progress.get("running") or not run_id:
+            # 不在飞：清状态（保留其它 run 的条目没有意义——审查单飞）
+            if self._review_stall_state:
+                self._review_stall_state.clear()
+            return {"triggered": False, "reason": "not_running"}
+
+        # 判据 ①：进度产物最新 mtime（分片集合经 shard_paths 唯一入口）
+        root = self.project_root
+        sources = [
+            p
+            for p in [*shard_paths(root, run_id), out_path(root, run_id)]
+            if p.is_file()
+        ]
+        try:
+            mtime = max(p.stat().st_mtime for p in sources) if sources else 0.0
+        except OSError:
+            mtime = 0.0
+
+        # 判据 ②：run 子进程进程树 CPU 时间（秒）；不可解析 fail-open
+        proc = (getattr(self.agent_runner, "_running_agents", None) or {}).get(run_id)
+        cpu = None
+        if proc is not None:
+            try:
+                from core.agent_runner.maintenance_runs import (
+                    agent_process_cpu_seconds,
+                )
+
+                cpu = agent_process_cpu_seconds(proc)
+            except Exception:  # noqa: BLE001 — 判据读取失败按不可用处理
+                cpu = None
+        if cpu is None:
+            self._review_stall_state.pop(run_id, None)
+            return {"triggered": False, "reason": "cpu_unavailable", "run_id": run_id}
+
+        now = time.time()
+        prev = self._review_stall_state.get(run_id)
+        if prev is not None and (
+            mtime != prev.get("mtime") or cpu != prev.get("cpu")
+        ):
+            # 任一判据有进展 → 整体重置计时（误杀防护，Requirement 2）
+            prev = None
+        if prev is None:
+            self._review_stall_state[run_id] = {
+                "mtime": mtime,
+                "cpu": cpu,
+                "since": now,
+            }
+            return {"triggered": False, "reason": "baseline", "run_id": run_id}
+
+        stalled_minutes = (now - prev["since"]) / 60.0
+        threshold = self._review_stall_minutes()
+        if stalled_minutes < threshold:
+            return {
+                "triggered": False,
+                "reason": "below_threshold",
+                "run_id": run_id,
+                "stalled_minutes": round(stalled_minutes, 1),
+                "threshold_minutes": threshold,
+            }
+
+        # 达阈值 → 取消 + 告警留痕（急救落账由 run 收尾的既有 error 收场
+        # 抢救路径执行；本文档 D3：MUST NOT 新造落账路径）
+        reason = (
+            f"review_stall_watchdog: 审查 run 双判据停滞 {int(stalled_minutes)} 分钟"
+            f"（阈值 {threshold}）：产物 mtime 冻结于 {mtime}、进程树 CPU 冻结于 "
+            f"{cpu}s——自动取消并走既有急救落账（09-24 ocr scan 僵死 2h20m 同型）"
+        )
+        cancelled = {"status": "skipped", "base_run_id": run_id}
+        cancel_fn = getattr(self.agent_runner, "cancel_run", None)
+        if callable(cancel_fn):
+            try:
+                cancelled = cancel_fn(run_id, reason=reason, by="review_stall_watchdog")
+            except Exception as e:  # noqa: BLE001 — 取消失败仍落告警留痕
+                self.logger.error(
+                    "admin_monitor", f"review stall watchdog cancel_run failed: {e}"
+                )
+                cancelled = {"status": "error", "error": str(e)}
+        else:
+            cancelled = {"status": "no_agent_runner"}
+        self._review_stall_state.pop(run_id, None)
+
+        dedup_key = f"review-stall-watchdog-{run_id}"
+
+        def _inflight(rec: dict) -> bool:
+            return (
+                rec.get("kind") == ESCALATION
+                and rec.get("signal_type") == "review_stall_watchdog"
+                and rec.get("dedup_key") == dedup_key
+            )
+
+        self.store.append_if_absent(
+            {
+                "kind": ESCALATION,
+                "signal_type": "review_stall_watchdog",
+                "dedup_key": dedup_key,
+                "spec": None,
+                "severity": "major",
+                "description": (
+                    f"审查 run 看门狗自动取消：{run_id} 产物 mtime 与进程 CPU 双判据"
+                    f"同时无进展 {int(stalled_minutes)} 分钟（阈值 {threshold}）——"
+                    f"已登记取消旗标，收尾急救落账自动执行"
+                ),
+                "evidence": (
+                    f"run_id={run_id}; mtime={mtime}; cpu_seconds={cpu}; "
+                    f"stalled_minutes={int(stalled_minutes)}; "
+                    f"cancel={cancelled}"
+                ),
+                "action_taken": (
+                    "cancel_run(by=review_stall_watchdog) + AdminStore 告警"
+                    f"（去重键 {dedup_key}，单 run 至多一条）"
+                ),
+                "recommended_action": (
+                    "无需人工干预：产物已由急救落账路径入账（对照 error 收场抢救"
+                    "日志 inserted/updated；读数为 0 时复核 .fenix/code-review/"
+                    "out-<run_id>.jsonl 是否滞留未转化 findings）。判为误杀时在"
+                    "「代码审查」分面手动重审一次即可"
+                ),
+            },
+            _inflight,
+        )
+        self.logger.warning("admin_monitor", f"review stall watchdog triggered: {reason}")
+        return {
+            "triggered": True,
+            "run_id": run_id,
+            "stalled_minutes": round(stalled_minutes, 1),
+            "threshold_minutes": threshold,
+            "cancel": cancelled,
+        }
 
     def _run_regression_checkpoint(self) -> dict:
         """周期性全量回归调度检查点（add-test-regression-tab）。
