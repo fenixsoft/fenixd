@@ -27,4 +27,5 @@ code-fix 批回归失败后的重试 = 整批 agent 重做（实测 ~16min/批�
 - `core/agent_runner/maintenance_runs.py`（或 `run_regression` 原语层）：支持用例子集执行
 - `agents/code-fix.md`：定向修复契约段（只修失败相关、可修测试、`fix_scope=test` 标注、禁止扩面重做全批）
 - `.fenix/config.template.yaml`：新增 `targeted_retry_max` 配置键
+- `tests/test_codefix_targeted_retry.py`（新增）：定向轮循环、子集回归、映射回退、现场即弃单测
 - 边界：跨轮的「回归失败 → 台账条目（`regression-` 前缀、复发重开）」由 add-regression-auto-fix 负责；本 SPEC 只治理批内重试轮，二者正交
