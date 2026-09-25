@@ -468,6 +468,10 @@ def _default_echo_view(scope: str) -> dict:
         "worktree": {"build_artifact_paths": [], "has_build_artifacts": None},
         "scope": scope,
         "raw_exists": False,
+        # code-review item 7e414f8f4485：description 顶层缺省键——正常路径由
+        # project.description 提取填充（非 str/缺失 → ""），缺省置空串保证
+        # resolve_config 异常早退路径返回形状与正常路径一致
+        "description": "",
         "sources": _managed_key_sources({}),
         "error": None,
     }

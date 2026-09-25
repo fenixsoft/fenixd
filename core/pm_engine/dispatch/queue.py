@@ -749,144 +749,167 @@ class QQQueueMixin:
             # fail-open：不因检查故障阻塞派发（与其它派发前闸门 fail-open 一致）。
             # 1.7/1.10：本闸门以 agent_type ∈ (implementer, fast-track) 为入口
             # ，spec-review 天然不进入，无需额外排除。
-            if agent_type in ("implementer", "fast-track"):
-                try:
-                    convergence = self._pm._check_superseded_convergence(spec_name)
-                except Exception as e:
-                    convergence = {"blocked": False, "error": None}
-                    self._pm.logger.warning(
-                        "pm_engine",
-                        f"同源草案收敛检查异常 '{spec_name}'（fail-open 放行）: {e}",
-                    )
-                if convergence.get("blocked"):
-                    self._pm.state_machine.update_spec(
-                        spec_name,
-                        {
-                            "status": "blocked",
-                            "tester_run": None,
-                            "error": convergence.get("error") or "同源草案收敛义务未满足",
-                        },
-                    )
-                    self._pm.logger.error(
-                        "pm_engine",
-                        f"同源草案收敛义务拦截派发 '{spec_name}'（含 SUPERSEDED.md，"
-                        f"{convergence.get('superseded_path')}）— 已 blocked，"
-                        f"收敛后恢复；移除队列条目继续扫描",
-                    )
-                    with self._queue_lock:
-                        # 收敛拦截：移除条目（不重新入队）、释放槽位
-                        # 准入已消费即零 run 启动，MUST 退还（item d2e6133109ff）。
-                        self._pm._transient_unseal_recredit()
-                        self._rollback_dispatch_slot(base_prio)
-                    continue
+            # ── 出锁段闸门异常兜底（code-review item 8343d5e56846）──────
+            # 条目 pop 后槽位已在锁内递增（_active_runs/_active_priority_counts），
+            # 出锁后的收敛拦截写盘 / 守卫三 / 预算 / 内容闸门 / transition 各段
+            # 此前无异常保护：任一 STATE 写盘或判定抛异常会跳过全部回滚点，该
+            # 条目占用的并发槽位永久泄漏（max_concurrent 逐次侵蚀 → 派发停摆），
+            # 异常还会沿 _process_queue 传播进调用方（worker finally / 定时器
+            # 线程）。统一在此兜底：异常路径退还准入 + 回滚槽位（条目重新入队）、
+            # 本调用 suppressed 抑制防同条目热旋；正常路径行为与成功时序不变，
+            # 各分支既有清理逻辑不动。
+            try:
+                if agent_type in ("implementer", "fast-track"):
+                    try:
+                        convergence = self._pm._check_superseded_convergence(spec_name)
+                    except Exception as e:
+                        convergence = {"blocked": False, "error": None}
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"同源草案收敛检查异常 '{spec_name}'（fail-open 放行）: {e}",
+                        )
+                    if convergence.get("blocked"):
+                        self._pm.state_machine.update_spec(
+                            spec_name,
+                            {
+                                "status": "blocked",
+                                "tester_run": None,
+                                "error": convergence.get("error") or "同源草案收敛义务未满足",
+                            },
+                        )
+                        self._pm.logger.error(
+                            "pm_engine",
+                            f"同源草案收敛义务拦截派发 '{spec_name}'（含 SUPERSEDED.md，"
+                            f"{convergence.get('superseded_path')}）— 已 blocked，"
+                            f"收敛后恢复；移除队列条目继续扫描",
+                        )
+                        with self._queue_lock:
+                            # 收敛拦截：移除条目（不重新入队）、释放槽位
+                            # 准入已消费即零 run 启动，MUST 退还（item d2e6133109ff）。
+                            self._pm._transient_unseal_recredit()
+                            self._rollback_dispatch_slot(base_prio)
+                        continue
 
-            # ── 守卫三：派发互斥（fix-repair-lane-dedup / design 守卫三，legacy）──
-            # 仅存量 fix-* SPEC 可达（非 fix 父 SPEC 现已走原地打回，不进入此分支）。
-            # fix spec 实现器派发前检查同根兄弟是否存在活跃修复活动；
-            # 存在则回滚 entry 到队列、跳过本轮派发（先到先得，后到抑制）。
-            # 被抑制条目记入 suppressed 后继续扫描后队：抑制自己 ≠ 阻塞他人。
-            if agent_type == "implementer" and self._pm._is_fix_spec(spec_name):
-                carrier = self._pm._sibling_repair_active(spec_name, my_enqueued_at=my_enqueued_at)
-                if carrier:
-                    # 回滚：把已 pop 的 entry 放回队列
-                    with self._queue_lock:
-                        # 准入已消费即零 run 启动，MUST 退还（item d2e6133109ff）。
-                        self._pm._transient_unseal_recredit()
-                        self._rollback_dispatch_slot(base_prio, entry_to_dispatch)
-                    self._pm.logger.info(
-                        "pm_engine",
-                        f"守卫三：'{spec_name}' 同根兄弟 '{carrier}' 存在活跃修复"
-                        f"——跳过本轮派发，保持 ready",
-                    )
-                    suppressed.add((spec_name, agent_type))
-                    continue
+                # ── 守卫三：派发互斥（fix-repair-lane-dedup / design 守卫三，legacy）──
+                # 仅存量 fix-* SPEC 可达（非 fix 父 SPEC 现已走原地打回，不进入此分支）。
+                # fix spec 实现器派发前检查同根兄弟是否存在活跃修复活动；
+                # 存在则回滚 entry 到队列、跳过本轮派发（先到先得，后到抑制）。
+                # 被抑制条目记入 suppressed 后继续扫描后队：抑制自己 ≠ 阻塞他人。
+                if agent_type == "implementer" and self._pm._is_fix_spec(spec_name):
+                    carrier = self._pm._sibling_repair_active(spec_name, my_enqueued_at=my_enqueued_at)
+                    if carrier:
+                        # 回滚：把已 pop 的 entry 放回队列
+                        with self._queue_lock:
+                            # 准入已消费即零 run 启动，MUST 退还（item d2e6133109ff）。
+                            self._pm._transient_unseal_recredit()
+                            self._rollback_dispatch_slot(base_prio, entry_to_dispatch)
+                        self._pm.logger.info(
+                            "pm_engine",
+                            f"守卫三：'{spec_name}' 同根兄弟 '{carrier}' 存在活跃修复"
+                            f"——跳过本轮派发，保持 ready",
+                        )
+                        suppressed.add((spec_name, agent_type))
+                        continue
 
-            # Update state to in-progress
-            if agent_type == "implementer":
-                # add-fail-counter-budget D2：派发前预算闸门。
-                # 已启动（_run_agent_worker 内已自增计数）的 run 不受此处影响，
-                # 仍会跑完 merge；本闸门只在「即将开启新一轮」时校验，避免无限重派。
-                # 闸门触发 → 不派发、状态置 blocked + 人工裁决告警，并回滚队列占用。
-                # 1.7：spec-review 不经本闸门（评审不消耗实现预算）；1.10：回滚
-                # 点只对 implementer 可达，不会误减评审的 _active_reviews。
-                if self._pm._check_impl_budget_exhausted(spec_name):
-                    with self._queue_lock:
-                        # 准入已在本拍 pop 前消费（code-review item
-                        # d2e6133109ff）：条目回滚即零 run 启动，MUST 退还
-                        # （探针名额/错峰节拍），否则空烧至观察窗空过/硬过期。
-                        self._pm._transient_unseal_recredit()
-                        self._rollback_dispatch_slot(base_prio, entry_to_dispatch)
-                    continue
-                # add-spec-content-integrity-gate：派发前内容完整性闸门。
-                # 空 spec 目录（无 proposal/design/tasks/specs）冻结派发，
-                # 不烧预算；与预算闸门同层并列，复用回滚范式。
-                if self._pm._check_spec_content_missing(spec_name):
-                    with self._queue_lock:
-                        # 准入已在本拍 pop 前消费（code-review item
-                        # d2e6133109ff）：条目回滚即零 run 启动，MUST 退还
-                        # （探针名额/错峰节拍），否则空烧至观察窗空过/硬过期。
-                        self._pm._transient_unseal_recredit()
-                        self._rollback_dispatch_slot(base_prio, entry_to_dispatch)
-                    continue
-                # 修复重派时状态已是 implementing（同态转换非法），跳过 transition
-                cur_status = (self._pm.state_machine.read_one(spec_name) or {}).get("status")
-                if cur_status != "implementing":
-                    # fix-observability-gaps 2.2：自动派发来源（run 尚未派发，
-                    # trigger_run_id 暂无，派发完成后由收口路径写 run context）
+                # Update state to in-progress
+                if agent_type == "implementer":
+                    # add-fail-counter-budget D2：派发前预算闸门。
+                    # 已启动（_run_agent_worker 内已自增计数）的 run 不受此处影响，
+                    # 仍会跑完 merge；本闸门只在「即将开启新一轮」时校验，避免无限重派。
+                    # 闸门触发 → 不派发、状态置 blocked + 人工裁决告警，并回滚队列占用。
+                    # 1.7：spec-review 不经本闸门（评审不消耗实现预算）；1.10：回滚
+                    # 点只对 implementer 可达，不会误减评审的 _active_reviews。
+                    if self._pm._check_impl_budget_exhausted(spec_name):
+                        with self._queue_lock:
+                            # 准入已在本拍 pop 前消费（code-review item
+                            # d2e6133109ff）：条目回滚即零 run 启动，MUST 退还
+                            # （探针名额/错峰节拍），否则空烧至观察窗空过/硬过期。
+                            self._pm._transient_unseal_recredit()
+                            self._rollback_dispatch_slot(base_prio, entry_to_dispatch)
+                        continue
+                    # add-spec-content-integrity-gate：派发前内容完整性闸门。
+                    # 空 spec 目录（无 proposal/design/tasks/specs）冻结派发，
+                    # 不烧预算；与预算闸门同层并列，复用回滚范式。
+                    if self._pm._check_spec_content_missing(spec_name):
+                        with self._queue_lock:
+                            # 准入已在本拍 pop 前消费（code-review item
+                            # d2e6133109ff）：条目回滚即零 run 启动，MUST 退还
+                            # （探针名额/错峰节拍），否则空烧至观察窗空过/硬过期。
+                            self._pm._transient_unseal_recredit()
+                            self._rollback_dispatch_slot(base_prio, entry_to_dispatch)
+                        continue
+                    # 修复重派时状态已是 implementing（同态转换非法），跳过 transition
+                    cur_status = (self._pm.state_machine.read_one(spec_name) or {}).get("status")
+                    if cur_status != "implementing":
+                        # fix-observability-gaps 2.2：自动派发来源（run 尚未派发，
+                        # trigger_run_id 暂无，派发完成后由收口路径写 run context）
+                        self._pm.state_machine.transition(
+                            spec_name, "implementing",
+                            trigger_run_id=None, agent_type="implementer", channel="auto",
+                        )
+                elif agent_type == "fast-track":
+                    # fast-track：与 implementer 同语义，派发即进入 implementing；
+                    # 失败打回重派时状态已是 implementing，跳过同态转换。
+                    if self._pm._check_impl_budget_exhausted(spec_name):
+                        with self._queue_lock:
+                            # 准入已在本拍 pop 前消费（code-review item
+                            # d2e6133109ff）：条目回滚即零 run 启动，MUST 退还
+                            # （探针名额/错峰节拍），否则空烧至观察窗空过/硬过期。
+                            self._pm._transient_unseal_recredit()
+                            self._rollback_dispatch_slot(base_prio, entry_to_dispatch)
+                        continue
+                    # add-spec-content-integrity-gate：内容完整性闸门（fast-track 分支，
+                    # 与 implementer 同层并列；空 spec 冻结派发，不烧预算）。
+                    if self._pm._check_spec_content_missing(spec_name):
+                        with self._queue_lock:
+                            # 准入已在本拍 pop 前消费（code-review item
+                            # d2e6133109ff）：条目回滚即零 run 启动，MUST 退还
+                            # （探针名额/错峰节拍），否则空烧至观察窗空过/硬过期。
+                            self._pm._transient_unseal_recredit()
+                            self._rollback_dispatch_slot(base_prio, entry_to_dispatch)
+                        continue
+                    cur_status = (self._pm.state_machine.read_one(spec_name) or {}).get("status")
+                    if cur_status != "implementing":
+                        # fix-observability-gaps 2.2：fast-track 自动派发来源
+                        self._pm.state_machine.transition(
+                            spec_name, "implementing",
+                            trigger_run_id=None, agent_type="fast-track", channel="auto",
+                        )
+                elif agent_type == "verifier":
+                    # fix-observability-gaps 2.2：verifier 自动派发来源
                     self._pm.state_machine.transition(
-                        spec_name, "implementing",
-                        trigger_run_id=None, agent_type="implementer", channel="auto",
+                        spec_name, "testing",
+                        trigger_run_id=None, agent_type="verifier", channel="auto",
                     )
-            elif agent_type == "fast-track":
-                # fast-track：与 implementer 同语义，派发即进入 implementing；
-                # 失败打回重派时状态已是 implementing，跳过同态转换。
-                if self._pm._check_impl_budget_exhausted(spec_name):
-                    with self._queue_lock:
-                        # 准入已在本拍 pop 前消费（code-review item
-                        # d2e6133109ff）：条目回滚即零 run 启动，MUST 退还
-                        # （探针名额/错峰节拍），否则空烧至观察窗空过/硬过期。
-                        self._pm._transient_unseal_recredit()
-                        self._rollback_dispatch_slot(base_prio, entry_to_dispatch)
-                    continue
-                # add-spec-content-integrity-gate：内容完整性闸门（fast-track 分支，
-                # 与 implementer 同层并列；空 spec 冻结派发，不烧预算）。
-                if self._pm._check_spec_content_missing(spec_name):
-                    with self._queue_lock:
-                        # 准入已在本拍 pop 前消费（code-review item
-                        # d2e6133109ff）：条目回滚即零 run 启动，MUST 退还
-                        # （探针名额/错峰节拍），否则空烧至观察窗空过/硬过期。
-                        self._pm._transient_unseal_recredit()
-                        self._rollback_dispatch_slot(base_prio, entry_to_dispatch)
-                    continue
-                cur_status = (self._pm.state_machine.read_one(spec_name) or {}).get("status")
-                if cur_status != "implementing":
-                    # fix-observability-gaps 2.2：fast-track 自动派发来源
-                    self._pm.state_machine.transition(
-                        spec_name, "implementing",
-                        trigger_run_id=None, agent_type="fast-track", channel="auto",
-                    )
-            elif agent_type == "verifier":
-                # fix-observability-gaps 2.2：verifier 自动派发来源
-                self._pm.state_machine.transition(
-                    spec_name, "testing",
-                    trigger_run_id=None, agent_type="verifier", channel="auto",
+                elif agent_type == "planner-plan":
+                    # 并行出题条目不迁移 spec 状态（add-verify-lane-throughput 1.1）：
+                    # 出题与实现并行在飞，spec 状态机由实现车道驱动；此处零状态写。
+                    # 预算/内容完整性闸门同 spec-review 逻辑不适用（出题不消耗实现
+                    # 预算，无实现内容可校验）。
+                    pass
+                elif agent_type == "spec-review":
+                    # 评审条目状态推进（fix-spec-review-blocking-dispatch 1.6）：
+                    # 不调用 transition——状态已由晋升链（promote_drafted 的
+                    # reviewing 分支 / rejected 复评 / re_review）置为 reviewing，
+                    # 派发处只登记在飞集合（上面出队分流已 add）并记录派发日志
+                    # （下方统一日志）。预算闸门/内容完整性闸门/同源草案收敛/
+                    # 守卫三均以 agent_type ∈ (implementer, fast-track) 为入口，
+                    # 评审条目不进入这些同步闸门及其回滚点（1.7/1.10：评审不消耗
+                    # 实现预算，无实现内容可校验），也就不会误减 _active_runs。
+                    pass
+            except Exception as e:
+                # 记账必然闭合：先退还准入再回滚槽位（条目重新入队待下轮重派），
+                # suppressed 抑制本调用内重试（抑制自己 ≠ 阻塞他人，守卫三同款）。
+                with self._queue_lock:
+                    self._pm._transient_unseal_recredit()
+                    self._rollback_dispatch_slot(base_prio, entry_to_dispatch)
+                suppressed.add((spec_name, agent_type))
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"派发闸门处理异常 '{spec_name}' ({agent_type}) — 已回滚槽位"
+                    f"记账并保留条目: {e}",
                 )
-            elif agent_type == "planner-plan":
-                # 并行出题条目不迁移 spec 状态（add-verify-lane-throughput 1.1）：
-                # 出题与实现并行在飞，spec 状态机由实现车道驱动；此处零状态写。
-                # 预算/内容完整性闸门同 spec-review 逻辑不适用（出题不消耗实现
-                # 预算，无实现内容可校验）。
-                pass
-            elif agent_type == "spec-review":
-                # 评审条目状态推进（fix-spec-review-blocking-dispatch 1.6）：
-                # 不调用 transition——状态已由晋升链（promote_drafted 的
-                # reviewing 分支 / rejected 复评 / re_review）置为 reviewing，
-                # 派发处只登记在飞集合（上面出队分流已 add）并记录派发日志
-                # （下方统一日志）。预算闸门/内容完整性闸门/同源草案收敛/
-                # 守卫三均以 agent_type ∈ (implementer, fast-track) 为入口，
-                # 评审条目不进入这些同步闸门及其回滚点（1.7/1.10：评审不消耗
-                # 实现预算，无实现内容可校验），也就不会误减 _active_runs。
-                pass
+                continue
 
             self._pm.logger.info(
                 "pm_engine",
@@ -1252,6 +1275,19 @@ class QQQueueMixin:
                             f"run={result.run_id}",
                         )
                         # fix-observability-gaps 2.2：零变更哨成功收口，run context 可标注
+                        # 收口前 ready 态兜底（code-review item 78ceeef7f56c）：与
+                        # _finalize_merge_success 同口径（evo-spec-concurrency-
+                        # flight-guard D3）——run 在飞期间评审收尾竞态把 status 回退
+                        # 为 ready 时，先补记合法转移 ready→implementing 再推进
+                        # implemented；否则 ready→implemented 被拒后仍会写
+                        # implementer_run 并入队 verifier（status=ready 不满足
+                        # (implemented, testing) 永不派发）。
+                        self._pm._merge_ready_fallback(
+                            spec_name,
+                            result.run_id,
+                            "implementer",
+                            getattr(result, "branch", None),
+                        )
                         self._pm.state_machine.transition(
                             spec_name, "implemented",
                             trigger_run_id=result.run_id,
