@@ -1104,7 +1104,11 @@ class AdminMonitor:
             if self.agent_runner is not None:
                 running = getattr(self.agent_runner, "_running_agents", None) or {}
                 if any(str(rid).startswith("code-review-") for rid in running):
-                    self._code_review_in_flight = True
+                    # code-review item 68a28fa47419：此处 MUST NOT 置位本车道单飞
+                    # 标志——命中的是外部（如 Dashboard 手动）启动的 run，其收尾
+                    # 不经过本监视器自有 _worker 的 finally 复位点，置位后外部 run
+                    # 结束标志恒为 True，周期审查在本次 daemon 生命周期内静默停摆。
+                    # 外部 run 的去重已由本探测每轮重查 _running_agents 承担。
                     return {"triggered": False, "reason": "already_running_agent"}
             self._code_review_in_flight = True
 
@@ -1601,7 +1605,12 @@ class AdminMonitor:
             if self.agent_runner is not None:
                 running = getattr(self.agent_runner, "_running_agents", None) or {}
                 if any(str(rid).startswith("regression-") for rid in running):
-                    self._regression_in_flight = True
+                    # code-review item 68a28fa47419（对齐 code-review 车道同款）：
+                    # 此处 MUST NOT 置位本车道单飞标志——命中的是外部启动的
+                    # regression run，其收尾不经过本监视器自有 _worker 的 finally
+                    # 复位点，置位后外部 run 结束标志恒为 True，周期回归在本次
+                    # daemon 生命周期内静默停摆。外部 run 去重已由本探测每轮重查
+                    # _running_agents 承担。
                     return {"triggered": False, "reason": "already_running_agent"}
             self._regression_in_flight = True
 
@@ -2247,7 +2256,10 @@ class AdminMonitor:
                     "无待派发，待"
                     "Administrator 处置；pending/failed/escalated 阶段看处置记录）",
                     f"updated={updated_str}，阈值 {int(threshold_minutes)} 分钟"
-                    f"（stuck 阈值 {int(self.admin_cfg.get('stuck_threshold_minutes', 0))}"
+                    # code-review item 6afca7da6f16：复用上方 _cfg_float 容错读出的
+                    # stuck_threshold（裸 int() 直读 admin_cfg 会在脏配置如 "160m"
+                    # 下抛 ValueError 中断整轮检测）。
+                    f"（stuck 阈值 {int(stuck_threshold)}"
                     " 分钟远高于此，本信号先于 stuck 捕获）",
                 )
             )
