@@ -99,7 +99,7 @@ class H_SessionRoutesMixin:
     def _api_session_send(self, query):
         """POST /api/session/send?project=<name> → body {"text": "..."} 发送用户文本。
 
-        空/空白 → 400；项目或会话缺失 → 404；成功 → {"ok": true}
+        空/空白/非字符串 → 400；项目或会话缺失 → 404；成功 → {"ok": true}
         """
         context = self._session_context(query)
         if context is None:
@@ -119,7 +119,14 @@ class H_SessionRoutesMixin:
         if body is None:
             return  # _read_json_body 已写错误响应
 
-        text = (body.get("text") or "").strip()
+        text = body.get("text")
+        if not isinstance(text, str):
+            # 类型防线（code-review item b82e10346495）：数字/布尔/dict/list
+            # 等真值直接 400 参数错误，而非 .strip() 抛 AttributeError 被
+            # _handle_inner 兜成 500。
+            self._error(400, "text must be a string")
+            return
+        text = text.strip()
         if not text:
             self._error(400, "text is required and must not be blank")
             return
