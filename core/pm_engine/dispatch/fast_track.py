@@ -726,7 +726,9 @@ class FFastTrackMixin:
         解析函数与同一归因构造），不另起一套判定。fast-track 结果文件顶层 status
         契约本就是 "success"（verdict 承载在 verification 段），与硬门白名单
         {"success","error","partial"} 兼容（5.2）；status != success 的形态已在
-        调用点（2251 行）拦截，到本方法时必为 success。
+        同文件 ``_run_fast_track_flow`` 的 status 非法拦截分支（run 成功但
+        status 非 success 且无诚实退出缺口时写明非法值并转失败重派）拦截，
+        到本方法时必为 success。
 
         叠加判据以 worktree 内 tasks.md 为对象（runner 硬门同款）。worktree 不可得
         或结果文件已随收口清理 → fail-open（记录 warning 不误拦——runner 产物硬门

@@ -47,6 +47,9 @@ export function useSlashCommands({
 }: UseSlashCommandsOptions) {
   const [filteredCommands, setFilteredCommands] = useState<SlashCommand[]>([]);
   const [showCommandMenu, setShowCommandMenu] = useState(false);
+  // 频次写盘版本号：trackCommandUsage 只落 localStorage、不改 commands 引用，
+  // frequent 的 useMemo 需要靠它感知历史变化并即时重算（否则频次面板长期陈旧）。
+  const [historyVersion, setHistoryVersion] = useState(0);
   const [commandQuery, setCommandQuery] = useState('');
   const [selectedCommandIndex, setSelectedCommandIndex] = useState(-1);
   const [slashPosition, setSlashPosition] = useState(-1);
@@ -89,7 +92,7 @@ export function useSlashCommands({
 
   const frequent = useMemo(
     () => frequentCommands(sortedCommands, historyRef.current),
-    [sortedCommands],
+    [sortedCommands, historyVersion],
   );
 
   const trackCommandUsage = useCallback(
@@ -97,6 +100,9 @@ export function useSlashCommands({
       const history = readCommandHistory(historyProjectKey);
       history[command.name] = (history[command.name] || 0) + 1;
       saveCommandHistory(historyProjectKey, history);
+      // 同步内存副本并 bump 版本号，frequent 面板与 localStorage 即时同步
+      historyRef.current = history;
+      setHistoryVersion((version) => version + 1);
     },
     [historyProjectKey],
   );

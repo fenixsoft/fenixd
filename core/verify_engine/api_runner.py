@@ -299,7 +299,18 @@ class ApiRunner(VerifyRunner):
         import httpx
 
         url = rewrite_origin(str(step.get("url") or ""), self.base_url)
-        duration = float(step.get("duration") or 5.0)
+        try:
+            duration = float(step.get("duration") or 5.0)
+        except (TypeError, ValueError) as e:
+            # 非法 duration（非数字字符串/结构化值）归一为本步骤结构化失败，
+            # 与 http_request 的 timeout 防御口径对齐，而非 ValueError 穿出
+            # 令整个场景 run 异常中断。
+            return {
+                "success": False,
+                "action": "sse_connect",
+                "url": url,
+                "error": f"duration 须为数字（秒）: {step.get('duration')!r} ({e})",
+            }
         events: list[dict] = []
 
         try:

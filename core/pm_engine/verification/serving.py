@@ -579,9 +579,20 @@ def _probe_dist_freshness(pipeline, spec_name: str) -> str:
     if not dist_entry.exists():
         return ""  # served dist 从未构建：交既有 prepare 流程兜底
 
-    src_latest = max(
-        p.stat().st_mtime for p in src_root.rglob("*") if p.is_file()
-    )
+    # rglob 枚举与 stat 之间存在文件系统竞态（并发构建清理、编辑器临时文件
+    # 消失、权限变化）：单文件 stat 失败跳过该文件，不向上抛 OSError——
+    # 探针恒直通或判滞后，不制造新失败模式（code-review item 77b966f9c240）。
+    src_mtimes: list = []
+    for p in src_root.rglob("*"):
+        if not p.is_file():
+            continue
+        try:
+            src_mtimes.append(p.stat().st_mtime)
+        except OSError:
+            continue
+    if not src_mtimes:
+        return ""  # src 树无可 stat 文件（竞态清空）：直通
+    src_latest = max(src_mtimes)
     try:
         dist_mtime = dist_entry.stat().st_mtime
     except OSError:

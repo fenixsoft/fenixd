@@ -605,13 +605,19 @@ def compute_attribution_level(scenario: dict) -> str:
     if has_real_screenshots and _scenario_has_failed_assertion_evidence(scenario):
         return ATTRIBUTION_LEVEL_EVIDENCE_BACKED
 
-    # 归因涉及视觉现象但无截图/标签佐证 → pending-visual（必须在通用
-    # evidence-backed 检测之后：有截图时视觉断言可被证据支撑 → evidence-backed）
+    # 归因涉及视觉现象但无截图/标签佐证 → pending-visual。只有有截图/有标签
+    # 两路 evidence-backed 检测排在它之前（有截图时视觉断言可被证据支撑 →
+    # evidence-backed）。有意设计（code-review item 78678bf1fa56）：它排在
+    # first_failed_step+归因证据的通用 evidence-backed 检测之前——文字级归因
+    # 证据不解除视觉类场景的 pending-visual，视觉断言仍待截图佐证
+    # （tests/test_verdict_credibility_gate.py s7 钉死该顺序；下游
+    # should_suppress_bug_found 对两级别同待遇）。
     if _is_visual_classification(classification):
         if _has_visual_assertions(scenario):
             return ATTRIBUTION_LEVEL_PENDING_VISUAL
 
-    # 有 first_failed_step + 失败断言归因 → evidence-backed
+    # 有 first_failed_step + 失败断言归因 → evidence-backed（视觉类场景已在
+    # 上方先行判 pending-visual，不会走到这里）
     first_failed_step = evidence.get("first_failed_step") or ""
     if isinstance(first_failed_step, str) and first_failed_step.strip():
         if _scenario_has_failed_assertion_evidence(scenario):

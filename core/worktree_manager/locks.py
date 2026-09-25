@@ -41,34 +41,53 @@ class G3LockMixin:
 
             孤儿进程可能来自任一 agent 类型，进程表只能证明「该 spec 仍有活跃
             worktree」而无法可靠区分前缀，因此两把一起登记，宁可多拦不漏放。
+
+            add 与 _lock_since 写入全程持 _spec_lock_th（code-review item
+            776cffc0a278），与 create / release_spec_lock 的加锁纪律对齐。
             """
-            self._spec_locks.add(f"{spec_name}:implementer")
-            self._lock_since[f"{spec_name}:implementer"] = time.time()
-            self._spec_locks.add(f"{spec_name}:verifier")
-            self._lock_since[f"{spec_name}:verifier"] = time.time()
+            with self._spec_lock_th:
+                self._spec_locks.add(f"{spec_name}:implementer")
+                self._lock_since[f"{spec_name}:implementer"] = time.time()
+                self._spec_locks.add(f"{spec_name}:verifier")
+                self._lock_since[f"{spec_name}:verifier"] = time.time()
 
     def _release_spec_locks(self, spec_name: str, reason: str) -> list:
-            """释放该 spec 的全部在册锁，返回被释放的 key（已不在册则返回空）。"""
-            to_remove = [k for k in self._spec_locks if self._lock_spec_name(k) == spec_name]
-            for k in to_remove:
-                self._spec_locks.discard(k)
-                self._lock_since.pop(k, None)
-            return to_remove
+            """释放该 spec 的全部在册锁，返回被释放的 key（已不在册则返回空）。
+
+            to_remove 计算与摘除全程持 _spec_lock_th（code-review item
+            776cffc0a278）：无锁迭代 _spec_locks 时并发 create/cleanup 增删
+            会抛 "Set changed size during iteration"，且摘除须与 _lock_since
+            清理原子（纪律同 lifecycle.py:593 段）。调用方（has_active_worktree
+            / refresh_locks）均未持该非重入锁，锁内取锁无死锁风险。
+            """
+            with self._spec_lock_th:
+                to_remove = [
+                    k for k in self._spec_locks if self._lock_spec_name(k) == spec_name
+                ]
+                for k in to_remove:
+                    self._spec_locks.discard(k)
+                    self._lock_since.pop(k, None)
+                return to_remove
 
     def _lock_young(self, spec_name: str) -> bool:
             """该 spec 任一在册锁的锁龄 < STALE_LOCK_IDLE_SECONDS（create 构建窗口豁免）。
 
             锁龄缺失（历史锁未登记时刻）按不年轻处理——豁免只对确定年轻的锁生效，
             失败方向保守（宁可走既有陈锁回收，不额外放行）。
+
+            迭代全程持 _spec_lock_th（code-review item 776cffc0a278，纪律同
+            上方 _release_spec_locks）；调用方（has_active_worktree /
+            refresh_locks）均未持锁，无嵌套取锁。
             """
             now = time.time()
-            for k in self._spec_locks:
-                if self._lock_spec_name(k) != spec_name:
-                    continue
-                since = self._lock_since.get(k)
-                if since is not None and (now - since) < STALE_LOCK_IDLE_SECONDS:
-                    return True
-            return False
+            with self._spec_lock_th:
+                for k in self._spec_locks:
+                    if self._lock_spec_name(k) != spec_name:
+                        continue
+                    since = self._lock_since.get(k)
+                    if since is not None and (now - since) < STALE_LOCK_IDLE_SECONDS:
+                        return True
+                return False
 
     def _spec_process_alive(self, spec_name: str) -> bool:
             """进程表中是否存在指向该 spec worktree 的进程（带短缓存）。

@@ -77,10 +77,13 @@ _INFRA_FINGERPRINTS = (
 # 数字类指纹（402/403/429）不做裸子串匹配（code-review item b4ce03fd99c4）：
 # 失败原因文本任意位置出现这些数字（如路径 …-1403.md、行号 "line 4290"、
 # exit code 14029）都会被误判 infra——不递增 _review_attempts、计入熔断计数，
-# 真实 content 失败的重试预算被悄悄跳过。收紧为「两侧不邻接数字」边界：
-# 仅当数字串独立（"HTTP 429"、"Error 403"、"402 余额不足"、"错误403"）才归
-# infra。不用 \b——\b 视 CJK 为 word 字符，会漏掉中文紧邻数字的真实指纹。
-_NUMERIC_INFRA_RE = re.compile(r"(?<!\d)(?:402|403|429)(?!\d)")
+# 真实 content 失败的重试预算被悄悄跳过。收紧为「两侧为分隔符」边界：
+# 仅当数字串不邻接 ASCII 字母/数字/连字符（"HTTP 429"、"Error 403"、
+# "402 余额不足"、"错误403"）才归 infra——封死 spec 名拼入 reason 的
+# 连字符形态（fix-429-backoff / add-403-retry）误判穿透
+# （code-review item 80d45b2a5087）。不用 \w/\b——二者视 CJK 为 word
+# 字符，会漏掉中文紧邻数字的真实指纹，故字符类只收 ASCII 字母数字与连字符。
+_NUMERIC_INFRA_RE = re.compile(r"(?<![0-9A-Za-z-])(?:402|403|429)(?![0-9A-Za-z-])")
 # CLI 进程级崩溃：error 含 "Exit code: <N>" 且 N 非 0/1
 _CLI_EXIT_CODE_RE = re.compile(r"Exit code:\s*(-?\d+)")
 
@@ -966,8 +969,10 @@ class SpecReviewManager:
         for fp in _INFRA_FINGERPRINTS:
             if fp in low:
                 return "infra"
-        # 数字类指纹（402/403/429）：词边界匹配，防任意数字串误判 infra
-        # （见 _NUMERIC_INFRA_RE 注释，code-review item b4ce03fd99c4）。
+        # 数字类指纹（402/403/429）：分隔符边界匹配（两侧不邻接 ASCII
+        # 字母/数字/连字符），防任意数字串与 spec 名连字符形态误判 infra
+        # （见 _NUMERIC_INFRA_RE 注释，code-review item b4ce03fd99c4 /
+        # 80d45b2a5087）。
         if _NUMERIC_INFRA_RE.search(low):
             return "infra"
         # CLI 进程级崩溃：exit code 非 0/1（0 正常 / 1 内容失败）

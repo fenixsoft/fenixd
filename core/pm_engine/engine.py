@@ -3727,7 +3727,6 @@ class PMEngine:
         spec_name: str,
         reason: str,
         state: dict,
-        remaining: int = 0,
     ):
         """落 run_infra_failure 告警记录（evo-run-failure-classification-circuitbreaker D3）。
 

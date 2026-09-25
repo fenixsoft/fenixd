@@ -115,7 +115,12 @@ class SessionManager:
         with self._lock:
             existing = self._sessions.get(project_name)
             if existing is not None:
-                if existing.proc.poll() is None:
+                # code-review item 6f1f51a385a0：_terminate 认领后（关 stdin →
+                # 等宽限窗 → kill）进程在窗内仍存活，仅凭 poll() 判活会把即将
+                # 被 kill 的会话当可用会话复用，调用方随后的 send 大概率
+                # SessionNotRunningError——与 send/stop 的幂等语义对齐，已认领
+                # 终止的会话按已退出处理，走下方清理重建路径。
+                if existing.proc.poll() is None and not existing.terminating:
                     # 进程存活，复用
                     existing.last_activity = time.time()
                     return existing
@@ -299,7 +304,11 @@ class SessionManager:
         )
 
         with self._lock:
-            self._remove_session_nolock(session.project)
+            # code-review item 6f1f51a385a0：start 复用分支把 terminating 会话
+            # 按已退出清理重建后，宽限窗内映射可能已被新会话顶替——按 project
+            # 名盲 pop 会摘掉新会话制造孤儿进程，仅当仍是本会话时才移除。
+            if self._sessions.get(session.project) is session:
+                self._remove_session_nolock(session.project)
 
         logger.info(
             "session terminated: project=%s session_id=%s pid=%d reason=%s",

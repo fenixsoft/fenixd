@@ -275,7 +275,6 @@ async function launchChromeExtension(distPath, opts = {}) {
   // mkdtemp 生成含随机后缀的临时 profile 目录，避免 Date.now() 可预测命名在共享主机上的符号链接占位风险
   const userDataDir = fs.mkdtempSync('/tmp/fenix-ext-profile-');
   let browserContext = null;
-  let extensionPage = null;
 
   try {
     // 启动 Chromium 并加载扩展
@@ -317,12 +316,10 @@ async function launchChromeExtension(distPath, opts = {}) {
       // 给扩展一些时间加载
       await new Promise(resolve => setTimeout(resolve, 3000));
 
-      // 获取或创建页面
+      // 无已有页面时兜底开一页（新页面经 browserContext 'page' 事件自动挂网络监听）
       const pages = browserContext.pages();
-      if (pages.length > 0) {
-        extensionPage = pages[0];
-      } else {
-        extensionPage = await browserContext.newPage();
+      if (pages.length === 0) {
+        await browserContext.newPage();
       }
 
       // 打开新标签页 — 应该由扩展接管

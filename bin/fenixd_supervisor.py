@@ -520,27 +520,9 @@ def main():
                 # 避免孤儿 daemon / 重启 supervisor 后双 daemon。
                 log("shutdown signal received — SIGTERM daemon for supervisor exit")
                 restart = False
-                sigkill_wait = _sigkill_wait_seconds()
-                try:
-                    proc.send_signal(signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
-                try:
-                    proc.wait(timeout=sigkill_wait)
-                except subprocess.TimeoutExpired:
-                    log(f"daemon did not exit within {sigkill_wait}s after SIGTERM — SIGKILL")
-                    try:
-                        proc.kill()
-                    except ProcessLookupError:
-                        pass
-                    try:
-                        proc.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        # 与 stop/restart 分支同款兜底：不可中断睡眠时收尸交给外层 wait
-                        log(
-                            "daemon still alive 5s after SIGKILL "
-                            "(uninterruptible sleep?) — leave reaping to outer wait"
-                        )
+                # 收尾复用 _terminate_daemon 单一实现（同 stop/restart 分支），
+                # 避免再内联复制 SIGTERM→wait→SIGKILL→收尸 序列复演漂移
+                _terminate_daemon(proc, _sigkill_wait_seconds())
                 break
             if RESTART_REQUEST.exists():
                 log("restart_request detected — SIGTERM daemon for restart")

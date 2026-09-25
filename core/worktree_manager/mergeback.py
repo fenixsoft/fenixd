@@ -564,7 +564,7 @@ class G4MergebackMixin:
                     "worktree_manager",
                     f"WIP overlap precheck before merge-back of '{branch}': "
                     f"{len(overlap)} dirty tracked file(s) also changed on branch "
-                    f"— {overlap} (warning only, merge proceeds)",
+                    f"— {overlap} (overlap detected, gate policy decides)",
                 )
             return overlap
         except (subprocess.TimeoutExpired, OSError):

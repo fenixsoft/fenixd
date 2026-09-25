@@ -269,13 +269,22 @@ def load_verify_contract(project_root: Path, logger=None) -> Optional[VerifyCont
     for i, step in enumerate(prepare_data or [], 1):
         if isinstance(step, str):
             prepare.append(PrepareStep(run=step))
-        elif isinstance(step, dict) and step.get("run"):
+        # run 类型守卫（code-review item 716108a0bdb4）：run 为映射/数字等
+        # 畸形值会在 run_prepare_steps 里被 str() 序列化成 Python 字面量形态
+        # 经 shell=True 执行（垃圾命令甚至误执行片段）——先校验类型，非法
+        # 按下方「记 warning 忽略该步」惯例处理。
+        elif (
+            isinstance(step, dict)
+            and isinstance(step.get("run"), (str, list))
+            and step.get("run")
+        ):
             prepare.append(PrepareStep(run=step["run"], cwd=str(step.get("cwd") or "")))
         elif logger:
             logger.warning(
                 "verify_contract",
-                f"verify.yaml prepare 第 {i} 步非法（须为字符串或含非空 run 的"
-                f"映射，已忽略该步——构建步骤悄悄缺失会验证陈旧产物）: "
+                f"verify.yaml prepare 第 {i} 步非法（须为字符串或含非空 run"
+                f"（字符串/字符串列表）的映射，已忽略该步——构建步骤悄悄缺失"
+                f"会验证陈旧产物）: "
                 f"{repr(step)[:200]}",
             )
     serve = None
