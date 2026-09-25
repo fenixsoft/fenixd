@@ -50,12 +50,10 @@ def _verifier_error_is_infra(pipeline, error_text: str) -> bool:
 # ── evo-infra-failure-budget-exempt R1：统一失败归因接口 ───────────
 
 # infra 降级触发 error 文本标记（enrich_failure_class 判定）。R1 有意收窄为
-# worktree / merge conflict / tree dirty 六项——仅命中本清单才判 infra。
+# worktree / merge conflict / tree dirty 三项——仅命中本清单才判 infra；
+# worktree 为子串宽匹配（覆盖 git worktree add / worktree lock 等具体形态）。
 _INFRA_DEGRADE_MARKERS = (
     "worktree",
-    "git worktree add",
-    "worktree lock",
-    "worktree already exists",
     "merge conflict",
     "tree dirty",
 )
