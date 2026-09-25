@@ -2419,7 +2419,17 @@ def run_impl_ocr(
             )
             _register_lane = getattr(runner, "register_lane_process", None)
             if callable(_register_lane):
-                _register_lane(run_id, proc, lane_done)
+                try:
+                    _register_lane(run_id, proc, lane_done)
+                except BaseException:
+                    # 注册失败同理收尸：进程已启动，不 kill 会以孤儿形态继续
+                    # 运行占用资源——kill+reap 后上抛（外层折算 unavailable）。
+                    proc.kill()
+                    try:
+                        proc.communicate(timeout=10)
+                    except Exception:
+                        pass
+                    raise
             try:
                 try:
                     _proc_out, _proc_err = proc.communicate(
@@ -2438,6 +2448,16 @@ def run_impl_ocr(
                         pass
                     proc = None
                     timed_out = True
+                except BaseException:
+                    # 意外异常（如 MemoryError）中断 communicate：进程仍存活，
+                    # 先 kill+reap 收尸再上抛（外层折算 unavailable）——否则
+                    # 审查子进程以孤儿形态继续运行占用资源。
+                    proc.kill()
+                    try:
+                        proc.communicate(timeout=10)
+                    except Exception:
+                        pass
+                    raise
             finally:
                 # 完成/非零退出/硬超时/意外异常四路同收口：停跳后本线程独占
                 # 写（幂等，车道整体 finally 二次调用无害）。排水登记不在此

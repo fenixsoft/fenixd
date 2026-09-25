@@ -898,11 +898,19 @@ def _escalate_scenario_defect_reroute(
         )
         return True
 
+    # 改道轮数按调用方传入的实际值描述（_repair_depth = 已执行改道次数）：
+    # 链首改道后 bug-found 且 product-bug=0 时仅重派 1 次即走到这里，固定写
+    # 上限轮数与事实不符会误导人工裁决；仅当实际轮数达到上限时才用
+    # 「预算耗尽」措辞。
+    budget_exhausted = _repair_depth >= _SCENARIO_REPAIR_MAX_ROUNDS
+    escalate_head = (
+        "场景缺陷改道预算耗尽" if budget_exhausted else "场景缺陷改道未达预算上限即升级"
+    )
     pipeline._context.state_machine.update_spec(
         spec_name,
         {
             "error": (
-                f"场景缺陷改道预算耗尽（{_SCENARIO_REPAIR_MAX_ROUNDS} 轮），"
+                f"{escalate_head}（实际改道 {_repair_depth} 轮），"
                 f"仍为纯场景缺陷（product-bug=0）— 已升级人工裁决，spec 保持"
                 f"testing，不再消耗实现轮预算"
             ),
@@ -910,7 +918,7 @@ def _escalate_scenario_defect_reroute(
     )
     pipeline._context.logger.error(
         "pm_engine",
-        f"场景缺陷改道预算耗尽 '{spec_name}'（深度 {_repair_depth}）— "
+        f"{escalate_head} '{spec_name}'（实际改道 {_repair_depth} 轮）— "
         f"升级人工，不等打回 implementer 修场景",
     )
     pipeline._context.escalation_notifier(
@@ -919,7 +927,7 @@ def _escalate_scenario_defect_reroute(
         severity="major",
         description=(
             f"'{spec_name}' 验证失败清单全部为场景缺陷（test-defect/flaky）"
-            f"且 product-bug=0，改道重派 judge {_SCENARIO_REPAIR_MAX_ROUNDS} "
+            f"且 product-bug=0，改道重派 judge {_repair_depth} "
             f"轮后仍未原地修复完成——已停止重派，升级人工裁决。"
         ),
         evidence=(

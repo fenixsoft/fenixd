@@ -282,9 +282,18 @@ class H12RegressionRoutesMixin:
         except OSError as e:
             # mkdir 与其余写路径一并包 try（code-review item 6c873c1c07ed）：
             # 权限/IO 失败不再逃逸 handler 被 dispatcher 转成通用 Internal
-            # Server Error（具体错误文本泄漏进 HTTP 响应），与其余写路径
-            # 一致报告。
-            self._error(500, f"回归触发信号写入失败: {e}")
+            # Server Error，与其余写路径一致报告。不外泄裸异常文本
+            # （code-review item 2dd97866d0d5，对齐 autodraft 策略）：OSError
+            # 文本可携带内部路径/权限属主细节，客户端收固定文案，细节降级
+            # 经服务端日志留痕。
+            _log = getattr(self, "logger", None)
+            if _log is not None:
+                _log.warning(
+                    "regression_routes",
+                    f"回归触发信号目录创建失败 {req_path.parent}: "
+                    f"{type(e).__name__}: {e!r}",
+                )
+            self._error(500, "回归触发信号写入失败")
             return
         try:
             fd = os.open(str(req_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
@@ -324,7 +333,16 @@ class H12RegressionRoutesMixin:
                         f"回归触发信号半写文件清理失败 {req_path}: {un_err!r}"
                         f"（原写入异常: {exc!r}）；残留文件将使后续触发持续 409",
                     )
-            self._error(500, f"回归触发信号写入失败: {exc}")
+            # 不外泄裸异常文本（code-review item 2dd97866d0d5，对齐 autodraft
+            # 策略）：异常细节降级经服务端日志留痕，客户端收固定文案。
+            _log = getattr(self, "logger", None)
+            if _log is not None:
+                _log.warning(
+                    "regression_routes",
+                    f"回归触发信号写入失败 {req_path}: "
+                    f"{type(exc).__name__}: {exc!r}",
+                )
+            self._error(500, "回归触发信号写入失败")
             return
         finally:
             if f is not None:
@@ -393,7 +411,16 @@ class H12RegressionRoutesMixin:
         try:
             req_path.parent.mkdir(parents=True, exist_ok=True)
         except OSError as e:
-            self._error(500, f"回归修复触发信号写入失败: {e}")
+            # 不外泄裸异常文本（code-review item 2dd97866d0d5，对齐 autodraft
+            # 策略）：异常细节降级经服务端日志留痕，客户端收固定文案。
+            _log = getattr(self, "logger", None)
+            if _log is not None:
+                _log.warning(
+                    "regression_routes",
+                    f"回归修复触发信号目录创建失败 {req_path.parent}: "
+                    f"{type(e).__name__}: {e!r}",
+                )
+            self._error(500, "回归修复触发信号写入失败")
             return
         try:
             fd = os.open(str(req_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
@@ -416,12 +443,29 @@ class H12RegressionRoutesMixin:
                     os.close(fd)
                 except OSError:
                     pass
-            # 写中途失败：清掉半写文件，避免残留被 daemon 误消费
+            # 写中途失败：清掉半写文件，避免残留被 daemon 误消费（清理失败
+            # 留痕并携带底层异常，形态对齐 _api_regression_run——残留文件会
+            # 让后续每个 POST 都 409 直到 daemon 消费）。
             try:
                 os.unlink(str(req_path))
-            except OSError:
-                pass
-            self._error(500, f"回归修复触发信号写入失败: {exc}")
+            except OSError as un_err:
+                _log = getattr(self, "logger", None)
+                if _log is not None:
+                    _log.warning(
+                        "regression_routes",
+                        f"回归修复触发信号半写文件清理失败 {req_path}: {un_err!r}"
+                        f"（原写入异常: {exc!r}）；残留文件将使后续触发持续 409",
+                    )
+            # 不外泄裸异常文本（code-review item 2dd97866d0d5，对齐 autodraft
+            # 策略）：异常细节降级经服务端日志留痕，客户端收固定文案。
+            _log = getattr(self, "logger", None)
+            if _log is not None:
+                _log.warning(
+                    "regression_routes",
+                    f"回归修复触发信号写入失败 {req_path}: "
+                    f"{type(exc).__name__}: {exc!r}",
+                )
+            self._error(500, "回归修复触发信号写入失败")
             return
         finally:
             if f is not None:

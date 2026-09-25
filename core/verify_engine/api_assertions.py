@@ -285,6 +285,10 @@ class ApiAssertionRunner:
                 )
             except re.error:
                 passed = False
+        else:
+            # 配置错误可见化：与 run() 入口「未知断言类型」口径对齐，
+            # 避免拼写错的 mode 静默按失败处理、被误归因为产品缺陷
+            error = f"未知 mode: {mode}"
         result = {
             "type": "json_path",
             "layer": 3,
@@ -308,7 +312,11 @@ class ApiAssertionRunner:
                 actual = v
                 break
         passed = False
-        if actual is not None:
+        error = None
+        if mode not in ("exact", "contains", "regex"):
+            # 配置错误可见化：与 run() 入口「未知断言类型」口径对齐
+            error = f"未知 mode: {mode}"
+        elif actual is not None:
             if mode == "exact":
                 passed = str(actual).strip() == str(expected).strip()
             elif mode == "contains":
@@ -318,7 +326,7 @@ class ApiAssertionRunner:
                     passed = bool(re.search(str(expected), str(actual)))
                 except re.error:
                     passed = False
-        return {
+        result = {
             "type": "response_header",
             "layer": 3,
             "header": header,
@@ -326,6 +334,9 @@ class ApiAssertionRunner:
             "actual": actual,
             "pass": passed,
         }
+        if error is not None:
+            result["error"] = error
+        return result
 
     async def _assert_body_contains(self, resp, a: dict) -> dict:
         """断言响应体包含期望文本。"""
@@ -333,7 +344,11 @@ class ApiAssertionRunner:
         mode = a.get("mode", "contains")
         body = resp.get("body") or ""
         passed = False
-        if mode == "exact":
+        error = None
+        if mode not in ("exact", "contains", "regex"):
+            # 配置错误可见化：与 run() 入口「未知断言类型」口径对齐
+            error = f"未知 mode: {mode}"
+        elif mode == "exact":
             passed = str(body).strip() == str(expected).strip()
         elif mode == "contains":
             passed = expected in str(body)
@@ -342,7 +357,7 @@ class ApiAssertionRunner:
                 passed = bool(re.search(str(expected), str(body)))
             except re.error:
                 passed = False
-        return {
+        result = {
             "type": "body_contains",
             "layer": 3,
             "expected": expected,
@@ -350,6 +365,9 @@ class ApiAssertionRunner:
             "pass": passed,
             "actual_snippet": str(body)[:200] if not passed and body else "",
         }
+        if error is not None:
+            result["error"] = error
+        return result
 
     async def _assert_json_schema(self, resp, a: dict) -> dict:
         """断言响应体 JSON 符合 schema（jsonschema 库；验收期已查依赖）。"""
@@ -387,6 +405,8 @@ class ApiAssertionRunner:
         events = [dict(e) for e in (resp.get("events") or [])]
         expected = a.get("expected", "")
         mode = a.get("mode", "contains")
+        # 配置错误可见化：与 run() 入口「未知断言类型」口径对齐（未知 mode 不再静默）
+        error = None if mode in ("exact", "contains", "regex") else f"未知 mode: {mode}"
         hits = []
         for ev in events:
             data = str(ev.get("data") or "")
@@ -403,7 +423,7 @@ class ApiAssertionRunner:
                 matched = False
             if matched:
                 hits.append(data)
-        return {
+        result = {
             "type": "sse_event_matches",
             "layer": 3,
             "expected": expected,
@@ -412,6 +432,9 @@ class ApiAssertionRunner:
             "hit_count": len(hits),
             "pass": len(hits) > 0,
         }
+        if error is not None:
+            result["error"] = error
+        return result
 
     # ═══════════════════════════════════════════════════════════════
     # 第4层：启发式阈值（失败=warning，需上下文判定）

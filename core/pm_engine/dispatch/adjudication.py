@@ -20,6 +20,20 @@ from pathlib import Path
 class VAdjudicationMixin:
     """V 交付物裁定/dispute（design D1 表 B V 组）。"""
 
+    def _find_worktree_for(self, result) -> "str | None":
+        """branch → worktree_path 查找样板（声明读取/写回各方法共用）。
+
+        ``result`` 无分支上下文或查找失败一律回 ``None``，调用方按主树回退
+        语义继续——与提取前各调用点行为逐字一致。
+        """
+        branch = getattr(result, "branch", None) if result is not None else None
+        if not branch:
+            return None
+        try:
+            return self._pm.agent_runner.worktree_manager.find_worktree_path(branch)
+        except Exception:
+            return None
+
     def _effective_declaration(self, spec_name: str, result=None) -> dict:
         """经统一解析入口取「生效声明」（add-declaration-relocation-protocol D1）。
 
@@ -35,14 +49,7 @@ class VAdjudicationMixin:
         from core.deliverables import resolve_effective_declaration
 
         branch = getattr(result, "branch", None) if result is not None else None
-        worktree_path = None
-        if branch:
-            try:
-                worktree_path = self._pm.agent_runner.worktree_manager.find_worktree_path(
-                    branch
-                )
-            except Exception:
-                worktree_path = None
+        worktree_path = self._find_worktree_for(result)
         return resolve_effective_declaration(
             spec_name,
             branch=branch,
@@ -361,14 +368,7 @@ class VAdjudicationMixin:
         from core.deliverables import resolve_writeback_target
 
         branch = getattr(result, "branch", None) if result is not None else None
-        worktree_path = None
-        if branch:
-            try:
-                worktree_path = self._pm.agent_runner.worktree_manager.find_worktree_path(
-                    branch
-                )
-            except Exception:
-                worktree_path = None
+        worktree_path = self._find_worktree_for(result)
         return resolve_writeback_target(
             spec_name,
             branch=branch,
@@ -474,14 +474,7 @@ class VAdjudicationMixin:
         from core.deliverables import verify_correction_readback
 
         branch = getattr(result, "branch", None) if result is not None else None
-        worktree_path = None
-        if branch:
-            try:
-                worktree_path = self._pm.agent_runner.worktree_manager.find_worktree_path(
-                    branch
-                )
-            except Exception:
-                worktree_path = None
+        worktree_path = self._find_worktree_for(result)
         try:
             ok = verify_correction_readback(
                 spec_name,
@@ -1566,12 +1559,7 @@ class VAdjudicationMixin:
         if not branch:
             return
         rel = f"spec/changes/{spec_name}/tasks.md"
-        try:
-            worktree_path = (
-                self._pm.agent_runner.worktree_manager.find_worktree_path(branch)
-            )
-        except Exception:
-            worktree_path = None
+        worktree_path = self._find_worktree_for(result)
         tmp_wt = None
         if worktree_path is None:
             try:

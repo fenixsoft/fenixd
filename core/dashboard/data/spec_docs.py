@@ -162,31 +162,46 @@ def count_scenarios(project_root, spec_name) -> int:
     return count
 
 
+def _load_planned_scenarios(project_root, spec_name) -> "list | None":
+    """装载 planner 出题产物场景列表（两个场景计数函数的共享装载助手）。
+
+    读 `.fenix/verify-progress/<spec>/test_scenarios.json`（planner-plan 出题
+    产物，分批整体重写），完成 spec 名校验、路径拼接、exists 检查、json 解析、
+    dict 解包 scenarios 与列表类型校验后返回场景 list。缺失/损坏/非列表返回
+    None——出题进度是纯展示信号，任何解析异常都不阻断摘要（fail-open，
+    与 count_scenarios 同风格）；调用侧各自只保留 sum 谓词，读入口径
+    （路径迁移、容错分支）只改本处。
+    """
+    spec_name = _validated_spec_name(spec_name)
+    if spec_name is None:
+        return None
+    pf = Path(project_root) / ".fenix" / "verify-progress" / spec_name / "test_scenarios.json"
+    if not pf.exists():
+        return None
+    try:
+        data = json.loads(pf.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+        return None
+    if isinstance(data, dict):
+        data = data.get("scenarios")
+    if not isinstance(data, list):
+        return None
+    return data
+
+
 def count_generated_scenarios(project_root, spec_name) -> int:
     """统计 planner 已补全的场景数（verification-phase-progress）。
 
-    读 .fenix/verify-progress/<spec>/test_scenarios.json（planner-plan 出题
-    产物，分批整体重写）；缺失/损坏/非列表以 0 计——出题进度是纯展示信号，
-    任何解析异常都不阻断摘要（fail-open，与 count_scenarios 同风格）。
+    读 .fenix/verify-progress/<spec>/test_scenarios.json（装载助手
+    _load_planned_scenarios，缺失/损坏/非列表以 0 计）。
 
     口径=「已补全场景数」（steps/assertions 非空才算）：分批落盘强制骨架
     先行（fix-planner-scenarios-batching-hook）后，骨架含全部 id 但无肉，
     若按条数计则骨架落盘瞬间出题条 0→N/N 一次跳；数带肉场景使出题条
     随每 1/3 重写真实爬升。
     """
-    spec_name = _validated_spec_name(spec_name)
-    if spec_name is None:
-        return 0
-    pf = Path(project_root) / ".fenix" / "verify-progress" / spec_name / "test_scenarios.json"
-    if not pf.exists():
-        return 0
-    try:
-        data = json.loads(pf.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
-        return 0
-    if isinstance(data, dict):
-        data = data.get("scenarios")
-    if not isinstance(data, list):
+    data = _load_planned_scenarios(project_root, spec_name)
+    if data is None:
         return 0
     return sum(
         1 for sc in data if isinstance(sc, dict) and (sc.get("steps") or sc.get("assertions"))
@@ -197,12 +212,11 @@ def count_planned_scenarios(project_root, spec_name) -> int:
     """统计 planner 本轮规划的场景条目总数（骨架含全部 id）。
 
     读本轮 planner 出题产物 `.fenix/verify-progress/<spec>/test_scenarios.json`
-    的场景条目数——这是**「出题 N/M」分母的权威来源**。分批落盘强制骨架先行
+    （装载助手 _load_planned_scenarios，缺失/损坏/非列表以 0 计）的场景条目
+    数——这是**「出题 N/M」分母的权威来源**。分批落盘强制骨架先行
     （fix-planner-scenarios-batching-hook）后，骨架即含全部 id（steps/assertions
     空），故骨架落盘瞬间 total 即达最终值，分子（已补全数）随每 1/3 重写爬升，
     done≤total 恒成立。
-
-    缺失/损坏/非列表以 0 计（fail-open，与 count_generated_scenarios 同风格）。
 
     ⚠️ 曾误用 count_scenarios（数 specs/<cap>/spec.md 的 `#### Scenario:` 块）作
     分母——但 planner 会把单个 Scenario 按其交付物形态**拆成多形态条目**
@@ -210,19 +224,8 @@ def count_planned_scenarios(project_root, spec_name) -> int:
     绑定关系（实测 243/267 个 spec 出现 done>total，如 20/11）；且非「多形态
     验收」类 spec 的 spec.md 根本不含 `#### Scenario:` 块（分母为 0）。
     """
-    spec_name = _validated_spec_name(spec_name)
-    if spec_name is None:
-        return 0
-    pf = Path(project_root) / ".fenix" / "verify-progress" / spec_name / "test_scenarios.json"
-    if not pf.exists():
-        return 0
-    try:
-        data = json.loads(pf.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
-        return 0
-    if isinstance(data, dict):
-        data = data.get("scenarios")
-    if not isinstance(data, list):
+    data = _load_planned_scenarios(project_root, spec_name)
+    if data is None:
         return 0
     return sum(1 for sc in data if isinstance(sc, dict))
 

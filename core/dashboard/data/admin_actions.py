@@ -1700,16 +1700,25 @@ def _exec_continue_auto_fix(project_root, spec: str, note: str = "") -> dict:
 
 def _exec_raise_budget(project_root, spec: str) -> dict:
     """raise_budget：agents.token_budget_millions 翻倍 + 复位告警幂等标记。"""
-    from .config_admin import read_config, write_config
+    from .config_admin import write_config
 
     proot = Path(project_root)
     current_val = 50.0
     try:
-        agents_cfg = (read_config(proot) or {}).get("agents") or {}
-        raw = agents_cfg.get("token_budget_millions")
-        if raw is not None:
+        # 翻倍基数取**生效**预算（code-review item 3de34b86c99e）：项目级
+        # read_config 回显只对真 int 生效（_echo_agents_int_keys 过滤）且不含
+        # 用户级继承——预算只配在用户级（如生效 80M）或项目级为 float（如 0.5）
+        # 时读到 None 会误回缺省 50，「翻倍」语义失真且项目级显式值从此覆盖
+        # 用户级。改经 ConfigLoader.resolve_config 取用户级+项目级深合并后的
+        # 原始值（int/float 均参与运算，bool 排除），与预算检查器
+        # （token_budget._get_config 生效值口径）一致。
+        from core.config import ConfigLoader
+
+        effective = ConfigLoader.resolve_config(proot)
+        raw = (effective.get("agents") or {}).get("token_budget_millions")
+        if isinstance(raw, (int, float)) and not isinstance(raw, bool):
             current_val = float(raw)
-    except (TypeError, ValueError):
+    except Exception:  # noqa: BLE001 — 读侧任何异常按缺省 50 兜底（宁缺毋 500）
         pass
     if current_val <= 0:
         # 0=关闭语义无法翻倍，回缺省基线翻倍（与 _check_token_budget 缺省一致）

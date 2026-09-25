@@ -31,6 +31,11 @@ POST_READY_SETTLE_SECONDS = 10
 LEGACY_START_PROBE_ATTEMPTS = 30
 LEGACY_START_PROBE_INTERVAL_SECONDS = 1
 
+# 端口前向边界（单一份正则，收集/内存改写/持久化改写共用）：``:port`` 后随
+# 路径/查询/片段/引号或串尾。各处自写一份会漂移——场景 URL 带 #fragment 或
+# 引号边界时收集判定命中而改写不生效，重探持续失败走兜底路径。
+_PORT_BOUNDARY = r"(?=[/\?#\"']|$)"
+
 
 def _ensure_serving_worktree(pipeline, spec_name: str, contract, mode: str):
     """serving worktree 供给（static/command 两型共享）。
@@ -164,7 +169,6 @@ def _serve_static_in_worktree(pipeline, spec_name, contract, scenarios_path) -> 
     )
 
 
-@staticmethod
 def _serve_command_in_worktree(pipeline, spec_name, contract, scenarios_path) -> tuple:
     """命令型被测实例的 worktree 隔离（serve.kind=command + static_scope=worktree）。
 
@@ -936,7 +940,7 @@ def _ensure_app_reachable(pipeline, spec_name: str) -> tuple:
         foreign_ports = {
             m.group(1)
             for u in urls
-            for m in [re.search(r":(\d+)(?=[/\?#]|$)", u)]
+            for m in [re.search(r":(\d+)" + _PORT_BOUNDARY, u)]
             if m and int(m.group(1)) != base_port
         }
         if foreign_ports:
@@ -946,7 +950,7 @@ def _ensure_app_reachable(pipeline, spec_name: str) -> tuple:
             for u in urls:
                 v = u
                 for p in foreign_ports:
-                    v = re.sub(r":%s(?=[/\?#]|$)" % p, f":{base_port}", v)
+                    v = re.sub(r":%s" % p + _PORT_BOUNDARY, f":{base_port}", v)
                 urls_new.append(v)
             if all(_probe(u) for u in urls_new):
                 boot_log.close()
@@ -964,7 +968,9 @@ def _ensure_app_reachable(pipeline, spec_name: str) -> tuple:
     if base_port:
         for port in range(base_port + 1, base_port + 51):
             if _probe(f"http://127.0.0.1:{port}/"):
-                urls_new = [re.sub(r":%d(?=[/\?]|$)" % base_port, f":{port}", u) for u in urls]
+                urls_new = [
+                    re.sub(r":%d" % base_port + _PORT_BOUNDARY, f":{port}", u) for u in urls
+                ]
                 if all(_probe(u) for u in urls_new):
                     pipeline._rewrite_scenario_port(scenarios_path, base_port, port)
                     boot_log.close()
@@ -1047,7 +1053,7 @@ def _rewrite_scenario_port(pipeline, scenarios_path: Path, old_port: int, new_po
     """
     from core.verify_contract import _rewrite_scenario_target_values
 
-    port_re = re.compile(r":%d(?=[/\?\"']|$)" % old_port)
+    port_re = re.compile(r":%d" % old_port + _PORT_BOUNDARY)
 
     def _rewrite_value(value: str) -> tuple[str, int]:
         return port_re.subn(f":{new_port}", value)
