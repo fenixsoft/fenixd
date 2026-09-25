@@ -530,7 +530,16 @@ class VerificationPipeline:
             # report.json 实际已在盘上（judge 自己写的），拒绝的是状态机
             # 采纳而非落盘——不再「保持 testing 静默等待」（170 分钟自锁
             # 与全量重跑罚金的根因已消除）。
-            detail = violations[0].get("reason") if violations else ""
+            # 元素形态非受控保证（code-review item 93d4fac73764）：与下方
+            # 失败历史处同口径加 isinstance 守卫，非 dict 时降级为空串对账，
+            # 不以 AttributeError 中断本分支。
+            detail = (
+                violations[0].get("reason")
+                if isinstance(violations, list)
+                and violations
+                and isinstance(violations[0], dict)
+                else ""
+            )
             self._context.logger.warning(
                 "pm_engine",
                 f"批量归因查重拒绝采纳 '{spec_name}'（重合成预算耗尽）— "
