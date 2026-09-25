@@ -210,6 +210,17 @@ class TestRepairRoundDetection:
         assert declares_new_delivery(
             "## 验证修复\n- [ ] 追加新功能支持") is True
 
+    def test_declares_new_delivery_repair_phrase_variants(self):
+        # 修复语境常见变体：动词与「对…的修复」之间隔着「了」「针对」等
+        # 衔接字，不得误判为新增交付声明（否则修复轮扩容闸门被无声放开）
+        assert declares_new_delivery(
+            "## 验证修复\n- [ ] 追加了针对场景 s1 的修复") is False
+        assert declares_new_delivery(
+            "## 验证修复\n- [ ] 增加了对于旧版导入功能的修复") is False
+        # 排除只应命中修复语境，真新增交付仍须计为扩容声明
+        assert declares_new_delivery(
+            "## 验证修复\n- [ ] 新增交付：历史错误的修复向导") is True
+
 
 # ── 3.2 v2-config-page 真实 11→17 夹具回归 ────────────────────────
 
