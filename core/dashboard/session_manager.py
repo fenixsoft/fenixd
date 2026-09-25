@@ -400,10 +400,17 @@ class SessionManager:
             logger.exception("stdout reader error: session=%s", sid)
         finally:
             # EOF → 进程退出，追加 session_ended 并移除。
-            # 若已被 _terminate（user/idle/shutdown）先行移除则不再重复广播
-            # （避免同会话出现两条终态事件）。
+            # 若已被 _terminate（user/idle/shutdown）认领或先行移除则不再重复
+            # 广播（避免同会话出现两条终态事件）。code-review item 84c6823a177e：
+            # _terminate 认领（terminating=True）到移除之间隔着关 stdin 与宽限
+            # 等待，进程恰在此窗内退出时本 finally 会触发且会话仍在映射中——
+            # 只查注册表会把真实停止理由抢先成 process_exit 并产生两条终态
+            # 事件，故补查 terminating，交由 _terminate 落终态。
             with self._lock:
-                still_registered = self._sessions.get(session.project) is session
+                still_registered = (
+                    self._sessions.get(session.project) is session
+                    and not session.terminating
+                )
                 if still_registered:
                     self._remove_session_nolock(session.project)
             if still_registered:
