@@ -144,12 +144,14 @@ def _parallel_plan_scenario_def(sc) -> dict:
 from core.pm_engine.verification.serving import (
     _current_instance_base_url,
     _current_verify_round,
+    _dist_probe_block_report,
     _ensure_app_reachable,
     _ensure_serving_worktree,
     _evict_spec_serving,
     _finalize_static,
     _open_boot_log,
     _port_responds,
+    _probe_dist_freshness,
     _read_boot_log_tail,
     _register_serving_instance,
     _remove_serving_worktree,
@@ -169,13 +171,16 @@ from core.pm_engine.verification.escalation import (
     _escalate_scenario_defect_reroute,
     _escalate_scenario_repair_exhausted,
     _handle_env_blocked_inconclusive,
+    _handle_env_exemption_handshake,
     _handle_judge_env_declared,
+    _handle_verdict_env_exemption_inconclusive,
     _judge_bugs_declare_env,
     _schedule_scenario_repair_reverify,
     _SCENARIO_REPAIR_REVERIFY_DELAY_SECONDS,
     _scenario_defect_reroute_gate,
     _speculative_bug_found_gate,
     _update_warning_streaks,
+    _verdict_env_exemption_level2,
     _warning_stale_triage_alert,
     _write_inconclusive_loop_signal,
 )
@@ -310,6 +315,15 @@ class VerificationPipeline:
         "_write_inconclusive_loop_signal": _write_inconclusive_loop_signal,
         "_env_whitewash_gate": _env_whitewash_gate,
         "_escalate_env_blocked": _escalate_env_blocked,
+        # fix-verdict-env-exemption-handshake：裁决豁免握手（级二判据/同源
+        # inconclusive 处置/尾段拦截）与 serving dist 新鲜度探针
+        "_verdict_env_exemption_level2": _verdict_env_exemption_level2,
+        "_handle_verdict_env_exemption_inconclusive": (
+            _handle_verdict_env_exemption_inconclusive
+        ),
+        "_handle_env_exemption_handshake": _handle_env_exemption_handshake,
+        "_probe_dist_freshness": _probe_dist_freshness,
+        "_dist_probe_block_report": _dist_probe_block_report,
         "_update_warning_streaks": _update_warning_streaks,
         "_warning_stale_triage_alert": _warning_stale_triage_alert,
         "_scenario_defect_reroute_gate": _scenario_defect_reroute_gate,
@@ -994,6 +1008,14 @@ class VerificationPipeline:
         等价搬移自 _run_three_stage_verification 的 verified 分支体。
         内部 return 为提前退出主函数语义；调用者 MUST 在 return 之后显式 return。
         """
+        # ── 裁决 env 豁免握手（verdict-env-exemption-handshake，judge 采纳尾段）──
+        # 进度核对/报告闸门/洗白门禁/transition 之前的拦截点：级二命中（裁决
+        # 后失败全部为环境性）时 MUST NOT 落 verified——无 admin 放行处置记录
+        # 转 inconclusive 重验（该轮不再到达洗白门禁，同一轮两道裁决后防线
+        # 不叠加动作）；查得放行记录保留处置回链后放行。级二不命中零改动
+        # 直通（含全绿快道合成报告——无豁免对象，快道不受影响）。
+        if self._handle_env_exemption_handshake(spec_name, report):
+            return
         # D6: testing→verified 前置进度核对：done>=total 才晋级
         vblocker = self._check_verification_gate(spec_name)
         if vblocker:
@@ -1835,6 +1857,18 @@ class VerificationPipeline:
             # 实例地址，直接分发各 Runner（web/api URL origin 改写依据、
             # 环境门探针定位依据）。无实例形态（纯 cli）为空串无害空操作。
             engine.base_url = self._current_instance_base_url(spec_name)
+            # ── serving dist 新鲜度探针（serving-dist-freshness-probe 2.2）──
+            # 场景开跑前执行一次（场景间不重复）：判滞后先自动重建（构建契约
+            # 与 merge-back 同源）；重建失败 MUST NOT 以陈旧 dist 静默开跑——
+            # 合成全批 blocked-env 报告，该轮按环境性失联语义走既有
+            # blocked-env/inconclusive 路径处置（重验轮探针先行，重建成功即
+            # 真实复跑；穷尽走 B7 升级通道），供豁免握手与 admin 升级链消费。
+            probe_err = self._probe_dist_freshness(spec_name)
+            if probe_err:
+                block_report = self._dist_probe_block_report(
+                    spec_name, executed_scenarios, probe_err
+                )
+                return None, block_report, app_reachable, reach_note, False
             report = asyncio.run(engine.run(executed_scenarios))
             env_error = report.get("env_error")
             if env_error is None and cached_results:

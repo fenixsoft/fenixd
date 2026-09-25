@@ -36,6 +36,102 @@ def _collect_unmerged_paths(status_text: str) -> list:
     return [p for p in paths if p]
 
 
+def run_dist_build(
+    project_root: Path,
+    static_root: str | Path = DASHBOARD_STATIC_ROOT,
+    logger=None,
+    error_detail: list | None = None,
+) -> bool:
+    """执行主树构建（.fenix/verify.yaml prepare 驱动，回退 npm run build）。
+
+    构建什么从 verify.yaml 的 prepare 段读取——不预设目标为 nodejs 项目，
+    步骤自带 cwd、每步受 PREPARE_STEP_TIMEOUT 约束；契约缺失时回退历史
+    行为（static_root 下 npm run build）；契约存在但未声明 prepare 视为
+    「无构建步骤」，直接成功。
+
+    fix-verdict-env-exemption-admin-handshake 1.1：自 ``_run_dist_build``
+    提取的构建执行体模块级化（merge-back 确定性重建与 serving dist 新鲜度
+    探针两处同源复用；design D3「构建命令契约与 merge-back 同源，不在
+    serving 层硬编码 npm run build」）。
+
+    Args:
+        project_root: 主树项目根。
+        static_root: 静态根（回退构建 cwd 与日志文案），缺省 dashboard 静态根。
+        logger: 结构化 logger（warning 口径与提取前逐字一致）。
+        error_detail: 可选失败现场收集器（list）：失败时追加尾部日志文案
+            （prepare 失败原因 / fallback 构建 stderr+stdout 尾 200 字符），
+            供 serving 探针把构建失败尾部日志写入 run 错误现场；不传时
+            行为与提取前逐字节一致。
+    """
+    from core.verify_contract import (
+        ensure_main_tree_deps,
+        load_verify_contract,
+        read_config_deps_mode,
+        resolve_deps_mode,
+        run_prepare_steps,
+    )
+
+    contract = load_verify_contract(project_root, logger)
+    if contract is not None:
+        if not contract.prepare:
+            return True
+        # add-main-tree-deps-provision：merge 后主树重建 dist 与验证同样
+        # 可能缺 node_modules（主树只被 merge-back 写入、无人手工安装），
+        # prepare 前按 cwd 集合预装依赖（mode 无 pm 配置通道，走
+        # read_config_deps_mode + resolve_deps_mode 同源解析）。
+        ensure_main_tree_deps(
+            project_root,
+            sorted({(s.cwd or ".") for s in contract.prepare}),
+            mode=resolve_deps_mode(contract, read_config_deps_mode(project_root)),
+            logger=logger,
+        )
+        err = run_prepare_steps(contract, project_root)
+        if err:
+            logger.warning(
+                "worktree_manager",
+                f"dist rebuild prepare 失败: {err}",
+            )
+            if error_detail is not None:
+                error_detail.append(str(err))
+            return False
+        return True
+    static_dir = Path(project_root) / static_root
+    if not (static_dir / "package.json").exists():
+        logger.warning(
+            "worktree_manager",
+            f"dist rebuild skipped: no package.json under {static_root}",
+        )
+        return False
+    try:
+        r = subprocess.run(
+            ["npm", "run", "build"],
+            cwd=str(static_dir),
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+        if r.returncode != 0:
+            # 回退构建失败时保留输出尾部现场（截断口径与 commit 失败取
+            # stderr[:200] 的既有做法一致），编译错误多在末尾，便于从日志
+            # 直接定位而不必人工重跑。
+            detail = ((r.stderr or "") + "\n" + (r.stdout or "")).strip()[-200:]
+            logger.warning(
+                "worktree_manager",
+                f"dist rebuild fallback build failed: {detail}",
+            )
+            if error_detail is not None:
+                error_detail.append(detail)
+        return r.returncode == 0
+    except (subprocess.SubprocessError, OSError) as e:
+        logger.warning(
+            "worktree_manager",
+            f"dist build invocation failed: {e}",
+        )
+        if error_detail is not None:
+            error_detail.append(str(e))
+        return False
+
+
 class G5DistConflictsMixin:
     """G5 构建产物冲突/dist 重建（design D1 表 A G5）。"""
 
@@ -246,73 +342,12 @@ class G5DistConflictsMixin:
     def _run_dist_build(self) -> bool:
         """执行主树构建（.fenix/verify.yaml prepare 驱动，回退 npm run build）。
 
-        构建什么从 verify.yaml 的 prepare 段读取——不预设目标为 nodejs 项目，
-        步骤自带 cwd、每步受 PREPARE_STEP_TIMEOUT 约束；契约缺失时回退历史
-        行为（DASHBOARD_STATIC_ROOT 下 npm run build）；契约存在但未声明
-        prepare 视为「无构建步骤」，直接成功。
-        供 merge 后确定性重建使用；测试通过 patch 本方法模拟构建产物/失败。
+        fix-verdict-env-exemption-admin-handshake 1.1：构建执行体已提取为
+        模块级 ``run_dist_build``（serving dist 新鲜度探针同源复用），本方法
+        保留为薄委托、行为不变。供 merge 后确定性重建使用；测试通过 patch
+        本方法模拟构建产物/失败的既有契约不变。
         """
-        from core.verify_contract import (
-            ensure_main_tree_deps,
-            load_verify_contract,
-            read_config_deps_mode,
-            resolve_deps_mode,
-            run_prepare_steps,
-        )
-
-        contract = load_verify_contract(self.project_root, self.logger)
-        if contract is not None:
-            if not contract.prepare:
-                return True
-            # add-main-tree-deps-provision：merge 后主树重建 dist 与验证同样
-            # 可能缺 node_modules（主树只被 merge-back 写入、无人手工安装），
-            # prepare 前按 cwd 集合预装依赖（mode 无 pm 配置通道，走
-            # read_config_deps_mode + resolve_deps_mode 同源解析）。
-            ensure_main_tree_deps(
-                self.project_root,
-                sorted({(s.cwd or ".") for s in contract.prepare}),
-                mode=resolve_deps_mode(contract, read_config_deps_mode(self.project_root)),
-                logger=self.logger,
-            )
-            err = run_prepare_steps(contract, self.project_root)
-            if err:
-                self.logger.warning(
-                    "worktree_manager",
-                    f"dist rebuild prepare 失败: {err}",
-                )
-                return False
-            return True
-        static_dir = self.project_root / DASHBOARD_STATIC_ROOT
-        if not (static_dir / "package.json").exists():
-            self.logger.warning(
-                "worktree_manager",
-                f"dist rebuild skipped: no package.json under {DASHBOARD_STATIC_ROOT}",
-            )
-            return False
-        try:
-            r = subprocess.run(
-                ["npm", "run", "build"],
-                cwd=str(static_dir),
-                capture_output=True,
-                text=True,
-                timeout=600,
-            )
-            if r.returncode != 0:
-                # 回退构建失败时保留输出尾部现场（截断口径与 commit 失败取
-                # stderr[:200] 的既有做法一致），编译错误多在末尾，便于从日志
-                # 直接定位而不必人工重跑。
-                detail = ((r.stderr or "") + "\n" + (r.stdout or "")).strip()[-200:]
-                self.logger.warning(
-                    "worktree_manager",
-                    f"dist rebuild fallback build failed: {detail}",
-                )
-            return r.returncode == 0
-        except (subprocess.SubprocessError, OSError) as e:
-            self.logger.warning(
-                "worktree_manager",
-                f"dist build invocation failed: {e}",
-            )
-            return False
+        return run_dist_build(self.project_root, DASHBOARD_STATIC_ROOT, self.logger)
 
     def _rebuild_dist_after_merge(self) -> None:
         """merge 后从合并后 src 确定性重建主树产物（dist 冲突根治 B）。
