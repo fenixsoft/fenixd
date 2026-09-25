@@ -3579,6 +3579,16 @@ class FenixDaemon:
                     f"supervisor 刷新上报"
                 )
                 data = {}
+            # code-review item d7ea0b9c5270：解析成功但顶层非 dict（null/[]/
+            # 字符串等，部分写入或手工编辑）时旧判定整段静默跳过，恰是排水
+            # 窗口可能被 SIGKILL 截断需告警的场景。并入既有「按未上报处理」
+            # 告警分支并归一为 {}，再进 sigkill_wait/漂移判定。
+            if not isinstance(data, dict):
+                warnings.append(
+                    f"supervisor runtime 顶层非对象（{type(data).__name__}）——"
+                    f"按未上报处理，建议重启 supervisor 刷新上报"
+                )
+                data = {}
             if not warnings and isinstance(data, dict):
                 try:
                     sigkill_wait = int(data.get("sigkill_wait") or 0)

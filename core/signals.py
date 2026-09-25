@@ -119,6 +119,7 @@ def request_admin_invoke(
     # 内容随后经 tempfile+os.replace 原子换入。空占位窗口对消费侧
     # （fenixd._consume_request_file 先 rename 后读私有副本）无害：最坏
     # rename 走空占位、下一轮（1s 粒度）拾取换入的完整内容，请求不丢。
+    # [fenix-ignore:c3d305a22fc2] 进程崩溃残留的零字节占位无需 TTL 自愈：消费侧 _consume_request_file 每轮主循环把它 rename 成私有副本，空文件 json.load 抛 JSONDecodeError 走清理分支照样 unlink（fenixd.py），占位随之从磁盘移除，通道不会被永久锁死。
     try:
         placeholder_fd = os.open(
             req_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644

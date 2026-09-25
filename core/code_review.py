@@ -330,7 +330,7 @@ def _item_id(project: str, file: str, fp: str) -> str:
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone_utc()).isoformat()
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _coerce_line(value) -> int:
@@ -357,13 +357,6 @@ def _coerce_line(value) -> int:
         except ValueError:
             return 1
     return 1
-
-
-def timezone_utc():
-    """UTC timezone（延迟解析避免循环导入）。"""
-    from datetime import timezone
-
-    return timezone.utc
 
 
 # ── 条目 upsert（读-改-写 + flock） ─────────────────────────────────

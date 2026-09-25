@@ -30,6 +30,10 @@ class JsonFormatter(logging.Formatter):
         # Include extra context if available
         if hasattr(record, "context") and record.context:
             entry["context"] = record.context
+        # 500 兜底等调用方以 logger.exception 约定「详情（含堆栈）留服务端日志」，
+        # 缺此字段 traceback 会被静默丢弃（code-review item c175ecdbbeed）
+        if record.exc_info:
+            entry["exc_info"] = self.formatException(record.exc_info)
         return json.dumps(entry, ensure_ascii=False)
 
 

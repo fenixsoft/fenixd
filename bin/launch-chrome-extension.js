@@ -71,10 +71,11 @@ function parseArgs() {
     }
   }
 
-  // 校验参数取值：--timeout 缺值/非数字会得 NaN 使总超时失效；带值选项缺值时静默得 undefined
+  // 校验参数取值：--timeout 缺值/非数字会得 NaN、0 或负数会使剩余预算恒为 0 立即超时收卷，
+  // 造成零验证假通过，故须为正数；带值选项缺值时静默得 undefined
   const usage = '用法: node launch-chrome-extension.js [--dist-path <path>] [--timeout <ms>] [--debug] [--headless] [--output <path>]';
   let invalidReason = null;
-  if (!Number.isFinite(opts.timeout)) invalidReason = '--timeout 需要数字参数（毫秒）';
+  if (!Number.isFinite(opts.timeout) || opts.timeout <= 0) invalidReason = '--timeout 需要正数参数（毫秒，须大于 0）';
   if (opts.distPath === undefined) invalidReason = '--dist-path 缺少取值';
   if (opts.output === undefined) invalidReason = '--output 缺少取值';
   if (invalidReason) {

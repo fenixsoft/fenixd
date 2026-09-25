@@ -1690,7 +1690,7 @@ def _clear_task_gate_rejections(runner, spec_name: str) -> None:
 # daemon 侧硬门判定保持不变（本入口只加出口，不改判定）。
 
 
-_SELFHECK_LOGGER = logging.getLogger("fenixd.agent_runner.result_gate")
+_SELFCHECK_LOGGER = logging.getLogger("fenixd.agent_runner.result_gate")
 
 
 class _SelfcheckShim:
@@ -1715,7 +1715,7 @@ class _SelfcheckShim:
     def __init__(self, project_root):
         self.project_root = project_root
         self.state_machine = None
-        self.logger = _SELFHECK_LOGGER
+        self.logger = _SELFCHECK_LOGGER
         # 惰性导入（函数运行期，非模块加载期——本模块 MUST NOT import runner）：
         # 白名单以 AgentRunner 类属性为单源，禁止在本处另写一份字面量。
         from core.agent_runner.runner import AgentRunner
@@ -1798,7 +1798,7 @@ def _selfcheck_dispositions_violations(data: dict, wt_path: Path, spec_name: str
     return violations
 
 
-_SELFHECK_USAGE = (
+_SELFCHECK_USAGE = (
     "用法: python3 -m core.agent_runner.result_gate --selfcheck <结果文件路径>\n"
     "对 .fenix-run-result.json 执行与 daemon 侧收工硬门同源的自证校验\n"
     "（worktree 内可跑、零网络、零 daemon 依赖；只读目标文件，零副作用）。\n"
@@ -1861,11 +1861,11 @@ def main(argv=None) -> int:
     """
     argv = list(sys.argv[1:] if argv is None else argv)
     if len(argv) != 2 or argv[0] != "--selfcheck" or not argv[1].strip():
-        sys.stderr.write(_SELFHECK_USAGE)
+        sys.stderr.write(_SELFCHECK_USAGE)
         return 2
     if not Path(argv[1]).is_file():
         sys.stderr.write(f"selfcheck: 结果文件不存在: {argv[1]}\n")
-        sys.stderr.write(_SELFHECK_USAGE)
+        sys.stderr.write(_SELFCHECK_USAGE)
         return 2
     return run_selfcheck(argv[1])
 

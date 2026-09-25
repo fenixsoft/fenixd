@@ -144,7 +144,7 @@ export function isToolGroupItem(item: MessageListItem): item is ToolGroupItem {
 }
 
 function isGroupableToolMessage(message: ChatMessage): message is ChatMessage & { toolName: string } {
-  return Boolean(message.isToolUse && message.toolName && !message.isSubagentContainer);
+  return Boolean(message.isToolUse && message.toolName);
 }
 
 // thinking 隐藏判定（唯一权威口径，code-review item 2faec963d2ea）：开关关闭

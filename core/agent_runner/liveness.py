@@ -114,7 +114,7 @@ RUNTIME_SWEEP_IDLE_SECONDS = 1800
 def _file_has_terminal_event(run_file: Path) -> bool:
     """读 run jsonl 逐行判定尾部是否已有终态事件（运行期/启动清扫共享口径）。
 
-    终态口径 = ``RUN_TERMINAL_EVENT_TYPES``（result/interrupted/error/cancelled），
+    终态口径 = ``RUN_TERMINAL_EVENT_TYPES``（result/interrupted/error/cancelled/frozen-terminated/gate-blocked，以常量为准），
     两种清扫 MUST 复用本 helper，不得各自实现解析逻辑（runtime-run-sweep
     「与启动清扫口径一致」Requirement）。损坏 JSON 行跳过不阻断；
     文件不可读（OSError）视为无终态事件。
@@ -182,7 +182,7 @@ def _file_tail_is_terminal(run_file: Path) -> bool:
     追加、result 之后 superseded 序列真实存在），存活判据要的是「末行终态即 run
     已明确终结」的后置不变量口径（对齐 dashboard classify_run 只看末行）。
 
-    终态口径 = ``RUN_TERMINAL_EVENT_TYPES``（result/interrupted/error/cancelled），
+    终态口径 = ``RUN_TERMINAL_EVENT_TYPES``（result/interrupted/error/cancelled/frozen-terminated/gate-blocked，以常量为准），
     复用框架单一真源，不另立集合。**superseded 不在终态集合内**——它是原地重试
     弃置旧产物文件的标记，run 在新 sub_run_id 文件继续，把其视为终结会造成原地
     重试退避窗口内的双派发。

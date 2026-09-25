@@ -141,11 +141,12 @@ export default function SpecDocModal({ project, spec, open, onClose, initialDoc 
   const cacheRef = useRef<Map<string, DocCacheEntry>>(new Map());
   const [cacheVersion, setCacheVersion] = useState(0);
 
-  // 当前 spec+doc 的缓存键
+  // 当前 project+spec+doc 的缓存键（含 project 维度：组件跨项目常驻挂载，cacheRef 存活，
+  // 不同项目的同名 spec 必须各自独立，避免互相串用文档内容）
   const cacheKey = useMemo(() => {
     if (!spec) return '';
-    return `${spec}:${activeTab}`;
-  }, [spec, activeTab]);
+    return `${project}:${spec}:${activeTab}`;
+  }, [project, spec, activeTab]);
 
   // 当前缓存条目
   const currentEntry = useMemo(() => {
@@ -155,7 +156,7 @@ export default function SpecDocModal({ project, spec, open, onClose, initialDoc 
 
   const loadDoc = useCallback(async () => {
     if (!spec) return;
-    const key = `${spec}:${activeTab}`;
+    const key = `${project}:${spec}:${activeTab}`;
 
     // 检查缓存：loading 表示该 key 已有在途请求，不重复加载
     const cached = cacheRef.current.get(key);
@@ -202,10 +203,10 @@ export default function SpecDocModal({ project, spec, open, onClose, initialDoc 
   // 重试加载
   const handleRetry = useCallback(() => {
     if (!spec) return;
-    const key = `${spec}:${activeTab}`;
+    const key = `${project}:${spec}:${activeTab}`;
     cacheRef.current.delete(key);
     void loadDoc();
-  }, [spec, activeTab, loadDoc]);
+  }, [project, spec, activeTab, loadDoc]);
 
   const renderContent = () => {
     if (!currentEntry) {

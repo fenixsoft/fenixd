@@ -521,6 +521,10 @@ class H11CodeReviewRoutesMixin:
             # 会做文件写入/git commit/lint，失败属预期而非异常态；裸 `{e}` 会把内部
             # 路径/栈信息透给 HTTP 客户端。与 _api_code_review_items_status 同款
             # 泛化文案（详情经服务端日志留痕）。
+            logger.warning(
+                "生成修复 SPEC 异常（item_ids=%s）: %s: %s",
+                item_ids, type(e).__name__, e
+            )
             self._error(500, "生成修复 SPEC 失败（详见服务端日志）")
             return
         if not result.get("ok"):
