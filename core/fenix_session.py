@@ -339,7 +339,10 @@ def start_daemon(root: str | None = None) -> dict:
     启动前清除陈旧 `.fenix/stop`（仅当 daemon 与 supervisor 均未在跑时删除，
     避免误删一次正在进行的停止操作留下的标记）。启动后轮询 `is_running`
     至多约 5 秒，命中再返回成功；窗口耗尽则经 `tmux has-session` 复核会话
-    存活——会话已退出（启动命令失败）返回 ok=False。
+    存活，并经 `list-panes` 校验会话确以 supervisor 命令启动——会话已退出
+    （启动命令失败）或会话内是同名残留的无关窗格，均返回 ok=False。
+    new-session 返回码非零（duplicate session 除外，维持既有「已存在」路径
+    语义落回轮询复核）同样直接返回 ok=False 并附 stderr，不静默忽略。
 
     返回: {"ok": bool, "error": str|None, "session": str|None, "already": bool}
     任何 subprocess/tmux 异常均返回 ok=False 的错误对象，不抛异常。
@@ -381,7 +384,7 @@ def start_daemon(root: str | None = None) -> dict:
         # 交给 shell 执行，裸拼路径含空格时被拆词致启动失败、含 ;/$/反引号等
         # 元字符时构成命令注入面（路径来源含 CLI 入参与调用方传参）。
         proot_q = shlex.quote(str(proot))
-        subprocess.run(
+        created = subprocess.run(
             [
                 "tmux",
                 "new-session",
@@ -394,6 +397,18 @@ def start_daemon(root: str | None = None) -> dict:
             text=True,
             timeout=15,
         )
+        # new-session 返回码校验（code-review item ed96126c1cdf）：非零说明会话
+        # 根本没建起来，静默吞掉会让后续轮询必败、收口 has-session 又只看「会话
+        # 存在」而可能撞上同名残留会话误报成功。duplicate session（同名会话已在，
+        # 如并发 start 竞态）维持既有「已存在」路径语义，落回下方轮询 + 复核；
+        # 其余失败（tmux server 异常等）直接 ok=False 并附 stderr。
+        if created.returncode != 0 and "duplicate session" not in (created.stderr or ""):
+            return {
+                "ok": False,
+                "error": f"tmux new-session 失败（rc={created.returncode}）: {(created.stderr or '').strip()}",
+                "session": session,
+                "already": False,
+            }
     except Exception as e:
         return {
             "ok": False,
@@ -426,6 +441,40 @@ def start_daemon(root: str | None = None) -> dict:
         return {
             "ok": False,
             "error": "daemon 启动探测超时且 tmux 会话已退出（启动命令可能失败），请查看 .fenix/logs/supervisor.log",
+            "session": session,
+            "already": False,
+        }
+    # 会话存活 ≠ 本命令在跑（code-review item ed96126c1cdf）：同名残留会话可能
+    # 装着无关窗格（如人工附着的交互 shell），只判「会话存在」会误报成功。经
+    # list-panes 校验窗格确以 supervisor 命令启动才维持宽容成功；列表为空
+    # （复核手段自身拿不到窗格信息）时维持既有宽容语义，不因校验失效改判失败。
+    try:
+        panes = subprocess.run(
+            ["tmux", "list-panes", "-t", session, "-F", "#{pane_start_command}"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except Exception as e:
+        return {
+            "ok": False,
+            "error": f"无法确认 daemon 会话内容（tmux 异常）: {e}，请查看 .fenix/logs/supervisor.log",
+            "session": session,
+            "already": False,
+        }
+    if panes.returncode != 0:
+        # 会话恰在 has-session 与 list-panes 之间退出——等同会话已消失
+        return {
+            "ok": False,
+            "error": "daemon 启动探测超时且 tmux 会话已退出（启动命令可能失败），请查看 .fenix/logs/supervisor.log",
+            "session": session,
+            "already": False,
+        }
+    start_cmds = [ln.strip() for ln in panes.stdout.splitlines() if ln.strip()]
+    if start_cmds and not any("fenixd_supervisor.py" in cmd for cmd in start_cmds):
+        return {
+            "ok": False,
+            "error": "daemon 启动探测超时且 tmux 会话内存活的不是 supervisor 命令（同名残留会话？），请查看 .fenix/logs/supervisor.log",
             "session": session,
             "already": False,
         }

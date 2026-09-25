@@ -119,6 +119,12 @@ def scan_server_routes(root: Path) -> tuple:
             route = m.group(1)
             if not route.startswith("/"):
                 continue
+            # TEXT 级只收 API 字面量：须在 /api/ 前缀下且非裸前缀守卫本身，
+            # 滤掉 _handle_inner 的静态派发（"/"、"/index.html"、"/screenshots/"）
+            # 与 "/api/" 守卫，防静态资源条目混入「API 路由」分节误导 planner
+            # 取证方向
+            if not route.startswith("/api/") or len(route) <= len("/api/"):
+                continue
             # 中性值：本级不做方法归属（与 docstring 一致），渲染时省略方法标签
             entries.append((route, _rel_line(f, root, i), "TEXT"))
     return entries, skipped

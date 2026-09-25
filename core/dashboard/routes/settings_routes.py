@@ -16,7 +16,7 @@ import yaml
 
 from core.dashboard import data as dashboard_data
 from core.dashboard.ocr_status import check_ocr_installed, install_ocr
-from core.admin_store import AdminStore, SIGNAL  # noqa: E402
+from core.admin_store import AdminStore, SIGNAL, evidence_project  # noqa: E402
 from core.agent_runner.prompt_builder import (
     AGENT_PROMPT_DIR,
     AGENT_PROMPT_FILES,
@@ -476,7 +476,7 @@ class H5SettingsRoutesMixin:
             # 文件缺失 / 解析失败（含异常摘要，OSError 一并归入）/
             # 内容无效（YAML 可解析但契约校验未通过，如顶层非映射、ready 段非法）。
             # 摘要 MUST 剔除 ";" 与换行——下游按 ";" 分段解析 evidence 的
-            # 「项目名=」字段（admin_monitor 摄取 / code_fix._evidence_project /
+            # 「项目名=」字段（admin_monitor 摄取 / admin_store.evidence_project /
             # 本端点 _is_inflight 均然），污染分隔符会破坏项目名提取与在途判重。
             cpath = proot / ".fenix" / "verify.yaml"
             if not cpath.is_file():
@@ -503,12 +503,8 @@ class H5SettingsRoutesMixin:
         # **前缀**时（`项目名=proj` 命中 `项目名=proj2; 覆盖确认=是`）会误判在途，
         # 端点回 dispatched 却不写信号——用户等一个永不会来的草稿。改写为按字段
         # 解析：取 `项目名=` 到下一个 `;` 之间的值做**全等**比较。
-        def _evidence_project(ev: str) -> str:
-            for seg in (ev or "").split(";"):
-                seg = seg.strip()
-                if seg.startswith("项目名="):
-                    return seg[len("项目名="):].strip()
-            return ""
+        # 「项目名=」字段解析单源：core.admin_store.evidence_project
+        # （原本地嵌套副本已收敛，mergeback / code_fix 同款）。
 
         def _is_inflight(r: dict) -> bool:
             return (
@@ -516,7 +512,7 @@ class H5SettingsRoutesMixin:
                 and r.get("signal_type") == signal_type
                 and not r.get("handled")
                 and not r.get("escalated")
-                and _evidence_project(r.get("evidence")) == project["name"]
+                and evidence_project(r.get("evidence")) == project["name"]
             )
 
         # 在途查重与写入在单次排他锁内完成（code-review item 0d7c2ef12e33）：

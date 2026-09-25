@@ -411,7 +411,7 @@ class G4MergebackMixin:
         try:
             if not self._artifacts.is_config_unresolved():
                 return
-            from core.admin_store import AdminStore, SIGNAL
+            from core.admin_store import AdminStore, SIGNAL, evidence_project
 
             project_name = self.project_root.name
             spec = self._spec_from_branch(branch)
@@ -420,13 +420,8 @@ class G4MergebackMixin:
                 evidence += f"; branch={branch}"
             store = AdminStore(self.project_root, self.logger)
 
-            def _evidence_project(ev: str) -> str:
-                # 取 `项目名=` 到下一个 `;` 之间的值（settings_routes 同款解析）
-                for seg in (ev or "").split(";"):
-                    seg = seg.strip()
-                    if seg.startswith("项目名="):
-                        return seg[len("项目名="):].strip()
-                return ""
+            # 「项目名=」字段解析单源：core.admin_store.evidence_project
+            # （原本地嵌套副本已收敛，settings_routes / code_fix 同款）。
 
             # 在途去重（照搬 settings_routes._api_verify_yaml_autodraft_post 的
             # inflight 判定范式：kind==SIGNAL 且未 handled 且 evidence 项目名
@@ -439,7 +434,7 @@ class G4MergebackMixin:
                 if r.get("kind") == SIGNAL
                 and r.get("signal_type") == "build_artifact_paths_missing"
                 and not r.get("handled")
-                and _evidence_project(r.get("evidence")) == project_name
+                and evidence_project(r.get("evidence")) == project_name
             ]
             if inflight:
                 return

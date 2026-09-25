@@ -73,7 +73,7 @@ def read_evolution_items(project_root, project_filter=None) -> list:
                 "decided_at": rec.get("decided_at"),
             }
         )
-    out.sort(key=lambda x: (x.get("created_at") or ""), reverse=True)
+    out.sort(key=lambda x: (str(x.get("created_at") or "")), reverse=True)
     return out
 
 

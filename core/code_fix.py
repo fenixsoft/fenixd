@@ -1375,25 +1375,13 @@ def _salvage_commit(worktree, message: str) -> bool:
 
 # ── 回归契约缺失信号（5.5 / D5，分流口径对齐 regression_routes 既有区分）──
 
-
-def _evidence_project(evidence: str) -> str:
-    """从 evidence 串（``项目名=<name>; ...``）按字段解析项目名，全等比较用。
-
-    与 regression_routes/settings_routes 的同名 helper 同口径：evidence 的
-    生产点格式不一（dashboard 侧可能只有裸 ``项目名=<name>`` 无尾随分隔符），
-    不能靠带分隔符的子串匹配；项目名互为前缀时（``web`` 与 ``webapp``）
-    也不得互撞（code-review item 29958284895a）。
-    """
-    for seg in (evidence or "").split(";"):
-        seg = seg.strip()
-        if seg.startswith("项目名="):
-            return seg[len("项目名="):].strip()
-    return ""
+# 「项目名=」字段解析单源：core.admin_store.evidence_project
+# （原模块级 `_evidence_project` 副本已收敛，mergeback / settings_routes 同款）。
 
 
 def _signal_inflight(store, signal_type: str, project_name: str) -> bool:
     """同项目同类型、未摄取未处置的在途信号已存在 → 不重复写。"""
-    from core.admin_store import SIGNAL
+    from core.admin_store import SIGNAL, evidence_project
 
     for rec in store.read_all():
         if rec.get("kind") != SIGNAL or rec.get("signal_type") != signal_type:
@@ -1402,7 +1390,7 @@ def _signal_inflight(store, signal_type: str, project_name: str) -> bool:
             continue
         # 项目名按字段全等比较而非裸子串：``项目名=web`` 不得命中
         # ``项目名=webapp``（前缀关系项目名互判在途 → 新信号被静默跳写）。
-        if _evidence_project(str(rec.get("evidence") or "")) == project_name:
+        if evidence_project(str(rec.get("evidence") or "")) == project_name:
             return True
     return False
 

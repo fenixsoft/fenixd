@@ -231,22 +231,8 @@ class EventBus:
                 # 级别偏离登记：_recover_ready 同类跳过现为 info，本处取
                 # debug 是为避免每个定时 SPEC 每 60s 一条噪音；_recover_ready 保持
                 # 不动（Non-Goals，本 SPEC 不顺带改）。
-                try:
-                    from core.state_machine import start_after_blocks_promotion
-
-                    if start_after_blocks_promotion(entry, self.config):
-                        self.logger.debug(
-                            "event_bus",
-                            f"Recovery: skip '{name}' — start_after scheduled pickup "
-                            f"pending（drafted）",
-                        )
-                        return True
-                except Exception as e:
-                    # fail-open：无法判定时不阻塞既有恢复路径，记日志（2.3）
-                    self.logger.warning(
-                        "event_bus",
-                        f"start_after 判定异常 '{name}'（fail-open 放行）: {e}",
-                    )
+                if self._start_after_blocks(name, entry, "drafted"):
+                    return True
                 self.logger.info("event_bus", f"Recovery: re-triggering promote for '{name}'")
                 self.pm_engine.handle_event("spec_drafted", name, entry)
             elif status == "reviewing":
@@ -254,22 +240,8 @@ class EventBus:
                 # scope 条件约束），措辞复用 _recover_ready 既有串 + 分支后缀，
                 # debug 级，MUST NOT 打「re-triggering spec_reviewing」日志、
                 # 不写 STATE。
-                try:
-                    from core.state_machine import start_after_blocks_promotion
-
-                    if start_after_blocks_promotion(entry, self.config):
-                        self.logger.debug(
-                            "event_bus",
-                            f"Recovery: skip '{name}' — start_after scheduled pickup "
-                            f"pending（reviewing）",
-                        )
-                        return True
-                except Exception as e:
-                    # fail-open：无法判定时不阻塞既有恢复路径，记日志（2.3）
-                    self.logger.warning(
-                        "event_bus",
-                        f"start_after 判定异常 '{name}'（fail-open 放行）: {e}",
-                    )
+                if self._start_after_blocks(name, entry, "reviewing"):
+                    return True
                 self.logger.info(
                     "event_bus", f"Recovery: re-triggering spec_reviewing for '{name}'"
                 )
@@ -324,6 +296,32 @@ class EventBus:
                 f"Recovery failed for spec '{name}': {type(e).__name__}: {e}",
             )
             return False
+
+    def _start_after_blocks(self, name: str, entry: dict, status_label: str) -> bool:
+        """start_after 定时拾取早退判定（_recover_one drafted/reviewing 单点共用）。
+
+        惰导入 ``start_after_blocks_promotion``（导入失败同样 fail-open）→ 命中
+        记 debug 级跳过日志（含状态标签后缀）并返回 True（调用方早退、计入
+        handled）；判定异常记 warning 后返回 False（调用方继续既有恢复路径）。
+        返回 True 表示「须早退」。
+        """
+        try:
+            from core.state_machine import start_after_blocks_promotion
+
+            if start_after_blocks_promotion(entry, self.config):
+                self.logger.debug(
+                    "event_bus",
+                    f"Recovery: skip '{name}' — start_after scheduled pickup "
+                    f"pending（{status_label}）",
+                )
+                return True
+        except Exception as e:
+            # fail-open：无法判定时不阻塞既有恢复路径，记日志（2.3）
+            self.logger.warning(
+                "event_bus",
+                f"start_after 判定异常 '{name}'（fail-open 放行）: {e}",
+            )
+        return False
 
     def _recover_testing(self, name: str, entry: dict):
         """testing 无驱动恢复出口（add-control-plane-silent-failure-guards 4.3）。

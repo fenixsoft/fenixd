@@ -202,7 +202,7 @@ export default function SystemPanel({ config, onSave, project, onConfigSynced }:
 
   const admin = config.admin ?? {};
   // 瞬断治理（fix-provider-transient-backoff D6）：agents.transient_* 五键
-  const transient = config.agents ?? {};
+  const agentsSection = config.agents ?? {};
 
   // 自省字段（self_review.*）已拆至独立「自省」页签（SelfReviewPanel）
   const initialValues = {
@@ -213,11 +213,11 @@ export default function SystemPanel({ config, onSave, project, onConfigSynced }:
     shutdown_drain_seconds: admin.shutdown_drain_seconds ?? 1800,
     bug_repair_mode: admin.bug_repair_mode ?? 'inplace',
     stuck_silence_minutes: admin.stuck_silence_minutes ?? 120,
-    transient_backoff_schedule: transient.transient_backoff_schedule ?? '30,60,120',
-    transient_redispatch_delay_seconds: transient.transient_redispatch_delay_seconds ?? 600,
-    transient_break_threshold: transient.transient_break_threshold ?? 3,
-    transient_break_window_seconds: transient.transient_break_window_seconds ?? 600,
-    transient_break_cooldown_seconds: transient.transient_break_cooldown_seconds ?? 600,
+    transient_backoff_schedule: agentsSection.transient_backoff_schedule ?? '30,60,120',
+    transient_redispatch_delay_seconds: agentsSection.transient_redispatch_delay_seconds ?? 600,
+    transient_break_threshold: agentsSection.transient_break_threshold ?? 3,
+    transient_break_window_seconds: agentsSection.transient_break_window_seconds ?? 600,
+    transient_break_cooldown_seconds: agentsSection.transient_break_cooldown_seconds ?? 600,
   };
 
   useEffect(() => {
