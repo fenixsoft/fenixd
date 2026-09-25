@@ -961,9 +961,10 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
             if _tk in patch["agents"]:
                 merged["agents"][_tk] = patch["agents"][_tk]
         # fix-agent-lane-efficiency D1：子代理模型覆盖合并分支。
-        # 非空字符串覆盖、空串视为"未配置"（保留原值）——与 read_config 回显语义
-        # （空串 = 使用 provider model）一致：用户在 UI 保存空串意为"用 provider
-        # 默认值"，清空此前的覆盖。
+        # 非空字符串覆盖、空串显式写回空值（语义 = 清除覆盖、回落 provider
+        # model，磁盘原值会被覆盖）——与 read_config 回显语义（空串 = 使用
+        # provider model）一致：用户在 UI 保存空串意为"用 provider 默认值"，
+        # 清空此前的覆盖。
         _sro = patch["agents"].get("subagent_model_override")
         if isinstance(_sro, str):
             merged["agents"]["subagent_model_override"] = _sro.strip()

@@ -12,6 +12,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import time
+import traceback
 
 from pathlib import Path
 from typing import Optional
@@ -699,7 +700,12 @@ class G4MergebackMixin:
                 break
             if line.startswith("CONFLICT"):
                 break
-            paths.append(line.strip())
+            # 与同文件其余 git 文本输出解析（_detect_wip_overlap /
+            # _backup_untracked_spec_files）同口径反转义 quotePath 转义形：
+            # 非 ASCII 冲突路径残留带引号八进制转义形时，_artifacts.is_artifact
+            # 与 _rehearsed_path_is_ignored_du（check-ignore）拿到的是转义字面量，
+            # 判定必然失真，被忽略草稿会被误判为语义冲突直通 repair。
+            paths.append(_unquote_git_path(line.strip()))
         return [p for p in paths if p]
 
     def _rehearsed_path_is_ignored_du(self, path: str) -> bool:
@@ -986,6 +992,16 @@ class G4MergebackMixin:
                 )
             return MergeConflictInfo(False, timeout_error)
         except Exception as e:
+            # 兜底可见性（code-review item afad828153e2）：本方法其余失败路径
+            # （merge 失败、abort 失败、超时）都落日志，唯独这里原样静默——进入
+            # 该兜底意味着 try 块内非 subprocess 的意外异常（如
+            # _rebuild_dist_after_merge、_drop_backup 抛错），事后只能靠 str(e)
+            # 盲猜。返回前记录 branch 与堆栈，与其余失败路径可观测性口径一致。
+            self.logger.error(
+                "worktree_manager",
+                f"Unexpected error during merge-back of branch '{branch}': "
+                f"{e}\n{traceback.format_exc()}",
+            )
             return MergeConflictInfo(False, str(e))
 
     def _backup_untracked_spec_files(self, branch: str):

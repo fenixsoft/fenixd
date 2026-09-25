@@ -94,6 +94,7 @@ class FileWatcher:
         self._last_summaries = {}  # project path -> {spec_name: summary dict}（增量 diff 基线）
         self._run_base = {}  # (project path, run_id) -> {"size": int, "status": str}
         self._log_sigs = {}  # project path -> {log_path: (mtime_ns, size)}
+        self._proj_scan_warn = {}  # project -> 上次扫描失败告警时刻（monotonic 秒，5 分钟节流）
 
     # ── 生命周期 ─────────────────────────────────────────────
 
@@ -150,7 +151,17 @@ class FileWatcher:
                 continue
             try:
                 self._scan_project(proj["name"], Path(proj["path"]))
-            except Exception:
+            except Exception as e:  # 单项目失败不拖垮整轮；低频节流告警（同 _loop 5 分钟纪律）
+                now = time.monotonic()
+                key = proj.get("path") or proj["name"]
+                if now - self._proj_scan_warn.get(key, 0.0) >= 300:
+                    self._proj_scan_warn[key] = now
+                    logger.warning(
+                        "dashboard watcher 扫描项目 %s 失败: %s: %s",
+                        proj["name"],
+                        type(e).__name__,
+                        e,
+                    )
                 continue
         # 项目集变化后剔除消失项目的缓存（长驻进程防无界累积）
         self._prune_stale_caches(projects)

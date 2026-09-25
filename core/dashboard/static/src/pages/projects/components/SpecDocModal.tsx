@@ -47,7 +47,24 @@ const SafeLink: Components['a'] = ({ href, children, ...props }) => {
     return <span>{children}</span>;
   }
 
-  // 页内锚点：直接渲染锚点链接（无外部协议风险，不新开窗口）
+  // 页内锚点（#xxx，排除 SPA 路由 #/ 与裸 #）：拦截原生跳转，改为滚动定位到目标元素（不存在则不动作）。
+  // 本应用基于 hash 路由，原生跳转会把 location.hash 从 #/... 改写成 #xxx，被路由当作路径变更导致当前页面被切走
+  if (href.startsWith('#') && !href.startsWith('#/') && href.length > 1) {
+    return (
+      <a
+        href={href}
+        onClick={(e) => {
+          e.preventDefault();
+          document.getElementById(href.slice(1))?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }}
+        {...props}
+      >
+        {children}
+      </a>
+    );
+  }
+
+  // SPA 路由链接（#/）与裸 #：保持原生跳转
   if (href.startsWith('#')) {
     return (
       <a href={href} {...props}>

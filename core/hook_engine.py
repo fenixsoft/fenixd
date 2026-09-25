@@ -75,7 +75,7 @@ HOOK_ACTIONS = (
     "shell",
 )
 
-# 订阅事件类型 = 十状态枚举 + 项目级伪事件 all-done
+# 订阅事件类型 = 全部状态枚举（SpecStatus.ALL）+ 项目级伪事件 all-done
 VALID_EVENTS = tuple(SpecStatus.ALL) + (HOOK_EVENT_ALL_DONE,)
 
 # 超时缺省（D4：shell 缺省 60，webhook 缺省 10）
@@ -174,7 +174,7 @@ def validate_hook_entry(entry: Any) -> Optional[str]:
 
     规则：
     - 必须为 dict；
-    - events 非空列表，取值 ∈ 十状态枚举；
+    - events 非空列表，取值 ∈ 全部状态枚举（SpecStatus.ALL）；
     - action ∈ 七枚举；
     - action=webhook 必须 url 非空字符串；
     - action=shell 必须 command 非空字符串。
@@ -185,7 +185,7 @@ def validate_hook_entry(entry: Any) -> Optional[str]:
         return "hook 条目必须为对象"
     events = entry.get("events")
     if not isinstance(events, list) or not events:
-        return "events 必须为非空数组（订阅的事件类型，取十状态枚举值）"
+        return "events 必须为非空数组（订阅的事件类型，取值为全部状态枚举 SpecStatus.ALL 之一）"
     for ev in events:
         if ev not in VALID_EVENTS:
             return f"events 含非法事件类型: {ev!r}（应为 {list(VALID_EVENTS)} 之一）"

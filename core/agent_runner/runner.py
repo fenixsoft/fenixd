@@ -379,7 +379,8 @@ class _AttemptState:
     provider_name: Optional[str] = None
     # 当前模型名
     model: Optional[str] = None
-    # 实例级链指针（design D1：cursor 按 agent_type 记忆）。-1 表示尚未选定
+    # run 级链指针（design D1）：仅本次 run 的 attempt 间记忆切换进度，跨 run
+    # 由 _select_chain_candidate 重新选点。-1 表示尚未选定
     chain_cursor: int = -1
     # session_id 所属 provider（None=默认网关）
     session_id: Optional[str] = None
@@ -1930,7 +1931,8 @@ class AgentRunner:
 
         add-provider-failover（design D1/D2/D3/D4/D5）：
         - 该 agent_type 的 provider 分配为**按序候选链**；每次 attempt 启动前用
-          _select_chain_candidate 选首个未冷却候选（链指针按 agent_type 记忆于本实例）。
+          _select_chain_candidate 选首个未冷却候选（链指针为 run 级：仅本次 run
+          的 attempt 间记忆切换进度，跨 run 由 _select_chain_candidate 重新选点）。
         - 切换类错误（classify_switch_error）失败 → 该 provider 进入 switch 短冷却，同 run
           后续 attempt 自动前进到下一候选；仅当 provider 未变时才 --resume 原会话
           （fix 跨 provider resume：session 在旧 CLAUDE_CONFIG_DIR，切换后续跑必然

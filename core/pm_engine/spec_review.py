@@ -65,9 +65,6 @@ def _parse_porcelain_path(line: str) -> Optional[str]:
 # 非 spec 内容问题。指纹匹配大小写不敏感；"Exit code: 1" 不得一律判 infra
 # （评审器内容失败同样 exit 1），仅当退出码非 0/1（进程级崩溃）才归 infra。
 _INFRA_FINGERPRINTS = (
-    "403",
-    "402",
-    "429",
     "quota",
     "budget",
     "余额",
@@ -77,6 +74,13 @@ _INFRA_FINGERPRINTS = (
     "provider chain exhausted",
     "model_chain_preflight_failed",
 )
+# 数字类指纹（402/403/429）不做裸子串匹配（code-review item b4ce03fd99c4）：
+# 失败原因文本任意位置出现这些数字（如路径 …-1403.md、行号 "line 4290"、
+# exit code 14029）都会被误判 infra——不递增 _review_attempts、计入熔断计数，
+# 真实 content 失败的重试预算被悄悄跳过。收紧为「两侧不邻接数字」边界：
+# 仅当数字串独立（"HTTP 429"、"Error 403"、"402 余额不足"、"错误403"）才归
+# infra。不用 \b——\b 视 CJK 为 word 字符，会漏掉中文紧邻数字的真实指纹。
+_NUMERIC_INFRA_RE = re.compile(r"(?<!\d)(?:402|403|429)(?!\d)")
 # CLI 进程级崩溃：error 含 "Exit code: <N>" 且 N 非 0/1
 _CLI_EXIT_CODE_RE = re.compile(r"Exit code:\s*(-?\d+)")
 
@@ -295,8 +299,9 @@ class SpecReviewManager:
             # 评审 run 因 spec 冻结被终止（frozen_terminated=True）：写
             # _frozen_hold 标记、保持 reviewing、不重派、不递增 _review_attempts、
             # 不触发熔断。MUST NOT 走 _classify_run_failure 的 content/infra
-            # 分支（_INFRA_FINGERPRINTS 含 "429"/"rate limit" 等指纹，评审 run
-            # 的限流/配额类失败重试会被误判 infra 而递增计数/熔断）。
+            # 分支（_INFRA_FINGERPRINTS 含 "rate limit" 等指纹、数字指纹
+            # 402/403/429 同归 infra，评审 run 的限流/配额类失败重试会被误判
+            # infra 而递增计数/熔断）。
             # 判定用 `is True` 严格等值（修复验证轮 BUG）：MagicMock 等替身
             # 在属性访问时自动生成 truthy 子对象，`if getattr(...)` 裸布尔会把
             # 非冻结的替身结果误判为冻结终止、跳过重试递增——生产结果
@@ -462,8 +467,15 @@ class SpecReviewManager:
                     "error": None,
                 },
             )
-            # 触发实现调度
-            self.pm_engine._on_spec_ready(spec_name)
+            # 触发实现调度（pm_engine None 守卫，code-review item b110838b85e0）：
+            # 与 rejected 分支（:541）及 responsible_release（:1139）同款——CLI 与
+            # Dashboard 均以 SpecReviewManager(proot, sm, None, None, {}, logger)
+            # 构造（bin/fenix_cli.py cmd_review、core/dashboard/data/admin_actions.py
+            # re_review_spec），缺守卫会在状态已转 ready 后抛 AttributeError，调用方
+            # 拿不到结果而状态已变更。此处按 None 跳过派发（状态已在 ready，由
+            # daemon full_scan recovery 兜底拾取）。
+            if self.pm_engine is not None:
+                self.pm_engine._on_spec_ready(spec_name)
             self.logger.info("spec_review", f"评审通过: {spec_name} status={status}")
             return True
         elif status == "rejected":
@@ -932,6 +944,10 @@ class SpecReviewManager:
         for fp in _INFRA_FINGERPRINTS:
             if fp in low:
                 return "infra"
+        # 数字类指纹（402/403/429）：词边界匹配，防任意数字串误判 infra
+        # （见 _NUMERIC_INFRA_RE 注释，code-review item b4ce03fd99c4）。
+        if _NUMERIC_INFRA_RE.search(low):
+            return "infra"
         # CLI 进程级崩溃：exit code 非 0/1（0 正常 / 1 内容失败）
         m = _CLI_EXIT_CODE_RE.search(reason or "")
         if m:

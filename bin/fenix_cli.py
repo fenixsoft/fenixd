@@ -194,7 +194,7 @@ def main():
 
     p_promote = subparsers.add_parser(
         "promote",
-        help="晋升 drafted SPEC → ready（软化+lint+transition）",
+        help="晋升 drafted SPEC → ready/reviewing（按评审判定分流，软化+lint+transition）",
     )
     p_promote.add_argument("spec", help="要晋升的 SPEC 名称")
     p_promote.add_argument(

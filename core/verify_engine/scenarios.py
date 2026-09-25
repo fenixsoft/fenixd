@@ -469,11 +469,15 @@ ASSERTION_LAYERS = {
 }
 
 # 需要选择器的断言类型（web 语义；CLI/API 断言不含 selector 概念）
+# dom_structure 不在此列：执行器 _assert_dom_structure 只消费 parent/child
+# 字段、从不读 selector，其必填规则由 ASSERTION_REQUIRED_FIELDS 单源表登记
+# （code-review item b7b59e47a089）。
 ASSERTIONS_REQUIRING_SELECTOR = VALID_ASSERTIONS - {
     "text_contains",
     "no_console_error",
     "no_network_error",
     "no_auth_error",
+    "dom_structure",
 }
 
 # 需要target选择器的操作（web 语义；mock_api 的 target 为 URL 模式，seed 为 localStorage 键）
@@ -637,6 +641,26 @@ ASSERTION_REQUIRED_FIELDS: dict = {
             "help": "毫秒上限",
             "example": "500",
             "mode": "include_zero",
+        },
+    ),
+    # ── web 断言 ──
+    # parent/child 均无兜底：执行器以空选择器拼 locator 会在运行期以笼统的
+    # 「断言执行异常」失败，故双必填（mode=post）；relation 有默认值
+    # "contains"，不登记。
+    "dom_structure": (
+        {
+            "key": "extra.parent",
+            "short": "parent",
+            "help": "父元素CSS选择器",
+            "example": '"#list"',
+            "mode": "post",
+        },
+        {
+            "key": "extra.child",
+            "short": "child",
+            "help": "子元素CSS选择器",
+            "example": '".item"',
+            "mode": "post",
         },
     ),
 }
@@ -1042,6 +1066,16 @@ def _validate_web(scenario: TestScenario) -> list[str]:
             )
         if a.type in ASSERTIONS_REQUIRING_SELECTOR and not a.selector:
             errors.append(f"场景'{scenario.id}'断言{i}: 类型 '{a.type}' 需要 selector")
+        # web 断言必填字段与 cli/api 同源：查 ASSERTION_REQUIRED_FIELDS 单源表
+        # （dom_structure 的 parent/child 必填，code-review item b7b59e47a089）。
+        specs = ASSERTION_REQUIRED_FIELDS.get(a.type, ())
+        _append_required_field_errors(
+            errors,
+            scenario.id,
+            f"断言{i}: {a.type} 需要",
+            specs,
+            lambda key, a=a: _assert_lookup_value(a, key),
+        )
 
     # navigate URL 验收（2026-08-28：相对路径导致浏览器白屏、整轮断言全灭）
     nav_steps = [s for s in scenario.steps if s.action == "navigate"]
