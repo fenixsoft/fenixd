@@ -39,7 +39,17 @@ import time
 import uuid
 from pathlib import Path
 
-from core.code_review import mark_ignored, mark_resolved, read_items
+from core.code_review import (  # noqa: F401
+    _atomic_write,
+    _now_iso,
+    _read_items_unlocked,
+    _with_lock,
+    fingerprint,
+    items_path,
+    mark_ignored,
+    mark_resolved,
+    read_items,
+)
 from core.config import ConfigLoader
 from core.verify_contract import load_verify_contract
 
@@ -815,6 +825,229 @@ def count_open_items(project_root) -> int:
         for rec in items.values()
         if isinstance(rec, dict) and rec.get("status") == "open"
     )
+
+
+# ── 回归快照→台账 findings 转换与复发重开（add-regression-auto-fix 1.1/1.2）──
+#
+# 消费端（fenixd._check_regression_fix_requests）把最近一次回归快照
+# （core/regression.py 单快照 .fenix/regression/last-run.json）的问题列表
+# 转换为 code-fix 台账条目（upsert_findings，category 以 ``regression-`` 为
+# 前缀隔离标识）。纯函数化便于单测，不触碰既有批派/验证/合并路径。
+
+# 回归来源条目的 category 前缀（重开语义的唯一作用域标识）
+REGRESSION_CATEGORY_PREFIX = "regression-"
+
+# 整体超时条目的 file 锚点（design D4）：upsert_findings 跳过无 file 的发现，
+# 而整体超时无逐用例定位；超时处置的真实入口恰是回归硬超时的声明落点
+# verify.yaml（先查套件性能，确属超时配置不合理才调声明），以真实存在文件
+# 为锚点而非伪造用例路径。
+REGRESSION_TIMEOUT_FILE = ".fenix/verify.yaml"
+
+# description 内动态文本（失败 message / 超时 reason / 输出摘要）截断上限
+_REGRESSION_EXCERPT_LIMIT = 500
+
+
+def _regression_excerpt(value, limit: int = _REGRESSION_EXCERPT_LIMIT) -> str:
+    """动态文本截断（None 安全）：超限截断加省略号，保持纯函数可单测。"""
+    text = value if isinstance(value, str) else ("" if value is None else str(value))
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "…"
+
+
+def _regression_time_text(value) -> str:
+    """耗时展示文本：整数耗时不带小数（42.0 → "42s"，42.3 → "42.3s"）。"""
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return "未知"
+    if num.is_integer():
+        return f"{int(num)}s"
+    return f"{round(num, 2)}s"
+
+
+# suggestion 按类目固化文案（单源，spec「长耗时修复语义固化」Requirement）：
+# long 类 MUST 含「不改变测试通过结果」前提与优化手段建议——文案随批派
+# 注入修复 Agent，是该约束的唯一落点。
+REGRESSION_SUGGESTIONS = {
+    "regression-failure": (
+        "定位该用例失败原因并修复：优先修被测实现，确属测试代码缺陷（断言过期、"
+        "夹具失效等）可修测试本身；MUST NOT 以删除/跳过用例的方式掩盖失败。"
+    ),
+    "regression-error": (
+        "定位该用例报错原因并修复：优先修被测实现，确属测试代码缺陷（导入错误、"
+        "夹具失效等）可修测试本身；MUST NOT 以删除/跳过用例的方式掩盖错误。"
+    ),
+    "regression-long-test": (
+        "以不改变测试通过结果为前提优化该用例耗时：允许优化被测实现或测试代码"
+        "本身（去冗余 sleep、修慢 fixture、并发化等）；MUST NOT 使原测试由通过"
+        "变为失败（批验证回归重跑会复核）。"
+    ),
+}
+
+# 整体超时条目 suggestion（design D4 风险对冲：防修复 Agent 误读为「改配置
+# 了事」——先查套件性能，确属超时配置不合理才调声明）
+_REGRESSION_TIMEOUT_SUGGESTION = (
+    "整体超时处置指引：先排查套件性能问题（慢用例/慢 fixture/可并发化/串行"
+    "浪费），按 failure/long-test 思路修复慢的根源；确属回归硬超时声明不合理"
+    "（套件本就长于 timeout_seconds 且无性能问题）才调整 .fenix/verify.yaml "
+    "的 regression timeout_seconds；MUST NOT 以单纯放宽超时掩盖性能退化。"
+)
+
+
+def convert_regression_snapshot_to_findings(snapshot, output_excerpt: str = "") -> list:
+    """回归快照 → code-fix 台账 findings 列表（纯函数，add-regression-auto-fix 1.1）。
+
+    映射固化（spec「daemon 消费信号并转换为台账条目」Requirement）：
+    - failures 逐条：kind=failure → category ``regression-failure``；
+      kind=error → ``regression-error``；severity 均为 high；title 取用例名；
+      description 携带分类、耗时与失败 message（截断 500 字）。
+    - long_tests 逐条：category ``regression-long-test``、severity medium。
+    - status=timeout：追加单条 ``regression-timeout``（severity high，file 固定
+      ``.fenix/verify.yaml``，title「回归整体超时」），description 携带 reason 与
+      输出摘要（``output_excerpt`` 由消费端预读快照 output 字段指向的日志文件
+      尾部传入，读取失败置空；函数内截断 500 字）。
+
+    输入容错：snapshot 缺失/非 dict/字段缺失不抛异常，返回空列表（消费端
+    以当下快照为准，转换零条目时仍可继续走 checkpoint 既有守卫）。
+    """
+    findings: list = []
+    if not isinstance(snapshot, dict):
+        return findings
+
+    failures = snapshot.get("failures")
+    if isinstance(failures, list):
+        for item in failures:
+            if not isinstance(item, dict):
+                continue
+            kind = str(item.get("kind") or "failure")
+            category = (
+                f"{REGRESSION_CATEGORY_PREFIX}error"
+                if kind == "error"
+                else f"{REGRESSION_CATEGORY_PREFIX}failure"
+            )
+            name = str(item.get("name") or "").strip() or "unnamed"
+            desc = (
+                f"回归失败用例（{category}），耗时 {_regression_time_text(item.get('time'))}；"
+                f"信息：{_regression_excerpt(item.get('message'))}"
+            )
+            findings.append({
+                "file": str(item.get("file") or ""),
+                "line": item.get("line"),
+                "severity": "high",
+                "category": category,
+                "title": name,
+                "description": desc,
+                "suggestion": REGRESSION_SUGGESTIONS.get(
+                    category, REGRESSION_SUGGESTIONS["regression-failure"]
+                ),
+                "evidence": "",
+            })
+
+    long_tests = snapshot.get("long_tests")
+    if isinstance(long_tests, list):
+        for item in long_tests:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "").strip() or "unnamed"
+            time_text = _regression_time_text(item.get("time"))
+            findings.append({
+                "file": str(item.get("file") or ""),
+                "line": item.get("line"),
+                "severity": "medium",
+                "category": f"{REGRESSION_CATEGORY_PREFIX}long-test",
+                "title": name,
+                "description": (
+                    f"长耗时用例（{REGRESSION_CATEGORY_PREFIX}long-test），"
+                    f"耗时 {time_text}，超出回归长耗时阈值"
+                ),
+                "suggestion": REGRESSION_SUGGESTIONS["regression-long-test"],
+                "evidence": "",
+            })
+
+    if str(snapshot.get("status") or "") == "timeout":
+        desc = (
+            "回归整体超时（未完成，无逐用例定位）；原因："
+            + (_regression_excerpt(snapshot.get("reason")) or "未提供")
+        )
+        excerpt = _regression_excerpt(output_excerpt)
+        if excerpt:
+            desc += f"；输出摘要：{excerpt}"
+        findings.append({
+            "file": REGRESSION_TIMEOUT_FILE,
+            "line": 1,
+            "severity": "high",
+            "category": f"{REGRESSION_CATEGORY_PREFIX}timeout",
+            "title": "回归整体超时",
+            "description": desc,
+            "suggestion": _REGRESSION_TIMEOUT_SUGGESTION,
+            "evidence": "",
+        })
+
+    return findings
+
+
+def regression_findings_fingerprints(findings: list) -> set:
+    """转换产物的指纹集合（重开语义的 live 集合；无 file/title 的条目跳过，
+    与 upsert_findings 的关键字段硬规则同口径）。"""
+    out: set = set()
+    for finding in findings or []:
+        if not isinstance(finding, dict):
+            continue
+        file_ = str(finding.get("file") or "")
+        title = str(finding.get("title") or "")
+        category = str(finding.get("category") or "")
+        if not file_ or not title:
+            continue
+        out.add(fingerprint(file_, category, title))
+    return out
+
+
+def reopen_regression_items(project_root, live_fps) -> int:
+    """重开复发的回归条目（add-regression-auto-fix 1.2）。
+
+    仅 category 以 ``regression-`` 为前缀、fingerprint 命中 ``live_fps``
+    （本次快照问题集指纹）且 status 非 open 的条目：status 重开为 open 并
+    刷新 first_seen_at——保证同问题复发可再次触发修复（否则链会以
+    no_open_items 拒绝、按钮一次性失效）。
+
+    非 ``regression-`` 前缀条目（code-review 来源）零触碰，即使 file/title
+    恰好同名（fingerprint 只在回归前缀子集内比对）。
+
+    读-改-写 + flock 与台账写同锁（``_with_lock``；锁内 MUST NOT 再次加
+    同一把锁）。Returns: 重开条目数。
+    """
+    fps = {fp for fp in (live_fps or ()) if isinstance(fp, str) and fp}
+    if not fps:
+        return 0
+    now = _now_iso()
+    path = items_path(project_root)
+    reopened = 0
+
+    def _do() -> None:
+        nonlocal reopened
+        current = _read_items_unlocked(path)
+        changed = False
+        for rec in current.values():
+            if not str(rec.get("category") or "").startswith(REGRESSION_CATEGORY_PREFIX):
+                continue
+            if rec.get("status") == "open":
+                continue
+            if rec.get("fingerprint") not in fps:
+                continue
+            rec["status"] = "open"
+            rec["first_seen_at"] = now
+            rec["last_seen_at"] = now
+            reopened += 1
+            changed = True
+        if changed:
+            content = "".join(
+                json.dumps(current[k], ensure_ascii=False) + "\n" for k in sorted(current)
+            )
+            _atomic_write(path, content)
+
+    _with_lock(path, _do)
+    return reopened
 
 
 # ── 产物解析（编排侧读 out 文件；与 run_code_fix 的写入口径一致）────────

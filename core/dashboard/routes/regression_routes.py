@@ -1,10 +1,12 @@
 """regression_routes.py — 全量回归 (test-regression-tab) routes（add-test-regression-tab）。
 
-承载 4 个端点：
+承载 6 个端点：
 - GET  /api/regression/result    （query project）→ 最近一次回归快照
 - GET  /api/regression/config    （query project）→ verify.yaml regression 段配置状态
 - POST /api/regression/run       （query project）→ 写手动触发信号
 - POST /api/regression/autodraft （query project）→ 同步 AI 生成 regression 段
+- POST /api/regression/fix       （query project）→ 写回归问题自动修复触发信号（add-regression-auto-fix）
+- GET  /api/regression/fix-result（query project）→ 只读修复触发判定结果（add-regression-auto-fix）
 
 端点 handler 走既有 mixin 形态（self._json / self._error）。两个 POST 端点的
 项目均从 query string 解析，不消费请求体（code-review item 6e9597e51e90：
@@ -38,6 +40,13 @@ from core.dashboard import data as dashboard_data
 # 与 code_review_request / approve_push_request 同属「dashboard 原子写 →
 # daemon 主循环消费」文件信号族。
 REGRESSION_REQUEST = ".fenix/regression_request.json"
+
+# 回归自动修复信号/结果文件（add-regression-auto-fix，daemon 主循环经
+# fenixd._check_regression_fix_requests 消费/回写）。与 code_fix_request /
+# code_fix_request_result 完全同构（design D2）：POST fix 只写信号，
+# MUST NOT 在 HTTP 线程内同步转换/投递；结果文件由消费端原子写回。
+REGRESSION_FIX_REQUEST = ".fenix/regression_fix_request.json"
+REGRESSION_FIX_REQUEST_RESULT = ".fenix/regression_fix_request_result.json"
 
 # 同步生成的服务端预算（秒）。起草含「按 cmd 跑一次全量回归」的自证步
 # （fenix_verify_contract.py regression 行），大套件可到十分钟级——给足
@@ -321,6 +330,125 @@ class H12RegressionRoutesMixin:
             if f is not None:
                 f.close()
         self._json({"ok": True, "requested_at": created})
+
+    def _api_regression_fix(self, query):
+        """POST /api/regression/fix — query project（add-regression-auto-fix 2.1）
+
+        手动「自动修复回归问题」：校验最近一次回归快照存在且问题列表非空后，
+        写 ``.fenix/regression_fix_request.json`` 文件信号 → daemon 主循环消费
+        （``fenixd._check_regression_fix_requests`` 读快照转换为 code-fix 台账
+        条目并以 ``override_enabled=True`` 投递）。MUST NOT 在 HTTP 线程内
+        同步转换/投递。
+
+        校验失败以稳定错误码拒绝、不写信号（前端控制流按 code 分支）：
+        - 项目不存在 → 404
+        - 快照缺失/从未执行/parse_error 损坏 → 400 ``regression_never_run``
+          （parse_error 快照无 failures 键，不落 no_issues 以免误导）
+        - 快照可读但无异常（failures 与 long_tests 均空且 status 非 timeout）
+          → 400 ``regression_no_issues``
+        - 受理 → 200 + {ok, requested_at}；O_CREAT|O_EXCL 独占创建，
+          FileExistsError → 409（并发第二次 POST 或上一信号尚未被消费）
+        """
+        project = self._project_from_query(query)
+        if project is None or not project.get("exists"):
+            self._error(404, "project not found")
+            return
+        proot = Path(project["path"])
+
+        # 快照校验（读侧契约与 core.regression.read_result 一致：缺失 →
+        # never_run，损坏 → parse_error；统一归 never_run 拒绝）
+        from core.regression import read_result
+
+        try:
+            snapshot = read_result(str(proot))
+        except Exception:  # noqa: BLE001 — 读侧任何异常按缺失兜底（宁拒勿 500）
+            snapshot = {"status": "never_run"}
+        status = str(snapshot.get("status") or "") if isinstance(snapshot, dict) else ""
+        if status in ("", "never_run", "parse_error"):
+            self._coded_error(
+                400, "最近一次回归快照缺失或不可解析，请先执行一次全量回归",
+                "regression_never_run",
+            )
+            return
+
+        # 问题列表非空守卫：failures 非空 / long_tests 非空 / 整体超时 三者其一
+        failures = snapshot.get("failures")
+        long_tests = snapshot.get("long_tests")
+        has_issues = (
+            (isinstance(failures, list) and len(failures) > 0)
+            or (isinstance(long_tests, list) and len(long_tests) > 0)
+            or status == "timeout"
+        )
+        if not has_issues:
+            self._coded_error(
+                400, "最近一次回归无异常用例，无需修复", "regression_no_issues",
+            )
+            return
+
+        # 原子创建信号文件（O_CREAT|O_EXCL 独占创建，对齐 _api_regression_run）：
+        # 独占创建成功即胜出；FileExistsError → 409（已有未消费请求）。
+        created = datetime.now(timezone.utc).isoformat()
+        payload = {"source": "regression_fix", "created": created}
+        req_path = proot / REGRESSION_FIX_REQUEST
+        try:
+            req_path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            self._error(500, f"回归修复触发信号写入失败: {e}")
+            return
+        try:
+            fd = os.open(str(req_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except FileExistsError:
+            self._error(409, "已有未消费的回归修复触发请求（请稍后重试）")
+            return
+        except OSError:
+            self._error(500, "回归修复触发信号写入失败")
+            return
+        f = None
+        try:
+            # 显式接管 fd（对齐 _api_regression_run：fdopen 失败路径兜底关 fd）
+            f = os.fdopen(fd, "w", encoding="utf-8")
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        except Exception as exc:
+            if f is None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            # 写中途失败：清掉半写文件，避免残留被 daemon 误消费
+            try:
+                os.unlink(str(req_path))
+            except OSError:
+                pass
+            self._error(500, f"回归修复触发信号写入失败: {exc}")
+            return
+        finally:
+            if f is not None:
+                f.close()
+        self._json({"ok": True, "requested_at": created})
+
+    def _api_regression_fix_result(self, query):
+        """GET /api/regression/fix-result — query project（2.2）
+
+        修复触发判定结果只读透传：返回 daemon 消费端写回的
+        ``.fenix/regression_fix_request_result.json`` 内容
+        （``{request_created, triggered, reason, message, finished_at}``）。
+        文件缺失/损坏/非 dict → 缺省态 ``{"status": "none"}``（MUST NOT 500
+        或 404 报错；前端以 ``request_created`` 比对本轮触发回链判定）。
+        """
+        project = self._project_from_query(query)
+        if project is None or not project.get("exists"):
+            self._error(404, "project not found")
+            return
+        path = Path(project["path"]) / REGRESSION_FIX_REQUEST_RESULT
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+            self._json({"status": "none"})
+            return
+        self._json(data if isinstance(data, dict) else {"status": "none"})
 
     def _api_regression_autodraft_post(self, query):
         """POST /api/regression/autodraft — query project
