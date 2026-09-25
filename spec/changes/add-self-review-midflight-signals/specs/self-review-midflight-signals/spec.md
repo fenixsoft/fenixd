@@ -38,7 +38,7 @@
 
 ### Requirement: 编排层救回痕迹归集
 
-自省 MUST 扫描窗口内 fenixd.log（agent_runner 组件），归集编排层救回痕迹行：provider switched、重试续跑（retry/do_continue）、gave up、worktree 失效重建（no longer exists / fresh create）。输出按关键词归组的计数 + 最多 5 条样本（时间戳 + 摘要截断）。日志文件缺失或解析失败时该节降级为空（不阻断自省）。
+自省 MUST 扫描窗口内 fenixd.log，按「关键词 → 组件」成对过滤归集编排层救回痕迹行：`provider switched`（agent_runner）、`gave up`（pm_engine）、`in-place retry`（agent_runner）。关键词与组件须按实测日志文案成对绑定，泛词 retry 不得单独成模式（会卷入 event_bus 无关行）。输出按关键词归组的计数 + 最多 5 条样本（时间戳 + 摘要截断）。日志文件缺失或解析失败时该节降级为空（不阻断自省）；窗口早于当前日志起点（轮转）时按日志起点截断（对齐既有日志节口径）。
 
 #### Scenario: 换道与重试痕迹被归集
 
