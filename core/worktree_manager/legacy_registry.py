@@ -151,17 +151,30 @@ class G2LegacyRegistryMixin:
             )
             self._active_reuse.pop(spec_name, None)
             self._proc_scan_cache.pop(spec_name, None)
-            for k in [k for k in self._spec_locks if k.split(":")[0] == spec_name]:
-                self._spec_locks.discard(k)
-                self._lock_since.pop(k, None)
+            # 加锁口径对齐 cleanup finally（code-review item 1a7509f2653a）：
+            # 计算与摘除全程持 _spec_lock_th，迭代用 sorted 快照，防误删并发
+            # create 的新锁及 "Set changed size during iteration"。
+            with self._spec_lock_th:
+                for k in [
+                    k for k in sorted(self._spec_locks)
+                    if k.split(":")[0] == spec_name
+                ]:
+                    self._spec_locks.discard(k)
+                    self._lock_since.pop(k, None)
             return
         self._active_worktrees.discard(wt_str)
         self._wt_branches.pop(wt_str, None)
         self._active_reuse.pop(spec_name, None)
-        # 释放 spec 锁（与 cleanup 的 finally 段同语义，按 spec 精确匹配）
-        for k in [k for k in self._spec_locks if k.split(":")[0] == spec_name]:
-            self._spec_locks.discard(k)
-            self._lock_since.pop(k, None)
+        # 释放 spec 锁（与 cleanup 的 finally 段同语义，按 spec 精确匹配；
+        # code-review item 1a7509f2653a：全程持 _spec_lock_th + sorted 快照，
+        # 防误删并发 create 的新锁及无锁迭代活跃 Set 的竞态）
+        with self._spec_lock_th:
+            for k in [
+                k for k in sorted(self._spec_locks)
+                if k.split(":")[0] == spec_name
+            ]:
+                self._spec_locks.discard(k)
+                self._lock_since.pop(k, None)
         self._proc_scan_cache.pop(spec_name, None)
         self.logger.info(
             "worktree_manager",
