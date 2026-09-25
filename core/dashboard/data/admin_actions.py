@@ -16,10 +16,7 @@ from pathlib import Path
 # 冻结前缀与「原状态 X」解析单点（add-spec-scheduling-controls D4）
 from core.state_machine import (
     FREEZE_ERROR_PREFIX,
-    FROZEN_FIELD,
     parse_orig_status,
-    INFRA_FAILURE_COUNT_FIELD,
-    VERIFY_INFRA_ROUNDS_FIELD,
     START_AFTER_MANUAL,
 )
 
