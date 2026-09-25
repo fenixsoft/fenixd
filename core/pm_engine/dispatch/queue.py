@@ -2887,32 +2887,20 @@ class QQQueueMixin:
 
     def _ocr_join_await_lane(self, spec_name: str, origin: str, fingerprint: dict,
                              reason: str) -> str:
-        """停等分支：幂等触发车道 + 落 pending 标量 + 返回 defer（任务 4.2）。
+        """停等分支：落 pending 标量 + 幂等触发车道 + 返回 defer（任务 4.2）。
 
         车道启动失败且不在飞 → MUST NOT 无限停等：fail-open 放行 + WARNING
         留痕（对齐 unavailable 的环境降级语义）。
         """
-        started = None
-        try:
-            started = self._start_impl_ocr_lane(spec_name, fingerprint)
-        except Exception as e:  # noqa: BLE001
-            self._pm.logger.warning(
-                "pm_engine",
-                f"ocr 车道幂等触发失败 '{spec_name}': {type(e).__name__}: {e}",
-            )
-        if started is None and not self._ocr_lane_running(spec_name):
-            self._pm.logger.warning(
-                "pm_engine",
-                f"ocr join 停等放弃 '{spec_name}'（车道未启动且不在飞，"
-                f"fail-open 放行）: {reason}",
-            )
-            self._ocr_join_clear_pending(spec_name)
-            self._ocr_clear_findings_directive(spec_name)
-            return "pass"
-        # pending 落盘包 try/except（与 _ocr_join_clear_pending 同款惯例）：
-        # 写失败不得打断 _ocr_join_gate 的 pass/defer/reject 返回契约；且此路
-        # 径 MUST NOT 返回 defer——pending 缺席时唤醒回调幂等空转，spec 会
-        # 永久停等 testing，故 fail-open 放行（对齐上方车道缺席降级语义）。
+        # pending 先落盘、后触发车道（code-review item 19de3c05e9f2）：车道
+        # 线程体及其完成回调都晚于 Thread.start，而 start 又晚于标记写入——
+        # 自启车道无论多快完成，回调读 pending 必然晚于写入，不存在「回调于
+        # 标记落盘前空转、此后再无唤醒、spec 带停等标记永久滞留 testing」
+        # 窗口（该窗口只能靠外部 stuck/orphan 巡检兜底）。pending 落盘包
+        # try/except（与 _ocr_join_clear_pending 同款惯例）：写失败不得打断
+        # _ocr_join_gate 的 pass/defer/reject 返回契约，且此路径 MUST NOT
+        # 返回 defer——pending 缺席时唤醒回调幂等空转，故 fail-open 放行
+        # （对齐下方车道缺席降级语义）；此时车道尚未启动，不产生空转回调。
         try:
             self._pm.state_machine.update_spec(
                 spec_name, self._ocr_join_pending_fields(origin)
@@ -2924,23 +2912,25 @@ class QQQueueMixin:
                 f"{type(e).__name__}: {e}",
             )
             return "pass"
-        # 落盘后锁内复核在飞（code-review item dd27b3a77576；去 started 前置
-        # 覆盖自启车道，code-review item 19de3c05e9f2）：完成回调读 pending
-        # 发生在锁内 pop（_run finally）之后、与本次复核串行于 _ocr_lane_lock
-        # ——无论车道是幂等触发的既有车道（started is None）还是本调用刚
-        # 自启的车道（started="started"），只要它恰在「上方在飞判定」与
-        # 「pending 落盘」之间异常/极快完成，其回调就读到缺席标记幂等空转，
-        # 此后再无回调唤醒，spec 会带停等标记永久停等（只能靠外部
-        # stuck/orphan 巡检兜底）。故复核只看在飞、不以 started 为前置：
-        # 不在飞即按同款 fail-open 语义清标记放行——若回调已抢先完成
-        # verified 推进，后续 transition 为幂等短路/非法拒绝（状态机记日志
-        # 返回，不抛错），不会双推进；见在飞则回调必然晚于标记写入读到
-        # （pop 未发生 ⇒ 读在写后），defer 停等安全。
-        if not self._ocr_lane_running(spec_name):
+        started = None
+        try:
+            started = self._start_impl_ocr_lane(spec_name, fingerprint)
+        except Exception as e:  # noqa: BLE001
             self._pm.logger.warning(
                 "pm_engine",
-                f"ocr join 停等放弃 '{spec_name}'（车道于停等落盘间隙完成，"
-                f"完成回调可能已空转，fail-open 放行）: {reason}",
+                f"ocr 车道幂等触发失败 '{spec_name}': {type(e).__name__}: {e}",
+            )
+        # 未自启时锁内复核在飞（code-review item dd27b3a77576）：覆盖幂等触发
+        # 的既有车道恰在「在飞判定」与「pending 落盘」之间完成的形态——其回调
+        # 读到缺席标记即幂等空转，此后再无唤醒。复核不在飞即按 fail-open 语义
+        # 清标记放行；见在飞则回调必然晚于标记写入读到（pop 未发生 ⇒ 读在写
+        # 后），defer 停等安全。自启路径（started="started"）由上方先写后启
+        # 的顺序保证回调必见标记（19de3c05e9f2），无需复核。
+        if started is None and not self._ocr_lane_running(spec_name):
+            self._pm.logger.warning(
+                "pm_engine",
+                f"ocr join 停等放弃 '{spec_name}'（车道未启动且不在飞，"
+                f"fail-open 放行）: {reason}",
             )
             self._ocr_join_clear_pending(spec_name)
             self._ocr_clear_findings_directive(spec_name)
