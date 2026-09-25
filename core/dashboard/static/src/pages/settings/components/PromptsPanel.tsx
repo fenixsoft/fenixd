@@ -62,11 +62,13 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
     // data/extraDraft 仍是旧项目的渲染快照（effect 跑在 project 已变、state
     // 未变的渲染之后）。拒绝则保留当前内容、不加载新项目；此时 loadedFor
     // 与当前 project 不一致，handleSave 的对账会拦住跨项目错写。
-    if (
-      data &&
-      extraDraft !== projectExtraOf(data, activeAgent) &&
-      !window.confirm('当前项目的修改尚未保存，切换将丢弃，确定继续？')
-    ) {
+    // 加载失败场景（code-review item c542789d7297）：data 为 null 时 extra
+    // 输入框仍渲染可编辑，仅以 data 判脏会跳过确认、静默丢弃用户键入的
+    // 草稿——data 为空但草稿非空同样视为脏。
+    const dirty = data
+      ? extraDraft !== projectExtraOf(data, activeAgent)
+      : extraDraft !== '';
+    if (dirty && !window.confirm('当前项目的修改尚未保存，切换将丢弃，确定继续？')) {
       return;
     }
     let cancelled = false;
