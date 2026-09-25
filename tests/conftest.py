@@ -142,6 +142,110 @@ def _isolated_basetemp_cleanup(request):
         pass
 
 
+# ── 单用例超时豁免清单（add-per-test-timeout-gate）─────────────────────────
+# 全局门：pytest.ini timeout=10（signal）。确需超过 10s 的用例在
+# tests/timeout-allowlist.yaml 显式登记（nodeid + timeout_seconds + reason），
+# 钩子在收集期按 nodeid 逐字匹配注入 pytest.mark.timeout(N) 覆盖单用例阈值。
+# 清单 schema（reason 非空、timeout_seconds > 0、YAML 可解析）由
+# tests/test_timeout_gate.py::TestTimeoutAllowlistSchema 机械校验——违规判
+# 测试失败（防静默豁免）；注入侧对不可解析清单只告警不炸收集。
+
+import warnings
+
+TIMEOUT_ALLOWLIST_PATH = Path(__file__).resolve().parent / "timeout-allowlist.yaml"
+
+
+def load_timeout_allowlist(path=None):
+    """读取豁免清单，返回 (entries, error)。
+
+    entries：原始条目列表（逐条合法性交给 validate_timeout_allowlist /
+    tests/test_timeout_gate.py 的 schema 校验）；文件缺失按空清单处理；
+    YAML 解析失败或顶层结构非法时返回 ([], 原因文本)——调用方决定告警或判失败。
+    """
+    allowlist_path = path or TIMEOUT_ALLOWLIST_PATH
+    if not allowlist_path.exists():
+        return [], None
+    try:
+        import yaml
+
+        data = yaml.safe_load(allowlist_path.read_text(encoding="utf-8"))
+    except Exception as exc:  # yaml.YAMLError / 编码异常：清单不可解析
+        return [], f"豁免清单 YAML 解析失败：{exc!r}"
+    if data is None:
+        data = {"entries": []}
+    if not (isinstance(data, dict) and isinstance(data.get("entries"), list)):
+        return [], (
+            "豁免清单顶层须为 {entries: [...]} 映射（entries 为条目列表），"
+            f"实际 {type(data).__name__}"
+        )
+    return data["entries"], None
+
+
+def validate_timeout_allowlist(entries):
+    """逐条校验豁免清单条目，返回违规描述列表（空列表 = 合法）。
+
+    校验规则（防静默豁免）：nodeid 非空字符串；timeout_seconds 为 >0 数值
+    （布尔不算数）；reason 非空字符串——豁免必须写明为何 10s 不够。
+    """
+    violations = []
+    if not isinstance(entries, list):
+        return [f"清单须为条目列表，实际 {type(entries).__name__}"]
+    for idx, entry in enumerate(entries, start=1):
+        if not isinstance(entry, dict):
+            violations.append(
+                f"第 {idx} 条：条目须为映射（nodeid/timeout_seconds/reason），"
+                f"实际 {type(entry).__name__}"
+            )
+            continue
+        where = f"第 {idx} 条"
+        nodeid = entry.get("nodeid")
+        if not isinstance(nodeid, str) or not nodeid.strip():
+            violations.append(
+                f"{where}：nodeid 缺失或为空（须与 pytest --collect-only 输出逐字一致）"
+            )
+        else:
+            where = f"第 {idx} 条（{nodeid}）"
+        seconds = entry.get("timeout_seconds")
+        if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or seconds <= 0:
+            violations.append(f"{where}：timeout_seconds 须为 >0 的数值，实际 {seconds!r}")
+        reason = entry.get("reason")
+        if not isinstance(reason, str) or not reason.strip():
+            violations.append(f"{where}：reason 缺失或为空（豁免必须写明为何 10s 不够）")
+    return violations
+
+
+def _usable_allowlist_entry(entry):
+    """钩子注入仅认结构合法的条目（条目级违规由 schema 校验用例拦截上报）。"""
+    seconds = entry.get("timeout_seconds") if isinstance(entry, dict) else None
+    return (
+        isinstance(entry, dict)
+        and isinstance(entry.get("nodeid"), str)
+        and isinstance(seconds, (int, float))
+        and not isinstance(seconds, bool)
+        and seconds > 0
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    """豁免清单注入（add-per-test-timeout-gate 任务 2.2）。
+
+    按 nodeid 逐字匹配清单条目，命中即注入 pytest.mark.timeout(N) 覆盖全局
+    10s 门。清单不可解析时发 warning 并放弃本轮注入（不炸收集）；条目级违规
+    由 tests/test_timeout_gate.py::TestTimeoutAllowlistSchema 在回归中判失败。
+    """
+    entries, error = load_timeout_allowlist()
+    if error is not None:
+        warnings.warn(f"单用例超时豁免清单不可用，本轮未注入任何豁免：{error}")
+        return
+    by_nodeid = {
+        entry["nodeid"]: entry for entry in entries if _usable_allowlist_entry(entry)
+    }
+    for item in items:
+        entry = by_nodeid.get(item.nodeid)
+        if entry is not None:
+            item.add_marker(pytest.mark.timeout(entry["timeout_seconds"]))
+
+
 def make_project(tmp_path: Path, name: str = "proj-a", otherspec: bool = True) -> Path:
     """构造一个可用的 Fenixd 项目目录。
 
