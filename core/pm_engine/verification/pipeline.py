@@ -791,7 +791,7 @@ class VerificationPipeline:
                             f"'{_apply_status}'）'{spec_name}' — 丢弃，不阻断",
                         )
                         return None
-            elif retry_status != "testing":
+            else:
                 # 非 testing 丢弃（code-review item 3219564e2f22）：本节 docstring
                 # 明言「重试前复用入口状态判据（非 testing 丢弃，与 stale-result
                 # 防护同构）」，但旧实现仅「非 testing 就不重派」，随后仍无条件走
