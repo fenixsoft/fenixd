@@ -377,11 +377,12 @@ def _finalize_static(pipeline, srv, contract, scenarios_path, scope_label) -> tu
         )
         return (False, False, note)
     # D9：POST_READY_SETTLE_SECONDS 经门面解析（测试 patch 包级常量生效）
-    time.sleep(_facade.POST_READY_SETTLE_SECONDS)
+    settled = _facade.POST_READY_SETTLE_SECONDS
+    time.sleep(settled)
     note = (
         f"验证契约 static[{scope_label}]: 被测实例 {srv.base_url}"
         f"（场景 origin 改写 {n} 处，探针通过后静置 "
-        f"{POST_READY_SETTLE_SECONDS}s）— {probe_note}"
+        f"{settled}s）— {probe_note}"
     )
     return (True, False, note)
 
