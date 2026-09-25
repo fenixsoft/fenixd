@@ -34,6 +34,7 @@ import ast
 import json
 import os
 import re
+import statistics
 import subprocess
 import tempfile
 from datetime import datetime, timedelta
@@ -645,6 +646,350 @@ def collect_failed_run_samples(
     return samples[:limit]
 
 
+# ── 中途信号采集（add-self-review-midflight-signals）────────────────────
+# 第六数据源：窗口内全部车道 run（含终态成功者）的中途浪费/险情机械化信号。
+# 扫描策略 = run_metrics 量化初筛（零事件流读取）+ 离群 run 事件流深扫 +
+# 编排层救回痕迹归集。只进自省摘要，不新增 admin 告警（降噪铁律）。
+
+# 初筛离群倍数（design D1）：run 指标 > 同 agent_type 窗口组中位数 × 3 即离群
+# （成功与失败 run 同口径）。×3 与 LATENCY_STALL_SECONDS 同为保守倍数，宁漏勿
+# 噪；固定绝对阈值被否——阈值随模型/车道配置漂移失效。实测偏松/偏紧调此常量。
+MIDFLIGHT_OUTLIER_MULTIPLIER = 3
+
+# 初筛最小组样本数（design D1）：组内某维度有效样本 < 3 时该维度跳过（2 个
+# 样本互为彼此的离群对照无意义；全组 0/缺失时有效样本数自然 < 3 一并跳过）。
+MIDFLIGHT_MIN_GROUP_SAMPLES = 3
+
+# 初筛维度（proposal）：turns / cost_usd / duration_seconds 三维度。
+MIDFLIGHT_OUTLIER_DIMS = ("turns", "cost_usd", "duration_seconds")
+
+# 深扫行数上限（design D2）：窗口长尾 run 实测量级上界，超限多为异常残留转录；
+# 与「仅离群 run 深扫」双闸限制自省自身开销。
+MIDFLIGHT_SCAN_MAX_LINES = 20000
+
+# 中途 error/stderr 事件首条摘要截断长度（tasks 2.1）。
+_MIDFLIGHT_EVENT_SUMMARY_MAX = 140
+
+# 救回痕迹样本上限与 message 截断（tasks 3.1：每组至多 5 条样本）。
+_RESCUE_TRACE_SAMPLE_MAX = 5
+_RESCUE_TRACE_SAMPLE_MSG_MAX = 200
+
+# 救回痕迹「关键词 → 组件」成对模式（design D3 / tasks 3.1，文案取自
+# 2026-09-25 实测日志取证）。关键词与组件 MUST 成对绑定：泛词 retry 单独成
+# 模式会卷入 event_bus 大量无关行（实测 1156 条）。
+# 来源日志语句（单点维护，文案变更时改这里 + 此清单）：
+# - "provider switched …" → agent_runner（runner.py 换道打点 warning 行，
+#   如 "provider switched inferaiapi.com → corealgos.com for '<spec>'"）
+# - "… — in-place retry …" → agent_runner（transient 退避续跑 / Artifact
+#   gate 续跑 warning 行）
+# - "(gave up: …)" → pm_engine（派发收尾 error 行嵌入 AgentRunResult.error，
+#   如 "Failed to create worktree (gave up: parallel run or manual freeze)"）
+# 实测零命中、暂不作主模式的兜底候选（注释留证，文案出现时再启用）：
+# "do_continue" / "no longer exists" / "fresh create"。
+_RESCUE_TRACE_PATTERNS = (
+    {"keyword": "provider switched", "component": "agent_runner"},
+    {"keyword": "in-place retry", "component": "agent_runner"},
+    {"keyword": "gave up", "component": "pm_engine"},
+)
+
+
+def _iter_window_runs(project_root, window_start: datetime, window_end: datetime):
+    """产出窗口内 (run_id, 产物 Path)：当前目录 ∪ 归档并集，排除 review- 前缀。
+
+    口径同 collect_runs_stats：_collect_run_files 并集去重（同 run_id 当前目录
+    优先），run_id 内嵌开始时间戳判定归属（缺失回退文件 mtime）。只读遍历。
+    """
+    runs_dir = Path(project_root) / ".fenix" / "runs"
+    if not runs_dir.is_dir():
+        return
+    for p in _collect_run_files(runs_dir):
+        run_id = p.stem
+        if run_id.startswith("review-"):
+            continue  # 自省 run 不审视自身
+        try:
+            stat = p.stat()
+        except OSError:
+            continue
+        start_ts = _run_start_ts(run_id)
+        ts = start_ts if start_ts is not None else int(stat.st_mtime)
+        if _in_window(datetime.fromtimestamp(ts), window_start, window_end):
+            yield run_id, p
+
+
+def _metrics_outlier_dims(metric: dict) -> dict:
+    """单 run 指标的初筛维度值：仅保留数值型（非 bool）且 > 0 的维度。
+
+    cost_usd 部分 provider 不回传（None）、未收尾 run duration 可能为 0——
+    0/缺失不能作为离群候选（永不超过中位 ×3），也不计入组有效样本。
+    """
+    values = {}
+    for dim in MIDFLIGHT_OUTLIER_DIMS:
+        v = metric.get(dim)
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0:
+            values[dim] = v
+    return values
+
+
+def _collect_metrics_outliers(
+    project_root, window_start: datetime, window_end: Optional[datetime] = None
+) -> List[Dict[str, Any]]:
+    """量化初筛：窗口内 run_metrics 离群 run（design D1，零事件流读取）。
+
+    经 core.dashboard.data.runs 公共访问器（延迟导入，对齐 _run_terminal_success
+    先例）按 run 查 run_metrics 指标（进程内索引缓存，仅首查扫日志）；按
+    agent_type 分组对 turns/cost_usd/duration_seconds 三维度做「组中位数 ×
+    MIDFLIGHT_OUTLIER_MULTIPLIER」离群判定，成功与失败 run 同口径。组内某维度
+    有效样本 < MIDFLIGHT_MIN_GROUP_SAMPLES（含全组 0/缺失）时该维度跳过。
+
+    Args:
+        window_end: 窗口上界；调用侧（collect_daily_summary）传入口冻结快照，
+            对齐 collect_runs_stats 快照化契约。None 时入口冻结兜底（直调兼容）。
+
+    Returns: [{run_id, path, agent_type, terminal, outliers: {维度: {value,
+        median}}}]；path 为事件流文件路径（_collect_run_files 并集），供深扫
+        环节复用。索引查不到的 run（旧日志轮转出窗）跳过初筛，不视为离群也
+        不报错；索引访问异常同样按缺失跳过。
+    """
+    if window_end is None:
+        window_end = datetime.now()  # 快照化兜底：直调时入口冻结
+    try:
+        from core.dashboard.data.runs import load_run_metric  # noqa: PLC0415
+    except Exception:
+        return []
+
+    grouped: Dict[str, list] = {}
+    for run_id, path in _iter_window_runs(project_root, window_start, window_end):
+        try:
+            metric = load_run_metric(project_root, run_id)
+        except Exception:
+            continue  # 索引异常按缺失跳过，不报错
+        if not isinstance(metric, dict):
+            continue
+        agent_type = str(metric.get("agent_type") or "unknown")
+        grouped.setdefault(agent_type, []).append((run_id, path, metric))
+
+    outliers: List[Dict[str, Any]] = []
+    for agent_type, runs in grouped.items():
+        medians: Dict[str, float] = {}
+        for dim in MIDFLIGHT_OUTLIER_DIMS:
+            values = [
+                _metrics_outlier_dims(m)[dim]
+                for _, _, m in runs
+                if dim in _metrics_outlier_dims(m)
+            ]
+            if len(values) < MIDFLIGHT_MIN_GROUP_SAMPLES:
+                continue
+            medians[dim] = statistics.median(values)
+        if not medians:
+            continue
+        for run_id, path, metric in runs:
+            dims = _metrics_outlier_dims(metric)
+            hit = {
+                dim: {"value": v, "median": medians[dim]}
+                for dim, v in dims.items()
+                if dim in medians and v > medians[dim] * MIDFLIGHT_OUTLIER_MULTIPLIER
+            }
+            if hit:
+                outliers.append(
+                    {
+                        "run_id": run_id,
+                        "path": str(path),
+                        "agent_type": agent_type,
+                        "terminal": metric.get("terminal"),
+                        "outliers": hit,
+                    }
+                )
+    # 确定性输出：(agent_type, run_id) 字典序
+    outliers.sort(key=lambda o: (o["agent_type"], o["run_id"]))
+    return outliers
+
+
+def _midflight_event_summary(entry: dict) -> str:
+    """error/stderr 事件首条摘要（≤ _MIDFLIGHT_EVENT_SUMMARY_MAX 字符）。
+
+    error 终态行形如 {"type": "error", "error": …, "exit_code": …}（run_files
+    append_run_error）；stderr 兜底行形如 {"type": "stderr", "line": …}
+    （runner stderr 守护线程）。取首个非空文本字段，缺失时整行 repr 兜底。
+    """
+    for key in ("error", "line", "message"):
+        val = entry.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip()[:_MIDFLIGHT_EVENT_SUMMARY_MAX]
+    return str(entry)[:_MIDFLIGHT_EVENT_SUMMARY_MAX]
+
+
+def _scan_run_midflight(path, max_lines: int = MIDFLIGHT_SCAN_MAX_LINES) -> Dict[str, Any]:
+    """单 run 事件流深扫（design D2，流式逐行、有界内存）。
+
+    逐行迭代 + 单行 json.loads（失败跳过——半行交错/噪声行不阻断）构建事件
+    生成器，喂 latency.latency_samples_from_events（延迟导入；生成器入口是其
+    既有契约）采样 API 往返，latency_stats 算 stall 计数与最长往返；同一遍
+    累计中途 error/stderr 事件计数与首条摘要（≤140 字符）。单行可能数 MB
+    （assistant 全量消息体），MUST NOT 整文件读入内存；超过 max_lines 行停止
+    并置 truncated 标记。
+
+    Returns: {rounds, stalls, max_gap, error_count, stderr_count, first_error,
+        first_stderr, truncated}；文件不可读时返回零值扫描结果（不抛异常）。
+    """
+    from core.agent_runner.latency import (  # noqa: PLC0415
+        latency_samples_from_events,
+        latency_stats,
+    )
+
+    state: Dict[str, Any] = {
+        "lines": 0,
+        "truncated": False,
+        "error_count": 0,
+        "stderr_count": 0,
+        "first_error": None,
+        "first_stderr": None,
+    }
+
+    def _iter_events():
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    state["lines"] += 1
+                    if state["lines"] > max_lines:
+                        state["truncated"] = True  # 行数上限：截断标注后停止
+                        break
+                    try:
+                        entry = json.loads(line)
+                    except (json.JSONDecodeError, ValueError):
+                        continue  # 坏行跳过不抛异常
+                    if not isinstance(entry, dict):
+                        continue
+                    etype = entry.get("type")
+                    if etype == "error":
+                        state["error_count"] += 1
+                        if state["first_error"] is None:
+                            state["first_error"] = _midflight_event_summary(entry)
+                    elif etype == "stderr":
+                        state["stderr_count"] += 1
+                        if state["first_stderr"] is None:
+                            state["first_stderr"] = _midflight_event_summary(entry)
+                    yield entry
+        except OSError:
+            return  # 读取失败按空产出（零值扫描），不阻断其余 run
+
+    samples = latency_samples_from_events(_iter_events())
+    stats = latency_stats(samples)
+    return {
+        "rounds": stats["rounds"],
+        "stalls": stats["stalls"],
+        "max_gap": stats["max"],
+        "error_count": state["error_count"],
+        "stderr_count": state["stderr_count"],
+        "first_error": state["first_error"],
+        "first_stderr": state["first_stderr"],
+        "truncated": state["truncated"],
+    }
+
+
+def _collect_midflight_scans(
+    project_root,
+    outliers,
+    window_start: datetime,
+    window_end: Optional[datetime] = None,
+) -> List[Dict[str, Any]]:
+    """离群 run 事件流深扫编排（tasks 2.2）：仅对初筛离群 run 逐个深扫。
+
+    Args:
+        outliers: _collect_metrics_outliers 产出（含 path 事件流文件路径）。
+        window_start/window_end: 窗口边界（深扫前复核 run 窗口归属——初筛与
+            深扫编排之间时间推进，run_id 内嵌时间戳优先、缺失回退 mtime）。
+
+    Returns: [{run_id, agent_type, terminal, outliers, rounds, stalls, max_gap,
+        error_count, stderr_count, first_error, first_stderr, truncated}]。
+        无离群 run 返回空；path 不存在/读取失败按该 run 空产出跳过（不阻断
+        其余 run）。
+    """
+    if window_end is None:
+        window_end = datetime.now()
+    results: List[Dict[str, Any]] = []
+    for o in outliers or []:
+        path = o.get("path")
+        if not path:
+            continue
+        p = Path(path)
+        try:
+            stat = p.stat()
+        except OSError:
+            continue  # 产物已清理/不可读 → 该 run 空产出跳过
+        start_ts = _run_start_ts(p.stem)
+        ts = start_ts if start_ts is not None else int(stat.st_mtime)
+        if not _in_window(datetime.fromtimestamp(ts), window_start, window_end):
+            continue
+        try:
+            scan = _scan_run_midflight(p)
+        except Exception:
+            continue  # 单 run 深扫异常（latency 导入失败等）不阻断其余 run
+        results.append(
+            {
+                "run_id": o.get("run_id"),
+                "agent_type": o.get("agent_type"),
+                "terminal": o.get("terminal"),
+                "outliers": o.get("outliers") or {},
+                **scan,
+            }
+        )
+    return results
+
+
+def _collect_rescue_traces(
+    project_root, window_start: datetime, window_end: Optional[datetime] = None
+) -> Dict[str, Dict[str, Any]]:
+    """编排层救回痕迹归集（design D3 / tasks 3.1）。
+
+    流式扫描 .fenix/logs/fenixd.log（仅主日志，对齐既有第 4节日志节口径；
+    窗口早于当前日志起点（轮转）时按日志起点自然截断，不强制回扫 .1），按
+    _RESCUE_TRACE_PATTERNS「关键词 → 组件」成对过滤窗口内日志行，归组计数 +
+    每组至多 _RESCUE_TRACE_SAMPLE_MAX 条样本（时间戳 + message 截断）。不按
+    run_id 关联（部分行只有 spec 名，强行关联引入第三个解析口径）。
+
+    Returns: {关键词: {count, samples: ["<ts> [<component>] <message截断>"]}}；
+    日志缺失/读取失败降级空 dict（不阻断自省）。
+    """
+    if window_end is None:
+        window_end = datetime.now()
+    log_path = Path(project_root) / ".fenix" / "logs" / "fenixd.log"
+    if not log_path.is_file():
+        return {}
+    groups: Dict[str, Dict[str, Any]] = {}
+    try:
+        with log_path.open("r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                try:
+                    entry = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if not isinstance(entry, dict):
+                    continue
+                component = entry.get("component")
+                message = entry.get("message")
+                if not isinstance(message, str) or not message:
+                    continue
+                if not _in_window(
+                    _iso_to_local_dt(entry.get("timestamp")), window_start, window_end
+                ):
+                    continue
+                for pat in _RESCUE_TRACE_PATTERNS:
+                    if pat["component"] == component and pat["keyword"] in message:
+                        g = groups.setdefault(
+                            pat["keyword"], {"count": 0, "samples": []}
+                        )
+                        g["count"] += 1
+                        if len(g["samples"]) < _RESCUE_TRACE_SAMPLE_MAX:
+                            g["samples"].append(
+                                f"{entry.get('timestamp', '')} [{component}] "
+                                f"{message[:_RESCUE_TRACE_SAMPLE_MSG_MAX]}"
+                            )
+                        break  # 一行只归入最先命中的模式
+    except OSError:
+        return {}
+    return groups
+
+
 def collect_log_errors(project_root, window_start: datetime, limit: int = 20) -> Dict[str, Any]:
     """近 24 小时窗口 fenixd.log ERROR 聚合：总数 + 最近 limit 条样本
     （含时间戳/组件/消息）。"""
@@ -900,7 +1245,7 @@ class SelfReviewScheduler:
 
     def collect_daily_summary(self, window_start: datetime) -> str:
         """聚合窗口数据摘要：STATE 终态 / runs 统计 / admin 告警与处置 /
-        日志 ERROR / 近 3 日 git 提交五源。
+        日志 ERROR / 近 3 日 git 提交 / 中途信号六源。
 
         窗口 = [window_start, window_end]，其中 window_end 为函数入口时冻结的
         datetime.now() 快照值，聚合执行期间不再调用实时时钟判定窗口归属。输出
@@ -972,7 +1317,86 @@ class SelfReviewScheduler:
         lines.extend(self._collect_recent_commits())
         lines.append("")
 
+        # 6. 中途信号（含成功 run）（add-self-review-midflight-signals）：
+        # 量化初筛离群 / 离群 run 事件流深扫 / 编排救回痕迹三小节，任一环节
+        # 异常降级空产出 + warning（不阻断摘要与其余五节），只进摘要不告警。
+        lines.append("## 6. 中途信号（含成功 run）")
+        lines.extend(self._collect_midflight_section(window_start, window_end))
+        lines.append("")
+
         return "\n".join(lines)
+
+    def _collect_midflight_section(
+        self, window_start: datetime, window_end: Optional[datetime]
+    ) -> List[str]:
+        """第六节「中途信号」渲染：初筛离群 / 深扫 / 救回痕迹三小节。
+
+        各小节「有产出才渲染」；三类信号全空时渲染占位行（形态对齐既有节）。
+        任一环节异常降级为该环节空产出 + logger.warning，不阻断摘要与其余
+        五节（对齐「任一源读取失败降级为空段」契约）。只读采集，不产生任何
+        admin 告警、不写任何文件（自省只读铁律）。
+        """
+        outliers: List[Dict[str, Any]] = []
+        try:
+            outliers = _collect_metrics_outliers(self.project_root, window_start, window_end)
+        except Exception as e:
+            self.logger.warning("self_review", f"中途信号初筛异常（降级空产出）: {e}")
+
+        scans: List[Dict[str, Any]] = []
+        try:
+            scans = _collect_midflight_scans(
+                self.project_root, outliers, window_start, window_end
+            )
+        except Exception as e:
+            self.logger.warning("self_review", f"中途信号深扫异常（降级空产出）: {e}")
+
+        traces: Dict[str, Dict[str, Any]] = {}
+        try:
+            traces = _collect_rescue_traces(self.project_root, window_start, window_end)
+        except Exception as e:
+            self.logger.warning("self_review", f"中途信号痕迹归集异常（降级空产出）: {e}")
+
+        if not (outliers or scans or traces):
+            return ["- （窗口内无中途信号）"]
+
+        lines: List[str] = []
+        if outliers:
+            lines.append("### 初筛离群 run（run_metrics 量化，> 组中位 ×3）")
+            for o in outliers:
+                success = str(o.get("terminal") or "").strip().lower() == "success"
+                dims = "、".join(
+                    f"{dim}={d['value']}（组中位 {d['median']}{'，成功收尾' if success else ''}）"
+                    for dim, d in o["outliers"].items()
+                )
+                lines.append(f"- {o['run_id']}（{o['agent_type']}）：{dims}")
+            lines.append("")
+        if scans:
+            lines.append("### 离群 run 事件流深扫（API 停滞与中途 error）")
+            for s in scans:
+                gap = (
+                    f" max_gap={s['max_gap']:.1f}s"
+                    if isinstance(s.get("max_gap"), (int, float))
+                    else ""
+                )
+                errs = f" 中途error={s['error_count']}" if s.get("error_count") else ""
+                stderrs = f" 中途stderr={s['stderr_count']}" if s.get("stderr_count") else ""
+                trunc = " [truncated]" if s.get("truncated") else ""
+                row = f"- {s['run_id']}: stall={s.get('stalls', 0)}{gap}{errs}{stderrs}{trunc}"
+                if s.get("first_error"):
+                    row += f"\n  - 首条error: {s['first_error']}"
+                if s.get("first_stderr"):
+                    row += f"\n  - 首条stderr: {s['first_stderr']}"
+                lines.append(row)
+            lines.append("")
+        if traces:
+            lines.append("### 编排救回痕迹（fenixd.log 关键词归组）")
+            summary = "、".join(f"{k}={v['count']}" for k, v in traces.items())
+            lines.append(f"- 编排救回痕迹：{summary}")
+            for keyword, g in traces.items():
+                for smp in g["samples"]:
+                    lines.append(f"  - [{keyword}] {smp}")
+            lines.append("")
+        return lines
 
     def _collect_state_distribution(self) -> Dict[str, int]:
         dist: Dict[str, int] = {}

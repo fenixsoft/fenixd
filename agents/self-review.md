@@ -33,6 +33,14 @@
 - **失误（mistakes）**：执行层面的错误（配置失误、状态误置、合并/提交遗漏、超时），需指出根因。
 - **可改进（improvements）**：系统性改进点，足以支撑后续 SPEC 立项。
 
+### 中途信号（数据摘要第六节）的用法
+数据摘要第 6 节「中途信号（含成功 run）」是含成功 run 在内的**过程性证据来源**，覆盖终态分类看不到的中途浪费与险情：
+- **初筛离群 run**：run 指标（turns / cost_usd / duration_seconds）超过同 agent_type 组中位 ×3 的 run，**终态成功者也入选**——成功收尾不等于过程无浪费。
+- **事件流深扫**：离群 run 的 API 停滞（stall 计数、最长往返 max_gap）与中途 error/stderr 事件痕迹。
+- **编排救回痕迹**：fenixd.log 中 provider switched / in-place retry / gave up 关键词归组——失败被编排层重试/换道救回的过程性消耗。
+
+条目引导：中途信号作为 waste / improvements 的证据来源，量化离群与停滞可直接立项（如「成功 run 的 45 轮里 X 轮停滞 >60s」）；深扫行首条 error/stderr 摘要与救回痕迹样本可交叉核对第 2 节 runs 统计定位具体 run。中途信号不产生告警，只作证据；引用时同样遵守「含证据/含调查评估」质量标准。
+
 ### 闭环判定（存在「近 3 日既有条目」时）
 对上方既有条目逐条判断：该问题**是否已经被修正**（如对应 fix 已提交、SPEC 已落地、告警/错误不再复现）。判定依据 MUST 可核实（commit hash、spec 名、告警 id 等），必要时只读查看 git log 与源码核实；拿不准的保守起见**不判定**。已修正条目写入回顾 JSON 的 `resolved` 数组（id + reason），daemon 会将其从 todo.md 移除。
 
