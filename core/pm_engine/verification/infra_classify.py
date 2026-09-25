@@ -200,7 +200,7 @@ def _detect_uniform_verify_failure(pipeline, spec_name: str, report: dict) -> bo
     failed_scns = [
         s
         for s in (report.get("scenarios") or [])
-        if s.get("status") in ("fail", "failed", "error")
+        if isinstance(s, dict) and s.get("status") in ("fail", "failed", "error")
     ]
     if len(failed_scns) < fail_total:
         return False  # 报告口径不一致，不哨
