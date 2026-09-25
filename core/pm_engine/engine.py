@@ -1713,65 +1713,67 @@ class PMEngine:
             approve_mode = self._get_approve_mode()
             if approve_mode == "auto" and status == "done":
                 self._auto_approve(spec_name)
+
+            # ── legacy：存量 fix-* SPEC 完成 → 父 SPEC 自动重验（D4 过渡期兼容）──
+            # 仅对 fix-* 链条生效；新裁决不再产生 fix-* 派生，待存量链收敛后自然耗尽。
+            # If this is a fix SPEC, re-trigger verification of the original SPEC
+            # （置于 try 块内：_guard:done 去重窗口须覆盖方法全部副作用，含本段
+            # transition/update_spec/_enqueue，见 fix-daemon-lifecycle-races D5）
+            if spec_name.startswith("fix-"):
+                # 剥离 fix- 前缀逐级生成的候选根名；取「最深且存在」的候选，避免
+                # 全剥光后根名本身也带 fix- 前缀（如 fix-dashboard-...）时定位失败，
+                # 导致父 SPEC 的 bug-found 永不闭环、full_scan 反复派生新 fix。
+                original = None
+                name = spec_name
+                candidates = []
+                while name.startswith("fix-"):
+                    name = name[4:]
+                    candidates.append(name)
+                for cand in reversed(candidates):
+                    if self.state_machine.read_one(cand):
+                        original = cand
+                        break
+                if original is None:
+                    self.logger.warning(
+                        "pm_engine",
+                        f"Fix done — no original SPEC found for '{spec_name}', skipping re-verify",
+                    )
+                    return
+                original_spec = self.state_machine.read_one(original)
+                if original_spec:
+                    current_status = original_spec.get("status", "")
+                    # 幂等保护：若父SPEC已在 testing（验证中），说明已有verifier在处理，跳过
+                    # 注：父 spec 现在保持在 bug-found 等 fix（不再放置为 implementing）
+                    if current_status == "testing":
+                        self.logger.info(
+                            "pm_engine",
+                            f"Fix done — original '{original}' already in 'testing', "
+                            f"skipping duplicate re-verify",
+                        )
+                        return
+                    self.logger.info("pm_engine", f"Fix done — re-verifying original: {original}")
+                    # 使用 transition 做状态转换；若当前状态无法直接转到 implemented，跳过
+                    # （不再用 update_spec 兜底，那正是竞态覆写的根因）
+                    if not self.state_machine.is_valid_transition(current_status, "implemented"):
+                        self.logger.info(
+                            "pm_engine",
+                            f"Fix done — cannot transition '{original}' from '{current_status}' "
+                            f"to implemented, skipping",
+                        )
+                        return
+                    self.state_machine.transition(
+                        original, "implemented",
+                        trigger_run_id=None, agent_type=None, channel="auto",
+                    )
+                    self.state_machine.update_spec(
+                        original,
+                        {
+                            "error": f"Re-verifying after fix: {spec_name}",
+                        },
+                    )
+                    self._enqueue(original, "verifier")
         finally:
             self._handling_events.discard(event_key)
-
-        # ── legacy：存量 fix-* SPEC 完成 → 父 SPEC 自动重验（D4 过渡期兼容）──
-        # 仅对 fix-* 链条生效；新裁决不再产生 fix-* 派生，待存量链收敛后自然耗尽。
-        # If this is a fix SPEC, re-trigger verification of the original SPEC
-        if spec_name.startswith("fix-"):
-            # 剥离 fix- 前缀逐级生成的候选根名；取「最深且存在」的候选，避免
-            # 全剥光后根名本身也带 fix- 前缀（如 fix-dashboard-...）时定位失败，
-            # 导致父 SPEC 的 bug-found 永不闭环、full_scan 反复派生新 fix。
-            original = None
-            name = spec_name
-            candidates = []
-            while name.startswith("fix-"):
-                name = name[4:]
-                candidates.append(name)
-            for cand in reversed(candidates):
-                if self.state_machine.read_one(cand):
-                    original = cand
-                    break
-            if original is None:
-                self.logger.warning(
-                    "pm_engine",
-                    f"Fix done — no original SPEC found for '{spec_name}', skipping re-verify",
-                )
-                return
-            original_spec = self.state_machine.read_one(original)
-            if original_spec:
-                current_status = original_spec.get("status", "")
-                # 幂等保护：若父SPEC已在 testing（验证中），说明已有verifier在处理，跳过
-                # 注：父 spec 现在保持在 bug-found 等 fix（不再放置为 implementing）
-                if current_status == "testing":
-                    self.logger.info(
-                        "pm_engine",
-                        f"Fix done — original '{original}' already in 'testing', "
-                        f"skipping duplicate re-verify",
-                    )
-                    return
-                self.logger.info("pm_engine", f"Fix done — re-verifying original: {original}")
-                # 使用 transition 做状态转换；若当前状态无法直接转到 implemented，跳过
-                # （不再用 update_spec 兜底，那正是竞态覆写的根因）
-                if not self.state_machine.is_valid_transition(current_status, "implemented"):
-                    self.logger.info(
-                        "pm_engine",
-                        f"Fix done — cannot transition '{original}' from '{current_status}' "
-                        f"to implemented, skipping",
-                    )
-                    return
-                self.state_machine.transition(
-                    original, "implemented",
-                    trigger_run_id=None, agent_type=None, channel="auto",
-                )
-                self.state_machine.update_spec(
-                    original,
-                    {
-                        "error": f"Re-verifying after fix: {spec_name}",
-                    },
-                )
-                self._enqueue(original, "verifier")
 
     def _find_implementer_worktree(self, spec_name: str) -> Optional[Path]:
         """Find the active implementer worktree for a SPEC, or None."""
