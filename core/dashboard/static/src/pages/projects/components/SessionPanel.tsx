@@ -183,7 +183,17 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
     if (data.session) {
       sessionIdRef.current = data.session.id;
       setStarted(true);
-      setEnded(false);
+      // 快照终态扫描（code-review item 216ac3c40493）：与下方 onmessage 的
+      // session_ended 增量扫描单源化——会话可能在分面切离期间被停止/空闲
+      // 回收/进程退出，快照事件缓冲已含 session_ended（服务端 _terminate
+      // 先 append 终态再移除会话），只置 false 会让输入区与停止按钮误恢复
+      // 可用；命中终态时同步清 watchRegisteredRef（服务端会话已移除，此后
+      // 注销 watch 必 404）。
+      const snapshotEnded = (data.events || []).some(
+        (e) => e?.type === 'session_ended',
+      );
+      setEnded(snapshotEnded);
+      if (snapshotEnded) watchRegisteredRef.current = false;
       syncEvents(data.events || []);
       setTruncated(Boolean(data.truncated));
       setError('');
