@@ -1,7 +1,9 @@
 """core.dashboard.routes — Dashboard 路由子包（refactor-giant-classes D1/D3/D5/D6）。
 
 各组方法按资源拆分为 mixin，DashboardHandler 继承它们（D5：MRO 中
-资源组须排在 BaseHTTPRequestHandler 之前）。门面 re-export 全部公开名。
+资源组须排在 BaseHTTPRequestHandler 之前）。server.py 从各子模块直接
+导入 mixin；下方 __init__ 级 re-export 仅为包级导入便利/兼容保留，
+并非完整门面——新增 mixin（如 H11+）时须在此同步追加。
 """
 
 from .base import H0BaseMixin
