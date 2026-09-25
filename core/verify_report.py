@@ -391,14 +391,21 @@ def _render_bugs_section(bugs, scenario_evidence=None) -> list:
 
 
 def _md_cell(v, max_len=None) -> str:
-    """Markdown 表格单元格统一转义口径：竖线转义（可选超长截断）。
+    """Markdown 表格单元格统一转义口径：竖线与换行转义（可选超长截断）。
 
     场景结果表与断言级豁免清单共用：status/classification 等列源自裁决
-    自由文本，含竖线时会撑破 Markdown 表格列，故所有插值列同口径转义。
+    自由文本，含竖线时会撑破 Markdown 表格列，故所有插值列同口径转义；
+    换行（\\r\\n/\\r/\\n）折叠为空格，保证单元格永不跨行。
     max_len 仅承载豁免清单证据列的既有截断行为（>160 截为 157+"..."），
     其余列不引入新截断。
     """
-    text = str(v).replace("|", "\\|")
+    text = (
+        str(v)
+        .replace("\r\n", " ")
+        .replace("\r", " ")
+        .replace("\n", " ")
+        .replace("|", "\\|")
+    )
     if max_len is not None and len(text) > max_len:
         text = text[: max_len - 3] + "..."
     return text
