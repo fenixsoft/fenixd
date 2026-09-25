@@ -931,9 +931,18 @@ def runs_retention_check(project_root, config: dict | None = None, logger=None) 
     archive_dir = runs_dir / "archive"
     try:
         if archive_dir.is_dir():
+            def _mtime_asc_key(p):
+                # 单文件 stat 失败（并发删除/移动等 OSError 子类）只回退 mtime 0
+                # （升序排到最前＝最旧优先删除方向，unlink 失败由逐条 OSError 承
+                # 接），不放大为放弃本周期整轮归档清理。
+                try:
+                    return p.stat().st_mtime
+                except OSError:
+                    return 0.0
+
             archive_files = sorted(
                 (p for p in archive_dir.glob("*.jsonl")),
-                key=lambda p: p.stat().st_mtime,
+                key=_mtime_asc_key,
             )
             archive_total = len(archive_files)
             excess = archive_total - keep

@@ -439,11 +439,17 @@ STORED_SIGNAL_TYPES = (
 
 # run_id 前缀 → 计入"失败 run"的 agent 类型（失败计数专用子集）
 # ⚠️ 真源 = core/agent_runner/run_files.py:RUN_ID_AGENT_PREFIXES（新增 run 前缀
-# 只改那里）；本表是它的**子集**——只列计入失败统计的前缀（planner-/test- 不计）。
+# 只改那里）；本表是它的**子集**——只列计入失败统计的前缀（裸 `planner-`/
+# `test-` 不计；细前缀 `planner-plan-`/`planner-judge-` 计入）。
 # orphaned-state-probe-calibration：前缀归一（_spec_from_run_id）已改用真源全量
 # 前缀表，本表**只**服务失败计数（_detect_repeated_failures 显式传入），不再服务
-# 活跃度/归属判定。`repair-` 属实现通道（失败即实现失败）已补入；`planner-`/
-# `test-` 仍不计入（不得随归一扩大计数口径——design 1 拆分约束）。
+# 活跃度/归属判定。`repair-` 属实现通道（失败即实现失败）已补入；裸 `planner-`/
+# `test-` 仍不计入（不得随归一扩大计数口径——design 1 拆分约束，计入/不计入
+# 边界由 tests/test_admin.py::TestFailurePrefixSubset 锁定）。`planner-plan-`/
+# `planner-judge-` 属既有 planner 细前缀、自初版即计（同测试锁定）；`admin-`
+# 自初版收录——run_id 形如 admin-<spec>-<ts>（core/agent_runner/
+# maintenance_runs.py），处置 run 失败同样还原到被处置 spec 计数。
+# [fenix-ignore:847c916d468e] design 1 拆分约束口径即「裸 planner-/test- 不计、细前缀 planner-plan-/planner-judge- 自初版即计」（TestFailurePrefixSubset 锁定），上方注释已逐项区分并写明 admin- 收录理由，注释与代码一致
 _RUN_PREFIXES = (
     "impl-",
     "verify-",
@@ -555,14 +561,56 @@ def _is_admin_run_id(stem: str) -> bool:
     return False
 
 
+# [fenix-ignore:7514e3abee76] 三处归并已由 commit 9362f29b 收敛为单点本函数（spec/signal_type/exclude_run_id 以参传入），条目所述三份手写副本在当前代码不成立
+def _merge_admin_runs(records, spec=None, signal_type=None, exclude_run_id=None) -> dict:
+    """DISPOSITION 记录按 ``admin_run_id`` 归并（单一实现，勿二次漂移）。
+
+    三处在飞/孤儿判定共用同一归并本体（``_spec_has_active_admin_run`` /
+    ``AdminMonitor._has_active_admin_run_for`` /
+    ``_recover_orphaned_dispositions`` 的孤儿扫描），差异仅在过滤条件，
+    以参数传入（None = 不过滤）：
+
+      - ``spec`` / ``signal_type``：按记录字段精确相等过滤；
+      - ``exclude_run_id``：剔除该 run（重派判定排除正被孤儿处理的中断
+        run 自身——其 pending 记录是考察对象，不得自证「已有在飞 run」）。
+
+    返回 ``{admin_run_id: {"final": bool, "has_pending": bool, "rec": dict}}``：
+    组内出现任一非 pending 记录即 ``final=True``（已终结 run 含
+    superseded/interrupted/escalated 终结后仍滞留 store 的 pending 记录均
+    算终结）；``rec`` 为该 run 首条记录（孤儿扫描读 created/spec/
+    signal_type 用，final 组不会被消费）。在飞 = 组 ``has_pending`` 且非
+    ``final``。
+    """
+    by_run: dict = {}
+    for rec in records:
+        if rec.get("kind") != DISPOSITION:
+            continue
+        if signal_type is not None and rec.get("signal_type") != signal_type:
+            continue
+        if spec is not None and rec.get("spec") != spec:
+            continue
+        rid = rec.get("admin_run_id")
+        if not rid:
+            continue
+        if exclude_run_id is not None and rid == exclude_run_id:
+            continue
+        status = rec.get("status") or rec.get("result")
+        info = by_run.setdefault(rid, {"final": False, "has_pending": False, "rec": rec})
+        if status == "pending":
+            info["has_pending"] = True
+        else:
+            info["final"] = True
+    return by_run
+
+
 def _spec_has_active_admin_run(store, spec: str, logger=None) -> bool:
     """该 spec 是否存在在飞/待派发的 Administrator run（任意 signal_type）。
 
     fix-recovery-path-blockers D2：按 ``(spec)`` 单键聚合 store 中
-    ``kind == DISPOSITION`` 的记录，复用 ``_has_active_admin_run_for`` 的
-    by_run 归并口径（某 ``admin_run_id`` 组 ``has_pending`` 且无终结兄弟
-    记录才算在飞——已终结 run 含 superseded/interrupted/escalated 终结后
-    仍滞留 store 的 pending 记录均不算）——但**去掉 signal_type 过滤**：
+    ``kind == DISPOSITION`` 的记录，by_run 归并委托 ``_merge_admin_runs``
+    （某 ``admin_run_id`` 组 ``has_pending`` 且无终结兄弟记录才算在飞——
+    已终结 run 含 superseded/interrupted/escalated 终结后仍滞留 store 的
+    pending 记录均不算），不传 signal_type 过滤：
     admin 处置的 signal_type 可能是 ``verify_env_blocked`` /
     ``manual-intervention`` / ``stuck``，不只有 ``orphaned_state``，
     按 ``(spec, signal_type)`` 精确匹配会漏。
@@ -582,21 +630,7 @@ def _spec_has_active_admin_run(store, spec: str, logger=None) -> bool:
                 f"{type(e).__name__}: {e}",
             )
         return False
-    by_run: dict = {}
-    for rec in records:
-        if rec.get("kind") != DISPOSITION:
-            continue
-        if rec.get("spec") != spec:
-            continue
-        rid = rec.get("admin_run_id")
-        if not rid:
-            continue
-        status = rec.get("status") or rec.get("result")
-        info = by_run.setdefault(rid, {"final": False, "has_pending": False})
-        if status == "pending":
-            info["has_pending"] = True
-        else:
-            info["final"] = True
+    by_run = _merge_admin_runs(records, spec=spec)
     return any(info["has_pending"] and not info["final"] for info in by_run.values())
 
 
@@ -2641,34 +2675,22 @@ class AdminMonitor:
     def _has_active_admin_run_for(self, spec, signal_type: str, exclude_run_id: Optional[str] = None) -> bool:
         """同 (spec, signal_type) 是否已有在飞/待派发的 admin run。
 
-        判据刻意对齐 _recover_orphaned_dispositions 自身的 by_run 归并口径
-        （同款 `status == "pending"`）：一个 run 只有在「存在 pending 记录
-        且无任何非 pending 兄弟记录」时才视为在飞——已终结 run（含被
-        superseded/interrupted/escalated 终结的原 pending 记录仍滞留 store
-        的形态）不算在飞。据此为「已有在飞 run 的信号」去重，避免双重派发。
+        判据与 _recover_orphaned_dispositions 的 by_run 归并同源（归并本体
+        单点 ``_merge_admin_runs``，勿二次漂移）：一个 run 只有在「存在
+        pending 记录且无任何非 pending 兄弟记录」时才视为在飞——已终结
+        run（含被 superseded/interrupted/escalated 终结的原 pending 记录
+        仍滞留 store 的形态）不算在飞。据此为「已有在飞 run 的信号」去重，
+        避免双重派发。
 
         exclude_run_id：重派判定时排除「正被孤儿处理的中断 run」自身——其
         pending 记录是本判定的考察对象，不得把自己误判为「已有在飞 run」。
         """
-        by_run: dict = {}
-        for rec in self.store.read_all():
-            if rec.get("kind") != DISPOSITION:
-                continue
-            if rec.get("signal_type") != signal_type:
-                continue
-            if rec.get("spec") != spec:
-                continue
-            rid = rec.get("admin_run_id")
-            if not rid:
-                continue
-            if exclude_run_id is not None and rid == exclude_run_id:
-                continue
-            status = rec.get("status") or rec.get("result")
-            info = by_run.setdefault(rid, {"final": False, "has_pending": False})
-            if status == "pending":
-                info["has_pending"] = True
-            else:
-                info["final"] = True
+        by_run = _merge_admin_runs(
+            self.store.read_all(),
+            spec=spec,
+            signal_type=signal_type,
+            exclude_run_id=exclude_run_id,
+        )
         return any(info["has_pending"] and not info["final"] for info in by_run.values())
 
     def _has_active_admin_run_for_spec(self, spec) -> bool:
@@ -2736,17 +2758,9 @@ class AdminMonitor:
         records = self.store.read_all()
         grace = max(self.cooldown_minutes, 1) * 60
         now = time.time()
-        by_run: dict = {}
-        for rec in records:
-            if rec.get("kind") != DISPOSITION:
-                continue
-            rid = rec.get("admin_run_id")
-            if not rid:
-                continue
-            status = rec.get("status") or rec.get("result")
-            by_run.setdefault(rid, {"final": False, "rec": rec})
-            if status != "pending":
-                by_run[rid]["final"] = True
+        # by_run 归并单点在 _merge_admin_runs（三处共用，勿二次漂移）；
+        # 本消费方不过滤，只取每组首条记录与 final 标记。
+        by_run = _merge_admin_runs(records)
 
         for rid, info in by_run.items():
             if info["final"]:

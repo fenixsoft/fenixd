@@ -796,8 +796,15 @@ class FFastTrackMixin:
                     designed_ids = [
                         s.get("id") for s in sc_data if isinstance(s, dict) and s.get("id")
                     ]
-            except (OSError, json.JSONDecodeError):
-                pass
+            except (OSError, json.JSONDecodeError) as e:
+                # 覆盖门降级 MUST 留痕（code-review item 75770d2d2cc6）：静默
+                # 吞掉会使 designed_ids 保持空 → validate 按 None 跳过全量执行
+                # 比对，fail-closed 硬校验无声退化为仅结构校验。
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"fast-track 读取 test_scenarios.json 失败 '{spec_name}'"
+                    f"（按无设计集降级，仅做结构与证据校验）: {type(e).__name__}: {e}",
+                )
 
         check = validate_fast_track_result(ft_result, designed_ids or None)
         # （fix-fasttrack-recovery-resume 4.1 出口矩阵：硬校验失败重派分支）

@@ -287,6 +287,12 @@ class FenixDaemon:
         # 两者均以 getattr 读取，容忍未走 initialize 的裸对象（既有测试形态）。
         self._cooldown_started_at = None
         self._self_triggered_cycle = False
+        # _selfheal_loop_alerted 标记「本重启循环已升过 stale_selfheal_loop
+        # critical 告警」：边沿判定为 streak >= threshold（阈值经热更新可被调低
+        # 于已累计 streak，等值判定将令告警永久静默），靠本标记去重防逐周期
+        # 重复堆积；循环断裂处（streak 归零/陈旧解除）一并复位，下一循环不受
+        # 旧标记压制。以 getattr 读取，容忍未走 initialize 的裸对象。
+        self._selfheal_loop_alerted = False
         # 收口幂等守卫（fix-supervisor-hosting-chain 验证修复 BUG-01）：supervisor
         # 见 stop flag 会主动 SIGTERM daemon（停止协作），与 stop_daemon 的 SIGTERM
         # 可能叠加成双重信号。Python 信号处理器在字节码边界打断主线程——若在第一次
@@ -1391,9 +1397,11 @@ class FenixDaemon:
         判定只由 _self_triggered_cycle 承载：窗口内重启的 +1 等价于该标记，距上条
         ≥ window 的归零等价于标记为空——无须再比对 gap（那样得到的恒为同一结论）。
 
-        streak 达 threshold 的那一次（边沿）经 AdminStore 升
+        streak 达 threshold 起（>= 判定：阈值经热更新可被调低于已累计 streak，
+        等值判定将令 critical 告警永久静默）经 AdminStore 升
         ``signal_type: stale_selfheal_loop`` / ``severity: critical`` 告警——
-        不逐周期重复堆积同一循环的告警。
+        以「本循环已告警」标记去重，不逐周期重复堆积同一循环的告警；标记在
+        循环断裂处（streak 归零/陈旧解除）复位，下一循环不受旧标记压制。
         """
         prev_streak = int(history[-1]["self_triggered_streak"]) if history else 0
         self_triggered = bool(getattr(self, "_self_triggered_cycle", False))
@@ -1406,7 +1414,11 @@ class FenixDaemon:
             }
         )
         self._self_triggered_cycle = False
-        if streak == threshold:
+        if not self_triggered:
+            # 循环已断（streak 归零）：解除「本循环已 critical 告警」去重标记
+            self._selfheal_loop_alerted = False
+        if streak >= threshold and not getattr(self, "_selfheal_loop_alerted", False):
+            self._selfheal_loop_alerted = True
             self._alert_selfheal_loop(streak, threshold, window)
         return streak
 
@@ -1657,13 +1669,15 @@ class FenixDaemon:
         """
         req = PROJECT_ROOT / ".fenix" / "restart_request"
         if not self._code_stale:
-            # 状态解除：清零计时与边沿记忆，恢复正常（自触发周期随陈旧一并收尾）
+            # 状态解除：清零计时与边沿记忆，恢复正常（自触发周期随陈旧一并收尾）；
+            # stale_selfheal_loop 去重标记一并复位（循环随陈旧解除终结）
             self._stale_idle_since = None
             self._heal_block_reason = None
             self._self_triggered_cycle = False
             # evo-add-stale-code-dangling-deadline 2.3：悬空周期收尾，超时防重复
             # 写标志一并复位（下一悬空周期允许再次超时触发）。
             self._dangling_timeout_fired = False
+            self._selfheal_loop_alerted = False
             return
 
         now = time.time()

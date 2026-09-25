@@ -1107,19 +1107,42 @@ class PMEngine:
         目标 run 由本车道派发、本车道属主停止（cancel_run 文档的调用方限制指
         transition/recovery/gate/freeze 等旁链不得越权终止他人 run；车道对自己
         派发的 run 做生命周期收尾正是该原语的本职用法，任务 1.2 明示「既有取消
-        路径」）。冻结回退不经此处：freeze 后 runner 轮询环按 spec frozen 态
+        路径」）。取消键 MUST 为完整 run 级 id（含 epoch，形如
+        ``planner-plan-<spec>-<epoch>``）：裸 ``planner-plan-<spec>`` 经
+        ``_normalize_run_id`` 归一（不剥 epoch）后与消费点的带 epoch 键不收敛，
+        取消静默失效（code-review item 794e218ce816，照 ``_reclaim_verify_lane``
+        同款约束）。冻结回退不经此处：freeze 后 runner 轮询环按 spec frozen 态
         自动终止在飞 run（add-freeze-stop-inflight-agents 既有机制）。
         """
         try:
             removed = self._dispatcher._remove_queued_entry(spec_name, "planner-plan")
-            cancel_ret = self.agent_runner.cancel_run(
-                f"planner-plan-{spec_name}", reason=reason, by="parallel-plan-lane"
-            )
-            if removed or cancel_ret.get("status") == "cancel_requested":
+            cancelled: list[str] = []
+            runner = getattr(self, "agent_runner", None)
+            if runner is not None:
+                # list(...) 快照迭代（对齐 cancel_run/轮询环的快照口径）
+                for aid in list(getattr(runner, "_running_agents", {}).keys()):
+                    agent_type, _ = infer_run_agent_type(aid)
+                    if agent_type != "planner-plan":
+                        continue
+                    # 归属复核以 run_spec_part 全等为准（防 startswith 裸前缀
+                    # 误中同根后代 spec 的 run）；planner-plan run id 形如
+                    # ``planner-plan-<spec>-<epoch>``，剥前缀与时间戳后即 <spec>
+                    if run_spec_part(aid) != spec_name:
+                        continue
+                    # 完整 run 级 id：剥 attempt/瞬态重试后缀，保留 epoch
+                    run_level_id = strip_run_id_suffixes(aid)
+                    if run_level_id in cancelled:
+                        continue
+                    ret = runner.cancel_run(
+                        run_level_id, reason=reason, by="parallel-plan-lane"
+                    )
+                    if ret.get("status") == "cancel_requested":
+                        cancelled.append(run_level_id)
+            if removed or cancelled:
                 self.logger.info(
                     "pm_engine",
                     f"并行出题已停止（{reason}）: {spec_name} "
-                    f"(queued_removed={removed}, cancel={cancel_ret.get('status')})",
+                    f"(queued_removed={removed}, cancelled={cancelled})",
                 )
         except Exception as e:
             self.logger.warning(

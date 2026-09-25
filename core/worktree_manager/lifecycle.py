@@ -448,13 +448,18 @@ class G1LifecycleMixin:
         except subprocess.TimeoutExpired:
             return False
 
+    # [fenix-ignore:880e75c5874f] 条目过时：docstring 现行文案已写明 implementer 失败走 register_legacy 遗产保留不删分支，仅非实现者失败路径才 branch -D
     def cleanup(self, wt_path: Path, success: bool = True):
         """
         Clean up a worktree after an Agent run.
 
         Args:
             wt_path: Path to the worktree to clean up
-            success: If True, retain the branch; if False, delete branch too
+            success: If True, retain the branch. If False, an implementer
+                branch is NOT deleted: it is registered as legacy via
+                register_legacy, keeping the worktree and branch for
+                successor runs to consume; only non-implementer (e.g.
+                verifier) failures delete the branch too (`branch -D`)
         """
         wt_str = str(wt_path)
         if wt_str not in self._active_worktrees:

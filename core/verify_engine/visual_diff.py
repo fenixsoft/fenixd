@@ -163,22 +163,45 @@ class VisualDiffer:
             return merged
 
         def _compare_once() -> list[dict]:
-            """单次对比（SSIM，skimage 不可用时降级像素对比）。"""
+            """单次对比（SSIM，skimage 不可用时降级像素对比）。
+
+            解码失败（基线/当前截图损坏或非图像文件）不向上抛：返回
+            status='error' 结构化结果，首次对比与重拍循环两条路径同被覆盖。
+            """
             try:
-                return self._ssim_compare(
-                    baseline_path,
-                    current_path,
-                    baseline_name,
-                    scenario_id,
-                    screenshots_dir,
-                )
-            except ImportError:
-                return self._pixel_fallback_compare(
-                    baseline_path,
-                    current_path,
-                    baseline_name,
-                    scenario_id,
-                )
+                try:
+                    return self._ssim_compare(
+                        baseline_path,
+                        current_path,
+                        baseline_name,
+                        scenario_id,
+                        screenshots_dir,
+                    )
+                except ImportError:
+                    return self._pixel_fallback_compare(
+                        baseline_path,
+                        current_path,
+                        baseline_name,
+                        scenario_id,
+                    )
+            except (OSError, ValueError) as e:
+                # ImportError 兜底接不住解码异常（PIL 的 UnidentifiedImageError
+                # 属 OSError 子系，skimage 对损坏文件多抛 ValueError）——落盘
+                # 中断等导致的坏图返回结构化 error 结果（与 size_mismatch/
+                # skipped 同型），不击穿整场验证。
+                return [
+                    {
+                        "baseline": baseline_name,
+                        "status": "error",
+                        "ssim": None,
+                        "pass": False,
+                        "detail": (
+                            "截图读取/解码失败，视觉对比不可用: "
+                            f"{type(e).__name__}: {e}"
+                        ),
+                        "scenario_id": scenario_id,
+                    }
+                ]
 
         # 截取当前页面（截图前动画静置——opacity 渐变动画只有 getAnimations
         # 能判定，CLS 布局偏移对纯淡入不敏感，见 _wait_stable 注释）
@@ -253,6 +276,9 @@ class VisualDiffer:
             ]
 
         # 执行对比（首次）
+        # [fenix-ignore:7cf3ba96236e] 问题已由提交 9362f29b 修复：_compare_once
+        # 内层已有 (OSError, ValueError) 解码异常兜底，返回与 size_mismatch/
+        # skipped 同型的 status='error' 结构化结果，首次调用与重拍循环均覆盖。
         results = _compare_once()
         best = results[0]
 
