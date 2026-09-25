@@ -1013,12 +1013,34 @@ class G4MergebackMixin:
                         timeout=120,
                     )
             if result.returncode == 0:
-                self._drop_backup(backup)
+                # merge 已落地（HEAD 前移、内容已进主树，code-review item
+                # 9518e4be1085）：以下三个辅助步骤只做清理/重建，任何抛错仅
+                # warning 降级——不得落入文件末尾通用 except 被误报成合回冲突
+                # （否则调用方按冲突清理 worktree，主树与台账状态从此分叉）。
+                try:
+                    self._drop_backup(backup)
+                except Exception as e:  # noqa: BLE001 — 清理失败不否定已落地的 merge
+                    self.logger.warning(
+                        "worktree_manager",
+                        f"merge-back 后备份清理意外失败（保留备份供人工裁决）：{e}",
+                    )
                 # merge 成功后把随分支带回 tracked 的 ignored 草稿移出（防撞车循环重启）
                 if head_before:
-                    self._purge_ignored_brought_in(head_before)
+                    try:
+                        self._purge_ignored_brought_in(head_before)
+                    except Exception as e:  # noqa: BLE001 — 清理失败不否定已落地的 merge
+                        self.logger.warning(
+                            "worktree_manager",
+                            f"merge-back 后 ignored 草稿清理意外失败（忽略继续）：{e}",
+                        )
                 # dist 冲突根治 B：触碰 static src 的 merge 从合并后 src 重建 dist
-                self._rebuild_dist_after_merge()
+                try:
+                    self._rebuild_dist_after_merge()
+                except Exception as e:  # noqa: BLE001 — 重建失败不否定已落地的 merge
+                    self.logger.warning(
+                        "worktree_manager",
+                        f"merge-back 后 dist 重建意外失败（忽略继续）：{e}",
+                    )
                 self.logger.info(
                     "worktree_manager",
                     f"Merged branch '{branch}' into main tree",
