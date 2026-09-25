@@ -90,7 +90,7 @@ function signalTag(signalType?: string) {
 function ActivityCard({ a, onViewRun, isMobile }: { a: ActivityItem; onViewRun?: (a: ActivityItem) => void; isMobile?: boolean }) {
   const unhandled = a.handled === false;
   // fix-admin-disposition-empty-shell：失败处置自解释——error 携带 CLI 失败原因，
-  // 空 summary 兜底文案同步附带 error，空壳卡片（仅时间+spec）不再出现。
+  // 由下方独立红色区块渲染一次；空 summary 兜底行只保留处置/结果，避免重复。
   const errText = a.error || '';
 
   // 移动端渐进披露：isMobile && summary.length > 300 时折叠
@@ -116,9 +116,7 @@ function ActivityCard({ a, onViewRun, isMobile }: { a: ActivityItem; onViewRun?:
     </div>
   ) : (
     <div style={{ ...PRE_WRAP, marginBottom: 8, color: '#8c8c8c' }}>
-      {errText
-        ? `（无叙述总结）失败原因：${errText} · 结果：${a.result || '—'}`
-        : `（无叙述总结）处置：${a.actions_taken || '—'} · 结果：${a.result || '—'}`}
+      {`（无叙述总结）处置：${a.actions_taken || '—'} · 结果：${a.result || '—'}`}
     </div>
   );
 
