@@ -473,6 +473,19 @@ def _run_terminal_success(project_root, run_id: str) -> Optional[bool]:
     return str(terminal).strip().lower() == "success"
 
 
+def _is_phantom_signal_failure(project_root, run_id: str, detail: str) -> bool:
+    """双源交叉守卫（evo-fix-self-review-phantom-failed-samples 2.2/2.3）：
+    信号路径命中（detail 前缀 signal=）而 daemon 侧 run_metrics 终态为
+    terminal=success（正常 result 收尾即记 success，与 result 文本无关）→
+    幻影失败。collect_runs_stats（计数侧改计 succeeded）与
+    collect_failed_run_samples（样本侧排除并改写告警）共用本判定，守卫条件
+    单点维护、计数与样本口径一致：marker= 命中（假成功抓取）与 error 终态
+    失败 MUST NOT 纳入守卫；索引查不到该 run 终态时维持现状（False）计入，
+    不因缺数据改判。
+    """
+    return detail.startswith("signal=") and _run_terminal_success(project_root, run_id) is True
+
+
 def _record_phantom_failure_alert(store, logger, run_id: str, detail: str) -> None:
     """幻影失败告警（self_review_phantom_failure，warning、不自动 mark_handled）。
 
@@ -517,10 +530,12 @@ def collect_runs_stats(project_root, window_start: datetime) -> Dict[str, int]:
     self-review run 自身。
 
     窗口 = [window_start, window_end]，其中 window_end 为函数入口时冻结的
-    datetime.now() 快照值，聚合执行期间不再调用实时时钟判定窗口归属。按 run_id
-    内嵌开始时间戳判定归属（缺失回退文件 mtime），与 get_runs 的解析口径一致。
-    统计源为当前目录 + 归档目录并集（archive 目录不存在时忽略），同 run_id
-    当前目录优先去重。产物文件只读，不触发任何写操作。
+    datetime.now() 快照值，聚合执行期间不再调用实时时钟判定窗口归属。窗口
+    遍历、归窗、分类与双源守卫与 collect_failed_run_samples 消费同一份共享
+    产出（_iter_window_classified_runs + _is_phantom_signal_failure，口径
+    单点维护，code-review item 45181d22b901）。统计源为当前目录 + 归档目录
+    并集（archive 目录不存在时忽略），同 run_id 当前目录优先去重。产物文件
+    只读，不触发任何写操作。
     """
     # 快照化：聚合启动时冻结窗口上界
     window_end = datetime.now()
@@ -534,41 +549,21 @@ def collect_runs_stats(project_root, window_start: datetime) -> Dict[str, int]:
         "dropped": 0,
         "running": 0,
     }
-    runs_dir = Path(project_root) / ".fenix" / "runs"
-    if not runs_dir.is_dir():
-        return counts
-    files = _collect_run_files(runs_dir)
-    for p in files:
-        run_id = p.stem
-        if run_id.startswith("review-"):
-            continue  # 自省 run 不审视自身
-        try:
-            stat = p.stat()
-        except OSError:
-            continue
-        start_ts = _run_start_ts(run_id)
-        ts = start_ts if start_ts is not None else int(stat.st_mtime)
-        if not _in_window(datetime.fromtimestamp(ts), window_start, window_end):
-            continue
-        category, detail = _classify_run(run_id, _read_run_tail(p, 3))
+    for run_id, _p, _ts, category, detail in _iter_window_classified_runs(
+        project_root, window_start, window_end
+    ):
         # 判定口径（result-based classification）：succeeded 以 _classify_run 的
-        # result 分支判定结果为准——result 文本未命中 _business_fail_marker 且
-        # 终态邻近事件行（尾 3 行中排除 result 终态正文及其 assistant 回声行）
-        # 未命中 _signal_evidence 即计为 succeeded，不引入成功语义文本
-        # 白名单（朴素文本如「已退出」同样计为 succeeded）。接受项边界：信号词
-        # 位于终态邻近 3 行之外时不再翻转分类（原先由全文件扫描捕获）；实证上
-        # 盲派空 spec run 的失败凭据是 result 文本命中 marker（marker 路径保留），
-        # 不依赖全文件扫描。本函数无 detail 输出通道，MUST NOT 追加 _scan_run_signals
-        # 改写 category——running/dropped/timeout/instant_hang 桶位保持不变。
-        # 双源交叉守卫（evo-fix-self-review-phantom-failed-samples 2.3）：仅对
-        # 信号路径命中（detail 前缀 signal=）的 failed 比对 daemon 侧 terminal。
-        # terminal=success（正常 result 收尾即记 success，与 result 文本无关）
-        # → 幻影失败，改计 succeeded（不计失败统计）。marker= 命中（假成功
-        # 抓取）与 error 终态失败照常计入；索引查不到该 run 终态时维持现状
-        # 计入，不因缺数据改判。
-        if category == "failed" and detail.startswith("signal="):
-            if _run_terminal_success(project_root, run_id) is True:
-                category = "succeeded"
+        # result 分支判定结果为准，不引入成功语义文本白名单（朴素文本如
+        # 「已退出」同样计为 succeeded）。本函数无 detail 输出通道，MUST NOT
+        # 追加 _scan_run_signals 改写 category——running/dropped/timeout/
+        # instant_hang 桶位保持不变。
+        # 双源交叉守卫（与样本侧共用 _is_phantom_signal_failure）：仅对信号
+        # 路径命中（detail 前缀 signal=）的 failed 比对 daemon 侧 terminal，
+        # terminal=success 即幻影失败，改计 succeeded（不计失败统计）；
+        # marker= 命中（假成功抓取）与 error 终态失败照常计入；索引查不到
+        # 该 run 终态时维持现状计入，不因缺数据改判。
+        if category == "failed" and _is_phantom_signal_failure(project_root, run_id, detail):
+            category = "succeeded"
         counts["total"] += 1
         counts[category] += 1
     return counts
@@ -582,8 +577,9 @@ def collect_failed_run_samples(
     返回 ``[{run_id, detail}]``：detail 为命中的业务失败标记（marker=...）或
     结构性失败信号（signal=...）摘要；仅分类为 failed 的 run 入选。
     窗口快照化（同 collect_runs_stats），按 run_id 内嵌时间戳判定归属。
-    统计源与 collect_runs_stats 同一并集（当前目录 + 归档目录，同 run_id
-    当前目录优先去重），保证计数与样本口径一致。
+    统计源与 collect_runs_stats 消费同一份共享产出（_iter_window_classified_runs：
+    当前目录 + 归档目录并集，同 run_id 当前目录优先去重），保证计数与样本
+    口径一致。
 
     双源交叉守卫（evo-fix-self-review-phantom-failed-samples 2.2）：仅对信号
     路径命中（detail 前缀 signal=）的样本查 daemon 侧 run_metrics 终态；
@@ -597,23 +593,9 @@ def collect_failed_run_samples(
     window_end = datetime.now()
     samples: List[Dict[str, str]] = []
     ts_by_run: Dict[str, int] = {}
-    runs_dir = Path(project_root) / ".fenix" / "runs"
-    if not runs_dir.is_dir():
-        return samples
-    files = _collect_run_files(runs_dir)
-    for p in files:
-        run_id = p.stem
-        if run_id.startswith("review-"):
-            continue
-        try:
-            stat = p.stat()
-        except OSError:
-            continue
-        start_ts = _run_start_ts(run_id)
-        ts = start_ts if start_ts is not None else int(stat.st_mtime)
-        if not _in_window(datetime.fromtimestamp(ts), window_start, window_end):
-            continue
-        category, detail = _classify_run(run_id, _read_run_tail(p, 3))
+    for run_id, p, ts, category, detail in _iter_window_classified_runs(
+        project_root, window_start, window_end
+    ):
         # 判定口径（result-based classification）：succeeded 以 _classify_run 的
         # result 分支判定结果为准（不引入成功语义文本白名单），成功终态不入选
         # 失败样本；接受项边界：终态邻近 3 行之外的主题词不再翻转分类。
@@ -627,13 +609,12 @@ def collect_failed_run_samples(
             if sig:
                 detail = sig
         if category == "failed" and detail:
-            # 双源交叉守卫：terminal=success 而信号路径判 failed → 幻影失败，
-            # 不计入失败样本、改写 phantom 告警（不自动 handled）；marker=
-            # 命中与 error 终态失败不在守卫之列；索引查不到该 run 终态时
-            # 维持现状计入，不因缺数据改判。
-            if detail.startswith("signal=") and (
-                _run_terminal_success(project_root, run_id) is True
-            ):
+            # 双源交叉守卫（与计数侧共用 _is_phantom_signal_failure）：
+            # terminal=success 而信号路径判 failed → 幻影失败，不计入失败
+            # 样本、改写 phantom 告警（不自动 handled）；marker= 命中与
+            # error 终态失败不在守卫之列；索引查不到该 run 终态时维持现状
+            # 计入，不因缺数据改判。
+            if _is_phantom_signal_failure(project_root, run_id, detail):
                 _record_phantom_failure_alert(store, logger, run_id, detail)
                 continue
             samples.append({"run_id": run_id, "detail": detail})
@@ -694,7 +675,8 @@ _RESCUE_TRACE_PATTERNS = (
 
 
 def _iter_window_runs(project_root, window_start: datetime, window_end: datetime):
-    """产出窗口内 (run_id, 产物 Path)：当前目录 ∪ 归档并集，排除 review- 前缀。
+    """产出窗口内 (run_id, 产物 Path, 归属时间戳)：当前目录 ∪ 归档并集，排除
+    review- 前缀。
 
     口径同 collect_runs_stats：_collect_run_files 并集去重（同 run_id 当前目录
     优先），run_id 内嵌开始时间戳判定归属（缺失回退文件 mtime）。只读遍历。
@@ -713,7 +695,31 @@ def _iter_window_runs(project_root, window_start: datetime, window_end: datetime
         start_ts = _run_start_ts(run_id)
         ts = start_ts if start_ts is not None else int(stat.st_mtime)
         if _in_window(datetime.fromtimestamp(ts), window_start, window_end):
-            yield run_id, p
+            yield run_id, p, ts
+
+
+def _iter_window_classified_runs(project_root, window_start: datetime, window_end: datetime):
+    """窗口内 run 的分类产出，collect_runs_stats 与 collect_failed_run_samples
+    共用的单一口径源（code-review item 45181d22b901）：yield (run_id, 产物
+    Path, 归属时间戳, category, detail)。
+
+    遍历与归窗复用 _iter_window_runs；(category, detail) = _classify_run 读
+    尾 3 行。判定口径（result-based classification）两侧同源：succeeded 以
+    _classify_run 的 result 分支判定为准——result 文本未命中 _business_fail_marker
+    且终态邻近事件行（尾 3 行中剥除 result 终态正文及其 assistant 回声行后）
+    未命中 _signal_evidence 即计为 succeeded，不引入成功语义文本白名单；
+    接受项边界：信号词位于终态邻近 3 行之外时不再翻转分类（原先由全文件
+    扫描捕获）；实证上盲派空 spec run 的失败凭据是 result 文本命中 marker
+    （marker 路径保留），不依赖全文件扫描。
+
+    双源交叉守卫不在此收口：collect_failed_run_samples 在分类后、守卫前还有
+    一次 failed 空 detail 的全文件信号回填（_scan_run_signals），守卫判定须按
+    各自回填后的 detail 执行（_is_phantom_signal_failure）——若守卫前先行回填，
+    collect_runs_stats 对「error 终态空文本」run 的既有计数会被改写。
+    """
+    for run_id, p, ts in _iter_window_runs(project_root, window_start, window_end):
+        category, detail = _classify_run(run_id, _read_run_tail(p, 3))
+        yield run_id, p, ts, category, detail
 
 
 def _metrics_outlier_dims(metric: dict) -> dict:
@@ -758,7 +764,7 @@ def _collect_metrics_outliers(
         return []
 
     grouped: Dict[str, list] = {}
-    for run_id, path in _iter_window_runs(project_root, window_start, window_end):
+    for run_id, path, _ts in _iter_window_runs(project_root, window_start, window_end):
         try:
             metric = load_run_metric(project_root, run_id)
         except Exception:
