@@ -9,8 +9,8 @@
 ## D2 改动点
 
 - A 取消旗标跨 attempt 生效（runner.py:733-747）：not_running 分支改为按 base_id 登记旗标（复用 add-run-cancel 的 _normalize_run_id 归一化、_cancel_requested 幂等集合与 reason/by 元数据）后返回；返回值保留 status=not_running、附 flag_registered 字段。复活 attempt 的启动守卫（_attempt_top_guards，runner.py:3222 附近）已逐 attempt 查旗标，零新增轮询；run 收尾 _cancel_clear 幂等清理已有，无泄漏风险。
-- B retry 让位（runner.py:3151-3165 附近）：in-place retry 重派前对 planner-plan 增查并行出题标记 status 为 discarded 或 quarantined 即放弃。runner 不依赖 pm_engine——沿 result_gate 的注入约定新增标记读取回调（缺省 None 时视为无标记、行为不变），engine 侧装配时注入既有 _read_parallel_plan_marker。
-- C 停滞预算（runner.py:4121-4127 采样点旁）：latency_state 已逐轮累积往返时长，采样点旁判停。判据：run 内连续 N 次以上达到 120 秒的往返，或 stall 占比达到一半且超过 M 分钟无产物 mtime 进展（产物路径取 run 既有 results 约定）；开关与 N、M 经 ConfigLoader.get 点号键 agents.run_stall_budget_enabled、agents.run_stall_budget_stalls、agents.run_stall_budget_window_minutes 读取，core/config.py 规范化，缺省关闭。触发走既有 attempt 终止与清理路径，终态日志记录命中判据；不新增 admin 告警，离群沿 add-self-review-midflight-signals 既有日汇总浮现。
+- B retry 让位（runner.py:3151-3165 附近）：in-place retry 重派前对 planner-plan 增查并行出题标记 status 为 discarded 即放弃（评审核正：标记实际枚举 dispatched/failed/discarded/completed，无 quarantined 值；产物隔离与 discarded 标记写入伴生，discarded 单值即覆盖隔离与转串行）。runner 不依赖 pm_engine——沿 result_gate 的注入约定新增标记读取回调（缺省 None 时视为无标记、行为不变），engine 侧装配时注入既有 _read_parallel_plan_marker。
+- C 停滞预算（runner.py:4121-4127 采样点旁）：latency_state 已逐轮累积往返时长，采样点旁判停。判据：run 内连续 N 次以上达到 120 秒的往返，或 stall 占比达到一半且超过 M 分钟无产物 mtime 进展（产物路径取 run 既有 results 约定）；开关与 N、M 经 ConfigLoader.get 点号键 agents.run_stall_budget_enabled、agents.run_stall_budget_stalls、agents.run_stall_budget_window_minutes 读取，core/config.py 规范化，缺省关闭。触发走既有 attempt 终止与清理路径，终态日志记录命中判据；判停统计随 run 生命周期累积（latency_state 现为单次 _run_claude 作用域，runner.py:4021，需提升为 run 级聚合），命中即终止整个重试链、不再触发瞬态重试或 in-place retry；不新增 admin 告警，离群沿 add-self-review-midflight-signals 既有日汇总浮现。
 
 ## D3 权衡与风险
 
