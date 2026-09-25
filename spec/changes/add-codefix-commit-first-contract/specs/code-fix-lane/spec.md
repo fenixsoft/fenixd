@@ -1,12 +1,29 @@
 # code-fix-lane delta：先 commit 再验证契约与 salvage 兜底
 
+本变更改写 `code-fix-lane` 能力「全量回归门与合回」requirement 的「零有效修复拒合回」
+分支（活源：`spec/changes/add-code-fix-batch-failure-selfheal/specs/code-fix-lane/spec.md`）：
+拒合回判定前新增 salvage 检测前置分支；其余 bullet（回归原语、worktree 执行、套件锁、
+门面透传、快照归属、merge-back 闸门、核销口径）语义逐字不变。
+
 ## MODIFIED Requirements
 
-### Requirement: 全量回归门与合回（零有效修复拒合回判定段）
+### Requirement: 全量回归门与合回
 
-原「零有效修复拒合回」判定前 MUST 先执行 salvage 检测（见 ADDED「收尾 salvage commit」）：
+每批修复 SHALL 经全量回归通过后才合回主树，MUST NOT 在回归未通过时合回。
 
-- **零有效修复拒合回**：批收尾判定时，若产物行无一条 `status == "fixed"`，或 worktree 分支相对建树点无任何提交**且 salvage 检测无可提交的未提交改动**时，MUST NOT 合回、MUST NOT 置任何条目 `resolved`（`merge_back` 对「分支已是 HEAD 祖先」返回成功，无此守卫会把全 `skipped` 的批白洗成 `resolved`）；拒合回收尾 MUST 清理 worktree 并把该批条目写入进度快照 `chain_skipped`（链内跳过，语义见 `code-fix-batch-selfheal`），进度以非终态文案记原因 `no_effective_fix`，链继续推进下一批。
+- 回归 MUST 复用 `core.regression.run_regression` 执行原语与项目 `verify.yaml` 的 `regression` 段契约。
+- 回归 MUST 在**该批的 worktree 内**执行（针对该批修复后的代码）：执行根 = worktree，故 `run_regression` 的 `project_root` 参数取 worktree 路径。
+- 回归执行 MUST 与主树共用同一把主机级套件锁：调用 MUST 显式传 `lock_root=<主树根>`，使锁文件为 `<主树根>/.fenix/full-suite.lock`，保证同一主机同一时刻只跑一套全量测试。
+- 门面 `core/agent_runner/maintenance_runs.run_regression` SHALL 同时接受可选 `project_root`（缺省回落 `runner.project_root`）与 `lock_root`（缺省 `None`），二者透传至 `core.regression.run_and_write_regression` → `core.regression.run_regression`；既有调用点不传时语义逐字不变。
+- worktree 内回归的快照随执行根落盘于 worktree（门禁用途），MUST NOT 被当作主树「测试回归」分面的数据源。
+- 回归 `status == "passed"` 时 MUST 经 `worktree_manager.merge_back(wt)` 合回主树，MUST NOT 绕过既有 merge-back 闸门（merge-tree 预演 / WIP 重叠 / spec 目录在飞）。
+- 合回成功后 MUST 把该批中**产物行 `status == "fixed"`** 的条目按 `item_id` 精确置 `resolved`，MUST NOT 置未参与该批的条目，MUST NOT 置被 agent 判为 `skipped` 的条目。
+- **零有效修复拒合回**：批收尾判定时，若产物行无一条 `status == "fixed"`，或 worktree 分支相对建树点无任何提交**且 salvage 检测无可提交的未提交改动**（salvage 检测见 ADDED「收尾 salvage commit」）时，MUST NOT 合回、MUST NOT 置任何条目 `resolved`（`merge_back` 对「分支已是 HEAD 祖先」返回成功，无此守卫会把全 `skipped` 的批白洗成 `resolved`）；拒合回收尾 MUST 清理 worktree 并把该批条目写入进度快照 `chain_skipped`（链内跳过，语义见 `code-fix-batch-selfheal`），进度以非终态文案记原因 `no_effective_fix`，链继续推进下一批（零产物批按 halt 终止链会使最早队列头永久堵塞车道，违背批失败不堵塞的自愈目标）。
+
+#### Scenario: 回归通过则合回并核销
+
+- **WHEN** 第 1 批修复完成，产物行含 `status: fixed` 的条目，worktree 内全量回归 `status=passed`
+- **THEN** 框架 MUST 把该批分支 merge-back 主树，并把该批 `fixed` 条目置 `resolved`（`skipped` 条目 MUST 保持 `open`），进度 `done` MUST 按实际置 `resolved` 的条数增加
 
 #### Scenario: 零有效修复拒合回
 
