@@ -1,0 +1,17 @@
+# ── 单用例超时豁免清单（add-per-test-timeout-gate）─────────────────────────
+# 全局门：pytest.ini timeout=10（signal）。确需超过 10s 的用例必须在下方
+# entries 显式登记豁免——豁免必须显式留痕，禁止静默放宽。
+#
+# schema（三字段均必填；tests/test_timeout_gate.py::TestTimeoutAllowlistSchema
+# 机械校验，任一违规即测试失败）：
+#   - nodeid:          pytest 完整节点 ID，与 `pytest --collect-only -q` 输出
+#                      逐字一致（参数化用例含 [参数] 后缀）
+#   - timeout_seconds: 豁免后的单用例超时秒数，正数（>0）
+#   - reason:          为何 10s 不够——写明等什么/多长（缺失或为空即违规）
+#
+# 示例（复制后填真实值，勿原样提交）：
+# entries:
+#   - nodeid: tests/test_something.py::TestFoo::test_bar
+#     timeout_seconds: 30
+#     reason: 该用例起真实子进程并等待 20s 排水窗口，10s 不够
+entries: []
