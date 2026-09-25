@@ -17,10 +17,12 @@ DEFAULT_GATEWAY_MODEL 随 `_get_admin_model` 同迁本模块（D2b 规则 3）�
 均由 runner.py re-export（D2b 规则 4）。
 """
 
+import dataclasses
 import fcntl
 import hashlib
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -1392,7 +1394,97 @@ def _unique_regression_run_id(runner) -> str:
         return candidate
 
 
-def run_regression(runner, spec, reason: str = "manual", project_root=None, lock_root=None) -> RegressionResult:
+# pytest 中需要独立参数值（空格分隔形态）的选项（add-codefix-targeted-retry 2.1）：
+# 收集目标判定时这些选项的**值**不是收集目标。``--opt=value`` 等号形态天然是
+# 单 token 且以 ``-`` 开头，不进此判定。覆盖常见声明形态；未收录选项的空格
+# 形态值可能被误判为收集目标——项目契约（verify.yaml regression.cmd）形态
+# 稳定（``python3 -m pytest tests/ -q --junit-xml=...``），超出清单时映射侧
+# 以 fail-closed 兜底（宁回全量不错替换）。
+_PYTEST_VALUE_OPTIONS = frozenset({
+    "-c", "--config", "-o", "--override-ini", "-k", "-m", "-p", "-r", "-W",
+    "--junit-xml", "--junit-prefix", "--result-log", "--basetemp",
+    "--rootdir", "--durations", "--maxfail", "--html", "--css", "--tb",
+})
+
+# shell 控制操作符：命令 token 化后含任一即视为复杂 shell 形态，
+# fail-closed 不做子集替换（token 级替换在含管道/重定向/命令串的命令上
+# 语义不可靠）。
+_SHELL_OPERATORS = frozenset({"|", "||", "&&", ";", ">", "<", ">>", "&", "$(", "`"})
+
+
+def _is_pytest_invocation(token: str) -> bool:
+    """token 是否为 pytest 可执行名（含绝对/相对路径形态）。"""
+    base = token.rsplit("/", 1)[-1]
+    return base in ("pytest", "py.test")
+
+
+def _apply_pytest_subset(cmd, subset_nodeids, exec_root=None):
+    """把 pytest 命令的既有收集位置参数替换为失败用例 nodeids（2.1，D2）。
+
+    两态命令均支持（str=shell 经 shlex token 化、list=argv 原样）。替换规则：
+
+    - 命令 MUST 为 pytest 形态（token 序列含 pytest/py.test 可执行名，
+      ``python -m pytest`` 形态天然命中）——否则返回 None（回退全量）。
+    - 收集目标 = pytest 之后、非旗标、且不紧跟在带值选项后的 token；
+      含 shell 控制操作符、或不存在任何收集目标 → 返回 None（fail-closed）。
+    - 替换：首个收集目标位置放全部 nodeids，其余收集目标删除（保持
+      「收集目标并集」语义下的精确子集）；旗标（``-q``/``--junit-xml`` 等）
+      逐字保留。
+    - 重组形态与输入一致：shell 命令经 shlex.quote 重组，argv 原样列表。
+
+    返回新命令（同形态）；不可替换时返回 None（调用方回退全量）。
+    """
+    if not subset_nodeids:
+        return None
+    is_shell = isinstance(cmd, str)
+    try:
+        tokens = shlex.split(cmd) if is_shell else [str(t) for t in cmd]
+    except ValueError:  # noqa: PERF203 — shell 引号非法：不可安全 token 化
+        return None
+
+    pytest_idx = None
+    for i, t in enumerate(tokens):
+        if _is_pytest_invocation(t) or (i > 0 and tokens[i - 1] == "-m" and _is_pytest_invocation(t)):
+            pytest_idx = i
+            break
+    if pytest_idx is None:
+        return None
+    if any(t in _SHELL_OPERATORS for t in tokens):
+        return None
+
+    target_indexes = []
+    pending_value_opt = None
+    for i in range(pytest_idx + 1, len(tokens)):
+        t = tokens[i]
+        if t.startswith("-") and len(t) > 1:
+            pending_value_opt = t if t in _PYTEST_VALUE_OPTIONS else None
+            continue
+        if pending_value_opt is not None:
+            # 带值选项的值（如 ``--junit-xml path`` 的 path）不是收集目标
+            pending_value_opt = None
+            continue
+        target_indexes.append(i)
+
+    if not target_indexes:
+        # 无既有收集位置参数可「取代」——无法以取代语义精确注入
+        #（MUST NOT 尾部追加：并集语义会退化全量），回退全量。
+        return None
+
+    first = target_indexes[0]
+    shift = len(subset_nodeids) - 1
+    out = tokens[:first] + [str(n) for n in subset_nodeids] + tokens[first + 1:]
+    for i in reversed(target_indexes[1:]):
+        # 插入 nodeids 后，原索引 i 的元素右移 shift 位
+        del out[i + shift]
+    if is_shell:
+        return " ".join(shlex.quote(t) for t in out)
+    return out
+
+
+def run_regression(
+    runner, spec, reason: str = "manual", project_root=None, lock_root=None,
+    subset_nodeids=None,
+) -> RegressionResult:
     """执行一次全量回归（task 3.1，对齐 run_code_review 形态）。
 
     与 run_code_review 不同：**不经 LLM**——直接按 verify.yaml regression.cmd
@@ -1413,6 +1505,14 @@ def run_regression(runner, spec, reason: str = "manual", project_root=None, lock
         lock_root: 主机级锁锚定根（D10）。缺省 None。code-fix 批 worker
             传主树根，使 worktree 内回归与主树/其它 worktree 共用同一把
             ``.fenix/full-suite.lock``。
+        subset_nodeids: 失败用例子集（add-codefix-targeted-retry 2.1，可选
+            nodeid 序列）。仅当项目命令为 pytest 形态且子集非空时生效——以
+            失败 nodeids **取代**命令中的既有收集位置参数（如 ``tests/``
+            目录），保留 ``-q``/``--junit-xml`` 等非收集旗标；MUST NOT 尾部
+            追加（pytest 多位置参数为收集目标并集，追加会静默退化全量）。
+            子集为空或命令非 pytest 形态（或无法安全改写）时忽略子集跑
+            全量（fail-closed 到现状语义）。锁根/执行根透传语义逐字不变；
+            子集替换只发生在门面层（D2：不扩散到 core.regression 原语）。
 
     返回:
         RegressionResult(status=快照状态, snapshot=完整快照)。
@@ -1422,6 +1522,24 @@ def run_regression(runner, spec, reason: str = "manual", project_root=None, lock
     run_id = _unique_regression_run_id(runner)
     log = getattr(runner, "logger", None)
     exec_root = project_root if project_root is not None else runner.project_root
+
+    subset = list(subset_nodeids) if subset_nodeids else []
+    if subset:
+        subset_cmd = _apply_pytest_subset(spec.cmd, subset, exec_root=exec_root)
+        if subset_cmd is not None:
+            spec = dataclasses.replace(spec, cmd=subset_cmd)
+            if log is not None:
+                log.info(
+                    "regression",
+                    f"code-fix 定向子集回归（{len(subset)} 例，取代既有收集目标）",
+                )
+        else:
+            # 非 pytest 形态 / 无法安全改写 → 忽略子集跑全量（fail-closed）
+            if log is not None:
+                log.warning(
+                    "regression",
+                    "定向子集不可用（非 pytest 形态或无法安全改写收集目标），回退全量回归",
+                )
 
     try:
         snapshot = run_and_write_regression(

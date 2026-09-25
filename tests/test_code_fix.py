@@ -70,12 +70,15 @@ class TestCodeReviewFixConfig(unittest.TestCase):
         from core.config import ConfigLoader
 
         cfg = ConfigLoader.get_code_review_fix_config({})
-        self.assertEqual(cfg, {"enabled": False, "batch_size": 20})
+        self.assertEqual(cfg, {"enabled": False, "batch_size": 20,
+                               "targeted_retry_max": 3})
         cfg2 = ConfigLoader.get_code_review_fix_config({"admin": {}})
-        self.assertEqual(cfg2, {"enabled": False, "batch_size": 20})
+        self.assertEqual(cfg2, {"enabled": False, "batch_size": 20,
+                                "targeted_retry_max": 3})
         # 段非 dict 视为缺省
         cfg3 = ConfigLoader.get_code_review_fix_config({"admin": {"code_review_fix": "x"}})
-        self.assertEqual(cfg3, {"enabled": False, "batch_size": 20})
+        self.assertEqual(cfg3, {"enabled": False, "batch_size": 20,
+                                "targeted_retry_max": 3})
 
     def test_invalid_batch_size_falls_back(self):
         from core.config import ConfigLoader
@@ -102,7 +105,23 @@ class TestCodeReviewFixConfig(unittest.TestCase):
         cfg = ConfigLoader.get_code_review_fix_config(
             {"admin": {"code_review_fix": {"enabled": True, "batch_size": 30}}}
         )
-        self.assertEqual(cfg, {"enabled": True, "batch_size": 30})
+        self.assertEqual(cfg, {"enabled": True, "batch_size": 30,
+                               "targeted_retry_max": 3})
+
+    def test_targeted_retry_max_bounds(self):
+        """targeted_retry_max 约束 1-5：合法保留，bool/非整数/越界回退 3。"""
+        from core.config import ConfigLoader
+
+        for good in (1, 3, 5):
+            cfg = ConfigLoader.get_code_review_fix_config(
+                {"admin": {"code_review_fix": {"targeted_retry_max": good}}}
+            )
+            self.assertEqual(cfg["targeted_retry_max"], int(good), f"{good!r} 应保留")
+        for bad in (0, -1, 6, True, "x", "4", None, 2.5, []):
+            cfg = ConfigLoader.get_code_review_fix_config(
+                {"admin": {"code_review_fix": {"targeted_retry_max": bad}}}
+            )
+            self.assertEqual(cfg["targeted_retry_max"], 3, f"{bad!r} 应回退 3")
 
     def test_code_fix_in_known_agent_types(self):
         from core.config import ConfigLoader
@@ -749,8 +768,11 @@ class _FakeRunner:
         return _t.SimpleNamespace(run_id=rid, success=True, fixed=fixed,
                                   skipped=skipped, error="", output="done")
 
-    def run_regression(self, spec, reason="manual", project_root=None, lock_root=None):
+    def run_regression(self, spec, reason="manual", project_root=None, lock_root=None,
+                       subset_nodeids=None):
         self.regression_calls.append((str(project_root), str(lock_root)))
+        self.subset_calls = getattr(self, "subset_calls", [])
+        self.subset_calls.append(list(subset_nodeids) if subset_nodeids else None)
         status = self.regression_statuses[min(
             len(self.regression_calls) - 1, len(self.regression_statuses) - 1)]
         import types as _t
@@ -1067,7 +1089,8 @@ class TestOrchestratorGuards(unittest.TestCase):
         self.assertEqual(len(runner.worktree_manager.cleanup_calls), 1,
                          "失败批 MUST cleanup（现场即弃 + 释放 spec 锁）")
         self.assertFalse(runner.worktree_manager.cleanup_calls[0][1])
-        self.assertEqual(len(runner.fix_calls), 2, "首次失败后重试一次")
+        self.assertEqual(len(runner.fix_calls), 4,
+                         "首轮失败后定向重试轮耗尽（1 首轮+3 定向轮，缺省上限 3）")
         self.assertTrue(runner.fix_calls[1][2], "重试 prompt 注入失败用例摘要")
         items = read_items(proot)
         self.assertTrue(all(r["status"] == "open" for r in items.values()))
@@ -1109,14 +1132,15 @@ class TestOrchestratorGuards(unittest.TestCase):
         })
         _write_verify_yaml(proot)
         # 批 a 两次回归失败（2 次 run + 2 次回归）→ consumed；批 b 正常成功
-        runner = _FakeRunner(proot, regression_statuses=["failed", "failed", "passed"])
+        runner = _FakeRunner(proot, regression_statuses=[
+            "failed", "failed", "failed", "failed", "passed"])
         orch = CodeFixOrchestrator(
             runner, proot,
             config={"admin": {"code_review_fix": {"enabled": True, "batch_size": 1}}},
             logger=None)
         orch.checkpoint()
-        self.assertEqual(len(runner.fix_calls), 3,
-                         "失败批 consumed 后 MUST 自驱动推进批 b（2+1 次 run）")
+        self.assertEqual(len(runner.fix_calls), 5,
+                         "失败批 consumed 后 MUST 自驱动推进批 b（1 首轮+3 定向轮+1 次 run）")
         self.assertEqual(len(runner.worktree_manager.merge_calls), 1, "仅批 b 合回")
         items = read_items(proot)
         self.assertEqual(items["a"]["status"], "open", "入档案条目保持 open")
@@ -1388,16 +1412,17 @@ class TestManualAuthorizationChain(unittest.TestCase):
             "c": _item("c", first_seen_at="2026-03-01T00:00:00Z"),
         })
         _write_verify_yaml(proot)
-        # 批 a 两次回归失败（2 run）→ consumed；批 b、c 链自驱动成功（各 1 run）
-        runner = _FakeRunner(proot, regression_statuses=["failed", "failed", "passed", "passed"])
+        # 批 a 定向重试 3 轮耗尽（1 首轮+3 定向轮 run）→ consumed；批 b、c 链自驱动成功（各 1 run）
+        runner = _FakeRunner(proot, regression_statuses=[
+            "failed", "failed", "failed", "failed", "passed", "passed"])
         orch = CodeFixOrchestrator(
             runner, proot,
             config={"admin": {"code_review_fix": {"enabled": False, "batch_size": 1}}},
             logger=None)
         res = orch.checkpoint(override_enabled=True)
         self.assertEqual(res, {"triggered": True, "reason": "dispatched"})
-        self.assertEqual(len(runner.fix_calls), 4,
-                         "失败批 consumed MUST NOT 终止手动授权链（2+1+1 次 run）")
+        self.assertEqual(len(runner.fix_calls), 6,
+                         "失败批 consumed MUST NOT 终止手动授权链（4+1+1 次 run）")
         items = read_items(proot)
         self.assertEqual(items["a"]["status"], "open", "失败批条目入档案保持 open")
         self.assertEqual(items["b"]["status"], "resolved")
@@ -1992,10 +2017,10 @@ class TestCodeReviewFixConfigAdmin(unittest.TestCase):
              patch("core.dashboard.data.USER_CONFIG_PATH",
                    proot / ".user-none" / "config.yaml"):
             rc = read_config(proot)
-            self.assertEqual(rc["code_review_fix"], {"enabled": False, "batch_size": 20})
+            self.assertEqual(rc["code_review_fix"], {"enabled": False, "batch_size": 20, "targeted_retry_max": 3})
             self.assertEqual(rc["sources"]["admin.code_review_fix"], "user")
             eff = read_effective_config(proot)
-            self.assertEqual(eff["code_review_fix"], {"enabled": False, "batch_size": 20})
+            self.assertEqual(eff["code_review_fix"], {"enabled": False, "batch_size": 20, "targeted_retry_max": 3})
 
     def test_write_read_roundtrip(self):
         from core.dashboard.data import read_config, write_config
@@ -2004,7 +2029,7 @@ class TestCodeReviewFixConfigAdmin(unittest.TestCase):
         r = write_config(proot, {"code_review_fix": {"enabled": True, "batch_size": 30}})
         self.assertIsNone(r.get("error"), r)
         rc = read_config(proot)
-        self.assertEqual(rc["code_review_fix"], {"enabled": True, "batch_size": 30})
+        self.assertEqual(rc["code_review_fix"], {"enabled": True, "batch_size": 30, "targeted_retry_max": 3})
         self.assertEqual(rc["sources"]["admin.code_review_fix"], "project")
 
     def test_invalid_batch_size_rejected_no_half_write(self):
@@ -2025,7 +2050,7 @@ class TestCodeReviewFixConfigAdmin(unittest.TestCase):
         self.assertIn("boolean", r["error"])
         # 落盘值保持原值（不半写）
         rc = read_config(proot)
-        self.assertEqual(rc["code_review_fix"], {"enabled": True, "batch_size": 30})
+        self.assertEqual(rc["code_review_fix"], {"enabled": True, "batch_size": 30, "targeted_retry_max": 3})
 
 
 # ── add-code-fix-batch-failure-selfheal：三态收尾 / 锁释放 / 重试预算 / 链内跳过 ──

@@ -1643,6 +1643,9 @@ class ConfigLoader:
           不写进度。严格 bool：非 bool 值（如字符串/数字）回退 False）
         - batch_size: 20（每批条目数；必须为正整数，bool / ≤0 / 非整数
           回退 20）
+        - targeted_retry_max: 3（add-codefix-targeted-retry 2.4；回归失败
+          后定向重试轮上限，注释约束合理区间 1-5，bool / 非整数 / 越界
+          回退 3——过大烧钱、0 会让「重试一次」的现状语义都保不住）
         段缺失或非 dict 时整体视为缺省，不抛异常。
         """
         admin = config.get("admin") if isinstance(config, dict) else None
@@ -1659,9 +1662,17 @@ class ConfigLoader:
             or batch_size <= 0
         ):
             batch_size = 20
+        targeted_retry_max = crf.get("targeted_retry_max", 3)
+        if (
+            not isinstance(targeted_retry_max, int)
+            or isinstance(targeted_retry_max, bool)
+            or not 1 <= targeted_retry_max <= 5
+        ):
+            targeted_retry_max = 3
         return {
             "enabled": enabled,
             "batch_size": int(batch_size),
+            "targeted_retry_max": int(targeted_retry_max),
         }
 
     @classmethod

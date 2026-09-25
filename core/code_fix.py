@@ -450,7 +450,8 @@ def _failed_item_ids(project_root) -> set:
 
 
 def record_failed_batch(
-    project_root, item_ids, worktree, reason="", branch="", tip_sha=""
+    project_root, item_ids, worktree, reason="", branch="", tip_sha="",
+    detail_ref="",
 ) -> None:
     """把确定性失败批落盘到 fix-failed.json（原子写；同条目集复用记录）。
 
@@ -465,6 +466,9 @@ def record_failed_batch(
 
     ``reason``/``branch``/``tip_sha`` 为可选关键字参数（缺省空串，兼容既有
     调用点）；``branch``/``tip_sha`` 是现场即弃后修复提交的 git 追溯线索。
+    ``detail_ref``（add-codefix-targeted-retry 4.4，可选）：最后一轮回归
+    失败用例明细文件引用（``.fenix/code-review/`` 相对路径，供事后审计；
+    add-regression-auto-fix 复发重开亦以明细为对账源）。
     ``worktree`` 形参仅为兼容既有调用点保留，MUST NOT 落盘（现场即弃后该
     路径写入几秒即失效且无读者，追溯以 branch/tip_sha 为准，code-review
     item a0e268c1f1c1），记录中恒为 null。
@@ -492,6 +496,7 @@ def record_failed_batch(
     target["reason"] = reason
     target["branch"] = branch
     target["tip_sha"] = tip_sha
+    target["detail_ref"] = detail_ref
     target["failed_at"] = now
     _atomic_write(
         _failed_path(project_root),
@@ -502,6 +507,165 @@ def record_failed_batch(
         # 预算内入档可自动重试，不产生人工项。
         _write_retry_exhausted_alert(project_root, item_ids, reason, branch, tip_sha)
         _append_todo_entry(project_root, item_ids, reason, branch, tip_sha)
+
+
+# ── 回归失败明细结构化落盘（add-codefix-targeted-retry 1.1/1.2）──────────
+
+
+FIX_REG_FAILURES_DIR = ".fenix/code-review"
+# targeted_retry_max 缺省（design D4 / tasks 2.4）：与
+# ConfigLoader.get_code_review_fix_config 的回退值同源。
+TARGETED_RETRY_MAX_DEFAULT = 3
+TARGETED_RETRY_MAX_MIN = 1
+TARGETED_RETRY_MAX_MAX = 5
+
+
+def fix_reg_failures_relpath(run_id: str) -> str:
+    """失败明细文件相对主树路径（每轮回归一份、文件名含该轮回归 run_id）。"""
+    return f"{FIX_REG_FAILURES_DIR}/fix-reg-failures-{run_id}.json"
+
+
+def write_fix_reg_failures(project_root, run_id: str, items, fallback_full: bool) -> str:
+    """回归失败用例明细落盘（返回相对路径引用，1.1/1.2）。
+
+    写入点 = 每轮回归非 passed 时（首轮全量与每个定向轮子集回归各落一份，
+    文件名含该轮回归 run_id），供重试注入、失败档案引用（最后一轮明细）与
+    轮次演进审计。结构 ``{items, source_run_id, created_at, fallback_full}``；
+    映射失败时 ``fallback_full=True``（items 尽力保留原始摘要、无 nodeid 映射
+    结果即空列表），重试侧据此回退全量（fail-closed）。落盘失败只记日志不炸
+    批（审计辅助件，非门禁）。
+    """
+    payload = {
+        "items": list(items or []),
+        "source_run_id": str(run_id),
+        "created_at": _now_iso(),
+        "fallback_full": bool(fallback_full),
+    }
+    rel = fix_reg_failures_relpath(run_id)
+    path = Path(project_root) / rel
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_write(
+            path, json.dumps(payload, ensure_ascii=False, indent=2),
+        )
+    except OSError:
+        return ""
+    return rel
+
+
+def _map_junit_failures_to_nodeids(failures, exec_root=None):
+    """junit 失败用例 → 结构化明细 ``([{nodeid, summary}], ok)``（1.1/1.2，D1）。
+
+    nodeid 以 junit ``classname`` **主导**重构（pytest junitxml 的 testcase
+    不产 ``file`` 属性属预期形态，MUST NOT 因此判映射失败）：
+
+    - classname 点分段序列按「最长模块前缀」拆分——前缀转文件路径
+      （``tests.test_x`` → ``tests/test_x.py``），余下段作 ``::`` 类链，
+      末接 ``::name``：``tests.test_x.TestFoo`` + ``test_bar`` →
+      ``tests/test_x.py::TestFoo::test_bar``。
+    - 模块边界判定：``exec_root`` 提供时以 ``<modpath>.py`` 文件存在性为准
+      （回归刚在该根跑过、测试文件必然在盘）；唯一边界命中才可映射，多个
+      前缀同时命中（如 ``a.py`` 与 ``a/b.py`` 并存）视为歧义。``exec_root``
+      缺省 None 时退化启发式（首个大写开头段起为类链，无则整段为模块）。
+    - ``file`` 属性存在（非空）时参与一致性校验：与重构文件路径不一致 →
+      该用例映射失败。
+    - classname 缺失/空、非 Python 模块形态、歧义、任一用例映射失败 →
+      整体判失败（``ok=False``）——子集 MUST 覆盖全部失败用例，漏一个即
+      漏修一个；调用方据此回退全量重试（fail-closed）。
+    """
+    items = []
+    exec_root_path = Path(exec_root) if exec_root else None
+    for f in failures or []:
+        if not isinstance(f, dict):
+            return [], False
+        classname = str(f.get("classname") or "").strip()
+        name = str(f.get("name") or "").strip()
+        if not classname or not name:
+            return [], False
+        segs = classname.split(".")
+        if any(not s or not s.isidentifier() for s in segs):
+            # 非 Python 标识符形态（如 Java 形态 junit 或宿主路径）
+            return [], False
+
+        def _mod_file(mod_segs):
+            return "/".join(mod_segs) + ".py"
+
+        boundary = None
+        if exec_root_path is not None:
+            for k in range(len(segs), 0, -1):
+                cand = exec_root_path / _mod_file(segs[:k])
+                if cand.is_file():
+                    if boundary is not None:
+                        # 多个前缀同时对应在盘文件：重构结果歧义
+                        return [], False
+                    boundary = k
+            if boundary is None:
+                return [], False
+        else:
+            boundary = len(segs)
+            for i, s in enumerate(segs):
+                if s[:1].isupper():
+                    boundary = i
+                    break
+
+        rel_file = _mod_file(segs[:boundary])
+        cls_chain = segs[boundary:]
+        nodeid = rel_file + "".join(f"::{s}" for s in cls_chain) + f"::{name}"
+
+        file_attr = str(f.get("file") or "").strip()
+        if file_attr:
+            # file 属性存在才参与校验（pytest 不产该属性属预期形态）
+            norm_attr = file_attr.replace("\\", "/").lstrip("./")
+            if norm_attr != rel_file:
+                return [], False
+
+        summary = str(f.get("message") or f.get("kind") or "")[:200]
+        items.append({"nodeid": nodeid, "summary": summary})
+    return items, True
+
+
+def _merge_failure_items(cumulative, items):
+    """轮间累计明细合并（2.3）：按 nodeid 去重，后轮摘要覆盖前轮。"""
+    merged = {i["nodeid"]: i for i in cumulative}
+    for i in items:
+        merged[i["nodeid"]] = i
+    return list(merged.values())
+
+
+def _ingest_failure_round(root, reg, cumulative, exec_root):
+    """单轮回归失败明细的提取 → 累计合并 → 落盘（1.1/1.2/2.3）。
+
+    写入点 = 每轮回归非 passed 时（首轮全量与每个定向轮子集回归各一份）。
+    返回 ``(fail_items, mapped, detail_rel, cumulative)``：``mapped=False``
+    表示映射失败/无明细（fallback_full，重试侧回退全量）；``detail_rel``
+    为落盘文件相对路径（落盘失败为空串）。
+    """
+    raw_failures = (getattr(reg, "snapshot", None) or {}).get("failures") or []
+    fail_items, mapped = _map_junit_failures_to_nodeids(raw_failures, exec_root=exec_root)
+    if mapped and fail_items:
+        cumulative = _merge_failure_items(cumulative, fail_items)
+    else:
+        # 映射失败，或无结构化明细（timeout/parse_error/零 failure 记录）：
+        # 子集无从谈起，按 fallback_full 走全量 + 旧式摘要注入。
+        mapped = False
+    detail_rel = write_fix_reg_failures(
+        root, getattr(reg, "run_id", "") or "unknown",
+        fail_items if mapped else [], fallback_full=not mapped,
+    )
+    return fail_items, mapped, detail_rel, cumulative
+
+
+def _render_targeted_retry_brief(items) -> str:
+    """定向轮注入文本（2.2/2.3）：累计失败明细 + 只修失败相关的硬指令。"""
+    lines = [
+        f"定向重试：回归失败 {len(items)} 例（累计明细，含此前修过但再次失败的用例）。",
+        "本轮为定向修复：只修复与下列失败用例相关的问题（失败可能是产品缺陷，"
+        "也可能是测试本身缺陷——断言过时、替身失真、超时替身自旋类，自行判定；"
+        "修测试时产物行标 fix_scope=test），MUST NOT 扩面重做全批。",
+    ]
+    for i in items[:50]:
+        lines.append(f"- {i['nodeid']}: {i.get('summary', '')}")
+    return "\n".join(lines)
 
 
 def release_retryable_failed_batches(project_root) -> int:
@@ -1458,6 +1622,22 @@ class CodeFixOrchestrator:
         """解析 admin.code_review_fix 生效值（根形态 → 段读取器）。"""
         return ConfigLoader.get_code_review_fix_config(self._get_root_config())
 
+    def _targeted_retry_max(self) -> int:
+        """定向重试轮上限（add-codefix-targeted-retry 2.2/2.4）。
+
+        读 ``admin.code_review_fix.targeted_retry_max``，缺省 3；约束 1-5，
+        越界/非法回退缺省（读取器已做同款守卫，此处对「测试替身 config 段
+        未走读取器」的形态兜底）。
+        """
+        try:
+            raw = self._get_config().get("targeted_retry_max", TARGETED_RETRY_MAX_DEFAULT)
+            v = int(raw)
+        except (TypeError, ValueError):
+            return TARGETED_RETRY_MAX_DEFAULT
+        if TARGETED_RETRY_MAX_MIN <= v <= TARGETED_RETRY_MAX_MAX:
+            return v
+        return TARGETED_RETRY_MAX_DEFAULT
+
     def _code_fix_running(self) -> bool:
         """在途判据：编排器单飞标记或 runner 侧存在 code-fix- 前缀 run。"""
         if self._in_flight:
@@ -2270,7 +2450,7 @@ class CodeFixOrchestrator:
             return "consumed"
 
         # 第一次全量回归（执行根=worktree、锁根=主树，D10）
-        retry_run_id: str | None = None
+        attempt_run_ids: list[str] = []
         write_progress(
             root,
             phase="regressing",
@@ -2280,58 +2460,108 @@ class CodeFixOrchestrator:
             reg_spec, reason="code-fix", project_root=wt, lock_root=root
         )
         if reg.status != "passed":
-            # 5.6：同一 worktree 内重试一次（prompt 注入失败用例摘要）
-            self._log(
-                "warning",
-                f"code-fix 第 {batch_no} 批首次回归未通过（{reg.status}），重试一次",
-            )
-            summary = _failure_summary(reg)
-            # 重试轮 run_id 变更（task 2.2）：新预生成并刷新进度（worktree/
-            # batch_total 不变），保证重试 run 在飞期间读侧解析的是当前轮
-            # out 文件（fix-out-<retry_run_id>.jsonl），而非首轮残留。exclude
-            # 排除首轮 run_id（同 worktree 内主树残留判据覆盖不到，同秒撞名
-            # 会复用首轮 out 文件）。
-            retry_run_id = _preset_run_id(runner, exclude=(run_id,))
-            write_progress(
-                root,
-                phase="retrying",
-                current=f"第 {batch_no} 批回归失败重试中（{len(items)}/{total} 条）",
-                run_id=retry_run_id,
-            )
-            retry_result = runner.run_code_fix(
-                wt, items, failure_summary=summary, run_id=retry_run_id
-            )
-            if not retry_result.success:
+            # 定向重试轮循环（add-codefix-targeted-retry 2.2，D4）：重试轮从
+            # 「整批重做 + 全量回归」改为「定向修复（只修失败用例相关问题，
+            # 可修测试本身）+ 失败用例子集回归」，上限 targeted_retry_max
+            # （缺省 3）。首轮与重试轮复用既有 _preset_run_id/write_progress
+            # 机制，进度 phase 沿用 retrying（轮次号入文案）。
+            retry_max = self._targeted_retry_max()
+            cumulative: list[dict] = []   # 轮间累计明细注入集（2.3）
+            last_detail_ref = ""          # 最后一轮明细引用（入失败档案，4.4）
+            exhausted = False
+            for attempt in range(1, retry_max + 1):
+                # ① 失败明细提取 + 合并 + 落盘（1.1/1.2/2.3）：本轮注入的
+                # reg 为上一轮回归结果；映射失败（非 pytest 形态、classname
+                # 不足以唯一重构、无明细）→ fallback_full，重试侧回退全量
+                # 重试（fail-closed）。文件名含该轮回归 run_id。
+                fail_items, mapped, detail_rel, cumulative = _ingest_failure_round(
+                    root, reg, cumulative, wt)
+                if detail_rel:
+                    last_detail_ref = detail_rel
+                # ③ 定向轮 run_id 预生成 + 进度刷新（沿用 5.6 机制）：exclude
+                # 排除首轮与本批此前各轮（同 worktree 内主树残留判据覆盖不到，
+                # 同秒撞名会复用 out 文件）。
+                retry_run_id = _preset_run_id(runner, exclude=(run_id, *attempt_run_ids))
+                write_progress(
+                    root,
+                    phase="retrying",
+                    current=(
+                        f"第 {batch_no} 批定向重试 {attempt}/{retry_max}"
+                        f"（失败 {len(cumulative)} 例"
+                        + ("，子集回归）" if mapped else "，明细不可映射，全量回归）")
+                    ),
+                    run_id=retry_run_id,
+                )
+                # ④ 派定向轮 run（同一 worktree）：prompt 注入累计失败明细
+                # （2.3）+ 只修失败相关的硬指令；映射失败时注入旧式摘要。
+                summary = (
+                    _render_targeted_retry_brief(cumulative)
+                    if mapped and cumulative
+                    else _failure_summary(reg)
+                )
                 self._log(
-                    "error",
-                    f"code-fix 重试 run 失败（run {retry_result.run_id}）: {retry_result.error}",
+                    "warning",
+                    f"code-fix 第 {batch_no} 批回归未通过（{reg.status}），"
+                    f"定向重试 {attempt}/{retry_max}"
+                    + (f"（{len(fail_items)} 例子集）" if mapped else "（回退全量）"),
                 )
-                # run 失败（第二次回归根本没跑）≠「两次回归均失败」：不入失败
-                # 档案（不烧跨轮预算），与首次 run 失败同语义——条目入
-                # chain_skipped；清理 worktree 释放 spec 锁（否则
-                # code-review-fix:code-fix 被永久持有，下一批 create() 恒返回
-                # None，车道首批后即死）；consumed：链继续。
-                _safe_cleanup(wm, wt, success=False, logger=self._logger)
-                self._consumed_progress(
-                    current=f"第 {batch_no} 批失败已跳过（重试 run 失败）— 继续后续批次",
-                    reason=f"regression_retry_run_failed: {retry_result.error}"[:500],
-                    chain_skip_ids=item_ids,
+                retry_result = runner.run_code_fix(
+                    wt, items, failure_summary=summary, run_id=retry_run_id
                 )
-                return "consumed"
-            retry_run_id = retry_result.run_id
-            reg = runner.run_regression(
-                reg_spec, reason="code-fix", project_root=wt, lock_root=root
-            )
-            if reg.status != "passed":
-                # 两次均失败 → 现场即弃（selfheal D2）：cleanup **前**把
-                # branch/tip_sha 连同 reason 写入失败档案（fail_count 预算），
-                # 随后清理 worktree 释放锁——不再保留现场待人工（锁死车道），
-                # 丢弃的修复提交由下轮重试重新生成，tip_sha 留作 reflog 追溯。
+                if not retry_result.success:
+                    self._log(
+                        "error",
+                        f"code-fix 重试 run 失败（run {retry_result.run_id}）: {retry_result.error}",
+                    )
+                    # run 失败（本轮回归根本没跑）≠ 回归均失败：不入失败
+                    # 档案（不烧跨轮预算），与首次 run 失败同语义——条目入
+                    # chain_skipped；清理 worktree 释放 spec 锁（否则
+                    # code-review-fix:code-fix 被永久持有，下一批 create() 恒返回
+                    # None，车道首批后即死）；consumed：链继续。
+                    _safe_cleanup(wm, wt, success=False, logger=self._logger)
+                    self._consumed_progress(
+                        current=f"第 {batch_no} 批失败已跳过（重试 run 失败）— 继续后续批次",
+                        reason=f"regression_retry_run_failed: {retry_result.error}"[:500],
+                        chain_skip_ids=item_ids,
+                    )
+                    return "consumed"
+                attempt_run_ids.append(retry_result.run_id)
+                # ⑤ 回归：映射成功 → 只重跑失败子集（2.1，范围=本轮失败集，
+                # 非累计集——上一轮已通过的用例不重跑）；映射失败 → 全量
+                # （fail-closed 到现状语义）。
+                write_progress(
+                    root,
+                    phase="regressing",
+                    current=(
+                        f"第 {batch_no} 批定向轮 {attempt} 回归中"
+                        + (f"（子集 {len(fail_items)} 例）" if mapped else "（全量）")
+                    ),
+                )
+                reg = runner.run_regression(
+                    reg_spec, reason="code-fix", project_root=wt, lock_root=root,
+                    subset_nodeids=[i["nodeid"] for i in fail_items] if mapped else None,
+                )
+                if reg.status == "passed":
+                    break
+            else:
+                exhausted = True
+            if exhausted:
+                # 最后一轮（耗尽轮）的回归失败明细补落盘（1.1：每个定向轮
+                # 回归非 passed 时各落一份——循环顶部的提取点覆盖不到它），
+                # 随后该轮明细引用随现场即弃入失败档案。
+                _, _, detail_rel, _ = _ingest_failure_round(root, reg, cumulative, wt)
+                if detail_rel:
+                    last_detail_ref = detail_rel
+                # 耗尽 targeted_retry_max 轮仍失败 → 现场即弃（selfheal D2
+                # 语义逐字沿用）：cleanup **前**把 branch/tip_sha 连同 reason
+                # 与最后一轮明细引用写入失败档案（fail_count 预算），随后清理
+                # worktree 释放锁——不再保留现场待人工（锁死车道），丢弃的
+                # 修复提交由下轮重试重新生成，tip_sha 留作 reflog 追溯。
                 # consumed：条目已入档案（离开可选池），链继续推进下一批。
                 self._log(
                     "error",
-                    f"code-fix 第 {batch_no} 批两次回归均未通过，现场即弃"
-                    f"（branch/tip_sha 入档案，worktree 清理: {wt}）",
+                    f"code-fix 第 {batch_no} 批定向重试 {retry_max} 轮耗尽仍失败，"
+                    f"现场即弃（branch/tip_sha/明细引用入档案，worktree 清理: {wt}）",
                 )
                 summary2 = _failure_summary(reg)
                 tip_sha = _worktree_head(wt)
@@ -2339,13 +2569,17 @@ class CodeFixOrchestrator:
                 record_failed_batch(
                     root, item_ids, wt,
                     reason="regression_failed_twice", branch=branch, tip_sha=tip_sha,
+                    detail_ref=last_detail_ref,
                 )
                 write_regression_failed_alert(
                     root, item_ids, wt, summary2, branch=branch, tip_sha=tip_sha
                 )
                 _safe_cleanup(wm, wt, success=False, logger=self._logger)
                 self._consumed_progress(
-                    current=f"第 {batch_no} 批失败已跳过（两次回归未通过）— 继续后续批次",
+                    current=(
+                        f"第 {batch_no} 批失败已跳过（回归 {retry_max} 轮定向重试未通过）"
+                        f"— 继续后续批次"
+                    ),
                     reason=f"regression_failed_twice: {reg.status}",
                 )
                 return "consumed"
@@ -2354,11 +2588,13 @@ class CodeFixOrchestrator:
         # 建树点有提交。merge_back 对「分支已是 HEAD 祖先」返回成功——无此
         # 守卫，全 skipped 的批会以「零改动合并成功 + 回归必过」白洗 resolved。
         rows = read_fix_out(wt, result.run_id)
-        if retry_run_id:
-            # 重试轮产物是独立文件（fix-out-<retry_run_id>.jsonl）：两轮改动都落在
-            # 同一 worktree、随同一次合回进主树，故核销按**并集**口径；只读首次
-            # run 会漏掉「重试才修复」的条目（已合回却仍留 open，被反复重派）。
-            rows.extend(read_fix_out(wt, retry_run_id))
+        if attempt_run_ids:
+            # 定向轮产物是独立文件（fix-out-<retry_run_id>.jsonl）：首轮与
+            # 各定向轮改动都落在同一 worktree、随同一次合回进主树，故核销按
+            # **并集**口径；只读首次 run 会漏掉「重试才修复」的条目（已合回
+            # 却仍留 open，被反复重派）。
+            for rid in attempt_run_ids:
+                rows.extend(read_fix_out(wt, rid))
         # LLM 拒绝出口（2026-09-23）：skipped 且显式标注可忽略原因的条目在
         # 批收尾即置 ignored 终态（不等合回——ignored 与代码变更无关），从
         # 本批后续的失败档案/chain_skipped 集合中排除（已终态，MUST NOT 随批
