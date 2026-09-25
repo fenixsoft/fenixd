@@ -280,6 +280,7 @@ class RRollbackMixin:
         # admin 告警直发（fix-mergeback-stashpop-silent-loss D1）：低频事件、
         # 无风暴风险，不加节流。任何异常都不阻塞 merge-back 主流程。
         try:
+            from core.agent_runner.prompt_builder import _str_field
             from core.admin_store import AdminStore, SIGNAL
 
             # 条目去向从 worktree_manager 读（dispatch 层不持锁，读实例属性足够——
@@ -324,6 +325,14 @@ class RRollbackMixin:
                 f"({', '.join(conflict_files)})。{fate_desc}{overlap_desc}。"
                 f"逐文件找回：{recover_cmds}"
             )
+            evidence = _str_field(
+                {
+                    "conflict_files": list(conflict_files),
+                    "stash_kept": bool(fate.get("kept", True)),
+                    "stash_sha": sha,
+                    "wip_overlap": overlap,
+                }
+            )
             store = AdminStore(self._pm.project_root, self._pm.logger)
             store.append(
                 {
@@ -332,12 +341,7 @@ class RRollbackMixin:
                     "spec": spec_name,
                     "severity": "major",
                     "description": description,
-                    "evidence": {
-                        "conflict_files": list(conflict_files),
-                        "stash_kept": bool(fate.get("kept", True)),
-                        "stash_sha": sha,
-                        "wip_overlap": overlap,
-                    },
+                    "evidence": evidence,
                     "recommended_action": (
                         "git stash list 查条目去向；按逐文件 git show <sha>:<file> 命令"
                         "核对内容，仍需要的改动手动落回工作区；确认零独有内容后 "
