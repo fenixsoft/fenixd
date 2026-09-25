@@ -1592,6 +1592,56 @@ def _write_defer_expired_alert(
     )
 
 
+def _write_defer_orphan_alert(
+    project_root, item_ids, overlap, branch="", tip_sha="",
+    grace_minutes=30, orphan_since="", owner_note="",
+) -> None:
+    """无主陈旧 WIP 宽限耗尽升级的一次性 major 告警（add-mergeback-wip-active-
+    coordination 2.2/D4）。
+
+    ``signal_type=mergeback_wip_orphan_stuck``（admin_monitor 已登记 major 分级
+    与批语义适配指引）——``mergeback_wip_overlap`` 同级 major：升级是既有 WIP
+    重叠人工告警族的「无主限期」变体，附 overlap 文件清单与识别证据（含 D1
+    已知盲区注记）；处置指引按批语义适配——批无 spec 可重派，指引指向提交/
+    stash 重叠文件。调用方以台账 ``owner_escalated_at`` 先查后记（同
+    ``_has_expired_archive`` 指纹去重语义），一次性不重复升级。
+    """
+    from core.admin_store import AdminStore, SIGNAL
+    from core.worktree_manager.types import WipOccupantInfo
+
+    evidence = (
+        f"项目名={Path(project_root).name}; branch={branch or 'unknown'}; "
+        f"tip_sha={tip_sha or 'unknown'}; "
+        f"item_ids={', '.join(str(i) for i in item_ids)}; "
+        f"重叠文件: {_fmt_overlap(overlap)}; "
+        f"宽限={grace_minutes}分钟（自 {orphan_since or '?'} 起）; "
+        f"识别证据: {owner_note or '无主（在飞实现车道分支改动集零命中）'}; "
+        f"盲区注记: {WipOccupantInfo.BLIND_SPOT_NOTE}"
+    )
+    store = AdminStore(project_root, logger=None)
+    store.append(
+        {
+            "kind": SIGNAL,
+            "signal_type": "mergeback_wip_orphan_stuck",
+            "spec": None,
+            "severity": "major",
+            "description": (
+                "code-fix 延迟批合回被主树未提交改动挡住，占用者识别为"
+                f"无主陈旧 WIP（在飞实现车道分支改动集零命中），宽限 "
+                f"{grace_minutes} 分钟内无人认领、主树 WIP 未清除——升级"
+                "人工处置（批保持保留待自动合回语义，未丢弃、未触碰主树）"
+            ),
+            "evidence": evidence,
+            "source": "code-fix-lane",
+            "recommended_action": (
+                "该批无 spec 可重派：人工核对重叠文件归属后，提交"
+                "（git add/commit）或 stash（git stash push）主树这些改动，"
+                "链边界自动合回核销该批；无需人工重派"
+            ),
+        }
+    )
+
+
 def _main_tree_dirty_files(project_root) -> list:
     """主树脏 tracked 文件清单（evo-add-codefix-batch-wip-precheck 1.1）。
 
@@ -2195,6 +2245,170 @@ class CodeFixOrchestrator:
                 last_msg = msg
         return done_hits, last_msg
 
+    # ── 占用者协调（add-mergeback-wip-active-coordination 1.1/2.1/2.2）────
+
+    def _orphan_grace_minutes(self) -> float:
+        """无主陈旧 WIP 宽限（分钟）：``admin.mergeback_wip_orphan_grace_minutes``。
+
+        缺省 30（对齐 admin escalation cooldown 量级，design D4）；解析失败/
+        负值回退缺省——配置事故 MUST NOT 放大成「宽限 0 分钟秒升级」或
+        「无限期静默等待」两个错误极端。
+        """
+        try:
+            raw = ConfigLoader.get(
+                self._get_root_config(),
+                "admin.mergeback_wip_orphan_grace_minutes",
+                30,
+            )
+            val = float(raw)
+        except (TypeError, ValueError):
+            return 30.0
+        if val < 0:
+            return 30.0
+        return val
+
+    def _make_holder_retry_callback(self, branch: str):
+        """持有者 run 终态回调工厂（D5）。
+
+        事件驱动的重试 MUST 复用既有单一重试入口——``checkpoint()``（
+        ``_process_deferred_merges`` 的唯一调用点，位于 ``self._lock`` 段内、
+        ``already_running`` 守卫之后），MUST NOT 从事件回调线程旁路直调
+        ``_process_deferred_merges``；在飞批期间本回调按 ``already_running``
+        早退，由链边界节拍兜底（秒级让位于正确性）。回调异常自兜（fire 侧
+        还有 runner 侧兜底），轮询路径始终在场作为事件丢失防线（D3）。
+
+        锁占用守卫（``threading.Lock`` 不可重入）：注册时「run 已终态→立即
+        触发」的同步路径可能发生在**本线程已持有 ``self._lock``** 的上下文
+        （``_retry_one_deferred`` 的注册点位于 checkpoint 锁段内）——此时重入
+        ``checkpoint()`` 即自锁死；另一线程的 checkpoint 在飞时，该 checkpoint
+        本身就会重试延迟批，事件重试亦属冗余。两种形态一律让位：锁空闲才投
+        递 checkpoint，否则并入当前/后续节拍（竞态窗口内锁被他人抢占只是
+        bounded 等待，无死锁面）。
+        """
+        def _cb():
+            self._log(
+                "info",
+                f"持有者 run 终态到达（branch={branch}）— 事件驱动重试延迟批合回",
+            )
+            if self._lock.locked():
+                self._log(
+                    "info",
+                    "checkpoint 锁占用中——事件重试并入当前/后续链节拍"
+                    "（该节拍同样会重试延迟批，无需重入）",
+                )
+                return
+            try:
+                self.checkpoint()
+            except Exception as e:  # noqa: BLE001 — 事件重试失败由轮询兜底
+                self._log(
+                    "warning",
+                    f"事件驱动重试触发失败（轮询兜底路径继续在场）: {e}",
+                )
+        return _cb
+
+    def _inflight_impl_run_ids(self) -> list:
+        """在飞实现车道 run_id 列表（agent_runner 注册表快照，D1 数据源）。"""
+        running = getattr(self._agent_runner, "_running_agents", None) or {}
+        return [str(rid) for rid in running.keys()]
+
+    def _coordinate_blocked_merge(self, entry, item_ids, overlap, branch, tip_sha) -> str:
+        """被挡批的占用者协调：识别 → 订阅/宽限 → 台账与留痕。
+
+        在 defer 消费路径的两个被挡点（批收尾 ``_defer_merge_back`` 与重试
+        ``_retry_one_deferred``）调用（design D5：识别与订阅挂在 defer 消费
+        路径上）。行为：
+
+        - overlap 为空 → 直接返回空串（零识别、零订阅开销，spec「无 overlap
+          零变化」）；
+        - 识别命中在飞持有者 → ``owner_*`` 字段随台账留痕 + 注册持有者 run
+          终态监听（subscriber 键按分支稳定覆盖，轮询重复注册不累积）；
+        - 识别为无主 → 记 ``owner_orphan_since``（首次）宽限计时；宽限耗尽
+          且未升级过 → 写一次性 major 告警（``_write_defer_orphan_alert``）
+          并记 ``owner_escalated_at``。批保持「保留待自动合回」语义——升级
+          不改变批的预算/台账状态（D5）；
+        - 识别结果随台账 ``owner_*`` 字段与进度/日志留痕（返回摘要文案供
+          调用方并入进度 current）。
+
+        Returns: 识别摘要文案（识别不可用/无 overlap 时为空串）。
+        """
+        if not overlap:
+            return ""
+        try:
+            return self._coordinate_blocked_merge_impl(
+                entry, item_ids, overlap, branch, tip_sha
+            )
+        except Exception as e:  # noqa: BLE001 — 协调异常不影响 defer 保留语义
+            self._log(
+                "warning",
+                f"占用者协调异常（不影响 defer 保留语义，轮询兜底）: {e}",
+            )
+            return ""
+
+    def _coordinate_blocked_merge_impl(self, entry, item_ids, overlap, branch, tip_sha) -> str:
+        root = self.project_root
+        runner = self._agent_runner
+        wm = getattr(runner, "worktree_manager", None)
+        identify = getattr(wm, "identify_wip_occupant", None)
+        if not callable(identify):
+            return ""
+        info = identify(overlap, self._inflight_impl_run_ids())
+        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        fields = {
+            "owner_kind": "holder" if info.holder else "orphan",
+            "owner_holders": info.to_dict()["holders"],
+            "owner_identified_at": now,
+        }
+        if info.holder:
+            # 识别结果变化（无主→有主）：宽限计时清零重计（design D2 轮询
+            # 时识别结果变化随之更新）。
+            fields["owner_orphan_since"] = None
+            register = getattr(runner, "register_run_terminal_callback", None)
+            if callable(register):
+                for rid in info.holder_run_ids():
+                    register(
+                        rid,
+                        self._make_holder_retry_callback(branch),
+                        subscriber=f"code-fix-defer:{branch}",
+                    )
+                self._log(
+                    "info",
+                    f"延迟批占用者为在飞车道，已注册其终态监听（事件驱动重试）"
+                    f": branch={branch}, holder_runs={info.holder_run_ids()}",
+                )
+            note = info.describe()
+        else:
+            # 无主：宽限计时（首次记 since），耗尽升级一次性 major 告警。
+            since = str(entry.get("owner_orphan_since") or "") or now
+            fields["owner_orphan_since"] = since
+            note = info.describe()
+            grace = self._orphan_grace_minutes()
+            try:
+                start = calendar.timegm(time.strptime(since, "%Y-%m-%dT%H:%M:%SZ"))
+                elapsed_min = (time.time() - start) / 60.0
+            except (ValueError, TypeError):
+                elapsed_min = 0.0
+            if elapsed_min >= grace and not entry.get("owner_escalated_at"):
+                fields["owner_escalated_at"] = now
+                _write_defer_orphan_alert(
+                    root, item_ids, overlap, branch=branch, tip_sha=tip_sha,
+                    grace_minutes=grace, orphan_since=since,
+                    owner_note=note,
+                )
+                self._log(
+                    "warning",
+                    f"延迟批占用者为无主陈旧 WIP 且宽限（{grace} 分钟）耗尽，"
+                    f"已升级 major 人工告警（批保持保留待自动合回）"
+                    f": branch={branch}, 重叠={_fmt_overlap(overlap)}",
+                )
+                note = f"{note}；宽限已耗尽，已升级 major 人工告警"
+            else:
+                note = (
+                    f"{note}；宽限 {grace:g} 分钟内继续事件驱动等待"
+                    f"（自 {since} 起）"
+                )
+        _patch_deferred_entry(root, item_ids, **fields)
+        return note
+
     def _retry_one_deferred(self, wm, entry) -> tuple:
         """单条延迟批重试，结果四分派（D4/2.1）。返回 ``(核销数, 结果文案)``。"""
         root = self.project_root
@@ -2274,6 +2488,15 @@ class CodeFixOrchestrator:
                 f"延迟批合回待重试（主树未提交改动：{_fmt_overlap(overlap)}）"
                 "— 已保留，主树清理后自动合回"
             )
+            # 占用者协调（add-mergeback-wip-active-coordination 1.1/2.1/2.2）：
+            # 识别留痕 + 持有者订阅/无主宽限升级；识别摘要并入进度与返回文案。
+            # 固定轮询保持原节拍在场（事件驱动重试的主要唤醒 + 轮询兜底双通道，
+            # D3），本路径即轮询兜底本体。
+            owner_note = self._coordinate_blocked_merge(
+                entry, item_ids, overlap, branch, tip_sha
+            )
+            if owner_note:
+                msg = f"{msg}；{owner_note}"
             write_progress(root, phase="merging", reason="wip_gate_blocked", current=msg)
             return 0, msg
 
@@ -2365,7 +2588,7 @@ class CodeFixOrchestrator:
         tip_sha = _worktree_head(wt)
         branch = _worktree_branch(wt)
         # 台账先落（磁盘真相源），随后放锁/告警/进度。
-        record_deferred_batch(
+        deferred_entry = record_deferred_batch(
             root, pending_ids, fixed_ids, wt,
             branch=branch, tip_sha=tip_sha, last_overlap=overlap,
         )
@@ -2376,14 +2599,23 @@ class CodeFixOrchestrator:
             self._log("warning", f"code-fix defer 放锁异常（车道可能死锁）: {e}")
         # 首次 defer 即发 info 提示（1.3）：含交集文件清单与人工处置话术。
         _write_defer_info_alert(root, pending_ids, overlap, branch=branch)
+        # 占用者协调（add-mergeback-wip-active-coordination 1.1/2.1/2.2）：
+        # 首次被挡即识别留痕 + 持有者订阅/无主宽限计时（识别与订阅挂在 defer
+        # 消费路径上，design D5）；识别摘要并入进度 current。
+        owner_note = self._coordinate_blocked_merge(
+            deferred_entry, pending_ids, overlap, branch, tip_sha
+        )
+        current_txt = (
+            f"第 {batch_no} 批合回待重试（主树未提交改动："
+            f"{_fmt_overlap(overlap)}）— 已保留，主树清理后自动合回"
+        )
+        if owner_note:
+            current_txt = f"{current_txt}；{owner_note}"
         write_progress(
             root,
             phase="merging",
             reason="wip_gate_blocked",
-            current=(
-                f"第 {batch_no} 批合回待重试（主树未提交改动："
-                f"{_fmt_overlap(overlap)}）— 已保留，主树清理后自动合回"
-            ),
+            current=current_txt,
             # 批上下文三键清除：agent run 已结束，保留现场由台账承载（防读
             # 侧按陈旧 run_id 合成条级进度，D2 同款防陈旧索引）。
             worktree=None,

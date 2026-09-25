@@ -1,8 +1,10 @@
 """mergeback.py — G4 merge-back 主链（refactor-giant-classes D1/D5）。
 
 原为 WorktreeManager 的 12 个方法（含 208 行 `_merge_back_from_branch_locked`），
-原样搬移为 mixin（方法体零改动）。含 1 个 lazy import：
+原样搬移为 mixin（方法体零改动）。含 lazy import：
 - `WorktreeManager`（引用类级属性 `_rehearsal_*`，方法体内延迟导入防循环）
+- `core.agent_runner.run_files.run_spec_part`（占用者识别的 run_id→spec 解析，
+  add-mergeback-wip-active-coordination 1.1，方法体内延迟导入防装载环）
 
 D3 patch 缝隙：`MergeConflictInfo` 从 types 模块导入（包命名空间 re-export）。
 """
@@ -18,7 +20,7 @@ from pathlib import Path
 from typing import Optional
 
 from core.wip_checkpoint import collapse_wip_commits  # noqa: E402
-from core.worktree_manager.types import MergeConflictInfo
+from core.worktree_manager.types import MergeConflictInfo, WipOccupantInfo
 from core.worktree_manager import WIP_GATE_STASH_PREFIX  # noqa: E402
 
 
@@ -567,6 +569,181 @@ class G4MergebackMixin:
             return overlap
         except (subprocess.TimeoutExpired, OSError):
             return []
+
+    # ── 占用者识别（add-mergeback-wip-active-coordination 1.1/D1）──────────
+
+    # 在飞实现车道 run 前缀（design D1：implementer/code-fix run 的分支与交付物
+    # 改动集）。planner/verifier/admin 等非实现车道不参与识别。
+    _INFLIGHT_LANE_RUN_PREFIXES = ("impl-", "code-fix-")
+
+    # run_id → 载体 worktree 的 spec 名桥接：code-fix 车道 run_id 无 spec 段
+    # （``code-fix-<epoch>``，见 _unique_code_fix_run_id），其载体 worktree 由
+    # ``wm.create(spec_name="code-review-fix", agent_type="code-fix")`` 固定名
+    # 建树（code_fix.py 批 worker）——按前缀桥接到该固定 spec 名才能对上
+    # ``git worktree list`` 的命名口径。
+    _LANE_RUN_SPEC_BRIDGE = {"code-fix-": "code-review-fix"}
+
+    def identify_wip_occupant(self, overlap_files, running_run_ids=()) -> WipOccupantInfo:
+        """WIP overlap 占用者识别（add-mergeback-wip-active-coordination 1.1/D1）。
+
+        overlap 文件集 × 在飞实现车道分支改动集求交：
+        - 在飞 run 列表（调用方从 agent_runner 注册表取，本方法不依赖
+          agent_runner 实例——只吃 run_id 列表，防装载环）按前缀过滤出实现
+          车道（implementer/code-fix），经 ``run_spec_part`` 推导 spec；
+        - worktree 注册表以 ``git worktree list --porcelain`` 为真相（不信任
+          ``_active_worktrees``/``_wt_branches`` 内存表，daemon 重启即失），
+          按 spec 精确匹配出各车道分支；
+        - 每个分支跑 ``git diff --name-only HEAD...<分支>``（与
+          ``_detect_wip_overlap`` 的 merge-base 口径等价的三点式：只取分支侧
+          改动，排除主树 HEAD 前移带来的主树侧噪音）求改动文件集，与 overlap
+          求交。
+
+        命中 → ``WipOccupantInfo(holder=True)``（holders 列 run/spec/分支/命中
+        文件）；零命中（含无在飞车道、diff 失败按空集处理的保守方向）→
+        ``holder=False``（无主陈旧 WIP）。识别 MUST 纯机械（worktree 注册表、
+        在飞 run 列表、git diff），MUST NOT 使用 LLM 推导路径名。
+
+        已知盲区（随 WipOccupantInfo.BLIND_SPOT_NOTE 留痕）：只覆盖 worktree
+        分支型在飞车道；持有者直接改主树不入分支的形态（admin/人工会话、
+        主树内构建产物）分支 diff 必零命中，一律按无主走宽限升级。
+
+        只读不写：不触碰主树、不改任何闸门判定——识别结果仅供 defer 消费方
+        决定订阅/升级。
+        """
+        overlap = sorted({str(p) for p in (overlap_files or []) if p})
+        if not overlap:
+            # 无 overlap 时零识别开销（spec：无 overlap 零变化）
+            return WipOccupantInfo(False, [], [], source="worktree-branch-diff")
+        overlap_set = set(overlap)
+
+        # 1) 在飞实现车道 → spec 集合（纯机械：run_id 前缀过滤 + spec 段解析）
+        lane_specs: dict = {}  # spec -> [run_id, ...]
+        for rid in running_run_ids or []:
+            rid = str(rid or "")
+            if not rid.startswith(self._INFLIGHT_LANE_RUN_PREFIXES):
+                continue
+            specs = self._lane_run_specs(rid)
+            for spec in specs:
+                lane_specs.setdefault(spec, [])
+                if rid not in lane_specs[spec]:
+                    lane_specs[spec].append(rid)
+        if not lane_specs:
+            return WipOccupantInfo(False, [], overlap)
+
+        # 2) worktree 注册表真相 → (目录名, 路径, 分支) 候选
+        pairs = self._worktree_name_branch_pairs()
+
+        # 3) 逐车道分支求交
+        holders: list = []
+        for spec, run_ids in lane_specs.items():
+            for wt_name, wt_path, branch in pairs:
+                if not self._wt_name_matches_spec(wt_name, spec):
+                    continue
+                branch_files = self._branch_changed_files(branch)
+                hits = sorted(overlap_set & branch_files)
+                if hits:
+                    holders.append(
+                        {
+                            "run_ids": sorted(run_ids),
+                            "spec": spec,
+                            "branch": branch,
+                            "worktree": str(wt_path),
+                            "files": hits,
+                        }
+                    )
+        if holders:
+            return WipOccupantInfo(True, holders, overlap)
+        return WipOccupantInfo(False, [], overlap)
+
+    def _lane_run_specs(self, run_id: str) -> list:
+        """run_id → 候选 spec 名列表（机械解析 + 固定名桥接）。"""
+        specs: list = []
+        try:
+            # lazy import 防装载环（agent_runner 包装载链重；本模块被
+            # worktree_manager 包内其他 mixin 经 dal 装配引用）。
+            from core.agent_runner.run_files import run_spec_part
+
+            spec = run_spec_part(run_id)
+            if spec:
+                specs.append(spec)
+        except Exception:  # noqa: BLE001 — 解析失败退桥接/空，不抛穿识别
+            pass
+        for prefix, bridged in self._LANE_RUN_SPEC_BRIDGE.items():
+            if run_id.startswith(prefix) and bridged not in specs:
+                specs.append(bridged)
+        return specs
+
+    def _worktree_name_branch_pairs(self) -> list:
+        """``git worktree list --porcelain`` → [(目录名, 路径, 分支), ...]。
+
+        与 find_worktree_by_spec 同口径的 porcelain 渲染（`worktree <path>`
+        开段、`branch refs/heads/<b>` 属段；detached 无 branch 行不计）。
+        命令失败/超时返回空表 → 识别按「零命中=无主」走（升级仅为告警，
+        误判影响有界，MUST NOT 为覆盖盲区引入主树写探测）。
+        """
+        try:
+            res = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(self.project_root),
+                    "worktree",
+                    "list",
+                    "--porcelain",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            return []
+        if res.returncode != 0:
+            return []
+        pairs: list = []
+        current_path = ""
+        for line in res.stdout.splitlines():
+            if line.startswith("worktree "):
+                current_path = line[len("worktree "):].strip()
+                continue
+            if line.startswith("branch ") and current_path:
+                branch = line[len("branch "):].strip()
+                if branch.startswith("refs/heads/"):
+                    branch = branch[len("refs/heads/"):]
+                pairs.append((Path(current_path).name, current_path, branch))
+                current_path = ""
+        return pairs
+
+    def _branch_changed_files(self, branch: str) -> set:
+        """分支相对主树 HEAD 的改动文件集（D1 机械数据源）。
+
+        ``git diff --name-only HEAD...<branch>``（merge-base 三点式，与
+        ``_detect_wip_overlap`` 的 merge-base+两点式等价）；与该函数同口径
+        反转义 quotePath 转义形。命令失败/超时返回空集（该车道按零命中处理，
+        保守方向 = 宁可按无主宽限升级告警，不可误标在飞持有者跳过升级）。
+        """
+        try:
+            res = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(self.project_root),
+                    "diff",
+                    "--name-only",
+                    f"HEAD...{branch}",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            return set()
+        if res.returncode != 0:
+            return set()
+        return {
+            _unquote_git_path(ln.strip())
+            for ln in res.stdout.splitlines()
+            if ln.strip()
+        }
 
     def _merge_tree_supported(self) -> bool:
         """``git merge-tree --write-tree`` 可用性一次性探测（进程内缓存）。

@@ -73,6 +73,7 @@ from core.agent_runner.liveness import (
     AGENT_TERMINATE_GRACE_SECONDS,
     LIVE_ATTEMPT_STREAM_WINDOW_SECONDS,
     LivenessSupervisor,
+    _file_has_terminal_event,
 )
 from core.agent_runner.session import SessionTracker
 from core.agent_runner.provider_circuit import (
@@ -603,6 +604,12 @@ class AgentRunner:
         # __dict__ 赋值静默顶掉前者 → 先登记的车道从排水集合消失，重启即被
         # 当无主回收）。单键 set/pop 原子，对齐 _running_agents 不加锁。
         self._lane_processes: Dict[str, tuple] = {}
+        # per-run 终态回调表（add-mergeback-wip-active-coordination D2）：
+        # base_run_id → {subscriber → callback}。挂在 _execute_agent 终态收口
+        # 处触发；defer 批合回消费者据此注册持有者 run 监听实现事件驱动重试。
+        # 二级 dict 按 subscriber 键覆盖（同订阅方重复注册不累积）；fire 时
+        # 整键 pop 消费（单键原子，对齐 _running_agents 不加锁）。
+        self._run_terminal_callbacks: Dict[str, Dict[str, object]] = {}
 
     # ── 取消旗标惰性 property（add-run-cancel）────────────────────
     # 测试普遍以 ``AgentRunner.__new__`` 绕过 ``__init__`` 构造，沿用
@@ -1966,6 +1973,14 @@ class AgentRunner:
             # 9dc9195cbd73）：统一在 run 终态外口摘除，覆盖 success/exhausted
             # 两收口之外的全部早退终态 return（frozen/取消/熔断/链耗尽/让位）。
             self._turn_branch_state_forget(run_id)
+            # per-run 终态回调触发（add-mergeback-wip-active-coordination D2）：
+            # 终态收口处（成功/失败/取消/冻结/熔断等任意终态都经本 finally）
+            # 消费回调表——持有者 run 收尾即唤醒 defer 批合回事件驱动重试。
+            try:
+                self._fire_run_terminal_callbacks(run_id)
+            except Exception as e:
+                self.logger.warning(
+                    "agent_runner", f"run 终态回调触发异常（不阻断结果返回）: {e}")
             try:
                 self._v2_harvest_used_worktrees(used_wts, handed_off)
             except Exception as e:
@@ -5119,6 +5134,97 @@ class AgentRunner:
             rid for rid, proc in list(self._running_agents.items())
             if proc.poll() is None
         ]
+
+    # ── per-run 终态回调表（add-mergeback-wip-active-coordination D2）──────
+    # 现状无通用 per-run 订阅 API（core/event_bus.py 是 STATE.md 文件监视器，
+    # 非 pub-sub；_lane_registry 的 done_event 明示车道键非 run_id、不含实现
+    # 车道）——本表为新增：挂在 _execute_agent 终态收口处（实现/code-fix run
+    # 落终态都经此），做 base_run_id → {subscriber → callback}。defer 批合回
+    # 消费者据此注册持有者 run 监听，终态到达即触发事件驱动重试（替代固定
+    # 长间隔轮询作为主要唤醒手段；轮询降级为兜底）。
+
+    def _run_terminal_callback_table(self) -> dict:
+        """终态回调表（base_run_id → {subscriber → callback}）。
+
+        生产路径 ``__init__`` 已建态；惰性回退仅对齐 _lane_registry 先例，让
+        测试以 ``AgentRunner.__new__`` 绕过 ``__init__`` 的实例同样安全。
+        """
+        tbl = self.__dict__.get("_run_terminal_callbacks")
+        if tbl is None:
+            tbl = {}
+            self.__dict__["_run_terminal_callbacks"] = tbl
+        return tbl
+
+    def register_run_terminal_callback(self, run_id: str, callback,
+                                       subscriber: str = "default") -> None:
+        """注册 per-run 终态回调（D2）：该 run 落终态即触发 callback。
+
+        注册时先查该 run 是否已终态（run 文件终态行，复用
+        ``liveness._file_has_terminal_event`` 同口径；且不在在飞进程表），
+        是则立即触发——不依赖后续事件，防「终态后才注册」的监听泄漏（设计
+        Risks 第 3 条）。注册与立即触发双轨：即便「已终态」判定漏判（旧
+        attempt 文件残留终态行等），真正的终态收口仍会触发本回调——回调
+        消费方幂等（重复触发 = 一次空转重试），漏触发才不可接受。
+
+        Args:
+            run_id: run id（任意 attempt 形态，内部按 base_run_id 归一化）。
+            callback: 无参可调用对象；在终态收口线程/注册线程**同步执行**，
+                消费方 MUST 自兜异常且快速返回（fire 侧有 try/except 兜底，
+                单回调异常不阻断其余回调与 run 收尾）。
+            subscriber: 订阅方键（同 run 同订阅方重复注册覆盖，不累积）。
+        """
+        base = self._normalize_run_id(str(run_id or ""))
+        if not base:
+            return
+        subs = self._run_terminal_callback_table().setdefault(base, {})
+        subs[str(subscriber or "default")] = callback
+        if not self._run_id_in_flight(base) and self._run_files_terminal(base):
+            self._fire_run_terminal_callbacks(base)
+
+    def _run_id_in_flight(self, base_run_id: str) -> bool:
+        """base_run_id 的任一 attempt 是否仍在在飞进程表（注册表键为 attempt id）。"""
+        running = getattr(self, "_running_agents", None) or {}
+        return any(
+            rid == base_run_id or str(rid).startswith(base_run_id + "-")
+            for rid in list(running.keys())
+        )
+
+    def _run_files_terminal(self, base_run_id: str) -> bool:
+        """该 base run 的任一 run 文件已出现终态事件（_file_has_terminal_event 同口径）。
+
+        匹配 ``<base>.jsonl`` 与 ``<base>-*.jsonl``（attempt/瞬态重试文件）；
+        带 ``-`` 边界防止 base id 前缀撞上其他 run（``impl-x-123`` 不得命中
+        ``impl-x-1234-a1.jsonl``）。
+        """
+        runs_dir = self.project_root / ".fenix" / "runs"
+        try:
+            files: list = []
+            for pat in (f"{base_run_id}.jsonl", f"{base_run_id}-*.jsonl"):
+                files.extend(runs_dir.glob(pat))
+        except OSError:
+            return False
+        return any(_file_has_terminal_event(f) for f in files)
+
+    def _fire_run_terminal_callbacks(self, run_id: str) -> None:
+        """触发并消费该 run 的全部终态回调（整键 pop，单键原子）。
+
+        供 ``_execute_agent`` 终态收口调用；单回调异常 warning 兜底，不阻断
+        其余回调与 run 收尾。
+        """
+        base = self._normalize_run_id(str(run_id or ""))
+        if not base:
+            return
+        subs = self._run_terminal_callback_table().pop(base, None)
+        if not subs:
+            return
+        for name, cb in list(subs.items()):
+            try:
+                cb()
+            except Exception as e:  # noqa: BLE001 — 单回调异常不阻断收尾
+                self.logger.warning(
+                    "agent_runner",
+                    f"run 终态回调执行异常（run={base}, subscriber={name}）: {e}",
+                )
 
     # ── 车道级在飞登记（planned-restart-drain B/D2）───────────────────────
     # 非 agent_runner 派生的车道进程（run_impl_ocr 的 ocr 子进程等）不在
