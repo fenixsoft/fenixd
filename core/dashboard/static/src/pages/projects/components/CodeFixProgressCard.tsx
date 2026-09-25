@@ -28,6 +28,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Card, Space, Typography } from 'antd';
 import ProgressBarTile from './ProgressBarTile';
+import { blockedReasonDisplay, blockedReasonInfo } from './codeFixGuidance';
 import { getCodeReviewFixProgress } from '../../../services/dashboard';
 import type { CodeReviewFixProgress } from '../../../services/dashboard';
 
@@ -261,7 +262,9 @@ export default function CodeFixProgressCard(
   if (current) sub.push(current);
   if (startupStageText) sub.push(startupStageText);
   if (phase === 'fixing' && itemProgressText) sub.push(itemProgressText);
-  if (alarm && reason) sub.push(`原因：${reason}`);
+  // 原因行换人类可读文案（2026-09-25 用户要求：不能只透传英文 reason 原码），
+  // 已知 reason 带「可读原因（原码）」括注，未知原样回显（宁严勿松）。
+  if (alarm && reason) sub.push(`原因：${blockedReasonDisplay(reason)}`);
   if (alarm && !reason && readFailed) sub.push('进度读取失败，已停止轮询');
 
   // 次级文案段的 testid（嵌套三元被审查规则禁止，抽为 if/else 局部计算）：
@@ -301,6 +304,20 @@ export default function CodeFixProgressCard(
             data-testid={subTestId}
           >
             {sub.join(' · ')}
+          </Typography.Text>
+        )}
+        {/* blocked 终态处置指引（2026-09-25 用户要求：不能仅提示「已阻塞」，
+            必须明确告知如何处理）。独立成行，alarm 时 warning 色与次级灰字
+            区分；自愈等待类（failed_batch_retained/wip_gate_blocked）指引
+            本身是「无需处理」，保持中性 secondary 不渲染成故障。readFailed
+            停轮询不在此列（无 reason 语境，原因行已覆盖）。 */}
+        {phase === 'blocked' && !readFailed && (
+          <Typography.Text
+            type={selfhealWait ? 'secondary' : 'warning'}
+            style={{ fontSize: 12 }}
+            data-testid="code-fix-blocked-guidance"
+          >
+            {`如何处理：${blockedReasonInfo(reason).guidance}`}
           </Typography.Text>
         )}
       </Space>
