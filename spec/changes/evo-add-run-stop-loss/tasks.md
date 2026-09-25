@@ -31,6 +31,6 @@
 
 ## 3. 测试
 
-- [ ] 3.1 tests/test_run_stop_loss.py：守卫测试用 seed 与进程内装配出题，覆盖 attempt 间隙取消路径——not_running 取消登记旗标后，复活 attempt 启动守卫命中旗标以 cancelled 收尾且不再执行 provider 轮次
-- [ ] 3.2 tests/test_run_stop_loss.py：覆盖 discarded 标记下 in-place retry 让位不重派、标记在途或缺失时重试照常、活跃 attempt 取消行为不变三条路径
-- [ ] 3.3 tests/test_run_stop_loss.py：停滞判据单元测试——复合判据各分支命中与不命中、慢而健康的 run 不误杀、缺省关闭时不判停、配置非法值回退缺省
+- [x] 3.1 tests/test_run_stop_loss.py：守卫测试用 seed 与进程内装配出题，覆盖 attempt 间隙取消路径——not_running 取消登记旗标后，复活 attempt 启动守卫命中旗标以 cancelled 收尾且不再执行 provider 轮次
+- [x] 3.2 tests/test_run_stop_loss.py：覆盖 discarded 标记下 in-place retry 让位不重派、标记在途或缺失时重试照常、活跃 attempt 取消行为不变三条路径
+- [x] 3.3 tests/test_run_stop_loss.py：停滞判据单元测试——复合判据各分支命中与不命中、慢而健康的 run 不误杀、缺省关闭时不判停、配置非法值回退缺省
