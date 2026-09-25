@@ -241,12 +241,18 @@ class G3LockMixin:
                     if pid == me or _is_claude_process(pid_str):
                         continue
                     proc_dir = Path("/proc") / pid_str
-                    # cmdline 匹配（既有判定）
+                    # cmdline 匹配：尾部以路径续接/空白/引号/行尾锚定（与
+                    # _worktree_has_live_process 的锚定纪律一致），防止
+                    # wt_name 是另一 worktree 目录名严格前缀时子串过配、
+                    # 误杀兄弟 worktree 的残留进程
                     try:
                         argv = (proc_dir / "cmdline").read_bytes().split(b"\0")
                         argv_text = " ".join(a.decode("utf-8", "replace") for a in argv if a)
                     except OSError:
                         argv_text = ""
+                    cmdline_hit = re.search(
+                        re.escape(token) + r"(?:[/\s\"']|$)", argv_text
+                    )
                     # cwd readlink 归属匹配（覆盖 argv 无路径的 Bash 包装进程）；
                     # 与 _pid_in_project_worktrees 一致先 realpath 归一，消解
                     # 符号链接/挂载拼写差异，避免同一物理 cwd 归属核对能命中、
@@ -256,7 +262,7 @@ class G3LockMixin:
                     except OSError:
                         cwd_real = ""
                     if (
-                        token in argv_text
+                        cmdline_hit
                         or cwd_real == token_real
                         or cwd_real.startswith(token_real + os.sep)
                     ):

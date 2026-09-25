@@ -175,7 +175,7 @@ def _ocr_lane_summary(project_root, run_id: str) -> str:
                     continue
                 try:
                     ev = json.loads(line)
-                except (json.JSONDecodeError, ValueError):
+                except ValueError:
                     continue
                 if isinstance(ev, dict) and ev.get("type") == "start":
                     return str(ev.get("message") or "").strip()
@@ -280,7 +280,7 @@ def get_spec_timeline(
                     continue
                 try:
                     log_entry = json.loads(line)
-                except (json.JSONDecodeError, ValueError):
+                except ValueError:
                     continue
                 # 合法 JSON 但非对象（裸字符串/数组等）的行取不到字段，跳过，
                 # 避免 AttributeError 令整个时间轴接口失败

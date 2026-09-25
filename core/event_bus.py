@@ -109,7 +109,7 @@ class EventBus:
         基线，否则后台首扫 / watcher 的 ``_dispatch_changes`` 会把全部存量 SPEC
         判为「新出现」并重放 hook 事件（2026-09-07 事故：15+ pushed spec 的
         commit-push hook 连环触发）。``event_bus.start()`` 本身已同步调用
-        ``_update_known_state()``（本文件 :51），本方法属**显式化该不变量**的
+        ``_update_known_state()``，本方法属**显式化该不变量**的
         冗余加固（design D5），不是唯一保障。
         """
         self._update_known_state()
@@ -137,7 +137,7 @@ class EventBus:
 
         同步入口（fix-spec-review-blocking-dispatch 4.1 兼容契约）：「基线快照 +
         扫描主体」两段顺序执行。既有调用方语义逐字不变——``_periodic_scan_loop``
-        （本文件 :645）继续整调用同步版；``fenixd.start()`` MUST NOT 调用异步版
+        继续整调用同步版；``fenixd.start()`` MUST NOT 调用异步版
         （否则后台扫描线程永被同步等待吞掉）；启动初扫请用 ``start_initial_scan``。
 
         韧性（fix-dispatch-orphan D3/D4）：单条 SPEC 的处理异常只跳过该条并记日志，
@@ -223,12 +223,12 @@ class EventBus:
             status = entry.get("status", "")
             if status == "drafted":
                 # add-start-after-scope-config 2.4：start_after 定时拾取早退
-                # （与 _recover_ready 既有早退同源，本文件 :337-347）——本分支受
+                # （与 _recover_ready 既有早退同源）——本分支受
                 # gates.start_after_scope 条件约束：full 时未到期/哨兵的 SPEC 不被
                 # 恢复路径晋升（否则每轮扫描生产「re-triggering promote」噪音事件并
                 # 提前拾取，实证 add-project-detail-tabs 提前 42 分钟）；dispatch 时
                 # 回到旧行为（照常恢复晋升）。
-                # 级别偏离登记：_recover_ready 同类跳过现为 info（:341），本处取
+                # 级别偏离登记：_recover_ready 同类跳过现为 info，本处取
                 # debug 是为避免每个定时 SPEC 每 60s 一条噪音；_recover_ready 保持
                 # 不动（Non-Goals，本 SPEC 不顺带改）。
                 try:
@@ -332,7 +332,7 @@ class EventBus:
         丢失（handle_event 实参不符 TypeError），运行期无人驱动、只能等 daemon
         重启回退 ready——testing 态在 recovery 分支中无任何出口。本方法补齐：
 
-        - 复用 implemented 分支（158-175）的防重入守卫：`_inconclusive_attempts
+        - 复用 implemented 分支的防重入守卫：`_inconclusive_attempts
           > 0`（暂停自动重验）跳过；`tester_run` 的重验风暴防护由无驱动判定的
           「run 文件活跃度 + 存活子进程」检查吸收——verifier 在跑 = 该 spec
           有近期写活动的 run 文件/存活子进程 → 非无驱动 → 跳过（等效于
@@ -402,9 +402,9 @@ class EventBus:
               读 ``read_all()`` 后套模块级 ``_spec_has_active_admin_run`` 归并
               判定（与 AdminMonitor._has_active_admin_run_for_spec 同源，勿二次
               漂移）——覆盖「pending 但进程已死」的残骸形态；
-          (b) ``agent_runner.running_run_ids()``（runner.py:4320）中存在
+          (b) ``agent_runner.running_run_ids()`` 中存在
               ``admin-<spec>-`` 前缀 run——admin run 经 ``_run_claude`` 注册进
-              ``_running_agents``（runner.py:3372），本通路只覆盖**进程存活**
+              ``_running_agents``，本通路只覆盖**进程存活**
               的 admin run。
 
         任一成立 → 返回 True（调用方跳过本次重验派发）；两路皆异常 → fail-open
@@ -552,22 +552,20 @@ class EventBus:
         恢复侧既有门 = ``start_after_pending``（本文件 ``_recover_ready`` 内）、
         存活子进程（``_ready_has_live_child``）与 frozen 复核（alert-noise-
         governance 2.1：frozen=True 跳过恢复、零 STATE 写入——有意等待态，
-        冻结 spec 的唯一出路是补内容后人工 unfreeze_spec）；派发侧既有门（``_on_spec_ready``，
-        ``core/pm_engine/engine.py:316-425``）= 关闭中 / 10 秒冷却 / 单飞 /
+        冻结 spec 的唯一出路是补内容后人工 unfreeze_spec）；派发侧既有门（``_on_spec_ready``）
+        = 关闭中 / 10 秒冷却 / 单飞 /
         ``has_active_worktree`` / ``_dispatch_backoffed`` / ``start_after`` / 依赖，
         精触发经 ``_on_spec_ready → _enqueue → _process_queue`` 全链路生效。
         方位校正：``_instant_fail_cooled`` 与并发闸 ``max_concurrent`` 不在
-        ``_on_spec_ready`` 内、而在 ``_process_queue`` 的候选筛选与调度处
-        （``core/pm_engine/dispatch.py:437``、``503``、``378-393``），经上述链路
+        ``_on_spec_ready`` 内、而在 ``_process_queue`` 的候选筛选与调度处，经上述链路
         同样生效，判定为「未被绕过」。另须纠正的原表述：``_recover_ready`` 与
         ``_on_spec_ready`` 均**不读** ``_cancelled_hold``，故该守卫即本入口的
         早退闸门（复用既有标记，非新判据）。
 
         **有界性核对（design D4，真实吸收点是队列去重而非冷却窗口）**：重复
-        恢复尝试由 ``_enqueue`` 按 ``(spec_name, agent_type)`` 去重吸收
-        （``core/pm_engine/dispatch.py:269-275``）——已入队等待并发槽的 SPEC
+        恢复尝试由 ``_enqueue`` 按 ``(spec_name, agent_type)`` 去重吸收——已入队等待并发槽的 SPEC
         不会被 60 秒重试重复入队。``_pending_dispatches`` 单飞与 ``_last_dispatch_at``
-        10 秒冷却（``DISPATCH_COOLDOWN_SECONDS = 10``，``core/pm_engine/engine.py:81``）
+        10 秒冷却（``DISPATCH_COOLDOWN_SECONDS = 10``）
         只吸收**秒级**重复触发，**不足以**吸收 60 秒间隔的重试——故有界性依赖
         队列去重与本入口的两道有意等待早退闸门，MUST NOT 依赖冷却窗口（后续
         删去重或误以为冷却兜住都会破坏有界性）。
@@ -676,7 +674,7 @@ class EventBus:
 
         orphaned-state-probe-calibration 1.4：从「同语义孪生」改为直接复用
         admin_monitor._pgrep_live_worktree——修复 repair- 前缀失明时只改一处，
-        避免孪生漂移（实测：admin_monitor 曾于 :335 补 repair 而本处遗漏会
+        避免孪生漂移（实测：admin_monitor 曾先行补 repair 而本处遗漏会
         造成恢复链与检测链口径不一致）。行为与 admin_monitor 完全一致：
         pgrep -f "{impl,verify,repair}-<spec>-" 任一命中即判存活。
 

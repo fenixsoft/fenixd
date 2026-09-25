@@ -634,21 +634,32 @@ class SpecReviewManager:
             )
             if result.returncode == 0:
                 for line in result.stdout.splitlines():
-                    if line.startswith("??") or line.startswith(" M") or line.startswith("M "):
-                        path = _parse_porcelain_path(line)
-                        if path is None:
-                            continue
-                        # 忽略 SPEC 目录内的文件（已经单独记录）
-                        if path.startswith(SPEC_CHANGES_PREFIX):
-                            continue
-                        full = self.project_root / path
-                        if full.is_file():
-                            try:
-                                content = full.read_bytes()
-                                h = hashlib.md5(content).hexdigest()
-                                snapshot["dirty_files"][path] = h
-                            except OSError:
-                                pass
+                    # 脏文件判定按 porcelain 首两字符逐位语义展开，覆盖 MM/AM/MT
+                    # 等组合态（仅匹配三种前缀会让组合态脏文件漏出快照，评审期
+                    # 改动随之漏出 _verify_snapshot 的 WARNING 留痕）：
+                    # - ??：未跟踪；
+                    # - index 列 M/A：暂存改动或新增（M /MM/MT/AM/A …）；
+                    # - worktree 列非空格：工作区有未暂存改动（ M/T/RM …）。
+                    status = line[:2]
+                    is_dirty = status == "??" or (
+                        len(status) == 2 and (status[0] in "MA" or status[1] != " ")
+                    )
+                    if not is_dirty:
+                        continue
+                    path = _parse_porcelain_path(line)
+                    if path is None:
+                        continue
+                    # 忽略 SPEC 目录内的文件（已经单独记录）
+                    if path.startswith(SPEC_CHANGES_PREFIX):
+                        continue
+                    full = self.project_root / path
+                    if full.is_file():
+                        try:
+                            content = full.read_bytes()
+                            h = hashlib.md5(content).hexdigest()
+                            snapshot["dirty_files"][path] = h
+                        except OSError:
+                            pass
         except (subprocess.SubprocessError, OSError):
             pass
         return snapshot
@@ -786,10 +797,15 @@ class SpecReviewManager:
         if snapshot_path.exists():
             try:
                 snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+                # 快照可能被外部写成合法但非对象的 JSON（如 []），_verify_snapshot
+                # 的 .get 会抛 AttributeError 逃出 consume_review_result——按读取
+                # 失败同款口径降级：抛 TypeError 走下方 WARNING 降级分支。
+                if not isinstance(snapshot, dict):
+                    raise TypeError(f"快照非 JSON 对象: {type(snapshot).__name__}")
                 snapshot_err = self._verify_snapshot(spec_name, snapshot)
                 if snapshot_err:
                     return snapshot_err
-            except (OSError, json.JSONDecodeError, UnicodeDecodeError) as e:
+            except (OSError, json.JSONDecodeError, UnicodeDecodeError, TypeError) as e:
                 # 读取失败不再静默放行（code-review item 5d38e8dd6478 / 6a3f77476d0f）：
                 # 快照是 SPEC 目录完整性硬门（删除检测）的唯一依据，缺失/损坏时
                 # 旧实现 pass 静默放行、且无日志——越界删除将无人发现。Non-UTF8
@@ -891,10 +907,16 @@ class SpecReviewManager:
             if snapshot_path.exists():
                 try:
                     snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+                    # 与 _check_write_boundary 同款：快照为合法但非对象的 JSON 时，
+                    # _verify_snapshot 的 .get 会抛 AttributeError，被本方法外层
+                    # except AttributeError 静默吞成「产物非法」且无留痕——按读取
+                    # 失败同款口径降级（抛 TypeError 走下方 WARNING）。
+                    if not isinstance(snapshot, dict):
+                        raise TypeError(f"快照非 JSON 对象: {type(snapshot).__name__}")
                     snapshot_err = self._verify_snapshot(spec_name, snapshot)
                     if snapshot_err:
                         return (False, None)
-                except (OSError, json.JSONDecodeError, UnicodeDecodeError) as e:
+                except (OSError, json.JSONDecodeError, UnicodeDecodeError, TypeError) as e:
                     # 与 _check_write_boundary 同款：读取失败记 WARNING 而非静默
                     # 放行（code-review item 5d38e8dd6478——本文件的同款快照加载
                     # 代码需一并修正）。

@@ -3776,7 +3776,16 @@ class PMEngine:
         count = int(state.get("count", 0)) if state else 0
         until = state.get("until") or 0.0
         # 冷却总时长（秒→分钟，取整）
-        cooldown_minutes = int(self._get_config("admin.run_infra_breaker.cooldown_minutes", 30))
+        # 配置非法值防御（code-review item e3e50d960b1b，与 _handle_push_failure
+        # 的 max_retries 同款）：非数字字符串裸 int() 抛 ValueError/TypeError，
+        # 从 recovered 分支穿透 handle_event 炸到调用方，中断当轮事件处理且
+        # 每次冷却到期复现——回退默认值 30。
+        try:
+            cooldown_minutes = int(
+                self._get_config("admin.run_infra_breaker.cooldown_minutes", 30) or 30
+            )
+        except (TypeError, ValueError):
+            cooldown_minutes = 30
         now_epoch = time.time()
         window_str = f"{count} 次连续 infra 失败；冷却 {cooldown_minutes} 分钟"
         evidence = (

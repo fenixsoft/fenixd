@@ -10,7 +10,8 @@ CLI 特异执行语义（与 web「失败即中断」唯一的分歧点，design
     （exit_code/stdout/stderr），由 exit_code 断言仲裁
   - **超时强杀 = 步骤失败**：hang 本身是要抓的缺陷；杀整个进程组防孤儿子进程
   - **信号死亡 = error**：被信号终止（如段错误）判 error 而非 fail，
-    不进 product-bug 管道；argv 二进制不存在（FileNotFoundError）同判 error
+    不进 product-bug 管道；argv 二进制不存在（FileNotFoundError）、
+    cwd 目录不存在同判 error
   - 环境注入：``FENIX_VERIFY_BASE_URL`` / ``FENIX_VERIFY_PORT`` 自动注入且
     框架值优先——场景 env 中同名变量被框架值覆盖（防 stale 地址事故同一
     防护逻辑，design D4）；无实例形态下注入为空操作
@@ -102,7 +103,8 @@ class CliRunner(VerifyRunner):
             result = await self._execute_run(step_dict, named_results)
             step_results.append(result)
             if result.get("error_level") == "error":
-                # 信号死亡/argv 二进制不存在 → 场景 error（不进 product-bug 管道）
+                # 信号死亡/argv 二进制不存在/cwd 目录不存在 → 场景 error
+                # （不进 product-bug 管道）
                 return {
                     "scenario_id": scenario.id,
                     "description": scenario.description,
@@ -148,9 +150,12 @@ class CliRunner(VerifyRunner):
         use_shell = not isinstance(cmd, list)
         cwd = self._resolve_cwd(step_dict.get("cwd", ""))
         if cwd is None:
+            # cwd 缺失属场景/环境缺陷：判 error 与信号死亡/二进制不存在同规
+            # （不进 product-bug 管道），与 FileNotFoundError 分支口径一致
             return {
                 "success": False,
                 "action": "run",
+                "error_level": "error",
                 "error": f"cwd 目录不存在: {step_dict.get('cwd')}",
             }
         env = self._build_env(step_dict.get("env") or {})
@@ -275,7 +280,7 @@ class CliRunner(VerifyRunner):
     def _resolve_cwd(self, rel: str):
         """cwd 相对验证树根（scenario_root）；无显式 cwd 时以验证树根为
         缺省（worktree 轮落验证树，无 worktree 轮回退 project_root）。
-        目录不存在返回 None（步骤失败）。
+        目录不存在返回 None（判 error，不进 product-bug 管道）。
         """
         if not rel:
             # 回退链：scenario_root（有 serving worktree 时）→ project_root

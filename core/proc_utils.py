@@ -48,12 +48,21 @@ def _bind_retry(host: str = "127.0.0.1", retries: int = 3) -> socket.socket:
     from socket import socket as _socket
 
     last_err = None
+    s = None
     for _ in range(max(1, retries)):
         try:
             s = _socket()
             s.bind((host, 0))
             return s
         except OSError as e:
+            # bind 失败时显式释放已创建的 socket（与 find_bound_socket 的
+            # 释放纪律对齐；非引用计数实现下避免 fd 积累）
+            if s is not None:
+                try:
+                    s.close()
+                except OSError:
+                    pass
+                s = None
             last_err = e
             time.sleep(0.05)
     raise last_err  # type: ignore[misc]

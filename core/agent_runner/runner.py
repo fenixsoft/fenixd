@@ -2801,7 +2801,14 @@ class AgentRunner:
                 cooldown_until = self.switch_cooldown_until(provider_name)
             except Exception:  # noqa: BLE001 — 冷却查询失败回退常量推算
                 cooldown_until = 0.0
-        if cooldown_until <= now:
+        # 时钟口径统一：switch_cooldown_until 返回的是 monotonic 时刻而非
+        # epoch 秒，不得与 epoch now 直接比较/格式化。在效冷却按剩余单调差值
+        # 换算成 epoch 截止；无冷却/已到期/查询失败（返回 0）回退常量时长
+        # 推算——与原回退值同口径，延迟语义不变。
+        _mono_now = self._now()
+        if cooldown_until > _mono_now:
+            cooldown_until = now + (cooldown_until - _mono_now)
+        else:
             cooldown_until = now + _RL_CD
         # ① provider 进限流冷却（复用 switch 冷却通道与候选跳过语义；时长用
         # 独立常量——spec 限流冷却通道，design D3）。
@@ -3230,6 +3237,24 @@ class AgentRunner:
             )
         return None
 
+    def _git_status_porcelain(self, wt_path: Path) -> list:
+        """worktree dirty 取证（git status --porcelain，成功终态收割用）。
+
+        取证失败（git 超时/缺失等 OSError/SubprocessError）fail-open 返回空
+        列表：取证环节绝不吞掉已到手的成功终态（与 _worktree_path_valid /
+        _check_terminal_no_commit_gate 对同类 git 调用的 fail-open 口径一致）。
+        """
+        try:
+            _st = subprocess.run(
+                ["git", "-C", str(wt_path), "status", "--porcelain"],
+                capture_output=True, text=True, timeout=30,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return []
+        if _st.returncode != 0:
+            return []
+        return [l for l in _st.stdout.splitlines() if l.strip()]
+
     # ── R7: 成功终态（等价搬移，D1 R7 表）─────────────────────────────
     # 半开探针闭合 / wt_dirty 取证 / worktree 分型 / token 入账。
     # 终态零提交门不在此处（except 作用域之外不可达重试通道），已上移至
@@ -3259,21 +3284,11 @@ class AgentRunner:
         if agent_type in ("implementer", "fast-track"):
             # fix-zero-change-blindspot：cleanup 前取证 worktree dirty 状态
             #（仅 implementer / fast-track——零变更哨对两者都生效）。
-            _st = subprocess.run(
-                ["git", "-C", str(wt_path), "status", "--porcelain"],
-                capture_output=True, text=True, timeout=30,
-            )
-            if _st.returncode == 0:
-                wt_dirty = [l for l in _st.stdout.splitlines() if l.strip()]
+            wt_dirty = self._git_status_porcelain(wt_path)
         elif agent_type == "repair":
             # repair 现场取证：冲突解决是否已 commit（dispatch 层据此
             # 判断 re-merge-back 前的现场状态，add-merge-back-repair-lane）。
-            _st = subprocess.run(
-                ["git", "-C", str(wt_path), "status", "--porcelain"],
-                capture_output=True, text=True, timeout=30,
-            )
-            if _st.returncode == 0:
-                wt_dirty = [l for l in _st.stdout.splitlines() if l.strip()]
+            wt_dirty = self._git_status_porcelain(wt_path)
         # add-impl-terminal-nocommit-gate（D2）：终态零提交门已上移至
         # _execute_agent_inner 的 while 循环 try 体内（成功 break 之前、拷回
         # 与产物硬门之后）——本方法由 break 之后的 return 调用，位于
