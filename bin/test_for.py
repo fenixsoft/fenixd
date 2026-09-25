@@ -170,6 +170,20 @@ def apply_explicit_mappings(target_files: List[str], explicit_map: Dict[str, str
     """Apply explicit test mappings for files without import relationships."""
     affected = set()
 
+    # 值非字符串（如手改 yaml 写成 core/foo.py: 123）时打告警跳过，避免其进入
+    # affected 后在消费处 test_path.startswith("tests/") 抛 AttributeError 崩溃。
+    valid_map: Dict[str, str] = {}
+    for pattern, test_file in explicit_map.items():
+        if isinstance(test_file, str):
+            valid_map[pattern] = test_file
+        else:
+            print(
+                f"Warning: test_map.yaml explicit mapping {pattern!r} -> {test_file!r} "
+                "is not a string; ignoring this mapping.",
+                file=sys.stderr,
+            )
+    explicit_map = valid_map
+
     for target_file in target_files:
         # Normalize path
         target_path = Path(target_file)
