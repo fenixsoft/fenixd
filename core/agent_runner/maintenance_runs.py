@@ -1512,7 +1512,7 @@ def _apply_pytest_subset(cmd, subset_nodeids, exec_root=None):
 
     pytest_idx = None
     for i, t in enumerate(tokens):
-        if _is_pytest_invocation(t) or (i > 0 and tokens[i - 1] == "-m" and _is_pytest_invocation(t)):
+        if _is_pytest_invocation(t):
             pytest_idx = i
             break
     if pytest_idx is None:
