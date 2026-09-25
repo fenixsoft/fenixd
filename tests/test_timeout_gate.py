@@ -81,3 +81,84 @@ class TestGateBehavior:
         )
         # 正常用例不受影响：门内完成即通过
         result.assert_outcomes(passed=1)
+
+
+class TestAllowlistSchema:
+    """任务 2.3：豁免清单 schema 校验（真实清单必须干净；各类违规必须被指出）。"""
+
+    @staticmethod
+    def _violations_of(tmp_path, yaml_text):
+        from conftest import load_timeout_allowlist, validate_timeout_allowlist
+
+        path = tmp_path / "timeout-allowlist.yaml"
+        path.write_text(yaml_text, encoding="utf-8")
+        entries, error = load_timeout_allowlist(path)
+        assert error is None, f"样例清单应可解析，却报错：{error}"
+        return validate_timeout_allowlist(entries)
+
+    def test_real_allowlist_is_clean(self):
+        from conftest import load_timeout_allowlist, validate_timeout_allowlist
+
+        entries, error = load_timeout_allowlist()
+        assert error is None, f"仓库真实豁免清单不可解析：{error}"
+        assert validate_timeout_allowlist(entries) == []
+
+    def test_missing_or_blank_reason_is_flagged(self, tmp_path):
+        violations = self._violations_of(
+            tmp_path,
+            textwrap.dedent(
+                """\
+                entries:
+                  - nodeid: tests/test_x.py::test_no_reason
+                    timeout_seconds: 30
+                  - nodeid: tests/test_x.py::test_blank_reason
+                    timeout_seconds: 30
+                    reason: ""
+                """
+            ),
+        )
+        # 每条违规都要指出违规条目（序号 + 字段），reason 缺失与为空各计一条
+        assert len(violations) == 2, violations
+        assert "第 1 条" in violations[0] and "reason" in violations[0]
+        assert "第 2 条" in violations[1] and "reason" in violations[1]
+
+    def test_non_positive_timeout_seconds_is_flagged(self, tmp_path):
+        violations = self._violations_of(
+            tmp_path,
+            textwrap.dedent(
+                """\
+                entries:
+                  - nodeid: tests/test_x.py::test_zero
+                    timeout_seconds: 0
+                    reason: 零秒豁免
+                  - nodeid: tests/test_x.py::test_negative
+                    timeout_seconds: -5
+                    reason: 负秒豁免
+                """
+            ),
+        )
+        assert len(violations) == 2, violations
+        assert all("timeout_seconds" in v for v in violations)
+
+    def test_missing_nodeid_is_flagged(self, tmp_path):
+        violations = self._violations_of(
+            tmp_path,
+            textwrap.dedent(
+                """\
+                entries:
+                  - timeout_seconds: 30
+                    reason: 缺 nodeid
+                """
+            ),
+        )
+        assert len(violations) == 1, violations
+        assert "nodeid" in violations[0]
+
+    def test_malformed_yaml_is_flagged(self, tmp_path):
+        from conftest import load_timeout_allowlist
+
+        path = tmp_path / "broken.yaml"
+        path.write_text("entries: [ {nodeid: a, timeout_seconds: 1", encoding="utf-8")
+        entries, error = load_timeout_allowlist(path)
+        assert entries == []
+        assert error is not None and "解析失败" in error
