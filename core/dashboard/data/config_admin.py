@@ -1713,6 +1713,35 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
                     f"(00:00-23:59): {se_patch['spec_run_at']!r}"
                 )
 
+    # code-review item 30ffc3a445d4：容器键非 dict patch 直接拒绝（对齐上方
+    # agents / hooks / self_evolution 同款「must be an object」守卫：这批键在
+    # _deep_merge_managed 中均带 isinstance(..., dict) 前置条件，非 dict 值走
+    # 静默跳过路径，write_config 仍返回 ok:true，提交被丢弃而调用方无感知；
+    # 各键的非法「值」校验段同样以 isinstance(..., dict) 为前提，非 dict 一律绕过）
+    for _ck in (
+        "gates",
+        "verify",
+        "runs",
+        "archive",
+        "admin",
+        "self_review",
+        "code_review",
+        "code_review_fix",
+        "regression",
+        "stale_code_selfheal",
+    ):
+        if _ck in config_patch and not isinstance(config_patch[_ck], dict):
+            return fail(f"{_ck} must be an object: {config_patch[_ck]!r}")
+
+    # 嵌套形态同口径：「同步用户级设置」经 _SYNC_PAGE_KEYS 把用户级 admin 段以
+    # {"admin": {"code_review": ...}} 形态送入（值取自用户级文件原文，手工脏数据
+    # 会原样透传），非 dict 子段在合并分支（isinstance dict 前置）被静默跳过致
+    # sync 返回 ok 却未落盘——与顶层同款拒绝
+    if isinstance(config_patch.get("admin"), dict):
+        for _nk in ("code_review", "code_review_fix"):
+            if _nk in config_patch["admin"] and not isinstance(config_patch["admin"][_nk], dict):
+                return fail(f"admin.{_nk} must be an object: {config_patch['admin'][_nk]!r}")
+
     # 2. 合并受管键
     merged = _deep_merge_managed(raw, config_patch)
 
