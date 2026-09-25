@@ -913,7 +913,15 @@ class G6StashGuardMixin:
             )
             if diff.returncode != 0 or not diff.stdout.strip():
                 return
-            for rel in [ln.strip() for ln in diff.stdout.splitlines() if ln.strip()]:
+            # 路径反转义（同 _list_dirty_tracked_files 口径）：diff --name-only
+            # 对非 ASCII/特殊字符路径默认输出 C-quoted 转义形，不反转义则下方
+            # ls-files/check-ignore/rm --cached 的 pathspec 永不命中，purge
+            # 对该类文件静默跳过。
+            for rel in [
+                _unquote_git_path(ln.strip())
+                for ln in diff.stdout.splitlines()
+                if ln.strip()
+            ]:
                 ls = subprocess.run(
                     ["git", "-C", str(self.project_root), "ls-files", "--error-unmatch", "--", rel],
                     capture_output=True,
@@ -969,7 +977,12 @@ class G6StashGuardMixin:
                 text=True,
                 timeout=30,
             )
-            staged_set = set(staged.stdout.splitlines())
+            # 同款反转义：staged 名单要与 victims（已反转义为真实路径）做子集
+            # 校验，带引号转义形会把非 ASCII 路径误判为「暂存集越界」并回滚
+            # 本次 purge。
+            staged_set = {
+                _unquote_git_path(ln) for ln in staged.stdout.splitlines()
+            }
             if staged.returncode != 0 or not staged_set <= set(victims):
                 self.logger.warning(
                     "worktree_manager",
