@@ -3,7 +3,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: blocked-env 的报告与门禁换算
-report.summary 的 `blocked_env` 字段与「有效失败 = failed - blocked_env」口径保持不变；inconclusive 判定 SHALL 从「全部原始失败均为 blocked-env」扩展为两级：级一维持既有全批 blocked-env（judge 前原始 summary 口径，escalation 阶段 2.6）；级二为「judge 裁决后全部失败（含混合形态中原始 failed>0 的部分）均被归类环境因素」——级二在裁决采纳尾段判定，处理与级一同源（回 implemented 重验新 attempt，不判 bug-found、不产生 repeated_failures）。既有重验上限与 B7 升级阈值语义对两级统一适用。
+report.summary 的 `blocked_env` 字段与「有效失败 = failed - blocked_env」口径保持不变；inconclusive 判定 SHALL 从「全部原始失败均为 blocked-env」扩展为两级：级一维持既有全批 blocked-env（judge 前原始 summary 口径，escalation 阶段 2.6）；级二为「judge 裁决后全部失败断言（含混合形态中原始 failed>0 的部分，按 assertion_triage 断言级归类，场景缺该字段时回退场景级 classification）均归类 env——不存在 product-bug / test-defect 条目，blocked_env 形态场景天然视为环境性」——级二在裁决采纳尾段判定（先于既有场景级 env 洗白门禁 `_env_whitewash_gate`，后者行为不变），处理与级一同源（回 implemented 重验新 attempt，不判 bug-found、不产生 repeated_failures）；flaky 归类维持既有豁免放行，不纳入级二。既有重验上限与 B7 升级阈值语义对两级统一适用。
 
 #### Scenario: 混合形态全部环境性按 inconclusive 处理
 - **WHEN** 一轮原始 summary 为 19 passed + 2 failed + 1 blocked_env（混合形态，不满足级一判据），judge 裁决将 2 个 failed 全部归类 env

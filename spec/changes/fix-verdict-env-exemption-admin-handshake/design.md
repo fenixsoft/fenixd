@@ -10,8 +10,13 @@
 事故形态（add-session-composer 2026-09-25）：原始 summary 19 passed + 2 failed +
 1 blocked_env + 1 warning——2.5/2.7 判据不命中（非不可达、非 pass=0），2.6 判据
 `failed+errors=2 > 0` 直接 return False；judge 裁决把 2 个 failed 归类 env 产出
-verified。三道环境防御全在 judge 之前、以原始口径判定；judge 之后的 env 归类
-（豁免清单）不回流任何升级计数器，admin_monitor 三层检测（repeated_failures /
+verified。三道环境防御全在 judge 之前、以原始口径判定；judge 之后的防线只有
+verified 洗白门禁（`_env_whitewash_gate` → `whitewash_violations`，2026-09-04
+help-center 防线，escalation.py:177 / verdict_check.py:217），而它只检查**场景级**
+`classification == "env"` 且 status 非 pass 的形态——本次事故的裁决豁免走**断言级**
+triage（`assertion_triage` 归类 env，报告豁免清单按断言逐条渲染 7 条），场景级
+classification 未标 env，从该检查漏出，verified 放行；该形态下 env 归类同样不回流
+inconclusive 重验链，admin_monitor 三层检测（repeated_failures /
 stuck / blocked_stuck）以失败/error 终态为输入，verified 通过全盲。dist 重建只有
 merge-back 单点（`core/worktree_manager/dist_conflicts.py:317`
 `_rebuild_dist_after_merge`，失败仅 logger.error 不重试不阻塞），verify prepare 的
@@ -46,7 +51,12 @@ B7 升级通道（`_write_inconclusive_loop_signal`，`inconclusive_escalate_att
 只能在 judge 之后判定；挂尾段天然覆盖混合形态与全批形态的 judge 后路径，与阶段
 2.6（judge 前短路）构成两级防线且互不重复——阶段 2.6 命中即 return，judge 不跑，
 尾段不会看到重复轮次。计数复用 `_inconclusive_attempts`（两级共享同一上限与
-升级阈值，避免双计数器漂移）。
+升级阈值，避免双计数器漂移）。与既有洗白门禁的分工：`_env_whitewash_gate`
+（场景级 classification=env 且 status 非 pass → `_escalate_env_blocked`：
+blocked + admin + 冻结转人工）保持不变，覆盖场景级标注形态；级二覆盖其漏出的
+断言级豁免形态。级二拦截点在洗白门禁之前，级二命中即转 inconclusive（该轮
+不再到达洗白门禁），级二不命中时洗白门禁行为逐字节不变——同一轮两道裁决后
+防线不叠加动作。
 
 ### D2 重验前补救 = dist 探针前置 + 探针结果随 run 留痕
 
@@ -66,17 +76,26 @@ dashboard static 产物存在且被测实例 serve 主树 dist 的形态生效�
 
 ### D4 混合形态级二判据实现口径
 
-级二判定读 judge 裁决产物的分类统计（豁免清单条数 == 本轮 failed + blocked_env
-总数，且产品缺陷数 == 0），不重算原始 summary。产品缺陷数 > 0 时级二不命中、走
-既有 bug-found——豁免记录照常保留（部分豁免不阻断缺陷修复流）。
+级二判定读 judge 裁决产物的断言级分类（`assertion_triage`；场景无
+assertion_triage 时回退场景级 classification）：全部非 pass/passed 场景（含
+blocked_env 形态场景，其天然视为环境性）的失败断言中不存在 product-bug /
+test-defect 条目，且全部失败断言归类均为 env——即「失败全部为环境性」方命中；
+不重算原始 summary，不用「豁免清单条数 == failed + blocked_env」等式（豁免清单
+是断言级行，条数与场景数不对齐，事故形态 7 条断言 ≠ 2 failed + 1 blocked_env）。
+含 product-bug（产品缺陷）或 test-defect（测试脚本缺陷）条目时级二不命中、走
+既有 bug-found——豁免记录照常保留（部分豁免不阻断缺陷修复流）。flaky 归类
+维持既有豁免放行语义不转重验（不扩大本 SPEC 范围）。
 
 ### D5 admin 确认的落点复用 B7 + 人工放行语义
 
 级二重验穷尽（attempts 达 `inconclusive_escalate_attempts`）→
-`_write_inconclusive_loop_signal` 写 SIGNAL → admin 处置。豁免最终生效以 admin
-处置记录（AdminStore DISPOSITION）或人工 `admin-resolve` 放行为准；无放行记录前
-SPEC 停留在 implemented + error 现场（与既有 B7 「暂停自动重验等待人工处置」
-语义闭环，不新增状态机状态）。
+`_write_inconclusive_loop_signal` 写 SIGNAL → admin 处置。豁免最终生效以
+AdminStore 处置记录为唯一锚（kind=DISPOSITION，经 `latest_resolved_disposition`
+按 spec 查询；dashboard/CLI 人工放行动作落库后同一锚点可查）；守卫检查点放在
+级二命中分支内：查得该 SPEC 放行记录 → 本轮直接按既有豁免清单落 verified 并在
+报告保留处置回链；查不得 → 转 inconclusive 重验。无放行记录前 SPEC 停留在
+implemented + error 现场（与既有 B7 「暂停自动重验等待人工处置」语义闭环，
+不新增状态机状态）。
 
 ## Risks / Trade-offs
 

@@ -3,7 +3,7 @@
 ## ADDED Requirements
 
 ### Requirement: env 豁免非空时阻断直接 verified
-judge 裁决采纳尾段 SHALL 在落 verified 终态前检查豁免清单：本轮存在任一失败断言被裁决归类为环境因素（env 豁免）时，MUST NOT 直接落 verified——该轮 SHALL 转入 inconclusive 处理（回 implemented、保留失败现场、排队重验新 attempt），与既有全批 blocked-env 的 inconclusive 语义同源。全绿机械快道（0 失败 0 警告）无豁免对象，MUST NOT 受本要求影响。
+judge 裁决采纳尾段 SHALL 在落 verified 终态前按级二判据检查裁决产物的断言级分类（assertion_triage，场景缺该字段时回退场景级 classification）：全部失败断言归类 env（无 product-bug / test-defect 条目）时，MUST NOT 直接落 verified——该轮 SHALL 转入 inconclusive 处理（回 implemented、保留失败现场、排队重验新 attempt），与既有全批 blocked-env 的 inconclusive 语义同源。含 product-bug / test-defect 条目时本要求不命中，走既有 bug-found（env 部分照常留豁免记录）；flaky 归类维持既有豁免放行。全绿机械快道（0 失败 0 警告）无豁免对象，MUST NOT 受本要求影响。
 
 #### Scenario: 裁决豁免触发重验而非放行
 - **WHEN** 一轮验证 19 场景通过、2 场景失败，judge 裁决将 2 个失败全部归类 env 并倾向 verified
@@ -21,7 +21,7 @@ inconclusive 重验派发前，框架 SHALL 先执行环境补救动作（至少
 - **THEN** 重验轮 served dist 含最新文案，原 2 场景真实复跑（非豁免放行），全绿则自然 verified
 
 ### Requirement: 重验穷尽后豁免须经 admin 确认
-inconclusive 重验达到既有上限（`verify_engine.inconclusive_max_attempts`，缺省 3）仍存在 env 类失败时，框架 SHALL 走既有 B7 升级通道：向 admin store 写 SIGNAL 唤起 Administrator 做环境补救处置；admin 处置记录确认环境不可解（或人工裁决放行）后，豁免方可生效落 verified。admin 介入前框架 MUST NOT 以豁免清单为依据自行产出最终 verified。
+inconclusive 重验达到既有上限（`verify_engine.inconclusive_max_attempts`，缺省 3）仍存在 env 类失败时，框架 SHALL 走既有 B7 升级通道：向 admin store 写 SIGNAL 唤起 Administrator 做环境补救处置；AdminStore 中出现该 SPEC 的已处置放行记录（kind=DISPOSITION，经 `latest_resolved_disposition` 可查；dashboard/CLI 人工放行动作落库后同一锚点可查）后，豁免方可生效落 verified。守卫检查点 SHALL 放在级二命中分支内：查得放行记录即本轮直接放行（不再转 inconclusive），查不得则转 inconclusive 重验。admin 介入前框架 MUST NOT 以豁免清单为依据自行产出最终 verified。
 
 #### Scenario: 连续 env 失联唤起 Administrator
 - **WHEN** 同一 SPEC 连续达到升级阈值（缺省 4）轮次均为「失败全部归类 env」
