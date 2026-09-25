@@ -1427,8 +1427,16 @@ class ConfigLoader:
             except (TypeError, ValueError):
                 return default
 
+        # 严格 bool（code-review item 556de743c9af）：bool(...) 会把任何 truthy
+        # 非 bool 值（如 YAML 引号串 enabled: "false"）静默转 True、意外启用
+        # admin 子系统；非 bool 回退文档缺省 True（与 get_code_review_config
+        # 同范式）。
+        enabled = admin.get("enabled", True)
+        if not isinstance(enabled, bool):
+            enabled = True
+
         return {
-            "enabled": bool(admin.get("enabled", True)),
+            "enabled": enabled,
             "interval_minutes": _num(admin.get("interval_minutes"), 5.0, float),
             "agent_model": admin.get("agent_model") or None,
             "escalation_cooldown_minutes": _num(
@@ -1889,7 +1897,8 @@ class ConfigLoader:
         """stuck 判定阈值单源派生自 run 超时（design D1/D2/D4）。
 
         effective_threshold = run_timeout_seconds + STUCK_GRACE_SECONDS（600s）。
-        run_timeout_seconds 缺失、非正数或非有限浮点（.nan）时回退 4200s 并打
+        run_timeout_seconds 缺失、非正数或非有限浮点（.nan）时回退
+        STUCK_FALLBACK_SECONDS（9600s）并打
         WARNING（D4：
         防有人把超时关掉导致恢复永不触发）。旧键
         schedule/admin.stuck_threshold_minutes 不论是否配置都不影响结果（D3 告警）。
