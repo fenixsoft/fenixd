@@ -28,6 +28,6 @@
 
 ## 验证修复（原地打回第 1 轮）
 
-- [ ] 先复核失败有效性：逐条核对 `spec/changes/add-codefix-commit-first-contract/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
-- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
-- [ ] 修复后重跑验证确认通过
+- [x] 先复核失败有效性：逐条核对 `spec/changes/add-codefix-commit-first-contract/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
+- [x] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
+- [x] 修复后重跑验证确认通过（复核结论：4 失败场景同根因为真实产品 Bug——首轮回归 passed 快路径批收尾 salvage 守卫引用未初始化 retry_run_id 抛 UnboundLocalError；core/code_fix.py 预初始化修复后 code-fix 家族 6 文件 181 passed + 15 subtests 全绿，3 例 salvage 单测复现失败转通过）
