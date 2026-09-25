@@ -1486,7 +1486,7 @@ def _is_pytest_invocation(token: str) -> bool:
     return base in ("pytest", "py.test")
 
 
-def _apply_pytest_subset(cmd, subset_nodeids, exec_root=None):
+def _apply_pytest_subset(cmd, subset_nodeids):
     """把 pytest 命令的既有收集位置参数替换为失败用例 nodeids（2.1，D2）。
 
     两态命令均支持（str=shell 经 shlex token 化、list=argv 原样）。替换规则：
@@ -1593,7 +1593,7 @@ def run_regression(
 
     subset = list(subset_nodeids) if subset_nodeids else []
     if subset:
-        subset_cmd = _apply_pytest_subset(spec.cmd, subset, exec_root=exec_root)
+        subset_cmd = _apply_pytest_subset(spec.cmd, subset)
         if subset_cmd is not None:
             spec = dataclasses.replace(spec, cmd=subset_cmd)
             if log is not None:

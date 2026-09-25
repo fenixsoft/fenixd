@@ -84,11 +84,18 @@ def shard_paths(project_root, run_id: str) -> List[Path]:
     # ``out-<epoch>-b<N>.jsonl``（缺 ``code-review-`` 段），三消费侧全盲。
     # run_id 去掉已知前缀后的同素材错名文件存在时 WARNING 点名——只告警
     # 不消费（读侧口径 fail-显式不 fail-静默，也不放宽 glob 兜错名）。
+    # glob 列举全部批次候选（-b2/-b3 等错名分片同样点名），排除与正名
+    # ``out-<run_id>-b<N>.jsonl`` 同形的路径（rest 退化拼出正名不误报）。
     rest = run_id[len("code-review-"):] if run_id.startswith("code-review-") else ""
     if rest:
         try:
-            stray = d / f"out-{rest}-b1.jsonl"
-            if stray.is_file():
+            legit_re = re.compile(re.escape(f"out-{run_id}-b") + r"[0-9]+\.jsonl")
+            strays = sorted(
+                p
+                for p in d.glob(f"out-{rest}-b*.jsonl")
+                if p.is_file() and not legit_re.fullmatch(p.name)
+            )
+            for stray in strays:
                 _logger.warning(
                     "code_review: 疑似错名分片 %s（run %s 的分片名应为 "
                     "out-%s-b<N>.jsonl）——该文件不参与聚合消费，请核对"

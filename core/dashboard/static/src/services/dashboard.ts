@@ -148,7 +148,11 @@ async function request<T>(
         const body = (await res.json()) as ApiErrorBody;
         if (body?.error) msg = body.error;
         if (body?.code) code = body.code;
-      } catch {
+      } catch (e) {
+        // 错误体消费期间的 abort（挂起的错误响应被超时/取消中止，item
+        // eebe470f0864 同理）同样纳入分类——不得被当作「非 JSON 错误体」
+        // 静默改写成 HTTP 状态码错误。
+        if (e instanceof DOMException && e.name === 'AbortError') throw classifyAbort();
         // 非 JSON 错误体，保留 HTTP 状态码信息
       }
       throw new ApiError(msg, res.status, classifyHttpKind(res.status), code);

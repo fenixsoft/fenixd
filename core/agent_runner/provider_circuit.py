@@ -678,7 +678,7 @@ class ProviderCircuit:
                     f"pm.failover.daily_attempts_warn ({warn}) — check for silent cost",
                 )
 
-    # ── 全局瞬断错误指纹熔断（fix-provider-transient-backoff D4 / transcendent-dispatch-gating）──
+    # ── 全局瞬断错误指纹熔断（fix-provider-transient-backoff D4 / transient-dispatch-gating）──
     # 全局维度的瞬断错误指纹计数：错误文本归一化（剥离 model 名/时间戳等可变字段）
     # 生成指纹，在窗口内同一指纹出现次数达阈值 → 触发全局派发冻结。计数与熔断
     # 状态保持进程内存（与既有 4xx 熔断同构，daemon 重启清零）。
@@ -1758,7 +1758,12 @@ class ProviderCircuit:
 
     def reset_signal_kill(self, spec_name: str) -> None:
         """成功 / 冷却到期：清除该 spec 的信号死法连续计数与冷却态。"""
-        self._signal_kill.pop(spec_name, None)
+        # pop 加锁（code-review item 9ac979221141）：与 record_signal_kill /
+        # is_signal_kill_cooldown 的记账锁纪律对齐——无锁 pop 可把并发收尾
+        # run 刚 setdefault 建立的计数（甚至刚写入的 cooldown_until）整条
+        # 抹掉，冷却被提前解除、连续计数从头再算。
+        with self._signal_kill_lock:
+            self._signal_kill.pop(spec_name, None)
 
     def _signal_kill_cooldown_after(self) -> int:
         """信号冷却阈值（agents.signal_kill_cooldown_after，缺省 3）。"""

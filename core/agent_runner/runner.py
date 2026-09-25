@@ -2291,13 +2291,11 @@ class AgentRunner:
                     # 不可达。wt_dirty 取证口径与 _finalize_success 相同
                     # （git status --porcelain，失败按空列表 fail-open）。
                     if agent_type == "implementer":
-                        _nc_st = subprocess.run(
-                            ["git", "-C", str(wt_path), "status", "--porcelain"],
-                            capture_output=True, text=True, timeout=30,
-                        )
-                        _nc_dirty = (
-                            [l for l in _nc_st.stdout.splitlines() if l.strip()]
-                            if _nc_st.returncode == 0 else [])
+                        # fix-nocommit-gate-git-forensics-failopen：复用
+                        # _git_status_porcelain 取证（OSError/SubprocessError
+                        # 按空列表 fail-open），git 超时/缺失不吞已到手的
+                        # 成功终态——与本注释上方声明的口径一致。
+                        _nc_dirty = self._git_status_porcelain(wt_path)
                         self._check_terminal_no_commit_gate(
                             spec_name=spec_name, agent_type=agent_type,
                             wt_path=wt_path,

@@ -154,7 +154,13 @@ def count_scenarios(project_root, spec_name) -> int:
     count = 0
     try:
         for sf in specs_dir.rglob("*.md"):
-            for line in sf.read_text(encoding="utf-8").split("\n"):
+            try:
+                content = sf.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                # 单文件不可读/解码失败跳过该文件，不影响其余文件计数
+                # （与 _read_spec_scenarios 逐文件容错口径一致）
+                continue
+            for line in content.split("\n"):
                 if re.match(r"^####\s+Scenario:", line):
                     count += 1
     except (OSError, UnicodeDecodeError):

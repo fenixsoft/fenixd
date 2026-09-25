@@ -11,6 +11,7 @@ from pathlib import Path
 
 # 跨层引用（D4：叶子→中层/中枢，函数内延迟 import 避免循环）
 from core.run_task_track import find_impl_run_file, parse_run_task_done
+# 该行导入同时即本模块对外的同名再导出，其余位置不重复 import。
 
 
 def find_implementer_worktree(project_root, spec_name):
@@ -44,10 +45,6 @@ def find_implementer_worktree(project_root, spec_name):
 # engine 门禁共用，避免 dashboard 消费层被 agent_runner 反向 import）；此处
 # 保留同名再导出，既有全部调用点（engine.py:961/1166、本模块 1406/1470 等）
 # 零改动仍可用。
-from core.run_task_track import (  # noqa: E402,F401
-    find_impl_run_file,
-    parse_run_task_done,
-)
 
 # 向后兼容别名：旧调用点（tests / 历史引用）仍可用下划线前缀名。
 _parse_run_task_done = parse_run_task_done
