@@ -1875,7 +1875,17 @@ def run_code_fix(
     # out 解析（fixed/skipped 计数；skipped 条目由编排器保持 open）
     fixed = skipped = 0
     if run_ok:
-        for rec in _read_fix_out_rows(out_path):
+        try:
+            rows = _read_fix_out_rows(out_path)
+        except OSError as e:
+            # 硬门判存/读取成功后、计数读取前产物被删/权限收紧等读取异常
+            # 不得穿透本函数收尾。此处成功但零计数会与硬门「至少一条有效
+            # 行」的保证矛盾（掩盖读取故障），故对齐硬门 fail-closed 语义
+            # 折算为失败信封。
+            run_ok = False
+            error = f"code-fix 产物计数读取失败: {out_path} 读取异常（{e}）"
+            rows = []
+        for rec in rows:
             if rec.get("status") == "fixed":
                 fixed += 1
             elif rec.get("status") == "skipped":
