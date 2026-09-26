@@ -26,6 +26,7 @@
 
 import json
 import re
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -46,6 +47,12 @@ _FINGERPRINT_RE = re.compile(re.escape(_FINGERPRINT_MARKER) + r"([^\s，。）|]
 # dashboard.data.parse_verdict 同款语法，两处必须同源演进）。
 _MD_CONCLUSION_RE = re.compile(r"^#{2,4}\s*(?:判定)?结论\s*(?:摘要)?\s*[：:]?\s*(.*)$", re.M)
 _MD_COUNT_RE = re.compile(r"^\|\s*(通过|失败|错误)\s*\|\s*([^|]+?)\s*\|", re.M)
+
+# 报告入库 git 子进程超时（秒）：照 core/archive_commit.py 惯例，探测最快、
+# add 居中、commit 最慢（锁冲突等待窗口更长）。
+_REPORT_PROBE_TIMEOUT = 30
+_REPORT_ADD_TIMEOUT = 60
+_REPORT_COMMIT_TIMEOUT = 120
 
 
 # ── 结构化数据读取 ────────────────────────────────────────────────
@@ -754,11 +761,99 @@ def _append_alert(
             )
 
 
+def _commit_verification_report(project_root, spec_name, logger=None) -> None:
+    """报告落盘即入库（evo-add-verification-report-commit-on-write）。
+
+    对 ``spec/changes/<spec>/verification-report.md`` 做 pathspec 精确的
+    git add + commit（add 与 commit 同 pathspec，--only 语义），使「落盘」
+    与「入库」同步，不再依赖归档兜底；subprocess 惯例照 core/archive_commit.py。
+
+    - pathspec 严格单文件：禁用 ``git add -A -- spec`` 整目录（会卷入其它
+      spec 在途草案，engine.py 同款警示），也不吞索引中无关 staged 内容；
+    - 失败语义：非 git 仓库（被管项目可能无 git）静默跳过；其余失败
+      （git 不可用、index.lock 争用等）只落 WARNING（附 stderr 摘要），
+      绝不影响验证主流程与报告写盘结果；
+    - 幂等：报告已入库且内容无变化时静默跳过（探测式：add 后与 HEAD 逐字
+      节比对，不解析 git 各版本漂移的 nothing-to-commit 文案）——闸门在同
+      一 spec 多轮验证中反复进入（pipeline/legacy 四调用点），重复放行不
+      得反复落 WARNING 制造告警噪声。
+    """
+    proot = Path(project_root)
+    rel_path = f"spec/changes/{spec_name}/verification-report.md"
+
+    def _warn(msg: str) -> None:
+        if logger is not None:
+            logger.warning("verify_report", f"验证报告入库失败 '{spec_name}': {msg}")
+
+    try:
+        # 非 git 仓库：入库机制不适用，静默跳过（每轮验证都进闸门，
+        # 对无 git 的被管项目逐轮刷 WARNING 纯属噪声）
+        probe = subprocess.run(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            cwd=str(proot),
+            capture_output=True,
+            text=True,
+            timeout=_REPORT_PROBE_TIMEOUT,
+        )
+        if probe.returncode != 0 or probe.stdout.strip() != "true":
+            return
+        add = subprocess.run(
+            ["git", "add", "--", rel_path],
+            cwd=str(proot),
+            capture_output=True,
+            text=True,
+            timeout=_REPORT_ADD_TIMEOUT,
+        )
+        if add.returncode != 0:
+            _warn(f"git add 失败: {add.stderr.strip() or f'exit {add.returncode}'}")
+            return
+        # 幂等主判定：add 后暂存内容与 HEAD 一致（报告已入库且内容无变化）
+        # 即静默跳过——用探测式判定而非解析 nothing-to-commit 文案：git 各
+        # 版本文案漂移（"nothing to commit, working tree clean" 与
+        # "nothing added to commit but untracked files present" 并存），
+        # 单一文案匹配会在重复放行时误落 WARNING。
+        unchanged = subprocess.run(
+            ["git", "diff", "--cached", "--quiet", "HEAD", "--", rel_path],
+            cwd=str(proot),
+            capture_output=True,
+            text=True,
+            timeout=_REPORT_PROBE_TIMEOUT,
+        )
+        if unchanged.returncode == 0:
+            return
+        commit = subprocess.run(
+            [
+                "git", "commit",
+                "-m", f"[fenix] {spec_name}: verification-report 入库",
+                "--", rel_path,
+            ],
+            cwd=str(proot),
+            capture_output=True,
+            text=True,
+            timeout=_REPORT_COMMIT_TIMEOUT,
+        )
+        if commit.returncode != 0:
+            output = (commit.stdout + "\n" + commit.stderr).strip()
+            if (
+                "nothing to commit" in output
+                or "nothing added to commit" in output
+            ):
+                return  # 探测到提交之间他人已入库同内容（并发窗口）：静默跳过
+            _warn(f"git commit 失败: {output or f'exit {commit.returncode}'}")
+    except (OSError, subprocess.TimeoutExpired) as e:
+        _warn(f"git 入库异常: {e}")
+
+
 def ensure_verification_report(project_root, spec_name, logger=None) -> dict:
     """验证报告产物闸门：裁决放行前调用。
 
     返回 {"ok": True, "action": "present"|"synthesized"|"resynthesized"} 表示放行；
     返回 {"ok": False, "error": <文案>} 表示 MUST 阻止状态推进（fail-closed）。
+
+    放行时（含 present——Agent 已自写报告、框架未落盘）报告文件同步入库
+    （``_commit_verification_report``，pathspec 精确）；git 失败只落 WARNING，
+    不改变放行结论。本动作只做 git 入库，不触碰 spec_has_content 内容认可
+    判定（verification-report.md 保持不计入名单）。
 
     action=resynthesized：既有报告属上一轮残留（``_report_is_superseded``），
     已用本轮结构化数据重新合成覆盖。既有报告在场但不可读（OSError/
@@ -782,7 +877,9 @@ def ensure_verification_report(project_root, spec_name, logger=None) -> dict:
             existing = ""
             unreadable = True
         if not unreadable and not _report_is_superseded(project_root, spec_name, existing):
-            # Agent 已写报告且与本轮裁决一致：原样保留，不覆盖、不改 mtime
+            # Agent 已写报告且与本轮裁决一致：原样保留，不覆盖、不改 mtime；
+            # 文件既已在盘，落盘即入库（present 是验证 Agent 自写报告的主路径）
+            _commit_verification_report(project_root, spec_name, logger)
             return {"ok": True, "action": "present"}
         result = synthesize_verification_report(project_root, spec_name)
         if result.get("ok"):
@@ -799,6 +896,7 @@ def ensure_verification_report(project_root, spec_name, logger=None) -> dict:
                         f"验证报告闸门：'{spec_name}' 报告属上一轮残留"
                         f"（本轮裁决已变更），已重新合成覆盖",
                     )
+            _commit_verification_report(project_root, spec_name, logger)
             return {"ok": True, "action": "resynthesized"}
         error = result.get("error") or "验证报告缺失且无法合成"
         if unreadable:
@@ -840,6 +938,7 @@ def ensure_verification_report(project_root, spec_name, logger=None) -> dict:
                 "verify_report",
                 f"验证报告闸门：'{spec_name}' 报告缺失，已由框架合成",
             )
+        _commit_verification_report(project_root, spec_name, logger)
         return {"ok": True, "action": "synthesized"}
 
     error = result.get("error") or "验证报告缺失且无法合成"
