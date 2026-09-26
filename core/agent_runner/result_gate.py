@@ -105,7 +105,7 @@ class FrozenTerminatedError(Exception):
 
 
 class AgentArtifactGateError(Exception):
-    """planner 产物硬门失败（add-judge-artifact-gate D1。
+    """planner 产物硬门失败（add-judge-artifact-gate D1）。
 
     add-planready-artifact-gate：plan 类型也含结果文件契约——planner-plan
     现亦校验 .fenix-run-result.json（status='plan-ready'）。
