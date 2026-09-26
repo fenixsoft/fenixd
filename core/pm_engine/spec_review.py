@@ -1185,6 +1185,10 @@ class SpecReviewManager:
             return False, "SPEC 不存在"
         if entry.get("status") != SpecStatus.BLOCKED:
             return False, "SPEC 状态不是 blocked"
+        # 冻结前置检查（与 re_review 同款）：frozen-strip 语义下 frozen spec
+        # 的 transition 必失败，须明确报冻结而非误导性的「状态转移失败」
+        if entry.get(FROZEN_FIELD):
+            return False, "SPEC 已冻结（请先解冻）"
 
         # 执行 blocked → ready（fix-observability-gaps 2.2：人工担责放行来源）
         success = self.state_machine.transition(
