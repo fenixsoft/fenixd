@@ -167,6 +167,23 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
     activeRef.current = active;
   }, [active]);
 
+  // 快照应用串行链（code-review item e3b97bedcb43：自主 effect 局部闭包提升到
+  // 组件级）：原链只在主 effect 内可见，handleStart 的快照拉取不经该链——用户
+  // 在激活后立即点「开始会话」时，afterHello 在途的旧快照（GET 发起于
+  // startSession 完成之前）可晚于 handleStart 的快照应用，applySnapshot 整表
+  // 替换把面板翻回空态（started=false、events 清空）、uuid 去重集合按旧快照
+  // 重建，窗口内事件丢失，需用户再次点击才恢复。链提升后，effect 内 loadAll /
+  // afterHello 与 handleStart 的快照统一经本链按发起顺序串行落盘。
+  const loadChainRef = useRef<Promise<void>>(Promise.resolve());
+  const enqueueSnapshotLoad = (task: () => Promise<void>): Promise<void> => {
+    // 返回挂接 catch 之前的 promise：任务自身的失败（handleStart 的 getSession
+    // 报错）仍沿返回值抛给调用方的既有 catch（→ setError）；链本体经 catch 续接，
+    // 单次失败不断链（loadAll / afterHello 的任务内部自吞错，行为不变）。
+    const run = loadChainRef.current.then(task);
+    loadChainRef.current = run.catch(() => {});
+    return run;
+  };
+
   const syncEvents = (next: SessionEvent[]) => {
     // 全量重拉：以快照 uuids 重建去重集合（code-review item 12c190b15530）——
     // 旧实现只 clear，重拉后到达的 SSE session_events 帧若携带快照中已有的
@@ -276,12 +293,9 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
     // hello 触发的 afterHello 重载并发执行、各自带全量快照调 syncEvents、无
     // 排序守卫——早发出者后返回时旧快照覆盖新快照，中间送达的事件从渲染
     // 列表丢失。经 promise 链按发起顺序串行应用快照（后应用的必然是更晚
-    // 发起的加载，包含更新的服务端状态）。
-    let loadChain: Promise<void> = Promise.resolve();
-    const enqueueSnapshotLoad = (task: () => Promise<void>): Promise<void> => {
-      loadChain = loadChain.then(task).catch(() => {});
-      return loadChain;
-    };
+    // 发起的加载，包含更新的服务端状态）。链本体在组件级（loadChainRef，
+    // item e3b97bedcb43）：handleStart 的快照应用须并入同一链。
+
 
     const loadAll = () =>
       enqueueSnapshotLoad(async () => {
@@ -459,13 +473,19 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
       // 响应返回（sessionIdRef 已置位、watch 已补注册，SSE 帧可先行 append）到
       // 本 GET 快照落定之间存在竞态窗口，整表替换会把窗口内未进入服务端快照的
       // 事件永久丢弃且 uuid 被去重集合剔除；与 afterHello 第二次重拉共用
-      // applySnapshotCarried。
-      const data = await getSession(project);
-      // 快照返回前已切离：不应用快照（避免非激活面板重新持有一份活跃状态）
+      // applySnapshotCarried。经组件级串行链应用（code-review item e3b97bedcb43）：
+      // 排队在途的 afterHello 旧快照之后落盘，避免其晚到时整表替换把面板翻回
+      // 空态（后应用的必然是更晚发起的加载）。
+      await enqueueSnapshotLoad(async () => {
+        const data = await getSession(project);
+        // 快照返回前已切离：不应用快照（避免非激活面板重新持有一份活跃状态）
+        if (!activeRef.current) return;
+        if (data.session) {
+          applySnapshotCarried(data);
+        }
+      });
+      // 快照落定前已切离：不回写状态（同上）；正常路径清 error
       if (!activeRef.current) return;
-      if (data.session) {
-        applySnapshotCarried(data);
-      }
       setError('');
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));

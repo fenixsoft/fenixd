@@ -454,7 +454,12 @@ class ImplBudget:
                 if base.is_dir() and any(base.glob(f"{current_run}*.jsonl")):
                     return False
             except OSError:
-                return False
+                # 扫描失败 ≠ 产物已可见（item dbcbc1495dc2）：按 False 处理会
+                # 绕过 _reconcile_impl_budget 的在飞 run 守卫，纯漂移分支把
+                # used 下调改写、在飞 run 的启动计数被永久吞掉——与同文件
+                # _count_normal_completed_impl_runs 的保守口径（失败＝不可知、
+                # 跳过本轮对账不改数）对齐，返回 True 视为未落盘、本轮不下调。
+                return True
         return True
 
     def _budget_reconcile_has_exemption(self, spec_name: str) -> bool:

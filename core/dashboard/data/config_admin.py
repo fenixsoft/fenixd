@@ -758,6 +758,13 @@ def read_effective_config(project_root) -> dict:
                 (llm_eff.get("providers") or []) if isinstance(llm_eff, dict) else [],
             )
         result["agents"].update(_echo_agents_int_keys(agents_eff))
+        # fix-agent-lane-efficiency D1：子代理模型覆盖生效值回显（code-review
+        # item d1b9c5631669）——缺省视图恒空串，不回填则项目作用域覆盖值在
+        # 有效配置视图恒显示空串，且 merge 分支把空串定义为「显式清除覆盖」，
+        # 前端基于有效视图构造 agents patch 保存会静默清掉磁盘配置值。经
+        # get_subagent_model_override 单点归一化（str 剥空白，非法类型回空串），
+        # 与 read_config 回显口径一致。
+        result["agents"]["subagent_model_override"] = ConfigLoader.get_subagent_model_override(effective)
         # 同因重派熔断阈值有效值回显（经 ConfigLoader 单点归一化，非法回退缺省 3）
         result["agents"]["max_same_cause_redispatches"] = (
             ConfigLoader.get_max_same_cause_redispatches(effective)

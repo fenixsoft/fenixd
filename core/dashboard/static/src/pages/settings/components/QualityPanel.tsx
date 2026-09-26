@@ -88,6 +88,15 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
   // 补段请求同步防重入锁（同 ProjectProfilePanel 的 autodraftInFlight 约定：loading
   // 渲染生效存在调度间隙，useRef 写读同帧原子）
   const regressionDraftInFlight = useRef(false);
+  // 当前 project prop 镜像 ref（code-review item e884e5a8a3af，与
+  // SelfReviewPanel item 522b3bd7ae53 同形态）：autodraft 终态后的滞后重拉
+  // 闭包捕获的是发起时的 project（数分钟请求期间用户可切换项目），完成时经
+  // ref 判等丢弃已被项目切换取代的响应——初始拉取 effect 的 alive 守卫拦
+  // 不到这条链路，否则旧项目 regression 段/在途态会覆盖新项目视图。
+  const projectRef = useRef(project);
+  useEffect(() => {
+    projectRef.current = project;
+  }, [project]);
 
   // 回填门控（code-review item 241f4f2d452a，同 LlmProviderPanel item 5d6582ba9951 /
   // AgentModelPanel item 9f98edec21fa / ApprovalModePanel item a8786c075c4f）：无条件
@@ -231,7 +240,12 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
         // 终态后重拉配置状态：success 时卡片从「缺失提示」切到已配置展示；
         // no_test_system 时幂等重拉（结果不变，无害）
         getRegressionConfig(project)
-          .then((d) => setRegressionCfg(d))
+          .then((d) => {
+            // 项目切换守卫（code-review item e884e5a8a3af）：重拉 resolve 时
+            // 用户可能已切换项目（projectRef 已更新、闭包 project 未变），
+            // 只回填仍是当前项目的响应
+            if (projectRef.current === project) setRegressionCfg(d);
+          })
           .catch(() => {
             /* 重拉失败不打断成功结论：下次进入页面 effect 会重拉 */
           });

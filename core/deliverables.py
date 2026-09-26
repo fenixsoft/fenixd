@@ -308,7 +308,6 @@ def extract_paths_typed(spec_dir) -> dict:
         in_fence = False
         in_tasks_header = True  # 第一个 `## ` 标题之前为头部说明段
         in_scenario = False  # 能力 spec 的 Scenario 小节
-        line_ctx = "references" if doc_kind != "tasks" else "deliverables"
 
         for raw_line in text.splitlines():
             if _H2_RE.match(raw_line):
@@ -318,15 +317,24 @@ def extract_paths_typed(spec_dir) -> dict:
             elif _H2_RE.match(raw_line) or raw_line.startswith("#"):
                 in_scenario = False
 
-            # 围栏代码块：整块内所有行均视为显式路径声明，沿用块前语境
+            # 围栏代码块：整块内所有行均视为显式路径声明，语境在块首按结构性
+            # 小节语义重算（item d3391833951c：不沿用块前最近一条已分类行的
+            # 关键词语境——「实现依据：`x`」引用行紧邻的围栏路径清单会被整体
+            # 降级 references（硬交付物静默软化，假成功方向）；块前无可分类行
+            # 时又继承初始档位，tasks 头部说明段围栏块被当硬交付物（误拦方向）。
+            # 空行使勾选/关键词规则天然不命中，_classify_line 只剩 Scenario /
+            # tasks 头部 / 兜底三条结构规则，与 D1 规则表一致）。
             if _FENCE_RE.match(raw_line):
+                if not in_fence:
+                    fence_ctx = _classify_line(
+                        "", doc_kind, in_tasks_header, in_scenario
+                    )
                 in_fence = not in_fence
                 continue
             if in_fence:
-                ctx = line_ctx
+                ctx = fence_ctx
             else:
                 ctx = _classify_line(raw_line, doc_kind, in_tasks_header, in_scenario)
-                line_ctx = ctx
 
             if in_fence:
                 # 代码块内逐 token（按空白/常见分隔符切分）
@@ -833,20 +841,35 @@ def load_declaration_baseline(spec_name, project_root) -> "dict | None":
     return data if isinstance(data, dict) else None
 
 
-def _git_object_exists_on_branch(branch, path, project_root) -> bool:
-    """``git cat-file -e <branch>:<path>`` O(1) 探测（纯对象库，零成本）。"""
+def _git_object_exists_on_branch(branch, path, project_root) -> "bool | None":
+    """``git cat-file -e <branch>:<path>`` O(1) 探测（纯对象库，零成本）。
+
+    Returns:
+        True = 确定存在；False = git 成功执行且确定不存在（退出码非零且
+        stderr 呈「does not exist」形态）；None = git 不可用（超时/无法执行/
+        非仓库/分支对象名无效）。退出码 128 同时覆盖「路径不存在」与
+        「非仓库」，单看 returncode 无法区分（code-review item
+        d5da82df85c3），故按 stderr 形态三态判别；无法识别的失败一律归
+        不可用（None），由调用方按各自 fail-safe 语义处置。
+    """
     try:
         r = subprocess.run(
             ["git", "-C", str(project_root), "cat-file", "-e", f"{branch}:{path}"],
-            # 只用 returncode 判存在性：输出丢弃到 DEVNULL，免无谓管道与
-            # 缓冲（code-review item feccb157c1d5）。
+            # stdout 丢弃；stderr 留管道供 128 形态判别（item d5da82df85c3）
+            # ——item feccb157c1d5 的全 DEVNULL 免管道优化在「判不存在」须
+            # 排除 git 不可用的正确性要求前让位。
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             timeout=_GIT_READ_TIMEOUT_SECONDS,
         )
-        return r.returncode == 0
     except (subprocess.TimeoutExpired, OSError):
+        return None
+    if r.returncode == 0:
+        return True
+    stderr_text = (r.stderr or b"").decode("utf-8", "replace").lower()
+    if "does not exist" in stderr_text:
         return False
+    return None
 
 
 def _declared_satisfied_on_branch(path, kind, branch, project_root) -> bool:
@@ -855,13 +878,16 @@ def _declared_satisfied_on_branch(path, kind, branch, project_root) -> bool:
     new/modify → blob/tree 存在；delete → blob/tree 不存在（反判）。
     branch 缺失/git 异常 → False（fail-safe 判未满足 → 可能判 removed；
     保守取向——缺件处置有终审/人工兜底，不静默放行）。
+    delete 反判仅在「确定不存在」（exists is False）时算满足：git 不可用
+    （探测返回 None）显式判未满足，兑现上一行的保守承诺（item
+    d5da82df85c3——旧 ``not exists`` 会把 None 反成「已满足」假成功）。
     """
     if not branch or not path:
         return False
     exists = _git_object_exists_on_branch(branch, path, project_root)
     if kind == "delete":
-        return not exists
-    return exists
+        return exists is False  # None（git 不可用）→ 判未满足（fail-safe）
+    return bool(exists)
 
 
 def relocation_credential_target(project_root, path) -> "str | None":
@@ -1032,7 +1058,7 @@ def is_stale_declaration(entry, project_root) -> bool:
 
     Returns:
         命中陈旧信号返回 True；new/delete/reference/缺字段恒 False；仅 git 不可用
-        （超时/无法执行）时回退文件系统存在性判定。
+        （超时/无法执行/非仓库）时回退文件系统存在性判定。
     """
     if not isinstance(entry, dict):
         return False
@@ -1041,22 +1067,28 @@ def is_stale_declaration(entry, project_root) -> bool:
     if kind != "modify" or not path:
         return False
     # 主树 HEAD 存在性：git cat-file -e HEAD:<path>；仅 git 不可用（超时/无法
-    # 执行）才回退文件系统存在性（item 0a451454809b）
+    # 执行/非仓库）才回退文件系统存在性（item 0a451454809b；item
+    # d5da82df85c3：非仓库错误与「路径不存在」同为退出码 128，须按 stderr
+    # 形态区分——非仓库不可判确定性陈旧，同样回退文件系统）
     try:
         r = subprocess.run(
             ["git", "-C", str(project_root), "cat-file", "-e", f"HEAD:{path}"],
-            # 同 _git_object_exists_on_branch：只看 returncode，输出走 DEVNULL
-            # （code-review item feccb157c1d5）。
+            # stderr 留管道供 128 形态判别，同 _git_object_exists_on_branch
+            # 三态化（取代旧全 DEVNULL 只看 returncode，feccb157c1d5）。
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             timeout=_GIT_READ_TIMEOUT_SECONDS,
         )
+    except (subprocess.TimeoutExpired, OSError):
+        pass  # git 判定不可用：走文件系统回退
+    else:
         if r.returncode == 0:
             return False  # 主树 HEAD 存在 → 非陈旧
-        return True  # git 成功执行且 HEAD 无该路径 → 确定性陈旧
-    except (subprocess.TimeoutExpired, OSError):
-        pass
-    # git 判定不可用（超时/无法执行）：回退文件系统存在性（fail-safe）
+        stderr_text = (r.stderr or b"").decode("utf-8", "replace").lower()
+        if "does not exist" in stderr_text:
+            return True  # git 成功执行且 HEAD 无该路径 → 确定性陈旧
+        # 非仓库/对象名无效等 git 不可用错误 → 不判确定性陈旧，走文件系统回退
+    # git 判定不可用（超时/无法执行/非仓库）：回退文件系统存在性（fail-safe）
     try:
         return not (Path(project_root) / path).exists()
     except OSError:

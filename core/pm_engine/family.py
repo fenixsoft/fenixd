@@ -319,8 +319,16 @@ class FamilyGovernor:
                 if d.name.startswith(f"impl-{spec_name}-") or d.name.startswith(
                     f"verify-{spec_name}-"
                 ):
+                    # 尾部锚定（对齐 worktree_manager.locks._worktree_has_live_process
+                    # 的锚定纪律）：裸子串在兄弟 worktree 目录名互为前缀时过配——
+                    # impl-x-<ts10> 的 pattern 会命中 impl-x-<ts11> 的进程，
+                    # 其活进程持续把本 spec 判存活，压制孤儿修复/重派判定
                     r = _sp.run(
-                        ["pgrep", "-f", f"worktrees/{d.name}"],
+                        [
+                            "pgrep",
+                            "-f",
+                            f"worktrees/{re.escape(d.name)}([/[:space:]\"']|$)",
+                        ],
                         capture_output=True,
                         text=True,
                         timeout=10,

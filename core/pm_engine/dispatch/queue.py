@@ -62,6 +62,16 @@ class QQQueueMixin:
         # 释放（MUST NOT 晚于锚点 reviewer_run 落盘），锚点落盘后由 reviewer_run
         # 判据接力；finally 幂等兜底释放（异常路径也释放）。
         self._active_reviews: set = set()
+        # 评审 worker 过渡在飞集合（code-review item e3d1d53906cb）：spec 名
+        # 集合，覆盖「_active_reviews 已释放、四步链锚点 reviewer_run 尚未落盘」
+        # 的过渡窗口——该窗口内 reviewer_in_flight 判「无在飞评审」，外部通道
+        # （admin re_review / rejected 复评）为同一 spec 新入队的评审条目会被
+        # 放行，产生同 spec 两个并发 dispatch_review。worker 释放 _active_reviews
+        # 的同一锁段内置位、收尾 finally 幂等释放；判据消费点仅
+        # _review_entry_ready。MUST NOT 并入 _active_reviews：dispatch_review
+        # 入口防重派判据（is_review_in_flight）与 D4 重入安全性共用该集合，
+        # 过渡登记并入会让重试接力的新 worker 被本 worker 的登记挡住。
+        self._reviews_dispatching: set = set()
         # 并行出题在飞集合（add-verify-lane-throughput 2.1）：spec 名集合，
         # planner-plan 并行条目独立登记、不占 _active_runs/_active_priorities
         # （出题与实现并行，占实现槽位会抵消并行收益）。生命周期对齐评审条目：
@@ -333,9 +343,24 @@ class QQQueueMixin:
           路径会让锚点残留的条目被永久静默跳过（design D4 重入安全性）。
           ``_active_reviews`` 前置判据（``"queued"``）同样经 reviewer_in_flight
           命中：空锚点 + 已出队未收口 → 判在飞 → 本条目不派发。
+        - worker 过渡在飞判据（code-review item e3d1d53906cb）：``_active_reviews``
+          已被 worker 释放（MUST NOT 晚于锚点落盘，design D4）、锚点尚未落盘的
+          过渡窗口内，reviewer_in_flight 会判「无在飞评审」；``_reviews_dispatching``
+          命中（同 spec 评审 worker 已出队未收工）→ 判在飞顺延，堵住同 spec
+          第二条评审条目在窗口内被并发派发的窗口。重试接力条目不受影响：
+          worker 收尾先摘登记、``_run_agent_worker`` finally 的 ``_process_queue``
+          再重扫派发。
         - 判定异常 fail-open 放行（保守不阻塞候选扫描，与其它候选闸门一致）。
         """
         if spec.get("status") != "reviewing":
+            return False
+        # 过渡在飞判据（code-review item e3d1d53906cb）：见 docstring。成员读
+        # 不加锁（对齐 engine.is_review_in_flight 对 _active_reviews 的裸读先例）。
+        if sname in self._reviews_dispatching:
+            self._pm.logger.debug(
+                "pm_engine",
+                f"评审 worker 过渡在飞（已出队未收口），派发顺延: {sname}",
+            )
             return False
         try:
             in_flight, _reason = self._pm.agent_runner.reviewer_in_flight(
@@ -3268,6 +3293,10 @@ class QQQueueMixin:
           的本次登记（幂等 discard），锚点落盘后由 ``reviewer_run`` 判据接力
           ——否则同一 worker 线程内的续 attempt 重入 ``dispatch_review`` 入口
           见自己仍在集合中而被拒，评审收口被自己挡住；
+        - 同一锁段内在 ``_reviews_dispatching`` 置位过渡在飞登记（code-review
+          item e3d1d53906cb）：释放后、锚点落盘前的过渡窗口对外仍判在飞
+          （判据消费点 ``_review_entry_ready``），堵住同 spec 第二条评审条目
+          并发派发窗口；收尾 finally 幂等释放，重试接力不被延迟；
         - 四步链**内部**异常已由 ``dispatch_review`` 自吞并走
           ``_handle_review_failure``（重试/冻结），不会传播到这里；
         - 四步链**之外**异常（构造 SpecReviewManager 失败、快照/日志路径异常
@@ -3290,6 +3319,11 @@ class QQQueueMixin:
         )
         # 释放时点：不晚于四步链锚点 reviewer_run 落盘
         with self._queue_lock:
+            # 过渡登记与释放同一锁段完成（code-review item e3d1d53906cb）：
+            # _active_reviews 释放后、锚点落盘前的窗口内由 _reviews_dispatching
+            # 接力在飞判定（判据见 _review_entry_ready），防同 spec 第二条
+            # 评审条目在窗口内被并发派发；收尾 finally 幂等释放。
+            self._reviews_dispatching.add(spec_name)
             self._active_reviews.discard(spec_name)
         try:
             review_manager.dispatch_review(spec_name)
@@ -3315,3 +3349,11 @@ class QQQueueMixin:
                     "pm_engine",
                     f"评审 worker 异常收口失败（交 recovery 兜底）: {spec_name}: {e2}",
                 )
+        finally:
+            # 过渡在飞登记释放（幂等，code-review item e3d1d53906cb）：worker
+            # 收工即摘除，重试入队的接力条目由 _run_agent_worker finally 的
+            # _process_queue 在摘除后重扫派发，重试接力不被本登记延迟
+            # （D4 重入安全性不受影响——dispatch_review 入口防重派判据仍只查
+            # _active_reviews）。
+            with self._queue_lock:
+                self._reviews_dispatching.discard(spec_name)

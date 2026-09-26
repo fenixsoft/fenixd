@@ -76,7 +76,7 @@ class CliAssertionRunner:
                     results.append(
                         {
                             "type": a_type,
-                            "layer": 1 if a_type == "exit_code" else 3,
+                            "layer": CLI_ASSERTION_LAYERS.get(a_type, 0),
                             "pass": False,
                             "error": f"断言引用的 run 结果 '{ref}' 不存在"
                             f"（step 字段对应 run 步骤 as 命名，缺省=最近一次）",
@@ -91,7 +91,7 @@ class CliAssertionRunner:
                     results.append(
                         {
                             "type": a_type,
-                            "layer": 1 if a_type == "exit_code" else 3,
+                            "layer": CLI_ASSERTION_LAYERS.get(a_type, 0),
                             "pass": False,
                             "error": f"断言执行异常: {e}",
                         }
@@ -135,6 +135,11 @@ class CliAssertionRunner:
             与原 `actual or ""` 兜底等价），非 str（仅 json_output）先 str()
             字符串化（与既有 json_output 行为一致）。
         """
+        # 配置错误可见化：未知 mode 显式走断言异常通道（与 api 侧
+        # sse_event_matches「未知 mode」及 run()「未知断言类型」口径对齐），
+        # 不静默按 contains 匹配掩盖场景编写缺陷
+        if mode not in ("exact", "contains", "regex"):
+            raise ValueError(f"未知 mode: {mode}")
         if mode == "exact":
             if exact_strip:
                 m = (actual or "").strip() == str(expected).strip()

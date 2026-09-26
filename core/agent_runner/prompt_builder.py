@@ -93,6 +93,32 @@ def _single_pass_replace(template: str, values: dict[str, str]) -> str:
     )
 
 
+def _fill_and_scan_placeholders(
+    template: str, values: dict[str, str], agent_type: str, run_id: str
+) -> str:
+    """独立构建路径共用收尾：单趟填充 + 未解析占位符残留扫描告警。
+
+    code-review item ebd39ad068f3：self-review/evolution/code-review/code-fix
+    四条独立构建路径（不走 _fill_placeholders）原先各自 _single_pass_replace
+    后直接返回，仅 code-review 有残留扫描——模板漂移导致的注入静默丢失在
+    其余三条车道不可见，与 add-code-review-auto-fix 的 fail-open 可观测口径
+    不齐。统一收尾：扫描扣除 values 已知键（正文含合法 {snake_case} 字面量
+    时不误报），残留记 warning 不阻断派发；日志消息结构与 _build_code_review_prompt
+    既有实现一致（agent=<车道> run_id=<token> leftover=<残留键>）。
+    """
+    out = _single_pass_replace(template, values)
+    leftover = sorted(set(_PLACEHOLDER_RE.findall(out)) - set(values))
+    if leftover:
+        _logger.warning(
+            "提示词占位符未解析（模板漂移，注入内容可能静默丢失）: "
+            "agent=%s run_id=%s leftover=%s",
+            agent_type,
+            run_id,
+            leftover,
+        )
+    return out
+
+
 def planner_result_path(project_root, spec_name: str, agent_type: str) -> Path:
     """planner 阶段产物结果文件路径（add-judge-artifact-gate D1，注入/校验同源）。
 
@@ -1446,7 +1472,7 @@ class PromptBuilder:
             / ".fenix"
             / f"self_review_out-{token}-{datetime.datetime.now():%Y%m%d%H%M%S}.json"
         )
-        prompt = _single_pass_replace(
+        prompt = _fill_and_scan_placeholders(
             template,
             {
                 "{review_date}": token,
@@ -1458,6 +1484,8 @@ class PromptBuilder:
                 or "（近3日窗口内无既有条目）",
                 "{out_path}": str(out_path),
             },
+            "self-review",
+            token,
         )
         # 非交互契约段（fix-agent-noninteractive-contract D2）：独立构建路径
         # 不走统一收尾处注入，就地追加（return 之前）。
@@ -1514,7 +1542,7 @@ class PromptBuilder:
         # 单趟填充（code-review item 7975ab14dbe7 同款语义）：todo.md 全文/
         # 条目清单来自用户数据，可能本身含占位符字面量，逐键 str.replace
         # 会被后续键二次替换污染。
-        prompt = _single_pass_replace(
+        prompt = _fill_and_scan_placeholders(
             template,
             {
                 "{todo_sections}": todo_sections,
@@ -1522,6 +1550,8 @@ class PromptBuilder:
                 "{out_path}": str(out_path),
                 "{project_root}": str(self._pm.project_root),
             },
+            "evolution",
+            spec_name,
         )
         # 非交互契约段（fix-agent-noninteractive-contract D2）：独立构建路径
         # 不走统一收尾处注入，就地追加（return 之前）。
@@ -1583,20 +1613,9 @@ class PromptBuilder:
             "{repo_concurrency}": str(repo_concurrency),
             "{out_path}": str(out_path),
         }
-        prompt = _single_pass_replace(template, values)
-        # 未解析占位符残留告警（add-code-review-auto-fix 同款防护）：本路径
-        # 独立于 _fill_placeholders，模板漂移导致的注入静默丢失同样要日志可见。
-        # 与 _fill_placeholders 同口径扣除已知占位符键——正文含合法 {snake_case}
-        # 字面量时不误报；日志参数用 token（本函数无 run_id 名，误引用曾致
-        # NameError 使派发失败）。
-        leftover = sorted(set(_PLACEHOLDER_RE.findall(prompt)) - set(values))
-        if leftover:
-            _logger.warning(
-                "提示词占位符未解析（模板漂移，注入内容可能静默丢失）: "
-                "agent=code-review run_id=%s leftover=%s",
-                str(token),
-                leftover,
-            )
+        # 填充 + 残留占位符扫描告警走共用收尾（code-review item ebd39ad068f3）；
+        # 日志参数用 token（本函数无 run_id 名，误引用曾致 NameError 使派发失败）。
+        prompt = _fill_and_scan_placeholders(template, values, "code-review", str(token))
         # 非交互契约段（fix-agent-noninteractive-contract D2）：独立构建路径
         # 不走统一收尾处注入，就地追加（return 之前）。
         prompt += self._noninteractive_contract_section()
@@ -1632,13 +1651,15 @@ class PromptBuilder:
         # 单趟填充（code-review item 7975ab14dbe7 同款语义）：条目 JSON 来自
         # LLM 审查产物，description/evidence 可能含占位符字面量，逐键
         # str.replace 会被后续键二次替换污染。
-        prompt = _single_pass_replace(
+        prompt = _fill_and_scan_placeholders(
             template,
             {
                 "{items}": items_txt,
                 "{out_path}": str(out_path),
                 "{worktree}": str(worktree),
             },
+            "code-fix",
+            run_id,
         )
         # 回归失败重试轮注入（task 5.6）：上一轮全量回归的失败用例摘要——
         # 令 agent 优先修复其上轮修复引入的回归，再继续处置清单剩余条目。
