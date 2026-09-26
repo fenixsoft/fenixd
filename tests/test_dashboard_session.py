@@ -296,6 +296,17 @@ class TestReaderThreads:
             time.sleep(0.02)
         return False
 
+    def _wait_event(self, hub, pred, timeout=5.0):
+        """轮询 hub 广播，等待首个满足 pred 的事件出现（进程存活场景无
+        session_ended 终态，须按目标事件等待，否则白烧满 deadline）。"""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            for ev in self._events_from_broadcasts(hub):
+                if pred(ev):
+                    return True
+            time.sleep(0.02)
+        return False
+
     def _events_from_broadcasts(self, hub):
         """收集所有 session_events 广播中的事件列表。"""
         out = []
@@ -312,8 +323,8 @@ class TestReaderThreads:
             stdout_lines=['{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}'],
             stdout_eof=True,
         )
-        # 等 stdout 线程跑完
-        self._wait_reader(mgr, s)
+        # 等 stdout 线程把 assistant 行消化广播（进程存活无 session_ended，按目标事件等）
+        assert self._wait_event(hub, lambda ev: ev.get("type") == "assistant")
         # hub 应收到事件广播
         events = self._events_from_broadcasts(hub)
         assert events, "应有 session_events 广播"
@@ -335,7 +346,8 @@ class TestReaderThreads:
             ],
             stdout_eof=True,
         )
-        self._wait_reader(mgr, s)
+        # 等 assistant 行广播（init 捕获先于同批 assistant 行，此时缓存已写入）
+        assert self._wait_event(hub, lambda ev: ev.get("type") == "assistant")
         events = self._events_from_broadcasts(hub)
         # hook_* 噪音被过滤；init 捕获后丢弃（有意行为变化，前端 SILENT_KINDS 已含 init）；
         # assistant 保留
@@ -357,7 +369,9 @@ class TestReaderThreads:
             stdout_lines=["NOT A JSON LINE"],
             stdout_eof=True,
         )
-        self._wait_reader(mgr, s)
+        assert self._wait_event(
+            hub, lambda ev: ev.get("type") == "stderr" and ev.get("line") == "NOT A JSON LINE"
+        )
         events = self._events_from_broadcasts(hub)
         assert any(ev["type"] == "stderr" and ev.get("line") == "NOT A JSON LINE" for ev in events)
 
