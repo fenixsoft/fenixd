@@ -22,6 +22,22 @@ const AGENTS_DEFAULTS = {
   scalePrecheckFull: 45,
 } as const;
 
+// 九字段表单映射单源（config 取值 ?? AGENTS_DEFAULTS）：initialValues 与回填 effect
+// 共用，新增预算字段只改此处，避免两份映射漏改一处导致初值与回填值分叉
+function buildAgentsFormValues(agents: ConfigData['agents']) {
+  return {
+    token_budget_millions: agents.token_budget_millions ?? AGENTS_DEFAULTS.tokenBudgetMillions,
+    daily_run_limit: agents.daily_run_limit ?? AGENTS_DEFAULTS.dailyRunLimit,
+    impl_run_budget: agents.impl_run_budget ?? AGENTS_DEFAULTS.implRunBudget,
+    impl_run_budget_max: agents.impl_run_budget_max ?? AGENTS_DEFAULTS.implRunBudgetMax,
+    verify_redo_budget: agents.verify_redo_budget ?? AGENTS_DEFAULTS.verifyRedoBudget,
+    max_same_cause_redispatches: agents.max_same_cause_redispatches ?? AGENTS_DEFAULTS.maxSameCauseRedispatches,
+    scale_precheck_enabled: agents.scale_precheck?.enabled ?? AGENTS_DEFAULTS.scalePrecheckEnabled,
+    scale_precheck_higher: agents.scale_precheck?.higher_threshold ?? AGENTS_DEFAULTS.scalePrecheckHigher,
+    scale_precheck_full: agents.scale_precheck?.full_threshold ?? AGENTS_DEFAULTS.scalePrecheckFull,
+  };
+}
+
 interface TokenBudgetPanelProps {
   config: ConfigData;
   onSave: (values: Partial<ConfigData>) => Promise<void>;
@@ -36,20 +52,7 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
   // 规模预检开关（agents.scale_precheck.enabled）：关闭时隐藏两阈值输入
   const scalePrecheckOn = Form.useWatch('scale_precheck_enabled', form);
 
-  const sp = config.agents.scale_precheck ?? {};
-
-  const initialValues = {
-    token_budget_millions: config.agents.token_budget_millions ?? AGENTS_DEFAULTS.tokenBudgetMillions,
-    daily_run_limit: config.agents.daily_run_limit ?? AGENTS_DEFAULTS.dailyRunLimit,
-    impl_run_budget: config.agents.impl_run_budget ?? AGENTS_DEFAULTS.implRunBudget,
-    impl_run_budget_max: config.agents.impl_run_budget_max ?? AGENTS_DEFAULTS.implRunBudgetMax,
-    verify_redo_budget: config.agents.verify_redo_budget ?? AGENTS_DEFAULTS.verifyRedoBudget,
-    max_same_cause_redispatches:
-      config.agents.max_same_cause_redispatches ?? AGENTS_DEFAULTS.maxSameCauseRedispatches,
-    scale_precheck_enabled: sp.enabled ?? AGENTS_DEFAULTS.scalePrecheckEnabled,
-    scale_precheck_higher: sp.higher_threshold ?? AGENTS_DEFAULTS.scalePrecheckHigher,
-    scale_precheck_full: sp.full_threshold ?? AGENTS_DEFAULTS.scalePrecheckFull,
-  };
+  const initialValues = buildAgentsFormValues(config.agents);
 
   // 回填门控（code-review item cbec8303669f，比照 MiscSettingsPanel 0a2bd3f20fcd /
   // AgentModelPanel 9f98edec21fa）：无条件 setFieldsValue 会在保存往返或「同步用户级
@@ -57,19 +60,7 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
   // 内容。改为序列化比较，只在内容真变化时回填。
   const lastBackfillRef = useRef('');
   useEffect(() => {
-    const next = {
-      token_budget_millions: config.agents.token_budget_millions ?? AGENTS_DEFAULTS.tokenBudgetMillions,
-      daily_run_limit: config.agents.daily_run_limit ?? AGENTS_DEFAULTS.dailyRunLimit,
-      impl_run_budget: config.agents.impl_run_budget ?? AGENTS_DEFAULTS.implRunBudget,
-      impl_run_budget_max: config.agents.impl_run_budget_max ?? AGENTS_DEFAULTS.implRunBudgetMax,
-      verify_redo_budget: config.agents.verify_redo_budget ?? AGENTS_DEFAULTS.verifyRedoBudget,
-      max_same_cause_redispatches:
-        config.agents.max_same_cause_redispatches ?? AGENTS_DEFAULTS.maxSameCauseRedispatches,
-      scale_precheck_enabled: config.agents.scale_precheck?.enabled ?? AGENTS_DEFAULTS.scalePrecheckEnabled,
-      scale_precheck_higher:
-        config.agents.scale_precheck?.higher_threshold ?? AGENTS_DEFAULTS.scalePrecheckHigher,
-      scale_precheck_full: config.agents.scale_precheck?.full_threshold ?? AGENTS_DEFAULTS.scalePrecheckFull,
-    };
+    const next = buildAgentsFormValues(config.agents);
     const key = JSON.stringify(next);
     if (key === lastBackfillRef.current) return;
     lastBackfillRef.current = key;
