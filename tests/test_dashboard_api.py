@@ -649,7 +649,10 @@ class TestProjectLifecycleAPI:
                             lambda root: (_ for _ in ()).throw(RuntimeError("tmux gone")))
         try:
             status, body = srv.post("/api/projects/proj-a/start")
-            assert status == 200 and body["ok"] is False and "tmux gone" in body["error"]
+            # code-review item 2a32ba26780c：环境异常客户端收固定文案（不 500、
+            # 不外泄裸异常文本），"tmux gone" 细节仅经服务端日志留痕。
+            assert status == 200 and body["ok"] is False
+            assert body["error"] == "操作失败"
         finally:
             srv.stop()
 
