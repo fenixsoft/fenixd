@@ -11,6 +11,7 @@ from core.agent_runner.latency import _entry_is_tool_result
 from core.agent_runner.run_files import append_run_line, run_spec_part
 from datetime import datetime, timezone
 import json
+import re
 import subprocess
 import time
 
@@ -322,7 +323,18 @@ class LivenessSupervisor:
             if stem in self._terminal_verified:
                 continue
             # 判据 ①：在飞保护（注册表命中 → 跳过且不入缓存）
-            if stem in self._pm._running_agents:
+            # code-review c1dd6ddcdae0：planner 节流（runner._planner_throttle_acquire）
+            # 以 base run_id 预生成 <run_id>.jsonl 并在等待期写心跳，attempt 启动后以
+            # <run_id>-a1.jsonl 落盘并注册 _running_agents（键=attempt run_id），base
+            # 文件自此无写入——其 stem 与注册表键不同形，仅 mtime 停更越阈就会被误补
+            # interrupted。先按 _normalize_run_id 同款正则（本地最小复制，避免跨模块
+            # import 环）剥离 -a<n>/-r<n> 后缀，归一化后的 base 键命中注册表归一化键
+            # 集合 → 该 run 仍存活，跳过补写与「悬空 run」告警。幂等：无后缀键归一
+            # 后为自身，覆盖原精确成员判定。
+            base_stem = re.sub(r"(?:-a\d+|-r\d+)+$", "", stem)
+            if base_stem in {
+                re.sub(r"(?:-a\d+|-r\d+)+$", "", key) for key in self._pm._running_agents
+            }:
                 continue
             # 判据 ②：流停保护，先行短路免读
             try:
@@ -971,7 +983,7 @@ class LivenessSupervisor:
         return max(0.0, now - zero_since)
 
     def _zero_output_assessment(
-        self, run_file: Path, snapshot: dict, window_seconds: float, now: float | None = None
+        self, snapshot: dict, now: float | None = None
     ) -> "str | None":
         """「可观测零产出」确定性短路判定（fix-run-hang-amplification 1.4/1.5）。
 
@@ -1186,7 +1198,7 @@ class LivenessSupervisor:
         # 1.4/1.5/1.7「可观测零产出」确定性短路：三条件同时成立 → 直接 kill，
         # MUST NOT 调用 judge LLM。证据标注为启发式「零产出」判定（含输出文件
         # 路径与零增长区间），并写入被监督 run 的 jsonl 供审计。
-        zero_output = self._zero_output_assessment(run_file, snapshot, window, now)
+        zero_output = self._zero_output_assessment(snapshot, now)
         if zero_output:
             try:
                 append_run_line(
