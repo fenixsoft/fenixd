@@ -1473,26 +1473,34 @@ class StateMachine:
         原子性（D1/D2）：存在性查重与插入在同一把 ``.STATE.md.lock`` 内完成。
         查重与写盘分处锁外时，两个并发 add 会各持「尚无该条目」的快照整体回写，
         后写者把先写者刚注册的 spec 整条抹掉（同源丢失更新）。
+
+        入参 ``entry`` 不会被原地改写：默认字段补齐在内部副本上进行，
+        调用方传入的 dict 保持原样。
         """
         added: dict = {}
 
         def _mutate(specs):
             if spec_name in specs:
                 return False, False
-            entry.setdefault("status", SpecStatus.DRAFTED)
-            entry.setdefault("priority", 5)
-            entry.setdefault("created", datetime.now(timezone.utc).isoformat())
-            entry.setdefault("updated", datetime.now(timezone.utc).isoformat())
-            entry.setdefault("implementer_run", None)
-            entry.setdefault("tester_run", None)
-            entry.setdefault("branch", None)
-            entry.setdefault("error", None)
-            entry.setdefault("depends_on", None)
-            entry.setdefault("reviewer_run", None)
-            entry.setdefault("_review_attempts", 0)
+            # 先拷贝再补齐默认字段：MUST NOT 原地改写调用方传入的 entry
+            # （否则共享 dict 的调用方会在返回后看到隐式注入的键）。
+            # 注意副本须换名（闭包内同名重绑定会让 entry 变局部名，RHS 求值
+            # 即 UnboundLocalError）。
+            new_entry = dict(entry)
+            new_entry.setdefault("status", SpecStatus.DRAFTED)
+            new_entry.setdefault("priority", 5)
+            new_entry.setdefault("created", datetime.now(timezone.utc).isoformat())
+            new_entry.setdefault("updated", datetime.now(timezone.utc).isoformat())
+            new_entry.setdefault("implementer_run", None)
+            new_entry.setdefault("tester_run", None)
+            new_entry.setdefault("branch", None)
+            new_entry.setdefault("error", None)
+            new_entry.setdefault("depends_on", None)
+            new_entry.setdefault("reviewer_run", None)
+            new_entry.setdefault("_review_attempts", 0)
 
-            specs[spec_name] = entry
-            added["status"] = entry["status"]
+            specs[spec_name] = new_entry
+            added["status"] = new_entry["status"]
             return True, True
 
         if not self._mutate_locked(_mutate):
