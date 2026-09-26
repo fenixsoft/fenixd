@@ -11,6 +11,7 @@ D3 patch 缝隙：`MergeConflictInfo` 从 types 模块导入（包命名空间 r
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import time
@@ -970,6 +971,11 @@ class G4MergebackMixin:
                 capture_output=True,
                 text=True,
                 timeout=120,
+                # 固化 C locale（同 queries.create_worktree_on_branch 先例）：DRY
+                # 拒绝的 "would be overwritten by merge" 是 git 可翻译串（unpack-
+                # trees），本地化下 _parse_merge_blockers 的英文 marker 落空，两个
+                # merge 前自愈永不触发。C locale 无翻译目录，报错恒为英文。
+                env={**os.environ, "LC_ALL": "C"},
             )
             if result.returncode != 0:
                 error = (
@@ -996,6 +1002,9 @@ class G4MergebackMixin:
                         capture_output=True,
                         text=True,
                         timeout=120,
+                        # C locale 恒定（同首个 merge 调用）：本地化报错文案会让
+                        # _parse_merge_blockers 的英文 marker 落空
+                        env={**os.environ, "LC_ALL": "C"},
                     )
                 elif blockers and self._discard_identical_local_changes(blockers, branch):
                     result = subprocess.run(
@@ -1012,6 +1021,9 @@ class G4MergebackMixin:
                         capture_output=True,
                         text=True,
                         timeout=120,
+                        # C locale 恒定（同首个 merge 调用）：本地化报错文案会让
+                        # _parse_merge_blockers 的英文 marker 落空
+                        env={**os.environ, "LC_ALL": "C"},
                     )
             if result.returncode == 0:
                 # merge 已落地（HEAD 前移、内容已进主树，code-review item
