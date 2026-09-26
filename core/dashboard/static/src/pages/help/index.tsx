@@ -78,13 +78,25 @@ async function renderMermaid(code: string, container: HTMLDivElement) {
   }
 }
 
+// 在途 mermaid 渲染任务集：图经动态 import + mermaid.render 异步注入 SVG，
+// 渲染完成后页面布局才稳定；锚点滚动等布局敏感逻辑需等待其全部结束
+const pendingMermaidRenders = new Set<Promise<void>>();
+
+/** 等待当前所有在途 mermaid 渲染结束；无在途渲染时立即完成。 */
+function waitForMermaidRenders(): Promise<void> {
+  return Promise.all(pendingMermaidRenders).then(() => undefined);
+}
+
 // ── MermaidBlock：拦截 language-mermaid code 块 ────────────────────
 
 function MermaidBlock({ code }: { code: string }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (ref.current && code) {
-      void renderMermaid(code, ref.current);
+      // 登记在途渲染任务（renderMermaid 内部全量捕获异常，不会 reject）
+      const task = renderMermaid(code, ref.current);
+      pendingMermaidRenders.add(task);
+      void task.finally(() => pendingMermaidRenders.delete(task));
     }
   }, [code]);
   return <div ref={ref} style={{ margin: '12px 0', minHeight: 40, display: 'flex', justifyContent: 'center' }} />;
@@ -320,7 +332,16 @@ export default function HelpPage() {
     const anchor = pendingAnchorRef.current;
     if (!anchor) return;
     pendingAnchorRef.current = null;
-    requestAnimationFrame(() => scrollToAnchor(anchor));
+    let cancelled = false;
+    // mermaid 块异步渲染注入 SVG 会撑开页面：先等一帧，再等本稿在途 mermaid
+    // 渲染全部结束后才滚动；否则锚点位于图中/图后时目标标题位置未定，
+    // 滚动会停在偏上位置
+    requestAnimationFrame(() => {
+      void waitForMermaidRenders().then(() => {
+        if (!cancelled) scrollToAnchor(anchor);
+      });
+    });
+    return () => { cancelled = true; };
   }, [docData, docLoading]);
 
   // 依赖 docData：文档内容轮次变化时重建 components（同步重置 slug 去重计数）
@@ -337,7 +358,11 @@ export default function HelpPage() {
     if (!docs.length) return <Empty description="暂无帮助文档" />;
     if (docLoading) return <Skeleton active paragraph={{ rows: 8 }} />;
     if (error) return <Alert type="error" message="文档加载失败" description={error} />;
-    if (!docData) return <Empty description="文档内容为空" />;
+    // docs 就绪但单篇文档尚未开始/完成加载（docData 为空，清单 effect 的 loading=false
+    // 与单篇加载 effect 的 docLoading=true 之间隔一帧），或刚切换文档、加载 effect
+    // 尚未生效（docData 仍归属上一篇）：一律按加载中渲染，避免闪现
+    // 「文档内容为空」空态或上一篇的陈旧内容（docData.name 由后端原样回显请求名）
+    if (!docData || docData.name !== currentDoc) return <Skeleton active paragraph={{ rows: 8 }} />;
     return (
       <Markdown remarkPlugins={[remarkGfm]} components={helpComponents}>
         {docData.content || ''}

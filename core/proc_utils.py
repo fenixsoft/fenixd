@@ -8,7 +8,7 @@
 - ``find_bound_socket``：保留已绑定 socket 的 contextmanager（消除 TOCTOU 竞态窗口，
   concurrent-suite-isolation 4.1），绑定失败时按可重试策略重取。
 
-两函数均只依赖 stdlib，任何 core 模块均可安全导入。
+以下助手均只依赖 stdlib，任何 core 模块均可安全导入。
 """
 
 import os

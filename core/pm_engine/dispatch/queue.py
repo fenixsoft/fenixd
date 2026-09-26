@@ -93,6 +93,11 @@ class QQQueueMixin:
         # 时点启动共用）；车道线程完成回调经同锁摘除登记。
         self._ocr_lane_lock = threading.Lock()
         self._ocr_lane_inflight: Dict[str, bool] = {}
+        # WIP 等待超限降级告警去重集合：{spec_name}，daemon 生命周期内每条目
+        # 至多告警一次（_report_wip_defer_stuck_once 的幂等去重判据；daemon 主
+        # 循环复查与重试失败 Timer 两条触发路径共用，故 __init__ 统一初始化，
+        # 避免两线程各自惰性建集合）。
+        self._wip_defer_degrade_notified: set = set()
 
     # ── 验证车道槽位豁免（add-verify-lane-throughput 2.1）──────────────────
     # 槽位豁免车道全集：spec-review（既有先例，fix-spec-review-blocking-dispatch）
@@ -2367,13 +2372,9 @@ class QQQueueMixin:
         self, spec_name: str, count: int, first_at: int,
     ) -> None:
         """超限降级告警（daemon 生命周期内每条目至多一次，防周期节拍刷屏）。"""
-        notified = getattr(self, "_wip_defer_degrade_notified", None)
-        if notified is None:
-            notified = set()
-            self._wip_defer_degrade_notified = notified
-        if spec_name in notified:
+        if spec_name in self._wip_defer_degrade_notified:
             return
-        notified.add(spec_name)
+        self._wip_defer_degrade_notified.add(spec_name)
         self._report_mergeback_wip_defer_stuck(spec_name, count, first_at)
 
     def _record_wip_defer_retry_failure(

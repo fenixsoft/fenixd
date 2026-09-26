@@ -659,10 +659,11 @@ def _dist_probe_block_report(pipeline, spec_name: str, scenarios, probe_err: str
     }
     try:
         save_report(pipeline._context.project_root, spec_name, report)
-    except OSError as e:
+    except Exception as e:
         pipeline._context.logger.warning(
             "pm_engine",
-            f"dist 探针阻断报告写盘失败 '{spec_name}'（不影响本轮处置）: {e}",
+            f"dist 探针阻断报告写盘失败 '{spec_name}'（不影响本轮处置）: "
+            f"{type(e).__name__}: {e}",
         )
     return report
 

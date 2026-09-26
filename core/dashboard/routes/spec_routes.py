@@ -19,6 +19,11 @@ class H3SpecRoutesMixin:
     """H3 spec management。"""
 
     def _api_specs(self, query) -> dict:
+        # 未知/不存在项目维持 200 + {"error": ..., "specs": []}，不走本文件
+        # 其余端点的 _error(404) 家族——这是有意的 v1 兼容契约，非遗漏：
+        # tests/test_dashboard_api.py::test_unknown_project 钉死 200 + specs
+        # 空表形状，v3 前端 list 页 load() 也按响应体 error 字段分支渲染，
+        # 改 404 会同时破坏测试契约与前端消费形状（code-review item 81d9ba1b6aae）。
         project = self._project_from_query(query)
         if project is None:
             return {"error": "unknown project", "specs": []}

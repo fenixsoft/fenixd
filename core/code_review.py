@@ -1396,6 +1396,7 @@ def mark_resolved(project_root, item_ids: List[str]) -> int:
     """
     path = items_path(project_root)
     hit = 0
+    now = _now_iso()
 
     def _do() -> None:
         nonlocal hit
@@ -1406,6 +1407,7 @@ def mark_resolved(project_root, item_ids: List[str]) -> int:
                 continue
             rec["status"] = "resolved"
             rec["resolution"] = "code-fix-auto"
+            rec["resolved_at"] = now  # 同 mark_ignored 的 ignored_at / resolve_snapshot 的 resolved_at
             hit += 1
         content = "".join(
             json.dumps(current[k], ensure_ascii=False) + "\n" for k in sorted(current)

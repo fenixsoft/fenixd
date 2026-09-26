@@ -79,9 +79,13 @@ class VerifyEngine:
         # 传给各 Runner，取代 navigate 文本正则考古）。无实例形态为空串。
         self.base_url = ""
 
-        # 并行度配置
+        # 并行度配置（容错口径同 escalation.py：脏值回退默认 5，
+        # 下限 1——信号量计数为 0 会令并行池永久拿不到许可而挂死）
         verify_cfg = (config or {}).get("verify_engine", {})
-        self.max_parallel = verify_cfg.get("max_parallel", 5)
+        try:
+            self.max_parallel = max(1, int(verify_cfg.get("max_parallel", 5)))
+        except (TypeError, ValueError):
+            self.max_parallel = 5
         self.headless = verify_cfg.get("headless", True)
 
         # 兼容旧访问点：web Runner 的浏览器管理器（未创建 web Runner 时为
