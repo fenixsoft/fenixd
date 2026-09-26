@@ -115,10 +115,18 @@ def _write_signal_exclusive(req_path, payload):
       仍走三步无空窗。
 
     返回：成功 → 信号轮询路径字符串；目标已存在（独占写失败）→ None。
-    异常：其余失败（os.open/写内容/os.link 的 OSError）抛 _SignalWriteError。
+    异常：其余失败（mkdir/os.open/写内容/os.link 的 OSError）抛
+    _SignalWriteError。
     409/500 的错误码与文案差异由调用方映射，本函数不发响应。
     """
-    req_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        req_path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        # 父目录创建失败（.fenix 不可建：只读盘/权限）与 os.open 同口径包装
+        # （code-review item 512425623308）：裸 OSError 会穿透调用方的
+        # except _SignalWriteError 分支，落到通用 500 兜底，客户端收不到
+        # 「信号写入失败」的结构化文案。
+        raise _SignalWriteError(str(exc)) from exc
     tmp_path = (
         req_path.parent / f".{req_path.name}.{os.getpid()}.{uuid4().hex}.tmp"
     )
