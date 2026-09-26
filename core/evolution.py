@@ -66,20 +66,6 @@ _FIELD_RE = re.compile(r"^ {2,}-\s+([^：]+)：(.*)$")
 # SPEC 名 / capability 合法性（fenix-new 同源正则）
 _KEBAB_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 
-# 条目状态枚举（items.jsonl 记录 status 字段取值）
-ITEM_STATUSES = (
-    "pending",
-    "analyzed",
-    "draft_failed",
-    "accepted",
-    "auto_accepted",
-    "rejected",
-    "accept_failed",
-)
-
-# 草稿文档文件名（按 fenix-new 流程五件套）
-DRAFT_FILES = ("proposal.md", "design.md", "tasks.md", ".spec.yaml")
-
 # .spec.yaml 模板（内容 schema/created/mode 三行）
 SPEC_YAML_TEMPLATE = "schema: spec-driven\ncreated: {created}\nmode: full\n"
 
@@ -989,20 +975,31 @@ def lint_draft(draft_dir_: Path, project_root) -> List[str]:
     与 ``core.deliverables.lint_tasks_parseable``（与 fenixd.py 启动时同款
     sys.path 注入），返回合并后的 violation 清单。MUST NOT 自实现第二套声明
     解析。lint 自身故障 fail-open（记 WARNING 返回空清单，不阻塞）。
+
+    注入的实际解析范围（如实标注）：常驻进程（daemon）中顶层包 ``core`` 早已
+    进 ``sys.modules``，``from core.deliverables import ...`` 的子模块解析走已
+    缓存 core 包的 ``__path__``（daemon 自身安装根），插入 ``sys.path[0]`` 并
+    不改变解析目标；注入只在 core 尚未导入的裸进程（独立 CLI/测试）生效。
+    两种形态下 lint 结果一致；注入项在 lint 结束后恢复，不长期驻留 sys.path。
     """
     proot = Path(project_root)
-    fenix_dir = proot / ".fenix"
-    if str(fenix_dir) not in sys.path:
-        sys.path.insert(0, str(fenix_dir))
-    from core.deliverables import lint_declared, lint_tasks_parseable
+    fenix_dir = str(proot / ".fenix")
+    injected = fenix_dir not in sys.path
+    if injected:
+        sys.path.insert(0, fenix_dir)
+    try:
+        from core.deliverables import lint_declared, lint_tasks_parseable
 
-    violations: List[str] = []
-    for fn in (lint_declared, lint_tasks_parseable):
-        try:
-            violations.extend(fn(draft_dir_, proot) or [])
-        except Exception as e:
-            _logger.warning("evolution: 草稿 lint 异常（非阻塞放行）: %s", e)
-    return violations
+        violations: List[str] = []
+        for fn in (lint_declared, lint_tasks_parseable):
+            try:
+                violations.extend(fn(draft_dir_, proot) or [])
+            except Exception as e:
+                _logger.warning("evolution: 草稿 lint 异常（非阻塞放行）: %s", e)
+        return violations
+    finally:
+        if injected:
+            sys.path.remove(fenix_dir)
 
 
 # ── 任务 3.3：落地单条复核结果 ─────────────────────────────────────
@@ -1055,7 +1052,7 @@ def ingest_item(item: dict, project_root) -> str:
     if not worth_spec:
         base["status"] = "analyzed"
         upsert_item(project_root, base)
-        write_todo_marker(base)
+        write_todo_marker(base, project_path=project_root)
         return "analyzed"
 
     d, reason = materialize_draft(base, project_root)
@@ -1064,7 +1061,7 @@ def ingest_item(item: dict, project_root) -> str:
         base["draft_failed_reason"] = reason
         _logger.warning("evolution: 条目 %s 草稿落盘失败: %s", eid, reason)
         upsert_item(project_root, base)
-        write_todo_marker(base)
+        write_todo_marker(base, project_path=project_root)
         return "draft_failed"
 
     violations = lint_draft(d, project_root)
@@ -1079,12 +1076,12 @@ def ingest_item(item: dict, project_root) -> str:
             base["draft_failed_reason"],
         )
         upsert_item(project_root, base)
-        write_todo_marker(base)
+        write_todo_marker(base, project_path=project_root)
         return "draft_failed"
 
     base["status"] = "pending"
     upsert_item(project_root, base)
-    write_todo_marker(base)
+    write_todo_marker(base, project_path=project_root)
     return "pending"
 
 
