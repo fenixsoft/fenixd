@@ -975,7 +975,9 @@ class AgentRunner:
         - 输出契约：``.fenix/verify-progress/<spec>/dispute_judge_result.json``
           顶层 ``status: "success"`` + ``verdicts: [{element, verdict,
           actual_path, reasoning, confidence}]``（verdict 四取一
-          typo|reference|missing|unclear）；
+          typo|reference|missing|unclear）；派发前会 unlink 上一轮结果文件
+          （陈旧裁决防护：本轮未落新文件时读取侧按等价 unclear 兜底，不消费
+          上一轮裁决）；
         - 裁决的机械执行（D4）由调用方（dispatch）完成——本方法只派发与收工。
 
         Args:
@@ -1002,6 +1004,29 @@ class AgentRunner:
                 run_id, spec_name, "dispute-judge",
                 success=False, duration_seconds=0.0,
                 error=f"dispute judge 输入落盘失败: {e}",
+            )
+
+        # 派发前清除上一轮结果文件（陈旧裁决防护，与 engine
+        # 「Ignoring stale result file」同取向）：结果文件按 spec 固定路径跨轮
+        # 复用且内容不带 run id，若本轮 judge 收工但未落新文件（未按输出契约
+        # 写盘/写盘中断），读取侧会把上一轮裁决误当作本轮结论消费。派发前
+        # unlink 使「本轮未写 = 文件不存在」，读取侧（_read_dispute_verdicts）
+        # 自然按等价 unclear 兜底。删除失败不阻断派发（文件不存在属常态；
+        # 其他异常 debug 级留痕）。
+        result_path = vp_dir / "dispute_judge_result.json"
+        try:
+            result_path.unlink()
+            self.logger.debug(
+                "agent_runner",
+                f"已清除上一轮 dispute judge 结果文件 '{spec_name}': {result_path}",
+            )
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            self.logger.debug(
+                "agent_runner",
+                f"清除上一轮 dispute judge 结果文件失败 '{spec_name}'"
+                f"（不阻断派发）: {e}",
             )
 
         try:
