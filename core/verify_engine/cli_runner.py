@@ -303,9 +303,14 @@ class CliRunner(VerifyRunner):
     def _build_env(self, declared_env: dict) -> dict:
         """执行环境组装：进程环境 + 场景 env（{env:VAR} 插值）+ 框架注入优先。"""
         env = dict(os.environ)
+        base_url, port = self._base_url_parts()
+        if base_url:
+            # 先播种框架值：让场景 env 的 {env:FENIX_VERIFY_*} 插值可见，
+            # 否则 daemon 进程环境无同名变量时占位符按「未命中」残留字面文本
+            env["FENIX_VERIFY_BASE_URL"] = base_url
+            env["FENIX_VERIFY_PORT"] = port
         for k, v in (declared_env or {}).items():
             env[str(k)] = _interpolate_env(str(v), env)
-        base_url, port = self._base_url_parts()
         if base_url:
             # 框架值优先：覆盖场景声明中的同名变量（防 stale 地址事故）
             env["FENIX_VERIFY_BASE_URL"] = base_url

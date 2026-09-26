@@ -30,8 +30,9 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
   // 本次处置是否已到终态（done/error/missing）：终态后按钮与输入框恢复可用
   const [runDone, setRunDone] = useState(false);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // 本轮发起时刻（ms）：轮询只采用此后产生的 run，避免 daemon 尚未落 pending 时
-  // 取到历史 run；409（已有处置进行中）时放宽为接受现有最新 run。
+  // 本轮发起的服务端时刻锚点（ms，取 invoke 响应携带的 created）：轮询只采用此后
+  // 产生的 run，避免 daemon 尚未落 pending 时取到历史 run；409（已有处置进行中）
+  // 时放宽为接受现有最新 run。
   const invokeTimeRef = useRef(0);
   const acceptAnyRunRef = useRef(false);
   // 回车发送经 setTimeout 延后触发（等下拉选中项的 onChange 回写），
@@ -155,8 +156,16 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
     if (invoked && !runDone) return;
     setSending(true);
     try {
-      await invokeSpecAdmin(project, spec, text);
-      invokeTimeRef.current = Date.now();
+      const res = (await invokeSpecAdmin(project, spec, text)) as
+        | { created?: string | null }
+        | undefined;
+      // 定位锚点取服务端 created（invoke 响应携带的请求落盘时刻）：轮询侧比较的
+      // 活动记录 created 同样产自 daemon 主机时钟，两侧同源即与浏览器本地时钟
+      // 无关——否则浏览器时钟快 5 秒以上时新 run 的 created 恒小于
+      // invokeTimeRef.current - 5000，定位条件永不成立，界面无限停留在等待层
+      // （code-review item c49899d6afd3）。缺失/不可解析时回退本地时钟。
+      const createdMs = res?.created ? new Date(res.created).getTime() : NaN;
+      invokeTimeRef.current = Number.isNaN(createdMs) ? Date.now() : createdMs;
       acceptAnyRunRef.current = false;
       setRunId(null);
       setEventCount(0);

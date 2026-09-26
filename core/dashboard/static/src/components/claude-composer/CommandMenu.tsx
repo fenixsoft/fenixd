@@ -270,6 +270,7 @@ export default function CommandMenu({
   return renderInPortal(
     <div
       ref={menuRef}
+      id="command-menu-listbox"
       role="listbox"
       aria-label="可用命令"
       className="fenix-composer-portal command-menu border border-border bg-popover/95 text-popover-foreground"
@@ -294,6 +295,7 @@ export default function CommandMenu({
               return (
                 <div
                   key={renderKey}
+                  id={`command-menu-opt-${commandIndex}`}
                   ref={isSelected ? selectedItemRef : null}
                   role="option"
                   aria-selected={isSelected}

@@ -170,15 +170,15 @@ function assertionDetail(a: AssertionResultItem): string {
     case 'file_content':
       return `文件内容匹配「${a.expected ?? ''}」${a.negate ? '（取反）' : ''}`;
     case 'json_output': {
-      const actual = a.actual !== undefined ? `，实际「${JSON.stringify(a.actual) ?? a.actual}」` : '';
-      return `JSON ${a.path || '?'} 期望「${JSON.stringify(a.expected) ?? a.expected}」${actual}`;
+      const actual = a.actual !== undefined ? `，实际「${JSON.stringify(a.actual)}」` : '';
+      return `JSON ${a.path || '?'} 期望「${JSON.stringify(a.expected)}」${actual}`;
     }
     // ── api ──
     case 'status_code':
       return `期望状态码 ${a.expected ?? '?'}，实际 ${a.actual ?? '?'}`;
     case 'json_path': {
-      const actual = a.actual !== undefined ? `，实际「${JSON.stringify(a.actual) ?? a.actual}」` : '';
-      return `路径 ${a.path || '?'} 期望「${JSON.stringify(a.expected) ?? a.expected}」${actual}`;
+      const actual = a.actual !== undefined ? `，实际「${JSON.stringify(a.actual)}」` : '';
+      return `路径 ${a.path || '?'} 期望「${JSON.stringify(a.expected)}」${actual}`;
     }
     case 'response_header':
       return `头 ${a.header || '?'} 期望「${a.expected ?? ''}」，实际「${a.actual ?? ''}」`;
@@ -198,9 +198,9 @@ function assertionDetail(a: AssertionResultItem): string {
       const bits: string[] = [];
       if (a.path) bits.push(`路径 ${a.path}`);
       if (a.header) bits.push(`头 ${a.header}`);
-      if (a.expected !== undefined) bits.push(`期望「${JSON.stringify(a.expected) ?? a.expected}」`);
+      if (a.expected !== undefined) bits.push(`期望「${JSON.stringify(a.expected)}」`);
       if (a.actual !== undefined && a.actual !== null && a.actual !== '')
-        bits.push(`实际「${JSON.stringify(a.actual) ?? a.actual}」`);
+        bits.push(`实际「${JSON.stringify(a.actual)}」`);
       return bits.join('，');
     }
   }

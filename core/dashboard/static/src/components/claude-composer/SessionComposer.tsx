@@ -193,6 +193,22 @@ export default function SessionComposer({
             <PromptInputTextarea
               ref={composer.textareaRef}
               dir="auto"
+              /* 命令菜单 ARIA 关联（code-review cbffca1f7ee4）：菜单键盘导航
+                 时焦点始终留在本 textarea，高亮项须靠 aria-activedescendant
+                 播报、容器靠 aria-controls 关联；undefined 时 React 移除属性
+                 （菜单关闭或空候选），避免悬空引用。 */
+              aria-controls={
+                composer.showCommandMenu && composer.filteredCommands.length > 0
+                  ? 'command-menu-listbox'
+                  : undefined
+              }
+              aria-activedescendant={
+                composer.showCommandMenu &&
+                composer.filteredCommands.length > 0 &&
+                composer.selectedCommandIndex >= 0
+                  ? `command-menu-opt-${composer.selectedCommandIndex}`
+                  : undefined
+              }
               value={composer.input}
               disabled={disabled}
               onChange={composer.handleInputChange}

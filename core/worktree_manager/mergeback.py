@@ -423,17 +423,23 @@ class G4MergebackMixin:
             # 「项目名=」字段解析单源：core.admin_store.evidence_project
             # （原本地嵌套副本已收敛，settings_routes / code_fix 同款）。
 
-            # 在途去重（照搬 settings_routes._api_verify_yaml_autodraft_post 的
-            # inflight 判定范式：kind==SIGNAL 且未 handled 且 evidence 项目名
-            # 全等）。项目名 MUST 按字段解析后全等比较，不得裸子串包含：同机
-            # 项目名互为前缀（fenix 与 fenixd）时 `项目名=fenix` 会命中
-            # `项目名=fenixd; …` 而误判在途、漏写起草信号。
+            # 在途去重（同 settings_routes._api_verify_yaml_autodraft_post 收紧后
+            # 的 inflight 判定口径：kind==SIGNAL、未 handled、未被巡检拾取
+            # （not escalated）、evidence 项目名全等）。项目名 MUST 按字段解析后
+            # 全等比较，不得裸子串包含：同机项目名互为前缀（fenix 与 fenixd）时
+            # `项目名=fenix` 会命中 `项目名=fenixd; …` 而误判在途、漏写起草信号。
+            # escalated 检查（code-review item ff064d68996f 同源口径）：生产上
+            # `handled=True` 只对 kind=ESCALATION 写入，SIGNAL 记录恒
+            # handled=False，admin_monitor 摄取时改写的是 escalated——漏掉该
+            # 检查会让首条信号被巡检拾取后（escalated=True）永远占住在途位，
+            # 配置仍未裁决时后续 merge-back 不再写信号，起草失败即静默脱管。
             inflight = [
                 r
                 for r in store.read_all()
                 if r.get("kind") == SIGNAL
                 and r.get("signal_type") == "build_artifact_paths_missing"
                 and not r.get("handled")
+                and not r.get("escalated")
                 and evidence_project(r.get("evidence")) == project_name
             ]
             if inflight:

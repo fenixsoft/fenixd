@@ -100,7 +100,8 @@ def _verify_verdict_evidence(pipeline, spec_name: str, retry_judge: bool = False
          report.json。
       4. 返回结构化结果 ``{"ok", "cause", "violations", "dispatch_error"}``：
          cause ∈ pass / violations / dispatch_frozen / dispatch_cancelled /
-         dispatch_failed / dispatch_exception / report_missing。
+         dispatch_failed / dispatch_exception / report_missing /
+         batch_attribution_dedup（查重拒绝回炉处置自身失败，宁可不推进不采纳）。
 
     注意：judge 失败（process 级）已由调用方在 ``judge_result.success`` 处拦截，
     本方法只负责「judge 已成功但产物不合规」的确定性校验与重试。

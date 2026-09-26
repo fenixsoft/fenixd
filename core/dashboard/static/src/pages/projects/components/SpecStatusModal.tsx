@@ -271,7 +271,7 @@ export default function SpecStatusModal({
         }
       },
     });
-  }, [project, spec, message, appModal]);
+  }, [project, spec, onDone, message, appModal]);
 
   // ── 审批推送（done，add-spec-approve-push-modal） ──────────
   // done 态的唯一闭环动作：确认后写 .fenix/approve_push_request.json 文件信号，

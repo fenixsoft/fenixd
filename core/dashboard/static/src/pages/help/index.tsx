@@ -123,12 +123,11 @@ function githubSlug(text: string): string {
 }
 
 // 重复标题 slug 去重计数（GitHub 规则：同名依次追加 -1、-2…）。
-// buildHelpComponents 每轮重建时重置；heading 内以 useRef 缓存首次分配结果，重渲染不重复递增。
-let slugCounts = new Map<string, number>();
-
-function allocHeadingId(base: string): string {
-  const n = slugCounts.get(base) ?? 0;
-  slugCounts.set(base, n + 1);
+// 计数 Map 由 buildHelpComponents 在闭包内每轮新建（不写模块级可变量，
+// 消除渲染期对模块态的副作用）；heading 内以 useRef 缓存首次分配结果，重渲染不重复递增。
+function allocHeadingId(counts: Map<string, number>, base: string): string {
+  const n = counts.get(base) ?? 0;
+  counts.set(base, n + 1);
   return n === 0 ? base : `${base}-${n}`;
 }
 
@@ -142,11 +141,11 @@ function scrollToAnchor(anchor: string) {
 }
 
 /** heading 组件工厂：保留原字号样式，注入 GitHub slug id（重复标题按 -1/-2 去重，锚点跳转目标）。 */
-function headingComponent(Tag: 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6', style: CSSProperties) {
+function headingComponent(Tag: 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6', style: CSSProperties, slugCounts: Map<string, number>) {
   return function Heading({ children }: any) {
     // slug 仅分配一次并缓存于 ref：重渲染不重复递增计数，id 保持稳定
     const idRef = useRef<string | null>(null);
-    if (idRef.current === null) idRef.current = allocHeadingId(githubSlug(nodeText(children)));
+    if (idRef.current === null) idRef.current = allocHeadingId(slugCounts, githubSlug(nodeText(children)));
     return (
       <Tag id={idRef.current} style={{ ...style, scrollMarginTop: 76 }}>
         {children}
@@ -159,7 +158,9 @@ function headingComponent(Tag: 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6', style: C
 
 function buildHelpComponents(onNavigate: (docName: string, anchor?: string) => void, docs: HelpDocMeta[]): Components {
   const docNames = new Set(docs.map((d) => d.name));
-  slugCounts = new Map(); // 新一轮文档渲染：重置同名标题去重计数
+  // 本轮文档渲染的同名标题去重计数：闭包内局部 Map，随本轮 components 的生命周期
+  // 新建（重建 components 即重置），渲染期不再写模块级可变量
+  const slugCounts = new Map<string, number>();
   return {
     ...markdownComponents,
     code({ className, children, ...props }: any) {
@@ -185,12 +186,12 @@ function buildHelpComponents(onNavigate: (docName: string, anchor?: string) => v
       return <pre>{children}</pre>;
     },
     // heading 注入 GitHub slug id（页内锚点跳转目标）；字号样式同 markdownComponents
-    h1: headingComponent('h1', { fontSize: 18, fontWeight: 600 }),
-    h2: headingComponent('h2', { fontSize: 16, fontWeight: 600 }),
-    h3: headingComponent('h3', { fontSize: 14, fontWeight: 600 }),
-    h4: headingComponent('h4', { fontSize: 14, fontWeight: 400 }),
-    h5: headingComponent('h5', { fontSize: 14, fontWeight: 400 }),
-    h6: headingComponent('h6', { fontSize: 14, fontWeight: 400 }),
+    h1: headingComponent('h1', { fontSize: 18, fontWeight: 600 }, slugCounts),
+    h2: headingComponent('h2', { fontSize: 16, fontWeight: 600 }, slugCounts),
+    h3: headingComponent('h3', { fontSize: 14, fontWeight: 600 }, slugCounts),
+    h4: headingComponent('h4', { fontSize: 14, fontWeight: 400 }, slugCounts),
+    h5: headingComponent('h5', { fontSize: 14, fontWeight: 400 }, slugCounts),
+    h6: headingComponent('h6', { fontSize: 14, fontWeight: 400 }, slugCounts),
     a({ href, children, ...rest }: any) {
       // 纯锚点（#xxx，排除 SPA 路由 #/）：当前文档页内滚动
       if (href && href.startsWith('#') && !href.startsWith('#/') && href.length > 1) {

@@ -948,9 +948,10 @@ class HookEngine:
             )
         port = self._dashboard_port()
         if not self._probe_dashboard(port):
+            # 上限按每轮 urlopen timeout=2s + 间隔 DASHBOARD_PROBE_INTERVAL 估算（对应 _probe_dashboard）
             return (
                 False,
-                f"dashboard 已 respawn，但 {port} 端口 {DASHBOARD_PROBE_ATTEMPTS * DASHBOARD_PROBE_INTERVAL:.0f}s 内未恢复 HTTP 可服务",
+                f"dashboard 已 respawn，但 {port} 端口最坏 {DASHBOARD_PROBE_ATTEMPTS * (2 + DASHBOARD_PROBE_INTERVAL):.0f}s 内未恢复 HTTP 可服务",
             )
         return True, f"dashboard 会话 {target} 已重启（端口 {port} 恢复可服务）"
 

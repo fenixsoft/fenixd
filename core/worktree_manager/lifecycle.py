@@ -634,6 +634,15 @@ class G1LifecycleMixin:
         ``git fsck --unreachable | grep <sha>`` 追溯，消灭「现场毁灭后取证靠
         转录间接复原」的盲区。
 
+        ``git stash create`` 只快照已跟踪文件的改动（index + worktree），实现
+        者 WIP 最常见的新增未跟踪文件不进快照 commit（code-review item
+        c61688ecd88a）。故快照前先对未跟踪文件补充留档：``git ls-files
+        --others --exclude-standard`` 列出后批量 ``git hash-object -w`` 写入
+        对象库（只增不可达 blob，不动 index / 引用 / 工作区），路径→blob SHA
+        清单打进 WARNING 日志（``git cat-file -p <sha>`` 可还原内容）；留档
+        失败仅 WARNING 明示「untracked 文件不在本快照内」，不影响 stash
+        create，也不阻断删除主流程。
+
         Returns: 快照 commit SHA（留档成功）或空字符串（跳过/失败）。
         """
         try:
@@ -645,6 +654,60 @@ class G1LifecycleMixin:
             )
             if status.returncode != 0 or not status.stdout.strip():
                 return ""  # 干净，无快照价值
+            # untracked 留档（code-review item c61688ecd88a）：stash create 不含
+            # 未跟踪文件，先把它逐个 hash-object -w 写入对象库并打日志；失败仅
+            # WARNING，不阻断 stash create 与删除主流程。
+            try:
+                others = subprocess.run(
+                    ["git", "-C", str(wt_path), "ls-files", "--others",
+                     "--exclude-standard"],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                )
+                if others.returncode != 0:
+                    raise OSError(
+                        (others.stderr or "").strip() or "ls-files failed"
+                    )
+                ut_paths = [ln for ln in others.stdout.splitlines() if ln.strip()]
+                if ut_paths:
+                    # --stdin-paths 按行读路径且支持 ls-files 的 C 风格引号路径
+                    hashed = subprocess.run(
+                        ["git", "-C", str(wt_path), "hash-object", "-w",
+                         "--stdin-paths"],
+                        input="\n".join(ut_paths) + "\n",
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                    )
+                    if hashed.returncode != 0:
+                        raise OSError(
+                            (hashed.stderr or "").strip() or "hash-object failed"
+                        )
+                    ut_shas = hashed.stdout.split()
+                    if len(ut_shas) != len(ut_paths):
+                        raise OSError(
+                            f"hash-object wrote {len(ut_shas)} blobs for "
+                            f"{len(ut_paths)} untracked paths"
+                        )
+                    pairs = [
+                        f"{p} -> {s}" for p, s in zip(ut_paths, ut_shas)
+                    ]
+                    shown = "; ".join(pairs[:20])
+                    if len(pairs) > 20:
+                        shown += f"; (+{len(pairs) - 20} more)"
+                    self.logger.warning(
+                        "worktree_manager",
+                        f"Pre-rmtree untracked files archived for {wt_path} "
+                        f"({len(pairs)} files, recover via git cat-file -p "
+                        f"<sha>): {shown}",
+                    )
+            except (subprocess.TimeoutExpired, OSError) as ue:
+                self.logger.warning(
+                    "worktree_manager",
+                    f"Pre-rmtree untracked archive failed for {wt_path}: {ue} "
+                    f"— untracked files are NOT in the snapshot",
+                )
             snap = subprocess.run(
                 [
                     "git",
