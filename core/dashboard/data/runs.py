@@ -715,7 +715,12 @@ def read_run_events_between(project_root, run_id: str, start_offset: int) -> "li
     跨扫描边界被截断的半个 JSON 行会降级为 stderr 条目（_parse_run_lines 容错）。
     读失败（文件被并发归档/移除等 OSError）返回 None 以区别于「无新增」的 []，
     调用侧（watcher 增量推送）据此保留旧基线，下一轮重读同一区间。
+    run_id 先经 _RUN_ID_RE 白名单校验（code-review item f970801a5c7d，与
+    _resolve_run_file 同口径）：含路径分隔符等越界字符一律按读失败返回 None，
+    不拼 runs 目录之外的读取路径。
     """
+    if not isinstance(run_id, str) or not _RUN_ID_RE.match(run_id):
+        return None
     run_file = Path(project_root) / ".fenix" / "runs" / f"{run_id}.jsonl"
     try:
         with run_file.open("rb") as f:
