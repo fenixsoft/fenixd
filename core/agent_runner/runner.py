@@ -272,7 +272,7 @@ def _route_map_head(wt_path: Path, logger) -> str:
         )
         if res.returncode == 0:
             return res.stdout.strip()
-    except subprocess.SubprocessError:
+    except (OSError, subprocess.SubprocessError):
         pass
     return ""
 
