@@ -146,9 +146,14 @@ Administrator agent 与 daemon 之间的一次性交接文件：agent 按提示�
 
 | 文件 | 角色 |
 |------|------|
-| `items.jsonl` | 审查发现台账（权威存储）：`item_id`、`file`/`line`、`severity`、`category`、`title`/`description`/`suggestion`、`fingerprint`（去重指纹）、`status`（open/fixing/resolved…）、`first_seen_at`/`last_seen_at`、`review_id`。按 fingerprint 去重 upsert，flock + 原子替换 |
+| `items.jsonl` | 审查发现台账（权威存储）：`item_id`、`file`/`line`、`severity`、`category`、`title`/`description`/`suggestion`、`fingerprint`（去重指纹）、`status`（`open` / `in_spec` / `resolved` / `ignored`——`fixing` 是批修复的阶段而非条目态）、`first_seen_at`/`last_seen_at`、`review_id`。按 fingerprint 去重 upsert，flock + 原子替换 |
 | `manifest-<run_id>.json` | 派发前框架写的审查范围声明（scope、files[]、window_start），审查进度 total 的权威来源 |
 | `out-<run_id>.jsonl` | 审查 agent 逐文件追加的发现流（增量落盘），run 结束后读取并入 items.jsonl 台账 |
+| `out-<run_id>-b<N>.jsonl` | code-fix 批内并行的修复分片产物（每批一个分片，N 数值升序；非 `-b<正整数>` 后缀的同形文件不被消费，`core/code_review.py` 的 `shard_paths` 是分片发现唯一入口） |
+| `fix-progress.json` | 自动修复批次进度（done/total）；条级进度与 startup_stage 由读侧合成 |
+| `fix-deferred.json` | WIP defer 台账（worktree/branch/tip_sha/item_ids/fixed_ids/defer_count/first_deferred_at/last_overlap 八字段；90 分钟 / 6 次双门预算） |
+| `fix-failed.json` | 批失败档案（fail_count 预算，达 3 次一次性告警转人工；人工处置后 `core.code_fix.release_failed_batch` 解除） |
+| `code_review_request_result.json` | 手动触发受理回链凭据（`started` / `dropped` / `failed` 三态 + 受理窗口标记） |
 | `batch_N.json` | agent 自发切批的中间产物，非契约产物，框架不读 |
 
 同层的 `code_review_state.json`（`last_run_date`）是调度防重状态，不是日志。
@@ -189,7 +194,7 @@ Administrator agent 与 daemon 之间的一次性交接文件：agent 按提示�
 
 ## 与信号文件的区分
 
-以下文件长得像日志但**只承载一次信号，消费即删或随状态覆盖**，无历史可查：`scheduling_kick/<spec>.json`（即时派发唤醒）、`admin_invoke_request.json`（Admin 唤起）、`regression_request.json`（手动回归触发）、`restart_request.json`、`daemon_started`（最近启动时刻）、`daemon.lock`/`lifecycle.lock`/`full-suite.lock`（互斥锁）、`recovery_watch.json`、`self_review_state.json`/`code_review_state.json`/`regression/state.json`（调度防重水位）。它们的语义见[文件与数据地图](10-artifacts.md)。
+以下文件长得像日志但**只承载一次信号，消费即删或随状态覆盖**，无历史可查：`scheduling_kick/<spec>.json`（即时派发唤醒）、`admin_invoke_request.json`（Admin 唤起）、`regression_request.json`（手动回归触发）、`code_fix_request.json`（手动自动修复授权）、`spec_delete_request.json`（SPEC 删除异步受理）、`restart_request.json`、`daemon_started`（最近启动时刻）、`daemon.lock`/`lifecycle.lock`/`full-suite.lock`（互斥锁）、`recovery_watch.json`、`self_review_state.json`/`code_review_state.json`/`regression/state.json`（调度防重水位）。它们的语义见[文件与数据地图](10-artifacts.md)。
 
 ## 排障入口速查
 

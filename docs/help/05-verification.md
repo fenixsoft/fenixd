@@ -87,6 +87,10 @@ ready:
 1. **admin 裁决**：冻结文件损坏、或修复新增了可交互元素导致覆盖缺口时，框架不自动重排，而是升级「场景计划争议」呼叫 admin 处置（扩展场景 / 声明纯展示）；
 2. **人工重置**：删除冻结文件即批准重新出题（下一轮验证走完整 planner 设计流程）。
 
+### 并行出题与 parallel_plan.json
+
+出题也可以并行（多路 planner 同时设计）。并行进度与仲裁记录在 `.fenix/verify-progress/<spec>/parallel_plan.json`，条目状态机为 dispatched → completed / failed / cancelled / frozen，全部落定后收敛为 consumed（`core/pm_engine/engine.py`）。某一路失败时其半成品会被隔离：场景文件改名 `.parallel-discarded` 并打 discarded 标记，让位后续重试——残缺场景集不会被当成冻结集消费。
+
 ## verdict 四分类与证据链
 
 门禁判定 `verified` 前的证据分四类：
@@ -100,15 +104,51 @@ ready:
 
 > 关键防伪机制：**构建失败/环境不可达绝不判 bug-found**，防止「验证没能发生」被当成「验证发现了缺陷」→ 派生伪 fix → 修复级联空烧 token。
 
+## env 豁免与 admin 握手
+
+**你会看到什么**：验证连续多轮「没有产品缺陷却停在 testing」，SPEC 反复回到 implemented 重派新验证轮；或收到「inconclusive 循环」升级告警要求人工处置。
+
+机制（`core/pm_engine/verification/escalation.py`）：环境类失败（blocked-env / 证据不足）有两级豁免防线——
+
+- **级一（judge 前）**：整批场景全部 blocked-env 且无任何 fail/error 时，本轮不出 verdict、记为 inconclusive 并回 implemented 重派新验证 attempt。级一/级二共享同一计数 `_inconclusive_attempts`：前 3 次（`verify_engine.inconclusive_max_attempts`，缺省 3）静默重派；达到第 4 次（`verify_engine.inconclusive_escalate_attempts`）升级写入 inconclusive_loop 信号并暂停自动重验。
+- **级二（judge 后）**：judge 结论采纳前做归因断言——无 product-bug / test-defect 归因、无 flaky / 未知归因、且至少一条 env 归因，才允许按环境问题豁免（否则结论照常生效）。
+
+**admin DISPOSITION 放行守卫**：对 inconclusive 循环的人工放行处置须经握手校验——放行记录的创建时间必须晚于本轮 inconclusive_loop 信号，陈旧的放行不复用（`_handle_env_exemption_handshake`）。放行被采纳后，本轮 report.json 会写入 `admin_disposition_backlink` 回链（信号类型 / 处置 id / 动作摘要），供审计对账。
+
+**排查指引**：「verified 卡在 implemented 反复重验」通常不是死循环——先查 `.fenix/verify-progress/<spec>/` 下的 inconclusive_loop 信号与对应 admin 处置记录；有效放行落地后，下一轮验证即正常推进。
+
 ## 验证报告与修复循环
 
 验证产物集中在 `.fenix/verify-progress/<spec>/` 下。report.json 记录总体情况（summary：总场景数/通过/失败/警告/错误数）与逐场景明细（scenarios：每个场景的 kind/判定/失败信息/证据，web 为截图，CLI/API 为命令输出与 HTTP 响应体）；verification-report.md 则以 Markdown 形式汇总缺陷根因。
 
 验证失败后 SPEC 进入 `bug-found`，派生 fix 分支修复再重新验证。修复循环有三轮熔断：同一缺陷连续 3 轮验证失败即自动 blocked 转人工，防止在修不好的缺陷上无限烧钱。
 
+## fastlane 小缺陷轻量通道
+
+**你会看到什么**：验证只挂了 1 个场景，修复却没走「整轮重验」，而是很快合并一个小修复、只重验少数场景——这是 fastlane 在起作用。
+
+机制（`core/pm_engine/verification/fastlane.py`）：小缺陷允许 code-fix 在主树直接修复 + 子集重验，跳过完整流水线。准入三条件：
+
+1. 失败场景数 = 1；
+2. judge 归因影响面 ≤ 3 个文件（`FASTLANE_MAX_AFFECTED_FILES`；影响面清单不可读时保守回落整轮）；
+3. 无争议 findings 标记（该检测 fail-open，宁宽勿误）。
+
+重验范围 = 失败场景 ∪ 其 `depends_on` 前置链（递归）∪ 下游受影响链（递归）；未实跑的场景沿用上一轮结论并标注来源。fastlane 连续失败 2 次（`_fastlane_fail_streak`）即回落整轮验证，防止在小通道里反复打转。每次准入/回落判定记录在 `.fenix/verify-progress/<spec>/fastlane_decision.json`。注意：fastlane 只豁免整轮验证，**不豁免 code-review 与交付物门禁**，其失败同样计入验证失败轮数。
+
+## judge 门禁治理与 verdict 缓存
+
+**你会看到什么**：SPEC 弹出 `judge_rerun_cap` 人工升级，或被 blocked 并提示 judge 重裁决超限。
+
+机制（`core/pm_engine/verification/judge_gate.py`、`core/pm_engine/verification/verdict_evidence.py`）：judge 重裁决受两层预算约束——
+
+- **轮内**：一轮验证里真实派发 judge ≤ 2 次（`_JUDGE_ROUND_MAX_REAL_DISPATCHES`），超出即停派并升级人工；证据扩充每轮 ≤ 1 次且不计入真实派发；命中 fast-track 复用既有 verdict 的不重复计数。
+- **spec 级**：整个 SPEC 生命周期 judge 重裁决最多 5 次（`_MAX_JUDGE_RERUNS`），超限 SPEC blocked 转人工；计数冻结后不因重启清零（`_judge_cap_frozen`）。
+
+**verdict 缓存**：每次 judge 结论按指纹持久化到 `.fenix/verify-progress/<spec>/verdict_cache.json`；修复轮命中同一指纹时直接注入既有结论、裁剪重验范围（PASS 结论同样入缓存）；缓存写失败不影响流程（fail-open）。
+
 ## 伪失败防线
 
-伪失败是验证链最大的 token 浪费源，Fenix 为此设了五道防线：
+伪失败是验证链最大的 token 浪费源，Fenix 为此设了七道防线：
 
 | 防线 | 说明 |
 |------|------|
@@ -117,6 +157,14 @@ ready:
 | blocked-env 不判 bug | 构建/环境问题不触发修复级联 |
 | BASE_URL 重写 | 场景永远打新鲜实例 |
 | 就绪探针 | 实例可用后才开始跑场景 |
+| 迟到结果防御 | SPEC 已不在 testing 时收到的验证结果直接丢弃、不覆写终态（`core/pm_engine/verification/legacy.py` 单一收敛点，bug-found / verified / process-failure 三分支共用）；verified 收敛点同时摘除队列并取消在飞 verify run（`core/pm_engine/engine.py`，回收键含 epoch 防串代） |
+| 逐测超时门 | pytest 全局单用例 10s signal 硬门（`pytest.ini`，机读判定「Timeout (>10.0s) from pytest-timeout」）；确需更长须登记 `tests/timeout-allowlist.yaml`（nodeid + timeout_seconds + reason 三字段，由 `tests/test_timeout_gate.py` 机械校验；全局阈值无放宽配置） |
+
+## infra 失败预算豁免
+
+**你会看到什么**：验证多轮因基础设施问题（构建环境、依赖安装、端口占用等）失败，但 SPEC 没有像产品缺陷那样被三轮熔断冻结，也未重复扣减 run 预算。
+
+机制（`core/state_machine.py`）：判定为 infra 的验证失败轮不计入 `MAX_VERIFY_FAIL_ROUNDS` 的冻结判定，冻结计数只在验证 PASS 时归零；对应验证 run 的预算按幂等退款（`_infra_refunded_run_ids` 记账，同一 run 不重复退）。观测字段落在 STATE.md：`_infra_failure_count`（infra 失败次数，观测不归零）、`_verify_infra_rounds`（infra 轮数，不参与冻结）、`_infra_refunded_run_ids`（退款幂等清单）。预算口径详见 [调度与治理规则](06-governance.md) 的「三类预算」。
 
 ## 验证结果在哪看
 

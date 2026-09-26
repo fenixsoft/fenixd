@@ -68,6 +68,8 @@ Fast-track 模式下，`validate_fast_track_result()` 对 `.fenix-run-result.jso
 
 实现 Agent 完成代码编写后、提交前，收工守卫对账三件事：零变更守卫检查 run 内是否产生了新提交，声称成功但既无新提交也无 Edit/Write 工具调用的 run 被判定为失败并重新派发；交付物守卫提取 tasks.md 的 Deliverables 声明（`core/deliverables.py:extract_paths()`），逐条检查声明路径是否在分支上真实存在，缺件阻塞收工；修复预算（`agents.impl_run_budget`）跟踪 run 内修复轮次，预算用尽仍有缺陷则自动升级 full 模式。三道对账都是确定性机械检查，不依赖 LLM 判断。
 
+**交付物路径修正写「生效命中层」（relocation writeback）**：judge 裁决「声明路径是笔误、实际路径是 X」这类修正时，写回目标不是固定主树，而是按**生效声明命中层**判定（`core/deliverables.py` 的 `resolve_writeback_target`）：声明在 worktree 内生效 → 修正写入该 worktree 并随分支提交；命中主树声明 → 写主树（同源写入不算错层）；声明只存在于分支（不可写层）→ 走 dispute 审计核销（凭据记录 relocation old→new 映射，或 judge 判定的 actual_path）。修正落地后按守卫读取基准（worktree > branch > main）复检，读回仍是旧路径即判修正未生效；同一族路径反复出错触发独立持久化的熔断计数，防止修正循环空转。
+
 ## 自愈链路：异常中断后的自动恢复
 
 即使有 lint、门禁和守卫，运行时仍会出现 Agent 崩溃、daemon 异常退出、worktree 残留等情况。自愈链路的目标是在不丢失状态、不烧浪费钱的前提下，把这些异常自动修复到可继续调度的状态。
@@ -87,6 +89,20 @@ daemon 由 `fenixd_supervisor.py` 托管，异常退出后自动拉起。重启�
 ### Worktree 遗产清理与 autostash 回收
 
 `core/worktree_manager.py` 管理实现 run 的 worktree 生命周期。每个 worktree 在创建时登记到活动集，run 结束后进入遗留宽限期，宽限期内 worktree 保留供参考，超时后由 sweeper 回收。派发前的 autostash（`fix-autostash-orphans` 机制）在主树有未暂存修改时自动 `git stash`，确保 worktree 创建和分支操作的原子性。滞留的 autostash 条目由 `reclaim_stale_autostash()` 定期兜底回收：先合并到主树（`stash → merge → pop`），冲突时自动解决（UU → add），最终 drop 原条目。`reclaim_stale_autostash_if_idle()` 只在调度器空闲时触发，不与正常派发竞争。
+
+### stash pop 冲突三分诊
+
+autostash 条目的 `git stash pop` 也可能撞上冲突。`core/worktree_manager/stash_guard.py` 按现场把冲突分三类处置，全程**不丢弃任何 stash 条目**：
+
+1. **态 1 · 三方重试**：用 stash 父提交、恢复时刻 HEAD 与 stash 内容做三方 merge-file 合并，能干净合出即直接恢复；
+2. **态 2 · 恢复 commit 只入库冲突路径**：`checkout --theirs` 取 stash 侧内容，`git add` 后以 `commit --only` 仅提交冲突路径，把处置留成可审计的提交；
+3. **态 3 · 兜底落工作区**：至少把 stash 内容完整落回工作区并登记处置记录（disposition）——绝不执行 `checkout -f HEAD` 之类的静默丢弃。
+
+三方合并失败本身不是异常（返回失败标记交上层分类）；条目一律保留到确认恢复成功，回收器只兜底滞留项。
+
+### merge-back 的 spec 目录在飞守卫
+
+merge-back（把实现分支合并回主树）开跑前有一道前置检查（`core/worktree_manager/mergeback.py`，位于 rehearse 与 wip 重叠闸之后、clean tree 检查之前）：若 `spec/changes/<spec>/` 目录在主树存在未提交编辑（含未跟踪文件），说明有别的会话正在改这份 SPEC 的任务书/设计文档——此时合并会把「文档改动」与「代码改动」搅进同一提交。守卫的处理是**有界顺延**：默认最多顺延 30 分钟 / 3 轮（STATE 字段 `_merge_retry_pending` 记账），期间不重派实现轮、不消耗预算；顺延超限回落人工通道（merge 熔断告警）。守卫解析自身失败时 fail-open 放行，不因守卫故障阻塞正常合并。
 
 ### 重启协议
 
@@ -109,6 +125,8 @@ daemon 进程持有的是启动时刻的代码副本（Python import 后不重�
 
 两机制**无独立开关**：整体关闭即 `stale_code_selfheal.enabled: false`（向后兼容，缺省行为不变）。五个新键经 `.fenix/config.yaml` 配置 + 30s 热更新生效（缺省 1800 / 3 / 600 / 300 / 3，非正整数回退缺省，`0` 不等效关闭），Dashboard 面板未暴露，详见[配置参考](09-config.md#stale_code_selfheal代码陈旧自愈)。
 
+**悬空超时硬上限**：陈旧自愈在「非空闲」时会一直等；但若陈旧为真却始终等不到空闲窗口（悬空）超过 `stale_code_selfheal.max_dangling_seconds`（缺省 14400 秒 = 4 小时，`0` = 关闭，`fenixd.py`），就不再等全空闲，而是直接走规划性重启。超时触发时落 `stale_code_dangling_timeout` 告警（warning 级，进人工待处理视图，60 分钟去重），提示「自愈被长期非空闲状态压制，已强制重启」。
+
 ## 告警系统：自愈无法覆盖时升级人工
 
 前四类机制覆盖了大多数异常，但有些情况无法自动化处理：merge 冲突的根因是 git 历史分歧、SPEC 卡在 `blocked` 状态且自动恢复无效、同一 SPEC 反复失败但每次失败原因不同。这些场景需要人工介入，告警系统就是把框架无法解决的问题升级给人的通道。
@@ -126,6 +144,14 @@ daemon 进程持有的是启动时刻的代码副本（Python import 后不重�
 `core/alert_lifecycle.py` 解决的是告警与 spec 状态脱钩的问题：升级告警产生后，spec 的后续状态变化（恢复、验证通过、到达终态）不会自动回写告警，导致管理员视图被历史噪音淹没。模块提供纯函数判定逻辑：关联 spec 状态到达终态（`done`/`pushed`）或离开 `blocked` 即视为条件解除，告警被标记为已自动闭环。结构化触发条件（`trigger` 字段）在告警写入时埋点（`build_trigger()` + `attach_trigger()`），使闭环判定有明确的依据而非猜测。无 `trigger` 字段的存量告警按 `signal_type` 推断 condition 做存量回填。
 
 `_send_human_escalation_alert()` 和 `_escalate_env_blocked()` 分别处理常规升级告警和环境阻塞告警：前者在 Dashboard 红色横幅展示，后者在 SPEC 详情页标记 `blocked-env` 状态。两种告警最终都写入 `admin_alerts.json`，运维记录页统一展示，每条告警带信号类型、严重度、证据与处置建议。
+
+### 信号前置探测与处置回写
+
+请求型困境信号（`verify_regression_missing` / `verify_contract_missing` / `build_artifact_paths_missing`）在摄取时先做一次**只读前置探测**（`core/admin_monitor.py`）：诉求若已满足（比如 verify.yaml 其实已补上），直接标记 handled + resolved 留痕，不再唤起 Administrator——admin 会话是贵的，能不叫就不叫。反之唤起后，admin 处置到达终态时结果回写信号（`handled=true`），人工触发与豁免路径同样留痕，形成「信号 → 处置 → 回写」闭环。
+
+### 告警降噪治理
+
+`daemon_errors` 类告警有指纹级降噪（`core/admin_monitor.py`）：daemon 重启后的首次扫描对既有指纹冷却 30 分钟（`DAEMON_ERROR_RESTART_COOLDOWN_MINUTES`），避免「每次重启都把陈年错误重新喊一遍」；同一指纹的孪生条目合并计数。两类项目级抑制：fixture 项目（dashboard.yaml `fixture: true`）的错误不产生告警；「SPEC 已交付但声明内容缺失」以 `spec_delivered_no_content` 独立信号承载（替代旧的 spec_content_missing，**不冻结** SPEC，见 `core/pm_engine/spec_integrity.py`）——交付后的产物漂移是提醒，不是事故。
 
 ## 机制衔接：纵深防御的完整链条
 

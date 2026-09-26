@@ -57,6 +57,14 @@ SPEC 走完全生命周期后使用。命令把 `spec/changes/<name>/` 目录移
 | `fenix_process.py` | 查看指定 SPEC 的详细进展 |
 | `fenix_session.py` | 计算项目唯一 tmux session 名并查询运行状态 |
 | `fenixd_supervisor.py` | daemon 托管入口（框架守护进程由 supervisor 托管，而非 tmux） |
+| `fenix_cli.py` | SPEC 运维子命令集：`promote`（晋升草稿）/ `reflow`（verified 回炉复位 ready）/ `activate`（手工激活待激活 SPEC）/ `review`（重新评审）/ `unfreeze`（解冻），均支持 `--project <path>` |
+| `fenix_status.py` | 项目状态一句话总结 + 各 SPEC 状态表（`/fenix-status` 的底层实现） |
+| `fenix_verify_contract.py` | 校验 verify.yaml 契约形态（prepare/serve/ready 与场景集 kind 的自动反推匹配） |
+| `ocr_review.py` | 收尾代码质量审查入口（`verify.impl_code_review` 开启后由实现者调用的 ocr 封装） |
+| `run_full_suite.py` | 全量回归唯一有界入口（主机级锁 + 超时控制；周期回归与手动触发共用，勿裸跑 `pytest tests/`） |
+| `fenix_archive.py` | 归档已完成的 change 到 archive 目录 |
+| `launch-chrome-extension.js` | 启动 Chrome 扩展（验证用） |
+| `test_for.py` | 验证辅助脚本 |
 
 ### 托管态（managed / unmanaged / stopped）
 
@@ -73,9 +81,6 @@ daemon 运行状态分三态：
 | `managed` | supervisor 与 daemon 均在运行 | daemon 受 supervisor 托管，restart_request / 审批推送等文件信号有消费方 |
 | `unmanaged` | 有 daemon 进程但无 supervisor | 裸 daemon（存量项目未经托管），文件信号无人消费——需经 Dashboard 项目页「安装托管」或 `/fenix-setup` 恢复托管 |
 | `stopped` | 两者皆无 | daemon 未运行 |
-| `fenix_archive.py` | 归档已完成的 change 到 archive 目录 |
-| `launch-chrome-extension.js` | 启动 Chrome 扩展（验证用） |
-| `test_for.py` | 验证辅助脚本 |
 
 ## full 模式 vs fast-track 模式选择
 
