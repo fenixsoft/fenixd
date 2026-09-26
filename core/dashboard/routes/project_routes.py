@@ -330,12 +330,10 @@ class H2ProjectRoutesMixin:
         regenerateProjectDescription 统一按 result.ok/.error 分支（4xx 会被
         request 层抛异常、反而破坏现约），故执行失败不改用 _error。
         """
-        project = self._project_from_query(query)
+        # 统一 400/404 口径（code-review item c6597d26ac7c）：复用文件级端点
+        # 共用校验助手——缺参 400、项目未知或不存在一律 404
+        project = self._project_query_or_error(query, "README.md")
         if project is None:
-            self._error(400, "unknown project")
-            return
-        if not project.get("exists"):
-            self._error(404, "project not found")
             return
 
         proot = Path(project["path"])
