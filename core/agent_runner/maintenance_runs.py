@@ -1770,7 +1770,12 @@ def run_regression(
             if log is not None:
                 log.error("regression", f"回归执行异常（run {run_id}）: {e}")
 
-        ok = snapshot.get("status") in ("passed", "failed", "timeout")
+        # 语义收窄（code-review b955b21cf40e）：success 仅当回归通过
+        # （status == "passed"）为真——failed/timeout 是执行有结果而非回归
+        # 通过，旧实现把二者计入 ok 使信封 success=True 与字段字面义相反，
+        # 新消费方按 success 判「回归通过」会把失败回归当成功。计数/终态取
+        # snapshot 与 status，不依赖 success。
+        ok = snapshot.get("status") == "passed"
         status = snapshot.get("status", "parse_error")
         if status == "skipped":
             # 主机级锁未获取等：非成功也非失败（本次未执行）
