@@ -76,23 +76,32 @@ class InfraCircuitBreaker:
     def threshold(self) -> int:
         """连续 infra 失败触发熔断的阈值（admin.run_infra_breaker.threshold）。
 
-        非数值脏值回退缺省（宽容语义，不在派发判定路径上抛）。
+        范围守卫与 ConfigLoader.get_run_infra_breaker_config 一致（code-review
+        item 8c2855513307）：bool / 非数值 / ``< 1`` 一律回退缺省 3——仅 int()
+        截断会让 ``0.5`` 变 0（首次 infra 失败即熔断）、``true`` 变 1，阈值
+        保护被静默收紧。
         """
         try:
-            return int(self._get_config("threshold", 3))
-        except (TypeError, ValueError):
+            val = self._get_config("threshold", 3)
+            if isinstance(val, bool) or not isinstance(val, (int, float)) or val < 1:
+                return 3
+            return int(val)
+        except (TypeError, ValueError, OverflowError):
+            # 非有限浮点（.nan/.inf）穿透范围比较时按脏值回退缺省（不抛）
             return 3
 
     @property
     def cooldown_minutes(self) -> float:
         """熔断冷却时长（分钟，admin.run_infra_breaker.cooldown_minutes）。
 
-        非数值脏值回退缺省（宽容语义，不在派发判定路径上抛）。
+        范围守卫与 ConfigLoader.get_run_infra_breaker_config 一致（code-review
+        item 8c2855513307）：bool / 非数值 / ``<= 0`` 一律回退缺省 30.0——
+        0/负数会使 until <= now，熔断即建即恢复，保护静默失效。
         """
-        try:
-            return float(self._get_config("cooldown_minutes", 30))
-        except (TypeError, ValueError):
+        val = self._get_config("cooldown_minutes", 30)
+        if not isinstance(val, (int, float)) or isinstance(val, bool) or val <= 0:
             return 30.0
+        return float(val)
 
     def _get_config(self, key: str, default):
         """取 admin.run_infra_breaker 段配置值（key 为段内字段名）。
