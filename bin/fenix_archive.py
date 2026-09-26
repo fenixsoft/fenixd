@@ -50,6 +50,7 @@ def archive_change(project_root: Path, name: str) -> dict:
         raise ValueError(f"Change '{name}' not found at {change_dir}")
 
     target = project_root / "spec" / "archive" / f"{date.today().isoformat()}-{name}"
+    # [fenix-ignore:4d8934ef8959] target 被并发创建为普通文件时不会静默覆盖：源 change_dir 必为目录，rename(目录, 已存在文件) 报 ENOTDIR，shutil.move 的 copytree 回退再抛 FileExistsError（OSError 族，main 已统一捕获），move 不会返回 moved == target，change_dir 与既有文件均原样保留
     if target.exists():
         raise ValueError(
             f"Archive target already exists: {target} — 请改名或改日再归档，原目录不会被覆盖"
