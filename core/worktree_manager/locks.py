@@ -51,7 +51,7 @@ class G3LockMixin:
             self._spec_locks.add(f"{spec_name}:verifier")
             self._lock_since[f"{spec_name}:verifier"] = time.time()
 
-    def _release_spec_locks(self, spec_name: str, reason: str) -> list:
+    def _release_spec_locks(self, spec_name: str, reason: str, not_after: float | None = None) -> list:
         """释放该 spec 的全部在册锁，返回被释放的 key（已不在册则返回空）。
 
         to_remove 计算与摘除全程持 _spec_lock_th（code-review item
@@ -59,10 +59,21 @@ class G3LockMixin:
         会抛 "Set changed size during iteration"，且摘除须与 _lock_since
         清理原子（纪律同 lifecycle.py:593 段）。调用方（has_active_worktree
         / refresh_locks）均未持该非重入锁，锁内取锁无死锁风险。
+
+        not_after：入口时刻守卫（code-review item cec36ef4e1fb，与 cleanup
+        finally 的 cleanup_entry_ts 同款）——仅摘除 _lock_since 不晚于该时刻
+        的在册锁。判定链（进程扫描 / 流 mtime）在持锁之前完成，期间并发
+        create() / _register_spec_locks 重新登记的同键新锁 _lock_since 晚于
+        入口时刻，跳过不误删，防止新 run 在 create 到子进程可被进程表扫到
+        的构建窗口内失去锁保护（重开双派发窗口）；None 表示不设限（行为同
+        旧版）。
         """
         with self._spec_lock_th:
             to_remove = [
-                k for k in self._spec_locks if self._lock_spec_name(k) == spec_name
+                k
+                for k in self._spec_locks
+                if self._lock_spec_name(k) == spec_name
+                and (not_after is None or self._lock_since.get(k, 0.0) <= not_after)
             ]
             for k in to_remove:
                 self._spec_locks.discard(k)

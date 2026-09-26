@@ -6,8 +6,10 @@
 import hashlib
 import json
 import logging
+import os
 import re
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import Dict, Optional, Tuple
@@ -74,6 +76,19 @@ _INFRA_FINGERPRINTS = (
     "provider circuit open",
     "provider chain exhausted",
     "model_chain_preflight_failed",
+)
+# 监督超时短语（code-review item 4b0176280b0a）：评审 run 被监督机制因超时或被判
+# 停滞而杀时 reason 含以下短语——这类失败是「run 没跑完」而非 provider 侧链路故障，
+# MUST NOT 判 infra。尤其 "extension budget exhausted" 含裸指纹 "budget"，会被
+# _classify_run_failure 误判 infra → _handle_review_failure 清锚点且不递增
+# _review_attempts，再死循环零成本复评、MAX_REVIEW_ATTEMPTS 冻结兜底失效。清单与
+# budget.py:_is_exemptable_reason 的「不可豁免」分支逐一对应（该处同样把这几个
+# 短语明确划为「监督超时、不可豁免」的非 infra 类），两处口径对齐。
+_SUPERVISION_TIMEOUT_PHRASES = (
+    "extension budget exhausted",
+    "run timeout reached",
+    "absolute_max_seconds cap reached",
+    "stagnant",
 )
 # 数字类指纹（402/403/429）不做裸子串匹配（code-review item b4ce03fd99c4）：
 # 失败原因文本任意位置出现这些数字（如路径 …-1403.md、行号 "line 4290"、
@@ -293,10 +308,29 @@ class SpecReviewManager:
         snapshot_dir.mkdir(parents=True, exist_ok=True)
         snapshot_path = snapshot_dir / "snapshot.json"
         try:
-            snapshot_path.write_text(
-                json.dumps(snapshot, ensure_ascii=False, indent=2),
-                encoding="utf-8",
+            # 原子写（tempfile + os.replace，同 engine._write_impl_result_snapshot
+            # 手法，code-review item f851cefd6aa4）：快照是写入边界校验（SPEC 目录
+            # 删除比对）的唯一基线，旧实现直接 write_text，进程中途崩溃/磁盘满会留
+            # 下截断 JSON——下游 _check_write_boundary 读失败仅 WARNING 降级、本轮
+            # 删除检测静默失效。
+            fd, tmp_name = tempfile.mkstemp(
+                prefix=f".snapshot.{spec_name}.",
+                suffix=".tmp",
+                dir=str(snapshot_dir),
             )
+            tmp_path = Path(tmp_name)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(snapshot, f, ensure_ascii=False, indent=2)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(str(tmp_path), str(snapshot_path))
+            finally:
+                if tmp_path.exists():
+                    try:
+                        tmp_path.unlink()
+                    except OSError:
+                        pass
         except OSError as e:
             self.logger.warning("spec_review", f"快照保存失败: {spec_name}: {e}")
 
@@ -901,23 +935,28 @@ class SpecReviewManager:
         本方法在 run 失败时前置校验，合法产物优先消费，exit code 失败仅降级
         为 warning 日志并留痕。
 
-        锚点 = 解析 entry.reviewer_run 内嵌 epoch 时间戳（dispatch_review
-        步骤①写入 run_id 的时刻，run_id 形如 ``spec-review-<spec>-<ts>``），
-        与 consume 内跳过的新鲜度校验语义同向。
+        锚点优先级：调用方显式传入的 ``run_started_at`` 优先生效（与
+        ``consume_review_result`` 同名单参同口径，code-review item 1ea5bc3bc4b7
+        ——旧实现被 run_id 尾段 epoch 无条件覆盖，参数语义失效）；未显式传入时
+        才回落解析 entry.reviewer_run 内嵌 epoch 时间戳（dispatch_review 步骤①
+        写入 run_id 的时刻，run_id 形如 ``spec-review-<spec>-<ts>``）。
         """
         result_path = spec_review_result_path(self.project_root, spec_name)
 
-        # 锚点解析：reviewer_run 内嵌 epoch 时间戳（run_id 尾部段）
+        # 锚点解析：显式传入的 run_started_at 优先生效；仅未传时回落 reviewer_run
+        # 内嵌 epoch 时间戳（run_id 尾部段）——旧实现尾段无条件覆盖显式传参，
+        # 参数语义失效（code-review item 1ea5bc3bc4b7）。
         anchor_ts = run_started_at
-        try:
-            entry = self.state_machine.read_one(spec_name) or {}
-            run_id = entry.get("reviewer_run") or ""
-            if run_id:
-                tail = str(run_id).rsplit("-", 1)[-1]
-                if tail.isdigit():
-                    anchor_ts = float(tail)
-        except (TypeError, ValueError):
-            pass
+        if anchor_ts is None:
+            try:
+                entry = self.state_machine.read_one(spec_name) or {}
+                run_id = entry.get("reviewer_run") or ""
+                if run_id:
+                    tail = str(run_id).rsplit("-", 1)[-1]
+                    if tail.isdigit():
+                        anchor_ts = float(tail)
+            except (TypeError, ValueError):
+                pass
 
         try:
             if not result_path.is_file():
@@ -1008,6 +1047,12 @@ class SpecReviewManager:
             if artifact_ok:
                 return "artifact"
         low = (reason or "").lower()
+        # 监督超时前置排除（code-review item 4b0176280b0a）：须在指纹匹配之前——
+        # "extension budget exhausted" 含裸指纹 "budget" 会被误判 infra；归 content
+        # 走既有重试语义（递增 _review_attempts，挂死超时亦耗尝试预算）。
+        for super_phrase in _SUPERVISION_TIMEOUT_PHRASES:
+            if super_phrase in low:
+                return "content"
         for fp in _INFRA_FINGERPRINTS:
             if fp in low:
                 return "infra"

@@ -267,9 +267,11 @@ class RecoveryWatch:
             # _recheck_deadline 回退 registered_at + followup 计算。
             "recheck_deadline": due,
             "reason": reason,
-            # 登记时的状态：复查通过条件 = 已离开该状态或已有活跃派发
-            # （auto-recovery 登记时是 ready/implemented；defer 登记时是
-            # implementing/testing 等卡死态——离开它才算恢复推进）。
+            # 登记时的状态：仅观测留痕（无判定消费方，tests 断言其存在）。
+            # 复查通过判据已收紧为声明语义（check_recovery_watch 的
+            # post-recovery-patrol D4）：status ∈ RECOVERY_PROGRESS_STATUSES
+            # （implemented/testing/verified/done/pushed）或已有活跃派发，
+            # 不再比较「status 与登记时是否相同」。
             "status_at_register": entry.get("status"),
         }
         self._pm._save_recovery_watch()
@@ -1105,6 +1107,12 @@ class RecoveryWatch:
                 f"dispatch_stalled signal recorded for '{spec_name}'",
             )
         except Exception as e:
+            # 回滚指纹登记（code-review item f96c11623564）：上方持锁段的
+            # 指纹登记先于 admin store 写入，append 失败若保留指纹，defer_limit
+            # 内的重试升级会命中同指纹冷却被静默抑制——「写失败不消耗冷却」。
+            with self._watch_lock:
+                if self._signal_fingerprints.get(spec_name) == (fp, now):
+                    self._signal_fingerprints.pop(spec_name, None)
             self._pm.logger.error(
                 "pm_engine",
                 f"Failed to record dispatch_stalled for '{spec_name}': {e}",

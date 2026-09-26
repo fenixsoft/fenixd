@@ -10,12 +10,10 @@ from core.state_machine import (
     BUDGET_EXEMPT_RUNS_FIELD,
     BUDGET_MANUAL_RESET_BASELINE_FIELD,
     INFRA_FAILURE_COUNT_FIELD,
-    VERIFY_INFRA_ROUNDS_FIELD,
 )
 from core.agent_runner.run_files import run_spec_part, strip_run_id_suffixes
 from pathlib import Path
 import json
-import re
 
 # ── 实现尝试总预算缺省值（add-fail-counter-budget D2/D3）──────────
 # 每 spec 跨修复周期的实现 run 启动次数上限（含首次实现与每轮修复重派、
@@ -283,7 +281,14 @@ class ImplBudget:
         entry = self._pm.state_machine.read_one(spec_name) or {}
         if entry.get(BUDGET_EXEMPT_ALERTED_FIELD):
             return
-        self._pm.state_machine.update_spec(spec_name, {BUDGET_EXEMPT_ALERTED_FIELD: True})
+        # 幂等标记翻转收敛为 state_machine 锁内原子 test-and-set（bump_counters
+        # 读改写同把文件锁）：auto-recovery 与派发失败两条线程并发豁免都读到
+        # 未标记时，仅 bump 结果 == 1 的赢家发告警，其余跳过（防重复告警）。
+        alerted = self._pm.state_machine.bump_counters(
+            spec_name, {BUDGET_EXEMPT_ALERTED_FIELD: 1}
+        )[BUDGET_EXEMPT_ALERTED_FIELD]
+        if alerted > 1:
+            return
         threshold = self._budget_exempt_alert_threshold()
         self._pm._send_human_escalation_alert(
             spec_name=spec_name,

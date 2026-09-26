@@ -242,11 +242,17 @@ class G5DistConflictsMixin:
             # 全量 staged 新增后按配置判定器过滤（code-review item
             # 6d8414eb218c）：不带 DASHBOARD_STATIC_ROOT 路径限定——配置在静态
             # 根之外（如根级 dist/）的产物同属「一律移除」语义，与判定器口径一致。
+            # -c core.quotePath=false（code-review item 2ae764751712）：非 ASCII
+            # 产物路径保持原样输出，否则 C 转义引号形让下方 _artifacts.paths_in
+            # 判不中、git rm pathspec 失配，stray 收口漏收。与 _artifact_paths/
+            # _list_unmerged_files 等采集点同口径。
             staged = subprocess.run(
                 [
                     "git",
                     "-C",
                     str(self.project_root),
+                    "-c",
+                    "core.quotePath=false",
                     "diff",
                     "--cached",
                     "--name-only",
