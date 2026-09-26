@@ -2027,6 +2027,7 @@ class StateMachine:
             # 若清除标记会让「仅剩合并」的分支退回 ready 全新派发，白废已完成的实现。
             # 顺延的有界上限由 dispatch 调用方（D2）承载；此处是 daemon 重启单次的
             # 有界短窗（不自旋），由下一次重启/人工提交解除。
+            # [fenix-ignore:143b2435ac7b] 非缺陷：2015 行元组解包只给新名字赋值、不重绑 merge_info，其仍是 MergeConflictInfo 对象，getattr 读到真实 spec_dir_inflight（test_state_machine_recovery_remerge_keeps_marker 已覆盖此分支）
             if getattr(merge_info, "spec_dir_inflight", False):
                 self.logger.warning(
                     "state_machine",
