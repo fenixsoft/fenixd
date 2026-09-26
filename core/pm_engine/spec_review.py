@@ -16,6 +16,7 @@ from core.state_machine import (
     SpecStatus,
     FROZEN_FIELD,
     FREEZE_ERROR_PREFIX,
+    _NullLogger,
 )
 from core.agent_runner.runner import AgentRunner
 from core.agent_runner.prompt_builder import (
@@ -147,7 +148,11 @@ class SpecReviewManager:
         self.agent_runner = agent_runner
         self.pm_engine = pm_engine
         self.config = config
-        self.logger = logger or _logger
+        # logger 缺省时兜底 _NullLogger（同 state_machine/verify_engine 先例）：
+        # 本类日志调用均为 (component, message) 两位置参数形态，若兜底 stdlib
+        # Logger，首参会被当格式串（"spec_review" % msg）致日志错乱或被
+        # handleError 吞掉——模块级 _logger 仅供本文件 stdlib %s 风格调用。
+        self.logger = logger if logger is not None else _NullLogger()
 
     # ── 评审派发 ────────────────────────────────────────────────
 
