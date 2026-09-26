@@ -1,7 +1,7 @@
 # 提案：worktree 锁让路的退避等待与降级计数
 
 ## 背景与问题
-agent run 启动时 _prepare_worktree（core/agent_runner/runner.py:2729）经 worktree_manager.create 取 worktree；同 spec:agent_type 锁已被并行 run 持有时 create 返回 None（core/worktree_manager/lifecycle.py:144-153），runner 仅 time.sleep(5) 一次（runner.py:2805，全路径唯一等待）即经 _should_give_up_before_retry 判定放弃（:2822 错误文案「Failed to create worktree (gave up: parallel run or manual freeze)」）。对验证出题车道，这一个瞬间事件就把整条新验证流程炸进降级：pipeline.py:2436 raise 后 engine.py:2421-2424 无计数 WARNING 降级旧版 verifier。日志保留窗内同签名已发生 7 次（09-06/09-17/09-19/09-21/09-22/09-24/09-26），09-06 还波及主派发车道；09-26 降级拉起的旧版 verifier 白跑 966 秒 97 轮后被回收（fenixd.log:26872-26889）。
+agent run 启动时 _prepare_worktree（core/agent_runner/runner.py:2729）经 worktree_manager.create 取 worktree；同 spec:agent_type 锁已被并行 run 持有时 create 返回 None（core/worktree_manager/lifecycle.py:144-153），runner 仅 time.sleep(5) 一次（runner.py:2805，全路径唯一等待）即经 _should_give_up_before_retry 判定放弃（:2822 错误文案「Failed to create worktree (gave up: parallel run or manual freeze)」）。对验证出题车道，这一个瞬间事件就把整条新验证流程炸进降级：core/pm_engine/verification/pipeline.py:2436 raise 后 engine.py:2421-2424 无计数 WARNING 降级旧版 verifier。日志保留窗内同签名已发生 9 次、跨 7 个日期（09-06×3、09-17、09-19、09-21、09-22、09-24、09-26；fenixd.log 4 + log.1 2 + log.2 3），09-06 还波及主派发车道；09-26 降级拉起的旧版 verifier 白跑 966 秒 97 轮后被回收（fenixd.log:26872-26889）。
 
 ## 目标
 1. 锁活跃（并行 run）导致的 worktree 创建失败改为短退避等待重试（等持锁方排空），重试耗尽才放弃；
