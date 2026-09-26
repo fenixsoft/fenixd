@@ -3,6 +3,12 @@
 //  - shadcn Button/Tooltip 换 antd Tooltip + 原生 button（tailwind 类保留）；
 //  - lucide 图标换 @ant-design/icons（SendOutlined / StopOutlined）；
 //  - PromptInputHeader（附件区）随附件链裁剪不迁。
+//
+// 预留说明：PromptInputButton / PromptInputSubmit / usePromptInput（连同
+// status Context 与 Send/Stop 图标切换）当前全仓无消费方（桶文件亦未导出），
+// 属对齐上游原语集的预留 API，非死代码遗留。启用前注意：PromptInputButton
+// 的 tooltip 用 antd Tooltip 直接包 disabled 按钮时，disabled:pointer-events-none
+// 会让 tooltip 永不弹出，届时需外包 span 或改走其他提示形态。
 
 import * as React from 'react';
 import { Tooltip } from 'antd';
