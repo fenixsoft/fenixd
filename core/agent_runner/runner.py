@@ -5964,7 +5964,6 @@ class AgentRunner:
 
         Returns: 窗口到期仍未终态的在跑 run_id 列表（空 = 全部自然收工）。
         """
-        waited = 0.0
         deadline = time.time() + max(0.0, timeout)
         remaining = self.running_run_ids()
         if not remaining and not self.running_lane_ids():
