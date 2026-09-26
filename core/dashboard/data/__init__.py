@@ -298,7 +298,6 @@ from .state import parse_state
 # ── config_admin 组 ──
 from .config_admin import (
     _MANAGED_KEYS,
-    _AGENTS_MANAGED_SUBKEYS,
     _SOURCE_KEYS,
     _DEFAULT_SELF_REVIEW,
     _CONFIG_HEADER_COMMENT,

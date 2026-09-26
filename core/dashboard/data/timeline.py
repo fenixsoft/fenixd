@@ -7,8 +7,6 @@ import json
 import re
 from pathlib import Path
 
-import yaml
-
 _LIFECYCLE_ORDER = {
     "drafted": 0,
     "reviewing": 0.5,
@@ -622,8 +620,9 @@ def _timeline_with_retry(timeline: list, project_root, entry: dict) -> list:
 
     重派计数是 spec 级状态（STATE.md `_retry_count`），run 产物无逐节点历史
     快照——只在最新 run 节点呈现当前值（>0 时），历史节点不伪造。分母取
-    项目 config `agents.max_retries`（缺失/异常回退 3，与 dispatch 取值默认
-    一致；read_effective_config 是受管键白名单视图，不含 max_retries）。
+    有效配置 `agents.max_retries`（ConfigLoader.resolve_config 用户级+项目级
+    深合并，与派发侧 runner._get_config 同口径；缺失/异常回退 3，与 dispatch
+    取值默认一致；read_effective_config 是受管键白名单视图，不含 max_retries）。
     """
     try:
         count = int(entry.get("_retry_count") or 0)
@@ -633,9 +632,13 @@ def _timeline_with_retry(timeline: list, project_root, entry: dict) -> list:
         return timeline
     max_r = 3
     try:
-        with (Path(project_root) / ".fenix" / "config.yaml").open("r", encoding="utf-8") as f:
-            max_r = int(((yaml.safe_load(f) or {}).get("agents") or {}).get("max_retries") or 3)
-    except (OSError, yaml.YAMLError, TypeError, ValueError):
+        from core.config import ConfigLoader
+
+        cfg = ConfigLoader.resolve_config(Path(project_root))
+        max_r = int(ConfigLoader.get(cfg, "agents.max_retries", 3) or 3)
+    except (TypeError, ValueError):
+        # resolve_config 自兜底（文件缺失/解析失败降级空 dict），此处仅防
+        # max_retries 配出非数值——回退默认 3，展示信号不阻断时间轴
         pass
     for e in reversed(timeline):
         if e.get("kind") == "run":
