@@ -2577,6 +2577,7 @@ class FenixDaemon:
                 f"scheduling_kick 信号疑似已更新，保留供下一轮消费: {path.name}",
             )
             return
+        # [fenix-ignore:f9299c2f3cc4] 删除前已重读 path 并校验 created 同代，读后重写的新 kick 保留待下轮消费（item 6888607ae472 落地）
         tmp_path = None
         try:
             fd, tmp_str = tempfile.mkstemp(
@@ -3050,6 +3051,7 @@ class FenixDaemon:
                 ):
                     if ident is not None:
                         self._code_review_io_identity = ident
+                    # [fenix-ignore:15471b956c32] IO 告警已按信号身份(ino/mtime_ns/size)去重，同一未消费信号仅告警首次，持久故障不再逐轮刷屏（item 974d06dfad47 落地）
                     self.logger.warning(
                         "fenixd",
                         "code_review 触发信号消费遭遇 IO 异常（信号未消费、留盘待"
