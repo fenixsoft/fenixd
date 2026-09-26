@@ -1361,6 +1361,11 @@ class StateMachine:
         # _inconclusive_attempts / ENV_BLOCK_ROUNDS_FIELD 同款「同一原子写清零」）。
         updates["_redispatch_same_cause_streak"] = 0
         updates["_redispatch_cause_fp"] = None
+        # 全场景同因失败哨计数随人工解冻清零（与上方各验证计数同一原子写）：
+        # admin 按推荐动作「拨回 implemented 重验」/解冻人工修复后，同因失败
+        # 观察窗从 1 重新起算；否则解冻后首轮同因失败 attempts 即 ≥4 立即
+        # 再次 blocked，「连续 3 轮」承诺落空。
+        updates["_uniform_fail_attempts"] = 0
         # fix-recovery-path-blockers D4：场景原地修复预算耗尽轮次随人工解冻
         # 清零——人工解冻是唯一人工裁决出口（对齐 _env_block_rounds 既有语义），
         # 解冻后重新获得「首次耗尽排程重验 → 再次耗尽升级」的完整体验；其余

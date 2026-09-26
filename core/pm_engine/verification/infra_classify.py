@@ -176,6 +176,31 @@ def _record_infra_failure(pipeline, spec_name: str, reason: str, run_id: str = "
         )
 
 
+def _reset_uniform_fail_streak(pipeline, spec_name: str) -> None:
+    """同因失败哨连续计数回落：本轮已确定非「全场景同因失败」时归零。
+
+    docstring/推荐动作承诺的「连续 3 轮同因」按连续轮次熔断——通过轮或
+    混合失败轮若不回落，_uniform_fail_attempts 按生命周期累计，非连续的
+    偶发同因失败也会误触发 blocked。仅计数非零时才落一次 update_spec
+    （常态验证轮零额外写）；回落失败不阻断本轮判定。
+    """
+    try:
+        spec = pipeline._context.state_machine.read_one(spec_name) or {}
+        if not int(spec.get("_uniform_fail_attempts", 0) or 0):
+            return
+        pipeline._context.state_machine.update_spec(
+            spec_name, {"_uniform_fail_attempts": 0}
+        )
+    except (TypeError, ValueError):
+        return
+    except Exception as e:
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"_uniform_fail_attempts 回落失败（不阻断判定）'{spec_name}': "
+            f"{type(e).__name__}: {e}",
+        )
+
+
 def _detect_uniform_verify_failure(pipeline, spec_name: str, report: dict) -> bool:
     """全场景同因失败哨：pass=0 且全部失败场景（fail/error）错误签名一致 → 疑环境/场景问题。
 
@@ -193,7 +218,11 @@ def _detect_uniform_verify_failure(pipeline, spec_name: str, report: dict) -> bo
     except (TypeError, ValueError):
         return False
     fail_total = failed + errors
-    if passed != 0 or fail_total < 3:
+    if passed != 0:
+        # 本轮存在通过场景 → 非「全场景同因失败」轮，连续计数回落为 0
+        _reset_uniform_fail_streak(pipeline, spec_name)
+        return False
+    if fail_total < 3:
         return False
     # 仅失败态场景纳入哨（fail/failed/error，与 summary 的 failed+errors 同口径），
     # warning/blocked-env 不混入；纯 error 轮也要覆盖
@@ -218,6 +247,8 @@ def _detect_uniform_verify_failure(pipeline, spec_name: str, report: dict) -> bo
                     break
         sigs.add(_normalize_fail_signature(sig)[:80])
     if len(sigs) != 1:
+        # 失败签名不一致（混合失败轮）：非同因失败轮，连续计数回落为 0
+        _reset_uniform_fail_streak(pipeline, spec_name)
         return False
     signature = next(iter(sigs))
     if not signature:
