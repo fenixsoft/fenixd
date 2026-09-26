@@ -24,10 +24,10 @@ class VerdictReadResult:
 
     - ok=True  → status 为白名单内合法裁决（verified/bug-found/plan-ready/
       scenario-repaired）。
-    - ok=False → 结果文件**不可读**（missing/parse/unknown-status/foreign-stamp），
-      reason 归因、detail 附解析错误原文。不可读**绝不**等价于 verified——历史
-      add-verify-contract-autodraft 事故：summary 裸换行致非法 JSON → 读侧按
-      None 处理 → else 分支 → verified → done → auto-push。
+    - ok=False → 结果文件**不可读**（missing/parse/io-error/unknown-status/
+      foreign-stamp），reason 归因、detail 附解析错误原文。不可读**绝不**等价
+      于 verified——历史 add-verify-contract-autodraft 事故：summary 裸换行致
+      非法 JSON → 读侧按 None 处理 → else 分支 → verified → done → auto-push。
     """
 
     __slots__ = ("status", "reason", "detail")
@@ -56,7 +56,16 @@ class VerdictReadResult:
 
 
 def _read_verify_report(pipeline, spec_name: str) -> dict:
-    """读取 verify-progress/<spec>/report.json（尽力解析，失败返回空 dict）。"""
+    """读取 verify-progress/<spec>/report.json（尽力解析，失败返回空 dict）。
+
+    哨兵差异（fix-code-review）：本函数失败返回 {}（空 dict 哨兵），而同一
+    report.json 经 core.verdict_check.load_report 读取时失败返回 None（None
+    哨兵）——同一产物两套读取器并存、判空口径不同，新增消费点须按各自哨兵
+    取用（`if not report` 对 {} / None 双兼容，`is None` / `== {}` 判定互不
+    兼容）。本函数消费方：infra_classify._scenario_classification_distribution
+    / _failed_scenario_ids（经 pipeline 门面）；load_report 消费方：
+    escalation._env_whitewash_gate 等。
+    """
     path = pipeline._context.project_root / ".fenix" / "verify-progress" / spec_name / "report.json"
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -174,8 +183,9 @@ def _read_verifier_result(pipeline, result_path: Path) -> VerdictReadResult:
     """读取 verifier 写入的 .fenix-run-result.json，返回结构化三态结果。
 
     fix-verdict-read-failclosed（fail-closed 语义反转）：
-    结果文件缺失 / 非法 JSON / status 白名单外一律返回 ok=False 的不可读结果
-    （reason ∈ missing / parse / unknown-status），**绝不**返回 None 表示
+    结果文件缺失 / 非法 JSON / IO 异常 / status 白名单外一律返回 ok=False 的
+    不可读结果（reason ∈ missing / parse / io-error / unknown-status），
+    **绝不**返回 None 表示
     「视为 verified」——裁决读不出来 = 按通过放行是历史事故根因
     （add-verify-contract-autodraft：裸换行非法 JSON → None → else 分支
     → verified → done → auto-push）。不可读的处置（重试/blocked）由调用方
@@ -202,11 +212,14 @@ def _read_verifier_result(pipeline, result_path: Path) -> VerdictReadResult:
         )
         return VerdictReadResult.failure("parse", f"{e}")
     except OSError as e:
+        # IO 失败（权限/设备错误等）≠ 产物格式损坏：独立 reason=io-error，
+        # 与 json.JSONDecodeError 的 parse 分池，下游按 reason 排障不误读为
+        # 格式损坏（调用方统一按不可读处置，不受新 reason 影响）。
         pipeline._context.logger.warning(
             "pm_engine",
             f"Failed to read verifier result (fail-closed): {e}",
         )
-        return VerdictReadResult.failure("parse", f"{e}")
+        return VerdictReadResult.failure("io-error", f"{e}")
     if not isinstance(data, dict):
         pipeline._context.logger.warning(
             "pm_engine",
