@@ -241,6 +241,8 @@ export function deleteProject(name: string) {
 // ── 运维记录（/api/admin-activities，与 v1 运维记录页同源） ──
 
 export interface ActivityItem {
+  // 后端 AdminStore._normalize_entry 对全部记录 setdefault("id", …)，运行时恒有值（activities 页 Timeline key）
+  id: string;
   escalation_id?: string;
   project?: string;
   spec?: string;
@@ -443,7 +445,9 @@ export interface SpecSummary {
   cancelled_hold?: boolean;
 }
 
-export async function getSpecs(project: string): Promise<{ project: string; specs: SpecSummary[] }> {
+// v1 兼容契约：未知/不存在项目返回 200 + {error, specs: []}（无 project 键，
+// 有意不走 404），列表页按响应体 error 字段分支渲染
+export async function getSpecs(project: string): Promise<{ project?: string; specs: SpecSummary[]; error?: string }> {
   return request(`/api/specs?project=${encodeURIComponent(project)}`);
 }
 
@@ -803,6 +807,9 @@ export interface SpecDetail {
     time: string;
     from?: string;
     to?: string;
+    // 状态节点回退方向单源（get_spec_timeline 按生命周期序下发）：true=回退转移；
+    // 存量/归档数据可能缺失，详情页缺失时回退旧判定（带 reason 即视为回退）
+    backward?: boolean;
     // 折叠状态节点：完整状态序列（首尾与 from/to 一致，中间状态不省略）
     chain?: string[];
     reason?: string;
