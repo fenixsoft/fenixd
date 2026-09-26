@@ -1204,24 +1204,37 @@ def _speculative_bug_found_gate(pipeline, spec_name: str) -> bool:
                 ),
             },
         )
-        pipeline._context.escalation_notifier(
-            spec_name=spec_name,
-            signal_type="attribution_evidence_insufficient",
-            severity="major",
-            description=(
-                f"'{spec_name}' 验证归因证据不足待人工复核："
-                f"连续 {gate_attempts} 次驱动场景归因均为推测级"
-                f"（speculative），门禁已 blocked 等待人工裁决"
-            ),
-            evidence=(
-                f"spec={spec_name}; max_retries={max_retries}; " f"连续推测轮数={gate_attempts}"
-            ),
-            recommended_action=(
-                "人工核验验证场景与失败断言：若为真·产品缺陷请"
-                "在 triage_violations.json 标注后重派 verify；"
-                "若为场景缺陷请退回 plan 修复场景"
-            ),
-        )
+        # 升级通道自身失败不得抛穿裁决流程（与同文件 _escalate_scenario_defect_reroute
+        # 的包裹模式对齐，code-review item fb3660678b0c）：blocked 处置已在上方
+        # update_spec 落盘，notifier 抛异常若落入函数级 except 会被误记为
+        # 「门禁校验异常跳过」并 return False，调用方据此继续 bug-found 打回，
+        # 覆盖刚写入的 blocked 终态。
+        try:
+            pipeline._context.escalation_notifier(
+                spec_name=spec_name,
+                signal_type="attribution_evidence_insufficient",
+                severity="major",
+                description=(
+                    f"'{spec_name}' 验证归因证据不足待人工复核："
+                    f"连续 {gate_attempts} 次驱动场景归因均为推测级"
+                    f"（speculative），门禁已 blocked 等待人工裁决"
+                ),
+                evidence=(
+                    f"spec={spec_name}; max_retries={max_retries}; " f"连续推测轮数={gate_attempts}"
+                ),
+                recommended_action=(
+                    "人工核验验证场景与失败断言：若为真·产品缺陷请"
+                    "在 triage_violations.json 标注后重派 verify；"
+                    "若为场景缺陷请退回 plan 修复场景"
+                ),
+            )
+        except Exception as e:
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"归因证据不足升级告警失败 '{spec_name}'（非阻塞，"
+                f"blocked 处置已落盘、仅告警通道失败）: "
+                f"{type(e).__name__}: {e}",
+            )
         return True
     except Exception as e:
         # 门禁自身异常不阻断既有裁决（治理代码是附加治理，框架级门禁
