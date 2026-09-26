@@ -77,9 +77,7 @@ def main():
         # 三个命令分支共用：调用抛 ValueError/OSError 时统一转 {ok: False, error: ...} 输出
         try:
             _emit(payload_fn())
-        except ValueError as e:
-            _emit({**error_base, "error": str(e) + root_hint}, ok=False)
-        except OSError as e:
+        except (ValueError, OSError) as e:
             _emit({**error_base, "error": str(e) + root_hint}, ok=False)
 
     if args.command == "new":
