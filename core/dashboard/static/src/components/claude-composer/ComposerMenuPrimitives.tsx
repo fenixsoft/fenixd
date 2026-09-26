@@ -60,7 +60,6 @@ export function ComposerMenuItem({
   icon,
   isSelected,
   onSelect,
-  role = 'menuitemradio',
   trailing,
   className,
 }: {
@@ -69,15 +68,14 @@ export function ComposerMenuItem({
   icon?: ReactNode;
   isSelected: boolean;
   onSelect: () => void;
-  role?: 'menuitemradio' | 'menuitem';
   trailing?: ReactNode;
   className?: string;
 }) {
   return (
     <button
       type="button"
-      role={role}
-      aria-checked={role === 'menuitemradio' ? isSelected : undefined}
+      role="menuitemradio"
+      aria-checked={isSelected}
       onClick={onSelect}
       className={cn(
         'flex w-full items-start gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-sm transition-colors',

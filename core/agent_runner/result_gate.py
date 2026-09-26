@@ -854,7 +854,7 @@ def _alert_quality_gates_form_drift(
             ),
         )
     except Exception as e:  # noqa: BLE001 —— fail-open：告警通道故障不阻断收尾
-        _soft_gate_logger.warning(
+        _logger.warning(
             "quality-gates 形态违规告警写入失败（fail-open，不影响收尾）: %s", e
         )
 
@@ -926,7 +926,7 @@ def _check_quality_gates_soft(runner, spec_name: str, wt_path: Path | None) -> N
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError, UnicodeDecodeError) as e:
-            _soft_gate_logger.warning(
+            _logger.warning(
                 "quality-gates.json 无法解析（宽松对账，仅告警放行）: %s (%s)", rel, e
             )
             _alert_quality_gates_form_drift(
@@ -937,7 +937,7 @@ def _check_quality_gates_soft(runner, spec_name: str, wt_path: Path | None) -> N
             continue
         gates = data.get("gates") if isinstance(data, dict) else None
         if not isinstance(gates, dict):
-            _soft_gate_logger.warning(
+            _logger.warning(
                 "quality-gates.json 顶层缺 gates 对象（宽松对账，仅告警放行）: %s", rel
             )
             _alert_quality_gates_form_drift(
@@ -948,7 +948,7 @@ def _check_quality_gates_soft(runner, spec_name: str, wt_path: Path | None) -> N
             continue
         for gid, entry in gates.items():
             if gid not in RUN_GATE_IDS:
-                _soft_gate_logger.warning(
+                _logger.warning(
                     "quality-gates.json 出现契约外 gate-id='%s'（宽松对账，仅告警"
                     "放行；合法集 %s）: %s", gid, list(RUN_GATE_IDS), rel,
                 )
@@ -960,7 +960,7 @@ def _check_quality_gates_soft(runner, spec_name: str, wt_path: Path | None) -> N
                 )
             if not isinstance(entry, dict) or entry.get("status") not in GATE_STATUSES:
                 bad = entry.get("status") if isinstance(entry, dict) else "<非对象>"
-                _soft_gate_logger.warning(
+                _logger.warning(
                     "quality-gates.json gate-id='%s' status='%s' 不在枚举（宽松对账，"
                     "仅告警放行；合法值 %s）: %s", gid, bad, list(GATE_STATUSES), rel,
                 )
@@ -1020,10 +1020,10 @@ def _check_repo_code_review_artifact(manifest: list, project_root, run_id: str) 
             text = src.read_text(encoding="utf-8", errors="replace")
         except OSError as e:
             # 静默跳过会把「文件系统读取失败」误归因为「agent 没落行」，
-            # 取证门失真——记 WARNING（经 _soft_gate_logger，caplog 可断言）
+            # 取证门失真——记 WARNING（经 _logger，caplog 可断言）
             # 并收集名单进失败文案，供 valids<=0 时区分环境侧根因。
             unreadable.append(src.name)
-            _soft_gate_logger.warning(
+            _logger.warning(
                 "审查产物读取失败（repo-code-review-gate，该来源不计入有效行）"
                 ": %s (%s)", src.name, e,
             )
@@ -1180,12 +1180,11 @@ def _check_impl_result_artifact(
 # agent_type 分派；调用点（runner.py）MUST 在拷回块之前执行。
 _FENCED_JSON_RE = re.compile(r"```(?:json)?\s*\n(.*?)\n```", re.DOTALL)
 
-_salvage_logger = logging.getLogger("fenixd.agent_runner.result_gate")
-
-# quality-gates.json 宽松对账告警通道（add-quality-gates-visibility 任务 3.2）：
-# 与 salvage 同一标准 logging 通道，caplog 可断言；MUST NOT 走 runner.logger
-# （测试替身无法被 caplog 捕获）。
-_soft_gate_logger = logging.getLogger("fenixd.agent_runner.result_gate")
+# 模块唯一标准 logging 通道（add-quality-gates-visibility 任务 3.2 引入的
+# soft-gate 告警与 salvage 捞回共用；历史 _salvage_logger / _soft_gate_logger /
+# _SELFCHECK_LOGGER 三别名已合并为单常量，避免误读为三条独立通道）。caplog
+# 可断言；MUST NOT 走 runner.logger（测试替身无法被 caplog 捕获）。
+_logger = logging.getLogger("fenixd.agent_runner.result_gate")
 
 
 def salvage_result_from_transcript(
@@ -1282,10 +1281,10 @@ def salvage_result_from_transcript(
             encoding="utf-8",
         )
     except OSError as e:
-        _salvage_logger.warning(
+        _logger.warning(
             "结果捞回写盘失败 '%s' (%s): %s", spec_name, agent_type, e)
         return False
-    _salvage_logger.warning(
+    _logger.warning(
         "%s 结果捞回：run 未写结果文件，已从转录末轮 fenced JSON "
         "代写落盘 '%s' run_id=%s status=%s",
         agent_type, spec_name, run_id, payload.get("status"))
@@ -1696,9 +1695,6 @@ def _clear_task_gate_rejections(runner, spec_name: str) -> None:
 # daemon 侧硬门判定保持不变（本入口只加出口，不改判定）。
 
 
-_SELFCHECK_LOGGER = logging.getLogger("fenixd.agent_runner.result_gate")
-
-
 class _SelfcheckShim:
     """自检 CLI 的门面依赖替身（D2b 规则 1 的离线等价物）。
 
@@ -1721,7 +1717,7 @@ class _SelfcheckShim:
     def __init__(self, project_root):
         self.project_root = project_root
         self.state_machine = None
-        self.logger = _SELFCHECK_LOGGER
+        self.logger = _logger
         # 惰性导入（函数运行期，非模块加载期——本模块 MUST NOT import runner）：
         # 白名单以 AgentRunner 类属性为单源，禁止在本处另写一份字面量。
         from core.agent_runner.runner import AgentRunner

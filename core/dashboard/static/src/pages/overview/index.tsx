@@ -32,7 +32,20 @@ export default function OverviewPage() {
       // [fenix-ignore:1a02afbcf833] 在飞删除窗口内 totals/token_usage 仍含被删项目：无可靠 per-project 分解可扣减（spec_updated_today/week 只进 totals 不进摘要，降级项目不进 totals），近似扣减反会引入错数；轮询落定后自愈，属乐观 UI 已知瞬态折衷
       setData({ ...d, projects });
       // 菜单校准：自动发现/他端删除后，侧边栏子菜单跟随最新项目全集
-      setInitialState((prev) => ({ ...(prev || { projects: [] }), projects: projects.map((p) => p.name) }));
+      const names = projects.map((p) => p.name);
+      // 项目全集与上次完全相同时返回 prev，避免 30s 心跳/visibilitychange 补刷
+      // 以新对象触发 @@initialState 消费者（布局/菜单）周期性无效重渲染
+      setInitialState((prev) => {
+        const prevProjects = prev?.projects;
+        if (
+          prevProjects &&
+          prevProjects.length === names.length &&
+          prevProjects.every((n, i) => n === names[i])
+        ) {
+          return prev;
+        }
+        return { ...(prev || { projects: [] }), projects: names };
+      });
       setError('');
     } catch (e) {
       // fix-dashboard-fault-isolation 3.1：请求失败 MUST NOT 清空已成功加载的

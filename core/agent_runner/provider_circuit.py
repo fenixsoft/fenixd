@@ -1293,8 +1293,12 @@ class ProviderCircuit:
             return "frozen"
         if self.is_post_unseal_hold(now=now):
             return "hold"
-        if self.is_probe_observation(now=now):
-            with self._unseal_lock:
+        # 闸态判定与探针名额读取收进同一 _unseal_lock 临界区（RLock 可重入，
+        # is_probe_observation 内部持锁不受影响）：否则并发线程可在判定与读取
+        # 之间完成观察窗到期推进（_finish_probe 复位 _transient_probe_dispatched
+        # 并转入 release/重熔断），本线程会按过期闸态误返 "probe"。
+        with self._unseal_lock:
+            if self.is_probe_observation(now=now):
                 return "observe" if self._transient_probe_dispatched else "probe"
         # 观察窗到期推进可能产生重熔断（探针判败，_finish_probe 内联置冻结）
         # ——重查冻结保持短路序（幂等：已解封时该查询早退 False，零副作用）。
