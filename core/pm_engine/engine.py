@@ -97,6 +97,10 @@ DEPENDENCY_ACCEPTED_STATUSES = ("done", "pushed", "implemented", "verified")
 # 回写 ready 外溢的秒级重入；合法重试（Retry/full_scan 周期/退避定时器）间隔为
 # 分钟级，不受影响。
 DISPATCH_COOLDOWN_SECONDS = 10
+# 派发冷却登记 _last_dispatch_at 无界增长防护（code-review item 8c6c06bb595e）：
+# spec 归档/删除后条目无删除路径，daemon 常驻数月 + spec 数千规模下缓慢增长；
+# 超上限时在写入入口按时间淘汰最旧（近似 LRU，被淘汰 spec 的冷却判据必已远超窗口）。
+_LAST_DISPATCH_AT_MAX = 10000
 
 
 # ── 派发前同源草案收敛检查（evo-deliverable-declaration-drift-align D3）──────
@@ -858,6 +862,14 @@ class PMEngine:
             self._enqueue(spec_name, agent_type)
             # 冷却起点（双派发穿透原地修 2026-09-06）：以实际入队时刻计时
             self._last_dispatch_at[spec_name] = time.time()
+            # 无界增长防护（code-review item 8c6c06bb595e）：写入口顺带淘汰——
+            # 超 _LAST_DISPATCH_AT_MAX 时移除时间最旧条目（近似 LRU；被淘汰 spec
+            # 的冷却判据必已远超窗口，无副作用）。
+            if len(self._last_dispatch_at) > _LAST_DISPATCH_AT_MAX:
+                for _stale in sorted(
+                    self._last_dispatch_at, key=self._last_dispatch_at.get
+                )[: len(self._last_dispatch_at) - _LAST_DISPATCH_AT_MAX]:
+                    self._last_dispatch_at.pop(_stale, None)
             # 并行出题触发（add-verify-lane-throughput 1.1）：spec 进入 ready 且
             # 满足触发条件即注册 planner-plan 并行条目，出题与实现车道并行在飞；
             # 触发失败只 WARNING，不影响刚完成的实现派发。
@@ -1940,7 +1952,10 @@ class PMEngine:
                         tmp_path.unlink()
                     except OSError:
                         pass
-        except OSError as e:
+        except (OSError, TypeError, ValueError) as e:
+            # 补捕 TypeError/ValueError（code-review item 9e35ac5c6b56）：json.dump
+            # 遇不可序列化对象/非法代理对不在 OSError 之列，不捕则违背 docstring
+            # 承诺的 fail-open——快照写失败仅记 WARNING，不阻塞派发主流程
             self.logger.warning(
                 "pm_engine",
                 f"impl-result 快照写入失败 '{spec_name}'（非阻塞）: {e}",
@@ -2451,8 +2466,12 @@ class PMEngine:
         """推送超限升级为 push_failed 困境信号（severity=major）写入 admin store。"""
         from core.admin_store import AdminStore, SIGNAL
 
-        store = AdminStore(self.project_root, self.logger)
         try:
+            # AdminStore 构造纳入 try（code-review item 105c8965ec12，对齐
+            # _note_unattainable_todos 手法）：构造若抛异常不得从 _push_lock
+            # 临界区穿透，否则 _handle_push_failure 后续的退避计数/next_retry_at
+            # 落盘（update_spec）被整体跳过——push 失败退避状态丢失。
+            store = AdminStore(self.project_root, self.logger)
             store.append(
                 {
                     "kind": SIGNAL,
@@ -2475,7 +2494,9 @@ class PMEngine:
                 f"push_failed 信号已写入 admin store: '{spec_name}'",
             )
         except Exception as e:
-            self.logger.error(
+            # 告警写入失败降级 WARNING（报告可丢，主链不可断）：push 退避状态
+            # 落盘不受本告警写入故障影响
+            self.logger.warning(
                 "pm_engine",
                 f"push_failed 信号写入 admin store 失败: {e}",
             )
@@ -2803,7 +2824,10 @@ class PMEngine:
         # ValueError/TypeError，从 _push_lock 内穿透 approve_push 一路炸到
         # _on_spec_done 调用方，中断 push 退避与升级链路——回退默认值。
         try:
-            max_retries = int(self._get_config("pm.push.max_retries", 3) or 3)
+            raw_max_retries = self._get_config("pm.push.max_retries", 3)
+            # 显式判 None（code-review item 95c429d664e3）：`or 3` 会把合法的 0
+            # （首次失败即停止自动重试）吞成默认 3，仅缺省时才回退默认值。
+            max_retries = 3 if raw_max_retries is None else int(raw_max_retries)
         except (TypeError, ValueError):
             max_retries = 3
         backoff_seconds = [300, 900]  # 默认指数退避：5 分钟、15 分钟
@@ -3832,66 +3856,83 @@ class PMEngine:
         from core.admin_store import AdminStore, ESCALATION, SIGNAL
         from core.alert_lifecycle import attach_trigger
 
-        store = AdminStore(self.project_root, self.logger)
-        count = int(state.get("count", 0)) if state else 0
-        until = state.get("until") or 0.0
-        # 冷却总时长（秒→分钟，取整）
-        # 配置非法值防御（code-review item e3e50d960b1b，与 _handle_push_failure
-        # 的 max_retries 同款）：非数字字符串裸 int() 抛 ValueError/TypeError，
-        # 从 recovered 分支穿透 handle_event 炸到调用方，中断当轮事件处理且
-        # 每次冷却到期复现——回退默认值 30。
+        # 告警落盘整体 fail-open（code-review item 41e2ac64d94a，对齐
+        # _signal_push_failed / _write_blocker_report 的包裹手法）：AdminStore
+        # 构造与 store.append 此前完全裸奔，磁盘满/权限等 OSError 会从 recovered
+        # 分支穿透 _on_spec_reviewing 与 handle_event（handler 调用无 except）
+        # 炸到 EventBus 调用方，中断当轮评审入队——报告可丢，主链不可断
+        # （b21d8f2d8247 同口径）。
         try:
-            cooldown_minutes = int(
-                self._get_config("admin.run_infra_breaker.cooldown_minutes", 30) or 30
+            store = AdminStore(self.project_root, self.logger)
+            count = int(state.get("count", 0)) if state else 0
+            until = state.get("until") or 0.0
+            # 冷却总时长（秒→分钟，取整）
+            # 配置非法值防御（code-review item e3e50d960b1b，与 _handle_push_failure
+            # 的 max_retries 同款）：非数字字符串裸 int() 抛 ValueError/TypeError，
+            # 从 recovered 分支穿透 handle_event 炸到调用方，中断当轮事件处理且
+            # 每次冷却到期复现——回退默认值 30。
+            try:
+                raw_cooldown = self._get_config(
+                    "admin.run_infra_breaker.cooldown_minutes", 30
+                )
+                # 显式判 None（code-review item 95c429d664e3）：`or 30` 会把
+                # 合法的 cooldown_minutes=0（不冷却）吞成默认 30，仅缺省才回退。
+                cooldown_minutes = 30 if raw_cooldown is None else int(raw_cooldown)
+            except (TypeError, ValueError):
+                cooldown_minutes = 30
+            now_epoch = time.time()
+            window_str = f"{count} 次连续 infra 失败；冷却 {cooldown_minutes} 分钟"
+            evidence = (
+                f"link=spec-review; count={count}; cooldown={cooldown_minutes}min; " f"{window_str}"
             )
-        except (TypeError, ValueError):
-            cooldown_minutes = 30
-        now_epoch = time.time()
-        window_str = f"{count} 次连续 infra 失败；冷却 {cooldown_minutes} 分钟"
-        evidence = (
-            f"link=spec-review; count={count}; cooldown={cooldown_minutes}min; " f"{window_str}"
-        )
-        if event == "triggered":
-            entry = {
-                "kind": ESCALATION,
-                "signal_type": "run_infra_failure",
-                "spec": spec_name,
-                "severity": "critical",
-                "description": (
-                    f"spec-review 链路连续 infra 失败 {count} 次（阈值 {self._get_config('admin.run_infra_breaker.threshold', 3)}），"
-                    f"已触发熔断（冷却 {cooldown_minutes} 分钟）。"
-                    f"原因：{reason}"
-                ),
-                "evidence": evidence,
-                "recommended_action": (
-                    "冷却到期后自动恢复重试。若持续失败请检查 provider 配额/余额、"
-                    "模型链配置与 run_timeout 设置"
-                ),
-            }
-            attach_trigger(entry)
-            store.append(entry)
+            if event == "triggered":
+                entry = {
+                    "kind": ESCALATION,
+                    "signal_type": "run_infra_failure",
+                    "spec": spec_name,
+                    "severity": "critical",
+                    "description": (
+                        f"spec-review 链路连续 infra 失败 {count} 次（阈值 {self._get_config('admin.run_infra_breaker.threshold', 3)}），"
+                        f"已触发熔断（冷却 {cooldown_minutes} 分钟）。"
+                        f"原因：{reason}"
+                    ),
+                    "evidence": evidence,
+                    "recommended_action": (
+                        "冷却到期后自动恢复重试。若持续失败请检查 provider 配额/余额、"
+                        "模型链配置与 run_timeout 设置"
+                    ),
+                }
+                attach_trigger(entry)
+                store.append(entry)
+                self.logger.warning(
+                    "pm_engine",
+                    f"run_infra_failure triggered: spec={spec_name} count={count}",
+                )
+            else:
+                # recovered：落 SIGNAL 档（链路级恢复，不绑定 spec）
+                entry = {
+                    "kind": SIGNAL,
+                    "signal_type": "run_infra_failure",
+                    "spec": None,
+                    "severity": "critical",
+                    "description": (
+                        f"spec-review 链路 infra 熔断冷却到期，已自动恢复重试"
+                        f"（冷却前连续失败 {count} 次）"
+                    ),
+                    "evidence": evidence,
+                    "recommended_action": "后续若再次连续 infra 失败将重新熔断",
+                }
+                store.append(entry)
+                self.logger.info(
+                    "pm_engine",
+                    f"run_infra_failure recovered: link=spec-review count={count}",
+                )
+        except Exception as e:
+            # 告警写失败降级 WARNING 不中断当轮事件处理（熔断判定/评审入队主链
+            # 不受影响，报告可丢）
             self.logger.warning(
                 "pm_engine",
-                f"run_infra_failure triggered: spec={spec_name} count={count}",
-            )
-        else:
-            # recovered：落 SIGNAL 档（链路级恢复，不绑定 spec）
-            entry = {
-                "kind": SIGNAL,
-                "signal_type": "run_infra_failure",
-                "spec": None,
-                "severity": "critical",
-                "description": (
-                    f"spec-review 链路 infra 熔断冷却到期，已自动恢复重试"
-                    f"（冷却前连续失败 {count} 次）"
-                ),
-                "evidence": evidence,
-                "recommended_action": "后续若再次连续 infra 失败将重新熔断",
-            }
-            store.append(entry)
-            self.logger.info(
-                "pm_engine",
-                f"run_infra_failure recovered: link=spec-review count={count}",
+                f"run_infra_failure 告警写入失败（熔断主链不受影响）: {e}",
             )
 
     # ── 实现尝试总预算（add-fail-counter-budget D2/D4 / add-spec-status-modal-budget D3）──────────────
