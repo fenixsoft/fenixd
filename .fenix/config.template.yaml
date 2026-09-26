@@ -450,6 +450,14 @@ admin:
   #   # 本身）并只重跑失败用例子集；每轮烧一次 agent run，设过大烧钱、
   #   # 0 会让「重试一次」的现状语义都保不住——越界/非法回退缺省 3。
   #   targeted_retry_max: 3
+  #   # 批收尾回归两段式（严格 bool，缺省 true，add-codefix-affinity-
+  #   # batching）：true=链内非末批按批触碰面定向回归（verify.yaml
+  #   # regression.cmd 写 {test_targets} 占位符方参与定向化，框架按批内
+  #   # 改动映射测试路径注入，同值导出 FENIX_TEST_TARGETS 环境变量；cmd
+  #   # 无占位符或映射空集时自动回退全量）+ 链末批恒走全量回归兜底；
+  #   # false=全批全量回归（等价既有行为）。非法值（非 bool）回退缺省
+  #   # true 并记 warning。
+  #   targeted_regression: true
 
   # ---- 周期性全量回归（add-test-regression-tab，可选）----
   # 设置页「质量」页签提供该开关（读/写 GET/POST /api/config 的

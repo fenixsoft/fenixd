@@ -1778,6 +1778,10 @@ class ConfigLoader:
         - targeted_retry_max: 3（add-codefix-targeted-retry 2.4；回归失败
           后定向重试轮上限，注释约束合理区间 1-5，bool / 非整数 / 越界
           回退 3——过大烧钱、0 会让「重试一次」的现状语义都保不住）
+        - targeted_regression: True（add-codefix-affinity-batching 4.1；
+          批收尾回归两段式：true=链内非末批按触碰面定向回归 + 链末批恒
+          全量兜底，false=全批全量。严格 bool，非法值回退缺省 True 并记
+          warning——不抛异常中断批链）
         段缺失或非 dict 时整体视为缺省，不抛异常。
         """
         # 段入口经 _segment_or_empty 归一（code-review item 4d46314da624）：
@@ -1804,10 +1808,19 @@ class ConfigLoader:
             or not 1 <= targeted_retry_max <= 5
         ):
             targeted_retry_max = 3
+        targeted_regression = crf.get("targeted_regression", True)
+        if not isinstance(targeted_regression, bool):
+            logging.getLogger(__name__).warning(
+                "admin.code_review_fix.targeted_regression 非法值 %r（非 bool），"
+                "回退缺省 True",
+                targeted_regression,
+            )
+            targeted_regression = True
         return {
             "enabled": enabled,
             "batch_size": int(batch_size),
             "targeted_retry_max": int(targeted_retry_max),
+            "targeted_regression": targeted_regression,
         }
 
     @classmethod
