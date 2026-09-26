@@ -2297,45 +2297,53 @@ def clear_project_page_keys(project_root, page: str) -> dict:
     if not config_path.exists():
         return {"ok": True, "error": None, "cleared": None, "path": str(config_path)}
 
-    raw = {}
-    try:
-        with config_path.open("r", encoding="utf-8") as f:
-            loaded = yaml.safe_load(f)
-        if isinstance(loaded, dict):
-            raw = loaded
-    except (yaml.YAMLError, OSError) as e:
-        return fail(f"读取现有配置失败: {e}")
-
-    cleared = {}
-    for section, keys in _SYNC_PAGE_KEYS[page].items():
-        sec_raw = raw.get(section)
-        if not isinstance(sec_raw, dict):
-            continue
-        removed = {k: sec_raw.pop(k) for k in keys if k in sec_raw}
-        if removed:
-            cleared[section] = removed
-            if not sec_raw:
-                raw.pop(section)  # section 删空整段移除，不留空 mapping
-
-    if not cleared:
-        # 没有可删的键：不重写文件（保留原文件 mtime，避免无意义触碰配置热更新）
-        return {"ok": True, "error": None, "cleared": {}, "path": str(config_path)}
-
-    config_dir = config_path.parent
-    try:
-        fd, tmp_path = tempfile.mkstemp(dir=str(config_dir), prefix=".config-", suffix=".yaml.tmp")
+    # 读-改-写全程持锁（code-review item 7d24ff72b5ca）：与 write_config 共用
+    # _CONFIG_WRITE_LOCK——用户在设置页同时点「清空」与另一页签「保存」时，两侧
+    # 各自基于 raw 快照整文件写回，后落盘者会覆盖先落盘者（save 的键被 clear 的
+    # 旧快照抹掉，或 clear 的删除被 save 的旧快照写回）。写路径低频，锁内仅多出
+    # yaml 读写，无重入风险（调用方为 HTTP 路由，不持本锁）。
+    with _CONFIG_WRITE_LOCK:
+        raw = {}
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(_CONFIG_HEADER_COMMENT)
-                yaml.safe_dump(raw, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
-            os.replace(tmp_path, config_path)
-        except Exception:
+            with config_path.open("r", encoding="utf-8") as f:
+                loaded = yaml.safe_load(f)
+            if isinstance(loaded, dict):
+                raw = loaded
+        except (yaml.YAMLError, OSError) as e:
+            return fail(f"读取现有配置失败: {e}")
+
+        cleared = {}
+        for section, keys in _SYNC_PAGE_KEYS[page].items():
+            sec_raw = raw.get(section)
+            if not isinstance(sec_raw, dict):
+                continue
+            removed = {k: sec_raw.pop(k) for k in keys if k in sec_raw}
+            if removed:
+                cleared[section] = removed
+                if not sec_raw:
+                    raw.pop(section)  # section 删空整段移除，不留空 mapping
+
+        if not cleared:
+            # 没有可删的键：不重写文件（保留原文件 mtime，避免无意义触碰配置热更新）
+            return {"ok": True, "error": None, "cleared": {}, "path": str(config_path)}
+
+        config_dir = config_path.parent
+        try:
+            fd, tmp_path = tempfile.mkstemp(dir=str(config_dir), prefix=".config-", suffix=".yaml.tmp")
             try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
-    except OSError as e:
-        return fail(f"写入配置文件失败: {e}")
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(_CONFIG_HEADER_COMMENT)
+                    yaml.safe_dump(
+                        raw, f, allow_unicode=True, default_flow_style=False, sort_keys=False
+                    )
+                os.replace(tmp_path, config_path)
+            except Exception:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
+        except OSError as e:
+            return fail(f"写入配置文件失败: {e}")
 
     return {"ok": True, "error": None, "cleared": cleared, "path": str(config_path)}
