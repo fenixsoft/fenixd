@@ -501,6 +501,10 @@ class G1LifecycleMixin:
                 # 死亡 implementer run：保留 worktree 与分支为遗产，仅释放锁 + 移出活动集。
                 # 物理目录留给后继 run 只读参考，由 sweeper（宽限期超时）或 merge 成功
                 # （consume_legacy）回收。注册发生在删除之前，避免指向已删路径。
+                # 收工清扫（code-review item 54d372035862）：与常规路径及 keep_for_reuse
+                # 口径对齐——目录保留，进程也不留。否则上一轮 dev-server 残留占着旧端口，
+                # 后继 run create() 认领继承目录后可被存活探测误判为本轮实例已就绪。
+                self._kill_worktree_strays(wt_path.name)
                 spec = self._spec_from_branch(branch)
                 if spec:
                     self.register_legacy(spec, wt_path, branch)
