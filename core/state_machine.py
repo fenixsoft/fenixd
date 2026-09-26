@@ -1252,6 +1252,10 @@ class StateMachine:
           保留分支上 resume 续做，而非从零新建分支。
         - 判定不通过（无 branch / 零提交 / 载体不可用）→ 清 ``_frozen_hold``、
           不置 ``_recovery_resume``、走普通重派，并 WARNING 留痕降级原因。
+        锚点回写在 ``.STATE.md.lock`` 锁内以最新条目复核（与 freeze_spec 同一
+        口径）：续做判定依据的锁外快照若已在窗口内被并发改写/清空，则放弃
+        branch/implementer_run 回写并 WARNING 留痕，防陈旧锚点复活
+        （fenix-fix f5a17d596717）。
         ``_frozen_hold`` 缺失（从未被冻结终止）时行为与改动前逐位一致。
         """
         entry = self.read_one(spec_name) or {}
@@ -1343,13 +1347,24 @@ class StateMachine:
         updates: dict = {FROZEN_FIELD: False}
         if status is not None and resume_status is None and not (frozen_hold and resume_branch):
             updates["status"] = status
+        resume_anchors: dict = {}
         if resume_branch is not None:
             updates["status"] = resume_status
-            updates["branch"] = resume_branch
-            updates["implementer_run"] = resume_impl_run
             # dispatch 层据此识别「解冻续做」路径：在保留分支的 worktree 内
             # resume，而非从零新建分支（与 _recovery_preserve_spec 同源输出）。
             updates["_recovery_resume"] = True
+            # 锚点不在此处进 updates（fenix-fix f5a17d596717，与 freeze_spec
+            # 的 code-fix d266d19c4860 同一口径）：本方法的锁外 read_one 快照
+            # 与落盘之间隔着 _resolve_preserved_branch 的 git 子进程（窗口可达
+            # 秒级），期间其他写者（dashboard/admin 处置/恢复链）若已改写或
+            # 清空锚点，锁外旧值会在本写中复活。回写载荷是 git 解析出的
+            # resume_branch（快照 branch 缺失时来自命名空间枚举），不能改写
+            # 成锁内最新值，故收进 _mutate_locked 的锁内回调：以最新条目复核
+            # 快照锚点未变才并入（见下方 _mutate），git 子进程保持在锁外。
+            resume_anchors = {
+                "branch": resume_branch,
+                "implementer_run": resume_impl_run,
+            }
         updates[FROZEN_HOLD_FIELD] = False
         # 计数清零并入同一原子写，避免解冻后残留计数立即再次触发冻结
         updates[VERIFY_REDO_COUNT_FIELD] = 0
@@ -1383,7 +1398,46 @@ class StateMachine:
         updates[SCENARIO_REPAIR_EXHAUSTED_FIELD] = 0
         updates["error"] = None
         updates[FROZEN_UNTIL_FIELD] = None
-        return self.update_spec(spec_name, updates)
+        # update_spec 的单条目写语义在此显式展开（与 freeze_spec 同款：
+        # _mutate_locked + _apply_updates_entry + _log_update_applied，无第二份
+        # 实现）：锚点复核 MUST 在 .STATE.md.lock 锁内基于最新条目进行，故不能
+        # 走 update_spec 的盲写封装。锁内不输出日志（持锁窗口不含 I/O），
+        # 复核失败经 anchor_recheck 带出锁外留痕。
+        applied: dict = {}
+        anchor_recheck: dict = {}
+
+        def _mutate(specs):
+            if resume_anchors:
+                fresh = specs.get(spec_name) or {}
+                if (
+                    fresh.get("branch") == entry.get("branch")
+                    and fresh.get("implementer_run") == entry.get("implementer_run")
+                ):
+                    updates.update(resume_anchors)
+                else:
+                    anchor_recheck["snapshot"] = entry
+                    anchor_recheck["fresh"] = fresh
+            found = self._apply_updates_entry(specs, spec_name, updates, applied)
+            return found, found
+
+        if not self._mutate_locked(_mutate):
+            self.logger.warning("state_machine", f"SPEC not found: {spec_name}")
+            return False
+        if anchor_recheck:
+            _snap = anchor_recheck["snapshot"]
+            _fresh = anchor_recheck["fresh"]
+            self.logger.warning(
+                "state_machine",
+                f"Unfreeze anchor recheck: spec '{spec_name}' 的 branch/"
+                f"implementer_run 锚点在续做判定后被并发改写（快照 branch="
+                f"{_snap.get('branch')!r}/implementer_run="
+                f"{_snap.get('implementer_run')!r} → 最新 branch="
+                f"{_fresh.get('branch')!r}/implementer_run="
+                f"{_fresh.get('implementer_run')!r}）——放弃锚点回写，"
+                f"防陈旧锚点复活",
+            )
+        self._log_update_applied(spec_name, applied)
+        return True
 
     def add_spec(self, spec_name: str, entry: dict) -> bool:
         """Add a new SPEC entry. Returns False if already exists.

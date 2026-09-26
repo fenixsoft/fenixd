@@ -51,6 +51,9 @@ class DashboardHTTPServer(ThreadingHTTPServer):
         # 并发请求槽位计数（dashboard-connection-limit D6）：entry 获取、finally 释放
         self._request_slots = 0
         self._slots_lock = threading.Lock()
+        # projects() TTL 缓存锁：TTL 判断→discover→写回序列互斥，防止 TTL 到期
+        # 瞬间的并发请求各自触发一次 discover 重复扫盘
+        self._projects_lock = threading.Lock()
 
     def _try_acquire_request_slot(self) -> bool:
         """尝试获取一个处理槽位；并发数 ≥ MAX_SERVER_THREADS 时拒绝。
@@ -77,21 +80,27 @@ class DashboardHTTPServer(ThreadingHTTPServer):
         保留上次成功结果（从未成功过则为空列表）并记录错误，异常 MUST NOT
         冒泡；`_cache_ts` 无条件推进，使 TTL 内后续请求复用上次结果而非每个
         请求都重试一次注定失败的发现。
+
+        「TTL 判断→discover→写回」序列由 `_projects_lock` 互斥（双重检查：
+        未过期走无锁快路径；同一 TTL 窗口只有一个线程真正执行 discover，
+        其余并发请求等锁后直接复用刚写回的缓存，不重复扫盘）。
         """
         from core.dashboard import server as _server_mod
 
         logger = _server_mod.logger
-        now = time.time()
-        if now - self._cache_ts > self._cache_ttl:
-            try:
-                self._projects_cache = self.registry.discover()
-            except Exception as exc:  # noqa: BLE001 —— 发现层兜底，不得使请求失败
-                # 保留 _projects_cache 原值；记录错误；不抛出
-                logger.error("项目发现失败，复用上次成功结果: %s", exc)
-            finally:
-                # 以扫描完成时刻起算 TTL：慢扫描（含注定失败的发现）不压缩缓存有效期
-                self._cache_ts = time.time()
-        return self._projects_cache
+        if time.time() - self._cache_ts <= self._cache_ttl:
+            return self._projects_cache
+        with self._projects_lock:
+            if time.time() - self._cache_ts > self._cache_ttl:
+                try:
+                    self._projects_cache = self.registry.discover()
+                except Exception as exc:  # noqa: BLE001 —— 发现层兜底，不得使请求失败
+                    # 保留 _projects_cache 原值；记录错误；不抛出
+                    logger.error("项目发现失败，复用上次成功结果: %s", exc)
+                finally:
+                    # 以扫描完成时刻起算 TTL：慢扫描（含注定失败的发现）不压缩缓存有效期
+                    self._cache_ts = time.time()
+            return self._projects_cache
 
     def invalidate_projects_cache(self):
         """使 projects() 的 TTL 缓存立即失效（下一次调用强制重新 discover）。

@@ -75,7 +75,7 @@ _SOURCE_KEYS = [
     "admin.code_review_fix",
     # add-test-regression-tab：admin.regression 键（周期全量回归开关）
     "admin.regression",
-    # add-settings-system-tab：admin.* 受管键（5 键）
+    # add-settings-system-tab：admin.* 受管键全部
     "admin.enabled",
     "admin.interval_minutes",
     "admin.escalation_cooldown_minutes",
@@ -301,7 +301,7 @@ def _managed_key_sources(raw: dict) -> dict:
     # add-test-regression-tab：admin.regression 段显式定义 → project
     if isinstance(admin_raw, dict) and isinstance(admin_raw.get("regression"), dict):
         sources["admin.regression"] = "project"
-    # add-settings-system-tab：admin.* 受管键（5 键）显式定义 → project
+    # add-settings-system-tab：admin.* 受管键显式定义 → project
     if isinstance(admin_raw, dict):
         for _k in (
             "enabled",
@@ -358,7 +358,7 @@ _ADMIN_DEFAULTS = {
 }
 
 def _managed_admin_keys(config: dict) -> dict:
-    """受管 admin.* 键提取：6 键 + 缺省填充，不透传未知 admin 键/self_review 子段。
+    """受管 admin.* 键提取：全部受管键 + 缺省填充，不透传未知 admin 键/self_review 子段。
 
     与 llm/agents 段「缺省填充」形态一致：文件里为合法类型的值才回显，否则用缺省。
     merge_breaker_threshold 缺省沿用 agents.merge_breaker_threshold（未配置则为 2）；
@@ -450,7 +450,7 @@ def _default_echo_view(scope: str) -> dict:
         "code_review_fix": dict(_DEFAULT_CODE_REVIEW_FIX),
         # add-test-regression-tab：admin.regression 键（缺省 false，周期全量回归开关）
         "regression": dict(_DEFAULT_REGRESSION),
-        # add-settings-system-tab：admin.* 受管键（5 键 + 缺省填充）
+        # add-settings-system-tab：admin.* 受管键全部（含缺省填充）
         "admin": dict(_ADMIN_DEFAULTS, merge_breaker_threshold=2),
         # add-spec-hooks：两级 hook 订阅配置（缺省空订阅，零行为）
         "hooks": {"global": [], "specs": {}},
@@ -663,7 +663,7 @@ def read_config(scope_root, scope: str = "project") -> dict:
         # 回显，与 code_review 同形态：顶层独立子键、不进 _managed_admin_keys
         # 键集——未知 admin 键由白名单狭窄回显，读不懂写入值）
         result["regression"] = _CL.get_regression_config(raw)
-        # add-settings-system-tab：受管 admin 键提取（5 键 + 缺省填充，不透传未知键）
+        # add-settings-system-tab：受管 admin 键提取（含缺省填充，不透传未知键）
         result["admin"] = _managed_admin_keys(raw)
     # add-spec-hooks：hooks 段原样透传（读回 UI 编辑视图）
     hooks_raw = raw.get("hooks")
@@ -871,7 +871,7 @@ def read_effective_config(project_root) -> dict:
     # add-test-regression-tab：regression 生效值回显（与 code_review 同形态：
     # 顶层独立子键、经 get_regression_config 归一化缺省）
     result["regression"] = ConfigLoader.get_regression_config(effective)
-    # add-settings-system-tab：受管 admin 键提取（5 键 + 缺省填充，不透传未知键）
+    # add-settings-system-tab：受管 admin 键提取（含缺省填充，不透传未知键）
     result["admin"] = _managed_admin_keys(effective)
     # add-spec-hooks：hooks 段有效值透传（读回 UI 编辑视图）
     hooks_eff = effective.get("hooks")
@@ -1140,7 +1140,7 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
         if isinstance(patch["regression"].get("enabled"), bool):
             reg["enabled"] = patch["regression"]["enabled"]
         merged["admin"]["regression"] = reg
-    # add-settings-system-tab：admin.* 六键合并（只动受管键，保留未知键）
+    # add-settings-system-tab：admin.* 受管键合并（只动受管键，保留未知键）
     if "admin" in patch and isinstance(patch["admin"], dict):
         if not isinstance(merged.get("admin"), dict):
             merged["admin"] = {}
@@ -1557,7 +1557,7 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
         if isinstance(sr_patch, dict) and sr_patch.get("enabled") is not None and not isinstance(sr_patch["enabled"], bool):
             return fail(f"verify.serving_reclaim.enabled must be a boolean: {sr_patch['enabled']!r}")
 
-    # add-settings-system-tab：admin.* 五键前置校验（非法值直接拒绝，不静默忽略——
+    # add-settings-system-tab：admin.* 受管键前置校验（非法值直接拒绝，不静默忽略——
     # 与 verify/self_review 同模式，前端输入类型错误在后端权威兜底）。
     if isinstance(config_patch.get("admin"), dict):
         adm = config_patch["admin"]
@@ -1918,7 +1918,7 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
                         "agents.scale_precheck requires higher_threshold < full_threshold: "
                         f"{_sp_higher} >= {_sp_full}"
                     )
-            # fix-provider-transient-backoff D6：瞬断治理四数值键非负整数校验（非法拒绝 400）
+            # fix-provider-transient-backoff D6：瞬断治理四数值键非负数值校验（非法拒绝 400）
             for _tk in (
                 "transient_redispatch_delay_seconds",
                 "transient_break_threshold",
@@ -1928,7 +1928,7 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
                 if _tk in agents and agents[_tk] is not None:
                     _tv = agents[_tk]
                     if isinstance(_tv, bool) or not isinstance(_tv, (int, float)) or _tv < 0:
-                        raise ValueError(f"agents.{_tk} must be a non-negative integer: {_tv!r}")
+                        raise ValueError(f"agents.{_tk} must be a non-negative number: {_tv!r}")
             if (
                 "transient_backoff_schedule" in agents
                 and agents["transient_backoff_schedule"] is not None
@@ -2021,7 +2021,7 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
                         raise ValueError(
                             f"admin.self_review.run_at must be HH:MM (00:00-23:59): {sr['run_at']}"
                         )
-            # add-settings-system-tab：admin.* 六键（merged 视图校验；写路径前置校验
+            # add-settings-system-tab：admin.* 受管键（merged 视图校验；写路径前置校验
             # 已拒绝非法 patch，此处兜底防绕过前置校验的直连调用）
             if (
                 "enabled" in admin_m

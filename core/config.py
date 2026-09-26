@@ -1143,7 +1143,9 @@ class ConfigLoader:
         if not chain:
             return None
 
-        llm = config.get("llm") or {}
+        # 段入口经 _segment_or_empty 归一（code-review item f3a0f8e121c8）：
+        # llm 段真值非 dict 时不再 AttributeError，按空段降级、链解析返回 None 走默认网关。
+        llm = cls._segment_or_empty(config, "llm")
         providers = llm.get("providers") or []
         by_name = {p.get("name"): p for p in providers if isinstance(p, dict)}
 

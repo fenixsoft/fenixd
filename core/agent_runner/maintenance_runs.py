@@ -1426,7 +1426,8 @@ def _unique_regression_run_id(runner) -> str:
     申领即创建（对齐 _unique_code_review_run_id / item e61828a54fda）：
     以 ``O_CREAT|O_EXCL`` 抢占 ``run-<candidate>.json``（原子），输者退避
     下一候选；占位内容为合法空 JSON ``{}``（无读者按 run 文件聚合，占位
-    不破坏任何消费方）。
+    不破坏任何消费方）。占位仅作申领凭据，不回填真实 run 记录——由
+    run_regression 收尾 finally 清理（item e6a103d93b91），不留空占位。
     """
     base = f"regression-{int(time.time())}"
     candidate = base
@@ -1591,59 +1592,72 @@ def run_regression(
     log = getattr(runner, "logger", None)
     exec_root = project_root if project_root is not None else runner.project_root
 
-    subset = list(subset_nodeids) if subset_nodeids else []
-    if subset:
-        subset_cmd = _apply_pytest_subset(spec.cmd, subset)
-        if subset_cmd is not None:
-            spec = dataclasses.replace(spec, cmd=subset_cmd)
-            if log is not None:
-                log.info(
-                    "regression",
-                    f"code-fix 定向子集回归（{len(subset)} 例，取代既有收集目标）",
-                )
-        else:
-            # 非 pytest 形态 / 无法安全改写 → 忽略子集跑全量（fail-closed）
-            if log is not None:
-                log.warning(
-                    "regression",
-                    "定向子集不可用（非 pytest 形态或无法安全改写收集目标），回退全量回归",
-                )
-
+    # 申领占位收尾清理（item e6a103d93b91）：_unique_regression_run_id 以
+    # O_CREAT|O_EXCL 抢占 run-<run_id>.json 仅作原子申领，`{}` 占位此后
+    # 无人回填也无人读（执行链 run_and_write_regression 只写 last-run.json
+    # /state.json/.running）——不清理则每次执行永久泄漏一个空占位。此处按
+    # 申领处同构拼路径（reg_dir 取 runner.project_root，与 project_root
+    # 参数无关），成功/失败/skipped/异常各路径 finally 统一清理；missing_ok
+    # 容忍 OSError 回退路径本就未落盘的情况。
+    claim_placeholder = (
+        runner.project_root / ".fenix" / "regression" / f"run-{run_id}.json"
+    )
     try:
-        snapshot = run_and_write_regression(
-            exec_root,
-            spec,
-            logger=log,
-            lock_root=lock_root,
-        )
-    except Exception as e:  # noqa: BLE001 — 执行异常兜底为失败快照
-        snapshot = {
-            "status": "parse_error",
-            "cmd": str(getattr(spec, "cmd", "")),
-            "output": str(getattr(spec, "output", "")),
-            "reason": f"回归执行异常: {e}",
-        }
-        if log is not None:
-            log.error("regression", f"回归执行异常（run {run_id}）: {e}")
+        subset = list(subset_nodeids) if subset_nodeids else []
+        if subset:
+            subset_cmd = _apply_pytest_subset(spec.cmd, subset)
+            if subset_cmd is not None:
+                spec = dataclasses.replace(spec, cmd=subset_cmd)
+                if log is not None:
+                    log.info(
+                        "regression",
+                        f"code-fix 定向子集回归（{len(subset)} 例，取代既有收集目标）",
+                    )
+            else:
+                # 非 pytest 形态 / 无法安全改写 → 忽略子集跑全量（fail-closed）
+                if log is not None:
+                    log.warning(
+                        "regression",
+                        "定向子集不可用（非 pytest 形态或无法安全改写收集目标），回退全量回归",
+                    )
 
-    ok = snapshot.get("status") in ("passed", "failed", "timeout")
-    status = snapshot.get("status", "parse_error")
-    if status == "skipped":
-        # 主机级锁未获取等：非成功也非失败（本次未执行）
+        try:
+            snapshot = run_and_write_regression(
+                exec_root,
+                spec,
+                logger=log,
+                lock_root=lock_root,
+            )
+        except Exception as e:  # noqa: BLE001 — 执行异常兜底为失败快照
+            snapshot = {
+                "status": "parse_error",
+                "cmd": str(getattr(spec, "cmd", "")),
+                "output": str(getattr(spec, "output", "")),
+                "reason": f"回归执行异常: {e}",
+            }
+            if log is not None:
+                log.error("regression", f"回归执行异常（run {run_id}）: {e}")
+
+        ok = snapshot.get("status") in ("passed", "failed", "timeout")
+        status = snapshot.get("status", "parse_error")
+        if status == "skipped":
+            # 主机级锁未获取等：非成功也非失败（本次未执行）
+            return RegressionResult(
+                run_id=run_id,
+                success=False,
+                status=status,
+                error=snapshot.get("reason", "skipped"),
+                snapshot=snapshot,
+            )
         return RegressionResult(
             run_id=run_id,
-            success=False,
+            success=ok,
             status=status,
-            error=snapshot.get("reason", "skipped"),
+            error=snapshot.get("reason", "") if not ok else "",
             snapshot=snapshot,
         )
-    return RegressionResult(
-        run_id=run_id,
-        success=ok,
-        status=status,
-        error=snapshot.get("reason", "") if not ok else "",
-        snapshot=snapshot,
-    )
+    finally:
+        claim_placeholder.unlink(missing_ok=True)
 
 
 # ── 自动修复执行（add-code-review-auto-fix，task 6.1-6.3）────────────────

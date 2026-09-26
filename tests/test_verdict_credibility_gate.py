@@ -343,7 +343,7 @@ class TestBatchAttributionDedup(unittest.TestCase):
         self.assertTrue(result["ok"])
 
 
-# ── 8. 归一化细分 + 级联豁免（fix-verdict-dedup-resynthesis D3）─────────
+# ── 8. 归一化细分（fix-verdict-dedup-resynthesis D3）────────────────
 
 
 def _cascade_scenario(sid, step_no, assertion, cls="env"):
@@ -351,7 +351,7 @@ def _cascade_scenario(sid, step_no, assertion, cls="env"):
 
     evidence 走共享截断模板（模拟 judge 批量生成时 ``error[:120]`` 截断 +
     共享模板串的 16:39 事故形态）——模板偷懒的「同文」集中在归一化指纹里，
-    局部区分只能来自步骤序号与断言 label（design D3 的级联豁免判据）。
+    局部区分只能来自步骤序号与断言 label（design D3 的归一化拆分判据）。
     """
     return {
         "scenario_id": sid,
@@ -446,30 +446,34 @@ class TestDedupNormalizationCascadeExemption(unittest.TestCase):
         self.assertEqual(len(result["violations"]), 1)
         self.assertEqual(len(result["violations"][0]["scenario_ids"]), 4)
 
-    def test_exemption_only_for_same_classification(self):
-        """豁免只对同 classification 生效（不同分类的场景组不豁免）。"""
-        sig_a = {"classification": "env", "ffs_step": "1",
-                 "ffs_desc": "应用初始化失败", "triage_labels": ["a"]}
-        sig_b = {"classification": "env", "ffs_step": "2",
-                 "ffs_desc": "应用初始化失败", "triage_labels": ["b"]}
-        sig_c = {"classification": "product-bug", "ffs_step": "3",
-                 "ffs_desc": "应用初始化失败", "triage_labels": ["c"]}
-        # 分类混杂：级联豁免前提（组内 classification 相同）不成立 → 不豁免
-        from core.verdict_check import _cascade_root_exemption
-        self.assertFalse(_cascade_root_exemption([sig_a, sig_b, sig_c]))
-        # 分类全同 + 步骤各异 → 豁免成立
-        self.assertTrue(_cascade_root_exemption([sig_a, sig_b]))
+    def test_classification_splits_fingerprint_groups(self):
+        """classification 参与归一化分组：分类分散的共享模板串不坍缩成违规组。"""
+        report = {"scenarios": [
+            _cascade_scenario("s1", 2, "项目列表行可见", cls="env"),
+            _cascade_scenario("s2", 2, "项目列表行可见", cls="env"),
+            _cascade_scenario("s3", 2, "项目列表行可见", cls="product-bug"),
+        ]}
+        result = check_batch_attribution_dedup(report)
+        self.assertTrue(result["ok"])
 
-    def test_desc_prefix_similarity_gate(self):
-        """描述体前缀重合 <80% 不豁免（各自描述差异过大 → 属正常多因，查重照常）。"""
-        from core.verdict_check import _cascade_root_exemption
-        sigs = [
-            {"classification": "env", "ffs_step": "1",
-             "ffs_desc": "应用初始化失败，前置实例未就绪", "triage_labels": ["a"]},
-            {"classification": "env", "ffs_step": "2",
-             "ffs_desc": "完全不同的一句话描述另一个失败", "triage_labels": ["b"]},
-        ]
-        self.assertFalse(_cascade_root_exemption(sigs))
+    def test_distinct_desc_bodies_not_merged(self):
+        """描述体不同即归一化不同组（正常多因形态，不判违规）。"""
+        def _sc(sid, desc):
+            return {"scenario_id": sid, "status": "fail",
+                    "classification": "env",
+                    "evidence": {"first_failed_step": f"步骤1: {desc}"},
+                    "assertion_triage": [{
+                        "assertion": "项目列表行可见",
+                        "classification": "env",
+                        "evidence": "错误信息（截断）: 断言未通过，详见 assertion_results",
+                    }]}
+        report = {"scenarios": [
+            _sc("s1", "应用初始化失败，前置实例未就绪"),
+            _sc("s2", "完全不同的一句话描述另一个失败"),
+            _sc("s3", "第三种截然不同的失败表现"),
+        ]}
+        result = check_batch_attribution_dedup(report)
+        self.assertTrue(result["ok"])
 
 
 # ── 7. validate_attribution_levels 写入 report.json ─────────────

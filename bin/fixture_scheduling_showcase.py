@@ -178,66 +178,35 @@ def _provision_from_template() -> None:
 
 
 def _reset_alerts_baseline() -> None:
-    """把夹具 .fenix/admin_alerts.json 复位到空基线 `[]`（原子写）。
+    """把夹具 .fenix/admin_alerts.json 复位到空基线 `[]`（原子写，经 _atomic_write_text）。
 
     fixture-project-governance：seed 场景经 AdminStore.append 往夹具写入的
     升级告警/处置记录是验证数据，若不清空会跨验证轮次永久累积（读侧跨项目
     聚合已跳过夹具，但显式查询与 `--status` 仍可见，复位保持基线一致）。
 
-    写入 MUST 为原子写（同目录 tempfile.mkstemp + os.replace，与
-    AdminStore._write_unlocked 同形态）——夹具 .fenix/ 内有常驻 daemon 与
-    seed 场景的并发读-改-写，半写文件会被 AdminStore._read_unlocked 判为损坏
-    并隔离改名，使后续 api 场景读到空集。MUST NOT 触碰 admin_alerts.json.lock
-    （锁文件不属数据基线）。
+    MUST NOT 触碰 admin_alerts.json.lock（锁文件不属数据基线）——
+    _atomic_write_text 只在目标目录落临时文件后 os.replace 目标路径，不会
+    碰到 `.lock` 后缀的锁文件。原子写为何 MUST（同 AdminStore._write_unlocked
+    同形态的并发半写风险）见 _atomic_write_text docstring。
     """
-    alerts_path = ROOT / ".fenix" / "admin_alerts.json"
-    alerts_path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path_str = tempfile.mkstemp(
-        prefix=".admin_alerts.",
-        suffix=".tmp",
-        dir=str(alerts_path.parent),
-    )
-    tmp_path = Path(tmp_path_str)
-    try:
-        # fdopen 本身可能抛异常（如 fd 无效/编码问题）：此时 fd 仍未被接管，
-        # finally 只 unlink 路径、不关 fd，会泄漏文件描述符。显式兜底关闭
-        # （code-review item f056464f4cf7）。
-        f = os.fdopen(fd, "w", encoding="utf-8")
-    except Exception:
-        try:
-            os.close(fd)
-        except OSError:
-            pass
-        try:
-            tmp_path.unlink()
-        except OSError:
-            pass
-        raise
-    try:
-        with f:
-            json.dump([], f, ensure_ascii=False)
-            f.write("\n")
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(str(tmp_path), str(alerts_path))
-    finally:
-        if tmp_path.exists():
-            try:
-                tmp_path.unlink()
-            except OSError:
-                pass
+    _atomic_write_text(ROOT / ".fenix" / "admin_alerts.json", "[]\n")
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
-    """原子写文本（tempfile + fsync + os.replace，同 _reset_alerts_baseline 惯用法）。"""
+    """原子写文本（同目录 tempfile.mkstemp + fsync + os.replace）。
+
+    与 AdminStore._write_unlocked 同形态，MUST 走原子写的原因：夹具 .fenix/
+    内有常驻 daemon 与 seed 场景的并发读-改-写，write_text 先截断后写的半写
+    文件会被 AdminStore._read_unlocked 判为损坏并隔离改名。STATE.md、
+    config.yaml 基线与 admin_alerts.json 空基线复位均经本助手落盘。
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_str = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
     tmp_path = Path(tmp_str)
     try:
         # fdopen 本身可能抛异常（如 fd 无效/编码问题）：此时 fd 仍未被接管，
         # finally 只 unlink 路径、不关 fd，会泄漏文件描述符（重复 --reset
-        # 运行累积泄漏）。显式兜底关闭，镜像 _reset_alerts_baseline 的加固
-        # （code-review item 804a6cf78f92）。
+        # 运行累积泄漏）。显式兜底关闭（code-review item 804a6cf78f92）。
         f = os.fdopen(fd, "w", encoding="utf-8")
     except Exception:
         try:

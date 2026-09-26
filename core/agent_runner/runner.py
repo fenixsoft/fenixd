@@ -352,13 +352,6 @@ def ensure_route_map(wt_path: Path, project_root: Path, logger,
     )
     return out
 
-# ── V2 测试服务器（add-worktree-test-server）────────────────────────────
-# per-run 隔离测试服务的端口分配基数，范围 [V2_TEST_PORT_BASE, V2_TEST_PORT_BASE+19]
-# 主服务 8787 排除在外，并发运行（并行度 2，预留余量取 20 个高位端口段）不冲突。
-V2_TEST_PORT_BASE = 19000
-V2_TEST_PORT_RANGE = 20
-V2_DEV_SERVER_MARKER = "fenix-v2-dev-server"
-
 # ── 轮次上限活性感知续期（add-turn-limit-anchor-c design D2）────────────────
 # 轮询环判定 run 触达 max_turns 上限时，按封闭决策矩阵（分支提交活性 / 尾部
 # 窗口 tool_result 流量活性）判定续期或终止——有活性且续期未达封顶 → extend
@@ -3812,7 +3805,10 @@ class AgentRunner:
             return None, None, chain, None
         # 链指针推进：上次因切换类失败已前移的，保持前移（design D1/D3）；
         # 否则从头选首个未冷却候选。4xx 熔断拦截态也算"不可用"跳过。
-        if st.chain_cursor < 0:
+        # 上界守卫：chain 每 attempt 现读配置重建，运行中配置热更新缩短候选链时，
+        # 遗留 cursor 可能 >= len(chain)，此时重选落点而非以未捕获 IndexError 崩溃；
+        # 重选仍为 -1 则落入下方 chain_exhausted/circuit 分支。
+        if st.chain_cursor < 0 or st.chain_cursor >= len(chain):
             st.chain_cursor = self._select_chain_candidate(chain, spec_name, agent_type)
         if st.chain_cursor < 0:
             # 无可用候选。区分两类根因（design D3 / spec failover-dispatch）：

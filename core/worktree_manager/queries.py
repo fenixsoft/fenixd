@@ -271,7 +271,7 @@ class G8QueryMixin:
                 text=True,
                 timeout=15,
             )
-        except subprocess.TimeoutExpired:
+        except (subprocess.TimeoutExpired, OSError):
             return None
         if res.returncode != 0:
             return None
@@ -754,7 +754,7 @@ class G8QueryMixin:
                 timeout=10,
             )
             return verify.returncode == 0
-        except subprocess.TimeoutExpired:
+        except (subprocess.TimeoutExpired, OSError):
             return False
 
     def branch_tip(self, branch: str) -> Optional[str]:
