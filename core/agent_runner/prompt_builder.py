@@ -1000,7 +1000,7 @@ class PromptBuilder:
             return ""
         try:
             fb_text = replan_fb_path.read_text(encoding="utf-8")[:3000]
-        except OSError:
+        except (OSError, UnicodeDecodeError):
             return ""
         return (
             f"\n## ⚠️ 上一轮场景验收未通过（MANDATORY：逐条修复后再输出）\n\n"
@@ -2009,7 +2009,7 @@ class PromptBuilder:
             return ""
         try:
             data = json.loads(recheck_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
             return ""
         if not isinstance(data, list) or not data:
             return ""
@@ -2048,7 +2048,7 @@ class PromptBuilder:
             return ""
         try:
             data = json.loads(rejection_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
             return ""
         if not isinstance(data, list) or not data:
             return ""
