@@ -30,6 +30,19 @@ def _spec_accumulate_lock(spec_name: str) -> threading.Lock:
         return lock
 
 
+def _to_int(value) -> int:
+    """非数值容错转 int，非法/缺失回退 0（code-review item f6e985eed424）。
+
+    STATE 条目可能被人工编辑或由历史版本写入非数值字符串（如 '12abc'），
+    裸 int() 抛 ValueError 会从 _accumulate_token_usage 冒泡打断收工累计；
+    容错口径与同函数 _cost_usd 的 try/except (TypeError, ValueError) 对齐。
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
 class TokenAccountant:
     """token 用量与预算告警组件（门面 AgentRunner 的组合组件）。"""
 
@@ -69,11 +82,11 @@ class TokenAccountant:
             )
             return
         tokens_in = (
-            int(usage_info.get("input_tokens", 0) or 0)
-            + int(usage_info.get("cache_creation_input_tokens", 0) or 0)
-            + int(usage_info.get("cache_read_input_tokens", 0) or 0)
+            _to_int(usage_info.get("input_tokens", 0))
+            + _to_int(usage_info.get("cache_creation_input_tokens", 0))
+            + _to_int(usage_info.get("cache_read_input_tokens", 0))
         )
-        tokens_out = int(usage_info.get("output_tokens", 0) or 0)
+        tokens_out = _to_int(usage_info.get("output_tokens", 0))
         cost = usage_info.get("cost_usd")
 
         # code-review item 7f6062e65ecb：同 spec 并发收工（impl-ocr 并行车道等
@@ -93,20 +106,20 @@ class TokenAccountant:
                 return
             if not isinstance(entry, dict):
                 return
-            prev_in = int(entry.get("_tokens_in", 0) or 0)
-            prev_out = int(entry.get("_tokens_out", 0) or 0)
+            prev_in = _to_int(entry.get("_tokens_in", 0))
+            prev_out = _to_int(entry.get("_tokens_out", 0))
             new_in = prev_in + tokens_in
             new_out = prev_out + tokens_out
             # 缓存分项累计（spec 详情「缓存命中/命中率」展示）：字段缺失（历史 spec）从 0 起步
-            prev_cache_read = int(entry.get("_cache_read_tokens", 0) or 0)
-            prev_cache_creation = int(entry.get("_cache_creation_tokens", 0) or 0)
+            prev_cache_read = _to_int(entry.get("_cache_read_tokens", 0))
+            prev_cache_creation = _to_int(entry.get("_cache_creation_tokens", 0))
             updates = {
                 "_tokens_in": new_in,
                 "_tokens_out": new_out,
                 "_cache_read_tokens": prev_cache_read
-                + int(usage_info.get("cache_read_input_tokens", 0) or 0),
+                + _to_int(usage_info.get("cache_read_input_tokens", 0)),
                 "_cache_creation_tokens": prev_cache_creation
-                + int(usage_info.get("cache_creation_input_tokens", 0) or 0),
+                + _to_int(usage_info.get("cache_creation_input_tokens", 0)),
             }
             # 成本：仅网关真实回传时累计；网关不回传则不写 _cost_usd（保持缺失语义）
             if cost is not None:
