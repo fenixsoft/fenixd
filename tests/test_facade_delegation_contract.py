@@ -128,12 +128,12 @@ PIPELINE_INST_TARGETS = {
         "_clear_degrade_context": "_clear_degrade_context",
     }
 
-# VerificationPipeline 静态组：{方法名: 模块级函数名}（5 个，D7 类级别名）
+# VerificationPipeline 静态组：{方法名: 模块级函数名}（4 个，D7 类级别名；
+# e3841db4c1c7 删除死函数 _load_frozen_scenarios 后由 5 减至 4）
 PIPELINE_STATIC_TARGETS = {
     "_extract_replan_error_items": "_bg_extract_replan_error_items",
     "_replan_errors_unconsumed": "_bg_replan_errors_unconsumed",
     "_normalize_fail_signature": "_normalize_fail_signature",
-    "_load_frozen_scenarios": "_load_frozen_scenarios",
     "_port_responds": "_port_responds"
 }
 
@@ -691,11 +691,12 @@ class TestCoverageHardGate(unittest.TestCase):
                 total += 1
         # 收敛对象 267 = 237 实例式 + 30 静态式；+2 stdlib 保留 + 1 薄包装真方法 = 270
         # （deliverable-dispute-orphan-preclassify：+1 实例式 _preclassify_orphan → 271）
-        self.assertEqual(total, 271, f"全集枚举数量错误: {total}")
+        # （e3841db4c1c7：删除 _load_frozen_scenarios 静态转发 → 270）
+        self.assertEqual(total, 270, f"全集枚举数量错误: {total}")
 
     def test_counts_match_inventory(self):
         self.assertEqual(len(PIPELINE_INST_TARGETS), 85)
-        self.assertEqual(len(PIPELINE_STATIC_TARGETS), 5)
+        self.assertEqual(len(PIPELINE_STATIC_TARGETS), 4)
         self.assertEqual(len(RUNNER_INST_TARGETS), 52)
         self.assertEqual(len(RUNNER_STATIC_TARGETS), 15)
         self.assertEqual(len(ENGINE_INST_TARGETS), 101)

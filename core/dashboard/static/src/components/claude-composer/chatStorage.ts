@@ -16,7 +16,14 @@ export const safeLocalStorage = {
     try {
       localStorage.setItem(key, value);
     } catch (error) {
-      if ((error as { name?: string })?.name === 'QuotaExceededError') {
+      const err = error as { name?: string; code?: number; number?: number };
+      // 各引擎配额超限异常名不统一（如 Firefox 旧版 NS_ERROR_DOM_QUOTA_REACHED），
+      // 放宽为名字含 'QuotaExceeded'、DOMException code 22 或 Error number -2147024882 均进入清理重试。
+      if (
+        err.name?.includes('QuotaExceeded') ||
+        err.code === 22 ||
+        err.number === -2147024882
+      ) {
         console.warn('localStorage quota exceeded, clearing old composer data');
 
         const keys = Object.keys(localStorage);

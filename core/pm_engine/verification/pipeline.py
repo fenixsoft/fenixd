@@ -72,7 +72,6 @@ from core.pm_engine.verification.infra_classify import (
 from core.pm_engine.verification.scenario_gate import (
     _apply_interaction_contract,
     _apply_scenario_freeze,
-    _load_frozen_scenarios,
     _render_scenario_change_section_to_report,
     _run_contract_static_check,
     _run_scenario_static_check,
@@ -389,10 +388,6 @@ class VerificationPipeline:
 
     _normalize_fail_signature = staticmethod(_normalize_fail_signature)
 
-    # ── scenario_gate 薄委托（见 report_gate 注释 D2b 规则 2）──
-
-    _load_frozen_scenarios = staticmethod(_load_frozen_scenarios)
-
     # ── serving 薄委托（见 report_gate 注释 D2b 规则 2）──
 
     _port_responds = staticmethod(_port_responds)
@@ -636,6 +631,20 @@ class VerificationPipeline:
                 f"保守处置（fail-closed）: {verdict_ret}",
             )
         # ── cause=violations（真·二次违规）：保留既有语义 blocked + 告警 ──
+        # 写 blocked 前二次核对（code-review item 5d28c6b0fe51）：judge 重试为
+        # 长耗时操作，窗口内 spec 可能已被人工复位/冻结接管——非 testing 时
+        # DEBUG 丢弃，不覆盖较新状态（同入口 _apply_status 判据口径）。核对
+        # 先于失败历史侧车写入（code-review item de5187db298b）：spec 已被人工
+        # 复位/接管时结果整体丢弃，失败历史不得先行落账污染升级分型与轮间
+        # diff（与 report_missing 分支同口径）。
+        _apply_status = (self._context.state_machine.read_one(spec_name) or {}).get("status", "")
+        if _apply_status != "testing":
+            self._context.logger.debug(
+                "pm_engine",
+                f"裁决证据二次违规但 spec 已非 testing（当前 "
+                f"'{_apply_status}'）'{spec_name}' — 丢弃，不阻断",
+            )
+            return
         # 本轮回合计入失败历史侧车（cause_type=evidence-invalid），供升级闸门
         # 分型与轮间 diff（fix-verdict-retry-misattribution D6）。
         self._append_fail_history(
@@ -647,17 +656,6 @@ class VerificationPipeline:
                 if isinstance(v, dict)
             ],
         )
-        # 写 blocked 前二次核对（code-review item 5d28c6b0fe51）：judge 重试为
-        # 长耗时操作，窗口内 spec 可能已被人工复位/冻结接管——非 testing 时
-        # DEBUG 丢弃，不覆盖较新状态（同入口 _apply_status 判据口径）。
-        _apply_status = (self._context.state_machine.read_one(spec_name) or {}).get("status", "")
-        if _apply_status != "testing":
-            self._context.logger.debug(
-                "pm_engine",
-                f"裁决证据二次违规但 spec 已非 testing（当前 "
-                f"'{_apply_status}'）'{spec_name}' — 丢弃，不阻断",
-            )
-            return
         self._context.logger.error(
             "pm_engine",
             f"裁决证据分类二次校验仍失败 '{spec_name}' — 阻断推进为 blocked-env"
@@ -756,6 +754,9 @@ class VerificationPipeline:
                 # （记轮内 +1 与生命周期 _judge_real_dispatches）。
                 self._judge_charge_verdict_retry(spec_name, [])
                 retry_judge = self._pm.agent_runner.run_planner(spec_name, "judge")
+                # 重派失败真实根因留痕（code-review item 6afab3e3a4d4）：非让位类
+                # 失败时承接 retry_judge.error，供下方 blocked error/evidence 归因。
+                retry_failure = ""
                 # ── 结果侧让位（code-review item 93fa1398fed0）──
                 # 重派 judge 被冻结终止/人工取消/provider 熔断时按让位语义处置，
                 # 与 _dispatch_judge_or_reuse（frozen/cancelled/circuit-open）
@@ -804,6 +805,16 @@ class VerificationPipeline:
                             f"{retry_judge.error}",
                         )
                         return None
+                    # ── 通用失败留痕（code-review item 6afab3e3a4d4）──
+                    # 非让位类重派失败（网关 5xx/超时等通用 run 失败）：MUST NOT
+                    # 把根因整体丢弃成「重派 judge 一次后仍不可读」的旧产物解析
+                    # 错误——真实失败原因入 blocked error/evidence，供人工排障归因。
+                    retry_failure = retry_judge.error or ""
+                    self._context.logger.warning(
+                        "pm_engine",
+                        f"重派 judge 失败（非让位类）'{spec_name}' — 按二次不可读 "
+                        f"fail-closed 处置，真实根因入 blocked 留痕: {retry_failure}",
+                    )
                 if retry_judge.success:
                     verifier_result = self._read_verdict(spec_name)
                     verifier_status = verifier_result.status if verifier_result.ok else None
@@ -849,10 +860,17 @@ class VerificationPipeline:
                         f"'{_apply_status}'）'{spec_name}' — 丢弃，不阻断",
                     )
                     return None
+                # 重派失败真实根因入 blocked（code-review item 6afab3e3a4d4）：
+                # 通用失败（非让位类）时 error/evidence 携带 retry_judge.error，
+                # 避免人工排障只见旧产物解析错误而误导归因。
+                _retry_failure_note = (
+                    f"；重派 judge 失败原因: {retry_failure}" if retry_failure else ""
+                )
                 self._context.logger.error(
                     "pm_engine",
                     f"裁决结果二次仍不可读 '{spec_name}' — 阻断为 blocked"
-                    f"（reason={verifier_result.reason}）: {verifier_result.detail}",
+                    f"（reason={verifier_result.reason}）: {verifier_result.detail}"
+                    f"{_retry_failure_note}",
                 )
                 self._context.state_machine.update_spec(
                     spec_name,
@@ -861,6 +879,7 @@ class VerificationPipeline:
                         "error": (
                             f"验证裁决结果文件不可读（重派 judge 一次后仍不可读，"
                             f"reason={verifier_result.reason}）：{verifier_result.detail}"
+                            f"{_retry_failure_note}"
                         ),
                     },
                 )
@@ -875,6 +894,7 @@ class VerificationPipeline:
                     evidence=(
                         f"spec={spec_name}; result_file={verdict_result_path}; "
                         f"parse_error={verifier_result.detail}"
+                        + (f"; retry_failure={retry_failure}" if retry_failure else "")
                     ),
                     recommended_action=(
                         "检查 planner-judge 是否以合法 JSON 写入结果文件（字符串内换行/"
@@ -970,6 +990,13 @@ class VerificationPipeline:
                 run_id=getattr(judge_result, "run_id", "") or "",
             )
             return
+        # 守卫二前置快照（code-review item bc89ea6fee12）：transition 落定后状态
+        # 恒为 bug-found，守卫二的 ready/implementing 判据须读 transition 前的
+        # 状态，否则 spawn 抑制永不触发（原 verification.py 等价搬移的既有顺序
+        # 缺陷；抑制语义：transition 前仍 ready/implementing 即跳过派生子 fix）。
+        _pre_transition_status = (
+            self._context.state_machine.read_one(spec_name) or {}
+        ).get("status", "")
         # fix-observability-gaps 2.2：planner-judge 判定 bug-found（自动来源）
         self._context.state_machine.transition(
             spec_name, "bug-found",
@@ -999,7 +1026,9 @@ class VerificationPipeline:
         # 被验对象为 fix spec 且自身 ready/implementing（重实现已在飞）时，
         # 跳过派生子 fix——由在飞重实现承载修复。
         if self._context.is_fix_spec(spec_name):
-            cur = (self._context.state_machine.read_one(spec_name) or {}).get("status", "")
+            # 用 transition 前快照判定（code-review item bc89ea6fee12）：transition
+            # 之后读取状态恒为 bug-found，判据形同虚设。
+            cur = _pre_transition_status
             if cur in ("ready", "implementing"):
                 self._context.logger.info(
                     "pm_engine",
@@ -1748,13 +1777,17 @@ class VerificationPipeline:
     # 加载场景 → 应用可达性自愈 → 静态缺陷扫描 → VerifyEngine 创建/运行。
     # D4：VerifyEngine / load_scenarios 的 import 保留在本方法体内（运行时函数体内），
     # 测试靠 patch("core.verify_engine.VerifyEngine") 在本方法执行时生效。
-    def _execute_stage2(self, spec_name: str, verify_dir, scenarios_path):
+    def _execute_stage2(self, spec_name: str, verify_dir, scenarios_path,
+                        skip_prune: bool = False):
         """阶段2 引擎执行段（等价搬移自循环体内 B3）。
 
         返回五元组 (env_error, report, app_reachable, reach_note, aborted)：
         - aborted=True：应用不可达 fail-fast，调用者 MUST return 终止流水线
         - env_error 非 None：环境错误，调用者走 replan 回写段
         - env_error=None, report 非 None：引擎执行完成，调用者继续 B4 门禁
+        - skip_prune=True：跳过修复轮缓存裁剪（_prune_rescan_scenarios），
+          以传入场景集原样作为本轮执行集（fastlane 子集重验用，兑现模块
+          docstring「绕过缓存逻辑」不变量）
         """
         import asyncio
         from core.verify_engine import VerifyEngine
@@ -1828,9 +1861,19 @@ class VerificationPipeline:
             # ── 修复轮重验场景集裁剪（add-verify-lane-throughput 4.2）──
             # 失败∪受影响∪前置链照跑，其余采信缓存判定；任一前提不满足
             # 即原样全量（fail-open，绝不因裁剪产生新增打回）。
-            executed_scenarios, cached_results, prune_note = self._prune_rescan_scenarios(
-                spec_name, scenarios
-            )
+            if skip_prune:
+                # fastlane 子集重验（subset_reverify）显式绕过缓存逻辑（模块
+                # docstring 不变量）：子集场景集原样作为本轮执行集，不消费
+                # verdict 缓存——代码修复不改 package.json → 构建指纹不变，
+                # 未触达文件的并入下游场景会被上轮 PASS 缓存采信免跑，修复
+                # 波及回归漏验。
+                executed_scenarios, cached_results, prune_note = scenarios, {}, (
+                    "fastlane 子集重验：显式跳过缓存裁剪，子集全量执行"
+                )
+            else:
+                executed_scenarios, cached_results, prune_note = self._prune_rescan_scenarios(
+                    spec_name, scenarios
+                )
             self._context.logger.info("pm_engine", f"[阶段2] {prune_note} '{spec_name}'")
 
             if not executed_scenarios and cached_results:
@@ -2216,7 +2259,7 @@ class VerificationPipeline:
                 ok, reason = self._validate_parallel_product(spec_name, verify_dir)
                 if ok:
                     lane.write_marker(
-                        spec_name, {"status": "consumed", "consumed_at": reason}
+                        spec_name, {"status": "consumed", "consumed_scenarios": reason}
                     )
                     self._context.logger.info(
                         "pm_engine",
@@ -2525,7 +2568,8 @@ class VerificationPipeline:
                         continue
                     # 3.7 预算耗尽分支：MUST NOT 落入下方「预算耗尽即继续验证」
                     # fall-through（对空集即等于携 0 场景进入阶段2 执行与裁决）。
-                    # 比照 env_error 退回的预算耗尽分支（verification.py:1929-1943）：
+                    # 比照 env_error 退回的预算耗尽分支（本方法 env_error 段
+                    # 预算耗尽即置 implemented + error 显式结束，pipeline.py:2659-2675）：
                     # 置 implemented + error 显式结束本轮，ERROR 留痕。
                     self._context.state_machine.update_spec(
                         spec_name,

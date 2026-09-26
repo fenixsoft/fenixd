@@ -324,7 +324,7 @@ class TestRegistryEntriesResolvable(unittest.TestCase):
         # 归 VerificationPipeline 解析域。
         pipe_domain = _facade_resolution_domain(VerificationPipeline)
         for name in ("_extract_replan_error_items", "_replan_errors_unconsumed",
-                     "_normalize_fail_signature", "_load_frozen_scenarios"):
+                     "_normalize_fail_signature"):
             self.assertIn(name, pipe_domain,
                           f"静态式转发豁免名 {name!r} 应在 VerificationPipeline 解析域")
 

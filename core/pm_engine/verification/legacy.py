@@ -26,7 +26,8 @@ def _discard_if_not_testing(pipeline, spec_name, result, label):
     直接覆写 implemented，触发终态回退 + 冗余全量重验。
 
     ``label``：DEBUG 丢弃消息中的结果标签（foreign-role/unknown-status+stale/
-    stale/bug-found/verified/process-failure/plan-ready/scenario-repaired）。
+    stale/bug-found/verified/process-failure/plan-ready/scenario-repaired/
+    unknown-status/unreadable）。
     """
     _cur = (pipeline._context.state_machine.read_one(spec_name) or {}).get("status", "")
     if _cur != "testing":
@@ -234,6 +235,13 @@ def _run_legacy_verification(pipeline, spec_name: str):
                     )
                     return
                 # 文件属当前 spec 且 mtime 新鲜，但 status 白名单外 → blocked
+                # ── 在飞 verify 结果状态判据（fix-daemon-lifecycle-races D6）──
+                # run_verifier 期间状态可能已漂移（stale-result 拨回 implemented /
+                # 人工复位 / 冻结接管）→ DEBUG 丢弃，不覆写较新状态（与
+                # bug-found/verified/process-failure 分支同款复核，判据单点
+                # 收敛于 _discard_if_not_testing）。
+                if _discard_if_not_testing(pipeline, spec_name, result, "unknown-status"):
+                    return
                 # ── verified 一次性放行门（judge-rerun-stability R2）──
                 # 「legacy unknown-status 不得改判」：已 verified 且场景集
                 # 未变时，白名单外 status（implementer 残留 success 等）不
@@ -282,6 +290,19 @@ def _run_legacy_verification(pipeline, spec_name: str):
                 return
             # 缺失 / 非法 JSON → D5 直接 blocked（不可读属结构性异常，
             # 自动重派整轮 verifier 只会烧钱，交人工）。
+            # ── 在飞 verify 结果状态判据（fix-daemon-lifecycle-races D6）──
+            # run_verifier 期间状态可能已漂移（stale-result 拨回 implemented /
+            # 人工复位 / 冻结接管）→ DEBUG 丢弃，不覆写较新状态（与
+            # bug-found/verified/process-failure 分支同款复核，判据单点
+            # 收敛于 _discard_if_not_testing）。
+            if _discard_if_not_testing(pipeline, spec_name, result, "unreadable"):
+                return
+            # ── verified 一次性放行门（judge-rerun-stability R2）──
+            # 已 verified 且场景集未变时，结果不可读不得把 verified 覆盖为
+            # blocked（与 unknown-status 分支 243 行同理由：verified 门读
+            # 自有 verdict_stability.json，裁决以稳定性缓存为准）。
+            if pipeline._verified_gate_refuses(spec_name, "blocked"):
+                return
             pipeline._context.logger.error(
                 "pm_engine",
                 f"Verifier (legacy) 结果不可读 '{spec_name}' — 阻断为 blocked"

@@ -54,12 +54,24 @@ def _ensure_serving_worktree(pipeline, spec_name: str, contract, mode: str):
     # D9：经包命名空间延迟解析，使 patch("core.pm_engine.verification.run_prepare_steps") 生效
     import core.pm_engine.verification as _facade
 
-    head = subprocess.run(
-        ["git", "-C", str(pipeline._context.project_root), "rev-parse", "HEAD"],
-        capture_output=True,
-        text=True,
-        timeout=15,
-    ).stdout.strip()
+    # code-review 205c8b9f37ed：校验 rev-parse returncode 并捕获 subprocess 异常，
+    # 失败时走既有 (None, None, err) 失败路径（原先 git 失败时 head 静默为空串，
+    # 缓存每轮落空全量重建；超时/OSError 则炸穿被兜成「新验证流程失败」）
+    try:
+        head_res = subprocess.run(
+            ["git", "-C", str(pipeline._context.project_root), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        return None, None, f"获取验证 worktree HEAD 失败: {e}"
+    if head_res.returncode != 0:
+        return None, None, (
+            "获取验证 worktree HEAD 失败: "
+            f"{(head_res.stderr or head_res.stdout).strip()[-200:]}"
+        )
+    head = head_res.stdout.strip()
     old = cache.get(spec_name)
     if (
         old is not None
@@ -105,13 +117,19 @@ def _ensure_serving_worktree(pipeline, spec_name: str, contract, mode: str):
     )
     if r.returncode != 0:
         return None, None, ("验证 worktree 创建失败: " f"{(r.stderr or r.stdout).strip()[-200:]}")
-    provision_worktree_node_modules(
-        wt,
-        pipeline._context.project_root,
-        sorted({(s.cwd or ".") for s in contract.prepare}),
-        mode=resolve_deps_mode(contract, pipeline._context.config_reader("verify.deps_mode", "")),
-        logger=pipeline._context.logger,
-    )
+    # code-review 7470b5d89795：provision 抛异常（网络/npm 故障）时清理刚建的
+    # worktree 再走既有失败路径，避免 .fenix/verify-serving/ 累积孤儿目录
+    try:
+        provision_worktree_node_modules(
+            wt,
+            pipeline._context.project_root,
+            sorted({(s.cwd or ".") for s in contract.prepare}),
+            mode=resolve_deps_mode(contract, pipeline._context.config_reader("verify.deps_mode", "")),
+            logger=pipeline._context.logger,
+        )
+    except Exception as e:
+        pipeline._remove_serving_worktree(wt)
+        return None, None, f"验证 worktree 依赖供给失败: {e}"
     err = _facade.run_prepare_steps(contract, wt)
     if err:
         pipeline._remove_serving_worktree(wt)
@@ -819,8 +837,9 @@ def _ensure_app_reachable(pipeline, spec_name: str) -> tuple:
         except Exception:
             return False
 
-    # 1) 直接探测：已可达则无需自愈
-    if all(_probe(u) for u in urls):
+    # 1) 直接探测：已可达则无需自愈（4xx/5xx 同样视为服务在应答——urls 均
+    #    经上方 http 前缀过滤，语义与探活环/恢复路径统一，见 _probe 注释）
+    if all(_probe(u, http_error_ok=True) for u in urls):
         return True, False, ""
 
     # 2) 自愈：无契约路径（契约 command 分支已在上方 return），
@@ -944,7 +963,7 @@ def _ensure_app_reachable(pipeline, spec_name: str) -> tuple:
 
     for _ in range(LEGACY_START_PROBE_ATTEMPTS):
         time.sleep(LEGACY_START_PROBE_INTERVAL_SECONDS)
-        if all(_probe(u) for u in urls):
+        if all(_probe(u, http_error_ok=True) for u in urls):
             boot_log.close()
             return True, False, "已自动启动应用服务"
 

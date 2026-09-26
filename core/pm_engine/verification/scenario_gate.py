@@ -12,10 +12,7 @@
 """
 
 import json
-import re
-import time
 from pathlib import Path
-from typing import Optional
 
 
 def _apply_scenario_freeze(pipeline, spec_name: str) -> dict:
@@ -78,6 +75,16 @@ def _apply_scenario_freeze(pipeline, spec_name: str) -> dict:
         validate_scenario_dicts,
         prepare_scenarios_for_write,
     )
+
+    # code-review 3dd5194ce79b：pipeline 实例被 engine 跨 spec 串行复用，本函数
+    # 是三个实例缓存（_last_freeze_rejected / _last_freeze_rejected_covers /
+    # _last_scenario_diff）的唯一写点。冻结轮开始时先清空并按 spec 登记归属，
+    # 早退路径（文件缺失/解析失败/整批非法）不遗留上一 spec 或上一轮的陈旧值；
+    # 冻结复用轮（不经本函数重算冻结）据归属戳校验，不消费异 spec 缓存。
+    pipeline._last_freeze_owner = spec_name
+    pipeline._last_freeze_rejected = []
+    pipeline._last_freeze_rejected_covers = set()
+    pipeline._last_scenario_diff = None
 
     verify_dir = pipeline._context.project_root / ".fenix" / "verify-progress" / spec_name
     scenarios_path = verify_dir / "test_scenarios.json"
@@ -303,7 +310,7 @@ def _apply_scenario_freeze(pipeline, spec_name: str) -> dict:
             # schema_version（备份取回条目可能为旧 schema，先迁移再落盘）
             # tmp+replace 原子写（与本文件 _render_scenario_change_section_to_report
             # 同款）：裸写中途被 SIGKILL/断电会留下截断 JSON，下一轮
-            # _load_frozen_scenarios 会误判 corrupt，触发一轮人工裁决停摆。
+            # _load_frozen_or_escalate 会误判 corrupt，触发一轮人工裁决停摆。
             tmp = scenarios_path.with_name(scenarios_path.name + ".tmp")
             tmp.write_text(
                 json.dumps(
@@ -330,7 +337,7 @@ def _apply_scenario_freeze(pipeline, spec_name: str) -> dict:
         try:
             # tmp+replace 原子写（与本文件 _render_scenario_change_section_to_report
             # 同款）：裸写中途被 SIGKILL/断电会留下截断 JSON，下一轮
-            # _load_frozen_scenarios 会误判 corrupt，触发一轮人工裁决停摆。
+            # _load_frozen_or_escalate 会误判 corrupt，触发一轮人工裁决停摆。
             tmp = scenarios_path.with_name(scenarios_path.name + ".tmp")
             tmp.write_text(
                 json.dumps(
@@ -415,7 +422,13 @@ def _apply_interaction_contract(pipeline, spec_name: str) -> dict:
         # 误判缺口 → 退回重排 → planner 再生成同类非法场景）。本去噪仅对
         # 覆盖登记（covers 字段）生效；未登记 covers 的文本命中式覆盖无法
         # 从剔除侧反推，按既有「设计漏项」判定（3.10 至少区分两类缺口）。
-        rejected_covers = getattr(pipeline, "_last_freeze_rejected_covers", None) or set()
+        # code-review 3dd5194ce79b：归属戳校验——rejected_covers 缓存仅对当前
+        # spec 的冻结轮生效；冻结复用轮不重算冻结，跨 spec 复用残留视为无缓存
+        # （不豁免），避免把上轮/其它 spec 剔除清单误套到本 spec 覆盖缺口上。
+        if getattr(pipeline, "_last_freeze_owner", None) != spec_name:
+            rejected_covers = set()
+        else:
+            rejected_covers = getattr(pipeline, "_last_freeze_rejected_covers", None) or set()
         if rejected_covers and not result.ok and result.uncovered:
             remaining = [k for k in result.uncovered if k not in rejected_covers]
             removed = [k for k in result.uncovered if k in rejected_covers]
@@ -467,7 +480,13 @@ def _render_scenario_change_section_to_report(pipeline, spec_name: str) -> None:
     重复调用会因已存在「本轮场景集变更」标题而跳过。diff 来源优先级：
     ``_last_scenario_diff``（本轮冻结计算）> 重新读取 scenarios.json（首轮）。
     """
-    diff = getattr(pipeline, "_last_scenario_diff", None)
+    # code-review 3dd5194ce79b：diff 归属戳校验——非当前 spec 冻结轮写入的缓存
+    # （跨 spec 复用残留）不作为渲染来源，回落重新读取 scenarios.json 分支。
+    diff = (
+        getattr(pipeline, "_last_scenario_diff", None)
+        if getattr(pipeline, "_last_freeze_owner", None) == spec_name
+        else None
+    )
     from core.verify_scenarios import (
         render_change_section,
         load_scenario_set,
@@ -618,33 +637,3 @@ def _run_contract_static_check(pipeline, spec_name: str) -> None:
             "pm_engine",
             f"契约静态检查跳过 '{spec_name}'（fail-open，不阻断出题）: " f"{type(e).__name__}: {e}",
         )
-
-
-def _load_frozen_scenarios(verify_dir: Path):
-    """读取冻结场景集（scenario-reuse-on-reenter）。
-
-    frozen-scenario-schema-migration：损坏判定携带字段级差异清单
-    （load_scenarios ValueError 已含场景 id/下标/缺失字段），升级告警
-    可凭差异精准修复，不再吞为笼统 corrupt。
-
-    Returns:
-        list[TestScenario]：冻结集有效（验收通过的原班场景）；
-        None：无冻结文件（首次出题，走 planner 设计流程）；
-        tuple ('corrupt', <差异清单文本>)：文件存在但验收失败（损坏/
-        结构非法/为空）——场景一经冻结跨轮一致，变更须 admin 裁决，
-        绝不静默重新出题。
-    """
-    from core.verify_engine.scenarios import load_scenarios
-
-    path = verify_dir / "test_scenarios.json"
-    if not path.is_file():
-        return None
-    try:
-        scenarios = load_scenarios(path)
-    except ValueError as e:
-        return ("corrupt", str(e))
-    except Exception as e:
-        return ("corrupt", f"load_scenarios 非验收路径异常: {type(e).__name__}: {e}")
-    if not scenarios:
-        return ("corrupt", "冻结场景文件为空（无任何场景）")
-    return scenarios

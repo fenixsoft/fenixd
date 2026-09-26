@@ -2,7 +2,7 @@
 inconclusive 循环升级单元测试（add-verdict-credibility-gate / spec: inconclusive-loop-escalation）
 
 覆盖 tasks 5.1-5.4：
-  - 阈值内（1-3 轮）不写 SIGNAL
+  - 阈值内（1-2 轮）不写 SIGNAL，第 3 轮达重验上限写 SIGNAL（922e79f7a511）
   - 连续第 N（可配）轮写入 kind=SIGNAL 记录（type=inconclusive_loop）
   - admin_monitor 摄取后唤起 Administrator（STORED_SIGNAL_TYPES 已含 inconclusive_loop）
   - 人工清 _inconclusive_attempts 后从 1 重新计数
@@ -91,11 +91,16 @@ class TestEscalationThreshold(unittest.TestCase):
         self.tmpdir = tempfile.mkdtemp()
         self.addCleanup(lambda: shutil.rmtree(self.tmpdir, ignore_errors=True))
 
-    def test_rounds_1_3_no_signal(self):
-        """第 1-3 轮不触发（阈值 4 内不写 SIGNAL）。"""
+    def test_rounds_1_2_no_signal_cap_writes(self):
+        """第 1-2 轮（重验分支内）不写 SIGNAL；第 3 轮达重验上限写 SIGNAL。
+
+        922e79f7a511 修复后停止收口与升级合并：attempts >= max_attempts（缺省
+        3）即写 inconclusive_loop SIGNAL——缺省配置（escalate=4 > max=3）下
+        升级分支可达，不再「停止分支不写信号」造成 inconclusive 无人呼唤。
+        """
         engine, sm, _ = _mk_engine(self.tmpdir, escalate_attempts=4)
         report = _all_blocked_report()
-        for expected_round in (1, 2, 3):
+        for expected_round in (1, 2):
             handled = engine._verification._handle_env_blocked_inconclusive("s1", report)
             self.assertTrue(handled, f"第 {expected_round} 轮应按 inconclusive 处理")
             self.assertEqual(int(sm.read_one("s1")["_inconclusive_attempts"]),
@@ -105,6 +110,15 @@ class TestEscalationThreshold(unittest.TestCase):
                             if s.get("signal_type") == "inconclusive_loop"]
             self.assertEqual(len(inconclusive), 0,
                              f"第 {expected_round} 轮不应写入 inconclusive_loop SIGNAL")
+        # 第 3 轮达重验上限（max_attempts=3，未达 escalate=4）：合并后的升级
+        # 分支写 SIGNAL（SIGNAL 即停止自动重验的人工唤起通道）
+        handled = engine._verification._handle_env_blocked_inconclusive("s1", report)
+        self.assertTrue(handled)
+        self.assertEqual(int(sm.read_one("s1")["_inconclusive_attempts"]), 3)
+        sigs = _signals(self.tmpdir)
+        inconclusive = [s for s in sigs
+                        if s.get("signal_type") == "inconclusive_loop"]
+        self.assertEqual(len(inconclusive), 1, "第 3 轮达重验上限应写 SIGNAL")
 
     def test_round_4_writes_signal(self):
         """第 4 轮（缺省阈值）写入 SIGNAL 且暂停自动重验。"""

@@ -633,8 +633,9 @@ class TestEmptyAbortCallerConsumption(unittest.TestCase):
         self.engine._verification._read_planner_result = MagicMock(
             return_value=VerdictReadResult.success("plan-ready"))
         self.engine._verification._apply_interaction_contract = MagicMock(return_value=None)
-        # 首轮出题前无冻结文件（避免 _load_frozen_scenarios corrupt 升级）
-        self.engine._verification._load_frozen_scenarios = MagicMock(return_value=None)
+        # 首轮出题前无冻结文件（e3841db4c1c7 删除死函数 _load_frozen_scenarios
+        # 后冻结读取已由 _load_frozen_or_escalate 内联承担，无文件自然返回
+        # (None, False) 走 replan 循环，无需再桩拦截）
 
         def _write_invalid_planner(spec_name, agent_type):
             # planner 出题：写入全部非法条目（web 场景缺 navigate 步骤）
@@ -792,6 +793,8 @@ class TestInteractionContractRejectionDenoise:
                 ["card-link", "other-link"])
             vpipe = self._make_vpipe(tmp_path)
             # 冻结处留痕：被剔除场景 bad 覆盖了 card-link
+            # （3dd5194ce79b 后缓存携带 spec 归属戳，直写缓存需同步登记所有者）
+            vpipe._last_freeze_owner = "spec-demo"
             vpipe._last_freeze_rejected = ["bad"]
             vpipe._last_freeze_rejected_covers = {"card-link"}
             ret = vpipe._apply_interaction_contract("spec-demo")
@@ -810,6 +813,7 @@ class TestInteractionContractRejectionDenoise:
             mock_validate.return_value = self._result_with_uncovered(
                 ["click-card"])
             vpipe = self._make_vpipe(tmp_path)
+            vpipe._last_freeze_owner = "spec-demo"
             vpipe._last_freeze_rejected = ["bad"]
             vpipe._last_freeze_rejected_covers = {"card-link"}  # 不含 click-card
             ret = vpipe._apply_interaction_contract("spec-demo")
