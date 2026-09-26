@@ -407,16 +407,27 @@ def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def _declared_entries_from_text(text: str) -> "list | None":
-    """从 tasks.md 文本解析声明段条目（path + kind，保序去重）。
+def _extract_declared_block(text: str) -> "tuple[List[str] | None, str | None]":
+    """抽取 tasks.md 文本 ``## Deliverables`` 段内的 fenced yaml 块行（单点）。
 
-    与 ``extract_declared_entries`` 同构的解析逻辑，但直接吃文本而非文件——
-    供统一声明解析入口（``resolve_effective_declaration``）从分支/worktree/主树
-    三种来源解析共用。无声明段、无有效围栏块、yaml 解析失败或全部条目非法
-    → ``None``（与 ``extract_declared_entries`` 返回语义一致）。
+    段边界（``_DECLARED_HEADING_RE`` 定位标题 + ``_H2_RE`` 截断）与围栏块切换
+    （``_FENCE_RE`` 翻转）的唯一实现——条目解析（``_declared_entries_from_text``
+    委托链）与 ``lint_declared`` 共用（code-review item aa9e700d8155：原两处各持
+    一份扫描拷贝，fence 语法或段边界规则单点演进（如 ``~~~`` 支持、标题别名）会
+    解析漂移——lint 放行的块下游解析为 None 静默回退正则猜测，恰是规则 0 要消灭
+    的形态）。
+
+    Args:
+        text: tasks.md 全文（None 容错为空文本，沿用既有条目解析的入参语义）。
+
+    Returns:
+        ``(block_lines, 诊断)``：无 ``## Deliverables`` 标题 → ``(None, None)``
+        （存量 spec，非形态违规）；有标题但段内无 fenced 块 → ``(None, 诊断)``
+        （规则 0 违规文案，仅 lint 消费；条目解析按 ``block_lines`` 为 None 静默
+        回退正则猜测）；否则 ``(块行列表, None)``。yaml 解析与条目过滤不在本函数
+        职责内——lint 需对语法错/非列表产出专属诊断，条目解析对两者静默回退
+        ``None``，消费语义不同故不下沉。
     """
-    import yaml as _yaml
-
     lines = (text or "").splitlines()
     start = None
     for i, line in enumerate(lines):
@@ -424,7 +435,7 @@ def _declared_entries_from_text(text: str) -> "list | None":
             start = i + 1
             break
     if start is None:
-        return None
+        return None, None
 
     block: List[str] = []
     in_fence = False
@@ -436,6 +447,32 @@ def _declared_entries_from_text(text: str) -> "list | None":
             continue
         if in_fence:
             block.append(line)
+    if not block:
+        return None, (
+            "Deliverables 声明段存在但未解析出 fenced yaml 块——声明条目必须写在"
+            "```yaml 围栏内（每条 `- path: <具体文件>` + `  kind: <new|modify|"
+            "delete|reference>` 两行），平铺的 Markdown 列表或缩进子项不会被"
+            "下游解析器识别，等同未声明（守卫会回退正则语境猜测）；"
+            "请改为 fenced yaml 块后重试晋升"
+        )
+    return block, None
+
+
+def _declared_entries_from_text(text: str) -> "list | None":
+    """从 tasks.md 文本解析声明段条目（path + kind，保序去重）。
+
+    与 ``extract_declared_entries`` 同构的解析逻辑，但直接吃文本而非文件——
+    供统一声明解析入口（``resolve_effective_declaration``）从分支/worktree/主树
+    三种来源解析共用。无声明段、无有效围栏块、yaml 解析失败或全部条目非法
+    → ``None``（与 ``extract_declared_entries`` 返回语义一致）。
+
+    段边界/围栏块扫描单点复用 ``_extract_declared_block``（``lint_declared``
+    同源）；诊断由 lint 消费，本链路对无标题/无块一律静默回退 ``None``（既有
+    语义不变）。
+    """
+    import yaml as _yaml
+
+    block, _ = _extract_declared_block(text)
     if not block:
         return None
     try:
@@ -2034,33 +2071,12 @@ def lint_declared(spec_dir, project_root) -> List[str]:
         text = tasks.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return []
-    lines = text.splitlines()
-    start = None
-    for i, line in enumerate(lines):
-        if _DECLARED_HEADING_RE.match(line):
-            start = i + 1
-            break
-    if start is None:
-        return []  # 无声明段（存量 spec）不在 lint 职责内
-
-    block: List[str] = []
-    in_fence = False
-    for line in lines[start:]:
-        if _H2_RE.match(line):
-            break
-        if _FENCE_RE.match(line):
-            in_fence = not in_fence
-            continue
-        if in_fence:
-            block.append(line)
-    if not block:
-        return [
-            "Deliverables 声明段存在但未解析出 fenced yaml 块——声明条目必须写在"
-            "```yaml 围栏内（每条 `- path: <具体文件>` + `  kind: <new|modify|"
-            "delete|reference>` 两行），平铺的 Markdown 列表或缩进子项不会被"
-            "下游解析器识别，等同未声明（守卫会回退正则语境猜测）；"
-            "请改为 fenced yaml 块后重试晋升"
-        ]
+    block, no_block_diag = _extract_declared_block(text)
+    if block is None:
+        if no_block_diag is None:
+            return []  # 无声明段（存量 spec）不在 lint 职责内
+        # 规则 0：有标题但段内无 fenced yaml 块（诊断文案单点在 _extract_declared_block）
+        return [no_block_diag]
     try:
         entries = _yaml.safe_load("\n".join(block))
     except Exception as e:
