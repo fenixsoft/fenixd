@@ -96,10 +96,14 @@ export interface FileMentionMatch {
 /**
  * @ 提及触发判定（spec：光标前最后一个 `@` 且其后无空白时触发；空白口径与
  * matchSlashTrigger 的 `\S` 对齐，@ 后出现换行同样终止触发，避免跨行选中候选
- * 时 replaceFileMention 丢弃换行后的后续文本）。
+ * 时 replaceFileMention 丢弃换行后的后续文本）。``` 代码块内不触发，与
+ * matchSlashTrigger 的补全纪律一致。
  * 输入为光标前文本；未命中返回 null。
  */
 export function matchFileMention(textBeforeCursor: string): FileMentionMatch | null {
+  if (isInsideCodeBlock(textBeforeCursor)) {
+    return null;
+  }
   const lastAtIndex = textBeforeCursor.lastIndexOf('@');
   if (lastAtIndex === -1) {
     return null;

@@ -3337,11 +3337,14 @@ class PMEngine:
                 # 必须与其余 blocker 构造点同为 dict：此前 append 字符串导致
                 # _write_blocker_report 按 b['spec'] 取值抛 TypeError，
                 # 全量扫描中断、auto-recovery 永不执行。
+                # code-review item 1d8af1b35663：updated 缺失/非法时无法判定
+                # 滞留时长，跳过本轮（与 implementing/testing 分支解析失败静默
+                # 跳过同口径），不按 0 分钟照报。
                 try:
                     u = datetime.fromisoformat((entry.get("updated") or "").replace("Z", "+00:00"))
                     v_elapsed = int((now - u).total_seconds() / 60)
                 except (ValueError, TypeError):
-                    v_elapsed = 0
+                    continue
                 # fix-verified-gate-evidence-race D3：error 带 task-gap: 前缀的卡
                 # verified spec 属「任务缺口待人工裁决」，blocker 条目 reason 改述
                 # 为裁决形态并携带缺口摘要（去前缀），供 admin 工作台直接定位；
@@ -3359,15 +3362,19 @@ class PMEngine:
                         }
                     )
                     continue
-                blockers.append(
-                    {
-                        "spec": name,
-                        "status": status,
-                        "reason": f"卡在 verified 状态 {v_elapsed} 分钟（应为瞬态，需要推进到 done）",
-                        "error": stored_error,
-                        "elapsed_minutes": v_elapsed,
-                    }
-                )
+                # code-review item 1d8af1b35663：与 implementing/testing 同口径
+                # 的滞留宽限阈值——超 stuck 阈值才列 blocker，避免 verified→
+                # done 转移前后瞬态窗口的每轮噪音上报。
+                if v_elapsed > stuck_threshold_minutes:
+                    blockers.append(
+                        {
+                            "spec": name,
+                            "status": status,
+                            "reason": f"卡在 verified 状态 {v_elapsed} 分钟（应为瞬态，需要推进到 done）",
+                            "error": stored_error,
+                            "elapsed_minutes": v_elapsed,
+                        }
+                    )
                 continue
 
             # Check if stuck in an active state

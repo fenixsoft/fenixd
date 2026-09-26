@@ -1,0 +1,97 @@
+- generic [ref=e5]:
+  - complementary [ref=e7]:
+    - generic [ref=e8]:
+      - menu [ref=e10]:
+        - menuitem "dashboard 概览" [ref=e11] [cursor=pointer]:
+          - link "dashboard 概览" [ref=e13]:
+            - /url: "#/overview"
+            - generic [ref=e14]:
+              - img "dashboard" [ref=e16]:
+                - img [ref=e17]
+              - generic [ref=e19]: 概览
+        - menuitem "project 项目" [expanded] [ref=e20] [cursor=pointer]:
+          - generic [ref=e22]:
+            - img "project" [ref=e24]:
+              - img [ref=e25]
+            - generic [ref=e27]: 项目
+        - menu [ref=e28]:
+          - menuitem "fenixd" [ref=e29] [cursor=pointer]:
+            - link "fenixd" [ref=e31]:
+              - /url: "#/projects/fenixd"
+              - generic [ref=e33]: fenixd
+          - menuitem "scheduling-showcase" [ref=e34] [cursor=pointer]:
+            - link "scheduling-showcase" [ref=e36]:
+              - /url: "#/projects/scheduling-showcase"
+              - generic [ref=e38]: scheduling-showcase
+          - menuitem "activation-showcase" [ref=e39] [cursor=pointer]:
+            - link "activation-showcase" [ref=e41]:
+              - /url: "#/projects/activation-showcase"
+              - generic [ref=e43]: activation-showcase
+          - menuitem "fenix-desktop" [ref=e44] [cursor=pointer]:
+            - link "fenix-desktop" [ref=e46]:
+              - /url: "#/projects/fenix-desktop"
+              - generic [ref=e48]: fenix-desktop
+          - menuitem "fenix-server" [ref=e49] [cursor=pointer]:
+            - link "fenix-server" [ref=e51]:
+              - /url: "#/projects/fenix-server"
+              - generic [ref=e53]: fenix-server
+        - menuitem "setting 设置" [ref=e54] [cursor=pointer]:
+          - link "setting 设置" [ref=e56]:
+            - /url: "#/settings"
+            - generic [ref=e57]:
+              - img "setting" [ref=e59]:
+                - img [ref=e60]
+              - generic [ref=e62]: 设置
+        - menuitem "history 运维" [ref=e63] [cursor=pointer]:
+          - link "history 运维" [ref=e65]:
+            - /url: "#/activities"
+            - generic [ref=e66]:
+              - img "history" [ref=e68]:
+                - img [ref=e69]
+              - generic [ref=e71]: 运维
+        - menuitem "question-circle 帮助" [ref=e72] [cursor=pointer]:
+          - link "question-circle 帮助" [ref=e74]:
+            - /url: "#/help"
+            - generic [ref=e75]:
+              - img "question-circle" [ref=e77]:
+                - img [ref=e78]
+              - generic [ref=e81]: 帮助
+      - img [ref=e83] [cursor=pointer]
+  - generic [ref=e85]:
+    - banner [ref=e86]
+    - banner [ref=e87]:
+      - generic [ref=e88]:
+        - generic [ref=e90]:
+          - img "logo" [ref=e92]
+          - generic [ref=e94]: FenixHarness
+        - navigation [ref=e100] [cursor=pointer]:
+          - list [ref=e101]:
+            - listitem [ref=e102]:
+              - link "概览" [ref=e103]:
+                - /url: "#/overview"
+            - listitem [ref=e104]: /
+            - listitem [ref=e105]: fenixd
+    - main [ref=e106]:
+      - generic [ref=e107]:
+        - generic [ref=e110]:
+          - button "back" [ref=e112] [cursor=pointer]:
+            - img "arrow-left" [ref=e114]:
+              - img [ref=e115]
+          - generic [ref=e118]:
+            - generic [ref=e119]: fenixd
+            - generic [ref=e121]: 共 332 个 SPEC
+        - generic [ref=e125]:
+          - tablist [ref=e126]:
+            - generic [ref=e128]:
+              - tab "功能开发" [ref=e130] [cursor=pointer]
+              - tab "代码审查" [ref=e132] [cursor=pointer]
+              - tab "测试回归" [ref=e134] [cursor=pointer]
+              - tab "项目架构" [ref=e136] [cursor=pointer]
+              - tab "会话接入" [active] [selected] [ref=e138] [cursor=pointer]
+          - tabpanel "会话接入" [ref=e1055]:
+            - generic [ref=e1057]:
+              - generic [ref=e1058]: 尚未接入会话
+              - button "message 开始会话" [ref=e1059] [cursor=pointer]:
+                - img "message" [ref=e1061]:
+                  - img [ref=e1062]
+                - generic [ref=e1064]: 开始会话

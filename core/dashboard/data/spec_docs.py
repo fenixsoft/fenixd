@@ -160,6 +160,8 @@ def count_scenarios(project_root, spec_name) -> int:
     目录解析复用 resolve_spec_dir（活跃优先/归档回退），与 get_spec_doc 的
     文档读取口径一致——归档 SPEC 的场景计数不再恒为 0；spec 完全不存在
     （活跃/归档均无命中）或无 specs 子目录时仍以 0 计（fail-open 纯展示）。
+    仅逐 capability 的 ``specs/<capability>/spec.md`` 计数（与
+    _read_spec_scenarios 的汇总口径一致），capability 目录下的其它 md 不计。
     """
     spec_name = _validated_spec_name(spec_name)
     if spec_name is None:
@@ -172,7 +174,7 @@ def count_scenarios(project_root, spec_name) -> int:
         return 0
     count = 0
     try:
-        for sf in specs_dir.rglob("*.md"):
+        for sf in specs_dir.glob("*/spec.md"):
             try:
                 content = sf.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):

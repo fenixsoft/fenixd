@@ -602,8 +602,15 @@ class BrowserManager:
                     [target, value],
                 )
                 await page.reload(wait_until="domcontentloaded", timeout=15000)
-                await self._wait_stable(page)
-                return {"success": True, "action": action, "target": target}
+                first_frame_ok = await self._wait_stable(page)
+                result = {"success": True, "action": action, "target": target}
+                # 与 navigate 分支（B1）对齐：seed 后整页重载同样可能首帧渲染
+                # 失败，仅首帧超时时显式落 False（True 不写键，旧报告/测试兼容）；
+                # env_gate.is_blank_render_candidate 依赖此键把白屏场景降级
+                # blocked-env，不再伪装成「元素不存在」类产品/场景失败
+                if first_frame_ok is False:
+                    result["first_frame_ok"] = False
+                return result
 
             # mock_api：拦截 URL 模式并返回固定 JSON，用于离线验证依赖外部 API
             # 的场景（如 Open-Meteo / 时间服务器）。target = URL 模式（Playwright

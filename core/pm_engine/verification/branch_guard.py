@@ -448,7 +448,6 @@ def _disputed_deliverables(pipeline, impl_result, missing) -> list:
     return disputed
 
 
-@staticmethod
 def _extract_replan_error_items(env_error: str) -> list[str]:
     """抽取场景验收错误文本中的逐条错误清单（消费硬门比对基准，D5）。
 
@@ -472,7 +471,6 @@ def _extract_replan_error_items(env_error: str) -> list[str]:
     return [env_error.strip()]
 
 
-@staticmethod
 def _replan_errors_unconsumed(prev_items: list, cur_items: list) -> bool:
     """消费硬门判定：本轮错误清单是否为上轮相同或超集（D5）。
 

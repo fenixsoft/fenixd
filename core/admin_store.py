@@ -102,7 +102,14 @@ class AdminStore:
         if not path.exists():
             return [], False
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            text = path.read_text(encoding="utf-8")
+            if not text.strip():
+                # 正常空文件（0 字节/纯空白）与「合法空数组」同语义：非损坏，
+                # 恒 corrupt=False（不留底、本次写回放行）。json.loads("") 会抛
+                # JSONDecodeError，不在此短路会被误判为损坏留底、拒掉当次写回
+                # （code-review item 2d386f296ace）。
+                return [], False
+            data = json.loads(text)
         except (OSError, json.JSONDecodeError):
             return [], self._quarantine_corrupt(path)
         if not isinstance(data, list):
@@ -179,7 +186,7 @@ class AdminStore:
                 except OSError:
                     pass
 
-    def _mutate(self, fn, skip_unchanged: bool = False):
+    def _mutate(self, fn, skip_unchanged: bool = False, refuse_returns_none: bool = False):
         """在单次排他锁内完成读-改-写，返回 fn(records) 的结果。
 
         跨进程并发（监视线程 append 与 Dashboard mark_handled）若分别在两次
@@ -195,6 +202,12 @@ class AdminStore:
         仅凭 corrupt 信号触发：文件不存在/合法空数组路径恒放行，留底改名后
         的下一次 mutate 读到的是缺失文件（干净空集合、corrupt=False），
         恢复写入不被拦（scenario「损坏后恢复写入」）。
+
+        refuse_returns_none=True（code-review item 2570ca391771）：拒写时返回
+        None 而非 fn 结果——fn 已在内存生效但记录未落盘，调用方（append /
+        append_if_absent）据此把返回按未落地处理，不再把拒写伪装成成功。
+        默认 False：其余调用方（merge_signal 的元组解构、mark_* 的布尔/计数
+        返回值）行为保持不变。
         """
         with self._thread_lock:
             with self._lock() as lf:
@@ -212,7 +225,7 @@ class AdminStore:
                                 "告警文件损坏留底后拒绝写回（历史不覆盖，"
                                 "待人工介入；留底后新告警恢复写入不被拦）",
                             )
-                        return result
+                        return None if refuse_returns_none else result
                     if len(records) > MAX_RECORDS:
                         del records[:-MAX_RECORDS]
                     self._write_unlocked(records)
@@ -257,14 +270,22 @@ class AdminStore:
                 rec["choices"] = None
         return rec
 
-    def append(self, entry: dict) -> dict:
+    def append(self, entry: dict) -> "dict | None":
         """追加一条记录，补齐 id/created/handled 等默认字段，返回落地后的记录。
 
         记录顺序：新记录追加到数组末尾（最近在后）。读侧按倒序返回。
+        文件损坏留底被下限保护拒写时返回 None——记录未落盘，其 id 不构成
+        mark_handled/mark_escalated 的有效锚点，调用方可按未落地处理
+        （code-review item 2570ca391771）。
         """
         rec = self._normalize_entry(entry)
-        self._mutate(lambda records: records.append(rec))
-        return rec
+
+        def fn(records: list) -> bool:
+            records.append(rec)
+            return True
+
+        written = self._mutate(fn, refuse_returns_none=True)
+        return rec if written else None
 
     def append_if_absent(self, entry: dict, is_inflight) -> "dict | None":
         """单次排他锁内完成「在途查重 → 追加」（code-review item 0d7c2ef12e33）。
@@ -273,7 +294,8 @@ class AdminStore:
         不原子，ThreadingHTTPServer 并发同参 POST 可都观测到空在飞集并各自
         append，产生重复信号（每个重复消耗一次 Administrator run）。
         ``is_inflight(record)`` 以已读取的记录逐条判定是否在途；无在途才写入。
-        返回落地的记录；存在在途（未写）返回 None。
+        返回落地的记录；存在在途（未写）或文件损坏留底被下限保护拒写
+        （记录未落盘，item 2570ca391771）时返回 None。
         """
         rec = self._normalize_entry(entry)
 
@@ -283,7 +305,7 @@ class AdminStore:
             records.append(rec)
             return True
 
-        written = self._mutate(fn, skip_unchanged=True)
+        written = self._mutate(fn, skip_unchanged=True, refuse_returns_none=True)
         return rec if written else None
 
     def merge_signal(self, entry: dict, status_hash: str):

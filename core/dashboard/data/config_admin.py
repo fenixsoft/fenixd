@@ -19,29 +19,6 @@ from core.pm_engine.budget import DEFAULT_IMPL_RUN_BUDGET
 
 # Dashboard 管理的配置键子集：写回时只更新这些键，其它键原样保留
 _MANAGED_KEYS = ["llm", "agents", "gates", "runs", "verify", "hooks"]
-# 在 agents 下管理的子键白名单
-_AGENTS_MANAGED_SUBKEYS = [
-    "models",
-    "max_concurrent",
-    "run_timeout_seconds",
-    "max_turns",
-    "daily_run_limit",
-    "token_budget_millions",
-    "impl_run_budget",
-    "impl_run_budget_max",
-    "verify_redo_budget",
-    # 同因重派熔断阈值（agents.max_same_cause_redispatches，缺省 3，1-100）
-    "max_same_cause_redispatches",
-    # 规模预检（agents.scale_precheck 三键：总开关 + 两阈值）
-    "scale_precheck",
-    # 超时活性监督（agents.timeout_supervision 段，supervision-timeout-config-consistency）：
-    # 自动对齐持久化与设置页直连写回共用此受管子键
-    "timeout_supervision",
-    # fix-agent-lane-efficiency D1：子代理模型覆盖（subagent model override）。
-    # 非空时，直连 Provider 车道下隔离 settings.json 的 env 子代理 tier 映射使用
-    # 该值而非 provider 自身 model。空串（缺省）= 使用 provider model。
-    "subagent_model_override",
-]
 
 # 用户级配置文件路径（与项目级同名 `.fenix/config.yaml`，作用域由所在目录决定）
 

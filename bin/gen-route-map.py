@@ -271,13 +271,26 @@ def main() -> int:
     entries.extend(server_entries)
     entries.extend(scan_spa_routes(root))
     entries.extend(scan_testids(root))
-    # 去重（同 route 多出处取首个），保持 server → SPA → testid 顺序
+    # 去重：表驱动条目（显式方法）按 (route, method) 二元组去重——同 route
+    # 的 GET/POST 条目各保留一条，防跨方法表同路由的第二条目被按 route
+    # 去重静默丢弃、地图丢失 POST/DELETE 方法标注（code-review item
+    # 2cf39e265f97，如 base.py /api/config 四路由的 GET+POST 双表条目）；
+    # TEXT fallback 级仍按 route 去重（同 route 多出处取首个，且表驱动已
+    # 收录的 route 不再重复收录），SPA/testid 级方法恒定、二元组即 route 级。
+    # 保持 server → SPA → testid 顺序
     seen: set = set()
+    seen_routes: set = set()
     deduped: list = []
     for route, src, method in entries:
-        if route in seen:
-            continue
-        seen.add(route)
+        if method == "TEXT":
+            if route in seen_routes:
+                continue
+        else:
+            key = (route, method)
+            if key in seen:
+                continue
+            seen.add(key)
+        seen_routes.add(route)
         deduped.append((route, src, method))
 
     warning_buf: list = []

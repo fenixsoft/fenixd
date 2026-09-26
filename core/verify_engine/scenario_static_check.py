@@ -38,7 +38,12 @@ _HOST_PORT_RE = re.compile(
     r"(?:\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}|localhost|[a-zA-Z][a-zA-Z0-9\-]*):(\d{2,5})"
 )
 _FLAG_PORT_RE = re.compile(r"(?:--port|-p|--port=|-p=)(?:\s|=)?(\d{2,5})")
-_PORT_VAR_RE = re.compile(r"PORT[^\w]*(?:[\"']?\s*,\s*[\"']?|[\"']?)[^\w]{0,6}(\d{2,5})")
+# 左边界用 (?<![A-Za-z]) 而非 \b：事故根因形态 FENIX_VERIFY_PORT 中 PORT
+# 紧邻下划线（下划线属词字符，\b 不成立）会被 \b 整体漏报；此处只需排除
+# REPORT/SUPPORT 等字母复合词的 PORT 子串被误提取成字面端口
+_PORT_VAR_RE = re.compile(
+    r"(?<![A-Za-z])PORT[^\w]*(?:[\"']?\s*,\s*[\"']?|[\"']?)[^\w]{0,6}(\d{2,5})"
+)
 _PORT_PATTERNS = (_URL_PORT_RE, _HOST_PORT_RE, _FLAG_PORT_RE, _PORT_VAR_RE)
 
 # ── 双汉字文本选择器模式（antd autoInsertSpace：二字按钮渲染为「X X」）──

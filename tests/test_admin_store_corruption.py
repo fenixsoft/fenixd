@@ -92,7 +92,9 @@ class TestRefuseWriteBack:
         admin_store, logger = store
         _corrupt(admin_store)
         rec = admin_store.append({"kind": "signal", "spec": "s", "signal_type": "x"})
-        assert rec.get("id")  # append 返回规范化记录（不承诺本次落盘）
+        # code-review item 2570ca391771：corrupt 拒写时 append 返回 None，
+        # 调用方据此把该条按未落地处理，不再伪装成已落盘的成功。
+        assert rec is None, "拒写时 append 须返回 None（未落地信号）"
         # 写回被拒绝：留底文件存在，且没有新 admin_alerts.json 覆盖历史
         assert _corrupt_quarantined_files(admin_store), "损坏证据已留底"
         assert not admin_store.alerts_path.exists(), "拒绝写回：不得新建文件覆盖损坏历史"

@@ -1,0 +1,762 @@
+- generic [ref=e5]:
+  - complementary [ref=e7]:
+    - generic [ref=e8]:
+      - menu [ref=e10]:
+        - menuitem "dashboard 概览" [ref=e11] [cursor=pointer]:
+          - link "dashboard 概览" [ref=e13]:
+            - /url: "#/overview"
+            - generic [ref=e14]:
+              - img "dashboard" [ref=e16]:
+                - img [ref=e17]
+              - generic [ref=e19]: 概览
+        - menuitem "project 项目" [expanded] [ref=e20] [cursor=pointer]:
+          - generic [ref=e22]:
+            - img "project" [ref=e24]:
+              - img [ref=e25]
+            - generic [ref=e27]: 项目
+        - menu [ref=e28]:
+          - menuitem "fenixd" [ref=e29] [cursor=pointer]:
+            - link "fenixd" [ref=e31]:
+              - /url: "#/projects/fenixd"
+              - generic [ref=e33]: fenixd
+          - menuitem "scheduling-showcase" [ref=e34] [cursor=pointer]:
+            - link "scheduling-showcase" [ref=e36]:
+              - /url: "#/projects/scheduling-showcase"
+              - generic [ref=e38]: scheduling-showcase
+          - menuitem "activation-showcase" [ref=e39] [cursor=pointer]:
+            - link "activation-showcase" [ref=e41]:
+              - /url: "#/projects/activation-showcase"
+              - generic [ref=e43]: activation-showcase
+          - menuitem "fenix-desktop" [ref=e44] [cursor=pointer]:
+            - link "fenix-desktop" [ref=e46]:
+              - /url: "#/projects/fenix-desktop"
+              - generic [ref=e48]: fenix-desktop
+          - menuitem "fenix-server" [ref=e49] [cursor=pointer]:
+            - link "fenix-server" [ref=e51]:
+              - /url: "#/projects/fenix-server"
+              - generic [ref=e53]: fenix-server
+        - menuitem "setting 设置" [ref=e54] [cursor=pointer]:
+          - link "setting 设置" [ref=e56]:
+            - /url: "#/settings"
+            - generic [ref=e57]:
+              - img "setting" [ref=e59]:
+                - img [ref=e60]
+              - generic [ref=e62]: 设置
+        - menuitem "history 运维" [ref=e63] [cursor=pointer]:
+          - link "history 运维" [ref=e65]:
+            - /url: "#/activities"
+            - generic [ref=e66]:
+              - img "history" [ref=e68]:
+                - img [ref=e69]
+              - generic [ref=e71]: 运维
+        - menuitem "question-circle 帮助" [ref=e72] [cursor=pointer]:
+          - link "question-circle 帮助" [ref=e74]:
+            - /url: "#/help"
+            - generic [ref=e75]:
+              - img "question-circle" [ref=e77]:
+                - img [ref=e78]
+              - generic [ref=e81]: 帮助
+      - img [ref=e83] [cursor=pointer]
+  - generic [ref=e85]:
+    - banner [ref=e86]
+    - banner [ref=e87]:
+      - generic [ref=e88]:
+        - generic [ref=e90]:
+          - img "logo" [ref=e92]
+          - generic [ref=e94]: FenixHarness
+        - navigation [ref=e100] [cursor=pointer]:
+          - list [ref=e101]:
+            - listitem [ref=e102]:
+              - link "概览" [ref=e103]:
+                - /url: "#/overview"
+            - listitem [ref=e104]: /
+            - listitem [ref=e105]: fenixd
+    - main [ref=e106]:
+      - generic [ref=e107]:
+        - generic [ref=e110]:
+          - button "back" [ref=e112] [cursor=pointer]:
+            - img "arrow-left" [ref=e114]:
+              - img [ref=e115]
+          - generic [ref=e118]:
+            - generic [ref=e119]: fenixd
+            - generic [ref=e121]: 共 332 个 SPEC
+        - generic [ref=e125]:
+          - tablist [ref=e126]:
+            - generic [ref=e128]:
+              - tab "功能开发" [selected] [ref=e130] [cursor=pointer]
+              - tab "代码审查" [ref=e132] [cursor=pointer]
+              - tab "测试回归" [ref=e134] [cursor=pointer]
+              - tab "项目架构" [ref=e136] [cursor=pointer]
+              - tab "会话接入" [ref=e138] [cursor=pointer]
+          - tabpanel "功能开发" [ref=e141]:
+            - generic [ref=e143]:
+              - generic [ref=e144]:
+                - generic [ref=e145]:
+                  - generic [ref=e147]:
+                    - searchbox "搜索名称…" [ref=e149]
+                    - button "search" [ref=e151] [cursor=pointer]:
+                      - img "search" [ref=e153]:
+                        - img [ref=e154]
+                  - generic [ref=e157] [cursor=pointer]:
+                    - generic [ref=e158]:
+                      - generic:
+                        - generic: 全部状态
+                      - combobox [ref=e160]
+                    - img "down" [ref=e162]:
+                      - img [ref=e163]
+                  - radiogroup [ref=e166]:
+                    - generic [ref=e167] [cursor=pointer]:
+                      - generic [ref=e168]:
+                        - radio "全部" [checked]
+                      - text: 全部
+                    - generic [ref=e169] [cursor=pointer]:
+                      - generic [ref=e170]:
+                        - radio "进行中"
+                      - text: 进行中
+                    - generic [ref=e171] [cursor=pointer]:
+                      - generic [ref=e172]:
+                        - radio "已完成"
+                      - text: 已完成
+                - radiogroup [ref=e173]:
+                  - generic [ref=e174] [cursor=pointer]:
+                    - generic [ref=e175]:
+                      - radio "未归档" [checked]
+                    - text: 未归档
+                  - generic [ref=e176] [cursor=pointer]:
+                    - generic [ref=e177]:
+                      - radio "已归档"
+                    - text: 已归档
+              - generic [ref=e180]:
+                - table [ref=e184]:
+                  - rowgroup [ref=e196]:
+                    - row "状态 模式 名称 优先级 创建时间 任务进度 验证 耗时 操作" [ref=e197]:
+                      - columnheader [ref=e198]
+                      - columnheader "状态" [ref=e199] [cursor=pointer]:
+                        - generic [ref=e200]:
+                          - generic [ref=e201]: 状态
+                          - generic [ref=e203]:
+                            - img [ref=e204]:
+                              - img [ref=e205]
+                            - img [ref=e207]:
+                              - img [ref=e208]
+                      - columnheader "模式" [ref=e210] [cursor=pointer]:
+                        - generic [ref=e211]:
+                          - generic [ref=e212]: 模式
+                          - generic [ref=e214]:
+                            - img [ref=e215]:
+                              - img [ref=e216]
+                            - img [ref=e218]:
+                              - img [ref=e219]
+                      - columnheader "名称" [ref=e221] [cursor=pointer]:
+                        - generic [ref=e222]:
+                          - generic [ref=e223]: 名称
+                          - generic [ref=e225]:
+                            - img [ref=e226]:
+                              - img [ref=e227]
+                            - img [ref=e229]:
+                              - img [ref=e230]
+                      - columnheader "优先级" [ref=e232] [cursor=pointer]:
+                        - generic [ref=e233]:
+                          - generic [ref=e234]: 优先级
+                          - generic [ref=e236]:
+                            - img [ref=e237]:
+                              - img [ref=e238]
+                            - img [ref=e240]:
+                              - img [ref=e241]
+                      - columnheader "创建时间" [ref=e243] [cursor=pointer]:
+                        - generic [ref=e244]:
+                          - generic [ref=e245]: 创建时间
+                          - generic [ref=e247]:
+                            - img [ref=e248]:
+                              - img [ref=e249]
+                            - img [ref=e251]:
+                              - img [ref=e252]
+                      - columnheader "任务进度" [ref=e254] [cursor=pointer]:
+                        - generic [ref=e255]:
+                          - generic [ref=e256]: 任务进度
+                          - generic [ref=e258]:
+                            - img [ref=e259]:
+                              - img [ref=e260]
+                            - img [ref=e262]:
+                              - img [ref=e263]
+                      - columnheader "验证" [ref=e265] [cursor=pointer]:
+                        - generic [ref=e266]:
+                          - generic [ref=e267]: 验证
+                          - generic [ref=e269]:
+                            - img [ref=e270]:
+                              - img [ref=e271]
+                            - img [ref=e273]:
+                              - img [ref=e274]
+                      - columnheader "耗时" [ref=e276] [cursor=pointer]:
+                        - generic [ref=e277]:
+                          - generic [ref=e278]: 耗时
+                          - generic [ref=e280]:
+                            - img [ref=e281]:
+                              - img [ref=e282]
+                            - img [ref=e284]:
+                              - img [ref=e285]
+                      - columnheader "操作" [ref=e287]
+                  - rowgroup [ref=e288]:
+                    - row "已推送 完整模式 add-architecture-two-stage-generation P5 2026-09-26 11:59:30 100 10/10 100% 21/21 56分43秒 文档 more 更多" [ref=e289]:
+                      - cell [ref=e290]
+                      - cell "已推送" [ref=e291]:
+                        - generic [ref=e294]: 已推送
+                      - cell "完整模式" [ref=e296]:
+                        - generic [ref=e297]: 完整模式
+                      - cell "add-architecture-two-stage-generation" [ref=e298]
+                      - cell "P5" [ref=e299]:
+                        - generic [ref=e300]: P5
+                      - cell "2026-09-26 11:59:30" [ref=e301]
+                      - cell "100 10/10 100%" [ref=e302]:
+                        - generic [ref=e303]:
+                          - progressbar [ref=e304]
+                          - generic [ref=e308]:
+                            - generic [ref=e309]: 10/10
+                            - generic [ref=e310]: 100%
+                      - cell "21/21" [ref=e311]:
+                        - generic [ref=e312] [cursor=pointer]: 21/21
+                      - cell "56分43秒" [ref=e313]
+                      - cell "文档 more 更多" [ref=e314]:
+                        - generic [ref=e315]:
+                          - button "文档" [ref=e317] [cursor=pointer]:
+                            - generic [ref=e318]: 文档
+                          - button "more 更多" [ref=e320] [cursor=pointer]:
+                            - img "more" [ref=e322]:
+                              - img [ref=e323]
+                            - generic [ref=e325]: 更多
+                    - row "已推送 完整模式 evo-signal-preprobe-handled-writeback P5 2026-09-26 11:56:30 100 3/3 100% 11/11 47分20秒 文档 more 更多" [ref=e326]:
+                      - cell [ref=e327]
+                      - cell "已推送" [ref=e328]:
+                        - generic [ref=e331]: 已推送
+                      - cell "完整模式" [ref=e333]:
+                        - generic [ref=e334]: 完整模式
+                      - cell "evo-signal-preprobe-handled-writeback" [ref=e335]
+                      - cell "P5" [ref=e336]:
+                        - generic [ref=e337]: P5
+                      - cell "2026-09-26 11:56:30" [ref=e338]
+                      - cell "100 3/3 100%" [ref=e339]:
+                        - generic [ref=e340]:
+                          - progressbar [ref=e341]
+                          - generic [ref=e345]:
+                            - generic [ref=e346]: 3/3
+                            - generic [ref=e347]: 100%
+                      - cell "11/11" [ref=e348]:
+                        - generic [ref=e349] [cursor=pointer]: 11/11
+                      - cell "47分20秒" [ref=e350]
+                      - cell "文档 more 更多" [ref=e351]:
+                        - generic [ref=e352]:
+                          - button "文档" [ref=e354] [cursor=pointer]:
+                            - generic [ref=e355]: 文档
+                          - button "more 更多" [ref=e357] [cursor=pointer]:
+                            - img "more" [ref=e359]:
+                              - img [ref=e360]
+                            - generic [ref=e362]: 更多
+                    - row "已推送 完整模式 evo-supervisor-drift-log-dedup P5 2026-09-26 11:56:29 100 3/3 100% 10/10 23分53秒 文档 more 更多" [ref=e363]:
+                      - cell [ref=e364]
+                      - cell "已推送" [ref=e365]:
+                        - generic [ref=e368]: 已推送
+                      - cell "完整模式" [ref=e370]:
+                        - generic [ref=e371]: 完整模式
+                      - cell "evo-supervisor-drift-log-dedup" [ref=e372]
+                      - cell "P5" [ref=e373]:
+                        - generic [ref=e374]: P5
+                      - cell "2026-09-26 11:56:29" [ref=e375]
+                      - cell "100 3/3 100%" [ref=e376]:
+                        - generic [ref=e377]:
+                          - progressbar [ref=e378]
+                          - generic [ref=e382]:
+                            - generic [ref=e383]: 3/3
+                            - generic [ref=e384]: 100%
+                      - cell "10/10" [ref=e385]:
+                        - generic [ref=e386] [cursor=pointer]: 10/10
+                      - cell "23分53秒" [ref=e387]
+                      - cell "文档 more 更多" [ref=e388]:
+                        - generic [ref=e389]:
+                          - button "文档" [ref=e391] [cursor=pointer]:
+                            - generic [ref=e392]: 文档
+                          - button "more 更多" [ref=e394] [cursor=pointer]:
+                            - img "more" [ref=e396]:
+                              - img [ref=e397]
+                            - generic [ref=e399]: 更多
+                    - row "已推送 完整模式 evo-add-run-stop-loss P5 2026-09-26 03:48:53 100 8/8 100% 8/8 1时43分29秒 文档 more 更多" [ref=e400]:
+                      - cell [ref=e401]
+                      - cell "已推送" [ref=e402]:
+                        - generic [ref=e405]: 已推送
+                      - cell "完整模式" [ref=e407]:
+                        - generic [ref=e408]: 完整模式
+                      - cell "evo-add-run-stop-loss" [ref=e409]
+                      - cell "P5" [ref=e410]:
+                        - generic [ref=e411]: P5
+                      - cell "2026-09-26 03:48:53" [ref=e412]
+                      - cell "100 8/8 100%" [ref=e413]:
+                        - generic [ref=e414]:
+                          - progressbar [ref=e415]
+                          - generic [ref=e419]:
+                            - generic [ref=e420]: 8/8
+                            - generic [ref=e421]: 100%
+                      - cell "8/8" [ref=e422]:
+                        - generic [ref=e423] [cursor=pointer]: 8/8
+                      - cell "1时43分29秒" [ref=e424]
+                      - cell "文档 more 更多" [ref=e425]:
+                        - generic [ref=e426]:
+                          - button "文档" [ref=e428] [cursor=pointer]:
+                            - generic [ref=e429]: 文档
+                          - button "more 更多" [ref=e431] [cursor=pointer]:
+                            - img "more" [ref=e433]:
+                              - img [ref=e434]
+                            - generic [ref=e436]: 更多
+                    - row "已推送 快速模式 fix-archify-vendored-injection P5 2026-09-25 21:25:27 100 6/6 100% 7/7 19分36秒 文档 more 更多" [ref=e437]:
+                      - cell [ref=e438]
+                      - cell "已推送" [ref=e439]:
+                        - generic [ref=e442]: 已推送
+                      - cell "快速模式" [ref=e444]:
+                        - generic [ref=e445]: 快速模式
+                      - cell "fix-archify-vendored-injection" [ref=e446]
+                      - cell "P5" [ref=e447]:
+                        - generic [ref=e448]: P5
+                      - cell "2026-09-25 21:25:27" [ref=e449]
+                      - cell "100 6/6 100%" [ref=e450]:
+                        - generic [ref=e451]:
+                          - progressbar [ref=e452]
+                          - generic [ref=e456]:
+                            - generic [ref=e457]: 6/6
+                            - generic [ref=e458]: 100%
+                      - cell "7/7" [ref=e459]:
+                        - generic [ref=e460] [cursor=pointer]: 7/7
+                      - cell "19分36秒" [ref=e461]
+                      - cell "文档 more 更多" [ref=e462]:
+                        - generic [ref=e463]:
+                          - button "文档" [ref=e465] [cursor=pointer]:
+                            - generic [ref=e466]: 文档
+                          - button "more 更多" [ref=e468] [cursor=pointer]:
+                            - img "more" [ref=e470]:
+                              - img [ref=e471]
+                            - generic [ref=e473]: 更多
+                    - row "已推送 完整模式 add-project-architecture-tab P5 2026-09-25 18:10:53 100 13/13 100% 17/17 1时2分52秒 文档 more 更多" [ref=e474]:
+                      - cell [ref=e475]
+                      - cell "已推送" [ref=e476]:
+                        - generic [ref=e479]: 已推送
+                      - cell "完整模式" [ref=e481]:
+                        - generic [ref=e482]: 完整模式
+                      - cell "add-project-architecture-tab" [ref=e483]
+                      - cell "P5" [ref=e484]:
+                        - generic [ref=e485]: P5
+                      - cell "2026-09-25 18:10:53" [ref=e486]
+                      - cell "100 13/13 100%" [ref=e487]:
+                        - generic [ref=e488]:
+                          - progressbar [ref=e489]
+                          - generic [ref=e493]:
+                            - generic [ref=e494]: 13/13
+                            - generic [ref=e495]: 100%
+                      - cell "17/17" [ref=e496]:
+                        - generic [ref=e497] [cursor=pointer]: 17/17
+                      - cell "1时2分52秒" [ref=e498]
+                      - cell "文档 more 更多" [ref=e499]:
+                        - generic [ref=e500]:
+                          - button "文档" [ref=e502] [cursor=pointer]:
+                            - generic [ref=e503]: 文档
+                          - button "more 更多" [ref=e505] [cursor=pointer]:
+                            - img "more" [ref=e507]:
+                              - img [ref=e508]
+                            - generic [ref=e510]: 更多
+                    - row "已推送 完整模式 decouple-codefix-review-lanes P3 2026-09-25 14:15:37 100 10/10 100% 10/10 1时19分19秒 文档 more 更多" [ref=e511]:
+                      - cell [ref=e512]
+                      - cell "已推送" [ref=e513]:
+                        - generic [ref=e516]: 已推送
+                      - cell "完整模式" [ref=e518]:
+                        - generic [ref=e519]: 完整模式
+                      - cell "decouple-codefix-review-lanes" [ref=e520]
+                      - cell "P3" [ref=e521]:
+                        - generic [ref=e522]: P3
+                      - cell "2026-09-25 14:15:37" [ref=e523]
+                      - cell "100 10/10 100%" [ref=e524]:
+                        - generic [ref=e525]:
+                          - progressbar [ref=e526]
+                          - generic [ref=e530]:
+                            - generic [ref=e531]: 10/10
+                            - generic [ref=e532]: 100%
+                      - cell "10/10" [ref=e533]:
+                        - generic [ref=e534] [cursor=pointer]: 10/10
+                      - cell "1时19分19秒" [ref=e535]
+                      - cell "文档 more 更多" [ref=e536]:
+                        - generic [ref=e537]:
+                          - button "文档" [ref=e539] [cursor=pointer]:
+                            - generic [ref=e540]: 文档
+                          - button "more 更多" [ref=e542] [cursor=pointer]:
+                            - img "more" [ref=e544]:
+                              - img [ref=e545]
+                            - generic [ref=e547]: 更多
+                    - row "已推送 完整模式 add-mergeback-wip-active-coordination P3 2026-09-25 14:15:37 100 8/8 100% 20/20 44分49秒 文档 more 更多" [ref=e548]:
+                      - cell [ref=e549]
+                      - cell "已推送" [ref=e550]:
+                        - generic [ref=e553]: 已推送
+                      - cell "完整模式" [ref=e555]:
+                        - generic [ref=e556]: 完整模式
+                      - cell "add-mergeback-wip-active-coordination" [ref=e557]
+                      - cell "P3" [ref=e558]:
+                        - generic [ref=e559]: P3
+                      - cell "2026-09-25 14:15:37" [ref=e560]
+                      - cell "100 8/8 100%" [ref=e561]:
+                        - generic [ref=e562]:
+                          - progressbar [ref=e563]
+                          - generic [ref=e567]:
+                            - generic [ref=e568]: 8/8
+                            - generic [ref=e569]: 100%
+                      - cell "20/20" [ref=e570]:
+                        - generic [ref=e571] [cursor=pointer]: 20/20
+                      - cell "44分49秒" [ref=e572]
+                      - cell "文档 more 更多" [ref=e573]:
+                        - generic [ref=e574]:
+                          - button "文档" [ref=e576] [cursor=pointer]:
+                            - generic [ref=e577]: 文档
+                          - button "more 更多" [ref=e579] [cursor=pointer]:
+                            - img "more" [ref=e581]:
+                              - img [ref=e582]
+                            - generic [ref=e584]: 更多
+                    - row "已推送 完整模式 add-codefix-commit-first-contract P2 2026-09-25 14:15:37 100 8/8 100% 9/9 1时3分40秒 文档 more 更多" [ref=e585]:
+                      - cell [ref=e586]
+                      - cell "已推送" [ref=e587]:
+                        - generic [ref=e590]: 已推送
+                      - cell "完整模式" [ref=e592]:
+                        - generic [ref=e593]: 完整模式
+                      - cell "add-codefix-commit-first-contract" [ref=e594]
+                      - cell "P2" [ref=e595]:
+                        - generic [ref=e596]: P2
+                      - cell "2026-09-25 14:15:37" [ref=e597]
+                      - cell "100 8/8 100%" [ref=e598]:
+                        - generic [ref=e599]:
+                          - progressbar [ref=e600]
+                          - generic [ref=e604]:
+                            - generic [ref=e605]: 8/8
+                            - generic [ref=e606]: 100%
+                      - cell "9/9" [ref=e607]:
+                        - generic [ref=e608] [cursor=pointer]: 9/9
+                      - cell "1时3分40秒" [ref=e609]
+                      - cell "文档 more 更多" [ref=e610]:
+                        - generic [ref=e611]:
+                          - button "文档" [ref=e613] [cursor=pointer]:
+                            - generic [ref=e614]: 文档
+                          - button "more 更多" [ref=e616] [cursor=pointer]:
+                            - img "more" [ref=e618]:
+                              - img [ref=e619]
+                            - generic [ref=e621]: 更多
+                    - row "已推送 完整模式 add-codefix-targeted-retry P2 2026-09-25 14:15:37 100 12/12 100% 14/14 42分48秒 文档 more 更多" [ref=e622]:
+                      - cell [ref=e623]
+                      - cell "已推送" [ref=e624]:
+                        - generic [ref=e627]: 已推送
+                      - cell "完整模式" [ref=e629]:
+                        - generic [ref=e630]: 完整模式
+                      - cell "add-codefix-targeted-retry" [ref=e631]
+                      - cell "P2" [ref=e632]:
+                        - generic [ref=e633]: P2
+                      - cell "2026-09-25 14:15:37" [ref=e634]
+                      - cell "100 12/12 100%" [ref=e635]:
+                        - generic [ref=e636]:
+                          - progressbar [ref=e637]
+                          - generic [ref=e641]:
+                            - generic [ref=e642]: 12/12
+                            - generic [ref=e643]: 100%
+                      - cell "14/14" [ref=e644]:
+                        - generic [ref=e645] [cursor=pointer]: 14/14
+                      - cell "42分48秒" [ref=e646]
+                      - cell "文档 more 更多" [ref=e647]:
+                        - generic [ref=e648]:
+                          - button "文档" [ref=e650] [cursor=pointer]:
+                            - generic [ref=e651]: 文档
+                          - button "more 更多" [ref=e653] [cursor=pointer]:
+                            - img "more" [ref=e655]:
+                              - img [ref=e656]
+                            - generic [ref=e658]: 更多
+                    - row "已推送 快速模式 add-per-test-timeout-gate P1 2026-09-25 14:15:37 100 9/9 100% 5/5 36分15秒 文档 more 更多" [ref=e659]:
+                      - cell [ref=e660]
+                      - cell "已推送" [ref=e661]:
+                        - generic [ref=e664]: 已推送
+                      - cell "快速模式" [ref=e666]:
+                        - generic [ref=e667]: 快速模式
+                      - cell "add-per-test-timeout-gate" [ref=e668]
+                      - cell "P1" [ref=e669]:
+                        - generic [ref=e670]: P1
+                      - cell "2026-09-25 14:15:37" [ref=e671]
+                      - cell "100 9/9 100%" [ref=e672]:
+                        - generic [ref=e673]:
+                          - progressbar [ref=e674]
+                          - generic [ref=e678]:
+                            - generic [ref=e679]: 9/9
+                            - generic [ref=e680]: 100%
+                      - cell "5/5" [ref=e681]:
+                        - generic [ref=e682] [cursor=pointer]: 5/5
+                      - cell "36分15秒" [ref=e683]
+                      - cell "文档 more 更多" [ref=e684]:
+                        - generic [ref=e685]:
+                          - button "文档" [ref=e687] [cursor=pointer]:
+                            - generic [ref=e688]: 文档
+                          - button "more 更多" [ref=e690] [cursor=pointer]:
+                            - img "more" [ref=e692]:
+                              - img [ref=e693]
+                            - generic [ref=e695]: 更多
+                    - row "已推送 完整模式 fix-verdict-env-exemption-admin-handshake P5 2026-09-25 14:05:41 100 9/9 100% 8/8 55分35秒 文档 more 更多" [ref=e696]:
+                      - cell [ref=e697]
+                      - cell "已推送" [ref=e698]:
+                        - generic [ref=e701]: 已推送
+                      - cell "完整模式" [ref=e703]:
+                        - generic [ref=e704]: 完整模式
+                      - cell "fix-verdict-env-exemption-admin-handshake" [ref=e705]
+                      - cell "P5" [ref=e706]:
+                        - generic [ref=e707]: P5
+                      - cell "2026-09-25 14:05:41" [ref=e708]
+                      - cell "100 9/9 100%" [ref=e709]:
+                        - generic [ref=e710]:
+                          - progressbar [ref=e711]
+                          - generic [ref=e715]:
+                            - generic [ref=e716]: 9/9
+                            - generic [ref=e717]: 100%
+                      - cell "8/8" [ref=e718]:
+                        - generic [ref=e719] [cursor=pointer]: 8/8
+                      - cell "55分35秒" [ref=e720]
+                      - cell "文档 more 更多" [ref=e721]:
+                        - generic [ref=e722]:
+                          - button "文档" [ref=e724] [cursor=pointer]:
+                            - generic [ref=e725]: 文档
+                          - button "more 更多" [ref=e727] [cursor=pointer]:
+                            - img "more" [ref=e729]:
+                              - img [ref=e730]
+                            - generic [ref=e732]: 更多
+                    - row "已推送 完整模式 add-session-composer P5 2026-09-25 11:34:52 100 17/17 100% 22/22 2时21分34秒 文档 more 更多" [ref=e733]:
+                      - cell [ref=e734]
+                      - cell "已推送" [ref=e735]:
+                        - generic [ref=e738]: 已推送
+                      - cell "完整模式" [ref=e740]:
+                        - generic [ref=e741]: 完整模式
+                      - cell "add-session-composer" [ref=e742]
+                      - cell "P5" [ref=e743]:
+                        - generic [ref=e744]: P5
+                      - cell "2026-09-25 11:34:52" [ref=e745]
+                      - cell "100 17/17 100%" [ref=e746]:
+                        - generic [ref=e747]:
+                          - progressbar [ref=e748]
+                          - generic [ref=e752]:
+                            - generic [ref=e753]: 17/17
+                            - generic [ref=e754]: 100%
+                      - cell "22/22" [ref=e755]:
+                        - generic [ref=e756] [cursor=pointer]: 22/22
+                      - cell "2时21分34秒" [ref=e757]
+                      - cell "文档 more 更多" [ref=e758]:
+                        - generic [ref=e759]:
+                          - button "文档" [ref=e761] [cursor=pointer]:
+                            - generic [ref=e762]: 文档
+                          - button "more 更多" [ref=e764] [cursor=pointer]:
+                            - img "more" [ref=e766]:
+                              - img [ref=e767]
+                            - generic [ref=e769]: 更多
+                    - row "已推送 完整模式 add-regression-auto-fix P5 2026-09-25 11:31:57 100 12/12 100% 23/23 3时59分32秒 文档 more 更多" [ref=e770]:
+                      - cell [ref=e771]
+                      - cell "已推送" [ref=e772]:
+                        - generic [ref=e775]: 已推送
+                      - cell "完整模式" [ref=e777]:
+                        - generic [ref=e778]: 完整模式
+                      - cell "add-regression-auto-fix" [ref=e779]
+                      - cell "P5" [ref=e780]:
+                        - generic [ref=e781]: P5
+                      - cell "2026-09-25 11:31:57" [ref=e782]
+                      - cell "100 12/12 100%" [ref=e783]:
+                        - generic [ref=e784]:
+                          - progressbar [ref=e785]
+                          - generic [ref=e789]:
+                            - generic [ref=e790]: 12/12
+                            - generic [ref=e791]: 100%
+                      - cell "23/23" [ref=e792]:
+                        - generic [ref=e793] [cursor=pointer]: 23/23
+                      - cell "3时59分32秒" [ref=e794]
+                      - cell "文档 more 更多" [ref=e795]:
+                        - generic [ref=e796]:
+                          - button "文档" [ref=e798] [cursor=pointer]:
+                            - generic [ref=e799]: 文档
+                          - button "more 更多" [ref=e801] [cursor=pointer]:
+                            - img "more" [ref=e803]:
+                              - img [ref=e804]
+                            - generic [ref=e806]: 更多
+                    - row "已推送 完整模式 add-self-review-midflight-signals P5 2026-09-25 11:25:50 100 11/11 100% 14/14 1时13分50秒 文档 more 更多" [ref=e807]:
+                      - cell [ref=e808]
+                      - cell "已推送" [ref=e809]:
+                        - generic [ref=e812]: 已推送
+                      - cell "完整模式" [ref=e814]:
+                        - generic [ref=e815]: 完整模式
+                      - cell "add-self-review-midflight-signals" [ref=e816]
+                      - cell "P5" [ref=e817]:
+                        - generic [ref=e818]: P5
+                      - cell "2026-09-25 11:25:50" [ref=e819]
+                      - cell "100 11/11 100%" [ref=e820]:
+                        - generic [ref=e821]:
+                          - progressbar [ref=e822]
+                          - generic [ref=e826]:
+                            - generic [ref=e827]: 11/11
+                            - generic [ref=e828]: 100%
+                      - cell "14/14" [ref=e829]:
+                        - generic [ref=e830] [cursor=pointer]: 14/14
+                      - cell "1时13分50秒" [ref=e831]
+                      - cell "文档 more 更多" [ref=e832]:
+                        - generic [ref=e833]:
+                          - button "文档" [ref=e835] [cursor=pointer]:
+                            - generic [ref=e836]: 文档
+                          - button "more 更多" [ref=e838] [cursor=pointer]:
+                            - img "more" [ref=e840]:
+                              - img [ref=e841]
+                            - generic [ref=e843]: 更多
+                    - row "已推送 完整模式 evo-add-stale-code-dangling-deadline P5 2026-09-25 02:54:29 100 7/7 100% 13/13 52分11秒 文档 more 更多" [ref=e844]:
+                      - cell [ref=e845]
+                      - cell "已推送" [ref=e846]:
+                        - generic [ref=e849]: 已推送
+                      - cell "完整模式" [ref=e851]:
+                        - generic [ref=e852]: 完整模式
+                      - cell "evo-add-stale-code-dangling-deadline" [ref=e853]
+                      - cell "P5" [ref=e854]:
+                        - generic [ref=e855]: P5
+                      - cell "2026-09-25 02:54:29" [ref=e856]
+                      - cell "100 7/7 100%" [ref=e857]:
+                        - generic [ref=e858]:
+                          - progressbar [ref=e859]
+                          - generic [ref=e863]:
+                            - generic [ref=e864]: 7/7
+                            - generic [ref=e865]: 100%
+                      - cell "13/13" [ref=e866]:
+                        - generic [ref=e867] [cursor=pointer]: 13/13
+                      - cell "52分11秒" [ref=e868]
+                      - cell "文档 more 更多" [ref=e869]:
+                        - generic [ref=e870]:
+                          - button "文档" [ref=e872] [cursor=pointer]:
+                            - generic [ref=e873]: 文档
+                          - button "more 更多" [ref=e875] [cursor=pointer]:
+                            - img "more" [ref=e877]:
+                              - img [ref=e878]
+                            - generic [ref=e880]: 更多
+                    - row "已推送 完整模式 evo-fix-self-review-phantom-failed-samples P5 2026-09-25 02:54:29 100 8/8 100% 8/8 1时10分36秒 文档 more 更多" [ref=e881]:
+                      - cell [ref=e882]
+                      - cell "已推送" [ref=e883]:
+                        - generic [ref=e886]: 已推送
+                      - cell "完整模式" [ref=e888]:
+                        - generic [ref=e889]: 完整模式
+                      - cell "evo-fix-self-review-phantom-failed-samples" [ref=e890]
+                      - cell "P5" [ref=e891]:
+                        - generic [ref=e892]: P5
+                      - cell "2026-09-25 02:54:29" [ref=e893]
+                      - cell "100 8/8 100%" [ref=e894]:
+                        - generic [ref=e895]:
+                          - progressbar [ref=e896]
+                          - generic [ref=e900]:
+                            - generic [ref=e901]: 8/8
+                            - generic [ref=e902]: 100%
+                      - cell "8/8" [ref=e903]:
+                        - generic [ref=e904] [cursor=pointer]: 8/8
+                      - cell "1时10分36秒" [ref=e905]
+                      - cell "文档 more 更多" [ref=e906]:
+                        - generic [ref=e907]:
+                          - button "文档" [ref=e909] [cursor=pointer]:
+                            - generic [ref=e910]: 文档
+                          - button "more 更多" [ref=e912] [cursor=pointer]:
+                            - img "more" [ref=e914]:
+                              - img [ref=e915]
+                            - generic [ref=e917]: 更多
+                    - row "已推送 完整模式 fix-verify-late-result-terminal-clobber P5 2026-09-24 20:06:11 100 12/12 100% 14/14 1时21分55秒 文档 more 更多" [ref=e918]:
+                      - cell [ref=e919]
+                      - cell "已推送" [ref=e920]:
+                        - generic [ref=e923]: 已推送
+                      - cell "完整模式" [ref=e925]:
+                        - generic [ref=e926]: 完整模式
+                      - cell "fix-verify-late-result-terminal-clobber" [ref=e927]
+                      - cell "P5" [ref=e928]:
+                        - generic [ref=e929]: P5
+                      - cell "2026-09-24 20:06:11" [ref=e930]
+                      - cell "100 12/12 100%" [ref=e931]:
+                        - generic [ref=e932]:
+                          - progressbar [ref=e933]
+                          - generic [ref=e937]:
+                            - generic [ref=e938]: 12/12
+                            - generic [ref=e939]: 100%
+                      - cell "14/14" [ref=e940]:
+                        - generic [ref=e941] [cursor=pointer]: 14/14
+                      - cell "1时21分55秒" [ref=e942]
+                      - cell "文档 more 更多" [ref=e943]:
+                        - generic [ref=e944]:
+                          - button "文档" [ref=e946] [cursor=pointer]:
+                            - generic [ref=e947]: 文档
+                          - button "more 更多" [ref=e949] [cursor=pointer]:
+                            - img "more" [ref=e951]:
+                              - img [ref=e952]
+                            - generic [ref=e954]: 更多
+                    - row "已推送 完整模式 fix-quality-gates-flat-form-and-explainability P5 2026-09-24 12:48:12 100 7/7 100% 24/24 2时16分6秒 文档 more 更多" [ref=e955]:
+                      - cell [ref=e956]
+                      - cell "已推送" [ref=e957]:
+                        - generic [ref=e960]: 已推送
+                      - cell "完整模式" [ref=e962]:
+                        - generic [ref=e963]: 完整模式
+                      - cell "fix-quality-gates-flat-form-and-explainability" [ref=e964]
+                      - cell "P5" [ref=e965]:
+                        - generic [ref=e966]: P5
+                      - cell "2026-09-24 12:48:12" [ref=e967]
+                      - cell "100 7/7 100%" [ref=e968]:
+                        - generic [ref=e969]:
+                          - progressbar [ref=e970]
+                          - generic [ref=e974]:
+                            - generic [ref=e975]: 7/7
+                            - generic [ref=e976]: 100%
+                      - cell "24/24" [ref=e977]:
+                        - generic [ref=e978] [cursor=pointer]: 24/24
+                      - cell "2时16分6秒" [ref=e979]
+                      - cell "文档 more 更多" [ref=e980]:
+                        - generic [ref=e981]:
+                          - button "文档" [ref=e983] [cursor=pointer]:
+                            - generic [ref=e984]: 文档
+                          - button "more 更多" [ref=e986] [cursor=pointer]:
+                            - img "more" [ref=e988]:
+                              - img [ref=e989]
+                            - generic [ref=e991]: 更多
+                    - row "已推送 快速模式 add-code-fix-startup-stage-visibility P5 2026-09-24 12:46:43 100 6/6 100% 8/8 41分6秒 文档 more 更多" [ref=e992]:
+                      - cell [ref=e993]
+                      - cell "已推送" [ref=e994]:
+                        - generic [ref=e997]: 已推送
+                      - cell "快速模式" [ref=e999]:
+                        - generic [ref=e1000]: 快速模式
+                      - cell "add-code-fix-startup-stage-visibility" [ref=e1001]
+                      - cell "P5" [ref=e1002]:
+                        - generic [ref=e1003]: P5
+                      - cell "2026-09-24 12:46:43" [ref=e1004]
+                      - cell "100 6/6 100%" [ref=e1005]:
+                        - generic [ref=e1006]:
+                          - progressbar [ref=e1007]
+                          - generic [ref=e1011]:
+                            - generic [ref=e1012]: 6/6
+                            - generic [ref=e1013]: 100%
+                      - cell "8/8" [ref=e1014]:
+                        - generic [ref=e1015] [cursor=pointer]: 8/8
+                      - cell "41分6秒" [ref=e1016]
+                      - cell "文档 more 更多" [ref=e1017]:
+                        - generic [ref=e1018]:
+                          - button "文档" [ref=e1020] [cursor=pointer]:
+                            - generic [ref=e1021]: 文档
+                          - button "more 更多" [ref=e1023] [cursor=pointer]:
+                            - img "more" [ref=e1025]:
+                              - img [ref=e1026]
+                            - generic [ref=e1028]: 更多
+                - list [ref=e1029]:
+                  - listitem [ref=e1030]: 共 50 条
+                  - listitem "上一页" [ref=e1031]:
+                    - button "left" [disabled] [ref=e1032]:
+                      - img "left" [ref=e1033]:
+                        - img [ref=e1034]
+                  - listitem "1" [ref=e1036] [cursor=pointer]:
+                    - generic [ref=e1037]: "1"
+                  - listitem "2" [ref=e1038] [cursor=pointer]:
+                    - generic [ref=e1039]: "2"
+                  - listitem "3" [ref=e1040] [cursor=pointer]:
+                    - generic [ref=e1041]: "3"
+                  - listitem "下一页" [ref=e1042] [cursor=pointer]:
+                    - button "right" [ref=e1043]:
+                      - img "right" [ref=e1044]:
+                        - img [ref=e1045]
+                  - listitem [ref=e1047]:
+                    - generic [ref=e1048]:
+                      - generic "20 条/页" [ref=e1049]:
+                        - text: 20 条/页
+                        - combobox "页码" [ref=e1050]
+                      - img "down" [ref=e1052]:
+                        - img [ref=e1053]

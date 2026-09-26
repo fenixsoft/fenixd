@@ -381,9 +381,9 @@ class VerificationPipeline:
     # ── branch_guard 薄委托（见 report_gate 注释 D2b 规则 2）──
 
     # D7 类级别名：取代 @staticmethod def 转发壳（无签名无 docstring，双份签名消除）
-    _extract_replan_error_items = staticmethod(_bg_extract_replan_error_items.__func__)
+    _extract_replan_error_items = staticmethod(_bg_extract_replan_error_items)
 
-    _replan_errors_unconsumed = staticmethod(_bg_replan_errors_unconsumed.__func__)
+    _replan_errors_unconsumed = staticmethod(_bg_replan_errors_unconsumed)
 
     # ── infra_classify 薄委托（见 report_gate 注释 D2b 规则 2）──
 

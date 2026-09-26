@@ -325,8 +325,9 @@ export default function HelpPage() {
     handleDocChange(name);
     if (!anchor) return;
     if (name === currentDoc) {
-      // 同文档：内容已在渲染，等一帧后滚动
-      requestAnimationFrame(() => scrollToAnchor(anchor));
+      // 同文档：等一帧后再等本稿在途 mermaid 渲染全部结束才滚动（口径同跨文档
+      // 滚动 effect），否则目标标题位于图中/图后时布局未定，滚动会停在偏上位置
+      requestAnimationFrame(() => void waitForMermaidRenders().then(() => scrollToAnchor(anchor)));
     } else {
       // 跨文档：暂存锚点，等新文档加载渲染完成（滚动 effect 消费）
       pendingAnchorRef.current = anchor;
