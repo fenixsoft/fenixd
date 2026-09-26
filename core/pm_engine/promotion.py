@@ -229,7 +229,16 @@ def should_skip_review(project_root: Path, spec_name: str, config: dict, logger)
     #    会误判满足本条件跳过评审）
     from core.deliverables import extract_declared_entries
 
-    entries = extract_declared_entries(spec_dir)
+    try:
+        entries = extract_declared_entries(spec_dir)
+    except Exception as e:
+        # 解析异常（异常形态 tasks.md）：保守不跳过评审，不让异常沿
+        # promote_drafted 传播中断晋升链
+        logger.warning(
+            "pm_engine",
+            f"Deliverables 声明段解析异常 '{spec_name}'（保守不跳过评审）: {e}",
+        )
+        return False
     if not entries:
         return False
     if len(entries) > 3:
