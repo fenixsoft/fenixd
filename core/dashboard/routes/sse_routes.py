@@ -111,8 +111,10 @@ class H9SseRoutesMixin:
             return False
         try:
             data = self.connection.recv(1, socket.MSG_PEEK)
-        except BlockingIOError:
-            # 暂无数据可读 ≠ EOF：select 就绪与数据到达间的竞态，本次不判定断开
+        except (BlockingIOError, socket.timeout):
+            # 暂无数据可读 ≠ EOF。connection 已设写超时（超时模式），select 就绪
+            # 与数据到达间的竞态下 recv 抛 socket.timeout 而非 BlockingIOError
+            # （后者仅在纯非阻塞模式出现，保留以免误落下方 OSError 分支被误判断开）
             return False
         except (OSError, ValueError):
             return True

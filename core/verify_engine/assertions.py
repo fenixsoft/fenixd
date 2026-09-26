@@ -464,6 +464,22 @@ class AssertionRunner:
         timeout_ms = int(a.get("timeout", 3000))
         interval_ms = int(a.get("interval", 200))
 
+        if not expected:
+            # 显式失败而非静默恒真：expected 缺省为空串时 exact 退化成
+            # 「元素文本为空即通过」，contains/regex 对任意可读文本恒真，
+            # 会产出假通过；与 dom_structure 的缺参口径（确定性失败）
+            # 保持一致，给出可定位提示。
+            return {
+                "type": "text_match",
+                "layer": 3,
+                "selector": selector,
+                "expected": expected,
+                "actual": "",
+                "mode": mode,
+                "pass": False,
+                "error": "缺少 expected 字段",
+            }
+
         # 非法正则是确定性错误：_text_matches 内 re.search 每轮重抛 re.error，
         # 会被下方 except 当作「元素尚未渲染」的临时态空转至超时，故进轮询前预检。
         if mode == "regex":
@@ -537,6 +553,19 @@ class AssertionRunner:
         """
         text = a.get("text") or a.get("expected", "")
         selector = a.get("selector", "")
+
+        if not text:
+            # 显式失败而非静默恒真：缺参时 text 为空串，selector 分支的
+            # `"" in t` 与页面级降级的 `"" in content` 对任意内容恒真，
+            # 会产出假通过；与 dom_structure 的缺参口径（确定性失败）
+            # 保持一致，给出可定位提示。
+            return {
+                "type": "text_contains",
+                "layer": 3,
+                "text": text,
+                "pass": False,
+                "error": "缺少 text/expected 字段",
+            }
 
         if selector:
             # 等待至少一个匹配元素出现（容忍尚未渲染的情况），再检查全部匹配

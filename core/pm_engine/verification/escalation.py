@@ -18,6 +18,9 @@ from pathlib import Path
 # add-blocked-reverify-lane D3：env 阻塞轮次计数字段
 from core.state_machine import (
     ENV_BLOCK_ROUNDS_FIELD,
+    # env 阻塞冻结阈值单点定义在 core.state_machine（与 ENV_BLOCK_ROUNDS_FIELD
+    # 同源，防阈值语义漂移）
+    ENV_BLOCK_FREEZE_THRESHOLD,
     FREEZE_ERROR_PREFIX,
     # judge-scenario-repair：judge 原地场景修复预算单点定义在 core.state_machine
     # （与 pipeline.py 同源，防两侧调参漂移）
@@ -251,7 +254,7 @@ def _escalate_env_blocked(
         except Exception:
             pass  # 记账侧车，不阻断升级通道
         rounds = int(spec.get(ENV_BLOCK_ROUNDS_FIELD) or 0) + 1
-        frozen = rounds >= 2  # 阈值：连续 2 轮阻塞 → 冻结转人工
+        frozen = rounds >= ENV_BLOCK_FREEZE_THRESHOLD  # 阈值：连续 2 轮阻塞 → 冻结转人工
         planner_cost = pipeline._last_planner_run_cost(spec_name) if frozen else ""
         cost_note = f"\n\n> 🪙 重新出题成本参考：{planner_cost}" if planner_cost else ""
         error_msg = (

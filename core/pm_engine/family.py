@@ -302,7 +302,13 @@ class FamilyGovernor:
         try:
             import subprocess as _sp
 
-            wt_root = self._pm.project_root / ".claude" / "worktrees"
+            # 根目录经 worktree_manager.base_dir 取（与 fenixd.py 初始化同源读
+            # worktree.base_dir），避免改配后写死 .claude/worktrees 使 is_dir()
+            # 恒假、探测静默落空；属性链缺失时回退缺省目录
+            wm = getattr(getattr(self._pm, "agent_runner", None), "worktree_manager", None)
+            wt_root = getattr(wm, "base_dir", None) or (
+                self._pm.project_root / ".claude" / "worktrees"
+            )
             if not wt_root.is_dir():
                 return False
             # 精确前缀归属守卫（对齐 queries.find_implementer_worktree 范式）：

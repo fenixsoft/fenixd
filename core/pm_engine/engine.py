@@ -56,6 +56,8 @@ from core.state_machine import (
     FREEZE_ERROR_PREFIX,
     FROZEN_FIELD,
     FROZEN_UNTIL_FIELD,
+    PUSH_ATTEMPTS_FIELD,
+    PUSH_BACKOFF_NEXT_RETRY_AT_FIELD,
     START_AFTER_FIELD,
     SpecStatus,
     parse_orig_status,
@@ -2608,7 +2610,17 @@ class PMEngine:
                 spec_name, "pushed",
                 trigger_run_id=None, agent_type=None, channel="auto",
             )
-            self.state_machine.update_spec(spec_name, {"error": None})
+            # push 成功 = 退避/重试计数的唯一清零点（code-review item
+            # bbba88d8e6af）：字段化后与 error 文本标记同清，避免 spec 复回
+            # done 时带陈旧退避期与计数。
+            self.state_machine.update_spec(
+                spec_name,
+                {
+                    "error": None,
+                    PUSH_ATTEMPTS_FIELD: None,
+                    PUSH_BACKOFF_NEXT_RETRY_AT_FIELD: None,
+                },
+            )
             # （b21d8f2d8247 同口径）报告可丢，主链不可断：pushed 已落定，
             # PROJECT_LOG 不可写/磁盘满不得中断 push 收口并向外传播
             try:
@@ -2809,7 +2821,18 @@ class PMEngine:
             final_error = (
                 f"{error_base} [push_attempts={attempts}] " f"[push_failed — 已停止自动重试]"
             )
-            self.state_machine.update_spec(spec_name, {"error": final_error})
+            # 超限分支文本无退避标记 → 退避截止字段同语义清空
+            self.state_machine.update_spec(
+                spec_name,
+                {
+                    "error": final_error,
+                    # 字段化双活（code-review item bbba88d8e6af）：重试计数
+                    # 同步落专用字段，「清除错误」整段清 error 文本不再归零；
+                    # 文本标记保留（展示语义 + 存量读侧回退）。
+                    PUSH_ATTEMPTS_FIELD: attempts,
+                    PUSH_BACKOFF_NEXT_RETRY_AT_FIELD: None,
+                },
+            )
             spec["error"] = final_error  # 同步本地引用供后续读取
             self.logger.error(
                 "pm_engine",
@@ -2823,7 +2846,18 @@ class PMEngine:
                 f"{error_base} [push_attempts={attempts}] "
                 f"[push_backoff next_retry_at={next_retry}]"
             )
-            self.state_machine.update_spec(spec_name, {"error": final_error})
+            self.state_machine.update_spec(
+                spec_name,
+                {
+                    "error": final_error,
+                    # 字段化双活（code-review item bbba88d8e6af）：退避截止
+                    # 与重试计数同步落专用字段，「清除错误」整段清 error 文本
+                    # 不再连根抹掉 → 退避期/计数归零；文本标记保留（展示
+                    # 语义 + 存量读侧回退）。
+                    PUSH_ATTEMPTS_FIELD: attempts,
+                    PUSH_BACKOFF_NEXT_RETRY_AT_FIELD: next_retry,
+                },
+            )
             spec["error"] = final_error  # 同步本地引用供后续读取
             self.logger.warning(
                 "pm_engine",

@@ -359,6 +359,16 @@ class AdminStore:
 
         return self._mutate(mutate)
 
+    def read_records(self) -> list:
+        """读取全部记录（按存储原序：新记录在数组末尾，不排序）。
+
+        供消费方全量扫描（按 key 幂等去重等与顺序无关的判定）使用，
+        避免外部直调内部 ``_read_locked``；损坏/缺失返回空列表。每次
+        调用重新解析文件，返回独立列表，与内部状态无共享引用。需要
+        「最新的在前」排序视图请用 :meth:`read_all`。
+        """
+        return self._read_locked()
+
     def read_all(self) -> list:
         """读取全部记录（最新的在前）。损坏/缺失返回空列表。"""
         records = self._read_locked()

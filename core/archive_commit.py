@@ -30,7 +30,8 @@ def commit_archive_move(project_root, spec_name: str, archive_dir) -> dict:
 
     Returns:
         {"committed": bool, "commit": str|null, "warning": str|null}
-        - committed=True：提交成功，commit 为本次提交的全量 hash；
+        - committed=True：提交成功，commit 为本次提交的全量 hash
+          （哈希读取失败时为 null，提交本身已落库）；
         - committed=False：warning 说明原因（非 git 仓库 / git 失败 / 无可提交内容）。
     """
     proot = Path(project_root)
@@ -89,17 +90,23 @@ def commit_archive_move(project_root, spec_name: str, archive_dir) -> dict:
         )
         if commit.returncode != 0:
             return _fail(f"git commit 失败: {commit.stderr.strip() or f'exit {commit.returncode}'}")
+        # 提交已落库，先行置位：后续读哈希若因超时/OSError 失败，不能回退成
+        # committed=False（否则上层误判未提交而重试，只会得到 nothing to
+        # commit 的二次告警）；此时仅将 commit 置 None，不当异常收场。
+        result["committed"] = True
         # 取哈希不用 rev-parse HEAD：commit 成功到读取 HEAD 之间有窗口，
         # daemon/dashboard 并发操作同一仓库时会记到别人的提交；本次提交恒触碰
         # paths，用 pathspec 限定的 log -1 锚定本次提交本身。
-        rev = subprocess.run(
-            ["git", "log", "-1", "--format=%H", "--"] + paths,
-            cwd=str(proot),
-            capture_output=True,
-            text=True,
-            timeout=_PROBE_TIMEOUT,
-        )
-        result["committed"] = True
+        try:
+            rev = subprocess.run(
+                ["git", "log", "-1", "--format=%H", "--"] + paths,
+                cwd=str(proot),
+                capture_output=True,
+                text=True,
+                timeout=_PROBE_TIMEOUT,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return result
         result["commit"] = rev.stdout.strip() if rev.returncode == 0 else None
         return result
     except (OSError, subprocess.TimeoutExpired) as e:

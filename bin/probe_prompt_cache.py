@@ -175,7 +175,10 @@ def probe(provider_name: str, config_path: Path) -> dict:
     # main() 据此 exit 1（与下方 rounds_distinct 的「不可信」口径一致）。
     r2 = rounds[1] if len(rounds) > 1 else {}
     r2_cr = int(r2.get("cache_read_input_tokens") or 0)
-    if any("error" in r for r in rounds):
+    # 失败轮判定被下方 cache_supported 裁决与 rounds_distinct 跳过判定共用，
+    # 提取局部变量避免两处口径静默分叉（code-review item b162aa42ec7f）。
+    has_failed_round = any("error" in r for r in rounds)
+    if has_failed_round:
         cache_supported = None
     else:
         cache_supported = r2_cr > 0
@@ -186,7 +189,7 @@ def probe(provider_name: str, config_path: Path) -> dict:
     # D3 定案记录：网关不接受可复用前缀缓存时输出 false 与实测差异。
     # 任一轮失败时差异不可判定（成功轮子集可能缩成单元素，把真实差异
     # 掩盖为「相同」），显式标注跳过而非给出误导性 distinct=False。
-    if any("error" in r for r in rounds):
+    if has_failed_round:
         evidence["rounds_distinct"] = None
         evidence["rounds_distinct_note"] = "存在失败轮次，差异判定不可信，已跳过"
     else:

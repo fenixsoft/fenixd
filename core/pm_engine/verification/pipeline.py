@@ -2013,8 +2013,7 @@ class VerificationPipeline:
     # ── B5: judge 派发与失败三让位 + D6 二次状态核对（等价搬移）──────
     # D1 B5 段落：_judge_dispatch_gate / judge 失败三让位分支 / D6 二次状态核对。
     # 返回 judge_result（成功）或 None（让位/核对不过，调用者 MUST return）。
-    def _dispatch_judge_or_reuse(self, spec_name: str, report, fail_count: int,
-                                 judge_result) -> object:
+    def _dispatch_judge_or_reuse(self, spec_name: str, judge_result) -> object:
         """judge 派发与失败三让位 + D6 二次状态核对（等价搬移自 B5）。
 
         快道未命中（judge_result None）→ 真实派发 judge（含稳定性复用门）；
@@ -2707,7 +2706,7 @@ class VerificationPipeline:
         if _gates_aborted:
             return
         # ── B5: judge 派发与失败三让位 + D6 二次状态核对（见 _dispatch_judge_or_reuse）──
-        judge_result = self._dispatch_judge_or_reuse(spec_name, report, fail_count, judge_result)
+        judge_result = self._dispatch_judge_or_reuse(spec_name, judge_result)
         if judge_result is None:
             return
 
