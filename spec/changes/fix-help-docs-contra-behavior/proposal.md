@@ -9,7 +9,7 @@
 - 修正 `07-safeguards.md`：autostash 回收「冲突时自动解决（UU → add）」→ 三分诊（三方重试 → 恢复 commit → 兜底登记，绝不静默丢弃）；「十状态生命周期」→ 11 状态。
 - 修正 `08-dashboard.md`：impl 收尾代码审查「实现者写结果文件前内联调用、并发经提示词软约束」→ 框架侧异步并行车道（merge-back+tester 派发时点启动、并发硬生效缺省 4）；架构图「1800 秒硬超时整组击杀」→ 两段式（探索 ≤720s / 出图 ≤1080s 分段击杀 + HEAD 指纹一致跳过探索段）。
 - 修正 `09-config.md`：`agents.max_concurrent` 缺省 5；`admin.code_review_fix` 回归失败处置段整段重写（定向重试 ≤`targeted_retry_max` 缺省 3 轮只重跑失败子集、耗尽现场即弃入档案、FAIL_RETRY_MAX=3 预算内新链自动重试，删除「保留待人工 / release_failed_batch」旧世界描述）；回归「跑全量」→ 首轮全量+定向轮子集；「30 分钟 full scan 兜底」→ `schedule.poll_interval_minutes`（缺省 30）；`admin.shutdown_drain_seconds` 双侧行为补规划性重启豁免（restart_request 在场时按 `agents.run_drain_max_seconds` 排水不被 0 夹紧）；`impl_code_review_concurrency` 缺省 4 且硬生效；`agents.models` 角色集 10 → 11（+code-fix）；审查产物「agent 逐文件落 out-<run_id>.jsonl」→ 分片直写 out-<run_id>-b<N>.jsonl 聚合。
-- 修正 `README.md`（03 行「10 状态全景」→ 11 状态）、`02-concepts.md`（「十一类 Agent」→ 12 类 +code-fix 行）、`03-lifecycle.md` 与 `12-faq.md`（hook 事件「十状态枚举」→ 11 状态 + `all-done` 伪事件）。
+- 修正 `README.md`（03 行「10 状态全景」→ 11 状态）、`02-concepts.md`（「十一类 Agent」→ 12 类 +code-fix 行）、`01-quick-start.md`（相关文档链接行「10 状态全景」→ 11 状态）、`03-lifecycle.md` 与 `12-faq.md`（hook 事件「十状态枚举」→ 11 状态 + `all-done` 伪事件）。
 
 ## Capabilities
 
@@ -20,5 +20,5 @@
 
 ## Impact
 
-- 仅改动 `docs/help/*.md`（05/06/07/08/09/README/02/03/12 共 9 份），零代码改动、零配置改动、零运行时行为变化。
+- 仅改动 `docs/help/*.md`（05/06/07/08/09/README/01/02/03/12 共 10 份），零代码改动、零配置改动、零运行时行为变化。
 - 帮助页（Dashboard /help）直接渲染该目录，改完即对用户可见；无需 daemon 重启（文档由前端按需拉取）。

@@ -13,6 +13,8 @@
   kind: modify
 - path: docs/help/README.md
   kind: modify
+- path: docs/help/01-quick-start.md
+  kind: modify
 - path: docs/help/02-concepts.md
   kind: modify
 - path: docs/help/03-lifecycle.md
@@ -58,11 +60,12 @@
 - [ ] 5.7 admin.code_review 节审查路径：「再由 agent 逐文件落 `out-<run_id>.jsonl`」→ 分片直写口径（子代理各写 `out-<run_id>-b<N>.jsonl`，读侧聚合，主产物仅兜底），锚点 code_review.py:56-129
 - [ ] 5.8 全文 grep 自检：无「保留待人工」「release_failed_batch」「十个角色」残留；「模板值与代码缺省不一致」表与本节新口径不冲突
 
-## 6. 目录与概念章口径修正（docs/help/README.md、02-concepts.md）
+## 6. 目录与概念章口径修正（docs/help/README.md、01-quick-start.md、02-concepts.md）
 
 - [ ] 6.1 README.md 目录表 03 行简介「10 状态全景与合法转移」→「11 状态全景与合法转移」
 - [ ] 6.2 02-concepts.md 架构图 Agent Pool 标题「十一类 Agent」→「十二类 Agent」，表格补 code-fix 行（职责：按批修复 code-review 台账 open 条目、独立 worktree 修复+全量回归通过才合回；触发：审查收尾产生新 open 条目 / full scan 周期兜底 / 项目页手动触发）；正文「十一类」字样同步
-- [ ] 6.3 全文 grep 自检：两文件无「10 状态」「十一类」残留
+- [ ] 6.3 01-quick-start.md「相关文档」节链接行简介「— 10 状态全景」→「— 11 状态全景」（评审补：该行不在原交付清单，属 D3 交叉引用清零范围遗漏）
+- [ ] 6.4 全文 grep 自检：三文件无「10 状态」「十一类」残留
 
 ## 7. 事件枚举口径修正（docs/help/03-lifecycle.md、12-faq.md）
 
