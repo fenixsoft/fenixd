@@ -502,7 +502,9 @@ class TestEnvBlockedInconclusive(unittest.TestCase):
         spec = self.sm.read_one("s1")
         self.assertEqual(int(spec["_inconclusive_attempts"]), 3)
         self.assertIn("连续 3 轮", spec["error"])
-        self.assertIn("请人工检查", spec["error"])
+        # 922e79f7a511：达重验上限后停止收口与 SIGNAL 升级合并，error 文案由
+        # 「请人工检查 mock/SSE 推送环境」改为「已呼叫 Administrator 核查验证环境」
+        self.assertIn("已呼叫 Administrator 核查验证环境", spec["error"])
         self.assertGreaterEqual(int(spec["_dispatch_backoff_until"]), int(datetime.now(timezone.utc).timestamp()))
         self.assertEqual(self.sm.read_one("s1")["status"], "implemented")
 

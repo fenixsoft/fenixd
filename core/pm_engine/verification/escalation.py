@@ -46,6 +46,26 @@ _SCENARIO_REPAIR_REVERIFY_DELAY_SECONDS = 1800
 _REVERIFY_TIMERS_LOCK = threading.Lock()
 
 
+def _read_int_config(pipeline, key: str, default: int) -> int:
+    """读取整数配置并防御性转换（code-review f65f6eeec868）。
+
+    原 `int(config_reader(...) or N)` 模式：yaml 误配非数字串时 int() 抛
+    ValueError 沿裁决路径上抛；且 `or N` 把合法的 0 归一为缺省，无法用 0
+    关闭自动重验。此处与 _handle_*_inconclusive 的 attempts 解析同款防御：
+    None 显式判空回退缺省、非数字回退缺省、0 原样透传。
+    """
+    try:
+        value = pipeline._context.config_reader(key, default)
+        if value is None:
+            return default
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+# [fenix-ignore:d5f83f2038f4] 三处同构骨架经停止分支合并（922e79f7a511）
+# 与 _read_int_config 抽取后，残留分歧仅在各自文案与 judge 无并行降档，
+# 参数化抽取风险大于收益，暂不共享实现
 def _handle_env_blocked_inconclusive(pipeline, spec_name: str, report: dict) -> bool:
     """环境性失联门禁：全批 blocked-env → inconclusive → 保持 testing 重派新 attempt。
 
@@ -58,8 +78,9 @@ def _handle_env_blocked_inconclusive(pipeline, spec_name: str, report: dict) -> 
     Administrator，对应 spec Scenario）。
 
     重验上限沿用 attempts=3（verify_engine.inconclusive_max_attempts 可调）：
-    连续超限后停止自动重验、保持 implemented 并写 error 暴露，由
-    admin_monitor stuck 检测唤起人工，不再无界自动重验。
+    连续超限后停止自动重验、保持 implemented 并写 error 暴露——停止收口
+    与 SIGNAL 升级合并（code-review 922e79f7a511）：达上限轮次写
+    inconclusive_loop SIGNAL 唤起 Administrator，不再无界自动重验。
 
     Returns:
         True 表示本轮已按 inconclusive 处理（调用方跳过 bug-found/verified
@@ -87,20 +108,21 @@ def _handle_env_blocked_inconclusive(pipeline, spec_name: str, report: dict) -> 
         attempts = int(spec.get("_inconclusive_attempts", 0) or 0) + 1
     except (TypeError, ValueError):
         attempts = 1
-    max_attempts = int(
-        pipeline._context.config_reader("verify_engine.inconclusive_max_attempts", 3) or 3
+    max_attempts = _read_int_config(
+        pipeline, "verify_engine.inconclusive_max_attempts", 3
     )
-    escalate_attempts = int(
-        pipeline._context.config_reader("verify_engine.inconclusive_escalate_attempts", 4) or 4
+    escalate_attempts = _read_int_config(
+        pipeline, "verify_engine.inconclusive_escalate_attempts", 4
     )
 
     # ── B7 升级通道（add-verdict-credibility-gate / design D6）──
-    # 连续计数达到升级阈值（缺省 4）：向 admin store 写 kind=SIGNAL 记录，
-    # 经 admin_monitor 摄取唤起 Administrator。三层既有检测口径
-    # （repeated_failures / stuck / blocked_stuck）均实证错过该故障形态，
-    # 不可依赖它们。写入后停止自动重验：计数不清零则 recovery（B6）保持
-    # 跳过，人工处置是唯一出路——与「暂停自动重验」语义闭环。
-    if attempts >= escalate_attempts:
+    # 达升级阈值（缺省 4）或达重验上限（attempts >= max_attempts，缺省 3，
+    # 停止收口与升级合并，code-review 922e79f7a511）：向 admin store 写
+    # kind=SIGNAL 记录，经 admin_monitor 摄取唤起 Administrator。三层既有
+    # 检测口径（repeated_failures / stuck / blocked_stuck）均实证错过该
+    # 故障形态，不可依赖它们。写入后停止自动重验：计数不清零则 recovery
+    # （B6）保持跳过，人工处置是唯一出路——与「暂停自动重验」语义闭环。
+    if attempts >= escalate_attempts or attempts >= max_attempts:
         pipeline._write_inconclusive_loop_signal(spec_name, attempts, blocked_env, report)
         pipeline._context.logger.error(
             "pm_engine",
@@ -147,36 +169,11 @@ def _handle_env_blocked_inconclusive(pipeline, spec_name: str, report: dict) -> 
         # 取整、下限 1），首轮不降档（白屏证据尚不存在，降档会冤枉健康
         # 环境）。下一轮 VerifyEngine 构造时读取覆盖 max_parallel。
         if attempts >= 2:
-            base = int(pipeline._context.config_reader("verify_engine.max_parallel", 5) or 5)
+            base = _read_int_config(pipeline, "verify_engine.max_parallel", 5)
             updates["_verify_parallel_override"] = max(1, base >> (attempts - 1))
         pipeline._context.state_machine.update_spec(spec_name, updates)
         pipeline._context.enqueue(spec_name, "verifier")
         return True
-
-    # 连续 ≥max_attempts 轮全部环境性失联：停止自动重验，暴露错误等待人工。
-    # 置 _dispatch_backoff_until 吸收同状态 update 触发的即时重派振荡。
-    pipeline._context.logger.error(
-        "pm_engine",
-        f"'{spec_name}' 连续 {attempts} 轮验证全部 blocked-env，"
-        f"疑为 mock/SSE 推送环境故障，暂停自动重验",
-    )
-    pipeline._context.state_machine.update_spec(
-        spec_name,
-        {
-            "status": "implemented",
-            "tester_run": None,
-            "error": (
-                f"连续 {attempts} 轮验证全部环境性失联（blocked-env），"
-                f"请人工检查 mock/SSE 推送环境；不产生 bug-found 信号"
-            ),
-            "_inconclusive_attempts": attempts,
-            "_dispatch_backoff_until": (
-                int(datetime.now(timezone.utc).timestamp())
-                + _SCENARIO_REPAIR_REVERIFY_DELAY_SECONDS
-            ),
-        },
-    )
-    return True
 
 
 def _env_whitewash_gate(pipeline, spec_name: str) -> bool:
@@ -239,6 +236,10 @@ def _escalate_env_blocked(
     的裁决参考。
     """
     try:
+        # 函数入口归一：violations 不可为 None（code-review 671b6c3c2e48），
+        # 否则 262/265 行 violations[:3] 抛 TypeError 被下方函数级 except
+        # 吞掉，阻塞/告警/呼叫全部静默跳过。
+        violations = list(violations or [])
         spec = pipeline._context.state_machine.read_one(spec_name) or {}
         # ── evo-infra-failure-budget-exempt R2：env 阻塞属 infra ──
         # prepare/serve 失败（构建命令退出、端口不可达、自动启动失败）走
@@ -502,7 +503,7 @@ def _warning_stale_triage_alert(pipeline, spec_name: str, scenario_ids: list) ->
         for sc in report.get("scenarios", []) or []:
             if not isinstance(sc, dict):
                 continue
-            sid = sc.get("scenario_id") or sc.get("id")
+            sid = str(sc.get("scenario_id") or sc.get("id") or "")
             if sid not in scenario_ids:
                 continue
             ev = sc.get("evidence") if isinstance(sc.get("evidence"), dict) else {}
@@ -992,11 +993,11 @@ def _handle_judge_env_declared(pipeline, spec_name: str) -> bool:
         attempts = int(spec.get("_inconclusive_attempts", 0) or 0) + 1
     except (TypeError, ValueError):
         attempts = 1
-    max_attempts = int(
-        pipeline._context.config_reader("verify_engine.inconclusive_max_attempts", 3) or 3
+    max_attempts = _read_int_config(
+        pipeline, "verify_engine.inconclusive_max_attempts", 3
     )
-    escalate_attempts = int(
-        pipeline._context.config_reader("verify_engine.inconclusive_escalate_attempts", 4) or 4
+    escalate_attempts = _read_int_config(
+        pipeline, "verify_engine.inconclusive_escalate_attempts", 4
     )
     note = (
         f"judge 判定 bug-found 但所有 bug 根因均自述为环境/基础设施问题"
@@ -1004,7 +1005,9 @@ def _handle_judge_env_declared(pipeline, spec_name: str) -> bool:
     )
 
     # ── B7 升级通道（design D6）──
-    if attempts >= escalate_attempts:
+    # 达升级阈值或达重验上限（attempts >= max_attempts，停止收口与升级
+    # 合并，code-review 922e79f7a511）即升级写 SIGNAL。
+    if attempts >= escalate_attempts or attempts >= max_attempts:
         # 构造一个简化 report（blocked-env 场景信息从 state 读）：
         # judge 自述环境问题时，blocked-env 数需要从上轮 report 提取，
         # 此处用 _inconclusive_attempts 作为上下文。
@@ -1057,30 +1060,6 @@ def _handle_judge_env_declared(pipeline, spec_name: str) -> bool:
         )
         pipeline._context.enqueue(spec_name, "verifier")
         return True
-
-    # 连续 ≥max_attempts 轮均自述环境问题：停止自动重验，暴露错误等待人工。
-    pipeline._context.logger.error(
-        "pm_engine",
-        f"'{spec_name}' 连续 {attempts} 轮 judge 均自述环境问题（伪失败），"
-        f"暂停自动重验，请人工检查验证场景/环境",
-    )
-    pipeline._context.state_machine.update_spec(
-        spec_name,
-        {
-            "status": "implemented",
-            "tester_run": None,
-            "error": (
-                f"连续 {attempts} 轮验证均因环境/基础设施问题未完成"
-                f"（judge 自述），请人工检查验证场景/环境；不派生 fix"
-            ),
-            "_inconclusive_attempts": attempts,
-            "_dispatch_backoff_until": (
-                int(datetime.now(timezone.utc).timestamp())
-                + _SCENARIO_REPAIR_REVERIFY_DELAY_SECONDS
-            ),
-        },
-    )
-    return True
 
 
 def _judge_bugs_declare_env(pipeline, spec_name: str) -> bool:
@@ -1166,8 +1145,8 @@ def _speculative_bug_found_gate(pipeline, spec_name: str) -> bool:
                     pass
             return False
 
-        max_retries = int(
-            pipeline._context.config_reader("verify_engine.credibility_gate_max_retries", 1) or 1
+        max_retries = _read_int_config(
+            pipeline, "verify_engine.credibility_gate_max_retries", 1
         )
         spec = pipeline._context.state_machine.read_one(spec_name) or {}
         gate_attempts = int(spec.get("_credibility_gate_attempts", 0) or 0)
@@ -1425,11 +1404,11 @@ def _handle_verdict_env_exemption_inconclusive(
         attempts = int(spec.get("_inconclusive_attempts", 0) or 0) + 1
     except (TypeError, ValueError):
         attempts = 1
-    max_attempts = int(
-        pipeline._context.config_reader("verify_engine.inconclusive_max_attempts", 3) or 3
+    max_attempts = _read_int_config(
+        pipeline, "verify_engine.inconclusive_max_attempts", 3
     )
-    escalate_attempts = int(
-        pipeline._context.config_reader("verify_engine.inconclusive_escalate_attempts", 4) or 4
+    escalate_attempts = _read_int_config(
+        pipeline, "verify_engine.inconclusive_escalate_attempts", 4
     )
     env_note = (
         f"验证失败全部被裁决归类 env（env 断言 {verdict.get('env_entries', 0)} 条、"
@@ -1437,7 +1416,9 @@ def _handle_verdict_env_exemption_inconclusive(
     )
 
     # ── B7 升级通道（复用既有 SIGNAL 写入，add-verdict-credibility-gate D6）──
-    if attempts >= escalate_attempts:
+    # 达升级阈值或达重验上限（attempts >= max_attempts，停止收口与升级
+    # 合并，code-review 922e79f7a511）即升级写 SIGNAL。
+    if attempts >= escalate_attempts or attempts >= max_attempts:
         pipeline._write_inconclusive_loop_signal(spec_name, attempts, blocked_env, report or {})
         pipeline._context.logger.error(
             "pm_engine",
@@ -1483,37 +1464,11 @@ def _handle_verdict_env_exemption_inconclusive(
         # add-verify-parallel-backoff / design D1：与级一同款降档——attempts≥2
         # 起按配置值逐轮减半向下取整、下限 1，下一轮 VerifyEngine 构造时读取。
         if attempts >= 2:
-            base = int(pipeline._context.config_reader("verify_engine.max_parallel", 5) or 5)
+            base = _read_int_config(pipeline, "verify_engine.max_parallel", 5)
             updates["_verify_parallel_override"] = max(1, base >> (attempts - 1))
         pipeline._context.state_machine.update_spec(spec_name, updates)
         pipeline._context.enqueue(spec_name, "verifier")
         return True
-
-    # 连续 ≥max_attempts 轮：停止自动重验，暴露错误等待人工（与级一同款收口）
-    pipeline._context.logger.error(
-        "pm_engine",
-        f"'{spec_name}' 连续 {attempts} 轮验证失败均被裁决豁免为环境性，"
-        f"暂停自动重验，等待 admin 处置或人工放行（豁免清单不得作为 "
-        f"verified 依据）",
-    )
-    pipeline._context.state_machine.update_spec(
-        spec_name,
-        {
-            "status": "implemented",
-            "tester_run": None,
-            "error": (
-                f"连续 {attempts} 轮验证失败均被裁决归类 env（豁免握手拦截），"
-                f"无 admin 放行处置记录，请人工核查验证环境或放行；"
-                f"不产生 bug-found 信号"
-            ),
-            "_inconclusive_attempts": attempts,
-            "_dispatch_backoff_until": (
-                int(datetime.now(timezone.utc).timestamp())
-                + _SCENARIO_REPAIR_REVERIFY_DELAY_SECONDS
-            ),
-        },
-    )
-    return True
 
 
 def _env_exempt_disposition_is_stale(
@@ -1550,7 +1505,7 @@ def _env_exempt_disposition_is_stale(
         return dt
 
     try:
-        latest_signal_created = ""
+        latest_signal_dt = None
         for rec in store.read_all():
             if rec.get("kind") != SIGNAL:
                 continue
@@ -1558,9 +1513,15 @@ def _env_exempt_disposition_is_stale(
                 continue
             if rec.get("spec") != spec_name:
                 continue
-            created = str(rec.get("created") or "")
-            if created > latest_signal_created:
-                latest_signal_created = created
+            # 统一按 _parse_ts 解析后取最近（code-review 4ed9b3c4a946）：
+            # 字典序比较在混存朴素时间戳与 +00:00 后缀 ISO 串时由长度决定
+            # 序关系，可能选错「最近一条」；_parse_ts 的朴素→UTC 归一使
+            # 两类时间戳可比。不可解析的记录跳过（不参与锚点选取）。
+            rec_dt = _parse_ts(rec.get("created"))
+            if rec_dt is not None and (
+                latest_signal_dt is None or rec_dt > latest_signal_dt
+            ):
+                latest_signal_dt = rec_dt
     except Exception as e:
         pipeline._context.logger.warning(
             "pm_engine",
@@ -1569,15 +1530,12 @@ def _env_exempt_disposition_is_stale(
         )
         return True
 
-    if not latest_signal_created:
+    if latest_signal_dt is None:
         return False
     disposition_dt = _parse_ts(disposition.get("created"))
     if disposition_dt is None:
         return True
-    signal_dt = _parse_ts(latest_signal_created)
-    if signal_dt is None:
-        return False
-    return disposition_dt <= signal_dt
+    return disposition_dt <= latest_signal_dt
 
 
 def _handle_env_exemption_handshake(

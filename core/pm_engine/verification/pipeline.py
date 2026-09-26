@@ -72,7 +72,6 @@ from core.pm_engine.verification.infra_classify import (
 from core.pm_engine.verification.scenario_gate import (
     _apply_interaction_contract,
     _apply_scenario_freeze,
-    _load_frozen_scenarios,
     _render_scenario_change_section_to_report,
     _run_contract_static_check,
     _run_scenario_static_check,
@@ -388,10 +387,6 @@ class VerificationPipeline:
     # ── infra_classify 薄委托（见 report_gate 注释 D2b 规则 2）──
 
     _normalize_fail_signature = staticmethod(_normalize_fail_signature)
-
-    # ── scenario_gate 薄委托（见 report_gate 注释 D2b 规则 2）──
-
-    _load_frozen_scenarios = staticmethod(_load_frozen_scenarios)
 
     # ── serving 薄委托（见 report_gate 注释 D2b 规则 2）──
 

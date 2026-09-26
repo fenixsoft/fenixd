@@ -1911,6 +1911,11 @@ class TestZeroChangeConfirmationPath(unittest.TestCase):
         self.engine._clear_dispatch_conflict = MagicMock(return_value={})
         wm = MagicMock()
         wm.find_implementer_worktree = MagicMock(return_value=None)
+        # 19a447af3bfc 后零变更哨补查 worktree git status：本夹具分支经
+        # `git branch` 创建、未注册 worktree，真实 find_worktree_path 返回
+        # None（无匹配）→ 哨兵跳过该检查；未 stub 会拿到真值 MagicMock 使
+        # git status 失败误判「非零变更」，零变更哨不触发、走错收口路径。
+        wm.find_worktree_path = MagicMock(return_value=None)
         wm.merge_back_from_branch.return_value = (True, "")
         wm.last_stash_pop_conflicts = []
         wm.consume_legacy = MagicMock()
