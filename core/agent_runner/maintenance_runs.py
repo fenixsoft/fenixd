@@ -23,6 +23,7 @@ import hashlib
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -728,7 +729,11 @@ def run_evolution(
       _run_claude（spec「分析 run 的角色、模型链与执行形态」）。
 
     产物路径 ``.fenix/evolution/out-<run_id>.json``（契约 JSON：
-    items[] 含 verdict/analysis_md/spec），run 结束读取并清理（4.4）。
+    items[] 含 verdict/analysis_md/spec），run 结束**先抢救再清理**
+    （evo-add-evolution-product-salvage：run_ok=False 也先读产物，产物
+    缺失或不可解析且 ``<out>.parts`` 有分片时按合并配方恢复；完整契约
+    按成功落地并落 INFO，部分恢复按失败落地且不推进水位——水位由
+    调用方按 success 决定）。
     产物缺失或解析失败返回 success=False 并带原因，MUST NOT 抛异常
     穿透到调用方。落地（ingest_item）由本方法执行，自动接受是
     5.3 检查点的职责（本方法不触碰配置开关）。
@@ -790,28 +795,44 @@ def run_evolution(
     runner._accumulate_evolution_tokens(run_id, usage_info)
 
     # 读取契约产物并落地（4.4：产物缺失/解析失败 → success=False 带原因）
+    # 收尾段重排为「先抢救再清理」（evo-add-evolution-product-salvage）：
+    # 无论 run_ok 先做抢救（产物缺失或 JSON 不可解析且 .parts 有分片 →
+    # 合并恢复）再 read_contract；恢复出完整契约（条目数与待分析条目一致
+    # 或未知）而 CLI 非零退出时按成功落地并落 INFO；部分恢复（条目不足）
+    # 按失败落地——success=False、缺失数入 error，MUST NOT 触发水位推进
+    # （fenixd worker 仅在 success 时对全部 ready_projects
+    # advance_watermark(snapshot_at)，部分成功推进会永久跳过未分析条目；
+    # 已落地条目由 ingest_item 幂等去重由下轮检查点补齐）。确无产物可救
+    # 才在 finally 清理，范围含 .parts 残片目录。
     degraded = None
     items_ingested = 0
     drafts = 0
     try:
-        if run_ok:
-            try:
-                from core.evolution import ContractError, read_contract, ingest_item
+        try:
+            from core.evolution import ContractError, read_contract, ingest_item
 
-                try:
-                    contract = read_contract(out_path)
-                except ContractError as e:
-                    run_ok = False
-                    error = str(e)
-                    contract = None
-            except Exception as e:
-                # 落地异常不应穿透（检查点统一捕获）；整轮视为失败带原因
+            # 先抢救：_run_claude 非零退出/产物半写时按分片合并配方恢复
+            salvaged = _salvage_evolution_out(out_path)
+
+            contract = None
+            try:
+                contract = read_contract(out_path)
+            except ContractError as e:
+                # 失败归因分级（任务 1.2）：「产物文件未写出」与「产物
+                # JSON 不可解析」可判别；CLI 自身异常原因附注保留归因。
+                prev_error = error
                 run_ok = False
-                error = f"分析落地异常: {e}"
+                error = str(e)
+                if prev_error and prev_error != str(e):
+                    error = f"{error}（CLI 退出异常: {prev_error}）"
                 contract = None
-            if run_ok and contract:
+
+            if contract is not None:
+                items = contract.get("items") or []
+                expected = len(pending_entries) if pending_entries else None
+                partial = expected is not None and len(items) < expected
                 degraded = contract.get("degraded")
-                for item in contract.get("items") or []:
+                for item in items:
                     try:
                         status = ingest_item(item, runner.project_root)
                     except Exception as e:
@@ -826,16 +847,51 @@ def run_evolution(
                     items_ingested += 1
                     if status == "pending":
                         drafts += 1
+                if partial:
+                    # 部分恢复按失败落地：缺失数入 error、不触发水位推进
+                    # （见上方收尾段说明；已落地条目由下轮幂等去重补齐）。
+                    run_ok = False
+                    error = (
+                        f"产物部分恢复: 仅 {len(items)}/{expected} 条，"
+                        f"缺失 {expected - len(items)} 条"
+                        f"（水位不推进，已落地条目由下轮幂等去重补齐）"
+                    )
+                elif not run_ok:
+                    # CLI 非零退出但契约产物完整（直读或抢救合并恢复）。
+                    # 空条目不翻转：无从证明恢复出完整契约，按失败落地。
+                    if items:
+                        run_ok = True
+                        error = ""
+                        _log = getattr(runner, "logger", None)
+                        if _log is not None:
+                            how = (
+                                f"抢救合并恢复 {salvaged} 条分片"
+                                if salvaged is not None
+                                else "产物直读"
+                            )
+                            _log.info(
+                                "self-evolution",
+                                f"CLI 退出异常但契约产物完整（{how}），"
+                                f"按成功落地",
+                            )
+                    else:
+                        run_ok = False
+                        error = "CLI 退出异常且契约产物无条目"
+        except Exception as e:
+            # 落地异常不应穿透（检查点统一捕获）；整轮视为失败带原因
+            run_ok = False
+            error = f"分析落地异常: {e}"
+            contract = None
     finally:
-        # 清理放与 ``if run_ok:`` 同级的外层 finally（code-review item
-        # b77dad6f5ea5；早前 f1ef92e5ca50 已把 finally 从内层读写 try 上移过
-        # 一次，但整块仍被 ``if run_ok:`` 门控）：_run_claude 失败（超时/
-        # 轮次上限强杀/非零退出）而 agent 已先行写出产物时 run_ok=False
-        # 使整块被跳过，out-<run_id>.json 永久残留 .fenix/evolution/ 累积
-        # 垃圾（与 docstring「run 结束读取并清理」不符）。上移到外层
-        # finally 保证无论 run/import/读写成败都清理本 run 的产物文件
-        # （_delete_evolution_out 缺失即跳过，run 失败且从未写出时幂等安全）。
+        # 清理放外层 finally 且后移到「先抢救」之后（code-review item
+        # b77dad6f5ea5；早前 f1ef92e5ca50 把 finally 从内层读写 try 上移，
+        # 本轮 evo-add-evolution-product-salvage 再把删除动作从「无条件
+        # 先删」改为「先抢救再清理」）：无论 run/import/读写成败都清理
+        # 本 run 的产物文件，范围扩到 .parts 残片目录（止住已观测的残片
+        # 目录垃圾）。_delete_evolution_out / _delete_evolution_parts_dir
+        # 缺失即跳过，run 失败且从未写出时幂等安全。
         runner._delete_evolution_out(out_path)
+        _delete_evolution_parts_dir(out_path)
 
     return EvolutionResult(
         run_id=run_id,
@@ -854,6 +910,68 @@ def _delete_evolution_out(out_path: Path):
         out_path.unlink(missing_ok=True)
     except OSError:
         pass
+
+
+def _delete_evolution_parts_dir(out_path: Path):
+    """删除本 run 的 ``<out>.parts`` 分片残片目录（幂等安全）。
+
+    分片目录是 agents/evolution.md 纯提示词契约的中间产物，正常收尾由
+    agent 自行 rm -rf；抢救路径兜底清理（确无产物可救 / 已合并完成后）
+    ，止住已观测的残片目录垃圾。
+    """
+    try:
+        shutil.rmtree(Path(f"{out_path}.parts"), ignore_errors=True)
+    except OSError:
+        pass
+
+
+def _salvage_evolution_out(out_path: Path) -> int | None:
+    """产物缺失或 JSON 不可解析且 ``<out>.parts`` 分片非空时合并恢复。
+
+    agents/evolution.md 的分片写入契约是纯提示词约定，框架零参与：CLI
+    非零退出 / 覆盖写瞬间的截断半写窗口（增量合并按分片反复重写 out，
+    恰在 out 已存在时）都可能留下「已写分片未合并」或「产物半写」现场
+    （evo-1790079811 实证留有 3 个可解析分片）。分片为每文件单条目自
+    包含 JSON，按 sorted(glob) 拼接 items 即既有合并配方，框架侧复刻
+    无障碍（产物仅保留 items，run_id 从文件名复算，degraded 置 None
+    ——read_contract 对三者均不做存在性强制）。
+
+    Returns:
+        恢复写回的分片条目数；无需/无法抢救（产物完整可解析、无分片、
+        写回失败）时返回 None——调用方据 None 与数值区分「直读」与「抢救」。
+    """
+    try:
+        part_files = sorted(Path(f"{out_path}.parts").glob("*.json"))
+    except OSError:
+        return None
+    if not part_files:
+        return None
+    # 产物已存在且 JSON 完整可解析时不覆盖：契约字段级问题（缺字段/
+    # 枚举非法）不属抢救范畴，交给 read_contract 的分级报错。
+    try:
+        json.loads(out_path.read_text(encoding="utf-8"))
+        return None
+    except (OSError, ValueError):
+        pass
+    items = []
+    for p in part_files:
+        try:
+            item = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue  # 单片损坏跳过，不阻塞其余分片
+        if isinstance(item, dict):
+            items.append(item)
+    # 与 agents/evolution.md 合并配方同形：out-<run_id>.json → run_id
+    run_id = out_path.stem[len("out-"):] if out_path.stem.startswith("out-") else None
+    payload = {"run_id": run_id, "degraded": None, "items": items}
+    try:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    except OSError:
+        return None
+    return len(items)
 
 
 def _accumulate_evolution_tokens(runner, run_id: str, usage_info: dict) -> None:
