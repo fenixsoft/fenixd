@@ -578,6 +578,14 @@ export default function SpecDetailPage() {
   useEffect(() => {
     if (!name || !spec) return;
 
+    // SPEC 快速切换（renderSpecSwitch 内 history.push）不重挂载本组件，
+    // scenarioFilter 等本地过滤态会跨 SPEC 残留：上一 SPEC 选中的「失败」
+    // 过滤原样作用于新 SPEC 场景列表（列表页过滤粘性在 URL query、此处为
+    // 隐式残留）。随 [name, spec] 变更归零（code-review item 3c54c109b5f6）；
+    // expandedAlerts 按告警 id、cancelNotices 按 run_id 索引，失效键多为
+    // 无害空读，不重置
+    setScenarioFilter('');
+
     // SSE 热更新：后台刷新必须静默原位进行——不能走 setLoading（整页被
     // Spin 替换再重建，交互状态全丢、agent 运行期间页面持续闪烁）。
     // applyDetail 以 JSON 内容判等，数据无变化时跳过 setState 避免无谓重渲染。
@@ -614,6 +622,10 @@ export default function SpecDetailPage() {
 
     // watcher 的 detail/state 事件自带完整详情可直接采用；
     // run_meta/refresh 只带轻量通知，节流后重拉 REST（与 list.tsx 同策略）。
+    // 节流无尾沿补偿：500ms 窗口内到达的最后一条轻量通知被丢弃不补拉，但
+    // refresh 为全局心跳兜底信号、事件流持续到来，最终一致性可恢复，仅存在
+    // 一段滞后窗口。属信息级且自愈，不设尾沿定时器（code-review item
+    // 6058215a190e）
     const REFRESH_THROTTLE_MS = 500;
     let lastRefresh = 0;
     const throttledLoad = () => {
@@ -1125,9 +1137,9 @@ export default function SpecDetailPage() {
                       终止
                     </Button>
                   )}
-                  {cancelNotices[item.run_id!] && (
+                  {item.run_id && cancelNotices[item.run_id] && (
                     <Typography.Text type="success" style={{ fontSize: 12 }}>
-                      {cancelNotices[item.run_id!]}
+                      {cancelNotices[item.run_id]}
                     </Typography.Text>
                   )}
                 </div>

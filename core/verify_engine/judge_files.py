@@ -98,25 +98,31 @@ def _migrate_legacy_attribution(legacy_data: Dict[str, Any]) -> Dict[str, Any]:
     旧格式来自早期 judge 产物，无 scenarios 列表字段（调用方 load_attribution
     已对含 scenarios 列表的新格式提前返回，故此处只处理整块归因形态）：
     将整块归因作为单个场景条目（id = "legacy_0"）。
+
+    attribution 为空而仅有 classification 时，文本侧保留分类内容（查重/回炉
+    判定依赖该文本），同时保留独立 classification 字段并标注
+    classification_fallback=True，显式标记为分类回退而非原生归因。
     """
     # 整块归因作为单个条目
     attribution = legacy_data.get("attribution") or ""
     classification = legacy_data.get("classification") or ""
+    scenario_entry = {
+        "id": "legacy_0",
+        "attribution": attribution,
+        "status": ATTRIBUTION_STATUS_ACCEPT,
+        "timestamp": legacy_data.get("timestamp") or "",
+    }
     if not attribution and classification:
-        attribution = classification
-    scenarios = [
-        {
-            "id": "legacy_0",
-            "attribution": attribution,
-            "status": ATTRIBUTION_STATUS_ACCEPT,
-            "timestamp": legacy_data.get("timestamp") or "",
-        }
-    ]
+        # 旧格式仅存分类文本时，文本侧保留分类内容供查重/回炉判定读取，
+        # 同时保留独立 classification 字段并显式标注回退来源（非静默顶替）。
+        scenario_entry["attribution"] = classification
+        scenario_entry["classification"] = classification
+        scenario_entry["classification_fallback"] = True
 
     return {
         "format_version": "1.0",
         "migrated_from_legacy": True,
-        "scenarios": scenarios,
+        "scenarios": [scenario_entry],
     }
 
 
@@ -160,40 +166,6 @@ def save_attribution(
         except OSError:
             pass
         raise
-
-
-def mark_scenario_status(
-    project_root: Path,
-    spec_name: str,
-    scenario_id: str,
-    status: str,
-) -> bool:
-    """更新单个场景条目的状态（accept 或 requeue）。
-
-    Returns:
-        True 表示成功更新；False 表示场景未找到。
-    """
-    if status not in ATTRIBUTION_STATUSES:
-        raise ValueError(f"Invalid status: {status}")
-
-    # [fenix-ignore:89c55e4dbac3] 当前仓库内无任何调用方，写侧唯一（verdict_evidence 经 save_attribution 整体落盘），不存在并发读改写路径。
-    attr_data = load_attribution(project_root, spec_name)
-    if attr_data is None:
-        return False
-
-    scenarios = attr_data.get("scenarios") or []
-    updated = False
-    for sc in scenarios:
-        if isinstance(sc, dict) and sc.get("id") == scenario_id:
-            sc["status"] = status
-            updated = True
-            break
-
-    if not updated:
-        return False
-
-    save_attribution(project_root, spec_name, scenarios)
-    return True
 
 
 def get_requeue_scenarios(project_root: Path, spec_name: str) -> List[Dict[str, Any]]:
@@ -268,18 +240,6 @@ def build_requeue_manifest(
     return manifest
 
 
-def load_requeue_manifest(project_root: Path, spec_name: str) -> Optional[Dict[str, Any]]:
-    """读取回炉清单（缺失/损坏返回 None）。"""
-    path = _requeue_manifest_path(project_root, spec_name)
-    if not path.exists():
-        return None
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-        return None
-    return data if isinstance(data, dict) else None
-
-
 def clear_requeue_manifest(project_root: Path, spec_name: str) -> None:
     """清除回炉清单文件（合规采纳后调用）。"""
     path = _requeue_manifest_path(project_root, spec_name)
@@ -287,30 +247,6 @@ def clear_requeue_manifest(project_root: Path, spec_name: str) -> None:
         path.unlink(missing_ok=True)
     except OSError:
         pass
-
-
-def is_full_requeue(project_root: Path, spec_name: str) -> bool:
-    """判断是否全量重复（100% requeue）。
-
-    写侧（verdict_evidence._handle_scenario_requeue）只落非 PASS 场景条目
-    （pass/passed 在落盘前已跳过），故对全部条目判 ``all`` 即「所有非 PASS
-    场景均为 requeue」，无需再按 PASS 过滤；accept 条目须参与判定（存在
-    accept 即非全量回炉）。
-
-    Returns:
-        True 表示所有非 PASS 场景均为 requeue 状态；无归因数据返回 False。
-    """
-    attr_data = load_attribution(project_root, spec_name)
-    if attr_data is None:
-        return False
-
-    scenarios = attr_data.get("scenarios") or []
-    entries = [sc for sc in scenarios if isinstance(sc, dict)]
-
-    if not entries:
-        return False
-
-    return all(sc.get("status") == ATTRIBUTION_STATUS_REQUEUE for sc in entries)
 
 
 def migrate_legacy_attribution_file(project_root: Path, spec_name: str) -> bool:

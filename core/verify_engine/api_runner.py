@@ -19,40 +19,16 @@ httpx 依赖：setup 时检查（缺失=验证环境错误，引擎不判 bug-fo
 
 import asyncio
 import json
-import re
 import time
 from urllib.parse import urlparse
 
+from ._evidence import _EVIDENCE_LIMIT, _truncate, _interpolate_env  # 共享证据工具（符号出口保持）
 from .runner import VerifyRunner, register_runner, determine_scenario_status
 from .api_assertions import ApiAssertionRunner, json_schema_available
 from .env_gate import probe_http_health
 from .scenarios import validate_scenario
 
-_EVIDENCE_LIMIT = 64 * 1024  # 证据 64KB 截断上限
 _SSE_MAX_EVENTS = 100  # sse_connect 单窗口事件收集上限（触顶截断并在 detail 标注）
-
-
-def _truncate(text: str) -> tuple:
-    """证据截断：超过 64KB（UTF-8 字节口径）截断并带截断标记。返回 (截断后文本, truncated)。"""
-    if text is None:
-        return "", False
-    # 与 cli_runner._truncate 同源同口径：按编码后字节数截断（中文等多字节
-    # 证据按字符数比较会漏截）；errors="ignore" 丢弃尾部被切半的多字节序列
-    encoded = text.encode("utf-8", errors="replace")
-    if len(encoded) > _EVIDENCE_LIMIT:
-        return encoded[:_EVIDENCE_LIMIT].decode("utf-8", errors="ignore"), True
-    return text, False
-
-
-def _interpolate_env(value: str, env: dict) -> str:
-    """{env:VAR} 插值：未命中的占位符原样保留（防静默改写）。"""
-    if not isinstance(value, str) or "{env:" not in value:
-        return value
-
-    def _repl(m):
-        return env.get(m.group(1), m.group(0))
-
-    return re.sub(r"\{env:([^}]+)\}", _repl, value)
 
 
 def rewrite_origin(url: str, base_url: str) -> str:
