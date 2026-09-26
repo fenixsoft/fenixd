@@ -1566,12 +1566,17 @@ class ProviderCircuit:
             from core.admin_store import AdminStore
 
             store = AdminStore(self._pm.project_root, self._pm.logger)
+            # 数值容错（与同键既有消费点 record_transient_error/_finish_probe 的
+            # _positive_number 钳制口径统一）：裸 int(... or 0) 遇非数值配置抛
+            # ValueError，被外层 except 吞掉后告警自动核销整体静默失效。
             cooldown = int(
-                self._pm._get_config(
-                    "agents.transient_break_cooldown_seconds",
+                self._positive_number(
+                    self._pm._get_config(
+                        "agents.transient_break_cooldown_seconds",
+                        TRANSIENT_BREAK_COOLDOWN_SECONDS,
+                    ),
                     TRANSIENT_BREAK_COOLDOWN_SECONDS,
                 )
-                or 0
             )
             # 冻结时长分钟数 + 偏差裕量（时钟域偏差，见 docstring）；缺省不小于 60 分钟
             anchor_minutes = max(60, cooldown // 60 + 2)

@@ -337,8 +337,11 @@ def _strip_terminal_echo_lines(lines: list) -> list:
     不剥除则 marker 声明窗口收窄（698a9a0d）被信号路径原路绕过（2026-09-25
     两幻影误报实拍：impl/planner run 收工摘要正文提及「预算耗尽」即被判
     failed，重启 daemon 亦不可消除）。排除按行结构识别（窗口内 type=assistant
-    即回声行）、不做逐字副本内容匹配；窗口外的 assistant 事件行（独立失败
-    证据）保留。
+    即回声行）、不做逐字副本内容匹配；若调用方传入长于窗口的行序列，窗口
+    外的 assistant 事件行（独立失败证据）原样保留——但当前唯一调用链
+    _classify_run 只喂尾 3 行（_iter_window_classified_runs 固定
+    _read_run_tail(p, 3)），窗口起点 max(0, len-3) 恒为 0，全部输入都落在
+    窗口内，此保留分支实际不触发。
     """
     window_start = max(0, len(lines) - _TERMINAL_ADJACENT_WINDOW)
     kept = list(lines[:window_start])
@@ -410,7 +413,11 @@ def _classify_run(run_id: str, lines: list) -> tuple:
         # subtype!=success / is_error=True 或声明区 marker 命中，信号路径
         # 仅是兜底，此 fail-open 敞口为接受项（对 698a9a0d「兜底通道不收窄」
         # 决策的有意推翻；聚合侧另有双源交叉守卫兜住漏网，见
-        # collect_failed_run_samples）。窗口外的独立事件行仍可检出。
+        # collect_failed_run_samples）。（本分类管线只消费尾 3 行：唯一调用
+        # 链 _iter_window_classified_runs 固定 _read_run_tail(p, 3)，剥除窗
+        # 口起点恒为 0，全部输入都落在终态邻近窗口内，窗口外不存在独立事件
+        # 行；信号词在尾 3 行之外时不再翻转分类，见
+        # _iter_window_classified_runs 的接受项边界说明。）
         signal = _signal_evidence(_strip_terminal_echo_lines(lines)[:-1])
         if signal is not None:
             return "failed", signal

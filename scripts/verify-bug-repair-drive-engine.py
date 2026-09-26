@@ -35,7 +35,6 @@ REPO_ROOT = _find_repo_root(Path(__file__).resolve().parent)
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-from core.config import ConfigLoader
 from core.state_machine import StateMachine
 from core.pm_engine import PMEngine
 

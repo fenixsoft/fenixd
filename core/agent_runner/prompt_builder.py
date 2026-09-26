@@ -28,7 +28,7 @@ _logger = logging.getLogger("fenixd.agent_runner.prompt_builder")
 # progress_path）原样留在派发提示词属 fail-open，静默丢失预期注入。
 _PLACEHOLDER_RE = re.compile(r"\{[a-z_]+\}")
 
-# 十类 agent → 提示词文件名（agent-type 白名单的单一来源，Dashboard 端点复用）
+# 全部 agent 类型 → 提示词文件名（agent-type 白名单的单一来源，Dashboard 端点复用）
 # add-daily-self-review：新增 self-review（每日自省）类型。
 # add-deliverable-declaration-triage：新增 dispute-judge（交付物缺件 LLM 终审）类型。
 # add-framework-self-evolution：新增 evolution（框架自进化复核）类型。

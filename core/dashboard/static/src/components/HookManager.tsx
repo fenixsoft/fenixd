@@ -205,7 +205,7 @@ export default function HookManager({
       } else {
         next = [...hooks, entry];
       }
-      // 等 onSave 完成再关 Modal（code-review item aae592c70283）：destroyOnClose
+      // 等 onSave 完成再关 Modal（code-review item aae592c70283）：destroyOnHidden
       // + preserve=false 下提前关闭会销毁表单丢用户编辑内容；失败保持打开可重试
       try {
         await onSave(next);

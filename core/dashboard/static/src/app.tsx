@@ -12,11 +12,16 @@ import { ConfigProvider } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import type { ReactNode } from 'react';
 import dayjs from 'dayjs';
+import customParseFormat from 'dayjs/plugin/customParseFormat';
 import 'dayjs/locale/zh-cn';
 import logoUrl from './assets/logo-64.png';
 import defaultSettings from '../config/defaultSettings';
 import { getOverview } from './services/dashboard';
 
+// 自省/演进面板的 TimePicker 以 dayjs(str, 'HH:mm') 回填配置字符串，
+// 该双参解析必须注册 customParseFormat 插件才生效（缺省解析得 Invalid Date，
+// TimePicker 空显且保存产出 'Invalid Date' 被后端 400）。统一在此全局注册。
+dayjs.extend(customParseFormat);
 dayjs.locale('zh-cn');
 
 /**

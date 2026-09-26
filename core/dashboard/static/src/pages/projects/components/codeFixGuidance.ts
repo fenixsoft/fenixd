@@ -57,7 +57,9 @@ const BLOCKED_REASONS: Record<string, BlockedReasonInfo> = {
  * 与前端既有 SELFHEAL_WAIT_REASONS 的「reason 漂移不静默」口径一致。
  */
 export function blockedReasonInfo(reason: string | null | undefined): BlockedReasonInfo {
-  if (reason && BLOCKED_REASONS[reason]) {
+  // hasOwnProperty 排除 Object.prototype 继承键（constructor/toString 等），
+  // 避免未知 reason 误入「已知」分支后取不到 label/guidance。
+  if (reason && Object.prototype.hasOwnProperty.call(BLOCKED_REASONS, reason)) {
     return BLOCKED_REASONS[reason];
   }
   return { label: reason || '未知原因', guidance: '需人工排查' };
@@ -68,7 +70,10 @@ export function blockedReasonInfo(reason: string | null | undefined): BlockedRea
  * 未知 reason 原样回显（此时 label 即原码，不重复括注）。
  */
 export function blockedReasonDisplay(reason: string | null | undefined): string {
-  const known = reason != null && reason !== '' && BLOCKED_REASONS[reason] != null;
+  const known =
+    reason != null &&
+    reason !== '' &&
+    Object.prototype.hasOwnProperty.call(BLOCKED_REASONS, reason);
   if (!reason) {
     return '未知原因';
   }

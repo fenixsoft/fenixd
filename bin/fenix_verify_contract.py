@@ -83,6 +83,24 @@ def selfcheck_regression(project_root: Path, contract=None) -> tuple:
         output_abs.relative_to(root)
     except ValueError:
         return False, f"regression.output 越界项目根，拒绝触达: {output_rel}"
+    # 白名单化约束（code-review item d503c2228418）：output 是 verify.yaml 里
+    # 人工填写的自由路径，contained-in-root 只防外溢不防内伤——误填 src/ 源码
+    # 或 .fenix/ 配置键文件时，下面的清理会先真实删除该文件且回归命令不会重写
+    # 它，配置笔误升级为项目内文件丢失。unlink 前收紧为 JUnit XML 产物形态，
+    # 并显式拒绝契约文件本身与 .fenix/ 下的配置键文件。
+    if not output_rel.endswith(".xml"):
+        return False, (
+            f"regression.output 须为 .xml 产物路径，拒绝清理非 XML 文件: {output_rel}"
+        )
+    protected = {
+        (root / ".fenix" / "verify.yaml").resolve(),
+        (root / ".fenix" / "config.yaml").resolve(),
+    }
+    if output_abs in protected:
+        return False, (
+            f"regression.output 不得指向契约/配置键文件（verify.yaml/config.yaml），"
+            f"拒绝清理: {output_rel}"
+        )
     # 清理旧产物，确保解析的是本次执行产出
     if output_abs.is_file():
         try:

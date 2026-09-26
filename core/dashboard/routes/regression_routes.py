@@ -55,6 +55,63 @@ REGRESSION_REQUEST = ".fenix/regression_request.json"
 REGRESSION_FIX_REQUEST = ".fenix/regression_fix_request.json"
 REGRESSION_FIX_REQUEST_RESULT = ".fenix/regression_fix_request_result.json"
 
+# _write_trigger_signal 的三种结果（本函数不发响应，调用方按结果映射）：
+_TRIGGER_OK = "ok"  # 信号已落盘（独占创建胜出）→ 200
+_TRIGGER_CONFLICT = "conflict"  # 轮询路径已有未消费信号 → 409
+_TRIGGER_ERROR = "error"  # 目录创建/独占写失败 → 500
+
+
+def _write_trigger_signal(logger, req_path: Path, payload: dict, label: str) -> str:
+    """触发类信号「mkdir 包错 + 三步原子独占写 + 失败脱敏日志」单点实现。
+
+    /api/regression/run 与 /api/regression/fix 的信号写入路径完全同构，唯一
+    差异是文案前缀（label：「回归触发」/「回归修复触发」）与 payload。此前
+    两份复制体已实质漂移（run 侧保留完整根因论述、fix 侧压缩成「对齐
+    _api_regression_run」一句），mkdir 包错（item 6c873c1c07ed）等修复被迫
+    双点同修——收敛到此（item e22bfec7b9ee），端点只留守卫与响应映射。
+
+    写文件本体共用 code_review_routes 的三步原子独占写
+    ``_write_signal_exclusive``（item 422ae03395de 去重）：写完整临时文件 +
+    fsync → os.link 原子挂到轮询路径 → finally 清临时文件。先填内容再原子
+    挂载，daemon 1s 主循环 tick 落在创建与填充之间的空窗不复存在——旧实现
+    直接创建轮询路径、之后才 json.dump，消费端（run 侧 _consume_request_file）
+    会把空/半写文件 rename 走、解析失败按已消费返回 None，用户触发静默丢失
+    而本侧仍回 ok:true（item 4140f1f86f3f）。独占创建语义保留：目标已存在
+    （并发第二 POST 或上一信号尚未被消费）→ _TRIGGER_CONFLICT。
+
+    失败路径（均返回 _TRIGGER_ERROR，不抛异常）：
+    - 目录创建失败：与其余写路径一并包 try（item 6c873c1c07ed），权限/IO
+      失败不再逃逸 handler 被 dispatcher 转成通用 Internal Server Error，
+      与其余写路径一致报告。
+    - 独占写失败（_SignalWriteError）：临时文件写中途失败时轮询路径尚未
+      创建，无半写残留可误消费、无需额外清理（临时文件已由
+      ``_write_signal_exclusive`` 的 finally 清掉）。
+    - 两类失败均不外泄裸异常文本（item 2dd97866d0d5，对齐 autodraft 策略）：
+      OSError/异常文本可携带内部路径/权限属主细节，客户端只收调用方映射的
+      固定文案，细节降级经服务端日志留痕。
+    """
+    try:
+        req_path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        if logger is not None:
+            logger.warning(
+                "regression_routes",
+                f"{label}信号目录创建失败 {req_path.parent}: "
+                f"{type(e).__name__}: {e!r}",
+            )
+        return _TRIGGER_ERROR
+    try:
+        written = _write_signal_exclusive(req_path, payload)
+    except _SignalWriteError as exc:
+        if logger is not None:
+            logger.warning(
+                "regression_routes",
+                f"{label}信号写入失败 {req_path}: "
+                f"{type(exc).__name__}: {exc!r}",
+            )
+        return _TRIGGER_ERROR
+    return _TRIGGER_CONFLICT if written is None else _TRIGGER_OK
+
 # 同步生成的服务端预算（秒）。起草含「按 cmd 跑一次全量回归」的自证步
 # （fenix_verify_contract.py regression 行），大套件可到十分钟级——给足
 # 15 分钟；前端 timeoutMs 另加余量（dashboard.ts REGRESSION_AUTODRAFT_TIMEOUT_MS）。
@@ -276,54 +333,21 @@ class H12RegressionRoutesMixin:
             self._error(400, "daemon 未运行，请先启动 daemon")
             return
 
-        # 原子独占创建信号文件（三步独占写，item 4140f1f86f3f）：旧实现
-        # O_CREAT|O_EXCL 直接创建轮询路径、之后才 json.dump——daemon 1s
-        # 主循环 tick 落在创建与填充之间的空窗时，消费端 _consume_request_file
-        # 把空/半写文件 rename 走、解析失败按已消费返回 None，用户触发静默
-        # 丢失而本侧仍回 ok:true。改为写完整临时文件后 os.link 原子挂到
-        # 轮询路径：轮询路径要么不存在、要么已是完整 JSON，空窗不复存在；
-        # 独占创建语义保留（目标已存在抛 FileExistsError → 409，并发第二
-        # POST 或上一信号尚未被消费）。
-        created = datetime.now(timezone.utc).isoformat()
         # 键名与消费者契约一致（fenixd._check_regression_requests 读
         # requested_at；item 117af27b759a：写 created 使 daemon 恒记空时间戳）
+        created = datetime.now(timezone.utc).isoformat()
         payload = {"source": "dashboard", "requested_at": created}
         req_path = proot / REGRESSION_REQUEST
-        try:
-            req_path.parent.mkdir(parents=True, exist_ok=True)
-        except OSError as e:
-            # mkdir 与其余写路径一并包 try（code-review item 6c873c1c07ed）：
-            # 权限/IO 失败不再逃逸 handler 被 dispatcher 转成通用 Internal
-            # Server Error，与其余写路径一致报告。不外泄裸异常文本
-            # （code-review item 2dd97866d0d5，对齐 autodraft 策略）：OSError
-            # 文本可携带内部路径/权限属主细节，客户端收固定文案，细节降级
-            # 经服务端日志留痕。
-            _log = getattr(self, "logger", None)
-            if _log is not None:
-                _log.warning(
-                    "regression_routes",
-                    f"回归触发信号目录创建失败 {req_path.parent}: "
-                    f"{type(e).__name__}: {e!r}",
-                )
+        # 三步原子独占写 + 失败脱敏日志收敛在 _write_trigger_signal（item
+        # e22bfec7b9ee 去重），此处只按结果映射响应：error → 500、
+        # conflict → 409（并发第二 POST 或上一信号尚未被消费）
+        outcome = _write_trigger_signal(
+            getattr(self, "logger", None), req_path, payload, "回归触发",
+        )
+        if outcome == _TRIGGER_ERROR:
             self._error(500, "回归触发信号写入失败")
             return
-        try:
-            written = _write_signal_exclusive(req_path, payload)
-        except _SignalWriteError as exc:
-            # 临时文件写中途失败时轮询路径尚未创建，无半写残留可误消费、
-            # 无需清理（临时文件已由辅助函数 finally 清掉）；不外泄裸异常
-            # 文本（code-review item 2dd97866d0d5，对齐 autodraft 策略）：
-            # 异常细节降级经服务端日志留痕，客户端收固定文案。
-            _log = getattr(self, "logger", None)
-            if _log is not None:
-                _log.warning(
-                    "regression_routes",
-                    f"回归触发信号写入失败 {req_path}: "
-                    f"{type(exc).__name__}: {exc!r}",
-                )
-            self._error(500, "回归触发信号写入失败")
-            return
-        if written is None:
+        if outcome == _TRIGGER_CONFLICT:
             self._error(409, "已有未消费的回归触发请求（请稍后重试）")
             return
         self._json({"ok": True, "requested_at": created})
@@ -382,44 +406,20 @@ class H12RegressionRoutesMixin:
             )
             return
 
-        # 原子独占创建信号文件（三步独占写，对齐 _api_regression_run，同族
-        # item 4140f1f86f3f）：先写完整临时文件再 os.link 原子挂到轮询路径，
-        # 消费端不会再读到「已创建未填充」的空/半写文件；独占创建语义保留，
-        # 目标已存在（并发第二 POST 或上一信号尚未被消费）→ 409。
         created = datetime.now(timezone.utc).isoformat()
         payload = {"source": "regression_fix", "created": created}
         req_path = proot / REGRESSION_FIX_REQUEST
-        try:
-            req_path.parent.mkdir(parents=True, exist_ok=True)
-        except OSError as e:
-            # 不外泄裸异常文本（code-review item 2dd97866d0d5，对齐 autodraft
-            # 策略）：异常细节降级经服务端日志留痕，客户端收固定文案。
-            _log = getattr(self, "logger", None)
-            if _log is not None:
-                _log.warning(
-                    "regression_routes",
-                    f"回归修复触发信号目录创建失败 {req_path.parent}: "
-                    f"{type(e).__name__}: {e!r}",
-                )
+        # 三步原子独占写 + 失败脱敏日志收敛在 _write_trigger_signal（item
+        # e22bfec7b9ee 去重，对齐 _api_regression_run），此处只按结果映射
+        # 响应：error → 500、conflict → 409（并发第二 POST 或上一信号尚未
+        # 被消费）
+        outcome = _write_trigger_signal(
+            getattr(self, "logger", None), req_path, payload, "回归修复触发",
+        )
+        if outcome == _TRIGGER_ERROR:
             self._error(500, "回归修复触发信号写入失败")
             return
-        try:
-            written = _write_signal_exclusive(req_path, payload)
-        except _SignalWriteError as exc:
-            # 临时文件写中途失败时轮询路径尚未创建，无半写残留可误消费、
-            # 无需清理（形态对齐 _api_regression_run）；不外泄裸异常文本
-            # （code-review item 2dd97866d0d5，对齐 autodraft 策略）：异常
-            # 细节降级经服务端日志留痕，客户端收固定文案。
-            _log = getattr(self, "logger", None)
-            if _log is not None:
-                _log.warning(
-                    "regression_routes",
-                    f"回归修复触发信号写入失败 {req_path}: "
-                    f"{type(exc).__name__}: {exc!r}",
-                )
-            self._error(500, "回归修复触发信号写入失败")
-            return
-        if written is None:
+        if outcome == _TRIGGER_CONFLICT:
             self._error(409, "已有未消费的回归修复触发请求（请稍后重试）")
             return
         self._json({"ok": True, "requested_at": created})

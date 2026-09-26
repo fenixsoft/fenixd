@@ -151,21 +151,6 @@ def _collapse_message(project_root, commits, logger, timeout=WIP_TIMEOUT_SECONDS
         ((h, s) for h, s in commits if not s.startswith(WIP_COMMIT_PREFIX)),
         commits[0],
     )
-    if final_subject.startswith(WIP_COMMIT_PREFIX):
-        # 仅 WIP 无最终提交：以最新 WIP 的完整消息改写前缀生成塌缩消息。
-        body = subprocess.run(
-            ["git", "-C", str(project_root), "log", "-1", "--format=%B", final_hash],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-        )
-        if body.returncode == 0 and body.stdout.strip():
-            return body.stdout.replace(WIP_COMMIT_PREFIX, "[fenix]", 1), True
-        # git log 失败/正文为空：消息获取失败，返回占位 subject 并置 ok=False，
-        # 由调用方按失败降级（放弃本次塌缩）。
-        return final_subject.replace(WIP_COMMIT_PREFIX, "[fenix]", 1), False
     body = subprocess.run(
         ["git", "-C", str(project_root), "log", "-1", "--format=%B", final_hash],
         capture_output=True,
@@ -175,9 +160,14 @@ def _collapse_message(project_root, commits, logger, timeout=WIP_TIMEOUT_SECONDS
         timeout=timeout,
     )
     if body.returncode == 0 and body.stdout.strip():
+        if final_subject.startswith(WIP_COMMIT_PREFIX):
+            # 仅 WIP 无最终提交：以最新 WIP 的完整消息改写前缀生成塌缩消息。
+            return body.stdout.replace(WIP_COMMIT_PREFIX, "[fenix]", 1), True
         return body.stdout, True
     # git log 失败/正文为空：消息获取失败，返回占位 subject 并置 ok=False，
     # 由调用方按失败降级（放弃本次塌缩）。
+    if final_subject.startswith(WIP_COMMIT_PREFIX):
+        return final_subject.replace(WIP_COMMIT_PREFIX, "[fenix]", 1), False
     return final_subject, False
 
 

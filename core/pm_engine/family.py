@@ -179,16 +179,16 @@ class FamilyGovernor:
         深度 > max_depth（默认 3）或 宽度 >= max_width（默认 2，新成员将越界）
         时返回 True。enabled 语义由 config 承载：未配置即采用默认值。
         """
-        iw = self._pm._get_config("pm.family.max_depth")
-        ns = self._pm._get_config("pm.family.max_width")
+        max_depth_raw = self._pm._get_config("pm.family.max_depth")
+        max_width_raw = self._pm._get_config("pm.family.max_width")
         # 非法配置值回退默认（对齐 engine._ready_stall_threshold_minutes 的
         # 容错口径）：族谱门是 bug-found 主链路，配置写坏不得中断处置。
         try:
-            max_depth = int(iw if iw is not None else 3)
+            max_depth = int(max_depth_raw if max_depth_raw is not None else 3)
         except (TypeError, ValueError):
             max_depth = 3
         try:
-            max_width = int(ns if ns is not None else 2)
+            max_width = int(max_width_raw if max_width_raw is not None else 2)
         except (TypeError, ValueError):
             max_width = 2
         depth = self._fix_prefix_depth(child_name)
