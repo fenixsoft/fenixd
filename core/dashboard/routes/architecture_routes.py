@@ -181,16 +181,17 @@ def _read_status(proot: Path) -> dict | None:
 
 def _extract_component_count(stdout: str | None) -> int | None:
     """从 stdout 尾部提取 ``ARCHIFY_DONE <组件数>``（autodraft marker 范式：
-    claude 可能用代码块包裹输出，剥反引号后前缀匹配）；缺失/不可解析 → None。"""
+    claude 可能用代码块包裹输出，剥反引号后前缀匹配）；协议约定 marker 为
+    stdout 最后一行，倒序扫描取最后一条可解析出整数的 marker 行（正文回显
+    的协议说明文字不可解析，跳过不干扰判定）；缺失 → None。"""
     tail = (stdout or "")[-2000:]
-    for line in tail.splitlines():
+    for line in reversed(tail.splitlines()):
         s = line.strip().strip("`").strip()
         if s.startswith(ARCHIFY_MARKER_PREFIX):
-            rest = s[len(ARCHIFY_MARKER_PREFIX):].strip()
             try:
-                return int(rest)
+                return int(s[len(ARCHIFY_MARKER_PREFIX):].strip())
             except ValueError:
-                return None
+                continue
     return None
 
 
