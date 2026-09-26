@@ -12,6 +12,7 @@ import os
 import re
 import subprocess
 import time
+import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -804,13 +805,17 @@ def _ensure_app_reachable(pipeline, spec_name: str) -> tuple:
             # legacy 链消费，此处已无浆可流）。
             return pipeline._serve_command_in_main(spec_name, contract, scenarios_path)
 
-    def _probe(u: str, timeout: float = 2.0) -> bool:
+    def _probe(u: str, timeout: float = 2.0, http_error_ok: bool = False) -> bool:
         try:
             req = urllib.request.Request(
                 u, method="GET", headers={"User-Agent": "fenix-verify-probe"}
             )
             with urllib.request.urlopen(req, timeout=timeout):
                 return True
+        except urllib.error.HTTPError:
+            # 4xx/5xx 同样说明该端口已有 HTTP 服务在应答：根路径 404 的
+            # API-only 应用不应被判不可达（连接拒绝/超时仍为阴性）
+            return http_error_ok
         except Exception:
             return False
 
@@ -949,7 +954,7 @@ def _ensure_app_reachable(pipeline, spec_name: str) -> tuple:
     # （base_port → 扫描到的邻近端口），对「场景写了别的端口」完全无能为力，
     # 导致应用明明已启动却被判不可达、spec 永久卡死在 testing
     # （fix-fix-improve-verify-adjudication）。
-    if base_port and _probe(f"http://127.0.0.1:{base_port}/"):
+    if base_port and _probe(f"http://127.0.0.1:{base_port}/", http_error_ok=True):
         foreign_ports = {
             m.group(1)
             for u in urls
@@ -980,7 +985,7 @@ def _ensure_app_reachable(pipeline, spec_name: str) -> tuple:
     # 扫描 base_port 附近的端口，命中则改写场景 URL 并确认可达
     if base_port:
         for port in range(base_port + 1, base_port + 51):
-            if _probe(f"http://127.0.0.1:{port}/"):
+            if _probe(f"http://127.0.0.1:{port}/", http_error_ok=True):
                 urls_new = [
                     re.sub(r":%d" % base_port + _PORT_BOUNDARY, f":{port}", u) for u in urls
                 ]
