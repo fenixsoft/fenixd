@@ -11,7 +11,7 @@
 | — | [README](README.md)（本页） | 帮助中心目录索引 |
 | 01 | [快速上手](01-quick-start.md) | 从零到交付的端到端流程 |
 | 02 | [核心概念与架构](02-concepts.md) | 闭环原理、Agent 角色、执行模式 |
-| 03 | [SPEC 生命周期与状态机](03-lifecycle.md) | 10 状态全景与合法转移 |
+| 03 | [SPEC 生命周期与状态机](03-lifecycle.md) | 11 状态全景与合法转移 |
 | 04 | [CLI 操作手册](04-cli.md) | 7 个 /fenix-* skill 详解 |
 | 05 | [验证体系](05-verification.md) | 三步流水线、verify.yaml 契约 |
 | 06 | [调度与治理规则](06-governance.md) | 预算、重试、告警分级、熔断 |
