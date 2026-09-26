@@ -13,7 +13,7 @@
 
 import { DeleteOutlined, EditOutlined } from '@ant-design/icons';
 import {
-  App, Button, Form, Input, InputNumber, List, Modal, Popconfirm, Select, Space, Switch, Table, Tag, Tooltip, Typography,
+  App, Button, Form, Input, InputNumber, List, Modal, Popconfirm, Select, Space, Spin, Switch, Table, Tag, Tooltip, Typography,
 } from 'antd';
 import dayjs from 'dayjs';
 import { useCallback, useState, useMemo } from 'react';
@@ -519,8 +519,16 @@ export default function HookManager({
             <Select
               mode="multiple"
               placeholder="选择事件类型"
-              options={(allowProjectEvent ? [...ALL_EVENTS, 'all-done'] : ALL_EVENTS)
-                .map((ev) => ({ value: ev, label: `${EVENT_LABELS[ev] || ev}（${ev}）` }))}
+              // 两种作用域都保留 all-done 选项：存量 spec 级 hook 可能已订阅该事件
+              // （后端忽略但配置存在，须可辨认/可移除）；spec 级标 disabled 并注明
+              options={[...ALL_EVENTS, 'all-done'].map((ev) => {
+                const projectOnly = ev === 'all-done' && !allowProjectEvent;
+                return {
+                  value: ev,
+                  label: `${EVENT_LABELS[ev] || ev}（${ev}）${projectOnly ? '（仅全局作用域生效）' : ''}`,
+                  disabled: projectOnly,
+                };
+              })}
             />
           </Form.Item>
           <Form.Item name="action" label="动作" rules={[{ required: true }]}>
@@ -571,7 +579,9 @@ export default function HookManager({
 
       {/* ── 最近执行记录 ──────────────────────────────────────── */}
       <Title level={5} style={{ marginTop: 24 }}>最近执行</Title>
-      {audit.length === 0 ? (
+      {auditLoading ? (
+        <Spin size="small" style={{ marginTop: 8 }} />
+      ) : audit.length === 0 ? (
         <Text type="secondary">暂无执行记录</Text>
       ) : isMobile ? (
         <List
