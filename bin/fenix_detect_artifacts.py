@@ -88,6 +88,10 @@ def detect_build_artifacts(project_root: Path) -> dict:
             # errors="replace"：非 UTF-8 编码（如 GBK）的 package.json 解码不抛
             # UnicodeDecodeError（ValueError 族不在下方 except 内），守住 MUST NOT 抛异常契约
             pkg = json.loads(pkg_json.read_text(encoding="utf-8", errors="replace"))
+            # 顶层是合法 JSON 但非对象（[]/字符串/null 等）时 pkg.get 抛 AttributeError，
+            # 不在下方 except 内；非 dict 归一为 {} 按无 scripts 处理（与下方 scripts 防御同口径）
+            if not isinstance(pkg, dict):
+                pkg = {}
             # "scripts" 键存在但为 null 时 get 的默认值不生效，须归一为 dict；
             # 非 dict（数字/字符串等）同样防住，避免迭代抛 TypeError 违反 MUST NOT 抛异常约定
             scripts = pkg.get("scripts") or {}

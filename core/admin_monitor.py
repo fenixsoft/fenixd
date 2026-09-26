@@ -3179,8 +3179,17 @@ class AdminMonitor:
                     # _throttled 冷却会把重派吞掉，同 _retry_due_dispatch_failures
                     # 既有先例）。signal 重建失败 / 已有在飞 run → 回落原终结逻辑。
                     signal = self._rebuild_dispatch_signal(sig_rec)
-                    if signal is not None and not self._has_active_admin_run_for(
-                        spec, sig_type, exclude_run_id=rid
+                    # 在飞互斥守卫口径与 _retry_due_dispatch_failures 对齐
+                    # （`if spec and ...`）：daemon 级记录 spec=None 时
+                    # _merge_admin_runs 的 spec 过滤被 None 哨兵禁用（None =
+                    # 不过滤），任意其他 spec 同 signal_type 的在飞 pending 都会
+                    # 令守卫误真 → 重派被放弃、原 run 落 interrupted 终结；
+                    # spec 非空才判定，spec=None 跳过守卫（同款先例 2751/2971）。
+                    if signal is not None and (
+                        not spec
+                        or not self._has_active_admin_run_for(
+                            spec, sig_type, exclude_run_id=rid
+                        )
                     ):
                         # fixture 项目抑制（alert-noise-governance 5.1）：置于
                         # superseded 记录写入与重派之前——不写「已重派」审计、

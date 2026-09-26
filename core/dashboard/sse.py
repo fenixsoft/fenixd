@@ -71,12 +71,17 @@ class SSEHub:
             self._conns.pop(conn.id, None)
 
     def broadcast(self, event: dict, run_id: str | None = None):
-        """广播事件；run_id 非空时只发给订阅了该 run 的连接。"""
+        """广播事件；run_id 非空时只发给订阅了该 run 的连接。
+
+        成员测试与 watch/unwatch 写侧同锁（self._lock），保证 watched_runs
+        读写锁纪律对称。conn.send 在锁内调用安全：仅做 queue nowait 操作
+        （非阻塞、无网络写），队列内部互斥量是叶子锁（消费侧 get 等待时
+        释放，且无任何路径持队列锁反向获取本锁），锁序单向，无死锁或阻塞放大。
+        """
         with self._lock:
-            conns = list(self._conns.values())
-        for conn in conns:
-            if run_id is None or run_id in conn.watched_runs:
-                conn.send(event)
+            for conn in self._conns.values():
+                if run_id is None or run_id in conn.watched_runs:
+                    conn.send(event)
 
     def watch(self, cid: str, run_id: str):
         with self._lock:

@@ -658,6 +658,13 @@ class LivenessSupervisor:
             "background_calls": {},  # task_id -> {"output_file", "started_at"}
         }
         cutoff = now - max(0.0, window_seconds)
+        # 文件 mtime 循环外 stat 一次缓存（code-review 72341c32f432）：无时间戳行的
+        # 窗口回退判定复用同一值，避免数千条 stderr 兜底行触发数千次冗余 stat 系统调用
+        # （监督循环内反复执行会造成 I/O 放大）。
+        try:
+            file_mtime = run_file.stat().st_mtime
+        except OSError:
+            file_mtime = None
         try:
             with run_file.open(encoding="utf-8", errors="replace") as f:
                 for line in f:
@@ -681,12 +688,9 @@ class LivenessSupervisor:
                         or (etype == "user" and self._is_tool_result_event(entry))
                     )
                     is_tool_complete = self._is_tool_result_event(entry)
-                    # 事件是否落在判定窗口内（无时间戳回退文件 mtime）
+                    # 事件是否落在判定窗口内（无时间戳回退缓存的文件 mtime）
                     if ts is None:
-                        try:
-                            in_window = run_file.stat().st_mtime >= cutoff
-                        except OSError:
-                            in_window = False
+                        in_window = file_mtime is not None and file_mtime >= cutoff
                     else:
                         in_window = ts >= cutoff
                     # 窗口内分类计数：心跳与实质事件分别计数，MUST NOT 混淆
@@ -1143,13 +1147,33 @@ class LivenessSupervisor:
             }
         window = max(30.0, float(sup["judge_window"]))
         snapshot = self._liveness_snapshot(run_file, window)
+        if not snapshot.get("stream_available"):
+            # code-review 709297545d7e：读取失败（OSError，如 fd 耗尽/权限抖动）可能
+            # 只是瞬时不可读，与「窗口内零实质事件」的确认停滞是两回事——先重试一次
+            # 快照，避免一次瞬时 I/O 抖动终止一个本可被判 advancing 续期的 run
+            # （对齐 _line_is_terminal/_file_tail_is_terminal 的 fail-open 不误杀口径）。
+            snapshot = self._liveness_snapshot(run_file, window)
         evidence = self._summarize_snapshot(snapshot)
+        if not snapshot.get("stream_available"):
+            # 重试仍不可读：证据缺失 ≠ 确认停滞，reason 不再冒用 stagnant 文案
+            # （budget._is_exemptable_reason 按 "stagnant" 判不可豁免，读取失败属
+            # 基础设施性证据缺失，走豁免口径），WARNING 留痕便于复盘定位真实根因。
+            self._pm.logger.warning(
+                "agent_runner",
+                f"run stream unavailable after retry, killing {spec_name or 'unknown'} "
+                f"({run_id}): {run_file}",
+            )
+            return {
+                "action": "kill",
+                "reason": "run stream unavailable: liveness snapshot unreadable after retry",
+                "evidence": evidence,
+                "settings": sup,
+            }
         # 1.2 fix-run-hang-amplification：零事件守卫按**实质事件**判定——
         # ``events_in_window`` 现只计数实质事件（assistant/user 含 tool_result/result），
         # 心跳（tool_progress）不再计入进度证据，守卫不再被心跳恒久打穿。
         if (
-            not snapshot.get("stream_available")
-            or snapshot.get("last_event_age") is None
+            snapshot.get("last_event_age") is None
             or snapshot["last_event_age"] > window
             or snapshot.get("events_in_window", 0) == 0
         ):

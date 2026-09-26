@@ -1006,7 +1006,15 @@ def _handle_judge_env_declared(pipeline, spec_name: str) -> bool:
         # judge 自述环境问题时，blocked-env 数需要从上轮 report 提取，
         # 此处用 _inconclusive_attempts 作为上下文。
         pipeline._write_inconclusive_loop_signal(
-            spec_name, attempts, 0, {"scenarios": [], "summary": {"blocked_env": 0}}
+            spec_name,
+            attempts,
+            0,
+            {"scenarios": [], "summary": {"blocked_env": 0}},
+            description=(
+                f"'{spec_name}' 连续 {attempts} 轮验证均因环境/基础设施问题"
+                f"未完成（judge 自述），已达升级阈值，"
+                f"请 Administrator 核查验证环境"
+            ),
         )
         pipeline._context.logger.error(
             "pm_engine",
@@ -1255,12 +1263,17 @@ def _write_inconclusive_loop_signal(
     attempts: int,
     blocked_env: int,
     report: dict,
+    description: str | None = None,
 ) -> bool:
     """向 admin store 写 inconclusive_loop SIGNAL（design D6 / Task 5.2）。
 
     连续 blocked-env 达升级阈值时调用：kind=SIGNAL，type=inconclusive_loop，
     附 spec 名、连续轮数、末轮 blocked_env 数、最近实例探针摘要。admin_monitor
     _detect_family_explosion 摄取后按既有 SIGNAL 通道唤起 Administrator。
+
+    description 可覆盖缺省的 blocked-env 模板文案（code-review item
+    782362a0983e）：judge 自述环境等非 blocked-env 形态的升级入口传入与
+    故障形态一致的措辞，避免告警把人工排查引向 blocked-env 探针方向。
 
     写失败静默降级（信号只是升级通道，spec 的 error 字段已承载人工可见信息），
     返回是否写入成功。
@@ -1286,8 +1299,11 @@ def _write_inconclusive_loop_signal(
                 "spec": spec_name,
                 "severity": "major",
                 "description": (
-                    f"'{spec_name}' 连续 {attempts} 轮验证全部为 blocked-env"
-                    f"（环境性失联），已达升级阈值，请 Administrator 核查验证环境"
+                    description
+                    or (
+                        f"'{spec_name}' 连续 {attempts} 轮验证全部为 blocked-env"
+                        f"（环境性失联），已达升级阈值，请 Administrator 核查验证环境"
+                    )
                 ),
                 "evidence": (
                     f"spec={spec_name}; 连续轮数={attempts}; "

@@ -12,6 +12,7 @@ design D3 须留类命名空间——mixin 上的 staticmethod 经继承仍挂�
 
 from __future__ import annotations
 
+import os
 import subprocess
 import time
 
@@ -222,6 +223,10 @@ class G8QueryMixin:
                     capture_output=True,
                     text=True,
                     timeout=30,
+                    # 仅本命令固化 C locale：git gettext 在非 C locale 下会把
+                    # "already exists" 翻译成本地化文案，下面的子串匹配落空
+                    # → 不重试直接放弃。C locale 无翻译目录，输出恒为英文。
+                    env={**os.environ, "LC_ALL": "C"},
                 )
                 if "already exists" not in (result.stderr or "") or create_attempt >= 3:
                     break
