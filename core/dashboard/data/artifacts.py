@@ -473,8 +473,12 @@ def parse_bugs(project_root, spec_name) -> list:
         ]
         # 裁决分类与证据（add-verdict-evidence-taxonomy 3.1）：从场景条目摘取；
         # 旧格式 report.json 无 classification/evidence 字段时为空/缺省，向后兼容。
-        # 结构化证据优先取场景 evidence 字段（judge 增强产出）；
-        # 回退到首个失败断言的 message，保证旧数据仍有证据可见。
+        # 断言级证据优先（message/detail/actual，沿用分类化改造前的既有展示口径）；
+        # 场景级结构化 evidence（judge 增强产出）仅在断言证据全空时兜底，
+        # 保证旧数据/断言结果为空的失败场景仍有证据可见。
+        # 与 parse_filtered_failures 的 evidence_summary 链（first_failed_step →
+        # failed_assertions 首项 actual）口径不同：那边无断言级逐条字段，
+        # 只从场景结构化 evidence 摘要。
         sc_evidence = sc.get("evidence")
         if isinstance(sc_evidence, dict):
             sc_evidence = json.dumps(sc_evidence, ensure_ascii=False)
