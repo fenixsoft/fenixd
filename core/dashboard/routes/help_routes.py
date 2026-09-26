@@ -21,10 +21,27 @@ class H8HelpRoutesMixin:
         """从 Markdown 原文解析首个一级标题（# 行）作为文档标题。
 
         兼容「#标题」「#\t标题」等无空格 ATX 变体（code-review fcff933f40ad）；
-        ## 及更深层级不视为一级标题。无一级标题时回退为去后缀文件名，
-        保证清单端点始终有可展示标题。
+        ## 及更深层级不视为一级标题。围栏代码块（```/~~~，行首或缩进≤3 空格，
+        开头可带语言标注）内的行不参与标题匹配，避免 `# install` 之类代码注释
+        被误认为文档标题（code-review 69c2b5524b13）。无一级标题时回退为
+        去后缀文件名，保证清单端点始终有可展示标题。
         """
+        in_fence = False
+        fence_marker = ""
         for line in content.splitlines():
+            # 围栏判定（常见形态，非完整 CommonMark）：缩进≤3 空格的 ``` / ~~~ 行；
+            # 围栏内仅同符号围栏行可闭合，异符号行视为代码内容
+            bare = line.lstrip(" ")
+            indent = len(line) - len(bare)
+            if indent <= 3 and bare.startswith(("```", "~~~")):
+                marker = bare[:3]
+                if not in_fence:
+                    in_fence, fence_marker = True, marker
+                elif marker == fence_marker:
+                    in_fence, fence_marker = False, ""
+                continue
+            if in_fence:
+                continue
             # code-review fcff933f40ad：#(?!#) 排除 ## 及更深层级，\s* 兼容无空格写法
             m = re.match(r"#(?!#)\s*(.+)", line.strip())
             if m:
