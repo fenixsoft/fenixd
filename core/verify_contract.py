@@ -602,6 +602,10 @@ def validate_contract(project_root: Path, logger=None) -> ValidateResult:
     # 3. 执行 prepare 构建步骤
     prepare_ok = True
     prepare_error = ""
+    # prepare_steps_run 记录「声明步数」（code-review item 69f20b76f5a2）：
+    # run_prepare_steps 签名仅返回错误串、无法回传实际执行到的步数（改签名
+    # 会波及 serving/dist_conflicts 等调用方），CLI 据此显示「声明 N 步」，
+    # 避免误读为已执行步数。
     prepare_steps_run = len(contract.prepare)
     if contract.prepare:
         err = run_prepare_steps(contract, project_root)
@@ -1322,9 +1326,14 @@ def probe_ready(base_url: str, ready: ReadyProbe) -> tuple:
     deadline = time.time() + max(1, ready.timeout)
     last_err = ""
     while time.time() < deadline:
+        # 轮询按时限钳制（code-review item 3898f0d542ad）：urlopen 超时按剩余
+        # 预算取 min(3.0, …)、sleep 钳制为剩余预算，对齐 _discover_port.
+        # _probe_in_budget 纪律（旧实现二者固定 3s/1s，timeout=60 时最坏约
+        # 63-64s，突破声明时限）。
+        budget = deadline - time.time()
         try:
             req = Request(url, method="GET", headers={"User-Agent": "fenix-verify-contract"})
-            with urlopen(req, timeout=3) as resp:
+            with urlopen(req, timeout=min(3.0, budget)) as resp:
                 if resp.status == ready.expect:
                     body = resp.read(4096)
                     vacuity = _probe_vacuity_note(base_url, ready, body)
@@ -1334,7 +1343,7 @@ def probe_ready(base_url: str, ready: ReadyProbe) -> tuple:
                 last_err = f"状态码 {resp.status} != {ready.expect}"
         except Exception as e:
             last_err = str(e)[:120]
-        time.sleep(1)
+        time.sleep(min(1.0, max(0.0, deadline - time.time())))
     return False, f"就绪探针超时（{ready.timeout}s）: {url} — {last_err}"
 
 
@@ -1660,10 +1669,21 @@ def selfcheck_contract_light(project_root: Path, logger=None, base_url: str = ""
                         errors.append("serve.root 为空（kind=static 必填）")
                     elif kind == "command" and not raw_serve.get("cmd"):
                         errors.append("serve.cmd 为空（kind=command 必填）")
+                # ready 段形态校验（code-review item 11d679872896）：ready 为标量
+                # （如 ready: /health）时 load_verify_contract 返回 None——整份契约
+                # 按无契约回退（prepare/serve 一并失效，走 commands.start 旧行为），
+                # 此处裸读仅校验 serve 段会把「契约整体失效」误当「纯 cli 形态」
+                # 放行，违背消费期大声暴露契约错误的目标。ready 缺失/映射视为
+                # 合法（其余情形记入 errors 自证失败，与 serve 段同口径）。
+                raw_ready = raw.get("ready")
+                if raw_ready is not None and not isinstance(raw_ready, dict):
+                    errors.append(
+                        f"ready 段非法（须为映射，契约整体按无契约回退）: {raw_ready!r}"
+                    )
         except Exception as e:
             errors.append(f"契约 YAML 解析失败: {e}")
         if errors:
-            return "轻量自证失败（serve 段）: " + "；".join(errors)
+            return "轻量自证失败（serve/ready 段）: " + "；".join(errors)
         return None  # 无 serve 段（纯 cli 形态）不在消费期自证范围
 
     serve = contract.serve
