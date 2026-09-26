@@ -1568,7 +1568,10 @@ class PMEngine:
                 # 自动回退重新派发验证器，断点续跑（保留 implementer_run 与 progress），
                 # 消除「verified 无出口」死锁。仅进度不完整走此路径；任务缺口
                 # （blocker 但非 vblocker）保持 verified 供人工裁决，不自动回退。
-                if vblocker:
+                # blocker == vblocker（同串）即任务缺口闸门已放行、仅剩进度不完整；
+                # 两闸门同中时 blocker 为 "task-gap:…; " + vblocker 合并文案，走下方
+                # 保持 verified 分支携带完整合并结论供人工裁决。
+                if vblocker and blocker == vblocker:
                     self.logger.warning(
                         "pm_engine",
                         f"验证进度不完整 '{spec_name}'，门禁逃生门回退 testing 重新验证: {vblocker}",
