@@ -894,7 +894,14 @@ class H3SpecRoutesMixin:
         try:
             content_length = int(self.headers.get("Content-Length", "0") or 0)
         except ValueError:
+            # 报文分帧已不可解析，且 _drain_remaining_request_body 里同一处
+            # int() 同样失败得 remaining=0 跳过排空，客户端已发出的 body 字节
+            # 会残留 keep-alive 连接被下一请求当请求行。比照
+            # base._read_json_body（code-review item 8beb499acc56）置
+            # close_connection=True 后按无 body 继续执行，让残留字节随连接
+            # 关闭作废。
             content_length = 0
+            self.close_connection = True
         if content_length > 0:
             body = self._read_json_body()
             if body is None:
