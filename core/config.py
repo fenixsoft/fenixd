@@ -1481,11 +1481,15 @@ class ConfigLoader:
     # ── 陈旧自愈配置（add-stale-code-selfheal D5）──────────────────────
     # stale_code_selfheal 节两键缺省：enabled 默认开启（本项目陈旧是常态，默认
     # 关闭等于把问题留给用户发现；风险由 supervisor 熔断兜底、由开关提供退出
-    # 通道）；idle_confirm_seconds 取 120s 作为连续空闲确认窗（触发实现在
-    # fenixd.py 主循环 _maybe_stale_selfheal_tick），该取值沿自 daemon 内建化
-    # 之前的实践，已验证足以防零活跃窗口竞态。
+    # 通道）；idle_confirm_seconds 取 600s 作为连续空闲确认窗（触发实现在
+    # fenixd.py 主循环 _maybe_stale_selfheal_tick）。evo-reduce-stale-code-
+    # selfheal-noise：120s（沿自 daemon 内建化之前的实践）会把开发日密集落地
+    # 的代码批次逐个放大成多轮重启（2026-09-26 实测单日 16 次重启 + drain
+    # 约 20 分钟不可用）；600s 窗让短间隙批次由同一轮重启一次收编（重启加载
+    # 的是触盘时点的全部代码），小时间隔的独立批次仍各得一轮重启。项目级
+    # stale_code_selfheal.idle_confirm_seconds 覆盖语义不变。
     STALE_CODE_SELFHEAL_ENABLED_DEFAULT = True
-    STALE_CODE_SELFHEAL_IDLE_SECONDS_DEFAULT = 120
+    STALE_CODE_SELFHEAL_IDLE_SECONDS_DEFAULT = 600
     STALE_CODE_SELFHEAL_MAX_SECONDS = 86400  # 仅建议上界（警告不拒绝），保持读取宽容语义
     # evo-stale-selfheal-restart-cooldown：重启冷却与自触发识别缺省
     # （窗口 / 阈值 / 锁存时长 / 自触发窗口 / 自触发升级阈值）
@@ -1549,8 +1553,9 @@ class ConfigLoader:
         """Return the ``stale_code_selfheal`` 段，缺失/非法值回退缺省。
 
         - enabled: 布尔，缺省 True（非布尔回退缺省——布尔缺省语义下非法即用缺省）
-        - idle_confirm_seconds: 正整数秒，缺省 120（非整数/负数/0 回退缺省；
-          bool 是 int 子类须显式排除）
+        - idle_confirm_seconds: 正整数秒，缺省 600（evo-reduce-stale-code-
+          selfheal-noise，原 120；非整数/负数/0 回退缺省；bool 是 int 子类
+          须显式排除）
         - cooldown_window_seconds / cooldown_threshold / cooldown_duration_seconds /
           self_triggered_window_seconds / self_triggered_threshold: 正整数，缺省
           1800 / 3 / 600 / 300 / 3（evo-stale-selfheal-restart-cooldown）。冷却

@@ -11,8 +11,8 @@
 **回归锚点**：`test_stalled_review_run_is_not_idle` /
 `test_stalled_review_run_blocks_selfheal_tick` 在未修补实现上必然失败——修补前
 `_is_idle()` 只读 `_active_runs`（评审 run 从不计入它，恒为 0）与 admin 池，
-故「评审 run 停滞在飞」会被判空闲、连续 120s 后 touch restart_request 杀掉在跑
-run（2026-09-21 事故）。
+故「评审 run 停滞在飞」会被判空闲、连续空闲达阈值后 touch restart_request 杀掉
+在跑 run（2026-09-21 事故）。
 
 判定链路复用**真实实现**：`PMEngine.review_anchors` / `PMEngine.is_review_in_flight`
 （只读门面）与 `LivenessSupervisor.reviewer_in_flight`（分层判据，进程表为真相）。
@@ -40,6 +40,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import core.fenix_session as fenix_session  # noqa: E402
 from core.admin_store import AdminStore  # noqa: E402
 from core.agent_runner.liveness import LivenessSupervisor  # noqa: E402
+from core.config import ConfigLoader  # noqa: E402
 from core.pm_engine.engine import PMEngine  # noqa: E402
 from core.state_machine import StateMachine  # noqa: E402
 
@@ -141,8 +142,8 @@ class _Harness:
     def tick(self):
         self.daemon._maybe_stale_selfheal_tick()
 
-    def tick_near_threshold(self, seconds=300):
-        """把「已连续空闲」拨到阈值之上后 tick 一次（触发窗口内）。"""
+    def tick_near_threshold(self, seconds=650):
+        """把「已连续空闲」拨到指定秒数后 tick 一次（缺省超 600s 触发阈值）。"""
         self.daemon._stale_idle_since = time.time() - seconds
         self.tick()
 
@@ -212,7 +213,7 @@ class TestReviewerLaneIdle(_IdleBase):
         in_flight, reason = h.pm.agent_runner.reviewer_in_flight(SPEC, REVIEW_RUN)
         assert (in_flight, reason) == (False, "stale")
         assert h.daemon._is_idle() is True, "陈旧锚点 MUST NOT 永久占据非空闲"
-        h.tick_near_threshold(300)
+        h.tick_near_threshold(650)
         assert h.req.exists(), "真正空闲时自愈必须仍可触发"
 
     def test_anchor_in_flight_after_active_reviews_released(self):
@@ -225,7 +226,7 @@ class TestReviewerLaneIdle(_IdleBase):
         h.write_stream(tail="system", age_seconds=3600)
         assert h.pm.is_review_in_flight(SPEC) is False, "前置：队列登记已释放"
         assert h.daemon._is_idle() is False, "锚点仍在飞必须仍判非空闲"
-        h.tick_near_threshold(300)
+        h.tick_near_threshold(650)
         assert not h.req.exists()
 
     def test_queued_review_without_anchor_is_not_idle(self):
@@ -242,6 +243,63 @@ class TestReviewerLaneIdle(_IdleBase):
         in_flight, reason = h.pm.agent_runner.reviewer_in_flight(SPEC, REVIEW_RUN)
         assert (in_flight, reason) == (True, "stream")
         assert h.daemon._is_idle() is False
+
+
+class TestIdleConfirmDefaultSixHundred(_IdleBase):
+    """evo-reduce-stale-code-selfheal-noise 3.1：缺省 idle_confirm_seconds=600。
+
+    覆盖：缺省解析、项目显式覆盖优先级、缺省下密集批次（空闲窗内反复落地）
+    仅触发一轮自愈重启。合批语义（design R1 评审修正）：空闲计时复位仅由
+    非空闲信号与陈旧解除触发，新代码落地不复位计时；合批效果来自确认窗
+    本身的延迟收编——重启加载的是触盘时点的全部代码。
+    """
+
+    def test_default_parses_600(self):
+        """节缺失 → idle_confirm_seconds 解析为 600（原缺省 120）。"""
+        assert ConfigLoader.STALE_CODE_SELFHEAL_IDLE_SECONDS_DEFAULT == 600
+        cfg = ConfigLoader.get_stale_code_selfheal_config({})
+        assert cfg["idle_confirm_seconds"] == 600
+
+    def test_project_override_wins(self):
+        """项目显式覆盖优先：解析层与 tick 触发层均以覆盖值为准。"""
+        cfg = ConfigLoader.get_stale_code_selfheal_config(
+            {"stale_code_selfheal": {"idle_confirm_seconds": 90}}
+        )
+        assert cfg["idle_confirm_seconds"] == 90
+        h = self.harness()
+        h.daemon.config = {"stale_code_selfheal": {"idle_confirm_seconds": 90}}
+        h.tick_near_threshold(100)  # 100s ≥ 覆盖阈值 90s
+        assert h.req.exists(), "项目显式覆盖必须优先生效"
+
+    def test_default_blocks_trigger_before_600(self):
+        """缺省 600s 下短空闲不触发：300s/599s 空闲均不得写 restart_request
+        （旧缺省 120s 下 300s 空闲早已触发——本断言即缺省提额的回归锚点）。"""
+        h = self.harness()
+        h.tick_near_threshold(300)
+        assert not h.req.exists()
+        h.tick_near_threshold(599)
+        assert not h.req.exists()
+
+    def test_dense_batches_single_restart_round(self):
+        """缺省下密集批次仅一轮重启：600s 窗内反复落地（陈旧持续、计时持续
+        累计）不成轮；连续空闲达 600s 触发一轮后，req 在场阻断后续重复成轮，
+        重启历史恰一条。"""
+        h = self.harness()
+        # 密集批次：多批代码在窗口内相继落地（daemon 持旧代码 → _code_stale
+        # 持续为真），空闲从未满 600s → 不触发
+        for batch_idle in (100, 200, 300, 450, 590):
+            h.tick_near_threshold(batch_idle)
+        assert not h.req.exists(), "600s 确认窗内的密集批次不得各自触发重启"
+        # 连续空闲达 600s → 一轮重启收编窗内全部批次
+        h.tick_near_threshold(600)
+        assert h.req.exists(), "连续空闲达缺省阈值后必须触发一轮重启"
+        # req 已在场 → 后续 tick 走 in-flight 阻断，不再产生第二轮
+        h.tick_near_threshold(600)
+        h.tick_near_threshold(600)
+        history = h.proot / ".fenix" / "restart_history.jsonl"
+        assert history.exists()
+        lines = history.read_text(encoding="utf-8").strip().splitlines()
+        assert len(lines) == 1, f"密集批次应仅一轮重启，实际历史 {len(lines)} 条"
 
 
 class TestReviewAnchorFacade(_IdleBase):

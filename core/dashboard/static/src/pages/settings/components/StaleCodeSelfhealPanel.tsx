@@ -6,8 +6,9 @@ import type { SelfEvolutionSectionHandle } from './selfEvolutionSection';
 const { Text } = Typography;
 
 // add-stale-code-selfheal：陈旧自愈配置节缺省与 ConfigLoader 缺省一致
-// （enabled=true / idle_confirm_seconds=120）
-const DEFAULT_IDLE_SECONDS = 120;
+// （enabled=true / idle_confirm_seconds=600，evo-reduce-stale-code-selfheal-
+// noise——原 120 会把开发日密集落地批次逐个放大成多轮重启）
+const DEFAULT_IDLE_SECONDS = 600;
 const MAX_IDLE_SECONDS = 86400;
 
 interface StaleCodeSelfhealPanelProps {

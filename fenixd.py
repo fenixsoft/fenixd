@@ -69,6 +69,7 @@ from core.admin_store import (
     AdminStore,
     DISPOSITION,
     ESCALATION,
+    INFO,
     SIGNAL,
     severity_needs_human,
 )
@@ -1120,14 +1121,21 @@ class FenixDaemon:
         mtime 超启动 baseline → 为真；否则为假。取代「命中后永久跳过检测」的
         一次性旗标语义，按状态边沿记录：
           - 假→真：落一次 WARNING（保留 improve-hot-reload-robustness D4 文案），
-            并经 AdminStore 写入一条 signal_type: stale_code 的 escalation 告警
-            ——陈旧成为 dashboard 可见的持续状态。该告警为 warning 级（2026-09-13
-            用户降噪决策）：写入即自动标记已处理，不进人工告警横幅/待处理队列，
-            仅保留历史记录；状态边沿触发写入，单个陈旧周期内不重复堆积。
-            写入前另经 latest_signal 做 STALE_ALERT_DEDUP_MINUTES 窗口去重
-            （stale-code-alert-window-dedup）：60 分钟内已有同信号记录则跳过
-            写入降级为日志，覆盖高频提交下 daemon 快速轮换重启的跨生命周期
-            重复；超窗新周期照常成条。
+            并经 AdminStore 写入一条 signal_type: stale_code 告警——陈旧成为
+            dashboard 可见的持续状态。
+            evo-reduce-stale-code-selfheal-noise 2.2：按自愈健康谓词分流——
+            stale_code_selfheal.enabled 且未悬空超限（写入时点可判定，见
+            _stale_selfheal_healthy）时以 info 级 kind 留痕（无处理生命周期，
+            不进人工队列/升级路径，日志附当日累计计数）；selfheal disabled 沿用
+            既有 escalation 写入路径（warning 级、写入即自动 mark_handled）。
+            悬空超限的升级由 _alert_dangling_timeout 独立承接（signal_type=
+            stale_code_dangling_timeout），此处不双重升级；自愈动作失败（写
+            restart_request 失败）的升级在 _maybe_stale_selfheal_tick 落点。
+            两条路径写入前均经 latest_signal 做 STALE_ALERT_DEDUP_MINUTES
+            窗口去重（stale-code-alert-window-dedup）：60 分钟内已有同信号记录
+            （info 或 escalation 任一，kind 白名单已含 INFO）则跳过写入降级为
+            日志，覆盖高频提交下 daemon 快速轮换重启的跨生命周期重复；超窗新
+            周期照常成条。
           - 真→假：记录状态解除（重启后新进程 baseline 刷新，或磁盘代码回退），
             不产生新告警；既有历史告警可经既有处置流程关闭。
         """
@@ -1184,36 +1192,87 @@ class FenixDaemon:
                             f"（created {recent.get('created')}），跳过写入仅留日志",
                         )
                     else:
-                        # 降噪（2026-09-13 用户决策）：陈旧是可自愈收敛的持续状态，
-                        # 降为 warning 级——写入即自动标记已处理，不进人工告警横幅/
-                        # 待处理队列（复用 token_budget 同款处置），仅留历史记录。
-                        # 状态边沿（假→真）触发写入，单个陈旧周期内不会重复堆积，
-                        # 故不再依赖「未处置告警去重」。
-                        rec = self.admin_store.append(
-                            {
-                                "kind": ESCALATION,
-                                "signal_type": "stale_code",
-                                "spec": None,
-                                "severity": "warning",
-                                "description": (
-                                    "daemon 进程持旧代码，自愈将在连续空闲后触发重启"
-                                    "（stale_code_selfheal 配置启用时）"
-                                ),
-                                "evidence": (
-                                    "fenixd 30s 检测点：fenixd.py/core/**/*.py mtime "
-                                    "超进程启动 baseline"
-                                ),
-                                "action_taken": "fenixd 陈旧检测命中，标记为警告（等待空闲自愈）",
-                                "recommended_action": (
-                                    "无需人工干预：连续空闲达到 "
-                                    "stale_code_selfheal.idle_confirm_seconds 后自适应重启；"
-                                    "如需立即生效可 touch .fenix/restart_request 或手动重启 "
-                                    "daemon；关闭自愈见 stale_code_selfheal.enabled"
-                                ),
-                            }
-                        )
-                        if not severity_needs_human(rec.get("severity")):
-                            self.admin_store.mark_handled(rec["id"])
+                        # evo-reduce-stale-code-selfheal-noise 2.2：按自愈健康谓词
+                        # 分流。健康（selfheal enabled 且未悬空超限）→ info 级留痕；
+                        # disabled → 沿用既有 escalation 写入路径（下方保留原块）。
+                        # 悬空超限不在此分流——其升级由 _alert_dangling_timeout
+                        # 以独立 signal_type=stale_code_dangling_timeout 承接，
+                        # 此处双重写入只会重复成条。
+                        if self._stale_selfheal_healthy():
+                            rec = self.admin_store.append(
+                                {
+                                    "kind": INFO,
+                                    "signal_type": "stale_code",
+                                    "spec": None,
+                                    "severity": "info",
+                                    "description": (
+                                        "daemon 进程持旧代码，陈旧自愈已启用且链路健康，"
+                                        "将在连续空闲后自动重启装载新代码"
+                                    ),
+                                    "evidence": (
+                                        "fenixd 30s 检测点：fenixd.py/core/**/*.py mtime "
+                                        "超进程启动 baseline"
+                                    ),
+                                    "action_taken": (
+                                        "fenixd 陈旧检测命中，按 info 级留痕"
+                                        "（自愈健康路径降噪，不进人工队列）"
+                                    ),
+                                    "recommended_action": (
+                                        "无需人工干预：连续空闲达到 "
+                                        "stale_code_selfheal.idle_confirm_seconds"
+                                        "（缺省 600 秒）后自适应重启；如需立即生效可 "
+                                        "touch .fenix/restart_request 或手动重启 "
+                                        "daemon；关闭自愈见 stale_code_selfheal.enabled"
+                                    ),
+                                    # info 级无处理生命周期（mark_handled 仅锚定
+                                    # ESCALATION，语义不可放宽）：写入 payload 自带
+                                    # handled=true + handled_at 落盘，避免该记录在
+                                    # read_all 遍历视图里呈现为永久未处理。
+                                    "handled": True,
+                                    "handled_at": datetime.now(timezone.utc).isoformat(),
+                                }
+                            )
+                            # 日计数（跨重启存活）：当日累计以 admin_alerts.json 中
+                            # 当日 signal_type=stale_code 记录数计——进程内计数器在
+                            # daemon 高频自愈重启下每次归零，撑不起「当日」语义。
+                            self.logger.info(
+                                "fenixd",
+                                f"stale_code info 级留痕已写入（id {rec['id']}），"
+                                f"当日累计 {self._stale_code_daily_count()} 条",
+                            )
+                        else:
+                            # 降噪（2026-09-13 用户决策）：陈旧是可自愈收敛的持续状态，
+                            # 降为 warning 级——写入即自动标记已处理，不进人工告警横幅/
+                            # 待处理队列（复用 token_budget 同款处置），仅留历史记录。
+                            # 状态边沿（假→真）触发写入，单个陈旧周期内不会重复堆积，
+                            # 故不再依赖「未处置告警去重」。本分支现为 selfheal
+                            # disabled 的升级路径（evo-reduce-stale-code-selfheal-
+                            # noise 2.3）：禁用即无自动收敛通道，维持 escalation 口径。
+                            rec = self.admin_store.append(
+                                {
+                                    "kind": ESCALATION,
+                                    "signal_type": "stale_code",
+                                    "spec": None,
+                                    "severity": "warning",
+                                    "description": (
+                                        "daemon 进程持旧代码，自愈将在连续空闲后触发重启"
+                                        "（stale_code_selfheal 配置启用时）"
+                                    ),
+                                    "evidence": (
+                                        "fenixd 30s 检测点：fenixd.py/core/**/*.py mtime "
+                                        "超进程启动 baseline"
+                                    ),
+                                    "action_taken": "fenixd 陈旧检测命中，标记为警告（等待空闲自愈）",
+                                    "recommended_action": (
+                                        "无需人工干预：连续空闲达到 "
+                                        "stale_code_selfheal.idle_confirm_seconds 后自适应重启；"
+                                        "如需立即生效可 touch .fenix/restart_request 或手动重启 "
+                                        "daemon；关闭自愈见 stale_code_selfheal.enabled"
+                                    ),
+                                }
+                            )
+                            if not severity_needs_human(rec.get("severity")):
+                                self.admin_store.mark_handled(rec["id"])
             except Exception as e:
                 self.logger.warning("fenixd", f"stale_code 告警写入失败（non-blocking）: {e}")
         else:
@@ -1226,6 +1285,44 @@ class FenixDaemon:
                 "fenixd",
                 "代码陈旧状态解除：磁盘代码与进程运行代码已一致（重启后新 baseline 或磁盘回退）",
             )
+
+    def _stale_selfheal_healthy(self) -> bool:
+        """自愈健康谓词（evo-reduce-stale-code-selfheal-noise 2.2，写入时点可判定）。
+
+        「健康」= stale_code_selfheal.enabled 且未悬空超限（_dangling_timeout_fired
+        未触发）。「自愈重启请求成功发出并生效」发生在告警写入之后的 idle_confirm
+        窗口末尾，不可写入时点判定，不作分支条件；写失败的升级在
+        _maybe_stale_selfheal_tick 的 OSError 落点独立承接。配置读取异常按启用
+        处理（与 _maybe_stale_selfheal_tick 的兜底口径一致）。
+        """
+        try:
+            cfg = ConfigLoader.get_stale_code_selfheal_config(self.config)
+            enabled = bool(cfg.get("enabled", True))
+        except Exception:  # noqa: BLE001 — 配置读取异常按缺省启用处理
+            enabled = True
+        return enabled and not getattr(self, "_dangling_timeout_fired", False)
+
+    def _stale_code_daily_count(self) -> int:
+        """当日 stale_code 记录数（evo-reduce-stale-code-selfheal-noise 2.2）。
+
+        以 admin_alerts.json 中当日（UTC 日界）signal_type=stale_code 的在册
+        记录数计（read_all 遍历，info/escalation 两口径合计），跨重启存活；
+        存储裁剪（MAX_RECORDS）只丢最旧历史，对「当日」读数的影响仅限极端
+        高产日，可接受。读取失败按 0 计（仅用于日志，不阻断写入）。
+        """
+        try:
+            today = datetime.now(timezone.utc).date().isoformat()
+            records = self.admin_store.read_all()
+        except Exception:  # noqa: BLE001 — 计数仅用于日志
+            return 0
+        count = 0
+        for rec in records:
+            if rec.get("signal_type") != "stale_code":
+                continue
+            created = str(rec.get("created") or "")
+            if created[:10] == today:
+                count += 1
+        return count
 
     def _is_idle(self) -> bool:
         """空闲判定（add-stale-code-selfheal D2 + fix-state-atomicity-and-selfheal-restart D3
@@ -1621,6 +1718,61 @@ class FenixDaemon:
                 "fenixd", f"stale_code_dangling_timeout 告警写入失败（non-blocking）: {e}"
             )
 
+    def _alert_selfheal_write_failure(self, error: OSError) -> None:
+        """自愈动作失败升级告警（evo-reduce-stale-code-selfheal-noise 2.3）。
+
+        空闲确认达成却 touch .fenix/restart_request 失败（OSError）= 自动收敛
+        通道已断，原先仅 logger.error、无人知悉。本方法补一条 escalation：
+        signal_type 仍取 stale_code（与健康路径 info 留痕同信号族，共用 60 分钟
+        去重窗口——写失败与留痕互斥成条，不刷屏），severity=warning 且不调用
+        mark_handled——须留在人工待处理视图（参照 _alert_dangling_timeout 的
+        写入模式；mark_handled 仅锚定 ESCALATION 的闭环锚点语义不受影响）。
+        悬空超限路径的写失败不经过此处：该路径本就有独立升级告警，重复写入
+        只会双重升级。
+        """
+        try:
+            admin_store = getattr(self, "admin_store", None)
+            if admin_store is not None:
+                recent = admin_store.latest_signal(
+                    None, "stale_code", STALE_ALERT_DEDUP_MINUTES
+                )
+                if recent is not None:
+                    self.logger.info(
+                        "fenixd",
+                        f"stale_code 写失败升级窗口去重命中："
+                        f"{STALE_ALERT_DEDUP_MINUTES} 分钟内已有同信号记录"
+                        f"（created {recent.get('created')}），跳过写入仅留日志",
+                    )
+                    return
+                # 注意：不调用 mark_handled——升级事件须留在人工待处理视图
+                admin_store.append(
+                    {
+                        "kind": ESCALATION,
+                        "signal_type": "stale_code",
+                        "spec": None,
+                        "severity": "warning",
+                        "description": (
+                            "daemon 持旧代码且空闲确认已达成，但自愈重启请求"
+                            "（.fenix/restart_request）写入失败，自动收敛通道"
+                            "中断，需人工知悉"
+                        ),
+                        "evidence": (
+                            f"restart_request 写入 OSError: {error}；空闲计时已"
+                            "复位，下个检测 tick 自动重试"
+                        ),
+                        "action_taken": "记录 error 日志并落本升级告警（陈旧状态保持，触发自动重试）",
+                        "recommended_action": (
+                            "核查 .fenix 目录权限/磁盘空间与只读挂载；修复后自愈"
+                            "将自动重试；如需立即生效可手动重启 daemon 或临时置 "
+                            "stale_code_selfheal.enabled: false"
+                        ),
+                    }
+                )
+        except Exception:  # noqa: BLE001 — 告警写入失败不阻断自愈重试
+            self.logger.warning(
+                "fenixd", "stale_code 写失败升级告警写入异常（non-blocking）"
+            )
+
     def _alert_selfheal_loop(self, streak: int, threshold: int, window: int) -> None:
         """自触发 streak 达阈值：stale_selfheal_loop 告警（critical，需人工判断）。"""
         try:
@@ -1777,13 +1929,18 @@ class FenixDaemon:
         try:
             cfg = ConfigLoader.get_stale_code_selfheal_config(self.config)
         except Exception:  # noqa: BLE001 — 配置读取异常按缺省启用处理
+            # 兜底缺省引用 ConfigLoader 常量（evo-reduce-stale-code-selfheal-
+            # noise：原硬编码 120 与新缺省 600 漂移会放大重启节律）
             cfg = {
                 "enabled": True,
-                "idle_confirm_seconds": 120,
+                "idle_confirm_seconds": (
+                    ConfigLoader.STALE_CODE_SELFHEAL_IDLE_SECONDS_DEFAULT
+                ),
                 "max_dangling_seconds": 14400,
             }
         enabled, confirm_seconds = bool(cfg.get("enabled", True)), cfg.get(
-            "idle_confirm_seconds", 120
+            "idle_confirm_seconds",
+            ConfigLoader.STALE_CODE_SELFHEAL_IDLE_SECONDS_DEFAULT,
         )
         cooldown_window = cfg.get("cooldown_window_seconds", 1800)
         cooldown_threshold = cfg.get("cooldown_threshold", 3)
@@ -1979,7 +2136,14 @@ class FenixDaemon:
                     "supervisor 将执行优雅重启使新代码生效",
                 )
             except OSError as e:
+                # evo-reduce-stale-code-selfheal-noise 2.3：自愈动作失败的升级点。
+                # 原先仅 logger.error——写失败意味着自动收敛通道已断（空闲确认
+                # 达成却发不出重启请求），升级 escalation 提请人工知悉；复用
+                # _alert_dangling_timeout 的 append + latest_signal 去重范式，
+                # signal_type 仍取 stale_code（与 info 留痕同受 60 分钟窗口互斥
+                # 成条，不刷屏）。陈旧状态与空闲计时保持，下个 tick 自动重试。
                 self.logger.error("fenixd", f"restart_request 写入失败: {e}")
+                self._alert_selfheal_write_failure(e)
             finally:
                 self._stale_idle_since = None
             if wrote:
