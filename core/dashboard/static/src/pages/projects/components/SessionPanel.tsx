@@ -156,6 +156,16 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
   // 暴露给 error 分支「重试」按钮——旧实现只清 error，不重跑失败的加载，
   // 用户掉回空/旧面板而无任何重试发生。
   const reloadRef = useRef<(() => void) | null>(null);
+  // 分面激活态镜像（code-review item 58ec4693e77c）：handleStart 等事件回调
+  // 跨 await 续跑时，闭包捕获的 active 是点击当帧快照——用户点「开始会话」后
+  // 立即切离分面，切离清理 effect 已清空 sessionIdRef/ended 等状态并释放订阅，
+  // 续跑若照旧写入会把活跃状态回落到非激活面板（直到下次激活 loadAll 重置才
+  // 自愈）。经本 ref 读取最新激活态，供 handleStart 在各 await 后校验，失配
+  // 即中止后续注册与状态写入。
+  const activeRef = useRef(active);
+  useEffect(() => {
+    activeRef.current = active;
+  }, [active]);
 
   const syncEvents = (next: SessionEvent[]) => {
     // 全量重拉：以快照 uuids 重建去重集合（code-review item 12c190b15530）——
@@ -417,11 +427,16 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active]);
 
-  // 开始会话：显式创建（唯一允许启动进程的端点），成功后拉全量
+  // 开始会话：显式创建（唯一允许启动进程的端点），成功后拉全量。
+  // 各 await 后的切离守卫（code-review item 58ec4693e77c）：经 activeRef 校验
+  // 分面仍激活，失配即中止——切离清理 effect 已释放订阅并清空状态，续跑不得
+  // 回写 sessionIdRef/started、注册 watch 或应用快照（提前 return 仍走 finally
+  // 复位 loading，不悬置加载态）。
   const handleStart = async () => {
     try {
       setLoading(true);
       const res = await startSession(project);
+      if (!activeRef.current) return;
       sessionIdRef.current = res.session.id;
       setStarted(true);
       setEnded(false);
@@ -433,6 +448,8 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
       if (!watchRegisteredRef.current && cidRef.current && sessionIdRef.current) {
         try {
           await registerSessionWatch(project, cidRef.current);
+          // 注册返回前已切离：不置注册标记（非激活面板不得标记持有订阅）
+          if (!activeRef.current) return;
           watchRegisteredRef.current = true;
         } catch (e) {
           console.error('Failed to register session watch:', e);
@@ -444,6 +461,8 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
       // 事件永久丢弃且 uuid 被去重集合剔除；与 afterHello 第二次重拉共用
       // applySnapshotCarried。
       const data = await getSession(project);
+      // 快照返回前已切离：不应用快照（避免非激活面板重新持有一份活跃状态）
+      if (!activeRef.current) return;
       if (data.session) {
         applySnapshotCarried(data);
       }
