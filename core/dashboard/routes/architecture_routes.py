@@ -32,6 +32,7 @@ started_at/error/duration_ms/component_count`` 加可选键 ``stage``
 from __future__ import annotations
 
 import json
+import logging
 import os
 import signal
 import subprocess
@@ -39,6 +40,13 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+
+# ── 模块级 logger（code-review item 967909e7db47：refresh 先前以
+# getattr(self, 'logger', None) 取值恒为 None（handler 未定义 logger
+# 属性），两段式管线日志分支全静默丢失；改传模块 logger 并保持
+# warning/info 单参消息形态，spawn 失败/超时击杀/判定失败等路径
+# 真实留痕）──────────────────────────────────────────────────────
+logger = logging.getLogger("fenixd.dashboard.routes.architecture_routes")
 
 # ── 模块常数（不新增配置项，对齐 autodraft 先例）─────────────────────
 
@@ -379,7 +387,6 @@ def _judge_artifact(
     if not (COMPONENT_COUNT_MIN <= count <= COMPONENT_COUNT_MAX):
         if logger is not None:
             logger.warning(
-                "architecture_routes",
                 f"架构图组件数越界（count={count}，"
                 f"allowed=[{COMPONENT_COUNT_MIN}, {COMPONENT_COUNT_MAX}]）",
             )
@@ -500,7 +507,6 @@ class ArchitectureManager:
             # (False, False, msg) 交调用方回 500。
             if logger is not None:
                 logger.warning(
-                    "architecture_routes",
                     f"架构图生成线程启动失败（project={project_name}）: "
                     f"{type(exc).__name__}: {exc!r}",
                 )
@@ -562,7 +568,6 @@ class ArchitectureManager:
         except Exception as exc:  # noqa: BLE001 — CLI 不存在等 spawn 失败
             if logger is not None:
                 logger.warning(
-                    "architecture_routes",
                     f"调用 claude CLI 异常（project={project_name}，"
                     f"{stage_label}）: {type(exc).__name__}: {exc!r}",
                 )
@@ -588,7 +593,6 @@ class ArchitectureManager:
                 pass
             if logger is not None:
                 logger.warning(
-                    "architecture_routes",
                     f"架构图生成{stage_label}超时（>{timeout}s，"
                     f"project={project_name}）；已终止整个进程组",
                 )
@@ -602,7 +606,6 @@ class ArchitectureManager:
         except Exception as exc:  # noqa: BLE001 — communicate 其它异常
             if logger is not None:
                 logger.warning(
-                    "architecture_routes",
                     f"claude 进程通信异常（project={project_name}，"
                     f"{stage_label}）: {type(exc).__name__}: {exc!r}",
                 )
@@ -648,7 +651,6 @@ class ArchitectureManager:
             if _evidence_head_matches(proot):
                 if logger is not None:
                     logger.info(
-                        "architecture_routes",
                         f"evidence HEAD 指纹命中，跳过阶段1 探索"
                         f"（project={project_name}），只付出图成本",
                     )
@@ -670,7 +672,6 @@ class ArchitectureManager:
                 if rc != 0:
                     if logger is not None:
                         logger.warning(
-                            "architecture_routes",
                             f"架构图阶段1 探索失败（project={project_name}，"
                             f"returncode={rc}）；stderr 尾部: "
                             f"{(stderr or '')[-400:] if isinstance(stderr, str) else ''}",
@@ -707,7 +708,6 @@ class ArchitectureManager:
             state, error, count = _judge_artifact(diagram_path, rc, stdout, logger)
             if logger is not None and state == "failed":
                 logger.warning(
-                    "architecture_routes",
                     f"架构图生成判失败（project={project_name}，"
                     f"returncode={rc}）：{error}；"
                     f"stderr 尾部: {(stderr or '')[-400:] if isinstance(stderr, str) else ''}",
@@ -786,7 +786,7 @@ class H13ArchitectureRoutesMixin:
             return
         proot = Path(project["path"])
         accepted, conflict, error = self._architecture_manager().refresh(
-            proot, project["name"], logger=getattr(self, "logger", None)
+            proot, project["name"], logger=logger
         )
         if accepted:
             self._json({"ok": True, "state": "generating"})
