@@ -395,6 +395,10 @@ def _make_pipeline(tmp_path: Path, failed_ids: list, state: dict | None = None):
             read_one=lambda spec: dict(state),
             update_spec=lambda spec, fields: state.update(fields),
             bump_counters=_bump_counters,
+            # fastlane 收敛链（bug-found→implemented→testing）现显式调
+            # transition（code-review item 51e7dea98b19），桩恒返回 True
+            # 保持既有收敛测试语义。
+            transition=lambda *args, **kwargs: True,
         ),
         logger=logger,
         agent_runner=SimpleNamespace(
@@ -406,7 +410,7 @@ def _make_pipeline(tmp_path: Path, failed_ids: list, state: dict | None = None):
     pipe = SimpleNamespace(
         _context=ctx,
         _failed_scenario_ids=lambda spec: list(failed_ids),
-        _execute_stage2=lambda spec, verify_dir, scenarios_path: (
+        _execute_stage2=lambda spec, verify_dir, scenarios_path, skip_prune=False: (
             None,
             {"scenarios": [
                 {"scenario_id": "s0", "status": "pass"},
@@ -610,7 +614,8 @@ class TestMinorDefectFastlane:
         by_id = {sc["scenario_id"]: sc for sc in merged["scenarios"]}
         assert by_id["s2"]["source"].startswith("carried-over")
         assert merged["summary"] == {
-            "total": 3, "passed": 2, "failed": 1, "errors": 0, "carried_over": 1
+            "total": 3, "passed": 2, "failed": 1, "errors": 0,
+            "warnings": 0, "blocked_env": 0, "carried_over": 1,
         }
 
 
