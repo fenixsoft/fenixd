@@ -154,6 +154,26 @@ class CliAssertionRunner:
                 m = str(expected) in text
         return (not m) if negate else m
 
+    def _resolve_under_root(self, raw) -> "Path | None":
+        """文件类断言 path/glob 的统一解析护栏：限定在验证树根内。
+
+        与 docstring「path/glob 相对验证树根」的承诺对齐：拒绝绝对路径
+        （pathlib 的 ``/`` 对绝对路径直接取绝对路径，静默落到树根之外）
+        与含 ``..`` 的段；resolve 后再校验前缀仍在本根内（防符号链接
+        逃逸）。worktree 轮若放行，断言会读到主树而非隔离树的文件，
+        产生假结果。返回 None 表示路径非法，由调用方按断言失败语义
+        记录错误，不抛异常破坏断言收集流程。
+        """
+        rel = Path(str(raw))
+        if rel.is_absolute() or ".." in rel.parts:
+            return None
+        resolved = (self.project_root / rel).resolve()
+        try:
+            resolved.relative_to(self.project_root.resolve())
+        except ValueError:
+            return None
+        return resolved
+
     # ═══════════════════════════════════════════════════════════════
     # 第1层：存在性/状态（确定性，0误判）
     # ═══════════════════════════════════════════════════════════════
@@ -177,9 +197,17 @@ class CliAssertionRunner:
 
     async def _assert_file_exists(self, a: dict) -> dict:
         """断言文件/目录存在（exists 缺省 true；path 相对验证树根）。"""
-        path = (self.project_root / str(a.get("path", ""))).resolve()
-        exists = path.exists()
         want = bool(a.get("exists", True))
+        path = self._resolve_under_root(a.get("path", ""))
+        if path is None:
+            return {
+                "type": "file_exists",
+                "layer": 1,
+                "path": str(a.get("path", "")),
+                "pass": False,
+                "error": "path 非法：须为相对验证树根的路径（不得为绝对路径或含 '..' 段）",
+            }
+        exists = path.exists()
         return {
             "type": "file_exists",
             "layer": 1,
@@ -190,7 +218,16 @@ class CliAssertionRunner:
 
     async def _assert_dir_contains(self, a: dict) -> dict:
         """断言目录通配匹配数量在 [min, max] 内（glob 相对验证树根）。"""
-        glob = str(a.get("glob", "")).lstrip("/")
+        glob = str(a.get("glob", ""))
+        if self._resolve_under_root(glob) is None:
+            return {
+                "type": "dir_contains",
+                "layer": 1,
+                "glob": glob,
+                "count": 0,
+                "pass": False,
+                "error": "glob 非法：须为相对验证树根的路径（不得为绝对路径或含 '..' 段）",
+            }
         paths = sorted(self.project_root.glob(glob)) if glob else []
         count = len(paths)
         minimum = a.get("min")
@@ -253,7 +290,15 @@ class CliAssertionRunner:
 
     async def _assert_file_content(self, a: dict) -> dict:
         """断言文件内容匹配（path 相对验证树根；mode/negate）。"""
-        path = (self.project_root / str(a.get("path", ""))).resolve()
+        path = self._resolve_under_root(a.get("path", ""))
+        if path is None:
+            return {
+                "type": "file_content",
+                "layer": 3,
+                "path": str(a.get("path", "")),
+                "pass": False,
+                "error": "path 非法：须为相对验证树根的路径（不得为绝对路径或含 '..' 段）",
+            }
         if not path.is_file():
             return {
                 "type": "file_content",
