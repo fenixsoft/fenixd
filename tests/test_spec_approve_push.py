@@ -6,6 +6,7 @@ Task 5.3：幂等与竞态核对（连续两次 409、spec 已 pushed 后消费�
 """
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -181,7 +182,9 @@ class TestCheckApprovePushRequests:
         req_path.parent.mkdir(parents=True, exist_ok=True)
         req_path.write_text(json.dumps({
             "spec": spec, "source": source,
-            "created": "2026-09-11T00:00:00+00:00",
+            # item 69d57b48a605 引入 created 时效分档后，写死的历史时间戳会被判
+            # 陈旧（仅消费不执行推送）——夹具须写入当前时刻模拟「新鲜审批」
+            "created": datetime.now(timezone.utc).isoformat(),
         }), encoding="utf-8")
         return req_path
 
@@ -247,6 +250,33 @@ class TestCheckApprovePushRequests:
         assert not req.exists()
         assert any("pm_engine 未初始化" in str(a) for a in logger.warnings)
 
+    def test_stale_created_signal_consumed_without_push(self, tmp_path, monkeypatch):
+        """陈旧 created（超阈值）→ 信号已消费但不执行推送（item 69d57b48a605）。
+
+        时效分档：daemon 停机期间积压的旧审批重启后仅消费不执行（WARNING
+        留痕），approve_push 不被调用。
+        """
+        proot = tmp_path / "proj"
+        (proot / ".fenix").mkdir(parents=True, exist_ok=True)
+        req = proot / ".fenix" / "approve_push_request.json"
+        req.write_text(json.dumps({
+            "spec": "done-spec", "source": "dashboard",
+            "created": "2020-01-01T00:00:00+00:00",
+        }), encoding="utf-8")
+        stale_calls = []
+
+        def fake_approve_push(self, spec_name):
+            stale_calls.append(spec_name)
+            return True
+
+        mock_engine = type("MockEngine", (), {"approve_push": fake_approve_push})()
+        logger = FakeLogger()
+        daemon = _FakeDaemon(proot, mock_engine, logger)
+        self._pickup(monkeypatch, proot, daemon)
+        assert not req.exists()
+        assert stale_calls == []
+        assert any("陈旧信号" in str(a) for a in logger.warnings)
+
     def test_atomic_consume_failure_keeps_signal_next_cycle_retries(self, tmp_path, monkeypatch):
         """原子消费（os.replace 占位）失败 → 信号保留本轮跳过，下一轮再消费。
 
@@ -302,7 +332,8 @@ class TestApprovePushIdempotency:
         req_path.parent.mkdir(parents=True, exist_ok=True)
         req_path.write_text(json.dumps({
             "spec": "pushed-spec", "source": "dashboard",
-            "created": "2026-09-11T00:00:00+00:00",
+            # 同 _write_signal：时效分档下夹具须写新鲜 created，否则被判陈旧不执行
+            "created": datetime.now(timezone.utc).isoformat(),
         }), encoding="utf-8")
         # mock pm_engine.approve_push 返回 True（模拟已 pushed 幂等跳过）
         # 注意：经实例属性访问时 self 自动传入，签名须为 (self, spec_name)

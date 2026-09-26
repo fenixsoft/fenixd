@@ -59,6 +59,7 @@ from core.signals import SCHEDULING_KICK_DIR
 # 对齐信号时序族）。daemon 正常运行时消费延迟 ≤ 2s（1s 主循环），超过 1 小时
 # 未消费只可能是消费方缺席——此时「唤醒」已失去即时语义，退化为「下次扫描自然
 # 会处理」。MUST NOT 进配置（对齐 docs/help/06-governance.md 既有记载）。
+# code-review item 69d57b48a605：approve_push 车道 created 时效分档复用同判据同阈值。
 SCHEDULING_KICK_STALE_THRESHOLD_SECONDS = 3600
 from core.wip_checkpoint import (
     ANCHOR_DRAIN_PRESERVE,
@@ -2060,6 +2061,27 @@ class FenixDaemon:
                 pass
         return payload if isinstance(payload, dict) else None
 
+    @staticmethod
+    def _signal_created_is_stale(created) -> bool:
+        """信号车道 created 时效分档判据（code-review item 69d57b48a605 抽取）。
+
+        与 scheduling_kick D4/D5 同判据（唯一判据 = created 时间戳，消费方
+        时钟）：created 缺失 / 非字符串 / ISO 格式非法，或早于
+        SCHEDULING_KICK_STALE_THRESHOLD_SECONDS → 陈旧（True），仅消费不执行。
+        approve_push 车道经此复用同判据同阈值（同一常量，防漂移）。
+        """
+        if not isinstance(created, str) or not created:
+            return True
+        try:
+            dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
+        except ValueError:
+            return True  # created 非法 → 按陈旧处理
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return (
+            datetime.now(timezone.utc) - dt
+        ).total_seconds() > SCHEDULING_KICK_STALE_THRESHOLD_SECONDS
+
     def _check_admin_invoke_requests(self):
         """主循环每轮扫描手动唤起 Admin 的文件信号并投递后台执行。
 
@@ -2259,7 +2281,12 @@ class FenixDaemon:
         _consume_request_file 原子消费——彼者「先消费后处理」，而本车道
         语义是「唤起成功才删，失败/未就绪信号保留留待下轮重试」（D4/D5）；
         payload 形状校验（isinstance dict）在任何删除动作之前完成，不存在
-        「先 unlink 后 payload.get」丢请求形态。
+        「先 unlink 后 payload.get」丢请求形态。占位只在唤起成功之后发生——
+        唤起后的删除先以 os.replace 原子改名到进程唯一临时名再删私有副本
+        （code-review item 690e48370279）：若 dashboard 在读取完成至删除之间的
+        窗口对同一 spec 原子重写新 kick，直接 path.unlink() 会把新请求一并误删
+        而从未被处理（与 _consume_request_file / item bfd39d85860e 同型丢请求
+        形态）；占位后原路径腾空，新写入落在全新路径、下一轮照常消费。
         """
         try:
             with path.open("r", encoding="utf-8") as f:
@@ -2287,20 +2314,10 @@ class FenixDaemon:
             except OSError:
                 pass
             return
-        # 陈旧分档（D4/D5）：created 缺失/非法按陈旧处理（仅删）
-        stale = True
+        # 陈旧分档（D4/D5）：created 缺失/非法按陈旧处理（仅删）；
+        # 判据抽为 _signal_created_is_stale（item 69d57b48a605：approve_push 共用）
         created = payload.get("created")
-        if isinstance(created, str) and created:
-            try:
-                dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
-                if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=timezone.utc)
-                stale = (
-                    datetime.now(timezone.utc) - dt
-                ).total_seconds() > SCHEDULING_KICK_STALE_THRESHOLD_SECONDS
-            except ValueError:
-                stale = True  # created 非法 → 按陈旧处理
-        if stale:
+        if self._signal_created_is_stale(created):
             self.logger.info(
                 "fenixd",
                 f"scheduling_kick 陈旧信号（created={created}），仅删除不唤起: {path.name}",
@@ -2345,11 +2362,30 @@ class FenixDaemon:
                 f"scheduling_kick 唤起 '{spec}' 失败（full_scan 兜底）: {e}",
             )
             return
-        # 唤起成功后删除；删除失败亦留待下轮
+        # 唤起成功后删除；删除失败亦留待下轮。删除先占位（item 690e48370279，
+        # 与 _consume_request_file / item bfd39d85860e 同型）：os.replace 原子
+        # 改名到进程唯一临时名，读取完成至删除之间窗口内 dashboard 原子重写的
+        # 新 kick 不会被本次删除误删——原路径腾空，新写入落在全新路径、下一轮
+        # 照常消费。占位失败（信号已消失等）视同「删除失败留待下轮」：留存
+        # 信号被再次唤起由下游 handler 既有幂等谓词吸收。
+        tmp_path = None
         try:
-            path.unlink()
+            fd, tmp_str = tempfile.mkstemp(
+                prefix=f".{path.name}.consumed.", suffix=".json",
+                dir=str(path.parent),
+            )
+            os.close(fd)
+            tmp_path = Path(tmp_str)
+            os.replace(str(path), str(tmp_path))
         except OSError:
-            self.logger.warning("fenixd", f"scheduling_kick 信号删除失败，留待下轮: {path.name}")
+            self.logger.warning(
+                "fenixd", f"scheduling_kick 信号删除失败，留待下轮: {path.name}"
+            )
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
 
     def _reclaim_stale_scheduling_kicks(self) -> None:
         """陈旧 scheduling kick 信号回收（启动清扫 + 周期计时段，600s 对齐孤儿清扫）。
@@ -2419,6 +2455,12 @@ class FenixDaemon:
         0e1eafada5d6）：先 rename 占位再读（payload 非法/损坏一律已消费返回
         None），消灭「先 unlink 后 payload.get」对合法 JSON 非对象值的
         AttributeError 丢请求形态与 read-unlink 窗口竞态。
+
+        时效分档（code-review item 69d57b48a605）：created 与 scheduling_kick
+        同判据同阈值（经 _signal_created_is_stale）——daemon 停机期间积压的旧
+        审批信号重启后仅消费不执行（warning 留痕、明示积压旧审批）；created
+        缺失/非法保守按陈旧处理。消费本身已由 _consume_request_file 占位完成，
+        时效只决定「是否执行推送」。
         """
         req_path = PROJECT_ROOT / ".fenix" / "approve_push_request.json"
         payload = self._consume_request_file(req_path)
@@ -2428,6 +2470,17 @@ class FenixDaemon:
         spec = payload.get("spec")
         if not spec:
             self.logger.warning("fenixd", "approve_push 请求缺少 spec，忽略")
+            return
+        # 时效分档（item 69d57b48a605）：与 scheduling_kick 同判据同阈值，
+        # 停机积压的旧审批重启后不执行推送；created 缺失/非法保守按陈旧处理
+        created = payload.get("created")
+        if self._signal_created_is_stale(created):
+            self.logger.warning(
+                "fenixd",
+                f"approve_push 陈旧信号（created={created}）超过 "
+                f"{SCHEDULING_KICK_STALE_THRESHOLD_SECONDS}s 阈值，不执行推送: "
+                f"spec='{spec}'（积压旧审批，如仍需推送请在 dashboard 重新发起）",
+            )
             return
         if self.pm_engine is None:
             self.logger.warning("fenixd", "pm_engine 未初始化，丢弃 approve_push 请求")

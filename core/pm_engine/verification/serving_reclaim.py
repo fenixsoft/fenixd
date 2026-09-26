@@ -165,8 +165,13 @@ def _should_keep(spec_name: str | None, wt_path: Path, project_root: Path) -> bo
 
 
 def _remove_serving_worktree(project_root: Path, wt_path: Path) -> None:
-    """git worktree remove --force + git worktree prune（幂等）。"""
-    subprocess.run(
+    """git worktree remove --force + git worktree prune（幂等）。
+
+    git 非零返回（权限/文件被占用/路径非注册 worktree 等）时抛 RuntimeError
+    （含 stderr 留痕），由调用方记 WARNING 且不计入 reclaimed，
+    避免目录删除失败仍被记为回收成功。
+    """
+    remove = subprocess.run(
         [
             "git",
             "-C",
@@ -180,11 +185,23 @@ def _remove_serving_worktree(project_root: Path, wt_path: Path) -> None:
         text=True,
         timeout=30,
     )
-    subprocess.run(
+    if remove.returncode != 0:
+        raise RuntimeError(
+            f"git worktree remove --force {wt_path} 失败 "
+            f"(rc={remove.returncode}): "
+            f"{(remove.stderr or remove.stdout).strip()}"
+        )
+    prune = subprocess.run(
         ["git", "-C", str(project_root), "worktree", "prune"],
         capture_output=True,
+        text=True,
         timeout=15,
     )
+    if prune.returncode != 0:
+        raise RuntimeError(
+            f"git worktree prune 失败 (rc={prune.returncode}): "
+            f"{(prune.stderr or prune.stdout).strip()}"
+        )
 
 
 def _is_boot_log_target(name: str) -> bool:

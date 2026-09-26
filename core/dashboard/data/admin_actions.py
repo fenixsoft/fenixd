@@ -1268,6 +1268,15 @@ def clear_spec_error(project_root, spec: str) -> dict:
     通道（对齐 configure_spec_freeze「冻结管理仅对冻结 spec 生效」的反向
     守卫与 {ok: False, error: 原因} 拒绝形状）。
 
+    豁免标记守卫（code-review item 582624e4c92a）：admin_monitor 的
+    blocked_stuck 豁免除 frozen 字段与「用户指令冻结：」前缀外，还认 error
+    前缀 ``frozen:`` 与「用户指令」子串两种存量文本标记（人工冻结/暂停的
+    历史文案，词形漂移不一）。blocked 态清空 error 会连带抹掉这些标记、
+    使豁免失效——有意等待态 spec 满冷却阈值即被反复误报唤起 admin（真实
+    事故：清除错误整段抹掉 error 连带冻结标记 → 15 分钟循环误报；清除
+    error ≠ 要求重派）。故 blocked 态 error 携带任一豁免标记时同样拒绝；
+    判据须与 admin_monitor._detect_blocked_stuck 保持同步，勿单侧增删。
+
     Args:
         project_root: 项目根目录
         spec: SPEC 名称（须 kebab-case，且已在 STATE.md 注册）
@@ -1276,7 +1285,7 @@ def clear_spec_error(project_root, spec: str) -> dict:
         {"ok": True, "found": True}  — 已清除（含本就为空）
         {"found": False}             — spec 不存在
         {"ok": False, "found": True, "frozen": True, "error": 原因}
-                                     — 冻结态拒绝
+                                     — 冻结态/豁免标记拒绝
     """
     proot = Path(project_root)
     specs = parse_state(proot)
@@ -1288,6 +1297,17 @@ def clear_spec_error(project_root, spec: str) -> dict:
             "found": True,
             "frozen": True,
             "error": "SPEC 处于冻结态，清除错误会连带解除冻结；请先经解冻（unfreeze）官方通道恢复",
+        }
+    entry = specs[spec]
+    err_text = str(entry.get("error") or "")
+    if entry.get("status") == "blocked" and (
+        err_text.startswith("frozen:") or "用户指令" in err_text
+    ):
+        return {
+            "ok": False,
+            "found": True,
+            "frozen": True,
+            "error": "SPEC 的 error 携带冻结/用户指令标记（admin 巡检 blocked_stuck 豁免的依据），清除会使豁免失效并引发循环误报；请先经官方通道处置或人工修正 STATE.md",
         }
     from core.state_machine import StateMachine, project_state_logger
 
@@ -1438,6 +1458,18 @@ def reset_verification(project_root, spec: str, note: str = "", signal_type: str
             return {
                 "ok": False, "found": True, "steps": [], "target_status": None,
                 "error": "冻结原因属用户指令成本止损（非验证链信号），重置验证被拒绝",
+            }
+        # 用户指令冻结默认拒绝（code-review item 659874157d55）：freeze_spec
+        # 把人工 reason 并入冻结 error（「用户指令冻结：原状态 X · <reason>」），
+        # 自定义 reason 含「重派/验证/预算/env」等通用词即命中下方 marker 子串
+        # 判别，人工冻结被静默解除并删验证进度。人工冻结走 unfreeze/裁决动词
+        # 处置；自动冻结（闸门/env 阻塞/judge·verify 链）写自有文案不携带本
+        # 前缀（见 is_spec_frozen 注），合法验证链冻结不受影响——结构化
+        # signal_type 路径同样不经过本判定。
+        if error_text.startswith(FREEZE_ERROR_PREFIX):
+            return {
+                "ok": False, "found": True, "steps": [], "target_status": None,
+                "error": "用户指令冻结不属验证链信号（人工冻结走解冻/裁决处置），重置验证被拒绝",
             }
         if not any(m in error_text for m in _VERIFY_CHAIN_ERROR_MARKERS):
             return {

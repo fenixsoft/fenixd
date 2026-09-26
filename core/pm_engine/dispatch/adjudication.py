@@ -2168,6 +2168,10 @@ class VAdjudicationMixin:
                                 }
                             )
                             for k, d in diff_by_element.items()
+                            # 非 dict（_apply_declaration_correction 改写失败
+                            # 返回 None）跳过该键，与预分类审计投影同口径——
+                            # 单条 diff 异常不得令整条 dispute 审计记录丢失。
+                            if isinstance(d, dict)
                         },
                     }
                 )

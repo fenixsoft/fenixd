@@ -152,7 +152,9 @@ class H6AlertRoutesMixin:
             self._error(400, "unknown project")
             return
         if not project.get("exists"):
-            self._error(400, "project not found")
+            # 404「资源不存在」语义，与 _api_alert_resolve 及全仓写路径统一，
+            # 不再与 resolve 的同条件 404 分叉（code-review item 60ca51790701）
+            self._error(404, "project not found")
             return
         if not alert_id:
             self._error(400, "missing alert id")

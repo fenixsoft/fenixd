@@ -3098,6 +3098,8 @@ class QQQueueMixin:
         from core.config import ConfigLoader
 
         if not self._impl_ocr_enabled():
+            # 与其余 pass 出口对齐：停等标记残留会误导车道回调与巡检判别
+            self._ocr_join_clear_pending(spec_name)
             self._ocr_clear_findings_directive(spec_name)
             return "pass"
         fingerprint = self._ocr_current_fingerprint(spec_name)

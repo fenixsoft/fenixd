@@ -142,9 +142,10 @@ def _write_fuse_marker(fail_count: int) -> None:
 def _write_fuse_alert() -> None:
     """熔断触发时经既有告警通道（AdminStore）产出 critical 告警。
 
-    supervisor 是独立进程，写告警需把框架根加入 sys.path 并实例化 AdminStore；
-    import/写入失败降级为日志（熔断标记与 supervisor.log critical 记录已落盘，
-    告警是增强通道）。测试可用替身注入替换。
+    supervisor 是独立进程，写告警需把 .fenix/（FENIX_DIR）加入 sys.path 并实例化
+    AdminStore；core 包经 .fenix/core → 框架 core/ 软链解析，项目布局缺该软链时
+    导入失败。import/写入失败降级为日志（熔断标记与 supervisor.log critical 记录
+    已落盘，告警是增强通道）。测试可用替身注入替换。
     """
     try:
         if str(FENIX_DIR) not in sys.path:
@@ -171,6 +172,11 @@ def _write_fuse_alert() -> None:
                     "supervisor 进程，其不继承旧熔断）"
                 ),
             }
+        )
+    except ImportError as e:  # 多为布局缺软链：给出排障指引
+        log(
+            f"fuse alert write failed (non-blocking): {e}"
+            f"（导入失败：检查 {FENIX_DIR / 'core'} 软链是否指向框架 core/）"
         )
     except Exception as e:  # noqa: BLE001 — 告警通道非关键路径，失败降级日志
         log(f"fuse alert write failed (non-blocking): {e}")
