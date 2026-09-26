@@ -316,10 +316,11 @@ def _load_verify_contract_with_raw(
             port=port,
         )
     # ready 段（code-review item c2d140a513b9）：先类型校验再取值——ready: 为
-    # 标量/字符串（如 ready: /health）时 .get 抛 AttributeError、expect/timeout
-    # 为非数字时 int() 抛 ValueError，均从本函数直接冒出，违背文档「解析失败
-    # 按无契约处理并记 warning」约定（selfcheck_contract_light 的调用不在 try
-    # 内，消费期会崩溃）。非法映射/非法数值一律记 warning 并按无契约回退。
+    # 标量/字符串（如 ready: /health）时 .get 抛 AttributeError 从本函数直接
+    # 冒出，违背文档「解析失败按无契约处理并记 warning」约定
+    # （selfcheck_contract_light 的调用不在 try 内，消费期会崩溃）。非法映射
+    # 按无契约回退；expect/timeout 非法值回退缺省并记 warning（item
+    # 97f9f0e1a56e，见下方解析处）。
     ready_data = data.get("ready")
     if ready_data is not None and not isinstance(ready_data, dict):
         if logger:
@@ -329,19 +330,30 @@ def _load_verify_contract_with_raw(
             )
         return None, None
     ready_data = ready_data or {}
-    try:
-        ready = ReadyProbe(
-            url=str(ready_data.get("url") or "/") or "/",
-            expect=int(ready_data.get("expect") or 200),
-            timeout=int(ready_data.get("timeout") or DEFAULT_READY_TIMEOUT),
+    # expect/timeout 数值解析（code-review item 97f9f0e1a56e）：旧
+    # ``int(... or 200)`` 让 bool 穿透——bool 是 int 子类，``expect: true`` 得
+    # expect=1（探针状态码恒不匹配，静默等满 timeout 后误报「实例未就绪」）、
+    # ``timeout: true`` 得 1 秒就绪窗口骤缩；``false`` 又因 falsy 被 or 静默
+    # 换成缺省（配置笔误被吞）。改走 _positive_int_or_default（排除 bool，与
+    # serve.port、regression 段数值解析同口径），显式给出非法值时记 warning
+    # 后回退缺省。
+    raw_expect = ready_data.get("expect")
+    raw_timeout = ready_data.get("timeout")
+    bad_ready_values = [
+        f"{key}={raw!r}"
+        for key, raw in (("expect", raw_expect), ("timeout", raw_timeout))
+        if raw is not None and _positive_int_or_default(raw, 0) == 0
+    ]
+    if bad_ready_values and logger:
+        logger.warning(
+            "verify_contract",
+            f"verify.yaml ready 段数值非法（回退缺省）: {', '.join(bad_ready_values)}",
         )
-    except (TypeError, ValueError) as e:
-        if logger:
-            logger.warning(
-                "verify_contract",
-                f"verify.yaml ready 段数值非法（按无契约回退）: {e}",
-            )
-        return None, None
+    ready = ReadyProbe(
+        url=str(ready_data.get("url") or "/") or "/",
+        expect=_positive_int_or_default(raw_expect, 200),
+        timeout=_positive_int_or_default(raw_timeout, DEFAULT_READY_TIMEOUT),
+    )
     # 端口注入迁移告警（不阻断）：cmd 未引用注入端口时实例会与既有实例
     # 争抢固定端口（dashboard 端口独占语义下 = 杀掉占用者接管，2026-09-05
     # 验证实例顺带杀主树 dashboard 事故的根源），由未消费注入的兜底发现

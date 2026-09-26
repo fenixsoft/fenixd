@@ -2010,7 +2010,7 @@ class FenixDaemon:
                 break
 
     @staticmethod
-    def _consume_request_file(req_path):
+    def _consume_request_file(req_path, outcome=None):
         """原子消费文件信号：读+删作为整体，返回 payload dict 或 None。
 
         code-review item bfd39d85860e：dashboard 侧以 tempfile + os.replace 原子写
@@ -2019,9 +2019,19 @@ class FenixDaemon:
         操作静默丢失（旧注释只覆盖「删失败=已被消费」的反向窗口）。改为先把文件
         rename 到进程唯一临时名（原子占位：新写入者拿到的是全新路径、不会被误删），
         再读该私有副本并删除；读取/解析失败同样返回 None 并清理。
+
+        code-review item 94618d6567ee：outcome 为可选 dict 出参，记录返回 None
+        的归因——"absent"=信号不在场或已被并发取走；"io"=mkstemp/rename 阶段
+        IO 异常（磁盘满/权限等），信号**未被消费**仍留盘待下轮重试；
+        "payload"=信号已消费但内容非法/不可读。消费方（code_review 车道）据此
+        区分「payload 非法」与「IO 异常」，后者不落 invalid_payload 结果。
+        其余调用方不传 outcome，返回形态与行为完全不变。
         """
+        if outcome is None:
+            outcome = {}
         # 「信号不存在」是各车道每秒轮询的绝对常态，先 exists() 判空避免稳态下每轮 mkstemp+unlink 的无谓churn（item 97fdc0ac0a2f）
         if not req_path.exists():
+            outcome["kind"] = "absent"
             return None
         tmp_path = None
         try:
@@ -2036,6 +2046,7 @@ class FenixDaemon:
             # 信号文件不存在（稀疏事件的绝大多数轮次）：mkstemp 已建出私有临时
             # 副本路径，此处必须清理，否则主循环每轮泄漏一个零字节 .consumed.* 文件
             # （线上实测堆积 11 万+）。与下方 OSError 分支同样清理 tmp_path。
+            outcome["kind"] = "absent"
             if tmp_path is not None:
                 try:
                     tmp_path.unlink()
@@ -2043,6 +2054,9 @@ class FenixDaemon:
                     pass
             return None
         except OSError:
+            # 非缺失类 IO 异常（磁盘满/权限等）：信号未被 rename 走、仍留盘，
+            # 归因为 io 而非 payload 非法（item 94618d6567ee）。
+            outcome["kind"] = "io"
             if tmp_path is not None:
                 try:
                     tmp_path.unlink()
@@ -2053,13 +2067,19 @@ class FenixDaemon:
             with tmp_path.open("r", encoding="utf-8") as f:
                 payload = json.load(f)
         except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+            # 信号已被 rename 消费（不会再重试），读不出合法内容按 payload
+            # 非法归因。
+            outcome["kind"] = "payload"
             return None
         finally:
             try:
                 tmp_path.unlink()
             except OSError:
                 pass
-        return payload if isinstance(payload, dict) else None
+        if isinstance(payload, dict):
+            return payload
+        outcome["kind"] = "payload"
+        return None
 
     @staticmethod
     def _signal_created_is_stale(created) -> bool:
@@ -2804,13 +2824,16 @@ class FenixDaemon:
         req_path = PROJECT_ROOT / ".fenix" / "code_review_request.json"
         # 「信号在场但 payload 非法」探测（add-code-review-trigger-ack 1.2）：
         # _consume_request_file 对「无信号」与「损坏/非 dict payload」都返回
-        # None（前者是每轮稀疏常态），以消费前的存在性探测区分二者——文件在场
-        # 却读不出合法 payload → 落 invalid_payload 结果，不再静默丢信号。
-        # 探测与消费之间信号只会被本主循环线程取走（单消费者），无并发误判面。
-        signal_was_present = req_path.exists()
-        payload = self._consume_request_file(req_path)
+        # None（前者是每轮稀疏常态）——文件在场却读不出合法 payload → 落
+        # invalid_payload 结果，不再静默丢信号。item 94618d6567ee：消费期 IO
+        # 异常（磁盘满/权限等）同样返回 None 且信号未被消费，经 outcome 归因
+        # 出参区分——IO 异常不落 invalid_payload 结果（那会把「触发信号内容
+        # 非法」误展示给用户、误导排障方向），仅记日志待下轮自愈重试。
+        outcome = {}
+        payload = self._consume_request_file(req_path, outcome=outcome)
         if payload is None:
-            if signal_was_present:
+            kind = outcome.get("kind")
+            if kind == "payload":
                 self.logger.warning(
                     "fenixd",
                     "code_review 触发信号 payload 非法/损坏，信号已消费并落 "
@@ -2818,6 +2841,12 @@ class FenixDaemon:
                 )
                 self._write_code_review_request_result(
                     None, "dropped", "invalid_payload")
+            elif kind == "io":
+                self.logger.warning(
+                    "fenixd",
+                    "code_review 触发信号消费遭遇 IO 异常（信号未消费、留盘待"
+                    "下轮重试），不落 invalid_payload 结果",
+                )
             return
 
         # requested_at 提前提取（回链用）：守卫拒绝/单飞拒绝/投递成功/失败的
