@@ -3997,7 +3997,9 @@ class FenixDaemon:
           构造只读 spec/worktree），空值无副作用；MUST NOT 回退
           ``_spec_from_run_id`` 反查（会把「STATE 无 implementer_run」的形态
           重新排除在外）；
-        - worktree 取在册记录（``find_worktrees_by_spec`` 全量，不因歧义丢失）；
+        - worktree 取在册记录（``find_worktrees_by_spec`` 全量，不因歧义丢失；
+          每个在册 worktree 各追加一条保全条目并全量并入返回值，code-review
+          item a368f2d36516）；
         - 条目并入既有 sidecar（不覆盖，先读后写）。
 
         Returns: 新增保全条目的 worktree 路径列表（供保护集 / WIP checkpoint）。
@@ -4031,25 +4033,36 @@ class FenixDaemon:
                 if wt:
                     worktrees = [str(wt)]
             ahead = _ahead_commit_count(branch) if branch else 0
-            worktree = worktrees[0] if worktrees else ""
-            if worktree and worktree not in seen_wt:
-                seen_wt.add(worktree)
-                added_wt.append(worktree)
-            entries.append(
-                {
-                    "spec": spec,
-                    "run_id": run_id,
-                    "branch": branch,
-                    "worktree": worktree,
-                    "ahead_commits": ahead,
-                    "reason": reason,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                }
-            )
+            # 每个「在册 worktree」各追加一条保全条目并全量并入返回值
+            # （code-review item a368f2d36516）：旧实现只取 worktrees[0]，
+            # 同一 spec 同时存在 impl- 与 repair- 两个在册 worktree 时，
+            # 第二个既不写入 sidecar 也不进 WIP checkpoint 提交集合——
+            # 锚点 A「中断时刻分支必有可恢复提交」只对首个 worktree 成立。
+            # 条目结构不变，消费方（_wip_checkpoint_preserved_worktrees 的
+            # worktree→spec 映射、保护集来源 (b)）按条目逐条读取，天然兼容。
+            if not worktrees:
+                worktrees = [""]
+            for worktree in worktrees:
+                worktree = str(worktree)
+                if worktree and worktree not in seen_wt:
+                    seen_wt.add(worktree)
+                    added_wt.append(worktree)
+                entries.append(
+                    {
+                        "spec": spec,
+                        "run_id": run_id,
+                        "branch": branch,
+                        "worktree": worktree,
+                        "ahead_commits": ahead,
+                        "reason": reason,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    }
+                )
             self.logger.warning(
                 "fenixd",
                 f"Preserving implementing spec '{spec}' (branch "
-                f"'{branch or 'none'}', worktree '{worktree or 'none'}', "
+                f"'{branch or 'none'}', worktrees="
+                f"{[wt for wt in worktrees if wt] or ['none']}, "
                 f"ahead={ahead})",
             )
         if not _write_preserve_sidecar(entries):
