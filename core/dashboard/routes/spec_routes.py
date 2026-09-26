@@ -154,8 +154,9 @@ class H3SpecRoutesMixin:
         if "priority" not in body:
             self._error(400, "priority required in request body")
             return
-        # bool 显式拒绝（与 spec-budget 端点同口径）——int(True) 会静默转 1 被当作 P1
-        if isinstance(body["priority"], bool):
+        # bool/浮点显式拒绝（与 spec-budget 端点同口径）——int(True) 会静默转 1
+        # 被当作 P1，int(2.9) 会静默截断为 2；str 保留（数据层兼容可转 int 的 str）
+        if isinstance(body["priority"], bool) or not isinstance(body["priority"], (int, str)):
             self._error(400, "priority must be an integer between 1 and 9")
             return
         proot = Path(project["path"])
