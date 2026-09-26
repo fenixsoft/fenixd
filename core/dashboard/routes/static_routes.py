@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import gzip
 import mimetypes
+import os
 import re
 import urllib.parse
 from pathlib import Path
@@ -27,8 +28,9 @@ class H10StaticRoutesMixin:
     # ThreadingHTTPServer 的 worker 在 GIL 下串行执行，每请求对同一不可变
     # .js/.css 重压同一字节纯属浪费。仅缓存文件名带内容 hash 的文件
     # （_HASHED_STATIC_RE，index.html 除外）；key 含 (size, mtime_ns) 兜底
-    # 同名重写；单文件超上限不入缓（大小守卫），条目数超限整体清空（简单
-    # 有界，防长生命周期下缓存无界增长）。
+    # 同名重写，且键取自读 body 之前那次 stat——保证键与载荷出自同一文件
+    # 版本（code-review item b0021abda19f）；单文件超上限不入缓（大小守卫），
+    # 条目数超限整体清空（简单有界，防长生命周期下缓存无界增长）。
     _GZIP_PAYLOAD_CACHE_MAX_BYTES = 2 * 1024 * 1024
     _GZIP_PAYLOAD_CACHE_MAX_ENTRIES = 16
     _gzip_payload_cache: Dict[tuple, bytes] = {}
@@ -117,11 +119,14 @@ class H10StaticRoutesMixin:
         ctype = mimetypes.guess_type(str(target))[0] or "image/png"
         self._send_file(target, ctype)
 
-    def _hashed_gzip_payload(self, path: Path, body: bytes) -> Optional[bytes]:
+    def _hashed_gzip_payload(self, path: Path, body: bytes,
+                             st: Optional[os.stat_result] = None) -> Optional[bytes]:
         """hashed 不可变 bundle 的 gzip 载荷（缓存命中/回填）；不压缩返回 None。
 
         调用方须自行保证客户端 Accept-Encoding 含 gzip（下方 _send_file 已
-        守卫）。非 hashed 文件仍逐请求压缩（内容可变，不可缓存）。
+        守卫）。非 hashed 文件仍逐请求压缩（内容可变，不可缓存）。st 须为
+        调用方读取 body 之前取得的 stat 结果（code-review item b0021abda19f），
+        保证缓存键与 body 出自同一文件版本；未传入时兜底自取。
         """
         if path.suffix.lower() not in self._GZIP_EXT:
             return None
@@ -129,11 +134,14 @@ class H10StaticRoutesMixin:
             path.name != "index.html"
             and self._HASHED_STATIC_RE.search(path.name) is not None
         )
-        try:
-            st = path.stat()
-            key = (str(path), st.st_size, st.st_mtime_ns) if immutable else None
-        except OSError:
-            key = None
+        if st is None:
+            try:
+                st = path.stat()
+            except OSError:
+                st = None
+        key = None
+        if immutable and st is not None:
+            key = (str(path), st.st_size, st.st_mtime_ns)
         if key is not None:
             cached = self._gzip_payload_cache.get(key)
             if cached is not None:
@@ -152,6 +160,15 @@ class H10StaticRoutesMixin:
 
     def _send_file(self, path: Path, ctype: str, cache: str = "no-cache",
                    extra_headers: "list[tuple[str, str]] | None" = None):
+        # 先 stat 后读（code-review item b0021abda19f）：gzip 缓存键的
+        # (size, mtime_ns) 必须与 body 出自同一文件版本。若读后再 stat，
+        # 两步之间文件被原地重写时键描述新版本、载荷却是旧内容的 gzip，
+        # 此后同名请求恒命中陈旧 bundle；读前 stat 则键描述旧版本，重写
+        # 后自然 miss 重压，不会以新键长期污染缓存。
+        try:
+            st = path.stat()
+        except OSError:
+            st = None
         try:
             body = path.read_bytes()
         except OSError:
@@ -164,7 +181,7 @@ class H10StaticRoutesMixin:
         for _name, _value in (extra_headers or ()):
             self.send_header(_name, _value)
         if path.suffix.lower() in self._GZIP_EXT and self._wants_gzip():
-            payload = self._hashed_gzip_payload(path, body)
+            payload = self._hashed_gzip_payload(path, body, st)
             if payload is not None:
                 self.send_header("Content-Encoding", "gzip")
                 self.send_header("Vary", "Accept-Encoding")
