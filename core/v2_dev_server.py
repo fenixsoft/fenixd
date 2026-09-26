@@ -310,16 +310,47 @@ def _pgrep_dev_servers(pattern: str) -> list:
     return [int(s) for s in res.stdout.split() if s.strip().isdigit()]
 
 
+def _pid_alive(pid: int) -> bool:
+    """进程是否仍存活（/proc 条目存在且非僵尸态；Z 态视同已终止）。
+
+    孤儿 dev-server 的父进程（已死 daemon 的 shell 链）可能不收尸，/proc
+    条目以 Z 态残留，须按已终止计，否则误补 SIGKILL 且漏计清理数。
+    """
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_bytes()
+        # comm 可含空格/括号，取最后一个 ')' 之后的首字段（state）。
+        return stat.rsplit(b")", 1)[1].split()[:1] != [b"Z"]
+    except (OSError, IndexError):
+        return False
+
+
 def _kill_pids(pids: list) -> int:
-    """对 PID 列表逐个 SIGTERM，返回成功发出的个数（忽略单个失败）。"""
+    """对 PID 列表逐个 SIGTERM，短暂轮询 /proc 确认退出，仍存活补 SIGKILL。
+
+    返回确认已终止的进程数（单个 pid 操作失败——权限不足/竞态消失——按未
+    终止计，忽略继续）。等待有界：SIGTERM 后至多 ~2s、SIGKILL 后至多 ~1s，
+    不阻塞调用方（启动清扫/周期清扫均可容忍秒级）。
+    """
     killed = 0
     for pid in pids:
         try:
             res = subprocess.run(["kill", "-TERM", str(pid)], timeout=5)
+            if res.returncode != 0:
+                continue
+            for _ in range(20):  # ~2s 上限等待 SIGTERM 生效
+                if not _pid_alive(pid):
+                    break
+                time.sleep(0.1)
+            else:  # 仍存活（如 node 卡死不响应 SIGTERM）→ SIGKILL 兜底
+                subprocess.run(["kill", "-KILL", str(pid)], timeout=5)
+                for _ in range(10):  # ~1s 上限等待 SIGKILL 生效
+                    if not _pid_alive(pid):
+                        break
+                    time.sleep(0.1)
+            if not _pid_alive(pid):
+                killed += 1
         except (subprocess.SubprocessError, OSError):
             continue
-        if res.returncode == 0:
-            killed += 1
     return killed
 
 
