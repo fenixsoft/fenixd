@@ -199,7 +199,9 @@ class TestStateParserHalfWriteDefense(unittest.TestCase):
         }
         original_parse = StateParser.parse
 
-        def _fake_parse(path):
+        def _fake_parse(path, logger=None):
+            # read_all 自 685210d97ff8 起向 parse 传 logger（status 非法条目
+            # 记 warning），替身签名需兼容第二参数
             return sm._raw_override
 
         try:
