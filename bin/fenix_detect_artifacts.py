@@ -247,6 +247,8 @@ def write_config_if_unresolved(project_root: Path, detection: dict) -> dict:
 
     注意：有 PyYAML 时走 yaml.dump 全量重写，config.yaml 原有注释与排版会全部
     丢失（PyYAML 不保留注释）；仅无 yaml 的退化文本路径逐行保留原文件。
+    config.yaml 无法解析（YAMLError/OSError）或顶层非映射时中止写入，绝不以空
+    配置起步全量重写，以免静默清空用户其余配置。
 
     Returns: {"wrote": bool, "reason": str}
     """
@@ -273,10 +275,24 @@ def write_config_if_unresolved(project_root: Path, detection: dict) -> dict:
         try:
             with open(cfg_path, "r", encoding="utf-8") as f:
                 config = yaml.safe_load(f) or {}
-        except (OSError, yaml.YAMLError, FileNotFoundError):
-            config = {}
+        except FileNotFoundError:
+            config = {}  # 文件尚不存在，空配置起步不损失任何内容
+        except (OSError, yaml.YAMLError) as e:
+            # 读取失败/语法错误：以空 dict 全量重写会清掉用户其余配置，中止写入
+            # （与退化文本路径「其余行原样保留」语义对齐）
+            return {
+                "wrote": False,
+                "reason": f"config.yaml 无法解析，中止写入以免清空既有配置: {e}",
+            }
         if not isinstance(config, dict):
-            config = {}
+            # 顶层非映射（列表/标量）：yaml.dump 全量重写会改写整个文档结构，中止
+            return {
+                "wrote": False,
+                "reason": (
+                    f"config.yaml 顶层为 {type(config).__name__} 而非映射，"
+                    "中止写入以免清空既有配置"
+                ),
+            }
         worktree = config.setdefault("worktree", {})
         if not isinstance(worktree, dict):
             worktree = {}
