@@ -917,9 +917,12 @@ class QQQueueMixin:
     def _run_agent_worker(self, spec_name: str, agent_type: str, priority: int):
         """Worker thread body: run the agent and handle result.
 
-        Always decrements _active_runs and re-triggers queue processing
-        in finally, so slots are released even on exceptions.
-        priority 参数用于 finally 中从 _active_priorities 移除对应档位。
+        finally 按 agent_type 分流释放（详见 finally 内分流注释）：实现车道减
+        _active_runs 并按档位摘除 _active_priorities；spec-review /
+        planner-plan 车道从不递增 _active_runs，仅摘除各自在飞登记
+        （_active_reviews / _active_parallel_plans）。各车道均重新触发队列
+        处理，异常路径同样释放。
+        priority 参数仅实现车道用于 finally 中从 _active_priorities 移除对应档位。
         """
         try:
             if agent_type == "spec-review":

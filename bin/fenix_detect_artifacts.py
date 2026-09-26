@@ -12,7 +12,7 @@
     --write：探测结果写入项目主树的 .fenix/config.yaml（幂等，不覆盖已显式配置的项目）。
 
 探测信息源（按优先级）：
-    1. package.json 的 scripts.build / scripts.dist / scripts.release
+    1. package.json 的 scripts.build / scripts.dist / scripts.release / scripts.bundle
     2. pyproject.toml 的 [build-system]（poetry setuptools 等 → 检查 dist/）
     3. 项目目录结构：根级 dist/、build/、out/ 目录（独立信息源，仅项目根级，
        不递归子级；Python 项目不列 build/）、release-*.zip 等命名的产物文件（写入具体文件名）
