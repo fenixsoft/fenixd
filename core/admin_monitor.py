@@ -3707,16 +3707,64 @@ class AdminMonitor:
         entry["retry_count"] = 0
 
     def _close_dispatch_failures_on_success(self, signal: dict) -> None:
-        """dispatch 成功（run_administrator 正常返回）→ 关闭该 spec 未处理的
+        """dispatch 成功（run_administrator 正常返回）→ 关闭未处理的
         派发失败升级记录（admin-dispatch-failure-escalation D2）。
 
         仅关闭带 next_retry_at 字段的未处理 kind=escalation 记录（两条分流
         路径：admin_dispatch_programming_error 与原类型记录均带该字段；手动
         唤起的记录不带，天然不关）；其他升级记录（人工处置中/其他原因）不受
         影响。闭环发生在 dispatch 时刻，不扩 alert_lifecycle._SIGNAL_CONDITIONS。
+
+        spec 路径按 spec 名下过滤；daemon 级路径（spec=None，如 daemon_errors）
+        按重派链携带的 _dispatch_retry_id 精确闭环对应记录——否则重派成功
+        不闭环，_retry_due_dispatch_failures 每轮巡检都会命中该到期记录，
+        无限重复唤起 Administrator（code-review 58c9fd5dfeb9）。
         """
         spec = signal.get("spec")
         if not spec:
+            # daemon 级记录 spec 恒为 None，无法按 spec 过滤闭环；改按
+            # 记录 id 闭环（重派链信号必带 _dispatch_retry_id）。此处先
+            # 复核派发失败记录口径（kind=escalation ∧ 未 handled ∧ 带
+            # next_retry_at，与 spec 路径 close_dispatch_failure_alerts
+            # 的过滤集一致），再经 auto_resolve 写 handled_by="auto-resolve"
+            # + resolve_note，与 spec 路径闭环形态同形。
+            retry_id = signal.get("_dispatch_retry_id")
+            if not retry_id:
+                return
+            try:
+                rec = next(
+                    (r for r in self.store.read_all() if r.get("id") == retry_id),
+                    None,
+                )
+            except Exception as e:
+                self.logger.error(
+                    "admin_monitor",
+                    f"Failed to read dispatch-failure escalation {retry_id}: {e}",
+                )
+                return
+            if (
+                rec is None
+                or rec.get("kind") != ESCALATION
+                or rec.get("handled")
+                or not rec.get("next_retry_at")
+            ):
+                return
+            try:
+                closed = self.store.auto_resolve(
+                    [{"id": retry_id, "resolve_note": "后续派发成功"}]
+                )
+                if closed:
+                    self.logger.info(
+                        "admin_monitor",
+                        f"Dispatch succeeded for daemon-level signal "
+                        f"{signal.get('signal_type')}, closed dispatch-failure "
+                        f"escalation {retry_id}",
+                    )
+            except Exception as e:
+                self.logger.error(
+                    "admin_monitor",
+                    f"Failed to close dispatch-failure escalation {retry_id}: {e}",
+                )
             return
         try:
             closed = self.store.close_dispatch_failure_alerts(spec, "后续派发成功")
