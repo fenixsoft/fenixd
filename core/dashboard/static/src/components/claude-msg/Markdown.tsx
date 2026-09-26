@@ -97,7 +97,8 @@ const CodeBlock = ({ node: _node, className, children, forceBlock, ...props }: C
     );
   }
 
-  const match = /language-(\w+)/.exec(className || '');
+  // [\w+#-] 覆盖 c++ / objective-c / c# 等含非字母数字字符的语言标注
+  const match = /language-([\w+#-]+)/.exec(className || '');
   const language = match ? match[1] : 'text';
   const languageLabel = language.charAt(0).toUpperCase() + language.slice(1);
 
