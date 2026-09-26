@@ -13,7 +13,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 # run 产物 agent 类型推断（原 data.py 顶层导入，随 runs 组迁移）
-from core.agent_runner.run_files import infer_run_agent_type, run_spec_part
+from core.agent_runner.run_files import (
+    infer_run_agent_type,
+    run_spec_part,
+    strip_run_id_suffixes,
+)
 
 # ── 结构化 run 指标日志索引（fix-observability-gaps 1.5 消费点）────────────
 # run 收尾在 fenixd.log 写一条 metric_type=run_metrics 的结构化指标（runner.py
@@ -495,9 +499,11 @@ def get_runs(project_root, spec_name: str | None = None, include_archive: bool =
         # 此前是本地漂移副本，漏了 spec-review-/dispute-judge- → 评审 Agent
         # 在时间线上退化为泛型 "agent"，且 spec 残留整个 run_id）。
         agent_type, spec_part = infer_run_agent_type(run_id)
-        # 去掉 attempt 段（-a<n>，每个 attempt 追加的后缀），再剥末尾时间戳（-<ts>）。
-        # 先剥 -a<n> 再剥时间戳，使 spec_part 不残留时间戳/尝试段。
-        spec_part = re.sub(r"-a\d+$", "", spec_part)
+        # 去掉 attempt/瞬态重试段（-a<n> / -r<n>，任意顺序可重复，如 -a1-r1），
+        # 再剥末尾时间戳（-<ts>），使 spec_part 不残留时间戳/尝试段。
+        # 复用 run_files.strip_run_id_suffixes（RUN_ID_SUFFIX_RE），与
+        # run_spec_part 后缀剥除完全同源，避免内联正则再从同口径漂移。
+        spec_part = strip_run_id_suffixes(spec_part)
         m = re.match(r"^(.*)-\d{9,10}$", spec_part)
         if m:
             spec_part = m.group(1)
