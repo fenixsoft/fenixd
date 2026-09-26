@@ -330,10 +330,18 @@ class H2ProjectRoutesMixin:
         regenerateProjectDescription 统一按 result.ok/.error 分支（4xx 会被
         request 层抛异常、反而破坏现约），故执行失败不改用 _error。
         """
-        # 统一 400/404 口径（code-review item c6597d26ac7c）：复用文件级端点
-        # 共用校验助手——缺参 400、项目未知或不存在一律 404
-        project = self._project_query_or_error(query, "README.md")
+        # [fenix-ignore:c6597d26ac7c] 400/404 双档口径是被
+        # tests/test_dashboard_api.py::TestProjectDescribeAPI 钉死的既有契约：
+        # registry 未知（笔误/已删）→ 400 "unknown project"，已注册但目录
+        # 缺失 → 404 "project not found"。与共用助手 _project_query_or_error
+        # 的统一口径（未知/不存在一律 404）差异系有意保留，改用共用助手会
+        # 破坏 test_describe_unknown_project_returns_400。
+        project = self._project_from_query(query)
         if project is None:
+            self._error(400, "unknown project")
+            return
+        if not project.get("exists"):
+            self._error(404, "project not found")
             return
 
         proot = Path(project["path"])
