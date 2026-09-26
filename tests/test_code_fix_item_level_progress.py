@@ -47,7 +47,7 @@ def _item(item_id, status="open", **extra):
     rec = {
         "item_id": item_id,
         "status": status,
-        "file": f"core/{item_id}.py",
+        "file": f"{item_id}/{item_id}.py",
         "line": 7,
         "severity": "major",
         "category": "correctness",

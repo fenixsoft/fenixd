@@ -41,8 +41,11 @@ agent run 在独立 worktree 内修复并提交；框架在该 worktree 上跑�
 """
 
 import calendar
+import dataclasses
 import json
 import os
+import re
+import shlex
 import subprocess
 import threading
 import time
@@ -961,16 +964,113 @@ def _append_todo_entry(project_root, item_ids, reason="", branch="", tip_sha="")
         pass
 
 
-# ── 选批（5.2）────────────────────────────────────────────────────────
+# ── 选批（5.2；add-codefix-affinity-batching 1.1 亲和性聚类）──────────
+
+
+def _select_batch_order_key(rec) -> tuple:
+    """既有稳定序口径：first_seen_at 升序（缺失回退 item_id）。"""
+    return (
+        str(rec.get("first_seen_at") or ""),
+        str(rec.get("item_id") or ""),
+    )
+
+
+def _file_parent_dir(file_path: str):
+    """条目 file 的直接父目录（POSIX 相对路径口径）。
+
+    顶层文件（无父目录）返回 None——互不为「同目录」（design D1：目录簇取
+    直接父目录全等比较，顶层文件不构成簇）。
+    """
+    rel = str(file_path or "").replace("\\", "/")
+    parent = rel.rsplit("/", 1)[0] if "/" in rel else ""
+    return parent or None
+
+
+def _group_open_items_by_file(open_items: list) -> list:
+    """按 file 字段归并文件组（add-codefix-affinity-batching 1.1）。
+
+    ``open_items`` 须已按既有稳定序排好——组内条目保持该序；dict 插入序即
+    组间序（组的键 = 组内最早条目的稳定序键，天然满足「组间按组内最早
+    first_seen_at 升序（缺失回退组内最小 item_id）」）。文件组是最小不可拆
+    单元：同一文件的全部 open 条目必入同批。
+    """
+    groups: dict = {}
+    for rec in open_items:
+        groups.setdefault(str(rec.get("file") or ""), []).append(rec)
+    return list(groups.values())
+
+
+def _pack_first_batch(groups: list, target: int) -> list:
+    """贪心装箱返回首批（design D1 四规则，确定性：同输入必同输出）。
+
+    - 目标规模 T=``target``（batch_size，语义为「目标规模」而非精确条数）；
+      硬上限 H=2T。
+    - 从最早文件组开启当前批；吸收候选优先级：与批内已有文件同目录的最早
+      文件组优先（加入后 ≤ H 即吸收，允许浮动超 T）；无可用同目录候选时取
+      全局最早异目录组尝试吸收（仅批 < T 时；吸收后 ≥ T 即封批）。
+    - 批条数达 H 封批；单文件组自身 > H 独立成批不拆（整批可超 H）。
+    """
+    hard_cap = 2 * target
+    if not groups:
+        return []
+    first = list(groups[0])
+    batch = list(first)
+    if len(batch) > hard_cap:
+        # 规则 6：单文件组超硬上限独立成批、不拆分（拆分重蹈「同文件问题
+        # 分批重复取证」覆辙；批内并行由波次上限自适应消化）
+        return batch
+    batch_dirs: set = set()
+    for rec in first:
+        d = _file_parent_dir(rec.get("file"))
+        if d is not None:
+            batch_dirs.add(d)
+    remaining = [list(g) for g in groups[1:]]
+    while remaining and len(batch) < hard_cap:
+        # 候选扫描（全局最早序）：①最早一个「加入后 ≤ H」的同目录组优先；
+        # 顺带记录最早异目录组（其吸收条件 batch < T 与序号无关，首遇即最早）
+        same_idx = -1
+        cross_idx = -1
+        for i, grp in enumerate(remaining):
+            d = _file_parent_dir(grp[0].get("file"))
+            if d is not None and d in batch_dirs:
+                if len(batch) + len(grp) <= hard_cap:
+                    same_idx = i
+                    break
+                # 该同目录组不满足吸收条件 → 继续扫更小的同目录候选
+                continue
+            if cross_idx < 0:
+                cross_idx = i
+        if same_idx >= 0:
+            pick, cross_absorbed = same_idx, False
+        elif cross_idx >= 0 and len(batch) < target:
+            pick, cross_absorbed = cross_idx, True
+        else:
+            break  # 无任何候选满足吸收条件 → 封批（余组进下一装箱批）
+        grp = remaining.pop(pick)
+        batch.extend(grp)
+        for rec in grp:
+            d = _file_parent_dir(rec.get("file"))
+            if d is not None:
+                batch_dirs.add(d)
+        if len(batch) >= hard_cap:
+            break  # 规则 5：达硬上限封批
+        if cross_absorbed and len(batch) >= target:
+            break  # 规则 4：异目录吸收后 ≥ 目标规模即封批
+    return batch
 
 
 def select_batch(project_root, batch_size: int, exclude_ids=None) -> list:
-    """从台账选下一批：open 条目按 first_seen_at 升序（缺失回退 item_id
-    稳定排序）取前 batch_size 条。
+    """从台账选下一批：文件亲和性聚类装箱（add-codefix-affinity-batching 1.1）。
 
-    排除口径 = 失败档案条目并集 ∪ ``exclude_ids``（add-code-fix-batch-
+    open 条目按 ``file`` 字段归并为文件组（组不可拆），组间按组内最早
+    first_seen_at 升序（缺失回退组内最小 item_id，与既有稳定序口径一致），
+    经贪心装箱返回首批——``batch_size`` 为目标规模 T（同目录组允许浮动超 T、
+    硬上限 H=2T 封批），不再是精确条数。链推进每轮重调本函数，每次调用返回
+    装箱后的首批即可（既有调用点只消费首批，语义零改动）。
+
+    排除口径不变 = 失败档案条目并集 ∪ ``exclude_ids``（add-code-fix-batch-
     selfheal：链内跳过集 chain_skipped，瞬态失败条目本链不再选批；缺省
-    None 向后兼容，既有调用点零改动）。
+    None 向后兼容，既有调用点零改动）。台账读失败返回空列表（fail-closed）。
 
     返回条目 record 列表（含 item_id/file/line/severity/category/title/
     description/suggestion 等 prompt 注入字段）。
@@ -987,14 +1087,11 @@ def select_batch(project_root, batch_size: int, exclude_ids=None) -> list:
         and rec.get("status") == "open"
         and rec.get("item_id") not in excluded
     ]
-    open_items.sort(
-        key=lambda rec: (
-            str(rec.get("first_seen_at") or ""),
-            str(rec.get("item_id") or ""),
-        )
-    )
-    n = int(batch_size) if isinstance(batch_size, int) and batch_size > 0 else 20
-    return open_items[:n]
+    if not open_items:
+        return []
+    target = int(batch_size) if isinstance(batch_size, int) and batch_size > 0 else 20
+    open_items.sort(key=_select_batch_order_key)
+    return _pack_first_batch(_group_open_items_by_file(open_items), target)
 
 
 def count_open_items(project_root) -> int:
@@ -1008,6 +1105,266 @@ def count_open_items(project_root) -> int:
         for rec in items.values()
         if isinstance(rec, dict) and rec.get("status") == "open"
     )
+
+
+def is_chain_last_batch(project_root, batch_item_ids, chain_skipped=None) -> bool:
+    """链末批判定（add-codefix-affinity-batching 3.1，供批收尾回归分流）。
+
+    与链收敛出口同判据：以链选批同口径排除（失败档案 ∪ ``chain_skipped`` ∪
+    延迟台账）后、再排除本批 ``batch_item_ids``，``select_batch`` 返回空 →
+    本批为末批。MUST 在核销**前**调用（核销会改变 open 集）；本批条目集合
+    从既有批上下文取得（ctx["item_ids"]）。
+
+    MUST NOT 用裸 ``count_open_items`` 排除本批判定：其计数含失败档案/
+    跳过/延迟等被排除 open 条目（``count_open_items`` docstring），链最后
+    一批收尾时这些条目常在档，裸计数 >0 会把实际末批判成非末批 → 定向回归
+    → 链随即正常收敛，全量兜底防线整链落空（design D3）。
+    """
+    exclude = (
+        set(chain_skipped or ())
+        | set(batch_item_ids or ())
+        | _deferred_item_ids(project_root)
+    )
+    # batch_size=1：装箱目标不影响空/非空判据（任一可选 open 条目都返回非空）
+    return not select_batch(project_root, 1, exclude_ids=exclude)
+
+
+# ── 批内波次上限自适应（add-codefix-affinity-batching 2.1）────────────
+
+# 波次上限硬上限（防网关限流放大）：任何批规模 MUST NOT 超过
+CODE_FIX_WAVE_CAP_MAX = 8
+
+
+def wave_cap_for_groups(group_count) -> int:
+    """批内子代理并发波次上限分档（纯函数，单测直测）。
+
+    G = 批内文件组数（并行真实粒度）：G ≤ 4 → 4；5 ≤ G ≤ 8 → 6；
+    G ≥ 9 → 8。8 为硬上限（``CODE_FIX_WAVE_CAP_MAX``）；下限 4（单文件组
+    大批不因批变大改变并行判定，spec「单文件大组批仍为下限 4」）。
+    """
+    try:
+        g = int(group_count)
+    except (TypeError, ValueError):
+        g = 0
+    if g >= 9:
+        return CODE_FIX_WAVE_CAP_MAX
+    if g >= 5:
+        return 6
+    return 4
+
+
+# ── 批收尾回归两段式（add-codefix-affinity-batching 3.2/3.3）──────────
+#
+# 链内非末批批收尾回归按批触碰面定向（verify.yaml regression.cmd 声明
+# ``{test_targets}`` 占位符方参与定向化；无占位符/映射空集/配置关回退全量，
+# fail-open 防漏检），链末批恒全量兜底。定向回归只缩小测试集——构造替换后
+# 的 RegressionSpec 副本传入既有 run_regression（主机级锁/JUnit 解析/硬超时
+# 全继承），不新增执行通道。
+
+# regression.cmd 中的测试路径列表占位符（对齐 {port} 占位符先例）
+CODE_FIX_TEST_TARGETS_PLACEHOLDER = "{test_targets}"
+
+# 同值导出的环境变量名（cmd 可二选一引用占位符或环境变量）
+CODE_FIX_TEST_TARGETS_ENV = "FENIX_TEST_TARGETS"
+
+
+def _is_test_path(rel_path: str) -> bool:
+    """测试路径判别（spec 3.2 规则 a）：``tests/`` 下或 ``test_`` 前缀/
+    ``_test`` 后缀（后缀按去扩展名后的 stem 判别——``foo_test.py`` 的
+    stem ``foo_test`` 以 ``_test`` 结尾）。"""
+    rel = str(rel_path or "").replace("\\", "/").strip("/")
+    if not rel:
+        return False
+    if rel == "tests" or rel.startswith("tests/"):
+        return True
+    name = rel.rsplit("/", 1)[-1]
+    stem = name.rsplit(".", 1)[0] if "." in name else name
+    return name.startswith("test_") or stem.startswith("test_") or stem.endswith("_test")
+
+
+def _module_names_for_file(rel_path: str) -> list:
+    """产品文件的候选 import 模块名（``core/foo.py`` → ``["core.foo", "foo"]``）。
+
+    带上裸 stem（去目录形态）：测试文件从仓库根与包内目录两个 sys.path 形态
+    import 均常见；多召回方向是「多跑测试」（fail-open 侧，design 风险节）。
+    """
+    rel = str(rel_path or "").replace("\\", "/").strip("/")
+    if not rel or rel.endswith("/"):
+        return []
+    name = rel.rsplit("/", 1)[-1]
+    stem = name.rsplit(".", 1)[0] if "." in name else name
+    if not stem:
+        return []
+    names = [stem]
+    prefix = rel[: -len(name)].replace("/", ".")
+    dotted = prefix + stem
+    if dotted != stem:
+        names.append(dotted)
+    return names
+
+
+def _map_fix_files_to_tests(fixed_files, exec_root) -> list:
+    """触碰面映射（add-codefix-affinity-batching 3.2）：fixed 行 file 集合
+    → 测试路径列表。
+
+    规则：(a) 测试文件（``tests/`` 下或 ``test_`` 前缀/``_test`` 后缀）直接
+    入选；(b) 产品文件按「同目录 ``tests/`` 的 ``test_<stem>.py`` 命名匹配」
+    ∪「``tests/`` 树内 grep import/from 反查」取并集——grep 以 subprocess
+    单次 ``grep -rl`` 完成，MUST NOT 逐文件 Python 遍历（tests/ 树可达千
+    文件）。
+
+    ``exec_root`` 为回归执行根（code-fix 批=worktree），路径相对其解析；
+    返回排序去重后的测试路径列表（相对 exec_root，POSIX 形态）。映射不出
+    任何测试路径返回空列表（调用方 fail-open 回退全量并记日志）。探测失败
+    （tests/ 缺失、grep 异常）只缩小定向面，MUST NOT 抛异常。
+    """
+    from pathlib import PurePosixPath
+
+    root = Path(exec_root) if exec_root is not None else Path.cwd()
+    direct: set = set()
+    product: list = []
+    seen: set = set()
+    for raw in fixed_files or ():
+        rel = str(raw or "").replace("\\", "/").strip()
+        while rel.startswith("./"):
+            rel = rel[2:]
+        rel = rel.strip("/")
+        if not rel or rel in seen:
+            continue
+        seen.add(rel)
+        if _is_test_path(rel):
+            direct.add(rel)
+        else:
+            product.append(rel)
+    if product:
+        # (b1) 同目录 tests/ 的 test_<stem>.py 命名匹配
+        for rel in product:
+            p = PurePosixPath(rel)
+            name = p.name
+            stem = name.rsplit(".", 1)[0] if "." in name else name
+            parent = str(p.parent)
+            cand_dir = parent + "/tests" if parent not in ("", ".") else "tests"
+            cand_root = root / cand_dir
+            if not cand_root.is_dir():
+                continue
+            try:
+                for hit in sorted(cand_root.glob(f"test_{stem}.py")):
+                    if hit.is_file():
+                        direct.add(hit.relative_to(root).as_posix())
+            except OSError:
+                continue  # fail-open：glob 失败只缩小定向面
+        # (b2) tests/ 树内 import/from 反查（单次 subprocess）
+        modules = sorted({m for rel in product for m in _module_names_for_file(rel)})
+        tests_dir = root / "tests"
+        if modules and tests_dir.is_dir():
+            alt = "|".join(re.escape(m) for m in modules)
+            pattern = rf"(from|import)\s+({alt})\b"
+            try:
+                proc = subprocess.run(
+                    ["grep", "-rlE", pattern, "tests"],
+                    cwd=str(root),
+                    capture_output=True,
+                    text=True,
+                    errors="replace",
+                    timeout=60,
+                )
+                # grep 退出码 0=有匹配 / 1=无匹配（均非错误）；>1 才是故障
+                if proc.returncode == 0:
+                    for line in proc.stdout.splitlines():
+                        rel = line.strip().lstrip("./").strip("/")
+                        if rel:
+                            direct.add(rel)
+            except (OSError, subprocess.SubprocessError, ValueError):
+                pass  # fail-open：反查失败只缩小定向面
+    return sorted(direct)
+
+
+def _cmd_has_test_targets(spec) -> bool:
+    """regression.cmd 是否声明 ``{test_targets}`` 占位符（str/list 两态）。"""
+    if spec is None:
+        return False
+    cmd = getattr(spec, "cmd", None)
+    if isinstance(cmd, str):
+        return CODE_FIX_TEST_TARGETS_PLACEHOLDER in cmd
+    if isinstance(cmd, (list, tuple)):
+        return any(CODE_FIX_TEST_TARGETS_PLACEHOLDER in str(el) for el in cmd)
+    return False
+
+
+def _apply_test_targets(spec, test_targets: list):
+    """构造替换 ``{test_targets}`` 后的 RegressionSpec 副本（3.3）。
+
+    str 形态（经 shell 执行）：替换为空格连接、逐路径 ``shlex.quote`` 引用
+    的测试路径列表；list 形态（argv 不经 shell）：元素级替换——占位元素恰
+    等占位符时展开为路径列表（路径原样不做 shell 引用），元素内含占位符时
+    以空格连接原样替换。
+
+    同值导出 ``FENIX_TEST_TARGETS`` 环境变量（对齐 ``{port}`` 占位符先例，
+    cmd 可二选一引用）：执行侧经 ``_with_test_targets_env`` 在回归窗口内
+    设置。
+
+    返回 ``dataclasses.replace`` 副本（不原地改写既有契约对象）；替换后与
+    原 cmd 相同则原样返回（零副本）。
+    """
+    targets = [str(t) for t in (test_targets or []) if str(t or "").strip()]
+    if not targets or not _cmd_has_test_targets(spec):
+        return spec
+    quoted = " ".join(shlex.quote(t) for t in targets)
+    raw = " ".join(targets)
+    cmd = spec.cmd
+    if isinstance(cmd, str):
+        new_cmd: object = cmd.replace(CODE_FIX_TEST_TARGETS_PLACEHOLDER, quoted)
+    else:
+        new_list: list = []
+        for el in cmd:
+            s = str(el)
+            if s == CODE_FIX_TEST_TARGETS_PLACEHOLDER:
+                new_list.extend(targets)  # 元素级展开：占位元素 → 路径列表
+            elif CODE_FIX_TEST_TARGETS_PLACEHOLDER in s:
+                new_list.append(s.replace(CODE_FIX_TEST_TARGETS_PLACEHOLDER, raw))
+            else:
+                new_list.append(el)
+        new_cmd = new_list
+    if new_cmd == cmd:
+        return spec
+    return dataclasses.replace(spec, cmd=new_cmd)
+
+
+class _with_test_targets_env:
+    """回归执行窗口内导出 ``FENIX_TEST_TARGETS``（同值双轨，{port} 先例）。
+
+    回归执行被主机级锁串行化、且该变量仅被声明引用它的回归命令消费——窗口
+    外的 daemon 并发子进程读到该变量亦无消费方（inert）。``targets`` 为空
+    时不触碰进程环境。
+    """
+
+    def __init__(self, test_targets):
+        self._value = " ".join(str(t) for t in (test_targets or []) if str(t or "").strip())
+        self._prev = None
+
+    def __enter__(self):
+        if self._value:
+            self._prev = os.environ.get(CODE_FIX_TEST_TARGETS_ENV)
+            os.environ[CODE_FIX_TEST_TARGETS_ENV] = self._value
+        return self
+
+    def __exit__(self, *exc):
+        if self._value:
+            if self._prev is None:
+                os.environ.pop(CODE_FIX_TEST_TARGETS_ENV, None)
+            else:
+                os.environ[CODE_FIX_TEST_TARGETS_ENV] = self._prev
+        return False
+
+
+def _fixed_files_from_rows(rows: list) -> list:
+    """产物行中 status=fixed 行的 file 集合（保序去重，3.4 映射输入）。"""
+    files = [
+        str(r.get("file"))
+        for r in rows or ()
+        if isinstance(r, dict) and r.get("status") == "fixed" and r.get("file")
+    ]
+    return list(dict.fromkeys(files))
 
 
 # ── 回归快照→台账 findings 转换与复发重开（add-regression-auto-fix 1.1/1.2）──
@@ -1741,6 +2098,50 @@ class CodeFixOrchestrator:
             return v
         return TARGETED_RETRY_MAX_DEFAULT
 
+    def _targeted_regression_enabled(self) -> bool:
+        """批收尾定向回归开关（add-codefix-affinity-batching 4.1）。
+
+        读 ``admin.code_review_fix.targeted_regression``，严格 bool、缺省
+        true；非法值由读取器回退缺省并记 warning（MUST NOT 抛异常）——此处
+        对「测试替身 config 段未走读取器」的形态再兜底同款回退。
+        """
+        raw = self._get_config().get("targeted_regression", True)
+        if isinstance(raw, bool):
+            return raw
+        return True
+
+    def _resolve_batch_regression_spec(
+        self, reg_spec, wt, run_id: str, batch_no: int, is_last_batch: bool
+    ) -> tuple:
+        """批收尾回归两段式分流（add-codefix-affinity-batching 3.4）。
+
+        返回 ``(eff_spec, targeted, targets)``：
+        - 末批（``is_last_batch``）恒 ``(reg_spec 原样, False, [])``——全量
+          兜底，无论开关取值与 cmd 是否声明占位符；
+        - 非末批且 ``targeted_regression=true`` 且 cmd 含 ``{test_targets}``
+          且触碰面映射非空 → 定向（替换后的 RegressionSpec 副本）；
+        - 否则（配置关 / cmd 无占位符 / 映射空集）回退全量并记日志留痕
+          （fail-open：映射是优化不是门槛，MUST NOT 回退到「跳过回归」）。
+        """
+        if is_last_batch or not self._targeted_regression_enabled():
+            return reg_spec, False, []
+        targets = _map_fix_files_to_tests(
+            _fixed_files_from_rows(read_fix_out(wt, run_id)), wt
+        )
+        if targets and _cmd_has_test_targets(reg_spec):
+            self._log(
+                "info",
+                f"code-fix 第 {batch_no} 批定向回归"
+                f"（触碰面 {len(targets)} 个测试路径）",
+            )
+            return _apply_test_targets(reg_spec, targets), True, targets
+        why = (
+            "触碰面映射空集" if not targets
+            else "regression.cmd 未声明 {test_targets} 占位符"
+        )
+        self._log("info", f"code-fix 第 {batch_no} 批回退全量回归（{why}）")
+        return reg_spec, False, targets
+
     def _code_fix_running(self) -> bool:
         """在途判据：编排器单飞标记或 runner 侧存在 code-fix- 前缀 run。"""
         if self._in_flight:
@@ -2122,6 +2523,11 @@ class CodeFixOrchestrator:
                     "items": batch,
                     "item_ids": item_ids,
                     "regression_spec": contract.regression,
+                    # 链内跳过集随批上下文下发（add-codefix-affinity-batching
+                    # 3.1）：批 worker 的链末批判定与链选批同口径必需（失败
+                    # 档案在 select_batch 内部排除，chain_skipped/延迟台账
+                    # 由判定函数并入排除集）。
+                    "chain_skipped": list(chain_skipped),
                 }
             except Exception as exc:
                 self._in_flight = False
@@ -2791,21 +3197,36 @@ class CodeFixOrchestrator:
             )
             return "consumed"
 
-        # 第一次全量回归（执行根=worktree、锁根=主树，D10）
+        # 批收尾回归两段式分流（add-codefix-affinity-batching 3.4）：链末批
+        # （核销前判定，3.1）恒全量；非末批按开关/占位符/映射三分支分流
+        # （fail-open 回退全量——定向化是优化不是门槛）。
+        is_last_batch = is_chain_last_batch(
+            root, item_ids, chain_skipped=ctx.get("chain_skipped")
+        )
+        eff_spec, targeted, targets = self._resolve_batch_regression_spec(
+            reg_spec, wt, run_id, batch_no=batch_no, is_last_batch=is_last_batch
+        )
+        # 第一次回归（执行根=worktree、锁根=主树，D10）；定向与全量共用既有
+        # run_regression（不新增执行通道），失败同走下方定向重试块（零新增
+        # 处置分支）。
         attempt_run_ids: list[str] = []
         # 首轮回归 passed 的快路径不进下方定向重试块，retry_run_id 须预初始
         # 化为空串——批收尾 salvage 守卫按 ``retry_run_id or result.run_id``
         # 取提交归属 run：快路径回落首轮（裸引用在快路径抛 UnboundLocalError，
         # 批 worker 收尾整体中断，2026-09-25 验证打回实证）。
         retry_run_id = ""
+        reg_mode = "定向回归" if targeted else "全量回归"
         write_progress(
             root,
             phase="regressing",
-            current=f"第 {batch_no} 批全量回归中（{len(items)}/{total} 条）",
+            current=f"第 {batch_no} 批{reg_mode}中（{len(items)}/{total} 条）",
         )
-        reg = runner.run_regression(
-            reg_spec, reason="code-fix", project_root=wt, lock_root=root
-        )
+        # FENIX_TEST_TARGETS 双轨导出（3.3，{port} 先例）：仅回归窗口内设置，
+        # 空目标零触碰（全量回归路径零环境变更）。
+        with _with_test_targets_env(targets):
+            reg = runner.run_regression(
+                eff_spec, reason="code-fix", project_root=wt, lock_root=root
+            )
         if reg.status != "passed":
             # 定向重试轮循环（add-codefix-targeted-retry 2.2，D4）：重试轮从
             # 「整批重做 + 全量回归」改为「定向修复（只修失败用例相关问题，

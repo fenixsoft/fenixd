@@ -1648,6 +1648,22 @@ class PromptBuilder:
             wt = detail.get("worktree") or self._pm.project_root
             out_path = Path(wt) / ".fenix" / "code-review" / f"fix-out-{run_id}.jsonl"
         worktree = detail.get("worktree") or self._pm.project_root
+        # 批内波次上限自适应（add-codefix-affinity-batching 2.2）：按本批
+        # items 的文件组数 G 分档（≤4→4；5–8→6；≥9→8），经 {wave_cap} 注入
+        # 模板。懒加载规避装载环（code_fix 属编排侧，不反向依赖本模块——同
+        # code_fix.py:241 先例）。模板缺占位符时旧文案「固定上限 4」原样保留
+        # （回退缺省 4 的旧模板兼容，无需注入侧分支）。
+        try:
+            from core.code_fix import wave_cap_for_groups
+
+            group_files = {
+                str(it.get("file") or "")
+                for it in items
+                if isinstance(it, dict) and it.get("file")
+            }
+            wave_cap = wave_cap_for_groups(len(group_files))
+        except Exception:  # noqa: BLE001 — 分档失败回退缺省下限（fail-open）
+            wave_cap = 4
         # 单趟填充（code-review item 7975ab14dbe7 同款语义）：条目 JSON 来自
         # LLM 审查产物，description/evidence 可能含占位符字面量，逐键
         # str.replace 会被后续键二次替换污染。
@@ -1657,6 +1673,7 @@ class PromptBuilder:
                 "{items}": items_txt,
                 "{out_path}": str(out_path),
                 "{worktree}": str(worktree),
+                "{wave_cap}": str(wave_cap),
             },
             "code-fix",
             run_id,

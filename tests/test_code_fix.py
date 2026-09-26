@@ -52,7 +52,10 @@ def _write_items(project_root, records):
 
 
 def _item(item_id, status="open", first_seen_at=None, **extra):
-    rec = {"item_id": item_id, "status": status, "file": f"core/{item_id}.py",
+    # file 缺省每条目独立顶层目录（异目录组）：亲和性聚类（add-codefix-
+    # affinity-batching 1.1）下同目录文件会浮动聚成同批，链路类测试需要
+    # 「每条目一组」的旧截断语义——聚类的目录亲和行为由其专属测试文件覆盖。
+    rec = {"item_id": item_id, "status": status, "file": f"{item_id}/{item_id}.py",
            "line": 1, "severity": "major", "category": "correctness",
            "title": f"title {item_id}", "description": f"desc {item_id}",
            "suggestion": f"sug {item_id}", "fingerprint": f"fp-{item_id}"}
@@ -70,15 +73,17 @@ class TestCodeReviewFixConfig(unittest.TestCase):
         from core.config import ConfigLoader
 
         cfg = ConfigLoader.get_code_review_fix_config({})
+        # add-codefix-affinity-batching 4.1：新增 targeted_regression 键
+        # （严格 bool 缺省 True），精确等值断言同步补键
         self.assertEqual(cfg, {"enabled": False, "batch_size": 20,
-                               "targeted_retry_max": 3})
+                               "targeted_retry_max": 3, "targeted_regression": True})
         cfg2 = ConfigLoader.get_code_review_fix_config({"admin": {}})
         self.assertEqual(cfg2, {"enabled": False, "batch_size": 20,
-                                "targeted_retry_max": 3})
+                                "targeted_retry_max": 3, "targeted_regression": True})
         # 段非 dict 视为缺省
         cfg3 = ConfigLoader.get_code_review_fix_config({"admin": {"code_review_fix": "x"}})
         self.assertEqual(cfg3, {"enabled": False, "batch_size": 20,
-                                "targeted_retry_max": 3})
+                                "targeted_retry_max": 3, "targeted_regression": True})
 
     def test_invalid_batch_size_falls_back(self):
         from core.config import ConfigLoader
@@ -106,7 +111,7 @@ class TestCodeReviewFixConfig(unittest.TestCase):
             {"admin": {"code_review_fix": {"enabled": True, "batch_size": 30}}}
         )
         self.assertEqual(cfg, {"enabled": True, "batch_size": 30,
-                               "targeted_retry_max": 3})
+                               "targeted_retry_max": 3, "targeted_regression": True})
 
     def test_targeted_retry_max_bounds(self):
         """targeted_retry_max 约束 1-5：合法保留，bool/非整数/越界回退 3。"""
@@ -282,8 +287,11 @@ class TestCodeFixParallelPrompt(unittest.TestCase):
         # 触发条件：组数 ≥2 且总条目 >2 才并行（D7 单组/小批退化为串行）
         self.assertIn("组数 ≥2", t)
         self.assertIn("总条目 >2", t)
-        # 并发上限 3（固定常量写进提示词，不设配置键——design D3）
-        self.assertIn("≤3", t)
+        # 并发上限占位符化（add-codefix-affinity-batching 2.3）：分档语义
+        # 与 8 硬上限写进模板，注入值由 prompt 组装点计算
+        self.assertIn("{wave_cap}", t)
+        self.assertIn("组数 ≤4", t)
+        self.assertIn("8 为硬上限", t)
         # 波次语义：完成一组（落盘后）即补派下一组
         self.assertIn("补派", t)
         # 单写者（D4）：{out_path} 唯一写者是 orchestrator，逐组立即落盘、禁攒批
@@ -339,7 +347,7 @@ class TestCodeFixParallelPrompt(unittest.TestCase):
         }
         prompt = runner._build_prompt("runner", "code-fix", detail)
         self.assertIn("并行处置", prompt)
-        self.assertIn("≤3", prompt)
+        self.assertIn("并发上限 4", prompt, "3 个文件组 → 分档下限 4")
         for token in ("{items}", "{out_path}", "{worktree}"):
             self.assertNotIn(token, prompt)
         self.assertIn("item-6", prompt)
@@ -592,13 +600,16 @@ class TestProgressIO(unittest.TestCase):
 
 class TestSelectBatch(unittest.TestCase):
     def test_orders_by_first_seen_at_and_caps_batch_size(self):
+        """迁移自「时间序截取前 N 条」语义（add-codefix-affinity-batching 1.1）：
+        batch_size 现为目标规模 T——异目录组在批 < T 时吸收、吸收后 ≥ T 即封批。
+        三条目分置三个顶层目录（互不同目录）以维持原断言形状。"""
         from core.code_fix import select_batch
 
         proot = _make_project_root()
         _write_items(proot, {
-            "old": _item("old", first_seen_at="2026-01-01T00:00:00Z"),
-            "mid": _item("mid", first_seen_at="2026-02-01T00:00:00Z"),
-            "new": _item("new", first_seen_at="2026-03-01T00:00:00Z"),
+            "old": _item("old", file="pkg_a/old.py", first_seen_at="2026-01-01T00:00:00Z"),
+            "mid": _item("mid", file="pkg_b/mid.py", first_seen_at="2026-02-01T00:00:00Z"),
+            "new": _item("new", file="pkg_c/new.py", first_seen_at="2026-03-01T00:00:00Z"),
             "resolved": _item("resolved", status="resolved"),
             "ignored": _item("ignored", status="ignored"),
         })
@@ -2022,10 +2033,10 @@ class TestCodeReviewFixConfigAdmin(unittest.TestCase):
              patch("core.dashboard.data.USER_CONFIG_PATH",
                    proot / ".user-none" / "config.yaml"):
             rc = read_config(proot)
-            self.assertEqual(rc["code_review_fix"], {"enabled": False, "batch_size": 20, "targeted_retry_max": 3})
+            self.assertEqual(rc["code_review_fix"], {"enabled": False, "batch_size": 20, "targeted_retry_max": 3, "targeted_regression": True})
             self.assertEqual(rc["sources"]["admin.code_review_fix"], "user")
             eff = read_effective_config(proot)
-            self.assertEqual(eff["code_review_fix"], {"enabled": False, "batch_size": 20, "targeted_retry_max": 3})
+            self.assertEqual(eff["code_review_fix"], {"enabled": False, "batch_size": 20, "targeted_retry_max": 3, "targeted_regression": True})
 
     def test_write_read_roundtrip(self):
         from core.dashboard.data import read_config, write_config
@@ -2034,7 +2045,7 @@ class TestCodeReviewFixConfigAdmin(unittest.TestCase):
         r = write_config(proot, {"code_review_fix": {"enabled": True, "batch_size": 30}})
         self.assertIsNone(r.get("error"), r)
         rc = read_config(proot)
-        self.assertEqual(rc["code_review_fix"], {"enabled": True, "batch_size": 30, "targeted_retry_max": 3})
+        self.assertEqual(rc["code_review_fix"], {"enabled": True, "batch_size": 30, "targeted_retry_max": 3, "targeted_regression": True})
         self.assertEqual(rc["sources"]["admin.code_review_fix"], "project")
 
     def test_invalid_batch_size_rejected_no_half_write(self):
@@ -2055,7 +2066,7 @@ class TestCodeReviewFixConfigAdmin(unittest.TestCase):
         self.assertIn("boolean", r["error"])
         # 落盘值保持原值（不半写）
         rc = read_config(proot)
-        self.assertEqual(rc["code_review_fix"], {"enabled": True, "batch_size": 30, "targeted_retry_max": 3})
+        self.assertEqual(rc["code_review_fix"], {"enabled": True, "batch_size": 30, "targeted_retry_max": 3, "targeted_regression": True})
 
 
 # ── add-code-fix-batch-failure-selfheal：三态收尾 / 锁释放 / 重试预算 / 链内跳过 ──
