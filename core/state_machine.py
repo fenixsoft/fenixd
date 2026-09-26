@@ -286,6 +286,15 @@ IMPL_DIAGNOSIS_FIELD = "_impl_diagnosis"
 # 「毒 spec 借每次 admin 复位重置计数 → 无限循环」敞口复开。
 SCENARIO_REPAIR_EXHAUSTED_FIELD = "_scenario_repair_exhausted_rounds"
 
+# ── judge 场景原地修复预算（judge-scenario-repair）──────────────────
+# 上限重入轮数单点定义（pm_engine.verification 的 pipeline.py 与 escalation.py
+# 共用，避免两处漂移：一侧调参会使改道门与 judge 重入预算对不上）。
+# 场景文件自身缺陷（夹具未自建/步骤客观错误/依赖序缺失）由 judge 原地修复
+# 后重执行，不再「env 伪失败→原样重验」空转；上限与阶段1 replan_left 对齐。
+# 2026-09-18：2 → 3（实证 add-spec-manual-activation：夹具场景第 3 轮才修出
+# 正确修复却因预算耗尽无法重入，修复落盘却永不执行）。
+_SCENARIO_REPAIR_MAX_ROUNDS = 3
+
 
 # ── STATE.md Parser ─────────────────────────────────────────────────
 

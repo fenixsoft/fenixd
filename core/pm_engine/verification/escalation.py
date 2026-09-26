@@ -16,11 +16,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 # add-blocked-reverify-lane D3：env 阻塞轮次计数字段
-from core.state_machine import ENV_BLOCK_ROUNDS_FIELD, FREEZE_ERROR_PREFIX
-
-# judge-scenario-repair：judge 原地场景修复预算（上限重入轮数）
-# 2026-09-18：2 → 3（与 pipeline.py 同步；实证第 3 轮才出正确修复）
-_SCENARIO_REPAIR_MAX_ROUNDS = 3
+from core.state_machine import (
+    ENV_BLOCK_ROUNDS_FIELD,
+    FREEZE_ERROR_PREFIX,
+    # judge-scenario-repair：judge 原地场景修复预算单点定义在 core.state_machine
+    # （与 pipeline.py 同源，防两侧调参漂移）
+    _SCENARIO_REPAIR_MAX_ROUNDS,
+)
 
 # fix-recovery-path-blockers D3：预算耗尽重验延时常量（30 分钟，
 # 与 schedule.poll_interval_minutes 缺省对齐）。定时器管准点、周期扫描管兜底

@@ -45,6 +45,8 @@ from core.state_machine import (
     FREEZE_ERROR_PREFIX,
     VERIFY_INFRA_ROUNDS_FIELD,
     SCENARIO_REPAIR_EXHAUSTED_FIELD,
+    # judge-scenario-repair：修复预算单点定义在 state_machine（与 escalation.py 同源）
+    _SCENARIO_REPAIR_MAX_ROUNDS,
 )
 
 # refactor-verification-module 阶段3.3：infra 失败归因/历史/回拨组已迁 infra_classify.py，
