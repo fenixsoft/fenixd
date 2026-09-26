@@ -215,7 +215,7 @@ function ProblemCell({ rec }: { rec: CodeReviewItem }) {
         >
           <Typography.Paragraph
             type="secondary"
-            style={{ fontSize: 12, marginBottom: 0 }}
+            style={{ fontSize: 12, marginBottom: 0, wordBreak: 'break-word' }}
             ellipsis={{ rows: 2, tooltip: false }}
             onMouseEnter={handleEnter}
             onMouseLeave={handleLeave}
@@ -1080,6 +1080,13 @@ export default function QualityTab({ project, active }: QualityTabProps) {
         dataSource={filteredItems}
         columns={columns}
         size="small"
+        // tableLayout=fixed（2026-09-26 用户要求）：ignored 等过滤下存在 120 字符
+        // 英文标题、70 字符无空格文件路径、900+ 字符描述，默认 auto 布局按内容
+        // min-content 撑开列宽，单元格内的省略样式永不触发、表格被撑出容器。
+        // 定宽后「问题」列吃剩余宽度，行内既有的 nowrap/ellipsis/line-clamp
+        // 截断真正生效（形制对齐 RegressionTab / 项目列表，2026-09-25 移动端
+        // 越界定调「改布局不改宽度」的同一机制）。
+        tableLayout="fixed"
         rowSelection={{
           selectedRowKeys: selectedKeys,
           onChange: (keys) => setSelectedKeys(keys),
