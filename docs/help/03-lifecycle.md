@@ -189,7 +189,7 @@ SPEC 处于 `implementing`/`testing` 这类中断状态时，daemon 重启会自
 
 ## 状态变化事件与 Hook
 
-SPEC 每次状态转换（包括 Dashboard 处置、人工冻结这类不经状态机 `transition()` 的跨进程写入）都会在 ≤5 秒内发布一条状态变化事件，事件类型即目标状态（十状态枚举）。你可以用 hook 订阅这些事件，在 SPEC 进入指定状态时自动执行动作：重启 daemon / dashboard、git 提交与推送、webhook 通知、任意 shell 命令。订阅分全局与 SPEC 级两级，配置存于 `.fenix/config.yaml` 的 `hooks` 段（30 秒热更新生效），完整配置参考见[配置参考](09-config.md#hooks)，Dashboard 操作入口见[Dashboard 使用指南](08-dashboard.md)，执行审计见[文件与数据地图](10-artifacts.md)。
+SPEC 每次状态转换（包括 Dashboard 处置、人工冻结这类不经状态机 `transition()` 的跨进程写入）都会在 ≤5 秒内发布一条状态变化事件，事件类型即目标状态（11 状态枚举，另含项目级伪事件 `all-done`——全部 SPEC 到达终态时发布的项目级事件）。你可以用 hook 订阅这些事件，在 SPEC 进入指定状态时自动执行动作：重启 daemon / dashboard、git 提交与推送、webhook 通知、任意 shell 命令。订阅分全局与 SPEC 级两级，配置存于 `.fenix/config.yaml` 的 `hooks` 段（30 秒热更新生效），完整配置参考见[配置参考](09-config.md#hooks)，Dashboard 操作入口见[Dashboard 使用指南](08-dashboard.md)，执行审计见[文件与数据地图](10-artifacts.md)。
 
 > 不要在 hook 动作里修改 SPEC 状态，状态变化会再次发布事件形成自激循环；框架不对 hook 做熔断，只能靠审计与告警事后暴露。
 

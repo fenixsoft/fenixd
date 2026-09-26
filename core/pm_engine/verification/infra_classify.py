@@ -344,7 +344,16 @@ def _append_fail_history(
     try:
         path = _fail_history_path(pipeline, spec_name)
         rounds = _read_fail_history(pipeline, spec_name)
-        next_round = max([int(r.get("round", 0) or 0) for r in rounds], default=0) + 1
+        # 条目 round 脏值（读损坏非数值字符串）按 0 计容错（口径对齐文件内
+        # 既有 try/except (TypeError, ValueError) 写法）——兑现 docstring
+        # 「含读损坏静默降级」承诺，单条脏数据不炸穿调用方验证判定。
+        next_round = 0
+        for r in rounds:
+            try:
+                next_round = max(next_round, int(r.get("round", 0) or 0))
+            except (TypeError, ValueError):
+                continue
+        next_round += 1
         rounds.append(
             {
                 "round": next_round,

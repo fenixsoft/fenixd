@@ -78,8 +78,15 @@ def test_removed_default_symbols_no_longer_exist():
     # `.git/.claude/node_modules` 均非本仓源码，扫入会产生假阳性（存量缺陷：
     # 旧实现只排除了后三者）。
     _SKIP = ("/.git", "/node_modules", "/.claude", "/.fenix", "/.history")
-    for root, _dirs, files in os.walk(repo_root):
+    for root, dirs, files in os.walk(repo_root):
         if any(seg in root for seg in _SKIP):
+            # 就地剪枝（对齐 core/deliverables.py 同款治理，code-review item
+            # 5f9ed67a5538）：只 continue 不剪枝时 os.walk 仍下探 .fenix/
+            # .claude/.history 做 scandir——实测访问 37.9 万目录耗 6.3s，且
+            # .fenix 的 pytest-basetemp 随每轮回归累积，耗时单调上涨（回归
+            # 负载下已实测 9.285s，逼近全局 10s 硬门）。跳过目录的 .py 本就
+            # 不参与断言，剪枝只是省掉无谓下探，断言语义零变化。
+            dirs[:] = []
             continue
         for fname in files:
             if not fname.endswith(".py"):

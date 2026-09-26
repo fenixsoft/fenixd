@@ -10,7 +10,7 @@ docs/help 各章中每一处「描述框架行为」的断言 MUST 与当前代�
 4. 调度模型（06-governance.md 优先级与并发节）：MUST 删除「不同优先级之间不并行，低优先级必须等所有高优先级 SPEC 完成后才会启动」，改写为宽松优先级并行——「任务 X 可派发当且仅当没有比 X 更重要的活动任务；同档并行至 max_concurrent；不抢占；队列老化仅内存态」，锚点 `core/pm_engine/dispatch/queue.py:496-520,226-275`。
 5. `agents.max_concurrent` 缺省值（06-governance.md 与 09-config.md）：MUST 为代码缺省 5（非 2），锚点 `core/pm_engine/dispatch/queue.py:562`。
 6. autostash 回收冲突处置（07-safeguards.md）：MUST 删除「冲突时自动解决（UU → add）」，改写为三分诊——态 1 UU 文件 `git merge-file` 三方重试 → 态 2 逐文件 `checkout --theirs` + `commit --only` 只入库冲突路径留审计 → 态 3 兜底落工作区 + 登记 disposition；stash 条目一律保留记账，锚点 `core/worktree_manager/stash_guard.py:134-165,274-360`。
-7. 状态机状态数（07-safeguards.md「十状态生命周期」、README.md 03 行「10 状态全景」）：MUST 统一为 11 状态（含 reviewing），锚点 `core/state_machine.py:26-37`。
+7. 状态机状态数（07-safeguards.md「十状态生命周期」、README.md 03 行「10 状态全景」、01-quick-start.md 相关文档链接行「10 状态全景」）：MUST 统一为 11 状态（含 reviewing），锚点 `core/state_machine.py:26-37`。
 8. impl 收尾代码审查形态（08-dashboard.md 质量页签段、09-config.md verify 段）：MUST 写明框架侧异步并行车道——merge-back 成功 + tester 派发时点由框架启动（不占 agent turn、实现者不等待、产物硬门已摘除）；`impl_code_review_concurrency` 缺省 MUST 为 4 且经车道命令注入硬生效（非「提示词命令示例承载的软约束」），锚点 `core/pm_engine/dispatch/queue.py:2648`、`core/config.py:2389,2459,2487`。
 9. 架构图生成超时（08-dashboard.md 项目架构分面段）：MUST 由「1800 秒硬超时，超时整组击杀」改写为两段式——探索段 ≤720s、出图段 ≤1080s 分段击杀（总预算 1800s 不变），HEAD 指纹一致时重试跳过探索段，status 增 `stage` 键，锚点 `core/dashboard/routes/architecture_routes.py:45-49,195-262`。
 10. code_review_fix 回归失败处置（09-config.md admin.code_review_fix 节）：MUST 删除「首次不通过在同一 worktree 内自动重试一次；仍不通过则丢弃该批、worktree 保留待人工、人工调 release_failed_batch 解除」，改写为——定向重试 ≤`admin.code_review_fix.targeted_retry_max`（缺省 3）轮、只重跑失败子集（映射失败 fail-closed 回全量）；耗尽后现场即弃（cleanup + 放锁）入失败档案；`FAIL_RETRY_MAX=3` 预算内新链自动重试，达上限才一次性告警 + todo 登记，锚点 `core/code_fix.py:2860-2945,690-722,79`、`core/config.py:1800-1806`。
@@ -22,7 +22,7 @@ docs/help 各章中每一处「描述框架行为」的断言 MUST 与当前代�
 16. hook 事件枚举（03-lifecycle.md 状态变化事件节、12-faq.md 第 11 条）：「十状态枚举」MUST 改为「11 状态枚举 + `all-done` 伪事件」，锚点 `core/hook_engine.py:79-80`。
 
 #### Scenario: 反偏差点逐条可机检
-- **WHEN** 对 docs/help 上述 9 份文档逐点执行文本核对（grep 断言旧表述已不存在、新表述关键值在场）
+- **WHEN** 对 docs/help 上述 10 份文档逐点执行文本核对（grep 断言旧表述已不存在、新表述关键值在场）
 - **THEN** 16 个反偏差点全部命中新口径：grep 不到「不同优先级之间不并行」「UU → add」「1800 秒硬超时」「保留待人工」「release_failed_batch」「十个角色」「10 状态全景」「十状态」等旧表述；grep 到「缺省 5」「11 状态」「12 类」「720」「1080」「targeted_retry_max」「分片」「all-done」等新口径关键值
 
 #### Scenario: 文档与代码权威锚点一致

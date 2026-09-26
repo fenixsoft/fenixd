@@ -931,89 +931,103 @@ def run_code_review(
     run_id = runner._unique_code_review_run_id()
     mpath = runner.project_root / ".fenix" / "code-review" / f"manifest-{run_id}.json"
     opath = runner.project_root / ".fenix" / "code-review" / f"out-{run_id}.jsonl"
+    # 申领占位收尾清理（对齐 run_regression item e6a103d93b91 的 finally 形态）：
+    # _unique_code_review_run_id 以 O_CREAT|O_EXCL 先落 ``{}`` 空占位，本 run
+    # 真正进入执行链（_run_claude）前的任何早退/异常路径（manifest 落盘失败、
+    # _build_prompt 失败、模型链 provider 配置缺键 KeyError 等原不在任何 try
+    # 保护内）都必须清掉占位后再上抛/折算失败信封，否则空占位永久残留
+    # .fenix/code-review/ 累积垃圾。组装完成置位后 finally 不再触碰（占位已被
+    # 完整 manifest 覆盖，成为本 run 的合法审计载体）；missing_ok 容忍本就未
+    # 落盘的失败路径。
+    _manifest_settled = False
     try:
-        mpath.parent.mkdir(parents=True, exist_ok=True)
-        mpath.write_text(
-            json.dumps(
-                {
-                    "run_id": run_id,
-                    "scope": scope,
-                    "review_kind": review_kind,
-                    "window_start": window_start.isoformat() if window_start else None,
-                    # 429 限流重派标注（add-code-review-concurrency-and-429-
-                    # resilience D4）：非 None 时本 run 是原 run 的重派，取证可见
-                    "redispatch_of": redispatch_of,
-                    "files": [str(f) for f in manifest],
-                    "requested_at": datetime.now(timezone.utc).isoformat(),
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
-    except OSError as e:
-        return CodeReviewResult(run_id=run_id, success=False, error=f"manifest 落盘失败: {e}")
-
-    # 重派缘由运行留痕（task 5.2「运行记录可见重派缘由字段」）：重派 run 启动
-    # 即向自身 jsonl 标注 redispatch_of（写失败仅丢留痕不阻断）。
-    if redispatch_of:
         try:
-            from core.agent_runner.run_files import append_run_line as _arl
-
-            _arl(
-                runner.project_root / ".fenix" / "runs" / f"{run_id}.jsonl",
-                {
-                    "type": "ratelimit_redispatch",
-                    "run_id": run_id,
-                    "spec": "code-review",
-                    "redispatch_of": redispatch_of,
-                    "reason": "429 ratelimit",
-                },
+            mpath.parent.mkdir(parents=True, exist_ok=True)
+            mpath.write_text(
+                json.dumps(
+                    {
+                        "run_id": run_id,
+                        "scope": scope,
+                        "review_kind": review_kind,
+                        "window_start": window_start.isoformat() if window_start else None,
+                        # 429 限流重派标注（add-code-review-concurrency-and-429-
+                        # resilience D4）：非 None 时本 run 是原 run 的重派，取证可见
+                        "redispatch_of": redispatch_of,
+                        "files": [str(f) for f in manifest],
+                        "requested_at": datetime.now(timezone.utc).isoformat(),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
             )
-        except OSError:
-            pass
+        except OSError as e:
+            return CodeReviewResult(run_id=run_id, success=False, error=f"manifest 落盘失败: {e}")
 
-    review_window = (
-        f"[{window_start.isoformat()}, now]" if window_start else "（全仓，manual_full）"
-    )
-    # 全仓审查并发（add-code-review-concurrency-and-429-resilience）：双通道
-    # 注入①提示词侧子代理扇出上限（{repo_concurrency}），②scan 命令
-    # --concurrency 由提示词模板同键承载。
-    from core.config import ConfigLoader as _CLRepoConc
+        # 重派缘由运行留痕（task 5.2「运行记录可见重派缘由字段」）：重派 run 启动
+        # 即向自身 jsonl 标注 redispatch_of（写失败仅丢留痕不阻断）。
+        if redispatch_of:
+            try:
+                from core.agent_runner.run_files import append_run_line as _arl
 
-    prompt = runner._build_prompt(
-        run_id,
-        "code-review",
-        detail={
-            "manifest": [str(f) for f in manifest],
-            "review_window": review_window,
-            "out_path": str(opath),
-            "repo_concurrency": _CLRepoConc.get_repo_code_review_concurrency(
-                getattr(runner, "config", {}) or {}
-            ),
-        },
-    )
+                _arl(
+                    runner.project_root / ".fenix" / "runs" / f"{run_id}.jsonl",
+                    {
+                        "type": "ratelimit_redispatch",
+                        "run_id": run_id,
+                        "spec": "code-review",
+                        "redispatch_of": redispatch_of,
+                        "reason": "429 ratelimit",
+                    },
+                )
+            except OSError:
+                pass
 
-    # 模型解析链：agents.models.code-review > self-review > administrator >
-    # _get_admin_model → 默认网关（design D1 模型链回退）
-    env_overrides: Dict[str, str] = {}
-    assignment = (
-        runner._get_agent_model_assignment("code-review")
-        or runner._get_agent_model_assignment("self-review")
-        or runner._get_agent_model_assignment("administrator")
-    )
-    provider_name = None
-    if assignment:
-        provider, model_override = assignment[0]
-        provider_name = provider.get("name")
-        env_overrides["ANTHROPIC_BASE_URL"] = provider["baseurl"]
-        env_overrides["ANTHROPIC_API_KEY"] = provider["apikey"]
-        env_overrides["ANTHROPIC_MODEL"] = model_override
-        env_overrides["CLAUDE_CONFIG_DIR"] = str(runner._ensure_agent_config_dir(provider["name"], model_override))
-        for k, v in (provider.get("env") or {}).items():
-            env_overrides[k] = v
-    else:
-        model_override = runner._get_admin_model()
+        review_window = (
+            f"[{window_start.isoformat()}, now]" if window_start else "（全仓，manual_full）"
+        )
+        # 全仓审查并发（add-code-review-concurrency-and-429-resilience）：双通道
+        # 注入①提示词侧子代理扇出上限（{repo_concurrency}），②scan 命令
+        # --concurrency 由提示词模板同键承载。
+        from core.config import ConfigLoader as _CLRepoConc
+
+        prompt = runner._build_prompt(
+            run_id,
+            "code-review",
+            detail={
+                "manifest": [str(f) for f in manifest],
+                "review_window": review_window,
+                "out_path": str(opath),
+                "repo_concurrency": _CLRepoConc.get_repo_code_review_concurrency(
+                    getattr(runner, "config", {}) or {}
+                ),
+            },
+        )
+
+        # 模型解析链：agents.models.code-review > self-review > administrator >
+        # _get_admin_model → 默认网关（design D1 模型链回退）
+        env_overrides: Dict[str, str] = {}
+        assignment = (
+            runner._get_agent_model_assignment("code-review")
+            or runner._get_agent_model_assignment("self-review")
+            or runner._get_agent_model_assignment("administrator")
+        )
+        provider_name = None
+        if assignment:
+            provider, model_override = assignment[0]
+            provider_name = provider.get("name")
+            env_overrides["ANTHROPIC_BASE_URL"] = provider["baseurl"]
+            env_overrides["ANTHROPIC_API_KEY"] = provider["apikey"]
+            env_overrides["ANTHROPIC_MODEL"] = model_override
+            env_overrides["CLAUDE_CONFIG_DIR"] = str(runner._ensure_agent_config_dir(provider["name"], model_override))
+            for k, v in (provider.get("env") or {}).items():
+                env_overrides[k] = v
+        else:
+            model_override = runner._get_admin_model()
+        _manifest_settled = True
+    finally:
+        if not _manifest_settled:
+            mpath.unlink(missing_ok=True)
 
     claude_error = ""  # CLI 原始错误文本（429 终态归因以它为准，见 catch 处）
     try:

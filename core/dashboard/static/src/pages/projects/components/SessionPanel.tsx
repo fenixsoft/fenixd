@@ -74,6 +74,19 @@ const COMPACT_NOTE_STYLE: CSSProperties = {
   gap: 8,
   padding: '16px 2px',
 };
+// 空态（尚未接入会话）容器（2026-09-26 用户定调恢复居中：在面板内水平+垂直
+// 居中，非 3.2 曾废弃的视口悬空居中）。flex:1 占满面板剩余高度才有垂直居中的
+// 支点；minHeight:0 防内容溢出撑破（同 MESSAGE_AREA_STYLE 的教训）。
+const EMPTY_STATE_STYLE: CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  flex: 1,
+  minHeight: 0,
+  alignItems: 'center',
+  justifyContent: 'center',
+  gap: 8,
+  padding: '16px 2px',
+};
 const LOADING_ROW_STYLE: CSSProperties = {
   display: 'flex',
   alignItems: 'center',
@@ -539,7 +552,7 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
     }
     if (!started) {
       return (
-        <div style={COMPACT_NOTE_STYLE}>
+        <div style={EMPTY_STATE_STYLE}>
           <Typography.Text type="secondary">尚未接入会话</Typography.Text>
           <Button type="primary" icon={<MessageOutlined />} onClick={() => void handleStart()}>
             开始会话

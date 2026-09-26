@@ -20,7 +20,7 @@ SPEC 进入 `drafted` 状态后、被晋升为 `ready` 之前，框架执行一�
 
 ### 状态机转移门
 
-SPEC 的十状态生命周期（`drafted` → `ready` → `implementing` → `implemented` → `testing` → `verified`/`bug-found` → `done` → `pushed`，以及 `blocked`）由 `core/state_machine.py` 中的 `SpecStatus` 枚举和 `transition()` 方法管理。每一次状态转换都是一个门禁点：非法转移（比如从 `done` 直接跳回 `ready`）会被状态机拒绝，STATE.md 不会写入不一致的状态。人工冻结是状态机的另一道门：当管理员在 Dashboard 或 CLI 中冻结一个 SPEC 时，`FROZEN_FIELD` 被写入 STATE.md 的 entry 中，此后所有自动链路对 status 的改写在 `update_spec()` 内被统一拦截（82 个调用点一次性收口），冻结期间 SPEC 稳定在 `blocked` 状态，不参与调度，不被自动恢复。冻结还支持定时解冻（`frozen_until` 字段），超时后自动解除。
+SPEC 的 11 状态生命周期（`drafted` → `ready` → `reviewing` → `implementing` → `implemented` → `testing` → `verified`/`bug-found` → `done` → `pushed`，以及 `blocked`）由 `core/state_machine.py` 中的 `SpecStatus` 枚举和 `transition()` 方法管理。每一次状态转换都是一个门禁点：非法转移（比如从 `done` 直接跳回 `ready`）会被状态机拒绝，STATE.md 不会写入不一致的状态。人工冻结是状态机的另一道门：当管理员在 Dashboard 或 CLI 中冻结一个 SPEC 时，`FROZEN_FIELD` 被写入 STATE.md 的 entry 中，此后所有自动链路对 status 的改写在 `update_spec()` 内被统一拦截（82 个调用点一次性收口），冻结期间 SPEC 稳定在 `blocked` 状态，不参与调度，不被自动恢复。冻结还支持定时解冻（`frozen_until` 字段），超时后自动解除。
 
 **冻结即停在跑 agent（add-freeze-stop-inflight-agents）**：冻结不仅挡住派发边界，还终止该 SPEC 名下**已经在跑**的 agent（评审 reviewer、实现 implementer、验证 verifier、修复 repair、fast-track 等全部经 dispatch 收口的角色）。runner 轮询环（1 秒粒度）在人工取消旗标检查旁直接读 STATE 的 `frozen` 字段，命中即：先对当前 worktree 做一次 WIP checkpoint（锚点 `freeze-hold`）保全未提交现场 → `terminate()` → 最长 10 秒宽限 → 存活则 `kill()` → 向 run 产物追加 `frozen-terminated` 终态行 → 走独立 `FrozenTerminatedError` 通道（与人工取消 `RunCancelledError` 并列、互不干扰）。被冻结终止的 run 不重试、不重派、不翻转 status；STATE 写入 `_frozen_hold` 标记（与 `_cancelled_hold` 并列、互不读写），保留 `branch` / `implementer_run` 锚点。
 
@@ -88,7 +88,7 @@ daemon 由 `fenixd_supervisor.py` 托管，异常退出后自动拉起。重启�
 
 ### Worktree 遗产清理与 autostash 回收
 
-`core/worktree_manager.py` 管理实现 run 的 worktree 生命周期。每个 worktree 在创建时登记到活动集，run 结束后进入遗留宽限期，宽限期内 worktree 保留供参考，超时后由 sweeper 回收。派发前的 autostash（`fix-autostash-orphans` 机制）在主树有未暂存修改时自动 `git stash`，确保 worktree 创建和分支操作的原子性。滞留的 autostash 条目由 `reclaim_stale_autostash()` 定期兜底回收：先合并到主树（`stash → merge → pop`），冲突时自动解决（UU → add），最终 drop 原条目。`reclaim_stale_autostash_if_idle()` 只在调度器空闲时触发，不与正常派发竞争。
+`core/worktree_manager.py` 管理实现 run 的 worktree 生命周期。每个 worktree 在创建时登记到活动集，run 结束后进入遗留宽限期，宽限期内 worktree 保留供参考，超时后由 sweeper 回收。派发前的 autostash（`fix-autostash-orphans` 机制）在主树有未暂存修改时自动 `git stash`，确保 worktree 创建和分支操作的原子性。滞留的 autostash 条目由 `reclaim_stale_autostash()` 定期兜底回收：先合并到主树（`stash → merge → pop`）；pop 发生冲突时按**三分诊**逐文件处置，绝不静默丢弃——态 1 对每个 UU 冲突文件做 `git merge-file` 三方重试（两侧改动都保留，失败即进下一态）；态 2 逐文件 `git checkout --theirs` 取回 stash 版内容落工作区，再 `commit --only` 只把本次冲突路径入库留审计；态 3 兜底把 stash 版内容至少落工作区并登记 disposition。stash 条目一律保留记账（不自动 drop，可经 `git show <sha>:<file>` 找回）；三分诊后复查仍有 UU 残留时主树保持半合并状态，交人工处置。`reclaim_stale_autostash_if_idle()` 只在调度器空闲时触发，不与正常派发竞争。
 
 ### stash pop 冲突三分诊
 

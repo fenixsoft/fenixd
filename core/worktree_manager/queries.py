@@ -1,7 +1,10 @@
 """queries.py — G8 查询/枚举（纯 git 只读，refactor-giant-classes D1/D5）。
 
 原为 WorktreeManager 的 16 个方法（`core/worktree_manager/_legacy.py`），
-原样搬移为 mixin（方法体零改动）。纯 git 只读查询，无跨组写操作。
+原样搬移为 mixin（方法体零改动）。除 `create_worktree_on_branch` 这一个
+写入口（`git worktree prune` / `git worktree add` 创建 worktree 并更新
+`_active_worktrees` / `_wt_branches` 内存表，方法体原样搬移自写组）外，
+其余均为纯 git 只读查询，无跨组写操作。
 
 `_impl_branch_owned_by_spec` 为 staticmethod（tests 类直调，
 design D3 须留类命名空间——mixin 上的 staticmethod 经继承仍挂在类命名空间）。
@@ -23,7 +26,7 @@ from core.worktree_manager import (  # noqa: E402
 
 
 class G8QueryMixin:
-    """G8 查询/枚举（纯 git 只读）——低耦合（design D1 表 A G8）。"""
+    """G8 查询/枚举（纯 git 只读；唯一写入口 create_worktree_on_branch）——低耦合（design D1 表 A G8）。"""
 
     @staticmethod
     def _spec_from_worktree_name(wt_name: str) -> Optional[str]:

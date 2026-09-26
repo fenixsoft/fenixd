@@ -1,0 +1,6 @@
+{
+  "env": {
+    "API_TIMEOUT_MS": "600000",
+    "CLAUDE_CODE_MAX_RETRIES": "2"
+  }
+}

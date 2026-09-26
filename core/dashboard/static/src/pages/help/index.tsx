@@ -260,6 +260,11 @@ export default function HelpPage() {
   const [error, setError] = useState('');
   const [drawerOpen, setDrawerOpen] = useState(false);
 
+  // 跨文档锚点跳转：待滚动锚点暂存，内容就绪后消费（见下方 effect）。
+  // 声明前置（code-review item 50dbe62365b5）：文档加载 effect 的错误分支会
+  // 写入此 ref，声明与使用顺序倒置易被误读为另一同名变量。
+  const pendingAnchorRef = useRef<string | null>(null);
+
   // 加载文档清单
   useEffect(() => {
     let cancelled = false;
@@ -316,9 +321,6 @@ export default function HelpPage() {
     setDocInUrl(name);
     setDrawerOpen(false);
   }, []);
-
-  // 跨文档锚点跳转：待滚动锚点暂存，内容就绪后消费（见下方 effect）
-  const pendingAnchorRef = useRef<string | null>(null);
 
   // 页内相对链接导航回调（可携带锚点：doc.md#anchor）
   const onNavigate = useCallback((name: string, anchor?: string) => {

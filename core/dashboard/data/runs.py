@@ -105,7 +105,8 @@ def _load_run_metric_index(project_root: Path) -> dict:
     provider 等），run_id 为 context.run_id（基础 run id）。日志轮转
     （size 缩小，或首块指纹不符的轮转后快速回涨形态）时整体重建，追加
     （size 增长且指纹不变）只补扫新增部分。索引超
-    _RUN_METRIC_INDEX_MAX 按最旧淘汰（防长驻进程无界增长）。
+    _RUN_METRIC_INDEX_MAX 按最旧淘汰（防长驻进程无界增长）。扫描中途读
+    失败不推进 key（下轮从旧 offset 重扫同一区间，重扫幂等）。
     """
     global _RUN_METRIC_INDEX, _RUN_METRIC_INDEX_KEY
     logs_dir = Path(project_root) / ".fenix" / "logs"
@@ -132,13 +133,18 @@ def _load_run_metric_index(project_root: Path) -> dict:
                 f.seek(start)
             _RUN_METRIC_INDEX.update(_parse_run_metric_stream(f))
     except OSError:
+        # 3c9c40ef135f：扫描中途读失败不推进 key——下一轮从旧 offset 重扫同一
+        # 区间（_parse_run_metric_stream 产物按 run_id 覆盖式写入，重扫幂等）；
+        # 轮转/首扫重建分支已清空的索引由下轮（指纹不符/size 判定）重判重建
+        # 自愈。对齐 log_index._update_log_block_index「读取失败不推进」口径。
         pass
+    else:
+        _RUN_METRIC_INDEX_KEY = key
     # 容量上限：超限按最旧淘汰（dict 保插入序＝日志出现序），保近期 run 指标
     if len(_RUN_METRIC_INDEX) > _RUN_METRIC_INDEX_MAX:
         excess = len(_RUN_METRIC_INDEX) - _RUN_METRIC_INDEX_MAX
         for rid in list(_RUN_METRIC_INDEX)[:excess]:
             del _RUN_METRIC_INDEX[rid]
-    _RUN_METRIC_INDEX_KEY = key
     return _RUN_METRIC_INDEX
 
 

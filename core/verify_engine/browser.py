@@ -134,6 +134,10 @@ class BrowserManager:
         # 独立 HTML 入口点支持
         self._use_verify_html: bool = False
 
+        # 最近一次注册、可能尚未被消费的 dialog 一次性处理器（_register_dialog_handler
+        # 持引用以便注册前摘除残留，code-review item 4c32769cc34e）
+        self._pending_dialog_handler = None
+
         # （SSE 拦截标记现记录在 page 对象属性 _fenix_sse_blocked 上——
         # mock 场景必须隔离活体推流，见 mock_api 分支；勿用 id(page) 集合，
         # 页面对象 GC 后 id 复用会造成标记误命中。）
@@ -466,7 +470,18 @@ class BrowserManager:
             except Exception:
                 pass
 
+        # 注册前先摘除上一轮残留的未消费 once 处理器（code-review item
+        # 4c32769cc34e）：声明的 dialog 步骤之后 click 实际未弹框时，once
+        # 处理器不会自动移除，会按旧 mode 吞掉后续步骤触发的对话框；摘除后
+        # 同页至多挂一个处理器，也消除一次对话框同时唤醒多个 once 回调的问题
+        stale = self._pending_dialog_handler
+        if stale is not None:
+            try:
+                page.remove_listener("dialog", stale)
+            except Exception:
+                pass
         page.once("dialog", _handle)
+        self._pending_dialog_handler = _handle
 
     async def execute_action(self, page, step: dict) -> dict:
         """执行单个用户操作。

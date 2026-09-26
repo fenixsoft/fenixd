@@ -26,7 +26,7 @@ graph TB
         PM --> SM
     end
 
-    subgraph POOL ["Agent Pool（十一类 Agent）"]
+    subgraph POOL ["Agent Pool（十二类 Agent）"]
         IMP["Implementer\n（实现者）"]
         VER["Verifier\n（验证者）"]
         PP["Planner-Plan\n（规划器）"]
@@ -67,7 +67,7 @@ graph TB
 
 两条入边的分工是理解调度的关键：**正常唤醒靠文件监听（2 秒级），兜底扫描只是安全网**。各唤醒源的间隔、成本实测与已知盲区见[调度与治理规则](06-governance.md#调度节拍spec-何时被唤醒)。
 
-## 十一类 Agent 角色
+## 十二类 Agent 角色
 
 | Agent 类型 | 职责 | 触发时机 |
 |-----------|------|---------|
@@ -82,6 +82,7 @@ graph TB
 | **evolution**（自进化） | 从自省报告提炼需求、批量产出 evo-* SPEC | 定时触发 |
 | **spec-review**（方案评审） | 阅读 SPEC 三文档做方案级评审（goal-fit/hole/regression），结论 approved/repaired/rejected | `drafted → reviewing` 晋升门禁 |
 | **code-review**（代码审查） | 周期性仓库级代码审查，问题沉淀为可追踪台账（`.fenix/code-review/items.jsonl`），供项目页「代码审查」分面消费并生成 fix-cr-* 修复 SPEC | 每日自省时点同步触发 / 项目页「代码审查」分面手动触发 |
+| **code-fix**（代码修复） | 按批修复 code-review 台账的 `open` 条目：在独立 worktree 内修复并提交，全量回归通过才合回主树 | 审查收尾产生新 `open` 条目 / full scan 周期兜底 / 项目页「代码审查」分面手动触发 |
 
 ## full 模式 vs fast-track 模式
 
@@ -165,6 +166,6 @@ Dashboard 支持同时监控多个 Fenixd 项目。每个项目拥有自己的 `
 ## 相关文档
 
 - [快速上手](01-quick-start.md) — 端到端流程实操
-- [SPEC 生命周期与状态机](03-lifecycle.md) — 10 状态详细转移规则
+- [SPEC 生命周期与状态机](03-lifecycle.md) — 11 状态详细转移规则
 - [验证体系](05-verification.md) — 三步流水线与 verify.yaml 契约
 - [调度与治理规则](06-governance.md) — 预算、熔断、告警分级

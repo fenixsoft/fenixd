@@ -184,7 +184,12 @@ class H_SessionRoutesMixin:
 
         一次拿 tracked + 未忽略 untracked（--exclude-standard 遵循 .gitignore）。
         非 git 仓库（returncode!=0）/子进程超时/git 不可执行（OSError）→ 空数组
-        （200 语义，不 500，前端补全降级为无候选）；超上限截断。
+        （200 语义，不 500，前端补全降级为无候选）。
+
+        截断契约（code-review item 448e7c6898a6）：超上限 SESSION_FILES_LIMIT
+        （5000）时静默截断——响应只是普通数组，不附 truncated 标记（与
+        /api/session 的 events 端点显式回传 truncated 布尔不同）；补全消费方
+        须按「候选可能不全」容忍，大仓库尾部文件进不了候选且无提示。
         """
         try:
             completed = subprocess.run(
@@ -219,6 +224,10 @@ class H_SessionRoutesMixin:
 
         供 @ 提及补全。project 校验复用 _session_context（缺参/未注册 404，
         与既有 _session_context 样板对未注册项目的口径一致）。
+
+        截断契约（code-review item 448e7c6898a6）：上限 SESSION_FILES_LIMIT
+        （5000），超出静默截断，响应体不附 truncated 标记（响应保持普通
+        数组形状；_json 助手不支持自定义响应头）。
         """
         context = self._session_context(query)
         if context is None:
