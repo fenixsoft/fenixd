@@ -361,7 +361,7 @@ def _update_warning_streaks(pipeline, spec_name: str) -> list:
     调用方据此发告警。侧车文件：``.fenix/verify-progress/<spec>/warning_streaks.json``，
     结构 {scenario_id: 连续轮数}。
     """
-    from core.verdict_check import VERDICT_CLASSES, load_report, save_report
+    from core.verdict_check import load_report
 
     streaks_path = (
         pipeline._context.project_root
