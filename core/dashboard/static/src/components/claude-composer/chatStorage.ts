@@ -72,7 +72,13 @@ export function readCommandHistory(project: string): Record<string, number> {
   try {
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      return parsed as Record<string, number>;
+      // 值类型校验：手改/旧格式残留的非 number 值会让消费方按值排序/比较出 NaN
+      // （trackCommandUsage 的 || 0 自增还会字符串拼接），逐条剔除、只留非 NaN number。
+      return Object.fromEntries(
+        Object.entries(parsed).filter(
+          ([, value]) => typeof value === 'number' && !Number.isNaN(value),
+        ),
+      ) as Record<string, number>;
     }
     return {};
   } catch (error) {
