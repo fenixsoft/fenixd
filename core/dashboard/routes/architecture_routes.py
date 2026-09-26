@@ -9,17 +9,24 @@
 query string 解析，不消费请求体（对齐 regression_routes POST 契约；残留
 body 字节由派发层 _drain_remaining_request_body 排空）。
 
-生成机制（design D1/D3）：POST 只受理——起 daemon 守护线程跑一次性
-headless claude（vendored archify skill 指引原文注入提示词，分析项目代码
-→ 自包含交互式 HTML；零联网安装、零用户环境依赖），MUST NOT 在 HTTP
-线程内同步等待（全库分析可达 10–30 分钟，同步 HTTP 在浏览器休眠/代理
-超时下不可靠）。前端 generating 期间 3s 轮询 status。
+生成机制（add-architecture-two-stage-generation，design D1/D3）：POST 只
+受理——起 daemon 守护线程跑**两段式** headless claude 管线，磁盘为唯一
+交接面：阶段1 探索 run（小 prompt，只读取证写
+``.fenix/architecture/evidence.md``，marker ``ARCHIFY_EVIDENCE_DONE``）→
+阶段2 出图 run（SKILL.md 与 evidence 均以包根绝对路径引用、不内嵌全文，
+候选 JSON 分段小步写，marker ``ARCHIFY_DONE``）→ 既有产物权威判定链。
+evidence.md 头部盖 repo HEAD 指纹，refresh 受理时 HEAD 一致则跳过阶段1
+（重试只付出图成本），HEAD 变化自动重探索。两段 prompt 均落在「小上下文
+× 短输出」安全区（bigmodel 网关对该形态之外的大请求存在静默丢弃），
+MUST NOT 在 HTTP 线程内同步等待。前端 generating 期间 3s 轮询 status。
 
 产物与状态存储（design D2）：项目根 ``.fenix/architecture/{diagram.html,
-status.json}``（gitignored 运行时产物）；status.json 每次状态迁移 tmp+rename
-原子写，结构含 ``state/generated_at/started_at/error/duration_ms/
-component_count``。dashboard 进程内模块级 ``ArchitectureManager`` 持
-per-project 单飞锁与在飞进程句柄，为该目录的唯一写者（单写者原则）。
+evidence.md, status.json}``（gitignored 运行时产物）；status.json 每次
+状态迁移 tmp+rename 原子写，结构含存量六键 ``state/generated_at/
+started_at/error/duration_ms/component_count`` 加可选键 ``stage``
+（exploring/authoring/终态 null）。dashboard 进程内模块级
+``ArchitectureManager`` 持 per-project 单飞锁与在飞进程句柄，为该目录的
+唯一写者（单写者原则）。
 """
 
 from __future__ import annotations
@@ -35,13 +42,20 @@ from pathlib import Path
 
 # ── 模块常数（不新增配置项，对齐 autodraft 先例）─────────────────────
 
-# 单次生成的硬超时（秒）。archify 全库分析 10–30 分钟量级，1800s 给足余量；
-# 超时以进程组方式击杀（design D3，防孙进程残留）。
-GEN_TIMEOUT_SECONDS = 1800
+# 分段硬超时（秒，design D3）：总预算 1800s 不变，拆为阶段1 探索 ≤720s、
+# 阶段2 出图 ≤1080s；超时以进程组方式击杀（防孙进程残留），error 文案
+# 区分阶段。
+_EXPLORE_TIMEOUT_SECONDS = 720
+_AUTHOR_TIMEOUT_SECONDS = 1080
 
-# 生成完成 marker 协议（autodraft marker 范式）：stdout 末行
+# 生成完成 marker 协议（autodraft marker 范式）：阶段2 stdout 末行
 # ``ARCHIFY_DONE <组件数>``。
 ARCHIFY_MARKER_PREFIX = "ARCHIFY_DONE"
+
+# 阶段1 探索 run 完成 marker（stdout 末行）：与 ``ARCHIFY_DONE`` 无前缀
+# 交集（``ARCHIFY_EVIDENCE_DONE`` 不以 ``ARCHIFY_DONE`` 开头），两段判定
+# 互不干扰；测试 fake 亦按该 marker 区分阶段。
+EVIDENCE_MARKER_PREFIX = "ARCHIFY_EVIDENCE_DONE"
 
 # 形态契约：核心组件数允许区间（spec「图形态契约」）。能提取组件数时越界
 # 判 failed；无法提取（marker 缺失）记 component_count=null 放行（design D5）。
@@ -52,6 +66,10 @@ COMPONENT_COUNT_MAX = 16
 ARCHITECTURE_DIR = ".fenix/architecture"
 STATUS_FILENAME = "status.json"
 DIAGRAM_FILENAME = "diagram.html"
+EVIDENCE_FILENAME = "evidence.md"
+
+# evidence.md 头部 HEAD 指纹行前缀（design D2）：``evidence-head: <sha> | <ISO 时间戳>``。
+EVIDENCE_HEAD_PREFIX = "evidence-head:"
 
 # env 剔除口径同 SessionManager._BANNED_ENV_KEYS（D1.11）：一次性架构图
 # 生成与 agent-run 无关，MUST NOT 注入 agent-run 专用上下文。
@@ -102,26 +120,56 @@ _SKILL_VENDORED_MISSING_ERROR = (
 )
 
 
-def _build_prompt(proot: Path, project_name: str) -> str:
-    """中文生成提示词（design D4/D5）：vendored SKILL.md 指引原文注入 +
-    包根绝对路径 + 五项形态约束 + 产物写盘绝对路径 + ARCHIFY_DONE marker
-    协议。自包含，不依赖目标项目内有任何 fenixd 文件、不依赖用户环境已装
-    skill（指引原文直接注入，claude 读 vendored 伴生文件走绝对路径）。"""
+def _evidence_path(proot: Path) -> Path:
+    """阶段1 取证材料落盘绝对路径（design D1：两段唯一交接面）。"""
+    return proot / ARCHITECTURE_DIR / EVIDENCE_FILENAME
+
+
+def _build_explore_prompt(proot: Path, project_name: str) -> str:
+    """阶段1 探索提示词（design D1）：~1KB 小 prompt——四项取证维度 +
+    evidence.md 写盘绝对路径 + ARCHIFY_EVIDENCE_DONE marker 契约。
+
+    不注入 archify SKILL.md 全文（大上下文请求在 bigmodel 网关实测静默
+    丢弃，两段编排把每轮请求压回「小上下文 × 短输出」安全区）；只读分析，
+    不修改项目任何文件。"""
+    evidence = _evidence_path(proot).resolve()
+    return f"""对当前项目（{project_name}，项目根即当前工作目录）的代码做一次只读
+取证，为后续绘制运行时架构图准备材料。只读分析，MUST NOT 修改项目内任何文件。
+
+【取证维度】把以下四项调查清楚并写成材料：
+1. 核心组件：8–16 个高层抽象（模块/服务/数据层等），各配一句职责说明；
+2. 主链路：一条最核心的运行链路，从入口到落点分步说明；
+3. 外部依赖：第三方服务/外部存储/网关等，注明各自用途；
+4. 信任边界：进程/网络/权限分界，哪些输入不可信、在哪里校验。
+
+【产出要求】把取证材料写成自包含的 Markdown，写入绝对路径（覆盖写）：
+  {evidence}
+- 只写代码里可验证的事实，不引入猜测；材料里注明关键结论对应的代码位置。
+
+【完成标记】写盘成功后，stdout 的最后一行必须输出且仅输出一个 marker：
+{EVIDENCE_MARKER_PREFIX}"""
+
+
+def _build_author_prompt(proot: Path, project_name: str) -> str:
+    """阶段2 出图提示词（design D1/D6）：~2KB 小 prompt——SKILL.md 与
+    evidence 均以绝对路径引用（先读再开工，不内嵌全文）+ 五项形态约束 +
+    候选 JSON 分段小步写纪律 + ARCHIFY_DONE marker 协议。"""
     out = (proot / ARCHITECTURE_DIR / DIAGRAM_FILENAME).resolve()
     skill_root = _vendored_skill_root()
-    skill_md = (skill_root / "SKILL.md").read_text(encoding="utf-8")
-    return f"""分析当前项目（{project_name}，项目根即当前工作目录）的代码，
-产出一张高层**运行时架构图**：核心组件有哪些、主链路怎么跑、依赖了哪些外部服务、
-信任边界在哪。
+    evidence = _evidence_path(proot).resolve()
+    return f"""基于已完成的架构取证材料，为项目（{project_name}，项目根即当前工作
+目录）绘制一张高层**运行时架构图**。
 
-【archify skill 指引（vendored 随库分发，无需安装，全程无网络依赖）】
-包根目录（绝对路径）：{skill_root}
-- 下方指引原文中出现的相对路径均相对该包根目录解析；
-- 指引中的校验步骤用 `node bin/archify.mjs validate …` 本地执行（无网络）。
-
-<archify-skill>
-{skill_md}
-</archify-skill>
+【第一步：先读再开工】开工前必须完整阅读以下两个文件（均以绝对路径引用，
+不随本提示词内嵌）：
+1. archify skill 指引（vendored 随库分发，无需安装，全程无网络依赖）：
+   {skill_root / "SKILL.md"}
+   - 指引原文中出现的相对路径均相对包根目录 {skill_root} 解析；
+   - 指引中的校验步骤用 `node bin/archify.mjs validate …` 本地执行（无网络）。
+2. 取证材料（阶段1 已写盘）：
+   {evidence}
+   - 架构事实以该材料为准；如有关键信息缺口，允许少量定向查证补齐，
+     但不要重新做全库探索。
 
 【产物要求】
 - 输出为单个自包含 HTML 文件（全部 CSS/JS 内联，不引用任何外部资源），写入绝对路径：
@@ -133,9 +181,99 @@ def _build_prompt(proot: Path, project_name: str) -> str:
   4. 辅助信息放进说明卡片（note card）承载，不要为承载说明而继续增加连线；
   5. 节点与说明文字全部使用中文标注。
 
+【写盘纪律（MUST 遵守）】候选 JSON 分段小步写，禁止单次巨量 Write：
+- 先写最小骨架文件（nodes/edges/notes 空数组占位），再逐段用 Edit 补全；
+- 每次写盘只补一两个组件的条目，写完即落盘；
+- 中间观察与草稿随时落盘到临时文件，不靠上下文携带。
+
 【完成标记】写盘成功后，stdout 的最后一行必须输出且仅输出一个 marker：
 ARCHIFY_DONE <组件数>
 其中 <组件数> 为图中核心组件的实际数量（整数）。"""
+
+
+def _repo_head(proot: Path) -> str | None:
+    """目标项目 repo 当前 HEAD sha（design D2）：以 proot 为 cwd 执行
+    ``git rev-parse HEAD``（daemon 进程 cwd 与 proot 不同，MUST NOT 用
+    进程 cwd 取 HEAD）。
+
+    detached HEAD / 非 git 项目 / 命令异常一律返回 None（读侧判不匹配，
+    每次 refresh 重新探索）。"""
+    try:
+        rev = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(proot),
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if rev.returncode != 0:
+            return None
+        # detached HEAD（symbolic-ref 失败）按不可复用口径处理
+        sym = subprocess.run(
+            ["git", "symbolic-ref", "-q", "HEAD"],
+            cwd=str(proot),
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if sym.returncode != 0:
+        return None
+    sha = (rev.stdout or "").strip()
+    return sha or None
+
+
+def _stamp_evidence_head(proot: Path) -> bool:
+    """阶段1 成功后给 evidence.md 头部盖 HEAD 指纹（sha + UTC 时间戳，
+    design D2）。已存在旧指纹头则剥离后重盖（重探索场景旧指纹已失效）。
+    尽力而为：写失败返回 False，不阻断阶段2（下次 refresh 最多多付一次
+    探索成本）。"""
+    path = _evidence_path(proot)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+    lines = text.splitlines(keepends=True)
+    if lines and lines[0].startswith(EVIDENCE_HEAD_PREFIX):
+        lines = lines[1:]
+        while lines and not lines[0].strip():  # 旧头部留下的空行一并清掉
+            lines = lines[1:]
+    sha = _repo_head(proot) or "unknown"
+    stamped = f"{EVIDENCE_HEAD_PREFIX} {sha} | {_utcnow_iso()}\n\n" + "".join(lines)
+    try:
+        path.write_text(stamped, encoding="utf-8")
+    except OSError:
+        return False
+    return True
+
+
+def _evidence_head_matches(proot: Path) -> bool:
+    """evidence.md 是否可复用（design D2）：存在、非空、带指纹头且记录的
+    HEAD sha 与当前 repo HEAD 一致。缺失/损坏（含解码失败）/无指纹头/
+    取不到当前 HEAD 一律判不匹配 → 重探索。"""
+    try:
+        text = _evidence_path(proot).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+    if not text.strip() or not text.startswith(EVIDENCE_HEAD_PREFIX):
+        return False
+    first = text.splitlines()[0].strip()
+    sha = first[len(EVIDENCE_HEAD_PREFIX):].split("|")[0].strip()
+    if not sha or sha == "unknown":
+        return False
+    current = _repo_head(proot)
+    return current is not None and sha == current
+
+
+def _evidence_ready(proot: Path) -> bool:
+    """阶段1 判定链的产物侧：evidence.md 存在且非空（design D4，不信
+    claude 自述）。"""
+    path = _evidence_path(proot)
+    try:
+        return path.is_file() and path.stat().st_size > 0
+    except OSError:
+        return False
 
 
 def _status_payload(
@@ -146,8 +284,11 @@ def _status_payload(
     error: str | None = None,
     duration_ms: int | None = None,
     component_count: int | None = None,
+    stage: str | None = None,
 ) -> dict:
-    """status.json 全字段形态（task 1.1：六键恒在，未 applicable 为 null）。"""
+    """status.json 全字段形态（task 1.1）：存量六键恒在（未 applicable 为
+    null），加可选键 ``stage``（两段编排运行态：exploring/authoring，终态
+    与受理初态为 null——读侧容忍缺键/多键，向后兼容）。"""
     return {
         "state": state,
         "started_at": started_at,
@@ -155,6 +296,7 @@ def _status_payload(
         "error": error,
         "duration_ms": duration_ms,
         "component_count": component_count,
+        "stage": stage,
     }
 
 
@@ -304,9 +446,10 @@ class ArchitectureManager:
                 error="生成被中断（daemon 重启或后台线程已不存在），请重新点击「刷新架构图」",
             )
             return synth
-        # 补齐六键（旧版残留文件可能缺键）
+        # 补齐存量六键 + stage（旧版残留文件可能缺键）
         full = _status_payload(state or "none")
-        for key in ("started_at", "generated_at", "error", "duration_ms", "component_count"):
+        for key in ("started_at", "generated_at", "error", "duration_ms",
+                    "component_count", "stage"):
             if key in data:
                 full[key] = data.get(key)
         return full
@@ -374,6 +517,101 @@ class ArchitectureManager:
             return False, False, "架构图生成线程启动失败，请重试"
         return True, False, None
 
+    def _write_stage(self, proot: Path, started_at: str, stage: str) -> None:
+        """在飞阶段迁移落盘（state 仍 generating + stage 键）：阶段1/阶段2
+        spawn 前写，前端轮询可辨当前段。尽力而为：写失败不中断生成。"""
+        try:
+            _write_status(
+                proot,
+                _status_payload("generating", started_at=started_at, stage=stage),
+            )
+        except OSError:
+            pass
+
+    def _run_stage(
+        self,
+        proot: Path,
+        project_name: str,
+        key: str,
+        *,
+        prompt: str,
+        timeout: int,
+        stage_label: str,
+        logger=None,
+    ) -> tuple[bool, int | None, str | None, str | None, str | None]:
+        """运行一段生成 run（design D1/D3）：spawn → communicate(timeout)
+        → 超时进程组 SIGKILL 击杀（既有 killpg 范式）。
+
+        返回 (ok, returncode, stdout, stderr, error)：
+        - ok=True：进程已退出（returncode 可能非零，交调用方判定链处理）；
+        - ok=False：spawn 失败/通信异常/超时击杀，error 为带阶段前缀的
+          失败文案，调用方直接 failed 短路。
+        """
+        try:
+            proc = subprocess.Popen(
+                ["claude", "-p", prompt, "--permission-mode", "bypassPermissions"],
+                cwd=str(proot),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=_build_spawn_env(),
+                # 独立会话组（autodraft 同款）：超时可 killpg 整组清场，
+                # 杜绝只杀直接子进程留下的孤儿孙进程
+                start_new_session=True,
+            )
+        except Exception as exc:  # noqa: BLE001 — CLI 不存在等 spawn 失败
+            if logger is not None:
+                logger.warning(
+                    "architecture_routes",
+                    f"调用 claude CLI 异常（project={project_name}，"
+                    f"{stage_label}）: {type(exc).__name__}: {exc!r}",
+                )
+            return False, None, None, None, "调用 claude CLI 失败"
+        with self._guard:
+            self._procs[key] = proc
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            # 进程组击杀（autodraft 同款）：claude 派生的 bash/写文件孙进程
+            # 一并终止，锁释放后无在途写者
+            try:
+                pgid = os.getpgid(proc.pid)
+                os.killpg(pgid, signal.SIGKILL)
+            except (ProcessLookupError, OSError):
+                try:
+                    proc.kill()
+                except Exception:  # noqa: BLE001
+                    pass
+            try:
+                proc.communicate()  # 回收已杀进程、排干管道
+            except Exception:  # noqa: BLE001
+                pass
+            if logger is not None:
+                logger.warning(
+                    "architecture_routes",
+                    f"架构图生成{stage_label}超时（>{timeout}s，"
+                    f"project={project_name}）；已终止整个进程组",
+                )
+            return (
+                False,
+                None,
+                None,
+                None,
+                f"{stage_label}超时（>{timeout}s 未完成），已终止生成进程",
+            )
+        except Exception as exc:  # noqa: BLE001 — communicate 其它异常
+            if logger is not None:
+                logger.warning(
+                    "architecture_routes",
+                    f"claude 进程通信异常（project={project_name}，"
+                    f"{stage_label}）: {type(exc).__name__}: {exc!r}",
+                )
+            return False, None, None, None, f"claude 进程通信失败（{stage_label}）"
+        finally:
+            with self._guard:
+                self._procs.pop(key, None)
+        return True, proc.returncode, stdout, stderr, None
+
     def _run_generation(
         self,
         proot: Path,
@@ -382,8 +620,10 @@ class ArchitectureManager:
         lock: threading.Lock,
         logger=None,
     ) -> None:
-        """生成线程体（design D3/D5）：vendored 包完整性检查 → spawn →
-        超时治理 → 权威判定链 → 状态落盘。锁在线程结束时释放（finally）。"""
+        """生成线程体（两段式管线，design D1–D5）：vendored 包完整性检查
+        （两段共用一次，先于阶段1）→ 阶段1 探索 run（evidence HEAD 指纹
+        命中则跳过）→ 阶段1 判定（rc==0 且 evidence 非空）→ 阶段2 出图
+        run → 权威判定链 → 状态落盘。锁在线程结束时释放（finally）。"""
         key = self._key(proot)
         t0 = time.monotonic()
         diagram_path = proot / ARCHITECTURE_DIR / DIAGRAM_FILENAME
@@ -395,91 +635,81 @@ class ArchitectureManager:
                     error=_SKILL_VENDORED_MISSING_ERROR,
                 )
                 return
-
-            # ── 2) spawn headless claude（design D3）─────────────────
-            prompt = _build_prompt(proot, project_name)
             try:
-                diagram_path.parent.mkdir(parents=True, exist_ok=True)
-                proc = subprocess.Popen(
-                    ["claude", "-p", prompt, "--permission-mode", "bypassPermissions"],
-                    cwd=str(proot),
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    env=_build_spawn_env(),
-                    # 独立会话组（autodraft 同款）：超时可 killpg 整组清场，
-                    # 杜绝只杀直接子进程留下的孤儿孙进程
-                    start_new_session=True,
-                )
-            except Exception as exc:  # noqa: BLE001 — CLI 不存在等 spawn 失败
-                if logger is not None:
-                    logger.warning(
-                        "architecture_routes",
-                        f"调用 claude CLI 异常（project={project_name}）: "
-                        f"{type(exc).__name__}: {exc!r}",
-                    )
+                (proot / ARCHITECTURE_DIR).mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
                 self._finish(
-                    proot, started_at, t0, "failed", error="调用 claude CLI 失败"
+                    proot, started_at, t0, "failed",
+                    error=f"架构图运行目录创建失败: {exc}",
                 )
                 return
-            with self._guard:
-                self._procs[key] = proc
-            stdout = None
-            try:
-                stdout, stderr = proc.communicate(timeout=GEN_TIMEOUT_SECONDS)
-            except subprocess.TimeoutExpired:
-                # 进程组击杀（autodraft 同款）：claude 派生的 bash/写文件孙进程
-                # 一并终止，锁释放后无在途写者
-                try:
-                    pgid = os.getpgid(proc.pid)
-                    os.killpg(pgid, signal.SIGKILL)
-                except (ProcessLookupError, OSError):
-                    try:
-                        proc.kill()
-                    except Exception:  # noqa: BLE001
-                        pass
-                try:
-                    proc.communicate()  # 回收已杀进程、排干管道
-                except Exception:  # noqa: BLE001
-                    pass
-                if logger is not None:
-                    logger.warning(
-                        "architecture_routes",
-                        f"架构图生成超时（>{GEN_TIMEOUT_SECONDS}s，"
-                        f"project={project_name}）；已终止整个进程组",
-                    )
-                self._finish(
-                    proot,
-                    started_at,
-                    t0,
-                    "failed",
-                    error=f"生成超时（>{GEN_TIMEOUT_SECONDS}s 未完成），已终止生成进程",
-                )
-                return
-            except Exception as exc:  # noqa: BLE001 — communicate 其它异常
-                if logger is not None:
-                    logger.warning(
-                        "architecture_routes",
-                        f"claude 进程通信异常（project={project_name}）: "
-                        f"{type(exc).__name__}: {exc!r}",
-                    )
-                self._finish(
-                    proot, started_at, t0, "failed", error="claude 进程通信失败"
-                )
-                return
-            finally:
-                with self._guard:
-                    self._procs.pop(key, None)
 
-            # ── 3) 权威判定链（design D5，不信 claude 自述）──────────
-            state, error, count = _judge_artifact(
-                diagram_path, proc.returncode, stdout, logger
+            # ── 2) 阶段1 探索 run：evidence HEAD 命中则跳过（design D2）──
+            if _evidence_head_matches(proot):
+                if logger is not None:
+                    logger.info(
+                        "architecture_routes",
+                        f"evidence HEAD 指纹命中，跳过阶段1 探索"
+                        f"（project={project_name}），只付出图成本",
+                    )
+            else:
+                self._write_stage(proot, started_at, "exploring")
+                ok, rc, _stdout, stderr, err = self._run_stage(
+                    proot, project_name, key,
+                    prompt=_build_explore_prompt(proot, project_name),
+                    timeout=_EXPLORE_TIMEOUT_SECONDS,
+                    stage_label="阶段1 探索",
+                    logger=logger,
+                )
+                if not ok:
+                    # spawn 失败/通信异常/超时：failed 短路，不 spawn 阶段2
+                    self._finish(proot, started_at, t0, "failed", error=err)
+                    return
+                # 阶段1 判定链（design D4，不信 claude 自述）：rc==0 且
+                # evidence 非空，任一不满足直接 failed 短路
+                if rc != 0:
+                    if logger is not None:
+                        logger.warning(
+                            "architecture_routes",
+                            f"架构图阶段1 探索失败（project={project_name}，"
+                            f"returncode={rc}）；stderr 尾部: "
+                            f"{(stderr or '')[-400:] if isinstance(stderr, str) else ''}",
+                        )
+                    self._finish(
+                        proot, started_at, t0, "failed",
+                        error=f"阶段1 探索失败（claude 非零退出 exit={rc}），"
+                              f"取证材料未产出",
+                    )
+                    return
+                if not _evidence_ready(proot):
+                    self._finish(
+                        proot, started_at, t0, "failed",
+                        error=f"阶段1 探索失败（{ARCHITECTURE_DIR}/"
+                              f"{EVIDENCE_FILENAME} 缺失或为空），取证材料未产出",
+                    )
+                    return
+                _stamp_evidence_head(proot)
+
+            # ── 3) 阶段2 出图 run ────────────────────────────────────
+            self._write_stage(proot, started_at, "authoring")
+            ok, rc, stdout, stderr, err = self._run_stage(
+                proot, project_name, key,
+                prompt=_build_author_prompt(proot, project_name),
+                timeout=_AUTHOR_TIMEOUT_SECONDS,
+                stage_label="阶段2 出图",
+                logger=logger,
             )
+            if not ok:
+                self._finish(proot, started_at, t0, "failed", error=err)
+                return
+
+            # ── 4) 产物权威判定链（design D5，行为与改造前一致）──────
+            state, error, count = _judge_artifact(diagram_path, rc, stdout, logger)
             if logger is not None and state == "failed":
                 logger.warning(
                     "architecture_routes",
                     f"架构图生成判失败（project={project_name}，"
-                    f"returncode={proc.returncode}）：{error}；"
+                    f"returncode={rc}）：{error}；"
                     f"stderr 尾部: {(stderr or '')[-400:] if isinstance(stderr, str) else ''}",
                 )
             self._finish(
@@ -531,8 +761,9 @@ class H13ArchitectureRoutesMixin:
         """GET /api/architecture/status?project=<name>
 
         返回生成状态：``{project, state, started_at, generated_at, error,
-        duration_ms, component_count}``，state ∈ none|generating|ready|failed。
-        项目不存在 → 404。
+        duration_ms, component_count, stage}``，state ∈
+        none|generating|ready|failed；stage 仅 generating 期间非 null
+        （exploring/authoring，向后兼容可选键）。项目不存在 → 404。
         """
         project = self._project_from_query(query)
         if project is None or not project.get("exists"):
