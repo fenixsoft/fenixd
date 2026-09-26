@@ -150,7 +150,8 @@ class H10StaticRoutesMixin:
             self._gzip_payload_cache[key] = payload
         return payload
 
-    def _send_file(self, path: Path, ctype: str, cache: str = "no-cache"):
+    def _send_file(self, path: Path, ctype: str, cache: str = "no-cache",
+                   extra_headers: "list[tuple[str, str]] | None" = None):
         try:
             body = path.read_bytes()
         except OSError:
@@ -160,6 +161,8 @@ class H10StaticRoutesMixin:
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Cache-Control", cache)
+        for _name, _value in (extra_headers or ()):
+            self.send_header(_name, _value)
         if path.suffix.lower() in self._GZIP_EXT and self._wants_gzip():
             payload = self._hashed_gzip_payload(path, body)
             if payload is not None:

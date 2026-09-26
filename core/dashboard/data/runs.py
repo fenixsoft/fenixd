@@ -347,6 +347,13 @@ def _first_run_event_ts(path: Path) -> "str | None":
 # 双算无害）。缓存存 status_raw——stale 判定依赖当前时刻，每次按 now 重算。
 _RUN_META_CACHE: dict = {}
 _RUN_META_CACHE_MAX = 16384
+# code-review item 95590b3c2534：终态产物缓存固化宽限窗（秒）。run 收尾先向产物
+# 追加终态事件（_run_claude finally），后写 fenixd.log run_metrics 真实耗时指标
+# （成功/失败路径都在其后经 worktree 清理等数秒级间隙才落盘）；两步之间读路径
+# 一旦把 mtime 推算耗时以「终态产物 mtime_ns/size」为键固化，键永不变化，指标
+# 落盘也不再被消费。窗口内对「终态且结构化指标未命中」的 run 延迟固化（见
+# _run_meta_cached）；窗口过后指标仍缺失（旧日志/中断 run）才按 mtime 兜底固化。
+_RUN_METRIC_GRACE_SECONDS = 15
 
 
 def _run_meta_cached(p: Path, stat, now: float,
@@ -431,6 +438,15 @@ def _run_meta_cached(p: Path, stat, now: float,
         "duration_seconds": duration_seconds,
         "file_size": stat.st_size,
     }
+    # code-review item 95590b3c2534：终态 + 结构化指标未命中 + 产物刚收尾（宽限
+    # 窗内）→ 不固化缓存。此时 duration 是 mtime 兜底值，而真实耗时指标行可能尚
+    # 在写盘路上；一旦固化，永不变化的缓存键会把它永久钉住。宽限窗内每次重算
+    # （仅新近收尾的 run，代价可忽略），指标落盘后自然命中结构化值再固化；窗口
+    # 过后指标仍缺失则按 mtime 兜底正常固化（旧日志/中断 run 行为不变）。
+    if (project_root is not None and logged is None
+            and status_raw in _RUN_TERMINAL_STATUS_MAP.values()
+            and (now - stat.st_mtime) < _RUN_METRIC_GRACE_SECONDS):
+        return meta
     if len(_RUN_META_CACHE) > _RUN_META_CACHE_MAX:
         _RUN_META_CACHE.clear()
     _RUN_META_CACHE[key] = meta
