@@ -433,7 +433,7 @@ export default function HookManager({
         <List
           // 直接携带原始下标 idx（code-review item b1b8c06516be）：按 id 反查在
           // 无 id/重复 id 的 hook 上会永远命中第一条，误操作错误条目
-          dataSource={hooks.map((h, i) => ({ ...h, key: h.id || i, idx: i }))}
+          dataSource={hooks.map((h, i) => ({ ...h, key: `${h.id || 'idx'}-${i}`, idx: i }))}
           pagination={false}
           size="small"
           renderItem={(item: HookConfig & { key: string | number; idx: number }) => {
@@ -486,7 +486,7 @@ export default function HookManager({
         />
       ) : (
         <Table
-          dataSource={hooks.map((h, i) => ({ ...h, key: h.id || i }))}
+          dataSource={hooks.map((h, i) => ({ ...h, key: `${h.id || 'idx'}-${i}` }))}
           columns={columns}
           pagination={false}
           size="small"
