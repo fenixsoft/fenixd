@@ -61,7 +61,16 @@ class PRepairLaneMixin:
                 f"（轮次超限/已 blocked）— 回退 fallback 重派（rehearsed，"
                 f"prompt 注入冲突上下文）",
             )
-            self._fallback_after_repair(spec_name, branch, merge_error)
+            # code-review item eeb49d9c68dd：此分支 repair 被拒（轮次超限/已
+            # blocked），从未派发 repair agent——merge_error 须落 merge_error
+            # 形参，repair_error 只写「repair 不可用」事实，避免 STATE error
+            # 被误标为 repair 失败误导排障。
+            self._fallback_after_repair(
+                spec_name,
+                branch,
+                repair_error="预演检出语义冲突且 repair 不可用",
+                merge_error=merge_error,
+            )
 
     def _should_enter_repair(
         self, spec_name: str, merge_info, streak: int, breaker_threshold: int

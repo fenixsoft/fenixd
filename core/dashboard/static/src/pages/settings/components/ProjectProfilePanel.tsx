@@ -173,7 +173,12 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
       console.error('Failed to load verify.yaml:', e);
       message.error(`加载 verify.yaml 失败：${e instanceof Error ? e.message : e}`);
     } finally {
-      if (!silent && seq === yamlLoadSeq.current) setYamlLoading(false);
+      // 非 silent 仍按「仍是最新加载」判定清理；silent 统一清 false 无害化——
+      // 保存触发的静默重载会自增 seq 令并发「重新加载」的响应过期、其清理被
+      // 跳过，而 silent 自身又不置/不清 yamlLoading，yamlLoading 便永久悬挂为
+      // true（编辑区整体禁用且无超时兜底）。silent 加载期间 yamlLoading 本应
+      // 恒为 false，提前清掉并发的非 silent 加载锁也只是提前解禁编辑区，无害。
+      if (!silent || seq === yamlLoadSeq.current) setYamlLoading(false);
     }
   };
 
