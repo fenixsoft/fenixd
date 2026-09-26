@@ -177,7 +177,8 @@ def probe_http_health(base_url: str, timeout: float = 2.0) -> bool:
         timeout: 单次探测超时（秒）。
 
     Returns:
-        True 表示连通且数据端点可达；False 表示实例失联。
+        True 表示任一探测端点连通即成立（根路径 2xx 即满足，
+        不强制数据端点可达）；False 表示全部探测端点均失联。
     """
     candidates: list[str] = []
     base = (base_url or "").rstrip("/")
