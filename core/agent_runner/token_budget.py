@@ -302,10 +302,14 @@ class TokenAccountant:
                         {
                             "agent_type": agent_type,
                             "timestamp": datetime.now(timezone.utc).isoformat(),
-                            "input_tokens": int(usage_info.get("input_tokens", 0) or 0)
-                            + int(usage_info.get("cache_creation_input_tokens", 0) or 0)
-                            + int(usage_info.get("cache_read_input_tokens", 0) or 0),
-                            "output_tokens": int(usage_info.get("output_tokens", 0) or 0),
+                            # code-review item ee160183aeaf：数值键改用 _to_int
+                            # 容错转换——裸 int() 遇非数值字符串抛 ValueError，
+                            # 不在外层 except (OSError, json.JSONDecodeError)
+                            # 内，会冒泡违背「写入失败静默跳过」承诺。
+                            "input_tokens": _to_int(usage_info.get("input_tokens", 0))
+                            + _to_int(usage_info.get("cache_creation_input_tokens", 0))
+                            + _to_int(usage_info.get("cache_read_input_tokens", 0)),
+                            "output_tokens": _to_int(usage_info.get("output_tokens", 0)),
                             "cost_usd": usage_info.get("cost_usd"),
                         }
                     )
