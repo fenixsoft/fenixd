@@ -221,7 +221,7 @@ export function installHosting(name: string) {
 
 /** 同步/清空用户级设置：sync=把用户级 config.yaml 中 page 页签对应的受管键覆盖
  *  写入项目级；clear=删除项目级该页签受管键（清空后沿用用户级/默认值）。
- *  page 白名单：llm/agents/parallel/token/verify/approval/misc/system */
+ *  page 白名单见 core/dashboard/data/config_admin.py 的 _SYNC_PAGE_KEYS */
 export function syncConfigFromUser(
   project: string,
   page: string,
