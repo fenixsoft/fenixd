@@ -154,7 +154,7 @@ class ConfigLoader:
     # 白名单键 = KNOWN_AGENT_TYPES 全集 + repair + supervision-judge，随
     # agents.models 角色集动态扩大（向 KNOWN_AGENT_TYPES 新增角色即同步放开
     # 同名 timeout_overrides 键）；design D3 初版的「七类」表述已过时。
-    TIMEOUT_OVERRIDE_AGENT_TYPES = frozenset(KNOWN_AGENT_TYPES) | {"fast-track", "repair"}
+    TIMEOUT_OVERRIDE_AGENT_TYPES = frozenset(KNOWN_AGENT_TYPES) | {"repair"}
     # supervision-judge 是内部轻量判定子进程（非长 run），不参与 absolute_max 派生，
     # 允许低于 agent run 的 300s 下限（spec per-agent-timeout-override 3.3 场景 240s 生效）。
     TIMEOUT_OVERRIDE_KEYS = TIMEOUT_OVERRIDE_AGENT_TYPES | {"supervision-judge"}
