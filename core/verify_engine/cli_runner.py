@@ -22,40 +22,16 @@ CLI 特异执行语义（与 web「失败即中断」唯一的分歧点，design
 import asyncio
 import json
 import os
-import re
 import signal
 from pathlib import Path
 from urllib.parse import urlparse
 
+from ._evidence import _EVIDENCE_LIMIT, _truncate, _interpolate_env  # 共享证据工具（符号出口保持）
 from .runner import VerifyRunner, register_runner, determine_scenario_status
 from .cli_assertions import CliAssertionRunner
 from .scenarios import validate_scenario
 
-_EVIDENCE_LIMIT = 64 * 1024  # 证据 64KB 截断上限
 DEFAULT_RUN_TIMEOUT = 60.0
-
-
-def _truncate(text: str) -> tuple:
-    """证据截断：超过 64KB（UTF-8 字节口径）截断并带截断标记。返回 (截断后文本, truncated)。"""
-    if text is None:
-        return "", False
-    # 按编码后字节数截断（与「64KB」声明同口径；中文等多字节输出按字符数
-    # 比较会漏截）；errors="ignore" 丢弃尾部被切半的多字节序列，不出非法 UTF-8
-    encoded = text.encode("utf-8", errors="replace")
-    if len(encoded) > _EVIDENCE_LIMIT:
-        return encoded[:_EVIDENCE_LIMIT].decode("utf-8", errors="ignore"), True
-    return text, False
-
-
-def _interpolate_env(value: str, env: dict) -> str:
-    """{env:VAR} 插值：未命中的占位符原样保留（防静默改写）。"""
-    if not isinstance(value, str) or "{env:" not in value:
-        return value
-
-    def _repl(m):
-        return env.get(m.group(1), m.group(0))
-
-    return re.sub(r"\{env:([^}]+)\}", _repl, value)
 
 
 @register_runner

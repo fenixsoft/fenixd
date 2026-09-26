@@ -666,7 +666,20 @@ class BrowserManager:
                     try:
                         mock_status = int(step.get("status") or 200)
                     except (TypeError, ValueError):
-                        mock_status = 200
+                        # 不静默回退 200（code-review 修）：场景意图的 4xx/5xx
+                        # 分支若因 status 脏值被当成成功响应，错误提示类断言会
+                        # 系统性伪失败并被归因为产品缺陷。与 wait 的
+                        # invalid_wait_value 同口径，本步骤结构化失败返回。
+                        return {
+                            "success": False,
+                            "action": action,
+                            "target": target,
+                            "error_type": "invalid_mock_status",
+                            "error": (
+                                f"mock_api status 非法（应为 HTTP 状态码整数）: "
+                                f"{step.get('status')!r}"
+                            ),
+                        }
                     # Playwright URL glob：`*` 不匹配 `/`，结尾 `/*` 补成 `/**`
                     # （否则 https://host/* 无法匹配多段路径 /v1/forecast）
                     route_pattern = target[:-1] + "**" if target.endswith("/*") else target
@@ -720,6 +733,21 @@ class BrowserManager:
                         "target": target,
                         "value": value,
                         "detail": f"键盘按键: {value}",
+                    }
+                # 键盘按键启发式未命中：window/body 不是可填充 DOM 元素，若穿透
+                # 到下方通用 fill 路径，Playwright 报「Element is not an <input>」
+                # 类错误并被外层 except 归为 unknown error_type，场景作者难以
+                # 定位是 target 用错了窗口级语义（code-review 修）。
+                if action == "type":
+                    return {
+                        "success": False,
+                        "action": action,
+                        "target": target,
+                        "error_type": "invalid_type_target",
+                        "error": (
+                            f"window/body 目标不支持文本输入；键盘按键仅支持"
+                            f"无特殊字符的按键名（如 Escape/Enter）: {value!r}"
+                        ),
                     }
 
             # 等待目标元素可交互（.first 避免 strict mode violation）

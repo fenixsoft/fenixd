@@ -332,7 +332,19 @@ class CliAssertionRunner:
         truncated = size > _FILE_CONTENT_LIMIT
         with path.open("rb") as fh:
             content = fh.read(_FILE_CONTENT_LIMIT).decode("utf-8", errors="replace")
-        passed = self._match(content, expected, mode, negate)
+        if truncated and negate:
+            # 大文件超限 + negate：只读前 N 字节的截断样本无法完整反证「不包含
+            # expected」，截断点之后的真实出现会被漏检而静默假绿（truncated 标记
+            # 不参与裁决）。按断言失败处理（与 exact 超限分支同原则：无法完整
+            # 比对即判失败），并带 error/truncated 供定位。
+            passed = False
+            error = (
+                f"文件过大（{size} 字节 > 上限 {_FILE_CONTENT_LIMIT}），"
+                f"negate 断言无法在截断样本上完整反证，判失败"
+            )
+        else:
+            passed = self._match(content, expected, mode, negate)
+            error = ""
         result = {
             "type": "file_content",
             "layer": 3,
@@ -345,6 +357,8 @@ class CliAssertionRunner:
         }
         if truncated:
             result["truncated"] = True
+        if error:
+            result["error"] = error
         return result
 
     async def _assert_json_output(self, step, a: dict) -> dict:

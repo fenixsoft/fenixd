@@ -325,12 +325,19 @@ class AssertionRunner:
             selector,
             """el => {
             const rect = el.getBoundingClientRect();
-            return (
-                rect.top >= 0 &&
-                rect.left >= 0 &&
-                rect.bottom <= window.innerHeight &&
-                rect.right <= window.innerWidth
-            );
+            if (rect.width <= 0 || rect.height <= 0) {
+                // display:none 等隐藏元素 getBoundingClientRect 返回全零 rect，
+                // 四条边界不等式恒真会被误判为「在可视区域内」，零尺寸显式判失败
+                return { zero_size: true };
+            }
+            return {
+                zero_size: false,
+                in_view:
+                    rect.top >= 0 &&
+                    rect.left >= 0 &&
+                    rect.bottom <= window.innerHeight &&
+                    rect.right <= window.innerWidth,
+            };
         }""",
         )  # in_viewport evaluate ends
         if in_view is None:
@@ -341,11 +348,19 @@ class AssertionRunner:
                 "pass": False,
                 "error": "元素不存在",
             }
+        if in_view.get("zero_size", False):
+            return {
+                "type": "in_viewport",
+                "layer": 2,
+                "selector": selector,
+                "pass": False,
+                "error": "元素存在但零尺寸（如 display:none / 隐藏），不视为在可视区域内",
+            }
         return {
             "type": "in_viewport",
             "layer": 2,
             "selector": selector,
-            "pass": in_view,
+            "pass": in_view["in_view"],
         }
 
     async def _assert_z_index_order(self, page, a: dict) -> dict:
@@ -459,16 +474,17 @@ class AssertionRunner:
         读到旧值，因此轮询到超时为止。
         """
         selector = a["selector"]
-        expected = a.get("expected", "")
+        # 「未设置」哨兵是 None 而非空串：空串是 text_match 的合法期望值
+        # （如「detail 为空串」），与 scenarios.py Assertion 哨兵及 api 侧
+        # json_path/sse_event_matches 的空串 exact 比较口径一致。
+        expected = a.get("expected", None)
         mode = a.get("mode", "exact")
         timeout_ms = int(a.get("timeout", 3000))
         interval_ms = int(a.get("interval", 200))
 
-        if not expected:
-            # 显式失败而非静默恒真：expected 缺省为空串时 exact 退化成
-            # 「元素文本为空即通过」，contains/regex 对任意可读文本恒真，
-            # 会产出假通过；与 dom_structure 的缺参口径（确定性失败）
-            # 保持一致，给出可定位提示。
+        if expected is None:
+            # 显式失败而非静默恒真：expected 未设置时与 dom_structure 的缺参
+            # 口径（确定性失败）保持一致，给出可定位提示。
             return {
                 "type": "text_match",
                 "layer": 3,
@@ -478,6 +494,20 @@ class AssertionRunner:
                 "mode": mode,
                 "pass": False,
                 "error": "缺少 expected 字段",
+            }
+        if expected == "" and mode in ("contains", "regex"):
+            # 显式空串对 contains/regex 恒真（"" 是任意文本的子串、空串正则
+            # 恒匹配），维持确定性失败避免假通过；exact 模式放行空串比较，
+            # actual.strip() == "" 断言「元素文本为空」。
+            return {
+                "type": "text_match",
+                "layer": 3,
+                "selector": selector,
+                "expected": expected,
+                "actual": "",
+                "mode": mode,
+                "pass": False,
+                "error": f"mode={mode} 时 expected 为显式空串恒真，拒绝",
             }
 
         # 非法正则是确定性错误：_text_matches 内 re.search 每轮重抛 re.error，

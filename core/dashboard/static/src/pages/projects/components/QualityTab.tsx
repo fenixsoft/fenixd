@@ -44,6 +44,7 @@ import {
   getCodeReviewProgress,
   getCodeReviewRunResult,
   getConfig,
+  isTriggerResultForRequest,
   setCodeReviewItemStatus,
   STREAM_URL,
   triggerCodeFixRun,
@@ -535,8 +536,11 @@ export default function QualityTab({ project, active }: QualityTabProps) {
     try {
       const res = await triggerCodeReview(project, scope);
       wantedAt = res.requested_at;
-      void loadProgress();
-      void loadItems();
+      // 经 ref 取最新 loader（code-review item 75c98014e626）：await 往返期间发生
+      // 项目切换时，本闭包捕获的旧 loader 直呼会用旧项目刷新覆盖新视图——ref 视图
+      // 随 loadItems/loadProgress 重建每轮同步为最新闭包（同 SSE/心跳刷新路径）。
+      void loadProgressRef.current();
+      void loadItemsRef.current({ background: false });
     } catch (e) {
       const errMsg = e instanceof Error ? e.message : String(e);
       // 业务拒绝按稳定错误码分支（code-review item fbdb437a22a0）：旧实现对
@@ -567,8 +571,8 @@ export default function QualityTab({ project, active }: QualityTabProps) {
         if (ackPollAbortedRef.current) return;
         try {
           const snap = await getCodeReviewRunResult(project);
-          // 仅认 requested_at 回链本次的记录（上一轮残留 MUST NOT 弹提示）
-          if (snap.requested_at && snap.requested_at === wantedAt) {
+          // 仅认定是本次触发的结果（统一回链判读，见 isTriggerResultForRequest）
+          if (isTriggerResultForRequest(snap, wantedAt)) {
             result = snap;
             break;
           }
@@ -659,7 +663,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
         if (fixRunPollAbortedRef.current) return;
         try {
           const snap = await getCodeFixRunResult(project);
-          if (snap.request_created && snap.request_created === wantedAt) {
+          if (isTriggerResultForRequest(snap, wantedAt)) {
             result = snap;
             break;
           }

@@ -663,6 +663,10 @@ export default function SpecListPage() {
   const pendingPatchesRef = useRef<Record<string, SpecSummary | null>>({});
   const patchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const specMapRef = useRef(specMap);
+  // 「已成功加载」闩锁（code-review item f8144e4ed721）：区分「首屏未载入/加载
+  // 失败」与「已成功加载但为空」两种空表情形，零 SPEC 项目成功加载后不再随搜索
+  // 防抖节拍反复回退重拉 /api/specs。
+  const specLoadedRef = useRef(false);
   // 渲染期副作用消除（code-review item b81c73214b46）：原在渲染体直接写
   // specMapRef.current = specMap，属 render side effect（并发渲染/StrictMode
   // 下可能 ref 与本次渲染不一致）；改在 effect 中同步。
@@ -701,6 +705,8 @@ export default function SpecListPage() {
         for (const s of d.specs || []) next[s.name] = s;
         setSpecMap(next);
         setError('');
+        // 成功加载（含空表）即闩锁，后续防抖回退不再触发（code-review item f8144e4ed721）
+        specLoadedRef.current = true;
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -815,8 +821,9 @@ export default function SpecListPage() {
   useEffect(() => {
     const t = setTimeout(() => {
       setDebouncedQ(q);
-      // 本地表空（首屏未载入/失败）→ 回退请求 /api/specs
-      if (q.trim() && Object.keys(specMapRef.current).length === 0) {
+      // 本地表空且尚未成功加载（首屏未载入/加载失败）→ 回退请求 /api/specs；
+      // 已成功加载但为空（零 SPEC 项目）不再重拉（code-review item f8144e4ed721）
+      if (q.trim() && !specLoadedRef.current && Object.keys(specMapRef.current).length === 0) {
         void load();
       }
     }, SEARCH_DEBOUNCE_MS);
@@ -873,6 +880,8 @@ export default function SpecListPage() {
   useEffect(() => {
     expandedInitRef.current = false;
     setExpandedKeys([]);
+    // specLoadedRef 闩锁随项目复位（code-review item f8144e4ed721）
+    specLoadedRef.current = false;
   }, [name]);
   useEffect(() => {
     if (expandedInitRef.current) return;
