@@ -33,12 +33,12 @@ def _run_attribution_gate(pipeline, spec_name: str, report: dict, lane_label: st
     仅用于日志前缀，保持各轮次既有文案不变。
 
     Returns:
-        ``check_batch_attribution_dedup_scenario`` 的查重结果；分级自身异常时
-        返回 None（→ 调用方走既有「跳过分级照常采纳」语义）。查重拒绝收口
-        MUST 由调用方在本 try 之外执行（code-review ab428d7a4e07）——本函数
-        内部 except 只兜「分级计算自身」异常。
+        ``check_batch_attribution_dedup_scenario`` 的查重结果；分级计算自身
+        异常时返回 None（→ 调用方走既有「跳过分级照常采纳」语义）；跨轮缓存
+        打标（load_verdict_cache/tag_cached_attributions）失败仅记 warning，
+        dedup 照常返回。查重拒绝收口 MUST 由调用方在分级 try 之外执行
+        （code-review ab428d7a4e07）。
     """
-    dedup = None
     try:
         from core.verdict_check import (
             validate_attribution_levels,
@@ -68,6 +68,20 @@ def _run_attribution_gate(pipeline, spec_name: str, report: dict, lane_label: st
         # incremental-attribution 2.1：命中重复的归因置 requeue 待回炉，
         # 非重复置 accept 保留；MUST NOT 因子集重复废弃整轮归因）。
         dedup = check_batch_attribution_dedup_scenario(report)
+    except Exception as e:
+        # 归因分级自身异常不阻断既有裁决链（分级是附加治理，宁可缺失
+        # 也不让增强流程因治理代码崩溃——judge 正常裁决继续）
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"归因分级校验异常跳过{lane_label}'{spec_name}'"
+            f"（不阻断裁决）: {type(e).__name__}: {e}",
+        )
+        return None
+    # 跨轮缓存归因打标（design D3）是纯效率增益：其失败 MUST NOT 丢弃已
+    # 算出的 dedup（查重可能已判拒绝，按「dedup=None 跳过分级照常采纳」
+    # 返回会静默放行带病采纳、查重门失效）——单独兜住只记 warning，dedup
+    # 照常返回给调用方执行拒绝收口（缓存打标失败只影响效率不影响查重正确性）。
+    try:
         cache = load_verdict_cache(pipeline._context.project_root, spec_name)
         tagged = tag_cached_attributions(report, cache, spec_name)
         if tagged:
@@ -77,12 +91,10 @@ def _run_attribution_gate(pipeline, spec_name: str, report: dict, lane_label: st
                 f"{len(tagged)} 个场景带 cached_from_previous_round 标",
             )
     except Exception as e:
-        # 归因分级自身异常不阻断既有裁决链（分级是附加治理，宁可缺失
-        # 也不让增强流程因治理代码崩溃——judge 正常裁决继续）
         pipeline._context.logger.warning(
             "pm_engine",
-            f"归因分级校验异常跳过{lane_label}'{spec_name}'"
-            f"（不阻断裁决）: {type(e).__name__}: {e}",
+            f"跨轮缓存归因打标异常{lane_label}'{spec_name}'"
+            f"（仅效率增益失败，查重结果照常返回）: {type(e).__name__}: {e}",
         )
     return dedup
 
@@ -121,6 +133,90 @@ def _rejection_closure(
             "violations": dedup.get("violations") or [],
             "dispatch_error": f"{type(requeue_err).__name__}: {requeue_err}",
         }
+
+
+def _dispatch_failure_result(
+    pipeline, spec_name: str, re_judge, violations: list, lane_label: str
+) -> dict:
+    """重试轮/重合成轮 judge 派发失败三分支统一收口（fix-verdict-retry-misattribution）。
+
+    原两份近逐字拷贝（重试轮/重合成轮）单源化防漂移：frozen 门拦截 → 让位
+    （dispatch_frozen，不写 blocked 不发告警）；取消旗标拦截 → 同语义让位
+    （dispatch_cancelled）；其它派发失败（网关拒绝/预算闸门等）→
+    dispatch_failed 温和处置，不得冒充「二次违反证据契约」。
+
+    ``lane_label`` 为日志前缀词（"裁决重试" / "重合成"），保持各轮次既有
+    文案逐字不变；frozen 门/cancel 旗标判据与 runner.py 门共用导出常量。
+    """
+    if (re_judge.error or "").startswith(FROZEN_TERMINATED_ERROR_PREFIX):
+        pipeline._context.logger.info(
+            "pm_engine",
+            f"{lane_label} judge 派发被 frozen 门拦截 '{spec_name}'"
+            f"（人工已冻结，让位不写状态）: {re_judge.error}",
+        )
+        return {
+            "ok": False,
+            "cause": "dispatch_frozen",
+            "violations": violations,
+            "dispatch_error": re_judge.error,
+        }
+    if getattr(re_judge, "cancelled", False):
+        pipeline._context.logger.info(
+            "pm_engine",
+            f"{lane_label} judge 派发被取消旗标拦截 '{spec_name}'"
+            f"（run 已人工取消，让位不写状态）: {re_judge.error}",
+        )
+        return {
+            "ok": False,
+            "cause": "dispatch_cancelled",
+            "violations": violations,
+            "dispatch_error": re_judge.error,
+        }
+    pipeline._context.logger.warning(
+        "pm_engine",
+        f"{lane_label} judge 派发失败 '{spec_name}': {re_judge.error}",
+    )
+    return {
+        "ok": False,
+        "cause": "dispatch_failed",
+        "violations": violations,
+        "dispatch_error": re_judge.error,
+    }
+
+
+def _adopt_report(pipeline, spec_name: str, report: dict, lane_label: str) -> dict:
+    """合规采纳收口统一助手（重试轮/重合成轮两份近逐字拷贝单源化）。
+
+    清 violations/resynthesis_directive/requeue_manifest → 裁决缓存
+    （_persist_verdict_cache）→ 状态映射重写（enforce_status_mapping）→
+    save_report（写回失败记 warning 非阻塞）→ 逐条映射改写日志 → 返回
+    cause=pass 采纳结果。
+
+    ``lane_label`` 为映射日志前缀词（"裁决重试" / "重合成采纳"），保持各轮次
+    既有文案逐字不变；轮次专属收尾日志（如重合成轮「产物合规」warning）由
+    调用方在 return 前补打，次序与既有路径一致。
+    """
+    from core.verdict_check import enforce_status_mapping, save_report
+
+    pipeline._clear_verdict_violations(spec_name)
+    pipeline._clear_resynthesis_directive(spec_name)
+    pipeline._clear_requeue_manifest(spec_name)
+    pipeline._persist_verdict_cache(spec_name, report)
+    mapping = enforce_status_mapping(report)
+    try:
+        save_report(pipeline._context.project_root, spec_name, report)
+    except OSError as e:
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"裁决映射重写写回失败 '{spec_name}': {e}",
+        )
+    for c in mapping["corrected"]:
+        pipeline._context.logger.info(
+            "pm_engine",
+            f"{lane_label}后映射强制重写 '{spec_name}' 场景 "
+            f"{c['scenario_id']}: {c['from_status']} → failed",
+        )
+    return {"ok": True, "cause": "pass", "violations": [], "dispatch_error": ""}
 
 
 def _verify_verdict_evidence(pipeline, spec_name: str, retry_judge: bool = False) -> dict:
@@ -218,10 +314,10 @@ def _verify_verdict_evidence(pipeline, spec_name: str, retry_judge: bool = False
         try:
             re_judge = pipeline._pm.agent_runner.run_planner(spec_name, "judge")
         except Exception as e:
-            # dispatch_exception：run_planner 抛异常（re_judge=None）→ 立即早退。
-            # 禁止继续执行 load_report 复读第一轮违规的旧 report.json（现路径
-            # 会据此打出「重试后仍不合规」假 ERROR）；是否写 blocked 由调用方
-            # 按 cause 决定。
+            # dispatch_exception：run_planner 抛异常 → 立即早退。禁止继续
+            # 执行 load_report 复读第一轮违规的旧 report.json（现路径会据此
+            # 打出「重试后仍不合规」假 ERROR）；是否写 blocked 由调用方按
+            # cause 决定。（run_planner 违反契约返回 None 的形态见下方分支）
             pipeline._context.logger.warning(
                 "pm_engine",
                 f"裁决重试 judge 异常 '{spec_name}': {e}",
@@ -232,47 +328,29 @@ def _verify_verdict_evidence(pipeline, spec_name: str, retry_judge: bool = False
                 "violations": violations_1,
                 "dispatch_error": str(e),
             }
-        if re_judge is not None and not re_judge.success:
-            # ── 重试派发失败三分支（fix-verdict-retry-misattribution）──
-            # frozen 门拦截：spec 已人工冻结 → 让位（不写 blocked、不发告警），
-            # 语义化返回供调用方 INFO 留痕。判据与 runner.py 门共用导出常量。
-            if (re_judge.error or "").startswith(FROZEN_TERMINATED_ERROR_PREFIX):
-                pipeline._context.logger.info(
-                    "pm_engine",
-                    f"裁决重试 judge 派发被 frozen 门拦截 '{spec_name}'"
-                    f"（人工已冻结，让位不写状态）: {re_judge.error}",
-                )
-                return {
-                    "ok": False,
-                    "cause": "dispatch_frozen",
-                    "violations": violations_1,
-                    "dispatch_error": re_judge.error,
-                }
-            # 取消旗标拦截：结构化字段判定（非字符串匹配，design D3）→ 同语义让位
-            if getattr(re_judge, "cancelled", False):
-                pipeline._context.logger.info(
-                    "pm_engine",
-                    f"裁决重试 judge 派发被取消旗标拦截 '{spec_name}'"
-                    f"（run 已人工取消，让位不写状态）: {re_judge.error}",
-                )
-                return {
-                    "ok": False,
-                    "cause": "dispatch_cancelled",
-                    "violations": violations_1,
-                    "dispatch_error": re_judge.error,
-                }
-            # 其它派发失败（网关拒绝/预算闸门等）：携带原始 error，由调用方按
-            # dispatch_failed 温和处置——不得冒充「二次违反证据契约」。
+        if re_judge is None:
+            # run_planner 违反类型契约返回 None（区别于上方抛异常形态）：
+            # 与异常分支同处置立即早退，禁止落至下方 load_report 复读第一轮
+            # 旧产物（复读会把旧违规误判为「重试后仍不合规」假 ERROR 并触发
+            # blocked 处置）。
             pipeline._context.logger.warning(
                 "pm_engine",
-                f"裁决重试 judge 派发失败 '{spec_name}': {re_judge.error}",
+                f"裁决重试 judge 返回 None '{spec_name}'（run_planner 违反契约）",
             )
             return {
                 "ok": False,
-                "cause": "dispatch_failed",
+                "cause": "dispatch_exception",
                 "violations": violations_1,
-                "dispatch_error": re_judge.error,
+                "dispatch_error": "run_planner returned None",
             }
+        if not re_judge.success:
+            # ── 重试派发失败三分支（fix-verdict-retry-misattribution）──
+            # frozen 门拦截 / 取消旗标拦截 / 其它派发失败三种让位处置与重合成
+            # 轮共用 _dispatch_failure_result 单源实现（frozen 判据与 runner.py
+            # 门共用导出常量）。
+            return _dispatch_failure_result(
+                pipeline, spec_name, re_judge, violations_1, "裁决重试"
+            )
         report2 = load_report(pipeline._context.project_root, spec_name)
         if report2 is None:
             # 重试成功但 report.json 不可读 → report_missing（产物丢失，非违规）
@@ -295,25 +373,7 @@ def _verify_verdict_evidence(pipeline, spec_name: str, retry_judge: bool = False
             if dedup is not None and not dedup["ok"]:
                 # 场景级回炉闭环收口：与首轮/重合成轮共用单源实现
                 return _rejection_closure(pipeline, spec_name, report2, dedup, "（重试轮）")
-            pipeline._clear_verdict_violations(spec_name)
-            pipeline._clear_resynthesis_directive(spec_name)
-            pipeline._clear_requeue_manifest(spec_name)
-            pipeline._persist_verdict_cache(spec_name, report2)
-            mapping2 = enforce_status_mapping(report2)
-            try:
-                save_report(pipeline._context.project_root, spec_name, report2)
-            except OSError as e:
-                pipeline._context.logger.warning(
-                    "pm_engine",
-                    f"裁决映射重写写回失败 '{spec_name}': {e}",
-                )
-            for c in mapping2["corrected"]:
-                pipeline._context.logger.info(
-                    "pm_engine",
-                    f"裁决重试后映射强制重写 '{spec_name}' 场景 "
-                    f"{c['scenario_id']}: {c['from_status']} → failed",
-                )
-            return {"ok": True, "cause": "pass", "violations": [], "dispatch_error": ""}
+            return _adopt_report(pipeline, spec_name, report2, "裁决重试")
         # 真·二次违规（重试确实发生）：violations 携带 validate_report 原始明细，
         # 由调用方按既有语义处置（blocked + verdict_evidence_invalid 告警）。
         pipeline._context.logger.error(
@@ -562,7 +622,13 @@ def _escalate_dedup_resynthesis(
     error 携带多轮违规摘要；spec 置 blocked 后自动链路对 status 的改写被
     update_spec 剥离（人工接管），MUST NOT 无限重试重合成。
     """
-    summary = "; ".join(str(v.get("reason") or "")[:160] for v in (violations or []))
+    # 与 _verdict_violations_evidence 同口径截断（20 条 + 总数注明）：违规
+    # 多时 error 字段直入 STATE.md，无总长上限会膨胀数 KB——截断后单条 error
+    # 有界（≤20×160 字符）。
+    shown_violations = [v for v in (violations or []) if isinstance(v, dict)][:20]
+    summary = "; ".join(str(v.get("reason") or "")[:160] for v in shown_violations)
+    if len(violations or []) > 20:
+        summary = f"{summary}; violations_truncated=20/{len(violations)}"
     error = (
         f"批量归因查重连续 {rejection_round} 次拒绝采纳"
         f"（含 {_RESYNTHESIS_MAX_ATTEMPTS} 轮轻量重合成仍同文），"
@@ -583,17 +649,29 @@ def _escalate_dedup_resynthesis(
             "error": error,
         },
     )
-    pipeline._context.escalation_notifier(
-        spec_name=spec_name,
-        signal_type="verdict_dedup_resynthesis_exhausted",
-        severity="critical",
-        description=(
-            f"'{spec_name}' 批量归因查重连续拒绝（含 {_RESYNTHESIS_MAX_ATTEMPTS} "
-            f"轮轻量重合成）已 blocked，等待人工裁决"
-        ),
-        evidence=(f"spec={spec_name}; rejections={rejection_round}; " f"违规摘要: {summary}"),
-        recommended_action=("人工核查归因模板偷懒或级联豁免误判；修正归因后解除 blocked"),
-    )
+    # 升级通道自身失败不得抛穿裁决流程（与 escalation.py 升级路径的包裹
+    # 模式对齐）：blocked 处置已在上方 update_spec 落盘，notifier 抛异常仅记
+    # warning（人工唤起仍有 blocked_stuck 兜底）；裸外溢会沿
+    # _handle_attr_dedup_rejection → _rejection_closure 的 except 折算为
+    # cause=batch_attribution_dedup，admin store 无任何升级记录。
+    try:
+        pipeline._context.escalation_notifier(
+            spec_name=spec_name,
+            signal_type="verdict_dedup_resynthesis_exhausted",
+            severity="critical",
+            description=(
+                f"'{spec_name}' 批量归因查重连续拒绝（含 {_RESYNTHESIS_MAX_ATTEMPTS} "
+                f"轮轻量重合成）已 blocked，等待人工裁决"
+            ),
+            evidence=(f"spec={spec_name}; rejections={rejection_round}; " f"违规摘要: {summary}"),
+            recommended_action=("人工核查归因模板偷懒或级联豁免误判；修正归因后解除 blocked"),
+        )
+    except Exception as e:
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"重合成预算耗尽升级告警失败 '{spec_name}'（非阻塞，"
+            f"blocked 处置已落盘、仅告警通道失败）: {type(e).__name__}: {e}",
+        )
     return {
         "ok": False,
         "cause": "batch_attribution_dedup",
@@ -692,41 +770,27 @@ def _handle_attr_dedup_rejection(
             "violations": violations_entries,
             "dispatch_error": str(e),
         }
-    if re_judge is not None and not re_judge.success:
-        if (re_judge.error or "").startswith(FROZEN_TERMINATED_ERROR_PREFIX):
-            pipeline._context.logger.info(
-                "pm_engine",
-                f"重合成 judge 派发被 frozen 门拦截 '{spec_name}'"
-                f"（人工已冻结，让位不写状态）: {re_judge.error}",
-            )
-            return {
-                "ok": False,
-                "cause": "dispatch_frozen",
-                "violations": violations_entries,
-                "dispatch_error": re_judge.error,
-            }
-        if getattr(re_judge, "cancelled", False):
-            pipeline._context.logger.info(
-                "pm_engine",
-                f"重合成 judge 派发被取消旗标拦截 '{spec_name}'"
-                f"（run 已人工取消，让位不写状态）: {re_judge.error}",
-            )
-            return {
-                "ok": False,
-                "cause": "dispatch_cancelled",
-                "violations": violations_entries,
-                "dispatch_error": re_judge.error,
-            }
+    if re_judge is None:
+        # run_planner 违反类型契约返回 None（区别于上方抛异常形态）：与异常
+        # 分支同处置立即早退，禁止落至下方 load_report 复读旧产物（复读会把
+        # 旧违规误判为重合成仍不合规）。
         pipeline._context.logger.warning(
             "pm_engine",
-            f"重合成 judge 派发失败 '{spec_name}': {re_judge.error}",
+            f"重合成 judge 返回 None '{spec_name}'（run_planner 违反契约）",
         )
         return {
             "ok": False,
-            "cause": "dispatch_failed",
+            "cause": "dispatch_exception",
             "violations": violations_entries,
-            "dispatch_error": re_judge.error,
+            "dispatch_error": "run_planner returned None",
         }
+    if not re_judge.success:
+        # ── 重合成派发失败三分支（fix-verdict-retry-misattribution）──
+        # frozen 门拦截 / 取消旗标拦截 / 其它派发失败三种让位处置与重试轮
+        # 共用 _dispatch_failure_result 单源实现。
+        return _dispatch_failure_result(
+            pipeline, spec_name, re_judge, violations_entries, "重合成"
+        )
 
     # 4) 重合成产物回灌完整校验链（与 _verify_verdict_evidence 既有路径同源）
     report2 = load_report(pipeline._context.project_root, spec_name)
@@ -767,29 +831,12 @@ def _handle_attr_dedup_rejection(
 
     # 5) 合规采纳：清 violations + 清 directive + 清回炉清单 + 状态映射
     #    重写 + 裁决缓存
-    pipeline._clear_verdict_violations(spec_name)
-    pipeline._clear_resynthesis_directive(spec_name)
-    pipeline._clear_requeue_manifest(spec_name)
-    pipeline._persist_verdict_cache(spec_name, report2)
-    mapping2 = enforce_status_mapping(report2)
-    try:
-        save_report(pipeline._context.project_root, spec_name, report2)
-    except OSError as e:
-        pipeline._context.logger.warning(
-            "pm_engine",
-            f"裁决映射重写写回失败 '{spec_name}': {e}",
-        )
-    for c in mapping2["corrected"]:
-        pipeline._context.logger.info(
-            "pm_engine",
-            f"重合成采纳后映射强制重写 '{spec_name}' 场景 "
-            f"{c['scenario_id']}: {c['from_status']} → failed",
-        )
+    adopted = _adopt_report(pipeline, spec_name, report2, "重合成采纳")
     pipeline._context.logger.warning(
         "pm_engine",
         f"重合成产物合规 '{spec_name}' — 已按既有语义采纳推进",
     )
-    return {"ok": True, "cause": "pass", "violations": [], "dispatch_error": ""}
+    return adopted
 
 
 def _handle_scenario_requeue(pipeline, spec_name: str, report: dict, dedup: dict) -> dict:
@@ -1071,7 +1118,12 @@ def _persist_verdict_cache(pipeline, spec_name: str, report: dict) -> None:
     for sc in report.get("scenarios") or []:
         if not isinstance(sc, dict):
             continue
-        sid = str(sc.get("scenario_id"))
+        # 与 848 行 / verdict_check 读侧同口径：scenario_id 缺省时回退 id，
+        # 两者皆缺时跳过该场景不入缓存——裸 str(None) 会生成字面量 "None"
+        # 键（可写盘但永远不被消费侧命中），三处口径漂移此处最弱。
+        sid = str(sc.get("scenario_id") or sc.get("id") or "")
+        if not sid:
+            continue
         if sc.get("status") in ("pass", "passed"):
             # PASS 条目：无需 classification/evidence，采信判据只看四元组
             dfp = dfp_by_sid.get(sid, "")
