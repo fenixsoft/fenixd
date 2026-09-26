@@ -239,6 +239,7 @@ export default function ClaudeOutputPane({
       // 用户侧表现为点了没反应
       message.error(`加载更早事件失败：${e instanceof Error ? e.message : String(e)}`);
     } finally {
+      // [fenix-ignore:ca32b80a4ccc] loading 重置刻意只按 runId 宽口径（与 loadTail finally 同口径，宽于数据写回守卫）：跨项目 runId 重名切换时 runId 仍匹配、现状会正常重置 loadingMore 不滞留，补 project 比对反而关闭重置路径（loadOlder 开头 loadingMore 短路）致按钮永久 loading
       if (isMountedRef.current && activeRunIdRef.current === reqRunId) {
         setLoadingMore(false);
       }
