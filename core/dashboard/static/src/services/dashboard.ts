@@ -2221,8 +2221,12 @@ export function isTriggerResultForRequest(
   wantedAt: string,
 ): boolean {
   // 键名二择：code-review 用 requested_at，code-fix/regression-fix 用
-  // request_created（缺省态下该键为 null/缺席，恒不匹配本次触发时间）
-  const triggerAt = 'requested_at' in snap ? snap.requested_at : snap.request_created;
+  // request_created（缺省态下该键为 null/缺席，恒不匹配本次触发时间）。
+  // 两键均为可选字段，`in` 收窄的后置分支仍保留可选字段成员，故直接按
+  // 可选键逐次取值（先 requested_at 后 request_created），不依赖收窄。
+  const triggerAt: string | null | undefined =
+    (snap as { requested_at?: string | null }).requested_at ??
+    (snap as { request_created?: string | null }).request_created;
   return !!triggerAt && triggerAt === wantedAt;
 }
 
