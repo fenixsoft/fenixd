@@ -42,6 +42,14 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
   // 期间按钮可继续点击会发出重叠保存请求（并发写同一 config/todo 文件，
   // 结果取决于响应到达顺序）——saving 期间置 loading/disabled 并在入口短路。
   const [saving, setSaving] = useState(false);
+  // 当前 project prop 镜像 ref（code-review item 522b3bd7ae53，与父组件
+  // scopeRef/projectRef 同形态）：handleSave 的 todo.md 覆写/回读续段在
+  // await onSave 期间执行，用户可能已把作用域切到别的项目，闭包捕获的
+  // project 已过期——续段动文件/回填前须与发起时快照比对币值。
+  const projectRef = useRef(project);
+  useEffect(() => {
+    projectRef.current = project;
+  }, [project]);
   // 上次回填的 self_review 序列化值（配合下方 effect 的回填门控）
   const lastSelfReviewBackfillRef = useRef('');
 
@@ -98,6 +106,11 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
       return;
     }
     setSaving(true);
+    // 发起时的作用域快照（code-review item 522b3bd7ae53）：下方 todo.md
+    // 覆写/回读续段执行前与 projectRef 比对，作用域已切换即中止——否则
+    // 续段按过期 project 调 saveTodo/getTodo，迟到的旧项目回读会覆写
+    // 新作用域面板的编辑框，用户再点「保存」即跨项目整文件覆写 todo.md
+    const projectAtStart = project;
     try {
       let ok = false;
       try {
@@ -118,6 +131,10 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
       // 覆写与回读拆成独立错误分支：覆写成功而回读偶发失败（网络抖动）时
       // 文件已落盘，不能误报「保存失败」误导用户重试或怀疑丢失编辑
       if (!project || !ok) return;
+      // 作用域已在 await onSave 期间切换：中止本段 todo.md 覆写/回读，
+      // 不再以过期 project 调 saveTodo/getTodo（新作用域面板由其自身的
+      // 加载 effect 负责，见上方 cancelled 守卫）
+      if (projectRef.current !== projectAtStart) return;
       try {
         await saveTodo(project, todoDraft);
       } catch (e) {
@@ -129,6 +146,9 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
       // 回读失败单独提示；保留编辑框现有草稿不回填（覆写内容即用户刚提交的草稿）
       try {
         const d = await getTodo(project);
+        // saveTodo await 期间作用域再切换：丢弃迟到的旧项目回读，
+        // 不回填新作用域面板（code-review item 522b3bd7ae53）
+        if (projectRef.current !== projectAtStart) return;
         setTodoDraft(d.content);
         setTodoExists(d.exists);
       } catch (e) {
