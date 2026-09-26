@@ -141,7 +141,7 @@ def determine_scenario_status(
     has_layer_1_3_fail = False
     has_layer_4_fail = False
     for a in assertion_results:
-        if a.get("pass", True):
+        if a.get("pass", False):
             continue
         layer = a.get("layer", 0)
         if 1 <= layer <= 3:
