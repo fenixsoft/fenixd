@@ -566,14 +566,17 @@ class G8QueryMixin:
                 valid.append(cand)
             if not valid:
                 return []
-            # 排序：先「已含 main」优先（committerdate 最新），其次 ahead 最大
-            valid.sort(
-                key=lambda c: (
-                    not c["main_is_ancestor"],
-                    -c["committerdate"],
-                    -c["ahead"],
-                )
-            )
+            # 排序（D2，与 docstring/spec 排序规则一致）：「已含 main」分组
+            # 优先；组内主排序键分形态——已含 main（repair 已把 main 合入
+            # 分支的形态）按 committerdate 最新；无「已含 main」候选的回落
+            # 形态按 ahead（``main..<branch>`` 提交数）最大；同键并列以
+            # committerdate 最新裁决
+            def _sort_key(c):
+                if c["main_is_ancestor"]:
+                    return (0, -c["committerdate"], -c["ahead"])
+                return (1, -c["ahead"], -c["committerdate"])
+
+            valid.sort(key=_sort_key)
             return valid
         except (subprocess.TimeoutExpired, OSError) as e:
             self.logger.warning(
