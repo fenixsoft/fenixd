@@ -354,7 +354,9 @@ def main():
     for test_path in explicit_tests:
         # Convert "tests/test_foo.py" to "tests.test_foo"
         if test_path.startswith("tests/"):
-            module_path = "tests." + test_path[6:].replace("/", ".").replace(".py", "")
+            # 先剥 .py 后缀再替换分隔符，避免串内 ".py" 片段被全量误删
+            tail = str(Path(test_path[6:]).with_suffix(""))
+            module_path = "tests." + tail.replace("/", ".")
             affected_tests.add(module_path)
         elif test_path.startswith("tests."):
             affected_tests.add(test_path)
