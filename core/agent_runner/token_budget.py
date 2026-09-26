@@ -163,7 +163,13 @@ class TokenAccountant:
             if ratio >= 1.0 and not alert_flag:
                 self._send_token_alert(spec_name, tokens_in, budget, "warning", "预算 100% 警告")
                 try:
-                    self._pm.state_machine.update_spec(spec_name, {"_token_alert_100": True})
+                    # code-review item c41873e0bfa2：从 80% 以下一次性越到 100% 以上
+                    # 时同步置位低档标志，否则下次累计 ratio 仍 >= 1.0 时会走下方
+                    # elif 补发「预算 80% 提醒告警」——先收 100% 再收 80%，时间线
+                    # 倒置。tokens_in 单调递增，两标志同写即可彻底封死补发路径。
+                    self._pm.state_machine.update_spec(
+                        spec_name, {"_token_alert_100": True, "_token_warn_80": True}
+                    )
                 except Exception:
                     pass
             elif ratio >= 0.8 and not warn_flag:
