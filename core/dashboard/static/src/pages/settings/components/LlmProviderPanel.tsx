@@ -1,7 +1,9 @@
-import { Button, Card, Col, Form, Input, InputNumber, Popconfirm, Row, Switch, Typography, message } from 'antd';
+import { Button, Card, Col, Form, Input, InputNumber, Popconfirm, Row, Space, Switch, Tooltip, Typography, message } from 'antd';
 import { DownOutlined, MinusCircleOutlined, PlusOutlined, RightOutlined } from '@ant-design/icons';
 import { useEffect, useRef, useState } from 'react';
+import { checkLlmHealth } from '@/services/dashboard';
 import type { ConfigData, LlmProvider, ProviderBillingPrice } from '@/services/dashboard';
+import { toHealthDisplay, type HealthCheckDisplay } from '@/utils/llmHealth';
 
 import SyncFromUserButton from './SyncFromUserButton';
 import { SETTINGS_ACTIONS_ROW_STYLE } from '../styles';
@@ -185,6 +187,45 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
     setBillingOpenMap((m) => ({ ...m, ...allOpen }));
   };
 
+  // 每张卡片的健康检测状态（key=Form.List field.key 稳定 id；仅保留最近一次
+  // 结果，检测中 loading 禁重复点击——add-provider-health-check 4.1）
+  const [healthMap, setHealthMap] = useState<
+    Record<number, { loading: boolean; display?: HealthCheckDisplay }>
+  >({});
+
+  // 表单当前值直传（未保存修改即测）；Base URL / API Key / 默认模型名任一为空
+  // 直接提示补齐、不发请求（spec「表单值不完整不发请求」）
+  const runHealthCheck = async (field: { key: number; name: number }) => {
+    const baseurl = (form.getFieldValue(['providers', field.name, 'baseurl']) || '').trim();
+    const apikey = (form.getFieldValue(['providers', field.name, 'apikey']) || '').trim();
+    const model = (form.getFieldValue(['providers', field.name, 'model']) || '').trim();
+    const missing = [!baseurl && 'Base URL', !apikey && 'API Key', !model && '默认模型名'].filter(
+      Boolean,
+    );
+    if (missing.length > 0) {
+      message.warning(`健康检测前请先补齐该卡片的 ${missing.join('、')}`);
+      return;
+    }
+    setHealthMap((m) => ({ ...m, [field.key]: { loading: true } }));
+    try {
+      const r = await checkLlmHealth({ baseurl, apikey, model });
+      const display = toHealthDisplay(r);
+      setHealthMap((m) => ({ ...m, [field.key]: { loading: false, display } }));
+      if (r.ok) {
+        message.success(`健康检测通过：${model} ${display.short}`);
+      } else {
+        message.error(`健康检测失败：${r.error_kind || ''}${r.error ? `（${r.error}）` : ''}`);
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setHealthMap((m) => ({
+        ...m,
+        [field.key]: { loading: false, display: { kind: 'fail', short: '失败 · 请求异常', tooltip: msg } },
+      }));
+      message.error(`健康检测请求失败：${msg}`);
+    }
+  };
+
   const handleSave = async () => {
     try {
       // 先剔除完全空的价格行（占位行），避免其阻塞整体校验
@@ -278,6 +319,7 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
                 // 折叠态与概要计数（useWatch 驱动；field.key 为卡片稳定 id）
                 const envOpen = !!envOpenMap[field.key];
                 const billingOpen = !!billingOpenMap[field.key];
+                const health = healthMap[field.key];
                 const envCount = ((providersWatch?.[field.name]?.envEntries || []) as EnvEntry[]).filter(
                   (e) => (e?.key || '').trim(),
                 ).length;
@@ -290,14 +332,41 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
                   style={{ marginBottom: 16 }}
                   title={`Provider ${index + 1}`}
                   extra={
-                    <Popconfirm
-                      title="确定删除此 Provider？"
-                      onConfirm={() => remove(field.name)}
-                      okText="删除"
-                      cancelText="取消"
-                    >
-                      <Button type="text" danger icon={<MinusCircleOutlined />} />
-                    </Popconfirm>
+                    <Space size={4}>
+                      {/* 最近一次健康检测结果内联展示（成功绿/失败红，tooltip 完整错误） */}
+                      {health?.display && (
+                        <Tooltip title={health.display.tooltip}>
+                          <Text
+                            data-testid={`health-result-${index}`}
+                            style={{
+                              color: health.display.kind === 'ok' ? '#52c41a' : '#ff4d4f',
+                              fontSize: 12,
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            {health.display.short}
+                          </Text>
+                        </Tooltip>
+                      )}
+                      <Button
+                        size="small"
+                        type="text"
+                        data-testid={`health-check-btn-${index}`}
+                        loading={!!health?.loading}
+                        disabled={!!health?.loading}
+                        onClick={() => runHealthCheck(field)}
+                      >
+                        健康检测
+                      </Button>
+                      <Popconfirm
+                        title="确定删除此 Provider？"
+                        onConfirm={() => remove(field.name)}
+                        okText="删除"
+                        cancelText="取消"
+                      >
+                        <Button type="text" danger icon={<MinusCircleOutlined />} />
+                      </Popconfirm>
+                    </Space>
                   }
                 >
                   {/* 名称 / Base URL / API Key / 默认模型名：标签与输入框同行

@@ -1,14 +1,17 @@
-import { App, Button, Card, Col, Form, Input, Row, Select, Space, Typography } from 'antd';
+import { App, Button, Card, Col, Form, Input, Row, Select, Space, Tooltip, Typography } from 'antd';
 import {
   CopyOutlined,
+  HeartOutlined,
   HolderOutlined,
   MinusCircleOutlined,
   PlusOutlined,
   SnippetsOutlined,
 } from '@ant-design/icons';
 import { useEffect, useRef, useState } from 'react';
+import { checkLlmHealth } from '@/services/dashboard';
 import type { AgentModelAssignment, AgentsConfig, AgentsModels, ConfigData } from '@/services/dashboard';
 import { cloneRoleValue, type RoleValue } from '@/utils/agentModels';
+import { resolveHealthCheckParams, toHealthDisplay, type HealthCheckDisplay } from '@/utils/llmHealth';
 
 import SyncFromUserButton from './SyncFromUserButton';
 import { SETTINGS_ACTIONS_ROW_STYLE } from '../styles';
@@ -115,6 +118,12 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
   const [dragReady, setDragReady] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState<string | null>(null);
 
+  // 行内健康检测（add-provider-health-check 4.2）：每行独立状态（key 与拖拽
+  // rowId 同构 `${roleIndex}-${rowIndex}`），loading 防行内并发重复、行间互不影响
+  const [healthRows, setHealthRows] = useState<
+    Record<string, { loading: boolean; display?: HealthCheckDisplay }>
+  >({});
+
   const initialValues = buildFormValues(config.agents);
 
   // 回填门控（code-review item 9f98edec21fa）：effect 读取的字段不止
@@ -158,6 +167,46 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
     // 填充并发执行），会以快照覆盖这些更新。form.setFieldValue 支持嵌套路径
     // 数组成员，直接定位该行 model 字段避免整数组替换。
     form.setFieldValue(['roleList', roleIndex, 'rows', rowIndex, 'model'], def);
+  };
+
+  // 行内健康检测：检测目标按运行期同款链解析（design D6 / spec「模型分配页签
+  // 行内图标按钮」）——模型 = 行内模型 → 角色级默认 → Provider 默认；baseurl/
+  // apikey 按行内所选 Provider 名解析。config.llm.providers（props，当前作用域
+  // 已保存配置）同时充当表单当前值与回退源：本页签只编辑角色分配、不编辑
+  // Provider 本体，两者同源；解析失败提示原因、不发请求。
+  const runRowHealthCheck = async (index: number, rIdx: number) => {
+    const rowId = `${index}-${rIdx}`;
+    const rv = form.getFieldValue(['roleList', index]) as RoleValue | undefined;
+    const row = (rv?.rows || [])[rIdx];
+    const resolved = resolveHealthCheckParams({
+      formProviders: providers,
+      savedProviders: providers,
+      providerName: row?.provider,
+      rowModel: row?.model,
+      roleModel: rv?.roleModel,
+    });
+    if ('error' in resolved) {
+      message.warning(resolved.error);
+      return;
+    }
+    setHealthRows((m) => ({ ...m, [rowId]: { loading: true } }));
+    try {
+      const r = await checkLlmHealth(resolved);
+      const display = toHealthDisplay(r);
+      setHealthRows((m) => ({ ...m, [rowId]: { loading: false, display } }));
+      if (r.ok) {
+        message.success(`健康检测通过：${resolved.model} ${display.short}`);
+      } else {
+        message.error(`健康检测失败：${r.error_kind || ''}${r.error ? `（${r.error}）` : ''}`);
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setHealthRows((m) => ({
+        ...m,
+        [rowId]: { loading: false, display: { kind: 'fail', short: '失败 · 请求异常', tooltip: msg } },
+      }));
+      message.error(`健康检测请求失败：${msg}`);
+    }
   };
 
   // 复制某角色的当前分配到剪贴板（深拷贝，之后编辑该卡片不影响副本）
@@ -312,6 +361,7 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
                             const rowId = `${index}-${rIdx}`;
                             const dragging = dragReady === rowId;
                             const isOverTarget = dragOver === rowId && dragReady !== null && dragReady !== rowId;
+                            const health = healthRows[rowId];
                             return (
                               <Row
                                 key={rowField.key}
@@ -395,6 +445,37 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
                                       }
                                     />
                                   </Form.Item>
+                                </Col>
+                                {/* 最近一次健康检测结果内联展示（口径同模型页签 4.1） */}
+                                <Col flex="0 0 auto" style={{ maxWidth: 150 }}>
+                                  {health?.display && (
+                                    <Tooltip title={health.display.tooltip}>
+                                      <Text
+                                        data-testid={`health-row-result-${rowId}`}
+                                        style={{
+                                          color: health.display.kind === 'ok' ? '#52c41a' : '#ff4d4f',
+                                          fontSize: 12,
+                                          whiteSpace: 'nowrap',
+                                        }}
+                                      >
+                                        {health.display.short}
+                                      </Text>
+                                    </Tooltip>
+                                  )}
+                                </Col>
+                                {/* 健康检测图标按钮：32px 列，置于删除图标之前（spec 4.2） */}
+                                <Col flex="32px" style={{ textAlign: 'right' }}>
+                                  <Button
+                                    type="text"
+                                    size="small"
+                                    icon={<HeartOutlined />}
+                                    data-testid={`health-row-btn-${rowId}`}
+                                    title="健康检测"
+                                    aria-label="健康检测"
+                                    loading={!!health?.loading}
+                                    disabled={!!health?.loading}
+                                    onClick={() => runRowHealthCheck(index, rIdx)}
+                                  />
                                 </Col>
                                 <Col flex="32px" style={{ textAlign: 'right' }}>
                                   <Button

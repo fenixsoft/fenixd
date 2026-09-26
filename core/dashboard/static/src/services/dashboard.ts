@@ -1903,6 +1903,33 @@ export async function autodraftVerifyYaml(
   });
 }
 
+// ── LLM Provider 健康检测（add-provider-health-check，/api/config/llm-health-check）──
+
+/** 健康检测结果：ok=true 时 model 回显请求的模型名；失败按四分类
+    （http_error 带 status / connection_error / timeout / empty_reply）。 */
+export interface LlmHealthCheckResult {
+  ok: boolean;
+  latency_ms: number;
+  error_kind?: 'http_error' | 'connection_error' | 'timeout' | 'empty_reply' | null;
+  status?: number | null;
+  error?: string | null;
+  model?: string | null;
+}
+
+/** LLM Provider 健康检测：daemon 代理对 {baseurl}/v1/messages 发最小消息请求
+    （后端 15s 超时，默认 30s 请求超时可覆盖，无需 per-call 调整）。 */
+export async function checkLlmHealth(params: {
+  baseurl: string;
+  apikey: string;
+  model: string;
+}): Promise<LlmHealthCheckResult> {
+  return request<LlmHealthCheckResult>(`/api/config/llm-health-check`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+  });
+}
+
 // ── SPEC 状态事件 hook 审计（add-spec-hooks，/api/hooks/audit） ──
 
 export interface HookAuditRecord {

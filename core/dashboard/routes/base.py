@@ -184,6 +184,9 @@ def _post_config(s, p, q, m):
 def _post_config_sync(s, p, q, m):
     s._api_config_sync_from_user(q)
 
+def _post_config_llm_health_check(s, p, q, m):
+    s._api_config_llm_health_check_post(q)
+
 def _post_quality_ocr_install(s, p, q, m):
     s._api_quality_ocr_install_post(q)
 
@@ -408,6 +411,9 @@ _API_POST_ROUTES = [
     # 精确路由（原顺序保持）
     ("exact", "/api/config",              _post_config),
     ("exact", "/api/config/sync-from-user", _post_config_sync),
+    # LLM Provider 健康检测（add-provider-health-check）：daemon 代理探测
+    # {baseurl}/v1/messages（纯只读、无副作用、不落盘密钥；探测失败恒 200 业务数据）
+    ("exact", "/api/config/llm-health-check", _post_config_llm_health_check),
     # 质量页签：一键安装 open-code-review（POST，同步执行 npm install -g）
     ("exact", "/api/quality/ocr-install", _post_quality_ocr_install),
     ("exact", "/api/prompts",             _post_prompts),
