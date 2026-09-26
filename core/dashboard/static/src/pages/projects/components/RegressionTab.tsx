@@ -292,6 +292,16 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
     loadResultRef.current = loadResult;
   }, [loadResult]);
 
+  // 当前 project 身份哨（code-review item f538e7f059ec，与 loadResultRef 同
+  // 口径）：handleFix 的回链轮询闭包捕获点击时的 project，最长 30s 轮询期间
+  // 切换项目（本分面仍选中时 abort 哨不触发）后旧轮询仍打旧项目接口，其
+  // 结果提示弹在当前视图会被误读为新项目的结果——经 ref 读取最新身份，
+  // 变化即中止本轮轮询与提示（handler 的 finally 复位 fixPending）。
+  const projectRef = useRef(project);
+  useEffect(() => {
+    projectRef.current = project;
+  }, [project]);
+
   // active 门控：进入分面加载，离开分面停止轮询（未选中零请求）
   useEffect(() => {
     if (!active || !project) return;
@@ -391,8 +401,13 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
       while (Date.now() < deadline) {
         // 卸载/切走后停止轮询与提示（finally 复位 pending）
         if (fixPollAbortedRef.current) return;
+        // 轮询期间切换项目（f538e7f059ec）：闭包捕获的 project 仍是点击时的
+        // 旧项目，其结果提示弹在当前视图会被误读为新项目的结果——身份已
+        // 变化即中止本轮轮询与提示
+        if (projectRef.current !== project) return;
         await new Promise((resolve) => setTimeout(resolve, FIX_POLL_INTERVAL_MS));
         if (fixPollAbortedRef.current) return;
+        if (projectRef.current !== project) return;
         try {
           const snap = await getRegressionFixResult(project);
           if (snap.request_created && snap.request_created === wantedAt) {
@@ -404,6 +419,9 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
         }
       }
       if (fixPollAbortedRef.current) return;
+      // 结果提示前再核对身份（f538e7f059ec）：轮询末次命中后切换项目，
+      // 旧项目的成功/拒绝提示不得弹在当前（新项目）视图
+      if (projectRef.current !== project) return;
       if (result) {
         if (result.triggered) {
           message.success(
