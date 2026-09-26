@@ -8,7 +8,7 @@ from pathlib import Path
 # tool_result 事件识别单一真源（design D1：禁止在真源之外再次硬编码事件类型比较），
 # 本模块经类内 staticmethod 别名委托复用（与 runner.py 同型），不保留本地副本。
 from core.agent_runner.latency import _entry_is_tool_result
-from core.agent_runner.run_files import append_run_error, append_run_line, run_spec_part
+from core.agent_runner.run_files import append_run_line, run_spec_part
 from datetime import datetime, timezone
 import json
 import subprocess
