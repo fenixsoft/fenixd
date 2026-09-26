@@ -35,7 +35,8 @@ export default function OverviewPage() {
       const names = projects.map((p) => p.name);
       // 项目全集与上次完全相同时返回 prev，避免 30s 心跳/visibilitychange 补刷
       // 以新对象触发 @@initialState 消费者（布局/菜单）周期性无效重渲染
-      setInitialState((prev) => {
+      // 显式注解 prev：.umi 生成类型缺失时该回调参数无法获得上下文类型（避免新增 TS7006）
+      setInitialState((prev: { projects?: string[] } | undefined) => {
         const prevProjects = prev?.projects;
         if (
           prevProjects &&
