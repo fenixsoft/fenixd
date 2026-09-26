@@ -1233,6 +1233,40 @@ class G4MergebackMixin:
                 f"Unexpected error during merge-back of branch '{branch}': "
                 f"{e}\n{traceback.format_exc()}",
             )
+            # 意外异常收口（code-review item def58bf1aa16，与 TimeoutExpired 分支
+            # 对齐）：异常可能落在 _backup_untracked_spec_files 已把主树 untracked
+            # 文件移入备份目录之后，甚至 merge 已进冲突态之后——只记日志会让用户
+            # 文件无限期滞留备份目录且无位置提示、主树残留半合并态。abort 幂等
+            # （无合并进行时静默失败），收口失败均不掩盖原始异常。
+            abort_err = ""
+            try:
+                abort = subprocess.run(
+                    ["git", "-C", str(self.project_root), "merge", "--abort"],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                if abort.returncode != 0:
+                    abort_err = (
+                        abort.stderr.strip() or f"exit code {abort.returncode}"
+                    )
+            except Exception:  # noqa: BLE001 — abort 失败不掩盖原始异常
+                abort_err = "merge --abort itself raised"
+            if abort_err:
+                self.logger.warning(
+                    "worktree_manager",
+                    f"merge --abort failed after unexpected merge-back error: "
+                    f"{abort_err} — main tree may still be in a conflicted state",
+                )
+            if backup is not None:
+                try:
+                    self._restore_backup(backup)
+                except Exception as restore_err:  # noqa: BLE001 — 回移失败不掩盖原始异常
+                    self.logger.warning(
+                        "worktree_manager",
+                        f"merge-back 意外异常后回移备份失败，用户文件滞留备份目录"
+                        f"待人工处理：backup='{backup}'：{restore_err}",
+                    )
             return MergeConflictInfo(False, str(e))
 
     def _backup_untracked_spec_files(self, branch: str):
