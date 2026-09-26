@@ -177,6 +177,9 @@ class H5SettingsRoutesMixin:
             except OSError as e:
                 self._error(500, f"提示词读取失败（{atype}）: {e}")
                 return
+            except UnicodeDecodeError as e:
+                self._error(500, f"提示词读取失败（{atype}，文件编码非 UTF-8）: {e}")
+                return
             agents.append({"type": atype, "file": fname, "content": content})
         out: dict = {"agents": agents}
         project = self._project_from_query(query)
@@ -197,6 +200,9 @@ class H5SettingsRoutesMixin:
         except OSError as e:
             self._error(500, f"项目附加提示词读取失败: {e}")
             return
+        except UnicodeDecodeError as e:
+            self._error(500, f"项目附加提示词读取失败（文件编码非 UTF-8）: {e}")
+            return
         out["project"] = {
             "name": project["name"],
             "path": project["path"],
@@ -214,8 +220,8 @@ class H5SettingsRoutesMixin:
         path = agents_dir / AGENT_PROMPT_FILES[agent_type]
         if not path.is_file():
             return ""
-        # 读失败不吞（item 113782f1517d）：OSError 由 _api_prompts_get 转可读
-        # 500——静默空串与真空提示词无法区分。
+        # 读失败不吞（item 113782f1517d）：OSError / UnicodeDecodeError 由
+        # _api_prompts_get 转可读 500——静默空串与真空提示词无法区分。
         return path.read_text(encoding="utf-8")
 
 
@@ -287,6 +293,9 @@ class H5SettingsRoutesMixin:
         except OSError as e:
             self._error(500, f"todo.md 读取失败: {e}")
             return
+        except UnicodeDecodeError as e:
+            self._error(500, f"todo.md 读取失败（文件编码非 UTF-8）: {e}")
+            return
         self._json(
             {"project": project["name"], "path": str(target), "exists": exists, "content": content}
         )
@@ -336,6 +345,9 @@ class H5SettingsRoutesMixin:
                 content = target.read_text(encoding="utf-8")
         except OSError as e:
             self._error(500, f"verify.yaml 读取失败: {e}")
+            return
+        except UnicodeDecodeError as e:
+            self._error(500, f"verify.yaml 读取失败（文件编码非 UTF-8）: {e}")
             return
         self._json(
             {"project": project["name"], "path": str(target), "exists": exists, "content": content}
