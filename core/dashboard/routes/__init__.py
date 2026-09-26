@@ -17,3 +17,6 @@ from .help_routes import H8HelpRoutesMixin
 from .sse_routes import H9SseRoutesMixin
 from .static_routes import H10StaticRoutesMixin
 from .session_routes import H_SessionRoutesMixin
+from .code_review_routes import H11CodeReviewRoutesMixin
+from .regression_routes import H12RegressionRoutesMixin
+from .architecture_routes import H13ArchitectureRoutesMixin
