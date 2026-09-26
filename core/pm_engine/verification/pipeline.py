@@ -756,6 +756,54 @@ class VerificationPipeline:
                 # （记轮内 +1 与生命周期 _judge_real_dispatches）。
                 self._judge_charge_verdict_retry(spec_name, [])
                 retry_judge = self._pm.agent_runner.run_planner(spec_name, "judge")
+                # ── 结果侧让位（code-review item 93fa1398fed0）──
+                # 重派 judge 被冻结终止/人工取消/provider 熔断时按让位语义处置，
+                # 与 _dispatch_judge_or_reuse（frozen/cancelled/circuit-open）
+                # 及 _handle_verdict_evidence_rejection（dispatch_frozen/
+                # dispatch_cancelled）同口径：不携旧「不可读」结论落入下方
+                # blocked 写入、不发 critical 告警。冻结 hold 保持原
+                # status=testing，下方 != "testing" 守卫拦不住该覆写，须在此
+                # 显式让位（人工已接管不写 blocked 不发告警）。
+                if not retry_judge.success:
+                    if getattr(retry_judge, "frozen_terminated", False) is True:
+                        self._context.logger.info(
+                            "pm_engine",
+                            f"重派 judge run 因 spec 冻结被终止 '{spec_name}' — "
+                            f"让位：保持原状，不写 blocked、不发告警: "
+                            f"{retry_judge.error or ''}",
+                        )
+                        return None
+                    if getattr(retry_judge, "cancelled", False):
+                        self._context.logger.info(
+                            "pm_engine",
+                            f"重派 judge run 被人工取消 '{spec_name}' — 让位："
+                            f"保持 testing 原状，不写 blocked、不发告警: "
+                            f"{retry_judge.error or ''}",
+                        )
+                        return None
+                    if "provider circuit open" in (retry_judge.error or ""):
+                        # 熔断期 judge 失败属 provider 故障（与
+                        # _dispatch_judge_or_reuse 同口径）：留 error 保持
+                        # testing 等待下轮重验，挂 infra 记账，不按结构性
+                        # 不可读处置为 blocked。
+                        self._context.state_machine.update_spec(
+                            spec_name,
+                            {
+                                "error": retry_judge.error,
+                            },
+                        )
+                        self._record_infra_failure(
+                            spec_name,
+                            retry_judge.error,
+                            run_id=getattr(retry_judge, "run_id", "") or "",
+                        )
+                        self._context.logger.warning(
+                            "pm_engine",
+                            f"Provider circuit open — 重派 judge 被抑制 "
+                            f"'{spec_name}'，保持 testing 等待下轮重验: "
+                            f"{retry_judge.error}",
+                        )
+                        return None
                 if retry_judge.success:
                     verifier_result = self._read_verdict(spec_name)
                     verifier_status = verifier_result.status if verifier_result.ok else None
@@ -790,7 +838,8 @@ class VerificationPipeline:
             if not verifier_result.ok:
                 # 写 blocked 前二次核对（code-review item 5d28c6b0fe51）：重派
                 # judge 常态 15-50 分钟，窗口内 spec 可能已被人工复位/冻结接管
-                # （frozen 门被此重派路径有意绕过）——非 testing 时 DEBUG 丢弃，
+                # （frozen 门被此重派路径有意绕过；结果侧 frozen 终止/取消/
+                # 熔断已在重派返回处显式让位）——非 testing 时 DEBUG 丢弃，
                 # 不覆盖较新状态（同上方 _apply_status 判据口径）。
                 _apply_status = (self._context.state_machine.read_one(spec_name) or {}).get("status", "")
                 if _apply_status != "testing":

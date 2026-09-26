@@ -332,6 +332,10 @@ def _run_legacy_verification(pipeline, spec_name: str):
                 pipeline._context.state_machine.update_spec(
                     spec_name,
                     {
+                        # 对齐 verified 分支同构闸门阻断（460-466）：写 tester_run
+                        # 供 dashboard/审计在报告闸门阻断时仍可见触发本轮的 run
+                        # （code-review item a0eff51179fd）。
+                        "tester_run": result.run_id,
                         "error": report_blocker,
                     },
                 )
