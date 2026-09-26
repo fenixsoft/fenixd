@@ -389,10 +389,21 @@ def _write_verdict_violations(pipeline, spec_name: str, violations: list) -> Non
     try:
         path = pipeline._verdict_violations_path(spec_name)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(violations, ensure_ascii=False, indent=2),
-            encoding="utf-8",
+        # 原子替换（与 _write_resynthesis_directive 同款）：写入中途崩溃
+        # 不留截断 JSON——读侧 fail-open 会丢违规明细致重试 judge 盲重试。
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(path.parent), prefix=".verdictv.", suffix=".json.tmp"
         )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(violations, f, ensure_ascii=False, indent=2)
+                f.flush()
+            os.replace(tmp_path, path)
+        except OSError:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
     except OSError as e:
         pipeline._context.logger.warning(
             "pm_engine",

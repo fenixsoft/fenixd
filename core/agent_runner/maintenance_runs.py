@@ -1671,7 +1671,10 @@ def run_regression(
             snapshot=snapshot,
         )
     finally:
-        claim_placeholder.unlink(missing_ok=True)
+        try:
+            claim_placeholder.unlink(missing_ok=True)
+        except OSError:
+            pass  # 清理失败不吞回归结果（对齐 _delete_admin_disposition 等降级语义）
 
 
 # ── 自动修复执行（add-code-review-auto-fix，task 6.1-6.3）────────────────
