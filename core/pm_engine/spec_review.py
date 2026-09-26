@@ -550,7 +550,22 @@ class SpecReviewManager:
             rejection_class = normalize_rejection_class(data.get("rejection_class"))
 
             if rejections < MAX_REJECT_REDO:
-                # 未达上限：不冻结，回 reviewing 触发复评
+                # 未达上限：不冻结，回 reviewing 触发复评。
+                # transition 返回值校验（与上方 approved 分支的 TOCTOU 口径对称）：
+                # 读态与 transition 之间存在并发窗口，写者可能已把 spec 推进到
+                # 别的状态（或冻结剥离），reviewing→ 非法/被剥离返回 False。失败时
+                # 保留 reviewer_run 锚点与重试计数，不落打回字段、不入队复评——
+                # 否则非评审态的 spec 会被盖上评审打回错误文案并丢失锚点。
+                success = self.state_machine.transition(
+                    spec_name, "reviewing",
+                    trigger_run_id=run_id, agent_type="spec-review", channel="auto",
+                )
+                if not success:
+                    self.logger.warning(
+                        "spec_review",
+                        f"评审否决但 transition 回 reviewing 失败，保留锚点待重试: {spec_name}",
+                    )
+                    return False
                 self.state_machine.update_spec(
                     spec_name,
                     {
@@ -560,10 +575,6 @@ class SpecReviewManager:
                         "_review_rejection_class": rejection_class,
                         "error": (f"spec-review-rejected: {blocked_summary}"),
                     },
-                )
-                self.state_machine.transition(
-                    spec_name, "reviewing",
-                    trigger_run_id=run_id, agent_type="spec-review", channel="auto",
                 )
                 self.logger.warning(
                     "spec_review",
