@@ -1,5 +1,5 @@
-import { Button, Card, Form, InputNumber, Switch, Typography } from 'antd';
-import { useEffect, useRef } from 'react';
+import { Button, Card, Form, InputNumber, Switch, Typography, message } from 'antd';
+import { useEffect, useRef, useState } from 'react';
 import type { ConfigData } from '@/services/dashboard';
 import SyncFromUserButton from './SyncFromUserButton';
 import { SETTINGS_ACTIONS_ROW_STYLE } from '../styles';
@@ -49,6 +49,11 @@ interface TokenBudgetPanelProps {
 
 export default function TokenBudgetPanel({ config, onSave, project, onConfigSynced }: TokenBudgetPanelProps) {
   const [form] = Form.useForm();
+  // 保存重入守卫（code-review item 53b14fb31196，比照 ApprovalModePanel
+  // 589c1c98c5a4）：onSave 是异步，提交期间按钮可继续点击会发出重叠保存请求
+  // （并发写同一配置文件，结果取决于响应到达顺序）——saving 期间置
+  // loading/disabled 并在入口短路。
+  const [saving, setSaving] = useState(false);
   // 规模预检开关（agents.scale_precheck.enabled）：关闭时隐藏两阈值输入
   const scalePrecheckOn = Form.useWatch('scale_precheck_enabled', form);
 
@@ -68,26 +73,40 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
   }, [config.agents, form]);
 
   const handleSave = async () => {
+    if (saving) {
+      return;
+    }
+    setSaving(true);
     try {
       const values = await form.validateFields();
-      await onSave({
-        agents: {
-          token_budget_millions: values.token_budget_millions,
-          daily_run_limit: values.daily_run_limit,
-          impl_run_budget: values.impl_run_budget,
-          impl_run_budget_max: values.impl_run_budget_max,
-          verify_redo_budget: values.verify_redo_budget,
-          max_same_cause_redispatches: values.max_same_cause_redispatches,
-          scale_precheck: {
-            enabled: values.scale_precheck_enabled,
-            higher_threshold: values.scale_precheck_higher,
-            full_threshold: values.scale_precheck_full,
+      // 分离「表单校验」与「保存持久化」（code-review item def003cd8cff，比照
+      // ApprovalModePanel 568b0ff8cce2 口径）：校验失败 antd 已在表单内渲染提示，
+      // 静默返回；onSave 持久化失败（网络/500）拆独立 try/catch 显式反馈，避免
+      // 用户误以为配置已保存。
+      try {
+        await onSave({
+          agents: {
+            token_budget_millions: values.token_budget_millions,
+            daily_run_limit: values.daily_run_limit,
+            impl_run_budget: values.impl_run_budget,
+            impl_run_budget_max: values.impl_run_budget_max,
+            verify_redo_budget: values.verify_redo_budget,
+            max_same_cause_redispatches: values.max_same_cause_redispatches,
+            scale_precheck: {
+              enabled: values.scale_precheck_enabled,
+              higher_threshold: values.scale_precheck_higher,
+              full_threshold: values.scale_precheck_full,
+            },
           },
-        },
-      });
+        });
+      } catch (error) {
+        // 保存持久化失败（网络/500）：给用户显式反馈而非静默
+        message.error(`保存失败：${error instanceof Error ? error.message : String(error)}`);
+      }
     } catch {
-      // 校验/保存失败：antd 已在表单内渲染行内错误提示，不再打印 console.error
-      // （与 MiscSettingsPanel 静默口径对齐，避免触发验证的 no_console_error 断言）。
+      // 校验失败：antd 已在表单内渲染提示，不落 console
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -286,7 +305,7 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
         {project && onConfigSynced && (
           <SyncFromUserButton project={project} page="token" onSynced={onConfigSynced} />
         )}
-        <Button type="primary" onClick={handleSave}>
+        <Button type="primary" onClick={handleSave} loading={saving} disabled={saving}>
           保存
         </Button>
       </div>
