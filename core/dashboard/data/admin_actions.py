@@ -1269,6 +1269,7 @@ def clear_spec_error(project_root, spec: str) -> dict:
     守卫与 {ok: False, error: 原因} 拒绝形状）。
 
     豁免标记守卫（code-review item 582624e4c92a）：admin_monitor 的
+    豁免标记守卫（code-review item 582624e4c92a）：admin_monitor 的
     blocked_stuck 豁免除 frozen 字段与「用户指令冻结：」前缀外，还认 error
     前缀 ``frozen:`` 与「用户指令」子串两种存量文本标记（人工冻结/暂停的
     历史文案，词形漂移不一）。blocked 态清空 error 会连带抹掉这些标记、
@@ -1276,6 +1277,13 @@ def clear_spec_error(project_root, spec: str) -> dict:
     事故：清除错误整段抹掉 error 连带冻结标记 → 15 分钟循环误报；清除
     error ≠ 要求重派）。故 blocked 态 error 携带任一豁免标记时同样拒绝；
     判据须与 admin_monitor._detect_blocked_stuck 保持同步，勿单侧增删。
+
+    退避标记摘取（code-review item bbba88d8e6af）：done 态 spec 的 error
+    携带 push 退避/重试计数的机器可读标记（``[push_backoff next_retry_at=…]``
+    与 ``[push_attempts=N]``）。整段清空会把退避期与连续重试计数一并归零
+    （engine 自动 push 从零重新起算）。故清空前先摘取这两个标记回写专用
+    字段（``_push_backoff_next_retry_at`` / ``_push_attempts``，读侧字段
+    优先的过渡期承接）；error 无标记时不写键，不影响普通错误清除。
 
     Args:
         project_root: 项目根目录
@@ -1309,10 +1317,31 @@ def clear_spec_error(project_root, spec: str) -> dict:
             "frozen": True,
             "error": "SPEC 的 error 携带冻结/用户指令标记（admin 巡检 blocked_stuck 豁免的依据），清除会使豁免失效并引发循环误报；请先经官方通道处置或人工修正 STATE.md",
         }
-    from core.state_machine import StateMachine, project_state_logger
+    from core.pm_engine.reporting import (
+        extract_push_attempts_marker,
+        extract_push_backoff_marker,
+    )
+    from core.state_machine import (
+        PUSH_ATTEMPTS_FIELD,
+        PUSH_BACKOFF_NEXT_RETRY_AT_FIELD,
+        StateMachine,
+        project_state_logger,
+    )
+
+    # 退避标记摘取回写（code-review item bbba88d8e6af）：机器可读标记寄居
+    # error 文本，整段清空会把 push 退避期与连续重试计数一并归零。清空前
+    # 先摘取文本标记回写专用字段；标记不在时不写键——保留字段既有值，
+    # 普通错误清除不误伤退避状态。
+    updates = {"error": None}
+    backoff_until = extract_push_backoff_marker(err_text)
+    if backoff_until is not None:
+        updates[PUSH_BACKOFF_NEXT_RETRY_AT_FIELD] = backoff_until
+    push_attempts = extract_push_attempts_marker(err_text)
+    if push_attempts is not None:
+        updates[PUSH_ATTEMPTS_FIELD] = push_attempts
 
     sm = StateMachine(proot / ".fenix" / "STATE.md", project_state_logger(proot))
-    sm.update_spec(spec, {"error": None})
+    sm.update_spec(spec, updates)
     return {"ok": True, "found": True}
 
 

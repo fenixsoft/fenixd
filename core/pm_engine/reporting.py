@@ -9,6 +9,38 @@ SPEC 状态经门面回引 self._pm.state_machine（design D3 规则 3）；
 from datetime import datetime, timezone
 import re
 
+from core.state_machine import (
+    PUSH_ATTEMPTS_FIELD,
+    PUSH_BACKOFF_NEXT_RETRY_AT_FIELD,
+)
+
+
+def _coerce_int(value):
+    """宽松 int 转换：缺失/非法（含经 STATE.md 往返的 str/None）回 None。"""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def extract_push_backoff_marker(error_text):
+    """从 error 文本摘取 push 退避截止标记并返回 unix 时间戳；无标记回 None。
+
+    读侧回退解析与 clear_spec_error 过渡期摘取共用的单一实现（防词形
+    漂移）。标记约定：``[push_backoff next_retry_at=<unix_ts>]``。
+    """
+    m = re.search(r"\[push_backoff next_retry_at=(\d+)\]", str(error_text or ""))
+    return _coerce_int(m.group(1)) if m else None
+
+
+def extract_push_attempts_marker(error_text):
+    """从 error 文本摘取 push 连续重试计数标记并返回 int；无标记回 None。
+
+    标记约定：``[push_attempts=N]``。共用约定同 extract_push_backoff_marker。
+    """
+    m = re.search(r"\[push_attempts=(\d+)\]", str(error_text or ""))
+    return _coerce_int(m.group(1)) if m else None
+
 
 class ReportBuilder:
     """项目报告组件（门面 PMEngine 的组合组件）。"""
@@ -78,28 +110,34 @@ class ReportBuilder:
 
     @staticmethod
     def _is_push_backoffed(spec: dict) -> bool:
-        """判断 spec 是否在 push 退避期内（error 含 next_retry_at 且未到期）。
+        """判断 spec 是否在 push 退避期内（专用字段优先，error 文本标记回退）。
 
-        退避标记约定：error 文本中包含 `[push_backoff next_retry_at=<unix_ts>]`。
-        设计原则（D3）：退避期内 recovery 重放直接跳过，不发 push 命令。
+        双源约定（code-review item bbba88d8e6af）：退避标记原先仅寄居 error
+        文本，Dashboard「清除错误」整段清 error 时连根抹掉 → 退避期归零、
+        自动 push 从零重新起算。字段化后：写侧（engine._handle_push_failure）
+        专用字段 + error 文本双活写入；本读侧专用字段优先，缺字段（存量
+        spec）回退文本解析，现状行为不变。设计原则（D3）：退避期内 recovery
+        重放直接跳过，不发 push 命令。
         """
-        error = spec.get("error") or ""
-        m = re.search(r"\[push_backoff next_retry_at=(\d+)\]", error)
-        if not m:
+        next_retry = _coerce_int(spec.get(PUSH_BACKOFF_NEXT_RETRY_AT_FIELD))
+        if next_retry is None:
+            next_retry = extract_push_backoff_marker(spec.get("error") or "")
+        if next_retry is None:
             return False
         try:
-            return float(m.group(1)) > datetime.now(timezone.utc).timestamp()
+            return float(next_retry) > datetime.now(timezone.utc).timestamp()
         except (TypeError, ValueError):
             return False
 
     @staticmethod
     def _get_push_retry_count(spec: dict) -> int:
-        """从 error 文本中提取 push 连续重试次数。"""
-        error = spec.get("error") or ""
-        m = re.search(r"\[push_attempts=(\d+)\]", error)
-        if m:
-            try:
-                return int(m.group(1))
-            except (TypeError, ValueError):
-                pass
-        return 0
+        """提取 push 连续重试次数（专用字段优先，error 文本标记回退）。
+
+        双源约定同 _is_push_backoffed（code-review item bbba88d8e6af）：
+        存量 spec 无专用字段时按文本 `[push_attempts=N]` 解析（现状不变），
+        两源皆缺回 0。
+        """
+        attempts = _coerce_int(spec.get(PUSH_ATTEMPTS_FIELD))
+        if attempts is None:
+            attempts = extract_push_attempts_marker(spec.get("error") or "")
+        return attempts if attempts is not None else 0

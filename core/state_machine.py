@@ -279,6 +279,21 @@ TASK_GATE_REJECTIONS_FIELD = "_impl_gate_task_rejections"
 # 无需类型转换登记——此处定义常量作为单一事实源供写侧/注入侧共用。
 IMPL_DIAGNOSIS_FIELD = "_impl_diagnosis"
 
+# ── push 退避/重试计数字段（code-review item bbba88d8e6af）──────────
+# [push_backoff next_retry_at=<ts>] 与 [push_attempts=N] 两个机器可读标记
+# 原先仅寄居 error 文本，Dashboard「清除错误」整段清 error 时连根抹掉——
+# 退避期判定（_is_push_backoffed 回 False）与连续重试计数
+# （_get_push_retry_count 回 0）同时归零，自动 push 从零重新起算。字段化后
+# 双活：写侧（engine._handle_push_failure）专用字段 + error 文本标记同步
+# 写入（文本保留展示语义，兼作存量读侧回退）；读侧
+# （reporting._is_push_backoffed / _get_push_retry_count）专用字段优先、
+# 缺字段回退 error 文本解析（存量 spec 行为不变）。唯一清零点 = push 成功
+# （approve_push 落 pushed 时随 error 一并同清）；clear_spec_error 清 error
+# 前先摘取文本标记回写字段（过渡期承接），退避与计数不随「清除错误」归零。
+# 字段名单点定义（pm_engine 与 dashboard 共用，避免两处漂移）。
+PUSH_BACKOFF_NEXT_RETRY_AT_FIELD = "_push_backoff_next_retry_at"
+PUSH_ATTEMPTS_FIELD = "_push_attempts"
+
 # ── 场景原地修复预算耗尽轮次（fix-recovery-path-blockers D4）──────────
 # 字段名单点定义（pm_engine 与 state_machine 共用，避免两处漂移）：
 # _scenario_repair_exhausted_rounds：spec 生命周期内「场景原地修复预算耗尽」
