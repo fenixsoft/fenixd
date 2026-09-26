@@ -529,7 +529,27 @@ class RecoveryWatch:
                 f"Recovery watch failed for '{spec_name}' — not recovered, "
                 f"escalating dispatch_stalled",
             )
-            self._pm._signal_dispatch_stalled(spec_name, evidence)
+            try:
+                self._pm._signal_dispatch_stalled(spec_name, evidence)
+            except Exception as signal_exc:
+                # 与读取失败分支（上方升级调用）同款守卫（code-review item
+                # 96b3b5771561）：本观察项已在上方 pop 落盘，而
+                # _signal_dispatch_stalled 的模块导入 / 裸 read_one /
+                # get_admin_config 窄捕（仅 TypeError/ValueError）之外的异常
+                # 仍可向上逃逸——不接住会中止整轮复查：本条观察项已丢失、
+                # raised 未记录、其余到期观察项全部漏看。失败路径恢复观察项
+                # （due 不变，下轮重试升级；setdefault 不覆盖并发窗口内的
+                # 重新登记）后 continue，不中止整轮。
+                with self._watch_lock:
+                    self._recovery_watch.setdefault(spec_name, item)
+                    self._pm._save_recovery_watch()
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"dispatch_stalled escalation failed for "
+                    f"'{spec_name}' (watch restored for retry): "
+                    f"{type(signal_exc).__name__}: {signal_exc}",
+                )
+                continue
             raised.append(spec_name)
         return raised
 

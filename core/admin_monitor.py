@@ -367,6 +367,10 @@ SIGNAL_RECOMMENDATION = {
     # evo-merge-back-wip-overlap-gate D1：阻塞策略下主树 WIP 与分支改动重叠导致
     # merge-back 中止的核对指引——重叠 ≠ 冲突，主树零污染，处置后重新放行即可。
     "mergeback_wip_overlap": "merge-back 被 WIP 重叠闸门阻塞（策略=block，主树零污染，未 stash/merge/pop）：提交（git add/commit）或 stash（git stash push）主树与分支重叠的未提交改动后，重新放行该 spec（ready 重派）继续 merge-back；改动找回用 git stash list 与逐文件 git show <sha>:<file>",
+    # evo-merge-back-spec-dir-inflight-guard D1a/D2：spec 目录在飞编辑顺延超限
+    # 处置指引——自动重试已停止，人工是唯一出路；spec 保持 implementing（不降
+    # 级 ready），提交主树 spec 目录后复位 ready 重新放行 merge-back。
+    "mergeback_spec_dir_inflight_stuck": "merge-back 顺延超限（spec 目录在飞编辑，窗口/轮数上限已到，自动重试已停止）：人工提交主树 spec/changes/<spec>/ 目录的未提交改动（git add/commit，含 spec 迭代修补）后，把该 spec 复位 ready 重新放行 merge-back（分支与已实现产物保留，勿静默丢弃）；或等待 daemon 恢复通道（recovery）下一轮再试",
     # evo-add-wip-defer-merge-retry-consumer 2.1：等待超限降级处置指引——周期
     # 消费者已停止自动重试，人工是唯一出路（勿复位 ready 后干等：自动通道已关）。
     "mergeback_wip_defer_stuck": "WIP 延迟合回等待超限（窗口/轮数上限已到，自动重试已停止）：人工核对主树与分支改动路径重叠的未提交改动归属后，提交（git add/commit）或 stash（git stash push）主树重叠改动，再把该 spec 复位 ready 重新放行 merge-back；或人工完成该分支向主树的合并",
@@ -1887,8 +1891,7 @@ class AdminMonitor:
             # inconclusive_loop，其余存储型信号（mergeback_wip_overlap/
             # stash_pop_conflict/verify_uniform_failure 等）会误落
             # 「AI 起草验证契约请求（UI 手动触发）」文案，与信号语义完全不符。
-            # 改按 SIGNAL_RECOMMENDATION 表推导；表外类型（如
-            # mergeback_spec_dir_inflight_stuck）用中性兜底。
+            # 改按 SIGNAL_RECOMMENDATION 表推导；表外类型用中性兜底。
             signal = self._make_signal(
                 stype,
                 spec,

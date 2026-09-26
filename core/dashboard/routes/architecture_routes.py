@@ -812,6 +812,15 @@ class H13ArchitectureRoutesMixin:
                 404,
             )
             return
+        # code-review item 9e7b4eb16804：diagram.html 由 claude 生成、设计上内联
+        # 全部 JS（同源自直发/iframe 无 sandbox 即执行），得以携 dashboard 源调用
+        # 各未鉴权管理 API。CSP ``sandbox allow-scripts`` 使文档以不透明源运行：
+        # 内联脚本照常渲染图（不依赖同源凭据），而 fetch/XHR/表单等同源管理 API
+        # 调用被浏览器隔离阻断；浏览器直接打开与 iframe 嵌入同样受控。
         self._send_file(
-            proot / ARCHITECTURE_DIR / DIAGRAM_FILENAME, "text/html; charset=utf-8"
+            proot / ARCHITECTURE_DIR / DIAGRAM_FILENAME,
+            "text/html; charset=utf-8",
+            extra_headers=[
+                ("Content-Security-Policy", "sandbox allow-scripts"),
+            ],
         )

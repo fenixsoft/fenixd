@@ -347,6 +347,15 @@ def _first_run_event_ts(path: Path) -> "str | None":
 # 双算无害）。缓存存 status_raw——stale 判定依赖当前时刻，每次按 now 重算。
 _RUN_META_CACHE: dict = {}
 _RUN_META_CACHE_MAX = 16384
+# code-review item 95590b3c2534：终态产物缓存固化宽限窗（秒）。run 收尾先向产物
+# 追加终态事件（_run_claude finally），后写 fenixd.log run_metrics 真实耗时指标
+# （成功/失败路径都在其后经 worktree 清理等数秒级间隙才落盘）；两步之间读路径
+# 一旦把 mtime 推算耗时以「终态产物 mtime_ns/size」为键固化，键永不变化，指标
+# 落盘也不再被消费。窗口内对「终态且结构化指标未命中」的 run 以「临时条目」
+# 入缓存（见 _run_meta_cached）：窗内照常命中 memo（burst 读零重扫），窗口过后
+# 重算一次——指标已落盘则固化真实值；仍缺失（旧日志/中断 run）才按 mtime 兜底
+# 永久固化。
+_RUN_METRIC_GRACE_SECONDS = 15
 
 
 def _run_meta_cached(p: Path, stat, now: float,
@@ -372,16 +381,23 @@ def _run_meta_cached(p: Path, stat, now: float,
            str(project_root) if project_root is not None else "")
     cached = _RUN_META_CACHE.get(key)
     if cached is not None:
-        status = cached["status_raw"]
-        # fix-retry-orphan-active-runs D3：stale 判定按当前时刻每次重算
-        if status in ("running", "empty") and (now - stat.st_mtime) > _RUN_STALE_SECONDS:
-            status = "stale"
-        return {
-            "status": status,
-            "started": cached["started"],
-            "duration_seconds": cached["duration_seconds"],
-            "file_size": cached["file_size"],
-        }
+        meta_c, provisional_until = cached
+        # code-review item 95590b3c2534：临时条目（宽限窗内固化的终态 run）到期
+        # 重算一次——此时 mtime 宽限窗亦必已过（上次计算时刻 ≥ mtime），指标已
+        # 落盘则固化真实值，仍缺失则按 mtime 兜底永久固化（不再反复重扫）。
+        if provisional_until is not None and now >= provisional_until:
+            cached = None
+        else:
+            status = meta_c["status_raw"]
+            # fix-retry-orphan-active-runs D3：stale 判定按当前时刻每次重算
+            if status in ("running", "empty") and (now - stat.st_mtime) > _RUN_STALE_SECONDS:
+                status = "stale"
+            return {
+                "status": status,
+                "started": meta_c["started"],
+                "duration_seconds": meta_c["duration_seconds"],
+                "file_size": meta_c["file_size"],
+            }
     run_id = p.stem
     # 耗时：run_id 起始时间戳为 attempt 段前的 10 位 unix 秒（int(time.time())），
     # 文件 mtime 为终止。优先匹配 `-<ts>-a<n>`（含 attempt 后缀的真实格式），
@@ -431,9 +447,20 @@ def _run_meta_cached(p: Path, stat, now: float,
         "duration_seconds": duration_seconds,
         "file_size": stat.st_size,
     }
+    # code-review item 95590b3c2534：终态 + 结构化指标未命中 + 产物刚收尾（宽限
+    # 窗内）→ 缓存条目标记临时（provisional）。此时 duration 是 mtime 兜底值，
+    # 而真实耗时指标行可能尚在写盘路上；一旦按普通条目固化，永不变化的缓存键
+    # 会把它永久钉住。临时条目在窗内照常命中 memo（D3 契约：文件未变零重扫），
+    # 窗口过后重算一次：指标已落盘则固化结构化值，仍缺失（旧日志/中断 run）则
+    # 按 mtime 兜底永久固化。
+    provisional_until = None
+    if (project_root is not None and logged is None
+            and status_raw in _RUN_TERMINAL_STATUS_MAP.values()
+            and (now - stat.st_mtime) < _RUN_METRIC_GRACE_SECONDS):
+        provisional_until = now + _RUN_METRIC_GRACE_SECONDS
     if len(_RUN_META_CACHE) > _RUN_META_CACHE_MAX:
         _RUN_META_CACHE.clear()
-    _RUN_META_CACHE[key] = meta
+    _RUN_META_CACHE[key] = (meta, provisional_until)
     return meta
 
 

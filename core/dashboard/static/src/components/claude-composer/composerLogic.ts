@@ -118,8 +118,10 @@ export function matchFileMention(textBeforeCursor: string): FileMentionMatch | n
 /**
  * 选中候选文件后替换输入框中的 `@` 片段（spec：`@src` → `@src/app.tsx`，
  * 替换结果保留 `@` 前缀——发送的 text 原样携带 `@路径` 由 CLI 侧展开）。
- * 紧随查询词的一个空格被吞掉（插入文本自带分隔空格），避免出现双空格；
- * 光标落在 `@路径 ` 之后（即尾部文本起始处）。
+ * 紧随查询词的一个空白字符（空格或换行）被吞掉（插入文本自带分隔空格），
+ * 避免出现双空格；光标落在 `@路径 ` 之后（即尾部文本起始处）。
+ * 边界按首个 `\s` 切分而非仅空格：光标落在文本中部插入 `@` 时（after 形如
+ * `@\nworld`），若只认空格会得到 -1 并把换行后的既有内容整体静默丢弃。
  */
 export function replaceFileMention(
   input: string,
@@ -128,8 +130,8 @@ export function replaceFileMention(
 ): { text: string; cursor: number } {
   const before = input.slice(0, atIndex);
   const after = input.slice(atIndex);
-  const spaceIndex = after.indexOf(' ');
-  const tail = spaceIndex !== -1 ? after.slice(spaceIndex + 1) : '';
+  const segmentEnd = after.search(/\s/);
+  const tail = segmentEnd !== -1 ? after.slice(segmentEnd + 1) : '';
   const text = `${before}@${path} ${tail}`;
   return { text, cursor: before.length + path.length + 2 };
 }

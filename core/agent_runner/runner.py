@@ -345,9 +345,11 @@ def ensure_route_map(wt_path: Path, project_root: Path, logger,
     except OSError as e:
         logger.warning("agent_runner", f"route-map 写入失败（fail-open）: {e}")
         return None
+    # text=True 下 result.stdout 是 str，len() 为字符数；按 utf-8 编码统计
+    # 真实字节数（与 write_text 落盘体积同口径），避免排障估算产物体积被误导。
     logger.info(
         "agent_runner",
-        f"route-map 生成完成: {out}（{len(result.stdout)} 字节, "
+        f"route-map 生成完成: {out}（{len(result.stdout.encode('utf-8'))} 字节, "
         f"HEAD={head[:12] or 'unknown'}）",
     )
     return out
@@ -1107,8 +1109,16 @@ class AgentRunner:
         """
         run_id = run_id or f"spec-review-{spec_name}-{int(time.time())}"
         result_path = spec_review_result_path(self.project_root, spec_name)
-        # 确保结果目录存在
-        result_path.parent.mkdir(parents=True, exist_ok=True)
+        # 确保结果目录存在（与 run_dispute_judge 同口径：目录创建失败收口为
+        # 结构化失败结果，OSError 不裸冒泡给调用方）
+        try:
+            result_path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            return AgentRunResult(
+                run_id, spec_name, "spec-review",
+                success=False, duration_seconds=0.0,
+                error=f"spec review 结果目录创建失败: {e}",
+            )
 
         try:
             prompt = self._build_prompt(

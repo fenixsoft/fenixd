@@ -6,6 +6,7 @@ daemon/托管态检测、项目与 SPEC 摘要、摘要索引、概览。
 
 import copy
 import json
+import math
 import os
 import threading
 import time
@@ -879,6 +880,14 @@ def _token_usage_view(entry: dict) -> dict:
     else:
         try:
             cost_val = float(cost)
+            # code-review item 9b4dfa399776：STATE.md 为 YAML 方言，字段被手改为
+            # .inf/.nan 时解析为非有限 float，float() 会成功放行——api 层
+            # json.dumps 默认 allow_nan 输出 Infinity/NaN 字面量，浏览器
+            # JSON.parse 整份响应失败，详情/列表接口不可用。非有限值按
+            # None/cost_available=False 处理，与 _judge_stat_or_none 的
+            # fail-open 口径对齐。
+            if not math.isfinite(cost_val):
+                raise ValueError("non-finite cost")
             cost_available = True
         except (TypeError, ValueError):
             cost_val = None

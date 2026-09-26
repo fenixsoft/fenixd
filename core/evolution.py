@@ -766,6 +766,8 @@ def clear_todo(project_path) -> dict:
 
     - 项目无 ``.fenix/`` 目录或 todo.md 本就不存在 → ``existed: False``
       且不创建任何目录（MUST NOT 替无 todo 的项目凭空 mkdir）；
+    - todo.md 不可访问（权限/IO 等 OSError 且非不存在类）→ ``ok: False``
+      并写 WARNING 留痕（与 ``scan_ready_projects`` 同口径，不静默报成功）；
     - 与每日自省追加（``self_review._append_todo``）及自进化标记回写
       （``write_todo_marker``）共用同一把 flock，避免读-改-写交错；
     - 失败收敛进返回值，MUST NOT 抛异常（调用方为 dashboard 端点，
@@ -780,6 +782,14 @@ def clear_todo(project_path) -> dict:
         "existed": False,
         "error": None,
     }
+    # code-review item 893d537894b2：裸 is_file() 把 EACCES 等 OSError 吞成
+    # False、按「无 todo.md 无需清理」误报成功；与 scan_ready_projects 同口径
+    # 用 _path_access_error 三态探测，不可访问时 ok=False 并留痕。
+    acc_err = _path_access_error(todo)
+    if acc_err is not None:
+        outcome["error"] = f"todo.md 不可访问: {acc_err}"
+        _logger.warning("evolution: todo.md 不可访问，跳过清理 %s: %s", todo, acc_err)
+        return outcome
     if not todo.is_file():
         # 非错误：无 todo.md 的项目本就无需清理
         outcome["ok"] = True
