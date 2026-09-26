@@ -453,6 +453,23 @@ STORED_SIGNAL_TYPES = (
     "verify_uniform_failure",
 )
 
+# 前置探测白名单（evo-signal-preprobe-handled-writeback R1）：请求型
+# 「产物存在性」可探测信号——摄取循环在 mark_escalated / 唤起 Administrator
+# 之前先做只读探测，诉求已被事实满足（产物/配置已存在）即闭环免唤起。
+# 入表约束：仅收「探测谓词与诉求满足是同一事实」的类型（段/文件/配置存在性），
+# 探测通过即无剩余动作；需语义判断的类型（manual-intervention、inconclusive_loop
+# 等）永不收录。新增类型必须同时给出只读谓词与「满足即无剩余动作」论证。
+# 探测异常 fail-open（R4）：按原路径照常唤起，不因探测器自身缺陷吞信号。
+PREPROBE_SIGNAL_TYPES = (
+    # UI 手动请求补写 .fenix/verify.yaml 的 regression 段：段已存在即诉求满足
+    "verify_regression_missing",
+    # 请求起草验证契约：.fenix/verify.yaml 存在且可解析即诉求满足
+    "verify_contract_missing",
+    # 请求裁决产物路径配置：worktree.build_artifact_paths 非空或
+    # has_build_artifacts=false（确无产物）裁决已作出即诉求满足
+    "build_artifact_paths_missing",
+)
+
 # run_id 前缀 → 计入"失败 run"的 agent 类型（失败计数专用子集）
 # ⚠️ 真源 = core/agent_runner/run_files.py:RUN_ID_AGENT_PREFIXES（新增 run 前缀
 # 只改那里）；本表是它的**子集**——只列计入失败统计的前缀（裸 `planner-`/
@@ -1846,6 +1863,25 @@ class AdminMonitor:
                     {"mark_escalated": bool(marked), "record_id": rec.get("id")},
                 )
                 continue
+            # 前置探测守卫（evo-signal-preprobe-handled-writeback R1/R3）：
+            # 白名单内的请求型「产物存在性」信号在 mark_escalated / 唤起之前
+            # 先做只读探测——诉求已被事实满足（段/文件/配置已存在）即闭环，
+            # 免对已被满足的诉求白唤起一次 admin 处置 run（LLM 调用）。
+            if stype in PREPROBE_SIGNAL_TYPES:
+                try:
+                    satisfied = self._preprobe_signal_satisfied(stype)
+                except Exception as e:
+                    # R4 fail-open：探测异常按原路径继续唤起，不静默吞信号
+                    self.logger.warning(
+                        "admin_monitor",
+                        f"{stype}: 前置探测异常（{type(e).__name__}: {e}），"
+                        f"按原路径继续唤起",
+                        {"record_id": rec.get("id"), "spec": spec},
+                    )
+                else:
+                    if satisfied:
+                        self._close_signal_preprobed(rec, stype, spec)
+                        continue
             # code-review 9e031d3e7c7f：缺 description 的兜底文案不再用三元链
             # 硬编码——三元链仅覆盖 family_explosion/dispatch_stalled/
             # inconclusive_loop，其余存储型信号（mergeback_wip_overlap/
@@ -1908,6 +1944,79 @@ class AdminMonitor:
             "evidence": evidence,
             "recommended_action": SIGNAL_RECOMMENDATION.get(signal_type, ""),
         }
+
+    def _preprobe_signal_satisfied(self, stype: str) -> bool:
+        """只读探测：PREPROBE_SIGNAL_TYPES 内请求型信号的诉求是否已被满足。
+
+        evo-signal-preprobe-handled-writeback R2：全部谓词只读——仅检查目标
+        产物/配置的存在性，不写项目文件、不触发构建或网络访问。探测谓词与
+        诉求满足是同一事实（段/文件/配置已存在），语义等价故可免唤起。
+        返回 False = 诉求未满足（调用方照常唤起）；异常由调用方 fail-open。
+        """
+        if stype in ("verify_regression_missing", "verify_contract_missing"):
+            # 复用契约装载做存在性判断（缺文件/解析失败返回 None，本身不落盘、
+            # 不执行脚本）；logger 传 None 防测试替身缺方法——装载器的 warning
+            # 仅提示性，探测路径不需要它。
+            from .verify_contract import load_verify_contract
+
+            contract = load_verify_contract(self.project_root, None)
+            if contract is None:
+                return False
+            if stype == "verify_contract_missing":
+                return True
+            # verify_regression_missing：regression 段存在性（缺段 regression=None）
+            return contract.regression is not None
+        if stype == "build_artifact_paths_missing":
+            paths = self._get_config("worktree.build_artifact_paths", None)
+            if paths:
+                return True
+            # 「确无产物」亦属已裁决（SIGNAL_RECOMMENDATION 明确不得用路径
+            # 留空冒充已裁决——has_build_artifacts=false 是唯一合法结案形态）
+            return self._get_config("worktree.has_build_artifacts", None) is False
+        return False
+
+    def _close_signal_preprobed(self, rec: dict, stype: str, spec: str) -> None:
+        """前置探测通过即闭环（evo-signal-preprobe-handled-writeback R3/R6）。
+
+        mark_signal_handled（handled=true）+ 同步 mark_escalated——摄取过滤
+        只看 escalated，缺此步记录下一 tick 会被重捞、每周期重复探测并重复
+        追加留痕；与既有终态守卫/前提复核守卫 mark_escalated+continue 同范式。
+        再追加 result=resolved 处置留痕（无 admin_run_id——_merge_admin_runs
+        对无 admin_run_id 的记录跳过归并，不会伪造「在飞 run」；先例同冷却
+        跳过留痕）。留痕失败不阻断闭环本身（handled/escalated 已落）。
+        """
+        handled = self.store.mark_signal_handled(rec.get("id"))
+        escalated = self.store.mark_escalated(rec.get("id"))
+        try:
+            self.store.append(
+                {
+                    "kind": DISPOSITION,
+                    "signal_type": stype,
+                    "spec": spec,
+                    "severity": rec.get("severity")
+                    or SIGNAL_SEVERITY.get(stype, "major"),
+                    "description": rec.get("description")
+                    or SIGNAL_RECOMMENDATION.get(stype, ""),
+                    "action_taken": (
+                        "pre-probe auto-resolve：前置探测通过、诉求已满足、免唤起"
+                        "（evo-signal-preprobe-handled-writeback）"
+                    ),
+                    "result": "resolved",
+                }
+            )
+        except Exception as e:
+            self.logger.error(
+                "admin_monitor",
+                f"{stype}: 前置探测闭环留痕写入失败（id={rec.get('id')}）：{e}",
+                {"record_id": rec.get("id"), "spec": spec},
+            )
+        self.logger.info(
+            "admin_monitor",
+            f"{stype}: 前置探测通过、诉求已满足、免唤起"
+            f"（handled={'ok' if handled else '未命中'}，"
+            f"escalated={'ok' if escalated else '未命中'}）",
+            {"record_id": rec.get("id"), "spec": spec},
+        )
 
     def _detect_repeated_failures(self, now: float) -> list:
         """窗口内同 spec 失败 run ≥ 阈值。
@@ -3477,6 +3586,34 @@ class AdminMonitor:
                 "admin_monitor",
                 f"Failed to persist administrator disposition for run {disp.run_id}: {e}",
             )
+
+        # 终态回写（evo-signal-preprobe-handled-writeback R5）：处置 run 写入
+        # 非 pending 的最终处置结果后，回写对应信号 handled=true——原信号不再
+        # 永挂未处理（此前 mark_signal_handled 仅有 dashboard 人工 alert-resolve
+        # 调用方，处置 run 自动链路上无人回写）。两类豁免：escalate=true 属
+        # 升级人工（人工处置是唯一出路，由人工 alert-resolve 闭环）；人工显式
+        # 触发路径 signal_rec=None 无关联记录，跳过。回写失败仅记警告日志，
+        # 不阻塞处置结果落盘。
+        if (
+            disp.result
+            and disp.result != "pending"
+            and not disp.escalate
+            and signal_rec is not None
+        ):
+            try:
+                if self.store.mark_signal_handled(signal_rec.get("id")):
+                    self.logger.info(
+                        "admin_monitor",
+                        f"处置终态（result={disp.result}）已回写信号 handled=true"
+                        f"（id={signal_rec.get('id')}，"
+                        f"{signal.get('signal_type')}）",
+                    )
+            except Exception as e:
+                self.logger.warning(
+                    "admin_monitor",
+                    f"处置终态回写信号 handled 失败（不阻塞处置结果落盘）: {e}",
+                    {"record_id": signal_rec.get("id"), "run_id": disp.run_id},
+                )
 
         # family_explosion 处置：Administrator「放行一次」→ 设置父 SPEC 豁免位
         # （fix-family-convergence-governor / design D4）。结构字段优先级最高；
