@@ -1810,7 +1810,7 @@ class ConfigLoader:
             targeted_retry_max = 3
         targeted_regression = crf.get("targeted_regression", True)
         if not isinstance(targeted_regression, bool):
-            logging.getLogger(__name__).warning(
+            _logger.warning(
                 "admin.code_review_fix.targeted_regression 非法值 %r（非 bool），"
                 "回退缺省 True",
                 targeted_regression,
