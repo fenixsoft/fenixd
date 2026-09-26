@@ -5,7 +5,7 @@
 // （D8：不引入 react-i18next）。
 // portal 弹层挂 .fenix-composer-portal 注入 HSL 语义变量（tailwind 语义色
 // 依赖，面板内变量在 .claude-msg-pane、portal 到 body 后缺失——见 composer.css）。
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { CSSProperties, ComponentType, ReactElement } from 'react';
 import {
@@ -158,7 +158,19 @@ export default function CommandMenu({
 }: CommandMenuProps) {
   const menuRef = useRef<HTMLDivElement | null>(null);
   const selectedItemRef = useRef<HTMLDivElement | null>(null);
+  // code-review item d5ad5dadc4a6：menuPosition 基于视口尺寸仅在渲染时计算，
+  // resize 时需触发重渲染重算，避免弹层停在基于旧视口的过期位置。
+  const [, bumpViewportVersion] = useState(0);
   const menuPosition = getMenuPosition(position);
+
+  useEffect(() => {
+    if (!isOpen) {
+      return;
+    }
+    const handleViewportResize = () => bumpViewportVersion((version) => version + 1);
+    window.addEventListener('resize', handleViewportResize);
+    return () => window.removeEventListener('resize', handleViewportResize);
+  }, [isOpen]);
 
   useEffect(() => {
     if (!isOpen) {
