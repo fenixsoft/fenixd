@@ -234,55 +234,69 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
     );
   };
 
+  // 保存重入守卫（code-review item d0faa2345d54）：onSave 是异步（validateFields +
+  // 持久化），提交期间连点会发出重叠保存请求并发写同一配置文件——落盘结果取决于
+  // 响应到达顺序。saving 期间入口短路、finally 复位，按钮置 loading 且 disabled
+  // （范式同 ApprovalModePanel item 589c1c98c5a4）。
+  const [saving, setSaving] = useState(false);
+
   const handleSave = async () => {
-    // 分离「表单校验」与「保存持久化」（code-review item 3086b7e96c4f）：旧实现
-    // 两者混在同一 try/catch 且只 console.error，把校验失败与网络/500 混为一谈，
-    // 对纯校验失败可能违反 no_console_error 断言，onSave 拒绝时也无用户反馈。
-    let values;
-    try {
-      values = await form.validateFields();
-    } catch {
-      // 校验失败：antd 已在表单内渲染提示，不落 console
+    if (saving) {
       return;
     }
-    const roleList: RoleValue[] = values.roleList;
-    // v1 improve-failover-model-mapping-ui D4 校验：已配置的链不允许整链无可用模型
-    const providerDefaults: Record<string, string> = {};
-    providers.forEach((p) => {
-      if (p.name) providerDefaults[p.name] = p.model || '';
-    });
-    const missing: string[] = [];
-    roleList.forEach((rv, index) => {
-      if (!rv?.rows || rv.rows.length === 0) return;
-      const roleDefault = (rv.roleModel || '').trim();
-      const allRowsHaveModel = rv.rows.every((r) => {
-        const p = (r?.provider || '').trim();
-        if (!p) return true; // 空 provider 行保存时丢弃
-        return !!((r?.model || '').trim() || roleDefault || providerDefaults[p]);
-      });
-      // 只判 allRowsHaveModel（code-review item bc1ba7979cf5）：roleDefault
-      // 非空时 every 的或链恒真，旧写法 `!roleDefault && !allRowsHaveModel`
-      // 的前半永不成立——语义与 `!allRowsHaveModel` 等价，去掉死条件免误导。
-      if (!allRowsHaveModel) {
-        missing.push(AGENT_ROLES[index]?.label ?? `角色 ${index + 1}`);
+    setSaving(true);
+    try {
+      // 分离「表单校验」与「保存持久化」（code-review item 3086b7e96c4f）：旧实现
+      // 两者混在同一 try/catch 且只 console.error，把校验失败与网络/500 混为一谈，
+      // 对纯校验失败可能违反 no_console_error 断言，onSave 拒绝时也无用户反馈。
+      let values;
+      try {
+        values = await form.validateFields();
+      } catch {
+        // 校验失败：antd 已在表单内渲染提示，不落 console
+        return;
       }
-    });
-    if (missing.length > 0) {
-      message.error(
-        `保存失败：${missing.join('、')} 无可用模型（角色级缺省与逐行模型均为空，且 Provider 也无默认模型）`,
-      );
-      return;
-    }
-    try {
-      await onSave({
-        agents: {
-          models: toModels(roleList),
-          subagent_model_override: (values.subagentModelOverride || '').trim(),
-        },
+      const roleList: RoleValue[] = values.roleList;
+      // v1 improve-failover-model-mapping-ui D4 校验：已配置的链不允许整链无可用模型
+      const providerDefaults: Record<string, string> = {};
+      providers.forEach((p) => {
+        if (p.name) providerDefaults[p.name] = p.model || '';
       });
-    } catch (error) {
-      // 保存持久化失败：给用户显式反馈而非静默
-      message.error(`保存失败：${error instanceof Error ? error.message : String(error)}`);
+      const missing: string[] = [];
+      roleList.forEach((rv, index) => {
+        if (!rv?.rows || rv.rows.length === 0) return;
+        const roleDefault = (rv.roleModel || '').trim();
+        const allRowsHaveModel = rv.rows.every((r) => {
+          const p = (r?.provider || '').trim();
+          if (!p) return true; // 空 provider 行保存时丢弃
+          return !!((r?.model || '').trim() || roleDefault || providerDefaults[p]);
+        });
+        // 只判 allRowsHaveModel（code-review item bc1ba7979cf5）：roleDefault
+        // 非空时 every 的或链恒真，旧写法 `!roleDefault && !allRowsHaveModel`
+        // 的前半永不成立——语义与 `!allRowsHaveModel` 等价，去掉死条件免误导。
+        if (!allRowsHaveModel) {
+          missing.push(AGENT_ROLES[index]?.label ?? `角色 ${index + 1}`);
+        }
+      });
+      if (missing.length > 0) {
+        message.error(
+          `保存失败：${missing.join('、')} 无可用模型（角色级缺省与逐行模型均为空，且 Provider 也无默认模型）`,
+        );
+        return;
+      }
+      try {
+        await onSave({
+          agents: {
+            models: toModels(roleList),
+            subagent_model_override: (values.subagentModelOverride || '').trim(),
+          },
+        });
+      } catch (error) {
+        // 保存持久化失败：给用户显式反馈而非静默
+        message.error(`保存失败：${error instanceof Error ? error.message : String(error)}`);
+      }
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -507,7 +521,7 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
                 {project && onConfigSynced && (
                   <SyncFromUserButton project={project} page="agents" onSynced={onConfigSynced} />
                 )}
-                <Button type="primary" onClick={handleSave}>
+                <Button type="primary" onClick={handleSave} loading={saving} disabled={saving}>
                   保存
                 </Button>
               </div>

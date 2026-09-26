@@ -625,8 +625,9 @@ class PromptBuilder:
         声明本 agent 以 headless、无人值守方式运行、**无法与人类交互**。单一
         真相：在 ``_build_prompt`` 统一收尾处注入（agent 类型白名单
         ``AGENT_PROMPT_FILES`` 新增类型自动继承，无需逐个改 ``agents/*.md``）；
-        repair / self-review / evolution 三条独立构建路径在各自 ``return`` 前
-        就地追加（D2）。纯静态文本、零 IO、零状态条件，幂等可重复注入（D4）。
+        repair / self-review / evolution / code-review / code-fix 五条独立构建
+        路径在各自 ``return`` 前就地追加（D2）。纯静态文本、零 IO、零状态条件，
+        幂等可重复注入（D4）。
 
         四组规范性语义（spec requirement「非交互契约段的关键语义」）：
         1. 无人类可交互/无人值守——不存在能回复本 agent 的人；
@@ -1157,9 +1158,9 @@ class PromptBuilder:
             entry = self._pm.state_machine.read_one(spec_name) or {}
             branch = entry.get("branch") or None
             if branch:
-                worktree_path = self._pm.agent_runner.worktree_manager.find_worktree_path(
-                    branch
-                )
+                wm = getattr(self._pm, "worktree_manager", None)
+                if wm is not None:
+                    worktree_path = wm.find_worktree_path(branch)
         except Exception:
             pass
         try:

@@ -1,6 +1,6 @@
 import { Alert, Button, Card, Form, Input, Radio, Space, Switch, Typography } from 'antd';
 import { MinusCircleOutlined, PlusOutlined } from '@ant-design/icons';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import type { ConfigData } from '@/services/dashboard';
 import SyncFromUserButton from './SyncFromUserButton';
 import { SETTINGS_ACTIONS_ROW_STYLE } from '../styles';
@@ -56,6 +56,10 @@ interface VerifyPanelProps {
 
 export default function VerifyPanel({ config, onSave, project, onConfigSynced }: VerifyPanelProps) {
   const [form] = Form.useForm();
+  // 保存重入守卫（code-review item 2a3a76864687）：onSave 是异步，提交期间
+  // 按钮可继续点击会发出重叠保存请求（并发写同一配置文件，结果取决于响应
+  // 到达顺序）——saving 期间置 loading/disabled 并在入口短路。
+  const [saving, setSaving] = useState(false);
   // 产物路径为项目级键：用户级作用域下只读展示（无 project 即用户级）
   const artifactEditable = Boolean(project);
   // 三态联动：无产物（false）时路径列表隐藏并显示结案提示
@@ -88,6 +92,10 @@ export default function VerifyPanel({ config, onSave, project, onConfigSynced }:
   }, [hasBuildArtifacts, form]);
 
   const handleSave = async () => {
+    if (saving) {
+      return;
+    }
+    setSaving(true);
     try {
       const values = await form.validateFields();
       const payload: Partial<ConfigData> = {
@@ -126,6 +134,8 @@ export default function VerifyPanel({ config, onSave, project, onConfigSynced }:
       await onSave(payload);
     } catch (error) {
       console.error('Validation failed:', error);
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -383,7 +393,7 @@ export default function VerifyPanel({ config, onSave, project, onConfigSynced }:
         {project && onConfigSynced && (
           <SyncFromUserButton project={project} page="verify" onSynced={onConfigSynced} />
         )}
-        <Button type="primary" onClick={handleSave} data-testid="verify-save">
+        <Button type="primary" onClick={handleSave} loading={saving} disabled={saving} data-testid="verify-save">
           保存
         </Button>
       </div>

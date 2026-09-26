@@ -26,6 +26,9 @@ interface ProjectProfilePanelProps {
 export default function ProjectProfilePanel({ config, onSave, project, focusVerifySignal }: ProjectProfilePanelProps) {
   const [description, setDescription] = useState(config.description || '');
   const [loading, setLoading] = useState(false);
+  // 简介保存重入守卫：保存请求在飞期间置位，按钮 loading/disabled 阻止连点
+  // 并发发多个写同一配置文件的保存请求（对齐 verify.yaml 保存的 yamlSaving 口径）
+  const [saving, setSaving] = useState(false);
   // 「手工编辑」跳转定位：ref 指向本实例渲染的卡片/编辑框（不用
   // querySelector——设置页切作用域曾出现双 DOM 实例并存，选择器会命中隐藏实例）
   const verifySectionRef = useRef<HTMLDivElement>(null);
@@ -56,6 +59,8 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
   }, [focusVerifySignal]);
 
   const handleSave = async () => {
+    if (saving) return; // 重入守卫：保存请求在飞期间连点直接短路，不发并发保存请求
+    setSaving(true);
     try {
       // 父级保存失败时返回 false（错误 toast 已由父级呈现），仅明确成功才
       // 提示「保存成功」，避免失败时错误与成功两条提示自相矛盾。
@@ -67,6 +72,8 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
       const errorMessage = error instanceof Error ? error.message : String(error);
       message.error(`保存失败：${errorMessage}`);
       console.error('Failed to save description:', error);
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -276,7 +283,7 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
           <Button onClick={handleRegenerate} loading={loading}>
             AI 自动生成
           </Button>
-          <Button type="primary" onClick={handleSave}>
+          <Button type="primary" onClick={handleSave} loading={saving} disabled={saving}>
             保存
           </Button>
         </div>

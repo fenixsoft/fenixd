@@ -1004,6 +1004,14 @@ def _check_repo_code_review_artifact(manifest: list, project_root, run_id: str) 
     注：``unavailable`` 降级语义（ocr 缺失/网关不可达）**不适用于本车道**——
     本 run 的审查手段是 agent 自身的 LLM 阅读，ocr 只是可选加速器；agent 没写
     逐文件结果就是没审，不存在「环境不可用所以免责」的口子。
+
+    签名说明（模块函数形态，非门族 runner 首参）：首参为 ``manifest`` 而非
+    runner，MUST NOT 登记进 runner._FORWARDER_REGISTRY（partial 会把 runner
+    注入 manifest 形参 → TypeError，code-review 条目 30a9ff6b4000 确认的
+    埋雷形态）。本函数**直 import 专用、不经门面**——调用方经
+    ``from core.agent_runner.result_gate import
+    _check_repo_code_review_artifact`` 直取（maintenance_runs.run_code_review /
+    tests），后续新增调用点按此形态，勿经 runner.<方法名> 误调。
     """
     if not manifest:
         return None

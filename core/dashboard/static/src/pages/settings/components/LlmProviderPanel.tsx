@@ -192,6 +192,10 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
   const [healthMap, setHealthMap] = useState<
     Record<number, { loading: boolean; display?: HealthCheckDisplay }>
   >({});
+  // 保存重入守卫（code-review item fe84991f84a0）：onSave 是异步，提交期间
+  // 按钮可继续点击会发出重叠保存请求（并发写同一配置文件，结果取决于响应
+  // 到达顺序）——saving 期间置 loading/disabled 并在入口短路。
+  const [saving, setSaving] = useState(false);
 
   // 表单当前值直传（未保存修改即测）；Base URL / API Key / 默认模型名任一为空
   // 直接提示补齐、不发请求（spec「表单值不完整不发请求」）
@@ -227,6 +231,10 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
   };
 
   const handleSave = async () => {
+    if (saving) {
+      return;
+    }
+    setSaving(true);
     try {
       // 先剔除完全空的价格行（占位行），避免其阻塞整体校验
       const snapshot = form.getFieldsValue(true);
@@ -302,6 +310,8 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
       // 校验失败：展开全部折叠区，让藏在折叠区的错误（如价格行必填）可见
       // （antd 已在表单内渲染提示；不落 console，避免触发 no_console_error 断言）
       expandAllSections();
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -625,7 +635,7 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
           {project && onConfigSynced && (
             <SyncFromUserButton project={project} page="llm" onSynced={onConfigSynced} />
           )}
-          <Button type="primary" onClick={handleSave}>
+          <Button type="primary" onClick={handleSave} loading={saving} disabled={saving}>
             保存
           </Button>
         </div>

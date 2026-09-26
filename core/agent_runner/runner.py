@@ -430,6 +430,12 @@ class _AttemptState:
     turns: int = 0
     # 用于 "provider switched" 跨 attempt 打点
     last_provider_used: Optional[str] = None
+    # design D3：上次 attempt 实际使用的模型名（model_changed 日志留痕）。
+    # run 级生命周期（跨 attempt 记忆、run 结束即弃）——原为 AgentRunner 实例
+    # 属性，并发 run 共享实例使 A run 写入被 B run 读作「上次模型」、model_changed
+    # 日志跨 run 串扰（code-review item 62847f876c87），故与 last_provider_used
+    # 同置 st、生命周期口径一致。
+    last_model_used: Optional[str] = None
     # add-impl-selfcheck-model-probe（2.1/2.2）：本 run 内 unrecognized_model
     # 拒模型命中计数（全链不可用归因里报告规模用）与「链尾仍被拒」旗标
     # （置位后 attempt 预算立即收场——对同一拒模型再起必败进程是纯浪费）。
@@ -541,7 +547,6 @@ class AgentRunner:
         # add-quality-gates-visibility：quality-gates.json 宽松对账（仅 WARNING，
         # 零拦截——登记供门面转发，与其它 _check_* 同机制）
         "_check_quality_gates_soft": _check_quality_gates_soft,
-        "_check_repo_code_review_artifact": _check_repo_code_review_artifact,
         "_check_success_completion": _check_success_completion,
         "_check_partial_consistency": _check_partial_consistency,
         "_check_taskupdate_crosscheck": _check_taskupdate_crosscheck,    }
@@ -610,8 +615,11 @@ class AgentRunner:
         # implementer/verifier 在主线程登记；liveness 监督与 shutdown 关停均以
         # list(...) 快照迭代、pop 带 default——全部单键原子操作，无读改写竞态，
         # 不加锁（持锁跨 grace 等待窗口反而引入死锁面）。
-        # _daily_run_count 仅在 _execute_agent（implementer/verifier/planner）路径
-        # 自增，admin run 不经过该路径，无跨线程写。
+        # _daily_run_count 为跨 run 共享计数：_finalize_success 在 run-worker
+        # 线程（worker 池，多 run 并发）执行 += 1（读-改-写三步），故以
+        # _daily_count_lock 互斥——否则并发自增互相丢失更新会少记，放宽
+        # agents.daily_run_limit 软护栏（code-review item 152ca97a293a）。
+        # admin run 不经过该自增路径。
         self._running_agents: Dict[str, subprocess.Popen] = {}
         self._daily_run_count = 0
         # 人工取消旗标集合（add-run-cancel D1）：键为基础 run_id（已剥 -a<n>
@@ -624,6 +632,9 @@ class AgentRunner:
         # run 收尾互斥锁（code-review item 183ded7b526a）：注册表 pop 与停机
         # interrupted 标记写入互斥（协议详见 _run_finalize_lock property 注释）。
         self._run_finalize_lock = threading.Lock()
+        # 日计数自增互斥锁（code-review item 152ca97a293a）：worker 池多 run
+        # 并发收工自增 _daily_run_count（+= 读改写需互斥，协议见 613 行注释）。
+        self._daily_count_lock = threading.Lock()
         # 车道登记表（design D2）：__init__ 即建态——车道线程（queue
         # _start_impl_ocr_lane 每 spec 一线程）并发首次 register 时不得走
         # _lane_registry 的建态分支（两线程同见 None 会各建一个 dict、后一次
@@ -719,6 +730,24 @@ class AgentRunner:
     @_run_finalize_lock.setter
     def _run_finalize_lock(self, value):
         self.__dict__["_run_finalize_lock_state"] = value
+
+    @property
+    def _daily_count_lock(self) -> threading.Lock:
+        """日计数自增互斥锁（code-review item 152ca97a293a）：worker 池多 run
+        并发 _finalize_success 自增 _daily_run_count 的互斥点（+= 读改写，
+        不加锁并发自增丢失更新致计数偏小、放宽 daily_run_limit 软护栏）。
+        惰性 property（测试 __new__ 绕过 __init__，对齐 _run_finalize_lock
+        模式）。
+        """
+        inst = self.__dict__.get("_daily_count_lock_state")
+        if inst is None:
+            inst = threading.Lock()
+            self.__dict__["_daily_count_lock_state"] = inst
+        return inst
+
+    @_daily_count_lock.setter
+    def _daily_count_lock(self, value):
+        self.__dict__["_daily_count_lock_state"] = value
 
     # ── run_id 归一化助手（add-run-cancel D1/D3）──────────────────
 
@@ -2234,7 +2263,8 @@ class AgentRunner:
         model = st.model
         usage_info = st.usage_info
         turns = st.turns
-        self._last_model_used = None  # 用于 model_changed 日志留痕（design D3）
+        # model_changed 日志留痕（design D3）改用 run 级 st.last_model_used
+        #（字段缺省 None，无需实例属性复位；code-review item 62847f876c87）
         cancelled_flag = st.cancelled_flag
         cancel_reason = st.cancel_reason
         shutdown_interrupted = st.shutdown_interrupted
@@ -2807,13 +2837,14 @@ class AgentRunner:
                 f"provider switched {st.last_provider_used} → {provider_name} "
                 f"for '{spec_name}'"
             )
-            last_model = getattr(self, "_last_model_used", None)
+            last_model = st.last_model_used
             if model and last_model and model != last_model:
                 switch_msg += f" — model_changed: {last_model}→{model}"
             self.logger.info("agent_runner", switch_msg)
-        # 记忆本次使用的模型名（供下次 attempt 切换时判定 model_changed，design D3）
+        # 记忆本次使用的模型名（供下次 attempt 切换时判定 model_changed，design D3）；
+        # 存 run 级 st，不挂实例（code-review item 62847f876c87，防并发 run 串扰）。
         if model:
-            self._last_model_used = model
+            st.last_model_used = model
         # 更新记忆：下次 attempt 据以判断切换并打点（design D5）。
         st.last_provider_used = provider_name
 
@@ -3743,7 +3774,10 @@ class AgentRunner:
                 # 成功：清理 worktree（保留分支供 merge-back），返回结果
                 self.worktree_manager.cleanup(wt_path, success=True)
         duration = time.time() - start_time
-        self._daily_run_count += 1
+        # 跨 run 共享计数自增互斥（code-review item 152ca97a293a）：worker 池
+        # 多 run 并发收工，+= 读改写不加锁会丢失更新。
+        with self._daily_count_lock:
+            self._daily_run_count += 1
         # cli-retry-backoff（2.1/2.2）：成功收工重置秒挂连续计数（非连续不累积）
         self._reset_instant_fail(spec_name)
         # evo-sigterm-source-tracking-cooldown：成功收工重置信号死法连续计数
@@ -4285,18 +4319,11 @@ class AgentRunner:
         # per-agent-timeout-override 3.2：run 生效超时按 agent_type 覆盖值查询
         #（override → 全局 run_timeout_seconds → 3600 回退）。
         timeout = self._effective_run_timeout(agent_type)
-        from core.config import ConfigLoader
-        # fix-stuck-threshold-unify D5：supervision 激活路径读取 absolute_max 兜底值，
-        # 不直接读原始配置（防止与 run 超时脱钩）。返回 None 表示未启用 supervision。
-        sup_abs_max = ConfigLoader.effective_supervision_absolute_max_seconds(self.config)
-        if sup_abs_max is not None and sup_abs_max < timeout:
-            # 护栏兜底已保证 sup_abs_max ≥ run_timeout + 7200，正常不应进此分支；
-            # 极端情况下仍以兜底值覆盖，确保 supervision 不早于 run 超时终止运行。
-            self.logger.debug(
-                "agent_runner",
-                f"supervision absolute_max({int(sup_abs_max)}s) 低于 run_timeout({timeout}s)，"
-                "以兜底值优先",
-            )
+        # fix-stuck-threshold-unify D5：supervision 的 absolute_max 兜底下限实际
+        # 由 LivenessSupervisor._supervision_deadline_action 的 floor 派生承担
+        #（保证 absolute_max ≥ run_timeout + 7200，见 liveness.py 1108-1131），
+        # 此处不再冗余校验（原读取-日志分支只打日志、从不覆盖，系死分支，已删，
+        # code-review item eedfeec65a57）。
 
         # 每线程独立 env 副本，多 agent_type 并发时环境覆盖互不串扰
         env = os.environ.copy()
@@ -4388,7 +4415,8 @@ class AgentRunner:
         # 共享状态由主线程在 join 之后读取，天然构成 happens-before。
         last_result: Dict[str, Any] = {}
         turn_count = [0]  # 被读线程递增；主线程轮询读取（GIL 保证可见性）
-        stdout_lines: list = []
+        # 注意：stdout 行只逐条解析并落盘，不再累积全量转录（曾以 stdout_lines
+        # 无界滞留流式转录内存，code-review item 85d9e72b64b3）。
         stderr_lines: list = []
 
         # ── evo-add-run-stop-loss 2.1：base_run_id 前移 ─────────────────
@@ -4430,7 +4458,6 @@ class AgentRunner:
                         stderr_lines.append(line)
                         append_run_line(run_file, {"type": "stderr", "line": line})
                         continue
-                    stdout_lines.append(line)
                     try:
                         entry = json.loads(line)
                     except json.JSONDecodeError:
@@ -5108,7 +5135,10 @@ class AgentRunner:
         """Check and reset daily run counter."""
         today = datetime.now(timezone.utc).date()
         if today != self._daily_reset_date:
-            self._daily_run_count = 0
+            # 与 _finalize_success 的自增同锁互斥（code-review item
+            # 152ca97a293a）：防跨日归零与并发自增交错丢失更新。
+            with self._daily_count_lock:
+                self._daily_run_count = 0
             # D5：直接写组合对象（转发 setter 已删；AgentRunner 不另行持有第二份）。
             self._provider_circuit._daily_reset_date = today
 

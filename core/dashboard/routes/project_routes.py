@@ -197,7 +197,16 @@ class H2ProjectRoutesMixin:
                         req_path.touch()
                         result = {"ok": True, "error": None, "requested": True, "session": None}
                     except OSError as e:
-                        result = {"ok": False, "error": f"写入 restart_request 失败: {e}"}
+                        # 不外泄裸异常文本（code-review item 18e71e70c018）：str(e)
+                        # 可能携带 .fenix/restart_request 完整路径与 errno 细节，
+                        # 客户端收固定文案，详情经服务端日志留痕（同外层 except 口径）。
+                        logger.warning(
+                            "写入 restart_request 失败（project=%s）: %s: %s",
+                            project["name"],
+                            type(e).__name__,
+                            e,
+                        )
+                        result = {"ok": False, "error": "写入 restart_request 失败"}
         except Exception as e:  # 环境异常（tmux 不可用等）→ 返回错误对象，不 500
             # 不外泄裸异常文本（code-review item 2a32ba26780c）：环境异常的
             # str(e) 可能携带内部路径/tmux 错误细节，与 _api_project_describe

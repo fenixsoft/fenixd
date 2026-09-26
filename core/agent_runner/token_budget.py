@@ -5,10 +5,6 @@
 """
 
 from datetime import datetime, timezone
-import fcntl
-import json
-import os
-import tempfile
 import threading
 
 # code-review item 7f6062e65ecb：_accumulate_token_usage 的「read_one 读旧值 →
@@ -271,69 +267,28 @@ class TokenAccountant:
             return
         if not isinstance(usage_info, dict):
             usage_info = {}
+        # code-review item 1e3f44bb351f：usage_info 带 unobserved=True（turn-limit/
+        # timeout 强杀路径，四数值键全零只是观测兜底而非确认零）时跳过本侧车
+        # 落盘——对齐 _accumulate_token_usage 的 D4 口径：不把不可观测当零入账，
+        # 逐轮记录不得呈现为「确认零消耗」。
+        if usage_info.get("unobserved"):
+            return
         tokens_json = (
             self._pm.project_root / ".fenix" / "verify-progress" / spec_name / "tokens.json"
         )
-        try:
-            tokens_json.parent.mkdir(parents=True, exist_ok=True)
-            # code-review item c01047460508：read_text → 内存 append → write_text
-            # 整文件覆盖，既非原子（写中途崩溃留下半个 JSON，下次读取 JSONDecodeError
-            # 回退 {} 后首写即清空既有全部历史）也无文件锁（并发两个 run 收工互相
-            # 覆盖丢记录）。对齐同目录 maintenance_runs._append_token_run（item
-            # d1836827425e 同病同方）：``.tokens.json.lock`` 做 fcntl.flock 互斥 +
-            # tempfile + fsync + os.replace 原子落盘；读侧 JSONDecodeError 回退 {}
-            # 语义不变（原子写后不再产生半文件）。
-            lock_path = tokens_json.parent / f".{tokens_json.name}.lock"
-            with open(lock_path, "w") as lock_f:
-                fcntl.flock(lock_f, fcntl.LOCK_EX)
-                try:
-                    data = {}
-                    if tokens_json.is_file():
-                        try:
-                            loaded = json.loads(tokens_json.read_text(encoding="utf-8"))
-                        except (OSError, json.JSONDecodeError):
-                            loaded = {}
-                        if isinstance(loaded, dict):
-                            data = loaded
-                    runs = data.get("runs")
-                    if not isinstance(runs, list):
-                        runs = []
-                    runs.append(
-                        {
-                            "agent_type": agent_type,
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
-                            # code-review item ee160183aeaf：数值键改用 _to_int
-                            # 容错转换——裸 int() 遇非数值字符串抛 ValueError，
-                            # 不在外层 except (OSError, json.JSONDecodeError)
-                            # 内，会冒泡违背「写入失败静默跳过」承诺。
-                            "input_tokens": _to_int(usage_info.get("input_tokens", 0))
-                            + _to_int(usage_info.get("cache_creation_input_tokens", 0))
-                            + _to_int(usage_info.get("cache_read_input_tokens", 0)),
-                            "output_tokens": _to_int(usage_info.get("output_tokens", 0)),
-                            "cost_usd": usage_info.get("cost_usd"),
-                        }
-                    )
-                    data["runs"] = runs
-                    content = json.dumps(data, ensure_ascii=False, indent=2)
-                    # 原子替换：同目录进程唯一临时名 + fsync + os.replace
-                    fd, tmp_str = tempfile.mkstemp(
-                        prefix=f".{tokens_json.name}.",
-                        suffix=".tmp",
-                        dir=str(tokens_json.parent),
-                    )
-                    try:
-                        with os.fdopen(fd, "w", encoding="utf-8") as f:
-                            f.write(content)
-                            f.flush()
-                            os.fsync(f.fileno())
-                        os.replace(tmp_str, str(tokens_json))
-                    finally:
-                        if os.path.exists(tmp_str):
-                            try:
-                                os.unlink(tmp_str)
-                            except OSError:
-                                pass
-                finally:
-                    fcntl.flock(lock_f, fcntl.LOCK_UN)
-        except (OSError, json.JSONDecodeError):
-            pass
+        # code-review item f58099cfae63：锁 + 原子写副本（fcntl flock + mkstemp +
+        # fsync + os.replace，约 55 行）与同包 maintenance_runs._append_token_run
+        # 逐行同构却各自演进（条目键形态、临时文件清理写法已现微差）——直接委托
+        # 公共助手，消除双份漂移面。惰性 import：maintenance_runs 不依赖本模块，
+        # 无 import 环。
+        from core.agent_runner.maintenance_runs import (
+            _append_token_run,
+            _token_usage_fields,
+        )
+
+        entry = {
+            "agent_type": agent_type,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            **_token_usage_fields(usage_info),
+        }
+        _append_token_run(tokens_json, entry)

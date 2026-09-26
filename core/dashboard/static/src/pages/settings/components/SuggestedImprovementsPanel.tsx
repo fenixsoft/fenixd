@@ -583,6 +583,8 @@ const SuggestedImprovementsPanel = forwardRef<
           );
         } else {
           message.error(result.error || '接受失败');
+          // 失败时拒绝 resolve，Modal.confirm 不自动关闭，弹窗原样留着（同 555-557 行注释）
+          return Promise.reject(new Error(result.error || 'accept failed'));
         }
         const next = await loadItems();
         if (result.ok) nextAfterAction(next, item, onDone);
@@ -603,6 +605,8 @@ const SuggestedImprovementsPanel = forwardRef<
           message.success('已拒绝');
         } else {
           message.error(result.error || '拒绝失败');
+          // 失败时拒绝 resolve，Modal.confirm 不自动关闭，弹窗原样留着（同 555-557 行注释）
+          return Promise.reject(new Error(result.error || 'reject failed'));
         }
         const next = await loadItems();
         if (result.ok) nextAfterAction(next, item, onDone);
@@ -635,6 +639,8 @@ const SuggestedImprovementsPanel = forwardRef<
           message.success('已删除');
         } else {
           message.error(result.error || '删除失败');
+          // 失败时拒绝 resolve，Modal.confirm 不自动关闭，弹窗原样留着（同 555-557 行注释）
+          return Promise.reject(new Error(result.error || 'delete failed'));
         }
         const next = await loadItems();
         if (result.ok) nextAfterAction(next, item, onDone);

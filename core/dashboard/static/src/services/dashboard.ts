@@ -1231,6 +1231,9 @@ export interface CodeReviewFixConfig {
   enabled?: boolean;
   /** 每批修复的台账条目数（正整数，缺省 20，1–1000） */
   batch_size?: number;
+  /** 定向回归开关（缺省 true——配置缺席或非法均视为开；读侧按 !== false
+   *  归一口径，与 QualityPanel 4.3 注释一致；add-codefix-affinity-batching） */
+  targeted_regression?: boolean;
 }
 
 /** 周期性全量回归（admin.regression；add-test-regression-tab） */
