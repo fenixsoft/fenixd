@@ -1134,8 +1134,22 @@ class SelfReviewScheduler:
         window_start = last_run_at if last_run_at is not None else now - timedelta(hours=24)
 
         # 触发：成功/失败都写 last_run_date=today（失败当日不重试，次日
-        # run_at 自然重试）
-        return self._execute_review(local_today_str(), now, sr, window_start)
+        # run_at 自然重试）。顶层兜底：未被 _execute_review 内层 try 捕获的
+        # 意外异常（零活动判定/摘要聚合/todo 读取与渲染等段）也记告警并写
+        # last_run_date=today，使「失败当日不重试（防风暴）」对全部失败形态
+        # 成立——否则确定性异常会随巡检轮（分钟级）全天循环完整触发。
+        today = local_today_str()
+        try:
+            return self._execute_review(today, now, sr, window_start)
+        except Exception as e:
+            self._record_failure_alert(f"{today}: 自省执行意外异常: {e}")
+            self._save_state(today)
+            return {
+                "triggered": True,
+                "ok": False,
+                "reason": f"unexpected_error: {e}",
+                "date": today,
+            }
 
     def _execute_review(self, today: str, now: datetime, sr: dict, window_start: datetime) -> dict:
         """执行一次自省：聚合窗口数据 → 发起 run → 追加 todo.md → 提交。"""
