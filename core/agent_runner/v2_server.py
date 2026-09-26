@@ -87,6 +87,13 @@ class V2ServerManager:
         entry = self._v2_servers.get(str(wt_path))
         if not entry:
             return {}
+        if entry[1].poll() is not None:
+            # 条目陈旧（进程已死）：与 launch 侧陈旧条目处理口径对齐——清理条目
+            # 并释放端口记账，按未启动处理返回空 dict，绝不向 agent 注入失效端口
+            # 的 V2_BASE_URL 造成测试假失败。
+            self._v2_servers.pop(str(wt_path), None)
+            self._v2_used_ports.discard(entry[0])
+            return {}
         return {"V2_BASE_URL": v2_base_url(entry[0])}
 
     def _v2_stop_for_worktree(self, wt_path: Path) -> None:

@@ -1116,6 +1116,21 @@ def _validate_typed(scenario: TestScenario, kind: str) -> list[str]:
         _append_required_field_errors(
             errors, scenario.id, f"步骤{i}", specs, lambda key, s=step: _step_lookup_value(s, key)
         )
+        # api 步骤 url 绝对地址验收（code-review item cf81feeaec37）：对齐
+        # web navigate 同款 ^https?:// 校验——rewrite_origin 对无 scheme/netloc
+        # 的 URL 原样透传，相对 URL 会拖到运行期 httpx 请求时才失败。缺失
+        # 已由必填检查报告，此处仅拦形态非法。
+        if (
+            kind == "api"
+            and step.action in ("http_request", "sse_connect")
+            and step.url
+            and not re.match(r"^https?://\S+$", step.url.strip())
+        ):
+            errors.append(
+                f"场景'{scenario.id}'步骤{i}: url 必须为绝对地址"
+                f"（http://或https://开头，含主机与端口），收到 '{step.url}'"
+                f"——相对路径会被验收拒绝并退回 plan 阶段"
+            )
 
     for i, a in enumerate(scenario.assertions):
         if a.type not in KIND_ASSERTIONS.get(kind, set()):

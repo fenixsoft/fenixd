@@ -96,8 +96,13 @@ def _read_last_nonempty_line(path, chunk_size: int = 65536) -> str:
     lines = [ln for ln in text.splitlines() if ln.strip()]
     if not lines:
         return ""
-    # 尾部块正好从行首开始（start == 0）或块内含换行 → 末行为完整行
-    if start == 0 or "\n" in raw.decode("utf-8", errors="replace"):
+    # 尾部块正好从行首开始（start == 0）或块内存在位于末行**之前**的换行
+    # （去掉尾换行后仍含 \n）→ 末行为完整行。超长末行（> chunk_size）独占
+    # 整块时块内唯一的 \n 是其自身结尾符，判据不成立 → 回退全量读
+    # （code-review item c731923c9b36：旧判据「块内含任意 \n」把超长末行
+    # 自身的结尾符误当完整行证据，返回首部被截断的半行、json 解析必败，
+    # 在途重试豁免对大输出 run 静默失效）。
+    if start == 0 or b"\n" in raw.rstrip(b"\n"):
         return lines[-1]
     # 整个块是被截断的单行 → 回退全量读
     full = path.read_text(encoding="utf-8", errors="replace").splitlines()

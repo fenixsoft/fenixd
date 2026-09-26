@@ -237,7 +237,7 @@ def run_suite(
     # pytest 的 FAILED 摘要集中在输出末段，失败条目多时最早的 FAILED 行会被
     # 下方截尾丢掉，基于截断文本提取会让 cur ⊆ base 误判「存量」而漏报本次引入。
     # stdout/stderr 键仍按截断保留（展示用途），完整失败集合经 failed_tests 键给出。
-    failed_tests = collect_failed_tests(err, out)
+    failed_tests = collect_failed_tests(out, err)
     # 超时约定退出码 124（与 timeout(1) 惯例一致），正常按 pytest 实际退出码。
     exit_code = 124 if timed_out else (rc if rc is not None else 1)
     summary = {
@@ -263,7 +263,7 @@ def run_suite(
 # ── 失败集合与基线归类 ─────────────────────────────────────────────────
 
 
-def collect_failed_tests(stderr: str, stdout: str = "") -> list:
+def collect_failed_tests(stdout: str, stderr: str = "") -> list:
     """从 pytest 摘要输出收集失败/错误测试标识（FAILED/ERROR <nodeid> - <reason>）。
 
     ERROR 条目（收集错误、fixture 实例化错误）同样计入失败集合，加

@@ -938,13 +938,9 @@ class AgentRunner:
         # 持槽等待期间不派发 attempt——run 尚未创建，先写保活事件到预生成
         # run 文件（防 recovery watch 在长等待中把「已派发但未启动」误判为
         # 无进度/stuck；design D2 备选方案，见 _planner_throttle_acquire）。
-        acquired = self._planner_throttle_acquire(spec_name, run_id, sem)
-        if not acquired:
-            return AgentRunResult(
-                run_id, spec_name, f"planner-{mode}",
-                success=False, duration_seconds=0,
-                error="planner throttle 获取信号量失败",
-            )
+        # 恒成功：无限等待直至获取信号量（无排队超时/失败返回路径，
+        # 见 _planner_throttle_acquire 契约），无需检查返回值
+        self._planner_throttle_acquire(spec_name, run_id, sem)
         try:
             return self._execute_agent(spec_name, f"planner-{mode}", run_id)
         finally:
@@ -1208,9 +1204,12 @@ class AgentRunner:
             return _PLANNER_SEMAPHORE
 
     def _planner_throttle_acquire(self, spec_name: str, run_id: str,
-                                  sem: threading.BoundedSemaphore) -> bool:
-        """持槽等待信号量（可观测 + 等待期保活，design D2 备选方案）。
+                                  sem: threading.BoundedSemaphore) -> None:
+        """持槽等待信号量直至获取（恒成功，无失败返回路径；可观测 + 等待期
+        保活，design D2 备选方案）。
 
+        - 排队无时长上限：本方法无限等待直至 acquire 成功才返回（恒成功，
+          调用方无需检查返回值），等待期靠保活心跳维持 run 流新鲜；
         - ``sem`` 必须传入调用方经 _planner_throttle_semaphore() 取得的同一
           实例——acquire 与调用方 finally 的 release 须落在同一对象。若在此
           处无锁重读模块全局，热更新重建信号量的窗口内会 acquire 到新对象、
@@ -1252,7 +1251,7 @@ class AgentRunner:
                     })
                 except OSError:
                     pass
-                return True
+                return
             # 等待仍在继续：保活心跳（约每 60s 一次），run 流保持新鲜
             if time.monotonic() >= deadline:
                 deadline = time.monotonic() + THROTTLED_WAIT_HEARTBEAT_SECONDS

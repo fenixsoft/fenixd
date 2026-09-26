@@ -406,6 +406,10 @@ class H12RegressionRoutesMixin:
             )
             return
 
+        # 键名契约：信号 payload 用 created（fenixd
+        # ._check_regression_fix_requests 读 created 回链结果文件
+        # request_created）；响应键沿同族 _api_regression_run 叫 requested_at，
+        # 取值即此 created——两键同源仅命名语境不同
         created = datetime.now(timezone.utc).isoformat()
         payload = {"source": "regression_fix", "created": created}
         req_path = proot / REGRESSION_FIX_REQUEST

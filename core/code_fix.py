@@ -2621,17 +2621,27 @@ class CodeFixOrchestrator:
         )
         if owner_note:
             current_txt = f"{current_txt}；{owner_note}"
-        write_progress(
-            root,
-            phase="merging",
-            reason="wip_gate_blocked",
-            current=current_txt,
-            # 批上下文三键清除：agent run 已结束，保留现场由台账承载（防读
-            # 侧按陈旧 run_id 合成条级进度，D2 同款防陈旧索引）。
-            worktree=None,
-            run_id=None,
-            batch_total=None,
-        )
+        # 进度写盘与上方告警同款兜底：异常上穿会沿批 worker 兜底路径触发
+        # _safe_cleanup(success=False) 物理清掉刚保留的 worktree（台账已登记、
+        # 锁已放），defer 保留现场丢失。
+        try:
+            write_progress(
+                root,
+                phase="merging",
+                reason="wip_gate_blocked",
+                current=current_txt,
+                # 批上下文三键清除：agent run 已结束，保留现场由台账承载（防读
+                # 侧按陈旧 run_id 合成条级进度，D2 同款防陈旧索引）。
+                worktree=None,
+                run_id=None,
+                batch_total=None,
+            )
+        except Exception as e:  # noqa: BLE001 — 进度写盘失败不影响 defer 保留，
+            # 只留痕供排查（defer 消费路径轮询会刷新进度）。
+            self._log(
+                "warning",
+                f"code-fix defer 进度写盘异常（保留现场不受影响）: {e}",
+            )
         self._log(
             "warning",
             f"code-fix 第 {batch_no} 批合回被主树未提交改动挡住"
