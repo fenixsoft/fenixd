@@ -2098,14 +2098,16 @@ class AdminMonitor:
                 continue
             # code-review item f67ba8199742：历史文件被手工编辑或旧版本格式
             # 残留时元素可能为标量/dict，直接取 c[0]/c[1] 会 TypeError 并中断
-            # 当轮全部信号检测——形状不合法（非二元 list/tuple 或时间戳非
-            # 数值）的条目跳过。
+            # 当轮全部信号检测——形状不合法（非二元 list/tuple、时间戳非
+            # 数值，或 code-review f9814702b128 补的状态值非字符串——下方
+            # seq 的 join 对非 str 元素同样 TypeError）的条目跳过。
             in_window = [
                 c
                 for c in changes
                 if isinstance(c, (list, tuple))
                 and len(c) == 2
                 and isinstance(c[0], (int, float))
+                and isinstance(c[1], str)
                 and c[0] >= cutoff
             ]
             if len(in_window) < 2:
@@ -4571,7 +4573,13 @@ class AdminMonitor:
                 continue
             rec = history.get(name)
             last_status = rec.get("last_status") if isinstance(rec, dict) else None
-            changes = rec.get("changes") if isinstance(rec, dict) else []
+            # code-review f9814702b128：rec 为 dict 但缺 "changes" 键或值为
+            # null/非列表（手工编辑、旧版本残留）时，原样透传会在下方
+            # append/迭代处 AttributeError/TypeError，沿 _detect_flapping
+            # 中断整轮信号检测——非 list 一律按空历史处理（读侧对空
+            # changes 本就跳过，口径一致；本轮回写即洗成合法形状）。
+            raw_changes = rec.get("changes") if isinstance(rec, dict) else None
+            changes = raw_changes if isinstance(raw_changes, list) else []
             if last_status is not None and last_status != status:
                 changes.append([now, status])
                 changed = True
