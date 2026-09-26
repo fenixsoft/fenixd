@@ -950,6 +950,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
             }}
             // 只保留契约四档（用户 2026-09-26 要求）：漂移值 high/medium/low
             // 已在写侧+读侧归一（见 SEVERITY_COLOR 注释），不再作为过滤选项
+            // [fenix-ignore:679043c64a68] high/medium/low 选项残留已在 fde342a2 修复，当前仅契约四档
             options={[
               { value: 'critical', label: 'critical' },
               { value: 'major', label: 'major' },
