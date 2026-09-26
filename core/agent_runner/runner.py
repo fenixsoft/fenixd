@@ -3077,30 +3077,44 @@ class AgentRunner:
         # attempt（不递增 attempt、不触发 switch 冷却、不改 chain_cursor）。
         backoff = transient_budget[transient_retries]
         transient_retries += 1
-        append_run_line(
-            self.project_root / ".fenix" / "runs"
-            / f"{sub_run_id}.jsonl", {
-                "type": "transient_retry",
-                "spec": spec_name,
-                "provider": provider_name,
-                "backoff_seconds": backoff,
-                "retry_number": transient_retries,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            })
+        # 留痕写失败不改变重试决策（code-review item 449ab5cb953f：对齐
+        # _planner_throttle_acquire/_ratelimit_redispatch_on_terminal 口径）
+        try:
+            append_run_line(
+                self.project_root / ".fenix" / "runs"
+                / f"{sub_run_id}.jsonl", {
+                    "type": "transient_retry",
+                    "spec": spec_name,
+                    "provider": provider_name,
+                    "backoff_seconds": backoff,
+                    "retry_number": transient_retries,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                })
+        except OSError as e:
+            self.logger.warning(
+                "agent_runner",
+                f"transient_retry 留痕写入失败（不阻断退避重试）: {e}",
+            )
         # fix-retry-orphan-active-runs D1：superseded
         # 终态补写——本文件末行恒为终态，恢复「终态后置」
         # 不变量。写侧紧跟 transient_retry = 本文件终态，
         # 重试在新 sub_run_id 文件继续（runner.py:1922
         # 换新注释处交叉引用）；daemon 退避窗口内死亡
         # 由 interrupted 补写接续（末行仍终态）。
-        append_run_line(
-            self.project_root / ".fenix" / "runs"
-            / f"{sub_run_id}.jsonl", {
-                "type": "superseded",
-                "spec": spec_name,
-                "provider": provider_name,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            })
+        try:
+            append_run_line(
+                self.project_root / ".fenix" / "runs"
+                / f"{sub_run_id}.jsonl", {
+                    "type": "superseded",
+                    "spec": spec_name,
+                    "provider": provider_name,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                })
+        except OSError as e:
+            self.logger.warning(
+                "agent_runner",
+                f"superseded 留痕写入失败（不阻断退避重试）: {e}",
+            )
         self.logger.warning(
             "agent_runner",
             f"Transient error for '{spec_name}' (attempt {attempt}, "
@@ -3195,15 +3209,23 @@ class AgentRunner:
         ``provider`` 写 ``provider_name or ""``：provider 为 None（配置缺失/
         链耗尽）时仍可序列化，下游解析不因 null 异常。
         """
-        append_run_line(
-            self.project_root / ".fenix" / "runs" / f"{sub_run_id}.jsonl", {
-                "type": "gate-blocked",
-                "spec": spec_name,
-                "provider": provider_name or "",
-                "reason": reason,
-                "error": error[:_GATE_ERROR_TRUNCATE],
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            })
+        # 留痕写失败不改变门禁终态处置（code-review item 449ab5cb953f：
+        # 对齐 _planner_throttle_acquire/_ratelimit_redispatch_on_terminal 口径）
+        try:
+            append_run_line(
+                self.project_root / ".fenix" / "runs" / f"{sub_run_id}.jsonl", {
+                    "type": "gate-blocked",
+                    "spec": spec_name,
+                    "provider": provider_name or "",
+                    "reason": reason,
+                    "error": error[:_GATE_ERROR_TRUNCATE],
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                })
+        except OSError as e:
+            self.logger.warning(
+                "agent_runner",
+                f"gate-blocked 留痕写入失败（不阻断门禁终态处置）: {e}",
+            )
         self.logger.warning(
             "agent_runner",
             f"Artifact gate for '{spec_name}' ({agent_type}) terminal: "
@@ -3300,18 +3322,26 @@ class AgentRunner:
         transient_retries += 1
         # add-timeline-gate-failure-display D1：门禁归因随事件落盘
         #（原先只进 daemon log），截断口径见 _GATE_ERROR_TRUNCATE。
-        append_run_line(
-            self.project_root / ".fenix" / "runs"
-            / f"{sub_run_id}.jsonl", {
-                "type": "transient_retry",
-                "spec": spec_name,
-                "provider": provider_name,
-                "backoff_seconds": backoff,
-                "retry_number": transient_retries,
-                "reason": "artifact_gate",
-                "error": error[:_GATE_ERROR_TRUNCATE],
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            })
+        # 留痕写失败不改变重试决策（code-review item 449ab5cb953f：对齐
+        # _planner_throttle_acquire/_ratelimit_redispatch_on_terminal 口径）
+        try:
+            append_run_line(
+                self.project_root / ".fenix" / "runs"
+                / f"{sub_run_id}.jsonl", {
+                    "type": "transient_retry",
+                    "spec": spec_name,
+                    "provider": provider_name,
+                    "backoff_seconds": backoff,
+                    "retry_number": transient_retries,
+                    "reason": "artifact_gate",
+                    "error": error[:_GATE_ERROR_TRUNCATE],
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                })
+        except OSError as e:
+            self.logger.warning(
+                "agent_runner",
+                f"transient_retry 留痕写入失败（不阻断退避重试）: {e}",
+            )
         # fix-retry-orphan-active-runs D1：superseded 终态补写
         # ——与 provider 瞬断通道同语义：superseded 紧跟
         # transient_retry = 本文件终态，重试在新 sub_run_id 文件
@@ -3319,15 +3349,21 @@ class AgentRunner:
         # add-timeline-gate-failure-display D1：本文件被弃置后读侧只能从事件取
         # 原因，门禁归因 MUST 一并带上（否则时间轴该节点 reason 为空 =
         # 「无原因绿点」误导）。
-        append_run_line(
-            self.project_root / ".fenix" / "runs"
-            / f"{sub_run_id}.jsonl", {
-                "type": "superseded",
-                "spec": spec_name,
-                "provider": provider_name,
-                "error": error[:_GATE_ERROR_TRUNCATE],
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            })
+        try:
+            append_run_line(
+                self.project_root / ".fenix" / "runs"
+                / f"{sub_run_id}.jsonl", {
+                    "type": "superseded",
+                    "spec": spec_name,
+                    "provider": provider_name,
+                    "error": error[:_GATE_ERROR_TRUNCATE],
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                })
+        except OSError as e:
+            self.logger.warning(
+                "agent_runner",
+                f"superseded 留痕写入失败（不阻断退避重试）: {e}",
+            )
         self.logger.warning(
             "agent_runner",
             f"Artifact gate for '{spec_name}' (attempt {attempt}, "
@@ -4293,10 +4329,28 @@ class AgentRunner:
                             # result.modelUsage（D3 记账段证实矛盾）。
                             _msg = entry.get("message") or {}
                             _usage = _msg.get("usage") or {}
-                            _inp = int(_usage.get("input_tokens") or 0)
-                            _cr = int(
-                                _usage.get("cache_read_input_tokens") or 0
-                            )
+                            # usage 字段级防御（code-review item 3a3c7edfa67b）：
+                            # 畸形值（非数值字符串/嵌套 dict）令 int() 抛
+                            # ValueError/TypeError 会命中外层 except 终止整个读
+                            # 线程——此后该 run 全部 stdout 事件（含 result 终态）
+                            # 不再落盘，且 stdout 管道无人排水。单事件按 0 计 +
+                            # DEBUG 留痕，与逐行 JSONDecodeError 防护同粒度。
+                            try:
+                                _inp = int(_usage.get("input_tokens") or 0)
+                                _cr = int(
+                                    _usage.get("cache_read_input_tokens") or 0
+                                )
+                            except (TypeError, ValueError):
+                                _inp = _cr = 0
+                                self.logger.debug(
+                                    "agent_runner",
+                                    f"malformed usage fields, metrics"
+                                    f" skipped: {_usage!r}",
+                                    {
+                                        "run_id": run_id,
+                                        "event": "usage_field_malformed",
+                                    },
+                                )
                             context_metrics["total_input_tokens"] += _inp
                             context_metrics["total_cache_read_tokens"] += _cr
                             if _inp > context_metrics["peak_input_so_far"]:

@@ -1135,12 +1135,9 @@ class QQQueueMixin:
                     # 上轮已降级放行后的再派发）从零开始，避免陈旧计数误降级。
                     # （TASK_GATE_REJECTIONS_FIELD 已模块顶部导入，删除此处的
                     # 冗余函数内 import——code-review item 3218887178b8/35c865a3a00f）
-                    try:
-                        prev_gate_rejections = int(
-                            dispatch_entry.get(TASK_GATE_REJECTIONS_FIELD, 0) or 0
-                        )
-                    except (TypeError, ValueError):
-                        prev_gate_rejections = 0
+                    prev_gate_rejections = self._parse_int_field(
+                        dispatch_entry, TASK_GATE_REJECTIONS_FIELD, 0
+                    )
                     if prev_gate_rejections > 0:
                         self._pm.state_machine.update_spec(
                             spec_name, {TASK_GATE_REJECTIONS_FIELD: 0}
@@ -1286,12 +1283,10 @@ class QQQueueMixin:
                         )
                         self._enqueue_front(spec_name, "verifier")
                         return
-                    attempts = 0
                     spec_entry = self._pm.state_machine.read_one(spec_name) or {}
-                    try:
-                        attempts = int(spec_entry.get("_zero_change_attempts", 0) or 0) + 1
-                    except (TypeError, ValueError):
-                        attempts = 1
+                    attempts = (
+                        self._parse_int_field(spec_entry, "_zero_change_attempts", 0) + 1
+                    )
                     # fix-zero-change-blindspot：区分「真空转」与「有工作未提交」。
                     # cleanup 前取证的 worktree_dirty 非空 = agent 确实动过文件
                     # （如用 Bash 写文件而非 Edit/Write），只是没 commit——不是空转，
@@ -1746,10 +1741,9 @@ class QQQueueMixin:
                     else:
                         # Retry or mark error
                         spec_entry = self._pm.state_machine.read_one(spec_name)
-                        try:
-                            prev_retries = int(spec_entry.get("_retry_count", 0) or 0)
-                        except (TypeError, ValueError):
-                            prev_retries = 0
+                        prev_retries = self._parse_int_field(
+                            spec_entry, "_retry_count", 0
+                        )
                         retries = prev_retries + 1
                         max_r = self._pm._get_config("agents.max_retries", 3)
                         # ── 同因重派熔断（fix-redispatch-loop-governance D3/3.3/3.4）──
@@ -1769,12 +1763,9 @@ class QQQueueMixin:
                         # _retry_count 封顶四条通道的失败 MUST NOT 增减它。
                         fp = self._pm._redispatch_cause_fingerprint(final_error)
                         prev_fp = spec_entry.get("_redispatch_cause_fp")
-                        try:
-                            prev_streak = int(
-                                spec_entry.get("_redispatch_same_cause_streak", 0) or 0
-                            )
-                        except (TypeError, ValueError):
-                            prev_streak = 0
+                        prev_streak = self._parse_int_field(
+                            spec_entry, "_redispatch_same_cause_streak", 0
+                        )
                         streak = prev_streak + 1 if prev_fp == fp else 1
                         from core.config import ConfigLoader as _CL_breaker
 
@@ -1989,6 +1980,28 @@ class QQQueueMixin:
         return False
 
     @staticmethod
+    def _parse_int_field(entry: dict, key: str, default: int = 0) -> int:
+        """状态条目整型记账字段容错解析（单一落点，code-review item 43cfde173067）。
+
+        ``_retry_count`` / ``_merge_streak`` / ``_zero_change_attempts`` /
+        ``_ocr_fix_rounds`` 等字段的 try-int-except-(TypeError, ValueError)
+        解析块此前在文件内重复多处，统一改引本工具（与
+        ``_parse_defer_accounting`` 确立的单一落点方向同口径）：字段缺失 /
+        None / 空值 / 非数值脏值一律回退 0，后续调整容错规则只改此处。
+
+        Args:
+            entry: 状态条目（调用方自行 read_one，缺条目传 ``{}``）。
+            key: 记账字段名。
+            default: 字段缺失时的缺省值（现存调用点均为 0）。
+
+        Returns: 解析后的 int；脏值/类型不符回退 0，不抛异常。
+        """
+        try:
+            return int(entry.get(key, default) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
     def _parse_defer_accounting(entry: dict, now: float) -> tuple[int, float]:
         """顺延/WIP 等待共用记账字段的解析与缺省回填（单一落点）。
 
@@ -2007,10 +2020,7 @@ class QQQueueMixin:
 
         Returns: (count, first_f)——first_f 已保证为 float（缺省回填 now）。
         """
-        try:
-            count = int(entry.get("_merge_retry_count", 0) or 0)
-        except (TypeError, ValueError):
-            count = 0
+        count = QQQueueMixin._parse_int_field(entry, "_merge_retry_count", 0)
         first_at = entry.get("_merge_retry_first_at")
         try:
             first_f = float(first_at) if first_at else now
@@ -2471,10 +2481,7 @@ class QQQueueMixin:
         spec_entry = self._pm.state_machine.read_one(spec_name) or {}
         fp = self._pm._merge_fingerprint(merge_error)
         prev_fp = spec_entry.get("_merge_fp")
-        try:
-            prev_streak = int(spec_entry.get("_merge_streak", 0) or 0)
-        except (TypeError, ValueError):
-            prev_streak = 0
+        prev_streak = self._parse_int_field(spec_entry, "_merge_streak", 0)
         streak = prev_streak + 1 if prev_fp == fp else 1
         final_error = f"Merge-back failed (fp={fp}): {merge_error}"
 
@@ -2540,10 +2547,7 @@ class QQQueueMixin:
                 streak=streak,
             )
         else:
-            try:
-                prev_retries = int(spec_entry.get("_retry_count", 0) or 0)
-            except (TypeError, ValueError):
-                prev_retries = 0
+            prev_retries = self._parse_int_field(spec_entry, "_retry_count", 0)
             retries = prev_retries + 1
             self._pm.state_machine.update_spec(
                 spec_name,
@@ -3158,10 +3162,7 @@ class QQQueueMixin:
                 self._ocr_clear_findings_directive(spec_name)
                 return "pass"
             entry = self._pm.state_machine.read_one(spec_name) or {}
-            try:
-                rounds = int(entry.get("_ocr_fix_rounds", 0) or 0)
-            except (TypeError, ValueError):
-                rounds = 0
+            rounds = self._parse_int_field(entry, "_ocr_fix_rounds", 0)
             if rounds < 1:
                 return self._ocr_join_reject(
                     spec_name, entry, actionable, rounds, artifact

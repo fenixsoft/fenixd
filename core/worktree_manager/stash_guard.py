@@ -1047,8 +1047,21 @@ class G6StashGuardMixin:
         Returns: True 表示冲突已全部解决且 merge 已提交。
         """
         try:
+            # -c core.quotePath=false（code-review item 4ce10509fde4）：非 ASCII
+            # DU 冲突路径保持原样输出，否则 porcelain 的 C 转义引号形会被原样
+            # 拼入下方 git rm --cached 与 check-ignore 的 pathspec（永不命中）
+            # → git rm 返回非 0 → 自愈恒失败回退 merge --abort。与
+            # _collect_conflict_paths / _list_unmerged_files 的采集点同口径。
             status = subprocess.run(
-                ["git", "-C", str(self.project_root), "status", "--porcelain"],
+                [
+                    "git",
+                    "-C",
+                    str(self.project_root),
+                    "-c",
+                    "core.quotePath=false",
+                    "status",
+                    "--porcelain",
+                ],
                 capture_output=True,
                 text=True,
                 timeout=30,

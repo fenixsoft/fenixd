@@ -17,6 +17,8 @@ engine.py — 验证引擎主控（Runner 插件化调度，design D1）
 
 import asyncio
 import json
+import os
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -521,19 +523,49 @@ class VerifyEngine:
             "done": done,
             "current": current,
         }
+        # 原子写（code-review item 4897aa6ba94f，对齐 regression._atomic_write
+        # 的 mkstemp+os.replace 范式）：进度文件随每个场景完成高频重写，裸
+        # open("w") 原地截断会让并发读取侧（dashboard/质量门）读到半截 JSON。
         try:
-            with open(progress_path, "w", encoding="utf-8") as f:
-                json.dump(progress, f, ensure_ascii=False)
+            fd, tmp_path = tempfile.mkstemp(
+                prefix=f".{progress_path.name}.", suffix=".tmp", dir=str(progress_path.parent)
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(progress, f, ensure_ascii=False)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp_path, progress_path)
+            finally:
+                if os.path.exists(tmp_path):
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
         except Exception as e:
             self.logger.debug("verify_engine", f"进度文件写入失败（非致命）: {e}")
 
     def _save_report(self, report: dict):
-        """将报告写入磁盘。"""
+        """将报告写入磁盘（mkstemp+os.replace 原子替换，防并发读侧撕裂）。"""
         report_dir = self.project_root / ".fenix" / "verify-progress" / self.spec_name
         report_dir.mkdir(parents=True, exist_ok=True)
         report_path = report_dir / "report.json"
-        with open(report_path, "w", encoding="utf-8") as f:
-            json.dump(report, f, ensure_ascii=False, indent=2)
+        # 原子写（code-review item 4897aa6ba94f，同 _write_progress）
+        fd, tmp_path = tempfile.mkstemp(
+            prefix=f".{report_path.name}.", suffix=".tmp", dir=str(report_dir)
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(report, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, report_path)
+        finally:
+            if os.path.exists(tmp_path):
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
         self.logger.info(
             "verify_engine",
             f"📊 报告已保存: {report_path}",

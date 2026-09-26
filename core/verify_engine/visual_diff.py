@@ -162,27 +162,32 @@ class VisualDiffer:
             merged["scenario_id"] = scenario_id
             return merged
 
-        def _compare_once() -> list[dict]:
+        def _compare_once(current_file: Path = None, diff_file: Path = None) -> list[dict]:
             """单次对比（SSIM，skimage 不可用时降级像素对比）。
 
             解码失败（基线/当前截图损坏或非图像文件）不向上抛：返回
             status='error' 结构化结果，首次对比与重拍循环两条路径同被覆盖。
+
+            current_file/diff_file：重拍轮传入轮次命名文件，避免未入选轮次
+            覆写标准证据路径（code-review item 4693d3ce3731）。
             """
             try:
                 try:
                     return self._ssim_compare(
                         baseline_path,
-                        current_path,
+                        current_file or current_path,
                         baseline_name,
                         scenario_id,
                         screenshots_dir,
+                        diff_path=diff_file,
                     )
                 except ImportError:
                     return self._pixel_fallback_compare(
                         baseline_path,
-                        current_path,
+                        current_file or current_path,
                         baseline_name,
                         scenario_id,
+                        diff_path=diff_file,
                     )
             except (OSError, ValueError) as e:
                 # ImportError 兜底接不住解码异常（PIL 的 UnidentifiedImageError
@@ -293,11 +298,29 @@ class VisualDiffer:
             if best.get("status") not in ("warning", "diff_detected"):
                 break  # 结构性失败（size_mismatch 等）重拍无意义
             await _settle()
-            await page.screenshot(path=str(current_path), full_page=False)
+            # 重拍先落盘到轮次命名文件（code-review item 4693d3ce3731）：
+            # 仅当该轮分数胜出时才把截图/差异图复制回标准证据路径，保证
+            # 返回的 best（ssim/status）与磁盘上的 current_image/diff_image
+            # 恒对应——此前每轮重拍无条件覆写标准路径，best 来自更早轮时
+            # 报告分数与证据文件内容错位，误导人工核验。
+            retake_no = retake_count + 1
+            retake_shot = screenshots_dir / f"{scenario_id}_current_r{retake_no}.png"
+            retake_diff = screenshots_dir / f"{scenario_id}_diff_r{retake_no}.png"
+            await page.screenshot(path=str(retake_shot), full_page=False)
             retake_count += 1
-            cand = _compare_once()[0]
+            cand = _compare_once(retake_shot, retake_diff)[0]
             if self._compare_score(cand) > self._compare_score(best):
+                cand["current_image"] = str(current_path)
+                cand_diff = cand.get("diff_image")
+                if cand_diff:
+                    std_diff = screenshots_dir / f"{scenario_id}_diff.png"
+                    shutil.copy(str(cand_diff), str(std_diff))
+                    cand["diff_image"] = str(std_diff)
+                shutil.copy(str(retake_shot), str(current_path))
                 best = cand
+            # 未入选轮次文件不留盘（入选内容已复制回标准路径）
+            retake_shot.unlink(missing_ok=True)
+            retake_diff.unlink(missing_ok=True)
 
         final = _evidence_fields(best)
 
@@ -527,6 +550,7 @@ class VisualDiffer:
         baseline_name: str,
         scenario_id: str,
         output_dir: Path,
+        diff_path: Optional[Path] = None,
     ) -> list[dict]:
         """使用 scikit-image 的 SSIM 进行感知对比。"""
         from skimage.metrics import structural_similarity as ssim
@@ -563,8 +587,10 @@ class VisualDiffer:
             )
         )
 
-        # 生成差异图
-        diff_path = output_dir / f"{scenario_id}_diff.png"
+        # 生成差异图（diff_path 缺省时写标准路径；重拍轮传入轮次命名路径，
+        # 见 compare() 重拍循环注释）
+        if diff_path is None:
+            diff_path = output_dir / f"{scenario_id}_diff.png"
         diff_img = (np.abs(baseline_img - current_img) * 255).astype(np.uint8)
         io.imsave(str(diff_path), diff_img)
 
@@ -599,6 +625,7 @@ class VisualDiffer:
         current_path: Path,
         baseline_name: str,
         scenario_id: str,
+        diff_path: Optional[Path] = None,
     ) -> list[dict]:
         """降级方案：简单的像素百分比差异。
 
@@ -648,8 +675,10 @@ class VisualDiffer:
         total_pixels = int(b_arr.shape[0] * b_arr.shape[1])
         diff_ratio = diff_pixels / total_pixels
 
-        # 生成差异图
-        diff_path = self.base_dir / "screenshots" / f"{scenario_id}_diff.png"
+        # 生成差异图（diff_path 缺省时写标准路径；重拍轮传入轮次命名路径，
+        # 见 compare() 重拍循环注释）
+        if diff_path is None:
+            diff_path = self.base_dir / "screenshots" / f"{scenario_id}_diff.png"
         diff_img = np.zeros_like(b_arr)
         diff_img[diff_mask] = [255, 0, 0]  # 差异像素标红
         Image.fromarray(diff_img).save(str(diff_path))

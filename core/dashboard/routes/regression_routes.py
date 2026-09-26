@@ -480,20 +480,6 @@ class H12RegressionRoutesMixin:
 
         from core.verify_contract import load_verify_contract
 
-        contract = load_verify_contract(proot, logger=getattr(self, "logger", None))
-
-        # 已有有效 regression 段 → 不生成（人工/既有配置权威）
-        if contract is not None and contract.regression is not None:
-            self._json(
-                {
-                    "ok": True,
-                    "project": project["name"],
-                    "status": "skipped",
-                    "message": "regression 段已配置，无需生成。如需调整请在「项目简介」面板编辑 verify.yaml。",
-                }
-            )
-            return
-
         # 同项目单飞：在途时第二个请求直接 409（ThreadingHTTPServer 并发线程
         # 各起一个 claude 起草进程会互相踩 verify.yaml / git index）
         lock = _autodraft_lock(proot)
@@ -501,6 +487,23 @@ class H12RegressionRoutesMixin:
             self._error(409, "该项目的 AI 生成正在进行中，请稍候")
             return
         try:
+            # 已有有效 regression 段 → 不生成（人工/既有配置权威）。判定必须在
+            # 锁内重读契约后作出（code-review item 4a073d8518df）：锁外读到的
+            # 快照可能在等锁窗口内过期——请求 B 于 A 起草落位前读到旧契约、
+            # A 释放锁后 B 才拿到锁，按过期快照继续会以整契约草稿整体覆盖 A
+            # 刚写入（或用户刚手改）的 verify.yaml。skipped 与 full_contract
+            # 均以锁内重读结果为准。
+            contract = load_verify_contract(proot, logger=getattr(self, "logger", None))
+            if contract is not None and contract.regression is not None:
+                self._json(
+                    {
+                        "ok": True,
+                        "project": project["name"],
+                        "status": "skipped",
+                        "message": "regression 段已配置，无需生成。如需调整请在「项目简介」面板编辑 verify.yaml。",
+                    }
+                )
+                return
             full_contract = contract is None
             prompt = _autodraft_prompt(proot, project["name"], full_contract)
             try:

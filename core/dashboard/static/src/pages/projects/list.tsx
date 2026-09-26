@@ -196,6 +196,10 @@ function SpecNameCell({ project, record }: { project: string; record: SpecSummar
   // 消失后为 specMap 中已不存在的 spec 开 popover。alive 标志丢弃卸载后的
   // 回写；挂载时复位以兼容 StrictMode 模拟卸载-重挂载（ref 不随重挂载重置）。
   const aliveRef = useRef(true);
+  // 悬浮结束哨（code-review item 3ab32340dfeb）：onLeave 只清防抖 timer，
+  // 已在飞的 fetch 响应回来仍会 setWhy/setOpen——鼠标早已离开后浮层凭空弹出
+  // 且无触发方再关闭。回写前同时校验「未卸载」与「仍在悬浮」。
+  const hoveredRef = useRef(false);
 
   // 卸载清理（code-review item 2d5f6ca39f91）：悬停启动的 200ms 定时器若在
   // 触发前组件被卸载（列表刷新/行删除/切 Tab），其回调仍会 setWhy/setOpen，
@@ -209,9 +213,10 @@ function SpecNameCell({ project, record }: { project: string; record: SpecSummar
   }, []);
 
   const onEnter = () => {
+    hoveredRef.current = true;
     timerRef.current = setTimeout(() => {
       void fetchProposalWhy(project, record.name).then((text) => {
-        if (!aliveRef.current) return;
+        if (!aliveRef.current || !hoveredRef.current) return;
         if (text) {
           setWhy(text);
           setOpen(true);
@@ -220,6 +225,7 @@ function SpecNameCell({ project, record }: { project: string; record: SpecSummar
     }, 200);
   };
   const onLeave = () => {
+    hoveredRef.current = false;
     if (timerRef.current) clearTimeout(timerRef.current);
     setOpen(false);
   };
@@ -289,6 +295,10 @@ function VerifyCell({ project, record }: { project: string; record: SpecSummary 
   // 丢弃卸载后的回写；挂载时复位以兼容 StrictMode 模拟卸载-重挂载（ref 不随
   // 重挂载重置）。
   const aliveRef = useRef(true);
+  // 悬浮结束哨（code-review item 3ab32340dfeb，与 SpecNameCell 同款）：
+  // onLeave 不使在飞的 fetchVerdict 失效，鼠标离开后响应回来仍会
+  // setVerdict/setOpen。回写前同时校验「未卸载」与「仍在悬浮」。
+  const hoveredRef = useRef(false);
 
   // 卸载清理（code-review item 2d5f6ca39f91，与 SpecNameCell 同款）
   useEffect(() => {
@@ -306,9 +316,10 @@ function VerifyCell({ project, record }: { project: string; record: SpecSummary 
   }
 
   const onEnter = () => {
+    hoveredRef.current = true;
     timerRef.current = setTimeout(() => {
       void fetchVerdict(project, record.name).then((v) => {
-        if (!aliveRef.current) return;
+        if (!aliveRef.current || !hoveredRef.current) return;
         if (v && v.exists) {
           setVerdict(v);
           setOpen(true);
@@ -317,6 +328,7 @@ function VerifyCell({ project, record }: { project: string; record: SpecSummary 
     }, 200);
   };
   const onLeave = () => {
+    hoveredRef.current = false;
     if (timerRef.current) clearTimeout(timerRef.current);
     setOpen(false);
   };
