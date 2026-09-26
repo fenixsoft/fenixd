@@ -143,7 +143,16 @@ def _record_infra_failure(pipeline, spec_name: str, reason: str, run_id: str = "
             )
 
         # ── _verify_infra_rounds 轮次记账（纯观测，不参与冻结判定）──
-        rounds = pipeline._context.state_machine.bump_verify_infra_rounds(spec_name, +1)
+        # 局部容错：失败时 rounds 取 None，不阻断下游台账写入（与上/下记账步骤同构）
+        try:
+            rounds = pipeline._context.state_machine.bump_verify_infra_rounds(spec_name, +1)
+        except Exception as e:
+            rounds = None
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"_verify_infra_rounds 记账失败（不阻断下游记账）'{spec_name}': "
+                f"{type(e).__name__}: {e}",
+            )
 
         # ── 失败历史台账 failure_class=infra（R3 回拨参考）──
         # 记录点在统一归因入口：infra 轮不进 bug-found 分支，
@@ -223,6 +232,10 @@ def _detect_uniform_verify_failure(pipeline, spec_name: str, report: dict) -> bo
         _reset_uniform_fail_streak(pipeline, spec_name)
         return False
     if fail_total < 3:
+        # 0 passed 但失败不足 3 的小失败轮：非「全场景同因失败」轮，
+        # 同样回落连续计数（与 passed>0 / 混合签名轮处置一致，兑现
+        # 信号文案与 docstring「连续 3 轮同因」的『连续』口径）
+        _reset_uniform_fail_streak(pipeline, spec_name)
         return False
     # 仅失败态场景纳入哨（fail/failed/error，与 summary 的 failed+errors 同口径），
     # warning/blocked-env 不混入；纯 error 轮也要覆盖
@@ -245,7 +258,7 @@ def _detect_uniform_verify_failure(pipeline, spec_name: str, report: dict) -> bo
                 if st.get("success") is False:
                     sig = str(st.get("error") or st.get("detail") or "")
                     break
-        sigs.add(_normalize_fail_signature(sig)[:80])
+        sigs.add(_normalize_fail_signature(sig)[:120])
     if len(sigs) != 1:
         # 失败签名不一致（混合失败轮）：非同因失败轮，连续计数回落为 0
         _reset_uniform_fail_streak(pipeline, spec_name)
@@ -524,7 +537,12 @@ def reclassify_infra_rounds(
         ok=False 时 fail_rounds 为当前值（未变化），由调用方按需展示 reason。
     """
     if n <= 0:
-        return {"ok": False, "reason": "n must be > 0", "fail_rounds": 0, "applied": 0}
+        entry = state_machine.read_one(spec_name) or {}
+        try:
+            cur_rounds = int(entry.get("_verify_fail_rounds", 0) or 0)
+        except (TypeError, ValueError):
+            cur_rounds = 0
+        return {"ok": False, "reason": "n must be > 0", "fail_rounds": cur_rounds, "applied": 0}
 
     # ── 幂等：按 reclassify_key 去重 ──
     reclassify_key = _hash.sha256(

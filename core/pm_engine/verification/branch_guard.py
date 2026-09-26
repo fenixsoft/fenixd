@@ -111,9 +111,15 @@ def _branch_commit_count(pipeline, result) -> Optional[int]:
 
 
 def _implementer_zero_change(pipeline, spec_name: str, result) -> bool:
-    """实现器零变更成功判定：分支零新提交 且 全程零 Edit/Write 工具调用。
+    """实现器零变更成功判定：分支零新提交 且 全程零编辑类工具调用
+    （Edit/Write/MultiEdit/NotebookEdit）且 worktree 无未提交改动。
 
     分支缺失（result.branch 为空）不判定（保持既有行为，向后兼容）。
+    worktree 未提交改动补查（19a447af3bfc）：Bash 重定向/heredoc 等写
+    通道落盘不产生 tool_use 记录，仅凭工具名判定会把真实改动误判空转、
+    触发重派（未提交改动随后随 worktree 复位丢失）；存在未提交改动即按
+    非零变更返回 False，杜绝误重派。该项查询失败（无 worktree/子进程
+    异常）按跳过处理，维持既有「仅按工具名判定」语义（不吞空转侦测能力）。
     """
     branch = getattr(result, "branch", None)
     if not branch:
@@ -147,6 +153,26 @@ def _implementer_zero_change(pipeline, spec_name: str, result) -> bool:
                         return False
     except OSError:
         return False
+    # 零提交 + 零编辑类工具调用后补查 worktree 未提交改动（19a447af3bfc）：
+    # Bash 重定向/heredoc 等写通道落盘的改动无 tool_use 记录，仅凭工具名
+    # 会把真实改动误判空转触发重派（未提交改动随后随 worktree 复位丢失）。
+    # 存在未提交改动 → 非零变更（return False）；查询失败（无 worktree/子进程
+    # 异常）跳过本检查，维持既有「仅按工具名判定」语义。
+    try:
+        worktree = pipeline._pm.agent_runner.worktree_manager.find_worktree_path(branch)
+        if worktree:
+            r = subprocess.run(
+                ["git", "-C", str(worktree), "status", "--porcelain"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            if r.returncode != 0:
+                return False
+            if r.stdout.strip():
+                return False
+    except Exception:
+        pass
     return True
 
 
@@ -327,6 +353,9 @@ def _deliverable_gate_missing(pipeline, spec_name: str, result) -> list:
     # 引用（软校验，D4）：缺失仅审计留痕——引用错误不该阻断实现
     missing_refs = [p for p in references if not _exists_on_branch(p)]
     if missing_refs:
+        # component 用 "deliverable-reference-missing" 而非全模块统一的
+        # "pm_engine"：刻意的可过滤标签（事件语义）——tests/
+        # test_deliverable_gate.py 按该组件名过滤断言，勿按模块约定统一。
         pipeline._context.logger.warning(
             "deliverable-reference-missing",
             f"引用类路径在实现分支中不存在（仅审计留痕，不阻断）："
