@@ -13,7 +13,7 @@ screenshot_lab.py — 截图健全性算法标签（screenshot-evidence-labeling
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Union
 
 # ── 阈值常量 ───────────────────────────────────────────────────
 # 像素标准差阈值（uint8 [0,255] 归一化后 [0,1]）
