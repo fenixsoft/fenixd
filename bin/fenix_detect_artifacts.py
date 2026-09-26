@@ -238,7 +238,8 @@ def write_config_if_unresolved(project_root: Path, detection: dict) -> dict:
 
     仅 when worktree.has_build_artifacts 未显式布尔裁决（未裁决；空值/null 亦视为
     未裁决）才写入；已裁决项目跳过（MUST NOT 覆盖人工设置）。YAML 缺失时退化到
-    最小文本追加（保留其余行），不抛异常——写入失败返回 {"wrote": False, "reason": <原因>}。
+    定向文本更新（仅改写/追加 worktree 段两键，其余行原样保留），不抛异常——
+    写入失败返回 {"wrote": False, "reason": <原因>}。
 
     注意：有 PyYAML 时走 yaml.dump 全量重写，config.yaml 原有注释与排版会全部
     丢失（PyYAML 不保留注释）；仅无 yaml 的退化文本路径逐行保留原文件。
@@ -287,38 +288,95 @@ def write_config_if_unresolved(project_root: Path, detection: dict) -> dict:
             yaml.dump(config, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
         return {"wrote": True, "reason": "探测结果已写入（YAML 全量重写，原注释丢失）"}
     except ImportError:
-        pass  # 无 yaml → 退化最小文本追加
+        pass  # 无 yaml → 退化定向文本更新
 
-    # ── 退化路径：无 PyYAML → 最小文本追加（保留原行）──────────────────────
+    # ── 退化路径：无 PyYAML → 定向行内更新（仅改写/追加 worktree 段两键）──
+    # 旧实现的整段剔除会把 base_dir 等段内兄弟键一并删掉，与 PyYAML 路径的
+    # 全量重写语义漂移；此处两键已存在则原位替换，不在册则段内追加，其余行原样保留
     old_lines = []
     if cfg_path.is_file():
         try:
             old_lines = cfg_path.read_text(encoding="utf-8").splitlines()
         except OSError:
             pass
-    # 剔除旧 worktree 段（避免重复键）
-    new_lines = []
-    in_worktree = False
-    for line in old_lines:
-        stripped = line.strip()
-        if stripped == "worktree:" and not line.startswith(" "):
-            in_worktree = True
-            continue
-        if in_worktree:
-            if not line.startswith(" ") and not line.startswith("\t") and stripped:
-                in_worktree = False
-            else:
-                continue
-        new_lines.append(line)
-    new_lines.append("")
-    new_lines.append("worktree:")
-    new_lines.append(f"  has_build_artifacts: {str(detection['has_build_artifacts']).lower()}")
+
+    def _is_block_item(s: str) -> bool:
+        return s == "-" or s.startswith("- ")
+
+    has_line = f"  has_build_artifacts: {str(detection['has_build_artifacts']).lower()}"
     paths = detection["build_artifact_paths"]
-    new_lines.append(f"  build_artifact_paths: {json.dumps(paths, ensure_ascii=False)}")
-    new_lines.append("")
+    paths_line = f"  build_artifact_paths: {json.dumps(paths, ensure_ascii=False)}"
+
+    # 定位旧 worktree: 段区间 [wt_start, wt_end)。段尾检测须放过顶格块式列表项：
+    # yaml.dump 的列表子行落在键的缩进层级（可顶格 `- x`），仍属段内不能截断
+    wt_start = None
+    wt_end = len(old_lines)
+    for i, line in enumerate(old_lines):
+        stripped = line.strip()
+        if stripped == "worktree:" and not line.startswith((" ", "\t")):
+            wt_start = i
+            break
+    if wt_start is not None:
+        for j in range(wt_start + 1, len(old_lines)):
+            line = old_lines[j]
+            stripped = line.strip()
+            if stripped and not line.startswith((" ", "\t")) and not _is_block_item(stripped):
+                wt_end = j
+                break
+
+    if wt_start is None:
+        # 无 worktree 段：文件尾追加新段，其余行原样保留
+        new_lines = list(old_lines)
+        if new_lines and new_lines[-1].strip():
+            new_lines.append("")
+        new_lines.append("worktree:")
+        new_lines.append(has_line)
+        new_lines.append(paths_line)
+    else:
+        new_lines = old_lines[: wt_start + 1]
+        i = wt_start + 1
+        wrote_has = wrote_paths = False
+        while i < wt_end:
+            line = old_lines[i]
+            stripped = line.strip()
+            if stripped.startswith("has_build_artifacts:"):
+                new_lines.append(has_line)  # 原位替换（旧 null 空值行同此更新）
+                wrote_has = True
+                i += 1
+            elif stripped.startswith("build_artifact_paths:"):
+                new_lines.append(paths_line)  # 原位替换
+                wrote_paths = True
+                i += 1
+                # 吞掉旧键的块式列表值行（yaml.dump 默认块式），否则残留悬空
+                # `- x` 会破坏 YAML；确属值块的空行/注释一并清掉，值块后缀的
+                # 空行/注释（下一个兄弟键的前导）原样保留
+                pending = []
+                while i < wt_end:
+                    s = old_lines[i].strip()
+                    if _is_block_item(s):
+                        pending.clear()
+                        i += 1
+                    elif not s or s.startswith("#"):
+                        pending.append(old_lines[i])
+                        i += 1
+                    else:
+                        break
+                new_lines.extend(pending)
+            else:
+                new_lines.append(line)  # base_dir 等兄弟键及注释原样保留
+                i += 1
+        if not wrote_has:
+            new_lines.append(has_line)
+        if not wrote_paths:
+            new_lines.append(paths_line)
+        new_lines.extend(old_lines[wt_end:])
+
+    text = "\n".join(new_lines)
+    if text and not text.endswith("\n"):
+        text += "\n"
     try:
-        cfg_path.write_text("\n".join(new_lines), encoding="utf-8")
-        return {"wrote": True, "reason": "探测结果已写入（文本追加退化路径）"}
+        cfg_path.write_text(text, encoding="utf-8")
+        return {"wrote": True, "reason": "探测结果已写入（文本定向更新退化路径）"}
     except OSError as e:
         return {"wrote": False, "reason": f"写入失败: {e}"}
 
