@@ -4,10 +4,17 @@
 原样搬移为 mixin（方法体零改动）。
 
 D5 约定：各组方法采用 mixin 模式，DashboardHandler 继承各组 mixin。
+
+错误文案口径（code-review item cf2adb6709f5）：OSError 分支对外回固定
+语境文案（哪个文件/哪一步失败），异常原文经 logger.warning 服务端留痕、
+不随响应透出——OSError 文本含服务器绝对路径，对齐 base.py 500 兜底
+「不外泄裸异常文本」（item 1a2a0bd78662）。UnicodeDecodeError / YAML
+语法错误的详情不含内部路径且对用户自修有用，仍随响应透出。
 """
 
 from __future__ import annotations
 
+import logging
 import os
 import tempfile
 from pathlib import Path
@@ -22,6 +29,9 @@ from core.agent_runner.prompt_builder import (
     AGENT_PROMPT_FILES,
     project_agents_dir,
 )
+
+# fenixd. 层级字面量（tests/test_logger_no_bypass.py：core/ 禁 __name__ 旁路）
+logger = logging.getLogger("fenixd.dashboard.routes.settings_routes")
 
 
 def _atomic_write_text(target: Path, content: str) -> None:
@@ -175,7 +185,8 @@ class H5SettingsRoutesMixin:
             try:
                 content = path.read_text(encoding="utf-8") if path.is_file() else ""
             except OSError as e:
-                self._error(500, f"提示词读取失败（{atype}）: {e}")
+                logger.warning("提示词读取失败（%s）: %s", atype, e)
+                self._error(500, f"提示词读取失败（{atype}）")
                 return
             except UnicodeDecodeError as e:
                 self._error(500, f"提示词读取失败（{atype}，文件编码非 UTF-8）: {e}")
@@ -198,7 +209,8 @@ class H5SettingsRoutesMixin:
                 for atype in AGENT_PROMPT_FILES
             }
         except OSError as e:
-            self._error(500, f"项目附加提示词读取失败: {e}")
+            logger.warning("项目附加提示词读取失败（%s）: %s", project["name"], e)
+            self._error(500, "项目附加提示词读取失败")
             return
         except UnicodeDecodeError as e:
             self._error(500, f"项目附加提示词读取失败（文件编码非 UTF-8）: {e}")
@@ -269,7 +281,8 @@ class H5SettingsRoutesMixin:
         try:
             _atomic_write_text(target, content)
         except OSError as e:
-            self._error(500, f"提示词写入失败: {e}")
+            logger.warning("提示词写入失败（%s）: %s", agent_type, e)
+            self._error(500, "提示词写入失败")
             return
         self._json({"ok": True, "agent_type": agent_type, "path": str(target)})
 
@@ -291,7 +304,8 @@ class H5SettingsRoutesMixin:
             if exists:
                 content = target.read_text(encoding="utf-8")
         except OSError as e:
-            self._error(500, f"todo.md 读取失败: {e}")
+            logger.warning("todo.md 读取失败（%s）: %s", project["name"], e)
+            self._error(500, "todo.md 读取失败")
             return
         except UnicodeDecodeError as e:
             self._error(500, f"todo.md 读取失败（文件编码非 UTF-8）: {e}")
@@ -322,7 +336,8 @@ class H5SettingsRoutesMixin:
         try:
             _atomic_write_text(target, content)
         except OSError as e:
-            self._error(500, f"todo.md 保存失败: {e}")
+            logger.warning("todo.md 保存失败（%s）: %s", project["name"], e)
+            self._error(500, "todo.md 保存失败")
             return
         self._json({"ok": True, "project": project["name"], "path": str(target)})
 
@@ -344,7 +359,8 @@ class H5SettingsRoutesMixin:
             if exists:
                 content = target.read_text(encoding="utf-8")
         except OSError as e:
-            self._error(500, f"verify.yaml 读取失败: {e}")
+            logger.warning("verify.yaml 读取失败（%s）: %s", project["name"], e)
+            self._error(500, "verify.yaml 读取失败")
             return
         except UnicodeDecodeError as e:
             self._error(500, f"verify.yaml 读取失败（文件编码非 UTF-8）: {e}")
@@ -394,7 +410,8 @@ class H5SettingsRoutesMixin:
         try:
             _atomic_write_text(target, content)
         except OSError as e:
-            self._error(500, f"verify.yaml 保存失败: {e}")
+            logger.warning("verify.yaml 保存失败（%s）: %s", project["name"], e)
+            self._error(500, "verify.yaml 保存失败")
             return
         self._json({"ok": True, "project": project["name"], "path": str(target)})
 
@@ -416,7 +433,8 @@ class H5SettingsRoutesMixin:
         try:
             content = template.read_text(encoding="utf-8")
         except OSError as e:
-            self._error(500, f"契约模板读取失败: {e}")
+            logger.warning("契约模板读取失败: %s", e)
+            self._error(500, "契约模板读取失败")
             return
         self._json({"path": str(template), "template": content})
 

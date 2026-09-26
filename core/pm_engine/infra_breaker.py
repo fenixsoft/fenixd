@@ -13,6 +13,7 @@ infra_breaker.py — 链路级 infra 熔断器（evo-run-failure-classification-
 
 import json
 import logging
+import math
 import os
 import tempfile
 import threading
@@ -96,10 +97,16 @@ class InfraCircuitBreaker:
 
         范围守卫与 ConfigLoader.get_run_infra_breaker_config 一致（code-review
         item 8c2855513307）：bool / 非数值 / ``<= 0`` 一律回退缺省 30.0——
-        0/负数会使 until <= now，熔断即建即恢复，保护静默失效。
+        0/负数会使 until <= now，熔断即建即恢复，保护静默失效。非有限浮点
+        （.nan/.inf）同样回退（code-review item d0a328355581）：``.inf`` 使
+        until 永不到期（熔断永久），``.nan`` 使 now>=until 恒 False 同样永续
+        熔断。
         """
         val = self._get_config("cooldown_minutes", 30)
         if not isinstance(val, (int, float)) or isinstance(val, bool) or val <= 0:
+            return 30.0
+        if not math.isfinite(val):
+            # 非有限浮点（.nan/.inf）穿透范围比较时按脏值回退缺省（同 threshold）
             return 30.0
         return float(val)
 
