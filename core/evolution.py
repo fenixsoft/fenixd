@@ -1868,6 +1868,8 @@ def read_contract(path) -> Dict[str, Any]:
     """解析分析 run 契约产物 JSON（3.8）。
 
     任一不满足 MUST 抛 ``ContractError`` 判整轮失败（不产生任何条目）：
+    - 文件存在（缺失报「产物文件未写出」）且 JSON 可解析（非法报
+      「产物 JSON 不可解析」，两者可判别归因）；
     - JSON 可解析且为 dict；
     - 含 ``items`` 数组；
     - 每条含 ``project`` / ``date_section`` / ``title`` / ``verdict``(dict)
@@ -1879,10 +1881,18 @@ def read_contract(path) -> Dict[str, Any]:
 
     解析成功后由调用方删除产物文件。返回 {"run_id", "degraded", "items"}。
     """
+    # 失败归因分级（evo-add-evolution-product-salvage）：「产物文件未写出」
+    # 与「产物 JSON 不可解析」拆成两个可判别的 ContractError 文案——告警与
+    # 日志可直接判别失败面（前者是子代理从未写出/被清理，后者是半写截断
+    # 或内容损坏，处置不同）。
     try:
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as e:
-        raise ContractError(f"产物 JSON 不可读/非法: {e}") from e
+        text = Path(path).read_text(encoding="utf-8")
+    except OSError as e:
+        raise ContractError(f"产物文件未写出: {e}") from e
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as e:
+        raise ContractError(f"产物 JSON 不可解析: {e}") from e
     if not isinstance(data, dict):
         raise ContractError("产物顶层不是对象")
     items = data.get("items")
