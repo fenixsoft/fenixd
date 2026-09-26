@@ -618,7 +618,13 @@ class SpecReviewManager:
                     "CLI 解冻——解冻恢复原状态 reviewing，daemon 自动重派评审；"
                     "或直接撤销该 spec"
                 ),
-                alert_callback=self.pm_engine._send_human_escalation_alert,
+                # pm_engine None 守卫（同上两处 freeze 站点先例）：CLI 形态
+                # pm_engine=None，缺守卫会在冻结前取属性抛 AttributeError。
+                alert_callback=(
+                    self.pm_engine._send_human_escalation_alert
+                    if self.pm_engine is not None
+                    else None
+                ),
                 extra_updates={
                     "reviewer_run": None,
                     "_review_attempts": 0,
