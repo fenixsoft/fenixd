@@ -967,7 +967,8 @@ class StateMachine:
         """
         return self._bump_counter(spec_name, VERIFY_REDO_COUNT_FIELD, delta)
 
-    def update_spec(self, spec_name: str, updates: dict) -> bool:
+    def update_spec(self, spec_name: str, updates: dict,
+                    *, applied_out: Optional[dict] = None) -> bool:
         """Update a single SPEC's fields atomically. Returns True if updated.
 
         原子性（fix-state-atomicity-and-selfheal-restart D1）：读 STATE.md →
@@ -981,6 +982,12 @@ class StateMachine:
         留痕日志提取为 ``_log_update_applied``——原子转换路径
         （``_transition_atomic``）共用同一份写语义，避免冻结剥离/取消保持
         解锁规则出现第二份实现。
+
+        ``applied_out``（code-review b7a0f425b6bb）：可选收集 dict，写成功后
+        回填本次实际生效字段（含 ``_stripped`` 剥离留痕，语义同
+        ``_apply_updates_entry.applied``）。冻结剥离时本函数仍返回 True
+        （写本身成功），调用方须自行核对 ``_stripped`` 才能判知 status 写
+        未生效——只消费 bool 返回值的既有调用方不受影响。
         """
         applied: dict = {}
 
@@ -992,6 +999,9 @@ class StateMachine:
             self.logger.warning("state_machine", f"SPEC not found: {spec_name}")
             return False
         self._log_update_applied(spec_name, applied)
+        if applied_out is not None:
+            applied_out.clear()
+            applied_out.update(applied)
         return True
 
     def _apply_updates_entry(self, specs: Dict[str, dict], spec_name: str,
