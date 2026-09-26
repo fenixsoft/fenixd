@@ -48,7 +48,6 @@ const menuBaseStyle: CSSProperties = {
   boxShadow: '0 24px 60px rgba(2, 6, 23, 0.18), 0 0 0 1px rgba(148, 163, 184, 0.12)',
   zIndex: 1000,
   padding: '6px',
-  transition: 'opacity 150ms ease-in-out, transform 150ms ease-in-out',
   backdropFilter: 'blur(12px)',
 };
 
@@ -260,8 +259,6 @@ export default function CommandMenu({
           ...menuPosition,
           overflowY: 'hidden',
           padding: '20px',
-          opacity: 1,
-          transform: 'translateY(0)',
           textAlign: 'center',
         }}
       >
@@ -276,7 +273,7 @@ export default function CommandMenu({
       role="listbox"
       aria-label="可用命令"
       className="fenix-composer-portal command-menu border border-border bg-popover/95 text-popover-foreground"
-      style={{ ...menuBaseStyle, ...menuPosition, opacity: 1, transform: 'translateY(0)' }}
+      style={{ ...menuBaseStyle, ...menuPosition }}
     >
       {orderedNamespaces.map((namespace) => (
         <div key={namespace} className="command-group">
