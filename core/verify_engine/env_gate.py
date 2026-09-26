@@ -11,6 +11,9 @@ env_gate.py — 验证环境健全性门（verify-environment-sanity-gate）。
   探针健康 = 维持 fail（此时确属真缺陷或慢场景）
 
 三条件同时成立才降级（design Risks 防误伤），任一不满足保持原判定。
+例外（B1 白屏候选）：step_results 含显式 ``first_frame_ok is False`` 时，
+白屏属客户端渲染维度证据，finalize 不依赖探针直接降级 blocked-env
+（见 is_blank_render_candidate）。
 """
 
 from __future__ import annotations

@@ -540,6 +540,9 @@ class AdminStore:
             if rec.get("signal_type") != signal_type:
                 continue
             if rec.get("kind") not in (SIGNAL, ESCALATION, DISPOSITION):
+                # 三种 kind 已是 admin_alerts.json 全部在册记录（见模块 docstring），
+                # 此过滤对正常记录恒放行；保留仅作前瞻性防御，拦截人工修补/
+                # 外部工具写入的未知或缺失 kind（code-review c78e3230828e）。
                 continue
             rec_spec = rec.get("spec")
             if spec is not None and rec_spec != spec:
