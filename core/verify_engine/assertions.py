@@ -358,6 +358,19 @@ class AssertionRunner:
         selector = a["selector"]
         compare_selector = a.get("compare_selector", "")
         op = a.get("operator", ">")
+        if op not in (">", "<", "=="):
+            # 确定性失败而非静默按相等比较：planner 误写 ">="/"≥" 等会落入
+            # == 分支产出与场景意图相悖的裁决，与 _assert_alignment 的非法
+            # axis 口径保持一致，给出可定位提示。
+            return {
+                "type": "z_index_order",
+                "layer": 2,
+                "selector": selector,
+                "compare_selector": compare_selector,
+                "operator": op,
+                "pass": False,
+                "error": f"非法 operator: {op!r}，仅支持 >/</==",
+            }
 
         if not compare_selector:
             # 显式失败而非静默兜底：缺对比对象时 _safe_evaluate 会返回
