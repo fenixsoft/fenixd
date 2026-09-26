@@ -9,6 +9,7 @@
 
 import shutil
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -60,6 +61,13 @@ class TestVerifiedStuckBlocker(unittest.TestCase):
 
     def test_blocker_entry_is_dict_not_string(self):
         self._spec_to_verified()
+        # code-review item 1d8af1b35663：verified 分支加了与 implementing/testing
+        # 同口径的滞留宽限阈值（缺省派生 160min），刚转移的瞬态窗口不再列 blocker；
+        # update_spec 会无条件把 updated 刷新为当前时间（_apply_updates_entry），
+        # 故直接改 STATE.md 文本回拨 updated 越阈，以命中 blocker 构造分支。
+        past = (datetime.now(timezone.utc) - timedelta(minutes=200)).isoformat()
+        text = re.sub(r"(- updated: ).+", rf"\g<1>{past}", self.state_path.read_text(encoding="utf-8"))
+        self.state_path.write_text(text, encoding="utf-8")
         result = self.engine.check_blockers()  # 修复前此处抛 TypeError
         b = result["blockers"][0]
         self.assertIsInstance(b, dict)
