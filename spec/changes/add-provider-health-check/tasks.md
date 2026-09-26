@@ -23,7 +23,7 @@
 
 ## 1. 后端探测模块
 
-- [ ] 1.1 新建 `core/dashboard/llm_health.py`：`run_llm_health_check(baseurl, apikey, model) -> dict`，对 `{baseurl 去尾斜杠}/v1/messages` 发最小消息请求（`role: user` / `content: "hello"` / `max_tokens: 64`；请求头照抄 `bin/probe_prompt_cache.py` 先例：`x-api-key` + `anthropic-version: 2023-06-01` + apikey 非空时 `Authorization: Bearer`，stdlib urllib 不引入新依赖）；模块级常量 `HEALTH_CHECK_TIMEOUT_SECONDS = 15`；返回 `{"ok", "latency_ms", "error_kind", "status", "error"}`，失败四分类 `http_error`（非 200，带 status + 响应片段截断 ≤200 字符）/ `connection_error` / `timeout` / `empty_reply`（200 但解析不到非空文本 content）；函数内不落盘 apikey 与完整响应。
+- [ ] 1.1 新建 `core/dashboard/llm_health.py`：`run_llm_health_check(baseurl, apikey, model) -> dict`，对 `{baseurl 去尾斜杠}/v1/messages` 发最小消息请求（`role: user` / `content: "hello"` / `max_tokens: 64`；请求头照抄 `bin/probe_prompt_cache.py` 先例：`x-api-key` + `anthropic-version: 2023-06-01` + apikey 非空时 `Authorization: Bearer`，stdlib urllib 不引入新依赖）；模块级常量 `HEALTH_CHECK_TIMEOUT_SECONDS = 15`；返回 `{"ok", "latency_ms", "error_kind", "status", "error", "model"}`（`model` 仅成功时回显请求的 model，与 spec「模型正常回复」Scenario 对齐；失败场景按 spec 对应响应体取值），失败四分类 `http_error`（非 200，带 status + 响应片段截断 ≤200 字符）/ `connection_error` / `timeout` / `empty_reply`（200 但解析不到非空文本 content）；函数内不落盘 apikey 与完整响应。
 - [ ] 1.2 新建 `tests/test_llm_health.py`：monkeypatch urllib 替身覆盖 200 正常回复（latency_ms 为正整数、model 回显口径）、非 200（error_kind=http_error + status 透传 + 片段截断）、超时（error_kind=timeout）、连接异常（error_kind=connection_error）、200 无文本（error_kind=empty_reply）、baseurl 尾斜杠去除；`pytest tests/test_llm_health.py` 全绿。
 
 ## 2. 端点接线

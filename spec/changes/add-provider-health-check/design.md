@@ -2,7 +2,7 @@
 
 - 「模型」页签 = `LlmProviderPanel.tsx`（Provider 卡片：名称 / Base URL / API Key / 默认模型名，标题栏 extra 现只有 Popconfirm 包裹的删除图标）。
 - 「模型分配」页签 = `AgentModelPanel.tsx`（角色卡片 → Provider 行：拖拽手柄 / Provider 下拉 / 模型输入 / 删除图标，见 `AgentModelPanel.tsx:399` 附近的行布局）。
-- 运行期 Provider 消费方式：claude CLI 经 `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN` 走 Anthropic 兼容协议（`core/agent_runner/runner.py:1044`）。健康检测因此对 `{baseurl}/v1/messages` 发 Anthropic messages 请求即可代表真实可用性。
+- 运行期 Provider 消费方式：claude CLI 经 `ANTHROPIC_BASE_URL` + `ANTHROPIC_API_KEY` 走 Anthropic 兼容协议（`core/agent_runner/runner.py:1044-1045`；provider 覆盖生效时会清除继承的 `ANTHROPIC_AUTH_TOKEN`，见 `runner.py:4197-4201`）。健康检测请求照抄 probe 先例同时携带 `x-api-key` 与 `Authorization: Bearer` 两种头，覆盖两种传输口径，因此对 `{baseurl}/v1/messages` 发 Anthropic messages 请求即可代表真实可用性。
 - 既有直连先例：`bin/probe_prompt_cache.py` 用 stdlib urllib 构造 `/v1/messages` 请求（`x-api-key` + `anthropic-version: 2023-06-01` + 条件 `Authorization: Bearer`）。
 - Dashboard 路由形态：handler 写在 `routes/settings_routes.py` 的 `H5SettingsRoutesMixin`，经 `routes/base.py` 的 `_API_POST_ROUTES` 表 + 适配函数注册（exact 匹配）。
 
@@ -36,6 +36,8 @@
 - [同步端点占用 handler 线程最长 15s] → dashboard HTTP server 本就并发处理请求（keep-alive 线程模型）；15s 上限可控，不做异步化。
 - [网关对 `/v1/messages` 路径变体（如带版本前缀的代理）行为不一] → 与 claude CLI 运行期同路径同协议，检测结论对运行期可用性有效；`connection_error`/`http_error` 分类足以指导排障。
 - [表单当前值含未校验输入（如半截 URL）] → 后端按 `connection_error` 归类返回，前端原样展示；不做前端预校验 URL 合法性（避免误拦）。
+- [任意 baseurl 探测的 SSRF 面] → dashboard 仅绑定 127.0.0.1（`core/dashboard/server.py:106`），API 无鉴权为既有面貘（`/api/quality/ocr-install` 同为无鉴权 POST 且副作用更重）；本端点只读探测、无副作用，滥用面与既有端点一致，不新增鉴权。
+- [探测结果污染运行期熔断状态] → 探测为纯只读，MUST NOT 写入 `core/agent_runner/provider_circuit.py` 的 4xx 熔断计数 / 切换冷却 / 半开探针状态——手动健康检测与运行期熔断彼此独立，避免用户点检反把 provider 打入冷却。
 
 ## Migration Plan
 
