@@ -33,9 +33,9 @@
 
 ## 3. 前端 service 与解析工具
 
-- [ ] 3.1 `core/dashboard/static/src/services/dashboard.ts` 新增 `checkLlmHealth(params: { baseurl; apikey; model })` service 函数，走既有 `request()` 封装并导出结果类型。
-- [ ] 3.2 新建 `core/dashboard/static/src/utils/llmHealth.ts`：`resolveHealthCheckParams({ formProviders, savedProviders, providerName, rowModel, roleModel })` —— 模型链＝行内模型 → 角色级缺省 → Provider 默认模型；baseurl/apikey 先按名查 formProviders（表单当前值）、查不到回退 savedProviders（已保存配置）；解析不出任一字段返回 `{ error: <原因> }`，纯函数零 React 依赖。
-- [ ] 3.3 新建 `core/dashboard/static/tests/llmHealth.test.mjs`（node --test + 原生 type-stripping 导入 .ts，范式同 `agentModels.test.mjs`）：行内模型已填 / 留空走角色级缺省 / 再留空走 Provider 默认 / Provider 仅在已保存配置中（回退命中）/ 两处都无（返回 error）各分支。
+- [x] 3.1 `core/dashboard/static/src/services/dashboard.ts` 新增 `checkLlmHealth(params: { baseurl; apikey; model })` service 函数，走既有 `request()` 封装并导出结果类型。
+- [x] 3.2 新建 `core/dashboard/static/src/utils/llmHealth.ts`：`resolveHealthCheckParams({ formProviders, savedProviders, providerName, rowModel, roleModel })` —— 模型链＝行内模型 → 角色级缺省 → Provider 默认模型；baseurl/apikey 先按名查 formProviders（表单当前值）、查不到回退 savedProviders（已保存配置）；解析不出任一字段返回 `{ error: <原因> }`，纯函数零 React 依赖。
+- [x] 3.3 新建 `core/dashboard/static/tests/llmHealth.test.mjs`（node --test + 原生 type-stripping 导入 .ts，范式同 `agentModels.test.mjs`）：行内模型已填 / 留空走角色级缺省 / 再留空走 Provider 默认 / Provider 仅在已保存配置中（回退命中）/ 两处都无（返回 error）各分支。
 
 ## 4. 两页签入口与验证
 
