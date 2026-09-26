@@ -176,46 +176,65 @@ _GLOBAL_BUDGET_CACHE: dict = {}
 _GLOBAL_BUDGET_CACHE_MAX = 64
 
 
-def _resolve_global_impl_run_budget(project_root) -> int:
-    """读取全局 agents.impl_run_budget 有效值，fallback DEFAULT_IMPL_RUN_BUDGET。
+def _cached_config_value(project_root, cache: dict, cache_max: int, parse):
+    """config 读侧签名缓存公共流程单点（config 读侧各入口共用）。
 
-    结果按（用户级 + 项目级）config.yaml 签名键缓存（config 变化自动失效），
-    与闸门口径一致：ConfigLoader.get 读合并配置 → 按有效上限夹紧 → fallback DEFAULT。
+    统一「（用户级 + 项目级）config.yaml 签名键 → 命中直返 → resolve_config
+    → parse(cfg) → 写缓存 → 超 cache_max 清空」样板，各入口只保留自己的
+    解析语义（parse 闭包）与缓存表，避免再增配置读侧时复制一半流程、漏掉
+    双签名修正。parse 在 cache miss 时才调用（其内部导入不落在命中热路径）。
     """
-    from core.pm_engine.budget import (
-        clamp_impl_run_budget,
-        DEFAULT_IMPL_RUN_BUDGET,
-        resolve_impl_run_budget_max,
-        IMPL_RUN_BUDGET_MAX_KEY,
-        IMPL_RUN_BUDGET_MAX_DEFAULT,
-    )
-    from core.config import ConfigLoader
     import core.dashboard.data as _facade
+    from core.config import ConfigLoader
 
     proot = Path(project_root)
-    cfg_path = proot / ".fenix" / "config.yaml"
-    sig = _facade._config_file_sig(cfg_path)
     # fcdd13be884c：resolve_config 是用户级 + 项目级深合并，cache_key 须并入
     # 用户级 config.yaml 签名，否则用户只改用户级 agents.impl_run_budget(_max)
     # 时缓存不失效、持续吐旧值。文件缺失时 _config_file_sig 恒返回 None，稳定。
     cache_key = (
         str(proot.resolve()),
         _facade._config_file_sig(_facade.USER_CONFIG_PATH),
-        sig,
+        _facade._config_file_sig(proot / ".fenix" / "config.yaml"),
     )
-    cached = _GLOBAL_BUDGET_CACHE.get(cache_key)
+    cached = cache.get(cache_key)
     if cached is not None:
         return cached
     cfg = ConfigLoader.resolve_config(proot)
-    max_value = resolve_impl_run_budget_max(
-        ConfigLoader.get(cfg, IMPL_RUN_BUDGET_MAX_KEY, IMPL_RUN_BUDGET_MAX_DEFAULT)
+    value = parse(cfg)
+    if len(cache) > cache_max:
+        cache.clear()
+    cache[cache_key] = value
+    return value
+
+
+def _resolve_global_impl_run_budget(project_root) -> int:
+    """读取全局 agents.impl_run_budget 有效值，fallback DEFAULT_IMPL_RUN_BUDGET。
+
+    结果按（用户级 + 项目级）config.yaml 签名键缓存（config 变化自动失效，
+    公共流程见 _cached_config_value），与闸门口径一致：ConfigLoader.get 读
+    合并配置 → 按有效上限夹紧 → fallback DEFAULT。
+    """
+
+    def _parse(cfg):
+        # budget 为 pm_engine 叶子模块：函数内导入避开 pm_engine 包循环
+        from core.pm_engine.budget import (
+            clamp_impl_run_budget,
+            DEFAULT_IMPL_RUN_BUDGET,
+            resolve_impl_run_budget_max,
+            IMPL_RUN_BUDGET_MAX_KEY,
+            IMPL_RUN_BUDGET_MAX_DEFAULT,
+        )
+        from core.config import ConfigLoader
+
+        max_value = resolve_impl_run_budget_max(
+            ConfigLoader.get(cfg, IMPL_RUN_BUDGET_MAX_KEY, IMPL_RUN_BUDGET_MAX_DEFAULT)
+        )
+        raw = ConfigLoader.get(cfg, "agents.impl_run_budget")
+        return clamp_impl_run_budget(raw, max_value) or DEFAULT_IMPL_RUN_BUDGET
+
+    return _cached_config_value(
+        project_root, _GLOBAL_BUDGET_CACHE, _GLOBAL_BUDGET_CACHE_MAX, _parse
     )
-    raw = ConfigLoader.get(cfg, "agents.impl_run_budget")
-    budget = clamp_impl_run_budget(raw, max_value) or DEFAULT_IMPL_RUN_BUDGET
-    if len(_GLOBAL_BUDGET_CACHE) > _GLOBAL_BUDGET_CACHE_MAX:
-        _GLOBAL_BUDGET_CACHE.clear()
-    _GLOBAL_BUDGET_CACHE[cache_key] = budget
-    return budget
 
 
 # ── per-spec 预算上限缓存（fix-dashboard-read-path-performance D1）───────────
@@ -233,40 +252,26 @@ def _impl_budget_max(project_root) -> int:
 
     供 spec_summary 夹紧 override 与 API 校验共用（与闸门 ImplBudget._impl_budget_max
     同源：同一 resolve_impl_run_budget_max 纯函数 + 同一配置键）。
-    结果按（用户级 + 项目级）config.yaml 签名缓存（配置变化自动失效），避免每
-    spec 重复 resolve_config（fix-dashboard-read-path-performance：读路径冷重建
-    最大单项成本）。
+    结果按（用户级 + 项目级）config.yaml 签名缓存（配置变化自动失效，公共流程
+    见 _cached_config_value），避免每 spec 重复 resolve_config
+    （fix-dashboard-read-path-performance：读路径冷重建最大单项成本）。
     """
-    import core.dashboard.data as _facade
 
-    proot = Path(project_root)
-    cfg_path = proot / ".fenix" / "config.yaml"
-    sig = _facade._config_file_sig(cfg_path)
-    # fcdd13be884c：同 _resolve_global_impl_run_budget，cache_key 并入用户级
-    # config.yaml 签名（resolve_config 深合并两级；文件缺失时签名恒为 None）。
-    cache_key = (
-        str(proot.resolve()),
-        _facade._config_file_sig(_facade.USER_CONFIG_PATH),
-        sig,
-    )
-    cached = _IMPL_BUDGET_MAX_CACHE.get(cache_key)
-    if cached is not None:
-        return cached
-    # budget 为 pm_engine 叶子模块：函数内导入避开 pm_engine 包循环
-    from core.pm_engine.budget import (
-        resolve_impl_run_budget_max,
-        IMPL_RUN_BUDGET_MAX_KEY,
-        IMPL_RUN_BUDGET_MAX_DEFAULT,
-    )
-    from core.config import ConfigLoader
+    def _parse(cfg):
+        # budget 为 pm_engine 叶子模块：函数内导入避开 pm_engine 包循环
+        from core.pm_engine.budget import (
+            resolve_impl_run_budget_max,
+            IMPL_RUN_BUDGET_MAX_KEY,
+            IMPL_RUN_BUDGET_MAX_DEFAULT,
+        )
+        from core.config import ConfigLoader
 
-    cfg = ConfigLoader.resolve_config(proot)
-    raw = ConfigLoader.get(cfg, IMPL_RUN_BUDGET_MAX_KEY, IMPL_RUN_BUDGET_MAX_DEFAULT)
-    budget = resolve_impl_run_budget_max(raw)
-    if len(_IMPL_BUDGET_MAX_CACHE) > _IMPL_BUDGET_MAX_CACHE_MAX:
-        _IMPL_BUDGET_MAX_CACHE.clear()
-    _IMPL_BUDGET_MAX_CACHE[cache_key] = budget
-    return budget
+        raw = ConfigLoader.get(cfg, IMPL_RUN_BUDGET_MAX_KEY, IMPL_RUN_BUDGET_MAX_DEFAULT)
+        return resolve_impl_run_budget_max(raw)
+
+    return _cached_config_value(
+        project_root, _IMPL_BUDGET_MAX_CACHE, _IMPL_BUDGET_MAX_CACHE_MAX, _parse
+    )
 
 
 def _normalize_depends_on(raw) -> str | None:
