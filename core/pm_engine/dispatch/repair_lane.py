@@ -710,7 +710,14 @@ class PRepairLaneMixin:
             )
         else:
             full_error = base_error
-        max_r = self._pm._get_config("agents.max_retries", 3)
+        # 配置非法值防御（与 adjudication.py 的 agents.max_retries 读取同款）：
+        # 非数字字符串裸比较在下方 retries >= max_r 抛 TypeError，本方法是
+        # repair 链三条失败路径的共同收尾（且可能运行在 worker 的 except 兜底
+        # 内），异常会打断 update_spec/blocked 收尾——回退默认值 3。
+        try:
+            max_r = int(self._pm._get_config("agents.max_retries", 3) or 3)
+        except (TypeError, ValueError):
+            max_r = 3
         updates: dict = {
             "status": "ready",
             "error": full_error,
