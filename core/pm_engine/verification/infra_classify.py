@@ -459,10 +459,13 @@ def _scenario_classification_distribution(pipeline, spec_name: str) -> dict:
 
 
 def _failed_scenario_ids(pipeline, spec_name: str) -> list:
-    """从当前 report.json 提取非 PASS 场景 id 列表（失败轮 failed_scenarios）。"""
-    from core.verdict_check import load_report
+    """从当前 report.json 提取非 PASS 场景 id 列表（失败轮 failed_scenarios）。
 
-    report = load_report(pipeline._context.project_root, spec_name)
+    读取器与 _scenario_classification_distribution 同源（统一经
+    pipeline._read_verify_report）：读取失败/非 dict 报告时该函数降级
+    返回 {}，在此自然归约为空清单（缺报告 ⇒ 无失败场景），返回约定不变。
+    """
+    report = pipeline._read_verify_report(spec_name)
     if not isinstance(report, dict):
         return []
     ids = []
@@ -530,7 +533,7 @@ def reclassify_infra_rounds(
 
     store = AdminStore(project_root, logger)
     try:
-        existing = store._read_locked()
+        existing = store.read_records()
     except Exception:
         existing = []
     already_applied = any(
