@@ -328,7 +328,8 @@ class RecoveryWatch:
             # （defer_limit_minutes，1.7）：自首个 due 到期时刻起累计顺延
             # 超限 → 回落既有 stale 判定并升级，不因「一直有重试痕迹」把
             # 真实卡死洗成健康。有界性门施加于全部顺延分支之前。
-            if not self._defer_exhausted(item, now):
+            defer_exhausted = self._defer_exhausted(item, now)
+            if not defer_exhausted:
                 # 过渡窗口豁免（D1/D2 既有）：该 spec 存在待合并分支（未并入
                 # main 的提交）或 succeed 痕迹在缓冲窗内 → 顺延本次判定
                 # （保留观察项、推进 due），MUST NOT 静默丢弃观察项或关闭它。
@@ -381,6 +382,46 @@ class RecoveryWatch:
             try:
                 entry = self._pm.state_machine.read_one(spec_name)
             except Exception as e:
+                # 有界性门（code-review item 78beed6b0814）：读取失败顺延分支
+                # 原先不受 _defer_exhausted 约束——STATE 持续不可读（文件损坏/
+                # 解析异常）时每轮重新把 due 推到 now + inflight_retry_minutes
+                # 并 continue，观察项永远到不了下方升级，与上方「有界性门施加
+                # 于全部顺延分支之前」矛盾（真实卡死从此无人告警）。本任轮
+                # defer 已超限 → 不再顺延，升级 dispatch_stalled（evidence
+                # 注明 STATE 不可读）；信号记录失败则保留观察项下轮重试，
+                # 不静默丢弃。
+                if defer_exhausted:
+                    self._pm.logger.error(
+                        "pm_engine",
+                        f"Recovery watch read-failure defer limit reached for "
+                        f"'{spec_name}' (STATE unreadable, cumulative defer > "
+                        f"defer_limit_minutes), escalating dispatch_stalled",
+                    )
+                    evidence = (
+                        f"auto-recovery/defer at {item.get('registered_at')} "
+                        f"({item.get('reason')}); STATE unreadable: read_one "
+                        f"kept failing past defer_limit_minutes so the watch "
+                        f"could not re-check spec status — escalating instead "
+                        f"of deferring indefinitely, "
+                        f"last_read_error={type(e).__name__}: {str(e)[:120]}"
+                    )
+                    try:
+                        self._pm._signal_dispatch_stalled(spec_name, evidence)
+                    except Exception as signal_exc:
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"dispatch_stalled escalation failed for "
+                            f"'{spec_name}' (watch retained for retry): "
+                            f"{type(signal_exc).__name__}: {signal_exc}",
+                        )
+                        continue
+                    # 升级成功才关闭观察项（与既有升级路径「pop + 落盘持锁」
+                    # 同款）；失败路径上方已保留观察项并 continue。
+                    with self._watch_lock:
+                        self._recovery_watch.pop(spec_name, None)
+                        self._pm._save_recovery_watch()
+                    raised.append(spec_name)
+                    continue
                 retry_due = now + self._inflight_retry_minutes() * 60
                 with self._watch_lock:
                     item["due"] = retry_due
@@ -646,7 +687,9 @@ class RecoveryWatch:
         自 ``_recheck_deadline``（首个 due 到期时刻）起累计顺延不得超过
         ``defer_limit_minutes``（缺省 30）；now 已越过该截止 → 回落既有 stale
         判定并升级——MUST NOT 以「一直有重试痕迹 / 长期活跃态」把真实卡死洗成
-        健康。调用点：``check_recovery_watch`` 第 1 层，施加于全部顺延分支之前。
+        健康。调用点：``check_recovery_watch`` 第 1 层，施加于全部顺延分支之前
+        （读取失败顺延分支复用同一判定：超限不再顺延而是升级，evidence 注明
+        STATE 不可读）。
         """
         return now >= self._recheck_deadline(item) + self._defer_limit_minutes() * 60
 
