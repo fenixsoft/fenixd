@@ -12,12 +12,15 @@
   pm_engine push 尾部的归档收口保留为兜底（有残留才动作）。
 """
 
+import re
 import subprocess
 from pathlib import Path
 
 _PROBE_TIMEOUT = 30
 _ADD_TIMEOUT = 60
 _COMMIT_TIMEOUT = 120
+# pathspec 安全白名单：spec_name / 归档目录名允许的合法字符集
+_SAFE_PATH_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
 def commit_archive_move(project_root, spec_name: str, archive_dir) -> dict:
@@ -58,6 +61,17 @@ def commit_archive_move(project_root, spec_name: str, archive_dir) -> dict:
     except (OSError, subprocess.TimeoutExpired) as e:
         return _fail(f"git 探测失败，跳过归档提交: {e}")
 
+    # pathspec 安全：spec_name / 归档目录名直接拼入 git pathspec，glob（* ? []）
+    # 会被按模式匹配解释而可能误匹配计划外路径；白名单不通过时 fail-open 跳过提交。
+    if not (
+        _SAFE_PATH_RE.match(spec_name)
+        and _SAFE_PATH_RE.match(Path(archive_dir).name)
+    ):
+        return _fail(
+            "spec_name 或归档目录名含 pathspec 危险字符，跳过归档提交: "
+            f"{spec_name!r} / {Path(archive_dir).name!r}"
+        )
+
     # pathspec 组装：changes 侧仅在存在目录或存在跟踪文件时参与——从未入库的
     # spec 归档后该路径 matches nothing，会让整条 git add fatal 退出。
     changes_side = f"spec/changes/{spec_name}"
@@ -89,6 +103,7 @@ def commit_archive_move(project_root, spec_name: str, archive_dir) -> dict:
             timeout=_COMMIT_TIMEOUT,
         )
         if commit.returncode != 0:
+            _unstage(proot, paths)
             return _fail(f"git commit 失败: {commit.stderr.strip() or f'exit {commit.returncode}'}")
         # 提交已落库，先行置位：后续读哈希若因超时/OSError 失败，不能回退成
         # committed=False（否则上层误判未提交而重试，只会得到 nothing to
@@ -110,7 +125,26 @@ def commit_archive_move(project_root, spec_name: str, archive_dir) -> dict:
         result["commit"] = rev.stdout.strip() if rev.returncode == 0 else None
         return result
     except (OSError, subprocess.TimeoutExpired) as e:
+        _unstage(proot, paths)
         return _fail(f"归档提交异常: {e}")
+
+
+def _unstage(proot: Path, paths) -> None:
+    """提交失败/异常后，把本次已写入索引的归档路径 reset 回滚（fail-open）。
+
+    只 reset 本次 pathspec 范围，不动索引中其它无关 staged 内容；reset 自身
+    失败时静默忽略（仅 best-effort），保证失败路径不在索引残留半状态。
+    """
+    try:
+        subprocess.run(
+            ["git", "reset", "--"] + paths,
+            cwd=str(proot),
+            capture_output=True,
+            text=True,
+            timeout=_PROBE_TIMEOUT,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        pass
 
 
 def _has_tracked_files(proot: Path, pathspec: str) -> bool:
