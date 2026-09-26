@@ -10,7 +10,9 @@ _clear_degrade_context）。纯结构搬移，零行为变化。
 """
 
 import json
+import os
 import re
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -420,7 +422,22 @@ def _all_green_fast_path(pipeline, spec_name: str, report: dict, fail_count: int
     }
     try:
         result_path.parent.mkdir(parents=True, exist_ok=True)
-        result_path.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
+        # 原子写（对齐 _copyback_run_result 的 _write_atomic 手法）：同目录
+        # 临时文件 + os.replace，写盘瞬间读侧（Dashboard 轮询）不会读到半截 JSON。
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=".fenix-run-result.", suffix=".tmp", dir=str(result_path.parent)
+        )
+        tmp_path = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(json.dumps(payload, ensure_ascii=False, indent=1))
+            os.replace(tmp_path, result_path)
+        finally:
+            if tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
     except OSError as e:
         # fix-verdict-read-failclosed D6：机械写回失败 → 退化常规 judge（返回
         # None），不得按 verified 兜底放行（历史 fail-open 语义已清除）。
