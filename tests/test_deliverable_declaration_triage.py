@@ -624,10 +624,25 @@ class _AdjudicationFixture(unittest.TestCase):
         def fake_run(spec_name, judge_input, run_id=None):
             if state_assert:
                 state_assert(spec_name, judge_input, run_id)
+            # 01d1335a9902 契约：结果文件须带 run_id（写侧 runner.run_dispute_
+            # judge 收工后向既有结果文件补写 run stamp），读侧 _read_dispute_
+            # _verdicts 按本次 judge_run_id 严格匹配——替身复刻该补写行为，
+            # 否则夹具写的无 stamp 结果文件被读侧按陈旧裁决拒绝。
+            _rid = run_id or "dispute-judge-s1-1"
+            _rp = (self.project_root / ".fenix" / "verify-progress"
+                   / spec_name / "dispute_judge_result.json")
+            try:
+                if _rp.exists():
+                    _data = json.loads(_rp.read_text(encoding="utf-8"))
+                    if isinstance(_data, dict):
+                        _data["run_id"] = _rid
+                        _rp.write_text(json.dumps(_data, ensure_ascii=False),
+                                       encoding="utf-8")
+            except Exception:
+                pass
             if judge_result is None:
-                return AgentRunResult(run_id or "dispute-judge-s1-1", "s1",
-                                      "dispute-judge", success=True,
-                                      duration_seconds=1.0)
+                return AgentRunResult(_rid, "s1", "dispute-judge",
+                                      success=True, duration_seconds=1.0)
             return judge_result
 
         self.runner.run_dispute_judge = fake_run
