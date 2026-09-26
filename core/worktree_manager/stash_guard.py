@@ -110,6 +110,15 @@ class G6StashGuardMixin:
                 capture_output=True,
                 text=True,
                 timeout=30,
+                # 仅本命令固化 C locale（对齐 queries.create_worktree_on_branch
+                # 的 LC_ALL=C 手法）：下方依赖英文子串 "No local changes" 判定
+                # 是否真正 stash 过，本地化 git（如 zh_CN 装了 translation）会把
+                # 该串（git 内经 _() 包装可翻译）输出为译文、子串匹配落空 → 误判
+                # 「已 stash」返回 True → mergeback finally 的 restore_after_merge
+                # 把 stash 栈顶（可能是用户手工 stash 的无关条目）弹到刚合并完的
+                # 主树上（_main_tree_lock 要防的 LIFO 错配）。C locale 无翻译
+                # 目录，输出恒为英文。
+                env={**os.environ, "LC_ALL": "C"},
             )
         except (subprocess.TimeoutExpired, OSError) as e:
             # git 超时/不可用：按「未 stash」降级（与 returncode!=0 同路径），
@@ -186,6 +195,11 @@ class G6StashGuardMixin:
                 capture_output=True,
                 text=True,
                 timeout=30,
+                # 仅本命令固化 C locale（同 ensure_clean_tree 的 stash push）：
+                # 下方依赖英文子串 "No stash entries"（无 stash 可恢复的正常跳过）
+                # 与 "CONFLICT"（进入三态自愈）做判定，本地化 git 下判定翻转会
+                # 破坏 guard finally 链的恢复语义。
+                env={**os.environ, "LC_ALL": "C"},
             )
         except (subprocess.TimeoutExpired, OSError) as e:
             # 本方法常在 guard 的 finally 中执行，绝不能外抛（会吞掉业务原始
@@ -381,12 +395,23 @@ class G6StashGuardMixin:
                 )
                 remaining.append(f)
                 continue
-            st = subprocess.run(
-                ["git", "-C", str(self.project_root), "add", "--", f],
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
+            try:
+                st = subprocess.run(
+                    ["git", "-C", str(self.project_root), "add", "--", f],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+            except (subprocess.TimeoutExpired, OSError) as e:
+                # 本调用链常在 guard 的 finally 中执行，绝不能外抛（会吞掉已
+                # 成功的 merge 结果并中断清理链）——超时/不可用按态 1 失败处置
+                # 进态 2（与 returncode!=0 同路径）
+                self.logger.warning(
+                    "worktree_manager",
+                    f"State-1 git add failed for '{f}': {e} — falling to state 2",
+                )
+                remaining.append(f)
+                continue
             if st.returncode != 0:
                 self.logger.warning(
                     "worktree_manager",
@@ -405,12 +430,25 @@ class G6StashGuardMixin:
 
         # ── 态 2：取回 stash 版 + 路径作用域恢复 commit ──
         for f in remaining:
-            co = subprocess.run(
-                ["git", "-C", str(self.project_root), "checkout", "--theirs", "--", f],
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
+            try:
+                co = subprocess.run(
+                    ["git", "-C", str(self.project_root), "checkout", "--theirs", "--", f],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+            except (subprocess.TimeoutExpired, OSError) as e:
+                # 本调用链常在 guard 的 finally 中执行，绝不能外抛（会吞掉已
+                # 成功的 merge 结果并中断清理链）——超时/不可用按态 3 兜底降级
+                # （同下方对态 2 恢复 commit 的处置口径）：stash 版仍在 index
+                # stage 3 + 工作区冲突标记，不丢数据，显式登记 disposition。
+                self.logger.warning(
+                    "worktree_manager",
+                    f"State-2 checkout --theirs failed for '{f}' ({e}) — "
+                    f"stash content preserved in worktree/index, falling to "
+                    f"state-3 disposition",
+                )
+                return 3, f"state-2 checkout --theirs failed for '{f}'"
             if co.returncode != 0:
                 # --theirs 失败（罕见：路径仍 UU）：stash 版在 index stage 3 +
                 # 工作区冲突标记仍保留两侧，不丢数据；放弃本次 commit 走态 3
@@ -866,7 +904,23 @@ class G6StashGuardMixin:
                     )
                     return False
                 identical.append(path)
-            backup = self.project_root / ".fenix" / "merge-backup" / f"identical-{int(time.time())}"
+            backup_root = self.project_root / ".fenix" / "merge-backup"
+            base_name = f"identical-{int(time.time())}"
+            backup = backup_root / base_name
+            # 同名冲突处理（对齐 mergeback._backup_untracked_spec_files 的
+            # code-review item e27367b20119 口径）：_main_tree_lock 只串行化本
+            # 进程，跨进程（dashboard 手工 merge-back 与 daemon）撞同一秒时目录
+            # 同名静默复用，shutil.copy2 到已存在 dst 会覆盖抹掉既有备份——目标
+            # 已存在时追加微秒后缀，极端情况仍冲突再用递增序号兜底。
+            if backup.exists():
+                import datetime as _dt
+
+                ms = _dt.datetime.now().strftime("%f")
+                backup = backup_root / f"{base_name}-{ms}"
+                n = 1
+                while backup.exists():
+                    backup = backup_root / f"{base_name}-{ms}-{n}"
+                    n += 1
             for path in identical:
                 dest = backup / path
                 dest.parent.mkdir(parents=True, exist_ok=True)
@@ -960,13 +1014,30 @@ class G6StashGuardMixin:
                     victims.append(rel)
             if not victims:
                 return
+            processed: list = []  # 已成功 rm --cached 的路径（中途失败按此回滚索引态）
             for rel in victims:
-                subprocess.run(
+                rm = subprocess.run(
                     ["git", "-C", str(self.project_root), "rm", "-f", "--cached", "--", rel],
                     capture_output=True,
                     text=True,
                     timeout=30,
                 )
+                if rm.returncode != 0:
+                    # rm 失败（如 index.lock 争用）：路径仍 tracked，继续的话
+                    # staged 子集校验是单向的（只要求子集、不强求 victims 入暂存
+                    # 集）、裸 commit 会把该路径照常入库，purge 对该路径静默失效
+                    # 撞车循环原样重启——按 _untrack_ignored_local_changes 口径
+                    # 先回滚本次已移出的索引态再放弃（不残留 staged 删除），
+                    # WARNING 留观测。
+                    self.logger.warning(
+                        "worktree_manager",
+                        f"Purge ignored brought-in: git rm --cached failed for "
+                        f"'{rel}': {(rm.stderr or rm.stdout).strip()} — reverting "
+                        f"index, aborting purge",
+                    )
+                    self._reset_index_paths(processed)
+                    return
+                processed.append(rel)
             # 路径作用域守卫（同 _untrack_ignored_local_changes）：裸 commit 会把
             # index 里其它 staged 条目连带入库，校验暂存集不含本次移出路径之外的
             # 外来条目，不过则回滚本次已移出的索引态再返回（不残留 staged 删除）。
