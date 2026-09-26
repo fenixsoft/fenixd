@@ -44,10 +44,13 @@ const MessageItem = memo(({ message, prevMessage, showThinking = false }: Messag
     [message.content],
   );
 
-  const formattedTime = useMemo(
-    () => new Date(message.timestamp).toLocaleTimeString(),
-    [message.timestamp],
-  );
+  const formattedTime = useMemo(() => {
+    // 非法 timestamp（缺失/格式错）解析得 Invalid Date，toLocaleTimeString 会把
+    // 字面 'Invalid Date' 渲染到头像行/气泡时间（code-review item 4bc55b8aa8d6）：
+    // 校验解析结果，非法时省略时间显示（类型契约只保证字段存在，不保证可解析）。
+    const t = new Date(message.timestamp);
+    return Number.isNaN(t.getTime()) ? '' : t.toLocaleTimeString();
+  }, [message.timestamp]);
   // thinkingForced：无正文兜底强制渲染的 thinking（design D4）不受开关隐藏，
   // 否则 thinking-only 流的兜底产物在渲染层被击穿（verification BUG-02）。
   // 判定经 toolGrouping.isThinkingHidden 与分组层同源（item 2faec963d2ea）

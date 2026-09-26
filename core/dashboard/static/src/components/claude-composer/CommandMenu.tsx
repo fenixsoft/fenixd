@@ -84,6 +84,10 @@ const namespaceAccentClasses: Record<string, string> = {
 const MENU_EDGE_GAP = 16;
 const MENU_MAX_HEIGHT = 360;
 const MENU_MIN_HEIGHT = 160;
+// 桌面分支菜单宽度与未给 bottom 时的默认锚定间距（code-review item
+// 4b90dbe0dd88）：clamp 上限与 width 必须同源，避免只改一处右缘被裁切。
+const MENU_WIDTH = 440;
+const DEFAULT_ANCHOR_BOTTOM = 90;
 
 const getCommandKey = (command: CommandMenuCommand) =>
   `${command.name}::${command.namespace || command.type || 'other'}::${command.path || ''}`;
@@ -111,7 +115,7 @@ const getMenuPosition = (position: {
   // 移动端（<640px）：全宽锚定输入区上方（spec：移动端补全菜单全宽锚定）
   if (window.innerWidth < 640) {
     const anchorBottom = Math.min(
-      Math.max(MENU_EDGE_GAP, position.bottom ?? 90),
+      Math.max(MENU_EDGE_GAP, position.bottom ?? DEFAULT_ANCHOR_BOTTOM),
       maxAnchorBottom,
     );
     return {
@@ -130,14 +134,14 @@ const getMenuPosition = (position: {
   );
   const clampedLeft = Math.max(
     MENU_EDGE_GAP,
-    Math.min(position.left, window.innerWidth - 440 - MENU_EDGE_GAP),
+    Math.min(position.left, window.innerWidth - MENU_WIDTH - MENU_EDGE_GAP),
   );
 
   return {
     position: 'fixed',
     bottom: `${anchorBottom}px`,
     left: `${clampedLeft}px`,
-    width: 'min(440px, calc(100vw - 32px))',
+    width: `min(${MENU_WIDTH}px, calc(100vw - 32px))`,
     maxWidth: 'calc(100vw - 32px)',
     maxHeight: `min(${MENU_MAX_HEIGHT}px, calc(100vh - ${anchorBottom}px - ${MENU_EDGE_GAP}px))`,
   };
