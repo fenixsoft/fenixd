@@ -148,8 +148,8 @@ export default function ParallelSettingsPanel({ config, onSave, project, onConfi
             </span>
           </div>
           <Text type="secondary">
-            默认关闭（不节流）。开启后限制全框架同时在出题的 Planner 数量（上限为 1-10，默认 1）多个 Planner 
-            并发同时访问 LLM 网关时，降低网关排队/长尾延迟出现的概率，但可能造成验证吞吐下降。
+            默认关闭（不节流）。开启后限制全框架同时在出题的 Planner 数量（上限为 1-10，默认 1）。多个
+            Planner 并发访问 LLM 网关时，降低网关排队/长尾延迟出现的概率，但可能造成验证吞吐下降。
           </Text>
           {plannerThrottleOn ? (
             <Form.Item
