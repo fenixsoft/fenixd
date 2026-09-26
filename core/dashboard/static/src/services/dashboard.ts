@@ -2198,6 +2198,34 @@ export async function getRegressionFixResult(
   );
 }
 
+/** 手动触发判定结果回链判读统一入口（code-review / code-fix / regression-fix
+ * 三端点共用）。
+ *
+ * 三个「手动触发 → 轮询受理判定结果」封装（getCodeReviewRunResult /
+ * getCodeFixRunResult / getRegressionFixResult）的缺省态（结果文件缺失/损坏）
+ * wire 契约各不相同，回链键名亦二择：
+ *   - CodeReviewRunResult：缺省态为**全 null 字段对象**（requested_at/status/
+ *     reason/message/finished_at 均 null，运行时真值 null 而非缺席），回链键
+ *     ``requested_at``；
+ *   - CodeFixRunResult：缺省态为**空对象 {}**（全部字段缺席，运行时 undefined；
+ *     引用 74c58ba954c8：类型曾按全 null 声明而实际为空对象，故如实声明可选），
+ *     回链键 ``request_created``；
+ *   - RegressionFixRunResult：缺省态为 ``{"status": "none"}``（MUST NOT 404），
+ *     回链键 ``request_created``。
+ * 三种缺省态在回链判读上运行时行为一致：回链键真值缺失/为 null，必然不匹配
+ * 本次触发返回的 ``requested_at``。本函数收敛「是否本次触发结果」判读，新
+ * 消费者直接调用，勿再自行区分键名与缺省形态。
+ */
+export function isTriggerResultForRequest(
+  snap: CodeReviewRunResult | CodeFixRunResult | RegressionFixRunResult,
+  wantedAt: string,
+): boolean {
+  // 键名二择：code-review 用 requested_at，code-fix/regression-fix 用
+  // request_created（缺省态下该键为 null/缺席，恒不匹配本次触发时间）
+  const triggerAt = 'requested_at' in snap ? snap.requested_at : snap.request_created;
+  return !!triggerAt && triggerAt === wantedAt;
+}
+
 /** 有效 regression 段的解析字段（GET /api/regression/config）。 */
 export interface RegressionSpecView {
   /** 执行命令：str（shell）或 list（argv）；cwd 为项目根 */

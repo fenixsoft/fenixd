@@ -40,6 +40,7 @@ import {
   fixRegression,
   getRegressionFixResult,
   getRegressionResult,
+  isTriggerResultForRequest,
   triggerRegression,
 } from '../../../services/dashboard';
 import type {
@@ -410,7 +411,7 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
         if (projectRef.current !== project) return;
         try {
           const snap = await getRegressionFixResult(project);
-          if (snap.request_created && snap.request_created === wantedAt) {
+          if (isTriggerResultForRequest(snap, wantedAt)) {
             result = snap;
             break;
           }

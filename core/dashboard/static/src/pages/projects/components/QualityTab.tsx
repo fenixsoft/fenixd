@@ -44,6 +44,7 @@ import {
   getCodeReviewProgress,
   getCodeReviewRunResult,
   getConfig,
+  isTriggerResultForRequest,
   setCodeReviewItemStatus,
   STREAM_URL,
   triggerCodeFixRun,
@@ -570,8 +571,8 @@ export default function QualityTab({ project, active }: QualityTabProps) {
         if (ackPollAbortedRef.current) return;
         try {
           const snap = await getCodeReviewRunResult(project);
-          // 仅认 requested_at 回链本次的记录（上一轮残留 MUST NOT 弹提示）
-          if (snap.requested_at && snap.requested_at === wantedAt) {
+          // 仅认定是本次触发的结果（统一回链判读，见 isTriggerResultForRequest）
+          if (isTriggerResultForRequest(snap, wantedAt)) {
             result = snap;
             break;
           }
@@ -662,7 +663,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
         if (fixRunPollAbortedRef.current) return;
         try {
           const snap = await getCodeFixRunResult(project);
-          if (snap.request_created && snap.request_created === wantedAt) {
+          if (isTriggerResultForRequest(snap, wantedAt)) {
             result = snap;
             break;
           }
