@@ -1269,7 +1269,6 @@ def clear_spec_error(project_root, spec: str) -> dict:
     守卫与 {ok: False, error: 原因} 拒绝形状）。
 
     豁免标记守卫（code-review item 582624e4c92a）：admin_monitor 的
-    豁免标记守卫（code-review item 582624e4c92a）：admin_monitor 的
     blocked_stuck 豁免除 frozen 字段与「用户指令冻结：」前缀外，还认 error
     前缀 ``frozen:`` 与「用户指令」子串两种存量文本标记（人工冻结/暂停的
     历史文案，词形漂移不一）。blocked 态清空 error 会连带抹掉这些标记、
@@ -1756,7 +1755,7 @@ def _exec_continue_auto_fix(project_root, spec: str, note: str = "") -> dict:
     # _reconcile_impl_budget 的重锚自愈兜底，见 budget.py）。
     try:
         prev_used = int(entry.get("_impl_run_budget_used", 0) or 0)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         prev_used = 0
     updates[BUDGET_MANUAL_RESET_BASELINE_FIELD] = max(0, prev_used)
     updates["_impl_run_budget_used"] = 0
