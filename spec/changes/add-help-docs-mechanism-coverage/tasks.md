@@ -1,6 +1,8 @@
 ## Deliverables
 
 ```yaml
+- path: docs/help/03-lifecycle.md
+  kind: modify
 - path: docs/help/04-cli.md
   kind: modify
 - path: docs/help/05-verification.md
@@ -38,9 +40,9 @@
 - [ ] 2.4 新增「SPEC 并发在飞守卫」段落（merge 修复通道节附近）：评审收尾不打回实现中 spec（`_review_skipped_result` 侧车）、实现派发前在飞评审探测、实现合并收尾补记转移
 - [ ] 2.5 infra 豁免在「三类预算」表附近补一句交叉引用（详表在 05 章）
 
-## 3. 保障机制章补齐（docs/help/07-safeguards.md）
+## 3. 生命周期与保障机制章补齐（docs/help/03-lifecycle.md、docs/help/07-safeguards.md）
 
-- [ ] 3.1 新增「取消保持态」小节（冻结小节之后）：`_cancelled_hold` 有意等待语义（恢复链路跳过、唯一出路显式复位）、与 `_frozen_hold` 的并列互斥关系（冻结终止先清取消保持）
+- [ ] 3.1 （03-lifecycle.md）新增「取消保持态」小节（「冻结与解冻」节之后）：`_cancelled_hold` 有意等待语义（恢复链路跳过、唯一出路显式复位）、与 `_frozen_hold` 的并列互斥关系（冻结终止先清取消保持）
 - [ ] 3.2 新增「stash pop 冲突三分诊」细节段（autostash 段展开）：三态处置链与 stash 条目保留记账（stash_guard.py 核对）
 - [ ] 3.3 新增「merge-back spec 目录在飞守卫」段落：有界顺延（缺省 30 分钟/3 轮、`_merge_retry_pending`）、超限回落人工通道不耗预算
 - [ ] 3.4 交付物守卫段补「relocation writeback 同层修正」：judge 修正写生效命中层（worktree/主树/dispute 核销三分支）、修正后按守卫读取基准复检、同族复发熔断
