@@ -2098,7 +2098,7 @@ class CodeFixOrchestrator:
                     total=total,
                     done=done,
                     batch_no=batch_no,
-                    current=f"第 {batch_no} 批启动（{len(batch)}/{total} 条）",
+                    current=f"第 {batch_no} 批启动（{len(batch)} 条）",
                     reason="",
                     # 批上下文防御性归零（D2）：上一批收尾写点已清三键，此处
                     # 显式置 null 保证「切批 selecting 写时批上下文必为 null」
@@ -2714,7 +2714,6 @@ class CodeFixOrchestrator:
         runner = self._agent_runner
         batch_no = ctx["batch_no"]
         items = ctx["items"]
-        total = ctx["total"]
 
         # 建树（5.4）：create() 返回 None 即收尾——不派 run、不合回、条目保持
         # open、复位单飞，进度 failed（halt：下一轮 full scan 重试）。
@@ -2744,7 +2743,7 @@ class CodeFixOrchestrator:
             write_progress(
                 root,
                 phase="fixing",
-                current=f"第 {batch_no} 批修复中（{len(items)}/{total} 条）",
+                current=f"第 {batch_no} 批修复中（{len(items)} 条）",
                 worktree=str(wt),
                 run_id=run_id,
                 batch_total=len(items),
@@ -2801,7 +2800,7 @@ class CodeFixOrchestrator:
         write_progress(
             root,
             phase="regressing",
-            current=f"第 {batch_no} 批全量回归中（{len(items)}/{total} 条）",
+            current=f"第 {batch_no} 批全量回归中（{len(items)} 条）",
         )
         reg = runner.run_regression(
             reg_spec, reason="code-fix", project_root=wt, lock_root=root
@@ -3011,7 +3010,7 @@ class CodeFixOrchestrator:
         write_progress(
             root,
             phase="merging",
-            current=f"第 {batch_no} 批合回中（{len(items)}/{total} 条）",
+            current=f"第 {batch_no} 批合回中（{len(items)} 条）",
         )
         merge_info = wm.merge_back(wt)
         if not getattr(merge_info, "success", False):
