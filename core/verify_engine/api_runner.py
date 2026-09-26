@@ -258,6 +258,18 @@ class ApiRunner(VerifyRunner):
                 "error_type": "connection_failed",
                 "error": f"连接失败（实例失联或不可达，环境候选）: {e}",
             }
+        except httpx.ConnectTimeout as e:
+            # 连接阶段超时继承自 TimeoutException 而非 ConnectError（典型：
+            # 主机宕机但防火墙丢包而非立即拒绝），须在通用超时分支之前细分，
+            # 否则实例失联场景漏标环境候选。
+            return {
+                "success": False,
+                "action": "http_request",
+                "method": method,
+                "url": url,
+                "error_type": "connection_failed",
+                "error": f"连接超时（连接阶段，实例失联或不可达，环境候选）: {e}",
+            }
         except httpx.TimeoutException as e:
             return {
                 "success": False,
@@ -381,6 +393,16 @@ class ApiRunner(VerifyRunner):
                 "url": url,
                 "error_type": "connection_failed",
                 "error": f"连接失败（实例失联或不可达，环境候选）: {e}",
+            }
+        except httpx.ConnectTimeout as e:
+            # 连接阶段超时继承自 TimeoutException 而非 ConnectError：与
+            # ConnectError 同为实例失联环境候选，勿落入通用异常分支。
+            return {
+                "success": False,
+                "action": "sse_connect",
+                "url": url,
+                "error_type": "connection_failed",
+                "error": f"连接超时（连接阶段，实例失联或不可达，环境候选）: {e}",
             }
         except httpx.ReadTimeout:
             # 窗口内服务端完全不发数据（无心跳/注释行）时，aiter_lines 阻塞至
