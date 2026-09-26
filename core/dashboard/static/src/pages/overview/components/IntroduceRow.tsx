@@ -21,9 +21,12 @@ function pct(done: number, total: number) {
 function compactTokens(n: number): string {
   // 进位守卫：未舍入换算值 ≥9999.95 时 toFixed(1) 会进位成 "10000.0万"（如 99999999），
   // 与下一档亿自相矛盾 → 用未舍入值提前升档按亿显示（n ≥ 1e8 自然落入此支）得 "1.0亿"；
-  // K 档区间 [1e3,1e4) 换算值恒 < 10 无进位问题，亿档之上无更高档
+  // 亿档之上无更高档
   if (n / 1e4 >= 9999.95) return (n / 1e8).toFixed(1) + '亿';
   if (n >= 1e4) return (n / 1e4).toFixed(1) + '万';
+  // K→万边界同理：K 档换算值 n/1e3 ∈ [9.95,10) 时 toFixed(1) 会进位成 "10.0K"（如 9999.6），
+  // 与 n ≥ 1e4 档的 "1.0万" 数值相同却跨档自相矛盾 → 对称提前升档按万显示得 "1.0万"
+  if (n / 1e3 >= 9.95) return (n / 1e4).toFixed(1) + '万';
   if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
   return String(n);
 }
