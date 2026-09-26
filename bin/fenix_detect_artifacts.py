@@ -125,7 +125,7 @@ def detect_build_artifacts(project_root: Path) -> dict:
                             paths_found.add("dist/")
                             sources.append(f"pyproject.toml 存在 + {d}/ 目录非空")
                         # build/ 目录名太通用（易误报任意同名目录），不作为 Python 项目产物候选
-                        elif d not in ("build",):
+                        elif d == "_build":
                             paths_found.add(f"{d}/")
                             sources.append(f"pyproject.toml 存在 + {d}/ 目录非空")
         except OSError:
