@@ -299,7 +299,11 @@ def render_report(project_root) -> str:
     for name, entry in sorted(active.items(), key=_active_sort_key):
         st = entry.get("status", "?")
         icon = STATUS_ICONS.get(st, "❓")
-        pri = entry.get("priority", "?")
+        # 与 _active_sort_key 同口径：priority 为 null/非法时折叠为 "?"，避免渲染出 PNone
+        try:
+            pri = int(entry.get("priority"))
+        except (TypeError, ValueError):
+            pri = "?"
         try:
             s = data.spec_summary(proot, name, entry)
         except Exception:
