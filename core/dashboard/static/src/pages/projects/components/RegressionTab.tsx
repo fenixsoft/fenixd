@@ -165,18 +165,20 @@ function RunningProgressView({
   );
 }
 
-/** 合并 failure/error 用例与长耗时用例为统一结果表（带分类列）。 */function buildRows(snapshot: RegressionResult): Array<
-  { key: string; name: string; file: string; line: number; time: number; kind: string; message?: string }
-> {
-  const rows: Array<{
-    key: string;
-    name: string;
-    file: string;
-    line: number;
-    time: number;
-    kind: string;
-    message?: string;
-  }> = [];
+// ── 结果表行结构单源（code-review item 7360ae15ac6c）：buildRows 返回类型、
+// 函数内 rows 局部类型与组件内 ColumnsType 泛型统一引用此定义，列字段变更只改这里。
+interface CaseRow {
+  key: string;
+  name: string;
+  file: string;
+  line: number;
+  time: number;
+  kind: string;
+  message?: string;
+}
+
+/** 合并 failure/error 用例与长耗时用例为统一结果表（带分类列）。 */function buildRows(snapshot: RegressionResult): Array<CaseRow> {
+  const rows: Array<CaseRow> = [];
   for (const f of snapshot.failures ?? []) {
     rows.push({
       key: `f-${rows.length}`,
@@ -519,7 +521,6 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
     (snapshot?.long_tests?.length ?? 0) > 0 ||
     status === 'timeout';
 
-  type CaseRow = { key: string; name: string; file: string; line: number; time: number; kind: string; message?: string };
   const columns: ColumnsType<CaseRow> = isMobile
     ? [
         // <768 窄屏：单列堆叠卡——用例名（换行）、文件:行（换行）、分类 Tag +
