@@ -101,8 +101,8 @@ def validate_build_artifact_paths(value: Any) -> Optional[str]:
     fail-safe（丢弃 + 回退空集合）互补：解析侧保守、写入侧显式。
 
     与 ``normalize_artifact_patterns`` 同一判定权威：顶层须为字符串列表；逐项
-    strip 后仍会被 normalize 丢弃的项（非字符串、绝对路径、含 ``..``、不含
-    ``*`` 又未以 ``/`` 结尾）即非法。返回的提示含丢弃项与合法形态示例，供
+    strip 后仍会被 normalize 丢弃的项（非字符串、绝对路径、含 ``..`` 段、
+    不含 ``*`` 又未以 ``/`` 结尾）即非法。返回的提示含丢弃项与合法形态示例，供
     前端回显；合法返回 None。
     """
     if value is None:

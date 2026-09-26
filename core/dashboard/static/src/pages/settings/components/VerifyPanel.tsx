@@ -13,10 +13,11 @@ function artifactPathRule(rules: unknown, value: unknown): Promise<void> {
   const v = typeof value === 'string' ? value.trim() : '';
   if (!v) return Promise.reject(new Error('路径不能为空'));
   if (v.startsWith('/')) return Promise.reject(new Error('不能是绝对路径'));
-  // 与后端 normalize_artifact_patterns 同口径（code-review item c30b8b2c0662）：
-  // 后端是 `".." in item`（任意位置出现即拒），旧实现只判整段 '..'，使
-  // "dist..old/" 通过前端校验后被 POST /api/config 400 拒绝而用户看不到原因。
-  if (v.includes('..')) return Promise.reject(new Error("不能含 '..'"));
+  // 与后端 normalize_artifact_patterns 同口径：`".." in item.split("/")`，按
+  // 独立路径段判定（docstring「含 '..' 段的项丢弃」）——dist..old/ 这类含
+  // '..' 子串的合法目录名放行，与后端一致。旧注释误称后端为 `".." in item`
+  // 子串判定（code-review item c30b8b2c0662），曾使前端比后端更严。
+  if (v.split('/').includes('..')) return Promise.reject(new Error("不能含 '..' 路径段"));
   if (!v.includes('*') && !v.endsWith('/'))
     return Promise.reject(new Error("目录前缀须以 '/' 结尾，或使用含 '*' 的通配"));
   return Promise.resolve();
