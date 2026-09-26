@@ -188,7 +188,10 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
           message.warning(`已保存，但刷新列表返回错误：${errPayload}`);
         } else {
           setData(d);
-          // 仅当用户仍停在同一 agent 时才回填草稿（避免覆盖刚切到的 agent）
+          // 仅当用户仍停在同一 agent 时才回填草稿（避免覆盖刚切到的 agent）。
+          // 同 agent 上保存后继续键入的分支由 TextArea 的 disabled={saving}
+          // 兜底（code-review item cbd7e62160ec）：保存请求在飞期间输入框
+          // 已禁用，此处回填不会覆盖用户保存后键入的未保存内容。
           if (targetAgent === activeAgent) {
             setExtraDraft(projectExtraOf(d, targetAgent));
           }
@@ -273,6 +276,10 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
             onChange={(e) => setExtraDraft(e.target.value)}
             placeholder="自由 Markdown，例如本项目特有的验证规范、选择器约定等"
             autoSize={{ minRows: 6, maxRows: 14 }}
+            // 保存进行中禁止编辑（code-review item cbd7e62160ec）：与 Select 的
+            // disabled={saving} 同口径——在飞期间继续键入的内容不在已提交的
+            // extraDraft 里，refetch 回填会用服务端值无条件覆盖（静默丢失）。
+            disabled={saving}
             style={{ marginTop: 8 }}
           />
           <div style={{ marginTop: 12, textAlign: 'right' }}>
