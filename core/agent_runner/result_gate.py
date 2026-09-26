@@ -30,6 +30,7 @@ from core.agent_runner.prompt_builder import (
     spec_review_result_status_whitelist,
 )
 from core.agent_runner.run_files import append_run_line
+from core.fast_track_result import parse_fast_track_verification
 from core.run_task_track import (
     find_impl_run_file,
     parse_tasks_md,
@@ -1097,6 +1098,27 @@ def _check_impl_result_artifact(
     if status == "error":
         # 2.6：error 不施加任何完成度类判据（agent 自报失败即按失败处理）。
         return None
+
+    # add-fasttrack-verification-write-gate（任务 1.1）：fast-track 的 success
+    # 结果文件在 run 末即校验 verification 段结构，缺段/不完整当场报错——由既有
+    # 产物门重试机制（_handle_artifact_gate_retry，结构类失败不计数不降级）驱动
+    # 实现者同 session 原地补写，不再等到 merge 前 dispatch 交接点才拒收（run 已
+    # success 终态、只能整轮作废重派）。解析单源复用
+    # core/fast_track_result.parse_fast_track_verification，与 dispatch 第二道
+    # 防线（_hard_check_fast_track）同一 schema。本函数被 full 车道共用，故以
+    # 结果文件自报 mode 字段为车道判据：partial/error（诚实退出，本就不含
+    # verification 段）与 mode 非 fast-track 的结果一律不触发，full 车道不变。
+    if (
+        status == "success"
+        and data.get("mode") == "fast-track"
+        and parse_fast_track_verification(data) is None
+    ):
+        return (
+            f"exit 0 但 fast-track 结果文件 verification 段缺失或结构不完整"
+            f"（须含非空 scenarios、每条含非空 scenario_id/description、"
+            f"status 枚举合法、verdict 属 verified/bug-found，"
+            f"{agent_type} 产物硬门）: {result_path}"
+        )
 
     # status ∈ {success, partial} → 以 worktree 内 tasks.md 为对象的判据
     # （tasks.md 路径单点在 parse_tasks_md 与各失败消息构造处，不再另设
