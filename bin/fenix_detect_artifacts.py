@@ -73,7 +73,7 @@ def detect_build_artifacts(project_root: Path) -> dict:
     # ── 1. Fenix 框架项目（core/dashboard/static/dist/）────────────────────
     fenix_dist = project_root / "core" / "dashboard" / "static" / "dist"
     if fenix_dist.is_dir():
-        # 检查是否有构建产物特征（index.html / hash JS 文件）
+        # 目录存在且非空即视为框架产物目录（不校验 index.html / hash JS 等产物特征）
         try:
             if any(fenix_dist.iterdir()):
                 paths_found.add("core/dashboard/static/dist/")
@@ -85,7 +85,9 @@ def detect_build_artifacts(project_root: Path) -> dict:
     pkg_json = project_root / "package.json"
     if pkg_json.is_file():
         try:
-            pkg = json.loads(pkg_json.read_text(encoding="utf-8"))
+            # errors="replace"：非 UTF-8 编码（如 GBK）的 package.json 解码不抛
+            # UnicodeDecodeError（ValueError 族不在下方 except 内），守住 MUST NOT 抛异常契约
+            pkg = json.loads(pkg_json.read_text(encoding="utf-8", errors="replace"))
             # "scripts" 键存在但为 null 时 get 的默认值不生效，须归一为 dict；
             # 非 dict（数字/字符串等）同样防住，避免迭代抛 TypeError 违反 MUST NOT 抛异常约定
             scripts = pkg.get("scripts") or {}
@@ -109,7 +111,8 @@ def detect_build_artifacts(project_root: Path) -> dict:
     pyproject = project_root / "pyproject.toml"
     if pyproject.is_file():
         try:
-            content = pyproject.read_text(encoding="utf-8")
+            # errors="replace" 同 package.json 分支：非 UTF-8 编码不抛 UnicodeDecodeError
+            content = pyproject.read_text(encoding="utf-8", errors="replace")
             if "[build-system]" in content or "[tool.poetry]" in content:
                 # Python 项目的常见产物目录。site-packages/ 不列为候选：根级出现
                 # site-packages/ 多为手工摆放的第三方包或 venv 残留而非构建产物，
