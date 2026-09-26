@@ -309,10 +309,17 @@ export default function ClaudeOutputPane({
       if (msg.type === 'run_events' && msg.run_id === runId) {
         if (msg.reset) {
           // 产物被轮转/截断：重新拉取完整尾部（整体替换合理：旧列表已失效）
+          // 派发即记账（item e6c332a1dc8f，同 hello 重同步）：reset 重拉与初载/
+          // 重同步快照按同一序号排序，晚落地的过期一方整包丢弃——否则 reset 重拉
+          // 与重连 hello 重同步并发在途且 reset 快照晚落地时，会以更旧窗口整体
+          // 替换列表并回退 total/status，此后连接稳定即无自愈路径
+          const snapSeq = ++tailSnapSeqRef.current;
           void (async () => {
             try {
               const data = await getRunTail(runId, project, tail);
+              if (snapSeq <= tailSnapAppliedRef.current) return; // 过期快照，丢弃
               if (isMountedRef.current && activeRunIdRef.current === runId && activeProjectRef.current === project) {
+                tailSnapAppliedRef.current = snapSeq;
                 setEvents(data.events || []);
                 setTotalEvents(data.total_events || 0);
                 // 重拉成功清错误态（code-review item ccb026b72fe7，同 hello 重同步）
