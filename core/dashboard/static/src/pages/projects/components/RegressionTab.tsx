@@ -177,7 +177,8 @@ interface CaseRow {
   message?: string;
 }
 
-/** 合并 failure/error 用例与长耗时用例为统一结果表（带分类列）。 */function buildRows(snapshot: RegressionResult): Array<CaseRow> {
+/** 合并 failure/error 用例与长耗时用例为统一结果表（带分类列）。 */
+function buildRows(snapshot: RegressionResult): Array<CaseRow> {
   const rows: Array<CaseRow> = [];
   for (const f of snapshot.failures ?? []) {
     rows.push({
