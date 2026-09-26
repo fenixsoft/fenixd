@@ -519,20 +519,29 @@ def _warning_stale_triage_alert(pipeline, spec_name: str, scenario_ids: list) ->
             )
     evidence = "\n".join(evidence_lines) or (f"连续 2 轮 warning 场景：{', '.join(scenario_ids)}")
 
-    pipeline._context.escalation_notifier(
-        spec_name=spec_name,
-        signal_type="warning_stale_triage",
-        severity="critical",
-        description=(
-            f"'{spec_name}' 以下场景连续 {latest_round} 轮均为 warning，"
-            f"需人工 triage 甄别是否真缺陷被悬置：{', '.join(scenario_ids)}"
-        ),
-        evidence=evidence,
-        recommended_action=(
-            f"人工复核 {', '.join(scenario_ids)} 的真实根因；下一轮验证已将其"
-            f"列入优先复核清单（triage_recheck.json）"
-        ),
-    )
+    # 升级通道自身失败不得抛穿裁决流程（与同文件其他升级路径对齐，
+    # code-review item 7e0509f14fdd）：notifier 抛异常不得连带丢掉
+    # triage_recheck.json 优先复核清单落盘。
+    try:
+        pipeline._context.escalation_notifier(
+            spec_name=spec_name,
+            signal_type="warning_stale_triage",
+            severity="critical",
+            description=(
+                f"'{spec_name}' 以下场景连续 {latest_round} 轮均为 warning，"
+                f"需人工 triage 甄别是否真缺陷被悬置：{', '.join(scenario_ids)}"
+            ),
+            evidence=evidence,
+            recommended_action=(
+                f"人工复核 {', '.join(scenario_ids)} 的真实根因；下一轮验证已将其"
+                f"列入优先复核清单（triage_recheck.json）"
+            ),
+        )
+    except Exception as e:
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"triage 升级告警失败 '{spec_name}'（非阻塞）: {type(e).__name__}: {e}",
+        )
     # 下一轮 planner prompt 优先复核注入（design D5）：落盘 triage_recheck.json
     recheck_path = (
         pipeline._context.project_root
