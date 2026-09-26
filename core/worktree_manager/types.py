@@ -69,7 +69,7 @@ class WipOccupantInfo:
                     f" run={','.join(h.get('run_ids') or []) or '?'}"
                     f" 命中{len(h.get('files') or [])}文件"
                 )
-            return f"占用者=在飞车道（{'；'.join(parts)}）"
+            return f"占用者=在飞车道（{'；'.join(parts)}；{self.BLIND_SPOT_NOTE}）"
         return (
             f"占用者=无主陈旧 WIP（数据源={self.source}；{self.BLIND_SPOT_NOTE}）"
         )

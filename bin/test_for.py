@@ -166,7 +166,9 @@ def load_test_map(tests_dir: str) -> Dict[str, str]:
         return {}
 
 
-def apply_explicit_mappings(target_files: List[str], explicit_map: Dict[str, str]) -> Set[str]:
+def apply_explicit_mappings(
+    target_files: List[str], explicit_map: Dict[str, str], project_root: Path
+) -> Set[str]:
     """Apply explicit test mappings for files without import relationships."""
     affected = set()
 
@@ -185,9 +187,15 @@ def apply_explicit_mappings(target_files: List[str], explicit_map: Dict[str, str
     explicit_map = valid_map
 
     for target_file in target_files:
-        # Normalize path
+        # Normalize path——与 normalize_module_path 同口径（先 resolve 再相对化），
+        # 否则传入 ./、绝对路径或含 .. 的目标时 startswith 对 yaml 中
+        # core/xxx 形态的 pattern 全部失配，显式映射被静默跳过；
+        # 归一失败（目标不在项目内）回退原串，保留旧行为。
         target_path = Path(target_file)
-        target_str = str(target_path)
+        try:
+            target_str = str(target_path.resolve().relative_to(project_root))
+        except ValueError:
+            target_str = str(target_path)
 
         for pattern, test_file in explicit_map.items():
             # Check if target matches pattern (prefix or exact match)
@@ -341,7 +349,7 @@ def main():
 
     # Apply explicit mappings
     explicit_map = load_test_map(str(tests_dir))
-    explicit_tests = apply_explicit_mappings(target_files, explicit_map)
+    explicit_tests = apply_explicit_mappings(target_files, explicit_map, project_root)
     # Convert explicit test paths to module paths for consistency
     for test_path in explicit_tests:
         # Convert "tests/test_foo.py" to "tests.test_foo"

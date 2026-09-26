@@ -89,7 +89,8 @@ class DashboardHTTPServer(ThreadingHTTPServer):
                 # 保留 _projects_cache 原值；记录错误；不抛出
                 logger.error("项目发现失败，复用上次成功结果: %s", exc)
             finally:
-                self._cache_ts = now
+                # 以扫描完成时刻起算 TTL：慢扫描（含注定失败的发现）不压缩缓存有效期
+                self._cache_ts = time.time()
         return self._projects_cache
 
     def invalidate_projects_cache(self):

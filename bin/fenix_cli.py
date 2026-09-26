@@ -37,12 +37,13 @@ def cmd_promote(args):
     """晋升 drafted SPEC → ready / reviewing（按评审判定分流）。"""
     from core.pm_engine.promotion import promote_drafted
     from core.state_machine import StateMachine, project_state_logger
-    from core.logger import Logger
     from core.config import ConfigLoader
 
     proot = _resolve_project_root(args.project)
-    sm = StateMachine(proot / ".fenix" / "STATE.md", project_state_logger(proot))
-    logger = Logger(proot)
+    # 复用按项目根缓存的 state logger：本就指向 .fenix/logs/fenixd.log 且与
+    # STATE 写入同源；另构造 Logger 会摘除其 handler 并把留痕散落 <proot>/fenixd.log
+    logger = project_state_logger(proot)
+    sm = StateMachine(proot / ".fenix" / "STATE.md", logger)
 
     # 解析项目有效配置（用户级 + 项目级深合并），使评审分流判定与 daemon
     # 同源——不传 config 时 promote_drafted 无法评估跳过白名单，恒直通 ready。
@@ -96,11 +97,11 @@ def cmd_promote(args):
 def cmd_review(args):
     """重新评审 blocked SPEC（评审相关 blocked → reviewing）。"""
     from core.state_machine import StateMachine, project_state_logger
-    from core.logger import Logger
 
     proot = _resolve_project_root(args.project)
-    sm = StateMachine(proot / ".fenix" / "STATE.md", project_state_logger(proot))
-    logger = Logger(proot)
+    # 同 cmd_promote：复用缓存 state logger（.fenix/logs），勿另构造 Logger 摘其 handler
+    logger = project_state_logger(proot)
+    sm = StateMachine(proot / ".fenix" / "STATE.md", logger)
 
     entry = sm.read_one(args.spec)
     if not entry:
@@ -166,11 +167,11 @@ def cmd_reflow(args):
     """
     from core.pm_engine.task_reflow import reflow_spec
     from core.state_machine import StateMachine, project_state_logger
-    from core.logger import Logger
 
     proot = _resolve_project_root(args.project)
-    sm = StateMachine(proot / ".fenix" / "STATE.md", project_state_logger(proot))
-    logger = Logger(proot)
+    # 同 cmd_promote：复用缓存 state logger（.fenix/logs），勿另构造 Logger 摘其 handler
+    logger = project_state_logger(proot)
+    sm = StateMachine(proot / ".fenix" / "STATE.md", logger)
 
     result = reflow_spec(proot, args.spec, state_machine=sm, logger=logger, source="cli")
     if result.get("ok"):

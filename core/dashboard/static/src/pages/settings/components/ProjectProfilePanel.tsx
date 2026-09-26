@@ -121,6 +121,18 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
   // 首次加载未完成（草稿还是空串）或期间已切换项目（草稿仍是上一个项目的
   // 内容）时拒绝保存，防止以当前项目名把旧契约/空串写盘覆盖既有契约。
   const yamlDraftSourceRef = useRef<{ project: string; seq: number } | null>(null);
+  // 草稿保护：镜像当前草稿值（加载回调是异步闭包，读不到最新 state）+
+  // 最近一次服务器返回内容基线。静默回写（保存后重载）前比对——草稿既不
+  // 等于基线也不等于服务器新内容，说明有未保存的用户修改，保留草稿并提示，
+  // 防止用户输入被回写静默覆盖丢失。
+  const yamlDraftRef = useRef('');
+  const yamlLoadedContentRef = useRef('');
+
+  // 草稿统一写入口：同步 ref 镜像（编辑 onChange 与「插入模板」共用）
+  const applyYamlDraft = (value: string) => {
+    yamlDraftRef.current = value;
+    setYamlDraft(value);
+  };
 
   const loadVerifyYaml = async (silent = false) => {
     const seq = ++yamlLoadSeq.current;
@@ -129,8 +141,26 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
     try {
       const d = await getVerifyYaml(project);
       if (seq !== yamlLoadSeq.current) return; // 过期响应：丢弃，不回写草稿
+      if (
+        silent &&
+        yamlDraftRef.current !== d.content &&
+        yamlDraftRef.current !== yamlLoadedContentRef.current
+      ) {
+        // 静默回写遇未保存草稿（既不等于刚保存/上次加载内容，也不等于服务
+        // 器新内容）：保留用户编辑不覆盖，仅同步存在性/归属/基线并提示。
+        // 非静默加载（「重新加载」按钮/切项目）是显式动作，维持直接覆盖。
+        setYamlExists(d.exists);
+        yamlLoadedContentRef.current = d.content;
+        yamlDraftSourceRef.current = { project, seq };
+        message.warning(
+          '服务器上的 verify.yaml 已重新加载，但本地草稿有未保存修改，已保留您的编辑；如需丢弃修改请点击「重新加载」'
+        );
+        return;
+      }
       setYamlDraft(d.content);
+      yamlDraftRef.current = d.content;
       setYamlExists(d.exists);
+      yamlLoadedContentRef.current = d.content;
       yamlDraftSourceRef.current = { project, seq };
     } catch (e) {
       if (seq !== yamlLoadSeq.current) return; // 过期请求的失败也不打扰当前项目
@@ -142,6 +172,10 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
   };
 
   useEffect(() => {
+    // 切项目：清草稿保护基线，草稿归属随加载切到新项目（回写按既有行为
+    // 直接覆盖），防止上一项目残留基线把新项目内容误判为「覆盖未保存修改」
+    yamlDraftRef.current = '';
+    yamlLoadedContentRef.current = '';
     loadVerifyYaml();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project]);
@@ -173,7 +207,9 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
   const handleInsertTemplate = async () => {
     try {
       const d = await getVerifyYamlTemplate();
-      setYamlDraft(d.template);
+      // 走统一写入口：模板内容与已加载基线不同即视为未保存修改，
+      // 在途静默回写不会把模板覆盖掉
+      applyYamlDraft(d.template);
       message.info('已插入契约模板：按项目实际取消注释并修改，保存后下一轮验证生效');
     } catch (e) {
       const errorMessage = e instanceof Error ? e.message : String(e);
@@ -258,7 +294,7 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
             ref={yamlTextareaRef}
             data-testid="verify-yaml-textarea"
             value={yamlDraft}
-            onChange={(e) => setYamlDraft(e.target.value)}
+            onChange={(e) => applyYamlDraft(e.target.value)}
             disabled={yamlLoading}
             placeholder={'# 全注释 = 无契约。可点击「插入模板」开始配置。'}
             autoSize={{ minRows: 12, maxRows: 28 }}
@@ -274,10 +310,16 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
                   cancelText="取消"
                   onConfirm={handleInsertTemplate}
                 >
-                  <Button data-testid="verify-yaml-template">插入模板</Button>
+                  <Button data-testid="verify-yaml-template" disabled={yamlLoading}>
+                    插入模板
+                  </Button>
                 </Popconfirm>
               ) : (
-                <Button onClick={handleInsertTemplate} data-testid="verify-yaml-template">
+                <Button
+                  onClick={handleInsertTemplate}
+                  disabled={yamlLoading}
+                  data-testid="verify-yaml-template"
+                >
                   插入模板
                 </Button>
               )}

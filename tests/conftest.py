@@ -322,8 +322,11 @@ def make_project(tmp_path: Path, name: str = "proj-a", otherspec: bool = True) -
         encoding="utf-8",
     )
 
-    # 事件日志（时间戳必须是最近时间，get_recent_events 按分钟窗口过滤）
-    (proot / ".fenix" / "logs" / "fenixd-2026.log").write_text(
+    # 事件日志（时间戳必须是最近时间，get_recent_events 按分钟窗口过滤）。
+    # 文件名用 FlockRotatingFileHandler 真实命名 fenixd.log（轮转备份为
+    # fenixd.log.N）；旧值 fenixd-2026.log 是生产端不会产生的失真名，
+    # get_recent_events 的 glob（fenixd.log*）匹配不到会假失败。
+    (proot / ".fenix" / "logs" / "fenixd.log").write_text(
         json.dumps({"timestamp": datetime.now(timezone.utc).isoformat(), "level": "INFO",
                     "component": "pm_engine", "message": "scan"}, ensure_ascii=False) + "\n",
         encoding="utf-8",

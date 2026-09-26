@@ -329,99 +329,58 @@ def _run_epoch(run_file: Path) -> str:
     return m.group(1) if m else run_file.name
 
 
-def _run_session_id(run_file: Path) -> "str | None":
-    """读 run 产物 init 事件的 ``session_id``（Task 计数器 taskId 的归属会话）。
+def _scan_run_events(run_file: Path) -> "tuple[list, set, dict, str | None, bool]":
+    """单遍扫描 run 产物：Task 记账 + init ``session_id`` + 异常终态标记。
 
-    Task 工具的 ``taskId`` 是**会话级**计数（每个新会话从 1 起）。``--resume``
-    续做共享同一 ``session_id``、taskId 连续；而 daemon 因超时/瞬断/跨 provider
-    **新建会话**重派时 ``session_id`` 变化、taskId 复位。故跨轮累积 Task 记录
-    MUST 按 ``session_id`` 分族——按派发 epoch 分族会把不同会话的独立 taskId
-    序错误拼成一条全局序，导致映射错位（2026-09-16 refactor-verification-module
-    事故：a1-r1 的 2 个 create 把 a1-r2 的 15 个 create 整体后移，使 a1-r2 真实
-    完成的 4.7/4.8 被映射到 4.5/4.6）。
-
-    无 init 事件 / 无 session_id → ``None``（调用方回退 epoch 家族）。
-    """
-    try:
-        with run_file.open("r", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entry = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if (isinstance(entry, dict)
-                        and entry.get("type") == "system"
-                        and entry.get("subtype") == "init"):
-                    sid = entry.get("session_id")
-                    return str(sid) if sid else None
-    except OSError:
-        return None
-    return None
-
-
-def _run_ended_abnormally(run_file: Path) -> bool:
-    """run 产物是否以异常终态收尾（超时/kill/非 0 退出写入 ``type=="error"``）。
-
-    正常收尾为 ``result`` / ``superseded`` 事件，无 ``error`` 行；``append_run_error``
-    只在超时/信号杀/非 0 退出时追加 ``type=="error"`` 终态行。被硬超时或信号
-    杀死的 run，其 Task 记账**被截断**——「建了 Task 但没来得及 TaskUpdate」
-    不构成实现者漏做的证据，故其 ``TaskCreate`` 不产生完成度义务（2026-09-16
-    refactor-verification-module 事故：a1-r2 撞 18600s 上限被杀，4.9/4.10/4.11
-    只创建未完成，后续轮次从不使用 Task 工具 → 硬门永久拒绝、原地重试死循环）。
-
-    完成记录（``done_ids``）仍取全部 run——已 ``completed`` 是正向证据，不受
-    创建轮死法影响；只对「缺失」这一负向结论要求来源可信。
-    """
-    try:
-        with run_file.open("r", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                if '"error"' not in line:
-                    continue
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entry = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(entry, dict) and entry.get("type") == "error":
-                    return True
-    except OSError:
-        return False
-    return False
-
-
-def _scan_task_create_update(run_file: Path) -> "tuple[list, set, dict]":
-    """扫描单 run 产物的 TaskCreate/TaskUpdate 调用（解析循环单点实现）。
-
-    parse_run_task_done 与 parse_run_task_done_cumulative 均消费本扫描结果，
-    禁止再造第二套循环——两套解析一旦漂移（TaskUpdate 输入形态、status 取值
-    变化只改一侧），会产出矛盾结论（同模块 docstring 的正则收口理由）。
+    解析循环单点实现（原 _scan_task_create_update 的循环收口于此并扩展两路
+    结论）：一次文件 IO 同时产出 TaskCreate/TaskUpdate 记账、首个 init 事件的
+    ``session_id`` 与 ``type=="error"`` 终态行标记，供 parse_run_task_done /
+    parse_run_task_done_cumulative 及下方三个扫描器投影消费——
+    parse_run_task_done_cumulative 此前对同一文件先后调 _run_session_id /
+    _scan_task_create_update / _run_ended_abnormally 三次全量重读（run 产物
+    只增，大 spec 家族文件可达数 MB，result_gate 每轮实现收工都要跑一遍）。
+    禁止再造第二套循环（理由见 _scan_task_create_update）。
 
     Returns:
-        (created_ordered, completed_idx, last_update_status)：
+        (created_ordered, completed_idx, last_update_status, session_id,
+         ended_abnormally)：
         - created_ordered: 按出现序的 tasks.md id（subject 无编号记 None）；
         - completed_idx: TaskUpdate ``status=completed`` 的 ``taskId - 1`` 集合；
-        - last_update_status: ``taskId - 1`` → 最近一次 TaskUpdate status。
-    OSError → 空三元组（容错：任何损坏都不抛异常）。
+        - last_update_status: ``taskId - 1`` → 最近一次 TaskUpdate status；
+        - session_id: 首个 init 事件的 ``session_id``（首个 init 即定格：无值/
+          缺失 → None、不再看后续 init；无 init 事件 → None）；
+        - ended_abnormally: 任一行 ``type=="error"`` 即 True（先做 ``"error"``
+          字面子串快筛再解析——type 值为 "error" 时行内必有该字面，快筛不漏）。
+    OSError → (空三元组, None, False)（容错：任何损坏都不抛异常）。
     """
     created_ordered: list = []
     completed_idx: set = set()
     last_update_status: dict = {}  # taskId-1 → 最近一次 TaskUpdate status
+    session_id: "str | None" = None
+    init_seen = False
+    ended_abnormally = False
     try:
         with run_file.open("r", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                line = line.strip()
+            for raw in f:
+                # error 终态快筛（原 _run_ended_abnormally）：先查子串再解析
+                may_error = '"error"' in raw
+                line = raw.strip()
                 if not line:
                     continue
                 try:
                     entry = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if not isinstance(entry, dict) or entry.get("type") != "assistant":
+                if not isinstance(entry, dict):
+                    continue
+                etype = entry.get("type")
+                if may_error and etype == "error":
+                    ended_abnormally = True
+                if etype == "system" and entry.get("subtype") == "init" and not init_seen:
+                    init_seen = True  # 首个 init 定格（空/缺失 session_id → None）
+                    sid = entry.get("session_id")
+                    session_id = str(sid) if sid else None
+                if etype != "assistant":
                     continue
                 for c in (entry.get("message") or {}).get("content") or []:
                     if not isinstance(c, dict) or c.get("type") != "tool_use":
@@ -441,8 +400,63 @@ def _scan_task_create_update(run_file: Path) -> "tuple[list, set, dict]":
                         if status == "completed":
                             completed_idx.add(n - 1)
     except OSError:
-        return [], set(), {}
-    return created_ordered, completed_idx, last_update_status
+        return [], set(), {}, None, False
+    return created_ordered, completed_idx, last_update_status, session_id, ended_abnormally
+
+
+def _run_session_id(run_file: Path) -> "str | None":
+    """读 run 产物 init 事件的 ``session_id``（Task 计数器 taskId 的归属会话）。
+
+    Task 工具的 ``taskId`` 是**会话级**计数（每个新会话从 1 起）。``--resume``
+    续做共享同一 ``session_id``、taskId 连续；而 daemon 因超时/瞬断/跨 provider
+    **新建会话**重派时 ``session_id`` 变化、taskId 复位。故跨轮累积 Task 记录
+    MUST 按 ``session_id`` 分族——按派发 epoch 分族会把不同会话的独立 taskId
+    序错误拼成一条全局序，导致映射错位（2026-09-16 refactor-verification-module
+    事故：a1-r1 的 2 个 create 把 a1-r2 的 15 个 create 整体后移，使 a1-r2 真实
+    完成的 4.7/4.8 被映射到 4.5/4.6）。
+
+    无 init 事件 / 无 session_id → ``None``（调用方回退 epoch 家族）。
+    循环实体已收口于 _scan_run_events，本函数为其 session_id 投影。
+    """
+    return _scan_run_events(run_file)[3]
+
+
+def _run_ended_abnormally(run_file: Path) -> bool:
+    """run 产物是否以异常终态收尾（超时/kill/非 0 退出写入 ``type=="error"``）。
+
+    正常收尾为 ``result`` / ``superseded`` 事件，无 ``error`` 行；``append_run_error``
+    只在超时/信号杀/非 0 退出时追加 ``type=="error"`` 终态行。被硬超时或信号
+    杀死的 run，其 Task 记账**被截断**——「建了 Task 但没来得及 TaskUpdate」
+    不构成实现者漏做的证据，故其 ``TaskCreate`` 不产生完成度义务（2026-09-16
+    refactor-verification-module 事故：a1-r2 撞 18600s 上限被杀，4.9/4.10/4.11
+    只创建未完成，后续轮次从不使用 Task 工具 → 硬门永久拒绝、原地重试死循环）。
+
+    完成记录（``done_ids``）仍取全部 run——已 ``completed`` 是正向证据，不受
+    创建轮死法影响；只对「缺失」这一负向结论要求来源可信。
+
+    循环实体已收口于 _scan_run_events，本函数为其异常终态投影。
+    """
+    return _scan_run_events(run_file)[4]
+
+
+def _scan_task_create_update(run_file: Path) -> "tuple[list, set, dict]":
+    """扫描单 run 产物的 TaskCreate/TaskUpdate 调用（解析循环单点实现）。
+
+    parse_run_task_done 与 parse_run_task_done_cumulative 均消费本扫描结果，
+    禁止再造第二套循环——两套解析一旦漂移（TaskUpdate 输入形态、status 取值
+    变化只改一侧），会产出矛盾结论（同模块 docstring 的正则收口理由）。
+
+    Returns:
+        (created_ordered, completed_idx, last_update_status)：
+        - created_ordered: 按出现序的 tasks.md id（subject 无编号记 None）；
+        - completed_idx: TaskUpdate ``status=completed`` 的 ``taskId - 1`` 集合；
+        - last_update_status: ``taskId - 1`` → 最近一次 TaskUpdate status。
+    OSError → 空三元组（容错：任何损坏都不抛异常）。
+
+    循环实体已收口于 _scan_run_events（含 init session_id / error 终态两路
+    扩展结论），本函数返回其 Task 记账投影（签名与语义不变）。
+    """
+    return _scan_run_events(run_file)[:3]
 
 
 def parse_run_task_done_cumulative(project_root, spec_name) -> dict:
@@ -498,11 +512,16 @@ def parse_run_task_done_cumulative(project_root, spec_name) -> dict:
     files.sort()
 
     # 分族键：session_id 优先（taskId 计数器归属会话），无 init 事件回退 epoch。
+    # 每文件单遍 _scan_run_events 同时产出分族键、Task 记账与异常终态标记并
+    # 缓存到 scans 供族内消费——此前分族/族内两趟对同一文件先后调
+    # _run_session_id / _scan_task_create_update / _run_ended_abnormally
+    # 三次全量重读（读放大，见 _scan_run_events docstring）。
     families: dict = {}
+    scans: dict = {}
     for _mt, p in files:
-        key = _run_session_id(p)
-        if key is None:
-            key = f"epoch:{_run_epoch(p)}"
+        creates, completed_idx, _last_status, sid, ended_abnormally = _scan_run_events(p)
+        scans[p] = (creates, completed_idx, ended_abnormally)
+        key = sid if sid is not None else f"epoch:{_run_epoch(p)}"
         families.setdefault(key, []).append(p)
 
     all_done: set = set()
@@ -511,14 +530,14 @@ def parse_run_task_done_cumulative(project_root, spec_name) -> dict:
     for _key, fam_files in families.items():
         created_ordered: list = []
         for p in fam_files:
-            creates, completed_idx, _last_status = _scan_task_create_update(p)
+            creates, completed_idx, ended_abnormally = scans[p]
             created_ordered.extend(creates)  # 该 run 创建并入族内全局序
             for idx in completed_idx:  # taskId 即族内全局序下标
                 if 0 <= idx < len(created_ordered) and created_ordered[idx]:
                     all_done.add(created_ordered[idx])
             # 义务来源：仅正常收尾 run 的创建计入 tracked（异常终止 run 的
             # 记账被截断，不产生完成度义务）。
-            if not _run_ended_abnormally(p):
+            if not ended_abnormally:
                 for cid in creates:
                     if cid:
                         all_tracked.add(cid)

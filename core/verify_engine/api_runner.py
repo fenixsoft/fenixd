@@ -33,11 +33,14 @@ _SSE_MAX_EVENTS = 100  # sse_connect 单窗口事件收集上限（触顶截断�
 
 
 def _truncate(text: str) -> tuple:
-    """证据截断：超过 64KB 截断并带截断标记。返回 (截断后文本, truncated)。"""
+    """证据截断：超过 64KB（UTF-8 字节口径）截断并带截断标记。返回 (截断后文本, truncated)。"""
     if text is None:
         return "", False
-    if len(text) > _EVIDENCE_LIMIT:
-        return text[:_EVIDENCE_LIMIT], True
+    # 与 cli_runner._truncate 同源同口径：按编码后字节数截断（中文等多字节
+    # 证据按字符数比较会漏截）；errors="ignore" 丢弃尾部被切半的多字节序列
+    encoded = text.encode("utf-8", errors="replace")
+    if len(encoded) > _EVIDENCE_LIMIT:
+        return encoded[:_EVIDENCE_LIMIT].decode("utf-8", errors="ignore"), True
     return text, False
 
 

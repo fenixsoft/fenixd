@@ -360,13 +360,22 @@ def get_recent_events(project_root, minutes=10, limit=30) -> list:
     logs_dir = Path(project_root) / ".fenix" / "logs"
     if not logs_dir.is_dir():
         return []
-    log_files = sorted(logs_dir.glob("fenixd*.log"), reverse=True)
+    # 轮转备份名是 fenixd.log.1/.2（FlockRotatingFileHandler 标准命名，不以
+    # .log 结尾），fenixd*.log 匹配不到，轮转后近期事件会静默丢失；改用
+    # fenixd.log* 并排除伴随锁文件 fenixd.log.lock（core/logger.py，无日志内容）。
+    log_files = sorted(
+        (p for p in logs_dir.glob("fenixd.log*") if not p.name.endswith(".lock")),
+        reverse=True,
+    )
     # cutoff 归一为 ...Z 形态再与日志时间戳（统一 ...Z 落盘）做字典序比较
     cutoff = _norm_utc_iso(
         (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
     )
     events = []
-    for lf in log_files[:2]:
+    # reverse 字典序下当前文件 fenixd.log 恒排最后（备份名是其前缀延长），
+    # 取末 2 个 = 最近一个轮转备份 + 当前文件，且当前文件最后处理，
+    # events[-limit:] 优先保留当前文件的新事件。
+    for lf in log_files[-2:]:
         try:
             events.extend(_iter_tail_log_entries(proot=Path(project_root), lf=lf, cutoff=cutoff))
         except (OSError, UnicodeDecodeError):

@@ -386,24 +386,30 @@ class HookEngine:
         except Exception as e:
             self._log_error(f"hook 匹配失败 spec={spec} event={to_status}: {type(e).__name__}: {e}")
             return
-        for cfg, scope in matches:
-            hook_id = cfg.get("id") if isinstance(cfg, dict) else None
-            th = threading.Thread(
-                target=self._execute_one,
-                args=(hook_id, scope, spec, from_status, to_status, entry or {}, cfg),
-                name=f"hook-{hook_id or 'anon'}-{spec}",
-                daemon=True,
-            )
-            th.start()
+        try:
+            for cfg, scope in matches:
+                hook_id = cfg.get("id") if isinstance(cfg, dict) else None
+                th = threading.Thread(
+                    target=self._execute_one,
+                    args=(hook_id, scope, spec, from_status, to_status, entry or {}, cfg),
+                    name=f"hook-{hook_id or 'anon'}-{spec}",
+                    daemon=True,
+                )
+                th.start()
 
-        # 项目级 all-done 评估（fix-hook-all-specs-done）：迁移进成功终态时
-        # 检查全员是否收口；迁移到任何非终态则复位去重标志（打回后再收口
-        # 可再次触发）。
-        if to_status in SPEC_SUCCESS_TERMINAL:
-            self._maybe_dispatch_all_done(spec)
-        else:
-            with self._all_done_lock:
-                self._all_done_fired = False
+            # 项目级 all-done 评估（fix-hook-all-specs-done）：迁移进成功终态时
+            # 检查全员是否收口；迁移到任何非终态则复位去重标志（打回后再收口
+            # 可再次触发）。
+            if to_status in SPEC_SUCCESS_TERMINAL:
+                self._maybe_dispatch_all_done(spec)
+            else:
+                with self._all_done_lock:
+                    self._all_done_fired = False
+        except Exception as e:
+            self._log_error(
+                f"hook 投递失败（不向调用方抛）spec={spec} event={to_status}: "
+                f"{type(e).__name__}: {e}"
+            )
 
     # ── 项目级 all-done（fix-hook-all-specs-done）────────────────────
 
@@ -430,23 +436,26 @@ class HookEngine:
             if self._all_done_fired:
                 return
             self._all_done_fired = True
-        for cfg, scope in match_hooks(self.config, "*", HOOK_EVENT_ALL_DONE):
-            hook_id = cfg.get("id") if isinstance(cfg, dict) else None
-            th = threading.Thread(
-                target=self._execute_one,
-                args=(
-                    hook_id,
-                    scope,
-                    "*",
-                    None,
-                    HOOK_EVENT_ALL_DONE,
-                    {"trigger_spec": trigger_spec},
-                    cfg,
-                ),
-                name=f"hook-{hook_id or 'anon'}-all-done",
-                daemon=True,
-            )
-            th.start()
+        try:
+            for cfg, scope in match_hooks(self.config, "*", HOOK_EVENT_ALL_DONE):
+                hook_id = cfg.get("id") if isinstance(cfg, dict) else None
+                th = threading.Thread(
+                    target=self._execute_one,
+                    args=(
+                        hook_id,
+                        scope,
+                        "*",
+                        None,
+                        HOOK_EVENT_ALL_DONE,
+                        {"trigger_spec": trigger_spec},
+                        cfg,
+                    ),
+                    name=f"hook-{hook_id or 'anon'}-all-done",
+                    daemon=True,
+                )
+                th.start()
+        except Exception as e:
+            self._log_error(f"all-done hook 投递失败（不向调用方抛）: {type(e).__name__}: {e}")
 
     # ── 单条执行 ────────────────────────────────────────────────────
 

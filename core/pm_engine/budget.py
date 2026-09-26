@@ -325,6 +325,15 @@ class ImplBudget:
         """
         used = self._impl_run_budget_used(spec_name)
         completed = self._count_normal_completed_impl_runs(spec_name)
+        # 扫描失败（计数不可用）≠ 权威 0：0 会被当成真实对账值把 used 改写
+        # 清零（已耗尽的 spec 意外重获全部预算），故记 WARN 跳过本轮对账不改数。
+        if completed is None:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"预算计数对账跳过: '{spec_name}' used={used}"
+                f"（runs 目录扫描失败，无权威计数，本轮不改数）",
+            )
+            return
         # 人工重置基线：有锚点时对账目标 = 基线之后的新增正常收工 run 数。
         baseline = self._budget_manual_reset_baseline(spec_name)
         if baseline is None:
@@ -487,13 +496,16 @@ class ImplBudget:
                 pass
         return False
 
-    def _count_normal_completed_impl_runs(self, spec_name: str) -> int:
+    def _count_normal_completed_impl_runs(self, spec_name: str) -> int | None:
         """从 .fenix/runs/ 侧车统计本 spec 正常收工的实现 run 数。
 
         run_id 规则 ``impl-<spec>-<ts>[-a<n>][-r<m>]``（每 attempt/瞬态重试一个
         产物文件，同一 run 的多 attempt/重试视为一个 run，取最新产物）。
         判据：产物末行（终态行）为 error ＝ 死亡 run，不计；
         result 终态 ＝ 正常收工（成功或带收工结果的失败均计入）。
+        runs 目录缺失 ＝ 权威 0；扫描失败（IO/权限）返回 None——对账方
+        （_reconcile_impl_budget）以本计数为权威改写 used，喂 0 会把预算
+        瞬态清零，故失败必须与「真实 0」区分。
         """
         runs_dir = self._pm.project_root / ".fenix" / "runs"
         if not runs_dir.is_dir():
@@ -502,7 +514,7 @@ class ImplBudget:
         # glob 是惰性生成器，迭代期间的 OSError（权限/IO 抖动）会向上冒泡进
         # 对账主流程（item ba82df251f21）——守卫写法与同文件
         # _impl_run_unmaterialized / _budget_reconcile_has_exemption 对齐：
-        # 扫描失败按 0 计并记 WARNING，不阻断调用方主流程。
+        # 扫描失败返回 None（非 0），调用方据此跳过本轮对账不改数。
         try:
             for p in runs_dir.glob(f"impl-{spec_name}-*.jsonl"):
                 if run_spec_part(p.stem) != spec_name:
@@ -519,9 +531,9 @@ class ImplBudget:
         except OSError as e:
             self._pm.logger.warning(
                 "pm_engine",
-                f"runs 目录扫描失败 '{spec_name}'（按 0 计）: {e}",
+                f"runs 目录扫描失败 '{spec_name}'（计数不可用）: {e}",
             )
-            return 0
+            return None
         count = 0
         for _mtime, path in newest_attempt.values():
             if not self._run_file_died(path):
