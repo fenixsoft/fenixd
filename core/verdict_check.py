@@ -1239,8 +1239,6 @@ def scenario_fingerprint(scenario: dict) -> str:
 
     异常/缺字段返回空串（调用方按未命中处理，fail-open）。
     """
-    import hashlib as _hashlib
-
     try:
         failed = [
             {
@@ -1260,7 +1258,7 @@ def scenario_fingerprint(scenario: dict) -> str:
             ensure_ascii=False,
             sort_keys=True,
         )
-        return _hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
     except (TypeError, ValueError, AttributeError):
         return ""
 
@@ -1291,11 +1289,25 @@ def save_verdict_cache(project_root, spec_name, cache: dict) -> None:
     payload = dict(cache) if isinstance(cache, dict) else {}
     if "_meta" not in payload:
         payload["_meta"] = {"head_at_write": compute_head_at_write(project_root)}
+    import os
+    import tempfile
+
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
-        tmp = p.with_name(p.name + ".tmp")
-        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
-        tmp.replace(p)
+        # tempfile.mkstemp 唯一临时文件 + os.replace：并发写同缓存时各进程 tmp
+        # 互不覆盖，避免固定 .tmp 文件名下另一进程 write_text 轮中截断导致空文件落盘。
+        fd, tmp_path = tempfile.mkstemp(dir=str(p.parent), prefix=".verdict_cache.", suffix=".json.tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=1)
+                f.flush()
+            os.replace(tmp_path, p)
+        except OSError:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
     except OSError:
         pass
 
@@ -1363,8 +1375,6 @@ def scenario_definition_fingerprint(scenario: dict) -> str:
     两侧投影一致；易变键（status/evidence/assertion_triage 等）不在白名单，
     天然不影响指纹。异常/空载荷返回空串（fail-closed，按不可采信处理）。
     """
-    import hashlib as _hashlib
-
     try:
         payload = json.dumps(
             {k: scenario.get(k) for k in _SCENARIO_DEFINITION_KEYS},
@@ -1372,17 +1382,15 @@ def scenario_definition_fingerprint(scenario: dict) -> str:
             sort_keys=True,
             default=str,
         )
-        return _hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
     except (TypeError, ValueError, AttributeError):
         return ""
 
 
 def _stable_file_hash(path: Path) -> str:
     """单文件内容 sha256；读取失败返回 ""（该文件视作缺席）。"""
-    import hashlib as _hashlib
-
     try:
-        return _hashlib.sha256(path.read_bytes()).hexdigest()
+        return hashlib.sha256(path.read_bytes()).hexdigest()
     except OSError:
         return ""
 
@@ -1397,8 +1405,6 @@ def compute_build_fingerprint(project_root) -> str:
 
     项目根无任何清单 → 返回 ""（fail-closed：无法刻画被测构建则不采信）。
     """
-    import hashlib as _hashlib
-
     root = Path(project_root)
     parts = []
     for name in _BUILD_MANIFEST_CANDIDATES:
@@ -1410,7 +1416,7 @@ def compute_build_fingerprint(project_root) -> str:
             parts.append(f"{name}:{h}")
     if not parts:
         return ""
-    return _hashlib.sha256("\n".join(sorted(parts)).encode("utf-8")).hexdigest()[:16]
+    return hashlib.sha256("\n".join(sorted(parts)).encode("utf-8")).hexdigest()[:16]
 
 
 def compute_verify_config_fingerprint(project_root) -> str:

@@ -150,12 +150,14 @@ class Logger:
             return
         # close() 后 _handler 被置 None：daemon 关停序列里（atexit 钩子、异常
         # 兜底、后台线程收尾）close 之后仍可能有日志调用，这里降级为无害
-        # no-op，避免 AttributeError 掩盖原始错误甚至打断关停路径。先取局部
-        # 变量再判空，容忍判空与使用之间被 close() 并发置 None。
-        handler = self._handler
-        if handler is None:
-            return
+        # no-op，避免 AttributeError 掩盖原始错误甚至打断关停路径。判空放在
+        # self._lock 内与 close() 的置 None 互斥（code-review item
+        # 87f191448088），锁内所见即所写，不再有判空与使用之间被并发
+        # close() 的窗口。
         with self._lock:
+            handler = self._handler
+            if handler is None:
+                return
             record = logging.LogRecord(
                 name="fenixd",
                 level=level,
@@ -178,11 +180,15 @@ class Logger:
 
     def close(self):
         """Close the log handler, flushing any buffered data."""
-        if self._handler:
-            self._handler.flush()
-            self._handler.close()
-            self._python_logger.removeHandler(self._handler)
-            self._handler = None
+        # 与 _log 共用 self._lock：flush/close/置 None 与 _log 的锁内判空
+        # 互斥，关停窗口内并发日志调用不会写向已 close 的流（code-review
+        # item 87f191448088）。
+        with self._lock:
+            if self._handler:
+                self._handler.flush()
+                self._handler.close()
+                self._python_logger.removeHandler(self._handler)
+                self._handler = None
 
     def debug(self, component: str, message: str, context: dict = None):
         self._log(logging.DEBUG, component, message, context)

@@ -25,8 +25,10 @@
 """
 
 import json
+import os
 import re
 import subprocess
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -53,6 +55,31 @@ _MD_COUNT_RE = re.compile(r"^\|\s*(通过|失败|错误)\s*\|\s*([^|]+?)\s*\|", 
 _REPORT_PROBE_TIMEOUT = 30
 _REPORT_ADD_TIMEOUT = 60
 _REPORT_COMMIT_TIMEOUT = 120
+
+
+def _atomic_write(path: Path, content: str) -> None:
+    """mkstemp 唯一临时文件 + fsync + os.replace 原子写（code_review._atomic_write 同款）。
+
+    固定 ``<name>.tmp`` 临时名在并发写同一目标时会互相截断：进程 A 完成 write_text
+    后、进程 B 在同一 .tmp 上截断改写，随后任一方的 replace 都可能把截断内容落盘。
+    唯一临时名保证并发写不可能产生截断产物——rename 前目标不变，rename 后内容完整。
+    """
+    parent = path.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    tmp_fd, tmp_path_str = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(parent))
+    tmp_path = Path(tmp_path_str)
+    try:
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    finally:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
 
 
 # ── 结构化数据读取 ────────────────────────────────────────────────
@@ -183,11 +210,9 @@ def _persist_degrade_annotation(project_root, spec_name, annotation) -> None:
                 data = loaded
         data["degrade_annotation"] = annotation
         report_path.parent.mkdir(parents=True, exist_ok=True)
-        # tmp+replace 原子写（与 write_verdict_stability 同款）：进程中途崩溃
-        # 不会留下截断的 report.json
-        tmp = report_path.with_name(report_path.name + ".tmp")
-        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(report_path)
+        # mkstemp 唯一临时文件原子写（_atomic_write）：进程中途崩溃不会留下
+        # 截断的 report.json；固定 .tmp 名并发写会互相截断后 replace
+        _atomic_write(report_path, json.dumps(data, ensure_ascii=False, indent=2))
     except (OSError, TypeError, ValueError):
         pass
 
@@ -202,12 +227,23 @@ def _derive_status(run_result, report) -> str:
         if status in ("verified", "bug-found"):
             return status
     if isinstance(report, dict):
-        summary = report.get("summary") or {}
-        try:
-            if (int(summary.get("failed", 0) or 0) + int(summary.get("errors", 0) or 0)) > 0:
+        summary = report.get("summary")
+        if isinstance(summary, dict):
+            try:
+                if (int(summary.get("failed", 0) or 0) + int(summary.get("errors", 0) or 0)) > 0:
+                    return "bug-found"
+            except (TypeError, ValueError):
+                pass
+            else:
+                # 显式声明过 failed/errors 键且值非 0 已被上分支拦截 → 判定有据
+                if "failed" in summary or "errors" in summary:
+                    return "verified"
+        # summary 缺失/非 dict/不可解析/未声明失败键时退化为按场景计数兜底：
+        # 存在非 pass/passed 场景即 bug-found（与 _resolve_scenarios 的场景级
+        # 数据源回退同向）
+        for sc in _resolve_scenarios(report, run_result) or []:
+            if isinstance(sc, dict) and str(sc.get("status") or "") not in ("pass", "passed"):
                 return "bug-found"
-        except (TypeError, ValueError):
-            pass
     return "verified"
 
 
@@ -564,7 +600,12 @@ def render_verification_report(
         count_note = f"{len(bugs)} 个真实产品 Bug"
     else:
         head = "✅ 通过（verified）"
-        count_note = "全部场景通过"
+        # count_note 须与状态详情行（detail_parts）一致：豁免失败（flaky/test-defect
+        # 豁免场景合法保留失败计数而终局 verified）时再写「全部场景通过」会自相矛盾
+        if (failed or 0) + (errors or 0) > 0:
+            count_note = "其余失败场景已豁免（见分类列）"
+        else:
+            count_note = "全部场景通过"
     lines.append(f"## 结论：{head}")
     lines.append("")
 
@@ -718,12 +759,10 @@ def synthesize_verification_report(project_root, spec_name, now=None) -> dict:
     out_path = Path(project_root) / "spec" / "changes" / spec_name / "verification-report.md"
     try:
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        # tmp+replace 原子写（与 _persist_degrade_annotation 同款）：进程中途崩溃
-        # 不会留下截断的 md——截断残留的指纹仍等于本轮指纹，会被闸门以
-        # present 放行，违背「放行时报告必然完整在盘」的本职
-        tmp = out_path.with_name(out_path.name + ".tmp")
-        tmp.write_text(content, encoding="utf-8")
-        tmp.replace(out_path)
+        # mkstemp 唯一临时文件原子写（_atomic_write）：进程中途崩溃不会留下截断
+        # 的 md；固定 .tmp 名并发合成会互相截断——截断残留的指纹仍等于本轮
+        # 指纹，会被闸门以 present 放行，违背「放行时报告必然完整在盘」的本职
+        _atomic_write(out_path, content)
     except OSError as e:
         return {"ok": False, "error": f"验证报告写入失败: {e}"}
     return {"ok": True, "path": str(out_path)}
@@ -1079,11 +1118,9 @@ def write_verdict_stability(project_root, spec_name, data) -> None:
     p = _verdict_stability_path(project_root, spec_name)
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
-        tmp = p.with_name(p.name + ".tmp")
-        tmp.write_text(
-            json.dumps(data, ensure_ascii=False, indent=1, default=str), encoding="utf-8"
-        )
-        tmp.replace(p)
+        # mkstemp 唯一临时文件原子写（_atomic_write）：固定 .tmp 名并发写会
+        # 互相截断后 replace 出截断缓存
+        _atomic_write(p, json.dumps(data, ensure_ascii=False, indent=1, default=str))
     except OSError:
         pass
 

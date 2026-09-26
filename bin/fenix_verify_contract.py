@@ -209,8 +209,10 @@ def main():
 
     # 输出 prepare 结果
     print(f"[prepare] {'✓ 通过' if result.prepare_ok else '✗ 失败'}", end="")
+    # 声明步数（非实际执行步数——prepare_steps_run 在执行前赋值，第 1 步即
+    # 失败时仍为全部声明步数；code-review item 69f20b76f5a2），避免误读。
     if result.prepare_steps_run > 0:
-        print(f"（{result.prepare_steps_run} 步）", end="")
+        print(f"（声明 {result.prepare_steps_run} 步）", end="")
     print()
     if result.prepare_error:
         print(f"  错误: {result.prepare_error}")

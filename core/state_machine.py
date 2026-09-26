@@ -225,6 +225,15 @@ VERIFY_REDO_COUNT_FIELD = "_verify_redo_count"
 # 重启重验预算缺省阈值（agents.verify_redo_budget 未配置时沿用本值）
 DEFAULT_VERIFY_REDO_BUDGET = 3
 
+# ── 验证/重派周期计数内部字段（code-review item d52ab6f4d442）────────
+# 字段名单点定义（pm_engine 与 state_machine 共用，避免两处漂移）：
+# - _inconclusive_attempts：inconclusive（含 judge 自述环境暂停）连续轮次计数
+# - _redispatch_same_cause_streak：同因重派熔断计数（fix-redispatch-loop-governance）
+# - _uniform_fail_attempts：全场景同因失败哨计数（观察窗）
+INCONCLUSIVE_ATTEMPTS_FIELD = "_inconclusive_attempts"
+REDISPATCH_SAME_CAUSE_STREAK_FIELD = "_redispatch_same_cause_streak"
+UNIFORM_FAIL_ATTEMPTS_FIELD = "_uniform_fail_attempts"
+
 # ── 冻结终止保持标记（add-freeze-stop-inflight-agents D3）──────────────
 # _frozen_hold：spec 被冻结终止（run 因 frozen 被强杀、现场已 WIP 保全）后
 # 的独立保持标记，与 _cancelled_hold 并列且互不读写：
@@ -345,7 +354,7 @@ class StateParser:
     """Parse and serialize STATE.md entries."""
 
     @staticmethod
-    def parse(state_path: Path) -> Dict[str, dict]:
+    def parse(state_path: Path, logger=None) -> Dict[str, dict]:
         """
         Parse STATE.md and return {spec_name: entry_dict}.
 
@@ -364,10 +373,31 @@ class StateParser:
             return {}
 
         content = state_path.read_text(encoding="utf-8")
-        return StateParser._parse_content(content)
+        return StateParser._parse_content(content, logger)
 
     @staticmethod
-    def _parse_content(content: str) -> Dict[str, dict]:
+    def _admit_entry(name: str, entry: dict, specs: dict, logger) -> None:
+        """收编解析出的条目：status 缺失/非法时记 warning 后丢弃。
+
+        code-review item 685210d97ff8：status 缺失或值不在 SpecStatus.ALL 的
+        条目此前被过滤点静默丢弃——而 update_spec/add_spec/remove_spec 走
+        「锁内 read_all → 改 → _write_all_locked 全量回写」，一次手改 STATE.md
+        的 status 拼写错误会让下个写者把该条目（含 branch/implementer_run
+        锚点与全部预算计数）从文件整体删除且无痕。此处不改变既有丢弃行为，
+        仅把丢弃显性化为 warning；logger=None（脚本/测试直调）时自然静默。
+        """
+        status = entry.get("status")
+        if status in SpecStatus.ALL:
+            specs[name] = entry
+        elif logger is not None:
+            logger.warning(
+                "state_machine",
+                f"跳过 status 缺失或非法的条目 '{name}': {status!r} —— "
+                f"下个写者将把它从 STATE.md 移除",
+            )
+
+    @staticmethod
+    def _parse_content(content: str, logger=None) -> Dict[str, dict]:
         """Parse content string into spec entries."""
         specs = {}
         current_name = None
@@ -393,10 +423,7 @@ class StateParser:
             header_match = re.match(r"^###\s+(.+)$", line)
             if header_match:
                 if current_name and current_entry:
-                    if "status" in current_entry:
-                        # Only accept entries with valid status values
-                        if current_entry["status"] in SpecStatus.ALL:
-                            specs[current_name] = current_entry
+                    StateParser._admit_entry(current_name, current_entry, specs, logger)
                 current_name = header_match.group(1).strip()
                 current_entry = {}
                 continue
@@ -478,9 +505,8 @@ class StateParser:
                 current_entry[key] = value
 
         # Don't forget the last entry
-        if current_name and current_entry and "status" in current_entry:
-            if current_entry["status"] in SpecStatus.ALL:
-                specs[current_name] = current_entry
+        if current_name and current_entry:
+            StateParser._admit_entry(current_name, current_entry, specs, logger)
 
         return specs
 
@@ -637,7 +663,7 @@ class StateMachine:
         会抛 ``AttributeError``/``TypeError``（事故家族
         ``string indices must be integers``），整轮 full_scan 静默中止。
         """
-        raw = StateParser.parse(self.state_path)
+        raw = StateParser.parse(self.state_path, self.logger)
         return self._normalize_entries(raw)
 
     def _normalize_entries(self, raw: Dict[str, dict]) -> Dict[str, dict]:
@@ -689,8 +715,6 @@ class StateMachine:
         本方法 + flock 的组合。flock 按打开文件描述符生效，同进程对同一文件
         的第二个 fd 再 flock 会阻塞，故锁内不得再走 write_all。
         """
-        import threading
-
         content = StateParser.serialize(specs)
         parent = self.state_path.parent
 
@@ -762,17 +786,17 @@ class StateMachine:
         """
         lock_path = self._lockfile
         verify = 0
+        missing = False
         for attempt in (1, 2):
             with open(lock_path, "w") as lock_f:
                 fcntl.flock(lock_f, fcntl.LOCK_EX)
                 try:
                     specs = self.read_all()
                     if spec_name not in specs:
-                        self.logger.warning(
-                            "state_machine",
-                            f"bump {field} failed: SPEC not found: {spec_name}",
-                        )
-                        return 0
+                        # 锁内不落日志（持锁窗口不含 I/O，见 _log_update_applied
+                        # docstring），SPEC-not-found 告警带出锁外再记
+                        missing = True
+                        break
                     try:
                         current = int(specs[spec_name].get(field, 0) or 0)
                     except (TypeError, ValueError):
@@ -793,6 +817,13 @@ class StateMachine:
                 f"(attempt {attempt}): wrote {new_value}, read back {verify} — "
                 f"并发写覆盖，已重试",
             )
+        # SPEC-not-found 告警带出锁外再记（锁内不输出日志）
+        if missing:
+            self.logger.warning(
+                "state_machine",
+                f"bump {field} failed: SPEC not found: {spec_name}",
+            )
+            return 0
         # 重试后仍不匹配：返回磁盘实际值（以落盘为准），由调用方审计
         return verify
 
@@ -810,6 +841,7 @@ class StateMachine:
         """
         lock_path = self._lockfile
         verify: Dict[str, int] = {field: 0 for field in deltas}
+        missing = False
         for attempt in (1, 2):
             new_values: Dict[str, int] = {}
             with open(lock_path, "w") as lock_f:
@@ -817,11 +849,9 @@ class StateMachine:
                 try:
                     specs = self.read_all()
                     if spec_name not in specs:
-                        self.logger.warning(
-                            "state_machine",
-                            f"bump {sorted(deltas)} failed: SPEC not found: {spec_name}",
-                        )
-                        return {field: 0 for field in deltas}
+                        # 锁内不落日志（持锁窗口不含 I/O），告警带出锁外再记
+                        missing = True
+                        break
                     entry = specs[spec_name]
                     for field, delta in deltas.items():
                         try:
@@ -847,6 +877,13 @@ class StateMachine:
                 f"(attempt {attempt}): wrote {new_values}, read back {verify} — "
                 f"并发写覆盖，已重试",
             )
+        # SPEC-not-found 告警带出锁外再记（锁内不输出日志）
+        if missing:
+            self.logger.warning(
+                "state_machine",
+                f"bump {sorted(deltas)} failed: SPEC not found: {spec_name}",
+            )
+            return {field: 0 for field in deltas}
         # 重试后仍不匹配：返回磁盘实际值（以落盘为准），由调用方审计
         return verify
 
@@ -876,43 +913,51 @@ class StateMachine:
             记 warning 并返回 (True, 0)，不阻断调用方。
         """
         lock_path = self._lockfile
+        missing = False
         with open(lock_path, "w") as lock_f:
             fcntl.flock(lock_f, fcntl.LOCK_EX)
             try:
                 specs = self.read_all()
                 if spec_name not in specs:
-                    self.logger.warning(
-                        "state_machine",
-                        f"refund impl budget failed: SPEC not found: {spec_name}",
-                    )
-                    return True, 0
-                entry = specs[spec_name]
-                refunded_raw = entry.get(INFRA_REFUNDED_RUN_IDS_FIELD) or "[]"
-                try:
-                    refunded = (
-                        json.loads(refunded_raw) if isinstance(refunded_raw, str) else []
-                    )
-                except (json.JSONDecodeError, TypeError, ValueError):
-                    refunded = []
-                if not isinstance(refunded, list):
-                    refunded = []
-                try:
-                    used = int(entry.get(IMPL_RUN_BUDGET_USED_FIELD, 0) or 0)
-                except (TypeError, ValueError):
-                    used = 0
-                if anchor and anchor in refunded:
-                    return False, used
-                entry[IMPL_RUN_BUDGET_USED_FIELD] = max(0, used - 1)
-                if anchor:
-                    refunded.append(anchor)
-                    entry[INFRA_REFUNDED_RUN_IDS_FIELD] = json.dumps(
-                        refunded, ensure_ascii=False
-                    )
-                entry["updated"] = datetime.now(timezone.utc).isoformat()
-                self._write_all_locked(specs)
-                return True, entry[IMPL_RUN_BUDGET_USED_FIELD]
+                    # 锁内不落日志（持锁窗口不含 I/O，见 _log_update_applied
+                    # docstring），SPEC-not-found 告警带出锁外再记
+                    missing = True
+                else:
+                    entry = specs[spec_name]
+                    refunded_raw = entry.get(INFRA_REFUNDED_RUN_IDS_FIELD) or "[]"
+                    try:
+                        refunded = (
+                            json.loads(refunded_raw)
+                            if isinstance(refunded_raw, str)
+                            else []
+                        )
+                    except (json.JSONDecodeError, TypeError, ValueError):
+                        refunded = []
+                    if not isinstance(refunded, list):
+                        refunded = []
+                    try:
+                        used = int(entry.get(IMPL_RUN_BUDGET_USED_FIELD, 0) or 0)
+                    except (TypeError, ValueError):
+                        used = 0
+                    if anchor and anchor in refunded:
+                        return False, used
+                    entry[IMPL_RUN_BUDGET_USED_FIELD] = max(0, used - 1)
+                    if anchor:
+                        refunded.append(anchor)
+                        entry[INFRA_REFUNDED_RUN_IDS_FIELD] = json.dumps(
+                            refunded, ensure_ascii=False
+                        )
+                    entry["updated"] = datetime.now(timezone.utc).isoformat()
+                    self._write_all_locked(specs)
+                    return True, entry[IMPL_RUN_BUDGET_USED_FIELD]
             finally:
                 fcntl.flock(lock_f, fcntl.LOCK_UN)
+        # SPEC-not-found 告警带出锁外再记（持锁窗口不含 I/O）
+        self.logger.warning(
+            "state_machine",
+            f"refund impl budget failed: SPEC not found: {spec_name}",
+        )
+        return True, 0
 
     def bump_task_gate_rejections(self, spec_name: str, delta: int = 1) -> int:
         """任务完成度类产物硬门拒绝计数原子增减（``_impl_gate_task_rejections``）。
@@ -1399,7 +1444,7 @@ class StateMachine:
         # add-verdict-credibility-gate / design D6：inconclusive 循环计数同样
         # 随人工解冻清零——人工处置后 blocked-env 轮次从 1 重新计数（与
         # _verify_redo_count 同语义，B6「恢复尊重暂停标记」闭环的人工侧）。
-        updates["_inconclusive_attempts"] = 0
+        updates[INCONCLUSIVE_ATTEMPTS_FIELD] = 0
         # add-verify-parallel-backoff / design D2：降档并行度与
         # _inconclusive_attempts 完全同生命周期——人工解冻同轮清 override，
         # 重验从配置并行度重新开始，不留降档残留。
@@ -1412,13 +1457,13 @@ class StateMachine:
         # fix-redispatch-loop-governance D3.5：同因重派熔断计数随人工解冻清零——
         # 人工处置后同因重试从零起算（与 VERIFY_REDO_COUNT_FIELD /
         # _inconclusive_attempts / ENV_BLOCK_ROUNDS_FIELD 同款「同一原子写清零」）。
-        updates["_redispatch_same_cause_streak"] = 0
+        updates[REDISPATCH_SAME_CAUSE_STREAK_FIELD] = 0
         updates["_redispatch_cause_fp"] = None
         # 全场景同因失败哨计数随人工解冻清零（与上方各验证计数同一原子写）：
         # admin 按推荐动作「拨回 implemented 重验」/解冻人工修复后，同因失败
         # 观察窗从 1 重新起算；否则解冻后首轮同因失败 attempts 即 ≥4 立即
         # 再次 blocked，「连续 3 轮」承诺落空。
-        updates["_uniform_fail_attempts"] = 0
+        updates[UNIFORM_FAIL_ATTEMPTS_FIELD] = 0
         # fix-recovery-path-blockers D4：场景原地修复预算耗尽轮次随人工解冻
         # 清零——人工解冻是唯一人工裁决出口（对齐 _env_block_rounds 既有语义），
         # 解冻后重新获得「首次耗尽排程重验 → 再次耗尽升级」的完整体验；其余
@@ -1924,7 +1969,7 @@ class StateMachine:
                             "_retry_count": 0,
                             "_merge_fp": None,
                             "_merge_streak": 0,
-                            "_redispatch_same_cause_streak": 0,
+                            REDISPATCH_SAME_CAUSE_STREAK_FIELD: 0,
                             "_redispatch_cause_fp": None,
                         },
                     )
@@ -1999,7 +2044,7 @@ class StateMachine:
                         "_retry_count": 0,
                         "_merge_fp": None,
                         "_merge_streak": 0,
-                        "_redispatch_same_cause_streak": 0,
+                        REDISPATCH_SAME_CAUSE_STREAK_FIELD: 0,
                         "_redispatch_cause_fp": None,
                     },
                 )
@@ -2094,7 +2139,7 @@ class StateMachine:
                 "_retry_count": 0,
                 "_merge_fp": None,
                 "_merge_streak": 0,
-                "_redispatch_same_cause_streak": 0,
+                REDISPATCH_SAME_CAUSE_STREAK_FIELD: 0,
                 "_redispatch_cause_fp": None,
                 "_repair_round": 0,
                 "_repair_merge_error": None,
@@ -2275,7 +2320,7 @@ class StateMachine:
                 "_retry_count": 0,
                 "_merge_fp": None,
                 "_merge_streak": 0,
-                "_redispatch_same_cause_streak": 0,
+                REDISPATCH_SAME_CAUSE_STREAK_FIELD: 0,
                 "_redispatch_cause_fp": None,
             },
         )

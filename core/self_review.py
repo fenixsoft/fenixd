@@ -17,7 +17,8 @@ run → 按 resolved 移除已闭环历史条目 + 追加写入项目 ``.fenix/t
 审查范围即该窗口内产生的 spec/告警/运维记录。取代 24h 滚动窗口（09-08
 事故：一次迟到补跑把 24h 锚点拖到白天，此后 02:00 永久失效——滚动窗口
 与「每晚 run_at」意图冲突）。无 last_run_at（首跑/旧格式状态文件）回退
-24h 窗口；手动触发通道 = 删除状态文件（或把 last_run_date 改为昨日）。
+24h 窗口；手动触发通道 = 删除状态文件（把 last_run_date 改为昨日仅解除
+同日防重复，不重置增量窗口——锚点仍从 last_run_at 起算）。
 
 零活动防护（2026-09-05 用户决策，窗口 09-08 起为增量窗口）：窗口内无任何
 SPEC run（``review-`` 前缀自省 run 已排除）→ 不发起 run、不唤醒 admin，
@@ -789,9 +790,9 @@ def _collect_metrics_outliers(
         medians: Dict[str, float] = {}
         for dim in MIDFLIGHT_OUTLIER_DIMS:
             values = [
-                _metrics_outlier_dims(m)[dim]
+                dims[dim]
                 for _, _, m in runs
-                if dim in _metrics_outlier_dims(m)
+                if dim in (dims := _metrics_outlier_dims(m))
             ]
             if len(values) < MIDFLIGHT_MIN_GROUP_SAMPLES:
                 continue
@@ -1120,7 +1121,8 @@ class SelfReviewScheduler:
         当日不再重试，失败次日 run_at 自然重试）。返回结果 dict（触发与否/
         原因/结果）供测试与审计。enabled=false 时全链路零动作（不调度、不
         执行、不写文件）。无 last_run_at（首跑/旧格式状态文件）回退 24h
-        窗口；手动触发通道 = 删除状态文件或把 last_run_date 改为昨日。
+        窗口；手动触发通道 = 删除状态文件；把 last_run_date 改为昨日仅解除
+        同日防重复（窗口仍从 last_run_at 起算，当日节已存在时不追加）。
         """
         from .config import ConfigLoader
 

@@ -2465,12 +2465,13 @@ class FenixDaemon:
         _consume_request_file 原子消费——彼者「先消费后处理」，而本车道
         语义是「唤起成功才删，失败/未就绪信号保留留待下轮重试」（D4/D5）；
         payload 形状校验（isinstance dict）在任何删除动作之前完成，不存在
-        「先 unlink 后 payload.get」丢请求形态。占位只在唤起成功之后发生——
-        唤起后的删除先以 os.replace 原子改名到进程唯一临时名再删私有副本
-        （code-review item 690e48370279）：若 dashboard 在读取完成至删除之间的
-        窗口对同一 spec 原子重写新 kick，直接 path.unlink() 会把新请求一并误删
-        而从未被处理（与 _consume_request_file / item bfd39d85860e 同型丢请求
-        形态）；占位后原路径腾空，新写入落在全新路径、下一轮照常消费。
+        「先 unlink 后 payload.get」丢请求形态。唤起成功后的删除防重写竞态
+        （item 6888607ae472）：删除前重读 path，仅当仍是本次已消费的同一代
+        payload（created 一致）才 os.replace 改名到私有副本再删——读取至删除
+        窗口内 dashboard 原子重写的新 kick（created 变更）会被保留、下一轮
+        照常消费。旧实现先读后占位 rename（item 690e48370279）在任意交错下均
+        与直接 unlink 等价（读取与 rename 间隔唤起/排队的长时间处理，窗口内
+        重写的新 kick 会被改名到 tmp 销毁），已弃。
         """
         try:
             with path.open("r", encoding="utf-8") as f:
@@ -2546,12 +2547,36 @@ class FenixDaemon:
                 f"scheduling_kick 唤起 '{spec}' 失败（full_scan 兜底）: {e}",
             )
             return
-        # 唤起成功后删除；删除失败亦留待下轮。删除先占位（item 690e48370279，
-        # 与 _consume_request_file / item bfd39d85860e 同型）：os.replace 原子
-        # 改名到进程唯一临时名，读取完成至删除之间窗口内 dashboard 原子重写的
-        # 新 kick 不会被本次删除误删——原路径腾空，新写入落在全新路径、下一轮
-        # 照常消费。占位失败（信号已消失等）视同「删除失败留待下轮」：留存
-        # 信号被再次唤起由下游 handler 既有幂等谓词吸收。
+        # 唤起成功后删除；删除失败亦留待下轮。删除前重读 path 校验「仍是本次
+        # 已消费的同一代 payload（created 一致）才删」（item 6888607ae472）：
+        # 旧占位块（item 690e48370279）先 mkstemp 再 os.replace(path, tmp) 后
+        # unlink(tmp)，意图复刻 _consume_request_file 的「新写入不丢」消费语义；
+        # 但读取发生在函数开头，rename 在唤起 + _process_queue 全部完成后才发生
+        # ——窗口内 dashboard 原子重写的新 kick 会被 rename 到 tmp 并销毁、从未
+        # 被消费，任意交错下与直接 path.unlink() 等价，声称的不变量不成立。重读
+        # 判定同代后，rename 与删除间仅隔微秒级连续操作；created 已变更（重写）
+        # 或 path 消失时保留现场，新 kick 下一轮照常消费。corrupt/stale/missing-
+        # spec 的 plain unlink 清理分支属防御路径（读侧先判坏再删、dashboard
+        # 写侧 mkstemp+fsync+os.replace 原子替换，坏值与新值的覆盖窗口微秒级），
+        # 不引入一致性检查。
+        same_generation = False
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                current = json.load(f)
+            same_generation = (
+                isinstance(current, dict)
+                and current.get("spec") == spec
+                and current.get("created") == created
+            )
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+            # path 消失/读失败：无可删或无法判定，均不再触碰 path
+            pass
+        if not same_generation:
+            self.logger.info(
+                "fenixd",
+                f"scheduling_kick 信号疑似已更新，保留供下一轮消费: {path.name}",
+            )
+            return
         tmp_path = None
         try:
             fd, tmp_str = tempfile.mkstemp(
@@ -3006,11 +3031,30 @@ class FenixDaemon:
                 self._write_code_review_request_result(
                     None, "dropped", "invalid_payload")
             elif kind == "io":
-                self.logger.warning(
-                    "fenixd",
-                    "code_review 触发信号消费遭遇 IO 异常（信号未消费、留盘待"
-                    "下轮重试），不落 invalid_payload 结果",
-                )
+                # 主循环约 1s 一轮巡检：IO 异常下信号留盘待下轮重试，磁盘满/
+                # 权限等持久故障期间同一信号的 IO 告警会无限刷屏（item
+                # 974d06dfad47）。按信号文件身份（ino+mtime_ns+size）去重：
+                # 同一条未消费信号只告警首次；文件被重写/重建（新触发）或故障
+                # 恢复后再次故障时身份变化，重新告警（对齐 supervisor drift
+                # latest_signal 去重 / _heal_block_reason 状态沿触发先例）。
+                # stat 亦失败（极端权限场景）时无法建身份，保留逐轮告警以不
+                # 静默丢信号。
+                ident = None
+                try:
+                    st = req_path.stat()
+                    ident = (st.st_ino, st.st_mtime_ns, st.st_size)
+                except OSError:
+                    pass
+                if ident is not None and ident != getattr(
+                    self, "_code_review_io_identity", None
+                ):
+                    if ident is not None:
+                        self._code_review_io_identity = ident
+                    self.logger.warning(
+                        "fenixd",
+                        "code_review 触发信号消费遭遇 IO 异常（信号未消费、留盘待"
+                        "下轮重试），不落 invalid_payload 结果",
+                    )
             return
 
         # requested_at 提前提取（回链用）：守卫拒绝/单飞拒绝/投递成功/失败的

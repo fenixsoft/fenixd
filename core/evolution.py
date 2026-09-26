@@ -345,11 +345,13 @@ def _parse_iso(value: str) -> Optional[datetime]:
 
     naive（无时区）输入视为本地时间（self_review 写 ``datetime.now().isoformat()``
     即本地 naive），统一 astimezone 到 UTC，保证与水位（UTC aware）可比。
+    结尾 ``Z`` 后缀与 code_review._iso_to_local_dt 同口径先归一 ``+00:00``
+    （Python 3.10 的 fromisoformat 不认 Z，code-review item 8f824069987d）。
     """
     if not isinstance(value, str) or not value:
         return None
     try:
-        dt = datetime.fromisoformat(value)
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
     if dt.tzinfo is None:
@@ -1023,6 +1025,10 @@ def ingest_item(item: dict, project_root) -> str:
       ``draft_failed`` 并记录 violation 原文与 spec 摘要；通过置 ``pending``。
 
     写入条目 MUST 保留 todo.md 原文四字段（impact/evidence/analysis/suggestion）。
+
+    标记回写 MUST NOT 显式传 project_path（code-review item 8e29b50298c7）：
+    write_todo_marker 按条目 project 名经 registry 解析源项目 todo.md；钉死框架
+    根会使多项目部署下非框架项目条目的标记在框架 todo.md 里落空（或误标同名条目）。
     """
     verdict = item.get("verdict") if isinstance(item, dict) else None
     worth_spec = bool(isinstance(verdict, dict) and verdict.get("worth_spec"))
@@ -1062,7 +1068,7 @@ def ingest_item(item: dict, project_root) -> str:
     if not worth_spec:
         base["status"] = "analyzed"
         upsert_item(project_root, base)
-        write_todo_marker(base, project_path=project_root)
+        write_todo_marker(base)
         return "analyzed"
 
     d, reason = materialize_draft(base, project_root)
@@ -1071,7 +1077,7 @@ def ingest_item(item: dict, project_root) -> str:
         base["draft_failed_reason"] = reason
         _logger.warning("evolution: 条目 %s 草稿落盘失败: %s", eid, reason)
         upsert_item(project_root, base)
-        write_todo_marker(base, project_path=project_root)
+        write_todo_marker(base)
         return "draft_failed"
 
     violations = lint_draft(d, project_root)
@@ -1086,12 +1092,12 @@ def ingest_item(item: dict, project_root) -> str:
             base["draft_failed_reason"],
         )
         upsert_item(project_root, base)
-        write_todo_marker(base, project_path=project_root)
+        write_todo_marker(base)
         return "draft_failed"
 
     base["status"] = "pending"
     upsert_item(project_root, base)
-    write_todo_marker(base, project_path=project_root)
+    write_todo_marker(base)
     return "pending"
 
 
