@@ -3812,7 +3812,10 @@ class AgentRunner:
             return None, None, chain, None
         # 链指针推进：上次因切换类失败已前移的，保持前移（design D1/D3）；
         # 否则从头选首个未冷却候选。4xx 熔断拦截态也算"不可用"跳过。
-        if st.chain_cursor < 0:
+        # 上界守卫：chain 每 attempt 现读配置重建，运行中配置热更新缩短候选链时，
+        # 遗留 cursor 可能 >= len(chain)，此时重选落点而非以未捕获 IndexError 崩溃；
+        # 重选仍为 -1 则落入下方 chain_exhausted/circuit 分支。
+        if st.chain_cursor < 0 or st.chain_cursor >= len(chain):
             st.chain_cursor = self._select_chain_candidate(chain, spec_name, agent_type)
         if st.chain_cursor < 0:
             # 无可用候选。区分两类根因（design D3 / spec failover-dispatch）：
