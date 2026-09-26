@@ -41,4 +41,4 @@
 
 - [x] 4.1 `LlmProviderPanel.tsx`：每张 Provider 卡片标题栏删除图标左侧新增文字按钮「健康检测」；点击前校验该卡片 Base URL / API Key / 默认模型名非空（空则 message 提示补齐不发请求）；检测中按钮 loading 禁重复；结果内联显示在标题栏（成功绿色「正常 · X.Xs」+ 成功 message，失败红色「失败 · <error_kind>」+ 失败 message + tooltip 展示完整 error），表单当前值直传（未保存修改即测）。
 - [x] 4.2 `AgentModelPanel.tsx`：每个 Provider 行在删除图标列之前新增 32px 图标按钮列（icon-only、title/aria-label「健康检测」）；点击时用 `resolveHealthCheckParams` 解析（config.llm.providers 为表单当前值），解析失败 message 提示原因不发请求；按行隔离 loading 与结果 state（防行间串扰与并发重复），内联展示口径与 4.1 一致。
-- [ ] 4.3 验证收口：`cd core/dashboard/static && npm run build` 通过、`npm test` 全绿；后端 `pytest tests/test_llm_health.py core/dashboard 相关既有 API 用例`（`tests/test_dashboard_api.py`）无回归。
+- [x] 4.3 验证收口：`cd core/dashboard/static && npm run build` 通过、`npm test` 全绿；后端 `pytest tests/test_llm_health.py core/dashboard 相关既有 API 用例`（`tests/test_dashboard_api.py`）无回归。
