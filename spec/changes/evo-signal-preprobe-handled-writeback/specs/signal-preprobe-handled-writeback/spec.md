@@ -10,7 +10,7 @@
 
 ### R3 探测通过即闭环
 
-探测通过时：调用 AdminStore.mark_signal_handled 将信号置 handled=true，并追加一条 result=resolved 的处置留痕（注明「探测通过、诉求已满足、免唤起」），随后跳过 Administrator 唤起。
+探测通过时：调用 AdminStore.mark_signal_handled 将信号置 handled=true，并同步将该记录置 escalated=true（摄取循环过滤仅看 escalated，缺此步记录下一 tick 会被重捞、每周期重复探测并重复追加留痕），再追加一条 result=resolved 的处置留痕（注明「探测通过、诉求已满足、免唤起」），随后跳过 Administrator 唤起。
 
 ### R4 fail-open
 
@@ -18,7 +18,7 @@
 
 ### R5 处置终态回写
 
-admin 处置 run 写入非 pending 的最终处置结果时，必须回写对应信号的 handled=true（复用 AdminStore.mark_signal_handled），使原信号不再永挂未处理；回写失败仅记警告日志，不影响处置结果本身落盘。
+admin 处置 run 写入非 pending 的最终处置结果时，必须回写对应信号的 handled=true（复用 AdminStore.mark_signal_handled），使原信号不再永挂未处理；回写失败仅记警告日志，不影响处置结果本身落盘。两类豁免：escalate=true 的处置（升级人工，人工处置是唯一出路）不自动回写，由人工 alert-resolve 闭环；处置无关联信号记录（人工显式触发，signal_rec=None）时跳过回写。
 
 ### R6 可对账
 

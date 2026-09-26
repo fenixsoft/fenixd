@@ -1,6 +1,6 @@
 ## 背景
 
-fenix-desktop 项目一条 ui-manual 请求型信号（verify_regression_missing，请求补写 .fenix/verify.yaml 的 regression 段）诉求在 55 分钟后即由提交满足，却因 daemon 停机 7.6 天挂到恢复后才被处置（跨 45 小时，处置 run admin-fenix-desktop-1790392534 于 09-26T03:19Z 判为陈旧信号）。核查确认：daemon 运行时摄取为分钟级（_admin_monitor_loop 周期 5 分钟）、alert_lifecycle 已有周期自动闭环，但存在两个真实缺口：(1) kind=signal 的请求型可探测信号不在自动闭环覆盖面内——daemon 恢复后仍会对诉求已被满足的信号白唤起一次 admin 处置 run（LLM 调用）；(2) 处置完成后无人回写信号 handled，原信号永挂未处理（AdminStore.mark_signal_handled 已实现但无调用方，属普遍现象而非孤例）。
+fenix-desktop 项目一条 ui-manual 请求型信号（verify_regression_missing，请求补写 .fenix/verify.yaml 的 regression 段）诉求在 55 分钟后即由提交满足，却因 daemon 停机 7.6 天挂到恢复后才被处置（跨 45 小时，处置 run admin-fenix-desktop-1790392534 于 09-26T03:19Z 判为陈旧信号）。核查确认：daemon 运行时摄取为分钟级（_admin_monitor_loop 周期 5 分钟）、alert_lifecycle 已有周期自动闭环，但存在两个真实缺口：(1) kind=signal 的请求型可探测信号不在自动闭环覆盖面内——daemon 恢复后仍会对诉求已被满足的信号白唤起一次 admin 处置 run（LLM 调用）；(2) 处置完成后无人回写信号 handled，原信号永挂未处理（AdminStore.mark_signal_handled 已实现，但 admin 处置自动链路上无调用方——现存调用仅 dashboard 人工 alert-resolve 闭环端点 core/dashboard/data/admin_alerts.py:57 与 core/dashboard/routes/alert_routes.py:289，属人工通道而非处置 run 的自动回写）。
 
 ## 目标
 

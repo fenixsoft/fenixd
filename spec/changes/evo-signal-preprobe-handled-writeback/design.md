@@ -1,7 +1,7 @@
 ## 落点
 
 - 前置探测：core/admin_monitor.py 信号摄取循环 _detect_family_explosion（run_once :930 调用）内、mark_escalated / _invoke_administrator 之前插入探测守卫；信号类型收录表在 :437 附近，白名单常量置于同文件收录表旁。
-- 终态回写：core/agent_runner/maintenance_runs.py 处置结果写入处（run 启动写 pending :234 附近、终态写 result=resolved/failed :316 附近），终态分支调用 AdminStore.mark_signal_handled（core/admin_store.py:365）。
+- 终态回写：core/admin_monitor.py _invoke_administrator 内最终 DISPOSITION 落盘处（store.append 写 kind=DISPOSITION 终态记录，:3440-3474 附近）——注意非 maintenance_runs.py：该文件只写 run 启动的 pending 记录（:220-237）与构造 AdminDisposition 返回对象（:310-328，不落盘），终态 DISPOSITION 记录由 _invoke_administrator 在 run_administrator 返回后落盘（:3323 注释即此约定）。回写用参数 signal_rec.get("id")（原始 SIGNAL 记录 id 仅在该作用域可得）；人工显式触发路径 signal_rec=None（:3330）无关联记录，跳过回写。
 
 ## 探测谓词
 
@@ -13,8 +13,8 @@
 
 ## 数据流与留痕
 
-- 探测通过：AdminStore.mark_signal_handled(信号 id) + 追加 kind=disposition、result=resolved 记录（字段与 maintenance_runs 写入的处置记录同构，action 注明 pre-probe auto-resolve：探测通过、诉求已满足、免唤起），随后 continue 跳过唤起。
-- 终态回写：处置 result 非 pending 时对处置对象引用的信号 id 调 mark_signal_handled；异常捕获降级为 logger.warning，不阻塞处置结果落盘（对齐 R5）。
+- 探测通过：AdminStore.mark_signal_handled(信号 id) **并同步 mark_escalated(同一 id)**（摄取过滤只看 escalated，_detect_family_explosion 循环 :1781——只写 handled 下一 tick 会被重捞、每周期重复探测并重复追加留痕；与既有终态守卫/前提复核守卫 mark_escalated+continue 同范式）+ 追加 kind=disposition、result=resolved 记录（字段与 maintenance_runs 写入的处置记录同构，action 注明 pre-probe auto-resolve：探测通过、诉求已满足、免唤起；不带 admin_run_id——_merge_admin_runs 对无 admin_run_id 的记录跳过归并（:608-610），不会伪造「在飞 run」，先例同冷却跳过留痕 :3395-3408），随后 continue 跳过唤起。
+- 终态回写：_invoke_administrator 落最终 DISPOSITION 后，disp.result 非 pending 且 disp.escalate 为假且 signal_rec 非 None 时，对 signal_rec.get("id") 调 mark_signal_handled（escalate=true = 升级人工，人工处置是唯一出路——对齐 :3504 既有范式，由人工 alert-resolve 闭环；人工显式触发路径 signal_rec=None 无对象，跳过）；异常捕获降级为 logger.warning，不阻塞处置结果落盘（对齐 R5）。
 
 ## 风险与防误杀
 
