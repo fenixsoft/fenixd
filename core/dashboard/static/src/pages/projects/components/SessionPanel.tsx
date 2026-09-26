@@ -179,7 +179,10 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
   // 快照应用单源（code-review item a4bbea6af729）：会话状态更新块曾在
   // loadAll / afterHello / handleStart 三处复制粘贴，易漂移——抽单一 helper。
   // 会话存在 → 记 cid、置已启动、全量替换事件；不存在 → 空态。
-  const applySnapshot = (data: Awaited<ReturnType<typeof getSession>>) => {
+  // 返回快照是否命中会话终态（code-review item d8e51da1b3c9）：即下方终态
+  // 扫描的判定结果（空态恒 false），供 afterHello 注册 watch 前判断——
+  // 终态会话跳过注册（注册毫无意义且竞态窗口内必 404）。
+  const applySnapshot = (data: Awaited<ReturnType<typeof getSession>>): boolean => {
     if (data.session) {
       sessionIdRef.current = data.session.id;
       setStarted(true);
@@ -197,6 +200,7 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
       syncEvents(data.events || []);
       setTruncated(Boolean(data.truncated));
       setError('');
+      return snapshotEnded;
     } else {
       // 会话未启动：空态，等待「开始会话」。清 error（item 232d40e20d0c）：
       // 成功获取快照即代表当前真实状态——此前瞬态故障（如重连前 afterHello
@@ -206,6 +210,7 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
       syncEvents([]);
       setTruncated(false);
       setError('');
+      return false;
     }
   };
 
@@ -282,8 +287,13 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
         try {
           const data = await getSession(project);
           if (disposed) return;
-          applySnapshot(data);
-          if (data.session) {
+          const snapshotEnded = applySnapshot(data);
+          // 终态会话跳过 watch 注册（code-review item d8e51da1b3c9）：快照含
+          // session_ended 时服务端已移除会话（_terminate 先 append 终态再摘除），
+          // 注册毫无意义；且服务端在 GET 响应生成后、本 POST 到达前完成摘除的
+          // 竞态窗口内注册必 404 → console.error，污染 no_console_error 断言
+          // （与 onmessage / applySnapshot 的终态扫描同口径）。
+          if (data.session && !snapshotEnded) {
             // 会话存在：用服务端 hello 分配的 cid 注册 watch
             try {
               await registerSessionWatch(project, cid);
@@ -302,7 +312,7 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
               applySnapshotCarried(again);
             }
           }
-          // 无会话（空态）：跳过注册，避免 404 + console.error
+          // 无会话（空态）或快照已判终态：跳过注册，避免 404 + console.error
         } catch (e) {
           if (!disposed) setError(e instanceof Error ? e.message : String(e));
         }
