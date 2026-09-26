@@ -269,9 +269,10 @@ def validate_scenario_entries(entry_dicts: list) -> list[str]:
 
     scenarios.json 的 ScenarioEntry 与 test_scenarios.json 的 TestScenario
     形态不同（无 steps/assertions），无法直接复用 ``validate_scenario_dicts``；
-    这里对 ScenarioEntry 形态做等价的结构校验——**每条 MUST 有合法 kind**
-    （无 kind 无法路由到任何 Runner＝孤儿，储库复活根因）。返回错误清单，
-    空列表表示全部合法；本函数不抛异常。
+    这里对 ScenarioEntry 形态做等价的结构校验——**每条 MUST 有非空 id 且
+    合法 kind**（无 kind 无法路由到任何 Runner＝孤儿，储库复活根因；空 id
+    条目加载侧兜底为 ""、diff 循环恒判「无理由缺失」补齐保留，同属无法
+    路由的孤儿形态）。返回错误清单，空列表表示全部合法；本函数不抛异常。
     """
     errors: list[str] = []
     if not isinstance(entry_dicts, list):
@@ -281,6 +282,8 @@ def validate_scenario_entries(entry_dicts: list) -> list[str]:
             errors.append(f"场景集条目[{i}]解析失败: 期望对象，" f"实际为 {type(item).__name__}")
             continue
         sid = item.get("id") or f"[{i}]"
+        if not str(item.get("id") or "").strip():
+            errors.append(f"场景集条目[{i}] 缺少非空 id")
         kind = item.get("kind")
         if kind not in ("web", "cli", "api"):
             errors.append(
