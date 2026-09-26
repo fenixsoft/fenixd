@@ -108,8 +108,16 @@ class DashboardHTTPServer(ThreadingHTTPServer):
         改变发现结果的写操作（删除项目等）完成后必须调用：缓存 TTL 内的
         后续读请求否则会拿到变更前的旧项目集——已删项目在概览页
         「消失→马上重现→约 10s（=TTL）后才再消失」。
+
+        失效标记写入必须持 `_projects_lock`（code-review fa3db1c77606）：
+        否则与在飞 discover 竞态——扫描（扫出变更前旧项目集）的 finally
+        以 time.time() 重写 `_cache_ts` 会覆盖失效标记，旧集在 TTL 内复活。
+        持锁后失效与「discover→写回→推进时间戳」序列互斥：失效要么排在
+        写回之后重新打标记（后续请求经锁内双重检查立即重新 discover），
+        要么先于扫描发生（新扫描直接扫出变更后的项目集），不会被覆盖。
         """
-        self._cache_ts = 0.0
+        with self._projects_lock:
+            self._cache_ts = 0.0
 
     def project_by_name(self, name: str):
         for p in self.projects():
