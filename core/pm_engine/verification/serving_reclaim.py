@@ -3,7 +3,8 @@
 reclaim_verify_serving D1/D2/D3/D5：
 
 对 `.fenix/verify-serving/` 下每个 `<spec>-<ts>` 目录判定是否「无主」，
-四重保留判据全部满足 fail-safe（异常时返回「保留」），回收动作通过
+保留判据（spec 存活/登记/活进程/宽限期/在飞）全部满足 fail-safe
+（异常时返回「保留」），回收动作通过
 `git worktree remove --force` + `git worktree prune` 完成，幂等且
 不触碰 `servers.json` / `contract_selfcheck.json` 等状态文件。
 
@@ -144,8 +145,13 @@ def is_within_grace_period(wt_path: Path) -> bool:
         return True
 
 
-def _should_keep(spec_name: str | None, wt_path: Path, project_root: Path) -> bool:
-    """四重保留判据聚合：满足任一即保留。"""
+def _should_keep(
+    spec_name: str | None,
+    wt_path: Path,
+    project_root: Path,
+    is_spec_in_flight=None,
+) -> bool:
+    """保留判据聚合：满足任一即保留（is_spec_in_flight 命中亦保留）。"""
     # 判据 1：spec 存活
     if spec_name is not None and is_spec_alive(spec_name, project_root):
         return True
@@ -158,6 +164,13 @@ def _should_keep(spec_name: str | None, wt_path: Path, project_root: Path) -> bo
     # 判据 4：宽限期内
     if is_within_grace_period(wt_path):
         return True
+    # 判据 5：spec 验证在飞（可选；无法判定时 fail-safe 保留）
+    if is_spec_in_flight is not None and spec_name is not None:
+        try:
+            if is_spec_in_flight(spec_name):
+                return True
+        except Exception:
+            return True
     return False
 
 
@@ -267,7 +280,7 @@ def reclaim_verify_serving(
             # 目录名不符合 {spec}-{10 位时间戳} 约定：无法判定归属，fail-safe 保留
             kept.append(entry.name)
             continue
-        if _should_keep(spec_name, entry, project_root):
+        if _should_keep(spec_name, entry, project_root, is_spec_in_flight):
             kept.append(entry.name)
             continue
         # 无主 → 回收
@@ -294,8 +307,9 @@ def reclaim_verify_serving(
         # 顶层状态文件一律保留
         if _is_state_file(name):
             continue
-        # 无法解析为 <spec>-boot.log → 保留
+        # 无法解析为 <spec>-boot.log → 保留（杂散文件计入 kept 留痕观测）
         if not _is_boot_log_target(name):
+            kept.append(name)
             continue
         log_spec = _boot_log_spec(name)
         # 按 spec 存活判据判定
