@@ -7,7 +7,9 @@ STATE.md（design D3 规则 3），本组件不持有实例状态。
 
 from typing import Optional
 import json
+import os
 import re
+import tempfile
 
 # ── 原地打回升级阈值（inplace-bug-repair D2）────────────────────
 # _verify_fail_rounds 达到此值时冻结为 blocked，停止自动修复，等待人工裁决。
@@ -154,6 +156,10 @@ class FamilyGovernor:
                 continue
             if self._fix_strip_all(name) != root:
                 continue
+            # STATE 坏条目防御（code-review item 18a70e5931b4）：非 dict 条目
+            # 直接跳过，不让 .get 抛 AttributeError 中断 bug-found 主链。
+            if not isinstance(entry, dict):
+                continue
             status = (entry or {}).get("status", "")
             if status in ("done", "pushed"):
                 continue
@@ -229,6 +235,10 @@ class FamilyGovernor:
             if self._fix_strip_all(name) != root:
                 continue
             if name == spec_name:
+                continue
+            # STATE 坏条目防御（code-review item 18a70e5931b4）：非 dict 条目
+            # 直接跳过，不让 .get 抛 AttributeError 中断 bug-found 主链。
+            if not isinstance(entry, dict):
                 continue
             status = (entry or {}).get("status", "")
             if status in ("done", "pushed"):
@@ -362,6 +372,17 @@ class FamilyGovernor:
                     candidate = deeper
                     continue
                 break
+            if not isinstance(entry, dict):
+                # STATE 坏条目防御（code-review item 18a70e5931b4）：非 dict 条目
+                # 无法判终态，按非终态子 fix 处理（不允许再派生、不抛
+                # AttributeError 中断 bug-found 主链）；此处为 while 下探循环，
+                # 不能 bare continue（候选未变会死循环），沿用非终态分支的下探逻辑。
+                best = candidate
+                deeper = f"fix-{candidate}"
+                if deeper in specs:
+                    candidate = deeper
+                    continue
+                break
             status = (entry or {}).get("status", "")
             if status in ("done", "pushed"):
                 # 该层终态：不承载，但允许检查更深一层是否仍在飞
@@ -387,8 +408,8 @@ class FamilyGovernor:
         """
         from core.admin_store import AdminStore, SIGNAL
 
-        store = AdminStore(self._pm.project_root, self._pm.logger)
         try:
+            store = AdminStore(self._pm.project_root, self._pm.logger)
             store.append(
                 {
                     "kind": SIGNAL,
@@ -750,10 +771,26 @@ class FamilyGovernor:
         try:
             snap_dir = self._pm.project_root / ".fenix" / "verify-progress" / spec_name
             snap_dir.mkdir(parents=True, exist_ok=True)
-            (snap_dir / "prev-impl-result.json").write_text(
-                json.dumps(data, ensure_ascii=False, indent=2),
-                encoding="utf-8",
+            # 原子写（tempfile + fsync + os.replace，落实 engine.py:1908
+            # 注释声称的「同款手法」——prev-impl-result.json 供人工与后续轮次
+            # 回溯，进程中断不得留截断 JSON）
+            fd, tmp_name = tempfile.mkstemp(
+                prefix=".prev-impl-result.",
+                suffix=".tmp",
+                dir=str(snap_dir),
             )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(json.dumps(data, ensure_ascii=False, indent=2))
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp_name, str(snap_dir / "prev-impl-result.json"))
+            finally:
+                if os.path.exists(tmp_name):
+                    try:
+                        os.unlink(tmp_name)
+                    except OSError:
+                        pass
         except OSError:
             pass
         summary = str(data.get("summary") or "").strip()[:800]
@@ -843,7 +880,33 @@ class FamilyGovernor:
             # 无现有段：追加到末尾
             new_text = text.rstrip("\n") + section
 
-        tasks_path.write_text(new_text, encoding="utf-8")
+        # 原子写（tempfile + fsync + os.replace，对齐 engine._sync_task_progress
+        # 同款手法——tasks.md 是任务完成度门禁（_task_completion_blocker 经
+        # parse_tasks_md 读取）的关键输入，中途崩溃/磁盘满不得留截断文件）
+        try:
+            fd, tmp_name = tempfile.mkstemp(
+                prefix=f".tasks.{spec_name}.",
+                suffix=".tmp",
+                dir=str(tasks_path.parent),
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(new_text)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp_name, str(tasks_path))
+            finally:
+                if os.path.exists(tmp_name):
+                    try:
+                        os.unlink(tmp_name)
+                    except OSError:
+                        pass
+        except OSError as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"验证修复段写入 tasks.md 失败：{spec_name}: {e}",
+            )
+            return
         self._pm.logger.info(
             "pm_engine",
             f"验证修复段已{'更新' if m else '注入'}：{spec_name}（原地打回第 {fail_rounds} 轮）",
@@ -872,10 +935,10 @@ class FamilyGovernor:
         from core.admin_store import AdminStore, ESCALATION, severity_needs_human
         from core.alert_lifecycle import build_trigger
 
-        store = AdminStore(self._pm.project_root, self._pm.logger)
-        if trigger is None:
-            trigger = build_trigger(signal_type, spec_name)
         try:
+            store = AdminStore(self._pm.project_root, self._pm.logger)
+            if trigger is None:
+                trigger = build_trigger(signal_type, spec_name)
             entry = {
                 "kind": ESCALATION,
                 "signal_type": signal_type,
