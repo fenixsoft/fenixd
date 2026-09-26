@@ -509,23 +509,32 @@ const SuggestedImprovementsPanel = forwardRef<
   const hasDoc = Boolean(viewItem?.has_draft)
     || (viewItem?.doc_source !== null && viewItem?.doc_source !== undefined);
 
+  // 过期响应守卫（code-review item 8a59ec4e6c54）：viewItem/viewTab 快速切换
+  // 会并发多个 loadView，仅 mountedRef 判活挡不住「较早发起的请求最后返回」——
+  // 旧页签内容会写进 viewContent 而页签已停在别处。每次发起自增请求序号，
+  // 响应时序号已落后即整体丢弃（不写 viewContent/viewError/viewLoading）。
+  const viewReqSeqRef = useRef(0);
+
   const loadView = useCallback(async (item: EvolutionItem, tab: ViewTab) => {
+    const reqSeq = ++viewReqSeqRef.current;
     setViewLoading(true);
     setViewError(null);
     try {
       const data = tab === 'analysis'
         ? await getEvolutionAnalysis(item.id)
         : await getEvolutionDraft(item.id, tab);
-      if (!mountedRef.current) return;
+      // 序号落后 = 已有更新的请求接管视图，本响应过期丢弃
+      if (!mountedRef.current || reqSeq !== viewReqSeqRef.current) return;
       if (!data.found) {
         setViewContent('');
       } else {
         setViewContent(data.content || '（空）');
       }
     } catch (e) {
-      if (mountedRef.current) setViewError(errText(e, '加载失败'));
+      if (mountedRef.current && reqSeq === viewReqSeqRef.current) setViewError(errText(e, '加载失败'));
     } finally {
-      if (mountedRef.current) setViewLoading(false);
+      // 过期请求不复位 loading：新请求仍在飞，由它自己的 finally 收口
+      if (mountedRef.current && reqSeq === viewReqSeqRef.current) setViewLoading(false);
     }
   }, []);
 
