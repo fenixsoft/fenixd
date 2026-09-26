@@ -563,7 +563,6 @@ class FFastTrackMixin:
                 # 顺延的有界上限由 dispatch 调用方承载；fast-track 车道是同一轮内
                 # 失败即返回的有界短窗（不自旋）。
                 if getattr(merge_info, "spec_dir_inflight", False):
-                    self._keep_fast_track_worktree(spec_name, result)
                     self._pm.logger.warning(
                         "pm_engine",
                         f"fast-track merge-back 顺延 '{spec_name}'（branch '{branch}'）: "
