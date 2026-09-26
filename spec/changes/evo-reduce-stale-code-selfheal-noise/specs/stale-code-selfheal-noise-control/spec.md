@@ -4,11 +4,11 @@
 
 ### Requirement: 自愈健康路径告警降级
 
-当 stale_code_selfheal.enabled 且自愈链路健康（自愈重启请求成功发出并生效）时，系统 SHALL 将陈旧代码告警以 info 级写入 admin_alerts.json（kind 非 escalation、severity 为 info），并 SHALL 在日志输出含当日累计次数的日计数；该类记录 SHALL 继续受 60 分钟去重约束，SHALL NOT 进入人工告警队列与升级路径，且 SHALL NOT 依赖 mark_handled 生命周期（该接口仅锚定 ESCALATION）。
+当 stale_code_selfheal.enabled 且自愈链路健康（写入时点可判定：enabled 且未悬空超限；重启成功与否发生在写入之后的 idle_confirm 窗口，不作写入分支条件）时，系统 SHALL 将陈旧代码告警以 info 级写入 admin_alerts.json（kind 非 escalation、severity 为 info），并 SHALL 在日志输出含当日累计次数的日计数；该类记录 SHALL 继续受 60 分钟去重约束，SHALL NOT 进入人工告警队列与升级路径，且 SHALL NOT 依赖 mark_handled 生命周期（该接口仅锚定 ESCALATION）。
 
 #### Scenario: 自愈启用且重启成功
 
-- WHEN stale_code_selfheal.enabled 且 daemon 因陈旧代码成功触发自愈重启
+- WHEN stale_code_selfheal.enabled 且检测点判定自愈链路健康（未悬空超限）
 - THEN 本轮 stale_code 告警以 info 级 kind 写入存储，severity 为 info，附当日累计计数
 - THEN 该记录不出现在 pending_escalations 同口径（kind=ESCALATION 且未处理）清单中
 
