@@ -30,6 +30,7 @@ import shutil
 import subprocess
 import sys
 import time
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 
@@ -192,6 +193,11 @@ def get_verify_progress():
     return results
 
 
+def disp_width(text):
+    """文本终端显示宽度：东亚洲宽字符（W/F）计 2 列，其余计 1 列"""
+    return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1 for ch in text)
+
+
 def bar(pct, width=20, style="block"):
     """渲染进度条"""
     filled = max(0, min(width, int(pct / 100 * width)))
@@ -205,7 +211,7 @@ def bar(pct, width=20, style="block"):
 def header_line(text):
     """节标题"""
     w = shutil.get_terminal_size((120, 40)).columns
-    pad = max(0, w - len(text) - 4)
+    pad = max(0, w - disp_width(text) - 4)
     return f"\n{BOLD}{BLUE}══ {text} {RESET}{DIM}{'─' * pad}{RESET}\n"
 
 
@@ -484,7 +490,7 @@ def run_tui(interval=3):
             now = datetime.now().strftime("%H:%M:%S")
             w = shutil.get_terminal_size((120, 40)).columns
             title = f"  Fenix 开发仪表盘  —  {now}  "
-            pad = max(0, w - len(title) - 4)
+            pad = max(0, w - disp_width(title) - 4)
             print(f"\n{BOLD}{BG_BLUE}{WHITE}{title}{RESET}{DIM}{'─' * pad}{RESET}")
 
             # 每轮只扫一次 ps，概览与状态栏共用
@@ -512,7 +518,7 @@ def run_tui(interval=3):
 
             w = shutil.get_terminal_size((120, 40)).columns
             footer = f" SPECs: {total} | 🚀 已推送: {pushed} | 🎯 待推送: {pending_push} | 🔨 活跃: {active} | 🤖 Agent进程: {len(agents)} "
-            pad = max(0, w - len(footer) - 2)
+            pad = max(0, w - disp_width(footer) - 2)
             print(f"\n{BG_BLUE}{WHITE}{BOLD}{footer}{RESET}{DIM}{'─' * pad}{RESET}")
 
             sys.stdout.flush()
