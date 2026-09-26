@@ -41,7 +41,7 @@ def _mkdtemp(prefix: str) -> str:
 
 
 def _item(item_id, status="open", **extra):
-    rec = {"item_id": item_id, "status": status, "file": f"core/{item_id}.py",
+    rec = {"item_id": item_id, "status": status, "file": f"{item_id}/{item_id}.py",
            "line": 1, "severity": "major", "category": "correctness",
            "title": f"title {item_id}", "description": f"desc {item_id}",
            "suggestion": f"sug {item_id}", "fingerprint": f"fp-{item_id}",
@@ -92,7 +92,7 @@ class TestWipOverlapDefersBatch(unittest.TestCase):
 
         proot = _make_git_project_root()
         _track_and_dirty(proot, "core/a.py")
-        _write_items(proot, {"a": _item("a")})
+        _write_items(proot, {"a": _item("a", file="core/a.py")})
         _write_verify_yaml(proot)
         runner = _FakeRunner(proot)
         orch = CodeFixOrchestrator(runner, proot, config=_CFG_ON, logger=None)
@@ -121,7 +121,7 @@ class TestWipOverlapDefersBatch(unittest.TestCase):
         _track_and_dirty(proot, "core/b.py")
         _write_items(proot, {
             "a": _item("a"),
-            "b": _item("b"),
+            "b": _item("b", file="core/b.py"),
         })
         _write_verify_yaml(proot)
         runner = _FakeRunner(proot)

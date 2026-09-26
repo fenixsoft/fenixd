@@ -138,8 +138,12 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
       // 缺省 false；分面只读展示 + 手动触发，配置归设置页「质量」页签
       regression_enabled: config.regression?.enabled === true,
       // add-code-review-auto-fix：自动修复开关 + 批大小（回填缺省 false/20）
+      // add-codefix-affinity-batching 4.3：定向回归开关（缺省 true——配置
+      // 缺席或非法均视为开，与后端 get_code_review_fix_config 缺省同源）
       code_review_fix_enabled: config.code_review_fix?.enabled === true,
       code_review_fix_batch_size: config.code_review_fix?.batch_size ?? QUALITY_DEFAULTS.fixBatchSize,
+      code_review_fix_targeted_regression:
+        config.code_review_fix?.targeted_regression !== false,
     };
     const key = JSON.stringify(next);
     if (key === lastBackfillRef.current) return;
@@ -305,9 +309,12 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
         // add-code-review-auto-fix：自动修复开关 + 批大小（与开关同处一个
         // <Form> 实例内，validateFields 恒返回两字段；1–1000 由表单校验把关，
         // 后端 write_config 权威兜底）
+        // add-codefix-affinity-batching 4.3：定向回归开关并入同段写回
+        // （Switch 恒有 bool 值；后端 write_config 权威兜底严格 bool）
         code_review_fix: {
           enabled: values.code_review_fix_enabled === true,
           batch_size: values.code_review_fix_batch_size,
+          targeted_regression: values.code_review_fix_targeted_regression === true,
         },
       });
     } catch (err) {
@@ -670,6 +677,31 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
               data-testid="code-review-fix-batch-size"
             />
           </Form.Item>
+          {/* add-codefix-affinity-batching 4.3：批收尾回归两段式开关
+              （admin.code_review_fix.targeted_regression，缺省 true）。
+              与 code_review_fix_enabled 同形态：switch-inline-row + 说明文案。 */}
+          <div className="switch-inline-row" style={{ marginTop: 24 }}>
+            <Form.Item
+              name="code_review_fix_targeted_regression"
+              valuePropName="checked"
+              noStyle
+            >
+              <Switch data-testid="code-review-fix-targeted-regression-switch" />
+            </Form.Item>
+            <span className="switch-inline-label">
+              非末批定向回归
+              <span className="label-note">
+                （admin.code_review_fix.targeted_regression）
+              </span>
+            </span>
+          </div>
+          <Text type="secondary">
+            开启（缺省）后，自动修复链内非末批的批收尾回归按本批触碰面定向：
+            项目 verify.yaml 的 regression.cmd 写 {'{test_targets}'} 占位符时，
+            框架按本批改动文件映射测试路径注入执行（cmd 未声明占位符或映射为空
+            时自动回退全量回归）；链内末批恒走全量回归兜底。关闭后全部批次均走
+            全量回归。
+          </Text>
         </Card>
         {/* 回归测试：标题与说明置于卡片外，与上方「代码质量」节同构 */}
         <h3 style={{ marginTop: 32 }}>回归测试</h3>

@@ -55,7 +55,7 @@ def _write_items(project_root, records):
 
 
 def _item(item_id, status="open", first_seen_at=None, **extra):
-    rec = {"item_id": item_id, "status": status, "file": f"core/{item_id}.py",
+    rec = {"item_id": item_id, "status": status, "file": f"{item_id}/{item_id}.py",
            "line": 1, "severity": "major", "category": "correctness",
            "title": f"title {item_id}", "description": f"desc {item_id}",
            "suggestion": f"sug {item_id}", "fingerprint": f"fp-{item_id}"}
