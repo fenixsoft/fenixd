@@ -198,8 +198,12 @@ def apply_explicit_mappings(
             target_str = str(target_path)
 
         for pattern, test_file in explicit_map.items():
-            # Check if target matches pattern (prefix or exact match)
-            if target_str.startswith(pattern) or target_str == pattern:
+            # 按路径边界匹配：仅以 '/' 结尾的 pattern 视为目录前缀（前缀匹配），
+            # 其余要求与目标完全相等——避免宽松 pattern（如 core/pm）把
+            # core/pm_engine/... 等不相关目标也映射进 affected。
+            if pattern.endswith("/") and target_str.startswith(pattern):
+                affected.add(test_file)
+            elif target_str == pattern:
                 affected.add(test_file)
 
     return affected

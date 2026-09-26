@@ -55,13 +55,23 @@ export default function ArchitectureTab({ project, active }: ArchitectureTabProp
   // 请求序号守卫（对齐 QualityTab/RegressionTab）：轮询与手动刷新并发时
   // 较慢的早期响应不得覆盖较新数据。
   const seqRef = useRef(0);
+  // active 快照（模式同 loadStatusRef）：await 返回后闭包里的 active 可能
+  // 已过期（请求在途时切离分面），离面复核以 ref 中的最新值为准。
+  const activeRef = useRef(active);
+  useEffect(() => {
+    activeRef.current = active;
+  }, [active]);
 
   const loadStatus = useCallback(async () => {
     if (!active || !project) return;
     const seq = ++seqRef.current;
     try {
       const data = await getArchitectureStatus(project);
-      if (seq !== seqRef.current) return;
+      // seq 之外再复核最新 active：请求在途时切离分面则直接放弃，否则
+      // generating 态会在此处新起 3s 轮询定时器，且之后每次 tick 因闭包
+      // active=false 入口 early-return，定时器离面后永久空转（违背
+      // 「离开分面停止轮询」语义）。
+      if (seq !== seqRef.current || !activeRef.current) return;
       setStatus(data);
       // generating → 3s 轮询；其余态停轮询
       if (data.state === 'generating') {

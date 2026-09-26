@@ -1719,6 +1719,7 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
         "code_review_fix",
         "regression",
         "stale_code_selfheal",
+        "worktree",
     ):
         if _ck in config_patch and not isinstance(config_patch[_ck], dict):
             return fail(f"{_ck} must be an object: {config_patch[_ck]!r}")

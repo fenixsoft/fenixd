@@ -41,9 +41,9 @@ def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
       spec/archive/<name>-<Unix秒>/；目录缺失仅清状态（幂等）。
     - 目录移动失败（OSError）：返回含 ``error``（``归档移动失败: ...``）的
       失败 dict（不裸抛异常）；STATE.md 尚未改动、目录留在原位。
-    - STATE 剔除失败（OSError）：尽力把已归档目录移回 ``spec/changes/<name>``
-      并返回含 ``error`` 的失败 dict（不裸抛异常）；回滚亦失败时
-      ``archived``/``archive_path`` 保留滞留位置并写入 ``error``。
+    - STATE 剔除失败（OSError 或其他异常）：尽力把已归档目录移回
+      ``spec/changes/<name>`` 并返回含 ``error`` 的失败 dict（不裸抛异常）；
+      回滚亦失败时 ``archived``/``archive_path`` 保留滞留位置并写入 ``error``。
     - 归档同名冲突（极小概率）：在名字追加微秒后缀重试，直至成功。
 
     Returns:
@@ -184,14 +184,18 @@ def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
     # 只能手工修复），并以返回码而非裸异常告知调用方。
     try:
         sm.remove_spec(spec)
-    except OSError as e:
+    # 非 OSError 异常（STATE.md 解析/flock 等环节，异常面同 auto_archive_check
+    # 兜底注释的确认）同样不能裸抛：目录此时可能已移入 archive，任何异常路径
+    # 都先尽力回滚目录，再以结构化 error dict 告知调用方（code-review item
+    # f9e4288dd75f）
+    except Exception as e:
         rollback_err = None
         if archived:
             try:
                 shutil.move(archive_path, str(spec_dir))
                 archived = False
                 archive_path = None
-            except OSError as re_:
+            except Exception as re_:
                 rollback_err = str(re_)
         error = f"移除 STATE.md 条目失败: {e}"
         if rollback_err is not None:
