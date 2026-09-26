@@ -27,6 +27,7 @@ admin_monitor 巡检唤起 Administrator，分钟级异步）已废弃——信�
 from __future__ import annotations
 
 import json
+import logging
 import os
 import signal
 import subprocess
@@ -42,6 +43,10 @@ from core.dashboard.routes.code_review_routes import (
     _SignalWriteError,
     _write_signal_exclusive,
 )
+
+# 模块级 logger（函数内免外传；handler 无 logger 属性，getattr 恒 None 会使
+# 失败留痕永不生效，见 code-review item 3f7d5ad37689）
+logger = logging.getLogger("fenixd.dashboard.routes.regression_routes")
 
 # 手动触发信号文件（daemon 主循环经 fenixd._check_regression_requests 消费）。
 # 与 code_review_request / approve_push_request 同属「dashboard 原子写 →
@@ -61,7 +66,7 @@ _TRIGGER_CONFLICT = "conflict"  # 轮询路径已有未消费信号 → 409
 _TRIGGER_ERROR = "error"  # 目录创建/独占写失败 → 500
 
 
-def _write_trigger_signal(logger, req_path: Path, payload: dict, label: str) -> str:
+def _write_trigger_signal(req_path: Path, payload: dict, label: str) -> str:
     """触发类信号「mkdir 包错 + 三步原子独占写 + 失败脱敏日志」单点实现。
 
     /api/regression/run 与 /api/regression/fix 的信号写入路径完全同构，唯一
@@ -93,22 +98,18 @@ def _write_trigger_signal(logger, req_path: Path, payload: dict, label: str) -> 
     try:
         req_path.parent.mkdir(parents=True, exist_ok=True)
     except OSError as e:
-        if logger is not None:
-            logger.warning(
-                "regression_routes",
-                f"{label}信号目录创建失败 {req_path.parent}: "
-                f"{type(e).__name__}: {e!r}",
-            )
+        logger.warning(
+            f"{label}信号目录创建失败 {req_path.parent}: "
+            f"{type(e).__name__}: {e!r}",
+        )
         return _TRIGGER_ERROR
     try:
         written = _write_signal_exclusive(req_path, payload)
     except _SignalWriteError as exc:
-        if logger is not None:
-            logger.warning(
-                "regression_routes",
-                f"{label}信号写入失败 {req_path}: "
-                f"{type(exc).__name__}: {exc!r}",
-            )
+        logger.warning(
+            f"{label}信号写入失败 {req_path}: "
+            f"{type(exc).__name__}: {exc!r}",
+        )
         return _TRIGGER_ERROR
     return _TRIGGER_CONFLICT if written is None else _TRIGGER_OK
 
@@ -341,9 +342,7 @@ class H12RegressionRoutesMixin:
         # 三步原子独占写 + 失败脱敏日志收敛在 _write_trigger_signal（item
         # e22bfec7b9ee 去重），此处只按结果映射响应：error → 500、
         # conflict → 409（并发第二 POST 或上一信号尚未被消费）
-        outcome = _write_trigger_signal(
-            getattr(self, "logger", None), req_path, payload, "回归触发",
-        )
+        outcome = _write_trigger_signal(req_path, payload, "回归触发")
         if outcome == _TRIGGER_ERROR:
             self._error(500, "回归触发信号写入失败")
             return
@@ -417,9 +416,7 @@ class H12RegressionRoutesMixin:
         # e22bfec7b9ee 去重，对齐 _api_regression_run），此处只按结果映射
         # 响应：error → 500、conflict → 409（并发第二 POST 或上一信号尚未
         # 被消费）
-        outcome = _write_trigger_signal(
-            getattr(self, "logger", None), req_path, payload, "回归修复触发",
-        )
+        outcome = _write_trigger_signal(req_path, payload, "回归修复触发")
         if outcome == _TRIGGER_ERROR:
             self._error(500, "回归修复触发信号写入失败")
             return
