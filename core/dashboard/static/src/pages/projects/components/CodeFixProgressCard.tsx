@@ -202,7 +202,7 @@ export default function CodeFixProgressCard(
   const selfhealWait =
     !readFailed &&
     phase === 'blocked' &&
-    reason != null &&
+    reason !== '' &&
     SELFHEAL_WAIT_REASONS.has(reason);
   const alarm = stopped && !selfhealWait;
 
