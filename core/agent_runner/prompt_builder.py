@@ -11,6 +11,7 @@ verdict 退回）仍由代码按状态追加。文件缺失派发显式报错。
 self._pm，不在本组件持有状态。
 """
 
+import datetime
 import json
 import logging
 import re
@@ -196,21 +197,25 @@ class PromptBuilder:
         return path.read_text(encoding="utf-8")
 
     def _fill_placeholders(
-        self, template: str, agent_type: str, spec_name: str, detail: dict | None
+        self, template: str, agent_type: str, spec_name: str, detail: dict | None,
+        wt_path: Path | None = None,
     ) -> str:
         """占位符填充：单趟多模式替换（正文含大量 {} JSON 示例，禁用 str.format）。
 
         progress_path 语义按 agent 现行为保持：verifier 写
         verify-progress/<spec>.json；fast-track 写 verify-progress/<spec>/<spec>.json。
         administrator 困境信号字段由 detail 注入（其余 agent 文件不含这些占位符）。
+        wt_path: fast-track 的 {result_path} 落点（impl_result_path，与收工硬门
+            _result_gate_section 同源）；不可得时降级相对路径表述。
         """
         root = self._pm.project_root
         vp_dir = root / ".fenix" / "verify-progress" / spec_name
         sig = detail or {}
         # add-judge-artifact-gate D1：planner 产物路径经 planner_result_path 统一
         # 计算（注入侧与 runner 硬门校验侧同源，防双实现漂移）。{result_path}/
-        # {scenarios_path} 值按两类型产物文件名恒定——fast-track/judge/plan 共用
-        # 的 .fenix-run-result.json 与 test_scenarios.json 同此路径。
+        # {scenarios_path} 值按两类型产物文件名恒定——judge/plan 共用的
+        # .fenix-run-result.json 与 test_scenarios.json 同此路径；fast-track 的
+        # {result_path} 例外（下方分支改填 worktree 根——收工硬门唯一落点）。
         values = {
             "{spec_name}": spec_name,
             "{spec_dir}": f"spec/changes/{spec_name}",
@@ -228,6 +233,15 @@ class PromptBuilder:
             )
         elif agent_type == "fast-track":
             values["{progress_path}"] = str(vp_dir / f"{spec_name}.json")
+            # fast-track 结果文件唯一交付落点是 worktree 根（fix-impl-resultfile-
+            # contract-gap D1：impl_result_path，收工硬门同源检查）——不得沿用上方
+            # 主树 planner-judge 产物路径，agent 据此写主树会被硬门判产物缺失
+            # 整轮重烧。wt_path 不可得时降级相对路径表述（同 _result_gate_section）。
+            values["{result_path}"] = (
+                str(impl_result_path(wt_path))
+                if wt_path is not None
+                else ".fenix-run-result.json（worktree 根目录）"
+            )
         elif agent_type == "dispute-judge":
             # 交付物缺件 LLM 终审（add-deliverable-declaration-triage D3）：
             # 输入（缺件清单 + spec 语境 + findings + basename 候选）由 dispatch
@@ -330,7 +344,8 @@ class PromptBuilder:
             return self._build_code_fix_prompt(spec_name, detail or {})
 
         template = self._load_agent_template(agent_type)
-        prompt = self._fill_placeholders(template, agent_type, spec_name, detail)
+        prompt = self._fill_placeholders(
+            template, agent_type, spec_name, detail, wt_path=wt_path)
 
         if agent_type == "implementer":
             # 上轮 error 上下文注入（add-implementer-deliverable-gate D4）+
@@ -1422,6 +1437,15 @@ class PromptBuilder:
         # 不对称防回归）：结构化值序列化为 JSON 串，非字符串直达 re.sub 的
         # 替换回调会抛 TypeError 中断整条 self-review run 的提示词构建；
         # None/缺失归一为空串后仍落到原默认占位提示，正常字符串值原样通过。
+        # out_path 兜底不参与读侧契约：生产链路 run_self_review 恒传由 run_id
+        # 派生的 out_path（读侧只读该路径），本兜底仅测试/异常构建路径触达。
+        # token 是自省归属日期而非 run_id，仅日期命名同日多 run 仍互覆——加
+        # 秒级时间戳把碰撞窗口缩到同秒（前缀形态对齐 REVIEW_OUT_PREFIX）。
+        out_path = detail.get("out_path") or (
+            self._pm.project_root
+            / ".fenix"
+            / f"self_review_out-{token}-{datetime.datetime.now():%Y%m%d%H%M%S}.json"
+        )
         prompt = _single_pass_replace(
             template,
             {
@@ -1432,13 +1456,7 @@ class PromptBuilder:
                 or "（read_todo 关闭或 todo.md 不存在，不注入）",
                 "{todo_entries}": _str_field(detail.get("todo_entries"))
                 or "（近3日窗口内无既有条目）",
-                "{out_path}": str(
-                    detail.get("out_path")
-                    # 兜底带归属日期标识（与读侧 self_review_out-<run_id>.json
-                    # 同形态，core/self_review.py REVIEW_OUT_PREFIX），避免缺
-                    # out_path 时落入无 run_id 固定路径被多 run 互覆。
-                    or (self._pm.project_root / ".fenix" / f"self_review_out-{token}.json")
-                ),
+                "{out_path}": str(out_path),
             },
         )
         # 非交互契约段（fix-agent-noninteractive-contract D2）：独立构建路径
@@ -1484,7 +1502,15 @@ class PromptBuilder:
 
         out_path = detail.get("out_path")
         if not out_path:
-            out_path = self._pm.project_root / ".fenix" / "evolution" / "out.json"
+            # 兜底不参与读侧契约（生产链路 run_evolution 恒传 out-<run_id>.json，
+            # 读侧只读该路径）：固定 out.json 多 run 必互覆——加秒级时间戳把
+            # 碰撞窗口缩到同秒。
+            out_path = (
+                self._pm.project_root
+                / ".fenix"
+                / "evolution"
+                / f"out-{datetime.datetime.now():%Y%m%d%H%M%S}.json"
+            )
         # 单趟填充（code-review item 7975ab14dbe7 同款语义）：todo.md 全文/
         # 条目清单来自用户数据，可能本身含占位符字面量，逐键 str.replace
         # 会被后续键二次替换污染。

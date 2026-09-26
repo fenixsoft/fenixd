@@ -157,8 +157,10 @@ class G3LockMixin:
     def _pid_in_project_worktrees(self, pid_str: str) -> bool:
         """核对命中进程归属本项目 worktrees（跨项目 slug 撞名防误判）。
 
-        双重归属信号，任一命中即认：cmdline 含本项目 worktrees 基目录前缀，
-        或 cwd 经 realpath 归一后位于基目录之下（argv 缺路径的进程形态）。
+        双重归属信号，任一命中即认：cmdline 含本项目 worktrees 基目录前缀
+        （按目录边界匹配，code-review c2b43a144ff0：裸子串会把同前缀更长
+        目录名如 worktrees-backup/ 的进程误判归属本项目），或 cwd 经
+        realpath 归一后位于基目录之下（argv 缺路径的进程形态）。
         realpath 归一消解符号链接/挂载拼写差异，避免把自家 agent 误判为
         他家进程（自误杀 → 活锁被放行 → 双派发）。两信号皆不可得（/proc
         不可读等）按不归属处理，失败方向与既有扫描异常一致（保守无进程，
@@ -171,7 +173,10 @@ class G3LockMixin:
                 argv_text = f.read().replace(b"\0", b" ").decode("utf-8", "replace")
         except OSError:
             argv_text = ""
-        if base_text in argv_text or base_real in argv_text:
+        # argv 命中同样按目录边界匹配（code-review c2b43a144ff0）：口径与
+        # 下方 cwd 分支的 startswith(base_real + os.sep) 对齐，同前缀更长
+        # 目录名（worktrees-backup/ 等）不再被误判归属本项目
+        if base_text + os.sep in argv_text or base_real + os.sep in argv_text:
             return True
         try:
             cwd_real = os.path.realpath(os.readlink(f"/proc/{pid_str}/cwd"))

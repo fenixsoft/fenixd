@@ -32,11 +32,17 @@ _SOURCE_KEYS = [
     "agents.daily_run_limit",
     "agents.token_budget_millions",
     "agents.impl_run_budget",
+    # open-impl-budget-ceiling：实现尝试预算上限（与 _AGENTS_SOURCE_KEYS 同键
+    # 双登记——后者只管回显与 project 标注，缺此处的 user 缺省登记则未配置时
+    # sources 缺键，来源徽标拿到 undefined）
+    "agents.impl_run_budget_max",
     "agents.verify_redo_budget",
     # 同因重派熔断阈值（agents.max_same_cause_redispatches）
     "agents.max_same_cause_redispatches",
     # 规模预检三键（agents.scale_precheck.*）
     "agents.scale_precheck",
+    # supervision-timeout-config-consistency：超时监督段（agents.timeout_supervision）
+    "agents.timeout_supervision",
     "gates.approve_mode",
     # add-draft-promotion-gate：草稿晋升模式
     "gates.promote_mode",
@@ -213,6 +219,10 @@ def _managed_key_sources(raw: dict) -> dict:
         ):
             if _tk in agents_raw:
                 sources[f"agents.{_tk}"] = "project"
+        # supervision-timeout-config-consistency：超时监督段显式定义 → project
+        # （映射段，isinstance 判定对齐 agents.models 同款）
+        if isinstance(agents_raw.get("timeout_supervision"), dict):
+            sources["agents.timeout_supervision"] = "project"
     gates_raw = raw.get("gates")
     if isinstance(gates_raw, dict) and "approve_mode" in gates_raw:
         sources["gates.approve_mode"] = "project"

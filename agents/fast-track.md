@@ -66,7 +66,7 @@
   **先落盘再深入**：全量套件回归 / 交付物核实之前，先写最小可判的结果文件；框架不解析回复正文，正文里的 JSON 不算交付。
 4. 若裁决为 bug-found 且修复预算未用尽：在同一上下文中修复，重跑受影响场景，重新裁决，并覆盖结果文件。
 5. 若修复预算已用尽而缺陷仍在：仍须写出结果文件并置 verification.verdict="bug-found"——daemon 会升级到 full 模式。
-6. 同时把 {scenarios_path} 与 {result_path} 写入 verify-progress 目录（场景集必须持久化，供后续 full 模式 verifier 复用）。
+6. 同时把 {scenarios_path} 的场景集写入 verify-progress 目录（场景集必须持久化，供后续 full 模式 verifier 复用；用 worktree 内相对路径，收尾由框架拷回主树）。结果文件不在 verify-progress 另存副本——唯一交付落点始终是 worktree 根目录的 `.fenix-run-result.json`（收工硬门只检查该文件）。
 
 ## 收工守卫（Guards，MANDATORY，daemon 强制执行）
 - 零变更守卫（Zero-change guard）：宣称成功但既无新提交也无 Edit/Write 工具调用 = 判为失败并重派。

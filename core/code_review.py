@@ -490,7 +490,7 @@ def resolve_snapshot(project_root, observed_fingerprints: set, now: Optional[str
                 continue
             rec["status"] = "resolved"
             rec["resolved_at"] = now
-            rec["last_seen_at"] = now
+            # last_seen_at 保持最后观测时刻不动（核销时刻由 resolved_at 承载）
             changed = True
             resolved_count += 1
         if changed:
