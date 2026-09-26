@@ -156,6 +156,16 @@ STALE_SELFHEAL_REVIEW_ANCHOR_CACHE_SECONDS = 2.0
 # 治理参数后续可由告警治理 SPEC 统一参数化。
 STALE_ALERT_DEDUP_MINUTES = 60
 
+# supervisor 漂移告警 PROJECT_LOG 追加跨重启窗口去重阈值
+# （evo-supervisor-drift-log-dedup 1.1，与 STALE_ALERT_DEDUP_MINUTES 同层声明、
+# 同风格：模块常量不入 config，规避「新增配置项必须带 Dashboard UI」约束）。
+# drain 一致性检查在每次 daemon 启动自检都会重新产出同一组 supervisor 异常
+# 告警，高频提交下生命周期快速轮换、PROJECT_LOG 逐次刷屏。去重状态复用
+# admin_alerts.json（latest_signal 窗口查询，键为 supervisor_runtime_drift
+# 族），天然跨重启存活、零新增状态文件。60 分钟远短于漂移阈值
+# SUPERVISOR_RUNTIME_DRIFT_SECONDS（24h），真·新异常周期照常超窗成条。
+SUPERVISOR_LOG_DEDUP_MINUTES = 60
+
 # 单飞 fallback 锁的惰性创建守卫（code-review item d51f639c500c）：旧实现
 # 「检查→为 None→new Lock→写回」非原子，两线程可各建一把锁并同时通过
 # check-then-set——创建本身必须互斥。
@@ -3822,13 +3832,78 @@ class FenixDaemon:
                         f"{drift_error}——疑似 runtime 文件残留自此前 supervisor 进程，"
                         f"建议重启 supervisor 刷新上报"
                     )
+        # PROJECT_LOG 追加窗口去重（evo-supervisor-drift-log-dedup 1.2）：
+        # drain 一致性警告在每次 daemon 启动自检都会重新产出同一组 supervisor
+        # 异常告警，高频提交下生命周期快速轮换、PROJECT_LOG 逐次刷屏。写入前
+        # 查持久化 admin 告警存储：SUPERVISOR_LOG_DEDUP_MINUTES 窗口内已有同键
+        # （supervisor_runtime_drift 族）记录则跳过追加（框架日志仍逐条落，
+        # 被抑制的只是 PROJECT_LOG 追加）；未命中则照常追加，并写入一条
+        # warning 级去重标记（写入即 mark_handled，不进人工告警队列），使去重
+        # 状态跨重启存活。判定为族级粗粒度：窗口内不同子类异常不单独成条。
+        # admin_store 不可用或读写异常时降级为照常追加（保持现状行为），不因
+        # 去重机制引入静默丢日志。对齐 stale_code 通道窗口去重先例。
+        suppressed = False
+        dedup_tracked = False
+        if warnings:
+            try:
+                if self.admin_store is not None:
+                    recent = self.admin_store.latest_signal(
+                        None, "supervisor_runtime_drift", SUPERVISOR_LOG_DEDUP_MINUTES
+                    )
+                    dedup_tracked = True
+                    if recent is not None:
+                        suppressed = True
+                        self.logger.info(
+                            "fenixd",
+                            f"supervisor 漂移告警窗口去重命中："
+                            f"{SUPERVISOR_LOG_DEDUP_MINUTES} 分钟内已有同信号记录"
+                            f"（created {recent.get('created')}），跳过 PROJECT_LOG 追加"
+                            f"（{len(warnings)} 条仅留框架日志）",
+                        )
+            except Exception as e:
+                dedup_tracked = False
+                self.logger.warning(
+                    "fenixd",
+                    f"supervisor 告警去重状态不可用，降级为照常追加 PROJECT_LOG"
+                    f"（non-blocking）: {e}",
+                )
         for w in warnings:
             self.logger.warning("fenixd", w)
+            if suppressed:
+                continue
             try:
                 if self.pm_engine is not None:
                     self.pm_engine._append_project_log(f"⚠️ {w}")
             except Exception:
                 pass
+        if dedup_tracked and not suppressed:
+            try:
+                # spec MUST 为 None：latest_signal 的 spec=None 查询只匹配
+                # spec=None 记录，标记带 spec 值会使窗口判定永不命中、去重
+                # 静默失效。warning 级不在 HUMAN_SEVERITIES，写入即自动处置
+                # （对齐 stale_code 记录语义），不进人工横幅/待处理队列。
+                rec = self.admin_store.append(
+                    {
+                        "kind": ESCALATION,
+                        "signal_type": "supervisor_runtime_drift",
+                        "spec": None,
+                        "severity": "warning",
+                        "description": (
+                            "supervisor 异常族告警已追加 PROJECT_LOG，"
+                            f"{SUPERVISOR_LOG_DEDUP_MINUTES} 分钟内重启 daemon "
+                            "不再重复追加"
+                        ),
+                        "evidence": "；".join(warnings)[:500],
+                        "action_taken": "已追加 PROJECT_LOG 并写入去重标记（窗口去重）",
+                        "recommended_action": "重启 supervisor 使排水窗口与上报刷新生效",
+                    }
+                )
+                if not severity_needs_human(rec.get("severity")):
+                    self.admin_store.mark_handled(rec["id"])
+            except Exception as e:
+                self.logger.warning(
+                    "fenixd", f"supervisor 告警去重标记写入失败（non-blocking）: {e}"
+                )
 
     def _preserve_interrupted_runs(self, run_ids: list, reason: str) -> list:
         """排水超时 terminate 前保全在跑 run 的 spec 上下文到 sidecar（D3）。
