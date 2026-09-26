@@ -15,6 +15,10 @@
       <spec>/          # 每个 spec 的验证目录
         report.json            # 验证报告（summary + scenarios）
         test_scenarios.json    # 冻结的验证场景清单
+        parallel_plan.json     # 并行出题状态机（dispatched→completed/failed/cancelled/frozen→consumed）
+        fastlane_decision.json # fastlane 准入/回落判定记录
+        quality-gates.json     # 质量门禁落盘三项（嵌套 {"gates":...} 形态唯一合法）
+        verdict_cache.json     # judge verdict 指纹缓存（修复轮裁剪重验范围）
         screenshots/           # 场景截图（含失败截图）
         <spec>.json            # 场景逐条进度
     runs/              # Agent 运行记录（JSONL 流式）
@@ -25,9 +29,24 @@
       ...                       # 其它 agent 类型
     logs/              # 框架日志
       fenixd.log         # daemon 滚动日志（10MB×5 轮转，格式见日志体系章）
+    architecture/      # 项目架构图产物（gitignored，按项目存自包含 HTML）
+    scheduling_kick/   # 即时唤醒信号目录（每 SPEC 一文件，消费后删除）
+    code-review/       # 周期代码审查与自动修复产物
+      items.jsonl              # 审查问题台账（open/in_spec/resolved/ignored）
+      out-<run_id>.jsonl       # 审查 run 逐文件结果
+      out-<run_id>-b<N>.jsonl  # code-fix 修复分片产物（批内并行，单写者落盘）
+      fix-progress.json        # 自动修复批次进度
+      fix-deferred.json        # WIP defer 台账（90min/6 次双门预算）
+      fix-failed.json          # 批失败档案（fail_count 预算，达 3 告警）
+      code_review_request_result.json  # 手动触发受理回链凭据（started/dropped/failed）
     admin_alerts.json  # 告警与处置记录
     hook_audit.jsonl   # hook 触发与执行审计（append-only）
     admin_invoke_request.json   # Admin 唤起请求信号（daemon 拾取后清除）
+    spec_delete_request.json    # SPEC 删除受理信号（有在跑 agent 时异步停止）
+    code_fix_request.json       # 手动「自动修复」整链授权信号（消费后清除）
+    restart_history.jsonl       # 自愈重启历史（ts / self_triggered / streak）
+    supervisor_fused            # supervisor 启动失败熔断标记（人工删除后重启恢复）
+    supervisor_runtime.json     # supervisor 运行时自报（pid / script_hash / started_at）
     todo.md            # 当日待办/自省列表
     evolution/         # 框架自进化产物（gitignored，非交付物）
       items.jsonl      # 条目状态机（一行一条，按 id 幂等更新）
@@ -56,6 +75,9 @@
 - priority: 5              # 优先级 1-9（P1 最高）
 - created: <ISO 8601>      # 创建时间
 - updated: <ISO 8601>      # 最近更新时间
+- start_after: <ISO8601|manual|null>   # 定时拾取（manual=待人工激活，永不到期）
+- frozen_until: <ISO8601|null>         # 定时解冻时刻（到点自动解冻）
+- impl_run_budget_override: <int|null> # per-spec 实现尝试预算覆盖（按 agents.impl_run_budget_max 夹紧）
 - implementer_run: <run-id|null>   # 最近实现者 run ID
 - tester_run: <run-id|null>        # 最近验证者 run ID
 - reviewer_run: <run-id|null>      # 最近方案评审 run ID（reviewing 态必有值）
@@ -71,6 +93,26 @@
 - _token_warn_80: <bool>   # token 预算 80% 告警已发标记
 - _token_alert_100: <bool> # token 预算 100% 告警已发标记
 ```
+
+**内部字段（`_` 前缀）**：所有 `_` 前缀字段**无条件透传持久化**（`core/state_machine.py` 的序列化逻辑），完整集合以 `core/state_machine.py` 为准。可观测的关键项：
+
+| 字段 | 含义 |
+|------|------|
+| `_verify_redo_count` | 重启重验预算已用次数（`agents.verify_redo_budget`，超限 `verify_redo_exhausted` 冻结） |
+| `_verify_fail_rounds` | 验证失败连续轮数（三轮熔断判据） |
+| `_frozen_hold` | 冻结保持标记（冻结终止在跑 agent 后置位） |
+| `_cancelled_hold` | 取消保持标记（人工取消后的有意等待） |
+| `_env_block_rounds` | env 阻塞连续轮数（≥2 轮冻结升级） |
+| `_inconclusive_attempts` | env 豁免两级防线共享计数（3 静默重派 / 4 升级） |
+| `_infra_failure_count` / `_verify_infra_rounds` | infra 失败观测（不计入冻结判定） |
+| `_infra_refunded_run_ids` | infra 验证 run 预算退款幂等清单 |
+| `_fastlane_fail_streak` | fastlane 连续失败计数（达 2 回落整轮） |
+| `_review_skipped_result` | 评审收尾被并发推进时的结果侧车（`<status>@result-path=<路径>`） |
+| `_recovery_resume` | 保留分支续做标记（一次性消费） |
+| `_repair_awaiting_remerge` | repair 成功、待重新合并进主树标记 |
+| `_merge_retry_pending` | merge-back spec 目录在飞守卫的有界顺延记账 |
+| `_judge_rerun_count` | judge 重裁决累计次数（spec 级上限 5） |
+| `_impl_gate_task_rejections` | 收工守卫对任务书声明形态的拦截计数 |
 
 > 状态取值与转移规则见 [SPEC 生命周期与状态机](03-lifecycle.md)。
 
@@ -138,7 +180,12 @@ proposal.md、design.md、tasks.md 与 specs/ 是 spec-driven 流程的 change a
 | 当日待办/自省 | `.fenix/todo.md` |
 | 建议改进项 / 自进化草稿 | `.fenix/evolution/items.jsonl` + `drafts/<id>/`（Dashboard 设置页「自进化」页签） |
 | 任务进度 | `spec/changes/<spec>/tasks.md` 勾选状态 |
-| 全量回归结果 | `.fenix/regression/last-run.json`（Dashboard 项目页「测试回归」分面）；周期防重在 `state.json` 的 `last_run_date`，手动触发信号见 `.fenix/regression_request.json` |
+| 全量回归结果 | `.fenix/regression/last-run.json`（Dashboard 项目页「测试回归」分面）；周期防重在 `state.json` 的 `last_run_date`，手动触发信号见 `.fenix/regression_request.json`，运行中标记见 `.running` |
+| 质量门禁卡在哪道门 | `.fenix/verify-progress/<spec>/quality-gates.json`（落盘三项；其余三项框架合成）+ Dashboard 详情页门禁卡 |
+| fastlane 是否被采用 | `.fenix/verify-progress/<spec>/fastlane_decision.json`（准入/回落判定与理由） |
+| code-fix 台账与修复进度 | `.fenix/code-review/items.jsonl`（台账）+ `fix-progress.json`（批次进度）+ `fix-deferred.json` / `fix-failed.json`（defer 与失败档案） |
+| 自愈重启是否自触发循环 | `.fenix/restart_history.jsonl`（`self_triggered` / `self_triggered_streak` 字段） |
+| supervisor 是否熔断 | `.fenix/supervisor_fused` 存在即熔断（含失败次数与 pid）；修复后删除该文件并重启 supervisor；运行时自报见 `supervisor_runtime.json` |
 
 ## 相关文档
 

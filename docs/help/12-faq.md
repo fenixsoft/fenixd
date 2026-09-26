@@ -6,7 +6,7 @@
 
 **现象**：SPEC 状态长期为 ready，没有 implementer run 启动。
 
-**根因**（按概率排序）：有更高优先级 SPEC 占用并发额度（`agents.max_concurrent`）；达到每日运行上限 `agents.daily_run_limit`；达到实现尝试预算（`_impl_run_budget_used >= impl_run_budget`）；SPEC 处于派发锁退避期（`pm.dispatch_backoff_schedule`，error 记录 backoff until）；或者 daemon 根本没有运行。
+**根因**（按概率排序）：有更高优先级 SPEC 占用并发额度（`agents.max_concurrent`；调度默认严格优先级，开启 `pm.dispatch.aging` 后等待中的 SPEC 逐级放宽降档，高优先级不再严格垄断并发槽）；达到每日运行上限 `agents.daily_run_limit`；达到实现尝试预算（`_impl_run_budget_used >= impl_run_budget`）；SPEC 处于派发锁退避期（`pm.dispatch_backoff_schedule`，error 记录 backoff until）；或者 daemon 根本没有运行。
 
 **处置**：先用 `/fenix-status` 与 Dashboard 概览页确认 daemon 健康；再查 `.fenix/logs/fenixd.log` 的 dispatch 相关记录，以及 STATE.md 中该 spec 的 `error` 与 `_impl_run_budget_used` 字段。若确认是预算耗尽，人工评估后调整 `agents.impl_run_budget`（约 30 秒热更新）并 reset spec。
 
@@ -26,7 +26,7 @@
 
 **根因**：常见有三类：验证场景反复失败导致修复循环多轮重验；卡住的 run 在超时监督续期（extension）中空转；多个同根 fix 并行派生。
 
-**处置**：先把 `agents.timeout_supervision.max_extensions` 调小或置 0，压缩续期上限；再检查是否陷入修复循环，看 `.fenix/verify-progress/<spec>/` 的重验轮数与失败截图；紧急止损可直接在 Dashboard 冻结该 SPEC。注意预算告警本身不会自动冻结 SPEC，处置由人工决策（[配置参考](09-config.md#agents)）。
+**处置**：先把 `agents.timeout_supervision.max_extensions` 调小或置 0，压缩续期上限；再检查是否陷入修复循环，看 `.fenix/verify-progress/<spec>/` 的重验轮数与失败截图；若怀疑 run 在低效空转，可开启 `agents.run_stall_budget_*`（缺省关闭）——观测窗内持续停滞的 run 会被主动终止并写 `[run-stall-budget]` 前缀错误，而不是靠超时续期硬拖（见[调度与治理规则](06-governance.md#run-止损run-stall-budget)）；紧急止损可直接在 Dashboard 冻结该 SPEC。注意预算告警本身不会自动冻结 SPEC，处置由人工决策（[配置参考](09-config.md#agents)）。
 
 ## 4. merge 冲突反复失败
 
@@ -82,7 +82,7 @@
 
 相关：[SPEC 生命周期与状态机](03-lifecycle.md#冻结与解冻)、[Dashboard 使用指南](08-dashboard.md)
 
-## 9. 配置改了不生效
+## 10. 配置改了不生效
 
 **现象**：改了 `.fenix/config.yaml` 的键，行为没有变化。
 
@@ -90,13 +90,13 @@
 
 **处置**：按键标注的生效方式决定是否重启 daemon；判断实际生效值以项目 config.yaml 为准。
 
-## 10. 找不到某个文件/目录
+## 11. 找不到某个文件/目录
 
 **现象**：排查时需要某个产物（报告/日志/截图），但找不到。
 
 **处置**：对照 [文件与数据地图](10-artifacts.md#出问题去哪查对照表) 逐项核对。`.fenix/` 内的文件都可以安全重新生成，缺失不一定代表异常。
 
-## 11. 配了 hook 但没触发 / 收到 hook_failure 告警
+## 12. 配了 hook 但没触发 / 收到 hook_failure 告警
 
 **现象**：SPEC 状态变化后配置的 hook 没有执行；或运维记录页出现 `hook_failure` 告警。
 
@@ -104,7 +104,7 @@
 
 **处置**：先查 `.fenix/hook_audit.jsonl`（或 Dashboard Hook 页签「最近执行」）按 spec 找记录：status=skipped 是被停用；status=failure 是动作报错，detail 含输出摘要；完全没有记录则是匹配阶段未命中（核对 id 与 events）。修正配置后 ≤30 秒热更新自动生效。完整键参考见[配置参考](09-config.md#hooks)。
 
-## 12. 配了 Provider 但 Agent 没走它（仍打到默认网关）
+## 13. 配了 Provider 但 Agent 没走它（仍打到默认网关）
 
 **现象**：`agents.models` 给某角色分配了 Provider，但从时间轴的 `model@provider` 标记或账单看，请求仍打到 cc-switch 等默认网关。
 

@@ -88,6 +88,8 @@ Fenix daemon 自动调度 SPEC 时受一组预算、重试与熔断规则约束�
 | **Token 预算** | `agents.token_budget_millions` | 单 spec 累计 input token 预算（单位百万）；累计到 80% 发提醒告警、100% 发升级告警 | 不自动冻结，告警由人工决定处置 |
 | **每日运行上限** | `agents.daily_run_limit` | 每日全部 Agent 运行总数上限（0=无限） | 当日停止派发 |
 
+> 另有一类**不消耗预算的豁免**：判定为基础设施（infra）问题的验证失败轮不计入验证失败冻结判定，对应验证 run 的预算幂等退款——详见[验证体系](05-verification.md)的「infra 失败预算豁免」。
+
 ## 重试、退避与秒挂冷却
 
 失败重试由 `agents.max_retries` 控制，设定失败 Agent run 的最大重试次数。
@@ -95,6 +97,23 @@ Fenix daemon 自动调度 SPEC 时受一组预算、重试与熔断规则约束�
 派发锁冲突按 `pm.dispatch_backoff_schedule`（默认 `[30, 120, 600]` 秒）递增退避：派发 implementer 遇到 worktree already active 时依次拉长等待间隔，期间不消耗 attempt 配额；若序列耗尽仍拿不到锁，触发 `dispatch_stalled` 信号升级处置。
 
 秒挂冷却针对「刚启动即失败」的 run：这类 run 会进入冷却期，冷却期内 implementer/fast-track/repair 的再次派发一律跳过，防止失败—重派—再失败的反抖空转。
+
+**信号死法冷却**：同一 SPEC 连续 3 次以「信号死亡」收场（进程被 Exit 143 / 负信号杀死，且非人工关停、非框架主动终止）时，进入 600 秒冷却——期间全部 agent 类型的重派一律跳过、不消耗任何预算，到期自动恢复，并落 major 告警（15 分钟节流，`core/agent_runner/provider_circuit.py`、`core/pm_engine/dispatch/queue.py`）。与秒挂冷却同时命中时取更晚到期者。
+
+## 瞬断熔断与解封渐进恢复
+
+provider（LLM 路由）持续报错会触发熔断；熔断的解除不是瞬间完成的，而是一套渐进恢复态序（`core/agent_runner/provider_circuit.py`）：
+
+**冻结 > post-unseal hold > 探针观察窗 > 错峰放行 > open**
+
+1. **post-unseal hold**：解封后先按 `agents.transient_unseal_backoff_base_seconds`（缺省 60 秒）× 解封次数退避等待，封顶 `agents.transient_unseal_backoff_max_seconds`（缺省 600 秒）；
+2. **探针观察窗**：只放一条最高优先级探针，窗口 `agents.transient_unseal_probe_window_seconds`（缺省 120 秒）内同指纹新故障记账即判探针失败；
+3. **错峰放行**：探针通过后按 `agents.transient_unseal_release_stagger_seconds`（缺省 30 秒）节拍逐个放行积压派发，避免惊群；
+4. **open**：稳定窗 `agents.transient_unseal_stable_window_seconds`（缺省 1800 秒）内无新故障，解封次数随之衰减。
+
+`backoff_base_seconds` / `release_stagger_seconds` 置 0 可整体禁用该机制。重新熔断时上述中间态全部作废、从头再来。
+
+**排查入口**：SPEC 停在 `ready` 却迟迟不派发、并发槽位空闲时，先查 `.fenix/logs/fenixd.log` 的解封保持日志（特征串 `Transient unseal ... active — N queued dispatch(es) held`）——你遇到的可能不是调度或预算问题，而是某条 provider 车道还在 hold / 观察窗 / 错峰放行中。
 
 ## 超时活性监督
 
@@ -106,6 +125,22 @@ Fenix daemon 自动调度 SPEC 时受一组预算、重试与熔断规则约束�
 4. LLM 判定 advancing → `deadline += extension_seconds` 续期；stagnant / judge 不可用 → 终止留证
 
 对用户的实际含义是：run 超过超时时间后可能仍在续期运行，Dashboard 显示「运行中」不代表卡死；真正停滞的 run 会被终止并留下证据。
+
+## run 止损（run-stall budget）
+
+超时活性监督回答「run 超时后要不要续期」；run 止损补上另一面：**没到超时、但持续低效空转的 run 要不要提前止损**。三件套语义（`core/agent_runner/runner.py`、`core/config.py`）：
+
+1. **取消旗标跨 attempt 生效**：run 被取消后，同一槽位的原地重试不会把它复活——未在飞的 run 登记取消同样生效；
+2. **原地重试让位**：并行出题的半成品已被隔离（discarded 标记）时，重试 run 检测到即主动让位退出（日志特征 `[retry-yielded]`），不覆盖新一轮产物；
+3. **停滞复合判停**（任一命中）：观测窗内连续多次出现 ≥120 秒的慢往返（`RUN_STALL_ROUND_SECONDS=120`，最少 2 次采样、占比过半触发）；或停滞占比过半且超过窗口分钟数无产物文件 mtime 进展。命中即：写 WIP checkpoint → 终止 run → error 终态带 `[run-stall-budget]` 前缀。
+
+| 配置键 | 默认值 | 作用 |
+|--------|--------|------|
+| `agents.run_stall_budget_enabled` | `false` | 总开关（缺省关闭，热更新生效） |
+| `agents.run_stall_budget_stalls` | `5` | 观测窗内允许的停滞次数 |
+| `agents.run_stall_budget_window_minutes` | `10` | 观测窗长度（分钟） |
+
+与超时活性监督的关系：监督是「到期审、LLM 判 advancing 可续期」；止损开启后，停滞 run 在观测窗内即被主动终止，而不是靠续期无限拖延。
 
 ## 自动恢复
 
@@ -194,6 +229,14 @@ daemon 重启时，处于 `implementing`/`testing` 中断状态的 SPEC 自动�
 ## merge 修复通道与熔断
 
 合并失败按指数退避重试（`pm.push.retry_backoff_seconds` 默认 `[300, 900]`）；连续失败达到 `merge_breaker_threshold`（复用 `agents.merge_breaker_threshold`，默认 2）后，自动 merge 被阻断并转人工处置，产生 critical 级的 `merge_streak` 困境信号。落到体感上：同一 SPEC 连续 merge 失败几次就会停止自动重试并发出红脸告警，提示你去检查 git 冲突根因，而不是让框架继续盲目重试。
+
+## SPEC 并发在飞守卫
+
+方案评审与实现两条车道交叉时，框架用一组守卫防止互相踩踏（`core/pm_engine/spec_review.py`、`core/pm_engine/dispatch/queue.py`）：
+
+- **评审收尾不打回实现中 SPEC**：评审结论落地时若 SPEC 已被推进到 `implementing` / `implemented` / `testing`，跳过回退动作——评审结果落侧车文件、STATE 登记 `_review_skipped_result`（格式 `<status>@result-path=<路径>`），只清评审 run 字段；
+- **实现派发前查在飞评审**：派发实现前依次探测进程表 → 评审流文件 → 活跃评审注册表的 queued 条目（陈旧锚点与探测异常一律 fail-open 放行）；命中则该条目保留队列、不消耗派发 attempt，等评审先收尾；
+- **实现合并收尾补记转移**：实现合并收尾发现 SPEC 仍停在 `ready`（评审收尾晚了半步的窗口）时，先补记 `ready → implementing` 转移再推 `implemented`，保证状态轨迹完整可审计。
 
 ## fix 族谱收敛
 

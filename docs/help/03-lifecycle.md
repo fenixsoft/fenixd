@@ -132,6 +132,14 @@ planner-judge 门禁判定通过后 SPEC 进入 `verified`，随即自动推进�
 
 冻结通过 `/fenix-freeze` 或 Dashboard 冻结操作触发：状态写入 blocked，附带结构化 `frozen: true` 标记与规范前缀 error。冻结期间所有自动链路对状态的改写都会被剥离，唯一出路是解冻。解冻（`/fenix-unfreeze`）恢复冻结前的状态并清空 error；对未冻结的 SPEC 执行解冻是幂等 no-op，可以放心调用。
 
+## 取消保持态（_cancelled_hold）
+
+人工取消一个运行中的 run 后，SPEC 不是被立刻重新调度，而是进入**取消保持态**：STATE 记录 `_cancelled_hold` 标记，含义是「有人有意让它停下」（`core/state_machine.py`）。
+
+- **有意等待，不是故障**：恢复链路（daemon 重启回退、孤儿清理、重派扫描）对保持态 SPEC 一律跳过——不复位、不重派、不递增重验计数；
+- **与冻结并列**：`_cancelled_hold` 与 `_frozen_hold` 是两个互不读写的独立标记；对冻结中的 SPEC 执行终止时，会先清掉取消保持标记；
+- **唯一出路是显式复位**：Dashboard SPEC 详情行的「恢复运行」动作（见 [Dashboard 使用指南](08-dashboard.md)）是保持态的正规出口——先判定能否保留实现分支：命中则保留分支续做（打 `_recovery_resume` 标记、清零相关计数）并即时唤醒派发；未命中则降级为普通重派。终态（done/pushed）、冻结或非保持态的 SPEC 调用它会被幂等拒绝。
+
 ## blocked 的两种语义：冻结 vs 阻塞
 
 `blocked` 是唯一「等人工」态，但它承载着两种语义完全不同的停摆。每次写入 `status=blocked` 时，框架 MUST 将停摆显式归入下列两类之一，MUST NOT 产生「两者皆无」的裸 blocked：
