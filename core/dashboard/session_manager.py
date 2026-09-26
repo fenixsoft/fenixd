@@ -416,16 +416,27 @@ class SessionManager:
             # 时进程可能仍在运行——补查 poll()，进程仍存活则不删会话、不广播
             # process_exit 终态（记 WARNING 留痕），交由 _terminate/idle 扫描
             # 正常回收，防存活会话被误删、子进程成孤儿。
+            # code-review item 67cd36c22c79：终态广播与映射摘除解耦——get()/
+            # start()/send() 的清理分支会在进程退出后抢先摘除映射但不广播，
+            # 若仍以「映射仍指向本会话」作为广播前置，抢先摘除后本 finally 判
+            # still_registered 为假即静默返回，该会话的 SSE 订阅端收不到任何
+            # 终态事件。故广播条件改为「进程已退出且未被 _terminate 认领」，
+            # 仅靠 terminating 标记去重——认领方 _terminate 与本 finally 二者
+            # 恰其一广播，恰一方广播约定不变；映射摘除仍仅在映射仍指向本会话
+            # 时执行，避免误摘他人。存活会话不可能被未认领路径摘除（get/
+            # start/send 均只摘已退出进程），故 proc_still_alive 判定无需再查
+            # 映射归属。
             with self._lock:
+                claimed = session.terminating
+                proc_exited = session.proc.poll() is not None
                 still_registered = (
-                    self._sessions.get(session.project) is session
-                    and not session.terminating
+                    not claimed
+                    and proc_exited
+                    and self._sessions.get(session.project) is session
                 )
-                proc_still_alive = still_registered and session.proc.poll() is None
-                if proc_still_alive:
-                    still_registered = False
                 if still_registered:
                     self._remove_session_nolock(session.project)
+                proc_still_alive = not claimed and not proc_exited
             if proc_still_alive:
                 logger.warning(
                     "stdout reader exited but process alive: session=%s pid=%d, "
@@ -433,7 +444,7 @@ class SessionManager:
                     sid,
                     session.proc.pid,
                 )
-            if still_registered:
+            if not claimed and proc_exited:
                 end_event = {
                     "type": "session_ended",
                     "session_id": sid,
