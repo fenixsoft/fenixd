@@ -101,7 +101,7 @@ class H4RunRoutesMixin:
         if not project.get("exists"):
             return {"error": "project not found"}
         try:
-            tail = min(int(query.get("tail", ["300"])[0]), 2000)
+            tail = max(1, min(int(query.get("tail", ["300"])[0]), 2000))
         except (TypeError, ValueError):
             tail = 300
         # 向前分页窗口（add-run-record-readability 4.2）：缺省 0 = 既有尾部截取
