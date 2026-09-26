@@ -193,6 +193,12 @@ def _superseded_name_peers(spec_name: str, scan: dict) -> list:
     return peers
 
 
+# evo-add-worktree-acquire-backoff 1.3：新验证流程降级累计计数器。
+# MUST 为模块级——PMEngine 按 run 重建实例，实例级计数恒为 1、无法统计
+# 降级频率；WARNING 附「第 N 次降级」供日志保留窗内统计降级频率。
+_NEW_VERIFIER_FALLBACK_COUNT = 0
+
+
 class PMEngine:
     """
     Project Management Engine — the brain of fenixd.
@@ -2418,9 +2424,14 @@ class PMEngine:
         try:
             self._run_three_stage_verification(spec_name)
         except Exception as e:
+            # evo-add-worktree-acquire-backoff 1.3：模块级累计计数（实例按
+            # run 重建，实例级计数恒为 1），WARNING 附「第 N 次降级」。
+            global _NEW_VERIFIER_FALLBACK_COUNT
+            _NEW_VERIFIER_FALLBACK_COUNT += 1
             self.logger.warning(
                 "pm_engine",
-                f"新验证流程失败 '{spec_name}': {e}，降级到旧版 verifier",
+                f"新验证流程失败 '{spec_name}': {e}，降级到旧版 verifier"
+                f"（第 {_NEW_VERIFIER_FALLBACK_COUNT} 次降级）",
             )
             try:
                 self._run_legacy_verification(spec_name)

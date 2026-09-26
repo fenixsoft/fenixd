@@ -2797,31 +2797,38 @@ class AgentRunner:
 
         # Create or reuse worktree
         if wt_path is None:
-            wt_path = self.worktree_manager.create(spec_name, agent_type)
+            # evo-add-worktree-acquire-backoff（design 1/2）：create 失败不再
+            # 「sleep(5) 一次 + 单一判定」，改由 _prepare_worktree 内分探针
+            # 处置——锁活跃（并行 run 持同 spec:agent_type 锁）走短退避等待
+            # 重试（不消耗 attempt 重试额度，等持锁方排空）；frozen/
+            # _cancelled_hold/status 迁出预期态三种人工接管态立即让位不进
+            # 退避；其余失败保持既有 attempt 层重试语义。
+            wt_path, acquire_yield = self._create_worktree_with_backoff(
+                spec_name, agent_type)
             if wt_path is None:
                 error_msg = "Failed to create worktree"
                 self.logger.error("agent_runner", error_msg)
+                if acquire_yield in ("human-takeover",
+                                     "lock-backoff-exhausted"):
+                    # 退避耗尽仍锁活跃 / 人工接管让位 → 既有 gave up 终态
+                    #（错误文案保持 fix-restart-dual-dispatch 既有签名）
+                    self._log_run_metrics(
+                        run_id=run_id, spec_name=spec_name,
+                        agent_type=agent_type,
+                        duration_seconds=time.time() - start_time,
+                        turns=turns, usage_info=usage_info,
+                        terminal="failure", provider=provider_name,
+                        model=model,
+                    )
+                    return wt_path, False, AgentRunResult(
+                        attempt_run_id, spec_name, agent_type,
+                        success=False,
+                        duration_seconds=time.time() - start_time,
+                        error=f"{error_msg} (gave up: parallel run or manual freeze)",
+                        provider_used=provider_name, model_used=model,
+                    ), False
                 if attempt < max_retries:
                     time.sleep(5)
-                    # fix-restart-dual-dispatch S3/S4：重试前判定——锁活跃
-                    #（另一 run 在跑）或人工冻结时放弃，不再换名再造并行 run
-                    if self._should_give_up_before_retry(
-                                    spec_name, agent_type):
-                        self._log_run_metrics(
-                            run_id=run_id, spec_name=spec_name,
-                            agent_type=agent_type,
-                            duration_seconds=time.time() - start_time,
-                            turns=turns, usage_info=usage_info,
-                            terminal="failure", provider=provider_name,
-                            model=model,
-                        )
-                        return wt_path, False, AgentRunResult(
-                            attempt_run_id, spec_name, agent_type,
-                            success=False,
-                            duration_seconds=time.time() - start_time,
-                            error=f"{error_msg} (gave up: parallel run or manual freeze)",
-                            provider_used=provider_name, model_used=model,
-                        ), False
                     return wt_path, False, None, True  # do_continue
                 self._log_run_metrics(
                     run_id=run_id, spec_name=spec_name, agent_type=agent_type,
@@ -2853,6 +2860,85 @@ class AgentRunner:
                     self.worktree_manager.get_branch_name(wt_path) or "",
                 )
         return wt_path, reuse_worktree, None, False
+
+    # ── evo-add-worktree-acquire-backoff：锁让路退避取得 worktree ──────
+    # 退避序列（design 1）：锁活跃导致的 create 失败按该序列等待重试，
+    # 在 _prepare_worktree 内完成、不消耗 attempt 重试额度；耗尽才交还
+    # 调用方走既有 gave up 终态。
+    WORKTREE_ACQUIRE_BACKOFF_SEQUENCE = (30, 60, 120)
+
+    def _create_worktree_with_backoff(self, spec_name: str,
+                                      agent_type: str) -> tuple:
+        """create worktree，锁活跃时按短退避序列等待重试
+        （evo-add-worktree-acquire-backoff design 1/2）。
+
+        create 返回 None 后按原因分探针分流（不改
+        _should_give_up_before_retry 既有签名与语义）：
+        - 人工接管态（frozen / _cancelled_hold / status 迁出预期态，经
+          check_lock=False 探针）：立即让位，不进退避——人工接管语义
+          不可自动穿越；
+        - 锁活跃（has_active_lock 探针，并行 run 持同 spec:agent_type
+          锁）：按 WORKTREE_ACQUIRE_BACKOFF_SEQUENCE 退避等待重试，
+          每轮重探前复查人工接管态（等待期间被冻结/取消保持/status
+          迁出，含并行 run 完成后的状态迁移，即立即让位，不得在锁
+          释放后照常取得 worktree——先例：provider-transient 退避的
+          重派前复查）；锁释放后下一轮 create 即取得。
+        - 其余失败原因（非锁、非人工接管）：不等待，交还调用方按
+          既有 attempt 层语义处理。
+
+        返回 (wt_path, acquire_yield)：
+        - wt_path 非 None → 取得成功，acquire_yield 为 None；
+        - wt_path 为 None → acquire_yield 为让位/失败原因：
+          "human-takeover"（人工接管让位）/
+          "lock-backoff-exhausted"（退避耗尽仍锁活跃）/
+          "create-failed"（其它失败原因）
+        """
+        wt_path = self.worktree_manager.create(spec_name, agent_type)
+        if wt_path is not None:
+            return wt_path, None
+        # 分探针 1：人工接管态立即让位（check_lock=False——锁由下方独立分流）
+        if self._should_give_up_before_retry(spec_name, agent_type,
+                                             check_lock=False):
+            return None, "human-takeover"
+        # 分探针 2：非锁活跃（git 失败等其它原因）不进退避
+        wm = self.worktree_manager
+        if wm is None or not wm.has_active_lock(spec_name, agent_type):
+            return None, "create-failed"
+        seq = self.WORKTREE_ACQUIRE_BACKOFF_SEQUENCE
+        for round_no, backoff in enumerate(seq, start=1):
+            self.logger.warning(
+                "agent_runner",
+                f"Worktree create for '{spec_name}' ({agent_type}) blocked "
+                f"by active spec lock — waiting {backoff}s before re-probe "
+                f"({round_no}/{len(seq)}) "
+                f"(evo-add-worktree-acquire-backoff)",
+            )
+            time.sleep(backoff)
+            # 每轮重探前复查人工接管态：等待期间 spec 被冻结/取消保持/
+            # status 迁出预期态 → 立即让位，不得照常取得 worktree。
+            if self._should_give_up_before_retry(spec_name, agent_type,
+                                                 check_lock=False):
+                self.logger.warning(
+                    "agent_runner",
+                    f"Worktree acquire for '{spec_name}' ({agent_type}) "
+                    f"yields during lock backoff: spec 已被人工/其它链路"
+                    f"接管",
+                )
+                return None, "human-takeover"
+            wt_path = self.worktree_manager.create(spec_name, agent_type)
+            if wt_path is not None:
+                self.logger.info(
+                    "agent_runner",
+                    f"Worktree for '{spec_name}' ({agent_type}) acquired "
+                    f"after lock wait ({round_no}/{len(seq)}) — peer run "
+                    f"released spec lock",
+                )
+                return wt_path, None
+            # 锁已释放但 create 仍失败（命名重试撞满、git 错误等）→
+            # 交还调用方按既有 attempt 层语义处理，不再空转退避。
+            if not wm.has_active_lock(spec_name, agent_type):
+                return None, "create-failed"
+        return None, "lock-backoff-exhausted"
 
     # ── R6 子步 1: 4xx 熔断计数 + 瞬断判定（等价搬移，D1 R6 表）──────
     # 纯副作用：4xx 计数 / 半开探针闭合失败记账 / 瞬断判定 / 全局瞬断指纹记账。
