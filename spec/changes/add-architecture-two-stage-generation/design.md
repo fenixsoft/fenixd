@@ -3,7 +3,7 @@
 架构图页签（`architecture_routes.py`）当前以单体 `claude -p` 一次完成「读代码取证 + 产出 archify 图」，在 fenixd 与 fenix-desktop 双项目实测全部 1800s 超时。取证定案（2026-09-26）：
 
 - bigmodel 网关对「大上下文 × 长输出」请求存在静默丢弃（TCP ESTAB、收发队列全零、转录零事件、进程 I/O 零变化），CLI 应用层无请求级超时只能无限等；
-- 单体 spawn 形态把危险请求密集化：SKILL.md 全文（~30KB）内嵌首条 prompt、Explore 子代理取证报告（11KB+）全文回灌主 agent、主 agent 单轮生成完整候选 JSON——三轮挂点全部落在主 agent 大上下文轮；
+- 单体 spawn 形态把危险请求密集化：SKILL.md 全文（实测 16396 字节 ≈ 16KB）内嵌首条 prompt、Explore 子代理取证报告（11KB+）全文回灌主 agent、主 agent 单轮生成完整候选 JSON——三轮挂点全部落在主 agent 大上下文轮；
 - 旁证：子代理小上下文请求几十次零挂；本机手工复用现成报告 + 分段小步写盘全程零挂。
 
 `API_TIMEOUT_MS=600000` + `CLAUDE_CODE_MAX_RETRIES=2` 已通过项目级 `.claude/settings.json` 注入（治「挂死」不治「必挂」），作为纵深保留。

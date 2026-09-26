@@ -1,6 +1,6 @@
 ## Why
 
-架构图页签的 daemon 单体 `claude -p` 生成在 fenixd 与 fenix-desktop 两个项目实测全部 1800s 超时（进程组击杀），功能整体不可用。取证定案：bigmodel 网关对「大上下文 × 长输出」请求存在静默丢弃（TCP ESTAB、收发队列全零、转录零事件），而单体 spawn 形态把这类危险请求密集化——SKILL.md 全文（~30KB）内嵌首条 prompt、Explore 子代理取证报告（11KB+）全文回灌主 agent、主 agent 单轮生成完整候选 JSON。旁证：小上下文请求实测几十次零挂。
+架构图页签的 daemon 单体 `claude -p` 生成在 fenixd 与 fenix-desktop 两个项目实测全部 1800s 超时（进程组击杀），功能整体不可用。取证定案：bigmodel 网关对「大上下文 × 长输出」请求存在静默丢弃（TCP ESTAB、收发队列全零、转录零事件），而单体 spawn 形态把这类危险请求密集化——SKILL.md 全文（实测 16396 字节 ≈ 16KB）内嵌首条 prompt、Explore 子代理取证报告（11KB+）全文回灌主 agent、主 agent 单轮生成完整候选 JSON。旁证：小上下文请求实测几十次零挂。
 
 ## What Changes
 
