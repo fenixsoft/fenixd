@@ -131,6 +131,10 @@ def _truncate(text: str, limit: int = DETAIL_LIMIT) -> str:
 
 def _num(value, default: float) -> float:
     """数值兜底：非法/非正数回退缺省。"""
+    # 排除 bool（bool 是 int 子类，显式前判，对齐 _positive_int_or_default
+    # 范式；否则 True 会被 float() 变 1.0 → 1 秒超时，False 被静默吞掉）
+    if isinstance(value, bool):
+        return default
     try:
         v = float(value)
     except (TypeError, ValueError):
