@@ -1084,9 +1084,10 @@ def resolve_spec_name(name: str, item_id_: str, project_root, state_machine) -> 
     """生成并消解接受路径的 SPEC 名（3.4）。
 
     基名 ``evo-<name>``；与 ``spec/changes/<candidate>``、STATE.md 既有条目名、
-    ``spec/archive/`` 既有归档（目录名按 ``_archive_name_candidates`` 归一化
-    候选集与 candidate 全等比较）任一冲突时追加 ``-<item_id 前 6 位>`` 并
-    重新校验全部三处；仍冲突返回 None（调用方置 draft_failed 并告警）。
+    ``spec/archive/`` 既有归档（归档名以 ``-<candidate>`` 结尾，或按
+    ``_archive_name_candidates`` 归一化候选集与 candidate 全等比较命中）任一
+    冲突时追加 ``-<item_id 前 6 位>`` 并重新校验全部三处；仍冲突返回 None
+    （调用方置 draft_failed 并告警）。
     ``name`` 非法（非 kebab-case）直接返回 None。
     """
     if not isinstance(name, str) or not _KEBAB_RE.match(name):
@@ -1107,7 +1108,13 @@ def resolve_spec_name(name: str, item_id_: str, project_root, state_machine) -> 
                 for archived in arch_root.iterdir():
                     if not archived.is_dir():
                         continue
-                    if candidate in _archive_name_candidates(archived.name):
+                    # 归档名以 ``-<candidate>`` 结尾（如 ``add-<name>`` 前缀
+                    # 形态）或其归一化候选集含 candidate（覆盖
+                    # ``YYYY-MM-DD-<name>-<n>`` / ``<name>-<epoch>`` 形态，
+                    # 见 code-review item c99fdc8e6c0c）均判冲突。
+                    if (archived.name.endswith("-" + candidate)
+                            or candidate in _archive_name_candidates(
+                                archived.name)):
                         return True
             except OSError:
                 pass
