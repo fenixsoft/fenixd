@@ -616,10 +616,12 @@ def _validate_code_review_report(
     # 读侧 fail-open 接受同义键名，与「软契约不应承担机械对账」的既有取向一致；
     # 对账语义不变（仍是逐条计数 + reason 强校验）。
     cr_dispositions = None
+    _alias_hit = "dispositions"
     for _alias in ("dispositions", "findings_summary"):
         _val = code_review.get(_alias)
         if _val is not None:
             cr_dispositions = _val
+            _alias_hit = _alias
             break
     if cr_dispositions is None:
         cr_dispositions = []
@@ -628,9 +630,9 @@ def _validate_code_review_report(
         # 标量）MUST NOT 以未捕获 TypeError 崩溃硬门本身（_format_gap_list
         # 对 code-review item 58ae4e08513b 的同类立场）：先定向归因非数组，
         # 再 fail-closed 落结构化失败（与自检侧 _selfcheck_dispositions_
-        # violations 的非数组分支同文案口径）。
+        # violations 的非数组分支同文案口径，归因用实际命中的别名键名）。
         return (
-            f"exit 0 但结果文件 code_review.dispositions 非数组"
+            f"exit 0 但结果文件 code_review.{_alias_hit} 非数组"
             f"（逐条处置 MUST 为对象数组，每项含 disposition 键）"
             f"（impl-code-review-gate）: {report_rel}"
         )
