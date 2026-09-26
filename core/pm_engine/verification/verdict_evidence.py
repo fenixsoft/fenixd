@@ -163,6 +163,7 @@ def _verify_verdict_evidence(pipeline, spec_name: str, retry_judge: bool = False
                 }
         # 合规：清掉历史驳回清单（若有）后强制重写 status 映射（D3）写回
         pipeline._clear_verdict_violations(spec_name)
+        pipeline._clear_resynthesis_directive(spec_name)
         pipeline._clear_requeue_manifest(spec_name)
         pipeline._persist_verdict_cache(spec_name, report)
         mapping = enforce_status_mapping(report)
@@ -297,6 +298,7 @@ def _verify_verdict_evidence(pipeline, spec_name: str, retry_judge: bool = False
                         "dispatch_error": f"{type(requeue_err).__name__}: {requeue_err}",
                     }
             pipeline._clear_verdict_violations(spec_name)
+            pipeline._clear_resynthesis_directive(spec_name)
             pipeline._clear_requeue_manifest(spec_name)
             pipeline._persist_verdict_cache(spec_name, report2)
             mapping2 = enforce_status_mapping(report2)
