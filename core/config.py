@@ -2103,7 +2103,14 @@ class ConfigLoader:
             return None
         sup = cls._supervision_segment(config) or {}
         configured = sup.get("absolute_max_seconds")
-        if not isinstance(configured, (int, float)):
+        # code-review 56eecd2ea903：YAML .nan/.inf 字面量穿透 isinstance 校验，
+        # NaN 与 floor 的 < 比较恒 False，NaN 会被当生效值返回，下游 absolute_max
+        # 超时比较恒 False，supervision 的无条件终止兜底失效——非有限浮点与
+        # 未配置同口径返回 None（消费方按各自默认），与 effective_stuck_threshold_seconds
+        # 的 .nan 防御（code-review d9e9a238696f）同款范式。
+        if not isinstance(configured, (int, float)) or (
+            isinstance(configured, float) and not math.isfinite(configured)
+        ):
             return None
         if float(configured) < float(floor):
             # 独立去重标记（code-review item bbfc01b9388a）：运行时下限兜底 ERROR
@@ -2158,8 +2165,12 @@ class ConfigLoader:
         if sup is None:
             return
         configured = sup.get("absolute_max_seconds")
-        if not isinstance(configured, (int, float)):
-            return  # 未配置显式 absolute_max：由消费方按各自默认处理，不校验
+        # code-review 56eecd2ea903：非有限浮点（.nan/.inf）与未配置同口径不校验，
+        # 防 NaN 穿透 >= 比较误入对齐/fail-fast 分支产生「低于下限」的误导性诊断
+        if not isinstance(configured, (int, float)) or (
+            isinstance(configured, float) and not math.isfinite(configured)
+        ):
+            return  # 未配置显式 absolute_max（含 .nan/.inf）：由消费方按各自默认处理，不校验
         if float(configured) >= float(floor):
             return  # 一致（含自动对齐后再次校验）
         if not sup.get("auto_align", True):
