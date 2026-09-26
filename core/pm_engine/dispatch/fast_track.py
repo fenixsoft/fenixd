@@ -18,6 +18,7 @@ patch time 模块对象属性全进程共享，重绑依旧生效。
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 
@@ -987,10 +988,14 @@ class FFastTrackMixin:
                 data = _yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
                 if isinstance(data, dict) and data.get("mode") == "fast-track":
                     data["mode"] = "full"
-                    yaml_path.write_text(
+                    # 同目录临时文件 + os.replace 原子替换（对齐 state_machine
+                    # 写回约定）：写一半被杀不留截断 YAML（queue.py 同式）。
+                    tmp_path = yaml_path.with_name(".spec.yaml.tmp")
+                    tmp_path.write_text(
                         _yaml.safe_dump(data, default_flow_style=False, sort_keys=False),
                         encoding="utf-8",
                     )
+                    os.replace(tmp_path, yaml_path)
                     self._pm.logger.info(
                         "pm_engine",
                         f"fast-track 升级: .spec.yaml mode → full " f"for '{spec_name}'",

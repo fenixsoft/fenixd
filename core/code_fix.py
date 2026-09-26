@@ -2448,9 +2448,12 @@ class CodeFixOrchestrator:
                     items = read_items(root)
                 except Exception:  # noqa: BLE001 — 台账读失败按空集（不核销）
                     items = {}
+                # 批界守卫（与 _run_batch_created 核销前 batch_set 过滤同口径）：
+                # agent 产物带出的批外 id 不核销。
+                batch_set = set(item_ids)
                 still_open = [
                     i for i in fixed_ids
-                    if (items.get(i) or {}).get("status") == "open"
+                    if i in batch_set and (items.get(i) or {}).get("status") == "open"
                 ]
                 if still_open:
                     hit = mark_resolved(root, still_open)
@@ -2948,7 +2951,11 @@ class CodeFixOrchestrator:
         # 本批后续的失败档案/chain_skipped 集合中排除（已终态，MUST NOT 随批
         # 作废被重试重做）。分区口径见 _split_fix_rows。
         fixed_ids, skip_reasons = _split_fix_rows(rows)
-        ignore_ids = list(dict.fromkeys(skip_reasons))
+        # mark_ignored 对命中 id 无条件置 ignored 终态（无批界保护），先以
+        # 本批 item_ids 过滤——agent 产物行带出的批外 open 条目不置终态
+        # （与下方核销前 batch_set 守卫同口径）。
+        batch_set = set(item_ids)
+        ignore_ids = [i for i in skip_reasons if i in batch_set]
         ignored = mark_ignored(root, ignore_ids, reasons=skip_reasons) if ignore_ids else 0
         ignore_set = set(ignore_ids)
         pending_ids = [iid for iid in item_ids if iid not in ignore_set]

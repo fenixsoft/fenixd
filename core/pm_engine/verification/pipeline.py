@@ -13,38 +13,21 @@ _last_scenario_diff / _last_interaction_contract 随组件同迁（design D3 规
 """
 
 from pathlib import Path
-from typing import Optional
 from datetime import datetime, timezone
 import functools
 import json
-import os
-import re
 import subprocess
-import tempfile
 import time
-import urllib.request
 
-from core.serving_registry import ServingRegistry
-from core.proc_utils import find_free_port
-
-# judge-scenario-repair：judge 原地场景修复预算（上限重入轮数）。
-# 场景文件自身缺陷（夹具未自建/步骤客观错误/依赖序缺失）由 judge 原地修复
-# 后重执行，不再「env 伪失败→原样重验」空转；上限与阶段1 replan_left 对齐。
-# 2026-09-18：2 → 3（实证 add-spec-manual-activation：夹具场景第 3 轮才修出
-# 正确修复却因预算耗尽无法重入，修复落盘却永不执行）。
-_SCENARIO_REPAIR_MAX_ROUNDS = 3
+# judge-scenario-repair：judge 原地场景修复预算（_SCENARIO_REPAIR_MAX_ROUNDS）
+# 单点定义见 core.state_machine（与 escalation.py 同源，防两侧调参漂移）。
 
 # D9：`ensure_main_tree_deps` / `run_prepare_steps` / `load_verify_contract` /
 # `rewrite_scenarios_origin` 不再在此模块顶层绑定——调用点经包命名空间
 # （`import core.pm_engine.verification as _facade`）延迟解析，使
 # `patch("core.pm_engine.verification.<name>")` 语义保持（见 __init__.py）。
-from core.verify_contract import (
-    CommandVerifyServer,
-    entry_preflight_error,
-    provision_worktree_node_modules,
-    resolve_deps_mode,
-    StaticVerifyServer,
-)
+# 本模块不再从 verify_contract 顶层绑定任何名字（此前的 5 个服务器/依赖
+# 名为单体拆分遗留死导入，已移除）。
 
 # fix-verdict-read-failclosed D3：与 runner 产物硬门共用同一 status 白名单单一来源
 # （prompt_builder 定义、两侧 import，避免双实现漂移）。
@@ -60,10 +43,10 @@ from core.agent_runner.runner import FROZEN_TERMINATED_ERROR_PREFIX
 from core.state_machine import (
     ENV_BLOCK_ROUNDS_FIELD,
     FREEZE_ERROR_PREFIX,
-    INFRA_FAILURE_COUNT_FIELD,
     VERIFY_INFRA_ROUNDS_FIELD,
-    INFRA_REFUNDED_RUN_IDS_FIELD,
     SCENARIO_REPAIR_EXHAUSTED_FIELD,
+    # judge-scenario-repair：修复预算单点定义在 state_machine（与 escalation.py 同源）
+    _SCENARIO_REPAIR_MAX_ROUNDS,
 )
 
 # refactor-verification-module 阶段3.3：infra 失败归因/历史/回拨组已迁 infra_classify.py，

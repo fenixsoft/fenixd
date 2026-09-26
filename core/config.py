@@ -249,22 +249,14 @@ class ConfigLoader:
             raw_enabled = None
         enabled = raw_enabled if isinstance(raw_enabled, bool) \
             else cls.RUN_STALL_BUDGET_ENABLED_DEFAULT
-        if enabled:
-            stalls = cls._normalize_stall_budget_positive(
-                config, "agents.run_stall_budget_stalls",
-                cls.RUN_STALL_BUDGET_STALLS_DEFAULT, integer=True)
-            window_seconds = cls._normalize_stall_budget_positive(
-                config, "agents.run_stall_budget_window_minutes",
-                cls.RUN_STALL_BUDGET_WINDOW_MINUTES_DEFAULT, integer=False) * 60.0
-        else:
-            # 关闭态同样返回归一化阈值（读侧可展示生效形态；判停消费方
-            # 以 enabled=False 短路，不进判停）
-            stalls = cls._normalize_stall_budget_positive(
-                config, "agents.run_stall_budget_stalls",
-                cls.RUN_STALL_BUDGET_STALLS_DEFAULT, integer=True)
-            window_seconds = cls._normalize_stall_budget_positive(
-                config, "agents.run_stall_budget_window_minutes",
-                cls.RUN_STALL_BUDGET_WINDOW_MINUTES_DEFAULT, integer=False) * 60.0
+        # 开关两态行为一致：关闭态同样返回归一化阈值（读侧可展示生效形态；
+        # 判停消费方以 enabled=False 短路，不进判停），故归一化只写一遍。
+        stalls = cls._normalize_stall_budget_positive(
+            config, "agents.run_stall_budget_stalls",
+            cls.RUN_STALL_BUDGET_STALLS_DEFAULT, integer=True)
+        window_seconds = cls._normalize_stall_budget_positive(
+            config, "agents.run_stall_budget_window_minutes",
+            cls.RUN_STALL_BUDGET_WINDOW_MINUTES_DEFAULT, integer=False) * 60.0
         return {"enabled": enabled, "stalls": stalls,
                 "window_seconds": window_seconds}
 
@@ -1695,10 +1687,20 @@ class ConfigLoader:
         sr = admin.get("self_review") if isinstance(admin, dict) else None
         if not isinstance(sr, dict):
             sr = {}
+        # 严格 bool：bool(...) 会把任何 truthy 非 bool 值（如 YAML 引号串
+        # enabled: "false"）静默转 True、意外开启自省周期调度；非 bool 回退
+        # 文档缺省 False（与 get_regression_config 同范式，code-review
+        # item 1050310f1b6e）。
+        enabled = sr.get("enabled", False)
+        if not isinstance(enabled, bool):
+            enabled = False
+        read_todo = sr.get("read_todo", False)
+        if not isinstance(read_todo, bool):
+            read_todo = False
         return {
-            "enabled": bool(sr.get("enabled", False)),
+            "enabled": enabled,
             "run_at": cls._validated_run_at(sr.get("run_at")),
-            "read_todo": bool(sr.get("read_todo", False)),
+            "read_todo": read_todo,
         }
 
     @classmethod

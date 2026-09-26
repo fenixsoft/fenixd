@@ -286,6 +286,15 @@ IMPL_DIAGNOSIS_FIELD = "_impl_diagnosis"
 # 「毒 spec 借每次 admin 复位重置计数 → 无限循环」敞口复开。
 SCENARIO_REPAIR_EXHAUSTED_FIELD = "_scenario_repair_exhausted_rounds"
 
+# ── judge 场景原地修复预算（judge-scenario-repair）──────────────────
+# 上限重入轮数单点定义（pm_engine.verification 的 pipeline.py 与 escalation.py
+# 共用，避免两处漂移：一侧调参会使改道门与 judge 重入预算对不上）。
+# 场景文件自身缺陷（夹具未自建/步骤客观错误/依赖序缺失）由 judge 原地修复
+# 后重执行，不再「env 伪失败→原样重验」空转；上限与阶段1 replan_left 对齐。
+# 2026-09-18：2 → 3（实证 add-spec-manual-activation：夹具场景第 3 轮才修出
+# 正确修复却因预算耗尽无法重入，修复落盘却永不执行）。
+_SCENARIO_REPAIR_MAX_ROUNDS = 3
+
 
 # ── STATE.md Parser ─────────────────────────────────────────────────
 
@@ -2027,6 +2036,7 @@ class StateMachine:
             # 若清除标记会让「仅剩合并」的分支退回 ready 全新派发，白废已完成的实现。
             # 顺延的有界上限由 dispatch 调用方（D2）承载；此处是 daemon 重启单次的
             # 有界短窗（不自旋），由下一次重启/人工提交解除。
+            # [fenix-ignore:143b2435ac7b] 非缺陷：2015 行元组解包只给新名字赋值、不重绑 merge_info，其仍是 MergeConflictInfo 对象，getattr 读到真实 spec_dir_inflight（test_state_machine_recovery_remerge_keeps_marker 已覆盖此分支）
             if getattr(merge_info, "spec_dir_inflight", False):
                 self.logger.warning(
                     "state_machine",

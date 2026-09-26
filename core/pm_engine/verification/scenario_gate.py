@@ -199,7 +199,11 @@ def _apply_scenario_freeze(pipeline, spec_name: str) -> dict:
             try:
                 # frozen-scenario-schema-migration 2.1：写端恒定写入
                 # schema_version 标记（旧字段先迁移再落盘，读侧直通）
-                full_backup.write_text(
+                # tmp+replace 原子写（与本函数 test_scenarios.json 写回同款）：
+                # 裸写中途被 SIGKILL/断电会留下截断备份，下轮无理由缺场景补齐
+                # 读备份失败（backup_map 置空），场景被判「定义不可恢复」剔除。
+                tmp = full_backup.with_name(full_backup.name + ".tmp")
+                tmp.write_text(
                     json.dumps(
                         prepare_scenarios_for_write(valid_planner),
                         ensure_ascii=False,
@@ -207,6 +211,7 @@ def _apply_scenario_freeze(pipeline, spec_name: str) -> dict:
                     ),
                     encoding="utf-8",
                 )
+                tmp.replace(full_backup)
             except OSError as e:
                 # 3.6：写失败不得零痕迹——备份是后续无理由缺场景补齐的唯一
                 # 恢复源，写失败后下轮补齐将因 backup_map 为空把场景判
