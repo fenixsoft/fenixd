@@ -358,7 +358,13 @@ class SessionManager:
                 try:
                     ev = json.loads(line)
                 except json.JSONDecodeError:
-                    # 非 JSON 行 → stderr 兜底事件（进缓冲 + 广播，前端实时可见）
+                    ev = None
+                # code-review item a1ad7f4c983b：合法 JSON 但非 object（null/数组/
+                # 字符串等）的行若放行到下方 ev.get 会抛 AttributeError，被外层
+                # except 捕获后整条读循环终止、存活会话被误按 process_exit 移除，
+                # 故与 JSONDecodeError 同走 stderr 兜底分支。
+                # 非 JSON / 非 object 行 → stderr 兜底事件（进缓冲 + 广播，前端实时可见）
+                if not isinstance(ev, dict):
                     ev = {"type": "stderr", "line": line, "ts": time.time()}
                     session.events.append(ev)
                     self._hub.broadcast(
@@ -406,13 +412,27 @@ class SessionManager:
             # 等待，进程恰在此窗内退出时本 finally 会触发且会话仍在映射中——
             # 只查注册表会把真实停止理由抢先成 process_exit 并产生两条终态
             # 事件，故补查 terminating，交由 _terminate 落终态。
+            # code-review item a1ad7f4c983b：循环因异常退出（如 broadcast 抛错）
+            # 时进程可能仍在运行——补查 poll()，进程仍存活则不删会话、不广播
+            # process_exit 终态（记 WARNING 留痕），交由 _terminate/idle 扫描
+            # 正常回收，防存活会话被误删、子进程成孤儿。
             with self._lock:
                 still_registered = (
                     self._sessions.get(session.project) is session
                     and not session.terminating
                 )
+                proc_still_alive = still_registered and session.proc.poll() is None
+                if proc_still_alive:
+                    still_registered = False
                 if still_registered:
                     self._remove_session_nolock(session.project)
+            if proc_still_alive:
+                logger.warning(
+                    "stdout reader exited but process alive: session=%s pid=%d, "
+                    "kept for _terminate/idle reclaim",
+                    sid,
+                    session.proc.pid,
+                )
             if still_registered:
                 end_event = {
                     "type": "session_ended",

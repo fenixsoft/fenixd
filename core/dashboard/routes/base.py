@@ -273,7 +273,11 @@ def _post_alert_resolve(s, p, q, m):
     s._api_alert_resolve(q)
 
 def _post_run_watch(s, p, q, m):
-    rest = urllib.parse.unquote(m.group(1))[: -len("/watch")]
+    # 路由 pattern ^/api/runs/(.+)/watch$ 已消费 /watch 后缀，group(1) 即 run
+    # id 本体——不得再剥（code-review item 9d6e8392b667：照搬 GET 适配器的
+    # 二次剥离会把 run id 截断，SSE 增量订阅静默失效）；GET 适配器正则
+    # ^/api/runs/(.+)$ 的 group(1) 含后缀，那里的剥离才是必要的
+    rest = urllib.parse.unquote(m.group(1))
     s._json(s._api_run_watch(rest, q, watch=True))
 
 def _post_project_describe(s, p, q, m):
@@ -336,7 +340,9 @@ def _post_install_hosting(s, p, q, m):
 # ── DELETE 路由适配函数 ───────────────────────────────────────────────
 
 def _del_run_watch(s, p, q, m):
-    rest = urllib.parse.unquote(m.group(1))[: -len("/watch")]
+    # 同 _post_run_watch（code-review item 9d6e8392b667）：group(1) 不含
+    # /watch 后缀，二次剥离会把 run id 截断致注销错 id
+    rest = urllib.parse.unquote(m.group(1))
     s._json(s._api_run_watch(rest, q, watch=False))
 
 def _del_session_watch(s, p, q, m):

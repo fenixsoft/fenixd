@@ -284,8 +284,13 @@ def ownership_violations_for_task_line(line: str, lane: str) -> List[str]:
 
 
 def _match_artifact_key(literal: str):
-    """从路径字面量中识别命中的归属表 key（含 ``.fenix-run-result.json``）。"""
-    for key in VERIFICATION_ARTIFACT_OWNERS:
+    """从路径字面量中识别命中的归属表 key（含 ``.fenix-run-result.json``）。
+
+    按 key 长度降序取最长命中：``scenarios.json`` 是 ``test_scenarios.json``
+    的子串，子串匹配不得依赖归属表插入顺序（否则 ``test_scenarios.json``
+    引用会被误判成 ``scenarios.json``）。
+    """
+    for key in sorted(VERIFICATION_ARTIFACT_OWNERS, key=len, reverse=True):
         if key in literal:
             return key
     return None

@@ -354,7 +354,12 @@ async function launchChromeExtension(distPath, opts = {}) {
       timeoutTimer = setTimeout(() => { timedOut = true; resolve(null); }, remaining);
     });
 
-    const raced = await Promise.race([collectAndTest(), timeoutPromise]);
+    // 超时收卷后 collectAndTest 仍在后台执行，finally 中 browserContext.close() 会使其内部
+    // 未兜底的 await（如 newPage）以 Target closed 拒绝；附加 catch 分支吞掉迟到失败，
+    // 避免 unhandledRejection 使进程崩溃（race 本身仍监听原 Promise，失败时照常进外层 catch）
+    const collectPromise = collectAndTest();
+    collectPromise.catch(() => {});
+    const raced = await Promise.race([collectPromise, timeoutPromise]);
     clearTimeout(timeoutTimer);
     const uiResults = raced === null ? [] : raced;
 

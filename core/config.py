@@ -2321,7 +2321,7 @@ class ConfigLoader:
         所有消费方（daemon 自动归档检查、dashboard 设置回显）MUST 调本助手读取
         生效值，而非直读原始配置——保证非法值不会流入归档判定。
         """
-        archive = config.get("archive") or {}
+        archive = cls._segment_or_empty(config, "archive")
         at = archive.get("auto_threshold")
         if at is None:
             return default

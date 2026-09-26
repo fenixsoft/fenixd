@@ -52,7 +52,7 @@ class H4RunRoutesMixin:
         except ValueError:
             content_length = 0
         # [fenix-ignore:4e54263f454d] 此处不读 body 不会毒化 keep-alive：未消费 body 由 _handle_inner finally 的 _drain_remaining_request_body 统一排空（BUG-01/265e22d75797），同 regression_routes 6e9597e51e90 先例
-        if content_length > 0 and (reason is None or not reason):
+        if content_length > 0 and not reason:
             body = self._read_json_body()
             if isinstance(body, dict):
                 reason = (body.get("reason") or "").strip() or None
@@ -118,6 +118,10 @@ class H4RunRoutesMixin:
 
     def _api_run_watch(self, run_id: str, query, watch: bool) -> dict:
         """注册/取消某条 SSE 连接的 run 增量订阅（弹窗打开/关闭时调用）。"""
+        # 最小防御（code-review item 9d6e8392b667）：空 run_id 会静默注册成
+        # 无效订阅（broadcast 按 run_id 精确匹配永远落空），直接拒绝
+        if not run_id:
+            return {"error": "missing run id"}
         project = self._project_from_query(query)
         if project is None or not project.get("exists"):
             return {"error": "unknown project"}

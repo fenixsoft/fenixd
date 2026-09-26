@@ -1232,7 +1232,8 @@ export interface RegressionConfig {
   enabled?: boolean;
 }
 
-// add-settings-system-tab：系统页签受管 admin.* 键（read_config 白名单 6 键）
+// add-settings-system-tab：系统页签受管 admin.* 键（read_config 白名单，
+// 键集合以后端 _managed_admin_keys 为准）
 export interface AdminConfig {
   /** 自动自愈总开关（缺省 true） */
   enabled?: boolean;

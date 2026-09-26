@@ -779,7 +779,11 @@ class FamilyGovernor:
 
         try:
             text = tasks_path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
+        except (OSError, UnicodeDecodeError) as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"tasks.md 读取失败，跳过验证修复段注入：{spec_name}: {e}",
+            )
             return
 
         report_path = f"spec/changes/{spec_name}/verification-report.md"

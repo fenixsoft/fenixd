@@ -276,6 +276,15 @@ export default function CodeFixProgressCard(
     subTestId = 'code-fix-item-progress';
   }
 
+  // 进度条 status（嵌套三元被审查规则禁止，抽为 if/else 局部计算）：
+  // 需人工终止/读取失败 → exception；自愈等待 → normal；其余 → active。
+  let barStatus: 'exception' | 'normal' | 'active' = 'active';
+  if (alarm) {
+    barStatus = 'exception';
+  } else if (selfhealWait) {
+    barStatus = 'normal';
+  }
+
   return (
     <Card
       size="small"
@@ -294,7 +303,7 @@ export default function CodeFixProgressCard(
         <ProgressBarTile
           done={liveDone}
           total={total}
-          status={alarm ? 'exception' : selfhealWait ? 'normal' : 'active'}
+          status={barStatus}
           strokeColor={alarm ? '#ff4d4f' : undefined}
         />
         {sub.length > 0 && (

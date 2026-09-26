@@ -526,7 +526,8 @@ def _record_phantom_failure_alert(store, logger, run_id: str, detail: str) -> No
 
 
 def collect_runs_stats(project_root, window_start: datetime) -> Dict[str, int]:
-    """近 24 小时窗口 runs 统计（成功/失败/秒挂/超时/丢弃/在跑），排除
+    """[window_start, window_end] 窗口（调度侧为 [last_run_at, now] 增量，
+    首跑回退 24h）runs 统计（成功/失败/秒挂/超时/丢弃/在跑），排除
     self-review run 自身。
 
     窗口 = [window_start, window_end]，其中 window_end 为函数入口时冻结的
@@ -572,7 +573,9 @@ def collect_runs_stats(project_root, window_start: datetime) -> Dict[str, int]:
 def collect_failed_run_samples(
     project_root, window_start: datetime, limit: int = 10, store=None, logger=None
 ) -> List[Dict[str, str]]:
-    """收集窗口内业务失败 run 样本（run_id + 失败依据摘要），用于可追溯输出。
+    """收集 [window_start, window_end] 窗口内业务失败 run 样本（调度侧为
+    [last_run_at, now] 增量，首跑回退 24h；run_id + 失败依据摘要），用于
+    可追溯输出。
 
     返回 ``[{run_id, detail}]``：detail 为命中的业务失败标记（marker=...）或
     结构性失败信号（signal=...）摘要；仅分类为 failed 的 run 入选。
@@ -997,7 +1000,8 @@ def _collect_rescue_traces(
 
 
 def collect_log_errors(project_root, window_start: datetime, limit: int = 20) -> Dict[str, Any]:
-    """近 24 小时窗口 fenixd.log ERROR 聚合：总数 + 最近 limit 条样本
+    """[window_start, window_end] 窗口（调度侧为 [last_run_at, now] 增量，
+    首跑回退 24h）fenixd.log ERROR 聚合：总数 + 最近 limit 条样本
     （含时间戳/组件/消息）。"""
     # 快照化：聚合启动时冻结窗口上界
     window_end = datetime.now()
@@ -1084,8 +1088,6 @@ class SelfReviewScheduler:
     def __init__(
         self, config: dict, project_root, logger, state_machine, agent_runner=None, store=None
     ):
-        from .config import ConfigLoader
-
         self.config = config
         self.project_root = Path(project_root)
         self.logger = logger

@@ -155,11 +155,19 @@ def _validated_spec_name(spec) -> str | None:
 
 
 def count_scenarios(project_root, spec_name) -> int:
-    """统计 SPEC 各 spec.md 中 Scenario 数量。"""
+    """统计 SPEC 各 spec.md 中 Scenario 数量。
+
+    目录解析复用 resolve_spec_dir（活跃优先/归档回退），与 get_spec_doc 的
+    文档读取口径一致——归档 SPEC 的场景计数不再恒为 0；spec 完全不存在
+    （活跃/归档均无命中）或无 specs 子目录时仍以 0 计（fail-open 纯展示）。
+    """
     spec_name = _validated_spec_name(spec_name)
     if spec_name is None:
         return 0
-    specs_dir = Path(project_root) / "spec" / "changes" / spec_name / "specs"
+    spec_dir = resolve_spec_dir(project_root, spec_name)
+    if spec_dir is None:
+        return 0
+    specs_dir = spec_dir / "specs"
     if not specs_dir.is_dir():
         return 0
     count = 0

@@ -589,18 +589,17 @@ def diff_planner_output(
         )
 
     # ── 受控增量约束（design D2）──
-    # 修复轮且未声明新增交付：任何新增均属「超发」，必须拦截（spec：修复轮不扩容）。
-    # 非修复轮（首轮之后重新规划）允许新增但需走 diff 记录。
-    if new_entries and not result.extended:
-        # 合法追加：合并写回（design D2：新增范围允许追加；此处按修复轮判断）。
-        # 若修复轮且未声明新增交付，则拦截超发，本批新增被丢弃（仅保留既有集）。
-        if repair:
-            overcount = len(new_entries)
-            new_entries = []
-            result.change_lines.append(
-                f"- 拦截 planner 超发 {overcount} 个未声明新增范围的场景"
-                f"（修复轮不扩容，按 D2 丢弃）"
-            )
+    # 合法追加（design D2：新增范围允许追加；非修复轮重新规划允许新增但走
+    # diff 记录）：合并写回，不进下方拦截分支。
+    # 拦截超发：修复轮且未声明新增交付时，任何新增均属「超发」，必须拦截
+    # （spec：修复轮不扩容），本批新增被丢弃（仅保留既有集）。
+    if new_entries and not result.extended and repair:
+        overcount = len(new_entries)
+        new_entries = []
+        result.change_lines.append(
+            f"- 拦截 planner 超发 {overcount} 个未声明新增范围的场景"
+            f"（修复轮不扩容，按 D2 丢弃）"
+        )
 
     final_entries = kept_entries + new_entries
     result.scenario_set = ScenarioSet(

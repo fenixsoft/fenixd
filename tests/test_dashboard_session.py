@@ -268,12 +268,14 @@ class TestSessionManagerUnit:
 # ── 1.2 假进程读线程测试 ────────────────────────────────────────────────
 
 class TestReaderThreads:
-    def _mk(self, manager_fx, monkeypatch, stdout_lines, stderr_lines=None, stdout_eof=True):
+    def _mk(self, manager_fx, monkeypatch, stdout_lines, stderr_lines=None, stdout_eof=True,
+            exit_code=None):
         mgr, hub = manager_fx
         proc = FakeProc(
             stdout_lines=stdout_lines,
             stderr_lines=stderr_lines or [],
             stdout_eof=stdout_eof,
+            exit_code=exit_code,
         )
         monkeypatch.setattr(
             "core.dashboard.session_manager.subprocess.Popen",
@@ -366,6 +368,9 @@ class TestReaderThreads:
             monkeypatch,
             stdout_lines=['{"type":"assistant","message":{"content":[{"type":"text","text":"x"}]}}'],
             stdout_eof=True,
+            # 本场景即「进程已退出」：reader 的 process_exit 守卫按 poll() 区分
+            # 存活（item a1ad7f4c983b），替身须在启动前如实声明退出码
+            exit_code=0,
         )
         assert self._wait_reader(mgr, s)
         events = self._events_from_broadcasts(hub)
@@ -591,7 +596,9 @@ class TestInitCache:
         )
         s1 = mgr.start("proj-a", "/tmp/proj-a")
         assert _wait_until(lambda: s1.slash_commands == ["/old"])
-        # 模拟进程退出：EOF → reader 移除会话
+        # 模拟进程退出：EOF → reader 移除会话（替身须如实报退出码，
+        # reader 的 process_exit 守卫按 poll() 区分存活，item a1ad7f4c983b）
+        procs[0]._exit_code = 0
         procs[0].stdout.close()
         assert _wait_until(lambda: mgr.get("proj-a") is None)
         s2 = mgr.start("proj-a", "/tmp/proj-a")
