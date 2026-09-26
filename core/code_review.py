@@ -1029,8 +1029,8 @@ def save_code_review_state(project_root, date_str: str) -> None:
     """
     path = _code_review_state_path(project_root)
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
+        _atomic_write(
+            path,
             json.dumps(
                 {
                     "last_run_date": date_str,
@@ -1039,7 +1039,6 @@ def save_code_review_state(project_root, date_str: str) -> None:
                 ensure_ascii=False,
                 indent=2,
             ),
-            encoding="utf-8",
         )
     except OSError as e:
         _logger.warning("code_review: code_review_state.json 写入失败: %s", e)
@@ -1296,7 +1295,7 @@ def generate_fix_spec(
             "start_after": normalized_sa,
         }
 
-    ok, err = _git_commit(project_root, dest, name)
+    ok, err = _git_commit(project_root, name)
     if not ok:
         # add 已写入索引而 commit 失败（hook 拒绝 / index.lock 竞争 / 缺
         # identity 等）时，先撤回 pathspec 暂存项再删工作树副本，避免留下
@@ -1341,8 +1340,23 @@ def generate_fix_spec(
     shutil.rmtree(draft_root, ignore_errors=True)
 
     # 成功后把参与条目置 in_spec 并写 spec_name（in_spec 由生成链路置入，
-    # 不经 set_item_status——后者仅允许人工 open/ignored，design 1.5）
-    _mark_in_spec(project_root, [rec["item_id"] for rec in candidates], name)
+    # 不经 set_item_status——后者仅允许人工 open/ignored，design 1.5）。
+    # 置位失败（_atomic_write 磁盘满/权限）时 SPEC 已提交并注册为 drafted，
+    # 裸抛会让调用方误判整批未生成而重试，_spec_name_conflicted 会给同一批
+    # 问题追加 -<fp[:6]> 生成第二个修复 SPEC——记 warning 并返回错误提示人工核对。
+    try:
+        _mark_in_spec(project_root, [rec["item_id"] for rec in candidates], name)
+    except OSError as e:
+        _logger.warning(
+            "code_review: SPEC %s 已生成但台账条目置位 in_spec 失败: %s", name, e
+        )
+        return {
+            "ok": False,
+            "spec_name": name,
+            "skipped": skipped,
+            "error": f"SPEC {name} 已生成并提交，但台账条目置位 in_spec 失败: {e}（请勿重试生成以免重复 SPEC，需人工核对条目）",
+            "start_after": normalized_sa,
+        }
     return {
         "ok": True,
         "spec_name": name,
@@ -1607,7 +1621,7 @@ def _design_md(name: str, items: List[dict]) -> str:
         "",
     ]
     for it in items:
-        lines.append(f"### `{it.get('file')}:{it.get('line')}` — {it.get('title')}")
+        lines.append(f"### `{it.get('file')}:{it.get('line')}` — {_one_line(it.get('title'))}")
         lines.append("")
         lines.extend(_problem_lines(it, ""))
     return "\n".join(lines)
@@ -1652,21 +1666,27 @@ def _lint_draft(draft_dir_: Path, project_root) -> List[str]:
     与 ``core.deliverables.lint_tasks_parseable``（MUST NOT 自实现第二套）。
     """
     proot = Path(project_root)
-    fenix_dir = proot / ".fenix"
-    if str(fenix_dir) not in sys.path:
-        sys.path.insert(0, str(fenix_dir))
-    from core.deliverables import lint_declared, lint_tasks_parseable
+    fenix_dir = str(proot / ".fenix")
+    injected = fenix_dir not in sys.path
+    if injected:
+        sys.path.insert(0, fenix_dir)
+    try:
+        from core.deliverables import lint_declared, lint_tasks_parseable
 
-    violations: List[str] = []
-    for fn in (lint_declared, lint_tasks_parseable):
-        try:
-            violations.extend(fn(draft_dir_, proot) or [])
-        except Exception as e:
-            _logger.warning("code_review: 草稿 lint 异常（非阻塞放行）: %s", e)
-    return violations
+        violations: List[str] = []
+        for fn in (lint_declared, lint_tasks_parseable):
+            try:
+                violations.extend(fn(draft_dir_, proot) or [])
+            except Exception as e:
+                _logger.warning("code_review: 草稿 lint 异常（非阻塞放行）: %s", e)
+        return violations
+    finally:
+        # 注入项在 lint 结束后恢复，不长期驻留 sys.path（同 evolution.lint_draft）
+        if injected:
+            sys.path.remove(fenix_dir)
 
 
-def _git_commit(project_root, draft_copy: Path, spec_name: str) -> Tuple[bool, str]:
+def _git_commit(project_root, spec_name: str) -> Tuple[bool, str]:
     """仅提交目标 spec 目录（MUST NOT ``git add -A`` / ``git add .``）。
 
     add 与 commit 均以同一 pathspec 限定（--only 语义，与
