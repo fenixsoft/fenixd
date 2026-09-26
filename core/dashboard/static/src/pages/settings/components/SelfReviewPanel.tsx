@@ -70,7 +70,10 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
   }, [project]);
 
   // 自省字段（self_review.*）：TimePicker 值为 dayjs 对象（结构性保证
-  // HH:mm 合法），保存时转回字符串
+  // HH:mm 合法），保存时转回字符串。
+  // 注意：下方 dayjs(str, 'HH:mm') 双参解析依赖 app.tsx 全局注册的
+  // customParseFormat 插件（code-review item e5732f6a7667）——未注册时
+  // 得 Invalid Date，TimePicker 空显且保存提交 'Invalid Date' 被后端拒绝
   const initialValues = {
     enabled: selfReview?.enabled ?? false,
     run_at: dayjs(selfReview?.run_at ?? DEFAULT_RUN_AT, 'HH:mm'),
