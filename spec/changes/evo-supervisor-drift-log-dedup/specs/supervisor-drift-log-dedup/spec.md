@@ -2,7 +2,7 @@
 
 ### R1 窗口去重
 
-daemon 启动自检的 supervisor drain 一致性检查在向 PROJECT_LOG 追加告警（_append_project_log 调用点）前，必须先做窗口去重判定：以 admin 告警存储为去重状态源，窗口时长 SUPERVISOR_LOG_DEDUP_MINUTES（默认 60 分钟）内已存在同键（supervisor runtime 异常族，signal_type=supervisor_runtime_drift）记录时，跳过本次追加。
+daemon 启动自检的 supervisor drain 一致性检查在向 PROJECT_LOG 追加告警（_append_project_log 调用点）前，必须先做窗口去重判定：以 admin 告警存储为去重状态源，窗口时长 SUPERVISOR_LOG_DEDUP_MINUTES（默认 60 分钟）内已存在同键（supervisor runtime 异常族，signal_type=supervisor_runtime_drift）记录时，跳过本次追加。判定为族级粗粒度：命中时本次检查产生的全部 supervisor 异常族告警一并跳过 PROJECT_LOG 追加（框架日志不受影响），窗口内不同子类异常不单独成条。
 
 ### R2 抑制留痕
 
@@ -10,7 +10,7 @@ daemon 启动自检的 supervisor drain 一致性检查在向 PROJECT_LOG 追加
 
 ### R3 去重状态跨重启存活
 
-首次追加告警时同步写入一条去重标记记录（kind=escalation、severity=warning、写入即自动 mark_handled、不进人工告警队列），使后续重启的窗口判定能命中；去重按 signal_type 键判定，不逐字匹配告警文案（文案含运行时数值，跨重启会漂移）。
+首次追加告警时同步写入一条去重标记记录（kind=escalation、spec=None、severity=warning、写入即自动 mark_handled、不进人工告警队列），使后续重启的窗口判定能命中（spec MUST 为 None：latest_signal 的 spec=None 查询只匹配 spec=None 记录）；去重按 signal_type 键判定，不逐字匹配告警文案（文案含运行时数值，跨重启会漂移）。
 
 ### R4 降级路径
 
