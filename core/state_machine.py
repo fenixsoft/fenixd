@@ -243,6 +243,10 @@ FROZEN_HOLD_FIELD = "_frozen_hold"
 # 冻结阈值（rounds >= 2）判定在 pm_engine.verification 升级通道。
 ENV_BLOCK_ROUNDS_FIELD = "_env_block_rounds"
 
+# 冻结阈值单点定义（与上面字段名同源防漂移）：连续达到该轮数仍 env 阻塞
+# → 结构化冻结转人工（判定在 pm_engine.verification 升级通道）。
+ENV_BLOCK_FREEZE_THRESHOLD = 2
+
 # ── 基础设施失败预算豁免侧车（evo-infra-failure-budget-exempt R2/R3）──
 # 字段名单点定义（pm_engine 与 state_machine 共用，避免两处漂移）：
 #
