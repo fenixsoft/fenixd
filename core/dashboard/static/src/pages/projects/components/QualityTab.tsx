@@ -948,15 +948,12 @@ export default function QualityTab({ project, active }: QualityTabProps) {
               setSeverityFilter(v);
               setItemsPage(1); // 过滤条件变化回第 1 页（server-side 过滤配套）
             }}
-            // 三档漂移值 high/medium/low 插在对应严重度档位之间（排序同
-            // 后端读侧归一的档位次序），台账存量漂移条目即可过滤
+            // 只保留契约四档（用户 2026-09-26 要求）：漂移值 high/medium/low
+            // 已在写侧+读侧归一（见 SEVERITY_COLOR 注释），不再作为过滤选项
             options={[
               { value: 'critical', label: 'critical' },
-              { value: 'high', label: 'high' },
               { value: 'major', label: 'major' },
-              { value: 'medium', label: 'medium' },
               { value: 'minor', label: 'minor' },
-              { value: 'low', label: 'low' },
               { value: 'info', label: 'info' },
             ]}
           />
