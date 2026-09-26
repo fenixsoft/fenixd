@@ -87,6 +87,42 @@ def _run_attribution_gate(pipeline, spec_name: str, report: dict, lane_label: st
     return dedup
 
 
+def _rejection_closure(
+    pipeline, spec_name: str, report: dict, dedup: dict, lane_label: str
+) -> dict:
+    """批量归因查重拒绝统一收口（首轮/重试轮/重合成轮三处单源化，防三份拷贝漂移）。
+
+    记录违规 → 场景级回炉闭环（``_handle_scenario_requeue``：标记 requeue/accept
+    状态 + 回炉清单 → 派发重合成（仅重做 requeue 子集）→ 回灌校验；返回
+    cause=pass 表示已闭环采纳）；回炉处置自身异常时折算为
+    ``cause=batch_attribution_dedup`` 失败返回（宁可不推进不带病采纳），
+    也不得裸外溢（engine 层 except Exception 会降级旧版 verifier 旁路查重门）。
+
+    ``lane_label`` 为轮次标签（首轮 ``" "`` / ``"（重试轮）"`` / ``"（重合成轮）"``），
+    仅用于日志文案，保持各轮次既有文案逐字不变（与 ``_run_attribution_gate``
+    的标签约定一致）。
+    """
+    for v in dedup["violations"]:
+        pipeline._context.logger.error(
+            "pm_engine",
+            f"批量归因查重拒绝采纳{lane_label}'{spec_name}': {v.get('reason')}",
+        )
+    try:
+        return pipeline._handle_scenario_requeue(spec_name, report, dedup)
+    except Exception as requeue_err:
+        pipeline._context.logger.error(
+            "pm_engine",
+            f"查重拒绝回炉处置异常{lane_label}'{spec_name}'（按查重拒绝失败返回，"
+            f"不采纳）: {type(requeue_err).__name__}: {requeue_err}",
+        )
+        return {
+            "ok": False,
+            "cause": "batch_attribution_dedup",
+            "violations": dedup.get("violations") or [],
+            "dispatch_error": f"{type(requeue_err).__name__}: {requeue_err}",
+        }
+
+
 def _verify_verdict_evidence(pipeline, spec_name: str, retry_judge: bool = False) -> dict:
     """确定性校验裁决 report.json 的分类/证据合规，并按映射强制重写 status。
 
@@ -140,28 +176,8 @@ def _verify_verdict_evidence(pipeline, spec_name: str, retry_judge: bool = False
         # 门）——单独 try 折算为 cause=batch_attribution_dedup 失败返回
         # （宁可不推进也不带病采纳）。
         if dedup is not None and not dedup["ok"]:
-            for v in dedup["violations"]:
-                pipeline._context.logger.error(
-                    "pm_engine",
-                    f"批量归因查重拒绝采纳 '{spec_name}': {v.get('reason')}",
-                )
-            # 场景级回炉闭环：标记 requeue/accept 状态 + 回炉清单 →
-            # 派发重合成（仅重做 requeue 子集）→ 回灌校验（fix-verdict-
-            # dedup-resynthesis D1/D2；返回 cause=pass 已闭环采纳）
-            try:
-                return pipeline._handle_scenario_requeue(spec_name, report, dedup)
-            except Exception as requeue_err:
-                pipeline._context.logger.error(
-                    "pm_engine",
-                    f"查重拒绝回炉处置异常 '{spec_name}'（按查重拒绝失败返回，"
-                    f"不采纳）: {type(requeue_err).__name__}: {requeue_err}",
-                )
-                return {
-                    "ok": False,
-                    "cause": "batch_attribution_dedup",
-                    "violations": dedup.get("violations") or [],
-                    "dispatch_error": f"{type(requeue_err).__name__}: {requeue_err}",
-                }
+            # 场景级回炉闭环收口：与重试轮/重合成轮共用单源实现
+            return _rejection_closure(pipeline, spec_name, report, dedup, " ")
         # 合规：清掉历史驳回清单（若有）后强制重写 status 映射（D3）写回
         pipeline._clear_verdict_violations(spec_name)
         pipeline._clear_resynthesis_directive(spec_name)
@@ -277,27 +293,8 @@ def _verify_verdict_evidence(pipeline, spec_name: str, retry_judge: bool = False
             # （engine 层会降级旧版 verifier 旁路查重门）——单独 try 折算为
             # cause=batch_attribution_dedup 失败返回（宁可不推进不采纳）。
             if dedup is not None and not dedup["ok"]:
-                for v in dedup["violations"]:
-                    pipeline._context.logger.error(
-                        "pm_engine",
-                        f"批量归因查重拒绝采纳（重试轮）'{spec_name}': " f"{v.get('reason')}",
-                    )
-                # 统一收口：场景级回炉闭环
-                try:
-                    return pipeline._handle_scenario_requeue(spec_name, report2, dedup)
-                except Exception as requeue_err:
-                    pipeline._context.logger.error(
-                        "pm_engine",
-                        f"查重拒绝回炉处置异常（重试轮）'{spec_name}'"
-                        f"（按查重拒绝失败返回，不采纳）: "
-                        f"{type(requeue_err).__name__}: {requeue_err}",
-                    )
-                    return {
-                        "ok": False,
-                        "cause": "batch_attribution_dedup",
-                        "violations": dedup.get("violations") or [],
-                        "dispatch_error": f"{type(requeue_err).__name__}: {requeue_err}",
-                    }
+                # 场景级回炉闭环收口：与首轮/重合成轮共用单源实现
+                return _rejection_closure(pipeline, spec_name, report2, dedup, "（重试轮）")
             pipeline._clear_verdict_violations(spec_name)
             pipeline._clear_resynthesis_directive(spec_name)
             pipeline._clear_requeue_manifest(spec_name)
@@ -754,27 +751,8 @@ def _handle_attr_dedup_rejection(
     # 查重门）——单独 try 折算为 cause=batch_attribution_dedup 失败返回
     # （宁可不推进不采纳）。
     if dedup2 is not None and not dedup2["ok"]:
-        for v in dedup2["violations"]:
-            pipeline._context.logger.error(
-                "pm_engine",
-                f"批量归因查重拒绝采纳（重合成轮）'{spec_name}': " f"{v.get('reason')}",
-            )
         # 重合成产物再拒 → 递归进入下一轮场景级回炉（或达上限升级）
-        try:
-            return pipeline._handle_scenario_requeue(spec_name, report2, dedup2)
-        except Exception as requeue_err:
-            pipeline._context.logger.error(
-                "pm_engine",
-                f"查重拒绝回炉处置异常（重合成轮）'{spec_name}'"
-                f"（按查重拒绝失败返回，不采纳）: "
-                f"{type(requeue_err).__name__}: {requeue_err}",
-            )
-            return {
-                "ok": False,
-                "cause": "batch_attribution_dedup",
-                "violations": dedup2.get("violations") or [],
-                "dispatch_error": f"{type(requeue_err).__name__}: {requeue_err}",
-            }
+        return _rejection_closure(pipeline, spec_name, report2, dedup2, "（重合成轮）")
 
     # 5) 合规采纳：清 violations + 清 directive + 清回炉清单 + 状态映射
     #    重写 + 裁决缓存
