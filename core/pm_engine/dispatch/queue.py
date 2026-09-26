@@ -521,6 +521,12 @@ class QQQueueMixin:
         - 同一档内多个任务可并行至 max_concurrent；不同档可并发（只要满足上述规则）。
         - 不抢占：已在运行的任务不会被新到的高优先级中断。
         - 每轮派发队列中最高优先级的合法就绪条目。
+        - 槽满豁免边界（fix-spec-review-blocking-dispatch 1.5b / add-verify-
+          lane-throughput 2.1，code-review item 64394b92e9ef）：槽位占满时
+          评审 / 并行出题豁免车道照常扫描派发（不占实现槽位、并发无上限），
+          但该豁免只作用于槽位闸门；宽松优先级闸门（上方第一条）对所有车道
+          统一生效——豁免车道条目在存在数值更小的活动任务（更高优）时同样
+          顺延，不因槽满豁免而例外。
 
         队列老化（dispatch-queue-aging / design D3）：比较用 effective 档位
         （base - 等待老化收益）；派发后活动集合 _active_priorities 记 base 原值
@@ -724,6 +730,13 @@ class QQQueueMixin:
                 # 必须在锁内完成——解锁后 _run_queue 可被其他线程修改，
                 # 但 entry_to_dispatch 已 pop，变量局部安全。
                 priority, spec_name, agent_type, my_enqueued_at = entry_to_dispatch
+                # 统一绑定 base_prio（活动追踪记 base 原值：活动任务不老化，
+                # spec Scenario: 持久运行的 P4 不会被降级，min_active 语义不变）。
+                # 与 priority 同值；出锁段闸门异常兜底按 agent_type 分流回滚，
+                # 豁免车道（spec-review/planner-plan）不使用该值
+                # （code-review item 76330e41877d：原仅 else 分支绑定，异常兜底
+                # 无条件引用对豁免车道存在 NameError 风险）。
+                base_prio = priority
                 if agent_type == "spec-review":
                     # 评审条目不占实现车道槽位（design D2）：MUST NOT 增减
                     # _active_runs、MUST NOT 写 _active_priority_counts /
@@ -743,9 +756,6 @@ class QQQueueMixin:
                     active_count = self._active_runs
                 else:
                     self._active_runs += 1
-                    # 活动追踪记 base 原值：活动任务不老化
-                    # （spec Scenario: 持久运行的 P4 不会被降级，min_active 语义不变）。
-                    base_prio = entry_to_dispatch[0]
                     self._active_priority_counts[base_prio] = (
                         self._active_priority_counts.get(base_prio, 0) + 1
                     )
@@ -914,9 +924,19 @@ class QQQueueMixin:
             except Exception as e:
                 # 记账必然闭合：先退还准入再回滚槽位（条目重新入队待下轮重派），
                 # suppressed 抑制本调用内重试（抑制自己 ≠ 阻塞他人，守卫三同款）。
+                # 按 agent_type 分流（code-review item 76330e41877d）：实现车道
+                # （implementer/fast-track/verifier，锁内已递增 _active_runs /
+                # 档位计数）回滚槽位记账；豁免车道（spec-review/planner-plan）
+                # 从不递增 _active_runs，调 _rollback_dispatch_slot 会把
+                # _active_runs 反向减成负数，只退还准入并摘除各自在飞登记。
                 with self._queue_lock:
                     self._pm._transient_unseal_recredit()
-                    self._rollback_dispatch_slot(base_prio, entry_to_dispatch)
+                    if agent_type in ("implementer", "fast-track", "verifier"):
+                        self._rollback_dispatch_slot(base_prio, entry_to_dispatch)
+                    elif agent_type == "spec-review":
+                        self._active_reviews.discard(spec_name)
+                    elif agent_type == "planner-plan":
+                        self._active_parallel_plans.discard(spec_name)
                 suppressed.add((spec_name, agent_type))
                 self._pm.logger.warning(
                     "pm_engine",
@@ -963,7 +983,7 @@ class QQQueueMixin:
                 #      清 reviewer_run、保持 reviewing、重新入队（spec-review-
                 #      recovery spec Scenario「worker 内异常走统一回滚」），
                 #      MUST NOT 只记日志了事。
-                self._run_spec_review_worker(spec_name, priority)
+                self._run_spec_review_worker(spec_name)
 
             elif agent_type == "fast-track":
                 # ── fast-track 单 run 全包：实现 → 场景设计 → 验证 → 判定 ──
@@ -2643,6 +2663,11 @@ class QQQueueMixin:
                 "_retry_count": 0,
                 "_merge_fp": None,
                 "_merge_streak": 0,
+                # 零变更哨「连续 3 次」计数清账（与 fast_track.py 成功收口、
+                # queue.py 确认型 no-op 分支同款，code-review item b12df5687a55）：
+                # 普通实现成功收口不清零会使非连续零变更累计进哨位，
+                # 同 spec 后续轮次首次零变更即按 3/3 熔断。
+                "_zero_change_attempts": 0,
                 # 派发成功即清零锁冲突计数（improve-run-lifecycle-governance D5）
                 **self._pm._clear_dispatch_conflict(spec_name),
                 # 顺延记账清账（evo-merge-back-spec-dir-inflight-guard D2）：
@@ -3283,7 +3308,7 @@ class QQQueueMixin:
                 f"{type(e).__name__}: {e}",
             )
 
-    def _run_spec_review_worker(self, spec_name: str, priority: int):
+    def _run_spec_review_worker(self, spec_name: str):
         """评审 run worker 线程体（fix-spec-review-blocking-dispatch 1.8）。
 
         - 四步链（锚点落盘 → 快照 → 执行 → 机械收口）保留在
