@@ -100,7 +100,9 @@ function isLocalHostname(hostname) {
   return (
     host === 'localhost' ||
     host.endsWith('.localhost') ||
-    host.startsWith('127.') ||
+    // 127/8 须整体为四段点分数字，否则 127.0.0.1.<公网域名> 这类可公网解析的子域
+    // （DNS rebinding 常用形态）会被误判为本机而漏采进 networkLog/anomalies
+    /^127(\.\d{1,3}){3}$/.test(host) ||
     host === '::1' ||
     host === '::' ||
     host === '0.0.0.0' ||
@@ -295,16 +297,12 @@ async function launchChromeExtension(distPath, opts = {}) {
     // 网络日志收集
     // ========================================================================
 
-    // 在所有已有页面上设置监听 — 必须在任何等待/开页之前挂载，
-    // 否则扩展初始加载窗口内的请求（最关键的外部 API 调用）会漏采
-    for (const page of browserContext.pages()) {
-      setupNetworkLogging(page, networkLog);
-    }
-
-    // 新页面自动添加监听
-    browserContext.on('page', (page) => {
-      setupNetworkLogging(page, networkLog);
-    });
+    // 在 context 级设置网络监听 — 必须在任何等待/开页之前挂载，
+    // 否则扩展初始加载窗口内的请求（最关键的外部 API 调用）会漏采。
+    // Playwright 的 page 级事件不携带 MV3 service worker 发起的请求
+    // （SW 请求只在 browserContext 上发出），而扩展后台抓取恰跑在 SW 里；
+    // context 级同时覆盖所有页面与 SW，故不再另挂 page 级监听，避免同请求双计 anomalies
+    setupNetworkLogging(browserContext, networkLog);
 
     // ========================================================================
     // 网络采集 + UI 测试 — 受 --timeout 总预算约束，超时后提前收卷已有 networkLog
@@ -316,7 +314,7 @@ async function launchChromeExtension(distPath, opts = {}) {
       // 给扩展一些时间加载
       await new Promise(resolve => setTimeout(resolve, 3000));
 
-      // 无已有页面时兜底开一页（新页面经 browserContext 'page' 事件自动挂网络监听）
+      // 无已有页面时兜底开一页（网络监听挂于 context 级，开页时序不影响采集覆盖）
       const pages = browserContext.pages();
       if (pages.length === 0) {
         await browserContext.newPage();
@@ -439,8 +437,13 @@ function sanitizeHeaders(headers) {
   return sanitized;
 }
 
-function setupNetworkLogging(page, networkLog) {
-  page.on('request', (req) => {
+/**
+ * 在 BrowserContext 级挂载 request/response/requestfailed 监听：
+ * page 级事件收不到 MV3 service worker 发起的请求（扩展后台轮询/刷新恰跑在 SW 里），
+ * 漏采会使 hasCriticalAnomalies 对后台网络行为失明；context 级事件覆盖全部页面与 SW。
+ */
+function setupNetworkLogging(context, networkLog) {
+  context.on('request', (req) => {
     if (isExternalUrl(req.url())) {
       networkLog.push({
         type: 'request',
@@ -452,7 +455,7 @@ function setupNetworkLogging(page, networkLog) {
     }
   });
 
-  page.on('response', (res) => {
+  context.on('response', (res) => {
     if (isExternalUrl(res.url())) {
       networkLog.push({
         type: 'response',
@@ -467,7 +470,7 @@ function setupNetworkLogging(page, networkLog) {
     }
   });
 
-  page.on('requestfailed', (req) => {
+  context.on('requestfailed', (req) => {
     if (isExternalUrl(req.url())) {
       networkLog.push({
         type: 'failure',
