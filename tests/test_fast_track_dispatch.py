@@ -125,6 +125,7 @@ class TestFastTrackVerified(_Base):
 
 class TestFastTrackZeroChange(_Base):
     def test_zero_change_redispatches(self):
+        """零变更 + 交付物缺件 → 空转重派（不合并、不推进状态）。"""
         self._mk()
         self.engine.agent_runner.run_fast_track.return_value = AgentRunResult(
             "impl-demo-1", "demo", "fast-track", True, 10.0,
@@ -132,6 +133,11 @@ class TestFastTrackZeroChange(_Base):
         )
         self.engine._read_implementer_result = MagicMock(return_value=_fast_result("verified"))
         self.engine._verification._implementer_zero_change = MagicMock(return_value=True)
+        # 缺件：确认型 no-op 豁免不触发（code-review item 9e148901155e），
+        # 仍按空转重派回 ready。
+        self.engine._verification._deliverable_gate_missing = MagicMock(
+            return_value=[{"path": "core/x.py", "kind": "new", "violation": "missing"}]
+        )
         self.engine._reconcile_impl_budget = MagicMock()
         self.engine._clear_dispatch_conflict = MagicMock(return_value={})
         self.sm.transition("demo", "implementing")
@@ -140,6 +146,26 @@ class TestFastTrackZeroChange(_Base):
 
         entry = self.sm.read_one("demo")
         self.assertEqual(entry["status"], "ready")
+
+    def test_zero_change_deliverables_ready_confirms_noop(self):
+        """零变更 + 交付物齐备 → 确认型 no-op 成功收口（对齐 full 车道）。"""
+        self._mk()
+        self.engine.agent_runner.run_fast_track.return_value = AgentRunResult(
+            "impl-demo-1", "demo", "fast-track", True, 10.0,
+            branch="fenix/demo-1", worktree_dirty=[],
+        )
+        self.engine._read_implementer_result = MagicMock(return_value=_fast_result("verified"))
+        self.engine._verification._implementer_zero_change = MagicMock(return_value=True)
+        self.engine._verification._deliverable_gate_missing = MagicMock(return_value=[])
+        self.engine._reconcile_impl_budget = MagicMock()
+        self.engine._clear_dispatch_conflict = MagicMock(return_value={})
+        self.sm.transition("demo", "implementing")
+
+        self.engine._run_fast_track_worker("demo")
+
+        entry = self.sm.read_one("demo")
+        self.assertEqual(entry["status"], "verified")
+        self.engine._on_spec_verified.assert_called_once_with("demo")
 
 
 class TestFastTrackIllegalResult(_Base):

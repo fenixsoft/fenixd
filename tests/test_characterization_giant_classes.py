@@ -645,7 +645,10 @@ class TestReadDisputeVerdicts:
     def test_valid_verdicts_returns_data(self, tmp_path):
         """合法结果（status=success + verdicts 非空）→ 返回 data。"""
         verdicts = [{"path": "x.py", "verdict": "keep"}]
-        pm, _ = self._make_pm_with_result(tmp_path, "s4", {"status": "success", "verdicts": verdicts})
+        # 01d1335a9902 契约：结果文件须带 run_id（写侧 runner 收工补写），
+        # 读侧按 judge_run_id 严格匹配——夹具补齐 stamp 才走合法路径。
+        pm, _ = self._make_pm_with_result(tmp_path, "s4", {
+            "run_id": "run-4", "status": "success", "verdicts": verdicts})
         from core.pm_engine.dispatch import Dispatcher
         d = Dispatcher(pm)
         judge_result = MagicMock(success=True)

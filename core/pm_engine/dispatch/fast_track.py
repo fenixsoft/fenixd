@@ -325,6 +325,35 @@ class FFastTrackMixin:
         # ── 零变更成功哨 ──
         if self._pm._implementer_zero_change(spec_name, result):
             self._keep_fast_track_worktree(spec_name, result)
+            # ── 验证确认型 no-op 放行（code-review item 9e148901155e，与 full
+            # 车道 queue.py 零变更哨守卫同源，add-web-ui 事故原地修）── 分支零
+            # 提交 + 交付物齐备 = 合法验证确认完成（分支零提交时 rev-list
+            # main..branch == 0 ⟺ 已并入 main），走成功收口不重派；缺件仍按空转
+            # 重派（_handle_fast_track_zero_change）。成功收口复用正常路径形态：
+            # _reconcile_and_merge（merge 失败内部已处置，早退；merge 成功分支
+            # 内含 implemented 推进 + _zero_change_attempts 清零）→ 快照/清理 →
+            # _fast_track_advance_to_verified。
+            if not self._pm._deliverable_gate_missing(spec_name, result):
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"零变更哨·确认型 no-op（fast-track）'{spec_name}' — 交付物齐备"
+                    f"且分支零提交（已并入 main），走成功收口（不重派）"
+                    f"run={getattr(result, 'run_id', '') or ''}",
+                )
+                merged = self._reconcile_and_merge(spec_name, result)
+                if not merged:
+                    return  # merge 失败内部已处置（保留 worktree + 重派/熔断）
+                try:
+                    self._pm._write_impl_result_snapshot(spec_name, ft_result)
+                except Exception as e:
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"fast-track 确认型 no-op impl-result 快照写入失败 "
+                        f"'{spec_name}'（非阻塞）: {e}",
+                    )
+                self._pm._cleanup_shared_result_file(spec_name)
+                self._fast_track_advance_to_verified(spec_name, result)
+                return
             self._handle_fast_track_zero_change(spec_name, result)
             return
 
@@ -556,20 +585,23 @@ class FFastTrackMixin:
                     self._report_mergeback_wip_overlap(spec_name, merge_info, branch, merge_error)
                     return False
                 # ── spec 目录在飞编辑顺延（evo-merge-back-spec-dir-inflight-guard
-                # D1/D1a）── 与 wip_gate_blocked 同族：卫检查是前置拦截而非 merge
-                # 失败（主树零污染，未 stash/merge/pop）——不推进状态、不经
-                # _merge_fp/_merge_streak 记账、不 blocked。保留 worktree 供重派
-                # 继承；spec 保持 in-flight（implementing），branch/implementer_run
-                # 锚点原样保留，由外部提交动作解除后经下一轮恢复/重排再试合并。
-                # 顺延的有界上限由 dispatch 调用方承载；fast-track 车道是同一轮内
-                # 失败即返回的有界短窗（不自旋）。
+                # D1/D1a；code-review item a84787292647，fast-track 对齐 full 车道
+                # _defer_merge_back）── 与 full 车道同语义：写 _merge_retry_pending
+                # 记账 + 排程 merge-only 重试（_retry_merge_back_only 按 branch
+                # 锚点通用实现，天然覆盖 fast-track 车道），有界顺延自动重试合并；
+                # 窗口/轮数超限由 _defer_merge_back 内部回落「告警 + 人工处置」
+                # 通道（_report_mergeback_spec_dir_inflight_stuck）。MUST NOT
+                # 在飞顺延零重试——原行为 spec 悬置 implementing 且无活跃 run，
+                # 只能等 admin_monitor stuck 阈值唤起人工，两侧有界性不对称。
+                # spec 保持 in-flight（implementing），保留 worktree/锚点。
                 if getattr(merge_info, "spec_dir_inflight", False):
                     self._pm.logger.warning(
                         "pm_engine",
                         f"fast-track merge-back 顺延 '{spec_name}'（branch '{branch}'）: "
-                        f"{merge_error} — spec 目录在飞编辑，不推进状态，"
-                        f"保留 worktree/锚点待解除后重试",
+                        f"{merge_error} — spec 目录在飞编辑，不推进状态，保留 "
+                        f"worktree/锚点，写顺延记账并排程 merge-only 重试",
                     )
+                    self._defer_merge_back(spec_name, merge_info, branch, merge_error)
                     return False
                 spec_entry = self._pm.state_machine.read_one(spec_name) or {}
                 # （code-review item 9f857a108821）此处旧有 `max_r = ...
@@ -1110,6 +1142,12 @@ class FFastTrackMixin:
             self._pm._exempt_dead_run_budget(
                 spec_name,
                 f"fast-track no run-result (error={str(final_error)[:80]})",
+                # （code-review item 867125061b61）对齐 full 车道（queue.py 死亡
+                # run 豁免）：run_reason 传入豁免判据——监督超时/被判停滞而杀
+                # （extension budget exhausted / stagnant）不豁免（确实消耗了整份
+                # 预算）；缺此实参此类 run 被错误豁免（预算回退），同一次监督击杀
+                # 两条车道预算记账口径不一致，被击杀 run 可无限重派烧预算。
+                run_reason=str(final_error) if final_error else None,
             )
         # provider 熔断拦截
         if final_error and "provider circuit open" in final_error:

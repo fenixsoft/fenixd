@@ -298,6 +298,18 @@ class VAdjudicationMixin:
                 f"（judge run {judge_run_id}，等价 unclear）",
             )
             return None
+        # run stamp 严格匹配（code-review item 01d1335a9902）：结果文件按 spec
+        # 固定路径跨轮复用，写侧 runner.run_dispute_judge 派发前 unlink，但
+        # unlink 失败 + 本轮写盘失败时旧文件残留——文件内 run_id 与本次 judge
+        # run 不一致 → 视为陈旧裁决拒绝，等价 unclear（对齐
+        # _cleanup_shared_result_file 的 stamp 严格匹配范式，fail-closed）。
+        if data.get("run_id") != judge_run_id:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"dispute judge 结果 run stamp 与本次 judge run 不符 '{spec_name}'"
+                f"（judge run {judge_run_id}，等价 unclear）",
+            )
+            return None
         verdicts = data.get("verdicts")
         if not isinstance(verdicts, list) or not verdicts:
             self._pm.logger.warning(
@@ -582,7 +594,10 @@ class VAdjudicationMixin:
             streak = 0
         streak += 1
         try:
-            max_r = int(self._pm._get_config("agents.max_retries", 3) or 3)
+            # None 判空而非 or 兜底（code-review item c54ffbef69c5）：合法配置
+            # 0（不自动重试）不被 or 吞成缺省 3。
+            cfg_max_r = self._pm._get_config("agents.max_retries", 3)
+            max_r = 3 if cfg_max_r is None else int(cfg_max_r)
         except Exception:
             max_r = 3
         max_r = max(max_r, 1)
@@ -1887,7 +1902,28 @@ class VAdjudicationMixin:
         deferred_typo_elements: list = []
         diff_by_element: dict = {}
         # 生效声明上下文（改写目标 spec_dir + 条目级 kind/陈日判定基准）
-        effective_resolved = self._effective_declaration(spec_name, result)
+        try:
+            effective_resolved = self._effective_declaration(spec_name, result)
+        except Exception as e:
+            # 终审解析失败（畸形 git/文件态）不得让 spec 滞留「LLM 终审进行中」
+            # 僵尸文案误导人工判读（code-review item 373b4b302c80）：改写 error
+            # 为真实归因后置 blocked 转人工（等价 unclear 全量待裁缺件转人工）。
+            err_final = (
+                f"交付物守卫缺件 [{', '.join(remaining_paths)}] LLM 终审解析失败"
+                f"（judge run {judge_run_id}）— 已 blocked 待人工裁决: "
+                f"{type(e).__name__}: {e}"
+            )
+            self._pm.state_machine.update_spec(
+                spec_name,
+                {"status": "blocked", "tester_run": None, "error": err_final},
+            )
+            self._pm.logger.error(
+                "pm_engine",
+                f"交付物守卫缺件终审解析失败 '{spec_name}'"
+                f"（judge run {judge_run_id}，等价 unclear 转人工）: "
+                f"{type(e).__name__}: {e}",
+            )
+            return {"action": "handled"}
         eff_spec_dir = effective_resolved.get("spec_dir") or str(
             self._pm.project_root / "spec" / "changes" / spec_name
         )
@@ -2375,7 +2411,10 @@ class VAdjudicationMixin:
             prev_retries = 0
         retries = prev_retries + 1
         try:
-            max_r = int(self._pm._get_config("agents.max_retries", 3) or 3)
+            # None 判空而非 or 兜底（code-review item c54ffbef69c5）：合法配置
+            # 0（不自动重试）不被 or 吞成缺省 3。
+            cfg_max_r = self._pm._get_config("agents.max_retries", 3)
+            max_r = 3 if cfg_max_r is None else int(cfg_max_r)
         except Exception:
             max_r = 3
         err_ready, err_blocked = error_builder(retries, max_r)

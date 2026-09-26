@@ -1065,6 +1065,28 @@ class AgentRunner:
                 spec_name=spec_name,
                 agent_type="dispute-judge",
             )
+            # 收工后补写 run stamp（code-review item 01d1335a9902）：结果文件按
+            # spec 固定路径跨轮复用且内容不带 run id——派发前 unlink 失败 +
+            # 本轮 judge 未写盘时，读取侧会误消费上一轮裁决。此处确定性补写
+            # run_id，读取侧（_read_dispute_verdicts）据此做 stamp 严格匹配
+            # （对齐 engine._cleanup_shared_result_file 范式）。补写失败仅留痕：
+            # 读取侧 run stamp 校验不过 → 等价 unclear 兜底（fail-closed）。
+            try:
+                _rp = vp_dir / "dispute_judge_result.json"
+                if _rp.exists():
+                    _rd = json.loads(_rp.read_text(encoding="utf-8"))
+                    if isinstance(_rd, dict):
+                        _rd["run_id"] = run_id
+                        _rp.write_text(
+                            json.dumps(_rd, ensure_ascii=False, indent=2),
+                            encoding="utf-8",
+                        )
+            except Exception as _e:
+                self.logger.warning(
+                    "agent_runner",
+                    f"dispute judge 结果补写 run stamp 失败 '{spec_name}'"
+                    f"（读取侧按等价 unclear 兜底）: {_e}",
+                )
             return AgentRunResult(
                 run_id, spec_name, "dispute-judge",
                 success=True, duration_seconds=time.time() - start_time,

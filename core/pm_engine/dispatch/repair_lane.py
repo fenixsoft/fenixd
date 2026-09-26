@@ -46,11 +46,15 @@ class PRepairLaneMixin:
         """
         breaker_threshold = self._pm._get_config("agents.merge_breaker_threshold", 2)
         if self._pm._should_enter_repair(spec_name, merge_info, 0, breaker_threshold):
+            # conflict_paths 统一 getattr 守卫（code-review item c1e84fcc2afd）：
+            # merge_info 非 MergeConflictInfo 形态（测试替身/未来重构）时
+            # 不因裸取属性抛 AttributeError 中断直通 repair 分支。
+            conflict_paths = list(getattr(merge_info, "conflict_paths", []) or [])
             self._pm.logger.info(
                 "pm_engine",
                 f"预演检出语义冲突直通 repair '{spec_name}'："
-                f"{len(merge_info.conflict_paths)} path(s) "
-                f"{getattr(merge_info, 'conflict_paths', [])} — 主树零污染，"
+                f"{len(conflict_paths)} path(s) "
+                f"{conflict_paths} — 主树零污染，"
                 f"不经 fp 记账（rehearsed）",
             )
             self._pm._dispatch_repair_lane(spec_name, merge_info, branch)
@@ -467,8 +471,15 @@ class PRepairLaneMixin:
                     )
                 try:
                     wm.consume_legacy(spec_name)
-                except Exception:
-                    pass
+                except Exception as e:
+                    # 失败不再静默吞掉（code-review item 8fde33e82e7b）：与
+                    # fast_track.py / queue.py 的等价调用同款非阻塞 WARNING，
+                    # 使持续的 legacy 清理失败在本车道可观测（fail-open 但可见）。
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"consume_legacy 清理失败 '{spec_name}'（非阻塞）: "
+                        f"{type(e).__name__}: {e}",
+                    )
                 self._enqueue_front(spec_name, "verifier")
                 self._pm.logger.info(
                     "pm_engine",
@@ -723,8 +734,11 @@ class PRepairLaneMixin:
         # 非数字字符串裸比较在下方 retries >= max_r 抛 TypeError，本方法是
         # repair 链三条失败路径的共同收尾（且可能运行在 worker 的 except 兜底
         # 内），异常会打断 update_spec/blocked 收尾——回退默认值 3。
+        # None 判空而非 or 兜底（code-review item 4b339ba921f2）：合法配置 0
+        # （不自动重试）不被 or 吞成缺省 3。
         try:
-            max_r = int(self._pm._get_config("agents.max_retries", 3) or 3)
+            cfg_max_r = self._pm._get_config("agents.max_retries", 3)
+            max_r = 3 if cfg_max_r is None else int(cfg_max_r)
         except (TypeError, ValueError):
             max_r = 3
         updates: dict = {

@@ -105,6 +105,14 @@ class RRollbackMixin:
         try:
             spec_entry = self._pm.state_machine.read_one(spec_name)
             if not spec_entry:
+                # spec 条目缺失/读取为空（并发删除或状态读取异常，code-review item
+                # 729c57c474d7）：不再静默返回——与 01c0160765d2 的可诊断性口径一致，
+                # 事后对账可确认回滚被跳过而非未触发。
+                self._pm.logger.info(
+                    "pm_engine",
+                    f"派发失败回滚：spec='{spec_name}' 条目缺失/读取为空 "
+                    f"agent_type={agent_type!r}（跳过回滚，仅留痕）",
+                )
                 return
             status = spec_entry.get("status")
             backoff_until = int(datetime.now(timezone.utc).timestamp()) + (

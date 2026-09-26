@@ -466,7 +466,11 @@ class TestTestTargetsPlaceholder(unittest.TestCase):
                 self.assertEqual(
                     os.environ[CODE_FIX_TEST_TARGETS_ENV], "tests/a.py tests/b.py"
                 )
-            self.assertIsNone(os.environ.get(CODE_FIX_TEST_TARGETS_ENV), "窗口外还原")
+            self.assertEqual(
+                os.environ.get(CODE_FIX_TEST_TARGETS_ENV), sentinel,
+                "窗口外还原：无先前值时弹出、有先前值（如定向回归窗口预置的"
+                "失败用例子集）时还原先前值",
+            )
         finally:
             if sentinel is not None:
                 os.environ[CODE_FIX_TEST_TARGETS_ENV] = sentinel
