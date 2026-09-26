@@ -756,24 +756,23 @@ def should_suppress_bug_found(report: dict) -> bool:
     return driver_count > 0
 
 
-# ── 批量归因查重归一化细分 + 级联豁免（fix-verdict-dedup-resynthesis D3）──
+# ── 批量归因查重归一化细分（fix-verdict-dedup-resynthesis D3）──────────
 # 16:39 事故解剖：judge 用脚本批量生成归因时 ``error[:120]`` 截断 + 共享模板串
 # 使 5 个单根因级联场景完全坍缩——但它们的失败步骤序号/断言清单各异，归因高度
 # 相似本是合法形态（前置步骤失败 → 后续场景级联失败），门的「逐字相同=偷懒」
 # 假设对它失配。归一化细分：
 #   - ``first_failed_step`` 拆「步骤序号 / 描述体」：步骤序号单独进指纹；
 #     描述体哈希化（保持熵的同时避免整段原文撑爆指纹与 reason 摘录）；
-#   - 级联豁免：组内 classification 相同、描述体（去步骤序号）两两前缀重合
-#     ≥80%、但步骤序号集合或断言清单逐场景存在差异 → 该组不计违规；
-#   - 纯模板偷懒（连步骤引用都逐字复制、断言也相同）→ 仍拒绝。
-
-_CASCADE_ROOT_PREFIX_SIMILARITY = 0.8
+#   - 步骤序号 / 断言清单任一不同 → 归一化即不同组，凑不满「≥3 同文」而放行
+#     （合法级联由归一化拆分兜住；不设组内豁免分支——同组成员在步骤/断言/
+#     描述体各分量上必然全等，豁免判定只会得到 False）；
+#   - 纯模板偷懒（连步骤引用都逐字复制、断言也相同）→ 仍坍缩同组 → 拒绝。
 
 
 def _extract_step_number(ffs_text) -> str:
     """从 first_failed_step 提取「步骤N」/「step N」前缀序号（无则空串）。
 
-    级联豁免/指纹细分用：步骤序号是区分「共享根因的合法级联」与「连步骤
+    归一化指纹细分用：步骤序号是区分「共享根因的合法级联」与「连步骤
     引用都复制的模板偷懒」的关键场景局部数据。
     """
     if not isinstance(ffs_text, str):
@@ -783,7 +782,7 @@ def _extract_step_number(ffs_text) -> str:
 
 
 def _first_failed_step_desc(ffs_text) -> str:
-    """去除步骤序号前缀后的描述体（级联根因前缀重合比较用原文）。"""
+    """去除步骤序号前缀后的描述体（归一化空白后哈希进指纹）。"""
     if not isinstance(ffs_text, str):
         return ""
     return re.sub(
@@ -797,25 +796,6 @@ def _first_failed_step_desc(ffs_text) -> str:
 def _normalize_whitespace(text) -> str:
     """空白折叠 + strip（归一化比较的统一前置）。"""
     return re.sub(r"\s+", " ", (text or "")).strip()
-
-
-def _prefix_similarity(a, b) -> float:
-    """两串空白折叠后的公共前缀重合度：LCP 长度 / min(两长)。
-
-    双空视为 1.0（同为缺失）；单空视为 0.0（无共享根因可言）。
-    """
-    a = _normalize_whitespace(a)
-    b = _normalize_whitespace(b)
-    if not a and not b:
-        return 1.0
-    if not a or not b:
-        return 0.0
-    lcp = 0
-    for ca, cb in zip(a, b):
-        if ca != cb:
-            break
-        lcp += 1
-    return lcp / min(len(a), len(b))
 
 
 def scenario_attribution_summary(sc: dict) -> str:
@@ -853,62 +833,6 @@ def scenario_attribution_summary(sc: dict) -> str:
     if len(summary) > 200:
         summary = summary[:200] + "…"
     return summary
-
-
-def _scenario_attribution_signature(sc: dict) -> dict:
-    """场景归因的结构化签名（级联豁免判定用，区别于归一化指纹）。
-
-    字段：classification、ffs_step（失败步骤序号）、ffs_desc（去序号后的
-    描述体原文）、triage_labels（断言 label 清单）。这些是级联豁免据以
-    区分「共享根因 / 各自局部证据」的直接素材。
-    """
-    evidence = sc.get("evidence") or {}
-    ffs_text = ""
-    if isinstance(evidence, dict):
-        ffs = evidence.get("first_failed_step") or ""
-        if isinstance(ffs, str):
-            ffs_text = ffs
-    triage = sc.get("assertion_triage") or []
-    labels: List[str] = []
-    if isinstance(triage, list):
-        for t in triage:
-            if isinstance(t, dict):
-                assertion = str(t.get("assertion") or "").strip()
-                if assertion:
-                    labels.append(assertion)
-    return {
-        "classification": str(sc.get("classification") or ""),
-        "ffs_step": _extract_step_number(ffs_text),
-        "ffs_desc": _first_failed_step_desc(ffs_text),
-        "triage_labels": sorted(labels),
-    }
-
-
-def _cascade_root_exemption(signatures: List[dict]) -> bool:
-    """级联豁免判定（fix-verdict-dedup-resynthesis D3 / Task 1.2）。
-
-    全部成立才豁免（返回 True = 该组不计违规）：
-      1. 组内 classification 相同（豁免只对同分类生效）；
-      2. 描述体（去步骤序号前缀）两两前缀重合 ≥ 80%（共享同一根因模板）；
-      3. 步骤序号集合**或**断言 label 清单逐场景存在差异（不是逐字复制）。
-
-    纯模板偷懒（连步骤引用都复制、断言也相同）→ 不豁免，仍拒绝。
-    """
-    if not signatures or len(signatures) < 2:
-        return False
-    classes = {s["classification"] for s in signatures}
-    if len(classes) != 1:
-        return False
-    descs = [s["ffs_desc"] for s in signatures]
-    for i in range(len(descs)):
-        for j in range(i + 1, len(descs)):
-            if _prefix_similarity(descs[i], descs[j]) < _CASCADE_ROOT_PREFIX_SIMILARITY:
-                return False
-    steps = {s["ffs_step"] for s in signatures}
-    triage_sets = {",".join(s["triage_labels"]) for s in signatures}
-    if len(steps) == 1 and len(triage_sets) == 1:
-        return False  # 无任何场景局部差异 → 纯同文模板偷懒，不豁免
-    return True
 
 
 def _normalize_attribution(sc: dict) -> str:
@@ -954,12 +878,13 @@ def check_batch_attribution_dedup(report: dict) -> dict:
     对全部非 PASS 场景归因归一化（strip + 空白折叠 + ffs 描述体哈希化）：
     ≥3 个场景逐字相同 → 拒绝采纳（返回 violations），要求逐场景归因后重合成。
 
-    归一化细分 + 级联豁免（fix-verdict-dedup-resynthesis D3）：
+    归一化细分（fix-verdict-dedup-resynthesis D3）：
     - 步骤序号进指纹——16:39 事故 5 个级联场景因 error[:120] 截断同文而误拒，
       但它们各自失败步骤/断言不同，是单根因级联失败的合法形态；
-    - 级联豁免：同 classification、描述体（去步骤序号）两两前缀重合 ≥80%、
-      但步骤序号集合或断言清单逐场景不同 → 该组不计违规（合法级联）；
-    - 纯模板偷懒（连步骤引用都逐字复制）→ 仍拒绝。
+    - 步骤序号 / 断言清单任一不同 → 归一化即不同组，凑不满「≥3 同文」——
+      合法级联由归一化拆分放行（不设组内豁免分支：同组成员在步骤/断言/
+      描述体各分量上必然全等，豁免判定只会得到 False）；
+    - 纯模板偷懒（连步骤引用都逐字复制）→ 仍坍缩同组 → 拒绝。
 
     Returns:
         {"ok": bool, "violations": [{"scenario_ids": [...], "reason": str}]}
@@ -970,8 +895,8 @@ def check_batch_attribution_dedup(report: dict) -> dict:
 def check_batch_attribution_dedup_scenario(report: dict) -> dict:
     """批量归因查重场景级判定（add-judge-incremental-attribution 2.1 / D2）。
 
-    与 ``check_batch_attribution_dedup`` 同源归一化与级联豁免，但判定粒度
-    从整批降为场景：命中重复（≥3 场景归一化后逐字相同且非级联豁免）的
+    与 ``check_batch_attribution_dedup`` 同源归一化，但判定粒度
+    从整批降为场景：命中重复（≥3 场景归一化后逐字相同）的
     场景归因置 ``requeue``（待回炉），其余非重复场景置 ``accept``（保留
     复用）——**MUST NOT 因子集重复废弃整轮已写盘归因**。
 
@@ -1008,7 +933,7 @@ def _batch_attribution_dedup_common(report: dict, scenario_level: bool) -> dict:
     if not isinstance(scenarios, list):
         return {"ok": True, "violations": [], **extra}
 
-    groups: dict[str, dict] = {}
+    groups: dict[str, list] = {}
     for sc in scenarios:
         if not isinstance(sc, dict):
             continue
@@ -1019,20 +944,13 @@ def _batch_attribution_dedup_common(report: dict, scenario_level: bool) -> dict:
         norm = _normalize_attribution(sc)
         if not norm:
             continue
-        grp = groups.setdefault(norm, {"scenario_ids": [], "signatures": []})
-        grp["scenario_ids"].append(sid)
-        grp["signatures"].append(_scenario_attribution_signature(sc))
+        groups.setdefault(norm, []).append(sid)
 
     violations = []
     requeue_ids: List[str] = []
     accept_ids: List[str] = []
-    for norm_text, grp in groups.items():
-        sids = grp["scenario_ids"]
+    for norm_text, sids in groups.items():
         if len(sids) < 3:
-            accept_ids.extend(sids)
-            continue
-        if _cascade_root_exemption(grp["signatures"]):
-            # 级联豁免：真共享根因但场景局部证据各异 → 合法，不计违规
             accept_ids.extend(sids)
             continue
         violations.append(
