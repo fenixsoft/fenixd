@@ -22,20 +22,28 @@ export function extractProposalWhy(markdown: string): string | null {
   return text || null;
 }
 
-const whyCache = new Map<string, { status: 'loading' | 'done' | 'empty'; promise?: Promise<string | null>; text?: string }>();
+const whyCache = new Map<string, { status: 'loading' | 'done' | 'empty'; promise?: Promise<string | null>; text?: string; cachedAt?: number }>();
+
+// done/empty 结果的缓存有效期：proposal.md 运行期可能被更新（Why 区块新增/改写），
+// 过期后重新拉取，避免 SPA 长会话中悬停提示长期展示过期内容。
+const WHY_CACHE_TTL_MS = 60 * 1000;
 
 export function fetchProposalWhy(project: string, spec: string): Promise<string | null> {
   const key = `${project}│${spec}`;
   const cached = whyCache.get(key);
   if (cached) {
-    return cached.status === 'loading' && cached.promise
-      ? cached.promise
-      : Promise.resolve(cached.text || null);
+    if (cached.status === 'loading' && cached.promise) {
+      return cached.promise; // 在途请求直接复用，保持并发去重
+    }
+    if (cached.cachedAt !== undefined && Date.now() - cached.cachedAt < WHY_CACHE_TTL_MS) {
+      return Promise.resolve(cached.text || null);
+    }
+    whyCache.delete(key); // 已过期，当作未命中重新拉取
   }
   const p = getSpecDoc(project, spec, 'proposal')
     .then((d) => {
       const why = d.found ? extractProposalWhy(d.content) : null;
-      whyCache.set(key, { status: why ? 'done' : 'empty', text: why || undefined });
+      whyCache.set(key, { status: why ? 'done' : 'empty', text: why || undefined, cachedAt: Date.now() });
       return why;
     })
     .catch(() => {
