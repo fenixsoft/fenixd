@@ -1525,8 +1525,10 @@ class VAdjudicationMixin:
         生效声明（``resolved``）仍含该条目 → ``relocate_declared_path`` 文本改写
         （kind 保持、同名去重，改写目标 = 生效声明所在位置 spec_dir）；已无该条目
         （实现方先行对齐）→ ``register_relocation_credential`` 凭据登记（不经文本
-        替换）。二者均落 dispute 审计流（含 before/after diff 或凭据摘要）+ 分支
-        提交固化（4.2）。改写/登记失败 → False（调用方保留在 remaining）。
+        替换）。二者均落 dispute 审计流（含 before/after diff 或凭据摘要）；仅
+        文本改写路径随后分支提交固化（4.2）——凭据登记未改写 tasks.md，无提交
+        可固化（code-review item 2f920214d8d1）。改写/登记失败 → False（调用方
+        保留在 remaining）。
 
         ``verdict``/``evidence``/``extra_audit``（可选，evo-deliverable-declaration-
         drift-align 1.4）：缺省 ``verdict="typo"`` 保持既有调用形态；漂移机械对齐
@@ -1553,10 +1555,15 @@ class VAdjudicationMixin:
         # （3.6，MUST NOT 写主树）——判据与 resolve_writeback_target 同源，
         # 防「spec_dir or 主树」型回退再次漂移进来。
         wb_writable = resolved.get("source") in ("worktree", "main") and bool(spec_dir)
+        # code-review item 2f920214d8d1：仅文本改写路径动了 tasks.md，才存在
+        # 可固化的提交；凭据登记路径（3.6）跳过提交——对未改动的 tasks.md
+        # add+commit 恒 nothing-to-commit，只会打出误导性「未落分支」WARNING。
+        tasks_md_rewrote = False
         try:
             if entry_still_present and wb_writable:
                 # 3.2/3.3：文本改写（生效声明所在位置）——kind 保持、同名去重
                 diff = relocate_declared_path(spec_dir, old_path, new_path)
+                tasks_md_rewrote = True
                 from core.admin_store import DisputeAuditStore
 
                 audit_rec = {
@@ -1611,12 +1618,15 @@ class VAdjudicationMixin:
                 f"回退缺件处置）: {e}",
             )
             return False
-        # 分支提交固化（4.2）：改写/登记落盘后立即提交到实现分支（写盘即固化）。
+        # 分支提交固化（4.2）：文本改写落盘后立即提交到实现分支（写盘即固化）。
         # 传入 resolved 供 _commit_declaration_rewrite 按写回层（source）判定
-        # 提交落点（code-review item b306482f0d0e）。
-        self._commit_declaration_rewrite(
-            spec_name, old_path, new_path, result, resolved=resolved
-        )
+        # 提交落点（code-review item b306482f0d0e）。凭据登记路径（3.6）未改写
+        # tasks.md，跳过提交——否则空提交恒失败并误报「未落分支」
+        # （code-review item 2f920214d8d1）。
+        if tasks_md_rewrote:
+            self._commit_declaration_rewrite(
+                spec_name, old_path, new_path, result, resolved=resolved
+            )
         return True
 
     def _commit_declaration_rewrite(
