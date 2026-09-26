@@ -9,10 +9,26 @@ D5 约定：各组方法采用 mixin 模式，DashboardHandler 继承各组 mixi
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 from core.dashboard import data as dashboard_data
 from core.dashboard.registry import Registry
+
+# fenixd. 层级字面量（tests/test_logger_no_bypass.py：core/ 禁 __name__ 旁路）
+logger = logging.getLogger("fenixd.dashboard.routes.spec_routes")
+
+
+def _internal_error(handler, msg: str, exc: BaseException) -> None:
+    """端点级兜底 500 统一收口（code-review item 12bae0b2286c）。
+
+    不内嵌裸异常文本——`{e}` 会把内部绝对路径/存储细节透给 HTTP 客户端，
+    与 base 层 _handle 外层 500 策略对齐（item 1a2a0bd78662）：对外固定
+    文案（msg 保留端点语境：哪个操作 failed），原始异常经 logger.exception
+    （含 traceback）留服务端日志。
+    """
+    logger.exception("%s", msg, exc_info=exc)
+    handler._error(500, msg)
 
 
 class H3SpecRoutesMixin:
@@ -116,7 +132,7 @@ class H3SpecRoutesMixin:
         try:
             result = dashboard_data.clear_spec_error(proot, spec)
         except Exception as e:  # noqa: BLE001 兜底：写回异常不崩溃进程
-            self._error(500, f"clear spec error failed: {e}")
+            _internal_error(self, "clear spec error failed", e)
             return
         if not result.get("found"):
             self._error(404, f"spec not found: {spec}")
@@ -166,7 +182,7 @@ class H3SpecRoutesMixin:
             self._error(400, "priority must be an integer between 1 and 9")
             return
         except Exception as e:  # noqa: BLE001 兜底：写回异常不崩溃进程
-            self._error(500, f"set spec priority failed: {e}")
+            _internal_error(self, "set spec priority failed", e)
             return
         if not result.get("found"):
             self._error(404, f"spec not found: {spec}")
@@ -201,7 +217,7 @@ class H3SpecRoutesMixin:
         try:
             result = dashboard_data.freeze_spec(Path(project["path"]), spec)
         except Exception as e:  # noqa: BLE001 兜底：写回异常不崩溃进程
-            self._error(500, f"freeze spec failed: {e}")
+            _internal_error(self, "freeze spec failed", e)
             return
         if not result.get("found"):
             self._error(404, result.get("error") or "spec not found")
@@ -228,7 +244,7 @@ class H3SpecRoutesMixin:
         try:
             result = dashboard_data.unfreeze_spec(Path(project["path"]), spec)
         except Exception as e:  # noqa: BLE001 兜底：写回异常不崩溃进程
-            self._error(500, f"unfreeze spec failed: {e}")
+            _internal_error(self, "unfreeze spec failed", e)
             return
         if not result.get("found"):
             self._error(404, result.get("error") or "spec not found")
@@ -273,7 +289,7 @@ class H3SpecRoutesMixin:
         try:
             result = dashboard_data.set_spec_start_after(proot, spec, body["value"])
         except Exception as e:  # noqa: BLE001 兜底：写回异常不崩溃进程
-            self._error(500, f"set spec start_after failed: {e}")
+            _internal_error(self, "set spec start_after failed", e)
             return
         if not result.get("found"):
             self._error(404, result.get("error") or "spec not found")
@@ -331,7 +347,7 @@ class H3SpecRoutesMixin:
         try:
             result = dashboard_data.activate_spec(proot, spec)
         except Exception as e:  # noqa: BLE001 兜底：写回异常不崩溃进程
-            self._error(500, f"activate spec failed: {e}")
+            _internal_error(self, "activate spec failed", e)
             return
         if not result.get("found"):
             self._error(404, result.get("error") or "spec not found")
@@ -396,7 +412,7 @@ class H3SpecRoutesMixin:
         try:
             result = dashboard_data.resume_cancelled_spec(proot, spec)
         except Exception as e:  # noqa: BLE001 兜底：写回异常不崩溃进程
-            self._error(500, f"resume spec failed: {e}")
+            _internal_error(self, "resume spec failed", e)
             return
         if not result.get("found"):
             self._error(404, result.get("error") or "spec not found")
@@ -462,7 +478,7 @@ class H3SpecRoutesMixin:
                 proot, spec, body["mode"], body.get("until")
             )
         except Exception as e:  # noqa: BLE001 兜底：写回异常不崩溃进程
-            self._error(500, f"configure spec freeze failed: {e}")
+            _internal_error(self, "configure spec freeze failed", e)
             return
         if not result.get("found"):
             self._error(404, result.get("error") or "spec not found")
@@ -526,7 +542,7 @@ class H3SpecRoutesMixin:
         try:
             result = dashboard_data.set_spec_budget(proot, spec, budget)
         except Exception as e:  # noqa: BLE001 兜底：写回异常不崩溃进程
-            self._error(500, f"set spec budget failed: {e}")
+            _internal_error(self, "set spec budget failed", e)
             return
         if not result.get("found"):
             self._error(404, result.get("error") or "spec not found")
@@ -569,7 +585,7 @@ class H3SpecRoutesMixin:
         try:
             result = dashboard_data.archive_spec(proot, spec)
         except Exception as e:  # noqa: BLE001 兜底：移动异常不崩溃进程
-            self._error(500, f"archive spec failed: {e}")
+            _internal_error(self, "archive spec failed", e)
             return
         if not result.get("found"):
             self._error(404, result.get("error") or f"spec not found: {spec}")
@@ -631,7 +647,7 @@ class H3SpecRoutesMixin:
         try:
             result = dashboard_data.promote_spec(proot, spec)
         except Exception as e:  # noqa: BLE001 兜底：晋升异常不崩溃进程
-            self._error(500, f"promote spec failed: {e}")
+            _internal_error(self, "promote spec failed", e)
             return
         if not result.get("found"):
             self._error(404, result.get("error") or f"spec not found: {spec}")
@@ -670,7 +686,7 @@ class H3SpecRoutesMixin:
         try:
             result = dashboard_data.reflow_spec(proot, spec)
         except Exception as e:  # noqa: BLE001 兜底：回炉异常不崩溃进程
-            self._error(500, f"spec task reflow failed: {e}")
+            _internal_error(self, "spec task reflow failed", e)
             return
         if not result.get("found"):
             self._error(404, result.get("reason") or f"spec not found: {spec}")
@@ -704,7 +720,7 @@ class H3SpecRoutesMixin:
         try:
             result = dashboard_data.re_review_spec(proot, spec)
         except Exception as e:  # noqa: BLE001 兜底：重新评审异常不崩溃进程
-            self._error(500, f"re-review spec failed: {e}")
+            _internal_error(self, "re-review spec failed", e)
             return
         if not result.get("found"):
             self._error(404, result.get("error") or f"spec not found: {spec}")
@@ -741,7 +757,7 @@ class H3SpecRoutesMixin:
         try:
             result = dashboard_data.request_spec_approve_push(proot, spec)
         except Exception as e:  # noqa: BLE001 兜底：写文件异常不崩溃进程
-            self._error(500, f"spec approve push request failed: {e}")
+            _internal_error(self, "spec approve push request failed", e)
             return
         if not result.get("found"):
             self._error(404, result.get("error") or f"spec not found: {spec}")
@@ -796,14 +812,14 @@ class H3SpecRoutesMixin:
         try:
             running_ids = dashboard_data.running_run_ids_for_spec(proot, spec)
         except Exception as e:  # noqa: BLE001 兜底：在跑 run 读取异常不崩溃进程
-            self._error(500, f"delete spec failed: {e}")
+            _internal_error(self, "delete spec failed", e)
             return
         if running_ids:
             try:
                 req = dashboard_data.request_spec_delete(
                     proot, spec, stopping=len(running_ids))
             except Exception as e:  # noqa: BLE001 兜底：信号写入异常不崩溃进程
-                self._error(500, f"delete spec failed: {e}")
+                _internal_error(self, "delete spec failed", e)
                 return
             if req.get("unmanaged"):
                 self._error(409, req.get("error") or "daemon 未托管")
@@ -833,7 +849,7 @@ class H3SpecRoutesMixin:
         try:
             result = dashboard_data.soft_delete_spec(proot, spec)
         except Exception as e:  # noqa: BLE001 兜底：写回/移动异常不崩溃进程
-            self._error(500, f"delete spec failed: {e}")
+            _internal_error(self, "delete spec failed", e)
             return
         if not result.get("found"):
             self._error(404, f"spec not found: {spec}")
@@ -896,7 +912,7 @@ class H3SpecRoutesMixin:
         try:
             result = dashboard_data.request_admin_invoke(proot, spec, prompt)
         except Exception as e:  # noqa: BLE001 兜底：写文件异常不崩溃进程
-            self._error(500, f"admin invoke request failed: {e}")
+            _internal_error(self, "admin invoke request failed", e)
             return
         if not result.get("found"):
             self._error(404, result.get("error") or f"spec not found: {spec}")
