@@ -253,8 +253,9 @@ class G3LockMixin:
         其下 npm/pytest 等进程的 argv 以绝对路径引用自家 worktree 时同样命中
         token，而 cwd 又不在本项目 worktree 内，若不做归属核对会被本清扫
         SIGTERM/SIGKILL 误杀、拖垮对方项目的活跃 run。因此 cmdline 命中须
-        核对 argv 中该 token 的绝对路径前缀：worktrees/ 之前的前缀经 realpath
-        解析后落在本项目 base_dir 才认，解析到他处即否决；argv 只含裸相对
+        核对 argv 中被引用的 worktree 目录绝对路径（绝对前缀 + token 拼合，
+        单看前缀无效：前缀按构造是基目录的父目录）：经 realpath 归一后等于
+        本项目 token_real 才认，解析到他处即否决；argv 只含裸相对
         token（无绝对路径证据可判异）时维持命中即入候选的既有语义。cwd 分支
         以 token_real 锚定本项目，本就精确，保持直入候选。
         """
@@ -263,9 +264,6 @@ class G3LockMixin:
         # token 的 realpath 归一形态（与 _pid_in_project_worktrees 的
         # base_real 同范式），供 cwd 归一后按目录边界精确归属
         token_real = os.path.realpath(os.path.join(str(self.base_dir), wt_name))
-        # 本项目基目录的 realpath 归一形态（与 token_real 同源），供 cmdline
-        # 命中的跨项目归属核对（见 docstring）
-        base_real = os.path.realpath(str(self.base_dir))
         # argv 中「绝对路径 + token」命中提取式：捕获 worktrees/ 之前的绝对
         # 前缀，尾部锚定纪律与 cmdline_hit 一致（路径续接/空白/引号/行尾）
         foreign_pattern = re.compile(
@@ -302,8 +300,10 @@ class G3LockMixin:
                     cwd_real = ""
                 # cmdline 命中的跨项目归属核对（code-review 40cfa57f5f02）：
                 # token 是全机性字面匹配，他项目同名 worktree 下进程的 argv
-                # 以绝对路径引用自家 worktree 时同样命中——worktrees/ 之前的
-                # 绝对前缀 realpath 解析不到本项目 base_dir 即否决，不入候选
+                # 以绝对路径引用自家 worktree 时同样命中——拼合「绝对前缀 +
+                # token」得到被引用的 worktree 目录绝对路径（仅比前缀不行：
+                # 前缀按构造是基目录的父目录，realpath 后永不等价于基目录），
+                # realpath 归一后不等于本项目 token_real 即否决，不入候选
                 # （失败方向保守：漏杀的残留可由下次清扫重试，误杀他项目
                 # 活跃进程不可逆）。argv 无绝对路径证据（裸相对 token，如
                 # 伪装 argv0 的测试进程形态）时无从判异，维持命中即入候选
@@ -311,7 +311,8 @@ class G3LockMixin:
                 foreign_hit = False
                 if cmdline_hit:
                     for m in foreign_pattern.finditer(argv_text):
-                        if os.path.realpath(m.group(1)) != base_real:
+                        ref_real = os.path.realpath(m.group(1) + token)
+                        if ref_real != token_real:
                             foreign_hit = True
                             break
                 if (
