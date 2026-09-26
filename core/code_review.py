@@ -845,7 +845,7 @@ def read_progress(project_root) -> dict:
       stale 阈值时 ``running=true``；已有终态行或超时即 ``running=false``
       （对齐 core/dashboard/data/runs.py 的 _classify_run/_RUN_STALE_SECONDS
       同款口径）。终态集合取 _RUN_TERMINAL_STATUS_MAP 全量（result/error/
-      interrupted/cancelled/superseded）。
+      interrupted/cancelled/frozen-terminated/superseded/gate-blocked）。
     """
     base = {"running": False, "review_id": None, "review_kind": None,
             "total": 0, "done": 0, "current": None}
