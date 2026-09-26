@@ -319,7 +319,13 @@ class CliRunner(VerifyRunner):
         parsed = urlparse(self.base_url)
         if parsed.scheme not in ("http", "https") or not parsed.netloc:
             return self.base_url, ""
-        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        try:
+            port = parsed.port
+        except ValueError:
+            # 端口段非法（非数字/越界，如 http://host:abc）：按非 http(s)
+            # 分支原样透出 base_url、不注入端口，异常不作结构化穿出
+            return self.base_url, ""
+        port = port or (443 if parsed.scheme == "https" else 80)
         return self.base_url.rstrip("/"), str(port)
 
     @staticmethod
