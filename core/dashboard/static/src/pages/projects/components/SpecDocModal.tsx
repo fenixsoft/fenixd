@@ -42,7 +42,8 @@ interface SpecDocModalProps {
 const ALLOWED_PROTOCOLS = new Set(['http:', 'https:', 'mailto:']);
 
 // 自定义链接组件：非白名单协议不输出可点击链接
-const SafeLink: Components['a'] = ({ href, children, ...props }) => {
+// （导出供帮助中心等其它 markdown 场景的链接兜底复用，保持协议白名单口径一致）
+export const SafeLink: Components['a'] = ({ href, children, ...props }) => {
   if (!href) {
     return <span>{children}</span>;
   }

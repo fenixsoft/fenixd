@@ -19,7 +19,7 @@ import type { Components } from 'react-markdown';
 
 import { getHelpDocs, getHelpDoc } from '@/services/dashboard';
 import type { HelpDocMeta, HelpDocItem } from '@/services/dashboard';
-import { markdownComponents } from '@/pages/projects/components/SpecDocModal';
+import { markdownComponents, SafeLink } from '@/pages/projects/components/SpecDocModal';
 import { useIsMobile } from '@/hooks/useIsMobile';
 
 const DEFAULT_DOC = 'README.md';
@@ -236,8 +236,9 @@ function buildHelpComponents(onNavigate: (docName: string, anchor?: string) => v
           );
         }
       }
-      // 其它链接：原样渲染
-      return <a href={href} target="_blank" rel="noopener noreferrer" {...rest}>{children}</a>;
+      // 其它链接：复用 SafeLink 的协议白名单兜底（非白名单协议/无效 URL 降级为纯文本），
+      // 与 SpecDocModal 的 markdown 链接安全口径保持一致
+      return <SafeLink href={href} {...rest}>{children}</SafeLink>;
     },
   };
 }
