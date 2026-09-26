@@ -2060,7 +2060,9 @@ class VerificationPipeline:
                 return None
             # ── 人工取消 hold-state（add-run-cancel D4，judge 同语义）──
             # judge run 被取消：spec 保持 testing 原状，只写 error。
-            if getattr(judge_result, "cancelled", False):
+            # 判定用 `is True`（同上 frozen_terminated：防 MagicMock 替身
+            # 自动生成 truthy 属性误判），与 legacy verifier cancelled 同口径。
+            if getattr(judge_result, "cancelled", False) is True:
                 j_err = judge_result.error or ""
                 cancelled_err = f"run 被人工取消：{j_err}" if j_err else "run 被人工取消"
                 self._context.state_machine.update_spec(
@@ -2387,7 +2389,9 @@ class VerificationPipeline:
                     # ── 人工取消 hold-state（add-run-cancel D4）──
                     # planner run 被取消：spec 保持 testing 原状，只写 error，
                     # 不流转 bug-found、不降级 legacy、不入队。
-                    if getattr(plan_result, "cancelled", False):
+                    # 判定用 `is True`（防 MagicMock 替身自动生成 truthy
+                    # 属性误判），与 legacy verifier cancelled 同口径。
+                    if getattr(plan_result, "cancelled", False) is True:
                         p_err = plan_result.error or ""
                         cancelled_err = f"run 被人工取消：{p_err}" if p_err else "run 被人工取消"
                         self._context.state_machine.update_spec(

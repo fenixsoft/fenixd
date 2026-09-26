@@ -144,6 +144,12 @@ ORPHANED_RUN_GRACE_SECONDS = 120
 # 阈值缺省：15 分钟 = 3 个 admin.interval_minutes(5) 巡检周期（design D5，
 # 与巡检周期整数倍对齐避免漏检），远短于 stuck（run_timeout+600s ≈ 160 分钟）。
 DEFAULT_ORPHANED_STATE_THRESHOLD_MINUTES = 15
+# stuck 阈值兜底缺省：_cfg_float 在键缺失/值非法时的回退值取与正常口径同量级的
+# 160 分钟（= config.effective_stuck_threshold_seconds 脏配置回退 STUCK_FALLBACK_
+# SECONDS 9600s/60），而非 0——0 会让 elapsed <= threshold 判定形同虚设（仅剩
+# mtime 宽限与进程/进度反证约束即提前误报 stuck），并使 _detect_orphaned_state
+# 的 stuck 交接（stuck_threshold > 0 分支）静默失效、长悬置 spec 双信号双召唤。
+DEFAULT_STUCK_THRESHOLD_MINUTES = 160.0
 
 # family_explosion 放行文本兜底：仅当处置文本表达「显式放行」语义时才写豁免位。
 # 2026-08-28 实证（fix-fix-fix-add-spec-context-menu）：旧的「包含 _family_waiver/
@@ -2137,7 +2143,9 @@ class AdminMonitor:
         signals = []
         # 容错读取与 _cfg_float 风格统一（同 _detect_orphaned_state）：值由
         # get_admin_config 预归一，此处防直读脏配置时巡检中断。
-        threshold_minutes = self._cfg_float("stuck_threshold_minutes", 0)
+        threshold_minutes = self._cfg_float(
+            "stuck_threshold_minutes", DEFAULT_STUCK_THRESHOLD_MINUTES
+        )
         grace_minutes = max(STUCK_GRACE_MINUTES, self.interval_minutes * 2)
         silence_minutes = self._cfg_float("stuck_silence_minutes", 120)
         runs_dir = self.project_root / ".fenix" / "runs"
@@ -2356,7 +2364,9 @@ class AdminMonitor:
             # 它也在），再补发 orphaned_state 只产生双信号/双唤起（实证：
             # 200 分钟无 run 悬置同时命中 stuck 与孤儿两路）。≤ stuck_threshold
             # 时的 orphaned 先于 stuck 触发（4.5 回归场景）。
-            stuck_threshold = self._cfg_float("stuck_threshold_minutes", 0)
+            stuck_threshold = self._cfg_float(
+                "stuck_threshold_minutes", DEFAULT_STUCK_THRESHOLD_MINUTES
+            )
             if stuck_threshold > 0 and elapsed_minutes > stuck_threshold:
                 continue
             # 注入 pm_engine（2026-09-18 修复）：条件 ④「无排队中的派发条目」——

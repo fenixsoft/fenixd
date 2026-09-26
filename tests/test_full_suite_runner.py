@@ -83,7 +83,7 @@ class TestCollectFailedTests:
             "FAILED tests/test_b.py::test_y - ValueError: boom\n"
             "===== 2 failed ... =====\n"
         )
-        result = collect_failed_tests(stderr, stdout)
+        result = collect_failed_tests(stdout, stderr)
         assert "tests/test_a.py::test_x" in result
         assert "tests/test_b.py::test_y" in result
         assert len(result) == 2
