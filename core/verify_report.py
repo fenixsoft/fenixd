@@ -899,8 +899,9 @@ def compute_spec_stamp(project_root, spec_name) -> str | None:
       - ``.fenix/verify-progress/<spec>/scenarios.json`` 内容（场景集冻结文件，
         _apply_scenario_freeze 每轮重写）。
 
-    两路任一不可读返回 None（调用方按「无法判定」保守不复用）。场景集变更或
-    spec.md 修改即改变 spec 戳 → 缓存失效重新验证。
+    两路全部不可读返回 None（调用方按「无法判定」保守不复用）；任一路可用
+    即按可得内容哈希（部分可得）。场景集变更或 spec.md 修改即改变 spec 戳
+    → 缓存失效重新验证。
     """
     import hashlib as _hashlib
 
@@ -912,7 +913,7 @@ def compute_spec_stamp(project_root, spec_name) -> str | None:
     for p in spec_files:
         try:
             parts.append(p.read_bytes())
-        except (OSError, UnicodeDecodeError):
+        except OSError:
             pass
 
     # 2) scenarios.json 内容
@@ -921,7 +922,7 @@ def compute_spec_stamp(project_root, spec_name) -> str | None:
     )
     try:
         parts.append(scenarios_path.read_bytes())
-    except (OSError, UnicodeDecodeError):
+    except OSError:
         pass
 
     if not parts:
