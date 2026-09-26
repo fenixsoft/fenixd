@@ -259,7 +259,8 @@ def merge_subset_report(prev_report, subset_report) -> dict:
             entry = copy.deepcopy(sc)
             entry["source"] = "carried-over: fastlane subset reverify（沿用上一轮通过结论）"
             carried.append(entry)
-    merged["scenarios"] = list((subset_report or {}).get("scenarios") or []) + carried
+    # 场景列表取 merged 自身的 deepcopy 副本，避免与原 subset_report 共享条目引用
+    merged["scenarios"] = list(merged.get("scenarios") or []) + carried
     # summary 重算（全部场景判定齐备）
     passed = failed = errors = 0
     for sc in merged["scenarios"]:
