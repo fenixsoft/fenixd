@@ -55,7 +55,7 @@ Fenix Web Dashboard（`http://localhost:8787`）是跨项目的可视化监控�
 
 「项目架构」分面承载按需生成的项目架构图。系统**不自动生成**：从未生成过时展示空态文案与「刷新架构图」按钮，点击后后端仅受理（`POST /api/architecture/refresh`），起后台线程 spawn 一次性 headless claude（archify skill 以 vendored 形式随库分发于 `vendor/archify/`，指引原文直接注入生成提示词，无需安装、零网络依赖）阅读项目代码，产出自包含交互式 HTML 架构图，按项目存于 `.fenix/architecture/`（gitignored 运行时产物），经 `GET /api/architecture/diagram` 下发、前端以 `sandbox="allow-scripts"` 的 iframe 沙箱渲染（不带 allow-same-origin，产物脚本与主站隔离）。生成期间按钮置灰并以 3 秒间隔轮询状态（`GET /api/architecture/status`）；同一项目同时最多一个在飞生成（重复触发返回 409）。图的形态契约：只保留 8–16 个核心组件、突出且仅一条主要路径、标出外部依赖与信任边界、辅助信息进说明卡片不增加连线、节点与说明中文标注；产物按「退出码 → 文件存在且非空 → 自包含 HTML 特征 → 组件数 ∈ [8, 16]」机械判定，不采信 agent 自述（组件数无法提取时记空放行，可用性优先）。刷新即覆盖旧图，只保留最近一次。
 
-失败排查：archify skill 随库分发于 `vendor/archify/`（溯源见 `VENDORED.md`），无需安装，生成零网络依赖；生成前会校验包完整性（`SKILL.md` 存在且非空），若报「包缺件，属部署损坏」的 failed 错误，说明部署目录缺件或损坏，对照 `vendor/archify/VENDORED.md` 恢复包后重新点击「刷新架构图」即可。生成有 1800 秒硬超时，超时会整组击杀 claude 进程及其派生子进程并判 failed。**daemon 重启会中断在飞生成**：页签会把残留的「生成中」状态合成为失败（错误注明生成被中断），无需清理文件，直接重新点击「刷新架构图」即可。
+失败排查：archify skill 随库分发于 `vendor/archify/`（溯源见 `VENDORED.md`），无需安装，生成零网络依赖；生成前会校验包完整性（`SKILL.md` 存在且非空），若报「包缺件，属部署损坏」的 failed 错误，说明部署目录缺件或损坏，对照 `vendor/archify/VENDORED.md` 恢复包后重新点击「刷新架构图」即可。生成采用**两段式超时**（总预算 1800 秒不变）：探索段 ≤720 秒、出图段 ≤1080 秒分段计时，超时按当前阶段击杀 claude 进程及其派生子进程并判 failed（错误文案带阶段前缀）；状态接口的 `status` 含 `stage` 键（exploring/authoring）可区分当前所处阶段；HEAD 指纹与上次生成一致时重试会跳过探索段直接出图。**daemon 重启会中断在飞生成**：页签会把残留的「生成中」状态合成为失败（错误注明生成被中断），无需清理文件，直接重新点击「刷新架构图」即可。
 
 ### SPEC 详情页（/projects/:name/:spec）
 
@@ -71,14 +71,14 @@ Fenix Web Dashboard（`http://localhost:8787`）是跨项目的可视化监控�
 
 设置页承担配置管理职责：分项目读写受管配置键（llm / agents.models / gates.approve_mode）；查看与编辑 verify.yaml 验证契约；查看/调整 token 预算与消耗；以及管理提示词：查看通用层 agents/ 提示词、编辑项目级附加提示词。「Hook」面板管理当前项目的全局 hooks（对所有 SPEC 生效），表单结构同 SPEC 详情页的 Hook 页签，并展示跨 SPEC 的最近执行记录。
 
-「质量」页签（内部 key `quality`，位于「验证」之后）承载代码质量门与周期性审查/回归设置，三张卡片。第一张（既有）：单个开关「收尾代码质量审查」（`verify.impl_code_review`，键路径不变）。开启后实现者在全部 tasks.md 任务完成、提交之后、写结果文件之前调用 ocr（`bin/ocr_review.py`）审查本次改动；环境未安装 ocr 时自动按 unavailable 降级跳过。该开关原置于「验证」页签，独立成页后验证页不再承载它（避免双入口）。第二张（`admin.code_review.enabled`，2026-09-19 从项目页「代码审查」分面迁来）：开关「周期性代码审查」——配置项归设置页统一管理，项目页分面只保留结果展示与手动触发。开启后与每日自省同周期派发 code-review agent，审查产品代码质量，问题入台账供项目页「代码审查」分面消费。第三张（`admin.regression.enabled`，add-test-regression-tab）：开关「周期性全量回归」——开启后与每日自省同周期自动执行一次全量回归（需项目 `.fenix/verify.yaml` 配置 `regression` 段），结果落到 `.fenix/regression/last-run.json`，供项目页「测试回归」分面展示；同一自然日防重；与 implementer 收尾的全量套件互斥（主机级锁）。手动触发（项目页「立即执行全量回归」）不受本开关约束。长耗时用例阈值来自 `verify.yaml` 的 `regression.long_test_threshold_seconds`（缺省 8 秒），属项目测试体系声明，在项目页「验证」面板的 `verify.yaml` 编辑入口中调整，本卡片不提供第二个写入路径。
+「质量」页签（内部 key `quality`，位于「验证」之后）承载代码质量门与周期性审查/回归设置，三张卡片。第一张（既有）：单个开关「收尾代码质量审查」（`verify.impl_code_review`，键路径不变）。开启后由框架在该实现 merge-back 成功、tester 派发的同一时点自动启动收尾代码审查（`bin/ocr_review.py`）**异步并行车道**——审查与验证车道并行在飞，不占 agent turn、实现者无需等待；环境未安装 ocr 时自动按 unavailable 降级跳过。该开关原置于「验证」页签，独立成页后验证页不再承载它（避免双入口）。第二张（`admin.code_review.enabled`，2026-09-19 从项目页「代码审查」分面迁来）：开关「周期性代码审查」——配置项归设置页统一管理，项目页分面只保留结果展示与手动触发。开启后与每日自省同周期派发 code-review agent，审查产品代码质量，问题入台账供项目页「代码审查」分面消费。第三张（`admin.regression.enabled`，add-test-regression-tab）：开关「周期性全量回归」——开启后与每日自省同周期自动执行一次全量回归（需项目 `.fenix/verify.yaml` 配置 `regression` 段），结果落到 `.fenix/regression/last-run.json`，供项目页「测试回归」分面展示；同一自然日防重；与 implementer 收尾的全量套件互斥（主机级锁）。手动触发（项目页「立即执行全量回归」）不受本开关约束。长耗时用例阈值来自 `verify.yaml` 的 `regression.long_test_threshold_seconds`（缺省 8 秒），属项目测试体系声明，在项目页「验证」面板的 `verify.yaml` 编辑入口中调整，本卡片不提供第二个写入路径。
 
-开关下方另有三项运行参数设置（add-impl-code-review-tuning，键 `verify.impl_code_review_timeout_sec` / `verify.impl_code_review_concurrency` / `verify.impl_code_review_effort`，缺省 600 / 2 / `low`）：
+开关下方另有三项运行参数设置（add-impl-code-review-tuning，键 `verify.impl_code_review_timeout_sec` / `verify.impl_code_review_concurrency` / `verify.impl_code_review_effort`，缺省 600 / 4 / `low`）：
 - **审查超时（秒）**：ocr LLM 单请求超时，写入 run 级 ocr provider 配置（`custom_providers.fenix-impl.timeout_sec`），**确定性生效**——不配置时 ocr 走其内置 300s 默认，实测 8 路并发 + 300s 会撞穿首字节等待导致大面积文件级 timeout。数字输入，须正整数，单位「秒」。
-- **审查并发**：ocr 并发子任务上限（`--concurrency`）。实测 8 路并发同时打同一 provider 网关会把首字节延迟放大到撞穿超时线，降到 2 以吞吐换稳定。数字输入，须正整数。
+- **审查并发**：ocr 并发子任务上限（`--concurrency`）。实测 8 路并发同时打同一 provider 网关会把首字节延迟放大到撞穿超时线，2 路对大 diff 又明显喂不饱，缺省取 4。数字输入，须正整数。
 - **审查力度**：ocr 审查力度预设（`--effort`），下拉 `low` / `medium` / `high`。`low` 更快更省但 recall 偏低（ocr precision 优先的刻意取舍），`medium` 为 ocr 官方默认，`high` 深度审查。
 
-**注意软约束**：`--concurrency` 与 `--effort` 经**提示词命令示例承载**（无持久化配置键 / 与并发同走单一通道），实现者须照抄提示词中的命令串才生效——这两项不像超时那样是硬性生效开关，若实现者改写命令形态即可能不生效；配置值只是框架注入的「建议值」。超时则写入 run 级配置、确定性生效。三项缺省值均比 ocr 官方默认（300s / 8 / `medium`）更保守：宁慢勿废，用户可随时上调。
+**生效方式**：`--concurrency` 与 `--effort` 均由框架在审查车道启动时**直接注入命令行**（车道命令注入、确定性生效），实现者无需照抄任何命令串；审查超时则写入 run 级配置、同样确定性生效。三项缺省值均比 ocr 官方默认（300s / 8 / `medium`）更保守：宁慢勿废，用户可随时上调。
 
 页签顶部有一行 open-code-review 环境状态（`GET /api/quality/ocr-status`，按 `shutil.which("ocr")` 探测，与 `bin/ocr_review.py` 的 PATH 解析同源）：已安装时显示版本号并放行开关；未安装时显示橙色提示 + 「一键安装」按钮，**开关置灰不可用**（避免开启一个运行期必然降级跳过的开关）。点「一键安装」调用 `POST /api/quality/ocr-install`，后端执行 `npm install -g @alibaba-group/open-code-review`（固定字面量，无用户输入拼接，不做提权）——成功后重新探测并解锁开关，失败（如权限不足 EACCES）返回 400 并把 npm 报错末尾透出，用户可自行 `sudo npm install -g @alibaba-group/open-code-review` 安装后刷新页面。**后端不拦「未安装时保存 `impl_code_review: true`」**：存量已勾选的配置不应因环境探测而保存失败，运行期降级语义保持不变。
 

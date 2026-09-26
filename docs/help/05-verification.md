@@ -26,7 +26,7 @@ sequenceDiagram
     JUDGE->>PM: verified / bug-found
 ```
 
-整条流水线由 PM Engine 串起三个阶段。阶段 1 由 planner-plan 读取 verify.yaml 契约，生成 test_scenarios.json 场景清单；阶段 2 由 VerifyEngine 依次执行 prepare（构建）、serve（启动被测实例）、注入 BASE_URL，再逐场景执行并截图，产出验证报告；阶段 3 由 planner-judge 做门禁判定，先核应用可达性与报告完整性，再给出 verified 或 bug-found 的结论。
+整条流水线由 PM Engine 编排三个阶段。阶段 1 由 planner-plan 读取 verify.yaml 契约，生成 test_scenarios.json 场景清单；阶段 2 由 VerifyEngine 依次执行 prepare（构建）、serve（启动被测实例）、注入 BASE_URL，再逐场景执行并截图，产出验证报告；阶段 3 由 planner-judge 做门禁判定，先核应用可达性与报告完整性，再给出 verified 或 bug-found 的结论。注意出题时机：spec 进入 `ready` 时框架即**并行触发** planner-plan 出题（与实现车道并行在飞，产物标记 `parallel_plan.json`），并非等 `implemented` 之后才串行出题——实现收工时场景计划往往已就绪。
 
 ## verify.yaml 契约
 
@@ -82,10 +82,11 @@ ready:
 
 验证场景（`test_scenarios.json`）由 planner **只设计一次**，验收通过即冻结，写入 `.fenix/verify-progress/<spec>/test_scenarios.json`。**此后无论重入验证多少次（打回重验、修复轮、重试），都直接复用冻结场景，绝不重新出题**：planner 单轮设计成本在小时级/千万 token 级，只应支付一次；更重要的是「同一把尺子量到底」：修复是否有效，衡量的始终是同一组标准。
 
-冻结集的变更只有两条通道：
+冻结集的变更只有三条通道：
 
 1. **admin 裁决**：冻结文件损坏、或修复新增了可交互元素导致覆盖缺口时，框架不自动重排，而是升级「场景计划争议」呼叫 admin 处置（扩展场景 / 声明纯展示）；
-2. **人工重置**：删除冻结文件即批准重新出题（下一轮验证走完整 planner 设计流程）。
+2. **人工重置**：删除冻结文件即批准重新出题（下一轮验证走完整 planner 设计流程）；
+3. **契约版本迁移（自动）**：冻结集条目带 `contract_version` 版本戳（当前 v2：web 场景必含 `navigate` 步骤）；低版本旧集加载时由框架自动迁移——以被测实例地址合成缺失的 `navigate` 步骤插入首位（迁移后写回盖新版本戳），无法合成时该场景转待重排、全部过时则回落重新出题，全程无需人工干预。
 
 ## verdict 四分类与证据链
 
@@ -95,8 +96,8 @@ ready:
 |------|------|------|
 | **pass** | 场景全部通过 | → verified → done |
 | **fail + 报告完整** | 场景失败且验证报告有证据 | → bug-found（修复循环） |
-| **blocked-env** | 环境不可达/构建失败（非产品缺陷） | → 不判 bug-found，回 testing 重派新 attempt |
-| **inconclusive** | 证据不足（mock/SSE 环境疑云） | → 不产生 verdict 信号，人工检查 |
+| **blocked-env** | 环境不可达/构建失败（非产品缺陷） | → 不判 bug-found，走两级豁免握手：级一判据（judge 前全批 blocked-env）判 inconclusive 进自动重验；级二判据（judge 后断言归因全 env）在 judge 采纳前拦截、不落 verified——豁免落 verified 须 admin DISPOSITION 放行 |
+| **inconclusive** | 证据不足（全批 blocked-env 或断言归因全 env 的重验轮） | → 自动回 implemented 重派新 attempt，最多 `verify_engine.inconclusive_max_attempts`（缺省 3）轮；第 4 轮写 `inconclusive_loop` SIGNAL 呼 admin 后停等人工 |
 
 > 关键防伪机制：**构建失败/环境不可达绝不判 bug-found**，防止「验证没能发生」被当成「验证发现了缺陷」→ 派生伪 fix → 修复级联空烧 token。
 

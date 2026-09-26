@@ -68,13 +68,17 @@ Fenix daemon 自动调度 SPEC 时受一组预算、重试与熔断规则约束�
 | `schedule.poll_interval_minutes` | 30 | 兜底全量扫描间隔（热更新） |
 | `pm.recovery.followup_check_minutes` | 15 | auto-recovery 后的闭环复查窗口 |
 | `pm.recovery.ready_stall_threshold_minutes` | 20 | 假就绪滞留判定阈值 |
-| `agents.max_concurrent` | 2 | 同一优先级的并发上限（见下节） |
+| `agents.max_concurrent` | 5 | 同时在飞的 Agent run 并发上限（见下节） |
 
 文件监听 2 秒、定时拾取 / 恢复复查 60 秒、归档 300 秒、孤儿清理 600 秒均为代码常量，不可配置。
 
 ## 优先级与并发
 
-调度采用严格优先级并行策略：priority 数值小的 SPEC 先执行，同一优先级内的任务可并行至 `agents.max_concurrent` 上限，不同优先级之间不并行，低优先级必须等所有高优先级 SPEC 完成后才会启动。优先级在 Dashboard 与 `/fenix-status` 中可见，也可以在 Dashboard 的 SPEC 详情行直接调整。
+调度采用**宽松优先级并行**策略：任务 X 可派发当且仅当没有比 X 更重要的活动任务（即 `min(active_priorities) >= X`）。同一优先级内的任务可并行至 `agents.max_concurrent` 上限；不同优先级也可并发——只要有空闲槽位且没有更重要的活动任务，低优先级 SPEC 无须等所有高优先级 SPEC 完成。已在运行的任务不会被新到的高优先级抢占（不抢占）。
+
+派发队列支持老化：条目等待越久，参与比较的优先级档位（effective 档位 = base − 老化收益）逐步放宽，给被高优任务持续占用挡住的低优任务打开派发窗口。活动任务不参与老化——派发后活动集合记录 base 原值；同级（effective 相等）条目保持先入队先派发的队首顺序（FCFS）；老化仅内存态，daemon 重启重建队列即从零计时。
+
+优先级在 Dashboard 与 `/fenix-status` 中可见，也可以在 Dashboard 的 SPEC 详情行直接调整。
 
 ## 三类预算
 
