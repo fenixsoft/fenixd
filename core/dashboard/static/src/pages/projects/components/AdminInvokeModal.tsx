@@ -213,9 +213,7 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
         />
       }
       open={open}
-      onCancel={(e) => {
-        onClose(e);
-      }}
+      onCancel={onClose}
       footer={null}
       destroyOnHidden
       {...modalProps}

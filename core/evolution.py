@@ -602,6 +602,17 @@ def parse_todo_entries(text: str) -> List[dict]:
             last_key = list(current_fields.keys())[-1]
             if stripped and not stripped.startswith("-"):
                 current_fields[last_key] += f"\n{stripped}"
+            elif stripped:
+                # 以「-」开头的续行（字段下的二级列表项、未知标签行等）不并入
+                # 字段值：并入会把未知标签/嵌套标题文本混进上一字段的值，污染
+                # 四字段结构化契约（规范写入方字段值恒为单行）。此处取「丢弃 +
+                # 留痕」而非静默吞掉；用 DEBUG 而非 WARNING——本函数在就绪巡
+                # 检热路径上被高频调用，告警级别会刷屏。
+                _logger.debug(
+                    "evolution: todo.md 字段续行以「-」开头，未并入字段 %s（丢弃）: %s",
+                    last_key,
+                    stripped,
+                )
             continue
 
     _flush_entry()

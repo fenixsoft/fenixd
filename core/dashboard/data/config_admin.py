@@ -2206,6 +2206,18 @@ _SYNC_PAGE_KEYS = {
     },
 }
 
+# 「同步用户级设置」段内复合值键白名单（code-review item fd7178c8666c）：sync
+# 以用户级文件原值构造 patch，手工脏形态（如 verify.serving_reclaim: true，应为
+# {enabled: bool}）在 write_config 前置校验（isinstance dict 前置条件）与
+# _deep_merge_managed 的 dict 守卫处被双双静默跳过，write_config 仍返回 ok:true——
+# sync 把该键上报进 synced 而项目级实际未落盘。此表内的键在拾取时先验
+# isinstance dict，形态不符直接报错拒绝（不剔除、不假成功）。agents.models 与
+# admin.code_review / admin.code_review_fix 不在表内：非 dict 已由 write_config
+# 的「must be an object」前置守卫直接拒绝，无需本函数重复预检。
+_SYNC_PAGE_DICT_VALUE_KEYS = {
+    "verify": {"serving_reclaim"},
+}
+
 def sync_config_from_user(project_root, page: str) -> dict:
     """把用户级 config.yaml 中 page 页签对应的受管键覆盖写入项目级配置。
 
@@ -2244,9 +2256,27 @@ def sync_config_from_user(project_root, page: str) -> dict:
     patch = {}
     for section, keys in section_map.items():
         sec_raw = user_raw.get(section)
-        if not isinstance(sec_raw, dict):
+        if sec_raw is None:
             continue  # 用户级未配置该段：本页无可同步值，跳过（不写空覆盖）
+        if not isinstance(sec_raw, dict):
+            # code-review item fd7178c8666c：段存在但形态脏（如 verify: true）
+            # 不能静默跳过——该段会被无声略去而其余段照常 sync 返回 ok，同款
+            # 「synced 与实际落盘不一致」假成功，直接报错拒绝。
+            return {
+                "ok": False,
+                "error": f"{section} must be an object: {sec_raw!r}",
+                "synced": None,
+                "path": str(_facade.USER_CONFIG_PATH),
+            }
         picked = {k: sec_raw[k] for k in keys if k in sec_raw}
+        for _dk in _SYNC_PAGE_DICT_VALUE_KEYS.get(section, ()):
+            if _dk in picked and not isinstance(picked[_dk], dict):
+                return {
+                    "ok": False,
+                    "error": f"{section}.{_dk} must be an object: {picked[_dk]!r}",
+                    "synced": None,
+                    "path": str(_facade.USER_CONFIG_PATH),
+                }
         if picked:
             patch[section] = picked
 
