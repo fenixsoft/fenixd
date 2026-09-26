@@ -154,6 +154,25 @@ def _escalations(store):
     return [r for r in store.read_all() if r.get("kind") == ESCALATION]
 
 
+def _revert_signal_handled(store, sig_id):
+    """还原信号的 handled 回写（替身保真，配合多轮重派模拟）。
+
+    真实链路中「重派后的 run 于落最终记录前被杀」时，处置终态回写
+    （_invoke_administrator 末尾的 mark_signal_handled）位于最终记录落盘
+    之后、同样不会发生。RescheduleRunner 替身同步返回 resolved 会触发该
+    回写，使下一轮巡检因信号已 handled 而无法再进入重派判定，与「再次
+    中断 → 再次重派」的模拟前提相悖；此处还原 handled 族字段，保持替身
+    与真实中断场景一致。
+    """
+    alerts_path = store.alerts_path
+    alerts = json.loads(alerts_path.read_text(encoding="utf-8"))
+    for r in alerts:
+        if r.get("kind") == SIGNAL and r.get("id") == sig_id:
+            r["handled"] = False
+            r["handled_at"] = None
+    alerts_path.write_text(json.dumps(alerts), encoding="utf-8")
+
+
 # ── 1.3 unhandled_signal_for ────────────────────────────
 
 
@@ -306,6 +325,9 @@ class TestRescheduleIntegration:
         assert any((r.get("status") or r.get("result")) == "superseded"
                    and r.get("reschedule_count") == 1 for r in recs)
         assert _escalations(store) == []
+        # 真实场景：被重派的 run 未落最终记录即被杀 → handled 回写不会发生，
+        # 信号仍可被下轮巡检回溯（替身同步 resolved 触发了回写，须还原）
+        _revert_signal_handled(store, sig["id"])
 
         # 第 2 次中断（新 run）→ 再重派（1→2）
         _append_pending(store, run_id="admin-spec-a-2")
@@ -315,6 +337,7 @@ class TestRescheduleIntegration:
         assert any((r.get("status") or r.get("result")) == "superseded"
                    and r.get("reschedule_count") == 2 for r in recs)
         assert _escalations(store) == []
+        _revert_signal_handled(store, sig["id"])
 
         # 第 3 次中断 → 超限：不再重派，升级人工 + escalated 终结记录
         _append_pending(store, run_id="admin-spec-a-3")
@@ -375,7 +398,7 @@ class TestRescheduleIntegration:
             "spec-a": {"status": "implementing", "updated": utcnow_iso()},
         }, config={"admin": {"escalation_cooldown_minutes": 15}},
             runner=RescheduleRunner)
-        _append_signal(store, signal_type="stuck", spec="spec-a")
+        sig = _append_signal(store, signal_type="stuck", spec="spec-a")
 
         # 第一次：中断 run 触发重派 → 新 run 的 pending 记录由 runner 落盘
         _append_pending(store, run_id="admin-spec-a-1")
@@ -408,6 +431,8 @@ class TestRescheduleIntegration:
             if r.get("kind") == DISPOSITION and r.get("admin_run_id") == new_run_id:
                 r["created"] = iso_ago(20)  # 拨回超 grace
         alerts_path.write_text(json.dumps(kept), encoding="utf-8")
+        # 同上：真实场景 run 死于最终记录落盘前，handled 回写不会发生，还原之
+        _revert_signal_handled(store, sig["id"])
         _write_interrupted_run(proot, new_run_id)
 
         mon._recover_orphaned_dispositions()
