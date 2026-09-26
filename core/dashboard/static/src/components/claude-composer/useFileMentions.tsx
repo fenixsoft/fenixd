@@ -164,6 +164,12 @@ export function useFileMentions({
 
   const handleFileMentionsKeyDown = useCallback(
     (event: KeyboardEvent<HTMLTextAreaElement>): boolean => {
+      // IME 组合态按键属于组词操作（Enter 确认拼音 / Esc 取消组合 / ↑↓ 选词），
+      // 不被候选选中拦截——组合期整体让行 IME，与 useComposerState 的发送守卫
+      // （composing 态 Enter MUST NOT 发送）口径一致。
+      if (event.nativeEvent.isComposing) {
+        return false;
+      }
       if (!showFileDropdown || filteredFiles.length === 0) {
         return false;
       }

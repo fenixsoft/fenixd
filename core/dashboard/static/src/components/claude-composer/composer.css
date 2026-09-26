@@ -6,9 +6,9 @@
  * 结构），变量不能从面板继承；2026-09-25 实证 bg-primary 等在此静默解析
  * 失败（发送按钮透明）。故 .fenix-composer 与 .fenix-composer-portal 各自
  * 都必须显式注入同组亮色值（各自有值即可，不依赖 global.less 继承）；
- * CSS 变量不继承只要求两处各有值、不要求两处重复书写，故以选择器分组
- * 共用同一份声明（下方单一来源），调色只改这一处，值与 global.less 的
- * .claude-msg-pane 保持一致。 */
+ * 该组值与 global.less 的 .claude-msg-pane 同组变量逐值相同，但两处无构建
+ * 期单一来源——下方声明只覆盖本文件这两个选择器，调色时除本处外还须
+ * 同步 global.less 的 .claude-msg-pane，漏改任意一处即两区域配色漂移。 */
 
 /* ── composer 本体与 portal 弹层的 HSL 语义变量（两选择器均不在
  *    .claude-msg-pane 后代位置、无法继承，各自需显式赋值；分组共用
