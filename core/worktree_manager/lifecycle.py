@@ -11,6 +11,7 @@ mock.patch("core.worktree_manager.subprocess.run") 修改 subprocess 模块对�
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import threading
@@ -224,6 +225,11 @@ class G1LifecycleMixin:
                     capture_output=True,
                     text=True,
                     timeout=30,
+                    # 与 queries.create_worktree_on_branch 同款固化 C locale：
+                    # git gettext 在非 C locale 下会把 "already exists" 翻译成本地化
+                    # 文案，下方子串匹配落空 → 换名重试不触发（本地化 git 下同秒
+                    # 撞名时仅降级为不重试，与 queries 同仓库同一逻辑两套口径）。
+                    env={**os.environ, "LC_ALL": "C"},
                 )
 
                 if result.returncode == 0:
@@ -436,8 +442,23 @@ class G1LifecycleMixin:
             if add.returncode != 0:
                 return False
 
+            # 路径作用域守卫（code-review item a83addc7fe6d）：裸 commit 会把 index
+            # 里其它 staged 条目（用户手工暂存 / 自愈残留）连带入库。本场景 rel
+            # 未被 rm --cached 移出 index（无 pathspec 解析失配问题），故改用
+            # commit --only -- <rel> 限定提交集（与 _untrack_ignored_local_changes
+            # / _purge_ignored_brought_in 的子集校验守卫同目的、实现更简）。
             commit = subprocess.run(
-                ["git", "-C", str(self.project_root), "commit", "-m", f"[fenix] spec: {spec_name}"],
+                [
+                    "git",
+                    "-C",
+                    str(self.project_root),
+                    "commit",
+                    "--only",
+                    "-m",
+                    f"[fenix] spec: {spec_name}",
+                    "--",
+                    rel,
+                ],
                 capture_output=True,
                 text=True,
                 timeout=30,
@@ -816,11 +837,20 @@ class G1LifecycleMixin:
                     shutil.rmtree(str(wt_dir), ignore_errors=True)
 
         # Prune stale worktree references
-        subprocess.run(
-            ["git", "-C", str(self.project_root), "worktree", "prune"],
-            capture_output=True,
-            timeout=10,
-        )
+        # （code-review item 506b30212499）收尾 prune 与循环体同款保护：git 挂起
+        # 超时会抛 TimeoutExpired 穿出 shutdown 清理链并跳过下方登记清空，还可能
+        # 中断后续收尾步骤。失败仅 WARNING，登记表照常清空。
+        try:
+            subprocess.run(
+                ["git", "-C", str(self.project_root), "worktree", "prune"],
+                capture_output=True,
+                timeout=10,
+            )
+        except (subprocess.SubprocessError, OSError) as e:
+            self.logger.warning(
+                "worktree_manager",
+                f"Worktree prune failed during orphan cleanup: {e}",
+            )
 
         self._active_worktrees.clear()
         self._spec_locks.clear()
@@ -846,6 +876,12 @@ class G1LifecycleMixin:
         # 派发不会双派发），下次调用自然重判。不整方法持 _spec_lock_th 是因
         # 下方 _release_spec_locks 会再次取同一非重入锁；快照后的 any() 遍历
         # 的是独立列表，不再触碰原集合。
+        # 入口时刻守卫（code-review item cec36ef4e1fb）：判定链（进程扫描 / 流
+        # mtime）在持锁前完成，期间并发 create() / _register_spec_locks 登记的
+        # 同键新锁 _lock_since 晚于本时刻，_release_spec_locks 按 not_after
+        # 跳过不误删（同 cleanup finally 的 cleanup_entry_ts 口径，防新 run
+        # 在构建窗口内失去锁保护重开双派发窗口）。
+        entry_ts = time.time()
         try:
             snapshot = sorted(self._spec_locks)
         except RuntimeError:
@@ -878,7 +914,9 @@ class G1LifecycleMixin:
         # 回收，孤儿清理语义不变。
         if mtime is None and self._lock_young(spec_name):
             return True
-        released = self._release_spec_locks(spec_name, "stale lock (no live process)")
+        released = self._release_spec_locks(
+            spec_name, "stale lock (no live process)", not_after=entry_ts
+        )
         if released:
             self.logger.warning(
                 "worktree_manager",
@@ -898,6 +936,10 @@ class G1LifecycleMixin:
 
         Returns: 被回收的锁 key 列表（审计/测试用）。
         """
+        # 入口时刻守卫（code-review item cec36ef4e1fb，同 has_active_worktree）：
+        # 判定链在持锁前完成，期间并发 create 登记的同 spec 新锁按 not_after
+        # 跳过不误删（防双派发窗口）。
+        entry_ts = time.time()
         released: list = []
         # 快照容错（code-review ae95d059b22，同 has_active_worktree）：sorted()
         # 构建快照仍要迭代原集合，并非原子，并发 create/cleanup 增删可抛
@@ -926,6 +968,7 @@ class G1LifecycleMixin:
                 self._release_spec_locks(
                     spec,
                     f"stale lock: no live process, stream idle " f">{STALE_LOCK_IDLE_SECONDS}s",
+                    not_after=entry_ts,
                 )
             )
         if released:
