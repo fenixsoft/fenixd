@@ -42,7 +42,16 @@ class H2ProjectRoutesMixin:
                 s["exists"] = True
                 projects.append(s)
             except Exception as exc:  # noqa: BLE001 —— 单项目失败降级，端点仍返回 200
-                projects.append(dashboard_data._degraded_project(p, f"摘要计算失败: {exc}"))
+                # 不外泄裸异常文本（code-review item 2a32ba26780c）：str(exc)
+                # 可能携带内部路径细节，与 _api_project_describe 的泛化文案
+                # 策略同款——细节降级经服务端日志留痕，客户端收固定文案。
+                logger.warning(
+                    "项目摘要计算降级（project=%s）: %s: %s",
+                    p["name"],
+                    type(exc).__name__,
+                    exc,
+                )
+                projects.append(dashboard_data._degraded_project(p, "摘要计算失败"))
         return {"projects": projects}
 
 
@@ -190,7 +199,17 @@ class H2ProjectRoutesMixin:
                     except OSError as e:
                         result = {"ok": False, "error": f"写入 restart_request 失败: {e}"}
         except Exception as e:  # 环境异常（tmux 不可用等）→ 返回错误对象，不 500
-            self._json({"ok": False, "error": f"操作失败: {e}"})
+            # 不外泄裸异常文本（code-review item 2a32ba26780c）：环境异常的
+            # str(e) 可能携带内部路径/tmux 错误细节，与 _api_project_describe
+            # 的泛化文案策略同款——细节降级经服务端日志留痕，客户端收固定文案。
+            logger.warning(
+                "项目生命周期操作异常（action=%s project=%s）: %s: %s",
+                action,
+                project["name"],
+                type(e).__name__,
+                e,
+            )
+            self._json({"ok": False, "error": "操作失败"})
             return
         if not result.get("ok"):
             self._json({"ok": False, "error": result.get("error", "未知错误")})
