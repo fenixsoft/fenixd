@@ -29,6 +29,7 @@ export default function OverviewPage() {
       // 心跳/visibilitychange 补刷会把它刷回列表——过滤在飞删除项，
       // 直到删除落定（settleProjectLocal）后才恢复采用服务端真值
       const projects = (d.projects || []).filter((p) => !deletingRef.current.has(p.name));
+      // [fenix-ignore:1a02afbcf833] 在飞删除窗口内 totals/token_usage 仍含被删项目：无可靠 per-project 分解可扣减（spec_updated_today/week 只进 totals 不进摘要，降级项目不进 totals），近似扣减反会引入错数；轮询落定后自愈，属乐观 UI 已知瞬态折衷
       setData({ ...d, projects });
       // 菜单校准：自动发现/他端删除后，侧边栏子菜单跟随最新项目全集
       setInitialState((prev) => ({ ...(prev || { projects: [] }), projects: projects.map((p) => p.name) }));
