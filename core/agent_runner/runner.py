@@ -2568,7 +2568,9 @@ class AgentRunner:
                     self._record_instant_fail(
                         spec_name,
                         time.time() - attempt_started_at,
-                        self.project_root / ".fenix" / "runs" / f"{attempt_run_id}.jsonl",
+                        # 与上方 shutdown 守卫同源取在飞产物文件：interrupted
+                        # 终态补写在 sub_run_id（原地重试后 ≠ attempt_run_id）
+                        self.project_root / ".fenix" / "runs" / f"{sub_run_id}.jsonl",
                     )
                     # add-cost-observability（D1）+ add-turn-limit-anchor-c（D4）：
                     # _run_claude 抛错（超时/kill/非 0 退出/rc==0 但 result 标记
