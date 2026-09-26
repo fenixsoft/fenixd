@@ -732,6 +732,19 @@ class H0BaseMixin:
             content_length = 0
         remaining = content_length - getattr(self, "_request_body_consumed", 0)
         if remaining > 0:
+            # 残留长度上界（code-review item 5761d9f2f5c3）：handler 走 query
+            # 校验早退而未调用 _read_json_body 的 POST/DELETE 路由（如
+            # _post_run_watch、_post_alerts_clear 等），Content-Length 从未
+            # 做上限校验；对攻击者声明的超大值（实际不发数据）下方
+            # rfile.read(remaining) 会盲等阻塞 worker 线程至 socket 超时，
+            # 并发打满请求槽后服务整体不可用。与 413 分支（9cbdd2e25696）
+            # 及 _handle 快速拒绝分支同口径：超限置 close_connection=True
+            # 跳过排空，残留字节随连接关闭作废。
+            from core.dashboard import server as _server_mod
+
+            if remaining > getattr(_server_mod, "MAX_POST_BODY", 256 * 1024):
+                self.close_connection = True
+                return
             try:
                 self.rfile.read(remaining)
             except Exception:  # noqa: BLE001 连接已断/异常则放弃排空，不影响主响应
