@@ -22,6 +22,7 @@ from pathlib import Path
 import yaml
 
 from core.dashboard import data as dashboard_data
+from core.dashboard.llm_health import run_llm_health_check
 from core.dashboard.ocr_status import check_ocr_installed, install_ocr
 from core.admin_store import AdminStore, SIGNAL, evidence_project  # noqa: E402
 from core.agent_runner.prompt_builder import (
@@ -122,6 +123,34 @@ class H5SettingsRoutesMixin:
         config["path"] = result["path"]
         self._json(config)
 
+
+    def _api_config_llm_health_check_post(self, query):
+        """POST /api/config/llm-health-check — LLM Provider 健康检测
+        （add-provider-health-check，纯探测无副作用）。
+
+        入参为显式三字段（design D3）：body {"baseurl", "apikey", "model"}，
+        不做 provider 名解析——解析逻辑（表单 Provider 列表优先、回退已保存
+        配置、模型解析链）全部在前端完成，后端保持无状态纯探测。探测失败也是
+        业务数据（恒 200 自含返回），仅缺参 400 不发上游请求（spec「缺参拦截」）。
+        """
+        body = self._read_json_body()
+        if body is None:
+            return
+        missing = [
+            k
+            for k in ("baseurl", "apikey", "model")
+            if not isinstance(body.get(k), str) or not body.get(k, "").strip()
+        ]
+        if missing:
+            self._error(400, f"缺少必填字段: {'、'.join(missing)}")
+            return
+        self._json(
+            run_llm_health_check(
+                body["baseurl"].strip(),
+                body["apikey"].strip(),
+                body["model"].strip(),
+            )
+        )
 
     def _api_config_sync_from_user(self, query):
         """POST /api/config/sync-from-user?project=<name>  body: {"page": "<页标识>", "action": "sync"|"clear"}

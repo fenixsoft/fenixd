@@ -28,8 +28,8 @@
 
 ## 2. 端点接线
 
-- [ ] 2.1 `core/dashboard/routes/settings_routes.py` 新增 `_api_config_llm_health_check_post(query)`：`_read_json_body` 读 body，`baseurl`/`apikey`/`model` 缺一或空串时 `_error(400, 指明缺失字段)` 不发上游请求；合法时调用 `run_llm_health_check` 并 `_json` 自含返回（探测失败也是 200 业务数据，见 spec「上游返回 HTTP 错误」Scenario）。
-- [ ] 2.2 `core/dashboard/routes/base.py`：新增 POST 适配函数 + 在 `_API_POST_ROUTES` 注册 `("exact", "/api/config/llm-health-check", ...)`。
+- [x] 2.1 `core/dashboard/routes/settings_routes.py` 新增 `_api_config_llm_health_check_post(query)`：`_read_json_body` 读 body，`baseurl`/`apikey`/`model` 缺一或空串时 `_error(400, 指明缺失字段)` 不发上游请求；合法时调用 `run_llm_health_check` 并 `_json` 自含返回（探测失败也是 200 业务数据，见 spec「上游返回 HTTP 错误」Scenario）。
+- [x] 2.2 `core/dashboard/routes/base.py`：新增 POST 适配函数 + 在 `_API_POST_ROUTES` 注册 `("exact", "/api/config/llm-health-check", ...)`。
 
 ## 3. 前端 service 与解析工具
 
