@@ -1946,7 +1946,10 @@ class ConfigLoader:
         global _DEPRECATED_STUCK_WARNED
         if _DEPRECATED_STUCK_WARNED:
             return
-        schedule = config.get("schedule") or {}
+        schedule = config.get("schedule")
+        # schedule 段与 admin 同款守卫：真值非 dict（如手改 YAML schedule: 3）
+        # 按空段降级，否则下方 in 成员测试对标量会 TypeError。
+        schedule = schedule if isinstance(schedule, dict) else {}
         # admin 段真值非 dict 时按空段降级（code-review item 06352a414cf4）：
         # 下方 in 成员测试对标量会 TypeError，使 effective_stuck_threshold_seconds
         # 在其自身的 agents 段读取之前就崩溃。

@@ -1611,24 +1611,42 @@ class VAdjudicationMixin:
                 f"回退缺件处置）: {e}",
             )
             return False
-        # 分支提交固化（4.2）：改写/登记落盘后立即提交到实现分支（写盘即固化）
-        self._commit_declaration_rewrite(spec_name, old_path, new_path, result)
+        # 分支提交固化（4.2）：改写/登记落盘后立即提交到实现分支（写盘即固化）。
+        # 传入 resolved 供 _commit_declaration_rewrite 按写回层（source）判定
+        # 提交落点（code-review item b306482f0d0e）。
+        self._commit_declaration_rewrite(
+            spec_name, old_path, new_path, result, resolved=resolved
+        )
         return True
 
     def _commit_declaration_rewrite(
-        self, spec_name: str, element: str, new_path: str, result
+        self, spec_name: str, element: str, new_path: str, result,
+        resolved: "dict | None" = None,
     ) -> None:
-        """声明改写/登记后提交固化到实现分支（add-declaration-relocation-protocol D2）。
+        """声明改写/登记后提交固化（add-declaration-relocation-protocol D2）。
 
         改写目标 = 生效声明所在位置（worktree 内文件 → 分支 → 主树回退，见
-        ``resolve_effective_declaration``）。改写后 MUST 在实现分支上提交：
+        ``resolve_effective_declaration``）。``resolved`` 为该解析结果（含
+        ``source``/``spec_dir``，``_relocate_or_register`` 传入），提交落点随
+        **写回层**判定：
 
-        - worktree 存在（full 车道守卫/裁决窗口保留 / fast-track 现场保留）：
-          ``git -C <worktree> add + commit``（提交落实现分支 HEAD）；
-        - worktree 已清理、仅分支留存：经 ``worktree_manager`` 重挂该分支
-          worktree、提交后移除（MUST NOT ``git -C <project_root> commit``——
-          只作用于主树当前分支，不会落到实现分支；仓库内亦无 commit-tree 型
-          无 worktree 写分支助手）。
+        - ``source == "main"``（命中主树层）：改写内容已落在主树工作区 →
+          同层提交（commit 根 = ``project_root``，与 ``resolve_writeback_target``
+          的 commit_root 语义一致），不经实现分支 worktree——分支内 add/commit
+          对主树工作区改动恒 nothing-to-commit，徒增「未落分支」噪音；
+        - 其余 source 在实现分支上提交：
+
+          - worktree 存在（full 车道守卫/裁决窗口保留 / fast-track 现场保留）：
+            ``git -C <worktree> add + commit``（提交落实现分支 HEAD）；
+          - worktree 已清理、仅分支留存：经 ``worktree_manager`` 重挂该分支
+            worktree、提交后移除（MUST NOT ``git -C <project_root> commit``——
+            只作用于主树当前分支，不会落到实现分支；仓库内亦无 commit-tree 型
+            无 worktree 写分支助手）；
+          - 重挂失败（code-review item b306482f0d0e）：MUST NOT 回退主树提交
+            （即上一条禁令——主树提交只落主树当前分支，且会把主树 tasks.md
+            工作区现状一并带上去），仅 WARNING 非阻塞，改写内容保留在原层
+            工作区（凭据登记路径未改写 tasks.md，本就无需提交）。
+
         - 提交失败仅 WARNING：内容仍在工作区，派发前 ``ensure_spec_committed``
           兜底（与既有 ``_commit_softened_declaration`` 非阻塞语义一致）。
         """
@@ -1636,6 +1654,13 @@ class VAdjudicationMixin:
         if not branch:
             return
         rel = f"spec/changes/{spec_name}/tasks.md"
+        # 写回层判定（code-review item b306482f0d0e）：生效声明命中主树层时
+        # 改写内容就在主树工作区，同层提交（commit 根 = project_root）。
+        if (resolved or {}).get("source") == "main":
+            self._commit_softened_declaration(
+                spec_name, element, repo_root=self._pm.project_root
+            )
+            return
         worktree_path = self._find_worktree_for(result)
         tmp_wt = None
         if worktree_path is None:
@@ -1647,8 +1672,15 @@ class VAdjudicationMixin:
                 tmp_wt = None
             worktree_path = tmp_wt
         if worktree_path is None:
-            # 重挂失败：退回既有主树提交路径（非阻塞，派发前兜底）
-            self._commit_softened_declaration(spec_name, element)
+            # 重挂失败（code-review item b306482f0d0e）：MUST NOT 回退主树提交
+            # ——git -C project_root 只落主树当前分支、不落实现分支，且会把主树
+            # tasks.md 工作区现状一并带上去。仅 WARNING 非阻塞，内容保留原层。
+            self._pm.logger.warning(
+                "pm_engine",
+                f"声明段重定位提交未落实现分支 '{spec_name}'（{element} → "
+                f"{new_path}，分支 {branch} 重挂 worktree 失败）——改写内容"
+                f"保留在原层工作区，非阻塞",
+            )
             return
         import subprocess as _sp
 

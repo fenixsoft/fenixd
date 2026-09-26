@@ -1646,8 +1646,10 @@ class QQQueueMixin:
                     # 「run 被人工取消」与 reason），不翻转 status、不动
                     # _retry_count/_merge_fp/_merge_streak、不入队重派。
                     # 后续重排完全交给既有机制（stuck 检测/恢复扫描）或
-                    # 管理员人工操作（freeze 等）。
-                    if getattr(result, "cancelled", False):
+                    # 管理员人工操作（freeze 等）。判定口径与上方
+                    # frozen_terminated 一致用 `is True`（防 MagicMock 替身
+                    # 自动生成 truthy 属性误判）。
+                    if getattr(result, "cancelled", False) is True:
                         cancelled_err = (
                             f"run 被人工取消：{final_error}" if final_error else "run 被人工取消"
                         )

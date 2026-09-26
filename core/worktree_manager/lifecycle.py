@@ -772,12 +772,19 @@ class G1LifecycleMixin:
         agent 进程时，同样返回 True（重建登记），防止创建第二个并发 worktree。
         """
         # [fenix-ignore:a83d069b9197] 台账所述子串比对已修复为 _lock_spec_name 精确比对（split(":")[0]==spec），spec 名互为子串不再误判持锁
-        # sorted() 快照先遍历（同 refresh_locks）：并发 create/cleanup 增删 _spec_locks 时，
-        # 无锁直接迭代会抛 "Set changed size during iteration"；不整方法持 _spec_lock_th
-        # 是因下方 _release_spec_locks 会再次取同一非重入锁。
+        # 快照容错（code-review ae95d059b22）：sorted() 构建快照本身就要迭代原
+        # 集合，并非原子——并发 create/cleanup 增删 _spec_locks 仍可能在此抛
+        # "Set changed size during iteration"，故捕获后保守视为持锁（本方法是
+        # 派发闸门，各调用方都把 True 解释为「spec 忙则不动」，误 True 仅延后
+        # 派发不会双派发），下次调用自然重判。不整方法持 _spec_lock_th 是因
+        # 下方 _release_spec_locks 会再次取同一非重入锁；快照后的 any() 遍历
+        # 的是独立列表，不再触碰原集合。
+        try:
+            snapshot = sorted(self._spec_locks)
+        except RuntimeError:
+            return True
         registered = any(
-            self._lock_spec_name(lock) == spec_name
-            for lock in sorted(self._spec_locks)
+            self._lock_spec_name(lock) == spec_name for lock in snapshot
         )
         if not registered:
             # 无在册锁：以进程为真相兜底（daemon 重启 / 孤儿 resume 场景），
@@ -825,7 +832,15 @@ class G1LifecycleMixin:
         Returns: 被回收的锁 key 列表（审计/测试用）。
         """
         released: list = []
-        for lock_key in sorted(self._spec_locks):
+        # 快照容错（code-review ae95d059b22，同 has_active_worktree）：sorted()
+        # 构建快照仍要迭代原集合，并非原子，并发 create/cleanup 增删可抛
+        # RuntimeError。本轮放弃清扫即返回（陈锁回收是幂等周期任务，漏扫一轮
+        # 由下一轮补上；保守方向——锁未回收只会延后派发，不会双派发）。
+        try:
+            snapshot = sorted(self._spec_locks)
+        except RuntimeError:
+            return released
+        for lock_key in snapshot:
             spec = self._lock_spec_name(lock_key)
             if self._spec_process_alive(spec):
                 continue

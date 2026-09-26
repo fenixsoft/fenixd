@@ -106,6 +106,10 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
   // ── verify.yaml 查看与编辑（项目级文件）──
   const [yamlDraft, setYamlDraft] = useState<string>('');
   const [yamlExists, setYamlExists] = useState<boolean>(false);
+  // 加载失败独立标记：yamlExists 只在加载成功时更新，失败时保持旧值 false 会把
+  // 「加载失败」误呈现为「确认不存在」，诱导用户插入模板→保存覆盖已有契约；
+  // 失败期间不渲染「尚无 verify.yaml」提示，改显失败提示与重试入口。
+  const [yamlLoadError, setYamlLoadError] = useState(false);
   const [yamlLoading, setYamlLoading] = useState(false);
   const [yamlSaving, setYamlSaving] = useState(false);
   const [autodraftLoading, setAutodraftLoading] = useState(false);
@@ -141,6 +145,7 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
     try {
       const d = await getVerifyYaml(project);
       if (seq !== yamlLoadSeq.current) return; // 过期响应：丢弃，不回写草稿
+      setYamlLoadError(false); // 加载成功：清除失败标记
       if (
         silent &&
         yamlDraftRef.current !== d.content &&
@@ -164,6 +169,7 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
       yamlDraftSourceRef.current = { project, seq };
     } catch (e) {
       if (seq !== yamlLoadSeq.current) return; // 过期请求的失败也不打扰当前项目
+      setYamlLoadError(true); // 失败时不让 yamlExists 的旧值冒充「确认不存在」
       console.error('Failed to load verify.yaml:', e);
       message.error(`加载 verify.yaml 失败：${e instanceof Error ? e.message : e}`);
     } finally {
@@ -176,6 +182,7 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
     // 直接覆盖），防止上一项目残留基线把新项目内容误判为「覆盖未保存修改」
     yamlDraftRef.current = '';
     yamlLoadedContentRef.current = '';
+    setYamlLoadError(false); // 清上一个项目残留的失败标记
     loadVerifyYaml();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project]);
@@ -281,13 +288,27 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
             本文件随仓库提交，保存后建议尽快 commit（daemon 派发 agent 前会 stash
             未提交修改）。
           </Text>
-          {!yamlExists && !yamlLoading && (
+          {!yamlExists && !yamlLoading && !yamlLoadError && (
             <Alert
               style={{ marginTop: 8 }}
               type="info"
               showIcon
               message="尚无 verify.yaml（无契约时框架回退旧行为），可插入模板后按项目修改保存。"
               data-testid="verify-yaml-missing-alert"
+            />
+          )}
+          {yamlLoadError && !yamlLoading && (
+            <Alert
+              style={{ marginTop: 8 }}
+              type="warning"
+              showIcon
+              message="verify.yaml 加载失败：无法确认服务器上是否已有契约，重试成功前请勿插入模板保存，以免覆盖已有契约。"
+              action={
+                <Button size="small" type="link" onClick={() => loadVerifyYaml()}>
+                  重试
+                </Button>
+              }
+              data-testid="verify-yaml-load-error-alert"
             />
           )}
           <TextArea

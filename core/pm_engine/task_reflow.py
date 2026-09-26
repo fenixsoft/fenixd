@@ -54,7 +54,9 @@ def reflow_spec(
     Returns:
         {"ok": True, "spec": ..., "status": "ready"} — 合规复位成功；
         {"ok": False, "found": False, "reason": ...} — SPEC 不存在；
-        {"ok": False, "found": True, "reason": ...} — 拒绝（四类原因见 docstring）。
+        {"ok": False, "found": True, "reason": ...} — 拒绝（非 verified /
+                                                      error 非 task-gap 前缀 /
+                                                      冻结态 / 写回期间被并发冻结）。
     """
     from core.state_machine import FROZEN_FIELD
 
@@ -93,12 +95,33 @@ def reflow_spec(
 
     # ── 执行：原子写回 status=ready + error=null（update_spec 不做状态机合法性
     #    校验，正是本动作用得上的地方：verified→ready 不在 VALID_TRANSITIONS）──
-    ok = state_machine.update_spec(spec_name, {"status": "ready", "error": None})
+    # applied_out 收集写回实际生效字段（code-review b7a0f425b6bb）：读快照判
+    # 冻结与写回之间无原子性，窗口内该 SPEC 被并发冻结时 _apply_updates_entry
+    # 会剥离 status 写（仅落 error=null）——update_spec 照常返回 True，但回炉
+    # 实际未发生。据 _stripped 痕迹识破该假成功：如实返回失败并记 warning，
+    # 不落 PROJECT_LOG 成功留痕（日志语义与真实状态一致；被清掉的 task-gap
+    # error 由下一次 verified→done 门禁尝试重写）。
+    applied: dict = {}
+    ok = state_machine.update_spec(
+        spec_name, {"status": "ready", "error": None}, applied_out=applied
+    )
     if not ok:
         return {
             "ok": False,
             "found": True,
             "reason": f"spec '{spec_name}' 状态写回失败（STATE.md 原子写失败）",
+        }
+    if "_stripped" in applied:
+        logger.warning(
+            "pm_engine",
+            f"回炉未生效 '{spec_name}'（来源={source}）：写回期间该 SPEC 已被"
+            f"并发冻结，status='{applied['_stripped']}' 写被剥离（error 已随"
+            f"更新清空，待下次门禁重写）",
+        )
+        return {
+            "ok": False,
+            "found": True,
+            "reason": f"spec '{spec_name}' 写回期间已被冻结，回炉未生效（status 写被剥离）",
         }
 
     # ── 留痕：PROJECT_LOG.md 追加可追溯记录（失败仅 warning，不阻塞复位）──

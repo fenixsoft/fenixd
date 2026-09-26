@@ -6,6 +6,22 @@ import { SETTINGS_ACTIONS_ROW_STYLE } from '../styles';
 
 const { Text } = Typography;
 
+// ── 预算/规模预检九项缺省单源（code-review item a4fa6d9dffbd）────────
+// initialValues 与回填 effect 曾各写一份字面量（50/50/6/100/3/3/true/30/45），
+// 只改其一时初次渲染值与配置缺失时的回填值即分叉——比照 QualityPanel 的
+// IMPL_REVIEW_DEFAULTS / QUALITY_DEFAULTS 先例抽模块级常量，缺省调整只改此处。
+const AGENTS_DEFAULTS = {
+  tokenBudgetMillions: 50,
+  dailyRunLimit: 50,
+  implRunBudget: 6,
+  implRunBudgetMax: 100,
+  verifyRedoBudget: 3,
+  maxSameCauseRedispatches: 3,
+  scalePrecheckEnabled: true,
+  scalePrecheckHigher: 30,
+  scalePrecheckFull: 45,
+} as const;
+
 interface TokenBudgetPanelProps {
   config: ConfigData;
   onSave: (values: Partial<ConfigData>) => Promise<void>;
@@ -23,15 +39,16 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
   const sp = config.agents.scale_precheck ?? {};
 
   const initialValues = {
-    token_budget_millions: config.agents.token_budget_millions ?? 50,
-    daily_run_limit: config.agents.daily_run_limit ?? 50,
-    impl_run_budget: config.agents.impl_run_budget ?? 6,
-    impl_run_budget_max: config.agents.impl_run_budget_max ?? 100,
-    verify_redo_budget: config.agents.verify_redo_budget ?? 3,
-    max_same_cause_redispatches: config.agents.max_same_cause_redispatches ?? 3,
-    scale_precheck_enabled: sp.enabled ?? true,
-    scale_precheck_higher: sp.higher_threshold ?? 30,
-    scale_precheck_full: sp.full_threshold ?? 45,
+    token_budget_millions: config.agents.token_budget_millions ?? AGENTS_DEFAULTS.tokenBudgetMillions,
+    daily_run_limit: config.agents.daily_run_limit ?? AGENTS_DEFAULTS.dailyRunLimit,
+    impl_run_budget: config.agents.impl_run_budget ?? AGENTS_DEFAULTS.implRunBudget,
+    impl_run_budget_max: config.agents.impl_run_budget_max ?? AGENTS_DEFAULTS.implRunBudgetMax,
+    verify_redo_budget: config.agents.verify_redo_budget ?? AGENTS_DEFAULTS.verifyRedoBudget,
+    max_same_cause_redispatches:
+      config.agents.max_same_cause_redispatches ?? AGENTS_DEFAULTS.maxSameCauseRedispatches,
+    scale_precheck_enabled: sp.enabled ?? AGENTS_DEFAULTS.scalePrecheckEnabled,
+    scale_precheck_higher: sp.higher_threshold ?? AGENTS_DEFAULTS.scalePrecheckHigher,
+    scale_precheck_full: sp.full_threshold ?? AGENTS_DEFAULTS.scalePrecheckFull,
   };
 
   // 回填门控（code-review item cbec8303669f，比照 MiscSettingsPanel 0a2bd3f20fcd /
@@ -41,15 +58,17 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
   const lastBackfillRef = useRef('');
   useEffect(() => {
     const next = {
-      token_budget_millions: config.agents.token_budget_millions ?? 50,
-      daily_run_limit: config.agents.daily_run_limit ?? 50,
-      impl_run_budget: config.agents.impl_run_budget ?? 6,
-      impl_run_budget_max: config.agents.impl_run_budget_max ?? 100,
-      verify_redo_budget: config.agents.verify_redo_budget ?? 3,
-      max_same_cause_redispatches: config.agents.max_same_cause_redispatches ?? 3,
-      scale_precheck_enabled: config.agents.scale_precheck?.enabled ?? true,
-      scale_precheck_higher: config.agents.scale_precheck?.higher_threshold ?? 30,
-      scale_precheck_full: config.agents.scale_precheck?.full_threshold ?? 45,
+      token_budget_millions: config.agents.token_budget_millions ?? AGENTS_DEFAULTS.tokenBudgetMillions,
+      daily_run_limit: config.agents.daily_run_limit ?? AGENTS_DEFAULTS.dailyRunLimit,
+      impl_run_budget: config.agents.impl_run_budget ?? AGENTS_DEFAULTS.implRunBudget,
+      impl_run_budget_max: config.agents.impl_run_budget_max ?? AGENTS_DEFAULTS.implRunBudgetMax,
+      verify_redo_budget: config.agents.verify_redo_budget ?? AGENTS_DEFAULTS.verifyRedoBudget,
+      max_same_cause_redispatches:
+        config.agents.max_same_cause_redispatches ?? AGENTS_DEFAULTS.maxSameCauseRedispatches,
+      scale_precheck_enabled: config.agents.scale_precheck?.enabled ?? AGENTS_DEFAULTS.scalePrecheckEnabled,
+      scale_precheck_higher:
+        config.agents.scale_precheck?.higher_threshold ?? AGENTS_DEFAULTS.scalePrecheckHigher,
+      scale_precheck_full: config.agents.scale_precheck?.full_threshold ?? AGENTS_DEFAULTS.scalePrecheckFull,
     };
     const key = JSON.stringify(next);
     if (key === lastBackfillRef.current) return;
