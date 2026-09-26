@@ -16,11 +16,16 @@ import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { PageContainer } from '@ant-design/pro-components';
 import type { Components } from 'react-markdown';
+import type { AnchorHTMLAttributes, ComponentType } from 'react';
 
 import { getHelpDocs, getHelpDoc } from '@/services/dashboard';
 import type { HelpDocMeta, HelpDocItem } from '@/services/dashboard';
 import { markdownComponents, SafeLink } from '@/pages/projects/components/SpecDocModal';
 import { useIsMobile } from '@/hooks/useIsMobile';
+
+// SafeLink 声明为 react-markdown 的宽联合类型 Components['a']，兜底分支直接作 JSX
+// 元素会触发 TS2604/TS2786，此处断言为具体锚点组件类型
+const SafeLinkComp = SafeLink as ComponentType<AnchorHTMLAttributes<HTMLAnchorElement>>;
 
 const DEFAULT_DOC = 'README.md';
 
@@ -238,7 +243,7 @@ function buildHelpComponents(onNavigate: (docName: string, anchor?: string) => v
       }
       // 其它链接：复用 SafeLink 的协议白名单兜底（非白名单协议/无效 URL 降级为纯文本），
       // 与 SpecDocModal 的 markdown 链接安全口径保持一致
-      return <SafeLink href={href} {...rest}>{children}</SafeLink>;
+      return <SafeLinkComp href={href} {...rest}>{children}</SafeLinkComp>;
     },
   };
 }
