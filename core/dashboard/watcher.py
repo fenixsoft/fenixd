@@ -6,7 +6,7 @@ watcher.py — Dashboard 数据源文件变更监听（VuePress 式推送的前�
 检测到变化后重组对应视图数据并交给 SSE Hub 广播。纯标准库，思路与
 daemon 侧 event_bus.py 的 checksum 轮询一致。
 
-事件类型（SSE Hub 广播的 payload 统一带 project 字段）：
+事件类型（除全局 refresh 外均带 project 字段）：
 - {type: "state",   project, specs, details, overview: null}  —— 增量形态
   （dashboard-incremental-watcher D2）：specs 仅列变更 spec 的摘要
   （新增/变更带 summary，删除以 summary:null 标记），details 仅含变更 spec 的详情，
@@ -16,6 +16,8 @@ daemon 侧 event_bus.py 的 checksum 轮询一致。
 - {type: "run_events", run_id, status, events[, reset]} —— 被订阅 run 的增量事件
 - {type: "admin_activities", project}          —— .fenix/admin_alerts.json 变化
   （add-admin-invoke-dialog：弹窗打开时前端据此重新拉取该 SPEC 的处置记录）
+- {type: "refresh"}                            —— 全局刷新心跳（无 project 字段），
+  周期广播：daemon 状态/新项目发现等变化不产生数据源文件变更，前端据此整体重拉校准
 
 监视模型（dashboard-incremental-watcher D7，两级签名跳层 + 索引兜底）：
 - **一级（顶层源）**：每项目 stat 固定集合（STATE.md、spec/changes、
