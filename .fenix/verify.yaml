@@ -103,3 +103,7 @@ regression:
   output: .fenix/regression/junit.xml
   format: junit
   timeout_seconds: 1800
+  # 长耗时用例阈值项目级收紧为 5s（2026-09-25；代码缺省 8 不动）。test_
+  # artifact_paths_declaration 的 walk 剪枝治理后已落 2s 级，5s 口径让
+  # 5s+ 用例进回归页签长耗时表。
+  long_test_threshold_seconds: 5
