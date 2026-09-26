@@ -143,8 +143,8 @@ class G4MergebackMixin:
                 return gate_blocked
 
             # ── spec 目录在飞编辑卫检查（evo-merge-back-spec-dir-inflight-guard D1）──
-            # 闸门顺序（task 0.1 固化）：rehearsed（line 77）→ wip_overlap_gate
-            # （line 96）→ 本卫检查 → ensure_clean_tree（line 100）。三者均为主树
+            # 闸门顺序（task 0.1 固化）：_rehearse_merge_from_branch →
+            # _wip_overlap_gate → 本卫检查 → ensure_clean_tree。三者均为主树
             # 零污染早退，顺序不改变各自判定结果，但 MUST 固化以防把「需 repair 的
             # 冲突」误报为「等待提交」。复用 _spec_from_branch（queries.py:43）从
             # 分支名解析 spec；解析失败（非 fenix/<spec>-<ts> 形态）→ 返回 None
@@ -284,8 +284,8 @@ class G4MergebackMixin:
           （``info.wip_overlap``）。产物重叠在此方法内已按 D3b 对齐 HEAD（
           ``git checkout HEAD -- <p>``），不再进入重叠集合。
 
-        **D3b 核心动机**：`ensure_clean_tree()`（`mergeback.py:100`）在闸门放行后
-        **无条件**对全树 tracked 脏改动执行 stash；产物的未提交改动**不需要
+        **D3b 核心动机**：`ensure_clean_tree()`（``merge_back_from_branch`` 主链
+        内、本闸门放行之后）**无条件**对全树 tracked 脏改动执行 stash；产物的未提交改动**不需要
         保护**（产物是 src 的投影，merge 后由构建重建），把它纳入重叠集合只会
         制造必然的 pop 冲突与误报 major 告警。因此在 `ensure_clean_tree` 之前，
         把重叠集合中判定为产物的子集对齐 HEAD（使其变干净、不进 stash、pop 无
