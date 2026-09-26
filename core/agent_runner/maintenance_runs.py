@@ -1844,7 +1844,7 @@ def run_code_fix(
     # 背景：glm-5.3-flash thinking 生成是回合耗时大头（09-24 批实测 117/357
     # 消息带 thinking、均 1614 字符、工具执行≈0）。实验定案后若保留须补
     # Dashboard 设置项（fenix-new-config-needs-dashboard-ui）。
-    agent_env = ((getattr(runner, "config", {}) or {}).get("agents") or {}).get("agent_env") or {}
+    agent_env = (((getattr(runner, "config", {}) or {}).get("agents") or {}).get("agent_env") or {}).get("code-fix") or {}
     for _k, _v in agent_env.items():
         env_overrides[str(_k)] = str(_v)
     if agent_env:
