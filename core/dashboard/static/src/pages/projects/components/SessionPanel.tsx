@@ -209,6 +209,36 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
     }
   };
 
+  // 快照应用（carried 合并形态，code-review item b2ce2f362979）：与 applySnapshot
+  // 并列，事件应用由整表替换改为「服务端快照为主序、本地已有而快照缺失的事件
+  // 按原顺序经 appendEvents 补回（uuid 并回去重集合）」。SSE 每事件只推一次，
+  // 快照 GET 发起后被服务端快照遗漏、却在快照应用前经 SSE append 的事件，整表
+  // 替换会把它从渲染列表抹掉、seenUuidsRef 按 snapshot 重建后其 uuid 一并移除
+  // （下次重连/重拉前不再出现）。afterHello 第二次重拉（code-review item
+  // 1371d6ca978a）与 handleStart 的快照拉取共用本实现，消除单点修复导致的路径
+  // 漂移。无 uuid 事件（stderr / session_ended 合成）无法去重且快照含同类事件，
+  // 维持全量重拉丢弃的既有语义，不补回。
+  const applySnapshotCarried = (data: Awaited<ReturnType<typeof getSession>>) => {
+    // 调用点均在 data.session 存在时进入；空会话委托 applySnapshot 兜底
+    if (!data.session) {
+      applySnapshot(data);
+      return;
+    }
+    const snapshotUuids = new Set(
+      (data.events || [])
+        .map((ev) => (ev ? (ev.uuid as string | undefined) : undefined))
+        .filter((u): u is string => Boolean(u)),
+    );
+    // carried 须在 applySnapshot（内部 syncEvents 整表替换 eventsRef）前取样
+    const carried = eventsRef.current.filter((ev) => {
+      const uuid = ev ? (ev.uuid as string | undefined) : undefined;
+      if (!uuid) return false;
+      return !snapshotUuids.has(uuid);
+    });
+    applySnapshot(data);
+    appendEvents(carried);
+  };
+
   // 拉全量 + 建立 SSE（分面激活时执行；切离后重新接回）
   useEffect(() => {
     if (!active || !project) return;
@@ -262,30 +292,14 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
               console.error('Failed to register session watch:', e);
             }
             // 注册后重拉一次（兜住注册前的窗口，design D6）。
-            // 合并去重而非整表替换（code-review item 1371d6ca978a）：本 GET
-            // 发起后被服务端快照遗漏、却在快照应用前经 SSE append 的事件，
-            // 整表替换会把它从渲染列表抹掉、seenUuidsRef 按 snapshot 重建后
-            // 其 uuid 一并移除（SSE 每事件只推一次，下次重连/重拉前不再出现）。
-            // 以服务端快照为主序应用后，把「本地已有、快照缺失」的事件按原
-            // 顺序经 appendEvents 补回（uuid 并回去重集合）；无 uuid 事件
-            // （stderr / session_ended 合成）无法去重且快照含同类事件，维持
-            // 全量重拉丢弃的既有语义，不补回。
+            // carried 合并而非整表替换（code-review item 1371d6ca978a）：本 GET
+            // 发起后被服务端快照遗漏、却在快照应用前经 SSE append 的事件不被
+            // 抹掉；合并实现单源于 applySnapshotCarried（item b2ce2f362979），
+            // 与 handleStart 复用。
             const again = await getSession(project);
             if (disposed) return;
             if (again.session) {
-              const snapshotUuids = new Set(
-                (again.events || [])
-                  .map((ev) => (ev ? (ev.uuid as string | undefined) : undefined))
-                  .filter((u): u is string => Boolean(u)),
-              );
-              const carried = eventsRef.current.filter((ev) => {
-                const uuid = ev ? (ev.uuid as string | undefined) : undefined;
-                if (!uuid) return false;
-                return !snapshotUuids.has(uuid);
-              });
-              syncEvents(again.events || []);
-              appendEvents(carried);
-              setTruncated(Boolean(again.truncated));
+              applySnapshotCarried(again);
             }
           }
           // 无会话（空态）：跳过注册，避免 404 + console.error
@@ -401,9 +415,14 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
           console.error('Failed to register session watch:', e);
         }
       }
+      // carried 合并而非整表替换（code-review item b2ce2f362979）：startSession
+      // 响应返回（sessionIdRef 已置位、watch 已补注册，SSE 帧可先行 append）到
+      // 本 GET 快照落定之间存在竞态窗口，整表替换会把窗口内未进入服务端快照的
+      // 事件永久丢弃且 uuid 被去重集合剔除；与 afterHello 第二次重拉共用
+      // applySnapshotCarried。
       const data = await getSession(project);
       if (data.session) {
-        applySnapshot(data);
+        applySnapshotCarried(data);
       }
       setError('');
     } catch (e) {
