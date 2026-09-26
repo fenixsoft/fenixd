@@ -1261,11 +1261,11 @@ export interface AdminConfig {
 }
 
 // add-stale-code-selfheal：代码陈旧自愈配置节（enabled 缺省 true /
-// idle_confirm_seconds 缺省 120）
+// idle_confirm_seconds 缺省 600，evo-reduce-stale-code-selfheal-noise）
 export interface StaleCodeSelfhealConfig {
   /** 陈旧自愈总开关（缺省 true）：陈旧 + 配置启用 + 托管 + 连续空闲达阈值 → 触发重启 */
   enabled?: boolean;
-  /** 连续空闲确认秒数（缺省 120）：陈旧状态 + 启用 + 托管 + 空闲持续达到该时长后 touch restart_request */
+  /** 连续空闲确认秒数（缺省 600）：陈旧状态 + 启用 + 托管 + 空闲持续达到该时长后 touch restart_request */
   idle_confirm_seconds?: number;
 }
 

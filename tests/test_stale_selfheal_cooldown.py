@@ -104,6 +104,7 @@ class _Fixture(unittest.TestCase):
         self._mp_sup = mock.patch.object(
             fenix_session, "supervisor_running", return_value=True)
         self._mp_sup.start()
+        self.cfg()  # 基线：idle_confirm_seconds=120（钉住触发节奏，见 _CFG_BASE）
 
     def tearDown(self):
         self._mp_sup.stop()
@@ -112,9 +113,17 @@ class _Fixture(unittest.TestCase):
 
     # ── 夹具辅助 ────────────────────────────────────────────────────
 
+    # evo-reduce-stale-code-selfheal-noise：idle 缺省 120→600。本文件聚焦
+    # cooldown/自触发/历史语义（idle 缺省本身由 test_stale_selfheal_idle.py
+    # 与 test_stale_code_selfheal.py 覆盖），夹具显式钉住旧缺省 120s 保持
+    # 既有触发节奏（130s 空闲可达阈值），不随缺省漂移。
+    _CFG_BASE = {"idle_confirm_seconds": 120}
+
     def cfg(self, **overrides):
-        """写入 stale_code_selfheal 配置（未覆盖键走缺省）。"""
-        self.d.config = {"stale_code_selfheal": dict(overrides)}
+        """写入 stale_code_selfheal 配置（未覆盖键回退夹具基线）。"""
+        base = dict(self._CFG_BASE)
+        base.update(overrides)
+        self.d.config = {"stale_code_selfheal": base}
 
     def plant_history(self, ages_seconds, streak=0, self_triggered=False):
         """按「距今多少秒」写入历史条目（ages_seconds 可为单个或多个）。"""
@@ -578,6 +587,9 @@ class TestIsIdleWithRunningAgents(unittest.TestCase):
     def test_bare_object_without_new_state_attrs_tolerated(self):
         """缺 _cooldown_started_at / _self_triggered_cycle 的裸对象：tick 不抛异常。"""
         d = self._daemon("absent", bare=True)
+        # 本类不走 _Fixture（无 self.d/cfg 基线）：显式钉 idle 120s 保持
+        # 既有触发节奏（缺省已提额 600，见 _CFG_BASE 注）
+        d.config = {"stale_code_selfheal": {"idle_confirm_seconds": 120}}
         with mock.patch.object(_fenixd_mod, "PROJECT_ROOT", self.proot), \
                 mock.patch.object(fenix_session, "supervisor_running", return_value=True):
             d._maybe_stale_selfheal_tick()  # 只开始计时，不触发

@@ -447,8 +447,11 @@ def _default_echo_view(scope: str) -> dict:
         "admin": dict(_ADMIN_DEFAULTS, merge_breaker_threshold=2),
         # add-spec-hooks：两级 hook 订阅配置（缺省空订阅，零行为）
         "hooks": {"global": [], "specs": {}},
-        # add-stale-code-selfheal：陈旧自愈配置节（enabled 缺省 true / idle_confirm_seconds 缺省 120）
-        "stale_code_selfheal": {"enabled": True, "idle_confirm_seconds": 120},
+        # add-stale-code-selfheal：陈旧自愈配置节（enabled 缺省 true /
+        # idle_confirm_seconds 缺省 600，evo-reduce-stale-code-selfheal-noise
+        # 2.4——与 ConfigLoader 缺省同步，避免设置页以旧值回填表单、用户保存即
+        # 把旧缺省显式写入项目配置、静默覆盖新缺省）
+        "stale_code_selfheal": {"enabled": True, "idle_confirm_seconds": 600},
         # add-framework-self-evolution：self_evolution 三键（缺省 auto_accept=false /
         # max_items_per_run=20 / spec_run_at=null 立即执行；code-review item
         # 42b017717b1e：两读路径统一含 spec_run_at，早退路径形状不缺键）

@@ -5,6 +5,9 @@ admin_store.py — Administrator 告警/处置记录持久化（.fenix/admin_ale
   - kind="signal"      监视器检测到的困境信号（审计 + 节流依据）
   - kind="escalation"  需人工介入的升级告警（未处理时 Dashboard 横幅展示）
   - kind="disposition" Administrator 完成的一次处置记录
+  - kind="info"        纯留痕信息（evo-reduce-stale-code-selfheal-noise）：
+                       自愈健康路径的 stale_code 留痕，无处理生命周期、
+                       不进人工队列，仅 latest_signal 窗口去重可见
 
 并发安全：daemon 监视线程与 Dashboard server 是独立进程，所有读改写
 都在 fcntl.flock 排他锁内进行（锁文件与数据文件同路径 + .lock）。
@@ -27,6 +30,10 @@ from .alert_lifecycle import AUTO_RESOLVE_BY
 SIGNAL = "signal"
 ESCALATION = "escalation"
 DISPOSITION = "disposition"
+# evo-reduce-stale-code-selfheal-noise 2.1：info 级留痕 kind。无处理生命周期
+# （mark_handled/unhandled/pending_escalations 仍仅锚定 ESCALATION，口径不变），
+# 仅参与 latest_signal 窗口去重（见白名单）。
+INFO = "info"
 
 # 记录数上限（2026-09-01 用户决策）：任何写回时自动裁剪，只保留最近 150 条。
 # 消费方（latest_signal 冷却去重、auto_resolve 按 id 闭环）均只依赖近期记录，
@@ -539,10 +546,14 @@ class AdminStore:
         for rec in self.read_all():
             if rec.get("signal_type") != signal_type:
                 continue
-            if rec.get("kind") not in (SIGNAL, ESCALATION, DISPOSITION):
-                # 三种 kind 已是 admin_alerts.json 全部在册记录（见模块 docstring），
+            if rec.get("kind") not in (SIGNAL, ESCALATION, DISPOSITION, INFO):
+                # 四种 kind 已是 admin_alerts.json 全部在册记录（见模块 docstring），
                 # 此过滤对正常记录恒放行；保留仅作前瞻性防御，拦截人工修补/
                 # 外部工具写入的未知或缺失 kind（code-review c78e3230828e）。
+                # evo-reduce-stale-code-selfheal-noise 2.1：INFO 加入白名单——
+                # 否则 info 级 stale_code 留痕对 latest_signal 不可见，60 分钟
+                # 窗口去重对 info 级整体失效，高频提交下每次 daemon 轮换重启
+                # 都重复成条，降噪目标落空。
                 continue
             rec_spec = rec.get("spec")
             if spec is not None and rec_spec != spec:
