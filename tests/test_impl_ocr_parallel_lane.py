@@ -447,7 +447,9 @@ class TestOcrJoinGate:
         )
         assert dispatcher._ocr_join_gate("demo", "planner-judge") == "pass"
         entry = pm.state_machine.read_one("demo")
-        assert "_ocr_join_wait" not in entry
+        # 总开关关闭出口与其余 pass 出口同口径清 pending（写 cleared 标量，
+        # code-review item 653b78f24c6c），故断言无「未清」停等标记而非键不存在
+        assert not entry.get("_ocr_join_wait")
 
     def test_missing_artifact_triggers_lane_and_defers(self, tmp_path):
         dispatcher, pm = self._dispatcher_with_fingerprint(
