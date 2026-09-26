@@ -1459,6 +1459,18 @@ def reset_verification(project_root, spec: str, note: str = "", signal_type: str
                 "ok": False, "found": True, "steps": [], "target_status": None,
                 "error": "冻结原因属用户指令成本止损（非验证链信号），重置验证被拒绝",
             }
+        # 用户指令冻结默认拒绝（code-review item 659874157d55）：freeze_spec
+        # 把人工 reason 并入冻结 error（「用户指令冻结：原状态 X · <reason>」），
+        # 自定义 reason 含「重派/验证/预算/env」等通用词即命中下方 marker 子串
+        # 判别，人工冻结被静默解除并删验证进度。人工冻结走 unfreeze/裁决动词
+        # 处置；自动冻结（闸门/env 阻塞/judge·verify 链）写自有文案不携带本
+        # 前缀（见 is_spec_frozen 注），合法验证链冻结不受影响——结构化
+        # signal_type 路径同样不经过本判定。
+        if error_text.startswith(FREEZE_ERROR_PREFIX):
+            return {
+                "ok": False, "found": True, "steps": [], "target_status": None,
+                "error": "用户指令冻结不属验证链信号（人工冻结走解冻/裁决处置），重置验证被拒绝",
+            }
         if not any(m in error_text for m in _VERIFY_CHAIN_ERROR_MARKERS):
             return {
                 "ok": False, "found": True, "steps": [], "target_status": None,
