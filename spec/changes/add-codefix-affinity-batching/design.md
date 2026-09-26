@@ -45,7 +45,7 @@ code-fix 车道现状链路（每批）：`select_batch`（时间序截前 20）
 ### D3 回归两段式：占位符 + fail-open 回退
 
 - `{test_targets}` 占位符：声明在 verify.yaml `regression.cmd` 中，框架替换为空格连接的测试路径列表；对齐 `{port}` 先例（替换 + 同值导出 `FENIX_TEST_TARGETS` 环境变量，str/list 两态 cmd 都支持；list 形态仅替换元素级占位符）。**cmd 无占位符 = 该项目不参与定向化**，恒全量，存量项目零迁移。
-- 末批判定：批收尾时 `count_open_items`（排除本批 item_id 后）为 0。判定必须在核销**前**做（核销会改变 open 集）；实现上由批上下文携带本批 item_ids 计算剩余数。
+- 末批判定：与链收敛出口同口径——`select_batch(root, T, exclude_ids=chain_skipped ∪ deferred_ids ∪ 本批 item_ids)` 返回空（失败档案 ∪ chain_skipped ∪ 延迟台账与本批全部排除后无可选批条目）。MUST NOT 用裸 `count_open_items` 排除本批判定：`count_open_items` 含失败档案/跳过/延迟的 open 条目（`core/code_fix.py:1000` docstring），链最后一批收尾时这些条目常在档，裸计数 >0 会把实际末批判成非末批 → 定向回归 → 链随即正常收敛，全量兜底整链落空。判定必须在核销**前**做（核销会改变 open 集）；链排除集（chain_skipped/deferred）从既有批上下文与延迟台账取得。
 - 触碰面映射（纯函数 `_map_fix_files_to_tests`）：规则 (a) 测试文件直接入选；(b) 产品文件 → 同目录 `tests/` 的 `test_<stem>.py` 命名匹配 + `tests/` 树内文本 grep `import <module>`/`from <module>` 反查取并集。stem 取文件名去扩展名（`core/foo.py` → `test_foo*.py` glob）。grep 反查以 `subprocess` 单次 `grep -rl` 完成，MUST NOT 逐文件 Python 遍历（tests/ 树可达千文件）。
 - fail-open 哲学：映射空集、cmd 无占位符、配置关闭 → 全量。定向化是优化不是门槛，任何不确定都回退到「多花回归时间」这一侧，MUST NOT 回退到「跳过回归」。
 - 定向回归执行仍走 `run_regression`（构造替换后的 RegressionSpec 副本传入），主机级锁、XML 解析、超时全继承——不新增执行通道。

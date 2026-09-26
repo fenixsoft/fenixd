@@ -33,9 +33,9 @@
 
 ## 3. 批收尾回归两段式
 
-- [ ] 3.1 链末批判定：批收尾回归前（核销前）以「排除本批 item_ids 后 `count_open_items` 为 0」判定末批，判定结果供回归分流使用；本批条目集合从既有批上下文取得
+- [ ] 3.1 链末批判定：批收尾回归前（核销前）以「链选批同口径排除（失败档案 ∪ chain_skipped ∪ 延迟台账）后、再排除本批 item_ids，`select_batch` 返回空」判定末批（与链收敛出口同判据；MUST NOT 用裸 `count_open_items` 排除本批判定——其计数含被排除 open 条目，会把实际末批判成非末批致全量兜底整链落空）；判定结果供回归分流使用；本批条目集合从既有批上下文取得
 - [ ] 3.2 `core/code_fix.py` 新增触碰面映射纯函数（fixed 行 `file` 集合 → 测试路径列表）：测试文件（`tests/` 下或 `test_` 前缀/`_test` 后缀）直接入选；产品文件按「同目录 `tests/` 的 `test_<stem>.py` glob 命名匹配」∪「`tests/` 树内 `grep -rl` import/from 反查」（subprocess 单次调用，MUST NOT 逐文件 Python 遍历）；路径相对回归执行根解析
-- [ ] 3.3 `{test_targets}` 占位符替换：str/list 两态 `regression.cmd` 支持（替换为空格连接的测试路径列表、路径做 shell 引用包裹、同值导出 `FENIX_TEST_TARGETS` 环境变量，对齐 `{port}` 占位符先例）；以替换后的 RegressionSpec 副本传入既有 `run_regression`（主机级锁/JUnit 解析/硬超时全继承，不新增执行通道）
+- [ ] 3.3 `{test_targets}` 占位符替换：str/list 两态 `regression.cmd` 支持（str 形态替换为空格连接的测试路径列表并对路径做 shell 引用包裹，list 形态按元素级替换、路径原样不做 shell 引用（argv 不经 shell）；同值导出 `FENIX_TEST_TARGETS` 环境变量，对齐 `{port}` 占位符先例）；以替换后的 RegressionSpec 副本传入既有 `run_regression`（主机级锁/JUnit 解析/硬超时全继承，不新增执行通道）
 - [ ] 3.4 批收尾回归分流：末批恒全量；非末批且 `targeted_regression=true` 且 cmd 含占位符且映射非空 → 定向回归；否则回退全量并记日志（fail-open）；进度写点 `current` 文案区分「定向回归」与「全量回归」（不带分母）；失败语义走既有回归失败路径（含定向重试轮），零新增处置分支
 - [ ] 3.5 单测：末批判定（剩余 open 为 0/非 0）+ 映射规则（测试文件直选/命名匹配/import 反查并集/空集）+ 占位符替换（str/list 两态、路径引用）+ 三分支回退（无占位符/映射空/配置关）+ 定向失败与末批全量失败均进既有失败路径
 
