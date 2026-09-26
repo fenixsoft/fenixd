@@ -612,6 +612,15 @@ class QQQueueMixin:
 
                 # 找队列中所有状态合法条目的最高 effective 档位
                 # （先不 pop，只扫描以确定 queued_best）
+                # code-review item 806ba20de85f：同轮判据缓存 (sname, atype) →
+                # (spec, ready)。best_valid_prio 扫描与 dispatch_idx 扫描在同一
+                # 锁持有窗口内连续执行，过滤条件一致、队列与 suppressed 均不变
+                # （_queue_entry_ready 链上仅幂等恢复定时器排程与日志，无队列
+                # mutation），第二轮直接复用首轮判定，消除同轮对同一批 spec 的
+                # 重复 read_one 读盘与闸门链（含 reviewer_in_flight 进程表/流
+                # 文件探测）——否则队列越大持锁 I/O 临界区越长，放大 dashboard
+                # 只读路径在 _queue_lock 上的等待。缓存每轮 while 重建，不跨轮。
+                scan_verdicts = {}
                 best_valid_prio = None
                 for entry in self._run_queue:
                     prio, sname, atype, enqueued_at = entry
@@ -624,12 +633,15 @@ class QQQueueMixin:
                     eff = self._pm._effective_priority(prio, enqueued_at, now)
                     spec = self._pm.state_machine.read_one(sname)
                     if not spec:
+                        scan_verdicts[(sname, atype)] = (None, False)
                         continue
                     # 状态守卫与退避/start_after/双冷却/在飞评审闸门链：单一
                     # 落点 _queue_entry_ready（对齐 _review_entry_ready 单一
                     # 落点范式，code-review item 409a6ced70ce），两处扫描不再
                     # 各自复制守卫链。
-                    if not self._queue_entry_ready(spec, sname, atype):
+                    ready = self._queue_entry_ready(spec, sname, atype)
+                    scan_verdicts[(sname, atype)] = (spec, ready)
+                    if not ready:
                         continue
                     if best_valid_prio is None or eff < best_valid_prio:
                         best_valid_prio = eff
@@ -661,13 +673,13 @@ class QQQueueMixin:
                         continue
                     if self._pm._effective_priority(prio, enqueued_at, now) != target_prio:
                         continue
-                    spec = self._pm.state_machine.read_one(sname)
-                    if not spec:
-                        continue
-                    # 状态守卫与闸门链：与 best_valid_prio 扫描同口径（同一
+                    # 状态守卫与闸门链：复用 best_valid_prio 扫描的同轮判定
+                    # 缓存（code-review item 806ba20de85f；判定口径仍同一
                     # 单一落点 _queue_entry_ready，code-review item
-                    # 409a6ced70ce）。
-                    if not self._queue_entry_ready(spec, sname, atype):
+                    # 409a6ced70ce）。两扫描过滤条件一致，走到这里的条目必在
+                    # 首轮缓存中，判定结果与原重复判定等价。
+                    spec, ready = scan_verdicts[(sname, atype)]
+                    if not spec or not ready:
                         continue
                     dispatch_idx = i
                     break
