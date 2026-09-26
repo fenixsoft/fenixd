@@ -128,14 +128,15 @@ def _judge_round_state(pipeline, spec_name: str) -> dict:
 
 
 def _judge_round_bump(pipeline, spec_name: str, field: str) -> int:
-    """轮内/生命周期计数字段 +1（返回新值；写失败不影响主流程）。"""
-    entry = pipeline._context.state_machine.read_one(spec_name) or {}
-    try:
-        value = int(entry.get(field, 0) or 0) + 1
-    except (TypeError, ValueError):
-        value = 1
-    pipeline._context.state_machine.update_spec(spec_name, {field: value})
-    return value
+    """轮内/生命周期计数字段 +1（返回新值；写失败不影响主流程）。
+
+    锁内原子递增（``state_machine.bump_counters``，与
+    ``fastlane._bump_fail_streak`` 同款）：锁外快照读改写会与其它对同字段
+    的写者（验证失败记账、admin infra 回拨）互相覆盖丢增量，使轮内/生命周期
+    阈值失真。
+    """
+    final = pipeline._context.state_machine.bump_counters(spec_name, {field: 1})
+    return final.get(field, 0)
 
 
 def _judge_charge_real_dispatch(pipeline, spec_name: str) -> int:

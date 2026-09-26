@@ -46,8 +46,8 @@ DISPUTED_FINDING_KEYWORDS = ("dispute", "adjudication")
 # 仓库相对路径形态（judge 归因文本中的影响面文件）：
 # 目录前缀形态（core/…、tests/…、bin/…）或带可识别扩展名的文件名。
 _AFFECTED_PATH_RE = re.compile(
-    r"\b(?:core|bin|docs|tests|agents|scripts|fenixd)[\w\-./]*\.[A-Za-z0-9]+"
-    r"|\b[A-Za-z0-9_\-]+\.(?:py|md|ya?ml|json|toml|ts|tsx|js|jsx)\b"
+    r"\b(?:core|bin|docs|tests|agents|scripts|src|fenixd)[\w\-./]*\.[A-Za-z0-9]+"
+    r"|\b[A-Za-z0-9_\-]+\.(?:py|md|ya?ml|json|toml|ts|tsx|js|jsx|vue|html|css|scss|svelte)\b"
 )
 
 
@@ -261,21 +261,30 @@ def merge_subset_report(prev_report, subset_report) -> dict:
             carried.append(entry)
     # 场景列表取 merged 自身的 deepcopy 副本，避免与原 subset_report 共享条目引用
     merged["scenarios"] = list(merged.get("scenarios") or []) + carried
-    # summary 重算（全部场景判定齐备）
-    passed = failed = errors = 0
+    # summary 重算（全部场景判定齐备）——口径对齐
+    # pipeline._merge_cached_scenario_results（warnings/blocked_env 恒在场，
+    # blocked-env 并入 warnings，下游按 key 直读不 KeyError/误读）
+    passed = failed = errors = warnings = blocked_env = 0
     for sc in merged["scenarios"]:
         st = sc.get("status")
         if st in ("pass", "passed"):
             passed += 1
+        elif st == "warning":
+            warnings += 1
         elif st in ("fail", "failed"):
             failed += 1
         elif st == "error":
             errors += 1
+        elif st == "blocked-env":
+            blocked_env += 1
+    warnings += blocked_env  # blocked-env 并入 warnings（同 _merge_cached_scenario_results 口径）
     merged["summary"] = {
         "total": len(merged["scenarios"]),
         "passed": passed,
         "failed": failed,
         "errors": errors,
+        "warnings": warnings,
+        "blocked_env": blocked_env,
         "carried_over": len(carried),
     }
     return merged
@@ -422,7 +431,7 @@ def subset_reverify(pipeline, spec_name: str, subset_ids: list) -> dict:
         # 写盘失败（磁盘满/权限等）按 fastlane 失败回落整轮，维持返回值契约
         return {"ok": False, "report": None, "reason": f"子集场景文件写盘失败: {e}"}
     env_error, report, _app_reachable, _reach_note, aborted = pipeline._execute_stage2(
-        spec_name, verify_dir, subset_path
+        spec_name, verify_dir, subset_path, skip_prune=True
     )
     if aborted:
         return {"ok": False, "report": None, "reason": "应用不可达 fail-fast（子集重验中止）"}
@@ -597,6 +606,23 @@ def dispatch_minor_defect_fastlane(pipeline, spec_name: str, decision: dict) -> 
     }
     save_report(ctx.project_root, spec_name, merged)
     sm.update_spec(spec_name, {FASTLANE_STREAK_FIELD: 0})
+    # 状态机合法性：bug-found 状态下复用 _apply_verified 的 transition 到
+    # verified 是非法转换（VALID_TRANSITIONS：BUG_FOUND 仅允许
+    # [IMPLEMENTING, IMPLEMENTED]，转换被拒返回 False 而 _apply_verified 不
+    # 检查返回值仍执行 verified 侧副作用——spec 滞留 bug-found 与全绿报告
+    # 不一致，收敛落空且后续 full_scan 按 bug-found 再派生整轮 fix）。先走
+    # 合法链 bug-found→implemented→testing（与 fix SPEC 整轮生命周期同构：
+    # fix 完成 → 重新验证），再复用 _apply_verified 收口（内部
+    # testing→verified + 门禁）。transition 返回 False（冻结剥离/非法）不得
+    # 假收敛，回落整轮并留痕。
+    for _hop in ("implemented", "testing"):
+        if not sm.transition(
+            spec_name, _hop,
+            trigger_run_id=run_id, agent_type="code-fix", channel="auto",
+        ):
+            return _bump_fail_streak(
+                f"fastlane 收敛状态转换 '{spec_name}'→{_hop} 失败（非法/冻结），回落整轮"
+            )
     pipeline._apply_verified(
         spec_name, SimpleNamespace(run_id=run_id), merged
     )
