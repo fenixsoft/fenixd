@@ -144,6 +144,10 @@ export default function HookManager({
     (idx: number) => {
       setEditIdx(idx);
       const h = hooks[idx];
+      // 越界兜底（code-review item fd5e78bfac49）：hooks prop 收缩窗口内点击编辑
+      // 会命中已不存在的下标，不设防则 TypeError 抛到 React 事件层且无任何反馈
+      // （口径对齐 handleSubmit catch 对 editIdx 越界的处理）
+      if (!h) return;
       form.setFieldsValue({
         events: h.events,
         action: h.action,
