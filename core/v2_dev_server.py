@@ -417,7 +417,7 @@ def _dev_server_orphan_pids(logger=None) -> list:
     故以「worktree 存在 且 有存活归属进程」为豁免条件，两条都检查。
     """
     out = []
-    for pid in _pgrep_dev_servers("dev-server.mjs"):
+    for pid in _pgrep_dev_servers(V2_DEV_SERVER_MARKER):
         try:
             argv = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
             tokens = [a.decode("utf-8", "replace") for a in argv if a]

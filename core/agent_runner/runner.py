@@ -352,13 +352,6 @@ def ensure_route_map(wt_path: Path, project_root: Path, logger,
     )
     return out
 
-# ── V2 测试服务器（add-worktree-test-server）────────────────────────────
-# per-run 隔离测试服务的端口分配基数，范围 [V2_TEST_PORT_BASE, V2_TEST_PORT_BASE+19]
-# 主服务 8787 排除在外，并发运行（并行度 2，预留余量取 20 个高位端口段）不冲突。
-V2_TEST_PORT_BASE = 19000
-V2_TEST_PORT_RANGE = 20
-V2_DEV_SERVER_MARKER = "fenix-v2-dev-server"
-
 # ── 轮次上限活性感知续期（add-turn-limit-anchor-c design D2）────────────────
 # 轮询环判定 run 触达 max_turns 上限时，按封闭决策矩阵（分支提交活性 / 尾部
 # 窗口 tool_result 流量活性）判定续期或终止——有活性且续期未达封顶 → extend
