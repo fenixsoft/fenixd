@@ -16,7 +16,6 @@ from pathlib import Path
 from core.agent_runner.run_files import (
     infer_run_agent_type,
     run_spec_part,
-    strip_run_id_suffixes,
 )
 
 # ── 结构化 run 指标日志索引（fix-observability-gaps 1.5 消费点）────────────
@@ -531,15 +530,11 @@ def get_runs(project_root, spec_name: str | None = None, include_archive: bool =
         # 从 run_id 推断 agent 类型与 spec（前缀表 = run_files 唯一真源；
         # 此前是本地漂移副本，漏了 spec-review-/dispute-judge- → 评审 Agent
         # 在时间线上退化为泛型 "agent"，且 spec 残留整个 run_id）。
-        agent_type, spec_part = infer_run_agent_type(run_id)
-        # 去掉 attempt/瞬态重试段（-a<n> / -r<n>，任意顺序可重复，如 -a1-r1），
-        # 再剥末尾时间戳（-<ts>），使 spec_part 不残留时间戳/尝试段。
-        # 复用 run_files.strip_run_id_suffixes（RUN_ID_SUFFIX_RE），与
-        # run_spec_part 后缀剥除完全同源，避免内联正则再从同口径漂移。
-        spec_part = strip_run_id_suffixes(spec_part)
-        m = re.match(r"^(.*)-\d{9,10}$", spec_part)
-        if m:
-            spec_part = m.group(1)
+        agent_type, _ = infer_run_agent_type(run_id)
+        # spec_part 后缀剥离（attempt/瞬态重试段 + 时间戳）复用
+        # run_files.run_spec_part 唯一真源（infer → strip_run_id_suffixes →
+        # 时间戳剥除同口径），避免内联副本随剥离规则演进再次漂移。
+        spec_part = run_spec_part(run_id)
         # 元数据（status/started/duration/file_size）按 (path, mtime_ns, size) memo
         # （fix-observability-gaps 1.5：project_root 传入使 duration 优先读结构化指标）
         meta = _run_meta_cached(p, stat, now, project_root=Path(project_root))
