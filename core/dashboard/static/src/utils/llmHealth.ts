@@ -1,7 +1,7 @@
 // llmHealth.ts — LLM Provider 健康检测的检测目标解析（add-provider-health-check 3.2）。
 // 纯函数零 React 依赖（范式同 agentModels.ts），供「模型分配」页签行内健康检测
 // 按钮使用：按运行期同款链解析实际检测目标（design D6）。
-import type { LlmProvider } from '@/services/dashboard';
+import type { LlmHealthCheckResult, LlmProvider } from '@/services/dashboard';
 
 export interface HealthCheckParams {
   baseurl: string;
@@ -10,8 +10,8 @@ export interface HealthCheckParams {
 }
 
 /** 解析结果：成功返回三字段检测参数，失败返回 { error: <原因> }（调用方
-    直接提示、不发请求）。用可辨识字段而非联合类型判别，调用方以 'error' in r 分支。 */
-export type HealthCheckResolution = (HealthCheckParams & { error?: undefined }) | { error: string };
+    直接提示、不发请求）。用 'error' in r 判别分支（in 收窄对两分支成员可靠）。 */
+export type HealthCheckResolution = HealthCheckParams | { error: string };
 
 export interface ResolveHealthCheckOptions {
   /** 表单正在编辑的 Provider 列表（表单当前值语义：未保存修改即测） */
@@ -63,4 +63,26 @@ export function resolveHealthCheckParams(opts: ResolveHealthCheckOptions): Healt
     };
   }
   return { baseurl, apikey, model };
+}
+
+/** 健康检测结果的内联展示形态：成功绿色「正常 · X.Xs」、失败红色
+    「失败 · <error_kind>」+ tooltip 完整错误（两处面板共用口径，spec 4.1/4.2）。 */
+export interface HealthCheckDisplay {
+  kind: 'ok' | 'fail';
+  short: string;
+  tooltip: string;
+}
+
+/** 后端检测结果 → 标题栏/行内展示形态（耗时秒一位小数）。 */
+export function toHealthDisplay(r: LlmHealthCheckResult): HealthCheckDisplay {
+  const seconds = `${(r.latency_ms / 1000).toFixed(1)}s`;
+  if (r.ok) {
+    return {
+      kind: 'ok',
+      short: `正常 · ${seconds}`,
+      tooltip: `模型 ${r.model || ''} 正常回复，耗时 ${seconds}`,
+    };
+  }
+  const kind = r.error_kind || '未知错误';
+  return { kind: 'fail', short: `失败 · ${kind}`, tooltip: r.error ? `${kind}：${r.error}` : kind };
 }
