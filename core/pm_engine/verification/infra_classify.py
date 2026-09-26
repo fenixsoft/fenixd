@@ -158,8 +158,12 @@ def _record_infra_failure(pipeline, spec_name: str, reason: str, run_id: str = "
                 failure_class="infra",
                 run_id=refund_key,
             )
-        except Exception:
-            pass
+        except Exception as e:
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"infra 失败台账写入失败（不阻断下游记账）'{spec_name}': "
+                f"refund_key={refund_key}: {type(e).__name__}: {e}",
+            )
 
         pipeline._context.logger.info(
             "pm_engine",
