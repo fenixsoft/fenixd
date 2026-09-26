@@ -281,6 +281,7 @@ async function launchChromeExtension(distPath, opts = {}) {
   try {
     // 启动 Chromium 并加载扩展
     browserContext = await chromium.launchPersistentContext(userDataDir, {
+      // [fenix-ignore:e6ec04e0f23d] 实测环境 Playwright（全局 1.59.1、tests/v2 1.62.1）均 ≥1.49，headless:true 默认即 new headless，可加载 MV3 扩展，旧 headless 前提不成立
       headless: headless,
       args: [
         `--disable-extensions-except=${absoluteDist}`,
@@ -371,9 +372,13 @@ async function launchChromeExtension(distPath, opts = {}) {
       a.severity === 'high' || a.severity === 'critical'
     );
 
+    // UI 测试 fail/error（面板未渲染、Console 报错等，与 buildSummary.uiTestFailures 同口径）
+    // 纳入 success，防止页面功能全挂时仅凭网络无异常即假通过；超时收卷时 uiResults 为空不受影响
+    const hasUiTestFailures = uiResults.some(t => t.status === 'fail' || t.status === 'error');
+
     const result = {
       // 超时收卷且 UI 测试与 networkLog 均为零证据时，扩展未经任何验证，不判通过
-      success: !hasCriticalAnomalies && !(timedOut && uiResults.length === 0 && networkLog.length === 0),
+      success: !hasCriticalAnomalies && !hasUiTestFailures && !(timedOut && uiResults.length === 0 && networkLog.length === 0),
       // 超时收卷且一条 UI 测试都未跑时，扩展加载未经任何验证，置 null 表示不确定而非乐观通过
       extensionLoaded: timedOut && uiResults.length === 0 ? null : true,
       extensionId: await getExtensionId(absoluteDist, browserContext),
