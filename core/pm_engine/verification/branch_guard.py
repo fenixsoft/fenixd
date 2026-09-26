@@ -134,7 +134,11 @@ def _implementer_zero_change(pipeline, spec_name: str, result) -> bool:
                     continue
                 if d.get("type") != "assistant":
                     continue
-                for c in (d.get("message") or {}).get("content") or []:
+                # message 为非 dict 载荷（JSON 字符串/数字/列表等）时不调 .get，
+                # 防 AttributeError 逸出零变更判定的 fail-open 口径。
+                msg = d.get("message")
+                content = msg.get("content") if isinstance(msg, dict) else None
+                for c in content or []:
                     if (
                         isinstance(c, dict)
                         and c.get("type") == "tool_use"
