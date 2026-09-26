@@ -2300,7 +2300,7 @@ class PromptBuilder:
             else:
                 # wt_path 不可得（测试/异常场景）→ 降级相对路径表述（D1），不崩溃。
                 result_path = ".fenix-run-result.json（worktree 根目录）"
-            return (
+            text = (
                 "\n\n## 结果文件硬门（实现者收工契约，强制）\n"
                 "- 框架对本次 run 的成功判定 = 进程正常退出 **且** 结果文件已落盘"
                 "且为可解析的非空 JSON。\n"
@@ -2326,6 +2326,20 @@ class PromptBuilder:
                 "显式 `Read` 其输出文件（`output-file` 路径）确认完成或失败。"
                 "MUST NOT 用 `sleep` / 周期性 `ps` 空转模拟等待。\n"
             )
+            if agent_type == "fast-track":
+                # add-fasttrack-verification-write-gate（任务 1.2）：fast-track
+                # 专属契约句，与 run 末产物硬门（result_gate._check_impl_result_
+                # artifact → parse_fast_track_verification）同一解析口径。MUST
+                # 仅在 fast-track 车道拼入——本块被 implementer（full 车道）
+                # 共用，无条件注入会给 full 车道强加 fast-track 专属义务。
+                text += (
+                    "- **fast-track 车道专属**：success 结果文件必须含合法 "
+                    "verification 段（scenarios 非空、每条含非空 "
+                    "scenario_id/description、status 枚举合法、verdict 属 "
+                    "verified/bug-found）——run 末产物硬门按同一解析口径校验，"
+                    "缺段/不完整当场拒收并要求原地补写。\n"
+                )
+            return text
         result_path = planner_result_path(self._pm.project_root, spec_name, "planner-judge")
         scenarios_path = planner_result_path(self._pm.project_root, spec_name, "planner-plan")
         return (
