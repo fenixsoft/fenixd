@@ -184,6 +184,13 @@ class TestLaneComparison:
         v = ownership_violations_for_task_line(line, "fast-track")
         assert v == []
 
+    def test_dir_ref_quote_wrapped_full_violation(self):
+        """full 车道引号包裹的目录持久化引用 → 判违规（引号闭合符不漏报）。"""
+        line = '- [ ] x 保存 report 到 ".fenix/verify-progress/<spec>/"'
+        v = ownership_violations_for_task_line(line, "full")
+        assert len(v) == 1
+        assert ".fenix/verify-progress/" in v[0]
+
 
 class TestResolveLane:
     """5.2 _resolve_lane_for_spec_dir：mode 缺失保守 full；异常保守 full。"""

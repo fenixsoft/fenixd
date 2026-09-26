@@ -121,12 +121,13 @@ _VP_ARTIFACT_RE = re.compile(
 )
 
 # ``.fenix/verify-progress/<spec>/`` 目录级引用：
-# 目录后必须紧跟空白 / 中文标点 / 行尾 / 反引号（Markdown 代码标记闭合——
-# 任务的路径引用常被反引号包裹，如 ``到 `.fenix/verify-progress/<spec>/` ``）。
+# 目录后必须紧跟空白 / 中文标点 / 行尾 / 反引号 / 直引号或中文引号或
+# 右方括号等引用闭合符（Markdown 代码标记闭合——
+# 任务的路径引用常被反引号或引号包裹，如 ``到 `.fenix/verify-progress/<spec>/` ``）。
 # 否则是文件级引用——已登记产物走 _VP_ARTIFACT_RE，未登记侧车文件放行，
 # 均非目录级。
 _VP_DIR_REF_RE = re.compile(
-    r"\.fenix/verify-progress/[^/\s]+/(?=[\s，,。、；;）)）】`]|$)"
+    r"\.fenix/verify-progress/[^/\s]+/(?=[\s，,。、；;）)）】`'\"」』\]]|$)"
 )
 
 # 代码扩展名出现（遮蔽后扫描）——由 _CODE_EXTENSIONS 动态拼接（同
