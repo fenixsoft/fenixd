@@ -28,7 +28,7 @@
 
 ## Impact
 
-- **新增文件**：`core/knowledge.py`（蒸馏管线核心）、`core/dashboard/routes/knowledge_routes.py`（API）、`core/dashboard/static/src/pages/projects/components/KnowledgeTab.tsx`（页签）、`spec/knowledge/` 初始骨架（index.md + 域目录由首个蒸馏 run 产出，本 SPEC 附种子空目录与 README）
-- **修改文件**：`.fenix/bin/fenix_archive.py`（归档后挂蒸馏触发）、`core/dashboard/data/spec_archive.py`（auto_archive_check 同样触发）、`core/dashboard/static/src/pages/projects/list.tsx`（新增页签）、`core/dashboard/server.py`（路由 Mixin 注册）、`core/config.py` + `config.template.yaml`（配置项）、Dashboard 设置页
-- **不修改**：归档目录本身的内容与移动逻辑（蒸馏只读归档）；fenix-archive skill 的交互流程（蒸馏对 skill 透明）
+- **新增文件**：`core/knowledge.py`（蒸馏管线核心）、`core/dashboard/routes/knowledge_routes.py`（API）、`core/dashboard/static/src/pages/projects/components/KnowledgeTab.tsx`（页签）、`spec/knowledge/` 初始骨架（本 SPEC 仅附 `README.md` 契约文档入库；`index.md`/`domains/`/`adr/` 由首个蒸馏 run 产出——git 不跟踪空目录，不以空目录形态入库）
+- **修改文件**：`core/archive_commit.py`（归档双路径共同漏斗 `commit_archive_move` 移动成功分支挂蒸馏触发，单点覆盖手工与 daemon 路径）、`core/dashboard/server.py`（路由 Mixin 注册）、`core/dashboard/static/src/pages/projects/listFilters.ts`（`ListTab` 联合类型扩页签 key）+ `list.tsx`（新增页签）、`core/config.py` + `.fenix/config.template.yaml`（配置项）、Dashboard 设置页
+- **不修改**：`.fenix/bin/fenix_archive.py` 与 `core/dashboard/data/spec_archive.py`（二者均已调用 `commit_archive_move`，单点挂载即覆盖，且前者为 gitignored 不可交付）、归档目录本身的内容与移动逻辑（蒸馏只读归档）；fenix-archive skill 的交互流程（蒸馏对 skill 透明）
 - **风险**：蒸馏 agent run 的输出质量决定真相源可读性——管线要求「散文重写」而非 delta 拼接，收尾校验拦截格式违规但无法校验语义质量（与 blueprint-index 的 honest boundary 一致：digest 是人审内容）；daemon 重启后需重启生效（后端约定）

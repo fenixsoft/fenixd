@@ -2,7 +2,7 @@
 
 ### Requirement: 归档触发蒸馏
 
-SPEC 归档完成后 SHALL 自动派发一次蒸馏 agent run（knowledge-distill 车道）。两条归档路径 SHALL 同等挂载：手工/CLI 路径（`.fenix/bin/fenix_archive.py`）与 daemon 自动归档路径（`auto_archive_check`）。蒸馏触发 SHALL fail-open：派发失败或 run 失败不阻塞、不回滚归档本身，失败信息记日志并生成重试台账条目。`knowledge.enabled` 为 false 时 SHALL 跳过派发。
+SPEC 归档完成后 SHALL 自动派发一次蒸馏 agent run（knowledge-distill 车道）。两条归档路径 SHALL 同等挂载：手工/CLI 路径（`.fenix/bin/fenix_archive.py`）与 daemon 自动归档路径（`auto_archive_check`）。蒸馏触发 SHALL fail-open：派发失败或 run 失败不阻塞、不回滚归档本身，失败信息记日志并生成重试台账条目。`knowledge.enabled` 为 false 时 SHALL 跳过派发。经同一漏斗的软删除路径（`soft_delete_spec` 以归档移动收尾）触发蒸馏 SHALL 视为预期行为。多条蒸馏 run 对 `spec/knowledge/` 的写 SHALL 串行化（单飞或队列）。归档原料缺失（无 `design.md` 或无 `specs/` delta）时蒸馏 run SHALL 降级处理：跳过 ADR 抽取、按可得原料（proposal 摘要）蒸馏能力页或留痕跳过，MUST NOT 因原料缺失判 run 失败。
 
 #### Scenario: 手工归档后蒸馏被派发
 
@@ -21,7 +21,7 @@ SPEC 归档完成后 SHALL 自动派发一次蒸馏 agent run（knowledge-distil
 
 ### Requirement: 蒸馏合并语义（后写覆盖前写）
 
-蒸馏 run SHALL 读被归档 SPEC 的 `specs/<capability>/spec.md` delta 与 `proposal.md` 摘要，对每个涉及的 capability 执行合并：真相源中**不存在**该能力页 → 新建（ADDED）；已存在 → 重写受影响规则段（MODIFIED，以本次 delta 为准覆盖旧表述，rev 加 1，溯源段追加一行）；delta 声明删除的规则 → 从能力页移除（REMOVED，溯源段留一行「已随 <归档名> 废除」）。同一能力被多个 SPEC 先后修改时，真相源 SHALL 只保留最终态规则。
+蒸馏 run SHALL 读被归档 SPEC 的 `specs/<capability>/spec.md` delta 与 `proposal.md` 摘要，对每个涉及的 capability 执行合并：真相源中**不存在**该能力页 → 新建（ADDED）；已存在 → 重写受影响规则段（MODIFIED，以本次 delta 为准覆盖旧表述，rev 加 1，溯源段追加一行）；delta 声明删除的规则 → 从能力页移除（REMOVED，溯源段留一行「已随 <归档名> 废除」）。同一能力被多个 SPEC 先后修改时，真相源 SHALL 只保留最终态规则。能力页拆为主从分片（marker `part` 字段）时，合并 SHALL 按 capability 名聚合、整体重写该能力全部分片。
 
 #### Scenario: 修改既有能力时覆盖而非追加
 

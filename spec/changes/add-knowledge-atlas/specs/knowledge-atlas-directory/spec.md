@@ -30,6 +30,8 @@ marker SHALL 为紧随 H1 的 HTML 注释，格式固定为：
 - **WHEN** 人类读者打开任一能力页
 - **THEN** 页面以散文陈述「系统现在如何工作」，读到的规则不含「新增了/修复了/原先是」等变更叙述；该能力的演变历史只在溯源段可见
 
+能力页因 150 行硬顶拆为主从分片时，marker SHALL 增加可选 `part=<n>` 字段：同能力各分片 capability 名保持一致，主页省略 part、从页 `part=2/3/...`，rev 与 sources 主从一致；合并语义按 capability 名聚合、整体重写该能力全部分片。
+
 #### Scenario: marker 机器可解析
 
 - **WHEN** 校验脚本解析某能力页 marker

@@ -2,7 +2,7 @@
 
 ### Requirement: ADR 抽取判据（跨 SPEC 架构级决策）
 
-蒸馏 run SHALL 从被归档 SPEC 的 `design.md` `## Decisions` 段中抽取**跨 SPEC 影响架构走向**的决策生成 ADR 条目，写入 `spec/knowledge/adr/ADR-NNN-<标题>.md`（NNN 为三位递增编号）。判据 SHALL 为高门槛、宁缺勿滥：仅当该决策约束了后续 SPEC 的实现空间、或确立了跨模块的机制选型（如「车道隔离必须走 spawn 点注入」「写读必须同层」级别的裁定）时收录；单 SPEC 内部的实现取舍（如某页面的布局选择、某函数的命名）MUST NOT 收录。一个归档 SPEC 可以产出零条 ADR。
+蒸馏 run SHALL 从被归档 SPEC 的 `design.md` `## Decisions` 段中抽取**跨 SPEC 影响架构走向**的决策生成 ADR 条目，写入 `spec/knowledge/adr/ADR-NNN-<标题>.md`（NNN 为三位递增编号）。判据 SHALL 为高门槛、宁缺勿滥：仅当该决策约束了后续 SPEC 的实现空间、或确立了跨模块的机制选型（如「车道隔离必须走 spawn 点注入」「写读必须同层」级别的裁定）时收录；单 SPEC 内部的实现取舍（如某页面的布局选择、某函数的命名）MUST NOT 收录。一个归档 SPEC 可以产出零条 ADR。被归档 SPEC 缺 `design.md` 时 SHALL 零产出 ADR（原料缺失降级，不判 run 失败）。
 
 #### Scenario: 内部取舍不产生 ADR
 

@@ -2,7 +2,7 @@
 
 ## Context
 
-`spec/archive/` 已积累 300 个归档 SPEC。每个归档自带 `specs/<capability>/spec.md`（`## ADDED Requirements` delta）与 `design.md`（`## Decisions` D1-D6 标准段），蒸馏原料完备；同一能力被多个 SPEC 先后修改（dashboard-spec-table ×6、scheduled-spec-pickup ×5），证明「当前规则」必须是合并语义的产物而非归档平铺。openspec 的平铺主 spec 方案被否决（不可读且无溯源）；本设计采用「域 → 能力 → 页」分层真相源 + 溯源链接回指归档。
+`spec/archive/` 已积累 300 个归档 SPEC。存量归档实测（2026-09-27）：300 个中 262 个自带 `specs/<capability>/spec.md`（`## ADDED Requirements` delta）与 `design.md`（`## Decisions` D1-D6 标准段）、296 个有 `proposal.md`；约 38 个早期 `fix-*` 归档缺 design.md/specs delta——蒸馏提示词须含原料缺失降级分支（见 D2），不得假设原料完备；同一能力被多个 SPEC 先后修改（dashboard-spec-table ×6、scheduled-spec-pickup ×5），证明「当前规则」必须是合并语义的产物而非归档平铺。openspec 的平铺主 spec 方案被否决（不可读且无溯源）；本设计采用「域 → 能力 → 页」分层真相源 + 溯源链接回指归档。
 
 既有机制锚点：
 - 归档双路径——手工 `.fenix/bin/fenix_archive.py::archive_change` 与 tracked 侧 `core/dashboard/data/spec_archive.py::archive_spec`（daemon 自动归档 `auto_archive_check` 300s 周期调用）——**均漏斗经过 `core/archive_commit.py::commit_archive_move`**（移动成功后调用，fail-open 哲学已有先例）。
@@ -34,14 +34,16 @@
 
 蒸馏是 LLM 任务（散文重写无可替代），但 git 操作与格式对账不进 agent：
 - daemon 派发 `claude -p` 后台 run（cwd 主树，提示词含目录契约、合并语义 ADDED/MODIFIED/REMOVED、风格禁令——禁历史叙述措辞、ADR 判据），run 直接写 `spec/knowledge/` 草稿；
-- run 结束后 daemon 侧执行**确定性校验脚本**（`core/knowledge.py::validate_knowledge`）：marker 可解析、sources 指向的归档目录存在、单页 ≤150 行、index/_domain 链接可解析；违规反馈给 run 修正（≤2 轮），仍违规则放弃本次产出（不留半成品）；
+- run 结束后 daemon 侧执行**确定性校验脚本**（`core/knowledge.py::validate_knowledge`）：marker 可解析、sources 指向的归档目录存在、单页 ≤150 行、index/_domain 链接可解析；违规反馈给 run 修正（≤2 轮），仍违规则放弃本次产出——run 直写主树，放弃时 daemon 侧 MUST `git restore -- spec/knowledge/` 并清理该目录下未跟踪新增（不留半成品）；
+- **单飞约束**：同 project 同时至多一个蒸馏 run 在写 `spec/knowledge/`，并发归档事件排队串行或合并为一次批量 run，避免并发写与并发 `git commit` 撞 index.lock；
+- **原料缺失降级**：归档无 `design.md` → 跳过 ADR 抽取；无 `specs/` delta → 按 proposal 摘要口径蒸馏能力页或留痕跳过，不判 run 失败（实测 300 存量归档中 38 个早期 `fix-*` 缺 design.md/specs delta）；
 - 校验通过后由 daemon 侧自动提交（复用 `archive_commit` 模式的 fail-open 提交）。
 
 与 fast-track 的 worktree-implementer 模式 deliberately 不同：真相源是 spec 元数据层（非产品代码），主树直跑避免 merge-back 复杂度；写路径限定 `spec/knowledge/` 一个目录，爆炸半径可控。提示词按 `agents.md` 文件化惯例落 `core/knowledge_prompts/distill.md`（契约段=动态段，改 prompt 先 merge main 的既有纪律适用）。
 
 ### D3: 触发点单点挂载在 commit_archive_move（tracked 共同漏斗）
 
-手工路径（`.fenix/bin/fenix_archive.py`，gitignored 不可交付）与 daemon 路径（`spec_archive.archive_spec`）都已调用 `core/archive_commit.py::commit_archive_move`——在该函数移动成功分支追加 `dispatch_distill(project_root, archived_name)` 即同时覆盖双路径，无需触碰不可交付的运行时脚本。fail-open：派发异常只记日志与重试台账，不影响归档返回值。重试台账复用既有 admin_alerts/todo.md 机制（首选取 todo.md 登记，给人看的队列，不进任务门禁）。`knowledge.enabled` 为 false 时 dispatch 直接返回。
+手工路径（`.fenix/bin/fenix_archive.py`，gitignored 不可交付）与 daemon 路径（`spec_archive.archive_spec`）都已调用 `core/archive_commit.py::commit_archive_move`——在该函数移动成功分支追加 `dispatch_distill(project_root, archived_name)` 即同时覆盖双路径，无需触碰不可交付的运行时脚本。注意漏斗实际有**三个**调用方：手工归档、daemon `archive_spec`/`auto_archive_check`、软删除 `soft_delete_spec`（其删除动作同样是「移入 `spec/archive/<名>-<Unix秒>/` + commit_archive_move」，见 spec_archive.py::soft_delete_spec）——软删除路径触发蒸馏属预期行为：其归档目录同样落 `spec/archive/`，sources 存在性校验天然兼容。直接调用 `commit_archive_move` 的既有单测（tests/test_spec_archive.py）经 dispatch 注入替身隔离，不触发真实派发。fail-open：派发异常只记日志与重试台账，不影响归档返回值。重试台账复用既有 admin_alerts/todo.md 机制（首选取 todo.md 登记，给人看的队列，不进任务门禁）。`knowledge.enabled` 为 false 时 dispatch 直接返回。
 
 ### D4: ADR 判据进提示词、supersede 机制进脚本
 
@@ -54,7 +56,7 @@
 - `GET /api/knowledge/file?project=&path=domains/<域>/<能力>.md|adr/ADR-NNN-*.md|adr/index.md` → 白名单前缀（`domains/`、`adr/`）内的文件内容，前缀外与 `..` 一律 400（路径穿越拒绝）
 - `GET /api/knowledge/graph?project=` → `graph/graph.html` 存在性 + 内容（maintenance SPEC 落地前恒 404，前端显占位）
 
-前端 `KnowledgeTab.tsx`：active 门控按需拉取（对齐 QualityTab/RegressionTab 先例）；Markdown 渲染复用既有 spec-doc-view 的渲染链路；ADR 列表视图带状态标签（accepted 绿/superseded 灰 + 跳转）；graph 区 `<iframe>`/html 注入位 + 占位文案。页签插在「架构」与「会话接入」之间（用户指定「会话接入之前」）。
+前端 `KnowledgeTab.tsx`：active 门控按需拉取（对齐 QualityTab/RegressionTab 先例）；Markdown 渲染复用既有 SpecDocModal/QualityTab 的 react-markdown 渲染链路（依赖已含 react-markdown ^10.1.0）；ADR 列表视图带状态标签（accepted 绿/superseded 灰 + 跳转）；graph 区 `<iframe>`/html 注入位 + 占位文案。页签插在「项目架构」与「会话接入」之间（用户指定「会话接入之前」）。
 
 ### D6: 配置项 knowledge.enabled + 设置页同步
 
@@ -74,4 +76,4 @@
 
 ## Open Questions
 
-- 蒸馏 run 的 provider/模型走 agents 默认网关即可，还是登记专用角色（agents.models.knowledge-distiller）？（倾向：登记专用角色，复用未登记 agent 无回退的教训——立项即登记，零成本。）
+- 蒸馏 run 的 provider/模型走 agents 默认网关即可，还是登记专用角色（agents.models.knowledge-distiller）？（倾向：登记专用角色，复用未登记 agent 无回退的教训——立项即登记，零成本。机制锚点：`core/config.py` KNOWN_AGENT_TYPES + `agents.models.<role>` 校验，向 KNOWN_AGENT_TYPES 新增角色即同步放开 agents.models 与 timeout_overrides 同名键。）
