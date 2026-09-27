@@ -648,11 +648,39 @@ class G1LifecycleMixin:
                 wt_spec = self._spec_from_branch(wt_branch_at_entry or "") or (
                     self._spec_from_worktree_name(wt_path.name)
                 )
+                # agent_type 维度限定（code-review item 79268616af63）：锁键为
+                # "<spec>:<agent_type>"，仅按 spec 名过滤会把该 spec 名下全部
+                # agent_type 的既有锁一并摘除——entry_ts 守卫只挡「cleanup 开始
+                # 之后」新登记的锁，挡不住对方 run 在入口之前已 create 持有的键
+                # （如 verifier 收尾时 implementer 已重派持锁），活 run 在构建
+                # 窗口内失去锁保护（重开 2026-09-03 双派发事故同型窗口）。故按
+                # 被清 worktree 自身形状反推键类型：verifier 形状（分支
+                # fenix/verify-<spec>-<ts>，分支表缺失回落 verify- 目录前缀）
+                # 只摘 :verifier；非 verifier 形状不摘 :verifier。分支名只编码
+                # verify/impl 两族形状，impl 族内具体 agent_type（implementer/
+                # fast-track 等）不可辨，同族维持全摘现状。非 impl-/verify-
+                # 目录前缀的载体（create_worktree_on_branch 的 repair-/judge-
+                # 产物等）自身从不登记锁，其收尾不摘任何键——同 spec 既有锁属
+                # 他人，由其自身收尾释放或 refresh_locks 陈锁清扫兜底。
+                wt_branch_text = wt_branch_at_entry or ""
+                if wt_branch_text.startswith("fenix/verify-"):
+                    wt_is_verifier = True
+                elif wt_branch_text.startswith("fenix/"):
+                    wt_is_verifier = False
+                else:
+                    wt_is_verifier = wt_path.name.startswith("verify-")
+                wt_own_lock = wt_path.name.startswith(("impl-", "verify-"))
                 to_remove = [
                     k
                     for k in self._spec_locks
                     if wt_spec is not None
+                    and wt_own_lock
                     and k.split(":")[0] == wt_spec
+                    and (
+                        (k.partition(":")[2] == "verifier")
+                        if wt_is_verifier
+                        else (k.partition(":")[2] != "verifier")
+                    )
                     and self._lock_since.get(k, 0.0) <= cleanup_entry_ts
                 ]
                 for k in to_remove:
