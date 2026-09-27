@@ -1,8 +1,13 @@
-import { Button, Card, Form, InputNumber, Typography, message } from 'antd';
+import { Button, Card, Form, InputNumber, Switch, Typography, message } from 'antd';
 import { useEffect, useRef, useState } from 'react';
 import type { ConfigData } from '@/services/dashboard';
 import SyncFromUserButton from './SyncFromUserButton';
 import { SETTINGS_ACTIONS_ROW_STYLE } from '../styles';
+import {
+  knowledgeSectionFromSwitches,
+  knowledgeSwitchDesc,
+  knowledgeSwitchesFromConfig,
+} from '../knowledgeSettings';
 
 const { Text } = Typography;
 
@@ -28,12 +33,17 @@ export default function MiscSettingsPanel({ config, onSave, project, onConfigSyn
   // 内容真变化时回填。
   const lastBackfillRef = useRef('');
   useEffect(() => {
-    const next = { auto_threshold: config.archive?.auto_threshold ?? 50 };
+    const kb = knowledgeSwitchesFromConfig(config.knowledge);
+    const next = {
+      auto_threshold: config.archive?.auto_threshold ?? 50,
+      audit_enabled: kb.auditEnabled,
+      graph_enabled: kb.graphEnabled,
+    };
     const key = JSON.stringify(next);
     if (key === lastBackfillRef.current) return;
     lastBackfillRef.current = key;
     form.setFieldsValue(next);
-  }, [config.archive, form]);
+  }, [config.archive, config.knowledge, form]);
 
   const handleSave = async () => {
     if (saving) {
@@ -58,6 +68,11 @@ export default function MiscSettingsPanel({ config, onSave, project, onConfigSyn
           archive: {
             auto_threshold: values.auto_threshold,
           },
+          // add-knowledge-atlas-maintenance：知识真相源维护车道开关
+          ...knowledgeSectionFromSwitches({
+            auditEnabled: values.audit_enabled,
+            graphEnabled: values.graph_enabled,
+          }),
         });
       } catch (error) {
         // 保存持久化失败：给用户显式反馈而非静默
@@ -71,9 +86,9 @@ export default function MiscSettingsPanel({ config, onSave, project, onConfigSyn
   return (
     <div>
       <h3>归档</h3>
-      <Text type="secondary">SPEC 归档相关设置。</Text>
-      <Card style={{ marginTop: 12 }}>
-        <Form form={form} layout="vertical">
+      <Text type="secondary">SPEC 归档与知识真相源维护设置。</Text>
+      <Form form={form} layout="vertical">
+        <Card style={{ marginTop: 12 }}>
           {/* add-spec-archive：自动归档阈值置于面板首字段——验证场景以
               .ant-input-number input 定位首字段（引擎 .first），归档阈值须居前 */}
           <Form.Item
@@ -101,8 +116,41 @@ export default function MiscSettingsPanel({ config, onSave, project, onConfigSyn
             默认 50。已完成（done/pushed）的 SPEC 数量超过此阈值时，自动将最久完成的归档到 archive 目录（保留 STATE.md 条目，可在「已归档」视图查看）。
             0 = 禁用。超过阈值时自动归档完成最久的 SPEC。保存后立即生效，无需重启 daemon。
           </Text>
-        </Form>
-      </Card>
+        </Card>
+        {/* add-knowledge-atlas-maintenance 任务 1.2：知识真相源维护车道开关 */}
+        <Card style={{ marginTop: 12 }}>
+          <h3 style={{ marginTop: 0 }}>知识真相源</h3>
+          <Text type="secondary">
+            spec/knowledge/ 真相源的周期维护车道开关；关闭后对应车道静默跳过。
+          </Text>
+          <Form.Item
+            name="audit_enabled"
+            label={
+              <>
+                每日知识体检<span className="label-note">（knowledge.audit_enabled）</span>
+              </>
+            }
+            valuePropName="checked"
+            style={{ marginTop: 16 }}
+          >
+            <Switch data-testid="knowledge-audit-switch" />
+          </Form.Item>
+          <Text type="secondary">{knowledgeSwitchDesc('audit')}</Text>
+          <Form.Item
+            name="graph_enabled"
+            label={
+              <>
+                知识关系图生成<span className="label-note">（knowledge.graph_enabled）</span>
+              </>
+            }
+            valuePropName="checked"
+            style={{ marginTop: 16 }}
+          >
+            <Switch data-testid="knowledge-graph-switch" />
+          </Form.Item>
+          <Text type="secondary">{knowledgeSwitchDesc('graph')}</Text>
+        </Card>
+      </Form>
       <div style={project ? SETTINGS_ACTIONS_ROW_STYLE : { textAlign: 'right', marginTop: 24 }}>
         {project && onConfigSynced && (
           <SyncFromUserButton project={project} page="misc" onSynced={onConfigSynced} />

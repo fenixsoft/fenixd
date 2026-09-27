@@ -753,6 +753,10 @@ class FenixDaemon:
         # add-framework-self-evolution 5.1：自进化检查点独立计时（节拍复用
         # admin.interval_minutes，缺省 5 分钟）。
         evolution_check_ts = time.time()
+        # add-knowledge-atlas-maintenance 3.3：知识真相源维护每日检查点独立计时
+        # （300s 节拍对齐自动归档挂载；检查点内部按自然日防重，每日只跑一次，
+        # audit → graph 先后共用同一唤醒）。
+        knowledge_check_ts = time.time()
         try:
             while self.running:
                 time.sleep(1)
@@ -884,6 +888,19 @@ class FenixDaemon:
                         runs_retention_check(PROJECT_ROOT, self.config, self.logger)
                     except Exception as e:
                         self.logger.error("fenixd", f"Runs retention check failed: {e}")
+                # 知识真相源维护每日检查点（add-knowledge-atlas-maintenance 3.3）：
+                # 每 300s 唤醒一次（与自动归档同款挂载，不新建线程），内部按自然日
+                # 防重——当日未跑则先后执行 audit 车道与 graph 生成（各自受
+                # knowledge.audit_enabled / knowledge.graph_enabled 门控，双禁用时
+                # 静默零动作）。异常捕获记日志不中断主循环。
+                if time.time() - knowledge_check_ts >= 300:
+                    knowledge_check_ts = time.time()
+                    try:
+                        from core.knowledge_audit import knowledge_daily_check
+
+                        knowledge_daily_check(PROJECT_ROOT, self.config, self.logger)
+                    except Exception as e:
+                        self.logger.error("fenixd", f"Knowledge maintenance check failed: {e}")
                 # 定时调度到期检测（add-spec-scheduling-controls D3）：每 60s
                 # 检查 auto 解冻（frozen_until 到期）与定时拾取（start_after
                 # 到期唤起派发）。周期扫描（full_scan）作为兜底，二者先后到达

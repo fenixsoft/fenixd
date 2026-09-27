@@ -1497,6 +1497,8 @@ export interface ConfigData {
   /** add-code-review-auto-fix：自动修复代码问题（admin.code_review_fix 两键，
    *  设置页「质量」页签读写；项目页「代码审查」分面呈现进度） */
   code_review_fix?: CodeReviewFixConfig;
+  /** add-knowledge-atlas-maintenance：知识真相源维护车道开关（设置页「杂项」页签） */
+  knowledge?: { audit_enabled?: boolean; graph_enabled?: boolean };
   scope: 'user' | 'project';
   raw_exists: boolean;
   sources: Record<string, string>;
