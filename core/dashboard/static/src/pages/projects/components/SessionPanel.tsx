@@ -8,7 +8,7 @@
 // 断言；验证 BUG-01 实证，迁移源为合入 main 的 5f5d5846 修复形态）。
 // 切离分面（active=false）：unregister watch + eventSource.close() + 清空本地状态，
 // 切回分面时重新执行 loadAll() 接回；MUST NOT 终止会话进程本身。
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import {
   App,
@@ -262,7 +262,9 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
 
   // 快照应用（carried 合并形态，code-review item b2ce2f362979）：与 applySnapshot
   // 并列，事件应用由整表替换改为「服务端快照为主序、本地已有而快照缺失的事件
-  // 按原顺序经 appendEvents 补回（uuid 并回去重集合）」。SSE 每事件只推一次，
+  // 按与快照窗口的时序关系拆分补回：早于快照首事件的（长会话环形缓冲滑出的
+  // 早期事件，item 51f0857322b5）前插回快照之前，其余经 appendEvents 尾补回
+  // （uuid 并回去重集合）」。SSE 每事件只推一次，
   // 快照 GET 发起后被服务端快照遗漏、却在快照应用前经 SSE append 的事件，整表
   // 替换会把它从渲染列表抹掉、seenUuidsRef 按 snapshot 重建后其 uuid 一并移除
   // （下次重连/重拉前不再出现）。afterHello 第二次重拉（code-review item
@@ -275,19 +277,51 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
       applySnapshot(data);
       return;
     }
+    const snapshotEvents = data.events || [];
     const snapshotUuids = new Set(
-      (data.events || [])
+      snapshotEvents
         .map((ev) => (ev ? (ev.uuid as string | undefined) : undefined))
         .filter((u): u is string => Boolean(u)),
     );
     // carried 须在 applySnapshot（内部 syncEvents 整表替换 eventsRef）前取样
-    const carried = eventsRef.current.filter((ev) => {
+    const local = eventsRef.current;
+    // 时序边界（code-review item 51f0857322b5）：服务端缓冲是
+    // deque(maxlen=4000) 环形缓冲（session_manager.py SESSION_EVENT_BUFFER），
+    // 长会话下早期事件已从快照滑出而 eventsRef 只增不减，carried 若一律尾
+    // 追加，会把最老的滑出事件排到最新消息之后且每次重连都维持错序。快照是
+    // 服务端事件序列的连续尾窗、本地到达序与之同序，故以「快照首事件 uuid
+    // 在本地列表中的下标」为边界：carried 中位于该下标之前的事件早于快照
+    // 窗口（前插回快照之前），位于其后的才是快照 GET 发起后经 SSE 先行到达、
+    // 快照未涵盖的窗口内事件（保持尾补回）。快照为空或首事件 uuid 在本地
+    // 找不到（如服务端重启后的新会话代际）时 boundary=-1，全部按尾补回——
+    // 不误删本地已有事件，保持断线窗口合并语义。
+    const firstUuid = snapshotEvents.find((ev) => Boolean(ev && ev.uuid))?.uuid;
+    const boundary = firstUuid
+      ? local.findIndex((ev) => (ev ? (ev.uuid as string | undefined) : undefined) === firstUuid)
+      : -1;
+    const older: SessionEvent[] = [];
+    const newer: SessionEvent[] = [];
+    for (let i = 0; i < local.length; i++) {
+      const ev = local[i];
       const uuid = ev ? (ev.uuid as string | undefined) : undefined;
-      if (!uuid) return false;
-      return !snapshotUuids.has(uuid);
-    });
+      if (!uuid || snapshotUuids.has(uuid)) continue;
+      if (boundary >= 0 && i < boundary) older.push(ev);
+      else newer.push(ev);
+    }
     applySnapshot(data);
-    appendEvents(carried);
+    // 早期滑出事件插回快照之前（appendEvents 只会尾追加，须手工前插），
+    // uuid 并回去重集合（与 appendEvents 的登记同口径）
+    if (older.length > 0) {
+      const seen = seenUuidsRef.current;
+      for (const olderEv of older) {
+        const u = olderEv.uuid as string | undefined;
+        if (u) seen.add(u);
+      }
+      const merged = [...older, ...eventsRef.current];
+      eventsRef.current = merged;
+      setEvents(merged);
+    }
+    appendEvents(newer);
   };
 
   // 拉全量 + 建立 SSE（分面激活时执行；切离后重新接回）
@@ -565,6 +599,13 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
     };
   }, [active, project, started]);
 
+  // 事件→消息转换结果缓存（code-review item 6b5bd3346ec3）：与 ClaudeOutputPane
+  // 同模式用 useMemo 缓存 runEventsToChatMessages。renderBody 是渲染期辅助函数
+  // 且含早返回分支，hook 必须提升到组件顶层（无条件执行，遵守 hooks 规则），
+  // 结果传入 renderBody 使用——否则每次渲染（含 loading/error 分支切换、父组件
+  // 级联渲染）都对全部事件重跑转换，长会话下是可感知的重复开销。
+  const chatMessages = useMemo(() => runEventsToChatMessages(events), [events]);
+
   // 渲染分支抽具名 helper（code-review item d42f28cde496）：渲染体原为
   // loading→error→!started→默认会话视图的链式嵌套三元（项目规则禁止），
   // 分支语义不可读；改 if/else 早返回，样式引用模块级常量。
@@ -608,7 +649,7 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
     return (
       <>
         <div style={MESSAGE_AREA_STYLE}>
-          <ClaudeMessageList messages={runEventsToChatMessages(events)} showThinking />
+          <ClaudeMessageList messages={chatMessages} showThinking />
           {truncated ? (
             <div style={TRUNCATED_BAR_STYLE}>
               <Typography.Text type="secondary" style={{ fontSize: 12, background: '#fff', padding: '0 8px' }}>

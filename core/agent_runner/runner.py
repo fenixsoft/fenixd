@@ -16,6 +16,7 @@ import tempfile
 import sys
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -368,6 +369,14 @@ TURN_EXTENSION_STEP_FRACTION = 0.25
 TURN_EXTENSION_MAX = 2
 TURN_EXTENSION_WINDOW_SECONDS = 60.0
 
+# _run_claude 的 stderr 环形缓冲容量（code-review item 0cbb6c8176cd）：与 stdout
+# 同治理（stdout 已不累积，item 85d9e72b64b3），只保留近期行供 _denoise_stderr
+# 拼装 error 文本与瞬断分类（classify_transient_error）使用，不随 run 时长无界
+# 增长。取值依据：error 文本取末 5 行、瞬断分类按全量文本匹配 switch pattern，
+# 正常 run 的 stderr 远低于该量级；子进程失控刷 stderr 时更早的行本就被噪音
+# 淹没，截断不影响死因归因。
+_STDERR_TAIL_MAX_LINES = 500
+
 # ── extension 末位自动保全（add-fast-track-scale-precheck D3）────────────────
 # fast-track 超时预算用尽前（extension #2 收尾前）自动触发一次 WIP checkpoint
 # 保全：已完成轮次的工作不随超时无保全作废。触发条件为『extension 末位窗口』
@@ -662,6 +671,14 @@ class AgentRunner:
         # 环线程（经 _stall_budget_state_for）并发建态/清理/摘除
         # _stall_budget_states，协议见 _stall_budget_lock property 注释。
         self._stall_budget_lock = threading.Lock()
+        # 轮次上限分支活性基线（add-turn-limit-anchor-c D2）：run_id →
+        # {"commit_count": int}。__init__ 即建态——消除 _turn_limit_action
+        # 首次进入的 hasattr 惰性初始化竞态（AgentRunner 实例被多个 worker
+        # 线程共享，两线程同见缺失会各建一个 dict、后写者空 dict 覆盖前者，
+        # 先写入的分支计数证据被孤立丢失，code-review item 26852ea34c26）。
+        # 测试以 ``AgentRunner.__new__`` 绕过 __init__ 的实例仍由
+        # _turn_limit_action 的原子惰性回退兜底。
+        self._turn_branch_state: Dict[str, dict] = {}
         # 车道登记表（design D2）：__init__ 即建态——车道线程（queue
         # _start_impl_ocr_lane 每 spec 一线程）并发首次 register 时不得走
         # _lane_registry 的建态分支（两线程同见 None 会各建一个 dict、后一次
@@ -2049,8 +2066,11 @@ class AgentRunner:
         Returns: {"action": "extend"|"kill", "extension_index",
                   "turn_step", "evidence", "new_turn_cap"}
         """
-        if not hasattr(self, "_turn_branch_state"):
-            self._turn_branch_state = {}
+        # 生产路径 __init__ 已建态；此处原子惰性回退仅供测试以 ``__new__`` 绕过
+        # __init__ 的实例——dict.setdefault 单键原子（GIL），并发首次进入共享
+        # 同一 dict，不再出现后写者空 dict 覆盖前者丢分支活性证据的竞态
+        #（code-review item 26852ea34c26）。
+        self.__dict__.setdefault("_turn_branch_state", {})
         turn_step = int((max_turns or 0) * TURN_EXTENSION_STEP_FRACTION)
         base = {
             "extension_index": turn_extensions_used,
@@ -4473,7 +4493,10 @@ class AgentRunner:
         turn_count = [0]  # 被读线程递增；主线程轮询读取（GIL 保证可见性）
         # 注意：stdout 行只逐条解析并落盘，不再累积全量转录（曾以 stdout_lines
         # 无界滞留流式转录内存，code-review item 85d9e72b64b3）。
-        stderr_lines: list = []
+        # stderr 同治理（code-review item 0cbb6c8176cd）：环形缓冲只留近期行，
+        # 供 _denoise_stderr 拼装 error 文本与瞬断分类使用；终态经 list(...) 快照
+        # 后挂异常，消费侧列表语义不变。
+        stderr_lines: deque = deque(maxlen=_STDERR_TAIL_MAX_LINES)
 
         # ── evo-add-run-stop-loss 2.1：base_run_id 前移 ─────────────────
         # 归一化键（含 epoch）在子线程启动前就绪：读线程的停滞预算采样旁挂
@@ -5233,13 +5256,17 @@ class AgentRunner:
     def _check_daily_limit(self):
         """Check and reset daily run counter."""
         today = datetime.now(timezone.utc).date()
-        if today != self._daily_reset_date:
-            # 与 _finalize_success 的自增同锁互斥（code-review item
-            # 152ca97a293a）：防跨日归零与并发自增交错丢失更新。
-            with self._daily_count_lock:
+        # 日期比较、清零、写回新日期整体同一临界区（code-review item
+        # 2c8a98240097，对齐 _finalize_success 自增互斥 item 152ca97a293a）：
+        # 原先「锁外判翻转 → 锁内清零 → 锁外写日期」三段式存在残余竞态——
+        # 线程 A 判定翻转后、清零前，线程 B 可刚在 _finalize_success 完成一次
+        # 自增，A 的清零把 B 的计数一并抹掉；A 锁外写日期的窗口还允许第三个
+        # 线程再次清零。锁内二次确认日期仍为旧值再清零，与自增互斥后不再交错。
+        with self._daily_count_lock:
+            if today != self._daily_reset_date:
                 self._daily_run_count = 0
-            # D5：直接写组合对象（转发 setter 已删；AgentRunner 不另行持有第二份）。
-            self._provider_circuit._daily_reset_date = today
+                # D5：直接写组合对象（转发 setter 已删；AgentRunner 不另行持有第二份）。
+                self._provider_circuit._daily_reset_date = today
 
         limit = self._get_config("agents.daily_run_limit", 50)
         if limit > 0 and self._daily_run_count >= limit:
@@ -5780,6 +5807,13 @@ class AgentRunner:
         done = data.get("done")
         total = data.get("total")
         if not isinstance(total, int) or not isinstance(done, int):
+            # schema 非法与 JSON 损坏同语义（code-review item 680bbf7cde75）：
+            # 坏文件不留痕——移除以免后续 attempt 反复解析失败、拿不到干净基线。
+            try:
+                if progress_path.exists():
+                    progress_path.unlink()
+            except OSError:
+                pass
             return None
         return data
     @property

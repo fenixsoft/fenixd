@@ -371,7 +371,7 @@ class FFastTrackMixin:
             # （action=proceed）→ 继续后续 merge 推进；handled（已终态处置：
             # 重派/blocked）→ 直接 return。
             adjudication = self._handle_fast_track_deliverable_gate(
-                spec_name, result, missing
+                spec_name, result, missing, impl_result=ft_result
             )
             if adjudication.get("action") != "proceed":
                 return
@@ -1305,14 +1305,18 @@ class FFastTrackMixin:
         spec_name: str,
         result,
         missing: list,
+        impl_result=None,
     ) -> dict:
         """fast-track 交付物守卫触发：接入同源裁决流水线（add-declaration-relocation-protocol 4.4）。
 
         与 full 车道同源（``_adjudicate_deliverable_missing``），保持 LLM 终审 /
-        重定位 / 预分类软化 / 防洗白的统一行为与输出契约。重派时按 fast-track
-        车道入队（MUST NOT 直按缺件重派）。
+        重定位 / 预分类软化 / 防洗白的统一行为与输出契约。``impl_result`` 为已
+        解析的实现结果 dict（``_read_implementer_result`` 产物，与 full 车道同
+        源），供 dispute-judge 输入携带实现者自报 findings；缺省 None 时 judge
+        输入 findings 为空（fail-open）。重派时按 fast-track 车道入队（MUST NOT
+        直按缺件重派）。
         """
         adjudication = self._pm._adjudicate_deliverable_missing(
-            spec_name, result, None, missing, agent_type="fast-track"
+            spec_name, result, impl_result, missing, agent_type="fast-track"
         )
         return adjudication

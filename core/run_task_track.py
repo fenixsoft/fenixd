@@ -106,6 +106,16 @@ def parse_unattainable(data: dict) -> "tuple[set, list]":
 _RUN_TASK_CACHE: dict = {}
 
 
+def tasks_md_path(project_root, spec_name) -> Path:
+    """tasks.md 规格内路径单点：``<root>/spec/changes/<spec>/tasks.md``。
+
+    判据读取（``parse_tasks_md``）与失败文案里的路径显示都从这里取，禁止
+    各自手拼同一相对路径——否则路径变更时判据正确跟随、文案仍指向旧位置，
+    失败归因失真（code-review item 52e0dac160b4）。
+    """
+    return Path(project_root) / "spec" / "changes" / spec_name / "tasks.md"
+
+
 def parse_tasks_md(project_root, spec_name) -> "tuple[list, set]":
     """解析 tasks.md 数字任务的勾选状态（D2 单一实现点，中性模块）。
 
@@ -118,7 +128,7 @@ def parse_tasks_md(project_root, spec_name) -> "tuple[list, set]":
     文件缺失/不可读/不含任何数字任务 → ([]， set())——「无缺口概念」，
     调用方判据通过（与既有 _task_completion_blocker 语义一致）。
     """
-    tasks_path = Path(project_root) / "spec" / "changes" / spec_name / "tasks.md"
+    tasks_path = tasks_md_path(project_root, spec_name)
     if not tasks_path.exists():
         return [], set()
     all_ids: list = []

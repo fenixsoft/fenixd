@@ -104,6 +104,9 @@ export default function KnowledgeTab({ project, active }: KnowledgeTabProps) {
   const [indexData, setIndexData] = useState<KnowledgeIndexData | null>(null);
   const [view, setView] = useState<View>({ kind: 'index' });
   const [loading, setLoading] = useState(false);
+  // 加载失败态（code-review item 61d229fbd494）：config/index 请求失败的
+  // 错误消息；null = 无错误。与「尚未初始化」业务态区分，不互相伪装。
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [graphState, setGraphState] = useState<'unknown' | 'ready' | 'missing'>('unknown');
   // 请求序号守卫（QualityTab/RegressionTab 同款）：慢响应不覆盖新视图
   const seqRef = useRef(0);
@@ -123,20 +126,27 @@ export default function KnowledgeTab({ project, active }: KnowledgeTabProps) {
       const data = await getKnowledgeIndex(project);
       if (seq !== seqRef.current) return;
       setIndexData(data);
-      // graph 探测：404 = 未生成（占位）；200 = 下发 URL 交 iframe
+      setLoadError(null);
+      // graph 探测：404 = 未生成（占位）；200 = 下发 URL 交 iframe。
+      // HEAD 探测（code-review item 6e3bcfab6887）：后端 /api/knowledge/graph
+      // 的 GET 路由对 HEAD 同表分派（_handle_api），且 _send_file/_json/_error
+      // 均在 command==HEAD 时抑制响应体——探测只收响应头，不再整份下载
+      // graph.html；iframe 渲染仍走 GET 的 knowledgeGraphUrl。
       try {
-        const res = await fetch(knowledgeGraphUrl(project));
+        const res = await fetch(knowledgeGraphUrl(project), { method: 'HEAD' });
         if (seq !== seqRef.current) return;
         setGraphState(res.ok ? 'ready' : 'missing');
       } catch {
         if (seq !== seqRef.current) return;
         setGraphState('missing');
       }
-    } catch {
+    } catch (e) {
       if (seq !== seqRef.current) return;
       setEnabled(true);
       setEnabledUnknown(false);
       setIndexData(null);
+      // 记 error 态而非伪装成「尚未初始化」（code-review item 61d229fbd494）
+      setLoadError(e instanceof ApiError ? e.message : String(e));
     } finally {
       if (seq === seqRef.current) setLoading(false);
     }
@@ -155,6 +165,7 @@ export default function KnowledgeTab({ project, active }: KnowledgeTabProps) {
     setIndexData(null);
     setGraphState('unknown');
     setEnabledUnknown(true);
+    setLoadError(null);
   }, [project]);
 
   if (!active) return null;
@@ -180,6 +191,22 @@ export default function KnowledgeTab({ project, active }: KnowledgeTabProps) {
         <Space>
           <Spin size="small" />
           <Typography.Text type="secondary">加载知识目录…</Typography.Text>
+        </Space>
+      </Card>
+    );
+  }
+
+  // 加载失败占位（code-review item 61d229fbd494）：明示错误 + 重试入口，
+  // 不再回落到「尚未初始化」业务占位；重试复用 load（loading 态自动接管渲染）。
+  if (loadError !== null) {
+    return (
+      <Card variant="borderless" data-testid="knowledge-load-error">
+        <Space direction="vertical" size={8}>
+          <Typography.Text strong>知识目录加载失败</Typography.Text>
+          <Typography.Text type="secondary">{loadError}</Typography.Text>
+          <Button size="small" data-testid="knowledge-retry" onClick={() => void load()}>
+            重试
+          </Button>
         </Space>
       </Card>
     );

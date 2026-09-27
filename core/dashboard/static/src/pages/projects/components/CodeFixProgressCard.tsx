@@ -122,6 +122,19 @@ export default function CodeFixProgressCard(
     onRunningChangeRef.current?.(fixRunning);
   }, [fixRunning]);
 
+  // 跨项目切换清态（code-review item 1d0b747da6b2）：本组件随 Tab 常驻挂载，
+  // project 变化只重启轮询 effect、不卸载组件，组件级 progress 会保留上一项目
+  // 最后一帧——新项目首个 tick 返回前（约 2s + 请求耗时）卡片按旧项目的
+  // batch_no/current/file 渲染，旧帧 running=true 还会把父组件「自动修复」按钮
+  // 多灰置一个轮询周期；新项目端点连续失败时旧帧一直展示到 readFailed。对
+  // project 专门 effect 清空 progress 与 readFailed（对齐 ClaudeOutputPane 无 key
+  // 复用切 run 清 status 的口径）。声明序在本轮询 effect 之前：project 变化时
+  // 清空先于新轮询的 tick 执行，不会误清新项目刚取到的帧；restartKey/retryKey
+  // 触发的正常轮询周期不经本 effect，已落地的进度不受影响。
+  useEffect(() => {
+    setProgress(null);
+    setReadFailed(false);
+  }, [project]);
   useEffect(() => {
     // active 门控（对齐 QualityTab/SessionPanel 的「未选中零请求」约定）：项目页
     // <Tabs> 未设 destroyInactiveTabPane，本组件首次激活后会一直挂载；若修复链

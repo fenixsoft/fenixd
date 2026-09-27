@@ -27,7 +27,7 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
   const [eventCount, setEventCount] = useState(0);
   // Administrator 串行处理：发起时若上一次处置尚未完成，本次请求排队等候拾取
   const [queued, setQueued] = useState(false);
-  // 本次处置是否已到终态（done/error/missing）：终态后按钮与输入框恢复可用
+  // 本次处置是否已到终态（终态词表见 handleRunStatus）：终态后按钮与输入框恢复可用
   const [runDone, setRunDone] = useState(false);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // 本轮发起的服务端时刻锚点（ms，取 invoke 响应携带的 created）：轮询只采用此后

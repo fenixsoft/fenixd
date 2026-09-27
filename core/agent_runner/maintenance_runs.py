@@ -1852,7 +1852,7 @@ def _stderr_tail_summary(stderr_lines, max_lines: int = 3, max_chars: int = 200)
 
 
 def _unique_code_fix_run_id(runner, exclude=()) -> str:
-    """生成不冲突的 ``code-fix-<epoch>`` run_id（task 6.2）。
+    """生成并**原子申领**不冲突的 ``code-fix-<epoch>`` run_id（task 6.2）。
 
     撞名判据（对齐 _unique_code_review_run_id 的退避形态）：runner 侧在飞
     run_id + 主树 ``.fenix/code-review/fix-out-<candidate>.jsonl`` 残留
@@ -1862,6 +1862,16 @@ def _unique_code_fix_run_id(runner, exclude=()) -> str:
     撞名会让重试轮复用首轮 out 文件、破坏「重试独立文件并集」口径，
     add-code-fix-item-level-progress 2.2）。
     目标已占时追加 ``-<n>`` 退避（n 从 1 起递增）。
+
+    申领即创建（对齐 _unique_code_review_run_id / item e61828a54fda）：
+    旧实现只对在飞快照、exclude 集与主树残留做「检查-然后-返回」探测，
+    check-then-act 窗口内两个同秒触发的独立入口会同时通过探测、拿到同一
+    candidate。现在飞集/exclude 预检通过后，以 ``O_CREAT|O_EXCL`` 抢占主树
+    ``fix-out-<candidate>.jsonl``（原子），输者退避下一候选；占位内容为
+    合法空 JSON ``{}``（主树 fix-out 无读者按文件聚合，占位不破坏任何消费
+    方；真实产物落 worktree 同名路径，不会与占位同文件）。占位仅作申领
+    凭据，不回填真实产物——由 run_code_fix 收尾 finally 清理（对齐
+    run_regression / item e6a103d93b91），不留空占位。
     """
     base = f"code-fix-{int(time.time())}"
     candidate = base
@@ -1877,6 +1887,27 @@ def _unique_code_fix_run_id(runner, exclude=()) -> str:
             n += 1
             candidate = f"{base}-{n}"
             continue
+        try:
+            cr_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            # 目录建不出（权限等）：退回既有探测语义，落盘失败由
+            # run_code_fix 的 out 目录创建路径统一报错
+            return candidate
+        try:
+            fd = os.open(
+                cr_dir / f"fix-out-{candidate}.jsonl",
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                0o644,
+            )
+        except FileExistsError:
+            # 已被并发触发申领 → 退避下一候选（申领即裁决，无再撞窗口）
+            n += 1
+            candidate = f"{base}-{n}"
+            continue
+        except OSError:
+            return candidate
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write("{}\n")
         return candidate
 
 
@@ -1962,154 +1993,171 @@ def run_code_fix(
     run_id = run_id or _unique_code_fix_run_id(runner)
     wt = Path(worktree_root)
     out_path = wt / ".fenix" / "code-review" / f"fix-out-{run_id}.jsonl"
+
+    # 申领占位收尾清理（item e6a103d93b91，对齐 run_regression 同构形态）：
+    # _unique_code_fix_run_id 以 O_CREAT|O_EXCL 抢占主树 fix-out-<run_id>.jsonl
+    # 仅作原子申领，`{}` 占位此后无人回填也无人读（真实产物落 worktree 同名
+    # 路径，主树占位无消费方）——不清理则每次执行永久泄漏一个空占位。此处按
+    # 申领处同构拼路径（cr_dir 取 runner.project_root，与 worktree_root 无关），
+    # 成功/失败/异常各路径 finally 统一清理；missing_ok 容忍 OSError 回退路径
+    # 本就未落盘的情况。
+    claim_placeholder = (
+        runner.project_root / ".fenix" / "code-review" / f"fix-out-{run_id}.jsonl"
+    )
     try:
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-    except OSError as e:
-        return CodeFixResult(
-            run_id=run_id, success=False, error=f"out 目录创建失败: {e}"
-        )
-
-    prompt = runner._build_prompt(
-        run_id,
-        "code-fix",
-        detail={
-            "items": items,
-            "out_path": str(out_path),
-            "worktree": str(wt),
-            "failure_summary": failure_summary,
-        },
-    )
-
-    # 模型解析链（D1）：code-fix > code-review > self-review > administrator
-    # > _get_admin_model → 默认网关（缺省与 code-review 同源）
-    env_overrides: Dict[str, str] = {}
-    assignment = (
-        runner._get_agent_model_assignment("code-fix")
-        or runner._get_agent_model_assignment("code-review")
-        or runner._get_agent_model_assignment("self-review")
-        or runner._get_agent_model_assignment("administrator")
-    )
-    if assignment:
-        provider, model_override = assignment[0]
-        env_overrides["ANTHROPIC_BASE_URL"] = provider["baseurl"]
-        env_overrides["ANTHROPIC_API_KEY"] = provider["apikey"]
-        env_overrides["ANTHROPIC_MODEL"] = model_override
-        env_overrides["CLAUDE_CONFIG_DIR"] = str(runner._ensure_agent_config_dir(provider["name"], model_override))
-        for k, v in (provider.get("env") or {}).items():
-            env_overrides[k] = v
-    else:
-        model_override = runner._get_admin_model()
-
-    # add-agent-env-overrides（2026-09-24 MAX_THINKING_TOKENS 实验）：配置键
-    # ``agents.agent_env.code-fix`` 的 per-agent 环境变量注入——本函数只 spawn
-    # code-fix run（env 随进程继承给其 Task 子代理），天然不波及其他车道。
-    # 背景：glm-5.3-flash thinking 生成是回合耗时大头（09-24 批实测 117/357
-    # 消息带 thinking、均 1614 字符、工具执行≈0）。实验定案后若保留须补
-    # Dashboard 设置项（fenix-new-config-needs-dashboard-ui）。
-    agent_env = (((getattr(runner, "config", {}) or {}).get("agents") or {}).get("agent_env") or {}).get("code-fix") or {}
-    if not isinstance(agent_env, dict):
-        # code-review item 21e3783270a2：``or {}`` 只兜住键缺失/None，yaml 误写为
-        # 字符串/数字/列表时裸调 .items() 抛 AttributeError，且本处位于任何 try
-        # 保护之外（:1995 的 try 只包 _run_claude），整批 code-fix 启动即崩。
-        # 对齐 _safe_int（item dc8f109b8b60）的防御降级口径：记 WARNING 按空
-        # 映射继续（零注入），不阻断维护 run 主流程。
-        _log = getattr(runner, "logger", None)
-        if _log is not None:
-            _log.warning(
-                "code-fix",
-                f"agents.agent_env.code-fix 配置类型错误（期望 dict，实际 "
-                f"{type(agent_env).__name__}），忽略 agent_env 注入",
+        try:
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            return CodeFixResult(
+                run_id=run_id, success=False, error=f"out 目录创建失败: {e}"
             )
-        agent_env = {}
-    for _k, _v in agent_env.items():
-        env_overrides[str(_k)] = str(_v)
-    if agent_env:
-        _log = getattr(runner, "logger", None)
-        if _log is not None:
-            _log.info("code-fix", f"agent_env 注入: {sorted(agent_env)}")
 
-    # 结构化失败签名（evo-code-fix-api-timeout-salvage 1.2）：先于 try 初始化——
-    # run_ok 也可能被产物硬门/计数读取置 False（此时 except 未执行），三值须有定义。
-    api_timeout = False
-    exit_code = None
-    stderr_summary = ""
-    try:
-        output, _turns, _session_id, _usage_info = runner._run_claude(
-            prompt,
-            wt,
+        prompt = runner._build_prompt(
             run_id,
-            model_override,
-            env_overrides,
-            # 轮次不设限（用户 2026-09-23）：批内条目数大时 800+扩展不够用，
-            # 撞上限=整批作废。_run_claude 对 None 跳过强制块；失控兜底由
-            # 超时覆盖（timeout_overrides）+ liveness 承担。
-            max_turns=None,
-            spec_name="code-review-fix",
-            agent_type="code-fix",
+            "code-fix",
+            detail={
+                "items": items,
+                "out_path": str(out_path),
+                "worktree": str(wt),
+                "failure_summary": failure_summary,
+            },
         )
-        run_ok = True
-        error = ""
-    except Exception as e:  # noqa: BLE001 — run 异常兜底为失败信封
-        output = ""
-        run_ok = False
-        error = str(e)
-        # evo-code-fix-api-timeout-salvage 1.2：结构化签名透出——失败记录与
-        # 日志携带 api_timeout / exit_code / stderr 摘要，替代仅 str(e) 压扁。
-        # api_timeout 判别在 runner 层完成（design D1），此处只读异常布尔标记；
-        # 三元全空（非 _run_claude 失败异常）时 error 保持原文不添噪。
-        api_timeout = bool(getattr(e, "api_timeout", False))
-        exit_code = getattr(e, "exit_code", None)
-        stderr_summary = _stderr_tail_summary(getattr(e, "stderr_lines", None))
-        if api_timeout or exit_code is not None or stderr_summary:
-            error = (
-                f"{error} [api_timeout={api_timeout} exit_code={exit_code}"
-                + (f" stderr_tail: {stderr_summary}" if stderr_summary else "")
-                + "]"
-            )
 
-    # ── 产物硬门（task 6.2）：run exit 0 但 out 缺失/零有效行 → 判失败 ──
-    if run_ok:
-        gate_err = _check_code_fix_artifact(items, out_path)
-        if gate_err is not None:
-            run_ok = False
-            error = gate_err
+        # 模型解析链（D1）：code-fix > code-review > self-review > administrator
+        # > _get_admin_model → 默认网关（缺省与 code-review 同源）
+        env_overrides: Dict[str, str] = {}
+        assignment = (
+            runner._get_agent_model_assignment("code-fix")
+            or runner._get_agent_model_assignment("code-review")
+            or runner._get_agent_model_assignment("self-review")
+            or runner._get_agent_model_assignment("administrator")
+        )
+        if assignment:
+            provider, model_override = assignment[0]
+            env_overrides["ANTHROPIC_BASE_URL"] = provider["baseurl"]
+            env_overrides["ANTHROPIC_API_KEY"] = provider["apikey"]
+            env_overrides["ANTHROPIC_MODEL"] = model_override
+            env_overrides["CLAUDE_CONFIG_DIR"] = str(runner._ensure_agent_config_dir(provider["name"], model_override))
+            for k, v in (provider.get("env") or {}).items():
+                env_overrides[k] = v
+        else:
+            model_override = runner._get_admin_model()
+
+        # add-agent-env-overrides（2026-09-24 MAX_THINKING_TOKENS 实验）：配置键
+        # ``agents.agent_env.code-fix`` 的 per-agent 环境变量注入——本函数只 spawn
+        # code-fix run（env 随进程继承给其 Task 子代理），天然不波及其他车道。
+        # 背景：glm-5.3-flash thinking 生成是回合耗时大头（09-24 批实测 117/357
+        # 消息带 thinking、均 1614 字符、工具执行≈0）。实验定案后若保留须补
+        # Dashboard 设置项（fenix-new-config-needs-dashboard-ui）。
+        agent_env = (((getattr(runner, "config", {}) or {}).get("agents") or {}).get("agent_env") or {}).get("code-fix") or {}
+        if not isinstance(agent_env, dict):
+            # code-review item 21e3783270a2：``or {}`` 只兜住键缺失/None，yaml 误写为
+            # 字符串/数字/列表时裸调 .items() 抛 AttributeError，且本处位于任何 try
+            # 保护之外（:1995 的 try 只包 _run_claude），整批 code-fix 启动即崩。
+            # 对齐 _safe_int（item dc8f109b8b60）的防御降级口径：记 WARNING 按空
+            # 映射继续（零注入），不阻断维护 run 主流程。
             _log = getattr(runner, "logger", None)
             if _log is not None:
-                _log.error(
+                _log.warning(
                     "code-fix",
-                    f"产物硬门拦截: run={run_id} items={len(items)} — {gate_err}",
+                    f"agents.agent_env.code-fix 配置类型错误（期望 dict，实际 "
+                    f"{type(agent_env).__name__}），忽略 agent_env 注入",
+                )
+            agent_env = {}
+        for _k, _v in agent_env.items():
+            env_overrides[str(_k)] = str(_v)
+        if agent_env:
+            _log = getattr(runner, "logger", None)
+            if _log is not None:
+                _log.info("code-fix", f"agent_env 注入: {sorted(agent_env)}")
+
+        # 结构化失败签名（evo-code-fix-api-timeout-salvage 1.2）：先于 try 初始化——
+        # run_ok 也可能被产物硬门/计数读取置 False（此时 except 未执行），三值须有定义。
+        api_timeout = False
+        exit_code = None
+        stderr_summary = ""
+        try:
+            output, _turns, _session_id, _usage_info = runner._run_claude(
+                prompt,
+                wt,
+                run_id,
+                model_override,
+                env_overrides,
+                # 轮次不设限（用户 2026-09-23）：批内条目数大时 800+扩展不够用，
+                # 撞上限=整批作废。_run_claude 对 None 跳过强制块；失控兜底由
+                # 超时覆盖（timeout_overrides）+ liveness 承担。
+                max_turns=None,
+                spec_name="code-review-fix",
+                agent_type="code-fix",
+            )
+            run_ok = True
+            error = ""
+        except Exception as e:  # noqa: BLE001 — run 异常兜底为失败信封
+            output = ""
+            run_ok = False
+            error = str(e)
+            # evo-code-fix-api-timeout-salvage 1.2：结构化签名透出——失败记录与
+            # 日志携带 api_timeout / exit_code / stderr 摘要，替代仅 str(e) 压扁。
+            # api_timeout 判别在 runner 层完成（design D1），此处只读异常布尔标记；
+            # 三元全空（非 _run_claude 失败异常）时 error 保持原文不添噪。
+            api_timeout = bool(getattr(e, "api_timeout", False))
+            exit_code = getattr(e, "exit_code", None)
+            stderr_summary = _stderr_tail_summary(getattr(e, "stderr_lines", None))
+            if api_timeout or exit_code is not None or stderr_summary:
+                error = (
+                    f"{error} [api_timeout={api_timeout} exit_code={exit_code}"
+                    + (f" stderr_tail: {stderr_summary}" if stderr_summary else "")
+                    + "]"
                 )
 
-    # out 解析（fixed/skipped 计数；skipped 条目由编排器保持 open）
-    fixed = skipped = 0
-    if run_ok:
-        try:
-            rows = _read_fix_out_rows(out_path)
-        except OSError as e:
-            # 硬门判存/读取成功后、计数读取前产物被删/权限收紧等读取异常
-            # 不得穿透本函数收尾。此处成功但零计数会与硬门「至少一条有效
-            # 行」的保证矛盾（掩盖读取故障），故对齐硬门 fail-closed 语义
-            # 折算为失败信封。
-            run_ok = False
-            error = f"code-fix 产物计数读取失败: {out_path} 读取异常（{e}）"
-            rows = []
-        for rec in rows:
-            if rec.get("status") == "fixed":
-                fixed += 1
-            elif rec.get("status") == "skipped":
-                skipped += 1
+        # ── 产物硬门（task 6.2）：run exit 0 但 out 缺失/零有效行 → 判失败 ──
+        if run_ok:
+            gate_err = _check_code_fix_artifact(items, out_path)
+            if gate_err is not None:
+                run_ok = False
+                error = gate_err
+                _log = getattr(runner, "logger", None)
+                if _log is not None:
+                    _log.error(
+                        "code-fix",
+                        f"产物硬门拦截: run={run_id} items={len(items)} — {gate_err}",
+                    )
 
-    return CodeFixResult(
-        run_id=run_id,
-        success=run_ok,
-        fixed=fixed,
-        skipped=skipped,
-        error=error,
-        output=output,
-        api_timeout=api_timeout if not run_ok else False,
-        exit_code=exit_code if not run_ok else None,
-        stderr_summary=stderr_summary if not run_ok else "",
-    )
+        # out 解析（fixed/skipped 计数；skipped 条目由编排器保持 open）
+        fixed = skipped = 0
+        if run_ok:
+            try:
+                rows = _read_fix_out_rows(out_path)
+            except OSError as e:
+                # 硬门判存/读取成功后、计数读取前产物被删/权限收紧等读取异常
+                # 不得穿透本函数收尾。此处成功但零计数会与硬门「至少一条有效
+                # 行」的保证矛盾（掩盖读取故障），故对齐硬门 fail-closed 语义
+                # 折算为失败信封。
+                run_ok = False
+                error = f"code-fix 产物计数读取失败: {out_path} 读取异常（{e}）"
+                rows = []
+            for rec in rows:
+                if rec.get("status") == "fixed":
+                    fixed += 1
+                elif rec.get("status") == "skipped":
+                    skipped += 1
+
+        return CodeFixResult(
+            run_id=run_id,
+            success=run_ok,
+            fixed=fixed,
+            skipped=skipped,
+            error=error,
+            output=output,
+            api_timeout=api_timeout if not run_ok else False,
+            exit_code=exit_code if not run_ok else None,
+            stderr_summary=stderr_summary if not run_ok else "",
+        )
+    finally:
+        try:
+            claim_placeholder.unlink(missing_ok=True)
+        except OSError:
+            pass  # 清理失败不吞 code-fix 结果（对齐 run_regression 降级语义）
 
 
 def _read_fix_out_rows(out_path: Path) -> list:
