@@ -980,30 +980,36 @@ class StateMachine:
         Returns: 归零前的计数值（0 = 本就干净；spec 不存在记 warning 返回 0）。
         """
         lock_path = self._lockfile
+        missing = False
         with open(lock_path, "w") as lock_f:
             fcntl.flock(lock_f, fcntl.LOCK_EX)
             try:
                 specs = self.read_all()
                 if spec_name not in specs:
-                    self.logger.warning(
-                        "state_machine",
-                        "reset task_gate_rejections failed: "
-                        f"SPEC not found: {spec_name}",
-                    )
-                    return 0
-                try:
-                    current = int(
-                        specs[spec_name].get(TASK_GATE_REJECTIONS_FIELD, 0) or 0
-                    )
-                except (TypeError, ValueError):
-                    current = 0
-                if current != 0:
-                    specs[spec_name][TASK_GATE_REJECTIONS_FIELD] = 0
-                    specs[spec_name]["updated"] = datetime.now(timezone.utc).isoformat()
-                    self._write_all_locked(specs)
-                return current
+                    # 锁内不落日志（持锁窗口不含 I/O，见 _log_update_applied
+                    # docstring），SPEC-not-found 告警带出锁外再记
+                    missing = True
+                else:
+                    try:
+                        current = int(
+                            specs[spec_name].get(TASK_GATE_REJECTIONS_FIELD, 0) or 0
+                        )
+                    except (TypeError, ValueError):
+                        current = 0
+                    if current != 0:
+                        specs[spec_name][TASK_GATE_REJECTIONS_FIELD] = 0
+                        specs[spec_name]["updated"] = datetime.now(timezone.utc).isoformat()
+                        self._write_all_locked(specs)
+                    return current
             finally:
                 fcntl.flock(lock_f, fcntl.LOCK_UN)
+        # SPEC-not-found 告警带出锁外再记（持锁窗口不含 I/O）
+        self.logger.warning(
+            "state_machine",
+            "reset task_gate_rejections failed: "
+            f"SPEC not found: {spec_name}",
+        )
+        return 0
 
     def bump_budget_exempt_runs(self, spec_name: str) -> int:
         """死亡豁免侧车计数原子递增（``_budget_exempt_runs``）。
@@ -1777,10 +1783,11 @@ class StateMachine:
                         channel: str = "auto") -> bool:
         """门禁自动路径专用转换（verifier-judgment-integrity D7 逃生门）。
 
-        仅允许 GATE_TRANSITIONS 中声明的转换（当前：VERIFIED→TESTING），
-        用于 _on_spec_verified 门禁拦截后的自动回退。人工路径（直接调
-        transition）受 VALID_TRANSITIONS 约束，VERIFIED→TESTING 仍被拒，
-        不得绕过。返回 False 表示非门禁允许的转换或 spec 不存在。
+        仅允许 GATE_TRANSITIONS 中声明的转换（口径以模块常量处注释为准、
+        勿在此复述防再漂移：VERIFIED→TESTING、BLOCKED→TESTING），分别
+        服务 _on_spec_verified 门禁拦截后的自动回退与 blocked 直达重验。
+        人工路径（直接调 transition）受 VALID_TRANSITIONS 约束，这两个
+        转换仍被拒，不得绕过。返回 False 表示非门禁允许的转换或 spec 不存在。
 
         fix-observability-gaps 2.1：与 transition() 相同——可选关键字参数
         trigger_run_id / agent_type / channel，日志前缀 `Gate transition: `
