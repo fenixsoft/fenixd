@@ -1809,7 +1809,11 @@ class CodeFixResult:
     与 CodeReviewResult / RegressionResult 同形态的维护型 run 结果：
     - ``fixed`` / ``skipped``: out 产物行中 status=fixed / skipped 的计数
       （skipped 条目 MUST 保持 open——由编排器在合回成功后只核销 fixed）；
-    - ``error``: success=False 时的失败原因（含产物硬门拦截文案）。
+    - ``error``: success=False 时的失败原因（含产物硬门拦截文案）；
+    - 结构化失败签名（evo-code-fix-api-timeout-salvage 1.2）：``api_timeout``
+      （单轮 API 请求超时终局，判别单源在 runner 层挂异常标记）、
+      ``exit_code`` / ``stderr_summary``（原始退出码与 stderr 尾行摘要）——
+      失败现场可判别、可追溯，不再把签名压扁为异常字符串。
     """
 
     def __init__(
@@ -1820,6 +1824,9 @@ class CodeFixResult:
         skipped: int = 0,
         error: str = "",
         output: str = "",
+        api_timeout: bool = False,
+        exit_code=None,
+        stderr_summary: str = "",
     ):
         self.run_id = run_id
         self.success = success
@@ -1827,6 +1834,21 @@ class CodeFixResult:
         self.skipped = skipped
         self.error = error
         self.output = output
+        self.api_timeout = api_timeout
+        self.exit_code = exit_code
+        self.stderr_summary = stderr_summary
+
+
+def _stderr_tail_summary(stderr_lines, max_lines: int = 3, max_chars: int = 200) -> str:
+    """stderr 尾行摘要（evo-code-fix-api-timeout-salvage 1.2，追溯用非判别用）。
+
+    取末尾至多 ``max_lines`` 条非空行、总长截断 ``max_chars``——判别一律读
+    ``api_timeout`` 布尔标记（runner 层单源），摘要只进日志/失败记录。
+    """
+    lines = [str(ln).strip() for ln in (stderr_lines or []) if str(ln).strip()]
+    if not lines:
+        return ""
+    return " | ".join(lines[-max_lines:])[:max_chars]
 
 
 def _unique_code_fix_run_id(runner, exclude=()) -> str:
@@ -2006,6 +2028,11 @@ def run_code_fix(
         if _log is not None:
             _log.info("code-fix", f"agent_env 注入: {sorted(agent_env)}")
 
+    # 结构化失败签名（evo-code-fix-api-timeout-salvage 1.2）：先于 try 初始化——
+    # run_ok 也可能被产物硬门/计数读取置 False（此时 except 未执行），三值须有定义。
+    api_timeout = False
+    exit_code = None
+    stderr_summary = ""
     try:
         output, _turns, _session_id, _usage_info = runner._run_claude(
             prompt,
@@ -2026,6 +2053,19 @@ def run_code_fix(
         output = ""
         run_ok = False
         error = str(e)
+        # evo-code-fix-api-timeout-salvage 1.2：结构化签名透出——失败记录与
+        # 日志携带 api_timeout / exit_code / stderr 摘要，替代仅 str(e) 压扁。
+        # api_timeout 判别在 runner 层完成（design D1），此处只读异常布尔标记；
+        # 三元全空（非 _run_claude 失败异常）时 error 保持原文不添噪。
+        api_timeout = bool(getattr(e, "api_timeout", False))
+        exit_code = getattr(e, "exit_code", None)
+        stderr_summary = _stderr_tail_summary(getattr(e, "stderr_lines", None))
+        if api_timeout or exit_code is not None or stderr_summary:
+            error = (
+                f"{error} [api_timeout={api_timeout} exit_code={exit_code}"
+                + (f" stderr_tail: {stderr_summary}" if stderr_summary else "")
+                + "]"
+            )
 
     # ── 产物硬门（task 6.2）：run exit 0 但 out 缺失/零有效行 → 判失败 ──
     if run_ok:
@@ -2066,6 +2106,9 @@ def run_code_fix(
         skipped=skipped,
         error=error,
         output=output,
+        api_timeout=api_timeout if not run_ok else False,
+        exit_code=exit_code if not run_ok else None,
+        stderr_summary=stderr_summary if not run_ok else "",
     )
 
 

@@ -162,7 +162,10 @@ class G1LifecycleMixin:
             # worktree 继承（fast-track 打回重派 / fix-provider-transient-backoff D3：
             # transient 终态保留的全 agent_type 遗产）：优先认领上一轮保留的复用遗产，
             # 在同一目录同一分支上继续（继承已提交成果与未提交现场），不再从零新建。
-            if agent_type in ("fast-track", "implementer", "planner-plan", "planner-judge", "verifier"):
+            # code-fix 车道（evo-code-fix-api-timeout-salvage 2.2）：api_timeout
+            # salvage 后的 recovery legacy（reuse=True）由同链下一批 create 经本
+            # 既有认领通路继承 salvaged 分支；认领不可用 fail-open 全新建树。
+            if agent_type in ("fast-track", "implementer", "planner-plan", "planner-judge", "verifier", "code-fix"):
                 reuse = self._take_reusable_worktree(spec_name)
                 if reuse is not None:
                     wt_path, branch = reuse
