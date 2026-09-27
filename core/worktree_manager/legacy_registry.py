@@ -129,6 +129,12 @@ class G2LegacyRegistryMixin:
         （替代 cleanup(success=False)），agent_type 参数供日志区分来源
         （fast-track / implementer / transient 其他 agent_type）。
         """
+        # 入口时刻快照（code-review item ede232241fe2，与 cleanup finally 的
+        # cleanup_entry_ts 同款）：两条出口的摘锁共用该基准——收尾期间并发
+        # create() 登记的同 spec 他 agent_type 新锁 _lock_since 晚于该时刻即
+        # 跳过不误摘（快照取方法入口，覆盖 _kill_worktree_strays 等耗时判定
+        # 的全程窗口）。
+        entry_ts = time.time()
         wt_str = str(wt_path)
         branch = self._wt_branches.get(wt_str) or self._guess_branch_from_worktree(wt_path)
         # 收工清扫：agent 已退出，杀掉残留测试子进程（目录保留，进程不留）
@@ -151,36 +157,47 @@ class G2LegacyRegistryMixin:
             )
             self._active_reuse.pop(spec_name, None)
             self._proc_scan_cache.pop(spec_name, None)
-            # 加锁口径对齐 cleanup finally（code-review item 1a7509f2653a）：
-            # 计算与摘除全程持 _spec_lock_th，迭代用 sorted 快照，防误删并发
-            # create 的新锁及 "Set changed size during iteration"。
-            with self._spec_lock_th:
-                for k in [
-                    k for k in sorted(self._spec_locks)
-                    if k.split(":")[0] == spec_name
-                ]:
-                    self._spec_locks.discard(k)
-                    self._lock_since.pop(k, None)
+            self._release_spec_locks_of(spec_name, not_after=entry_ts)
             return
         self._active_worktrees.discard(wt_str)
         self._wt_branches.pop(wt_str, None)
         self._active_reuse.pop(spec_name, None)
-        # 释放 spec 锁（与 cleanup 的 finally 段同语义，按 spec 精确匹配；
-        # code-review item 1a7509f2653a：全程持 _spec_lock_th + sorted 快照，
-        # 防误删并发 create 的新锁及无锁迭代活跃 Set 的竞态）
-        with self._spec_lock_th:
-            for k in [
-                k for k in sorted(self._spec_locks)
-                if k.split(":")[0] == spec_name
-            ]:
-                self._spec_locks.discard(k)
-                self._lock_since.pop(k, None)
+        # 释放 spec 锁（与 cleanup 的 finally 段同语义，按 spec 精确匹配）：
+        # 摘锁口径与入口时刻守卫统一收敛到 _release_spec_locks_of 单一实现。
+        self._release_spec_locks_of(spec_name, not_after=entry_ts)
         self._proc_scan_cache.pop(spec_name, None)
         self.logger.info(
             "worktree_manager",
             f"Kept worktree for reuse: {wt_path} (branch {branch}, "
             f"spec '{spec_name}'" + (f", agent_type '{agent_type}'" if agent_type else "") + ")",
         )
+
+    def _release_spec_locks_of(
+        self, spec_name: str, not_after: float | None = None,
+    ) -> None:
+        """摘除该 spec 名下（`<spec>:<agent_type>` 键按 spec 前缀精确匹配）的在册锁。
+
+        keep_for_reuse 两条出口（登记未生效 / 正常收尾）共用单一实现
+        （code-review item fcffade60cc9）：调整摘锁口径只需改此处，两条出口
+        行为不再漂移。加锁口径对齐 cleanup finally（code-review item
+        1a7509f2653a）：计算与摘除全程持 _spec_lock_th，迭代用 sorted 快照，
+        防误删并发 create 的新锁及 "Set changed size during iteration"。
+
+        not_after：入口时刻守卫（code-review item ede232241fe2，与 cleanup
+        finally 的 cleanup_entry_ts 同款）——仅摘除 _lock_since 不晚于该时刻
+        的锁：收尾期间派发器对同一 spec 换 agent_type 发起的新 create（如
+        verifier 收尾时 implementer 重派，lifecycle.py 清理注释已承认该并发
+        可发生）键不同故加锁成功，其 _lock_since 晚于入口时刻，跳过不误摘，
+        防在飞 run 失去锁保护重开双派发窗口；None 表示不设限（旧版行为）。
+        """
+        with self._spec_lock_th:
+            for k in [
+                k for k in sorted(self._spec_locks)
+                if k.split(":")[0] == spec_name
+                and (not_after is None or self._lock_since.get(k, 0.0) <= not_after)
+            ]:
+                self._spec_locks.discard(k)
+                self._lock_since.pop(k, None)
 
     def get_reuse_record(self, spec_name: str) -> Optional[dict]:
         """返回本轮 run 已认领的复用 worktree 记录（prompt 注入用），无则 None。"""
