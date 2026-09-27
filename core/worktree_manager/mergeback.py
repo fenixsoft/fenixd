@@ -1106,6 +1106,15 @@ class G4MergebackMixin:
                         "worktree_manager",
                         f"merge-back 后备份清理意外失败（保留备份供人工裁决）：{e}",
                     )
+                # merge 成功后把随分支带回 tracked 的 ignored 草稿移出（防撞车循环重启）
+                if head_before:
+                    try:
+                        self._purge_ignored_brought_in(head_before)
+                    except Exception as e:  # noqa: BLE001 — 清理失败不否定已落地的 merge
+                        self.logger.warning(
+                            "worktree_manager",
+                            f"merge-back 后 ignored 草稿清理意外失败（忽略继续）：{e}",
+                        )
                 # dist 冲突根治 B：自愈 merge 同样从合并后 src 重建收口
                 try:
                     self._rebuild_dist_after_merge()
@@ -1140,6 +1149,15 @@ class G4MergebackMixin:
                         "worktree_manager",
                         f"merge-back 后备份清理意外失败（保留备份供人工裁决）：{e}",
                     )
+                # merge 成功后把随分支带回 tracked 的 ignored 草稿移出（防撞车循环重启）
+                if head_before:
+                    try:
+                        self._purge_ignored_brought_in(head_before)
+                    except Exception as e:  # noqa: BLE001 — 清理失败不否定已落地的 merge
+                        self.logger.warning(
+                            "worktree_manager",
+                            f"merge-back 后 ignored 草稿清理意外失败（忽略继续）：{e}",
+                        )
                 # dist 冲突根治 B：该路径同样可能并入 static src 变更
                 try:
                     self._rebuild_dist_after_merge()
