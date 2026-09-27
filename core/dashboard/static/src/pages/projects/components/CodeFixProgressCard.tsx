@@ -214,7 +214,7 @@ export default function CodeFixProgressCard(
   const batchTotal = progress.batch_total;
   const currentItem = progress.current_item;
   let itemProgressText = '';
-  if (itemDone != null) {
+  if (itemDone !== null) {
     itemProgressText =
       batchTotal != null
         ? `本批已处置 ${itemDone}/${batchTotal} 条`
