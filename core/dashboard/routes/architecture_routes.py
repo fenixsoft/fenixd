@@ -488,7 +488,15 @@ class ArchitectureManager:
             _write_status(proot, _status_payload("generating", started_at=started_at))
         except OSError as exc:
             lock.release()
-            return False, False, f"架构图状态写入失败: {exc}"
+            # code-review item 955818ba1bd9：OSError 文本可携带内部绝对路径/
+            # errno 属主细节，不得内嵌进响应体（对齐 regression_routes/
+            # help_routes 既有口径）：客户端只收固定文案，细节降级服务端日志。
+            if logger is not None:
+                logger.warning(
+                    f"架构图状态写入失败（project={project_name}）: "
+                    f"{type(exc).__name__}: {exc!r}",
+                )
+            return False, False, "架构图状态写入失败"
         thread = threading.Thread(
             target=self._run_generation,
             args=(proot, project_name, started_at, lock, logger),
@@ -718,6 +726,20 @@ class ArchitectureManager:
                 )
             self._finish(
                 proot, started_at, t0, state, error=error, component_count=count
+            )
+        except Exception as exc:  # noqa: BLE001 — 兜底判定链等意外异常
+            # code-review item 3f4adc8143f0：意外异常若放任穿出线程体，终态未
+            # 落盘而锁已被 finally 释放，违反「终态写入 MUST 严格先于锁释放」
+            # 读侧契约（同 refresh 线程启动失败路径 item 1295fb028cb4）。兜底
+            # 只走本分支：正常成功/正常 failed 路径均提前 return，不经此处。
+            if logger is not None:
+                logger.warning(
+                    f"架构图生成线程意外异常（project={project_name}）: "
+                    f"{type(exc).__name__}: {exc!r}",
+                )
+            self._finish(
+                proot, started_at, t0, "failed",
+                error="架构图生成因内部错误终止，请重试",
             )
         finally:
             lock.release()
