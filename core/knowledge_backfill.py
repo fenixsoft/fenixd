@@ -53,6 +53,10 @@ DOMAIN_MAP_RELPATH = ".fenix/knowledge_backfill_domains.json"
 REPORT_RELPATH = ".fenix/knowledge_backfill_report.md"
 KNOWLEDGE_DIR = "spec/knowledge"
 PROMPT_PATH = Path(__file__).parent / "knowledge_prompts" / "backfill.md"
+# 史前复原（prehistoric bootstrap）：归档目录全部始于该日，此前为史前窗口
+PREHISTORIC_PROMPT_PATH = Path(__file__).parent / "knowledge_prompts" / "prehistoric.md"
+PREHISTORIC_UNTIL = "2026-09-02"
+PREHISTORIC_JSON_RELPATH = ".fenix/knowledge_backfill_prehistoric.json"
 
 # 台账终态
 STATUS_PENDING = "pending"
@@ -509,6 +513,36 @@ def _batch_list_block(
             line += f"\n  - 史前基线（链头输入）：{baseline}"
         lines.append(line)
     return "\n".join(lines) or "（空）"
+
+
+# ── 史前复原 run 提示词（core/knowledge_prompts/prehistoric.md） ─────────
+
+
+def first_commit_ref(project_root: Path) -> str:
+    """仓库首提交短 ref（史前窗口起点；非 git / 失败回退空串占位）。"""
+    try:
+        out = _git(Path(project_root), "rev-list", "--max-parents=0", "HEAD")
+    except Exception:  # noqa: BLE001 - 非 git 目录/超时按占位降级
+        return ""
+    lines = [ln.strip() for ln in out.splitlines() if ln.strip()]
+    return lines[0][:9] if lines else ""
+
+
+def build_prehistoric_prompt(
+    project_root: Path,
+    covered_caps,
+    violations: Optional[list[str]] = None,
+) -> str:
+    """史前复原提示词 = prehistoric.md 契约 + 动态段（窗口锚点 / 求差基准）。"""
+    text = PREHISTORIC_PROMPT_PATH.read_text(encoding="utf-8")
+    text = text.replace("{{UNTIL_DATE}}", PREHISTORIC_UNTIL)
+    text = text.replace("{{FIRST_REF}}", first_commit_ref(project_root) or "<首提交ref>")
+    text = text.replace("{{PREHISTORIC_JSON_PATH}}", PREHISTORIC_JSON_RELPATH)
+    text = text.replace(
+        "{{COVERED_CAPS}}",
+        "\n".join(f"- {c}" for c in sorted(covered_caps)) or "（空）",
+    )
+    return text.replace("{{VIOLATIONS_BLOCK}}", _violations_block(violations or []))
 
 
 # ── 链索引、批次划分与规模统计 ───────────────────────────────────────────
