@@ -198,7 +198,13 @@ def should_skip_review(project_root: Path, spec_name: str, config: dict, logger)
 
         with spec_yaml.open("r", encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
-    except Exception:
+    except Exception as e:
+        # .spec.yaml 读取/解析异常（YAML 损坏？）：保守不跳过评审，不让异常
+        # 沿 promote_drafted 传播中断晋升链
+        logger.warning(
+            "pm_engine",
+            f".spec.yaml 读取/解析异常 '{spec_name}'（保守不跳过评审）: {e}",
+        )
         return False
     if data.get("mode") != "fast-track":
         return False
