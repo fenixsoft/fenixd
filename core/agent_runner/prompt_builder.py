@@ -2137,6 +2137,22 @@ class PromptBuilder:
                     f"  - 场景 `{v.get('scenario_id')}`（status={v.get('status')}）："
                     f"{v.get('reason')}\n"
                 )
+                # 步骤失败型场景（verdict-step-failure-evidence-derivation）：
+                # 框架已由失败信号派生缺省 failed_assertions 清单，逐条抄入
+                # evidence.failed_assertions 并给出对应 assertion_triage 即可通过
+                # 覆盖校验——重试轮直接拿到应申报条目，不再撞空表死循环。
+                derived = v.get("derived_failed_assertions")
+                if isinstance(derived, list) and derived:
+                    lines.append(
+                        "    - 应申报条目（框架派生缺省清单，步骤失败型场景必填）："
+                        "逐条抄入 evidence.failed_assertions，并逐条给出对应 "
+                        "assertion_triage 归因：\n"
+                    )
+                    for d in derived:
+                        if isinstance(d, dict):
+                            lines.append(
+                                "      - " + json.dumps(d, ensure_ascii=False) + "\n"
+                            )
         lines.append(
             "- ⚠️ report.json 中已存在的 classification/evidence（上一轮残留）"
             "不代表裁决合规——缺失的 `assertion_triage` 逐断言归因同样是强制字段。\n"

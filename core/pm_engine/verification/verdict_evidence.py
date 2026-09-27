@@ -311,9 +311,11 @@ def _verify_verdict_evidence(pipeline, spec_name: str, retry_judge: bool = False
         )
 
     # 一次不合规：judge 重试一次（design D2）；违规明细落盘供重试 prompt 注入
+    # （report 一并传入：步骤失败型场景违规附带派生缺省清单，
+    # verdict-step-failure-evidence-derivation 1.2）
     if retry_judge:
         violations_1 = result["violations"]
-        pipeline._write_verdict_violations(spec_name, violations_1)
+        pipeline._write_verdict_violations(spec_name, violations_1, report)
         # ── 轮内重裁决记账（add-verify-lane-throughput 3.1/3.2）──
         # 此路径直接 run_planner 不经 _judge_dispatch_gate，轮内计数在此记账：
         # 全为可补类型（evidence 缺失/截断）→ 证据扩充（每轮 1 次，不计重派）；
@@ -452,14 +454,58 @@ _RESYNTHESIS_DIRECTIVE_FILENAME = "dedup_resynthesis_directive.json"
 _RESYNTHESIS_MAX_ATTEMPTS = 2
 
 
-def _write_verdict_violations(pipeline, spec_name: str, violations: list) -> None:
+def _attach_derived_failed_assertions(report: Optional[dict], violations: list) -> list:
+    """步骤失败型违规条目附派生缺省清单（verdict-step-failure-evidence-derivation 1.2）。
+
+    对「assertion_results 空表 + 失败信号」形态场景的违规条目，附键
+    ``derived_failed_assertions``（core.verdict_check.derive_default_failed_assertions
+    的派生条目），随驳回清单落盘进重试 prompt——重试 judge 直接拿到应申报
+    条目，而非再撞一次空表。其余形态（有引擎断言清单 / 条目无对应场景）原样
+    返回；report 缺席（None）时原样返回（幂等，重合成等调用方不受影响）。
+    """
+    from core.verdict_check import derive_default_failed_assertions
+
+    if not isinstance(report, dict) or not isinstance(violations, list):
+        return violations
+    by_sid: dict = {}
+    for sc in report.get("scenarios") or []:
+        if isinstance(sc, dict):
+            sid = str(sc.get("scenario_id") or sc.get("id") or "")
+            if sid:
+                by_sid[sid] = sc
+    enriched: list = []
+    for v in violations:
+        if not isinstance(v, dict):
+            enriched.append(v)
+            continue
+        sid = str(v.get("scenario_id") or "")
+        sc = by_sid.get(sid)
+        if sc is not None and "derived_failed_assertions" not in v:
+            ars = sc.get("assertion_results")
+            if not (isinstance(ars, list) and ars):
+                derived = derive_default_failed_assertions(sc)
+                if derived:
+                    v = {**v, "derived_failed_assertions": derived}
+        enriched.append(v)
+    return enriched
+
+
+def _write_verdict_violations(
+    pipeline, spec_name: str, violations: list, report: Optional[dict] = None
+) -> None:
     """落盘裁决驳回清单（verdict-rejection-retry：judge 重试幂等陷阱修复）。
 
     fix-budget-counting-semantics 复盘：judge 首轮补齐 classification/evidence
     但漏 assertion_triage，重试 judge 读到已增强的 report 后判定「无需改写」
     再次跳过，校验必然复败 → blocked。将违规明细落盘，由 agent_runner 注入
     重试 prompt（见 _verdict_rejection_section），告知重试 judge 缺口所在。
+
+    verdict-step-failure-evidence-derivation 1.2：传入 ``report`` 时对步骤失败
+    型场景（assertion_results 空表 + 失败信号）的违规条目附派生缺省清单
+    （``derived_failed_assertions``），重试 prompt 直接给出应申报条目；重试
+    次数与 blocked 推进逻辑不变。
     """
+    payload = _attach_derived_failed_assertions(report, violations) if report is not None else violations
     try:
         path = pipeline._verdict_violations_path(spec_name)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -470,7 +516,7 @@ def _write_verdict_violations(pipeline, spec_name: str, violations: list) -> Non
         )
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(violations, f, ensure_ascii=False, indent=2)
+                json.dump(payload, f, ensure_ascii=False, indent=2)
                 f.flush()
             os.replace(tmp_path, path)
         except OSError:

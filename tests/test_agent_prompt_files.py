@@ -586,6 +586,31 @@ class TestJudgeRoutingGuidanceRegression:
         assert AGENT_PROMPT_FILES["planner-judge"] == "planner-judge.md"
 
 
+class TestStepFailureChecklistGuard:
+    """verdict-step-failure-evidence-derivation 2.2：步骤失败型必填清单处方
+    防漂移守卫（fe612841 处方回归）。
+
+    planner-judge.md 的「步骤失败型场景必填清单（强制）」是 LLM 行为约束，
+    无守卫时后续改写可静默丢失 → 步骤失败型场景（assertion_results 空表 +
+    失败信号）首轮漏 triage、重试轮摘出空表，fail-closed 驳回-重试死循环。
+    断言子串与 agents/planner-judge.md 处方原文逐字一致。
+    """
+
+    def test_planner_judge_template_contains_step_failure_checklist(self):
+        """模板主体含「步骤失败型场景必填清单（强制）」处方小节（逐字一致）。"""
+        template = (AGENT_PROMPT_DIR / AGENT_PROMPT_FILES["planner-judge"]).read_text(
+            encoding="utf-8")
+        assert "**步骤失败型场景必填清单（强制）**" in template
+
+    def test_planner_judge_built_prompt_has_step_failure_checklist(self, tmp_path):
+        """端到端 build_prompt(planner-judge) 含该处方（模板是 prompt 唯一真相）。"""
+        proot = tmp_path / "proj"
+        _mk_spec_dir(proot, "demo")
+        runner = make_runner(proot)
+        prompt = runner._prompt_builder._build_prompt("demo", "planner-judge")
+        assert "**步骤失败型场景必填清单（强制）**" in prompt
+
+
 # ── 实现者任务进度契约段（fix-impl-tasks-completion-gate D5/6.3/9.6）────
 
 
