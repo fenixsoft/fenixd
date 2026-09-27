@@ -119,3 +119,14 @@ superseded 条目保留在列供溯源。编号接续本目录既有最大号。
 | [ADR-112](ADR-112-dispatch-wakeup-event-source-not-scan-frequency.md) | accepted | 调度空隙用事件源补齐不提频扫描：接受态转换定向反查 dependents（不建索引）、重评同源判据、派发走既有入口继承全部闸门、观察项判据收紧先自愈后升级 |
 | [ADR-113](ADR-113-fasttrack-death-bifurcation-branch-commits-stamp-failclosed.md) | accepted | fast-track 死亡路径按分支提交分流（有提交 merge+升级完整模式补验证、禁合成 verdict），共享结果文件 stamp 守卫 fail-closed、消费后在快照落盘单点删除 |
 | [ADR-114](ADR-114-preserve-chain-git-fact-fallback-predelete-snapshot.md) | accepted | 保全链 branch/worktree 以 git 事实回落（不信内存表、STATE branch 只终态写、前缀歧义按不可用），dirty 快照改删除前置动作覆盖全部删除路径，保护集宁多保不删 |
+| [ADR-115](ADR-115-daemon-supervisor-hosting-chain-three-state.md) | accepted | daemon 托管链拓扑：supervisor 父进程+tmux 仅脱离终端（取代 ADR-031 的 tmux 直启，软删除裁定保留），项目根解析禁软链跟随、托管态三态 managed/unmanaged/stopped 一等可见，消费方写信号前探活升级为托管态闸 |
+| [ADR-116](ADR-116-spec-review-gate-reviewing-state-judge-paradigm.md) | accepted | 方案级评审门挂 drafted→ready 间：显式 reviewing 状态不靠字段子状态、默认全量+白名单跳过（evo- 硬否决）、判官范式主树直跑、越界检测式校验不自动回滚、评审失败 fail-closed 且 rejected/incomplete 前缀分流 |
+| [ADR-117](ADR-117-deliverable-delete-kind-hard-contract-soften-exempt.md) | accepted | delete 交付物 kind 一等硬契约：gitignored 路径 delete 晋升 lint 直接拒（恒假校验立项当下暴露）、守卫返回结构化条目携带 kind、delete 排除出全部机械软化路径升级人工不自动降级 |
+| [ADR-118](ADR-118-impl-progress-contract-carrier-matches-route-tools.md) | accepted | 实现进度契约载体=结果文件结构化字段（completed_tasks/unfinished/partial），按路由 init.tools 能力条件生效缺工具 fail-open+审计，partial 消耗实现预算且归因禁空壳，硬门失败原地续做不废轮 |
+| [ADR-119](ADR-119-hang-governance-bounded-execution-over-transcript-heuristics.md) | accepted | 挂起治理：活性快照分离实质事件与心跳（心跳不计进展）、短路只认可观测零产出三条件、禁纯转录重复度判据（实测不判别），主防线是有界全量套件入口（硬超时+faulthandler+基线归类）与并发隔离 |
+| [ADR-120](ADR-120-death-run-budget-refund-infrastructure-death-only.md) | accepted | 死亡 run 预算豁免仅限基础设施性死亡（interrupted/网关链路耗尽），监督超时与停滞击杀跑满预算不豁免（细分 ADR-047 豁免面），跨 attempt 继承结构化诊断且清 error 不连带清诊断 |
+| [ADR-121](ADR-121-blocked-bifurcation-leverage-criterion-paired-freeze-alert.md) | accepted | blocked 二分类判据=admin 有无可操作杠杆（冻结转人工 vs 阻塞待 admin），冻结必经单一成对入口一次写入 frozen+规范前缀+人工升级告警，结构性消除静默冻结 |
+| [ADR-122](ADR-122-pending-merge-window-terminal-anchor-git-fact-criterion.md) | accepted | 已实现未合并窗口：branch 锚点随 run 终态成功落盘（语义=本轮实现分支、禁平行字段），待合并活性以 git 未并入提交为据（禁分支存在性恒真判据、全等归属禁前缀 glob、豁免有界回落防洗白），停机保护集由状态驱动不由事件可见性驱动 |
+| [ADR-123](ADR-123-verdict-single-read-entry-shared-result-role-stamp.md) | accepted | 验证裁决单源读取：共享结果文件唯一写入点按 agent_type 注入 role/spec 戳，裁决读先验戳不依赖 run_id 可解析、role≠verifier 记 dispute 不当裁决，丢弃仅限裁决读路径 |
+| [ADR-124](ADR-124-run-transcript-toolresult-recognition-single-source.md) | accepted | run 流转录 tool_result 识别单一真源（真实形态=user 事件包裹 block，顶层仅兼容），全部消费点共用判定函数禁各自假设，解析失明自检 WARNING 不入人工告警，外部格式解析必配真实形态夹具 |
+| [ADR-125](ADR-125-control-plane-silent-failure-ast-guard-exception-tiering.md) | accepted | 控制平面静默失效防线：AST 静态守卫（唯一签名+无变长参数才比对、候选集下限自检）不靠运行时断言不引重型类型检查，复位路径编程错误签名升级告警携调用点栈帧、运维异常保持 WARNING，悬置探测独立短阈值不改 stuck 语义 |
