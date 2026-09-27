@@ -69,6 +69,28 @@ export function useFileMentions({
     setFilteredFiles(filterMentionableFiles(fileList, match.query));
   }, [input, cursorPosition, fileList]);
 
+  // code-review item 50f9e8a4159c：外点关闭，与 CommandMenu 的 document
+  // mousedown 关闭口径统一——点击 textarea 以外区域即收起（textarea 内点击
+  // 不算外点，开闭仍由上方 effect 随输入/光标重算）；下拉候选行的 mousedown
+  // 已 preventDefault + stopPropagation（SessionComposer），不冒泡到
+  // document，选候选不会被外点逻辑误杀。
+  useEffect(() => {
+    if (!showFileDropdown) {
+      return;
+    }
+    const handleMouseDownOutside = (event: MouseEvent) => {
+      const textarea = textareaRef.current;
+      if (!textarea || !(event.target instanceof Node)) {
+        return;
+      }
+      if (!textarea.contains(event.target)) {
+        setShowFileDropdown(false);
+      }
+    };
+    document.addEventListener('mousedown', handleMouseDownOutside);
+    return () => document.removeEventListener('mousedown', handleMouseDownOutside);
+  }, [showFileDropdown, textareaRef]);
+
   const activeFileMentions = useMemo(() => {
     if (!input || fileMentions.length === 0) {
       return [];

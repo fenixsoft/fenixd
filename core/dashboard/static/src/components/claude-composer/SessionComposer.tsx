@@ -18,7 +18,7 @@ import { cn } from './cn';
 import { formatCommandCount } from './composerLogic';
 import { useVisualViewportHeight } from './useVisualViewportHeight';
 import { useComposerState } from './useComposerState';
-import CommandMenu from './CommandMenu';
+import CommandMenu, { DEFAULT_ANCHOR_BOTTOM } from './CommandMenu';
 import {
   PromptInput,
   PromptInputBody,
@@ -88,12 +88,12 @@ export default function SessionComposer({
 
   const commandMenuPosition = useMemo(() => {
     if (!composer.showCommandMenu) {
-      return { left: 16, bottom: 90 };
+      return { left: 16, bottom: DEFAULT_ANCHOR_BOTTOM };
     }
     const textareaRect = composer.textareaRef.current?.getBoundingClientRect();
     return {
       left: textareaRect ? textareaRect.left : 16,
-      bottom: textareaRect ? window.innerHeight - textareaRect.top + 8 : 90,
+      bottom: textareaRect ? window.innerHeight - textareaRect.top + 8 : DEFAULT_ANCHOR_BOTTOM,
     };
   }, [composer.showCommandMenu, composer.textareaRef]);
 
@@ -144,7 +144,7 @@ export default function SessionComposer({
                 ref={index === composer.selectedFileIndex ? selectedFileRef : undefined}
                 className={`cursor-pointer touch-manipulation border-b border-border/30 px-4 py-3 last:border-b-0 ${
                   index === composer.selectedFileIndex
-                    ? 'bg-primary/8 text-primary'
+                    ? 'bg-primary/10 text-primary'
                     : 'text-foreground hover:bg-accent/50'
                 }`}
                 onMouseDown={(event) => {
