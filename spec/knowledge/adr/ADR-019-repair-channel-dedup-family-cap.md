@@ -1,7 +1,8 @@
 # ADR-019：同根缺陷修复通道先到先得，族谱繁衍硬上限
 
 date: 2026-09-02
-status: accepted
+status: superseded
+Superseded by: ADR-034(bug 修复原地打回，不再派生 fix-* 子 SPEC)
 
 ## Context
 

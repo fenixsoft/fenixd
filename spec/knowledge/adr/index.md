@@ -23,7 +23,7 @@ superseded 条目保留在列供溯源。编号接续本目录既有最大号。
 | [ADR-016](ADR-016-dispatch-selfheal-discipline.md) | accepted | 调度自愈纪律：状态机纯记录直调补发、重发幂等不清历史字段、孤儿判定白名单、单条异常不中止整轮 |
 | [ADR-017](ADR-017-fake-success-defense-fail-closed-promotion.md) | accepted | 假成功防御：rc==0 须校验 result 终态；晋级关 fail-closed、推送关 fail-open；VERIFIED→TESTING 仅限自动回退 |
 | [ADR-018](ADR-018-push-main-first-sha-idempotent.md) | accepted | pushed 终态以远端内容（SHA）为准：main 先行为成功判据、分支仅审计留痕，ls-remote 去重幂等、失败有界退避超限升级人工 |
-| [ADR-019](ADR-019-repair-channel-dedup-family-cap.md) | accepted | 同根缺陷双修复通道（重实现/派生子 fix）先到先得，重置/spawn/派发三边界守卫互斥；族谱深度宽度硬上限越界转人工 |
+| [ADR-019](ADR-019-repair-channel-dedup-family-cap.md) | superseded | 同根缺陷双修复通道（重实现/派生子 fix）先到先得，重置/spawn/派发三边界守卫互斥；族谱深度宽度硬上限越界转人工（已随 ADR-034 原地打回退役） |
 | [ADR-020](ADR-020-provider-4xx-circuit-breaker.md) | accepted | provider 4xx 熔断：判据只认解析出的状态码、状态进程内存不落盘，熔断期不动状态机不增重试计数 |
 | [ADR-021](ADR-021-mergeback-conflict-selfheal-keep-merge-result.md) | accepted | merge-back 冲突自愈保 merge 结果：pop 冲突 checkout HEAD 弃 stash 版本、untracked 按分支新增路径交集移开备份，不一致副本不静默丢弃 |
 | [ADR-022](ADR-022-watchdog-thresholds-derived-single-source.md) | accepted | 看门狗阈值单源派生：恢复阈值=run_timeout+固定宽限，成对时间阈值一律派生自锚点旋钮不设独立键，绝对上限联动校验 |
@@ -38,3 +38,14 @@ superseded 条目保留在列供溯源。编号接续本目录既有最大号。
 | [ADR-031](ADR-031-dashboard-project-lifecycle-tmux-softdelete.md) | accepted | 项目运维：daemon 启停走 tmux 会话（优雅信号优先、kill 兜底、启动幂等），软删除=ignored 忽略列表（忽略优先于显式注册） |
 | [ADR-032](ADR-032-failover-chain-element-model-mapping.md) | accepted | failover 链元素级模型映射：元素 str|{provider,model} 三级解析回退、角色级 model 可选，校验改「每元素可解析」，保存整体替换防覆写 |
 | [ADR-033](ADR-033-v2-frontend-vendored-amis-sdk.md) | accepted | v2 前端栈=vendored AMIS SDK+JSON DSL 页面：tarball 提取无构建链、页面 JSON 深合并单页缺失可跳过；修订 ADR-008 前端形态，其零构建/vendored 原则延续 |
+| [ADR-034](ADR-034-inplace-bug-repair-no-derivation.md) | accepted | bug 修复原地打回：重置 implementing 在原 SPEC 内修复，不再派生 fix-* 子 SPEC；3 轮连续失败升级人工，通道去重/族谱治理随派生退役（推翻 ADR-019） |
+| [ADR-035](ADR-035-repair-convergence-dual-counter-budget.md) | accepted | 修复收敛双计数器：验证失败轮数只在 PASS 归零（连续性），实现 run 总预算派发时递增、重派决策处设卡耗尽 blocked（总量），沉没成本放行跑完 |
+| [ADR-036](ADR-036-deliverable-gate-before-merge-typed-extractor.md) | accepted | 交付物守卫 merge 前零 LLM 校验声明路径存在，提取器语境分类 deliverables/references，无法判定保守归硬校验（宁误拦不漏放），引用缺失仅审计 |
+| [ADR-037](ADR-037-worktree-test-server-reverse-proxy.md) | accepted | 页面验证服务=worktree 静态资源+API/SSE 反代主服务：打真后端不跑第二实例，框架管启停注入 V2_BASE_URL，端口高位段确定性分配 |
+| [ADR-038](ADR-038-v2-shell-level-sse-broadcast-bridge.md) | accepted | v2 事件架构：SSE 桥挂壳级转 sse:<type> broadcast、页面 onEvent 重拉（500ms 前缘节流）；增量数据流（run_events）自管 EventSource 快照先行 |
+| [ADR-039](ADR-039-v2-adapter-pure-function-data-layer.md) | accepted | v2 数据分层：Adapters 纯函数层（UMD 双出口）是字段逻辑唯一收口，计数 Number 归一+三级回退，页面 JSON 不做字段逻辑 |
+| [ADR-040](ADR-040-recovery-legacy-file-salvage-no-session-resume.md) | accepted | 死亡恢复=文件级遗产收编：worktree_manager 注册遗产获清扫豁免、prompt 注入快照、agent 只读复制进自己 worktree；跨派发会话续跑不可行不做 |
+| [ADR-041](ADR-041-verify-scenario-set-freeze.md) | accepted | 验证场景集跨轮冻结：scenarios.json 持久化，修复轮只增不减、删减须理由，确定性校验器补齐不可绕过，既有场景每轮全量重跑 |
+| [ADR-042](ADR-042-verdict-classification-evidence-enforced-checker.md) | accepted | 裁决强制分类+证据结构化：非 PASS 四选一并附证据，分类-状态映射采纳处强制重写，warning 连续 2 轮升级；确定性校验器把关 LLM 产物 |
+| [ADR-043](ADR-043-alert-auto-resolve-condition-whitelist.md) | accepted | 告警自动闭环：写入埋 trigger、判定挂既有周期扫描，condition 白名单未识别永不闭环，人工记录不可覆盖，存量首启一次推断回填 |
+| [ADR-044](ADR-044-token-accounting-at-completion-budget-alert-only.md) | accepted | token 计量收工单点采集进 STATE 内部字段（jsonl 留审计），验证链增量走侧车；预算线 80%/100% 幂等告警只告警不冻结，存量不回填 |
