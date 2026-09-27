@@ -343,14 +343,40 @@ def build_prompt(
     return text
 
 
-# ── 批次划分与规模统计 ───────────────────────────────────────────────────
+# ── 链索引、批次划分与规模统计 ───────────────────────────────────────────
+
+
+def build_chain_index(project_root: Path) -> dict[str, list[str]]:
+    """能力聚合链索引（方案 B 核心，纯机械零 LLM）：遍历 ``spec/archive/*/specs/``
+    目录名（能力名）× 归档目录名排序，产出 ``能力 → 触碰它的全部归档 delta 链``。
+
+    归档目录名以 ``YYYY-MM-DD`` 日期前缀开头，字典序即日期升序——链序天然按
+    时间排列，聚合蒸馏按链序一次成文最终态页面。无 ``specs/`` 的归档不触碰
+    任何能力（只可能进 ADR 抽取维度）。
+    """
+    archive_dir = Path(project_root) / "spec" / "archive"
+    index: dict[str, list[str]] = {}
+    if not archive_dir.is_dir():
+        return index
+    for archive in sorted(p.name for p in archive_dir.iterdir() if p.is_dir()):
+        specs = archive_dir / archive / "specs"
+        if not specs.is_dir():
+            continue
+        for cap in sorted(p.name for p in specs.iterdir() if p.is_dir()):
+            index.setdefault(cap, []).append(archive)
+    return index
 
 
 def build_batches(
     domain_map: dict[str, str], names: list[str]
 ) -> list[list[str]]:
     """按域分组、批 ≤20（同域一个批次流，域内超顶再切片；无域归位条目入
-    ``_unassigned`` 兜底域）。确定性：域与归档均按名排序。"""
+    ``_unassigned`` 兜底域）。确定性：域与成员均按名排序。
+
+    v2（方案 B）：``names`` 是**能力名**（链索引键集），``domain_map`` 由聚类
+    自举产出 ``能力名 → 域``——批次从归档粒度改为能力粒度，页间独立，批序
+    与正确性解耦（可并行、断点按能力续跑）。
+    """
     by_domain: dict[str, list[str]] = {}
     for name in sorted(names):
         domain = domain_map.get(name) or "_unassigned"
