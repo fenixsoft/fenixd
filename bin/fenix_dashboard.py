@@ -126,18 +126,24 @@ def cmd_list_projects() -> int:
 def get_active_agents():
     """获取活跃的 claude agent 进程"""
     try:
-        r = subprocess.run(["ps", "aux"], capture_output=True, text=True, timeout=3)
+        # 用 pid,pcpu,pmem,args 而非 aux（code-review item 7f4f7d70a4ce）：
+        # aux 的 START 列对运行超 24h 的进程输出两段（如「Sep 25」），固定
+        # 下标取 COMMAND 会漂移错位；args 为末列可含空格，maxsplit=3 把
+        # 剩余整段留给命令行，列数恒定
+        r = subprocess.run(
+            ["ps", "-eo", "pid,pcpu,pmem,args"], capture_output=True, text=True, timeout=3
+        )
         agents = []
         for line in r.stdout.split("\n"):
             if "claude " not in line or "grep" in line:
                 continue
-            parts = line.split()
-            if len(parts) < 11:
+            parts = line.split(None, 3)
+            if len(parts) < 4:
                 continue
-            pid = parts[1]
-            cpu = parts[2]
-            mem = parts[3]
-            cmd = " ".join(parts[10:])
+            pid = parts[0]
+            cpu = parts[1]
+            mem = parts[2]
+            cmd = parts[3]
             # 提取 agent 角色
             role = "agent"
             if "Implementer" in cmd:
@@ -157,7 +163,7 @@ def get_active_agents():
             # （run_spec_part 泛型兜底），prompt 正文里碰巧含这些子串的词会
             # 被当作命中段。
             spec = ""
-            for part in parts:
+            for part in cmd.split():
                 if "impl-" in part or "verify-" in part or "test-" in part:
                     spec = run_spec_part(part.rsplit("/", 1)[-1])
                     break
@@ -396,9 +402,11 @@ def render_event_feed(specs):
         msg = ev.get("message", "")
         ctx = ev.get("context", {})
 
-        # 高亮活跃 SPEC
+        # 高亮活跃 SPEC（code-review item c4a66079060e）：按名称长度降序
+        # 匹配——互为前缀的 SPEC 名（如 add-test-foo / add-test-foobar）会让
+        # 短名抢先命中串显别人的消息，与 render_active_specs 的精确匹配教训同源
         spec_in_msg = ""
-        for n in active_names:
+        for n in sorted(active_names, key=len, reverse=True):
             if n in msg:
                 spec_in_msg = n
                 break
