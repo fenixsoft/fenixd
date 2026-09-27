@@ -111,6 +111,72 @@ class TestStepFailureShapeTriage(unittest.TestCase):
         self.assertIsNotNone(violation)
         self.assertIn("visual:home.png", violation)
 
+    def test_visual_bare_name_attribution_compliant(self):
+        """归因以裸视觉名对应（不复制 visual: 前缀装饰）→ 合规。
+
+        回归守卫：visual: 前缀是派生器自造的装饰，覆盖校验若要求归因逐字
+        含整串，任何合法裸名归因都被误判未覆盖（验证链 BUG-01）。
+        """
+        scenario = {
+            "scenario_id": "web-4",
+            "status": "warning",
+            "classification": "flaky",
+            "step_results": [],
+            "assertion_results": [],
+            "visual_results": [
+                {"baseline": "probe-visual-gamma", "status": "diff_detected"}
+            ],
+            "evidence": {"first_failed_step": "probe-visual-gamma 视觉比对 diff_detected"},
+            "assertion_triage": [
+                {
+                    "assertion": "probe-visual-gamma 视觉比对与基线不一致",
+                    "classification": "flaky",
+                    "evidence": "ssim 0.9 低于门限",
+                },
+            ],
+        }
+        self.assertIsNone(triage_violation(scenario))
+        res = validate_report({"scenarios": [scenario]})
+        self.assertTrue(res["ok"], res.get("violations"))
+
+    def test_visual_full_prefix_attribution_still_covers(self):
+        """归因逐字引用完整标注（visual:home.png）→ 仍合规（完整 token 保留）。"""
+        scenario = {
+            "scenario_id": "web-5",
+            "status": "warning",
+            "classification": "flaky",
+            "step_results": [],
+            "assertion_results": [],
+            "visual_results": [{"baseline": "home.png", "status": "diff_detected"}],
+            "evidence": {},
+            "assertion_triage": [
+                {
+                    "assertion": "visual:home.png 与基线不一致",
+                    "classification": "flaky",
+                    "evidence": "diff",
+                },
+            ],
+        }
+        self.assertIsNone(triage_violation(scenario))
+
+    def test_visual_unrelated_attribution_still_violation(self):
+        """归因不含视觉名也不含完整标注 → 仍判违规（fail-closed 不弱化）。"""
+        scenario = {
+            "scenario_id": "web-6",
+            "status": "warning",
+            "classification": "flaky",
+            "step_results": [],
+            "assertion_results": [],
+            "visual_results": [{"baseline": "home.png", "status": "diff_detected"}],
+            "evidence": {},
+            "assertion_triage": [
+                {"assertion": "首页渲染正常", "classification": "flaky", "evidence": "x"},
+            ],
+        }
+        violation = triage_violation(scenario)
+        self.assertIsNotNone(violation)
+        self.assertIn("visual:home.png", violation)
+
     def test_generic_action_label_count_coverage(self):
         """引擎未回传 target（标注仅通用动作词）→ 条数覆盖即合规（粒度差兜底）。"""
         scenario = {
