@@ -117,7 +117,12 @@ def main() -> int:
         try:
             run_id, stats, summary = analyze_file(f)
             results.append((run_id, stats, summary, f))
-        except ValueError as e:
+        except Exception as e:
+            # 只收 ValueError 不够：analyze_file 下游的 samples/stats/summary
+            # 是与在线侧共享的解析函数，语义异常但合法 JSON 的事件（如
+            # timestamp 非数值、结构变异）可能抛 TypeError/KeyError 等。
+            # 单文件任何解析失败都归入 skipped 通道，保住「不中断批量扫描」
+            # 契约——其余正常文件的统计不因单个坏文件而全部丢失。
             skipped.append((f, str(e)))
 
     if results:
