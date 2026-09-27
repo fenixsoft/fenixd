@@ -26,6 +26,7 @@ visual_diff.py — 截图视觉对比
 
 import json
 import os
+import re
 import shutil
 import tempfile
 import time
@@ -116,6 +117,17 @@ class VisualDiffer:
                 return False
         return True
 
+    @staticmethod
+    def _safe_component(name: str) -> str:
+        """路径成分净化：滤除路径分隔符与空字节（替换为下划线）。
+
+        baseline_name/scenario_id 来自场景文件（validate_scenario 的 id
+        校验只查非空、不查字符集），含 ../ 或绝对路径形态的异常命名可经
+        f-string 拼接把截图/差异图/标记文件写出 verify-progress 目录——
+        拼接前统一净化（纵深防御，正常 kebab-case 命名不受影响）。
+        """
+        return re.sub(r"[\\/\x00]", "_", str(name))
+
     async def compare(
         self,
         page,
@@ -135,6 +147,11 @@ class VisualDiffer:
         Returns:
             对比结果列表（通常只有1个元素，但保留扩展性）
         """
+        # 路径成分净化（code-review item 8edfc0134edb）：入口处统一净化，
+        # 覆盖本方法与下游 _ssim_compare/_pixel_fallback_compare/
+        # _mark_suspicious 的全部拼路径位
+        baseline_name = self._safe_component(baseline_name)
+        scenario_id = self._safe_component(scenario_id)
         baseline_path = self.base_dir / "baselines" / f"{baseline_name}.png"
         screenshots_dir = self.base_dir / "screenshots"
         screenshots_dir.mkdir(parents=True, exist_ok=True)
@@ -494,6 +511,12 @@ class VisualDiffer:
                 entry["count"] = prev_count + 1
                 ssim = result.get("ssim")
                 ssim_list = entry.setdefault("ssims", [])
+                if not isinstance(ssim_list, list):
+                    # 脏 ssims 容错：侧车条目 ssims 可能为字符串/null（历史
+                    # 写手/手改），直接 append 抛 AttributeError 击穿对比轮，
+                    # 与上方 count 容错同口径回退空列表（fail-open）
+                    ssim_list = []
+                    entry["ssims"] = ssim_list
                 ssim_list.append(
                     round(float(ssim), 4) if isinstance(ssim, (int, float)) else None
                 )
@@ -673,6 +696,20 @@ class VisualDiffer:
         diff_mask = (np.abs(b_arr.astype(int) - c_arr.astype(int)) > 10).any(axis=2)
         diff_pixels = int(diff_mask.sum())
         total_pixels = int(b_arr.shape[0] * b_arr.shape[1])
+        if total_pixels == 0:
+            # 0 像素图（0x0）除零：ZeroDivisionError 不在 _compare_once 兜底
+            # (OSError, ValueError) 范围内，会击穿对比轮，提前返回与解码
+            # 失败同型的结构化 error 结果
+            return [
+                {
+                    "baseline": baseline_name,
+                    "status": "error",
+                    "ssim": None,
+                    "pass": False,
+                    "detail": "基线为 0 像素图，无法计算像素差异比",
+                    "scenario_id": scenario_id,
+                }
+            ]
         diff_ratio = diff_pixels / total_pixels
 
         # 生成差异图（diff_path 缺省时写标准路径；重拍轮传入轮次命名路径，

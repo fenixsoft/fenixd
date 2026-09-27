@@ -343,9 +343,14 @@ class VerifyEngine:
                     results.append(
                         {
                             "scenario_id": sid,
+                            "description": ready[i].description,
                             "kind": ready[i].kind,
                             "status": "error",
                             "error": str(r),
+                            "step_results": [],
+                            "assertion_results": [],
+                            "visual_results": [],
+                            "screenshots": [],
                         }
                     )
                 else:

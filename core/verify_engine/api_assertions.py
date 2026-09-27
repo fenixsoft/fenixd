@@ -217,13 +217,20 @@ class ApiAssertionRunner:
 
         expected = a.get("expected")
         actual = resp.get("status")
-        return {
+        # fail-closed：expected 缺失时不得借 None==None 蒙混判 pass（验收期
+        # 必填表 ASSERTION_REQUIRED_FIELDS 是前置防线，此处兜住运行期自愈/
+        # 绕过验收的调用路径），口径对齐 json_path 断言的 fail-closed
+        passed = expected is not None and _numeric(actual) == _numeric(expected)
+        result = {
             "type": "status_code",
             "layer": 1,
             "expected": expected,
             "actual": actual,
-            "pass": _numeric(actual) == _numeric(expected),
+            "pass": passed,
         }
+        if expected is None:
+            result["error"] = "断言缺 expected，无法与实际状态码对比（fail-closed）"
+        return result
 
     async def _assert_sse_event_count(self, resp, a: dict) -> dict:
         """断言 SSE 窗口内事件数不少于下限（第1层存在性）。"""
@@ -265,30 +272,33 @@ class ApiAssertionRunner:
             actual = None
         passed = False
         error = None
-        if mode == "exact":
-            if path_missing:
-                # 0 误判：expected=null 时「路径不存在」≠「显式 null」，fail-closed
-                passed = False
-                error = (
-                    f"路径 {path!r} 在 JSON 载荷中不存在（区别于显式 null），"
-                    f"无法与 expected 对比"
-                )
-            else:
-                passed = actual == expected
+        if mode not in ("exact", "contains", "regex"):
+            # 配置错误可见化：与 run() 入口「未知断言类型」口径对齐，
+            # 避免拼写错的 mode 静默按失败处理、被误归因为产品缺陷
+            error = f"未知 mode: {mode}"
+        elif path_missing:
+            # 0 误判：expected=null 时「路径不存在」≠「显式 null」，fail-closed。
+            # 路径缺失对任何内容比对 mode 都显式报错（与 exact 分支口径统一，
+            # 供 judge 区分「路径缺失——多为产品/场景缺陷」与「内容不符」）；
+            # 否则 contains/regex 会把缺失归一为空串静默失败，expected 可
+            # 匹配空串时甚至假阳性通过
+            passed = False
+            error = (
+                f"路径 {path!r} 在 JSON 载荷中不存在（区别于显式 null），"
+                f"无法与 expected 对比"
+            )
+        elif mode == "exact":
+            passed = actual == expected
         elif mode == "contains":
             # 以 is not None 判空：or 会把 0/False 等 falsy 合法值折叠为 ""
             passed = expected in str(actual if actual is not None else "")
-        elif mode == "regex":
+        else:  # regex
             try:
                 passed = bool(
                     re.search(str(expected), str(actual if actual is not None else ""))
                 )
             except re.error:
                 passed = False
-        else:
-            # 配置错误可见化：与 run() 入口「未知断言类型」口径对齐，
-            # 避免拼写错的 mode 静默按失败处理、被误归因为产品缺陷
-            error = f"未知 mode: {mode}"
         result = {
             "type": "json_path",
             "layer": 3,

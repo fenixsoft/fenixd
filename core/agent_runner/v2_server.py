@@ -5,6 +5,7 @@
 """
 
 import subprocess
+import threading
 from typing import Dict, Tuple
 from pathlib import Path
 from core.v2_dev_server import (
@@ -29,6 +30,13 @@ class V2ServerManager:
         self._v2_servers: Dict[str, Tuple[int, subprocess.Popen]] = {}
         self._v2_used_ports: set = set()
         self._v2_run_seq = 0
+        # 实例级互斥锁：_v2_servers/_v2_used_ports/_v2_run_seq 的读改写整体纳入
+        # 临界区——launch/stop/stop_all 的调用方分布在并行派发车道（repair_lane/
+        # fast_track）与多处终态收割点，多步序列无锁时 stop 可在 launch 登记前
+        # 弹出条目，泄漏已启动的 dev-server（进程不在册、端口被 used_ports 永久
+        # 占用）。慢操作（子进程启动 / terminate·wait）保持在临界区外，只保护
+        # 共享结构的读改写。
+        self._v2_lock = threading.Lock()
 
     def _v2_ensure_state(self) -> None:
         """惰性初始化 V2 状态（设计容错：部分测试以 ``AgentRunner.__new__`` 绕过
@@ -41,6 +49,8 @@ class V2ServerManager:
             self._v2_used_ports: set = set()
         if not hasattr(self, "_v2_run_seq"):
             self._v2_run_seq = 0
+        if not hasattr(self, "_v2_lock") or self._v2_lock is None:
+            self._v2_lock = threading.Lock()
 
     def _v2_launch_for_worktree(self, wt_path: Path) -> None:
         """为某 worktree 启动专属 dev-server 并登记（D2 派发前启动）。
@@ -55,24 +65,27 @@ class V2ServerManager:
         比让整条 spec 失败更优。登记成功才写入 _v2_servers，供终态回收。
         """
         self._v2_ensure_state()
-        entry = self._v2_servers.get(str(wt_path))
-        if entry is not None and entry[1].poll() is None:
-            # 存活实例在册：幂等 ensure，不重复启动（同 worktree 双实例互斥）
-            return
-        if entry is not None:
-            # 条目陈旧（进程已死）：释放其端口记账，避免 used_ports 假性占用
-            self._v2_used_ports.discard(entry[0])
-        try:
+        with self._v2_lock:
+            entry = self._v2_servers.get(str(wt_path))
+            if entry is not None and entry[1].poll() is None:
+                # 存活实例在册：幂等 ensure，不重复启动（同 worktree 双实例互斥）
+                return
+            if entry is not None:
+                # 条目陈旧（进程已死）：释放其端口记账，避免 used_ports 假性占用
+                self._v2_used_ports.discard(entry[0])
             self._v2_run_seq += 1
+        try:
             port, proc = v2_start_dev_server(
                 wt_path, self._v2_run_seq, self._v2_used_ports, self._pm.logger
             )
-            self._v2_servers[str(wt_path)] = (port, proc)
+            with self._v2_lock:
+                self._v2_servers[str(wt_path)] = (port, proc)
         except V2DevServerError as e:
             # 启动失败：移除（可能残留的）陈旧条目，保证 _v2_inject_env 拿不到死
             # 端口条目、返回空 dict，测试按承诺回退 PLAYWRIGHT/缺省 8787，
             # 而非向 agent 注入失效端口的 V2_BASE_URL 造成假失败。
-            self._v2_servers.pop(str(wt_path), None)
+            with self._v2_lock:
+                self._v2_servers.pop(str(wt_path), None)
             self._pm.logger.warning(
                 "agent_runner",
                 f"V2 dev-server launch failed for {wt_path} (tests fall back to " f"8787): {e}",
@@ -84,22 +97,24 @@ class V2ServerManager:
         未启动 dev-server 时返回空 dict，agent 沿用 config 缺省 8787。
         """
         self._v2_ensure_state()
-        entry = self._v2_servers.get(str(wt_path))
-        if not entry:
-            return {}
-        if entry[1].poll() is not None:
-            # 条目陈旧（进程已死）：与 launch 侧陈旧条目处理口径对齐——清理条目
-            # 并释放端口记账，按未启动处理返回空 dict，绝不向 agent 注入失效端口
-            # 的 V2_BASE_URL 造成测试假失败。
-            self._v2_servers.pop(str(wt_path), None)
-            self._v2_used_ports.discard(entry[0])
-            return {}
+        with self._v2_lock:
+            entry = self._v2_servers.get(str(wt_path))
+            if not entry:
+                return {}
+            if entry[1].poll() is not None:
+                # 条目陈旧（进程已死）：与 launch 侧陈旧条目处理口径对齐——清理条目
+                # 并释放端口记账，按未启动处理返回空 dict，绝不向 agent 注入失效端口
+                # 的 V2_BASE_URL 造成测试假失败。
+                self._v2_servers.pop(str(wt_path), None)
+                self._v2_used_ports.discard(entry[0])
+                return {}
         return {"V2_BASE_URL": v2_base_url(entry[0])}
 
     def _v2_stop_for_worktree(self, wt_path: Path) -> None:
         """回收某 worktree 的 dev-server（D2 终态回收）。"""
         self._v2_ensure_state()
-        entry = self._v2_servers.pop(str(wt_path), None)
+        with self._v2_lock:
+            entry = self._v2_servers.pop(str(wt_path), None)
         if entry is None:
             return
         port, proc = entry
@@ -111,5 +126,9 @@ class V2ServerManager:
     def _v2_stop_all(self) -> None:
         """daemon 关闭 / 异常恢复时回收全部在册 dev-server（D2）。"""
         self._v2_ensure_state()
-        for wt_str in list(self._v2_servers.keys()):
+        # 条目快照在临界区内取；逐个回收在锁外进行——_v2_stop_for_worktree 内部
+        # 会再取同一把非重入锁，临界区内直接调用会自死锁。
+        with self._v2_lock:
+            wt_keys = list(self._v2_servers.keys())
+        for wt_str in wt_keys:
             self._v2_stop_for_worktree(Path(wt_str))

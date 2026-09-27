@@ -1985,6 +1985,20 @@ def run_code_fix(
     # 消息带 thinking、均 1614 字符、工具执行≈0）。实验定案后若保留须补
     # Dashboard 设置项（fenix-new-config-needs-dashboard-ui）。
     agent_env = (((getattr(runner, "config", {}) or {}).get("agents") or {}).get("agent_env") or {}).get("code-fix") or {}
+    if not isinstance(agent_env, dict):
+        # code-review item 21e3783270a2：``or {}`` 只兜住键缺失/None，yaml 误写为
+        # 字符串/数字/列表时裸调 .items() 抛 AttributeError，且本处位于任何 try
+        # 保护之外（:1995 的 try 只包 _run_claude），整批 code-fix 启动即崩。
+        # 对齐 _safe_int（item dc8f109b8b60）的防御降级口径：记 WARNING 按空
+        # 映射继续（零注入），不阻断维护 run 主流程。
+        _log = getattr(runner, "logger", None)
+        if _log is not None:
+            _log.warning(
+                "code-fix",
+                f"agents.agent_env.code-fix 配置类型错误（期望 dict，实际 "
+                f"{type(agent_env).__name__}），忽略 agent_env 注入",
+            )
+        agent_env = {}
     for _k, _v in agent_env.items():
         env_overrides[str(_k)] = str(_v)
     if agent_env:

@@ -527,6 +527,22 @@ class AssertionRunner:
                     "error": f"非法正则: {e}",
                 }
 
+        # 非法 mode 是确定性配置错误：_text_matches 对未知 mode 返回 False，
+        # text_match 会空转至超时后按普通失败收场且无任何提示，judge 会把
+        # planner 的拼写错误（如 mode: has_text）误归因为产品缺陷；与
+        # _assert_z_index_order 的非法 operator 口径一致，进轮询前显式失败。
+        if mode not in ("exact", "contains", "regex"):
+            return {
+                "type": "text_match",
+                "layer": 3,
+                "selector": selector,
+                "expected": expected,
+                "actual": "",
+                "mode": mode,
+                "pass": False,
+                "error": f"非法 mode: {mode!r}，仅支持 exact/contains/regex",
+            }
+
         deadline = time.monotonic() + timeout_ms / 1000
         actual = ""
         passed = False
@@ -615,7 +631,15 @@ class AssertionRunner:
             # 在 <script> 里的产物页命中脚本字符串造成假通过；
             # 无 get_by_text 的环境（stub 页面等）降级回 page.content()
             # 原始 HTML 子串匹配——该保底路径存在 script/注释误判可能。
+            # 与 selector 分支同形态：先等文本出现（容忍异步渲染，超时吞掉）
+            # 再取数，避免断言先于渲染落地执行时立即 count 产出假失败。
             try:
+                try:
+                    await page.get_by_text(text).first.wait_for(
+                        state="attached", timeout=3000
+                    )
+                except Exception:
+                    pass
                 passed = await page.get_by_text(text).count() > 0
             except Exception:
                 content = await page.content()
@@ -645,7 +669,29 @@ class AssertionRunner:
                 "pass": False,
                 "error": "元素不存在",
             }
-        actual = await self._locator(page, selector).get_attribute(attr)
+        # 属性可能由前端异步写入（fetch 回调设 href/data-*、状态码回填），
+        # 一次性读取会读到旧值产出确定性判档的假失败；比照 text_match 做
+        # deadline 轮询，超时仍不等再判 fail。
+        timeout_ms = int(a.get("timeout", 3000))
+        interval_ms = int(a.get("interval", 200))
+        deadline = time.monotonic() + timeout_ms / 1000
+        actual = None
+        last_error = ""
+        while True:
+            try:
+                # 单轮读取限时 interval_ms，避免定位/读取异常时按 Playwright
+                # 默认 30 秒超时突破轮询预算（同 text_match 口径）。
+                actual = await self._locator(page, selector).get_attribute(
+                    attr, timeout=interval_ms
+                )
+            except Exception as e:
+                last_error = str(e)
+            if actual == expected:
+                break
+            if time.monotonic() >= deadline:
+                break
+            await page.wait_for_timeout(interval_ms)
+
         return {
             "type": "attribute_match",
             "layer": 3,
@@ -654,6 +700,8 @@ class AssertionRunner:
             "expected": expected,
             "actual": actual,
             "pass": actual == expected,
+            # 读数异常导致的失败附错误说明（同 text_match 口径）
+            **({"error": last_error} if actual != expected and last_error else {}),
         }
 
     async def _assert_no_console_error(self, page, a: dict) -> dict:
@@ -669,6 +717,13 @@ class AssertionRunner:
         """
         errors = a.get("_console_errors", [])
         allow_network = a.get("_external_net_errors_ok", False)
+
+        # 收集侧触顶截断标记（browser._capped_append）不计入 pass：
+        # external_net_errors_ok 豁免路径上，纯网络层错误风暴被截断后
+        # 标记若留在 errors 里会被误计为控制台错误（误报）
+        truncated = any(e.startswith("[truncated]") for e in errors)
+        if truncated:
+            errors = [e for e in errors if not e.startswith("[truncated]")]
 
         filtered: list[str] = []
         if allow_network:
@@ -691,6 +746,7 @@ class AssertionRunner:
             "layer": 3,
             "pass": len(errors) == 0,
             "errors": errors,
+            "truncated": truncated,
             "filtered_network": filtered,
         }
 

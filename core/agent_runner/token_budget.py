@@ -14,6 +14,7 @@ import threading
 # 锁表本身用全局锁保护（锁只覆盖同进程线程，跨进程字段级覆盖由 update_spec
 # 自身 flock 兜底单次写原子）。
 _ACCUM_LOCKS_GUARD = threading.Lock()
+# [fenix-ignore:c00c25def3a1] 每 spec 仅一个小 Lock、量级极小；收尾弹键会破坏「他线程持锁中被弹出」的互斥、weakref 在 CPython _thread.lock 上不可用，修复反引入并发复杂度，维持现状
 _ACCUM_LOCKS = {}  # spec_name -> threading.Lock
 
 
@@ -144,9 +145,22 @@ class TokenAccountant:
         告警 MUST NOT 修改 spec 状态（不自动冻结，design 决策有意为之）。
         """
         budget = self._pm._get_config("agents.token_budget_millions", 50)
+        # code-review item 8a37762cf313：config 若被误写成非数值（如 "80"），裸
+        # budget <= 0 比较抛 TypeError、float() 抛 ValueError，沿锁外的
+        # _accumulate_token_usage 调用点冒泡到 runner 收工路径，中断其后的验证链
+        # 侧车与指标记录。容错口径与同模块 _to_int 对齐：非法值记 warning 并回退
+        # 缺省 50，保证预算检查永不向收工路径抛异常。
+        try:
+            budget = float(budget)
+        except (TypeError, ValueError):
+            self._pm.logger.warning(
+                "agent_runner",
+                f"agents.token_budget_millions 配置非法 {budget!r}，回退缺省 50M",
+            )
+            budget = 50.0
         if not budget or budget <= 0:
             return  # 0 = 关闭
-        budget_tokens = float(budget) * 1_000_000
+        budget_tokens = budget * 1_000_000
         if budget_tokens <= 0:
             return
         ratio = tokens_in / budget_tokens
