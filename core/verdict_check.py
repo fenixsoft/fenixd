@@ -281,8 +281,11 @@ def _derived_label_tokens(entry: dict) -> List[str]:
 
     「步骤N(click .submit-btn)」形态剥出 ``click .submit-btn`` 与
     ``.submit-btn``——judge 归因文本常只引用步骤动作 + 选择器（不复制序号
-    壳），完整标注互不包含时专名子词仍可对账。通用动作词不单独入候选
-    （会误命中任意归因文本）。
+    壳），完整标注互不包含时专名子词仍可对账。视觉条目「visual:home.png」
+    的 ``visual:`` 前缀是派生器自造的装饰（derive_default_failed_assertions
+    添加），judge 归因按 design 风险条目「以名称对应」引用裸视觉名，故剥
+    前缀补裸名别名 token——否则裸名归因永不匹配，视觉路径逐条归因硬门
+    假阴性。通用动作词不单独入候选（会误命中任意归因文本）。
     """
     label = _normalize_whitespace(entry.get("selector"))
     tokens = [label] if label else []
@@ -294,6 +297,12 @@ def _derived_label_tokens(entry: dict) -> List[str]:
             words = inner.split()
             if len(words) > 1:
                 tokens.extend(w for w in words[1:] if w.lower() not in _GENERIC_STEP_ACTIONS)
+    else:
+        vm = re.match(r"^visual:(.+)$", label)
+        if vm:
+            inner = vm.group(1).strip()
+            if inner:
+                tokens.append(inner)
     return [t.lower() for t in tokens if t]
 
 
