@@ -2231,9 +2231,16 @@ class VerificationPipeline:
                 prefix = f"planner-plan-{spec_name}-"
                 while time.monotonic() < deadline:
                     # 等待期间状态迁移（人工接管）→ 丢弃本流水线（D6 同语义）
-                    if (self._context.state_machine.read_one(spec_name) or {}).get(
-                        "status"
-                    ) != "testing":
+                    _wait_status = (
+                        self._context.state_machine.read_one(spec_name) or {}
+                    ).get("status")
+                    if _wait_status != "testing":
+                        self._context.logger.debug(
+                            "pm_engine",
+                            f"Parallel plan wait aborted for '{spec_name}' "
+                            f"(current state '{_wait_status}') — spec no longer "
+                            f"in testing, pipeline dropped",
+                        )
                         return False
                     # run 已死（daemon 重启丢队列/attempt 收尾未写标记）→ 停等。
                     # 停等前重读一次标记：run 写出 completed 标记与从
@@ -2593,7 +2600,7 @@ class VerificationPipeline:
                     # 3.7 预算耗尽分支：MUST NOT 落入下方「预算耗尽即继续验证」
                     # fall-through（对空集即等于携 0 场景进入阶段2 执行与裁决）。
                     # 比照 env_error 退回的预算耗尽分支（本方法 env_error 段
-                    # 预算耗尽即置 implemented + error 显式结束，pipeline.py:2659-2675）：
+                    # replan_left<=0 分支：预算耗尽即置 implemented + error 显式结束）：
                     # 置 implemented + error 显式结束本轮，ERROR 留痕。
                     self._context.state_machine.update_spec(
                         spec_name,
