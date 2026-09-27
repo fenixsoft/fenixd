@@ -9,12 +9,20 @@ D5 约定：各组方法采用 mixin 模式，DashboardHandler 继承各组 mixi
 from __future__ import annotations
 
 import logging
+import threading
 import urllib.parse
 from pathlib import Path
 
 from core.dashboard import data as dashboard_data
 
 logger = logging.getLogger("fenixd.dashboard.project_routes")
+
+# 同项目简介生成互斥注册表（code-review item 9c8e2c44f682）：_api_project_describe
+# 在 HTTP 线程内同步等待 claude CLI 最长 120 秒，同项目并发点击会叠加占用
+# base.py 的请求槽位（耗尽时对全部请求返回 503）。锁按项目名缓存复用（项目
+# 数量有限，不会无限增长）。
+_DESCRIBE_LOCKS: dict[str, threading.Lock] = {}
+_DESCRIBE_LOCKS_GUARD = threading.Lock()
 
 
 class H2ProjectRoutesMixin:
@@ -389,31 +397,40 @@ class H2ProjectRoutesMixin:
             self._error(404, "project not found")
             return
 
-        proot = Path(project["path"])
-        # 读取项目文件内容
-        content = ""
-        readme_path = proot / "README.md"
-        if readme_path.exists():
-            try:
-                raw = readme_path.read_bytes()[:8192]  # ≤8KB 截断
-                content = raw.decode("utf-8", errors="replace")
-            except (OSError, UnicodeDecodeError):
-                content = ""
-        else:
-            # 缺失时改读 package.json/pyproject.toml 前 4KB
-            for fallback in ["package.json", "pyproject.toml"]:
-                fallback_path = proot / fallback
-                if fallback_path.exists():
-                    try:
-                        raw = fallback_path.read_bytes()[:4096]  # 前 4KB
-                        content = raw.decode("utf-8", errors="replace")
-                        break
-                    except (OSError, UnicodeDecodeError):
-                        continue
+        # 同项目互斥去重（code-review item 9c8e2c44f682）：避免并发重复点击
+        # 叠加占用 HTTP 请求槽。非阻塞抢锁，已被同项目在途请求持有则立即返回
+        # （与执行失败同款契约：HTTP 200 + {error}，前端按 result.error 分支）。
+        with _DESCRIBE_LOCKS_GUARD:
+            describe_lock = _DESCRIBE_LOCKS.setdefault(project["name"], threading.Lock())
+        if not describe_lock.acquire(blocking=False):
+            self._json({"error": "该项目简介正在生成中，请稍候再试"})
+            return
+        try:
+            proot = Path(project["path"])
+            # 读取项目文件内容
+            content = ""
+            readme_path = proot / "README.md"
+            if readme_path.exists():
+                try:
+                    raw = readme_path.read_bytes()[:8192]  # ≤8KB 截断
+                    content = raw.decode("utf-8", errors="replace")
+                except (OSError, UnicodeDecodeError):
+                    content = ""
+            else:
+                # 缺失时改读 package.json/pyproject.toml 前 4KB
+                for fallback in ["package.json", "pyproject.toml"]:
+                    fallback_path = proot / fallback
+                    if fallback_path.exists():
+                        try:
+                            raw = fallback_path.read_bytes()[:4096]  # 前 4KB
+                            content = raw.decode("utf-8", errors="replace")
+                            break
+                        except (OSError, UnicodeDecodeError):
+                            continue
 
-        # 拼固定中文指令 prompt（必须携带项目名与路径——README 主题重叠的
-        # 项目若无项目身份信息会生成彼此的简介）
-        prompt = f"""你是一个项目简介生成器。请为项目「{project["name"]}」（位于 {proot}）生成一句约100字的中文项目简介。
+            # 拼固定中文指令 prompt（必须携带项目名与路径——README 主题重叠的
+            # 项目若无项目身份信息会生成彼此的简介）
+            prompt = f"""你是一个项目简介生成器。请为项目「{project["name"]}」（位于 {proot}）生成一句约100字的中文项目简介。
 
 以下是该项目说明文件的内容：
 {content}
@@ -427,66 +444,68 @@ class H2ProjectRoutesMixin:
 4. 简介长度控制在100字左右
 5. 只输出简介文本，不要有其他内容"""
 
-        # 调用 headless claude CLI
-        import subprocess
+            # 调用 headless claude CLI
+            import subprocess
 
-        try:
-            result = subprocess.run(
-                ["claude", "-p", prompt],
-                cwd=str(proot),
-                timeout=120,
-                shell=False,
-                capture_output=True,
-                # 非交互：不继承 daemon 的 stdin，避免 CLI 等待输入挂起到超时
-                stdin=subprocess.DEVNULL,
-                # 显式 UTF-8：text=True 缺省按 locale 严格解码，LC_ALL=C 启动
-                # 的 daemon 解码中文输出会抛 UnicodeDecodeError、简介生成在该
-                # 环境确定性失败（code-review item ee8f460deb54）。errors=replace
-                # 保证坏字节不再中断。
-                text=True,
-                encoding="utf-8",
-                errors="replace",
+            try:
+                result = subprocess.run(
+                    ["claude", "-p", prompt],
+                    cwd=str(proot),
+                    timeout=120,
+                    shell=False,
+                    capture_output=True,
+                    # 非交互：不继承 daemon 的 stdin，避免 CLI 等待输入挂起到超时
+                    stdin=subprocess.DEVNULL,
+                    # 显式 UTF-8：text=True 缺省按 locale 严格解码，LC_ALL=C 启动
+                    # 的 daemon 解码中文输出会抛 UnicodeDecodeError、简介生成在该
+                    # 环境确定性失败（code-review item ee8f460deb54）。errors=replace
+                    # 保证坏字节不再中断。
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                )
+            except subprocess.TimeoutExpired:
+                self._json({"error": "生成超时"})
+                return
+            except Exception as e:
+                # 不外泄裸异常文本（code-review item 0936be83135a）：str(e) 可能
+                # 携带内部路径/命令细节，与 code_review_routes 的泛化文案策略同款
+                # ——细节降级经服务端日志留痕，客户端收通用消息。
+                logger.warning(
+                    "调用 claude CLI 异常（project=%s）: %s: %s",
+                    project["name"],
+                    type(e).__name__,
+                    e,
+                )
+                self._json({"error": "调用 claude CLI 失败"})
+                return
+
+            # 检查返回结果
+            if result.returncode != 0:
+                logger.warning(
+                    "claude CLI 非零退出码（project=%s）: %s",
+                    project["name"],
+                    result.returncode,
+                )
+                self._json({"error": "调用 claude CLI 失败"})
+                return
+
+            description = result.stdout.strip()
+            if not description:
+                self._json({"error": "生成的简介为空"})
+                return
+
+            # 写入配置
+            write_result = dashboard_data.write_config(
+                proot, {"description": description}, scope="project"
             )
-        except subprocess.TimeoutExpired:
-            self._json({"error": "生成超时"})
-            return
-        except Exception as e:
-            # 不外泄裸异常文本（code-review item 0936be83135a）：str(e) 可能
-            # 携带内部路径/命令细节，与 code_review_routes 的泛化文案策略同款
-            # ——细节降级经服务端日志留痕，客户端收通用消息。
-            logger.warning(
-                "调用 claude CLI 异常（project=%s）: %s: %s",
-                project["name"],
-                type(e).__name__,
-                e,
-            )
-            self._json({"error": "调用 claude CLI 失败"})
-            return
+            if not write_result["ok"]:
+                self._json({"error": f"配置写入失败: {write_result.get('error', '未知错误')}"})
+                return
 
-        # 检查返回结果
-        if result.returncode != 0:
-            logger.warning(
-                "claude CLI 非零退出码（project=%s）: %s",
-                project["name"],
-                result.returncode,
-            )
-            self._json({"error": "调用 claude CLI 失败"})
-            return
-
-        description = result.stdout.strip()
-        if not description:
-            self._json({"error": "生成的简介为空"})
-            return
-
-        # 写入配置
-        write_result = dashboard_data.write_config(
-            proot, {"description": description}, scope="project"
-        )
-        if not write_result["ok"]:
-            self._json({"error": f"配置写入失败: {write_result.get('error', '未知错误')}"})
-            return
-
-        self._json({"ok": True, "description": description})
+            self._json({"ok": True, "description": description})
+        finally:
+            describe_lock.release()
 
 
     def _project_from_query(self, query):
