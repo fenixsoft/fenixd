@@ -299,7 +299,16 @@ class H2ProjectRoutesMixin:
                     if not stop_result.get("ok"):
                         errors.append(stop_result.get("error", "停止 daemon 失败"))
                 except Exception as e:
-                    errors.append(f"停止 daemon 失败: {e}")
+                    # 不外泄裸异常文本（code-review item 1825f4bcd251）：str(e)
+                    # 可能携带内部路径/命令/errno 细节，客户端收固定文案，
+                    # 详情经服务端日志留痕（同 _run_project_lifecycle_locked 口径）。
+                    logger.warning(
+                        "停止 daemon 异常（project=%s）: %s: %s",
+                        project["name"],
+                        type(e).__name__,
+                        e,
+                    )
+                    errors.append("停止 daemon 失败")
                 if errors:
                     self._json({"ok": False, "error": "；".join(errors)})
                     return
@@ -322,7 +331,15 @@ class H2ProjectRoutesMixin:
             if not add_result[0]:
                 errors.append(add_result[1])
         except Exception as e:
-            errors.append(f"写入忽略列表失败: {e}")
+            # 不外泄裸异常文本（code-review item 1825f4bcd251）：同停止 daemon
+            # 分支，客户端收固定文案，异常详情经服务端日志留痕。
+            logger.warning(
+                "写入忽略列表异常（path=%s）: %s: %s",
+                project["path"],
+                type(e).__name__,
+                e,
+            )
+            errors.append("写入忽略列表失败")
         if errors:
             self._json({"ok": False, "error": "；".join(errors)})
             return
@@ -420,7 +437,15 @@ class H2ProjectRoutesMixin:
                 timeout=120,
                 shell=False,
                 capture_output=True,
+                # 非交互：不继承 daemon 的 stdin，避免 CLI 等待输入挂起到超时
+                stdin=subprocess.DEVNULL,
+                # 显式 UTF-8：text=True 缺省按 locale 严格解码，LC_ALL=C 启动
+                # 的 daemon 解码中文输出会抛 UnicodeDecodeError、简介生成在该
+                # 环境确定性失败（code-review item ee8f460deb54）。errors=replace
+                # 保证坏字节不再中断。
                 text=True,
+                encoding="utf-8",
+                errors="replace",
             )
         except subprocess.TimeoutExpired:
             self._json({"error": "生成超时"})
