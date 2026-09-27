@@ -180,6 +180,7 @@ def _run_legacy_verification(pipeline, spec_name: str):
         # 环境性失联门禁（legacy 路径同样生效）：旧版 verifier 若在 report.json
         # 中标记了 blocked-env 且全批环境性失联，则同样判定 inconclusive 重派，
         # 不判 bug-found（防假阴性派生 fix 家族）。
+        # [fenix-ignore:f6c112fcb5a5] _read_verify_report 失败恒返回 {} 哨兵（report_gate 契约，绝不为 None），report.get 无 AttributeError 风险
         report = pipeline._read_verify_report(spec_name)
         if pipeline._handle_env_blocked_inconclusive(spec_name, report):
             return
@@ -431,10 +432,21 @@ def _run_legacy_verification(pipeline, spec_name: str):
                         },
                     )
                     return
-            pipeline._context.state_machine.transition(
+            # transition 返回值校验（与 spec_review.py consume_review_result 同款）：
+            # 前置守卫链与 transition 之间存在 TOCTOU 窗口，窗口内 spec 被
+            # 人工冻结/并发接管致非法转移被拒时，保留原状——不覆写 error/
+            # tester_run、不派生 fix（伪 fix 级联防护）。
+            accepted = pipeline._context.state_machine.transition(
                 spec_name, "bug-found",
                 trigger_run_id=result.run_id, agent_type="tester", channel="auto",
             )
+            if not accepted:
+                pipeline._context.logger.warning(
+                    "pm_engine",
+                    f"bug-found transition 被拒（转移非法，疑似冻结/并发接管）"
+                    f"'{spec_name}' — 保留原状，不覆写字段、不派生 fix",
+                )
+                return
             pipeline._context.state_machine.update_spec(
                 spec_name,
                 {
@@ -508,10 +520,21 @@ def _run_legacy_verification(pipeline, spec_name: str):
             if _discard_if_not_testing(pipeline, spec_name, result, "verified"):
                 return
 
-            pipeline._context.state_machine.transition(
+            # transition 返回值校验（与 spec_review.py consume_review_result 同款）：
+            # 前置守卫链与 transition 之间存在 TOCTOU 窗口（进度核对/报告闸门/
+            # 洗白门禁多次读文件），窗口内 spec 被人工冻结/并发接管致非法转移
+            # 被拒时，保留原状——不覆写字段、不推进采纳/收尾链。
+            accepted = pipeline._context.state_machine.transition(
                 spec_name, "verified",
                 trigger_run_id=result.run_id, agent_type="tester", channel="auto",
             )
+            if not accepted:
+                pipeline._context.logger.warning(
+                    "pm_engine",
+                    f"verified transition 被拒（转移非法，疑似冻结/并发接管）"
+                    f"'{spec_name}' — 保留原状，不覆写字段、不推进收尾",
+                )
+                return
             pipeline._context.state_machine.update_spec(
                 spec_name,
                 {

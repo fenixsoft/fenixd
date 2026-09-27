@@ -7,14 +7,15 @@
      attribution 摘要提取仓库相对路径；清单不可读按「不满足」保守回落整轮
      ——与条件③的 fail-open 方向相反：fastlane 是优化通道，证据缺失宁可
      整轮也不误入）；
-  ③ 无 judge 争议/裁决标记——判据从实现/验证结果文件 ``.fenix-run-result.json``
+  ③ 无 judge 争议/裁决标记——判据从 judge/实现/验证结果文件
+     ``.fenix-run-result.json``
      的 findings 中 dispute/adjudication 类条目读取（读取先例
      ``branch_guard._disputed_deliverables`` 对 ``deliverable-dispute`` 的解析）；
      信号机制缺失或无条目时按「无争议」fail-open 并在判定记录留痕。
 
 三条件全满足 → 生成 code-fix 轻量修复任务（``agents/code-fix.md`` 车道，主树
 直接修复）+ 子集重验（失败场景 ∪ ``depends_on`` 前置链（递归）∪ 以失败场景
-为前置的下游场景（递归），未实跑场景沿用上一轮通过结论并标注来源）；任一条件
+为前置的下游场景（递归），未实跑场景沿用上一轮原判定并标注来源）；任一条件
 不满足 → 既有 bug-found→fix SPEC 整轮路径原样。fastlane 修复失败计入该 spec
 既有验证轮预算（``_verify_fail_rounds`` 与整轮失败同账）；同一验证轮连续
 2 次 fastlane 修复后仍失败强制回落整轮（STATE 字段 ``_fastlane_fail_streak``）。
@@ -80,7 +81,7 @@ def disputed_findings(result) -> list:
 
 
 def has_dispute_signal(pipeline, spec_name: str) -> tuple:
-    """条件③：实现/验证结果文件 findings 是否含争议条目。
+    """条件③：judge/实现/验证结果文件 findings 是否含争议条目。
 
     读取先例 ``branch_guard._disputed_deliverables``：从 run 结果文件的
     findings 读 dispute/adjudication 类条目。信号机制缺失（结果文件不存在/
@@ -92,10 +93,22 @@ def has_dispute_signal(pipeline, spec_name: str) -> tuple:
         fastlane）；evidence 为判定依据的简短描述。
     """
     root = pipeline._context.project_root
-    # 实现 run 结果文件：项目根共享 .fenix/.fenix-run-result.json（跨 spec
-    # 单例，实现/验证 agent 收尾契约的唯一落点）。
+    # 结果文件候选（按具体度降序，首个存在且可读者生效）：
+    # 1. judge 结果文件 .fenix/verify-progress/<spec>/.fenix-run-result.json
+    #    （本轮裁决落点，与 escalation._judge_bugs_declare_env 的 primary
+    #    同源；路径自带 spec 隔离，免跨 spec 戳校验）——置前：fastlane 评估
+    #    发生在 judge 之后，共享根文件此时多为实现/验证轮残留，先查最具体
+    #    落点才不漏 judge 侧 dispute/adjudication 条目；
+    # 2. 项目根共享 .fenix/.fenix-run-result.json（跨 spec 单例，实现/验证
+    #    agent 收尾契约的唯一落点）；
+    # 3. spec-review 副本。
+    shared_root_result = Path(root) / ".fenix" / ".fenix-run-result.json"
     candidates = [
-        Path(root) / ".fenix" / ".fenix-run-result.json",
+        (
+            Path(root) / ".fenix" / "verify-progress" / spec_name
+            / ".fenix-run-result.json"
+        ),
+        shared_root_result,
         Path(root) / ".fenix" / "spec-review" / spec_name / ".fenix-run-result.json",
     ]
     unreadable: list = []
@@ -113,7 +126,7 @@ def has_dispute_signal(pipeline, spec_name: str) -> tuple:
         # spec，也防本 spec 争议被其它 spec 后写覆写后误放行），回落检查
         # 下一候选。口径对齐 dashboard.data.artifacts._load_run_result：
         # 缺 spec 戳的旧格式文件仍采信；spec 专属副本路径自带隔离，不校验。
-        if path == candidates[0] and isinstance(data, dict):
+        if path == shared_root_result and isinstance(data, dict):
             stamp = data.get("spec")
             if isinstance(stamp, str) and stamp and stamp != spec_name:
                 continue
@@ -236,11 +249,14 @@ def subset_scenario_ids(scenarios, failed_id: str) -> list:
 
 
 def merge_subset_report(prev_report, subset_report) -> dict:
-    """合并子集重验报告与上一轮报告：未实跑场景沿用上一轮通过结论并标注来源。
+    """合并子集重验报告与上一轮报告：未实跑场景沿用上一轮原判定并标注来源。
 
     重验报告 MUST 含全量场景判定（minor-defect-fashlane spec 子集重验条款）：
-    实跑场景取子集报告最新判定，其余沿用上一轮 pass 结论并附
-    ``source: "carried-over: fastlane subset reverify"`` 标注。
+    实跑场景取子集报告最新判定；其余场景全量回填上一轮原判定（pass 沿用
+    通过结论，warning/blocked-env 等原样保留 classification 等侧车消费字段）
+    并附 ``source: "carried-over: fastlane subset reverify"`` 标注——非 pass
+    场景若丢弃，合并报告 total 缩水、warning streak 侧车按「不在本轮场景集」
+    剪枝清零，triage 连续计数被收敛静默打断。
     """
     merged = copy.deepcopy(subset_report) or {}
     executed_ids = {
@@ -255,10 +271,17 @@ def merge_subset_report(prev_report, subset_report) -> dict:
         sid = str(sc.get("scenario_id") or sc.get("id") or "")
         if not sid or sid in executed_ids:
             continue
+        # 未实跑场景全量回填（不只 pass）：warning 等非 pass 场景若丢弃，
+        # 合并报告 total 缩水（少于冻结场景集），warning streak 侧车按
+        # 「不在本轮场景集」剪枝清零——triage 连续计数被静默打断。
+        entry = copy.deepcopy(sc)
         if sc.get("status") in ("pass", "passed"):
-            entry = copy.deepcopy(sc)
             entry["source"] = "carried-over: fastlane subset reverify（沿用上一轮通过结论）"
-            carried.append(entry)
+        else:
+            entry["source"] = (
+                "carried-over: fastlane subset reverify（未实跑，沿用上一轮原判定）"
+            )
+        carried.append(entry)
     # 场景列表取 merged 自身的 deepcopy 副本，避免与原 subset_report 共享条目引用
     merged["scenarios"] = list(merged.get("scenarios") or []) + carried
     # summary 重算（全部场景判定齐备）——口径对齐
@@ -560,6 +583,16 @@ def dispatch_minor_defect_fastlane(pipeline, spec_name: str, decision: dict) -> 
     )
     try:
         fix_result = ctx.agent_runner._execute_agent(spec_name, "code-fix", run_id)
+    except AttributeError as e:
+        # 接线故障（context 未绑定 agent_runner，如桩 context 漏成员）≠ 真实
+        # 修复失败：每次 eligible 必然复现、白耗验证轮预算（连续 2 次即熔断
+        # 车道），ERROR 级醒目留痕以便与真实修复失败区分排障。
+        ctx.logger.error(
+            "pm_engine",
+            f"fastlane 接线故障 '{spec_name}': ctx.agent_runner 不可用（{e!r}）"
+            "——车道无法派发 code-fix，请检查 PipelineContext.agent_runner 绑定",
+        )
+        return _bump_fail_streak(f"code-fix 轻量修复派发异常: {e!r}（回落整轮）")
     except Exception as e:
         return _bump_fail_streak(f"code-fix 轻量修复派发异常: {e!r}（回落整轮）")
     if not getattr(fix_result, "success", False):
@@ -602,7 +635,7 @@ def dispatch_minor_defect_fastlane(pipeline, spec_name: str, decision: dict) -> 
     merged["fastlane"] = {
         "subset_ids": subset_ids,
         "fix_run_id": run_id,
-        "note": "fastlane 子集重验收敛：实跑子集见 scenarios 其余沿用上一轮通过结论",
+        "note": "fastlane 子集重验收敛：实跑子集见 scenarios 其余沿用上一轮原判定",
     }
     save_report(ctx.project_root, spec_name, merged)
     sm.update_spec(spec_name, {FASTLANE_STREAK_FIELD: 0})

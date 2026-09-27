@@ -774,7 +774,10 @@ class VerificationPipeline:
                             f"{retry_judge.error or ''}",
                         )
                         return None
-                    if getattr(retry_judge, "cancelled", False):
+                    # 判定用 `is True`（与上方 frozen_terminated 及
+                    # _dispatch_judge_or_reuse 同口径：防 MagicMock 替身
+                    # 自动生成 truthy 属性误判让位）。
+                    if getattr(retry_judge, "cancelled", False) is True:
                         self._context.logger.info(
                             "pm_engine",
                             f"重派 judge run 被人工取消 '{spec_name}' — 让位："
@@ -998,10 +1001,21 @@ class VerificationPipeline:
             self._context.state_machine.read_one(spec_name) or {}
         ).get("status", "")
         # fix-observability-gaps 2.2：planner-judge 判定 bug-found（自动来源）
-        self._context.state_machine.transition(
+        # transition 返回值校验（与 spec_review.py consume_review_result 同款）：
+        # 前置守卫链与 transition 之间存在 TOCTOU 窗口（报告闸门/洗白门禁/
+        # ocr gate 多次读文件），窗口内 spec 被人工冻结/复位致非法转移被拒时，
+        # 保留原状——不覆写 error/tester_run、不派生子 fix（伪 fix 级联防护）。
+        accepted = self._context.state_machine.transition(
             spec_name, "bug-found",
             trigger_run_id=judge_result.run_id, agent_type="planner-judge", channel="auto",
         )
+        if not accepted:
+            self._context.logger.warning(
+                "pm_engine",
+                f"bug-found transition 被拒（转移非法，疑似冻结/并发接管）"
+                f"'{spec_name}' — 保留原状，不覆写字段、不派生 fix",
+            )
+            return
         self._context.state_machine.update_spec(
             spec_name,
             {
@@ -1130,10 +1144,21 @@ class VerificationPipeline:
         if ocr_decision != "pass":
             return
         # fix-observability-gaps 2.2：planner-judge 判定 verified（自动来源）
-        self._context.state_machine.transition(
+        # transition 返回值校验（与 spec_review.py consume_review_result 同款）：
+        # 前置守卫链与 transition 之间存在 TOCTOU 窗口（进度核对/报告闸门/
+        # 洗白门禁/ocr gate 多次读文件），窗口内 spec 被人工冻结/复位致非法
+        # 转移被拒时，保留原状——不覆写字段、不推进采纳/auto-push 链。
+        accepted = self._context.state_machine.transition(
             spec_name, "verified",
             trigger_run_id=judge_result.run_id, agent_type="planner-judge", channel="auto",
         )
+        if not accepted:
+            self._context.logger.warning(
+                "pm_engine",
+                f"verified transition 被拒（转移非法，疑似冻结/并发接管）"
+                f"'{spec_name}' — 保留原状，不覆写字段、不推进收尾",
+            )
+            return
         self._context.state_machine.update_spec(
             spec_name,
             {
@@ -1270,9 +1295,6 @@ class VerificationPipeline:
                 )
             base_url = self._current_instance_base_url(spec_name)
             result = migrate_frozen_contract(raw, base_url=base_url)
-            # D4 风险 4：迁移结果回注实例属性，供阶段1 复用分支 diff 基线
-            # 使用（避免把「迁移」误记为「planner 本轮凭空增改场景」）。
-            self._frozen_migrated = list(result["migrated"])
             if result["aborted"] == "all_scenarios_stale":
                 # D3：全场景过时（含空集）→ 删除冻结文件、本轮回落到既有
                 # 出题分支——不置 blocked/env_blocked、不递归调用
@@ -2142,7 +2164,8 @@ class VerificationPipeline:
                 self._context.logger.warning(
                     "pm_engine",
                     f"Provider circuit open — planner judge suppressed for "
-                    f"'{spec_name}', holding implemented: {judge_result.error}",
+                    f"'{spec_name}', holding testing (recovery re-dispatch): "
+                    f"{judge_result.error}",
                 )
                 return None
             # ── 首轮 frozen 让位分支（fix-verdict-retry-misattribution D4）──
@@ -2454,7 +2477,8 @@ class VerificationPipeline:
                     # ── provider 熔断拦截（fix-fix-stashpop-deadlock：provider-fault-fuse） ──
                     # 熔断期 planner 派发失败属「provider 故障」，不是验证逻辑失败：
                     # 不得 raise（会触发 legacy 降级 → bug-found → 伪 fix 级联），
-                    # 保持 spec 在 implemented（由 full_scan recovery 兜底重排）。
+                    # 只写 error 保持 spec 在 testing（由 full_scan recovery 探测
+                    # 卡死/孤儿 testing 后重排——此处无 transition，不回 implemented）。
                     if plan_result.error and "provider circuit open" in plan_result.error:
                         self._context.state_machine.update_spec(
                             spec_name,
@@ -2473,7 +2497,7 @@ class VerificationPipeline:
                         self._context.logger.warning(
                             "pm_engine",
                             f"Provider circuit open — planner suppressed for '{spec_name}', "
-                            f"holding implemented: {plan_result.error}",
+                            f"holding testing (recovery re-dispatch): {plan_result.error}",
                         )
                         return
                     raise RuntimeError(f"Planner plan 失败: {plan_result.error}")

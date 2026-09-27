@@ -114,7 +114,9 @@ def _rejection_closure(
     仅用于日志文案，保持各轮次既有文案逐字不变（与 ``_run_attribution_gate``
     的标签约定一致）。
     """
-    for v in dedup["violations"]:
+    # [fenix-code-fix:4a5ffe0439c9] 防御取用：兜底收口自身不得因上游查重
+    # 结果缺 violations 键裸外溢 KeyError（与下方 except 分支同口径）。
+    for v in dedup.get("violations") or []:
         pipeline._context.logger.error(
             "pm_engine",
             f"批量归因查重拒绝采纳{lane_label}'{spec_name}': {v.get('reason')}",
@@ -184,7 +186,14 @@ def _dispatch_failure_result(
     }
 
 
-def _adopt_report(pipeline, spec_name: str, report: dict, lane_label: str) -> dict:
+def _adopt_report(
+    pipeline,
+    spec_name: str,
+    report: dict,
+    lane_label: str,
+    correction_log=None,
+    save_on_corrected_only: bool = False,
+) -> dict:
     """合规采纳收口统一助手（重试轮/重合成轮两份近逐字拷贝单源化）。
 
     清 violations/resynthesis_directive/requeue_manifest → 裁决缓存
@@ -195,6 +204,15 @@ def _adopt_report(pipeline, spec_name: str, report: dict, lane_label: str) -> di
     ``lane_label`` 为映射日志前缀词（"裁决重试" / "重合成采纳"），保持各轮次
     既有文案逐字不变；轮次专属收尾日志（如重合成轮「产物合规」warning）由
     调用方在 return 前补打，次序与既有路径一致。
+
+    ``correction_log`` 为可选的逐条改写日志回调（入参为 mapping["corrected"]
+    单条目，返回完整文案）：缺省用 ``{lane_label}后映射强制重写`` 模板；
+    首轮合规路径传入既有「裁决映射强制重写 …（含 classification）」文案，
+    保持首轮日志逐字不变（code-review 5c68aa4d6b82：采纳收口三处单源）。
+
+    ``save_on_corrected_only`` 为真时仅映射确有改写才写回 report.json
+    （首轮既有行为：无改写零写入）；缺省 False 恒写回（重试轮/重合成轮
+    既有行为：回灌产物连同分级门改写一并落盘）。
     """
     from core.verdict_check import enforce_status_mapping, save_report
 
@@ -203,19 +221,23 @@ def _adopt_report(pipeline, spec_name: str, report: dict, lane_label: str) -> di
     pipeline._clear_requeue_manifest(spec_name)
     pipeline._persist_verdict_cache(spec_name, report)
     mapping = enforce_status_mapping(report)
-    try:
-        save_report(pipeline._context.project_root, spec_name, report)
-    except OSError as e:
-        pipeline._context.logger.warning(
-            "pm_engine",
-            f"裁决映射重写写回失败 '{spec_name}': {e}",
-        )
+    if mapping["corrected"] or not save_on_corrected_only:
+        try:
+            save_report(pipeline._context.project_root, spec_name, report)
+        except OSError as e:
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"裁决映射重写写回失败 '{spec_name}': {e}",
+            )
     for c in mapping["corrected"]:
-        pipeline._context.logger.info(
-            "pm_engine",
-            f"{lane_label}后映射强制重写 '{spec_name}' 场景 "
-            f"{c['scenario_id']}: {c['from_status']} → failed",
-        )
+        if correction_log is not None:
+            message = correction_log(c)
+        else:
+            message = (
+                f"{lane_label}后映射强制重写 '{spec_name}' 场景 "
+                f"{c['scenario_id']}: {c['from_status']} → failed"
+            )
+        pipeline._context.logger.info("pm_engine", message)
     return {"ok": True, "cause": "pass", "violations": [], "dispatch_error": ""}
 
 
@@ -245,9 +267,7 @@ def _verify_verdict_evidence(pipeline, spec_name: str, retry_judge: bool = False
     """
     from core.verdict_check import (
         validate_report,
-        enforce_status_mapping,
         load_report,
-        save_report,
     )
 
     report = load_report(pipeline._context.project_root, spec_name)
@@ -275,26 +295,20 @@ def _verify_verdict_evidence(pipeline, spec_name: str, retry_judge: bool = False
             # 场景级回炉闭环收口：与重试轮/重合成轮共用单源实现
             return _rejection_closure(pipeline, spec_name, report, dedup, " ")
         # 合规：清掉历史驳回清单（若有）后强制重写 status 映射（D3）写回
-        pipeline._clear_verdict_violations(spec_name)
-        pipeline._clear_resynthesis_directive(spec_name)
-        pipeline._clear_requeue_manifest(spec_name)
-        pipeline._persist_verdict_cache(spec_name, report)
-        mapping = enforce_status_mapping(report)
-        if mapping["corrected"]:
-            try:
-                save_report(pipeline._context.project_root, spec_name, report)
-            except OSError as e:
-                pipeline._context.logger.warning(
-                    "pm_engine",
-                    f"裁决映射重写写回失败 '{spec_name}': {e}",
-                )
-            for c in mapping["corrected"]:
-                pipeline._context.logger.info(
-                    "pm_engine",
-                    f"裁决映射强制重写 '{spec_name}' 场景 {c['scenario_id']}: "
-                    f"{c['from_status']} → failed ({c['classification']})",
-                )
-        return {"ok": True, "cause": "pass", "violations": [], "dispatch_error": ""}
+        # （采纳收口与重试轮/重合成轮共用 _adopt_report 单源实现；
+        # code-review 5c68aa4d6b82 防漂移——首轮日志文案与「有改写才写回」
+        # 既有行为经参数保持逐字不变）
+        return _adopt_report(
+            pipeline,
+            spec_name,
+            report,
+            "裁决",
+            correction_log=lambda c: (
+                f"裁决映射强制重写 '{spec_name}' 场景 {c['scenario_id']}: "
+                f"{c['from_status']} → failed ({c['classification']})"
+            ),
+            save_on_corrected_only=True,
+        )
 
     # 一次不合规：judge 重试一次（design D2）；违规明细落盘供重试 prompt 注入
     if retry_judge:

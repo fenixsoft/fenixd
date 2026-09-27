@@ -63,6 +63,21 @@ def _read_int_config(pipeline, key: str, default: int) -> int:
         return default
 
 
+def _escalate_threshold_note(
+    attempts: int, max_attempts: int, escalate_attempts: int
+) -> str:
+    """按实际命中的升级条件生成阈值文案（code-review 974c5b39ad17）。
+
+    升级分支条件是 ``attempts >= escalate_attempts or attempts >= max_attempts``：
+    缺省（max_attempts=3、escalate_attempts=4）下第 3 轮即经重验上限升级，
+    文案若固定写「已达升级阈值 4」会虚报重验轮数，干扰人工对重验预算的
+    判断。三处 inconclusive 升级处理器共用本构造点，避免分支文案各自漂移。
+    """
+    if attempts >= max_attempts:
+        return f"已达重验上限 {max_attempts}"
+    return f"已达升级阈值 {escalate_attempts}"
+
+
 # [fenix-ignore:d5f83f2038f4] 三处同构骨架经停止分支合并（922e79f7a511）
 # 与 _read_int_config 抽取后，残留分歧仅在各自文案与 judge 无并行降档，
 # 参数化抽取风险大于收益，暂不共享实现
@@ -123,11 +138,20 @@ def _handle_env_blocked_inconclusive(pipeline, spec_name: str, report: dict) -> 
     # 故障形态，不可依赖它们。写入后停止自动重验：计数不清零则 recovery
     # （B6）保持跳过，人工处置是唯一出路——与「暂停自动重验」语义闭环。
     if attempts >= escalate_attempts or attempts >= max_attempts:
-        pipeline._write_inconclusive_loop_signal(spec_name, attempts, blocked_env, report)
+        pipeline._write_inconclusive_loop_signal(
+            spec_name,
+            attempts,
+            blocked_env,
+            report,
+            threshold_note=_escalate_threshold_note(
+                attempts, max_attempts, escalate_attempts
+            ),
+        )
         pipeline._context.logger.error(
             "pm_engine",
             f"'{spec_name}' 连续 {attempts} 轮验证全部 blocked-env，"
-            f"已达升级阈值 {escalate_attempts}，SIGNAL 已写 admin store，"
+            f"{_escalate_threshold_note(attempts, max_attempts, escalate_attempts)}，"
+            f"SIGNAL 已写 admin store，"
             f"暂停自动重验等待人工处置",
         )
         pipeline._context.state_machine.update_spec(
@@ -363,8 +387,12 @@ def _update_warning_streaks(pipeline, spec_name: str) -> list:
       - status 为 pass/failed（含被强制重写的 failed）或 classification 为
         product-bug/test-defect 的场景：计数清零。
 
-    返回本轮回填后「连续计数 == 2」的场景 id 列表（即触发 triage 升级的候选），
-    调用方据此发告警。侧车文件：``.fenix/verify-progress/<spec>/warning_streaks.json``，
+    返回本轮回填后「连续计数 >= 2 且尚未列入优先复核清单」的场景 id 列表
+    （即触发 triage 升级的候选），调用方据此发告警。触发不取精确相等、以
+    triage_recheck.json 已含该 id 去重（code-review ef96ee9d0506）：streak
+    侧车先落盘、告警由调用方在后执行，进程在两步之间中断后下轮计数已过 2
+    仍可补发，且已告警场景不重复升级。侧车文件：
+    ``.fenix/verify-progress/<spec>/warning_streaks.json``，
     结构 {scenario_id: 连续轮数}。
     """
     from core.verdict_check import load_report
@@ -396,6 +424,26 @@ def _update_warning_streaks(pipeline, spec_name: str) -> list:
     # 本轮场景 id 集 / pass 集合（供 triage_recheck.json 剪枝，见函数尾部）
     current_ids = set()
     passed_ids = set()
+    # 已列入优先复核清单的场景 id（code-review ef96ee9d0506）：升级触发条件
+    # 放宽为 >= 2 后以此去重——streak 侧车先落盘、triage 告警由调用方在后
+    # 执行，进程在两步之间中断时下轮计数涨到 3 后「== 2」永不命中，「连续
+    # 2 轮 warning 需人工甄别」的升级语义被静默吞掉；放宽后下轮可补发，且
+    # 已入清单者不重复告警。
+    recheck_path = (
+        pipeline._context.project_root
+        / ".fenix"
+        / "verify-progress"
+        / spec_name
+        / "triage_recheck.json"
+    )
+    already_recheck: set = set()
+    if recheck_path.exists():
+        try:
+            data = json.loads(recheck_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            data = None
+        if isinstance(data, list):
+            already_recheck = {sid for sid in data if isinstance(sid, str)}
     for sc in scenarios:
         if not isinstance(sc, dict):
             continue
@@ -411,14 +459,14 @@ def _update_warning_streaks(pipeline, spec_name: str) -> list:
         # failed（D3），不悬置；pass/failed 清零（D4）。
         if status == "warning" and classification in ("flaky", "env"):
             streaks[sid] = streaks.get(sid, 0) + 1
-            if streaks[sid] == 2:
+            if streaks[sid] >= 2 and sid not in already_recheck:
                 triage_candidates.append(sid)
         else:
             streaks[sid] = 0
 
     # 陈旧 id 剪枝：不在本轮场景集中的 id（planner 重排出题被替换）连同
     # 残留计数一并移除——否则残留 streak 会让新集复用旧 id 时立即凑满
-    # 升级阈值（== 2）误发 triage 升级，侧车文件也会无界增长
+    # 升级阈值（>= 2）误发 triage 升级，侧车文件也会无界增长
     # （与下方 triage_recheck.json 的剪枝同法）。
     for stale_id in set(streaks) - current_ids:
         del streaks[stale_id]
@@ -450,13 +498,7 @@ def _update_warning_streaks(pipeline, spec_name: str) -> list:
     # 被替换）的 id 会永久滞留并被 planner prompt 每轮反复注入过期情报。
     # 此处按本轮 report 场景状态剪枝；report 不可得（上方提前 return）或
     # 文件缺失/损坏时不动作——损坏文件由 alert 写入路径的坏文件容错自愈。
-    recheck_path = (
-        pipeline._context.project_root
-        / ".fenix"
-        / "verify-progress"
-        / spec_name
-        / "triage_recheck.json"
-    )
+    # （recheck_path 已在上方读取 already_recheck 时定义。）
     if recheck_path.exists():
         try:
             data = json.loads(recheck_path.read_text(encoding="utf-8"))
@@ -1018,14 +1060,16 @@ def _handle_judge_env_declared(pipeline, spec_name: str) -> bool:
             {"scenarios": [], "summary": {"blocked_env": 0}},
             description=(
                 f"'{spec_name}' 连续 {attempts} 轮验证均因环境/基础设施问题"
-                f"未完成（judge 自述），已达升级阈值，"
+                f"未完成（judge 自述），"
+                f"{_escalate_threshold_note(attempts, max_attempts, escalate_attempts)}，"
                 f"请 Administrator 核查验证环境"
             ),
         )
         pipeline._context.logger.error(
             "pm_engine",
             f"'{spec_name}' judge 连续 {attempts} 轮均自述环境问题，"
-            f"已达升级阈值 {escalate_attempts}，SIGNAL 已写 admin store，"
+            f"{_escalate_threshold_note(attempts, max_attempts, escalate_attempts)}，"
+            f"SIGNAL 已写 admin store，"
             f"暂停自动重验等待人工处置",
         )
         pipeline._context.state_machine.update_spec(
@@ -1246,6 +1290,7 @@ def _write_inconclusive_loop_signal(
     blocked_env: int,
     report: dict,
     description: str | None = None,
+    threshold_note: str | None = None,
 ) -> bool:
     """向 admin store 写 inconclusive_loop SIGNAL（design D6 / Task 5.2）。
 
@@ -1256,6 +1301,10 @@ def _write_inconclusive_loop_signal(
     description 可覆盖缺省的 blocked-env 模板文案（code-review item
     782362a0983e）：judge 自述环境等非 blocked-env 形态的升级入口传入与
     故障形态一致的措辞，避免告警把人工排查引向 blocked-env 探针方向。
+
+    threshold_note 为缺省模板中的阈值表述（code-review 974c5b39ad17）：
+    调用方传 ``_escalate_threshold_note`` 产物，使「已达重验上限/已达升级
+    阈值」与实际命中的升级条件一致；缺省回退通用表述。
 
     写失败静默降级（信号只是升级通道，spec 的 error 字段已承载人工可见信息），
     返回是否写入成功。
@@ -1284,7 +1333,8 @@ def _write_inconclusive_loop_signal(
                     description
                     or (
                         f"'{spec_name}' 连续 {attempts} 轮验证全部为 blocked-env"
-                        f"（环境性失联），已达升级阈值，请 Administrator 核查验证环境"
+                        f"（环境性失联），{threshold_note or '已达升级阈值'}，"
+                        f"请 Administrator 核查验证环境"
                     )
                 ),
                 "evidence": (
@@ -1419,11 +1469,20 @@ def _handle_verdict_env_exemption_inconclusive(
     # 达升级阈值或达重验上限（attempts >= max_attempts，停止收口与升级
     # 合并，code-review 922e79f7a511）即升级写 SIGNAL。
     if attempts >= escalate_attempts or attempts >= max_attempts:
-        pipeline._write_inconclusive_loop_signal(spec_name, attempts, blocked_env, report or {})
+        pipeline._write_inconclusive_loop_signal(
+            spec_name,
+            attempts,
+            blocked_env,
+            report or {},
+            threshold_note=_escalate_threshold_note(
+                attempts, max_attempts, escalate_attempts
+            ),
+        )
         pipeline._context.logger.error(
             "pm_engine",
             f"'{spec_name}' 连续 {attempts} 轮验证失败均被裁决豁免为环境性，"
-            f"已达升级阈值 {escalate_attempts}，SIGNAL 已写 admin store，"
+            f"{_escalate_threshold_note(attempts, max_attempts, escalate_attempts)}，"
+            f"SIGNAL 已写 admin store，"
             f"暂停自动重验等待人工处置（豁免清单不得作为 verified 依据）",
         )
         pipeline._context.state_machine.update_spec(

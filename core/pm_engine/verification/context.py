@@ -58,6 +58,22 @@ def _parallel_plan_lane(pm: Any) -> Any:
     )
 
 
+def _agent_runner_lane(pm: Any) -> Any:
+    """fastlane code-fix 轻量修复派发包装（minor-defect-fastlane）。
+
+    SimpleNamespace 成员 lambda **延迟解析** pm.agent_runner（与
+    _parallel_plan_lane 同约定）：桩 pm 未声明 agent_runner 属性时，调用才
+    AttributeError——消费侧按接线故障 ERROR 留痕后记账回落整轮，不影响验证轮。
+    """
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        _execute_agent=lambda *args, **kwargs: pm.agent_runner._execute_agent(
+            *args, **kwargs
+        ),
+    )
+
+
 @dataclass(frozen=False)
 class PipelineContext:
     """VerificationPipeline 显式依赖注入容器。
@@ -113,6 +129,12 @@ class PipelineContext:
     # test_no_self_pm_private_in_pipeline）。有缺省：桩 context 不提供即视
     # 为车道未启用（消费侧 fail-open 回落串行）。
     parallel_plan_lane: Any = field(default=None, repr=False)
+
+    # ── minor-defect-fastlane：code-fix 轻量修复派发（SimpleNamespace 包装，
+    # 成员 lambda 委托 pm.agent_runner——pipeline 侧零 self._pm._ 回引）。
+    # 有缺省：桩 context 不提供即视为车道不可派发（消费侧按接线故障记账
+    # 回落整轮）；测试可整体覆写该成员（SimpleNamespace 桩同源可用）。
+    agent_runner: Any = field(default=None, repr=False)
 
     # ── 便捷构造（从 PMEngine 实例一键创建）─────────────────────────────────
 
@@ -212,5 +234,6 @@ class PipelineContext:
             exempt_infra_run_budget=_exempt_infra_run_budget,
             ocr_join_gate=_ocr_join_gate,
             parallel_plan_lane=_parallel_plan_lane(pm),
+            agent_runner=_agent_runner_lane(pm),
             env_infra_markers=getattr(pm, "_ENV_INFRA_MARKERS", ()),
         )

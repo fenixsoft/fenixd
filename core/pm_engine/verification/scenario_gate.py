@@ -15,6 +15,26 @@ import json
 from pathlib import Path
 
 
+def _atomic_write_text(path: Path, content: str) -> None:
+    """tmp+replace 原子写文本文件（本文件四处写点共用助手，code-review 83f6bb98613c）。
+
+    先写目标同目录 ``<name>.tmp`` 再 replace：裸写中途被 SIGKILL/断电会
+    留下截断文件。写失败时在同一处清理残留 .tmp 后原样上抛，由调用点
+    按各自语义留痕（各写点日志级别/文案不同，收敛后调整原子写实现只改
+    这一处）。
+    """
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        tmp.write_text(content, encoding="utf-8")
+        tmp.replace(path)
+    except OSError:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
 def _apply_scenario_freeze(pipeline, spec_name: str) -> dict:
     """应用场景集冻结：planner 产出 vs 持久化集 diff，写回 scenarios.json。
 
@@ -133,7 +153,10 @@ def _apply_scenario_freeze(pipeline, spec_name: str) -> dict:
     for item in planner_scenarios:
         if not isinstance(item, dict):
             continue
-        if item.get("id") in rejected_set:
+        # 反查侧与登记侧（rejected_ids.append(str(item_id))）共用同一 id
+        # 规整：原始 id 为非字符串（如 int）时裸值 in 集合恒不命中，3.10
+        # 「条目非法剔除」去噪失效（code-review 99e826fde331）。
+        if str(item.get("id")) in rejected_set:
             covers = item.get("covers")
             if isinstance(covers, list):
                 rejected_covers.update(str(c) for c in covers if c)
@@ -206,19 +229,17 @@ def _apply_scenario_freeze(pipeline, spec_name: str) -> dict:
             try:
                 # frozen-scenario-schema-migration 2.1：写端恒定写入
                 # schema_version 标记（旧字段先迁移再落盘，读侧直通）
-                # tmp+replace 原子写（与本函数 test_scenarios.json 写回同款）：
-                # 裸写中途被 SIGKILL/断电会留下截断备份，下轮无理由缺场景补齐
+                # tmp+replace 原子写（共用 _atomic_write_text 助手）：裸写
+                # 中途被 SIGKILL/断电会留下截断备份，下轮无理由缺场景补齐
                 # 读备份失败（backup_map 置空），场景被判「定义不可恢复」剔除。
-                tmp = full_backup.with_name(full_backup.name + ".tmp")
-                tmp.write_text(
+                _atomic_write_text(
+                    full_backup,
                     json.dumps(
                         prepare_scenarios_for_write(valid_planner),
                         ensure_ascii=False,
                         indent=2,
                     ),
-                    encoding="utf-8",
                 )
-                tmp.replace(full_backup)
             except OSError as e:
                 # 3.6：写失败不得零痕迹——备份是后续无理由缺场景补齐的唯一
                 # 恢复源，写失败后下轮补齐将因 backup_map 为空把场景判
@@ -308,19 +329,17 @@ def _apply_scenario_freeze(pipeline, spec_name: str) -> dict:
         try:
             # frozen-scenario-schema-migration 2.1：补齐写回同样恒定写入
             # schema_version（备份取回条目可能为旧 schema，先迁移再落盘）
-            # tmp+replace 原子写（与本文件 _render_scenario_change_section_to_report
-            # 同款）：裸写中途被 SIGKILL/断电会留下截断 JSON，下一轮
-            # _load_frozen_or_escalate 会误判 corrupt，触发一轮人工裁决停摆。
-            tmp = scenarios_path.with_name(scenarios_path.name + ".tmp")
-            tmp.write_text(
+            # tmp+replace 原子写（共用 _atomic_write_text 助手）：裸写中途
+            # 被 SIGKILL/断电会留下截断 JSON，下一轮 _load_frozen_or_escalate
+            # 会误判 corrupt，触发一轮人工裁决停摆。
+            _atomic_write_text(
+                scenarios_path,
                 json.dumps(
                     prepare_scenarios_for_write(write_valid),
                     ensure_ascii=False,
                     indent=2,
                 ),
-                encoding="utf-8",
             )
-            tmp.replace(scenarios_path)
         except OSError as e:
             # 3.6：写回相关异常须 ERROR 留痕（外层 except 仅记 WARNING）
             pipeline._context.logger.error(
@@ -335,19 +354,17 @@ def _apply_scenario_freeze(pipeline, spec_name: str) -> dict:
         # 若只把写回挂补齐分支，非法条目仍留在 planner 写的文件、阶段2
         # 仍旧整轮失败。故在主路径写回过滤后合法子集，覆盖首轮/无缺失轮。
         try:
-            # tmp+replace 原子写（与本文件 _render_scenario_change_section_to_report
-            # 同款）：裸写中途被 SIGKILL/断电会留下截断 JSON，下一轮
-            # _load_frozen_or_escalate 会误判 corrupt，触发一轮人工裁决停摆。
-            tmp = scenarios_path.with_name(scenarios_path.name + ".tmp")
-            tmp.write_text(
+            # tmp+replace 原子写（共用 _atomic_write_text 助手）：裸写中途
+            # 被 SIGKILL/断电会留下截断 JSON，下一轮 _load_frozen_or_escalate
+            # 会误判 corrupt，触发一轮人工裁决停摆。
+            _atomic_write_text(
+                scenarios_path,
                 json.dumps(
                     prepare_scenarios_for_write(valid_planner),
                     ensure_ascii=False,
                     indent=2,
                 ),
-                encoding="utf-8",
             )
-            tmp.replace(scenarios_path)
         except OSError as e:
             # 3.6：写回成为主路径，异常以 ERROR 留痕（不得只留 WARNING 旁证）
             pipeline._context.logger.error(
@@ -519,12 +536,10 @@ def _render_scenario_change_section_to_report(pipeline, spec_name: str) -> None:
         return
     # add-verify-report-gate 要求不覆盖 mtime 语义仅针对「Agent 已写」文件；
     # 此处为框架追加小节，直接写回（Agent 漏写场景变更时由框架补）。
-    # tmp+replace 原子写（与 verify_report.py 同款）：裸写中途崩溃会留下截断
-    # 报告，截断残留仍携带本轮轮次指纹，会被报告闸门以 present 放行。
+    # tmp+replace 原子写（共用 _atomic_write_text 助手）：裸写中途崩溃会
+    # 留下截断报告，截断残留仍携带本轮轮次指纹，会被报告闸门以 present 放行。
     try:
-        tmp = report_path.with_name(report_path.name + ".tmp")
-        tmp.write_text(content.rstrip("\n") + "\n" + section + "\n", encoding="utf-8")
-        tmp.replace(report_path)
+        _atomic_write_text(report_path, content.rstrip("\n") + "\n" + section + "\n")
     except OSError as e:
         pipeline._context.logger.warning("pm_engine", f"场景集变更小节写回失败 '{spec_name}': {e}")
 

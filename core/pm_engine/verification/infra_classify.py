@@ -250,12 +250,13 @@ def _detect_uniform_verify_failure(pipeline, spec_name: str, report: dict) -> bo
     for s in failed_scns:
         sig = ""
         for a in s.get("assertion_results") or []:
-            if a.get("pass") is False:
+            # 非 dict 条目（脏 report.json）跳过，与场景级 isinstance 过滤同口径
+            if isinstance(a, dict) and a.get("pass") is False:
                 sig = str(a.get("error") or "")
                 break
         if not sig:
             for st in s.get("step_results") or []:
-                if st.get("success") is False:
+                if isinstance(st, dict) and st.get("success") is False:
                     sig = str(st.get("error") or st.get("detail") or "")
                     break
         sigs.add(_normalize_fail_signature(sig)[:120])

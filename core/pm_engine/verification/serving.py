@@ -407,25 +407,35 @@ def _finalize_static(pipeline, srv, contract, scenarios_path, scope_label) -> tu
 
 
 def _remove_serving_worktree(pipeline, wt_path) -> None:
-    subprocess.run(
-        [
-            "git",
-            "-C",
-            str(pipeline._context.project_root),
-            "worktree",
-            "remove",
-            "--force",
-            str(wt_path),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    subprocess.run(
-        ["git", "-C", str(pipeline._context.project_root), "worktree", "prune"],
-        capture_output=True,
-        timeout=15,
-    )
+    # best-effort 清理不向上抛：调用点（_ensure_serving_worktree /
+    # _evict_spec_serving）均在各自 try 块之外，git worktree remove
+    # 超时（进程占用/NFS 挂起）或 OSError 炸穿会把清理失败变成验证
+    # 主流程异常——对齐本文件其余 subprocess 写点的异常兜底与
+    # _evict_spec_serving 的非阻塞语义
+    try:
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(pipeline._context.project_root),
+                "worktree",
+                "remove",
+                "--force",
+                str(wt_path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        subprocess.run(
+            ["git", "-C", str(pipeline._context.project_root), "worktree", "prune"],
+            capture_output=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        pipeline._context.logger.warning(
+            "pm_engine", f"serving worktree 清理失败 '{wt_path}'（非阻塞）: {e}"
+        )
 
 
 # ── 被测实例登记制（verify-process-lifecycle D6）─────────────────
@@ -989,7 +999,9 @@ def _ensure_app_reachable(pipeline, spec_name: str) -> tuple:
                 for p in foreign_ports:
                     v = re.sub(r":%s" % p + _PORT_BOUNDARY, f":{base_port}", v)
                 urls_new.append(v)
-            if all(_probe(u) for u in urls_new):
+            # 复核探针与同函数其余探活点语义统一：4xx/5xx 同样证明 HTTP
+            # 服务在应答（API-only 应用根路径 404/405 不判不可达）
+            if all(_probe(u, http_error_ok=True) for u in urls_new):
                 boot_log.close()
                 return (
                     True,
@@ -1008,7 +1020,7 @@ def _ensure_app_reachable(pipeline, spec_name: str) -> tuple:
                 urls_new = [
                     re.sub(r":%d" % base_port + _PORT_BOUNDARY, f":{port}", u) for u in urls
                 ]
-                if all(_probe(u) for u in urls_new):
+                if all(_probe(u, http_error_ok=True) for u in urls_new):
                     pipeline._rewrite_scenario_port(scenarios_path, base_port, port)
                     boot_log.close()
                     return True, False, f"已自动启动应用服务（端口冲突，改用 {port}）"
@@ -1063,7 +1075,13 @@ def _read_boot_log_tail(pipeline, spec_name: str, handle) -> str:
             / "verify-serving"
             / f"{spec_name}-boot.log"
         )
-        data = log_path.read_bytes()[-2048:]
+        # 只取尾部 ≤2KB：先 stat 定位再 seek 读取，不把整份 boot.log 读进
+        # 内存（崩溃循环重启等失控子进程可把文件写到 GB 级）；尾部不足时
+        # 从头读（seek 0）
+        size = log_path.stat().st_size
+        with log_path.open("rb") as f:
+            f.seek(max(0, size - 2048))
+            data = f.read(2048)
         if not data.strip():
             return ""
         tail = data.decode("utf-8", errors="replace").rstrip()
@@ -1104,9 +1122,13 @@ def _rewrite_scenario_port(pipeline, scenarios_path: Path, old_port: int, new_po
         )
         if not n:
             return
-        scenarios_path.write_text(
+        # tmp+replace 原子写（与 scenario_gate.py 场景文件写点同款）：裸写
+        # 中途 SIGKILL 会留下截断 JSON，下一轮加载误判 corrupt 触发人工裁决停摆
+        tmp = scenarios_path.with_name(scenarios_path.name + ".tmp")
+        tmp.write_text(
             json.dumps(rewritten, ensure_ascii=False, indent=2), encoding="utf-8"
         )
+        tmp.replace(scenarios_path)
         pipeline._context.logger.info("pm_engine", f"已重写验证场景端口 {old_port} → {new_port}")
     except Exception as e:
         pipeline._context.logger.warning("pm_engine", f"重写验证场景端口失败: {e}")

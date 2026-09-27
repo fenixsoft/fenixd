@@ -145,6 +145,47 @@ def is_within_grace_period(wt_path: Path) -> bool:
         return True
 
 
+def is_spec_registered_in_servers(spec: str, project_root: Path) -> bool:
+    """判据 2（spec 前缀匹配，boot.log 维度）：servers.json 存在 worktree
+    目录名解析为该 spec 的登记项。
+
+    boot.log 无对应目录可做路径全等匹配（is_registered_in_servers），
+    退而按登记 worktree 名 {spec}-{10 位时间戳} 解析出 spec 后比对。
+    无法判定时返回 True（fail-safe）。
+    """
+    try:
+        for entry in ServingRegistry(project_root, logger=None).entries():
+            registered_path = entry.get("worktree", "")
+            if not registered_path:
+                continue
+            if parse_spec_from_worktree_name(Path(registered_path).name) == spec:
+                return True
+        return False
+    except Exception:
+        return True
+
+
+def has_live_process_for_spec(spec: str, project_root: Path) -> bool:
+    """判据 3（spec 前缀匹配，boot.log 维度）：存在 argv/cwd 指向该 spec
+    serving worktree 的活进程（孤儿进程仍在写 boot.log 的场景）。
+
+    serve_root 下目录名解析为该 spec 的目录逐个复用 has_live_process。
+    无法判定时返回 True（fail-safe）。
+    """
+    try:
+        serve_root = Path(project_root) / ".fenix" / "verify-serving"
+        if not serve_root.is_dir():
+            return False
+        for entry in serve_root.iterdir():
+            if not entry.is_dir():
+                continue
+            if parse_spec_from_worktree_name(entry.name) == spec and has_live_process(entry):
+                return True
+        return False
+    except Exception:
+        return True
+
+
 def _should_keep(
     spec_name: str | None,
     wt_path: Path,
@@ -317,6 +358,14 @@ def reclaim_verify_serving(
             if is_spec_alive(log_spec, project_root):
                 continue
         except Exception:
+            continue
+        # 与目录回收同一保留口径（fail-safe）：登记在册/活进程/宽限期内，
+        # 防 spec 已消失但实例仍存活或登记在册时误删正在写入的证据日志
+        if is_spec_registered_in_servers(log_spec, project_root):
+            continue
+        if has_live_process_for_spec(log_spec, project_root):
+            continue
+        if is_within_grace_period(file_entry):
             continue
         # 无在飞 run 判定（is_spec_in_flight 可选）
         try:
