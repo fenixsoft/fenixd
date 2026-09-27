@@ -53,6 +53,26 @@ def _make_handler(directory: str):
     return Handler
 
 
+# console/network 错误收集条数上限（code-review item eba5cdf51753）：
+# 错误循环型页面（SSE 重连风暴、轮询接口持续 4xx/5xx）在单场景窗口内
+# 可累计成百上千条，无界收集会经 no_console_error / no_network_error
+# 断言结果的 errors 字段整表进入 report.json 与 judge 归因上下文
+_MAX_COLLECTED_ERRORS = 200
+
+
+def _capped_append(bucket: list[str], entry: str) -> None:
+    """向错误收集列表追加一条，达到 _MAX_COLLECTED_ERRORS 后截断。
+
+    触顶时仅追加一次 [truncated] 标记保留「后续还有错误」信号；断言侧
+    （_assert_no_console_error）会把该标记从 pass 计算中剔除，避免在
+    external_net_errors_ok 豁免路径上把标记本身误计为控制台错误。
+    """
+    if len(bucket) < _MAX_COLLECTED_ERRORS:
+        bucket.append(entry)
+    elif len(bucket) == _MAX_COLLECTED_ERRORS:
+        bucket.append(f"[truncated] 错误条数达到上限 {_MAX_COLLECTED_ERRORS}，后续已截断")
+
+
 async def wait_animations_settled(page, timeout_ms: int) -> bool:
     """等待页面动画静置（settle，fix-visual-baseline-settle D1）。
 
@@ -368,7 +388,8 @@ class BrowserManager:
             timezone_id="Asia/Shanghai",
         )
 
-        # 收集控制台错误和网络错误
+        # 收集控制台错误和网络错误（条数上限见 _MAX_COLLECTED_ERRORS：
+        # 错误循环型页面单场景窗口可累计成百上千条，无界收集撑大报告）
         console_errors: list[str] = []
         network_errors: list[str] = []
 
@@ -377,7 +398,7 @@ class BrowserManager:
             lambda p: p.on(
                 "console",
                 lambda msg: (
-                    console_errors.append(f"[{msg.type}] {msg.text}")
+                    _capped_append(console_errors, f"[{msg.type}] {msg.text}")
                     if msg.type == "error"
                     else None
                 ),
@@ -388,7 +409,7 @@ class BrowserManager:
             lambda p: p.on(
                 "response",
                 lambda resp: (
-                    network_errors.append(f"{resp.status} {resp.url}")
+                    _capped_append(network_errors, f"{resp.status} {resp.url}")
                     if resp.status >= 400
                     else None
                 ),

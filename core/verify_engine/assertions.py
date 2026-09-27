@@ -718,6 +718,13 @@ class AssertionRunner:
         errors = a.get("_console_errors", [])
         allow_network = a.get("_external_net_errors_ok", False)
 
+        # 收集侧触顶截断标记（browser._capped_append）不计入 pass：
+        # external_net_errors_ok 豁免路径上，纯网络层错误风暴被截断后
+        # 标记若留在 errors 里会被误计为控制台错误（误报）
+        truncated = any(e.startswith("[truncated]") for e in errors)
+        if truncated:
+            errors = [e for e in errors if not e.startswith("[truncated]")]
+
         filtered: list[str] = []
         if allow_network:
             # 网络层错误特征：浏览器网络栈失败 / 资源加载失败 / fetch 失败 / CORS 拦截
@@ -739,6 +746,7 @@ class AssertionRunner:
             "layer": 3,
             "pass": len(errors) == 0,
             "errors": errors,
+            "truncated": truncated,
             "filtered_network": filtered,
         }
 
