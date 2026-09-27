@@ -1,7 +1,7 @@
 import { PageContainer } from '@ant-design/pro-components';
 import { Alert, App, Badge, Button, Card, Checkbox, Collapse, Descriptions, Dropdown, Empty, Image, Input, Select, Space, Spin, Tabs, Tag, Timeline, Tooltip, Typography } from 'antd';
 import { CloseOutlined, DownOutlined, ExclamationCircleFilled, FullscreenOutlined, InfoCircleFilled } from '@ant-design/icons';
-import { Fragment, useCallback, useEffect, useState } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import { history, useParams, useLocation } from '@umijs/max';
 import dayjs from 'dayjs';
 import Markdown from 'react-markdown';
@@ -496,6 +496,13 @@ function SpecHooksSection({ name, spec, readOnly = false }: { name: string; spec
   ];
 
   const handleSave = async (nextSpecHooks: HookConfig[]) => {
+    // config 为 null（首次加载中或加载失败）时 hooksCfg 退化为空对象，以此发起
+    // 保存，后端对 hooks 段是「patch 存在即整体替换」语义，项目级 hooks.global
+    // 会被静默抹掉；阻断保存并提示重试/刷新（code-review item a6c65167219a）
+    if (!config) {
+      message.error('Hook 配置尚未加载，无法保存，请稍后重试或刷新页面');
+      return;
+    }
     setSaving(true);
     try {
       const cfg = await saveConfig(name, {
@@ -562,6 +569,13 @@ export default function SpecDetailPage() {
   const [proposalWhy, setProposalWhy] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  // SPEC 下拉快速切换不重挂载本组件：事件回调（handleClearInfo / 告警裁决
+  // onResolved）闭包里的 name/spec 是调用时刻的值，迟到响应会把旧 SPEC 详情
+  // 整表写入已切换页面。render 期同步的 ref 提供「当前路由值」，响应返回时
+  // 比对不一致即整表丢弃（与主 effect 的 cancelled 守卫同一约定，
+  // code-review item cae55cf05562）
+  const nameSpecRef = useRef({ name, spec });
+  nameSpecRef.current = { name, spec };
 
   const toggleAlert = (id: string) => {
     setExpandedAlerts((prev) => {
@@ -854,7 +868,10 @@ export default function SpecDetailPage() {
     try {
       await clearSpecError(name, spec);
       message.success('已清除');
-      setDetail(await getSpecDetail(name, spec));
+      const fresh = await getSpecDetail(name, spec);
+      // 迟到响应守卫：等待期间已切换到另一 SPEC → 丢弃旧详情，不串页
+      if (nameSpecRef.current.name !== name || nameSpecRef.current.spec !== spec) return;
+      setDetail(fresh);
     } catch (err) {
       message.error(`清除失败：${err instanceof Error ? err.message : String(err)}`);
     }
@@ -1710,7 +1727,13 @@ export default function SpecDetailPage() {
                             /* 裁决成功后重拉告警列表与 spec 详情（处置闭环回显） */
                             onResolved={() => {
                               loadSpecAlerts();
-                              getSpecDetail(name, spec).then(setDetail).catch(() => {});
+                              getSpecDetail(name, spec)
+                                .then((d) => {
+                                  // 迟到响应守卫：等待期间已切换 SPEC → 丢弃旧详情，不串页
+                                  if (nameSpecRef.current.name !== name || nameSpecRef.current.spec !== spec) return;
+                                  setDetail(d);
+                                })
+                                .catch(() => {});
                             }}
                           />
                         </div>
