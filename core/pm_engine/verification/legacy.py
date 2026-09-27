@@ -88,6 +88,56 @@ def _redispatch_fresh_verify(pipeline, spec_name, result, reason, warn_reason=""
     )
 
 
+def _block_legacy_verdict(
+    pipeline, spec_name, result, run_result_path, verifier_result,
+    reason_label, recommended_action,
+):
+    """unknown-status / unreadable 两分支的 blocked 结局收敛单点
+    （code-review 493154d23013）。
+
+    两分支除 reason 文案与推荐动作外完全同构：logger.error →
+    update_spec(status=blocked) → escalation_notifier(
+    verdict_result_unreadable/critical)。状态判据与 error 文案单点维护，
+    防多处演进漏改其一造成行为漂移（与 _discard_if_not_testing/
+    _redispatch_fresh_verify 收敛动机一致）。
+
+    ``reason_label``：分支差异文案（「status 白名单外」/「结果不可读」），
+    嵌入日志/ error / 告警描述；``recommended_action``：推荐动作原文。
+    """
+    pipeline._context.logger.error(
+        "pm_engine",
+        f"Verifier (legacy) {reason_label} '{spec_name}' — 阻断为 blocked"
+        f"（reason={verifier_result.reason}）: "
+        f"{verifier_result.detail}",
+    )
+    pipeline._context.state_machine.update_spec(
+        spec_name,
+        {
+            "status": "blocked",
+            "tester_run": result.run_id,
+            "error": (
+                f"Verifier (legacy) 结果文件{reason_label}"
+                f"（reason={verifier_result.reason}）："
+                f"{verifier_result.detail}"
+            ),
+        },
+    )
+    pipeline._context.escalation_notifier(
+        spec_name=spec_name,
+        signal_type="verdict_result_unreadable",
+        severity="critical",
+        description=(
+            f"'{spec_name}' legacy 验证裁决结果文件{reason_label}，已 blocked "
+            f"等待人工裁决（reason={verifier_result.reason}）"
+        ),
+        evidence=(
+            f"spec={spec_name}; result_file={run_result_path}; "
+            f"parse_error={verifier_result.detail}"
+        ),
+        recommended_action=recommended_action,
+    )
+
+
 def _run_legacy_verification(pipeline, spec_name: str):
     """降级方案：使用旧版单体 Verifier Agent。"""
     # ── 在飞 verify 结果状态判据（fix-daemon-lifecycle-races D6）：入口状态
@@ -251,37 +301,9 @@ def _run_legacy_verification(pipeline, spec_name: str):
                 # 只是污染不是裁决，放行门继续拒绝降级。
                 if pipeline._verified_gate_refuses(spec_name, "blocked"):
                     return
-                pipeline._context.logger.error(
-                    "pm_engine",
-                    f"Verifier (legacy) status 白名单外 '{spec_name}' — "
-                    f"阻断为 blocked（reason={verifier_result.reason}）: "
-                    f"{verifier_result.detail}",
-                )
-                pipeline._context.state_machine.update_spec(
-                    spec_name,
-                    {
-                        "status": "blocked",
-                        "tester_run": result.run_id,
-                        "error": (
-                            f"Verifier (legacy) 结果文件 status 白名单外"
-                            f"（reason={verifier_result.reason}）："
-                            f"{verifier_result.detail}"
-                        ),
-                    },
-                )
-                pipeline._context.escalation_notifier(
-                    spec_name=spec_name,
-                    signal_type="verdict_result_unreadable",
-                    severity="critical",
-                    description=(
-                        f"'{spec_name}' legacy 验证裁决结果 status "
-                        f"白名单外，已 blocked 等待人工裁决"
-                        f"（reason={verifier_result.reason}）"
-                    ),
-                    evidence=(
-                        f"spec={spec_name}; result_file={run_result_path}; "
-                        f"parse_error={verifier_result.detail}"
-                    ),
+                _block_legacy_verdict(
+                    pipeline, spec_name, result, run_result_path, verifier_result,
+                    reason_label="status 白名单外",
                     recommended_action=(
                         "检查旧版 verifier 结果文件 status 是否在 "
                         "verified/bug-found/plan-ready/scenario-repaired "
@@ -304,37 +326,11 @@ def _run_legacy_verification(pipeline, spec_name: str):
             # 自有 verdict_stability.json，裁决以稳定性缓存为准）。
             if pipeline._verified_gate_refuses(spec_name, "blocked"):
                 return
-            pipeline._context.logger.error(
-                "pm_engine",
-                f"Verifier (legacy) 结果不可读 '{spec_name}' — 阻断为 blocked"
-                f"（reason={verifier_result.reason}）: "
-                f"{verifier_result.detail}",
-            )
-            pipeline._context.state_machine.update_spec(
-                spec_name,
-                {
-                    "status": "blocked",
-                    "tester_run": result.run_id,
-                    "error": (
-                        f"Verifier (legacy) 结果文件不可读（reason="
-                        f"{verifier_result.reason}）：{verifier_result.detail}"
-                    ),
-                },
-            )
-            pipeline._context.escalation_notifier(
-                spec_name=spec_name,
-                signal_type="verdict_result_unreadable",
-                severity="critical",
-                description=(
-                    f"'{spec_name}' legacy 验证裁决结果文件不可读，已 blocked "
-                    f"等待人工裁决（reason={verifier_result.reason}）"
-                ),
-                evidence=(
-                    f"spec={spec_name}; result_file={run_result_path}; "
-                    f"parse_error={verifier_result.detail}"
-                ),
+            _block_legacy_verdict(
+                pipeline, spec_name, result, run_result_path, verifier_result,
+                reason_label="结果不可读",
                 recommended_action=(
-                    "检查旧版 verifier 是否以合法 JSON 写入结果文件；修复后" "人工重置验证"
+                    "检查旧版 verifier 是否以合法 JSON 写入结果文件；修复后人工重置验证"
                 ),
             )
             return
@@ -602,10 +598,21 @@ def _run_legacy_verification(pipeline, spec_name: str):
         # _discard_if_not_testing（05d216e0182d）。
         if _discard_if_not_testing(pipeline, spec_name, result, "process-failure"):
             return
-        pipeline._context.state_machine.transition(
+        # transition 返回值校验（与 bug-found/verified 分支同款）：前置守卫链
+        # 与 transition 之间存在 TOCTOU 窗口，窗口内 spec 被人工冻结/并发接管
+        # 致非法转移被拒时，保留原状——不覆写 error/tester_run（error 覆写曾
+        # 发生抹掉 frozen 标记性 error 的事故）。
+        accepted = pipeline._context.state_machine.transition(
             spec_name, "bug-found",
             trigger_run_id=result.run_id, agent_type="tester", channel="auto",
         )
+        if not accepted:
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"bug-found transition 被拒（转移非法，疑似冻结/并发接管）"
+                f"'{spec_name}' — 保留原状，不覆写字段",
+            )
+            return
         pipeline._context.state_machine.update_spec(
             spec_name,
             {
