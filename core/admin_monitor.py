@@ -1333,8 +1333,13 @@ class AdminMonitor:
                                       scope, original_run_id: str) -> None:
         """冷却到期回调：以原 manifest/参数重调 ``run_code_review`` 一次（task 5.3）。
 
-        单飞守卫：车道忙（新周期/手动 run 在跑）时放弃本次重派（原 run 的
-        分片产物仍被 error 收场抢救落账，不因放弃而丢失）。
+        单飞守卫：车道忙时放弃本次重派（原 run 的分片产物仍被 error 收场
+        抢救落账，不因放弃而丢失）——既查本车道自有标志（新周期 run 在途），
+        也探测外部（如 Dashboard 手动）启动的 code-review run（对齐
+        _run_code_review_checkpoint 的 _running_agents 前缀探测；外部 run 的
+        置位/复位不经过本监视器自有 _worker，自有标志检测不到）。放弃不退
+        重派配额（防风暴优先，与 _schedule_ratelimit_redispatch 登记处口径
+        一致）。
         """
         # Timer 已触发：先摘句柄（允许后续新意图再排程——上限计数仍守卫）
         with self._code_review_lock:
@@ -1346,6 +1351,15 @@ class AdminMonitor:
                     f"（原 run {original_run_id}）",
                 )
                 return
+            if self.agent_runner is not None:
+                running = getattr(self.agent_runner, "_running_agents", None) or {}
+                if any(str(rid).startswith("code-review-") for rid in running):
+                    self.logger.warning(
+                        "admin_monitor",
+                        f"code-review 429 重派放弃：已有外部 code-review run 在跑"
+                        f"（原 run {original_run_id}）",
+                    )
+                    return
             self._code_review_in_flight = True
 
         def _worker():
@@ -1481,17 +1495,25 @@ class AdminMonitor:
                 self._review_stall_state.clear()
             return {"triggered": False, "reason": "not_running"}
 
-        # 判据 ①：进度产物最新 mtime（分片集合经 shard_paths 唯一入口）
+        # 判据 ①：进度产物最新 mtime（分片集合经 shard_paths 唯一入口）。
+        # 产物暂缺（sources 空）或 stat 失败（OSError）时沿用上一轮记录的
+        # mtime（code-review item be72a1425abd）：兜底 0.0 与上一轮值（>0）
+        # 必然不同，会被下方「任一判据有进展 → 整体重置计时」当进展清零——
+        # run 收尾/轮转窗口内产物短暂不可读即反复重置停滞计时，看门狗在该
+        # 期间形同失效；无上一轮记录才兜底 0.0（首跑产物未落盘）。
         root = self.project_root
         sources = [
             p
             for p in [*shard_paths(root, run_id), out_path(root, run_id)]
             if p.is_file()
         ]
+        prev = self._review_stall_state.get(run_id)
         try:
             mtime = max(p.stat().st_mtime for p in sources) if sources else 0.0
         except OSError:
             mtime = 0.0
+        if mtime == 0.0 and prev is not None:
+            mtime = prev.get("mtime") or 0.0
 
         # 判据 ②：run 子进程进程树 CPU 时间（秒）；不可解析 fail-open
         proc = (getattr(self.agent_runner, "_running_agents", None) or {}).get(run_id)
@@ -1510,7 +1532,6 @@ class AdminMonitor:
             return {"triggered": False, "reason": "cpu_unavailable", "run_id": run_id}
 
         now = time.time()
-        prev = self._review_stall_state.get(run_id)
         if prev is not None and (
             mtime != prev.get("mtime") or cpu != prev.get("cpu")
         ):
@@ -3486,7 +3507,8 @@ class AdminMonitor:
         """手动唤起入口（fenixd 主循环拾取 .fenix/admin_invoke_request.json）。
 
         与自动检测共用 _invoke_administrator 的唤起+落痕路径：run_administrator
-        返回后落最终 DISPOSITION（终结 run_administrator 开头落的 pending 记录），
+        完成后落最终 DISPOSITION（终结 run_administrator 开头落的 pending 记录；
+        executor 可用时唤起+落痕在后台 worker 内完成，同步回退态返回即已完成），
         escalate 时落升级告警。此前手动路径直接调 run_administrator 并丢弃返回值，
         pending 永无终态、处置叙述从不入告警时间线，dashboard 上显示「处置中」
         导致用户反复手动重呼（2026-08-29 v2-cutover-main-entry 三连呼实证）。
@@ -3496,7 +3518,13 @@ class AdminMonitor:
         self._invoke_administrator(signal, None)
 
     def _invoke_administrator(self, signal: dict, signal_rec: dict):
-        """唤起 Administrator 处置；失败或升级时落升级告警。"""
+        """唤起 Administrator 处置；失败或升级时落升级告警。
+
+        唤起+落痕整体经 ``_code_review_executor`` 投递后台 worker 执行（巡检
+        线程不同步等待小时级 admin run，否则 run_once 同线程的审查看门狗等
+        检查点停摆）；executor 不可用（测试/禁用态）回退同步执行，返回即
+        落痕完成。
+        """
         if self.agent_runner is None:
             # admin-dispatch-failure-escalation D2：重试派发遇 agent_runner 不
             # 可用 → bump 既有记录 retry_count 后结束，不重复落盘；非重试时
@@ -3581,178 +3609,208 @@ class AdminMonitor:
                     )
             return
 
-        try:
-            disp = self.agent_runner.run_administrator(signal)
-        except Exception as e:
-            self.logger.error(
-                "admin_monitor",
-                f"Administrator invocation failed: {e}",
-                {"signal": signal},
-            )
-            # admin-dispatch-failure-escalation D1/D2：按异常类型分流升级
-            self._escalate_dispatch_failure(signal, signal_rec, e)
-            return
-
-        # admin-dispatch-failure-escalation D2：dispatch 成功（run_administrator
-        # 正常返回）→ 关闭该 spec 未处理的派发失败升级记录；闭环发生在
-        # dispatch 时刻，不扩 alert_lifecycle._SIGNAL_CONDITIONS。
-        self._close_dispatch_failures_on_success(signal)
-
-        # 处置记录（任何情况下都留痕）；落盘失败不能丢 final 判定（否则该 run
-        # 的 pending 会变孤儿触发人工升级），记日志后继续
-        # fix-admin-disposition-empty-shell：失败记录自解释——error 携带 CLI 失败
-        # 原因；failed 时 recommended_action 回退到信号侧（disp 空串不再覆盖信号值）。
-        try:
-            self.store.append(
-                {
-                    "kind": DISPOSITION,
-                    "signal_type": signal.get("signal_type"),
-                    "spec": signal.get("spec") or disp.spec,
-                    "severity": signal.get("severity"),
-                    "description": disp.problem or signal.get("description"),
-                    "action_taken": disp.actions_taken,
-                    "result": disp.result,
-                    "recommended_action": (
-                        (disp.recommended_action or signal.get("recommended_action") or "")
-                        if disp.result == "failed"
-                        else disp.recommended_action
-                    ),
-                    "summary": disp.summary,
-                    "admin_run_id": disp.run_id,
-                    "escalate": bool(disp.escalate),
-                    "error": disp.error or "",
-                    # orphaned-state-probe-calibration 1.5：非零退出的可定位
-                    # 失败证据（原始 stderr 摘录/退出码/provider·model/带时间戳
-                    # 事件时间线），独立字段随处置记录留痕；无证据时省略
-                    # （类型守卫防 MagicMock 替身注入非 dict 值）。
-                    "failure_evidence": (
-                        disp.failure_evidence
-                        if isinstance(getattr(disp, "failure_evidence", None), dict)
-                        and disp.failure_evidence
-                        else None
-                    ),
-                    # add-human-adjudication-choices 4.2：结构化裁决字段
-                    # （choice_id 非空时框架按注册表 action 执行；空值写 None
-                    # 保持记录形状稳定，前端按无裁决处理）
-                    "choice_id": getattr(disp, "choice_id", "") or None,
-                    "suggested_choice": getattr(disp, "suggested_choice", "") or None,
-                }
-            )
-        except Exception as e:
-            self.logger.error(
-                "admin_monitor",
-                f"Failed to persist administrator disposition for run {disp.run_id}: {e}",
-            )
-
-        # 终态回写（evo-signal-preprobe-handled-writeback R5）：处置 run 写入
-        # 非 pending 的最终处置结果后，回写对应信号 handled=true——原信号不再
-        # 永挂未处理（此前 mark_signal_handled 仅有 dashboard 人工 alert-resolve
-        # 调用方，处置 run 自动链路上无人回写）。两类豁免：escalate=true 属
-        # 升级人工（人工处置是唯一出路，由人工 alert-resolve 闭环）；人工显式
-        # 触发路径 signal_rec=None 无关联记录，跳过。回写失败仅记警告日志，
-        # 不阻塞处置结果落盘。
-        if (
-            disp.result
-            and disp.result != "pending"
-            and not disp.escalate
-            and signal_rec is not None
-        ):
+        # 巡检线程 MUST NOT 同步等待 admin run：处置实测可跑百轮/小时级（152
+        # 轮/63 分钟），同步执行会令 run_once 同线程的 code-review stall 检查、
+        # 审查 run 看门狗等全部检查点在处置期间整体停摆。与
+        # _run_code_review_checkpoint 同形态经 ``_code_review_executor`` 投递
+        # 后台 worker 执行完整唤起+落痕；executor 不可用（测试/禁用态）回退
+        # 同步执行（行为不变，保逃生门）。多 worker 并行处置为 fenixd D6 既有
+        # 决策（不建 worktree、容忍主树写冲突风险）；节流锚点与在飞互斥守卫
+        # 仍由调用方在投递前的调用线程完成。
+        def _worker():
             try:
-                if self.store.mark_signal_handled(signal_rec.get("id")):
-                    self.logger.info(
+                try:
+                    disp = self.agent_runner.run_administrator(signal)
+                except Exception as e:
+                    self.logger.error(
                         "admin_monitor",
-                        f"处置终态（result={disp.result}）已回写信号 handled=true"
-                        f"（id={signal_rec.get('id')}，"
-                        f"{signal.get('signal_type')}）",
+                        f"Administrator invocation failed: {e}",
+                        {"signal": signal},
                     )
-            except Exception as e:
-                self.logger.warning(
-                    "admin_monitor",
-                    f"处置终态回写信号 handled 失败（不阻塞处置结果落盘）: {e}",
-                    {"record_id": signal_rec.get("id"), "run_id": disp.run_id},
-                )
+                    # admin-dispatch-failure-escalation D1/D2：按异常类型分流升级
+                    self._escalate_dispatch_failure(signal, signal_rec, e)
+                    return
 
-        # family_explosion 处置：Administrator「放行一次」→ 设置父 SPEC 豁免位
-        # （fix-family-convergence-governor / design D4）。结构字段优先级最高；
-        # 文本动作（放行 / _family_waiver / waive）兜底，兼容自由文本处置。
-        self._apply_family_waiver(signal, disp)
+                # admin-dispatch-failure-escalation D2：dispatch 成功（run_administrator
+                # 正常返回）→ 关闭该 spec 未处理的派发失败升级记录；闭环发生在
+                # dispatch 时刻，不扩 alert_lifecycle._SIGNAL_CONDITIONS。
+                self._close_dispatch_failures_on_success(signal)
 
-        # infra 回拨处置（evo-infra-failure-budget-exempt R3）：Administrator
-        # 文本显式声明「回拨 N 轮」→ 从 _verify_fail_rounds 减回误计入的
-        # infra 轮次并解冻（幂等，审计留痕 admin_store DISPOSITION）。
-        self._apply_infra_reclassification(signal, disp)
+                # 处置记录（任何情况下都留痕）；落盘失败不能丢 final 判定（否则该 run
+                # 的 pending 会变孤儿触发人工升级），记日志后继续
+                # fix-admin-disposition-empty-shell：失败记录自解释——error 携带 CLI 失败
+                # 原因；failed 时 recommended_action 回退到信号侧（disp 空串不再覆盖信号值）。
+                try:
+                    self.store.append(
+                        {
+                            "kind": DISPOSITION,
+                            "signal_type": signal.get("signal_type"),
+                            "spec": signal.get("spec") or disp.spec,
+                            "severity": signal.get("severity"),
+                            "description": disp.problem or signal.get("description"),
+                            "action_taken": disp.actions_taken,
+                            "result": disp.result,
+                            "recommended_action": (
+                                (disp.recommended_action or signal.get("recommended_action") or "")
+                                if disp.result == "failed"
+                                else disp.recommended_action
+                            ),
+                            "summary": disp.summary,
+                            "admin_run_id": disp.run_id,
+                            "escalate": bool(disp.escalate),
+                            "error": disp.error or "",
+                            # orphaned-state-probe-calibration 1.5：非零退出的可定位
+                            # 失败证据（原始 stderr 摘录/退出码/provider·model/带时间戳
+                            # 事件时间线），独立字段随处置记录留痕；无证据时省略
+                            # （类型守卫防 MagicMock 替身注入非 dict 值）。
+                            "failure_evidence": (
+                                disp.failure_evidence
+                                if isinstance(getattr(disp, "failure_evidence", None), dict)
+                                and disp.failure_evidence
+                                else None
+                            ),
+                            # add-human-adjudication-choices 4.2：结构化裁决字段
+                            # （choice_id 非空时框架按注册表 action 执行；空值写 None
+                            # 保持记录形状稳定，前端按无裁决处理）
+                            "choice_id": getattr(disp, "choice_id", "") or None,
+                            "suggested_choice": getattr(disp, "suggested_choice", "") or None,
+                        }
+                    )
+                except Exception as e:
+                    self.logger.error(
+                        "admin_monitor",
+                        f"Failed to persist administrator disposition for run {disp.run_id}: {e}",
+                    )
 
-        # add-human-adjudication-choices 4.2：处置结论表达为结构化 choice_id
-        # 时，走与人工 alert-resolve 相同的动作映射执行路径（同一动作映射、
-        # 同一留痕格式），自动处置与人工处置收敛为同一裁决空间。
-        self._apply_choice_execution(signal, disp)
+                # 终态回写（evo-signal-preprobe-handled-writeback R5）：处置 run 写入
+                # 非 pending 的最终处置结果后，回写对应信号 handled=true——原信号不再
+                # 永挂未处理（此前 mark_signal_handled 仅有 dashboard 人工 alert-resolve
+                # 调用方，处置 run 自动链路上无人回写）。两类豁免：escalate=true 属
+                # 升级人工（人工处置是唯一出路，由人工 alert-resolve 闭环）；人工显式
+                # 触发路径 signal_rec=None 无关联记录，跳过。回写失败仅记警告日志，
+                # 不阻塞处置结果落盘。
+                if (
+                    disp.result
+                    and disp.result != "pending"
+                    and not disp.escalate
+                    and signal_rec is not None
+                ):
+                    try:
+                        if self.store.mark_signal_handled(signal_rec.get("id")):
+                            self.logger.info(
+                                "admin_monitor",
+                                f"处置终态（result={disp.result}）已回写信号 handled=true"
+                                f"（id={signal_rec.get('id')}，"
+                                f"{signal.get('signal_type')}）",
+                            )
+                    except Exception as e:
+                        self.logger.warning(
+                            "admin_monitor",
+                            f"处置终态回写信号 handled 失败（不阻塞处置结果落盘）: {e}",
+                            {"record_id": signal_rec.get("id"), "run_id": disp.run_id},
+                        )
 
-        # env 阻塞 / blocked_stuck 处置收尾复位（add-blocked-reverify-lane D2 +
-        # frozen-scenario-schema-migration D3）：result 为 resolved/
-        # partially-resolved 且信号属复位集合（env 族 + blocked_stuck；人工唤起
-        # 通道经 underlying_signal_type 透传底层类型感知，见
-        # disposition_signal_hits_auto_reset）时，框架机械判定复位路径——实现
-        # 分支已合并 → transition_gate(testing) 直通道重验（跳过全量重实现）；
-        # 否则 → 既有 transition(ready)。两条路径均保留阻塞轮次（不清零，
-        # 生命周期累计语义），仅清 error。
-        # escalated 表示 admin 升级人工，不触发自动复位（人工处置是唯一出路）。
-        if disp.result in ("resolved", "partially-resolved"):
-            if disposition_signal_hits_auto_reset(signal):
-                self._reset_env_blocked_after_disposition(signal, disp)
-            elif signal.get("signal_type") == "orphaned_state":
-                # 孤儿状态复位（orphaned-state-signal R3）：独立复位路径
-                # （非 env 阻塞族）——testing→verifier 重验入队；implementing
-                # →ready 重实现。resolve_env_blocked_reset_path 入口守卫要求
-                # blocked 状态，孤儿 spec 处于 implementing/testing 不适用。
-                self._reset_orphaned_after_disposition(signal)
+                # family_explosion 处置：Administrator「放行一次」→ 设置父 SPEC 豁免位
+                # （fix-family-convergence-governor / design D4）。结构字段优先级最高；
+                # 文本动作（放行 / _family_waiver / waive）兜底，兼容自由文本处置。
+                self._apply_family_waiver(signal, disp)
 
-        # fix-stale-escalation-close：run 有最终结果即关闭其名下旧 escalation
-        # （孤儿看护在处置进行中误判 pending 超时的残留）。不关闭则 dashboard
-        # 处置卡片永久「需人工决策」、与 result=resolved 矛盾，且 unhandled_for
-        # 节流会压制该 spec 后续同型告警。failed/interrupted 保守保留——处置
-        # 未成功闭环，人工仍需知情。escalated 的接棒告警在其后落盘，不受影响。
-        if disp.result in ("resolved", "partially-resolved", "escalated"):
-            try:
-                closed = self.store.close_escalations_for_run(
-                    disp.run_id,
-                    f"随处置最终记录闭环（run {disp.run_id} 最终 result={disp.result}）",
-                )
-            except Exception as e:  # noqa: BLE001 — 闭环失败不阻塞处置落痕
-                closed = 0
+                # infra 回拨处置（evo-infra-failure-budget-exempt R3）：Administrator
+                # 文本显式声明「回拨 N 轮」→ 从 _verify_fail_rounds 减回误计入的
+                # infra 轮次并解冻（幂等，审计留痕 admin_store DISPOSITION）。
+                self._apply_infra_reclassification(signal, disp)
+
+                # add-human-adjudication-choices 4.2：处置结论表达为结构化 choice_id
+                # 时，走与人工 alert-resolve 相同的动作映射执行路径（同一动作映射、
+                # 同一留痕格式），自动处置与人工处置收敛为同一裁决空间。
+                self._apply_choice_execution(signal, disp)
+
+                # env 阻塞 / blocked_stuck 处置收尾复位（add-blocked-reverify-lane D2 +
+                # frozen-scenario-schema-migration D3）：result 为 resolved/
+                # partially-resolved 且信号属复位集合（env 族 + blocked_stuck；人工唤起
+                # 通道经 underlying_signal_type 透传底层类型感知，见
+                # disposition_signal_hits_auto_reset）时，框架机械判定复位路径——实现
+                # 分支已合并 → transition_gate(testing) 直通道重验（跳过全量重实现）；
+                # 否则 → 既有 transition(ready)。两条路径均保留阻塞轮次（不清零，
+                # 生命周期累计语义），仅清 error。
+                # escalated 表示 admin 升级人工，不触发自动复位（人工处置是唯一出路）。
+                if disp.result in ("resolved", "partially-resolved"):
+                    if disposition_signal_hits_auto_reset(signal):
+                        self._reset_env_blocked_after_disposition(signal, disp)
+                    elif signal.get("signal_type") == "orphaned_state":
+                        # 孤儿状态复位（orphaned-state-signal R3）：独立复位路径
+                        # （非 env 阻塞族）——testing→verifier 重验入队；implementing
+                        # →ready 重实现。resolve_env_blocked_reset_path 入口守卫要求
+                        # blocked 状态，孤儿 spec 处于 implementing/testing 不适用。
+                        self._reset_orphaned_after_disposition(signal)
+
+                # fix-stale-escalation-close：run 有最终结果即关闭其名下旧 escalation
+                # （孤儿看护在处置进行中误判 pending 超时的残留）。不关闭则 dashboard
+                # 处置卡片永久「需人工决策」、与 result=resolved 矛盾，且 unhandled_for
+                # 节流会压制该 spec 后续同型告警。failed/interrupted 保守保留——处置
+                # 未成功闭环，人工仍需知情。escalated 的接棒告警在其后落盘，不受影响。
+                if disp.result in ("resolved", "partially-resolved", "escalated"):
+                    try:
+                        closed = self.store.close_escalations_for_run(
+                            disp.run_id,
+                            f"随处置最终记录闭环（run {disp.run_id} 最终 result={disp.result}）",
+                        )
+                    except Exception as e:  # noqa: BLE001 — 闭环失败不阻塞处置落痕
+                        closed = 0
+                        self.logger.error(
+                            "admin_monitor",
+                            f"Failed to close stale escalations for run {disp.run_id}: {e}",
+                        )
+                    if closed:
+                        self.logger.info(
+                            "admin_monitor",
+                            f"Closed {closed} stale escalation(s) for run {disp.run_id} "
+                            f"(final result={disp.result})",
+                        )
+
+                if disp.escalate:
+                    # Administrator 判定无法自主处置 → 升级人工
+                    self.store.append(
+                        attach_trigger(
+                            {
+                                "kind": ESCALATION,
+                                "signal_type": signal.get("signal_type"),
+                                "spec": signal.get("spec") or disp.spec,
+                                "severity": signal.get("severity"),
+                                "description": signal.get("description"),
+                                "evidence": signal.get("evidence"),
+                                "action_taken": disp.actions_taken,
+                                "recommended_action": disp.recommended_action
+                                or signal.get("recommended_action"),
+                                "admin_run_id": disp.run_id,
+                            }
+                        )
+                    )
+                    self.logger.warning(
+                        "admin_monitor",
+                        f"Administrator escalated to human: {signal.get('signal_type')} "
+                        f"for '{signal.get('spec') or 'daemon'}'",
+                    )
+            except Exception as e:  # noqa: BLE001 — 后台 worker 兜底，异常不随线程静默
                 self.logger.error(
                     "admin_monitor",
-                    f"Failed to close stale escalations for run {disp.run_id}: {e}",
-                )
-            if closed:
-                self.logger.info(
-                    "admin_monitor",
-                    f"Closed {closed} stale escalation(s) for run {disp.run_id} "
-                    f"(final result={disp.result})",
+                    f"Administrator 后台处置异常（唤起/落痕）: {e}",
                 )
 
-        if disp.escalate:
-            # Administrator 判定无法自主处置 → 升级人工
-            self.store.append(
-                attach_trigger(
-                    {
-                        "kind": ESCALATION,
-                        "signal_type": signal.get("signal_type"),
-                        "spec": signal.get("spec") or disp.spec,
-                        "severity": signal.get("severity"),
-                        "description": signal.get("description"),
-                        "evidence": signal.get("evidence"),
-                        "action_taken": disp.actions_taken,
-                        "recommended_action": disp.recommended_action
-                        or signal.get("recommended_action"),
-                        "admin_run_id": disp.run_id,
-                    }
+        if self._code_review_executor is not None:
+            try:
+                self._code_review_executor.submit(_worker)
+            except Exception as e:
+                # 投递失败（executor 已 shutdown 等）回退同步执行：唤起不丢，
+                # 对齐 executor 不可用分支的逃生门口径
+                self.logger.error(
+                    "admin_monitor",
+                    f"Administrator 处置后台投递失败，回退同步执行: {e}",
                 )
-            )
-            self.logger.warning(
-                "admin_monitor",
-                f"Administrator escalated to human: {signal.get('signal_type')} "
-                f"for '{signal.get('spec') or 'daemon'}'",
-            )
+                _worker()
+        else:
+            # executor 不可用（测试/禁用态）：同步执行（行为不变，保逃生门）
+            _worker()
 
     # ── admin-dispatch-failure-escalation D1/D2 ──────────────────
 
