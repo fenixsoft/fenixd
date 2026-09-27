@@ -101,6 +101,7 @@ class H4RunRoutesMixin:
 
     def _api_run(self, run_id: str, query) -> dict:
         project = self._project_from_query(query)
+        # [fenix-ignore:ab3e32e09872] 200+error 字典系前端依赖的既有契约：request 层仅在非 2xx 才抛 ApiError，200 体按 RunDetail 透传（error 为类型内字段），改 404 需 request 层/组件联动评估，信息级口径差异不值当
         if project is None:
             return {"error": "unknown project"}
         if not project.get("exists"):
@@ -142,10 +143,13 @@ class H4RunRoutesMixin:
 
     def _api_events(self, query) -> dict:
         project = self._project_from_query(query)
+        # 项目缺失也保留 project 键（code-review item dc93a93c68d9）：与
+        # _api_hooks_audit 的 {"project": None, ...} 形状对齐，消费方统一按
+        # result.project 读取拿到 null 而非 undefined
         if project is None:
-            return {"events": []}
+            return {"project": None, "events": []}
         if not project.get("exists"):
-            return {"events": []}
+            return {"project": None, "events": []}
         try:
             minutes = int(query.get("minutes", ["10"])[0])
         except ValueError:
