@@ -4481,6 +4481,15 @@ class AgentRunner:
             "peak_input_so_far": 0,
         }
 
+        # ── evo-add-codefix-digest-cost-metrics 1.1/1.2：run 工具构成统计 ──
+        # 纯读侧旁路：assistant 事件逐条累计 tool_use content block 按工具名
+        # 计数（tool_uses 直方图）与无 tool_use 的 assistant 文本行数
+        # （text_turns）。作用域与 turn_count/context_metrics 同为本函数局部
+        # （每次 _run_claude 调用重建），跨 run/跨 attempt 天然不串数；累计
+        # 口径与 latency.py 的 rounds/stall 一致——按转录事件逐条累计，不改
+        # 变事件处理时序。
+        tool_metrics: dict = {"tool_uses": {}, "text_turns": 0}
+
         def _read_stream(stream, is_stderr: bool) -> None:
             try:
                 for line in iter(stream.readline, ""):
@@ -4538,6 +4547,23 @@ class AgentRunner:
                             context_metrics["context_peak_tokens"] = (
                                 context_metrics["peak_input_so_far"]
                             )
+                            # evo-add-codefix-digest-cost-metrics 1.1：工具
+                            # 构成逐事件累计（纯读侧旁路）。content 畸形/
+                            # 缺失按「无工具文本行」计（防御与 usage 同粒度
+                            # ——单事件异常不得终止读线程）。
+                            _content = _msg.get("content")
+                            _has_tool_use = False
+                            if isinstance(_content, list):
+                                for _blk in _content:
+                                    if (isinstance(_blk, dict)
+                                            and _blk.get("type") == "tool_use"):
+                                        _has_tool_use = True
+                                        _tname = str(_blk.get("name") or "unknown")
+                                        tool_metrics["tool_uses"][_tname] = (
+                                            tool_metrics["tool_uses"].get(_tname, 0) + 1
+                                        )
+                            if not _has_tool_use:
+                                tool_metrics["text_turns"] += 1
                         if entry.get("type") == "result":
                             # 记录最后一个 result 事件（含 num_turns / result 文本 / session_id）；
                             # 落盘推迟到读线程 join 后，保证 result 终态是文件最后一行
@@ -4919,6 +4945,12 @@ class AgentRunner:
                 _cr = context_metrics["total_cache_read_tokens"]
                 _peak = context_metrics["context_peak_tokens"]
                 _per_turn = (_inp // _turns) if _turns > 0 else 0
+                # 工具构成（evo-add-codefix-digest-cost-metrics 1.1）：直方图
+                # 按名排序稳定输出（同输入必同输出，diff/断言友好），总数为
+                # 直方图求和（单一真源，不另记计数器防漂移）。
+                _tool_hist = dict(sorted(tool_metrics["tool_uses"].items()))
+                _text_turns = tool_metrics["text_turns"]
+                _tools_total = sum(_tool_hist.values())
                 # 指标行落盘（先于终态行，type 为 run_metrics）
                 append_run_line(run_file, {
                     "type": "run_metrics",
@@ -4928,13 +4960,17 @@ class AgentRunner:
                     "cache_read_input_tokens": _cr,
                     "context_peak_tokens": _peak,
                     "per_turn_input_tokens": _per_turn,
+                    "text_turns": _text_turns,
+                    "tool_uses_total": _tools_total,
+                    "tool_uses": _tool_hist,
                 })
                 # 日志侧也落一份（与既有的 _log_run_metrics 同源，
                 # dashboard 读侧按 metric_type==run_metrics 增量索引）
                 self.logger.info(
                     "agent_runner",
                     f"context metrics: turns={_turns} inp={_inp} "
-                    f"peak={_peak} per_turn={_per_turn} cr={_cr}",
+                    f"peak={_peak} per_turn={_per_turn} cr={_cr} "
+                    f"tools={_tools_total} text_turns={_text_turns}",
                     {
                         "metric_type": "run_metrics",
                         "run_id": run_id,
@@ -4943,6 +4979,9 @@ class AgentRunner:
                         "cache_read_input_tokens": _cr,
                         "context_peak_tokens": _peak,
                         "per_turn_input_tokens": _per_turn,
+                        "text_turns": _text_turns,
+                        "tool_uses_total": _tools_total,
+                        "tool_uses": _tool_hist,
                     },
                 )
                 # 超阈值诊断 WARNING（告警降噪：turns < 5 空跑跳过）

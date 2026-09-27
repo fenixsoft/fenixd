@@ -129,6 +129,20 @@ FIX_PROGRESS_DEFAULT = {
     # 失败/重试 run 失败/零有效修复）被跳过的条目 id。select_batch 排除口径
     # = 失败档案并集 ∪ 本字段；新链启动（activation_id 更替）时重置为空。
     "chain_skipped": [],
+    # 链级持久 run 清单（evo-add-codefix-digest-cost-metrics 2.2）：本链全部
+    # agent run 的 run_id 逐 run 累积。进度文件既有 run_id 字段批收尾即清除、
+    # 台账核销记录（mark_resolved）不带 run_id，均不能充当「链内全部 run」
+    # 的事实源；链终局 rollup 以本清单逐 run 读 `.fenix/runs/<run_id>.jsonl`
+    # 归档计数，「覆盖链中全部 run 不漏样本」机械达成。新链启动重置为空。
+    "chain_run_ids": [],
+    # 链级核销计数（2.1「条目计数与台账核销一致」）：随链累积 mark_resolved /
+    # mark_ignored 的真实命中数（终态过滤后），rollup 时点读出即台账口径。
+    "chain_resolved": 0,
+    "chain_ignored": 0,
+    # 链终局 rollup 快照（2.1「随链状态落盘」）：链末批合回成功或链中途终局
+    # 时写入（结构见 _emit_chain_rollup）；新链启动不清除——历史链最后的
+    # rollup 保持可读，直至被新链终局写点覆盖。
+    "chain_rollup": None,
 }
 
 # phase 合法值（spec code-fix-progress）
@@ -179,6 +193,9 @@ def read_progress(project_root) -> dict:
     # list，浅拷贝会让所有缺省态调用方共享同一对象——未来任何一处就地 append
     # 都会污染进程级缺省态，使链内跳过集跨链/跨项目泄漏。每次读返回新列表。
     out["chain_skipped"] = list(FIX_PROGRESS_DEFAULT["chain_skipped"])
+    # chain_run_ids 同为 list 缺省（evo-add-codefix-digest-cost-metrics 2.2），
+    # 同一防共享纪律。
+    out["chain_run_ids"] = list(FIX_PROGRESS_DEFAULT["chain_run_ids"])
     try:
         raw = _progress_path(project_root).read_text(encoding="utf-8")
         data = json.loads(raw)
@@ -436,6 +453,36 @@ def _synthesize_startup_stage(project_root, progress: dict, out_rows) -> None:
         }
     except Exception:  # noqa: BLE001 — 启动阶段推断是尽力而为语义，不炸主流程
         progress["startup_stage"] = None
+
+
+# ── run 归档指标行（evo-add-codefix-digest-cost-metrics 2.2）──────────
+
+
+def _read_run_metrics(project_root, run_id: str) -> dict:
+    """读 run 归档 ``.fenix/runs/<run_id>.jsonl`` 的**末条** run_metrics 行。
+
+    链级 rollup 逐 run 汇总的数据源（路径定位先例：``_synthesize_startup_stage``
+    既有模式）。取末条——同 run 多次落 metrics 行（resume/重跑追加）时以后写
+    者为准。文件缺失/不可读/损坏行/无 metrics 行（旧转录或 run 未跑到收尾）
+    返回空 dict：rollup 按零贡献计，MUST NOT 炸链终局。
+    """
+    path = Path(project_root) / ".fenix" / "runs" / f"{run_id}.jsonl"
+    last: dict = {}
+    try:
+        with path.open(encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(rec, dict) and rec.get("type") == "run_metrics":
+                    last = rec
+    except OSError:
+        return {}
+    return last
 
 
 # ── 失败批保留集合（5.7 / D6）──────────────────────────────────────────
@@ -2265,6 +2312,7 @@ class CodeFixOrchestrator:
                             batch_total=None,
                             manual_authorized=False,
                             chain_skipped=[],
+                            **self._chain_terminal_fields("disabled"),
                         )
                 return {"triggered": False, "reason": "disabled"}
             if self._code_fix_running():
@@ -2299,6 +2347,7 @@ class CodeFixOrchestrator:
                         batch_total=None,
                         manual_authorized=False,
                         chain_skipped=[],
+                        **self._chain_terminal_fields("chain_converged"),
                     )
                 return {"triggered": False, "reason": "no_open_items"}
 
@@ -2326,6 +2375,10 @@ class CodeFixOrchestrator:
                 total = done + total_open
                 batch_no = prev.get("batch_no") or 0
                 chain_skipped = list(prev.get("chain_skipped") or [])
+                # 链级 run 清单随链身份沿用（2.2）：合并写语义下未传字段保留
+                # 现值，这里显式读出仅供 ctx 下发批 worker 追加本批 run_id。
+                chain_run_ids = list(prev.get("chain_run_ids") or [])
+                new_chain = False
             else:
                 activation_id = f"{int(time.time())}-{uuid.uuid4().hex[:8]}"
                 total = total_open
@@ -2334,6 +2387,12 @@ class CodeFixOrchestrator:
                 # 新链启动：预算内失败档案自动释放（下轮自动重试，等效原人工
                 # release_failed_batch）；链内跳过集随链身份更替重置为空。
                 chain_skipped = []
+                # 上一链未走终局写点即被更替（daemon 重启/崩溃中途）：按落盘
+                # 累积值补发一行 rollup 日志（不落盘——本链的终局快照已在既往
+                # 终态写点落盘或随重启丢失，紧随的新链写点会归零累积值）。
+                self._emit_chain_rollup("chain_superseded")
+                chain_run_ids = []
+                new_chain = True
                 released = release_retryable_failed_batches(root)
                 if released:
                     self._log(
@@ -2409,6 +2468,8 @@ class CodeFixOrchestrator:
                         batch_total=None,
                         manual_authorized=False,
                         chain_skipped=chain_skipped,
+                        # 跳批终局（2.1「链中途终局（失败/跳批）同样输出累计值」）
+                        **self._chain_terminal_fields("chain_exhausted"),
                     )
                 return {"triggered": False, "reason": "no_open_items"}
 
@@ -2446,6 +2507,7 @@ class CodeFixOrchestrator:
                     batch_total=None,
                     manual_authorized=False,
                     chain_skipped=chain_skipped,
+                    **self._chain_terminal_fields("wip_overlap_blocked"),
                 )
                 return {"triggered": False, "reason": "wip_overlap_at_select"}
             batch_no += 1
@@ -2468,6 +2530,7 @@ class CodeFixOrchestrator:
                     batch_total=None,
                     manual_authorized=False,
                     chain_skipped=chain_skipped,
+                    **self._chain_terminal_fields("regression_contract_missing"),
                 )
                 return {"triggered": False, "reason": "regression_contract_missing"}
             if contract.regression is None:
@@ -2486,6 +2549,7 @@ class CodeFixOrchestrator:
                     batch_total=None,
                     manual_authorized=False,
                     chain_skipped=chain_skipped,
+                    **self._chain_terminal_fields("regression_section_missing"),
                 )
                 return {"triggered": False, "reason": "regression_section_missing"}
 
@@ -2518,6 +2582,18 @@ class CodeFixOrchestrator:
                     # 链内跳过集：同链沿用（merge 语义下显式透传防剥落），新链
                     # 已在上分支重置为空——写入 [] 覆盖上一链残留。
                     chain_skipped=chain_skipped,
+                    # 链级累积（2.2）：新链显式归零重置（含上一链被更替时未
+                    # 出账的残余）；同链不传——合并写保留现值，run 清单由批
+                    # worker 在 run 启动写点逐 run 追加。
+                    **(
+                        {
+                            "chain_run_ids": [],
+                            "chain_resolved": 0,
+                            "chain_ignored": 0,
+                        }
+                        if new_chain
+                        else {}
+                    ),
                 )
                 ctx = {
                     "activation_id": activation_id,
@@ -2532,6 +2608,9 @@ class CodeFixOrchestrator:
                     # 档案在 select_batch 内部排除，chain_skipped/延迟台账
                     # 由判定函数并入排除集）。
                     "chain_skipped": list(chain_skipped),
+                    # 链级 run 清单基线（2.2）：批 worker 在首个 run 启动写点
+                    # 追加本批 run_id（重试轮由 _run_batch_created 续加）。
+                    "chain_run_ids": list(chain_run_ids),
                 }
             except Exception as exc:
                 self._in_flight = False
@@ -2582,8 +2661,121 @@ class CodeFixOrchestrator:
             run_id=None,
             batch_total=None,
             manual_authorized=False,
+            # 链中途终局（halt）同样出账（2.1）：rollup 随本写点落盘并清账。
+            **self._chain_terminal_fields("halt"),
             **fields,
         )
+
+    # -- 链级 rollup（evo-add-codefix-digest-cost-metrics 2.1/2.2）---------
+
+    def _chain_bump(self, root, **deltas) -> None:
+        """链级核销计数累加（2.1「条目计数与台账核销一致」）。
+
+        在 mark_resolved / mark_ignored 真实命中**之后**调用（传终态过滤后的
+        返回值），随链累积进进度快照——rollup 时点读出即台账口径，不另设独立
+        计数通道。失败仅告警，MUST NOT 阻断批收尾主流程。
+        """
+        if not deltas:
+            return
+        try:
+            prev = read_progress(root)
+            fields = {}
+            for key, delta in deltas.items():
+                try:
+                    step = int(delta)
+                    base = int(prev.get(key) or 0)
+                except (TypeError, ValueError):
+                    continue
+                if step:
+                    fields[key] = base + step
+            if fields:
+                write_progress(root, **fields)
+        except Exception as e:  # noqa: BLE001 — 计数失败不阻断批收尾
+            self._log("warning", f"code-fix 链级核销计数更新失败: {e}")
+
+    def _chain_rollup_snapshot(self) -> dict:
+        """按链级累积值汇总 rollup 快照（纯读侧，2.1/2.2）。
+
+        run 维度：以链级持久 run 清单（chain_run_ids）逐 run 读
+        ``.fenix/runs/<run_id>.jsonl`` 末条 run_metrics 行求和——「覆盖链中
+        全部 run 不漏样本」由清单机械达成；归档缺失按零贡献。条目维度：读
+        链级核销计数（chain_resolved/chain_ignored，即台账核销口径）。
+        """
+        prog = read_progress(self.project_root)
+        run_ids: list[str] = []
+        for rid in (prog.get("chain_run_ids") or []):
+            s = str(rid)
+            if s and s not in run_ids:
+                run_ids.append(s)
+        total_turns = total_tools = total_text = 0
+        for rid in run_ids:
+            m = _read_run_metrics(self.project_root, rid)
+            try:
+                turns = int(m.get("turns") or 0)
+                tools = int(m.get("tool_uses_total") or 0)
+                text = int(m.get("text_turns") or 0)
+            except (TypeError, ValueError):
+                continue
+            total_turns += turns
+            total_tools += tools
+            total_text += text
+        resolved = int(prog.get("chain_resolved") or 0)
+        ignored = int(prog.get("chain_ignored") or 0)
+        items = resolved + ignored
+        return {
+            "runs": len(run_ids),
+            "turns": total_turns,
+            "tool_uses_total": total_tools,
+            "text_turns": total_text,
+            "resolved": resolved,
+            "ignored": ignored,
+            "avg_turns_per_item": (round(total_turns / items, 1) if items else None),
+            "run_ids": run_ids,
+        }
+
+    def _emit_chain_rollup(self, trigger: str) -> dict | None:
+        """汇总并打一行结构化 rollup 日志（2.1）；无链级累积返回 None。
+
+        「有累积」判据 = run 清单非空或核销计数非零（延迟批在链终局后核销的
+        残余也可见，runs=0 仍出账）。异常一律吞掉转 warning——rollup 是纯
+        观测，MUST NOT 阻断链终局写点。
+        """
+        try:
+            snap = self._chain_rollup_snapshot()
+        except Exception as e:  # noqa: BLE001 — 观测失败不阻断链收尾
+            self._log("warning", f"code-fix chain rollup 汇总失败: {e}")
+            return None
+        if not snap["run_ids"] and not (snap["resolved"] or snap["ignored"]):
+            return None
+        snap["trigger"] = trigger
+        snap["finished_at"] = _now_iso()
+        self._log(
+            "info",
+            "code-fix chain rollup: "
+            f"trigger={trigger} runs={snap['runs']} turns={snap['turns']} "
+            f"tool_uses={snap['tool_uses_total']} text_turns={snap['text_turns']} "
+            f"resolved={snap['resolved']} ignored={snap['ignored']} "
+            f"avg_turns_per_item={snap['avg_turns_per_item']} "
+            f"run_ids={','.join(snap['run_ids'])}",
+        )
+        return snap
+
+    def _chain_terminal_fields(self, trigger: str) -> dict:
+        """链终局写点字段（2.1「随链状态落盘」）：rollup 快照 + 累积值归零。
+
+        供各链终局 write_progress 调用点 ``**`` 展开；无链级累积时返回空
+        dict（不触碰链级字段，无链 checkpoint 零开销）。归零即「出账后清账」
+        ——同一链不会被后续终局写点重复出账，新链从空累积起步。
+        """
+        rollup = self._emit_chain_rollup(trigger)
+        if rollup is None:
+            return {}
+        return {
+            "chain_rollup": rollup,
+            "chain_run_ids": [],
+            "chain_resolved": 0,
+            "chain_ignored": 0,
+        }
 
     def _consumed_progress(self, current: str, reason: str = "", chain_skip_ids=None) -> None:
         """consumed 失败收尾（selfheal D6）：链内跳过 + 非终态进度，链继续。
@@ -3157,6 +3349,9 @@ class CodeFixOrchestrator:
                 worktree=str(wt),
                 run_id=run_id,
                 batch_total=len(items),
+                # 链级 run 清单逐 run 追加（2.2）：进度文件 run_id 字段批收尾
+                # 即清除、不能充当链内 run 事实源，清单随链状态持久累积。
+                chain_run_ids=[*(ctx.get("chain_run_ids") or []), run_id],
             )
             created_sha = _worktree_head(wt)
             return self._run_batch_created(wm, wt, created_sha, ctx, run_id=run_id)
@@ -3183,6 +3378,9 @@ class CodeFixOrchestrator:
         total = ctx["total"]
         done = ctx["done"]
         reg_spec = ctx["regression_spec"]
+        # 链级 run 清单本地跟踪（2.2）：批上下文基线 + 本批首轮 run_id；
+        # 定向重试轮逐轮续加并随各写点持久化（链级事实源，rollup 汇总用）。
+        chain_runs = [*(ctx.get("chain_run_ids") or []), run_id]
 
         # 第一次修复 run（run_id 预生成传入，与进度文件 run_id 一致）
         result = runner.run_code_fix(wt, items, run_id=run_id)
@@ -3253,6 +3451,7 @@ class CodeFixOrchestrator:
                 # 排除首轮与本批此前各轮（同 worktree 内主树残留判据覆盖不到，
                 # 同秒撞名会复用 out 文件）。
                 retry_run_id = _preset_run_id(runner, exclude=(run_id, *attempt_run_ids))
+                chain_runs.append(retry_run_id)
                 write_progress(
                     root,
                     phase="retrying",
@@ -3262,6 +3461,7 @@ class CodeFixOrchestrator:
                         + ("，子集回归）" if mapped else "，明细不可映射，全量回归）")
                     ),
                     run_id=retry_run_id,
+                    chain_run_ids=list(chain_runs),
                 )
                 # ④ 派定向轮 run（同一 worktree）：prompt 注入累计失败明细
                 # （2.3）+ 只修失败相关的硬指令；映射失败时注入旧式摘要。
@@ -3391,6 +3591,10 @@ class CodeFixOrchestrator:
         batch_set = set(item_ids)
         ignore_ids = [i for i in skip_reasons if i in batch_set]
         ignored = mark_ignored(root, ignore_ids, reasons=skip_reasons) if ignore_ids else 0
+        # 链级核销计数累加（2.1）：以 mark_ignored 真实命中为准（条目计数与
+        # 台账核销一致），rollup 时点读出。
+        if ignored:
+            self._chain_bump(root, chain_ignored=ignored)
         ignore_set = set(ignore_ids)
         pending_ids = [iid for iid in item_ids if iid not in ignore_set]
         commits = _worktree_commit_count(wt, created_sha) if created_sha else 0
@@ -3494,8 +3698,16 @@ class CodeFixOrchestrator:
             if i in batch_set and (ledger.get(i) or {}).get("status") == "open"
         ]
         hit = mark_resolved(root, still_open) if still_open else 0
+        # 链级核销计数累加（2.1）：以 mark_resolved 真实命中为准。
+        if hit:
+            self._chain_bump(root, chain_resolved=hit)
         _safe_cleanup(wm, wt, success=True, logger=self._logger)
         new_done = done + hit
+        # 链末批合回即链终局（2.1）：rollup 汇总 + 一行结构化日志，随本写点
+        # 落盘并归零链级累积（非末批返回空 dict，不触碰链级字段——链继续）。
+        chain_final = (
+            self._chain_terminal_fields("chain_last_batch") if is_last_batch else {}
+        )
         write_progress(
             root,
             phase="merging",
@@ -3507,6 +3719,7 @@ class CodeFixOrchestrator:
             worktree=None,
             run_id=None,
             batch_total=None,
+            **chain_final,
         )
         self._log(
             "info",
