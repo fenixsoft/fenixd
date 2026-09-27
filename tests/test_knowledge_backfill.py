@@ -204,9 +204,32 @@ def bootstrap_writer(rec: Recorder, prompt: str) -> None:
     write_page(rec.root, "spec/knowledge/index.md", "# 真相源导航\n")
 
 
+# 史前清单：cap-x 已被归档覆盖（baseline 走链头）、cap-pre 未覆盖（产史前页）
+INVENTORY = [
+    {"capability": "cap-x", "domain": "dom-x", "baseline": "史前基线：迁移期轮询为 600 秒。"},
+    {"capability": "cap-pre", "domain": "dom-x", "baseline": "史前独有能力基线。"},
+]
+
+
+def prehistoric_writer(rec: Recorder, prompt: str) -> None:
+    (rec.root / ".fenix" / "knowledge_backfill_prehistoric.json").write_text(
+        json.dumps(INVENTORY, ensure_ascii=False), encoding="utf-8"
+    )
+    write_page(
+        rec.root,
+        "spec/knowledge/domains/dom-x/cap-pre.md",
+        "<!-- knowledge: capability=cap-pre rev=1 origin=prehistoric "
+        "sources=git:abc123456-..2026-09-02 -->\n"
+        "# cap-pre\n\n## 规则\n\n- 现行规则一句。\n\n## 溯源\n\n"
+        "- 2026-09-02 史前复原 — 迁移期已存在的基础规则\n",
+    )
+
+
 def default_on_call(rec: Recorder, prompt: str, run_id: str) -> None:
     if run_id.startswith("kb-bootstrap"):
         bootstrap_writer(rec, prompt)
+    elif run_id.startswith("kb-prehistoric"):
+        prehistoric_writer(rec, prompt)
     elif run_id.startswith("kb-adr"):
         write_adr(rec, prompt)
     else:
@@ -260,9 +283,10 @@ def test_full_success_capability_and_adr_batches(proj, install_core):
         "pending": 0, "distilled": 4, "failed": 0,
     }
     assert core.validate_calls >= 1
-    # 提交序列：能力批在前、ADR 批在后
+    # 提交序列：史前复原 → 能力批 → ADR 批
     msgs = [m for _, m in core.commit_calls]
     assert msgs == [
+        "[fenix] knowledge: backfill prehistoric",
         "[fenix] knowledge: backfill batch 1/2",
         "[fenix] knowledge: backfill batch 2/2",
         "[fenix] knowledge: backfill adr batch 1/1",
@@ -350,10 +374,11 @@ def test_bootstrap_input_is_capability_set(proj, install_core):
     assert "能力清单（共 2 个）" in bp
     assert "- cap-x" in bp and "- cap-y" in bp
     assert "- 2026-09-01-arc-a1" not in bp  # 聚类对象不再是归档名
-    # bootstrap 提交先于批次提交
+    # bootstrap 提交先于 prehistoric 与批次提交
     subjects = knowledge_subjects(proj)
     assert subjects[0] == "[fenix] knowledge: backfill bootstrap"
-    assert subjects[1].startswith("[fenix] knowledge: backfill batch 1/2")
+    assert subjects[1] == "[fenix] knowledge: backfill prehistoric"
+    assert subjects[2].startswith("[fenix] knowledge: backfill batch 1/2")
 
 
 def test_bootstrap_missing_domain_map_registers_todo(proj, install_core):
@@ -487,6 +512,95 @@ def test_adr_failure_marks_failed_and_registers_todo(proj, install_core):
     assert summary["converged"] is False
     todo = (proj / ".fenix" / "todo.md").read_text(encoding="utf-8")
     assert "回填 ADR 批次" in todo
+
+
+# ── 史前求差与基线链头（任务 2.3） ───────────────────────────────────────
+
+
+def test_prehistoric_diff_and_baseline_chain_head(proj, install_core):
+    install_core(FakeCore(proj))
+    seen: dict = {}
+
+    def on_call(rec, prompt, run_id):
+        if run_id.startswith("kb-prehistoric"):
+            seen["prompt"] = prompt
+        default_on_call(rec, prompt, run_id)
+
+    spawn = Recorder(proj, on_call=on_call)
+    summary = kb.run_backfill(proj, spawn=spawn)
+    assert summary["converged"] is True
+    # 史前 run 输入携带求差基准（归档链能力全集）
+    assert "- cap-x" in seen["prompt"] and "- cap-y" in seen["prompt"]
+    # 提交序：prehistoric 在能力批之前
+    subjects = knowledge_subjects(proj)
+    assert subjects[0] == "[fenix] knowledge: backfill prehistoric"
+    assert subjects[1].startswith("[fenix] knowledge: backfill batch 1/2")
+    # 未覆盖能力产史前页（入域、origin=prehistoric）
+    pre_page = (
+        proj / "spec/knowledge/domains/dom-x/cap-pre.md"
+    ).read_text(encoding="utf-8")
+    assert "origin=prehistoric" in pre_page
+    # 已覆盖能力：baseline 注入批次提示词作链头输入
+    batch_prompt = next(p for p, r in spawn.calls if r.startswith("kb-batch") and "cap-x" in p)
+    assert "史前基线（链头输入）：史前基线：迁移期轮询为 600 秒。" in batch_prompt
+    # 未覆盖能力不进聚合批次（不写页，diff 排除）
+    all_batch_prompts = "\n".join(p for p, r in spawn.calls if r.startswith("kb-batch"))
+    assert "cap-pre" not in all_batch_prompts
+    y_prompt = next(p for p, r in spawn.calls if r.startswith("kb-batch") and "cap-y" in p)
+    # cap-y 无史前基线：批次清单块不注入链头（模板正文的语义说明除外）
+    assert "史前基线（链头输入）" not in y_prompt
+    # 重入：清单已持久化，prehistoric 不重跑，收敛零派发
+    spawn2 = Recorder(proj)
+    again = kb.run_backfill(proj, spawn=spawn2)
+    assert again["reason"] == "converged"
+    assert spawn2.calls == []
+
+
+def test_prehistoric_missing_page_blocks_with_todo(proj, install_core):
+    install_core(FakeCore(proj))
+
+    def incomplete_prehistoric(rec, prompt, run_id):
+        # 只写清单不写未覆盖能力页 → 求差核验拦截
+        (rec.root / ".fenix" / "knowledge_backfill_prehistoric.json").write_text(
+            json.dumps(INVENTORY, ensure_ascii=False), encoding="utf-8"
+        )
+
+    spawn = Recorder(proj, on_call=incomplete_prehistoric)
+    result = kb.run_backfill(proj, spawn=spawn)
+    assert result["ok"] is False
+    assert result["reason"] == "prehistoric-missing-pages"
+    todo = (proj / ".fenix" / "todo.md").read_text(encoding="utf-8")
+    assert "cap-pre" in todo
+
+
+# ── 自举重跑清理 fixture 遗留（任务 2.3） ────────────────────────────────
+
+
+def test_bootstrap_cleans_fixture_leftovers(proj, install_core):
+    install_core(FakeCore(proj))
+    # 未跟踪 fixture 残留（e2e 污染形态：zn 演示域 / fixture ADR / graph 产物）
+    write_page(
+        proj, "spec/knowledge/domains/zn-demo-domain/zn-demo-capability.md", "# zn\n"
+    )
+    write_page(proj, "spec/knowledge/adr/ADR-001-zn-one.md", "# ADR-001：zn\n")
+    write_page(proj, "spec/knowledge/graph/graph.html", "<html>zn</html>\n")
+    # 已入库遗留域（真实聚类不再归位 → 重建时移除）
+    write_page(proj, "spec/knowledge/domains/dom-stale/old.md", "# old\n")
+    _git(proj, "add", "--", "spec/knowledge/domains/dom-stale")
+    _git(proj, "commit", "-qm", "seed stale domain")
+    (proj / ".fenix" / "knowledge_backfill_domains.json").unlink()
+
+    spawn = Recorder(proj, on_call=default_on_call)
+    summary = kb.run_backfill(proj, spawn=spawn)
+    assert summary["converged"] is True
+    # 未跟踪残留被清场
+    assert not (proj / "spec/knowledge/domains/zn-demo-domain").exists()
+    assert not (proj / "spec/knowledge/adr/ADR-001-zn-one.md").exists()
+    assert not (proj / "spec/knowledge/graph").exists()
+    # 已跟踪遗留域被真实聚类重建移除
+    assert not (proj / "spec/knowledge/domains/dom-stale").exists()
+    # 真实产物不受影响
+    assert (proj / "spec/knowledge/domains/dom-x/cap-x.md").is_file()
 
 
 # ── 前置缺失与提交工具回退 ───────────────────────────────────────────────

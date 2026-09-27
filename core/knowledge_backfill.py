@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -627,6 +628,71 @@ def _read_json(path: Path):
         return None
 
 
+# ── 史前求差与自举清理（任务 2.3） ───────────────────────────────────────
+
+
+def _missing_prehistoric_pages(
+    project_root: Path, inventory: list, chain_index: dict
+) -> list[str]:
+    """求差核验：清单中未被归档覆盖的能力必须有史前页落盘（入正确域）。
+
+    Returns:
+        缺页能力清单（空列表 = 通过）。
+    """
+    missing: list[str] = []
+    for item in inventory:
+        if not isinstance(item, dict):
+            continue
+        cap = item.get("capability")
+        if not cap or cap in chain_index:
+            continue  # 已被归档覆盖：不写史前页（baseline 走链头输入）
+        domain = str(item.get("domain") or "").strip()
+        page = project_root / KNOWLEDGE_DIR / "domains" / domain / f"{cap}.md"
+        if not page.is_file():
+            missing.append(f"{cap}（域 {domain or '未声明'}）")
+    return missing
+
+
+def _clean_untracked_knowledge(project_root: Path, log) -> None:
+    """自举重跑清场：清 ``spec/knowledge/`` 下未跟踪残留。
+
+    e2e fixture 遗留（zn 演示域、fixture ADR、graph/ 产物）均为未跟踪文件；
+    只动未跟踪内容（git clean），已入库内容不受影响——避免真实抽取的 ADR
+    编号与 fixture 条目重复触发校验失败。
+    """
+    proc = subprocess.run(
+        ["git", "clean", "-qfd", "--", KNOWLEDGE_DIR],
+        cwd=str(project_root),
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if proc.returncode != 0:  # noqa: BLE001 - fail-open 清理不阻塞自举
+        log.warning(
+            "knowledge",
+            f"回填自举清理未跟踪残留失败（fail-open）：{proc.stderr.strip()[:200]}",
+        )
+
+
+def _prune_stale_domains(project_root: Path, domain_map: dict, log) -> list[str]:
+    """以真实聚类重建域清单：不在新域集合中的既有域目录整体移除（fixture
+    遗留域，如 zn-demo-domain）。Returns: 被移除的域名清单。"""
+    domains_dir = project_root / KNOWLEDGE_DIR / "domains"
+    removed: list[str] = []
+    if not domains_dir.is_dir():
+        return removed
+    keep = {v for v in domain_map.values() if isinstance(v, str) and v}
+    for d in sorted(domains_dir.iterdir()):
+        if d.is_dir() and d.name not in keep:
+            shutil.rmtree(d, ignore_errors=True)
+            removed.append(d.name)
+    if removed:
+        log.warning(
+            "knowledge", f"回填自举重建域清单，移除遗留域：{', '.join(removed)}"
+        )
+    return removed
+
+
 # ── 车道主入口 ───────────────────────────────────────────────────────────
 
 
@@ -686,6 +752,8 @@ def run_backfill(
     domain_map = _read_json(domain_map_path)
     if not isinstance(domain_map, dict) or not domain_map:
         # ── 聚类自举 run（v2：聚类对象从归档名改为链索引能力名）──
+        # 自举重跑清场：fixture 遗留（未跟踪）先清，跑完再按真实聚类删遗留域
+        _clean_untracked_knowledge(project_root, log)
         chain_caps = sorted(chain_index)
         prompt = build_prompt("bootstrap", capabilities=chain_caps)
         run_id = f"kb-bootstrap-{int(time.time())}"
@@ -704,6 +772,7 @@ def run_backfill(
                 "请人工检查后重跑回填",
             )
             return {"triggered": True, "ok": False, "reason": "bootstrap-no-domain-map"}
+        _prune_stale_domains(project_root, domain_map, log)
         base_prompt = build_prompt("bootstrap", capabilities=chain_caps)
         ok, violations = _validate_with_repair(
             project_root, validate, spawn, base_prompt, run_id
@@ -723,8 +792,62 @@ def run_backfill(
             }
         commit(project_root, [KNOWLEDGE_DIR], "[fenix] knowledge: backfill bootstrap")
 
+    # ── 史前复原段（prehistoric bootstrap：git 考古 → 求差 → 史前页/链头）──
+    prehistoric_path = project_root / PREHISTORIC_JSON_RELPATH
+    inventory = _read_json(prehistoric_path)
+    if not isinstance(inventory, list) or not inventory:
+        prompt = build_prehistoric_prompt(project_root, chain_index)
+        run_id = f"kb-prehistoric-{int(time.time())}"
+        try:
+            spawn(prompt, run_id)
+        except Exception as e:  # noqa: BLE001 - fail-open 记台账不中断
+            append_todo_line(project_root, f"回填史前复原 run 失败（{run_id}）：{e}")
+            return {"triggered": True, "ok": False, "reason": "prehistoric-spawn-failed"}
+        inventory = _read_json(prehistoric_path)
+        if not isinstance(inventory, list) or not inventory:
+            append_todo_line(
+                project_root,
+                f"回填史前复原 run（{run_id}）未产出史前清单 "
+                f"{PREHISTORIC_JSON_RELPATH}，请人工检查后重跑回填",
+            )
+            return {"triggered": True, "ok": False, "reason": "prehistoric-no-inventory"}
+        missing = _missing_prehistoric_pages(project_root, inventory, chain_index)
+        if missing:
+            append_todo_line(
+                project_root,
+                f"回填史前复原 run（{run_id}）未覆盖能力缺史前页："
+                f"{', '.join(missing[:5])}，请人工检查后重跑回填",
+            )
+            return {"triggered": True, "ok": False, "reason": "prehistoric-missing-pages"}
+        base_prompt = build_prehistoric_prompt(project_root, chain_index)
+        ok, violations = _validate_with_repair(
+            project_root, validate, spawn, base_prompt, run_id
+        )
+        if not ok:
+            discard_knowledge_changes(project_root)
+            append_todo_line(
+                project_root,
+                "回填史前复原产出校验 "
+                f"{MAX_FIX_ROUNDS} 轮后仍失败，已放弃本次产出：{violations[:3]}",
+            )
+            return {
+                "triggered": True,
+                "ok": False,
+                "reason": "prehistoric-invalid",
+                "violations": violations[:10],
+            }
+        commit(project_root, [KNOWLEDGE_DIR], "[fenix] knowledge: backfill prehistoric")
+
+    # 求差：已被归档覆盖的能力，其史前基线作为链头输入聚合蒸馏单元
+    baselines: dict[str, str] = {}
+    for item in inventory if isinstance(inventory, list) else []:
+        if not isinstance(item, dict):
+            continue
+        cap, baseline = item.get("capability"), item.get("baseline")
+        if cap and baseline and cap in chain_index:
+            baselines[str(cap)] = str(baseline)
+
     # ── 能力聚合批次（方案 B：蒸馏单元 = 能力，页间独立、批序无关）──
-    baselines: dict[str, str] = {}  # 史前基线链头（史前复原段接入后填充）
     batches = build_batches(domain_map, todo_caps)
     total = len(batches)
     ok_batches: list[int] = []
