@@ -24,15 +24,15 @@
 - [activity-records-tabs](activity-records-tabs.md) — 活动记录页签
 - [project-page-tabs](project-page-tabs.md) — 项目详情页签
 - [dashboard-spec-archive](dashboard-spec-archive.md) — 归档查询视图
-- `ui-theme` — 主题切换
-- `v2-overview-page` — v2 总览页
-- `v2-project-list-page` — v2 项目列表页
-- `v2-spec-detail-page` — v2 SPEC 详情页
-- `v2-config-page` — v2 配置页
-- `v2-alerts-activities` — v2 告警与活动页
-- `v2-admin-doc-modals` — v2 管理文档弹窗
-- `v2-run-stream-modal` — v2 run 流弹窗
-- `v3-spec-detail-page` — v3 SPEC 详情页
-- `v3-spec-doc-view` — v3 SPEC 文档查看
-- `v3-activities-page` — v3 活动页
-- `v3-settings-page` — v3 设置页
+- [ui-theme](ui-theme.md) — 主题切换
+- [v2-overview-page](v2-overview-page.md) — v2 总览页
+- [v2-project-list-page](v2-project-list-page.md) — v2 项目列表页
+- [v2-spec-detail-page](v2-spec-detail-page.md) — v2 SPEC 详情页
+- [v2-config-page](v2-config-page.md) — v2 配置页
+- [v2-alerts-activities](v2-alerts-activities.md) — v2 告警与活动页
+- [v2-admin-doc-modals](v2-admin-doc-modals.md) — v2 管理文档弹窗
+- [v2-run-stream-modal](v2-run-stream-modal.md) — v2 run 流弹窗
+- [v3-spec-detail-page](v3-spec-detail-page.md) — v3 SPEC 详情页
+- [v3-spec-doc-view](v3-spec-doc-view.md) — v3 SPEC 文档查看
+- [v3-activities-page](v3-activities-page.md) — v3 活动页
+- [v3-settings-page](v3-settings-page.md) — v3 设置页
