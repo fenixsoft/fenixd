@@ -57,6 +57,22 @@ status: accepted
 {body}
 """
 
+PREHISTORIC_PAGE = """# 史前基础能力
+
+<!-- knowledge: capability=prehistoric-cap rev=1 origin=prehistoric
+     sources=git:{ref}-..2026-09-02 -->
+
+迁移期已存在的基础能力，现行规则如下。
+
+## 规则
+
+- 规则一句。
+
+## 溯源
+
+- 2026-09-02 史前复原（git:{ref}-..2026-09-02） — 迁移期已存在的基础规则
+"""
+
 
 class KnowledgeTestBase(unittest.TestCase):
     def setUp(self):
@@ -101,6 +117,18 @@ class TestParseMarker(unittest.TestCase):
     def test_part_field(self):
         m = parse_marker("<!-- knowledge: capability=x rev=1 part=2 sources=spec/archive/a -->")
         self.assertEqual(m["part"], "2")
+
+    def test_origin_default_archive(self):
+        m = parse_marker("<!-- knowledge: capability=x rev=1 sources=spec/archive/a -->")
+        self.assertEqual(m["origin"], "archive")
+
+    def test_origin_prehistoric(self):
+        m = parse_marker(
+            "<!-- knowledge: capability=x rev=1 origin=prehistoric"
+            " sources=git:44e1443ba-..2026-09-02 -->"
+        )
+        self.assertEqual(m["origin"], "prehistoric")
+        self.assertEqual(m["sources"], ["git:44e1443ba-..2026-09-02"])
 
     def test_invalid_returns_none(self):
         self.assertIsNone(parse_marker("no marker"))
@@ -177,6 +205,72 @@ class TestValidateKnowledge(KnowledgeTestBase):
         )
         v = validate_knowledge(self.root)
         self.assertTrue(any("kebab" in x for x in v))
+
+    # ── origin 分支（fix-knowledge-backfill-reconstruction 任务 2.2） ──
+    def _init_git_with_commit(self) -> str:
+        # git 不跟踪空目录：先落一个文件保证首提交真实存在（ref 可解析）
+        self._write("README.md", "# t\n")
+        self._git("init", "-q")
+        self._git("config", "user.name", "t")
+        self._git("config", "user.email", "t@t")
+        self._git("add", "--", ".")
+        self._git("commit", "-q", "-m", "init")
+        return self._git("rev-parse", "HEAD").stdout.strip()[:9]
+
+    def test_prehistoric_page_valid_passes(self):
+        ref = self._init_git_with_commit()
+        self._write(
+            f"{KNOWLEDGE_DIR}/domains/base/prehistoric-cap.md",
+            PREHISTORIC_PAGE.format(ref=ref),
+        )
+        # 不要求归档目录存在（sources 是 git 锚点而非归档路径）
+        self.assertEqual(validate_knowledge(self.root), [])
+
+    def test_prehistoric_bad_anchor_format(self):
+        self._init_git_with_commit()
+        self._write(
+            f"{KNOWLEDGE_DIR}/domains/base/prehistoric-cap.md",
+            PREHISTORIC_PAGE.format(ref="HEAD"),  # 非 sha 短 ref → 格式非法
+        )
+        v = validate_knowledge(self.root)
+        self.assertTrue(any("锚点格式非法" in x for x in v))
+
+    def test_prehistoric_unresolvable_ref(self):
+        self._init_git_with_commit()
+        self._write(
+            f"{KNOWLEDGE_DIR}/domains/base/prehistoric-cap.md",
+            PREHISTORIC_PAGE.format(ref="deadbeef"),  # 格式合法但对象不存在
+        )
+        v = validate_knowledge(self.root)
+        self.assertTrue(any("不可解析" in x for x in v))
+
+    def test_prehistoric_archive_path_source_rejected(self):
+        self._init_git_with_commit()
+        text = PREHISTORIC_PAGE.format(ref="44e1443ba").replace(
+            "sources=git:44e1443ba-..2026-09-02", "sources=spec/archive/whatever"
+        )
+        self._write(f"{KNOWLEDGE_DIR}/domains/base/prehistoric-cap.md", text)
+        v = validate_knowledge(self.root)
+        # git: 前缀强制分流：prehistoric 页不放行归档路径 sources
+        self.assertTrue(any("锚点格式非法" in x for x in v))
+
+    def test_invalid_origin_value_rejected(self):
+        self._init_git_with_commit()
+        text = GOOD_PAGE.format(
+            archive=self._archive_name(), today=date.today().isoformat()
+        ).replace("rev=1", "rev=1 origin=weird")
+        self._write(f"{KNOWLEDGE_DIR}/domains/d/x.md", text)
+        v = validate_knowledge(self.root)
+        self.assertTrue(any("origin 非法" in x for x in v))
+
+    def test_archive_page_origin_regression_zero(self):
+        """archive 页（缺省 origin）行为零回归：归档缺失照旧报违规。"""
+        self._write(
+            f"{KNOWLEDGE_DIR}/domains/d/x.md",
+            GOOD_PAGE.format(archive="1999-01-01-gone", today=date.today().isoformat()),
+        )
+        v = validate_knowledge(self.root)
+        self.assertTrue(any("不存在的归档目录" in x for x in v))
 
     # ── ADR ──────────────────────────────────────────────────────────
     def _commit_all(self):

@@ -53,6 +53,14 @@ _KEBAB_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 _MARKER_RE = re.compile(r"<!--\s*knowledge:(.*?)-->", re.S)
 _MARKER_FIELD_RE = re.compile(r"([A-Za-z_]+)=(\S+)")
 
+# marker origin 取值（fix-knowledge-backfill-reconstruction：prehistoric 复原段）
+ORIGIN_ARCHIVE = "archive"
+ORIGIN_PREHISTORIC = "prehistoric"
+
+# 史前锚点（design D4）：sources 项形如 git:44e1443b-..2026-09-02（起始ref-..截止日期）。
+# 用 git: 前缀显式分流，与归档路径项在视觉/解析上均无歧义。
+_GIT_ANCHOR_RE = re.compile(r"^git:([0-9a-f]{7,40})-\.\.(\d{4}-\d{2}-\d{2})$")
+
 # markdown 链接（image/链接同形，只关心 .md 与目录目标）
 _LINK_RE = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
 
@@ -99,8 +107,9 @@ def parse_marker(text: str) -> dict | None:
 
     Returns:
         dict：``{"capability": str, "rev": int, "sources": list[str],
-        "part": str|None}``；marker 缺失/字段非法时返回 None（由调用方
-        报具体违规）。
+        "part": str|None, "origin": str}``——origin 缺省 ``archive``，史前
+        复原页显式声明 ``origin=prehistoric``。marker 缺失/字段非法时返回
+        None（由调用方报具体违规）。
     """
     m = _MARKER_RE.search(text)
     if not m:
@@ -127,6 +136,7 @@ def parse_marker(text: str) -> dict | None:
         "rev": rev,
         "sources": sources,
         "part": fields.get("part"),
+        "origin": fields.get("origin", ORIGIN_ARCHIVE),
     }
 
 
@@ -153,6 +163,24 @@ def _git_show(proot: Path, rel_path: str) -> str | None:
     if r.returncode != 0:
         return None
     return r.stdout
+
+
+def _git_ref_resolvable(proot: Path, ref: str) -> bool:
+    """史前锚点起始 ref 可解析（``git cat-file -e <ref>^{commit}``）。
+
+    非 git 目录 / ref 不存在 / 超时 → False（由调用方报违规）。
+    """
+    try:
+        r = subprocess.run(
+            ["git", "cat-file", "-e", f"{ref}^{{commit}}"],
+            cwd=str(proot),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return r.returncode == 0
 
 
 def validate_knowledge(project_root) -> list:
@@ -214,13 +242,32 @@ def validate_knowledge(project_root) -> list:
             if marker is None:
                 violations.append(f"{label}: marker 字段非法（capability/rev/sources）")
                 continue
-            # sources 指向真实归档目录
-            for src in marker["sources"]:
-                if not src.startswith(ARCHIVE_DIR + "/"):
-                    violations.append(f"{label}: sources 非归档路径: {src}")
-                    continue
-                if not (proot / src).is_dir():
-                    violations.append(f"{label}: sources 指向不存在的归档目录: {src}")
+            # sources 按 origin 分支校验（fix-knowledge-backfill-reconstruction）
+            origin = marker.get("origin") or ORIGIN_ARCHIVE
+            if origin == ORIGIN_ARCHIVE:
+                # 归档页：sources 指向真实归档目录
+                for src in marker["sources"]:
+                    if not src.startswith(ARCHIVE_DIR + "/"):
+                        violations.append(f"{label}: sources 非归档路径: {src}")
+                        continue
+                    if not (proot / src).is_dir():
+                        violations.append(f"{label}: sources 指向不存在的归档目录: {src}")
+            elif origin == ORIGIN_PREHISTORIC:
+                # 史前页：sources 允许 git 区间锚点（不要求归档目录存在）
+                for src in marker["sources"]:
+                    am = _GIT_ANCHOR_RE.match(src)
+                    if not am:
+                        violations.append(
+                            f"{label}: prehistoric sources 锚点格式非法"
+                            f"（应形如 git:<ref>-..<日期>）: {src}"
+                        )
+                        continue
+                    if not _git_ref_resolvable(proot, am.group(1)):
+                        violations.append(
+                            f"{label}: prehistoric 锚点起始 ref 不可解析: {src}"
+                        )
+            else:
+                violations.append(f"{label}: origin 非法: {origin}")
             # 150 行硬顶
             line_count = len(text.splitlines())
             if line_count > MAX_PAGE_LINES:
