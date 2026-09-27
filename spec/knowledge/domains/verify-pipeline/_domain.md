@@ -44,3 +44,6 @@
 - `verify-progress-copyback` — 验证进度回传
 - `verify-progress-sourcing` — 验证进度读取源
 - `verify-reliability` — 验证可靠性（judge 重跑上限与结果单源读取）
+- [chrome-extension-verification](chrome-extension-verification.md) — 扩展项目验证（启动器与 chrome-extension:// 目标回退）
+- [scenario-mock-and-seed-actions](scenario-mock-and-seed-actions.md) — 场景 seed 预置与 mock_api 离线拦截
+- [external-api-network-exemption](external-api-network-exemption.md) — 外部 API 网络错误豁免（external_net_errors_ok）

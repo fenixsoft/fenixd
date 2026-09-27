@@ -24,3 +24,4 @@ SPEC 生命周期。本域能力条目清单如下（能力页由存量回填批
 - `fast-track-mode` — 快车道执行模式
 - `fast-track-mode-selection` — 快车道选道判定
 - `fast-track-scale-precheck` — 快车道规模预检
+- [spec-lifecycle-state-model](spec-lifecycle-state-model.md) — SPEC 生命周期状态机与 STATE.md 原子读写

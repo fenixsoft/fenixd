@@ -6,12 +6,12 @@
 
 ## 能力域
 
-- [project-management](domains/project-management/_domain.md) — 项目接入与生命周期（5 个能力）
+- [project-management](domains/project-management/_domain.md) — 项目接入与生命周期（8 个能力）
 - [planning-generation](domains/planning-generation/_domain.md) — 规划与出题（6 个能力）
-- [spec-lifecycle](domains/spec-lifecycle/_domain.md) — SPEC 生命周期（20 个能力）
+- [spec-lifecycle](domains/spec-lifecycle/_domain.md) — SPEC 生命周期（21 个能力）
 - [dispatch-scheduling](domains/dispatch-scheduling/_domain.md) — 调度与派发（8 个能力）
 - [implementer-lane](domains/implementer-lane/_domain.md) — 实现车道与交付物（26 个能力）
-- [verify-pipeline](domains/verify-pipeline/_domain.md) — 验证管线（40 个能力）
+- [verify-pipeline](domains/verify-pipeline/_domain.md) — 验证管线（43 个能力）
 - [verdict-adjudication](domains/verdict-adjudication/_domain.md) — 验证裁决与证据（19 个能力）
 - [code-review-lane](domains/code-review-lane/_domain.md) — 代码审查（13 个能力）
 - [code-fix-lane](domains/code-fix-lane/_domain.md) — 缺陷修复（16 个能力）
@@ -19,7 +19,7 @@
 - [run-resilience](domains/run-resilience/_domain.md) — 运行守护与失败韧性（26 个能力）
 - [recovery-continuity](domains/recovery-continuity/_domain.md) — 中断恢复与续做（13 个能力）
 - [worktree-vc](domains/worktree-vc/_domain.md) — 工作树与版本控制（14 个能力）
-- [daemon-runtime](domains/daemon-runtime/_domain.md) — 守护进程平台（7 个能力）
+- [daemon-runtime](domains/daemon-runtime/_domain.md) — 守护进程平台（12 个能力）
 - [provider-models](domains/provider-models/_domain.md) — 模型网关与配置（17 个能力）
 - [cost-observability](domains/cost-observability/_domain.md) — 成本与可观测（13 个能力）
 - [dashboard-frontend](domains/dashboard-frontend/_domain.md) — 仪表盘前端（32 个能力）
