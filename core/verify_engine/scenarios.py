@@ -1137,6 +1137,13 @@ def _validate_typed(scenario: TestScenario, kind: str) -> list[str]:
                 f"（http://或https://开头，含主机与端口），收到 '{step.url}'"
                 f"——相对路径会被验收拒绝并退回 plan 阶段"
             )
+        # 负数 timeout 词表拦截（code-review item bf2ffeded38c）：负值能过
+        # from_dict 的 float() 归一，放行到执行期会被 wait_for 立即判超时、
+        # 把场景定义错误误报成 hang 缺陷，在校验层提前拦下
+        if step.timeout and step.timeout < 0:
+            errors.append(
+                f"场景'{scenario.id}'步骤{i}: timeout 须为正数（秒），收到 {step.timeout}"
+            )
 
     for i, a in enumerate(scenario.assertions):
         if a.type not in KIND_ASSERTIONS.get(kind, set()):

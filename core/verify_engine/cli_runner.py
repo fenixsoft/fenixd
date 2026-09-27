@@ -10,7 +10,9 @@ CLI 特异执行语义（与 web「失败即中断」唯一的分歧点，design
     （exit_code/stdout/stderr），由 exit_code 断言仲裁
   - **超时强杀 = 步骤失败**：hang 本身是要抓的缺陷；杀整个进程组防孤儿子进程
   - **信号死亡 = error**：被信号终止（如段错误）判 error 而非 fail，
-    不进 product-bug 管道；argv 二进制不存在（FileNotFoundError）、
+    不进 product-bug 管道——仅 argv 形态成立；shell 形态被监控的是 shell，
+    内部命令信号死亡只体现为 shell 退出码 128+n，走非零退出码不判失败
+    路径、由 exit_code 断言仲裁；argv 二进制不存在（FileNotFoundError）、
     cwd 目录不存在同判 error
   - 环境注入：``FENIX_VERIFY_BASE_URL`` / ``FENIX_VERIFY_PORT`` 自动注入且
     框架值优先——场景 env 中同名变量被框架值覆盖（防 stale 地址事故同一
@@ -134,7 +136,18 @@ class CliRunner(VerifyRunner):
                 "error_level": "error",
                 "error": f"cwd 目录不存在: {step_dict.get('cwd')}",
             }
-        env = self._build_env(step_dict.get("env") or {})
+        declared_env = step_dict.get("env") or {}
+        if not isinstance(declared_env, dict):
+            # 场景 env 非 dict 形态（如列表/字符串）：from_dict 对非空非 dict
+            # 原样保留而词表校验不拦，直接进 _build_env 会 .items() 抛
+            # AttributeError 穿出整个场景——归一为本步骤结构化失败（code-review
+            # item 345415c58ac8，与 timeout 非法同规）
+            return {
+                "success": False,
+                "action": "run",
+                "error": f"env 须为 object（键值表），收到 {type(declared_env).__name__}",
+            }
+        env = self._build_env(declared_env)
         stdin = str(step_dict.get("stdin") or "")
         try:
             timeout = float(step_dict.get("timeout") or 0) or DEFAULT_RUN_TIMEOUT
@@ -146,7 +159,25 @@ class CliRunner(VerifyRunner):
                 "action": "run",
                 "error": f"timeout 须为数字（秒）: {step_dict.get('timeout')!r} ({e})",
             }
+        if timeout < 0:
+            # 负数 timeout 直通 wait_for 会立即抛 TimeoutError 走超时强杀，
+            # 把场景定义错误误判成 hang 缺陷：归一为本步骤结构化失败
+            # （code-review item bf2ffeded38c，词表校验层已同拦负值）
+            return {
+                "success": False,
+                "action": "run",
+                "error": f"timeout 须为正数（秒）: {step_dict.get('timeout')!r}",
+            }
         name = str(step_dict.get("as") or "")
+        if name == "_latest":
+            # `_latest` 是框架保留键（断言缺省引用最近一次 run 结果）：场景
+            # as 命名撞上会与 named_results["_latest"] 同槽自我覆盖，执行期
+            # 拒绝为结构化失败（code-review item 30a8c34f0535）
+            return {
+                "success": False,
+                "action": "run",
+                "error": f"as 命名 '{name}' 是框架保留键，请改用其他名称",
+            }
 
         try:
             if use_shell:
@@ -207,7 +238,10 @@ class CliRunner(VerifyRunner):
 
         exit_code = proc.returncode
         if exit_code is not None and exit_code < 0:
-            # 被信号终止（如 SIGSEGV）→ error，不进 product-bug 管道
+            # 被信号终止（如 SIGSEGV）→ error，不进 product-bug 管道。
+            # 仅 argv 形态成立：shell 形态被监控的是 shell，内部命令信号死亡
+            # 只体现为 shell 退出码 128+n，由 exit_code 断言仲裁
+            # （code-review item bf0cbf18b226）
             sig = -exit_code
             return {
                 "success": False,
