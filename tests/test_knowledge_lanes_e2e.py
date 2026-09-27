@@ -1,8 +1,9 @@
-"""三车道端到端测试（任务 5.2）。
+"""三车道端到端测试（任务 5.2；回填段已更新到 fix-knowledge-backfill-reconstruction
+方案 B 聚合语义：史前复原 → 聚类自举 → 能力聚合批次 → ADR 维度消化 → 收敛汇报）。
 
 真实车道实现 + fake spawn / 假 graphify 子进程替身，从配置装载到自然日检查点
 全链路贯通：
-- 回填：域清单缺失 → 自举 → 按域分批 → 校验提交 → 收敛汇报 → 重入幂等；
+- 回填：域清单缺失 → 自举 → 能力批 → 校验提交 → 收敛汇报 → 重入幂等；
 - audit：植入机械+语义病灶 → daemon 检查点触发 → 机械修 + 定向转写 → 报告
   与日戳断言，同自然日防重；
 - graph：假 graphify 产物落盘 → pathspec 提交 → 日戳断言。
@@ -11,6 +12,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 import types
@@ -80,39 +82,20 @@ def install_core(monkeypatch, root: Path, violations_fn=None):
     monkeypatch.setattr(core_pkg, "knowledge", mod, raising=False)
 
 
-# ── 回填车道端到端（自举 → 分批 → 收敛汇报） ─────────────────────────────
+# ── 回填车道端到端（自举 → 史前复原 → 能力聚合批 → 收敛汇报） ─────────────
 
 
 ARCHIVES = ["arc-a1", "arc-a2", "arc-a3", "arc-b1", "arc-b2", "arc-c1"]
-DOMAIN_MAP = {
-    "arc-a1": "dom-a", "arc-a2": "dom-a", "arc-a3": "dom-a",
-    "arc-b1": "dom-b", "arc-b2": "dom-b",
-    "arc-c1": "dom-c",
-}
+CAP_DOMAIN_MAP = {"cap-x": "dom-x"}
 
 
 def seed_archives(root: Path) -> None:
+    """6 归档触碰同一能力（聚合语义：1 个能力批，rev=链长 6）。"""
     for name in ARCHIVES:
         d = root / "spec" / "archive" / name / "specs" / "cap-x"
         d.mkdir(parents=True)
         (d.parent.parent / "proposal.md").write_text(f"# {name}\n", encoding="utf-8")
         (d / "spec.md").write_text("delta\n", encoding="utf-8")
-
-
-def page_text(archive: str) -> str:
-    return (
-        f"<!-- knowledge: capability=cap-{archive} rev=1 sources={archive} -->\n"
-        f"# cap-{archive}\n\n## 规则\n\n- {archive} 的现行规则一句。\n"
-    )
-
-
-def write_batch_pages(root: Path, prompt: str) -> None:
-    for ln in prompt.splitlines():
-        if ln.startswith("- arc-"):
-            name = ln[2:].strip()
-            p = root / "spec" / "knowledge" / "domains" / "dom-x" / f"cap-{name}.md"
-            p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(page_text(name), encoding="utf-8")
 
 
 def test_e2e_backfill_bootstrap_batches_convergence(e2e_root, monkeypatch):
@@ -123,24 +106,55 @@ def test_e2e_backfill_bootstrap_batches_convergence(e2e_root, monkeypatch):
     def spawn(prompt, run_id):
         if run_id.startswith("kb-bootstrap"):
             (root / ".fenix" / "knowledge_backfill_domains.json").write_text(
-                json.dumps(DOMAIN_MAP, ensure_ascii=False), encoding="utf-8"
+                json.dumps(CAP_DOMAIN_MAP, ensure_ascii=False), encoding="utf-8"
             )
             (root / "spec" / "knowledge").mkdir(parents=True, exist_ok=True)
             (root / "spec" / "knowledge" / "index.md").write_text(
                 "# 真相源导航\n", encoding="utf-8"
             )
             return "ok"
-        write_batch_pages(root, prompt)
+        if run_id.startswith("kb-prehistoric"):
+            # 全部能力已被归档覆盖：只出清单（baseline 作链头），无史前页
+            (root / ".fenix" / "knowledge_backfill_prehistoric.json").write_text(
+                json.dumps(
+                    [{"capability": "cap-x", "domain": "dom-x", "baseline": "史前基线一句。"}],
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            return "ok"
+        if run_id.startswith("kb-adr"):
+            raise AssertionError("无 design.md 归档不应派发 ADR 抽取 run")
+        # kb-batch：按能力清单写聚合页（rev=链长、sources 全链）
+        seg = prompt.split("本批能力清单（共", 1)[1]
+        for cap in re.findall(r"^- ([a-z0-9][a-z0-9-]*)（链", seg, re.M):
+            chain = re.search(
+                rf"^- {cap}（链 \d+ 份 delta：([^）]*)）", prompt, re.M
+            ).group(1).split(" → ")
+            p = root / "spec" / "knowledge" / "domains" / "dom-x" / f"{cap}.md"
+            p.parent.mkdir(parents=True, exist_ok=True)
+            src = ",".join(f"spec/archive/{a}" for a in chain)
+            p.write_text(
+                f"<!-- knowledge: capability={cap} rev={len(chain)} sources={src} -->\n"
+                f"# {cap}\n\n## 规则\n\n- 最终态规则一句。\n\n## 溯源\n"
+                + "".join(f"- {a} — 贡献一句\n" for a in chain),
+                encoding="utf-8",
+            )
         return "ok"
 
     summary = kb.run_backfill(root, spawn=spawn)
 
-    # 自举 → 3 域 3 批 → 全部成功
+    # 自举 → 6 归档触碰同一能力 → 1 个能力批；ADR 维度全部无 design.md 留痕跳过
     assert summary["converged"] is True
-    assert summary["batches_total"] == 3
-    assert summary["batches_ok"] == 3
-    assert summary["counts"]["distilled"] == 6
-    # 提交序列：bootstrap 先于 batch 1/3，批次消息连续
+    assert summary["batches_total"] == 1
+    assert summary["batches_ok"] == 1
+    assert summary["adr_batches_total"] == 0
+    assert summary["adr_skipped_no_design"] == sorted(ARCHIVES)
+    assert summary["counts"]["capability"] == {
+        "pending": 0, "distilled": 1, "failed": 0,
+    }
+    assert summary["counts"]["adr"] == {"pending": 0, "distilled": 6, "failed": 0}
+    # 提交序列：全部能力已被归档覆盖 → 史前段零产物零提交，仅 bootstrap + 能力批
     subjects = [
         ln
         for ln in _git(root, "log", "--format=%s", "--reverse").splitlines()
@@ -148,19 +162,25 @@ def test_e2e_backfill_bootstrap_batches_convergence(e2e_root, monkeypatch):
     ]
     assert subjects == [
         "[fenix] knowledge: backfill bootstrap",
-        "[fenix] knowledge: backfill batch 1/3",
-        "[fenix] knowledge: backfill batch 2/3",
-        "[fenix] knowledge: backfill batch 3/3",
+        "[fenix] knowledge: backfill batch 1/1",
     ]
-    # 台账全 distilled + 收敛汇报含批数/成败/规模统计
+    # 台账 v2 双维度键 + 分维度收敛汇报
     ledger = (root / ".fenix" / "knowledge_backfill.jsonl").read_text(encoding="utf-8")
-    assert ledger.count('"distilled"') == 6
+    assert '"name": "capability:cap-x"' in ledger
+    assert '"name": "adr:arc-a1"' in ledger
+    assert ledger.count('"status": "distilled"') == 7
     report = (root / ".fenix" / "knowledge_backfill_report.md").read_text(encoding="utf-8")
-    assert "批次总数：3（成功 3 / 失败 0）" in report
+    assert "能力页台账：distilled 1" in report
+    assert "ADR 台账：distilled 6" in report
     assert "真相源规模" in report
-    # 产物真身：6 个能力页落 domains/
+    # 产物真身：1 个能力页、rev=6、sources 全链（一次成文非 ×6 重放）
     pages = list((root / "spec" / "knowledge" / "domains").rglob("cap-*.md"))
-    assert len(pages) == 6
+    assert len(pages) == 1
+    page = pages[0].read_text(encoding="utf-8")
+    assert "rev=6" in page
+    for name in ARCHIVES:
+        assert f"spec/archive/{name}" in page
+    assert page.count("- 最终态规则一句。") == 1
     # 重入幂等：收敛后零派发
     calls_after: list = []
 

@@ -22,6 +22,7 @@ from pathlib import Path
 
 import pytest
 
+from core import knowledge as knowledge_impl  # 真模块引用（排队门 e2e 用；不受替身注入影响）
 from core import knowledge_backfill as kb
 
 
@@ -495,6 +496,32 @@ def test_adr_batch_consumed_and_no_design_skipped(proj, install_core):
     assert "无 design.md" in report
 
 
+def test_no_design_only_ledger_persisted(proj, install_core):
+    """纯 no_design 场景（零 ADR 批 run）：留痕跳过必须落盘。
+
+    回归锁：save 原先只在批次循环内，adr_batches 为空时 mark 只改内存，
+    台账文件停在 pending → has_pending 恒真 → 排队门永久阻塞增量派发。
+    """
+    (proj / "spec" / "archive" / "2026-09-01-arc-a1" / "design.md").unlink()
+    (proj / "spec" / "archive" / "2026-09-03-arc-b1" / "design.md").unlink()
+    install_core(FakeCore(proj))
+    spawn = Recorder(proj, on_call=default_on_call)
+    summary = kb.run_backfill(proj, spawn=spawn)
+    assert summary["converged"] is True
+    assert summary["adr_batches_total"] == 0
+    ledger = (proj / ".fenix" / "knowledge_backfill.jsonl").read_text(encoding="utf-8")
+    statuses = {
+        json.loads(ln)["name"]: json.loads(ln)["status"]
+        for ln in ledger.splitlines()
+        if ln.strip()
+    }
+    assert all(
+        v == "distilled" for k, v in statuses.items() if k.startswith("adr:")
+    ), statuses
+    # 排队门随之释放：重入收敛零派发
+    assert kb.ledger_has_pending(proj) is False
+
+
 def test_adr_failure_marks_failed_and_registers_todo(proj, install_core):
     poison_adr = "spec/knowledge/adr/ADR-001-decision-2026-09-01-arc-a1.md"
 
@@ -512,6 +539,68 @@ def test_adr_failure_marks_failed_and_registers_todo(proj, install_core):
     assert summary["converged"] is False
     todo = (proj / ".fenix" / "todo.md").read_text(encoding="utf-8")
     assert "回填 ADR 批次" in todo
+
+
+# ── 聚合回填全流程 e2e（任务 4.1）：回填期排队登记 → 二轮消化收敛 ─────────
+
+
+def seed_archive_d1(root: Path) -> None:
+    """回填期新归档：触达排队中的 cap-y（二轮扩链重聚合的证据）。"""
+    d = root / "spec" / "archive" / "2026-09-05-arc-d1"
+    (d / "specs" / "cap-y").mkdir(parents=True)
+    (d / "specs" / "cap-y" / "spec.md").write_text("delta\n", encoding="utf-8")
+    (d / "proposal.md").write_text("# 2026-09-05-arc-d1\n", encoding="utf-8")
+
+
+def read_ledger(root: Path) -> dict:
+    text = (root / ".fenix" / "knowledge_backfill.jsonl").read_text(encoding="utf-8")
+    return {
+        json.loads(ln)["name"]: json.loads(ln)["status"]
+        for ln in text.splitlines()
+        if ln.strip()
+    }
+
+
+def test_full_loop_dispatch_queue_then_drain(proj, install_core):
+    """全流程：首轮史前段失败早退（台账全 pending 落盘）→ 回填期新归档经
+    dispatch_distill 排队门登记入台账（不派发增量 run）→ 二轮断点续跑消化
+    收敛，排队能力以扩链后的全链（含新归档）重新聚合。"""
+    install_core(FakeCore(proj))
+    # 首轮：史前 run 不产清单 → 早退，台账保持 reconcile 出的全 pending
+    stall = Recorder(proj, on_call=lambda rec, p, r: None)
+    first = kb.run_backfill(proj, spawn=stall)
+    assert first["ok"] is False
+    assert first["reason"] == "prehistoric-no-inventory"
+    assert read_ledger(proj)["capability:cap-y"] == "pending"
+
+    # 回填期新归档派发被排队门拦截：登记 adr 键、不真派发（dispatcher 未触）
+    seed_archive_d1(proj)
+    calls: list = []
+
+    class Fake:
+        def dispatch(self, proot, names):
+            calls.append(list(names))
+
+    r = knowledge_impl.dispatch_distill(
+        proj, "2026-09-05-arc-d1", {"knowledge": {"enabled": True}}, dispatcher=Fake()
+    )
+    assert r == {"dispatched": False, "reason": "backfill-queued"}
+    assert calls == []
+    assert read_ledger(proj)["adr:2026-09-05-arc-d1"] == "pending"
+
+    # 二轮：史前正常 → 断点续跑消化全部 pending；cap-y 以扩链 3 链重新聚合
+    spawn = Recorder(proj, on_call=default_on_call)
+    second = kb.run_backfill(proj, spawn=spawn)
+    assert second["converged"] is True
+    batch_prompts = [p for p, run in spawn.calls if run.startswith("kb-batch")]
+    y_prompt = next(p for p in batch_prompts if "cap-y" in p)
+    assert cap_chain(y_prompt, "cap-y") == [
+        "2026-09-03-arc-b1", "2026-09-04-arc-c1", "2026-09-05-arc-d1",
+    ]
+    final = read_ledger(proj)
+    assert final["capability:cap-y"] == "distilled"
+    assert final["adr:2026-09-05-arc-d1"] == "distilled"
+    assert kb.ledger_has_pending(proj) is False
 
 
 # ── 史前求差与基线链头（任务 2.3） ───────────────────────────────────────

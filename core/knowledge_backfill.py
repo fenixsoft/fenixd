@@ -909,6 +909,10 @@ def run_backfill(
         # 无 design.md 无决策可抽：直接标 distilled 留痕跳过（对齐既有口径），
         # 否则 adr 条目永久 pending——回填无法收敛且排队门不释放
         ledger.mark(ADR_PREFIX + a, STATUS_DISTILLED)
+    if no_design:
+        # 留痕必须落盘：全部归档无 design 时下方批次循环不执行，循环内 save
+        # 覆盖不到，台账文件会停在 pending（排队门被永久顶住）
+        ledger.save()
     adr_batches = [
         with_design[i : i + BATCH_SIZE_MAX]
         for i in range(0, len(with_design), BATCH_SIZE_MAX)
