@@ -6,7 +6,9 @@ core/agent_runner/runner.py 的 context metrics 汇总处（:4936 日志行所�
 
 ## D2 链级 rollup 挂点：code-fix 链末批判定处
 
-core/code_fix.py 已有链末批判定 is_chain_last_batch（:1109，add-code-fix-batch-failure-selfheal 交付）：末批合回处汇总本链各 run 的轮数/tool_use（读 run 归档计数）与台账核销计数（resolved/ignored，按 review 维度台账为准），打一行结构化 rollup 日志并随链状态落盘；链中途终局（失败/跳批）同样输出累计值。选批与装箱（select_batch :1061、_pack_first_batch :1002）不动。
+core/code_fix.py 已有链末批判定 is_chain_last_batch（:1109，add-code-fix-batch-failure-selfheal 交付）：末批合回处汇总本链各 run 的轮数/tool_use（读 run 归档计数，按 `.fenix/runs/<run_id>.jsonl` 既有模式，见 :423 先例）与台账核销计数（resolved/ignored，按 review 维度台账为准），打一行结构化 rollup 日志并随链状态落盘；链中途终局（失败/跳批）同样输出累计值。选批与装箱（select_batch :1061、_pack_first_batch :1002）不动。
+
+链内 run 清单须显式记账：进度文件既有 `run_id` 字段是瞬时在飞标记（批收尾即清除，:111 注释与 :2264/:2298 等处 `run_id=None` 重置），台账核销记录（mark_resolved :1624）亦不携带 run_id，均不能充当「链内全部 run」的事实源。本 SPEC 须随链状态逐 run 累积 run_id（链级持久列表），rollup 以该清单逐 run 读归档计数为准——「覆盖链中全部 run 不漏样本」由此机械达成，而非依赖人工对账口径。
 
 ## D3 非目标：severity 预聚类不立项
 
