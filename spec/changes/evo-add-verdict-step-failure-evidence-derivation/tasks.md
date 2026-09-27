@@ -23,6 +23,6 @@
 
 ## 验证修复（原地打回第 1 轮）
 
-- [ ] 先复核失败有效性：逐条核对 `spec/changes/evo-add-verdict-step-failure-evidence-derivation/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
-- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
-- [ ] 修复后重跑验证确认通过
+- [x] 先复核失败有效性：逐条核对 `spec/changes/evo-add-verdict-step-failure-evidence-derivation/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码（结论：产品 Bug——场景期望裸专名 probe-visual-gamma 归因合规与 design 风险节「以名称对应归因」契约相符；产品把自造 visual: 前缀整串当唯一对账 token 属假阴性）
+- [x] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码（core/verdict_check.py _derived_label_tokens 对视觉派生条目剥 visual: 前缀补裸名别名 token；tests/test_verdict_step_failure_shape.py 补裸名归因合规/完整前缀仍合规/无关归因仍违规三例守卫）
+- [x] 修复后重跑验证确认通过（verdict 相关 26 个测试文件定向回归全绿：5 文件 176 passed + 21 文件 456 passed/1 xfailed，含复刻 BUG-01 失败形态的 test_visual_bare_name_attribution_compliant）
