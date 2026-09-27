@@ -82,6 +82,7 @@
     }
   ```
   - `failed_assertions`：从场景 assertion_results 中摘取未通过断言（type/selector/expected/actual）；
+  - **步骤失败型场景必填清单（强制）**：当场景 `assertion_results` 为空/缺失但存在失败步骤（step_results 有 success=false）或驱动视觉结论（visual_results 有 diff_detected/warning）时，MUST 把每个失败信号逐条列入 `failed_assertions`（可用 `{"type": "step_error", "selector": "<步骤 target>", "expected": "步骤成功", "actual": "<error 摘录≤300字>"}` 形态），并对应给出 assertion_triage 条目——校验器在此形态下按该清单核验逐条归因完整性，清单留空将被确定性驳回（重试亦无法通过）；
   - `screenshots`：证据截图路径列表（取自场景 screenshots）；
   - `first_failed_step`：首个失败步骤的中文描述。三者至少提供其一，且 `failed_assertions` 与 `screenshots` 优先从既有数据摘取。
   - **文本长度约束**：evidence 各文本字段（actual/first_failed_step/断言 evidence）≤300 字符——引用引擎已捕获的原始内容即可，禁止长篇叙述（输出量直接决定裁决耗时）。
@@ -96,7 +97,7 @@
       "evidence": "选择器含臆测类名，元素从未存在（DOM snapshot 佐证）"}
     ]
   ```
-  - 每个非 PASS 场景 MUST 对其**每一条失败断言**单独给出一条归因：`assertion`（断言内容：type + selector/expected）、`classification`（四选一，与场景分类定义一致）、`evidence`（该断言的证据/理由，非空）。
+  - 每个非 PASS 场景 MUST 对其**每一条失败断言**（无失败断言清单时为每条失败步骤/驱动视觉结论，与 `failed_assertions` 自申报清单逐条对应）单独给出一条归因：`assertion`（断言内容：type + selector/expected）、`classification`（四选一，与场景分类定义一致）、`evidence`（该断言的证据/理由，非空）。
   - 场景级豁免（不记产品 Bug）仅当该场景**全部失败断言**均被单独归类为非 product-bug 时成立；任一断言归类 product-bug → 场景 MUST `failed`，不得整体豁免。
   - 校验器会核对条目数与失败断言数、归类取值与证据非空，缺失或漏条目会触发裁决重试。
 
