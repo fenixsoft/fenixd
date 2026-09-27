@@ -93,8 +93,10 @@ export default function OverviewPage() {
       } catch {
         return;
       }
-      // 仅 alerts 事件驱动横幅刷新（跨项目告警聚合，与 30s 心跳解耦）
-      if (msg.type === 'alerts') setAlertsTick((t) => t + 1);
+      // alerts/admin_activities 事件均驱动横幅刷新（跨项目告警聚合，与 30s 心跳解耦）：
+      // AdminMonitor 新写入的升级告警走 admin_alerts.json 变更，watcher 只广播
+      // type=admin_activities（无 alerts 事件），不同驱则停留页面期间新告警不上屏
+      if (msg.type === 'alerts' || msg.type === 'admin_activities') setAlertsTick((t) => t + 1);
       // state/refresh/run_meta 不触发 overview 重拉：由 30s 心跳统一校准
     };
     // 卸载必须关闭，防 EventSource 连接泄漏

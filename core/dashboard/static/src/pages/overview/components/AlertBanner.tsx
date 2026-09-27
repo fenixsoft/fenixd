@@ -24,7 +24,7 @@ function sevRank(sev?: string) {
 }
 
 export default function AlertBanner({ refreshTick }: { refreshTick: number }) {
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
   const [data, setData] = useState<AlertsData | null>(null);
   const [optimistic, setOptimistic] = useState<string[]>([]);
   const [expanded, setExpanded] = useState(true);
@@ -85,6 +85,29 @@ export default function AlertBanner({ refreshTick }: { refreshTick: number }) {
   // hook（同详情页语义：loading 防重、成功回显步骤、失败展示错误且恢复可交互
   // 可重试），刷新回调经执行按钮的 onResolved 注入
 
+  // 「清理所有事件」是影响全部项目的破坏性批量操作（后端逐条 mark_alert_handled，
+  // 标记单向不可撤销，AdminMonitor 不会对同一告警重新升级），与 ProjectCards 删除
+  // 项目的确认约定对齐：先 modal.confirm 说明影响范围，误触不再静默抹掉待决策告警
+  const confirmClearAll = () => {
+    modal.confirm({
+      title: '清理所有事件',
+      content: (
+        <div style={{ whiteSpace: 'pre-wrap' }}>
+          {`确认清理全部项目的 ${count} 条未处理告警？\n\n`}
+          该操作会把所有项目的未处理告警标记为已处理，且不可撤销；标记后
+          AdminMonitor 不会对同一告警重新升级，请确认已逐条知悉。
+        </div>
+      ),
+      okText: '全部清理',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      // 不返回 promise：立即关弹窗，清理在后台进行（与 ProjectCards 删除同款）
+      onOk: () => {
+        void handleClearAll();
+      },
+    });
+  };
+
   const handleClearAll = async () => {
     try {
       await clearAllAlerts();
@@ -123,7 +146,7 @@ export default function AlertBanner({ refreshTick }: { refreshTick: number }) {
             <Button size="small" type="text" onClick={() => setExpanded((v) => !v)}>
               {expanded ? '收起列表' : '展开列表'}
             </Button>
-            <Button size="small" type="text" onClick={() => void handleClearAll()}>
+            <Button size="small" type="text" onClick={confirmClearAll}>
               清理所有事件
             </Button>
           </Space>
