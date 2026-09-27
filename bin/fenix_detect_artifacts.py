@@ -218,7 +218,7 @@ def _read_existing_config(project_root: Path) -> dict | None:
                 # 三态契约（与 worktree_config_view 同口径）：空值/null 表示「未裁决」，
                 # MUST NOT 落键——write_config_if_unresolved 以键在册判「已显式配置」，
                 # 误落键会把未裁决项目静默排除在自动探测写入之外；仅显式布尔裁决落键
-                if val.lower() in ("true", "1", "yes"):
+                if val.lower() in ("true", "1", "yes", "on"):  # on 是 YAML 1.1 的 true 别名，与 false 集合的 off 对称
                     result["has_build_artifacts"] = True
                 elif val.lower() in ("false", "0", "no", "off"):
                     result["has_build_artifacts"] = False
