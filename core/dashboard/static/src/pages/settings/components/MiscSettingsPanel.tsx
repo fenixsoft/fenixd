@@ -1,5 +1,5 @@
 import { Button, Card, Form, InputNumber, Typography, message } from 'antd';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ConfigData } from '@/services/dashboard';
 import SyncFromUserButton from './SyncFromUserButton';
 import { SETTINGS_ACTIONS_ROW_STYLE } from '../styles';
@@ -17,6 +17,10 @@ interface MiscSettingsPanelProps {
 
 export default function MiscSettingsPanel({ config, onSave, project, onConfigSynced }: MiscSettingsPanelProps) {
   const [form] = Form.useForm();
+  // 保存重入守卫（code-review item bbc939741560，比照 TokenBudgetPanel
+  // 53b14fb31196）：onSave 是异步落盘 + 父组件重载，请求在飞期间连点「保存」
+  // 会重复提交保存请求——saving 期间置 loading/disabled 并在入口短路。
+  const [saving, setSaving] = useState(false);
 
   // 回填门控（code-review item 0a2bd3f20fcd，比照 AgentModelPanel 9f98edec21fa）：
   // 无条件 setFieldsValue 会在其它面板保存触发父组件 setConfig 时，用外部
@@ -32,27 +36,35 @@ export default function MiscSettingsPanel({ config, onSave, project, onConfigSyn
   }, [config.archive, form]);
 
   const handleSave = async () => {
-    // 分离「表单校验」与「保存持久化」（code-review item 9125d4a7f7b4，比照
-    // AgentModelPanel 3086b7e96c4f）：旧实现两者混在同一 try/catch 且静默吞掉，
-    // onSave 拒绝（网络失败/500）时用户点击「保存」后无任何反馈。
-    let values;
-    try {
-      values = await form.validateFields();
-    } catch {
-      // 校验失败：antd 已在表单内渲染 explain-error 提示，无需额外日志
-      // （避免触发验证的 no_console_error 断言）。
+    if (saving) {
       return;
     }
+    setSaving(true);
     try {
-      await onSave({
-        // add-spec-archive：自动归档阈值（0 = 禁用）
-        archive: {
-          auto_threshold: values.auto_threshold,
-        },
-      });
-    } catch (error) {
-      // 保存持久化失败：给用户显式反馈而非静默
-      message.error(`保存失败：${error instanceof Error ? error.message : String(error)}`);
+      // 分离「表单校验」与「保存持久化」（code-review item 9125d4a7f7b4，比照
+      // AgentModelPanel 3086b7e96c4f）：旧实现两者混在同一 try/catch 且静默吞掉，
+      // onSave 拒绝（网络失败/500）时用户点击「保存」后无任何反馈。
+      let values;
+      try {
+        values = await form.validateFields();
+      } catch {
+        // 校验失败：antd 已在表单内渲染 explain-error 提示，无需额外日志
+        // （避免触发验证的 no_console_error 断言）。
+        return;
+      }
+      try {
+        await onSave({
+          // add-spec-archive：自动归档阈值（0 = 禁用）
+          archive: {
+            auto_threshold: values.auto_threshold,
+          },
+        });
+      } catch (error) {
+        // 保存持久化失败：给用户显式反馈而非静默
+        message.error(`保存失败：${error instanceof Error ? error.message : String(error)}`);
+      }
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -95,7 +107,7 @@ export default function MiscSettingsPanel({ config, onSave, project, onConfigSyn
         {project && onConfigSynced && (
           <SyncFromUserButton project={project} page="misc" onSynced={onConfigSynced} />
         )}
-        <Button type="primary" onClick={handleSave} data-testid="misc-save">
+        <Button type="primary" onClick={handleSave} loading={saving} disabled={saving} data-testid="misc-save">
           保 存
         </Button>
       </div>
