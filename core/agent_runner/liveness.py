@@ -332,8 +332,10 @@ class LivenessSupervisor:
             # 集合 → 该 run 仍存活，跳过补写与「悬空 run」告警。幂等：无后缀键归一
             # 后为自身，覆盖原精确成员判定。
             base_stem = re.sub(r"(?:-a\d+|-r\d+)+$", "", stem)
+            # 注册表会被 run 收尾线程并发 pop，先取快照避免迭代中 dict 变化
             if base_stem in {
-                re.sub(r"(?:-a\d+|-r\d+)+$", "", key) for key in self._pm._running_agents
+                re.sub(r"(?:-a\d+|-r\d+)+$", "", key)
+                for key in list(self._pm._running_agents)
             }:
                 continue
             # 判据 ②：流停保护，先行短路免读
