@@ -1322,6 +1322,10 @@ def accept_item(
         )
 
     def _do() -> dict:
+        # [fenix-ignore:17b84b130a08] 整体持锁（含 copytree 与 git 子进程）是
+        # compare-and-set 的既定取舍（见下注释）：拆锁会让并发接受者看到中间态；
+        # git 子进程已有 timeout=60 兜底、失败路径均有告警留痕，收敛锁窗的收益
+        # 不抵拆 CAS 结构的风险。
         # 「状态校验 → 复制/提交/注册 → 写回」整体持 items.jsonl flock 构成
         # compare-and-set（code-review item fba717748316）：daemon 自动接受与
         # dashboard 人工同意并发时，后到者在锁内重读必见先到者写回的最终状态，
@@ -1424,6 +1428,9 @@ def accept_item(
                     "error": rec["draft_failed_reason"],
                 }
         except OSError as e:
+            # 复制失败：清理半写副本（对齐下方提交失败分支的清理纪律），
+            # 否则残留目录永久占用原名，重试被迫换后缀立项
+            shutil.rmtree(dest, ignore_errors=True)
             rec["status"] = "accept_failed"
             rec["draft_failed_reason"] = f"草稿复制失败: {e}"
             _persist(rec)
