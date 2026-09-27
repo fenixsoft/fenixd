@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { ConfigData } from '@/services/dashboard';
 import SyncFromUserButton from './SyncFromUserButton';
 import { SETTINGS_ACTIONS_ROW_STYLE } from '../styles';
+import { usePanelDirty } from '../panelDirty';
 
 const { Text } = Typography;
 
@@ -71,6 +72,9 @@ interface VerifyPanelProps {
 
 export default function VerifyPanel({ config, onSave, project, onConfigSynced }: VerifyPanelProps) {
   const [form] = Form.useForm();
+  // 用户编辑置脏：切页签/作用域前由 index 经 anyPanelDirty 弹丢弃确认
+  // （code-review item 8a3eb01dc2b9）
+  const { setDirty } = usePanelDirty();
   // 保存重入守卫（code-review item 2a3a76864687）：onSave 是异步，提交期间
   // 按钮可继续点击会发出重叠保存请求（并发写同一配置文件，结果取决于响应
   // 到达顺序）——saving 期间置 loading/disabled 并在入口短路。
@@ -171,7 +175,7 @@ export default function VerifyPanel({ config, onSave, project, onConfigSynced }:
       {/* 单一 Form 承载两张卡片：产物路径卡片的 Form.List 必须处于 Form 上下文内，
           否则 add/remove 会落到 rc-field-form 的默认空上下文（warning 桩），
           点击「添加产物路径」静默无反应。 */}
-      <Form form={form} initialValues={initialValues} layout="vertical">
+      <Form form={form} initialValues={initialValues} layout="vertical" onValuesChange={() => setDirty(true)}>
         <Card style={{ marginTop: 12 }}>
           <Form.Item
             name="static_scope"

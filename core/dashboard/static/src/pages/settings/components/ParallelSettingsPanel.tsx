@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { ConfigData } from '@/services/dashboard';
 import SyncFromUserButton from './SyncFromUserButton';
 import { SETTINGS_ACTIONS_ROW_STYLE } from '../styles';
+import { usePanelDirty } from '../panelDirty';
 
 const { Text } = Typography;
 
@@ -37,6 +38,9 @@ interface ParallelSettingsPanelProps {
 
 export default function ParallelSettingsPanel({ config, onSave, project, onConfigSynced }: ParallelSettingsPanelProps) {
   const [form] = Form.useForm();
+  // 用户编辑置脏：切页签/作用域前由 index 经 anyPanelDirty 弹丢弃确认
+  // （code-review item 8a3eb01dc2b9）
+  const { setDirty } = usePanelDirty();
   // 保存重入守卫（code-review item 25f88bae6330，比照 TokenBudgetPanel
   // 53b14fb31196）：onSave 是异步，提交期间按钮可继续点击会发出重叠保存请求
   // （并发写同一配置文件，结果取决于响应到达顺序）——saving 期间置
@@ -108,7 +112,7 @@ export default function ParallelSettingsPanel({ config, onSave, project, onConfi
         同时运行的 Agent 进程数上限。调度采用严格优先级并行：高优先级任务先执行；同一优先级内可并行至该上限；不同优先级不并行（低优先级等高优先级全部完成后才启动）。
       </Text>
       <Card style={{ marginTop: 12 }}>
-        <Form form={form} initialValues={initialValues} layout="vertical">
+        <Form form={form} initialValues={initialValues} layout="vertical" onValuesChange={() => setDirty(true)}>
           <Form.Item
             name="max_concurrent"
             label={

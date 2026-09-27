@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { ConfigData } from '@/services/dashboard';
 import SyncFromUserButton from './SyncFromUserButton';
 import { SETTINGS_ACTIONS_ROW_STYLE } from '../styles';
+import { usePanelDirty } from '../panelDirty';
 
 const { Text } = Typography;
 
@@ -45,6 +46,9 @@ interface ApprovalModePanelProps {
 
 export default function ApprovalModePanel({ config, onSave, project, onConfigSynced }: ApprovalModePanelProps) {
   const [form] = Form.useForm();
+  // 用户编辑置脏：切页签/作用域前由 index 经 anyPanelDirty 弹丢弃确认
+  // （code-review item 8a3eb01dc2b9）
+  const { setDirty } = usePanelDirty();
   // 保存重入守卫（code-review item 589c1c98c5a4）：onSave 是异步，提交期间
   // 按钮可继续点击会发出重叠保存请求（并发写同一配置文件，结果取决于响应
   // 到达顺序）——saving 期间置 loading/disabled 并在入口短路。
@@ -110,6 +114,7 @@ export default function ApprovalModePanel({ config, onSave, project, onConfigSyn
           form={form}
           initialValues={gatesFormValues(config.gates)}
           layout="vertical"
+          onValuesChange={() => setDirty(true)}
         >
           {/* 草稿晋升模式（add-draft-promotion-gate D5，值语义对齐 approve_mode） */}
           {/* 说明文字置于 label 内标题下方第二行（用户要求）。仍不可放 children：

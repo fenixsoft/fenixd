@@ -7,6 +7,7 @@ import { toHealthDisplay, type HealthCheckDisplay } from '@/utils/llmHealth';
 
 import SyncFromUserButton from './SyncFromUserButton';
 import { SETTINGS_ACTIONS_ROW_STYLE } from '../styles';
+import { usePanelDirty } from '../panelDirty';
 
 const { Text } = Typography;
 
@@ -135,6 +136,9 @@ interface LlmProviderPanelProps {
 
 export default function LlmProviderPanel({ config, onSave, project, onConfigSynced }: LlmProviderPanelProps) {
   const [form] = Form.useForm();
+  // 用户编辑置脏：切页签/作用域前由 index 经 anyPanelDirty 弹丢弃确认
+  // （code-review item 8a3eb01dc2b9）
+  const { setDirty } = usePanelDirty();
   // 观察整个 providers 数组以驱动每张卡片「启用计费」开关对价格区的显隐
   const providersWatch = Form.useWatch('providers', form);
   // 每卡片两个折叠区（环境变量 / 计费价格）的展开态，key=Form.List field.key
@@ -319,7 +323,7 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
     <div>
       <h3>模型</h3>
       <Text type="secondary">定义可用的 LLM 提供者（Base URL / API Key / 默认模型）。</Text>
-      <Form form={form} initialValues={initialValues} layout="vertical" style={{ marginTop: 12 }}>
+      <Form form={form} initialValues={initialValues} layout="vertical" onValuesChange={() => setDirty(true)} style={{ marginTop: 12 }}>
         <Form.List name="providers">
           {(fields, { add, remove }) => (
             <>

@@ -7,6 +7,8 @@ import type { ConfigData, OverviewData } from '@/services/dashboard';
 // PAGE_LABELS 单一来源移入无依赖共享模块（code-review item 6df16f377728）：
 // 子组件不再从本文件反向导入，消除 index → panels → button → index 模块循环。
 import { PAGE_LABELS } from './pageLabels';
+// 页签/作用域切换丢弃确认（code-review item 8a3eb01dc2b9）：活跃面板判脏
+import { anyPanelDirty, resetPanelDirty } from './panelDirty';
 import LlmProviderPanel from './components/LlmProviderPanel';
 import AgentModelPanel from './components/AgentModelPanel';
 import ParallelSettingsPanel from './components/ParallelSettingsPanel';
@@ -147,9 +149,22 @@ export default function SettingsPage() {
     };
   }, [project, scope]); // 添加 scope 依赖，确保作用域切换时重新加载配置
 
+  // 页签/作用域切换丢弃确认（code-review item 8a3eb01dc2b9）：右侧面板按
+  // activeKey 条件渲染，切页签/切作用域即卸载当前面板、未保存的编辑随之丢弃。
+  // 与 PromptsPanel 的切项目确认（f2830281595d）统一口径：切换前活跃面板有
+  // 未保存改动则先询问，拒绝则原地不动（Menu/Select 均受控，取消不掉显示态）。
+  const confirmDiscardPanelEdits = (): boolean => {
+    if (!anyPanelDirty()) return true;
+    return window.confirm('当前页签的修改尚未保存，切换将丢弃，确定继续？');
+  };
+
   // 处理作用域选择（'user' 或 'project:<name>'）
   const handleScopeSelect = (value: string) => {
     const { scope: nextScope, project: nextProject } = decodeScopeValue(value);
+    // 同值选择不触发切换（rc-select 不回调，防御性兜底），避免误弹丢弃确认
+    if (nextScope === scope && nextProject === project) return;
+    // 切换会重载配置并卸载当前面板：有未保存改动先确认再放行
+    if (!confirmDiscardPanelEdits()) return;
     setScope(nextScope);
     setProject(nextProject);
     // 项目级页签仅项目级存在：切回用户级时不能停留在已消失的页签上
@@ -175,6 +190,9 @@ export default function SettingsPage() {
       return false;
     }
     message.success('保存成功');
+    // 已落盘的编辑不再是「未保存改动」（code-review item 8a3eb01dc2b9）：复位
+    // 判脏，后续切页签/作用域不再对已保存的内容弹丢弃确认。
+    resetPanelDirty();
     // 重新加载配置（失败不影响保存结论）
     try {
       const configData = await getConfig(project);
@@ -293,7 +311,11 @@ export default function SettingsPage() {
             <Menu
               mode={isMobile ? 'horizontal' : 'inline'}
               selectedKeys={[activeKey]}
-              onClick={({ key }) => setActiveKey(key)}
+              onClick={({ key }) => {
+                // 切页签即卸载当前面板：有未保存改动先确认（item 8a3eb01dc2b9）
+                if (key !== activeKey && !confirmDiscardPanelEdits()) return;
+                setActiveKey(key);
+              }}
               items={menuItems}
               style={
                 isMobile
@@ -400,6 +422,8 @@ export default function SettingsPage() {
                     onManualEdit={() => {
                       // 「手工编辑」：跳「项目简介」页签并聚焦 verify.yaml 编辑框。
                       // 回归卡片仅项目作用域渲染，此处 activeKey 必为合法项目级页签
+                      // 跳转同样丢弃当前页签未保存编辑，先经同款确认（item 8a3eb01dc2b9）
+                      if (!confirmDiscardPanelEdits()) return;
                       setActiveKey('project-profile');
                       setVerifyFocusSignal(Date.now());
                     }}

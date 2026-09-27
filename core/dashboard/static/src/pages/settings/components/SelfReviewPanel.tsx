@@ -7,6 +7,7 @@ import remarkGfm from 'remark-gfm';
 import { getTodo, saveTodo } from '@/services/dashboard';
 import type { ConfigData } from '@/services/dashboard';
 import { markdownComponents } from '@/pages/projects/components/SpecDocModal';
+import { usePanelDirty } from '../panelDirty';
 
 const { Text } = Typography;
 const { TextArea } = Input;
@@ -24,6 +25,10 @@ interface SelfReviewPanelProps {
 
 export default function SelfReviewPanel({ config, onSave, project }: SelfReviewPanelProps) {
   const [form] = Form.useForm();
+  // 用户编辑置脏：切页签/作用域前由 index 经 anyPanelDirty 弹丢弃确认
+  // （code-review item 8a3eb01dc2b9）。自省表单与 todo.md 草稿两路编辑都置脏；
+  // 保存经父级 handleSave 成功后统一复位，todo.md 段失败时在本地重新置脏
+  const { setDirty } = usePanelDirty();
   const selfReview = config.self_review;
 
   // ── todo.md 草稿状态：保存并入本页签右下角主保存按钮
@@ -141,6 +146,9 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
         const errorMessage = e instanceof Error ? e.message : String(e);
         message.error(`todo.md 保存失败：${errorMessage}`);
         console.error('Failed to save todo.md:', e);
+        // 配置段成功已触发父级统一复位判脏，但 todo.md 段未落盘、草稿仍是
+        // 未保存改动：重新置脏，切页签/作用域时丢弃确认不可缺席
+        setDirty(true);
         return;
       }
       // 回读失败单独提示；保留编辑框现有草稿不回填（覆写内容即用户刚提交的草稿）
@@ -163,7 +171,7 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
 
   return (
     <div data-testid="self-review-panel">
-      <Form form={form} initialValues={initialValues} layout="vertical">
+      <Form form={form} initialValues={initialValues} layout="vertical" onValuesChange={() => setDirty(true)}>
         <h3>自省</h3>
         <Text type="secondary">
           Fenix Daemon 每晚在指定时间由 Administrator Agent 自动执行工作回顾（浪费 /
@@ -266,7 +274,10 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
                     <TextArea
                       data-testid="todo-textarea"
                       value={todoDraft}
-                      onChange={(e) => setTodoDraft(e.target.value)}
+                      onChange={(e) => {
+                        setDirty(true);
+                        setTodoDraft(e.target.value);
+                      }}
                       disabled={todoLoading}
                       placeholder={'## 2026-09-04\n\n### 可改进\n- 证据：……'}
                       autoSize={{ minRows: 10, maxRows: 24 }}

@@ -15,6 +15,7 @@ import { resolveHealthCheckParams, toHealthDisplay, type HealthCheckDisplay } fr
 
 import SyncFromUserButton from './SyncFromUserButton';
 import { SETTINGS_ACTIONS_ROW_STYLE } from '../styles';
+import { usePanelDirty } from '../panelDirty';
 
 const { Text } = Typography;
 
@@ -105,6 +106,9 @@ interface AgentModelPanelProps {
 export default function AgentModelPanel({ config, onSave, project, onConfigSynced }: AgentModelPanelProps) {
   const { message } = App.useApp();
   const [form] = Form.useForm();
+  // 用户编辑置脏：切页签/作用域前由 index 经 anyPanelDirty 弹丢弃确认
+  // （code-review item 8a3eb01dc2b9）
+  const { setDirty } = usePanelDirty();
   const providers = config.llm.providers || [];
 
   // 「复制/粘贴」临时剪贴板：存放某个角色当前的分配（角色级默认模型 + Provider 行链）。
@@ -315,7 +319,7 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
           页签」添加 Provider 并保存，再回来分配；或切换到项目级配置（选择项目后进入配置页）进行分配。
         </div>
       )}
-      <Form form={form} initialValues={initialValues} layout="vertical" style={{ marginTop: 12 }}>
+      <Form form={form} initialValues={initialValues} layout="vertical" onValuesChange={() => setDirty(true)} style={{ marginTop: 12 }}>
         <Form.Item
           name="subagentModelOverride"
           label="子代理模型覆盖（Subagent Model Override）"

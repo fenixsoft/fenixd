@@ -30,6 +30,7 @@ import ScheduleFields, {
 } from '@/components/ScheduleFields';
 import type { AcceptSchedule } from '@/components/ScheduleFields';
 import { markdownComponents } from '@/pages/projects/components/SpecDocModal';
+import { usePanelDirty } from '../panelDirty';
 import {
   EVOLUTION_STATUS_LABELS,
   EVOLUTION_DOCS,
@@ -297,6 +298,9 @@ const SuggestedImprovementsPanel = forwardRef<
   SuggestedImprovementsPanelProps
 >(function SuggestedImprovementsPanel({ config, scope, project }, ref) {
   const [form] = Form.useForm();
+  // 用户编辑置脏：切页签/作用域前由 index 经 anyPanelDirty 弹丢弃确认
+  // （code-review item 8a3eb01dc2b9）；项目级作用域整表 disabled 不会触发
+  const { setDirty } = usePanelDirty();
   const se = config.self_evolution;
   const isUserScope = scope === 'user';
 
@@ -1041,7 +1045,7 @@ const SuggestedImprovementsPanel = forwardRef<
 
       {/* 7.2: 配置卡片 */}
       <Card style={{ marginTop: 12, marginBottom: 16 }}>
-        <Form form={form} initialValues={initialValues} layout="vertical" disabled={!isUserScope}>
+        <Form form={form} initialValues={initialValues} layout="vertical" disabled={!isUserScope} onValuesChange={() => setDirty(true)}>
           {!isUserScope && (
             <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
               全局键（auto_accept / max_items_per_run / spec_run_at），请在用户级作用域修改。
