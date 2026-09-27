@@ -239,7 +239,10 @@ def _find_step_url_candidate(steps) -> str:
         if isinstance(s, dict):
             url = s.get("url")
             if isinstance(url, str) and re.match(r"^https?://\S+$", url.strip()):
-                return url
+                # 返回 strip 后的值（code-review item 48320e6f6abb）：合成
+                # navigate 步骤的 value 不携带首尾空白，避免运行期浏览器以
+                # invalid URL 拒绝导航造成场景伪失败。
+                return url.strip()
     return ""
 
 
@@ -848,6 +851,7 @@ class TestStep:
             screenshot=d.get("screenshot", False),
             description=d.get("description", ""),
             dialog=d.get("dialog", ""),
+            # [fenix-ignore:56c49c2fafae] 唯一消费点 browser.py mock_api 已对 status 做 int() 强转+非法值结构化失败（不静默回退 200），数字字符串运行期可正常 mock，所述伪失败不存在；按建议回退 0 反而复活已修复的「4xx mock 静默变 200」缺陷
             status=d.get("status", 0) or 0,
             prompt_text=d.get("prompt_text", "") or "",
             command=d.get("command"),
@@ -1024,7 +1028,9 @@ class TestScenario:
             steps=[TestStep.from_dict(s) for s in d.get("steps", [])],
             assertions=[Assertion.from_dict(a) for a in d.get("assertions", [])],
             visual_baseline=d.get("visual_baseline", ""),
-            depends_on=d.get("depends_on", []),
+            # 显式 null 归一空列表（与 env/headers 的 or {} 同款，code-review
+            # item 301443cb108c）：None 会存活到 engine 编排期迭代才 TypeError。
+            depends_on=d.get("depends_on") or [],
             external_net_errors_ok=d.get("external_net_errors_ok", False),
             kind=d.get("kind", "web"),
             viewport=cls._parse_viewport(d.get("viewport")),
@@ -1179,6 +1185,13 @@ def validate_scenario(scenario: TestScenario) -> list[str]:
     errors: list[str] = []
     if not scenario.id or not scenario.id.strip():
         errors.append("场景ID不能为空")
+    # depends_on 列表类型验收（code-review item 301443cb108c）：非列表形态
+    # （str/dict）会被逐字符/逐键迭代，原样放行要拖到 engine 编排期才暴露。
+    if scenario.depends_on is not None and not isinstance(scenario.depends_on, list):
+        errors.append(
+            f"场景'{scenario.id}': depends_on 必须为场景ID列表，"
+            f"收到 {type(scenario.depends_on).__name__}"
+        )
     if scenario.kind not in VALID_KINDS:
         errors.append(
             f"场景'{scenario.id}'未知 kind '{scenario.kind}'，"
