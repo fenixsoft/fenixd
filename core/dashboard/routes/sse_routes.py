@@ -53,14 +53,17 @@ class H9SseRoutesMixin:
         # 停滞客户端防占位：无超时则发送缓冲写满后 _sse_send 永久阻塞，
         # 占死连接槽位与处理线程；写超时经 socket.timeout（OSError 子类）
         # 由下方 except 捕获，finally unregister 释放槽位。
-        self.connection.settimeout(SSE_WRITE_TIMEOUT_SECONDS)
-        self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream")
-        self.send_header("Cache-Control", "no-cache")
-        self.send_header("Connection", "keep-alive")
-        self.send_header("Transfer-Encoding", "chunked")
-        self.end_headers()
         try:
+            # 注册已占槽位，故 settimeout 与写响应头各步须纳入 try/finally 覆盖：
+            # 若留在 try 外，响应首字节刷出前客户端 RST 会让写失败穿出本方法、
+            # finally 未建立，该槽位永久泄漏（仅进程重启可回收）。
+            self.connection.settimeout(SSE_WRITE_TIMEOUT_SECONDS)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.send_header("Transfer-Encoding", "chunked")
+            self.end_headers()
             self._sse_send({"type": "hello", "cid": conn.id})
             last_heartbeat = time.monotonic()
             poll_interval = getattr(
