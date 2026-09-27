@@ -41,6 +41,7 @@ import {
   setSpecPriority,
   setSpecStartAfter,
   statusMeta,
+  STREAM_URL,
 } from '@/services/dashboard';
 import type { SpecDetail, SpecSummary } from '@/services/dashboard';
 import { fetchProposalWhy } from '@/utils/proposalWhy';
@@ -695,10 +696,19 @@ export default function SpecListPage() {
   // 见 listFilters.ts LIST_TABS，缺省 dev 且缺省不写参），读侧恢复复用既有 active 门控
   const [activeTab, setActiveTab] = useState<ListTab>(initialFilters.tab);
 
+  // 加载币值守卫（code-review item 95bc1b23a7b7）：本路由组件在 /projects/:name
+  // 下复用不重挂载，name 变化会重建 load 重新拉取，但旧项目在飞请求不会被丢弃；
+  // 30s 心跳 + visibilitychange + run_meta + SSE 多路触发也让同项目内存在重叠
+  // load。每次调用递增序号作为币值，响应落地前比对仍是最新一次才写 specMap/
+  // error，较慢的旧响应（旧项目的整表数据/错误）不再覆盖新数据（对照
+  // settings/index.tsx 同款问题的 cancelled 守卫，code-review item 56756944dd6e）。
+  const loadSeqRef = useRef(0);
   const load = useCallback(async () => {
     if (!name) return;
+    const seq = ++loadSeqRef.current;
     try {
       const d = await getSpecs(name);
+      if (loadSeqRef.current !== seq) return;
       if (d.error) {
         setError(d.error);
       } else {
@@ -710,9 +720,11 @@ export default function SpecListPage() {
         specLoadedRef.current = true;
       }
     } catch (e) {
+      if (loadSeqRef.current !== seq) return;
       setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setLoading(false);
+      // loading 只由最新一次请求收口，过期响应不抢（新请求自己会复位）
+      if (loadSeqRef.current === seq) setLoading(false);
     }
   }, [name]);
 
@@ -752,7 +764,7 @@ export default function SpecListPage() {
   // SSE 增量驱动：state 事件入 patch 队列；run_meta/refresh 仅做节流兜底重拉
   useEffect(() => {
     void load();
-    const es = new EventSource('/api/stream');
+    const es = new EventSource(STREAM_URL);
     es.onmessage = (ev: MessageEvent) => {
       let msg: {
         type?: string;
