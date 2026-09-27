@@ -274,8 +274,11 @@ def _impl_budget_max(project_root) -> int:
     )
 
 
-def _normalize_depends_on(raw) -> str | None:
+def normalize_depends_on(raw) -> str | None:
     """规范化 depends_on 取值（add-spec-manual-activation D12）。
+
+    公开接口（code-review item b4b0573cd357）：bin/fenix_process.py 等 TUI
+    脚本只依赖本公开名；旧私有名经函数体后的别名保持兼容。
 
     depends_on **未**登记在 `StateParser._parse_content` 的 null→None 归一化
     键表里，而 serialize 对空值恒写 ``- depends_on: null``——STATE.md 里
@@ -292,6 +295,10 @@ def _normalize_depends_on(raw) -> str | None:
     if not text or text.lower() == "null":
         return None
     return text
+
+
+# 兼容别名：旧私有名继续可用（tests/test_dashboard_data.py 等既有调用方零改动）
+_normalize_depends_on = normalize_depends_on
 
 
 def spec_summary(project_root, spec_name: str, entry: dict, runs_files: list | None = None) -> dict:
@@ -381,8 +388,8 @@ def spec_summary(project_root, spec_name: str, entry: dict, runs_files: list | N
         # tag 的数据源）。MUST NOT 直接透传 entry.get("depends_on")——该字段未
         # 登记在 StateParser._parse_content 的 null→None 归一化键表，serialize 对
         # 空值恒写 `depends_on: null`，透传会让 227/244 条无依赖 SPEC 拿到字面量
-        # "null" 而被误标（见 _normalize_depends_on docstring）。
-        "depends_on": _normalize_depends_on(entry.get("depends_on") if entry else None),
+        # "null" 而被误标（见 normalize_depends_on docstring）。
+        "depends_on": normalize_depends_on(entry.get("depends_on") if entry else None),
         # 冻结态（结构化字段优先，回退文本前缀）：前端据此渲染解冻入口。
         # 自动冻结（内容完整性闸门 / 预算闸门 / env 阻塞）只认文本会漏判。
         "frozen": _facade.is_spec_frozen(entry),
@@ -788,8 +795,8 @@ def spec_detail(project_root, spec_name: str, entry: dict) -> dict:
         "cancelled_hold": normalize_bool_flag(entry.get("_cancelled_hold")) if entry else False,
         # add-spec-manual-activation D12：与列表摘要 spec_summary 同口径单点归一——
         # STATE.md 对空依赖恒写 `depends_on: null`，透传会让详情态复现列表页
-        # 已修掉的「前置依赖」误标（见 _normalize_depends_on docstring）
-        "depends_on": _normalize_depends_on(entry.get("depends_on")),
+        # 已修掉的「前置依赖」误标（见 normalize_depends_on docstring）
+        "depends_on": normalize_depends_on(entry.get("depends_on")),
         "tasks": _facade.parse_tasks(project_root, spec_name, spec_status),
         "tasks_note": _facade.tasks_note(project_root, spec_name, spec_status),
         "run_progress": _facade.run_task_progress(project_root, spec_name),

@@ -12,7 +12,7 @@ spec_summary 的预算三字段与 worktree 检查。「需要关注」分诊由
 import os
 import re
 import sys
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 # .absolute()（不跟随软链接）：兼容两种调用（与 fenix_dashboard.py 同一判定）——
@@ -26,7 +26,11 @@ if str(_FENIX_DIR) not in sys.path:
     sys.path.insert(0, str(_FENIX_DIR))
 
 from core.dashboard import data  # noqa: E402
-from core.dashboard.data.summary import _normalize_depends_on  # noqa: E402
+# normalize_depends_on 走公开名（code-review item b4b0573cd357：顶层导入 core
+# 私有名，core 侧重命名即整份报告 import 期崩溃）；展示层助手单点在
+# core.tui_format（_local_ts 默认 fmt 契约由 test_cli_time_display 钉死）。
+from core.dashboard.data.summary import normalize_depends_on  # noqa: E402
+from core.tui_format import fmt_dur as _fmt_dur, local_ts as _local_ts  # noqa: E402
 
 STATUS_ICONS = {
     "drafted": "📝",
@@ -72,37 +76,6 @@ NEXT_STEPS = {
     "done": "等待推送 — 运行 /fenix-approve",
     "pushed": "✅ 已完成并推送",
 }
-
-
-def _local_ts(iso_str, fmt="%H:%M:%S"):
-    """UTC ISO → 本地时区显示（日志层全 UTC 写入，展示层转本地）。
-
-    默认 fmt 与回退切片 [:19] 是既有展示契约（test_cli_time_display 钉死）；
-    需要日期的调用点显式传 fmt="%m-%d %H:%M"。
-    """
-    try:
-        return (
-            datetime.fromisoformat(str(iso_str).replace("Z", "+00:00")).astimezone().strftime(fmt)
-        )
-    except Exception:
-        return str(iso_str)[:19]
-
-
-def _fmt_dur(seconds) -> str:
-    try:
-        s = int(seconds or 0)
-    except (TypeError, ValueError):
-        return ""
-    if s <= 0:
-        return ""
-    if s < 60:
-        return f"{s}s"
-    if s < 3600:
-        return f"{s // 60}m"
-    # 时长格式全段不补零（与分钟/天级分支同一口径，如 2h5m、1d5h）
-    if s < 86400:
-        return f"{s // 3600}h{(s % 3600) // 60}m"
-    return f"{s // 86400}d{(s % 86400) // 3600}h"
 
 
 def _fmt_tokens(n) -> str:
@@ -321,7 +294,7 @@ def render_report(project_root, spec_name: str) -> str:
     # 依赖列与 Dashboard 列表侧同一归一化单点对齐：STATE.md 序列化对空依赖
     # 恒写 ``- depends_on: null``，解析回来是字面量字符串 "null"（真值），
     # 裸真值判定会给无依赖 SPEC 渲染「依赖: null」的误导行。
-    deps = _normalize_depends_on(entry.get("depends_on"))
+    deps = normalize_depends_on(entry.get("depends_on"))
     if deps:
         head_notes.append(f"依赖: {deps}")
     if entry.get("branch"):
