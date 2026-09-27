@@ -25,10 +25,10 @@ api_timeout 终局且 worktree 工作区存在未提交改动的 code-fix 批 ru
 - WHEN api_timeout 终局但工作区无改动
 - THEN 跳过 salvage，按现状清理
 
-### Requirement: 同链下一批消费 salvaged 现场
-同链下一批创建 worktree 前，框架 SHALL 尝试消费上一批登记的 legacy 现场，使重试批从 salvaged 工作起步；无 legacy 或消费失败时 SHALL 保持既有行为。
+### Requirement: 同链下一批接续 salvaged 现场
+api_timeout 失败批 salvage 后，框架 SHALL 以既有 reuse 认领机制（mark_legacy_reusable + create 内 _take_reusable_worktree）使同链下一批建树继承 salvaged 分支，让后续承担同批条目的重试批从 salvaged 工作起步；认领不可用时 SHALL fail-open 保持既有行为（全新建树），MUST NOT 以 consume_legacy（回收端，删除分支）实现接续。
 
 #### Acceptance Scenario 5: 现场被下一批接续
-- WHEN 同链下一批建树且存在该链登记的 legacy 现场
-- THEN 建树前消费 legacy（consume_legacy），salvaged 提交对重试批可见
-- AND 消费异常时 fail-open 降级为现状行为（正常新建 worktree），不阻断链推进
+- WHEN 同链下一批建树且存在置了 reuse 标记的 salvaged legacy
+- THEN wm.create 经既有认领通路继承 salvaged 分支（仅分支模式在既有分支上重建载体），salvaged 提交对重试批可见
+- AND 认领不可用（无 legacy/载体失效/换壳失败）时 fail-open 降级为现状行为（正常新建 worktree），不阻断链推进
