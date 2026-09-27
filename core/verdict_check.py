@@ -160,6 +160,176 @@ def _scenario_has_failure_signal(scenario: dict) -> bool:
     return False
 
 
+# ── 步骤失败形态的失败清单派生（verdict-step-failure-evidence-derivation D1）──
+# 引擎侧「任一步骤原语失败即跳过断言执行」（cli_runner/api_runner/web_runner
+# 同语义）使该形态下 assertion_results 必然为空表：judge 若只按「从
+# assertion_results 摘未通过断言」申报，首轮漏 triage、重试轮摘出空表，
+# fail-closed 驳回-重试死循环（add-knowledge-atlas-maintenance 2026-09-27
+# 事故现场）。派生 helper 把失败信号机械映射为缺省 failed_assertions 条目，
+# triage 覆盖校验改对派生清单核验——逐条归因仍必须覆盖清单（fail-closed
+# 不弱化），只消除空表死循环。
+
+# 派生条目 actual 文本上限（与 agents/planner-judge.md 处方 ≤300 字约束一致）
+_DERIVED_ACTUAL_MAX_CHARS = 300
+
+# 通用步骤动作词（引擎失败结果未回传 target/command 时标注仅剩动作词，
+# 无法与归因文本对账——覆盖校验对此类标注豁免名称核对，走条数口径）
+_GENERIC_STEP_ACTIONS = (
+    "run",
+    "click",
+    "fill",
+    "navigate",
+    "wait",
+    "hover",
+    "press",
+    "check",
+    "request",
+    "get",
+    "post",
+    "put",
+    "delete",
+)
+
+
+def _step_failure_label(step: dict, idx: int) -> str:
+    """失败步骤的可引用名（action + target/command/url 类回传字段 + 序号前缀）。
+
+    引擎侧步骤失败结果不总回传 target（如 cli 只回传 action="run"），能取到
+    专名（选择器/命令/URL/名称）时带上——triage 覆盖校验以步骤名对应归因
+    条目（design 风险条目），专名是对账的关键标识。
+    """
+    parts = []
+    action = str(step.get("action") or "").strip()
+    if action:
+        parts.append(action)
+    for key in ("target", "selector", "command", "url", "name"):
+        val = step.get(key)
+        if isinstance(val, str) and val.strip():
+            parts.append(_normalize_whitespace(val))
+            break
+    label = " ".join(parts)
+    prefix = f"步骤{idx}"
+    return f"{prefix}({label})" if label else prefix
+
+
+def _clip_derived_text(text, limit: int = _DERIVED_ACTUAL_MAX_CHARS) -> str:
+    """派生条目文本归一化 + 截断（judge 申报处方的 ≤300 字约束同款）。"""
+    clipped = _normalize_whitespace(text)
+    if len(clipped) > limit:
+        return clipped[:limit] + "…"
+    return clipped
+
+
+def derive_default_failed_assertions(scenario: dict) -> List[dict]:
+    """由失败信号派生缺省 failed_assertions 清单（verdict-step-failure-evidence-derivation）。
+
+    条目来源（与 ``_scenario_has_failure_signal`` 同判定口径）：
+      - step_results 中 success=False 条目 → ``{"type": "step_error", ...}``
+      - visual_results 中 diff_detected/warning 条目 → ``{"type": "screenshot_mismatch", ...}``
+
+    条目形状与 agents/planner-judge.md「步骤失败型场景必填清单（强制）」处方
+    的申报形态一致（type/selector/expected/actual），并附 ``step_failure``
+    标注（步骤失败型形态，非引擎真实断言产物）。无失败信号返回空表。
+    """
+    entries: List[dict] = []
+    if not isinstance(scenario, dict):
+        return entries
+    for idx, s in enumerate(scenario.get("step_results") or [], 1):
+        if not (isinstance(s, dict) and not s.get("success", True)):
+            continue
+        entries.append(
+            {
+                "type": "step_error",
+                "selector": _step_failure_label(s, idx),
+                "expected": "步骤成功",
+                "actual": _clip_derived_text(s.get("error") or s.get("detail") or "")
+                or "步骤执行失败（引擎未返回 error 文本）",
+                "step_failure": True,
+            }
+        )
+    for v in scenario.get("visual_results") or []:
+        if not (isinstance(v, dict) and v.get("status") in ("diff_detected", "warning")):
+            continue
+        label = _normalize_whitespace(v.get("baseline") or v.get("name") or v.get("id") or "")
+        entries.append(
+            {
+                "type": "screenshot_mismatch",
+                "selector": f"visual:{label}" if label else "visual:视觉比对",
+                "expected": "视觉比对通过",
+                "actual": _clip_derived_text(
+                    v.get("error") or v.get("detail") or v.get("status") or ""
+                )
+                or "驱动视觉结论",
+                "step_failure": True,
+            }
+        )
+    return entries
+
+
+def _has_distinctive_derived_label(entry: dict) -> bool:
+    """派生条目标注是否含可对账专名（剥「步骤N(...)」壳后非动作单词）。"""
+    label = _normalize_whitespace(entry.get("selector"))
+    m = re.match(r"^步骤\d+\((.*)\)$", label)
+    inner = (m.group(1) if m else label).strip()
+    if not inner:
+        return False
+    return inner.lower() not in _GENERIC_STEP_ACTIONS
+
+
+def _derived_label_tokens(entry: dict) -> List[str]:
+    """派生条目的可对账文本集合（完整标注 + 剥壳后专名 + 专名子词）。
+
+    「步骤N(click .submit-btn)」形态剥出 ``click .submit-btn`` 与
+    ``.submit-btn``——judge 归因文本常只引用步骤动作 + 选择器（不复制序号
+    壳），完整标注互不包含时专名子词仍可对账。通用动作词不单独入候选
+    （会误命中任意归因文本）。
+    """
+    label = _normalize_whitespace(entry.get("selector"))
+    tokens = [label] if label else []
+    m = re.match(r"^步骤\d+\((.*)\)$", label)
+    if m:
+        inner = m.group(1).strip()
+        if inner:
+            tokens.append(inner)
+            words = inner.split()
+            if len(words) > 1:
+                tokens.extend(w for w in words[1:] if w.lower() not in _GENERIC_STEP_ACTIONS)
+    return [t.lower() for t in tokens if t]
+
+
+def _derived_entry_name_matched(entry: dict, triage: List[dict]) -> bool:
+    """派生条目是否被某条归因条目按名称对应（任一候选文本互相包含即算）。
+
+    允许以步骤名对应归因条目（design 风险条目：派生条目为步骤级、judge
+    归因为断言级，名称对应而非逐字相等是两粒度的对接面）。
+    """
+    for token in _derived_label_tokens(entry):
+        for t in triage:
+            assertion = _normalize_whitespace(t.get("assertion")).lower()
+            if assertion and (token in assertion or assertion in token):
+                return True
+    return False
+
+
+def _uncovered_derived_entries(derived: List[dict], triage: List[dict]) -> List[dict]:
+    """归因未逐条覆盖的派生条目（triage 覆盖校验的核对核心）。
+
+    两级口径（fail-closed 不弱化 + design 风险条目的粒度差兜底）：
+      1. 条数核对：归因条数少于派生条数 → 全部派生条目视为未覆盖（与
+         检测①②「条数少于失败断言数」同口径）；
+      2. 名称对应：条数足够时，含专名标注（步骤 target/命令/URL、视觉名）
+         的派生条目 MUST 被某条归因条目按名称提及；仅通用动作词标注（引擎
+         未回传 target 时无法对账）豁免名称核对——条数覆盖即逐条归因有落点。
+    """
+    if len(triage) < len(derived):
+        return list(derived)
+    return [
+        d
+        for d in derived
+        if _has_distinctive_derived_label(d) and not _derived_entry_name_matched(d, triage)
+    ]
+
+
 def is_expandable_evidence_violation(reason: str) -> bool:
     """判断 judge 违规是否属「可补证据」类型（add-verify-lane-throughput 3.2）。
 
@@ -230,16 +400,32 @@ def triage_violation(scenario: dict) -> Optional[str]:
 
     # 漏条目检测③（同条目 fail-closed）：既无引擎断言清单（assertion_results
     # 缺失/非列表/空表）也无自申报失败断言清单，而场景仍存在失败步骤/驱动视觉
-    # 结论等失败信号 → 无法证明逐条归因完整，按违规处理（fail-closed，不给
-    # 「任意 1 条合规 triage 即放行」留口）；理由文案显式声明「断言清单缺失」
-    # 这一前提，重裁决据此先补清单再逐条归类。
+    # 结论等失败信号 → 由失败信号派生缺省 failed_assertions 清单
+    # （verdict-step-failure-evidence-derivation D1），以派生清单为基准执行
+    # triage 覆盖校验：归因未逐条覆盖派生清单仍判违规并列出派生条目（fail-closed
+    # 不弱化，不给「任意 1 条合规 triage 即放行」留口）；逐条覆盖 → 合规——
+    # 空表不再空转驳回，重试轮 judge 有应申报条目可依。
     if not (isinstance(ars, list) and ars) and not (isinstance(ev_failed, list) and ev_failed):
         if _scenario_has_failure_signal(scenario):
-            return (
-                "assertion_results 断言清单缺失，无法逐条核验归因完整性"
-                "（场景仍存在失败信号）：须在 evidence.failed_assertions 逐条列出"
-                "失败断言并逐条归类"
-            )
+            derived = derive_default_failed_assertions(scenario)
+            if not derived:
+                # 防御兜底：有失败信号却派生不出条目（畸形条目形态）→ 沿用
+                # 原清单缺失文案（fail-closed 不放行）
+                return (
+                    "assertion_results 断言清单缺失，无法逐条核验归因完整性"
+                    "（场景仍存在失败信号）：须在 evidence.failed_assertions 逐条列出"
+                    "失败断言并逐条归类"
+                )
+            uncovered = _uncovered_derived_entries(derived, triage)
+            if uncovered:
+                listed = "；".join(f"{d.get('type')}[{d.get('selector')}]" for d in uncovered)
+                return (
+                    "assertion_results 断言清单缺失（场景存在失败信号），"
+                    f"assertion_triage 未逐条覆盖框架派生的失败清单"
+                    f"（未覆盖 {len(uncovered)}/{len(derived)} 条：{listed}）："
+                    "须在 evidence.failed_assertions 逐条申报上述派生条目"
+                    "（步骤失败型场景必填清单）并逐条给出 assertion_triage 归因"
+                )
     return None
 
 
