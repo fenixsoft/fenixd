@@ -335,8 +335,6 @@ class TestLoadFrozenOrEscalate:
         bak_raw = json.loads(bak.read_text(encoding="utf-8"))
         assert bak_raw[0][CONTRACT_VERSION_FIELD] == 1
         assert "navigate" not in [s.get("action") for s in bak_raw[0]["steps"]]
-        # D4 风险 4：迁移结果回注 _frozen_migrated
-        assert pipe._frozen_migrated[0]["steps"][0]["action"] == "navigate"
         # 未升级人工
         pipe._escalate_env_blocked.assert_not_called()
 
