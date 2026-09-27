@@ -44,7 +44,18 @@ class PRepairLaneMixin:
         超限）时回退现行 fallback 重派路径（prompt 注入冲突上下文），不产生无限
         repair 循环；repair 后 re-merge 失败链仍走既有 fp 熔断（本方法不动熔断语义）。
         """
-        breaker_threshold = self._pm._get_config("agents.merge_breaker_threshold", 2)
+        # 配置侧 int() 归一（code-review item a8c4f9dfc7a0，对齐 fast_track
+        # 同键 74317ab4a77a 治理）：字符串/null 配置裸用于熔断比较抛
+        # TypeError，被 worker 外层兜底放大成派发回滚——非法值回退缺省。
+        try:
+            # None 判空而非 or 兜底（对齐 fast_track c54ffbef69c5）：合法
+            # 配置 0 不被 or 吞成缺省 2。
+            cfg_threshold = self._pm._get_config("agents.merge_breaker_threshold", 2)
+            breaker_threshold = 2 if cfg_threshold is None else int(cfg_threshold)
+        except (TypeError, ValueError):
+            breaker_threshold = 2
+        # 下限保护：负数配置无意义，收敛到 1。
+        breaker_threshold = max(breaker_threshold, 1)
         if self._pm._should_enter_repair(spec_name, merge_info, 0, breaker_threshold):
             # conflict_paths 统一 getattr 守卫（code-review item c1e84fcc2afd）：
             # merge_info 非 MergeConflictInfo 形态（测试替身/未来重构）时
@@ -182,10 +193,15 @@ class PRepairLaneMixin:
                 "pm_engine",
                 f"repair 载体分支 '{branch}' 不存在 — 回退 fallback 全新重派",
             )
+            # code-review item 46859c50e0a5：此分支 repair agent 从未派发
+            # （载体解析即失败）——merge 错误须落 merge_error 形参，
+            # repair_error 只写「载体不存在」事实，避免 STATE error 被误标
+            # 为 repair 失败、真实 merge 上下文被占位符替换。
             self._fallback_after_repair(
                 spec_name,
                 None,
-                getattr(merge_info, "error", "") or "",
+                repair_error="repair 载体分支不存在",
+                merge_error=getattr(merge_info, "error", "") or "",
             )
             return False
         # 三态解析：原地 / 换壳
@@ -195,10 +211,13 @@ class PRepairLaneMixin:
                 "pm_engine",
                 f"repair 载体解析失败（分支 '{branch}' 不可用）— 回退 fallback",
             )
+            # code-review item 46859c50e0a5：同上，repair agent 从未派发——
+            # merge 错误落 merge_error 形参，repair_error 只写事实文案。
             self._fallback_after_repair(
                 spec_name,
                 branch,
-                getattr(merge_info, "error", "") or "",
+                repair_error="repair 载体解析失败",
+                merge_error=getattr(merge_info, "error", "") or "",
             )
             return False
         # 认领现场（D4）：_legacy take 摘出 + _spec_locks 注册，防 sweeper 宽限期回收
@@ -290,6 +309,23 @@ class PRepairLaneMixin:
             repair_error = ""
             r = None
             try:
+                # code-review item a1563e2bce84：派发前清除上一轮结果文件
+                # （陈旧结果防护，对齐 dispute-judge 路径 runner.py 的派发前
+                # unlink 先例）：结果文件按 worktree 根固定路径跨轮复用且内容
+                # 不带 run id，原地 repair 复用实现 worktree 时，上一轮实现
+                # run 遗留的 status=error 结果文件若未被本轮 repair agent
+                # 覆写，读取侧（下方）会把陈旧失败误判为本轮 repair 失败、
+                # 触发多余的 fallback 全新重派。派发前 unlink 使「本轮未写 =
+                # 文件不存在」；换壳全新 worktree 下文件本不存在，删除幂等。
+                # 删除失败不阻断派发。
+                try:
+                    (Path(wt_path) / ".fenix-run-result.json").unlink(missing_ok=True)
+                except OSError as e:
+                    self._pm.logger.debug(
+                        "pm_engine",
+                        f"清除上一轮 repair 结果文件失败 '{spec_name}'"
+                        f"（不阻断派发）: {e}",
+                    )
                 r = self._pm.agent_runner.run_repair(
                     spec_name,
                     wt_path,
@@ -644,7 +680,17 @@ class PRepairLaneMixin:
             prev_streak = 0
         streak = prev_streak + 1 if prev_fp == fp else 1
         final_error = f"Merge-back failed (fp={fp}): {merge_error}"
-        breaker_threshold = self._pm._get_config("agents.merge_breaker_threshold", 2)
+        # 配置侧 int() 归一（code-review item a8c4f9dfc7a0，对齐 fast_track
+        # 同键 74317ab4a77a 治理）：字符串/null 配置裸用于比较抛 TypeError
+        # 中断 merge 失败处置，非法值回退缺省。
+        try:
+            cfg_threshold = self._pm._get_config("agents.merge_breaker_threshold", 2)
+            breaker_threshold = 2 if cfg_threshold is None else int(cfg_threshold)
+        except (TypeError, ValueError):
+            breaker_threshold = 2
+        # 下限保护：streak 自 1 起计，threshold<=1 均为首次失败即熔断，
+        # 收敛到 1 防御负数配置。
+        breaker_threshold = max(breaker_threshold, 1)
         if streak >= breaker_threshold:
             # fix-observability-gaps 2.2：repair re-merge 熔断 blocked（自动降级路径）
             self._pm.state_machine.transition(

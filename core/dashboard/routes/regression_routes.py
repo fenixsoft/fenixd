@@ -36,6 +36,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from core.dashboard import data as dashboard_data
+# autodraft 起草 claude 的 env 剔除口径与 architecture_routes 同源（item
+# c6630211c148）：一次性起草与 agent-run 无关，MUST NOT 注入 agent-run 专用
+# 上下文；_build_spawn_env 为模块级函数且 architecture_routes 不反向依赖本
+# 模块，无循环导入。
+from core.dashboard.routes.architecture_routes import _build_spawn_env
 # 三步原子独占写与 code-review 族信号同构（写同目录唯一临时文件+fsync →
 # os.link 原子挂到轮询路径 → finally 清临时文件），共用同一实现避免同族
 # 竞态修复漂移（先例 item 422ae03395de）。
@@ -363,6 +368,9 @@ class H12RegressionRoutesMixin:
           （parse_error 快照无 failures 键，不落 no_issues 以免误导）
         - 快照可读但无异常（failures 与 long_tests 均空且 status 非 timeout）
           → 400 ``regression_no_issues``
+        - daemon 未受 supervisor 托管（unmanaged）→ 409；stopped → 400
+          「daemon 未运行」（消费方守卫，对齐 _api_regression_run：信号无人
+          消费会滞留并在 daemon 下次启动时被消费成用户并未请求的修复）
         - 受理 → 200 + {ok, requested_at}；三步原子独占写（独占创建语义
           保留，目标已存在 → 409：并发第二次 POST 或上一信号尚未被消费）
         """
@@ -400,6 +408,32 @@ class H12RegressionRoutesMixin:
             self._coded_error(
                 400, "最近一次回归无异常用例，无需修复", "regression_no_issues",
             )
+            return
+
+        # 消费方守卫（hosting_state 判据，对齐 _api_regression_run 与
+        # code_review fix-run 先例；item be459dd18625）：daemon 未运行/
+        # 未托管时信号无人消费、长期滞留（并在 daemon 下次启动时被消费成
+        # 用户并未请求的修复），前端轮询 fix-result 恒为 status:none 拿不到
+        # 终态或引导——宁拒勿假受理
+        from core.fenix_session import hosting_state as _hosting_state
+
+        try:
+            state = _hosting_state(str(proot))
+        except Exception as exc:
+            # 判定异常按未运行兜底，宁拒勿假放行；降级可观测（item 0d1ba0c6efc0）
+            state = "stopped"
+            logger.warning(
+                f"hosting_state 判定异常，按 stopped 兜底（宁拒勿假放行）: {exc!r}",
+            )
+        if state == "unmanaged":
+            self._error(
+                409,
+                "本项目 daemon 未受 supervisor 托管，回归修复信号不会被消费。"
+                "经项目页「安装托管」或 /fenix-setup 恢复 supervisor 托管后重试",
+            )
+            return
+        if state != "managed":
+            self._error(400, "daemon 未运行，请先启动 daemon")
             return
 
         # 键名契约：信号 payload 用 created（fenixd
@@ -521,6 +555,10 @@ class H12RegressionRoutesMixin:
                     # 独立会话组（对齐 verify_engine/cli_runner 惯例）：超时可
                     # killpg 整组清场，杜绝只杀直接子进程留下的孤儿孙进程
                     start_new_session=True,
+                    # 剥离 agent-run 专用环境键（与 architecture_routes
+                    # ._build_spawn_env 同口径，item c6630211c148）：一次性
+                    # 起草与 agent-run 无关，MUST NOT 注入 agent-run 上下文
+                    env=_build_spawn_env(),
                 )
                 stdout, stderr = proc.communicate(timeout=AUTODRAFT_TIMEOUT_SECONDS)
             except subprocess.TimeoutExpired:

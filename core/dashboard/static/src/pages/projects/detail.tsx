@@ -692,6 +692,10 @@ export default function SpecDetailPage() {
   const loadSpecAlerts = useCallback(() => {
     getAlerts()
       .then((d) => {
+        // 迟到响应守卫：等待期间已切换 SPEC → 丢弃旧告警列表，不串页（与
+        // handleClearInfo / 告警裁决 onResolved 对 setDetail 的守卫同型，
+        // code-review item b11dfba1da23）
+        if (nameSpecRef.current.name !== name || nameSpecRef.current.spec !== spec) return;
         setSpecAlerts((d.alerts || []).filter((a) => a.project === name && a.spec === spec));
       })
       .catch(() => {});
@@ -831,6 +835,18 @@ export default function SpecDetailPage() {
       else history.push(`/projects/${name}`);
     },
   };
+
+  // 参数缺失防御（code-review item 5aa57e968aad）：路由匹配成功但 name/spec
+  // 为空时主加载 effect 直接 return、loading 初值 true 无人复位，页面会永久
+  // 停在整页 Spin。守卫须放在全部 hook 之后（条件 return 前置会破坏 hook 顺
+  // 序，同 ClaudeOutputPane），以参数缺失提示兜底，不让 loading 悬挂。
+  if (!name || !spec) {
+    return (
+      <PageContainer breadcrumbRender={false} header={headerCfg}>
+        <Alert type="warning" showIcon message="参数缺失" description="URL 缺少项目名或 SPEC 名，请从项目列表重新进入。" />
+      </PageContainer>
+    );
+  }
 
   if (loading) {
     return (

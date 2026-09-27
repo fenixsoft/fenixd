@@ -19,6 +19,24 @@ from pathlib import Path
 from typing import Callable
 
 
+def _resolve_max_retries(cfg) -> int:
+    """解析 agents.max_retries 为重派/熔断轮数上限（三处共用防双写漂移）。
+
+    code-review item f68ba79c3e07：``_writeback_recur_bump``、
+    ``_adjudicate_deliverable_missing`` 熔断分支与 ``_redispatch_with_retry``
+    原各持一份相同解析样板，而注释要求「文案轮数与实际熔断阈值一致」，
+    双写任一处调整即漂移——解析口径收敛于此。None 判空回缺省 3（而非
+    or 兜底：合法配置 0 不被吞成缺省，code-review item c54ffbef69c5），
+    STATE.md 读回的非数字文本 int 异常回退 3，``max(..., 1)`` 下限保证
+    分母恒正。
+    """
+    try:
+        max_r = 3 if cfg is None else int(cfg)
+    except Exception:
+        max_r = 3
+    return max(max_r, 1)
+
+
 class VAdjudicationMixin:
     """V 交付物裁定/dispute（design D1 表 B V 组）。"""
 
@@ -198,9 +216,11 @@ class VAdjudicationMixin:
     def _dispute_spec_context(self, spec_name: str, missing: list) -> dict:
         """spec 三文档语境摘录：含缺件路径的段落 + Deliverables 声明段全文。
 
-        对 proposal.md/design.md/tasks.md/specs/*.md：以缺件路径为关键词抽取
-        命中行 ±2 行上下文（每文档独立段落清单）；tasks.md 的声明段经
-        ``extract_declared_entries`` 结构化摘录。读取失败静默跳过（fail-open）。
+        对 proposal.md/design.md/tasks.md/specs/**/*.md：以缺件路径为关键词
+        抽取命中行 ±2 行上下文（每文档独立段落清单，specs 文档以相对
+        specs/ 的相对路径为键）；tasks.md 的声明段经
+        ``extract_declared_entries`` 结构化摘录。读取失败逐文件跳过并留痕
+        （fail-open，单文件失败不中断其余收集）。
         """
         from pathlib import Path as _Path
 
@@ -215,12 +235,24 @@ class VAdjudicationMixin:
                     pass
         specs_dir = spec_dir / "specs"
         if specs_dir.is_dir():
-            try:
-                for f in sorted(specs_dir.rglob("*.md")):
-                    if f.is_file():
-                        docs[f.name] = f.read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError):
-                pass
+            # 键用相对 specs/ 的路径而非 basename（code-review item
+            # d11709b19335）：specs 子目录下同名文件（a/overview.md 与
+            # b/overview.md）以 f.name 为键会静默互相覆盖，judge 摘录丢其
+            # 一；容错收敛到单文件粒度——单个文件读取失败仅跳过自身并
+            # 留痕，不再中断整轮收集。
+            for f in sorted(specs_dir.rglob("*.md")):
+                if not f.is_file():
+                    continue
+                try:
+                    docs[str(f.relative_to(specs_dir))] = f.read_text(
+                        encoding="utf-8"
+                    )
+                except (OSError, UnicodeDecodeError) as e:
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"dispute 语境读 specs 文件失败 '{f}'（跳过单文件）: "
+                        f"{type(e).__name__}: {e}",
+                    )
 
         excerpts = {}
         for name, text in docs.items():
@@ -593,14 +625,9 @@ class VAdjudicationMixin:
         if entry.get("_writeback_recur_path") != path:
             streak = 0
         streak += 1
-        try:
-            # None 判空而非 or 兜底（code-review item c54ffbef69c5）：合法配置
-            # 0（不自动重试）不被 or 吞成缺省 3。
-            cfg_max_r = self._pm._get_config("agents.max_retries", 3)
-            max_r = 3 if cfg_max_r is None else int(cfg_max_r)
-        except Exception:
-            max_r = 3
-        max_r = max(max_r, 1)
+        # 解析口径收敛进 _resolve_max_retries（code-review item
+        # f68ba79c3e07，三处共用防「文案轮数与实际熔断阈值一致」双写漂移）。
+        max_r = _resolve_max_retries(self._pm._get_config("agents.max_retries", 3))
         self._pm.state_machine.update_spec(
             spec_name,
             {"_writeback_recur_streak": streak, "_writeback_recur_path": path},
@@ -2304,15 +2331,12 @@ class VAdjudicationMixin:
         for recur_path in sorted(set(remaining_paths) & typo_touched)[:1]:
             if not self._writeback_recur_bump(spec_name, recur_path):
                 continue
-            try:
-                # None 判空而非 or 兜底（code-review item c54ffbef69c5）：合法配置
-                # 0（不自动重试）不被 or 吞成缺省 3。max(max_r, 1) 与
-                # _writeback_recur_bump 同源——文案轮数与实际熔断阈值一致。
-                cfg_max_r = self._pm._get_config("agents.max_retries", 3)
-                max_r = 3 if cfg_max_r is None else int(cfg_max_r)
-            except Exception:
-                max_r = 3
-            max_r = max(max_r, 1)
+            # 解析口径收敛进 _resolve_max_retries（code-review item
+            # f68ba79c3e07），与 _writeback_recur_bump 同源——文案轮数与
+            # 实际熔断阈值一致。
+            max_r = _resolve_max_retries(
+                self._pm._get_config("agents.max_retries", 3)
+            )
             recur_entry = self._pm.state_machine.read_one(spec_name) or {}
             err = (
                 f"声明修正连续复发熔断（形态=修正未生效于读取基准，非普通缺件）: "
@@ -2436,13 +2460,9 @@ class VAdjudicationMixin:
         except (TypeError, ValueError):
             prev_retries = 0
         retries = prev_retries + 1
-        try:
-            # None 判空而非 or 兜底（code-review item c54ffbef69c5）：合法配置
-            # 0（不自动重试）不被 or 吞成缺省 3。
-            cfg_max_r = self._pm._get_config("agents.max_retries", 3)
-            max_r = 3 if cfg_max_r is None else int(cfg_max_r)
-        except Exception:
-            max_r = 3
+        # 解析口径收敛进 _resolve_max_retries（code-review item
+        # f68ba79c3e07，三处共用；此处原缺 max(..., 1) 下限，统一到同口径）。
+        max_r = _resolve_max_retries(self._pm._get_config("agents.max_retries", 3))
         err_ready, err_blocked = error_builder(retries, max_r)
         updates: dict = {
             "status": "ready",

@@ -23,6 +23,7 @@ from __future__ import annotations
 import gzip
 import json
 import logging
+import re as _re
 import urllib.parse
 
 # fenixd. 层级字面量（tests/test_logger_no_bypass.py：core/ 禁 __name__ 旁路）
@@ -368,8 +369,6 @@ def _del_project(s, p, q, m):
     s._api_project_delete(p, q)
 
 
-import re as _re
-
 _API_GET_ROUTES = [
     # 精确路由（原 _handle_api if/elif 顺序保持优先级）
     ("exact", "/api/projects",         _get_projects),
@@ -570,6 +569,15 @@ class H0BaseMixin:
         pass
 
     def _handle(self, method: str = "GET"):
+        # 拒绝 Transfer-Encoding（chunked）请求体：本模块读体与排空只认
+        # Content-Length，分块体既不会被 _read_json_body 消费也不会被排空，
+        # 残留的分块字节会在 keep-alive 连接上被下一请求当请求行解析
+        # （BUG-01 同类失步）。置 close_connection 回 411，让分块体随连接
+        # 关闭作废（与 413 分支处置口径对齐）。
+        if self.headers.get("Transfer-Encoding"):
+            self.close_connection = True
+            self._error(411, "Length Required")
+            return
         # 线程上限（dashboard-connection-limit D6）
         if not self.server._try_acquire_request_slot():
             # 快速拒绝路径同样处于「新请求」边界，先复位每请求状态再判断排空

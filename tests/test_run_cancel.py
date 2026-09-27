@@ -542,9 +542,15 @@ class TestDispatchHoldState:
 
 
 class TestCancelRequestData:
-    def test_request_run_cancel_writes_file(self, tmp_path):
+    def test_request_run_cancel_writes_file(self, tmp_path, monkeypatch):
         proot = tmp_path / "proj"
         (proot / ".fenix").mkdir(parents=True, exist_ok=True)
+        # request_run_cancel 带 hosting_state 消费方守卫（信号唯一消费方为
+        # daemon 主循环），本测试无 supervisor——按模块预留测试缝 patch 为
+        # managed（与 test_dashboard_api 同款），聚焦文件信号写入链路本身
+        monkeypatch.setattr(
+            "core.dashboard.data.admin_actions._hosting_state", lambda p: "managed"
+        )
         from core.dashboard import data as dash_data
         result = dash_data.request_run_cancel(proot, "impl-x-123", "测试")
         assert result["ok"] is True
@@ -557,9 +563,13 @@ class TestCancelRequestData:
         assert payload["source"] == "dashboard"
         assert payload["created"]
 
-    def test_duplicate_request_conflict(self, tmp_path):
+    def test_duplicate_request_conflict(self, tmp_path, monkeypatch):
         proot = tmp_path / "proj"
         (proot / ".fenix").mkdir(parents=True, exist_ok=True)
+        # 守卫测试缝：hosting_state patch 为 managed（同上，消费方在位）
+        monkeypatch.setattr(
+            "core.dashboard.data.admin_actions._hosting_state", lambda p: "managed"
+        )
         from core.dashboard import data as dash_data
         first = dash_data.request_run_cancel(proot, "impl-x-123", "r1")
         assert first["ok"] is True
@@ -675,8 +685,14 @@ class _TestServer:
 
 
 @pytest.fixture()
-def run_cancel_server(tmp_path):
+def run_cancel_server(tmp_path, monkeypatch):
     from core.dashboard.registry import Registry
+    # request_run_cancel 带 hosting_state 消费方守卫（本夹具无 supervisor/daemon
+    # 会判 stopped 拒写信号）——按模块预留测试缝 patch 为 managed
+    #（与 test_dashboard_api 同款），API 用例聚焦文件信号链路与状态码语义
+    monkeypatch.setattr(
+        "core.dashboard.data.admin_actions._hosting_state", lambda p: "managed"
+    )
     proot = tmp_path / "proj"
     (proot / ".fenix").mkdir(parents=True, exist_ok=True)
     (proot / ".fenix" / "STATE.md").write_text(

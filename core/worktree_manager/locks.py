@@ -367,6 +367,14 @@ class G3LockMixin:
             )
         return killed
 
+    def kill_strays(self, wt_name: str) -> list:
+        """清扫指定 worktree 的残留进程的公开收口（code-review 2b6a4d03be2e）。
+
+        Manager 外部调用方（agent_runner 终态收割等）只经本方法使用清扫
+        能力，不直调下划线私有实现；实现仍委托 ``_kill_worktree_strays``。
+        """
+        return self._kill_worktree_strays(wt_name)
+
     @staticmethod
     def _pid_alive(pid: int) -> bool:
         """/proc 存活探针（kill 0）：进程存在即存活（僵尸差异可接受）。"""

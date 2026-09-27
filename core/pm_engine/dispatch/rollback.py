@@ -450,20 +450,12 @@ class RRollbackMixin:
             # 复位写点已清标志）。以 callable 传入助手：记账读取与 update_spec
             # 同路兜底（构造失败与写入失败同WARNING，不阻塞后续留痕与告警）。
             entry = self._pm.state_machine.read_one(spec_name) or {}
-            try:
-                prev_count = int(entry.get("_merge_retry_count", 0) or 0)
-            except (TypeError, ValueError):
-                prev_count = 0
-            prev_first = entry.get("_merge_retry_first_at")
-            try:
-                first_f = float(prev_first) if prev_first else None
-            except (TypeError, ValueError):
-                first_f = None
+            count, first_f = self._parse_defer_accounting(entry, time.time())  # 首阻缺省=now，写侧回填与原 int(time.time()) 同口径
             return {
                 "error": f"mergeback wip overlap blocked (policy=block): files={overlap}",
                 "_wip_gate_deferred": True,
-                "_merge_retry_count": prev_count,
-                "_merge_retry_first_at": int(first_f) if first_f else int(time.time()),
+                "_merge_retry_count": count,
+                "_merge_retry_first_at": int(first_f),
             }
 
         self._emit_mergeback_alert(

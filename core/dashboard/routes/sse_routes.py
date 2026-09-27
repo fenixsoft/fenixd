@@ -85,6 +85,16 @@ class H9SseRoutesMixin:
                         last_heartbeat = time.monotonic()
                     continue
                 if event is None:  # 关闭信号
+                    # 流正常结束：补写 chunked 终止块，使响应符合 RFC 7230
+                    # chunked 语义（避免严格代理/客户端把无终止块的响应记为
+                    # 协议错误，如 ERR_INCOMPLETE_CHUNKED_ENCODING）。此时连接
+                    # 可能已被对端关闭，写失败容忍忽略；客户端断开（FIN 探测）
+                    # 与写异常路径不写，直接关闭连接终结流。
+                    try:
+                        self.wfile.write(b"0\r\n\r\n")
+                        self.wfile.flush()
+                    except OSError:
+                        pass
                     break
                 self._sse_send(event)
         except (
