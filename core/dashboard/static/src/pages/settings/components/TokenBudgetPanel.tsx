@@ -41,7 +41,7 @@ function buildAgentsFormValues(agents: ConfigData['agents']) {
 
 interface TokenBudgetPanelProps {
   config: ConfigData;
-  onSave: (values: Partial<ConfigData>) => Promise<void>;
+  onSave: (values: Partial<ConfigData>) => Promise<boolean>;
   /** 当前项目名；项目级作用域才显示「同步用户级设置」按钮 */
   project?: string;
   /** 同步成功后回填配置（父组件 setConfig 驱动表单刷新） */
@@ -88,7 +88,7 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
       // 静默返回；onSave 持久化失败（网络/500）拆独立 try/catch 显式反馈，避免
       // 用户误以为配置已保存。
       try {
-        await onSave({
+        const ok = await onSave({
           agents: {
             token_budget_millions: values.token_budget_millions,
             daily_run_limit: values.daily_run_limit,
@@ -103,6 +103,12 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
             },
           },
         });
+        // onSave 契约即 index.handleSave 的 Promise<boolean>（false=保存失败）。
+        // 失败 toast 由父级兜底负责，此处不重复报错、也不提示成功（code-review
+        // item 0abd04f38c76，比照 SelfReviewPanel 按返回值门控的范式）。
+        if (ok) {
+          message.success('保存成功');
+        }
       } catch (error) {
         // 保存持久化失败（网络/500）：给用户显式反馈而非静默
         message.error(`保存失败：${error instanceof Error ? error.message : String(error)}`);
