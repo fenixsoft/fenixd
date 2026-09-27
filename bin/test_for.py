@@ -402,9 +402,20 @@ def main():
     test_files = []
     for test_module in affected_tests:
         if test_module.startswith("tests."):
-            test_file = tests_dir / f"{test_module[6:]}.py"
+            # 模块段的 '.' 全部来自路径分隔符拼接（见 build_import_graph），
+            # 回转时须还原为 '/'，否则嵌套测试目录（如
+            # tests/fixtures/scheduling-showcase/tests/）的测试被折叠成
+            # 不存在的单段路径而被静默丢弃。
+            test_file = tests_dir / Path(*test_module[6:].split(".")).with_suffix(".py")
             if test_file.exists():
                 test_files.append(str(test_file))
+            else:
+                # 选中项回转后文件不存在：告警避免静默漏测后给出虚假绿色结论。
+                print(
+                    f"Warning: selected test {test_module!r} maps to missing file "
+                    f"{test_file}; it will not run.",
+                    file=sys.stderr,
+                )
 
     # Run tests
     success = run_tests(test_files, dry_run)
