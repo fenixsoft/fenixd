@@ -34,6 +34,11 @@ import re
 import time
 from pathlib import Path
 
+# tmp+replace 原子写助手与 scenario_gate 写盘惯例同源：本模块 JSON 落盘点
+# （fastlane_decision.json / test_scenarios.fastlane.json）会被后续流程回读，
+# 裸写中途被 SIGKILL 会留截断文件（code-review 1eeac794401f）。
+from core.pm_engine.verification.scenario_gate import _atomic_write_text
+
 # fastlane 触发阈值：judge 归因修复影响面文件数上限（minor-defect-fastlane 条件②）
 FASTLANE_MAX_AFFECTED_FILES = 3
 # 同一验证轮连续 fastlane 修复失败回落阈值（minor-defect-fastlane 条款：
@@ -324,8 +329,8 @@ def record_decision(pipeline, spec_name: str, decision: dict) -> None:
         payload = dict(decision)
         payload["spec"] = spec_name
         payload["recorded_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        _atomic_write_text(
+            path, json.dumps(payload, ensure_ascii=False, indent=2)
         )
     except OSError as e:
         pipeline._context.logger.warning(
@@ -447,8 +452,8 @@ def subset_reverify(pipeline, spec_name: str, subset_ids: list) -> dict:
     ]
     subset_path = verify_dir / "test_scenarios.fastlane.json"
     try:
-        subset_path.write_text(
-            json.dumps(subset_payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        _atomic_write_text(
+            subset_path, json.dumps(subset_payload, ensure_ascii=False, indent=2)
         )
     except OSError as e:
         # 写盘失败（磁盘满/权限等）按 fastlane 失败回落整轮，维持返回值契约
@@ -648,14 +653,30 @@ def dispatch_minor_defect_fastlane(pipeline, spec_name: str, decision: dict) -> 
     # fix 完成 → 重新验证），再复用 _apply_verified 收口（内部
     # testing→verified + 门禁）。transition 返回 False（冻结剥离/非法）不得
     # 假收敛，回落整轮并留痕。
+    _hops_done: list = []
     for _hop in ("implemented", "testing"):
         if not sm.transition(
             spec_name, _hop,
             trigger_run_id=run_id, agent_type="code-fix", channel="auto",
         ):
+            if _hops_done:
+                # 中间跳已成功、后续跳被拒：spec 滞留中间态（如 implemented）
+                # 且 code-fix 修复已实际执行，而回落整轮的调用方仍按 bug-found
+                # 语义走 on_spec_bug_found 派生 fix SPEC，full_scan 对滞留态
+                # 父 spec 会直接重派验证，形成双轨修复。状态无合法回退路径
+                # （implemented→bug-found 非法），此处把滞留原因写 error 字段
+                # 留痕供排障/人工处置判别。
+                sm.update_spec(spec_name, {
+                    "error": (
+                        f"fastlane 收敛状态转换 '{spec_name}'→{_hop} 失败"
+                        f"（非法/冻结），已迁移至 {'→'.join(_hops_done)}，"
+                        f"code-fix 修复已执行（run {run_id}），回落整轮"
+                    ),
+                })
             return _bump_fail_streak(
                 f"fastlane 收敛状态转换 '{spec_name}'→{_hop} 失败（非法/冻结），回落整轮"
             )
+        _hops_done.append(_hop)
     pipeline._apply_verified(
         spec_name, SimpleNamespace(run_id=run_id), merged
     )
