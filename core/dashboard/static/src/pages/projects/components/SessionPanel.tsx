@@ -246,6 +246,12 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
       // 成功获取快照即代表当前真实状态——此前瞬态故障（如重连前 afterHello
       // 失败）落下的「加载失败」不清除会永久遮住空态入口。
       sessionIdRef.current = null;
+      // 快照确认无会话 → 同步复位 watch 注册标记（与上方终态分支同口径）：
+      // 项目切换不重挂载本组件（list.tsx 的 project 来自 useParams、activeTab
+      // 持久化，active 恒 true），主 effect 清理只关 EventSource 不清标记——
+      // 残留的 true 会让切离分面时对无会话的新项目发 DELETE /api/session/watch
+      // → 404 → console.error，污染 no_console_error 断言。
+      watchRegisteredRef.current = false;
       setStarted(false);
       syncEvents([]);
       setTruncated(false);
