@@ -22,6 +22,10 @@ from pathlib import Path
 logger = logging.getLogger("fenixd.dashboard.routes.knowledge_routes")
 
 # ADR 头部字段（模块级编译，_parse_adr_head / _adr_titles_from_index 用）
+# [fenix-ignore:70b607ae7630] 展示层有意宽松取原值下发：前端 KnowledgeTab 仅按
+# 是否等于 'superseded' 二分支渲染，非法值同落 green 分支，归一 unknown 无渲染
+# 差别且抹掉拼写错误信息；与 core/knowledge.py 校验器（accepted|superseded）口径
+# 分工不同，归一属行为变更且需前端联动，收益不成比例。
 _ADR_STATUS_RE = re.compile(r"^status:\s*(\S+)\s*$", re.M)
 _ADR_SUPERSEDED_BY_RE = re.compile(r"^Superseded by:\s*(\S+)\s*$", re.M)
 # ADR 首标题：'# ADR-NNN: <标题>' / '# ADR-NNN：<标题>'（distill.md 契约）
@@ -97,9 +101,11 @@ class H14KnowledgeRoutesMixin:
         不含 _domain.md）；adrs 为 ``[{file, title, status, superseded_by}]``
         （按文件名排序，ADR 列表视图的编号/标题/状态标签数据源。title 取
         ADR 文件首标题 ``# ADR-NNN：<标题>``，缺失时以 adr/index.md 表格
-        标题列兜底，仍缺为 null）。未初始化（真相源目录
-        或 index.md 缺失）→ ``{initialized: False, index_md: null,
-        domains: [], adrs: []}`` 占位。项目不存在 → 404。
+        标题列兜底，仍缺为 null）。``initialized`` 与 ``index_md`` 随
+        index.md 存在性变化（缺失即 ``initialized: False`` / null）；
+        ``domains``/``adrs`` 始终按真相源目录实际内容填充——回填 bootstrap
+        先产域页、index.md 后置的中间态会出现 ``initialized: False`` 且
+        清单非空。项目不存在 → 404。
         """
         project = self._project_from_query(query)
         if project is None or not project.get("exists"):
