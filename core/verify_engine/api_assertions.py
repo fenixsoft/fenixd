@@ -254,6 +254,22 @@ class ApiAssertionRunner:
         expected = a.get("expected")
         payload = resp.get("json")
         if payload is None:
+            if resp.get("type") == "sse":
+                # 定向提示：SSE 捕获（{type: sse, events, duration}）无 JSON
+                # 载荷属捕获类型不匹配，非「响应体非合法 JSON」，防 judge 误
+                # 归因；SSE 事件内容断言应走 sse_event_matches
+                return {
+                    "type": "json_path",
+                    "layer": 3,
+                    "path": path,
+                    "expected": expected,
+                    "actual": None,
+                    "pass": False,
+                    "error": (
+                        "json_path 断言不支持 SSE 捕获（无 JSON 载荷）；"
+                        "事件内容断言请改用 sse_event_matches"
+                    ),
+                }
             # fail-closed：无 JSON 载荷时不得以 actual=None 与 expected=None 蒙混判 pass
             return {
                 "type": "json_path",
@@ -290,8 +306,10 @@ class ApiAssertionRunner:
         elif mode == "exact":
             passed = actual == expected
         elif mode == "contains":
-            # 以 is not None 判空：or 会把 0/False 等 falsy 合法值折叠为 ""
-            passed = expected in str(actual if actual is not None else "")
+            # 以 is not None 判空：or 会把 0/False 等 falsy 合法值折叠为 ""；
+            # 左侧 expected 一并 str 归一（数值/布尔形态不抛 TypeError，
+            # 与 sse_event_matches 口径对齐）
+            passed = str(expected) in str(actual if actual is not None else "")
         else:  # regex
             try:
                 passed = bool(
@@ -330,12 +348,17 @@ class ApiAssertionRunner:
             if mode == "exact":
                 passed = str(actual).strip() == str(expected).strip()
             elif mode == "contains":
-                passed = expected in str(actual)
+                # expected 一并 str 归一（数值/布尔形态不抛 TypeError）
+                passed = str(expected) in str(actual)
             elif mode == "regex":
                 try:
                     passed = bool(re.search(str(expected), str(actual)))
                 except re.error:
                     passed = False
+        else:
+            # 头不存在与值不匹配区分归因（与 json_path 缺失分支口径对齐），
+            # judge 无须从 actual=None 自行推断
+            error = f"响应头 '{header}' 不存在"
         result = {
             "type": "response_header",
             "layer": 3,
@@ -361,7 +384,9 @@ class ApiAssertionRunner:
         elif mode == "exact":
             passed = str(body).strip() == str(expected).strip()
         elif mode == "contains":
-            passed = expected in str(body)
+            # expected 一并 str 归一（数值/布尔形态不抛 TypeError，与
+            # sse_event_matches 口径对齐）
+            passed = str(expected) in str(body)
         elif mode == "regex":
             try:
                 passed = bool(re.search(str(expected), str(body)))
@@ -391,6 +416,20 @@ class ApiAssertionRunner:
         import jsonschema
 
         schema = a.get("schema")
+        if not isinstance(schema, dict):
+            # schema 缺失/非 dict 预检：jsonschema.validate 对非 dict schema
+            # 抛 SchemaError 而非 ValidationError，不预检会被 run() 包成笼统
+            # 「断言执行异常」，judge 无法区分「响应不合 schema」与「场景
+            # schema 本身写错」
+            return {
+                "type": "json_schema",
+                "layer": 3,
+                "pass": False,
+                "error": (
+                    f"schema 非法: 须为 JSON Schema 对象（dict），"
+                    f"实际 {type(schema).__name__}"
+                ),
+            }
         payload = resp.get("json")
         if payload is None:
             return {
@@ -409,12 +448,35 @@ class ApiAssertionRunner:
                 "pass": False,
                 "error": f"schema 校验失败: {e.message}（{e.json_path}）",
             }
+        except jsonschema.SchemaError as e:
+            # 运行期兜底（自愈/绕过验收的调用路径）补全：schema 本身写错
+            # 属场景缺陷，与「响应不合 schema」须可区分
+            return {
+                "type": "json_schema",
+                "layer": 3,
+                "pass": False,
+                "error": f"schema 非法: {e.message}",
+            }
 
     async def _assert_sse_event_matches(self, resp, a: dict) -> dict:
         """断言 SSE 窗口内存在与期望匹配的事件（data 字段）。"""
         events = [dict(e) for e in (resp.get("events") or [])]
         expected = a.get("expected", "")
         mode = a.get("mode", "contains")
+        # fail-closed：缺 expected 时 contains 空串恒真、regex 空串恒匹配，
+        # 窗口内有任一事件即假通过；与 web 侧 text_match 缺参显式失败口径
+        # 一致（exact 空串是合法期望，不在拦截之列）
+        if expected is None or (expected == "" and mode in ("contains", "regex")):
+            return {
+                "type": "sse_event_matches",
+                "layer": 3,
+                "expected": expected,
+                "mode": mode,
+                "actual_hits": [],
+                "hit_count": 0,
+                "pass": False,
+                "error": "缺少 expected 字段",
+            }
         # 配置错误可见化：与 run() 入口「未知断言类型」口径对齐（未知 mode 不再静默）
         error = None if mode in ("exact", "contains", "regex") else f"未知 mode: {mode}"
         hits = []
