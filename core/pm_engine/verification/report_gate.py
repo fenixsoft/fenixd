@@ -164,12 +164,21 @@ def _verifier_result_is_stale(pipeline, result, result_path: Path, spec_name: st
     stamped = data.get("spec")
     if isinstance(stamped, str) and stamped and stamped != spec_name:
         return True
+    raw_run_id = getattr(result, "run_id", "") or ""
     try:
-        m = re.search(r"-(\d{10,})-a\d+$", getattr(result, "run_id", "") or "")
-        if not m:
-            return False  # 无法解析 run_id：维持既有行为（mtime 无法判定）
-        run_start = int(m.group(1))
+        m = re.search(r"-(\d{10,})-a\d+$", raw_run_id)
+        run_start = int(m.group(1)) if m else None
     except (TypeError, ValueError):
+        run_start = None
+    if run_start is None:
+        # run_id 无法解析（格式漂移/非字符串）：mtime 陈旧护栏整体退化为
+        # 直通（不判陈旧）。维持既有放行行为不变（向后兼容），但记 WARNING
+        # 留痕——避免护栏无声失效无告警，格式漂移时可观测。
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"Verifier result run_id unparsable, mtime stale guard degraded "
+            f"to pass-through: path={result_path}, run_id='{raw_run_id}'",
+        )
         return False
     try:
         if result_path.stat().st_mtime < run_start - 5:
