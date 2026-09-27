@@ -304,8 +304,14 @@ def write_config_if_unresolved(project_root: Path, detection: dict) -> dict:
         config["worktree"] = worktree
         # yaml.dump 全量重写：PyYAML 不保留注释，原文件注释/排版在此全部丢失
         # （保留注释需保守文本插入，风险更高，此处如实告知而非伪装成无损合并）
-        with open(cfg_path, "w", encoding="utf-8") as f:
-            yaml.dump(config, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+        try:
+            with open(cfg_path, "w", encoding="utf-8") as f:
+                yaml.dump(config, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+        except OSError as e:
+            # 与退化文本路径错误契约对齐（docstring 承诺写入失败返回
+            # {"wrote": False, "reason": ...}）：只读文件系统/磁盘满/权限不足时
+            # 异常上抛会让按 stdout JSON 消费的上游拿到 traceback 而非错误载荷
+            return {"wrote": False, "reason": f"写入失败: {e}"}
         return {"wrote": True, "reason": "探测结果已写入（YAML 全量重写，原注释丢失）"}
     except ImportError:
         pass  # 无 yaml → 退化定向文本更新
@@ -418,7 +424,9 @@ def main():
     )
     args = parser.parse_args()
 
-    project_root = Path(args.project_root).resolve()
+    # expanduser：shell 引号包裹传入的 ~ 开头路径按字面落盘会误报「项目根目录不存在」，
+    # 与 fenix_dashboard.py cmd_add_project 的用户输入路径解析口径对齐
+    project_root = Path(args.project_root).expanduser().resolve()
     if not project_root.is_dir():
         print(json.dumps({"error": f"项目根目录不存在: {project_root}", "status": "error"}))
         sys.exit(1)

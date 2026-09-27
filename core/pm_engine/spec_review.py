@@ -100,6 +100,20 @@ _SUPERVISION_TIMEOUT_PHRASES = (
 # （code-review item 80d45b2a5087）。不用 \w/\b——二者视 CJK 为 word
 # 字符，会漏掉中文紧邻数字的真实指纹，故字符类只收 ASCII 字母数字与连字符。
 _NUMERIC_INFRA_RE = re.compile(r"(?<![0-9A-Za-z-])(?:402|403|429)(?![0-9A-Za-z-])")
+# 词形指纹（quota/budget/余额/rate limit 等）同样不做裸子串匹配（code-review
+# item 489d6071b236）：失败原因文本常内嵌 spec 名或产物路径（如
+# .fenix/spec-review/add-budget-widget/...、"结果文件读取失败: <spec 目录前缀>…"），
+# spec 名含 budget/quota 词根的 content 类失败会被裸子串误判 infra——不递增
+# _review_attempts、只清锚点，重试预算被跳过并持续计入熔断。复用
+# _NUMERIC_INFRA_RE 的分隔符边界思路：字符类只收 ASCII 字母数字与连字符
+# （不用 \w/\b——二者视 CJK 为 word 字符，"402 余额不足" 这类中文紧邻形态
+# 会漏判；数字串形态仍由 _NUMERIC_INFRA_RE 兜底命中）。"rate limit exceeded"、
+# "quota exceeded" 等正常 infra 文案两侧为空格/标点，边界判定不受影响。
+_INFRA_FINGERPRINT_RE = re.compile(
+    r"(?<![0-9A-Za-z-])(?:"
+    + "|".join(re.escape(fp) for fp in _INFRA_FINGERPRINTS)
+    + r")(?![0-9A-Za-z-])"
+)
 # CLI 进程级崩溃：error 含 "Exit code: <N>" 且 N 非 0/1
 _CLI_EXIT_CODE_RE = re.compile(r"Exit code:\s*(-?\d+)")
 
@@ -567,8 +581,13 @@ class SpecReviewManager:
                 for f in findings
                 if isinstance(f, dict) and f.get("severity") == "blocking"
             ]
+            # detail 值类型归一（code-review item b2b32a1e6f28）：detail 由 LLM
+            # 产出，显式 null/数字/嵌套对象（JSON 合法形态）会让 join 抛
+            # TypeError 逃出 consume_review_result，绕过失败分类/重试与冻结路径
+            # （get 默认值只兜「键缺失」，兜不住显式 null）。`or ""` 归一 falsy
+            # 值、str() 兜底非字符串，与 findings 元素级校验同族收口。
             blocked_summary = (
-                "; ".join(f.get("detail", "") for f in blocking) if blocking else "无详情"
+                "; ".join(str(f.get("detail") or "") for f in blocking) if blocking else "无详情"
             )
 
             entry_now = self.state_machine.read_one(spec_name) or {}
@@ -1053,9 +1072,11 @@ class SpecReviewManager:
         for super_phrase in _SUPERVISION_TIMEOUT_PHRASES:
             if super_phrase in low:
                 return "content"
-        for fp in _INFRA_FINGERPRINTS:
-            if fp in low:
-                return "infra"
+        # 词形指纹：与数字指纹同款分隔符边界匹配（code-review item
+        # 489d6071b236，见 _INFRA_FINGERPRINT_RE 注释），防 spec 名/路径内嵌
+        # 词根被裸子串误判 infra。
+        if _INFRA_FINGERPRINT_RE.search(low):
+            return "infra"
         # 数字类指纹（402/403/429）：分隔符边界匹配（两侧不邻接 ASCII
         # 字母/数字/连字符），防任意数字串与 spec 名连字符形态误判 infra
         # （见 _NUMERIC_INFRA_RE 注释，code-review item b4ce03fd99c4 /

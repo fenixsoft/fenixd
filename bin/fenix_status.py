@@ -12,7 +12,6 @@
 用法: python3 fenix_status.py          （经项目内 .fenix/bin/ 软链调用）
 """
 
-import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,6 +27,9 @@ if str(_FENIX_DIR) not in sys.path:
     sys.path.insert(0, str(_FENIX_DIR))
 
 from core.dashboard import data  # noqa: E402
+# 展示层助手单点在 core.tui_format（code-review item 50a1202e3e91：此前本脚本
+# 的 _fmt_dur 小时段补零输出 2h05m，与 fenix_process 的 2h5m 口径漂移）
+from core.tui_format import fmt_dur as _fmt_dur, local_ts  # noqa: E402
 
 TERMINAL = ("done", "pushed")
 STATUS_ICONS = {
@@ -48,29 +50,8 @@ VERIFY_STALL_MINUTES = 30  # 验证停滞阈值：进度文件 mtime 停滞 / �
 
 
 def _local_ts(iso_str, fmt="%m-%d %H:%M"):
-    """UTC ISO → 本地时区显示（日志层全 UTC 写入，展示层转本地）。"""
-    try:
-        return (
-            datetime.fromisoformat(str(iso_str).replace("Z", "+00:00")).astimezone().strftime(fmt)
-        )
-    except Exception:
-        return str(iso_str)[:19]
-
-
-def _fmt_dur(seconds) -> str:
-    try:
-        s = int(seconds or 0)
-    except (TypeError, ValueError):
-        return ""
-    if s <= 0:
-        return ""
-    if s < 60:
-        return f"{s}s"
-    if s < 3600:
-        return f"{s // 60}m"
-    if s < 86400:
-        return f"{s // 3600}h{(s % 3600) // 60:02d}m"
-    return f"{s // 86400}d{(s % 86400) // 3600}h"
+    """UTC ISO → 本地时区显示（实现单点 core.tui_format.local_ts；本面板默认带日期）。"""
+    return local_ts(iso_str, fmt)
 
 
 def _active_sort_key(item):

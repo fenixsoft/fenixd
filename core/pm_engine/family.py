@@ -96,14 +96,14 @@ class FamilyGovernor:
             closing_tasks = (
                 f"## 3. 验证与打包\n\n"
                 f"- [ ] 3.1 运行 `npm run build`（tsc + vite build）确认编译与构建通过\n"
-                f"- [ ] 3.2 运行框架单元测试（`python3 -m pytest .fenix/tests/ -v`）确认无回归\n"
+                f"- [ ] 3.2 按项目既有测试入口运行单元测试，确认无回归\n"
                 f"- [ ] 3.3 执行 `bash scripts/package.sh` 生成最新扩展包\n"
             )
         else:
             closing_tasks = (
                 f"## 3. 验证与构建\n\n"
                 f"- [ ] 3.1 按项目既有构建/打包流程执行收尾（如有）；无则跳过\n"
-                f"- [ ] 3.2 运行框架单元测试（`python3 -m pytest .fenix/tests/ -v`）确认无回归\n"
+                f"- [ ] 3.2 按项目既有测试入口运行单元测试，确认无回归\n"
             )
         tasks = (
             f"# Tasks: 修复 {parent_spec_name} 验证发现的缺陷\n\n"
@@ -654,8 +654,20 @@ class FamilyGovernor:
         self._pm._append_project_log(
             f"🐛 Bug found in **{spec_name}** → 原地打回第 {fail_rounds} 轮"
         )
-        # 排队实现器
-        self._pm._enqueue(spec_name, "implementer")
+        # 重派通道按 spec 实现模式选择（与 repair_lane._fallback_after_repair、
+        # engine 实现态恢复同口径）：fast-track spec 打回后仍回 fast-track
+        # 重派，不硬派 implementer（读侧异常回退 implementer）
+        try:
+            from core.spec_mode import read_spec_mode
+
+            channel = (
+                "fast-track"
+                if read_spec_mode(self._pm.project_root, spec_name) == "fast-track"
+                else "implementer"
+            )
+        except Exception:
+            channel = "implementer"
+        self._pm._enqueue(spec_name, channel)
 
     def _do_legacy_fix_spec_bug_found(self, spec_name: str):
         """存量 fix-* SPEC 的 legacy 闭环（design D4：自然终态耗尽）。

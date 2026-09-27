@@ -92,14 +92,22 @@ def _fuse_blocked() -> bool:
 
     新 supervisor 进程（pid 不同）不继承旧熔断——「重启 supervisor 进程」即
     天然清除熔断状态（与「人工删除标记文件」均为恢复路径）；旧标记按无效处理
-    （顺带清理，避免误读残留）。
+    （顺带清理，避免误读残留）；标记损坏/不可读同按未熔断处理（记日志并清理）。
     """
     marker = _fuse_marker()
     try:
         if not marker.is_file():
             return False
         data = json.loads(marker.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except (OSError, ValueError) as e:
+        # 标记损坏/不可读（外部改坏、磁盘问题）：按未熔断 fail-open 处理，但须
+        # 留观测痕迹并清理残留（与下方 pid 不匹配路径对称）——否则「拉起→秒退→
+        # 拉起」循环无痕恢复且 supervisor.log 零线索（code-review c13d4e9720ad）。
+        log(f"fuse marker corrupt/unreadable — treated as not fused (non-blocking): {e}")
+        try:
+            marker.unlink(missing_ok=True)
+        except OSError:
+            pass
         return False
     if isinstance(data, dict) and data.get("pid") == os.getpid():
         return True
@@ -331,9 +339,11 @@ def _write_supervisor_runtime() -> None:
     script_hash = _script_hash()
     if script_hash:
         data["script_hash"] = script_hash
-    FENIX_DIR.mkdir(parents=True, exist_ok=True)
     target = _supervisor_runtime_file()
     try:
+        # mkdir 也在保护内（与 _write_fuse_marker 对齐）：.fenix 只读/权限异常时
+        # 本函数按契约降级为日志，不炸穿 main 循环致看门狗无痕退出。
+        FENIX_DIR.mkdir(parents=True, exist_ok=True)
         tmp_fd, tmp_path = tempfile.mkstemp(
             prefix=".supervisor_runtime.",
             suffix=".tmp",
@@ -437,12 +447,13 @@ def _terminate_daemon(proc, sigkill_wait: int) -> None:
 
 def main():
     # 启动守卫（fix-supervisor-hosting-chain D1）：解析出的项目根下必须存在
-    # .fenix/（目录或软链），缺失时打印含解析来源与解析结果的可读错误并以
-    # 非零码退出；必须在 _write_supervisor_runtime() 与 start_daemon() 之前返回，
-    # 不产生任何进程、不写入任何 runtime 文件。
-    if not FENIX_DIR.exists():
+    # .fenix/（目录或指向目录的软链），缺失或为普通文件时打印含解析来源与解析
+    # 结果的可读错误并以非零码退出（is_dir() 对两者均假——否则普通文件情形
+    # 会在下方 mkdir 抛 FileExistsError 炸穿）；必须在 _write_supervisor_runtime()
+    # 与 start_daemon() 之前返回，不产生任何进程、不写入任何 runtime 文件。
+    if not FENIX_DIR.is_dir():
         print(
-            f"FATAL: supervisor 目标项目根下不存在 .fenix/（{FENIX_DIR}）。\n"
+            f"FATAL: supervisor 目标项目根下不存在 .fenix/（或不是目录）（{FENIX_DIR}）。\n"
             f"  解析来源: {PROJECT_ROOT_SOURCE}\n"
             f"  解析结果: {PROJECT_ROOT}\n"
             f"  请确认目标是一个已初始化（/fenix-setup 完成）的 Fenixd 项目，"

@@ -38,6 +38,22 @@ def _is_fenixd_logger(obj) -> bool:
     return hasattr(obj, "_log") and hasattr(obj, "_python_logger")
 
 
+def _is_valid_state_number(val, nonneg: bool) -> bool:
+    """状态文件数值字段合法性（数值类型 + isfinite + 可选非负，bool 不算数值）。
+
+    与 cooldown_minutes 配置侧 isfinite 守卫口径对齐（code-review item
+    d0a328355581 同构问题，code-review item 004678944eab）：json.loads 默认
+    接受 NaN/Infinity 字面量，非有限 until 使 condition() 的 now >= until
+    恒 False（熔断永续不恢复）。巨大 int 不送 math.isfinite（其内部转
+    float 会 OverflowError），int 任意精度恒有限。
+    """
+    if isinstance(val, bool) or not isinstance(val, (int, float)):
+        return False
+    if isinstance(val, float) and not math.isfinite(val):
+        return False
+    return not (nonneg and val < 0)
+
+
 class InfraCircuitBreaker:
     """链路级熔断器：连续 infra 失败达阈值 → 熔断，冷却后自动恢复。
 
@@ -142,13 +158,32 @@ class InfraCircuitBreaker:
                 )
                 return
             for link, st in raw.items():
-                if isinstance(st, dict):
-                    self._cache[link] = {
-                        "count": int(st.get("count", 0)),
-                        "until": float(st.get("until", 0.0)),
-                        "state": str(st.get("state", "closed")),
-                    }
-        except (OSError, json.JSONDecodeError, ValueError, TypeError) as e:
+                if not isinstance(st, dict):
+                    continue
+                count = st.get("count", 0)
+                until = st.get("until", 0.0)
+                if not (
+                    _is_valid_state_number(count, nonneg=True)
+                    and _is_valid_state_number(until, nonneg=False)
+                ):
+                    # 脏值（NaN/Infinity/负数/bool 等）→ fail-open 复位该链路
+                    # 为 closed，防非有限 until 使 now >= until 恒 False 致熔断
+                    # 永续（code-review item 004678944eab，口径同配置侧
+                    # cooldown_minutes 的 isfinite 守卫）。
+                    self._log(
+                        "warning",
+                        "infra_breaker",
+                        f"熔断状态含非法数值（link={link}），fail-open 复位为"
+                        f" closed: {self._state_path}",
+                    )
+                    self._cache[link] = {"count": 0, "until": 0.0, "state": "closed"}
+                    continue
+                self._cache[link] = {
+                    "count": int(count),
+                    "until": float(until),
+                    "state": str(st.get("state", "closed")),
+                }
+        except (OSError, json.JSONDecodeError, ValueError, TypeError, OverflowError) as e:
             self._log(
                 "warning",
                 "infra_breaker",
