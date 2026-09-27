@@ -1,0 +1,24 @@
+<!-- knowledge: capability=suggested-improvements-ui rev=2 sources=spec/archive/2026-09-18-add-framework-self-evolution,spec/archive/2026-09-19-evo-item-retention-doc-tracking -->
+
+# 改进建议呈现（设置页「自进化」页签）
+
+设置页「自进化」页签的「建议改进项」面板：自进化条目的浏览、过滤、批量处置、文档查看与全局清理入口。
+
+## 现行规则
+
+- 页签与卡片布局：设置页页签「自进化」下自上而下两张卡片——①「代码陈旧自愈」（StaleCodeSelfhealPanel，标题、开关/输入控件、data-testid 与绑定配置键遵循其自身契约）；②「建议改进项」（SuggestedImprovementsPanel）。第二张卡片标题置于卡片外（与第一张同构）、标题下带功能注解，卡片内不重复标题、不带保存按钮；「条目列表」小节标题与表格同样置于卡片外。页签底部只有唯一「保存」按钮（内容最下方、右对齐），点击同时校验并收集两卡片配置节、合并为一次 `POST /api/config`；任一卡片校验失败即中止提交、不发请求。页签在用户级与项目级作用域均可见，作用域切换不丢失或错位卡片、不破坏默认选中态。
+- 全局开关与每轮上限：「允许框架自改进」开关绑定 `self_evolution.auto_accept`（缺省关闭），开关行布局——开关在前、名称同行不换行、附 `（self_evolution.auto_accept）` 键名注解、下方功能注解；「每轮分析条目上限」绑定 `self_evolution.max_items_per_run`（整数 1..200，缺省 20），独占一行、输入框单位后缀「条」、下方功能注解。读值取配置接口返回的 `self_evolution` 节点；保存经页签底部唯一按钮、不带 `project` 参数（写用户级），成功后提示并回显新值。项目级作用域下两控件只读并提示「全局键，请在用户级作用域修改」，保存载荷不含 `self_evolution`（仅可提交项目级可写的 `stale_code_selfheal`）；后端 400 时展示可读错误且不改本地状态；上限提交 0/负数/超 200 被后端拒绝且界面值不被改为非法值。
+- 清理所有项目自省内容：全局动作按钮置于配置表单之外（Form 的 disabled 只作用表单控件），实心红底白字告警样式（primary + danger）并带功能注解；点击先弹二次确认，文案明示三点——清空所有项目的 `.fenix/todo.md`、下方条目列表不受影响（列表读 items.jsonl）、不代为提交 git。确认后调 `POST /api/evolution/clear-todo`（不带 project 参数，全局动作），完成后回报「已清空 N / 跳过 M / 失败 K 个」，有失败项时逐个列出项目名与错误；清空后不重新拉取条目列表。项目级作用域下按钮禁用。后端遍历 registry 已发现且存在的项目逐个清理，单个失败不中断其余，返回 `{ok, cleared, skipped, failed}`——无失败项 ok=true（全部跳过亦 true）；项目无 `.fenix/` 目录或 todo.md 不存在计入 skipped（不凭空创建目录）；清空只把 todo.md 截断为空文件（保留文件本体），不触碰 `.fenix/evolution/` 下 items.jsonl/草稿/水位，不代提交或推送 git；与每日自省追加、自进化标记回写共用同一把 todo.md flock。
+- 条目表格：直接置于页签内容流内（不包卡片），小节标题「条目列表」置于表格上方；数据来自 `GET /api/evolution/items`；列序固定：复选框、项目、日期、类别、问题、评估结论、状态、操作。首列行选择复选框（表头全选随当前过滤结果全选/半选）；类别列以 Tag 渲染（浪费/失误/可改进，未知类别默认色兜底）；评估结论列汇总三项判定（可截断，「查看分析结论」看全文）；状态列中文映射——待决策/不需要立项/草稿生成失败/已同意/已自动接受/已拒绝/接受失败；默认按入库时间倒序；列表为空显示空态文案而非空白；接口失败显示可读错误且页面其它区块不受影响。表头排序：项目/日期/类别/问题/状态五列可排序（日期按 `date_section` 字典序；状态按语义次序——待人工处理的在前、终态在后，非标签字母序），评估结论与操作列不可排序。移动端横向滚动展示、操作列固定右侧（不做卡片式降级）。
+- 过滤条：控件依次为状态下拉、项目下拉、日期区间 RangePicker、「重置」。状态缺省值随数据重算——列表存在任一 `pending` 条目时缺省过滤「待决策」（把待决策顶到眼前），一条都没有时缺省为空（不过滤、原样展示全部）；每次数据重载重算（无粘性），用户手动改动保留到下一次重载。状态与项目选项从当前数据现算 distinct 值（不出现选了必然 0 条的选项），当前选中值始终在选项里。日期按 `date_section` 闭区间过滤。过滤纯前端完成，不因过滤重复请求接口。「重置」仅在任一条件非空时出现，点击清空全部三个条件；过滤无结果显示区别于「暂无任何条目」的空态文案。
+- 批量操作：「批量同意 / 批量拒绝 / 批量删除」作用于当前勾选条目，未勾选时禁用；逐个调用既有单条接口（后端无批量端点）且串行执行（并发写 items.jsonl 与逐条 git commit 会互相冲突）；执行前二次确认弹窗预告「将执行 N 条」，对状态不允许该操作的条目前端筛掉并预告「跳过 M 条」及原因分组（如「已决策 2 条、不需要立项 1 条」），全部被跳过时不发请求；执行后汇报「成功 X / 跳过 Y / 失败 Z」并逐条列失败明细（条目名 + 后端错误）；完成后刷新列表并清空勾选；执行中三按钮禁用/加载态防重复提交；过滤条件变化即清空勾选（批量不作用于不可见行）。
+- 操作列「更多」下拉：与 SPEC 列表页同款交互（antd Dropdown + MoreOutlined + Button type="link" size="small"），菜单项依次：查看分析结论、查看 SPEC 草稿、同意、拒绝（危险项）、删除（危险项）。禁用规则——无草稿条目（analyzed/draft_failed）：「查看 SPEC 草稿」「同意」禁用，「查看分析结论」可用，analyzed 的「拒绝」禁用（仅可查看结论），draft_failed 的「拒绝」可用；已决定条目（accepted/auto_accepted/rejected）：「同意」「拒绝」禁用，查看类保持可用；「删除」不设状态门（任意状态含 accepted/auto_accepted 均可删）。同意/拒绝/删除均经二次确认后才发请求；删除确认弹窗明示后果——条目将从列表移除、草稿一并删除、todo.md 记录仍存在且可能在下一轮分析 run 重新入库。
+- 查看分析结论：抽屉或弹窗展示该条目 `analysis_md` 全文（Markdown 渲染），来自 `GET /api/evolution/analysis?item_id=<id>`；有加载态；条目不存在显示可读错误（不显示空白弹窗）；结论缺失显示空态。
+- 查看 SPEC 草稿：来自 `GET /api/evolution/draft?item_id=<id>&doc=<proposal|design|tasks|spec>`，doc 越白名单 400、条目不存在 404。文档来源按「草稿优先、SPEC 位置回退」解析：草稿目录 `.fenix/evolution/drafts/<id>/` 存有目标文档时读草稿；草稿缺失但条目记录含 `spec_name` 时，以 `spec_name` 为权威名解析 SPEC 目录（活跃 `spec/changes/<spec_name>/` 优先，`spec/archive/` 回退）读取对应文档——已同意立项、草稿已随接受删除的条目仍可查看；`spec` 文档取 `specs/<capability>/spec.md`（capability 取条目记录 `spec.capability`）。解析后的目标路径必须位于所解析目录内（越界一律拒绝）；归档目录名归一化后与 `spec_name` 互为前缀但非全等 → 不归属该条目（found: false），全等才命中。草稿与 SPEC 位置均无该文档时返回 `found: false`，前端显示空态。
+- 前端交互：同意成功刷新表格并提示「已立项：<spec_name>」；拒绝成功刷新并提示成功；失败展示后端错误文案、以刷新后的真实状态为准（不出现假成功状态）；接受成功的条目显示「已同意」，请求在途时按钮禁用或忽略重复点击。前端依据 `has_draft || doc_source` 决定「查看」弹窗是否渲染文档页签——二者皆假（null/缺省）时不渲染文档页签，仅展示分析结论。
+- API 契约：`/api/evolution/items`（GET，可选 project，按入库时间倒序）、`/api/evolution/analysis`（GET item_id，返回 `{found, content}`，未知 404）、`/api/evolution/draft`（GET item_id+doc，草稿优先 SPEC 位置回退）、`/api/evolution/accept`（POST，返回新 SPEC 名与状态）、`/api/evolution/reject`（POST，返回新状态）、`/api/evolution/delete`（POST，硬删不设状态门）。参数缺失/非法 400 且不触碰任何文件；item_id 未知 404；端点不接受任意文件路径参数（读取范围固定为由 item_id / spec_name 推导出的 `.fenix/evolution/` 与 SPEC 目录路径）。条目摘要至少含 id、project、date_section、section、title、三项判定、status、has_draft、spec_name、created_at、decided_at，并含 `doc_source`（`"draft"` / `"spec"` / null）标明文档可读来源。
+
+## 溯源
+
+- 2026-09-18 2026-09-18-add-framework-self-evolution — 新增「自进化」页签与「建议改进项」面板全部规则（卡片布局与唯一保存按钮、开关与上限、全局清理动作、表格/过滤/批量/操作列、查看与前端交互、API 契约六端点）
+- 2026-09-19 2026-09-19-evo-item-retention-doc-tracking — 「查看 SPEC 草稿」的读取来源定为草稿优先、SPEC 位置回退（治已立项条目「查看」恒空态）；API 契约补 doc_source 字段与归档名全等归属规则
