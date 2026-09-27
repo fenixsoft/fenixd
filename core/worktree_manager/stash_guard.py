@@ -525,6 +525,41 @@ class G6StashGuardMixin:
         sha 记入日志，gc 前可按 sha 找回。
 
         Returns: True 表示成功恢复了一个条目。
+
+        与 merge-back 的互斥（code-review item 5ed4e6352f2f）：本方法的
+        「栈顶探测→pop→drop」序列全程在 ``_main_tree_lock`` 内执行，与
+        ``merge_back_from_branch`` 的 stash→merge→pop 临界区互斥。引擎层
+        ``reclaim_stale_autostash_if_idle`` 的 ``_active_runs > 0`` 空闲预检是
+        非原子的先验判断：巡检的多次 subprocess 秒级窗口内仍可能有新 run
+        启动并 ``ensure_clean_tree`` 压栈，仅靠「栈顶 sha 未变」复核无法区分
+        「滞留旧条目」与「刚被 merge-back 压入的条目」，可能把后者当滞留条目
+        弹出恢复到干净主树、令 ``restore_after_merge`` 落空（LIFO 错配）。
+        锁为非重入 ``threading.Lock``：本调用链（fenixd 主循环 →
+        engine.reclaim_stale_autostash_if_idle → 本方法）进入时不持有该锁，
+        临界区内也不调用会再次取锁的函数（不调 ``ensure_clean_tree`` /
+        ``merge_back_from_branch``）。以非阻塞 acquire 参与互斥：锁被占用
+        （merge-back 进行中）时本轮直接放弃、条目保留交下轮巡检——与
+        「主树脏不抢」同一退化语义，也不阻塞调用方主循环。
+        """
+        if not self._main_tree_lock.acquire(blocking=False):
+            self.logger.info(
+                "worktree_manager",
+                "Stale autostash reclaim skipped (main tree lock busy: "
+                "merge-back in progress)",
+            )
+            return False
+        try:
+            return self._reclaim_stale_autostash_locked()
+        finally:
+            self._main_tree_lock.release()
+
+    def _reclaim_stale_autostash_locked(self) -> bool:
+        """reclaim_stale_autostash 的实现体，调用方必须已持有 _main_tree_lock
+        （口径同 mergeback._merge_back_from_branch_locked）。
+
+        与进程内 merge-back 临界区互斥后，「栈顶 sha 未变」双复核仍保留：
+        锁只串行化本进程（dashboard 侧跨进程 merge-back 不共享内存锁），
+        sha 核对继续防跨进程插队误弹。
         """
         try:
             status = subprocess.run(
