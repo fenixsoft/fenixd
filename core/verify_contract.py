@@ -1508,6 +1508,13 @@ def rewrite_scenarios_origin(scenarios_path: Path, base_url: str) -> int:
             with open(fd, "w", encoding="utf-8") as f:
                 json.dump(rewritten, f, ensure_ascii=False, indent=2)
                 f.flush()
+                # fsync 落盘后再 rename，断电才真正不会留下截断 JSON（对齐全仓原子写惯例）
+                os.fsync(f.fileno())
+            # mkstemp 产物固定 0600，还原原文件权限，避免 os.replace 后权限漂移
+            try:
+                os.chmod(tmp_path, scenarios_path.stat().st_mode & 0o777)
+            except OSError:
+                pass
             os.replace(tmp_path, scenarios_path)
         except OSError:
             try:
