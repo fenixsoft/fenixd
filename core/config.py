@@ -1836,6 +1836,35 @@ class ConfigLoader:
         }
 
     @classmethod
+    def get_knowledge_config(cls, config: Dict[str, Any]) -> Dict[str, Any]:
+        """Return the ``knowledge.*`` 段，缺失项填默认值（add-knowledge-atlas-maintenance D4）。
+
+        - audit_enabled / graph_enabled：bool，缺省 True（纯增量：audit 车道与
+          graph 生成默认随每日检查点开启）。
+        - 非法值（非 bool）不阻塞加载/热更新：WARNING 告警并回退缺省 True，
+          与 get_code_review_fix_config 的 targeted_regression 同口径——解析级
+          容错，语义破坏由消费方门控兜底。
+        - 段入口经 _segment_or_empty 归一：整段非 dict 时该段按空段降级（ERROR
+          已由助手记录），两键取缺省 True。
+        - ``enabled``（蒸馏总开关）归前置 SPEC add-knowledge-atlas 的解析器所有，
+          本方法不触碰，合并后两键同段共存。
+        """
+        knowledge = cls._segment_or_empty(config, "knowledge")
+        result = {}
+        for key, default in (("audit_enabled", True), ("graph_enabled", True)):
+            val = knowledge.get(key, default)
+            if not isinstance(val, bool):
+                _logger.warning(
+                    "knowledge.%s 非法值 %r（非 bool），回退缺省 %s",
+                    key,
+                    val,
+                    default,
+                )
+                val = default
+            result[key] = val
+        return result
+
+    @classmethod
     def get_regression_config(cls, config: Dict[str, Any]) -> Dict[str, Any]:
         """Return the ``admin.regression.*`` 段，缺失项填默认值。
 

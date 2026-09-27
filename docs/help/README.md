@@ -23,5 +23,6 @@
 | 12 | [FAQ 与故障排查](12-faq.md) | 现象→根因→处置 |
 | 13 | [模型链运维](13-model-chain-ops.md) | 拒模型条目摘除与恢复 |
 | 14 | [管道吞吐运维](14-pipeline-throughput-ops.md) | 并发槽位、merge 预检、重启排水的人工调整与回退 |
+| 15 | [知识真相源](knowledge-atlas.md) | 目录结构、回填/体检/关系图三车道与 graphify 安装 |
 
 > **以代码为准**：Fenix 行为以仓库代码实现为唯一事实来源。README.md 与 config.template.yaml 存在若干过时描述，本帮助文档已按实际代码行为校正，易混淆点见 [配置参考](09-config.md#模板值与代码缺省不一致)。
