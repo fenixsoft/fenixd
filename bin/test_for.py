@@ -14,6 +14,7 @@ Usage:
 import argparse
 import ast
 import os
+import signal
 import sys
 import yaml
 from pathlib import Path
@@ -22,7 +23,8 @@ import subprocess
 
 # 有界运行约定（对齐 bin/run_full_suite.py 的 fix-run-hang-amplification）：
 # faulthandler_timeout 让挂起用例先打印各线程栈（定位挂点），子进程硬超时兜底
-# 中止——存量死循环挂起可超 1 小时，裸跑会让开发者终端被无限期挂住。
+# 中止（独立进程组 SIGTERM→SIGKILL，孙进程一并中止）——存量死循环挂起可超
+# 1 小时，裸跑会让开发者终端被无限期挂住。
 FAULTHANDLER_TIMEOUT_SECONDS = 300
 SUBPROCESS_TIMEOUT_SECONDS = 3600
 
@@ -172,11 +174,13 @@ def apply_explicit_mappings(
     """Apply explicit test mappings for files without import relationships."""
     affected = set()
 
-    # 值非字符串（如手改 yaml 写成 core/foo.py: 123）时打告警跳过，避免其进入
-    # affected 后在消费处 test_path.startswith("tests/") 抛 AttributeError 崩溃。
+    # 键/值非字符串（值如手改 yaml 写成 core/foo.py: 123，键如裸数字 8787: ...
+    # 被 safe_load 解析为 int）时打告警跳过——值异常进入 affected 后会在消费处
+    # test_path.startswith("tests/") 抛 AttributeError，键异常则在本函数
+    # pattern.endswith("/") 处抛 AttributeError，均使工具 traceback 崩溃。
     valid_map: Dict[str, str] = {}
     for pattern, test_file in explicit_map.items():
-        if isinstance(test_file, str):
+        if isinstance(pattern, str) and isinstance(test_file, str):
             valid_map[pattern] = test_file
         else:
             print(
@@ -209,12 +213,47 @@ def apply_explicit_mappings(
     return affected
 
 
+def run_bounded(cmd: List[str], cwd, timeout: int = SUBPROCESS_TIMEOUT_SECONDS) -> tuple:
+    """有界运行命令，硬超时时中止**整个进程组**（同 bin/run_full_suite.run_command）。
+
+    子进程以独立进程组启动（``start_new_session=True``）：超时先对整组发
+    SIGTERM 给短暂优雅窗口，未退出再 SIGKILL 整组——pytest 拉起的孙进程
+    （v2 dev server、daemon 集成类测试等）一并中止，不留孤儿继续占端口/内存
+    （本仓库已知残留 daemon 占端口会让下一次运行恒失败）。进程已退出
+    （ProcessLookupError）等 killpg 失败静默吞掉。输出不经管道、直接透传
+    终端，faulthandler 栈仍实时可见。
+
+    返回 ``(returncode, timed_out)``；超时中止时 returncode 为 None。
+    """
+    proc = subprocess.Popen(cmd, cwd=str(cwd), start_new_session=True)
+    try:
+        return proc.wait(timeout=timeout), False
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)  # start_new_session=True ⇒ pgid==pid
+        except OSError:
+            pass  # 进程已退出，无需再中止
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)  # start_new_session=True ⇒ pgid==pid
+            except OSError:
+                pass  # 进程组已不存在
+        try:
+            proc.wait(timeout=10)  # 收割 SIGKILL 后的子进程，不留僵尸
+        except subprocess.TimeoutExpired:
+            pass
+        return None, True
+
+
 def run_tests(test_files: List[str], dry_run: bool = False) -> bool:
     """Run the specified test files.
 
     Bounded run: pytest runs with ``-o faulthandler_timeout`` (dumps thread
-    stacks on hangs) and a subprocess hard timeout; on timeout a hint points
-    to ``bin/run_full_suite.py`` for hanging-test triage.
+    stacks on hangs) and a subprocess hard timeout that kills the whole
+    process group (孙进程一并中止，同 ``bin/run_full_suite.py``); on timeout
+    a hint points to ``bin/run_full_suite.py`` for hanging-test triage.
     """
     if not test_files:
         print("No tests affected. Consider running full test suite.")
@@ -237,20 +276,17 @@ def run_tests(test_files: List[str], dry_run: bool = False) -> bool:
     ] + test_files
     print(f"Running: {' '.join(cmd)}")
 
-    try:
-        result = subprocess.run(
-            cmd,
-            cwd=Path(__file__).resolve().parent.parent,
-            timeout=SUBPROCESS_TIMEOUT_SECONDS,
-        )
-    except subprocess.TimeoutExpired:
+    returncode, timed_out = run_bounded(
+        cmd, Path(__file__).resolve().parent.parent, timeout=SUBPROCESS_TIMEOUT_SECONDS
+    )
+    if timed_out:
         print(
             f"[test_for] 测试运行超过 {SUBPROCESS_TIMEOUT_SECONDS}s，已中止"
             f"（faulthandler {FAULTHANDLER_TIMEOUT_SECONDS}s 起打印的挂起栈见上方输出）；"
             f"挂起定位请改用: python3 bin/run_full_suite.py"
         )
         return False
-    return result.returncode == 0
+    return returncode == 0
 
 
 def main():
@@ -293,20 +329,17 @@ def main():
             print(f"Dry-run: {' '.join(cmd)}")
             sys.exit(0)
         print("Running all tests...")
-        try:
-            result = subprocess.run(
-                cmd,
-                cwd=project_root,
-                timeout=SUBPROCESS_TIMEOUT_SECONDS,
-            )
-        except subprocess.TimeoutExpired:
+        returncode, timed_out = run_bounded(
+            cmd, project_root, timeout=SUBPROCESS_TIMEOUT_SECONDS
+        )
+        if timed_out:
             print(
                 f"[test_for] 测试运行超过 {SUBPROCESS_TIMEOUT_SECONDS}s，已中止"
                 f"（faulthandler {FAULTHANDLER_TIMEOUT_SECONDS}s 起打印的挂起栈见上方输出）；"
                 f"挂起定位请改用: python3 bin/run_full_suite.py"
             )
             sys.exit(1)
-        sys.exit(result.returncode)
+        sys.exit(returncode)
 
     if not target_files:
         print("Error: No files specified. Use --all to run all tests.")
