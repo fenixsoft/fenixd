@@ -78,3 +78,10 @@
 | web-knowledge-tab-lazy-graph-placeholder | element_not_exist [data-testid="knowledge-index-view"] 默认分面下知识面板不在 DOM | test-defect | 测试用例自身缺陷（非产品缺陷） | 断言次序与引擎「步骤先行、断言后置」模型冲突：步骤4 click「项目知识」页签成功后面板已挂载，element_not_exist 后置执行结构性必败；「未选中不在 DOM」语义在该引擎下不可表达，属场景设计缺陷。页签/面板渲染正常由同轮 web-knowledge-tab-position（6 页签、位置断言... |
 | web-knowledge-index-render-and-nav | text_contains "znidx-atlas-index-title" 总目录标题在页面文本中 | test-defect | 测试用例自身缺陷（非产品缺陷） | 断言时序错置：引擎断言后置执行，步骤6已点击能力链接、页面已切至能力页视图，index 标题自然不在当前文本。标题渲染已在步骤5 wait [data-testid=knowledge-index-view]:has-text(znidx-atlas-index-title) 成功验证，产品无缺陷 |
 | web-knowledge-index-render-and-nav | no_click_interception a:has-text("zn-demo-capability") 能力链接不被遮挡 | test-defect | 测试用例自身缺陷（非产品缺陷） | 断言自带重点击（error=Locator.click Timeout waiting for locator），此时链接已因步骤6成功点击随 SPA 导航从 DOM 移除，非遮挡所致；步骤6 click 成功即证明点击未被遮挡。导航型链接不适配该断言的目标存活前提，属场景设计缺陷 |
+
+## 本轮场景集变更
+
+当前稳定场景集共 21 个（第 1 轮）。
+
+- 首轮写入 21 个场景
+

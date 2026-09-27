@@ -57,3 +57,9 @@
 
 - [x] 5.1 e2e 测试（fake spawn 替身，不触真实网关）：构造 fixture change 归档 → 断言 dispatch_distill 被触发、蒸馏产出经校验落盘、index/域清单同步更新、REMOVED 语义删规则留痕、ADR supersede 链正确
 - [x] 5.2 全量回归通过（pytest 既有套件 + 本 SPEC 新增用例），dashboard 手工冒烟记录归档（worktree 实例）截图至 .history/
+
+## 验证修复（原地打回第 1 轮）
+
+- [ ] 先复核失败有效性：逐条核对 `spec/changes/add-knowledge-atlas/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
+- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
+- [ ] 修复后重跑验证确认通过
