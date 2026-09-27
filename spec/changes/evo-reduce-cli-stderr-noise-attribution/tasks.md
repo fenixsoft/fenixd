@@ -15,7 +15,7 @@
 
 ## 1. 噪声常量收口
 
-- [ ] 1.1 core/agent_runner/provider_circuit.py：把 UNRECOGNIZED_MODEL_TEXT_PATTERNS（:80）收口导出为可复用的 CLI stderr 诊断噪声 pattern 常量（按具体 pattern 枚举 [claude-code:*] 启动期诊断行）；:405-423 分类判据与 :443-479 瞬断判定不动
+- [ ] 1.1 core/agent_runner/provider_circuit.py：**新增**独立常量 CLI_STDERR_NOISE_TEXT_PATTERNS（派生自 UNRECOGNIZED_MODEL_TEXT_PATTERNS，按具体 pattern 枚举 [claude-code:*] 启动期诊断行，如 [claude-code:unrecognized_model]），供消费端统一判别；既有 UNRECOGNIZED_MODEL_TEXT_PATTERNS（:80）元组**原样保留**、继续作为 :420 分类判据唯一 pattern 源，不改写不重命名；:405-423 分类判据与 :443-479 瞬断判定不动
 
 ## 2. 消费端降噪
 
