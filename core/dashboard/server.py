@@ -259,17 +259,21 @@ def _find_dashboard_occupant(port: int) -> dict | None:
 def _is_dashboard_serve_cmd(cmdline: str) -> bool:
     """cmdline 是否为 fenix_dashboard.py --serve 实例。
 
-    按 argv 精确匹配（code-review item c36c3fc10722）：子串匹配下 --serve 是
-    --server/--servable 等参数的前缀，且文件路径出现在任意进程参数里（如
-    编辑器/打包脚本引用 fenix_dashboard.py）也会命中，serve() 接管路径会据
-    此对无关 PID 发 SIGTERM。_find_dashboard_occupant 返回的 cmdline 由
-    /proc/<pid>/cmdline 以 NUL→空格还原，故按空白切分回 argv 逐项比对：
-    argv[0] 的 basename 恰为 fenix_dashboard.py，且存在一项严格等于 --serve。
+    按 argv 匹配（code-review item 05269db8b9cb）：文档惯例启动形态是
+    `python3 fenix_dashboard.py --serve`，argv[0] 是解释器而非脚本，只认
+    argv[0]（c36c3fc10722 收紧后的判据）会把真实旧实例恒判 False、接管
+    语义永不生效——故遍历全部 argv 项：存在某项 basename 恰为
+    fenix_dashboard.py 且另一项严格等于 --serve 即命中。仍守住
+    c36c3fc10722 的防误杀语义：--serve 用严格等号而非子串匹配（--server/
+    --servable 等前缀参数不误命中）；编辑器/打包脚本仅引用脚本路径时不
+    会同时携带独立的 --serve 参数项，不误判。_find_dashboard_occupant
+    返回的 cmdline 由 /proc/<pid>/cmdline 以 NUL→空格还原，故按空白切分
+    回 argv 逐项比对。
     """
     argv = cmdline.split()
-    if not argv or os.path.basename(argv[0]) != "fenix_dashboard.py":
-        return False
-    return "--serve" in argv
+    return "--serve" in argv and "fenix_dashboard.py" in {
+        os.path.basename(a) for a in argv
+    }
 
 
 def _proc_starttime(pid: int) -> int | None:
