@@ -1281,6 +1281,10 @@ def salvage_result_from_transcript(
                 # 防 AttributeError 逸出本函数「转录损坏不抛异常」的防御口径。
                 msg = d.get("message")
                 content = msg.get("content") if isinstance(msg, dict) else None
+                # content 为不可迭代标量（int/float/bool 等）时 for 会抛
+                # TypeError，与 msg 同口径归一为 None，守住「转录损坏不抛异常」。
+                if not isinstance(content, list):
+                    content = None
                 for c in content or []:
                     if isinstance(c, dict) and c.get("type") == "text":
                         last_text = c.get("text") or ""
