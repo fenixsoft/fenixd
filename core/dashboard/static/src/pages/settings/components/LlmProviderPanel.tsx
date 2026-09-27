@@ -112,7 +112,6 @@ function toProviders(values: FormValues): LlmProvider[] {
       // 此处不存在静默覆盖。
       if (k) env[k] = v;
     });
-    if (Object.keys(env).length > 0) rest.env = env;
     // improve-provider-billing-config（task 3.4）：价格行写入 providers[i].billing
     // 内嵌结构；卡片开关关闭时不携带生效价格行（enabled: false + 空 prices）。
     const cardPrices: ProviderBillingPrice[] = (prices || [])
@@ -125,8 +124,10 @@ function toProviders(values: FormValues): LlmProvider[] {
         cache_read_per_million: r.cache_read_per_million as number,
         cache_creation_per_million: r.cache_creation_per_million as number,
       }));
-    rest.billing = { enabled: !!billingEnabled, prices: cardPrices };
-    return rest as LlmProvider;
+    // 旧 env/billing 已剥离（见上），env/billing 均无条件覆盖写入：
+    // env={}（用户删空全部环境变量行）也必须落盘，否则删除操作静默失效
+    //（item 6f3dd544086b 的缺陷本体）。
+    return { ...rest, env, billing: { enabled: !!billingEnabled, prices: cardPrices } } as LlmProvider;
   });
 }
 
