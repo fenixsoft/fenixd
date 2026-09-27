@@ -1652,6 +1652,93 @@ class StateMachine:
 
         return self._mutate_locked(_mutate)
 
+    def _finish_transition(self, outcome: dict, result: bool, spec_name: str,
+                           new_status: str, *, label: str, verb: str,
+                           trigger_run_id: str | None = None,
+                           agent_type: str | None = None,
+                           channel: str = "auto") -> bool:
+        """transition / transition_gate 共用的锁外出口分支（code-review 14e0ba4fccce）。
+
+        ``_transition_atomic`` 返回后的 missing / idempotent / invalid /
+        stripped / result 五个出口此前在两个方法里各复制一份约 50 行的判定
+        与留痕逻辑，仅查表（由调用方在锁内消费）与日志文案不同——stripped
+        假成功消歧（c809d1296efc）等修复须双点同步落笔，单侧修补易漏改另
+        一侧造成行为漂移，故收敛于此。文案差异以两个参数带入：
+
+        - ``label``：正文文案中的转换名（``"transition"`` /
+          ``"gate transition"``），用于 idempotent / invalid / stripped 行；
+          成功行取 ``label.capitalize()`` 前缀（``"Transition"`` /
+          ``"Gate transition"``，后者为时间轴正则刻意不命中的前缀，见
+          ``transition_gate`` docstring）；
+        - ``verb``：missing 行的连字形态（``"transition"`` /
+          ``"gate-transition"``，历史文案即连字，逐字保留防断言失配）。
+
+        日志级别 / 通道（``state_machine``）/ 结构化 context /
+        ``_log_update_applied`` 留痕写点与各出口返回值在两方法间本就逐字
+        一致，此处不引入任何行为变化。
+        """
+        if outcome.get("missing"):
+            self.logger.warning(
+                "state_machine", f"Cannot {verb} nonexistent SPEC: {spec_name}"
+            )
+            return False
+
+        old_status = outcome.get("old_status")
+
+        # 幂等自迁移短路（fix-daemon-lifecycle-races D4）：new_status == old_status
+        # 视为幂等自迁移，INFO 降级直接返回 True，不进入转换表（VALID_TRANSITIONS /
+        # GATE_TRANSITIONS）拒绝分支。历史 ERROR 噪声（done→pushed 双路径并发必触发
+        # 的 pushed→pushed 假告警）由此消噪；真实非法迁移（如 implemented→verified）
+        # 仍记 ERROR。依赖返回 False 阻断重复副作用的调用点须改为前置状态判断或
+        # 接受幂等覆盖：全库核查见 engine.py:332（done→done 时 total_duration 重算
+        # 覆盖为同值，幂等无害）与 dispatch.py:480-503（已有 cur_status !=
+        # "implementing" 前置判断的同型防护）。判定在锁内基于最新状态完成，此处
+        # 只负责留痕。
+        if outcome.get("idempotent"):
+            self.logger.info(
+                "state_machine",
+                f"Idempotent {label}: {spec_name} {old_status} → {new_status} "
+                f"(already in state, skipped)",
+            )
+            return True
+
+        # Validate transition（判定已在锁内完成，此处留痕）
+        if outcome.get("invalid"):
+            self.logger.error(
+                "state_machine",
+                f"Invalid {label}: {spec_name} {old_status} → {new_status}",
+            )
+            return False
+
+        # 冻结剥离假成功消歧（code-review c809d1296efc）：frozen spec 的 status
+        # 写在锁内被剥离、状态实际未变，此前照常走 result=True 分支输出
+        # 「Transition」并返回 True，依赖返回值判断推进结果的自动链路会误以为
+        # 状态已到位。改为显式 warning + 返回 False——冻结期间自动链路失效
+        # 本就是冻结语义（唯一出路 unfreeze_spec），False 让调用方诚实感知。
+        if outcome.get("stripped") is not None:
+            self.logger.warning(
+                "state_machine",
+                f"Frozen SPEC '{spec_name}': {label} {old_status} → {new_status} "
+                f"stripped — manual freeze intact, status unchanged",
+            )
+            return False
+
+        if result:
+            self.logger.info(
+                "state_machine",
+                f"{label.capitalize()}: {spec_name} {old_status} → {new_status}",
+                # fix-observability-gaps 2.1：结构化 context（trigger_run_id /
+                # agent_type / channel），供 dashboard 时间轴读侧优先消费；
+                # 断路器在落盘成功后返回 True，日志先行
+                {
+                    "trigger_run_id": trigger_run_id,
+                    "agent_type": agent_type,
+                    "channel": channel,
+                },
+            )
+            self._log_update_applied(spec_name, outcome.get("applied", {}))
+        return result
+
     def transition(self, spec_name: str, new_status: str,
                    *, trigger_run_id: str | None = None,
                    agent_type: str | None = None,
@@ -1672,64 +1759,13 @@ class StateMachine:
         """
         outcome: dict = {}
         result = self._transition_atomic(spec_name, new_status, VALID_TRANSITIONS, outcome)
-        if outcome.get("missing"):
-            self.logger.warning("state_machine", f"Cannot transition nonexistent SPEC: {spec_name}")
-            return False
-
-        old_status = outcome.get("old_status")
-
-        # 幂等自迁移短路（fix-daemon-lifecycle-races D4）：new_status == old_status
-        # 视为幂等自迁移，INFO 降级直接返回 True，不进入 VALID_TRANSITIONS 拒绝
-        # 分支。历史 ERROR 噪声（done→pushed 双路径并发必触发的 pushed→pushed
-        # 假告警）由此消噪；真实非法迁移（如 implemented→verified）仍记 ERROR。
-        # 依赖返回 False 阻断重复副作用的调用点须改为前置状态判断或接受幂等覆盖：
-        # 全库核查见 engine.py:332（done→done 时 total_duration 重算覆盖为同值，
-        # 幂等无害）与 dispatch.py:480-503（已有 cur_status != "implementing"
-        # 前置判断的同型防护）。判定在锁内基于最新状态完成，此处只负责留痕。
-        if outcome.get("idempotent"):
-            self.logger.info(
-                "state_machine",
-                f"Idempotent transition: {spec_name} {old_status} → {new_status} "
-                f"(already in state, skipped)",
-            )
-            return True
-
-        # Validate transition（判定已在锁内完成，此处留痕）
-        if outcome.get("invalid"):
-            self.logger.error(
-                "state_machine",
-                f"Invalid transition: {spec_name} {old_status} → {new_status}",
-            )
-            return False
-
-        # 冻结剥离假成功消歧（code-review c809d1296efc）：frozen spec 的 status
-        # 写在锁内被剥离、状态实际未变，此前照常走 result=True 分支输出
-        # 「Transition」并返回 True，依赖返回值判断推进结果的自动链路会误以为
-        # 状态已到位。改为显式 warning + 返回 False——冻结期间自动链路失效
-        # 本就是冻结语义（唯一出路 unfreeze_spec），False 让调用方诚实感知。
-        if outcome.get("stripped") is not None:
-            self.logger.warning(
-                "state_machine",
-                f"Frozen SPEC '{spec_name}': transition {old_status} → {new_status} "
-                f"stripped — manual freeze intact, status unchanged",
-            )
-            return False
-
-        if result:
-            self.logger.info(
-                "state_machine",
-                f"Transition: {spec_name} {old_status} → {new_status}",
-                # fix-observability-gaps 2.1：结构化 context（trigger_run_id /
-                # agent_type / channel），供 dashboard 时间轴读侧优先消费；
-                # 断路器在落盘成功后返回 True，日志先行
-                {
-                    "trigger_run_id": trigger_run_id,
-                    "agent_type": agent_type,
-                    "channel": channel,
-                },
-            )
-            self._log_update_applied(spec_name, outcome.get("applied", {}))
-        return result
+        # 锁外五出口（missing/idempotent/invalid/stripped/result）判定与留痕
+        # 收敛于 _finish_transition，与 transition_gate 仅查表与文案不同。
+        return self._finish_transition(
+            outcome, result, spec_name, new_status,
+            label="transition", verb="transition",
+            trigger_run_id=trigger_run_id, agent_type=agent_type, channel=channel,
+        )
 
     def is_valid_transition(self, from_status: str, to_status: str) -> bool:
         """Check if a transition is legal."""
@@ -1758,54 +1794,13 @@ class StateMachine:
         """
         outcome: dict = {}
         result = self._transition_atomic(spec_name, new_status, GATE_TRANSITIONS, outcome)
-        if outcome.get("missing"):
-            self.logger.warning(
-                "state_machine", f"Cannot gate-transition nonexistent SPEC: {spec_name}"
-            )
-            return False
-
-        old_status = outcome.get("old_status")
-
-        # 幂等自迁移短路（fix-daemon-lifecycle-races D4）：同 transition() 语义，
-        # old==new 视为幂等，INFO 直接返回 True，不进 GATE_TRANSITIONS 拒绝分支。
-        # 判定在锁内基于最新状态完成，此处只负责留痕。
-        if outcome.get("idempotent"):
-            self.logger.info(
-                "state_machine",
-                f"Idempotent gate transition: {spec_name} {old_status} → {new_status} "
-                f"(already in state, skipped)",
-            )
-            return True
-
-        if outcome.get("invalid"):
-            self.logger.error(
-                "state_machine",
-                f"Invalid gate transition: {spec_name} {old_status} → {new_status}",
-            )
-            return False
-
-        # 冻结剥离假成功消歧（code-review c809d1296efc）：同 transition()——
-        # frozen spec 的 status 写被剥离、状态实际未变，返回 False 而非假成功。
-        if outcome.get("stripped") is not None:
-            self.logger.warning(
-                "state_machine",
-                f"Frozen SPEC '{spec_name}': gate transition {old_status} → {new_status} "
-                f"stripped — manual freeze intact, status unchanged",
-            )
-            return False
-
-        if result:
-            self.logger.info(
-                "state_machine",
-                f"Gate transition: {spec_name} {old_status} → {new_status}",
-                {
-                    "trigger_run_id": trigger_run_id,
-                    "agent_type": agent_type,
-                    "channel": channel,
-                },
-            )
-            self._log_update_applied(spec_name, outcome.get("applied", {}))
-        return result
+        # 锁外五出口（missing/idempotent/invalid/stripped/result）判定与留痕
+        # 收敛于 _finish_transition，与 transition 仅查表与文案不同。
+        return self._finish_transition(
+            outcome, result, spec_name, new_status,
+            label="gate transition", verb="gate-transition",
+            trigger_run_id=trigger_run_id, agent_type=agent_type, channel=channel,
+        )
 
     # ── Query ──────────────────────────────────────────────────────
 
