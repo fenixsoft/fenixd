@@ -245,6 +245,13 @@ def _rule_stale_navigate_port(scenario: dict, serving_port: str | None) -> list[
     return findings
 
 
+# value 不以选择器语义消费的步骤动作：其 value 分别为输入文本/按键名（type）、
+# localStorage 原始 JSON（seed）、像素位移（scroll）、option value（select）、
+# JSON 响应体（mock_api）——均为业务数据、不参与 autoInsertSpace 渲染，二字中文
+# 是正常输入而非文本选择器，不做 2 汉字文本选择器扫描（code-review 8661824c890e）。
+_VALUE_NON_SELECTOR_ACTIONS = frozenset({"type", "seed", "scroll", "select", "mock_api"})
+
+
 def _rule_double_han_text_selector(scenario: dict, serving_port: str | None) -> list[StaticFinding]:
     """③ 双汉字文本选择器（antd autoInsertSpace：二字按钮渲染为「X X」）。
 
@@ -252,6 +259,8 @@ def _rule_double_han_text_selector(scenario: dict, serving_port: str | None) -> 
     文本字面量，恰含 2 个汉字时报告——antd Button 对恰 2 汉字文本自动插入
     空格（「确定」→「确 定」），按原文字匹配/断言必失配（历史 touch-expand
     /antd 系列事故积累）。1/3 汉字不报（autoInsertSpace 仅二字触发）。
+    步骤 value 仅在选择器语义的动作上扫描，type/seed 等业务数据跳过
+    （见 _VALUE_NON_SELECTOR_ACTIONS）。
     """
     sid = str(scenario.get("id") or "?")
     findings: list[StaticFinding] = []
@@ -282,7 +291,14 @@ def _rule_double_han_text_selector(scenario: dict, serving_port: str | None) -> 
     for i, step in enumerate(scenario.get("steps") or []):
         if not isinstance(step, dict):
             continue
+        action = str(step.get("action") or "")
         for field in ("target", "value"):
+            # type（输入文本/按键名）、seed（localStorage 数据）等动作的
+            # value 不参与 autoInsertSpace 渲染，二字中文（如输入「确认」）
+            # 是正常业务数据，按文本选择器扫描会产出「点击/断言必失配」的
+            # 失实情报并误导 judge 归因（code-review 8661824c890e）。
+            if field == "value" and action in _VALUE_NON_SELECTOR_ACTIONS:
+                continue
             text = step.get(field)
             if not isinstance(text, str) or not text:
                 continue
