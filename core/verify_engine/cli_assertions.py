@@ -202,7 +202,22 @@ class CliAssertionRunner:
 
     async def _assert_file_exists(self, a: dict) -> dict:
         """断言文件/目录存在（exists 缺省 true；path 相对验证树根）。"""
-        want = bool(a.get("exists", True))
+        # exists 显式归一：bool 原样收；字符串按 "true"/"false"/"1"/"0" 解析；
+        # 其余脏值显式失败——bool("false") 类非空字符串恒真会静默反转断言
+        # 语义产出假失败，与 _assert_exit_code 对非法 expected 的口径对齐
+        raw = a.get("exists", True)
+        if isinstance(raw, bool):
+            want = raw
+        else:
+            normalized = raw.strip().lower() if isinstance(raw, str) else raw
+            if normalized in ("true", "1"):
+                want = True
+            elif normalized in ("false", "0"):
+                want = False
+            else:
+                raise ValueError(
+                    f"exists 非法，须为布尔或 'true'/'false'/'1'/'0': {raw!r}"
+                )
         path = self._resolve_under_root(a.get("path", ""))
         if path is None:
             return {
