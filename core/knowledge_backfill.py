@@ -450,7 +450,7 @@ def build_prompt(
         text = text.replace(
             "{{MODE_LINE}}",
             "本次运行模式：**模式一（聚类自举）**——只执行「模式一：聚类自举」段，"
-            "忽略模式二。",
+            "忽略模式二与模式三。",
         )
         text = text.replace("{{CAPABILITY_COUNT}}", str(len(capabilities)))
         text = text.replace(
@@ -466,12 +466,26 @@ def build_prompt(
         text = text.replace(
             "{{MODE_LINE}}",
             "本次运行模式：**模式二（能力聚合蒸馏批次）**——只执行「模式二：能力"
-            "聚合蒸馏批次」段，忽略模式一。",
+            "聚合蒸馏批次」段，忽略模式一与模式三。",
         )
         text = text.replace("{{CAPABILITY_COUNT}}", "0")
         text = text.replace("{{CAPABILITY_LIST}}", "（本次不适用）")
         text = text.replace("{{BATCH_SIZE}}", str(len(batch)))
         text = text.replace("{{BATCH_LIST}}", _batch_list_block(batch, chains, baselines))
+    elif mode == "adr":
+        batch = batch or []
+        text = text.replace(
+            "{{MODE_LINE}}",
+            "本次运行模式：**模式三（ADR 抽取批次）**——只执行「模式三：ADR 抽取"
+            "批次」段，忽略模式一与模式二。",
+        )
+        text = text.replace("{{CAPABILITY_COUNT}}", "0")
+        text = text.replace("{{CAPABILITY_LIST}}", "（本次不适用）")
+        text = text.replace("{{BATCH_SIZE}}", str(len(batch)))
+        text = text.replace(
+            "{{BATCH_LIST}}",
+            "\n".join(f"- {name}" for name in batch) or "（空）",
+        )
     else:  # pragma: no cover - 调用方约束
         raise ValueError(f"unknown backfill prompt mode: {mode}")
     text = text.replace(
@@ -728,6 +742,63 @@ def run_backfill(
             )
         ledger.save()
 
+    # ── ADR 抽取批次（模式三：design.md 决策扫描，归档粒度）──
+    no_design = [
+        a for a in todo_adr
+        if not (project_root / "spec" / "archive" / a / "design.md").is_file()
+    ]
+    with_design = [a for a in todo_adr if a not in set(no_design)]
+    for a in no_design:
+        # 无 design.md 无决策可抽：直接标 distilled 留痕跳过（对齐既有口径），
+        # 否则 adr 条目永久 pending——回填无法收敛且排队门不释放
+        ledger.mark(ADR_PREFIX + a, STATUS_DISTILLED)
+    adr_batches = [
+        with_design[i : i + BATCH_SIZE_MAX]
+        for i in range(0, len(with_design), BATCH_SIZE_MAX)
+    ]
+    adr_total = len(adr_batches)
+    adr_ok = 0
+    adr_failed: list[dict] = []
+    for i, batch in enumerate(adr_batches, 1):
+        base_prompt = build_prompt("adr", batch=batch)
+        run_id = f"kb-adr{i}-{int(time.time())}"
+        try:
+            spawn(base_prompt, run_id)
+            ok, violations = _validate_with_repair(
+                project_root, validate, spawn, base_prompt, run_id
+            )
+        except Exception as e:  # noqa: BLE001 - 单批失败不阻塞后续批
+            ok, violations = False, [f"run 派发/执行失败：{e}"]
+        if ok:
+            try:
+                commit(
+                    project_root,
+                    [KNOWLEDGE_DIR],
+                    f"[fenix] knowledge: backfill adr batch {i}/{adr_total}",
+                )
+            except Exception as e:  # noqa: BLE001
+                log.warning("knowledge", f"回填 ADR 批次 {i}/{adr_total} 提交失败（fail-open）：{e}")
+            for a in batch:
+                ledger.mark(ADR_PREFIX + a, STATUS_DISTILLED, batch=i)
+            adr_ok += 1
+        else:
+            discard_knowledge_changes(project_root)
+            for a in batch:
+                ledger.mark(ADR_PREFIX + a, STATUS_FAILED, batch=i)
+            append_todo_line(
+                project_root,
+                f"回填 ADR 批次 {i}/{adr_total} 校验 {MAX_FIX_ROUNDS} 轮后仍失败"
+                f"（{len(batch)} 个归档），已回滚半成品：{violations[:3]}",
+            )
+            adr_failed.append(
+                {"batch": i, "archives": batch, "violations": violations[:5]}
+            )
+            log.warning(
+                "knowledge",
+                f"回填 ADR 批次 {i}/{adr_total} 失败（{len(batch)} 归档），继续后续批次",
+            )
+        ledger.save()
+
     counts = ledger.counts()
     scale = scale_stats(project_root)
     converged = all(
@@ -739,7 +810,12 @@ def run_backfill(
         "batches_total": total,
         "batches_ok": len(ok_batches),
         "batches_failed": len(failed_batches),
+        "adr_batches_total": adr_total,
+        "adr_batches_ok": adr_ok,
+        "adr_batches_failed": len(adr_failed),
+        "adr_skipped_no_design": no_design,
         "failed": failed_batches,
+        "adr_failed": adr_failed,
         "counts": counts,
         "scale": scale,
     }
@@ -747,7 +823,8 @@ def run_backfill(
     log.info(
         "knowledge",
         f"回填车道收敛汇报：能力批 {len(ok_batches)}/{total} 成功、"
-        f"{len(failed_batches)} 失败；规模 {scale}",
+        f"{len(failed_batches)} 失败；ADR 批 {adr_ok}/{adr_total} 成功、"
+        f"{len(adr_failed)} 失败；规模 {scale}",
     )
     return summary
 
@@ -803,6 +880,23 @@ def _write_report(project_root: Path, summary: dict) -> None:
                 f"- 批次 {item['batch']}/{summary.get('batches_total', 0)}："
                 f"{', '.join(item.get('capabilities', []))}"
             )
+        lines.append("")
+    adr_failed = summary.get("adr_failed", [])
+    if adr_failed:
+        lines.append("## ADR 失败批次（已登记 todo.md，重跑回填只重做失败条目）")
+        lines.append("")
+        for item in adr_failed:
+            lines.append(
+                f"- ADR 批次 {item['batch']}/{summary.get('adr_batches_total', 0)}："
+                f"{', '.join(item.get('archives', []))}"
+            )
+        lines.append("")
+    skipped = summary.get("adr_skipped_no_design", [])
+    if skipped:
+        lines.append(
+            f"- 无 design.md 归档 {len(skipped)} 个，已标 distilled 留痕跳过："
+            f"{', '.join(skipped)}"
+        )
         lines.append("")
     atomic_write_text(project_root / REPORT_RELPATH, "\n".join(lines))
 

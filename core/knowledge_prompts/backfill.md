@@ -70,6 +70,24 @@
 
 {{BATCH_LIST}}
 
+## 模式三：ADR 抽取批次（adr）
+
+输入：本批**归档**清单（均含 `design.md`）。逐归档读取 `design.md`，抽取「跨 SPEC
+影响架构走向」的机制选型决策，产出 ADR 条目：
+
+- 产物：`spec/knowledge/adr/ADR-NNN-<标题>.md`——三段式（Context/Decision/
+  Consequences），头部 `date:` 与 `status: accepted` 行；编号接续 `adr/` 目录既有
+  最大编号（无既有条目则从 001 起）；
+- 同一决策被多个归档重复记录 → 合并为一个条目，以最终口径为准；
+- 非架构级取舍（单 SPEC 内布局/命名/文案）→ 不抽取，跳过即可，不算失败；
+- 同步维护 `spec/knowledge/adr/index.md`（每条目一行：编号链接、状态、一句话摘要）；
+- 只动 `spec/knowledge/adr/`；已落盘 ADR 的三段正文不可改写（supersede 只允许改
+  头部 status 与追加 Superseded by 行）；不要执行 git 操作。
+
+本批归档清单（共 {{BATCH_SIZE}} 个）：
+
+{{BATCH_LIST}}
+
 {{VIOLATIONS_BLOCK}}
 
 ## 收尾自查（所有模式）
@@ -80,5 +98,5 @@
       真实存在的 `spec/archive/<名>` 目录；
 - [ ] 页内无中间态规则残留（被推翻/废除的规则不出现在规则段）；
 - [ ] 单页不超 150 行；
-- [ ] `index.md` 与各域 `_domain.md` 的链接全部可解析；
+- [ ] `index.md`、各域 `_domain.md` 与 `adr/index.md` 的链接全部可解析；
 - [ ] 未触碰 `spec/knowledge/` 之外的文件。
