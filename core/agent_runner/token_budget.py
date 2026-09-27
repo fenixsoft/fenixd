@@ -176,8 +176,18 @@ class TokenAccountant:
         with _spec_accumulate_lock(spec_name):
             try:
                 entry = self._pm.state_machine.read_one(spec_name) or {}
-            except Exception:
-                entry = {}
+            except Exception as e:
+                # code-review item b6e08ef1cbbc：读失败时标志真值不可知（可能早已
+                # 置位），按「未置位」继续会在 STATE 短暂不可读窗口内每次收工重复
+                # 发射同档告警（下方置位写失败本就静默 pass，封不住重发）。比照
+                # 上游 _accumulate_token_usage 的读失败口径：记 warning 后直接
+                # return 跳过本轮检查，「幂等不重复」在读失败窗口同样成立。锁内
+                # return，由 with 释放 _spec_accumulate_lock，持锁结构不变。
+                self._pm.logger.warning(
+                    "agent_runner",
+                    f"token 预算检查读 STATE 失败 '{spec_name}'，跳过本轮检查: {e}",
+                )
+                return
             if not isinstance(entry, dict):
                 entry = {}
             warn_flag = bool(entry.get("_token_warn_80", False))
@@ -267,7 +277,7 @@ class TokenAccountant:
     def _record_verify_progress_tokens(
         self, spec_name: str, agent_type: str, usage_info: dict
     ) -> None:
-        """验证链侧车：把 planner/judge run 的 usage 逐轮追加到 tokens.json（D3）。
+        """验证链侧车：把 planner run 的 usage 逐轮追加到 tokens.json（D3）。
 
         路径 ``.fenix/verify-progress/<spec>/tokens.json``，结构：
             {"runs": [{"agent_type": "planner-plan", "timestamp": "...",
@@ -275,6 +285,10 @@ class TokenAccountant:
         场景执行为 Python 无 LLM，不入。报告合成时按本侧车求和（task 2.2）。
 
         仅 agent_type 以 ``planner`` 开头时记录；非 LLM run（verifier 场景执行）不计。
+        code-review item 7b8aa5d1aa64 口径澄清：judge 不入本侧车——dispute-judge/
+        spec-review 走 run_dispute_judge/run_spec_review 直连收工路径，不经本函数的
+        两个调用点（_finalize_success / _exhausted_result），故「本链增量 Token」
+        实际只覆盖 planner 消耗。
         写入失败静默跳过（观测增强，不能阻断主流程）。
         """
         if not isinstance(agent_type, str) or not agent_type.startswith("planner"):
