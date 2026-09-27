@@ -25,7 +25,7 @@
 
 ## 1. 配置项扩展
 
-- [ ] 1.0 前置依赖闸门接线：实现入口首查 `.fenix/STATE.md` 本条目 `depends_on` 字段，为空则登记 `depends_on: add-knowledge-atlas`（派发闸门 `PMEngine._dependencies_satisfied` 消费，缺登记则依赖排序不生效）；若登记时前置 `add-knowledge-atlas` 尚未合并，按 blocked 上报零文件改动退出，由闸门在前置合并后接管重派
+- [x] 1.0 前置依赖闸门接线：实现入口首查 `.fenix/STATE.md` 本条目 `depends_on` 字段，为空则登记 `depends_on: add-knowledge-atlas`（派发闸门 `PMEngine._dependencies_satisfied` 消费，缺登记则依赖排序不生效）；若登记时前置 `add-knowledge-atlas` 尚未合并，按 blocked 上报零文件改动退出，由闸门在前置合并后接管重派
 - [ ] 1.1 core/config.py 新增 `knowledge.audit_enabled` 与 `knowledge.graph_enabled` 解析（bool 默认 true，非法值回退默认并告警），.fenix/config.template.yaml 登记带注释模板行，补解析单测
 - [ ] 1.2 core/dashboard/static/src/pages/settings/index.tsx 设置页新增两开关控件与说明文案，补渲染单测
 
