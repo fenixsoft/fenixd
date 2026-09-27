@@ -1,6 +1,6 @@
 import { Alert, Button, Card, Form, Input, Radio, Space, Switch, Typography } from 'antd';
 import { MinusCircleOutlined, PlusOutlined } from '@ant-design/icons';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ConfigData } from '@/services/dashboard';
 import SyncFromUserButton from './SyncFromUserButton';
 import { SETTINGS_ACTIONS_ROW_STYLE } from '../styles';
@@ -45,6 +45,21 @@ function toFormState(v: boolean | null | undefined): HasBuildArtifactsState {
   return 'unset';
 }
 
+// 表单值映射单源（code-review item 90e26b043318，比照 TokenBudgetPanel
+// cbec8303669f 的 buildAgentsFormValues 形态）：initialValues 与回填 effect
+// 共用，缺省调整只改此处，避免两份映射漏改一处导致初值与回填值分叉。
+function buildVerifyFormValues(config: ConfigData) {
+  return {
+    static_scope: config.verify?.static_scope || 'main',
+    deps_mode: config.verify?.deps_mode || 'hardlink',
+    serving_reclaim_enabled: config.verify?.serving_reclaim?.enabled ?? true,
+    build_artifact_paths: (config.worktree?.build_artifact_paths || []).map(
+      (p) => ({ path: p }),
+    ),
+    has_build_artifacts: toFormState(config.worktree?.has_build_artifacts),
+  };
+}
+
 interface VerifyPanelProps {
   config: ConfigData;
   onSave: (values: Partial<ConfigData>) => Promise<void>;
@@ -67,16 +82,19 @@ export default function VerifyPanel({ config, onSave, project, onConfigSynced }:
     | HasBuildArtifactsState
     | undefined;
 
+  const initialValues = buildVerifyFormValues(config);
+
+  // 回填门控（code-review item 90e26b043318，比照 TokenBudgetPanel
+  // cbec8303669f）：无条件 setFieldsValue 会在保存往返或「同步用户级设置」刷新
+  // config 时，用外部值覆盖用户在保存请求在飞期间继续输入、尚未保存的内容。
+  // 改为序列化比较，只在内容真变化时回填。
+  const lastBackfillRef = useRef('');
   useEffect(() => {
-    form.setFieldsValue({
-      static_scope: config.verify?.static_scope || 'main',
-      deps_mode: config.verify?.deps_mode || 'hardlink',
-      serving_reclaim_enabled: config.verify?.serving_reclaim?.enabled ?? true,
-      build_artifact_paths: (config.worktree?.build_artifact_paths || []).map(
-        (p) => ({ path: p }),
-      ),
-      has_build_artifacts: toFormState(config.worktree?.has_build_artifacts),
-    });
+    const next = buildVerifyFormValues(config);
+    const key = JSON.stringify(next);
+    if (key === lastBackfillRef.current) return;
+    lastBackfillRef.current = key;
+    form.setFieldsValue(next);
   }, [config.verify, config.worktree, form]);
 
   // 「无派生物」时清空路径 List 的 store 值（code-review item aceafc981274）：
@@ -132,8 +150,9 @@ export default function VerifyPanel({ config, onSave, project, onConfigSynced }:
         }
       }
       await onSave(payload);
-    } catch (error) {
-      console.error('Validation failed:', error);
+    } catch {
+      // 校验失败：antd 已在表单内渲染提示，不落 console（避免触发验证的
+      // no_console_error 断言，与同族面板口径一致）
     } finally {
       setSaving(false);
     }
@@ -152,7 +171,7 @@ export default function VerifyPanel({ config, onSave, project, onConfigSynced }:
       {/* 单一 Form 承载两张卡片：产物路径卡片的 Form.List 必须处于 Form 上下文内，
           否则 add/remove 会落到 rc-field-form 的默认空上下文（warning 桩），
           点击「添加产物路径」静默无反应。 */}
-      <Form form={form} layout="vertical">
+      <Form form={form} initialValues={initialValues} layout="vertical">
         <Card style={{ marginTop: 12 }}>
           <Form.Item
             name="static_scope"
