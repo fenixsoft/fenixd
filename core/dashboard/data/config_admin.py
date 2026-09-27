@@ -113,6 +113,11 @@ _SOURCE_KEYS = [
     # fix-artifact-paths-hardcoded-default D4：项目是否存在构建产物（三态，
     # 缺省 None=未裁决 / false=已声明无产物 / true=按路径判定）
     "worktree.has_build_artifacts",
+    # add-knowledge-atlas：知识真相源总开关（设置页「杂项」页签可编辑）
+    "knowledge.enabled",
+    # add-knowledge-atlas-maintenance：知识真相源维护车道两键（设置页「杂项」页签可编辑）
+    "knowledge.audit_enabled",
+    "knowledge.graph_enabled",
 ]
 
 # 受管 agents 标量键（来源标注 + 回显共用；配置键新条目在此登记一次即可
@@ -435,6 +440,9 @@ def _default_echo_view(scope: str) -> dict:
                    "context_cost_per_turn_threshold": 200000},
         # add-spec-archive D5：自动归档阈值（0 = 禁用，默认 50）
         "archive": {"auto_threshold": 50},
+        # add-knowledge-atlas：知识真相源总开关（缺省 true，与 ConfigLoader 缺省
+        # 同步）；add-knowledge-atlas-maintenance：维护车道两键同节缺省
+        "knowledge": {"enabled": True, "audit_enabled": True, "graph_enabled": True},
         # add-daily-self-review：admin.self_review 三键（缺省 false/false/02:00）
         "self_review": dict(_DEFAULT_SELF_REVIEW),
         # add-code-review-agent-and-quality-tab：admin.code_review 两键（缺省 false/500）
@@ -645,6 +653,17 @@ def read_config(scope_root, scope: str = "project") -> dict:
         from core.config import ConfigLoader as _CL
 
         result["archive"] = {"auto_threshold": _CL.effective_auto_archive_threshold(raw)}
+    # add-knowledge-atlas：knowledge 段回显（段在文件中显式出现才覆盖缺省，
+    # 与 archive 同型——避免未配置段以回显形态伪装成已配置）；合并后段内三键
+    # 共存（enabled 蒸馏总开关 + audit_enabled/graph_enabled 维护车道），
+    # 各经生效助手归一（非法值回落缺省）
+    if isinstance(raw.get("knowledge"), dict):
+        from core.config import ConfigLoader as _CLK
+
+        result["knowledge"] = {
+            **_CLK.get_knowledge_lane_config(raw),
+            **_CLK.get_knowledge_config(raw),
+        }
     # add-daily-self-review：admin.self_review 三键（经 ConfigLoader 生效值回显）
     admin_raw = raw.get("admin")
     if isinstance(admin_raw, dict):
@@ -869,6 +888,12 @@ def read_effective_config(project_root) -> dict:
         result["runs"] = {"keep": runs_eff["keep"]}
     # add-spec-archive D5：经生效助手取值（非法配置回落默认 50，设置页回显一致）
     result["archive"] = {"auto_threshold": ConfigLoader.effective_auto_archive_threshold(effective)}
+    # add-knowledge-atlas：经生效助手取值（非法值回退 true，设置页回显一致）；
+    # 合并后段内三键共存（enabled 总开关 + 维护车道两键）
+    result["knowledge"] = {
+        **ConfigLoader.get_knowledge_lane_config(effective),
+        **ConfigLoader.get_knowledge_config(effective),
+    }
     # add-daily-self-review：经生效助手取值（run_at 非法值回退 02:00，回显一致）
     result["self_review"] = ConfigLoader.get_self_review_config(effective)
     # add-code-review-agent-and-quality-tab：code_review 生效值回显（与
@@ -1070,6 +1095,18 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
             if not isinstance(merged.get("archive"), dict):
                 merged["archive"] = {}
             merged["archive"]["auto_threshold"] = at
+    # add-knowledge-atlas：knowledge.enabled（bool 总开关；非 bool 由 write_config
+    # 前置校验拒绝，合并分支只应用合法形态——缺分支会被静默丢弃，历史同坑）；
+    # add-knowledge-atlas-maintenance：维护车道两键（audit_enabled/graph_enabled）
+    # 同型合并——设置页「杂项」页签提交它们，缺分支同样静默丢弃（历史同坑）
+    if "knowledge" in patch and isinstance(patch["knowledge"], dict):
+        _km = patch["knowledge"]
+        for _kkey in ("enabled", "audit_enabled", "graph_enabled"):
+            _kv = _km.get(_kkey)
+            if isinstance(_kv, bool):
+                if not isinstance(merged.get("knowledge"), dict):
+                    merged["knowledge"] = {}
+                merged["knowledge"][_kkey] = _kv
     # add-daily-self-review：admin.self_review 三键（enabled/read_todo 布尔、
     # run_at 合法 HH:MM；非法 run_at 由 write_config 前置校验拒绝，此处只应用合法值）
     if "self_review" in patch and isinstance(patch["self_review"], dict):
@@ -1754,9 +1791,19 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
         "regression",
         "stale_code_selfheal",
         "worktree",
+        "knowledge",
     ):
         if _ck in config_patch and not isinstance(config_patch[_ck], dict):
             return fail(f"{_ck} must be an object: {config_patch[_ck]!r}")
+
+    # add-knowledge-atlas：knowledge.enabled 前置校验（布尔；非法直接拒绝 400，
+    # 不静默落盘——合并分支对非 bool 是「跳过」语义，缺此校验会退回 ok:true
+    # 静默丢弃，违反 D7「非法值直接拒绝」契约）
+    if isinstance(config_patch.get("knowledge"), dict):
+        for _kkey in ("enabled", "audit_enabled", "graph_enabled"):
+            _ke = config_patch["knowledge"].get(_kkey)
+            if _ke is not None and not isinstance(_ke, bool):
+                return fail(f"knowledge.{_kkey} must be a boolean: {_ke!r}")
 
     # 嵌套形态同口径：「同步用户级设置」经 _SYNC_PAGE_KEYS 把用户级 admin 段以
     # {"admin": {"code_review": ...}} 形态送入（值取自用户级文件原文，手工脏数据
@@ -2058,6 +2105,15 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
                     raise ValueError(
                         f"archive.auto_threshold must be a non-negative integer (0=disabled): {at}"
                     )
+            # add-knowledge-atlas + add-knowledge-atlas-maintenance：knowledge 段
+            # 三键必须为布尔（非法值拒绝 400，对齐 D7「非法值直接拒绝」契约）
+            knowledge_m = merged.get("knowledge") or {}
+            for _kkey in ("enabled", "audit_enabled", "graph_enabled"):
+                if _kkey in knowledge_m and knowledge_m[_kkey] is not None:
+                    if not isinstance(knowledge_m[_kkey], bool):
+                        raise ValueError(
+                            f"knowledge.{_kkey} must be a boolean: {knowledge_m[_kkey]!r}"
+                        )
             # add-daily-self-review：admin.self_review 三键（后端校验，非法输入拒绝 400）
             admin_m = merged.get("admin") or {}
             if isinstance(admin_m, dict) and isinstance(admin_m.get("self_review"), dict):
@@ -2236,7 +2292,7 @@ _SYNC_PAGE_KEYS = {
     "approval": {
         "gates": ["promote_mode", "approve_mode", "spec_review_mode", "start_after_scope"]
     },
-    "misc": {"archive": ["auto_threshold"]},
+    "misc": {"archive": ["auto_threshold"], "knowledge": ["enabled"]},
     "system": {
         "admin": [
             "enabled",

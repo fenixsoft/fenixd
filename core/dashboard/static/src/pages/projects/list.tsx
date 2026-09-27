@@ -51,6 +51,7 @@ import SessionPanel from './components/SessionPanel';
 import QualityTab from './components/QualityTab';
 import RegressionTab from './components/RegressionTab';
 import ArchitectureTab from './components/ArchitectureTab';
+import KnowledgeTab from './components/KnowledgeTab';
 // add-quality-gates-visibility：阶段→完成度/配色映射抽到纯函数模块（node:test
 // 可加载 .ts），list.tsx 原地 import 替换本地定义，调用点零改动
 import {
@@ -1455,6 +1456,14 @@ export default function SpecListPage() {
             // GET /api/architecture/status，未选中零请求（对齐
             // QualityTab/RegressionTab 按需加载语义）；不自动触发生成
             children: <ArchitectureTab project={name} active={activeTab === 'architecture'} />,
+          },
+          {
+            key: 'knowledge',
+            label: '项目知识',
+            // add-knowledge-atlas 4.2：承载知识真相源只读视图（位于「项目架构」
+            // 与「会话接入」之间）。KnowledgeTab active 门控：仅在选中本分面时
+            // 拉取 GET /api/knowledge/index，未选中零请求（对齐按需加载语义）
+            children: <KnowledgeTab project={name} active={activeTab === 'knowledge'} />,
           },
           {
             key: 'session',

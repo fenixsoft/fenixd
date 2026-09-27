@@ -18,7 +18,7 @@ graph，减少唤醒）：``shutil.which('graphify')`` 探测，缺失/执行失
 
 挂载：``fenixd.py`` 主循环 300s 周期检查点调 ``knowledge_daily_check``（与自动
 归档同款挂载）；门控 ``knowledge.audit_enabled`` / ``knowledge.graph_enabled``
-（core/config.py get_knowledge_config，缺省 True）。
+（core/config.py get_knowledge_lane_config，缺省 True）。
 """
 
 from __future__ import annotations
@@ -118,7 +118,7 @@ def knowledge_daily_check(
     """
     project_root = Path(project_root)
     log = logger or _NullLogger()
-    cfg = ConfigLoader.get_knowledge_config(config or {})
+    cfg = ConfigLoader.get_knowledge_lane_config(config or {})
     audit_enabled = cfg["audit_enabled"]
     graph_enabled = cfg["graph_enabled"]
     if not audit_enabled and not graph_enabled:
@@ -739,7 +739,7 @@ def run_graph(
     """
     project_root = Path(project_root)
     log = logger or _NullLogger()
-    cfg = ConfigLoader.get_knowledge_config(config or {})
+    cfg = ConfigLoader.get_knowledge_lane_config(config or {})
     if not cfg["graph_enabled"]:
         return {"triggered": False, "reason": "disabled"}
     which = which or shutil.which

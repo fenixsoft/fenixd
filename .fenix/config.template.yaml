@@ -358,21 +358,26 @@ pm:
     # 连续推送失败上限（默认 3）：达上限后停止自动重试并升级人工
     max_retries: 3
 
-# ---- Dashboard (optional) ----
-# Web Dashboard 默认端口（可选）。优先级: --port > ~/.config/fenixd/dashboard.yaml 的 port > 本字段 > 8787
-dashboard:
-  port: 8787
-
-# ---- 知识真相源维护（可选，add-knowledge-atlas-maintenance）----
-# 真相源（spec/knowledge/）周期维护车道开关。蒸馏总开关 knowledge.enabled
-# 归前置 SPEC add-knowledge-atlas 所有；下面两键只管维护车道，缺省全开。
+# ---- Knowledge Atlas（项目知识真相源，add-knowledge-atlas）----
+# SPEC 归档后自动派发蒸馏 run，把当前业务规则蒸馏进 spec/knowledge/ 真相源
+# （index.md 总目录 + domains/<域>/<能力>.md 能力页 + adr/ 决策索引）。
 knowledge:
+  # 总开关：false 时归档不派发蒸馏（归档照旧），项目知识页签显示禁用占位。
+  # 修改后约 30s 配置热更新生效，无需重启 daemon。
+  enabled: true
+  # ---- 维护车道（add-knowledge-atlas-maintenance）----
+  # 真相源（spec/knowledge/）周期维护车道开关；下面两键只管维护，缺省全开。
   # 每日 audit 体检（五类病灶扫描 + 机械自修/语义转写分级处置 + 体检报告
   # .fenix/knowledge_audit_report.md）。false = 静默跳过，无日志噪音。
   audit_enabled: true
   # 每日 Graphify 关系图生成（graphify CLI 未安装时自动降级跳过，
   # 安装步骤见 docs/help/knowledge-atlas.md）。
   graph_enabled: true
+
+# ---- Dashboard (optional) ----
+# Web Dashboard 默认端口（可选）。优先级: --port > ~/.config/fenixd/dashboard.yaml 的 port > 本字段 > 8787
+dashboard:
+  port: 8787
 
 # ---- Administrator 自愈（可选）----
 # Fenixd 无人值守自愈：轻量监视器零成本检测困境信号，困境才唤起 Administrator Agent 处置，
