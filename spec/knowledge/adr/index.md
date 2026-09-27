@@ -105,3 +105,17 @@ superseded 条目保留在列供溯源。编号接续本目录既有最大号。
 | [ADR-098](ADR-098-run-artifact-terminal-postlude-invariant-stale-reclass.md) | accepted | run 产物终态后置不变量：弃置前必补写 superseded 终态行（紧跟 transient_retry）；读侧 mtime 1800s 改判 stale 挡活跃计数，存量免清扫自愈不清洗 |
 | [ADR-099](ADR-099-impl-terminal-nocommit-gate-pre-rmtree-reference-snapshot.md) | accepted | implementer 正常终态+分支零提交+dirty 在 cleanup 前拦截走 WIP 提交+退避+resume 续做，机械归因零 LLM，rmtree 前引用式 stash create 快照留档 |
 | [ADR-100](ADR-100-approve-push-file-signal-liveness-precheck-no-retry.md) | accepted | 有状态写操作禁 dashboard 双轨直执行：跨进程走文件信号+写前探活 409+消费不重试（各失败源有既有兜底）+payload 极简防漂移 |
+| [ADR-101](ADR-101-spec-content-integrity-gate-at-dispatch.md) | accepted | 空 SPEC 内容完整性闸门挂派发前（预算闸门同层）：实质四选一宽松判定、闸门自身 IO 异常放行、命中 blocked+告警注册解除条件自动闭环 |
+| [ADR-102](ADR-102-tasksmd-relint-before-merge-branch-side-fail-open.md) | accepted | tasks.md 损伤 merge 前两车道机械复检（full=分支 HEAD 基准、fast-track=worktree 文件），显示层 lint fail-open 宁漏勿拦、解析计数单源纯函数 |
+| [ADR-103](ADR-103-turn-limit-liveness-renewal-forced-kill-wip-salvage.md) | accepted | turn-limit 命中按封闭矩阵活性续期（分支新提交或 tool_result 流量任一即活性、步长 25% 封顶 2 次），强杀收口在可证明静默后接 WIP 保全、消耗记 unobserved 不记零 |
+| [ADR-104](ADR-104-verdict-dedup-rejection-resynthesis-loop.md) | accepted | 裁决查重拒绝必有出口回路：违规落盘→定向重合成（复用轻量 judge 通道）→同入口全链再校验→有界升级；按场景子集回炉、全量重复仍升级、级联豁免防误拦 |
+| [ADR-105](ADR-105-inplace-retry-spec-state-recheck-before-redispatch.md) | accepted | 原地重试子循环退避后重派前必须复查 spec 预期态与冻结/取消旗标，非预期态语义化放弃，复查自身异常 fail-open，与 attempt 层 give-up 检查同源 |
+| [ADR-106](ADR-106-visual-baseline-pass-gate-never-auto-rebuild.md) | accepted | 视觉基线固化过健全性+场景通过性双门（未过顺延 baseline_deferred 非打回），截图前动画静置+限次重拍择优，污染只标记告警、框架永不自动重建基线 |
+| [ADR-107](ADR-107-blocked-to-testing-reverify-gate-lane.md) | accepted | blocked→testing 重验直通道走 GATE_TRANSITIONS 逃生门（守卫=非冻结+分支已合并 git 事实、异常回退 ready），复位挂 admin 处置收尾，阻塞轮数生命周期累计第 2 次必冻结 |
+| [ADR-108](ADR-108-self-evolution-daemon-hosted-gitignored-draft-staging.md) | accepted | 自进化车道 daemon 宿主+同进程状态机注册（不新增第三条文件信号）、草稿 gitignored 暂存接受时先提交后注册零残留、LLM 只读复核、落盘/lint/注册全在确定性代码 |
+| [ADR-109](ADR-109-stale-code-selfheal-daemon-builtin-circuit-breaker.md) | accepted | 代码陈旧自愈 daemon 内建闭环（30s mtime 持续状态+内部双源空闲判定+空闲重启），外部 when-idle 脚本退役；未托管不自愈、启动熔断 60s/3 次人工清标 |
+| [ADR-110](ADR-110-verify-env-deterministic-failfast-before-scenarios.md) | accepted | 确定性验证环境错误场景执行前 fail-fast：预检只拦确定形态零误杀、不可达短路场景数=0 走既有升级通道不产报告、mtime 快照门自证、user_blocked 守卫保留 |
+| [ADR-111](ADR-111-dashboard-four-layer-fault-isolation.md) | accepted | dashboard 四层故障隔离：探测按 errno 分流（ENOENT 静默/EIO 告警）、ignored 前置于探测、发现跳过+日志、聚合 per-project error、缓存保留旧值推进时间戳、前端保留 stale 数据 |
+| [ADR-112](ADR-112-dispatch-wakeup-event-source-not-scan-frequency.md) | accepted | 调度空隙用事件源补齐不提频扫描：接受态转换定向反查 dependents（不建索引）、重评同源判据、派发走既有入口继承全部闸门、观察项判据收紧先自愈后升级 |
+| [ADR-113](ADR-113-fasttrack-death-bifurcation-branch-commits-stamp-failclosed.md) | accepted | fast-track 死亡路径按分支提交分流（有提交 merge+升级完整模式补验证、禁合成 verdict），共享结果文件 stamp 守卫 fail-closed、消费后在快照落盘单点删除 |
+| [ADR-114](ADR-114-preserve-chain-git-fact-fallback-predelete-snapshot.md) | accepted | 保全链 branch/worktree 以 git 事实回落（不信内存表、STATE branch 只终态写、前缀歧义按不可用），dirty 快照改删除前置动作覆盖全部删除路径，保护集宁多保不删 |
