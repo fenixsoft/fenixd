@@ -262,7 +262,10 @@ def _write_snapshot(proot: Path, snap):
 
 
 class TestRegressionFixAPI:
-    def test_accepts_writes_signal(self, tmp_path):
+    def test_accepts_writes_signal(self, tmp_path, monkeypatch):
+        import core.fenix_session as _fenix_session
+        # 受理前置：daemon 已托管运行（fix 端点与 run 同款 hosting_state 守卫）
+        monkeypatch.setattr(_fenix_session, "hosting_state", lambda p: "managed")
         proot = make_project(tmp_path)
         _write_snapshot(proot, _snapshot(failures=[_failure(), _failure(
             kind="error", name="tests/test_b.py::test_y")]))
@@ -318,8 +321,11 @@ class TestRegressionFixAPI:
         finally:
             srv.stop()
 
-    def test_long_only_snapshot_accepted(self, tmp_path):
+    def test_long_only_snapshot_accepted(self, tmp_path, monkeypatch):
         """仅长耗时（全绿但慢）同样可触发修复。"""
+        import core.fenix_session as _fenix_session
+        # 受理前置：daemon 已托管运行（fix 端点与 run 同款 hosting_state 守卫）
+        monkeypatch.setattr(_fenix_session, "hosting_state", lambda p: "managed")
         proot = make_project(tmp_path)
         _write_snapshot(proot, _snapshot(status="passed", long_tests=[_long()]))
         srv = _server(tmp_path, proot)

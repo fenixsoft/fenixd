@@ -544,10 +544,15 @@ class TestRepairWorker(unittest.TestCase):
             run_id="repair-demo-1", spec_name=self.spec, agent_type="repair",
             success=True, duration_seconds=1.0, branch=branch,
         )
-        self.engine.agent_runner.run_repair = MagicMock(return_value=fail_result)
-        (wt / ".fenix-run-result.json").write_text(
-            json.dumps({"status": "error", "spec": self.spec,
-                        "error": "无法解决冲突"}), encoding="utf-8")
+        # 派发前 worker 会预清理 worktree 内的陈旧结果文件（repair_lane 预清理），
+        # 故在 run_repair 内（即派发后）写入，模拟 repair agent run 期间的真实时序。
+        def fake_run_repair(*args, **kwargs):
+            (wt / ".fenix-run-result.json").write_text(
+                json.dumps({"status": "error", "spec": self.spec,
+                            "error": "无法解决冲突"}), encoding="utf-8")
+            return fail_result
+
+        self.engine.agent_runner.run_repair = MagicMock(side_effect=fake_run_repair)
         self.engine._run_repair_worker(self.spec, wt, resolved_branch, info)
         entry = self.sm.read_one(self.spec)
         self.assertEqual(entry["status"], "ready")

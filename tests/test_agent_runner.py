@@ -84,7 +84,7 @@ class TestTerminalHarvest:
         with pytest.raises(RuntimeError):
             runner._execute_agent("spec", "implementer", "impl-exc-1")
         runner._v2_server._v2_stop_for_worktree.assert_called_once_with(wt)
-        runner.worktree_manager._kill_worktree_strays.assert_called_once_with(
+        runner.worktree_manager.kill_strays.assert_called_once_with(
             wt.name)
 
     @pytest.mark.parametrize(
@@ -116,7 +116,7 @@ class TestTerminalHarvest:
         else:
             runner._execute_agent("spec", agent_type, run_id)
         runner._v2_server._v2_stop_for_worktree.assert_not_called()
-        runner.worktree_manager._kill_worktree_strays.assert_not_called()
+        runner.worktree_manager.kill_strays.assert_not_called()
 
     def test_repeated_harvest_idempotent(self, tmp_path):
         """同一 worktree 收割两次（runner 层 + dispatch 层）→ 第二次无害。"""
