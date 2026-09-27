@@ -91,3 +91,37 @@ SPEC 归档（手工与 daemon 自动两条路径）完成后自动派发一次�
 
 配置开关 `knowledge.enabled`（缺省 true，Dashboard 设置页可改）：false 时归档
 不派发蒸馏，项目知识页签显示禁用占位。
+
+## 域命名映射表（首跑自举登记）
+
+下表由存量回填首跑（模式一：聚类自举）登记，记录域目录名 → 业务含义，
+是唯一一次对 README 的写入；后续蒸馏只读此表，不改本节。
+
+| 域目录 | 业务含义 |
+| --- | --- |
+| project-management | 项目接入与生命周期：项目发现注册、描述、生命周期控制与冻结停机 |
+| planning-generation | 规划与出题：SPEC 生成、路由地图、生成节流与 planready 产物门 |
+| spec-lifecycle | SPEC 生命周期：审批、评审门、晋升、调度拾取、冻结与归档 |
+| dispatch-scheduling | 调度与派发：优先级并行调度、并发度、队列治理与事件投递 |
+| implementer-lane | 实现车道：implementer 任务协议、交付物声明门禁与任务进度回写 |
+| verify-pipeline | 验证管线：契约、场景治理、执行引擎与验证报告 |
+| verdict-adjudication | 验证裁决：judge 产物门、证据分类与裁决结果完整性 |
+| code-review-lane | 代码审查：审查 agent、台账条目、实现期审查门与 OCR 并行车道 |
+| code-fix-lane | 缺陷修复：code-fix 车道、CR 台账修复批与修复族收敛 |
+| agent-runtime | Agent 运行时：进程托管、提示词注入、运行参数与工具效率 |
+| run-resilience | 运行守护与失败韧性：超时监督、失败分类、预算与状态写入防线 |
+| recovery-continuity | 中断恢复与续做：恢复保全、分支锚定、重试与断点续跑 |
+| worktree-vc | 工作树与版本控制：worktree 隔离、merge-back 与 stash 冲突处置 |
+| daemon-runtime | 守护进程平台：单例、健康、排水与 supervisor 托管 |
+| provider-models | 模型网关与配置：provider 链、故障熔断退避、模型分配与配置分级 |
+| cost-observability | 成本与可观测：成本治理、耗时与延迟观测、run 记录可读性 |
+| dashboard-frontend | 仪表盘前端：页面、页签、弹窗与主题等交互体验 |
+| dashboard-platform | 仪表盘服务：服务端、SSE 实时通道、增量索引与实例生命周期 |
+| mobile-adaptation | 移动端适配：断点、密度与触控目标的响应式适配 |
+| admin-ops | 管理员运营：admin agent、处置活动、人工裁决与告警处置 |
+| self-evolution | 自省与自进化：每日自省、改进建议、陈旧代码自愈与 DFX 看护 |
+| test-engineering | 测试工程：测试隔离、替身保真、回归三段与 fixture 治理 |
+| codebase-structure | 代码结构治理：包结构、门面契约与巨型类/长函数拆分 |
+| docs-help | 帮助与文档：帮助中心、文档机制与保障机制专章 |
+
+域归位的机器可读清单（能力 → 域）见 `.fenix/knowledge_backfill_domains.json`。
