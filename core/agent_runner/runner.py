@@ -4440,9 +4440,14 @@ class AgentRunner:
         runs_dir.mkdir(parents=True, exist_ok=True)
         run_file = runs_dir / f"{run_id}.jsonl"
 
+        # 提示词经 stdin 管道传入（code-review 75589537fb72）："-p" 不带位置
+        # 参数时 claude CLI 从 stdin 读提示词。不走 argv——argv 全文驻留
+        # /proc/<pid>/cmdline（同机用户经 ps 可见 spec 上下文等敏感内容），
+        # 且单参数受 ARG_MAX 约束，超长提示词（大 spec 全文注入）会令 Popen
+        # 以 E2BIG 直接失败。
         cmd = [
             "claude",
-            "-p", prompt,
+            "-p",
             "--output-format", "stream-json",
             "--verbose",  # claude CLI 要求: --print + --output-format=stream-json 必须带 --verbose
             "--add-dir", str(cwd),
@@ -4478,6 +4483,7 @@ class AgentRunner:
 
         proc = subprocess.Popen(
             cmd,
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -4486,6 +4492,21 @@ class AgentRunner:
             cwd=str(cwd),
         )
         self._running_agents[run_id] = proc
+
+        # 提示词写 stdin 后立即关闭写端（CLI 读到 EOF 才开始跑）。独立守护
+        # 线程写入：prompt 超过管道缓冲时同步写会阻塞主线程；CLI 提前退出
+        # （或强杀路径关闭管道）时写端 BrokenPipe/OSError 静默吞掉——退出码
+        # 与错误文本仍由下方既有轮询环按原语义兜底，本线程不改变终态判定。
+        def _feed_stdin() -> None:
+            try:
+                proc.stdin.write(prompt)
+                proc.stdin.close()
+            except (BrokenPipeError, OSError, ValueError):
+                pass
+
+        threading.Thread(
+            target=_feed_stdin, name=f"stdin-feed-{run_id}", daemon=True
+        ).start()
 
         # 两条守护线程分别读 stdout / stderr，避免单线程 readline 卡死。
         # 共享状态由主线程在 join 之后读取，天然构成 happens-before。
@@ -5909,7 +5930,7 @@ class AgentRunner:
                 self.logger.warning(
                     "agent_runner", f"终态收割 V2 stop 失败 {wt}: {e}")
             try:
-                self.worktree_manager._kill_worktree_strays(Path(wt).name)
+                self.worktree_manager.kill_strays(Path(wt).name)
             except Exception as e:
                 self.logger.warning(
                     "agent_runner", f"终态收割 strays 清扫失败 {wt}: {e}")
