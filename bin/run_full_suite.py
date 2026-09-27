@@ -204,8 +204,17 @@ def run_command(cmd, timeout, cwd, env=None) -> tuple:
                 pass  # 进程组已不存在
         try:
             out, err = proc.communicate(timeout=10)
-        except subprocess.TimeoutExpired:
-            out, err = "", ""
+        except subprocess.TimeoutExpired as exc:
+            # EOF 迟迟不到（游离孙进程仍持有管道写端）时保留已读到的部分输出：
+            # faulthandler 栈是挂起定位的关键证据，置空会让 extract_hanging_test
+            # 无从提取。注意 text=True 下 Popen 的 TimeoutExpired 携带的是 bytes
+            # （解码只发生在成功路径），须按实际类型归一为 str（兼容 None/str）。
+            out = exc.stdout or ""
+            err = exc.stderr or ""
+            if isinstance(out, bytes):
+                out = out.decode(errors="replace")
+            if isinstance(err, bytes):
+                err = err.decode(errors="replace")
         return None, out, err, True
 
 
@@ -424,12 +433,14 @@ class SuiteLock:
 # ── 基线 worktree 对比（3.2）──────────────────────────────────────────
 
 
-def run_baseline_comparison(project_root, ref, timeout, basetemp_unique=False) -> dict:
+def run_baseline_comparison(project_root, ref, timeout, basetemp_unique=False, log=print) -> dict:
     """在基线 ref 的临时 worktree 跑同一套件，与当前结果做失败集合差异归类。
 
     Args:
         basetemp_unique: 主机锁获取失败时置 True——与主套件同语义（见 run_suite），
             回退 pid 唯一 basetemp 防并发套件互删临时目录。
+        log: 日志通道（透传给 run_suite）；--json 模式下调用方传入 stderr 通道，
+            保证 stdout 只含最终 JSON 文档。
 
     Returns: {"ref", "baseline_failures", "baseline_rc",
               "baseline_timed_out", "classification", "hanging"}。
@@ -460,7 +471,7 @@ def run_baseline_comparison(project_root, ref, timeout, basetemp_unique=False) -
             # 该限制声明（见 main 归类输出 baseline_env_note），不得静默采信。
             baseline = run_suite(
                 wt, timeout=min(BASELINE_TIMEOUT_SECONDS, timeout * 2),
-                basetemp_unique=basetemp_unique,
+                basetemp_unique=basetemp_unique, log=log,
             )
             # failed_tests 由 run_suite 在截断前自完整原始输出提取（c00c0572529d）。
             failed = baseline.get("failed_tests", [])
@@ -493,6 +504,11 @@ def run_baseline_comparison(project_root, ref, timeout, basetemp_unique=False) -
             )
 
 
+def _log_to_stderr(message: str) -> None:
+    """--json 模式的日志通道：日志行走 stderr，stdout 只输出最终 JSON 文档。"""
+    print(message, file=sys.stderr)
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="有界全量套件入口（fix-run-hang-amplification）")
     parser.add_argument(
@@ -523,14 +539,20 @@ def main(argv=None) -> int:
             cur = cur.parent
 
     os.chdir(project_root)
-    lock = SuiteLock(project_root)
+    # --json 供脚本消费（code-review item e15ace9e9d3a）：全部 [run_full_suite]
+    # 日志行（主机锁、套件摘要、基线对比清单）改走 stderr，stdout 只保留末尾的
+    # 单一合法 JSON 文档——日志与 JSON 混在同一 stdout 时，消费方对整体
+    # json.loads 会因前导日志行解析失败。
+    log = _log_to_stderr if args.json else print
+    lock = SuiteLock(project_root, log=log)
 
     base = None
     with lock:
         # 锁获取失败（等待超时）→ 回退 pid 唯一 basetemp：固定 basetemp 下
         # 并发套件会在会话开始互相清空对方临时目录，正是主机锁要防的损坏。
         current = run_suite(
-            project_root, timeout=args.timeout, basetemp_unique=not lock.acquired
+            project_root, timeout=args.timeout,
+            basetemp_unique=not lock.acquired, log=log,
         )
         # baseline 执行纳入同一锁作用域（code-review item b8556d5a478e）：
         # run_baseline_comparison 会再启一套完整 pytest，「同一主机全量套件
@@ -540,7 +562,7 @@ def main(argv=None) -> int:
         if args.baseline:
             base = run_baseline_comparison(
                 project_root, args.baseline, args.timeout,
-                basetemp_unique=not lock.acquired,
+                basetemp_unique=not lock.acquired, log=log,
             )
 
     result = {
@@ -600,17 +622,17 @@ def main(argv=None) -> int:
                     "基线运行于临时 worktree，.fenix 运行态文件与主树不对等，"
                     "环境性差异会污染两侧失败集合对比，存量归类可信度受限"
                 )
-        print(f"\n[run_full_suite] 基线对比 ref={args.baseline} " f"→ {result['classification']}")
+        log(f"\n[run_full_suite] 基线对比 ref={args.baseline} " f"→ {result['classification']}")
         if current_failed:
-            print("[run_full_suite] 当前失败清单:")
+            log("[run_full_suite] 当前失败清单:")
             for f in current_failed:
-                print(f"  FAILED {f}")
+                log(f"  FAILED {f}")
         if base["baseline_failures"]:
-            print("[run_full_suite] 基线失败清单:")
+            log("[run_full_suite] 基线失败清单:")
             for f in base["baseline_failures"]:
-                print(f"  BASELINE_FAILED {f}")
+                log(f"  BASELINE_FAILED {f}")
         if result.get("baseline_env_note"):
-            print(f"[run_full_suite] 注意: {result['baseline_env_note']}")
+            log(f"[run_full_suite] 注意: {result['baseline_env_note']}")
 
     if args.json:
         print(json_dumps(result))
