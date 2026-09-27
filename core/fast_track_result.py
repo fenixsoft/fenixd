@@ -22,6 +22,8 @@ fast-track run 复用现有 ``.fenix-run-result.json`` 机制，在其中增加�
 纯函数模块，无外部依赖；verdict_check 硬校验器与 pm_engine 派发分支共用。
 """
 
+import logging
+import re
 from typing import Optional
 from pathlib import Path
 
@@ -162,15 +164,11 @@ def estimate_spec_scale(spec_dir: Path) -> int:
     Returns:
         规模分（int），值越大任务越重。
     """
-    import logging as _log
-    import re as _re
-    from pathlib import Path as _Path
-
-    spec_path = _Path(spec_dir)
+    spec_path = Path(spec_dir)
     if not spec_path.is_dir():
         return 0
 
-    logger = _log.getLogger("fenixd.fast_track_scale")
+    logger = logging.getLogger("fenixd.fast_track_scale")
 
     # 1. 统计 tasks.md 未勾选任务条数
     tasks_path = spec_path / "tasks.md"
@@ -179,7 +177,7 @@ def estimate_spec_scale(spec_dir: Path) -> int:
         try:
             text = tasks_path.read_text(encoding="utf-8")
             # 匹配 "- [ ]" 开头的任务行
-            unchecked_count = len(_re.findall(r"^- \[ \] ", text, _re.MULTILINE))
+            unchecked_count = len(re.findall(r"^- \[ \] ", text, re.MULTILINE))
         except (OSError, UnicodeDecodeError) as e:
             logger.warning(f"fast-track 规模预估读取 {tasks_path} 失败（低档放行）: {e}")
             unchecked_count = 0
