@@ -6,7 +6,7 @@
 
 本 SPEC 补齐三块：**存量回填**（300 个归档按域分批蒸馏，一次性）、**audit 淘汰车道**（周期检测矛盾/悬空/重复，持续防真相源腐烂与膨胀）、**Graphify 关系图集成**（低频自动生成 `graph/`，点亮前置 SPEC 预留的前端渲染位）。
 
-依赖：`add-knowledge-atlas` 已合并（复用其 `core/knowledge.py` 校验器、蒸馏提示词、`KnowledgeTab` 渲染位与 `knowledge.enabled` 配置）。
+依赖：`add-knowledge-atlas` 已合并（复用其 `core/knowledge.py` 校验器、蒸馏提示词、`KnowledgeTab` 渲染位与 `knowledge.enabled` 配置）。该依赖 MUST 机读生效：STATE.md 本条目 `depends_on` 字段登记 `add-knowledge-atlas`（逗号分隔规范形态，由派发闸门 `PMEngine._dependencies_satisfied` 与 `EventBus._find_dependents` 消费），未合并前本 SPEC 不进入实现派发。
 
 ## What Changes
 
@@ -24,7 +24,7 @@
 
 ## Impact
 
-- **新增文件**：`core/knowledge_backfill.py`（回填批处理）、`core/knowledge_audit.py`（audit 车道）、`core/knowledge_prompts/backfill.md` 与 `audit.md`（提示词）
-- **修改文件**：`core/config.py` + `.fenix/config.template.yaml`（新配置项）、`core/dashboard/static/src/pages/settings/index.tsx`（设置页控件）、daemon 主循环挂周期调度（`fenixd.py`）；`core/knowledge.py` 仅 import 复用（校验器与提交工具），不修改
+- **新增文件**：`core/knowledge_backfill.py`（回填批处理）、`core/knowledge_audit.py`（audit 车道）、`core/knowledge_prompts/backfill.md` 与 `audit.md`（提示词）、`docs/help/knowledge-atlas.md`（帮助文档）
+- **修改文件**：`core/config.py` + `.fenix/config.template.yaml`（新配置项）、`core/dashboard/static/src/pages/settings/index.tsx`（设置页控件）、daemon 主循环挂周期调度（`fenixd.py`）、`docs/help/README.md`（帮助目录表登记）；`core/knowledge.py` 仅 import 复用（校验器与提交工具），不修改
 - **不修改**：真相源目录契约与 marker 格式（前置 SPEC 定稿，本 SPEC 只消费）；KnowledgeTab 前端（graph 探测接口已就绪）
 - **风险**：300 个归档回填是批量 agent run，存在 token 成本（批处理 + 断点续跑控制浪费，复用 code-fix 亲和性分批的教训）；audit 自动修复误删风险（机械项白名单化，语义项必须走 LLM 重写而非脚本改写）

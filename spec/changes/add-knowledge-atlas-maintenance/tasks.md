@@ -19,10 +19,13 @@
   kind: modify
 - path: docs/help/knowledge-atlas.md
   kind: new
+- path: docs/help/README.md
+  kind: modify
 ```
 
 ## 1. 配置项扩展
 
+- [ ] 1.0 前置依赖闸门接线：实现入口首查 `.fenix/STATE.md` 本条目 `depends_on` 字段，为空则登记 `depends_on: add-knowledge-atlas`（派发闸门 `PMEngine._dependencies_satisfied` 消费，缺登记则依赖排序不生效）；若登记时前置 `add-knowledge-atlas` 尚未合并，按 blocked 上报零文件改动退出，由闸门在前置合并后接管重派
 - [ ] 1.1 core/config.py 新增 `knowledge.audit_enabled` 与 `knowledge.graph_enabled` 解析（bool 默认 true，非法值回退默认并告警），.fenix/config.template.yaml 登记带注释模板行，补解析单测
 - [ ] 1.2 core/dashboard/static/src/pages/settings/index.tsx 设置页新增两开关控件与说明文案，补渲染单测
 
@@ -44,6 +47,6 @@
 
 ## 5. 文档与端到端
 
-- [ ] 5.1 新建 docs/help/knowledge-atlas.md：真相源使用说明（目录结构、页签导航、audit/graph 行为、graphify 人工安装步骤[uv tool install graphifyy]、daemon 重启生效说明）
+- [ ] 5.1 新建 docs/help/knowledge-atlas.md：真相源使用说明（目录结构、页签导航、audit/graph 行为、graphify 人工安装步骤[uv tool install graphifyy]、daemon 重启生效说明）；docs/help/README.md 完整目录表补登记行（帮助条目必须可发现）
 - [ ] 5.2 e2e 测试（fake spawn 替身 + 临时 fixture 归档集）：回填车道端到端（自举→分批→收敛汇报）、audit 端到端（植入病灶→机械修+语义转写→报告断言）、graph 端到端（假 CLI 产物落盘与提交断言）
 - [ ] 5.3 全量回归通过（pytest 既有套件 + 本 SPEC 新增用例）
