@@ -1193,7 +1193,12 @@ def is_verdict_stable(project_root, spec_name) -> bool:
     # verdict 一致性（status + failed_ids）
     if prev.get("status") != curr.get("status"):
         return False
-    if sorted(prev.get("failed_ids") or []) != sorted(curr.get("failed_ids") or []):
+    prev_failed = prev.get("failed_ids")
+    curr_failed = curr.get("failed_ids")
+    # 脏值容错：failed_ids 损坏成非列表时与缓存损坏同判 → 保守不复用（False）
+    if not isinstance(prev_failed, list) or not isinstance(curr_failed, list):
+        return False
+    if sorted(prev_failed) != sorted(curr_failed):
         return False
 
     # spec 戳未变
