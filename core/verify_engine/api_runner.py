@@ -318,6 +318,7 @@ class ApiRunner(VerifyRunner):
             }
         events: list[dict] = []
         truncated = False
+        data_truncated = False
 
         try:
             async with client.stream(
@@ -337,6 +338,7 @@ class ApiRunner(VerifyRunner):
                     }
                 deadline = time.monotonic() + duration
                 event: dict = {"data": "", "event": ""}
+                data_bytes = 0  # 当前事件 data 累计 UTF-8 字节（与 _truncate 同口径）
                 async for line in resp.aiter_lines():
                     if time.monotonic() > deadline:
                         break
@@ -347,18 +349,27 @@ class ApiRunner(VerifyRunner):
                         v = line[5:]
                         if v.startswith(" "):
                             v = v[1:]
-                        event["data"] += v + "\n"
+                        # 单事件 data 64KB 截断纪律（与 http_request body 同源
+                        # _truncate）：超限后停止拼接，防高速流式端点把单条
+                        # 事件推到任意大、撑爆 capture 与 judge 归因上下文。
+                        if data_bytes <= _EVIDENCE_LIMIT:
+                            data_bytes += len((v + "\n").encode("utf-8", errors="replace"))
+                            event["data"] += v + "\n"
                     elif line.startswith("event:"):
                         event["event"] = line[6:].strip()
                     elif line == "":
                         if event["data"].strip():
+                            data, over = _truncate(event["data"].rstrip("\n"))
+                            if over:
+                                data_truncated = True
                             events.append(
                                 {
-                                    "data": event["data"].rstrip("\n"),
+                                    "data": data,
                                     "event": event["event"],
                                 }
                             )
                         event = {"data": "", "event": ""}
+                        data_bytes = 0
                         if len(events) >= _SSE_MAX_EVENTS:
                             truncated = True
                             break
@@ -406,7 +417,8 @@ class ApiRunner(VerifyRunner):
             "url": url,
             "events": len(events),
             "detail": f"SSE 收集 {len(events)} 个事件（{duration}s 窗口）"
-            + (f"（达到收集上限 {_SSE_MAX_EVENTS}，后续事件已截断）" if truncated else ""),
+            + (f"（达到收集上限 {_SSE_MAX_EVENTS}，后续事件已截断）" if truncated else "")
+            + ("（单事件 data 超 64KB 已截断）" if data_truncated else ""),
         }
 
     def config_env(self) -> dict:
