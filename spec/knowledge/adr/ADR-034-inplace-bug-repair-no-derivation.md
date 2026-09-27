@@ -1,7 +1,8 @@
 # ADR-034：bug 修复原地打回，不再派生 fix-* 子 SPEC
 
 date: 2026-09-05
-status: accepted
+status: superseded
+Superseded by: ADR-075(bug 修复方式配置化双模式，名称前缀分流退役)
 
 ## Context
 

@@ -38,7 +38,7 @@ superseded 条目保留在列供溯源。编号接续本目录既有最大号。
 | [ADR-031](ADR-031-dashboard-project-lifecycle-tmux-softdelete.md) | accepted | 项目运维：daemon 启停走 tmux 会话（优雅信号优先、kill 兜底、启动幂等），软删除=ignored 忽略列表（忽略优先于显式注册） |
 | [ADR-032](ADR-032-failover-chain-element-model-mapping.md) | accepted | failover 链元素级模型映射：元素 str|{provider,model} 三级解析回退、角色级 model 可选，校验改「每元素可解析」，保存整体替换防覆写 |
 | [ADR-033](ADR-033-v2-frontend-vendored-amis-sdk.md) | accepted | v2 前端栈=vendored AMIS SDK+JSON DSL 页面：tarball 提取无构建链、页面 JSON 深合并单页缺失可跳过；修订 ADR-008 前端形态，其零构建/vendored 原则延续 |
-| [ADR-034](ADR-034-inplace-bug-repair-no-derivation.md) | accepted | bug 修复原地打回：重置 implementing 在原 SPEC 内修复，不再派生 fix-* 子 SPEC；3 轮连续失败升级人工，通道去重/族谱治理随派生退役（推翻 ADR-019） |
+| [ADR-034](ADR-034-inplace-bug-repair-no-derivation.md) | superseded | bug 修复原地打回：重置 implementing 在原 SPEC 内修复，不再派生 fix-* 子 SPEC；3 轮连续失败升级人工，通道去重/族谱治理随派生退役（推翻 ADR-019）（已随 ADR-075 修订：缺省原地、派生可选） |
 | [ADR-035](ADR-035-repair-convergence-dual-counter-budget.md) | accepted | 修复收敛双计数器：验证失败轮数只在 PASS 归零（连续性），实现 run 总预算派发时递增、重派决策处设卡耗尽 blocked（总量），沉没成本放行跑完 |
 | [ADR-036](ADR-036-deliverable-gate-before-merge-typed-extractor.md) | accepted | 交付物守卫 merge 前零 LLM 校验声明路径存在，提取器语境分类 deliverables/references，无法判定保守归硬校验（宁误拦不漏放），引用缺失仅审计 |
 | [ADR-037](ADR-037-worktree-test-server-reverse-proxy.md) | accepted | 页面验证服务=worktree 静态资源+API/SSE 反代主服务：打真后端不跑第二实例，框架管启停注入 V2_BASE_URL，端口高位段确定性分配 |
@@ -77,3 +77,15 @@ superseded 条目保留在列供溯源。编号接续本目录既有最大号。
 | [ADR-070](ADR-070-config-validation-tolerance-classification.md) | accepted | 配置校验按缺陷性质分类：键集不匹配逐键降级（保留键+内嵌重启处方+进程生命周期去重），值/类型非法整段拒绝、启动 FATAL |
 | [ADR-071](ADR-071-daemon-self-monitoring-signal-semantics.md) | accepted | daemon 自检信号：错误升级按时间窗+归一化指纹（无状态重算、fail-closed），代码陈旧用 mtime 指纹（不用 git hash/schema 版本），阈值模块常量不进配置 |
 | [ADR-072](ADR-072-content-assets-served-by-backend-dynamic-read.md) | accepted | 内容型资产由后端端点动态读盘伺服不进前端 dist（白名单+realpath 防穿越），重依赖渲染库动态加载；内容与代码演进边界确立 |
+| [ADR-073](ADR-073-state-events-published-at-eventbus-diff.md) | accepted | SPEC 状态事件发布点收口 EventBus 状态 diff（唯一全局观察者覆盖跨进程写入），消费者禁入 state_machine 回调；2s 延迟与跳变合并为接受代价，动作线程池执行不阻塞状态机 |
+| [ADR-074](ADR-074-runtime-mutable-values-never-versioned.md) | accepted | 运行时可变值不落版本库：调度门控字段存 STATE.md entry、订阅配置存 .fenix/config.yaml，spec 目录只承载版本化文档；.spec.yaml 仅放创建期声明 |
+| [ADR-075](ADR-075-bug-repair-mode-configurable-prefix-retired.md) | accepted | bug 修复方式由 admin.bug_repair_mode 配置（inplace 缺省/derive），名称前缀分流退役；切换实时生效、在飞链自然终态不迁移（推翻 ADR-034 一律原地口径，派生治理随 derive 模式长期保留） |
+| [ADR-076](ADR-076-llm-verdict-run-dispatch-daemon-mechanical-execution.md) | accepted | LLM 裁决以轻量单轮 agent run 派发（复用路由/记账/超时），judge 只读只产裁决 JSON，daemon 机械执行+重跑守卫；修正声明≠放行缺件，审计留痕可回滚 |
+| [ADR-077](ADR-077-verify-runner-plugin-architecture.md) | accepted | 验证引擎 Runner 插件化：调度器不认识 kind、场景级 kind 混排、断言结果恒为 pass/layer 字段 dict 下游零分支、契约形态按场景集反推零新增字段；新形态只加 Runner |
+| [ADR-078](ADR-078-dangling-run-terminal-state-sweep-startup-and-runtime.md) | accepted | 悬空 run 终态补写双兜底：启动清扫（派发前全扫）+ 运行期三重判据（不在注册表∧mtime 停更≥1800s∧尾部无终态）周期扫；interrupted 补写 reason 区分来源，线程级 except 兜底归因 re-raise |
+| [ADR-079](ADR-079-deterministic-undeclarable-soften-before-llm-judge.md) | accepted | 确定性不可交付声明（gitignored/仓库外/dist/.fenix）在 LLM/人工介入前机械软化 kind→reference：晋升期软化先于 lint、守卫期预分类免 judge，全程审计留痕，LLM 终审只接语义矛盾 |
+| [ADR-080](ADR-080-verify-contract-signal-routed-autodraft-selfcert-gate.md) | accepted | 验证契约缺失不打回 plan：信号化唤起 Administrator 自主起草，草稿须过机械三段自证才落位；有效契约一律不碰、人类 UI 显式授权（overwrite 标记）方可越过 |
+| [ADR-081](ADR-081-provider-transient-inplace-backoff-before-chain-advance.md) | accepted | provider 瞬断原地退避优先换链：attempt 内子重试 r{n} 续 --resume、worktree 全类型保留+transient keep_for_reuse、dispatch 排程等待重派、全局错误指纹熔断；归因判定只看原始信号不读降噪文本 |
+| [ADR-082](ADR-082-gate-evidence-per-spec-addressed-persistence.md) | accepted | 门禁证据 per-spec 寻址持久化（verify-progress/<spec>/impl-result.json 原子快照）：共享 run-result 降级为兼容兜底，证据缺失 fail-closed 拦截，恢复巡检尊重门禁结论、re-trigger 作人工修复心跳 |
+| [ADR-083](ADR-083-drafted-promotion-single-choke-point-shared-core.md) | accepted | drafted 晋升门控单点化（manual 等待不写 error），晋升核心共享函数供 daemon/dashboard/CLI 三通道复用；transition 收尾留调用方，CLI 人工子命令独立入口不挂 daemon 主程序 |
+| [ADR-084](ADR-084-contract-agent-artifact-hard-gate-retry-budget-split.md) | accepted | 产物契约型 agent（planner-judge/plan）成功判定加产物硬门：exit 0 但产物缺失/不可解析判失败走瞬态重试，产物不合规走裁决重试，两类预算分离；judge 逐场景 checkpoint 先落盘再深入 |
