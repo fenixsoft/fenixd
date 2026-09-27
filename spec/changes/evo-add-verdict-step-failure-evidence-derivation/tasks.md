@@ -20,3 +20,9 @@
 
 - [x] 2.1 tests/test_verdict_step_failure_shape.py（new）：仿 tests/test_verify_verdict_multi_kind.py 的 TestMultiKindTriageRequirement 风格补两例——assertion_results 空表+失败步骤+归因未覆盖派生清单→违规且文案含派生条目；归因逐条覆盖派生清单→合规
 - [x] 2.2 tests/test_agent_prompt_files.py：断言 agents/planner-judge.md 含「步骤失败型场景必填清单」处方小节（fe612841 处方防漂移守卫；断言子串须与 agents/planner-judge.md:85 处方原文逐字一致，当前原文为「**步骤失败型场景必填清单（强制）**」）
+
+## 验证修复（原地打回第 1 轮）
+
+- [ ] 先复核失败有效性：逐条核对 `spec/changes/evo-add-verdict-step-failure-evidence-derivation/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
+- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
+- [ ] 修复后重跑验证确认通过
