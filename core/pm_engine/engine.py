@@ -2267,7 +2267,27 @@ class PMEngine:
                 honest_exit_convergence_gap as _honest_convergence_gap,
             )
 
-            converged_gap = _honest_convergence_gap(result, self.project_root, spec_name)
+            # code-review item 833f70ceec3a：与 rollback._honest_exit_gap（同一
+            # 收敛判据的另一调用点，"判定异常一律按失败处置"）同口径的
+            # fail-closed 包裹——result dict 来自 agent 写的 .fenix-run-result.json
+            # （半受信输入），解析异常不得从 _on_spec_verified 穿透中断当轮
+            # verified 收口，按失败处置返回带异常摘要的拦截串（走 task-gap
+            # blocker 通道供人工裁决）。
+            try:
+                converged_gap = _honest_convergence_gap(
+                    result, self.project_root, spec_name
+                )
+            except Exception as e:  # noqa: BLE001 — 判定异常按失败处置（fail-closed）
+                self.logger.warning(
+                    "pm_engine",
+                    f"unattainable 收敛判定异常 '{spec_name}'（fail-closed 拦截）: "
+                    f"{type(e).__name__}: {e}",
+                )
+                return (
+                    TASK_GAP_ERROR_PREFIX
+                    + "unattainable 收敛判定异常（按失败处置）："
+                    + f"{type(e).__name__}: {e}"
+                )
             if converged_gap:
                 self._note_unattainable_todos(spec_name, result, converged_gap)
                 self._clear_task_gap_error(spec_name)
@@ -3665,6 +3685,40 @@ class PMEngine:
                         spec_name, f"auto-recovered from stuck {stuck_status}"
                     )
                 elif stuck_status == "testing":
+                    # code-review item 54075e1dda03：ocr join 停等豁免——entry 带
+                    # ``_ocr_join_wait`` 且 ocr 车道在飞（``ocr_lane_busy``）时，
+                    # spec 处于 queue._ocr_join_await_lane 承诺的「MUST 停止推进
+                    # （tester 不重派）」停等态，此处 reset implemented+重派
+                    # verifier 会打断该契约（唤醒回调 _on_impl_ocr_lane_finished
+                    # 见状态非 testing 即幂等空转，损失整轮重验证），跳过本轮
+                    # 恢复、留痕待车道完成回调唤醒 join 重评（与
+                    # _fasttrack_recovery_reentry / admin_monitor 孤儿探针把
+                    # _ocr_join_wait 当合法等待判据同口径）。
+                    # 豁免 MUST 以车道在飞为条件而非停等标记单边：daemon 重启后
+                    # 在飞登记（_ocr_lane_inflight）即丢、车道线程已死，停等标记
+                    # 无 boot 恢复路径——标记单边豁免会把这类 spec 永久钉在
+                    # testing。ocr_lane_busy 判定异常按在飞处理（宁紧勿松）。
+                    # 本豁免的安全性依赖如下隐式阈值序（特此声明，无处校验）：
+                    # 车道硬超时 verify.impl_code_review_lane_timeout_sec（缺省
+                    # 2400s，ConfigLoader.get_impl_code_review_lane_timeout_sec）
+                    # MUST < stuck 阈值 effective_stuck_threshold_seconds（=
+                    # agents.run_timeout_seconds+600s，回退 9600s）——车道先于本
+                    # 分支阈值超时收尾并触发回调/停等清账；运行方若把车道超时配到
+                    # ≥ stuck 阈值，停等 spec 会在超阈值后被本分支每轮 defer，
+                    # 直到车道硬超时兜底为止。
+                    if entry.get("_ocr_join_wait"):
+                        try:
+                            _lane_busy = self.ocr_lane_busy(spec_name)
+                        except Exception:  # noqa: BLE001 — 判定异常按在飞（宁紧勿松）
+                            _lane_busy = True
+                        if _lane_busy:
+                            self.logger.info(
+                                "pm_engine",
+                                f"testing 卡死恢复豁免（ocr join 停等中）: "
+                                f"'{spec_name}' ({b['elapsed_minutes']} min) — "
+                                f"车道在飞，待完成回调唤醒 join 重评",
+                            )
+                            continue
                     self.logger.info(
                         "pm_engine",
                         f"Auto-recovering stuck SPEC: {spec_name} (was {stuck_status})",
