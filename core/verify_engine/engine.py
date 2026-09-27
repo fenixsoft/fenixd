@@ -88,7 +88,6 @@ class VerifyEngine:
             self.max_parallel = max(1, int(verify_cfg.get("max_parallel", 5)))
         except (TypeError, ValueError):
             self.max_parallel = 5
-        self.headless = verify_cfg.get("headless", True)
 
         # 兼容旧访问点：web Runner 的浏览器管理器（未创建 web Runner 时为
         # None；测试/回退路径可直连注入假浏览器）。
@@ -140,6 +139,10 @@ class VerifyEngine:
                 "scenarios": [{...}, ...],
             }
         """
+        # 探针 memoize 以单次 run 为界（code-review 5e779321cdad）：引擎实例
+        # 被复用跑第二轮时不得套用上一轮的探针结论，入口先重置。
+        self._env_probe = None
+
         # 规范化场景
         normalized = []
         for s in scenarios:
@@ -246,6 +249,10 @@ class VerifyEngine:
                     self.logger.warning("verify_engine", f"Runner '{kind}' teardown 异常: {te}")
                 msg = f"验证环境错误: {kind} Runner 初始化失败: {e}"
                 self.logger.error("verify_engine", msg)
+                # 与验收失败路径对称：早退也落一条进度，覆盖上一轮残留的
+                # 「验证完成」等陈旧内容，避免仪表盘与当轮实际状态不符
+                # （code-review 6b80ad1277a0）。
+                self._write_progress(0, len(normalized), msg)
                 report = self._build_report([])
                 report["env_error"] = msg
                 self._save_report(report)
@@ -261,7 +268,7 @@ class VerifyEngine:
             # ── 环境健全性门：场景结算后的统一后置分类（design D1）──
             # mock 环境断流时等待类超时整批假阴性，不能逐场景烧 token 重验。
             # 探针在该轮验证中只执行一次（首个候选场景触达即 memoize），
-            # 全部候选场景共享同一探针结论：失联 → 降级 blocked-env。
+            # 候选场景按各自 kind 的探针结论结算：失联 → 降级 blocked-env。
             await self._post_classify_environment(normalized, results)
         finally:
             for kind in kinds:
@@ -383,7 +390,7 @@ class VerifyEngine:
         - 候选 = 场景 status==fail 且（mock_api 步骤 + 纯等待超时失败）。
         - 探针只跑一次（本方法入口即整轮验证的首次触达），结果 memoize 在
           self._env_probe，供候选场景共享。探针健康 → 维持 fail。
-        - 探针失联 → 全部候选降级为 blocked-env。
+        - 探针失联 → 候选降级为 blocked-env（按各 kind 的探针结论逐组结算）。
 
         Returns:
             {"probe_healthy": bool, "blocked_env": int, "probe_detail": str}
@@ -408,23 +415,33 @@ class VerifyEngine:
             self._env_probe = await self._run_environment_probe(candidates)
 
         probe = self._env_probe
-        healthy = bool(probe.get("healthy", True))
+        overall_healthy = bool(probe.get("healthy", True))
+        per_kind = probe.get("per_kind") or {}
         blocked_env = 0
         for r in results:
+            # 混合 kind 候选集按各自 kind 的探针结论结算（逐组套用，避免
+            # 单一探针裁决全部候选）；该 kind 未单独探针时回落整轮汇总结论。
+            kind_probe = per_kind.get(r.get("kind", "web"))
+            healthy = (
+                bool(kind_probe.get("healthy", True)) if kind_probe else overall_healthy
+            )
+            detail = (
+                kind_probe.get("detail", "") if kind_probe else probe.get("detail", "")
+            )
             effective = finalize_scenario_status(r, healthy)
             if effective == "blocked-env":
                 r["status"] = "blocked-env"
                 r["env_blocked"] = True
-                r["env_probe_detail"] = probe.get("detail", "")
+                r["env_probe_detail"] = detail
                 blocked_env += 1
 
         self.logger.info(
             "verify_engine",
-            f"环境健全性门: 候选={len(candidates)}, 探针={'健康' if healthy else '失联'}, "
+            f"环境健全性门: 候选={len(candidates)}, 探针={'健康' if overall_healthy else '失联'}, "
             f"blocked-env={blocked_env} — {probe.get('detail', '')}",
         )
         return {
-            "probe_healthy": healthy,
+            "probe_healthy": overall_healthy,
             "blocked_env": blocked_env,
             "probe_detail": probe.get("detail", ""),
         }
@@ -432,9 +449,10 @@ class VerifyEngine:
     async def _run_environment_probe(self, candidates: list[dict]) -> dict:
         """环境健全性探针：探针本体委托 Runner.probe_env（整轮一次）。
 
-        按候选场景的 kind 归属选择探针 Runner（web 优先，保持既有行为）；
-        无 Runner 可探时（测试直连注入浏览器等回退路径）落回
-        _fallback_environment_probe。
+        按候选场景的 kind 分组分别探针（web 优先），各 kind 结论独立记录在
+        per_kind，混合 kind 候选集互不套用对方结论（code-review d1441fc08f76）；
+        汇总 detail 标注结论来源 kind 供 judge 判别。无 Runner 可探时（测试
+        直连注入浏览器等回退路径）落回 _fallback_environment_probe。
         """
         kinds = []
         for c in candidates:
@@ -443,13 +461,23 @@ class VerifyEngine:
                 kinds.append(k)
         kinds.sort(key=lambda k: 0 if k == "web" else 1)
         runners = getattr(self, "_runners", {})
+        per_kind: dict = {}
         for kind in kinds:
             runner = runners.get(kind)
             if runner is None:
                 continue
             sub = [c for c in candidates if c.get("kind", "web") == kind]
-            return await runner.probe_env(sub)
-        return await self._fallback_environment_probe(candidates)
+            per_kind[kind] = await runner.probe_env(sub)
+        if not per_kind:
+            return await self._fallback_environment_probe(candidates)
+        # 汇总：overall 取各 kind 探针的合取（任一失联即整轮判失联的保守
+        # 口径），per-kind 差异由 _post_classify_environment 精确套用。
+        healthy = all(p.get("healthy", True) for p in per_kind.values())
+        detail = "；".join(
+            f"{kind} 探针: {p.get('detail', '')}".strip(": ").strip()
+            for kind, p in per_kind.items()
+        )
+        return {"healthy": healthy, "detail": detail, "per_kind": per_kind}
 
     async def _fallback_environment_probe(self, candidates: list[dict]) -> dict:
         """回退探针（无 Runner 可探：测试直连注入浏览器等路径）。

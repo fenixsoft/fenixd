@@ -161,7 +161,10 @@ class ApiRunner(VerifyRunner):
         body = step.get("body", "")
         body_type = str(step.get("body_type") or "").lower()
         try:
-            timeout = float(step.get("timeout") or 30.0)
+            # 区分「键缺失」与「显式 0」：or 兜底会把显式 0（立即超时）静默
+            # 改写成缺省 30s；缺省仅在键缺失时生效
+            _raw_timeout = step.get("timeout")
+            timeout = float(30.0 if _raw_timeout is None else _raw_timeout)
         except (TypeError, ValueError) as e:
             # 非法 timeout（非数字字符串/结构化值）归一为本步骤结构化失败，
             # 而非 ValueError 穿出令整个场景 run 异常中断。
@@ -252,6 +255,9 @@ class ApiRunner(VerifyRunner):
                 "action": "http_request",
                 "method": method,
                 "url": url,
+                # 读超时按场景失败处理（与连接类失败的环境候选分流不同），
+                # 但补 error_type 使下游机械分流无须匹配中文文案
+                "error_type": "request_timeout",
                 "error": f"请求超时（{timeout}s）: {e}",
             }
         except Exception as e:
@@ -305,7 +311,10 @@ class ApiRunner(VerifyRunner):
 
         url = rewrite_origin(str(step.get("url") or ""), self.base_url)
         try:
-            duration = float(step.get("duration") or 5.0)
+            # 区分「键缺失」与「显式 0」：or 兜底会把显式 0（零窗口）静默
+            # 改写成缺省 5s；缺省仅在键缺失时生效
+            _raw_duration = step.get("duration")
+            duration = float(5.0 if _raw_duration is None else _raw_duration)
         except (TypeError, ValueError) as e:
             # 非法 duration（非数字字符串/结构化值）归一为本步骤结构化失败，
             # 与 http_request 的 timeout 防御口径对齐，而非 ValueError 穿出

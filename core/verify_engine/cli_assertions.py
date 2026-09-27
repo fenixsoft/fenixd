@@ -19,7 +19,7 @@ import json
 import re
 from pathlib import Path
 
-from .api_assertions import evaluate_json_path
+from .api_assertions import _MISSING, evaluate_json_path
 from .scenarios import CLI_ASSERTION_LAYERS
 
 # 文件内容断言读取上限（MB 级）：场景断言 path 误指向构建产物/日志等大文件时，
@@ -285,9 +285,23 @@ class CliAssertionRunner:
             actual = stderr
         else:  # combined（缺省）
             actual = stdout + "\n" + stderr
-        expected = a.get("expected", "")
+        expected = a.get("expected")
         mode = a.get("mode", "contains")
         negate = bool(a.get("negate", False))
+        if not expected:
+            # 显式失败而非静默恒真：缺参时 contains 的 `"" in actual` 对任意
+            # 输出恒真、regex 空串恒匹配，会产出假通过；与 web 侧
+            # text_contains 缺参口径对齐
+            return {
+                "type": "output_match",
+                "layer": 3,
+                "stream": stream,
+                "mode": mode,
+                "expected": expected,
+                "negate": negate,
+                "pass": False,
+                "error": "缺少 expected 字段",
+            }
         passed = self._match(actual, expected, mode, negate)
         # 证据纪律：报告只保留命中片段（64KB 内、前后文截断），不膨胀
         snippet = ""
@@ -409,9 +423,32 @@ class CliAssertionRunner:
                 }
         path = a.get("path") or ""
         expected = a.get("expected")
-        actual = evaluate_json_path(data, path) if path else data
+        # 哨兵区分「路径不存在」与「显式 null」（与 api 侧 _assert_json_path
+        # 口径对齐）：expected=null 且路径缺失时 None==None 会假通过
+        actual = evaluate_json_path(data, path, missing=_MISSING) if path else data
+        path_missing = bool(path) and actual is _MISSING
+        if path_missing:
+            # 哨兵仅内部判定，不外泄（actual 归一为 None）
+            actual = None
         mode = a.get("mode", "exact")
         negate = bool(a.get("negate", False))
+        if path_missing:
+            # fail-closed：路径缺失对任何比对 mode 都显式报错（negate 下也不
+            # 放行——缺失属场景/产品缺陷，须可定位），不做内容比对
+            return {
+                "type": "json_output",
+                "layer": 3,
+                "step": a.get("step"),
+                "path": path,
+                "expected": expected,
+                "actual": None,
+                "mode": mode,
+                "pass": False,
+                "error": (
+                    f"路径 {path!r} 在 JSON 载荷中不存在（区别于显式 null），"
+                    f"无法与 expected 对比"
+                ),
+            }
         # 匹配逻辑与 _match 共用单一实现；exact 走结构相等（JSON 值可非字符串，
         # 不做 str()/strip），与文本断言的 strip 语义以 exact_strip 开关区分
         passed = self._match(actual, expected, mode, negate, exact_strip=False)

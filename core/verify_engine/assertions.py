@@ -169,12 +169,17 @@ class AssertionRunner:
         """断言元素获得焦点。"""
         selector = a["selector"]
         focused = await self._safe_evaluate(page, selector, "el => el === document.activeElement")
-        return {
+        result = {
             "type": "element_focused",
             "layer": 1,
             "selector": selector,
             "pass": focused is True,
         }
+        if focused is None:
+            # 与 element_enabled/no_overlap「元素不存在」口径对齐：None =
+            # 元素缺失/求值失败，排障时无须猜测是缺失还是焦点不在
+            result["error"] = f"元素 '{selector}' 不存在"
+        return result
 
     async def _assert_element_enabled(self, page, a: dict) -> dict:
         """断言元素可交互（非disabled状态）。"""
@@ -411,7 +416,8 @@ class AssertionRunner:
                 "error": f"元素 '{selector}' 不存在",
             }
 
-        if compare_selector and not await self._element_exists(page, compare_selector):
+        # compare_selector 已在上方缺参检查中确保非空，此处直接判存在性
+        if not await self._element_exists(page, compare_selector):
             return {
                 "type": "z_index_order",
                 "layer": 2,
@@ -657,6 +663,20 @@ class AssertionRunner:
         selector = a["selector"]
         attr = a.get("attribute", "")
         expected = a.get("expected", "")
+        if not attr or expected is None:
+            # 显式失败而非空转（与 text_match/z_index_order 缺参口径一致）：
+            # attribute 缺参时 get_attribute("") 每轮抛错被轮询吞掉重试、
+            # expected=None 与任何读取值永不相等，均空转满超时且报错是
+            # Playwright 原始文本，judge 易把 planner 缺参误判为产品缺陷
+            return {
+                "type": "attribute_match",
+                "layer": 3,
+                "selector": selector,
+                "attribute": attr,
+                "expected": expected,
+                "pass": False,
+                "error": "缺少 attribute 字段" if not attr else "缺少 expected 字段",
+            }
         if not await self._element_exists(page, selector):
             # 快速失败：比照 _assert_element_enabled 先查存在性，
             # 避免元素缺失时 get_attribute 拖满 Playwright 默认 30 秒超时
@@ -828,8 +848,19 @@ class AssertionRunner:
             count = await page.locator(f"{parent_sel} > {child_sel}").count()
             passed = count > 0
         else:
-            passed = False
-            count = 0
+            # 非法 relation 显式可见化（与 z_index_order 非法 operator、
+            # text_match 非法 mode 口径对齐）：裸失败会让 judge 把 planner
+            # 配置错误误归因为产品缺陷
+            return {
+                "type": "dom_structure",
+                "layer": 3,
+                "parent": parent_sel,
+                "child": child_sel,
+                "relation": relation,
+                "count": 0,
+                "pass": False,
+                "error": f"非法 relation: {relation!r}，仅支持 contains/direct-child",
+            }
 
         return {
             "type": "dom_structure",

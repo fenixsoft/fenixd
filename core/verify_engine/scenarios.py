@@ -206,10 +206,12 @@ def migrate_frozen_contract(
         step = current + 1
         fn = _CONTRACT_MIGRATIONS.get(step)
         if fn is None:
-            # fail-closed：未登记的版本段不猜不跳过，退回既有人工通道
+            # fail-closed：未登记的版本段不猜不跳过，退回既有人工通道。
+            # pending_replan 与 migrated 一致清空：迁移中途回滚 = 已迁移段
+            # 产物一并丢弃，保留部分清单会与「全部回滚」事实不匹配
             return {
                 "migrated": [],
-                "pending_replan": pending_replan,
+                "pending_replan": [],
                 "aborted": "no_migration_path",
             }
         migrated, pending = fn(migrated, base_url=base_url)
@@ -1031,7 +1033,12 @@ class TestScenario:
             # 显式 null 归一空列表（与 env/headers 的 or {} 同款，code-review
             # item 301443cb108c）：None 会存活到 engine 编排期迭代才 TypeError。
             depends_on=d.get("depends_on") or [],
-            external_net_errors_ok=d.get("external_net_errors_ok", False),
+            # 严格 bool 归一（口径对齐 _parse_viewport / depends_on 归一）：
+            # 真值字符串（"false"/"0" 等非空串）按 d.get 原样放行会意外启用
+            # 外部网络错误豁免、漏报真实故障，故仅接受布尔 True
+            external_net_errors_ok=(
+                d.get("external_net_errors_ok") is True
+            ),
             kind=d.get("kind", "web"),
             viewport=cls._parse_viewport(d.get("viewport")),
         )
@@ -1137,6 +1144,13 @@ def _validate_typed(scenario: TestScenario, kind: str) -> list[str]:
                 f"（http://或https://开头，含主机与端口），收到 '{step.url}'"
                 f"——相对路径会被验收拒绝并退回 plan 阶段"
             )
+        # 负数 timeout 词表拦截（code-review item bf2ffeded38c）：负值能过
+        # from_dict 的 float() 归一，放行到执行期会被 wait_for 立即判超时、
+        # 把场景定义错误误报成 hang 缺陷，在校验层提前拦下
+        if step.timeout and step.timeout < 0:
+            errors.append(
+                f"场景'{scenario.id}'步骤{i}: timeout 须为正数（秒），收到 {step.timeout}"
+            )
 
     for i, a in enumerate(scenario.assertions):
         if a.type not in KIND_ASSERTIONS.get(kind, set()):
@@ -1234,6 +1248,18 @@ def validate_scenario_dicts(raw: list) -> list[str]:
     # 旧 schema 前置迁移（读侧同样靠本函数做最终校验，迁移须先于校验执行；
     # 迁移为幂等操作，load_scenarios 已迁移时此处零干扰）
     raw = migrate_scenario_schema(raw)
+    _, all_errors = _parse_and_validate_scenario_dicts(raw)
+    return all_errors
+
+
+def _parse_and_validate_scenario_dicts(raw: list) -> tuple:
+    """逐条 from_dict+validate（validate_scenario_dicts / load_scenarios 共用）。
+
+    返回 (成功且通过校验的场景列表, 错误清单)。同一 JSON 只解析一遍：
+    validate_scenario_dicts 只消费错误清单；load_scenarios 在错误为空时
+    直接复用场景列表，避免二次 from_dict（code-review 91d7507f957d）。
+    """
+    scenarios: list = []
     all_errors: list[str] = []
     for i, item in enumerate(raw):
         try:
@@ -1241,9 +1267,11 @@ def validate_scenario_dicts(raw: list) -> list[str]:
             errors = scenario.validate()
             if errors:
                 all_errors.extend(errors)
+            else:
+                scenarios.append(scenario)
         except Exception as e:
             all_errors.append(f"场景[{i}]解析失败: {e}")
-    return all_errors
+    return scenarios, all_errors
 
 
 def load_scenarios(filepath) -> list[TestScenario]:
@@ -1279,9 +1307,10 @@ def load_scenarios(filepath) -> list[TestScenario]:
     raw = migrate_scenario_schema(raw)
 
     # 读端校验与写端 schema 门同源（fix-frozen-scenario-orphan-reservoir D1）：
-    # 校验逻辑提取为 validate_scenario_dicts 独立可调用，此处调用它（行为零变化，
-    # 报错格式「场景文件包含 N 个错误」不变）。
-    all_errors = validate_scenario_dicts(raw)
+    # 校验逻辑提取为 validate_scenario_dicts 独立可调用（行为零变化，
+    # 报错格式「场景文件包含 N 个错误」不变）；此处走共用解析 helper，
+    # 校验通过后直接复用解析结果，免二次 from_dict。
+    parsed, all_errors = _parse_and_validate_scenario_dicts(raw)
     if all_errors:
         # 迁移后仍失败 → 报字段级差异清单（场景 id/下标/缺失字段），不吞为
         # 笼统 corrupt：admin 处置（frozen-scenario-schema-migration 1.2）
@@ -1291,7 +1320,7 @@ def load_scenarios(filepath) -> list[TestScenario]:
             detail += "\n" + "\n".join(f"  # {n}" for n in version_notes)
         raise ValueError(f"场景文件包含 {len(all_errors)} 个错误:\n" + detail)
 
-    return [TestScenario.from_dict(item) for item in raw]
+    return parsed
 
 
 def save_scenarios(scenarios: list[TestScenario], filepath) -> None:

@@ -326,7 +326,12 @@ class VisualDiffer:
             await page.screenshot(path=str(retake_shot), full_page=False)
             retake_count += 1
             cand = _compare_once(retake_shot, retake_diff)[0]
-            if self._compare_score(cand) > self._compare_score(best):
+            # 跨标尺防护（code-review e91595028247）：SSIM 分与像素降级折算分
+            # （1-差异比）语义不同，极端情况下首轮 SSIM、重拍轮 skimage 失效
+            # 降级像素时直接比较无意义；方案标识不一致时维持 best 不择优。
+            if self._score_scheme(cand) == self._score_scheme(
+                best
+            ) and self._compare_score(cand) > self._compare_score(best):
                 cand["current_image"] = str(current_path)
                 cand_diff = cand.get("diff_image")
                 if cand_diff:
@@ -348,6 +353,18 @@ class VisualDiffer:
         self._update_baseline_streaks(scenario_id, baseline_name, scenario_context, final)
 
         return [final]
+
+    @staticmethod
+    def _score_scheme(result: dict) -> str:
+        """比较分所属标尺（与 _compare_score 同源判定）：ssim / pixel / none。
+
+        供重拍循环择优前确认 cand 与 best 可比（跨标尺比较语义未定义）。
+        """
+        if isinstance(result.get("ssim"), (int, float)):
+            return "ssim"
+        if isinstance(result.get("pixel_diff_ratio"), (int, float)):
+            return "pixel"
+        return "none"
 
     @staticmethod
     def _compare_score(result: dict):
@@ -419,20 +436,32 @@ class VisualDiffer:
         try:
             marker = self._suspicious_marker_path(baseline_name)
             marker.parent.mkdir(parents=True, exist_ok=True)
-            marker.write_text(
-                json.dumps(
-                    {
-                        "baseline": baseline_name,
-                        "scenario_id": scenario_id,
-                        "suspicious": True,
-                        "note": "连续多轮 diff_detected 且 DOM 断言全过，基线疑似污染；"
-                        "重建需人工确认（框架不会自动覆盖/删除基线）",
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                ),
-                encoding="utf-8",
+            # 原子写（与 _save_baseline_streaks 同型）：标记写一半被杀会留下
+            # 截断 JSON 误导人工核实，temp + rename 保证读者只见完整内容。
+            fd, tmp_path = tempfile.mkstemp(
+                dir=str(marker.parent), prefix=f".{marker.name}.", suffix=".tmp"
             )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(
+                        {
+                            "baseline": baseline_name,
+                            "scenario_id": scenario_id,
+                            "suspicious": True,
+                            "note": "连续多轮 diff_detected 且 DOM 断言全过，基线疑似污染；"
+                            "重建需人工确认（框架不会自动覆盖/删除基线）",
+                        },
+                        f,
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                    f.flush()
+                os.replace(tmp_path, marker)
+            except OSError:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
         except OSError as e:
             self._log_warning(f"suspicious 标记写失败: {e}")
 

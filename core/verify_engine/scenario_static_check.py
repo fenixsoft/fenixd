@@ -11,7 +11,7 @@ fail-open 边界（design D3/D4）：
 
 模式表（design D4）：模块级数据结构（rule_id / 适用 kind / 匹配函数），
 新增模式 = 增加表项，不动扫描器主体。初始钉死三条：
-  1. ``stale_literal_port``   — cli/api 场景 command/stdin 字面端口 ≠ serving 端口
+  1. ``stale_literal_port``   — cli/api 场景 command/stdin/env/url/headers 字面端口 ≠ serving 端口
   2. ``stale_navigate_port``  — web navigate URL 字面端口 ≠ serving 端口
   3. ``double_han_text_selector`` — 双汉字文本选择器（antd autoInsertSpace
      渲染为「X X」，二字断言文本必失配的历史坑）
@@ -21,7 +21,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable, Sequence
@@ -143,12 +145,13 @@ def _flagged_2han_literals(text: str) -> list[str]:
 
 
 def _rule_stale_literal_port(scenario: dict, serving_port: str | None) -> list[StaticFinding]:
-    """① cli/api 场景 command/stdin/http_request url 字面端口 ≠ serving 端口。
+    """① cli/api 场景 command/stdin/env/url/headers 字面端口 ≠ serving 端口。
 
     本次事故根因：跨轮 replan 原样写回已裁决场景，seed stdign 内嵌上一轮
     serving 字面端口 → 新一轮端口不同 → 夹具未建成 → 下游连锁失败。cli 场景扫
-    ``command``/``stdin`` 步骤字段，api 场景扫 ``http_request``/``sse_connect``
-    步骤 url 字段。serving 端口未知时不触发（上层已按表项 need_port 跳过）。
+    ``command``（str=shell / list=argv，list 逐项拼接后扫）/``stdin``/``env``
+    值（k=v 形态扫），api 场景扫 ``http_request``/``sse_connect`` 步骤 url 与
+    ``headers`` 值。serving 端口未知时不触发（上层已按表项 need_port 跳过）。
     """
     sid = str(scenario.get("id") or "?")
     findings: list[StaticFinding] = []
@@ -158,10 +161,20 @@ def _rule_stale_literal_port(scenario: dict, serving_port: str | None) -> list[S
         for i, step in enumerate(steps):
             if not isinstance(step, dict):
                 continue
+            # command 支持 str（shell）/list（argv 直接执行）双形态：list 逐项
+            # 拼接后扫描，argv 项内嵌字面端口不漏报；env 值（支持 {env:VAR}
+            # 插值）写死端口同属跨轮残留，按 k=v 形态纳入扫描（0d1488ebcfe7）
+            texts: list[tuple[str, str]] = []
             for field in ("command", "stdin"):
                 text = step.get(field)
-                if not isinstance(text, str) or not text:
-                    continue
+                if isinstance(text, (list, tuple)):
+                    text = " ".join(str(item) for item in text)
+                if isinstance(text, str) and text:
+                    texts.append((field, text))
+            env = step.get("env")
+            if isinstance(env, dict):
+                texts.extend((f"env.{k}", f"{k}={v}") for k, v in env.items())
+            for field, text in texts:
                 for port in _matching_ports(text):
                     if serving_port and port == str(serving_port):
                         continue
@@ -184,24 +197,30 @@ def _rule_stale_literal_port(scenario: dict, serving_port: str | None) -> list[S
                 continue
             if step.get("action") not in ("http_request", "sse_connect"):
                 continue
-            url = step.get("url")
-            if not isinstance(url, str) or not url:
-                continue
-            for port in _matching_ports(url):
-                if serving_port and port == str(serving_port):
-                    continue
-                findings.append(
-                    StaticFinding(
-                        scenario_id=sid,
-                        rule_id="stale_literal_port",
-                        location=f"steps[{i}].url",
-                        message=(
-                            f"api 步骤 url 字面端口 {port} ≠ 本轮 serving 端口 "
-                            f"{serving_port or '未知'}（跨轮端口残留）。api 场景应打"
-                            f"本轮实例地址（FENIX_VERIFY_PORT），勿硬编码字面端口。"
-                        ),
+            # url 之外，headers 值（支持 {env:VAR} 插值）写死端口同属跨轮
+            # 残留，按 k=v 形态纳入扫描（0d1488ebcfe7）
+            texts: list[tuple[str, str]] = []
+            if isinstance(step.get("url"), str) and step.get("url"):
+                texts.append(("url", step["url"]))
+            headers = step.get("headers")
+            if isinstance(headers, dict):
+                texts.extend((f"headers.{k}", f"{k}={v}") for k, v in headers.items())
+            for field, text in texts:
+                for port in _matching_ports(text):
+                    if serving_port and port == str(serving_port):
+                        continue
+                    findings.append(
+                        StaticFinding(
+                            scenario_id=sid,
+                            rule_id="stale_literal_port",
+                            location=f"steps[{i}].{field}",
+                            message=(
+                                f"api 步骤 {field} 字面端口 {port} ≠ 本轮 serving 端口 "
+                                f"{serving_port or '未知'}（跨轮端口残留）。api 场景应打"
+                                f"本轮实例地址（FENIX_VERIFY_PORT），勿硬编码字面端口。"
+                            ),
+                        )
                     )
-                )
     return findings
 
 
@@ -387,6 +406,28 @@ def scan_scenarios(
     return findings
 
 
+def _atomic_write_text(path: Path, data: str) -> None:
+    """原子覆盖写（对齐 scenarios.save_scenarios 惯例）：同目录临时文件 +
+    ``os.replace``，写盘中途被杀不会在目标路径留下截断 JSON。失败时清理
+    临时文件后抛出，由调用方 fail-open 处置（code-review ac96e97cc71b）。
+    """
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(path.parent), prefix=f".{path.name}-", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, str(path))
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 def write_findings(project_root: Path, spec_name: str, findings: Sequence[StaticFinding]) -> None:
     """findings 覆盖写 ``.fenix/verify-progress/<spec>/scenario_static_findings.json``。
 
@@ -402,10 +443,7 @@ def write_findings(project_root: Path, spec_name: str, findings: Sequence[Static
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         payload = [f.to_dict() for f in findings]
-        target.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        _atomic_write_text(target, json.dumps(payload, ensure_ascii=False, indent=2))
     except Exception as e:  # noqa: BLE001 — fail-open 设计
         logger.warning(
             f"scenario_static_check: 静态扫描 findings 落盘失败 '{spec_name}'"
@@ -513,6 +551,7 @@ def scan_contract(project_root: Path) -> list[dict]:
         # ② serve.cmd 入口 vs package.json start script 入口
         start_cmd = _package_start_entry(project_root)
         start_entry = resolve_entry_path(start_cmd, project_root) if start_cmd else None
+        # [fenix-ignore:d7e96e83281a] 两侧均出自 resolve_entry_path 唯一非 None 返回路径 (cwd/arg).resolve()，比较前已绝对化并归一软链，'./x' 与 'x' 形态差异不可能存活到此处
         if entry is not None and start_entry is not None and Path(entry) != Path(start_entry):
             findings.append(
                 dict(
@@ -567,9 +606,8 @@ def write_contract_findings(project_root: Path, spec_name: str, findings: Sequen
     )
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(
-            json.dumps(list(findings), ensure_ascii=False, indent=2),
-            encoding="utf-8",
+        _atomic_write_text(
+            target, json.dumps(list(findings), ensure_ascii=False, indent=2)
         )
     except Exception as e:  # noqa: BLE001 — fail-open 设计
         logger.warning(

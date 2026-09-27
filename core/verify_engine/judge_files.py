@@ -45,6 +45,23 @@ def _requeue_manifest_path(project_root: Path, spec_name: str) -> Path:
     return project_root / ".fenix" / "verify-progress" / spec_name / REQUEUE_MANIFEST_FILENAME
 
 
+def _fsync_dir(path: Path) -> None:
+    """fsync 父目录，持久化 rename 的目录项元数据。
+
+    POSIX 语义下 os.replace 落盘数据不等于目录项已持久化，主机掉电后
+    可能 tmp 与目标文件一起消失。judge 归因/回炉清单属可重算产物，故
+    尽力而为：fsync 目录失败不阻断主流程。
+    """
+    try:
+        dir_fd = os.open(str(path), os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    except OSError:
+        pass
+
+
 def load_attribution(project_root: Path, spec_name: str) -> Optional[Dict[str, Any]]:
     """读取 judge 归因产物，自动兼容新旧格式。
 
@@ -160,6 +177,7 @@ def save_attribution(
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp_path, path)
+        _fsync_dir(path.parent)
     except Exception:
         try:
             os.unlink(tmp_path)
@@ -228,7 +246,12 @@ def build_requeue_manifest(
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(manifest, f, ensure_ascii=False, indent=2)
             f.flush()
+            # 与 save_attribution 同纪律：replace 前刷数据落盘，防掉电后
+            # rename 到位而内容为空/截断（清单驱动下轮回炉子集，丢失后果
+            # 是回炉信息缺失）
+            os.fsync(f.fileno())
         os.replace(tmp_path, path)
+        _fsync_dir(path.parent)
     except OSError:
         try:
             os.unlink(tmp_path)
@@ -259,13 +282,20 @@ def migrate_legacy_attribution_file(project_root: Path, spec_name: str) -> bool:
     if not path.exists():
         return True  # 无需迁移
 
+    # 直接探测磁盘文件原始形态判「已是新格式」，不绕道 load_attribution 的
+    # 归一化结果：上次迁移产物若被后续 judge 回写（仍带 migrated_from_legacy
+    # 标记），绕道会对新格式再做一次等价 save_attribution——幂等但多一次
+    # 无谓写（仅刷新 saved_at）。
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return False  # 文件损坏
+    if isinstance(raw, dict) and "scenarios" in raw and isinstance(raw["scenarios"], list):
+        return True  # 已是新格式，无需迁移
+
     attr_data = load_attribution(project_root, spec_name)
     if attr_data is None:
         return False  # 文件损坏
-
-    # 如果已是新格式（含 scenarios 字段），无需迁移
-    if "scenarios" in attr_data and not attr_data.get("migrated_from_legacy"):
-        return True
 
     # 执行迁移（load_attribution 已自动转换格式）
     try:

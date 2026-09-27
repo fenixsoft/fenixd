@@ -19,8 +19,10 @@ browser.py — Playwright 浏览器管理器
 import asyncio
 import http.server
 import json
+import os
 import re
 import socketserver
+import tempfile
 import threading
 from pathlib import Path
 from typing import Optional
@@ -71,6 +73,35 @@ def _capped_append(bucket: list[str], entry: str) -> None:
         bucket.append(entry)
     elif len(bucket) == _MAX_COLLECTED_ERRORS:
         bucket.append(f"[truncated] 错误条数达到上限 {_MAX_COLLECTED_ERRORS}，后续已截断")
+
+
+# mock 路由 glob → 正则编译缓存（code-review item 9af293ddcb49）：response
+# 监听对每条 4xx/5xx 都要查 mock 命中，避免逐条重复编译。
+_GLOB_RE_CACHE: dict = {}
+
+
+def _mock_url_hit(url: str, patterns) -> bool:
+    """判断 URL 是否命中已注册 mock 路由的 glob pattern。
+
+    与 Playwright route 匹配同口径：``**`` 匹配任意字符、``*`` 匹配除
+    ``/`` 外任意字符、``?`` 匹配单个非 ``/`` 字符。
+    """
+    for pat in patterns:
+        regex = _GLOB_RE_CACHE.get(pat)
+        if regex is None:
+            regex = re.compile(
+                "".join(
+                    ".*" if t == "**"
+                    else "[^/]*" if t == "*"
+                    else "[^/]" if t == "?"
+                    else re.escape(t)
+                    for t in re.split(r"(\*\*|\*|\?)", pat)
+                )
+            )
+            _GLOB_RE_CACHE[pat] = regex
+        if regex.fullmatch(url):
+            return True
+    return False
 
 
 async def wait_animations_settled(page, timeout_ms: int) -> bool:
@@ -285,9 +316,24 @@ class BrowserManager:
 </html>"""
 
         verify_path = self._project_root / "dist" / "verify.html"
-        # 自动清理旧文件，确保每次生成都是最新内容
-        verify_path.unlink(missing_ok=True)
-        verify_path.write_text(html, encoding="utf-8")
+        # 原子写（对齐 save_scenarios / settings_routes._atomic_write_text
+        # 惯例，code-review item 8eea9dd16d3a）：同目录临时文件 + os.replace，
+        # 写盘中途被杀不会在 dev server 正在服务的路径上留下截断的 HTML。
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(verify_path.parent), prefix=f".{verify_path.name}-", suffix=".tmp"
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(html)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, str(verify_path))
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
         self._use_verify_html = True
         self._log("info", f"已生成独立 HTML 入口: verify.html (JS={js_path}, CSS={css_path})")
 
@@ -329,14 +375,20 @@ class BrowserManager:
         from playwright.async_api import async_playwright
 
         self._playwright = await async_playwright().start()
+        launch_args = [
+            "--disable-animations",
+            "--disable-gpu",
+            "--font-render-hinting=none",
+        ]
+        # 沙箱按运行环境注入（code-review item 03879984b764）：仅 root
+        # （euid==0，Chromium 渲染进程沙箱在此环境无法启用）才回退
+        # --no-sandbox；其余环境保留默认沙箱隔离，避免被测页面侧漏洞
+        # 直达宿主。geteuid 在非 Unix 平台不存在，按非 root 处理。
+        if getattr(os, "geteuid", None) is not None and os.geteuid() == 0:
+            launch_args.append("--no-sandbox")
         self._browser = await self._playwright.chromium.launch(
             headless=headless,
-            args=[
-                "--disable-animations",
-                "--disable-gpu",
-                "--no-sandbox",
-                "--font-render-hinting=none",
-            ],
+            args=launch_args,
         )
         self._started = True
 
@@ -411,6 +463,12 @@ class BrowserManager:
                 lambda resp: (
                     _capped_append(network_errors, f"{resp.status} {resp.url}")
                     if resp.status >= 400
+                    # mock_api 刻意 fulfill 的 4xx/5xx（409/500 分支场景必需，
+                    # 见 execute_action）是场景语义内的合法响应，不计入
+                    # network_errors：否则「mock 错误码验证错误提示 +
+                    # no_network_error 断言」组合会系统性伪失败
+                    # （code-review item 9af293ddcb49）
+                    and not _mock_url_hit(resp.url, getattr(p, "_fenix_mock_patterns", ()))
                     else None
                 ),
             ),
@@ -525,7 +583,11 @@ class BrowserManager:
         """
         action = step.get("action", "")
         target = step.get("target", "")
-        value = step.get("value", "")
+        # value 归一为字符串（code-review item 08ef327b2c7e）：场景 JSON 中
+        # 数值/布尔形态的 value（planner 产物并非不可能）此前会在
+        # startswith/fill/select_option/json.loads 等分支抛
+        # AttributeError/TypeError 并被顶层 except 归为 unknown，报错不可定位
+        value = str(step.get("value") or "")
 
         try:
             if action == "navigate":
@@ -589,19 +651,11 @@ class BrowserManager:
                         "error_type": "invalid_wait_value",
                         "error": f"wait 值非法（应为毫秒数）: {value!r}",
                     }
-                try:
-                    await page.wait_for_timeout(timeout_ms)
-                except Exception as e:
-                    return {
-                        "success": False,
-                        "action": action,
-                        "error_type": (
-                            "element_not_found_or_not_actionable"
-                            if "timeout" in str(e).lower()
-                            else "unknown"
-                        ),
-                        "error": f"wait 超时: {e}",
-                    }
+                # 纯计时器不抛 timeout 类异常（code-review item 2d93bf93df4e）：
+                # 此前的 try/except 实际不可达，且真触发时（页面/浏览器关闭等
+                # 环境级故障）会被误标成「wait 超时」，把环境故障伪装成场景
+                # 时序问题——异常统一交给下方顶层 except 按实际错误分类
+                await page.wait_for_timeout(timeout_ms)
                 return {
                     "success": True,
                     "action": action,
@@ -667,7 +721,6 @@ class BrowserManager:
                         # 以页面对象自身属性标记（admin 修 2026-08-29）：此前用
                         # id(page) 去重，页面对象被 GC 后 id 复用会导致后续场景
                         # 误判「已拦截」而跳过 SSE 隔离。
-                        page._fenix_sse_blocked = True
 
                         async def _hold_sse(route):
                             # 故意不 fulfill：让 /api/stream 请求永久挂起，
@@ -680,6 +733,11 @@ class BrowserManager:
                             return
 
                         await page.route("**/api/stream*", _hold_sse)
+                        # 标记在 route 注册成功后才落（code-review item
+                        # 222eba9212b5）：注册抛异常时若标记已为 True，同页
+                        # 后续 mock_api 步骤会误判「已拦截」而跳过 SSE 隔离，
+                        # 活体 /api/stream 推流将重新污染 mock 数据
+                        page._fenix_sse_blocked = True
                     # mock 状态码（admin 修 2026-08-29：族谱爆炸根因之一）：
                     # 场景可携带 "status"（如 409/500）模拟后端拒绝/异常分支。
                     # 此前硬编码 200，导致 4xx/5xx 场景的 mock 全部按成功返回，
@@ -712,6 +770,15 @@ class BrowserManager:
                             body=value,
                         ),
                     )
+                    # 登记 mock pattern（code-review item 9af293ddcb49）：
+                    # new_context 的 response 监听据此跳过本路由 fulfill 的
+                    # 4xx/5xx，不再计入 network_errors；登记放在注册成功
+                    # 之后，route 注册失败时不会误标记
+                    mock_patterns = getattr(page, "_fenix_mock_patterns", None)
+                    if mock_patterns is None:
+                        mock_patterns = set()
+                        page._fenix_mock_patterns = mock_patterns
+                    mock_patterns.add(route_pattern)
                     return {
                         "success": True,
                         "action": action,
