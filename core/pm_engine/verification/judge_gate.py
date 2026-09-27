@@ -235,24 +235,34 @@ def _judge_round_escalate(pipeline, spec_name: str, state: dict) -> None:
         f"{fresh['real']} 次，仍需第 {fresh['real'] + 1} 次）— 停止派发，人工升级；"
         f"spec 保持 testing 可重试",
     )
-    pipeline._context.escalation_notifier(
-        spec_name=spec_name,
-        signal_type="judge_round_rerun_cap",
-        severity="major",
-        description=(
-            f"'{spec_name}' 第 {state['round']} 轮验证内 judge 重裁决达阈值"
-            f"（真实派发 {fresh['real']} 次，第 {fresh['real'] + 1} 次派发被阻止）—"
-            "已停止派发等待人工处置，spec 保持可重试状态"
-        ),
-        evidence=(
-            f"spec={spec_name}; verify_round={state['round']}; "
-            f"round_real_dispatches={fresh['real']}; 历次结论: {history or '无记录'}"
-        ),
-        recommended_action=(
-            "检查本轮 judge 反复重裁决根因（场景集是否冻结生效/失败是否复现一致/"
-            "产物是否被并发改写）；人工处置后重入 testing 即按正常路径执行"
-        ),
-    )
+    # 升级通道自身失败不得抛穿裁决流程（与 escalation.py 升级路径对齐，
+    # code-review item 7e0509f14fdd）：轮内停派升级告警失败仅 WARNING
+    # 留痕，spec 保持 testing 可重试的停派结论不受影响。
+    try:
+        pipeline._context.escalation_notifier(
+            spec_name=spec_name,
+            signal_type="judge_round_rerun_cap",
+            severity="major",
+            description=(
+                f"'{spec_name}' 第 {state['round']} 轮验证内 judge 重裁决达阈值"
+                f"（真实派发 {fresh['real']} 次，第 {fresh['real'] + 1} 次派发被阻止）—"
+                "已停止派发等待人工处置，spec 保持可重试状态"
+            ),
+            evidence=(
+                f"spec={spec_name}; verify_round={state['round']}; "
+                f"round_real_dispatches={fresh['real']}; 历次结论: {history or '无记录'}"
+            ),
+            recommended_action=(
+                "检查本轮 judge 反复重裁决根因（场景集是否冻结生效/失败是否复现一致/"
+                "产物是否被并发改写）；人工处置后重入 testing 即按正常路径执行"
+            ),
+        )
+    except Exception as e:
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"judge 轮内停派升级告警失败 '{spec_name}'（非阻塞）: "
+            f"{type(e).__name__}: {e}",
+        )
 
 
 def _judge_dispatch_gate(pipeline, spec_name: str):
@@ -343,20 +353,30 @@ def _judge_hard_cap_freeze(pipeline, spec_name: str, count: int) -> None:
         "pm_engine",
         f"judge 重跑硬上限 '{spec_name}'（{count} 轮）— " f"冻结为 blocked，等待人工裁决",
     )
-    pipeline._context.escalation_notifier(
-        spec_name=spec_name,
-        signal_type="judge_rerun_cap",
-        severity="major",
-        description=(
-            f"'{spec_name}' judge 重跑超上限"
-            f"（{count}/{_MAX_JUDGE_RERUNS} 轮），已冻结等待人工裁决"
-        ),
-        evidence=f"spec={spec_name}; judge_rerun_count={count}",
-        recommended_action=(
-            "检查验证为何反复重跑 judge（场景集冻结是否生效/失败是否复现一致）；"
-            "人工裁决后重置验证，计数器随 verified 落定清零点恢复"
-        ),
-    )
+    # 升级通道自身失败不得抛穿裁决流程（与 escalation.py 升级路径对齐，
+    # code-review item 7e0509f14fdd）：blocked 终态已在上方 update_spec
+    # 落盘，notifier 抛异常不得打断本轮裁决流程。
+    try:
+        pipeline._context.escalation_notifier(
+            spec_name=spec_name,
+            signal_type="judge_rerun_cap",
+            severity="major",
+            description=(
+                f"'{spec_name}' judge 重跑超上限"
+                f"（{count}/{_MAX_JUDGE_RERUNS} 轮），已冻结等待人工裁决"
+            ),
+            evidence=f"spec={spec_name}; judge_rerun_count={count}",
+            recommended_action=(
+                "检查验证为何反复重跑 judge（场景集冻结是否生效/失败是否复现一致）；"
+                "人工裁决后重置验证，计数器随 verified 落定清零点恢复"
+            ),
+        )
+    except Exception as e:
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"judge 重跑硬上限升级告警失败 '{spec_name}'（非阻塞，"
+            f"blocked 处置已落盘）: {type(e).__name__}: {e}",
+        )
 
 
 def _judge_rerun_count(pipeline, spec_name: str, delta: int = 0) -> int:
