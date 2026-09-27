@@ -404,12 +404,26 @@ def default_spawn(project_root: Path) -> SpawnFn:
 
     def _spawn(prompt: str, run_id: str) -> str:
         proc = subprocess.run(
-            ["claude", "-p", prompt],
+            # 与 core.knowledge 蒸馏 spawn 同形态：无头 -p 必须显式提权，
+            # 否则 LLM 写域映射/页面文件被权限拒绝、产物只能落 stdout（曾致
+            # bootstrap-no-domain-map：25 分钟聚类成果随被丢弃的 stdout 蒸发）
+            ["claude", "-p", prompt, "--permission-mode", "bypassPermissions"],
             cwd=str(project_root),
             capture_output=True,
             text=True,
             timeout=SPAWN_TIMEOUT_SECONDS,
         )
+        # stdout/stderr 落盘留痕：run 失败可取证，不再依赖调用方是否消费返回值
+        try:
+            runs_dir = project_root / ".fenix" / "runs"
+            runs_dir.mkdir(parents=True, exist_ok=True)
+            (runs_dir / f"{run_id}.out").write_text(
+                f"[returncode {proc.returncode}]\n"
+                f"[stdout]\n{proc.stdout or ''}\n[stderr]\n{proc.stderr or ''}\n",
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
         if proc.returncode != 0:
             raise RuntimeError(
                 f"claude -p 回填 run {run_id} 退出码 {proc.returncode}："
