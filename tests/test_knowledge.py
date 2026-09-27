@@ -4,6 +4,7 @@ commit_archive_move 挂载 / DistillManager 执行器（fake spawn 三支路）�
 运行：python3 -m pytest tests/test_knowledge.py -q
 """
 import os
+import json
 import subprocess
 import tempfile
 import threading
@@ -57,6 +58,22 @@ status: accepted
 {body}
 """
 
+PREHISTORIC_PAGE = """# 史前基础能力
+
+<!-- knowledge: capability=prehistoric-cap rev=1 origin=prehistoric
+     sources=git:{ref}-..2026-09-02 -->
+
+迁移期已存在的基础能力，现行规则如下。
+
+## 规则
+
+- 规则一句。
+
+## 溯源
+
+- 2026-09-02 史前复原（git:{ref}-..2026-09-02） — 迁移期已存在的基础规则
+"""
+
 
 class KnowledgeTestBase(unittest.TestCase):
     def setUp(self):
@@ -101,6 +118,18 @@ class TestParseMarker(unittest.TestCase):
     def test_part_field(self):
         m = parse_marker("<!-- knowledge: capability=x rev=1 part=2 sources=spec/archive/a -->")
         self.assertEqual(m["part"], "2")
+
+    def test_origin_default_archive(self):
+        m = parse_marker("<!-- knowledge: capability=x rev=1 sources=spec/archive/a -->")
+        self.assertEqual(m["origin"], "archive")
+
+    def test_origin_prehistoric(self):
+        m = parse_marker(
+            "<!-- knowledge: capability=x rev=1 origin=prehistoric"
+            " sources=git:44e1443ba-..2026-09-02 -->"
+        )
+        self.assertEqual(m["origin"], "prehistoric")
+        self.assertEqual(m["sources"], ["git:44e1443ba-..2026-09-02"])
 
     def test_invalid_returns_none(self):
         self.assertIsNone(parse_marker("no marker"))
@@ -177,6 +206,72 @@ class TestValidateKnowledge(KnowledgeTestBase):
         )
         v = validate_knowledge(self.root)
         self.assertTrue(any("kebab" in x for x in v))
+
+    # ── origin 分支（fix-knowledge-backfill-reconstruction 任务 2.2） ──
+    def _init_git_with_commit(self) -> str:
+        # git 不跟踪空目录：先落一个文件保证首提交真实存在（ref 可解析）
+        self._write("README.md", "# t\n")
+        self._git("init", "-q")
+        self._git("config", "user.name", "t")
+        self._git("config", "user.email", "t@t")
+        self._git("add", "--", ".")
+        self._git("commit", "-q", "-m", "init")
+        return self._git("rev-parse", "HEAD").stdout.strip()[:9]
+
+    def test_prehistoric_page_valid_passes(self):
+        ref = self._init_git_with_commit()
+        self._write(
+            f"{KNOWLEDGE_DIR}/domains/base/prehistoric-cap.md",
+            PREHISTORIC_PAGE.format(ref=ref),
+        )
+        # 不要求归档目录存在（sources 是 git 锚点而非归档路径）
+        self.assertEqual(validate_knowledge(self.root), [])
+
+    def test_prehistoric_bad_anchor_format(self):
+        self._init_git_with_commit()
+        self._write(
+            f"{KNOWLEDGE_DIR}/domains/base/prehistoric-cap.md",
+            PREHISTORIC_PAGE.format(ref="HEAD"),  # 非 sha 短 ref → 格式非法
+        )
+        v = validate_knowledge(self.root)
+        self.assertTrue(any("锚点格式非法" in x for x in v))
+
+    def test_prehistoric_unresolvable_ref(self):
+        self._init_git_with_commit()
+        self._write(
+            f"{KNOWLEDGE_DIR}/domains/base/prehistoric-cap.md",
+            PREHISTORIC_PAGE.format(ref="deadbeef"),  # 格式合法但对象不存在
+        )
+        v = validate_knowledge(self.root)
+        self.assertTrue(any("不可解析" in x for x in v))
+
+    def test_prehistoric_archive_path_source_rejected(self):
+        self._init_git_with_commit()
+        text = PREHISTORIC_PAGE.format(ref="44e1443ba").replace(
+            "sources=git:44e1443ba-..2026-09-02", "sources=spec/archive/whatever"
+        )
+        self._write(f"{KNOWLEDGE_DIR}/domains/base/prehistoric-cap.md", text)
+        v = validate_knowledge(self.root)
+        # git: 前缀强制分流：prehistoric 页不放行归档路径 sources
+        self.assertTrue(any("锚点格式非法" in x for x in v))
+
+    def test_invalid_origin_value_rejected(self):
+        self._init_git_with_commit()
+        text = GOOD_PAGE.format(
+            archive=self._archive_name(), today=date.today().isoformat()
+        ).replace("rev=1", "rev=1 origin=weird")
+        self._write(f"{KNOWLEDGE_DIR}/domains/d/x.md", text)
+        v = validate_knowledge(self.root)
+        self.assertTrue(any("origin 非法" in x for x in v))
+
+    def test_archive_page_origin_regression_zero(self):
+        """archive 页（缺省 origin）行为零回归：归档缺失照旧报违规。"""
+        self._write(
+            f"{KNOWLEDGE_DIR}/domains/d/x.md",
+            GOOD_PAGE.format(archive="1999-01-01-gone", today=date.today().isoformat()),
+        )
+        v = validate_knowledge(self.root)
+        self.assertTrue(any("不存在的归档目录" in x for x in v))
 
     # ── ADR ──────────────────────────────────────────────────────────
     def _commit_all(self):
@@ -329,6 +424,127 @@ class TestDispatchDistill(KnowledgeTestBase):
         )
         self.assertTrue(r["dispatched"])
         self.assertEqual(got["names"], [self._archive_name(), "2026-01-01-b"])
+
+
+class TestBackfillQueueGate(KnowledgeTestBase):
+    """任务 3.1：回填期排队双漏斗（dispatch_distill / dispatch_distill_batch）。
+
+    台账存在 pending → 不派发增量 run、归档登记进台账（终态 capability 条目
+    重置 pending）；台账缺失/收敛 → 即时派发零回归。
+    """
+
+    def _cfg(self):
+        return {"knowledge": {"enabled": True}}
+
+    def _seed_ledger(self, entries):
+        (self.root / ".fenix").mkdir(exist_ok=True)
+        text = "\n".join(json.dumps(e, ensure_ascii=False) for e in entries)
+        (self.root / ".fenix" / "knowledge_backfill.jsonl").write_text(
+            text + "\n", encoding="utf-8"
+        )
+
+    def _ledger_text(self):
+        return (self.root / ".fenix" / "knowledge_backfill.jsonl").read_text(
+            encoding="utf-8"
+        )
+
+    def _fake_dispatcher(self, calls):
+        class Fake:
+            def dispatch(self, proot, names):
+                calls.append(list(names))
+
+        return Fake()
+
+    def _touch_archive_capability(self):
+        cap_dir = (
+            self.root / "spec" / "archive" / self._archive_name() / "specs" / "pickup"
+        )
+        cap_dir.mkdir(parents=True, exist_ok=True)
+
+    def test_single_entry_queued_and_registered(self):
+        from core.knowledge import dispatch_distill
+
+        self._seed_ledger([{"name": "capability:other-cap", "status": "pending"}])
+        self._touch_archive_capability()
+        calls = []
+        r = dispatch_distill(
+            self.root, self._archive_name(), self._cfg(), dispatcher=self._fake_dispatcher(calls)
+        )
+        self.assertFalse(r["dispatched"])
+        self.assertEqual(r["reason"], "backfill-queued")
+        self.assertEqual(calls, [])  # 未派发增量 run
+        ledger = self._ledger_text()
+        # 双维度登记：adr 条目新建 + 触碰的 capability 条目新建
+        self.assertIn(f'"name": "adr:{self._archive_name()}"', ledger)
+        self.assertIn('"name": "capability:pickup"', ledger)
+        self.assertEqual(ledger.count('"status": "pending"'), 3)
+
+    def test_terminal_capability_reset_to_pending(self):
+        from core.knowledge import dispatch_distill
+
+        # 既有 pending 触发排队门；归档触碰的 capability:pickup 已终态
+        self._seed_ledger(
+            [
+                {"name": "capability:pickup", "status": "distilled"},
+                {"name": f"adr:{self._archive_name()}", "status": "distilled"},
+                {"name": "capability:other-cap", "status": "pending"},
+            ]
+        )
+        self._touch_archive_capability()
+        calls = []
+        dispatch_distill(
+            self.root, self._archive_name(), self._cfg(), dispatcher=self._fake_dispatcher(calls)
+        )
+        # 终态条目重置 pending：链索引重扫纳入新归档 delta 后重新聚合
+        ledger = self._ledger_text()
+        self.assertEqual(ledger.count('"status": "pending"'), 2)
+        self.assertEqual(calls, [])
+
+    def test_batch_entry_queued_and_registered(self):
+        from core.knowledge import dispatch_distill_batch
+
+        other = "2026-01-01-other-spec"
+        (self.root / "spec" / "archive" / other).mkdir(parents=True, exist_ok=True)
+        self._seed_ledger([{"name": "capability:other-cap", "status": "pending"}])
+        calls = []
+        r = dispatch_distill_batch(
+            self.root,
+            [self._archive_name(), other],
+            self._cfg(),
+            dispatcher=self._fake_dispatcher(calls),
+        )
+        self.assertFalse(r["dispatched"])
+        self.assertEqual(r["reason"], "backfill-queued")
+        self.assertEqual(calls, [])
+        ledger = self._ledger_text()
+        self.assertIn(f'"name": "adr:{self._archive_name()}"', ledger)
+        self.assertIn(f'"name": "adr:{other}"', ledger)
+
+    def test_converged_ledger_resumes_immediate_dispatch(self):
+        from core.knowledge import dispatch_distill
+
+        self._seed_ledger(
+            [
+                {"name": "capability:pickup", "status": "distilled"},
+                {"name": f"adr:{self._archive_name()}", "status": "distilled"},
+            ]
+        )
+        calls = []
+        r = dispatch_distill(
+            self.root, self._archive_name(), self._cfg(), dispatcher=self._fake_dispatcher(calls)
+        )
+        self.assertTrue(r["dispatched"])  # 收敛后恢复即时派发
+        self.assertEqual(calls, [[self._archive_name()]])
+
+    def test_missing_ledger_dispatches_immediately(self):
+        from core.knowledge import dispatch_distill
+
+        calls = []
+        r = dispatch_distill(
+            self.root, self._archive_name(), self._cfg(), dispatcher=self._fake_dispatcher(calls)
+        )
+        self.assertTrue(r["dispatched"])
+        self.assertEqual(calls, [[self._archive_name()]])
 
 
 class TestCommitArchiveMoveMount(KnowledgeTestBase):

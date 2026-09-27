@@ -1,17 +1,20 @@
-"""存量回填车道单测（任务 2.2 / 2.3）。
+"""存量回填车道单测（fix-knowledge-backfill-reconstruction，方案 B 聚合语义）。
 
 fake spawn 替身 + 注入的 core.knowledge 替身（真实 import 路径经 sys.modules +
 父包属性注入，接线语义与生产一致），覆盖：
-- 全量成功（分批 + 校验提交 + 收敛汇报）；
-- 聚类自举（清单缺失 → 自举 run 先行，bootstrap 提交先于批次提交）；
-- 批失败续跑（单批校验两轮仍失败 → failed + todo.md，不阻塞后续批）；
-- 中断重入（重入只处理 pending/failed，已蒸馏条目不重做；收敛后零派发）；
+- 链索引确定性（同输入同链序，日期前缀升序）；
+- 全量成功（能力聚合批次 + ADR 抽取批次 + 校验提交 + 分维度收敛汇报）；
+- 多归档能力一次成文（×3 链产 rev=3、sources 全链、无逐归档重放）；
+- 批次顺序无关（颠倒输入同划分）；
+- 台账 v2 断点续跑（legacy 作废重建、failed 不阻塞、维度独立）；
+- bootstrap 能力清单输入；ADR 无 design.md 留痕跳过；
 - core.knowledge 接线（validate_knowledge / commit_knowledge 复用与回退）。
 """
 
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 import types
@@ -19,6 +22,7 @@ from pathlib import Path
 
 import pytest
 
+from core import knowledge as knowledge_impl  # 真模块引用（排队门 e2e 用；不受替身注入影响）
 from core import knowledge_backfill as kb
 
 
@@ -30,20 +34,24 @@ def _git(root: Path, *args: str) -> str:
     return proc.stdout
 
 
-ARCHIVES = ["arc-a1", "arc-a2", "arc-b1", "arc-b2", "arc-c1", "arc-d1"]
-DOMAIN_MAP = {
-    "arc-a1": "dom-a",
-    "arc-a2": "dom-a",
-    "arc-b1": "dom-b",
-    "arc-b2": "dom-b",
-    "arc-c1": "dom-c",
-    "arc-d1": "dom-d",
+# 有日期前缀的归档名（链索引日期升序的直接证据）；cap-x 被 3 个归档触碰
+ARCHIVE_SPECS = {
+    "2026-09-01-arc-a1": ["cap-x"],
+    "2026-09-02-arc-a2": ["cap-x"],
+    "2026-09-03-arc-b1": ["cap-x", "cap-y"],
+    "2026-09-04-arc-c1": ["cap-y"],
 }
+WITH_DESIGN = ["2026-09-01-arc-a1", "2026-09-03-arc-b1"]
+DOMAIN_MAP = {"cap-x": "dom-x", "cap-y": "dom-y"}
 
 
 @pytest.fixture
 def proj(tmp_path):
-    """临时主树：git 仓库（含基线提交）+ 6 个存量归档 + 预置域归位清单。"""
+    """临时主树：git 仓库（含基线提交）+ 4 个存量归档 + 预置域归位清单。
+
+    a2/c1 无 design.md（ADR 维度留痕跳过支路）；域清单按能力名归位
+    （方案 B：聚类对象从归档名改为能力名）。
+    """
     root = tmp_path / "main"
     root.mkdir()
     _git(root, "init", "-q")
@@ -52,11 +60,14 @@ def proj(tmp_path):
     (root / "README.md").write_text("base\n", encoding="utf-8")
     _git(root, "add", ".")
     _git(root, "commit", "-qm", "init")
-    for name in ARCHIVES:
+    for name, caps in ARCHIVE_SPECS.items():
         d = root / "spec" / "archive" / name
-        (d / "specs" / "cap-x").mkdir(parents=True)
+        for cap in caps:
+            (d / "specs" / cap).mkdir(parents=True)
+            (d / "specs" / cap / "spec.md").write_text("delta\n", encoding="utf-8")
         (d / "proposal.md").write_text(f"# {name}\n", encoding="utf-8")
-        (d / "specs" / "cap-x" / "spec.md").write_text("delta\n", encoding="utf-8")
+        if name in WITH_DESIGN:
+            (d / "design.md").write_text("# 设计\n\n## Decisions\n\n- 架构级选型\n", encoding="utf-8")
     (root / ".fenix").mkdir()
     (root / ".fenix" / "knowledge_backfill_domains.json").write_text(
         json.dumps(DOMAIN_MAP, ensure_ascii=False), encoding="utf-8"
@@ -124,51 +135,167 @@ def write_page(root: Path, rel: str, text: str) -> None:
     p.write_text(text, encoding="utf-8")
 
 
-def page_text(archive: str) -> str:
-    return (
-        f"<!-- knowledge: capability=cap-{archive} rev=1 sources={archive} -->\n"
-        f"# cap-{archive}\n\n## 规则\n\n- {archive} 的现行规则一句。\n"
-    )
+# ── fake spawn 的产物模拟（按提示词语义逐字驱动） ────────────────────────
 
 
-def batch_names(prompt: str) -> list[str]:
-    return [
-        ln[2:].strip() for ln in prompt.splitlines() if ln.startswith("- arc-")
+def batch_caps(prompt: str) -> list[str]:
+    """解析模式二批次清单（能力名 + 链长 + 链序）。"""
+    seg = prompt.split("本批能力清单（共", 1)[1]
+    return re.findall(r"^- ([a-z0-9][a-z0-9-]*)（链", seg, re.M)
+
+
+def cap_chain(prompt: str, cap: str) -> list[str]:
+    m = re.search(rf"^- {cap}（链 (\d+) 份 delta：([^）]*)）", prompt, re.M)
+    assert m, f"批次清单缺少 {cap} 链标注"
+    return m.group(2).split(" → ") if int(m.group(1)) else []
+
+
+def adr_archives(prompt: str) -> list[str]:
+    seg = prompt.split("本批归档清单（共", 1)[1]
+    return re.findall(r"^- (\S+)$", seg, re.M)
+
+
+def agg_page(cap: str, chain: list[str], baseline: str | None = None) -> str:
+    """聚合语义页面：rev=链长、sources 全链、溯源按时间序、只有最终态规则。"""
+    src = ",".join(f"spec/archive/{a}" for a in chain)
+    lines = [
+        f"<!-- knowledge: capability={cap} rev={len(chain)} sources={src} -->",
+        f"# {cap}",
+        "",
+        "## 规则",
+        "",
+        f"- {cap} 最终态规则一句。",
+        "",
+        "## 溯源",
     ]
+    if baseline:
+        lines.append(f"- 2026-09-02 史前复原 — 迁移期已存在的基础规则")
+    for a in chain:
+        lines.append(f"- {a[:10]} {a} — 贡献一句")
+    return "\n".join(lines) + "\n"
 
 
 def write_batch_pages(rec: Recorder, prompt: str) -> None:
-    for name in batch_names(prompt):
+    domain_map = json.loads(
+        (rec.root / ".fenix" / "knowledge_backfill_domains.json").read_text(encoding="utf-8")
+    )
+    for cap in batch_caps(prompt):
+        chain = cap_chain(prompt, cap)
         write_page(
-            rec.root, f"spec/knowledge/domains/dom-x/cap-{name}.md", page_text(name)
+            rec.root,
+            f"spec/knowledge/domains/{domain_map.get(cap, '_unassigned')}/{cap}.md",
+            agg_page(cap, chain),
         )
 
 
-# ── 全量成功 ─────────────────────────────────────────────────────────────
+def write_adr(rec: Recorder, prompt: str) -> None:
+    for i, name in enumerate(adr_archives(prompt), 1):
+        write_page(
+            rec.root,
+            f"spec/knowledge/adr/ADR-{i:03d}-decision-{name}.md",
+            f"# ADR-{i:03d}：x\n\ndate: 2026-09-27\nstatus: accepted\n\n"
+            "## Context\n\nc\n\n## Decision\n\nd\n\n## Consequences\n\ne\n",
+        )
 
 
-def test_full_success_batches_commit_and_convergence(proj, install_core):
+def bootstrap_writer(rec: Recorder, prompt: str) -> None:
+    (rec.root / ".fenix" / "knowledge_backfill_domains.json").write_text(
+        json.dumps(DOMAIN_MAP, ensure_ascii=False), encoding="utf-8"
+    )
+    write_page(rec.root, "spec/knowledge/index.md", "# 真相源导航\n")
+
+
+# 史前清单：cap-x 已被归档覆盖（baseline 走链头）、cap-pre 未覆盖（产史前页）
+INVENTORY = [
+    {"capability": "cap-x", "domain": "dom-x", "baseline": "史前基线：迁移期轮询为 600 秒。"},
+    {"capability": "cap-pre", "domain": "dom-x", "baseline": "史前独有能力基线。"},
+]
+
+
+def prehistoric_writer(rec: Recorder, prompt: str) -> None:
+    (rec.root / ".fenix" / "knowledge_backfill_prehistoric.json").write_text(
+        json.dumps(INVENTORY, ensure_ascii=False), encoding="utf-8"
+    )
+    write_page(
+        rec.root,
+        "spec/knowledge/domains/dom-x/cap-pre.md",
+        "<!-- knowledge: capability=cap-pre rev=1 origin=prehistoric "
+        "sources=git:abc123456-..2026-09-02 -->\n"
+        "# cap-pre\n\n## 规则\n\n- 现行规则一句。\n\n## 溯源\n\n"
+        "- 2026-09-02 史前复原 — 迁移期已存在的基础规则\n",
+    )
+
+
+def default_on_call(rec: Recorder, prompt: str, run_id: str) -> None:
+    if run_id.startswith("kb-bootstrap"):
+        bootstrap_writer(rec, prompt)
+    elif run_id.startswith("kb-prehistoric"):
+        prehistoric_writer(rec, prompt)
+    elif run_id.startswith("kb-adr"):
+        write_adr(rec, prompt)
+    else:
+        write_batch_pages(rec, prompt)
+
+
+def knowledge_subjects(root: Path) -> list[str]:
+    return [
+        ln
+        for ln in _git(root, "log", "--format=%s", "--reverse").splitlines()
+        if ln.startswith("[fenix] knowledge:")
+    ]
+
+
+# ── 链索引确定性（任务 1.4） ─────────────────────────────────────────────
+
+
+def test_chain_index_deterministic_and_date_order(proj):
+    idx = kb.build_chain_index(proj)
+    assert idx["cap-x"] == [
+        "2026-09-01-arc-a1", "2026-09-02-arc-a2", "2026-09-03-arc-b1",
+    ]
+    assert idx["cap-y"] == ["2026-09-03-arc-b1", "2026-09-04-arc-c1"]
+    # 同输入同链序（纯函数零 LLM）
+    assert kb.build_chain_index(proj) == idx
+
+
+# ── 全量成功：能力批次 + ADR 批次 + 分维度收敛（任务 1.4 / 1.5） ──────────
+
+
+def test_full_success_capability_and_adr_batches(proj, install_core):
     core = install_core(FakeCore(proj))
-    spawn = Recorder(proj, on_call=lambda rec, p, r: write_batch_pages(rec, p))
+    spawn = Recorder(proj, on_call=default_on_call)
     summary = kb.run_backfill(proj, spawn=spawn)
 
     assert summary["triggered"] is True
     assert summary["converged"] is True
-    # 6 归档按 4 域聚批（每域一批，均 ≤20）：dom-a / dom-b / dom-c / dom-d
-    assert summary["batches_total"] == 4
-    assert summary["batches_ok"] == 4
-    assert summary["counts"]["distilled"] == 6
-    # 接线（任务 2.3）：校验器与提交工具来自 core.knowledge 替身
+    # 2 能力各归其域 → 2 个能力批；4 归档中 2 个有 design.md → 1 个 ADR 批
+    assert summary["batches_total"] == 2
+    assert summary["batches_ok"] == 2
+    assert summary["adr_batches_total"] == 1
+    assert summary["adr_batches_ok"] == 1
+    assert summary["adr_skipped_no_design"] == [
+        "2026-09-02-arc-a2", "2026-09-04-arc-c1",
+    ]
+    # 分维度计数（台账 v2）
+    assert summary["counts"]["capability"] == {
+        "pending": 0, "distilled": 2, "failed": 0,
+    }
+    assert summary["counts"]["adr"] == {
+        "pending": 0, "distilled": 4, "failed": 0,
+    }
     assert core.validate_calls >= 1
+    # 提交序列：史前复原 → 能力批 → ADR 批
     msgs = [m for _, m in core.commit_calls]
-    assert msgs[0] == "[fenix] knowledge: backfill batch 1/4"
-    assert msgs[-1] == "[fenix] knowledge: backfill batch 4/4"
-    assert all("/spec/knowledge" not in m for m in msgs)  # 消息不含路径杂音
-    log = _git(proj, "log", "--format=%s")
-    assert "[fenix] knowledge: backfill batch" in log
-    # 台账与收敛汇报文件落盘
+    assert msgs == [
+        "[fenix] knowledge: backfill prehistoric",
+        "[fenix] knowledge: backfill batch 1/2",
+        "[fenix] knowledge: backfill batch 2/2",
+        "[fenix] knowledge: backfill adr batch 1/1",
+    ]
+    # 台账 v2 键形态与分维度落盘
     ledger = (proj / ".fenix" / "knowledge_backfill.jsonl").read_text(encoding="utf-8")
-    assert ledger.count("distilled") == 6
+    assert "capability:cap-x" in ledger and "adr:2026-09-01-arc-a1" in ledger
+    assert ledger.count('"status": "distilled"') == 6
     assert (proj / ".fenix" / "knowledge_backfill_report.md").is_file()
     # 收敛后重入零派发（幂等）
     spawn2 = Recorder(proj)
@@ -178,33 +305,81 @@ def test_full_success_batches_commit_and_convergence(proj, install_core):
     assert spawn2.calls == []
 
 
-# ── 聚类自举 ─────────────────────────────────────────────────────────────
+# ── 多归档能力一次成文（×3 链，任务 1.4） ────────────────────────────────
 
 
-def test_bootstrap_run_commits_skeleton_before_batches(proj, install_core):
+def test_multi_archive_capability_single_shot(proj, install_core):
+    install_core(FakeCore(proj))
+    spawn = Recorder(proj, on_call=default_on_call)
+    summary = kb.run_backfill(proj, spawn=spawn)
+    assert summary["converged"] is True
+
+    batch_prompts = [p for p, r in spawn.calls if r.startswith("kb-batch")]
+    x_prompt = next(p for p in batch_prompts if "cap-x" in p)
+    # 提示词携带完整 3 归档链（日期升序），且无逐归档重放指引
+    assert (
+        "cap-x（链 3 份 delta：2026-09-01-arc-a1 → 2026-09-02-arc-a2 → "
+        "2026-09-03-arc-b1）" in x_prompt
+    )
+    assert "逐归档" not in x_prompt or "禁止逐归档重放" in x_prompt
+    # 产物：rev=3、sources 全链、溯源按时间序、无中间态规则
+    page = (
+        proj / "spec/knowledge/domains/dom-x/cap-x.md"
+    ).read_text(encoding="utf-8")
+    assert "rev=3" in page
+    for a in ("2026-09-01-arc-a1", "2026-09-02-arc-a2", "2026-09-03-arc-b1"):
+        assert f"spec/archive/{a}" in page
+    assert "最终态规则" in page
+    # 只有一个规则条目（一次成文，非 ×3 重放叠加）
+    assert page.count("- cap-x 最终态规则一句。") == 1
+    # 溯源段链序完整
+    trail = page.split("## 溯源")[1]
+    assert trail.index("2026-09-01-arc-a1") < trail.index("2026-09-02-arc-a2") < trail.index(
+        "2026-09-03-arc-b1"
+    )
+
+
+# ── 批次顺序无关（任务 1.4） ─────────────────────────────────────────────
+
+
+def test_batch_order_independence():
+    domain_map = {f"cap-{i:02d}": "d1" for i in range(25)}
+    domain_map.update({f"capb-{i:02d}": "d2" for i in range(3)})
+    names = sorted(domain_map)
+    forward = kb.build_batches(domain_map, names)
+    backward = kb.build_batches(domain_map, list(reversed(names)))
+    assert forward == backward  # 划分与输入顺序无关（确定性排序）
+    assert all(len(b) <= kb.BATCH_SIZE_MAX for b in forward)
+    assert sum(len(b) for b in forward) == 28
+
+
+# ── bootstrap：能力清单输入（任务 1.4） ──────────────────────────────────
+
+
+def test_bootstrap_input_is_capability_set(proj, install_core):
     install_core(FakeCore(proj))
     (proj / ".fenix" / "knowledge_backfill_domains.json").unlink()
+    seen: dict = {}
 
     def on_call(rec, prompt, run_id):
         if run_id.startswith("kb-bootstrap"):
-            (rec.root / ".fenix" / "knowledge_backfill_domains.json").write_text(
-                json.dumps(DOMAIN_MAP, ensure_ascii=False), encoding="utf-8"
-            )
-            write_page(rec.root, "spec/knowledge/index.md", "# 真相源导航\n")
+            seen["prompt"] = prompt
+            bootstrap_writer(rec, prompt)
             return
-        write_batch_pages(rec, prompt)
+        default_on_call(rec, prompt, run_id)
 
     spawn = Recorder(proj, on_call=on_call)
     summary = kb.run_backfill(proj, spawn=spawn)
     assert summary["converged"] is True
-    assert summary["batches_total"] == 4
-    subjects = [
-        ln
-        for ln in _git(proj, "log", "--format=%s", "--reverse").splitlines()
-        if ln.startswith("[fenix] knowledge:")
-    ]
+    bp = seen["prompt"]
+    assert "能力清单（共 2 个）" in bp
+    assert "- cap-x" in bp and "- cap-y" in bp
+    assert "- 2026-09-01-arc-a1" not in bp  # 聚类对象不再是归档名
+    # bootstrap 提交先于 prehistoric 与批次提交
+    subjects = knowledge_subjects(proj)
     assert subjects[0] == "[fenix] knowledge: backfill bootstrap"
-    assert subjects[1].startswith("[fenix] knowledge: backfill batch 1/4")
+    assert subjects[1] == "[fenix] knowledge: backfill prehistoric"
+    assert subjects[2].startswith("[fenix] knowledge: backfill batch 1/2")
 
 
 def test_bootstrap_missing_domain_map_registers_todo(proj, install_core):
@@ -219,33 +394,33 @@ def test_bootstrap_missing_domain_map_registers_todo(proj, install_core):
     assert "域归位清单" in todo
 
 
-# ── 批失败不阻塞后续批 + todo.md 登记 ────────────────────────────────────
-
-POISON = "spec/knowledge/domains/dom-x/cap-arc-b1.md"
+# ── 台账 v2：legacy 作废重建（任务 1.3 / 1.4） ───────────────────────────
 
 
-def test_batch_failure_marks_failed_and_continues(proj, install_core):
-    def violations():
-        return [f"{POISON}：超 150 行"] if (proj / POISON).exists() else []
-
-    core = install_core(FakeCore(proj, violations_fn=violations))
-    spawn = Recorder(proj, on_call=lambda rec, p, r: write_batch_pages(rec, p))
+def test_ledger_v2_discards_legacy_entries(proj, install_core):
+    install_core(FakeCore(proj))
+    (proj / ".fenix" / "knowledge_backfill.jsonl").write_text(
+        json.dumps({"name": "arc-a1", "status": "distilled"}, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    spawn = Recorder(proj, on_call=default_on_call)
     summary = kb.run_backfill(proj, spawn=spawn)
-
-    assert summary["batches_failed"] == 1
-    assert summary["batches_ok"] == 3  # dom-b 之后的批次照常派发提交
-    assert summary["counts"]["failed"] == 2
-    assert summary["counts"]["distilled"] == 4
-    failed_names = {n for item in summary["failed"] for n in item["archives"]}
-    assert failed_names == {"arc-b1", "arc-b2"}
-    todo = (proj / ".fenix" / "todo.md").read_text(encoding="utf-8")
-    assert "回填批次" in todo
-    # 失败批不产生提交（半成品已回滚）
-    msgs = [m for _, m in core.commit_calls]
-    assert len(msgs) == 3
+    assert summary["converged"] is True
+    ledger = (proj / ".fenix" / "knowledge_backfill.jsonl").read_text(encoding="utf-8")
+    # 旧归档粒度条目作废：无裸归档名键，全部带维度前缀
+    for ln in ledger.splitlines():
+        if ln.strip():
+            key = json.loads(ln)["name"]
+            assert key.startswith(("capability:", "adr:")), key
+    assert '"name": "arc-a1"' not in ledger
 
 
-def test_reentry_redoes_only_failed(proj, install_core):
+# ── 批失败不阻塞后续批/ADR 维度 + 断点续跑（任务 1.4） ────────────────────
+
+POISON = "spec/knowledge/domains/dom-x/cap-x.md"
+
+
+def test_capability_failure_not_blocking_and_resume(proj, install_core):
     poison_on = {"on": True}
 
     def violations():
@@ -254,53 +429,267 @@ def test_reentry_redoes_only_failed(proj, install_core):
         return []
 
     install_core(FakeCore(proj, violations_fn=violations))
-    spawn1 = Recorder(proj, on_call=lambda rec, p, r: write_batch_pages(rec, p))
-    kb.run_backfill(proj, spawn=spawn1)
+    spawn1 = Recorder(proj, on_call=default_on_call)
+    summary = kb.run_backfill(proj, spawn=spawn1)
 
-    # 环境修复后重跑：只处理 pending/failed 条目
+    # cap-x 批失败：不阻塞 cap-y 批，也不阻塞 ADR 维度
+    assert summary["batches_failed"] == 1
+    assert summary["batches_ok"] == 1
+    assert summary["adr_batches_ok"] == 1
+    assert summary["counts"]["capability"] == {
+        "pending": 0, "distilled": 1, "failed": 1,
+    }
+    assert summary["converged"] is False
+    todo = (proj / ".fenix" / "todo.md").read_text(encoding="utf-8")
+    assert "回填批次" in todo
+    failed_caps = {c for item in summary["failed"] for c in item["capabilities"]}
+    assert failed_caps == {"cap-x"}
+
+    # 环境修复后重跑：只重做 failed 能力维度条目，ADR 维度不再派发
     poison_on["on"] = False
-    spawn2 = Recorder(proj, on_call=lambda rec, p, r: write_batch_pages(rec, p))
-    summary = kb.run_backfill(proj, spawn=spawn2)
-
-    assert summary["converged"] is True
-    assert summary["counts"]["distilled"] == 6
-    all_prompts = "\n".join(p for p, _ in spawn2.calls)
-    assert "arc-b1" in all_prompts and "arc-b2" in all_prompts
-    for done in ("arc-a1", "arc-a2", "arc-c1", "arc-d1"):
-        assert f"- {done}\n" not in all_prompts
+    spawn2 = Recorder(proj, on_call=default_on_call)
+    summary2 = kb.run_backfill(proj, spawn=spawn2)
+    assert summary2["converged"] is True
+    run_ids = [r for _, r in spawn2.calls]
+    assert any(r.startswith("kb-batch") for r in run_ids)
+    assert not any(r.startswith("kb-adr") for r in run_ids)  # ADR 已终态不重做
+    batch_prompt = next(p for p, r in spawn2.calls if r.startswith("kb-batch"))
+    assert "cap-x" in batch_prompt
+    assert "cap-y" not in batch_prompt  # 已蒸馏能力不重做
     ledger = (proj / ".fenix" / "knowledge_backfill.jsonl").read_text(encoding="utf-8")
     statuses = [
         json.loads(ln)["status"] for ln in ledger.splitlines() if ln.strip()
     ]
-    assert statuses.count("distilled") == 6
     assert "failed" not in statuses
+    assert statuses.count("distilled") == 6
 
 
-# ── 中断重入（中断批按失败处置，重跑不重做已完成批） ────────────────────
+# ── ADR 维度消化与无 design.md 跳过（任务 1.5 两支路） ────────────────────
 
 
-def test_interrupted_run_resumes_without_redo(proj, install_core):
+def test_adr_batch_consumed_and_no_design_skipped(proj, install_core):
     install_core(FakeCore(proj))
-    seen = {"dom-b": False}
+    adr_calls: list[str] = []
 
-    def crash_on_dom_b(rec, prompt, run_id):
-        names = batch_names(prompt)
-        if "arc-b1" in names and not seen["dom-b"]:
-            seen["dom-b"] = True
-            raise RuntimeError("daemon 重启，run 中断")
-        write_batch_pages(rec, prompt)
+    def on_call(rec, prompt, run_id):
+        if run_id.startswith("kb-adr"):
+            adr_calls.extend(adr_archives(prompt))
+        default_on_call(rec, prompt, run_id)
 
-    spawn1 = Recorder(proj, on_call=crash_on_dom_b)
-    summary = kb.run_backfill(proj, spawn=spawn1)
-    assert summary["batches_failed"] == 1
-    assert summary["batches_ok"] == 3
+    spawn = Recorder(proj, on_call=on_call)
+    summary = kb.run_backfill(proj, spawn=spawn)
+    # ADR 批只收含 design.md 的归档
+    assert adr_calls == ["2026-09-01-arc-a1", "2026-09-03-arc-b1"]
+    # 无 design.md：零 run 直接标 distilled 留痕（跳过清单 + 台账终态）
+    assert summary["adr_skipped_no_design"] == [
+        "2026-09-02-arc-a2", "2026-09-04-arc-c1",
+    ]
+    ledger = (proj / ".fenix" / "knowledge_backfill.jsonl").read_text(encoding="utf-8")
+    entries = {
+        json.loads(ln)["name"]: json.loads(ln)["status"]
+        for ln in ledger.splitlines()
+        if ln.strip()
+    }
+    assert entries["adr:2026-09-02-arc-a2"] == "distilled"
+    assert entries["adr:2026-09-04-arc-c1"] == "distilled"
+    report = (proj / ".fenix" / "knowledge_backfill_report.md").read_text(encoding="utf-8")
+    assert "无 design.md" in report
 
-    spawn2 = Recorder(proj, on_call=lambda rec, p, r: write_batch_pages(rec, p))
-    summary2 = kb.run_backfill(proj, spawn=spawn2)
-    assert summary2["converged"] is True
-    for prompt, _ in spawn2.calls:
-        for done in ("arc-a1", "arc-a2", "arc-c1", "arc-d1"):
-            assert f"- {done}\n" not in prompt
+
+def test_no_design_only_ledger_persisted(proj, install_core):
+    """纯 no_design 场景（零 ADR 批 run）：留痕跳过必须落盘。
+
+    回归锁：save 原先只在批次循环内，adr_batches 为空时 mark 只改内存，
+    台账文件停在 pending → has_pending 恒真 → 排队门永久阻塞增量派发。
+    """
+    (proj / "spec" / "archive" / "2026-09-01-arc-a1" / "design.md").unlink()
+    (proj / "spec" / "archive" / "2026-09-03-arc-b1" / "design.md").unlink()
+    install_core(FakeCore(proj))
+    spawn = Recorder(proj, on_call=default_on_call)
+    summary = kb.run_backfill(proj, spawn=spawn)
+    assert summary["converged"] is True
+    assert summary["adr_batches_total"] == 0
+    ledger = (proj / ".fenix" / "knowledge_backfill.jsonl").read_text(encoding="utf-8")
+    statuses = {
+        json.loads(ln)["name"]: json.loads(ln)["status"]
+        for ln in ledger.splitlines()
+        if ln.strip()
+    }
+    assert all(
+        v == "distilled" for k, v in statuses.items() if k.startswith("adr:")
+    ), statuses
+    # 排队门随之释放：重入收敛零派发
+    assert kb.ledger_has_pending(proj) is False
+
+
+def test_adr_failure_marks_failed_and_registers_todo(proj, install_core):
+    poison_adr = "spec/knowledge/adr/ADR-001-decision-2026-09-01-arc-a1.md"
+
+    def violations():
+        if (proj / poison_adr).exists():
+            return [f"{poison_adr}：违规"]
+        return []
+
+    install_core(FakeCore(proj, violations_fn=violations))
+    spawn = Recorder(proj, on_call=default_on_call)
+    summary = kb.run_backfill(proj, spawn=spawn)
+    assert summary["adr_batches_failed"] == 1
+    assert summary["counts"]["adr"]["failed"] == 2  # 失败批整批标 failed
+    assert summary["counts"]["adr"]["distilled"] == 2  # 跳过支路不受影响
+    assert summary["converged"] is False
+    todo = (proj / ".fenix" / "todo.md").read_text(encoding="utf-8")
+    assert "回填 ADR 批次" in todo
+
+
+# ── 聚合回填全流程 e2e（任务 4.1）：回填期排队登记 → 二轮消化收敛 ─────────
+
+
+def seed_archive_d1(root: Path) -> None:
+    """回填期新归档：触达排队中的 cap-y（二轮扩链重聚合的证据）。"""
+    d = root / "spec" / "archive" / "2026-09-05-arc-d1"
+    (d / "specs" / "cap-y").mkdir(parents=True)
+    (d / "specs" / "cap-y" / "spec.md").write_text("delta\n", encoding="utf-8")
+    (d / "proposal.md").write_text("# 2026-09-05-arc-d1\n", encoding="utf-8")
+
+
+def read_ledger(root: Path) -> dict:
+    text = (root / ".fenix" / "knowledge_backfill.jsonl").read_text(encoding="utf-8")
+    return {
+        json.loads(ln)["name"]: json.loads(ln)["status"]
+        for ln in text.splitlines()
+        if ln.strip()
+    }
+
+
+def test_full_loop_dispatch_queue_then_drain(proj, install_core):
+    """全流程：首轮史前段失败早退（台账全 pending 落盘）→ 回填期新归档经
+    dispatch_distill 排队门登记入台账（不派发增量 run）→ 二轮断点续跑消化
+    收敛，排队能力以扩链后的全链（含新归档）重新聚合。"""
+    install_core(FakeCore(proj))
+    # 首轮：史前 run 不产清单 → 早退，台账保持 reconcile 出的全 pending
+    stall = Recorder(proj, on_call=lambda rec, p, r: None)
+    first = kb.run_backfill(proj, spawn=stall)
+    assert first["ok"] is False
+    assert first["reason"] == "prehistoric-no-inventory"
+    assert read_ledger(proj)["capability:cap-y"] == "pending"
+
+    # 回填期新归档派发被排队门拦截：登记 adr 键、不真派发（dispatcher 未触）
+    seed_archive_d1(proj)
+    calls: list = []
+
+    class Fake:
+        def dispatch(self, proot, names):
+            calls.append(list(names))
+
+    r = knowledge_impl.dispatch_distill(
+        proj, "2026-09-05-arc-d1", {"knowledge": {"enabled": True}}, dispatcher=Fake()
+    )
+    assert r == {"dispatched": False, "reason": "backfill-queued"}
+    assert calls == []
+    assert read_ledger(proj)["adr:2026-09-05-arc-d1"] == "pending"
+
+    # 二轮：史前正常 → 断点续跑消化全部 pending；cap-y 以扩链 3 链重新聚合
+    spawn = Recorder(proj, on_call=default_on_call)
+    second = kb.run_backfill(proj, spawn=spawn)
+    assert second["converged"] is True
+    batch_prompts = [p for p, run in spawn.calls if run.startswith("kb-batch")]
+    y_prompt = next(p for p in batch_prompts if "cap-y" in p)
+    assert cap_chain(y_prompt, "cap-y") == [
+        "2026-09-03-arc-b1", "2026-09-04-arc-c1", "2026-09-05-arc-d1",
+    ]
+    final = read_ledger(proj)
+    assert final["capability:cap-y"] == "distilled"
+    assert final["adr:2026-09-05-arc-d1"] == "distilled"
+    assert kb.ledger_has_pending(proj) is False
+
+
+# ── 史前求差与基线链头（任务 2.3） ───────────────────────────────────────
+
+
+def test_prehistoric_diff_and_baseline_chain_head(proj, install_core):
+    install_core(FakeCore(proj))
+    seen: dict = {}
+
+    def on_call(rec, prompt, run_id):
+        if run_id.startswith("kb-prehistoric"):
+            seen["prompt"] = prompt
+        default_on_call(rec, prompt, run_id)
+
+    spawn = Recorder(proj, on_call=on_call)
+    summary = kb.run_backfill(proj, spawn=spawn)
+    assert summary["converged"] is True
+    # 史前 run 输入携带求差基准（归档链能力全集）
+    assert "- cap-x" in seen["prompt"] and "- cap-y" in seen["prompt"]
+    # 提交序：prehistoric 在能力批之前
+    subjects = knowledge_subjects(proj)
+    assert subjects[0] == "[fenix] knowledge: backfill prehistoric"
+    assert subjects[1].startswith("[fenix] knowledge: backfill batch 1/2")
+    # 未覆盖能力产史前页（入域、origin=prehistoric）
+    pre_page = (
+        proj / "spec/knowledge/domains/dom-x/cap-pre.md"
+    ).read_text(encoding="utf-8")
+    assert "origin=prehistoric" in pre_page
+    # 已覆盖能力：baseline 注入批次提示词作链头输入
+    batch_prompt = next(p for p, r in spawn.calls if r.startswith("kb-batch") and "cap-x" in p)
+    assert "史前基线（链头输入）：史前基线：迁移期轮询为 600 秒。" in batch_prompt
+    # 未覆盖能力不进聚合批次（不写页，diff 排除）
+    all_batch_prompts = "\n".join(p for p, r in spawn.calls if r.startswith("kb-batch"))
+    assert "cap-pre" not in all_batch_prompts
+    y_prompt = next(p for p, r in spawn.calls if r.startswith("kb-batch") and "cap-y" in p)
+    # cap-y 无史前基线：批次清单块不注入链头（模板正文的语义说明除外）
+    assert "史前基线（链头输入）" not in y_prompt
+    # 重入：清单已持久化，prehistoric 不重跑，收敛零派发
+    spawn2 = Recorder(proj)
+    again = kb.run_backfill(proj, spawn=spawn2)
+    assert again["reason"] == "converged"
+    assert spawn2.calls == []
+
+
+def test_prehistoric_missing_page_blocks_with_todo(proj, install_core):
+    install_core(FakeCore(proj))
+
+    def incomplete_prehistoric(rec, prompt, run_id):
+        # 只写清单不写未覆盖能力页 → 求差核验拦截
+        (rec.root / ".fenix" / "knowledge_backfill_prehistoric.json").write_text(
+            json.dumps(INVENTORY, ensure_ascii=False), encoding="utf-8"
+        )
+
+    spawn = Recorder(proj, on_call=incomplete_prehistoric)
+    result = kb.run_backfill(proj, spawn=spawn)
+    assert result["ok"] is False
+    assert result["reason"] == "prehistoric-missing-pages"
+    todo = (proj / ".fenix" / "todo.md").read_text(encoding="utf-8")
+    assert "cap-pre" in todo
+
+
+# ── 自举重跑清理 fixture 遗留（任务 2.3） ────────────────────────────────
+
+
+def test_bootstrap_cleans_fixture_leftovers(proj, install_core):
+    install_core(FakeCore(proj))
+    # 未跟踪 fixture 残留（e2e 污染形态：zn 演示域 / fixture ADR / graph 产物）
+    write_page(
+        proj, "spec/knowledge/domains/zn-demo-domain/zn-demo-capability.md", "# zn\n"
+    )
+    write_page(proj, "spec/knowledge/adr/ADR-001-zn-one.md", "# ADR-001：zn\n")
+    write_page(proj, "spec/knowledge/graph/graph.html", "<html>zn</html>\n")
+    # 已入库遗留域（真实聚类不再归位 → 重建时移除）
+    write_page(proj, "spec/knowledge/domains/dom-stale/old.md", "# old\n")
+    _git(proj, "add", "--", "spec/knowledge/domains/dom-stale")
+    _git(proj, "commit", "-qm", "seed stale domain")
+    (proj / ".fenix" / "knowledge_backfill_domains.json").unlink()
+
+    spawn = Recorder(proj, on_call=default_on_call)
+    summary = kb.run_backfill(proj, spawn=spawn)
+    assert summary["converged"] is True
+    # 未跟踪残留被清场
+    assert not (proj / "spec/knowledge/domains/zn-demo-domain").exists()
+    assert not (proj / "spec/knowledge/adr/ADR-001-zn-one.md").exists()
+    assert not (proj / "spec/knowledge/graph").exists()
+    # 已跟踪遗留域被真实聚类重建移除
+    assert not (proj / "spec/knowledge/domains/dom-stale").exists()
+    # 真实产物不受影响
+    assert (proj / "spec/knowledge/domains/dom-x/cap-x.md").is_file()
 
 
 # ── 前置缺失与提交工具回退 ───────────────────────────────────────────────
@@ -317,20 +706,20 @@ def test_skips_without_knowledge_core(proj, monkeypatch):
 def test_commit_fallback_without_core_helper(proj, install_core):
     """core.knowledge 未提供提交工具时回退车道内 pathspec 提交（任务 2.3）。"""
     install_core(FakeCore(proj), with_commit=False)
-    spawn = Recorder(proj, on_call=lambda rec, p, r: write_batch_pages(rec, p))
+    spawn = Recorder(proj, on_call=default_on_call)
     summary = kb.run_backfill(proj, spawn=spawn)
     assert summary["converged"] is True
     log = _git(proj, "log", "--format=%s")
-    assert "[fenix] knowledge: backfill batch 1/4" in log
-    assert "[fenix] knowledge: backfill batch 4/4" in log
+    assert "[fenix] knowledge: backfill batch 1/2" in log
+    assert "[fenix] knowledge: backfill adr batch 1/1" in log
 
 
-# ── 批次划分 ─────────────────────────────────────────────────────────────
+# ── 批次划分（能力粒度，域内切片 ≤20） ───────────────────────────────────
 
 
 def test_build_batches_cap_and_grouping():
-    domain_map = {f"a{i}": "d1" for i in range(25)}
-    domain_map.update({f"b{i}": "d2" for i in range(3)})
+    domain_map = {f"cap-{i:02d}": "d1" for i in range(25)}
+    domain_map.update({f"capb-{i:02d}": "d2" for i in range(3)})
     domain_map["orphan"] = ""
     batches = kb.build_batches(domain_map, sorted(domain_map))
     assert all(len(b) <= kb.BATCH_SIZE_MAX for b in batches)
