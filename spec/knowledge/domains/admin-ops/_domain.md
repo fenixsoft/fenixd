@@ -17,13 +17,13 @@
 - [admin-disposition-reschedule](admin-disposition-reschedule.md) — admin 处置后重新排期
 - [admin-reset-error-escalation](admin-reset-error-escalation.md) — admin 重置后错误升级路径
 - [add-spec-manual-admin-invoke](add-spec-manual-admin-invoke.md) — SPEC 菜单发起管理员手工介入
-- `manual-invoke-signal-passthrough` — 手工触发信号类型透传
+- [manual-invoke-signal-passthrough](manual-invoke-signal-passthrough.md) — 手工触发信号类型透传
 - [adjudication-actions](adjudication-actions.md) — 人工裁决动作执行
 - [adjudication-choices-registry](adjudication-choices-registry.md) — 裁决选择题注册表
 - [adjudication-ui](adjudication-ui.md) — 人工裁决操作界面
 - [admin-choices-contract](admin-choices-contract.md) — 裁决选择题 admin 侧契约
 - [alert-lifecycle](alert-lifecycle.md) — 告警生命周期与自动消解
 - [alert-resolve](alert-resolve.md) — 告警人工消解闭环
-- `human-escalation-alerts` — 人工升级告警发出与节流
+- [human-escalation-alerts](human-escalation-alerts.md) — 人工升级告警发出与节流
 - [blocked-disposition-classification](blocked-disposition-classification.md) — blocked 冻结/阻塞二分类机械化
-- `stuck-signal-hygiene` — stuck 信号活跃度预检与处置后静默
+- [stuck-signal-hygiene](stuck-signal-hygiene.md) — stuck 信号活跃度预检与处置后静默
