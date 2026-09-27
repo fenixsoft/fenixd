@@ -9,6 +9,7 @@
 - [code-fix-agent](code-fix-agent.md) — code-fix 修复 agent
 - [code-fix-config](code-fix-config.md) — code-fix 车道配置
 - [code-fix-progress](code-fix-progress.md) — 修复进度聚合与呈现
+- [code-fix-item-level-progress](code-fix-item-level-progress.md) — 修复批内条级进度（读侧实时合成与呈现）
 - [code-fix-manual-trigger](code-fix-manual-trigger.md) — 手工触发修复的 checkpoint 授权
 - [correctness](correctness.md) — 代码审查正确性缺陷修复批（CR 台账机械生成）
 - [robustness](robustness.md) — 代码审查健壮性缺陷修复批（CR 台账机械生成）

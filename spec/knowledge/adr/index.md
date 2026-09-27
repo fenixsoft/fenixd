@@ -172,3 +172,4 @@ superseded 条目保留在列供溯源。编号接续本目录既有最大号。
 | [ADR-165](ADR-165-external-tool-param-channel-by-property.md) | accepted | 外部工具可调参数先实测性质再分流注入通道（持久化配置键→run 级配置直写、仅 CLI flag→提示词软约束+完整串断言），同参数禁双通道并存防遮蔽歧义（升级=整体切通道非叠加），非法/缺失/环境缺口一律回退缺省禁当交付物缺口重派，未 A/B 实测的归因只作推断、机制设计不依赖推断成立 |
 | [ADR-166](ADR-166-selfdrive-batch-loop-ternary-outcome-consumed-leaves-pool.md) | accepted | 自驱动批循环收尾三态化（success/consumed/halt），consumed 与 halt 分界判据=该批条目是否已全部离开可选池（可选池严格单调缩小保证收敛，无出池去向的失败禁入自驱动分支），选批为空是正常收敛出口禁误报故障 |
 | [ADR-167](ADR-167-unattended-lane-failure-selfheal-scene-discard-two-tier-skip-budget.md) | accepted | 无人值守车道失败自愈纪律：失败现场即弃+锁即时释放（留痕走档案 branch/tip_sha 不走现场保留），瞬态失败链内跳过与确定性失败档案预算两层分离（预算内新链自动释放免人工），预算用尽永久跳过+一次性点名录告警+台账人工项，预算上限为模块常量不设配置键 |
+| [ADR-168](ADR-168-item-progress-read-side-synthesis-explicit-batch-context.md) | accepted | 进度明细类字段由读侧经 agent 产物实时合成禁新增写侧回写路径（合成字段现算不落盘、不可得恒 null 禁回退 0/空对象），读侧定位上下文由写侧显式落盘既有状态文件并随收尾清除、禁目录 glob/前缀反推，run 标识编排器预生成经形参传入（不预生成则目标窗口失效） |
