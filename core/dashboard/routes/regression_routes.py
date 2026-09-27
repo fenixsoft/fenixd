@@ -317,12 +317,9 @@ class H12RegressionRoutesMixin:
         except Exception as exc:
             # 判定异常按未运行兜底，宁拒勿假放行；降级可观测（item 0d1ba0c6efc0）
             state = "stopped"
-            _log = getattr(self, "logger", None)
-            if _log is not None:
-                _log.warning(
-                    "regression_routes",
-                    f"hosting_state 判定异常，按 stopped 兜底（宁拒勿假放行）: {exc!r}",
-                )
+            logger.warning(
+                f"hosting_state 判定异常，按 stopped 兜底（宁拒勿假放行）: {exc!r}",
+            )
         if state == "unmanaged":
             self._error(
                 409,
@@ -507,6 +504,7 @@ class H12RegressionRoutesMixin:
                 return
             full_contract = contract is None
             prompt = _autodraft_prompt(proot, project["name"], full_contract)
+            proc = None  # Popen 自身抛异常（如 claude 不在 PATH）时下方兜底无进程可清场
             try:
                 proc = subprocess.Popen(
                     ["claude", "-p", prompt, "--permission-mode", "bypassPermissions"],
@@ -514,6 +512,12 @@ class H12RegressionRoutesMixin:
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True,
+                    # 显式 UTF-8：text=True 缺省按 locale 严格解码，LC_ALL=C 等
+                    # 非 UTF-8 locale 启动的 daemon 读中文管道会抛
+                    # UnicodeDecodeError（item 8771db5cac23）；errors=replace
+                    # 保证坏字节不再中断起草（对齐 ocr_status.py 同款修复）
+                    encoding="utf-8",
+                    errors="replace",
                     # 独立会话组（对齐 verify_engine/cli_runner 惯例）：超时可
                     # killpg 整组清场，杜绝只杀直接子进程留下的孤儿孙进程
                     start_new_session=True,
@@ -538,37 +542,46 @@ class H12RegressionRoutesMixin:
                     proc.communicate()  # 回收已杀进程、排干管道
                 except Exception:
                     pass
-                _log = getattr(self, "logger", None)
-                if _log is not None:
-                    _log.warning(
-                        "regression_routes",
-                        f"AI 生成 regression 段超时（>{AUTODRAFT_TIMEOUT_SECONDS}s，"
-                        f"project={project['name']}，full_contract={full_contract}）；"
-                        f"已终止整个进程组，无在途孤儿起草进程",
-                    )
+                logger.warning(
+                    f"AI 生成 regression 段超时（>{AUTODRAFT_TIMEOUT_SECONDS}s，"
+                    f"project={project['name']}，full_contract={full_contract}）；"
+                    f"已终止整个进程组，无在途孤儿起草进程",
+                )
                 self._json({"ok": False, "error": "生成超时（AI 起草未在预算时间内完成）"})
                 return
             except Exception as exc:
+                # 兜底清场复用超时分支的序列（item 62d7dda31633）：管道读写等
+                # 任何异常路径同样不得在 finally 释放单飞锁后留下仍在途的起草
+                # 进程组——孤儿起草者稍后自行落位会造成「已报失败但 regression
+                # 段事后出现」，并与用户重试的新起草并发写 verify.yaml /
+                # git index。proc 为 None 即 Popen 自身失败，无进程可杀。
+                if proc is not None:
+                    try:
+                        pgid = os.getpgid(proc.pid)
+                        os.killpg(pgid, signal.SIGKILL)
+                    except (ProcessLookupError, OSError):
+                        try:
+                            proc.kill()
+                        except Exception:
+                            pass
+                    try:
+                        proc.communicate()  # 回收已杀进程、排干管道
+                    except Exception:
+                        pass
                 # 不外泄裸异常文本（describe 同款）：str(exc) 可能携带内部路径/
                 # 命令细节，细节降级经服务端日志留痕，客户端收通用消息。
-                _log = getattr(self, "logger", None)
-                if _log is not None:
-                    _log.warning(
-                        "regression_routes",
-                        f"调用 claude CLI 异常（project={project['name']}）: "
-                        f"{type(exc).__name__}: {exc!r}",
-                    )
+                logger.warning(
+                    f"调用 claude CLI 异常（project={project['name']}）: "
+                    f"{type(exc).__name__}: {exc!r}",
+                )
                 self._json({"ok": False, "error": "调用 claude CLI 失败"})
                 return
 
             if proc.returncode != 0:
-                _log = getattr(self, "logger", None)
-                if _log is not None:
-                    _log.warning(
-                        "regression_routes",
-                        f"claude CLI 非零退出码（project={project['name']}）: "
-                        f"{proc.returncode}；stderr 尾部: {(stderr or '')[-400:]}",
-                    )
+                logger.warning(
+                    f"claude CLI 非零退出码（project={project['name']}）: "
+                    f"{proc.returncode}；stderr 尾部: {(stderr or '')[-400:]}",
+                )
                 self._json({"ok": False, "error": "调用 claude CLI 失败"})
                 return
 
@@ -609,14 +622,11 @@ class H12RegressionRoutesMixin:
                 )
                 return
 
-            _log = getattr(self, "logger", None)
-            if _log is not None:
-                _log.warning(
-                    "regression_routes",
-                    f"AI 生成 regression 段未落位（project={project['name']}，"
-                    f"full_contract={full_contract}，marker={marker!r}）；"
-                    f"stdout 尾部: {stdout_tail[-400:]}",
-                )
+            logger.warning(
+                f"AI 生成 regression 段未落位（project={project['name']}，"
+                f"full_contract={full_contract}，marker={marker!r}）；"
+                f"stdout 尾部: {stdout_tail[-400:]}",
+            )
             self._json(
                 {
                     "ok": False,
