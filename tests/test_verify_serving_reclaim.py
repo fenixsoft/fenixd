@@ -5,7 +5,8 @@ fix-verify-serving-disk-reclaim：
 - 5.1 保留判据矩阵：changes/archive 存活保留、登记在册保留、活进程保留、
   无法解析保留、6 位数字后缀 spec 正确解析、三重皆无回收
 - 5.2 回收执行：git remove --force + prune 打桩、单条目失败继续、重复清扫幂等
-- 5.3 boot.log 回收：无主删除 / 存活保留 / 无法解析保留 / 状态文件保留
+- 5.3 boot.log 回收：无主删除 / 存活保留 / 登记/活进程/宽限期保留 /
+  无法解析保留 / 状态文件保留
 - 5.4 reclaim_verify_serving 返回结构（reclaimed/kept/boot_logs_reclaimed）
 - 5.5 verify.serving_reclaim.enabled=false 时早退（不调 git、不删文件）
 """
@@ -342,7 +343,9 @@ class TestBootLogReclaim:
     def test_orphan_boot_log_reclaimed(self, tmp_path):
         """spec 不在 changes/archive 且无在飞 → 删除。"""
         serve_root = _make_verify_serving(tmp_path, [])
-        (serve_root / "add-gone-boot.log").write_text("x", encoding="utf-8")
+        gone_log = serve_root / "add-gone-boot.log"
+        gone_log.write_text("x", encoding="utf-8")
+        os.utime(gone_log, (OLD, OLD))
         calls = []
         with patch(_SUBPROCESS_RUN, side_effect=_no_git(calls)), \
              patch.object(sr, "has_live_process", return_value=False), \
@@ -396,6 +399,52 @@ class TestBootLogReclaim:
         assert "get-gone-boot.log" not in result["boot_logs_reclaimed"]
         assert (serve_root / "get-gone-boot.log").exists()
 
+    def test_boot_log_with_registered_worktree_kept(self, tmp_path):
+        """spec 已消失但 servers.json 仍登记同名 worktree → 保留（与目录回收同口径）。"""
+        serve_root = _make_verify_serving(tmp_path, ["add-baz-1788583057"])
+        (serve_root / "servers.json").write_text(
+            json.dumps(
+                [{"pid": 1, "port": 0, "spec": "add-baz",
+                  "worktree": str(serve_root / "add-baz-1788583057")}]
+            ),
+            encoding="utf-8",
+        )
+        baz_log = serve_root / "add-baz-boot.log"
+        baz_log.write_text("x", encoding="utf-8")
+        os.utime(baz_log, (OLD, OLD))
+        calls = []
+        with patch(_SUBPROCESS_RUN, side_effect=_no_git(calls)), \
+             patch.object(sr, "has_live_process", return_value=False):
+            result = reclaim_verify_serving(tmp_path, logger=None)
+        assert "add-baz-boot.log" not in result["boot_logs_reclaimed"]
+        assert baz_log.exists()
+
+    def test_boot_log_with_live_process_kept(self, tmp_path):
+        """孤儿进程仍在写（spec serving worktree 有活进程）→ 保留。"""
+        serve_root = _make_verify_serving(tmp_path, ["add-orphan-1788583057"])
+        orphan_log = serve_root / "add-orphan-boot.log"
+        orphan_log.write_text("x", encoding="utf-8")
+        os.utime(orphan_log, (OLD, OLD))
+        calls = []
+        with patch(_SUBPROCESS_RUN, side_effect=_no_git(calls)), \
+             patch.object(sr, "has_live_process", return_value=True), \
+             patch.object(sr, "is_registered_in_servers", return_value=False):
+            result = reclaim_verify_serving(tmp_path, logger=None)
+        assert "add-orphan-boot.log" not in result["boot_logs_reclaimed"]
+        assert orphan_log.exists()
+
+    def test_fresh_boot_log_kept_by_grace(self, tmp_path):
+        """新建死 spec 的 boot.log 未过宽限期 → 保留（宽限期缓冲）。"""
+        serve_root = _make_verify_serving(tmp_path, [])
+        (serve_root / "add-fresh-boot.log").write_text("x", encoding="utf-8")
+        calls = []
+        with patch(_SUBPROCESS_RUN, side_effect=_no_git(calls)), \
+             patch.object(sr, "has_live_process", return_value=False), \
+             patch.object(sr, "is_registered_in_servers", return_value=False):
+            result = reclaim_verify_serving(tmp_path, logger=None)
+        assert "add-fresh-boot.log" not in result["boot_logs_reclaimed"]
+        assert (serve_root / "add-fresh-boot.log").exists()
+
     def test_unparseable_state_files_kept(self, tmp_path):
         """无法解析归属 / 顶层状态文件 → 保留（fail-safe）。"""
         serve_root = _make_verify_serving(tmp_path, [])
@@ -425,7 +474,9 @@ class TestReturnStructure:
         serve_root = _make_verify_serving(
             tmp_path, ["fix-foo-1789587927", "add-gone-1789587928", "add-gone-1789587929"]
         )
-        (serve_root / "add-gone-boot.log").write_text("x", encoding="utf-8")
+        gone_log = serve_root / "add-gone-boot.log"
+        gone_log.write_text("x", encoding="utf-8")
+        os.utime(gone_log, (OLD, OLD))
         calls = []
         with patch(_SUBPROCESS_RUN, side_effect=_no_git(calls)), \
              patch.object(sr, "has_live_process", return_value=False), \
