@@ -95,7 +95,12 @@ function isBlankPriceRow(r: PriceRowValues | undefined): boolean {
 }
 
 function toProviders(values: FormValues): LlmProvider[] {
-  return values.providers.map(({ prices, envEntries, billingEnabled, ...rest }) => {
+  // 剥离回填时 spread 进行对象的旧 env/billing 键（code-review item 6f3dd544086b）：
+  // initialValues/回填 effect 用 { ...p, ... } 构造行对象，旧 env/billing 作为
+  // inert 键留在 store 里并经 validateFields 回流；billing 下方无条件覆盖本无碍，
+  // 但 env 仅在非空时覆盖——删空全部环境变量行后 env={} 会跳过赋值，rest.env
+  // 仍是旧对象被整体写回，删除操作被静默吞掉。故解构时同步剥离两键。
+  return values.providers.map(({ prices, envEntries, billingEnabled, env: _staleEnv, billing: _staleBilling, ...rest }) => {
     const env: Record<string, string> = {};
     (envEntries || []).forEach((e) => {
       const k = (e?.key || '').trim();
@@ -478,6 +483,7 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
                                   type="text"
                                   danger
                                   icon={<MinusCircleOutlined />}
+                                  aria-label={`删除环境变量 ${envField.name + 1}`}
                                   onClick={() => removeEnv(envField.name)}
                                 />
                               </Col>
@@ -635,7 +641,7 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
             </>
           )}
         </Form.List>
-        <div style={project ? { ...SETTINGS_ACTIONS_ROW_STYLE, marginTop: 12 } : { textAlign: 'right' }}>
+        <div style={project ? SETTINGS_ACTIONS_ROW_STYLE : { textAlign: 'right', marginTop: 24 }}>
           {project && onConfigSynced && (
             <SyncFromUserButton project={project} page="llm" onSynced={onConfigSynced} />
           )}
