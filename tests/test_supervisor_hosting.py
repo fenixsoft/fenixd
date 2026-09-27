@@ -318,9 +318,20 @@ class TestStartStopHosted:
         monkeypatch.setattr(fenix_session, "_fenix_pids_under",
                             lambda root: [str(daemon_pid), str(supervisor_pid)])
         monkeypatch.setattr(fenix_session, "_is_daemon_cmdline", lambda pid: pid == str(daemon_pid))
-        monkeypatch.setattr(fenix_session, "_alive_pids", lambda pids: [str(daemon_pid), str(supervisor_pid)])
+        # 替身语义：SIGKILL 命中即消亡。补杀后复核（SIGKILL 短轮询确认死亡）
+        # 按替身状态判 ok；此前的恒存活替身会让复核把已补杀进程判成「仍存活」
+        # → ok=False，替身失真而非产品缺陷。
         killed = []
-        monkeypatch.setattr(fenix_session.os, "kill", lambda pid, sig: killed.append((int(pid), sig)))
+        sigkilled = set()
+
+        def _kill(pid, sig):
+            killed.append((int(pid), sig))
+            if sig == fenix_session.signal.SIGKILL:
+                sigkilled.add(int(pid))
+
+        monkeypatch.setattr(fenix_session.os, "kill", _kill)
+        monkeypatch.setattr(fenix_session, "_alive_pids",
+                            lambda pids: [p for p in pids if int(p) not in sigkilled])
         tmux_calls = []
         monkeypatch.setattr(fenix_session.subprocess, "run",
                             lambda *a, **kw: tmux_calls.append(a) or mock.Mock(returncode=0))
@@ -363,10 +374,19 @@ class TestStartStopHosted:
 
         monkeypatch.setattr(fenix_session, "_fenix_pids_under", _scan)
         monkeypatch.setattr(fenix_session, "_is_daemon_cmdline", lambda pid: pid == str(old_daemon))
-        # 快照进程恒存活 → 走超时兜底路径
-        monkeypatch.setattr(fenix_session, "_alive_pids", lambda pids: list(pids))
+        # 快照进程在补杀前恒存活 → 走超时兜底路径；SIGKILL 命中即消亡
+        # （补杀后复核按替身状态判 ok，恒存活替身会替成「仍存活」假失败）
         killed = []
-        monkeypatch.setattr(fenix_session.os, "kill", lambda pid, sig: killed.append((int(pid), sig)))
+        sigkilled = set()
+
+        def _kill(pid, sig):
+            killed.append((int(pid), sig))
+            if sig == fenix_session.signal.SIGKILL:
+                sigkilled.add(int(pid))
+
+        monkeypatch.setattr(fenix_session.os, "kill", _kill)
+        monkeypatch.setattr(fenix_session, "_alive_pids",
+                            lambda pids: [p for p in pids if int(p) not in sigkilled])
         monkeypatch.setattr(fenix_session.subprocess, "run",
                             lambda *a, **kw: mock.Mock(returncode=0))
         t0 = time.time()

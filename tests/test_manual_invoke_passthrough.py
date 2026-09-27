@@ -128,6 +128,10 @@ def _make_monitor(tmp_path: Path, sm, runner):
     monitor.store = store
     monitor.agent_runner = runner
     monitor.pm_engine = None
+    # _invoke_administrator 现经该 executor 投递后台执行（None → 同步回退）；
+    # __new__ 绕过了 __init__ 的赋值，最小上下文须自备（对齐
+    # test_provider_failover 的替身口径），否则属性缺失直接 AttributeError。
+    monitor._code_review_executor = None
     return monitor
 
 
