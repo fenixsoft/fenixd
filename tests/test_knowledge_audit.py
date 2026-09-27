@@ -183,6 +183,46 @@ def test_audit_mechanical_fix_commits(proj, install_core):
     assert state["last_scale"]["pages"] >= 2
 
 
+def test_audit_mechanical_keeps_fullpath_sources(tmp_path):
+    """回归（fix f0868c0cf0f9）：marker sources 契约为全路径（core.knowledge
+    校验器强制 ``spec/archive/`` 前缀），悬空溯源判定与 sources 剔除必须按
+    基名归一比对。旧实现拿全路径对归档基名集合比对恒判悬空 → sources 被
+    清空 → 真实校验报 marker 字段非法 → 整轮机械修复被回滚（真实运行证据：
+    knowledge_audit_report.md 2026-09-28「修 0 / marker 字段非法，已回滚」）。
+    本例不装 FakeCore，走真实校验器与 pathspec 提交。"""
+    root = tmp_path / "main"
+    root.mkdir()
+    _git(root, "init", "-q")
+    _git(root, "config", "user.email", "t@example.com")
+    _git(root, "config", "user.name", "t")
+    (root / "spec" / "archive" / "arc-good").mkdir(parents=True)
+    (root / "spec" / "archive" / "arc-good" / "proposal.md").write_text("x\n")
+    kdom = root / "spec" / "knowledge" / "domains" / "dom-a"
+    kdom.mkdir(parents=True)
+    (root / "spec" / "knowledge" / "index.md").write_text(
+        "# 真相源\n\n- [alpha](domains/dom-a/alpha.md)\n"
+    )
+    (kdom / "alpha.md").write_text(
+        "<!-- knowledge: capability=alpha rev=1 sources=spec/archive/arc-good -->\n"
+        "# alpha\n\n## 规则\n\n- 超时:300 秒。\n\n## 溯源\n\n"
+        "- spec/archive/arc-good\n- spec/archive/arc-ghost\n",
+        encoding="utf-8",
+    )
+    _git(root, "add", ".")
+    _git(root, "commit", "-qm", "init")
+
+    result = ka.run_audit(root, spawn=lambda p, r: "ok")
+
+    assert result["counts"]["fixed"] >= 1
+    alpha = (kdom / "alpha.md").read_text(encoding="utf-8")
+    assert "sources=spec/archive/arc-good" in alpha  # 全路径 sources 未被清空
+    assert "arc-ghost" not in alpha  # 悬空溯源行已删
+    # 机械修复过真实校验并已提交，真相源目录无未提交残留
+    status = _git(root, "status", "--porcelain", "--", "spec/knowledge")
+    assert status.strip() == ""
+    assert "audit fix" in _git(root, "log", "--format=%s")
+
+
 def test_audit_zero_defect_passes_without_commit(proj, tmp_path, install_core):
     root = tmp_path / "clean"
     root.mkdir()
