@@ -725,3 +725,77 @@ def test_build_batches_cap_and_grouping():
     assert all(len(b) <= kb.BATCH_SIZE_MAX for b in batches)
     assert sum(len(b) for b in batches) == 29
     assert [len(b) for b in batches] == [1, 20, 5, 3]  # 兜底域 + d1 两片 + d2
+
+
+# ── 失败归因降噪（reduce-cli-stderr-noise-attribution D3） ───────────────
+
+NOISE_LINE = ("[claude-code:unrecognized_model] Model 'glm-5.3-flash' "
+              "is not a valid model name")
+
+
+def _fake_proc(returncode: int, stdout: str, stderr: str):
+    return subprocess.CompletedProcess(
+        args=["claude", "-p"], returncode=returncode, stdout=stdout, stderr=stderr
+    )
+
+
+def test_failure_attribution_tail_filters_noise_lines():
+    """stderr 混合噪声 + 真实死因：归因取过滤后尾部，不含噪声行。"""
+    stderr = (
+        f"{NOISE_LINE}\n"
+        "Traceback: upstream error\n"
+        "API Error: Request rejected (429)\n"
+    )
+    tail = kb._failure_attribution_tail("", stderr)
+    assert "API Error: Request rejected (429)" in tail
+    assert "unrecognized_model" not in tail
+    assert "Traceback: upstream error" in tail
+
+
+def test_failure_attribution_tail_falls_back_to_stdout_tail():
+    """stderr 全噪声：回退 stdout 尾部（stdout 不过滤）。"""
+    stdout = "loading...\nAPI Error: Request rejected (429)\n"
+    tail = kb._failure_attribution_tail(stdout, f"{NOISE_LINE}\n")
+    assert "API Error: Request rejected (429)" in tail
+    assert "unrecognized_model" not in tail
+    assert tail.endswith("API Error: Request rejected (429)")
+    # 两者皆空：返回空串，归因仅保留退出码前缀（调用方拼装）
+    assert kb._failure_attribution_tail("", f"{NOISE_LINE}\n") == ""
+    assert kb._failure_attribution_tail("", "") == ""
+
+
+def test_spawn_failure_attribution_uses_filtered_tail(proj, monkeypatch):
+    """spawn 失败归因端到端：噪声行不进归因文本，真实 429 死因可见。"""
+    monkeypatch.setattr(
+        kb.subprocess, "run",
+        lambda *a, **k: _fake_proc(1, "", f"{NOISE_LINE}\n"),
+    )
+    spawn = kb.default_spawn(proj)
+    with pytest.raises(RuntimeError) as ei:
+        spawn("prompt", "kb-attrib-noise")
+    msg = str(ei.value)
+    assert "退出码 1" in msg
+    assert "unrecognized_model" not in msg
+
+
+def test_spawn_failure_attribution_falls_back_to_stdout(proj, monkeypatch):
+    """stderr 全噪声且 stdout 含 429 死因：归因回退 stdout 尾部。
+
+    `.out` 留档不受影响——stdout/stderr 原始双留证，降噪只作用于归因消息。
+    """
+    stdout = "boot ok\nAPI Error: Request rejected (429)\n"
+    monkeypatch.setattr(
+        kb.subprocess, "run",
+        lambda *a, **k: _fake_proc(1, stdout, f"{NOISE_LINE}\n"),
+    )
+    spawn = kb.default_spawn(proj)
+    with pytest.raises(RuntimeError) as ei:
+        spawn("prompt", "kb-attrib-stdout")
+    msg = str(ei.value)
+    assert "API Error: Request rejected (429)" in msg
+    assert "unrecognized_model" not in msg
+    out_file = proj / ".fenix" / "runs" / "kb-attrib-stdout.out"
+    assert out_file.is_file()
+    body = out_file.read_text(encoding="utf-8")
+    assert NOISE_LINE in body  # 留证现场完整（原始 stderr 不滤）
+    assert "API Error: Request rejected (429)" in body

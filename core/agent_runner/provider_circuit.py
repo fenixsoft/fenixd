@@ -81,6 +81,21 @@ UNRECOGNIZED_MODEL_TEXT_PATTERNS = (
     r"unrecognized_model",
     r"unrecognized model",
 )
+# ── CLI stderr 启动期诊断噪声行（reduce-cli-stderr-noise-attribution D1）────
+# claude CLI 启动期对非 Anthropic 模型名打的固定 stderr 诊断（每 run 恰 1 条，
+# 转录 line 4，出现与否由模型名唯一决定：glm/deepseek 链 run 全有、claude 链
+# 零有），与失败/停滞零区分度——定噪。收口为**独立兄弟常量**供消费端（
+# self_review 深扫 first_stderr、knowledge_backfill 失败归因）统一判别，新噪声
+# 按具体 pattern 枚举追加即可。上方 UNRECOGNIZED_MODEL_TEXT_PATTERNS 原样保留，
+# 仍是 classify_unrecognized_model_error（:420 全仓唯一 pattern 引用点）的判据
+# 源——两边语义有意不同、互不替代：那边是裸子串形态（供全量 error 文本匹配、
+# 驱动瞬态收窄分类），这边是结构化行首形态（供逐行过滤），本常量 MUST NOT 反向
+# 喂给瞬态分类，也不得原地收窄上方的裸子串形态（会静默改变瞬态分类行为）。
+# MUST NOT 裸 `[claude-code:` 前缀一刀切：诊断行可能携带真实错误语义，且
+# classify_transient_error 通道 2 依赖该前缀作瞬断信号。
+CLI_STDERR_NOISE_TEXT_PATTERNS = (
+    r"^\[claude-code:unrecognized_model\]",
+)
 # 全链模型不可用语义标记（add-impl-selfcheck-model-probe 2.2）：链尾模型仍被拒
 # 时注入失败归因，派发器读侧据此**跳过同因重派**（阻断「switch 冷却到期复位 →
 # 重派再撞同一拒模型链」的 2-5 分钟循环）。摘除拒模型条目为人工运维步骤
@@ -137,6 +152,21 @@ TRANSIENT_UNSEAL_RELEASE_STAGGER_SECONDS = 30  # 错峰放行节拍秒
 SIGNAL_KILL_COOLDOWN_AFTER = 3  # 同 spec 信号死法连续达此数 → 冷却
 SIGNAL_KILL_COOLDOWN_SECONDS = 600  # 冷却时长（秒，与瞬断冷却同量级）
 SIGNAL_KILL_ALERT_THROTTLE_MINUTES = 15  # major 告警节流（分钟）
+
+
+def is_cli_stderr_noise(text: str) -> bool:
+    """判断单行 stderr 文本是否为 CLI 启动期诊断噪声行（D1 收口判别入口）。
+
+    消费端（self_review 深扫、knowledge_backfill 失败归因）统一经此判别，
+    匹配语义只定义在这一处。逐行调用——pattern 以 ``^`` 行首锚定，整段多行
+    文本一次匹配只锚首行，MUST NOT 这样用。
+    """
+    if not text:
+        return False
+    for pat in CLI_STDERR_NOISE_TEXT_PATTERNS:
+        if re.match(pat, text):
+            return True
+    return False
 
 
 def annotate_model_chain_unavailable(error_text: str, provider_name, model,
