@@ -5,6 +5,7 @@ import { autodraftRegression, getOcrStatus, getRegressionConfig, installOcr } fr
 import type { OcrStatus, RegressionConfigStatus } from '@/services/dashboard';
 import SyncFromUserButton from './SyncFromUserButton';
 import { SETTINGS_ACTIONS_ROW_STYLE } from '../styles';
+import { usePanelDirty } from '../panelDirty';
 
 const { Text } = Typography;
 
@@ -74,6 +75,9 @@ interface QualityPanelProps {
 
 export default function QualityPanel({ config, onSave, project, onConfigSynced, onManualEdit }: QualityPanelProps) {
   const [form] = Form.useForm();
+  // 用户编辑置脏：切页签/作用域前由 index 经 anyPanelDirty 弹丢弃确认
+  // （code-review item 8a3eb01dc2b9）
+  const { setDirty } = usePanelDirty();
   // 保存重入守卫（code-review item 66e48a34144b，比照 TokenBudgetPanel
   // 53b14fb31196）：onSave 是异步，提交期间按钮可继续点击会发出重叠保存请求
   //（四段配置重复提交 + 重复 toast，且在飞期间二次编辑被保存往返回填覆盖）
@@ -392,7 +396,7 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
           rc-field-form 的 Form.Item 只在 <form> 内注册字段——validateFields()
           不返回脱管字段，handleSave 恒提交 enabled:false（视觉开启但后端未
           持久化，api-regression-config-persisted 验证实测确证）。 */}
-      <Form form={form} layout="vertical" style={{ marginTop: 16 }}>
+      <Form form={form} layout="vertical" onValuesChange={() => setDirty(true)} style={{ marginTop: 16 }}>
         <Card style={{ marginTop: 12 }}>
           {/* 环境状态行：已装 → 绿色提示；未装 → 橙色提示 + 一键安装按钮
               （渲染逻辑抽 renderOcrStatus，见其注释） */}

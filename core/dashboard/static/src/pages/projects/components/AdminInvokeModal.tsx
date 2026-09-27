@@ -134,9 +134,13 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
 
   const handleRunStatus = (status: string) => {
     // interrupted/cancelled：终态但非崩溃（daemon 停机/人工取消），同样解除
-    // 「处置进行中」——否则被取消的 admin run 会把按钮永久锁死
+    // 「处置进行中」——否则被取消的 admin run 会把按钮永久锁死。
+    // frozen-terminated（item ce8a84164320）：spec 冻结终止的原始 classify 串
+    // ——REST 初载 / hello 重同步路径直报后端 classify status，不经
+    // TERMINAL_EVENT_STATUS 转译，不识别会把冻结终止的 admin run 锁死弹窗
     if (status === 'done' || status === 'error' || status === 'interrupted'
-      || status === 'cancelled' || status === 'missing') {
+      || status === 'cancelled' || status === 'missing'
+      || status === 'frozen-terminated') {
       setRunDone(true);
       // 处置完成、按钮恢复可用时同步清空输入框，便于直接输入下一个提示词
       setPrompt('');

@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { ConfigData } from '@/services/dashboard';
 import SyncFromUserButton from './SyncFromUserButton';
 import { SETTINGS_ACTIONS_ROW_STYLE } from '../styles';
+import { usePanelDirty } from '../panelDirty';
 
 const { Text } = Typography;
 
@@ -49,6 +50,9 @@ interface TokenBudgetPanelProps {
 
 export default function TokenBudgetPanel({ config, onSave, project, onConfigSynced }: TokenBudgetPanelProps) {
   const [form] = Form.useForm();
+  // 用户编辑置脏：切页签/作用域前由 index 经 anyPanelDirty 弹丢弃确认
+  // （code-review item 8a3eb01dc2b9）
+  const { setDirty } = usePanelDirty();
   // 保存重入守卫（code-review item 53b14fb31196，比照 ApprovalModePanel
   // 589c1c98c5a4）：onSave 是异步，提交期间按钮可继续点击会发出重叠保存请求
   // （并发写同一配置文件，结果取决于响应到达顺序）——saving 期间置
@@ -115,7 +119,7 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
       <h3>预算</h3>
       <Text type="secondary">Token 预算、每日 Agent 运行限额与实现尝试预算等成本控制项。</Text>
       {/* 单一 Form 承载两张卡片：同一保存按钮提交两节配置 */}
-      <Form form={form} initialValues={initialValues} layout="vertical">
+      <Form form={form} initialValues={initialValues} layout="vertical" onValuesChange={() => setDirty(true)}>
       <Card style={{ marginTop: 12 }}>
           <Form.Item
             name="token_budget_millions"

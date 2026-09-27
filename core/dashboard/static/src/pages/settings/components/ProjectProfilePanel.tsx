@@ -1,6 +1,8 @@
 import { Alert, Button, Card, Input, Popconfirm, Typography, message } from 'antd';
 import { useState, useEffect, useRef } from 'react';
 import type { ConfigData } from '@/services/dashboard';
+// 切页签/作用域丢弃确认的判脏登记（code-review item 8a3eb01dc2b9）
+import { usePanelDirty } from '../panelDirty';
 import {
   autodraftVerifyYaml,
   getVerifyYaml,
@@ -33,6 +35,12 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
   // querySelector——设置页切作用域曾出现双 DOM 实例并存，选择器会命中隐藏实例）
   const verifySectionRef = useRef<HTMLDivElement>(null);
   const yamlTextareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // 页签/作用域切换丢弃确认（code-review item 8a3eb01dc2b9）：本面板自持
+  // 简介/verify.yaml 两份草稿（非 antd Form），用户编辑经置脏入口登记，
+  // 切页签前由 index 统一弹确认；verify.yaml 保存不经父级 handleSave，
+  // 成功后在 handleYamlSave 内自行复位。
+  const { setDirty } = usePanelDirty();
 
   useEffect(() => {
     setDescription(config.description || '');
@@ -139,8 +147,11 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
   const yamlDraftRef = useRef('');
   const yamlLoadedContentRef = useRef('');
 
-  // 草稿统一写入口：同步 ref 镜像（编辑 onChange 与「插入模板」共用）
+  // 草稿统一写入口：同步 ref 镜像（编辑 onChange 与「插入模板」共用）。
+  // 用户驱动的草稿变更统一在此置脏（code-review item 8a3eb01dc2b9）；
+  // 加载回填直接 setYamlDraft 不经此口，不会误置脏。
   const applyYamlDraft = (value: string) => {
+    setDirty(true);
     yamlDraftRef.current = value;
     setYamlDraft(value);
   };
@@ -212,6 +223,9 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
     try {
       await saveVerifyYaml(project, yamlDraft);
       message.success('verify.yaml 已保存');
+      // 已落盘的草稿不再是「未保存改动」（code-review item 8a3eb01dc2b9）：
+      // 本面板 verify.yaml 保存不经父级 handleSave 的统一复位，须自行清脏
+      setDirty(false);
       setYamlExists(true);
       await loadVerifyYaml(true);
     } catch (e) {
@@ -274,7 +288,10 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
         </Text>
         <TextArea
           value={description}
-          onChange={(e) => setDescription(e.target.value)}
+          onChange={(e) => {
+            setDirty(true);
+            setDescription(e.target.value);
+          }}
           placeholder="暂无简介"
           autoSize={{ minRows: 4, maxRows: 8 }}
           style={{ marginTop: 12, marginBottom: 16 }}

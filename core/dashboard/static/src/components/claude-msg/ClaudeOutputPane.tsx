@@ -20,8 +20,10 @@ interface ClaudeOutputPaneProps {
    * （与面板头部「共 M 条事件」同源），首拉返回前退化为已加载条数——
    * 「加载更早事件」只增大已加载窗口、不改变总数，外层标题不随分页漂移 */
   onEventsCount?: (count: number) => void;
-  /** run 终态回调：done / error / interrupted / cancelled / missing
-   * （供外层恢复输入与按钮状态） */
+  /** run 终态回调：done / error / interrupted / cancelled / missing /
+   * frozen-terminated（item ce8a84164320：REST 初载 / hello 重同步直报的后端
+   * classify 原始串；SSE 增量路径已由 TERMINAL_EVENT_STATUS 转译为
+   * interrupted）（供外层恢复输入与按钮状态） */
   onRunStatus?: (status: string) => void;
 }
 
@@ -89,23 +91,33 @@ function appendWithoutOverlap(newer: RunEvent[], loaded: RunEvent[]): RunEvent[]
   return newer;
 }
 
-// 增量分支终态事件 → status 映射（code-review item 6ec9d7211411）：与
-// runEvents.ts 的终态事件集合对齐（error/interrupted/cancelled 终态渲染 +
-// session_ended 会话终态）。原先只认 result/error——run 中途被取消/daemon
-// 停机补写 interrupted/cancelled 而无 result/error 时，EventSource 不断链就
-// 不重连、收不到 hello 重同步的真实 status，外层（AdminInvokeModal 的
-// handleRunStatus 依赖 interrupted/cancelled 解除「处置进行中」锁定）按钮
-// 永久禁用。session_ended（会话进程退出/被杀）对在飞 run 等价中断，映射为
-// 外层已识别的 interrupted，不扩 onRunStatus 的既有字符串回调契约。
+// 增量分支终态事件 → status 映射（code-review item 6ec9d7211411）：覆盖
+// runEvents.ts 的终态渲染集合（error/interrupted/cancelled 终态渲染）+
+// session_ended 会话终态 + 写侧系统强制终止终态（item ce8a84164320）。原先只
+// 认 result/error——run 中途被取消/daemon 停机补写 interrupted/cancelled 而
+// 无 result/error 时，EventSource 不断链就不重连、收不到 hello 重同步的真实
+// status，外层（AdminInvokeModal 的 handleRunStatus 依赖 interrupted/cancelled
+// 解除「处置进行中」锁定）按钮永久禁用。session_ended（会话进程退出/被杀）、
+// frozen-terminated（spec 冻结终止，轮询环对在飞 run 生效，含 admin run）、
+// stall-budget-terminated（停滞判停终止）对在飞 run 等价中断，均映射为外层
+// 已识别的 interrupted，不扩 onRunStatus 的既有字符串回调契约。gate-blocked /
+// superseded 刻意不纳入（item ce8a84164320 取舍）：superseded 是原地重试弃置
+// 旧产物的中间弃置件（重试走新产物文件、可能仍在飞），gate-blocked 是门禁
+// 失败收口而非「在飞 run 被中断」——映射为 interrupted 会误解锁仍在飞的重试
+// 链路，admin 调用方语义未定前不入映射。
 const TERMINAL_EVENT_STATUS: Record<string, string> = {
   result: 'done',
   error: 'error',
   interrupted: 'interrupted',
   cancelled: 'cancelled',
   session_ended: 'interrupted',
+  'frozen-terminated': 'interrupted',
+  'stall-budget-terminated': 'interrupted',
 };
 
-// REST 拉取返回的 run status 终态集合（与 props onRunStatus 契约注释对齐）：
+// REST 拉取返回的 run status 终态集合（空态分支判定用；onRunStatus 契约
+// 另含 frozen-terminated——item ce8a84164320 的扩展仅及外层回调，空态分支
+// 词表未纳入）：
 // 空态分支据其区分「已终态但零事件」与「等待输出」（code-review item 97dcdc581245）
 const TERMINAL_RUN_STATUSES = new Set(['done', 'error', 'interrupted', 'cancelled', 'missing']);
 
@@ -217,9 +229,19 @@ export default function ClaudeOutputPane({
     if (!runId || !project || loadingMore) return;
     const reqRunId = runId;
     const reqProject = project;
+    // 派发即记账（item f9b3f56a1e32，同初载/hello/reset 快照守卫）：分页写回
+    // 是前置拼接 + total 回写，在途期间产物被轮转/截断触发 reset 重拉（整体
+    // 替换）时，迟到的分页响应会把轮转前的旧窗口拼进重置后列表、stale total
+    // 覆盖新计数——与重拉快照按同一序号排序，过期响应整包丢弃。刻意不推进
+    // tailSnapAppliedRef：分页写回非整体替换快照，推进会把晚于本页派发、仍在
+    // 途的重同步快照（含其中的终态 status 上报）误判为过期丢弃。
+    const snapSeq = ++tailSnapSeqRef.current;
     setLoadingMore(true);
     try {
       const data = await getRunTail(reqRunId, reqProject, tail, events.length);
+      // 过期分页响应（item f9b3f56a1e32）：更新的重拉/重同步快照已落地时整包
+      // 丢弃，防旧窗口前置拼进重置后列表
+      if (snapSeq <= tailSnapAppliedRef.current) return;
       if (isMountedRef.current && activeRunIdRef.current === reqRunId && activeProjectRef.current === reqProject) {
         setTotalEvents(data.total_events || 0);
         reportStatus(data.status || '');

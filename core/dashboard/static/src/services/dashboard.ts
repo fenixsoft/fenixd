@@ -128,13 +128,20 @@ async function request<T>(
     timedOut
       ? new ApiError(`请求超时（>${timeoutMs / 1000}s）`, 0, 'timeout')
       : new ApiError('请求已取消', 0, 'cancelled');
+  // abort 判定放宽（item bcf32b5cce85）：`instanceof DOMException` 在非标准
+  // 环境（旧 Safari、部分 fetch polyfill、SSR 下的 undici 老版本）会把 abort
+  // 抛出的普通 Error 漏判成「网络请求失败」。改为名称判定（AbortError 名称
+  // 跨环境稳定）+ signal.aborted 兜底（覆盖非 DOMException 形态的取消），
+  // 下方三处 catch 统一走本谓词；非 abort 异常仍归 'network' 不变。
+  const isAbort = (e: unknown) =>
+    (e as { name?: string })?.name === 'AbortError' || controller.signal.aborted;
   try {
     let res: Response;
     try {
       res = await fetch(path, { ...init, signal: controller.signal });
     } catch (e) {
       // 网络失败 / 超时区分（e49991904b1f）
-      if (e instanceof DOMException && e.name === 'AbortError') throw classifyAbort();
+      if (isAbort(e)) throw classifyAbort();
       throw new ApiError(
         `网络请求失败：${e instanceof Error ? e.message : String(e)}`,
         0,
@@ -152,7 +159,7 @@ async function request<T>(
         // 错误体消费期间的 abort（挂起的错误响应被超时/取消中止，item
         // eebe470f0864 同理）同样纳入分类——不得被当作「非 JSON 错误体」
         // 静默改写成 HTTP 状态码错误。
-        if (e instanceof DOMException && e.name === 'AbortError') throw classifyAbort();
+        if (isAbort(e)) throw classifyAbort();
         // 非 JSON 错误体，保留 HTTP 状态码信息
       }
       throw new ApiError(msg, res.status, classifyHttpKind(res.status), code);
@@ -172,7 +179,7 @@ async function request<T>(
     } catch (e) {
       // body 消费期间的 abort（挂起流被超时中止）同样纳入分类（item
       // eebe470f0864）——不得永挂，也不得误报为网络失败。
-      if (e instanceof DOMException && e.name === 'AbortError') throw classifyAbort();
+      if (isAbort(e)) throw classifyAbort();
       throw new ApiError(
         `读取响应失败：${e instanceof Error ? e.message : String(e)}`,
         res.status,
