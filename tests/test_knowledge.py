@@ -4,6 +4,7 @@ commit_archive_move 挂载 / DistillManager 执行器（fake spawn 三支路）�
 运行：python3 -m pytest tests/test_knowledge.py -q
 """
 import os
+import json
 import subprocess
 import tempfile
 import threading
@@ -423,6 +424,127 @@ class TestDispatchDistill(KnowledgeTestBase):
         )
         self.assertTrue(r["dispatched"])
         self.assertEqual(got["names"], [self._archive_name(), "2026-01-01-b"])
+
+
+class TestBackfillQueueGate(KnowledgeTestBase):
+    """任务 3.1：回填期排队双漏斗（dispatch_distill / dispatch_distill_batch）。
+
+    台账存在 pending → 不派发增量 run、归档登记进台账（终态 capability 条目
+    重置 pending）；台账缺失/收敛 → 即时派发零回归。
+    """
+
+    def _cfg(self):
+        return {"knowledge": {"enabled": True}}
+
+    def _seed_ledger(self, entries):
+        (self.root / ".fenix").mkdir(exist_ok=True)
+        text = "\n".join(json.dumps(e, ensure_ascii=False) for e in entries)
+        (self.root / ".fenix" / "knowledge_backfill.jsonl").write_text(
+            text + "\n", encoding="utf-8"
+        )
+
+    def _ledger_text(self):
+        return (self.root / ".fenix" / "knowledge_backfill.jsonl").read_text(
+            encoding="utf-8"
+        )
+
+    def _fake_dispatcher(self, calls):
+        class Fake:
+            def dispatch(self, proot, names):
+                calls.append(list(names))
+
+        return Fake()
+
+    def _touch_archive_capability(self):
+        cap_dir = (
+            self.root / "spec" / "archive" / self._archive_name() / "specs" / "pickup"
+        )
+        cap_dir.mkdir(parents=True, exist_ok=True)
+
+    def test_single_entry_queued_and_registered(self):
+        from core.knowledge import dispatch_distill
+
+        self._seed_ledger([{"name": "capability:other-cap", "status": "pending"}])
+        self._touch_archive_capability()
+        calls = []
+        r = dispatch_distill(
+            self.root, self._archive_name(), self._cfg(), dispatcher=self._fake_dispatcher(calls)
+        )
+        self.assertFalse(r["dispatched"])
+        self.assertEqual(r["reason"], "backfill-queued")
+        self.assertEqual(calls, [])  # 未派发增量 run
+        ledger = self._ledger_text()
+        # 双维度登记：adr 条目新建 + 触碰的 capability 条目新建
+        self.assertIn(f'"name": "adr:{self._archive_name()}"', ledger)
+        self.assertIn('"name": "capability:pickup"', ledger)
+        self.assertEqual(ledger.count('"status": "pending"'), 3)
+
+    def test_terminal_capability_reset_to_pending(self):
+        from core.knowledge import dispatch_distill
+
+        # 既有 pending 触发排队门；归档触碰的 capability:pickup 已终态
+        self._seed_ledger(
+            [
+                {"name": "capability:pickup", "status": "distilled"},
+                {"name": f"adr:{self._archive_name()}", "status": "distilled"},
+                {"name": "capability:other-cap", "status": "pending"},
+            ]
+        )
+        self._touch_archive_capability()
+        calls = []
+        dispatch_distill(
+            self.root, self._archive_name(), self._cfg(), dispatcher=self._fake_dispatcher(calls)
+        )
+        # 终态条目重置 pending：链索引重扫纳入新归档 delta 后重新聚合
+        ledger = self._ledger_text()
+        self.assertEqual(ledger.count('"status": "pending"'), 2)
+        self.assertEqual(calls, [])
+
+    def test_batch_entry_queued_and_registered(self):
+        from core.knowledge import dispatch_distill_batch
+
+        other = "2026-01-01-other-spec"
+        (self.root / "spec" / "archive" / other).mkdir(parents=True, exist_ok=True)
+        self._seed_ledger([{"name": "capability:other-cap", "status": "pending"}])
+        calls = []
+        r = dispatch_distill_batch(
+            self.root,
+            [self._archive_name(), other],
+            self._cfg(),
+            dispatcher=self._fake_dispatcher(calls),
+        )
+        self.assertFalse(r["dispatched"])
+        self.assertEqual(r["reason"], "backfill-queued")
+        self.assertEqual(calls, [])
+        ledger = self._ledger_text()
+        self.assertIn(f'"name": "adr:{self._archive_name()}"', ledger)
+        self.assertIn(f'"name": "adr:{other}"', ledger)
+
+    def test_converged_ledger_resumes_immediate_dispatch(self):
+        from core.knowledge import dispatch_distill
+
+        self._seed_ledger(
+            [
+                {"name": "capability:pickup", "status": "distilled"},
+                {"name": f"adr:{self._archive_name()}", "status": "distilled"},
+            ]
+        )
+        calls = []
+        r = dispatch_distill(
+            self.root, self._archive_name(), self._cfg(), dispatcher=self._fake_dispatcher(calls)
+        )
+        self.assertTrue(r["dispatched"])  # 收敛后恢复即时派发
+        self.assertEqual(calls, [[self._archive_name()]])
+
+    def test_missing_ledger_dispatches_immediately(self):
+        from core.knowledge import dispatch_distill
+
+        calls = []
+        r = dispatch_distill(
+            self.root, self._archive_name(), self._cfg(), dispatcher=self._fake_dispatcher(calls)
+        )
+        self.assertTrue(r["dispatched"])
+        self.assertEqual(calls, [[self._archive_name()]])
 
 
 class TestCommitArchiveMoveMount(KnowledgeTestBase):

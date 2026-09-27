@@ -37,6 +37,8 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
+from core.knowledge_backfill import ledger_has_pending, register_archive_pending
+
 logger = logging.getLogger("fenixd.knowledge")
 
 # ── 路径与契约常数 ────────────────────────────────────────────────────
@@ -668,6 +670,24 @@ def dispatch_distill(project_root, archived_name, config=None, *, dispatcher=Non
     if not (proot / ARCHIVE_DIR / archived_name).is_dir():
         return {"dispatched": False, "reason": "archive-dir-missing"}
 
+    # 回填期排队（fix-knowledge-backfill-reconstruction 3.1）：台账存在 pending
+    # 时不派发增量 run，把该归档登记进回填台账后返回——回填期 spec/knowledge/
+    # 只有回填一个写者；收敛（台账无 pending）后此门自然放行，恢复即时派发。
+    # 排队判定/登记故障 fail-open 放行原派发（不阻塞归档主流程）。
+    try:
+        if ledger_has_pending(proot):
+            register_archive_pending(proot, archived_name)
+            logger.info(
+                "knowledge-distill 回填期排队（archive=%s 登记回填台账）", archived_name
+            )
+            return {"dispatched": False, "reason": "backfill-queued"}
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "knowledge-distill 回填排队判定失败，按即时派发继续: %s: %s",
+            type(e).__name__,
+            e,
+        )
+
     mgr = dispatcher or _get_dispatcher()
     try:
         mgr.dispatch(proot, [archived_name])
@@ -708,6 +728,23 @@ def dispatch_distill_batch(project_root, archived_names: list, config=None, *, d
     missing = [n for n in archived_names if not (proot / ARCHIVE_DIR / n).is_dir()]
     if missing:
         return {"dispatched": False, "reason": f"archive-dir-missing: {', '.join(missing)}"}
+
+    # 回填期排队（批量入口：多归档分支不经单条路径，须同样判定；任务 3.1）
+    try:
+        if ledger_has_pending(proot):
+            for name in archived_names:
+                register_archive_pending(proot, name)
+            logger.info(
+                "knowledge-distill 回填期排队（批量 %s 登记回填台账）",
+                ", ".join(archived_names),
+            )
+            return {"dispatched": False, "reason": "backfill-queued"}
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "knowledge-distill 批量回填排队判定失败，按即时派发继续: %s: %s",
+            type(e).__name__,
+            e,
+        )
     mgr = dispatcher or _get_dispatcher()
     try:
         mgr.dispatch(proot, list(archived_names))
