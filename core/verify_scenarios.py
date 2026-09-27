@@ -207,9 +207,10 @@ def load_scenario_set(project_root, spec_name: str) -> Optional[ScenarioSet]:
         kept: list = []
         rejected: list[str] = []
         backfilled: list[str] = []
-        for item in raw_entries:
+        for i, item in enumerate(raw_entries):
             if not isinstance(item, dict):
-                rejected.append(f"[{len(kept)}]非对象")
+                # 记原始数组下标（非已保留计数），供 admin 按日志定位文件行（f79a6e2da286）。
+                rejected.append(f"[{i}]非对象")
                 continue
             if item.get("kind") not in ("web", "cli", "api"):
                 # b25b28a4ed8a：缺/非法 kind 兜底归类 web 保留在集（不再剔除，
@@ -439,7 +440,10 @@ def _parse_reasons(planner_scenarios: list) -> dict:
     for s in planner_scenarios:
         if not isinstance(s, dict):
             continue
-        sid = s.get("id")
+        raw_sid = s.get("id")
+        # str 归一：与 diff_planner_output 的 sid = str(s["id"]) 口径对齐，
+        # 否则 planner 把 id 写成数字等非字符串形态时移除声明查不到（8a8a338f653a）。
+        sid = str(raw_sid) if raw_sid else ""
         if sid and s.get("remove_reason"):
             reasons[sid] = str(s["remove_reason"])
     return reasons
@@ -671,5 +675,5 @@ def render_first_write_section(scenario_set: ScenarioSet) -> str:
     """首轮写入的「本轮场景集变更」小节渲染。"""
     diff = DiffResult()
     diff.scenario_set = scenario_set
-    diff.change_lines = [f"首轮写入 {len(scenario_set.scenarios)} 个场景"]
+    diff.change_lines = [f"- 首轮写入 {len(scenario_set.scenarios)} 个场景"]
     return render_change_section(diff)
