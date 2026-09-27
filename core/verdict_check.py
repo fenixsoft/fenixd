@@ -26,7 +26,10 @@ report.json，校验：
 
 import hashlib
 import json
+import os
 import re
+import subprocess
+import tempfile
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Set
 
@@ -140,6 +143,23 @@ def triage_entries(scenario: dict) -> List[dict]:
     return [t for t in triage if isinstance(t, dict)]
 
 
+def _scenario_has_failure_signal(scenario: dict) -> bool:
+    """场景是否含断言清单之外的失败信号（失败步骤 / 驱动视觉结论）。
+
+    判定口径与 ``has_only_non_driving_visual_indicators`` 同源：step_results
+    任一 success=False，或 visual_results 存在 diff_detected/warning 类驱动
+    视觉结论，即视为有失败信号（baseline_deferred/rejected 等非驱动视觉
+    状态不构成失败信号）。
+    """
+    for s in scenario.get("step_results") or []:
+        if isinstance(s, dict) and not s.get("success", True):
+            return True
+    for v in scenario.get("visual_results") or []:
+        if isinstance(v, dict) and v.get("status") in ("diff_detected", "warning"):
+            return True
+    return False
+
+
 def is_expandable_evidence_violation(reason: str) -> bool:
     """判断 judge 违规是否属「可补证据」类型（add-verify-lane-throughput 3.2）。
 
@@ -195,6 +215,31 @@ def triage_violation(scenario: dict) -> Optional[str]:
             f"assertion_triage 仅 {len(triage)} 条，少于失败断言数 {failed_count}"
             f"（MUST 逐条归类全部失败断言）"
         )
+
+    # 漏条目检测②（code-review item 4f4c0e8c54aa）：triage 条数少于 judge 自
+    # 申报的 evidence.failed_assertions 数 → 同为漏条目。assertion_results
+    # 缺失/非列表/空表时上面的 failed_count 恒为 0、检测失效，此路兜住该旁路
+    # （清单是 judge 自己申报的，申报了更多失败断言就必须逐条归类）。
+    evidence = scenario.get("evidence")
+    ev_failed = evidence.get("failed_assertions") if isinstance(evidence, dict) else None
+    if isinstance(ev_failed, list) and len(triage) < len(ev_failed):
+        return (
+            f"assertion_triage 仅 {len(triage)} 条，少于 evidence.failed_assertions "
+            f"的 {len(ev_failed)} 条（MUST 逐条归类全部失败断言）"
+        )
+
+    # 漏条目检测③（同条目 fail-closed）：既无引擎断言清单（assertion_results
+    # 缺失/非列表/空表）也无自申报失败断言清单，而场景仍存在失败步骤/驱动视觉
+    # 结论等失败信号 → 无法证明逐条归因完整，按违规处理（fail-closed，不给
+    # 「任意 1 条合规 triage 即放行」留口）；理由文案显式声明「断言清单缺失」
+    # 这一前提，重裁决据此先补清单再逐条归类。
+    if not (isinstance(ars, list) and ars) and not (isinstance(ev_failed, list) and ev_failed):
+        if _scenario_has_failure_signal(scenario):
+            return (
+                "assertion_results 断言清单缺失，无法逐条核验归因完整性"
+                "（场景仍存在失败信号）：须在 evidence.failed_assertions 逐条列出"
+                "失败断言并逐条归类"
+            )
     return None
 
 
@@ -224,7 +269,11 @@ def whitewash_violations(scenarios: list, verdict: str) -> List[str]:
     - 任一失败分类为 env → 不得 verified（env 问题须升级 admin 处置，
       不得当作豁免理由放行——「遇到 env 就不测试了」被本检查封死）；
     - 场景表存在非对象条目（损坏场景表）→ 不得 verified（fail-closed，
-      零有效场景的损坏报告不得静默放行）。
+      零有效场景的损坏报告不得静默放行）；
+    - exempt（fast-track 申报豁免）既不算通过也不算失败（code-review item
+      e3e2a98e2bb5）——否则全 exempt 表会被「0/N 场景通过（全部失败）」误拦
+      并按 env 阻塞升级，与申报豁免语义不符；但 env 豁免仍计入 env 通道
+      （help-center 事故防线：env 不得借豁免通道放行 verified）。
 
     仅约束 verdict=verified；bug-found 不受限。Returns: 违规说明列表（空=放行）。
     """
@@ -246,8 +295,17 @@ def whitewash_violations(scenarios: list, verdict: str) -> List[str]:
         # 双词表对齐（item 229075ac0732）：与本模块其余函数同口径——"passed"
         # 亦为通过态（下游 verdict_evidence/pipeline 均按双词表防御），否则
         # 全过报告会被误判 0 通过而错误阻断合法 verified 裁决。
-        if sc.get("status") in ("pass", "passed"):
+        status = sc.get("status")
+        if status in ("pass", "passed"):
             passed += 1
+        elif status == "exempt":
+            # exempt＝申报豁免（fast-track 合法状态）：既不算通过也不算失败
+            # （item e3e2a98e2bb5），不计入 has_failed。但 env 豁免仍须计入
+            # env_failed——env 不得当作豁免理由放行 verified（help-center
+            # 0/15 事故防线），豁免合法性（非 product-bug）由
+            # validate_fast_track_result 的豁免逃逸检查把关。
+            if sc.get("classification") == "env":
+                env_failed.append(sid)
         else:
             has_failed = True
             if sc.get("classification") == "env":
@@ -492,7 +550,8 @@ def _scenario_has_substantive_evidence(scenario: dict) -> bool:
     """判断场景是否有「实质性证据」支撑归因（非空 evidence 构成）。
 
     实质性证据 = 非空截图列表 / 有算法标签 / 有 first_failed_step /
-    有 failed_assertions / 有 first_frame_ok 结构化字段。
+    有 failed_assertions / 有 first_frame_ok=False 结构化字段（异常事实；
+    引擎侧只写 False，True 属无信息量默认态，与字段缺失同等处理）。
 
     evidence 形状防御（code-review item 803f6a23f662）：judge 产出非 dict
     （非空字符串等 truthy 形态）时按空 evidence 处理、保守降级 speculative
@@ -513,12 +572,16 @@ def _scenario_has_substantive_evidence(scenario: dict) -> bool:
         labels = {}
     if labels:
         return True
-    for key in ("first_failed_step", "first_frame_ok"):
-        val = evidence.get(key)
-        if isinstance(val, str) and val.strip():
-            return True
-        if isinstance(val, bool):
-            return True
+    ffs = evidence.get("first_failed_step")
+    if isinstance(ffs, str) and ffs.strip():
+        return True
+    # first_frame_ok 仅 False（异常事实）计为实质证据：引擎侧（core/verify_engine/
+    # browser.py）只写 first_frame_ok=False，从不写 True——True 属无信息量默认态，
+    # 与字段缺失同等处理。否则 judge 在 evidence 里伪造 first_frame_ok=true 即凑出
+    # has_evidence，经 compute_attribution_level 末段返回 evidence-backed，旁路
+    # should_suppress_bug_found 的 speculative 抑制（code-review item b96e297ffdaf）。
+    if evidence.get("first_frame_ok") is False:
+        return True
     if _scenario_has_failed_assertion_evidence(scenario):
         return True
     return False
@@ -1196,13 +1259,9 @@ def load_report(project_root, spec_name) -> Optional[dict]:
 
 def save_report(project_root, spec_name, report: dict) -> None:
     """原子写回增强后的 report.json（temp + rename，与既有产物写回同约定）。"""
-    import tempfile
-
     path = Path(project_root) / ".fenix" / "verify-progress" / spec_name / "report.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), prefix=".report.", suffix=".json.tmp")
-    import os
-
     try:
         with open(fd, "w", encoding="utf-8") as f:
             json.dump(report, f, ensure_ascii=False, indent=2)
@@ -1289,9 +1348,6 @@ def save_verdict_cache(project_root, spec_name, cache: dict) -> None:
     payload = dict(cache) if isinstance(cache, dict) else {}
     if "_meta" not in payload:
         payload["_meta"] = {"head_at_write": compute_head_at_write(project_root)}
-    import os
-    import tempfile
-
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
         # tempfile.mkstemp 唯一临时文件 + os.replace：并发写同缓存时各进程 tmp
@@ -1430,8 +1486,6 @@ def compute_verify_config_fingerprint(project_root) -> str:
 
 def compute_head_at_write(project_root) -> str:
     """当前 git HEAD（写侧 ``_meta.head_at_write``）；失败返回 ""（fail-open）。"""
-    import subprocess
-
     try:
         out = subprocess.run(
             ["git", "rev-parse", "HEAD"],

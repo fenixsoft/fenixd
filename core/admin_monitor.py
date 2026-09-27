@@ -691,7 +691,8 @@ def _has_recent_spec_run(project_root, spec: str, now: float, window: float) -> 
     （2026-09-18 事故根因：旧判定把处置者活动误判为被处置 SPEC 的驱动，
     导致恢复判定全跳过）。
 
-    两处实现共用 ``_is_admin_run_id``（单点定义），禁二次漂移。
+    ``AdminMonitor._has_recent_progress`` 已改为委托本函数（仅参数适配），
+    扫描体唯一，禁二次漂移。
     """
     if project_root is None:
         return False
@@ -1139,109 +1140,126 @@ class AdminMonitor:
                     return {"triggered": False, "reason": "already_running_agent"}
             self._code_review_in_flight = True
 
-        # 审查范围（add-code-review-scope-config task 2.1）：读配置缺省回退已由
-        # get_code_review_config 统一兜底（此处恒拿到 "window"/"full" 二值）。
-        # scope 只改变「收集什么」（full 档 window_start=None），不改变「何时
-        # 触发、算谁跑的」——review_kind 恒为 scheduled（见下方投递处）。
-        review_scope = cr_cfg.get("scope") if cr_cfg.get("scope") == "full" else "window"
+        # code-review item 6cc5281326bc：置位单飞标志之后的所有语句统一纳入本
+        # try——compute_window/collect_manifest（git 子进程）与
+        # save_code_review_state（文件 IO）均可抛异常，此前不在任何 try 内，
+        # 异常沿 run_once 逐段 try 兜底被吞但单飞标志无人复位，此后每轮检查点
+        # 恒命中 already_running 提前返回，周期审查直至 daemon 重启前静默停摆
+        # （与 68a28fa47419 修复的「外部 run 置位标志致车道静默停摆」同型）。
+        # except 中复位单飞标志，对齐空 manifest 分支与 submit 失败分支的既有
+        # 复位口径。
+        try:
+            # 审查范围（add-code-review-scope-config task 2.1）：读配置缺省回退已由
+            # get_code_review_config 统一兜底（此处恒拿到 "window"/"full" 二值）。
+            # scope 只改变「收集什么」（full 档 window_start=None），不改变「何时
+            # 触发、算谁跑的」——review_kind 恒为 scheduled（见下方投递处）。
+            review_scope = cr_cfg.get("scope") if cr_cfg.get("scope") == "full" else "window"
 
-        # 窗口 + manifest（与自省同源窗口口径，task 3.3 MUST 在 self_review 之前
-        # 调用，保证 window_start 读到上一次自省时刻而非本轮自省刚写入的 now）。
-        # window 档：窗口收集（window_start 同源自省）；full 档：全仓收集
-        # （window_start=None，对齐 manual_full 形态；不消费自省窗口，但自省
-        # 本身不受影响——两者只是共享触发时点）。
-        window_start, window_kind = compute_window(self.project_root)
-        if review_scope == "full":
-            manifest = collect_manifest(self.project_root, scope="full", window_start=None)
-        else:
-            manifest = collect_manifest(self.project_root, scope="window", window_start=window_start)
-        if not manifest:
-            # manifest 为空：记录并跳过（不派发空 run——design Risk「空场景
-            # 白洗」），同日防重仍然写入（当日不重试，与自省零活动跳过同口径）。
-            # 复位单飞标志（上方锁内已置位）——否则本车道永久被「已运行」挡住。
-            #
-            # add-code-review-scope-config task 2.2：本分支对 full 档实际不可达
-            # ——full 档走 git ls-files 全仓受控文件，受控仓必有文件；真为空只
-            # 可能是仓已非受控态（异常态），按既有 no_files 路径记录并跳过即可，
-            # 不新增分支。日志文案按档位区分：full 档 window_start=None，既有
-            # 「窗口内无文件变更…window_start=…」措辞失真（误导排障判别），改带
-            # scope 标注；window 档日志保持逐字节不变。
-            with self._code_review_lock:
-                self._code_review_in_flight = False
-            save_code_review_state(self.project_root, local_today_str())
+            # 窗口 + manifest（与自省同源窗口口径，task 3.3 MUST 在 self_review 之前
+            # 调用，保证 window_start 读到上一次自省时刻而非本轮自省刚写入的 now）。
+            # window 档：窗口收集（window_start 同源自省）；full 档：全仓收集
+            # （window_start=None，对齐 manual_full 形态；不消费自省窗口，但自省
+            # 本身不受影响——两者只是共享触发时点）。
+            window_start, window_kind = compute_window(self.project_root)
             if review_scope == "full":
-                self.logger.info(
-                    "admin_monitor",
-                    "code-review: 全仓 manifest 为空（异常态，受控仓不应出现），"
-                    f"跳过本次周期审查（scope={review_scope}）",
-                )
+                manifest = collect_manifest(self.project_root, scope="full", window_start=None)
             else:
-                self.logger.info(
-                    "admin_monitor",
-                    "code-review: 窗口内无文件变更，跳过本次周期审查"
-                    f"（window_start={window_start.isoformat()}, kind={window_kind}）",
-                )
-            return {"triggered": True, "ok": True, "reason": "no_files", "date": local_today_str()}
-
-        # 上限截断
-        max_files = cr_cfg.get("max_files", 500)
-        if max_files > 0 and len(manifest) > max_files:
-            manifest = manifest[:max_files]
-
-        # 防重状态写入（投递前即写——投递成功/失败均不重试，与自省同口径）
-        save_code_review_state(self.project_root, local_today_str())
-
-        # 投递后台 worker（对齐 _evolution_worker 形态）
-        review_kind = "scheduled"
-
-        ratelimit_intent: dict | None = None
-
-        def _worker():
-            nonlocal ratelimit_intent
-            try:
-                result = self.agent_runner.run_code_review(
-                    manifest,
-                    review_kind=review_kind,
-                    window_start=window_start if review_scope == "window" else None,
-                    scope=review_scope,
-                )
-                self.logger.info(
-                    "admin_monitor",
-                    f"code-review 周期审查完成：run_id={result.run_id}, "
-                    f"inserted={result.inserted}, updated={result.updated}, "
-                    f"resolved={result.resolved}, shards={result.shards}"
-                    + (f", error={result.error}" if result.error else ""),
-                )
-                # 429 打死 run 的自动重派消费侧（add-code-review-concurrency-
-                # and-429-resilience D4，task 5.3）：终态结果携带
-                # ratelimit_redispatch 意图（含最早冷却到期时刻）→ 收场复位
-                # 单飞后经 threading.Timer 延迟重投递（冷却期内 MUST NOT 重派）。
-                ratelimit_intent = getattr(result, "ratelimit_redispatch", None)
-            except Exception as e:
-                self.logger.error("admin_monitor", f"code-review 周期审查异常: {e}")
-            finally:
+                manifest = collect_manifest(self.project_root, scope="window", window_start=window_start)
+            if not manifest:
+                # manifest 为空：记录并跳过（不派发空 run——design Risk「空场景
+                # 白洗」），同日防重仍然写入（当日不重试，与自省零活动跳过同口径）。
+                # 复位单飞标志（上方锁内已置位）——否则本车道永久被「已运行」挡住。
+                #
+                # add-code-review-scope-config task 2.2：本分支对 full 档实际不可达
+                # ——full 档走 git ls-files 全仓受控文件，受控仓必有文件；真为空只
+                # 可能是仓已非受控态（异常态），按既有 no_files 路径记录并跳过即可，
+                # 不新增分支。日志文案按档位区分：full 档 window_start=None，既有
+                # 「窗口内无文件变更…window_start=…」措辞失真（误导排障判别），改带
+                # scope 标注；window 档日志保持逐字节不变。
                 with self._code_review_lock:
                     self._code_review_in_flight = False
-            if ratelimit_intent:
-                self._schedule_ratelimit_redispatch(
-                    manifest=manifest,
-                    review_kind=review_kind,
-                    window_start=window_start if review_scope == "window" else None,
-                    scope=review_scope,
-                    intent=ratelimit_intent,
-                )
+                save_code_review_state(self.project_root, local_today_str())
+                if review_scope == "full":
+                    self.logger.info(
+                        "admin_monitor",
+                        "code-review: 全仓 manifest 为空（异常态，受控仓不应出现），"
+                        f"跳过本次周期审查（scope={review_scope}）",
+                    )
+                else:
+                    self.logger.info(
+                        "admin_monitor",
+                        "code-review: 窗口内无文件变更，跳过本次周期审查"
+                        f"（window_start={window_start.isoformat()}, kind={window_kind}）",
+                    )
+                return {"triggered": True, "ok": True, "reason": "no_files", "date": local_today_str()}
 
-        try:
-            if self._code_review_executor is not None:
-                self._code_review_executor.submit(_worker)
-            else:
-                # executor 不可用（测试/禁用态）：同步执行（行为不变，保逃生门）
-                _worker()
-            return {"triggered": True, "ok": True, "reason": "scheduled", "date": local_today_str()}
+            # 上限截断
+            max_files = cr_cfg.get("max_files", 500)
+            if max_files > 0 and len(manifest) > max_files:
+                manifest = manifest[:max_files]
+
+            # 防重状态写入（投递前即写——投递成功/失败均不重试，与自省同口径）
+            save_code_review_state(self.project_root, local_today_str())
+
+            # 投递后台 worker（对齐 _evolution_worker 形态）
+            review_kind = "scheduled"
+
+            ratelimit_intent: dict | None = None
+
+            def _worker():
+                nonlocal ratelimit_intent
+                try:
+                    result = self.agent_runner.run_code_review(
+                        manifest,
+                        review_kind=review_kind,
+                        window_start=window_start if review_scope == "window" else None,
+                        scope=review_scope,
+                    )
+                    self.logger.info(
+                        "admin_monitor",
+                        f"code-review 周期审查完成：run_id={result.run_id}, "
+                        f"inserted={result.inserted}, updated={result.updated}, "
+                        f"resolved={result.resolved}, shards={result.shards}"
+                        + (f", error={result.error}" if result.error else ""),
+                    )
+                    # 429 打死 run 的自动重派消费侧（add-code-review-concurrency-
+                    # and-429-resilience D4，task 5.3）：终态结果携带
+                    # ratelimit_redispatch 意图（含最早冷却到期时刻）→ 收场复位
+                    # 单飞后经 threading.Timer 延迟重投递（冷却期内 MUST NOT 重派）。
+                    ratelimit_intent = getattr(result, "ratelimit_redispatch", None)
+                except Exception as e:
+                    self.logger.error("admin_monitor", f"code-review 周期审查异常: {e}")
+                finally:
+                    with self._code_review_lock:
+                        self._code_review_in_flight = False
+                if ratelimit_intent:
+                    self._schedule_ratelimit_redispatch(
+                        manifest=manifest,
+                        review_kind=review_kind,
+                        window_start=window_start if review_scope == "window" else None,
+                        scope=review_scope,
+                        intent=ratelimit_intent,
+                    )
+
+            try:
+                if self._code_review_executor is not None:
+                    self._code_review_executor.submit(_worker)
+                else:
+                    # executor 不可用（测试/禁用态）：同步执行（行为不变，保逃生门）
+                    _worker()
+                return {"triggered": True, "ok": True, "reason": "scheduled", "date": local_today_str()}
+            except Exception as e:
+                with self._code_review_lock:
+                    self._code_review_in_flight = False
+                self.logger.error("admin_monitor", f"code-review 周期审查派发失败: {e}")
+                return {"triggered": True, "ok": False, "reason": f"exception: {e}", "date": local_today_str()}
         except Exception as e:
             with self._code_review_lock:
                 self._code_review_in_flight = False
-            self.logger.error("admin_monitor", f"code-review 周期审查派发失败: {e}")
+            self.logger.error(
+                "admin_monitor",
+                f"code-review 周期审查异常（单飞标志已复位）: {e}",
+            )
             return {"triggered": True, "ok": False, "reason": f"exception: {e}", "date": local_today_str()}
 
     # ── 429 限流重派消费侧（add-code-review-concurrency-and-429-resilience D4，task 5.3）──
@@ -1641,48 +1659,63 @@ class AdminMonitor:
                     return {"triggered": False, "reason": "already_running_agent"}
             self._regression_in_flight = True
 
-        # 无有效 regression 段 → 跳过并复位单飞标志
-        contract = load_verify_contract(self.project_root, logger=self.logger)
-        if contract is None or contract.regression is None:
-            with self._regression_lock:
-                self._regression_in_flight = False
-            self.logger.info(
-                "admin_monitor",
-                "regression: 项目未配置全量回归（verify.yaml regression 段缺失），"
-                "跳过周期回归",
-            )
-            return {"triggered": False, "reason": "not_configured"}
-
-        spec = contract.regression
-        # 防重状态写入（投递前即写——投递成功/失败均不重试，与自省同口径）
-        save_state(self.project_root, local_today_str())
-
-        def _worker():
-            try:
-                result = self.agent_runner.run_regression(spec, reason="scheduled")
-                self.logger.info(
-                    "admin_monitor",
-                    f"regression 周期回归完成：run_id={result.run_id}, "
-                    f"status={result.status}"
-                    + (f", error={result.error}" if result.error else ""),
-                )
-            except Exception as e:
-                self.logger.error("admin_monitor", f"regression 周期回归异常: {e}")
-            finally:
+        # regression item 6cc5281326bc：置位单飞标志之后的所有语句统一纳入本
+        # try——load_verify_contract/save_state（文件 IO）均可抛异常，此前不在
+        # 任何 try 内，异常沿 run_once 逐段 try 兜底被吞但单飞标志无人复位，
+        # 此后每轮检查点恒命中 already_running 提前返回，周期回归直至 daemon
+        # 重启前静默停摆（同 code-review 车道 6cc5281326bc）。except 中复位
+        # 单飞标志，对齐未配置分支与 submit 失败分支的既有复位口径。
+        try:
+            # 无有效 regression 段 → 跳过并复位单飞标志
+            contract = load_verify_contract(self.project_root, logger=self.logger)
+            if contract is None or contract.regression is None:
                 with self._regression_lock:
                     self._regression_in_flight = False
+                self.logger.info(
+                    "admin_monitor",
+                    "regression: 项目未配置全量回归（verify.yaml regression 段缺失），"
+                    "跳过周期回归",
+                )
+                return {"triggered": False, "reason": "not_configured"}
 
-        try:
-            if self._code_review_executor is not None:
-                self._code_review_executor.submit(_worker)
-            else:
-                # executor 不可用（测试/禁用态）：同步执行（行为不变，保逃生门）
-                _worker()
-            return {"triggered": True, "ok": True, "reason": "scheduled", "date": local_today_str()}
+            spec = contract.regression
+            # 防重状态写入（投递前即写——投递成功/失败均不重试，与自省同口径）
+            save_state(self.project_root, local_today_str())
+
+            def _worker():
+                try:
+                    result = self.agent_runner.run_regression(spec, reason="scheduled")
+                    self.logger.info(
+                        "admin_monitor",
+                        f"regression 周期回归完成：run_id={result.run_id}, "
+                        f"status={result.status}"
+                        + (f", error={result.error}" if result.error else ""),
+                    )
+                except Exception as e:
+                    self.logger.error("admin_monitor", f"regression 周期回归异常: {e}")
+                finally:
+                    with self._regression_lock:
+                        self._regression_in_flight = False
+
+            try:
+                if self._code_review_executor is not None:
+                    self._code_review_executor.submit(_worker)
+                else:
+                    # executor 不可用（测试/禁用态）：同步执行（行为不变，保逃生门）
+                    _worker()
+                return {"triggered": True, "ok": True, "reason": "scheduled", "date": local_today_str()}
+            except Exception as e:
+                with self._regression_lock:
+                    self._regression_in_flight = False
+                self.logger.error("admin_monitor", f"regression 周期回归派发失败: {e}")
+                return {"triggered": True, "ok": False, "reason": f"exception: {e}", "date": local_today_str()}
         except Exception as e:
             with self._regression_lock:
                 self._regression_in_flight = False
-            self.logger.error("admin_monitor", f"regression 周期回归派发失败: {e}")
+            self.logger.error(
+                "admin_monitor",
+                f"regression 周期回归异常（单飞标志已复位）: {e}",
+            )
             return {"triggered": True, "ok": False, "reason": f"exception: {e}", "date": local_today_str()}
 
     def _run_alert_lifecycle(self, specs: dict) -> int:
@@ -4497,28 +4530,16 @@ class AdminMonitor:
     def _has_recent_progress(self, spec: str, runs_dir: Path, now: float, window: float) -> bool:
         """该 spec 是否存在窗口内有写活动的 run 文件（有进度）——非 admin 前缀。
 
-        fix-recovery-path-blockers D1：与模块级 `_has_recent_spec_run` 同源，
+        fix-recovery-path-blockers D1：与模块级 `_has_recent_spec_run` 同语义，
         排除 `admin-` 前缀（`_is_admin_run_id` 单点判定）——Administrator 的
-        处置 run 是处置者的活动，不是被处置 SPEC 的驱动证据。两处实现共用
-        `_is_admin_run_id`，勿二次漂移。
+        处置 run 是处置者的活动，不是被处置 SPEC 的驱动证据。
+
+        code-review item 43b4ca8a059e：扫描本体已并入模块级
+        `_has_recent_spec_run` 单一实现，本方法仅做参数适配
+        （runs_dir=<project_root>/.fenix/runs → project_root），勿再复制
+        第二份扫描体。
         """
-        if not runs_dir.is_dir():
-            return False
-        try:
-            files = list(runs_dir.glob("*.jsonl"))
-        except OSError:
-            return False
-        for p in files:
-            if _is_admin_run_id(p.stem):
-                continue
-            if self._spec_from_run_id(p.stem) != spec:
-                continue
-            try:
-                if now - p.stat().st_mtime < window:
-                    return True
-            except OSError:
-                continue
-        return False
+        return _has_recent_spec_run(runs_dir.parent.parent, spec, now, window)
 
     # ── 状态变更历史（抖动检测） ────────────────────────────────
 

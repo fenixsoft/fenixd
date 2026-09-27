@@ -391,11 +391,21 @@ class G2LegacyRegistryMixin:
                 )
         if branch and branch != "HEAD":
             try:
-                subprocess.run(
+                res = subprocess.run(
                     ["git", "-C", str(self.project_root), "branch", "-D", branch],
                     capture_output=True,
+                    text=True,
                     timeout=10,
                 )
+                if res.returncode != 0:
+                    # 非零（如分支仍被其他 worktree checkout、引用锁定）时
+                    # 分支会静默残留，记 WARNING 留痕（code-review item 20c7ad71a648）。
+                    self.logger.warning(
+                        "worktree_manager",
+                        f"Legacy {failure_label} branch-delete failed for "
+                        f"'{spec_name}': "
+                        f"{(res.stderr or '').strip()[:200]}",
+                    )
             except Exception as e:
                 self.logger.warning(
                     "worktree_manager",
@@ -403,11 +413,18 @@ class G2LegacyRegistryMixin:
                     f"'{spec_name}': {e}",
                 )
         try:
-            subprocess.run(
+            res = subprocess.run(
                 ["git", "-C", str(self.project_root), "worktree", "prune"],
                 capture_output=True,
+                text=True,
                 timeout=10,
             )
+            if res.returncode != 0:
+                self.logger.warning(
+                    "worktree_manager",
+                    f"Legacy {failure_label} prune failed for '{spec_name}': "
+                    f"{(res.stderr or '').strip()[:200]}",
+                )
         except Exception as e:
             self.logger.warning(
                 "worktree_manager",

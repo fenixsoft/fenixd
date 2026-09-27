@@ -322,23 +322,41 @@ class G4MergebackMixin:
         # 根本没碰」的产物静默抹掉，属净回归。
         if artifact_overlap:
             aligned_ok, aligned_fail = [], []
-            for p in artifact_overlap:
-                try:
-                    result = subprocess.run(
-                        [
-                            "git", "-C", str(self.project_root),
-                            "checkout", "HEAD", "--", p,
-                        ],
-                        capture_output=True,
-                        text=True,
-                        timeout=30,
-                    )
-                    if result.returncode == 0:
-                        aligned_ok.append(p)
-                    else:
+            # 先单次批量对齐（checkout 支持多条 pathspec 原子完成）：路径多时
+            # 逐路径起子进程会线性放大 _main_tree_lock 持锁时长；批量失败再
+            # 逐路径回落，保留 per-path aligned_ok/aligned_fail 区分能力。
+            try:
+                batch = subprocess.run(
+                    [
+                        "git", "-C", str(self.project_root),
+                        "checkout", "HEAD", "--", *artifact_overlap,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+            except (subprocess.TimeoutExpired, OSError):
+                batch = None
+            if batch is not None and batch.returncode == 0:
+                aligned_ok = list(artifact_overlap)
+            else:
+                for p in artifact_overlap:
+                    try:
+                        result = subprocess.run(
+                            [
+                                "git", "-C", str(self.project_root),
+                                "checkout", "HEAD", "--", p,
+                            ],
+                            capture_output=True,
+                            text=True,
+                            timeout=30,
+                        )
+                        if result.returncode == 0:
+                            aligned_ok.append(p)
+                        else:
+                            aligned_fail.append(p)
+                    except (subprocess.TimeoutExpired, OSError):
                         aligned_fail.append(p)
-                except (subprocess.TimeoutExpired, OSError):
-                    aligned_fail.append(p)
 
             if aligned_ok:
                 self.logger.info(

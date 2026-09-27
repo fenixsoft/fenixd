@@ -1009,6 +1009,11 @@ def lint_draft(draft_dir_: Path, project_root) -> List[str]:
             except Exception as e:
                 _logger.warning("evolution: 草稿 lint 异常（非阻塞放行）: %s", e)
         return violations
+    except ImportError as e:
+        _logger.warning(
+            "evolution: 草稿 lint 模块导入失败（fail-open 返回空清单）: %s", e
+        )
+        return []
     finally:
         if injected:
             sys.path.remove(fenix_dir)

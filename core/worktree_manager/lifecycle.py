@@ -595,13 +595,24 @@ class G1LifecycleMixin:
                     )
 
             # On failure, delete the branch we captured earlier
+            # （code-review item 70ee0e162d66）branch -D 返回码须检查：失败时
+            # stderr 已被 capture_output 吞掉，若仍记成功日志会掩盖残留死分支、
+            # 误导排障，与 worktree remove 失败有 WARNING 的口径对齐。
             if not success and branch and branch != "HEAD":
-                subprocess.run(
+                del_res = subprocess.run(
                     ["git", "-C", str(self.project_root), "branch", "-D", branch],
                     capture_output=True,
+                    text=True,
                     timeout=10,
                 )
-                self.logger.info("worktree_manager", f"Deleted branch: {branch}")
+                if del_res.returncode == 0:
+                    self.logger.info("worktree_manager", f"Deleted branch: {branch}")
+                else:
+                    self.logger.warning(
+                        "worktree_manager",
+                        f"Branch delete failed for {branch}: "
+                        f"{(del_res.stderr or '').strip()}",
+                    )
 
             self._active_worktrees.discard(wt_str)
             self._wt_branches.pop(wt_str, None)
@@ -805,6 +816,10 @@ class G1LifecycleMixin:
                     )
                     continue
                 self.logger.info("worktree_manager", f"Cleaning up orphan: {wt_dir}")
+                # 收尾清扫（code-review item 11c4366528dc，与 cleanup() 口径对齐）：
+                # 删除目录前先杀掉其残留测试子进程（dev-server 孤儿），否则目录
+                # 删除后它们成为 cwd 失效的永生孤儿（曾致存活检测永久受骗）
+                self._kill_worktree_strays(wt_dir.name)
                 # 硬删前留档（D2）：git worktree remove --force 成功路径同样先
                 # 留快照引用，消灭「先删后查」取证盲区；失败仅 WARNING 不阻塞。
                 self._snapshot_dirty_worktree(wt_dir, self._wt_branches.get(str(wt_dir)))

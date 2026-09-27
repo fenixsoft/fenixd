@@ -636,9 +636,16 @@ class ConfigLoader:
                     f"seconds string or list: {schedule_val!r}"
                 )
 
-        # Validate project type — 仅当 project 存在且（严格路径 或 显式提供 type）时校验
-        project = config.get("project")
-        if isinstance(project, dict) and (require_project or "type" in project):
+        # Validate project type — 仅当（严格路径 或 显式提供 type）时校验。
+        # 段入口经 _segment_or_empty 归一（code-review item b72e37e34e3b）：
+        # project 段与其他段不同——缺失（None/{}）是合法态（宽松路径由
+        # resolve_config 以 {} 重建身份），缺失不告警；仅真值非 dict 的脏段
+        # （如 project: [1]）ERROR 告警 + 按空段降级，与 schedule/agents/llm/
+        # gates/admin 段口径一致。降级后的空段在严格路径必然缺 type → 照常
+        # raise，docstring「require_project=True 时 project.type 必须有效」
+        # 不再被脏段静默绕过。
+        project = cls._segment_or_empty(config, "project")
+        if require_project or "type" in project:
             ptype = project.get("type", "")
             if ptype not in cls.VALID_PROJECT_TYPES:
                 raise ValueError(f"project.type must be one of {cls.VALID_PROJECT_TYPES}: {ptype}")

@@ -560,6 +560,7 @@ def stop_daemon(root: str | None = None) -> dict:
         # ④ 超时兜底：kill session 并对**快照中仍存活的残留**补 SIGKILL——
         # 不重新扫描项目（并发场景下新拉起的 supervisor 绝不被误杀）
         remaining = _alive_pids(target_pids)
+        kill_errors = []
         if remaining or (not target_pids and is_running(proot)):
             try:
                 subprocess.run(
@@ -573,14 +574,23 @@ def stop_daemon(root: str | None = None) -> dict:
             for pid in remaining:
                 try:
                     os.kill(int(pid), signal.SIGKILL)
-                except (ProcessLookupError, PermissionError):
+                except ProcessLookupError:
                     pass
+                except PermissionError as e:
+                    # 无权限发 SIGKILL＝目标仍存活（145eb8771dfc）：计入返回
+                    # error，不谎报 ok=True。
+                    kill_errors.append(f"SIGKILL pid {pid} 权限不足: {e}")
         # ⑤ finally 清除 stop（无论成败）
         try:
             stop_flag.unlink()
         except OSError:
             pass
-        return {"ok": True, "error": None, "session": session, "was_running": True}
+        return {
+            "ok": not kill_errors,
+            "error": "; ".join(kill_errors) if kill_errors else None,
+            "session": session,
+            "was_running": True,
+        }
     except Exception as e:
         # finally 语义：异常路径也清除 stop，避免项目永久拒绝启动
         try:
@@ -599,14 +609,20 @@ def _alive_pids(pids) -> list:
     """过滤仍存活的 pid（kill(pid, 0) 探测，0 号信号不改变目标）。
 
     fix-supervisor-hosting-chain 验证修复 BUG-01：stop_daemon 轮询/超时兜底
-    均只面向「入口快照」的 pid——探测失败（进程已退出/权限不足）安全跳过，
-    不抛异常。返回值仅含仍存活的 pid 串列表。
+    均只面向「入口快照」的 pid——探测到进程已退出（ProcessLookupError）安全
+    跳过，不抛异常。EPERM（PermissionError）语义是进程仍存在只是无权限发
+    信号，按存活返回（145eb8771dfc），由兜底 SIGKILL 显式失败并计入 error。
+    返回值仅含仍存活的 pid 串列表。
     """
     alive = []
     for pid in pids:
         try:
             os.kill(int(pid), 0)
             alive.append(pid)
-        except (ProcessLookupError, PermissionError):
+        except ProcessLookupError:
             pass
+        except PermissionError:
+            # EPERM＝进程存在但本用户无权限发信号，按存活处理（145eb8771dfc）：
+            # 吞掉会让等待窗提前判定全退、兜底跳过该 pid，stop_daemon 误报成功。
+            alive.append(pid)
     return alive

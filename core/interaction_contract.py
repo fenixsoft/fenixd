@@ -331,9 +331,15 @@ def scenario_covers(scenario: Any, candidate: InteractiveCandidate) -> bool:
     covers = _covers_list(scenario)
     if candidate.key in covers or normalize_token(candidate.raw) in covers:
         return True
-    # 通道 2：候选标识（原文/归一化）出现在场景文本
-    if candidate.raw.lower() in blob or candidate.key in blob:
-        return True
+    # 通道 2：候选标识（原文/归一化）作为独立 token 出现在场景文本。
+    # 边界排除字母/数字而非裸子串：card 不得命中 discard、link 不得命中
+    # hyperlink 这类嵌入式假覆盖；连字符/下划线是词内连接符（dark-card--link、
+    # btn_submit 对 card/btn 的引用仍算命中，不误杀既有合法覆盖）。
+    for term in dict.fromkeys((candidate.raw.lower(), candidate.key)):
+        if term and re.search(
+            r"(?<![a-z0-9])" + re.escape(term) + r"(?![a-z0-9])", blob
+        ):
+            return True
     # 通道 3：主语义关键词别名（中文表述同一元素）
     primary = _primary_keyword(candidate.key)
     if primary:

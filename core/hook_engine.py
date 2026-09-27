@@ -100,7 +100,7 @@ DASHBOARD_PROBE_INTERVAL = 0.5
 # 需要更大范围时在 hook 配置显式提供 paths 字段（如 paths: ["."]）。
 DEFAULT_COMMIT_PATHS = ("spec", ".fenix/STATE.md")
 
-# 审计 detail 截断（D6：≤2KB）
+# 审计 detail 截断（D6：≤2048 字符，按字符计而非 UTF-8 字节）
 DETAIL_LIMIT = 2048
 
 # 审计状态（D6）
@@ -122,7 +122,7 @@ def _utcnow_iso() -> str:
 
 
 def _truncate(text: str, limit: int = DETAIL_LIMIT) -> str:
-    """截断到 limit 字符（≤2KB 审计约束），保留头部。"""
+    """截断到 limit 字符（D6 审计上限按字符计，非 UTF-8 字节），保留头部。"""
     if text is None:
         return ""
     text = str(text)

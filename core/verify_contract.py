@@ -155,6 +155,22 @@ def _positive_int_or_default(value, default: int) -> int:
     return n
 
 
+def _prepare_run_valid(run) -> bool:
+    """prepare.run 合法形态守卫：非空 str（shell）或全字符串非空 list（argv）。
+
+    list 形态含非字符串元素（如 YAML ``run: [npm, run, 5]`` 的数字 5）时，
+    run_prepare_steps 里 subprocess.Popen 直接抛 TypeError 从
+    validate_contract / serving 调用链冒出，违背「构建失败返回人类可读错误
+    串、按验证环境错误处理」的模块约定（code-review item 8a6f8440804e）
+    ——判非法，走调用方「记 warning 忽略该步」惯例。
+    """
+    if isinstance(run, str):
+        return bool(run)
+    if isinstance(run, list):
+        return bool(run) and all(isinstance(x, str) for x in run)
+    return False
+
+
 @dataclass
 class PrepareStep:
     """一条构建步骤：``run`` 在 ``cwd``（相对项目根）下执行。"""
@@ -258,6 +274,16 @@ def _load_verify_contract_with_raw(
             logger.warning("verify_contract", f"验证契约解析失败（按无契约回退）: {e}")
         return None, None
     if not isinstance(data, dict):
+        # 顶层非映射（列表/标量/空文档）＝契约整体静默失效（prepare/serve/
+        # ready 全回退旧行为），与模块「解析失败记 warning」承诺及同文件其余
+        # 畸形片段「告警＋忽略该片段」哲学不一致（code-review item
+        # f9617dc6f63c）——与解析异常分支同口径记 warning（原文 repr 截断）。
+        if logger:
+            logger.warning(
+                "verify_contract",
+                f"验证契约解析失败（顶层须为字段映射，按无契约回退）: "
+                f"{repr(data)[:200]}",
+            )
         return None, None
 
     # prepare 步骤逐条解析（code-review item e892642d75db）：畸形条目（dict 缺
@@ -287,12 +313,9 @@ def _load_verify_contract_with_raw(
         # run 类型守卫（code-review item 716108a0bdb4）：run 为映射/数字等
         # 畸形值会在 run_prepare_steps 里被 str() 序列化成 Python 字面量形态
         # 经 shell=True 执行（垃圾命令甚至误执行片段）——先校验类型，非法
-        # 按下方「记 warning 忽略该步」惯例处理。
-        elif (
-            isinstance(step, dict)
-            and isinstance(step.get("run"), (str, list))
-            and step.get("run")
-        ):
+        # 按下方「记 warning 忽略该步」惯例处理。list 形态的逐元素校验见
+        # _prepare_run_valid（item 8a6f8440804e）。
+        elif isinstance(step, dict) and _prepare_run_valid(step.get("run")):
             prepare.append(PrepareStep(run=step["run"], cwd=str(step.get("cwd") or "")))
         elif logger:
             logger.warning(
@@ -1017,9 +1040,15 @@ class CommandVerifyServer:
         return None
 
     @property
-    def base_url(self) -> str:
+    def base_url(self) -> Optional[str]:
+        """被测实例地址；端口未发现（启动即退出/发现超时）时返回 None。
+
+        不得回落哨兵地址 ``http://127.0.0.1:0``——那是必探失败的非法 URL，
+        单独使用（诊断脚本/新调用方）时拿不到任何根因提示（code-review
+        item f2a86dbf1189）。既有调用方均先判 ``ok``／真值再取，不受影响。
+        """
         if self._port is None:
-            return f"http://127.0.0.1:{0}"
+            return None
         return f"http://127.0.0.1:{self._port}"
 
     @property

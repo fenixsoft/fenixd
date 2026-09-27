@@ -236,14 +236,14 @@ class TestWipOverlapGateArtifactScope:
             blocked, overlap = wm._wip_overlap_gate("fenix/impl")
             assert blocked is None
             assert overlap == [], f"纯产物重叠应被排除: {overlap}"
-            # checkout HEAD -- 对齐调用以产物路径为参数
+            # checkout HEAD -- 批量对齐：单次调用携带全部产物路径（回退逐路径仅批量失败时发生）
             checkout_calls = [
                 c.args[0]
                 for c in mock_run.call_args_list
                 if isinstance(c.args[0], list) and c.args[0][:3] == ["git", "-C", root.__str__()] and
                 c.args[0][3:5] == ["checkout", "HEAD"]
             ]
-            assert len(checkout_calls) == 2, f"两个产物应各对齐一次: {checkout_calls}"
+            assert len(checkout_calls) == 1, f"产物应单次批量对齐: {checkout_calls}"
             flat = [item for call in checkout_calls for item in call]
             assert "dist/index.html" in flat and "fenix-newtab-v1.0.0.zip" in flat
 

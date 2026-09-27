@@ -876,6 +876,7 @@ def read_progress(project_root) -> dict:
             # （mtime, index）元组比较，index 大者（主产物）胜出
             latest = max(
                 enumerate(sources),
+                # [fenix-ignore:90542a07fcf4] stat 已处于外层 try/except OSError 覆盖内，并发清理竞态的 FileNotFoundError 被兜底为 current=None，不会沿 read_progress 冒泡致端点 500
                 key=lambda t: (t[1].stat().st_mtime, t[0]),
             )[1]
             lines = [
@@ -1367,14 +1368,22 @@ def generate_fix_spec(
 
 
 def _mark_in_spec(project_root, item_ids: List[str], spec_name: str) -> None:
-    """把条目置 in_spec 并写入 spec_name（生成链路内部写路径，读-改-写锁内原子）。"""
+    """把条目置 in_spec 并写入 spec_name（生成链路内部写路径，读-改-写锁内原子）。
+
+    状态守卫与 ``mark_resolved`` / ``mark_ignored`` 对齐：仅 ``status ==
+    "open"`` 的条目可置——generate_fix_spec 选出候选到置位之间隔着 lint/
+    git 提交等秒级耗时，窗口内已被终态化（resolved/ignored）的条目跳过
+    不覆写，不冲掉核销/忽略记录。
+    """
     path = items_path(project_root)
 
     def _do() -> None:
         current = _read_items_unlocked(path)
         for iid in item_ids:
             rec = current.get(iid)
-            if rec is None:
+            # 同 mark_resolved / mark_ignored 守卫（c729af4d1750）：并发
+            # 窗口内被人工或 code-fix 车道终态化的条目跳过，不翻回 in_spec
+            if rec is None or rec.get("status") != "open":
                 continue
             rec["status"] = "in_spec"
             rec["spec_name"] = spec_name

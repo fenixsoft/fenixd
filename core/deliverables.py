@@ -310,13 +310,6 @@ def extract_paths_typed(spec_dir) -> dict:
         in_scenario = False  # 能力 spec 的 Scenario 小节
 
         for raw_line in text.splitlines():
-            if _H2_RE.match(raw_line):
-                in_tasks_header = False
-            if _SCENARIO_HEADING_RE.match(raw_line):
-                in_scenario = True
-            elif _H2_RE.match(raw_line) or raw_line.startswith("#"):
-                in_scenario = False
-
             # 围栏代码块：整块内所有行均视为显式路径声明，语境在块首按结构性
             # 小节语义重算（item d3391833951c：不沿用块前最近一条已分类行的
             # 关键词语境——「实现依据：`x`」引用行紧邻的围栏路径清单会被整体
@@ -324,6 +317,13 @@ def extract_paths_typed(spec_dir) -> dict:
             # 时又继承初始档位，tasks 头部说明段围栏块被当硬交付物（误拦方向）。
             # 空行使勾选/关键词规则天然不命中，_classify_line 只剩 Scenario /
             # tasks 头部 / 兜底三条结构规则，与 D1 规则表一致）。
+            # 围栏开/关判定先于标题态翻转（code-review item fedc3744144a）：
+            # 标题态翻转移入下方非围栏分支——围栏内容里以 # 开头的行（markdown
+            # 代码块内 `## Why`、yaml 注释样标题）不参与结构状态机，否则
+            # tasks.md 头部说明段围栏块内的 `##` 行会把 in_tasks_header 提前
+            # 打为 False，其后围栏块经 _classify_line 落入错误档位，且该状态
+            # 在块外持续生效（双向漂移）。围栏分隔行本身不命中任何标题正则，
+            # 先判围栏对开/关翻转行为零影响。
             if _FENCE_RE.match(raw_line):
                 if not in_fence:
                     fence_ctx = _classify_line(
@@ -334,6 +334,12 @@ def extract_paths_typed(spec_dir) -> dict:
             if in_fence:
                 ctx = fence_ctx
             else:
+                if _H2_RE.match(raw_line):
+                    in_tasks_header = False
+                if _SCENARIO_HEADING_RE.match(raw_line):
+                    in_scenario = True
+                elif _H2_RE.match(raw_line) or raw_line.startswith("#"):
+                    in_scenario = False
                 ctx = _classify_line(raw_line, doc_kind, in_tasks_header, in_scenario)
 
             if in_fence:
@@ -466,6 +472,22 @@ def _extract_declared_block(text: str) -> "tuple[List[str] | None, str | None]":
     return block, None
 
 
+def _is_filtered_declaration_path(path: str) -> bool:
+    """声明路径三类确定性无效形态判定（绝对路径/通配符/尾斜杠目录，单点谓词）。
+
+    ``_declared_entries_from_text`` 对三类形态逐条静默过滤（全部条目被滤空即
+    返回 ``None``、守卫回退正则语境猜测）；``lint_declared`` 必须以同一谓词在
+    晋升当下拒绝——否则 lint 绿灯与解析器 ``None`` 的落差令声明静默退化为
+    语境猜测（code-review item f109a12eefa3：如 ``kind: new, path: scripts/``
+    主树目录存在即过存在性检查放行，下游解析器把它滤空、声明机制整体失效）。
+    """
+    return bool(
+        _ABSOLUTE_RE.match(path)
+        or _WILDCARD_RE.search(path)
+        or _DIRECTORY_RE.search(path)
+    )
+
+
 def _declared_entries_from_text(text: str) -> "list | None":
     """从 tasks.md 文本解析声明段条目（path + kind，保序去重）。
 
@@ -498,7 +520,7 @@ def _declared_entries_from_text(text: str) -> "list | None":
         kind = str(e.get("kind") or "").strip().lower()
         if not path or kind not in _DECLARED_KINDS:
             continue
-        if _ABSOLUTE_RE.match(path) or _WILDCARD_RE.search(path) or _DIRECTORY_RE.search(path):
+        if _is_filtered_declaration_path(path):
             continue
         if any(o["path"] == path for o in out):
             continue
@@ -2044,7 +2066,10 @@ def lint_declared(spec_dir, project_root) -> List[str]:
        ``## Deliverables`` 标题的存量 spec 仍返回空清单（不在 lint 职责内）。
        事故原形：自进化草稿把 Deliverables 写成平铺 Markdown 列表 + 缩进
        path/kind 子项、kind 用 ``feature``/``test``/``chore`` 自造词，lint 全
-       部静默放行，只剩任务分组规则报错，失败信息指向不到真问题；
+       部静默放行，只剩任务分组规则报错，失败信息指向不到真问题；条目 path
+       命中绝对路径/通配符/尾斜杠目录三类形态同属「声明等于不存在」族——
+       下游解析器按 ``_is_filtered_declaration_path`` 静默过滤（f109a12eefa3），lint
+       以同一谓词在晋升当下拒绝；
     1. 路径含 ``<``/``>`` 模板占位符——守卫的 ``_is_deliverable_path`` 会静默
        跳过该条目，声明形同虚设（fix-admin-run-blocks-mainloop 同族坑）；
     2. ``kind: modify`` 的路径在主树是目录——目录声明与守卫判定形态不匹配
@@ -2155,6 +2180,18 @@ def lint_declared(spec_dir, project_root) -> List[str]:
             violations.append(
                 f"[{path}] 含 <...> 模板占位符——守卫会静默跳过该条目，"
                 f"声明形同虚设，请改为具体字面路径"
+            )
+            continue
+        # 绝对路径/通配符/尾斜杠目录（code-review item f109a12eefa3）：下游
+        # _declared_entries_from_text 按 _is_filtered_declaration_path 同一谓词
+        # 逐条静默过滤（全部条目被滤空即返回 None，守卫回退正则语境猜测）——
+        # lint 放行即「声明等于不存在」，与上方占位符同型，晋升当下拒绝。
+        if _is_filtered_declaration_path(path):
+            violations.append(
+                f"[{path}] 是绝对路径/通配符/尾斜杠目录形态——下游解析器会"
+                f"静默过滤该条目（等同未声明，守卫回退正则语境猜测），"
+                f"请改为仓库内字面文件路径（尾斜杠目录请去掉尾斜杠并锚定到"
+                f"目录下确定性锚点文件，绝对路径请改为相对项目根的路径）"
             )
             continue
         # 目录声明按字面路径判定（.fenix 归一化已退役，恒等映射自然退化）
