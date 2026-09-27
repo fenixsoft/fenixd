@@ -96,7 +96,7 @@ class FileWatcher:
         self._last_summaries = {}  # project path -> {spec_name: summary dict}（增量 diff 基线）
         self._run_base = {}  # (project path, run_id) -> {"size": int, "status": str}
         self._log_sigs = {}  # project path -> {log_path: (mtime_ns, size)}
-        self._proj_scan_warn = {}  # project -> 上次扫描失败告警时刻（monotonic 秒，5 分钟节流）
+        self._proj_scan_warn = {}  # project path -> 上次扫描失败告警时刻（monotonic 秒，5 分钟节流）
 
     # ── 生命周期 ─────────────────────────────────────────────
 
@@ -155,8 +155,9 @@ class FileWatcher:
                 self._scan_project(proj["name"], Path(proj["path"]))
             except Exception as e:  # 单项目失败不拖垮整轮；低频节流告警（同 _loop 5 分钟纪律）
                 now = time.monotonic()
-                key = proj.get("path") or proj["name"]
-                if now - self._proj_scan_warn.get(key, 0.0) >= 300:
+                # 键统一为项目路径（同 _prune_stale_caches 口径）；缺 path 跳过记账
+                key = Path(proj["path"]).as_posix() if proj.get("path") else None
+                if key and now - self._proj_scan_warn.get(key, 0.0) >= 300:
                     self._proj_scan_warn[key] = now
                     logger.warning(
                         "dashboard watcher 扫描项目 %s 失败: %s: %s",
@@ -176,7 +177,13 @@ class FileWatcher:
         但 exists=False 的项目保留缓存，路径恢复后基线继续有效。
         """
         live = {Path(p["path"]).as_posix() for p in projects if p.get("path")}
-        for cache in (self._top_sigs, self._spec_dirs, self._last_summaries, self._log_sigs):
+        for cache in (
+            self._top_sigs,
+            self._spec_dirs,
+            self._last_summaries,
+            self._log_sigs,
+            self._proj_scan_warn,
+        ):
             for k in [k for k in cache if k not in live]:
                 del cache[k]
         for k in [k for k in self._run_base if k[0] not in live]:
