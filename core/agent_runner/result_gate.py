@@ -35,6 +35,7 @@ from core.run_task_track import (
     find_impl_run_file,
     parse_tasks_md,
     parse_unattainable,
+    tasks_md_path,
 )
 
 # 任务完成度类硬门失败前缀（2026-09-16 改进②/① 的机械识别标记）。
@@ -1129,8 +1130,8 @@ def _check_impl_result_artifact(
         )
 
     # status ∈ {success, partial} → 以 worktree 内 tasks.md 为对象的判据
-    # （tasks.md 路径单点在 parse_tasks_md 与各失败消息构造处，不再另设
-    # 未使用绑定——code-review item df136b3985e7）
+    # （tasks.md 相对路径单点在 run_task_track.tasks_md_path，判据读取与
+    # 各失败文案同源取用——code-review item df136b3985e7 / 52e0dac160b4）
     all_ids, checked_ids = parse_tasks_md(wt_path, spec_name)
 
     # 诚实退出申报（2026-09-16 改进②）：顶层 unattainable 数组 → 机械豁免清单。
@@ -1432,7 +1433,7 @@ def _check_success_completion(
         return (
             f"{TASK_GATE_ERROR_PREFIX} exit 0 但 tasks.md 尚有未勾选数字任务"
             f"（{agent_type} 产物硬门）: "
-            f"{result_path.parent / 'spec' / 'changes' / spec_name / 'tasks.md'} "
+            f"{tasks_md_path(result_path.parent, spec_name)} "
             f"缺口: {runner._format_gap_list(unchecked)}"
         )
     raw_ct = data.get("completed_tasks")
