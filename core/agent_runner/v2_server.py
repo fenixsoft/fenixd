@@ -35,7 +35,9 @@ class V2ServerManager:
         # fast_track）与多处终态收割点，多步序列无锁时 stop 可在 launch 登记前
         # 弹出条目，泄漏已启动的 dev-server（进程不在册、端口被 used_ports 永久
         # 占用）。慢操作（子进程启动 / terminate·wait）保持在临界区外，只保护
-        # 共享结构的读改写。
+        # 共享结构的读改写。端口记账归属：_v2_used_ports 的 add/discard 全部
+        # 发生在本组件临界区内——v2_dev_server.start/stop 拿到的是快照副本或
+        # None，其内部记账不触碰共享集合，由本组件在锁内同步记账。
         self._v2_lock = threading.Lock()
 
     def _v2_ensure_state(self) -> None:
@@ -74,12 +76,16 @@ class V2ServerManager:
                 # 条目陈旧（进程已死）：释放其端口记账，避免 used_ports 假性占用
                 self._v2_used_ports.discard(entry[0])
             self._v2_run_seq += 1
+            # 端口记账快照：start 内部的 used_ports.add 只落快照副本，共享集合
+            # 的写入收敛到下方临界区（与 _v2_lock 注释声称的覆盖口径一致）。
+            used_snapshot = set(self._v2_used_ports)
         try:
             port, proc = v2_start_dev_server(
-                wt_path, self._v2_run_seq, self._v2_used_ports, self._pm.logger
+                wt_path, self._v2_run_seq, used_snapshot, self._pm.logger
             )
             with self._v2_lock:
                 self._v2_servers[str(wt_path)] = (port, proc)
+                self._v2_used_ports.add(port)
         except V2DevServerError as e:
             # 启动失败：移除（可能残留的）陈旧条目，保证 _v2_inject_env 拿不到死
             # 端口条目、返回空 dict，测试按承诺回退 PLAYWRIGHT/缺省 8787，
@@ -119,7 +125,11 @@ class V2ServerManager:
             return
         port, proc = entry
         try:
-            v2_stop_dev_server(proc, port, self._v2_used_ports, self._pm.logger)
+            # used_ports 传 None：stop 内部不触碰共享记账，端口释放收敛到下方
+            # 临界区（与 _v2_lock 注释声称的覆盖口径一致）。
+            v2_stop_dev_server(proc, port, None, self._pm.logger)
+            with self._v2_lock:
+                self._v2_used_ports.discard(port)
         except Exception as e:  # 回收失败不阻断主流程
             self._pm.logger.warning("agent_runner", f"V2 dev-server stop failed for {wt_path}: {e}")
 
