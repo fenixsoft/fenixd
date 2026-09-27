@@ -268,6 +268,11 @@ class FFastTrackMixin:
                 spec_name,
                 result,
                 "本轮实现中断：fast-track 结果文件未产出（run 异常结束），将自动重试",
+                # 豁免判据传真实归因而非上方固定人文案（code-review item
+                # 2d2da33c5b15，对齐 full 车道 queue.py 死亡 run 豁免形态：
+                # run_reason 用 result.error、error 字段用人话文案）——固定文案
+                # 永不命中监督击杀关键词，会把监督超时/停滞击杀的 run 误豁免。
+                run_reason=getattr(result, "error", None),
             )
             return
         # ── 诚实退出收敛（fast-track 车道，2026-09-16 改进② 补齐收敛路径）──
@@ -1122,8 +1127,14 @@ class FFastTrackMixin:
         spec_name: str,
         result,
         final_error: str,
+        run_reason: str | None = None,
     ) -> None:
-        """fast-track run 失败处理：与 implementer 同语义（重派/重试计数/blocked）。"""
+        """fast-track run 失败处理：与 implementer 同语义（重派/重试计数/blocked）。
+
+        run_reason：预算豁免判据（run 真实终态归因，供 _is_exemptable_reason
+        关键词检查）；None 时回退 final_error（既有行为）。展示文案与豁免
+        判据分离（code-review item 2d2da33c5b15）。
+        """
         # 死亡 run 豁免（无收工结果 = run 异常死亡）
         impl_status = None
         try:
@@ -1139,6 +1150,11 @@ class FFastTrackMixin:
                 f"（按无结果处置，触发预算豁免）: {type(e).__name__}: {e}",
             )
         if impl_status is None:
+            # 展示文案与豁免判据分离（code-review item 2d2da33c5b15）：调用方
+            # 显式传 run_reason（真实终态归因）时按其判定豁免，缺省回退
+            # final_error（既有行为）——固定人文案永不命中 _is_exemptable_reason
+            # 的监督击杀关键词，会让监督击杀的 run 被误豁免（预算回退）。
+            exempt_reason = run_reason if run_reason is not None else final_error
             self._pm._exempt_dead_run_budget(
                 spec_name,
                 f"fast-track no run-result (error={str(final_error)[:80]})",
@@ -1147,7 +1163,7 @@ class FFastTrackMixin:
                 # （extension budget exhausted / stagnant）不豁免（确实消耗了整份
                 # 预算）；缺此实参此类 run 被错误豁免（预算回退），同一次监督击杀
                 # 两条车道预算记账口径不一致，被击杀 run 可无限重派烧预算。
-                run_reason=str(final_error) if final_error else None,
+                run_reason=str(exempt_reason) if exempt_reason else None,
             )
         # provider 熔断拦截
         if final_error and "provider circuit open" in final_error:
