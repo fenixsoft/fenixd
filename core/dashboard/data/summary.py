@@ -6,6 +6,7 @@ daemon/托管态检测、项目与 SPEC 摘要、摘要索引、概览。
 
 import copy
 import json
+import logging
 import math
 import os
 import threading
@@ -23,6 +24,9 @@ from core.state_machine import (
 )
 # 取消保持标记归一读值单点（add-cancelled-spec-resume-action D1；叶子模块，无环）
 from .state import normalize_bool_flag
+
+# 服务端日志留痕出口（overview 降级摘要等；客户端只收固定文案，不外泄裸异常）
+logger = logging.getLogger("fenixd.dashboard.summary")
 
 # ── daemon 健康检测（D4：TTL memo 避免高频轮询重复 spawn tmux） ──────
 
@@ -87,13 +91,20 @@ def hosting_state(project_root) -> str:
     return state
 
 
-def project_summary(project_root, name: str, path: str) -> dict:
-    """单个项目的聚合摘要（/api/projects、/api/overview 共用）。"""
+def project_summary(project_root, name: str, path: str, specs=None) -> dict:
+    """单个项目的聚合摘要（/api/projects、/api/overview 共用）。
+
+    specs：可选的 parse_state 快照（{spec_name: entry}）。调用方已持有同
+    一项目的解析结果时透传，避免 STATE.md 在同一次请求内被重复解析
+    （overview 单次解析供摘要与统计两处消费）；省略时内部自行解析，
+    行为与原先一致。
+    """
     proot = Path(path)
     # D8：parse_state 经门面解析（tests patch 门面同名，与 overview 内 parse_state 一致）
     import core.dashboard.data as _facade
 
-    specs = _facade.parse_state(proot)
+    if specs is None:
+        specs = _facade.parse_state(proot)
     status_counts = {}
     for e in specs.values():
         st = e.get("status", "?") or "?"
@@ -1017,10 +1028,13 @@ def overview(registry_projects: list) -> dict:
             )
             continue
         try:
-            # D8：project_summary 经门面解析（tests monkeypatch 门面同名）
+            # D8：parse_state / project_summary 经门面解析（tests monkeypatch 门面同名）
             import core.dashboard.data as _facade
 
-            s = _facade.project_summary(p["path"], p["name"], p["path"])
+            # 单次解析 STATE.md：同份快照供 project_summary（免其内部重复 IO）
+            # 与下方 spec_updated/token 统计消费
+            entries = _facade.parse_state(p["path"])
+            s = _facade.project_summary(p["path"], p["name"], p["path"], entries)
             s["discovered"] = p.get("discovered", False)
             s["exists"] = True
             projects.append(s)
@@ -1031,8 +1045,6 @@ def overview(registry_projects: list) -> dict:
             totals["active_runs"] += s["active_runs"]
             for at, n in (s.get("active_runs_by_type") or {}).items():
                 totals["active_runs_by_type"][at] = totals["active_runs_by_type"].get(at, 0) + n
-            # D8：parse_state 经门面解析（tests patch 门面同名）
-            entries = _facade.parse_state(p["path"])
             t_today, t_week = _updated_spec_counts(entries, today_start, week_start)
             totals["spec_updated_today"] += t_today
             totals["spec_updated_week"] += t_week
@@ -1040,7 +1052,17 @@ def overview(registry_projects: list) -> dict:
             for st, n in s["status_counts"].items():
                 status_counts[st] = status_counts.get(st, 0) + n
         except Exception as exc:  # noqa: BLE001 —— 单项目失败降级，不得使整页失败
-            projects.append(_degraded_project(p, f"摘要计算失败: {exc}"))
+            # 不外泄裸异常文本（与 run_routes 取消端点异常脱敏口径一致）：str(exc)
+            # 可能携带服务器内部路径/errno 细节，随 /api/overview 下发浏览器；
+            # 细节经服务端日志留痕，客户端收固定文案。
+            logger.warning(
+                "项目摘要计算失败（project=%s path=%s）: %s: %s",
+                p.get("name"),
+                p["path"],
+                type(exc).__name__,
+                exc,
+            )
+            projects.append(_degraded_project(p, "摘要计算失败，详见服务端日志"))
     totals["status_counts"] = status_counts
     token_entries.sort(key=lambda e: (e["_ts"].timestamp() if e["_ts"] else 0.0), reverse=True)
     for e in token_entries:
