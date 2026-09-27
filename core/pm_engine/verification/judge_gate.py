@@ -397,8 +397,12 @@ def _judge_rerun_count(pipeline, spec_name: str, delta: int = 0) -> int:
         # 冻结早退：复用上方受保护转换（脏值按 0 兜底），不再递增
         return count
     if delta:
-        count = max(0, count + delta)
-        pipeline._context.state_machine.update_spec(spec_name, {"_judge_rerun_count": count})
+        # 锁内原子递增（与 _judge_round_bump 同款）：锁外快照读改写会与
+        # 其它对同字段的写者（verified 归零、admin 重置清零）互相覆盖丢
+        # 增量，使 hard cap 阈值失真。
+        return pipeline._context.state_machine.bump_counters(
+            spec_name, {"_judge_rerun_count": delta}
+        ).get("_judge_rerun_count", 0)
     return count
 
 
