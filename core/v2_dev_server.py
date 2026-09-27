@@ -324,33 +324,42 @@ def _pid_alive(pid: int) -> bool:
         return False
 
 
-def _kill_pids(pids: list) -> int:
+def _kill_pids(pids: list, logger=None) -> int:
     """对 PID 列表逐个 SIGTERM，短暂轮询 /proc 确认退出，仍存活补 SIGKILL。
 
-    返回确认已终止的进程数（单个 pid 操作失败——权限不足/竞态消失——按未
-    终止计，忽略继续）。等待有界：SIGTERM 后至多 ~2s、SIGKILL 后至多 ~1s，
-    不阻塞调用方（启动清扫/周期清扫均可容忍秒级）。
+    与 _kill 同走 os.kill 信号直发，不经外部 kill 二进制（其缺失会使清扫
+    静默退化为空操作）。返回确认已终止的进程数（单个 pid 操作失败——权限
+    不足/竞态消失——按未终止计，忽略继续）。等待有界：SIGTERM 后至多 ~2s、
+    SIGKILL 后至多 ~1s，不阻塞调用方（启动清扫/周期清扫均可容忍秒级）。
     """
     killed = 0
     for pid in pids:
         try:
-            res = subprocess.run(["kill", "-TERM", str(pid)], timeout=5)
-            if res.returncode != 0:
-                continue
-            for _ in range(20):  # ~2s 上限等待 SIGTERM 生效
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            continue  # 恰已退出（竞态），按未终止计
+        except OSError as e:
+            if logger:
+                logger.warning(
+                    "v2_dev_server",
+                    f"orphan sweep: SIGTERM pid={pid} failed ({e}) — skipped",
+                )
+            continue
+        for _ in range(20):  # ~2s 上限等待 SIGTERM 生效
+            if not _pid_alive(pid):
+                break
+            time.sleep(0.1)
+        else:  # 仍存活（如 node 卡死不响应 SIGTERM）→ SIGKILL 兜底
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass  # 竞态消失/权限不足，交由末尾 _pid_alive 判定
+            for _ in range(10):  # ~1s 上限等待 SIGKILL 生效
                 if not _pid_alive(pid):
                     break
                 time.sleep(0.1)
-            else:  # 仍存活（如 node 卡死不响应 SIGTERM）→ SIGKILL 兜底
-                subprocess.run(["kill", "-KILL", str(pid)], timeout=5)
-                for _ in range(10):  # ~1s 上限等待 SIGKILL 生效
-                    if not _pid_alive(pid):
-                        break
-                    time.sleep(0.1)
-            if not _pid_alive(pid):
-                killed += 1
-        except (subprocess.SubprocessError, OSError):
-            continue
+        if not _pid_alive(pid):
+            killed += 1
     return killed
 
 
@@ -463,7 +472,7 @@ def cleanup_orphans(logger=None) -> int:
     pids = sorted(set(_dev_server_orphan_pids(logger=logger)))
     if not pids:
         return 0
-    killed = _kill_pids(pids)
+    killed = _kill_pids(pids, logger=logger)
     if killed and logger:
         logger.warning("v2_dev_server", f"cleaned up {killed} orphan dev-server(s)")
     return killed
