@@ -138,6 +138,8 @@ def _implementer_zero_change(pipeline, spec_name: str, result) -> bool:
                     d = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                if not isinstance(d, dict):
+                    continue
                 if d.get("type") != "assistant":
                     continue
                 # message 为非 dict 载荷（JSON 字符串/数字/列表等）时不调 .get，

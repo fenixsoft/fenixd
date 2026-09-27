@@ -380,7 +380,9 @@ class TestVerdictAdoption(_PMEngineBase):
         ]}
         self._seed_report(r2)
         triage2 = self.engine._verification._update_warning_streaks("v2-config-page")
-        self.assertEqual(set(triage2), {"w1", "w2"})
+        # 候选为 [(scenario_id, 连续轮数), ...]（code-review 77a49621cfd3：
+        # 告警文案取实际 streak）
+        self.assertEqual({sid for sid, _ in triage2}, {"w1", "w2"})
         # 触发升级告警
         self.engine._verification._warning_stale_triage_alert("v2-config-page", triage2)
         alerts = [a for a in self._alerts()

@@ -196,8 +196,9 @@ def _adopt_report(
 ) -> dict:
     """合规采纳收口统一助手（重试轮/重合成轮两份近逐字拷贝单源化）。
 
-    清 violations/resynthesis_directive/requeue_manifest → 裁决缓存
-    （_persist_verdict_cache）→ 状态映射重写（enforce_status_mapping）→
+    清 violations/resynthesis_directive/requeue_manifest → 状态映射重写
+    （enforce_status_mapping）→ 裁决缓存（_persist_verdict_cache，须在映射
+    重写后用改写后的 report 落盘，code-review 26df5abd709d）→
     save_report（写回失败记 warning 非阻塞）→ 逐条映射改写日志 → 返回
     cause=pass 采纳结果。
 
@@ -219,8 +220,12 @@ def _adopt_report(
     pipeline._clear_verdict_violations(spec_name)
     pipeline._clear_resynthesis_directive(spec_name)
     pipeline._clear_requeue_manifest(spec_name)
-    pipeline._persist_verdict_cache(spec_name, report)
     mapping = enforce_status_mapping(report)
+    # 缓存在映射重写后落盘（code-review 26df5abd709d）：enforce_status_mapping
+    # 原地改写 report，「status=pass 但 classification 属 FORCE_FAILED_CLASSES」
+    # 的矛盾场景须以改写后的 failed 入缓存，不得先以 PASS 条目（四元组齐全）
+    # 落进缓存、靠读侧上轮 report 复核兜底。
+    pipeline._persist_verdict_cache(spec_name, report)
     if mapping["corrected"] or not save_on_corrected_only:
         try:
             save_report(pipeline._context.project_root, spec_name, report)
@@ -1178,7 +1183,7 @@ def _persist_verdict_cache(pipeline, spec_name: str, report: dict) -> None:
     for sc in report.get("scenarios") or []:
         if not isinstance(sc, dict):
             continue
-        # 与 848 行 / verdict_check 读侧同口径：scenario_id 缺省时回退 id，
+        # 与 _prune_rescan_scenarios / verdict_check 读侧同口径：scenario_id 缺省时回退 id，
         # 两者皆缺时跳过该场景不入缓存——裸 str(None) 会生成字面量 "None"
         # 键（可写盘但永远不被消费侧命中），三处口径漂移此处最弱。
         sid = str(sc.get("scenario_id") or sc.get("id") or "")

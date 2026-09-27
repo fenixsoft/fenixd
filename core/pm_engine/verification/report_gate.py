@@ -188,7 +188,7 @@ def _verifier_result_is_stale(pipeline, result, result_path: Path, spec_name: st
     return False
 
 
-def _read_verifier_result(pipeline, result_path: Path) -> VerdictReadResult:
+def _read_verifier_result(pipeline, result_path: Path, data=None) -> VerdictReadResult:
     """读取 verifier 写入的 .fenix-run-result.json，返回结构化三态结果。
 
     fix-verdict-read-failclosed（fail-closed 语义反转）：
@@ -205,30 +205,35 @@ def _read_verifier_result(pipeline, result_path: Path) -> VerdictReadResult:
     - "bug-found" 表示验证发现 Bug；
     - "plan-ready" 表示 Planner 已生成场景；
     - "scenario-repaired" 表示 judge 原地修复了场景文件（judge-scenario-repair）。
+
+    调用方已完成读取及 role/spec 戳校验时可经 `data` 直传解析结果，本函数
+    跳过二次 read_text（共享文件两次读取之间可能被其它 spec 覆写，绕过
+    戳校验被误采信）。
     """
-    if not result_path.exists():
-        pipeline._context.logger.warning(
-            "pm_engine",
-            f"Verifier result file not found: {result_path}",
-        )
-        return VerdictReadResult.failure("missing", f"{result_path}")
-    try:
-        data = json.loads(result_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as e:
-        pipeline._context.logger.warning(
-            "pm_engine",
-            f"Failed to read verifier result (fail-closed): {e}",
-        )
-        return VerdictReadResult.failure("parse", f"{e}")
-    except OSError as e:
-        # IO 失败（权限/设备错误等）≠ 产物格式损坏：独立 reason=io-error，
-        # 与 json.JSONDecodeError 的 parse 分池，下游按 reason 排障不误读为
-        # 格式损坏（调用方统一按不可读处置，不受新 reason 影响）。
-        pipeline._context.logger.warning(
-            "pm_engine",
-            f"Failed to read verifier result (fail-closed): {e}",
-        )
-        return VerdictReadResult.failure("io-error", f"{e}")
+    if data is None:
+        if not result_path.exists():
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"Verifier result file not found: {result_path}",
+            )
+            return VerdictReadResult.failure("missing", f"{result_path}")
+        try:
+            data = json.loads(result_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as e:
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"Failed to read verifier result (fail-closed): {e}",
+            )
+            return VerdictReadResult.failure("parse", f"{e}")
+        except OSError as e:
+            # IO 失败（权限/设备错误等）≠ 产物格式损坏：独立 reason=io-error，
+            # 与 json.JSONDecodeError 的 parse 分池，下游按 reason 排障不误读为
+            # 格式损坏（调用方统一按不可读处置，不受新 reason 影响）。
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"Failed to read verifier result (fail-closed): {e}",
+            )
+            return VerdictReadResult.failure("io-error", f"{e}")
     if not isinstance(data, dict):
         pipeline._context.logger.warning(
             "pm_engine",
@@ -323,7 +328,9 @@ def _read_shared_result(
             f"Ignoring {stamp_log_label} {path}: " f"spec='{stamped}' != '{spec_name}'",
         )
         return VerdictReadResult.failure("foreign-stamp", f"{path}: spec='{stamped}'")
-    return _read_verifier_result(pipeline, path)
+    # 单次读取贯穿戳校验与采信（复用首次解析的 data，消除两次读取之间
+    # 文件被其它 spec 覆写、绕过 spec 戳比对按白名单采信的 TOCTOU 窗口）。
+    return _read_verifier_result(pipeline, path, data=data)
 
 
 def _read_planner_result(pipeline, spec_name: str) -> VerdictReadResult:

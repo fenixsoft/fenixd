@@ -99,7 +99,11 @@ def _ensure_serving_worktree(pipeline, spec_name: str, contract, mode: str):
         old_wt = old.get("wt_path")
         if old_wt:
             pipeline._remove_serving_worktree(old_wt)
-    wt = serve_root / f"{spec_name}-{int(time.time())}"
+    # code-review 340873fcc988：后缀用纳秒时间戳——秒级后缀在「上轮 worktree
+    # 清理失败目录残留 + 本轮同秒重建」时与新路径撞名，git worktree add 因
+    # 路径已存在直接失败（本轮以难懂的「worktree 创建失败」告终，下一轮才
+    # 因时间戳变化自愈）
+    wt = serve_root / f"{spec_name}-{time.time_ns()}"
     r = subprocess.run(
         [
             "git",
@@ -169,6 +173,10 @@ def _serve_static_in_worktree(pipeline, spec_name, contract, scenarios_path) -> 
         and old.get("mode") == "static"
         and old.get("head") == head
         and isinstance(old.get("server"), StaticVerifyServer)
+        # code-review b7aa1db41ee6：与 _ensure_serving_worktree 同款目录存活
+        # 校验——HEAD 未变而 worktree 被外部清掉时，旧实例服务根目录已不存在
+        # （复用即场景整批 404），落到下方重建分支改用刚重建的 worktree
+        and Path(old["wt_path"]).is_dir()
     ):
         return pipeline._finalize_static(
             old["server"], contract, scenarios_path, "验证 worktree（复用）"
@@ -211,6 +219,9 @@ def _serve_command_in_worktree(pipeline, spec_name, contract, scenarios_path) ->
         and old.get("head") == head
         and isinstance(old.get("server"), CommandVerifyServer)
         and old["server"].ok
+        # code-review b7aa1db41ee6：同 _serve_static_in_worktree——目录消失
+        # 不复用，落到下方重启分支复用刚重建的 worktree
+        and Path(old["wt_path"]).is_dir()
     ):
         return pipeline._finalize_static(
             old["server"], contract, scenarios_path, "命令 worktree（复用）"
@@ -487,7 +498,11 @@ def _evict_spec_serving(pipeline, spec_name: str) -> None:
         if server is not None and hasattr(server, "pid"):
             # 登记过的实例（CommandVerifyServer 或兜底 spawn Popen）同步移除
             pipeline._unregister_serving_instance(spec_name, server)
-        if server is not None and getattr(server, "ok", True):
+        if server is not None:
+            # code-review 07bce05c191b：去掉 ok 门——CommandVerifyServer 的
+            # boot.log 句柄唯一关闭点是 stop()，ok=False 跳过会泄漏 fd；
+            # stop 自身对已死进程安全（killpg 已捕 ProcessLookupError），
+            # 与 _ensure_serving_worktree 的无条件清理口径对齐
             server.stop()
     except Exception as e:
         pipeline._context.logger.warning(
@@ -730,6 +745,16 @@ def _ensure_app_reachable(pipeline, spec_name: str) -> tuple:
         data = json.loads(scenarios_path.read_text(encoding="utf-8"))
     except Exception:
         return True, False, ""
+    # code-review bbf71fc97695：根非数组＝场景集损坏——直接迭代会产出字符串
+    # 键、全被 isinstance 过滤，kinds 恒空而提前判可达（serve/ready 门禁整段
+    # 跳过）。正常链路里上层 load_scenarios 已先拒非数组并退回 plan，此处为
+    # 纵深防御：留痕后按既有放行形态返回，不静默按空 kinds 放行。
+    if not isinstance(data, list):
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"验证场景文件根非数组（场景集损坏），可达性门禁跳过: {scenarios_path}",
+        )
+        return True, False, ""
 
     # ── 契约形态按场景集反推（verify-runner-engine D4：serve/ready 必要性
     # 由场景集 kind 组成决定，零新增字段）──
@@ -907,6 +932,9 @@ def _ensure_app_reachable(pipeline, spec_name: str) -> tuple:
     # cmd 内 --port|-p 数字（commands.start 形态）。
     base_port = None
     injected_port = None
+    # 入口存在性预检见原文（code-review 77e9753fae9c）：保留替换前的原 cmd，
+    # {port} 替换只作用于 spawn 用的 start_cmd（与契约 spawn 路径同口径）
+    orig_start_cmd = start_cmd
     if "{port}" in start_cmd:
         injected_port = find_free_port()
         start_cmd = start_cmd.replace("{port}", str(injected_port))
@@ -921,17 +949,18 @@ def _ensure_app_reachable(pipeline, spec_name: str) -> tuple:
         f"验证目标应用不可达，自动启动服务: {start_cmd}",
     )
 
-    # 入口存在性预检（design D1）：主树兜底自启同样在 spawn 前校验入口
-    # 存在性——serve.cmd 入口指向不存在文件时 fail-fast（场景执行数=0，
-    # 确定性错误不等探活超时浪费 30s）；commands.start 等非脚本型运行时
-    # 形态由解析器返回 None 放行（零误杀）。
-    preflight_err = entry_preflight_error(start_cmd, pipeline._context.project_root)
+    # 入口存在性预检（design D1）：{port} 替换前的原 cmd 检查（与契约
+    # spawn 路径同口径——{port} 不在路径段）；主树兜底自启同样在 spawn
+    # 前校验入口存在性——serve.cmd 入口指向不存在文件时 fail-fast（场景
+    # 执行数=0，确定性错误不等探活超时浪费 30s）；commands.start 等非脚本
+    # 型运行时形态由解析器返回 None 放行（零误杀）。
+    preflight_err = entry_preflight_error(orig_start_cmd, pipeline._context.project_root)
     if preflight_err:
         pipeline._write_verify_contract_missing(
             spec_name,
             f"{preflight_err}（入口存在性预检失败，spawn 前 fail-fast）",
             (
-                f"start_cmd 原文={start_cmd!r}; cwd={pipeline._context.project_root}; "
+                f"start_cmd 原文={orig_start_cmd!r}; cwd={pipeline._context.project_root}; "
                 f"来源=config commands.start 兜底"
             ),
             recommended_action=(
@@ -1013,17 +1042,28 @@ def _ensure_app_reachable(pipeline, spec_name: str) -> tuple:
                 )
 
     # 端口自动递增场景（如 --port 被占用时服务上探到邻近端口）：
-    # 扫描 base_port 附近的端口，命中则改写场景 URL 并确认可达
+    # 扫描 base_port 附近的端口，命中则改写场景 URL 并确认可达。
+    # code-review 15745b057144：并发探测（复用 _probe_ports_responding，对齐
+    # 契约路径）——原串行逐端口 _probe（timeout 2.0s）全部不响应时最坏
+    # 50×2s≈100s 阻塞主流程；先并发取响应端口集合再升序复核，命中语义与
+    # 串行版一致（首个复核通过的响应端口）。
     if base_port:
-        for port in range(base_port + 1, base_port + 51):
-            if _probe(f"http://127.0.0.1:{port}/", http_error_ok=True):
-                urls_new = [
-                    re.sub(r":%d" % base_port + _PORT_BOUNDARY, f":{port}", u) for u in urls
-                ]
-                if all(_probe(u, http_error_ok=True) for u in urls_new):
-                    pipeline._rewrite_scenario_port(scenarios_path, base_port, port)
-                    boot_log.close()
-                    return True, False, f"已自动启动应用服务（端口冲突，改用 {port}）"
+        # 探测口径与 _probe(http_error_ok=True) 一致：4xx/5xx 同样证明
+        # HTTP 服务在应答（API-only 应用根路径 404 不判不响应）
+        ports = sorted(
+            _probe_ports_responding(
+                range(base_port + 1, base_port + 51),
+                probe=lambda p: _probe(f"http://127.0.0.1:{p}/", http_error_ok=True),
+            )
+        )
+        for port in ports:
+            urls_new = [
+                re.sub(r":%d" % base_port + _PORT_BOUNDARY, f":{port}", u) for u in urls
+            ]
+            if all(_probe(u, http_error_ok=True) for u in urls_new):
+                pipeline._rewrite_scenario_port(scenarios_path, base_port, port)
+                boot_log.close()
+                return True, False, f"已自动启动应用服务（端口冲突，改用 {port}）"
 
     # 探活最终失败：boot.log 尾部（≤2KB）附入错误串，启动即死错误
     # （Cannot find module 等）对 admin 直接可读（design D3）
@@ -1172,15 +1212,20 @@ def _port_responds(port: int) -> bool:
         return False
 
 
-def _probe_ports_responding(ports) -> set:
+def _probe_ports_responding(ports, probe=None) -> set:
     """并发探测一组端口，返回响应端口集合（fix-deferred-findings 性能修复）。
 
     legacy 邻近扫描（range(legacy_hint, legacy_hint+51)）原为串行 urlopen
     探测（每端口 timeout=1.0，最坏 2×51s 量级），改造为 ThreadPoolExecutor
     并发后总耗时收敛到单端口探测上限。每个端口探测结果独立（_port_responds
     无共享状态），并发仅缩短墙钟时间，返回集合与原串行探测逐元素一致。
+    probe 可注入替代判定（code-review 15745b057144：兜底邻近扫描复用本函数
+    并保持 _probe(http_error_ok=True) 的 4xx/5xx 亦算应答口径）。
     """
     from concurrent.futures import ThreadPoolExecutor
 
+    if probe is None:
+        probe = _port_responds
+
     with ThreadPoolExecutor(max_workers=16) as pool:
-        return {p for p, ok in zip(ports, pool.map(_port_responds, ports)) if ok}
+        return {p for p, ok in zip(ports, pool.map(probe, ports)) if ok}

@@ -60,7 +60,8 @@ _INFRA_DEGRADE_MARKERS = (
 def enrich_failure_class(
     pipeline, spec_name: str, error_text: str = "", result=None, result_path: Path | None = None
 ) -> str:
-    """统一失败归因接口：返回 ``infra`` | ``product`` | ``unknown``（evo-infra-failure-budget-exempt R1）。
+    """统一失败归因接口：返回 ``infra`` | ``unknown``（unknown 由调用方按
+    product 保守处置；evo-infra-failure-budget-exempt R1）。
 
     复用 ``_verifier_error_is_infra`` 的 bool 判定（MUST 保持签名不变），
     在其上扩展三态分类。**兼容性**：legacy 路径 verification.py:3283 与
@@ -245,7 +246,10 @@ def _detect_uniform_verify_failure(pipeline, spec_name: str, report: dict) -> bo
         if isinstance(s, dict) and s.get("status") in ("fail", "failed", "error")
     ]
     if len(failed_scns) < fail_total:
-        return False  # 报告口径不一致，不哨
+        # 报告口径不一致，不哨：本轮未确立同因失败，连续计数同样回落
+        # （与 passed>0 / fail_total<3 / 混合签名轮处置一致）
+        _reset_uniform_fail_streak(pipeline, spec_name)
+        return False
     sigs: set[str] = set()
     for s in failed_scns:
         sig = ""
@@ -268,6 +272,8 @@ def _detect_uniform_verify_failure(pipeline, spec_name: str, report: dict) -> bo
     if not signature:
         # 全部失败场景均无可提取错误文本：空签名只是「无因可查」，
         # 不证明全场景同因，按报告不完整处理，走常规升级通道。
+        # 本轮未确立同因，连续计数同样回落（与其他非同因分支一致）。
+        _reset_uniform_fail_streak(pipeline, spec_name)
         return False
     spec = pipeline._context.state_machine.read_one(spec_name) or {}
     try:
