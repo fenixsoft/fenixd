@@ -53,7 +53,6 @@ import uuid
 from pathlib import Path
 
 from core.code_review import (  # noqa: F401
-    _atomic_write,
     _now_iso,
     _read_items_unlocked,
     _with_lock,
@@ -1626,19 +1625,24 @@ def _split_fix_rows(rows: list) -> tuple:
     - ``skip_reasons``：``item_id → skip_reason``，仅收录 ``status ==
       "skipped"`` 且 skip_reason ∈ ``IGNORE_ELIGIBLE_SKIP_REASONS``（判误报/
       不值得修，批收尾经 ``mark_ignored`` 置终态）。同条目多行时**后行覆盖
-      前行**（并集口径下重试轮的判定更新生效）；但最终态为 fixed 的条目
-      MUST NOT 出现在 skip_reasons——「首轮 skipped 判误报、重试轮 fixed」
-      以 fixed 为准（不降级）。
+      前行**——先按 ``item_id`` 取末行再做白名单过滤（并集口径下重试轮的
+      判定更新生效，含以普通 skipped 撤回可忽略标注）；但最终态为 fixed
+      的条目 MUST NOT 出现在 skip_reasons——「首轮 skipped 判误报、重试
+      轮 fixed」以 fixed 为准（不降级）。
     """
     fixed_ids = [r.get("item_id") for r in rows if r.get("status") == "fixed"]
     fixed_ids = list(dict.fromkeys(fixed_ids))
     fixed_set = set(fixed_ids)
+    # 先取末行再过滤（后行覆盖的生效前提）：若边过滤边收行，重试轮的普通
+    # skipped（无可忽略标注）会被白名单直接丢掉，首轮陈旧 false_positive
+    # 判定残留并被 mark_ignored 洗成 ignored 终态，违背缺省保守。
+    last_rows = {r.get("item_id"): r for r in rows}
     skip_reasons = {
-        r.get("item_id"): r.get("skip_reason")
-        for r in rows
-        if r.get("status") == "skipped"
-        and r.get("skip_reason") in IGNORE_ELIGIBLE_SKIP_REASONS
-        and r.get("item_id") not in fixed_set
+        item_id: last.get("skip_reason")
+        for item_id, last in last_rows.items()
+        if last.get("status") == "skipped"
+        and last.get("skip_reason") in IGNORE_ELIGIBLE_SKIP_REASONS
+        and item_id not in fixed_set
     }
     return fixed_ids, skip_reasons
 
