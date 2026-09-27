@@ -162,11 +162,13 @@ export default function MiscSettingsPanel({ config, onSave, project, onConfigSyn
           </Form.Item>
           <Text type="secondary">{knowledgeSwitchDesc('graph')}</Text>
         </Card>
-      </Form>
-      {/* add-knowledge-atlas：知识真相源总开关（knowledge.enabled）。
-          关闭后归档照常完成、但不派发蒸馏 run，项目知识页签显示禁用占位。 */}
-      <Card style={{ marginTop: 16 }} data-testid="knowledge-settings-card">
-        <Form form={form} layout="vertical">
+        {/* add-knowledge-atlas：知识真相源总开关（knowledge.enabled）。
+            关闭后归档照常完成、但不派发蒸馏 run，项目知识页签显示禁用占位。
+            本卡必须留在上方唯一 Form 内（code-review item 0dddde607278）：
+            rc-field-form 在 render 期无条件 setCallbacks，同一 form 实例被两个
+            <Form> 连接时后渲染者整体覆盖前者，单独再开一个 Form 会把
+            onValuesChange 置脏回调冲掉，导致整个面板脏标记失效。 */}
+        <Card style={{ marginTop: 16 }} data-testid="knowledge-settings-card">
           <Form.Item
             name="knowledge_enabled"
             valuePropName="checked"
@@ -186,14 +188,14 @@ export default function MiscSettingsPanel({ config, onSave, project, onConfigSyn
               保存后约 30s 配置热更新生效，无需重启 daemon。
             </Text>
           </div>
-        </Form>
-      </Card>
+        </Card>
+      </Form>
       <div style={project ? SETTINGS_ACTIONS_ROW_STYLE : { textAlign: 'right', marginTop: 24 }}>
         {project && onConfigSynced && (
           <SyncFromUserButton project={project} page="misc" onSynced={onConfigSynced} />
         )}
         <Button type="primary" onClick={handleSave} loading={saving} disabled={saving} data-testid="misc-save">
-          保 存
+          保存
         </Button>
       </div>
     </div>

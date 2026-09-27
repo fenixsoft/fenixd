@@ -1,5 +1,5 @@
 import { Button, Card, Form, Input, InputNumber, Modal, Select, Space, Switch, Typography, message } from 'antd';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { restartProjectDaemon } from '@/services/dashboard';
 import SyncFromUserButton from './SyncFromUserButton';
 import { usePanelDirty } from '../panelDirty';
@@ -108,11 +108,11 @@ const TRANSIENT_ANNOTATIONS: {
     rule: [{
       validator: (_: unknown, v: string | undefined | null) => {
         if (v == null || String(v).trim() === '') return Promise.resolve();
-        return String(v).split(',').every(p => {
-          const s = p.trim();
-          if (!s) return true;
-          return /^\d+$/.test(s) && Number(s) > 0;
-        })
+        // 先剥离空段再校验（code-review item da5d08818510）：尾逗号（"30,"）容忍，
+        // 但全空段串（",,,"）字段非空却不含任何退避秒数，语义上等同关闭原地退避，
+        // 与提示文案相悖，须显式报错
+        const segs = String(v).split(',').map(p => p.trim()).filter(s => s !== '');
+        return segs.length > 0 && segs.every(s => /^\d+$/.test(s) && Number(s) > 0)
           ? Promise.resolve()
           : Promise.reject(new Error('须为逗号分隔的正整数秒'));
       },
@@ -196,6 +196,13 @@ export default function SystemPanel({ config, onSave, project, onConfigSynced }:
   // 用户编辑置脏：切页签/作用域前由 index 经 anyPanelDirty 弹丢弃确认
   // （code-review item 8a3eb01dc2b9）
   const { setDirty } = usePanelDirty();
+  // 保存重入守卫（code-review item 8ccf20511320，比照 TokenBudgetPanel
+  // 53b14fb31196）：onSave 是异步，提交期间连点会发出重叠的 saveConfig 请求
+  // （并发写同一配置文件，落盘结果取决于到达顺序）——saving 期间按钮置
+  // loading/disabled 并在入口短路；setSaving 渲染生效存在 React 调度间隙，
+  // 经 savingRef 写读同帧原子拦住连点，state 只负责按钮视觉反馈。
+  const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
 
   // 重启 Fenix Daemon（项目级作用域才显示）：确认后写 restart_request，supervisor
   // 排水（admin.shutdown_drain_seconds）后优雅重启，dashboard 不直接杀进程
@@ -247,44 +254,52 @@ export default function SystemPanel({ config, onSave, project, onConfigSynced }:
   }, [config.admin, config.agents, form]);
 
   const handleSave = async () => {
-    // 分离「表单校验」与「保存持久化」（code-review item 834f22222a24）：与
-    // AgentModelPanel.handleSave 对齐——两段混在同一静默 catch 会把校验失败
-    // 与持久化失败混为一谈，且丢弃 onSave 的 Promise<boolean> 结果。
-    let values;
+    if (savingRef.current) return;
+    savingRef.current = true;
+    setSaving(true);
     try {
-      values = await form.validateFields();
-    } catch {
-      // 校验失败：antd 已在表单内渲染 explain-error 提示，不落 console
-      return;
-    }
-    try {
-      const ok = await onSave({
-        admin: {
-          enabled: values.enabled,
-          interval_minutes: values.interval_minutes,
-          escalation_cooldown_minutes: values.escalation_cooldown_minutes,
-          merge_breaker_threshold: values.merge_breaker_threshold,
-          shutdown_drain_seconds: values.shutdown_drain_seconds,
-          bug_repair_mode: values.bug_repair_mode,
-          stuck_silence_minutes: values.stuck_silence_minutes,
-        },
-        agents: {
-          transient_backoff_schedule:
-            typeof values.transient_backoff_schedule === 'string'
-              ? values.transient_backoff_schedule.trim()
-              : String(values.transient_backoff_schedule ?? ''),
-          transient_redispatch_delay_seconds: values.transient_redispatch_delay_seconds,
-          transient_break_threshold: values.transient_break_threshold,
-          transient_break_window_seconds: values.transient_break_window_seconds,
-          transient_break_cooldown_seconds: values.transient_break_cooldown_seconds,
-        },
-      });
-      // ok=false 时父级 handleSave 已 message.error 具体原因，此处不重复 toast
-      if (!ok) return;
-    } catch (error) {
-      // 持久化异常兜底：父级当前自带失败 toast，此 catch 保证其反馈路径调整
-      // （onSave 不再自带 toast）时也不退化为无声失败
-      message.error(`保存失败：${error instanceof Error ? error.message : String(error)}`);
+      // 分离「表单校验」与「保存持久化」（code-review item 834f22222a24）：与
+      // AgentModelPanel.handleSave 对齐——两段混在同一静默 catch 会把校验失败
+      // 与持久化失败混为一谈，且丢弃 onSave 的 Promise<boolean> 结果。
+      let values;
+      try {
+        values = await form.validateFields();
+      } catch {
+        // 校验失败：antd 已在表单内渲染 explain-error 提示，不落 console
+        return;
+      }
+      try {
+        const ok = await onSave({
+          admin: {
+            enabled: values.enabled,
+            interval_minutes: values.interval_minutes,
+            escalation_cooldown_minutes: values.escalation_cooldown_minutes,
+            merge_breaker_threshold: values.merge_breaker_threshold,
+            shutdown_drain_seconds: values.shutdown_drain_seconds,
+            bug_repair_mode: values.bug_repair_mode,
+            stuck_silence_minutes: values.stuck_silence_minutes,
+          },
+          agents: {
+            transient_backoff_schedule:
+              typeof values.transient_backoff_schedule === 'string'
+                ? values.transient_backoff_schedule.trim()
+                : String(values.transient_backoff_schedule ?? ''),
+            transient_redispatch_delay_seconds: values.transient_redispatch_delay_seconds,
+            transient_break_threshold: values.transient_break_threshold,
+            transient_break_window_seconds: values.transient_break_window_seconds,
+            transient_break_cooldown_seconds: values.transient_break_cooldown_seconds,
+          },
+        });
+        // ok=false 时父级 handleSave 已 message.error 具体原因，此处不重复 toast
+        if (!ok) return;
+      } catch (error) {
+        // 持久化异常兜底：父级当前自带失败 toast，此 catch 保证其反馈路径调整
+        // （onSave 不再自带 toast）时也不退化为无声失败
+        message.error(`保存失败：${error instanceof Error ? error.message : String(error)}`);
+      }
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
     }
   };
 
@@ -365,7 +380,8 @@ export default function SystemPanel({ config, onSave, project, onConfigSynced }:
         </Text>
         <Card style={{ marginTop: 12 }}>
           {TRANSIENT_ANNOTATIONS.map(({ key, label, note, unit, rule }) => (
-            <div key={key} style={{ marginBottom: 4 }}>
+            // 行距机制与上方系统分组一致（见 ADMIN_ANNOTATIONS 处注释）：不挂 inline margin
+            <div key={key}>
               {key === 'transient_backoff_schedule' ? (
                 <Form.Item
                   name={key}
@@ -433,7 +449,7 @@ export default function SystemPanel({ config, onSave, project, onConfigSynced }:
           {project && onConfigSynced && (
             <SyncFromUserButton project={project} page="system" onSynced={onConfigSynced} />
           )}
-          <Button type="primary" onClick={handleSave} data-testid="system-save-btn">
+          <Button type="primary" onClick={handleSave} loading={saving} disabled={saving} data-testid="system-save-btn">
             保存
           </Button>
         </Space>

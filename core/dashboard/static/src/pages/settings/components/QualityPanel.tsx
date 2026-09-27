@@ -275,15 +275,19 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
 
   const handleSave = async () => {
     if (saving) return;
+    // 先置位再校验（code-review item 2a72f9839b69，对齐同族面板顺序）：
+    // validateFields 是异步微任务，置位晚于校验时快速双击可双双通过入口
+    // 短路检查、发出重叠保存请求；校验失败在 return 前复位 saving。
+    setSaving(true);
     let values;
     try {
       values = await form.validateFields();
     } catch {
       // 校验失败：antd 已在表单内渲染提示，无需额外日志
       // （避免触发验证的 no_console_error 断言）。
+      setSaving(false);
       return;
     }
-    setSaving(true);
     try {
       await onSave({
         // add-impl-code-review-gate：收尾代码质量审查开关（键路径不变，仅移至质量页签）

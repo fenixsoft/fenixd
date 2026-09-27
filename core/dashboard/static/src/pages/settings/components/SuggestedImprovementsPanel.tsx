@@ -591,7 +591,8 @@ const SuggestedImprovementsPanel = forwardRef<
           return Promise.reject(new Error(result.error || 'accept failed'));
         }
         const next = await loadItems();
-        if (result.ok) nextAfterAction(next, item, onDone);
+        // 此处 result.ok 恒真（非 ok 已在上方提前 reject）
+        nextAfterAction(next, item, onDone);
       },
     });
   };
@@ -613,7 +614,8 @@ const SuggestedImprovementsPanel = forwardRef<
           return Promise.reject(new Error(result.error || 'reject failed'));
         }
         const next = await loadItems();
-        if (result.ok) nextAfterAction(next, item, onDone);
+        // 此处 result.ok 恒真（非 ok 已在上方提前 reject）
+        nextAfterAction(next, item, onDone);
       },
     });
   };
@@ -647,7 +649,8 @@ const SuggestedImprovementsPanel = forwardRef<
           return Promise.reject(new Error(result.error || 'delete failed'));
         }
         const next = await loadItems();
-        if (result.ok) nextAfterAction(next, item, onDone);
+        // 此处 result.ok 恒真（非 ok 已在上方提前 reject）
+        nextAfterAction(next, item, onDone);
       },
     });
   };

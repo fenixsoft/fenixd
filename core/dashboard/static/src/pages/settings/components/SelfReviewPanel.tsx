@@ -278,7 +278,11 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
                         setDirty(true);
                         setTodoDraft(e.target.value);
                       }}
-                      disabled={todoLoading}
+                      // 保存进行中禁止编辑（code-review item 5a7bb5de4335，与
+                      // PromptsPanel item cbd7e62160ec 同口径）：handleSave 双段
+                      // 提交后在飞期间键入的内容不在已提交的 todoDraft 里，
+                      // 回读回填会用磁盘值无条件覆盖（静默丢失）。
+                      disabled={todoLoading || saving}
                       placeholder={'## 2026-09-04\n\n### 可改进\n- 证据：……'}
                       autoSize={{ minRows: 10, maxRows: 24 }}
                       style={{

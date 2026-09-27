@@ -1091,7 +1091,9 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
     # add-spec-archive D5：archive.auto_threshold（非负整数，0=禁用，非法值静默忽略）
     if "archive" in patch and isinstance(patch["archive"], dict):
         at = patch["archive"].get("auto_threshold")
-        if isinstance(at, int) and at >= 0:
+        # code-review item 57914bc4b28c：排除 bool（True 是 int 子类且 True >= 0
+        # 成立），与 runs.keep 及 verify 数值键合并分支防御口径对齐
+        if isinstance(at, int) and not isinstance(at, bool) and at >= 0:
             if not isinstance(merged.get("archive"), dict):
                 merged["archive"] = {}
             merged["archive"]["auto_threshold"] = at
@@ -1838,7 +1840,11 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
             # TypeError——均非 ValueError，逃出本函数 except 致保存 500（agents 段
             # 同款问题已由 item 9e99a31f08fd 守卫转 400，此处对齐其余五个容器段；
             # 读侧 resolve_config 对非 dict 段按空段降级，写路径须显式拒绝）
-            for _seg in ("llm", "gates", "verify", "archive", "admin"):
+            # code-review item 0afae666dbbc：knowledge 为后增受管段，同款存量
+            # 非 dict 真值（如误当标量开关写的 knowledge: true）在下方
+            # `键 in knowledge_m` 成员测试对 bool/int 抛 TypeError 致 500——
+            # 纳入同款容器段守卫转 400
+            for _seg in ("llm", "gates", "verify", "archive", "admin", "knowledge"):
                 _seg_v = merged.get(_seg)
                 if _seg_v is not None and not isinstance(_seg_v, dict):
                     raise ValueError(

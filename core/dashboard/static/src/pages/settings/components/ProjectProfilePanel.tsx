@@ -36,12 +36,6 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
   const verifySectionRef = useRef<HTMLDivElement>(null);
   const yamlTextareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // 页签/作用域切换丢弃确认（code-review item 8a3eb01dc2b9）：本面板自持
-  // 简介/verify.yaml 两份草稿（非 antd Form），用户编辑经置脏入口登记，
-  // 切页签前由 index 统一弹确认；verify.yaml 保存不经父级 handleSave，
-  // 成功后在 handleYamlSave 内自行复位。
-  const { setDirty } = usePanelDirty();
-
   useEffect(() => {
     setDescription(config.description || '');
   }, [config.description]);
@@ -147,11 +141,27 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
   const yamlDraftRef = useRef('');
   const yamlLoadedContentRef = useRef('');
 
+  // 页签/作用域切换丢弃确认（code-review item 8a3eb01dc2b9）：本面板自持
+  // 简介/verify.yaml 两份独立草稿（非 antd Form），切页签/切作用域前由 index
+  // 统一判脏弹确认。判脏采用探针实时比对两份草稿与各自基线（code-review
+  // item 4815d4896312）：单一脏布尔会让「保存其一」连带清掉另一份草稿的未
+  // 保存标记（简介保存走父级 handleSave 的统一复位、yaml 保存走本面板的
+  // setDirty(false)），另一份草稿的丢弃确认随之失效；探针按各草稿自身落盘
+  // 状态归零——简介保存成功后父级重载回填 config，yaml 保存成功后
+  // loadVerifyYaml(true) 重打基线，任一草稿仍有未保存改动即脏。
+  // 内联箭头的引用稳定性由 usePanelDirty 的 probeRef 每渲染镜像保证
+  // （注册效果只跑一次，探针读到最新闭包），置于两份基线声明之后避免
+  // 引用未初始化的 ref。
+  usePanelDirty(
+    () =>
+      description !== (config.description || '') ||
+      yamlDraftRef.current !== yamlLoadedContentRef.current,
+  );
+
   // 草稿统一写入口：同步 ref 镜像（编辑 onChange 与「插入模板」共用）。
-  // 用户驱动的草稿变更统一在此置脏（code-review item 8a3eb01dc2b9）；
-  // 加载回填直接 setYamlDraft 不经此口，不会误置脏。
+  // 置脏无需显式登记：探针按 yamlDraftRef 与基线实时比对（上方
+  // usePanelDirty）；加载回填直接 setYamlDraft 并同步基线，同样不会误报脏。
   const applyYamlDraft = (value: string) => {
-    setDirty(true);
     yamlDraftRef.current = value;
     setYamlDraft(value);
   };
@@ -223,10 +233,10 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
     try {
       await saveVerifyYaml(project, yamlDraft);
       message.success('verify.yaml 已保存');
-      // 已落盘的草稿不再是「未保存改动」（code-review item 8a3eb01dc2b9）：
-      // 本面板 verify.yaml 保存不经父级 handleSave 的统一复位，须自行清脏
-      setDirty(false);
       setYamlExists(true);
+      // 已落盘草稿不再是「未保存改动」（code-review item 4815d4896312）：
+      // 静默重载把基线重打为已保存内容，探针比对相等即自动归零，
+      // 无需（也不能）手动清整面板脏标记——简介草稿的脏态须保留
       await loadVerifyYaml(true);
     } catch (e) {
       const errorMessage = e instanceof Error ? e.message : String(e);
@@ -288,10 +298,7 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
         </Text>
         <TextArea
           value={description}
-          onChange={(e) => {
-            setDirty(true);
-            setDescription(e.target.value);
-          }}
+          onChange={(e) => setDescription(e.target.value)}
           placeholder="暂无简介"
           autoSize={{ minRows: 4, maxRows: 8 }}
           style={{ marginTop: 12, marginBottom: 16 }}

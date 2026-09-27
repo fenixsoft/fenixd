@@ -180,6 +180,11 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
     // 填充并发执行），会以快照覆盖这些更新。form.setFieldValue 支持嵌套路径
     // 数组成员，直接定位该行 model 字段避免整数组替换。
     form.setFieldValue(['roleList', roleIndex, 'rows', rowIndex, 'model'], def);
+    // setFieldValue 只发 valueUpdate 通知、不回调 onValuesChange，本面板判脏完全
+    // 依赖 onValuesChange 显式置脏（panelDirty.ts）——程序化写值后须补置脏，
+    // 否则自动填充的修改切页签时不弹丢弃确认、随卸载静默丢失
+    // （code-review item ad4ec63bd751）
+    setDirty(true);
   };
 
   // 行内健康检测：检测目标按运行期同款链解析（design D6 / spec「模型分配页签
@@ -241,6 +246,9 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
       ...cloneRoleValue(clipboard.value),
       roleKey: AGENT_ROLES[index]?.key,
     });
+    // setFieldValue 不触发 onValuesChange，判脏不置位会导致粘贴内容切页签时
+    // 被静默丢弃（无丢弃确认），写值后显式置脏（code-review item ad4ec63bd751）
+    setDirty(true);
     message.success(
       `已粘贴「${clipboard.label}」的模型分配到「${AGENT_ROLES[index]?.label ?? `角色 ${index + 1}`}」`,
     );
@@ -386,7 +394,12 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
                             const curProvider = ((watchList[index]?.rows || [])[rIdx]?.provider || '').trim();
                             const rowId = `${index}-${rIdx}`;
                             const dragging = dragReady === rowId;
-                            const isOverTarget = dragOver === rowId && dragReady !== null && dragReady !== rowId;
+                            // 悬停指示线与 onDrop 落点同一套角色校验（code-review item
+                            // b0e132f22074）：跨角色卡片的换序会被 onDrop 静默拒绝，
+                            // 指示线不应高亮这类非法落点，避免视觉反馈与行为矛盾。
+                            const dragFromRole = dragReady === null ? null : Number(dragReady.split('-')[0]);
+                            const isOverTarget =
+                              dragOver === rowId && dragReady !== null && dragReady !== rowId && dragFromRole === index;
                             // 健康状态按稳定 field.key 取（不随删除/换序的位置迁移错配）
                             const health = healthRows[rowField.key];
                             return (
@@ -541,7 +554,9 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
                   </Card>
                 );
               })}
-              <div style={project ? { ...SETTINGS_ACTIONS_ROW_STYLE, marginTop: 12 } : { textAlign: 'right' }}>
+              {/* 保存按钮行复用统一常量（code-review item 7c1311483b0a）：与其余六个
+                  设置面板同一写法，项目/非项目两分支间距一致，避免视觉漂移 */}
+              <div style={project ? SETTINGS_ACTIONS_ROW_STYLE : { textAlign: 'right', marginTop: 24 }}>
                 {project && onConfigSynced && (
                   <SyncFromUserButton project={project} page="agents" onSynced={onConfigSynced} />
                 )}
