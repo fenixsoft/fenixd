@@ -631,9 +631,12 @@ def read_config(scope_root, scope: str = "project") -> dict:
         if isinstance(sr_raw, dict) and isinstance(sr_raw.get("enabled"), bool):
             result["verify"]["serving_reclaim"]["enabled"] = sr_raw["enabled"]
     runs_raw = raw.get("runs")
+    # code-review item 6170a050fadd：keep 仅接受真 int（bool 是 int 子类，
+    # isinstance(True, int) 为 True——回显 true 与消费侧 int(True)=1 同源，
+    # 归档保留上限会被静默压成 1），与 _is_int_not_bool 防护约定同款
     if (
         isinstance(runs_raw, dict)
-        and isinstance(runs_raw.get("keep"), int)
+        and _is_int_not_bool(runs_raw.get("keep"))
         and runs_raw["keep"] >= 1
     ):
         result["runs"] = {"keep": runs_raw["keep"]}
@@ -856,9 +859,11 @@ def read_effective_config(project_root) -> dict:
         if isinstance(sr_eff, dict) and isinstance(sr_eff.get("enabled"), bool):
             result["verify"]["serving_reclaim"]["enabled"] = sr_eff["enabled"]
     runs_eff = effective.get("runs")
+    # code-review item 6170a050fadd：keep 仅接受真 int（排除 bool，同 read_config
+    # 回显分支——int(True)=1 会把归档保留上限静默压成 1）
     if (
         isinstance(runs_eff, dict)
-        and isinstance(runs_eff.get("keep"), int)
+        and _is_int_not_bool(runs_eff.get("keep"))
         and runs_eff["keep"] >= 1
     ):
         result["runs"] = {"keep": runs_eff["keep"]}
@@ -994,8 +999,10 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
 
     if "runs" in patch and isinstance(patch["runs"], dict):
         keep = patch["runs"].get("keep")
-        # 仅接受正整数，非法值静默忽略（保留原配置）
-        if isinstance(keep, int) and keep >= 1:
+        # 仅接受正整数（code-review item 6170a050fadd：排除 bool——True 是 int
+        # 子类，落盘后消费侧 runs._resolve_runs_keep 的 int(True)=1 会把归档保留
+        # 上限静默压成 1），非法值静默忽略（保留原配置）
+        if _is_int_not_bool(keep) and keep >= 1:
             if not isinstance(merged.get("runs"), dict):
                 merged["runs"] = {}
             merged["runs"]["keep"] = keep
@@ -1777,6 +1784,19 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
         # 3. 校验受管字段（llm / agents.models / agents.max_concurrent / gates.approve_mode）
         #    不做完整 ConfigLoader 校验，避免缺少 project/schedule 等必填键时无法写入。
         try:
+            # code-review item bfbc50a5c577：存量 config.yaml 中容器段被手工编辑为
+            # 非 dict 真值标量（如 gates: 5、llm: "x"）时，_deep_merge_managed 原样
+            # 保留该非法段，下方 _validate_llm 对 str 抛 AttributeError、gates /
+            # verify / archive / admin 经 `or {}` 后 `键 in xxx` 成员测试对 int 抛
+            # TypeError——均非 ValueError，逃出本函数 except 致保存 500（agents 段
+            # 同款问题已由 item 9e99a31f08fd 守卫转 400，此处对齐其余五个容器段；
+            # 读侧 resolve_config 对非 dict 段按空段降级，写路径须显式拒绝）
+            for _seg in ("llm", "gates", "verify", "archive", "admin"):
+                _seg_v = merged.get(_seg)
+                if _seg_v is not None and not isinstance(_seg_v, dict):
+                    raise ValueError(
+                        f"{_seg} must be a mapping (存量非法段请先修正 config.yaml): {_seg_v!r}"
+                    )
             llm = merged.get("llm") or {}
             if llm:
                 ConfigLoader._validate_llm(llm)
@@ -2021,6 +2041,15 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
                         f"verify.deps_mode must be one of ['prefer-offline', 'hardlink']: "
                         f"{verify_m['deps_mode']}"
                     )
+            # code-review item 6170a050fadd：runs.keep 兜底校验（write_config 前置
+            # 校验只查 runs 为 dict，keep 类型此前无校验；口径与 _deep_merge_managed
+            # 合并分支一致——正整数且排除 bool，True 落盘后会被消费侧
+            # runs._resolve_runs_keep 的 int(True)=1 静默压成保留上限 1）
+            runs_m = merged.get("runs") or {}
+            if isinstance(runs_m, dict) and runs_m.get("keep") is not None:
+                _rk = runs_m["keep"]
+                if not _is_int_not_bool(_rk) or _rk < 1:
+                    raise ValueError(f"runs.keep must be a positive integer: {_rk!r}")
             # add-spec-archive D5：archive.auto_threshold 必须为非负整数（0=禁用）
             archive_m = merged.get("archive") or {}
             if "auto_threshold" in archive_m and archive_m["auto_threshold"] is not None:

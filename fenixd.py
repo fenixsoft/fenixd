@@ -60,6 +60,7 @@ from core.signals import SCHEDULING_KICK_DIR
 # 未消费只可能是消费方缺席——此时「唤醒」已失去即时语义，退化为「下次扫描自然
 # 会处理」。MUST NOT 进配置（对齐 docs/help/06-governance.md 既有记载）。
 # code-review item 69d57b48a605：approve_push 车道 created 时效分档复用同判据同阈值。
+# code-review item 6cc24b51f6b9：code_fix / regression_fix 手动触发车道同判据同阈值。
 SCHEDULING_KICK_STALE_THRESHOLD_SECONDS = 3600
 from core.wip_checkpoint import (
     ANCHOR_DRAIN_PRESERVE,
@@ -2141,7 +2142,8 @@ class FenixDaemon:
                 # 达成却发不出重启请求），升级 escalation 提请人工知悉；复用
                 # _alert_dangling_timeout 的 append + latest_signal 去重范式，
                 # signal_type 仍取 stale_code（与 info 留痕同受 60 分钟窗口互斥
-                # 成条，不刷屏）。陈旧状态与空闲计时保持，下个 tick 自动重试。
+                # 成条，不刷屏）。陈旧状态保持，空闲计时已在 finally 复位——
+                # 下个 tick 重新累计 idle_confirm_seconds 后自动重试。
                 self.logger.error("fenixd", f"restart_request 写入失败: {e}")
                 self._alert_selfheal_write_failure(e)
             finally:
@@ -3358,6 +3360,8 @@ class FenixDaemon:
         "dispatch_error": "自动修复投递失败，本批未投递（详见 daemon 日志）",
         "dispatch_exception": "自动修复消费异常，本批未投递（详见 daemon 日志）",
         "disabled": "自动修复开关处于关闭状态",
+        # item 6cc24b51f6b9：停机积压旧信号（created 超时效阈值）仅消费不执行
+        "stale_created": "触发信号已过期未执行（积压超过 1 小时，可能为停机残留），如仍需修复请重新发起",
     }
 
     def _write_code_fix_request_result(self, result_path, request_created, triggered,
@@ -3417,6 +3421,11 @@ class FenixDaemon:
         69fdd0ab526e）：先 rename 占位再读，消灭「先读后删」窗口内 dashboard
         重写新请求被 unlink 一并误删而从未被处理的丢请求形态（与 admin_invoke /
         approve_push / code_review / regression 四条已迁移车道同口径）。
+
+        时效分档（code-review item 6cc24b51f6b9）：created 与 scheduling_kick /
+        approve_push 同判据同阈值（经 _signal_created_is_stale）——daemon 停机
+        期间积压的旧手动修复信号重启后仅消费、落 stale_created 结果，不投递
+        checkpoint（手动授权语义锚定点击时刻）；created 缺失/非法保守按陈旧处理。
         """
         req_path = PROJECT_ROOT / ".fenix" / "code_fix_request.json"
         payload = self._consume_request_file(req_path)
@@ -3426,6 +3435,20 @@ class FenixDaemon:
         request_created = str(payload.get("created") or "")
         result_path = PROJECT_ROOT / ".fenix" / "code_fix_request_result.json"
         self.logger.info("fenixd", f"消费 code-fix 手动触发信号：created={request_created}")
+
+        # 时效分档（item 6cc24b51f6b9）：与 scheduling_kick / approve_push
+        # 同判据同阈值，停机积压的旧触发重启后不投递 checkpoint，仅落
+        # stale_created 结果（下游可辨认）；单飞等守卫不受影响
+        if self._signal_created_is_stale(payload.get("created")):
+            self.logger.warning(
+                "fenixd",
+                f"code-fix 陈旧信号（created={request_created}）超过 "
+                f"{SCHEDULING_KICK_STALE_THRESHOLD_SECONDS}s 阈值，不投递"
+                f"（停机积压旧请求，如仍需修复请在 dashboard 重新发起）",
+            )
+            self._write_code_fix_request_result(
+                result_path, request_created, False, "stale_created")
+            return
 
         # 编排器未装配不静默：落 orchestrator_missing 结果，用户可见明确原因
         orchestrator = getattr(self.agent_runner, "_code_fix_orchestrator", None)
@@ -3510,6 +3533,11 @@ class FenixDaemon:
         消费异常落 dispatch_exception（此时转换可能已入账——design D6：
         checkpoint 拒绝/异常不回滚台账，在飞链下一批 select_batch 自然
         吸收，回链如实返回 reason）。
+
+        时效分档（code-review item 6cc24b51f6b9）：created 与 code_fix /
+        approve_push 车道同判据同阈值（经 _signal_created_is_stale）——停机
+        积压旧信号重启后仅消费、落 stale_created 结果，不转换入账、不投递
+        checkpoint（手动授权语义锚定点击时刻）；created 缺失/非法保守按陈旧处理。
         """
         from core.code_fix import (
             convert_regression_snapshot_to_findings,
@@ -3528,6 +3556,21 @@ class FenixDaemon:
         result_path = PROJECT_ROOT / ".fenix" / "regression_fix_request_result.json"
         self.logger.info(
             "fenixd", f"消费 regression-fix 手动触发信号：created={request_created}")
+
+        # 时效分档（item 6cc24b51f6b9）：与 code_fix / approve_push 同判据
+        # 同阈值，停机积压的旧触发重启后不转换入账、不投递 checkpoint，仅落
+        # stale_created 结果（下游可辨认）；须在快照转换入账之前分档
+        if self._signal_created_is_stale(payload.get("created")):
+            self.logger.warning(
+                "fenixd",
+                f"regression-fix 陈旧信号（created={request_created}）超过 "
+                f"{SCHEDULING_KICK_STALE_THRESHOLD_SECONDS}s 阈值，不转换入账"
+                f"不投递（停机积压旧请求，如仍需修复请在 dashboard 重新发起）",
+            )
+            self._write_result_message(
+                result_path, request_created, False, "stale_created",
+                self.REGRESSION_FIX_RESULT_MESSAGES)
+            return
 
         # 编排器未装配不静默（且 MUST NOT 先入账再落结果——入账前置检查）
         orchestrator = getattr(self.agent_runner, "_code_fix_orchestrator", None)

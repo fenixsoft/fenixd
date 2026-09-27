@@ -23,16 +23,18 @@ from core.agent_runner.run_files import (
 # _log_run_metrics），含 duration_seconds / cost_usd / terminal / provider。
 # 读侧 duration 推算优先消费该指标（替代「由 run 文件 mtime 推算耗时」，
 # spec「MUST NOT 仅依赖 mtime」）；无指标（旧日志/未触发）才回退 mtime。
-# 索引按 (log_path, size, 首块指纹) 键增量维护：日志 append-only，size 增长只补扫
-# 新增块；size 缩小（轮转）或首块指纹不符（轮转后新内容在下一次调用前快速回涨到
-# 不小于旧 size，仅凭 size 判不出轮转）整体重建。进程内缓存，读侧高频重复调用零重扫。
+# 索引按 log_path 分槽（{log_path: {"key": (size, 首块指纹), "index": …}}）：
+# dashboard HTTP 服务单进程多项目（路由按 project 参数定位项目根），前端交替
+# 轮询多个项目时各槽保留各自的增量扫描起点，互不驱逐。每槽内按 (size, 首块
+# 指纹) 键增量维护：日志 append-only，size 增长只补扫新增块；size 缩小（轮转）
+# 或首块指纹不符（轮转后新内容在下一次调用前快速回涨到不小于旧 size，仅凭
+# size 判不出轮转）仅重建本槽。进程内缓存，读侧高频重复调用零重扫。
 _RUN_METRIC_INDEX: dict = {}
-# 容量上限（同 _RUN_META_CACHE 口径）：索引只增不清（除轮转整体重建），长驻
+# 容量上限（同 _RUN_META_CACHE 口径）：索引只增不清（除轮转本槽重建），长驻
 # daemon 历史 run 数以万计时内存无界增长。超限按最旧淘汰——整体清空不可取：
 # 增量扫描起点停在旧 size，清空后旧段不会重扫，近期 run 指标会整批丢失直至
-# 下次轮转；按插入序（=日志出现序）裁掉最旧 run_id 即可。
+# 下次轮转；各槽合计超限按槽序 + 槽内插入序（=日志出现序）裁掉最旧 run_id。
 _RUN_METRIC_INDEX_MAX = 16384
-_RUN_METRIC_INDEX_KEY: tuple = None  # (str(log_path), size, head_hash)
 
 
 def _strip_run_attempt_suffix(run_id: str) -> str:
@@ -98,16 +100,15 @@ def _log_head_fingerprint(log_path: Path, chunk: int = 512) -> str:
 
 
 def _load_run_metric_index(project_root: Path) -> dict:
-    """增量维护 run 指标索引 {base_run_id: metric_dict}（进程内缓存）。
+    """增量维护 run 指标索引 {base_run_id: metric_dict}（进程内缓存，按 log_path 分槽）。
 
     metric_dict 取日志行的 context（含 duration_seconds/cost_usd/terminal/
     provider 等），run_id 为 context.run_id（基础 run id）。日志轮转
-    （size 缩小，或首块指纹不符的轮转后快速回涨形态）时整体重建，追加
-    （size 增长且指纹不变）只补扫新增部分。索引超
+    （size 缩小，或首块指纹不符的轮转后快速回涨形态）时仅本槽整体重建，追加
+    （size 增长且指纹不变）只补扫新增部分。各槽合计超
     _RUN_METRIC_INDEX_MAX 按最旧淘汰（防长驻进程无界增长）。扫描中途读
     失败不推进 key（下轮从旧 offset 重扫同一区间，重扫幂等）。
     """
-    global _RUN_METRIC_INDEX, _RUN_METRIC_INDEX_KEY
     logs_dir = Path(project_root) / ".fenix" / "logs"
     log_path = logs_dir / "fenixd.log"
     try:
@@ -115,67 +116,75 @@ def _load_run_metric_index(project_root: Path) -> dict:
     except OSError:
         return {}
     head_hash = _log_head_fingerprint(log_path)
-    key = (str(log_path), size, head_hash)
-    if key == _RUN_METRIC_INDEX_KEY:
-        return _RUN_METRIC_INDEX
-    # size 缩小（轮转）、首块指纹不符（轮转后快速回涨超旧 size）或首扫 → 清空重建
-    if _RUN_METRIC_INDEX_KEY is None or _RUN_METRIC_INDEX_KEY[0] != str(log_path) \
-            or size < _RUN_METRIC_INDEX_KEY[1] \
-            or head_hash != _RUN_METRIC_INDEX_KEY[2]:
-        _RUN_METRIC_INDEX = {}
+    slot = _RUN_METRIC_INDEX.setdefault(str(log_path), {"key": None, "index": {}})
+    index = slot["index"]
+    key = (size, head_hash)
+    if key == slot["key"]:
+        return index
+    # size 缩小（轮转）、首块指纹不符（轮转后快速回涨超旧 size）或首扫 → 本槽清空重建
+    prev_key = slot["key"]
+    if prev_key is None or size < prev_key[0] or head_hash != prev_key[1]:
+        index = slot["index"] = {}
         start = 0
     else:
-        start = _RUN_METRIC_INDEX_KEY[1]
+        start = prev_key[0]
     try:
         with log_path.open("r", encoding="utf-8", errors="replace") as f:
             if start:
                 f.seek(start)
-            _RUN_METRIC_INDEX.update(_parse_run_metric_stream(f))
+            index.update(_parse_run_metric_stream(f))
     except OSError:
         # 3c9c40ef135f：扫描中途读失败不推进 key——下一轮从旧 offset 重扫同一
         # 区间（_parse_run_metric_stream 产物按 run_id 覆盖式写入，重扫幂等）；
-        # 轮转/首扫重建分支已清空的索引由下轮（指纹不符/size 判定）重判重建
-        # 自愈。对齐 log_index._update_log_block_index「读取失败不推进」口径。
+        # 轮转/首扫重建分支已清空的本槽索引由下轮（指纹不符/size 判定）重判
+        # 重建自愈。对齐 log_index._update_log_block_index「读取失败不推进」口径。
         pass
     else:
-        _RUN_METRIC_INDEX_KEY = key
-    # 容量上限：超限按最旧淘汰（dict 保插入序＝日志出现序），保近期 run 指标
-    if len(_RUN_METRIC_INDEX) > _RUN_METRIC_INDEX_MAX:
-        excess = len(_RUN_METRIC_INDEX) - _RUN_METRIC_INDEX_MAX
-        for rid in list(_RUN_METRIC_INDEX)[:excess]:
-            del _RUN_METRIC_INDEX[rid]
-    return _RUN_METRIC_INDEX
+        slot["key"] = key
+    # 容量上限：各槽合计超限按最旧淘汰（槽按出现序、槽内 dict 保插入序＝日志
+    # 出现序），保近期 run 指标
+    total = sum(len(s["index"]) for s in _RUN_METRIC_INDEX.values())
+    if total > _RUN_METRIC_INDEX_MAX:
+        excess = total - _RUN_METRIC_INDEX_MAX
+        for s in _RUN_METRIC_INDEX.values():
+            if excess <= 0:
+                break
+            s_index = s["index"]
+            for rid in list(s_index)[:excess]:
+                del s_index[rid]
+                excess -= 1
+    return index
 
 
-_ROTATED_METRIC_INDEX: dict = {}
-_ROTATED_METRIC_INDEX_KEY: tuple = None  # (str(log_path), size)
+# 同主日志索引按 log_path 分槽（dashboard 单进程多项目交替查询各自零重建）
+_ROTATED_METRIC_INDEX: dict = {}  # {str(log_path): {"key": (size,), "index": {run_id: ctx}}}
 
 
 def _load_rotated_run_metric_index(project_root: Path) -> dict:
-    """轮转日志 .fenixd.log.1 的 run_metrics 索引（跨轮转旧 run 回退源）。
+    """轮转日志 .fenixd.log.1 的 run_metrics 索引（跨轮转旧 run 回退源，按 log_path 分槽）。
 
     主日志索引只覆盖最近一次轮转之后的行，轮转前收尾的旧 run 终态只在
     .fenixd.log.1（evo-fix-self-review-phantom-failed-samples 2.1）。轮转
-    日志写入后冻结、下次轮转被整体替换，按 (log_path, size) 键增量维护：
-    size 变化（含被新轮转替换）整体重建。
+    日志写入后冻结、下次轮转被整体替换，每槽按 size 键增量维护：
+    size 变化（含被新轮转替换）仅重建本槽。
     """
-    global _ROTATED_METRIC_INDEX, _ROTATED_METRIC_INDEX_KEY
     log_path = Path(project_root) / ".fenix" / "logs" / "fenixd.log.1"
     try:
         size = log_path.stat().st_size
     except OSError:
         return {}
-    key = (str(log_path), size)
-    if key == _ROTATED_METRIC_INDEX_KEY:
-        return _ROTATED_METRIC_INDEX
+    slot = _ROTATED_METRIC_INDEX.setdefault(str(log_path), {"key": None, "index": {}})
+    key = (size,)
+    if key == slot["key"]:
+        return slot["index"]
     index: dict = {}
     try:
         with log_path.open("r", encoding="utf-8", errors="replace") as f:
             index = _parse_run_metric_stream(f)
     except OSError:
         pass
-    _ROTATED_METRIC_INDEX = index
-    _ROTATED_METRIC_INDEX_KEY = key
+    slot["index"] = index
+    slot["key"] = key
     return index
 
 

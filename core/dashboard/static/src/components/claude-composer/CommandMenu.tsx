@@ -87,7 +87,7 @@ const MENU_MIN_HEIGHT = 160;
 // 桌面分支菜单宽度与未给 bottom 时的默认锚定间距（code-review item
 // 4b90dbe0dd88）：clamp 上限与 width 必须同源，避免只改一处右缘被裁切。
 const MENU_WIDTH = 440;
-const DEFAULT_ANCHOR_BOTTOM = 90;
+export const DEFAULT_ANCHOR_BOTTOM = 90;
 
 const getCommandKey = (command: CommandMenuCommand) =>
   `${command.name}::${command.namespace || command.type || 'other'}::${command.path || ''}`;
@@ -129,7 +129,7 @@ const getMenuPosition = (position: {
     };
   }
   const anchorBottom = Math.min(
-    Math.max(MENU_EDGE_GAP, position.bottom ?? 90),
+    Math.max(MENU_EDGE_GAP, position.bottom ?? DEFAULT_ANCHOR_BOTTOM),
     maxAnchorBottom,
   );
   const clampedLeft = Math.max(

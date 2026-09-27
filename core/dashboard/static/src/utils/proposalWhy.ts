@@ -43,11 +43,18 @@ export function fetchProposalWhy(project: string, spec: string): Promise<string 
   const p = getSpecDoc(project, spec, 'proposal')
     .then((d) => {
       const why = d.found ? extractProposalWhy(d.content) : null;
-      whyCache.set(key, { status: why ? 'done' : 'empty', text: why || undefined, cachedAt: Date.now() });
+      // 回包到达时该键可能已被 TTL 过期后的新请求占位（loading），此时放弃写入，
+      // 避免迟到旧回包覆盖新条目、让陈旧文本带着新 cachedAt 重新回潮。
+      if (whyCache.get(key)?.promise === p) {
+        whyCache.set(key, { status: why ? 'done' : 'empty', text: why || undefined, cachedAt: Date.now() });
+      }
       return why;
     })
     .catch(() => {
-      whyCache.delete(key); // 失败不缓存，下次自动重试
+      // 同理：仅当缓存条目仍是本次请求时才清除，避免误删新请求的在途去重入口。
+      if (whyCache.get(key)?.promise === p) {
+        whyCache.delete(key); // 失败不缓存，下次自动重试
+      }
       return null;
     });
   whyCache.set(key, { status: 'loading', promise: p });

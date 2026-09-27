@@ -8,7 +8,8 @@
   两类拒绝错误码；GET /api/regression/fix-result：读取与缺失兜底
 - 3.2 daemon 消费链：消费→入账→triggered=true 全链路、snapshot_missing /
   orchestrator_missing / dispatch_exception 三兜底、already_running 拒绝时
-  条目保留、信号消费后不残留
+  条目保留、信号消费后不残留、陈旧信号（created 超 1h）仅消费落
+  stale_created 不投递不入账（item 6cc24b51f6b9）
 
 MUST NOT 真跑 agent——编排器经记录型假 executor 投递，runner 用最小替身。
 """
@@ -16,6 +17,7 @@ MUST NOT 真跑 agent——编排器经记录型假 executor 投递，runner 用
 import json
 import sys
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -481,6 +483,9 @@ def _orch(proot: Path, runner=None):
 
 
 _CREATED = "2026-09-25T01:02:03+00:00"
+# item 6cc24b51f6b9：created 超过 1h 阈值的手动信号按陈旧分档（仅消费不投递、
+# 不入账）。行为类用例改用新鲜 created 以到达原目标路径；固定值留给 stale 用例。
+_FRESH_CREATED = datetime.now(timezone.utc).isoformat()
 
 
 class TestRegressionFixConsume:
@@ -494,7 +499,7 @@ class TestRegressionFixConsume:
         runner = _FakeRunner()
         runner._code_fix_orchestrator = _orch(proot, runner=runner)
         daemon = _make_daemon(proot, runner)
-        _write_signal(proot, _CREATED)
+        _write_signal(proot, _FRESH_CREATED)
         _consume(monkeypatch, proot, daemon)
 
         assert not (proot / ".fenix" / "regression_fix_request.json").exists(), \
@@ -502,7 +507,7 @@ class TestRegressionFixConsume:
         res = _read_result(proot)
         assert res["triggered"] is True
         assert res["reason"] == "dispatched"
-        assert res["request_created"] == _CREATED, "结果 MUST 回链信号 created"
+        assert res["request_created"] == _FRESH_CREATED, "结果 MUST 回链信号 created"
         assert res["finished_at"]
 
         items = read_items(proot)
@@ -511,7 +516,7 @@ class TestRegressionFixConsume:
             "regression-failure", "regression-long-test"}
         for rec in items.values():
             assert rec["review_kind"] == "regression_fix"
-            assert rec["review_id"] == f"regression-fix-{_CREATED}"
+            assert rec["review_id"] == f"regression-fix-{_FRESH_CREATED}"
             assert rec["status"] == "open"
 
     def test_consumer_passes_override_enabled_true(self, monkeypatch):
@@ -521,7 +526,7 @@ class TestRegressionFixConsume:
         spy = _SpyOrch()
         runner = _FakeRunner(orchestrator=spy)
         daemon = _make_daemon(proot, runner)
-        _write_signal(proot, _CREATED)
+        _write_signal(proot, _FRESH_CREATED)
         _consume(monkeypatch, proot, daemon)
         assert spy.calls == [True]
 
@@ -542,7 +547,7 @@ class TestRegressionFixConsume:
         _write_snapshot(proot, snap)
         runner = _FakeRunner(orchestrator=_SpyOrch())
         daemon = _make_daemon(proot, runner)
-        _write_signal(proot, _CREATED)
+        _write_signal(proot, _FRESH_CREATED)
         _consume(monkeypatch, proot, daemon)
 
         rec = next(iter(read_items(proot).values()))
@@ -559,7 +564,7 @@ class TestRegressionFixConsume:
         _write_snapshot(proot, _snapshot(status="timeout", reason="硬超时中止"))
         runner = _FakeRunner(orchestrator=_SpyOrch())
         daemon = _make_daemon(proot, runner)
-        _write_signal(proot, _CREATED)
+        _write_signal(proot, _FRESH_CREATED)
         _consume(monkeypatch, proot, daemon)
 
         items = read_items(proot)
@@ -577,13 +582,13 @@ class TestRegressionFixConsume:
         spy = _SpyOrch()
         runner = _FakeRunner(orchestrator=spy)
         daemon = _make_daemon(proot, runner)
-        _write_signal(proot, _CREATED)
+        _write_signal(proot, _FRESH_CREATED)
         _consume(monkeypatch, proot, daemon)
 
         res = _read_result(proot)
         assert res["triggered"] is False
         assert res["reason"] == "snapshot_missing"
-        assert res["request_created"] == _CREATED
+        assert res["request_created"] == _FRESH_CREATED
         assert spy.calls == [], "快照缺失 MUST NOT 调 checkpoint"
         assert read_items(proot) == {}
         assert not (proot / ".fenix" / "regression_fix_request.json").exists()
@@ -595,7 +600,7 @@ class TestRegressionFixConsume:
         (reg_dir / "last-run.json").write_text("{broken", encoding="utf-8")
         runner = _FakeRunner(orchestrator=_SpyOrch())
         daemon = _make_daemon(proot, runner)
-        _write_signal(proot, _CREATED)
+        _write_signal(proot, _FRESH_CREATED)
         _consume(monkeypatch, proot, daemon)
         assert _read_result(proot)["reason"] == "snapshot_missing"
 
@@ -605,13 +610,13 @@ class TestRegressionFixConsume:
         _write_snapshot(proot, _snapshot(failures=[_failure()]))
         runner = _FakeRunner(with_attr=False)
         daemon = _make_daemon(proot, runner)
-        _write_signal(proot, _CREATED)
+        _write_signal(proot, _FRESH_CREATED)
         _consume(monkeypatch, proot, daemon)
 
         res = _read_result(proot)
         assert res["triggered"] is False
         assert res["reason"] == "orchestrator_missing"
-        assert res["request_created"] == _CREATED
+        assert res["request_created"] == _FRESH_CREATED
         assert read_items(proot) == {}, "编排器缺失时 MUST NOT 先入账"
         assert not (proot / ".fenix" / "regression_fix_request.json").exists()
 
@@ -621,13 +626,13 @@ class TestRegressionFixConsume:
         _write_snapshot(proot, _snapshot(failures=[_failure()]))
         runner = _FakeRunner(orchestrator=_BoomOrch())
         daemon = _make_daemon(proot, runner)
-        _write_signal(proot, _CREATED)
+        _write_signal(proot, _FRESH_CREATED)
         _consume(monkeypatch, proot, daemon)
 
         res = _read_result(proot)
         assert res["triggered"] is False
         assert res["reason"] == "dispatch_exception"
-        assert res["request_created"] == _CREATED
+        assert res["request_created"] == _FRESH_CREATED
         assert len(read_items(proot)) == 1, "转换入账成功后异常不回滚台账"
 
     def test_already_running_keeps_items(self, monkeypatch):
@@ -638,13 +643,13 @@ class TestRegressionFixConsume:
         runner._running_agents = {"code-fix-123": object()}
         runner._code_fix_orchestrator = _orch(proot, runner=runner)
         daemon = _make_daemon(proot, runner)
-        _write_signal(proot, _CREATED)
+        _write_signal(proot, _FRESH_CREATED)
         _consume(monkeypatch, proot, daemon)
 
         res = _read_result(proot)
         assert res["triggered"] is False
         assert res["reason"] == "already_running"
-        assert res["request_created"] == _CREATED
+        assert res["request_created"] == _FRESH_CREATED
         assert len(read_items(proot)) == 1, "拒绝不回滚台账（design D6）"
         assert not (proot / ".fenix" / "regression_fix_request.json").exists()
 
@@ -654,7 +659,7 @@ class TestRegressionFixConsume:
         _write_snapshot(proot, _snapshot(failures=[_failure()]))
         runner = _FakeRunner(orchestrator=_BoomOrch())
         daemon = _make_daemon(proot, runner)
-        _write_signal(proot, _CREATED)
+        _write_signal(proot, _FRESH_CREATED)
         _consume(monkeypatch, proot, daemon)
         first = _read_result(proot)
         assert first["reason"] == "dispatch_exception"
@@ -675,3 +680,23 @@ class TestRegressionFixConsume:
         assert spy.calls == []
         assert _read_result(proot) == {}
         assert read_items(proot) == {}
+
+    def test_stale_created_consumed_without_dispatch(self, monkeypatch):
+        """积压旧信号（created 超 1h 阈值）→ 仅消费落 stale_created，
+        不转换入账、不投递（item 6cc24b51f6b9）。"""
+        proot = _make_project_root()
+        _write_snapshot(proot, _snapshot(failures=[_failure()]))
+        spy = _SpyOrch()
+        runner = _FakeRunner(orchestrator=spy)
+        daemon = _make_daemon(proot, runner)
+        _write_signal(proot, _CREATED)
+        _consume(monkeypatch, proot, daemon)
+
+        assert not (proot / ".fenix" / "regression_fix_request.json").exists(), \
+            "陈旧信号同样 MUST 消费删除，不留死信号"
+        res = _read_result(proot)
+        assert res["triggered"] is False
+        assert res["reason"] == "stale_created"
+        assert res["request_created"] == _CREATED
+        assert spy.calls == [], "陈旧信号 MUST NOT 投递 checkpoint"
+        assert read_items(proot) == {}, "陈旧信号 MUST NOT 转换入账"

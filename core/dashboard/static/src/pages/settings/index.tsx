@@ -84,6 +84,14 @@ export default function SettingsPage() {
   // 自进化页签：两张配置卡片各自暴露的收集句柄，供页签底部唯一「保存」按钮触发
   const staleSelfhealRef = useRef<SelfEvolutionSectionHandle>(null);
   const suggestionsRef = useRef<SelfEvolutionSectionHandle>(null);
+  // 自进化保存重入守卫（code-review item d64feaab59a4）：对齐其余页签保存
+  // 按钮的 saving 口径（SelfReview/TokenBudget/Verify/ProjectProfile 均为
+  // saving 期间置 loading/disabled 并在入口短路），覆盖 collect 校验 →
+  // 保存 → 重载整条异步链；setSaving 渲染生效存在 React 调度间隙（同
+  // ProjectProfilePanel autodraft 的双击穿透实证），经 savingRef 写读同帧
+  // 原子拦住连点，state 只负责按钮视觉反馈。
+  const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
   // 质量页签「手工编辑」→「项目简介」页签聚焦信号（时间戳；0=无待处理信号）
   const [verifyFocusSignal, setVerifyFocusSignal] = useState(0);
 
@@ -184,35 +192,47 @@ export default function SettingsPage() {
   // （任一卡片校验失败即中止；项目级作用域下建议改进项为只读、返回空补丁，
   // 故只提交在当前作用域可写的陈旧自愈节）。
   const handleSelfEvolutionSave = async () => {
-    const parts = await Promise.all([
-      staleSelfhealRef.current?.collect(),
-      suggestionsRef.current?.collect(),
-    ]);
-    // ref 未挂载 ≠ 空收集（code-review item 51a0f171bc8c）：ref 未挂（卡片
-    // 未渲染/面板卸载）时 ``?.collect()`` 得 undefined——旧空检查只拒 null
-    // 哨兵，undefined 落入 ``?? {}`` 被当空数据合并：(a) 两 ref 都未挂时
-    // 用户看到「没有需要保存的变更」尽管啥也没收集；(b) 部分 ref 在场时真
-    // 数据与「未收集」混为一谈。undefined（面板未就绪）与 null（校验失败）
-    // 分开提示，均中止保存。
-    if (parts.some((p) => p === undefined)) {
-      message.warning('自进化面板未就绪，无法收集本节配置，请稍后重试');
-      return;
+    // 重入守卫（code-review item d64feaab59a4）：本入口是 collect 校验 →
+    // handleSave 写盘 → getConfig 重载的多段异步链，在飞窗口为全页保存入口
+    // 中最长；saving 期间连点直接短路，不发重复写盘请求、不重复弹「保存成功」。
+    if (savingRef.current) return;
+    savingRef.current = true;
+    setSaving(true);
+    try {
+      const parts = await Promise.all([
+        staleSelfhealRef.current?.collect(),
+        suggestionsRef.current?.collect(),
+      ]);
+      // ref 未挂载 ≠ 空收集（code-review item 51a0f171bc8c）：ref 未挂（卡片
+      // 未渲染/面板卸载）时 ``?.collect()`` 得 undefined——旧空检查只拒 null
+      // 哨兵，undefined 落入 ``?? {}`` 被当空数据合并：(a) 两 ref 都未挂时
+      // 用户看到「没有需要保存的变更」尽管啥也没收集；(b) 部分 ref 在场时真
+      // 数据与「未收集」混为一谈。undefined（面板未就绪）与 null（校验失败）
+      // 分开提示，均中止保存。
+      if (parts.some((p) => p === undefined)) {
+        message.warning('自进化面板未就绪，无法收集本节配置，请稍后重试');
+        return;
+      }
+      // 校验失败/无变更不再静默返回（code-review item 57ca856f0531）：旧实现两处
+      // 裸 return 使用户以为已保存，实际什么都没发生。
+      if (parts.some((p) => p === null)) {
+        message.warning('请先修正表单校验错误');
+        return;
+      }
+      const merged = parts.reduce<Partial<ConfigData>>(
+        (acc, p) => ({ ...acc, ...(p ?? {}) }),
+        {},
+      );
+      if (Object.keys(merged).length === 0) {
+        message.info('没有需要保存的变更');
+        return;
+      }
+      await handleSave(merged);
+    } finally {
+      // 各中止路径与在飞链结束统一复位；ref 同帧复位先于 state 渲染生效
+      savingRef.current = false;
+      setSaving(false);
     }
-    // 校验失败/无变更不再静默返回（code-review item 57ca856f0531）：旧实现两处
-    // 裸 return 使用户以为已保存，实际什么都没发生。
-    if (parts.some((p) => p === null)) {
-      message.warning('请先修正表单校验错误');
-      return;
-    }
-    const merged = parts.reduce<Partial<ConfigData>>(
-      (acc, p) => ({ ...acc, ...(p ?? {}) }),
-      {},
-    );
-    if (Object.keys(merged).length === 0) {
-      message.info('没有需要保存的变更');
-      return;
-    }
-    await handleSave(merged);
   };
 
   // 运行时构造菜单：自省与项目简介均为项目级页签，随项目级作用域出现；
@@ -419,6 +439,8 @@ export default function SettingsPage() {
                       <Button
                         type="primary"
                         onClick={handleSelfEvolutionSave}
+                        loading={saving}
+                        disabled={saving}
                         data-testid="settings-save"
                       >
                         保存

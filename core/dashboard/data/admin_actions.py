@@ -1357,7 +1357,10 @@ def set_spec_priority(project_root, spec: str, priority) -> dict:
     Raises:
         InvalidPriority: priority 不在 1-9 或不可转为整数
     """
-    # 1-9 整数校验（兼容可被 int() 消费的字符串）
+    # 1-9 整数校验（兼容可被 int() 消费的字符串）；bool/浮点直接拒绝，
+    # 对齐 set_spec_budget 的校验口径——bool 是 int 子类、int() 会静默截断浮点
+    if isinstance(priority, bool) or not isinstance(priority, (int, str)):
+        raise InvalidPriority(priority)
     try:
         p = int(priority)
     except (TypeError, ValueError):
