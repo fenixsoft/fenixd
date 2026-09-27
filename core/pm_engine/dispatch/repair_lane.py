@@ -166,10 +166,14 @@ class PRepairLaneMixin:
                 f"repair 轮次已达上限（{repair_round}/{MAX_REPAIR_ROUNDS_PER_FAILURE}）"
                 f"'{spec_name}' — 兜底回退 fallback 全新重派",
             )
+            # code-review item 8e379d862123：从未派发本轮 repair——merge 错误
+            # 须落 merge_error 形参，repair_error 只写「轮次超限」事实，避免
+            # STATE error 被误标为 repair 失败、真实 merge 上下文被占位符替换。
             self._fallback_after_repair(
                 spec_name,
                 branch,
-                getattr(merge_info, "error", "") or "",
+                repair_error="repair 轮次超限",
+                merge_error=getattr(merge_info, "error", "") or "",
             )
             return False
         # 分支消亡 → fallback（三态 (c)）
@@ -677,7 +681,15 @@ class PRepairLaneMixin:
                 streak=streak,
             ))
         # 未触发熔断且不可 repair → fallback 全新重派
-        self._fallback_after_repair(spec_name, branch, merge_error)
+        # code-review item 8e379d862123：re-merge 错误须落 merge_error 形参，
+        # repair_error 只写「re-merge 失败不可 repair」事实，避免 STATE error
+        # 被误标为 repair 失败、真实 merge 上下文被占位符替换。
+        self._fallback_after_repair(
+            spec_name,
+            branch,
+            repair_error="repair 后 re-merge 失败且不可 repair",
+            merge_error=merge_error,
+        )
         return False
 
     def _fallback_after_repair(
