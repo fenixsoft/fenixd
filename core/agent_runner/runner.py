@@ -384,6 +384,28 @@ def _default_ts_parser(entry: dict):
     return _latency_default_ts_parser(entry)
 
 
+# evo-code-fix-api-timeout-salvage 1.1：CLI 合成的单轮 API 请求超时终态文本
+# （超长单请求超时 → CLI 写出该文本并以 Exit 1 终局）。
+API_TIMEOUT_RESULT_TEXT = "Request timed out"
+
+
+def is_api_timeout_signature(last_result) -> bool:
+    """判别末次 result 事件是否单轮 API 请求超时签名（evo-code-fix-api-timeout-salvage 1.1）。
+
+    两形态命中（判别单源，车道层只读标记不重复解析，design D1）：
+    - 末次 result 事件 ``terminal_reason == "api_error"``（结构化终态标记）；
+    - result 文本含 CLI 合成的 "Request timed out"（synthetic 超时文本）。
+
+    ``last_result`` 为空（崩溃/强杀路径无 result 事件）恒 False——超时强杀有
+    自己的异常通道（timeout_error / turn_limit_error），不落入本判别。
+    """
+    if not last_result:
+        return False
+    if str(last_result.get("terminal_reason") or "") == "api_error":
+        return True
+    return API_TIMEOUT_RESULT_TEXT in str(last_result.get("result") or "")
+
+
 @dataclass
 class _AttemptState:
     """attempt 周期共享状态对象（design D3）。
@@ -5069,6 +5091,10 @@ class AgentRunner:
             exc.stderr_lines = list(stderr_lines)
             exc.has_result = bool(last_result)
             exc.exit_code = returncode
+            # evo-code-fix-api-timeout-salvage 1.1：api_timeout 布尔标记挂异常
+            # （判别在 runner 层一次完成，车道层只读标记，design D1）；
+            # 不改变既有异常消息文本。
+            exc.api_timeout = is_api_timeout_signature(last_result)
             raise exc
 
         # D5: 终态语义校验前置 —— rc==0 但 last_result 标记为 error 时仍判失败

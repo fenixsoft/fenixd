@@ -3094,6 +3094,68 @@ class CodeFixOrchestrator:
         )
         return True
 
+    def _salvage_api_timeout_wip(self, wt, result, batch_no: int) -> bool:
+        """api_timeout 终局失败的 WIP 即时 salvage（evo-code-fix-api-timeout-salvage 2.1）。
+
+        救回前移到失败当时（design D2），而非坐等陈旧清扫期的悬空 Pre-rmtree
+        快照。仅 api_timeout 签名（车道层只读 run 信封布尔标记，判别单源在
+        runner 层，design D1）且工作区脏（``git status --porcelain`` 非空）时
+        以 ``_salvage_commit`` 提交到批分支；工作区干净跳过（Requirement 4）、
+        提交失败 fail-open——一律返回 False，调用方照常 _safe_cleanup 并按
+        现状失败收尾（不改变跳批推进），MUST NOT 空提交凑数（与
+        ``_salvage_stranded_batch`` D4 同口径）。
+        """
+        if not getattr(result, "api_timeout", False):
+            return False
+        if not _worktree_porcelain(wt).strip():
+            self._log(
+                "info",
+                f"code-fix 第 {batch_no} 批 api_timeout 终局但工作区干净，"
+                f"跳过 salvage 按现状清理（run {result.run_id}）",
+            )
+            return False
+        message = f"api-timeout-salvage: batch {batch_no} run {result.run_id}"
+        if not _salvage_commit(wt, message):
+            self._log(
+                "warning",
+                f"code-fix 第 {batch_no} 批 api_timeout salvage 提交失败，"
+                f"按现状失败收尾（fail-open，run {result.run_id}）",
+            )
+            return False
+        self._log(
+            "warning",
+            f"code-fix 第 {batch_no} 批 api_timeout 终局，未提交现场已 salvage "
+            f"提交到批分支（cleanup 登记 recovery legacy 保全、下批认领继承）: "
+            f"{message}",
+        )
+        return True
+
+    def _mark_salvage_reusable(self, wm) -> bool:
+        """给刚登记的 salvage legacy 补 reuse 标记（evo-code-fix-api-timeout-salvage 2.1）。
+
+        调用前提：``_safe_cleanup(success=False)`` 已对非 verify- 前缀分支登记
+        recovery legacy（lifecycle.py 既有语义）。对批建树既有 spec_name
+        "code-review-fix"（:3134）置 reuse，下一批 ``wm.create`` 经既有认领
+        通路（``_take_reusable_worktree``）继承 salvaged 分支；无在册 legacy
+        （cleanup 未登记）/标记失败只留 WARNING 不阻断（fail-open，下批按
+        全新建树接续）。MUST NOT 调 ``consume_legacy``（回收端，删分支）。
+        """
+        marker = getattr(wm, "mark_legacy_reusable", None)
+        if marker is None:
+            return False
+        try:
+            marked = bool(marker("code-review-fix"))
+        except Exception as e:  # noqa: BLE001 — 标记失败不改变失败收尾
+            self._log("warning", f"code-fix salvage legacy reuse 标记异常（fail-open）: {e}")
+            return False
+        if not marked:
+            self._log(
+                "warning",
+                "code-fix salvage 后无在册 legacy 可置 reuse"
+                "（cleanup 未登记），下一批按全新建树接续",
+            )
+        return marked
+
     def _run_batch(self, ctx: dict) -> None:
         batch_no = ctx["batch_no"]
         outcome = "halt"
@@ -3188,11 +3250,25 @@ class CodeFixOrchestrator:
         result = runner.run_code_fix(wt, items, run_id=run_id)
         if not result.success:
             self._log("error", f"code-fix run 失败（run {result.run_id}）: {result.error}")
+            # evo-code-fix-api-timeout-salvage 2.1：api_timeout 终局且工作区脏时
+            # 先把 WIP salvage 提交到批分支，再照常 _safe_cleanup——MUST NOT 跳过
+            # cleanup（漏掉则 code-review-fix:code-fix spec 锁滞留，下一批 create()
+            # 恒 None 车道死锁，见 _run_batch_inner 既有警告）；salvage 未命中或
+            # 提交失败 fail-open 按现状失败收尾（2.3：非 api_timeout 行为不变）。
+            salvaged = self._salvage_api_timeout_wip(wt, result, batch_no=batch_no)
             # agent run 失败（瞬态，selfheal D3）：不合回不核销；条目入
             # chain_skipped（链内跳过，不烧跨轮预算）；清理 worktree 释放
             # spec 锁（否则下一批 create() 恒 None，车道死锁）；consumed：
-            # 链继续推进下一批。
+            # 链继续推进下一批。cleanup success=False 对非 verify- 前缀分支
+            # 自动登记 recovery legacy（lifecycle.py 既有语义，宽限期内豁免
+            # 陈旧清扫）——salvaged 现场由 legacy 机制保全而非物理清理。
             _safe_cleanup(wm, wt, success=False, logger=self._logger)
+            if salvaged:
+                # 补 reuse 标记（register_legacy 自身不置 reuse）：下一批
+                # wm.create 经既有认领通路 _take_reusable_worktree 继承 salvaged
+                # 分支（2.2，认领端零新增）；MUST NOT 走 consume_legacy——其
+                # 语义是后继成功 merge 后回收（会删分支，复刻悬空 commit 净损失）。
+                self._mark_salvage_reusable(wm)
             self._consumed_progress(
                 current=f"第 {batch_no} 批失败已跳过（run 失败）— 继续后续批次",
                 reason=f"agent_run_failed: {result.error}"[:500],
