@@ -119,7 +119,20 @@ def probe(provider_name: str, config_path: Path) -> dict:
             "cache_supported": None,
             "error": f"配置文件不存在: {config_path}",
         }
-    provider = _load_provider(config_path, provider_name)
+    # 配置文件解析失败同口径走 JSON 判据输出（code-review item 35e6d25230fd）：
+    # yaml.safe_load 遇语法非法的 config.yaml 抛 YAMLError，不捕获则 main()
+    # 直接 traceback 崩溃且 stdout 无 JSON，破坏模块「确定性 JSON 判据」契约；
+    # 归为 cache_supported=None，main() 据此 exit 1（参数类硬错误同口径）。
+    import yaml
+
+    try:
+        provider = _load_provider(config_path, provider_name)
+    except yaml.YAMLError as e:
+        return {
+            "provider": provider_name,
+            "cache_supported": None,
+            "error": f"配置文件解析失败: {e}",
+        }
     if provider is None:
         return {
             "provider": provider_name,
@@ -142,6 +155,10 @@ def probe(provider_name: str, config_path: Path) -> dict:
     rounds = []
     errors = []
     for i in (1, 2):
+        # 两轮间隔前置并跳过首轮（code-review item 5db314ddc9fb）：sleep 放
+        # 循环末尾会让最后一轮完成后仍无条件多等 1 秒才退出。
+        if i > 1:
+            time.sleep(1)
         try:
             parsed, _raw = _post_once(provider, body)
         except Exception as e:  # 网络/解析/HTTP 错误：round 留空并记录
@@ -164,7 +181,6 @@ def probe(provider_name: str, config_path: Path) -> dict:
                     ),
                 }
             )
-        time.sleep(1)
 
     # cache_supported 判据：第二轮有读取且第二轮 cache_read 显著（>0）。
     # 第1轮 cache_read 高而第2轮低（或恒 0）= 写入不可复用，不支持。
