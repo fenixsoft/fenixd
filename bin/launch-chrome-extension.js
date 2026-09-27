@@ -396,13 +396,18 @@ async function launchChromeExtension(distPath, opts = {}) {
 
   } catch (error) {
     const endTime = Date.now();
+    const anomalies = detectAnomalies(networkLog);
     return {
       success: false,
       extensionLoaded: false,
+      extensionId: null,
       manifestPath,
       networkLog,
-      anomalies: detectAnomalies(networkLog),
+      anomalies,
+      uiTests: [],
+      timedOut: false,
       duration: endTime - startTime,
+      summary: buildSummary(anomalies),
       error: error.message || String(error),
     };
   } finally {
