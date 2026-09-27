@@ -11,6 +11,7 @@ v2_dev_server.py — per-run 隔离测试服务生命周期管理（add-worktree
 """
 
 import os
+import re
 import signal
 import subprocess
 import time
@@ -106,7 +107,12 @@ def allocate_port(
         if _port_in_use(port):
             continue
         return port
-    fallback = find_free_port()
+    try:
+        fallback = find_free_port()
+    except OSError as e:
+        # 临时端口申请极端情况下也可抛 OSError（如 fd 耗尽）；包装为契约异常，
+        # 避免绕过 start() 声明的 V2DevServerError 契约直抛调用方。
+        raise V2DevServerError(f"ephemeral port fallback failed: {e}") from e
     if logger:
         logger.warning(
             "v2_dev_server",
@@ -189,8 +195,13 @@ def start(
     # 等待端口就绪（dev-server.mjs 监听后即写 "listening"；不读 stdout 时用探测）。
     # 连通成功后仍须确认本进程存活：allocate_port 的 bind 探测与 node 实际 bind
     # 之间存在窗口，端口可能被他方进程抢注——node bind 失败已退出而 connect 握手
-    # 到的是他方 listener，误判就绪会把验证流量打到异码服务上。
-    if not _wait_ready(port, timeout=5.0, logger=logger) or proc.poll() is not None:
+    # 到的是他方 listener，误判就绪会把验证流量打到异码服务上。就绪后再延迟复查
+    # 一次存活：外部 listener 抢先应答时 node 往往尚未退出，瞬时快照 poll() 为
+    # None 仍会漏判，延迟数百毫秒可覆盖 node 启动/bind 失败退出的典型时长。
+    ready = _wait_ready(port, timeout=5.0, logger=logger)
+    if ready:
+        time.sleep(0.3)
+    if not ready or proc.poll() is not None:
         # 启动但端口未就绪：视为失败，回收子进程，按端口冲突重试语义上抛。
         _log("error", f"dev-server on port {port} not ready in 5s, killing")
         _kill(proc)
@@ -399,8 +410,16 @@ def _worktree_has_live_referencing_process(wt_root: Path, exclude_pid: int) -> b
     事故根因之一）。与 worktree_manager._worktree_has_live_process 同判定。
     """
     try:
+        # 尾边界防串扰：pgrep -f 按子串 ERE 匹配，worktree 名 foo 会连引用
+        # worktrees/foo-bar 的进程一并命中（跨 worktree 误豁免）；须后随
+        # /、空白或行尾才算引用本 worktree。名含正则元字符时 re.escape
+        # 免被当作模式语法解释。
         res = subprocess.run(
-            ["pgrep", "-f", f"worktrees/{wt_root.name}"],
+            [
+                "pgrep",
+                "-f",
+                rf"worktrees/{re.escape(wt_root.name)}(/|[[:space:]]|$)",
+            ],
             capture_output=True,
             text=True,
             timeout=5,

@@ -710,6 +710,10 @@ def collect_manifest(project_root, scope: str, window_start: Optional[datetime] 
             ["log", "--since", since, "--diff-filter=ACMR", "--name-only", "--pretty=format:"],
         )
         files = [line for line in raw.splitlines() if line.strip()]
+        # --diff-filter=ACMR 按单次提交的变更类型过滤，挡不住窗口内先增/改、
+        # 随后又删除的路径（A/M 事件仍会把已消失的文件列入清单）。按工作树
+        # 存在性二次剔除，兑现上方「不让审查对已删除文件空转」的排除语义。
+        files = [f for f in files if (Path(project_root) / f.strip()).is_file()]
     seen: set = set()
     out: List[str] = []
     for f in files:
