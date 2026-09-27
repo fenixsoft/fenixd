@@ -130,3 +130,11 @@ superseded 条目保留在列供溯源。编号接续本目录既有最大号。
 | [ADR-123](ADR-123-verdict-single-read-entry-shared-result-role-stamp.md) | accepted | 验证裁决单源读取：共享结果文件唯一写入点按 agent_type 注入 role/spec 戳，裁决读先验戳不依赖 run_id 可解析、role≠verifier 记 dispute 不当裁决，丢弃仅限裁决读路径 |
 | [ADR-124](ADR-124-run-transcript-toolresult-recognition-single-source.md) | accepted | run 流转录 tool_result 识别单一真源（真实形态=user 事件包裹 block，顶层仅兼容），全部消费点共用判定函数禁各自假设，解析失明自检 WARNING 不入人工告警，外部格式解析必配真实形态夹具 |
 | [ADR-125](ADR-125-control-plane-silent-failure-ast-guard-exception-tiering.md) | accepted | 控制平面静默失效防线：AST 静态守卫（唯一签名+无变长参数才比对、候选集下限自检）不靠运行时断言不引重型类型检查，复位路径编程错误签名升级告警携调用点栈帧、运维异常保持 WARNING，悬置探测独立短阈值不改 stuck 语义 |
+| [ADR-126](ADR-126-run-verdict-artifact-first-over-exit-code.md) | accepted | run 判定产物优先：进程退出码不等于裁决，失败分支先验结果产物已落盘合法（白名单+派发锚点 mtime+spec 戳）即消费不重派，failed/戳不符视为不可信保守重试 |
+| [ADR-127](ADR-127-failure-classification-three-way-gate-accounting-decoupling.md) | accepted | 失败三态 product/infra/env 独立函数分类（原 bool 签名不动防恒真），门禁阈值只累计 product，infra 轮只记账+预算事后补偿（须入对账豁免防冲销）、env 保留 blocked 通道，unknown 保守按 product 宁少豁免 |
+| [ADR-128](ADR-128-link-level-infra-circuit-breaker-spec-counters-isolation.md) | accepted | 链路级 infra 熔断持久化落盘（补 provider 4xx 内存熔断未覆盖的 402/429/quota/budget），冷却短路派发入口，infra 失败对 spec 级尝试计数与冻结失盲，无杠杆告警只落 ESCALATION 不唤起 |
+| [ADR-129](ADR-129-run-id-spec-attribution-single-source-semantic-split.md) | accepted | run 归属判定单一真源全等匹配（禁前缀 glob 判归属、后缀剥离必覆盖 -a/-r），归属归一用全量前缀集而失败计数保留显式子集，一张表禁承载两种语义、口径变化须显式声明配测试 |
+| [ADR-130](ADR-130-dashboard-read-path-incremental-invalidation-no-write-side-effect.md) | accepted | dashboard 读路径：增量失效只重算变化项（全量重建仅冷启动/损坏）、缓存签名必须完备覆盖决定输出的全部输入（含 STATE 条目指纹、等价性用例验收）、run 文件尾读+memo 且末行禁截断、读侧零写副作用（清理挂 daemon 周期任务） |
+| [ADR-131](ADR-131-repair-success-git-fact-verification-commit-before-test.md) | accepted | repair 成功声明不进信任半径：worker 侧只读 git 事实复核（tip 前进+无冲突残留+无 MERGE_HEAD）后再 re-merge，失败注入具体事实重派，prompt 契约确立提交先于测试为强制终点 |
+| [ADR-132](ADR-132-module-to-package-split-paradigm-facade-patch-contract.md) | accepted | 巨型文件包化拆分范式：先改名入包 _legacy 再逐组摘出（同名包遮蔽）、补丁缝隙一等契约（门面 re-export 不保 patch 语义、调用点经门面延迟解析）、依赖参数注入禁模块级回引、内部调用走一行委托保实例打桩、子模块单向依赖、符号名锚定禁绝对行号 |
+| [ADR-133](ADR-133-signal-kill-attribution-closed-set-channel-isolation.md) | accepted | 信号致死闭集归因按序短路（cancel→监督强杀→daemon 关停→外部信号，不可判别标 unknown 禁猜测），信号死法冷却按 spec 维度禁写全局瞬断指纹，产物硬门两类失败与瞬断指纹通道隔离 |
