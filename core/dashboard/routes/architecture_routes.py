@@ -560,6 +560,11 @@ class ArchitectureManager:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                # 显式 UTF-8：text=True 缺省按 locale 解码，LC_ALL=C 启动的
+                # daemon 下 claude -p 的非 ASCII 回复会 decode 失败被误判
+                # 通信失败（同 ocr_status 修复，code-review item 7ddf7e2b3ed9）
+                encoding="utf-8",
+                errors="replace",
                 env=_build_spawn_env(),
                 # 独立会话组（autodraft 同款）：超时可 killpg 整组清场，
                 # 杜绝只杀直接子进程留下的孤儿孙进程
