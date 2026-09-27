@@ -40,6 +40,9 @@ export default function MiscSettingsPanel({ config, onSave, project, onConfigSyn
     const kb = knowledgeSwitchesFromConfig(config.knowledge);
     const next = {
       auto_threshold: config.archive?.auto_threshold ?? 50,
+      // add-knowledge-atlas：knowledge.enabled 开关回填（缺省 true，与后端缺省一致）
+      knowledge_enabled: config.knowledge?.enabled ?? true,
+      // add-knowledge-atlas-maintenance：维护车道开关回填（缺省 true，与后端缺省一致）
       audit_enabled: kb.auditEnabled,
       graph_enabled: kb.graphEnabled,
     };
@@ -72,11 +75,16 @@ export default function MiscSettingsPanel({ config, onSave, project, onConfigSyn
           archive: {
             auto_threshold: values.auto_threshold,
           },
-          // add-knowledge-atlas-maintenance：知识真相源维护车道开关
-          ...knowledgeSectionFromSwitches({
-            auditEnabled: values.audit_enabled,
-            graphEnabled: values.graph_enabled,
-          }),
+          // add-knowledge-atlas：知识真相源总开关（false 时归档不派发蒸馏）
+          // + add-knowledge-atlas-maintenance：维护车道开关——合并后同节三键共存，
+          // 组装为单一 knowledge 键（对象字面量出现两个同名键会被后者整体覆盖）
+          knowledge: {
+            enabled: values.knowledge_enabled,
+            ...knowledgeSectionFromSwitches({
+              auditEnabled: values.audit_enabled,
+              graphEnabled: values.graph_enabled,
+            }).knowledge,
+          },
         });
       } catch (error) {
         // 保存持久化失败：给用户显式反馈而非静默
@@ -123,7 +131,7 @@ export default function MiscSettingsPanel({ config, onSave, project, onConfigSyn
         </Card>
         {/* add-knowledge-atlas-maintenance 任务 1.2：知识真相源维护车道开关 */}
         <Card style={{ marginTop: 12 }}>
-          <h3 style={{ marginTop: 0 }}>知识真相源</h3>
+          <h3 style={{ marginTop: 0 }}>知识真相源维护</h3>
           <Text type="secondary">
             spec/knowledge/ 真相源的周期维护车道开关；关闭后对应车道静默跳过。
           </Text>
@@ -155,6 +163,31 @@ export default function MiscSettingsPanel({ config, onSave, project, onConfigSyn
           <Text type="secondary">{knowledgeSwitchDesc('graph')}</Text>
         </Card>
       </Form>
+      {/* add-knowledge-atlas：知识真相源总开关（knowledge.enabled）。
+          关闭后归档照常完成、但不派发蒸馏 run，项目知识页签显示禁用占位。 */}
+      <Card style={{ marginTop: 16 }} data-testid="knowledge-settings-card">
+        <Form form={form} layout="vertical">
+          <Form.Item
+            name="knowledge_enabled"
+            valuePropName="checked"
+            // SSR/首帧缺省：useEffect 回填在服务端渲染不执行，initialValue 保证
+            // 缺省（true）与后端缺省一致；挂载后 setFieldsValue 以 config 为准
+            initialValue={config.knowledge?.enabled ?? true}
+            style={{ marginBottom: 8 }}
+          >
+            <Switch data-testid="knowledge-enabled-switch" />
+          </Form.Item>
+          <Text strong>知识真相源</Text>
+          <div>
+            <Text type="secondary" data-testid="knowledge-enabled-desc">
+              归档完成后自动派发蒸馏 run，把该 SPEC 的当前业务规则蒸馏进
+              spec/knowledge/ 真相源（总目录 + 能力页 + ADR 索引）。
+              关闭后归档照常完成，但不再派发蒸馏，项目知识页签显示「知识真相源已禁用」占位。
+              保存后约 30s 配置热更新生效，无需重启 daemon。
+            </Text>
+          </div>
+        </Form>
+      </Card>
       <div style={project ? SETTINGS_ACTIONS_ROW_STYLE : { textAlign: 'right', marginTop: 24 }}>
         {project && onConfigSynced && (
           <SyncFromUserButton project={project} page="misc" onSynced={onConfigSynced} />

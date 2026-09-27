@@ -1476,6 +1476,9 @@ export interface ConfigData {
   verify?: VerifyConfig;
   /** add-spec-archive D5：自动归档阈值（0 = 禁用，默认 50） */
   archive?: { auto_threshold: number };
+  /** add-knowledge-atlas：知识真相源总开关 + add-knowledge-atlas-maintenance：
+   维护车道开关（合并后同节三键共存，缺省均 true） */
+  knowledge?: { enabled?: boolean; audit_enabled?: boolean; graph_enabled?: boolean };
   /** add-daily-self-review：每日自省（admin.self_review 三键） */
   self_review?: SelfReviewConfig;
   /** add-settings-system-tab：系统配置（admin.* 受管键） */
@@ -1504,8 +1507,6 @@ export interface ConfigData {
   /** add-code-review-auto-fix：自动修复代码问题（admin.code_review_fix 两键，
    *  设置页「质量」页签读写；项目页「代码审查」分面呈现进度） */
   code_review_fix?: CodeReviewFixConfig;
-  /** add-knowledge-atlas-maintenance：知识真相源维护车道开关（设置页「杂项」页签） */
-  knowledge?: { audit_enabled?: boolean; graph_enabled?: boolean };
   scope: 'user' | 'project';
   raw_exists: boolean;
   sources: Record<string, string>;
@@ -2342,4 +2343,54 @@ export function refreshArchitecture(project: string) {
  *  结构化错误，前端仅在 state==='ready' 时渲染 iframe）。 */
 export function architectureDiagramUrl(project: string): string {
   return `/api/architecture/diagram?project=${encodeURIComponent(project)}`;
+}
+
+// ── add-knowledge-atlas：项目知识真相源（只读视图）──────────────────
+
+/** 域清单条目（GET /api/knowledge/index 的 domains[]）。 */
+export interface KnowledgeDomain {
+  name: string;
+  /** 域内能力页文件名清单（不含 _domain.md）。 */
+  pages: string[];
+  nav_exists: boolean;
+}
+
+/** ADR 清单条目（index 响应的 adrs[]，后端解析文件头）。 */
+export interface KnowledgeAdrEntry {
+  file: string;
+  status: string;
+  superseded_by: string | null;
+}
+
+/** 项目知识总目录（GET /api/knowledge/index；未初始化 initialized=false）。 */
+export interface KnowledgeIndexData {
+  project?: string;
+  initialized: boolean;
+  index_md: string | null;
+  domains: KnowledgeDomain[];
+  adrs: KnowledgeAdrEntry[];
+}
+
+/** 读取项目知识总目录（分面 active 门控；未初始化为占位结构，非错误）。 */
+export async function getKnowledgeIndex(project: string): Promise<KnowledgeIndexData> {
+  const q = `?project=${encodeURIComponent(project)}`;
+  return request<KnowledgeIndexData>(`/api/knowledge/index${q}`);
+}
+
+/** 读取真相源单文件（GET /api/knowledge/file；path 白名单 domains/ 与 adr/
+ *  前缀，越界与 .. 后端恒 400）。 */
+export async function getKnowledgeFile(
+  project: string,
+  path: string,
+): Promise<{ project?: string; path: string; content: string }> {
+  const q = `?project=${encodeURIComponent(project)}&path=${encodeURIComponent(path)}`;
+  return request<{ project?: string; path: string; content: string }>(
+    `/api/knowledge/file${q}`,
+  );
+}
+
+/** 知识关系图下发端点 URL（iframe sandbox 加载；缺失回 404 结构化错误，
+ *  前端先 fetch 探测再决定渲染 iframe 或占位）。 */
+export function knowledgeGraphUrl(project: string): string {
+  return `/api/knowledge/graph?project=${encodeURIComponent(project)}`;
 }

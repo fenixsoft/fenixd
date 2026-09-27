@@ -147,6 +147,11 @@ class ConfigLoader:
         # （code-fix → code-review → self-review → administrator → 默认网关）中
         # code-review 级回退将失效，恒走默认网关。
         "code-fix",
+        # add-knowledge-atlas（design Open Question 立项裁定）：knowledge-distiller
+        # （归档蒸馏车道 agent，commit_archive_move 单点派发）。不登记会被
+        # _hash_gate 静默跳过 agents.models.knowledge-distiller 并回退默认网关
+        # ——复用「未登记 agent 无回退链」的教训，立项即登记（零成本）。
+        "knowledge-distiller",
     ]
 
     # ── run_timeout 按 agent_type 覆盖（per-agent-timeout-override）──────
@@ -796,6 +801,21 @@ class ConfigLoader:
                     "archive.auto_threshold 非法（应为非负整数，0=禁用）：%r，" "回落默认 50",
                     at,
                 )
+
+        # add-knowledge-atlas（task 1.1）：knowledge 段护栏（软校验）。与
+        # archive.auto_threshold 同型：键存在但类型非法时不进硬失败路径——只记
+        # ERROR，生效值由 get_knowledge_config 按回退规则兜底（回退 true）。
+        # 保证 30s 热更新路径不会因该节被中断。
+        knowledge = cls._segment_or_empty(config, "knowledge")
+        if (
+            "enabled" in knowledge
+            and knowledge["enabled"] is not None
+            and not isinstance(knowledge["enabled"], bool)
+        ):
+            _logger.error(
+                "knowledge.enabled 非法（应为布尔）：%r，回退缺省 true",
+                knowledge["enabled"],
+            )
 
         # add-framework-self-evolution：self_evolution 段护栏（软校验）。
         # 与 stale_code_selfheal 的处理方式一致：节/键存在但类型非法时不进入硬
@@ -1836,8 +1856,8 @@ class ConfigLoader:
         }
 
     @classmethod
-    def get_knowledge_config(cls, config: Dict[str, Any]) -> Dict[str, Any]:
-        """Return the ``knowledge.*`` 段，缺失项填默认值（add-knowledge-atlas-maintenance D4）。
+    def get_knowledge_lane_config(cls, config: Dict[str, Any]) -> Dict[str, Any]:
+        """Return the ``knowledge.*`` 维护车道生效值（add-knowledge-atlas-maintenance D4）。
 
         - audit_enabled / graph_enabled：bool，缺省 True（纯增量：audit 车道与
           graph 生成默认随每日检查点开启）。
@@ -2405,6 +2425,32 @@ class ConfigLoader:
             )
             return default
         return at
+
+    @classmethod
+    def get_knowledge_config(cls, config: Dict[str, Any]) -> Dict[str, Any]:
+        """读取 ``knowledge`` 段生效值（add-knowledge-atlas task 1.1）。
+
+        返回 ``{"enabled": bool}``：
+        - enabled 缺省 True（真相源默认开启）；
+        - 显式 bool 原样生效；
+        - 非法值（非 bool）记 ERROR 告警并回退 True（spec「非法值回退 true 并
+          告警」，宽松校验不阻塞加载与热更新，对齐 archive.auto_threshold 哲学）。
+
+        所有消费方（归档蒸馏派发、dashboard 页签禁用态回显）MUST 调本助手读取
+        生效值，而非直读原始配置——保证非法值不会流入派发判定。
+        """
+        knowledge = cls._segment_or_empty(config, "knowledge")
+        enabled = knowledge.get("enabled")
+        if enabled is None:
+            return {"enabled": True}
+        if not isinstance(enabled, bool):
+            _logger.error(
+                "knowledge.enabled 非法（应为布尔）：%r，回退缺省 true；"
+                "其余配置照常生效",
+                enabled,
+            )
+            return {"enabled": True}
+        return {"enabled": enabled}
 
     @classmethod
     def get_impl_code_review_enabled(cls, config: Dict[str, Any]) -> bool:

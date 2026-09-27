@@ -12,9 +12,12 @@
   pm_engine push 尾部的归档收口保留为兜底（有残留才动作）。
 """
 
+import logging
 import re
 import subprocess
 from pathlib import Path
+
+logger = logging.getLogger("fenixd.archive_commit")
 
 _PROBE_TIMEOUT = 30
 _ADD_TIMEOUT = 60
@@ -23,19 +26,25 @@ _COMMIT_TIMEOUT = 120
 _SAFE_PATH_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
-def commit_archive_move(project_root, spec_name: str, archive_dir) -> dict:
-    """提交一次归档移动（只 commit，不 push）。
+def commit_archive_move(project_root, spec_name: str, archive_dir, distill=None) -> dict:
+    """提交一次归档移动（只 commit，不 push），并单点挂载蒸馏派发。
 
     Args:
         project_root: 项目根目录
         spec_name: SPEC 名（用于提交信息）
         archive_dir: 移动后的归档目录路径（Path/str）
+        distill: 蒸馏派发替身（task 2.3 测试隔离）。None = 延迟导入
+            ``core.knowledge.dispatch_distill`` 走真实派发（内部另有
+            knowledge.enabled 门控与 pytest 环境守卫——既有单测直接调用
+            本函数不会触发真实蒸馏）。
 
     Returns:
-        {"committed": bool, "commit": str|null, "warning": str|null}
+        {"committed": bool, "commit": str|null, "warning": str|null,
+         "distill": {"dispatched": bool, "reason": str|null}|null}
         - committed=True：提交成功，commit 为本次提交的全量 hash
           （哈希读取失败时为 null，提交本身已落库）；
-        - committed=False：warning 说明原因（非 git 仓库 / git 失败 / 无可提交内容）。
+        - committed=False：warning 说明原因（非 git 仓库 / git 失败 / 无可提交内容）；
+        - distill 为 None 仅当 git 探测失败提前返回（派发只在 git 仓库内进行）。
     """
     proot = Path(project_root)
     result = {"committed": False, "commit": None, "warning": None}
@@ -60,6 +69,26 @@ def commit_archive_move(project_root, spec_name: str, archive_dir) -> dict:
             )
     except (OSError, subprocess.TimeoutExpired) as e:
         return _fail(f"git 探测失败，跳过归档提交: {e}")
+
+    # ── 知识蒸馏派发（add-knowledge-atlas task 2.3，双路径单点漏斗）──────
+    # 归档移动成功即触发（不依赖本次提交成败）。fail-open：派发异常只记日志
+    # 与重试台账，不影响归档提交主流程；内部 knowledge.enabled 门控与
+    # pytest 守卫由 dispatch_distill 承担。延迟导入避免模块级依赖环。
+    result["distill"] = None
+    try:
+        if distill is None:
+            from core.knowledge import dispatch_distill
+
+            distill = dispatch_distill
+        result["distill"] = distill(proot, Path(archive_dir).name)
+    except Exception as e:  # noqa: BLE001 — 派发任何异常不阻塞归档
+        logger.warning(
+            "知识蒸馏派发异常（archive=%s）: %s: %s",
+            Path(archive_dir).name,
+            type(e).__name__,
+            e,
+        )
+        result["distill"] = {"dispatched": False, "reason": f"error: {e}"}
 
     # pathspec 安全：spec_name / 归档目录名直接拼入 git pathspec，glob（* ? []）
     # 会被按模式匹配解释而可能误匹配计划外路径；白名单不通过时 fail-open 跳过提交。

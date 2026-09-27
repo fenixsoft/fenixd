@@ -12,16 +12,17 @@ import {
 
 const sp = (s) => new URLSearchParams(s);
 
-test('词表常量：状态 11 项、页签 5 项、类型 2 项', () => {
+test('词表常量：状态 11 项、页签 6 项、类型 2 项', () => {
   assert.equal(LIST_STATUSES.length, 11);
   assert.deepEqual(
     [...LIST_STATUSES],
     ['drafted', 'ready', 'reviewing', 'implementing', 'implemented', 'testing',
       'verified', 'bug-found', 'blocked', 'done', 'pushed'],
   );
+  // add-knowledge-atlas 4.2：knowledge 页签位于「项目架构」与「会话接入」之间
   assert.deepEqual(
     [...LIST_TABS],
-    ['dev', 'quality', 'regression', 'architecture', 'session'],
+    ['dev', 'quality', 'regression', 'architecture', 'knowledge', 'session'],
   );
   assert.deepEqual([...LIST_TYPES], ['active', 'completed']);
 });

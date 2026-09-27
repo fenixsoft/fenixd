@@ -19,8 +19,9 @@ import { usePanelDirty } from '../panelDirty';
 
 const { Text } = Typography;
 
-// 与后端 KNOWN_AGENT_TYPES 严格一致（含 code-review 共 11 个角色，勿增删；
-// code-review item f62e36d1531f：旧注释写 9 个，已漂移）
+// 与后端 KNOWN_AGENT_TYPES 严格一致（含 code-review/code-fix/knowledge-distiller
+// 共 12 个角色，勿增删；code-review item f62e36d1531f：旧注释写 9 个，已漂移——
+// 后端新增角色时此处必须同步，tests/test_agent_prompt_files.py 有守卫）
 const AGENT_ROLES = [
   { key: 'implementer', label: 'Implementer（执行）' },
   { key: 'planner-plan', label: 'Planner Plan（生成场景）' },
@@ -39,6 +40,10 @@ const AGENT_ROLES = [
   // add-code-review-auto-fix：code-fix（自动修复车道），模型链复用 code-review
   // （agents.models.code-fix → 回退 code-review → self-review → administrator）
   { key: 'code-fix', label: 'Code-Fix（自动修复）' },
+  // add-knowledge-atlas：knowledge-distiller（归档蒸馏车道），SPEC 归档后由
+  // commit_archive_move 单点派发；模型链 agents.models.knowledge-distiller →
+  // 回退默认网关（无中间回退级）
+  { key: 'knowledge-distiller', label: 'Knowledge-Distiller（知识蒸馏）' },
 ];
 
 // 后端 normalize_agent_models 输出 → 编辑器行（str / 对象 / 混合数组统一为 {provider, model}；
