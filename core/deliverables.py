@@ -51,6 +51,7 @@ import logging
 import os
 import re
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Iterable, List
 
@@ -786,6 +787,43 @@ def verify_correction_readback(
     return True
 
 
+def _atomic_write_text(target: Path, content: str) -> None:
+    """mkstemp 同目录临时文件 + ``os.replace`` 原子写（对齐 judge_files 纪律）。
+
+    与 ``core/verify_engine/judge_files.py:save_attribution`` 同形态：临时文件
+    名随机唯一（同 spec 并发写不再交错污染，code-review item a8cdbacd2897）、
+    写入后 flush + fsync 再原子替换，进程中途崩溃/被杀不会留下截断的目标文件
+    （code-review item 5b69a4a517cd——tasks.md 声明段改写曾用
+    ``write_text`` 直接覆盖，中断即丢声明段、守卫回退正则语境猜测）。
+    写失败清理临时文件后原样上抛，由调用方按各自 fail-safe 语义处置。
+    """
+    target = Path(target)
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(target.parent), prefix=f".{target.name}.", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, target)
+        # 尽力而为 fsync 父目录（rename 目录项持久化）；失败不阻断主流程
+        try:
+            dir_fd = os.open(str(target.parent), os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError:
+            pass
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 def snapshot_declaration_baseline(spec_name, run_id, project_root) -> "dict | None":
     """派发时快照主树声明条目到实现 Agent 不可触及的位置（D3）。
 
@@ -822,24 +860,16 @@ def snapshot_declaration_baseline(spec_name, run_id, project_root) -> "dict | No
         "entries": entries,
     }
     target = root / ".fenix" / "verify-progress" / spec_name / "declaration-baseline.json"
-    tmp = None
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
-        tmp = target.with_name(target.name + ".tmp")
-        tmp.write_text(json.dumps(snap, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(tmp, target)
+        # mkstemp 唯一临时文件 + os.replace 原子落盘（_atomic_write_text，
+        # item a8cdbacd2897：固定名 .tmp 在并发快照下内容可能交错污染基线）
+        _atomic_write_text(target, json.dumps(snap, ensure_ascii=False, indent=2))
     except OSError as e:
         _resolution_logger.warning(
             "deliverables",
             f"基线快照写入失败 '{spec_name}'（仅 WARNING 不阻塞派发）: {e}",
         )
-        # tmp 已在 try 前显式绑定为 None，此异常分支据此安全清理可能已创建的
-        # 临时文件（不存在未绑定风险）。
-        try:
-            if tmp is not None and tmp.exists():
-                tmp.unlink()
-        except OSError:
-            pass
         return None
     return snap
 
@@ -863,6 +893,19 @@ def load_declaration_baseline(spec_name, project_root) -> "dict | None":
     return data if isinstance(data, dict) else None
 
 
+def _git_c_env() -> dict:
+    """git 子进程环境：合并 ``os.environ`` 并强制 ``LC_ALL=C``。
+
+    消除「路径确定不存在」三态判别对 stderr 英文文案（``does not exist``）的
+    本地化依赖（code-review item 77767180a566：LC_MESSAGES/LANG 非英文环境下
+    git gettext 输出本地化文案，文案匹配恒失配、确定性不存在被误判为 git
+    不可用）。合并而非整体替换，保留调用方的 PATH 等既有环境。
+    """
+    env = dict(os.environ)
+    env["LC_ALL"] = "C"
+    return env
+
+
 def _git_object_exists_on_branch(branch, path, project_root) -> "bool | None":
     """``git cat-file -e <branch>:<path>`` O(1) 探测（纯对象库，零成本）。
 
@@ -882,6 +925,9 @@ def _git_object_exists_on_branch(branch, path, project_root) -> "bool | None":
             # 排除 git 不可用的正确性要求前让位。
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
+            # LC_ALL=C 固化英文文案，stderr 形态判别不受运行环境本地化影响
+            # （item 77767180a566，与 worktree_manager 既有 LC_ALL=C 手法同源）
+            env=_git_c_env(),
             timeout=_GIT_READ_TIMEOUT_SECONDS,
         )
     except (subprocess.TimeoutExpired, OSError):
@@ -1004,7 +1050,8 @@ def check_declaration_shrinkage(
 ) -> list:
     """收缩防护判定（D3）：基线路径在生效声明中被「无声剔除」→ removed 违规。
 
-    对基线每条（path, kind）判定：
+    对基线每条（path, kind）判定（``kind == "reference"`` 的基线条目恒跳过
+    ——软校验无硬闸可绕，不参与收缩硬判，item 1f56ff2ff4f2）：
       - 生效声明对基线路径**不再以原有 kind 硬校验**——条目被删除（不在
         effective_entries 中）、或 kind 被改写为 ``reference``（移入软校验组）、
         或改写为其他不满足原有语义的 kind（如 modify → delete / new）；
@@ -1050,6 +1097,13 @@ def check_declaration_shrinkage(
         path = str(be.get("path") or "").strip()
         kind = str(be.get("kind") or "").strip().lower()
         if not path or kind not in _DECLARED_KINDS:
+            continue
+        # kind=reference 是软校验条目（仅审计留痕）：守卫对 references 缺失只发
+        # 「deliverable-reference-missing」软告警、无硬闸可绕，其被剔除/改写属
+        # 文档级维护而非「绕门」，不参与收缩硬判（code-review item 1f56ff2ff4f2
+        # ——gitignored 运行时路径在分支 HEAD 恒不存在，清理过时 reference 声明
+        # 会被误判 removed 走缺件处置）。new/modify/delete 的硬判不削弱。
+        if kind == "reference":
             continue
         # 1) 生效声明仍以原 kind 硬校验该路径 → 未剔除
         if eff_by_path.get(path) == kind:
@@ -1099,6 +1153,8 @@ def is_stale_declaration(entry, project_root) -> bool:
             # 三态化（取代旧全 DEVNULL 只看 returncode，feccb157c1d5）。
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
+            # LC_ALL=C 固化英文文案（item 77767180a566，同上）
+            env=_git_c_env(),
             timeout=_GIT_READ_TIMEOUT_SECONDS,
         )
     except (subprocess.TimeoutExpired, OSError):
@@ -1293,7 +1349,9 @@ def replace_declared_path(spec_dir, element: str, actual_path: str) -> dict:
         lines[elem_idx] = f"{m.group(1)}{actual_path}{m.group(2)}"
     after = "\n".join(lines[start:end])
 
-    tasks.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # mkstemp + os.replace 原子写（_atomic_write_text，item 5b69a4a517cd）：
+    # 声明段是守卫对账根，中断截断会令声明段丢失、守卫回退正则语境猜测
+    _atomic_write_text(tasks, "\n".join(lines) + "\n")
     return {"element": element, "actual_path": actual_path, "before": before, "after": after}
 
 
@@ -1362,7 +1420,9 @@ def soften_declared_kind(spec_dir, element: str) -> dict:
     lines[kind_idx] = f"{kind_match.group(1)}kind: reference{kind_match.group(3)}"
     after = "\n".join(lines[start:end])
 
-    tasks.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # mkstemp + os.replace 原子写（_atomic_write_text，item 5b69a4a517cd）：
+    # 声明段是守卫对账根，中断截断会令声明段丢失、守卫回退正则语境猜测
+    _atomic_write_text(tasks, "\n".join(lines) + "\n")
     return {"element": element, "before": before, "after": after}
 
 
@@ -2045,7 +2105,9 @@ def remove_declared_entry(spec_dir, element: str) -> dict:
     end -= remove_end - elem_idx
     after = "\n".join(lines[start:end])
 
-    tasks.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # mkstemp + os.replace 原子写（_atomic_write_text，item 5b69a4a517cd）：
+    # 声明段是守卫对账根，中断截断会令声明段丢失、守卫回退正则语境猜测
+    _atomic_write_text(tasks, "\n".join(lines) + "\n")
     return {"element": element, "before": before, "after": after}
 
 
@@ -2108,6 +2170,9 @@ def lint_declared(spec_dir, project_root) -> List[str]:
     10. ``kind: delete`` 的路径在仓库外——delete 要求删除仓库内已入库文件，
         仓库外路径超出守卫 git 对账范围（规则 7 同型：守卫反判无从成立），
         任何分支不可交付，应改为仓库内路径。
+    12. 同一 path 在声明段出现多种 kind（abc42cc46260）——解析器
+        （``_declared_entries_from_text``）按 path 去重静默保留首条，生效 kind
+        取决于书写顺序，自相矛盾的声明在晋升当下拒绝并提示合并/去重。
 
     lint 自身故障一律 fail-open（返回空清单放行晋升），不因 lint 阻塞流水线。
     规则 0 的形态违规属「内容确定性无效」而非 lint 故障，照常返回违规。
@@ -2150,6 +2215,25 @@ def lint_declared(spec_dir, project_root) -> List[str]:
         ]
 
     violations: List[str] = []
+    # 规则 12（code-review item abc42cc46260）：声明段同 path 多 kind——
+    # _declared_entries_from_text 按 path 去重、静默保留首条，后者被丢弃且
+    # 生效 kind 取决于书写顺序（先 reference 后 new 或相反）；自相矛盾的
+    # 声明只能靠人读 tasks.md 发现，在晋升当下拒绝并提示合并/去重。
+    kinds_by_path: dict = {}
+    for e in entries:
+        if not isinstance(e, dict):
+            continue
+        p = str(e.get("path") or "").strip()
+        k = str(e.get("kind") or "").strip().lower()
+        if p and k in _DECLARED_KINDS:
+            kinds_by_path.setdefault(p, set()).add(k)
+    for p, kinds in kinds_by_path.items():
+        if len(kinds) > 1:
+            violations.append(
+                f"[{p}] 声明段存在多种 kind（{'/'.join(sorted(kinds))}）——"
+                f"同 path 重复声明会被解析器去重、静默保留首条（生效 kind 取决"
+                f"于书写顺序），请合并为单一条目或去重后重试晋升"
+            )
     for e in entries:
         if not isinstance(e, dict):
             violations.append(

@@ -20,9 +20,9 @@ fix-knowledge-backfill-reconstruction：能力聚合全链蒸馏 + 史前复原�
 
 依赖：``core.knowledge`` 的 ``validate_knowledge`` 与提交工具函数经延迟导入复用；
 前置未合并时车道整体降级为单行日志跳过（fail-open）。回填期 ``core.knowledge``
-派发漏斗经 ``ledger_has_pending``/``register_archive_pending`` 排队协作（台账在盘，
-``spec/knowledge/`` 回填期只有回填一个写者；本模块顶层不 import ``core.knowledge``，
-反向导入不构成环）。
+派发漏斗经 ``ledger_has_pending``/``register_archive_pending`` 排队协作，写段另取
+``knowledge-distill.lock``（与 ``DistillManager`` 同一把 flock，``spec/knowledge/``
+单写者由机制保证；本模块顶层不 import ``core.knowledge``，反向导入不构成环）。
 
 激活方式：一次性批量车道，合并后手工激活（Migration Plan）——
 ``python3 -m core.knowledge_backfill --project-root <主树>``；daemon 不自动挂载，
@@ -36,6 +36,7 @@ import os
 import shutil
 import subprocess
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -101,37 +102,62 @@ def atomic_write_text(path: Path, text: str) -> None:
     os.replace(tmp, path)
 
 
+@contextmanager
+def _todo_write_lock(project_root: Path):
+    """todo.md 读改写窗口的进程间互斥（flock，``.fenix/todo.lock``）。
+
+    todo.md 的追加是「读全文→拼接→整文件回写」，两个写者同时读旧文本再
+    各自回写时后写者会覆盖先写者的行；蒸馏重试台账与回填/审计车道共用
+    本锁串行化该窗口（code-review 1bb1eacf2463）。锁文件自身无内容语义。
+    """
+    import fcntl
+
+    todo_dir = Path(project_root) / ".fenix"
+    todo_dir.mkdir(parents=True, exist_ok=True)
+    fh = open(todo_dir / "todo.lock", "w")  # noqa: SIM115 — 生命周期=with
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        finally:
+            fh.close()
+
+
 def append_todo_line(project_root: Path, line: str) -> bool:
     """向项目 ``.fenix/todo.md`` 追加一条待办（幂等：同文本已存在则跳过）。
 
     归位到今日日期节（``## YYYY-MM-DD``）下的「### 知识真相源」小节；日期节缺失
     时在文件尾部新建。给人看的队列，不进任务门禁（对齐前置 SPEC D3 口径）。
+    读改写全程持 ``_todo_write_lock`` + ``atomic_write_text`` 原子回写。
     """
     today = time.strftime("%Y-%m-%d")
     todo_path = Path(project_root) / ".fenix" / "todo.md"
-    text = todo_path.read_text(encoding="utf-8") if todo_path.exists() else ""
-    if line in text:
-        return False
-    subsection = "### 知识真相源"
-    lines = text.splitlines()
-    # 定位今日日期节行号；无则新建于尾部
-    today_idx = next((i for i, ln in enumerate(lines) if ln.strip() == f"## {today}"), None)
-    if today_idx is None:
-        lines += ["", f"## {today}", subsection, f"- {line}"]
-    else:
-        # 今日节边界 = 下一个 `## ` 日期节或文件尾
-        end = next(
-            (i for i in range(today_idx + 1, len(lines)) if lines[i].startswith("## ")),
-            len(lines),
-        )
-        block = lines[today_idx:end]
-        sub_idx = next((i for i, ln in enumerate(block) if ln.strip() == subsection), None)
-        if sub_idx is None:
-            lines[today_idx:end] = block + [subsection, f"- {line}"]
+    with _todo_write_lock(project_root):
+        text = todo_path.read_text(encoding="utf-8") if todo_path.exists() else ""
+        if line in text:
+            return False
+        subsection = "### 知识真相源"
+        lines = text.splitlines()
+        # 定位今日日期节行号；无则新建于尾部
+        today_idx = next((i for i, ln in enumerate(lines) if ln.strip() == f"## {today}"), None)
+        if today_idx is None:
+            lines += ["", f"## {today}", subsection, f"- {line}"]
         else:
-            block.insert(sub_idx + 1, f"- {line}")
-            lines[today_idx:end] = block
-    atomic_write_text(todo_path, "\n".join(lines).rstrip("\n") + "\n")
+            # 今日节边界 = 下一个 `## ` 日期节或文件尾
+            end = next(
+                (i for i in range(today_idx + 1, len(lines)) if lines[i].startswith("## ")),
+                len(lines),
+            )
+            block = lines[today_idx:end]
+            sub_idx = next((i for i, ln in enumerate(block) if ln.strip() == subsection), None)
+            if sub_idx is None:
+                lines[today_idx:end] = block + [subsection, f"- {line}"]
+            else:
+                block.insert(sub_idx + 1, f"- {line}")
+                lines[today_idx:end] = block
+        atomic_write_text(todo_path, "\n".join(lines).rstrip("\n") + "\n")
     return True
 
 
@@ -728,6 +754,39 @@ def _prune_stale_domains(project_root: Path, domain_map: dict, log) -> list[str]
     return removed
 
 
+# ── 跨进程单写者锁（与 core.knowledge.DistillManager 同一把锁） ──────────
+
+
+@contextmanager
+def knowledge_distill_lock(project_root: Path):
+    """回填写段互斥：与 ``DistillManager._acquire_file_lock`` 同一
+    ``.fenix/knowledge-distill.lock`` flock（阻塞等待）。
+
+    回填车道（手工激活）与蒸馏车道（daemon 挂载）分属不同进程，此前互斥
+    只靠派发漏斗 ``ledger_has_pending`` 的快照判定，回填刚激活台账尚未落盘
+    首个 pending、或蒸馏 run 已在飞时激活回填，两进程会同时写
+    ``spec/knowledge/``，随后任意一方 restore/clean/discard 即清掉对方未提交
+    产出（code-review 2443e98dc1f0）。写段取同一把锁把「单写者」从约定
+    升级为机制。
+
+    MUST NOT 在已持该锁的进程内嵌套再取（flock 对同进程的第二个 fd 同样
+    互斥，会自阻塞）：本车道写段内不经 DistillManager 任何加锁路径。
+    """
+    import fcntl
+
+    lock_dir = Path(project_root) / ".fenix"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    fh = open(lock_dir / "knowledge-distill.lock", "w")  # noqa: SIM115 — 生命周期=with
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        finally:
+            fh.close()
+
+
 # ── 车道主入口 ───────────────────────────────────────────────────────────
 
 
@@ -787,91 +846,95 @@ def run_backfill(
     domain_map = _read_json(domain_map_path)
     if not isinstance(domain_map, dict) or not domain_map:
         # ── 聚类自举 run（v2：聚类对象从归档名改为链索引能力名）──
-        # 自举重跑清场：fixture 遗留（未跟踪）先清，跑完再按真实聚类删遗留域
-        _clean_untracked_knowledge(project_root, log)
-        chain_caps = sorted(chain_index)
-        prompt = build_prompt("bootstrap", capabilities=chain_caps)
-        run_id = f"kb-bootstrap-{int(time.time())}"
-        try:
-            spawn(prompt, run_id)
-        except Exception as e:  # noqa: BLE001 - fail-open 记台账不中断
-            append_todo_line(
-                project_root, f"回填聚类自举 run 失败（{run_id}）：{e}"
+        # 写段取蒸馏锁：与 DistillManager 串行，防两车道并发写 spec/knowledge/
+        with knowledge_distill_lock(project_root):
+            # 自举重跑清场：fixture 遗留（未跟踪）先清，跑完再按真实聚类删遗留域
+            _clean_untracked_knowledge(project_root, log)
+            chain_caps = sorted(chain_index)
+            prompt = build_prompt("bootstrap", capabilities=chain_caps)
+            run_id = f"kb-bootstrap-{int(time.time())}"
+            try:
+                spawn(prompt, run_id)
+            except Exception as e:  # noqa: BLE001 - fail-open 记台账不中断
+                append_todo_line(
+                    project_root, f"回填聚类自举 run 失败（{run_id}）：{e}"
+                )
+                return {"triggered": True, "ok": False, "reason": "bootstrap-spawn-failed"}
+            domain_map = _read_json(domain_map_path)
+            if not isinstance(domain_map, dict) or not domain_map:
+                append_todo_line(
+                    project_root,
+                    f"回填聚类自举 run（{run_id}）未产出域归位清单 {DOMAIN_MAP_RELPATH}，"
+                    "请人工检查后重跑回填",
+                )
+                return {"triggered": True, "ok": False, "reason": "bootstrap-no-domain-map"}
+            _prune_stale_domains(project_root, domain_map, log)
+            base_prompt = build_prompt("bootstrap", capabilities=chain_caps)
+            ok, violations = _validate_with_repair(
+                project_root, validate, spawn, base_prompt, run_id
             )
-            return {"triggered": True, "ok": False, "reason": "bootstrap-spawn-failed"}
-        domain_map = _read_json(domain_map_path)
-        if not isinstance(domain_map, dict) or not domain_map:
-            append_todo_line(
-                project_root,
-                f"回填聚类自举 run（{run_id}）未产出域归位清单 {DOMAIN_MAP_RELPATH}，"
-                "请人工检查后重跑回填",
-            )
-            return {"triggered": True, "ok": False, "reason": "bootstrap-no-domain-map"}
-        _prune_stale_domains(project_root, domain_map, log)
-        base_prompt = build_prompt("bootstrap", capabilities=chain_caps)
-        ok, violations = _validate_with_repair(
-            project_root, validate, spawn, base_prompt, run_id
-        )
-        if not ok:
-            discard_knowledge_changes(project_root)
-            append_todo_line(
-                project_root,
-                "回填自举产出校验 "
-                f"{MAX_FIX_ROUNDS} 轮后仍失败，已放弃本次产出：{violations[:3]}",
-            )
-            return {
-                "triggered": True,
-                "ok": False,
-                "reason": "bootstrap-invalid",
-                "violations": violations[:10],
-            }
-        commit(project_root, [KNOWLEDGE_DIR], "[fenix] knowledge: backfill bootstrap")
+            if not ok:
+                discard_knowledge_changes(project_root)
+                append_todo_line(
+                    project_root,
+                    "回填自举产出校验 "
+                    f"{MAX_FIX_ROUNDS} 轮后仍失败，已放弃本次产出：{violations[:3]}",
+                )
+                return {
+                    "triggered": True,
+                    "ok": False,
+                    "reason": "bootstrap-invalid",
+                    "violations": violations[:10],
+                }
+            commit(project_root, [KNOWLEDGE_DIR], "[fenix] knowledge: backfill bootstrap")
 
     # ── 史前复原段（prehistoric bootstrap：git 考古 → 求差 → 史前页/链头）──
     prehistoric_path = project_root / PREHISTORIC_JSON_RELPATH
     inventory = _read_json(prehistoric_path)
     if not isinstance(inventory, list) or not inventory:
-        prompt = build_prehistoric_prompt(project_root, chain_index)
-        run_id = f"kb-prehistoric-{int(time.time())}"
-        try:
-            spawn(prompt, run_id)
-        except Exception as e:  # noqa: BLE001 - fail-open 记台账不中断
-            append_todo_line(project_root, f"回填史前复原 run 失败（{run_id}）：{e}")
-            return {"triggered": True, "ok": False, "reason": "prehistoric-spawn-failed"}
-        inventory = _read_json(prehistoric_path)
-        if not isinstance(inventory, list) or not inventory:
-            append_todo_line(
-                project_root,
-                f"回填史前复原 run（{run_id}）未产出史前清单 "
-                f"{PREHISTORIC_JSON_RELPATH}，请人工检查后重跑回填",
+        # 写段取蒸馏锁（同聚类自举段）
+        with knowledge_distill_lock(project_root):
+            prompt = build_prehistoric_prompt(project_root, chain_index)
+            run_id = f"kb-prehistoric-{int(time.time())}"
+            try:
+                spawn(prompt, run_id)
+            except Exception as e:  # noqa: BLE001 - fail-open 记台账不中断
+                append_todo_line(project_root, f"回填史前复原 run 失败（{run_id}）：{e}")
+                return {"triggered": True, "ok": False, "reason": "prehistoric-spawn-failed"}
+            inventory = _read_json(prehistoric_path)
+            if not isinstance(inventory, list) or not inventory:
+                append_todo_line(
+                    project_root,
+                    f"回填史前复原 run（{run_id}）未产出史前清单 "
+                    f"{PREHISTORIC_JSON_RELPATH}，请人工检查后重跑回填",
+                )
+                return {"triggered": True, "ok": False, "reason": "prehistoric-no-inventory"}
+            missing = _missing_prehistoric_pages(project_root, inventory, chain_index)
+            if missing:
+                append_todo_line(
+                    project_root,
+                    f"回填史前复原 run（{run_id}）未覆盖能力缺史前页："
+                    f"{', '.join(missing[:5])}，请人工检查后重跑回填",
+                )
+                return {"triggered": True, "ok": False, "reason": "prehistoric-missing-pages"}
+            base_prompt = build_prehistoric_prompt(project_root, chain_index)
+            ok, violations = _validate_with_repair(
+                project_root, validate, spawn, base_prompt, run_id
             )
-            return {"triggered": True, "ok": False, "reason": "prehistoric-no-inventory"}
-        missing = _missing_prehistoric_pages(project_root, inventory, chain_index)
-        if missing:
-            append_todo_line(
-                project_root,
-                f"回填史前复原 run（{run_id}）未覆盖能力缺史前页："
-                f"{', '.join(missing[:5])}，请人工检查后重跑回填",
-            )
-            return {"triggered": True, "ok": False, "reason": "prehistoric-missing-pages"}
-        base_prompt = build_prehistoric_prompt(project_root, chain_index)
-        ok, violations = _validate_with_repair(
-            project_root, validate, spawn, base_prompt, run_id
-        )
-        if not ok:
-            discard_knowledge_changes(project_root)
-            append_todo_line(
-                project_root,
-                "回填史前复原产出校验 "
-                f"{MAX_FIX_ROUNDS} 轮后仍失败，已放弃本次产出：{violations[:3]}",
-            )
-            return {
-                "triggered": True,
-                "ok": False,
-                "reason": "prehistoric-invalid",
-                "violations": violations[:10],
-            }
-        commit(project_root, [KNOWLEDGE_DIR], "[fenix] knowledge: backfill prehistoric")
+            if not ok:
+                discard_knowledge_changes(project_root)
+                append_todo_line(
+                    project_root,
+                    "回填史前复原产出校验 "
+                    f"{MAX_FIX_ROUNDS} 轮后仍失败，已放弃本次产出：{violations[:3]}",
+                )
+                return {
+                    "triggered": True,
+                    "ok": False,
+                    "reason": "prehistoric-invalid",
+                    "violations": violations[:10],
+                }
+            commit(project_root, [KNOWLEDGE_DIR], "[fenix] knowledge: backfill prehistoric")
 
     # 求差：已被归档覆盖的能力，其史前基线作为链头输入聚合蒸馏单元
     baselines: dict[str, str] = {}
@@ -888,50 +951,53 @@ def run_backfill(
     ok_batches: list[int] = []
     failed_batches: list[dict] = []
     for i, batch in enumerate(batches, 1):
-        base_prompt = build_prompt(
-            "batch",
-            batch=batch,
-            chains={c: chain_index.get(c, []) for c in batch},
-            baselines=baselines,
-        )
-        run_id = f"kb-batch{i}-{int(time.time())}"
-        try:
-            spawn(base_prompt, run_id)
-            ok, violations = _validate_with_repair(
-                project_root, validate, spawn, base_prompt, run_id
+        # 写段取蒸馏锁：spawn→校验→提交/回滚作为整体与 DistillManager 串行，
+        # 防两车道并发写 spec/knowledge/（code-review 2443e98dc1f0）
+        with knowledge_distill_lock(project_root):
+            base_prompt = build_prompt(
+                "batch",
+                batch=batch,
+                chains={c: chain_index.get(c, []) for c in batch},
+                baselines=baselines,
             )
-        except Exception as e:  # noqa: BLE001 - 单批失败不阻塞后续批
-            ok, violations = False, [f"run 派发/执行失败：{e}"]
-        if ok:
-            # 校验通过即落库；提交失败 fail-open 记日志（内容已在盘上，
-            # 后续批次的 pathspec 提交会自然扫入）
+            run_id = f"kb-batch{i}-{int(time.time())}"
             try:
-                commit(
-                    project_root,
-                    [KNOWLEDGE_DIR],
-                    f"[fenix] knowledge: backfill batch {i}/{total}",
+                spawn(base_prompt, run_id)
+                ok, violations = _validate_with_repair(
+                    project_root, validate, spawn, base_prompt, run_id
                 )
-            except Exception as e:  # noqa: BLE001
-                log.warning("knowledge", f"回填批次 {i}/{total} 提交失败（fail-open）：{e}")
-            for cap in batch:
-                ledger.mark(CAPABILITY_PREFIX + cap, STATUS_DISTILLED, batch=i)
-            ok_batches.append(i)
-        else:
-            discard_knowledge_changes(project_root)
-            for cap in batch:
-                ledger.mark(CAPABILITY_PREFIX + cap, STATUS_FAILED, batch=i)
-            append_todo_line(
-                project_root,
-                f"回填批次 {i}/{total} 校验 {MAX_FIX_ROUNDS} 轮后仍失败（"
-                f"{len(batch)} 个能力），已回滚半成品：{violations[:3]}",
-            )
-            failed_batches.append(
-                {"batch": i, "capabilities": batch, "violations": violations[:5]}
-            )
-            log.warning(
-                "knowledge",
-                f"回填批次 {i}/{total} 失败（{len(batch)} 能力），继续后续批次",
-            )
+            except Exception as e:  # noqa: BLE001 - 单批失败不阻塞后续批
+                ok, violations = False, [f"run 派发/执行失败：{e}"]
+            if ok:
+                # 校验通过即落库；提交失败 fail-open 记日志（内容已在盘上，
+                # 后续批次的 pathspec 提交会自然扫入）
+                try:
+                    commit(
+                        project_root,
+                        [KNOWLEDGE_DIR],
+                        f"[fenix] knowledge: backfill batch {i}/{total}",
+                    )
+                except Exception as e:  # noqa: BLE001
+                    log.warning("knowledge", f"回填批次 {i}/{total} 提交失败（fail-open）：{e}")
+                for cap in batch:
+                    ledger.mark(CAPABILITY_PREFIX + cap, STATUS_DISTILLED, batch=i)
+                ok_batches.append(i)
+            else:
+                discard_knowledge_changes(project_root)
+                for cap in batch:
+                    ledger.mark(CAPABILITY_PREFIX + cap, STATUS_FAILED, batch=i)
+                append_todo_line(
+                    project_root,
+                    f"回填批次 {i}/{total} 校验 {MAX_FIX_ROUNDS} 轮后仍失败（"
+                    f"{len(batch)} 个能力），已回滚半成品：{violations[:3]}",
+                )
+                failed_batches.append(
+                    {"batch": i, "capabilities": batch, "violations": violations[:5]}
+                )
+                log.warning(
+                    "knowledge",
+                    f"回填批次 {i}/{total} 失败（{len(batch)} 能力），继续后续批次",
+                )
         ledger.save()
 
     # ── ADR 抽取批次（模式三：design.md 决策扫描，归档粒度）──
@@ -956,43 +1022,45 @@ def run_backfill(
     adr_ok = 0
     adr_failed: list[dict] = []
     for i, batch in enumerate(adr_batches, 1):
-        base_prompt = build_prompt("adr", batch=batch)
-        run_id = f"kb-adr{i}-{int(time.time())}"
-        try:
-            spawn(base_prompt, run_id)
-            ok, violations = _validate_with_repair(
-                project_root, validate, spawn, base_prompt, run_id
-            )
-        except Exception as e:  # noqa: BLE001 - 单批失败不阻塞后续批
-            ok, violations = False, [f"run 派发/执行失败：{e}"]
-        if ok:
+        # 写段取蒸馏锁（同能力聚合批次）
+        with knowledge_distill_lock(project_root):
+            base_prompt = build_prompt("adr", batch=batch)
+            run_id = f"kb-adr{i}-{int(time.time())}"
             try:
-                commit(
-                    project_root,
-                    [KNOWLEDGE_DIR],
-                    f"[fenix] knowledge: backfill adr batch {i}/{adr_total}",
+                spawn(base_prompt, run_id)
+                ok, violations = _validate_with_repair(
+                    project_root, validate, spawn, base_prompt, run_id
                 )
-            except Exception as e:  # noqa: BLE001
-                log.warning("knowledge", f"回填 ADR 批次 {i}/{adr_total} 提交失败（fail-open）：{e}")
-            for a in batch:
-                ledger.mark(ADR_PREFIX + a, STATUS_DISTILLED, batch=i)
-            adr_ok += 1
-        else:
-            discard_knowledge_changes(project_root)
-            for a in batch:
-                ledger.mark(ADR_PREFIX + a, STATUS_FAILED, batch=i)
-            append_todo_line(
-                project_root,
-                f"回填 ADR 批次 {i}/{adr_total} 校验 {MAX_FIX_ROUNDS} 轮后仍失败"
-                f"（{len(batch)} 个归档），已回滚半成品：{violations[:3]}",
-            )
-            adr_failed.append(
-                {"batch": i, "archives": batch, "violations": violations[:5]}
-            )
-            log.warning(
-                "knowledge",
-                f"回填 ADR 批次 {i}/{adr_total} 失败（{len(batch)} 归档），继续后续批次",
-            )
+            except Exception as e:  # noqa: BLE001 - 单批失败不阻塞后续批
+                ok, violations = False, [f"run 派发/执行失败：{e}"]
+            if ok:
+                try:
+                    commit(
+                        project_root,
+                        [KNOWLEDGE_DIR],
+                        f"[fenix] knowledge: backfill adr batch {i}/{adr_total}",
+                    )
+                except Exception as e:  # noqa: BLE001
+                    log.warning("knowledge", f"回填 ADR 批次 {i}/{adr_total} 提交失败（fail-open）：{e}")
+                for a in batch:
+                    ledger.mark(ADR_PREFIX + a, STATUS_DISTILLED, batch=i)
+                adr_ok += 1
+            else:
+                discard_knowledge_changes(project_root)
+                for a in batch:
+                    ledger.mark(ADR_PREFIX + a, STATUS_FAILED, batch=i)
+                append_todo_line(
+                    project_root,
+                    f"回填 ADR 批次 {i}/{adr_total} 校验 {MAX_FIX_ROUNDS} 轮后仍失败"
+                    f"（{len(batch)} 个归档），已回滚半成品：{violations[:3]}",
+                )
+                adr_failed.append(
+                    {"batch": i, "archives": batch, "violations": violations[:5]}
+                )
+                log.warning(
+                    "knowledge",
+                    f"回填 ADR 批次 {i}/{adr_total} 失败（{len(batch)} 归档），继续后续批次",
+                )
         ledger.save()
 
     counts = ledger.counts()
@@ -1031,11 +1099,18 @@ def _validate_with_repair(
     spawn: SpawnFn,
     base_prompt: str,
     run_id: str,
+    repair_rounds: Optional[int] = None,
 ) -> tuple[bool, list[str]]:
-    """确定性校验 + 违规反馈修正环（≤MAX_FIX_ROUNDS 轮，对齐前置 SPEC 收尾校验）。"""
+    """确定性校验 + 违规反馈修正环（≤MAX_FIX_ROUNDS 轮，对齐前置 SPEC 收尾校验）。
+
+    修正环单实现（本车道与 knowledge_audit 共用，MAX_FIX_ROUNDS 同源）；
+    ``repair_rounds`` 显式声明修正轮数上限：None = 缺省 ``MAX_FIX_ROUNDS``；
+    0 = 只校验、不派发修正 run（无 run 语境的机械自修只验不改语义）。
+    """
+    max_rounds = MAX_FIX_ROUNDS if repair_rounds is None else repair_rounds
     violations = [str(v) for v in (validate(project_root) or [])]
     rounds = 0
-    while violations and rounds < MAX_FIX_ROUNDS:
+    while violations and rounds < max_rounds:
         rounds += 1
         # 修正 run 复用同一基础提示词（保留模式语境）+ 违规清单附加段
         spawn(

@@ -41,6 +41,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from core.agent_env_keys import AGENT_RUN_BANNED_ENV_KEYS
+
 # ── 模块级 logger（code-review item 967909e7db47：refresh 先前以
 # getattr(self, 'logger', None) 取值恒为 None（handler 未定义 logger
 # 属性），两段式管线日志分支全静默丢失；改传模块 logger 并保持
@@ -79,13 +81,10 @@ EVIDENCE_FILENAME = "evidence.md"
 # evidence.md 头部 HEAD 指纹行前缀（design D2）：``evidence-head: <sha> | <ISO 时间戳>``。
 EVIDENCE_HEAD_PREFIX = "evidence-head:"
 
-# env 剔除口径同 SessionManager._BANNED_ENV_KEYS（D1.11）：一次性架构图
-# 生成与 agent-run 无关，MUST NOT 注入 agent-run 专用上下文。
-_BANNED_ENV_KEYS = frozenset({
-    "FENIX_RUN_PROJECT_ROOT",
-    "FENIX_RUN_WORKTREE",
-    "CLAUDE_CODE_ENABLE_TODO_TOOLS",
-})
+# env 剔除口径（D1.11）：一次性架构图生成与 agent-run 无关，MUST NOT 注入
+# agent-run 专用上下文。键集单一来源见 core/agent_env_keys.py（与
+# SessionManager、core.knowledge 共用同一 frozenset）。
+_BANNED_ENV_KEYS = AGENT_RUN_BANNED_ENV_KEYS
 
 
 def _utcnow_iso() -> str:

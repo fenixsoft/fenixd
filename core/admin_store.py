@@ -379,7 +379,8 @@ class AdminStore:
     def read_all(self) -> list:
         """读取全部记录（最新的在前）。损坏/缺失返回空列表。"""
         records = self._read_locked()
-        records.sort(key=lambda e: e.get("created", ""), reverse=True)
+        # or ""：对 "created": null（人工修补/外部写入脏形态）设防，与 latest_resolved_disposition 同口径
+        records.sort(key=lambda e: e.get("created") or "", reverse=True)
         return records
 
     def unhandled(self) -> list:
@@ -852,5 +853,6 @@ class DisputeAuditStore:
                         fcntl.flock(lf, fcntl.LOCK_UN)
         except OSError:
             return []
-        out.sort(key=lambda e: e.get("created", ""), reverse=True)
+        # or ""：对 "created": null 设防，避免 None 与 str 比较抛 TypeError
+        out.sort(key=lambda e: e.get("created") or "", reverse=True)
         return out

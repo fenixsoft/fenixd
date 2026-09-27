@@ -35,6 +35,7 @@ from typing import Callable, Optional
 from core.config import ConfigLoader
 from core.knowledge_backfill import (
     _NullLogger,
+    _validate_with_repair,
     append_todo_line,
     atomic_write_text,
     commit_pathspec,
@@ -43,7 +44,6 @@ from core.knowledge_backfill import (
     load_knowledge_core,
     resolve_commit,
     scale_stats,
-    violations_block,
 )
 
 # ── 常量 ─────────────────────────────────────────────────────────────────
@@ -64,14 +64,10 @@ MAX_SEMANTIC_RUNS = 10
 # graphify 单次生成硬超时（秒）
 GRAPH_TIMEOUT_SECONDS = 1800
 
-MAX_FIX_ROUNDS = 2
-
 _MARKER_RE = re.compile(r"<!--\s*knowledge:\s*(.*?)-->", re.DOTALL)
 _ARCHIVE_REF_RE = re.compile(r"spec/archive/([A-Za-z0-9._-]+)")
 _ADR_NAME_RE = re.compile(r"ADR-(\d{3})")
 _STATUS_WORD_RE = re.compile(r"\b(accepted|superseded)\b")
-# 溯源行：以列表项形式整行指向归档的行（机械删除对象）
-_SOURCE_LINE_RE = re.compile(r"^\s*[-*]\s*.*spec/archive/\S+", re.MULTILINE)
 
 
 # ── 状态文件（自然日防重 + 规模趋势基线） ────────────────────────────────
@@ -202,6 +198,14 @@ def _existing_archives(project_root: Path) -> set[str]:
     return {p.name for p in adir.iterdir() if p.is_dir()} if adir.is_dir() else set()
 
 
+def _source_base(src: str) -> str:
+    """marker sources 项归一为归档基名，供与 ``_existing_archives`` 的基名集合
+    比对。真相源契约里 sources 是全路径（``spec/archive/<名>``，core.knowledge
+    校验器强制该前缀），不归一直接比对会恒判悬空 → ``_clean_sources`` 把
+    sources 清空 → 校验报 marker 非法 → 整轮机械自修被回滚。"""
+    return Path(src.strip().rstrip("/")).name
+
+
 def _scan_pages(project_root: Path) -> dict:
     """五类病灶中的页级扫描：悬空溯源（①② 机械）、超行数（报告）、格式。"""
     pages = _collect_pages(project_root)
@@ -224,7 +228,7 @@ def _scan_pages(project_root: Path) -> dict:
         missing_sources: list[str] = []
         if marker and marker.get("sources"):
             names = [s for s in re.split(r"[,，]", marker["sources"]) if s]
-            missing_sources = [s for s in names if s not in archives]
+            missing_sources = [s for s in names if _source_base(s) not in archives]
         for i, ln in enumerate(lines):
             for m in _ARCHIVE_REF_RE.finditer(ln):
                 if m.group(1).strip("\"'`") not in archives:
@@ -261,6 +265,32 @@ def _adr_entry_status(text: str) -> Optional[str]:
     return m.group(1).lower() if m else None
 
 
+def _adr_status_slot(ln: str) -> Optional[tuple[int, int, str]]:
+    """定位 ADR index 行的状态槽位，返回 ``(start, end, 小写状态词)``；无则 None。
+
+    状态比对与改写都必须锚定状态槽位本身：整行首次出现的匹配会被编号链接
+    slug 或标题/摘要里的 accepted/superseded 字样抢走——比对错位、改写污染
+    标题，且大写形式能被小写化的 search 命中却不会被大小写敏感的 sub 替换。
+    - 表格行（``|`` 分列）：状态列整列即状态词（真实 index 列序「编号、状态、
+      摘要」），取内容恰为 accepted/superseded 的列；
+    - 非表格行（列表项「— accepted」尾缀形态）：状态词缀在行尾，取整行
+      **末次**出现，同理避开标题用词。
+    """
+    if "|" in ln:
+        offset = 0
+        for col in ln.split("|"):
+            if col.strip().lower() in ("accepted", "superseded"):
+                m = _STATUS_WORD_RE.search(col.lower())
+                return (offset + m.start(), offset + m.end(), m.group(1))
+            offset += len(col) + 1
+        return None
+    matches = list(_STATUS_WORD_RE.finditer(ln.lower()))
+    if not matches:
+        return None
+    m = matches[-1]
+    return (m.start(), m.end(), m.group(1))
+
+
 def _scan_adrs(project_root: Path) -> dict:
     """ADR 病灶：supersede 链断裂（报告）、index 状态与条目头不一致（机械对齐）、
     accepted 正文未提交改动（报告）。"""
@@ -284,14 +314,14 @@ def _scan_adrs(project_root: Path) -> dict:
         index_lines = index_path.read_text(encoding="utf-8", errors="replace").splitlines()
         for i, ln in enumerate(index_lines):
             nm = _ADR_NAME_RE.search(ln)
-            sm = _STATUS_WORD_RE.search(ln.lower())
-            if not nm or not sm:
+            slot = _adr_status_slot(ln)
+            if not nm or not slot:
                 continue
             name = f"ADR-{nm.group(1)}"
             expected = entry_status.get(name)
-            if expected and expected != sm.group(1):
+            if expected and expected != slot[2]:
                 status_mismatch.append(
-                    {"line_no": i, "name": name, "wrong": sm.group(1), "expected": expected}
+                    {"line_no": i, "name": name, "wrong": slot[2], "expected": expected}
                 )
     accepted_dirty: list[str] = []
     try:
@@ -425,7 +455,7 @@ def _apply_mechanical(project_root: Path, scan: dict) -> list[str]:
             if not sm:
                 return mm.group(0)
             names = [s for s in re.split(r"[,，]", sm.group(1)) if s]
-            kept_names = [s for s in names if s in archives]
+            kept_names = [s for s in names if _source_base(s) in archives]
             new_fields = fields[: sm.start(1)] + ",".join(kept_names) + fields[sm.end(1) :]
             return f"<!-- knowledge: {new_fields}-->"
 
@@ -444,16 +474,17 @@ def _apply_mechanical(project_root: Path, scan: dict) -> list[str]:
         if cleaned != text:
             atomic_write_text(path, cleaned)
             fixed.append(f"{rel}：清理格式（行尾空白/EOF 换行）")
-    # ADR index 状态对齐（机械）
+    # ADR index 状态对齐（机械）：替换只作用于状态槽位跨度（_adr_status_slot
+    # 按同一切列规则重定位），不碰标题/摘要列，大小写一律对齐为规范小写形
     index_path = Path(project_root) / KNOWLEDGE_DIR / "adr" / "index.md"
     mismatches = scan["adr"]["status_mismatch"]
     if mismatches and index_path.is_file():
         lines = index_path.read_text(encoding="utf-8", errors="replace").splitlines()
         for mm in mismatches:
             ln = lines[mm["line_no"]]
-            lines[mm["line_no"]] = _STATUS_WORD_RE.sub(
-                mm["expected"], ln, count=1
-            )
+            slot = _adr_status_slot(ln)
+            if slot and slot[2] != mm["expected"]:
+                lines[mm["line_no"]] = ln[: slot[0]] + mm["expected"] + ln[slot[1] :]
             fixed.append(f"adr/index.md：{mm['name']} 状态对齐为 {mm['expected']}")
         atomic_write_text(index_path, "\n".join(lines) + "\n")
     return fixed
@@ -472,34 +503,75 @@ def _context_block(title: str, page: dict) -> str:
     return f"### {title}：`{page['page']}`\n\n冲突规则行：{page['rule']}\n\n<page>\n{page['text']}\n</page>\n"
 
 
-def _page_text_by_rel(pages: list[dict], rel: str) -> str:
-    for p in pages:
-        if p["rel"] == rel:
-            return p["text"]
-    return ""
+def _page_text_by_rel(project_root: Path, rel: str) -> str:
+    """按 rel 现读盘上正文。``scan["pages"]`` 的 text 是 run_audit 开头的扫描
+    快照，机械自修段可能已删改这些页面（悬空行剔除、格式清理）；转写 prompt
+    必须与 LLM 实际要改的盘上内容一致，不得用旧快照拼上下文。"""
+    path = Path(project_root) / rel
+    if not path.is_file():
+        return ""
+    return path.read_text(encoding="utf-8", errors="replace")
 
 
-def _snapshots(project_root: Path, rels: list[str]) -> dict[str, str]:
-    return {
-        rel: (Path(project_root) / rel).read_text(encoding="utf-8", errors="replace")
-        if (Path(project_root) / rel).is_file()
-        else ""
-        for rel in rels
-    }
+def _knowledge_dirty_files(project_root: Path) -> set[str]:
+    """spec/knowledge/ 内未提交改动的 relpath 集合（tracked 改动 + 未跟踪新增）。
+
+    转写段的零改动判定与提交/回滚范围都以此为唯一依据——只快照涉事两页会
+    漏掉转写 run 落在第三页的修正（误判零改动后改动滞留工作区）。git 不可用/
+    超时 fail-open 返回空集。"""
+    try:
+        proc = subprocess.run(
+            [
+                "git",
+                "-c",
+                "core.quotepath=false",
+                "status",
+                "--porcelain",
+                "--",
+                KNOWLEDGE_DIR,
+            ],
+            cwd=str(project_root),
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return set()
+    if proc.returncode != 0:
+        return set()
+    files: set[str] = set()
+    for ln in proc.stdout.splitlines():
+        if len(ln) <= 3:
+            continue
+        rel = ln[3:].strip().strip('"')
+        if " -> " in rel:  # 重命名条目取新路径
+            rel = rel.split(" -> ", 1)[1]
+        if rel:
+            files.add(rel)
+    return files
 
 
-def _validate_with_repair(
-    project_root: Path, validate: Callable, spawn: Callable, base_prompt: str, run_id: str
-) -> tuple[bool, list[str]]:
-    """确定性校验 + 违规反馈修正环；``base_prompt`` 为空（机械自修无 run 语境）
-    时只校验不派发修正 run。"""
-    violations = [str(v) for v in (validate(project_root) or [])]
-    rounds = 0
-    while violations and rounds < MAX_FIX_ROUNDS and base_prompt:
-        rounds += 1
-        spawn(base_prompt + "\n\n" + violations_block(violations), f"{run_id}-fix{rounds}")
-        violations = [str(v) for v in (validate(project_root) or [])]
-    return (not violations), violations
+def _discard_paths(project_root: Path, rels: list[str]) -> None:
+    """只回滚指定文件（tracked restore + 未跟踪 clean），不碰工作区其他改动。
+
+    语义转写失败路径用它在清除本轮半成品的同时保住早前已验证但未提交的
+    产出（如机械段提交失败遗留内容），不得全目录连带回滚。"""
+    if not rels:
+        return
+    for cmd in (
+        ["git", "restore", "--", *rels],
+        ["git", "clean", "-qfd", "--", *rels],
+    ):
+        try:
+            subprocess.run(
+                cmd,
+                cwd=str(project_root),
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
 
 
 # ── 车道主入口 ───────────────────────────────────────────────────────────
@@ -534,7 +606,12 @@ def run_audit(project_root, logger=None, spawn: Optional[Callable] = None) -> di
     fixed = _apply_mechanical(project_root, scan)
     if fixed:
         ok, violations = _validate_with_repair(
-            project_root, validate, spawn, "", f"ka-fix-{int(time.time())}"
+            project_root,
+            validate,
+            spawn,
+            "",
+            f"ka-fix-{int(time.time())}",
+            repair_rounds=0,  # 机械自修无 run 语境：只验不改（显式声明）
         )
         if ok:
             summary = (
@@ -557,30 +634,37 @@ def run_audit(project_root, logger=None, spawn: Optional[Callable] = None) -> di
 
     # ── 语义转写（矛盾/重复 → 定向蒸馏 run） ──
     for idx, finding in enumerate(semantic, 1):
-        pages_for_snap = scan["pages"]
-        rels = sorted({finding["a"]["page"], finding["b"]["page"]})
-        before = _snapshots(project_root, rels)
         prompt = build_audit_prompt(
             finding["kind"],
             _context_block("页面甲", {
                 "page": finding["a"]["page"],
                 "rule": finding["a"]["rule"],
-                "text": _page_text_by_rel(pages_for_snap, finding["a"]["page"]),
+                "text": _page_text_by_rel(project_root, finding["a"]["page"]),
             }),
             _context_block("页面乙", {
                 "page": finding["b"]["page"],
                 "rule": finding["b"]["rule"],
-                "text": _page_text_by_rel(pages_for_snap, finding["b"]["page"]),
+                "text": _page_text_by_rel(project_root, finding["b"]["page"]),
             }),
         )
         run_id = f"ka-rewrite{idx}-{int(time.time())}"
+        # 提交/回滚纪律以 spec/knowledge/ 的 git dirty 状态为唯一依据；
+        # carryover 是本轮开始前已存在的未提交改动（如机械段提交失败遗留的
+        # 已验证产出），失败回滚只作用于本轮新触达的文件。
+        carryover = _knowledge_dirty_files(project_root)
         try:
             spawn(prompt, run_id)
             ok, violations = _validate_with_repair(project_root, validate, spawn, prompt, run_id)
         except Exception as e:  # noqa: BLE001 - 单个转写失败不阻塞其余
             ok, violations = False, [f"转写 run 失败：{e}"]
+        dirty_now = _knowledge_dirty_files(project_root)
         if not ok:
-            discard_knowledge_changes(project_root)
+            # 只回滚本轮触达的文件，不连带 carryover；本轮若改到 carryover
+            # 在场文件则无法拆分——清掉本轮文件后仍违规时整体回滚（carryover
+            # 里的机械产出是确定性的，下一轮体检会重建）。
+            _discard_paths(project_root, sorted(dirty_now - carryover))
+            if dirty_now & carryover and [str(v) for v in (validate(project_root) or [])]:
+                _discard_paths(project_root, sorted(dirty_now & carryover))
             counts["pending_manual"] += 1
             details["manual"].append(
                 f"{finding['kind']} 转写失败（{finding['a']['page']} × {finding['b']['page']}）："
@@ -592,9 +676,10 @@ def run_audit(project_root, logger=None, spawn: Optional[Callable] = None) -> di
                 f"（{finding['a']['page']} × {finding['b']['page']}），请人工核查",
             )
             continue
-        after = _snapshots(project_root, rels)
-        if before == after:
-            # 「判无矛盾」零改动收场
+        if not dirty_now:
+            # 「判无矛盾」零改动收场：dirty 面向整个真相源目录，转写 run 把
+            # 修正落到涉事两页之外的第三页同样会被下方提交收编，不会滞留
+            # 工作区被误判为零改动。
             counts["passed"] += 1
             details["no_conflict"].append(
                 f"{finding['kind']}（{finding['a']['page']} × {finding['b']['page']}）：判无矛盾"
@@ -607,6 +692,16 @@ def run_audit(project_root, logger=None, spawn: Optional[Callable] = None) -> di
             log.warning("knowledge", f"audit 转写提交失败（fail-open）：{e}")
         counts["rewritten"] += 1
         details["rewritten"].append(summary)
+
+    leftover = _knowledge_dirty_files(project_root)
+    if leftover:
+        # 转写段结束仍有未提交改动（提交失败 fail-open 的已验证产出）显式
+        # 曝光，留待后续提交扫入或人工处置，不再无声滞留工作区。
+        log.warning(
+            "knowledge",
+            f"audit 转写段结束仍有未提交改动（多为已验证产出，留待后续提交或人工处置）："
+            f"{sorted(leftover)[:5]}",
+        )
 
     # ── 报告项与规模趋势 ──
     manual_items = (
@@ -745,6 +840,9 @@ def run_graph(
     which = which or shutil.which
     cli = which("graphify")
     if not cli:
+        # PyPI 包名确为 graphifyy（graphifyy 0.9.70，graphify.com 出品；pypi 上
+        # 不存在 graphify 包，名被平台占位），安装后的 CLI 二进制叫 graphify——
+        # 与上方 which 探测名一致，安装命令非笔误。
         log.info(
             "knowledge",
             "graphify 未安装，跳过本次关系图生成（人工安装：uv tool install graphifyy）",

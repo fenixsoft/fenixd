@@ -17,6 +17,8 @@ from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from core.agent_env_keys import AGENT_RUN_BANNED_ENV_KEYS
+
 logger = logging.getLogger("fenixd.dashboard.session_manager")
 
 # ── 模块常量 ────────────────────────────────────────────────────────────────
@@ -76,12 +78,9 @@ class SessionManager:
         self._start_idle_thread()
 
     # ── D1.11：必须不出现的 env 键 ────────────────────────────────────────
-    # 自由会话 MUST NOT 注入 agent-run 专用上下文，防回归。
-    _BANNED_ENV_KEYS = frozenset({
-        "FENIX_RUN_PROJECT_ROOT",
-        "FENIX_RUN_WORKTREE",
-        "CLAUDE_CODE_ENABLE_TODO_TOOLS",
-    })
+    # 自由会话 MUST NOT 注入 agent-run 专用上下文，防回归。键集单一来源见
+    # core/agent_env_keys.py（与 core.knowledge、architecture_routes 共用）。
+    _BANNED_ENV_KEYS = AGENT_RUN_BANNED_ENV_KEYS
 
     def _build_cmd(self) -> list[str]:
         """构建 claude 子进程命令行。

@@ -70,6 +70,19 @@ def _file_sig(p: Path):
     return (st.st_mtime_ns, st.st_size)
 
 
+def _is_dir(p: Path) -> bool:
+    """is_dir() 的 OSError 容错版：探测失败（EIO/EACCES 等）按「非目录」处理。
+
+    pathlib 的 is_dir() 只吞 ENOENT/ENOTDIR/EBADF/ELOOP，其余 OSError 直接
+    上抛（同 registry.probe_child 记录的结论）；单个不可读目录 MUST NOT 中止
+    该项目整轮 spec/runs/logs 扫描通道，故显式吞掉按 False 处理。
+    """
+    try:
+        return p.is_dir()
+    except OSError:
+        return False
+
+
 class FileWatcher:
     def __init__(
         self,
@@ -96,7 +109,9 @@ class FileWatcher:
         self._last_summaries = {}  # project path -> {spec_name: summary dict}（增量 diff 基线）
         self._run_base = {}  # (project path, run_id) -> {"size": int, "status": str}
         self._log_sigs = {}  # project path -> {log_path: (mtime_ns, size)}
-        self._proj_scan_warn = {}  # project path -> 上次扫描失败告警时刻（monotonic 秒，5 分钟节流）
+        # project path -> 上次扫描失败告警时刻（monotonic 秒；缺键 = 从未告警，
+        # 首条失败即时留痕，此后 5 分钟节流）
+        self._proj_scan_warn = {}
 
     # ── 生命周期 ─────────────────────────────────────────────
 
@@ -114,14 +129,15 @@ class FileWatcher:
 
     def _loop(self):
         tick = 0
-        last_scan_warn = 0.0  # scan_once 持续失败告警节流（monotonic 秒）
-        last_hb_warn = 0.0  # 心跳广播失败告警节流（monotonic 秒）
+        last_scan_warn = None  # scan_once 持续失败告警节流（monotonic 秒；None = 从未告警）
+        last_hb_warn = None  # 心跳广播失败告警节流（monotonic 秒；None = 从未告警）
         while self._running:
             try:
                 self.scan_once()
             except Exception as e:  # 监听绝不崩溃：单轮失败下轮重试
                 now = time.monotonic()
-                if now - last_scan_warn >= 300:  # 低频节流：持续失败约 5 分钟记一条
+                # 低频节流：持续失败约 5 分钟记一条（None = 从未告警，首条失败即时留痕）
+                if last_scan_warn is None or now - last_scan_warn >= 300:
                     last_scan_warn = now
                     logger.warning(
                         "dashboard watcher scan_once 失败: %s: %s", type(e).__name__, e
@@ -135,7 +151,7 @@ class FileWatcher:
                     self.hub.broadcast({"type": "refresh"})
                 except Exception as e:
                     now = time.monotonic()
-                    if now - last_hb_warn >= 300:
+                    if last_hb_warn is None or now - last_hb_warn >= 300:
                         last_hb_warn = now
                         logger.warning(
                             "dashboard watcher 心跳广播失败: %s: %s",
@@ -157,7 +173,8 @@ class FileWatcher:
                 now = time.monotonic()
                 # 键统一为项目路径（同 _prune_stale_caches 口径）；缺 path 跳过记账
                 key = Path(proj["path"]).as_posix() if proj.get("path") else None
-                if key and now - self._proj_scan_warn.get(key, 0.0) >= 300:
+                last_warn = self._proj_scan_warn.get(key) if key else None
+                if key and (last_warn is None or now - last_warn >= 300):
                     self._proj_scan_warn[key] = now
                     logger.warning(
                         "dashboard watcher 扫描项目 %s 失败: %s: %s",
@@ -259,13 +276,13 @@ class FileWatcher:
         removed = set()
 
         seen = set()
-        if changes.is_dir():
+        if _is_dir(changes):
             try:
                 entries = list(changes.iterdir())
             except OSError:
                 entries = []
             for d in entries:
-                if not d.is_dir():
+                if not _is_dir(d):
                     continue
                 sname = d.name
                 seen.add(sname)
@@ -291,7 +308,7 @@ class FileWatcher:
         成本恒定。
         """
         runs_dir = proot / ".fenix" / "runs"
-        if not runs_dir.is_dir():
+        if not _is_dir(runs_dir):
             return set()
         run_changed = set()
         try:
@@ -317,7 +334,7 @@ class FileWatcher:
     def _scan_logs(self, proot: Path) -> bool:
         """fenixd*.log 文件签名比对；任一变化（追加/轮转）返回 True。"""
         logs_dir = proot / ".fenix" / "logs"
-        if not logs_dir.is_dir():
+        if not _is_dir(logs_dir):
             return False
         cache = self._log_sigs.setdefault(proot.as_posix(), {})
         changed = False

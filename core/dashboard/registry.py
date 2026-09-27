@@ -135,8 +135,10 @@ class Registry:
         返回 (data, load_error)：
           load_error=None —— 文件不存在（返回干净的默认结构，可正常写回），
             或读取解析成功；
-          load_error=exc  —— 文件存在但 read_text 抛 OSError 或 YAML 解析失败
-            （含用户手改产生的语法错误），data 为默认结构。该默认结构带毒：
+          load_error=exc  —— 文件存在但 read_text 抛 OSError、YAML 解析失败
+            （含用户手改产生的语法错误），或解析成功但顶层不是映射
+            （code-review item 4656307bf332：手改成列表/标量的文件同样带毒，
+             不能视为干净默认），data 为默认结构。该默认结构带毒：
             add_project/add_ignored/mark_fixture/remove_project 的 load→mutate→save
             链路一旦据此写回，损坏/暂不可读的原始配置即被只有新条目的默认结构
             整份覆盖，用户全部项目注册与忽略列表不可恢复地丢失
@@ -150,14 +152,22 @@ class Registry:
         except (OSError, yaml.YAMLError, UnicodeDecodeError) as exc:
             return defaults, exc
         if not isinstance(data, dict):
-            return defaults, None
-        out = {
-            # [fenix-ignore:664c907a50c4] 唯一消费方 bin/fenix_dashboard.py run_serve 已有 int() + TypeError/ValueError 兜底回退 DEFAULT_PORT，非法 port 不会拖到启动报错
-            "port": data.get("port") or DEFAULT_PORT,
-            "projects": data.get("projects") or [],
-            "scan_dirs": data.get("scan_dirs") or [],
-            "ignored": data.get("ignored") or [],
-        }
+            # code-review item 4656307bf332：合法 YAML 但顶层非映射（如整份
+            # 列表/标量）与解析失败同毒——旧实现返回 (defaults, None) 会使
+            # 27a41212fb75 的带毒守卫失效，写方法用默认结构整份覆盖原文件。
+            # 构造描述性错误对象，走 _load_for_write 的统一拒写口径。
+            return defaults, ValueError(
+                f"配置文件顶层不是映射（而是 {type(data).__name__}）"
+            )
+        # code-review item 1c3eb3a7bdd5：以读入 dict 为基底做键级归一化（保留
+        # 用户/第三方工具写入的未知顶层键），仅对四个已知键做容错归一——旧实现
+        # 只重建 4 个键，add_project 等任一写操作的 save 会把其余顶层键静默丢弃。
+        out = dict(data)
+        # [fenix-ignore:664c907a50c4] 唯一消费方 bin/fenix_dashboard.py run_serve 已有 int() + TypeError/ValueError 兜底回退 DEFAULT_PORT，非法 port 不会拖到启动报错
+        out["port"] = data.get("port") or DEFAULT_PORT
+        out["projects"] = data.get("projects") or []
+        out["scan_dirs"] = data.get("scan_dirs") or []
+        out["ignored"] = data.get("ignored") or []
         if not isinstance(out["projects"], list):
             out["projects"] = []
         if not isinstance(out["scan_dirs"], list):
@@ -169,15 +179,15 @@ class Registry:
     def _load_for_write(self) -> tuple:
         """写方法专用读入：load + 带毒检查，返回 (data, error_message)。
 
-        可正常写回时 error_message 为 None；文件存在但读取/解析失败时返回
-        可读错误，调用方按 (False, message) 契约直接返回且 MUST NOT save
-        （code-review item 27a41212fb75）。
+        可正常写回时 error_message 为 None；文件存在但读取/解析失败、或解析
+        成功但顶层非映射时返回可读错误，调用方按 (False, message) 契约直接
+        返回且 MUST NOT save（code-review item 27a41212fb75、4656307bf332）。
         """
         data, load_error = self._load_checked()
         if load_error is None:
             return data, None
         return data, (
-            f"配置 {self.config_path} 读取/解析失败（{load_error}），"
+            f"配置 {self.config_path} 读取/解析失败或顶层结构非法（{load_error}），"
             "已拒绝写回以免整份覆盖丢失；请先手工修复该文件后重试"
         )
 
@@ -216,6 +226,20 @@ class Registry:
                     tmp_path.unlink()
                 except OSError:
                     pass
+
+    def _save_or_error(self, data: dict):
+        """写方法的 save 契约包装（code-review item 30ea99a516eb）。
+
+        save 内部 mkdir/mkstemp/write/fsync/os.replace 抛出的 OSError
+        （EACCES、ENOSPC、目录被删等）若穿透 add_project/mark_fixture/
+        remove_project/add_ignored，会破坏「返回 (bool, message)、不抛异常」
+        契约——这里统一捕获转错误消息；成功返回 None。
+        """
+        try:
+            self.save(data)
+        except OSError as exc:
+            return f"写回配置失败: {exc}"
+        return None
 
     # ── 发现 ─────────────────────────────────────────────────
 
@@ -405,10 +429,18 @@ class Registry:
                 {
                     "name": name or (rp.name or key),
                     "path": key,
-                    "fixture": fixture,
+                    # code-review item 4346360f4dd6：与 mark_fixture 的
+                    # bool(fixture) 口径对齐——非布尔真值（如 "yes"）若原样
+                    # 落盘，discover 按 `is True` 判定恒为假，形成「写进去
+                    # 了却不生效」的静默漂移。
+                    "fixture": bool(fixture),
                 }
             )
-            self.save(data)
+            # code-review item 30ea99a516eb：save 的 OSError 转错误消息，
+            # 不穿透 (bool, message) 契约（下同）。
+            save_error = self._save_or_error(data)
+            if save_error is not None:
+                return False, save_error
             return True, f"已注册项目: {key}"
 
     def mark_fixture(self, path, fixture=True) -> tuple:
@@ -448,7 +480,9 @@ class Registry:
                     continue
                 if existing == key:
                     p["fixture"] = bool(fixture)
-                    self.save(data)
+                    save_error = self._save_or_error(data)
+                    if save_error is not None:
+                        return False, save_error
                     return True, f"已更新夹具标记: {key}"
             return False, f"项目未在监控列表（无需变更）: {key}"
 
@@ -497,7 +531,9 @@ class Registry:
             if not removed:
                 return False, f"项目未在监控列表（无法移除）: {key}"
             data["projects"] = remaining
-            self.save(data)
+            save_error = self._save_or_error(data)
+            if save_error is not None:
+                return False, save_error
             return True, f"已从监控列表移除: {key}"
 
     def add_ignored(self, path) -> tuple:
@@ -525,7 +561,9 @@ class Registry:
                 return False, f"项目已在忽略列表: {key}"
             ignored.append(key)
             data["ignored"] = ignored
-            self.save(data)
+            save_error = self._save_or_error(data)
+            if save_error is not None:
+                return False, save_error
             return True, f"已加入忽略列表: {key}"
 
     def is_ignored(self, path) -> bool:
