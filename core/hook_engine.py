@@ -363,6 +363,12 @@ class HookEngine:
         # 任一 spec 离开终态即复位（见 dispatch）。进程内存态，重启自然复位。
         self._all_done_fired = False
         self._all_done_lock = threading.Lock()
+        # 在飞去重（按 hook_id）：状态短窗口连续迁移时同一 hook 不再并起执行
+        # 线程——commit/push 类动作非幂等，并发执行会抢 git index.lock 产生
+        # failure 审计+告警噪音，甚至重复提交；在飞时记 skipped 审计。
+        # 与 all-done 去重共用 _all_done_lock（均为 dispatch 阶段纯内存去重，
+        # 临界区仅集合读写，锁内无 IO、无嵌套获取）。
+        self._inflight_hooks: set = set()
         # 框架目录：core/hook_engine.py → 框架根（bin/fenix_dashboard.py 所在）
         self._framework_root = Path(__file__).resolve().parent.parent
         self._project_name = None
@@ -463,6 +469,27 @@ class HookEngine:
 
     # ── 单条执行 ────────────────────────────────────────────────────
 
+    def _inflight_begin(self, hook_id) -> bool:
+        """在飞去重 check-and-set：该 hook 已有执行线程在飞则返回 False。
+
+        仅带 id 的 hook 参与去重（无 id 手写 hook 无法定位，保持并发旧行为）；
+        锁窗口仅集合读写，hook 动作本体一律在锁外执行。
+        """
+        if not hook_id:
+            return True
+        with self._all_done_lock:
+            if hook_id in self._inflight_hooks:
+                return False
+            self._inflight_hooks.add(hook_id)
+            return True
+
+    def _inflight_end(self, hook_id) -> None:
+        """释放在飞标记（执行线程 finally 调用；无 id hook 无标记可释放）。"""
+        if not hook_id:
+            return
+        with self._all_done_lock:
+            self._inflight_hooks.discard(hook_id)
+
     def _find_live_hook(self, hook_id, scope: str, spec: str) -> Optional[dict]:
         """执行前从实时 config 读 hooks 段，按 id + 作用域找回该条配置。
 
@@ -493,11 +520,27 @@ class HookEngine:
     ) -> None:
         """单条 hook 的执行线程：实时重读配置、enabled 判 skip、执行、审计。
 
+        在飞去重：同一 hook 上一线程未结束时不再并起新执行，记 skipped 审计
+        返回（避免状态快速连续迁移时非幂等动作并发执行）。
         单 hook 异常互不影响（线程级 try 全包裹，失败走 failure 审计+告警）。
         无 id 的手写 hook（validate_hook_entry 允许缺省 id 的受支持形态）无法
         按 id 重查实时配置，按投递时命中的原始配置 matched_cfg 执行并照常写
         审计；带 id 条目在投递与执行间隙被删除仍静默跳过（不写审计）。
         """
+        if not self._inflight_begin(hook_id):
+            live = self._find_live_hook(hook_id, scope, spec) or {}
+            self._audit(
+                spec,
+                from_status,
+                to_status,
+                hook_id,
+                live.get("action"),
+                scope,
+                STATUS_SKIPPED,
+                "同一 hook 上一事件仍在执行（在飞去重），本次跳过",
+                0.0,
+            )
+            return
         try:
             cfg = self._find_live_hook(hook_id, scope, spec)
             if cfg is None:
@@ -508,7 +551,6 @@ class HookEngine:
             if not cfg.get("enabled", True):
                 self._audit(
                     spec,
-                    to_status,
                     from_status,
                     to_status,
                     hook_id,
@@ -524,7 +566,6 @@ class HookEngine:
                 # 配置被手工改坏：记 failure 但不告警（配置层错误，审计暴露）
                 self._audit(
                     spec,
-                    to_status,
                     from_status,
                     to_status,
                     hook_id,
@@ -541,7 +582,6 @@ class HookEngine:
             try:
                 self._audit(
                     spec,
-                    to_status,
                     from_status,
                     to_status,
                     hook_id,
@@ -554,6 +594,8 @@ class HookEngine:
                 self._alert_failure(spec, to_status, "?", scope, detail)
             except Exception:
                 pass
+        finally:
+            self._inflight_end(hook_id)
 
     def _execute_action(
         self,
@@ -601,7 +643,6 @@ class HookEngine:
         duration = time.monotonic() - started
         self._audit(
             spec,
-            to_status,
             from_status,
             to_status,
             hook_id,
@@ -1085,7 +1126,6 @@ class HookEngine:
     def _audit(
         self,
         spec: str,
-        event: str,
         from_status: Optional[str],
         to_status: Optional[str],
         hook_id,
@@ -1095,11 +1135,15 @@ class HookEngine:
         detail: str,
         duration_s: float,
     ) -> None:
-        """带锁追加一条审计记录到 .fenix/hook_audit.jsonl。"""
+        """带锁追加一条审计记录到 .fenix/hook_audit.jsonl。
+
+        event 字段恒取 to_status（事件源即状态迁移的新状态，伪事件 all-done
+        也以 to_status 传入），二者恒等故不设独立 event 参数。
+        """
         rec = {
             "ts": _utcnow_iso(),
             "spec": spec,
-            "event": event,
+            "event": to_status,
             "from_status": from_status,
             "to_status": to_status,
             "hook_id": hook_id,

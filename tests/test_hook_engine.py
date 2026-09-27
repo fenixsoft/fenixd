@@ -371,7 +371,7 @@ class TestAudit(unittest.TestCase):
 
     def test_audit_record_fields(self):
         eng = HookEngine(self.proot, self.config, logger=MagicMock())
-        eng._audit("s1", "done", "verified", "done", "h1", "commit",
+        eng._audit("s1", "verified", "done", "h1", "commit",
                     "global", STATUS_SUCCESS, "ok", 1.23)
         recs = read_hook_audit(self.proot)
         self.assertEqual(len(recs), 1)
@@ -390,8 +390,8 @@ class TestAudit(unittest.TestCase):
 
     def test_read_audit_spec_filter(self):
         eng = HookEngine(self.proot, self.config, logger=MagicMock())
-        eng._audit("s1", "done", None, "done", "h1", "commit", "global", STATUS_SUCCESS, "ok", 1)
-        eng._audit("s2", "blocked", None, "blocked", "h2", "push", "spec", STATUS_SUCCESS, "ok", 2)
+        eng._audit("s1", None, "done", "h1", "commit", "global", STATUS_SUCCESS, "ok", 1)
+        eng._audit("s2", None, "blocked", "h2", "push", "spec", STATUS_SUCCESS, "ok", 2)
         recs = read_hook_audit(self.proot, spec="s1")
         self.assertEqual(len(recs), 1)
         self.assertEqual(recs[0]["spec"], "s1")
@@ -399,7 +399,7 @@ class TestAudit(unittest.TestCase):
     def test_read_audit_limit(self):
         eng = HookEngine(self.proot, self.config, logger=MagicMock())
         for i in range(5):
-            eng._audit(f"s{i}", "done", None, "done", f"h{i}", "commit", "global", STATUS_SUCCESS, "ok", 1)
+            eng._audit(f"s{i}", None, "done", f"h{i}", "commit", "global", STATUS_SUCCESS, "ok", 1)
         recs = read_hook_audit(self.proot, limit=2)
         self.assertEqual(len(recs), 2)
         self.assertEqual(recs[0]["hook_id"], "h4")
