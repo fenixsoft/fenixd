@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { ConfigData } from '@/services/dashboard';
 import SyncFromUserButton from './SyncFromUserButton';
 import { SETTINGS_ACTIONS_ROW_STYLE } from '../styles';
+import { usePanelDirty } from '../panelDirty';
 
 const { Text } = Typography;
 
@@ -17,6 +18,9 @@ interface MiscSettingsPanelProps {
 
 export default function MiscSettingsPanel({ config, onSave, project, onConfigSynced }: MiscSettingsPanelProps) {
   const [form] = Form.useForm();
+  // 用户编辑置脏：切页签/作用域前由 index 经 anyPanelDirty 弹丢弃确认
+  // （code-review item 8a3eb01dc2b9）
+  const { setDirty } = usePanelDirty();
   // 保存重入守卫（code-review item bbc939741560，比照 TokenBudgetPanel
   // 53b14fb31196）：onSave 是异步落盘 + 父组件重载，请求在飞期间连点「保存」
   // 会重复提交保存请求——saving 期间置 loading/disabled 并在入口短路。
@@ -73,7 +77,7 @@ export default function MiscSettingsPanel({ config, onSave, project, onConfigSyn
       <h3>归档</h3>
       <Text type="secondary">SPEC 归档相关设置。</Text>
       <Card style={{ marginTop: 12 }}>
-        <Form form={form} layout="vertical">
+        <Form form={form} layout="vertical" onValuesChange={() => setDirty(true)}>
           {/* add-spec-archive：自动归档阈值置于面板首字段——验证场景以
               .ant-input-number input 定位首字段（引擎 .first），归档阈值须居前 */}
           <Form.Item

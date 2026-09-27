@@ -2,6 +2,7 @@ import { Button, Card, Form, Input, InputNumber, Modal, Select, Space, Switch, T
 import { useEffect, useRef } from 'react';
 import { restartProjectDaemon } from '@/services/dashboard';
 import SyncFromUserButton from './SyncFromUserButton';
+import { usePanelDirty } from '../panelDirty';
 import type { ConfigData } from '@/services/dashboard';
 
 const { Text } = Typography;
@@ -192,6 +193,9 @@ function buildSystemFormValues(config: ConfigData) {
 
 export default function SystemPanel({ config, onSave, project, onConfigSynced }: SystemPanelProps) {
   const [form] = Form.useForm();
+  // 用户编辑置脏：切页签/作用域前由 index 经 anyPanelDirty 弹丢弃确认
+  // （code-review item 8a3eb01dc2b9）
+  const { setDirty } = usePanelDirty();
 
   // 重启 Fenix Daemon（项目级作用域才显示）：确认后写 restart_request，supervisor
   // 排水（admin.shutdown_drain_seconds）后优雅重启，dashboard 不直接杀进程
@@ -288,7 +292,7 @@ export default function SystemPanel({ config, onSave, project, onConfigSynced }:
     <div data-testid="system-panel">
       {/* 自省设置已拆至独立「自省」页签（SelfReviewPanel）：本页签单 Form 覆盖
           系统+瞬断治理两段，底部统一一个保存按钮（与其他页签一致：Card 外、右下对齐） */}
-      <Form form={form} initialValues={initialValues} layout="vertical">
+      <Form form={form} initialValues={initialValues} layout="vertical" onValuesChange={() => setDirty(true)}>
         <h3>系统</h3>
         <Text type="secondary">
           系统级行为（自愈监视器、重启排水等）的设置界面。保存后约 30 秒经配置热更新生效。

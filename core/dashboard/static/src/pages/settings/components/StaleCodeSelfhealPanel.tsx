@@ -2,6 +2,7 @@ import { Card, Form, InputNumber, Switch, Typography } from 'antd';
 import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
 import type { ConfigData } from '@/services/dashboard';
 import type { SelfEvolutionSectionHandle } from './selfEvolutionSection';
+import { usePanelDirty } from '../panelDirty';
 
 const { Text } = Typography;
 
@@ -31,6 +32,9 @@ const StaleCodeSelfhealPanel = forwardRef<
   StaleCodeSelfhealPanelProps
 >(function StaleCodeSelfhealPanel({ config }, ref) {
   const [form] = Form.useForm();
+  // 用户编辑置脏：切页签/作用域前由 index 经 anyPanelDirty 弹丢弃确认
+  // （code-review item 8a3eb01dc2b9）
+  const { setDirty } = usePanelDirty();
   const scs = config.stale_code_selfheal;
 
   const initialValues = buildScsFormValues(scs);
@@ -71,7 +75,7 @@ const StaleCodeSelfhealPanel = forwardRef<
 
   return (
     <div data-testid="stale-code-selfheal-panel">
-      <Form form={form} initialValues={initialValues} layout="vertical">
+      <Form form={form} initialValues={initialValues} layout="vertical" onValuesChange={() => setDirty(true)}>
         <h3>新代码自动装载</h3>
         <Text type="secondary">
           本项目是可自我改进的。daemon 进程持有的是启动时刻的代码副本，本机制把「检测到代码陈旧」接到「空闲时自动重启」上。当连续空闲达到
