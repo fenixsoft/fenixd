@@ -2153,7 +2153,7 @@ class QQQueueMixin:
         try:
             return max(
                 1,
-                int(self._pm._get_config("mergeback.spec_dir_inflight_max_rounds", 3) or 3),
+                int(self._pm._get_config("mergeback.spec_dir_inflight_max_rounds", 3)),
             )
         except (TypeError, ValueError):
             return 3
@@ -2716,9 +2716,9 @@ class QQQueueMixin:
         )
         # add-impl-ocr-parallel-lane（任务 4.1）：merge-back 成功且 tester 派发的
         # 同一时点启动 ocr 审查车道——与 verifier 车道并行，join 于 testing 出口
-        # （_ocr_join_gate）。指纹取本方法开头持久化的锚点（_ocr_base_commit）+
-        # 分支 head；任何异常都不阻塞 merge 收尾主流程（车道缺席时 join 门禁会
-        # 幂等补启，见 4.2）。
+        # （_ocr_join_gate）。指纹取 merge 前 _run_agent_worker 持久化的锚点
+        # （_ocr_base_commit，写点在调用方 merge 准备段）+ 分支 head；任何异常
+        # 都不阻塞 merge 收尾主流程（车道缺席时 join 门禁会幂等补启，见 4.2）。
         try:
             fp = self._ocr_current_fingerprint(spec_name)
             if fp is not None:
