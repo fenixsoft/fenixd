@@ -43,7 +43,7 @@ from pathlib import Path
 
 # 夹具运行时根：默认仓外 /root/scheduling-showcase，可经 FENIX_FIXTURE_ROOT 覆盖
 # （换用户/换主机/目录改名时无需改代码）；缺省回退现值，不改变本机既有行为。
-ROOT = Path(os.environ.get("FENIX_FIXTURE_ROOT", "/root/scheduling-showcase"))
+ROOT = Path(os.environ.get("FENIX_FIXTURE_ROOT", "/root/scheduling-showcase")).expanduser().resolve()
 # 仓内骨架（稳定资产的事实源；路径相对本脚本 → 主树与 worktree 均成立）
 TEMPLATE = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "scheduling-showcase"
 BASELINE_CONFIG = "agents:\n  max_concurrent: 2\n"
