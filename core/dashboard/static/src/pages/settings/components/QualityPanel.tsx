@@ -74,6 +74,11 @@ interface QualityPanelProps {
 
 export default function QualityPanel({ config, onSave, project, onConfigSynced, onManualEdit }: QualityPanelProps) {
   const [form] = Form.useForm();
+  // 保存重入守卫（code-review item 66e48a34144b，比照 TokenBudgetPanel
+  // 53b14fb31196）：onSave 是异步，提交期间按钮可继续点击会发出重叠保存请求
+  //（四段配置重复提交 + 重复 toast，且在飞期间二次编辑被保存往返回填覆盖）
+  // ——saving 期间置 loading/disabled 并在入口短路。
+  const [saving, setSaving] = useState(false);
   // 环境门只拦「开启」不拦「关闭」（code-review item 1bcde4921884）：ocr 未
   // 就绪时若把开关一律禁用，已配 verify.impl_code_review:true 的项目从此无法
   // 在 UI 关掉该 gate（禁用开关不可切换，handleSave 还会原样重提 true）。
@@ -265,6 +270,7 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
   };
 
   const handleSave = async () => {
+    if (saving) return;
     let values;
     try {
       values = await form.validateFields();
@@ -273,6 +279,7 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
       // （避免触发验证的 no_console_error 断言）。
       return;
     }
+    setSaving(true);
     try {
       await onSave({
         // add-impl-code-review-gate：收尾代码质量审查开关（键路径不变，仅移至质量页签）
@@ -324,6 +331,8 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
       // 上方「校验失败」与「保存失败」的区分并不成立。保留兜底捕获：未来
       // 父组件改为透传失败时，保存失败不致被静默吞掉。
       message.error(`保存失败：${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -810,7 +819,7 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
         {project && onConfigSynced && (
           <SyncFromUserButton project={project} page="quality" onSynced={onConfigSynced} />
         )}
-        <Button type="primary" onClick={handleSave} data-testid="quality-save">
+        <Button type="primary" onClick={handleSave} loading={saving} disabled={saving} data-testid="quality-save">
           保存
         </Button>
       </div>
