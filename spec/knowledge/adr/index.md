@@ -138,3 +138,20 @@ superseded 条目保留在列供溯源。编号接续本目录既有最大号。
 | [ADR-131](ADR-131-repair-success-git-fact-verification-commit-before-test.md) | accepted | repair 成功声明不进信任半径：worker 侧只读 git 事实复核（tip 前进+无冲突残留+无 MERGE_HEAD）后再 re-merge，失败注入具体事实重派，prompt 契约确立提交先于测试为强制终点 |
 | [ADR-132](ADR-132-module-to-package-split-paradigm-facade-patch-contract.md) | accepted | 巨型文件包化拆分范式：先改名入包 _legacy 再逐组摘出（同名包遮蔽）、补丁缝隙一等契约（门面 re-export 不保 patch 语义、调用点经门面延迟解析）、依赖参数注入禁模块级回引、内部调用走一行委托保实例打桩、子模块单向依赖、符号名锚定禁绝对行号 |
 | [ADR-133](ADR-133-signal-kill-attribution-closed-set-channel-isolation.md) | accepted | 信号致死闭集归因按序短路（cancel→监督强杀→daemon 关停→外部信号，不可判别标 unknown 禁猜测），信号死法冷却按 spec 维度禁写全局瞬断指纹，产物硬门两类失败与瞬断指纹通道隔离 |
+| [ADR-134](ADR-134-run-liveness-tail-terminal-criterion-single-recovery-path.md) | accepted | run 存活判据以流末行终态为准（复用终态单源集合、superseded 非死亡、解析失败 fail-open 不误杀），恢复语义单一实现点（精触发与全量扫描同源），精触发稳态零 STATE 写入 |
+| [ADR-135](ADR-135-same-cause-redispatch-fingerprint-breaker-freeze-human.md) | accepted | 同因重派熔断按归因归一化指纹连续计数（差异化即重置），达阈值冻结转人工不再入队，冻结文案内嵌原状态供解冻还原，既有各熔断/退避通道独立记账互不喂入 |
+| [ADR-136](ADR-136-honest-exit-convergence-single-criterion-lane-uniform.md) | accepted | 诚实退出收敛判据单点（partial+缺口非空⊆unattainable、禁回退读主树勾选），两车道同源判据/收口/留痕，fast-track 收敛降级 full 补三阶段独立验证，非法 unattainable 收敛点 fail-closed |
+| [ADR-137](ADR-137-redispatch-legacy-inheritance-contract-claim-single-entry.md) | accepted | 打回重派路径必须重派前登记可继承遗产（现场保留或仅分支登记），保留判定复用收敛判据单点、异常 fail-open 不阻断收工，认领单点覆盖式更新，断言以「在册+可认领」为准 |
+| [ADR-138](ADR-138-facade-forwarding-getattr-registry-class-level-alias.md) | accepted | 门面转发以 __getattr__ 内联显式注册表统一委托（未知名严格 AttributeError、dunder 不转发、patch 缝隙兼容），静态式转发以类级别名收敛不入实例注册表，契约测试逐名覆盖性硬门 |
+| [ADR-139](ADR-139-interactive-session-longlived-stream-subprocess-process-bound.md) | accepted | 交互式自由会话=长驻 claude 流式子进程（必带 --replay-user-messages），会话状态与有界事件缓冲仅存 dashboard 进程内（无落盘无 resume），spawn cwd 锁死注册项目根，uuid 去重全量重拉接回 |
+| [ADR-140](ADR-140-declaration-authority-branch-side-baseline-snapshot-shrink-guard.md) | accepted | 交付物声明权威源=实现分支（worktree>分支>主树统一解析入口），改写同位写分支并提交、主树由 merge-back 对齐，派发时可信基线快照机械化「只可增不可减」，陈旧声明凭三要素凭据确定性重定位禁语义推断 |
+| [ADR-141](ADR-141-external-tool-credential-injection-run-level-home.md) | accepted | 外部工具凭据注入走 run 级隔离 HOME（其配置文件压制 env 时唯一确定性手段），HOME 须指向直接含配置目录的目录，包装器用 PATH 搜索型 exec，baseurl 原样透传不归一化，环境缺口降级放行须非空原因 |
+| [ADR-142](ADR-142-gate-sentinel-dispatched-in-shared-failopen-predicate.md) | accepted | 门控字段哨兵值（如 start_after=manual）必须在共享 fail-open 谓词内解析前显式分派，禁消费点各自判等；哨兵复用单字段、读侧原样返回禁折叠/伪渲染，激活=置空+既有唤醒信号且幂等拒绝 |
+| [ADR-143](ADR-143-artifact-ownership-table-promotion-gate-motivation-elimination.md) | accepted | 验证产物按「产物→归属车道集合」声明式归属表治理，三重合取机械判据在晋升 lint 拦截「要求实现者产出他车道产物」；自证型作弊消除动机而非写侧拦截（堵写不可行），零误拦优先 |
+| [ADR-144](ADR-144-orphan-declaration-preclassify-reference-plane-kind-split.md) | accepted | 孤儿声明判定分离引用面与观测面（git grep 负向 pathspec 排除记账面/spec 自身/产物），历史判据按 kind 分化（new 不查历史、modify 路径历史、delete 不参与），机械删除后续走守卫对账防「删完即收口」 |
+| [ADR-145](ADR-145-build-artifact-config-driven-unresolved-first-class-wip-head-align.md) | accepted | 构建产物判定零默认值全由项目显式配置驱动，未裁决为一等三态之一且 fail-safe 恒假+起草信号，WIP 重叠闸门产物子集 stash 前对齐 HEAD（只对重叠子集、失败回落不阻塞），未裁决信号挂咽喉处复用 admin 起草链路 |
+| [ADR-146](ADR-146-scenario-reroute-stoploss-failure-set-comparison-chain-scoped.md) | accepted | 场景改道止损=跨轮失败集对比（改道前⊆重跑即无一修复立即升级不耗预算，有修复则续预算），读取点须在重跑产物落定后，留存带链内作用域（深度≥1+轮次匹配）防陈旧留存误停新链 |
+| [ADR-147](ADR-147-recovery-driver-exclude-admin-intentional-wait-structured-field.md) | accepted | 恢复判定排除 admin 前缀（admin run 非被处置 spec 的驱动证据），判定纯函数、在飞守卫放派发/唤起点（存储 pending∪进程表两真相并集），有意等待双落持久退避字段+定时器（定时器不作唯一机制），耗尽计数只在他终态与人工解冻清零 |
+| [ADR-148](ADR-148-verify-serving-reclaim-multi-evidence-retain-failsafe.md) | accepted | verify-serving 回收按多证据保留集（spec 存活含归档/登记 resolve 全等/活进程/宽限期，异常一律保留），mtime 不作删除依据只作宽限，复用幂等 remove、启动+周期双触发（done 事件不作唯一机制），依赖实装默认 hardlink |
+| [ADR-149](ADR-149-ledger-resolve-by-full-observation-only-window-append-only.md) | accepted | 审查台账核销只由全量快照观测驱动（未观测≠已修复，窗口观测只增不核销），空 manifest 禁记全绿，框架预算 manifest 为进度分母权威，窗口源与同节拍任务同源且检查点次序先于覆写方，ingest 只消费结构化字段 |
+| [ADR-150](ADR-150-new-file-signal-tripod-consume-sweep-hosting-guard.md) | accepted | 新增文件信号必须三件齐登：主循环消费点+启停清扫路径（损坏删除防卡死）+托管守卫（daemon 未运行拒绝写入），消费后即时清理且幂等，新车道复用既有信号机制不另立平行通道 |
