@@ -231,6 +231,13 @@ def _run_start_ts(run_id: str) -> Optional[int]:
 # 同量级，覆盖常规产物尾部（result 终态行 4KB+）。
 _RUN_TAIL_WINDOW_BYTES = 64 * 1024
 
+# 尾窗击穿扩窗倍数（code-review item b4f2e8c47390）：窗口内完整行不足（末行
+# 超窗，如单条 MB 级 assistant 消息体）时不再回退整文件流读——单条大行击穿
+# 窗口即触发与转录总量成正比的 IO 尖峰——而是按此倍数指数扩窗重读，直到凑足
+# max_lines 个完整行或窗口覆盖全文件。IO 与尾部所需内容成正比（总读出
+# ≈ 4/3 × 终态窗口），重读次数 O(log)。
+_RUN_TAIL_WINDOW_GROWTH = 4
+
 
 def _parse_run_tail_lines(raw_lines) -> list:
     """逐行 JSON 解析 run 产物行（跳过噪声行），只保留 dict 事件。"""
@@ -245,50 +252,38 @@ def _parse_run_tail_lines(raw_lines) -> list:
     return lines
 
 
-def _read_run_tail_full(path: Path, max_lines: int) -> list:
-    """全量流式读取产物末尾 max_lines 行（尾窗内完整行不足时的回退分支）。
-
-    逐行迭代只保留末 max_lines 行文本（内存与文件大小无关），解析口径与
-    主路径一致；文件不可读（OSError）返回 []。
-    """
-    tail: List[str] = []
-    try:
-        with path.open("rb") as f:
-            for raw_line in f:
-                tail.append(raw_line.decode("utf-8", errors="replace"))
-                if len(tail) > max_lines:
-                    del tail[0]
-    except OSError:
-        return []
-    return _parse_run_tail_lines(tail)
-
-
 def _read_run_tail(path: Path, max_lines: int = 3) -> list:
     """读取 run 产物文件末尾若干行并逐行 JSON 解析（跳过噪声行）。
 
     尾块读取（对齐 dashboard ``_read_run_lines`` 范式）：seek 到文件尾部
     ``_RUN_TAIL_WINDOW_BYTES`` 字节窗口再按行切，不把整份转录读进内存。
     窗口首片段是从字节窗口切入的上一行残段（起点恰压行尾时为空串），丢弃
-    不解析；丢弃后窗口内完整行不足 max_lines（末行超窗等）→ 回退
-    ``_read_run_tail_full``。返回内容与旧整文件 ``read_text().splitlines()
-    [-max_lines:]`` 一致：文件不足一个窗口时 start=0 全量读取、不丢弃首行；
-    起点压行尾时空串首片段丢弃不占位；位置切片先于解析（噪声行占位）。
+    不解析；丢弃后窗口内完整行不足 max_lines（末行超窗，如单条超大 JSON
+    行）→ 按 ``_RUN_TAIL_WINDOW_GROWTH`` 倍数指数扩窗重读（b4f2e8c47390：
+    不回退整文件流读，IO 不再与转录总量成正比），直到凑足行数或窗口覆盖
+    全文件。返回内容与旧整文件 ``read_text().splitlines()[-max_lines:]``
+    一致：窗口覆盖全文件（start=0）时不丢弃首行；起点压行尾时空串首片段
+    丢弃不占位；位置切片先于解析（噪声行占位）。
     """
     try:
         with path.open("rb") as f:
             f.seek(0, os.SEEK_END)
             size = f.tell()
-            start = max(0, size - _RUN_TAIL_WINDOW_BYTES)
-            f.seek(start)
-            chunk = f.read()
+            window = _RUN_TAIL_WINDOW_BYTES
+            while True:
+                start = max(0, size - window)
+                f.seek(start)
+                chunk = f.read()
+                raw = chunk.decode("utf-8", errors="replace").splitlines()
+                if start == 0:
+                    # 窗口已覆盖全文件：全量行、不丢首片段（同旧整文件口径）
+                    return _parse_run_tail_lines(raw[-max_lines:])
+                raw = raw[1:]  # 首片段是上一行的残段（或压行尾的空串），丢弃
+                if len(raw) >= max_lines:
+                    return _parse_run_tail_lines(raw[-max_lines:])
+                window *= _RUN_TAIL_WINDOW_GROWTH
     except OSError:
         return []
-    raw = chunk.decode("utf-8", errors="replace").splitlines()
-    if start > 0:
-        raw = raw[1:]  # 首片段是上一行的残段（或压行尾的空串），丢弃
-        if len(raw) < max_lines:
-            return _read_run_tail_full(path, max_lines)
-    return _parse_run_tail_lines(raw[-max_lines:])
 
 
 def _business_fail_marker(text: str) -> Optional[str]:
@@ -533,7 +528,9 @@ def _record_phantom_failure_alert(store, logger, run_id: str, detail: str) -> No
         logger.warning("self_review", description)
 
 
-def collect_runs_stats(project_root, window_start: datetime) -> Dict[str, int]:
+def collect_runs_stats(
+    project_root, window_start: datetime, pre_classified: Optional[List[tuple]] = None
+) -> Dict[str, int]:
     """[window_start, window_end] 窗口（调度侧为 [last_run_at, now] 增量，
     首跑回退 24h）runs 统计（成功/失败/秒挂/超时/丢弃/在跑），排除
     self-review run 自身。
@@ -545,10 +542,12 @@ def collect_runs_stats(project_root, window_start: datetime) -> Dict[str, int]:
     单点维护，code-review item 45181d22b901）。统计源为当前目录 + 归档目录
     并集（archive 目录不存在时忽略），同 run_id 当前目录优先去重。产物文件
     只读，不触发任何写操作。
-    """
-    # 快照化：聚合启动时冻结窗口上界
-    window_end = datetime.now()
 
+    pre_classified（code-review item 8c9ee042a091）：调用侧已物化的
+    _iter_window_classified_runs 分类产出（同轮自省一次分类、统计与样本
+    两侧共享，消除重复的全量分类重扫）；传入时跳过窗口重扫，window_end
+    亦不再冻结。
+    """
     counts = {
         "total": 0,
         "succeeded": 0,
@@ -558,9 +557,13 @@ def collect_runs_stats(project_root, window_start: datetime) -> Dict[str, int]:
         "dropped": 0,
         "running": 0,
     }
-    for run_id, _p, _ts, category, detail in _iter_window_classified_runs(
-        project_root, window_start, window_end
-    ):
+    if pre_classified is not None:
+        runs = pre_classified
+    else:
+        # 快照化：聚合启动时冻结窗口上界
+        window_end = datetime.now()
+        runs = _iter_window_classified_runs(project_root, window_start, window_end)
+    for run_id, _p, _ts, category, detail in runs:
         # 判定口径（result-based classification）：succeeded 以 _classify_run 的
         # result 分支判定结果为准，不引入成功语义文本白名单（朴素文本如
         # 「已退出」同样计为 succeeded）。本函数无 detail 输出通道，MUST NOT
@@ -579,7 +582,12 @@ def collect_runs_stats(project_root, window_start: datetime) -> Dict[str, int]:
 
 
 def collect_failed_run_samples(
-    project_root, window_start: datetime, limit: int = 10, store=None, logger=None
+    project_root,
+    window_start: datetime,
+    limit: int = 10,
+    store=None,
+    logger=None,
+    pre_classified: Optional[List[tuple]] = None,
 ) -> List[Dict[str, str]]:
     """收集 [window_start, window_end] 窗口内业务失败 run 样本（调度侧为
     [last_run_at, now] 增量，首跑回退 24h；run_id + 失败依据摘要），用于
@@ -592,6 +600,11 @@ def collect_failed_run_samples(
     当前目录 + 归档目录并集，同 run_id 当前目录优先去重），保证计数与样本
     口径一致。
 
+    pre_classified（code-review item 8c9ee042a091）：调用侧已物化的
+    _iter_window_classified_runs 分类产出（同轮自省一次分类、统计与样本
+    两侧共享，消除重复的全量分类重扫）；传入时跳过窗口重扫，window_end
+    亦不再冻结。
+
     双源交叉守卫（evo-fix-self-review-phantom-failed-samples 2.2）：仅对信号
     路径命中（detail 前缀 signal=）的样本查 daemon 侧 run_metrics 终态；
     terminal=success 则不计入失败样本，改写一条 self_review_phantom_failure
@@ -601,12 +614,15 @@ def collect_failed_run_samples(
     经 collect_daily_summary 透传 self.store/self.logger）；store 未注入时
     仍排除幻影但跳过告警、降级 logger.warning。
     """
-    window_end = datetime.now()
     samples: List[Dict[str, str]] = []
     ts_by_run: Dict[str, int] = {}
-    for run_id, p, ts, category, detail in _iter_window_classified_runs(
-        project_root, window_start, window_end
-    ):
+    if pre_classified is not None:
+        runs = pre_classified
+    else:
+        # 快照化：聚合启动时冻结窗口上界
+        window_end = datetime.now()
+        runs = _iter_window_classified_runs(project_root, window_start, window_end)
+    for run_id, p, ts, category, detail in runs:
         # 判定口径（result-based classification）：succeeded 以 _classify_run 的
         # result 分支判定结果为准（不引入成功语义文本白名单），成功终态不入选
         # 失败样本；接受项边界：终态邻近 3 行之外的主题词不再翻转分类。
@@ -1170,10 +1186,20 @@ class SelfReviewScheduler:
         # 零活动防护：窗口 [last_run_at, now] 内无任何 SPEC run（review-
         # 自省 run 已排除）→ 不唤醒 admin，仅在 todo.md 记一句占位并跳过
         # （2026-09-05 用户决策，窗口 2026-09-08 起为增量窗口）。
-        if collect_runs_stats(self.project_root, window_start)["total"] == 0:
+        # 窗口分类遍历（逐 run 读尾 3 行 + 幻影守卫查日志索引）一次物化、
+        # 三处共享（code-review item 8c9ee042a091）：零活动判定、摘要的
+        # runs 统计与失败样本消费同一份 _iter_window_classified_runs 产出，
+        # 消除同轮自省对窗口 run 的重复全量分类重扫。
+        classified_runs = list(
+            _iter_window_classified_runs(self.project_root, window_start, datetime.now())
+        )
+        stats = collect_runs_stats(
+            self.project_root, window_start, pre_classified=classified_runs
+        )
+        if stats["total"] == 0:
             return self._skip_review(today)
 
-        daily_summary = self.collect_daily_summary(window_start)
+        daily_summary = self.collect_daily_summary(window_start, pre_classified=classified_runs)
         # 闭环判定条目（read_todo=true 时收集窗口内既有条目并 ID 标注注入）
         cleanup_entries: List[Dict[str, str]] = []
         todo_md = None
@@ -1274,7 +1300,7 @@ class SelfReviewScheduler:
 
     # ── 四源数据摘要（spec 场景锁定数据源清单） ───────────────
 
-    def collect_daily_summary(self, window_start: datetime) -> str:
+    def collect_daily_summary(self, window_start: datetime, pre_classified=None) -> str:
         """聚合窗口数据摘要：STATE 终态 / runs 统计 / admin 告警与处置 /
         日志 ERROR / 近 3 日 git 提交 / 中途信号六源。
 
@@ -1282,6 +1308,11 @@ class SelfReviewScheduler:
         datetime.now() 快照值，聚合执行期间不再调用实时时钟判定窗口归属。输出
         markdown 文本块，作为自省 prompt 的「数据摘要」注入（与人工复盘同
         源）。任一源读取失败降级为空段（不阻断自省）。
+
+        pre_classified（code-review item 8c9ee042a091）：调用侧已物化的
+        _iter_window_classified_runs 分类产出，透传给 runs 统计与失败样本
+        两节共享，避免同轮自省重复执行窗口分类遍历；None 时各自原地扫描
+        （直调兼容）。
         """
         # 快照化：聚合启动时冻结窗口上界
         window_end = datetime.now()
@@ -1305,7 +1336,7 @@ class SelfReviewScheduler:
 
         # 2. runs 统计
         lines.append("## 2. runs 统计（窗口内）")
-        stats = collect_runs_stats(self.project_root, window_start)
+        stats = collect_runs_stats(self.project_root, window_start, pre_classified=pre_classified)
         lines.append(f"- 总 run 数: {stats['total']}")
         lines.append(f"- 成功: {stats['succeeded']}")
         lines.append(f"- 失败: {stats['failed']}")
@@ -1318,7 +1349,11 @@ class SelfReviewScheduler:
         # 样本收集仍须执行以产出 self_review_phantom_failure 告警（无真实
         # 失败时返回空列表，「失败样本」节不渲染，输出形态不变）。
         samples = collect_failed_run_samples(
-            self.project_root, window_start, store=self.store, logger=self.logger
+            self.project_root,
+            window_start,
+            store=self.store,
+            logger=self.logger,
+            pre_classified=pre_classified,
         )
         if samples:
             lines.append("- 失败样本:")
