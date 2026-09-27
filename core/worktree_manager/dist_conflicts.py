@@ -387,8 +387,21 @@ class G5DistConflictsMixin:
         本身的成功语义不被重建失败否定）。
         """
         try:
+            # -c core.quotePath=false：与本文件其余采集点同口径，非 ASCII 的
+            # src 路径不做 C 转义引号形，startswith(DASHBOARD_STATIC_ROOT)
+            # 与 is_artifact 才能命中（code-review item 4de8cd258b75）
             diff = subprocess.run(
-                ["git", "-C", str(self.project_root), "diff", "--name-only", "HEAD^1", "HEAD"],
+                [
+                    "git",
+                    "-C",
+                    str(self.project_root),
+                    "-c",
+                    "core.quotePath=false",
+                    "diff",
+                    "--name-only",
+                    "HEAD^1",
+                    "HEAD",
+                ],
                 capture_output=True,
                 text=True,
                 timeout=30,
@@ -589,6 +602,7 @@ class G5DistConflictsMixin:
 
         无法解析或不含该错误时返回空列表。
         """
+        # [fenix-ignore:1ec8c40ae174] 唯一调用点 mergeback.py 的全部 git merge 子进程已注入 env LC_ALL=C 固化 C locale（75b31cad），error 恒为英文文案，条目所述本地化解析失效不存在
         marker = "would be overwritten by merge:"
         idx = error.find(marker)
         if idx == -1:
@@ -697,10 +711,11 @@ class G5DistConflictsMixin:
                     text=True,
                     timeout=30,
                 )
-            except (subprocess.SubprocessError, OSError):
+            except (subprocess.SubprocessError, OSError) as e:
                 self.logger.warning(
                     "worktree_manager",
-                    f"checkout -f HEAD -- {f} timed out during self-heal",
+                    f"checkout -f HEAD -- {f} failed during self-heal: "
+                    f"{type(e).__name__}: {e}",
                 )
             else:
                 if res.returncode != 0:
@@ -720,8 +735,8 @@ class G5DistConflictsMixin:
                 text=True,
                 timeout=30,
             )
-        except (subprocess.SubprocessError, OSError):
+        except (subprocess.SubprocessError, OSError) as e:
             self.logger.warning(
                 "worktree_manager",
-                "git reset timed out during stash-pop self-heal",
+                f"git reset failed during stash-pop self-heal: {type(e).__name__}: {e}",
             )
