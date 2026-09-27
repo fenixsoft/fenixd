@@ -37,7 +37,12 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
-from core.knowledge_backfill import ledger_has_pending, register_archive_pending
+from core.agent_env_keys import AGENT_RUN_BANNED_ENV_KEYS as _BANNED_ENV_KEYS
+from core.knowledge_backfill import (
+    append_todo_line,
+    ledger_has_pending,
+    register_archive_pending,
+)
 
 logger = logging.getLogger("fenixd.knowledge")
 
@@ -80,12 +85,8 @@ RUN_TIMEOUT_SECONDS = 1800
 # 校验失败后的修正轮上限（spec：最多 2 轮）
 MAX_FIX_ROUNDS = 2
 
-# env 剔除口径同 SessionManager._BANNED_ENV_KEYS：蒸馏 run 与 agent-run 无关
-_BANNED_ENV_KEYS = frozenset({
-    "FENIX_RUN_PROJECT_ROOT",
-    "FENIX_RUN_WORKTREE",
-    "CLAUDE_CODE_ENABLE_TODO_TOOLS",
-})
+# _BANNED_ENV_KEYS 单一来源见 core/agent_env_keys.py（与 SessionManager、
+# architecture_routes 共用同一 frozenset）；蒸馏 run 与 agent-run 无关。
 
 
 def _utcnow_iso() -> str:
@@ -319,7 +320,6 @@ def validate_knowledge(project_root) -> list:
                     violations.append(f"{label}: superseded 条目缺 Superseded by 行")
                 else:
                     target_num = sb.group(1)
-                    target = adr_dir / f"ADR-{target_num}-"
                     if target_num == num or not any(adr_dir.glob(f"ADR-{target_num}-*.md")):
                         violations.append(
                             f"{label}: Superseded by 指向不存在条目: ADR-{target_num}"
@@ -395,20 +395,21 @@ def _kill_process_group(proc: subprocess.Popen) -> None:
 
 
 def _register_todo_retry(proot: Path, archived_names: list, reason: str) -> None:
-    """失败登 todo.md 重试台账（给人看的队列，不进任务门禁；fail-open）。"""
+    """失败登 todo.md 重试台账（给人看的队列，不进任务门禁；fail-open）。
+
+    写入经 ``knowledge_backfill.append_todo_line``（tmp+os.replace 原子回写
+    + flock 串行读改写）：此前本处裸 write_text 截断重写，与回填车道并发
+    时后写者会覆盖先写者的台账行（code-review 1bb1eacf2463）。
+    """
     names = ", ".join(archived_names)
-    line = (
-        f"- [ ] knowledge-distill 重试（{_utcnow_iso()}）：归档 {names} — {reason}\n"
-    )
-    section_head = "## knowledge-distill 重试台账\n"
-    todo = proot / ".fenix" / "todo.md"
     try:
-        todo.parent.mkdir(parents=True, exist_ok=True)
-        existing = todo.read_text(encoding="utf-8") if todo.is_file() else ""
-        if section_head not in existing:
-            existing = existing.rstrip("\n") + ("\n\n" if existing.strip() else "") + section_head
-        todo.write_text(existing + ("" if existing.endswith("\n") else "\n") + line, encoding="utf-8")
-    except OSError as e:
+        appended = append_todo_line(
+            proot,
+            f"[ ] knowledge-distill 重试（{_utcnow_iso()}）：归档 {names} — {reason}",
+        )
+        if not appended:
+            logger.info("knowledge-distill 重试台账已存在同文本条目，跳过重复登记")
+    except Exception as e:  # noqa: BLE001 — fail-open：台账失败不影响主流程
         logger.warning("knowledge-distill 重试台账登记失败（todo.md 写入异常）: %s", e)
 
 
@@ -508,8 +509,13 @@ class DistillManager:
             with self._guard:
                 queue = self._queues.get(key, [])
                 batch, self._queues[key] = queue[:], []
-            if not batch:
-                return
+                if not batch:
+                    # 退出前必须在锁内摘除自己：dispatch 持同一把锁 extend
+                    # 队列后按 _workers 判定是否补线程，若此处锁外退出，
+                    # dispatch 会看到尚存活的线程而漏补，新归档名滞留队列
+                    # 无人消费（code-review 64067e7181f6 竞态窗口）。
+                    self._workers.pop(key, None)
+                    return
             try:
                 self._run_with_lock(proot, batch)
             except Exception as e:  # noqa: BLE001 — worker 不因单批异常死亡
@@ -567,13 +573,34 @@ class DistillManager:
             violations = validate_knowledge(proot)
             if not violations:
                 commit = _commit_output(proot, archived_names)
-                result["ok"] = True
-                result["commit"] = commit
-                logger.info(
-                    "knowledge-distill 完成（%s，第 %d 轮，commit=%s）",
+                if commit is None:
+                    # 提交失败当轮重试一次（index.lock 撞车等瞬态失败常可恢复）
+                    commit = _commit_output(proot, archived_names)
+                if commit is not None:
+                    result["ok"] = True
+                    result["commit"] = commit
+                    logger.info(
+                        "knowledge-distill 完成（%s，第 %d 轮，commit=%s）",
+                        names,
+                        round_no + 1,
+                        commit,
+                    )
+                    return result
+                # 重试仍失败：产出已通过校验但未落库。不能标 ok=True 让它
+                # 无台账滞留工作区——后续任一批 _give_up 的 _discard_output
+                # 会把它连带回滚（code-review 0f5f648d54f4 静默丢失链）；
+                # 登台账留痕，保持「未落库」状态由人工/重试兜底。
+                result["error"] = "校验通过但自动提交失败（产出滞留工作区未落库）"
+                logger.warning(
+                    "knowledge-distill 校验通过但自动提交失败（%s），产出滞留"
+                    "工作区未落库，已登重试台账",
                     names,
-                    round_no + 1,
-                    commit or "-",
+                )
+                _register_todo_retry(
+                    proot,
+                    archived_names,
+                    "校验通过但自动提交失败，产出滞留工作区未落库"
+                    "（请人工提交；注意后续放弃产出的清理会回滚工作区）",
                 )
                 return result
             logger.warning(
@@ -583,8 +610,8 @@ class DistillManager:
                 "; ".join(violations[:5]),
             )
 
-        # 修正轮耗尽仍违规 → 放弃产出
-        self._give_up(proot, archived_names, "校验违规经 %d 轮修正仍未通过" % (result["rounds"]))
+        # 修正轮耗尽仍违规 → 放弃产出（rounds 为含首轮的总 run 次数）
+        self._give_up(proot, archived_names, "校验违规经 %d 轮 run 仍未通过" % (result["rounds"]))
         result["error"] = "校验违规未通过"
         return result
 
@@ -630,6 +657,62 @@ def _get_dispatcher() -> DistillManager:
     return _MANAGER
 
 
+def _gate_distill(proot: Path, archived_names: list, config=None) -> dict | None:
+    """单条/批量派发共用的门控链（enabled → 归档存在 → 回填期排队）。
+
+    双入口共用同一实现，避免门控规则漂移出现单条/批量行为不一致
+    （code-review f58075519410）。
+
+    Returns:
+        None = 全部放行；否则返回 ``{"dispatched": False, "reason": ...}``。
+    """
+    # knowledge.enabled 门控（task 1.1 读取器单源）
+    try:
+        from core.config import ConfigLoader
+
+        effective = config
+        if effective is None:
+            effective = ConfigLoader.resolve_config(proot)
+        if not ConfigLoader.get_knowledge_config(effective or {})["enabled"]:
+            return {"dispatched": False, "reason": "disabled"}
+    except Exception as e:  # noqa: BLE001 — 配置解析失败按禁用处理（fail-open）
+        logger.warning("knowledge-distill 配置解析失败，跳过派发: %s", e)
+        return {"dispatched": False, "reason": f"config-error: {e}"}
+
+    # 归档目录存在性（蒸馏只读归档；软删除路径命名同样落 spec/archive/）
+    missing = [n for n in archived_names if not (proot / ARCHIVE_DIR / n).is_dir()]
+    if missing:
+        if len(archived_names) == 1:
+            return {"dispatched": False, "reason": "archive-dir-missing"}
+        return {
+            "dispatched": False,
+            "reason": f"archive-dir-missing: {', '.join(missing)}",
+        }
+
+    # 回填期排队（fix-knowledge-backfill-reconstruction 3.1）：台账存在 pending
+    # 时不派发增量 run，把归档登记进回填台账后返回——回填期 spec/knowledge/
+    # 只有回填一个写者；收敛（台账无 pending）后此门自然放行，恢复即时派发。
+    # 排队判定/登记故障 fail-open 放行原派发（不阻塞归档主流程）。
+    try:
+        if ledger_has_pending(proot):
+            for name in archived_names:
+                register_archive_pending(proot, name)
+            label = (
+                archived_names[0]
+                if len(archived_names) == 1
+                else "批量 " + ", ".join(archived_names)
+            )
+            logger.info("knowledge-distill 回填期排队（%s 登记回填台账）", label)
+            return {"dispatched": False, "reason": "backfill-queued"}
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "knowledge-distill 回填排队判定失败，按即时派发继续: %s: %s",
+            type(e).__name__,
+            e,
+        )
+    return None
+
+
 def dispatch_distill(project_root, archived_name, config=None, *, dispatcher=None) -> dict:
     """归档蒸馏派发入口（task 2.1；commit_archive_move 单点挂载的漏斗）。
 
@@ -652,41 +735,9 @@ def dispatch_distill(project_root, archived_name, config=None, *, dispatcher=Non
         return {"dispatched": False, "reason": "test-environment"}
 
     proot = Path(project_root)
-
-    # knowledge.enabled 门控（task 1.1 读取器单源）
-    try:
-        from core.config import ConfigLoader
-
-        effective = config
-        if effective is None:
-            effective = ConfigLoader.resolve_config(proot)
-        if not ConfigLoader.get_knowledge_config(effective or {})["enabled"]:
-            return {"dispatched": False, "reason": "disabled"}
-    except Exception as e:  # noqa: BLE001 — 配置解析失败按禁用处理（fail-open）
-        logger.warning("knowledge-distill 配置解析失败，跳过派发: %s", e)
-        return {"dispatched": False, "reason": f"config-error: {e}"}
-
-    # 归档目录存在性（蒸馏只读归档；软删除路径命名同样落 spec/archive/）
-    if not (proot / ARCHIVE_DIR / archived_name).is_dir():
-        return {"dispatched": False, "reason": "archive-dir-missing"}
-
-    # 回填期排队（fix-knowledge-backfill-reconstruction 3.1）：台账存在 pending
-    # 时不派发增量 run，把该归档登记进回填台账后返回——回填期 spec/knowledge/
-    # 只有回填一个写者；收敛（台账无 pending）后此门自然放行，恢复即时派发。
-    # 排队判定/登记故障 fail-open 放行原派发（不阻塞归档主流程）。
-    try:
-        if ledger_has_pending(proot):
-            register_archive_pending(proot, archived_name)
-            logger.info(
-                "knowledge-distill 回填期排队（archive=%s 登记回填台账）", archived_name
-            )
-            return {"dispatched": False, "reason": "backfill-queued"}
-    except Exception as e:  # noqa: BLE001
-        logger.warning(
-            "knowledge-distill 回填排队判定失败，按即时派发继续: %s: %s",
-            type(e).__name__,
-            e,
-        )
+    gated = _gate_distill(proot, [archived_name], config)
+    if gated is not None:
+        return gated
 
     mgr = dispatcher or _get_dispatcher()
     try:
@@ -714,37 +765,9 @@ def dispatch_distill_batch(project_root, archived_names: list, config=None, *, d
     if _in_pytest() and dispatcher is None:
         return {"dispatched": False, "reason": "test-environment"}
     proot = Path(project_root)
-    try:
-        from core.config import ConfigLoader
-
-        effective = config
-        if effective is None:
-            effective = ConfigLoader.resolve_config(proot)
-        if not ConfigLoader.get_knowledge_config(effective or {})["enabled"]:
-            return {"dispatched": False, "reason": "disabled"}
-    except Exception as e:  # noqa: BLE001
-        logger.warning("knowledge-distill 配置解析失败，跳过派发: %s", e)
-        return {"dispatched": False, "reason": f"config-error: {e}"}
-    missing = [n for n in archived_names if not (proot / ARCHIVE_DIR / n).is_dir()]
-    if missing:
-        return {"dispatched": False, "reason": f"archive-dir-missing: {', '.join(missing)}"}
-
-    # 回填期排队（批量入口：多归档分支不经单条路径，须同样判定；任务 3.1）
-    try:
-        if ledger_has_pending(proot):
-            for name in archived_names:
-                register_archive_pending(proot, name)
-            logger.info(
-                "knowledge-distill 回填期排队（批量 %s 登记回填台账）",
-                ", ".join(archived_names),
-            )
-            return {"dispatched": False, "reason": "backfill-queued"}
-    except Exception as e:  # noqa: BLE001
-        logger.warning(
-            "knowledge-distill 批量回填排队判定失败，按即时派发继续: %s: %s",
-            type(e).__name__,
-            e,
-        )
+    gated = _gate_distill(proot, list(archived_names), config)
+    if gated is not None:
+        return gated
     mgr = dispatcher or _get_dispatcher()
     try:
         mgr.dispatch(proot, list(archived_names))
