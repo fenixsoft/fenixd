@@ -150,13 +150,16 @@ def _apply_scenario_freeze(pipeline, spec_name: str) -> dict:
     pipeline._last_freeze_rejected = list(rejected_ids)
     rejected_covers: set = set()
     rejected_set = set(rejected_ids)
-    for item in planner_scenarios:
+    for idx, item in enumerate(planner_scenarios):
         if not isinstance(item, dict):
             continue
-        # 反查侧与登记侧（rejected_ids.append(str(item_id))）共用同一 id
-        # 规整：原始 id 为非字符串（如 int）时裸值 in 集合恒不命中，3.10
-        # 「条目非法剔除」去噪失效（code-review 99e826fde331）。
-        if str(item.get("id")) in rejected_set:
+        # 反查侧与登记侧（item.get("id") or f"[{idx}]" 后
+        # rejected_ids.append(str(item_id))）共用同一 id 规整：原始 id 为
+        # 非字符串（如 int）时裸值 in 集合恒不命中，3.10「条目非法剔除」
+        # 去噪失效（code-review 99e826fde331）；id 为空/缺失时登记侧落
+        # "[idx]" 而裸反查算出 ""/"None"，同样永不命中（code-review
+        # 7a961175fded），故同样走 or f"[{idx}]" 兜底。
+        if str(item.get("id") or f"[{idx}]") in rejected_set:
             covers = item.get("covers")
             if isinstance(covers, list):
                 rejected_covers.update(str(c) for c in covers if c)
@@ -287,7 +290,10 @@ def _apply_scenario_freeze(pipeline, spec_name: str) -> dict:
         # 收编写回 schema 门剔除坏条目；备份缺定义的条目登记「定义不可恢复」
         # 从本轮验证集剔除（宁少验一个，不写必败文件）。
         unrecoverable: list[str] = []
-        for mid in missing_ids:
+        # sorted() 使补齐写回的字节序确定：missing_ids 是 set，直接迭代则
+        # 依哈希序（跨进程不稳定），test_scenarios.json 条目顺序逐轮漂移，
+        # 放大按文件指纹做缓存失效的误失效面。
+        for mid in sorted(missing_ids):
             if mid in backup_map:
                 reconciled.append(backup_map[mid])
             else:
