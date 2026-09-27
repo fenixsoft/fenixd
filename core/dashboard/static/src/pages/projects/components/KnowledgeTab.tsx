@@ -82,6 +82,16 @@ export function adrDisplayName(file: string): string {
   return m ? `${m[1]} ${m[2]}` : stem;
 }
 
+/** ADR 列表条目文本：标题字段优先（'ADR-001 <标题>'，编号取自文件名前缀），
+ *  无标题回退文件名派生（adrDisplayName）。 */
+export function adrListLabel(file: string, title: string | null): string {
+  if (title) {
+    const m = /^(ADR-\d{3})-/.exec(file.replace(/\.md$/, ''));
+    return m ? `${m[1]} ${title}` : title;
+  }
+  return adrDisplayName(file);
+}
+
 // ── 组件 ─────────────────────────────────────────────────────────────
 
 type View =
@@ -154,7 +164,7 @@ export default function KnowledgeTab({ project, active }: KnowledgeTabProps) {
     return (
       <Card variant="borderless" data-testid="knowledge-disabled-card">
         <Space direction="vertical" size={8}>
-          <Typography.Text strong>知识真相源未启用</Typography.Text>
+          <Typography.Text strong>知识真相源已禁用</Typography.Text>
           <Typography.Text type="secondary" data-testid="knowledge-disabled-desc">
             本实例已在设置中关闭知识真相源（knowledge.enabled=false）。蒸馏管线不会
             运行，此处不展示知识内容；可在「系统设置 → 杂项」中重新开启。
@@ -285,7 +295,7 @@ export default function KnowledgeTab({ project, active }: KnowledgeTabProps) {
                           void openPage(`adr/${a.file}`);
                         }}
                       >
-                        {adrDisplayName(a.file)}
+                        {adrListLabel(a.file, a.title)}
                       </a>{' '}
                       <Tag color={a.status === 'superseded' ? 'orange' : 'green'}>
                         {a.status}
