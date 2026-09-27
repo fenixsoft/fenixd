@@ -126,15 +126,31 @@ class Registry:
 
     def load(self) -> dict:
         """读取配置；缺失/损坏时返回默认结构。"""
+        data, _ = self._load_checked()
+        return data
+
+    def _load_checked(self) -> tuple:
+        """load() 的带状态版本：区分「文件不存在」与「存在但读取/解析失败」。
+
+        返回 (data, load_error)：
+          load_error=None —— 文件不存在（返回干净的默认结构，可正常写回），
+            或读取解析成功；
+          load_error=exc  —— 文件存在但 read_text 抛 OSError 或 YAML 解析失败
+            （含用户手改产生的语法错误），data 为默认结构。该默认结构带毒：
+            add_project/add_ignored/mark_fixture/remove_project 的 load→mutate→save
+            链路一旦据此写回，损坏/暂不可读的原始配置即被只有新条目的默认结构
+            整份覆盖，用户全部项目注册与忽略列表不可恢复地丢失
+            （code-review item 27a41212fb75）——写方法须拒绝 save。
+        """
         defaults = {"port": DEFAULT_PORT, "projects": [], "scan_dirs": [], "ignored": []}
         if not self.config_path.exists():
-            return defaults
+            return defaults, None
         try:
             data = yaml.safe_load(self.config_path.read_text(encoding="utf-8"))
-        except (OSError, yaml.YAMLError, UnicodeDecodeError):
-            return defaults
+        except (OSError, yaml.YAMLError, UnicodeDecodeError) as exc:
+            return defaults, exc
         if not isinstance(data, dict):
-            return defaults
+            return defaults, None
         out = {
             # [fenix-ignore:664c907a50c4] 唯一消费方 bin/fenix_dashboard.py run_serve 已有 int() + TypeError/ValueError 兜底回退 DEFAULT_PORT，非法 port 不会拖到启动报错
             "port": data.get("port") or DEFAULT_PORT,
@@ -148,7 +164,22 @@ class Registry:
             out["scan_dirs"] = []
         if not isinstance(out["ignored"], list):
             out["ignored"] = []
-        return out
+        return out, None
+
+    def _load_for_write(self) -> tuple:
+        """写方法专用读入：load + 带毒检查，返回 (data, error_message)。
+
+        可正常写回时 error_message 为 None；文件存在但读取/解析失败时返回
+        可读错误，调用方按 (False, message) 契约直接返回且 MUST NOT save
+        （code-review item 27a41212fb75）。
+        """
+        data, load_error = self._load_checked()
+        if load_error is None:
+            return data, None
+        return data, (
+            f"配置 {self.config_path} 读取/解析失败（{load_error}），"
+            "已拒绝写回以免整份覆盖丢失；请先手工修复该文件后重试"
+        )
 
     def save(self, data: dict):
         """写回配置（确保目录存在；原子替换，唯一临时路径）。
@@ -346,7 +377,11 @@ class Registry:
         # load→mutate→save 整段持锁（code-review item 2f4301b32a85：
         # ThreadingHTTPServer 下并发写请求会互相覆盖整份 YAML）。
         with self._SAVE_LOCK:
-            data = self.load()
+            # 读失败带毒守卫（code-review item 27a41212fb75）：拒绝以默认结构
+            # 覆盖写回损坏/暂不可读的原始配置。
+            data, load_error = self._load_for_write()
+            if load_error is not None:
+                return False, load_error
             for p in data.get("projects", []):
                 if not isinstance(p, dict):
                     continue
@@ -394,7 +429,11 @@ class Registry:
         key = str(rp)
 
         with self._SAVE_LOCK:
-            data = self.load()
+            # 读失败带毒守卫（code-review item 27a41212fb75）：拒绝以默认结构
+            # 覆盖写回损坏/暂不可读的原始配置。
+            data, load_error = self._load_for_write()
+            if load_error is not None:
+                return False, load_error
             for p in data.get("projects", []):
                 if not isinstance(p, dict):
                     continue
@@ -428,7 +467,11 @@ class Registry:
         key = str(rp)
 
         with self._SAVE_LOCK:
-            data = self.load()
+            # 读失败带毒守卫（code-review item 27a41212fb75）：拒绝以默认结构
+            # 覆盖写回损坏/暂不可读的原始配置。
+            data, load_error = self._load_for_write()
+            if load_error is not None:
+                return False, load_error
             remaining = []
             removed = False
             for p in data.get("projects", []):
@@ -470,7 +513,11 @@ class Registry:
         key = self._norm(path)
 
         with self._SAVE_LOCK:
-            data = self.load()
+            # 读失败带毒守卫（code-review item 27a41212fb75）：拒绝以默认结构
+            # 覆盖写回损坏/暂不可读的原始配置。
+            data, load_error = self._load_for_write()
+            if load_error is not None:
+                return False, load_error
             ignored = data.get("ignored") or []
             if not isinstance(ignored, list):
                 ignored = []
