@@ -1,5 +1,5 @@
 import { Card, Form, InputNumber, Switch, Typography } from 'antd';
-import { forwardRef, useEffect, useImperativeHandle } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
 import type { ConfigData } from '@/services/dashboard';
 import type { SelfEvolutionSectionHandle } from './selfEvolutionSection';
 
@@ -10,6 +10,15 @@ const { Text } = Typography;
 // noise——原 120 会把开发日密集落地批次逐个放大成多轮重启）
 const DEFAULT_IDLE_SECONDS = 600;
 const MAX_IDLE_SECONDS = 86400;
+
+// 两字段表单映射单源（config 取值 ?? 缺省）：initialValues 与回填 effect 共用，
+// 避免两份映射漏改一处导致初值与回填值分叉
+function buildScsFormValues(scs: ConfigData['stale_code_selfheal'] | undefined) {
+  return {
+    enabled: scs?.enabled ?? true,
+    idle_confirm_seconds: scs?.idle_confirm_seconds ?? DEFAULT_IDLE_SECONDS,
+  };
+}
 
 interface StaleCodeSelfhealPanelProps {
   config: ConfigData;
@@ -24,13 +33,18 @@ const StaleCodeSelfhealPanel = forwardRef<
   const [form] = Form.useForm();
   const scs = config.stale_code_selfheal;
 
-  const initialValues = {
-    enabled: scs?.enabled ?? true,
-    idle_confirm_seconds: scs?.idle_confirm_seconds ?? DEFAULT_IDLE_SECONDS,
-  };
+  const initialValues = buildScsFormValues(scs);
 
+  // 回填门控（比照 TokenBudgetPanel cbec8303669f 等同族面板）：无条件
+  // setFieldsValue 会在父级 setConfig 刷新 config 时覆盖用户尚未保存的输入。
+  // 对回填产物做序列化比较，只在内容真变化时回填。
+  const lastBackfillRef = useRef('');
   useEffect(() => {
-    form.setFieldsValue(initialValues);
+    const next = buildScsFormValues(config.stale_code_selfheal);
+    const key = JSON.stringify(next);
+    if (key === lastBackfillRef.current) return;
+    lastBackfillRef.current = key;
+    form.setFieldsValue(next);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [config.stale_code_selfheal, form]);
 
@@ -108,7 +122,7 @@ const StaleCodeSelfhealPanel = forwardRef<
             />
           </Form.Item>
           <Text type="secondary">
-            缺省 120 秒。「空闲」= 无活跃 agent run（planner / implementer / verifier /
+            缺省 {DEFAULT_IDLE_SECONDS} 秒。「空闲」= 无活跃 agent run（planner / implementer / verifier /
             judge 全部形态）且无 admin 处置在途任务；任一活跃信号出现立即清零重新计时。
             自动重启引入的新代码若无法启动，supervisor 会在连续 3 次 60 秒内崩溃后
             熔断停止拉起并告警，不会无限重启。

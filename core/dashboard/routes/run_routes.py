@@ -54,6 +54,11 @@ class H4RunRoutesMixin:
         # [fenix-ignore:4e54263f454d] 此处不读 body 不会毒化 keep-alive：未消费 body 由 _handle_inner finally 的 _drain_remaining_request_body 统一排空（BUG-01/265e22d75797），同 regression_routes 6e9597e51e90 先例
         if content_length > 0 and not reason:
             body = self._read_json_body()
+            if body is None:
+                # _read_json_body 失败路径已自行 _error(400/413)，必须终止，
+                # 否则继续执行会向同一 keep-alive 连接写第二个响应（与
+                # spec_routes _api_admin_invoke 等可选 body 端点的使用惯例对齐）
+                return
             if isinstance(body, dict):
                 reason = (body.get("reason") or "").strip() or None
         # 归一为 strip 后字符串；None/空白一律落空串（下游按空串视为未提供）

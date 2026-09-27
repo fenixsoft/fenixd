@@ -1,5 +1,5 @@
 import { Button, Card, Form, InputNumber, Switch, Typography, message } from 'antd';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ConfigData } from '@/services/dashboard';
 import SyncFromUserButton from './SyncFromUserButton';
 import { SETTINGS_ACTIONS_ROW_STYLE } from '../styles';
@@ -37,6 +37,11 @@ interface ParallelSettingsPanelProps {
 
 export default function ParallelSettingsPanel({ config, onSave, project, onConfigSynced }: ParallelSettingsPanelProps) {
   const [form] = Form.useForm();
+  // 保存重入守卫（code-review item 25f88bae6330，比照 TokenBudgetPanel
+  // 53b14fb31196）：onSave 是异步，提交期间按钮可继续点击会发出重叠保存请求
+  // （并发写同一配置文件，结果取决于响应到达顺序）——saving 期间置
+  // loading/disabled 并在入口短路。
+  const [saving, setSaving] = useState(false);
 
   const initialValues = buildFormValues(config);
 
@@ -54,35 +59,43 @@ export default function ParallelSettingsPanel({ config, onSave, project, onConfi
   }, [config, form]);
 
   const handleSave = async () => {
-    // 分离「表单校验」与「保存持久化」（code-review item 3243afb1df4e，比照
-    // MiscSettingsPanel 9125d4a7f7b4 / AgentModelPanel 3086b7e96c4f）：旧实现
-    // 两者混在同一 try/catch 且静默吞掉，onSave 拒绝（网络失败/500）时用户
-    // 点击「保存」后无任何反馈，与同族已修复面板口径漂移。
-    let values;
-    try {
-      values = await form.validateFields();
-    } catch {
-      // 校验失败：antd 已在表单内渲染行内错误提示，无需额外日志（避免触发
-      // 验证场景的 no_console_error 断言，比照 MiscSettingsPanel 口径）。
+    if (saving) {
       return;
     }
+    setSaving(true);
     try {
-      await onSave({
-        agents: {
-          max_concurrent: values.max_concurrent,
-          max_turns: values.max_turns,
-          run_timeout_seconds: values.run_timeout_seconds,
-        },
-        verify: {
-          ...(config.verify || {}),
-          planner_max_concurrent: values.planner_throttle
-            ? values.planner_max_concurrent
-            : 0,
-        },
-      });
-    } catch (error) {
-      // 保存持久化失败：给用户显式反馈而非静默
-      message.error(`保存失败：${error instanceof Error ? error.message : String(error)}`);
+      // 分离「表单校验」与「保存持久化」（code-review item 3243afb1df4e，比照
+      // MiscSettingsPanel 9125d4a7f7b4 / AgentModelPanel 3086b7e96c4f）：旧实现
+      // 两者混在同一 try/catch 且静默吞掉，onSave 拒绝（网络失败/500）时用户
+      // 点击「保存」后无任何反馈，与同族已修复面板口径漂移。
+      let values;
+      try {
+        values = await form.validateFields();
+      } catch {
+        // 校验失败：antd 已在表单内渲染行内错误提示，无需额外日志（避免触发
+        // 验证场景的 no_console_error 断言，比照 MiscSettingsPanel 口径）。
+        return;
+      }
+      try {
+        await onSave({
+          agents: {
+            max_concurrent: values.max_concurrent,
+            max_turns: values.max_turns,
+            run_timeout_seconds: values.run_timeout_seconds,
+          },
+          verify: {
+            ...(config.verify || {}),
+            planner_max_concurrent: values.planner_throttle
+              ? values.planner_max_concurrent
+              : 0,
+          },
+        });
+      } catch (error) {
+        // 保存持久化失败：给用户显式反馈而非静默
+        message.error(`保存失败：${error instanceof Error ? error.message : String(error)}`);
+      }
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -171,7 +184,7 @@ export default function ParallelSettingsPanel({ config, onSave, project, onConfi
         {project && onConfigSynced && (
           <SyncFromUserButton project={project} page="parallel" onSynced={onConfigSynced} />
         )}
-        <Button type="primary" onClick={handleSave} data-testid="settings-save">
+        <Button type="primary" onClick={handleSave} loading={saving} disabled={saving} data-testid="settings-save">
           保存
         </Button>
       </div>

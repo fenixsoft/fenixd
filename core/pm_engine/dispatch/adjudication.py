@@ -957,8 +957,6 @@ class VAdjudicationMixin:
             self._pm.project_root / "spec" / "changes" / spec_name
         )
 
-        # 缺件入参兼容 list[dict]（path/kind/violation）与 list[str]
-        missing_paths = [m["path"] if isinstance(m, dict) else str(m) for m in missing]
         entry_by_path: dict = {}
         for e in entries:
             if isinstance(e, dict) and e.get("path"):
@@ -1226,9 +1224,6 @@ class VAdjudicationMixin:
             # fail-open 回人工（不机械改写）
             return {"action": "fallback"}
 
-        # 缺件入参兼容 list[dict]（path/kind/violation）与 list[str]
-        missing_paths = [m["path"] if isinstance(m, dict) else str(m) for m in missing]
-
         # 逐条漂移判定 → 唯一候选 → 机械对齐（单条异常 → 保留 disputed 走人工）
         aligned_old: list = []
         remaining: list = []
@@ -1381,7 +1376,33 @@ class VAdjudicationMixin:
     # ── 陈日声明前置分类与重定位（add-declaration-relocation-protocol D4）──────
 
     def _preclassify_stale(self, spec_name: str, result, missing: list) -> dict:
-        """陈日声明前置分类（3.5/4.1）：命中陈日信号的缺件走重定位通道。
+        """陈日声明前置分类入口（fail-open 兜底，对齐其余三个预分类器）。
+
+        Returns:
+            透传 ``_preclassify_stale_impl`` 的
+            {"action": "proceed"} / {"action": "continue", "remaining": [...]}；
+            入口异常时 fail-open 回退既有流程：
+            {"action": "continue", "remaining": missing}（missing 原样带入
+            后继预分类软化 / LLM 终审，不阻塞整条收工链）。
+        """
+        try:
+            return self._preclassify_stale_impl(spec_name, result, missing)
+        except Exception as e:
+            # fail-open 契约落地（对齐 _preclassify_missing/_orphan/_drift 入口
+            # 兜底，code-review item 779c3de79a5c）：impl 内 _effective_declaration
+            # 等文件与 git 读取不逐点包 try，入口统一兜底，异常不再穿透调用方
+            # （_adjudicate_deliverable_missing），missing 原样续走既有流程。
+            self._pm.logger.warning(
+                "pm_engine",
+                f"陈日预分类异常回退既有流程 '{spec_name}': "
+                f"{type(e).__name__}: {e}",
+            )
+            return {"action": "continue", "remaining": missing}
+
+    def _preclassify_stale_impl(self, spec_name: str, result, missing: list) -> dict:
+        """_preclassify_stale 主体（fail-open 兜底在其入口，见上）。
+
+        陈日声明前置分类（3.5/4.1）：命中陈日信号的缺件走重定位通道。
 
         在预分类软化 / LLM 终审**之前**对缺件清单逐条做陈日信号判定
         （``is_stale_declaration``：kind == modify 且基线主树 HEAD 无该路径）。
@@ -2284,9 +2305,14 @@ class VAdjudicationMixin:
             if not self._writeback_recur_bump(spec_name, recur_path):
                 continue
             try:
-                max_r = int(self._pm._get_config("agents.max_retries", 3) or 3)
+                # None 判空而非 or 兜底（code-review item c54ffbef69c5）：合法配置
+                # 0（不自动重试）不被 or 吞成缺省 3。max(max_r, 1) 与
+                # _writeback_recur_bump 同源——文案轮数与实际熔断阈值一致。
+                cfg_max_r = self._pm._get_config("agents.max_retries", 3)
+                max_r = 3 if cfg_max_r is None else int(cfg_max_r)
             except Exception:
                 max_r = 3
+            max_r = max(max_r, 1)
             recur_entry = self._pm.state_machine.read_one(spec_name) or {}
             err = (
                 f"声明修正连续复发熔断（形态=修正未生效于读取基准，非普通缺件）: "
