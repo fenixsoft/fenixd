@@ -857,7 +857,8 @@ def _scan_run_midflight(path, max_lines: int = MIDFLIGHT_SCAN_MAX_LINES) -> Dict
     逐行迭代 + 单行 json.loads（失败跳过——半行交错/噪声行不阻断）构建事件
     生成器，喂 latency.latency_samples_from_events（延迟导入；生成器入口是其
     既有契约）采样 API 往返，latency_stats 算 stall 计数与最长往返；同一遍
-    累计中途 error/stderr 事件计数与首条摘要（≤140 字符）。单行可能数 MB
+    累计中途 error/stderr 事件计数与首条摘要（≤140 字符；first_stderr 跳过
+    CLI 启动期诊断噪声行——D2，计数保留全量）。单行可能数 MB
     （assistant 全量消息体），MUST NOT 整文件读入内存；超过 max_lines 行停止
     并置 truncated 标记。
 
@@ -868,6 +869,7 @@ def _scan_run_midflight(path, max_lines: int = MIDFLIGHT_SCAN_MAX_LINES) -> Dict
         latency_samples_from_events,
         latency_stats,
     )
+    from core.agent_runner.provider_circuit import is_cli_stderr_noise  # noqa: PLC0415
 
     state: Dict[str, Any] = {
         "lines": 0,
@@ -900,7 +902,17 @@ def _scan_run_midflight(path, max_lines: int = MIDFLIGHT_SCAN_MAX_LINES) -> Dict
                     elif etype == "stderr":
                         state["stderr_count"] += 1
                         if state["first_stderr"] is None:
-                            state["first_stderr"] = _midflight_event_summary(entry)
+                            # first_stderr 选取跳过 CLI 启动期诊断噪声行
+                            # （reduce-cli-stderr-noise-attribution D2）：该噪声
+                            # 每 run 恒 1 条、与死因零相关，放任占位会让连续
+                            # 两个自省窗口的条目被同一噪声带偏；stderr_count
+                            # 仍保留全量计数（取证现场完整），全噪声时置空。
+                            line = entry.get("line")
+                            if not (isinstance(line, str)
+                                    and is_cli_stderr_noise(line)):
+                                state["first_stderr"] = (
+                                    _midflight_event_summary(entry)
+                                )
                     yield entry
         except OSError:
             return  # 读取失败按空产出（零值扫描），不阻断其余 run

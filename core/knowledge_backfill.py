@@ -398,6 +398,26 @@ def register_archive_pending(project_root: Path, archive_name: str) -> bool:
 # ── spawn（生产实现：claude -p 直跑主树） ────────────────────────────────
 
 
+def _failure_attribution_tail(stdout: str, stderr: str, width: int = 400) -> str:
+    """失败归因文本（reduce-cli-stderr-noise-attribution D3）。
+
+    stderr 逐行过滤 CLI 启动期诊断噪声（``[claude-code:unrecognized_model]``
+    每 run 恒 1 条，恰淹没真实死因尾 400 字符）后取尾部 width 字符；过滤后
+    为空回退 stdout 尾部（``[claude-code:*]`` 诊断行只写 stderr，stdout 不过
+    滤）；两者皆空返回空串，归因仅保留退出码前缀（与 runner._denoise_stderr
+    「过滤后为空回退 Exit code」惯例一致）。``.out`` 留档不受影响——
+    stdout/stderr 双留证，降噪只作用于归因消息。
+    """
+    from core.agent_runner.provider_circuit import (  # noqa: PLC0415
+        is_cli_stderr_noise,
+    )
+
+    lines = [l for l in (stderr or "").splitlines() if not is_cli_stderr_noise(l)]
+    if lines:
+        return "\n".join(lines).strip()[-width:]
+    return (stdout or "").strip()[-width:]
+
+
 def default_spawn(project_root: Path) -> SpawnFn:
     """生产 spawn：主树直跑 ``claude -p``（与前置 SPEC 蒸馏 run 同形态，
     真相源是 spec 元数据层，非产品代码，不走 worktree 实现车道）。"""
@@ -425,10 +445,11 @@ def default_spawn(project_root: Path) -> SpawnFn:
         except OSError:
             pass
         if proc.returncode != 0:
-            raise RuntimeError(
-                f"claude -p 回填 run {run_id} 退出码 {proc.returncode}："
-                f"{proc.stderr.strip()[-400:]}"
-            )
+            tail = _failure_attribution_tail(proc.stdout, proc.stderr)
+            msg = f"claude -p 回填 run {run_id} 退出码 {proc.returncode}"
+            if tail:
+                msg = f"{msg}：{tail}"
+            raise RuntimeError(msg)
         return proc.stdout
 
     return _spawn

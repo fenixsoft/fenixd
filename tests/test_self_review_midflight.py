@@ -266,6 +266,38 @@ class TestScanRunMidflight:
         assert r["error_count"] == 0
         assert r["truncated"] is False
 
+    def test_first_stderr_skips_cli_noise_line(self, env):
+        """first_stderr 跳过 CLI 启动期诊断噪声行，取首条非噪声行（D2）。
+
+        [claude-code:unrecognized_model] 每 run 恒 1 条、与死因零相关；
+        stderr_count 仍保留全量计数（含噪声行）。
+        """
+        rid = _run_id("noise", datetime.now().timestamp() - 120)
+        lines = [
+            {"type": "system", "subtype": "init"},
+            {"type": "stderr",
+             "line": "[claude-code:unrecognized_model] Model 'glm-5.3-flash' is not a valid model name"},
+            {"type": "stderr", "line": "real diagnostic: ECONNRESET"},
+        ]
+        p = _write_run_file(env["runs_dir"], rid, lines)
+        r = _scan_run_midflight(p)
+        assert r["stderr_count"] == 2  # 计数保留全量（噪声行也计）
+        assert r["first_stderr"] == "real diagnostic: ECONNRESET"
+
+    def test_all_noise_stderr_left_blank(self, env):
+        """stderr 全为噪声行时 first_stderr 置空，计数仍计（D2）。"""
+        rid = _run_id("allnoise", datetime.now().timestamp() - 120)
+        lines = [
+            {"type": "stderr",
+             "line": "[claude-code:unrecognized_model] Model 'deepseek-v4-flash' is not a valid model name"},
+            {"type": "stderr",
+             "line": "[claude-code:unrecognized_model] Model 'glm-5.3-flash' is not a valid model name"},
+        ]
+        p = _write_run_file(env["runs_dir"], rid, lines)
+        r = _scan_run_midflight(p)
+        assert r["stderr_count"] == 2
+        assert r["first_stderr"] is None
+
     def test_error_events_counted_with_summary(self, env):
         """中途 error 终态行计数 + 首条摘要（≤140 字符）。"""
         rid = _run_id("err", datetime.now().timestamp() - 120)
