@@ -152,12 +152,14 @@ class ImplBudget:
     def _budget_exempt_alert_threshold(self) -> int:
         """死亡豁免侧车告警阈值（pm.budget_exempt_alert_threshold，缺省 6）。"""
         try:
-            val = int(
-                self._pm._get_config(
-                    "pm.budget_exempt_alert_threshold", BUDGET_EXEMPT_ALERT_THRESHOLD
-                )
-                or BUDGET_EXEMPT_ALERT_THRESHOLD
+            # 显式判 None（code-review item 431b18465020，与 engine.py
+            # _handle_push_failure 的 95c429d664e3 同款）：`or` 会把合法的 0
+            # （首次死亡豁免即告警，由下方 max(1, val) 夹紧下限）吞成默认 6，
+            # 仅缺省时才回退默认值。
+            raw = self._pm._get_config(
+                "pm.budget_exempt_alert_threshold", BUDGET_EXEMPT_ALERT_THRESHOLD
             )
+            val = BUDGET_EXEMPT_ALERT_THRESHOLD if raw is None else int(raw)
         except (TypeError, ValueError):
             val = BUDGET_EXEMPT_ALERT_THRESHOLD
         return max(1, val)
@@ -512,7 +514,9 @@ class ImplBudget:
         run_id 规则 ``impl-<spec>-<ts>[-a<n>][-r<m>]``（每 attempt/瞬态重试一个
         产物文件，同一 run 的多 attempt/重试视为一个 run，取最新产物）。
         判据：产物末行（终态行）为 error ＝ 死亡 run，不计；
-        result 终态 ＝ 正常收工（成功或带收工结果的失败均计入）。
+        凡末行非 error 一律计入正常收工——含 result 终态（成功或带收工
+        结果的失败）、gate-blocked 等中间态收尾，以及空文件/进程中断流
+        （无有效末行时同样按收工计入）。
         runs 目录缺失 ＝ 权威 0；扫描失败（IO/权限）返回 None——对账方
         （_reconcile_impl_budget）以本计数为权威改写 used，喂 0 会把预算
         瞬态清零，故失败必须与「真实 0」区分。
@@ -608,7 +612,9 @@ class ImplBudget:
             return True
 
         # 最近失败摘要：优先取 error，回退 tester_run/implementer_run 上下文
-        recent_error = (entry.get("error") or "").strip()
+        # （str() 归一，code-review item 6292a4f1d3f6：STATE 坏条目 error 为
+        # 非字符串真值时裸 .strip() 抛 AttributeError 穿透预算闸门）
+        recent_error = str(entry.get("error") or "").strip()
         if not recent_error:
             recent_error = (
                 f"最近实现 run={entry.get('implementer_run') or '未知'}，"
