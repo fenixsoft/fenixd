@@ -3,7 +3,7 @@
 // 权限请求横幅、模型/权限菜单、token 徽章、语音、附件拖拽区全部移除；停止
 // 语义映射到既有 stopSession（由 SessionPanel 注入 onStop）。输入区贴底全宽、
 // VisualViewport 键盘高度经 --keyboard-height 变量消费（D4）。
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { CSSProperties, FormEvent } from 'react';
 import { App, Button, Tooltip } from 'antd';
 import {
@@ -86,16 +86,49 @@ export default function SessionComposer({
   const fileDropdownRef = useRef<HTMLDivElement | null>(null);
   const selectedFileRef = useRef<HTMLDivElement | null>(null);
 
-  const commandMenuPosition = useMemo(() => {
+  // 命令菜单锚点（code-review c69c4ee705ca）：弹层是 position:fixed，坐标只在
+  // 打开那一帧采样会过期——页面滚动、窗口 resize、移动端键盘开合（visualViewport
+  // 变化改 --keyboard-height 使输入区位移）后菜单会漂离输入区；CommandMenu 内部
+  // resize 重渲染消费的仍是这份过期 position。菜单打开期间挂 resize +
+  // scroll(capture) + visualViewport resize 监听持续重采样 textarea rect（对齐
+  // useComposerMenuAnchor 的跟随策略），rect 未变不 setState；关闭即卸载监听
+  // （isOpen=false 时 CommandMenu 不渲染，position 值不被消费）。用
+  // useLayoutEffect 保证打开首帧就是重采样后的坐标，不闪旧位置。
+  const [commandMenuPosition, setCommandMenuPosition] = useState({
+    left: 16,
+    bottom: DEFAULT_ANCHOR_BOTTOM,
+  });
+
+  useLayoutEffect(() => {
     if (!composer.showCommandMenu) {
-      return { left: 16, bottom: DEFAULT_ANCHOR_BOTTOM };
+      return;
     }
-    const textareaRect = composer.textareaRef.current?.getBoundingClientRect();
-    return {
-      left: textareaRect ? textareaRect.left : 16,
-      bottom: textareaRect ? window.innerHeight - textareaRect.top + 8 : DEFAULT_ANCHOR_BOTTOM,
+    const sampleCommandMenuAnchor = () => {
+      const textareaRect = composer.textareaRef.current?.getBoundingClientRect();
+      const next = textareaRect
+        ? {
+            left: textareaRect.left,
+            bottom: window.innerHeight - textareaRect.top + 8,
+          }
+        : { left: 16, bottom: DEFAULT_ANCHOR_BOTTOM };
+      setCommandMenuPosition((previous) =>
+        previous.left === next.left && previous.bottom === next.bottom ? previous : next,
+      );
     };
-  }, [composer.showCommandMenu, composer.textareaRef]);
+
+    sampleCommandMenuAnchor();
+    const visualViewport = window.visualViewport;
+    window.addEventListener('resize', sampleCommandMenuAnchor);
+    window.addEventListener('scroll', sampleCommandMenuAnchor, true);
+    visualViewport?.addEventListener('resize', sampleCommandMenuAnchor);
+    return () => {
+      window.removeEventListener('resize', sampleCommandMenuAnchor);
+      window.removeEventListener('scroll', sampleCommandMenuAnchor, true);
+      visualViewport?.removeEventListener('resize', sampleCommandMenuAnchor);
+    };
+    // keyboardHeight 入 deps：visualViewport resize 事件可能早于
+    // --keyboard-height 变量提交触发，依赖键盘高度变化后重跑兜底重采样。
+  }, [composer.showCommandMenu, composer.textareaRef, keyboardHeight]);
 
   // 键盘高亮选中项滚入可视区
   useEffect(() => {

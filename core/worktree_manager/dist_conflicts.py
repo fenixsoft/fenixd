@@ -421,9 +421,10 @@ class G5DistConflictsMixin:
             if not self._run_dist_build():
                 self.logger.error(
                     "worktree_manager",
-                    "dist rebuild failed after merge — keeping committed dist "
-                    "(may lag merged src); run `npm run build` in "
-                    f"{DASHBOARD_STATIC_ROOT} manually",
+                    "dist rebuild failed after merge — keeping existing "
+                    "working-tree dist (may lag merged src); rebuild manually "
+                    "per the .fenix/verify.yaml prepare contract (build root: "
+                    f"{DASHBOARD_STATIC_ROOT})",
                 )
                 return
             subprocess.run(

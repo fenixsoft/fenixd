@@ -179,9 +179,20 @@ export default function ClaudeOutputPane({
   useEffect(() => {
     activeRunIdRef.current = runId;
     activeProjectRef.current = project;
-    // 无 key 复用实例切换 run 时清掉上一 run 的 status（与 activeRunIdRef
-    // 币值守卫同源，code-review item 97dcdc581245）
+    // 无 key 复用实例切换 run 时清掉上一 run 的 per-run 状态（与 activeRunIdRef
+    // 币值守卫同源，code-review item 97dcdc581245）：events/totalEvents/error
+    // 不清时，新 run 的 hello 重同步（appendWithoutOverlap 以 prev 为基准）
+    // 先于初载落地会把新 run 尾窗拼进上一 run 残留列表，随后初载快照因序号
+    // 较小被门槛整包丢弃、连接稳定后无重拉/重置路径自愈（item 7a4bcd0858f1）。
+    // tailSnapAppliedRef 一并归零，序号门槛不从上一 run 带过来（tailSnapSeqRef
+    // 是单调派发计数器，保持递增即可排序新 run 各快照的先后）；loadingMore
+    // 复位防上一 run 在途分页响应不再匹配 reqRunId 时「加载更早事件」永久 loading。
     setRunStatus('');
+    setEvents([]);
+    setTotalEvents(0);
+    setError('');
+    setLoadingMore(false);
+    tailSnapAppliedRef.current = 0;
   }, [runId, project]);
 
   // 拉取尾部事件
