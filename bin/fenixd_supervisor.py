@@ -397,6 +397,107 @@ def start_daemon():
         return None
 
 
+# ── 遗留 daemon 收编（SIGKILL supervisor 后重启的双 daemon / 误熔断防护）──────
+# SIGTERM/SIGINT 有转发收尾（见下方停机信号一节），SIGKILL 无法捕获：supervisor
+# 被 SIGKILL 后旧 daemon 仍存活，新 supervisor 启动时无条件 start_daemon——daemon
+# 有单例守卫时新 daemon 秒退被误计启动失败、连计 3 次触发熔断 critical 误告警
+# （服务实际健康），无守卫时双 daemon 并发写 .fenix。故 daemon 拉起成功后把 pid
+# 原子记录到 .fenix/daemon_runtime.json（supervisor 被杀后唯一存活的线索），拉起
+# 前先检测收编。路径在调用时经 FENIX_DIR 解析（_fuse_marker 同款），测试注入随动。
+
+
+def _daemon_runtime_file() -> Path:
+    return FENIX_DIR / "daemon_runtime.json"
+
+
+def _write_daemon_runtime(pid: int) -> None:
+    """daemon 拉起成功后原子记录其 pid（temp + rename，供重启后收编检测）。
+
+    写入失败降级日志：收编检测退化为旧行为（无条件拉起），不炸穿主循环。
+    """
+    data = {"pid": pid, "started_at": _now_iso()}
+    target = _daemon_runtime_file()
+    try:
+        FENIX_DIR.mkdir(parents=True, exist_ok=True)
+        tmp_fd, tmp_path = tempfile.mkstemp(
+            prefix=".daemon_runtime.",
+            suffix=".tmp",
+            dir=str(FENIX_DIR),
+        )
+        try:
+            with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, str(target))
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+    except OSError as e:
+        log(f"daemon_runtime write failed (non-blocking): {e}")
+
+
+def _adopt_leftover_daemon() -> None:
+    """拉起新 daemon 前收编 SIGKILL 遗留的存活旧 daemon（先收编再拉起）。
+
+    读 daemon_runtime.json 记录的 pid：文件缺失/损坏按无旧 daemon 处理；
+    os.kill(pid, 0) 失败（进程不存在，正常重启路径）同样跳过。存活则按既有
+    停止路径同款 SIGTERM → 等待（sigkill_wait 窗口）→ 超时 SIGKILL 收编，
+    等待与收编均不计入启动失败熔断。pid 回收误判（存活但非 daemon）用
+    /proc/<pid>/cmdline 含 fenixd 字样校验缓解，cmdline 不可读按存活保守
+    处理（宁可多等不双拉）。os.kill(pid, 0) 对 zombie 仍返回真，但旧
+    supervisor 死后 daemon 已 re-parent 由 init 收尸，本进程通常见不到
+    zombie，不特判。
+    """
+    try:
+        data = json.loads(_daemon_runtime_file().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    pid = data.get("pid") if isinstance(data, dict) else None
+    if not isinstance(pid, int) or pid <= 0:
+        return
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return
+    try:
+        cmdline = Path(f"/proc/{pid}/cmdline").read_bytes()
+        if b"fenixd" not in cmdline:
+            log(f"daemon_runtime pid {pid} alive but not fenixd (pid reuse) — skip adopt")
+            return
+    except OSError:
+        log(f"daemon_runtime pid {pid} alive, cmdline unreadable — adopt conservatively")
+    log(f"leftover daemon (pid {pid}) detected — SIGTERM before starting a new one")
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        return
+    sigkill_wait = _sigkill_wait_seconds()
+    deadline = time.monotonic() + sigkill_wait
+    while True:
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            log(f"leftover daemon (pid {pid}) exited after SIGTERM")
+            return
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(0.5)
+    log(
+        f"leftover daemon (pid {pid}) did not exit within {sigkill_wait}s "
+        "after SIGTERM — SIGKILL"
+    )
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except OSError:
+        return
+    # SIGKILL 后短等收尸（与 _terminate_daemon 的 5s 收尸窗口同量级）
+    time.sleep(5)
+
+
 # ── supervisor 自身停机信号（code-review 09d6ed559666）────────────────────
 # supervisor 被外部 SIGTERM/SIGINT（系统管理器 stop / 人为 kill）时若直接消亡，
 # daemon 会成为孤儿，随后重启 supervisor 又无条件拉起新 daemon → 双 daemon 并发
@@ -497,6 +598,9 @@ def main():
             )
             break
 
+        # 先收编再拉起（SIGKILL supervisor 后旧 daemon 可能仍存活，见
+        # _adopt_leftover_daemon）：避免双 daemon 与启动失败误熔断。
+        _adopt_leftover_daemon()
         proc = start_daemon()
         if proc is None:
             # Popen 失败（daemon 未启动）：按一次启动失败计入既有熔断计数
@@ -517,6 +621,9 @@ def main():
             continue
         started_ts = time.time()
         log(f"daemon started (pid {proc.pid})")
+        # 记录 daemon pid（原子覆写）：supervisor 被 SIGKILL 后重启时供
+        # _adopt_leftover_daemon 检测收编（写入失败降级日志，不阻断监视）
+        _write_daemon_runtime(proc.pid)
 
         # 监视循环：daemon 存活期间检测停止/重启请求
         restart = False
