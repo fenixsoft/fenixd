@@ -238,6 +238,30 @@ def _now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S")
 
 
+@contextmanager
+def _ledger_write_lock(project_root: Path):
+    """回填台账读改写窗口的进程间互斥（flock，``.fenix/knowledge_backfill.lock``）。
+
+    台账是整文件读改写语义：回填车道（run_backfill 多处整文件回写）与派发
+    漏斗（register_archive_pending，daemon 进程）分属不同进程，无互斥时后写者
+    会用内存中的旧 entries 覆盖先写者刚落盘的条目（code-review 5feb371288c8）。
+    锁文件自身无内容语义。
+    """
+    import fcntl
+
+    lock_dir = Path(project_root) / ".fenix"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    fh = open(lock_dir / "knowledge_backfill.lock", "w")  # noqa: SIM115 — 生命周期=with
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        finally:
+            fh.close()
+
+
 class BackfillLedger:
     """回填进度台账 v2（``.fenix/knowledge_backfill.jsonl``，双维度条目）。
 
@@ -360,11 +384,29 @@ class BackfillLedger:
         return out
 
     def save(self) -> None:
-        lines = [
-            json.dumps(self.entries[name], ensure_ascii=False)
-            for name in sorted(self.entries)
-        ]
-        atomic_write_text(self.path, "\n".join(lines) + ("\n" if lines else ""))
+        """整文件回写台账（读改写全程持进程间文件锁 + 按条合并）。
+
+        回填 run 长跑期间派发漏斗（``register_archive_pending``，另一进程）会
+        并发登记/重置条目；原子回写只保证单次写不撕裂，不保证读改写原子性，
+        后写者会用内存中的旧 entries 整体覆盖先写者刚落盘的条目。持锁重读盘上
+        最新条目后按条合并：仅一方持有的键直接纳入，两方都有的键取
+        ``updated_at`` 较新的一方——新登记条目与 pending 重置不再被覆盖丢失。
+        """
+        with _ledger_write_lock(self.path.parent.parent):
+            merged = dict(BackfillLedger.load(self.path).entries)
+            for name, entry in self.entries.items():
+                other = merged.get(name)
+                if (
+                    other is None
+                    or str(entry.get("updated_at", "")) >= str(other.get("updated_at", ""))
+                ):
+                    merged[name] = entry
+            self.entries = merged
+            lines = [
+                json.dumps(self.entries[name], ensure_ascii=False)
+                for name in sorted(self.entries)
+            ]
+            atomic_write_text(self.path, "\n".join(lines) + ("\n" if lines else ""))
 
 
 # ── 回填期排队（core.knowledge 派发漏斗调用，design D3） ─────────────────
@@ -394,7 +436,9 @@ def register_archive_pending(project_root: Path, archive_name: str) -> bool:
       pending**——链索引重扫纳入新归档 delta 后重新聚合，否则新归档的溯源行
       永不落页；条目不存在则新建 pending。
 
-    台账在盘、原子回写，重启安全。Returns: 是否发生登记/重置。
+    台账在盘、原子回写，重启安全；回写经 ``BackfillLedger.save`` 的进程间文件锁
+    + 按条合并落盘，与回填 run 的并发整文件回写互斥、不互相覆盖。
+    Returns: 是否发生登记/重置。
     """
     root = Path(project_root)
     ledger = BackfillLedger.load(root / LEDGER_RELPATH)
@@ -742,7 +786,13 @@ def _prune_stale_domains(project_root: Path, domain_map: dict, log) -> list[str]
     removed: list[str] = []
     if not domains_dir.is_dir():
         return removed
-    keep = {v for v in domain_map.values() if isinstance(v, str) and v}
+    # LLM 值不信任：只收合法单路径成分，畸形值（带路径分隔符/相对引用）不得
+    # 影响白名单判定
+    keep = {
+        v
+        for v in domain_map.values()
+        if isinstance(v, str) and v and "/" not in v and v not in (".", "..")
+    }
     for d in sorted(domains_dir.iterdir()):
         if d.is_dir() and d.name not in keep:
             shutil.rmtree(d, ignore_errors=True)
@@ -868,11 +918,20 @@ def run_backfill(
                     "请人工检查后重跑回填",
                 )
                 return {"triggered": True, "ok": False, "reason": "bootstrap-no-domain-map"}
-            _prune_stale_domains(project_root, domain_map, log)
             base_prompt = build_prompt("bootstrap", capabilities=chain_caps)
-            ok, violations = _validate_with_repair(
-                project_root, validate, spawn, base_prompt, run_id
-            )
+            try:
+                ok, violations = _validate_with_repair(
+                    project_root, validate, spawn, base_prompt, run_id
+                )
+            except Exception as e:  # noqa: BLE001 - 单段失败不阻塞车道，可重入
+                append_todo_line(
+                    project_root, f"回填自举校验/修正 run 失败（{run_id}）：{e}"
+                )
+                return {
+                    "triggered": True,
+                    "ok": False,
+                    "reason": "bootstrap-validate-failed",
+                }
             if not ok:
                 discard_knowledge_changes(project_root)
                 append_todo_line(
@@ -886,11 +945,35 @@ def run_backfill(
                     "reason": "bootstrap-invalid",
                     "violations": violations[:10],
                 }
-            commit(project_root, [KNOWLEDGE_DIR], "[fenix] knowledge: backfill bootstrap")
+            # 剪枝移到校验通过之后：白名单出自 LLM 域清单，先删后验会在清单
+            # 缺漏/畸形时把既有真实域内容物理删除并随提交落库；校验失败路径
+            # 此时还未删，无需依赖 restore 兜底（code-review 99e9e002cba5）
+            _prune_stale_domains(project_root, domain_map, log)
+            try:
+                commit(project_root, [KNOWLEDGE_DIR], "[fenix] knowledge: backfill bootstrap")
+            except Exception as e:  # noqa: BLE001 - 单段失败不阻塞车道，可重入
+                append_todo_line(project_root, f"回填自举提交失败（{run_id}）：{e}")
+                return {
+                    "triggered": True,
+                    "ok": False,
+                    "reason": "bootstrap-commit-failed",
+                }
 
     # ── 史前复原段（prehistoric bootstrap：git 考古 → 求差 → 史前页/链头）──
     prehistoric_path = project_root / PREHISTORIC_JSON_RELPATH
     inventory = _read_json(prehistoric_path)
+    if isinstance(inventory, list) and inventory:
+        # 重入复用磁盘旧清单前先对覆盖集求差：回填是长跑车道，期间新归档经
+        # register_archive_pending 重置能力为 pending 后重入，新触碰的能力不在
+        # 旧清单里——链头缺史前基线会让聚合页静默缺失史前窗口内容。存在旧
+        # 清单未覆盖的 pending 能力时整段重跑史前复原（code-review 387b3f802be7）
+        inv_caps = {
+            str(item.get("capability"))
+            for item in inventory
+            if isinstance(item, dict) and item.get("capability")
+        }
+        if any(cap not in inv_caps for cap in todo_caps):
+            inventory = None
     if not isinstance(inventory, list) or not inventory:
         # 写段取蒸馏锁（同聚类自举段）
         with knowledge_distill_lock(project_root):
@@ -918,9 +1001,19 @@ def run_backfill(
                 )
                 return {"triggered": True, "ok": False, "reason": "prehistoric-missing-pages"}
             base_prompt = build_prehistoric_prompt(project_root, chain_index)
-            ok, violations = _validate_with_repair(
-                project_root, validate, spawn, base_prompt, run_id
-            )
+            try:
+                ok, violations = _validate_with_repair(
+                    project_root, validate, spawn, base_prompt, run_id
+                )
+            except Exception as e:  # noqa: BLE001 - 单段失败不阻塞车道，可重入
+                append_todo_line(
+                    project_root, f"回填史前复原校验/修正 run 失败（{run_id}）：{e}"
+                )
+                return {
+                    "triggered": True,
+                    "ok": False,
+                    "reason": "prehistoric-validate-failed",
+                }
             if not ok:
                 discard_knowledge_changes(project_root)
                 append_todo_line(
@@ -934,7 +1027,15 @@ def run_backfill(
                     "reason": "prehistoric-invalid",
                     "violations": violations[:10],
                 }
-            commit(project_root, [KNOWLEDGE_DIR], "[fenix] knowledge: backfill prehistoric")
+            try:
+                commit(project_root, [KNOWLEDGE_DIR], "[fenix] knowledge: backfill prehistoric")
+            except Exception as e:  # noqa: BLE001 - 单段失败不阻塞车道，可重入
+                append_todo_line(project_root, f"回填史前复原提交失败（{run_id}）：{e}")
+                return {
+                    "triggered": True,
+                    "ok": False,
+                    "reason": "prehistoric-commit-failed",
+                }
 
     # 求差：已被归档覆盖的能力，其史前基线作为链头输入聚合蒸馏单元
     baselines: dict[str, str] = {}
@@ -950,6 +1051,10 @@ def run_backfill(
     total = len(batches)
     ok_batches: list[int] = []
     failed_batches: list[dict] = []
+    # 提交失败但内容有效、尚未落库的台账键（fail-open 遗留）：任一批次提交
+    # 成功即被 pathspec 扫入落库并清空；遇到回滚/收尾仍未落库则打回 pending，
+    # 保证台账不虚报已完成（code-review 3fd930cb6bbd）。
+    uncommitted_keys: set[str] = set()
     for i, batch in enumerate(batches, 1):
         # 写段取蒸馏锁：spawn→校验→提交/回滚作为整体与 DistillManager 串行，
         # 防两车道并发写 spec/knowledge/（code-review 2443e98dc1f0）
@@ -979,10 +1084,27 @@ def run_backfill(
                     )
                 except Exception as e:  # noqa: BLE001
                     log.warning("knowledge", f"回填批次 {i}/{total} 提交失败（fail-open）：{e}")
+                    uncommitted_keys.update(CAPABILITY_PREFIX + cap for cap in batch)
+                else:
+                    uncommitted_keys.clear()
                 for cap in batch:
                     ledger.mark(CAPABILITY_PREFIX + cap, STATUS_DISTILLED, batch=i)
                 ok_batches.append(i)
             else:
+                # 回滚会把此前提交失败批次仍在盘上的有效产出一并清掉：先把这些
+                # 条目打回 pending（重入重做），否则内容被丢弃而台账仍标
+                # distilled——真相源永久丢失且台账宣称已完成
+                stale = sorted(uncommitted_keys)
+                for key in stale:
+                    ledger.reset_pending(key)
+                if stale:
+                    append_todo_line(
+                        project_root,
+                        f"回填批次 {i}/{total} 回滚连带清除了此前提交失败批次的在盘"
+                        f"产出，相关条目已打回 pending 待重入重做："
+                        f"{', '.join(k.split(':', 1)[1] for k in stale[:5])}",
+                    )
+                uncommitted_keys.clear()
                 discard_knowledge_changes(project_root)
                 for cap in batch:
                     ledger.mark(CAPABILITY_PREFIX + cap, STATUS_FAILED, batch=i)
@@ -1042,10 +1164,25 @@ def run_backfill(
                     )
                 except Exception as e:  # noqa: BLE001
                     log.warning("knowledge", f"回填 ADR 批次 {i}/{adr_total} 提交失败（fail-open）：{e}")
+                    uncommitted_keys.update(ADR_PREFIX + a for a in batch)
+                else:
+                    uncommitted_keys.clear()
                 for a in batch:
                     ledger.mark(ADR_PREFIX + a, STATUS_DISTILLED, batch=i)
                 adr_ok += 1
             else:
+                # 回滚前把仍未落库的有效产出打回 pending（同能力批次循环口径）
+                stale = sorted(uncommitted_keys)
+                for key in stale:
+                    ledger.reset_pending(key)
+                if stale:
+                    append_todo_line(
+                        project_root,
+                        f"回填 ADR 批次 {i}/{adr_total} 回滚连带清除了此前提交失败"
+                        f"批次的在盘产出，相关条目已打回 pending 待重入重做："
+                        f"{', '.join(k.split(':', 1)[1] for k in stale[:5])}",
+                    )
+                uncommitted_keys.clear()
                 discard_knowledge_changes(project_root)
                 for a in batch:
                     ledger.mark(ADR_PREFIX + a, STATUS_FAILED, batch=i)
@@ -1063,6 +1200,20 @@ def run_backfill(
                 )
         ledger.save()
 
+    # 收尾对账：仍有提交失败未落库的有效产出时，不能让台账停在 distilled
+    # （内容在盘上未提交，后续任何一次回滚都会把它清掉而台账宣称已完成）——
+    # 打回 pending 待重入重做，收敛与排队门保持关闭（code-review 3fd930cb6bbd）
+    if uncommitted_keys:
+        for key in sorted(uncommitted_keys):
+            ledger.reset_pending(key)
+        append_todo_line(
+            project_root,
+            "回填收尾仍有批次提交失败未落库，相关条目已打回 pending 待重入重做："
+            f"{', '.join(k.split(':', 1)[1] for k in sorted(uncommitted_keys)[:5])}",
+        )
+        ledger.save()
+        uncommitted_keys.clear()
+
     counts = ledger.counts()
     scale = scale_stats(project_root)
     converged = all(
@@ -1070,6 +1221,7 @@ def run_backfill(
     )
     summary = {
         "triggered": True,
+        "ok": not failed_batches and not adr_failed,
         "converged": converged,
         "batches_total": total,
         "batches_ok": len(ok_batches),

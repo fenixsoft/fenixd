@@ -347,7 +347,9 @@ def _report_is_superseded(project_root, spec_name, content) -> bool:
     run_result = _load_run_result(project_root, spec_name)
     report = _load_report_json(project_root, spec_name)
     if run_result is None and report is None:
-        return False  # 无结构化数据可比对：交给合成路径自身 fail-closed
+        # 无结构化数据可比对：无法判残留，既有报告按 present 放行（有报告总
+        # 比 fail-closed 阻断好；判 True 走重新合成也无数据可用、只会阻断）
+        return False
     declared_verdict, declared_failed, declared_errors = _md_declared_verdict(content)
     if declared_verdict is None and declared_failed is None and declared_errors is None:
         return False  # 解析不出结论（Agent 自由叙述）→ 不判矛盾

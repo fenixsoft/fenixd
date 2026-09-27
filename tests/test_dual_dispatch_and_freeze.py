@@ -306,6 +306,9 @@ class TestBlockedStuckFrozenExemption(unittest.TestCase):
         mon.state_machine = MagicMock()
         mon.store = MagicMock()
         mon.agent_runner = MagicMock()
+        # _invoke_administrator 现经该 executor 投递后台执行（None → 同步回退）；
+        # __new__ 绕过了 __init__ 的赋值，最小上下文须自备，否则 AttributeError。
+        mon._code_review_executor = None
         return mon
 
     def _specs(self, frozen=False, legacy_text=False, stale=True):

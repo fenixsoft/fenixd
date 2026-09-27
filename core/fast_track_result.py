@@ -186,11 +186,14 @@ def estimate_spec_scale(spec_dir: Path) -> int:
 
     # 2. 统计声明段交付物数（modify/new/delete；reference 不计）
     #    add-declaration-relocation-protocol D1：声明读取经统一解析入口
-    #    （分支/worktree 版本优先、主树回退），与收工守卫同源；无声明段时
-    #    回退语境推断的 deliverables 口径。project_root 由 spec_path 向上
-    #    推导（spec_dir = project_root/spec/changes/<spec>）；推导出的
-    #    project_root 下不存在标准 spec 布局（测试/独立目录夹具）时回退
-    #    直接解析 spec_path（extract_declared 保有 kind 语义，reference 不计）。
+    #    resolve_effective_declaration，与收工守卫同源；当前调用只传
+    #    project_root（派发时点 worktree 尚未创建、无现成实现分支上下文，
+    #    未传 branch/worktree_path），分支/worktree 优先序不生效，实际
+    #    仅主树口径；无声明段时回退语境推断的 deliverables 口径。
+    #    project_root 由 spec_path 向上推导（spec_dir =
+    #    project_root/spec/changes/<spec>）；推导出的 project_root 下
+    #    不存在标准 spec 布局（测试/独立目录夹具）时回退直接解析
+    #    spec_path（extract_declared 保有 kind 语义，reference 不计）。
     file_count = 0
     try:
         from core.deliverables import (
@@ -206,7 +209,7 @@ def estimate_spec_scale(spec_dir: Path) -> int:
         if proj_root.is_dir() and (
             proj_root / "spec" / "changes" / spec_name / "tasks.md"
         ).is_file():
-            # 标准布局才走统一入口（分支/worktree 版本优先、主树回退）；
+            # 标准布局才走统一入口（当前仅主树口径，见上方注释）；
             # 非标准布局（如单测直接给 spec 目录）走下方直解析回退。
             declared = resolve_effective_declaration(
                 spec_name,
@@ -245,6 +248,11 @@ def budget_tier_for_scale(
     即阈值本身落在较低档（30 分仍 normal、45 分仍 higher），与配置界面
     注解一致。阈值经 ``agents.scale_precheck`` 覆盖，缺省 30 / 45。
 
+    契约：``higher_threshold`` MUST 小于 ``full_threshold``；相等或倒挂时
+    本函数入口回退缺省阈值（与 ``get_scale_precheck_config`` 同语义），
+    不抛异常——否则分值同时满足 ``>full`` 与 ``>higher``，先判 full 直接
+    返回会使 higher 档不可达。
+
     Args:
         scale: 规模分（estimate_spec_scale 的返回值）
         higher_threshold: higher 档下界（超过它才升档）
@@ -253,6 +261,10 @@ def budget_tier_for_scale(
     Returns:
         档位字符串："normal" / "higher" / "full"
     """
+    if higher_threshold >= full_threshold:
+        # 阈值相等/倒挂：回退缺省阈值保档位语义（不抛异常，兼容现有调用面）
+        higher_threshold = DEFAULT_HIGHER_THRESHOLD
+        full_threshold = DEFAULT_FULL_THRESHOLD
     if scale > full_threshold:
         return "full"
     if scale > higher_threshold:

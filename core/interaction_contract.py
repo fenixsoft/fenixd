@@ -189,9 +189,17 @@ def extract_candidates(text: str, source: str = "") -> List[InteractiveCandidate
 
     def _register(raw: str, idx: int):
         key = normalize_token(raw)
-        if not key or key in found:
+        if not key:
             return
-        if not any(kw in key for kw in INTERACTIVE_KEYWORDS):
+        if key in found:
+            # 同一文档内同元素多处出现：任一处声明纯展示即视为已声明
+            # （与 collect_spec_candidates 的跨文档合并语义一致）
+            if _has_display_decl(lines, idx):
+                found[key].declared_display = True
+            return
+        # 分段精确匹配而非子串包含：discard（含 card）、hyperlink（含 link）
+        # 这类嵌入式子串不应被误判为可交互候选
+        if not any(_bare_keyword(part) for part in re.split(r"[-_]", key)):
             return
         snippet = lines[idx].strip()
         if len(snippet) > 120:

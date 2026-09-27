@@ -1410,8 +1410,10 @@ def validate_fast_track_result(result: dict, designed_ids: Optional[list] = None
             )
         if not _exempt_classification_ok(sc):
             violations.append(
-                f"场景 {sid} 豁免逃逸：status=exempt 但分类为 product-bug"
-                "（豁免不得掩盖产品缺陷，视为 bug 未修复）"
+                f"场景 {sid} 豁免逃逸：status=exempt 但分类为"
+                f" {sc.get('classification')!r}"
+                f"（须为 {'、'.join(_EXEMPT_ALLOWED_CLASSES)} 之一；"
+                "豁免不得掩盖产品缺陷，视为 bug 未修复）"
             )
 
     # 场景全量执行：设计集与执行集一致，无静默遗漏
@@ -1461,6 +1463,9 @@ def save_report(project_root, spec_name, report: dict) -> None:
         with open(fd, "w", encoding="utf-8") as f:
             json.dump(report, f, ensure_ascii=False, indent=2)
             f.flush()
+            # fsync 落盘后再 rename：掉电时防止 rename 已生效而内容未写盘，
+            # 留下截断的裁决证据文件（与 state_machine/self_review 原子写同口径）
+            os.fsync(f.fileno())
         os.replace(tmp_path, path)
     except (OSError, TypeError, ValueError):
         # json.dump 对不可序列化对象抛 TypeError/ValueError，同样须清理半成品
@@ -1552,6 +1557,9 @@ def save_verdict_cache(project_root, spec_name, cache: dict) -> None:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(payload, f, ensure_ascii=False, indent=1)
                 f.flush()
+                # fsync 落盘后再 rename（与 save_report/state_machine 原子写同口径，
+                # 防掉电留下截断缓存）
+                os.fsync(f.fileno())
             os.replace(tmp_path, p)
         except OSError:
             try:

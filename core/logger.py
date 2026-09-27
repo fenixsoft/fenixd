@@ -124,9 +124,12 @@ class Logger:
         # 本实例的结构化写入不经它分发（见 _log）。
         self._python_logger = logging.getLogger("fenixd")
         self._python_logger.setLevel(self._level)
-        # Close previous handlers before clearing
+        # 仅摘除旧实例挂在全局日志器上的 handler，不 close（code-review item
+        # 3617b2ee430b）：多项目同进程下 project_state_logger 按项目根缓存
+        # Logger 实例（state_machine.py），N 个实例并存且各自经 _log 直写本
+        # 项目的 fenixd.log；在此 close 会关掉前一项目实例仍持有的流，其后续
+        # 日志静默丢失。handler 生命周期归各自实例的 close() 管理。
         for h in list(self._python_logger.handlers):
-            h.close()
             self._python_logger.removeHandler(h)
 
         # File handler with rotation（FlockRotatingFileHandler：多进程共写安全的轮转）

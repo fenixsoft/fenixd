@@ -167,11 +167,21 @@ def _failed_path(project_root) -> Path:
 
 
 def _atomic_write(path: Path, content: str) -> None:
-    """临时文件 + os.replace 原子写（对齐 core.code_review._atomic_write）。"""
+    """临时文件 + fsync + os.replace 原子写（对齐 core.code_review._atomic_write）。"""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + f".tmp-{uuid.uuid4().hex[:8]}")
-    tmp.write_text(content, encoding="utf-8")
-    os.replace(tmp, path)
+    try:
+        with tmp.open("w", encoding="utf-8") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
 
 
 def read_progress(project_root) -> dict:
@@ -2294,11 +2304,23 @@ class CodeFixOrchestrator:
                         # 进度，终止语义与真实在飞状态互相矛盾。改为仅追加
                         # reason=disabled 的提示性 current（合并写保留 running
                         # 与批上下文），终态改写留给批收尾后的下一次 checkpoint
-                        # （自驱动 _resubmit 或下一轮 full scan）。
+                        # （自驱动 _resubmit 或下一轮 full scan）。提示文案按
+                        # 手动授权分流：手动链收尾后的 checkpoint（无 override）
+                        # 凭 chain_authorized 越过 enabled 守卫继续派批，写
+                        # 「终止链」会与实际继续跑批矛盾。
+                        if chain_authorized:
+                            current = (
+                                "自动修复总开关已关闭，本链由手动授权，"
+                                "批收尾后将继续跑完剩余条目"
+                            )
+                        else:
+                            current = (
+                                "自动修复总开关已关闭，本批收尾后终止链（不再投递后续批次）"
+                            )
                         write_progress(
                             self.project_root,
                             reason="disabled",
-                            current="自动修复总开关已关闭，本批收尾后终止链（不再投递后续批次）",
+                            current=current,
                         )
                     else:
                         write_progress(

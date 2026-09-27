@@ -22,8 +22,10 @@ logger = logging.getLogger("fenixd.archive_commit")
 _PROBE_TIMEOUT = 30
 _ADD_TIMEOUT = 60
 _COMMIT_TIMEOUT = 120
-# pathspec 安全白名单：spec_name / 归档目录名允许的合法字符集
-_SAFE_PATH_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+# pathspec 安全白名单：spec_name / 归档目录名允许的合法字符集；
+# 同时排除纯点段（"." / ".."）——git 会把 spec/changes/.. 归一化上跳，
+# 使提交范围从单条归档扩大到计划外目录
+_SAFE_PATH_RE = re.compile(r"^(?!\.?\.$)[A-Za-z0-9._-]+$")
 
 
 def commit_archive_move(project_root, spec_name: str, archive_dir, distill=None) -> dict:

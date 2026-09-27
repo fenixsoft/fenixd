@@ -599,6 +599,13 @@ class EventBus:
 
         稳态（error 为空、无存活子进程）经 ``_recover_ready`` 零 STATE 写入
         （D4），不会产生「写 error → 触发 spec_ready 事件」的自激。
+
+        统计口径（code-review item 42bc50bb86b2）：``handled`` 沿用
+        ``_recover_one``/``_run_full_scan_body`` 既有语义——**含有意跳过**：
+        进入 ``_recover_ready`` 后因 frozen / start_after 未到期 / 存活子进程
+        零动作早退的条目同样计入 handled（``_recover_one`` docstring 明示
+        「True 表示处理成功（含有意跳过）」），故 handled>0 不等于「发生了
+        恢复动作」；入口两道有意等待早退（取消保持 / 派发退避）则不计数。
         """
         try:
             current_specs = self.state_machine.read_all()
@@ -748,7 +755,15 @@ class EventBus:
     # ── Internal ──────────────────────────────────────────────────
 
     def _watch_loop(self):
-        """Poll STATE.md for changes using checksum comparison."""
+        """Poll STATE.md for changes using checksum comparison.
+
+        持续失败退避（code-review item 2f1dd6067c88）：STATE.md 长期不可读
+        （权限损坏/磁盘故障）时，read_all/dispatch 异常仅记日志、`_last_checksum`
+        保持旧值（事件不丢，该设计保留），但固定 2s 重试会各刷一条 error
+        （约 1800 条/小时）。连续失败按 2→4→…→60s 指数退避（封顶 60s），
+        任一轮正常走完（含 checksum 未变化的空轮）即复位。
+        """
+        fail_backoff = 2.0
         while self._running:
             try:
                 if not self.state_path.exists():
@@ -763,13 +778,19 @@ class EventBus:
                     # checksum 再读盘/派发，若读盘抛异常（外层 except 只记日志），
                     # 该次状态变化事件被静默丢弃、且下轮 checksum 已相同不再触发
                     # ——一次变更永久丢失（仅 30 分钟全扫兜底）。改为成功后提交：
-                    # 失败时 checksum 保持旧值，下一 2s tick 自然重试。
+                    # 失败时 checksum 保持旧值，下一 tick 自然重试。
                     current_specs = self.state_machine.read_all()
                     self._dispatch_changes(current_specs)
                     self._last_checksum = current_hash
             except Exception as e:
                 self.logger.error("event_bus", f"Watch error: {e}")
+                # 连续失败拉长重试间隔（见 docstring 说明），避免长期故障下的
+                # 重试风暴；事件不丢语义不变——失败轮 checksum 保持旧值。
+                time.sleep(min(fail_backoff, 60.0))
+                fail_backoff = min(fail_backoff * 2, 60.0)
+                continue
 
+            fail_backoff = 2.0
             time.sleep(2)  # Poll every 2 seconds
 
     def _periodic_scan_loop(self, interval_minutes: int):
@@ -790,6 +811,10 @@ class EventBus:
                 # 每轮 full_scan() **前**调用：先扫后 scan，让当轮 full_scan
                 # 消费最新终态事实。经既有 pm_engine → agent_runner 引用，
                 # 无新增构造参数。异常降级 WARNING 不阻断当轮扫描。
+                # 级别偏离登记（code-review item 2f038f160eed）：与下方 full_scan
+                # 失败的 error 有意分档——清扫失败只令悬空 run 滞留一个周期
+                # （下轮自动重试，当轮扫描不受影响）；full_scan 失败则整轮恢复
+                # 链失效，故取 error。
                 try:
                     self.pm_engine.agent_runner.sweep_dangling_runs()
                 except Exception as e:
@@ -900,6 +925,11 @@ class EventBus:
 
         # Check for new or changed SPECs
         for name, entry in current_specs.items():
+            if not isinstance(entry, dict):
+                # 非 dict 条目跳过（code-review item d392b921a012，与
+                # _find_dependents / full_scan recovery 段双保险同口径）：坏条目
+                # 只损失自身事件，不再中止整轮 diff 并令 watch 通道每 2s 重复失败
+                continue
             new_status = entry.get("status", "drafted")
             old_status = self._known_specs.get(name)
 
@@ -924,10 +954,16 @@ class EventBus:
                 if new_status in DEPENDENCY_ACCEPTED_STATUSES:
                     accepted_names.append(name)
 
-        # Update known state
-        self._known_specs = {
-            name: entry.get("status", "drafted") for name, entry in current_specs.items()
-        }
+        # Update known state：非 dict 条目沿用旧已知状态（无则不登记），与上方
+        # 循环的跳过口径一致，避免快照重写处对坏条目二次引爆
+        # （code-review item d392b921a012）
+        next_known = {}
+        for name, entry in current_specs.items():
+            if isinstance(entry, dict):
+                next_known[name] = entry.get("status", "drafted")
+            elif name in self._known_specs:
+                next_known[name] = self._known_specs[name]
+        self._known_specs = next_known
         return events, accepted_names
 
     @staticmethod
