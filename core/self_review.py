@@ -1136,7 +1136,6 @@ class SelfReviewScheduler:
             from .admin_store import AdminStore
 
             self.store = AdminStore(self.project_root, logger)
-        self._sr_cfg = None  # 每次 check_and_run 时经 ConfigLoader 重读（热更新生效）
 
     # ── 调度判定（design D1） ──────────────────────────────────
 
@@ -1897,11 +1896,20 @@ class SelfReviewScheduler:
             self.logger.warning("self_review", f"git commit todo.md 失败: {e}")
             return False
         if commit.returncode != 0:
-            # 无变更可提交（内容重复等）不视为失败
-            self.logger.info(
-                "self_review",
-                f"git commit todo.md 未产生提交: {commit.stderr.strip()[:200]}",
-            )
+            # 分流：「nothing to commit」（无变更可提交，内容重复等）为良性
+            # 记 info；其余（index.lock 争用、hook 拒绝、身份未配置等真实
+            # 失败）不可与良性混同，记 WARNING 并带输出摘要（与 push 失败同口径）。
+            output = f"{commit.stdout.strip()}\n{commit.stderr.strip()}".strip()
+            if "nothing to commit" in output:
+                self.logger.info(
+                    "self_review",
+                    f"git commit todo.md 未产生提交: {output[:200]}",
+                )
+            else:
+                self.logger.warning(
+                    "self_review",
+                    f"git commit todo.md 失败: {output[:200]}",
+                )
             return False
         try:
             push = subprocess.run(
@@ -1928,7 +1936,10 @@ class SelfReviewScheduler:
     def _load_state(self) -> dict:
         path = self._state_path()
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            # errors="replace"：磁盘损坏/手改产生的非法字节按同文件其他读取
+            # 惯例容忍，避免 UnicodeDecodeError 逃逸到防风暴守卫之外（当日
+            # last_run_date 写不进去 → 巡检每轮重试风暴）。
+            data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
         except (OSError, json.JSONDecodeError):
             return {}
         return data if isinstance(data, dict) else {}
