@@ -89,3 +89,19 @@ superseded 条目保留在列供溯源。编号接续本目录既有最大号。
 | [ADR-082](ADR-082-gate-evidence-per-spec-addressed-persistence.md) | accepted | 门禁证据 per-spec 寻址持久化（verify-progress/<spec>/impl-result.json 原子快照）：共享 run-result 降级为兼容兜底，证据缺失 fail-closed 拦截，恢复巡检尊重门禁结论、re-trigger 作人工修复心跳 |
 | [ADR-083](ADR-083-drafted-promotion-single-choke-point-shared-core.md) | accepted | drafted 晋升门控单点化（manual 等待不写 error），晋升核心共享函数供 daemon/dashboard/CLI 三通道复用；transition 收尾留调用方，CLI 人工子命令独立入口不挂 daemon 主程序 |
 | [ADR-084](ADR-084-contract-agent-artifact-hard-gate-retry-budget-split.md) | accepted | 产物契约型 agent（planner-judge/plan）成功判定加产物硬门：exit 0 但产物缺失/不可解析判失败走瞬态重试，产物不合规走裁决重试，两类预算分离；judge 逐场景 checkpoint 先落盘再深入 |
+| [ADR-085](ADR-085-worktree-verify-progress-copyback-per-file-mtime-guard.md) | accepted | worktree 产物拷回收口于 runner 成功收口点（覆盖全部 agent 类型），逐文件 copy2+mtime 三态守卫防陈旧回灌，fail-open 留痕、失败路径不拷回 |
+| [ADR-086](ADR-086-cancel-hold-state-persistent-recovery-monitor-exempt.md) | accepted | 人工取消保持态随 STATE 持久（`_cancelled_hold`），重启恢复与自动监测豁免、不覆盖人工决策，仅显式 status 复位解锁；存量不迁移 |
+| [ADR-087](ADR-087-autostash-drop-criterion-tree-diff-sha-pinned.md) | accepted | autostash 删除判据=树级 diff 全同+sha 钉住+栈顶核对，含独有内容必保留并附找回命令；冲突事件留痕可处置、WIP 重叠只读预警不阻断 |
+| [ADR-088](ADR-088-verify-scenario-root-separated-from-project-root.md) | accepted | 验证执行根与簿记根分离：scenario_root 承载 cli 场景 cwd 与 seed 写入（物理隔离进 serving worktree），project_root 保留簿记路径不动 |
+| [ADR-089](ADR-089-wip-checkpoint-silent-window-collapse-before-mergeback.md) | accepted | WIP 检查点只在框架可证明静默窗口提交（排水进程死绝后/瞬断退避 sleep 前，无条件下生效），merge-back 前 soft-reset 塌缩 `fenix(wip):` 提交保主树历史零污染 |
+| [ADR-090](ADR-090-scenario-defect-only-reroute-to-judge-repair.md) | accepted | 纯场景缺陷（product-bug=0）改道门定向重派 judge 走 scenario-repaired 通道，实现轮预算不修场景；静态扫描只产情报 fail-open，与修复重入共用预算 |
+| [ADR-091](ADR-091-per-spec-budget-override-resolution-priority.md) | accepted | 实现预算解析优先级 per-spec 覆盖>全局 config>缺省、夹紧 1-10 单点纯函数共享，dashboard 读侧引用同源实现不重复解析，null=清除回退全局 |
+| [ADR-092](ADR-092-attribution-grading-framework-computed-screenshot-algorithmic-label.md) | accepted | 归因分级由框架机械计算（非 judge 自报）+截图健康算法标签+基线防污染+批量归因查重（≥3 逐字同拒落盘），inconclusive 达阈值必唤起 admin |
+| [ADR-093](ADR-093-scenario-set-write-gate-same-source-validation.md) | accepted | 场景集写入端全量过同源结构校验，坏条目剔除继续不整批拒绝、备份全合法才更新、加载净化只动内存；未消费反馈不再自动重跑改分级升级 |
+| [ADR-094](ADR-094-verdict-artifact-fail-closed-copyback-before-gate.md) | accepted | 裁决产物 fail-closed：拷回前置+硬门 mtime 新鲜度下界+白名单单源，不可读任何路径不得等价 verified，三阶段重试一次后 blocked、legacy 直接 blocked |
+| [ADR-095](ADR-095-verdict-dispatch-yield-zero-write-fail-history-sidecar.md) | accepted | 裁决重试 frozen/cancelled 让位零写入（不触状态机不发告警），失败 cause 结构化分型+fail_history 侧车 diff 识别无进展循环，只有真二次违规产出告警 |
+| [ADR-096](ADR-096-control-signal-machine-semantics-typed-bifurcation-dedup.md) | accepted | 控制信号机器语义走独立 signal_type 不依赖 evidence 字段（四处注册点同步），同项目同型未处置信号在途去重，前端 ref 同步锁防双击穿透 |
+| [ADR-097](ADR-097-plan-artifact-single-status-whitelist-degrade-annotation.md) | accepted | plan 产物硬门合法终态单值白名单（只认 plan-ready）+校验路径与读侧同源+归因携带真实 status，降级事实落盘持久化并渲染标注，新流程成功时清旧标注 |
+| [ADR-098](ADR-098-run-artifact-terminal-postlude-invariant-stale-reclass.md) | accepted | run 产物终态后置不变量：弃置前必补写 superseded 终态行（紧跟 transient_retry）；读侧 mtime 1800s 改判 stale 挡活跃计数，存量免清扫自愈不清洗 |
+| [ADR-099](ADR-099-impl-terminal-nocommit-gate-pre-rmtree-reference-snapshot.md) | accepted | implementer 正常终态+分支零提交+dirty 在 cleanup 前拦截走 WIP 提交+退避+resume 续做，机械归因零 LLM，rmtree 前引用式 stash create 快照留档 |
+| [ADR-100](ADR-100-approve-push-file-signal-liveness-precheck-no-retry.md) | accepted | 有状态写操作禁 dashboard 双轨直执行：跨进程走文件信号+写前探活 409+消费不重试（各失败源有既有兜底）+payload 极简防漂移 |
