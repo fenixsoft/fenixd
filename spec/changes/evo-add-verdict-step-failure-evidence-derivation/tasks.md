@@ -19,4 +19,4 @@
 ## 2. 守卫测试
 
 - [ ] 2.1 tests/test_verdict_step_failure_shape.py（new）：仿 tests/test_verify_verdict_multi_kind.py 的 TestMultiKindTriageRequirement 风格补两例——assertion_results 空表+失败步骤+归因未覆盖派生清单→违规且文案含派生条目；归因逐条覆盖派生清单→合规
-- [ ] 2.2 tests/test_agent_prompt_files.py：断言 agents/planner-judge.md 含「步骤失败型必填清单」处方小节（fe612841 处方防漂移守卫）
+- [ ] 2.2 tests/test_agent_prompt_files.py：断言 agents/planner-judge.md 含「步骤失败型场景必填清单」处方小节（fe612841 处方防漂移守卫；断言子串须与 agents/planner-judge.md:85 处方原文逐字一致，当前原文为「**步骤失败型场景必填清单（强制）**」）
