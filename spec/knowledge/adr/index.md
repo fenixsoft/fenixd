@@ -49,3 +49,17 @@ superseded 条目保留在列供溯源。编号接续本目录既有最大号。
 | [ADR-042](ADR-042-verdict-classification-evidence-enforced-checker.md) | accepted | 裁决强制分类+证据结构化：非 PASS 四选一并附证据，分类-状态映射采纳处强制重写，warning 连续 2 轮升级；确定性校验器把关 LLM 产物 |
 | [ADR-043](ADR-043-alert-auto-resolve-condition-whitelist.md) | accepted | 告警自动闭环：写入埋 trigger、判定挂既有周期扫描，condition 白名单未识别永不闭环，人工记录不可覆盖，存量首启一次推断回填 |
 | [ADR-044](ADR-044-token-accounting-at-completion-budget-alert-only.md) | accepted | token 计量收工单点采集进 STATE 内部字段（jsonl 留审计），验证链增量走侧车；预算线 80%/100% 幂等告警只告警不冻结，存量不回填 |
+| [ADR-045](ADR-045-core-componentization-facade-boundaries.md) | accepted | core 巨文件组件化：组合提取+门面、组件只许单向回引门面、锁与状态同迁；测试直调组件、门面只留有生产调用者的方法 |
+| [ADR-046](ADR-046-interaction-contract-prevalidation-per-assert-triage.md) | accepted | 交互契约前置校验（声明式可交互候选须有场景或展示声明）+ 豁免逐断言归因：全断言非 product-bug 才豁免，断言级豁免清单可复核 |
+| [ADR-047](ADR-047-budget-counter-atomic-primitive-death-refund.md) | accepted | 预算计数单点+补偿回退：死亡 run 豁免在死亡判定点回退而非启动处预判，读改写收敛到 state_machine 锁内原子原语 |
+| [ADR-048](ADR-048-admin-lane-threadpool-per-run-disposition-files.md) | accepted | admin 处置并发模型：主循环只拾取投递、线程池后台执行、处置文件按 run_id 实例分离；主循环信号拾取不得同步执行长任务 |
+| [ADR-049](ADR-049-agent-prompt-files-single-source-of-truth.md) | accepted | agent 提示词文件为唯一真相（无内置副本、占位符替换、动态段归代码）；项目附加层末尾注入、缺席零注入、软链布局级防护 |
+| [ADR-050](ADR-050-dashboard-incremental-data-pipeline.md) | accepted | dashboard 数据面增量化：摘要索引+签名增量重算、广播只带变更条目、前端本地归并 30s 心跳校准、连接/线程硬上限 503 |
+| [ADR-051](ADR-051-signature-key-natural-invalidation-dir-level-polling.md) | accepted | 变更检测纪律：读缓存键=(路径,mtime,size) 依赖写后自然失效不维护写侧钩子；watcher 目录级签名两级跳层替代 inotify 保零依赖 |
+| [ADR-052](ADR-052-state-md-field-whitelist-terminal-snapshot.md) | accepted | STATE.md 新字段必入序列化白名单；终态统计量在终态转换点快照进 STATE，读取仅终态采用持久值、脏值回退实时路径 |
+| [ADR-053](ADR-053-fast-track-single-run-lane-mode-in-spec-yaml.md) | accepted | fast-track：单 run 全包四段守卫保留，mode 存 `.spec.yaml` 缺省 full fail-closed；超预算升级保分支置 implemented 不重跑；判定靠确定性硬校验兜底 |
+| [ADR-054](ADR-054-mergeback-conflict-repair-branch-side-merge-main.md) | accepted | merge-back 语义冲突原地修复：git 层判定/调度层决策，repair 在分支侧合 main、主树恒干净不冻结，三态判定只信 git 事实，熔断计数不被 repair 清零 |
+| [ADR-055](ADR-055-llm-via-claude-cli-no-native-client.md) | accepted | 框架不实现独立 LLM 客户端：交互场景由执行会话完成、后台场景统一 headless claude -p（参数列表传参、超时有界、失败不改原值） |
+| [ADR-056](ADR-056-archive-visibility-dir-existence-periodic-governance.md) | accepted | 归档判定唯一事实源=活跃目录存在性（不写 STATE 标志）；按条目枚举 changes 必须容忍目录缺失；低频治理挂主循环周期计时而非事件埋点 |
+| [ADR-057](ADR-057-task-progress-subject-contract-read-side-fallback.md) | accepted | 任务进度协议：一个任务=一个 TaskCreate=一次汇报=一次勾选（subject 内嵌编号为契约）；读侧兜底链不依赖编号（创建序回退带弱一致性门槛） |
+| [ADR-058](ADR-058-dispatch-single-flight-inflight-state-protection.md) | accepted | 派发单飞守卫（异步操作前置位查重）+ 在飞态保护：失败回写不降级活跃验证态，verifier 结果竞态下重放合法路径或 blocked 留证，绝不静默丢弃 |
