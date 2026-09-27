@@ -4,26 +4,26 @@
 
 ## 能力页
 
-- `dashboard-ui` — 仪表盘基础界面
-- `dashboard-overview` — 项目总览页
-- `dashboard-spec-table` — SPEC 列表表格化
-- `spec-table-improvements` — SPEC 列表体验改进
-- `spec-list-filter-stickiness` — 列表过滤条件保持
-- `add-spec-context-menu` — SPEC 列表右键菜单
-- `add-spec-priority-and-delete-api` — SPEC 优先级与删除操作
-- `spec-detail-tabs` — SPEC 详情页签
-- `spec-detail-quick-switch` — SPEC 详情快速切换
-- `spec-doc-view` — SPEC 文档查看
-- `spec-status-actions-modal` — 状态变更操作弹窗
-- `spec-approve-push-modal` — 审批推送弹窗
-- `spec-timeline-accuracy` — 时间轴准确性
-- `spec-timeline-admin-events` — 时间轴 admin 事件
-- `timeline-gate-failure-display` — 时间轴门禁失败展示
-- `task-progress-phase-display` — 任务进度按阶段呈现
-- `quality-gates-progress` — 质量门禁进度呈现
-- `activity-records-tabs` — 活动记录页签
-- `project-page-tabs` — 项目详情页签
-- `dashboard-spec-archive` — 归档查询视图
+- [dashboard-ui](dashboard-ui.md) — 仪表盘基础界面
+- [dashboard-overview](dashboard-overview.md) — 项目总览页
+- [dashboard-spec-table](dashboard-spec-table.md) — SPEC 列表表格
+- [spec-table-improvements](spec-table-improvements.md) — SPEC 列表体验改进
+- [spec-list-filter-stickiness](spec-list-filter-stickiness.md) — 列表过滤条件保持
+- [add-spec-context-menu](add-spec-context-menu.md) — SPEC 列表右键菜单
+- [add-spec-priority-and-delete-api](add-spec-priority-and-delete-api.md) — SPEC 优先级与删除操作
+- [spec-detail-tabs](spec-detail-tabs.md) — SPEC 详情页签
+- [spec-detail-quick-switch](spec-detail-quick-switch.md) — SPEC 详情快速切换
+- [spec-doc-view](spec-doc-view.md) — SPEC 文档查看
+- [spec-status-actions-modal](spec-status-actions-modal.md) — 状态变更操作弹窗
+- [spec-approve-push-modal](spec-approve-push-modal.md) — 审批推送弹窗
+- [spec-timeline-accuracy](spec-timeline-accuracy.md) — 时间轴准确性
+- [spec-timeline-admin-events](spec-timeline-admin-events.md) — 时间轴 admin 事件
+- [timeline-gate-failure-display](timeline-gate-failure-display.md) — 时间轴门禁失败展示
+- [task-progress-phase-display](task-progress-phase-display.md) — 任务进度按阶段呈现
+- [quality-gates-progress](quality-gates-progress.md) — 质量门禁进度呈现
+- [activity-records-tabs](activity-records-tabs.md) — 活动记录页签
+- [project-page-tabs](project-page-tabs.md) — 项目详情页签
+- [dashboard-spec-archive](dashboard-spec-archive.md) — 归档查询视图
 - `ui-theme` — 主题切换
 - `v2-overview-page` — v2 总览页
 - `v2-project-list-page` — v2 项目列表页
