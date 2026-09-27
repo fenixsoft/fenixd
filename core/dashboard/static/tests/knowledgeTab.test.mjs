@@ -100,6 +100,13 @@ test('adrDisplayName：文件名转展示名', async (t) => {
   assert.equal(mod.adrDisplayName('index.md'), 'index');
 });
 
+test('adrListLabel：标题字段优先，编号取自文件名前缀；无标题回退文件名派生', async (t) => {
+  const mod = await loadTab();
+  assert.equal(mod.adrListLabel('ADR-001-zn-one.md', 'zn-adr-one-title'), 'ADR-001 zn-adr-one-title');
+  assert.equal(mod.adrListLabel('ADR-001-zn-one.md', null), 'ADR-001 zn-one', '无标题回退 adrDisplayName');
+  assert.equal(mod.adrListLabel('index.md', '某标题'), '某标题', '非 ADR-NNN 文件名仅回标题');
+});
+
 test('active=false 不渲染（未选中零请求零渲染）', async (t) => {
   const mod = await loadTab();
   const html = renderTab(mod, { project: 'p1', active: false });

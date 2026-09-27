@@ -21,9 +21,13 @@ from pathlib import Path
 
 logger = logging.getLogger("fenixd.dashboard.routes.knowledge_routes")
 
-# ADR 头部字段（模块级编译，_parse_adr_head 用）
+# ADR 头部字段（模块级编译，_parse_adr_head / _adr_titles_from_index 用）
 _ADR_STATUS_RE = re.compile(r"^status:\s*(\S+)\s*$", re.M)
 _ADR_SUPERSEDED_BY_RE = re.compile(r"^Superseded by:\s*(\S+)\s*$", re.M)
+# ADR 首标题：'# ADR-NNN: <标题>' / '# ADR-NNN：<标题>'（distill.md 契约）
+_ADR_TITLE_RE = re.compile(r"^#\s+ADR-\d{3}\s*[:：]\s*(.+?)\s*$", re.M)
+# adr/index.md 表格行：'| ADR-NNN | 标题 | ...'（标题列兜底源）
+_ADR_INDEX_ROW_RE = re.compile(r"^\|\s*(ADR-\d{3})\s*\|\s*([^|]+?)\s*\|", re.M)
 
 # 真相源目录与 graph 产物相对路径（契约见 spec/knowledge/README.md）
 KNOWLEDGE_DIR = "spec/knowledge"
@@ -33,17 +37,30 @@ GRAPH_FILENAME = "graph.html"
 _ALLOWED_PREFIXES = ("domains/", "adr/")
 
 
-def _parse_adr_head(text: str) -> tuple[str, str | None]:
-    """解析 ADR 头部 ``(status, superseded_by)``；无 status 行回 'unknown'。
+def _parse_adr_head(text: str) -> tuple[str, str | None, str | None]:
+    """解析 ADR 头部 ``(status, superseded_by, title)``；无 status 行回 'unknown'。
 
     契约见 core/knowledge_prompts/distill.md：status 行在 "## Context" 之前
-    的头部；supersede 只标不改时头部追加 ``Superseded by: ADR-NNN(...)`` 行。
+    的头部；supersede 只标不改时头部追加 ``Superseded by: ADR-NNN(...)`` 行；
+    首标题为 ``# ADR-NNN：<标题>``（半/全角冒号均收）。无标题行回 None
+    （调用方以 adr/index.md 表格标题列兜底）。
     """
     head = text.split("## Context", 1)[0]
     m = _ADR_STATUS_RE.search(head)
     status = m.group(1) if m else "unknown"
     sm = _ADR_SUPERSEDED_BY_RE.search(head)
-    return status, (sm.group(1) if sm else None)
+    tm = _ADR_TITLE_RE.search(head)
+    return status, (sm.group(1) if sm else None), (tm.group(1) if tm else None)
+
+
+def _adr_titles_from_index(text: str) -> dict[str, str]:
+    """解析 adr/index.md 表格的 ``编号 → 标题`` 映射（标题列兜底源）。
+
+    distill.md 契约列序为「编号、标题、状态、一句话摘要」；非表格形态
+    （如列表）返回空映射，调用方回退 None。分隔行（``| --- |``）不匹配
+    编号形态，天然跳过。
+    """
+    return dict(_ADR_INDEX_ROW_RE.findall(text))
 
 
 def _safe_knowledge_file(proot: Path, rel: str) -> Path | None:
@@ -77,8 +94,10 @@ class H14KnowledgeRoutesMixin:
 
         返回 ``{project, initialized, index_md, domains, adrs}``；domains 为
         ``[{name, pages, nav_exists}]``（pages 为域内能力页文件名清单，
-        不含 _domain.md）；adrs 为 ``[{file, status, superseded_by}]``（按
-        文件名排序，ADR 列表视图的状态标签数据源）。未初始化（真相源目录
+        不含 _domain.md）；adrs 为 ``[{file, title, status, superseded_by}]``
+        （按文件名排序，ADR 列表视图的编号/标题/状态标签数据源。title 取
+        ADR 文件首标题 ``# ADR-NNN：<标题>``，缺失时以 adr/index.md 表格
+        标题列兜底，仍缺为 null）。未初始化（真相源目录
         或 index.md 缺失）→ ``{initialized: False, index_md: null,
         domains: [], adrs: []}`` 占位。项目不存在 → 404。
         """
@@ -118,16 +137,31 @@ class H14KnowledgeRoutesMixin:
                 )
         adr_dir = kroot / "adr"
         if adr_dir.is_dir():
+            # adr/index.md 表格标题列（ADR 文件首标题缺失时的兜底源）
+            index_titles: dict[str, str] = {}
+            adr_index = adr_dir / "index.md"
+            if adr_index.is_file():
+                try:
+                    index_titles = _adr_titles_from_index(
+                        adr_index.read_text(encoding="utf-8")
+                    )
+                except (OSError, UnicodeDecodeError):
+                    index_titles = {}
             for adr in sorted(adr_dir.glob("ADR-*.md")):
                 try:
-                    status, superseded_by = _parse_adr_head(
+                    status, superseded_by, title = _parse_adr_head(
                         adr.read_text(encoding="utf-8")
                     )
                 except (OSError, UnicodeDecodeError):
-                    status, superseded_by = "unknown", None
+                    status, superseded_by, title = "unknown", None, None
+                if title is None:
+                    nm = re.match(r"^(ADR-\d{3})-", adr.name)
+                    if nm:
+                        title = index_titles.get(nm.group(1))
                 payload["adrs"].append(
                     {
                         "file": adr.name,
+                        "title": title,
                         "status": status,
                         "superseded_by": superseded_by,
                     }

@@ -2358,6 +2358,7 @@ export interface KnowledgeDomain {
 /** ADR 清单条目（index 响应的 adrs[]，后端解析文件头）。 */
 export interface KnowledgeAdrEntry {
   file: string;
+  title: string | null;
   status: string;
   superseded_by: string | null;
 }

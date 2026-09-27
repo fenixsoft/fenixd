@@ -83,6 +83,61 @@ class TestKnowledgeIndexAPI:
         finally:
             srv.stop()
 
+    def test_adr_list_title_field(self, tmp_path):
+        """ADR 列表标题字段（验证打回 BUG-01 修复）：title 取 ADR 文件首
+        标题 ``# ADR-NNN：<标题>``（半/全角冒号），缺失时以 adr/index.md
+        表格标题列兜底，两处皆无为 null。"""
+        proot = make_project(tmp_path)
+        k = proot / "spec" / "knowledge"
+        (k / "adr").mkdir(parents=True)
+        (k / "index.md").write_text("# 总目录\n", encoding="utf-8")
+        (k / "adr" / "index.md").write_text(
+            "# ADR 索引\n\n"
+            "| 编号 | 标题 | 状态 | 摘要 |\n| --- | --- | --- | --- |\n"
+            "| ADR-001 | zn-adr-one-title | superseded | 旧裁定 |\n"
+            "| ADR-003 | zn-adr-three-title | superseded | 兜底裁定 |\n",
+            encoding="utf-8",
+        )
+        (k / "adr" / "ADR-001-zn-one.md").write_text(
+            "status: superseded\nSuperseded by: ADR-002\n日期: 2026-09-27\n\n"
+            "# ADR-001: zn-adr-one-title\n\n## Context\nctx\n\n"
+            "## Decision\n\n## Consequences\n",
+            encoding="utf-8",
+        )
+        (k / "adr" / "ADR-002-zn-two.md").write_text(
+            "status: accepted\n日期: 2026-09-27\n\n"
+            "# ADR-002：zn-adr-two-title\n\n## Context\nctx\n\n"
+            "## Decision\n\n## Consequences\n",
+            encoding="utf-8",
+        )
+        # 无首标题：表格标题列兜底
+        (k / "adr" / "ADR-003-zn-three.md").write_text(
+            "status: superseded\nSuperseded by: ADR-002\n\n"
+            "## Context\nctx\n\n## Decision\n\n## Consequences\n",
+            encoding="utf-8",
+        )
+        # 无首标题且不在表格：null
+        (k / "adr" / "ADR-004-zn-four.md").write_text(
+            "status: accepted\n\n## Context\nctx\n\n## Decision\n\n## Consequences\n",
+            encoding="utf-8",
+        )
+        srv = _server(tmp_path, proot)
+        try:
+            status, body = srv.get("/api/knowledge/index?project=proj-a")
+            assert status == 200
+            adrs = {a["file"]: a for a in body["adrs"]}
+            assert adrs["ADR-001-zn-one.md"] == {
+                "file": "ADR-001-zn-one.md",
+                "title": "zn-adr-one-title",
+                "status": "superseded",
+                "superseded_by": "ADR-002",
+            }
+            assert adrs["ADR-002-zn-two.md"]["title"] == "zn-adr-two-title"
+            assert adrs["ADR-003-zn-three.md"]["title"] == "zn-adr-three-title"
+            assert adrs["ADR-004-zn-four.md"]["title"] is None
+        finally:
+            srv.stop()
+
     def test_unknown_project_404(self, tmp_path):
         proot = make_project(tmp_path)
         srv = _server(tmp_path, proot)
