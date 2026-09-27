@@ -108,8 +108,11 @@ const StaleCodeSelfhealPanel = forwardRef<
             style={{ marginTop: 24 }}
             rules={[
               { required: true, message: '请输入连续空闲确认秒数' },
+              // 正整数校验与 MiscSettingsPanel auto_threshold 同口径：不能用
+              // InputNumber 的 min/max 代替——blur 时会把越界值静默钳回边界，
+              // 用户永远看不到非法输入被拦截的表单错误提示
               {
-                type: 'number',
+                type: 'integer',
                 min: 1,
                 max: MAX_IDLE_SECONDS,
                 message: `须为 1-${MAX_IDLE_SECONDS} 的正整数秒`,
@@ -118,8 +121,6 @@ const StaleCodeSelfhealPanel = forwardRef<
             data-testid="stale-code-selfheal-field-idle_confirm_seconds"
           >
             <InputNumber
-              min={1}
-              max={MAX_IDLE_SECONDS}
               precision={0}
               style={{ width: '100%' }}
               addonAfter="秒"
