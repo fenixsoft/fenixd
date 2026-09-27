@@ -141,11 +141,22 @@ def _argv_script_token(argv):
     出现 -c（代码串）/ -m（模块，本函数不支持 "-m xxx" 形式）时返回 None——
     否则 `python3 -c "...; time.sleep(30)" fenixd_supervisor` 这种「命令行里
     提到脚本名」的进程会被误判成正在执行该脚本（子串假阳性事故）。
+    合并短选项写法（-uc / -im / 附着参数的 -c"<code>"）同样按 -c/-m 调用
+    处理返回 None，堵住经合并写法绕过检测的旁路。
     """
     for token in argv[1:]:
         if token in ("-c", "-m"):
             return None
         if token.startswith("-"):
+            # 短选项簇内可能藏着 -c/-m（如 -uc / -im / -c"<code>"）：按 Python
+            # 选项解析语义逐字符扫旗标，见 c/m 即代码串/模块调用；遇取参旗标
+            # （W/x/X）即止——其余字符是它的参数（如 -Ximporttime），不算旗标。
+            if not token.startswith("--"):
+                for ch in token[1:]:
+                    if ch in ("c", "m"):
+                        return None
+                    if ch in ("W", "x", "X"):
+                        break
             continue
         return token
     return None
@@ -496,7 +507,8 @@ def stop_daemon(root: str | None = None) -> dict:
          不触发规划性排水；.fenix/restart_request 不在册时不走排水窗口）
       ③ 轮询等待 daemon 与 supervisor 双双退出（上限约 30 秒）
       ④ 超时 `tmux kill-session -t <session>` 强制终止，并对残留 daemon/
-         supervisor 进程补发 SIGKILL（确保无孤儿）
+         supervisor 进程补发 SIGKILL 后短轮询复核（仍存活者计入 error，
+         确保无孤儿）
       ⑤ finally 清除 `.fenix/stop`
     幂等：`is_running` 为假时直接返回 was_running=False，不写 stop 文件。
 
@@ -571,15 +583,26 @@ def stop_daemon(root: str | None = None) -> dict:
                 )
             except Exception:
                 pass
+            sigkilled = []
             for pid in remaining:
                 try:
                     os.kill(int(pid), signal.SIGKILL)
+                    sigkilled.append(pid)
                 except ProcessLookupError:
                     pass
                 except PermissionError as e:
                     # 无权限发 SIGKILL＝目标仍存活（145eb8771dfc）：计入返回
                     # error，不谎报 ok=True。
                     kill_errors.append(f"SIGKILL pid {pid} 权限不足: {e}")
+            # 补发后短轮询复核：D 态（不可中断 IO/NFS）进程暂不响应 SIGKILL
+            # 时 kill 不报错、kill_errors 为空，不复核会向调用方谎报 ok=True。
+            recheck_deadline = time.time() + 2
+            while _alive_pids(sigkilled) and time.time() < recheck_deadline:
+                time.sleep(0.2)
+            for pid in _alive_pids(sigkilled):
+                kill_errors.append(
+                    f"SIGKILL pid {pid} 后仍存活（疑似不可中断态），daemon 可能未退出"
+                )
         # ⑤ finally 清除 stop（无论成败）
         try:
             stop_flag.unlink()
