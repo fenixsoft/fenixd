@@ -118,8 +118,29 @@ class FamilyGovernor:
             f"{closing_tasks}"
         )
 
-        (spec_dir / "proposal.md").write_text(proposal, encoding="utf-8")
-        (spec_dir / "tasks.md").write_text(tasks, encoding="utf-8")
+        # 原子写（tempfile + fsync + os.replace，对齐 _inject_verify_fix_task
+        # 同款手法——tasks.md 是任务完成度门禁（_task_completion_blocker 经
+        # parse_tasks_md 读取）的关键输入，proposal.md 承载修复动机与边界，
+        # 中途崩溃/磁盘满不得留截断文件；临时文件建在 spec_dir 同目录保证
+        # os.replace 原子性）
+        for filename, content in (("proposal.md", proposal), ("tasks.md", tasks)):
+            fd, tmp_name = tempfile.mkstemp(
+                prefix=f".{fix_spec_name}.{filename}.",
+                suffix=".tmp",
+                dir=str(spec_dir),
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(content)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp_name, str(spec_dir / filename))
+            finally:
+                if os.path.exists(tmp_name):
+                    try:
+                        os.unlink(tmp_name)
+                    except OSError:
+                        pass
         self._pm.logger.info("pm_engine", f"Ensured fix SPEC files: {fix_spec_name}")
 
     @staticmethod
@@ -742,6 +763,12 @@ class FamilyGovernor:
                     reset_fields["tester_run"] = None
                 self._pm.state_machine.update_spec(fix_spec_name, reset_fields)
                 self._pm._on_spec_ready(fix_spec_name)
+                # 入队收敛（code-review item 5e687a6085a1）：仅在实际发生重置/
+                # 新建的分支入队——幂等守卫跳过重置的 spec（implemented/blocked
+                # 等在途或终态）不在 _queue_entry_ready 的 implementer 放行口径
+                # （ready/implementing）内，无条件入队只会留下每轮扫描被跳过却
+                # 不淘汰的永久滞留条目，还违背守卫「不动该 spec」的裁定。
+                self._pm._enqueue(fix_spec_name, "implementer")
         else:
             self._pm.state_machine.add_spec(
                 fix_spec_name,
@@ -753,11 +780,12 @@ class FamilyGovernor:
                 },
             )
             self._pm.logger.info("pm_engine", f"Created fix SPEC: {fix_spec_name}")
+            # 新建分支入队（同上，code-review item 5e687a6085a1）
+            self._pm._enqueue(fix_spec_name, "implementer")
 
         self._pm._append_project_log(
             f"🐛 Bug found in **{spec_name}** → scheduling legacy **{fix_spec_name}**"
         )
-        self._pm._enqueue(fix_spec_name, "implementer")
 
     def _read_prev_impl_conclusions(self, spec_name: str) -> str:
         """读取上一轮 implementer 的收工结论，作为修复段的「上轮实现结论」小节。

@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import re
+import threading
 import time
 from collections import deque
 from datetime import datetime, timezone
@@ -29,7 +30,13 @@ from core.agent_runner.run_files import (
 # 指纹) 键增量维护：日志 append-only，size 增长只补扫新增块；size 缩小（轮转）
 # 或首块指纹不符（轮转后新内容在下一次调用前快速回涨到不小于旧 size，仅凭
 # size 判不出轮转）仅重建本槽。进程内缓存，读侧高频重复调用零重扫。
+# 并发口径（与 _RUN_META_CACHE 的「并发双算无害」不同）：本索引的增量落账/
+# 轮转重建/超限淘汰是非幂等读改写（del/原地清空/推进 key），而 dashboard 是
+# ThreadingHTTPServer 多线程（server.py 上限 64），并发双算有害——竞态 del 同一
+# run_id 抛 KeyError 致 runs 接口 500；在途扫描写进被替换的孤儿 dict 丢指标。
+# 读改写段以 _RUN_METRIC_INDEX_LOCK 串行化（锁内纯内存操作，日志扫描 IO 在锁外）。
 _RUN_METRIC_INDEX: dict = {}
+_RUN_METRIC_INDEX_LOCK = threading.Lock()
 # 容量上限（同 _RUN_META_CACHE 口径）：索引只增不清（除轮转本槽重建），长驻
 # daemon 历史 run 数以万计时内存无界增长。超限按最旧淘汰——整体清空不可取：
 # 增量扫描起点停在旧 size，清空后旧段不会重扫，近期 run 指标会整批丢失直至
@@ -108,6 +115,9 @@ def _load_run_metric_index(project_root: Path) -> dict:
     （size 增长且指纹不变）只补扫新增部分。各槽合计超
     _RUN_METRIC_INDEX_MAX 按最旧淘汰（防长驻进程无界增长）。扫描中途读
     失败不推进 key（下轮从旧 offset 重扫同一区间，重扫幂等）。
+
+    并发：读改写段（定槽/重建清空/合并推进/超限淘汰）经 _RUN_METRIC_INDEX_LOCK
+    串行化，日志扫描 IO 在锁外（锁内只做内存操作）。
     """
     logs_dir = Path(project_root) / ".fenix" / "logs"
     log_path = logs_dir / "fenixd.log"
@@ -116,44 +126,56 @@ def _load_run_metric_index(project_root: Path) -> dict:
     except OSError:
         return {}
     head_hash = _log_head_fingerprint(log_path)
-    slot = _RUN_METRIC_INDEX.setdefault(str(log_path), {"key": None, "index": {}})
-    index = slot["index"]
     key = (size, head_hash)
-    if key == slot["key"]:
-        return index
-    # size 缩小（轮转）、首块指纹不符（轮转后快速回涨超旧 size）或首扫 → 本槽清空重建
-    prev_key = slot["key"]
-    if prev_key is None or size < prev_key[0] or head_hash != prev_key[1]:
-        index = slot["index"] = {}
-        start = 0
-    else:
-        start = prev_key[0]
+    # 段 1（锁内，纯内存）：定槽 + 判定增量/重建起点；fast path（key 未变）在此
+    # 直接返回，日志扫描 IO 全部留在段 2 锁外，不阻塞其他线程的读路径。
+    with _RUN_METRIC_INDEX_LOCK:
+        slot = _RUN_METRIC_INDEX.setdefault(str(log_path), {"key": None, "index": {}})
+        if key == slot["key"]:
+            return slot["index"]
+        # size 缩小（轮转）、首块指纹不符（轮转后快速回涨超旧 size）或首扫 → 本槽清空重建
+        prev_key = slot["key"]
+        if prev_key is None or size < prev_key[0] or head_hash != prev_key[1]:
+            # 原地清空而非换引用：段 3 合并按 slot["index"] 现取落账，换引用会把
+            # 并发在途扫描写进孤儿 dict（丢指标且新空索引被误标记为已扫到本 offset）
+            slot["index"].clear()
+            start = 0
+        else:
+            start = prev_key[0]
+    # 段 2（锁外，IO）：补扫新增块 / 重建全量扫描，解析结果先落局部 dict。
+    scanned = None
     try:
         with log_path.open("r", encoding="utf-8", errors="replace") as f:
             if start:
                 f.seek(start)
-            index.update(_parse_run_metric_stream(f))
+            scanned = _parse_run_metric_stream(f)
     except OSError:
         # 3c9c40ef135f：扫描中途读失败不推进 key——下一轮从旧 offset 重扫同一
         # 区间（_parse_run_metric_stream 产物按 run_id 覆盖式写入，重扫幂等）；
         # 轮转/首扫重建分支已清空的本槽索引由下轮（指纹不符/size 判定）重判
         # 重建自愈。对齐 log_index._update_log_block_index「读取失败不推进」口径。
         pass
-    else:
-        slot["key"] = key
-    # 容量上限：各槽合计超限按最旧淘汰（槽按出现序、槽内 dict 保插入序＝日志
-    # 出现序），保近期 run 指标
-    total = sum(len(s["index"]) for s in _RUN_METRIC_INDEX.values())
-    if total > _RUN_METRIC_INDEX_MAX:
-        excess = total - _RUN_METRIC_INDEX_MAX
-        for s in _RUN_METRIC_INDEX.values():
-            if excess <= 0:
-                break
-            s_index = s["index"]
-            for rid in list(s_index)[:excess]:
-                del s_index[rid]
-                excess -= 1
-    return index
+    # 段 3（锁内，纯内存）：合并落账 + 推进 key + 超限淘汰。段 1/3 锁间隙内其他
+    # 线程可能已清空/推进本槽，合并始终写 slot["index"] 现取的本槽 dict（覆盖式
+    # 按 run_id 写入，重扫/并发双扫幂等收敛），不持段 1 的旧引用。
+    with _RUN_METRIC_INDEX_LOCK:
+        index = slot["index"]
+        if scanned is not None:
+            index.update(scanned)
+            slot["key"] = key
+        # 容量上限：各槽合计超限按最旧淘汰（槽按出现序、槽内 dict 保插入序＝日志
+        # 出现序），保近期 run 指标
+        total = sum(len(s["index"]) for s in _RUN_METRIC_INDEX.values())
+        if total > _RUN_METRIC_INDEX_MAX:
+            excess = total - _RUN_METRIC_INDEX_MAX
+            for s in _RUN_METRIC_INDEX.values():
+                if excess <= 0:
+                    break
+                s_index = s["index"]
+                for rid in list(s_index)[:excess]:
+                    del s_index[rid]
+                    excess -= 1
+        return index
 
 
 # 同主日志索引按 log_path 分槽（dashboard 单进程多项目交替查询各自零重建）

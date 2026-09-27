@@ -760,3 +760,14 @@ class TestGateBlockedBudgetAccounting:
         p2.write_text(json.dumps({"type": "error", "error": "boom"}) + "\n",
                       encoding="utf-8")
         assert ImplBudget._run_file_died(p2) is True
+
+    def test_empty_run_file_not_counted_dead(self, tmp_path):
+        """空产物文件（零字节）→ _run_file_died 返回 False（按收工计入）。
+
+        空文件/进程中断流无 error 末行，对账侧
+        （_count_normal_completed_impl_runs）按正常收工计入——固化该边界。
+        """
+        from core.pm_engine.budget import ImplBudget
+        p = tmp_path / "impl-spec-x-1700000002-a1.jsonl"
+        p.write_text("", encoding="utf-8")
+        assert ImplBudget._run_file_died(p) is False

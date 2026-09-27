@@ -842,7 +842,9 @@ def run_graph(
     if not cli:
         # PyPI 包名确为 graphifyy（graphifyy 0.9.70，graphify.com 出品；pypi 上
         # 不存在 graphify 包，名被平台占位），安装后的 CLI 二进制叫 graphify——
-        # 与上方 which 探测名一致，安装命令非笔误。
+        # 与上方 which 探测名一致，安装命令非笔误。面板侧同款安装提示见
+        # core/dashboard/static/src/pages/settings/knowledgeSettings.ts
+        # knowledgeSwitchDesc("graph")，两处文案须同步。
         log.info(
             "knowledge",
             "graphify 未安装，跳过本次关系图生成（人工安装：uv tool install graphifyy）",

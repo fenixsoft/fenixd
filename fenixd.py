@@ -3256,12 +3256,31 @@ class FenixDaemon:
         0e1eafada5d6）：先 rename 占位再读（payload 非法/损坏一律已消费返回
         None），消灭「先 unlink 后 payload.get」丢请求形态与 read-unlink
         窗口竞态。
+
+        时效分档（code-review item 117044e0ae4a）：requested_at 与
+        approve_push / code_fix 同判据同阈值（经 _signal_created_is_stale）
+        ——daemon 停机期间积压的旧手动回归信号重启后仅消费不执行（warning
+        留痕、明示积压旧请求）；本车道时间戳字段为 requested_at（writer 契约），
+        缺失/非法保守按陈旧处理。
         """
         from core.fenix_session import hosting_state
 
         req_path = PROJECT_ROOT / ".fenix" / "regression_request.json"
         payload = self._consume_request_file(req_path)
         if payload is None:
+            return
+
+        # 时效分档（item 117044e0ae4a）：与 approve_push / code_fix 同判据
+        # 同阈值，停机积压的旧手动回归重启后不派发全量回归；时间戳字段为
+        # requested_at（writer 契约），缺失/非法保守按陈旧处理
+        created = payload.get("requested_at")
+        if self._signal_created_is_stale(created):
+            self.logger.warning(
+                "fenixd",
+                f"regression 陈旧信号（requested_at={created}）超过 "
+                f"{SCHEDULING_KICK_STALE_THRESHOLD_SECONDS}s 阈值，不执行回归"
+                f"（停机积压旧请求，如仍需执行请在 dashboard 重新发起）",
+            )
             return
 
         # 守卫：daemon 未运行或 unmanaged 时信号无人消费

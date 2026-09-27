@@ -289,7 +289,15 @@ def render_active_specs(specs):
         for name, entry in specs.items()
         if entry.get("status") in ("implementing", "testing", "implemented")
     ]
-    active.sort(key=lambda x: x[1].get("priority", 999))
+    # 与 fenix_status._active_sort_key 同口径：priority 为 null/缺失/非法时折叠为 999，
+    # 防人工直改 STATE.md 写空值后 sorted 比较 None 与 int 抛 TypeError 崩溃渲染
+    def _prio_key(item):
+        try:
+            return int(item[1].get("priority"))
+        except (TypeError, ValueError):
+            return 999
+
+    active.sort(key=_prio_key)
 
     if not active:
         pending = [
@@ -308,7 +316,6 @@ def render_active_specs(specs):
         icon = STATUS_ICONS.get(status, "❓")
         color = STATUS_COLORS.get(status, WHITE)
         error = entry.get("error")
-        prio = entry.get("priority", "?")
 
         # 任务进度
         groups = dash_data.parse_tasks(PROJECT_ROOT, name)
@@ -417,47 +424,6 @@ def render_event_feed(specs):
             msg_display = msg[:100]
 
         lines.append(f"  {DIM}{ts}{RESET} {icon} {msg_display}")
-
-    return "\n".join(lines)
-
-
-def render_stats_panel(specs, scenario_counts=None):
-    """渲染右侧统计面板（简化版）
-
-    scenario_counts 可传调用方单轮预计算的 {spec: 场景数} 复用，避免对
-    全部 SPEC（含 done/pushed）逐个 rglob 重扫 spec.md；缺省时保持原
-    按需逐个统计行为。
-    """
-    total = len(specs)
-    by_status = {}
-    for e in specs.values():
-        st = e.get("status", "?")
-        by_status[st] = by_status.get(st, 0) + 1
-
-    lines = []
-    order = [
-        "implementing",
-        "testing",
-        "implemented",
-        "verified",
-        "done",
-        "pushed",
-        "ready",
-        "drafted",
-        "bug-found",
-    ]
-    for st in order:
-        count = by_status.get(st, 0)
-        if count > 0:
-            icon = STATUS_ICONS.get(st, "  ")
-            lines.append(f"    {icon} {st:14s}: {count}")
-
-    # 场景统计（传入预计算结果时不再逐 SPEC 重扫）
-    if scenario_counts is None:
-        scenario_counts = {n: dash_data.count_scenarios(PROJECT_ROOT, n) for n in specs}
-    total_scenarios = sum(scenario_counts.get(n, 0) for n in specs)
-    if total_scenarios > 0:
-        lines.append(f"    📋 场景总数: {total_scenarios}")
 
     return "\n".join(lines)
 

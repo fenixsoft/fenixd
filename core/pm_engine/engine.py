@@ -861,15 +861,22 @@ class PMEngine:
             )
             self._enqueue(spec_name, agent_type)
             # 冷却起点（双派发穿透原地修 2026-09-06）：以实际入队时刻计时
-            self._last_dispatch_at[spec_name] = time.time()
-            # 无界增长防护（code-review item 8c6c06bb595e）：写入口顺带淘汰——
-            # 超 _LAST_DISPATCH_AT_MAX 时移除时间最旧条目（近似 LRU；被淘汰 spec
-            # 的冷却判据必已远超窗口，无副作用）。
-            if len(self._last_dispatch_at) > _LAST_DISPATCH_AT_MAX:
-                for _stale in sorted(
-                    self._last_dispatch_at, key=self._last_dispatch_at.get
-                )[: len(self._last_dispatch_at) - _LAST_DISPATCH_AT_MAX]:
-                    self._last_dispatch_at.pop(_stale, None)
+            now_ts = time.time()
+            # 写入与淘汰一并纳入 _dispatch_guard_lock（code-review item
+            # a5e5a15dcfa1）：不同 spec 的 _on_spec_ready 可由多线程并发进入
+            # （单飞守卫只按 spec 去重），淘汰循环迭代键集合期间他线程写入会使
+            # dict 尺寸变化抛 RuntimeError 并穿透本方法中断当轮事件处理；锁内
+            # 仅做 dict 操作，与 _pending_dispatches/_handling_events 同款口径。
+            with self._dispatch_guard_lock:
+                self._last_dispatch_at[spec_name] = now_ts
+                # 无界增长防护（code-review item 8c6c06bb595e）：写入口顺带淘汰——
+                # 超 _LAST_DISPATCH_AT_MAX 时移除时间最旧条目（近似 LRU；被淘汰 spec
+                # 的冷却判据必已远超窗口，无副作用）。
+                if len(self._last_dispatch_at) > _LAST_DISPATCH_AT_MAX:
+                    for _stale in sorted(
+                        self._last_dispatch_at, key=self._last_dispatch_at.get
+                    )[: len(self._last_dispatch_at) - _LAST_DISPATCH_AT_MAX]:
+                        self._last_dispatch_at.pop(_stale, None)
             # 并行出题触发（add-verify-lane-throughput 1.1）：spec 进入 ready 且
             # 满足触发条件即注册 planner-plan 并行条目，出题与实现车道并行在飞；
             # 触发失败只 WARNING，不影响刚完成的实现派发。
@@ -1105,6 +1112,45 @@ class PMEngine:
         )
         self._quarantine_parallel_product(spec_name, f"并行出题 {status}")
 
+    def _cancel_lane_runs(
+        self, spec_name: str, agent_type: str, reason: str, by: str
+    ) -> list[str]:
+        """终止归属 ``spec_name`` 的活跃 ``agent_type`` 车道 run（两车道共享骨架）。
+
+        收敛 ``_stop_parallel_planning`` 与 ``_reclaim_verify_lane`` 的机械重复
+        （code-review item 79291d62b9e3）：list(...) 快照迭代 ``_running_agents``
+        （对齐 cancel_run/轮询环的快照口径）；经 ``infer_run_agent_type`` 过滤
+        本车道；归属复核以 ``run_spec_part`` 全等为准（防 startswith 裸前缀误中
+        同根后代 spec 的 run）；取消键经 ``strip_run_id_suffixes`` 取完整 run 级
+        id（含 epoch）——裸 spec 级键经 ``_normalize_run_id`` 归一后与消费点的
+        带 epoch 键不收敛，取消静默失效（code-review item 794e218ce816）。
+        仅取消本车道 ``agent_type`` 的 run，不波及其它车道。
+
+        Returns:
+            取消登记成功（``cancel_requested``）的完整 run 级 id 列表。
+        """
+        cancelled: list[str] = []
+        runner = getattr(self, "agent_runner", None)
+        if runner is None:
+            return cancelled
+        # list(...) 快照迭代（对齐 cancel_run/轮询环的快照口径）
+        for aid in list(getattr(runner, "_running_agents", {}).keys()):
+            lane_type, _ = infer_run_agent_type(aid)
+            if lane_type != agent_type:
+                continue
+            # 归属复核以 run_spec_part 全等为准（防 startswith 裸前缀
+            # 误中同根后代 spec 的 run）
+            if run_spec_part(aid) != spec_name:
+                continue
+            # 完整 run 级 id：剥 attempt/瞬态重试后缀，保留 epoch
+            run_level_id = strip_run_id_suffixes(aid)
+            if run_level_id in cancelled:
+                continue
+            ret = runner.cancel_run(run_level_id, reason=reason, by=by)
+            if ret.get("status") == "cancel_requested":
+                cancelled.append(run_level_id)
+        return cancelled
+
     def _stop_parallel_planning(self, spec_name: str, reason: str) -> None:
         """spec 状态回退（打回 drafted / 删除）时停止并行出题（任务 1.2）。
 
@@ -1122,28 +1168,9 @@ class PMEngine:
         """
         try:
             removed = self._dispatcher._remove_queued_entry(spec_name, "planner-plan")
-            cancelled: list[str] = []
-            runner = getattr(self, "agent_runner", None)
-            if runner is not None:
-                # list(...) 快照迭代（对齐 cancel_run/轮询环的快照口径）
-                for aid in list(getattr(runner, "_running_agents", {}).keys()):
-                    agent_type, _ = infer_run_agent_type(aid)
-                    if agent_type != "planner-plan":
-                        continue
-                    # 归属复核以 run_spec_part 全等为准（防 startswith 裸前缀
-                    # 误中同根后代 spec 的 run）；planner-plan run id 形如
-                    # ``planner-plan-<spec>-<epoch>``，剥前缀与时间戳后即 <spec>
-                    if run_spec_part(aid) != spec_name:
-                        continue
-                    # 完整 run 级 id：剥 attempt/瞬态重试后缀，保留 epoch
-                    run_level_id = strip_run_id_suffixes(aid)
-                    if run_level_id in cancelled:
-                        continue
-                    ret = runner.cancel_run(
-                        run_level_id, reason=reason, by="parallel-plan-lane"
-                    )
-                    if ret.get("status") == "cancel_requested":
-                        cancelled.append(run_level_id)
+            cancelled = self._cancel_lane_runs(
+                spec_name, "planner-plan", reason=reason, by="parallel-plan-lane"
+            )
             if removed or cancelled:
                 self.logger.info(
                     "pm_engine",
@@ -1183,27 +1210,12 @@ class PMEngine:
         dispatcher = getattr(self, "_dispatcher", None)
         if dispatcher is not None:
             removed = dispatcher._remove_queued_entry(spec_name, "verifier")
-        cancelled: list[str] = []
-        runner = getattr(self, "agent_runner", None)
-        if runner is not None:
-            # list(...) 快照迭代（对齐 cancel_run/轮询环的快照口径）
-            for aid in list(getattr(runner, "_running_agents", {}).keys()):
-                agent_type, _ = infer_run_agent_type(aid)
-                if agent_type != "verifier":
-                    continue
-                if run_spec_part(aid) != spec_name:
-                    continue
-                # 完整 run 级 id：剥 attempt/瞬态重试后缀，保留 epoch
-                run_level_id = strip_run_id_suffixes(aid)
-                if run_level_id in cancelled:
-                    continue
-                ret = runner.cancel_run(
-                    run_level_id,
-                    reason="spec verified — reclaim in-flight verify lane",
-                    by="verify-lane",
-                )
-                if ret.get("status") == "cancel_requested":
-                    cancelled.append(run_level_id)
+        cancelled = self._cancel_lane_runs(
+            spec_name,
+            "verifier",
+            reason="spec verified — reclaim in-flight verify lane",
+            by="verify-lane",
+        )
         if removed or cancelled:
             self.logger.info(
                 "pm_engine",
@@ -3490,7 +3502,10 @@ class PMEngine:
                     pass
 
             # Check for persistent errors
-            error = entry.get("error")
+            # 与 backfill_push_residuals 同款 str 归一（code-review item
+            # 4f927e30d717）：STATE 解析异常可产出非字符串且为真的 error，
+            # 直接下标切片会抛 TypeError 中断整轮 blocker 扫描。
+            error = str(entry.get("error") or "")
             if error and status == "ready":
                 try:
                     retries = int(entry.get("_retry_count", 0) or 0)
@@ -3773,7 +3788,9 @@ class PMEngine:
                 lines.append(
                     f"  - Status: `{b['status']}`, Elapsed: {b['elapsed_minutes']} minutes"
                 )
-                lines.append(f"  - Last error: {b['error'][:120]}")
+                # str 归一后再切片（code-review item 4f927e30d717）：blocker
+                # 条目的 error 可能是 STATE 解析异常产出的非字符串值。
+                lines.append(f"  - Last error: {str(b['error'] or '')[:120]}")
                 lines.append("")
 
         if warnings:

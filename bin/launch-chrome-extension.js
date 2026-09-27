@@ -68,6 +68,14 @@ function parseArgs() {
       case '--output':
         opts.output = args[++i];
         break;
+      default:
+        // 对未匹配任何 case 且以 -- 开头的参数告警：拼写错误的选项（如 --timeut）若被静默忽略，
+        // 调用方难以察觉参数未生效，验证口径会静默漂移；仅告警不退出，兼容调用方传入的新合法选项。
+        // 非 -- 开头的位置参数不在此列（可能作为独立占位实参，不属于选项拼写错误）。
+        if (String(args[i]).startsWith('--')) {
+          console.error(`警告: 未识别的命令行选项 "${args[i]}"，已忽略`);
+        }
+        break;
     }
   }
 
@@ -560,7 +568,7 @@ async function runUITests(context, page, consoleErrors = []) {
       results.push({ test: '面板渲染', status: 'error', detail: e.message });
     }
 
-    // 测试 3: 按钮可交互
+    // 测试 3: 按钮可见性（仅检测可见性，未实际点击，避免测试产生副作用）
     try {
       const buttons = await page.$$('button');
       let clickableCount = 0;
@@ -569,14 +577,14 @@ async function runUITests(context, page, consoleErrors = []) {
         if (isVisible) clickableCount++;
       }
       results.push({
-        test: '按钮交互',
+        test: '按钮可见性',
         status: buttons.length > 0 ? 'pass' : 'warn',
         detail: buttons.length > 0
-          ? `${buttons.length} 个按钮 (${clickableCount} 个可见)`
+          ? `${buttons.length} 个按钮 (${clickableCount} 个可见；仅检测可见性，未点击)`
           : '未发现按钮',
       });
     } catch (e) {
-      results.push({ test: '按钮交互', status: 'error', detail: e.message });
+      results.push({ test: '按钮可见性', status: 'error', detail: e.message });
     }
 
     // 测试 4: localStorage 可用

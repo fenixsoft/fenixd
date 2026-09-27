@@ -111,6 +111,9 @@ def request_run_cancel(project_root, run_id: str, reason: str = "") -> dict:
     """写入 run 取消的文件信号（.fenix/cancel_run_request.json）。
 
     原子写（tmp+rename），与 request_admin_invoke 同构：
+    - daemon 未受 supervisor 托管（hosting_state != "managed"）→ 信号无人
+      消费会静默滞留并锁死后续取消请求，前置拦截（对齐
+      request_spec_delete / request_spec_approve_push 契约）；
     - 已存在未消费的请求文件 → 返回冲突（409），不覆盖；
     - run_id 为空 → 返回 {ok: False, missing_run_id: True}；
     - 成功写入 → 返回 {ok: True, created}。
@@ -120,6 +123,7 @@ def request_run_cancel(project_root, run_id: str, reason: str = "") -> dict:
 
     Returns:
         {"ok": bool, "conflict": bool, "missing_run_id": bool,
+         "unmanaged": bool, "daemon_down": bool,
          "file": str|null, "created": str|null, "error": str|null}
     """
     if not run_id or not run_id.strip():
@@ -133,6 +137,43 @@ def request_run_cancel(project_root, run_id: str, reason: str = "") -> dict:
         }
 
     proot = Path(project_root)
+
+    # 消费方判据（对齐 request_spec_delete / request_spec_approve_push）：
+    # 信号唯一消费方是 daemon 主循环，unmanaged（进程在跑但无 supervisor）
+    # 或 stopped 时信号无人消费——静默滞留既让用户误以为取消已受理，又
+    # 让后续取消请求持续 409，前置拦截不写信号。
+    # _hosting_state 已在模块顶层导入（测试可 patch 该绑定）
+    try:
+        state = _hosting_state(proot)
+    except Exception:
+        state = "stopped"
+    if state == "unmanaged":
+        return {
+            "ok": False,
+            "conflict": False,
+            "missing_run_id": False,
+            "unmanaged": True,
+            "daemon_down": False,
+            "file": None,
+            "created": None,
+            "error": (
+                "本项目 daemon 未受 supervisor 托管，取消信号不会被消费。"
+                "经 Dashboard 项目页「安装托管」或 /fenix-setup 恢复"
+                "supervisor 托管后重试"
+            ),
+        }
+    if state != "managed":
+        return {
+            "ok": False,
+            "conflict": False,
+            "missing_run_id": False,
+            "unmanaged": False,
+            "daemon_down": True,
+            "file": None,
+            "created": None,
+            "error": "daemon 未运行，请先启动 daemon",
+        }
+
     req_path = proot / CANCEL_RUN_REQUEST
 
     # 已有未消费请求 → 冲突（409）
@@ -140,7 +181,7 @@ def request_run_cancel(project_root, run_id: str, reason: str = "") -> dict:
         try:
             existing = json.loads(req_path.read_text(encoding="utf-8"))
             existing_created = existing.get("created") if isinstance(existing, dict) else None
-        except (OSError, json.JSONDecodeError):
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
             existing_created = None
         return {
             "ok": False,

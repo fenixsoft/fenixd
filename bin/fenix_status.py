@@ -63,6 +63,13 @@ def _active_sort_key(item):
     return (pri, item[0])
 
 
+def _fix_root(name):
+    """剥全部连续 `fix-` 前缀得家族根名（对齐 family.py _fix_strip_all 口径）。"""
+    while name.startswith("fix-"):
+        name = name[4:]
+    return name
+
+
 def _load_gates(proot):
     """审批/晋升模式（与 Dashboard 设置页同源 read_effective_config）。"""
     try:
@@ -102,12 +109,17 @@ def _collect_signals(
             (level, f"未处理告警 {alerts['unhandled_count']} 条（最高 {sev}）{loc}：{desc}")
         )
 
-    # 豁免集合：存在活跃 fix-<name> 子 SPEC 时，父 SPEC 的停滞/无修复链不算问题
-    active_fix_parents = {
-        n[4:]
-        for n, e in entries.items()
-        if n.startswith("fix-") and e.get("status") not in TERMINAL
-    }
+    # 豁免集合：存在活跃 fix-<name> 子 SPEC 时，父 SPEC 的停滞/无修复链不算问题。
+    # 根名剥全部连续 `fix-` 前缀（对齐 family.py _fix_strip_all / engine.py
+    # _on_spec_done 候选循环口径）：嵌套修复链（fix-fix-<spec>）激活时父 SPEC
+    # 豁免不失效；裸 "fix-" 剥空后不进集合。
+    active_fix_parents = set()
+    for n, e in entries.items():
+        if not n.startswith("fix-") or e.get("status") in TERMINAL:
+            continue
+        root = _fix_root(n)
+        if root:
+            active_fix_parents.add(root)
 
     for name, entry in sorted(active.items(), key=_active_sort_key):
         st = entry.get("status", "")
