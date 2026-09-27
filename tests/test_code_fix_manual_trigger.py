@@ -8,6 +8,7 @@
 - checkpoint 异常落 dispatch_exception 结果
 - 结果文件 ``request_created`` 回链信号 ``created``
 - 信号先读后删（异常/损坏不复活、不重复消费）
+- 积压旧信号（created 超 1h 阈值）仅消费落 stale_created，不投递（item 6cc24b51f6b9）
 
 MUST NOT 真跑 agent——编排器经记录型假 executor 投递（批 worker 链不在本
 文件范围），runner 用最小替身。
@@ -16,6 +17,7 @@ MUST NOT 真跑 agent——编排器经记录型假 executor 投递（批 worker
 import json
 import sys
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -140,6 +142,9 @@ def _orch(proot: Path, enabled: bool, runner=None):
 
 
 _CREATED = "2026-09-22T01:02:03+00:00"
+# item 6cc24b51f6b9：created 超过 1h 阈值的手动信号按陈旧分档（仅消费不投递）。
+# 行为类用例改用新鲜 created 以到达原目标路径；固定值 _CREATED 留给 stale 用例。
+_FRESH_CREATED = datetime.now(timezone.utc).isoformat()
 
 
 class TestCodeFixManualTriggerConsume:
@@ -149,7 +154,7 @@ class TestCodeFixManualTriggerConsume:
         runner = _FakeRunner()
         runner._code_fix_orchestrator = _orch(proot, enabled=False, runner=runner)
         daemon = _make_daemon(proot, runner)
-        _write_signal(proot, _CREATED)
+        _write_signal(proot, _FRESH_CREATED)
         _consume(monkeypatch, proot, daemon)
 
         assert not (proot / ".fenix" / "code_fix_request.json").exists(), \
@@ -157,7 +162,7 @@ class TestCodeFixManualTriggerConsume:
         res = _read_result(proot)
         assert res["triggered"] is True
         assert res["reason"] == "dispatched"
-        assert res["request_created"] == _CREATED, "结果 MUST 回链信号 created"
+        assert res["request_created"] == _FRESH_CREATED, "结果 MUST 回链信号 created"
         assert res["message"]
         assert res["finished_at"]
 
@@ -167,7 +172,7 @@ class TestCodeFixManualTriggerConsume:
         spy = _SpyOrch()
         runner = _FakeRunner(orchestrator=spy)
         daemon = _make_daemon(proot, runner)
-        _write_signal(proot, _CREATED)
+        _write_signal(proot, _FRESH_CREATED)
         _consume(monkeypatch, proot, daemon)
         assert spy.calls == [True]
 
@@ -178,13 +183,13 @@ class TestCodeFixManualTriggerConsume:
         runner._running_agents = {"code-fix-123": object()}
         runner._code_fix_orchestrator = _orch(proot, enabled=True, runner=runner)
         daemon = _make_daemon(proot, runner)
-        _write_signal(proot, _CREATED)
+        _write_signal(proot, _FRESH_CREATED)
         _consume(monkeypatch, proot, daemon)
 
         res = _read_result(proot)
         assert res["triggered"] is False
         assert res["reason"] == "already_running"
-        assert res["request_created"] == _CREATED
+        assert res["request_created"] == _FRESH_CREATED
         assert "在跑" in res["message"]
         # 拒绝也不得留下死信号
         assert not (proot / ".fenix" / "code_fix_request.json").exists()
@@ -195,13 +200,13 @@ class TestCodeFixManualTriggerConsume:
         runner = _FakeRunner()
         runner._code_fix_orchestrator = _orch(proot, enabled=True, runner=runner)
         daemon = _make_daemon(proot, runner)
-        _write_signal(proot, _CREATED)
+        _write_signal(proot, _FRESH_CREATED)
         _consume(monkeypatch, proot, daemon)
 
         res = _read_result(proot)
         assert res["triggered"] is False
         assert res["reason"] == "no_open_items"
-        assert res["request_created"] == _CREATED
+        assert res["request_created"] == _FRESH_CREATED
         assert res["message"]
 
     def test_regression_contract_missing_rejected_with_result(self, monkeypatch):
@@ -210,13 +215,13 @@ class TestCodeFixManualTriggerConsume:
         runner = _FakeRunner()
         runner._code_fix_orchestrator = _orch(proot, enabled=True, runner=runner)
         daemon = _make_daemon(proot, runner)
-        _write_signal(proot, _CREATED)
+        _write_signal(proot, _FRESH_CREATED)
         _consume(monkeypatch, proot, daemon)
 
         res = _read_result(proot)
         assert res["triggered"] is False
         assert res["reason"] == "regression_contract_missing"
-        assert res["request_created"] == _CREATED
+        assert res["request_created"] == _FRESH_CREATED
         assert res["message"]
 
     def test_orchestrator_missing_not_silent(self, monkeypatch):
@@ -224,13 +229,13 @@ class TestCodeFixManualTriggerConsume:
         proot = _make_project_root()
         runner = _FakeRunner(with_attr=False)  # 无 _code_fix_orchestrator 属性
         daemon = _make_daemon(proot, runner)
-        _write_signal(proot, _CREATED)
+        _write_signal(proot, _FRESH_CREATED)
         _consume(monkeypatch, proot, daemon)
 
         res = _read_result(proot)
         assert res["triggered"] is False
         assert res["reason"] == "orchestrator_missing"
-        assert res["request_created"] == _CREATED
+        assert res["request_created"] == _FRESH_CREATED
         assert "编排器" in res["message"]
         assert not (proot / ".fenix" / "code_fix_request.json").exists()
 
@@ -239,20 +244,20 @@ class TestCodeFixManualTriggerConsume:
         proot = _make_project_root()
         runner = _FakeRunner(orchestrator=_BoomOrch())
         daemon = _make_daemon(proot, runner)
-        _write_signal(proot, _CREATED)
+        _write_signal(proot, _FRESH_CREATED)
         _consume(monkeypatch, proot, daemon)
 
         res = _read_result(proot)
         assert res["triggered"] is False
         assert res["reason"] == "dispatch_exception"
-        assert res["request_created"] == _CREATED
+        assert res["request_created"] == _FRESH_CREATED
 
     def test_signal_read_then_delete_not_revived(self, monkeypatch):
         """信号先读后删：异常不复活，二次扫描不重复消费（结果不被覆写）。"""
         proot = _make_project_root()
         runner = _FakeRunner(orchestrator=_BoomOrch())
         daemon = _make_daemon(proot, runner)
-        _write_signal(proot, _CREATED)
+        _write_signal(proot, _FRESH_CREATED)
         _consume(monkeypatch, proot, daemon)
         first = _read_result(proot)
         assert first["reason"] == "dispatch_exception"
@@ -283,3 +288,24 @@ class TestCodeFixManualTriggerConsume:
         _consume(monkeypatch, proot, daemon)
         assert spy.calls == []
         assert _read_result(proot) == {}
+
+    def test_stale_created_consumed_without_dispatch(self, monkeypatch):
+        """积压旧信号（created 超 1h 阈值）→ 仅消费落 stale_created，不投递。
+
+        item 6cc24b51f6b9：手动授权语义锚定点击时刻，daemon 停机积压的旧
+        信号重启后不得再执行；消费删除防卡死，结果如实反馈陈旧原因。
+        """
+        proot = _make_project_root()
+        spy = _SpyOrch()
+        runner = _FakeRunner(orchestrator=spy)
+        daemon = _make_daemon(proot, runner)
+        _write_signal(proot, _CREATED)
+        _consume(monkeypatch, proot, daemon)
+
+        assert not (proot / ".fenix" / "code_fix_request.json").exists(), \
+            "陈旧信号同样 MUST 消费删除，不留死信号"
+        res = _read_result(proot)
+        assert res["triggered"] is False
+        assert res["reason"] == "stale_created"
+        assert res["request_created"] == _CREATED
+        assert spy.calls == [], "陈旧信号 MUST NOT 投递 checkpoint"
