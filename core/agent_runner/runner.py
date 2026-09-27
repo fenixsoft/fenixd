@@ -635,6 +635,11 @@ class AgentRunner:
         # 日计数自增互斥锁（code-review item 152ca97a293a）：worker 池多 run
         # 并发收工自增 _daily_run_count（+= 读改写需互斥，协议见 613 行注释）。
         self._daily_count_lock = threading.Lock()
+        # 判停状态表互斥锁（code-review item 54ee68cac30b）：reader 线程
+        # （stdout/stderr 各一，经 _stall_budget_record_sample）与各 run 轮询
+        # 环线程（经 _stall_budget_state_for）并发建态/清理/摘除
+        # _stall_budget_states，协议见 _stall_budget_lock property 注释。
+        self._stall_budget_lock = threading.Lock()
         # 车道登记表（design D2）：__init__ 即建态——车道线程（queue
         # _start_impl_ocr_lane 每 spec 一线程）并发首次 register 时不得走
         # _lane_registry 的建态分支（两线程同见 None 会各建一个 dict、后一次
@@ -748,6 +753,26 @@ class AgentRunner:
     @_daily_count_lock.setter
     def _daily_count_lock(self, value):
         self.__dict__["_daily_count_lock_state"] = value
+
+    @property
+    def _stall_budget_lock(self) -> threading.Lock:
+        """判停状态表互斥锁（code-review item 54ee68cac30b）：
+        _stall_budget_states 建态/清理/摘除/读取的互斥点——reader 线程
+        （stdout/stderr 各一，经 _stall_budget_record_sample）与各 run 轮询
+        环线程（经 _stall_budget_state_for）并发进出；无锁时 24h 清理迭代
+        撞并发建键会抛 RuntimeError 沿 _run_claude 外层 except 把在飞 run
+        误判成 run thread crashed，并发首建还会互顶丢样本计数。惰性
+        property（测试 __new__ 绕过 __init__，对齐 _daily_count_lock 模式）。
+        """
+        inst = self.__dict__.get("_stall_budget_lock_state")
+        if inst is None:
+            inst = threading.Lock()
+            self.__dict__["_stall_budget_lock_state"] = inst
+        return inst
+
+    @_stall_budget_lock.setter
+    def _stall_budget_lock(self, value):
+        self.__dict__["_stall_budget_lock_state"] = value
 
     # ── run_id 归一化助手（add-run-cancel D1/D3）──────────────────
 
@@ -1773,9 +1798,18 @@ class AgentRunner:
                         d = json.loads(line)
                     except json.JSONDecodeError:
                         continue
+                    if not isinstance(d, dict):
+                        continue
                     if d.get("type") != "assistant":
                         continue
-                    for c in (d.get("message") or {}).get("content") or []:
+                    # message 为非 dict 载荷（JSON 字符串/数字/列表等）时不调
+                    # .get，防 AttributeError 逸出「转录损坏不抛异常」的防御
+                    # 口径；对齐 result_gate.salvage_result_from_transcript
+                    # （code-review item 9d6b7e60f36a）。
+                    msg = d.get("message")
+                    content = (msg.get("content")
+                               if isinstance(msg, dict) else None)
+                    for c in content or []:
                         if isinstance(c, dict) and c.get("type") == "text":
                             last_text = c.get("text") or ""
         except OSError:
@@ -5313,32 +5347,45 @@ class AgentRunner:
         （_run_claude 被直调、不经 _execute_agent 终态外口 forget）的状态
         泄漏（对齐 _cancel_requested 无需清理的键含 epoch 语义 + 卫生性
         淘汰）。
+
+        「查-建-清理迭代」整体持 _stall_budget_lock 临界区（code-review
+        item 54ee68cac30b）：reader 线程与各 run 轮询环线程并发进出，无锁
+        时清理迭代撞并发建键会抛 RuntimeError 把在飞 run 误判失败、并发
+        首建互顶丢样本计数。临界区内仅纯内存 dict 操作，无阻塞调用/回调/
+        重入；返回后调用方对 st 内层字段的读写不触及状态表结构。
         """
-        states = self._stall_budget_states
-        key = self._normalize_run_id(base_run_id)
-        st = states.get(key)
-        if st is None:
-            now = time.time()
-            for k in [k for k, v in states.items()
-                      if now - float(v.get("created_ts") or now) > 86400.0]:
-                states.pop(k, None)
-            st = {
-                "created_ts": now,
-                # reader 线程单写者维护的往返样本计数
-                "samples_total": 0,
-                "stalls_total": 0,
-                "consecutive_stalls": 0,
-                # 轮询环单写者维护的产物（run 转录）mtime 进展锚点
-                "last_mtime": 0.0,
-                "last_progress_ts": now,
-            }
-            states[key] = st
-        return st
+        with self._stall_budget_lock:
+            states = self._stall_budget_states
+            key = self._normalize_run_id(base_run_id)
+            st = states.get(key)
+            if st is None:
+                now = time.time()
+                for k in [k for k, v in states.items()
+                          if now - float(v.get("created_ts") or now) > 86400.0]:
+                    states.pop(k, None)
+                st = {
+                    "created_ts": now,
+                    # reader 线程单写者维护的往返样本计数
+                    "samples_total": 0,
+                    "stalls_total": 0,
+                    "consecutive_stalls": 0,
+                    # 轮询环单写者维护的产物（run 转录）mtime 进展锚点
+                    "last_mtime": 0.0,
+                    "last_progress_ts": now,
+                }
+                states[key] = st
+            return st
 
     def _stall_budget_forget(self, run_id: str) -> None:
-        """run 终态外口摘除判停状态（_execute_agent finally 幂等清理）。"""
+        """run 终态外口摘除判停状态（_execute_agent finally 幂等清理）。
+
+        摘除持 _stall_budget_lock：与 _stall_budget_state_for 的建态/清理
+        迭代互斥（code-review item 54ee68cac30b），防摘除撞迭代。
+        """
         try:
-            self._stall_budget_states.pop(self._normalize_run_id(run_id), None)
+            with self._stall_budget_lock:
+                self._stall_budget_states.pop(
+                    self._normalize_run_id(run_id), None)
         except Exception:
             pass
 
