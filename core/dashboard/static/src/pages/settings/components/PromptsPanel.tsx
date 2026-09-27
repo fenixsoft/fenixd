@@ -296,8 +296,10 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
               data-testid="prompts-extra-save"
               loading={saving}
               // 加载中禁用（code-review item 96880454231c）：草稿可能是上一
-              // 项目的残留内容，保存会跨项目错写。
-              disabled={loading}
+              // 项目的残留内容，保存会跨项目错写。未加载完成/加载失败时
+              // data 为空同样禁用（item 3afce137e38e）：handleSave 入口的
+              // `!data` 守卫会静默 return，不禁用则点击无任何反馈。
+              disabled={loading || !data}
               onClick={handleSave}
             >
               保存项目附加提示词
