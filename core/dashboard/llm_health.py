@@ -19,6 +19,7 @@ max_tokens=64），回答「这个 Provider+模型组合当前能不能回复 + 
 
 from __future__ import annotations
 
+import http.client
 import json
 import time
 import urllib.error
@@ -115,7 +116,8 @@ def run_llm_health_check(baseurl: str, apikey: str, model: str) -> dict:
         # 非 200：读错误体片段供排障（401 密钥无效 / 404 路径不对 / 429 限流等）
         try:
             snippet = _truncate(e.read().decode("utf-8", errors="replace"))
-        except OSError:
+        except (OSError, http.client.HTTPException):
+            # 错误体读取中断（如 IncompleteRead）同样只是拿不到片段，兜底空串
             snippet = ""
         return _fail(started, "http_error", error=snippet or f"HTTP {e.code}", status=e.code)
     except urllib.error.URLError as e:
@@ -128,6 +130,10 @@ def run_llm_health_check(baseurl: str, apikey: str, model: str) -> dict:
     except TimeoutError as e:
         # 读响应阶段的裸 socket 超时（响应头已到但体挂起）
         return _fail(started, "timeout", error=f"上游 {HEALTH_CHECK_TIMEOUT_SECONDS}s 内未返回: {e}")
+    except http.client.IncompleteRead as e:
+        # 响应头已到但体未收齐（上游网关提前断流）——同属连接类失败，
+        # 维持「探测失败也是业务数据（恒 200 自含返回）」契约
+        return _fail(started, "connection_error", error=f"上游连接提前关闭: {e}")
     except (OSError, ValueError) as e:
         # OSError：连接被拒 / DNS 失败 / 远端断开；ValueError：baseurl 非法
         # （urllib 对 unknown url type 抛 ValueError，spec 归 connection_error）
