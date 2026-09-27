@@ -160,8 +160,9 @@ class RecoveryWatch:
 
         读取失败**不再静默**（code-review item 905fe4cac7b2）：文件存在但整份
         JSON 损坏时记 WARNING 并把损坏文件改名为 ``.corrupt`` 移开，避免下一次
-        写入前一直读取坏文件、且丢失现场无从排查。缺失文件属正常首次启动，不
-        记日志。
+        写入前一直读取坏文件、且丢失现场无从排查。内容为合法 JSON 但非 dict
+        （如手工编辑成列表/字符串）同样按空续查并改名留存（code-review item
+        465164d164ed）。缺失文件属正常首次启动，不记日志。
         """
         path = self._pm._recovery_watch_path()
         if not path.exists():
@@ -191,6 +192,27 @@ class RecoveryWatch:
             return
         if isinstance(data, dict):
             self._recovery_watch = {k: v for k, v in data.items() if isinstance(v, dict)}
+            return
+        # 合法 JSON 但非 dict 同样不静默（code-review item 465164d164ed）：
+        # isinstance 假分支此前直接跳过赋值——观察项全量丢失且无任何日志、
+        # 原文件也不移开，下一次写入会整份覆盖丢失现场，正是本函数注释声称
+        # 要防的形态。与上方损坏分支同款处理：记 WARNING 并按时间戳 +
+        # 存在性退避改名留存现场（``.invalid`` 后缀区分根因）。
+        self._pm.logger.warning(
+            "pm_engine",
+            f"recovery_watch.json 内容为合法 JSON 但非 dict（type={type(data).__name__}），"
+            f"按空续查并将原文件改名留存现场",
+        )
+        try:
+            stamp = time.strftime("%Y%m%d-%H%M%S")
+            invalid = path.with_name(f"{path.name}.{stamp}.invalid")
+            seq = 0
+            while invalid.exists():
+                seq += 1
+                invalid = path.with_name(f"{path.name}.{stamp}.{seq}.invalid")
+            path.replace(invalid)
+        except OSError:
+            pass
 
     def _save_recovery_watch(self) -> None:
         """原子持久化观察项（tempfile + fsync + os.replace）。
@@ -237,19 +259,14 @@ class RecoveryWatch:
         auto-recovery 与 recovery deferred（存活子进程仍在）都会登记——后者防止
         「defer → 下轮仍卡死 → 再 defer」无限循环（tasks 3.1）。
         """
-        # 数值容错（code-review item 10fded66b995）：与本文件其它配置助手
-        # （_followup_check_minutes 等）同款 try/except——畸形
-        # pm.recovery.followup_check_minutes（非数值字符串）此前会让 float()
-        # 抛 ValueError 逃出登记路径，中断 auto-recovery 收尾。
-        try:
-            minutes = float(
-                self._pm._get_config(
-                    "pm.recovery.followup_check_minutes", DEFAULT_FOLLOWUP_CHECK_MINUTES
-                )
-                or DEFAULT_FOLLOWUP_CHECK_MINUTES
-            )
-        except (TypeError, ValueError):
-            minutes = float(DEFAULT_FOLLOWUP_CHECK_MINUTES)
+        # 数值容错与 0 值口径（code-review item 10fded66b995 / bb21abdb13df）：
+        # 统一复用 _followup_check_minutes（max(0.0, float(...)) + try/except
+        # 兜 TypeError/ValueError）。旧实现用 ``or DEFAULT`` 兜底，会把合法
+        # 配置值 0（想立即复查）当缺失回落成 15 分钟，与紧随其后的
+        # max(0.5, minutes) 钳制意图（允许极小间隔）自相矛盾，也与其余配置
+        # 助手保留 0 值的口径不一致；畸形（非数值）此前会让 float() 抛
+        # ValueError 逃出登记路径、中断 auto-recovery 收尾，同样由此兜住。
+        minutes = self._followup_check_minutes()
         due = time.time() + max(0.5, minutes) * 60
         with self._watch_lock:
             self._register_watch_entry(spec_name, reason, minutes, due)
