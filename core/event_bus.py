@@ -6,6 +6,7 @@ internal events to the PM Engine. Includes periodic full-scan fallback.
 """
 
 import hashlib
+import re
 import threading
 import time
 from pathlib import Path
@@ -15,6 +16,24 @@ from typing import Dict, Optional
 # PMEngine._dependencies_satisfied 共用同一常量，杜绝「闸门说满足、唤醒说
 # 不够」的双口径漂移——EventBus 仅据此识别「转入接受态」这一事实。
 from core.pm_engine.engine import DEPENDENCY_ACCEPTED_STATUSES  # noqa: E402
+
+# ── admin run id 的 spec 段全等判定（code-review item 91607da92bcd）──────────
+# run id 由 maintenance_runs._unique_admin_run_id 构造为 ``admin-<spec>-<epoch>``
+# （epoch = 纯数字秒级时间戳，现 10 位；撞名退避追加 ``-<n>``；在跑进程表键还
+# 可能带 ``-a<n>``/``-r<n>`` attempt/瞬态重试后缀）。spec 名可含连字符且互为
+# 前缀（fix-x 与 fix-x-2），``startswith("admin-<spec>-")`` 会把 fix-x-2 的
+# run 记到 fix-x 头上，令 fix-x 的 verifier 重验派发被错误互斥且无自愈；故以
+# 「epoch 段 ≥10 位数字」锚定 id 边界、贪婪取最长 spec 段后做**全等**比较
+# （spec 名自身以连字符+数字结尾，如 fix-2，不会被误剥进 id 段）。
+_ADMIN_RUN_ID_RE = re.compile(
+    r"^admin-(?P<spec>.+)-\d{10,}(?:-\d+)*(?:-[a-z]\d+)*$"
+)
+
+
+def _admin_run_id_matches_spec(run_id, spec: str) -> bool:
+    """run id 是否为该 spec 的 admin run（解析 spec 段全等，非前缀匹配）。"""
+    m = _ADMIN_RUN_ID_RE.match(str(run_id))
+    return m is not None and m.group("spec") == spec
 
 
 class EventBus:
@@ -409,10 +428,11 @@ class EventBus:
               读 ``read_all()`` 后套模块级 ``_spec_has_active_admin_run`` 归并
               判定（与 AdminMonitor._has_active_admin_run_for_spec 同源，勿二次
               漂移）——覆盖「pending 但进程已死」的残骸形态；
-          (b) ``agent_runner.running_run_ids()`` 中存在
-              ``admin-<spec>-`` 前缀 run——admin run 经 ``_run_claude`` 注册进
-              ``_running_agents``，本通路只覆盖**进程存活**
-              的 admin run。
+          (b) ``agent_runner.running_run_ids()`` 中存在 spec 段与该 spec
+              **全等**的 ``admin-<spec>-<epoch>`` run（``_admin_run_id_matches_spec``
+              解析判定，前缀匹配在 spec 名互为前缀时会记错账）——admin run 经
+              ``_run_claude`` 注册进 ``_running_agents``，本通路只覆盖**进程
+              存活**的 admin run。
 
         任一成立 → 返回 True（调用方跳过本次重验派发）；两路皆异常 → fail-open
         返回 False 放行并记 WARNING（守卫故障不阻断恢复路径）。
@@ -440,7 +460,7 @@ class EventBus:
                 try:
                     running = agent_runner.running_run_ids()
                     admin_found = any(
-                        str(rid).startswith(f"admin-{spec}-") for rid in running
+                        _admin_run_id_matches_spec(rid, spec) for rid in running
                     )
                 except Exception as e:
                     self.logger.warning(
