@@ -1,7 +1,8 @@
 # ADR-015：优雅退出快速排水并落 interrupted 终态标记
 
 date: 2026-09-02
-status: accepted
+status: superseded
+Superseded by: ADR-063(停机分规划性/非计划两档，恢复按 git 事实保全续做)
 
 ## Context
 

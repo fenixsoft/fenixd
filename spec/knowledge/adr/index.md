@@ -19,7 +19,7 @@ superseded 条目保留在列供溯源。编号接续本目录既有最大号。
 | [ADR-012](ADR-012-admin-zero-llm-monitor-and-main-tree.md) | accepted | 自愈监视零 LLM 成本（规则检测），仅困境时唤起 Administrator；其处置直接落 main 树 |
 | [ADR-013](ADR-013-task-writeback-and-completion-gate-at-transitions.md) | accepted | 任务进度回写（只增不减）与完成度门禁挂在 pm_engine 的 run 终态/状态转换点，不在 agent_runner |
 | [ADR-014](ADR-014-unattended-retry-safety.md) | accepted | 无人值守重试安全：错误指纹熔断、主树脏走 stash 不 commit、daemon 单实例 flock、max_turns/续跑/孤儿清理 |
-| [ADR-015](ADR-015-graceful-shutdown-drain-and-interrupted-mark.md) | accepted | 优雅退出秒级排水（SIGTERM 全部→interrupted 标记→≤10s→SIGKILL），不扩展 supervisor 窗口 |
+| [ADR-015](ADR-015-graceful-shutdown-drain-and-interrupted-mark.md) | superseded | 优雅退出秒级排水（SIGTERM 全部→interrupted 标记→≤10s→SIGKILL），不扩展 supervisor 窗口（已随 ADR-063 规划性重启排水退役） |
 | [ADR-016](ADR-016-dispatch-selfheal-discipline.md) | accepted | 调度自愈纪律：状态机纯记录直调补发、重发幂等不清历史字段、孤儿判定白名单、单条异常不中止整轮 |
 | [ADR-017](ADR-017-fake-success-defense-fail-closed-promotion.md) | accepted | 假成功防御：rc==0 须校验 result 终态；晋级关 fail-closed、推送关 fail-open；VERIFIED→TESTING 仅限自动回退 |
 | [ADR-018](ADR-018-push-main-first-sha-idempotent.md) | accepted | pushed 终态以远端内容（SHA）为准：main 先行为成功判据、分支仅审计留痕，ls-remote 去重幂等、失败有界退避超限升级人工 |
@@ -63,3 +63,17 @@ superseded 条目保留在列供溯源。编号接续本目录既有最大号。
 | [ADR-056](ADR-056-archive-visibility-dir-existence-periodic-governance.md) | accepted | 归档判定唯一事实源=活跃目录存在性（不写 STATE 标志）；按条目枚举 changes 必须容忍目录缺失；低频治理挂主循环周期计时而非事件埋点 |
 | [ADR-057](ADR-057-task-progress-subject-contract-read-side-fallback.md) | accepted | 任务进度协议：一个任务=一个 TaskCreate=一次汇报=一次勾选（subject 内嵌编号为契约）；读侧兜底链不依赖编号（创建序回退带弱一致性门槛） |
 | [ADR-058](ADR-058-dispatch-single-flight-inflight-state-protection.md) | accepted | 派发单飞守卫（异步操作前置位查重）+ 在飞态保护：失败回写不降级活跃验证态，verifier 结果竞态下重放合法路径或 blocked 留证，绝不静默丢弃 |
+| [ADR-059](ADR-059-runs-append-only-single-archival-entry.md) | accepted | runs 顶层产物只增不减，离开顶层唯一入口=spec 归档（推断单一实现+搬移 fail-open）；容量治理须带审计重新立项 |
+| [ADR-060](ADR-060-framework-artifact-commit-points.md) | accepted | 框架产物入库时机：归档残留挂 push 尾部批量收口（pathspec 限定、失败降级不阻塞终态）；须立即被 worktree agent 看见的产物在写入点即时 commit+push |
+| [ADR-061](ADR-061-rapid-death-judged-by-process-lifetime.md) | accepted | run 瞬时死亡判定以进程存活时长为准不解析退出码，框架主动 SIGTERM 不计入；连续秒挂冷却后自动恢复 |
+| [ADR-062](ADR-062-cooperative-cancellation-owner-thread-hold-state.md) | accepted | 人工取消=属主线程协作式终止（旗标+专用异常绕开重试/退避/provider 切换），取消不做状态转换（hold-state），自动链路无权取消 |
+| [ADR-063](ADR-063-planned-restart-drain-and-preserve-resume.md) | accepted | 停机分规划性（restart_request 在册→排水 shutdown_drain_seconds、supervisor 联动 +120s）与非计划（快速 terminate）两档；恢复按 git 事实保全分支续做（推翻 ADR-015 恒快速排水） |
+| [ADR-064](ADR-064-merge-tree-rehearsal-gate-direct-repair.md) | accepted | merge-back 语义冲突只读预演拦截（merge-tree 于 stash 前），命中直通 repair 不烧熔断记账不降级；remerge 真失败熔断不动 |
+| [ADR-065](ADR-065-verify-serving-instance-lifecycle-discipline.md) | accepted | 被测实例按 run 生命周期管理不常驻复用：进程组 spawn/killpg、ppid 自灭、作用域 try/finally 收割+周期清扫+登记制；端口耗尽用临时端口绝不回退主树实例 |
+| [ADR-066](ADR-066-fasttrack-read-side-fallback-synthesis.md) | accepted | fast-track/full 双模式产物差异由读侧回退合成吸收：写入端契约不动、专属副本优先+spec 守卫、口径同源；新增消费点必须接入回退链 |
+| [ADR-067](ADR-067-periodic-lane-attach-inspection-loop.md) | accepted | 周期自主车道：调度挂既有巡检循环不新增定时器、状态走 .fenix sidecar 不进 STATE.md、独立 run 类型不占 spec 预算、失败降级告警当日不重试、产物写入即入库 |
+| [ADR-068](ADR-068-local-cost-computation-per-provider-billing.md) | accepted | 成本金额只认本地计算：读侧解析 run 产物 usage+实际生效 marker 现算零新持久化，价格内嵌 providers[i].billing per-provider 谓词，四价齐备否则整体不可计价 |
+| [ADR-069](ADR-069-route-map-declared-generator-protocol.md) | accepted | 框架不解析被测应用源码：路由地图由项目声明生成器协议接入（固定路径/单参/Markdown stdout/超时 fail-open），来源=impl worktree、复用键=HEAD，覆盖缺口靠措辞防线 |
+| [ADR-070](ADR-070-config-validation-tolerance-classification.md) | accepted | 配置校验按缺陷性质分类：键集不匹配逐键降级（保留键+内嵌重启处方+进程生命周期去重），值/类型非法整段拒绝、启动 FATAL |
+| [ADR-071](ADR-071-daemon-self-monitoring-signal-semantics.md) | accepted | daemon 自检信号：错误升级按时间窗+归一化指纹（无状态重算、fail-closed），代码陈旧用 mtime 指纹（不用 git hash/schema 版本），阈值模块常量不进配置 |
+| [ADR-072](ADR-072-content-assets-served-by-backend-dynamic-read.md) | accepted | 内容型资产由后端端点动态读盘伺服不进前端 dist（白名单+realpath 防穿越），重依赖渲染库动态加载；内容与代码演进边界确立 |
