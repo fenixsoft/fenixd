@@ -9,8 +9,11 @@ D5 约定：各组方法采用 mixin 模式，DashboardHandler 继承各组 mixi
 from __future__ import annotations
 
 import errno
+import logging
 import re
 from pathlib import Path
+
+logger = logging.getLogger("fenixd.dashboard.help_routes")
 
 
 class H8HelpRoutesMixin:
@@ -116,7 +119,11 @@ class H8HelpRoutesMixin:
             if exc.errno in (errno.ENOENT, errno.ENOTDIR):
                 self._error(404, "help doc not found")
             else:
-                self._error(500, f"help doc read failed: {exc}")
+                # code-review e22ab64135ac：OSError 文本含 errno 与服务器
+                # 绝对路径，不得内嵌进响应体——详情 logger.warning 留痕，
+                # 响应只给泛化文案（对齐 settings_routes._api_prompts_get）
+                logger.warning("help doc read failed (%s): %s", name, exc)
+                self._error(500, "help doc read failed")
             return
         self._json(
             {
