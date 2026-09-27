@@ -1,5 +1,5 @@
 import { Button, Card, Form, Input, InputNumber, Modal, Select, Space, Switch, Typography, message } from 'antd';
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { restartProjectDaemon } from '@/services/dashboard';
 import SyncFromUserButton from './SyncFromUserButton';
 import type { ConfigData } from '@/services/dashboard';
@@ -167,6 +167,29 @@ const TRANSIENT_ANNOTATIONS: {
   },
 ];
 
+// admin.* + agents.transient_* 十二字段表单映射单源（config 取值 ?? 缺省）：
+// initialValues 与回填 effect 共用，避免两份映射漏改一处导致初值与回填值分叉
+function buildSystemFormValues(config: ConfigData) {
+  const admin = config.admin ?? {};
+  // 瞬断治理（fix-provider-transient-backoff D6）：agents.transient_* 五键
+  const agentsSection = config.agents ?? {};
+  // 自省字段（self_review.*）已拆至独立「自省」页签（SelfReviewPanel）
+  return {
+    enabled: admin.enabled ?? true,
+    interval_minutes: admin.interval_minutes ?? 5,
+    escalation_cooldown_minutes: admin.escalation_cooldown_minutes ?? 60,
+    merge_breaker_threshold: admin.merge_breaker_threshold ?? 2,
+    shutdown_drain_seconds: admin.shutdown_drain_seconds ?? 1800,
+    bug_repair_mode: admin.bug_repair_mode ?? 'inplace',
+    stuck_silence_minutes: admin.stuck_silence_minutes ?? 120,
+    transient_backoff_schedule: agentsSection.transient_backoff_schedule ?? '30,60,120',
+    transient_redispatch_delay_seconds: agentsSection.transient_redispatch_delay_seconds ?? 600,
+    transient_break_threshold: agentsSection.transient_break_threshold ?? 3,
+    transient_break_window_seconds: agentsSection.transient_break_window_seconds ?? 600,
+    transient_break_cooldown_seconds: agentsSection.transient_break_cooldown_seconds ?? 600,
+  };
+}
+
 export default function SystemPanel({ config, onSave, project, onConfigSynced }: SystemPanelProps) {
   const [form] = Form.useForm();
 
@@ -192,36 +215,30 @@ export default function SystemPanel({ config, onSave, project, onConfigSynced }:
             message.success('重启请求已写入，daemon 将排水后自动重启');
           } else {
             message.error(`重启失败：${res?.error ?? '未知错误'}`);
+            // 失败时拒绝 resolve，Modal.confirm 不自动关闭，弹窗原样留着供直接重试
+            return Promise.reject(new Error(res?.error ?? 'restart failed'));
           }
         } catch (err) {
           message.error(`重启失败：${err instanceof Error ? err.message : String(err)}`);
+          return Promise.reject(err instanceof Error ? err : new Error(String(err)));
         }
       },
     });
   };
 
-  const admin = config.admin ?? {};
-  // 瞬断治理（fix-provider-transient-backoff D6）：agents.transient_* 五键
-  const agentsSection = config.agents ?? {};
+  const initialValues = buildSystemFormValues(config);
 
-  // 自省字段（self_review.*）已拆至独立「自省」页签（SelfReviewPanel）
-  const initialValues = {
-    enabled: admin.enabled ?? true,
-    interval_minutes: admin.interval_minutes ?? 5,
-    escalation_cooldown_minutes: admin.escalation_cooldown_minutes ?? 60,
-    merge_breaker_threshold: admin.merge_breaker_threshold ?? 2,
-    shutdown_drain_seconds: admin.shutdown_drain_seconds ?? 1800,
-    bug_repair_mode: admin.bug_repair_mode ?? 'inplace',
-    stuck_silence_minutes: admin.stuck_silence_minutes ?? 120,
-    transient_backoff_schedule: agentsSection.transient_backoff_schedule ?? '30,60,120',
-    transient_redispatch_delay_seconds: agentsSection.transient_redispatch_delay_seconds ?? 600,
-    transient_break_threshold: agentsSection.transient_break_threshold ?? 3,
-    transient_break_window_seconds: agentsSection.transient_break_window_seconds ?? 600,
-    transient_break_cooldown_seconds: agentsSection.transient_break_cooldown_seconds ?? 600,
-  };
-
+  // 回填门控（code-review item 5be7cabc4d91，比照 TokenBudgetPanel cbec8303669f）：
+  // 无条件 setFieldsValue 会在保存往返或「同步用户级设置」刷新 config 时，用外部值
+  // 覆盖用户在保存请求在飞期间继续输入、尚未保存的内容。改为序列化比较，只在内容
+  // 真变化时回填。
+  const lastBackfillRef = useRef('');
   useEffect(() => {
-    form.setFieldsValue(initialValues);
+    const next = buildSystemFormValues(config);
+    const key = JSON.stringify(next);
+    if (key === lastBackfillRef.current) return;
+    lastBackfillRef.current = key;
+    form.setFieldsValue(next);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [config.admin, config.agents, form]);
 
