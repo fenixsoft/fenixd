@@ -387,8 +387,10 @@ def _update_warning_streaks(pipeline, spec_name: str) -> list:
       - status 为 pass/failed（含被强制重写的 failed）或 classification 为
         product-bug/test-defect 的场景：计数清零。
 
-    返回本轮回填后「连续计数 >= 2 且尚未列入优先复核清单」的场景 id 列表
-    （即触发 triage 升级的候选），调用方据此发告警。触发不取精确相等、以
+    返回本轮回填后「连续计数 >= 2 且尚未列入优先复核清单」的候选列表
+    [(scenario_id, 连续轮数), ...]（调用方据此发告警，文案轮次取实际连续
+    轮数——补发场景已 > 2，固定写 2 会误导人工对悬置时长的判断）。
+    触发不取精确相等、以
     triage_recheck.json 已含该 id 去重（code-review ef96ee9d0506）：streak
     侧车先落盘、告警由调用方在后执行，进程在两步之间中断后下轮计数已过 2
     仍可补发，且已告警场景不重复升级。侧车文件：
@@ -451,7 +453,8 @@ def _update_warning_streaks(pipeline, spec_name: str) -> list:
         if not sid:
             continue
         current_ids.add(sid)
-        if sc.get("status") == "pass":
+        # 双词表口径对齐 verdict_check（agent 写报告时 status 合法形态含 passed）
+        if sc.get("status") in ("pass", "passed"):
             passed_ids.add(sid)
         status = sc.get("status")
         classification = sc.get("classification")
@@ -460,7 +463,7 @@ def _update_warning_streaks(pipeline, spec_name: str) -> list:
         if status == "warning" and classification in ("flaky", "env"):
             streaks[sid] = streaks.get(sid, 0) + 1
             if streaks[sid] >= 2 and sid not in already_recheck:
-                triage_candidates.append(sid)
+                triage_candidates.append((sid, streaks[sid]))
         else:
             streaks[sid] = 0
 
@@ -528,7 +531,12 @@ def _update_warning_streaks(pipeline, spec_name: str) -> list:
 
 
 def _warning_stale_triage_alert(pipeline, spec_name: str, scenario_ids: list) -> None:
-    """连续 2 轮 warning 场景的 triage 升级告警（design D4 / D5）。
+    """warning 连续悬置场景的 triage 升级告警（design D4 / D5）。
+
+    scenario_ids 为 _update_warning_streaks 返回的候选列表
+    [(scenario_id, 连续轮数), ...]：告警文案轮次取实际 streak、缺值回退 2
+    （code-review 77a49621cfd3——补发场景实际连续轮数已 > 2，固定写 2 与
+    事实不符）。
 
     signal_type=warning_stale_triage，含 spec/场景/轮次/最近证据摘要；
     同时把场景写入下一轮 planner prompt 的「优先复核」注入（与 scenario-freeze
@@ -537,16 +545,17 @@ def _warning_stale_triage_alert(pipeline, spec_name: str, scenario_ids: list) ->
     """
     from core.verdict_check import load_report
 
+    streak_by_sid = {sid: streak for sid, streak in scenario_ids}
+    sids = list(streak_by_sid)
     # 证据摘要：从该场景的 evidence.failed_assertions / first_failed_step 摘取
     evidence_lines = []
     report = load_report(pipeline._context.project_root, spec_name)
-    latest_round = 2
     if isinstance(report, dict):
         for sc in report.get("scenarios", []) or []:
             if not isinstance(sc, dict):
                 continue
             sid = str(sc.get("scenario_id") or sc.get("id") or "")
-            if sid not in scenario_ids:
+            if sid not in sids:
                 continue
             ev = sc.get("evidence") if isinstance(sc.get("evidence"), dict) else {}
             ffs = ev.get("first_failed_step") or ""
@@ -562,10 +571,13 @@ def _warning_stale_triage_alert(pipeline, spec_name: str, scenario_ids: list) ->
             )
             evidence_lines.append(
                 f"场景 {sid}（classification={sc.get('classification')}, "
-                f"连续 {latest_round} 轮 warning）：{ffs}"
+                f"连续 {streak_by_sid.get(sid, 2)} 轮 warning）：{ffs}"
                 + (f"；失败断言：{fa_summary}" if fa_summary else "")
             )
-    evidence = "\n".join(evidence_lines) or (f"连续 2 轮 warning 场景：{', '.join(scenario_ids)}")
+    streak_detail = "、".join(
+        f"{sid}（连续 {streak_by_sid.get(sid, 2)} 轮）" for sid in sids
+    )
+    evidence = "\n".join(evidence_lines) or f"连续 warning 场景：{streak_detail}"
 
     # 升级通道自身失败不得抛穿裁决流程（与同文件其他升级路径对齐，
     # code-review item 7e0509f14fdd）：notifier 抛异常不得连带丢掉
@@ -576,12 +588,12 @@ def _warning_stale_triage_alert(pipeline, spec_name: str, scenario_ids: list) ->
             signal_type="warning_stale_triage",
             severity="critical",
             description=(
-                f"'{spec_name}' 以下场景连续 {latest_round} 轮均为 warning，"
-                f"需人工 triage 甄别是否真缺陷被悬置：{', '.join(scenario_ids)}"
+                f"'{spec_name}' 以下场景连续多轮均为 warning，"
+                f"需人工 triage 甄别是否真缺陷被悬置：{streak_detail}"
             ),
             evidence=evidence,
             recommended_action=(
-                f"人工复核 {', '.join(scenario_ids)} 的真实根因；下一轮验证已将其"
+                f"人工复核 {', '.join(sids)} 的真实根因；下一轮验证已将其"
                 f"列入优先复核清单（triage_recheck.json）"
             ),
         )
@@ -608,7 +620,7 @@ def _warning_stale_triage_alert(pipeline, spec_name: str, scenario_ids: list) ->
                     existing = data
             except (json.JSONDecodeError, OSError):
                 existing = []
-        merged = list(dict.fromkeys(existing + scenario_ids))
+        merged = list(dict.fromkeys(existing + sids))
         recheck_path.write_text(
             json.dumps(merged, ensure_ascii=False, indent=2),
             encoding="utf-8",
@@ -1682,20 +1694,26 @@ def _handle_env_exemption_handshake(
     rep = report if isinstance(report, dict) else load_report(
         pipeline._context.project_root, spec_name
     )
+    # 回链写入结果并入放行日志文案（code-review f8ec5838ce8c）：报告不可得
+    # 或写回失败时不得声称「报告已保留处置回链」，避免人工在报告中找回链落空。
     if isinstance(rep, dict):
         rep["admin_disposition_backlink"] = backlink
+        backlink_note = "报告已保留处置回链"
         try:
             save_report(pipeline._context.project_root, spec_name, rep)
         except OSError as e:
+            backlink_note = "报告处置回链写回失败（未保留）"
             pipeline._context.logger.warning(
                 "pm_engine",
                 f"豁免处置回链写回 report.json 失败 '{spec_name}'（不阻断放行）: {e}",
             )
+    else:
+        backlink_note = "报告不可得，处置回链未写入"
     pipeline._context.logger.warning(
         "pm_engine",
         f"env 豁免握手放行 '{spec_name}'：查得 admin 放行处置记录"
         f"（{disposition.get('created') or '时间未知'}），豁免清单作为 verified "
-        f"依据生效，报告已保留处置回链",
+        f"依据生效，{backlink_note}",
     )
     return False
 
