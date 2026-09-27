@@ -108,6 +108,15 @@ const STATUS_COLOR: Record<string, string> = {
   ignored: 'default',
 };
 
+// 状态过滤下拉选项（value/label 单源）：状态 Select 与表格空态文案共用同一
+// 词表，避免平行维护漂移（code-review item 0ca9da12f1df）
+const STATUS_FILTER_OPTIONS = [
+  { value: 'open', label: 'open（待处置）' },
+  { value: 'in_spec', label: 'in_spec（已立项修复）' },
+  { value: 'resolved', label: 'resolved（已修复）' },
+  { value: 'ignored', label: 'ignored（已忽略）' },
+];
+
 // ── 「问题」列单元格：两行堆叠 + 内容行悬浮浮层 ──────────────────────
 // 行布局（2026-09-20 用户要求）：第一行 = 问题标题 + `文件:行`（同一行不换行，
 // `文件:行` 过长时单行省略 + 原生 tooltip）；第二行 = 内容。
@@ -973,12 +982,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
             }}
             // 状态中文解释（用户 2026-09-23 要求）：仅下拉选项文案，表格
             // Tag 仍走 STATUS_TEXT 英文短标签
-            options={[
-              { value: 'open', label: 'open（待处置）' },
-              { value: 'in_spec', label: 'in_spec（已立项修复）' },
-              { value: 'resolved', label: 'resolved（已修复）' },
-              { value: 'ignored', label: 'ignored（已忽略）' },
-            ]}
+            options={STATUS_FILTER_OPTIONS}
           />
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
             已选 {openSelectedCount} 条
@@ -1126,7 +1130,19 @@ export default function QualityTab({ project, active }: QualityTabProps) {
           }
           setItemsPage(1); // 排序条件变化回第 1 页（与过滤变化同约定）
         }}
-        locale={{ emptyText: '暂无未处理问题' }}
+        // 空态文案随状态过滤动态生成（code-review item 0ca9da12f1df）：
+        // 非 open 过滤（in_spec/resolved/ignored）为空时按所选状态的展示文案
+        // 生成，避免误显「暂无未处理问题」让用户以为过滤未生效；
+        // open（默认值）与无过滤（allowClear 清空）保持原空态文案
+        locale={{
+          emptyText:
+            !statusFilter || statusFilter === 'open'
+              ? '暂无未处理问题'
+              : `暂无 ${
+                  STATUS_FILTER_OPTIONS.find((o) => o.value === statusFilter)?.label ??
+                  statusFilter
+                } 问题`,
+        }}
       />
     </Card>
   );
