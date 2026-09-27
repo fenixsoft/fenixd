@@ -16,7 +16,7 @@
 
 ### Requirement: marker origin 契约
 
-能力页 marker SHALL 增加可选 `origin` 字段：`origin=archive`（缺省，行为与既有契约完全一致）或 `origin=prehistoric`。prehistoric 页的 sources SHALL 允许 git 区间锚点形态（`git:<起始ref>-..<结束日期>`），`validate_knowledge` 的 sources 存在性校验 SHALL 按 origin 分支：archive 页沿用既有归档目录存在性校验；prehistoric 页校验 git 区间锚点格式且起始 ref 可解析，MUST NOT 要求归档目录存在。史前页同样 SHALL 受 150 行硬顶、禁历史措辞等全部既有页面契约约束。
+能力页 marker SHALL 增加可选 `origin` 字段：`origin=archive`（缺省，行为与既有契约完全一致）或 `origin=prehistoric`。prehistoric 页的 sources SHALL 允许 git 区间锚点形态（`git:<起始ref>-..<结束日期>`），`validate_knowledge` 的 sources 存在性校验 SHALL 按 origin 分支：archive 页沿用既有归档目录存在性校验；prehistoric 页校验 git 区间锚点格式且起始 ref 可解析，MUST NOT 要求归档目录存在。史前页同样 SHALL 受 150 行硬顶、禁历史措辞等全部既有页面契约约束。史前独有能力页（链索引中无任何归档 delta）的 marker rev SHALL 为 1、sources 仅含其单条 git 区间锚点。
 
 #### Scenario: prehistoric 页通过校验
 

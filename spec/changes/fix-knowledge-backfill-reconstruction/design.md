@@ -2,7 +2,7 @@
 
 ## Context
 
-`add-knowledge-atlas-maintenance` 已 pushed（回填车道 `core/knowledge_backfill.py` 落地：`BackfillLedger` 归档粒度台账、`build_batches` 按域分归档批 ≤20、`run_backfill` 主流程、`_validate_with_repair` 校验闭环）。两个语义缺陷（顺序承重未钉死、跨域归档稀释）+ 一个覆盖缺口（09-02 前史前能力无归档覆盖，08-16 迁移提交起 637 提交的地基不在任何 delta 里）。会话定案方案 B：能力聚合全链蒸馏 + 史前复原 + 回填期增量排队。
+`add-knowledge-atlas-maintenance` 已 pushed（回填车道 `core/knowledge_backfill.py` 落地：`BackfillLedger` 归档粒度台账、`build_batches` 按域分归档批 ≤20、`run_backfill` 主流程、`_validate_with_repair` 校验闭环）。两个语义缺陷（顺序承重未钉死、跨域归档稀释）+ 一个覆盖缺口（09-02 前史前能力无归档覆盖，08-16 迁移提交起 672 提交（实测）的地基不在任何 delta 里）。会话定案方案 B：能力聚合全链蒸馏 + 史前复原 + 回填期增量排队。
 
 ## Goals / Non-Goals
 
@@ -25,11 +25,11 @@
 
 ### D2: 台账条目键从归档名改为带前缀复合键
 
-`BackfillLedger` 条目键 `capability:<名>` / `adr:<归档名>`；旧归档粒度台账文件（`.fenix/knowledge_backfill.jsonl` 若存在旧条目）首次重入时作废重建（回填尚未真跑过，无迁移负担，设计上允许丢弃——台账是运行时进度非数据资产）。ADR 扫描保持归档粒度（design.md 是归档级产物），页蒸馏改能力粒度，两维度天然正交。
+`BackfillLedger` 条目键 `capability:<名>` / `adr:<归档名>`；旧归档粒度台账文件（`.fenix/knowledge_backfill.jsonl` 若存在旧条目）首次重入时作废重建（回填尚未真跑过，无迁移负担，设计上允许丢弃——台账是运行时进度非数据资产）。旧 domain_map 文件（`.fenix/knowledge_backfill_domains.json`）当前同样不存在（实测），v2 首次自举即以能力名为键重建，无残留格式风险。ADR 扫描保持归档粒度（design.md 是归档级产物），页蒸馏改能力粒度，两维度天然正交。
 
 ### D3: 排队 = 登记进台账而非内存队列
 
-`dispatch_distill` 检测台账有 pending 即不派发，把归档登记为 pending 条目后返回（fail-open 语义不变）。不做内存队列/锁——回填重入天然消化 pending，重启安全（台账在盘）。收敛判据 = 台账无 pending 且无 failed 待重试。
+`dispatch_distill` 检测台账有 pending 即不派发，把归档登记为 pending 条目后返回（fail-open 语义不变）。不做内存队列/锁——回填重入天然消化 pending，重启安全（台账在盘）。收敛判据 = 台账无 pending 且无 failed 待重试。排队登记落在 `core/knowledge.py` 侧：`core.knowledge_backfill` 顶层不 import `core.knowledge`（仅函数内懒导入），故 `core.knowledge` 导入 `BackfillLedger` 与台账路径常量不构成导入环；登记写入复用原子回写。
 
 ### D4: prehistoric 锚点用 `git:<起始ref>-..<结束日期>` 文本形态
 
