@@ -31,7 +31,9 @@ admin_store 的 DisputeAuditStore 追加模式）。
 """
 
 import fcntl
+import http.client
 import json
+import math
 import os
 import shlex
 import signal
@@ -142,7 +144,11 @@ def _num(value, default: float) -> float:
         v = float(value)
     except (TypeError, ValueError):
         return default
-    return v if v > 0 else default
+    # isfinite：排除 ±inf（YAML .inf、溢出字面量 1e400、字符串 "inf" 经
+    # float() 变 inf，可穿透 v > 0 守卫），否则 shell/webhook timeout=inf
+    # 永不超时、在飞标记不释放（对齐 config.py 的 .nan/.inf 守卫先例；
+    # nan 已被 v > 0 排除，此处一并兜住）
+    return v if v > 0 and math.isfinite(v) else default
 
 
 def _tail_combined(stdout: Optional[str], stderr: Optional[str]) -> str:
@@ -194,7 +200,9 @@ def validate_hook_entry(entry: Any) -> Optional[str]:
     - action=webhook 必须 url 非空字符串；
     - action=shell 必须 command 非空字符串；
     - action=commit/commit-push 可选 paths：非空字符串数组（git pathspec，
-      缺省仅 DEFAULT_COMMIT_PATHS 收口产物）。
+      缺省仅 DEFAULT_COMMIT_PATHS 收口产物）；
+    - 可选 timeout_seconds：正的有限数值（秒），bool/非有限值（.inf 等非法，
+      防手改 config.yaml 绕过执行侧 _num 守卫）。
 
     Returns: 非法时返回错误描述（含字段路径），合法返回 None。
     """
@@ -231,6 +239,18 @@ def validate_hook_entry(entry: Any) -> Optional[str]:
             or not all(isinstance(p, str) and p.strip() for p in paths)
         ):
             return "commit/commit-push 的 paths 必须为非空字符串数组（git pathspec，如 [\"spec\"]）"
+    timeout = entry.get("timeout_seconds")
+    if timeout is not None:
+        # 数值合法性（对齐 _num 语义）：非有限值（.inf/1e400/"inf"）会穿透
+        # 执行侧 v > 0 守卫致超时永不触发；bool 同 _num 前判显式排除
+        if isinstance(timeout, bool):
+            return "timeout_seconds 必须为正的有限数值（秒），收到布尔值"
+        try:
+            timeout_v = float(timeout)
+        except (TypeError, ValueError):
+            return f"timeout_seconds 必须为正的有限数值（秒），收到 {timeout!r}"
+        if not math.isfinite(timeout_v) or timeout_v <= 0:
+            return f"timeout_seconds 必须为正的有限数值（秒），收到 {timeout!r}"
     return None
 
 
@@ -1027,7 +1047,15 @@ class HookEngine:
                 return True
             except urllib.error.HTTPError:
                 return True  # 服务已响应（返回了错误码也算已起来）
-            except (urllib.error.URLError, TimeoutError, OSError):
+            except (
+                urllib.error.URLError,
+                TimeoutError,
+                OSError,
+                http.client.HTTPException,
+            ):
+                # HTTPException 家族（如 chunked 截断的 IncompleteRead）非
+                # OSError：读响应体失败按本轮探测未通过处理，继续下一轮重试，
+                # 不上抛给 _execute_one 通用兜底误报 hook 失败
                 time.sleep(DASHBOARD_PROBE_INTERVAL)
         return False
 
