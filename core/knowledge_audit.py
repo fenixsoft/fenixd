@@ -24,6 +24,7 @@ graph，减少唤醒）：``shutil.which('graphify')`` 探测，缺失/执行失
 from __future__ import annotations
 
 import difflib
+import hashlib
 import json
 import re
 import shutil
@@ -51,6 +52,9 @@ from core.knowledge_backfill import (
 
 REPORT_RELPATH = ".fenix/knowledge_audit_report.md"
 STATE_RELPATH = ".fenix/knowledge_audit_state.json"
+# 疑点台账（add-knowledge-audit-finding-ledger）：语义疑点判定历史与状态，
+# 指纹为键、原子写；no-conflict 豁免 / 同批去重 / 升级待人工都以此为准据。
+FINDINGS_RELPATH = ".fenix/knowledge_audit_findings.json"
 PROMPT_PATH = Path(__file__).parent / "knowledge_prompts" / "audit.md"
 KNOWLEDGE_DIR = "spec/knowledge"
 GRAPH_RELPATH = "spec/knowledge/graph"
@@ -95,6 +99,93 @@ def _today() -> str:
     return time.strftime("%Y-%m-%d")
 
 
+# ── 疑点台账（add-knowledge-audit-finding-ledger） ────────────────────────
+
+# 条目状态五态：
+# suspected（复核中/待复核）→ exempt（no-conflict 且两页内容未变，初筛跳派）
+# / fixed（重写提交纠偏）；superseded-in-batch（同批快照滞后重复，跳过）；
+# escalated（连续两轮复核无确定性判定，挂起等人工——终态，人工删除台账条目
+# 即消费清除，无自动恢复）。
+FINDING_STATUSES = ("suspected", "exempt", "fixed", "superseded-in-batch", "escalated")
+
+
+def _load_findings_ledger(project_root: Path) -> dict:
+    """读疑点台账（指纹 → 条目 dict）。缺失/损坏 fail-open 空台账。"""
+    path = Path(project_root) / FINDINGS_RELPATH
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_findings_ledger(project_root: Path, ledger: dict) -> None:
+    """疑点台账原子回写（对齐 _write_state 的 tmp + os.replace 模式）。"""
+    atomic_write_text(
+        Path(project_root) / FINDINGS_RELPATH,
+        json.dumps(ledger, ensure_ascii=False, indent=2) + "\n",
+    )
+
+
+def _finding_fingerprint(finding: dict) -> str:
+    """疑点指纹：sha256(kind + 两页 rel + 归一化规则行 + digits)。
+
+    输入全部复用初筛的现成计算（_normalize_rule 与 _scan_semantic 同款 digits
+    提取），不依赖 run 输出文本；两侧按 (page, 归一化规则行, digits) 排序后
+    拼接，扫描顺序差异（甲乙互换）不产生新指纹。"""
+
+    def _side(s: dict) -> tuple[str, str, str]:
+        return (
+            s["page"],
+            _normalize_rule(s["rule"]),
+            ",".join(re.findall(r"\d+(?:\.\d+)?", s["rule"])),
+        )
+
+    sa, sb = sorted((_side(finding["a"]), _side(finding["b"])))
+    payload = "|".join((finding["kind"], *sa, *sb))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _page_hash(project_root: Path, rel: str) -> str:
+    """页面现文 sha256（豁免键用全文哈希而非规则行指纹：同规则行在不同内容
+    语境下判决会翻转，只有内容未变才豁免，内容一变即解冻重派）。"""
+    return hashlib.sha256(
+        _page_text_by_rel(project_root, rel).encode("utf-8")
+    ).hexdigest()
+
+
+def _new_finding_entry(finding: dict) -> dict:
+    """新疑点入账（条目 schema 见设计：kind/pages/rules/page_hashes/verdicts/
+    status/first_seen/updated_at；review_rounds 为升级轮次计数）。"""
+    now = _today()
+    return {
+        "kind": finding["kind"],
+        "pages": [finding["a"]["page"], finding["b"]["page"]],
+        "rules": [finding["a"]["rule"], finding["b"]["rule"]],
+        "page_hashes": {},
+        "verdicts": [],
+        "status": "suspected",
+        "first_seen": now,
+        "updated_at": now,
+    }
+
+
+def _record_verdict(
+    entry: dict,
+    verdict: str,
+    commit: Optional[str] = None,
+    page_hashes: Optional[dict] = None,
+) -> None:
+    """确定性判定入账：verdicts 追加判定/日期/提交，状态迁移，升级轮次清零。
+    no-conflict 同时记录两页全文哈希（下次同指纹初筛的内容豁免键）。"""
+    entry["verdicts"].append({"date": _today(), "verdict": verdict, "commit": commit})
+    if page_hashes is not None:
+        entry["page_hashes"] = page_hashes
+    entry["status"] = "exempt" if verdict == "no-conflict" else "fixed"
+    entry["review_rounds"] = 0
+    entry["updated_at"] = _today()
+
+
 # ── 每日检查点（fenixd 主循环挂载入口） ──────────────────────────────────
 
 
@@ -128,7 +219,7 @@ def knowledge_daily_check(
     if audit_enabled and state.get("last_audit_date") != today:
         try:
             lane = audit_lane or run_audit
-            res = lane(project_root, logger=log) or {}
+            res = lane(project_root, logger=log, config=config) or {}
         except Exception as e:  # noqa: BLE001 - 周期车道异常不中断主循环
             log.error("knowledge", f"audit 车道执行失败（下周期重试）：{e}")
             res = {"ok": False, "error": str(e)}
@@ -140,6 +231,10 @@ def knowledge_daily_check(
             "knowledge-core-unavailable",
             "no-knowledge-dir",
         ):
+            # 回写前重读盘上状态合并（本 SPEC 3.2）：车道内部（run_audit）可能
+            # 已写 last_scale 等键，本地 state 是检查点开头的陈旧副本，直接回写
+            # 会把它覆盖丢失（规模趋势「上次 X 行」基线随之失效）。
+            state = _read_state(project_root)
             state["last_audit_date"] = today
             _write_state(project_root, state)
 
@@ -154,6 +249,7 @@ def knowledge_daily_check(
         # graph 的 fail-open 跳过（CLI 缺失/执行失败）同样落日戳：每周期重试
         # 会把单行日志放大成日志噪音（违背 fail-open 初衷），当日不再重试。
         if "error" not in res:
+            state = _read_state(project_root)  # 同上：先重读合并再落日戳
             state["last_graph_date"] = today
             _write_state(project_root, state)
 
@@ -297,6 +393,15 @@ def _adr_status_slot(ln: str) -> Optional[tuple[int, int, str]]:
     return (m.start(), m.end(), m.group(1))
 
 
+def _adr_file_exists(adr_dir: Path, name: str) -> bool:
+    """ADR-\\d{3} 引用在盘上的存在性：精确名或 slug 形态前缀文件
+    （如 ADR-015-add-knowledge-atlas.md）任一命中即算在盘。只按精确名比对会
+    把 slug 命名的真实文件判成断链（ADR-015/019/034 三条永久误报实况）。"""
+    if (adr_dir / f"{name}.md").is_file():
+        return True
+    return any(adr_dir.glob(f"{name}-*.md"))
+
+
 def _scan_adrs(project_root: Path) -> dict:
     """ADR 病灶：supersede 链断裂（报告）、index 状态与条目头不一致（机械对齐）、
     ADR 目录未提交改动（报告，不按条目状态过滤）。"""
@@ -310,7 +415,7 @@ def _scan_adrs(project_root: Path) -> dict:
             mm = re.match(r"ADR-(\d{3})", path.stem)
             name = f"ADR-{mm.group(1)}" if mm else path.stem
             m = re.search(r"^Superseded by:\s*(ADR-\d{3})", text, re.MULTILINE | re.IGNORECASE)
-            if m and not (adr_dir / f"{m.group(1)}.md").is_file():
+            if m and not _adr_file_exists(adr_dir, m.group(1)):
                 broken_chain.append(f"{path.stem} 的 Superseded by 指向不存在的 {m.group(1)}")
             status = _adr_entry_status(text)
             if status:
@@ -585,10 +690,21 @@ def _discard_paths(project_root: Path, rels: list[str]) -> None:
 # ── 车道主入口 ───────────────────────────────────────────────────────────
 
 
-def run_audit(project_root, logger=None, spawn: Optional[Callable] = None) -> dict:
-    """audit 车道入口：扫描五类病灶 → 机械直修提交 / 语义转写 / 报告落盘。"""
+def run_audit(
+    project_root,
+    logger=None,
+    spawn: Optional[Callable] = None,
+    config: Optional[dict] = None,
+) -> dict:
+    """audit 车道入口：扫描五类病灶 → 机械直修提交 / 语义转写 / 报告落盘。
+
+    config 为 ``knowledge.*`` 配置（缺省 None 按 {} 回落缺省值，由
+    knowledge_daily_check 挂载点透传）；语义项接入疑点台账
+    （.fenix/knowledge_audit_findings.json）：no-conflict 按内容豁免跳派、
+    同批快照滞后去重、连续两轮无确定性判定升级待人工。"""
     project_root = Path(project_root)
     log = logger or _NullLogger()
+    cfg = ConfigLoader.get_knowledge_lane_config(config or {})
     core = load_knowledge_core()
     if core is None:
         log.warning(
@@ -607,8 +723,22 @@ def run_audit(project_root, logger=None, spawn: Optional[Callable] = None) -> di
     scan["adr"] = _scan_adrs(project_root)
     semantic_all = _scan_semantic(scan["pages"])
 
-    counts = {"passed": 0, "fixed": 0, "rewritten": 0, "pending_manual": 0}
-    details: dict[str, list] = {"fixed": [], "rewritten": [], "manual": [], "no_conflict": []}
+    counts = {
+        "passed": 0,
+        "fixed": 0,
+        "rewritten": 0,
+        "exempt": 0,
+        "superseded": 0,
+        "pending_manual": 0,
+    }
+    details: dict[str, list] = {
+        "fixed": [],
+        "rewritten": [],
+        "manual": [],
+        "no_conflict": [],
+        "exempt": [],
+        "superseded": [],
+    }
 
     # 语义初筛截断显式留痕：溢出候选不静默丢弃，超出单轮转写上限的部分转入
     # 待人工明细（报告呈现为「共 N 条、本轮仅转写前 10 条、其余人工核查」），
@@ -620,6 +750,10 @@ def run_audit(project_root, logger=None, spawn: Optional[Callable] = None) -> di
             f"语义初筛候选共 {len(semantic_all)} 条，本轮仅转写前 {MAX_SEMANTIC_RUNS} 条，"
             f"其余 {len(semantic_all) - MAX_SEMANTIC_RUNS} 条请人工核查"
         )
+
+    # 本批已纠偏页集合（2.3）：机械段提交涉及的页 + 语义段转写提交涉及的页。
+    # 疑点规则行来自扫描开始快照，涉及页被纠偏后规则行已不代表盘上现状。
+    remediated_pages: set[str] = set()
 
     # ── 机械自修（直修直提交） ──
     # 写段取蒸馏锁：与 DistillManager / run_backfill 共用 .fenix/knowledge-distill.lock
@@ -660,6 +794,9 @@ def run_audit(project_root, logger=None, spawn: Optional[Callable] = None) -> di
                     )
                 except Exception as e:  # noqa: BLE001 - 提交失败 fail-open（内容已在盘上）
                     log.warning("knowledge", f"audit 机械修复提交失败（fail-open）：{e}")
+                # 机械修复已落盘（提交失败 fail-open 时内容同样在盘上）
+                remediated_pages |= {item["rel"] for item in scan["dangling"]}
+                remediated_pages |= set(scan["format"])
                 counts["fixed"] = len(fixed)
                 details["fixed"] = fixed
             else:
@@ -669,8 +806,71 @@ def run_audit(project_root, logger=None, spawn: Optional[Callable] = None) -> di
                     f"机械修复引入新违规，已回滚：{new_violations[:3]}"
                 )
 
-    # ── 语义转写（矛盾/重复 → 定向蒸馏 run） ──
+    # ── 语义转写（矛盾/重复 → 定向蒸馏 run；疑点台账接入豁免/去重/升级） ──
+    ledger = _load_findings_ledger(project_root)
     for idx, finding in enumerate(semantic, 1):
+        fp = _finding_fingerprint(finding)
+        entry = ledger.get(fp)
+        if entry is None:
+            entry = _new_finding_entry(finding)
+            ledger[fp] = entry
+            _save_findings_ledger(project_root, ledger)
+        pages = [finding["a"]["page"], finding["b"]["page"]]
+
+        # 同批快照滞后去重（2.3）：疑点清单在扫描开始一次性快照，涉及页在本批
+        # 已被纠偏（机械段提交或此前转写提交，含 fail-open 落盘）时，快照规则
+        # 行已不代表盘上现状，复核是白跑——标记 superseded-in-batch 跳过。
+        if pages[0] in remediated_pages or pages[1] in remediated_pages:
+            entry["status"] = "superseded-in-batch"
+            entry["updated_at"] = _today()
+            _save_findings_ledger(project_root, ledger)
+            counts["superseded"] += 1
+            details["superseded"].append(
+                f"{finding['kind']}（{pages[0]} × {pages[1]}）：涉及页本批已纠偏，跳过"
+            )
+            continue
+
+        # 待人工挂起（2.4）：escalated 只停自动复核，人工删除台账条目即消费
+        # 清除、恢复自动复核（todo.md 登记提供人工可见面）。
+        if entry.get("status") == "escalated":
+            counts["pending_manual"] += 1
+            details["manual"].append(
+                f"{finding['kind']}（{pages[0]} × {pages[1]}）：升级待人工（escalated），"
+                f"已停止自动复核"
+            )
+            continue
+
+        # no-conflict 按内容豁免（2.1）：两页全文 sha256 均未变才跳派；任一页
+        # 变化即解冻回 suspected 照常派发，升级轮次同步清零（豁免解冻重派不计
+        # 入升级轮次——每次内容变更重置，翻转情形保有再审价值）。
+        if cfg["no_conflict_exempt"] and entry.get("status") == "exempt":
+            cur_hashes = {
+                rel: _page_hash(project_root, rel) for rel in dict.fromkeys(pages)
+            }
+            if all(
+                entry.get("page_hashes", {}).get(rel) == h for rel, h in cur_hashes.items()
+            ):
+                entry["exempted_at"] = _today()
+                entry["updated_at"] = entry["exempted_at"]
+                _save_findings_ledger(project_root, ledger)
+                counts["exempt"] += 1
+                details["exempt"].append(
+                    f"{finding['kind']}（{pages[0]} × {pages[1]}）：两页内容未变，豁免复核"
+                )
+                continue
+            entry["status"] = "suspected"
+            entry["review_rounds"] = 0
+            entry["updated_at"] = _today()
+            _save_findings_ledger(project_root, ledger)
+        elif entry.get("status") in ("fixed", "superseded-in-batch"):
+            # 存量已纠偏/已跳过条目再次被扫出：真相源仍有该疑点，重开复核
+            entry["status"] = "suspected"
+            entry["updated_at"] = _today()
+            _save_findings_ledger(project_root, ledger)
+
+        # 进入复核：升级轮次 +1（连续 N 轮无确定性判定即升级，N 见配置）
+        entry["review_rounds"] = int(entry.get("review_rounds") or 0) + 1
+
         # 写段取蒸馏锁（同机械段）：每次转写迭代的 spawn→validate→提交/回滚
         # 整体与 DistillManager / run_backfill 串行（与 run_backfill 批次同款
         # 粒度），转写产出在提交前不再可能被并发蒸馏 run 的 discard 清掉。
@@ -701,14 +901,36 @@ def run_audit(project_root, logger=None, spawn: Optional[Callable] = None) -> di
             except Exception as e:  # noqa: BLE001 - 单个转写失败不阻塞其余
                 ok, violations = False, [f"转写 run 失败：{e}"]
             dirty_now = _knowledge_dirty_files(project_root)
+            # 本 run 新触达的文件（2.3 快照滞后去重的「已纠偏」判定基准）：carryover
+            # 是本轮开始前已存在的未提交改动，不是本 run 的产出，既不能当作该疑点的
+            # 「重写」证据，也不能据此把涉及页标记为本批已纠偏。
+            touched = dirty_now - carryover
             if not ok:
                 # 只回滚本轮触达的文件，不连带 carryover；本轮若改到 carryover
                 # 在场文件则无法拆分——清掉本轮文件后仍违规时整体回滚（carryover
                 # 里的机械产出是确定性的，下一轮体检会重建）。
-                _discard_paths(project_root, sorted(dirty_now - carryover))
+                _discard_paths(project_root, sorted(touched))
                 if dirty_now & carryover and [str(v) for v in (validate(project_root) or [])]:
                     _discard_paths(project_root, sorted(dirty_now & carryover))
                 counts["pending_manual"] += 1
+                if entry["review_rounds"] >= cfg["escalate_after_rounds"]:
+                    # 连续两轮进入复核均未产出确定性判定（仍 suspected，如转写
+                    # 失败回滚）→ 升级待人工：登记 todo.md 并停止自动复核。
+                    entry["status"] = "escalated"
+                    entry["updated_at"] = _today()
+                    _save_findings_ledger(project_root, ledger)
+                    details["manual"].append(
+                        f"{finding['kind']}（{pages[0]} × {pages[1]}）：连续 "
+                        f"{entry['review_rounds']} 轮复核无确定性判定，升级待人工（escalated）"
+                    )
+                    append_todo_line(
+                        project_root,
+                        f"audit 疑点升级待人工：{finding['kind']}"
+                        f"（{pages[0]} × {pages[1]}）连续 {entry['review_rounds']} 轮复核"
+                        f"无确定性判定，请人工仲裁；消费后删除 "
+                        f".fenix/knowledge_audit_findings.json 对应条目即恢复自动复核",
+                    )
+                    continue
                 details["manual"].append(
                     f"{finding['kind']} 转写失败（{finding['a']['page']} × {finding['b']['page']}）："
                     f"{violations[:2]}，已登记 todo.md"
@@ -718,27 +940,41 @@ def run_audit(project_root, logger=None, spawn: Optional[Callable] = None) -> di
                     f"audit 语义项转写失败：{finding['kind']}"
                     f"（{finding['a']['page']} × {finding['b']['page']}），请人工核查",
                 )
+                _save_findings_ledger(project_root, ledger)  # 升级轮次入账
                 continue
-            if not dirty_now:
-                # 「判无矛盾」零改动收场：dirty 面向整个真相源目录，转写 run 把
-                # 修正落到涉事两页之外的第三页同样会被下方提交收编，不会滞留
-                # 工作区被误判为零改动。
+            if not touched:
+                # 「判无矛盾」零改动收场：以本 run 新触达为准——转写 run 把修正落
+                # 到涉事两页之外的第三页同样计入 touched 并被下方提交收编，不会滞留
+                # 工作区被误判为零改动；carryover 在场改动不是本 run 的判定产出，
+                # 不收编进本笔提交（留待其余疑点的 run 或收尾 leftover 曝光）。
                 counts["passed"] += 1
                 details["no_conflict"].append(
                     f"{finding['kind']}（{finding['a']['page']} × {finding['b']['page']}）：判无矛盾"
                 )
+                # 判定入账（2.2）：记两页全文哈希作下次初筛的内容豁免键
+                _record_verdict(
+                    entry,
+                    "no-conflict",
+                    page_hashes={
+                        rel: _page_hash(project_root, rel) for rel in dict.fromkeys(pages)
+                    },
+                )
+                _save_findings_ledger(project_root, ledger)
                 continue
             summary = f"{finding['kind']} {finding['a']['page']} × {finding['b']['page']}"
+            commit_msg = f"[fenix] knowledge: audit rewrite {summary}"
             try:
-                commit(
-                    project_root,
-                    [KNOWLEDGE_DIR],
-                    f"[fenix] knowledge: audit rewrite {summary}",
-                )
+                commit(project_root, [KNOWLEDGE_DIR], commit_msg)
             except Exception as e:  # noqa: BLE001
                 log.warning("knowledge", f"audit 转写提交失败（fail-open）：{e}")
             counts["rewritten"] += 1
             details["rewritten"].append(summary)
+            # 判定入账（2.2）：重写提交记 fixed；本 run 触达的页快照规则行已滞后，
+            # 后续涉及同页的疑点走快照滞后去重（按实际触达而非疑点对全页标记——
+            # 未被改动的另一页快照仍有效，其疑点照常复核）
+            _record_verdict(entry, "fixed", commit=commit_msg)
+            _save_findings_ledger(project_root, ledger)
+            remediated_pages |= touched
 
     leftover = _knowledge_dirty_files(project_root)
     if leftover:
@@ -806,7 +1042,8 @@ def run_audit(project_root, logger=None, spawn: Optional[Callable] = None) -> di
     log.info(
         "knowledge",
         f"audit 体检完成：修 {counts['fixed']} / 转写 {counts['rewritten']} / "
-        f"待人工 {counts['pending_manual']} / 过 {counts['passed']}"
+        f"豁免 {counts.get('exempt', 0)} / 待人工 {counts['pending_manual']} / "
+        f"过 {counts['passed']}"
         + ("（需精简）" if slim else ""),
     )
     return {
@@ -834,7 +1071,8 @@ def _render_report(
         f"- 体检时间：{time.strftime('%Y-%m-%d %H:%M:%S')}",
         "- 结论：**需精简**" if slim else "- 结论：通过",
         f"- 计数：过 {counts['passed']} / 修 {counts['fixed']} / "
-        f"转写 {counts['rewritten']} / 待人工 {counts['pending_manual']}",
+        f"转写 {counts['rewritten']} / 豁免 {counts.get('exempt', 0)} / "
+        f"待人工 {counts['pending_manual']}",
         f"- 规模：{scale.get('domains', 0)} 域 / {scale.get('pages', 0)} 能力页 / "
         f"{scale.get('adrs', 0)} ADR / {scale.get('lines', 0)} 行"
         + (
@@ -854,6 +1092,8 @@ def _render_report(
         ("机械自修明细", "fixed"),
         ("转写明细", "rewritten"),
         ("判无矛盾（初筛误报）", "no_conflict"),
+        ("内容未变豁免（台账命中）", "exempt"),
+        ("本批跳过（快照滞后重复）", "superseded"),
         ("待人工明细", "manual"),
     ):
         if details.get(key):

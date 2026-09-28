@@ -373,6 +373,15 @@ knowledge:
   # 每日 Graphify 关系图生成（graphify CLI 未安装时自动降级跳过，
   # 安装步骤见 docs/help/knowledge-atlas.md）。
   graph_enabled: true
+  # ---- audit 疑点台账（add-knowledge-audit-finding-ledger）----
+  # no-conflict 判定按内容豁免：两页全文 sha256 均未变时次日初筛跳过派发
+  # 复核（台账 .fenix/knowledge_audit_findings.json）；任一页内容变更自动
+  # 解冻回 suspected 重新派发。false = 每次初筛都照常派发复核。
+  no_conflict_exempt: true
+  # 同一疑点连续 N 轮复核均无确定性判定（仍 suspected，如转写失败回滚）即
+  # 升级待人工：登记 .fenix/todo.md 并停止自动复核，人工消费后删除台账对应
+  # 条目即恢复。豁免解冻重派不计入升级轮次（每次内容变更重置）。
+  escalate_after_rounds: 2
 
 # ---- Dashboard (optional) ----
 # Web Dashboard 默认端口（可选）。优先级: --port > ~/.config/fenixd/dashboard.yaml 的 port > 本字段 > 8787
