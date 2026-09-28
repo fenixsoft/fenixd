@@ -1148,6 +1148,11 @@ def run_code_review(
             mpath.unlink(missing_ok=True)
 
     claude_error = ""  # CLI 原始错误文本（429 终态归因以它为准，见 catch 处）
+    # evo-add-code-review-ratelimit-resume 1.2：result 事件富归因（api_error_status
+    # /result 文本，runner 非零退出分支挂异常）随原始错误留存——except 块结束
+    # 异常绑定即删，后续意图登记只能读这里存的值。
+    claude_api_error_status = None
+    claude_result_text = ""
     try:
         output, turns, _session_id, usage_info = runner._run_claude(
             prompt,
@@ -1174,6 +1179,10 @@ def run_code_review(
         # 限流分类 MUST 以 CLI 原始错误为准，add-code-review-concurrency-and-
         # 429-resilience D4）
         claude_error = str(e)
+        # evo-add-code-review-ratelimit-resume 1.2：result 事件富归因一并留存
+        # （文本分类未命中时意图登记以此回退判 429，对齐 exc.api_timeout 先例）。
+        claude_api_error_status = getattr(e, "api_error_status", None)
+        claude_result_text = getattr(e, "result_text", "")
 
     # token 归账到独立类目（不写 STATE，与自省同一约束）。经门面调用
     # （对齐 run_administrator/run_self_review 的 runner.<method> 形态）：
@@ -1239,7 +1248,58 @@ def run_code_review(
                 # 会把台账**全部 open 置 resolved**（正是注释声明 MUST 避免的空集核销
                 # 白洗）。改为在框架侧按**同一指纹口径**补算 observed，并以「observed
                 # 非空」为最终门：既修复常态白洗，也保住「一条条目都没审出」时跳过核销。
-                if findings:
+                #
+                # ── 覆盖完整性守卫（evo-add-code-review-ratelimit-resume 3.3）──
+                # 剃余重派 run（redispatch_of 非空）以**剩余** manifest 跑，若
+                # 原样按 manual_full 收尾且 findings 非空，未覆盖文件的存量条目
+                # 会被误置 resolved（部分覆盖白洗——与下方 :1288 抢救红线同族
+                # 事故）。解锁门：「本轮累计覆盖（原 run 及其重派链产物 file
+                # 字段并集）⊇ 完整原 manifest」才核销，否则维持抢救红线。
+                # 守卫唯一实现点在本分支（design 核销门挂点二选一：本分支按
+                # 覆盖判定；消费侧 admin_monitor 不重复核销解锁）。原 manifest
+                # 缺失/损坏或守卫异常一律按未覆盖处理（宁锁勿白洗）。
+                writeoff_locked = False
+                locked_detail = ""
+                if redispatch_of:
+                    try:
+                        from core.code_review import (
+                            cumulative_covered_files as _cr_cum_covered,
+                            read_manifest_files as _cr_manifest_files,
+                        )
+
+                        origin_files = set(
+                            _cr_manifest_files(runner.project_root, redispatch_of))
+                        covered = _cr_cum_covered(runner.project_root, redispatch_of)
+                        if not origin_files:
+                            writeoff_locked = True
+                            locked_detail = "原 manifest 缺失/损坏，完整性不可判"
+                        elif not origin_files.issubset(covered):
+                            writeoff_locked = True
+                            locked_detail = (
+                                f"累计覆盖 {len(origin_files & covered)}/"
+                                f"{len(origin_files)} 文件（redispatch_of={redispatch_of}）"
+                                f"，本轮 manifest {len(manifest)} 文件")
+                        else:
+                            _log = getattr(runner, "logger", None)
+                            if _log is not None:
+                                _log.info(
+                                    "code-review",
+                                    f"全仓快照核销解锁（run {run_id}）：累计覆盖完整"
+                                    f"（{len(origin_files)}/{len(origin_files)} 文件，"
+                                    f"redispatch_of={redispatch_of}）",
+                                )
+                    except Exception as e:  # noqa: BLE001 — 判定失败按未覆盖处理
+                        writeoff_locked = True
+                        locked_detail = f"覆盖完整性判定异常（宁锁勿白洗）: {e}"
+                if writeoff_locked:
+                    _log = getattr(runner, "logger", None)
+                    if _log is not None:
+                        _log.warning(
+                            "code-review",
+                            f"全仓快照核销锁定（run {run_id}）：{locked_detail}"
+                            "——维持抢救红线，不核销（等剩余文件重派补齐后解锁）",
+                        )
+                elif findings:
                     try:
                         from core.code_review import fingerprint as _cr_fingerprint
 
@@ -1339,6 +1399,11 @@ def run_code_review(
                     error=claude_error,
                     provider_name=provider_name,
                     spec_name="code-review",
+                    # evo-add-code-review-ratelimit-resume 1.2：富归因透传——
+                    # 文本分类恒 False（stderr 降噪后只剩 Exit code: 1）时，
+                    # 登记侧以 result 事件回退判 429，意图照常登记并标注 run。
+                    api_error_status=claude_api_error_status,
+                    result_text=claude_result_text,
                 )
             except Exception as e:  # noqa: BLE001 — 意图登记失败不改变失败终态
                 _log = getattr(runner, "logger", None)

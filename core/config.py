@@ -1798,11 +1798,24 @@ class ConfigLoader:
             or stall_alert_minutes <= 0
         ):
             stall_alert_minutes = 15
+        # 手动全仓审查叠加防护阈值（evo-add-code-review-ratelimit-resume 4.1）：
+        # 台账 open 条数超过该阈值时手动 full 触发回 409 确认态（对齐
+        # trigger-ack 409 守卫先例），body 携带 confirm=true 二次确认后才派发。
+        # 缺省 30；显式 0 = 关闭守卫（直接派发，回退历史行为）；负数/bool/
+        # 非整数回退缺省。
+        manual_full_open_warn = cr.get("manual_full_open_warn", 30)
+        if (
+            not isinstance(manual_full_open_warn, int)
+            or isinstance(manual_full_open_warn, bool)
+            or manual_full_open_warn < 0
+        ):
+            manual_full_open_warn = 30
         return {
             "enabled": enabled,
             "max_files": int(max_files),
             "scope": scope,
             "stall_alert_minutes": int(stall_alert_minutes),
+            "manual_full_open_warn": int(manual_full_open_warn),
         }
 
     @classmethod

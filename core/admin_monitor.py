@@ -1341,6 +1341,38 @@ class AdminMonitor:
         重派配额（防风暴优先，与 _schedule_ratelimit_redispatch 登记处口径
         一致）。
         """
+        # ── 分片续跑：重派前把 manifest 剃成剩余文件（evo-add-code-review-
+        # ratelimit-resume 3.2）── 事故基线 code-review-1790574672：270 文件级
+        # 全仓审查死于 429 时原 run 已落 4 片，既有全量重跑重烧约 14 美元。剃余
+        # 口径：累计覆盖（原 run 及其重派链产物 file 字段并集）对原 manifest 求
+        # 补（code_review.remaining_manifest），redispatch_of 链路由 run_code_
+        # review 落盘时保留。剩余为空（原 run 已全覆盖，如 429 死于收尾段）→
+        # 无需重派，记日志返回；重派配额不退（防风暴优先，与登记处口径一致——
+        # 空跑重派同样占用冷却与单飞）。剃余失败回退原 manifest 全量重派（既有
+        # 行为，不因续跑优化引入新的失败面）。
+        try:
+            from core.code_review import (
+                cumulative_covered_files as _cum_covered,
+                remaining_manifest as _remaining_files,
+            )
+
+            covered = _cum_covered(self.project_root, original_run_id)
+            shaved_manifest = _remaining_files(list(manifest), covered)
+        except Exception as e:  # noqa: BLE001 — 剃余失败回退全量重派
+            self.logger.warning(
+                "admin_monitor",
+                f"code-review 429 重派剃余失败，回退原 manifest 全量重派: {e}",
+            )
+            shaved_manifest = list(manifest)
+        if not shaved_manifest:
+            self.logger.info(
+                "admin_monitor",
+                f"code-review 429 重派跳过：原 run {original_run_id} 累计覆盖已"
+                f"完整（{len(manifest)} 文件全部落账），无需重派（核销解锁由"
+                f" maintenance_runs 收尾分支按覆盖完整性判定）",
+            )
+            return
+
         # Timer 已触发：先摘句柄（允许后续新意图再排程——上限计数仍守卫）
         with self._code_review_lock:
             self._code_review_redispatch_timer = None
@@ -1364,8 +1396,10 @@ class AdminMonitor:
 
         def _worker():
             try:
+                # 剃余后的 manifest 续跑（evo-add-code-review-ratelimit-resume
+                # 3.2）：只跑原 run 未落账的剩余文件，redispatch_of 链路保留。
                 result = self.agent_runner.run_code_review(
-                    manifest,
+                    shaved_manifest,
                     review_kind=review_kind,
                     window_start=window_start,
                     scope=scope,
@@ -1376,6 +1410,7 @@ class AdminMonitor:
                     f"code-review 429 重派完成：redispatch_of={original_run_id}, "
                     f"run_id={result.run_id}, inserted={result.inserted}, "
                     f"updated={result.updated}, shards={result.shards}"
+                    f"（剃余续跑 {len(shaved_manifest)}/{len(manifest)} 文件）"
                     + (f", error={result.error}" if result.error else ""),
                 )
             except Exception as e:

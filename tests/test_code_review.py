@@ -723,6 +723,9 @@ class TestGetCodeReviewConfig(unittest.TestCase):
                 "max_files": 500,
                 "scope": "window",
                 "stall_alert_minutes": 15,
+                # evo-add-code-review-ratelimit-resume 4.1：手动 full 叠加防护
+                # 阈值缺省 30（0 = 关闭守卫）
+                "manual_full_open_warn": 30,
             },
         )
 
@@ -757,6 +760,7 @@ class TestGetCodeReviewConfig(unittest.TestCase):
                 "max_files": 100,
                 "scope": "window",
                 "stall_alert_minutes": 30,
+                "manual_full_open_warn": 30,
             },
         )
 
@@ -899,6 +903,8 @@ class TestDashboardConfigRoundtrip(unittest.TestCase):
                 "max_files": 200,
                 "scope": "window",
                 "stall_alert_minutes": 30,
+                # evo-add-code-review-ratelimit-resume 4.1：新键缺省回显
+                "manual_full_open_warn": 30,
             },
         )
         # 与 self_review 同形态：code_review 不在受管 admin 键集内
@@ -2444,3 +2450,247 @@ def _iso_now(offset=None):
 
     delta = offset if offset is not None else timedelta(0)
     return (datetime.now(timezone.utc) + delta).isoformat()
+
+
+class _RecDaemonLogger:
+    """可断言的 daemon logger 桩（fenixd 两参调用形态 info("fenixd", msg)）。"""
+
+    def __init__(self):
+        self.records = []
+
+    def _rec(self, lvl, *a):
+        self.records.append((lvl, a[1] if len(a) > 1 else str(a[0] if a else "")))
+
+    def info(self, *a, **k):
+        self._rec("info", *a)
+
+    def warning(self, *a, **k):
+        self._rec("warning", *a)
+
+    def error(self, *a, **k):
+        self._rec("error", *a)
+
+    def has(self, text):
+        return any(text in m for _lvl, m in self.records)
+
+
+class _ScheduleRecorder:
+    """手动 worker 上交意图的 admin_monitor 桩（记录 _schedule_ratelimit_redispatch）。"""
+
+    def __init__(self, boom=False):
+        self.calls = []
+        self._boom = boom
+        self._code_review_in_flight = False
+
+    def _schedule_ratelimit_redispatch(self, **kwargs):
+        if self._boom:
+            raise RuntimeError("timer arm failed")
+        self.calls.append(kwargs)
+
+
+class TestManualFullOpenBacklogGuard(unittest.TestCase):
+    """手动 full 触发防叠加（evo-add-code-review-ratelimit-resume 4.1，task 5.2）。
+
+    上一轮全仓审查未消化完（台账 open 超阈值）时手动 full 触发回 409 确认态
+    （code=code_review_open_backlog，对齐 trigger-ack 409 守卫先例），body
+    携带 confirm=true 的二次请求才放行；阈值入配置（缺省 30，显式 0 = 关闭）。
+    """
+
+    def setUp(self):
+        self.proot = Path(_mkdtemp("cr-backlog-"))
+        (self.proot / ".fenix").mkdir(parents=True, exist_ok=True)
+
+    def tearDown(self):
+        import shutil
+
+        shutil.rmtree(str(self.proot), ignore_errors=True)
+
+    def _seed_open(self, n):
+        from core.code_review import upsert_findings
+
+        upsert_findings(self.proot, [
+            {"file": f"core/f{i}.py", "category": "maintainability",
+             "title": f"存量条目 {i}。", "severity": "minor",
+             "description": "d", "suggestion": "s", "evidence": "e"}
+            for i in range(n)
+        ], review_id="seed", review_kind="manual_full")
+
+    def _post(self, body, cfg=None):
+        from unittest.mock import patch
+
+        from core.dashboard import data as dashboard_data
+        from core.dashboard.routes.code_review_routes import (
+            H11CodeReviewRoutesMixin,
+        )
+
+        route = _FakeCodeReviewRoute(self.proot, body=body)
+        with patch.object(dashboard_data, "read_effective_config",
+                          lambda p: cfg or {}), \
+                patch("core.fenix_session.hosting_state", lambda p: "managed"):
+            H11CodeReviewRoutesMixin._api_code_review_run(route, {})
+        return route.response
+
+    def test_config_threshold_default_invalid_and_zero(self):
+        from core.config import ConfigLoader
+
+        self.assertEqual(
+            ConfigLoader.get_code_review_config({})["manual_full_open_warn"], 30)
+        self.assertEqual(
+            ConfigLoader.get_code_review_config(
+                {"admin": {"code_review": {"manual_full_open_warn": 0}}}
+            )["manual_full_open_warn"], 0)
+        for bad in (-1, True, "40", 1.5):
+            self.assertEqual(
+                ConfigLoader.get_code_review_config(
+                    {"admin": {"code_review": {"manual_full_open_warn": bad}}}
+                )["manual_full_open_warn"], 30, bad)
+
+    def test_over_threshold_full_returns_409_confirm_state(self):
+        """open 超缺省阈值 30 → 409 确认态，未确认不派发（信号不落盘）。"""
+        self._seed_open(31)
+        status, body = self._post({"scope": "full"})
+        self.assertEqual(status, 409)
+        self.assertEqual(body.get("code"), "code_review_open_backlog")
+        self.assertIn("confirm=true", body.get("error", ""))
+        self.assertFalse(
+            (self.proot / ".fenix" / "code_review_request.json").exists())
+
+    def test_confirm_true_proceeds(self):
+        """二次确认（confirm=true）→ 放行派发（信号文件落盘）。"""
+        self._seed_open(31)
+        status, body = self._post({"scope": "full", "confirm": True})
+        self.assertEqual(status, 200)
+        self.assertTrue(body.get("ok"))
+        self.assertTrue(
+            (self.proot / ".fenix" / "code_review_request.json").exists())
+
+    def test_window_scope_not_guarded(self):
+        """守卫只作用于 full 触发（window 审查不叠加全仓核销风险）。"""
+        self._seed_open(31)
+        status, _body = self._post({"scope": "window"})
+        self.assertEqual(status, 200)
+
+    def test_under_threshold_passes(self):
+        self._seed_open(2)
+        status, _body = self._post({"scope": "full"})
+        self.assertEqual(status, 200)
+
+    def test_zero_threshold_disables_guard(self):
+        """显式 0 = 关闭守卫（回退历史行为）。"""
+        self._seed_open(31)
+        status, _body = self._post(
+            {"scope": "full"},
+            cfg={"admin": {"code_review": {"manual_full_open_warn": 0}}})
+        self.assertEqual(status, 200)
+
+
+class TestManualWorkerRatelimitConsume(unittest.TestCase):
+    """手动 worker 消费 429 重派意图（evo-add-code-review-ratelimit-resume
+    2.1/2.2，task 5.2）。
+
+    手动车道与周期车道同源消费：上交同一 admin_monitor 实例的
+    _schedule_ratelimit_redispatch（300 秒冷却延迟重投递、上限 1、单飞让位
+    均在其内部实现，双车道共享计数防叠加）；admin_monitor 未装配（fallback）
+    时记日志放弃并保持告警可见，不静默丢弃。
+    """
+
+    _REQ_AT = "2026-09-24T08:00:00+00:00"
+
+    def setUp(self):
+        self.proot = Path(_mkdtemp("cr-manual-rl-"))
+        (self.proot / ".fenix").mkdir(parents=True, exist_ok=True)
+
+    def tearDown(self):
+        import shutil
+
+        shutil.rmtree(str(self.proot), ignore_errors=True)
+
+    @staticmethod
+    def _mk_daemon(proot, monitor):
+        from unittest.mock import MagicMock
+
+        import fenixd
+
+        daemon = fenixd.FenixDaemon.__new__(fenixd.FenixDaemon)
+        daemon.running = True
+        daemon.agent_runner = MagicMock()
+        daemon.admin_monitor = monitor
+        daemon._admin_executor = _RecExecutor()
+        daemon.config = {}
+        daemon.logger = _RecDaemonLogger()
+        return daemon
+
+    def _signal(self):
+        (self.proot / ".fenix" / "code_review_request.json").write_text(
+            json.dumps({"scope": "full", "source": "dashboard",
+                        "requested_at": self._REQ_AT}), encoding="utf-8")
+
+    def _consume_and_drive(self, daemon, run_result):
+        """消费信号并驱动手动 worker（均在 PROJECT_ROOT patch 上下文内）。"""
+        from unittest.mock import patch
+
+        import fenixd
+
+        daemon.agent_runner.run_code_review.return_value = run_result
+        with patch.object(fenixd, "PROJECT_ROOT", self.proot), \
+                patch("core.fenix_session.hosting_state", lambda p: "managed"), \
+                patch("core.code_review.collect_manifest",
+                      lambda *a, **k: ["core/a.py", "core/b.py"]):
+            daemon._check_code_review_requests()
+            executor = daemon._admin_executor
+            if executor.jobs:
+                executor.jobs[0][0]()
+
+    @staticmethod
+    def _intent():
+        import time
+
+        return {"reason": "429 ratelimit", "provider": "inferaiapi.com",
+                "run_id": "run-m", "max_redispatches": 1,
+                "cooldown_until_epoch": time.time() + 300}
+
+    @staticmethod
+    def _run_result(intent):
+        from unittest.mock import MagicMock
+
+        return MagicMock(run_id="run-m", inserted=0, updated=0, resolved=0,
+                         shards=2, error="429 ...",
+                         ratelimit_redispatch=intent)
+
+    def test_worker_hands_intent_to_admin_monitor(self):
+        """手动审查死于 429 → 意图上交同一 admin_monitor 排程（300 秒冷却与
+        上限 1 由其内部既有实现承接）。"""
+        monitor = _ScheduleRecorder()
+        daemon = self._mk_daemon(self.proot, monitor)
+        self._signal()
+        self._consume_and_drive(daemon, self._run_result(self._intent()))
+        self.assertEqual(len(monitor.calls), 1, "窗口内不重复排程（上限 1）")
+        call = monitor.calls[0]
+        self.assertEqual(call["manifest"], ["core/a.py", "core/b.py"])
+        self.assertEqual(call["review_kind"], "manual_full")
+        self.assertIsNone(call["window_start"])
+        self.assertEqual(call["scope"], "full")
+        self.assertEqual(call["intent"]["run_id"], "run-m")
+
+    def test_worker_without_intent_does_not_schedule(self):
+        monitor = _ScheduleRecorder()
+        daemon = self._mk_daemon(self.proot, monitor)
+        self._signal()
+        self._consume_and_drive(daemon, self._run_result(None))
+        self.assertEqual(monitor.calls, [])
+
+    def test_worker_without_monitor_logs_and_survives(self):
+        """fallback 宿主（admin_monitor 未装配）→ 意图记日志放弃不静默。"""
+        daemon = self._mk_daemon(self.proot, None)
+        self._signal()
+        self._consume_and_drive(daemon, self._run_result(self._intent()))
+        self.assertTrue(daemon.logger.has("重派意图放弃"))
+
+    def test_worker_schedule_error_resets_flag(self):
+        """排程异常不吞 run 终态：日志 error 且单飞旗标复位。"""
+        monitor = _ScheduleRecorder(boom=True)
+        daemon = self._mk_daemon(self.proot, monitor)
+        self._signal()
+        self._consume_and_drive(daemon, self._run_result(self._intent()))
+        self.assertTrue(daemon.logger.has("排程失败"))
+        self.assertFalse(daemon.admin_monitor._code_review_in_flight)

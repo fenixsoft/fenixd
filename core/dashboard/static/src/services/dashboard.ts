@@ -1669,13 +1669,13 @@ export async function getCodeReviewFixProgress(project: string): Promise<CodeRev
 }
 
 /** add-code-review-agent-and-quality-tab：手动触发审查（full=全仓库 / window=本周期）。409 时抛错带后端文案 */
-export function triggerCodeReview(project: string, scope: 'full' | 'window') {
+export function triggerCodeReview(project: string, scope: 'full' | 'window', confirm = false) {
   return request<{ ok: boolean; scope: string; requested_at: string }>(
     `/api/code-review/run?project=${encodeURIComponent(project)}`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ scope }),
+      body: JSON.stringify({ scope, confirm }),
     },
   );
 }

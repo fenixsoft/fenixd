@@ -156,6 +156,108 @@ def read_review_out_rows(project_root, run_id: str, on_error=None) -> List[dict]
     return rows
 
 
+# ── 分片续跑：覆盖/剩余清单计算（evo-add-code-review-ratelimit-resume 3.1）──
+# 事故基线（code-review-1790574672）：218 轮全仓审查死于账户级 429，自述 16
+# 分片仅落 4 片；既有重派消费复用原 manifest 全量重跑（270 文件级，重烧约 14
+# 美元），而分片行 file 字段与 manifest 清单足以算出剩余文件。本组纯函数只判
+# 不派：剃余决策在 admin_monitor._consume_ratelimit_redispatch（消费侧回调），
+# 核销解锁判定在 maintenance_runs.run_code_review 收尾分支。
+
+
+def read_manifest_files(project_root, run_id: str) -> List[str]:
+    """读取某次 review run 的 manifest 文件清单（派发时落盘，total 权威来源）。
+
+    返回 ``files`` 字符串列表；manifest 缺失/损坏/字段非列表回退 ``[]``——
+    调用方对空清单按「完整性不可判」处理（核销守卫维持抢救红线）。
+    """
+    data = _read_json_file(manifest_path(project_root, run_id))
+    files = data.get("files")
+    if not isinstance(files, list):
+        return []
+    return [str(f) for f in files if str(f)]
+
+
+def covered_files(project_root, run_id: str) -> set:
+    """某次 review run 已落账产物覆盖的文件集合（聚合口径：分片 + 主产物）。
+
+    覆盖判定以聚合读侧行的 ``file`` 字段为准（agent 逐文件追加一行——
+    含零发现文件，提示词已约束），与 read_progress 的 done 计数同源。
+    产物全缺失（run 早夭零分片）→ 空集。
+    """
+    covered: set = set()
+    for rec in read_review_out_rows(project_root, run_id):
+        file_ = str(rec.get("file") or "")
+        if file_:
+            covered.add(file_)
+    return covered
+
+
+def redispatch_chain_run_ids(project_root, run_id: str) -> List[str]:
+    """某次 review run 及其全部 429 重派后代（按 manifest ``redispatch_of``
+    链路，先根后链，拓扑序）。
+
+    全量扫描 code-review 暂存区的 manifest-*.json 建 ``run_id → redispatch_of``
+    映射后回溯——manifest 派发时落盘且重派链路只增不改，扫描即权威。损坏/
+    缺字段的 manifest 按「非重派」处理（不入链）；环防御：已入链 run 不重复
+    展开（上限 1 的生产链长 ≤2，防御性容忍任意深度）。
+    """
+    of_map: Dict[str, str] = {}
+    d = code_review_dir(project_root)
+    try:
+        candidates = list(d.glob("manifest-*.json"))
+    except OSError:
+        candidates = []
+    for p in candidates:
+        rid = p.name[len("manifest-"):-len(".json")]
+        if not rid:
+            continue
+        parent = _read_json_file(p).get("redispatch_of")
+        if isinstance(parent, str) and parent:
+            of_map[rid] = parent
+    chain = [run_id]
+    # 广度优先展开后代：每个 rid 的直接子代 = of_map 中父指向 rid 的键
+    frontier = [run_id]
+    while frontier:
+        parent = frontier.pop(0)
+        children = sorted(rid for rid, of in of_map.items() if of == parent)
+        for child in children:
+            if child not in chain:  # 环防御
+                chain.append(child)
+                frontier.append(child)
+    return chain
+
+
+def cumulative_covered_files(project_root, run_id: str) -> set:
+    """某次 review run 及其重派链的**累计覆盖**文件集合（task 3.2 核销解锁门
+    与重派剃余共用的同一口径）。
+
+    覆盖 = 链上每个 run（原 run + 全部重派后代）各自落账产物的 file 字段
+    并集。「本轮累计覆盖 = 完整 manifest」之前 MUST NOT 触发全仓快照核销。
+    """
+    covered: set = set()
+    for rid in redispatch_chain_run_ids(project_root, run_id):
+        covered |= covered_files(project_root, rid)
+    return covered
+
+
+def remaining_manifest(manifest, covered: set) -> List[str]:
+    """原清单 − 已覆盖 = 剩余待审清单（task 3.1）。
+
+    保持原清单顺序并按原清单去重（重派 manifest 是原 manifest 的子序列，
+    剃余只删不改序）；covered 中的文件剔除，其余原样保留。
+    """
+    covered_norm = {str(f) for f in covered}
+    out: List[str] = []
+    seen: set = set()
+    for f in manifest:
+        fs = str(f)
+        if fs in covered_norm or fs in seen:
+            continue
+        seen.add(fs)
+        out.append(fs)
+    return out
+
+
 def _atomic_write(path: Path, content: str) -> None:
     """tempfile + fsync + os.replace 原子替换（StateMachine._write_all_locked 同式）。
 

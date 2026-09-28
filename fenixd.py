@@ -3192,6 +3192,41 @@ class FenixDaemon:
                     f"resolved={result.resolved}, shards={result.shards}"
                     + (f", error={result.error}" if result.error else ""),
                 )
+                # ── 429 限流重派意图消费（evo-add-code-review-ratelimit-resume
+                # 2.1/2.2）── 手动车道与周期车道（admin_monitor._worker）同源
+                # 消费：复用同一 admin_monitor 实例的计数与 Timer 句柄
+                # （_schedule_ratelimit_redispatch 内部读写
+                # _code_review_ratelimit_redispatches / _code_review_redispatch_timer），
+                # 手动+周期共享上限 1——防双车道叠加各耗一次重派额。300 秒冷却
+                # 延迟重投递与单飞让位语义均在 admin_monitor 侧既有实现，此处
+                # 只上交意图（与周期 worker 同一调用形态）。
+                ratelimit_intent = getattr(result, "ratelimit_redispatch", None)
+                if ratelimit_intent:
+                    mon = self.admin_monitor
+                    if mon is None:
+                        # fallback 宿主（admin_monitor 未装配）：意图记日志放弃
+                        # 并保持告警可见——run jsonl 已由 runner 侧标注
+                        # type=ratelimit_redispatch（告警面板取证可见），不静默丢弃。
+                        self.logger.warning(
+                            "fenixd",
+                            f"code-review 手动审查死于 429 限流（run {result.run_id}），"
+                            "admin_monitor 未装配（fallback），重派意图放弃"
+                            "——run jsonl 已标注 ratelimit_redispatch 可取证",
+                        )
+                    else:
+                        try:
+                            mon._schedule_ratelimit_redispatch(
+                                manifest=manifest,
+                                review_kind=review_kind,
+                                window_start=window_start,
+                                scope=scope,
+                                intent=ratelimit_intent,
+                            )
+                        except Exception as se:  # noqa: BLE001 — 排程失败不吞 run 终态
+                            self.logger.error(
+                                "fenixd",
+                                f"code-review 手动通道 429 重派排程失败: {se}",
+                            )
             except Exception as e:
                 # 兜底（manifest 失败已在上方分支落盘；run_code_review 执行
                 # 异常不回写结果——design D1：结果文件不承载 run 终态）

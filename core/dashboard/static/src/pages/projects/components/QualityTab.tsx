@@ -545,7 +545,37 @@ export default function QualityTab({ project, active }: QualityTabProps) {
     ackPollAbortedRef.current = false; // 本轮请求开启新哨（上一轮取消状态作废）
     let wantedAt: string | undefined;
     try {
-      const res = await triggerCodeReview(project, scope);
+      let res: { ok: boolean; scope: string; requested_at: string };
+      try {
+        res = await triggerCodeReview(project, scope);
+      } catch (e) {
+        // 二次全仓叠加防护（evo-add-code-review-ratelimit-resume 4.1）：台账
+        // open 超阈值时后端回 409 确认态，弹确认框二次放行（confirm=true
+        // 重发；取消则维持拒绝，不派发）
+        if (
+          e instanceof ApiError &&
+          e.code === 'code_review_open_backlog' &&
+          scope === 'full'
+        ) {
+          const go = await new Promise<boolean>((resolve) => {
+            modal.confirm({
+              title: '上一轮全仓审查可能未消化完',
+              content: e.message,
+              okText: '仍要开始全仓审查',
+              cancelText: '取消',
+              onOk: () => resolve(true),
+              onCancel: () => resolve(false),
+            });
+          });
+          if (!go) {
+            message.info('已取消全仓审查触发');
+            return;
+          }
+          res = await triggerCodeReview(project, scope, true);
+        } else {
+          throw e;
+        }
+      }
       wantedAt = res.requested_at;
       // 经 ref 取最新 loader（code-review item 75c98014e626）：await 往返期间发生
       // 项目切换时，本闭包捕获的旧 loader 直呼会用旧项目刷新覆盖新视图——ref 视图
