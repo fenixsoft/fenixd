@@ -17,8 +17,10 @@ result_gate.py — 结果数据结构与产物门（refactor-agent-runner-module
 
 import json
 import logging
+import os
 import re
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -1311,10 +1313,29 @@ def salvage_result_from_transcript(
         return False
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        # code-review item ceea0880b863：mkstemp + os.replace 原子落盘（同
+        # _copyback_run_result 的 _write_atomic 手法），避免写盘中途异常/被杀
+        # 留下截断 JSON——上方 target.exists() 守卫会把半截文件当成「结果已写」
+        # 永久阻断后续轮捞回。
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=f".{target.name}.", suffix=".tmp", dir=str(target.parent))
+        tmp_path = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(json.dumps(payload, ensure_ascii=False, indent=2))
+            # mkstemp 建文件为 0600，rename 前放宽到 write_text 的 umask 缺省
+            # 0644（同 verify_report 手法；chmod 失败不阻断写入）。
+            try:
+                os.chmod(tmp_path, 0o644)
+            except OSError:
+                pass
+            os.replace(tmp_path, target)
+        finally:
+            if tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
     except OSError as e:
         _logger.warning(
             "结果捞回写盘失败 '%s' (%s): %s", spec_name, agent_type, e)
