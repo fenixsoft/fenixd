@@ -215,6 +215,43 @@ def _write_signal_exclusive(req_path, payload):
     return str(req_path)
 
 
+def _guard_hosting_state(proot, signal_label):
+    """消费方守卫（hosting_state 判据，先例 request_spec_approve_push），
+    run / fix-run 两端点共用（item 13d53dcd5440 去重——此前两端点各复制一份
+    同构守卫，仅「审查信号/修复信号」一词之差，守卫规则变化（新增 hosting 态、
+    改兜底判据、改错误码）需同步改两处，易漂移；去重手法对齐同文件
+    _write_signal_exclusive 先例）。
+
+    - 判定异常按未运行兜底，宁拒勿假放行；降级可观测（item 0d1ba0c6efc0）；
+    - unmanaged（daemon 未受 supervisor 托管）→ 409 明确拒绝——信号无人消费
+      会永久滞留并在 daemon 下次启动时被消费成一次用户并未请求的触发；
+    - 非 managed（stopped）→ 400「daemon 未运行」。
+
+    ``signal_label`` 仅用于 409 文案（「审查信号」/「修复信号」）。返回：
+    放行 → None；拒绝 → (http_status, message) 元组，409/400 的错误码与
+    文案由调用方映射，本函数不发响应。
+    """
+    from core.fenix_session import hosting_state as _hosting_state
+
+    try:
+        state = _hosting_state(str(proot))
+    except Exception as exc:
+        # 判定异常按未运行兜底，宁拒勿假放行；降级可观测（item 0d1ba0c6efc0）
+        state = "stopped"
+        logger.warning(
+            "hosting_state 判定异常，按 stopped 兜底（宁拒勿假放行）: %r", exc
+        )
+    if state == "unmanaged":
+        return (
+            409,
+            f"本项目 daemon 未受 supervisor 托管，{signal_label}不会被消费。"
+            f"经项目页「安装托管」或 /fenix-setup 恢复 supervisor 托管后重试",
+        )
+    if state != "managed":
+        return 400, "daemon 未运行，请先启动 daemon"
+    return None
+
+
 class H11CodeReviewRoutesMixin:
     """H11 code-review（design D1 表 C H11）。"""
 
@@ -370,35 +407,22 @@ class H11CodeReviewRoutesMixin:
             self._coded_error(409, "已有审查在进行中", "code_review_running")
             return
 
-        # 消费方守卫（hosting_state 判据，先例 request_spec_approve_push）
-        from core.fenix_session import hosting_state as _hosting_state
-
-        try:
-            state = _hosting_state(str(proot))
-        except Exception as exc:
-            # 判定异常按未运行兜底，宁拒勿假放行；降级可观测（item 0d1ba0c6efc0）
-            state = "stopped"
-            logger.warning(
-                "hosting_state 判定异常，按 stopped 兜底（宁拒勿假放行）: %r", exc
-            )
-        if state == "unmanaged":
-            self._error(
-                409,
-                "本项目 daemon 未受 supervisor 托管，审查信号不会被消费。"
-                "经项目页「安装托管」或 /fenix-setup 恢复 supervisor 托管后重试",
-            )
-            return
-        if state != "managed":
-            self._error(400, "daemon 未运行，请先启动 daemon")
+        # 消费方守卫（hosting_state 判据，先例 request_spec_approve_push；
+        # item 13d53dcd5440 提取 _guard_hosting_state 与 fix-run 共用）
+        guard = _guard_hosting_state(proot, "审查信号")
+        if guard is not None:
+            self._error(*guard)
             return
 
         # 受理窗口守卫（add-code-review-trigger-ack 2.3，design D3）：信号已被
         # 上一触发消费（O_EXCL 守卫覆盖不到的空隙）、daemon 已受理（结果
         # started）但 run 尚未开始（progress.running=false，复用上方 running
         # 守卫的同一 progress 快照）且结果新鲜（finished_at 距今 ≤ 900s）且
-        # 受理后尚无新 run 启动过（review_id 内嵌 epoch ≤ finished_at——run
-        # 结束后结果文件仍停留 started，仅凭新鲜度会把窗口内合法重触发误判为
-        # 「排队中」假 409）→ 409 稳定错误码，消灭窗口内第二次 POST 假受理
+        # 受理后尚无新 run 启动过（review_id 内嵌 epoch 整秒小于 finished_at
+        # 整秒值——run 结束后结果文件仍停留 started，仅凭新鲜度会把窗口内合法
+        # 重触发误判为「排队中」假 409；item 5dbef178f679：同粒度整秒比较，
+        # 受理与 run 启动同秒即视为已启动）→ 409 稳定错误码，消灭窗口内第二次
+        # POST 假受理
         # （今日会被 daemon 单飞静默丢弃）。守卫读结果与 run 实际启动之间存在
         # 竞态 → fail-open 到 daemon 单飞的显式拒绝并落结果（有反馈不留静默）。
         ack_result = dashboard_data.read_code_review_request_result(str(proot))
@@ -409,7 +433,13 @@ class H11CodeReviewRoutesMixin:
                     and (datetime.now(timezone.utc) - finished_at).total_seconds()
                     <= CODE_REVIEW_ACK_WINDOW_SECONDS):
                 epoch = _review_id_epoch(progress.get("review_id"))
-                if epoch is None or epoch <= finished_at.timestamp():
+                # item 5dbef178f679：epoch 是 run_id 内嵌的秒级截断值，而
+                # finished_at 含亚秒——跨粒度直接比 ≤ 会把「受理与 run 启动
+                # 落在同一秒」误判为未启动（X ≤ X.2），窗口内合法重触发被假
+                # 409 挡到 15 分钟自然过期。finished_at 取整秒同粒度比较：
+                # epoch 严格小于才判「受理后尚无新 run 启动」（保守拒绝方向
+                # 不变，同秒启动即视为已启动放行）。
+                if epoch is None or epoch < int(finished_at.timestamp()):
                     self._coded_error(
                         409,
                         "审查已受理，正在启动（文件收集/排队中），请稍候",
@@ -462,26 +492,11 @@ class H11CodeReviewRoutesMixin:
             return
         proot = Path(project["path"])
 
-        # 消费方守卫（hosting_state 判据，先例 request_spec_approve_push）
-        from core.fenix_session import hosting_state as _hosting_state
-
-        try:
-            state = _hosting_state(str(proot))
-        except Exception as exc:
-            # 判定异常按未运行兜底，宁拒勿假放行；降级可观测（item 0d1ba0c6efc0）
-            state = "stopped"
-            logger.warning(
-                "hosting_state 判定异常，按 stopped 兜底（宁拒勿假放行）: %r", exc
-            )
-        if state == "unmanaged":
-            self._error(
-                409,
-                "本项目 daemon 未受 supervisor 托管，修复信号不会被消费。"
-                "经项目页「安装托管」或 /fenix-setup 恢复 supervisor 托管后重试",
-            )
-            return
-        if state != "managed":
-            self._error(400, "daemon 未运行，请先启动 daemon")
+        # 消费方守卫（hosting_state 判据，先例 request_spec_approve_push；
+        # item 13d53dcd5440 提取 _guard_hosting_state 与 run 端点共用）
+        guard = _guard_hosting_state(proot, "修复信号")
+        if guard is not None:
+            self._error(*guard)
             return
 
         # 原子创建信号文件：三步独占写机制（写临时文件+fsync+os.link+finally
@@ -513,22 +528,37 @@ class H11CodeReviewRoutesMixin:
         # 早于 created）才删；文件缺失/损坏/不可解析时不可能属于本次，按上一
         # 残留处置（维持预删语义）。
         result_path = proot / CODE_FIX_REQUEST_RESULT
-        try:
-            with result_path.open("r", encoding="utf-8") as f:
-                data = json.load(f)
-            # item 532fa1df1b2d：合法非 object JSON（[]/null 等）无 .get，先判
-            # 类型，非 dict 按上一轮残留处置（维持预删语义），勿让 AttributeError
-            # 穿透端点。
+        created_dt = _parse_iso_utc(created)
+
+        def _result_stale():
+            """读结果文件并判是否属上一轮残留（request_created 早于 created）。
+
+            item 532fa1df1b2d：合法非 object JSON（[]/null 等）无 .get，先判
+            类型，非 dict 按上一轮残留处置（维持预删语义），勿让 AttributeError
+            穿透端点。文件缺失/损坏/不可解析时不可能属于本次，按上一残留处置。
+            """
+            try:
+                with result_path.open("r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except (OSError, ValueError):
+                return True
             prev_created = (
                 str(data.get("request_created") or "")
                 if isinstance(data, dict)
                 else ""
             )
             prev_dt = _parse_iso_utc(prev_created)
-            created_dt = _parse_iso_utc(created)
-            stale = created_dt is None or prev_dt is None or prev_dt < created_dt
-        except (OSError, ValueError):
-            stale = True
+            return created_dt is None or prev_dt is None or prev_dt < created_dt
+
+        stale = _result_stale()
+        if stale:
+            # item 832ef25ae234：unlink 前重读复核——首读与 unlink 之间有窗口，
+            # daemon 1s tick 恰在此间隙消费刚写入的信号并原子 replace 本次判定
+            # （request_created == created）时，按首读到的上一轮旧内容执行的
+            # unlink 会把本次触发的判定误删（前端轮询变缺省空态、反馈丢失）。
+            # 双读仍判 stale（文件已消失/内容已换新均不成立）才删；删除失败
+            # 不阻塞受理。
+            stale = _result_stale()
         if stale:
             try:
                 result_path.unlink()
