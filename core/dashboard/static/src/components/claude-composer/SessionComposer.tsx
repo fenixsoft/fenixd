@@ -4,7 +4,7 @@
 // 语义映射到既有 stopSession（由 SessionPanel 注入 onStop）。输入区贴底全宽、
 // VisualViewport 键盘高度经 --keyboard-height 变量消费（D4）。
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import type { CSSProperties, FormEvent } from 'react';
+import type { CSSProperties, SyntheticEvent } from 'react';
 import { App, Button, Tooltip } from 'antd';
 import {
   ClearOutlined,
@@ -153,7 +153,9 @@ export default function SessionComposer({
   const hasInput = Boolean(composer.input.trim());
   const sendDisabled = disabled || sending || !hasInput;
 
-  const handleFormSubmit = (event: FormEvent<HTMLFormElement>) => {
+  // 表单提交与发送按钮共用的单一提交入口；参数放宽为 SyntheticEvent
+  // 以同时兼容 form onSubmit 与 antd Button onClick（两者事件类型不同）。
+  const handleFormSubmit = (event: SyntheticEvent) => {
     event.preventDefault();
     void composer.handleSubmit().catch(() => {
       // 失败已还原草稿；错误提示由 SessionPanel 呈现
@@ -327,12 +329,7 @@ export default function SessionComposer({
                   icon={<SendOutlined />}
                   loading={sending}
                   disabled={sendDisabled}
-                  onClick={(event) => {
-                    event.preventDefault();
-                    void composer.handleSubmit().catch(() => {
-                      // 失败已还原草稿；错误提示由 SessionPanel 呈现
-                    });
-                  }}
+                  onClick={handleFormSubmit}
                   aria-label={disabled ? '会话已结束' : '发送'}
                   title={disabled ? '会话已结束' : '发送'}
                 />
