@@ -15,6 +15,13 @@ import re
 import time
 from typing import Any
 
+# 第三方 regex 库（环境可用时）为 regex 模式提供 timeout 参数，防灾难性
+# 回溯正则挂起整个验证执行；库缺失时退回 stdlib re（无超时保护）。
+try:
+    import regex as _regex_mod
+except ImportError:  # pragma: no cover
+    _regex_mod = None
+
 
 class AssertionRunner:
     """执行结构化DOM断言。
@@ -73,10 +80,16 @@ class AssertionRunner:
                     result.setdefault("layer", 0)
                     results.append(result)
                 except Exception as e:
+                    # 兜底补齐定位上下文：handler 内未预检路径（选择器语法
+                    # 非法使 locator 抛错、_safe_evaluate 存在性检查与求值
+                    # 之间元素消失的竞态等）抛出的异常落到这里，缺 selector
+                    # 的裸形态无法定位是哪条断言执行失败。
                     results.append(
                         {
                             "type": a_type,
                             "layer": 0,
+                            "selector": assertion.get("selector", ""),
+                            "label": assertion.get("label", ""),
                             "pass": False,
                             "error": f"断言执行异常: {e}",
                         }
@@ -147,6 +160,7 @@ class AssertionRunner:
                 "type": "element_count",
                 "layer": 1,
                 "selector": selector,
+                "label": a.get("label", ""),
                 **{count_field: expected_raw},
                 "pass": False,
                 "error": f"非法 {count_field}: {expected_raw!r}，须为数值",
@@ -164,6 +178,7 @@ class AssertionRunner:
             "type": "element_count",
             "layer": 1,
             "selector": selector,
+            "label": a.get("label", ""),
             "expected": expected,
             "actual": actual,
             "pass": actual == expected,
@@ -190,6 +205,7 @@ class AssertionRunner:
             "type": "element_not_exist",
             "layer": 1,
             "selector": selector,
+            "label": a.get("label", ""),
             "actual_count": count,
             "pass": count == 0,
         }
@@ -218,6 +234,7 @@ class AssertionRunner:
                 "type": "element_enabled",
                 "layer": 1,
                 "selector": selector,
+                "label": a.get("label", ""),
                 "pass": False,
                 "error": "元素不存在",
             }
@@ -226,6 +243,7 @@ class AssertionRunner:
             "type": "element_enabled",
             "layer": 1,
             "selector": selector,
+            "label": a.get("label", ""),
             "pass": enabled,
         }
 
@@ -295,7 +313,24 @@ class AssertionRunner:
         通过 getBoundingClientRect 计算交集面积比例。
         """
         selector = a["selector"]
-        threshold = a.get("threshold", 0.2)
+        threshold_raw = a.get("threshold", 0.2)
+        try:
+            threshold = float(threshold_raw)
+        except (TypeError, ValueError):
+            threshold = None
+        if threshold is None or not 0 < threshold < 1:
+            # 非法 threshold 确定性失败而非静默透传（与 _assert_z_index_order
+            # 非法 operator 口径一致）：planner 误写 "20%" 等非数值进 JS 数值
+            # 比较得 NaN 恒为 false，任何重叠都检不出、断言恒 pass（假通过）；
+            # 0/负数又会把全部同级元素报成重叠。进 evaluate 前显式失败。
+            return {
+                "type": "no_overlap",
+                "layer": 2,
+                "selector": selector,
+                "threshold": threshold_raw,
+                "pass": False,
+                "error": f"非法 threshold: {threshold_raw!r}，须为 (0,1) 开区间内数值",
+            }
 
         overlaps = await self._safe_evaluate(
             page,
@@ -495,8 +530,32 @@ class AssertionRunner:
         if mode == "contains":
             return expected in actual
         if mode == "regex":
-            return bool(re.search(expected, actual))
+            return self._regex_search(expected, actual)
         return False
+
+    # regex 模式单次匹配的回溯预算（秒）：compile 通过但呈灾难性回溯的
+    # 正则（嵌套量词形态）在匹配时无超时保护，长文本下会同步阻塞
+    # AssertionRunner 直至回溯结束，整轮验证被单个断言拖死；planner 产出
+    # 属半可信输入，单次匹配超时按「不匹配」收场，交由轮询按普通失败上报。
+    _REGEX_MATCH_TIMEOUT_S = 1.0
+
+    @classmethod
+    def _regex_search(cls, pattern: str, text: str) -> bool:
+        """regex 模式匹配，带单次匹配超时保护。
+
+        优先用第三方 regex 库的 timeout 参数（覆盖嵌套量词等全部灾难性
+        回溯形态，超时抛 TimeoutError）；库不可用时退回 stdlib re（行为
+        同旧版，无超时保护）。任何异常一律按不匹配收场——抛错会被
+        _assert_text_match 的 except 当「元素尚未渲染」空转至超时。
+        """
+        if _regex_mod is not None:
+            try:
+                return bool(
+                    _regex_mod.search(pattern, text, timeout=cls._REGEX_MATCH_TIMEOUT_S)
+                )
+            except Exception:
+                return False
+        return bool(re.search(pattern, text))
 
     async def _assert_text_match(self, page, a: dict) -> dict:
         """断言元素文字内容匹配。
@@ -1009,8 +1068,18 @@ class AssertionRunner:
         try:
             tolerance = float(a.get("tolerance", 2))
         except (TypeError, ValueError):
-            # 非数值容差回退默认值，避免在比较处抛 TypeError。
-            tolerance = 2.0
+            # 非数值容差按确定性失败上报而非静默回退默认 2.0：配置错误被
+            # 吞掉后断言按非本意阈值裁决，与上方非法 axis、z_index_order
+            # 非法 operator 的确定性失败口径一致，给出可定位提示。
+            return {
+                "type": "alignment",
+                "layer": 4,
+                "selector": selector,
+                "axis": axis,
+                "tolerance": a.get("tolerance"),
+                "pass": False,
+                "error": f"非法 tolerance: {a.get('tolerance')!r}，须为数值（像素）",
+            }
 
         if not await self._element_exists(page, selector):
             return {
