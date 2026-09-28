@@ -114,6 +114,7 @@ def _judge_round_state(pipeline, spec_name: str) -> dict:
         }
         if current_mtime is not None:
             reset[_JUDGE_ROUND_REPORT_MTIME_FIELD] = current_mtime
+        # [fenix-ignore:77163ea07645] update_spec 与 bump_counters 同锁域（各自都在 .STATE.md.lock 的 flock(LOCK_EX) 内读改写），且本重置写的是常量 0 而非锁外快照计算值，无丢增量窗口。
         pipeline._context.state_machine.update_spec(spec_name, reset)
         return {"round": current_round, "real": 0, "expanded": 0, "escalated": False}
     return {
