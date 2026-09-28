@@ -6,6 +6,9 @@
   2. git 命令失败时仅 WARNING，闸门返回值与验证主流程不受影响
   3. 提交 pathspec 严格限于本报告文件（不卷入其它 spec 在途文件）
   4. 报告已入库且无变化时重复放行不落 WARNING（幂等静默跳过）
+  5. 场景段写盘即入库（evo-verify-report-scenario-section-commit）：
+     渲染写回后复用同一提交器补上次序缝（HEAD 含小节、pathspec 干净、
+     隔离与幂等）
 
 合成夹具沿用 add-verify-report-gate 的真实 report.json / .fenix-run-result.json。
 """
@@ -242,6 +245,124 @@ class TestIdempotentSilentSkip(_CommitTestBase):
 
 
 @unittest.skipIf(shutil.which("git") is None, "git 不可用")
+class TestScenarioSectionCommit(_CommitTestBase):
+    """场景5：场景段写盘即入库（evo-verify-report-scenario-section-commit）。
+
+    桩 pipeline 上下文 + 真实渲染函数：_render_scenario_change_section_to_report
+    只消费 _context.project_root/logger 与 _last_scenario_diff/_last_freeze_owner
+    归属戳（跨 spec 残留戳不作渲染来源）。
+    """
+
+    def _make_pipeline(self, diff):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            _context=SimpleNamespace(
+                project_root=self.project_root, logger=self.logger
+            ),
+            _last_scenario_diff=diff,
+            _last_freeze_owner=SPEC,
+        )
+
+    def _seed_report(self):
+        """报告闸门次序语义的前置态：报告已落盘且已入库（尚无场景段）。"""
+        self._report_path().parent.mkdir(parents=True, exist_ok=True)
+        self._report_path().write_text("## 结论：✅ 通过\n\n叙述。\n", encoding="utf-8")
+        self._git("add", "--", self._report_rel())
+        self._git("commit", "-q", "-m", "gate: report")
+
+    def _seed_diff(self):
+        """真实 diff（照抄 test_verify_scenarios 超发拦截夹具：含新增变更行）。"""
+        from core.verify_scenarios import (
+            ScenarioEntry,
+            ScenarioSet,
+            diff_planner_output,
+            save_scenario_set,
+        )
+
+        save_scenario_set(
+            self.project_root,
+            ScenarioSet(
+                SPEC,
+                1,
+                [
+                    ScenarioEntry(id="s1", description="场景一", added_in_round=1),
+                    ScenarioEntry(id="s2", description="场景二", added_in_round=1),
+                ],
+            ),
+        )
+        return diff_planner_output(
+            self.project_root,
+            SPEC,
+            {"_verify_fail_rounds": 1},
+            [{"id": "s1"}, {"id": "s2"}, {"id": "s3"}],
+            2,
+        )
+
+    def _render(self):
+        from core.pm_engine.verification.scenario_gate import (
+            _render_scenario_change_section_to_report,
+        )
+
+        _render_scenario_change_section_to_report(
+            self._make_pipeline(self._seed_diff()), SPEC
+        )
+
+    def test_section_write_is_committed(self):
+        self._seed_report()
+        count_before = self._commit_count()
+
+        self._render()
+
+        # HEAD 已包含小节（写盘即入库，不再滞留工作区）
+        head_content = self._git("show", f"HEAD:{self._report_rel()}").stdout
+        self.assertIn("## 本轮场景集变更", head_content)
+        self.assertIn("拦截 planner 超发", head_content)
+        # 该 pathspec 对 HEAD 干净
+        self.assertEqual(
+            self._git(
+                "diff", "HEAD", "--quiet", "--", self._report_rel()
+            ).returncode,
+            0,
+        )
+        status = self._git("status", "--porcelain").stdout
+        self.assertNotIn(self._report_rel(), status)
+        _subject, files = self._head_commit()
+        self.assertEqual(files, [self._report_rel()])
+        self.assertEqual(self._commit_count(), count_before + 1)
+
+    def test_section_commit_is_pathspec_isolated(self):
+        self._seed_report()
+        # 其它 spec 的在途草案（staged）+ 已跟踪文件未暂存修改（照抄
+        # TestPathspecPrecision 的保全断言）
+        other_dir = self.project_root / "spec" / "changes" / "other-spec-wip"
+        other_dir.mkdir(parents=True, exist_ok=True)
+        (other_dir / "tasks.md").write_text("WIP draft\n", encoding="utf-8")
+        self._git("add", "--", "spec/changes/other-spec-wip/tasks.md")
+        (self.project_root / "README.md").write_text("modified\n", encoding="utf-8")
+
+        self._render()
+
+        _subject, files = self._head_commit()
+        self.assertEqual(files, [self._report_rel()])
+        status = self._git("status", "--porcelain").stdout
+        self.assertIn("A  spec/changes/other-spec-wip/tasks.md", status)
+        self.assertIn(" M README.md", status)
+
+    def test_second_render_no_new_commit_no_warning(self):
+        self._seed_report()
+        self._render()
+        count1 = self._commit_count()
+        records_before = len(self.logger.records)
+
+        # 小节已在库 → 渲染幂等判重跳过，无新提交、零 WARNING
+        self._render()
+
+        self.assertEqual(self._commit_count(), count1)
+        self.assertEqual(len(self.logger.records), records_before)
+        self.assertEqual(self.logger.warnings(contains="入库失败"), [])
+
+
 class TestNonGitProjectSilentSkip(unittest.TestCase):
     """被管项目无 git：入库机制不适用，静默跳过（不逐轮刷 WARNING）。"""
 
