@@ -192,8 +192,9 @@ def _normalize_token(token: str) -> str:
     # 去首尾成对引号
     if len(tok) >= 2 and tok[0] in "\"'`" and tok[-1] == tok[0]:
         tok = tok[1:-1]
-    # 去除尾随常见标点（避免从句子里误带出句号/逗号/括号）
-    tok = tok.rstrip(".,;:。，；：)")
+    # 去除尾随常见标点（避免从句子里误带出句号/逗号/括号；含全角右闭合
+    # 标点，code-review item d633c26ae3ee）
+    tok = tok.rstrip(".,;:。，；：)）」』】")
     return tok
 
 
@@ -214,7 +215,14 @@ def _candidates_from_line(line: str) -> List[str]:
         if inner:
             cands.extend(inner)
         else:
-            cands.extend(rest.split())
+            for tok in rest.split():
+                # 中文句子通常无空格，「路径：core/api.py（新增）」切出的
+                # token 会整段尾带全角括注——截断首个全角标点起的尾缀，
+                # 避免括注内容伪装成交付路径（code-review item
+                # d633c26ae3ee；rstrip 剥不掉左括号前挂的括注内容）
+                tok = re.split(r"[（」』】]", tok, maxsplit=1)[0]
+                if tok:
+                    cands.append(tok)
 
     return cands
 
@@ -1288,6 +1296,31 @@ def register_relocation_credential(
         return None
 
 
+def _declared_kind_line(lines, path_idx, end):
+    """在声明条目 path 行之后定位 kind 行（+1..+2 两行窗口，单点助手）。
+
+    声明格式容忍 path 与 kind 之间隔一行（如注释行），窗口语义即
+    soften_declared_kind 的既有搜索窗；soften / remove_declared_entry /
+    replace_declared_path 三处文本改写统一走本助手（code-review item
+    4fc4ed9e05a9：删除侧只认紧邻一行会在 kind 于 +2 时把孤立 kind 行
+    留在段内，声明段 yaml 解析失败、守卫静默回退正则语境猜测）。窗口
+    内遇下一条件目的列表项起始行即停（防跨条目误中其 kind 行）。
+
+    Returns:
+        (kind_idx, kind_match)；窗口内无 kind 行返回 (None, None)。
+    """
+    for i in range(path_idx + 1, min(end, path_idx + 3)):
+        if re.match(r"^\s*-\s", lines[i]):
+            break
+        m = re.match(
+            r"^(\s*)kind\s*:\s*(new|modify|delete|reference)(\s*(#.*)?)$",
+            lines[i],
+        )
+        if m:
+            return i, m
+    return None, None
+
+
 def replace_declared_path(spec_dir, element: str, actual_path: str) -> dict:
     """机械替换 tasks.md 声明段条目的 path（add-deliverable-declaration-triage D4）。
 
@@ -1329,17 +1362,34 @@ def replace_declared_path(spec_dir, element: str, actual_path: str) -> dict:
         raise ValueError(f"声明段无条目匹配 {element}（无法修正）")
 
     before = "\n".join(lines[start:end])
-    # 去重：声明段已存在 actual_path 条目 → 删除 element 条目（path 行 + 紧随
-    # 的 kind 行），而不是制造两份同名声明
+    # 去重：声明段已存在 actual_path 条目 → 删除 element 条目（path 行 +
+    # 窗口内的 kind 行，含中间间隔行），而不是制造两份同名声明
     dup_idx = None
     for i in range(start, end):
         if i != elem_idx and _path_line_re(actual_path).match(lines[i]):
             dup_idx = i
             break
     if dup_idx is not None:
-        remove_end = elem_idx + 1
-        if remove_end < len(lines) and re.match(r"^\s+kind\s*:", lines[remove_end]):
-            remove_end += 1
+        # 去重契约是「同 kind」才删（docstring）：解析两条目的 kind 行比对，
+        # 不一致（含任一条目无 kind 行无法判定）上抛转人工——否则硬交付
+        # 条目（new/modify）会被静默删除、只留软审计 reference，硬校验降级
+        # 为软校验（code-review item 1a98aed80b98）
+        elem_kind_idx, elem_kind_m = _declared_kind_line(lines, elem_idx, end)
+        dup_kind_m = _declared_kind_line(lines, dup_idx, end)[1]
+        if (
+            elem_kind_m is None
+            or dup_kind_m is None
+            or elem_kind_m.group(2) != dup_kind_m.group(2)
+        ):
+            raise ValueError(
+                f"声明段已存在 {actual_path} 但 kind 不一致"
+                f"（element: "
+                f"{elem_kind_m.group(2) if elem_kind_m else '（无 kind 行）'}，"
+                f"existing: "
+                f"{dup_kind_m.group(2) if dup_kind_m else '（无 kind 行）'}）"
+                f"——去重要求同 kind，请人工核对声明段"
+            )
+        remove_end = elem_kind_idx + 1
         del lines[elem_idx:remove_end]
         # 声明段缩短了 remove_end - elem_idx 行，右端同步收缩：after 仍须是
         # 纯声明段新文（Returns 契约），不得吞进下一节的标题行
@@ -1395,17 +1445,7 @@ def soften_declared_kind(spec_dir, element: str) -> dict:
         raise ValueError(f"声明段无条目匹配 {element}（无法软化）")
 
     before = "\n".join(lines[start:end])
-    kind_idx = None
-    kind_match = None
-    for i in range(path_idx + 1, min(end, path_idx + 3)):
-        m = re.match(
-            r"^(\s*)kind\s*:\s*(new|modify|delete|reference)(\s*(#.*)?)$",
-            lines[i],
-        )
-        if m:
-            kind_idx = i
-            kind_match = m
-            break
+    kind_idx, kind_match = _declared_kind_line(lines, path_idx, end)
     if kind_idx is None or kind_match is None:
         raise ValueError(f"条目 {element} 无 kind 行可软化")
     if kind_match.group(2) == "delete":
@@ -2061,8 +2101,9 @@ def remove_declared_entry(spec_dir, element: str) -> dict:
 
     逐行精确文本操作（不经 yaml 反序列化再序列化——保留注释/顺序，diff
     最小）：在 ``## Deliverables`` 段内找到 ``path == element`` 的条目，
-    删除 path 行 + 紧随的 kind 行（两行，其余内容不动）。删除前重读文件、
-    按条目精确删除，任何失败上抛（调用方等价 fallback 回退既有路径）。
+    删除 path 行 + 搜索窗（+1..+2）内的 kind 行（kind 与 path 间隔的行，
+    如注释行，一并移除；其余内容不动）。删除前重读文件、按条目精确删除，
+    任何失败上抛（调用方等价 fallback 回退既有路径）。
 
     Returns:
         {"element", "before": <声明段原文>, "after": <声明段新文>}，
@@ -2096,9 +2137,11 @@ def remove_declared_entry(spec_dir, element: str) -> dict:
         raise ValueError(f"声明段无条目匹配 {element}（无法删除）")
 
     before = "\n".join(lines[start:end])
-    remove_end = elem_idx + 1
-    if remove_end < len(lines) and re.match(r"^\s+kind\s*:", lines[remove_end]):
-        remove_end += 1
+    # kind 行定位走单点助手（+1..+2 两行窗口，容忍 path 与 kind 间隔一行）：
+    # 只认紧邻一行会在 kind 于 +2 时把孤立 kind 行留在段内，声明段 yaml
+    # 解析失败、守卫静默回退正则语境猜测（code-review item 4fc4ed9e05a9）
+    kind_idx, _kind_match = _declared_kind_line(lines, elem_idx, end)
+    remove_end = kind_idx + 1 if kind_idx is not None else elem_idx + 1
     del lines[elem_idx:remove_end]
     # 声明段缩短了 remove_end - elem_idx 行，右端同步收缩：after 仍须是
     # 纯声明段新文（Returns 契约），不得吞进下一节的标题行
@@ -2170,6 +2213,10 @@ def lint_declared(spec_dir, project_root) -> List[str]:
     10. ``kind: delete`` 的路径在仓库外——delete 要求删除仓库内已入库文件，
         仓库外路径超出守卫 git 对账范围（规则 7 同型：守卫反判无从成立），
         任何分支不可交付，应改为仓库内路径。
+    11. ``kind: new`` 主树不存在且 basename 零命中时的孤儿声明拦截
+        （deliverable-dispute-orphan-preclassify）——任务清单（全路径与
+        basename 皆）零出现 + 源码面 git grep 零引用即判声明残留，拒绝
+        晋升（规则 4 零命中放行形态的收口，见内层实现）。
     12. 同一 path 在声明段出现多种 kind（abc42cc46260）——解析器
         （``_declared_entries_from_text``）按 path 去重静默保留首条，生效 kind
         取决于书写顺序，自相矛盾的声明在晋升当下拒绝并提示合并/去重。
