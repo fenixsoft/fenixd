@@ -19,4 +19,4 @@
 - [ ] 2.1 tests/test_verification_report_commit.py：新增场景段提交用例——种子报告加桩 pipeline 上下文（_context.project_root/logger 与 _last_scenario_diff/_last_freeze_owner 归属戳），调用真实渲染函数，断言 HEAD 包含小节且该 pathspec 对 HEAD 干净
 - [ ] 2.2 tests/test_verification_report_commit.py：隔离用例——其他 spec 的 staged 草案与已跟踪文件未暂存修改在场时，场景段提交仅入库报告文件本身
 - [ ] 2.3 tests/test_verification_report_commit.py：幂等用例——小节已在库后二次触发无新提交且零 WARNING
-- [ ] 2.4 回归自检：tests/test_pm_verification.py、tests/test_pm_recovery.py、tests/test_verify_parallel_backoff.py、tests/test_verify_report_gate.py、tests/test_verify_scenarios.py 全绿（存量 MagicMock 桩不受扰）
+- [ ] 2.4 回归自检：tests/test_pm_verification.py、tests/test_pm_recovery.py、tests/test_verify_parallel_backoff.py、tests/test_verify_report_gate.py、tests/test_verify_scenarios.py、tests/test_facade_delegation_contract.py 全绿（存量 MagicMock 桩不受扰；末项经 engine.py:264 门面映射桩本函数委托名，属改动邻接面）
