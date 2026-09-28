@@ -123,40 +123,88 @@ class TestKnowledgeLaneConfig(unittest.TestCase):
 
     def test_missing_section_defaults_true(self):
         cfg = ConfigLoader.get_knowledge_lane_config({})
-        self.assertEqual(cfg, {"audit_enabled": True, "graph_enabled": True})
+        self.assertEqual(
+            cfg,
+            {
+                "audit_enabled": True,
+                "graph_enabled": True,
+                "no_conflict_exempt": True,
+                "escalate_after_rounds": 2,
+            },
+        )
 
     def test_partial_keys_fill_default(self):
         cfg = ConfigLoader.get_knowledge_lane_config(
             {"knowledge": {"audit_enabled": False}}
         )
-        self.assertEqual(cfg, {"audit_enabled": False, "graph_enabled": True})
+        self.assertEqual(
+            cfg,
+            {
+                "audit_enabled": False,
+                "graph_enabled": True,
+                "no_conflict_exempt": True,
+                "escalate_after_rounds": 2,
+            },
+        )
 
     def test_valid_bools_passthrough(self):
         cfg = ConfigLoader.get_knowledge_lane_config(
             {"knowledge": {"audit_enabled": False, "graph_enabled": False}}
         )
-        self.assertEqual(cfg, {"audit_enabled": False, "graph_enabled": False})
+        self.assertEqual(
+            cfg,
+            {
+                "audit_enabled": False,
+                "graph_enabled": False,
+                "no_conflict_exempt": True,
+                "escalate_after_rounds": 2,
+            },
+        )
 
     def test_invalid_values_fallback_true_with_warning(self):
         with self.assertLogs("fenixd.config", level="WARNING") as captured:
             cfg = ConfigLoader.get_knowledge_lane_config(
                 {"knowledge": {"audit_enabled": "yes", "graph_enabled": 1}}
             )
-        self.assertEqual(cfg, {"audit_enabled": True, "graph_enabled": True})
+        self.assertEqual(
+            cfg,
+            {
+                "audit_enabled": True,
+                "graph_enabled": True,
+                "no_conflict_exempt": True,
+                "escalate_after_rounds": 2,
+            },
+        )
         joined = "\n".join(captured.output)
         self.assertIn("knowledge.audit_enabled", joined)
         self.assertIn("knowledge.graph_enabled", joined)
 
     def test_non_dict_section_degrades_to_defaults(self):
         cfg = ConfigLoader.get_knowledge_lane_config({"knowledge": ["audit_enabled"]})
-        self.assertEqual(cfg, {"audit_enabled": True, "graph_enabled": True})
+        self.assertEqual(
+            cfg,
+            {
+                "audit_enabled": True,
+                "graph_enabled": True,
+                "no_conflict_exempt": True,
+                "escalate_after_rounds": 2,
+            },
+        )
 
     def test_none_value_fallback_default(self):
         with self.assertLogs("fenixd.config", level="WARNING"):
             cfg = ConfigLoader.get_knowledge_lane_config(
                 {"knowledge": {"audit_enabled": None}}
             )
-        self.assertEqual(cfg, {"audit_enabled": True, "graph_enabled": True})
+        self.assertEqual(
+            cfg,
+            {
+                "audit_enabled": True,
+                "graph_enabled": True,
+                "no_conflict_exempt": True,
+                "escalate_after_rounds": 2,
+            },
+        )
 
     def test_template_registers_both_keys(self):
         text = (REPO_ROOT / ".fenix" / "config.template.yaml").read_text(
@@ -200,7 +248,13 @@ class TestKnowledgeManagedKeys(unittest.TestCase):
             view = config_admin.read_config(td, scope="project")
         self.assertEqual(
             view["knowledge"],
-            {"enabled": False, "audit_enabled": True, "graph_enabled": True},
+            {
+                "enabled": False,
+                "audit_enabled": True,
+                "graph_enabled": True,
+                "no_conflict_exempt": True,
+                "escalate_after_rounds": 2,
+            },
         )
 
     def test_deep_merge_applies_enabled(self):
