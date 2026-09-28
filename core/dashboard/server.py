@@ -502,6 +502,29 @@ def serve(registry: Registry, port: int = 8787, static_dir=None):
             )
             sys.exit(1)
 
+    # 优雅停机信号处理（code-review item a4e9b12a8b82）：SIGTERM 若走默认处置会
+    # 立即终止进程、不展开 Python 帧——serve() 的 finally 清理链（session_manager
+    # .shutdown / watcher.stop / server_close）永不执行，live-session 子进程被
+    # 孤儿化（正是 self-watchdog 自杀 / 外部 stop 要防的形态）。安装 handler 把
+    # SIGTERM 转为 httpd.shutdown()（从 serve_forever 干净返回 → 走 finally）。
+    # handler 闭包只引用 httpd（绑定/接管完成后即已存在），故在 watcher /
+    # SessionManager 创建**之前**安装：若晚于它们，启动窗口内到达的 SIGTERM 仍走
+    # 默认处置、孤儿化刚拉起的会话子进程（code-review item 26f606839a26）。窗口
+    # 内提前到达的信号只会置位 shutdown 请求，serve_forever 启动即返回 → 同样走
+    # 完整清理链。仅在主线程可安装（signal.signal 限制）；失败（非主线程调用
+    # serve）降级为既有默认处置。
+    try:
+        def _graceful_term(_signum, _frame):
+            # httpd.shutdown() MUST 从 serve_forever 所在线程**之外**调用（其内部
+            # 等 serve_forever 循环退出，同线程调用会死锁）。signal handler 在
+            # 主线程中断点执行、而主线程正阻塞在 serve_forever 内，故起一个极短命
+            # 线程调用 shutdown()，让 serve_forever 干净返回 → 走 finally 清理链。
+            threading.Thread(target=httpd.shutdown, daemon=True).start()
+
+        signal.signal(signal.SIGTERM, _graceful_term)
+    except (ValueError, OSError):
+        pass
+
     watcher = None
     try:
         watcher = FileWatcher(
@@ -541,24 +564,6 @@ def serve(registry: Registry, port: int = 8787, static_dir=None):
     print(f"  端口: {actual}", flush=True)
     print("  Ctrl+C 退出", flush=True)
     print("=" * 60, flush=True)
-    # 优雅停机信号处理（code-review item a4e9b12a8b82）：SIGTERM 若走默认处置会
-    # 立即终止进程、不展开 Python 帧——serve() 的 finally 清理链（session_manager
-    # .shutdown / watcher.stop / server_close）永不执行，live-session 子进程被
-    # 孤儿化（正是 self-watchdog 自杀 / 外部 stop 要防的形态）。安装 handler 把
-    # SIGTERM 转为 httpd.shutdown()（从 serve_forever 干净返回 → 走 finally）。
-    # 仅在主线程可安装（signal.signal 限制）；失败（非主线程调用 serve）降级为
-    # 既有默认处置。
-    try:
-        def _graceful_term(_signum, _frame):
-            # httpd.shutdown() MUST 从 serve_forever 所在线程**之外**调用（其内部
-            # 等 serve_forever 循环退出，同线程调用会死锁）。signal handler 在
-            # 主线程中断点执行、而主线程正阻塞在 serve_forever 内，故起一个极短命
-            # 线程调用 shutdown()，让 serve_forever 干净返回 → 走 finally 清理链。
-            threading.Thread(target=httpd.shutdown, daemon=True).start()
-
-        signal.signal(signal.SIGTERM, _graceful_term)
-    except (ValueError, OSError):
-        pass
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
