@@ -5,6 +5,7 @@
 ## 能力页
 
 - [code-fix-lane](code-fix-lane.md) — 自动修复车道编排
+- [code-fix-batch-parallel](code-fix-batch-parallel.md) — 批内并行处置（orchestrator 派子代理、单写者落盘、三级兜底、一次定向验证）
 - [code-fix-batch-selfheal](code-fix-batch-selfheal.md) — 修复批失败自愈（现场即弃、三态收尾、两层跳过与重试预算）
 - [code-fix-wipgate-defer](code-fix-wipgate-defer.md) — 修复批合回 WIP 阻断延迟合回（暂态零预算、现场保留+放锁、自动重试）
 - [code-fix-agent](code-fix-agent.md) — code-fix 修复 agent

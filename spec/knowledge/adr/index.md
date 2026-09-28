@@ -202,3 +202,4 @@ superseded 条目保留在列供溯源。编号接续本目录既有最大号。
 | [ADR-195](ADR-195-frozen-entry-recheck-and-escalation-cooldown-dual-leg-defense.md) | accepted | 冻结回置噪音双腿防御缺一不可：恢复/派发/重试入口 frozen 复核断「部分回置」腿（INFO 留痕零写入），daemon_errors 指纹级重启冷却+同轮孪生合并兜「整文件重置抹 frozen」腿，后续 SPEC 禁以任一腿为由删另一腿 |
 | [ADR-196](ADR-196-gate-exemption-and-dispatch-interception-two-criteria-layering.md) | accepted | 内容闸门豁免与派发拦截两判据分层：终态豁免/已交付降级只免冻结与告警，spec_has_content 四类认可名单不动且 verification-report.md 禁入（防盲目重实现已交付成果），终态 spec 入队属异常由派发层状态机管辖 |
 | [ADR-197](ADR-197-wipgate-defer-keep-scene-release-lock-zero-budget.md) | accepted | WIP 阻断延迟合回：暂态阻断零预算走独立 defer 台账禁入失败预算体系（预算语义=重跑，暂态只需等待），保留现场必须同步显式放锁（只保留不放锁=建树恒 None 车道死锁），defer 条目必退选批池，重试挂既有链节拍不新增线程 |
+| [ADR-198](ADR-198-agent-side-task-subagent-batch-parallel-single-run-contract.md) | accepted | 车道批内并行放 agent 侧 Task 子代理（框架单 run/单 out_path/单回归合回契约零改动），产物落盘验证提交集中 orchestrator 单写者、子代理三禁（写产物/验证/提交），并发上限保守且由框架按批规模注入不设配置键 |
