@@ -134,6 +134,27 @@ def admin_disposition_path(project_root: Path, run_id: str) -> Path:
     return Path(project_root) / ".fenix" / f"{ADMIN_DISPOSITION_PREFIX}{run_id}.json"
 
 
+def _apply_provider_env(
+    env_overrides: Dict[str, str], provider: dict, model_override: str, runner
+) -> None:
+    """取链首选 provider 的 env_overrides 注入口径（五个维护型 run 共用）。
+
+    code-review item 8303928771e4 去重：run_administrator / run_self_review /
+    run_evolution / run_code_review / run_code_fix 此前各自复制同一段组装
+    （ANTHROPIC_BASE_URL/API_KEY/ANTHROPIC_MODEL/CLAUDE_CONFIG_DIR +
+    provider.env 合并），注入口径任何变化（新增默认 env 键、CLAUDE_CONFIG_DIR
+    生成规则调整等）都须同步改五处，漏一处即车道间行为漂移（同
+    _write_signal_exclusive 去重先例 422ae03395de 的动机）。各车道的
+    assignment 回退链顺序不同属设计差异，留在调用侧。
+    """
+    env_overrides["ANTHROPIC_BASE_URL"] = provider["baseurl"]
+    env_overrides["ANTHROPIC_API_KEY"] = provider["apikey"]
+    env_overrides["ANTHROPIC_MODEL"] = model_override
+    env_overrides["CLAUDE_CONFIG_DIR"] = str(runner._ensure_agent_config_dir(provider["name"], model_override))
+    for k, v in (provider.get("env") or {}).items():
+        env_overrides[k] = v
+
+
 def _unique_admin_run_id(runner, spec: str) -> str:
     """生成不冲突的 ``admin-<spec>-<epoch>`` run_id（code-review item d543e3aaf129）。
 
@@ -194,12 +215,7 @@ def run_administrator(runner, signal: dict) -> AdminDisposition:
     if assignment:
         # 取链首选（Administrator 不接入 attempt 级 failover，仅用首选直连）
         provider, model_override = assignment[0]
-        env_overrides["ANTHROPIC_BASE_URL"] = provider["baseurl"]
-        env_overrides["ANTHROPIC_API_KEY"] = provider["apikey"]
-        env_overrides["ANTHROPIC_MODEL"] = model_override
-        env_overrides["CLAUDE_CONFIG_DIR"] = str(runner._ensure_agent_config_dir(provider["name"], model_override))
-        for k, v in (provider.get("env") or {}).items():
-            env_overrides[k] = v
+        _apply_provider_env(env_overrides, provider, model_override, runner)
         # 观测：run jsonl 写 provider_marker，与 dispatch attempt 路径同口径，
         # 时间轴才能展示 Administrator 实际驱动的 model@provider；
         # Administrator 不接 failover，链内下标恒 0/1
@@ -468,12 +484,7 @@ def run_self_review(
     ) or runner._get_agent_model_assignment("administrator")
     if assignment:
         provider, model_override = assignment[0]
-        env_overrides["ANTHROPIC_BASE_URL"] = provider["baseurl"]
-        env_overrides["ANTHROPIC_API_KEY"] = provider["apikey"]
-        env_overrides["ANTHROPIC_MODEL"] = model_override
-        env_overrides["CLAUDE_CONFIG_DIR"] = str(runner._ensure_agent_config_dir(provider["name"], model_override))
-        for k, v in (provider.get("env") or {}).items():
-            env_overrides[k] = v
+        _apply_provider_env(env_overrides, provider, model_override, runner)
     else:
         model_override = runner._get_admin_model()
 
@@ -568,6 +579,30 @@ def _read_self_review_out(out_path: Path) -> dict:
     return data
 
 
+def _write_claim_placeholder(fd: int, content: str = "{}\n") -> None:
+    """fdopen 写申领占位内容并接管 fdopen 自身的失败路径（item cbb57806fbfd）。
+
+    ``os.fdopen`` 自身抛错（fd 非法/MemoryError 等）时裸 fd 未被包装也无人
+    关闭（with 的 close 只在 fdopen 成功后才生效）——daemon 长生命周期内的
+    描述符泄漏。对齐 routes 侧 _write_signal_exclusive 的显式接管形态
+    （item 71d502440d3b，先例 regression_routes item 655c860e2e6e）：f 为
+    None（fdopen 未成功）时兜底 os.close；成功后统一经 finally close
+    （等价 with 语义）。三个 _unique_*_run_id 申领点共用。
+    """
+    f = None
+    try:
+        f = os.fdopen(fd, "w", encoding="utf-8")
+        f.write(content)
+    finally:
+        if f is not None:
+            f.close()
+        else:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
 def _append_token_run(tokens_json: Path, entry: dict) -> None:
     """向 token 归账文件的 ``runs`` 数组追加一条记录（flock + 原子替换）。
 
@@ -605,10 +640,24 @@ def _append_token_run(tokens_json: Path, entry: dict) -> None:
                     dir=str(tokens_json.parent),
                 )
                 try:
-                    with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    # fdopen 失败路径显式接管（item cbb57806fbfd，形态对齐
+                    # _write_claim_placeholder / routes 先例 71d502440d3b）：
+                    # with 的 close 只在 fdopen 成功后才生效，fdopen 自身抛错
+                    # 时裸 fd 无人关闭——f 为 None 时兜底 os.close。
+                    f = None
+                    try:
+                        f = os.fdopen(fd, "w", encoding="utf-8")
                         f.write(content)
                         f.flush()
                         os.fsync(f.fileno())
+                    finally:
+                        if f is not None:
+                            f.close()
+                        else:
+                            try:
+                                os.close(fd)
+                            except OSError:
+                                pass
                     os.replace(tmp_str, str(tokens_json))
                 finally:
                     tmp_path = Path(tmp_str)
@@ -764,12 +813,7 @@ def run_evolution(
     ) or runner._get_agent_model_assignment("administrator")
     if assignment:
         provider, model_override = assignment[0]
-        env_overrides["ANTHROPIC_BASE_URL"] = provider["baseurl"]
-        env_overrides["ANTHROPIC_API_KEY"] = provider["apikey"]
-        env_overrides["ANTHROPIC_MODEL"] = model_override
-        env_overrides["CLAUDE_CONFIG_DIR"] = str(runner._ensure_agent_config_dir(provider["name"], model_override))
-        for k, v in (provider.get("env") or {}).items():
-            env_overrides[k] = v
+        _apply_provider_env(env_overrides, provider, model_override, runner)
     else:
         model_override = runner._get_admin_model()
 
@@ -983,10 +1027,15 @@ def _accumulate_evolution_tokens(runner, run_id: str, usage_info: dict) -> None:
     原子替换），与 self-review/code-review 共用，消除并发覆盖。
     """
     tokens_json = runner.project_root / ".fenix" / "cost" / "self_review_tokens.json"
+    now = datetime.now(timezone.utc)
+    # date 统一为日期语义（item f6ba9c4dccef）：此前写 run_id（evo-<epoch>），
+    # 与 self-review 的 YYYY-MM-DD 同键不同义，按日聚合的成本视图会把本类目
+    # 整体错组；run_id 另立字段承载。
     entry = {
         "agent_type": "evolution",
-        "date": run_id,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "date": now.date().isoformat(),
+        "run_id": run_id,
+        "timestamp": now.isoformat(),
         **_token_usage_fields(usage_info),
     }
     _append_token_run(tokens_json, entry)
@@ -1134,12 +1183,7 @@ def run_code_review(
         if assignment:
             provider, model_override = assignment[0]
             provider_name = provider.get("name")
-            env_overrides["ANTHROPIC_BASE_URL"] = provider["baseurl"]
-            env_overrides["ANTHROPIC_API_KEY"] = provider["apikey"]
-            env_overrides["ANTHROPIC_MODEL"] = model_override
-            env_overrides["CLAUDE_CONFIG_DIR"] = str(runner._ensure_agent_config_dir(provider["name"], model_override))
-            for k, v in (provider.get("env") or {}).items():
-                env_overrides[k] = v
+            _apply_provider_env(env_overrides, provider, model_override, runner)
         else:
             model_override = runner._get_admin_model()
         _manifest_settled = True
@@ -1473,8 +1517,7 @@ def _unique_code_review_run_id(runner) -> str:
             continue
         except OSError:
             return candidate
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write("{}\n")
+        _write_claim_placeholder(fd)
         return candidate
 
 
@@ -1602,10 +1645,15 @@ def _accumulate_code_review_tokens(runner, run_id: str, usage_info: dict) -> Non
     （审查 run 无 spec 维度）。写路径走 _append_token_run（flock + 原子替换）。
     """
     tokens_json = runner.project_root / ".fenix" / "cost" / "code_review_tokens.json"
+    now = datetime.now(timezone.utc)
+    # date 统一为日期语义（item f6ba9c4dccef）：此前写 run_id
+    # （code-review-<epoch>），run_id 另立字段承载（对齐 self-review 的
+    # YYYY-MM-DD 口径，按日聚合不再错组）。
     entry = {
         "agent_type": "code-review",
-        "date": run_id,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "date": now.date().isoformat(),
+        "run_id": run_id,
+        "timestamp": now.isoformat(),
         **_token_usage_fields(usage_info),
     }
     _append_token_run(tokens_json, entry)
@@ -1655,8 +1703,7 @@ def _unique_regression_run_id(runner) -> str:
             continue
         except OSError:
             return candidate
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write("{}\n")
+        _write_claim_placeholder(fd)
         return candidate
 
 
@@ -1971,8 +2018,7 @@ def _unique_code_fix_run_id(runner, exclude=()) -> str:
             continue
         except OSError:
             return candidate
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write("{}\n")
+        _write_claim_placeholder(fd)
         return candidate
 
 
@@ -2099,12 +2145,7 @@ def run_code_fix(
         )
         if assignment:
             provider, model_override = assignment[0]
-            env_overrides["ANTHROPIC_BASE_URL"] = provider["baseurl"]
-            env_overrides["ANTHROPIC_API_KEY"] = provider["apikey"]
-            env_overrides["ANTHROPIC_MODEL"] = model_override
-            env_overrides["CLAUDE_CONFIG_DIR"] = str(runner._ensure_agent_config_dir(provider["name"], model_override))
-            for k, v in (provider.get("env") or {}).items():
-                env_overrides[k] = v
+            _apply_provider_env(env_overrides, provider, model_override, runner)
         else:
             model_override = runner._get_admin_model()
 
@@ -2451,10 +2492,15 @@ def _accumulate_impl_ocr_tokens(runner, run_id: str, summary) -> None:
         if not isinstance(summary, dict):
             summary = {}
         tokens_json = runner.project_root / ".fenix" / "cost" / "code_review_tokens.json"
+        now = datetime.now(timezone.utc)
+        # date 统一为日期语义（item f6ba9c4dccef）：此前写 run_id
+        # （impl-ocr-<spec>-<epoch>），run_id 另立字段承载（对齐其余归账
+        # 函数的 YYYY-MM-DD 口径，按日聚合不再错组）。
         entry = {
             "agent_type": "impl-ocr",
-            "date": run_id,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "date": now.date().isoformat(),
+            "run_id": run_id,
+            "timestamp": now.isoformat(),
             # 经 _safe_int 防御转换（对齐 _token_usage_fields / item
             # dc8f109b8b60）：ocr summary 畸形值回落 0，保住整条记账记录
             "input_tokens": _safe_int(summary.get("input_tokens", 0) or 0),
