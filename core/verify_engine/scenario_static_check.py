@@ -277,10 +277,13 @@ def _rule_double_han_text_selector(scenario: dict, serving_port: str | None) -> 
 
     扫描 web 场景断言 selector/text/expected 与步骤 target/value 中候选
     文本字面量，恰含 2 个汉字时报告——antd Button 对恰 2 汉字文本自动插入
-    空格（「确定」→「确 定」），按原文字匹配/断言必失配（历史 touch-expand
-    /antd 系列事故积累）。1/3 汉字不报（autoInsertSpace 仅二字触发）。
-    步骤 value 仅在选择器语义的动作上扫描，type/seed 等业务数据跳过
-    （见 _VALUE_NON_SELECTOR_ACTIONS）。
+    空格（「确定」→「确 定」），目标为按钮类元素时按原文匹配/断言将失配
+    （历史 touch-expand/antd 系列事故积累）。autoInsertSpace 仅作用于按钮
+    渲染文本：属性值（attribute_match 的 expected）、普通容器文本、属性
+    选择器引号片段均不受空格插入影响，故 message 采用条件式表述、不断言
+    必失配（code-review 8258f4e2035e）。1/3 汉字不报（autoInsertSpace 仅
+    二字触发）。步骤 value 仅在选择器语义的动作上扫描，type/seed 等业务
+    数据跳过（见 _VALUE_NON_SELECTOR_ACTIONS）。
     """
     sid = str(scenario.get("id") or "?")
     findings: list[StaticFinding] = []
@@ -301,10 +304,12 @@ def _rule_double_han_text_selector(scenario: dict, serving_port: str | None) -> 
                         rule_id="double_han_text_selector",
                         location=f"assertions[{i}].{field}",
                         message=(
-                            f"断言 {field} 含恰 2 汉字文本选择器 "
-                            f"`{lit}`——antd autoInsertSpace 会把二字文本渲染为「X X」"
-                            f"（如「确定」→「确 定」），按原文匹配必失配。建议改用 "
-                            f"data-testid 或含非汉字/更长文本的选择器。"
+                            f"断言 {field} 含恰 2 汉字文本 `{lit}`——若匹配目标为 "
+                            f"antd Button 类按钮，autoInsertSpace 会把二字文本渲染为"
+                            f"「X X」（如「确定」→「确 定」），按原文匹配将失配"
+                            f"（属性值/普通容器文本不受空格插入影响，请按目标元素"
+                            f"类型判断）。建议改用 data-testid 或含非汉字/更长文本"
+                            f"的选择器。"
                         ),
                     )
                 )
@@ -329,10 +334,12 @@ def _rule_double_han_text_selector(scenario: dict, serving_port: str | None) -> 
                         rule_id="double_han_text_selector",
                         location=f"steps[{i}].{field}",
                         message=(
-                            f"步骤 {field} 含恰 2 汉字文本选择器 "
-                            f"`{lit}`——antd autoInsertSpace 会把二字文本渲染为「X X」"
-                            f"（如「确定」→「确 定」），点击/断言必失配。建议改用 "
-                            f"data-testid 或含非汉字/更长文本的选择器。"
+                            f"步骤 {field} 含恰 2 汉字文本 `{lit}`——若匹配目标为 "
+                            f"antd Button 类按钮，autoInsertSpace 会把二字文本渲染为"
+                            f"「X X」（如「确定」→「确 定」），按原文点击/断言将失配"
+                            f"（属性值/普通容器文本不受空格插入影响，请按目标元素"
+                            f"类型判断）。建议改用 data-testid 或含非汉字/更长文本"
+                            f"的选择器。"
                         ),
                     )
                 )
@@ -407,6 +414,7 @@ def scan_scenarios(
     return findings
 
 
+# [fenix-ignore:3ce43c8b4bad] 所述 fsync/临时名行为漂移前提已失效——gate 版同名助手（63f474ae0e08）已收敛为 mkstemp 唯一临时名 + fsync + os.replace，与本版持久化语义一致，残余差异仅临时名前缀字符（外观级），跨模块收敛重构风险高于收益
 def _atomic_write_text(path: Path, data: str) -> None:
     """原子覆盖写（对齐 scenarios.save_scenarios 惯例）：同目录临时文件 +
     ``os.replace``，写盘中途被杀不会在目标路径留下截断 JSON。失败时清理
