@@ -34,6 +34,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import signal
 import subprocess
 import time
 from contextlib import contextmanager
@@ -488,39 +489,84 @@ def _failure_attribution_tail(stdout: str, stderr: str, width: int = 400) -> str
     return (stdout or "").strip()[-width:]
 
 
+def _kill_process_group(proc: subprocess.Popen) -> None:
+    """超时清场：killpg 整组收割 + 排干管道 + 强杀兜底。
+
+    与 ``core.knowledge.DistillManager`` 的同故障形态对齐（本文件内同款实现，
+    不改其对内私有的封装）：裸 ``subprocess.run``/``Popen.kill`` 超时只收直接
+    子进程，claude 派生的孙进程未被收割，可存活继续写 ``spec/knowledge/``，
+    与后续 validate/提交/回滚竞写。SIGKILL 后 ``communicate`` 仍可能永久阻塞
+    ——孙进程若重新 setsid 逃出进程组并继承 stdout/stderr 管道，管道不关闭
+    （core.knowledge code-review 44d833e20470 教训），此时强杀直接子进程并弃
+    管道，保底让调用方 fail-open 路径继续走。
+    """
+    try:
+        pgid = os.getpgid(proc.pid)
+        os.killpg(pgid, signal.SIGKILL)
+    except (ProcessLookupError, OSError):
+        try:
+            proc.kill()
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        proc.communicate(timeout=10)
+    except subprocess.TimeoutExpired:
+        try:
+            proc.kill()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            for stream in (proc.stdout, proc.stderr):
+                if stream is not None:
+                    stream.close()
+        except Exception:  # noqa: BLE001
+            pass
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def default_spawn(project_root: Path) -> SpawnFn:
     """生产 spawn：主树直跑 ``claude -p``（与前置 SPEC 蒸馏 run 同形态，
     真相源是 spec 元数据层，非产品代码，不走 worktree 实现车道）。"""
 
     def _spawn(prompt: str, run_id: str) -> str:
-        proc = subprocess.run(
-            # 与 core.knowledge 蒸馏 spawn 同形态：无头 -p 必须显式提权，
-            # 否则 LLM 写域映射/页面文件被权限拒绝、产物只能落 stdout（曾致
-            # bootstrap-no-domain-map：25 分钟聚类成果随被丢弃的 stdout 蒸发）
+        # 与 core.knowledge 蒸馏 spawn 同形态：无头 -p 必须显式提权，
+        # 否则 LLM 写域映射/页面文件被权限拒绝、产物只能落 stdout（曾致
+        # bootstrap-no-domain-map：25 分钟聚类成果随被丢弃的 stdout 蒸发）
+        proc = subprocess.Popen(
             ["claude", "-p", prompt, "--permission-mode", "bypassPermissions"],
             cwd=str(project_root),
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=SPAWN_TIMEOUT_SECONDS,
+            # 独立会话组：超时可 killpg 整组清场（对齐 core.knowledge
+            # DistillManager；裸 run 超时只杀直接子进程，孙进程可存活继续
+            # 写真相源）
+            start_new_session=True,
         )
+        try:
+            stdout, stderr = proc.communicate(timeout=SPAWN_TIMEOUT_SECONDS)
+        except Exception:  # noqa: BLE001 - 超时/通信异常统一 killpg 清场再抛
+            _kill_process_group(proc)
+            raise
         # stdout/stderr 落盘留痕：run 失败可取证，不再依赖调用方是否消费返回值
         try:
             runs_dir = project_root / ".fenix" / "runs"
             runs_dir.mkdir(parents=True, exist_ok=True)
             (runs_dir / f"{run_id}.out").write_text(
                 f"[returncode {proc.returncode}]\n"
-                f"[stdout]\n{proc.stdout or ''}\n[stderr]\n{proc.stderr or ''}\n",
+                f"[stdout]\n{stdout or ''}\n[stderr]\n{stderr or ''}\n",
                 encoding="utf-8",
             )
         except OSError:
             pass
         if proc.returncode != 0:
-            tail = _failure_attribution_tail(proc.stdout, proc.stderr)
+            tail = _failure_attribution_tail(stdout, stderr)
             msg = f"claude -p 回填 run {run_id} 退出码 {proc.returncode}"
             if tail:
                 msg = f"{msg}：{tail}"
             raise RuntimeError(msg)
-        return proc.stdout
+        return stdout
 
     return _spawn
 

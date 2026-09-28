@@ -41,6 +41,7 @@ from core.knowledge_backfill import (
     commit_pathspec,
     default_spawn,
     discard_knowledge_changes,
+    knowledge_distill_lock,
     load_knowledge_core,
     resolve_commit,
     scale_stats,
@@ -59,7 +60,8 @@ GRAPH_ARTIFACTS = ("graph.html", "GRAPH_REPORT.md", "graph.json")
 LINE_CAP = 150
 # 规模趋势「需精简」阈值：总行数相对上次体检增长超 +10%
 GROWTH_FLAG_RATIO = 0.10
-# 语义项单轮转写 run 数上限（误报进 run 由 LLM 终判，但需封顶控成本）
+# 语义项单轮转写 run 数上限（误报进 run 由 LLM 终判，但需封顶控成本）；
+# 超出部分不静默丢弃，由 run_audit 转入体检报告待人工明细留痕
 MAX_SEMANTIC_RUNS = 10
 # graphify 单次生成硬超时（秒）
 GRAPH_TIMEOUT_SECONDS = 1800
@@ -371,7 +373,9 @@ def _normalize_rule(line: str) -> str:
 
 def _scan_semantic(pages: list[dict]) -> list[dict]:
     """矛盾/重复初筛（宁松勿紧）：同主题词不同数值 → 矛盾候选；跨页近似/相同
-    规则 → 重复候选。LLM 在转写 run 里终判，误报由「判无矛盾」零改动收场。"""
+    规则 → 重复候选。LLM 在转写 run 里终判，误报由「判无矛盾」零改动收场。
+    返回全部候选（不截断）：单轮转写条数上限由 run_audit 按 MAX_SEMANTIC_RUNS
+    截断，并把溢出候选转入待人工明细，不在本函数静默丢弃。"""
     entries: list[dict] = []
     for page in pages:
         for rule in _rule_lines(page["text"]):
@@ -433,7 +437,7 @@ def _scan_semantic(pages: list[dict]) -> list[dict]:
                 }
             )
     findings.sort(key=lambda f: (f["kind"], f["a"]["page"], f["b"]["page"]))
-    return findings[:MAX_SEMANTIC_RUNS]
+    return findings
 
 
 # ── 分级处置 ─────────────────────────────────────────────────────────────
@@ -601,101 +605,140 @@ def run_audit(project_root, logger=None, spawn: Optional[Callable] = None) -> di
 
     scan = _scan_pages(project_root)
     scan["adr"] = _scan_adrs(project_root)
-    semantic = _scan_semantic(scan["pages"])
+    semantic_all = _scan_semantic(scan["pages"])
 
     counts = {"passed": 0, "fixed": 0, "rewritten": 0, "pending_manual": 0}
     details: dict[str, list] = {"fixed": [], "rewritten": [], "manual": [], "no_conflict": []}
 
-    # ── 机械自修（直修直提交） ──
-    fixed = _apply_mechanical(project_root, scan)
-    if fixed:
-        ok, violations = _validate_with_repair(
-            project_root,
-            validate,
-            spawn,
-            "",
-            f"ka-fix-{int(time.time())}",
-            repair_rounds=0,  # 机械自修无 run 语境：只验不改（显式声明）
+    # 语义初筛截断显式留痕：溢出候选不静默丢弃，超出单轮转写上限的部分转入
+    # 待人工明细（报告呈现为「共 N 条、本轮仅转写前 10 条、其余人工核查」），
+    # 体检报告不再对被截断的矛盾/重复候选呈现为「无更多语义发现」。
+    semantic = semantic_all[:MAX_SEMANTIC_RUNS]
+    if len(semantic_all) > MAX_SEMANTIC_RUNS:
+        counts["pending_manual"] += 1
+        details["manual"].append(
+            f"语义初筛候选共 {len(semantic_all)} 条，本轮仅转写前 {MAX_SEMANTIC_RUNS} 条，"
+            f"其余 {len(semantic_all) - MAX_SEMANTIC_RUNS} 条请人工核查"
         )
-        if ok:
-            summary = (
-                f"悬空溯源 {sum(1 for f in fixed if '悬空' in f)} 处"
-                f"/格式 {sum(1 for f in fixed if '格式' in f)} 页"
-                f"/ADR 索引 {sum(1 for f in fixed if '索引' in f)} 项"
+
+    # ── 机械自修（直修直提交） ──
+    # 写段取蒸馏锁：与 DistillManager / run_backfill 共用 .fenix/knowledge-distill.lock
+    # flock 单写者——audit 车道（fenixd 主循环挂载，与 DistillManager 同进程）
+    # 与归档事件触发的蒸馏 run 并发时，flock 对同进程第二个 fd 同样互斥，本段
+    # 的回滚/提交与蒸馏 run 的放弃/提交串行，任一方的 discard 不再清掉对方刚
+    # 写入且未提交的产出；写段内不经 DistillManager 任何加锁路径（validate 与
+    # 提交工具均无锁），无自阻塞风险。
+    with knowledge_distill_lock(project_root):
+        # 修复前违规快照：提交闸门只否决「本轮修复新引入的违规」。机械项只修
+        # 悬空溯源/格式/ADR index 三类，真相源里脚本修不了的既有违规（marker
+        # 缺失等报告项、kebab 名、链接失配、ADR 正文改写……）若一并否决，单个
+        # 报告类病灶就会令整轮机械修复被回滚、机械车道被单点病灶长期空转——
+        # 修复前后违规清单取差集，既有违规不拦提交，仍走各自报告/待人工路径。
+        before_violations = {str(v) for v in (validate(project_root) or [])}
+        fixed = _apply_mechanical(project_root, scan)
+        if fixed:
+            _, violations = _validate_with_repair(
+                project_root,
+                validate,
+                spawn,
+                "",
+                f"ka-fix-{int(time.time())}",
+                repair_rounds=0,  # 机械自修无 run 语境：只验不改（显式声明）
             )
-            try:
-                commit(project_root, [KNOWLEDGE_DIR], f"[fenix] knowledge: audit fix {summary}")
-            except Exception as e:  # noqa: BLE001 - 提交失败 fail-open（内容已在盘上）
-                log.warning("knowledge", f"audit 机械修复提交失败（fail-open）：{e}")
-            counts["fixed"] = len(fixed)
-            details["fixed"] = fixed
-        else:
-            discard_knowledge_changes(project_root)
-            counts["pending_manual"] += 1
-            details["manual"].append(
-                f"机械修复后校验仍违规，已回滚：{violations[:3]}"
-            )
+            new_violations = [v for v in violations if v not in before_violations]
+            if not new_violations:
+                summary = (
+                    f"悬空溯源 {sum(1 for f in fixed if '悬空' in f)} 处"
+                    f"/格式 {sum(1 for f in fixed if '格式' in f)} 页"
+                    f"/ADR 索引 {sum(1 for f in fixed if '索引' in f)} 项"
+                )
+                try:
+                    commit(
+                        project_root,
+                        [KNOWLEDGE_DIR],
+                        f"[fenix] knowledge: audit fix {summary}",
+                    )
+                except Exception as e:  # noqa: BLE001 - 提交失败 fail-open（内容已在盘上）
+                    log.warning("knowledge", f"audit 机械修复提交失败（fail-open）：{e}")
+                counts["fixed"] = len(fixed)
+                details["fixed"] = fixed
+            else:
+                discard_knowledge_changes(project_root)
+                counts["pending_manual"] += 1
+                details["manual"].append(
+                    f"机械修复引入新违规，已回滚：{new_violations[:3]}"
+                )
 
     # ── 语义转写（矛盾/重复 → 定向蒸馏 run） ──
     for idx, finding in enumerate(semantic, 1):
-        prompt = build_audit_prompt(
-            finding["kind"],
-            _context_block("页面甲", {
-                "page": finding["a"]["page"],
-                "rule": finding["a"]["rule"],
-                "text": _page_text_by_rel(project_root, finding["a"]["page"]),
-            }),
-            _context_block("页面乙", {
-                "page": finding["b"]["page"],
-                "rule": finding["b"]["rule"],
-                "text": _page_text_by_rel(project_root, finding["b"]["page"]),
-            }),
-        )
-        run_id = f"ka-rewrite{idx}-{int(time.time())}"
-        # 提交/回滚纪律以 spec/knowledge/ 的 git dirty 状态为唯一依据；
-        # carryover 是本轮开始前已存在的未提交改动（如机械段提交失败遗留的
-        # 已验证产出），失败回滚只作用于本轮新触达的文件。
-        carryover = _knowledge_dirty_files(project_root)
-        try:
-            spawn(prompt, run_id)
-            ok, violations = _validate_with_repair(project_root, validate, spawn, prompt, run_id)
-        except Exception as e:  # noqa: BLE001 - 单个转写失败不阻塞其余
-            ok, violations = False, [f"转写 run 失败：{e}"]
-        dirty_now = _knowledge_dirty_files(project_root)
-        if not ok:
-            # 只回滚本轮触达的文件，不连带 carryover；本轮若改到 carryover
-            # 在场文件则无法拆分——清掉本轮文件后仍违规时整体回滚（carryover
-            # 里的机械产出是确定性的，下一轮体检会重建）。
-            _discard_paths(project_root, sorted(dirty_now - carryover))
-            if dirty_now & carryover and [str(v) for v in (validate(project_root) or [])]:
-                _discard_paths(project_root, sorted(dirty_now & carryover))
-            counts["pending_manual"] += 1
-            details["manual"].append(
-                f"{finding['kind']} 转写失败（{finding['a']['page']} × {finding['b']['page']}）："
-                f"{violations[:2]}，已登记 todo.md"
+        # 写段取蒸馏锁（同机械段）：每次转写迭代的 spawn→validate→提交/回滚
+        # 整体与 DistillManager / run_backfill 串行（与 run_backfill 批次同款
+        # 粒度），转写产出在提交前不再可能被并发蒸馏 run 的 discard 清掉。
+        with knowledge_distill_lock(project_root):
+            prompt = build_audit_prompt(
+                finding["kind"],
+                _context_block("页面甲", {
+                    "page": finding["a"]["page"],
+                    "rule": finding["a"]["rule"],
+                    "text": _page_text_by_rel(project_root, finding["a"]["page"]),
+                }),
+                _context_block("页面乙", {
+                    "page": finding["b"]["page"],
+                    "rule": finding["b"]["rule"],
+                    "text": _page_text_by_rel(project_root, finding["b"]["page"]),
+                }),
             )
-            append_todo_line(
-                project_root,
-                f"audit 语义项转写失败：{finding['kind']}"
-                f"（{finding['a']['page']} × {finding['b']['page']}），请人工核查",
-            )
-            continue
-        if not dirty_now:
-            # 「判无矛盾」零改动收场：dirty 面向整个真相源目录，转写 run 把
-            # 修正落到涉事两页之外的第三页同样会被下方提交收编，不会滞留
-            # 工作区被误判为零改动。
-            counts["passed"] += 1
-            details["no_conflict"].append(
-                f"{finding['kind']}（{finding['a']['page']} × {finding['b']['page']}）：判无矛盾"
-            )
-            continue
-        summary = f"{finding['kind']} {finding['a']['page']} × {finding['b']['page']}"
-        try:
-            commit(project_root, [KNOWLEDGE_DIR], f"[fenix] knowledge: audit rewrite {summary}")
-        except Exception as e:  # noqa: BLE001
-            log.warning("knowledge", f"audit 转写提交失败（fail-open）：{e}")
-        counts["rewritten"] += 1
-        details["rewritten"].append(summary)
+            run_id = f"ka-rewrite{idx}-{int(time.time())}"
+            # 提交/回滚纪律以 spec/knowledge/ 的 git dirty 状态为唯一依据；
+            # carryover 是本轮开始前已存在的未提交改动（如机械段提交失败遗留的
+            # 已验证产出），失败回滚只作用于本轮新触达的文件。
+            carryover = _knowledge_dirty_files(project_root)
+            try:
+                spawn(prompt, run_id)
+                ok, violations = _validate_with_repair(
+                    project_root, validate, spawn, prompt, run_id
+                )
+            except Exception as e:  # noqa: BLE001 - 单个转写失败不阻塞其余
+                ok, violations = False, [f"转写 run 失败：{e}"]
+            dirty_now = _knowledge_dirty_files(project_root)
+            if not ok:
+                # 只回滚本轮触达的文件，不连带 carryover；本轮若改到 carryover
+                # 在场文件则无法拆分——清掉本轮文件后仍违规时整体回滚（carryover
+                # 里的机械产出是确定性的，下一轮体检会重建）。
+                _discard_paths(project_root, sorted(dirty_now - carryover))
+                if dirty_now & carryover and [str(v) for v in (validate(project_root) or [])]:
+                    _discard_paths(project_root, sorted(dirty_now & carryover))
+                counts["pending_manual"] += 1
+                details["manual"].append(
+                    f"{finding['kind']} 转写失败（{finding['a']['page']} × {finding['b']['page']}）："
+                    f"{violations[:2]}，已登记 todo.md"
+                )
+                append_todo_line(
+                    project_root,
+                    f"audit 语义项转写失败：{finding['kind']}"
+                    f"（{finding['a']['page']} × {finding['b']['page']}），请人工核查",
+                )
+                continue
+            if not dirty_now:
+                # 「判无矛盾」零改动收场：dirty 面向整个真相源目录，转写 run 把
+                # 修正落到涉事两页之外的第三页同样会被下方提交收编，不会滞留
+                # 工作区被误判为零改动。
+                counts["passed"] += 1
+                details["no_conflict"].append(
+                    f"{finding['kind']}（{finding['a']['page']} × {finding['b']['page']}）：判无矛盾"
+                )
+                continue
+            summary = f"{finding['kind']} {finding['a']['page']} × {finding['b']['page']}"
+            try:
+                commit(
+                    project_root,
+                    [KNOWLEDGE_DIR],
+                    f"[fenix] knowledge: audit rewrite {summary}",
+                )
+            except Exception as e:  # noqa: BLE001
+                log.warning("knowledge", f"audit 转写提交失败（fail-open）：{e}")
+            counts["rewritten"] += 1
+            details["rewritten"].append(summary)
 
     leftover = _knowledge_dirty_files(project_root)
     if leftover:

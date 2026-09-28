@@ -131,6 +131,14 @@ class Logger:
         # 日志静默丢失。handler 生命周期归各自实例的 close() 管理。
         for h in list(self._python_logger.handlers):
             self._python_logger.removeHandler(h)
+        # 已知局限（code-review item 9ed664019b2d）：摘除之后全局日志器只剩
+        # 最后构造实例的 handler，裸 logging.getLogger("fenixd.*") 子日志器
+        # （core 下 30 余处，如 archive_commit.py）自身无 handler，按传播语义
+        # 其记录会上溯串写进最后构造项目的 fenixd.log，生效级别也随最后实例
+        # 的 _level 漂移。进程内没有可靠的「当前项目」上下文可供按项目路由，
+        # 保留多实例 handler 又会向所有项目扇出串写，故维持 last-wins 并在此
+        # 明示：core 代码需要落盘日志时统一走 Logger 实例，勿依赖裸
+        # getLogger("fenixd.*") 通道（其输出项目归属不确定）。
 
         # File handler with rotation（FlockRotatingFileHandler：多进程共写安全的轮转）
         log_file = self.log_dir / "fenixd.log"

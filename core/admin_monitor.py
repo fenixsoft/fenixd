@@ -26,6 +26,7 @@ daemon 内独立线程周期性读取本地数据（STATE.md、.fenix/runs/ 转�
 
 import hashlib
 import json
+import os
 import re
 import subprocess
 import tempfile
@@ -36,7 +37,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from .admin_store import AdminStore, SIGNAL, ESCALATION, DISPOSITION
+from .admin_store import AdminStore, SIGNAL, ESCALATION, DISPOSITION, evidence_project
 from .alert_lifecycle import attach_trigger, find_resolvable
 
 # add-blocked-reverify-lane D2：env 阻塞复位判定与复位路径常量
@@ -1909,13 +1910,10 @@ class AdminMonitor:
                 # （非常规分支名退化为仅靠 evidence）时同样从「项目名=」解析。
                 "build_artifact_paths_missing",
             ):
-                # 从 evidence 提取项目名（格式: "项目名=<name>; ..."）
-                evidence = rec.get("evidence") or ""
-                for part in evidence.split(";"):
-                    part = part.strip()
-                    if part.startswith("项目名="):
-                        spec = part.split("=", 1)[1].strip()
-                        break
+                # 从 evidence 提取项目名（格式: "项目名=<name>; ..."）。
+                # 「项目名=」字段解析单源：core.admin_store.evidence_project
+                # （原内联副本已收敛，code_fix / mergeback / settings_routes 同款）。
+                spec = evidence_project(rec.get("evidence") or "") or None
             if not spec:
                 continue
             # 终态守卫（fix-family-explosion-loop 2026-08-28）：信号指向的 spec 若已
@@ -4654,6 +4652,11 @@ class AdminMonitor:
         try:
             with open(fd, "w", encoding="utf-8") as f:
                 json.dump(history, f, ensure_ascii=False)
+                # 与 store 层落盘口径一致（AdminStore._write_unlocked 同款）：
+                # flush+fsync 后才 replace，崩溃不丢最近一轮 flapping 历史
+                # （写盘仅发生在边界时刻，开销可忽略）。
+                f.flush()
+                os.fsync(f.fileno())
             tmp_path.replace(self._history_path)
         finally:
             if tmp_path.exists():
@@ -4701,6 +4704,15 @@ class AdminMonitor:
                 changed = True
             elif not isinstance(rec, dict) or rec.get("inactive_since") is not None:
                 # 暂离归来：重写记录时丢弃过期计时戳（一次性写盘）
+                changed = True
+            elif last_status is None:
+                # code-review 69e57a219b75：rec 为 dict 且含合法 changes 但缺
+                # last_status（手工编辑、旧版本残留）时，上方三分支均不置
+                # changed——内存中已重建的合法形态（见下方 history[name] = ...）
+                # 不落盘，下一轮重读仍是畸形形状，该 spec 后续真实状态切换持续
+                # 被当首见建档漏记（flapping 失明），直到另一 spec 恰好触发写盘
+                # 才自愈。此处置位使修复形态当轮落盘（与其他守卫分支同款的一次性
+                # 自愈写盘，不破坏「写盘只发生在边界时刻」口径）。
                 changed = True
             # code-review 9063aad172d4：裁剪不再只挂在追加分支——每轮对读到的
             # changes 统一按 cutoff 过滤后再回写，spec 长期停留同一状态时旧条目

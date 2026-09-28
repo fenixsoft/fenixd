@@ -1400,9 +1400,13 @@ def _apply_test_targets(spec, test_targets: list):
 class _with_test_targets_env:
     """回归执行窗口内导出 ``FENIX_TEST_TARGETS``（同值双轨，{port} 先例）。
 
-    回归执行被主机级锁串行化、且该变量仅被声明引用它的回归命令消费——窗口
-    外的 daemon 并发子进程读到该变量亦无消费方（inert）。``targets`` 为空
-    时不触碰进程环境。
+    导出落在进程级 ``os.environ``，窗口覆盖整个 ``run_regression`` 调用——
+    含主机级锁的等待期（最长 600s）。等待窗内同进程其他车道（verify /
+    dashboard 手动 / admin 定时回归）可正常起跑自身回归，其 regression.cmd
+    若声明引用该变量（二选一契约同样适用于它们），会继承本批收窄后的目标
+    集——「并发子进程 inert」的论断仅对未声明引用该变量的命令成立，不覆盖
+    上述同进程声明引用的车道（收窄到锁后 spawn 点须改 core/regression.py，
+    见 item 27971a0d9dd3）。``targets`` 为空时不触碰进程环境。
     """
 
     def __init__(self, test_targets):
@@ -1412,6 +1416,7 @@ class _with_test_targets_env:
     def __enter__(self):
         if self._value:
             self._prev = os.environ.get(CODE_FIX_TEST_TARGETS_ENV)
+            # [fenix-ignore:27971a0d9dd3] 进程级导出窗口含回归锁等待期，同进程并发车道 cmd 声明引用该变量会继承本批目标集；收窄到锁后 spawn 点须改 core/regression.py（跨组），暂维持现状
             os.environ[CODE_FIX_TEST_TARGETS_ENV] = self._value
         return self
 

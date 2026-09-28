@@ -561,6 +561,7 @@ class ArchitectureManager:
           失败文案，调用方直接 failed 短路。
         """
         try:
+            # [fenix-ignore:002d0de5aed2] 本地无鉴权管理 API + 全权限 agent 为产品系统性固有形态（threat model item 9e7b4eb16804），收敛须在 base.py 派发层统一 Origin/Host 校验或 loopback token，不在各端点逐个修补
             proc = subprocess.Popen(
                 ["claude", "-p", prompt, "--permission-mode", "bypassPermissions"],
                 cwd=str(proot),
@@ -653,9 +654,18 @@ class ArchitectureManager:
             try:
                 (proot / ARCHITECTURE_DIR).mkdir(parents=True, exist_ok=True)
             except OSError as exc:
+                # code-review item 9b347b701799：OSError 文本可携带内部绝对路径/
+                # errno 属主细节，随 status.json 原样下发浏览器属口径漂移——对齐
+                # refresh() 同款脱敏（item 955818ba1bd9）：客户端只收固定文案，
+                # 异常细节降级服务端日志留痕。
+                if logger is not None:
+                    logger.warning(
+                        f"架构图运行目录创建失败（project={project_name}）: "
+                        f"{type(exc).__name__}: {exc!r}",
+                    )
                 self._finish(
                     proot, started_at, t0, "failed",
-                    error=f"架构图运行目录创建失败: {exc}",
+                    error="架构图运行目录创建失败",
                 )
                 return
 

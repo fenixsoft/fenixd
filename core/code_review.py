@@ -798,7 +798,14 @@ def collect_manifest(project_root, scope: str, window_start: Optional[datetime] 
     """
     if scope == "full":
         raw = _git(project_root, ["ls-files"])
-        files = [line for line in raw.splitlines() if line.strip()]
+        # ls-files 列举的是索引条目：工作树中已删除但未 stage 删除的路径
+        # 仍会进入全仓清单，按工作树存在性剔除，兑现与下方 window scope
+        # 同款「不让审查对已删除文件空转」的排除语义。
+        # code-review item 3b306434100d。
+        files = [
+            line for line in raw.splitlines()
+            if line.strip() and (Path(project_root) / line.strip()).is_file()
+        ]
     else:
         # 窗口：window_start 之后变更的文件（--since 走本地时间）。
         # 加 --diff-filter=ACMR：排除 D（删除）与其它无内容形态——已删除文件
@@ -865,25 +872,16 @@ def write_request_result(project_root, requested_at, status, reason=None,
         "finished_at": datetime.now(timezone.utc).isoformat(),
     }
     result_path = Path(project_root) / CODE_REVIEW_REQUEST_RESULT
-    tmp_path = result_path.with_name(result_path.name + ".tmp")
     try:
-        result_path.parent.mkdir(parents=True, exist_ok=True)
-        with tmp_path.open("w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(str(tmp_path), str(result_path))
+        # _atomic_write：mkstemp 唯一临时名 + fsync + os.replace，并发写方
+        # 不共享固定名 .tmp，杜绝交错覆写（对齐本模块既有原子写模式，
+        # 目录创建与残留 tmp 清理由其内部兜底）。code-review item 629d47de2b54。
+        _atomic_write(result_path, json.dumps(payload, ensure_ascii=False, indent=2))
         return True
     except OSError as e:
         if logger is not None:
             logger.error("code_review", f"code_review 手动触发结果写入失败: {e}")
         return False
-    finally:
-        # replace 成功后 tmp 已不存在；失败路径清掉残留，防 .fenix 堆积零字节 tmp
-        try:
-            tmp_path.unlink()
-        except OSError:
-            pass
 
 
 def read_request_result(project_root) -> dict:

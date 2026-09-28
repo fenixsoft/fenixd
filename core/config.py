@@ -271,13 +271,19 @@ class ConfigLoader:
         """停滞预算数值键归一：正数（integer=True 时须整值），非法回退缺省。
 
         bool 排除与 _normalize_transient_seconds 同口径（bool 是 int 子类，
-        ``true`` 会被 int() 截成 1 静默生效）。
+        ``true`` 会被 int() 截成 1 静默生效）。非有限浮点（.nan/.inf）同回退
+        缺省（code-review item a61ee2b2031e）：nan 使下方 <=0 比较恒 False。
         """
         try:
             val = cls.get(config, key, None)
         except Exception:
             return default
-        if val is None or isinstance(val, bool) or not isinstance(val, (int, float)):
+        if (
+            val is None
+            or isinstance(val, bool)
+            or not isinstance(val, (int, float))
+            or (isinstance(val, float) and not math.isfinite(val))
+        ):
             return default
         if val <= 0:
             return default
@@ -370,8 +376,11 @@ class ConfigLoader:
         展示与生效值不脱节。``transient_backoff_schedule`` 保留字符串形态
         （逗号秒序列），其余四键为 int。
         """
-        agents = config.get("agents") if isinstance(config, dict) else None
-        agents = agents if isinstance(agents, dict) else {}
+        # 段入口经 _segment_or_empty 归一（code-review item a4d95c2e3419）：
+        # agents 整段非 dict（如 agents: [1]）时 ERROR 告警并按空段降级，与
+        # 同族段级读取器（get_admin_config 等）统一降级与告警口径，不再静默
+        # 吞掉脏段按全缺省返回。
+        agents = cls._segment_or_empty(config, "agents")
         return {
             "transient_backoff_schedule": cls.normalize_transient_backoff_schedule(
                 agents.get("transient_backoff_schedule")
@@ -570,7 +579,15 @@ class ConfigLoader:
         # 排除 bool（code-review item e9c679fb1bb3）：bool 是 int 子类，
         # YAML `poll_interval_minutes: true` 会通过 isinstance 校验并以 True 参与
         # 运算（True*60）。显式拒绝 bool。
-        if isinstance(poll, bool) or not isinstance(poll, (int, float)) or poll <= 0:
+        # 非有限浮点同拒（code-review item a61ee2b2031e，范式先例 d9e9a238696f）：
+        # nan 使 <=0 比较恒 False 可穿透校验，event_bus 周期扫描读到 nan 后
+        # time.sleep(nan) 抛 ValueError 冲出扫描线程循环。
+        if (
+            isinstance(poll, bool)
+            or not isinstance(poll, (int, float))
+            or (isinstance(poll, float) and not math.isfinite(poll))
+            or poll <= 0
+        ):
             raise ValueError(f"schedule.poll_interval_minutes must be positive: {poll}")
 
         # Validate agents — max_concurrent / max_retries / max_turns 均为可选，
@@ -596,7 +613,12 @@ class ConfigLoader:
         # get_run_drain_max_seconds 的 min 夹紧兜底，不把缺省值变成地雷）。
         if "run_drain_max_seconds" in agents and agents["run_drain_max_seconds"] is not None:
             rdm = agents["run_drain_max_seconds"]
-            if isinstance(rdm, bool) or not isinstance(rdm, (int, float)) or rdm < 0:
+            if (
+                isinstance(rdm, bool)
+                or not isinstance(rdm, (int, float))
+                or (isinstance(rdm, float) and not math.isfinite(rdm))
+                or rdm < 0
+            ):
                 raise ValueError(
                     f"agents.run_drain_max_seconds must be a non-negative number: {rdm!r}"
                 )
@@ -628,7 +650,12 @@ class ConfigLoader:
         ):
             if field in agents and agents[field] is not None:
                 val = agents[field]
-                if isinstance(val, bool) or not isinstance(val, (int, float)) or val < 0:
+                if (
+                    isinstance(val, bool)
+                    or not isinstance(val, (int, float))
+                    or (isinstance(val, float) and not math.isfinite(val))
+                    or val < 0
+                ):
                     raise ValueError(f"agents.{field} must be a non-negative number: {val!r}")
         if (
             "transient_backoff_schedule" in agents
@@ -730,6 +757,7 @@ class ConfigLoader:
                 if (
                     not isinstance(val, (int, float))
                     or isinstance(val, bool)
+                    or (isinstance(val, float) and not math.isfinite(val))
                     or val <= 0
                 ):
                     raise ValueError(f"admin.{field} must be positive: {val}")
@@ -737,7 +765,12 @@ class ConfigLoader:
         # 与 escalation_cooldown_minutes 同型（负数/非法类型拒绝）。
         if "stuck_silence_minutes" in admin and admin["stuck_silence_minutes"] is not None:
             _ssm = admin["stuck_silence_minutes"]
-            if not isinstance(_ssm, (int, float)) or isinstance(_ssm, bool) or _ssm < 0:
+            if (
+                not isinstance(_ssm, (int, float))
+                or isinstance(_ssm, bool)
+                or (isinstance(_ssm, float) and not math.isfinite(_ssm))
+                or _ssm < 0
+            ):
                 raise ValueError(
                     f"admin.stuck_silence_minutes must be a non-negative number: {_ssm}"
                 )
@@ -751,7 +784,12 @@ class ConfigLoader:
         # 快速停机。负数/非法类型拒绝（读取方 _validated_drain 另有回退兜底）。
         if "shutdown_drain_seconds" in admin and admin["shutdown_drain_seconds"] is not None:
             drain = admin["shutdown_drain_seconds"]
-            if not isinstance(drain, (int, float)) or isinstance(drain, bool) or drain < 0:
+            if (
+                not isinstance(drain, (int, float))
+                or isinstance(drain, bool)
+                or (isinstance(drain, float) and not math.isfinite(drain))
+                or drain < 0
+            ):
                 raise ValueError(
                     f"admin.shutdown_drain_seconds must be a non-negative number: {drain}"
                 )
@@ -1449,9 +1487,14 @@ class ConfigLoader:
         # 合法、drain 负数仍由 max(0, …) 夹 0），回退值与原缺省逐字一致。
         def _num(value, default, conv):
             try:
-                return conv(value)
+                result = conv(value)
             except (TypeError, ValueError):
                 return default
+            # 非有限浮点回退缺省（code-review item a61ee2b2031e）：float(nan)
+            # 不抛异常，nan 直接入返回值使静默窗/巡检间隔比较恒 False。
+            if isinstance(result, float) and not math.isfinite(result):
+                return default
+            return result
 
         # 严格 bool（code-review item 556de743c9af）：bool(...) 会把任何 truthy
         # 非 bool 值（如 YAML 引号串 enabled: "false"）静默转 True、意外启用
@@ -2346,6 +2389,9 @@ class ConfigLoader:
           supervision-judge，随 agents.models 角色集动态扩大）；
         - agent run 键值须为 ≥300 整数（低于下限会截断正常长 run）；
           supervision-judge 键值须为 ≥1 整数（内部轻量判定，不受 300 下限约束）；
+          整值浮点（如 ``900.0``）按整数接受（code-review item 01ae33baf2e6，
+          与 _normalize_transient_seconds 同口径；is_integer() 对 .nan/.inf 恒
+          False，非有限浮点同被拒）；
         - 非法键值**整条忽略**（该键回退全局默认）并打 ERROR，其余合法键正常生效；
           进程不得崩溃（调用方容错）。
 
@@ -2365,7 +2411,15 @@ class ConfigLoader:
                     sorted(cls.TIMEOUT_OVERRIDE_KEYS),
                 )
                 continue
-            if isinstance(val, bool) or not isinstance(val, int):
+            # 整值浮点按整数接受（code-review item 01ae33baf2e6）：与
+            # _normalize_transient_seconds / get_run_infra_breaker_config 同口径，
+            # YAML `900.0`（整值浮点）不再被判非法整条忽略并静默回退全局超时。
+            # is_integer() 对 .nan/.inf 恒 False，非有限浮点同被拒。
+            if (
+                isinstance(val, bool)
+                or not isinstance(val, (int, float))
+                or (isinstance(val, float) and not val.is_integer())
+            ):
                 _logger.error(
                     "agents.timeout_overrides.%s=%r 非法（应为整数秒），"
                     "该键被忽略并回退全局默认",
@@ -2382,7 +2436,7 @@ class ConfigLoader:
                     min_allowed,
                 )
                 continue
-            out[key] = val
+            out[key] = int(val)
         return out
 
     @classmethod
