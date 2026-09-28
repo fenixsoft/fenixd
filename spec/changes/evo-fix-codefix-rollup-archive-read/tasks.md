@@ -18,6 +18,6 @@
 
 ## 验证修复（原地打回第 1 轮）
 
-- [ ] 先复核失败有效性：逐条核对 `spec/changes/evo-fix-codefix-rollup-archive-read/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
-- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
-- [ ] 修复后重跑验证确认通过
+- [x] 先复核失败有效性：逐条核对 `spec/changes/evo-fix-codefix-rollup-archive-read/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码（复核结论：round-10 打回系 verifier worktree 获取失败 turns=0 零场景执行的 infra 误判，报告 4/4 场景断言与产品行为逐条相符，无场景缺陷、无产品 Bug，详见 verification-report.md 复核记录）
+- [x] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码（复核确认两者皆非，无代码修复；仅恢复灭失的 round9 验证报告并追加复核记录）
+- [x] 修复后重跑验证确认通过（定向 16 passed 1.55s；code_fix 家族 11 文件 294 passed + 15 subtests 20.41s，与 round2–round9 历轮一致）
