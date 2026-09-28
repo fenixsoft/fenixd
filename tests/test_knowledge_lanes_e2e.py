@@ -196,7 +196,7 @@ def test_e2e_backfill_bootstrap_batches_convergence(e2e_root, monkeypatch):
 
 # ── audit 车道端到端（植入病灶 → 机械修 + 语义转写 → 报告/日戳） ──────────
 
-ALPHA = """<!-- knowledge: capability=alpha rev=1 sources=arc-a1,arc-zombie -->
+ALPHA = """<!-- knowledge: capability=alpha rev=1 sources=arc-a1 -->
 # alpha
 
 ## 规则
@@ -207,7 +207,6 @@ ALPHA = """<!-- knowledge: capability=alpha rev=1 sources=arc-a1,arc-zombie -->
 ## 溯源
 
 - spec/archive/arc-a1
-- spec/archive/arc-zombie
 """
 
 BETA = """<!-- knowledge: capability=beta rev=1 sources=arc-b1 -->
@@ -223,13 +222,47 @@ BETA = """<!-- knowledge: capability=beta rev=1 sources=arc-b1 -->
 - spec/archive/arc-b1
 """
 
+GAMMA = """<!-- knowledge: capability=gamma rev=1 sources=arc-a1 -->
+# gamma
+
+## 规则
+
+- 禁止明文记录日志。
+
+## 溯源
+
+- spec/archive/arc-a1
+"""
+
+# 机械病灶独立成页（2.3：机械自修提交涉及的页，其上疑点同批标 superseded
+# 跳过）——悬空溯源不能与语义疑点共用页，否则转写候选到不了复核。
+DELTA = """<!-- knowledge: capability=delta rev=1 sources=arc-a1,arc-zombie -->
+# delta
+
+## 规则
+
+- 重试退避基数:5 秒。
+
+## 溯源
+
+- spec/archive/arc-a1
+- spec/archive/arc-zombie
+"""
+
 
 def seed_knowledge_with_defects(root: Path) -> None:
+    # 在档归档（arc-zombie 刻意缺席 = delta 的悬空病灶）；不播种会让 arc-a1/
+    # arc-b1 也悬空，机械段纠偏全部页面，语义疑点全数 superseded 到不了复核
+    for arc in ("arc-a1", "arc-b1"):
+        (root / "spec" / "archive" / arc).mkdir(parents=True, exist_ok=True)
+        (root / "spec" / "archive" / arc / "proposal.md").write_text("x\n", encoding="utf-8")
     kdom = root / "spec" / "knowledge" / "domains" / "dom-a"
     kdom.mkdir(parents=True)
     (root / "spec" / "knowledge" / "index.md").write_text("# 真相源\n", encoding="utf-8")
     (kdom / "alpha.md").write_text(ALPHA, encoding="utf-8")
     (kdom / "beta.md").write_text(BETA, encoding="utf-8")
+    (kdom / "gamma.md").write_text(GAMMA, encoding="utf-8")
+    (kdom / "delta.md").write_text(DELTA, encoding="utf-8")
     adr = root / "spec" / "knowledge" / "adr"
     adr.mkdir()
     (adr / "index.md").write_text("", encoding="utf-8")
@@ -244,22 +277,26 @@ def test_e2e_audit_through_daily_checkpoint(e2e_root, monkeypatch):
 
     def spawn(prompt, run_id):
         assert "定向转写" in prompt
-        # 按初筛病灶类型定向重写受影响页（beta 统一口径 / 去重复）
-        beta = root / "spec/knowledge/domains/dom-a/beta.md"
-        text = beta.read_text(encoding="utf-8")
+        # 按初筛病灶类型定向重写受影响页（beta 统一口径 / gamma 去重复）
+        kdom = root / "spec/knowledge/domains/dom-a"
         if "contradiction" in prompt:
+            beta = kdom / "beta.md"
+            text = beta.read_text(encoding="utf-8")
             text = text.replace("- 全局请求超时:600 秒。", "- 全局请求超时:300 秒。")
+            beta.write_text(text, encoding="utf-8")
         elif "duplicate" in prompt:
+            gamma = kdom / "gamma.md"
+            text = gamma.read_text(encoding="utf-8")
             text = text.replace("- 禁止明文记录日志。\n", "")
-        beta.write_text(text, encoding="utf-8")
+            gamma.write_text(text, encoding="utf-8")
         return "ok"
 
     config = make_config(root, graph_enabled=False)
 
-    def audit_lane(project_root, logger=None):
+    def audit_lane(project_root, logger=None, config=None):
         # 经检查点走真 run_audit，LLM 边界（spawn）注入替身；不注入会落到
-        # 生产 default_spawn 真跑 claude 子进程
-        return ka.run_audit(project_root, logger=logger, spawn=spawn)
+        # 生产 default_spawn 真跑 claude 子进程（config 形参对齐挂载点透传）
+        return ka.run_audit(project_root, logger=logger, spawn=spawn, config=config)
 
     result = ka.knowledge_daily_check(root, config=config, audit_lane=audit_lane)
 
@@ -281,9 +318,10 @@ def test_e2e_audit_through_daily_checkpoint(e2e_root, monkeypatch):
     assert _git(root, "status", "--porcelain", "--", "spec/knowledge").strip() == ""
     beta_final = (root / "spec/knowledge/domains/dom-a/beta.md").read_text(encoding="utf-8")
     assert "600" not in beta_final
-    assert "禁止明文记录日志" not in beta_final
-    alpha_final = (root / "spec/knowledge/domains/dom-a/alpha.md").read_text(encoding="utf-8")
-    assert "arc-zombie" not in alpha_final
+    gamma_final = (root / "spec/knowledge/domains/dom-a/gamma.md").read_text(encoding="utf-8")
+    assert "禁止明文记录日志" not in gamma_final  # 重复规则已从 gamma 去除
+    delta_final = (root / "spec/knowledge/domains/dom-a/delta.md").read_text(encoding="utf-8")
+    assert "arc-zombie" not in delta_final  # 悬空溯源 arc-zombie 被机械清除
     # 体检报告计数 + 日戳落盘
     report = (root / ".fenix" / "knowledge_audit_report.md").read_text(encoding="utf-8")
     assert "转写 2" in report
@@ -292,9 +330,9 @@ def test_e2e_audit_through_daily_checkpoint(e2e_root, monkeypatch):
     # 同自然日第二周期：防重不再执行
     calls: list = []
 
-    def counting_lane(project_root, logger=None):
+    def counting_lane(project_root, logger=None, config=None):
         calls.append(1)
-        return ka.run_audit(project_root, logger=logger)
+        return ka.run_audit(project_root, logger=logger, config=config)
 
     ka.knowledge_daily_check(root, config=config, audit_lane=counting_lane)
     assert calls == []

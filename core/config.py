@@ -1922,19 +1922,27 @@ class ConfigLoader:
     def get_knowledge_lane_config(cls, config: Dict[str, Any]) -> Dict[str, Any]:
         """Return the ``knowledge.*`` 维护车道生效值（add-knowledge-atlas-maintenance D4）。
 
-        - audit_enabled / graph_enabled：bool，缺省 True（纯增量：audit 车道与
-          graph 生成默认随每日检查点开启）。
-        - 非法值（非 bool）不阻塞加载/热更新：WARNING 告警并回退缺省 True，
-          与 get_code_review_fix_config 的 targeted_regression 同口径——解析级
-          容错，语义破坏由消费方门控兜底。
+        - audit_enabled / graph_enabled / no_conflict_exempt：bool，缺省 True
+          （纯增量：audit 车道与 graph 生成默认随每日检查点开启；
+          no_conflict_exempt 为疑点台账的内容豁免开关，
+          add-knowledge-audit-finding-ledger 4.1）。
+        - escalate_after_rounds：正整数，缺省 2（同一疑点连续 N 轮复核均无
+          确定性判定即升级待人工；豁免解冻重派不计入升级轮次）。
+        - 非法值不阻塞加载/热更新：WARNING 告警并回退缺省（bool 键同
+          get_code_review_fix_config 的 targeted_regression 口径——解析级
+          容错，语义破坏由消费方门控兜底）。
         - 段入口经 _segment_or_empty 归一：整段非 dict 时该段按空段降级（ERROR
-          已由助手记录），两键取缺省 True。
+          已由助手记录），各键取缺省值。
         - ``enabled``（蒸馏总开关）归前置 SPEC add-knowledge-atlas 的解析器所有，
-          本方法不触碰，合并后两键同段共存。
+          本方法不触碰，合并后各键同段共存。
         """
         knowledge = cls._segment_or_empty(config, "knowledge")
         result = {}
-        for key, default in (("audit_enabled", True), ("graph_enabled", True)):
+        for key, default in (
+            ("audit_enabled", True),
+            ("graph_enabled", True),
+            ("no_conflict_exempt", True),
+        ):
             val = knowledge.get(key, default)
             if not isinstance(val, bool):
                 _logger.warning(
@@ -1945,6 +1953,16 @@ class ConfigLoader:
                 )
                 val = default
             result[key] = val
+        rounds = knowledge.get("escalate_after_rounds", 2)
+        # bool 是 int 子类：True/False 不当轮次数（与 regression.enabled 的严格
+        # bool 同理，防 YAML 引号串/布尔值被静默当 1/0）
+        if not isinstance(rounds, int) or isinstance(rounds, bool) or rounds < 1:
+            _logger.warning(
+                "knowledge.escalate_after_rounds 非法值 %r（非正整数），回退缺省 2",
+                rounds,
+            )
+            rounds = 2
+        result["escalate_after_rounds"] = rounds
         return result
 
     @classmethod
