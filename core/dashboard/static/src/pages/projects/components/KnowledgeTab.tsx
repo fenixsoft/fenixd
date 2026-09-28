@@ -14,7 +14,7 @@
 //   经 resolveKnowledgePath 基于当前页目录归一化；外部链接走 SafeLink 白名单。
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AnchorHTMLAttributes, FC, ReactNode } from 'react';
-import { Button, Card, Space, Spin, Tag, Typography } from 'antd';
+import { Breadcrumb, Button, Card, Space, Spin, Tag, Typography } from 'antd';
 import Markdown from 'react-markdown';
 import type { Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -80,6 +80,29 @@ export function adrDisplayName(file: string): string {
   const stem = file.replace(/\.md$/, '');
   const m = /^(ADR-\d{3})-(.*)$/.exec(stem);
   return m ? `${m[1]} ${m[2]}` : stem;
+}
+
+/** 剥离 Markdown 中的 HTML 注释：marker（capability/rev/sources）是机器
+ *  接口，对人类读者隐形（渲染层剥离，源文件不动）。 */
+export function stripHtmlComments(md: string): string {
+  return md
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+/** 面包屑：真相源内路径 → 层级显示文本（替代裸目录路径）。
+ *  'domains/<域>/<能力>.md' → ['总目录','<域>','<能力>']；
+ *  'adr/ADR-001-x.md' → ['总目录','ADR','ADR-001-x']。 */
+export function knowledgeCrumbs(path: string): string[] {
+  const segs = path
+    .replace(/\.md$/, '')
+    .split('/')
+    .filter(Boolean)
+    .filter((s) => s !== '_domain'); // 域导航页：域名本身即当前层级
+  if (segs[0] === 'domains') return ['总目录', ...segs.slice(1)];
+  if (segs[0] === 'adr') return ['总目录', 'ADR', ...segs.slice(1)];
+  return ['总目录', ...segs];
 }
 
 /** ADR 列表条目文本：标题字段优先（'ADR-001 <标题>'，编号取自文件名前缀），
@@ -277,12 +300,13 @@ export default function KnowledgeTab({ project, active }: KnowledgeTabProps) {
         <Space direction="vertical" style={{ width: '100%' }} size={12}>
           <Space>
             {backToIndex}
-            <Typography.Text type="secondary" data-testid="knowledge-page-path">
-              {view.path}
-            </Typography.Text>
+            <Breadcrumb
+              data-testid="knowledge-page-path"
+              items={knowledgeCrumbs(view.path).map((title) => ({ title }))}
+            />
           </Space>
           <Markdown remarkPlugins={[remarkGfm]} components={linkComponents}>
-            {view.content}
+            {stripHtmlComments(view.content)}
           </Markdown>
         </Space>
       </Card>
@@ -302,7 +326,7 @@ export default function KnowledgeTab({ project, active }: KnowledgeTabProps) {
           <>
             <div data-testid="knowledge-index-md">
               <Markdown remarkPlugins={[remarkGfm]} components={linkComponents}>
-                {indexData?.index_md || ''}
+                {stripHtmlComments(indexData?.index_md || '')}
               </Markdown>
             </div>
 
