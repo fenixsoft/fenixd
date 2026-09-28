@@ -121,14 +121,14 @@ def detect_build_artifacts(project_root: Path) -> dict:
                 # Python 项目的常见产物目录。site-packages/ 不列为候选：根级出现
                 # site-packages/ 多为手工摆放的第三方包或 venv 残留而非构建产物，
                 # 而下游 ArtifactPathMatcher 会把命中路径当产物走 merge 自愈/重建
-                # 通道，误列会把语义改动产物化
-                for d in ["dist", "build", "_build"]:
+                # 通道，误列会把语义改动产物化；build/ 同样不列：目录名太通用
+                # （易误报任意同名目录），不作 Python 项目产物候选
+                for d in ["dist", "_build"]:
                     candidate = project_root / d
                     if candidate.is_dir() and any(candidate.iterdir()):
                         if d == "dist":
                             paths_found.add("dist/")
                             sources.append(f"pyproject.toml 存在 + {d}/ 目录非空")
-                        # build/ 目录名太通用（易误报任意同名目录），不作为 Python 项目产物候选
                         elif d == "_build":
                             paths_found.add(f"{d}/")
                             sources.append(f"pyproject.toml 存在 + {d}/ 目录非空")
