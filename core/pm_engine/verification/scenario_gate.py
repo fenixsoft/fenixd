@@ -548,6 +548,23 @@ def _render_scenario_change_section_to_report(pipeline, spec_name: str) -> None:
         _atomic_write_text(report_path, content.rstrip("\n") + "\n" + section + "\n")
     except OSError as e:
         pipeline._context.logger.warning("pm_engine", f"场景集变更小节写回失败 '{spec_name}': {e}")
+        return
+    # verify-report-scenario-section-commit：小节写盘即入库。采纳路径里报告
+    # 闸门的提交先于本函数（pipeline :1120/:948 → transition → :1194/:1034
+    # 渲染）且此后再无提交点，场景段会长期滞留工作区——复用同一 pathspec
+    # 单文件幂等提交器补上该缝（每报告至多一段 → 额外提交至多一次）。失败
+    # 降级由提交器内建（git 失败仅 WARNING、非 git 项目静默跳过），此处再兜
+    # 意外异常：入库动作绝不影响渲染写盘结论与验证主流程。
+    from core.verify_report import _commit_verification_report
+
+    try:
+        _commit_verification_report(
+            pipeline._context.project_root, spec_name, pipeline._context.logger
+        )
+    except Exception as e:  # pragma: no cover - 防御分支（提交器已内建降级）
+        pipeline._context.logger.warning(
+            "pm_engine", f"场景集变更小节入库失败 '{spec_name}': {e}"
+        )
 
 
 def _write_verify_contract_missing(
