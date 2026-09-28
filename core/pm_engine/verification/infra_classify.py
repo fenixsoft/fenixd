@@ -374,6 +374,7 @@ def _append_fail_history(
             except (TypeError, ValueError):
                 continue
         next_round += 1
+        # [fenix-ignore:e2c24507d8e4] 单写者核实成立：三处生产写入均在 daemon 单进程同轮验证结果消费路径（infra 记账/裁决证据拒收/bug-found 每轮互斥只走其一），同 spec 事件处理由 _handling_events + _dispatch_guard_lock 单飞去重，无跨进程写者（dashboard/admin 仅触达 reclassify，不写 fail_history）——read-modify-write 无并发覆写窗口。
         rounds.append(
             {
                 "round": next_round,
@@ -509,6 +510,18 @@ def _normalize_fail_signature(text: str) -> str:
     return re.sub(r"\s+", " ", t).strip()
 
 
+def _read_fail_rounds(entry: dict) -> int:
+    """容错读取 ``_verify_fail_rounds``（reclassify_infra_rounds 三处共用）。
+
+    缺失/脏值（非数值字符串）按 0 计，口径对齐文件内既有
+    try/except (TypeError, ValueError) 写法。
+    """
+    try:
+        return int(entry.get("_verify_fail_rounds", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def reclassify_infra_rounds(
     project_root,
     state_machine,
@@ -544,12 +557,8 @@ def reclassify_infra_rounds(
         ok=False 时 fail_rounds 为当前值（未变化），由调用方按需展示 reason。
     """
     if n <= 0:
-        entry = state_machine.read_one(spec_name) or {}
-        try:
-            cur_rounds = int(entry.get("_verify_fail_rounds", 0) or 0)
-        except (TypeError, ValueError):
-            cur_rounds = 0
-        return {"ok": False, "reason": "n must be > 0", "fail_rounds": cur_rounds, "applied": 0}
+        fail_rounds = _read_fail_rounds(state_machine.read_one(spec_name) or {})
+        return {"ok": False, "reason": "n must be > 0", "fail_rounds": fail_rounds, "applied": 0}
 
     # ── 幂等：按 reclassify_key 去重 ──
     reclassify_key = _hash.sha256(
@@ -570,24 +579,17 @@ def reclassify_infra_rounds(
     )
     if already_applied:
         entry = state_machine.read_one(spec_name) or {}
-        try:
-            cur_rounds = int(entry.get("_verify_fail_rounds", 0) or 0)
-        except (TypeError, ValueError):
-            cur_rounds = 0
         return {
             "ok": True,
             "applied": 0,
-            "fail_rounds": cur_rounds,
+            "fail_rounds": _read_fail_rounds(entry),
             "status": entry.get("status", ""),
             "note": "already applied (idempotent)",
         }
 
     # ── 读当前值 ──
     entry = state_machine.read_one(spec_name) or {}
-    try:
-        current = int(entry.get("_verify_fail_rounds", 0) or 0)
-    except (TypeError, ValueError):
-        current = 0
+    current = _read_fail_rounds(entry)
     applied = min(n, current)
     new_fail_rounds = current - applied
 
