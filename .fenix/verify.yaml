@@ -98,8 +98,19 @@ ready:
 # 项目测试体系 = pytest（tests/ 下 241 个 test_*.py，conftest.py collect_ignore_glob
 # 已排除 fixtures 夹具套件）。全量回归实测 5297 用例 / 254s，故 timeout_seconds
 # 设 1800（7 倍余量）。cmd 走 pytest 原生 --junit-xml 产出 JUnit XML。
+#
+# code-fix 批收尾回归两段式（add-codefix-affinity-batching，2026-09-27 接入）：
+# cmd 值 MUST 整体加引号——尾部 `#{test_targets}` 供框架检测占位符声明
+# （_cmd_has_test_targets 子串命中），不加引号会被 YAML 当行内注释剥掉、
+# 永远判 False 不参与定向化。shell 执行层该 token 位于词首=行内注释，pytest
+# 不可见；定向替换发生在该注释内（无害），实际测试集由
+# ${FENIX_TEST_TARGETS:-tests/} 注入——定向窗口框架导出该环境变量（同值双轨）
+# 展开为触碰面测试路径列表；回退窗口（末批恒全量/映射空集/配置关）环境变量
+# 不在场，POSIX 缺省展开回落 tests/ = 全量。MUST NOT 把 {test_targets} 直接
+# 写进参数位：周期回归窗口字面占位符会传给 pytest 致回归必挂；批收尾回退
+# 窗口已有消毒兜底（fallback-sanitization 替换 tests/），MUST NOT 依赖——参数位写法本身即配置错误。
 regression:
-  cmd: python3 -m pytest tests/ -q --junit-xml=.fenix/regression/junit.xml
+  cmd: "python3 -m pytest ${FENIX_TEST_TARGETS:-tests/} -q --junit-xml=.fenix/regression/junit.xml #{test_targets}"
   output: .fenix/regression/junit.xml
   format: junit
   timeout_seconds: 1800

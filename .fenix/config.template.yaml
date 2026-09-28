@@ -468,11 +468,28 @@ admin:
   #   targeted_retry_max: 3
   #   # 批收尾回归两段式（严格 bool，缺省 true，add-codefix-affinity-
   #   # batching）：true=链内非末批按批触碰面定向回归（verify.yaml
-  #   # regression.cmd 写 {test_targets} 占位符方参与定向化，框架按批内
-  #   # 改动映射测试路径注入，同值导出 FENIX_TEST_TARGETS 环境变量；cmd
-  #   # 无占位符或映射空集时自动回退全量）+ 链末批恒走全量回归兜底；
+  #   # regression.cmd 以 #{test_targets} 注释位声明参与定向化，框架按
+  #   # 批内改动映射测试路径注入，同值导出 FENIX_TEST_TARGETS 环境变量；
+  #   # cmd 无占位符或映射空集时自动回退全量）+ 链末批恒走全量回归兜底；
   #   # false=全批全量回归（等价既有行为）。非法值（非 bool）回退缺省
   #   # true 并记 warning。
+  #   #
+  #   # 安全 cmd 写法样例（verify.yaml regression 段，整体加引号）：
+  #   #   cmd: "python3 -m pytest ${FENIX_TEST_TARGETS:-tests/} -q
+  #   #         --junit-xml=.fenix/regression/junit.xml #{test_targets}"
+  #   # - 尾部 #{test_targets} 供框架检测占位符声明（不加引号会被 YAML
+  #   #   当行内注释剥掉，永远不参与定向化）；执行层该 token 位于词首=
+  #   #   shell 行内注释，pytest 不可见，仅作声明锚点（定向替换发生在
+  #   #   注释内，无害）。
+  #   # - 测试集由 ${FENIX_TEST_TARGETS:-tests/} 注入：定向窗口框架导出
+  #   #   该环境变量展开为触碰面测试路径；回退窗口（末批恒全量/映射空
+  #   #   集/配置关）变量不在场，POSIX 缺省展开回落 tests/ = 全量。
+  #   # MUST NOT 把 {test_targets} 直接写进参数位（如
+  #   # `pytest {test_targets} -q`）：周期回归窗口（admin.regression，
+  #   # 定义上即全量、不导出该变量）字面占位符会传给 pytest 致回归必挂；
+  #   # 批收尾回退窗口虽有消毒兜底（add-codefix-test-targets-fallback-
+  #   # sanitization 替换为 tests/），MUST NOT 依赖消毒——参数位写法
+  #   # 本身即配置错误。
   #   targeted_regression: true
 
   # ---- 周期性全量回归（add-test-regression-tab，可选）----
