@@ -44,6 +44,8 @@ import {
   STREAM_URL,
 } from '@/services/dashboard';
 import type { SpecDetail, SpecSummary } from '@/services/dashboard';
+// 时长格式化与详情页共用单源（code-review item f8307715a795）
+import { fmtDuration } from '@/utils/duration';
 import { fetchProposalWhy } from '@/utils/proposalWhy';
 import SpecDocModal from './components/SpecDocModal';
 import AdminInvokeModal from './components/AdminInvokeModal';
@@ -147,18 +149,6 @@ function progressSortPct(record: SpecSummary): number {
   return phaseProgressOf(record).percent;
 }
 
-function fmtDuration(sec?: number | null) {
-  // 显式 null/undefined 判等（code-review item 95013c6683be）：宽松相等被
-  // 项目 lint 禁止，意图为「null 或 undefined」时逐值显式比较。
-  if (sec === null || sec === undefined || Number.isNaN(sec)) return '';
-  let s = Math.max(0, Math.round(sec));
-  if (s < 60) return `${s}秒`;
-  const m = Math.floor(s / 60);
-  s %= 60;
-  if (m < 60) return s ? `${m}分${s}秒` : `${m}分`;
-  return `${Math.floor(m / 60)}时${m % 60}分${s ? `${s}秒` : ''}`;
-}
-
 // ── 设置拾取时间：过去时刻一律置灰 ──────────────────────────────
 // 拾取时间语义为「到该时刻后 daemon 才拾取」，故只能是未来；过去时刻无意义。
 // disabledDate 置灰「今天之前」的日期（今天全天可选，当天已过时刻由 disabledTime
@@ -189,22 +179,28 @@ function rangeArray(start: number, endExclusive: number) {
 // ── 名称列 Why 悬浮提示（对齐 v1 why-hint：悬停 200ms 拉取 proposal 的 ## Why 段） ──
 // 提取与缓存逻辑在 src/utils/proposalWhy.ts（任务详情页「任务背景描述」共用）
 
-function SpecNameCell({ project, record }: { project: string; record: SpecSummary }) {
+// ── 悬浮拉取装置（code-review item c7f6a8ebf9d8）：SpecNameCell / VerifyCell
+// 曾各自复制 alive/hovered/timer 三件套 + 逐行相同的卸载清理 + 200ms 防抖
+// onEnter/onLeave（注释互相引用「同款」），历史修复（2d5f6ca39f91 /
+// 3ab32340dfeb / 23afb102a432 / a75e0d5abef0）每条都要双处落补丁。收敛为共享
+// hook 单点维护，两个单元格只差取数函数与浮层渲染；回写真值结果，「有结论
+// 才弹」之类的过滤并入取数函数。
+function useHoverFetch<T>(fetcher: () => Promise<T | null>) {
   const [open, setOpen] = useState(false);
-  const [why, setWhy] = useState<string | null>(null);
+  const [value, setValue] = useState<T | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // 在飞 promise 守卫（code-review item 23afb102a432）：卸载只清防抖 timer，
-  // 200ms 已过、fetch 在飞时 promise 仍会 setWhy/setOpen——行（或整表）已
-  // 消失后为 specMap 中已不存在的 spec 开 popover。alive 标志丢弃卸载后的
-  // 回写；挂载时复位以兼容 StrictMode 模拟卸载-重挂载（ref 不随重挂载重置）。
+  // 在飞 promise 守卫（code-review item 23afb102a432 / a75e0d5abef0）：卸载只
+  // 清防抖 timer，200ms 已过、fetch 在飞时 promise 仍会回写 setState——行（或
+  // 整表）已消失后为已不存在的 spec 开 popover。alive 标志丢弃卸载后的回写；
+  // 挂载时复位以兼容 StrictMode 模拟卸载-重挂载（ref 不随重挂载重置）。
   const aliveRef = useRef(true);
-  // 悬浮结束哨（code-review item 3ab32340dfeb）：onLeave 只清防抖 timer，
-  // 已在飞的 fetch 响应回来仍会 setWhy/setOpen——鼠标早已离开后浮层凭空弹出
-  // 且无触发方再关闭。回写前同时校验「未卸载」与「仍在悬浮」。
+  // 悬浮结束哨（code-review item 3ab32340dfeb）：onLeave 只清防抖 timer，已在
+  // 飞的 fetch 响应回来仍会回写 setState——鼠标早已离开后浮层凭空弹出且无触
+  // 发方再关闭。回写前同时校验「未卸载」与「仍在悬浮」。
   const hoveredRef = useRef(false);
 
   // 卸载清理（code-review item 2d5f6ca39f91）：悬停启动的 200ms 定时器若在
-  // 触发前组件被卸载（列表刷新/行删除/切 Tab），其回调仍会 setWhy/setOpen，
+  // 触发前组件被卸载（列表刷新/行删除/切 Tab），其回调仍会回写 setState，
   // 造成卸载后 setState。统一在卸载时清掉。
   useEffect(() => {
     aliveRef.current = true;
@@ -217,10 +213,10 @@ function SpecNameCell({ project, record }: { project: string; record: SpecSummar
   const onEnter = () => {
     hoveredRef.current = true;
     timerRef.current = setTimeout(() => {
-      void fetchProposalWhy(project, record.name).then((text) => {
+      void fetcher().then((v) => {
         if (!aliveRef.current || !hoveredRef.current) return;
-        if (text) {
-          setWhy(text);
+        if (v) {
+          setValue(v);
           setOpen(true);
         }
       });
@@ -231,6 +227,16 @@ function SpecNameCell({ project, record }: { project: string; record: SpecSummar
     if (timerRef.current) clearTimeout(timerRef.current);
     setOpen(false);
   };
+
+  return { open, value, onEnter, onLeave };
+}
+
+function SpecNameCell({ project, record }: { project: string; record: SpecSummary }) {
+  // 防抖/哨卫/卸载清理走共享 useHoverFetch（code-review item c7f6a8ebf9d8），
+  // 本单元格只差取数函数（proposal ## Why 段）与浮层渲染
+  const { open, value: why, onEnter, onLeave } = useHoverFetch<string>(
+    () => fetchProposalWhy(project, record.name),
+  );
 
   const handleClick = () => {
     history.push(`/projects/${project}/${record.name}`);
@@ -288,52 +294,18 @@ function fetchVerdict(project: string, spec: string): Promise<SpecDetail['verdic
 }
 
 function VerifyCell({ project, record }: { project: string; record: SpecSummary }) {
-  const [open, setOpen] = useState(false);
-  const [verdict, setVerdict] = useState<SpecDetail['verdict'] | null>(null);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // 在飞 promise 守卫（code-review item a75e0d5abef0，与 SpecNameCell 同款）：
-  // 卸载只清防抖 timer，200ms 已过、fetchVerdict 在飞时 promise 仍会
-  // setVerdict/setOpen——对已消失行 setState 并试图打开 Popover。alive 标志
-  // 丢弃卸载后的回写；挂载时复位以兼容 StrictMode 模拟卸载-重挂载（ref 不随
-  // 重挂载重置）。
-  const aliveRef = useRef(true);
-  // 悬浮结束哨（code-review item 3ab32340dfeb，与 SpecNameCell 同款）：
-  // onLeave 不使在飞的 fetchVerdict 失效，鼠标离开后响应回来仍会
-  // setVerdict/setOpen。回写前同时校验「未卸载」与「仍在悬浮」。
-  const hoveredRef = useRef(false);
-
-  // 卸载清理（code-review item 2d5f6ca39f91，与 SpecNameCell 同款）
-  useEffect(() => {
-    aliveRef.current = true;
-    return () => {
-      aliveRef.current = false;
-      if (timerRef.current) clearTimeout(timerRef.current);
-    };
-  }, []);
+  // 防抖/哨卫/卸载清理走共享 useHoverFetch（code-review item c7f6a8ebf9d8，与
+  // SpecNameCell 同款）；「有结论才弹」过滤并入取数函数（v.exists 之外返回
+  // null，hook 不回写），行为与原内联实现一致
+  const { open, value: verdict, onEnter, onLeave } = useHoverFetch<NonNullable<SpecDetail['verdict']>>(
+    () => fetchVerdict(project, record.name).then((v) => (v && v.exists ? v : null)),
+  );
 
   // fix-verify-progress-fasttrack：无任何验证数据（verify_total 为 0）时渲染纯文本
   // 占位符 —，避免「尚无验证数据」被误读为 0/0 计数；无结论可读，不包 Popover。
   if (!record.verify_total) {
     return <span style={{ fontSize: 13, color: 'rgba(0, 0, 0, 0.45)' }}>—</span>;
   }
-
-  const onEnter = () => {
-    hoveredRef.current = true;
-    timerRef.current = setTimeout(() => {
-      void fetchVerdict(project, record.name).then((v) => {
-        if (!aliveRef.current || !hoveredRef.current) return;
-        if (v && v.exists) {
-          setVerdict(v);
-          setOpen(true);
-        }
-      });
-    }, 200);
-  };
-  const onLeave = () => {
-    hoveredRef.current = false;
-    if (timerRef.current) clearTimeout(timerRef.current);
-    setOpen(false);
-  };
 
   const sum = verdict?.summary;
   return (
@@ -792,10 +764,12 @@ export default function SpecListPage() {
         }
         return;
       }
-      if (msg.type === 'run_meta') {
+      if (msg.type === 'run_meta' && msg.project === name) {
         // run_meta（低频：仅状态转换）不携带摘要增量，节流兜底重拉校准
         // （实时任务进度/耗时字段随之刷新；refresh 为 watcher 2s 心跳，不触发
-        // 全量重拉——降为 30s 兜底心跳，见下）。
+        // 全量重拉——降为 30s 兜底心跳，见下）。只响应本项目：多项目宿主上
+        // 其他项目的 run 转换不再触发本页全量重拉（code-review item
+        // decdb246e859，对齐 detail.tsx 同款过滤 item 844dd6f5108b）。
         const now = Date.now();
         if (now - lastRefreshRef.current < REFRESH_THROTTLE_MS) return;
         lastRefreshRef.current = now;
@@ -1219,7 +1193,9 @@ export default function SpecListPage() {
               <Typography.Text type="secondary" data-testid="task-progress-cell">
                 {counter}
               </Typography.Text>
-              <Typography.Text type="secondary">{p}%</Typography.Text>
+              {/* 完成态文案与移动端卡片同口径（code-review item cf0a2e1103b9）：
+                  progress >= 100 显示「已完成」，两形态不再分叉 */}
+              <Typography.Text type="secondary">{progressText(p)}</Typography.Text>
             </div>
             {!isVerify && !isGates && (runAhead || runCurrent || runActive) ? (
               // run 层线索与计数换行分离（与 verify_current/gates_current 同款
