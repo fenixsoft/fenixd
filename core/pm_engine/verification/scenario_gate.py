@@ -12,27 +12,38 @@
 """
 
 import json
+import os
+import tempfile
 from pathlib import Path
 
 
 def _atomic_write_text(path: Path, content: str) -> None:
-    """tmp+replace 原子写文本文件（本文件四处写点共用助手，code-review 83f6bb98613c）。
+    """mkstemp 唯一临时文件 + fsync + os.replace 原子写（verify_report._atomic_write 同款）。
 
-    先写目标同目录 ``<name>.tmp`` 再 replace：裸写中途被 SIGKILL/断电会
-    留下截断文件。写失败时在同一处清理残留 .tmp 后原样上抛，由调用点
-    按各自语义留痕（各写点日志级别/文案不同，收敛后调整原子写实现只改
-    这一处）。
+    本文件四处写点共用助手（写点收敛 code-review 83f6bb98613c；实现收敛
+    63f474ae0e08）。临时名用 mkstemp 唯一名而非固定 ``<name>.tmp``：固定
+    临时名在并发写同一目标时互相截断——进程 A 完成写入后、进程 B 在同一
+    .tmp 上截断改写，随后任一方的 replace 都可能把截断内容落盘；唯一临时
+    名保证 rename 前目标不变、rename 后内容完整。任何写失败都在 finally
+    清理残留临时文件后原样上抛，由调用点按各自语义留痕（各写点日志级别/
+    文案不同，收敛后调整原子写实现只改这一处）。
     """
-    tmp = path.with_name(path.name + ".tmp")
+    tmp_fd, tmp_path_str = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
+    )
+    tmp_path = Path(tmp_path_str)
     try:
-        tmp.write_text(content, encoding="utf-8")
-        tmp.replace(path)
-    except OSError:
-        try:
-            tmp.unlink(missing_ok=True)
-        except OSError:
-            pass
-        raise
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    finally:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
 
 
 def _apply_scenario_freeze(pipeline, spec_name: str) -> dict:
@@ -109,12 +120,32 @@ def _apply_scenario_freeze(pipeline, spec_name: str) -> dict:
     verify_dir = pipeline._context.project_root / ".fenix" / "verify-progress" / spec_name
     scenarios_path = verify_dir / "test_scenarios.json"
     if not scenarios_path.exists():
+        # planner 未产出场景文件属正常状态，debug 留痕即可（code-review
+        # 4999e4231bba：早退路径不得零痕迹，排障可区分「无需冻结」与「坏数据」）
+        pipeline._context.logger.debug(
+            "pm_engine",
+            f"场景冻结跳过 '{spec_name}'（场景文件不存在，planner 尚未产出）:"
+            f" {scenarios_path}",
+        )
         return {}
     try:
         planner_scenarios = json.loads(scenarios_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as e:
+        # 解析失败属数据损坏信号（code-review 26c1f77eb84a）：冻结层留 WARNING
+        # 现场，衔接阶段2 _load_frozen_or_escalate 的 corrupt 报错归因链
+        # （3.6 留痕口径：失败不得零痕迹）。
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"场景冻结跳过 '{spec_name}'（test_scenarios.json 解析失败，"
+            f"阶段2 加载将另行报错）: {type(e).__name__}: {e}",
+        )
         return {}
     if not isinstance(planner_scenarios, list):
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"场景冻结跳过 '{spec_name}'（test_scenarios.json 顶层非列表，"
+            f"实际为 {type(planner_scenarios).__name__}，阶段2 加载将另行报错）",
+        )
         return {}
 
     entry = pipeline._context.state_machine.read_one(spec_name) or {}
@@ -538,7 +569,14 @@ def _render_scenario_change_section_to_report(pipeline, spec_name: str) -> None:
         content = report_path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return
-    if "## 本轮场景集变更" in content:  # 幂等：不重复追加
+    # 幂等契约（code-review a750f799c664）：以标题已存在于报告文件为判定——
+    # 同轮重复调用跳过；报告文件跨验证轮留存时（Verifier 未重写报告），后续
+    # 轮的场景集变更同样不再补写。这是「每份报告至多一段」的有意取舍而非
+    # 疏漏：入库提交器（verify-report-scenario-section-commit）按每报告至多
+    # 一段设计为额外提交至多一次，逐轮指纹改写标题会变更报告形态、牵动报告
+    # 闸门与入库提交，未纳入当前契约。Verifier 按报告闸门每轮重写报告后
+    # 标题不复存在，新一轮变更小节照常由本函数补写。
+    if "## 本轮场景集变更" in content:
         return
     # add-verify-report-gate 要求不覆盖 mtime 语义仅针对「Agent 已写」文件；
     # 此处为框架追加小节，直接写回（Agent 漏写场景变更时由框架补）。
@@ -578,8 +616,13 @@ def _write_verify_contract_missing(
     """
     from core.admin_store import AdminStore, SIGNAL
 
-    store = AdminStore(pipeline._context.project_root, pipeline._context.logger)
     try:
+        # AdminStore 构造纳入 try（code-review 41d7e6713728，对齐 engine.py
+        # _signal_push_failed / item 105c8965ec12 同款手法）：构造涉及目录/
+        # 文件访问，磁盘满或权限异常时若在 try 外抛出，会从本函数穿透契约
+        # fail-fast 出口的调用方（验证判定主链），违背「信号通道自身不可
+        # 影响验证判定」的 docstring 承诺。
+        store = AdminStore(pipeline._context.project_root, pipeline._context.logger)
         store.append(
             {
                 "kind": SIGNAL,
