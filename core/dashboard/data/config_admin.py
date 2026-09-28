@@ -17,7 +17,13 @@ from core.pm_engine.budget import DEFAULT_IMPL_RUN_BUDGET
 
 # ── 配置读写（受管键：llm / agents.* / gates.approve_mode / runs / verify.*） ──
 
-# Dashboard 管理的配置键子集：写回时只更新这些键，其它键原样保留
+# Dashboard 受管键的历史门面常量（code-review item f37ddee25a11 更正注释）：
+# 下行「写回时只更新这些键」描述的是旧写回机制；现行 write_config 经
+# _deep_merge_managed 的显式合并分支白名单写回，受管键集的权威来源是
+# _SOURCE_KEYS 与 _SYNC_PAGE_KEYS——knowledge / worktree / admin /
+# stale_code_selfheal / self_evolution 等后增受管段均不在本列表内。
+# 本常量如今仅作 data/__init__ 再导出与契约测试锚点保留，改此列表
+# 并不会放开写回（勿据其判断写回范围）。
 _MANAGED_KEYS = ["llm", "agents", "gates", "runs", "verify", "hooks"]
 
 # 用户级配置文件路径（与项目级同名 `.fenix/config.yaml`，作用域由所在目录决定）
@@ -565,7 +571,13 @@ def read_config(scope_root, scope: str = "project") -> dict:
             for k, v in agents_result.items():
                 result["agents"][k] = v
     gates_raw = raw.get("gates")
-    if isinstance(gates_raw, dict) and "approve_mode" in gates_raw:
+    # code-review item 775c04d26905：合法枚举才回显（非法值留空由缺省段 manual
+    # 兜底，与运行时 get_approve_mode 回退 manual 口径一致；对齐同段 promote_mode
+    # / spec_review_mode / start_after_scope 的过滤写法），杜绝手工脏值直显。
+    # 枚举集与 write_config 校验同源（ConfigLoader.VALID_APPROVE_MODES）。
+    from core.config import ConfigLoader as _CLAM
+
+    if isinstance(gates_raw, dict) and gates_raw.get("approve_mode") in _CLAM.VALID_APPROVE_MODES:
         # add-start-after-scope-config 3.2：MUST NOT 整段替换 result["gates"]
         # ——项目级显式配置 approve_mode 时其余 gates 键（promote_mode /
         # spec_review_mode / start_after_scope）会在此分支后被丢弃（实测复现）。
@@ -816,10 +828,12 @@ def read_effective_config(project_root) -> dict:
 
         result["agents"]["scale_precheck"] = _get_sp_eff(effective)
     gates_eff = effective.get("gates")
-    if isinstance(gates_eff, dict) and "approve_mode" in gates_eff:
-        # add-start-after-scope-config 3.2：MUST NOT 整段替换 result["gates"]
-        # （同 read_config 既有缺陷——其余 gates 键在分支后丢失），单键赋值。
-        result.setdefault("gates", {})["approve_mode"] = gates_eff["approve_mode"]
+    # add-start-after-scope-config 3.2：MUST NOT 整段替换 result["gates"]
+    # （同 read_config 既有缺陷——其余 gates 键在分支后丢失），单键赋值。
+    # code-review item 775c04d26905：经 get_approve_mode 生效值归一（缺失/非法
+    # 值回退 manual，回显与运行时生效值一致——对齐同段 spec_review_mode /
+    # start_after_scope 的 getter 单点写法），杜绝手工脏值直显。
+    result.setdefault("gates", {})["approve_mode"] = ConfigLoader.get_approve_mode(effective)
     # add-draft-promotion-gate：草稿晋升模式回显（缺省 auto）
     if isinstance(gates_eff, dict) and "promote_mode" in gates_eff:
         val = gates_eff["promote_mode"]
@@ -2298,7 +2312,14 @@ _SYNC_PAGE_KEYS = {
     "approval": {
         "gates": ["promote_mode", "approve_mode", "spec_review_mode", "start_after_scope"]
     },
-    "misc": {"archive": ["auto_threshold"], "knowledge": ["enabled"]},
+    "misc": {
+        "archive": ["auto_threshold"],
+        # add-knowledge-atlas-maintenance（code-review item b0f9ef662810）：知识
+        # 真相源维护车道两键随杂项页签同步——缺此步时「同步用户级设置」按钮会
+        # 静默漏同步 audit_enabled / graph_enabled、「清空」也删不掉项目级覆盖
+        # （与 quality 页三运行参数 / join 模式的同型事故同款）
+        "knowledge": ["enabled", "audit_enabled", "graph_enabled"],
+    },
     "system": {
         "admin": [
             "enabled",
