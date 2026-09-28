@@ -389,7 +389,23 @@ def _kill_process_group(proc: subprocess.Popen) -> None:
         except Exception:  # noqa: BLE001
             pass
     try:
-        proc.communicate()
+        proc.communicate(timeout=10)
+    except subprocess.TimeoutExpired:
+        # SIGKILL 后 communicate 仍可能永久阻塞：蒸馏 run 派生的孙进程若重新
+        # setsid 逃出进程组并继承 stdout/stderr 管道，管道不关闭——worker 线程
+        # 卡死连带 knowledge-distill.lock 不释放，同项目后续批次全部滞留
+        # （code-review 44d833e20470）。强杀直接子进程并弃管道，保底让
+        # _run_with_lock 的 finally 能释放 flock。
+        try:
+            proc.kill()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            for stream in (proc.stdout, proc.stderr):
+                if stream is not None:
+                    stream.close()
+        except Exception:  # noqa: BLE001
+            pass
     except Exception:  # noqa: BLE001
         pass
 
@@ -439,7 +455,8 @@ def _commit_output(proot: Path, archived_names: list) -> str | None:
     """pathspec 限定自动提交（复用 archive_commit 的 fail-open 哲学）。
 
     Returns:
-        commit hash（读取失败为 None）或 None（提交跳过/失败，已记 warning）。
+        commit hash；``""``（工作区无变更，nothing to commit，视为 ok）；
+        None（提交失败，已记 warning）。
     """
     names = ", ".join(archived_names)
     commit_msg = f"{COMMIT_PREFIX} {names}"
@@ -450,6 +467,13 @@ def _commit_output(proot: Path, archived_names: list) -> str | None:
             return None
         commit = _git(proot, ["commit", "-m", commit_msg, "--", KNOWLEDGE_DIR], timeout=120)
         if commit.returncode != 0:
+            # nothing to commit ≠ 提交失败：蒸馏判定无需新增/修改页面（如重复
+            # 蒸馏同批归档），按无变更视为 ok，避免误报「产出滞留」+ 误登重试
+            # 台账（code-review 1e83848b80f1）。
+            status = _git(proot, ["status", "--porcelain", "--", KNOWLEDGE_DIR])
+            if status.returncode == 0 and not status.stdout.strip():
+                logger.info("knowledge-distill 无变更可提交（%s），跳过空提交", names)
+                return ""
             _git(proot, ["reset", "--", KNOWLEDGE_DIR])
             logger.warning(
                 "knowledge-distill git commit 失败: %s",
@@ -583,7 +607,7 @@ class DistillManager:
                         "knowledge-distill 完成（%s，第 %d 轮，commit=%s）",
                         names,
                         round_no + 1,
-                        commit,
+                        commit or "无变更",
                     )
                     return result
                 # 重试仍失败：产出已通过校验但未落库。不能标 ok=True 让它
@@ -627,7 +651,7 @@ class DistillManager:
         except Exception as e:  # noqa: BLE001 — CLI 不存在等 spawn 失败
             return False, f"调用 claude CLI 失败: {e}"
         try:
-            proc.communicate(timeout=RUN_TIMEOUT_SECONDS)
+            stdout, stderr = proc.communicate(timeout=RUN_TIMEOUT_SECONDS)
         except subprocess.TimeoutExpired:
             _kill_process_group(proc)
             return False, f"run 超时（>{RUN_TIMEOUT_SECONDS}s），已终止进程组"
@@ -635,7 +659,19 @@ class DistillManager:
             _kill_process_group(proc)
             return False, f"claude 进程通信失败: {e}"
         if proc.returncode != 0:
-            return False, f"claude 进程非零退出（exit={proc.returncode}）"
+            # 失败诊断：stdout/stderr 摘要进日志，stderr 尾部随 error 一路进
+            # todo.md 台账 reason（否则蒸馏失败排障拿不到 claude 的报错，
+            # code-review 0d6683c2b68d）。
+            stdout_tail = (stdout or "").strip()[-500:]
+            stderr_tail = (stderr or "").strip()[-500:]
+            logger.warning(
+                "knowledge-distill run 非零退出（exit=%s）stdout 摘要: %s | stderr 摘要: %s",
+                proc.returncode,
+                stdout_tail[:200] or "（空）",
+                stderr_tail[:200] or "（空）",
+            )
+            detail = f"；stderr 尾部: {stderr_tail}" if stderr_tail else ""
+            return False, f"claude 进程非零退出（exit={proc.returncode}）{detail}"
         return True, None
 
     def _give_up(self, proot: Path, archived_names: list, reason: str) -> None:
