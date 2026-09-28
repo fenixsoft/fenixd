@@ -203,3 +203,4 @@ superseded 条目保留在列供溯源。编号接续本目录既有最大号。
 | [ADR-196](ADR-196-gate-exemption-and-dispatch-interception-two-criteria-layering.md) | accepted | 内容闸门豁免与派发拦截两判据分层：终态豁免/已交付降级只免冻结与告警，spec_has_content 四类认可名单不动且 verification-report.md 禁入（防盲目重实现已交付成果），终态 spec 入队属异常由派发层状态机管辖 |
 | [ADR-197](ADR-197-wipgate-defer-keep-scene-release-lock-zero-budget.md) | accepted | WIP 阻断延迟合回：暂态阻断零预算走独立 defer 台账禁入失败预算体系（预算语义=重跑，暂态只需等待），保留现场必须同步显式放锁（只保留不放锁=建树恒 None 车道死锁），defer 条目必退选批池，重试挂既有链节拍不新增线程 |
 | [ADR-198](ADR-198-agent-side-task-subagent-batch-parallel-single-run-contract.md) | accepted | 车道批内并行放 agent 侧 Task 子代理（框架单 run/单 out_path/单回归合回契约零改动），产物落盘验证提交集中 orchestrator 单写者、子代理三禁（写产物/验证/提交），并发上限保守且由框架按批规模注入不设配置键 |
+| [ADR-199](ADR-199-code-review-shard-direct-write-single-discovery-aggregation.md) | accepted | code-review 产物分片直写（谁审谁写审完即写、禁异步等待收工），分片发现单一入口 shard_paths 禁消费侧自写 glob，聚合口径三侧统一（分片 N 升序→主产物兜底、按 file 先见去重），错名分片 fail-显式只告警不消费；与 ADR-198 单写者以「产物是否喂回归/合回门」划界 |

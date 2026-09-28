@@ -13,7 +13,7 @@
 - [implementer-lane](domains/implementer-lane/_domain.md) — 实现车道与交付物（26 个能力）
 - [verify-pipeline](domains/verify-pipeline/_domain.md) — 验证管线（43 个能力）
 - [verdict-adjudication](domains/verdict-adjudication/_domain.md) — 验证裁决与证据（19 个能力）
-- [code-review-lane](domains/code-review-lane/_domain.md) — 代码审查（13 个能力）
+- [code-review-lane](domains/code-review-lane/_domain.md) — 代码审查（14 个能力）
 - [code-fix-lane](domains/code-fix-lane/_domain.md) — 缺陷修复（20 个能力）
 - [agent-runtime](domains/agent-runtime/_domain.md) — Agent 运行时（14 个能力）
 - [run-resilience](domains/run-resilience/_domain.md) — 运行守护与失败韧性（26 个能力）
