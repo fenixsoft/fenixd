@@ -3046,8 +3046,10 @@ class CodeFixOrchestrator:
         """无主陈旧 WIP 宽限（分钟）：``admin.mergeback_wip_orphan_grace_minutes``。
 
         缺省 30（对齐 admin escalation cooldown 量级，design D4）；解析失败/
-        负值回退缺省——配置事故 MUST NOT 放大成「宽限 0 分钟秒升级」或
-        「无限期静默等待」两个错误极端。
+        负值/NaN 回退缺省——配置事故 MUST NOT 放大成「无限期静默等待」极端。
+        ``0`` 是合法配置＝「耗尽即升级」（spec 3.2「配置可收紧」契约，
+        test_grace_zero_escalates_immediately 冻结；告警经 owner_escalated_at
+        一次性去重，秒升级无刷屏风险）。
         """
         try:
             raw = ConfigLoader.get(
@@ -3058,10 +3060,11 @@ class CodeFixOrchestrator:
             val = float(raw)
         except (TypeError, ValueError):
             return 30.0
-        # not (val > 0) 同时挡 0/负值/NaN（code-review item 56c8f34f1df5）：
-        # 0 会让无主陈旧 WIP 首次识别即秒升级 major 告警，NaN 使宽限比较恒假
-        # 退化为无限期静默等待——docstring 声明禁止的两个极端。
-        if not val > 0:
+        # 负值/NaN 回退（NaN 由 val != val 判别）：NaN 使宽限比较恒假，退化
+        # 为被声明禁止的「无限期静默等待」极端。0 不在回退之列（见 docstring；
+        # code-review item 56c8f34f1df5 曾把 0 一并回退，与本冻结场景契约冲突
+        # 令回归红，此处按 spec 口径恢复 0 的合法语义）。
+        if val != val or val < 0:
             return 30.0
         # inf 或超合理上限（一天）等同「无限期静默等待」，同回退缺省。
         if val == float("inf") or val > 24 * 60:

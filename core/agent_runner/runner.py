@@ -1422,7 +1422,7 @@ class AgentRunner:
                     })
                 except OSError:
                     pass
-                return
+                return True
             # 等待仍在继续：保活心跳（约每 60s 一次），run 流保持新鲜
             if time.monotonic() >= deadline:
                 deadline = time.monotonic() + THROTTLED_WAIT_HEARTBEAT_SECONDS
