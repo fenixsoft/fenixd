@@ -13,12 +13,14 @@ code-review-1790574672：218 轮 / 13.89 美元 / 自述 16 批仅落 b1-b4（4 
 
 - 现状：周期链 admin_monitor._worker（:1229-1243）→ _schedule_ratelimit_redispatch（:1266，PROVIDER_RATELIMIT_COOLDOWN_SECONDS=300、RATELIMIT_REDISPATCH_MAX=1）→ _consume_ratelimit_redispatch（:1332）；手动链 fenixd.py:3004 的 _worker（:3175-3205）只记日志。
 - 改法：手动 worker 复用 admin_monitor 的延迟重投递（抽共享入口或直接调用其方法），按车道核对上限计数语义（admin_monitor.py:860-864），单飞让位语义保持，周期路径行为不变。
+- 上限共享语义：手动消费复用同一 admin_monitor 实例的计数与 Timer 句柄（_code_review_ratelimit_redispatches / _code_review_redispatch_timer），手动与周期双车道共享上限 1，防叠加各自耗额；admin_monitor 未装配（fallback）时意图记日志放弃并保持告警可见，不静默丢弃。
 
 ## 分片续跑
 
 - 数据基础：分片行携带 file 字段、manifest 落盘完整文件清单（core/code_review.py manifest_path/shard_paths 已有）。
 - 改法：core/code_review.py 新增 covered/remaining 计算；_consume_ratelimit_redispatch 重派前剃余（本 run 形状 270→约 202）；redispatch_of 保留串联链路。
 - 核销门：剃余重派后仅当「本轮累计覆盖 = 完整 manifest」才解锁全仓快照核销，否则维持抢救红线（防止部分覆盖白洗核销）。
+- 核销门挂点：核销执行点在 core/agent_runner/maintenance_runs.py 收尾分支（run_ok 且 review_kind=="manual_full" 门，约 :1233-1274），不在重派决策侧——剃余重派 run 若原样以 manual_full 收尾且 findings 非空，将在此触发部分覆盖白洗核销（与本文件 :1279 抢救红线同族事故）。故覆盖完整性守卫 MUST 落在 maintenance_runs 核销分支（redispatch 恢复 run 未覆盖完整 manifest 时跳过核销），累计覆盖完整的解锁核销由消费侧回调或本分支补行，两处实现须唯一化。
 
 ## 触发入口防叠加
 
