@@ -2,8 +2,9 @@
 api_runner.py — ApiRunner：httpx 驱动的 API 场景执行（spec verify-runner-engine PR2）
 
 步骤（限 api 词表）：
-  - ``http_request``：method/url/headers（值支持 {env:VAR} 插值）/body+body_type/
-    timeout/as。URL origin 由框架统一改写（BASE_URL 注入铁律扩展，路径保留）。
+  - ``http_request``：method/url/headers/body+body_type/timeout/as。仅 headers
+    值支持 {env:VAR} 插值（url 不插值，原样发送）；URL origin 由框架统一
+    改写（BASE_URL 注入铁律扩展，路径保留）。
   - ``sse_connect``：url/duration（收集窗口秒数）/as。流式收集窗口内事件列表。
 
 响应捕获：步骤 ``as`` 命名、断言 ``response`` 字段引用（缺省=最近一次），
@@ -109,7 +110,10 @@ class ApiRunner(VerifyRunner):
         step_results: list[dict] = []
         steps_failed = False
 
-        async with httpx.AsyncClient() as client:
+        # trust_env=False：实例流量直连，防止进程携带的 HTTP(S)_PROXY 等代理
+        # 环境变量把打向本机实例的请求路由进代理（BASE_URL 注入铁律：
+        # 打新鲜实例）——httpx 缺省 trust_env=True 会读取这些变量。
+        async with httpx.AsyncClient(trust_env=False) as client:
             for i, step in enumerate(scenario.steps):
                 step_dict = step.to_dict()
                 result = await self._execute_step(client, step_dict, captures)
@@ -292,7 +296,11 @@ class ApiRunner(VerifyRunner):
         # JSON 解析必须用完整响应体（防截断破坏合法 JSON），但解析侧设体积
         # 上限：超限响应跳过解析置 resp_json=None（json_path/json_schema 断言
         # 按「路径不存在/非 JSON」口径失败），capture 标注便于 judge 归因。
-        json_parse_skipped = len(resp_text) > _JSON_PARSE_LIMIT
+        # 体积按 UTF-8 字节口径计量（与 _truncate 同口径）：len(str) 是字符数，
+        # 中文等多字节响应的实际字节数可达字符数倍数，按字符比较会低估内存
+        # 占用，且未解析标注里的数字与真实体积不符。
+        resp_text_bytes = len(resp_text.encode("utf-8", errors="replace"))
+        json_parse_skipped = resp_text_bytes > _JSON_PARSE_LIMIT
         if json_parse_skipped:
             resp_json = None
         else:
@@ -312,7 +320,7 @@ class ApiRunner(VerifyRunner):
         }
         if json_parse_skipped:
             capture["json_parse_skipped"] = (
-                f"响应体超大未解析（{len(resp_text)} 字节 > 上限 {_JSON_PARSE_LIMIT}）"
+                f"响应体超大未解析（{resp_text_bytes} 字节 > 上限 {_JSON_PARSE_LIMIT}）"
             )
         name = step.get("as") or ""
         if name:
@@ -355,6 +363,10 @@ class ApiRunner(VerifyRunner):
         events: list[dict] = []
         truncated = False
         data_truncated = False
+        # 缓冲初始化置于 try 外：ReadTimeout 可能在 stream 建连读响应头阶段
+        # 抛出并按「窗口正常结束」返回，收尾 flush 仍需访问缓冲。
+        event: dict = {"data": "", "event": ""}
+        data_bytes = 0  # 当前事件 data 累计 UTF-8 字节（与 _truncate 同口径）
 
         try:
             async with client.stream(
@@ -373,8 +385,6 @@ class ApiRunner(VerifyRunner):
                         "error": f"SSE 连接失败: HTTP {resp.status_code}",
                     }
                 deadline = time.monotonic() + duration
-                event: dict = {"data": "", "event": ""}
-                data_bytes = 0  # 当前事件 data 累计 UTF-8 字节（与 _truncate 同口径）
                 async for line in resp.aiter_lines():
                     if time.monotonic() > deadline:
                         break
@@ -440,6 +450,16 @@ class ApiRunner(VerifyRunner):
                 "url": url,
                 "error": f"SSE 收集异常: {type(e).__name__}: {e}",
             }
+
+        # 收尾 flush：deadline 截止 break 与流 EOF 都不会走到空行分帧分支，
+        # 缓冲中未以空行终结的最后一个事件若不在此落 events 会被静默丢弃，
+        # sse_event_count/sse_event_matches 等事件类断言据此假失败。窗口
+        # 截止/EOF 后仍有 data 的缓冲按空行分帧同口径入列。
+        if event["data"].strip():
+            data, over = _truncate(event["data"].rstrip("\n"))
+            if over:
+                data_truncated = True
+            events.append({"data": data, "event": event["event"]})
 
         capture = {"type": "sse", "events": events, "duration": duration}
         name = step.get("as") or ""
