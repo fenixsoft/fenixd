@@ -13,6 +13,7 @@ import dataclasses
 import json
 import os
 import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -20,10 +21,12 @@ from types import SimpleNamespace
 
 from core.code_fix import (
     CODE_FIX_TEST_TARGETS_ENV,
+    CODE_FIX_TEST_TARGETS_FALLBACK,
     CODE_FIX_TEST_TARGETS_PLACEHOLDER,
     CODE_FIX_WAVE_CAP_MAX,
     _apply_test_targets,
     _cmd_has_test_targets,
+    _sanitize_test_targets,
     _file_parent_dir,
     _fixed_files_from_rows,
     _is_test_path,
@@ -555,14 +558,19 @@ class TestBatchRegressionBranching(unittest.TestCase):
         return RegressionSpec(cmd=cmd, output=".fenix/junit.xml", timeout_seconds=600)
 
     def test_last_batch_always_full_regression(self):
-        """Scenario 链末批恒全量：无论开关/占位符，末批 spec 原样。"""
+        """Scenario 链末批恒全量：无论开关/占位符，末批回退全量——含占位符
+        时返回消毒副本（占位符替换为缺省 tests/），不再字面透传。"""
         orch = _orchestrator({"enabled": True, "targeted_regression": True})
         eff, targeted, targets = orch._resolve_batch_regression_spec(
             self.spec, self.wt, "run-1", batch_no=1, is_last_batch=True
         )
-        self.assertIs(eff, self.spec)
         self.assertFalse(targeted)
         self.assertEqual(targets, [])
+        self.assertEqual(
+            eff.cmd, "pytest tests/ -q --junit-xml out.xml",
+            "末批回退全量：占位符消毒为缺省 tests/",
+        )
+        self.assertIsNot(eff, self.spec, "消毒产生副本，既有契约对象不被改写")
 
     def test_non_last_batch_targeted(self):
         """Scenario 非末批定向回归生效：占位符被映射结果替换。"""
@@ -601,25 +609,36 @@ class TestBatchRegressionBranching(unittest.TestCase):
         eff, targeted, targets = orch._resolve_batch_regression_spec(
             self.spec, self.wt, "run-1", batch_no=1, is_last_batch=False
         )
-        self.assertIs(eff, self.spec)
         self.assertFalse(targeted)
         self.assertEqual(targets, [])
+        self.assertEqual(
+            eff.cmd, "pytest tests/ -q --junit-xml out.xml",
+            "映射空集回退全量：占位符消毒为缺省 tests/",
+        )
+        self.assertIsNot(eff, self.spec, "消毒产生副本，既有契约对象不被改写")
         self.assertTrue(any("映射空集" in msg for _, msg in orch._logs))
 
     def test_fallback_config_off(self):
-        """Scenario 配置关闭回退全量：targeted_regression=false 等价现状。"""
+        """Scenario 配置关闭回退全量：targeted_regression=false 等价现状
+        （含占位符 cmd 消毒为 tests/ 后执行，不再字面透传）。"""
         orch = _orchestrator({"enabled": True, "targeted_regression": False})
         eff, targeted, targets = orch._resolve_batch_regression_spec(
             self.spec, self.wt, "run-1", batch_no=1, is_last_batch=False
         )
-        self.assertIs(eff, self.spec)
         self.assertFalse(targeted)
         self.assertEqual(targets, [])
+        self.assertEqual(
+            eff.cmd, "pytest tests/ -q --junit-xml out.xml",
+            "配置关回退全量：占位符消毒为缺省 tests/",
+        )
+        self.assertIsNot(eff, self.spec, "消毒产生副本，既有契约对象不被改写")
 
     def test_targeted_failure_goes_into_existing_retry_path(self):
-        """定向失败进既有失败路径：分流仅替换首轮 spec，重试轮沿用原
-        reg_spec + subset_nodeids（零新增处置分支的结构性保证——分流点在
-        定向重试块之前，失败汇入同一 reg 对象）。"""
+        """定向失败进既有失败路径：分流仅替换首轮 spec，重试轮回归统一传
+        消毒 spec（add-codefix-test-targets-fallback-sanitization：两态统一
+        消毒 + FENIX_TEST_TARGETS 窗口；定向重试机制以 subset_nodeids 缩面
+        不变——零新增处置分支的结构性保证：分流点在定向重试块之前，失败
+        汇入同一 reg 对象）。"""
         import inspect
 
         from core.code_fix import CodeFixOrchestrator
@@ -627,8 +646,312 @@ class TestBatchRegressionBranching(unittest.TestCase):
         src = inspect.getsource(CodeFixOrchestrator._run_batch_created)
         self.assertIn("with _with_test_targets_env(targets):", src)
         self.assertIn("reg = runner.run_regression(\n                eff_spec", src)
-        # 重试轮回归调用仍传原 reg_spec（定向重试机制以 subset_nodeids 缩面）
-        self.assertIn("runner.run_regression(\n                    reg_spec", src)
+        # 重试轮回归传消毒 spec（无占位符时零迁移原样返回）
+        self.assertIn(
+            "runner.run_regression(\n                        _sanitize_test_targets(reg_spec)",
+            src,
+        )
+
+
+# ── 回退路径占位符消毒（add-codefix-test-targets-fallback-sanitization）──
+
+
+def _sf_failure(classname, name, message="boom"):
+    """junit 失败明细最小形态（与 targeted-retry 行为测试同型）。"""
+    return {"classname": classname, "name": name, "file": "",
+            "line": 0, "time": 0.0, "kind": "failure", "message": message}
+
+
+def _sf_write_verify_yaml(proot: Path, cmd: str) -> None:
+    """写最小 verify.yaml（regression.cmd 可注入占位符形态）。"""
+    body = (
+        "prepare:\n  - run: 'true'\n"
+        "serve:\n  kind: static\n  root: site\n"
+        "ready:\n  url: /\n  expect: 200\n"
+        "regression:\n"
+        f"  cmd: \"{cmd}\"\n"
+        "  output: \".fenix/regression/junit.xml\"\n"
+    )
+    (Path(proot) / ".fenix" / "verify.yaml").write_text(body, encoding="utf-8")
+
+
+class _SFWM:
+    """消毒重试轮行为测试的 fake worktree_manager：create 建真 git 仓并预置
+    tests/test_x.py 夹具（nodeid 映射存在性判定需要）。"""
+
+    def __init__(self):
+        self.merge_calls = []
+        self.cleanup_calls = []
+
+    def create(self, spec_name, agent_type="implementer"):
+        repo = Path(_mkdtemp("sanit-wt-"))
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True, capture_output=True)
+        (repo / "README.md").write_text("init", encoding="utf-8")
+        subprocess.run(
+            ["git", "-c", "user.email=t@t", "-c", "user.name=t", "add", "-A"],
+            cwd=repo, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q",
+             "-m", "init"], cwd=repo, check=True, capture_output=True)
+        (repo / "tests").mkdir(exist_ok=True)
+        (repo / "tests" / "test_x.py").write_text(
+            "def test_a():\n    assert True\n", encoding="utf-8")
+        (repo / ".fenix" / "regression").mkdir(parents=True, exist_ok=True)
+        return repo
+
+    def merge_back(self, wt_path):
+        self.merge_calls.append(str(wt_path))
+        return SimpleNamespace(success=True, error="")
+
+    def cleanup(self, wt_path, success=True):
+        self.cleanup_calls.append((str(wt_path), success))
+
+
+class _SFRunner:
+    """消毒重试轮行为测试的 fake AgentRunner：记录每次 run_regression 收到的
+    spec 命令、执行窗口内 FENIX_TEST_TARGETS 值与子集传参。"""
+
+    def __init__(self, project_root, regression_statuses=None, failure_sets=None):
+        self.project_root = Path(project_root)
+        self.logger = SimpleNamespace(
+            info=lambda *a, **k: None, warning=lambda *a, **k: None,
+            error=lambda *a, **k: None)
+        self._running_agents = {}
+        self.worktree_manager = _SFWM()
+        self.config = {}
+        self.fix_calls = []
+        self.spec_cmds = []      # 每次 run_regression 收到的 cmd（str/list 原样）
+        self.env_seen = []       # 每次 run_regression 窗口内 FENIX_TEST_TARGETS
+        self.subset_calls = []
+        self.regression_statuses = regression_statuses or ["passed"]
+        self.failure_sets = failure_sets or []
+        self._reg_no = 0
+        self._run_no = 0
+
+    def _get_config(self, key, default=None):
+        return self.config.get(key, default)
+
+    def run_code_fix(self, worktree_root, items, run_id=None, failure_summary=""):
+        self._run_no += 1
+        rid = run_id or f"code-fix-fake-{self._run_no}"
+        self.fix_calls.append((str(worktree_root), len(items), failure_summary, rid))
+        out = Path(worktree_root) / ".fenix" / "code-review" / f"fix-out-{rid}.jsonl"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        with out.open("w", encoding="utf-8") as fh:
+            for it in items:
+                fh.write(json.dumps(
+                    {"item_id": it["item_id"], "status": "fixed",
+                     "file": it.get("file", "")}, ensure_ascii=False) + "\n")
+        (Path(worktree_root) / f"touched-{rid}.txt").write_text("fix", encoding="utf-8")
+        subprocess.run(
+            ["git", "-c", "user.email=t@t", "-c", "user.name=t", "add", "-A"],
+            cwd=worktree_root, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q",
+             "-m", f"fix-{rid}"], cwd=worktree_root, check=True, capture_output=True)
+        return SimpleNamespace(run_id=rid, success=True, fixed=len(items),
+                               skipped=0, error="", output="done")
+
+    def run_regression(self, spec, reason="manual", project_root=None, lock_root=None,
+                       subset_nodeids=None):
+        self._reg_no += 1
+        self.spec_cmds.append(spec.cmd)
+        self.env_seen.append(os.environ.get(CODE_FIX_TEST_TARGETS_ENV))
+        self.subset_calls.append(list(subset_nodeids) if subset_nodeids else None)
+        status = self.regression_statuses[min(
+            self._reg_no - 1, len(self.regression_statuses) - 1)]
+        failures = (self.failure_sets[min(self._reg_no - 1, len(self.failure_sets) - 1)]
+                    if self.failure_sets else [])
+        return SimpleNamespace(
+            run_id=f"regression-fake-{self._reg_no}", status=status,
+            snapshot={"failures": failures}, error="")
+
+
+class TestFallbackSanitization(unittest.TestCase):
+    """回退出口/定向重试轮的占位符消毒（str 与 list 两态）。
+
+    覆盖四组：占位符在场×三类回退、重试轮两态消毒、无占位符零迁移、
+    fenixd 安全注释形态消毒无害。
+    """
+
+    def setUp(self):
+        self.wt = Path(_mkdtemp("sanit-wt-fix-"))
+        (self.wt / ".fenix" / "code-review").mkdir(parents=True, exist_ok=True)
+        (self.wt / ".fenix" / "code-review" / "fix-out-run-1.jsonl").write_text(
+            json.dumps({"item_id": "a", "status": "fixed", "file": "core/foo.py"})
+            + "\n",
+            encoding="utf-8",
+        )
+
+    def tearDown(self):
+        shutil.rmtree(self.wt, ignore_errors=True)
+
+    @staticmethod
+    def _spec(cmd):
+        return RegressionSpec(cmd=cmd, output=".fenix/junit.xml", timeout_seconds=600)
+
+    def test_fallback_exits_sanitized_both_cmd_forms(self):
+        """① 占位符在场×三类回退（末批/映射空集/配置关）× str/list 两态：
+        回退出口返回消毒副本，占位符替换为缺省 tests/，既有契约对象不被改写。"""
+        for cmd, want in (
+            ("python3 -m pytest {test_targets} -q --junit-xml out.xml",
+             "python3 -m pytest tests/ -q --junit-xml out.xml"),
+            (["python3", "-m", "pytest", "{test_targets}", "-q", "--junit-xml", "out.xml"],
+             ["python3", "-m", "pytest", "tests/", "-q", "--junit-xml", "out.xml"]),
+        ):
+            spec = self._spec(cmd)
+            # 回退出口 1：链末批恒全量
+            orch = _orchestrator({"enabled": True, "targeted_regression": True})
+            eff, targeted, targets = orch._resolve_batch_regression_spec(
+                spec, self.wt, "run-1", batch_no=1, is_last_batch=True
+            )
+            self.assertFalse(targeted)
+            self.assertEqual(targets, [])
+            self.assertEqual(eff.cmd, want)
+            self.assertIsNot(eff, spec)
+            # 回退出口 2a：触碰面映射空集
+            (self.wt / ".fenix" / "code-review" / "fix-out-run-1.jsonl").write_text(
+                json.dumps({"item_id": "a", "status": "fixed",
+                            "file": "core/orphan.py"}) + "\n",
+                encoding="utf-8",
+            )
+            orch = _orchestrator({"enabled": True, "targeted_regression": True})
+            eff, targeted, targets = orch._resolve_batch_regression_spec(
+                spec, self.wt, "run-1", batch_no=1, is_last_batch=False
+            )
+            self.assertFalse(targeted)
+            self.assertEqual(targets, [])
+            self.assertEqual(eff.cmd, want)
+            # 回退出口 2b：定向配置关
+            orch = _orchestrator({"enabled": True, "targeted_regression": False})
+            eff, targeted, targets = orch._resolve_batch_regression_spec(
+                spec, self.wt, "run-1", batch_no=1, is_last_batch=False
+            )
+            self.assertFalse(targeted)
+            self.assertEqual(eff.cmd, want)
+
+    def _sf_run(self, regression_statuses, failure_sets, cmd):
+        """驱动 checkpoint 全流程：两条异目录条目 + batch_size=1 拆两批
+        （批 a 非末批 → 定向分支可生效；同文件条目会被亲和聚类强制同批，
+        故批 b 用无测试对应的 core/other.py——单条目批恒末批判定见
+        TestChainLastBatch）。"""
+        from core.code_fix import CodeFixOrchestrator
+
+        proot = Path(_mkdtemp("sanit-proot-"))
+        self.addCleanup(shutil.rmtree, proot, ignore_errors=True)
+        (proot / ".fenix" / "code-review").mkdir(parents=True, exist_ok=True)
+        records = {
+            "a": _item("a", file="tests/test_x.py"),
+            "b": _item("b", file="core/other.py"),
+        }
+        (proot / ".fenix" / "code-review" / "items.jsonl").write_text(
+            "".join(json.dumps(records[k], ensure_ascii=False) + "\n"
+                    for k in sorted(records)),
+            encoding="utf-8")
+        _sf_write_verify_yaml(
+            proot,
+            "python3 -m pytest {test_targets} -q --junit-xml=.fenix/regression/junit.xml",
+        )
+        runner = _SFRunner(proot, regression_statuses=regression_statuses,
+                           failure_sets=failure_sets)
+        CodeFixOrchestrator(
+            runner, proot,
+            config={"admin": {"code_review_fix": {"enabled": True, "batch_size": 1}}},
+            logger=None,
+        ).checkpoint()
+        return runner
+
+    _SF_CMD = "python3 -m pytest tests/ -q --junit-xml=.fenix/regression/junit.xml"
+
+    def test_retry_round_sanitized_mapped_subset(self):
+        """② 重试轮 mapped 态：首轮失败进定向轮，重试轮回归 spec 为消毒副本
+        （ctx 原件占位符替换为 tests/，不再字面透传），FENIX_TEST_TARGETS
+        窗口在重试轮回归执行时在位，子集缩面照常。"""
+        runner = self._sf_run(
+            regression_statuses=["failed", "passed", "passed"],
+            failure_sets=[[_sf_failure("tests.test_x", "test_a")]],
+            cmd="python3 -m pytest {test_targets} -q",
+        )
+        # 批 a：首轮 + 1 个定向轮；批 b（末批）：首轮
+        self.assertEqual(len(runner.fix_calls), 3)
+        self.assertEqual(len(runner.spec_cmds), 3)
+        # 批 a 首轮定向 spec：映射 targets 替换（既有语义不变）
+        self.assertNotIn("{test_targets}", runner.spec_cmds[0])
+        self.assertIn("tests/test_x.py", runner.spec_cmds[0])
+        # 批 a 重试轮 spec：ctx 原件含占位符 → 消毒副本
+        self.assertEqual(runner.spec_cmds[1], self._SF_CMD)
+        # 批 b 末批回退全量：占位符同样消毒
+        self.assertEqual(runner.spec_cmds[2], self._SF_CMD)
+        # FENIX_TEST_TARGETS 同值双轨在重试轮回归窗口在位
+        self.assertEqual(runner.env_seen[1], "tests/test_x.py")
+        # mapped 态子集缩面照常（消毒后 tests/ 成为可替换收集目标）
+        self.assertEqual(runner.subset_calls[1], ["tests/test_x.py::test_a"])
+        self.assertEqual(len(runner.worktree_manager.merge_calls), 2, "两批各合回一次")
+
+    def test_retry_round_sanitized_unmapped_full(self):
+        """② 重试轮 unmapped 态：失败明细不可映射回退全量回归，spec 同样
+        消毒（全量路径不再字面透传占位符）。"""
+        runner = self._sf_run(
+            regression_statuses=["failed", "passed", "passed"],
+            # classname 指向不存在的模块 → 映射 fail-closed → 全量重试
+            failure_sets=[[_sf_failure("tests.ghost_mod", "test_a")]],
+            cmd="python3 -m pytest {test_targets} -q",
+        )
+        self.assertEqual(len(runner.fix_calls), 3)
+        self.assertEqual(len(runner.spec_cmds), 3)
+        self.assertEqual(runner.spec_cmds[1], self._SF_CMD)
+        self.assertEqual(runner.subset_calls[1], None, "映射失败回退全量（不传子集）")
+        self.assertEqual(len(runner.worktree_manager.merge_calls), 2, "两批各合回一次")
+
+    def test_no_placeholder_zero_migration(self):
+        """③ 无占位符零迁移：消毒对 spec 原样返回（零副本），str 与 list
+        两态；回退出口对无占位符 spec 行为与改动前逐字一致。"""
+        self.assertEqual(CODE_FIX_TEST_TARGETS_FALLBACK, "tests/")
+        for cmd in ("python3 -m pytest tests/ -q",
+                    ["python3", "-m", "pytest", "tests/", "-q"]):
+            spec = self._spec(cmd)
+            self.assertIs(_sanitize_test_targets(spec), spec)
+        # 回退出口同样零迁移：末批回退返回原对象
+        orch = _orchestrator({"enabled": True, "targeted_regression": True})
+        spec = self._spec("python3 -m pytest tests/ -q")
+        eff, targeted, _ = orch._resolve_batch_regression_spec(
+            spec, self.wt, "run-1", batch_no=1, is_last_batch=True
+        )
+        self.assertIs(eff, spec, "无占位符 spec 逐字原样（零迁移）")
+        self.assertFalse(targeted)
+
+    def test_fenixd_safe_comment_form_noop(self):
+        """④ fenixd 安全注释形态（${FENIX_TEST_TARGETS:-tests/} 缺省展开 +
+        词首 #{test_targets} 注释位）消毒为无害 no-op：注释位替换不产生
+        重复收集参数；list 两态独立占位元素展开单个目标。"""
+        safe_cmd = (
+            "python3 -m pytest ${FENIX_TEST_TARGETS:-tests/} -q"
+            " --junit-xml=.fenix/regression/junit.xml #{test_targets}"
+        )
+        orch = _orchestrator({"enabled": True, "targeted_regression": True})
+        eff, _, _ = orch._resolve_batch_regression_spec(
+            self._spec(safe_cmd), self.wt, "run-1", batch_no=1, is_last_batch=True
+        )
+        self.assertNotIn("{test_targets}", eff.cmd, "占位符已消毒")
+        self.assertIn(" #tests/", eff.cmd, "注释位被替换、词首 # 保持（pytest 不可见）")
+        self.assertIn(
+            "${FENIX_TEST_TARGETS:-tests/}", eff.cmd,
+            "POSIX 缺省展开位置原样保留",
+        )
+        self.assertEqual(
+            eff.cmd.count("tests/"), 2,
+            "仅注释位一处替换（缺省展开位置 1 + 注释位 1），无重复收集参数",
+        )
+        # list 两态：独立占位元素消毒为单个目标元素（无重复收集参数）
+        eff2 = _sanitize_test_targets(
+            self._spec(["python3", "-m", "pytest", "{test_targets}", "-q"])
+        )
+        self.assertEqual(eff2.cmd, ["python3", "-m", "pytest", "tests/", "-q"])
+        # list 内嵌形态（dir={test_targets}）消毒为 dir=tests/，无畸变
+        eff3 = _sanitize_test_targets(
+            self._spec(["python3", "-m", "pytest", "dir={test_targets}", "-q"])
+        )
+        self.assertEqual(eff3.cmd, ["python3", "-m", "pytest", "dir=tests/", "-q"])
 
 
 if __name__ == "__main__":  # pragma: no cover

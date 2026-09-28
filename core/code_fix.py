@@ -1234,6 +1234,13 @@ CODE_FIX_TEST_TARGETS_PLACEHOLDER = "{test_targets}"
 # 同值导出的环境变量名（cmd 可二选一引用占位符或环境变量）
 CODE_FIX_TEST_TARGETS_ENV = "FENIX_TEST_TARGETS"
 
+# 回退路径占位符消毒缺省目标（add-codefix-test-targets-fallback-sanitization）：
+# 回退全量出口把占位符替换为 tests/ 而非剥离参数——剥离对 str 形态留双空格、
+# 对 list 内嵌形态产生 ``dir=`` 畸变，且 pytest「无收集目标」走 rootdir 收集
+# 语义不可控；tests/ 与 _is_test_path 前缀识别、verify.yaml 安全形态缺省
+# （${FENIX_TEST_TARGETS:-tests/}）、pytest 中心助手链一致。
+CODE_FIX_TEST_TARGETS_FALLBACK = "tests/"
+
 
 def _is_test_path(rel_path: str) -> bool:
     """测试路径判别（spec 3.2 规则 a）：``tests/`` 下或 ``test_`` 前缀/
@@ -1427,6 +1434,18 @@ class _with_test_targets_env:
             else:
                 os.environ[CODE_FIX_TEST_TARGETS_ENV] = self._prev
         return False
+
+
+def _sanitize_test_targets(spec):
+    """回退路径占位符消毒薄包装（add-codefix-test-targets-fallback-sanitization）。
+
+    回退全量出口（链末批恒全量/映射空集/配置关/定向重试轮两态）把含
+    ``{test_targets}`` 占位符的 cmd 原样交给执行层会字面透传（pytest 收集
+    字面占位符必挂 → 回归失败 → 整批弃），故回退出口统一把占位符替换为
+    缺省 ``tests/``：复用 ``_apply_test_targets`` 的替换语义（str/list
+    两态），对无占位符 spec 原样返回（零副本零迁移），可无条件调用。
+    """
+    return _apply_test_targets(spec, [CODE_FIX_TEST_TARGETS_FALLBACK])
 
 
 def _fixed_files_from_rows(rows: list) -> list:
@@ -2193,15 +2212,20 @@ class CodeFixOrchestrator:
         """批收尾回归两段式分流（add-codefix-affinity-batching 3.4）。
 
         返回 ``(eff_spec, targeted, targets)``：
-        - 末批（``is_last_batch``）恒 ``(reg_spec 原样, False, [])``——全量
+        - 末批（``is_last_batch``）恒回退全量 ``(消毒副本, False, [])``——
           兜底，无论开关取值与 cmd 是否声明占位符；
         - 非末批且 ``targeted_regression=true`` 且 cmd 含 ``{test_targets}``
           且触碰面映射非空 → 定向（替换后的 RegressionSpec 副本）；
-        - 否则（配置关 / cmd 无占位符 / 映射空集）回退全量并记日志留痕
-          （fail-open：映射是优化不是门槛，MUST NOT 回退到「跳过回归」）。
+        - 否则（配置关 / 映射空集 / cmd 无占位符——定向判别仍用原 spec，
+          ctx 入口不盲替）回退全量并记日志留痕（fail-open：映射是优化
+          不是门槛，MUST NOT 回退到「跳过回归」）。
+
+        两个回退出口返回消毒副本（add-codefix-test-targets-fallback-
+        sanitization）：cmd 含占位符时替换为缺省 ``tests/`` 后再执行，无
+        占位符 spec 原样返回——回退路径不再把字面占位符透传给执行层。
         """
         if is_last_batch or not self._targeted_regression_enabled():
-            return reg_spec, False, []
+            return _sanitize_test_targets(reg_spec), False, []
         targets = _map_fix_files_to_tests(
             _fixed_files_from_rows(read_fix_out(wt, run_id)), wt
         )
@@ -2217,7 +2241,7 @@ class CodeFixOrchestrator:
             else "regression.cmd 未声明 {test_targets} 占位符"
         )
         self._log("info", f"code-fix 第 {batch_no} 批回退全量回归（{why}）")
-        return reg_spec, False, targets
+        return _sanitize_test_targets(reg_spec), False, targets
 
     def _code_fix_running(self) -> bool:
         """在途判据：编排器单飞标记或 runner 侧存在 code-fix- 前缀 run。"""
@@ -3623,10 +3647,19 @@ class CodeFixOrchestrator:
                         + (f"（子集 {len(fail_items)} 例）" if mapped else "（全量）")
                     ),
                 )
-                reg = runner.run_regression(
-                    reg_spec, reason="code-fix", project_root=wt, lock_root=root,
-                    subset_nodeids=[i["nodeid"] for i in fail_items] if mapped else None,
-                )
+                # 回退路径消毒（add-codefix-test-targets-fallback-sanitization）：
+                # 重试轮两态（mapped 真假）原共用 ctx 原件 reg_spec，占位符
+                # 在参数位时字面透传必挂——统一改用消毒副本（无占位符零
+                # 迁移），并纳入 FENIX_TEST_TARGETS 窗口（targets 非空保持
+                # 同值双轨；消毒后 cmd 已无占位符，窗口对 cmd inert）。
+                # mapped 态子集语义不受影响：subset_nodeids 由门面按消毒后
+                # cmd 的既有收集目标替换（消毒后 tests/ 成为可替换目标）。
+                with _with_test_targets_env(targets):
+                    reg = runner.run_regression(
+                        _sanitize_test_targets(reg_spec),
+                        reason="code-fix", project_root=wt, lock_root=root,
+                        subset_nodeids=[i["nodeid"] for i in fail_items] if mapped else None,
+                    )
                 if reg.status == "passed":
                     break
             else:
