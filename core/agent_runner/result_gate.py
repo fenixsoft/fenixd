@@ -17,17 +17,19 @@ result_gate.py — 结果数据结构与产物门（refactor-agent-runner-module
 
 import json
 import logging
+import os
 import re
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 from core.agent_runner.prompt_builder import (
     impl_result_path,
     planner_result_path,
-    planner_result_status_whitelist,
+    PLANNER_RESULT_STATUS_WHITELIST,
     spec_review_result_path,
-    spec_review_result_status_whitelist,
+    SPEC_REVIEW_RESULT_STATUS_WHITELIST,
 )
 from core.agent_runner.run_files import append_run_line
 from core.fast_track_result import parse_fast_track_verification
@@ -66,7 +68,7 @@ _ARTIFACT_FRESHNESS_GRACE_SECONDS = 1.0
 # 单值 ("plan-ready",)。planner-plan 的唯一合法终态是 plan-ready；
 # verified/bug-found/scenario-repaired 是 judge/verifier 词汇，出现即语义错位
 # （implementer 残留 "success" 同理）。读侧判定本就是 status != "plan-ready"
-# 即降级——硬门与读侧口径完全一致。不复用四值白名单常量 planner_result_status_whitelist，
+# 即降级——硬门与读侧口径完全一致。不复用四值白名单常量 PLANNER_RESULT_STATUS_WHITELIST，
 # 防「judge 合法值替 plan 类型放行」。随消费者同迁本模块（D2b 规则 3）。
 _PLANREADY_STATUSES = ("plan-ready",)
 
@@ -477,7 +479,7 @@ def _check_agent_result_artifact(
         if not isinstance(data, dict):
             return f"exit 0 但结果文件顶层非对象（{agent_type} 产物硬门）: {path}"
         status = data.get("status", "")
-        if status not in spec_review_result_status_whitelist:
+        if status not in SPEC_REVIEW_RESULT_STATUS_WHITELIST:
             return (
                 f"exit 0 但结果文件 status='{status}' 不在白名单"
                 f"（{agent_type} 产物硬门）: {path}"
@@ -515,7 +517,7 @@ def _check_agent_result_artifact(
     if not isinstance(data, dict):
         return f"exit 0 但结果文件顶层非对象（{agent_type} 产物硬门）: {path}"
     status = data.get("status", "")
-    if status not in planner_result_status_whitelist:
+    if status not in PLANNER_RESULT_STATUS_WHITELIST:
         return (
             f"exit 0 但结果文件 status='{status}' 不在白名单" f"（{agent_type} 产物硬门）: {path}"
         )
@@ -1241,14 +1243,14 @@ def salvage_result_from_transcript(
     （spec_review_result_path）；implementer / fast-track → ``impl_result_path(wt_path)``
     （wt_path 为 None 时返回 False——测试/异常场景无 worktree 载体）。
 
-    白名单分派：spec-review 用 ``spec_review_result_status_whitelist``
+    白名单分派：spec-review 用 ``SPEC_REVIEW_RESULT_STATUS_WHITELIST``
     （本模块已导入，默认值）；implementer/fast-track 的 ``_IMPL_RESULT_STATUSES``
     是 ``AgentRunner`` 类属性，不得导出为模块常量（1.1），MUST 经 ``statuses``
     参数由调用点传入。``statuses is None`` 时降级为该车道白名单或空（fail-closed）。
     """
     if agent_type == "spec-review":
         target = spec_review_result_path(project_root, spec_name)
-        whitelist = statuses if statuses is not None else spec_review_result_status_whitelist
+        whitelist = statuses if statuses is not None else SPEC_REVIEW_RESULT_STATUS_WHITELIST
     elif agent_type in ("implementer", "fast-track"):
         if wt_path is None:
             return False
@@ -1311,10 +1313,29 @@ def salvage_result_from_transcript(
         return False
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        # code-review item ceea0880b863：mkstemp + os.replace 原子落盘（同
+        # _copyback_run_result 的 _write_atomic 手法），避免写盘中途异常/被杀
+        # 留下截断 JSON——上方 target.exists() 守卫会把半截文件当成「结果已写」
+        # 永久阻断后续轮捞回。
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=f".{target.name}.", suffix=".tmp", dir=str(target.parent))
+        tmp_path = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(json.dumps(payload, ensure_ascii=False, indent=2))
+            # mkstemp 建文件为 0600，rename 前放宽到 write_text 的 umask 缺省
+            # 0644（同 verify_report 手法；chmod 失败不阻断写入）。
+            try:
+                os.chmod(tmp_path, 0o644)
+            except OSError:
+                pass
+            os.replace(tmp_path, target)
+        finally:
+            if tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
     except OSError as e:
         _logger.warning(
             "结果捞回写盘失败 '%s' (%s): %s", spec_name, agent_type, e)

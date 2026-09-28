@@ -23,7 +23,7 @@ from core.state_machine import (
 from core.agent_runner.runner import AgentRunner
 from core.agent_runner.prompt_builder import (
     spec_review_result_path,
-    spec_review_result_status_whitelist,
+    SPEC_REVIEW_RESULT_STATUS_WHITELIST,
 )
 
 _logger = logging.getLogger("fenixd.pm_engine.spec_review")
@@ -482,7 +482,7 @@ class SpecReviewManager:
 
         # 按 status 机械收口
         status = data.get("status")
-        if status not in spec_review_result_status_whitelist:
+        if status not in SPEC_REVIEW_RESULT_STATUS_WHITELIST:
             self.logger.warning("spec_review", f"未知 status: {status}")
             self._handle_review_failure(spec_name, f"未知 status: {status}")
             return False

@@ -337,12 +337,17 @@ class ProviderCircuit:
         # 顺序匹配：HTTP <code> / (404) / status code <code> / code <code> /
         # 「API Error: 403」（claude CLI 经 SDK 包装的鉴权错误实际形态，
         # fix-403-auth-failover-blindspot）
+        # 右边界 (?!\d)（code-review item 5b805fc991a2）：\d{3} 不设右边界会对
+        # 更长数字串截取前 3 位——"error 5001" 被截成 500、
+        # "exit code 1432" 被截成 143，前者恰被 classify_switch_error 判成 5xx
+        # 驱动链前进。(?!\d) 要求 3 位之后不再是数字才算命中；非数字后缀
+        # （"500." / "500)" / 行尾）不受影响。
         for pat in (
-            r"HTTP\s+(\d{3})",
+            r"HTTP\s+(\d{3})(?!\d)",
             r"\((\d{3})\)",
-            r"status\s*code\s*[:=]?\s*(\d{3})",
-            r"\bcode\s*[:=]?\s*(\d{3})",
-            r"[Ee]rror:?\s*(\d{3})",
+            r"status\s*code\s*[:=]?\s*(\d{3})(?!\d)",
+            r"\bcode\s*[:=]?\s*(\d{3})(?!\d)",
+            r"[Ee]rror:?\s*(\d{3})(?!\d)",
         ):
             m = re.search(pat, error_text, re.IGNORECASE)
             if m:
@@ -1810,20 +1815,31 @@ class ProviderCircuit:
 
     def _signal_kill_cooldown_after(self) -> int:
         """信号冷却阈值（agents.signal_kill_cooldown_after，缺省 3）。"""
+        raw = self._pm._get_config(
+            "agents.signal_kill_cooldown_after", SIGNAL_KILL_COOLDOWN_AFTER)
+        # bool 排除（code-review item ea68d5727ca3）：对齐同文件
+        # _record_daily_provider_attempt 的口径——yaml 误写布尔 true 时
+        # int(True)=1 会把阈值收成 1（首个信号死法立即触发冷却），bool 按畸形
+        # 回缺省；0（or 兜缺省）/负数（max(1) 钳 1）/非法串（except 兜缺省）
+        # 的既有兜底行为不变。
+        if type(raw) is bool:
+            return SIGNAL_KILL_COOLDOWN_AFTER
         try:
-            v = int(self._pm._get_config(
-                "agents.signal_kill_cooldown_after",
-                SIGNAL_KILL_COOLDOWN_AFTER) or SIGNAL_KILL_COOLDOWN_AFTER)
+            v = int(raw or SIGNAL_KILL_COOLDOWN_AFTER)
         except (TypeError, ValueError):
             v = SIGNAL_KILL_COOLDOWN_AFTER
         return max(1, v)
 
     def _signal_kill_cooldown_seconds(self) -> int:
         """信号冷却时长（agents.signal_kill_cooldown_seconds，缺省 600）。"""
+        raw = self._pm._get_config(
+            "agents.signal_kill_cooldown_seconds", SIGNAL_KILL_COOLDOWN_SECONDS)
+        # bool 排除（code-review item ea68d5727ca3）：同 _signal_kill_cooldown_after
+        # ——int(True)=1 会把冷却时长收成 1 秒，bool 按畸形回缺省，其余兜底不变。
+        if type(raw) is bool:
+            return SIGNAL_KILL_COOLDOWN_SECONDS
         try:
-            v = int(self._pm._get_config(
-                "agents.signal_kill_cooldown_seconds",
-                SIGNAL_KILL_COOLDOWN_SECONDS) or SIGNAL_KILL_COOLDOWN_SECONDS)
+            v = int(raw or SIGNAL_KILL_COOLDOWN_SECONDS)
         except (TypeError, ValueError):
             v = SIGNAL_KILL_COOLDOWN_SECONDS
         return max(1, v)

@@ -23,7 +23,12 @@ from core.dashboard.data import (
     parse_run_task_done,
     record_project_event,
 )
-from core.agent_runner.run_files import infer_run_agent_type, run_spec_part, strip_run_id_suffixes
+from core.agent_runner.run_files import (
+    RUN_ID_AGENT_PREFIXES,
+    infer_run_agent_type,
+    run_spec_part,
+    strip_run_id_suffixes,
+)
 from core.run_task_track import parse_tasks_md, parse_unattainable as _parse_unattainable
 from core.pm_engine.family import FamilyGovernor
 from core.pm_engine.budget import ImplBudget
@@ -42,17 +47,7 @@ from core.pm_engine.recovery import (
     DEFAULT_FOLLOWUP_CHECK_MINUTES,
     DEFAULT_SIGNAL_COOLDOWN_MINUTES,
 )
-from core.pm_engine.family import (
-    MAX_VERIFY_FAIL_ROUNDS,
-)
-from core.pm_engine.budget import (
-    DEFAULT_IMPL_RUN_BUDGET,
-    IMPL_RUN_BUDGET_USED_FIELD,
-    BUDGET_EXEMPT_ALERT_THRESHOLD,
-)
 from core.state_machine import (
-    BUDGET_EXEMPT_ALERTED_FIELD,
-    BUDGET_EXEMPT_RUNS_FIELD,
     FREEZE_ERROR_PREFIX,
     FROZEN_FIELD,
     FROZEN_UNTIL_FIELD,
@@ -2155,7 +2150,9 @@ class PMEngine:
         if not ok:
             self.logger.warning("pm_engine", f"任务回写 commit 失败 '{spec_name}': {err}")
             return
-        level = len(done_ids) if done_ids else min(max(flat_done) + 1, created_count)
+        # flat 兜底按实际写入数 bound 报告（code-review item c9632f1ba5fb）：
+        # created_count 口径在任务清单短于 run 创建序时虚大于真实勾选数。
+        level = len(done_ids) if done_ids else bound
         self.logger.info(
             "pm_engine",
             f"任务进度回写成功 '{spec_name}'：勾选 {level} 个任务"
@@ -2793,9 +2790,13 @@ class PMEngine:
                 if not (in_changes or in_archive):
                     continue
                 deleted = "D" in xy or (renamed and idx == 0)
+                # 显式按 xy 字段位判定新增/修改（code-review item 2fc03362a40b）：
+                # 首位 A/M（staged）或次位 A/M（unstaged），不依赖「porcelain
+                # 状态字符集不含其它字母」的子串包含巧合，与 deleted 判定同口径。
                 added = (
                     xy.startswith("??")
-                    or ("A" in xy or "M" in xy)
+                    or xy[0] in "AM"
+                    or xy[1] in "AM"
                     or (renamed and idx == 1)
                 )
                 if deleted or (in_archive and added):
@@ -3276,7 +3277,7 @@ class PMEngine:
             return float(DEFAULT_READY_STALL_THRESHOLD_MINUTES)
 
     def _spec_has_recent_run_activity(self, spec_name: str, window_minutes: float) -> bool:
-        """窗口内该 spec 是否有任何 run 产物活动（impl/verify/planner/admin）。
+        """窗口内该 spec 是否有任何 run 产物活动（前缀取 RUN_ID_AGENT_PREFIXES 全集）。
 
         「期间无成功派发」的代理判据：窗口内没有任何 run 流文件被写入即视为
         无派发活动（失败的 run 也算活动——有活动说明调度仍在工作，不是假就绪）。
@@ -3286,8 +3287,12 @@ class PMEngine:
             return False
         cutoff = time.time() - max(0.0, window_minutes) * 60
         try:
-            for prefix in ("impl", "verify", "planner-plan", "planner-judge", "admin"):
-                for p in runs_dir.glob(f"{prefix}-{spec_name}-*.jsonl"):
+            # 前缀唯一真源（code-review item bc67babca3c5）：直接消费 run_files
+            # 的 RUN_ID_AGENT_PREFIXES（前缀自带尾「-」），不再维护本地子集——
+            # 新增 agent 类型自动纳入，impl-ocr-<spec>-<ts> 等独立前缀形态的
+            # run id 也因此被 glob 覆盖。
+            for prefix, _agent_type in RUN_ID_AGENT_PREFIXES:
+                for p in runs_dir.glob(f"{prefix}{spec_name}-*.jsonl"):
                     # 精确归属守卫（范式见 recovery.py）：spec 名互为前缀时
                     # glob 命中不得直接认定——fix-x 不得被 fix-x-y 的活动豁免
                     if run_spec_part(p.stem) != spec_name:
@@ -3469,7 +3474,11 @@ class PMEngine:
                 # 滞留时长，跳过本轮（与 implementing/testing 分支解析失败静默
                 # 跳过同口径），不按 0 分钟照报。
                 try:
-                    u = datetime.fromisoformat((entry.get("updated") or "").replace("Z", "+00:00"))
+                    # updated 先 str 归一（code-review item 6e8033e77960，与
+                    # error 字段同款）：外部直改的非字符串值直接进 .replace 会
+                    # 抛 AttributeError（不在捕获列表内），中断整轮巡检。
+                    updated_raw = str(entry.get("updated") or "")
+                    u = datetime.fromisoformat(updated_raw.replace("Z", "+00:00"))
                     v_elapsed = int((now - u).total_seconds() / 60)
                 except (ValueError, TypeError):
                     continue
@@ -3508,7 +3517,7 @@ class PMEngine:
             # Check if stuck in an active state
             if status in ("implementing", "testing"):
                 try:
-                    updated_str = entry.get("updated", "")
+                    updated_str = str(entry.get("updated") or "")  # str 归一防非串值 AttributeError（item 6e8033e77960）
                     if updated_str:
                         updated = datetime.fromisoformat(updated_str.replace("Z", "+00:00"))
                         elapsed = self._stuck_elapsed_minutes(name, now, updated)
@@ -3547,7 +3556,7 @@ class PMEngine:
             # Check for ready-but-starving (never been picked up)
             if status == "ready":
                 try:
-                    updated_str = entry.get("updated", "")
+                    updated_str = str(entry.get("updated") or "")  # str 归一防非串值 AttributeError（item 6e8033e77960）
                     if updated_str:
                         updated = datetime.fromisoformat(updated_str.replace("Z", "+00:00"))
                         elapsed = (now - updated).total_seconds() / 60
@@ -3619,12 +3628,18 @@ class PMEngine:
                     pass
 
         # Log and auto-recover
-        if blockers:
+        # warning-only 轮次同样落 WARNING（code-review item 11f659e8a71a）：
+        # 队列饥饿形态 blockers 为空而 warnings 非空，若整段日志被 `if blockers:`
+        # 门住，本轮 warning 每轮算出、每轮丢弃，上方注释承诺的「Waiting in
+        # ready queue … possible queue starvation」（阈值 2×stuck）饿死观测
+        # 通道失效。报告仍仅在有 blocker 时落（报告以 blockers 为主结构）。
+        if blockers or warnings:
             self.logger.warning(
                 "pm_engine",
                 f"BLOCKER CHECK: {len(blockers)} blocking, {len(warnings)} warnings",
                 {"blockers": blockers, "warnings": warnings},
             )
+        if blockers:
             self._write_blocker_report(blockers, warnings)
 
             # Auto-recovery: reset stuck SPECs to previous state so they get retried
@@ -4273,15 +4288,20 @@ class PMEngine:
         return ConfigLoader.effective_run_timeout_seconds(self.config, agent_type)
 
     def _instant_fail_cooldown_until(self, spec_name: str) -> float:
-        """返回 spec 的秒挂冷却到期单调秒（未冷却/无条目返回 0）。"""
+        """返回 spec 的秒挂冷却到期单调秒（未冷却/无条目返回 0）。
+
+        委托到 agent_runner.instant_fail_cooldown_until（code-review item
+        97cdbf2893f7：与 _signal_kill_cooldown_until 同走公开方法，不再下钻
+        runner 私有 dict）；runner 不可用或判定异常时 fail-open（返回 0，
+        不排程恢复定时器）。
+        """
         runner = getattr(self, "agent_runner", None)
-        table = getattr(runner, "_instant_fail", None)
-        if not isinstance(table, dict):
+        m = getattr(runner, "instant_fail_cooldown_until", None)
+        if not callable(m):
             return 0.0
-        st = table.get(spec_name) or {}
         try:
-            return float(st.get("cooldown_until") or 0.0)
-        except (TypeError, ValueError):
+            return float(m(spec_name))
+        except Exception:
             return 0.0
 
     def reclaim_stale_autostash_if_idle(self) -> bool:

@@ -596,12 +596,14 @@ class FamilyGovernor:
                 f"冻结递增（保持 {entry.get('_verify_fail_rounds', 0)}）",
             )
             return
-        fail_rounds = 0
-        try:
-            fail_rounds = int(entry.get("_verify_fail_rounds", 0) or 0)
-        except (TypeError, ValueError):
-            fail_rounds = 0
-        fail_rounds += 1
+        # 计数递增走锁内原子原语（code-fix dd37a2be6ef6）：原先「read_one 读 →
+        # 算 +1 → 并进下方 update_spec 写回」读与写分处两段，与 fastlane 失败
+        # 记账（dispatch_minor_defect_fastlane 对同字段 bump_counters 原子递增）
+        # 在同一 spec 上时间重叠时，读旧值写回会吞掉对方刚加的增量。改按
+        # bump_counters 写后最新值判阈值；下方冻结/打回写不再并入该字段。
+        fail_rounds = self._pm.state_machine.bump_counters(
+            spec_name, {"_verify_fail_rounds": 1}
+        ).get("_verify_fail_rounds", 0)
 
         # ── 失败历史侧车（fix-verdict-retry-misattribution D6 + R3）──
         # 本轮 bug-found 采纳 = 真缺陷失败轮（cause_type=real-bugs），记入侧车供
@@ -616,31 +618,26 @@ class FamilyGovernor:
         )
 
         if fail_rounds >= MAX_VERIFY_FAIL_ROUNDS:
-            # ── 升级闸门：冻结为 blocked + human-escalation-alerts 告警 ──
+            # ── 升级闸门：冻结转人工（freeze_for_human 单一入口）──
+            # code-fix 0eda9bae5886：原先裸 update_spec 置 blocked，error 文案
+            # 既无 frozen 结构化标记也无 FREEZE_ERROR_PREFIX，blocked_stuck
+            # 看门狗的三选一豁免（frozen 字段 / 'frozen:' 前缀 / '用户指令'
+            # 子串）全不命中——闸门声称「等待人工裁决」却会被自动派 admin
+            # run。改走 freeze_for_human：frozen 与人工升级告警成对落盘，
+            # 豁免真正生效。_verify_fail_rounds 已由上方 bump_counters 原子
+            # 递增并落盘，不再并入本次写（避免覆盖并发写者的增量）。
             history = self._pm._read_fail_history(spec_name)
             classified = self._classify_fail_history(history)
-            self._pm.state_machine.update_spec(
+            self._pm.state_machine.freeze_for_human(
                 spec_name,
-                {
-                    "_verify_fail_rounds": fail_rounds,
-                    "status": "blocked",
-                    "error": (
-                        f"升级闸门连续失败第 {fail_rounds} 轮，已冻结等待人工裁决。"
-                        f"详见 `spec/changes/{spec_name}/verification-report.md`"
-                    ),
-                },
-            )
-            self._pm.logger.error(
-                "pm_engine",
-                f"升级闸门：'{spec_name}' 升级闸门连续失败第 {fail_rounds} 轮，"
-                f"冻结为 blocked，等待人工裁决",
-            )
-            self._send_human_escalation_alert(
-                spec_name=spec_name,
+                error=(
+                    f"升级闸门连续失败第 {fail_rounds} 轮，已冻结等待人工裁决。"
+                    f"详见 `spec/changes/{spec_name}/verification-report.md`"
+                ),
                 signal_type="verify_fail_escalation",
                 severity="major",
                 description=(
-                    f"'{spec_name}' 升级闸门连续失败第 {fail_rounds} 轮，" f"已冻结等待人工裁决"
+                    f"'{spec_name}' 升级闸门连续失败第 {fail_rounds} 轮，已冻结等待人工裁决"
                 ),
                 evidence=(
                     f"spec={spec_name}; "
@@ -651,16 +648,23 @@ class FamilyGovernor:
                     "检查验证报告定位根因，人工调整 SPEC 状态后重跑验证；"
                     "人工重置计数器即重新获得自动修复机会"
                 ),
+                alert_callback=self._send_human_escalation_alert,
+            )
+            self._pm.logger.error(
+                "pm_engine",
+                f"升级闸门：'{spec_name}' 升级闸门连续失败第 {fail_rounds} 轮，"
+                f"冻结为 blocked，等待人工裁决",
             )
             # 失败历史已被本次告警消费，清空侧车避免陈旧记录污染下一链条
             self._pm._clear_fail_history(spec_name)
             return
 
-        # ── 正常打回：递增计数 + 重置 implementing + 注入修复任务 ──
+        # ── 正常打回：重置 implementing + 注入修复任务 ──
+        # 计数已由上方 bump_counters 原子递增并落盘，此处不再并入 update_spec
+        # （避免覆盖并发写者——如 fastlane 失败记账——的增量）。
         self._pm.state_machine.update_spec(
             spec_name,
             {
-                "_verify_fail_rounds": fail_rounds,
                 "status": "implementing",
                 "error": (f"验证失败（原地打回第 {fail_rounds} 轮），重修中"),
             },
@@ -672,9 +676,17 @@ class FamilyGovernor:
         )
         # 注入 tasks.md「验证修复」段
         self._inject_verify_fix_task(spec_name, fail_rounds)
-        self._pm._append_project_log(
-            f"🐛 Bug found in **{spec_name}** → 原地打回第 {fail_rounds} 轮"
-        )
+        # PROJECT_LOG 可丢、主链不可断（b21d8f2d8247 同口径）：此时打回已
+        # 生效、修复段已注入，写盘失败不得中断下方重派 _enqueue
+        try:
+            self._pm._append_project_log(
+                f"🐛 Bug found in **{spec_name}** → 原地打回第 {fail_rounds} 轮"
+            )
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"原地打回项目日志失败 '{spec_name}'（非阻断，打回已生效）: {e}",
+            )
         # 重派通道按 spec 实现模式选择（与 repair_lane._fallback_after_repair、
         # engine 实现态恢复同口径）：fast-track spec 打回后仍回 fast-track
         # 重派，不硬派 implementer（读侧异常回退 implementer）
@@ -783,9 +795,17 @@ class FamilyGovernor:
             # 新建分支入队（同上，code-review item 5e687a6085a1）
             self._pm._enqueue(fix_spec_name, "implementer")
 
-        self._pm._append_project_log(
-            f"🐛 Bug found in **{spec_name}** → scheduling legacy **{fix_spec_name}**"
-        )
+        # PROJECT_LOG 可丢、主链不可断（b21d8f2d8247 同口径）：写盘失败不得
+        # 抛穿 bug-found 处理链
+        try:
+            self._pm._append_project_log(
+                f"🐛 Bug found in **{spec_name}** → scheduling legacy **{fix_spec_name}**"
+            )
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"legacy 派生项目日志失败 '{spec_name}'（非阻断，派生已生效）: {e}",
+            )
 
     def _read_prev_impl_conclusions(self, spec_name: str) -> str:
         """读取上一轮 implementer 的收工结论，作为修复段的「上轮实现结论」小节。

@@ -16,7 +16,7 @@ import json
 import re
 from pathlib import Path
 
-from core.agent_runner.prompt_builder import planner_result_status_whitelist
+from core.agent_runner.prompt_builder import PLANNER_RESULT_STATUS_WHITELIST
 
 
 class VerdictReadResult:
@@ -281,7 +281,7 @@ def _read_verifier_result(
         )
         return VerdictReadResult.failure("parse", f"顶层非对象: {result_path}")
     status = data.get("status", "")
-    if status not in planner_result_status_whitelist:
+    if status not in PLANNER_RESULT_STATUS_WHITELIST:
         # fail-closed：白名单外 status（如 implementer 共享文件残留的
         # success/error）不得被当成 verified 放行（历史日志：
         # "Unknown verifier status: 'success', treating as verified"）。

@@ -25,7 +25,7 @@ from typing import Optional, Dict, Any
 from core.agent_runner.prompt_builder import (
     PromptBuilder,
     spec_review_result_path,
-    spec_review_result_status_whitelist,
+    SPEC_REVIEW_RESULT_STATUS_WHITELIST,
 )
 
 # fix-verdict-read-failclosed D2（新鲜度宽限）与 add-planready-artifact-gate D2
@@ -424,10 +424,12 @@ class _AttemptState:
     顺序或作用域（等价搬移）；状态对象生命周期限于本函数（attempt 循环
     期间），MUST NOT 提升为实例属性（避免跨 run 泄漏）。
 
-    ⚠️ session_id / session_provider / usage_info 暂不回写：真实源在
-    _execute_agent_inner 的同名局部变量（见字段处标注，code-review item
-    41e028ab3b35）——后续方法提取把读写点迁到 st 侧前 MUST 先补齐回写点，
-    否则会拿到恒 None / 初始 dict 的陈旧值。
+    ⚠️ usage_info 暂不回写：真实源在 _execute_agent_inner 的同名局部变量
+    （见字段处标注，code-review item 41e028ab3b35）——后续方法提取把读写点
+    迁到 st 侧前 MUST 先补齐回写点，否则会拿到初始 dict 的陈旧值。
+    session_id / session_provider / transient_retries / resume_failures
+    死字段已删除（code-review item 41e028ab3b35 / 5bea5c21acee）：建态后
+    无回写点也从不读取，真实状态只活在同名局部变量里。
     """
 
     # 当前 attempt 使用的 worktree 路径（读 53 次，最高频共享标量）
@@ -440,16 +442,13 @@ class _AttemptState:
     # 由 _select_chain_candidate 重新选点。-1 表示尚未选定
     chain_cursor: int = -1
     # ⚠️ 暂不回写、真实源在局部变量（code-review item 41e028ab3b35）：
-    # session_id/session_provider/usage_info 建态后无回写点，真实状态只活在
-    # _execute_agent_inner 的同名局部变量里（如 _run_claude 返回的
-    # run_session_id/usage_info 经局部变量流转）。字段仅承载建态初值供顶部
-    # 别名读取，MUST NOT 把读写点迁到 st 侧（会拿到恒 None/初始 dict）。
-    # session_id 所属 provider（None=默认网关）
-    session_id: Optional[str] = None
-    session_provider: Optional[str] = None
-    # transient_retries / resume_failures 字段已移除（建态后从不回写也从不
-    # 读取的死字段，code-review item 41e028ab3b35）：真实计数是
-    # _execute_agent_inner 的 attempt 级局部变量，与状态对象无关。
+    # usage_info 建态后无回写点，真实状态只活在 _execute_agent_inner 的同名
+    # 局部变量里（_run_claude 返回的 usage_info 经局部变量流转）。字段仅承载
+    # 建态初值供顶部别名读取，MUST NOT 把读写点迁到 st 侧（会拿到初始 dict）。
+    # transient_retries / resume_failures / session_id / session_provider 字段
+    # 已移除（建态后从不回写也从不读取的死字段，code-review item
+    # 41e028ab3b35 / 5bea5c21acee）：真实状态是 _execute_agent_inner 的局部
+    # 变量（session 经 _run_claude 返回值与续跑提取回填），与状态对象无关。
     # worktree-reuse：fast-track 终态失败保留的复用遗产路径
     kept_wt_path: Optional[Path] = None
     # add-run-cancel D3/D5：本轮 run 是否被人工取消
@@ -1189,10 +1188,26 @@ class AgentRunner:
                     _rd = json.loads(_rp.read_text(encoding="utf-8"))
                     if isinstance(_rd, dict):
                         _rd["run_id"] = run_id
-                        _rp.write_text(
-                            json.dumps(_rd, ensure_ascii=False, indent=2),
-                            encoding="utf-8",
+                        # 原子重写（code-review item fd3afe24cdf0）：共享结果
+                        # 文件跨轮复用，write_text 中途被杀/掉电会留截断 JSON，
+                        # mkstemp + os.replace 与 _copyback_run_result 的
+                        # _write_atomic 同款手法。
+                        _fd, _tmp_name = tempfile.mkstemp(
+                            prefix=".dispute-judge-result.", suffix=".tmp",
+                            dir=str(vp_dir),
                         )
+                        _tmp_path = Path(_tmp_name)
+                        try:
+                            with os.fdopen(_fd, "w", encoding="utf-8") as _f:
+                                _f.write(json.dumps(
+                                    _rd, ensure_ascii=False, indent=2))
+                            os.replace(_tmp_path, _rp)
+                        finally:
+                            if _tmp_path.exists():
+                                try:
+                                    _tmp_path.unlink()
+                                except OSError:
+                                    pass
             except Exception as _e:
                 self.logger.warning(
                     "agent_runner",
@@ -1937,7 +1952,7 @@ class AgentRunner:
         """
         return salvage_result_from_transcript(
             self.project_root, spec_name, run_id, "spec-review",
-            statuses=spec_review_result_status_whitelist)
+            statuses=SPEC_REVIEW_RESULT_STATUS_WHITELIST)
 
     def _salvage_impl_result(self, spec_name: str, run_id: str | None,
                              wt_path: Path | None, agent_type: str) -> bool:
@@ -2386,8 +2401,11 @@ class AgentRunner:
         )
         # 别名：原变量名 → st 字段（保留，函数体暂不改为 st.xxx）
         wt_path = st.wt_path
-        session_id = st.session_id
-        session_provider = st.session_provider
+        # session_id/session_provider 的 st 死字段已删除（code-review item
+        # 5bea5c21acee）：建态后无回写点，真实状态只活在同名局部变量（顶部
+        # None 起步，由 _run_claude 返回值与续跑提取回填），直接局部初始化。
+        session_id = None
+        session_provider = None
         # chain_cursor 不设本地别名（code-review item 41e028ab3b35）：实际
         # 读写全部经 st.chain_cursor（provider_marker / 链推进 /
         # _resolve_provider_candidate），原别名从未被消费，已删除。
@@ -6023,6 +6041,16 @@ class AgentRunner:
             self._reset_instant_fail(spec_name)
             return False
         return True
+
+    def instant_fail_cooldown_until(self, spec_name: str) -> float:
+        """该 spec 秒挂冷却到期单调秒（未冷却/无条目返回 0；派发恢复排程用）。"""
+        st = self._instant_fail.get(spec_name)
+        if not st:
+            return 0.0
+        try:
+            return float(st.get("cooldown_until") or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
 
     def _read_verify_progress(self, spec_name: str) -> dict | None:
         """读取 verifier 断点进度文件（verifier-checkpoint-resume spec）。
