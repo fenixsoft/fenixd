@@ -135,7 +135,10 @@ def get_active_agents():
         )
         agents = []
         for line in r.stdout.split("\n"):
-            if "claude " not in line or "grep" in line:
+            # 旧 ps|grep 管道模式需排除 grep 自身；现 subprocess 直跑 ps，
+            # 管道里没有 grep 进程，子串排除只会误伤 args 含 grep 字样的真实
+            # claude 进程（code-review item d7b426447075）
+            if "claude " not in line:
                 continue
             parts = line.split(None, 3)
             if len(parts) < 4:
@@ -451,6 +454,9 @@ def check_daemon():
 
 def run_tui(interval=3):
     """终端仪表盘主循环（原 TUI，保留）"""
+    # 夹紧非法间隔（code-review item f489dab6d9b3）：0 退化为不 sleep 的热
+    # 循环，负值令 time.sleep 抛 ValueError 崩溃
+    interval = max(1, interval)
     print(f"{DIM}Fenix Dashboard — 每 {interval}s 刷新，Ctrl+C 退出{RESET}")
     time.sleep(1)
 
