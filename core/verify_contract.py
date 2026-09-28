@@ -327,6 +327,19 @@ def _load_verify_contract_with_raw(
             )
     serve = None
     serve_data = data.get("serve")
+    # serve 段形态守卫（code-review item 48713cc5a8cb）：非 None 且非映射
+    # （如 YAML 缩进错误写成 serve: myserver 标量）此前被静默落 serve=None、
+    # 回退 commands.start 旧行为，用户声明了 serve 段却全链路无一处提示——
+    # 记 warning（含原文 repr）对齐 prepare/ready/regression 段「告警＋忽略
+    # 该片段」惯例。
+    if serve_data is not None and not isinstance(serve_data, dict):
+        if logger:
+            logger.warning(
+                "verify_contract",
+                f"verify.yaml serve 段非法（须为映射，按无 serve 段处理）: "
+                f"{serve_data!r}",
+            )
+        serve_data = None
     if isinstance(serve_data, dict) and serve_data.get("kind") in ("static", "command"):
         # port 是可选 legacy 端口提示：非正整数（如 port: auto）按无提示
         # 回退 None，不得从 load_verify_contract 抛 ValueError——违背
@@ -491,12 +504,15 @@ def _raw_serve_section_errors(raw_serve) -> list:
     ``selfcheck_contract_light`` 的消费期自证共用本函数——此前三条校验及
     错误文案在两处逐字复刻，任一侧调整口径（新增枚举值、改文案）都会与
     另一侧漂移（code-review item 13d93a1f9a25），文案单点维护。
-    raw_serve 非映射（serve 段缺失/形态畸形）返回空列表：该形态由
-    load_verify_contract 静默丢弃 serve、按无 serve 段处理，两侧均不在
-    此判定。
+    raw_serve 缺失（None）返回空列表（纯 cli 形态，两侧均不在此判定）；
+    非 None 且非映射（如 YAML 缩进错误写成标量）返回一条形态错误——该形态
+    此前与缺失同被静默当「纯 cli」放行（code-review item 48713cc5a8cb），
+    验证退回 commands.start 旧行为而无任何提示。
     """
-    if not isinstance(raw_serve, dict):
+    if raw_serve is None:
         return []
+    if not isinstance(raw_serve, dict):
+        return [f"serve 段非法（须为映射）: {raw_serve!r}"]
     kind = raw_serve.get("kind", "")
     if kind not in ("static", "command"):
         return [f"serve.kind 非法: {kind}（应为 static 或 command）"]
@@ -701,9 +717,10 @@ def validate_contract(project_root: Path, logger=None) -> ValidateResult:
                 # command 形态：分配端口、替换占位符、启动进程
                 # srv 声明提前到此处，由 finally 统一 stop（先探 ready 再停）
                 srv = None
-                from core.proc_utils import find_free_port as _ffp
-
-                injected_port = _ffp()
+                # 端口分配直接复用模块级 find_free_port（code-review item
+                # 3e4ee4209a3d）：原函数内重复 import 与顶层 import、
+                # _find_free_port 兼容包装三名字同指一函数，收敛为单一来源。
+                injected_port = find_free_port()
                 cmd_str = contract.serve.cmd
                 if "{port}" in cmd_str:
                     cmd_str = cmd_str.replace("{port}", str(injected_port))
@@ -794,16 +811,27 @@ def validate_contract(project_root: Path, logger=None) -> ValidateResult:
                     pass
             elif proc is not None:
                 # 构造 CommandVerifyServer 失败（srv 仍为 None）的兜底：
-                # 进程组照常收掉，防孤儿服务（同上 item）。
+                # 进程组照常收掉，防孤儿服务（同上 item）。pgid 提前取定
+                # （start_new_session=True 下即 proc.pid）——wait 回收 leader
+                # 后 getpgid 将失效，补刀须用此句柄。
+                try:
+                    pgid = os.getpgid(proc.pid)
+                except (ProcessLookupError, PermissionError, OSError):
+                    pgid = proc.pid
                 try:
                     if proc.poll() is None:
-                        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                        os.killpg(pgid, signal.SIGTERM)
                         proc.wait(timeout=5)
                 except Exception:
-                    try:
-                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-                    except Exception:
-                        pass
+                    pass
+                # 组清扫补刀（code-review item 7168a8391e06）：同 stop 纪律——
+                # leader 退出（含 poll() 非 None 原本被整段跳过的形态）不代表
+                # 组内孙进程已清，补一次 SIGKILL；ProcessLookupError＝组已
+                # 清空，静默即可。
+                try:
+                    os.killpg(pgid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
 
     return ValidateResult(
         valid=valid,
@@ -881,18 +909,37 @@ def run_prepare_steps(contract: VerifyContract, project_root: Path) -> Optional[
         try:
             out, err = p.communicate(timeout=PREPARE_STEP_TIMEOUT)
         except subprocess.TimeoutExpired:
-            # 先 SIGTERM 整组留优雅退出机会，wait(5) 未退再 SIGKILL（同 stop 纪律）
+            # 先 SIGTERM 整组留优雅退出机会，wait(5) 未退再 SIGKILL（同 stop 纪律）。
+            # start_new_session=True 使 leader 即进程组长（pgid == p.pid），提前
+            # 取定句柄——wait 回收 leader 后 getpgid 将失效，组清扫补刀须用此
+            # 句柄（code-review item 7168a8391e06）。
             try:
-                os.killpg(os.getpgid(p.pid), signal.SIGTERM)
+                pgid = os.getpgid(p.pid)
+            except (ProcessLookupError, PermissionError, OSError):
+                pgid = p.pid
+            try:
+                os.killpg(pgid, signal.SIGTERM)
             except (ProcessLookupError, PermissionError, OSError):
                 pass
             try:
                 p.wait(timeout=5)
             except Exception:
-                try:
-                    os.killpg(os.getpgid(p.pid), signal.SIGKILL)
-                except Exception:
-                    pass
+                pass
+            # 组清扫补刀（code-review item 7168a8391e06）：leader 退出不等于组
+            # 内已清——shell 包装的构建命令收到 SIGTERM 即退时，忽略 SIGTERM
+            # 的孙进程（npm 派生的 node）会残留继续写 dist。无论 wait 成败都
+            # 补一次 SIGKILL；ProcessLookupError＝组已清空，静默即可。
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+            # 收尸（code-review item 020ba8771283）：补一次 communicate 排空
+            # stdout/stderr 管道并回收退出状态，不留 fd/僵尸窗口靠解释器 GC
+            # 与下一次 Popen._cleanup 兜底。
+            try:
+                p.communicate(timeout=5)
+            except Exception:
+                pass
             return f"第 {i} 步超时（>{PREPARE_STEP_TIMEOUT}s）: {cmd}"
         if p.returncode != 0:
             tail = (err or out or "").strip()[-300:]
@@ -1094,17 +1141,30 @@ class CommandVerifyServer:
         return self._port is not None and self._proc.poll() is None
 
     def stop(self):
+        # start_new_session=True 使 leader 即进程组长（pgid == pid），提前取定
+        # 句柄——wait 回收 leader 后 getpgid 将抛 ProcessLookupError，组清扫
+        # 补刀须用此句柄（code-review item 7168a8391e06）。
         try:
-            os.killpg(os.getpgid(self._proc.pid), signal.SIGTERM)
+            pgid = os.getpgid(self._proc.pid)
+        except (ProcessLookupError, PermissionError, OSError):
+            pgid = self._proc.pid
+        try:
+            os.killpg(pgid, signal.SIGTERM)
         except (ProcessLookupError, PermissionError, OSError):
             pass
         try:
             self._proc.wait(timeout=5)
         except Exception:
-            try:
-                os.killpg(os.getpgid(self._proc.pid), signal.SIGKILL)
-            except Exception:
-                pass
+            pass
+        # 组清扫补刀（code-review item 7168a8391e06）：wait 成功＝leader 已退，
+        # 但 shell 包装的 serve.cmd（npm start 等）下忽略 SIGTERM 的孙进程
+        # （node）仍在组内，原「仅 wait 超时才 SIGKILL」使其永远等不到补刀、
+        # 残留为占用端口的孤儿验证实例（陈旧实例污染验证同型）。无论 wait
+        # 成败都补一次组 SIGKILL；ProcessLookupError＝组已清空，静默即可。
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
         # 进程退出后关闭 boot.log 句柄（design D3：Popen 持句柄、退出后关闭）
         if self._boot_log is not None:
             try:
@@ -1757,6 +1817,20 @@ def selfcheck_contract_light(project_root: Path, logger=None, base_url: str = ""
 
     serve = contract.serve
     if serve is None:
+        # serve 段解析为 None 有两种形态：真无 serve 段（纯 cli，放行）与
+        # serve 段声明了但形态非法被「告警＋忽略」（code-review item
+        # 48713cc5a8cb）——后者裸读原始 YAML 复检 serve 段，否则用户声明了
+        # serve 段却在此按「纯 cli 形态」静默放行、验证退回 commands.start
+        # 旧行为。复检口径与 validate_contract 第 2 步单点同源
+        # （_raw_serve_section_errors）。
+        try:
+            raw = yaml.safe_load(contract_path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict) and raw.get("serve") is not None:
+                errs = _raw_serve_section_errors(raw.get("serve"))
+                if errs:
+                    return "轻量自证失败（serve 段）: " + "；".join(errs)
+        except Exception:
+            pass  # 复检读取失败不阻塞——load 已对解析失败按无契约回退并记 warning
         return None  # 无 serve 段：纯 cli 场景集，serve/ready 不相关
     if serve.kind == "static":
         if not serve.root:

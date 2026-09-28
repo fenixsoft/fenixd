@@ -77,7 +77,6 @@ def commit_archive_move(project_root, spec_name: str, archive_dir, distill=None)
     # 归档移动成功即触发（不依赖本次提交成败）。fail-open：派发异常只记日志
     # 与重试台账，不影响归档提交主流程；内部 knowledge.enabled 门控与
     # pytest 守卫由 dispatch_distill 承担。延迟导入避免模块级依赖环。
-    result["distill"] = None
     try:
         if distill is None:
             from core.knowledge import dispatch_distill

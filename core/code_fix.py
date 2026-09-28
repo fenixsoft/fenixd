@@ -42,6 +42,7 @@ agent run 在独立 worktree 内修复并提交；框架在该 worktree 上跑�
 
 import calendar
 import dataclasses
+import glob
 import json
 import os
 import re
@@ -538,9 +539,21 @@ def _failed_item_ids(project_root) -> set:
     return ids
 
 
+def _fail_count_int(value) -> int:
+    """失败档案 ``fail_count`` 类型容错解析（code-review item 4ac4bea334b2）。
+
+    档案被外部直改成非数值字符串时按缺省 1 处理，MUST NOT 让 ValueError
+    穿透炸掉 checkpoint 的「选批为空」收敛出口。
+    """
+    try:
+        return int(value or 1)
+    except (TypeError, ValueError):
+        return 1
+
+
 def record_failed_batch(
     project_root, item_ids, worktree, reason="", branch="", tip_sha="",
-    detail_ref="",
+    detail_ref="", logger=None,
 ) -> None:
     """把确定性失败批落盘到 fix-failed.json（原子写；同条目集复用记录）。
 
@@ -561,40 +574,57 @@ def record_failed_batch(
     ``worktree`` 形参仅为兼容既有调用点保留，MUST NOT 落盘（现场即弃后该
     路径写入几秒即失效且无读者，追溯以 branch/tip_sha 为准，code-review
     item a0e268c1f1c1），记录中恒为 null。
+
+    读-改-写全程持 flock（``_with_lock``，code-review item fd1dc2a59820，
+    对齐 ``write_progress``/``reopen_regression_items`` 同文件先例）：与
+    链边界自动操作（新链启动释放）及人工 ``release_failed_batch`` 的并发
+    交叠会丢更新。``logger``（可选）供达上限一次性告警拒写时留痕。
     """
-    records = load_failed_batches(project_root)
-    key = {str(i) for i in item_ids}
-    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    target = None
-    for rec in records:
-        if {str(i) for i in rec.get("item_ids") or []} == key:
-            target = rec
-            break
-    if target is not None:
-        target["fail_count"] = int(target.get("fail_count") or 0) + 1
-        # 墓碑复燃（code-review item 931df4af59cc）：预算内释放只打标不删除，
-        # 同条目集再次入档即清标回到在档排除态、fail_count 跨链续增——否则
-        # 墓碑留存会让本递增分支不可达，每链都重新以 fail_count=1 建档，
-        # 达上限告警/todo/永久跳过永不发生（确定性失败批无限重试）。
-        target.pop("released", None)
-        target.pop("released_at", None)
-    else:
-        target = {"item_ids": list(item_ids), "fail_count": 1}
-        records.append(target)
-    target["worktree"] = None
-    target["reason"] = reason
-    target["branch"] = branch
-    target["tip_sha"] = tip_sha
-    target["detail_ref"] = detail_ref
-    target["failed_at"] = now
-    _atomic_write(
-        _failed_path(project_root),
-        json.dumps(records, ensure_ascii=False, indent=2),
-    )
-    if target["fail_count"] == FAIL_RETRY_MAX:
+    path = _failed_path(project_root)
+    hit_max = False
+
+    def _do() -> None:
+        nonlocal hit_max
+        records = load_failed_batches(project_root)
+        key = {str(i) for i in item_ids}
+        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        target = None
+        for rec in records:
+            if {str(i) for i in rec.get("item_ids") or []} == key:
+                target = rec
+                break
+        if target is not None:
+            target["fail_count"] = int(target.get("fail_count") or 0) + 1
+            # 墓碑复燃（code-review item 931df4af59cc）：预算内释放只打标不删除，
+            # 同条目集再次入档即清标回到在档排除态、fail_count 跨链续增——否则
+            # 墓碑留存会让本递增分支不可达，每链都重新以 fail_count=1 建档，
+            # 达上限告警/todo/永久跳过永不发生（确定性失败批无限重试）。
+            target.pop("released", None)
+            target.pop("released_at", None)
+        else:
+            target = {"item_ids": list(item_ids), "fail_count": 1}
+            records.append(target)
+        target["worktree"] = None
+        target["reason"] = reason
+        target["branch"] = branch
+        target["tip_sha"] = tip_sha
+        target["detail_ref"] = detail_ref
+        target["failed_at"] = now
+        _atomic_write(
+            path,
+            json.dumps(records, ensure_ascii=False, indent=2),
+        )
+        hit_max = target["fail_count"] == FAIL_RETRY_MAX
+
+    # 锁内只有本文件读-改-写（MUST NOT 重入同一把锁）；告警/todo 写走
+    # AdminStore/todo 通道（异锁），保持锁外。
+    _with_lock(path, _do)
+    if hit_max:
         # 递增至预算上限的「那次入档」才告警 + 登记 todo（一次性，D4）；
         # 预算内入档可自动重试，不产生人工项。
-        _write_retry_exhausted_alert(project_root, item_ids, reason, branch, tip_sha)
+        _write_retry_exhausted_alert(
+            project_root, item_ids, reason, branch, tip_sha, logger=logger
+        )
         _append_todo_entry(project_root, item_ids, reason, branch, tip_sha)
 
 
@@ -772,49 +802,68 @@ def release_retryable_failed_batches(project_root) -> int:
     重试，每轮烧一次 agent run + 两次全量回归）。墓碑不参与选批排除
     （``_failed_item_ids`` 跳过 released 记录）；同条目集再次入档时
     ``record_failed_batch`` 清标复燃并递增。幂等：已释放记录跳过不重刷时间戳。
+
+    读-改-写全程持 flock（``_with_lock``，code-review item fd1dc2a59820，
+    对齐同文件 ``write_progress`` 先例）：与批收尾 ``record_failed_batch``
+    的并发交叠会丢更新（丢一条失败档案）。
     """
-    records = load_failed_batches(project_root)
-    released = 0
-    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    for rec in records:
-        if rec.get("released") or int(rec.get("fail_count") or 1) >= FAIL_RETRY_MAX:
-            continue
-        rec["released"] = True
-        rec["released_at"] = now
-        released += 1
-    if released:
-        _atomic_write(
-            _failed_path(project_root),
-            json.dumps(records, ensure_ascii=False, indent=2),
-        )
-    return released
+    path = _failed_path(project_root)
+
+    def _do() -> int:
+        records = load_failed_batches(project_root)
+        released = 0
+        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        for rec in records:
+            if rec.get("released") or int(rec.get("fail_count") or 1) >= FAIL_RETRY_MAX:
+                continue
+            rec["released"] = True
+            rec["released_at"] = now
+            released += 1
+        if released:
+            _atomic_write(
+                path,
+                json.dumps(records, ensure_ascii=False, indent=2),
+            )
+        return released
+
+    return _with_lock(path, _do)
 
 
 def release_failed_batch(project_root, item_ids) -> int:
     """人工清理后解除失败保留（从 fix-failed.json 移除命中的 item_id）。
 
     返回解除的记录条数（供人工/审计确认；未命中返回 0）。
+
+    读-改-写全程持 flock（``_with_lock``，code-review item fd1dc2a59820，
+    对齐同文件 ``write_progress`` 先例）：人工 release 与链边界自动操作
+    （新链启动释放/批收尾入档）并发交叠会把人工解除结果整份覆盖回去
+    （条目卡在跳过）。
     """
     target = set(item_ids)
     if not target:
         return 0
-    records = load_failed_batches(project_root)
-    kept = []
-    released = 0
-    for rec in records:
-        ids = [i for i in rec.get("item_ids") or [] if i not in target]
-        if len(ids) == len(rec.get("item_ids") or []):
-            kept.append(rec)  # 无交集，原样保留
-        elif ids:
-            rec["item_ids"] = ids
-            kept.append(rec)  # 部分解除，保留余量
-        else:
-            released += 1  # 整批解除
-    _atomic_write(
-        _failed_path(project_root),
-        json.dumps(kept, ensure_ascii=False, indent=2),
-    )
-    return released
+    path = _failed_path(project_root)
+
+    def _do() -> int:
+        records = load_failed_batches(project_root)
+        kept = []
+        released = 0
+        for rec in records:
+            ids = [i for i in rec.get("item_ids") or [] if i not in target]
+            if len(ids) == len(rec.get("item_ids") or []):
+                kept.append(rec)  # 无交集，原样保留
+            elif ids:
+                rec["item_ids"] = ids
+                kept.append(rec)  # 部分解除，保留余量
+            else:
+                released += 1  # 整批解除
+        _atomic_write(
+            path,
+            json.dumps(kept, ensure_ascii=False, indent=2),
+        )
+        return released
+
+    return _with_lock(path, _do)
 
 
 # ── 延迟合回台账（fix-codefix-wipgate-defer 1.2/D2）──────────────────
@@ -1253,7 +1302,10 @@ def _is_test_path(rel_path: str) -> bool:
         return True
     name = rel.rsplit("/", 1)[-1]
     stem = name.rsplit(".", 1)[0] if "." in name else name
-    return name.startswith("test_") or stem.startswith("test_") or stem.endswith("_test")
+    # name 支恒被 stem 支覆盖（name 含扩展名时其 ``test_`` 前缀必然蕴含
+    # stem 的；无扩展名时两者相同），保留即死条件（code-review item
+    # c8dc3902df49）。
+    return stem.startswith("test_") or stem.endswith("_test")
 
 
 def _module_names_for_file(rel_path: str) -> list:
@@ -1322,7 +1374,10 @@ def _map_fix_files_to_tests(fixed_files, exec_root) -> list:
             if not cand_root.is_dir():
                 continue
             try:
-                for hit in sorted(cand_root.glob(f"test_{stem}.py")):
+                # stem 拼入 glob 模式前转义（code-review item 209be1ea0334）：
+                # 文件名含 [ ] * ? 等元字符时按字面匹配，防字符类/通配语义
+                # 误配测试路径。
+                for hit in sorted(cand_root.glob(glob.escape(f"test_{stem}.py"))):
                     if hit.is_file():
                         direct.add(hit.relative_to(root).as_posix())
             except OSError:
@@ -1739,8 +1794,13 @@ def _split_fix_rows(rows: list) -> tuple:
     return fixed_ids, skip_reasons
 
 
-def _worktree_commit_count(worktree, created_sha: str) -> int:
-    """worktree 分支相对建树点的提交数（零有效修复守卫的 git 侧判据，5.8）。"""
+def _worktree_commit_count(worktree, created_sha: str):
+    """worktree 分支相对建树点的提交数（零有效修复守卫的 git 侧判据，5.8）。
+
+    返回 ``None`` 表示 git 判据不可用（非零退出/超时/输出非数值），与
+    「确认零提交」区分（code-review item e992bc1af898）——瞬时故障按 0
+    返回会把已提交修复的有效批误判拒合回、弃置成果。
+    """
     try:
         out = subprocess.run(
             ["git", "-C", str(worktree), "rev-list", "--count", f"{created_sha}..HEAD"],
@@ -1748,9 +1808,11 @@ def _worktree_commit_count(worktree, created_sha: str) -> int:
             text=True,
             timeout=30,
         )
+        if out.returncode != 0:
+            return None
         return int(out.stdout.strip() or "0")
     except (OSError, ValueError, subprocess.SubprocessError):
-        return 0
+        return None
 
 
 def _worktree_head(worktree) -> str:
@@ -1832,6 +1894,23 @@ def _salvage_commit(worktree, message: str) -> bool:
 # （原模块级 `_evidence_project` 副本已收敛，mergeback / settings_routes 同款）。
 
 
+def _log_alert_rejected(logger, signal_type: str) -> None:
+    """AdminStore.append 返回 None（文件损坏留底被下限保护拒写，记录未落盘）
+    时的留痕（code-review item bea407d9016c）：一次性告警（如
+    code_fix_retry_budget_exhausted）无重发机制，拒写即静默丢失，MUST 至少
+    记 warning；日志失败无副作用。logger 为 None（无日志器调用形态）跳过。
+    """
+    if logger is None:
+        return
+    try:
+        logger.warning(
+            "code-fix",
+            f"告警写盘被 AdminStore 下限保护拒写（记录未落盘）: {signal_type}",
+        )
+    except Exception:  # noqa: BLE001 — 留痕失败不影响主流程
+        pass
+
+
 def _signal_inflight(store, signal_type: str, project_name: str) -> bool:
     """同项目同类型、未摄取未处置的在途信号已存在 → 不重复写。"""
     from core.admin_store import SIGNAL, evidence_project
@@ -1879,7 +1958,7 @@ def write_regression_signal(project_root, signal_type: str, logger=None) -> None
             "Administrator 仅补 regression 段（MUST NOT 动 prepare/serve/ready 与"
             "其它顶层键），自证落位后 git 提交；完成后下一轮 full scan 自动续做自动修复。"
         )
-    store.append(
+    rec = store.append(
         {
             "kind": SIGNAL,
             "signal_type": signal_type,
@@ -1894,6 +1973,8 @@ def write_regression_signal(project_root, signal_type: str, logger=None) -> None
             "recommended_action": recommended,
         }
     )
+    if rec is None:
+        _log_alert_rejected(logger, signal_type)
     if logger is not None:
         try:
             logger.warning("code-fix", f"已写回归契约缺失信号: {signal_type}")
@@ -1903,17 +1984,18 @@ def write_regression_signal(project_root, signal_type: str, logger=None) -> None
 
 def write_regression_failed_alert(
     project_root, item_ids, worktree, failures_summary: str,
-    branch="", tip_sha="",
+    branch="", tip_sha="", logger=None,
 ) -> None:
     """回归两次均失败丢弃批时写失败告警（selfheal：已跳过，下轮自动重试）。
 
     ``worktree`` 形参保留兼容既有签名，但现场即弃后 worktree 已清理，
     evidence 改以 ``branch``/``tip_sha`` 作为追溯线索（git reflog 可找回）。
+    ``logger``（可选）：AdminStore 拒写（记录未落盘）时留痕。
     """
     from core.admin_store import AdminStore, SIGNAL
 
     store = AdminStore(project_root, logger=None)
-    store.append(
+    rec = store.append(
         {
             "kind": SIGNAL,
             "signal_type": "code_fix_regression_failed",
@@ -1936,17 +2018,23 @@ def write_regression_failed_alert(
             ),
         }
     )
+    if rec is None:
+        _log_alert_rejected(logger, "code_fix_regression_failed")
 
 
-def _write_retry_exhausted_alert(project_root, item_ids, reason, branch, tip_sha) -> None:
+def _write_retry_exhausted_alert(
+    project_root, item_ids, reason, branch, tip_sha, logger=None
+) -> None:
     """失败档案条目集 fail_count 达 FAIL_RETRY_MAX 时的一次性 warning 告警（D4）。
 
     点名录条目集与历次失败原因；此后该记录不再被释放、不再触发新告警。
+    ``logger``（可选）：AdminStore 拒写（记录未落盘）时留痕——本告警仅
+    fail_count 恰好递增至上限的那次入档发送、无重发机制，拒写即永久丢失。
     """
     from core.admin_store import AdminStore, SIGNAL
 
     store = AdminStore(project_root, logger=None)
-    store.append(
+    rec = store.append(
         {
             "kind": SIGNAL,
             "signal_type": "code_fix_retry_budget_exhausted",
@@ -1969,18 +2057,23 @@ def _write_retry_exhausted_alert(project_root, item_ids, reason, branch, tip_sha
             ),
         }
     )
+    if rec is None:
+        _log_alert_rejected(logger, "code_fix_retry_budget_exhausted")
 
 
-def _write_defer_info_alert(project_root, item_ids, overlap, branch="") -> None:
+def _write_defer_info_alert(
+    project_root, item_ids, overlap, branch="", logger=None
+) -> None:
     """首次进入 defer 路径的 info 提示（fix-codefix-wipgate-defer 1.3）。
 
     正文含 last_overlap 交集文件清单；处置话术复用 mergeback.py 升级出口
     （「提交（git add/commit）或 stash（git stash push）主树这些改动」）。
+    ``logger``（可选）：AdminStore 拒写（记录未落盘）时留痕。
     """
     from core.admin_store import AdminStore, SIGNAL
 
     store = AdminStore(project_root, logger=None)
-    store.append(
+    rec = store.append(
         {
             "kind": SIGNAL,
             "signal_type": "code_fix_wip_gate_deferred",
@@ -2003,20 +2096,23 @@ def _write_defer_info_alert(project_root, item_ids, overlap, branch="") -> None:
             ),
         }
     )
+    if rec is None:
+        _log_alert_rejected(logger, "code_fix_wip_gate_deferred")
 
 
 def _write_defer_expired_alert(
-    project_root, item_ids, overlap, branch="", tip_sha=""
+    project_root, item_ids, overlap, branch="", tip_sha="", logger=None
 ) -> None:
     """延迟批预算耗尽降级的一次性 warning 告警（D6/3.2）。
 
     一次性语义按条目集指纹（调用方以 ``_has_expired_archive`` 先查后记——
-    同 fix-failed「递增至上限那次发一次性 warning」先例）。
+    同 fix-failed「递增至上限那次发一次性 warning」先例）。``logger``
+    （可选）：AdminStore 拒写（记录未落盘）时留痕。
     """
     from core.admin_store import AdminStore, SIGNAL
 
     store = AdminStore(project_root, logger=None)
-    store.append(
+    rec = store.append(
         {
             "kind": SIGNAL,
             "signal_type": "code_fix_wip_gate_defer_expired",
@@ -2040,11 +2136,13 @@ def _write_defer_expired_alert(
             ),
         }
     )
+    if rec is None:
+        _log_alert_rejected(logger, "code_fix_wip_gate_defer_expired")
 
 
 def _write_defer_orphan_alert(
     project_root, item_ids, overlap, branch="", tip_sha="",
-    grace_minutes=30, orphan_since="", owner_note="",
+    grace_minutes=30, orphan_since="", owner_note="", logger=None,
 ) -> None:
     """无主陈旧 WIP 宽限耗尽升级的一次性 major 告警（add-mergeback-wip-active-
     coordination 2.2/D4）。
@@ -2054,7 +2152,8 @@ def _write_defer_orphan_alert(
     重叠人工告警族的「无主限期」变体，附 overlap 文件清单与识别证据（含 D1
     已知盲区注记）；处置指引按批语义适配——批无 spec 可重派，指引指向提交/
     stash 重叠文件。调用方以台账 ``owner_escalated_at`` 先查后记（同
-    ``_has_expired_archive`` 指纹去重语义），一次性不重复升级。
+    ``_has_expired_archive`` 指纹去重语义），一次性不重复升级。``logger``
+    （可选）：AdminStore 拒写（记录未落盘）时留痕。
     """
     from core.admin_store import AdminStore, SIGNAL
     from core.worktree_manager.types import WipOccupantInfo
@@ -2069,7 +2168,7 @@ def _write_defer_orphan_alert(
         f"盲区注记: {WipOccupantInfo.BLIND_SPOT_NOTE}"
     )
     store = AdminStore(project_root, logger=None)
-    store.append(
+    rec = store.append(
         {
             "kind": SIGNAL,
             "signal_type": "mergeback_wip_orphan_stuck",
@@ -2090,6 +2189,9 @@ def _write_defer_orphan_alert(
             ),
         }
     )
+    if rec is None:
+        _log_alert_rejected(logger, "mergeback_wip_orphan_stuck")
+
 
 
 def _main_tree_dirty_files(project_root) -> list:
@@ -2241,6 +2343,9 @@ class CodeFixOrchestrator:
             else "regression.cmd 未声明 {test_targets} 占位符"
         )
         self._log("info", f"code-fix 第 {batch_no} 批回退全量回归（{why}）")
+        # [fenix-ignore:f87f64aeca2e] 回退出口已经 _sanitize_test_targets 消毒：
+        # 占位符替换为缺省 tests/ 再执行（add-codefix-test-targets-fallback-
+        # sanitization），字面占位符不再透传执行层，问题不成立
         return _sanitize_test_targets(reg_spec), False, targets
 
     def _code_fix_running(self) -> bool:
@@ -2476,10 +2581,11 @@ class CodeFixOrchestrator:
             # 选批排除并集（D4 配套约束）：失败档案 ∪ chain_skipped ∪ 延迟台账
             # item_ids——defer 条目在合回成功前始终是 open 且不在失败档案，不
             # 排除则下一边界 earliest-first 立即重选同批、重跑 agent。
+            exclude_ids = set(chain_skipped) | _deferred_item_ids(root)
             batch = select_batch(
                 root,
                 cfg.get("batch_size", 20),
-                exclude_ids=set(chain_skipped) | _deferred_item_ids(root),
+                exclude_ids=exclude_ids,
             )
             if not batch:
                 # open 条目全被排除（失败档案 ∪ chain_skipped）→ consumed 链的
@@ -2493,8 +2599,15 @@ class CodeFixOrchestrator:
                     "failed",
                     "blocked",
                 ):
+                    # maxed 判定收窄到本轮实际参与排除的档案记录（code-review
+                    # item 4ac4bea334b2）：按全量档案统计会把已达上限但已离开
+                    # 排除集（人工置终态等）的条目也计成「需人工」，观测口径
+                    # 与真实排除原因失真；released 墓碑不参与排除，同口径跳过。
+                    # fail_count 解析类型容错（外部直改非数值按缺省 1）。
                     maxed = any(
-                        int(rec.get("fail_count") or 1) >= FAIL_RETRY_MAX
+                        not rec.get("released")
+                        and bool({str(i) for i in rec.get("item_ids") or []} & exclude_ids)
+                        and _fail_count_int(rec.get("fail_count")) >= FAIL_RETRY_MAX
                         for rec in load_failed_batches(root)
                     )
                     if deferred_msg:
@@ -2577,7 +2690,18 @@ class CodeFixOrchestrator:
             # 回归契约守卫（D5 fail-closed）：契约缺失/缺段 → 发信号、不派批
             contract = load_verify_contract(root, logger=self._logger)
             if contract is None:
-                write_regression_signal(root, "verify_contract_missing", logger=self._logger)
+                # 告警写盘失败不得劫持 fail-closed 收尾（code-review item
+                # 2ab1bb5633f0，同 _defer_merge_back 手法）：异常上穿会跳过
+                # 紧随的 blocked 进度写点并中断 checkpoint 调用方。
+                try:
+                    write_regression_signal(
+                        root, "verify_contract_missing", logger=self._logger
+                    )
+                except Exception as e:  # noqa: BLE001 — 信号通道失败只留痕
+                    self._log(
+                        "warning",
+                        f"code-fix 回归契约缺失信号写盘异常（收尾不受影响）: {e}",
+                    )
                 write_progress(
                     root,
                     running=False,
@@ -2596,7 +2720,16 @@ class CodeFixOrchestrator:
                 )
                 return {"triggered": False, "reason": "regression_contract_missing"}
             if contract.regression is None:
-                write_regression_signal(root, "verify_regression_missing", logger=self._logger)
+                # 同上（code-review item 2ab1bb5633f0）：告警写盘失败不劫持收尾。
+                try:
+                    write_regression_signal(
+                        root, "verify_regression_missing", logger=self._logger
+                    )
+                except Exception as e:  # noqa: BLE001 — 信号通道失败只留痕
+                    self._log(
+                        "warning",
+                        f"code-fix 回归段缺失信号写盘异常（收尾不受影响）: {e}",
+                    )
                 write_progress(
                     root,
                     running=False,
@@ -2925,7 +3058,13 @@ class CodeFixOrchestrator:
             val = float(raw)
         except (TypeError, ValueError):
             return 30.0
-        if val < 0:
+        # not (val > 0) 同时挡 0/负值/NaN（code-review item 56c8f34f1df5）：
+        # 0 会让无主陈旧 WIP 首次识别即秒升级 major 告警，NaN 使宽限比较恒假
+        # 退化为无限期静默等待——docstring 声明禁止的两个极端。
+        if not val > 0:
+            return 30.0
+        # inf 或超合理上限（一天）等同「无限期静默等待」，同回退缺省。
+        if val == float("inf") or val > 24 * 60:
             return 30.0
         return val
 
@@ -3054,7 +3193,7 @@ class CodeFixOrchestrator:
                 _write_defer_orphan_alert(
                     root, item_ids, overlap, branch=branch, tip_sha=tip_sha,
                     grace_minutes=grace, orphan_since=since,
-                    owner_note=note,
+                    owner_note=note, logger=self._logger,
                 )
                 self._log(
                     "warning",
@@ -3122,6 +3261,12 @@ class CodeFixOrchestrator:
                 ]
                 if still_open:
                     hit = mark_resolved(root, still_open)
+            # 链级核销计数累加（2.1）：以 mark_resolved 真实命中为准，与主路径
+            # _run_batch_created 同口径——缺它则延迟批核销不进任何链的 rollup
+            # （resolved 计数低于真实台账核销数、纯延迟核销场景整行被判无累积
+            # 跳过，code-review item 3776b9915001）。
+            if hit:
+                self._chain_bump(root, chain_resolved=hit)
             _safe_cleanup(wm, wt, success=True, logger=self._logger)
             _remove_deferred_batch(root, item_ids)
             prog = read_progress(root)
@@ -3183,6 +3328,7 @@ class CodeFixOrchestrator:
             record_failed_batch(
                 root, open_ids, wt,
                 reason="merge_back_conflict", branch=branch, tip_sha=tip_sha,
+                logger=self._logger,
             )
         _safe_cleanup(wm, wt, success=False, logger=self._logger)
         _remove_deferred_batch(root, item_ids)
@@ -3220,11 +3366,22 @@ class CodeFixOrchestrator:
             record_failed_batch(
                 root, open_ids, wt,
                 reason="wip_gate_blocked_expired", branch=branch, tip_sha=tip_sha,
+                logger=self._logger,
             )
         _safe_cleanup(wm, wt, success=False, logger=self._logger)
         _remove_deferred_batch(root, item_ids)
         if first_expire:
-            _write_defer_expired_alert(root, open_ids, overlap, branch, tip_sha)
+            # 告警写盘失败不得劫持降级收尾（code-review item 2ab1bb5633f0，
+            # 同 _defer_merge_back 手法）：紧随的 write_progress 尚未执行。
+            try:
+                _write_defer_expired_alert(
+                    root, open_ids, overlap, branch, tip_sha, logger=self._logger
+                )
+            except Exception as e:  # noqa: BLE001 — 告警失败只留痕
+                self._log(
+                    "warning",
+                    f"code-fix defer 降级告警写盘异常（降级收尾不受影响）: {e}",
+                )
         write_progress(
             root,
             reason="wip_gate_blocked_expired",
@@ -3267,7 +3424,9 @@ class CodeFixOrchestrator:
         # 登记保留、锁已放，异常上穿会触发 _safe_cleanup(success=False) 物理清
         # 掉刚保留的 worktree（条目变死条目，下轮 reclaim 重选重跑白丢一批）。
         try:
-            _write_defer_info_alert(root, pending_ids, overlap, branch=branch)
+            _write_defer_info_alert(
+                root, pending_ids, overlap, branch=branch, logger=self._logger
+            )
         except Exception as e:  # noqa: BLE001 — 告警写盘失败不影响 defer 保留，
             # 只留痕供排查（后续轮询/升级路径仍可再发告警）。
             self._log(
@@ -3702,11 +3861,21 @@ class CodeFixOrchestrator:
                     record_failed_batch(
                         root, open_ids, wt,
                         reason="regression_failed_twice", branch=branch, tip_sha=tip_sha,
-                        detail_ref=last_detail_ref,
+                        detail_ref=last_detail_ref, logger=self._logger,
                     )
-                    write_regression_failed_alert(
-                        root, open_ids, wt, summary2, branch=branch, tip_sha=tip_sha
-                    )
+                    # 告警写盘失败不得劫持 consumed 收尾（code-review item
+                    # 2ab1bb5633f0，同 _defer_merge_back 手法）：异常上穿会经
+                    # 批 worker 兜底把「链继续推进」改成 halt，本轮剩余批次不跑。
+                    try:
+                        write_regression_failed_alert(
+                            root, open_ids, wt, summary2,
+                            branch=branch, tip_sha=tip_sha, logger=self._logger,
+                        )
+                    except Exception as e:  # noqa: BLE001 — 告警失败只留痕
+                        self._log(
+                            "warning",
+                            f"code-fix 回归失败告警写盘异常（收尾不受影响）: {e}",
+                        )
                 _safe_cleanup(wm, wt, success=False, logger=self._logger)
                 self._consumed_progress(
                     current=(
@@ -3745,7 +3914,29 @@ class CodeFixOrchestrator:
             self._chain_bump(root, chain_ignored=ignored)
         ignore_set = set(ignore_ids)
         pending_ids = [iid for iid in item_ids if iid not in ignore_set]
+        # 建树点瞬时失败兜底（code-review item e992bc1af898）：created_sha 为
+        # 空串会使提交数判据恒按 0 处理（有效修复批被误判拒合回），先对
+        # _worktree_head 做有限重试再判定。
+        if not created_sha:
+            for _ in range(2):
+                time.sleep(0.5)
+                created_sha = _worktree_head(wt)
+                if created_sha:
+                    break
         commits = _worktree_commit_count(wt, created_sha) if created_sha else 0
+        if commits is None:
+            # git 判据不可用 ≠ 确认零提交（code-review item e992bc1af898）：
+            # 按 no_effective_fix 链内跳过会弃置可能已提交的整批修复成果，
+            # 改走 halt 终止链——下轮 full scan 重试同批（现场经
+            # cleanup(success=False) 的 recovery legacy 保全）。
+            self._log(
+                "warning",
+                f"code-fix 第 {batch_no} 批提交数判据不可用（git 失败），"
+                "halt 待下轮 full scan 重试同批",
+            )
+            _safe_cleanup(wm, wt, success=False, logger=self._logger)
+            self._finish("failed", reason="worktree_commit_count_unavailable")
+            return "halt"
         if fixed_ids and commits <= 0 and self._salvage_stranded_batch(
             wt, batch_no=batch_no, run_id=retry_run_id or result.run_id
         ):
@@ -3753,6 +3944,10 @@ class CodeFixOrchestrator:
             # 回归已在上方针对 worktree 工作区（含这些未提交改动）执行过，
             # salvage 不改变回归门语义（不改回归门：spec Non-Goal）。
             commits = _worktree_commit_count(wt, created_sha) if created_sha else 1
+            if commits is None:
+                # salvage 已确认落了新提交，「分支相对建树点有提交」事实成立，
+                # 复查瞬时失败不翻转该事实（按 ≥1 计）。
+                commits = 1
         if not fixed_ids or commits <= 0:
             if not pending_ids:
                 # 全批 skipped 均为可忽略原因：条目已尽置 ignored（终态）、
@@ -3825,6 +4020,7 @@ class CodeFixOrchestrator:
                 record_failed_batch(
                     root, open_ids, wt,
                     reason="merge_back_conflict", branch=branch, tip_sha=tip_sha,
+                    logger=self._logger,
                 )
             _safe_cleanup(wm, wt, success=False, logger=self._logger)
             self._consumed_progress(

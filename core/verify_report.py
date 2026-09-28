@@ -63,6 +63,12 @@ def _atomic_write(path: Path, content: str) -> None:
     固定 ``<name>.tmp`` 临时名在并发写同一目标时会互相截断：进程 A 完成 write_text
     后、进程 B 在同一 .tmp 上截断改写，随后任一方的 replace 都可能把截断内容落盘。
     唯一临时名保证并发写不可能产生截断产物——rename 前目标不变，rename 后内容完整。
+
+    mkstemp 以 0600 建临时文件，rename 前显式放宽到 0644：否则经本函数落盘的
+    产物（verification-report.md / report.json / verdict_stability.json）比常规
+    write_text 的 umask 缺省（通常 0644）更收紧——「Agent 手写 → 框架重合成
+    覆盖」后同一文件权限突然变 0600，跨用户读取（非 root 的辅助进程/人工其它
+    账号）会拒绝访问。chmod 失败不阻断写入（权限是尽力而为的附属属性）。
     """
     parent = path.parent
     parent.mkdir(parents=True, exist_ok=True)
@@ -73,6 +79,10 @@ def _atomic_write(path: Path, content: str) -> None:
             f.write(content)
             f.flush()
             os.fsync(f.fileno())
+        try:
+            os.chmod(tmp_path, 0o644)
+        except OSError:
+            pass
         os.replace(tmp_path, path)
     finally:
         if tmp_path.exists():
@@ -98,9 +108,18 @@ def _load_report_json(project_root, spec_name):
         return None
     scenarios = data.get("scenarios")
     summary = data.get("summary")
-    if not isinstance(scenarios, list) and not isinstance(summary, dict):
-        return None
-    return data
+    # 有效性判据（fail-closed，勿放宽为「list 或 dict 即可用」）：scenarios 须为
+    # **非空**列表，或 summary 为带计数键的 dict。「scenarios: []」且 summary
+    # 缺失/为空是截断/写坏形态——采信它会经「空场景集 + 无失败证据」一路推导
+    # 出 verified，合成出「全部场景通过」的假通过报告，与模块 fail-closed
+    # 哲学（不写空报告、阻断推进）相反。
+    if isinstance(scenarios, list) and scenarios:
+        return data
+    if isinstance(summary, dict) and any(
+        key in summary for key in ("total", "passed", "failed", "errors")
+    ):
+        return data
+    return None
 
 
 def _sum_verify_chain_tokens(project_root, spec_name):
@@ -144,6 +163,13 @@ def _load_run_result(project_root, spec_name):
 
     项目根为共享文件：仅采信 spec 戳**显式等于**当前 spec 的内容；无戳/缺戳
     视为不可归属（可能为其它 spec 残留或异常写入）一律忽略。
+
+    口径差异说明（有意为之，勿单方面「对齐」）：dashboard/data/artifacts.py
+    同名函数与 fastlane.has_dispute_signal 对无戳共享文件按「缺 spec 戳的旧
+    格式文件仍采信」的宽松口径读取。本模块产出闸门放行依据的合成报告，误
+    归属会把其它 spec 的结果渲染成本 spec 的验证结论并影响状态推进放行，故
+    取严格口径；展示/信号探测侧误采信的代价仅是显示错或 fail-open，两侧代价
+    不对称。排障时同一结果文件在两处「采信与否」结论不同属预期。
     """
     primary = (
         Path(project_root) / ".fenix" / "verify-progress" / spec_name / ".fenix-run-result.json"
@@ -205,9 +231,16 @@ def _persist_degrade_annotation(project_root, spec_name, annotation) -> None:
             try:
                 loaded = json.loads(report_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-                loaded = {}
-            if isinstance(loaded, dict):
-                data = loaded
+                # 文件在场但不可读（权限抖动/读取窗口异常等暂态）：跳过本次
+                # 持久化，绝不用仅含标注的空底稿原子覆盖——那会把可能完整的
+                # 既有报告永久替换成空壳，时间轴/报告页从此拿不到场景明细。
+                # annotation 是纯观测量（见 docstring），丢弃不阻断合成主流程。
+                return
+            if not isinstance(loaded, dict):
+                # 合法 JSON 但非对象（写坏形态）：同属「存在但不可用作报告
+                # 底稿」，同上跳过、保留原文件，不覆盖。
+                return
+            data = loaded
         data["degrade_annotation"] = annotation
         report_path.parent.mkdir(parents=True, exist_ok=True)
         # mkstemp 唯一临时文件原子写（_atomic_write）：进程中途崩溃不会留下
@@ -221,11 +254,20 @@ def _persist_degrade_annotation(project_root, spec_name, annotation) -> None:
 
 
 def _derive_status(run_result, report) -> str:
-    """从结构化数据推导终局判定：'verified' 或 'bug-found'。"""
+    """从结构化数据推导终局判定：'verified' 或 'bug-found'。
+
+    run_result.status 的显式失败/未完成取值（``error``/``partial``，fast-track
+    结果文件 status 白名单 success/error/partial 中的非成功终态）一律判
+    bug-found（fail-closed 方向）：这类取值若落空，会经「无法判定 → 默认
+    verified」的宽松兜底为实际失败/未完成的验证轮合成出 ✅ 通过报告，与
+    结构化数据语义相反。
+    """
     if run_result:
         status = run_result.get("status")
         if status in ("verified", "bug-found"):
             return status
+        if status in ("error", "partial"):
+            return "bug-found"
     if isinstance(report, dict):
         summary = report.get("summary")
         if isinstance(summary, dict):
@@ -269,29 +311,44 @@ def _summary_counts(report):
 def current_round_fingerprint(project_root, spec_name):
     """当前轮结构化数据的指纹（轮次身份）。无结构化数据时返回 None。
 
-    report.json 的 ``timestamp`` 由验证引擎每轮重写，是轮次身份的第一来源；
-    字段缺失时退化为文件 mtime（同样每轮重写即变化）。两路皆不可得返回 None
-    ——此时无从判定新旧，闸门维持「既有报告不改动」的保守行为。
+    联合指纹：report.json 成分 + run-result 成分，任一结构化数据更新即整枚
+    指纹变化。report.json 的 ``timestamp`` 由验证引擎每轮重写，是轮次身份的
+    第一来源；字段缺失时退化为文件 mtime。run-result mtime 同时纳入组成——
+    某轮验证可能**只重写 .fenix-run-result.json 不重写 report.json**（全绿
+    快道即只写 run-result，见 judge_gate._all_green_fast_path），指纹若只看
+    report.json 会保持不变，上一轮残留报告被以 present 放行（2026-09-12
+    事故同型）——不再单点依赖「引擎每轮重写 report.json」的跨模块契约。
+
+    run-result 成分与 ``_load_run_result`` 同一候选序（verify-progress 专属
+    副本优先，主树共享文件回退）：采信谁就盯谁——共享文件被其它 spec 重写
+    不应改变本 spec 的轮次身份（否则触发无谓重合成）。全部成分皆不可得返回
+    None——此时无从判定新旧，闸门维持「既有报告不改动」的保守行为。
     """
+    parts: list[str] = []
     report_path = Path(project_root) / ".fenix" / "verify-progress" / spec_name / "report.json"
-    run_result_path = (
-        Path(project_root) / ".fenix" / "verify-progress" / spec_name / ".fenix-run-result.json"
-    )
     report = _load_report_json(project_root, spec_name)
     if isinstance(report, dict):
         ts = report.get("timestamp")
         if isinstance(ts, str) and ts.strip():
-            return f"report.json@{ts.strip()}"
+            parts.append(f"report.json@{ts.strip()}")
+        else:
+            try:
+                parts.append(f"report.json@mtime{report_path.stat().st_mtime_ns}")
+            except OSError:
+                pass
+    for run_result_path in (
+        Path(project_root) / ".fenix" / "verify-progress" / spec_name / ".fenix-run-result.json",
+        Path(project_root) / ".fenix" / ".fenix-run-result.json",
+    ):
         try:
-            return f"report.json@mtime{report_path.stat().st_mtime_ns}"
+            if run_result_path.is_file():
+                parts.append(f"run-result@mtime{run_result_path.stat().st_mtime_ns}")
+                break
         except OSError:
             pass
-    try:
-        if run_result_path.is_file():
-            return f"run-result@mtime{run_result_path.stat().st_mtime_ns}"
-    except OSError:
-        pass
-    return None
+    if not parts:
+        return None
+    return "+".join(parts)
 
 
 def _report_fingerprint(content):
@@ -1090,17 +1147,20 @@ def verdict_failed_ids(report) -> list:
     """从 report.json 提取失败场景 id 集（status 非 pass/passed），排序去重。
 
     返回排序后的列表（方便跨轮一致比较）；report 为 None 或无场景时返回 []。
+    缺 scenario_id/id 的失败场景以序号占位（``__index_<i>``）计入失败集——
+    静默跳过会让无 id 失败场景在 failed_ids 集合上不可见，is_verdict_stable
+    误判稳定而复用裁决（防御性：引擎产物正常都带 id，位置或数量一变集合
+    即不同 → 保守不复用）。
     """
     scenarios = (report or {}).get("scenarios") or []
     ids: set = set()
-    for sc in scenarios:
+    for i, sc in enumerate(scenarios):
         if not isinstance(sc, dict):
             continue
         st = str(sc.get("status") or "")
         if st not in ("pass", "passed"):
             sid = sc.get("scenario_id") or sc.get("id")
-            if sid is not None:
-                ids.add(str(sid))
+            ids.add(str(sid) if sid is not None else f"__index_{i}")
     return sorted(ids)
 
 

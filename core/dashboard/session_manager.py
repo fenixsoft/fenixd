@@ -221,6 +221,10 @@ class SessionManager:
         self._idle_stop.set()
         with self._lock:
             sessions = list(self._sessions.values())
+        # code-review item da1eacbbbe78：串行终止为有意选择——会话数少（每项目
+        # 至多一个），正常会话关 stdin 即退，仅僵死会话各拖约宽限 5s+kill 后 2s；
+        # 并行 _terminate 的收益小于额外线程与竞态复杂度（认领/映射顶替守卫已
+        # 在 _terminate 内串行成立），维持串行。
         for s in sessions:
             self._terminate(s, "shutdown")
 
@@ -250,6 +254,8 @@ class SessionManager:
                 if s.proc.poll() is None
                 and (now - s.last_activity) > SESSION_IDLE_TIMEOUT_SECONDS
             ]
+        # 同 shutdown：串行为有意选择（item da1eacbbbe78）——本循环在后台
+        # daemon 线程内，不在关闭链上，僵死会话至多拖慢下一轮扫描，无需并行。
         for s in candidates:
             self._terminate(s, "idle")
 

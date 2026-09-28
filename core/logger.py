@@ -9,6 +9,7 @@ import fcntl
 import json
 import logging
 import os
+import sys
 import time
 import threading
 from pathlib import Path
@@ -151,8 +152,9 @@ class Logger:
         self._handler.setFormatter(JsonFormatter())
         self._python_logger.addHandler(self._handler)
 
-    def _log(self, level: int, component: str, message: str, context: dict = None):
-        """Thread-safe log entry."""
+    def _log(self, level: int, component: str, message: str, context: dict = None,
+             exc_info=None):
+        """Thread-safe log entry. exc_info 非 None 时经 JsonFormatter 落盘堆栈。"""
         # 级别判定（fix-robustness-edge-cases 3.3）：先判级再构造 record，
         # level 低于日志器级别时直接跳过。判本实例的 self._level 而非全局
         # logger 的 isEnabledFor——多项目同进程下各 Logger 依次构造并重绑
@@ -176,7 +178,7 @@ class Logger:
                 lineno=0,
                 msg=message,
                 args=(),
-                exc_info=None,
+                exc_info=exc_info,
             )
             record.component = component
             record.context = context
@@ -212,3 +214,10 @@ class Logger:
 
     def error(self, component: str, message: str, context: dict = None):
         self._log(logging.ERROR, component, message, context)
+
+    def exception(self, component: str, message: str, context: dict = None):
+        # 在 except 块内调用：取当前异常堆栈传入 LogRecord，JsonFormatter 的
+        # exc_info 字段经实例通道真正生效（item df6de36313c9——core 代码统一
+        # 走 Logger 实例落盘，traceback 不得依赖手工拼进 message）。
+        self._log(logging.ERROR, component, message, context,
+                  exc_info=sys.exc_info())
