@@ -137,6 +137,25 @@ class G2LegacyRegistryMixin:
         entry_ts = time.time()
         wt_str = str(wt_path)
         branch = self._wt_branches.get(wt_str) or self._guess_branch_from_worktree(wt_path)
+        # agent_type 家族限定（code-review item 1c6d47a74461，对齐 cleanup
+        # finally 的 79268616af63 口径）：摘锁只限本家族——verifier 收尾只摘
+        # :verifier，非 verifier 车道不摘 :verifier。not_after 入口守卫只挡
+        # 入口之后的新锁，挡不住入口之前他家族已持有的锁（如 verifier 收尾时
+        # implementer 已重派持锁），误摘会让在飞 run 在构建窗口内失去锁保护
+        # （重开 2026-09-03 双派发事故同型窗口）。调用方未传 agent_type 的
+        # 旧调用点按被收尾 worktree 形状反推（分支 fenix/verify- 前缀或目录
+        # verify- 前缀 → verifier 家族，fenix/ 或 impl- 前缀 → 非 verifier，
+        # 与 cleanup finally 的形状反推同口径）；形状完全不可辨时维持旧全摘。
+        if agent_type == "verifier":
+            lock_family = "verifier"
+        elif agent_type:
+            lock_family = "non-verifier"
+        elif (branch or "").startswith("fenix/verify-") or wt_path.name.startswith("verify-"):
+            lock_family = "verifier"
+        elif (branch or "").startswith("fenix/") or wt_path.name.startswith("impl-"):
+            lock_family = "non-verifier"
+        else:
+            lock_family = None
         # 收工清扫：agent 已退出，杀掉残留测试子进程（目录保留，进程不留）
         self._kill_worktree_strays(wt_path.name)
         self.register_legacy(spec_name, wt_path, branch)
@@ -157,14 +176,15 @@ class G2LegacyRegistryMixin:
             )
             self._active_reuse.pop(spec_name, None)
             self._proc_scan_cache.pop(spec_name, None)
-            self._release_spec_locks_of(spec_name, not_after=entry_ts)
+            self._release_spec_locks_of(spec_name, not_after=entry_ts, family=lock_family)
             return
         self._active_worktrees.discard(wt_str)
         self._wt_branches.pop(wt_str, None)
         self._active_reuse.pop(spec_name, None)
-        # 释放 spec 锁（与 cleanup 的 finally 段同语义，按 spec 精确匹配）：
+        # 释放 spec 锁（与 cleanup 的 finally 段同语义，按 spec 精确匹配，
+        # 并按 agent_type 家族限定——见上方 lock_family 推导注释）：
         # 摘锁口径与入口时刻守卫统一收敛到 _release_spec_locks_of 单一实现。
-        self._release_spec_locks_of(spec_name, not_after=entry_ts)
+        self._release_spec_locks_of(spec_name, not_after=entry_ts, family=lock_family)
         self._proc_scan_cache.pop(spec_name, None)
         self.logger.info(
             "worktree_manager",
@@ -174,6 +194,7 @@ class G2LegacyRegistryMixin:
 
     def _release_spec_locks_of(
         self, spec_name: str, not_after: float | None = None,
+        family: str | None = None,
     ) -> None:
         """摘除该 spec 名下（`<spec>:<agent_type>` 键按 spec 前缀精确匹配）的在册锁。
 
@@ -189,12 +210,26 @@ class G2LegacyRegistryMixin:
         verifier 收尾时 implementer 重派，lifecycle.py 清理注释已承认该并发
         可发生）键不同故加锁成功，其 _lock_since 晚于入口时刻，跳过不误摘，
         防在飞 run 失去锁保护重开双派发窗口；None 表示不设限（旧版行为）。
+
+        family：agent_type 家族限定（code-review item 1c6d47a74461，对齐
+        cleanup finally 的 79268616af63 口径）——"verifier" 只摘 :verifier、
+        "non-verifier" 不摘 :verifier（分支名只编码 verify/impl 两族形状，
+        impl 族内具体 agent_type 不可辨，同族维持全摘）；None 表示不设限
+        （被收尾 worktree 形状完全不可辨时的兜底）。
         """
         with self._spec_lock_th:
             for k in [
                 k for k in sorted(self._spec_locks)
                 if k.split(":")[0] == spec_name
                 and (not_after is None or self._lock_since.get(k, 0.0) <= not_after)
+                and (
+                    family is None
+                    or (
+                        (k.partition(":")[2] == "verifier")
+                        if family == "verifier"
+                        else (k.partition(":")[2] != "verifier")
+                    )
+                )
             ]:
                 self._spec_locks.discard(k)
                 self._lock_since.pop(k, None)
@@ -391,6 +426,17 @@ class G2LegacyRegistryMixin:
         branch = rec.get("branch", "")
         if path:
             wt = Path(path)
+            # 删除前收尾清扫（code-review item d50610627782）：登记遗产的孤儿
+            # 目录（daemon 重启、attempt 已死、cleanup 从未跑过）其残留子进程
+            # 从未被收割——目录删除后它们成为 cwd 失效的永生孤儿（曾致存活检
+            # 测永久受骗）。与 cleanup / cleanup_orphans / stale_sweep /
+            # keep_for_reuse 四条删除或保留目录的路径同口径。
+            self._kill_worktree_strays(wt.name)
+            # 删除前留档（code-review item d1735b0c555f，cleanup_orphans
+            # docstring 声明的 MUST 不变量）：本方法面对的正是未提交半成品
+            # （register_legacy：死亡 run 的未提交半成品目录保留），销毁前做
+            # stash create 快照引用供事后取证；失败仅 WARNING，不阻断删除。
+            self._snapshot_dirty_worktree(wt, branch or None)
             try:
                 res = subprocess.run(
                     ["git", "-C", str(self.project_root), "worktree", "remove", str(wt), "--force"],

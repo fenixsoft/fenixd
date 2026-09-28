@@ -1045,33 +1045,10 @@ class G4MergebackMixin:
                     )
             if result.returncode == 0:
                 # merge 已落地（HEAD 前移、内容已进主树，code-review item
-                # 9518e4be1085）：以下三个辅助步骤只做清理/重建，任何抛错仅
+                # 9518e4be1085）：以下辅助步骤只做清理/重建，任何抛错仅
                 # warning 降级——不得落入文件末尾通用 except 被误报成合回冲突
                 # （否则调用方按冲突清理 worktree，主树与台账状态从此分叉）。
-                try:
-                    self._drop_backup(backup)
-                except Exception as e:  # noqa: BLE001 — 清理失败不否定已落地的 merge
-                    self.logger.warning(
-                        "worktree_manager",
-                        f"merge-back 后备份清理意外失败（保留备份供人工裁决）：{e}",
-                    )
-                # merge 成功后把随分支带回 tracked 的 ignored 草稿移出（防撞车循环重启）
-                if head_before:
-                    try:
-                        self._purge_ignored_brought_in(head_before)
-                    except Exception as e:  # noqa: BLE001 — 清理失败不否定已落地的 merge
-                        self.logger.warning(
-                            "worktree_manager",
-                            f"merge-back 后 ignored 草稿清理意外失败（忽略继续）：{e}",
-                        )
-                # dist 冲突根治 B：触碰 static src 的 merge 从合并后 src 重建 dist
-                try:
-                    self._rebuild_dist_after_merge()
-                except Exception as e:  # noqa: BLE001 — 重建失败不否定已落地的 merge
-                    self.logger.warning(
-                        "worktree_manager",
-                        f"merge-back 后 dist 重建意外失败（忽略继续）：{e}",
-                    )
+                self._post_merge_finalize(backup, head_before, "主成功路径")
                 self.logger.info(
                     "worktree_manager",
                     f"Merged branch '{branch}' into main tree",
@@ -1096,33 +1073,8 @@ class G4MergebackMixin:
             # incremental-data 目录重命名事故根因之二）。
             if self._resolve_build_artifact_conflicts():
                 # 自愈返回 True 即 merge 已提交（code-review item 40eb004b263b）：
-                # 以下辅助步骤与主成功路径同口径，任何抛错仅 warning 降级——
-                # 不得落入文件末尾通用 except 被误报成合回冲突（否则调用方按
-                # 冲突清理 worktree，主树与台账状态从此分叉）。
-                try:
-                    self._drop_backup(backup)
-                except Exception as e:  # noqa: BLE001 — 清理失败不否定已落地的 merge
-                    self.logger.warning(
-                        "worktree_manager",
-                        f"merge-back 后备份清理意外失败（保留备份供人工裁决）：{e}",
-                    )
-                # merge 成功后把随分支带回 tracked 的 ignored 草稿移出（防撞车循环重启）
-                if head_before:
-                    try:
-                        self._purge_ignored_brought_in(head_before)
-                    except Exception as e:  # noqa: BLE001 — 清理失败不否定已落地的 merge
-                        self.logger.warning(
-                            "worktree_manager",
-                            f"merge-back 后 ignored 草稿清理意外失败（忽略继续）：{e}",
-                        )
-                # dist 冲突根治 B：自愈 merge 同样从合并后 src 重建收口
-                try:
-                    self._rebuild_dist_after_merge()
-                except Exception as e:  # noqa: BLE001 — 重建失败不否定已落地的 merge
-                    self.logger.warning(
-                        "worktree_manager",
-                        f"merge-back 后 dist 重建意外失败（忽略继续）：{e}",
-                    )
+                # 辅助步骤与主成功路径同口径（_post_merge_finalize 单一实现）。
+                self._post_merge_finalize(backup, head_before, "build-artifact 自愈后")
                 self.logger.info(
                     "worktree_manager",
                     f"Merge conflict self-healed (build artifacts aligned to "
@@ -1140,32 +1092,8 @@ class G4MergebackMixin:
             # 删除相撞——被忽略的草稿不是交付物，不应让 merge-back 死锁。
             if self._resolve_ignored_modify_delete_conflicts():
                 # 自愈返回 True 即 merge 已提交（code-review item 40eb004b263b）：
-                # 辅助步骤与主成功路径同口径，任何抛错仅 warning 降级——不得
-                # 落入文件末尾通用 except 被误报成合回冲突。
-                try:
-                    self._drop_backup(backup)
-                except Exception as e:  # noqa: BLE001 — 清理失败不否定已落地的 merge
-                    self.logger.warning(
-                        "worktree_manager",
-                        f"merge-back 后备份清理意外失败（保留备份供人工裁决）：{e}",
-                    )
-                # merge 成功后把随分支带回 tracked 的 ignored 草稿移出（防撞车循环重启）
-                if head_before:
-                    try:
-                        self._purge_ignored_brought_in(head_before)
-                    except Exception as e:  # noqa: BLE001 — 清理失败不否定已落地的 merge
-                        self.logger.warning(
-                            "worktree_manager",
-                            f"merge-back 后 ignored 草稿清理意外失败（忽略继续）：{e}",
-                        )
-                # dist 冲突根治 B：该路径同样可能并入 static src 变更
-                try:
-                    self._rebuild_dist_after_merge()
-                except Exception as e:  # noqa: BLE001 — 重建失败不否定已落地的 merge
-                    self.logger.warning(
-                        "worktree_manager",
-                        f"merge-back 后 dist 重建意外失败（忽略继续）：{e}",
-                    )
+                # 辅助步骤与主成功路径同口径（_post_merge_finalize 单一实现）。
+                self._post_merge_finalize(backup, head_before, "ignored-DU 自愈后")
                 self.logger.info(
                     "worktree_manager",
                     f"Merge conflict self-healed (modify/delete on ignored files) "
@@ -1316,6 +1244,43 @@ class G4MergebackMixin:
                         f"待人工处理：backup='{backup}'：{restore_err}",
                     )
             return MergeConflictInfo(False, str(e))
+
+    def _post_merge_finalize(self, backup, head_before: str, heal_label: str) -> None:
+        """merge 成功后的统一收尾（code-review item 499c99da7d6a）。
+
+        ``_merge_back_from_branch_locked`` 三条成功出口（主成功路径 /
+        build-artifact 自愈后 / ignored-DU 自愈后）共用单一实现，防三份副本
+        增删收尾步骤时漂移。序列：``_drop_backup`` → 条件性
+        ``_purge_ignored_brought_in`` → ``_rebuild_dist_after_merge``。
+
+        任一步失败仅 WARNING 降级——不得外抛被调用方误报成合回冲突（否则
+        调用方按冲突清理 worktree，主树与台账状态从此分叉，同主成功路径
+        注释口径）。``heal_label`` 区分日志归因（哪条成功出口）。
+        """
+        try:
+            self._drop_backup(backup)
+        except Exception as e:  # noqa: BLE001 — 清理失败不否定已落地的 merge
+            self.logger.warning(
+                "worktree_manager",
+                f"merge-back 后备份清理意外失败（保留备份供人工裁决）：{e}",
+            )
+        # merge 成功后把随分支带回 tracked 的 ignored 草稿移出（防撞车循环重启）
+        if head_before:
+            try:
+                self._purge_ignored_brought_in(head_before)
+            except Exception as e:  # noqa: BLE001 — 清理失败不否定已落地的 merge
+                self.logger.warning(
+                    "worktree_manager",
+                    f"merge-back 后 ignored 草稿清理意外失败（忽略继续）：{e}",
+                )
+        # dist 冲突根治 B：触碰 static src 的 merge 从合并后 src 重建 dist
+        try:
+            self._rebuild_dist_after_merge()
+        except Exception as e:  # noqa: BLE001 — 重建失败不否定已落地的 merge
+            self.logger.warning(
+                "worktree_manager",
+                f"merge-back 后 dist 重建意外失败（{heal_label}，忽略继续）：{e}",
+            )
 
     def _backup_untracked_spec_files(self, branch: str):
         """merge 前把与 implementer 分支新增路径冲突的主树 untracked 文件移到 .fenix/merge-backup/ 备份。

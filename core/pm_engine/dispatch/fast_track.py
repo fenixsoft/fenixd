@@ -518,7 +518,10 @@ class FFastTrackMixin:
             return
         try:
             self._pm.agent_runner._v2_stop_for_worktree(wt)
-            self._pm.agent_runner.worktree_manager.keep_for_reuse(spec_name, wt)
+            # agent_type 传参（code-review item 1c6d47a74461）：供 keep_for_reuse
+            # 摘锁时按家族限定（fast-track 属非 verifier 家族，不误摘 :verifier）
+            self._pm.agent_runner.worktree_manager.keep_for_reuse(
+                spec_name, wt, agent_type="fast-track")
         except Exception as e:
             self._pm.logger.warning(
                 "pm_engine",

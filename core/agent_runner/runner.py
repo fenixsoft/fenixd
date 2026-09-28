@@ -4024,7 +4024,8 @@ class AgentRunner:
             # MUST NOT 影响正常成功推进路径的 cleanup(success=True) 语义。
             if self._should_keep_worktree_for_partial(spec_name, wt_path):
                 try:
-                    self.worktree_manager.keep_for_reuse(spec_name, wt_path)
+                    self.worktree_manager.keep_for_reuse(
+                        spec_name, wt_path, agent_type=agent_type)
                     handed_off.add(wt_path)
                     self.logger.info(
                         "agent_runner",
@@ -4206,7 +4207,8 @@ class AgentRunner:
                     f"'{spec_name}': {e}",
                 )
         elif agent_type == "fast-track":
-            self.worktree_manager.keep_for_reuse(spec_name, st.wt_path)
+            self.worktree_manager.keep_for_reuse(
+                spec_name, st.wt_path, agent_type=agent_type)
             st.kept_wt_path = st.wt_path
             # 终态失败保留复用遗产：下轮在同一 worktree 继承成果，
             # 目录+分支有意保留 → 不参与终态收割（dev-server 已停）
