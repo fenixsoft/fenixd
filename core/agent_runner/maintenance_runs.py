@@ -321,6 +321,27 @@ def run_administrator(runner, signal: dict) -> AdminDisposition:
             )
 
     disp = runner._read_admin_disposition(disp_path)
+    # ── 产物硬门（对齐 code-review/code-fix 车道的 fail-closed 先例：
+    # _check_repo_code_review_artifact / _check_code_fix_artifact）──────────
+    # _run_claude 正常退出（success=True）但管理员从未按 prompt 写入处置文件
+    # （文件缺失/不可解析 → _read_admin_disposition 返回空 dict）时，下方
+    # result 兜底会把空跑折算成 "resolved"——消费侧 admin_monitor 对非 pending
+    # 且非 escalate 的 result 直接 mark_signal_handled，resolved 还会触发自动
+    # 复位，困境信号被零动作误闭环。按 fail-closed 折算为失败，错误信息点名
+    # 「admin 未写处置文件」。
+    if success and not disp:
+        success = False
+        error = (
+            f"admin 未写处置文件: run 正常退出但 {disp_path.name} 缺失或不可解析，"
+            "Administrator 零产物，判失败（fail-closed）"
+        )
+        _log = getattr(runner, "logger", None)
+        if _log is not None:
+            _log.warning(
+                "agent_runner",
+                f"Administrator run {run_id} 产物硬门拦截: {error}",
+                {"run_id": run_id, "spec": spec},
+            )
     # 读取即清理自身实例文件：内容已捕获进 AdminDisposition 返回给调用方落
     # final 记录，文件不再有读者；不清理会随并行实例累积成垃圾。
     runner._delete_admin_disposition(disp_path)
@@ -1189,7 +1210,10 @@ def run_code_review(
         _manifest_settled = True
     finally:
         if not _manifest_settled:
-            mpath.unlink(missing_ok=True)
+            try:
+                mpath.unlink(missing_ok=True)
+            except OSError:
+                pass  # 清理失败不吞组装期原始异常（对齐 run_regression/run_code_fix 降级语义）
 
     claude_error = ""  # CLI 原始错误文本（429 终态归因以它为准，见 catch 处）
     # evo-add-code-review-ratelimit-resume 1.2：result 事件富归因（api_error_status
