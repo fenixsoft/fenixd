@@ -200,6 +200,25 @@ def migrate_frozen_contract(
             "pending_replan": [],
             "aborted": "no_migration_path",
         }
+    # 混合版本集防线（code-review item 74be485d930f）：min 路由只看集内最小
+    # 值，集内同时存在旧条目与声明更新契约版本的条目时（新版 fenix 写出后
+    # 又被旧版追加 / 冻结文件被部分改写），后者会被逐段迁移一路盖成目标版本
+    # 戳、按旧规则静默校验采纳，旁路上方 min 判定的 fail-closed。版本不一致
+    # 本身即异常——补 max 校验：任一条目声明新于目标版本即同款交人工通道
+    # （「任一存疑即人工」口径），正常单版本路径行为不变。
+    max_declared = max(
+        item.get(CONTRACT_VERSION_FIELD)
+        if isinstance(item, dict) and type(item.get(CONTRACT_VERSION_FIELD)) is int
+        else 1
+        for item in scenarios
+    )
+    if max_declared > current_version:
+        # fail-closed：声明更新契约版本的条目不降级不静默放行（c542bb97d171）
+        return {
+            "migrated": [],
+            "pending_replan": [],
+            "aborted": "no_migration_path",
+        }
     migrated = scenarios
     pending_replan: list = []
     while current < current_version:
@@ -226,6 +245,13 @@ def migrate_frozen_contract(
     return {"migrated": migrated, "pending_replan": pending_replan, "aborted": ""}
 
 
+# ── 绝对 URL 形态判据（code-review item f4bbbcb7f6ab）─────────────
+# 契约 v2「web 场景 MUST 含绝对 URL navigate」验收的核心判据，三处共用
+# （_find_step_url_candidate 候选判定 / web navigate 验收 / api url 验收），
+# 避免同一模式多处内联、后续调整时单处修改漂移。
+_ABSOLUTE_URL_RE = r"^https?://\S+$"
+
+
 def _find_step_url_candidate(steps) -> str:
     """场景内步骤的 ``url`` 字段候选（web 场景 api 形态残留/手写场景）。
 
@@ -240,7 +266,7 @@ def _find_step_url_candidate(steps) -> str:
     for s in steps:
         if isinstance(s, dict):
             url = s.get("url")
-            if isinstance(url, str) and re.match(r"^https?://\S+$", url.strip()):
+            if isinstance(url, str) and re.match(_ABSOLUTE_URL_RE, url.strip()):
                 # 返回 strip 后的值（code-review item 48320e6f6abb）：合成
                 # navigate 步骤的 value 不携带首尾空白，避免运行期浏览器以
                 # invalid URL 拒绝导航造成场景伪失败。
@@ -757,6 +783,20 @@ def _str_field(d: dict, key: str) -> str:
     return str(raw) if raw else ""
 
 
+def _num_field(d: dict, key: str) -> float:
+    """步骤数值字段读入守卫（code-review item a0ba40d463e1）：timeout/duration
+    写出 "30s" 等非数值串时 float() 强转抛 ValueError，被外层包成不含场景 id
+    的笼统「解析失败」，与 _str_field 的字段级差异报错设计目标漂移。此处先做
+    可转性守卫：非数值形态报字段级错误（字段名 + 原值，场景 id 由
+    _parse_and_validate_scenario_dicts 的 except 分支补齐）；数值 0 / 合法
+    数字串与既有 float() 归一行为不变，不静默吞。"""
+    raw = d.get(key) or 0
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        raise ValueError(f"步骤 {key} 须为数值（秒），收到 {raw!r}") from None
+
+
 @dataclass
 class TestStep:
     """单个测试操作步骤。
@@ -874,14 +914,15 @@ class TestStep:
             cwd=d.get("cwd", ""),
             env=d.get("env") or {},
             stdin=d.get("stdin", ""),
-            timeout=float(d.get("timeout") or 0),
+            # timeout/duration 可转性守卫（_num_field）：非数值串报字段级错误
+            timeout=_num_field(d, "timeout"),
             as_=d.get("as", ""),
             method=d.get("method", ""),
             url=_str_field(d, "url"),
             headers=d.get("headers") or {},
             body=d.get("body", ""),
             body_type=d.get("body_type", ""),
-            duration=float(d.get("duration") or 0),
+            duration=_num_field(d, "duration"),
         )
 
 
@@ -1121,7 +1162,7 @@ def _validate_web(scenario: TestScenario) -> list[str]:
         )
     for i, step in enumerate(scenario.steps):
         if step.action == "navigate" and not re.match(
-            r"^https?://\S+$", (step.value or "").strip()
+            _ABSOLUTE_URL_RE, (step.value or "").strip()
         ):
             errors.append(
                 f"场景'{scenario.id}'步骤{i}: navigate URL 必须为绝对地址"
@@ -1169,7 +1210,7 @@ def _validate_typed(scenario: TestScenario, kind: str) -> list[str]:
             kind == "api"
             and step.action in ("http_request", "sse_connect")
             and step.url
-            and not re.match(r"^https?://\S+$", step.url.strip())
+            and not re.match(_ABSOLUTE_URL_RE, step.url.strip())
         ):
             errors.append(
                 f"场景'{scenario.id}'步骤{i}: url 必须为绝对地址"
@@ -1246,7 +1287,11 @@ def validate_scenario(scenario: TestScenario) -> list[str]:
             f"场景'{scenario.id}': depends_on 必须为场景ID列表，"
             f"收到 {type(scenario.depends_on).__name__}"
         )
-    if scenario.kind not in VALID_KINDS:
+    # kind 形态守卫（code-review item c74c42575c7c）：kind 为 dict/list 等不
+    # 可哈希形态（冻结文件被手工修坏）时，对 set 求成员先抛 TypeError，被
+    # 外层包成不含场景 id 的「解析失败」，拿不到「未知 kind」字段级定位。
+    # 非 str 一律走同款「未知 kind」报错（消息保留原值），字符串路径不变。
+    if not isinstance(scenario.kind, str) or scenario.kind not in VALID_KINDS:
         errors.append(
             f"场景'{scenario.id}'未知 kind '{scenario.kind}'，"
             f"支持: {', '.join(sorted(VALID_KINDS))}"
@@ -1310,7 +1355,12 @@ def _parse_and_validate_scenario_dicts(raw: list) -> tuple:
             else:
                 scenarios.append(scenario)
         except Exception as e:
-            all_errors.append(f"场景[{i}]解析失败: {e}")
+            # 场景 id 定位（code-review item a0ba40d463e1）：解析期异常（如
+            # _num_field 字段级报错）本不含场景 id，从原始条目补齐，admin 依
+            # 差异清单精准修冻结文件。
+            sid = item.get("id") if isinstance(item, dict) else ""
+            prefix = f"场景'{sid}'" if sid else f"场景[{i}]"
+            all_errors.append(f"{prefix}[{i}]解析失败: {e}")
     return scenarios, all_errors
 
 
