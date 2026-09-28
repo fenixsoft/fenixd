@@ -278,7 +278,19 @@ def _escalate_env_blocked(
             )
         except Exception:
             pass  # 记账侧车，不阻断升级通道
-        rounds = int(spec.get(ENV_BLOCK_ROUNDS_FIELD) or 0) + 1
+        try:
+            rounds = int(spec.get(ENV_BLOCK_ROUNDS_FIELD) or 0) + 1
+        except (TypeError, ValueError):
+            # 字段被外部工具写坏为非数字串时，int() 抛 ValueError 会被函数级
+            # except 吞成一条 WARNING，其后的阻塞落盘、admin 自动呼叫、人工
+            # 告警全部静默跳过——比照 _inconclusive_attempts 同款防御，
+            # 脏值按首轮阻塞处置，不让记账字段脏值瘫痪升级通道。
+            rounds = 1
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"'{spec_name}' {ENV_BLOCK_ROUNDS_FIELD} 字段脏值（非数字），"
+                f"已按首轮阻塞兜底",
+            )
         frozen = rounds >= ENV_BLOCK_FREEZE_THRESHOLD  # 阈值：连续 2 轮阻塞 → 冻结转人工
         planner_cost = pipeline._last_planner_run_cost(spec_name) if frozen else ""
         cost_note = f"\n\n> 🪙 重新出题成本参考：{planner_cost}" if planner_cost else ""
@@ -790,6 +802,12 @@ def _scenario_defect_reroute_gate(
             f"改道指令文件写失败 '{spec_name}'（仍重派 judge）: {e}",
         )
 
+    # 轮内重裁决记账（与 pipeline.py 裁决不可读重派、verdict_evidence
+    # 违规重派两条绕 gate 路径同口径）：本路径直接 run_planner 不经
+    # _judge_dispatch_gate，若不记账可绕过轮内 2 次与全局 5 次重裁决
+    # 阈值。空 violations 必然落入 "real" 分支（记轮内 +1 与生命周期
+    # _judge_real_dispatches，并刷新判定上下文键）。
+    pipeline._judge_charge_verdict_retry(spec_name, [])
     try:
         reroute_judge = pipeline._pm.agent_runner.run_planner(spec_name, "judge")
     except Exception as e:
@@ -813,7 +831,20 @@ def _scenario_defect_reroute_gate(
     if not reroute_judge.success:
         # 改道重派失败：取消/派发故障。保持 testing，不升级人工
         # （与裁决重试派发失败同型，温和处置留 error）。
-        if getattr(reroute_judge, "cancelled", False):
+        # ── 冻结终止让位（与 pipeline.py judge 失败让位分支同口径，
+        # frozen 判定在 cancelled 之前：spec 级 > run 级）──
+        # judge run 因 spec 冻结被终止 = 人工已接管：零写入提前返回
+        # （不写 error、不升级人工），INFO 留痕供日志对账。判定用
+        # `is True`（同 pipeline.py：防 MagicMock 替身自动生成 truthy
+        # 属性误判；生产结果 frozen_terminated 为显式 bool）。
+        if getattr(reroute_judge, "frozen_terminated", False) is True:
+            pipeline._context.logger.info(
+                "pm_engine",
+                f"改道重派 judge 因 spec 冻结被终止 '{spec_name}' — "
+                f"人工已接管，零写入让位（保持原状）",
+            )
+            return True
+        if getattr(reroute_judge, "cancelled", False) is True:
             pipeline._context.logger.warning(
                 "pm_engine",
                 f"改道重派 judge 被取消 '{spec_name}' — hold-state（保持 testing）",

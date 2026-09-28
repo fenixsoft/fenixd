@@ -446,19 +446,31 @@ class TestMinorDefectFastlane:
             ],
             "summary": {"total": 2 + failed_count, "failed": failed_count},
         }
-        # 场景文件权威键是 id（TestScenario 契约），须经 load_scenarios 校验
+        # 场景文件权威键是 id（TestScenario 契约），须经 load_scenarios 校验。
+        # cli 场景空 steps 会被验收词表拦截（steps 不得为空），补最小合法
+        # run 步骤；步骤真实执行由 _execute_stage2 桩承接，此处只过校验。
+        _cli_step = [{"action": "run", "command": "true"}]
         (vp / "test_scenarios.json").write_text(
             json.dumps([
-                {"id": "s-dep", "kind": "cli", "steps": [], "assertions": []},
-                {"id": "s0", "kind": "cli", "steps": [], "assertions": []},
+                {"id": "s-dep", "kind": "cli", "steps": _cli_step, "assertions": []},
+                {"id": "s0", "kind": "cli", "steps": _cli_step, "assertions": []},
                 {"id": "s-down", "depends_on": ["s0"], "kind": "cli",
-                 "steps": [], "assertions": []},
+                 "steps": _cli_step, "assertions": []},
             ], ensure_ascii=False),
             encoding="utf-8",
         )
-        # 条件②：单场景失败 → judge 归因影响面 1 文件（≤3）
+        # 条件②：单场景失败 → judge 归因影响面 1 文件（≤3）。
+        # 落盘形态与唯一生产写入方 judge_files.save_attribution 对齐
+        # （顶层 {format_version, scenarios} dict，逐场景条目在 scenarios
+        # 键下）；judge_affected_files 经 load_attribution 归一化读取，
+        # 顶层裸 list 是生产中不存在的形态，会被判不可读保守回落。
         (vp / "judge_attribution.json").write_text(
-            json.dumps([{"id": "s0", "attribution": "缺陷在 core/runner.py 与 tests/x.py"}]),
+            json.dumps(
+                {"format_version": "1.0", "scenarios": [
+                    {"id": "s0", "attribution": "缺陷在 core/runner.py 与 tests/x.py"}
+                ]},
+                ensure_ascii=False,
+            ),
             encoding="utf-8",
         )
         # 条件③：实现结果文件无 dispute/adjudication 条目

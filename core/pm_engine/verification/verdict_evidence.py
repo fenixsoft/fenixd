@@ -106,9 +106,13 @@ def _rejection_closure(
 
     记录违规 → 场景级回炉闭环（``_handle_scenario_requeue``：标记 requeue/accept
     状态 + 回炉清单 → 派发重合成（仅重做 requeue 子集）→ 回灌校验；返回
-    cause=pass 表示已闭环采纳）；回炉处置自身异常时折算为
-    ``cause=batch_attribution_dedup`` 失败返回（宁可不推进不带病采纳），
-    也不得裸外溢（engine 层 except Exception 会降级旧版 verifier 旁路查重门）。
+    cause=pass 表示已闭环采纳）；回炉处置自身异常时折算为独立
+    ``cause=requeue_error`` 失败返回（宁可不推进不带病采纳），也不得裸外溢
+    （engine 层 except Exception 会降级旧版 verifier 旁路查重门）。不复用
+    ``cause=batch_attribution_dedup``：该 cause 的 pipeline 消费侧基于正常
+    路径语义宣称「已 blocked + admin 告警」，而异常折算路径未到达
+    _escalate_dedup_resynthesis，spec 仍停留 testing——复用会让日志宣称与
+    实际状态相反（code-review item 6d5db0d31b）。
 
     ``lane_label`` 为轮次标签（首轮 ``" "`` / ``"（重试轮）"`` / ``"（重合成轮）"``），
     仅用于日志文案，保持各轮次既有文案逐字不变（与 ``_run_attribution_gate``
@@ -131,7 +135,7 @@ def _rejection_closure(
         )
         return {
             "ok": False,
-            "cause": "batch_attribution_dedup",
+            "cause": "requeue_error",
             "violations": dedup.get("violations") or [],
             "dispatch_error": f"{type(requeue_err).__name__}: {requeue_err}",
         }
@@ -142,14 +146,34 @@ def _dispatch_failure_result(
 ) -> dict:
     """重试轮/重合成轮 judge 派发失败三分支统一收口（fix-verdict-retry-misattribution）。
 
-    原两份近逐字拷贝（重试轮/重合成轮）单源化防漂移：frozen 门拦截 → 让位
-    （dispatch_frozen，不写 blocked 不发告警）；取消旗标拦截 → 同语义让位
-    （dispatch_cancelled）；其它派发失败（网关拒绝/预算闸门等）→
+    原两份近逐字拷贝（重试轮/重合成轮）单源化防漂移：frozen 拦截 → 让位
+    （dispatch_frozen，不写 blocked 不发告警；覆盖两种独立形态——在飞冻结
+    终止 frozen_terminated 属性与派发门 FROZEN_TERMINATED_ERROR_PREFIX 拒绝，
+    与 pipeline.py 对同一 AgentRunResult 的处置口径一致）；取消旗标拦截 →
+    同语义让位（dispatch_cancelled）；其它派发失败（网关拒绝/预算闸门等）→
     dispatch_failed 温和处置，不得冒充「二次违反证据契约」。
 
     ``lane_label`` 为日志前缀词（"裁决重试" / "重合成"），保持各轮次既有
     文案逐字不变；frozen 门/cancel 旗标判据与 runner.py 门共用导出常量。
     """
+    # 在飞冻结终止形态（code-review item 2d2d55f0e951）：judge run 在飞期间
+    # 被冻结终止且 error 未带前缀时，若只查 FROZEN_TERMINATED_ERROR_PREFIX
+    # 会落入 dispatch_failed，使 _handle_verdict_evidence_rejection 向已被
+    # 人工接管的 frozen spec 写 error——违背「frozen 门/取消旗标 = 人工已
+    # 接管：零写入」的让位语义。与 pipeline.py 同口径：属性用 `is True`
+    # 判定（防 MagicMock 替身自动生成 truthy 属性误判）。
+    if getattr(re_judge, "frozen_terminated", False) is True:
+        pipeline._context.logger.info(
+            "pm_engine",
+            f"{lane_label} judge run 因 spec 冻结被终止 '{spec_name}'"
+            f"（人工已接管，让位不写状态）: {re_judge.error or ''}",
+        )
+        return {
+            "ok": False,
+            "cause": "dispatch_frozen",
+            "violations": violations,
+            "dispatch_error": re_judge.error,
+        }
     if (re_judge.error or "").startswith(FROZEN_TERMINATED_ERROR_PREFIX):
         pipeline._context.logger.info(
             "pm_engine",
@@ -162,7 +186,9 @@ def _dispatch_failure_result(
             "violations": violations,
             "dispatch_error": re_judge.error,
         }
-    if getattr(re_judge, "cancelled", False):
+    # 判定用 `is True`（code-review item 2d2d55f0e951：与 pipeline.py 及上方
+    # frozen_terminated 同口径，防 MagicMock 替身自动生成 truthy 属性误判让位）。
+    if getattr(re_judge, "cancelled", False) is True:
         pipeline._context.logger.info(
             "pm_engine",
             f"{lane_label} judge 派发被取消旗标拦截 '{spec_name}'"
@@ -260,7 +286,9 @@ def _verify_verdict_evidence(pipeline, spec_name: str, retry_judge: bool = False
       4. 返回结构化结果 ``{"ok", "cause", "violations", "dispatch_error"}``：
          cause ∈ pass / violations / dispatch_frozen / dispatch_cancelled /
          dispatch_failed / dispatch_exception / report_missing /
-         batch_attribution_dedup（查重拒绝回炉处置自身失败，宁可不推进不采纳）。
+         batch_attribution_dedup（查重拒绝且重合成预算耗尽，_escalate_dedup_
+         resynthesis 已置 blocked + admin 告警）/ requeue_error（查重回炉
+         闭环自身异常折算，宁可不推进不带病采纳；spec 未升级、仍 testing）。
 
     注意：judge 失败（process 级）已由调用方在 ``judge_result.success`` 处拦截，
     本方法只负责「judge 已成功但产物不合规」的确定性校验与重试。
@@ -294,7 +322,9 @@ def _verify_verdict_evidence(pipeline, spec_name: str, retry_judge: bool = False
         # except 吞成 warning 后落入下方清违规+落缓存+cause=pass 采纳收口
         # （否则查重拒绝的报告被静默采纳，归因门整条失效）；也不得裸外溢
         # （engine 层 except Exception 会降级旧版 verifier，整体旁路查重
-        # 门）——单独 try 折算为 cause=batch_attribution_dedup 失败返回
+        # 门）——单独 try 折算为 cause=requeue_error 失败返回（独立 cause，
+        # 不复用 batch_attribution_dedup：消费侧「已 blocked」前提对异常
+        # 折算路径不成立，见 _rejection_closure docstring）
         # （宁可不推进也不带病采纳）。
         if dedup is not None and not dedup["ok"]:
             # 场景级回炉闭环收口：与重试轮/重合成轮共用单源实现
@@ -390,7 +420,8 @@ def _verify_verdict_evidence(pipeline, spec_name: str, retry_judge: bool = False
             # 拒绝处置路径自身异常 MUST NOT 被上方 except 吞掉后落入下方
             # cause=pass 采纳收口（查重拒绝的报告被静默采纳）；也不得裸外溢
             # （engine 层会降级旧版 verifier 旁路查重门）——单独 try 折算为
-            # cause=batch_attribution_dedup 失败返回（宁可不推进不采纳）。
+            # cause=requeue_error 失败返回（宁可不推进不采纳；独立 cause 不
+            # 复用 batch_attribution_dedup，见 _rejection_closure docstring）。
             if dedup is not None and not dedup["ok"]:
                 # 场景级回炉闭环收口：与首轮/重合成轮共用单源实现
                 return _rejection_closure(pipeline, spec_name, report2, dedup, "（重试轮）")
@@ -718,7 +749,8 @@ def _escalate_dedup_resynthesis(
     # 模式对齐）：blocked 处置已在上方 update_spec 落盘，notifier 抛异常仅记
     # warning（人工唤起仍有 blocked_stuck 兜底）；裸外溢会沿
     # _handle_attr_dedup_rejection → _rejection_closure 的 except 折算为
-    # cause=batch_attribution_dedup，admin store 无任何升级记录。
+    # cause=requeue_error，admin store 无任何升级记录（区别于本函数正常
+    # 返回的 cause=batch_attribution_dedup——彼时 blocked + 升级均已落盘）。
     try:
         pipeline._context.escalation_notifier(
             spec_name=spec_name,
@@ -888,7 +920,8 @@ def _handle_attr_dedup_rejection(
     # 拒绝处置路径自身异常 MUST NOT 被上方 except 吞掉后落入下方清
     # violations/directive + cause=pass 采纳收口（重合成仍被查重拒绝的
     # 产物被静默采纳）；也不得裸外溢（engine 层会降级旧版 verifier 旁路
-    # 查重门）——单独 try 折算为 cause=batch_attribution_dedup 失败返回
+    # 查重门）——单独 try 折算为 cause=requeue_error 失败返回（独立 cause，
+    # 不复用 batch_attribution_dedup，见 _rejection_closure docstring）
     # （宁可不推进不采纳）。
     if dedup2 is not None and not dedup2["ok"]:
         # 重合成产物再拒 → 递归进入下一轮场景级回炉（或达上限升级）

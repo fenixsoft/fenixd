@@ -130,6 +130,26 @@ def _check_verification_gate(pipeline, spec_name: str) -> str | None:
     return None
 
 
+def _verifier_stamp_gate(data, spec_name: str, require_verifier_role: bool) -> tuple:
+    """role/spec 戳校验唯一实现（evo-verifier-result-single-source R1）。
+
+    fix-code-review DRY：``_verifier_result_is_stale`` 与
+    ``_read_shared_result`` 原各自内联同一条规则（role 必须为 verifier、
+    spec 戳为非空字符串时须与当前 spec 一致），收敛到本助手后规则演进
+    （如新增戳字段/放宽容忍）只改此处。返回 (ok, reason)：ok=False 时
+    reason ∈ foreign-role（role 缺失或 ≠ verifier，仅
+    require_verifier_role=True 时参与判定）/ foreign-stamp（spec 戳不符）；
+    失败处置差异（判陈旧 True vs 返回 failure）由调用侧各自表达。
+    """
+    role = data.get("role") if isinstance(data, dict) else None
+    if require_verifier_role and role != "verifier":
+        return False, "foreign-role"
+    stamped = data.get("spec") if isinstance(data, dict) else None
+    if isinstance(stamped, str) and stamped and stamped != spec_name:
+        return False, "foreign-stamp"
+    return True, ""
+
+
 def _verifier_result_is_stale(pipeline, result, result_path: Path, spec_name: str) -> bool:
     """verifier 结果文件是否不可信（陈旧重放 / 异 spec 残留 / 缺失）。
 
@@ -157,12 +177,10 @@ def _verifier_result_is_stale(pipeline, result, result_path: Path, spec_name: st
     # 消除 run_id fail-open：旧行为在 run_id 不匹配 -\d{10,}-a\d+$
     # 时直接 return False 跳过所有后续校验，implementer 残留 status=success
     # 被错误采信。新版先查 role 与 spec 戳（不依赖 run_id），role≠verifier
-    # 或 role 缺失一律返回 True（不采信）。
-    role = data.get("role")
-    if role is None or role != "verifier":
-        return True
-    stamped = data.get("spec")
-    if isinstance(stamped, str) and stamped and stamped != spec_name:
+    # 或 role 缺失一律返回 True（不采信）。规则唯一实现在
+    # _verifier_stamp_gate（fix-code-review DRY），陈旧处置在调用侧表达。
+    ok, _reason = _verifier_stamp_gate(data, spec_name, require_verifier_role=True)
+    if not ok:
         return True
     raw_run_id = getattr(result, "run_id", "") or ""
     try:
@@ -188,7 +206,9 @@ def _verifier_result_is_stale(pipeline, result, result_path: Path, spec_name: st
     return False
 
 
-def _read_verifier_result(pipeline, result_path: Path, data=None) -> VerdictReadResult:
+def _read_verifier_result(
+    pipeline, result_path: Path, data=None, role_label: str = "Verifier"
+) -> VerdictReadResult:
     """读取 verifier 写入的 .fenix-run-result.json，返回结构化三态结果。
 
     fix-verdict-read-failclosed（fail-closed 语义反转）：
@@ -209,12 +229,17 @@ def _read_verifier_result(pipeline, result_path: Path, data=None) -> VerdictRead
     调用方已完成读取及 role/spec 戳校验时可经 `data` 直传解析结果，本函数
     跳过二次 read_text（共享文件两次读取之间可能被其它 spec 覆写，绕过
     戳校验被误采信）。
+
+    `role_label`：missing 日志的 agent 角色标注（fix-code-review）。非
+    verifier 读取路径（如 `_read_planner_result` 的 planner-plan 结果兜底）
+    复用本读取器时传入自身角色，避免缺失日志固定措辞「Verifier result
+    file not found」误导排障方向（实际是 planner-plan run 未产出结果文件）。
     """
     if data is None:
         if not result_path.exists():
             pipeline._context.logger.warning(
                 "pm_engine",
-                f"Verifier result file not found: {result_path}",
+                f"{role_label} result file not found: {result_path}",
             )
             return VerdictReadResult.failure("missing", f"{result_path}")
         try:
@@ -289,7 +314,9 @@ def _read_shared_result(
     收敛 `_read_planner_result` / `_read_verdict` 对同一共享回退路径重复的
     「read_text → json.loads → spec 戳不符记 WARNING 返回 foreign-stamp →
     委托 `_read_verifier_result`」骨架；role 校验差异以 require_verifier_role
-    布尔参数表达，后续护栏规则变更（如新增戳字段）只改本处。
+    布尔参数表达，戳规则唯一实现在 `_verifier_stamp_gate`（fix-code-review
+    DRY），后续护栏规则变更（如新增戳字段）只改该助手，本函数只表达失败
+    处置。
 
     两入口历史行为逐字保留（勿合并归一）：
     - require_verifier_role=True（_read_verdict）：data 非对象直接返回
@@ -303,26 +330,25 @@ def _read_shared_result(
         data = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as e:
         return VerdictReadResult.failure("parse", f"{path}: {e}")
-    if require_verifier_role:
-        # ── role/spec 戳双校验（evo-verifier-result-single-source R1）──
-        # 主树共享文件只认 role=verifier 的 legacy verifier 写入；role 缺失
-        # 视为旧格式遗留、role≠verifier 视为其它 agent 残留（如 implementer
-        # 的 status=success），一律不作为验证裁决。
-        if not isinstance(data, dict):
-            return VerdictReadResult.failure("parse", f"{path}: 顶层非对象")
-        role = data.get("role")
-        if role != "verifier":
+    if require_verifier_role and not isinstance(data, dict):
+        return VerdictReadResult.failure("parse", f"{path}: 顶层非对象")
+    # ── role/spec 戳校验唯一实现在 _verifier_stamp_gate（evo-verifier-result-
+    # single-source R1，fix-code-review DRY）：主树共享文件只认 role=verifier
+    # 的 legacy verifier 写入；role 缺失视为旧格式遗留、role≠verifier 视为
+    # 其它 agent 残留（如 implementer 的 status=success），一律不作为验证
+    # 裁决。本函数只表达失败处置（WARNING 措辞 + failure 归因）。
+    ok, reason = _verifier_stamp_gate(data, spec_name, require_verifier_role)
+    if not ok:
+        stamped = data.get("spec") if isinstance(data, dict) else None
+        if reason == "foreign-role":
+            role = data.get("role")
             pipeline._context.logger.warning(
                 "pm_engine",
                 f"Ignoring shared result file {path}: role={role!r} != "
                 f"'verifier'（implementer 残留/旧格式遗留，不作为验证裁决）",
             )
             return VerdictReadResult.failure("foreign-role", f"{path}: role={role!r}")
-        stamp_log_label = "shared result file"
-    else:
-        stamp_log_label = "stale result file"
-    stamped = data.get("spec") if isinstance(data, dict) else None
-    if isinstance(stamped, str) and stamped and stamped != spec_name:
+        stamp_log_label = "shared result file" if require_verifier_role else "stale result file"
         pipeline._context.logger.warning(
             "pm_engine",
             f"Ignoring {stamp_log_label} {path}: " f"spec='{stamped}' != '{spec_name}'",
@@ -357,7 +383,9 @@ def _read_planner_result(pipeline, spec_name: str) -> VerdictReadResult:
     # implementer 残留状态。
     if fallback.exists():
         return _read_shared_result(pipeline, fallback, spec_name, require_verifier_role=False)
-    return _read_verifier_result(pipeline, fallback)
+    # 兜底缺失（primary/fallback 均无）：missing 日志按 planner 语境标注
+    # （fix-code-review），勿沿用读取器默认的 Verifier 措辞误导排障方向。
+    return _read_verifier_result(pipeline, fallback, role_label="Planner")
 
 
 def _read_verdict(pipeline, spec_name: str) -> VerdictReadResult:

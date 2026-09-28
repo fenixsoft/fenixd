@@ -104,21 +104,27 @@ def _ensure_serving_worktree(pipeline, spec_name: str, contract, mode: str):
     # 路径已存在直接失败（本轮以难懂的「worktree 创建失败」告终，下一轮才
     # 因时间戳变化自愈）
     wt = serve_root / f"{spec_name}-{time.time_ns()}"
-    r = subprocess.run(
-        [
-            "git",
-            "-C",
-            str(pipeline._context.project_root),
-            "worktree",
-            "add",
-            "--detach",
-            str(wt),
-            "HEAD",
-        ],
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
+    # code-review a02f05cbf835：与上方 rev-parse 同口径兜底——git 缺失/权限/
+    # 60s 超时抛出的 OSError/subprocess.SubprocessError 不再炸穿验证主流程，
+    # 走既有 (None, None, err) 失败路径（对齐 _remove_serving_worktree 口径）
+    try:
+        r = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(pipeline._context.project_root),
+                "worktree",
+                "add",
+                "--detach",
+                str(wt),
+                "HEAD",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        return None, None, f"验证 worktree 创建失败: {e}"
     if r.returncode != 0:
         return None, None, ("验证 worktree 创建失败: " f"{(r.stderr or r.stdout).strip()[-200:]}")
     # code-review 7470b5d89795：provision 抛异常（网络/npm 故障）时清理刚建的
@@ -872,6 +878,17 @@ def _ensure_app_reachable(pipeline, spec_name: str) -> tuple:
         except Exception:
             return False
 
+    # code-review 9105bbfb5bc7：urls 为空时下方 all() 恒真（vacuous true），
+    # 可达性门禁与 commands.start 自启会被整体跳过——场景集含 web/api（纯
+    # cli 已在上方 return）但步骤无 http 绝对 URL 时显式留痕，不静默放行
+    if not urls:
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"场景 kind 集={','.join(sorted(kinds))} 但未收集到 http 绝对 URL，"
+            "可达性探测跳过（空集合 all() 恒真）：请检查场景 navigate/"
+            "http_request 步骤是否携带绝对地址，或补 .fenix/verify.yaml serve 契约",
+        )
+
     # 1) 直接探测：已可达则无需自愈（4xx/5xx 同样视为服务在应答——urls 均
     #    经上方 http 前缀过滤，语义与探活环/恢复路径统一，见 _probe 注释）
     if all(_probe(u, http_error_ok=True) for u in urls):
@@ -895,35 +912,24 @@ def _ensure_app_reachable(pipeline, spec_name: str) -> tuple:
         if contract_path.is_file() and contract is None:
             # 文件存在但 load_verify_contract 返回 None = 解析失败
             parse_error = True
-        # 写入 verify_contract_missing 信号（形态参照 verify_uniform_failure）
-        from core.admin_store import AdminStore, SIGNAL
-
-        store = AdminStore(pipeline._context.project_root, pipeline._context.logger)
-        try:
-            store.append(
-                {
-                    "kind": SIGNAL,
-                    "signal_type": "verify_contract_missing",
-                    "spec": spec_name,
-                    "severity": "major",
-                    "description": note,
-                    "evidence": (
-                        f"项目根={pipeline._context.project_root}; "
-                        f"场景kind集={','.join(sorted(kinds))}; "
-                        f"parse_error={'是' if parse_error else '否'}"
-                    ),
-                    "recommended_action": (
-                        "Administrator 起草 .fenix/verify.yaml 验证契约："
-                        "检查项目构建命令、静态目录、服务启动方式；"
-                        "草稿写临时路径 → bin/fenix_verify_contract.py 自证 → "
-                        "全通才落位 → git 提交 → spec 复位 ready 触发重验证"
-                    ),
-                }
-            )
-        except Exception as e:
-            pipeline._context.logger.error(
-                "pm_engine", f"verify_contract_missing 信号写入失败: {e}"
-            )
+        # code-review 3f06a4894b5b：信号写入收敛到共用助手
+        # pipeline._write_verify_contract_missing（契约相关 fail-fast 统一出口，
+        # 失败由助手内部记 error），parse_error 等差异并入 evidence 字符串
+        pipeline._write_verify_contract_missing(
+            spec_name,
+            note,
+            (
+                f"项目根={pipeline._context.project_root}; "
+                f"场景kind集={','.join(sorted(kinds))}; "
+                f"parse_error={'是' if parse_error else '否'}"
+            ),
+            recommended_action=(
+                "Administrator 起草 .fenix/verify.yaml 验证契约："
+                "检查项目构建命令、静态目录、服务启动方式；"
+                "草稿写临时路径 → bin/fenix_verify_contract.py 自证 → "
+                "全通才落位 → git 提交 → spec 复位 ready 触发重验证"
+            ),
+        )
         return False, False, note
 
     # 端口注入（与 worktree 路径同机制）：cmd 引用 {port} 时分配空闲
@@ -1147,6 +1153,9 @@ def _rewrite_scenario_port(pipeline, scenarios_path: Path, old_port: int, new_po
     正则自身以 ``:port`` + 边界锚定，裸域名与非 URL 文本不会被误改。
     """
     from core.verify_contract import _rewrite_scenario_target_values
+    # code-review 22e59d9a5ffb：原子写复用 scenario_gate 助手（失败时清理
+    # 残留 .tmp 再上抛，与 fastlane 同一收敛点），不再手写 tmp+replace
+    from core.pm_engine.verification.scenario_gate import _atomic_write_text
 
     port_re = re.compile(r":%d" % old_port + _PORT_BOUNDARY)
 
@@ -1162,13 +1171,12 @@ def _rewrite_scenario_port(pipeline, scenarios_path: Path, old_port: int, new_po
         )
         if not n:
             return
-        # tmp+replace 原子写（与 scenario_gate.py 场景文件写点同款）：裸写
-        # 中途 SIGKILL 会留下截断 JSON，下一轮加载误判 corrupt 触发人工裁决停摆
-        tmp = scenarios_path.with_name(scenarios_path.name + ".tmp")
-        tmp.write_text(
-            json.dumps(rewritten, ensure_ascii=False, indent=2), encoding="utf-8"
+        # 原子写（tmp+replace 收敛到 scenario_gate._atomic_write_text）：裸写
+        # 中途 SIGKILL 会留下截断 JSON，下一轮加载误判 corrupt 触发人工裁决停摆；
+        # 失败时助手清理残留 .tmp 再上抛，验证进度目录不再留孤儿 .tmp
+        _atomic_write_text(
+            scenarios_path, json.dumps(rewritten, ensure_ascii=False, indent=2)
         )
-        tmp.replace(scenarios_path)
         pipeline._context.logger.info("pm_engine", f"已重写验证场景端口 {old_port} → {new_port}")
     except Exception as e:
         pipeline._context.logger.warning("pm_engine", f"重写验证场景端口失败: {e}")
@@ -1198,8 +1206,6 @@ def _current_verify_round(pipeline, spec_name: str) -> int:
 
 
 def _port_responds(port: int) -> bool:
-    import urllib.request
-
     try:
         with urllib.request.urlopen(
             urllib.request.Request(

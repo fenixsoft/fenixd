@@ -344,6 +344,16 @@ def _run_legacy_verification(pipeline, spec_name: str):
             _redispatch_fresh_verify(pipeline, spec_name, result, "stale")
             return
         if verifier_status == "bug-found":
+            # ── 在飞 verify 结果状态判据·闸门写点前置复核（code-review
+            # 12f6974d3d88）──
+            # 复核前移到各闸门写点之前（与 unknown-status/unreadable 分支同
+            # 序）：run_verifier 期间 spec 已漂移出 testing 时，报告闸门/洗白
+            # 门阻断路径的 update_spec 不得覆写 error/tester_run（正是
+            # process-failure 分支注释承认的 error 覆写抹掉 frozen 标记性
+            # error 的事故同款风险）。transition 前仍保留同款复核收敛 TOCTOU
+            # 窗口。
+            if _discard_if_not_testing(pipeline, spec_name, result, "bug-found"):
+                return
             # 验证报告产物闸门（add-verify-report-gate，legacy 路径同闸门）
             report_blocker = pipeline._ensure_verification_report(spec_name)
             if report_blocker:
@@ -472,6 +482,15 @@ def _run_legacy_verification(pipeline, spec_name: str):
             # code-review 06ca08e65666：仅 verified 裁决落入成功晋级分支；
             # plan-ready/scenario-repaired 落入下方「验证未完成」分支，
             # MUST NOT 按通过收口。
+            # ── 在飞 verify 结果状态判据·闸门写点前置复核（code-review
+            # 12f6974d3d88）──
+            # 复核前移到各闸门写点之前（与 unknown-status/unreadable 分支同
+            # 序）：run_verifier 期间 spec 已漂移出 testing 时，进度核对/报告
+            # 闸门阻断路径的 update_spec 不得覆写 error/tester_run（error 覆写
+            # 曾抹掉 frozen 标记性 error 的事故同款风险）。transition 前仍保留
+            # 同款复核收敛 TOCTOU 窗口。
+            if _discard_if_not_testing(pipeline, spec_name, result, "verified"):
+                return
             # D6: legacy 路径同样前置进度核对：done>=total 才晋级
             vblocker = pipeline._check_verification_gate(spec_name)
             if vblocker:
@@ -597,6 +616,30 @@ def _run_legacy_verification(pipeline, spec_name: str):
         # 不覆盖 error/tester_run。判据与文案单点收敛于
         # _discard_if_not_testing（05d216e0182d）。
         if _discard_if_not_testing(pipeline, spec_name, result, "process-failure"):
+            return
+        # ── 统一失败归因入口（code-review 0d478d8f37ce，与 verdict bug-found
+        # 分支对齐）──
+        # 进程失败分支上游只经过早期 infra 门（_verifier_error_is_infra：熔断/
+        # 链耗尽/切换类），该门不匹配 worktree/merge conflict/tree dirty 标记；
+        # enrich_failure_class 比早期门多匹配这三类标记——error 含这些文本时
+        # 若直接流转 bug-found 即重演「先流转再归因」失效（spec 停在 bug-found
+        # 却不派生 fix，状态回退只能靠 recovery 兜底）。MUST 在 bug-found
+        # transition 之前：infra 命中按 infra 记账退款并保持原状态。
+        failure_class = pipeline.enrich_failure_class(
+            spec_name,
+            error_text=getattr(result, "error", "") or "",
+        )
+        if failure_class == "infra":
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"归因入口判 infra（legacy 进程失败）：'{spec_name}' 按 infra 记账，"
+                f"不流转 bug-found、不派生 fix",
+            )
+            pipeline._record_infra_failure(
+                spec_name,
+                "infra at attribution entry (legacy process-failure)",
+                run_id=getattr(result, "run_id", "") or "",
+            )
             return
         # transition 返回值校验（与 bug-found/verified 分支同款）：前置守卫链
         # 与 transition 之间存在 TOCTOU 窗口，窗口内 spec 被人工冻结/并发接管

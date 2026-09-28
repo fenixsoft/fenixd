@@ -2485,10 +2485,15 @@ class _ScheduleRecorder:
         self._boom = boom
         self._code_review_in_flight = False
 
-    def _schedule_ratelimit_redispatch(self, **kwargs):
+    def _schedule_ratelimit_redispatch(self, manifest, review_kind, window_start,
+                                       scope, intent):
+        # 显式签名对齐 admin_monitor 同名方法（替身保真守卫禁 **kwargs 宽容替身）
         if self._boom:
             raise RuntimeError("timer arm failed")
-        self.calls.append(kwargs)
+        self.calls.append(dict(
+            manifest=manifest, review_kind=review_kind,
+            window_start=window_start, scope=scope, intent=intent,
+        ))
 
 
 class TestManualFullOpenBacklogGuard(unittest.TestCase):
