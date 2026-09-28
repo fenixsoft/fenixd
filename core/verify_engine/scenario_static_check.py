@@ -147,7 +147,7 @@ def _flagged_2han_literals(text: str) -> list[str]:
 def _rule_stale_literal_port(scenario: dict, serving_port: str | None) -> list[StaticFinding]:
     """① cli/api 场景 command/stdin/env/url/headers 字面端口 ≠ serving 端口。
 
-    本次事故根因：跨轮 replan 原样写回已裁决场景，seed stdign 内嵌上一轮
+    本次事故根因：跨轮 replan 原样写回已裁决场景，seed stdin 内嵌上一轮
     serving 字面端口 → 新一轮端口不同 → 夹具未建成 → 下游连锁失败。cli 场景扫
     ``command``（str=shell / list=argv，list 逐项拼接后扫）/``stdin``/``env``
     值（k=v 形态扫），api 场景扫 ``http_request``/``sse_connect`` 步骤 url 与
@@ -191,6 +191,7 @@ def _rule_stale_literal_port(scenario: dict, serving_port: str | None) -> list[S
                             ),
                         )
                     )
+    # [fenix-ignore:60bffa136875] 模式表按已复盘事故形态钉死（D4：只收确定性规则、防误报磨掉 judge 信任），api body / web seed 载体未见事故证据，扩展扫描属投机扩大误报面，留待复盘确证后再扩
     elif kind == "api":
         for i, step in enumerate(steps):
             if not isinstance(step, dict):

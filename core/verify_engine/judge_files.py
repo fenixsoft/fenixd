@@ -283,9 +283,11 @@ def migrate_legacy_attribution_file(project_root: Path, spec_name: str) -> bool:
         return True  # 无需迁移
 
     # 直接探测磁盘文件原始形态判「已是新格式」，不绕道 load_attribution 的
-    # 归一化结果：上次迁移产物若被后续 judge 回写（仍带 migrated_from_legacy
-    # 标记），绕道会对新格式再做一次等价 save_attribution——幂等但多一次
-    # 无谓写（仅刷新 saved_at）。
+    # 归一化结果：迁移走 save_attribution 落盘，payload 只含
+    # format_version/scenarios/saved_at，顶层 migrated_from_legacy 标记并不
+    # 写入磁盘；新格式探测仅依据 scenarios 键——上次迁移产物若被后续 judge
+    # 回写（仍是「scenarios 列表」形态），绕道会对新格式再做一次等价
+    # save_attribution——幂等但多一次无谓写（仅刷新 saved_at）。
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, UnicodeDecodeError):

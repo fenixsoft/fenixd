@@ -745,6 +745,18 @@ def _append_required_field_errors(
 # ── 数据类 ────────────────────────────────────────────────────────
 
 
+def _str_field(d: dict, key: str) -> str:
+    """步骤字符串字段读入归一（code-review item 057b6e7741a5）：场景 JSON
+    写出数字等非字符串形态时归一为 str——原样透传会令词表校验期的
+    ``(step.value or "").strip()`` / ``step.url.strip()`` 抛 AttributeError，
+    被外层包成不含场景 id 的笼统「解析失败」。归一口径与 browser.py 运行层
+    的 ``str(step.get("value") or "")``（code-review item 08ef327b2c7e）一致，
+    不改变 wait 以毫秒数消费 value 等合法形态的运行语义；非法形态（如
+    navigate 收到数字）交词表校验走形态报错的字段级路径，不静默吞。"""
+    raw = d.get(key, "")
+    return str(raw) if raw else ""
+
+
 @dataclass
 class TestStep:
     """单个测试操作步骤。
@@ -848,8 +860,10 @@ class TestStep:
     def from_dict(cls, d: dict) -> "TestStep":
         return cls(
             action=d["action"],
-            target=d.get("target", ""),
-            value=d.get("value", ""),
+            # target/value/url 参与词表校验（必填判空、.strip() 形态检查），
+            # 非字符串形态经 _str_field 归一，不制造校验期 AttributeError
+            target=_str_field(d, "target"),
+            value=_str_field(d, "value"),
             screenshot=d.get("screenshot", False),
             description=d.get("description", ""),
             dialog=d.get("dialog", ""),
@@ -863,7 +877,7 @@ class TestStep:
             timeout=float(d.get("timeout") or 0),
             as_=d.get("as", ""),
             method=d.get("method", ""),
-            url=d.get("url", ""),
+            url=_str_field(d, "url"),
             headers=d.get("headers") or {},
             body=d.get("body", ""),
             body_type=d.get("body_type", ""),
@@ -1024,10 +1038,19 @@ class TestScenario:
 
     @classmethod
     def from_dict(cls, d: dict) -> "TestScenario":
+        # 损坏 steps 归一（code-review item 1bc2dac98c6e）：steps 存在但非列表
+        # （dict/str/None）时，推导式对 dict 键/str 字符迭代会让 TestStep.from_dict
+        # 直接抛 TypeError，被外层包成不含场景 id 的笼统「解析失败」，与契约
+        # 迁移 docstring「由读端以字段级差异报 corrupt」的承诺漂移。置空交
+        # 词表校验报字段级错误（web 缺 navigate / cli/api steps 不得为空），
+        # 错误带场景 id 定位。
+        steps = d.get("steps", [])
+        if not isinstance(steps, list):
+            steps = []
         return cls(
             id=d["id"],
             description=d.get("description", ""),
-            steps=[TestStep.from_dict(s) for s in d.get("steps", [])],
+            steps=[TestStep.from_dict(s) for s in steps],
             assertions=[Assertion.from_dict(a) for a in d.get("assertions", [])],
             visual_baseline=d.get("visual_baseline", ""),
             # 显式 null 归一空列表（与 env/headers 的 or {} 同款，code-review
@@ -1118,6 +1141,15 @@ def _validate_typed(scenario: TestScenario, kind: str) -> list[str]:
     """
     errors: list[str] = []
 
+    # 空 steps 词表拦截（code-review item fac3eaecdde6 / 890e16b33275）：web
+    # 场景有 navigate 硬要求兜住空步骤，cli/api 无对应约束——steps=[] 且
+    # assertions=[] 的场景会经 determine_scenario_status([], []) 空转判
+    # pass，零证据计入整轮裁决。验收期打回，不留运行期假通过通道。
+    if not scenario.steps:
+        errors.append(
+            f"场景'{scenario.id}'steps 不得为空（{kind} 场景至少需要一个步骤）"
+        )
+
     for i, step in enumerate(scenario.steps):
         if step.action not in KIND_ACTIONS.get(kind, set()):
             errors.append(
@@ -1150,6 +1182,14 @@ def _validate_typed(scenario: TestScenario, kind: str) -> list[str]:
         if step.timeout and step.timeout < 0:
             errors.append(
                 f"场景'{scenario.id}'步骤{i}: timeout 须为正数（秒），收到 {step.timeout}"
+            )
+        # sse_connect duration 负值同款拦截（code-review item c0d449652c16）：
+        # 负窗口 deadline 落在过去、首行即 break，场景以 0 事件失败收场，报错
+        # 只剩事件数下限不满足，judge 归因不到「窗口秒数为负」的配置根因。
+        # 口径对齐上方 timeout 分支：仅拦严格负值，不拦 0。
+        if step.duration and step.duration < 0:
+            errors.append(
+                f"场景'{scenario.id}'步骤{i}: duration 须为正数（秒），收到 {step.duration}"
             )
 
     for i, a in enumerate(scenario.assertions):

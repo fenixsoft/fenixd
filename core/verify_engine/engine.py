@@ -145,11 +145,22 @@ class VerifyEngine:
 
         # 规范化场景
         normalized = []
-        for s in scenarios:
+        # 验收错误清单提前到规范化期收集：dict 形态场景解析失败也走下方
+        # 验收门同一出口打回 plan（code-review item 6e84d77a0f58）。
+        acceptance_errors: list[str] = []
+        for i, s in enumerate(scenarios):
             if isinstance(s, TestScenario):
                 normalized.append(s)
             elif isinstance(s, dict):
-                normalized.append(TestScenario.from_dict(s))
+                # 逐条捕获（对齐 load_scenarios 的解析容错）：畸形 dict
+                # （如缺 id 键）若放任 from_dict 抛 KeyError，会穿出 run()
+                # 不落报告、不写进度、不走「场景验收失败」打回通道。
+                try:
+                    normalized.append(TestScenario.from_dict(s))
+                except Exception as e:
+                    acceptance_errors.append(
+                        f"场景[{i}] dict 解析失败: {type(e).__name__}: {e}"
+                    )
             else:
                 self.logger.warning(
                     "verify_engine",
@@ -159,7 +170,6 @@ class VerifyEngine:
         # ── 场景验收门（2026-08-28：相对 navigate 导致白屏整轮假失败）──
         # 验收失败不启动任何 Runner、不执行任何场景，返回带 env_error 的
         # 空报告，由 pm_engine 退回 plan 阶段重新生成（上限与反馈机制在调用方）。
-        acceptance_errors: list[str] = []
         seen_ids: set[str] = set()
         for s in normalized:
             # 跨场景 id 查重：validate 仅单场景校验不查重，重复 id 会被
