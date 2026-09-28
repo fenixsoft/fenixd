@@ -8,7 +8,7 @@ export interface KnowledgeSection {
   graph_enabled?: boolean;
 }
 
-/** 面板开关三元态：值 + 是否为缺省（缺省时说明文案提示「默认开启」） */
+/** 面板开关状态：两个布尔值；缺省开启语义由 knowledgeSwitchesFromConfig 归一（非 false 一律视为开启） */
 export interface KnowledgeSwitchState {
   auditEnabled: boolean;
   graphEnabled: boolean;
