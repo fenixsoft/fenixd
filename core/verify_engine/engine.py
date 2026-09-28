@@ -83,7 +83,9 @@ class VerifyEngine:
 
         # 并行度配置（容错口径同 escalation.py：脏值回退默认 5，
         # 下限 1——信号量计数为 0 会令并行池永久拿不到许可而挂死）
-        verify_cfg = (config or {}).get("verify_engine", {})
+        verify_cfg = (config or {}).get("verify_engine") or {}
+        if not isinstance(verify_cfg, dict):  # 段非 dict（str/list 等）时回退空段
+            verify_cfg = {}
         try:
             self.max_parallel = max(1, int(verify_cfg.get("max_parallel", 5)))
         except (TypeError, ValueError):
@@ -209,7 +211,7 @@ class VerifyEngine:
             more = f" 等 {len(acceptance_errors)} 项" if len(acceptance_errors) > 5 else ""
             msg = f"场景验收失败（{head}{more}）"
             self.logger.error("verify_engine", msg)
-            self._write_progress(0, len(normalized), f"场景验收失败: {msg}")
+            self._write_progress(0, len(normalized), msg)
             report = self._build_report([])
             report["env_error"] = msg
             self._save_report(report)
@@ -355,7 +357,7 @@ class VerifyEngine:
             for i, r in enumerate(batch_results):
                 sid = ready[i].id
                 completed_ids.add(sid)
-                if isinstance(r, Exception):
+                if isinstance(r, BaseException):  # 含 CancelledError，防异常对象漏进结果集
                     self.logger.error("verify_engine", f"场景'{sid}'异常: {r}")
                     results.append(
                         {
@@ -363,7 +365,7 @@ class VerifyEngine:
                             "description": ready[i].description,
                             "kind": ready[i].kind,
                             "status": "error",
-                            "error": str(r),
+                            "error": repr(r),
                             "step_results": [],
                             "assertion_results": [],
                             "visual_results": [],
