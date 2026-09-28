@@ -33,9 +33,22 @@ def _mk_pm(tmpdir, spec="demo-spec"):
     pm = SimpleNamespace()
     pm.project_root = Path(tmpdir)
     pm.logger = MagicMock()
+
+    def _bump_counters(s, deltas):
+        # 与 StateMachine.bump_counters 同语义的最小桩（改道重派记账
+        # _judge_charge_verdict_retry 经此递增轮内/生命周期计数）。
+        entry = _STATE.get(s) or {}
+        finals = {
+            k: max(0, int(entry.get(k, 0) or 0) + v)
+            for k, v in deltas.items()
+        }
+        _STATE[s] = {**entry, **finals}
+        return finals
+
     pm.state_machine = SimpleNamespace(
         read_one=lambda s: _STATE.get(s) or {},
         update_spec=lambda s, upd: _STATE.update({s: {**_STATE.get(s, {}), **upd}}),
+        bump_counters=_bump_counters,
     )
     pm.agent_runner = SimpleNamespace(
         run_planner=MagicMock(

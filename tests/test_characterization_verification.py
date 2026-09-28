@@ -36,6 +36,9 @@ class _FakeLogger:
         self.infos = []
         self.calls = []
 
+    def debug(self, *a, **k):
+        self.calls.append(("debug", a, k))
+
     def warning(self, *a, **k):
         self.warnings.append((a, k))
         self.calls.append(("warning", a, k))
